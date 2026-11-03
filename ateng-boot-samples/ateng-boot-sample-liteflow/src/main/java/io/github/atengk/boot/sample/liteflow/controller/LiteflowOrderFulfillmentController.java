@@ -69,20 +69,21 @@ public class LiteflowOrderFulfillmentController {
                     .build();
 
             return Result.success(response);
-        } catch (Exception ex) {
+        } catch (LiteflowExecutionException ex) {
             log.warn("【订单履约】履约链路异常中断，Saga 逆向补偿已执行：orderId={}, cause={}",
                     request.getOrderId(), ex.getMessage());
 
             String traceSummary = "N/A";
-            if (ex instanceof LiteflowExecutionException lee && lee.getTrace() != null) {
-                LiteflowExecutionTrace trace = lee.getTrace();
-                traceSummary = trace.formatSummary();
+            if (ex.getTrace() != null) {
+                traceSummary = ex.getTrace().formatSummary();
             }
+
+            String status = context.getCompensationLogs().isEmpty() ? "FAILED" : "COMPENSATED";
 
             OrderFulfillmentResponse response = OrderFulfillmentResponse.builder()
                     .orderId(context.getOrderId())
                     .success(false)
-                    .fulfillmentStatus("COMPENSATED")
+                    .fulfillmentStatus(status)
                     .compensationLogs(new ArrayList<>(context.getCompensationLogs()))
                     .errorSummary(ex.getMessage())
                     .traceSummary(traceSummary)

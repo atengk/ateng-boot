@@ -18,23 +18,11 @@ public class DynamicValidateCmp extends BaseNodeComponent<DynamicFlowContext> {
 
     @Override
     public void process(DynamicFlowContext context) {
-        String payload = resolvePayload(context);
+        String payload = context.resolvePayload(getRequestData());
         log.info("【动态规则-VALIDATE】校验输入有效性：{}", payload);
         if (payload == null || payload.isBlank()) {
             throw new BusinessException("动态规则执行入参 payload 不能为空");
         }
         context.put("validated", true);
-    }
-
-    private String resolvePayload(DynamicFlowContext context) {
-        String payload = context.getInputPayload();
-        if (payload == null) {
-            Object reqData = getRequestData();
-            if (reqData != null) {
-                payload = reqData.toString();
-                context.setInputPayload(payload);
-            }
-        }
-        return payload;
     }
 }

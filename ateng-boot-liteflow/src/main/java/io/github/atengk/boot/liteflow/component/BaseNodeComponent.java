@@ -4,6 +4,7 @@ import com.yomahub.liteflow.core.NodeComponent;
 import io.github.atengk.boot.core.util.JsonUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.BeanUtils;
 
 import java.lang.reflect.Method;
 import java.util.Collections;
@@ -40,18 +41,7 @@ public abstract class BaseNodeComponent<T> extends NodeComponent {
      * @throws IllegalStateException 若当前执行槽中未找到对应上下文
      */
     public T getContext() {
-        if (this.contextClass != null) {
-            T ctx = this.getContextBean(this.contextClass);
-            if (ctx != null) {
-                return ctx;
-            }
-        }
-        T firstCtx = this.getFirstContextBean();
-        if (firstCtx != null) {
-            return firstCtx;
-        }
-        String targetName = this.contextClass != null ? this.contextClass.getName() : "Context";
-        throw new IllegalStateException("未能从当前执行槽中获取到类型为 [" + targetName + "] 的业务上下文实例，请检查流程执行入参");
+        return ComponentSupport.resolveContext(this, this.contextClass);
     }
 
     /**
@@ -65,12 +55,13 @@ public abstract class BaseNodeComponent<T> extends NodeComponent {
     /**
      * 节点执行异常时的就地优雅降级钩子
      * <p>默认行为：直接重新向上抛出原始异常，以此中断流水线并触发已执行节点的 Saga 逆序回滚。</p>
-     * <p>降级范式：子类重写此方法并在内部就地设置保底数据或标记降级，<strong>且不向上抛出异常</strong>。
+     * <p>降级范式：子类重写此方法并在内部设置保底数据，<strong>且不向上抛出异常</strong>。
+     * 支持就地更新入参 {@code context} 并返回，或返回全新的保底上下文实例（框架将自动同步保底属性至当前执行槽）。
      * 流水线将视为当前节点降级恢复成功，继续推进后续节点的执行。</p>
      *
      * @param e       捕获的业务执行异常
      * @param context 强类型业务上下文
-     * @return 降级后的业务上下文
+     * @return 降级后的业务上下文（入参自身或全新构造的保底对象）
      * @throws Exception 若无需降级，继续抛出异常以中断流水线
      */
     public T onError(Exception e, T context) throws Exception {
@@ -83,7 +74,10 @@ public abstract class BaseNodeComponent<T> extends NodeComponent {
         try {
             process(context);
         } catch (Exception e) {
-            onError(e, context);
+            T fallback = onError(e, context);
+            if (fallback != null && fallback != context) {
+                BeanUtils.copyProperties(fallback, context);
+            }
         }
     }
 
@@ -161,7 +155,7 @@ public abstract class BaseNodeComponent<T> extends NodeComponent {
 
     @Override
     public String getTag() {
-        return this.getRefNode() != null ? this.getRefNode().getTag() : null;
+        return ComponentSupport.getTag(this);
     }
 
     /**
@@ -172,17 +166,7 @@ public abstract class BaseNodeComponent<T> extends NodeComponent {
      * @return 反序列化后的配置对象，若无配置数据则返回 null
      */
     public <D> D getCmpData(Class<D> dataClass) {
-        Objects.requireNonNull(dataClass, "dataClass 不能为空");
-        String cmpData = this.getRefNode() != null ? this.getRefNode().getCmpData() : null;
-        if (cmpData == null || cmpData.isBlank()) {
-            return null;
-        }
-        if (String.class.equals(dataClass) || Object.class.equals(dataClass)) {
-            @SuppressWarnings("unchecked")
-            D raw = (D) cmpData;
-            return raw;
-        }
-        return JsonUtil.parseObject(cmpData, dataClass);
+        return ComponentSupport.getCmpData(this, dataClass);
     }
 
     /**
@@ -193,11 +177,6 @@ public abstract class BaseNodeComponent<T> extends NodeComponent {
      * @return 反序列化后的列表，若无数据返回空列表
      */
     public <D> List<D> getCmpDataList(Class<D> elementClass) {
-        Objects.requireNonNull(elementClass, "elementClass 不能为空");
-        String cmpData = this.getRefNode() != null ? this.getRefNode().getCmpData() : null;
-        if (cmpData == null || cmpData.isBlank()) {
-            return Collections.emptyList();
-        }
-        return JsonUtil.parseList(cmpData, elementClass);
+        return ComponentSupport.getCmpDataList(this, elementClass);
     }
 }

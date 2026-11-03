@@ -114,12 +114,49 @@ class LiteflowTemplateTest {
     }
 
     @Test
+    @DisplayName("验证受管异步编排（预置上下文）返回 CompletableFuture 并更新上下文")
+    void testExecuteAsyncWithContext() throws Exception {
+        SampleTestContext initialContext = new SampleTestContext();
+        initialContext.setData("init");
+        CompletableFuture<SampleTestContext> future = liteflowTemplate.executeAsyncWithContext(
+                "testChainSuccess", "asyncParam", initialContext);
+
+        SampleTestContext context = future.get(5, TimeUnit.SECONDS);
+
+        assertThat(context).isSameAs(initialContext);
+        assertThat(context.getData()).isEqualTo("stepA_done");
+    }
+
+    @Test
     @DisplayName("验证直接即时执行动态 EL 表达式并解包上下文")
     void testExecuteEl() {
         SampleTestContext context = liteflowTemplate.executeEl("THEN(stepA)", "elParam", SampleTestContext.class);
 
         assertThat(context).isNotNull();
         assertThat(context.getData()).isEqualTo("stepA_done");
+    }
+
+    @Test
+    @DisplayName("验证直接即时执行动态 EL 表达式（预置上下文）")
+    void testExecuteElWithContext() {
+        SampleTestContext initialContext = new SampleTestContext();
+        initialContext.setData("init");
+        SampleTestContext context = liteflowTemplate.executeElWithContext("THEN(stepA)", "elParam", initialContext);
+
+        assertThat(context).isSameAs(initialContext);
+        assertThat(context.getData()).isEqualTo("stepA_done");
+    }
+
+    @Test
+    @DisplayName("验证动态 EL 表达式执行失败时异常完整保留 EL 语句")
+    void testExecuteElFailurePreservesElExpression() {
+        assertThatThrownBy(() -> liteflowTemplate.executeEl("THEN(stepFail)", SampleTestContext.class))
+                .isInstanceOf(LiteflowExecutionException.class)
+                .satisfies(ex -> {
+                    LiteflowExecutionException e = (LiteflowExecutionException) ex;
+                    assertThat(e.getChainId()).contains("DYNAMIC_EL[THEN(stepFail)]");
+                    assertThat(e.getMessage()).contains("DYNAMIC_EL[THEN(stepFail)]");
+                });
     }
 
     @Test

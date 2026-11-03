@@ -14,13 +14,13 @@
 | **执行门面** | 多上下文解包编排 | `LiteflowTemplate` | `enabled = true` | `LiteflowResponse execute(String, Object, Class<?>, Class<?>, ...)` | `LiteflowTemplateTest` |
 | **执行门面** | 规则链动态热重载 | `LiteflowTemplate` | `enabled = true` | `void reloadChain(String, String)`<br>`boolean containChain(String)` | `LiteflowDynamicRuleController` |
 | **执行门面** | 官方原生逃生通道 | `LiteflowTemplate` | `enabled = true` | `LiteflowResponse execute2Resp(...)`<br>`LiteflowResponse execute2RespWithEL(...)` | `LiteflowTemplateTest` |
-| **泛型组件** | 普通处理组件基类 | `BaseNodeComponent<T>` | - | `T getContext()`<br>`void rollback(T)`（自动探测并激活 Saga 逆序补偿） | `LiteflowComponentHierarchyTest`<br>`DeductInventoryCmp` |
-| **泛型组件** | 逻辑条件分支基类 | `BaseIfComponent<T>` | - | `boolean processIf()`<br>强类型条件路由真伪判定 | `LiteflowComponentHierarchyTest`<br>`CheckBlacklistIfCmp` |
-| **泛型组件** | 选择分支路由基类 | `BaseSwitchComponent<T>` | - | `String processSwitch()`<br>多分支目标组件 ID 强类型决策 | `LiteflowComponentHierarchyTest`<br>`RiskDecisionSwitchCmp` |
-| **泛型组件** | 次数循环控制基类 | `BaseForComponent<T>` | - | `int processFor()`<br>强类型循环执行次数控制 | `LiteflowComponentHierarchyTest` |
-| **泛型组件** | 迭代器循环基类 | `BaseIteratorComponent<T>` | - | `Iterator<?> processIterator()`<br>强类型集合迭代循环 | `LiteflowComponentHierarchyTest` |
-| **泛型组件** | 条件循环控制基类 | `BaseWhileComponent<T>` | - | `boolean processWhile()`<br>强类型循环退出条件判定 | `LiteflowComponentHierarchyTest` |
-| **泛型组件** | 循环中断跳出基类 | `BaseBreakComponent<T>` | - | `boolean processBreak()`<br>强类型循环中途熔断跳出 | `LiteflowComponentHierarchyTest` |
+| **泛型组件** | 普通处理组件基类 | `BaseNodeComponent<T>` | - | `void process(T)`<br>`void rollback(T)`（自动探测并激活 Saga 逆序补偿） | `LiteflowComponentHierarchyTest`<br>`DeductInventoryCmp` |
+| **泛型组件** | 逻辑条件分支基类 | `BaseIfComponent<T>` | - | `boolean processIf(T)`<br>强类型条件路由真伪判定 | `LiteflowComponentHierarchyTest`<br>`CheckBlacklistIfCmp` |
+| **泛型组件** | 选择分支路由基类 | `BaseSwitchComponent<T>` | - | `String processSwitch(T)`<br>多分支目标组件 ID 强类型决策 | `LiteflowComponentHierarchyTest`<br>`RiskDecisionSwitchCmp` |
+| **泛型组件** | 次数循环控制基类 | `BaseForComponent<T>` | - | `int processFor(T)`<br>强类型循环执行次数控制 | `LiteflowComponentHierarchyTest` |
+| **泛型组件** | 迭代器循环基类 | `BaseIteratorComponent<T>` | - | `Iterator<?> processIterator(T)`<br>强类型集合迭代循环 | `LiteflowComponentHierarchyTest` |
+| **泛型组件** | 条件循环控制基类 | `BaseWhileComponent<T>` | - | `boolean processWhile(T)`<br>强类型循环退出条件判定 | `LiteflowComponentHierarchyTest` |
+| **泛型组件** | 循环中断跳出基类 | `BaseBreakComponent<T>` | - | `boolean processBreak(T)`<br>强类型循环中途熔断跳出 | `LiteflowComponentHierarchyTest` |
 | **规则源 SPI** | 外部规则源扩展点 | `LiteflowRuleSourceProvider` | `rule-source.type = jdbc/custom` | `List<RuleSourceDefinition> loadRuleSources()` | `LiteflowRuleSourceTest` |
 | **规则源 SPI** | 规则源统一调度中心 | `LiteflowRuleSourceManager` | `rule-source.fail-fast = true` | `void refreshAll()`<br>`void refreshChain(String, String)` | `LiteflowRuleSourceTest` |
 | **规则热更** | Spring 领域事件总线 | `LiteflowRuleRefreshEvent`<br>`LiteflowRuleRefreshListener` | `enabled = true` | 发布全量或单链规则变更事件，触发即时平滑热生效 | `LiteflowRuleRefreshEventTest`<br>`LiteflowDynamicRuleController` |
@@ -112,9 +112,8 @@ liteflow:
 public class ValidateOrderCmp extends BaseNodeComponent<PriceCalculationContext> {
 
     @Override
-    public void process() {
-        // 直接获取绑定的业务强类型上下文，无需类型转换
-        PriceCalculationContext context = getContext();
+    public void process(PriceCalculationContext context) {
+        // 直接获取绑定的业务强类型上下文入参，无需强制类型转换
         log.info("【算价流程】校验订单参数，orderId={}, amount={}", context.getOrderId(), context.getOriginalAmount());
         if (context.getOriginalAmount() == null || context.getOriginalAmount().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BusinessException("订单原始金额必须大于 0");
@@ -146,8 +145,7 @@ liteflow:
 public class CheckBlacklistIfCmp extends BaseIfComponent<RiskApprovalContext> {
 
     @Override
-    public boolean processIf() {
-        RiskApprovalContext context = getContext();
+    public boolean processIf(RiskApprovalContext context) {
         boolean hitBlacklist = context.getIdCard() != null && context.getIdCard().contains("999");
         if (hitBlacklist) {
             log.warn("【风控流程】申请人命中黑名单，直接阻断！applicantId={}", context.getApplicantId());
@@ -165,8 +163,7 @@ public class CheckBlacklistIfCmp extends BaseIfComponent<RiskApprovalContext> {
 public class RiskDecisionSwitchCmp extends BaseSwitchComponent<RiskApprovalContext> {
 
     @Override
-    public String processSwitch() {
-        RiskApprovalContext context = getContext();
+    public String processSwitch(RiskApprovalContext context) {
         int fraudScore = context.getAntiFraudScore();
         int creditScore = context.getCreditScore();
 
@@ -182,8 +179,8 @@ public class RiskDecisionSwitchCmp extends BaseSwitchComponent<RiskApprovalConte
 ```
 
 #### 核心机制与边界防御
-- `BaseIfComponent` 的 `processIf()` 强制返回 `boolean`，无缝对接 LiteFlow `IF(..., ...)` 控制语法；
-- `BaseSwitchComponent` 的 `processSwitch()` 强制返回目标分支组件 ID 字符串，严格防止魔法值扩散。
+- `BaseIfComponent` 的 `processIf(context)` 强制返回 `boolean`，无缝对接 LiteFlow `IF(..., ...)` 控制语法；
+- `BaseSwitchComponent` 的 `processSwitch(context)` 强制返回目标分支组件 ID 字符串，严格防止魔法值扩散。
 
 ---
 
@@ -224,11 +221,11 @@ public class PriceService {
         LiteflowExecutionTrace trace = traceResult.getTrace();
         
         log.info("流程流转成功，链路步骤: {}, 耗时: {}ms", 
-                trace.getStepSequence(), trace.getTotalDurationMs());
+                trace.formatSummary(), trace.getTotalTimeSpentMs());
 
         return PriceCalculationResponse.builder()
                 .finalAmount(finalCtx.getFinalAmount())
-                .traceSummary(trace.getStepSequence())
+                .traceSummary(trace.formatSummary())
                 .build();
     }
 }
@@ -246,6 +243,19 @@ public class PriceService {
 
 ### 5.1 自动探测与逆序回滚机制 (`rollback`)
 
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    liteflow:
+      enabled: true                     # 开启 LiteFlow 自动装配底座
+liteflow:
+  enable: true
+  # 履约编排规则链定义示例：
+  # THEN(deductInventoryCmp, createWarehouseOrderCmp, sendShippingNoticeCmp)
+  # 当下游 sendShippingNoticeCmp 发生故障，LiteFlow 将自动逆序触发 createWarehouseOrderCmp 与 deductInventoryCmp 的 rollback 补偿
+```
+
 #### 实战业务代码
 ```java
 // 节点 1：扣减库存（实现 rollback(T) 自动激活补偿）
@@ -254,8 +264,7 @@ public class PriceService {
 public class DeductInventoryCmp extends BaseNodeComponent<OrderFulfillmentContext> {
 
     @Override
-    public void process() {
-        OrderFulfillmentContext ctx = getContext();
+    public void process(OrderFulfillmentContext ctx) {
         log.info("【正向执行】锁定并扣减库存: skuId={}, qty={}", ctx.getSkuId(), ctx.getQuantity());
         ctx.setInventoryDeducted(true);
     }
@@ -274,8 +283,7 @@ public class DeductInventoryCmp extends BaseNodeComponent<OrderFulfillmentContex
 public class CreateWarehouseOrderCmp extends BaseNodeComponent<OrderFulfillmentContext> {
 
     @Override
-    public void process() {
-        OrderFulfillmentContext ctx = getContext();
+    public void process(OrderFulfillmentContext ctx) {
         log.info("【正向执行】创建仓储运单: orderId={}", ctx.getOrderId());
         ctx.setWarehouseOrderCreated(true);
     }
@@ -301,8 +309,20 @@ public class CreateWarehouseOrderCmp extends BaseNodeComponent<OrderFulfillmentC
 
 ### 6.1 规则热重载与在线即时 EL 执行
 
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    liteflow:
+      enabled: true
+      rule-source:
+        type: custom                   # 外部规则源类型（可选: none, jdbc, custom；默认: none）
+        fail-fast: false               # 动态规则加载失败是否阻断启动（默认: true）
+```
+
 #### 实战业务代码
 ```java
+@Validated
 @RestController
 @RequestMapping("/sample/liteflow/dynamic")
 @RequiredArgsConstructor
@@ -313,28 +333,39 @@ public class LiteflowDynamicRuleController {
 
     // 1. 在线即时编译并执行动态 EL 表达式（无需预先定义 chainId）
     @PostMapping("/execute-el")
-    public Result<DynamicElExecuteResponse> executeEl(@RequestBody DynamicElExecuteRequest req) {
+    public Result<DynamicElExecuteResponse> executeEl(@Valid @RequestBody DynamicElExecuteRequest req) {
         LiteflowTraceResult<DynamicFlowContext> result = liteflowTemplate.executeElWithTrace(
                 req.getEl(), req.getPayload(), DynamicFlowContext.class);
         return Result.success(DynamicElExecuteResponse.builder()
                 .success(true)
                 .outputData(result.getContext().getAttributes())
-                .traceSummary(result.getTrace().getStepSequence())
+                .traceSummary(result.getTrace().formatSummary())
                 .build());
     }
 
     // 2. 在线热更新现有规则链
     @PostMapping("/reload-chain")
-    public Result<Boolean> reloadChain(@RequestBody DynamicChainReloadRequest req) {
+    public Result<Boolean> reloadChain(@Valid @RequestBody DynamicChainReloadRequest req) {
         liteflowTemplate.reloadChain(req.getChainId(), req.getEl());
         return Result.success(true);
     }
 
-    // 3. 通过领域事件发布全量/增量热更新广播
+    // 3. 探测指定 chainId 是否已被加载就绪
+    @GetMapping("/contain-chain")
+    public Result<Boolean> containChain(@NotBlank @RequestParam String chainId) {
+        return Result.success(liteflowTemplate.containChain(chainId));
+    }
+
+    // 4. 通过领域事件发布全量/增量热更新广播
     @PostMapping("/refresh-event")
-    public Result<String> refreshEvent(@RequestParam String chainId, @RequestParam String el) {
-        eventPublisher.publishEvent(LiteflowRuleRefreshEvent.refreshChain(this, chainId, el));
-        return Result.success("热更事件已发布");
+    public Result<String> refreshEvent(@RequestParam(required = false) String chainId, @RequestParam(required = false) String el) {
+        if (chainId != null && !chainId.isBlank() && el != null && !el.isBlank()) {
+            eventPublisher.publishEvent(LiteflowRuleRefreshEvent.refreshChain(this, chainId, el));
+            return Result.success("单链热更事件已发布: chainId=" + chainId);
+        } else {
+            eventPublisher.publishEvent(LiteflowRuleRefreshEvent.refreshAll(this));
+            return Result.success("全量规则源热重载事件已发布");
+        }
     }
 }
 ```

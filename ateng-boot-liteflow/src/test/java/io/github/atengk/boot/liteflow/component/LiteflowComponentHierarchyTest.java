@@ -406,4 +406,29 @@ class LiteflowComponentHierarchyTest {
 
         assertThat(context.getCapturedDataList()).containsExactly("item1", "item2", "item3");
     }
+
+    @Test
+    @DisplayName("测试上下文类型不匹配时显式拦截杜绝盲目强转")
+    void testContextTypeMismatchRejection() {
+        SampleNode sampleNode = new SampleNode();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                ComponentSupport.resolveContext(sampleNode, HierarchyTestContext.class))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("未能从当前执行槽中获取到类型为");
+    }
+
+    @Test
+    @DisplayName("测试流程执行中上下文类型不匹配时显式拦截杜绝盲目强转")
+    void testPipelineContextTypeMismatchRejection() {
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                liteflowTemplate.executeWithContext("testNodeChain", new UnrelatedContext()))
+                .isInstanceOf(io.github.atengk.boot.liteflow.exception.LiteflowExecutionException.class)
+                .hasMessageContaining("不匹配，拒绝执行不安全的盲目类型转换");
+    }
+
+    public static class UnrelatedContext {
+        private String dummy = "dummy";
+        public String getDummy() { return dummy; }
+        public void setDummy(String dummy) { this.dummy = dummy; }
+    }
 }

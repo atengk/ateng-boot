@@ -30,18 +30,7 @@ public abstract class BaseForComponent<T> extends NodeForComponent {
      * @throws IllegalStateException 若当前执行槽中未找到对应上下文
      */
     public T getContext() {
-        if (this.contextClass != null) {
-            T ctx = this.getContextBean(this.contextClass);
-            if (ctx != null) {
-                return ctx;
-            }
-        }
-        T firstCtx = this.getFirstContextBean();
-        if (firstCtx != null) {
-            return firstCtx;
-        }
-        String targetName = this.contextClass != null ? this.contextClass.getName() : "Context";
-        throw new IllegalStateException("未能从当前执行槽中获取到类型为 [" + targetName + "] 的业务上下文实例，请检查流程执行入参");
+        return ComponentSupport.resolveContext(this, this.contextClass);
     }
 
     /**
@@ -79,7 +68,7 @@ public abstract class BaseForComponent<T> extends NodeForComponent {
 
     @Override
     public String getTag() {
-        return this.getRefNode() != null ? this.getRefNode().getTag() : null;
+        return ComponentSupport.getTag(this);
     }
 
     /**
@@ -90,17 +79,7 @@ public abstract class BaseForComponent<T> extends NodeForComponent {
      * @return 反序列化后的配置对象，若无配置数据则返回 null
      */
     public <D> D getCmpData(Class<D> dataClass) {
-        Objects.requireNonNull(dataClass, "dataClass 不能为空");
-        String cmpData = this.getRefNode() != null ? this.getRefNode().getCmpData() : null;
-        if (cmpData == null || cmpData.isBlank()) {
-            return null;
-        }
-        if (String.class.equals(dataClass) || Object.class.equals(dataClass)) {
-            @SuppressWarnings("unchecked")
-            D raw = (D) cmpData;
-            return raw;
-        }
-        return JsonUtil.parseObject(cmpData, dataClass);
+        return ComponentSupport.getCmpData(this, dataClass);
     }
 
     /**
@@ -111,11 +90,6 @@ public abstract class BaseForComponent<T> extends NodeForComponent {
      * @return 反序列化后的列表，若无数据返回空列表
      */
     public <D> List<D> getCmpDataList(Class<D> elementClass) {
-        Objects.requireNonNull(elementClass, "elementClass 不能为空");
-        String cmpData = this.getRefNode() != null ? this.getRefNode().getCmpData() : null;
-        if (cmpData == null || cmpData.isBlank()) {
-            return Collections.emptyList();
-        }
-        return JsonUtil.parseList(cmpData, elementClass);
+        return ComponentSupport.getCmpDataList(this, elementClass);
     }
 }

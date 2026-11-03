@@ -9,9 +9,11 @@ import io.github.atengk.boot.sample.liteflow.model.DynamicChainReloadRequest;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteRequest;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteResponse;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -29,6 +31,7 @@ import java.util.HashMap;
  * @since 2026-11-03
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/sample/liteflow/dynamic")
 @RequiredArgsConstructor
@@ -86,7 +89,7 @@ public class LiteflowDynamicRuleController {
      * @return 是否存在
      */
     @GetMapping("/contain-chain")
-    public Result<Boolean> containChain(@RequestParam("chainId") String chainId) {
+    public Result<Boolean> containChain(@NotBlank(message = "规则链 chainId 不能为空") @RequestParam("chainId") String chainId) {
         boolean exists = liteflowTemplate.containChain(chainId);
         log.info("【动态规则】探测规则链就绪状态：chainId={}, exists={}", chainId, exists);
         return Result.success(exists);

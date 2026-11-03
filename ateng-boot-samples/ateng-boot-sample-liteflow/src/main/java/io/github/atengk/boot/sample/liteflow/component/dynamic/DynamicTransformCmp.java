@@ -19,22 +19,10 @@ public class DynamicTransformCmp extends BaseNodeComponent<DynamicFlowContext> {
 
     @Override
     public void process(DynamicFlowContext context) {
-        String payload = resolvePayload(context);
+        String payload = context.resolvePayload(getRequestData());
         String transformed = payload == null ? "" : payload.trim().toUpperCase(Locale.ROOT);
         log.info("【动态规则-TRANSFORM】数据大写转换：origin={}, transformed={}", payload, transformed);
         context.put("transformedPayload", transformed);
         context.setResult("TRANSFORMED:" + transformed);
-    }
-
-    private String resolvePayload(DynamicFlowContext context) {
-        String payload = context.getInputPayload();
-        if (payload == null) {
-            Object reqData = getRequestData();
-            if (reqData != null) {
-                payload = reqData.toString();
-                context.setInputPayload(payload);
-            }
-        }
-        return payload;
     }
 }

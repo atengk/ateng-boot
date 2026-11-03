@@ -214,6 +214,23 @@ class LiteflowObservabilityTest {
         // 清理验证
         LiteflowExecutionTrace.clearFromMdc("liteflow_trace");
         assertThat(MDC.get("liteflow_trace")).isNull();
+
+        // 门面清理验证
+        liteflowTemplate.executeWithTrace("normalTraceChain", ObsContext.class);
+        assertThat(MDC.get("liteflow_trace")).isNotNull();
+        liteflowTemplate.clearTraceMdc();
+        assertThat(MDC.get("liteflow_trace")).isNull();
+
+        // 作用域自动清理验证
+        LiteflowTraceResult<ObsContext> result = liteflowTemplate.executeWithTrace("normalTraceChain", ObsContext.class);
+        liteflowTemplate.clearTraceMdc();
+        assertThat(MDC.get("liteflow_trace")).isNull();
+        try (AutoCloseable scope = liteflowTemplate.withTraceMdcScope(result.getTrace())) {
+            assertThat(MDC.get("liteflow_trace")).isNotNull();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        assertThat(MDC.get("liteflow_trace")).isNull();
     }
 
     @Test

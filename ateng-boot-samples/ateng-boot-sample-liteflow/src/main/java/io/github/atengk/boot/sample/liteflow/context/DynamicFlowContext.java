@@ -33,6 +33,19 @@ public class DynamicFlowContext implements Serializable {
     private Map<String, Object> attributes = new ConcurrentHashMap<>();
 
     /**
+     * 解析并补齐有效 Payload（若未设置则尝试读取兜底对象）
+     *
+     * @param defaultPayload 兜底或全局请求入参对象
+     * @return 最终生效的 Payload 字符串
+     */
+    public String resolvePayload(Object defaultPayload) {
+        if (this.inputPayload == null && defaultPayload != null) {
+            this.inputPayload = defaultPayload.toString();
+        }
+        return this.inputPayload;
+    }
+
+    /**
      * 注入属性
      *
      * @param key   键

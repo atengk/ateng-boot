@@ -17,8 +17,9 @@ import java.util.Objects;
 import java.util.regex.Pattern;
 
 /**
- * 基于 JDBC 数据源的 LiteFlow 动态规则加载实现
- * 直接依托原生标准 {@link DataSource} 执行确定性 SQL 查询，支持无感知对接 MySQL、PostgreSQL、Oracle、H2 等主流关系型数据库，
+ * 基于标准数据源与 JDBC 的通用动态规则加载实现
+ * 直接依托原生标准 {@link DataSource} 执行确定性 SQL 查询，天然平滑对接 MyBatis-Plus、Spring Data JPA、HikariCP 等
+ * 任意持久层底座与 MySQL、PostgreSQL、Oracle、H2 等主流关系型数据库，实现零冗余第三方 ORM 依赖侵入；
  * 严格防范 SQL 注入并遵循确定性连接释放生命周期
  *
  * @author Ateng
@@ -81,7 +82,6 @@ public class JdbcLiteflowRuleSourceProvider implements LiteflowRuleSourceProvide
             log.info("ateng-boot-liteflow: 成功从数据库表 [{}] 加载了 [{}] 条有效动态规则", tableName, result.size());
             return result;
         } catch (SQLException e) {
-            log.error("ateng-boot-liteflow: 从数据库表 [{}] 加载动态规则失败: {}", tableName, e.getMessage(), e);
             throw new LiteflowExecutionException("DB_RULE_SOURCE_ERROR", null,
                     "从数据库加载 LiteFlow 动态规则失败: " + e.getMessage(), e);
         }
@@ -132,7 +132,6 @@ public class JdbcLiteflowRuleSourceProvider implements LiteflowRuleSourceProvide
             }
             return null;
         } catch (SQLException e) {
-            log.error("ateng-boot-liteflow: 从数据库表 [{}] 加载规则 [{}] 失败: {}", tableName, chainId, e.getMessage(), e);
             throw new LiteflowExecutionException(chainId, null,
                     "从数据库加载规则 [" + chainId + "] 失败: " + e.getMessage(), e);
         }

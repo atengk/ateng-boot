@@ -28,7 +28,7 @@ import java.util.concurrent.TimeUnit;
  * @author Ateng
  * @since 2026-11-03
  */
-public class LiteflowMetricsBinder implements MeterBinder, PostProcessChainExecuteLifeCycle, PostProcessNodeExecuteLifeCycle {
+public class LiteflowMetricsBinder implements MeterBinder {
 
     private static final Logger log = LoggerFactory.getLogger(LiteflowMetricsBinder.class);
 
@@ -80,26 +80,6 @@ public class LiteflowMetricsBinder implements MeterBinder, PostProcessChainExecu
 
     public NodeMetricsLifeCycle getNodeLifeCycle() {
         return nodeLifeCycle;
-    }
-
-    @Override
-    public void postProcessBeforeChainExecute(String chainId, Slot slot) {
-        this.chainLifeCycle.postProcessBeforeChainExecute(chainId, slot);
-    }
-
-    @Override
-    public void postProcessAfterChainExecute(String chainId, Slot slot) {
-        this.chainLifeCycle.postProcessAfterChainExecute(chainId, slot);
-    }
-
-    @Override
-    public void postProcessBeforeNodeExecute(NodeComponent nodeComponent) {
-        this.nodeLifeCycle.postProcessBeforeNodeExecute(nodeComponent);
-    }
-
-    @Override
-    public void postProcessAfterNodeExecute(NodeComponent nodeComponent, long timeSpent, Exception exception) {
-        this.nodeLifeCycle.postProcessAfterNodeExecute(nodeComponent, timeSpent, exception);
     }
 
     /**

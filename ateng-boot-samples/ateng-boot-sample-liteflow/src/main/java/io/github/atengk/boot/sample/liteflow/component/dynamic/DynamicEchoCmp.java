@@ -17,22 +17,10 @@ public class DynamicEchoCmp extends BaseNodeComponent<DynamicFlowContext> {
 
     @Override
     public void process(DynamicFlowContext context) {
-        String payload = resolvePayload(context);
+        String payload = context.resolvePayload(getRequestData());
         log.info("【动态规则-ECHO】收到即时入参：{}", payload);
         context.put("echoTimestamp", System.currentTimeMillis());
         context.put("echoPayload", "ECHO:" + payload);
         context.setResult("ECHO_SUCCESS");
-    }
-
-    private String resolvePayload(DynamicFlowContext context) {
-        String payload = context.getInputPayload();
-        if (payload == null) {
-            Object reqData = getRequestData();
-            if (reqData != null) {
-                payload = reqData.toString();
-                context.setInputPayload(payload);
-            }
-        }
-        return payload;
     }
 }

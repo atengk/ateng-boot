@@ -6,6 +6,7 @@ import com.yomahub.liteflow.flow.FlowBus;
 import com.yomahub.liteflow.flow.LiteflowResponse;
 import com.yomahub.liteflow.flow.entity.CmpStep;
 import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.util.SpringUtil;
 import io.github.atengk.boot.liteflow.exception.LiteflowExecutionException;
 import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
 import io.github.atengk.boot.liteflow.thread.FlowThreadTracker;
@@ -194,6 +195,19 @@ public class LiteflowTemplate {
     }
 
     /**
+     * 执行多上下文规则链（无入参重载）
+     *
+     * @param chainId             规则链 ID
+     * @param firstContextClass   首个上下文类型
+     * @param secondContextClass  第二个上下文类型
+     * @param otherContextClasses 其余上下文类型
+     * @return 执行成功响应包装
+     */
+    public LiteflowResponse execute(String chainId, Class<?> firstContextClass, Class<?> secondContextClass, Class<?>... otherContextClasses) {
+        return execute(chainId, null, firstContextClass, secondContextClass, otherContextClasses);
+    }
+
+    /**
      * 执行多上下文规则链，若失败自动转译受管异常，成功返回原始响应包装
      *
      * @param chainId             规则链 ID
@@ -220,6 +234,17 @@ public class LiteflowTemplate {
         LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
         checkResponseSuccess(chainId, response, trace);
         return response;
+    }
+
+    /**
+     * 执行多上下文规则链（无入参重载）
+     *
+     * @param chainId        规则链 ID
+     * @param contextClasses 多个上下文类型
+     * @return 执行成功响应包装
+     */
+    public LiteflowResponse executeMultiple(String chainId, Class<?>... contextClasses) {
+        return executeMultiple(chainId, null, contextClasses);
     }
 
     /**
@@ -286,11 +311,34 @@ public class LiteflowTemplate {
      */
     public <T> CompletableFuture<T> executeAsync(String chainId, Object param, Class<T> contextClass) {
         Supplier<T> task = AsyncContext.wrapSupplier(() -> execute(chainId, param, contextClass));
-        if (this.asyncExecutor != null) {
-            return CompletableFuture.supplyAsync(task, this.asyncExecutor);
-        } else {
-            return CompletableFuture.supplyAsync(task);
-        }
+        return CompletableFuture.supplyAsync(task, resolveAsyncExecutor());
+    }
+
+    /**
+     * 受管异步流式执行规则链（预置上下文实例无参重载）
+     *
+     * @param chainId     规则链 ID
+     * @param contextBean 已初始化的上下文实例
+     * @param <T>         上下文泛型
+     * @return 承载同一强类型上下文的 CompletableFuture
+     */
+    public <T> CompletableFuture<T> executeAsyncWithContext(String chainId, T contextBean) {
+        return executeAsyncWithContext(chainId, null, contextBean);
+    }
+
+    /**
+     * 受管异步流式执行规则链（预置上下文实例）
+     * 自动挂载 {@link AsyncContext} 四维上下文跨线程快照透传与清理，失败时通过 CompletableFuture 抛出受管异常
+     *
+     * @param chainId     规则链 ID
+     * @param param       流程入参
+     * @param contextBean 已初始化的上下文实例
+     * @param <T>         上下文泛型
+     * @return 承载同一强类型上下文的 CompletableFuture
+     */
+    public <T> CompletableFuture<T> executeAsyncWithContext(String chainId, Object param, T contextBean) {
+        Supplier<T> task = AsyncContext.wrapSupplier(() -> executeWithContext(chainId, param, contextBean));
+        return CompletableFuture.supplyAsync(task, resolveAsyncExecutor());
     }
 
     /**
@@ -324,9 +372,45 @@ public class LiteflowTemplate {
         long start = System.currentTimeMillis();
         LiteflowResponse response = this.flowExecutor.execute2RespWithEL(el, param, null, contextClass);
         long duration = System.currentTimeMillis() - start;
-        LiteflowExecutionTrace trace = handleTraceAndAudit("DYNAMIC_EL", response, duration);
-        checkResponseSuccess("DYNAMIC_EL", response, trace);
+        String chainId = resolveDynamicChainId(el);
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        checkResponseSuccess(chainId, response, trace);
         return response.getContextBean(contextClass);
+    }
+
+    /**
+     * 直接即时执行动态 EL 表达式（预置上下文实例无参重载）
+     *
+     * @param el          动态 EL 表达式
+     * @param contextBean 已初始化的上下文实例
+     * @param <T>         上下文泛型
+     * @return 同一强类型上下文实例
+     */
+    public <T> T executeElWithContext(String el, T contextBean) {
+        return executeElWithContext(el, null, contextBean);
+    }
+
+    /**
+     * 直接即时执行动态 EL 表达式（预置上下文实例）
+     *
+     * @param el          动态 EL 表达式
+     * @param param       流程入参
+     * @param contextBean 已初始化的上下文实例
+     * @param <T>         上下文泛型
+     * @return 同一强类型上下文实例
+     */
+    public <T> T executeElWithContext(String el, Object param, T contextBean) {
+        if (el == null || el.isBlank()) {
+            throw new IllegalArgumentException("el 表达式不能为空");
+        }
+        Objects.requireNonNull(contextBean, "contextBean 不能为空");
+        long start = System.currentTimeMillis();
+        LiteflowResponse response = this.flowExecutor.execute2RespWithEL(el, param, null, contextBean);
+        long duration = System.currentTimeMillis() - start;
+        String chainId = resolveDynamicChainId(el);
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        checkResponseSuccess(chainId, response, trace);
+        return contextBean;
     }
 
     /**
@@ -360,10 +444,46 @@ public class LiteflowTemplate {
         long start = System.currentTimeMillis();
         LiteflowResponse response = this.flowExecutor.execute2RespWithEL(el, param, null, contextClass);
         long duration = System.currentTimeMillis() - start;
-        LiteflowExecutionTrace trace = handleTraceAndAudit("DYNAMIC_EL", response, duration);
-        checkResponseSuccess("DYNAMIC_EL", response, trace);
+        String chainId = resolveDynamicChainId(el);
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        checkResponseSuccess(chainId, response, trace);
         T context = response.getContextBean(contextClass);
         return new LiteflowTraceResult<>(context, trace);
+    }
+
+    /**
+     * 直接即时执行动态 EL 表达式（预置上下文实例无参重载）并返回带有结构化链路轨迹的结果包装
+     *
+     * @param el          动态 EL 表达式
+     * @param contextBean 已初始化的上下文实例
+     * @param <T>         上下文泛型
+     * @return 包含同一强类型上下文与时序轨迹的结果包装
+     */
+    public <T> LiteflowTraceResult<T> executeElWithTrace(String el, T contextBean) {
+        return executeElWithTrace(el, null, contextBean);
+    }
+
+    /**
+     * 直接即时执行动态 EL 表达式（预置上下文实例）并返回带有结构化链路轨迹的结果包装
+     *
+     * @param el          动态 EL 表达式
+     * @param param       流程入参
+     * @param contextBean 已初始化的上下文实例
+     * @param <T>         上下文泛型
+     * @return 包含同一强类型上下文与时序轨迹的结果包装
+     */
+    public <T> LiteflowTraceResult<T> executeElWithTrace(String el, Object param, T contextBean) {
+        if (el == null || el.isBlank()) {
+            throw new IllegalArgumentException("el 表达式不能为空");
+        }
+        Objects.requireNonNull(contextBean, "contextBean 不能为空");
+        long start = System.currentTimeMillis();
+        LiteflowResponse response = this.flowExecutor.execute2RespWithEL(el, param, null, contextBean);
+        long duration = System.currentTimeMillis() - start;
+        String chainId = resolveDynamicChainId(el);
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        checkResponseSuccess(chainId, response, trace);
+        return new LiteflowTraceResult<>(contextBean, trace);
     }
 
     /**
@@ -398,6 +518,39 @@ public class LiteflowTemplate {
      */
     public LiteflowExecutionTrace extractTrace(String chainId, LiteflowResponse response, long durationMs) {
         return handleTraceAndAudit(chainId, response, durationMs);
+    }
+
+    /**
+     * 清理当前线程 MDC 中残留的 LiteFlow 链路轨迹信息
+     */
+    public void clearTraceMdc() {
+        String mdcKey = (this.properties != null && this.properties.getTrace() != null)
+                ? this.properties.getTrace().getMdcKey() : null;
+        LiteflowExecutionTrace.clearFromMdc(mdcKey);
+    }
+
+    /**
+     * 清理当前线程 MDC 中默认键的 LiteFlow 链路轨迹信息
+     */
+    public static void clearMdcTrace() {
+        LiteflowExecutionTrace.clearFromMdc();
+    }
+
+    /**
+     * 开启受管 MDC 轨迹注入作用域（支持 try-with-resources 自动清理）
+     *
+     * @param trace 时序链路轨迹
+     * @return 自动清理的 AutoCloseable 实例
+     */
+    public AutoCloseable withTraceMdcScope(LiteflowExecutionTrace trace) {
+        if (trace == null) {
+            return () -> {
+            };
+        }
+        String mdcKey = (this.properties != null && this.properties.getTrace() != null)
+                ? this.properties.getTrace().getMdcKey() : LiteflowExecutionTrace.DEFAULT_MDC_TRACE_KEY;
+        trace.injectToMdc(mdcKey);
+        return () -> LiteflowExecutionTrace.clearFromMdc(mdcKey);
     }
 
     /**
@@ -536,15 +689,10 @@ public class LiteflowTemplate {
     }
 
     /**
-     * 检查响应执行状态，若失败则转译抛出受管业务异常，并协同中断活动子线程
+     * 检查响应执行状态，若失败则转译抛出受管业务异常
      */
     private void checkResponseSuccess(String chainId, LiteflowResponse response, LiteflowExecutionTrace trace) {
         if (response != null && !response.isSuccess()) {
-            if (response.getSlot() != null && response.getSlot().getRequestId() != null) {
-                String reqId = response.getSlot().getRequestId();
-                FlowThreadTracker.interruptRunningThreads(reqId);
-                FlowThreadTracker.clean(reqId);
-            }
             Throwable cause = response.getCause();
             String failedNodeId = (trace != null && trace.getFailedStep() != null)
                     ? trace.getFailedStep().getNodeId()
@@ -593,5 +741,39 @@ public class LiteflowTemplate {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * 构建动态 EL 链标识（保留完整 EL 表达式语句）
+     */
+    private String resolveDynamicChainId(String el) {
+        return "DYNAMIC_EL[" + el + "]";
+    }
+
+    /**
+     * 解析可用的受管异步线程池
+     * 严禁在未配置受管 Executor 时直接沦陷至 ForkJoinPool.commonPool()
+     */
+    private Executor resolveAsyncExecutor() {
+        if (this.asyncExecutor != null) {
+            return this.asyncExecutor;
+        }
+        if (SpringUtil.isInitialized()) {
+            try {
+                Executor bean = SpringUtil.getBean("taskExecutor", Executor.class);
+                if (bean != null) {
+                    return bean;
+                }
+            } catch (Exception ignored) {
+            }
+            try {
+                Executor bean = SpringUtil.getBean(Executor.class);
+                if (bean != null) {
+                    return bean;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        throw new IllegalStateException("未注入受管异步线程池 Executor，禁止使用 ForkJoinPool 等野线程池执行 executeAsync；请向 LiteflowTemplate 注入受管 Executor (如 ThreadPoolTaskExecutor)");
     }
 }

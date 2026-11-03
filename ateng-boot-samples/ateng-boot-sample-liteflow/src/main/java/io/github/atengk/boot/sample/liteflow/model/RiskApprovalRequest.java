@@ -1,6 +1,8 @@
 package io.github.atengk.boot.sample.liteflow.model;
 
 import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
@@ -42,5 +44,7 @@ public class RiskApprovalRequest implements Serializable {
      * 外部征信基础分 (300-850)
      */
     @NotNull(message = "征信评分 (creditScore) 不能为空")
+    @Min(value = 300, message = "征信评分必须介于 300 至 850 之间")
+    @Max(value = 850, message = "征信评分必须介于 300 至 850 之间")
     private Integer creditScore;
 }

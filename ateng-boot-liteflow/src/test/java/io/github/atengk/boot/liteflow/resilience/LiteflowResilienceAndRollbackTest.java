@@ -50,6 +50,7 @@ class LiteflowResilienceAndRollbackTest {
             FlakyRollbackNode.class,
             FailingNode.class,
             DegradeNode.class,
+            BrandNewFallbackNode.class,
             FollowUpNode.class,
             FastNode.class,
             SlowHangNode.class
@@ -185,6 +186,22 @@ class LiteflowResilienceAndRollbackTest {
         }
     }
 
+    @Component("brandNewFallbackNode")
+    public static class BrandNewFallbackNode extends BaseNodeComponent<ResilienceTestContext> {
+        @Override
+        public void process(ResilienceTestContext context) {
+            throw new IllegalStateException("模拟核心计算失败触发全新对象降级");
+        }
+
+        @Override
+        public ResilienceTestContext onError(Exception e, ResilienceTestContext context) {
+            ResilienceTestContext brandNew = new ResilienceTestContext();
+            brandNew.setFallbackApplied(true);
+            brandNew.setFallbackData("BRAND_NEW_FALLBACK_INSTANCE");
+            return brandNew;
+        }
+    }
+
     @Component("followUpNode")
     public static class FollowUpNode extends BaseNodeComponent<ResilienceTestContext> {
         @Override
@@ -259,6 +276,20 @@ class LiteflowResilienceAndRollbackTest {
         assertThat(context.getFallbackData()).isEqualTo("HOT_SALE_FALLBACK");
         // 验证后续节点顺利接收降级保底数据并完成执行
         assertThat(context.getProcessLogs()).containsExactly("followUp:HOT_SALE_FALLBACK");
+    }
+
+    @Test
+    @DisplayName("测试 onError 返回全新上下文实例时自动同步保底属性至槽位上下文")
+    void testNewInstanceGracefulDegradation() {
+        ResilienceTestContext context = new ResilienceTestContext();
+
+        ResilienceTestContext result = liteflowTemplate.executeElWithContext(
+                "THEN(brandNewFallbackNode, followUpNode)", context);
+
+        assertThat(result).isSameAs(context);
+        assertThat(context.isFallbackApplied()).isTrue();
+        assertThat(context.getFallbackData()).isEqualTo("BRAND_NEW_FALLBACK_INSTANCE");
+        assertThat(context.getProcessLogs()).containsExactly("followUp:BRAND_NEW_FALLBACK_INSTANCE");
     }
 
     @Test

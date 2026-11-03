@@ -75,16 +75,6 @@ public class AtengLiteflowAutoConfiguration {
     }
 
     /**
-     * 单例初始化后置定制器，确保在 Spring 容器生命周期内可靠接管 LiteflowConfig
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    public LiteflowConfigCustomizer liteflowConfigCustomizer(ObjectProvider<LiteflowConfig> liteflowConfigProvider,
-                                                             AtengLiteflowProperties properties) {
-        return new LiteflowConfigCustomizer(liteflowConfigProvider, properties);
-    }
-
-    /**
      * 注册 LiteFlow 统一强类型操作门面
      * 保留底层 FlowExecutor 官方逃生舱的同时，提供自动校验解包与因果异常转译
      */
@@ -136,74 +126,20 @@ public class AtengLiteflowAutoConfiguration {
     }
 
     /**
-     * LiteflowConfig 运行时属性定制器
-     */
-    public static class LiteflowConfigCustomizer implements SmartInitializingSingleton {
-        private final ObjectProvider<LiteflowConfig> liteflowConfigProvider;
-        private final AtengLiteflowProperties properties;
-
-        public LiteflowConfigCustomizer(ObjectProvider<LiteflowConfig> liteflowConfigProvider,
-                                        AtengLiteflowProperties properties) {
-            this.liteflowConfigProvider = liteflowConfigProvider;
-            this.properties = properties;
-        }
-
-        @Override
-        public void afterSingletonsInstantiated() {
-            LiteflowConfig config = liteflowConfigProvider.getIfAvailable();
-            if (config == null) {
-                return;
-            }
-
-            // 1. 接管全局异步线程池构建器
-            String currentExecutor = config.getGlobalThreadPoolExecutorClass();
-            if (currentExecutor == null || currentExecutor.isBlank()
-                    || "com.yomahub.liteflow.thread.LiteFlowDefaultGlobalExecutorBuilder".equals(currentExecutor)) {
-                String configuredClass = properties.getThreadPool().getExecutorClass();
-                String targetClass = (configuredClass != null && !configuredClass.isBlank())
-                        ? configuredClass
-                        : LiteflowGlobalExecutorBuilder.class.getName();
-                config.setGlobalThreadPoolExecutorClass(targetClass);
-                log.info("ateng-boot-liteflow: 全局异步线程池接管配置生效 -> [{}]", targetClass);
-            }
-
-            // 2. 默认关闭原生虚拟线程直调，交由受管线程池全局代理四维上下文
-            if (config.getEnableVirtualThread() != null && config.getEnableVirtualThread()) {
-                config.setEnableVirtualThread(false);
-                log.info("ateng-boot-liteflow: 已将 liteflow.enable-virtual-thread 校准为 false，由受管线程池统一接管四维上下文透传");
-            }
-
-            // 3. 桥接 ruleSource 默认值
-            if ((config.getRuleSource() == null || config.getRuleSource().isBlank())
-                    && properties.getRuleSource() != null && !properties.getRuleSource().isBlank()) {
-                config.setRuleSource(properties.getRuleSource());
-            }
-
-            // 4. 桥接 printExecutionLog
-            if (config.getPrintExecutionLog() == null) {
-                config.setPrintExecutionLog(properties.isPrintExecutionLog());
-            }
-
-            // 5. 桥接 whenMaxWaitTimeout 并行超时阈值
-            if (properties.getWhenMaxWaitTimeout() != null && !properties.getWhenMaxWaitTimeout().isZero()
-                    && !properties.getWhenMaxWaitTimeout().isNegative()) {
-                long millis = properties.getWhenMaxWaitTimeout().toMillis();
-                config.setWhenMaxWaitTime((int) millis);
-                config.setWhenMaxWaitTimeUnit(TimeUnit.MILLISECONDS);
-                log.info("ateng-boot-liteflow: 并行编排 WHEN 全局超时阈值已配置 -> [{} ms]", millis);
-            }
-        }
-    }
-
-    /**
-     * 配置后置处理器，自动将 LiteFlow 的 globalThreadPoolExecutorClass 引导至受管构建器
+     * 配置后置处理器，自动在 LiteflowConfig 实例化完成后接管受管构建器与生产级参数
      */
     @Bean
-    public static BeanPostProcessor liteflowConfigPostProcessor(AtengLiteflowProperties properties) {
+    @ConditionalOnMissingBean
+    public static BeanPostProcessor liteflowConfigPostProcessor(ObjectProvider<AtengLiteflowProperties> propertiesProvider) {
         return new BeanPostProcessor() {
             @Override
             public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
                 if (bean instanceof LiteflowConfig config) {
+                    AtengLiteflowProperties properties = propertiesProvider.getIfAvailable();
+                    if (properties == null) {
+                        return bean;
+                    }
+
                     // 1. 若当前配置为默认构建器或为空，自动接管为受管全局构建器
                     String currentExecutor = config.getGlobalThreadPoolExecutorClass();
                     if (currentExecutor == null || currentExecutor.isBlank()
@@ -231,6 +167,15 @@ public class AtengLiteflowAutoConfiguration {
                     // 4. 桥接 printExecutionLog
                     if (config.getPrintExecutionLog() == null) {
                         config.setPrintExecutionLog(properties.isPrintExecutionLog());
+                    }
+
+                    // 5. 桥接 whenMaxWaitTimeout 并行超时阈值
+                    if (properties.getWhenMaxWaitTimeout() != null && !properties.getWhenMaxWaitTimeout().isZero()
+                            && !properties.getWhenMaxWaitTimeout().isNegative()) {
+                        long millis = properties.getWhenMaxWaitTimeout().toMillis();
+                        config.setWhenMaxWaitTime((int) millis);
+                        config.setWhenMaxWaitTimeUnit(TimeUnit.MILLISECONDS);
+                        log.info("ateng-boot-liteflow: 并行编排 WHEN 全局超时阈值已配置 -> [{} ms]", millis);
                     }
                 }
                 return bean;

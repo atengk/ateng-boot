@@ -93,13 +93,10 @@ public final class FlowThreadTracker {
         if (requestId == null || thread == null) {
             return;
         }
-        Set<Thread> threads = ACTIVE_THREADS.get(requestId);
-        if (threads != null) {
+        ACTIVE_THREADS.computeIfPresent(requestId, (k, threads) -> {
             threads.remove(thread);
-            if (threads.isEmpty()) {
-                ACTIVE_THREADS.remove(requestId);
-            }
-        }
+            return threads.isEmpty() ? null : threads;
+        });
     }
 
     /**
