@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<flow>
+    <chain name="testNodeChain">
+        THEN(sampleNode);
+    </chain>
+
+    <chain name="testSwitchChain">
+        SWITCH(sampleSwitch).to(branchA, branchB);
+    </chain>
+
+    <chain name="testIfChain">
+        IF(sampleIf, branchA, branchB);
+    </chain>
+
+    <chain name="testForChain">
+        FOR(sampleFor).DO(counterNode);
+    </chain>
+
+    <chain name="testWhileChain">
+        WHILE(sampleWhile).DO(counterNode);
+    </chain>
+
+    <chain name="testIteratorChain">
+        ITERATOR(sampleIterator).DO(itemNode);
+    </chain>
+
+    <chain name="testBreakChain">
+        FOR(10).DO(counterNode).BREAK(sampleBreak);
+    </chain>
+
+    <chain name="testDataAndTagChain">
+        THEN(dataAndTagNode.tag("vip-tag").data('{"limit":99,"role":"ADMIN"}'));
+    </chain>
+
+    <chain name="testDataListChain">
+        THEN(dataListNode.data('["item1","item2","item3"]'));
+    </chain>
+</flow>
