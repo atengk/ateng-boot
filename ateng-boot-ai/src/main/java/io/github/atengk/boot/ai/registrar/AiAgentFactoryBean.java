@@ -1,12 +1,15 @@
 package io.github.atengk.boot.ai.registrar;
 
+import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.tool.ToolExecutor;
 import io.github.atengk.boot.ai.context.AgentCallContext;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.routing.DynamicRoutingChatLanguageModel;
+import io.github.atengk.boot.ai.tool.ToolExecutionSandbox;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.core.util.ValidatorUtil;
@@ -91,24 +94,12 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
         AiServices<T> builder = AiServices.builder(agentInterface)
                 .chatLanguageModel(routingModel);
 
-        // 4. 解析受管工具类列表
+        // 4. 解析受管工具类列表并接入 ToolExecutionSandbox 局部沙箱
         if (tools != null && tools.length > 0) {
-            List<Object> toolBeans = new ArrayList<>(tools.length);
-            for (Class<?> toolClass : tools) {
-                if (toolClass == null) {
-                    continue;
-                }
-                try {
-                    Object toolBean = applicationContext.getBean(toolClass);
-                    toolBeans.add(toolBean);
-                } catch (NoSuchBeanDefinitionException e) {
-                    throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
-                            "智能体 [" + agentInterface.getSimpleName() + "] 声明绑定的工具类 [" + toolClass.getName()
-                                    + "] 在 Spring 容器中未找到对应 Bean，请确保该类标注了 @Component 并被 Spring 容器托管", e);
-                }
-            }
-            if (!toolBeans.isEmpty()) {
-                builder.tools(toolBeans);
+            Map<ToolSpecification, ToolExecutor> sandboxedTools = ToolExecutionSandbox.buildSandboxedTools(
+                    applicationContext, tools, agentInterface.getSimpleName());
+            if (!sandboxedTools.isEmpty()) {
+                builder.tools(sandboxedTools);
             }
         }
 
@@ -156,6 +147,7 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
             // 2. 打开调用上下文作用域并执行底层调用
             Object result;
             try (AgentCallContext.Scope ignored = AgentCallContext.openScope(replacements)) {
+                method.setAccessible(true);
                 result = method.invoke(rawAgent, args);
             } catch (InvocationTargetException ite) {
                 Throwable target = ite.getTargetException();
