@@ -4,7 +4,11 @@ import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.social.cache.InMemorySocialAuthStateCache;
 import io.github.atengk.boot.social.cache.SocialAuthStateCache;
 import io.github.atengk.boot.social.code.SocialResultCode;
+import io.github.atengk.boot.social.event.SocialUnboundEvent;
+import io.github.atengk.boot.social.exception.SocialAuthException;
 import io.github.atengk.boot.social.exception.SocialException;
+import io.github.atengk.boot.social.exception.SocialStateExpiredException;
+import io.github.atengk.boot.social.exception.SocialUnbindRejectedException;
 import io.github.atengk.boot.social.factory.SocialAppFactory;
 import io.github.atengk.boot.social.http.SpringRestClientHttpImpl;
 import io.github.atengk.boot.social.model.SocialAuthResult;
@@ -28,7 +32,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.io.IOException;
 import java.net.URI;
@@ -42,6 +48,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -61,6 +68,7 @@ class SocialAuthTemplateTest {
     private SocialUserDetailsService userDetailsService;
     private SocialSessionManager sessionManager;
     private SocialAppFactory appFactory;
+    private ApplicationEventPublisher eventPublisher;
     private SocialAuthTemplate authTemplate;
 
     @BeforeEach
@@ -108,13 +116,14 @@ class SocialAuthTemplateTest {
         bindTicketStore = new InMemoryBindTicketStore();
         userDetailsService = mock(SocialUserDetailsService.class);
         sessionManager = new SaTokenSocialSessionManager();
+        eventPublisher = mock(ApplicationEventPublisher.class);
 
         StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
         beanFactory.addBean("socialUserDetailsService", userDetailsService);
         beanFactory.addBean("socialAuthStateCache", stateCache);
 
         appFactory = new SocialAppFactory(properties, null, beanFactory.getBeanProvider(org.dromara.anduin.cache.AuthStateCache.class), httpAdapter);
-        authTemplate = new SocialAuthTemplate(appFactory, stateCache, bindTicketStore, beanFactory.getBeanProvider(SocialUserDetailsService.class), sessionManager);
+        authTemplate = new SocialAuthTemplate(appFactory, stateCache, bindTicketStore, beanFactory.getBeanProvider(SocialUserDetailsService.class), sessionManager, eventPublisher);
     }
 
     @AfterEach
@@ -478,6 +487,127 @@ class SocialAuthTemplateTest {
 
         assertThatThrownBy(() -> authTemplate.bind("ticket_ok", "  "))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("15. unbind: 正常解除绑定并原子广播 SocialUnboundEvent 领域事件")
+    void testUnbindSuccess() {
+        when(userDetailsService.canUnbind("user_1001", "github_app")).thenReturn(true);
+
+        authTemplate.unbind("user_1001", "github_app");
+
+        verify(userDetailsService).canUnbind("user_1001", "github_app");
+        verify(userDetailsService).unbind("user_1001", "github_app");
+
+        ArgumentCaptor<SocialUnboundEvent> eventCaptor = ArgumentCaptor.forClass(SocialUnboundEvent.class);
+        verify(eventPublisher).publishEvent(eventCaptor.capture());
+
+        SocialUnboundEvent event = eventCaptor.getValue();
+        assertThat(event).isNotNull();
+        assertThat(event.getUserId()).isEqualTo("user_1001");
+        assertThat(event.getAppKey()).isEqualTo("github_app");
+        assertThat(event.getUnbindTime()).isNotNull();
+        assertThat(event.getSource()).isSameAs(authTemplate);
+    }
+
+    @Test
+    @DisplayName("16. unbind: 孤儿死号安全防卫拦截（canUnbind 为 false 时刚性阻断）")
+    void testUnbindRejectedByOrphanGuard() {
+        when(userDetailsService.canUnbind("user_orphan", "github_app")).thenReturn(false);
+
+        assertThatThrownBy(() -> authTemplate.unbind("user_orphan", "github_app"))
+                .isInstanceOf(SocialUnbindRejectedException.class)
+                .hasMessageContaining("user_orphan")
+                .hasMessageContaining("github_app")
+                .hasMessageContaining("未绑定手机号或未设独立密码，防止账号孤儿化");
+
+        verify(userDetailsService).canUnbind("user_orphan", "github_app");
+        verify(userDetailsService, never()).unbind(any(), any());
+        verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    @Test
+    @DisplayName("17. unbind: 入参格式前置快速失败校验")
+    void testUnbindValidation() {
+        assertThatThrownBy(() -> authTemplate.unbind(null, "github_app"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("本地用户标识 [userId] 不能为空");
+
+        assertThatThrownBy(() -> authTemplate.unbind("   ", "github_app"))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> authTemplate.unbind("user_1001", null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("应用标识 [appKey] 不能为空");
+
+        assertThatThrownBy(() -> authTemplate.unbind("user_1001", "  "))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("18. unbind: canUnbind 异常时保留因果链并向外抛出")
+    void testUnbindCanUnbindThrowsExceptionPreservingCause() {
+        RuntimeException rootCause = new RuntimeException("DB Connection Timeout");
+        when(userDetailsService.canUnbind("user_err", "github_app")).thenThrow(rootCause);
+
+        assertThatThrownBy(() -> authTemplate.unbind("user_err", "github_app"))
+                .isInstanceOf(SocialException.class)
+                .hasCause(rootCause)
+                .hasMessageContaining("孤儿账号解绑核验执行异常");
+
+        verify(userDetailsService, never()).unbind(any(), any());
+        verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    @Test
+    @DisplayName("19. unbind: 持久化 SPI 解绑异常时保留因果链且不广播事件")
+    void testUnbindPersistenceThrowsExceptionPreservingCause() {
+        when(userDetailsService.canUnbind("user_err2", "github_app")).thenReturn(true);
+        RuntimeException rootCause = new RuntimeException("Deadlock detected during unbind");
+        doThrow(rootCause).when(userDetailsService).unbind("user_err2", "github_app");
+
+        assertThatThrownBy(() -> authTemplate.unbind("user_err2", "github_app"))
+                .isInstanceOf(SocialException.class)
+                .hasCause(rootCause)
+                .hasMessageContaining("解除第三方账号绑定异常");
+
+        verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    @Test
+    @DisplayName("20. unbind: 未提供 SocialUserDetailsService SPI 时跳过持久化并广播事件")
+    void testUnbindWithoutUserDetailsService() {
+        StaticListableBeanFactory emptyFactory = new StaticListableBeanFactory();
+        SocialAuthTemplate standaloneTemplate = new SocialAuthTemplate(
+                appFactory,
+                stateCache,
+                bindTicketStore,
+                emptyFactory.getBeanProvider(SocialUserDetailsService.class),
+                sessionManager,
+                eventPublisher
+        );
+
+        standaloneTemplate.unbind("user_standalone", "github_app");
+
+        verify(eventPublisher).publishEvent(any(SocialUnboundEvent.class));
+    }
+
+    @Test
+    @DisplayName("21. setApplicationEventPublisher: 验证 ApplicationEventPublisherAware 接口装配能力")
+    void testSetApplicationEventPublisherAware() {
+        SocialAuthTemplate template = new SocialAuthTemplate(
+                appFactory,
+                stateCache,
+                bindTicketStore,
+                new StaticListableBeanFactory().getBeanProvider(SocialUserDetailsService.class),
+                sessionManager
+        );
+
+        ApplicationEventPublisher customPublisher = mock(ApplicationEventPublisher.class);
+        template.setApplicationEventPublisher(customPublisher);
+
+        template.unbind("user_aware", "github_app");
+        verify(customPublisher).publishEvent(any(SocialUnboundEvent.class));
     }
 
     private String extractQueryParam(String url, String paramName) {

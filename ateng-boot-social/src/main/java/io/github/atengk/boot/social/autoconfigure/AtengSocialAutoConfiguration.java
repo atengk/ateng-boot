@@ -25,6 +25,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 
@@ -133,6 +134,7 @@ public class AtengSocialAutoConfiguration {
      * @param bindTicketStore                   两阶段绑定票据仓库
      * @param userDetailsServiceObjectProvider  用户服务 SPI
      * @param sessionManager                    会话凭据管理器
+     * @param eventPublisherObjectProvider      领域事件发布者
      * @return SocialAuthTemplate 门面实例
      */
     @Bean
@@ -142,9 +144,14 @@ public class AtengSocialAutoConfiguration {
             SocialAuthStateCache stateCache,
             BindTicketStore bindTicketStore,
             ObjectProvider<SocialUserDetailsService> userDetailsServiceObjectProvider,
-            SocialSessionManager sessionManager) {
+            SocialSessionManager sessionManager,
+            ObjectProvider<ApplicationEventPublisher> eventPublisherObjectProvider) {
         log.info("Initialized SocialAuthTemplate core facade");
-        return new SocialAuthTemplate(socialAppFactory, stateCache, bindTicketStore, userDetailsServiceObjectProvider, sessionManager);
+        SocialAuthTemplate template = new SocialAuthTemplate(socialAppFactory, stateCache, bindTicketStore, userDetailsServiceObjectProvider, sessionManager);
+        if (eventPublisherObjectProvider != null && eventPublisherObjectProvider.getIfAvailable() != null) {
+            template.setApplicationEventPublisher(eventPublisherObjectProvider.getIfAvailable());
+        }
+        return template;
     }
 
     @PostConstruct

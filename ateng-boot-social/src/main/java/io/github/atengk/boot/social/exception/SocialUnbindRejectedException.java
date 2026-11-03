@@ -17,7 +17,16 @@ public class SocialUnbindRejectedException extends SocialException {
                 "本地用户 [" + userId + "] 不允许解绑第三方应用 [" + appKey + "]：未绑定手机号或未设独立密码，防止账号孤儿化");
     }
 
+    public SocialUnbindRejectedException(String userId, String appKey, Throwable cause) {
+        super(SocialResultCode.SOCIAL_UNBIND_REJECTED,
+                "本地用户 [" + userId + "] 不允许解绑第三方应用 [" + appKey + "]：未绑定手机号或未设独立密码，防止账号孤儿化", cause);
+    }
+
     public SocialUnbindRejectedException(String message) {
         super(SocialResultCode.SOCIAL_UNBIND_REJECTED, message);
+    }
+
+    public SocialUnbindRejectedException(String message, Throwable cause) {
+        super(SocialResultCode.SOCIAL_UNBIND_REJECTED, message, cause);
     }
 }

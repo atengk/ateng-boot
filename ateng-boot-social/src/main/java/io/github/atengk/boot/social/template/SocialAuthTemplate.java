@@ -4,7 +4,11 @@ import io.github.atengk.boot.social.cache.SocialAuthStateCache;
 import io.github.atengk.boot.social.code.SocialResultCode;
 import io.github.atengk.boot.social.config.SocialAppConfig;
 import io.github.atengk.boot.social.context.CurrentSocialAppContextHolder;
+import io.github.atengk.boot.social.event.SocialUnboundEvent;
+import io.github.atengk.boot.social.exception.SocialAuthException;
 import io.github.atengk.boot.social.exception.SocialException;
+import io.github.atengk.boot.social.exception.SocialStateExpiredException;
+import io.github.atengk.boot.social.exception.SocialUnbindRejectedException;
 import io.github.atengk.boot.social.factory.SocialAppFactory;
 import io.github.atengk.boot.social.model.SocialAuthResult;
 import io.github.atengk.boot.social.model.SocialLoginOptions;
@@ -13,13 +17,15 @@ import io.github.atengk.boot.social.model.StateContext;
 import io.github.atengk.boot.social.session.SocialSessionManager;
 import io.github.atengk.boot.social.spi.SocialUserDetailsService;
 import io.github.atengk.boot.social.ticket.BindTicketStore;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.anduin.model.AuthCallback;
 import org.dromara.anduin.model.AuthResponse;
 import org.dromara.anduin.model.AuthUser;
 import org.dromara.anduin.request.AuthRequest;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.ApplicationEvent;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationEventPublisherAware;
 
 import java.time.Duration;
 
@@ -34,14 +40,62 @@ import java.time.Duration;
  * @since 2026-11-03
  */
 @Slf4j
-@RequiredArgsConstructor
-public class SocialAuthTemplate {
+public class SocialAuthTemplate implements ApplicationEventPublisherAware {
 
     private final SocialAppFactory socialAppFactory;
     private final SocialAuthStateCache stateCache;
     private final BindTicketStore bindTicketStore;
     private final ObjectProvider<SocialUserDetailsService> userDetailsServiceObjectProvider;
     private final SocialSessionManager sessionManager;
+    private ApplicationEventPublisher eventPublisher;
+
+    /**
+     * 基础五参构造函数
+     *
+     * @param socialAppFactory                  社交应用实例工厂
+     * @param stateCache                        防伪状态缓存
+     * @param bindTicketStore                   两阶段绑定票据仓库
+     * @param userDetailsServiceObjectProvider  持久化业务扩展点提供者
+     * @param sessionManager                    会话管理器
+     */
+    public SocialAuthTemplate(
+            SocialAppFactory socialAppFactory,
+            SocialAuthStateCache stateCache,
+            BindTicketStore bindTicketStore,
+            ObjectProvider<SocialUserDetailsService> userDetailsServiceObjectProvider,
+            SocialSessionManager sessionManager) {
+        this(socialAppFactory, stateCache, bindTicketStore, userDetailsServiceObjectProvider, sessionManager, null);
+    }
+
+    /**
+     * 全参构造函数（支持直接注入事件发布者）
+     *
+     * @param socialAppFactory                  社交应用实例工厂
+     * @param stateCache                        防伪状态缓存
+     * @param bindTicketStore                   两阶段绑定票据仓库
+     * @param userDetailsServiceObjectProvider  持久化业务扩展点提供者
+     * @param sessionManager                    会话管理器
+     * @param eventPublisher                    领域事件发布者
+     */
+    public SocialAuthTemplate(
+            SocialAppFactory socialAppFactory,
+            SocialAuthStateCache stateCache,
+            BindTicketStore bindTicketStore,
+            ObjectProvider<SocialUserDetailsService> userDetailsServiceObjectProvider,
+            SocialSessionManager sessionManager,
+            ApplicationEventPublisher eventPublisher) {
+        this.socialAppFactory = socialAppFactory;
+        this.stateCache = stateCache;
+        this.bindTicketStore = bindTicketStore;
+        this.userDetailsServiceObjectProvider = userDetailsServiceObjectProvider;
+        this.sessionManager = sessionManager;
+        this.eventPublisher = eventPublisher;
+    }
+
+    @Override
+    public void setApplicationEventPublisher(ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
+    }
 
     // ==================== 1. Web 浏览器端 OAuth2 授权跳转地址渲染 ====================
 
@@ -131,11 +185,11 @@ public class SocialAuthTemplate {
         String state = callback.getState();
         if (!appConfig.isIgnoreCheckState()) {
             if (state == null || state.isBlank()) {
-                throw new SocialException(SocialResultCode.SOCIAL_STATE_INVALID, "第三方回调参数中未携带防伪状态码 [state]");
+                throw new SocialStateExpiredException("第三方回调参数中未携带防伪状态码 [state]");
             }
             if (!stateCache.containsKey(state)) {
                 log.warn("OAuth2 state invalid or expired: appKey=[{}], state=[{}]", appKey, state);
-                throw new SocialException(SocialResultCode.SOCIAL_STATE_INVALID, "OAuth2 状态码 State 非法、已过期或已被重复消费");
+                throw new SocialStateExpiredException(state);
             }
         }
 
@@ -297,7 +351,80 @@ public class SocialAuthTemplate {
         return SocialAuthResult.loggedIn(userId, tokenInfo, socialUser, null);
     }
 
-    // ==================== 5. 独立获取第三方用户画像门面 ====================
+    // ==================== 5. 解绑操作与孤儿账号安全防卫 ====================
+
+    /**
+     * 解除本地用户与第三方社交平台的绑定关系
+     * <p>
+     * 在执行解绑前显式调用 {@link SocialUserDetailsService#canUnbind(String, String)} 检查业务层不变量。
+     * 若返回 false（如该用户未绑定手机号或未设独立密码），刚性拦截并抛出受管业务异常 {@link SocialUnbindRejectedException}；
+     * 解绑成功后，原子广播 {@link SocialUnboundEvent} 领域事件，支撑下游安全审计与流水记录。
+     * </p>
+     *
+     * @param userId 本地用户唯一标识
+     * @param appKey 社交应用唯一标识
+     * @throws IllegalArgumentException       当 userId 或 appKey 为空时
+     * @throws SocialUnbindRejectedException 若业务层孤儿账号核验未通过时
+     */
+    public void unbind(String userId, String appKey) {
+        if (userId == null || userId.isBlank()) {
+            throw new IllegalArgumentException("本地用户标识 [userId] 不能为空");
+        }
+        if (appKey == null || appKey.isBlank()) {
+            throw new IllegalArgumentException("应用标识 [appKey] 不能为空");
+        }
+
+        // 1. 获取持久化 SPI 扩展点
+        SocialUserDetailsService detailsService = userDetailsServiceObjectProvider.getIfAvailable();
+        if (detailsService != null) {
+            // 2. 孤儿死号前置安全防卫：核验业务层不变量
+            boolean canUnbind;
+            try {
+                canUnbind = detailsService.canUnbind(userId, appKey);
+            } catch (Exception ex) {
+                log.error("SocialUserDetailsService.canUnbind check error for userId: [{}], appKey: [{}]: {}",
+                        userId, appKey, ex.getMessage(), ex);
+                throw new SocialException("孤儿账号解绑核验执行异常: " + ex.getMessage(), ex);
+            }
+
+            if (!canUnbind) {
+                log.warn("Social unbinding rejected by safety guard: userId=[{}], appKey=[{}]", userId, appKey);
+                throw new SocialUnbindRejectedException(userId, appKey);
+            }
+
+            // 3. 执行持久化解绑
+            try {
+                detailsService.unbind(userId, appKey);
+            } catch (SocialException ex) {
+                throw ex;
+            } catch (Exception ex) {
+                log.error("Failed to unbind social user: userId=[{}], appKey=[{}]: {}",
+                        userId, appKey, ex.getMessage(), ex);
+                throw new SocialException("解除第三方账号绑定异常: " + ex.getMessage(), ex);
+            }
+        } else {
+            log.warn("SocialUserDetailsService is not provided, skipping local user unbinding persistence: userId=[{}], appKey=[{}]",
+                    userId, appKey);
+        }
+
+        log.info("Social user successfully unbound: userId=[{}], appKey=[{}]", userId, appKey);
+
+        // 4. 原子广播领域事件通知下游审计
+        publishEvent(new SocialUnboundEvent(this, userId, appKey));
+    }
+
+    /**
+     * 发布 Spring 领域事件
+     *
+     * @param event 待发布的领域事件
+     */
+    protected void publishEvent(ApplicationEvent event) {
+        if (this.eventPublisher != null && event != null) {
+            this.eventPublisher.publishEvent(event);
+        }
+    }
+
+    // ==================== 6. 独立获取第三方用户画像门面 ====================
 
     /**
      * 通过 Web 回调换码直接获取第三方标准化用户画像（仅认证不签发系统会话）
@@ -336,7 +463,7 @@ public class SocialAuthTemplate {
         return exchangeSocialUser(appKey, appConfig, callback);
     }
 
-    // ==================== 5. 内部编排辅助方法 ====================
+    // ==================== 7. 内部编排辅助方法 ====================
 
     /**
      * 执行底层第三方 HTTP 换码与用户信息拉取
@@ -350,13 +477,13 @@ public class SocialAuthTemplate {
                 authResponse = authRequest.login(callback);
             } catch (Exception ex) {
                 log.error("Third-party OAuth2 login exception for appKey: [{}]: {}", appKey, ex.getMessage(), ex);
-                throw new SocialException(SocialResultCode.SOCIAL_AUTH_FAILED, "第三方授权认证异常: " + ex.getMessage(), ex);
+                throw new SocialAuthException("第三方授权认证异常: " + ex.getMessage(), ex);
             }
 
             if (authResponse == null || !authResponse.ok() || authResponse.getData() == null) {
                 String errorMsg = authResponse != null ? authResponse.getMsg() : "第三方未返回有效响应";
                 log.warn("Third-party OAuth2 login rejected: appKey=[{}], msg=[{}]", appKey, errorMsg);
-                throw new SocialException(SocialResultCode.SOCIAL_AUTH_FAILED, "第三方授权认证失败: " + errorMsg);
+                throw new SocialAuthException("第三方授权认证失败: " + errorMsg);
             }
 
             SocialUser socialUser = SocialUser.fromAuthUser(authResponse.getData(), appConfig.getSource());
