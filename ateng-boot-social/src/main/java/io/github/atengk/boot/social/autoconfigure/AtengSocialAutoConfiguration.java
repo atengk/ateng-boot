@@ -1,9 +1,13 @@
 package io.github.atengk.boot.social.autoconfigure;
 
+import io.github.atengk.boot.social.cache.InMemorySocialAuthStateCache;
+import io.github.atengk.boot.social.cache.SocialAuthStateCache;
 import io.github.atengk.boot.social.factory.SocialAppFactory;
 import io.github.atengk.boot.social.http.SpringRestClientHttpImpl;
 import io.github.atengk.boot.social.properties.AtengSocialProperties;
 import io.github.atengk.boot.social.spi.SocialAppConfigProvider;
+import io.github.atengk.boot.social.ticket.BindTicketStore;
+import io.github.atengk.boot.social.ticket.InMemoryBindTicketStore;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -12,11 +16,13 @@ import org.dromara.anduin.http.HttpClientAdapter;
 import org.dromara.anduin.http.UnifiedHttpClientAccessor;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 
 /**
  * 社交登录与 OAuth2 自动装配类
@@ -26,9 +32,11 @@ import org.springframework.context.annotation.Bean;
  */
 @Slf4j
 @AutoConfiguration
+@AutoConfigureAfter(name = "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration")
 @ConditionalOnClass(name = "org.dromara.anduin.AuthRequestBuilder")
 @ConditionalOnProperty(prefix = "ateng.boot.social", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(AtengSocialProperties.class)
+@Import(RedisSocialCacheConfiguration.class)
 @RequiredArgsConstructor
 public class AtengSocialAutoConfiguration {
 
@@ -72,6 +80,30 @@ public class AtengSocialAutoConfiguration {
         SocialAppFactory factory = new SocialAppFactory(properties, configProviderObjectProvider, stateCacheObjectProvider, springClient);
         log.info("Initialized SocialAppFactory with {} static apps configured", properties.getApps().size());
         return factory;
+    }
+
+    /**
+     * 单机内存兜底防伪 State 状态缓存
+     *
+     * @return SocialAuthStateCache 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(SocialAuthStateCache.class)
+    public SocialAuthStateCache inMemorySocialAuthStateCache() {
+        log.info("Initialized InMemorySocialAuthStateCache for OAuth2 state management");
+        return new InMemorySocialAuthStateCache();
+    }
+
+    /**
+     * 单机内存兜底两阶段绑定票据仓库
+     *
+     * @return BindTicketStore 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(BindTicketStore.class)
+    public BindTicketStore inMemoryBindTicketStore() {
+        log.info("Initialized InMemoryBindTicketStore for two-phase social user binding");
+        return new InMemoryBindTicketStore();
     }
 
     @PostConstruct

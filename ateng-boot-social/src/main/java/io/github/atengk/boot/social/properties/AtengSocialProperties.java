@@ -35,6 +35,16 @@ public class AtengSocialProperties {
     private Duration readTimeout = Duration.ofSeconds(15);
 
     /**
+     * OAuth2 防伪 State 缓存默认过期时长，默认 5 分钟
+     */
+    private Duration stateTimeout = Duration.ofMinutes(5);
+
+    /**
+     * 两阶段绑定票据 BindTicket 默认过期时长，默认 5 分钟
+     */
+    private Duration bindTicketTimeout = Duration.ofMinutes(5);
+
+    /**
      * 全局默认出站代理配置（可选）
      */
     @NestedConfigurationProperty
