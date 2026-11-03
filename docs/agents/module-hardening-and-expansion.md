@@ -89,7 +89,8 @@ flowchart TD
 1. **全自洽对抗单测**：使用 JUnit 5 原生 `@TempDir`，测试后严格清理上下文与现场，100% 离线自洽（纯内存/Mock/H2）；
 2. **1:1 Sample 场景化实装**：在 `ateng-boot-samples/ateng-boot-sample-[MODULE_NAME]` 中实装所有支持的场景：
    - **业务场景命名驱动**：组件与测试必须按真实业务场景命名（如 `OrderTimeoutDelayQueueScenario`、`LargeFileChunkedUploadScenario`、`DynamicMultiSheetExcelScenario` 等）；
-   - **Web / 非 Web 分层铁律**：Web 契约层模块编写规范的 `@RestController` 与 `MockMvc` 测试；非 Web 底座/驱动模块（Redis、Storage、Excel、Kafka 等）专职编写 `ScenarioService` 并配套 `@SpringBootTest` 跑通真实业务，**严禁为了演示纯底座能力生造无意义的 Controller**。
+   - **全面 Web 体验化与多 Controller 暴露**：所有 Sample 工程统一引入 `ateng-boot-web` 作为 Web 容器底座；能通过 HTTP 调用的功能必须全面通过规范的 `@RestController` 接口向外暴露，并按功能领域拆分为多个独立 Controller（如 `RedisLockController`、`RedisCacheController` 等），被动监听类特性由 Controller 提供“生产投递触发端”与“状态/死信运维端”，统一采用 `/sample/<module>/<feature>/<action>` 路由并返回 `Result<T>`；
+   - **Sample README 极简体验卡**：Sample 工程自身 `README.md` 极度精简为四段式“启动与接口体验卡”（端口、环境说明、cURL 快速体验、回归单测命令，详见 [documentation-specification.md](./documentation-specification.md)），严禁冗余堆砌全景大表与长篇原理。
 3. **精准高效构建验证**：必须且只能执行多线程精准加速测试命令，验证测试 100% 全绿：
    ```bash
    mvn test -pl ateng-boot-[MODULE_NAME],ateng-boot-samples/ateng-boot-sample-[MODULE_NAME] -am -T 1C -nsu -B
@@ -98,13 +99,14 @@ flowchart TD
 ---
 
 ### 【阶段四：五维生产文档与 100% 全景矩阵闭环（5D Documentation）】
-对齐已跑通的源码与测试，全面更新子模块 `README.md`，达成五维交付：
+对齐已跑通的源码与测试，全面遵循 [documentation-specification.md](./documentation-specification.md) 更新子模块 `README.md`，达成五维交付：
 1. **维度零：100% 全景速查矩阵**：以标准 Markdown 表格收录该模块**所有对外暴露的公共门面类及 Public 方法、核心注解、配置项与扩展点 SPI**（100% 全覆盖，彻底杜绝隐形死代码）；
 2. **维度一：最小起步体验**：直击场景痛点与开箱即用的极简实战代码；
 3. **维度二：生产扩展接管**：企业级 SPI 定制实现、覆盖默认 Bean 与拦截器注入范式；
 4. **维度三：核心生产边界与非功能语义**：并发、幂等、重试、超时、断点恢复与异常降级底层机制；
 5. **维度四：全真代码逆向提取**：示例代码与配置 100% 逆向提取自已跑通的 Sample 与单测，表格反引号规范转义防破损；
-6. 同步维护模块内词汇表 `CONTEXT.md` 与根目录 `CONTEXT-MAP.md`。
+6. **三要素就近闭环与能力大章收敛**：各特性章节必须就近提供专属 YAML 配置、真实业务代码与边界机制，同类功能按能力大章聚合收敛；
+7. 同步维护模块内词汇表 `CONTEXT.md` 与根目录 `CONTEXT-MAP.md`。
 
 ---
 
@@ -113,7 +115,9 @@ flowchart TD
 执行本 SOP 结束前，必须逐项自检并满足以下条件：
 - [ ] 阶段一《企业级全场景矩阵》与设计树经开发者明确确认；
 - [ ] 批准的缺失场景功能与核心 API 重构完成，九道防线无红线触碰；
-- [ ] 非 Web 模块 Sample 零 Controller 污染，场景组件以真实业务命名；
+- [ ] Sample 工程引入 `ateng-boot-web` 并按领域拆分暴露多 Controller 接口，启动即可 HTTP 调试；
+- [ ] Sample `README.md` 遵循四段式极简体验卡模板，Starter `README.md` 遵循三要素就近闭环与能力大章收敛；
+- [ ] 场景与示例代码以真实高频业务命名与建模，杜绝 `NORMAL_SUCCESS_` 等单测试桩生搬；
 - [ ] 定向精准多线程测试（单测 + 场景 Sample）全部 PASS（BUILD SUCCESS）；
 - [ ] 子模块 `README.md` 包含 100% 覆盖度的全景速查矩阵，示例代码完全真实可运行；
 - [ ] 领域词汇表 `CONTEXT.md` 与全局 `CONTEXT-MAP.md` 同步更新完毕。

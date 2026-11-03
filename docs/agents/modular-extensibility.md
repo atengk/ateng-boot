@@ -45,9 +45,12 @@
 为保障多模块演化时的极速本地测试准出与环境无关性，样例工程遵循以下准则：
 
 - **1:1 独立场景沙箱**：每个业务 Starter 严格对应一个专属的 `ateng-boot-sample-<scenario>`（如 `core`、`web`、`mybatis-plus`、`redis`、`excel`、`satoken`、`storage`），彻底杜绝跨 Starter 混合的胖样例；
-- **Web / 非 Web 分层分明**：
-  - **Web 契约层模块**（`web`、`satoken`、`openapi` 等）：编写规范的 `@RestController` 并配套 `MockMvc` / `TestRestTemplate` 真实测试；
-  - **非 Web 底座/驱动模块**（`redis`、`storage`、`excel`、`kafka` 等）：专职编写 `ScenarioService` 并配套 `@SpringBootTest` 跑通真实业务流程，**严禁为了演示纯底座能力生造无意义的 Controller**；
+- **全面 Web 体验化与多 Controller 暴露**：
+  - 所有 Sample 工程统一引入 `ateng-boot-web` 作为 Web 容器底座，具备应用启动即可通过 HTTP/Swagger/cURL 交互体验的能力；
+  - 能通过 HTTP 调用的功能必须全面通过规范的 `@RestController` 接口向外暴露，并按功能领域拆分为多个独立 Controller（如 `RedisLockController`、`RedisCacheController` 等），严禁编写单一臃肿 Controller；
+  - 被动监听类特性（延时队列监听、Stream 消费者、广播订阅等）由 Controller 提供“生产投递触发端”与“状态/死信运维端”；
+  - 路由统配 `/sample/<module>/<feature>/<action>` 语义化命名空间，出参统配强类型 `Result<T>`；
+  - 样例工程自身的 `README.md` 极度精简为四段式“启动与接口体验卡”，严禁堆砌长篇原理架构（详见 [documentation-specification.md](./documentation-specification.md)）；
 - **业务场景命名驱动**：测试与组件类以实际业务痛点场景命名（如 `ChunkedUploadResumeScenario`、`OrderTimeoutDelayQueueScenario`）；
 - **纯内存端自验**：默认依托 H2 内存数据库、纯内存 Mock 或嵌入式组件运行端到端测试，严禁依赖外部真实物理中间件环境，保障 `mvn test` 开箱即过；
 - **自包含与零共享**：各场景工程完全独立自洽，严禁在样例工程之间建立依赖，严禁抽取跨样例共享代码；

@@ -138,34 +138,44 @@ public class SocialUser implements Serializable {
 
         // 2. 探测 rawUserInfo 响应中的 openid / open_id
         if (openId == null || openId.isBlank()) {
-            if (rawMap.get("openid") instanceof String o && !o.isBlank()) {
-                openId = o;
-            } else if (rawMap.get("open_id") instanceof String o && !o.isBlank()) {
-                openId = o;
+            if (rawMap.get("openid") != null && !String.valueOf(rawMap.get("openid")).isBlank()) {
+                openId = String.valueOf(rawMap.get("openid"));
+            } else if (rawMap.get("open_id") != null && !String.valueOf(rawMap.get("open_id")).isBlank()) {
+                openId = String.valueOf(rawMap.get("open_id"));
             }
         }
 
-        // 3. 最后回退至 authUser.getUuid() 保底
+        // 3. 回退至 authUser.getUuid() 保底
         if (openId == null || openId.isBlank()) {
             openId = authUser.getUuid();
         }
 
-        // 4. 探测 rawUserInfo 响应中的 unionid / union_id
-        if (unionId == null || unionId.isBlank()) {
-            if (rawMap.get("unionid") instanceof String u && !u.isBlank()) {
-                unionId = u;
-            } else if (rawMap.get("union_id") instanceof String u && !u.isBlank()) {
-                unionId = u;
+        // 4. 若仍为空，探测 rawUserInfo 中的 id / user_id
+        if (openId == null || openId.isBlank()) {
+            if (rawMap.get("id") != null && !String.valueOf(rawMap.get("id")).isBlank()) {
+                openId = String.valueOf(rawMap.get("id"));
+            } else if (rawMap.get("user_id") != null && !String.valueOf(rawMap.get("user_id")).isBlank()) {
+                openId = String.valueOf(rawMap.get("user_id"));
             }
         }
 
+        // 5. 探测 rawUserInfo 响应中的 unionid / union_id
+        if (unionId == null || unionId.isBlank()) {
+            if (rawMap.get("unionid") != null && !String.valueOf(rawMap.get("unionid")).isBlank()) {
+                unionId = String.valueOf(rawMap.get("unionid"));
+            } else if (rawMap.get("union_id") != null && !String.valueOf(rawMap.get("union_id")).isBlank()) {
+                unionId = String.valueOf(rawMap.get("union_id"));
+            }
+        }
+
+        String uuid = authUser.getUuid() != null && !authUser.getUuid().isBlank() ? authUser.getUuid() : openId;
         String genderDesc = authUser.getGender() != null ? authUser.getGender().name() : null;
 
         return SocialUser.builder()
                 .openId(openId)
                 .unionId(unionId)
                 .source(authUser.getSource())
-                .uuid(authUser.getUuid())
+                .uuid(uuid)
                 .username(authUser.getUsername())
                 .nickname(authUser.getNickname())
                 .avatar(authUser.getAvatar())

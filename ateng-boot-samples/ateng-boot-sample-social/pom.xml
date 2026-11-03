@@ -27,6 +27,24 @@
             <artifactId>ateng-boot-social</artifactId>
         </dependency>
 
+        <!-- Sa-Token 安全鉴权底座 (验证社交登录会话签发与多端治理) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-satoken</artifactId>
+        </dependency>
+
+        <!-- Spring Data Redis (提供类定义以激活 Sa-Token / Social 原生内存自洽降级模式) -->
+        <dependency>
+            <groupId>org.springframework.data</groupId>
+            <artifactId>spring-data-redis</artifactId>
+        </dependency>
+
+        <!-- Web 运行时基底 (统一 Result 响应契约、全局异常转译与全链路追踪) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+        </dependency>
+
         <!-- Spring Boot Web Starter -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

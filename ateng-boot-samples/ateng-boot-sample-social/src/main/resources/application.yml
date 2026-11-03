@@ -4,10 +4,29 @@ server:
 spring:
   application:
     name: ateng-boot-sample-social
+  config:
+    import: "optional:classpath:application-local.yml"
 
 ateng:
   boot:
     social:
       enabled: true
-      connect-timeout: 5s
-      read-timeout: 10s
+      connect-timeout: 3s
+      read-timeout: 3s
+      state-timeout: 5m
+      bind-ticket-timeout: 5m
+      controller:
+        enabled: true
+        prefix: /auth/social
+      apps:
+        github_app:
+          source: GITHUB
+          client-id: sample_github_client_id
+          client-secret: sample_github_client_secret
+          redirect-uri: http://localhost:8080/auth/social/github_app/callback
+        wechat_mp_app:
+          source: WECHAT_MINI_PROGRAM
+          client-id: sample_wx_appid
+          client-secret: sample_wx_secret
+          ignore-check-state: true
+          ignore-check-redirect-uri: true

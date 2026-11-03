@@ -2,6 +2,7 @@ package io.github.atengk.boot.social.autoconfigure;
 
 import io.github.atengk.boot.social.cache.InMemorySocialAuthStateCache;
 import io.github.atengk.boot.social.cache.SocialAuthStateCache;
+import io.github.atengk.boot.social.controller.SocialAuthController;
 import io.github.atengk.boot.social.factory.SocialAppFactory;
 import io.github.atengk.boot.social.http.SpringRestClientHttpImpl;
 import io.github.atengk.boot.social.properties.AtengSocialProperties;
@@ -24,6 +25,7 @@ import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
@@ -152,6 +154,22 @@ public class AtengSocialAutoConfiguration {
             template.setApplicationEventPublisher(eventPublisherObjectProvider.getIfAvailable());
         }
         return template;
+    }
+
+    /**
+     * 自动装配内置社交登录 REST 控制器端点
+     *
+     * @param socialAuthTemplate 社交登录核心门面
+     * @return SocialAuthController 控制器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(SocialAuthController.class)
+    @ConditionalOnClass(name = "org.springframework.web.servlet.DispatcherServlet")
+    @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
+    @ConditionalOnProperty(prefix = "ateng.boot.social.controller", name = "enabled", havingValue = "true")
+    public SocialAuthController socialAuthController(SocialAuthTemplate socialAuthTemplate) {
+        log.info("Initialized SocialAuthController REST endpoints under prefix: [{}]", properties.getController().getPrefix());
+        return new SocialAuthController(socialAuthTemplate);
     }
 
     @PostConstruct

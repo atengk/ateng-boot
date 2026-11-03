@@ -1,0 +1,16 @@
+# ------------------------------------------------------------------
+# 本地真实第三方社交开放平台凭据配置模板 (请勿提交包含真实机密的 application-local.yml)
+# 复制本文件为 application-local.yml 并填入真实配置即可在 local Profile 下联调
+# ------------------------------------------------------------------
+
+ateng:
+  boot:
+    social:
+      apps:
+        github_app:
+          client-id: YOUR_GITHUB_CLIENT_ID
+          client-secret: YOUR_GITHUB_CLIENT_SECRET
+          redirect-uri: http://localhost:8080/auth/social/github_app/callback
+        wechat_mp_app:
+          client-id: YOUR_WECHAT_MP_APPID
+          client-secret: YOUR_WECHAT_MP_SECRET

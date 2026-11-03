@@ -55,4 +55,27 @@ public class AtengSocialProperties {
      */
     @NestedConfigurationProperty
     private Map<String, SocialAppItemProperties> apps = new LinkedHashMap<>();
+
+    /**
+     * 内置社交登录 REST 控制器端点配置
+     */
+    @NestedConfigurationProperty
+    private ControllerConfig controller = new ControllerConfig();
+
+    /**
+     * 内置社交登录 REST 控制器端点配置参数
+     */
+    @Data
+    public static class ControllerConfig {
+
+        /**
+         * 是否启用内置社交登录 REST 控制器，默认 false
+         */
+        private boolean enabled = false;
+
+        /**
+         * 内置控制器端点统一前缀，默认 /auth/social
+         */
+        private String prefix = "/auth/social";
+    }
 }

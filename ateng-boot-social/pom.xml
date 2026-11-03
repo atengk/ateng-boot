@@ -115,6 +115,13 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- Hibernate Validator (单测 JSR-303 参数校验运行时引擎) -->
+        <dependency>
+            <groupId>org.hibernate.validator</groupId>
+            <artifactId>hibernate-validator</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- OkHttp MockWebServer (纯内存离线自洽测试，版本由 Spring Boot 统管) -->
         <dependency>
             <groupId>com.squareup.okhttp3</groupId>
