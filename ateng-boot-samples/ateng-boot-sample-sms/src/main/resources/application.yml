@@ -1,0 +1,43 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-sms
+  config:
+    import: "optional:classpath:application-local.yml"
+
+ateng:
+  boot:
+    sms:
+      enabled: true
+      default-channel: mock
+      channels:
+        mock:
+          supplier: MOCK
+          sign-name: 官方测试
+          weight: 100
+        primary-mock:
+          supplier: MOCK
+          sign-name: 主发信通道
+          failover-channel: mock
+          weight: 100
+      verify-code:
+        length: 6
+        char-type: NUMERIC
+        ttl: 5m
+        resend-interval: 60s
+        max-retry-attempts: 5
+      rate-limit:
+        per-minute: 1
+        per-hour: 5
+        per-day: 10
+      guard:
+        daily-max-quota: 1000
+        blacklist-enabled: true
+        blacklist:
+          - "13800000000"
+          - "13900000000"
+      callback:
+        enabled: true
+        path-prefix: /ateng-sms/callback

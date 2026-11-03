@@ -67,6 +67,7 @@
         <module>ateng-boot-tcp</module>
         <module>ateng-boot-search</module>
         <module>ateng-boot-admin</module>
+        <module>ateng-boot-sms</module>
         <module>ateng-boot-social</module>
     </modules>
 
@@ -422,6 +423,11 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-admin</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-sms</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
