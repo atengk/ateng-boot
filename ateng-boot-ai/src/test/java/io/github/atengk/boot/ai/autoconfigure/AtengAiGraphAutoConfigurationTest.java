@@ -98,11 +98,12 @@ class AtengAiGraphAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("默认装配 GraphWorkflowRegistry 注册表单例 Bean")
+    @DisplayName("默认装配 GraphWorkflowRegistry 与 GraphResumeTemplate 单例 Bean")
     void testGraphWorkflowRegistryAutoConfigured() {
         contextRunner.run(context -> {
             assertThat(context).hasNotFailed();
             assertThat(context).hasSingleBean(io.github.atengk.boot.ai.graph.GraphWorkflowRegistry.class);
+            assertThat(context).hasSingleBean(io.github.atengk.boot.ai.graph.GraphResumeTemplate.class);
         });
     }
 

@@ -5,6 +5,7 @@ import io.github.atengk.boot.ai.checkpoint.MemoryCheckpointSaver;
 import io.github.atengk.boot.ai.checkpoint.RedisCheckpointSaver;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.graph.GraphResumeTemplate;
 import io.github.atengk.boot.ai.graph.GraphWorkflow;
 import io.github.atengk.boot.ai.graph.GraphWorkflowRegistry;
 import io.github.atengk.boot.ai.properties.AtengAiGraphProperties;
@@ -24,6 +25,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.util.List;
+import java.util.concurrent.Executor;
 
 /**
  * 认知状态图底座自动装配类
@@ -90,5 +92,32 @@ public class AtengAiGraphAutoConfiguration {
     @ConditionalOnMissingBean
     public GraphWorkflowRegistry graphWorkflowRegistry(ObjectProvider<List<GraphWorkflow<?>>> workflowsProvider) {
         return new GraphWorkflowRegistry(workflowsProvider);
+    }
+
+    /**
+     * 自动装配认知图人机协作（HITL）恢复与运维管理门面
+     *
+     * @param workflowRegistry 工作流全局注册表
+     * @param checkpointSaver 检查点存储器
+     * @param properties 配置属性
+     * @param redisTemplateProvider Redis 模板提供者
+     * @param asyncExecutorProvider 异步执行器提供者
+     * @return 人机协作恢复门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public GraphResumeTemplate graphResumeTemplate(
+            GraphWorkflowRegistry workflowRegistry,
+            GraphCheckpointSaver checkpointSaver,
+            AtengAiGraphProperties properties,
+            ObjectProvider<StringRedisTemplate> redisTemplateProvider,
+            ObjectProvider<Executor> asyncExecutorProvider) {
+        return new GraphResumeTemplate(
+                workflowRegistry,
+                checkpointSaver,
+                properties,
+                redisTemplateProvider.getIfAvailable(),
+                asyncExecutorProvider.getIfAvailable()
+        );
     }
 }

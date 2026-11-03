@@ -289,16 +289,16 @@ public abstract class GraphWorkflow<S extends BaseGraphState> implements Initial
             status = WorkflowStatus.RUNNING;
         }
 
-        if (next != null && !next.isBlank() && !Objects.equals(next, StateGraph.END)) {
+        if (status == WorkflowStatus.CANCELLED || status == WorkflowStatus.FAILED) {
+            // 终态状态保持不可逆
+        } else if (next != null && !next.isBlank() && !Objects.equals(next, StateGraph.END)) {
             if (interruptBeforeNodes().contains(next) || status == WorkflowStatus.SUSPENDED) {
                 status = WorkflowStatus.SUSPENDED;
             } else {
                 status = WorkflowStatus.RUNNING;
             }
         } else {
-            if (status != WorkflowStatus.CANCELLED && status != WorkflowStatus.FAILED) {
-                status = WorkflowStatus.COMPLETED;
-            }
+            status = WorkflowStatus.COMPLETED;
         }
 
         return new StateSnapshotVo(
