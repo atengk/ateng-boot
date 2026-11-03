@@ -48,6 +48,11 @@ public class SocialUser implements Serializable {
     private String source;
 
     /**
+     * 发起授权认证的应用唯一标识（如 github-main, wechat-mp 等）
+     */
+    private String appKey;
+
+    /**
      * 原始系统唯一标识（对应 Anduin AuthUser uuid）
      */
     private String uuid;

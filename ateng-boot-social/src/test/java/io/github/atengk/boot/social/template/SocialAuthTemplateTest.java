@@ -40,7 +40,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -363,6 +365,119 @@ class SocialAuthTemplateTest {
         assertThat(socialUser).isNotNull();
         assertThat(socialUser.getOpenId()).isEqualTo("wx_profile_open");
         assertThat(StpUtil.isLogin()).isFalse();
+    }
+
+    @Test
+    @DisplayName("10. bind: 消费 BindTicket 成功绑定本地账号并签发 Sa-Token 登录会话")
+    void testBindSuccess() {
+        // 1. 预置一个待绑定的第三方画像并生成 BindTicket
+        SocialUser pendingUser = SocialUser.builder()
+                .appKey("github_app")
+                .source("GITHUB")
+                .openId("gh_user_888")
+                .username("dev_ateng")
+                .nickname("阿腾工程师")
+                .build();
+        String bindTicket = bindTicketStore.createTicket(pendingUser);
+
+        // 2. 验证票据存在
+        assertThat(bindTicketStore.contains(bindTicket)).isTrue();
+
+        // 3. 执行绑定
+        SocialLoginOptions options = SocialLoginOptions.builder()
+                .deviceType("PC")
+                .build();
+        SocialAuthResult result = authTemplate.bind(bindTicket, "local_user_777", options);
+
+        // 4. 断言认证结果与登录状态
+        assertThat(result).isNotNull();
+        assertThat(result.isLoggedIn()).isTrue();
+        assertThat(result.isRequireBind()).isFalse();
+        assertThat(result.getState()).isEqualTo(SocialAuthState.LOGGED_IN);
+        assertThat(result.getUserId()).isEqualTo("local_user_777");
+        assertThat(result.getTokenInfo()).isNotNull();
+        assertThat(result.getSocialUser()).isNotNull();
+        assertThat(result.getSocialUser().getOpenId()).isEqualTo("gh_user_888");
+
+        // 验证 Sa-Token 会话已确立
+        assertThat(StpUtil.isLogin()).isTrue();
+        assertThat(StpUtil.getLoginIdAsString()).isEqualTo("local_user_777");
+
+        // 验证持久化 SPI 被正确调用
+        verify(userDetailsService).bind(eq("local_user_777"), eq("github_app"), any(SocialUser.class));
+
+        // 5. 验证 BindTicket 已被原子物理销毁（阅后即焚）
+        assertThat(bindTicketStore.contains(bindTicket)).isFalse();
+        assertThat(bindTicketStore.get(bindTicket)).isNull();
+    }
+
+    @Test
+    @DisplayName("11. bind: 阅后即焚防重放防御（第二次重复消费立即强拦截阻断）")
+    void testBindBurnAfterReadingAndReplayAttackDefense() {
+        SocialUser pendingUser = SocialUser.builder()
+                .appKey("wechat_mp_app")
+                .source("WECHAT_MP")
+                .openId("wx_unique_666")
+                .build();
+        String bindTicket = bindTicketStore.createTicket(pendingUser);
+
+        // 首次消费绑定成功
+        SocialAuthResult firstResult = authTemplate.bind(bindTicket, "user_first");
+        assertThat(firstResult.isLoggedIn()).isTrue();
+
+        // 再次使用同一 BindTicket 发起重放绑定，强拦截并抛出异常
+        assertThatThrownBy(() -> authTemplate.bind(bindTicket, "user_second"))
+                .isInstanceOf(SocialException.class)
+                .hasMessageContaining("绑定凭证 BindTicket 非法、已过期或已被重复消费");
+    }
+
+    @Test
+    @DisplayName("12. bind: 伪造或过期的 BindTicket 对抗性防卫拦截")
+    void testBindExpiredOrFakeTicket() {
+        assertThatThrownBy(() -> authTemplate.bind("fake_non_exist_ticket_123", "user_123"))
+                .isInstanceOf(SocialException.class)
+                .hasMessageContaining("绑定凭证 BindTicket 非法、已过期或已被重复消费");
+    }
+
+    @Test
+    @DisplayName("13. bind: 业务绑定冲突异常正确穿透向外抛出且票据已被安全销毁")
+    void testBindBusinessExceptionPropagationAndTicketConsumed() {
+        SocialUser pendingUser = SocialUser.builder()
+                .appKey("github_app")
+                .source("GITHUB")
+                .openId("gh_conflict_999")
+                .build();
+        String bindTicket = bindTicketStore.createTicket(pendingUser);
+
+        // 模拟业务 SPI 检测到第三方账号已被其他账号绑定，抛出业务冲突异常
+        doThrow(new IllegalStateException("该 GitHub 账号已被其他本地用户绑定，禁止重复关联"))
+                .when(userDetailsService).bind(eq("local_user_fail"), eq("github_app"), any(SocialUser.class));
+
+        // 调用 bind 应当穿透抛出该异常
+        assertThatThrownBy(() -> authTemplate.bind(bindTicket, "local_user_fail"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("该 GitHub 账号已被其他本地用户绑定，禁止重复关联");
+
+        // 关键断言：即使绑定逻辑发生异常，该凭据也已被原子销毁，不可被二次利用重放
+        assertThat(bindTicketStore.contains(bindTicket)).isFalse();
+    }
+
+    @Test
+    @DisplayName("14. bind: 参数非法时前置快速失败")
+    void testBindValidation() {
+        assertThatThrownBy(() -> authTemplate.bind(null, "user_1"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("两阶段绑定票据 [bindTicket] 不能为空");
+
+        assertThatThrownBy(() -> authTemplate.bind("   ", "user_1"))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> authTemplate.bind("ticket_ok", null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("本地用户标识 [userId] 不能为空");
+
+        assertThatThrownBy(() -> authTemplate.bind("ticket_ok", "  "))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     private String extractQueryParam(String url, String paramName) {

@@ -214,7 +214,90 @@ public class SocialAuthTemplate {
         return resolveAuthResult(appKey, socialUser, options, null);
     }
 
-    // ==================== 4. 独立获取第三方用户画像门面 ====================
+    // ==================== 4. 两阶段账号绑定与会话签发门面 ====================
+
+    /**
+     * 消费两阶段绑定票据 BindTicket 完成本地用户与第三方账号绑定，并签发登录会话
+     *
+     * @param bindTicket 两阶段绑定票据凭证
+     * @param userId     本地系统用户唯一标识
+     * @return 认证成功结果（包含用户 ID、Sa-Token 凭据与第三方画像快照）
+     */
+    public SocialAuthResult bind(String bindTicket, String userId) {
+        return bind(null, bindTicket, userId, null);
+    }
+
+    /**
+     * 消费两阶段绑定票据 BindTicket 完成本地用户与第三方账号绑定，并签发登录会话（支持多端设备控制选项）
+     *
+     * @param bindTicket 两阶段绑定票据凭证
+     * @param userId     本地系统用户唯一标识
+     * @param options    登录多端控制参数
+     * @return 认证成功结果
+     */
+    public SocialAuthResult bind(String bindTicket, String userId, SocialLoginOptions options) {
+        return bind(null, bindTicket, userId, options);
+    }
+
+    /**
+     * 消费两阶段绑定票据 BindTicket 完成本地用户与第三方账号绑定，并签发登录会话（指定 appKey）
+     *
+     * @param appKey     社交应用标识（可选，若为空则自动取画像中关联的 appKey）
+     * @param bindTicket 两阶段绑定票据凭证
+     * @param userId     本地系统用户唯一标识
+     * @return 认证成功结果
+     */
+    public SocialAuthResult bind(String appKey, String bindTicket, String userId) {
+        return bind(appKey, bindTicket, userId, null);
+    }
+
+    /**
+     * 消费两阶段绑定票据 BindTicket 完成本地用户与第三方账号绑定，并签发登录会话（指定 appKey 与多端设备控制选项）
+     *
+     * @param appKey     社交应用标识（可选，若为空则自动取画像中关联的 appKey）
+     * @param bindTicket 两阶段绑定票据凭证
+     * @param userId     本地系统用户唯一标识
+     * @param options    登录多端控制参数
+     * @return 认证成功结果
+     */
+    public SocialAuthResult bind(String appKey, String bindTicket, String userId, SocialLoginOptions options) {
+        if (bindTicket == null || bindTicket.isBlank()) {
+            throw new IllegalArgumentException("两阶段绑定票据 [bindTicket] 不能为空");
+        }
+        if (userId == null || userId.isBlank()) {
+            throw new IllegalArgumentException("本地用户标识 [userId] 不能为空");
+        }
+
+        // 1. 原子消费并物理销毁 BindTicket（阅后即焚防重放）
+        SocialUser socialUser = bindTicketStore.remove(bindTicket);
+        if (socialUser == null) {
+            log.warn("BindTicket invalid, expired or already consumed: ticket=[{}]", bindTicket);
+            throw new SocialException(SocialResultCode.SOCIAL_BIND_TICKET_INVALID, "绑定凭证 BindTicket 非法、已过期或已被重复消费");
+        }
+
+        // 2. 解析生效的应用标识
+        String effectiveAppKey = (appKey != null && !appKey.isBlank()) ? appKey : socialUser.getAppKey();
+        if (effectiveAppKey == null || effectiveAppKey.isBlank()) {
+            effectiveAppKey = socialUser.getSource();
+        }
+
+        // 3. 联动持久化业务 SPI 绑定账号
+        SocialUserDetailsService detailsService = userDetailsServiceObjectProvider.getIfAvailable();
+        if (detailsService != null) {
+            detailsService.bind(userId, effectiveAppKey, socialUser);
+        } else {
+            log.warn("SocialUserDetailsService is not provided, skipping local user binding persistence: userId=[{}], appKey=[{}]", userId, effectiveAppKey);
+        }
+
+        // 4. 自动签发登录会话
+        Object tokenInfo = sessionManager.createSession(userId, options, socialUser);
+        log.info("Social user successfully bound and logged in: userId=[{}], appKey=[{}], openId=[{}]",
+                userId, effectiveAppKey, socialUser.getOpenId());
+
+        return SocialAuthResult.loggedIn(userId, tokenInfo, socialUser, null);
+    }
+
+    // ==================== 5. 独立获取第三方用户画像门面 ====================
 
     /**
      * 通过 Web 回调换码直接获取第三方标准化用户画像（仅认证不签发系统会话）
@@ -276,7 +359,11 @@ public class SocialAuthTemplate {
                 throw new SocialException(SocialResultCode.SOCIAL_AUTH_FAILED, "第三方授权认证失败: " + errorMsg);
             }
 
-            return SocialUser.fromAuthUser(authResponse.getData(), appConfig.getSource());
+            SocialUser socialUser = SocialUser.fromAuthUser(authResponse.getData(), appConfig.getSource());
+            if (socialUser != null) {
+                socialUser.setAppKey(appKey);
+            }
+            return socialUser;
         } finally {
             CurrentSocialAppContextHolder.clear();
         }

@@ -55,6 +55,17 @@ public interface SocialUserDetailsService {
     void bind(String userId, String appKey, SocialUser socialUser);
 
     /**
+     * 完成本地用户与第三方账号绑定关系的持久化落库（与 {@link #bind(String, String, SocialUser)} 语义等价）
+     *
+     * @param userId     本地用户 ID
+     * @param appKey     发起绑定的应用唯一标识
+     * @param socialUser 第三方标准化用户画像
+     */
+    default void bindSocialUser(String userId, String appKey, SocialUser socialUser) {
+        bind(userId, appKey, socialUser);
+    }
+
+    /**
      * 解除本地用户与第三方账号的持久化绑定关系
      *
      * @param userId 本地用户 ID
