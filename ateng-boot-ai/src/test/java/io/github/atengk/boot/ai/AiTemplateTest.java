@@ -4,7 +4,9 @@ import dev.ai4j.openai4j.OpenAiHttpException;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.output.Response;
 import io.github.atengk.boot.ai.context.AiContextHolder;
 import io.github.atengk.boot.ai.exception.AiException;
@@ -19,6 +21,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 import java.util.Map;
@@ -42,6 +45,8 @@ class AiTemplateTest {
     private AiTemplate aiTemplate;
     private ChatLanguageModel defaultChatModel;
     private ChatLanguageModel deepseekChatModel;
+    private StreamingChatLanguageModel defaultStreamingModel;
+    private StreamingChatLanguageModel deepseekStreamingModel;
 
     @BeforeEach
     void setUp() {
@@ -60,9 +65,11 @@ class AiTemplateTest {
 
         defaultChatModel = Mockito.mock(ChatLanguageModel.class);
         deepseekChatModel = Mockito.mock(ChatLanguageModel.class);
+        defaultStreamingModel = Mockito.mock(StreamingChatLanguageModel.class);
+        deepseekStreamingModel = Mockito.mock(StreamingChatLanguageModel.class);
 
-        registry.registerDefault(defaultChatModel, null, "gpt-4o");
-        registry.register("deepseek-r1", deepseekChatModel, null);
+        registry.registerDefault(defaultChatModel, defaultStreamingModel, "gpt-4o");
+        registry.register("deepseek-r1", deepseekChatModel, deepseekStreamingModel);
 
         aiTemplate = new AiTemplate(registry, properties);
     }
@@ -198,5 +205,61 @@ class AiTemplateTest {
         assertThatThrownBy(() -> aiTemplate.generate((List<ChatMessage>) null))
                 .isInstanceOf(AiException.class)
                 .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_INVALID_PAYLOAD));
+    }
+
+    @Test
+    @DisplayName("验证极简流式调用 stream(prompt) 返回有效 SseEmitter 实例")
+    void testStreamPromptSuccess() {
+        doAnswer(invocation -> {
+            StreamingResponseHandler<AiMessage> handler = invocation.getArgument(1);
+            handler.onNext("流式输出第一段");
+            handler.onComplete(Response.from(AiMessage.from("流式输出第一段")));
+            return null;
+        }).when(defaultStreamingModel).generate(anyList(), any());
+
+        SseEmitter emitter = aiTemplate.stream("流式提问");
+        assertThat(emitter).isNotNull();
+        verify(defaultStreamingModel, times(1)).generate(anyList(), any());
+    }
+
+    @Test
+    @DisplayName("验证指定命名流式模型 streamWithModel(modelName, prompt, emitter)")
+    void testStreamWithNamedModelSuccess() {
+        SseEmitter emitter = mock(SseEmitter.class);
+        aiTemplate.streamWithModel("deepseek-r1", "求导微积分", emitter);
+
+        verify(deepseekStreamingModel, times(1)).generate(anyList(), any());
+        verify(defaultStreamingModel, never()).generate(anyList(), any());
+    }
+
+    @Test
+    @DisplayName("验证图文多模态流式对话 stream(prompt, imageUrls, emitter)")
+    void testStreamMultimodalSuccess() {
+        SseEmitter emitter = mock(SseEmitter.class);
+        aiTemplate.stream("识别建筑", List.of("https://example.com/building.jpg"), emitter);
+
+        verify(defaultStreamingModel, times(1)).generate(anyList(), any());
+    }
+
+    @Test
+    @DisplayName("验证底层自定义流式处理器 stream(messages, handler)")
+    void testLowLevelStreamHandler() {
+        StreamingResponseHandler<AiMessage> handler = mock(StreamingResponseHandler.class);
+        List<ChatMessage> messages = List.of(UserMessage.from("底层测试"));
+
+        aiTemplate.stream(messages, handler);
+        verify(defaultStreamingModel, times(1)).generate(eq(messages), eq(handler));
+    }
+
+    @Test
+    @DisplayName("流式对话对抗性测试：空 prompt 或 null SseEmitter 异常拦截")
+    void testStreamInvalidPayloadDefense() {
+        assertThatThrownBy(() -> aiTemplate.streamMessages("deepseek-r1", List.of(UserMessage.from("hi")), null))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_INVALID_PAYLOAD));
+
+        SseEmitter emitter = mock(SseEmitter.class);
+        aiTemplate.streamWithModel("deepseek-r1", "   ", emitter);
+        verify(emitter, times(1)).completeWithError(any());
     }
 }

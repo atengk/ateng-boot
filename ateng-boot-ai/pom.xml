@@ -29,6 +29,13 @@
             <artifactId>spring-boot-autoconfigure</artifactId>
         </dependency>
 
+        <!-- Spring WebMVC (SSE 打字机流式推流可选支持) -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-webmvc</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- LangChain4j OpenAI 兼容网关 -->
         <dependency>
             <groupId>dev.langchain4j</groupId>
