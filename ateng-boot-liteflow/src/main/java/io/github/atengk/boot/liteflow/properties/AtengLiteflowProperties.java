@@ -32,6 +32,11 @@ public class AtengLiteflowProperties {
     private boolean printExecutionLog = true;
 
     /**
+     * 并行编排 WHEN 默认全局最大等待超时时间（支持标准 Duration 格式，如 3s、500ms，留空则不设全局超时）
+     */
+    private Duration whenMaxWaitTimeout;
+
+    /**
      * 异步并行编排线程池配置
      */
     @NestedConfigurationProperty

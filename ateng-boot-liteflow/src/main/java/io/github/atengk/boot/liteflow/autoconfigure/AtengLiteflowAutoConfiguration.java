@@ -1,11 +1,13 @@
 package io.github.atengk.boot.liteflow.autoconfigure;
 
 import com.yomahub.liteflow.core.FlowExecutor;
+import com.yomahub.liteflow.lifecycle.LifeCycleHolder;
 import com.yomahub.liteflow.property.LiteflowConfig;
 import com.yomahub.liteflow.springboot.config.LiteflowMainAutoConfiguration;
 import com.yomahub.liteflow.springboot.config.LiteflowPropertyAutoConfiguration;
 import io.github.atengk.boot.liteflow.core.LiteflowTemplate;
 import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
+import io.github.atengk.boot.liteflow.thread.FlowTimeoutInterruptionLifeCycle;
 import io.github.atengk.boot.liteflow.thread.LiteflowGlobalExecutorBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +25,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * ateng-boot LiteFlow 规则编排底座自动装配
@@ -47,6 +50,21 @@ public class AtengLiteflowAutoConfiguration {
     @ConditionalOnMissingBean
     public LiteflowGlobalExecutorBuilder liteflowGlobalExecutorBuilder() {
         return new LiteflowGlobalExecutorBuilder();
+    }
+
+    /**
+     * 注册 LiteFlow 流程执行超时协同中断生命周期拦截器
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public FlowTimeoutInterruptionLifeCycle flowTimeoutInterruptionLifeCycle() {
+        FlowTimeoutInterruptionLifeCycle lifeCycle = new FlowTimeoutInterruptionLifeCycle();
+        boolean alreadyAdded = LifeCycleHolder.getPostProcessFlowExecuteLifeCycleList().stream()
+                .anyMatch(lc -> lc instanceof FlowTimeoutInterruptionLifeCycle);
+        if (!alreadyAdded) {
+            LifeCycleHolder.addLifeCycle(lifeCycle);
+        }
+        return lifeCycle;
     }
 
     /**
@@ -118,6 +136,15 @@ public class AtengLiteflowAutoConfiguration {
             // 4. 桥接 printExecutionLog
             if (config.getPrintExecutionLog() == null) {
                 config.setPrintExecutionLog(properties.isPrintExecutionLog());
+            }
+
+            // 5. 桥接 whenMaxWaitTimeout 并行超时阈值
+            if (properties.getWhenMaxWaitTimeout() != null && !properties.getWhenMaxWaitTimeout().isZero()
+                    && !properties.getWhenMaxWaitTimeout().isNegative()) {
+                long millis = properties.getWhenMaxWaitTimeout().toMillis();
+                config.setWhenMaxWaitTime((int) millis);
+                config.setWhenMaxWaitTimeUnit(TimeUnit.MILLISECONDS);
+                log.info("ateng-boot-liteflow: 并行编排 WHEN 全局超时阈值已配置 -> [{} ms]", millis);
             }
         }
     }

@@ -2,7 +2,10 @@ package io.github.atengk.boot.liteflow.component;
 
 import com.yomahub.liteflow.core.NodeComponent;
 import io.github.atengk.boot.core.util.JsonUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -10,7 +13,7 @@ import java.util.Objects;
 /**
  * LiteFlow 泛型受管普通处理组件基类
  * 自动绑定业务强类型上下文并提供强类型传参辅助（{@link #getTag()}、{@link #getCmpData(Class)}），
- * 业务子类直接实现 {@link #process(Object)}
+ * 支持就地优雅降级（{@link #onError(Exception, Object)}）与 Saga 逆序反向补偿（{@link #rollback(Object)}）防御安全网。
  *
  * @param <T> 业务上下文类型
  * @author Ateng
@@ -18,10 +21,16 @@ import java.util.Objects;
  */
 public abstract class BaseNodeComponent<T> extends NodeComponent {
 
+    private static final Logger log = LoggerFactory.getLogger(BaseNodeComponent.class);
+
     private final Class<T> contextClass;
 
     protected BaseNodeComponent() {
         this.contextClass = ComponentContextResolver.resolveGenericContextClass(getClass(), BaseNodeComponent.class);
+        // 自动探测子类是否重写了带上下文的 rollback(T) 或无参 rollback()，若重写则自动向 LiteFlow 登记 isRollback = true
+        if (hasRollbackOverride()) {
+            this.setRollback(true);
+        }
     }
 
     /**
@@ -53,9 +62,29 @@ public abstract class BaseNodeComponent<T> extends NodeComponent {
      */
     public abstract void process(T context) throws Exception;
 
+    /**
+     * 节点执行异常时的就地优雅降级钩子
+     * <p>默认行为：直接重新向上抛出原始异常，以此中断流水线并触发已执行节点的 Saga 逆序回滚。</p>
+     * <p>降级范式：子类重写此方法并在内部就地设置保底数据或标记降级，<strong>且不向上抛出异常</strong>。
+     * 流水线将视为当前节点降级恢复成功，继续推进后续节点的执行。</p>
+     *
+     * @param e       捕获的业务执行异常
+     * @param context 强类型业务上下文
+     * @return 降级后的业务上下文
+     * @throws Exception 若无需降级，继续抛出异常以中断流水线
+     */
+    public T onError(Exception e, T context) throws Exception {
+        throw e;
+    }
+
     @Override
     public void process() throws Exception {
-        process(getContext());
+        T context = getContext();
+        try {
+            process(context);
+        } catch (Exception e) {
+            onError(e, context);
+        }
     }
 
     /**
@@ -79,18 +108,55 @@ public abstract class BaseNodeComponent<T> extends NodeComponent {
     }
 
     /**
-     * 逆序补偿回滚逻辑（带上下文重载，默认空实现）
+     * 逆序反向补偿回滚逻辑（带强类型上下文重载，默认空实现）
      *
      * @param context 强类型业务上下文
-     * @throws Exception 回滚异常
+     * @throws Exception 回滚执行异常
      */
     public void rollback(T context) throws Exception {
         // 默认空实现，由需要 Saga 补偿的子类按需重写
     }
 
     @Override
-    public void rollback() throws Exception {
-        rollback(getContext());
+    public void rollback() {
+        T context;
+        try {
+            context = getContext();
+        } catch (Throwable e) {
+            log.error("[LiteFlow Saga] 节点 [{}] 执行逆序反向补偿时获取上下文失败: {}", getNodeId(), e.getMessage(), e);
+            return;
+        }
+
+        try {
+            rollback(context);
+        } catch (Throwable t) {
+            // 确定性防御异常捕获与审计告警，坚决杜绝补偿自身抛出次生异常导致事务悬挂
+            log.error("[LiteFlow Saga] 节点 [{}] 执行逆序反向补偿异常 (已拦截防次生灾害): {}", getNodeId(), t.getMessage(), t);
+            onRollbackError(t, context);
+        }
+    }
+
+    /**
+     * 回滚执行异常时的保底审计钩子（默认空实现，子类可按需覆盖用于记录死信或上报运维报警）
+     *
+     * @param throwable 回滚抛出的异常
+     * @param context   强类型业务上下文
+     */
+    protected void onRollbackError(Throwable throwable, T context) {
+        // 默认空实现，子类可覆盖用于记录死信或上报运维报警
+    }
+
+    private boolean hasRollbackOverride() {
+        Class<?> current = getClass();
+        while (current != null && current != BaseNodeComponent.class && current != NodeComponent.class) {
+            for (Method method : current.getDeclaredMethods()) {
+                if ("rollback".equals(method.getName())) {
+                    return true;
+                }
+            }
+            current = current.getSuperclass();
+        }
+        return false;
     }
 
     @Override

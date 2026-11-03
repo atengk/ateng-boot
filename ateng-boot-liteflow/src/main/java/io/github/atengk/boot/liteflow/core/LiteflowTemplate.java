@@ -7,6 +7,7 @@ import com.yomahub.liteflow.flow.LiteflowResponse;
 import com.yomahub.liteflow.flow.entity.CmpStep;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.liteflow.exception.LiteflowExecutionException;
+import io.github.atengk.boot.liteflow.thread.FlowThreadTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -304,10 +305,15 @@ public class LiteflowTemplate {
     }
 
     /**
-     * 检查响应执行状态，若失败则转译抛出受管业务异常
+     * 检查响应执行状态，若失败则转译抛出受管业务异常，并协同中断活动子线程
      */
     private void checkResponseSuccess(String chainId, LiteflowResponse response) {
         if (response != null && !response.isSuccess()) {
+            if (response.getSlot() != null && response.getSlot().getRequestId() != null) {
+                String reqId = response.getSlot().getRequestId();
+                FlowThreadTracker.interruptRunningThreads(reqId);
+                FlowThreadTracker.clean(reqId);
+            }
             Throwable cause = response.getCause();
             String failedNodeId = resolveFailedNodeId(response);
             String message = formatErrorMessage(chainId, failedNodeId, response);

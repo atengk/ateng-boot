@@ -62,22 +62,22 @@ public class ContextPropagatingExecutorService implements ExecutorService {
 
     @Override
     public void execute(Runnable command) {
-        delegate.execute(AsyncContext.wrap(command));
+        delegate.execute(wrapCommand(command));
     }
 
     @Override
     public <T> Future<T> submit(Callable<T> task) {
-        return delegate.submit(AsyncContext.wrap(task));
+        return delegate.submit(wrapTask(task));
     }
 
     @Override
     public <T> Future<T> submit(Runnable task, T result) {
-        return delegate.submit(AsyncContext.wrap(task), result);
+        return delegate.submit(wrapCommand(task), result);
     }
 
     @Override
     public Future<?> submit(Runnable task) {
-        return delegate.submit(AsyncContext.wrap(task));
+        return delegate.submit(wrapCommand(task));
     }
 
     @Override
@@ -85,7 +85,7 @@ public class ContextPropagatingExecutorService implements ExecutorService {
         Objects.requireNonNull(tasks, "tasks must not be null");
         List<Callable<T>> wrapped = new ArrayList<>(tasks.size());
         for (Callable<T> task : tasks) {
-            wrapped.add(AsyncContext.wrap(task));
+            wrapped.add(wrapTask(task));
         }
         return delegate.invokeAll(wrapped);
     }
@@ -96,7 +96,7 @@ public class ContextPropagatingExecutorService implements ExecutorService {
         Objects.requireNonNull(tasks, "tasks must not be null");
         List<Callable<T>> wrapped = new ArrayList<>(tasks.size());
         for (Callable<T> task : tasks) {
-            wrapped.add(AsyncContext.wrap(task));
+            wrapped.add(wrapTask(task));
         }
         return delegate.invokeAll(wrapped, timeout, unit);
     }
@@ -106,7 +106,7 @@ public class ContextPropagatingExecutorService implements ExecutorService {
         Objects.requireNonNull(tasks, "tasks must not be null");
         List<Callable<T>> wrapped = new ArrayList<>(tasks.size());
         for (Callable<T> task : tasks) {
-            wrapped.add(AsyncContext.wrap(task));
+            wrapped.add(wrapTask(task));
         }
         return delegate.invokeAny(wrapped);
     }
@@ -117,9 +117,49 @@ public class ContextPropagatingExecutorService implements ExecutorService {
         Objects.requireNonNull(tasks, "tasks must not be null");
         List<Callable<T>> wrapped = new ArrayList<>(tasks.size());
         for (Callable<T> task : tasks) {
-            wrapped.add(AsyncContext.wrap(task));
+            wrapped.add(wrapTask(task));
         }
         return delegate.invokeAny(wrapped, timeout, unit);
+    }
+
+    private Runnable wrapCommand(Runnable command) {
+        if (command == null) {
+            return null;
+        }
+        String requestId = FlowThreadTracker.getCurrentRequestId();
+        if (requestId == null) {
+            return AsyncContext.wrap(command);
+        }
+        Runnable tracked = () -> {
+            Thread current = Thread.currentThread();
+            FlowThreadTracker.register(requestId, current);
+            try {
+                command.run();
+            } finally {
+                FlowThreadTracker.unregister(requestId, current);
+            }
+        };
+        return AsyncContext.wrap(tracked);
+    }
+
+    private <T> Callable<T> wrapTask(Callable<T> task) {
+        if (task == null) {
+            return null;
+        }
+        String requestId = FlowThreadTracker.getCurrentRequestId();
+        if (requestId == null) {
+            return AsyncContext.wrap(task);
+        }
+        Callable<T> tracked = () -> {
+            Thread current = Thread.currentThread();
+            FlowThreadTracker.register(requestId, current);
+            try {
+                return task.call();
+            } finally {
+                FlowThreadTracker.unregister(requestId, current);
+            }
+        };
+        return AsyncContext.wrap(tracked);
     }
 
     @Override
