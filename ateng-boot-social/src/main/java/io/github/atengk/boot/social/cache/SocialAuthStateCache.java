@@ -87,8 +87,16 @@ public interface SocialAuthStateCache extends AuthStateCache {
 
     @Override
     default void cache(String key, String value) {
+        StateContext existing = getContext(key);
+        if (existing != null) {
+            // 若已预存结构化上下文，保留原有租户与扩展数据，仅在未设置跳转地址且 value 与 key 不同时补充
+            if (existing.getRedirectUrl() == null && value != null && !value.equals(key)) {
+                existing.setRedirectUrl(value);
+            }
+            return;
+        }
         StateContext fallbackContext = StateContext.builder()
-                .redirectUrl(value)
+                .redirectUrl(value != null && !value.equals(key) ? value : null)
                 .build();
         set(key, fallbackContext, DEFAULT_STATE_TIMEOUT);
     }

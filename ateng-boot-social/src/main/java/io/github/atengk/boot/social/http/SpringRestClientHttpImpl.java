@@ -34,6 +34,16 @@ public class SpringRestClientHttpImpl implements HttpClientAdapter {
 
     private final RestClient defaultRestClient;
     private final Map<String, RestClient> appClientMap = new ConcurrentHashMap<>();
+    private volatile java.util.function.Function<String, String> urlRewriter;
+
+    /**
+     * 设置请求 URL 重写函数（主要用于离线单测环境将第三方 API 地址重定向至 MockWebServer，亦支持网关反代）
+     *
+     * @param urlRewriter URL 转换函数
+     */
+    public void setUrlRewriter(java.util.function.Function<String, String> urlRewriter) {
+        this.urlRewriter = urlRewriter;
+    }
 
     /**
      * 默认构造函数（连接超时 10s，读取超时 15s，无代理）
@@ -188,7 +198,8 @@ public class SpringRestClientHttpImpl implements HttpClientAdapter {
 
     private AdapterHttpResponse execute(HttpMethod method, String url, String body, HttpHeader customHeader) {
         try {
-            URI uri = URI.create(url);
+            String targetUrl = urlRewriter != null ? urlRewriter.apply(url) : url;
+            URI uri = URI.create(targetUrl);
             RestClient.RequestBodySpec requestSpec = obtainClient().method(method).uri(uri);
 
             // 统一挂载 User-Agent 标头

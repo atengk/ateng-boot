@@ -176,6 +176,21 @@ public class SocialUser implements Serializable {
     }
 
     /**
+     * 从 Dromara Anduin 原生 AuthUser 转换为标准化 SocialUser 领域模型（支持指定缺省平台来源保底）
+     *
+     * @param authUser       Anduin 授权用户对象
+     * @param fallbackSource 缺省平台来源标识
+     * @return 标准化 SocialUser
+     */
+    public static SocialUser fromAuthUser(AuthUser authUser, String fallbackSource) {
+        SocialUser user = fromAuthUser(authUser);
+        if (user != null && (user.getSource() == null || user.getSource().isBlank()) && fallbackSource != null) {
+            user.setSource(fallbackSource);
+        }
+        return user;
+    }
+
+    /**
      * 将 Jackson 3 JsonNode 递归转换为原生 Map 结构，保障纯净无跨版本类依赖
      */
     private static Map<String, Object> convertJsonNodeToMap(JsonNode node) {

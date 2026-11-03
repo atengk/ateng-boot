@@ -169,6 +169,7 @@ public class SocialAppFactory {
                 .serverUrl(props.getServerUrl())
                 .scopes(props.getScopes() != null ? props.getScopes() : Collections.emptyList())
                 .ignoreCheckState(props.isIgnoreCheckState())
+                .ignoreCheckRedirectUri(props.isIgnoreCheckRedirectUri())
                 .agentId(props.getAgentId())
                 .alipayPublicKey(props.getAlipayPublicKey())
                 .unionId(props.isUnionId())

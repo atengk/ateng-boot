@@ -5,7 +5,11 @@ import io.github.atengk.boot.social.cache.SocialAuthStateCache;
 import io.github.atengk.boot.social.factory.SocialAppFactory;
 import io.github.atengk.boot.social.http.SpringRestClientHttpImpl;
 import io.github.atengk.boot.social.properties.AtengSocialProperties;
+import io.github.atengk.boot.social.session.NoopSocialSessionManager;
+import io.github.atengk.boot.social.session.SocialSessionManager;
 import io.github.atengk.boot.social.spi.SocialAppConfigProvider;
+import io.github.atengk.boot.social.spi.SocialUserDetailsService;
+import io.github.atengk.boot.social.template.SocialAuthTemplate;
 import io.github.atengk.boot.social.ticket.BindTicketStore;
 import io.github.atengk.boot.social.ticket.InMemoryBindTicketStore;
 import jakarta.annotation.PostConstruct;
@@ -32,11 +36,14 @@ import org.springframework.context.annotation.Import;
  */
 @Slf4j
 @AutoConfiguration
-@AutoConfigureAfter(name = "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration")
+@AutoConfigureAfter(name = {
+        "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration",
+        "io.github.atengk.boot.satoken.autoconfigure.AtengSaTokenAutoConfiguration"
+})
 @ConditionalOnClass(name = "org.dromara.anduin.AuthRequestBuilder")
 @ConditionalOnProperty(prefix = "ateng.boot.social", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(AtengSocialProperties.class)
-@Import(RedisSocialCacheConfiguration.class)
+@Import({RedisSocialCacheConfiguration.class, SaTokenSocialSessionConfiguration.class})
 @RequiredArgsConstructor
 public class AtengSocialAutoConfiguration {
 
@@ -104,6 +111,40 @@ public class AtengSocialAutoConfiguration {
     public BindTicketStore inMemoryBindTicketStore() {
         log.info("Initialized InMemoryBindTicketStore for two-phase social user binding");
         return new InMemoryBindTicketStore();
+    }
+
+    /**
+     * 当未引入 Sa-Token 且未自定义实现时的保底会话管理器
+     *
+     * @return SocialSessionManager 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(SocialSessionManager.class)
+    public SocialSessionManager noopSocialSessionManager() {
+        log.info("Initialized NoopSocialSessionManager (Sa-Token not active or no custom session manager provided)");
+        return new NoopSocialSessionManager();
+    }
+
+    /**
+     * 自动装配社交登录核心操作门面
+     *
+     * @param socialAppFactory                  应用工厂
+     * @param stateCache                        防伪状态缓存
+     * @param bindTicketStore                   两阶段绑定票据仓库
+     * @param userDetailsServiceObjectProvider  用户服务 SPI
+     * @param sessionManager                    会话凭据管理器
+     * @return SocialAuthTemplate 门面实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SocialAuthTemplate socialAuthTemplate(
+            SocialAppFactory socialAppFactory,
+            SocialAuthStateCache stateCache,
+            BindTicketStore bindTicketStore,
+            ObjectProvider<SocialUserDetailsService> userDetailsServiceObjectProvider,
+            SocialSessionManager sessionManager) {
+        log.info("Initialized SocialAuthTemplate core facade");
+        return new SocialAuthTemplate(socialAppFactory, stateCache, bindTicketStore, userDetailsServiceObjectProvider, sessionManager);
     }
 
     @PostConstruct

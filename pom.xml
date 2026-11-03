@@ -101,6 +101,7 @@
         <snail-job.version>1.10.0</snail-job.version>
         <dromara-anduin.version>2.2.0</dromara-anduin.version>
         <tools-jackson.version>3.2.4</tools-jackson.version>
+        <commons-lang3.version>3.18.0</commons-lang3.version>
         <commons-collections4.version>4.4</commons-collections4.version>
         <guava.version>33.4.0-jre</guava.version>
         <jackson-annotations.version>2.22</jackson-annotations.version>
@@ -435,6 +436,11 @@
                 <groupId>tools.jackson.core</groupId>
                 <artifactId>jackson-databind</artifactId>
                 <version>${tools-jackson.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-lang3</artifactId>
+                <version>${commons-lang3.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.commons</groupId>

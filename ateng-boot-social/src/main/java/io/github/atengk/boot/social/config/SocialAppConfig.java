@@ -72,6 +72,11 @@ public class SocialAppConfig implements Serializable {
     private boolean ignoreCheckState;
 
     /**
+     * 是否忽略校验 redirectUri 回调地址（针对微信小程序、App直传或不需要回调跳转的场景自动开启）
+     */
+    private boolean ignoreCheckRedirectUri;
+
+    /**
      * 企业微信授权方的网页应用 ID / AgentId
      */
     private String agentId;
@@ -107,6 +112,10 @@ public class SocialAppConfig implements Serializable {
      * @return Anduin AuthConfig
      */
     public AuthConfig toAuthConfig() {
+        boolean ignoreRedirect = this.ignoreCheckRedirectUri
+                || this.redirectUri == null
+                || this.redirectUri.isBlank();
+
         return AuthConfig.builder()
                 .clientId(this.clientId)
                 .clientSecret(this.clientSecret)
@@ -114,6 +123,7 @@ public class SocialAppConfig implements Serializable {
                 .serverUrl(this.serverUrl)
                 .scopes(this.scopes != null ? this.scopes : Collections.emptyList())
                 .ignoreCheckState(this.ignoreCheckState)
+                .ignoreCheckRedirectUri(ignoreRedirect)
                 .agentId(this.agentId)
                 .alipayPublicKey(this.alipayPublicKey)
                 .unionId(this.unionId)

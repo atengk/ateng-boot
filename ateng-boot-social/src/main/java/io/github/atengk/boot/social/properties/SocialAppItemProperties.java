@@ -52,6 +52,11 @@ public class SocialAppItemProperties {
     private boolean ignoreCheckState = false;
 
     /**
+     * 是否忽略校验 redirectUri 回调地址，默认 false（当未配置 redirectUri 时自动忽略）
+     */
+    private boolean ignoreCheckRedirectUri = false;
+
+    /**
      * 企业微信授权方的网页应用 ID / AgentId (仅企微需要)
      */
     private String agentId;
