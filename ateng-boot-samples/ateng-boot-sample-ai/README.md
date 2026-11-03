@@ -33,6 +33,8 @@
 | **指定命名模型对话** | `AiChatController` | `POST /sample/ai/chat/sync` | `curl -X POST "http://localhost:8080/sample/ai/chat/sync" -H "Content-Type: application/json" -d "{\"prompt\":\"求解数学难题\",\"model\":\"reasoner\"}"` |
 | **发票凭单图文识别** | `AiChatController` | `POST /sample/ai/chat/sync` | `curl -X POST "http://localhost:8080/sample/ai/chat/sync" -H "Content-Type: application/json" -d "{\"prompt\":\"请识别发票报销金额与纳税人识别号\",\"images\":[\"https://images.example.com/invoice.png\"]}"` |
 | **双通道打字机流式推流** | `AiChatController` | `GET /sample/ai/chat/stream` | `curl -N "http://localhost:8080/sample/ai/chat/stream?prompt=请深度推导高阶微积分定理"` |
+| **单轮智能体审计决策** | `AiAgentController` | `POST /sample/ai/agent/audit` | `curl -X POST "http://localhost:8080/sample/ai/agent/audit" -H "Content-Type: application/json" -d "{\"orderId\":\"ORD_20261103001\",\"remarks\":\"年度财务大额专项审计\"}"` |
+| **跨轮多会话智能体审计** | `AiAgentController` | `POST /sample/ai/agent/audit/{sessionId}` | `curl -X POST "http://localhost:8080/sample/ai/agent/audit/sess_audit_1001" -H "Content-Type: application/json" -d "{\"orderId\":\"ORD_20261103001\",\"remarks\":\"多轮复核第1轮\"}"` |
 
 > **流式推流说明**：调用 `GET /sample/ai/chat/stream` 时，控制台或客户端将持续接收由 `event: reasoning`（思考过程）、`event: text`（正文内容）与 `event: done`（`[DONE]` 结束信号）组成的标准 Server-Sent Events 事件流。
 

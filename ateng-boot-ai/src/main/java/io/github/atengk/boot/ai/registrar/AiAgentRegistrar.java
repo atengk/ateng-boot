@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.BeanFactoryAware;
+import org.springframework.beans.factory.FactoryBean;
 import org.springframework.beans.factory.annotation.AnnotatedBeanDefinition;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
@@ -127,9 +128,17 @@ public class AiAgentRegistrar implements ImportBeanDefinitionRegistrar, Resource
         builder.addPropertyValue("tools", tools);
         builder.addPropertyValue("contentRetriever", contentRetriever);
         builder.addPropertyValue("chatMemory", chatMemory);
-        builder.setAutowireMode(AbstractBeanDefinition.AUTOWIRE_BY_TYPE);
 
-        registry.registerBeanDefinition(beanName, builder.getBeanDefinition());
+        AbstractBeanDefinition targetBeanDefinition = builder.getBeanDefinition();
+        try {
+            ClassLoader classLoader = resourceLoader != null ? resourceLoader.getClassLoader() : ClassUtils.getDefaultClassLoader();
+            Class<?> agentClass = ClassUtils.forName(interfaceClassName, classLoader);
+            targetBeanDefinition.setAttribute(FactoryBean.OBJECT_TYPE_ATTRIBUTE, agentClass);
+        } catch (ClassNotFoundException e) {
+            targetBeanDefinition.setAttribute(FactoryBean.OBJECT_TYPE_ATTRIBUTE, interfaceClassName);
+        }
+
+        registry.registerBeanDefinition(beanName, targetBeanDefinition);
         log.info("动态注册 @AiAgent 智能体 Bean: [{}] -> {}", beanName, interfaceClassName);
     }
 

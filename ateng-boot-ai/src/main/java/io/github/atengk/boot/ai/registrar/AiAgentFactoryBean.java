@@ -78,6 +78,12 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
         if (agentInterface == null || !agentInterface.isInterface()) {
             throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR, "agentInterface 必须声明为合法的 Java 接口类型");
         }
+    }
+
+    private synchronized void initProxy() {
+        if (this.proxyInstance != null) {
+            return;
+        }
 
         // 1. 获取模型注册表
         AiModelRegistry registry;
@@ -231,6 +237,9 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
 
     @Override
     public T getObject() {
+        if (proxyInstance == null) {
+            initProxy();
+        }
         return proxyInstance;
     }
 

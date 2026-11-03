@@ -24,6 +24,17 @@
 | **退避重试** | 429 限流与超时指数退避重试 | `AiTemplate`<br>`AiExceptionTranslator` | `ateng.boot.ai.model.max-retries` | 接入 Core 模块 `RetryUtil`，遇 429 / 连接超时自动执行带 Jitter 的指数退避重试，401/403 快速失败 | `AiExceptionTranslatorTest` / `AiTemplateTest` |
 | **因果异常体系** | 业务异常转译与强类型错误码 | `AiException`<br>`AiResultCode` | - | 底层驱动网络与 HTTP 异常统一转译为 `AiException`，100% 保留原始 cause 因果链，严禁 Log-and-Throw 双重污染 | `AiExceptionTranslatorTest` |
 | **全链路透传** | 四维上下文快照异步透传 | `SseTokenStreamBridge`<br>`AsyncContext` | - | 流式推流回调在 OkHttp 工作线程中完整还原调用方的 MDC `traceId` 与 `UserContext`，执行完毕严格恢复 | `SseTokenStreamBridgeTest` |
+| **声明式智能体** | `@AiAgent` 接口动态代理装配 | `@AiAgent`<br>`AiAgentFactoryBean` | `ateng.boot.ai.model.*` | 声明式接口结合 `@SystemMessage`/`@UserMessage`/`@V`，自动装配底层多模型动态路由代理 | `AiAgentFactoryBeanTest` / `AgentControllerIntegrationTest` |
+| **智能体包扫描** | 主程序自动探测与包扫描 | `@AiAgentScan`<br>`AiAgentRegistrar` | - | 依托 `AutoConfigurationPackages` 零配置自动扫描主程序包，或通过 `@AiAgentScan(basePackages = ...)` 显式指定路径 | `AiAgentRegistrarTest` / `AgentControllerIntegrationTest` |
+| **受管工具沙箱** | 局部受管工具执行与耗时自省 | `ToolExecutionSandbox`<br>`SandboxedToolExecutor` | - | `@AiAgent(tools = {OrderTools.class})`，解析 `@Tool`/`@P` 注解，DEBUG 入参/INFO 耗时统计，受管绑定 MDC `traceId` | `ToolExecutionSandboxTest` / `AgentControllerIntegrationTest` |
+| **异常自愈反思** | 业务异常转译与大模型自主纠偏 | `SandboxedToolExecutor` | - | 拦截工具抛出的 `BusinessException`/`IllegalArgumentException`，转译为语义化错误文本反馈模型促成反思自愈，JVM 致命 `Error` 坚决 Fail-Fast | `ToolExecutionSandboxTest` / `AgentControllerIntegrationTest` |
+| **结构化脱壳去噪** | 大模型 Markdown 代码块脱壳清洗 | `JsonPayloadSanitizer` | - | `sanitize(String)`，剥离 ` ```json ` 等包裹标记，保留纯净 JSON 并防范空内容与未闭合截断 | `JsonPayloadSanitizerTest` |
+| **防幻觉格式防卫** | 结构化输出 JSR-303 防卫熔断 | `AiAgentFactoryBean`<br>`ValidatorUtil` | - | 智能体方法返回强类型 DTO/Record 时，自动经由 `ValidatorUtil.validate(...)` 执行校验，格式破损时熔断抛出 `AI_RESPONSE_PARSE_ERROR` | `AiAgentFactoryBeanTest` / `AgentControllerIntegrationTest` |
+| **双模会话存储** | 内存与 Redis 双模存储自适应 | `ChatMemoryStore`<br>`InMemoryChatMemoryStore`<br>`RedisChatMemoryStore` | `ateng.boot.ai.chat-memory.type` | 统一 `ChatMemoryStore` SPI，`AUTO` 模式自动探测 Redis，未引入时无缝平滑回退至单机并发安全内存存储 | `InMemoryChatMemoryStoreTest` / `RedisChatMemoryStoreTest` |
+| **Redis TTL 漫游** | 分布式会话存储强类型 TTL 续期 | `RedisChatMemoryStore` | `ateng.boot.ai.chat-memory.ttl`<br>`ateng.boot.ai.chat-memory.key-prefix` | 原生 JSON 序列化（零 `@class` 污染），每次读写自动重置滑动 TTL，超时由 Redis 确定性物理回收，防内存膨胀 | `RedisChatMemoryStoreTest` |
+| **对称会话管理** | 会话记忆对称管理门面 | `ChatMemoryManager` | `ateng.boot.ai.chat-memory.max-messages` | `getMessages(id)`/`updateMessages(id, list)`、`appendMessage(id, msg)`/`clear(id)`、`exists(id)`/`getMessageCount(id)`/`truncate(id, n)` 完备对称运维 | `ChatMemoryManagerTest` / `AgentControllerIntegrationTest` |
+| **跨轮会话隔离** | 多用户/多租户会话隔离 | `@MemoryId`<br>`ChatMemoryProvider` | - | 接口方法形参标注 `@MemoryId`，LangChain4j 自动按 `sessionId` 路由至对应独立滑动窗口，会话历史物理隔离 | `AiAgentMemoryAndRagIntegrationTest` / `AgentControllerIntegrationTest` |
+| **RAG 知识库挂载** | 企业私有知识检索挂载点 | `@AiAgent(contentRetriever)`<br>`ContentRetriever` | - | 显式指定 Bean 名称或单 Bean 缺省自动装配 `ContentRetriever`，智能体调用时自动检索注入增强上下文 | `AiAgentMemoryAndRagIntegrationTest` |
 
 ---
 
@@ -51,15 +62,25 @@ flowchart TD
         DirectSync["同步对话<br>AiTemplate.chat(...)"]
         DirectStream["SSE 打字机推流<br>AiTemplate.stream(...)"]
         DynamicSwitch["动态切源作用域<br>AiContextHolder.useModel(...)"]
+        DeclarativeAgent["声明式智能体<br>@AiAgent 动态代理接口"]
     end
 
     subgraph CoreEngine["ateng-boot-ai 核心引擎"]
         AiTmpl["核心统一门面<br>AiTemplate"]
         Registry["多模型受管注册表<br>AiModelRegistry"]
+        RoutingModel["多模型动态切源代理<br>DynamicRoutingChatLanguageModel"]
         RetryEngine["指数退避重试引擎<br>RetryUtil (Equal Jitter)"]
         Extractor["思考链解耦状态机<br>ReasonerTokenExtractor"]
         Bridge["双通道流式推流桥接器<br>SseTokenStreamBridge"]
         CtxSnap["全链路四维快照传播<br>AsyncContext.ContextSnapshot"]
+        ToolSandbox["局部受管工具沙箱<br>ToolExecutionSandbox"]
+        MemoryFacade["会话记忆对称管理门面<br>ChatMemoryManager"]
+        Sanitizer["脱壳去噪与防幻觉防卫<br>JsonPayloadSanitizer / JSR-303"]
+    end
+
+    subgraph MemoryAndRag["会话记忆与认知外挂"]
+        MemoryStore["双模会话存储<br>RedisChatMemoryStore / InMemory"]
+        RagRetriever["知识库检索挂载点<br>ContentRetriever"]
     end
 
     subgraph Providers["大语言模型网关 (OpenAI-Compatible Gateway)"]
@@ -71,6 +92,11 @@ flowchart TD
     DirectSync --> AiTmpl
     DirectStream --> AiTmpl
     DynamicSwitch -.-> Registry
+    DeclarativeAgent --> RoutingModel
+    DeclarativeAgent --> ToolSandbox
+    DeclarativeAgent --> Sanitizer
+    DeclarativeAgent -.-> MemoryFacade
+    DeclarativeAgent -.-> RagRetriever
 
     AiTmpl --> Registry
     AiTmpl --> RetryEngine
@@ -78,16 +104,21 @@ flowchart TD
     Bridge --> Extractor
     Bridge --> CtxSnap
 
+    MemoryFacade --> MemoryStore
+
+    RoutingModel --> Registry
     Registry --> M_Default
     Registry --> M_Reasoner
     Registry --> M_Fast
 ```
 
 ### 设计不变量 (Architecture Invariants)
-1. **零实体泄露与对称契约**：对外接口纯净解耦，流式与同步操作具备严格的对称性与完备性；
+1. **零实体泄露与对称契约**：对外接口纯净解耦，流式与同步操作、会话存取操作具备严格的对称性与完备性；
 2. **内存真明文不变量**：大模型调用凭证（API Key）在内存中安全绑定，配置属性与异常日志输出强制掩码；
 3. **断字缓冲防泄露**：针对深度推理模型分片流输出，状态机在遇到标签前缀时进行有界缓冲，证伪后安全发射，确保思考链与正文绝对解耦；
-4. **资源安全确定性**：客户端中断网络连接（`Broken pipe`）时，推流桥接器主动拦截并安全闭合，杜绝 SDK 连接池悬挂与内存泄漏。
+4. **资源安全确定性**：客户端中断网络连接（`Broken pipe`）时，推流桥接器主动拦截并安全闭合，杜绝 SDK 连接池悬挂与内存泄漏；
+5. **受管沙箱与异常自愈不变量**：工具调用严格通过沙箱受管执行，业务异常转译为语义化错误文本促成大模型自主反思与修正，致命 `Error` 坚决 Fail-Fast；
+6. **确定性会话生命周期与滑动 TTL 不变量**：Redis 会话存储每次读写强制重置滑动 TTL，超时由 Redis 确定性物理回收，杜绝会话悬挂与内存膨胀。
 
 ---
 
@@ -370,7 +401,223 @@ eventSource.addEventListener('error', (event) => {
 
 ---
 
-## 6. 完整 YAML 配置属性清单 (全量速查附录)
+## 6. 声明式智能体与受管工具沙箱体系
+
+### 6.1 声明式接口定义与包扫描机制 (@AiAgent & @AiAgentScan)
+
+通过 `@AiAgent` 注解声明 Java 强类型接口，框架动态生成代理 Bean 并装配多模型切源、工具沙箱、会话记忆与输出防卫流水线：
+
+```java
+package io.github.atengk.boot.sample.ai.agent;
+
+import dev.langchain4j.service.MemoryId;
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
+import io.github.atengk.boot.ai.annotation.AiAgent;
+import io.github.atengk.boot.sample.ai.dto.FinancialAuditRequest;
+import io.github.atengk.boot.sample.ai.tool.OrderTools;
+import io.github.atengk.boot.sample.ai.vo.FinancialAuditResult;
+
+/**
+ * 财务合规审计声明式智能体
+ */
+@AiAgent(tools = {OrderTools.class})
+public interface FinancialAuditAgent {
+
+    @SystemMessage("你是一名资深财务合规审计专家，请调用工具查询订单与仓储履约状态，并给出客观严谨的合规审计决策报告。请以 JSON 格式输出。")
+    FinancialAuditResult auditOrder(@UserMessage FinancialAuditRequest request);
+
+    @SystemMessage("你是一名资深财务合规审计专家，请调用工具查询订单与仓储履约状态，并给出客观严谨的合规审计决策报告。请以 JSON 格式输出。")
+    FinancialAuditResult auditOrderWithSession(@MemoryId String sessionId, @UserMessage FinancialAuditRequest request);
+}
+```
+
+- **零配置自动探测**：缺省情况下，`AiAgentRegistrar` 依托 `AutoConfigurationPackages` 自动探测主程序入口所在包及其子包，无需额外配置；
+- **显式包扫描接管**：多模块拆分或接口定义在外部包时，可通过 `@AiAgentScan(basePackages = {"com.example.agent"})` 显式声明扫描路径；
+- **复合对象入参自动序列化**：方法形参可直接传入复杂业务对象（JavaBean / Record），底层通过 `JsonUtil` 自动转译为规范 JSON 字符串，消除了手写序列化代码的繁琐。
+
+---
+
+### 6.2 局部受管工具沙箱 (ToolExecutionSandbox) 与可观测性
+
+受管工具类统一遵循 Spring 标准组件规范（标注 `@Component`），由智能体在 `@AiAgent(tools = {OrderTools.class})` 中挂载调用：
+
+```java
+@Component
+public class OrderTools {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderTools.class);
+
+    @Tool("根据订单号查询订单履约详情信息，包含买家标识、商品编号、购买数量与实付金额")
+    public OrderInfo queryOrder(@P("待查询的订单业务主键，例如 ORD_20261103001") String orderId) {
+        log.info("[TOOL-INVOKE] 正在查询订单履约详情: {}", orderId);
+        if ("ORD_ERROR".equalsIgnoreCase(orderId)) {
+            throw new BusinessException(CommonResultCode.NOT_FOUND, "订单不存在或已被物理注销: " + orderId);
+        }
+        return new OrderInfo(orderId, "buyer_u10086", "SKU_LAPTOP_AI_PRO", 1, new BigDecimal("9999.00"), "PAID");
+    }
+}
+```
+
+- **局部隔离沙箱**：每个工具方法由 `SandboxedToolExecutor` 统一包装，确保工具执行与框架内核安全解耦；
+- **全链路可观测性**：DEBUG 级别记录输入参数，INFO 级别精准统计方法执行毫秒耗时，WARN 级别记录异常，自动绑定调用方的 MDC `traceId`；
+- **启动期 Fail-Fast 铁律**：工具类若未被 Spring 容器纳管为 Bean，或存在非法形参类型，框架在容器启动期直接熔断报错，严禁带病上线。
+
+---
+
+### 6.3 异常自愈反思范式 (Self-Healing Reflection)
+
+当业务系统发生受控拦截时，框架沙箱主动转译异常，引导大语言模型自主纠偏：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Agent as FinancialAuditAgent
+    participant Sandbox as ToolExecutionSandbox
+    participant Tool as OrderTools
+    participant LLM as 大语言模型 (GPT-4o)
+
+    Agent->>LLM: 财务合规审计请求 (orderId: ORD_ERROR)
+    LLM->>Sandbox: Tool Call (queryOrder)
+    Sandbox->>Tool: 反射执行 queryOrder("ORD_ERROR")
+    Tool-->>Sandbox: 抛出 BusinessException(NOT_FOUND, "订单不存在...")
+    Note over Sandbox: 捕获业务受控异常<br>转译为语义化反思反馈
+    Sandbox-->>LLM: 工具反馈: "工具执行业务拦截: [404] 订单不存在或已被物理注销: ORD_ERROR"
+    Note over LLM: 大模型根据错误反馈反思决策
+    LLM-->>Agent: 最终决策: REJECTED (订单不存在，风险评分 95)
+```
+
+- **业务受控异常转译**：工具方法抛出 `BusinessException` 或 `IllegalArgumentException` 时，沙箱捕获并格式化为 `"工具执行业务拦截: [code] message"` 文本反馈给大模型，促使大模型自主反思、更换参数重试或输出降级报告；
+- **致命系统错误 Fail-Fast**：对于 JVM 严重错误（如 `Error`、`OutOfMemoryError`）坚决向外抛出阻断执行，防止掩盖系统级崩溃。
+
+---
+
+### 6.4 响应脱壳去噪与 JSR-303 防幻觉输出校验
+
+大模型结构化响应普遍存在携带 Markdown 代码块格式（````json ... ````）及偶发性数值幻觉越界风险，框架提供双道安全防线：
+
+```java
+public record FinancialAuditResult(
+        @NotBlank(message = "审核决策状态不能为空")
+        String status,
+
+        @NotBlank(message = "合规审计分析报告不能为空")
+        String analysis,
+
+        @NotNull(message = "风险评分不能为空")
+        @Min(value = 0, message = "风险评分不能小于 0")
+        @Max(value = 100, message = "风险评分不能大于 100")
+        Integer riskScore,
+
+        List<String> riskTags
+) {}
+```
+
+1. **结构化脱壳清洗**：底层 `DynamicRoutingChatLanguageModel` 经由 `JsonPayloadSanitizer` 自动剥离 ` ```json ` 等外围包裹字符，保留纯净 JSON；
+2. **JSR-303 防幻觉输出防卫**：智能体方法返回强类型 DTO / Record 时，底层动态代理自动经由 Core 模块 `ValidatorUtil.validate(...)` 执行校验。若大模型幻觉输出导致评分越界（例如 `riskScore = 150`），直接熔断抛出 `AiException(AiResultCode.AI_RESPONSE_PARSE_ERROR)`，杜绝脏数据注入下游业务流程。
+
+---
+
+## 7. 双模会话记忆治理与 RAG 知识检索挂载
+
+### 7.1 双模会话存储与 Redis 强类型 TTL 漫游
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      chat-memory:
+        # 是否启用会话记忆治理 (默认 true)
+        enabled: true
+        # 存储类型: AUTO (自动探测 Redis，未引入平滑回退内存), IN_MEMORY, REDIS
+        type: AUTO
+        # Redis 存储键前缀 (默认 "ateng:ai:chat-memory:")
+        key-prefix: "ateng:ai:chat-memory:"
+        # 强类型滑动过期 TTL (每次读写自动重置续期，默认 24h)
+        ttl: 24h
+        # 默认滑动窗口保留的最大消息条数 (默认 20 条)
+        max-messages: 20
+```
+
+- **统一 SPI 抽象**：`ChatMemoryStore` 统一封装底层会话状态存取，内置 `InMemoryChatMemoryStore` 与 `RedisChatMemoryStore` 两种实现；
+- **零 `@class` 污染与原生序列化**：`RedisChatMemoryStore` 使用原生 JSON 结构持久化消息历史，彻底消除 Jackson `@class` 多态类型绑定引发的安全漏洞与跨语言屏障；
+- **强类型滑动 TTL 续期**：借助 `Duration` 强类型 TTL，每次会话读写强制重置过期时间，会话失效后由 Redis 原生机制确定性物理回收，杜绝无界悬挂与内存膨胀。
+
+---
+
+### 7.2 会话记忆对称管理门面 (ChatMemoryManager)
+
+框架自动装配对称管理门面 `ChatMemoryManager`，为业务与运维端提供完备对称的操作能力：
+
+```java
+@Autowired
+private ChatMemoryManager chatMemoryManager;
+
+// 1. 存在性与消息数检查
+boolean hasHistory = chatMemoryManager.exists("sess_u10086");
+int messageCount = chatMemoryManager.getMessageCount("sess_u10086");
+
+// 2. 读写对称：获取不可变消息历史列表与全量覆写
+List<ChatMessage> history = chatMemoryManager.getMessages("sess_u10086");
+chatMemoryManager.updateMessages("sess_u10086", newMessages);
+
+// 3. 增删对称：追加单条消息与安全清空会话
+chatMemoryManager.appendMessage("sess_u10086", UserMessage.from("你好"));
+chatMemoryManager.clear("sess_u10086");
+
+// 4. 滑动窗口维护：保留最近 N 条核心消息
+chatMemoryManager.truncate("sess_u10086", 10);
+```
+
+---
+
+### 7.3 @MemoryId 跨轮多会话物理隔离
+
+智能体方法中声明 `@MemoryId` 形参，LangChain4j 自动按会话 ID 路由至对应的物理隔离滑动窗口：
+
+```java
+@AiAgent(tools = {OrderTools.class})
+public interface CustomerServiceAgent {
+
+    @SystemMessage("你是一个客服助理")
+    String chat(@MemoryId String sessionId, @UserMessage String message);
+}
+```
+
+- **会话物理隔离**：不同的 `sessionId`（如不同用户、工单或场景）拥有完全独立的上下文窗口，严禁上下文串话；
+- **状态无感知漫游**：配合 `RedisChatMemoryStore`，多实例集群环境下用户请求路由至任意节点均可平滑读取同一份历史会话。
+
+---
+
+### 7.4 企业私有知识检索挂载点 (ContentRetriever / RAG)
+
+声明式智能体支持无缝挂载 LangChain4j 的 `ContentRetriever`，打通企业私有知识库与向量检索体系：
+
+```java
+// 1. 显式挂载指定名称的知识检索 Bean
+@AiAgent(contentRetriever = "financeRetriever")
+public interface FinanceRagAgent {
+    String ask(@UserMessage String question);
+}
+
+// 2. 容器中注册检索点 Bean
+@Bean
+public ContentRetriever financeRetriever(EmbeddingModel embeddingModel, EmbeddingStore<TextSegment> embeddingStore) {
+    return EmbeddingStoreContentRetriever.builder()
+            .embeddingStore(embeddingStore)
+            .embeddingModel(embeddingModel)
+            .maxResults(3)
+            .minScore(0.75)
+            .build();
+}
+```
+
+- **显式与缺省兼备**：未显式指定时，若容器中存在唯一的 `ContentRetriever` Bean，系统将自动绑定缺省检索点；存在多个时强制显式指定 Bean 名称，实现防御性隔离。
+
+---
+
+## 8. 完整 YAML 配置属性清单 (全量速查附录)
 
 ```yaml
 ateng:
@@ -404,6 +651,19 @@ ateng:
         # 自定义附加 HTTP 请求头 (可选，如特定网关鉴权标头)
         custom-headers:
           X-Tenant-Id: "10001"
+      
+      # 会话记忆治理强类型配置
+      chat-memory:
+        # 是否启用会话记忆治理 (默认 true)
+        enabled: true
+        # 存储类型: AUTO (默认自动探测 Redis，未引入平滑回退内存), IN_MEMORY, REDIS
+        type: AUTO
+        # Redis 存储键前缀 (默认 "ateng:ai:chat-memory:")
+        key-prefix: "ateng:ai:chat-memory:"
+        # 强类型滑动过期 TTL (每次读写自动续期，默认 24h)
+        ttl: 24h
+        # 默认滑动窗口保留的最大消息条数 (默认 20 条)
+        max-messages: 20
       
       # 命名多模型拓扑配置 (Map<String, AiModelConfig>)
       models:
