@@ -43,6 +43,12 @@ public class AtengLiteflowProperties {
     private ThreadPoolProperties threadPool = new ThreadPoolProperties();
 
     /**
+     * 多源动态规则加载与热重载扩展配置
+     */
+    @NestedConfigurationProperty
+    private DynamicRuleProperties dynamicRule = new DynamicRuleProperties();
+
+    /**
      * 异步并行编排线程池属性
      */
     @Data
@@ -87,5 +93,80 @@ public class AtengLiteflowProperties {
          * 独立线程池线程名称前缀
          */
         private String threadNamePrefix = "ateng-liteflow-";
+    }
+
+    /**
+     * 多源动态规则扩展属性
+     */
+    @Data
+    public static class DynamicRuleProperties {
+
+        /**
+         * 是否启用多源动态规则扩展管理器
+         */
+        private boolean enabled = true;
+
+        /**
+         * 容器就绪后是否自动从已注册的 SPI 规则源拉取并注册规则
+         */
+        private boolean autoLoadOnStartup = true;
+
+        /**
+         * 数据库动态规则加载器配置
+         */
+        @NestedConfigurationProperty
+        private DatabaseRuleProperties database = new DatabaseRuleProperties();
+    }
+
+    /**
+     * 数据库动态规则加载配置
+     */
+    @Data
+    public static class DatabaseRuleProperties {
+
+        /**
+         * 是否启用数据库动态规则加载器（默认 false，需开发者显式启用）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 规则元数据表名
+         */
+        private String tableName = "sys_liteflow_rule";
+
+        /**
+         * 流程链 ID 列名 (chainId)
+         */
+        private String ruleIdColumn = "rule_id";
+
+        /**
+         * 规则中文名称列名
+         */
+        private String ruleNameColumn = "rule_name";
+
+        /**
+         * EL 表达式列名
+         */
+        private String elColumn = "el_expression";
+
+        /**
+         * 状态标识列名 (1-启用, 0-禁用)
+         */
+        private String statusColumn = "status";
+
+        /**
+         * 路由/分组列名
+         */
+        private String routeGroupColumn = "route_group";
+
+        /**
+         * 过滤的路由分组（留空则不按分组过滤）
+         */
+        private String routeGroup = "DEFAULT";
+
+        /**
+         * 规则描述备注列名
+         */
+        private String descriptionColumn = "description";
     }
 }

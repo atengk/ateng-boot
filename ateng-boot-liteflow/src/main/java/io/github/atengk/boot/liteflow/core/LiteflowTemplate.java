@@ -296,6 +296,39 @@ public class LiteflowTemplate {
     }
 
     /**
+     * 判断当前是否已加载指定规则流程链
+     *
+     * @param chainId 流程链 ID
+     * @return 是否存在
+     */
+    public boolean containChain(String chainId) {
+        if (chainId == null || chainId.isBlank()) {
+            return false;
+        }
+        return FlowBus.containChain(chainId);
+    }
+
+    /**
+     * 动态下线/移除指定的规则流程链
+     *
+     * @param chainId 流程链 ID
+     * @return 是否成功移除
+     */
+    public boolean removeChain(String chainId) {
+        if (chainId == null || chainId.isBlank()) {
+            return false;
+        }
+        try {
+            boolean removed = FlowBus.removeChain(chainId);
+            log.info("ateng-boot-liteflow: 成功动态下线/移除规则链 [{}]", chainId);
+            return removed;
+        } catch (Exception e) {
+            log.warn("ateng-boot-liteflow: 动态移除规则链 [{}] 失败: {}", chainId, e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
      * 获取官方底层 {@link FlowExecutor} 原生实例（高阶操作逃生舱）
      *
      * @return 官方 FlowExecutor 实例

@@ -7,6 +7,10 @@ import com.yomahub.liteflow.springboot.config.LiteflowMainAutoConfiguration;
 import com.yomahub.liteflow.springboot.config.LiteflowPropertyAutoConfiguration;
 import io.github.atengk.boot.liteflow.core.LiteflowTemplate;
 import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
+import io.github.atengk.boot.liteflow.rule.JdbcLiteflowRuleSourceProvider;
+import io.github.atengk.boot.liteflow.rule.LiteflowRuleSourceManager;
+import io.github.atengk.boot.liteflow.rule.LiteflowRuleSourceProvider;
+import io.github.atengk.boot.liteflow.rule.event.LiteflowRuleRefreshListener;
 import io.github.atengk.boot.liteflow.thread.FlowTimeoutInterruptionLifeCycle;
 import io.github.atengk.boot.liteflow.thread.LiteflowGlobalExecutorBuilder;
 import org.slf4j.Logger;
@@ -24,6 +28,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 
+import javax.sql.DataSource;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
@@ -87,6 +94,44 @@ public class AtengLiteflowAutoConfiguration {
     public LiteflowTemplate liteflowTemplate(FlowExecutor flowExecutor,
                                              ObjectProvider<Executor> executorProvider) {
         return new LiteflowTemplate(flowExecutor, executorProvider.getIfAvailable());
+    }
+
+    /**
+     * 注册基于 JDBC 的数据库动态规则提供者（当存在 DataSource 且配置启用时激活）
+     */
+    @Bean
+    @ConditionalOnClass(DataSource.class)
+    @ConditionalOnBean(DataSource.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.liteflow.dynamic-rule.database", name = "enabled", havingValue = "true")
+    @ConditionalOnMissingBean(JdbcLiteflowRuleSourceProvider.class)
+    public JdbcLiteflowRuleSourceProvider jdbcLiteflowRuleSourceProvider(DataSource dataSource, AtengLiteflowProperties properties) {
+        return new JdbcLiteflowRuleSourceProvider(dataSource, properties.getDynamicRule().getDatabase());
+    }
+
+    /**
+     * 注册多源动态规则管理器
+     */
+    @Bean
+    @ConditionalOnBean(LiteflowTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.liteflow.dynamic-rule", name = "enabled", havingValue = "true", matchIfMissing = true)
+    @ConditionalOnMissingBean(LiteflowRuleSourceManager.class)
+    public LiteflowRuleSourceManager liteflowRuleSourceManager(ObjectProvider<List<LiteflowRuleSourceProvider>> providersProvider,
+                                                               LiteflowTemplate liteflowTemplate,
+                                                               AtengLiteflowProperties properties) {
+        List<LiteflowRuleSourceProvider> providers = providersProvider.getIfAvailable(Collections::emptyList);
+        return new LiteflowRuleSourceManager(providers, liteflowTemplate, properties);
+    }
+
+    /**
+     * 注册 Spring 领域事件热重载监听器
+     */
+    @Bean
+    @ConditionalOnBean(LiteflowTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.liteflow.dynamic-rule", name = "enabled", havingValue = "true", matchIfMissing = true)
+    @ConditionalOnMissingBean(LiteflowRuleRefreshListener.class)
+    public LiteflowRuleRefreshListener liteflowRuleRefreshListener(ObjectProvider<LiteflowRuleSourceManager> ruleSourceManagerProvider,
+                                                                   LiteflowTemplate liteflowTemplate) {
+        return new LiteflowRuleRefreshListener(ruleSourceManagerProvider.getIfAvailable(), liteflowTemplate);
     }
 
     /**
