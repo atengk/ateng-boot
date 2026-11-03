@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sms.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.ToString;
@@ -42,6 +43,7 @@ public class SmsChannel implements Serializable {
     /**
      * 访问密钥 Secret / SecretKey / AppSecret
      */
+    @JsonIgnore
     private final String accessKeySecret;
 
     /**

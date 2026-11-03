@@ -2,6 +2,9 @@ package io.github.atengk.boot.sms.template;
 
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
+import io.github.atengk.boot.sms.exception.SmsException;
+import io.github.atengk.boot.sms.exception.SmsResultCode;
+import io.github.atengk.boot.sms.exception.SmsVerifyCodeException;
 import io.github.atengk.boot.sms.limiter.SmsRateLimiter;
 import io.github.atengk.boot.sms.model.SmsParam;
 import io.github.atengk.boot.sms.model.SmsRequest;
@@ -79,20 +82,38 @@ public class SmsVerifyCodeTemplate {
      * @return 生成的验证码明文
      */
     public String generateAndSend(String phone, String bizType, String templateId, String channel, String signName) {
+        return generateAndSend(phone, bizType, templateId, channel, signName, null);
+    }
+
+    /**
+     * 生成验证码并通过短信发送（支持 IP 协同防刷）
+     *
+     * @param phone      目标手机号
+     * @param bizType    业务类型标识
+     * @param templateId 短信模板ID
+     * @param channel    指定短信渠道名
+     * @param signName   覆盖短信签名
+     * @param ip         客户端 IP 地址（支持协同防刷）
+     * @return 生成的验证码明文
+     */
+    public String generateAndSend(String phone, String bizType, String templateId, String channel, String signName, String ip) {
         BusinessAssert.hasText(phone, "目标手机号不能为空");
         SmsVerifyCodeProperties codeProp = properties.getVerifyCode() != null
                 ? properties.getVerifyCode()
                 : new SmsVerifyCodeProperties();
 
-        // 1. 滑动窗口频控防刷检查（1m/1h/1d）
+        // 1. 前置重发冷却防刷拦截（前置于滑动窗口，避免虚耗频控配额）
+        repository.checkCooldown(phone, bizType);
+
+        // 2. 滑动窗口频控防刷检查（1m/1h/1d，支持手机号与 IP 协同）
         if (rateLimiter != null) {
-            rateLimiter.acquire(phone);
+            rateLimiter.acquire(phone, ip);
         }
 
-        // 2. 生成随机安全验证码
+        // 3. 生成随机安全验证码
         String code = generateCode(codeProp);
 
-        // 3. 写入仓储并执行 60s 重发冷却防刷拦截
+        // 4. 写入仓储
         repository.save(
                 phone,
                 bizType,
@@ -102,10 +123,10 @@ public class SmsVerifyCodeTemplate {
                 codeProp.getMaxRetryAttempts()
         );
 
-        // 4. 解析模板ID（若未指定，尝试从默认或渠道配置中推导）
+        // 5. 解析模板ID（若未指定，尝试从默认或渠道配置中推导）
         String finalTemplateId = StringUtils.hasText(templateId) ? templateId : "SMS_VERIFY_CODE";
 
-        // 5. 组装发信请求并投递
+        // 6. 组装发信请求并投递
         SmsRequest request = SmsRequest.newBuilder(phone, finalTemplateId)
                 .param("code", code)
                 .channel(channel)
@@ -116,10 +137,20 @@ public class SmsVerifyCodeTemplate {
         log.info("[SmsVerifyCodeTemplate] 触发验证码短信投递 -> 目标号码: {}, 业务类型: {}, 模板ID: {}",
                 DesensitizeUtil.mobilePhone(phone), bizType, finalTemplateId);
 
-        SmsResult result = smsTemplate.send(request);
-        if (!result.isSuccess()) {
-            log.warn("[SmsVerifyCodeTemplate] 验证码发送失败，回滚作废验证码: {}", result.getRawMessage());
+        try {
+            SmsResult result = smsTemplate.send(request);
+            if (!result.isSuccess()) {
+                log.warn("[SmsVerifyCodeTemplate] 验证码发送失败，回滚作废验证码: {}", result.getRawMessage());
+                repository.remove(phone, bizType);
+                String msg = result.getRawMessage() != null ? result.getRawMessage() : "厂商发信拒绝";
+                throw new SmsVerifyCodeException("验证码短信发送失败: " + msg);
+            }
+        } catch (Exception ex) {
             repository.remove(phone, bizType);
+            if (ex instanceof SmsException se) {
+                throw se;
+            }
+            throw new SmsVerifyCodeException("验证码短信发送异常: " + ex.getMessage(), ex);
         }
 
         return code;

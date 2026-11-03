@@ -7,9 +7,11 @@ import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
 import io.github.atengk.boot.sms.template.SmsTemplate;
 import io.github.atengk.boot.sms.template.SmsVerifyCodeTemplate;
 import io.github.atengk.boot.sample.sms.dto.BatchSmsSendRequest;
+import io.github.atengk.boot.sample.sms.dto.DynamicChannelRegisterRequest;
 import io.github.atengk.boot.sample.sms.dto.SendSmsRequest;
 import io.github.atengk.boot.sample.sms.dto.SendVerifyCodeRequest;
 import io.github.atengk.boot.sample.sms.dto.VerifyCodeCheckRequest;
+import io.github.atengk.boot.sample.sms.vo.SmsChannelVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -131,19 +133,40 @@ public class SmsScenarioService {
     /**
      * 动态注册或更新短信渠道
      *
-     * @param channel 短信渠道配置对象
+     * @param req 渠道注册请求传输对象
      */
-    public void registerDynamicChannel(SmsChannel channel) {
+    public void registerDynamicChannel(DynamicChannelRegisterRequest req) {
+        SmsChannel channel = SmsChannel.builder()
+                .name(req.getName())
+                .supplier(req.getSupplier())
+                .accessKeyId(req.getAccessKeyId())
+                .accessKeySecret(req.getAccessKeySecret())
+                .signName(req.getSignName())
+                .appId(req.getAppId())
+                .region(req.getRegion())
+                .endpoint(req.getEndpoint())
+                .failoverChannel(req.getFailoverChannel())
+                .build();
         channelRegistry.register(channel);
     }
 
     /**
-     * 获取所有已注册的短信渠道
+     * 获取所有已注册的短信渠道视图列表（已过滤敏感凭据）
      *
-     * @return 渠道集合
+     * @return 渠道视图集合
      */
-    public Collection<SmsChannel> getChannels() {
-        return channelRegistry.getChannels().values();
+    public Collection<SmsChannelVO> getChannels() {
+        return channelRegistry.getChannels().values().stream()
+                .map(c -> SmsChannelVO.builder()
+                        .name(c.getName())
+                        .supplier(c.getSupplier())
+                        .signName(c.getSignName())
+                        .appId(c.getAppId())
+                        .region(c.getRegion())
+                        .endpoint(c.getEndpoint())
+                        .failoverChannel(c.getFailoverChannel())
+                        .build())
+                .toList();
     }
 
     private SmsRequest buildRequest(SendSmsRequest req) {

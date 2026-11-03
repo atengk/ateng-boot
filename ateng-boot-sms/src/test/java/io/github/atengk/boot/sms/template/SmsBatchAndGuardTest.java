@@ -247,6 +247,23 @@ class SmsBatchAndGuardTest {
     }
 
     @Test
+    @DisplayName("测试：SmsRequest包含多个号码时任一命中黑名单前置静默拦截返回 BLOCKED")
+    void testBlacklist_MultiPhonesRequest_AnyBlacklisted_Blocked() {
+        InMemorySmsBlacklistProvider blacklistProvider = (InMemorySmsBlacklistProvider) smsTemplate.getBlacklistProvider();
+        blacklistProvider.add("13911113333");
+
+        SmsRequest request = SmsRequest.newBuilder("13911112222", "SMS_MULTI")
+                .phones(List.of("13911112222", "13911113333"))
+                .build();
+        SmsResult result = smsTemplate.send(request);
+
+        assertNotNull(result);
+        assertFalse(result.isSuccess());
+        assertEquals(SmsDeliveryStatus.BLOCKED, result.getDeliveryStatus());
+        assertEquals(0, mockSmsProvider.getSentCount());
+    }
+
+    @Test
     @DisplayName("测试：单日成本预算熔断器硬熔断与事件广播 (DailyBudgetBreaker)")
     void testDailyBudgetBreaker_HardFuseAndEvent() {
         SmsGuardProperties guardProps = new SmsGuardProperties();

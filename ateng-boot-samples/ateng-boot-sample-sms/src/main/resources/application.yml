@@ -24,11 +24,14 @@ ateng:
           weight: 100
       verify-code:
         length: 6
-        type: NUMERIC
-        expire: 5m
-        rate-limit:
-          per-minute: 1
-          per-hour: 5
+        char-type: NUMERIC
+        ttl: 5m
+        resend-interval: 60s
+        max-retry-attempts: 5
+      rate-limit:
+        per-minute: 1
+        per-hour: 5
+        per-day: 10
       guard:
         daily-max-quota: 1000
         blacklist-enabled: true

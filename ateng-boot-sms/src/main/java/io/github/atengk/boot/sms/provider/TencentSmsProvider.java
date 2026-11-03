@@ -11,7 +11,6 @@ import io.github.atengk.boot.sms.model.SmsResult;
 import io.github.atengk.boot.sms.model.SmsSupplier;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -36,7 +35,7 @@ import java.util.*;
  * @since 2026-11-02
  */
 @Slf4j
-public class TencentSmsProvider implements SmsProvider {
+public class TencentSmsProvider extends AbstractHttpSmsProvider {
 
     /**
      * 默认腾讯云短信官方接入公网端点
@@ -74,10 +73,8 @@ public class TencentSmsProvider implements SmsProvider {
     private static final DateTimeFormatter UTC_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd")
             .withZone(ZoneOffset.UTC);
 
-    private final RestClient.Builder restClientBuilder;
-
     public TencentSmsProvider(RestClient.Builder restClientBuilder) {
-        this.restClientBuilder = restClientBuilder != null ? restClientBuilder : RestClient.builder();
+        super(restClientBuilder);
     }
 
     public TencentSmsProvider() {
@@ -176,8 +173,9 @@ public class TencentSmsProvider implements SmsProvider {
             parseAndThrowExceptionIfPossible(channel.getName(), errorBody, e);
             throw new SmsSendException(channel.getName(), "HTTP_" + e.getStatusCode().value(),
                     e.getStatusText(), SmsResultCode.SMS_SEND_ERROR, "腾讯云短信网关响应异常: " + e.getMessage(), e);
+        } catch (SmsSendException e) {
+            throw e;
         } catch (Exception e) {
-            log.error("[TencentSmsProvider] 腾讯云短信网络通信异常 (渠道: {}): {}", channel.getName(), e.getMessage(), e);
             throw new SmsSendException(channel.getName(), "NETWORK_ERROR", e.getMessage(),
                     SmsResultCode.SMS_SEND_ERROR, "腾讯云短信网络通信异常: " + e.getMessage(), e);
         }
@@ -206,7 +204,7 @@ public class TencentSmsProvider implements SmsProvider {
         String httpRequestMethod = "POST";
         String canonicalUri = "/";
         String canonicalQueryString = "";
-        String canonicalHeaders = "content-type:application/json\nhost:" + host.toLowerCase() + "\n";
+        String canonicalHeaders = "content-type:application/json\nhost:" + host.toLowerCase(Locale.ROOT) + "\n";
         String signedHeaders = "content-type;host";
         String hashedRequestPayload = sha256Hex(payload != null ? payload : "");
         String canonicalRequest = httpRequestMethod + "\n"
@@ -275,7 +273,6 @@ public class TencentSmsProvider implements SmsProvider {
             Map<String, Object> errorMap = (Map<String, Object>) responseMap.get("Error");
             String errCode = errorMap != null ? String.valueOf(errorMap.get("Code")) : "UNKNOWN_ERROR";
             String errMsg = errorMap != null ? String.valueOf(errorMap.get("Message")) : "未知错误";
-            log.error("[TencentSmsProvider] 腾讯云发信拒绝 -> 渠道: {}, 错误码: {}, 描述: {}", channelName, errCode, errMsg);
             throw new SmsSendException(channelName, errCode, errMsg, SmsResultCode.SMS_SEND_ERROR,
                     "腾讯云短信发送失败: [" + errCode + "] " + errMsg);
         }
@@ -296,8 +293,6 @@ public class TencentSmsProvider implements SmsProvider {
             String code = String.valueOf(statusItem.get("Code"));
             String msg = String.valueOf(statusItem.get("Message"));
             if (!"Ok".equalsIgnoreCase(code)) {
-                log.error("[TencentSmsProvider] 腾讯云发信明细拒绝 -> 渠道: {}, 错误码: {}, 描述: {}, 号码: {}",
-                        channelName, code, msg, DesensitizeUtil.mobilePhone(String.valueOf(statusItem.get("PhoneNumber"))));
                 throw new SmsSendException(channelName, code, msg, SmsResultCode.SMS_SEND_ERROR,
                         "腾讯云短信投递失败: [" + code + "] " + msg);
             }
@@ -333,7 +328,6 @@ public class TencentSmsProvider implements SmsProvider {
                 Map<String, Object> errorMap = (Map<String, Object>) responseMap.get("Error");
                 String code = String.valueOf(errorMap.get("Code"));
                 String message = String.valueOf(errorMap.get("Message"));
-                log.error("[TencentSmsProvider] 腾讯云网关拒绝 -> 渠道: {}, 错误码: {}, 描述: {}", channelName, code, message);
                 throw new SmsSendException(channelName, code, message, SmsResultCode.SMS_SEND_ERROR,
                         "腾讯云短信网关拒绝: [" + code + "] " + message, cause);
             }
@@ -341,19 +335,6 @@ public class TencentSmsProvider implements SmsProvider {
             throw e;
         } catch (Exception ignored) {
             // 解析失败时由外部继续抛出兜底异常
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> parseJsonSafely(String json) {
-        if (!StringUtils.hasText(json)) {
-            return Collections.emptyMap();
-        }
-        try {
-            return JsonUtil.parseObject(json, Map.class);
-        } catch (Exception e) {
-            log.warn("[TencentSmsProvider] 解析腾讯云响应 JSON 格式异常: {}", json, e);
-            return Collections.emptyMap();
         }
     }
 
@@ -378,23 +359,6 @@ public class TencentSmsProvider implements SmsProvider {
     }
 
     private static String bytesToHex(byte[] bytes) {
-        StringBuilder hexString = new StringBuilder();
-        for (byte b : bytes) {
-            String hex = Integer.toHexString(0xff & b);
-            if (hex.length() == 1) {
-                hexString.append('0');
-            }
-            hexString.append(hex);
-        }
-        return hexString.toString().toLowerCase();
-    }
-
-    private RestClient buildRestClient(Duration timeout) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(timeout);
-        factory.setReadTimeout(timeout);
-        return restClientBuilder.clone()
-                .requestFactory(factory)
-                .build();
+        return HexFormat.of().formatHex(bytes);
     }
 }

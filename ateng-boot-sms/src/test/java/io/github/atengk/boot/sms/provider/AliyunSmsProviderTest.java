@@ -128,6 +128,50 @@ class AliyunSmsProviderTest {
     }
 
     @Test
+    @DisplayName("测试阿里云短信携带数组参数时自动降级序列化为数字键 JSON 字符串")
+    void testSendSuccess_WithArrayParams_SerializesToNumberedKeyJson() throws Exception {
+        String jsonResponse = """
+                {
+                  "BizId": "123456789012345678^1",
+                  "Code": "OK",
+                  "Message": "OK",
+                  "RequestId": "F655A8D5-B967-440B-8683-CAD6FF8D28E1"
+                }
+                """;
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=utf-8")
+                .setBody(jsonResponse));
+
+        SmsChannel channel = SmsChannel.builder()
+                .name("aliyun-main")
+                .supplier(SmsSupplier.ALIYUN)
+                .accessKeyId("LTAI4FTESTKEY0001")
+                .accessKeySecret("testSecretKey9999")
+                .signName("阿腾科技")
+                .endpoint(serverUrl)
+                .build();
+
+        SmsRequest request = SmsRequest.newBuilder("13800138000", "SMS_TEST_8888")
+                .params(io.github.atengk.boot.sms.model.SmsParam.ofArray("888888", "10"))
+                .bizId("BIZ_OUT_1002")
+                .build();
+
+        SmsResult result = aliyunSmsProvider.send(request, channel);
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        String requestBody = recordedRequest.getBody().readUtf8();
+        Map<String, String> bodyParams = parseFormBody(requestBody);
+        assertEquals("SendSms", bodyParams.get("Action"));
+        assertNotNull(bodyParams.get("TemplateParam"));
+        assertTrue(bodyParams.get("TemplateParam").contains("\"1\":\"888888\"") || bodyParams.get("TemplateParam").contains("\"1\": \"888888\""));
+        assertTrue(bodyParams.get("TemplateParam").contains("\"2\":\"10\"") || bodyParams.get("TemplateParam").contains("\"2\": \"10\""));
+    }
+
+    @Test
     @DisplayName("测试业务状态码非 OK 响应转译 (如业务限流 isv.BUSINESS_LIMIT_CONTROL)")
     void testSendFailure_BusinessLimitControl_ThrowsSmsSendException() {
         String jsonResponse = """

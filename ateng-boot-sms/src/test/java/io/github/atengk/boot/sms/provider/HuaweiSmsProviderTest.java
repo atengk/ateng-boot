@@ -131,7 +131,7 @@ class HuaweiSmsProviderTest {
         assertEquals("13800138000", formParams.get("to"));
         assertEquals("HW_TPL_001", formParams.get("templateId"));
         assertEquals("华为云短信", formParams.get("signature"));
-        assertEquals("CALLBACK_001", formParams.get("statusCallback"));
+        assertEquals("CALLBACK_001", formParams.get("extend"));
         assertNotNull(formParams.get("templateParas"));
         assertTrue(formParams.get("templateParas").contains("123456"));
     }

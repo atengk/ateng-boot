@@ -2,12 +2,13 @@ package io.github.atengk.boot.sample.sms.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.sms.dto.BatchSmsSendRequest;
+import io.github.atengk.boot.sample.sms.dto.DynamicChannelRegisterRequest;
 import io.github.atengk.boot.sample.sms.dto.SendSmsRequest;
 import io.github.atengk.boot.sample.sms.dto.SendVerifyCodeRequest;
 import io.github.atengk.boot.sample.sms.dto.VerifyCodeCheckRequest;
 import io.github.atengk.boot.sample.sms.service.SmsScenarioService;
+import io.github.atengk.boot.sample.sms.vo.SmsChannelVO;
 import io.github.atengk.boot.sms.model.BatchSmsResult;
-import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsResult;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -107,24 +108,24 @@ public class SmsScenarioController {
     }
 
     /**
-     * 获取当前所有已注册的短信渠道列表
+     * 获取当前所有已注册的短信渠道列表（严格脱敏 VO）
      *
-     * @return Result<Collection<SmsChannel>>
+     * @return Result<Collection<SmsChannelVO>>
      */
     @GetMapping("/channel/list")
-    public Result<Collection<SmsChannel>> listChannels() {
+    public Result<Collection<SmsChannelVO>> listChannels() {
         return Result.success(smsScenarioService.getChannels());
     }
 
     /**
      * 动态注册或更新短信渠道
      *
-     * @param channel 短信渠道配置
+     * @param request 动态渠道注册请求传输对象
      * @return Result<Void>
      */
     @PostMapping("/channel/dynamic")
-    public Result<Void> registerDynamicChannel(@RequestBody SmsChannel channel) {
-        smsScenarioService.registerDynamicChannel(channel);
+    public Result<Void> registerDynamicChannel(@Valid @RequestBody DynamicChannelRegisterRequest request) {
+        smsScenarioService.registerDynamicChannel(request);
         return Result.success();
     }
 }

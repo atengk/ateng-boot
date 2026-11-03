@@ -2,7 +2,6 @@ package io.github.atengk.boot.sms.provider;
 
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
-import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
 import io.github.atengk.boot.sms.model.SmsChannel;
@@ -11,7 +10,6 @@ import io.github.atengk.boot.sms.model.SmsResult;
 import io.github.atengk.boot.sms.model.SmsSupplier;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -35,7 +33,7 @@ import java.util.*;
  * @since 2026-11-02
  */
 @Slf4j
-public class AliyunSmsProvider implements SmsProvider {
+public class AliyunSmsProvider extends AbstractHttpSmsProvider {
 
     /**
      * 默认阿里云短信官方接入公网端点
@@ -63,10 +61,8 @@ public class AliyunSmsProvider implements SmsProvider {
     private static final DateTimeFormatter UTC_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'")
             .withZone(ZoneOffset.UTC);
 
-    private final RestClient.Builder restClientBuilder;
-
     public AliyunSmsProvider(RestClient.Builder restClientBuilder) {
-        this.restClientBuilder = restClientBuilder != null ? restClientBuilder : RestClient.builder();
+        super(restClientBuilder);
     }
 
     public AliyunSmsProvider() {
@@ -110,7 +106,7 @@ public class AliyunSmsProvider implements SmsProvider {
 
         // 模板动态变量映射为 JSON 字符串
         if (request.getParams() != null && !request.getParams().isEmpty()) {
-            params.put("TemplateParam", JsonUtil.toJsonString(request.getParams().asMap()));
+            params.put("TemplateParam", request.getParams().toJsonString());
         }
 
         // 外部业务流水追踪号 (OutId)
@@ -151,8 +147,9 @@ public class AliyunSmsProvider implements SmsProvider {
             parseAndThrowExceptionIfPossible(channel.getName(), errorBody, e);
             throw new SmsSendException(channel.getName(), "HTTP_" + e.getStatusCode().value(),
                     e.getStatusText(), SmsResultCode.SMS_SEND_ERROR, "阿里云短信网关响应异常: " + e.getMessage(), e);
+        } catch (SmsSendException e) {
+            throw e;
         } catch (Exception e) {
-            log.error("[AliyunSmsProvider] 阿里云短信网络通信异常 (渠道: {}): {}", channel.getName(), e.getMessage(), e);
             throw new SmsSendException(channel.getName(), "NETWORK_ERROR", e.getMessage(),
                     SmsResultCode.SMS_SEND_ERROR, "阿里云短信网络通信异常: " + e.getMessage(), e);
         }
@@ -238,8 +235,6 @@ public class AliyunSmsProvider implements SmsProvider {
             return SmsResult.success(channelName, SmsSupplier.ALIYUN, bizId, requestId, 1);
         }
 
-        log.error("[AliyunSmsProvider] 阿里云短信发送失败 -> 渠道: {}, 错误码: {}, 描述: {}, requestId: {}",
-                channelName, code, message, requestId);
         throw new SmsSendException(channelName, code, message, SmsResultCode.SMS_SEND_ERROR,
                 "阿里云短信发送失败: [" + code + "] " + message);
     }
@@ -256,7 +251,6 @@ public class AliyunSmsProvider implements SmsProvider {
             String code = getFieldIgnoreCase(respMap, "Code");
             String message = getFieldIgnoreCase(respMap, "Message");
             if (StringUtils.hasText(code)) {
-                log.error("[AliyunSmsProvider] 阿里云网关拒绝 -> 渠道: {}, 错误码: {}, 描述: {}", channelName, code, message);
                 throw new SmsSendException(channelName, code, message, SmsResultCode.SMS_SEND_ERROR,
                         "阿里云短信网关拒绝: [" + code + "] " + message, cause);
             }
@@ -264,19 +258,6 @@ public class AliyunSmsProvider implements SmsProvider {
             throw e;
         } catch (Exception ignored) {
             // 解析失败不影响兜底异常向外抛出
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> parseJsonSafely(String json) {
-        if (!StringUtils.hasText(json)) {
-            return Collections.emptyMap();
-        }
-        try {
-            return JsonUtil.parseObject(json, Map.class);
-        } catch (Exception e) {
-            log.warn("[AliyunSmsProvider] 解析阿里云响应 JSON 格式异常: {}", json, e);
-            return Collections.emptyMap();
         }
     }
 
@@ -290,14 +271,5 @@ public class AliyunSmsProvider implements SmsProvider {
             }
         }
         return null;
-    }
-
-    private RestClient buildRestClient(Duration timeout) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(timeout);
-        factory.setReadTimeout(timeout);
-        return restClientBuilder.clone()
-                .requestFactory(factory)
-                .build();
     }
 }

@@ -16,21 +16,21 @@ ateng:
           access-key-id: YOUR_ALIYUN_ACCESS_KEY_ID
           access-key-secret: YOUR_ALIYUN_ACCESS_KEY_SECRET
           endpoint: dysmsapi.aliyuncs.com
-          region-id: cn-hangzhou
+          region: cn-hangzhou
           failover-channel: tencent-backup
         tencent-backup:
           supplier: TENCENT
           sign-name: YOUR_TENCENT_SIGN_NAME
-          sdk-app-id: YOUR_TENCENT_SDK_APP_ID
-          secret-id: YOUR_TENCENT_SECRET_ID
-          secret-key: YOUR_TENCENT_SECRET_KEY
+          app-id: YOUR_TENCENT_SDK_APP_ID
+          access-key-id: YOUR_TENCENT_SECRET_ID
+          access-key-secret: YOUR_TENCENT_SECRET_KEY
           endpoint: sms.tencentcloudapi.com
           region: ap-guangzhou
           failover-channel: huawei-backup
         huawei-backup:
           supplier: HUAWEI
           sign-name: YOUR_HUAWEI_SIGN_NAME
-          app-key: YOUR_HUAWEI_APP_KEY
-          app-secret: YOUR_HUAWEI_APP_SECRET
-          sender: YOUR_HUAWEI_SENDER_CHANNEL_NUM
-          app-url: https://smsapi.cn-north-4.myhuaweicloud.com:443
+          app-id: YOUR_HUAWEI_SENDER_CHANNEL_NUM
+          access-key-id: YOUR_HUAWEI_APP_KEY
+          access-key-secret: YOUR_HUAWEI_APP_SECRET
+          endpoint: https://smsapi.cn-north-4.myhuaweicloud.com:443

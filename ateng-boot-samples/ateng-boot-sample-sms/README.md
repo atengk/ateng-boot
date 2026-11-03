@@ -40,7 +40,8 @@
 | **统一 Webhook 回调网关** | `SmsCallbackController` | `POST /ateng-sms/callback/{channel}` | 统一入站端点，自动转译各厂商送达报告与上行短信为标准 Spring 领域事件 |
 | **全生命周期领域事件** | `@EventListener` | `SampleSmsEventListener` | 监听 `SmsDeliveryReportEvent`、`SmsMoMessageEvent` 与 `SmsBudgetExceededEvent` |
 | **发信失败后置补偿** | `SmsSendFailureHandler` | `SampleSmsFailureHandler` | 容灾降级后最终失败触发扩展补偿 SPI，支持持久化死信表或企业微信告警 |
-| **双模公有云真实联调** | `@Profile("local")` | `SampleSmsLocalRealIntegrationTest` | 配置 `application-local.yml` 真实凭证后一键全真贯通三大公有云发信 |
+| **渠道脱敏视图与动态注册** | `SmsChannelRegistry` | `GET /api/sms/channel/list`<br>`POST /api/sms/channel/dynamic` | 渠道信息脱敏视图 `SmsChannelVO`（绝不外泄秘钥），`DynamicChannelRegisterRequest` 动态热插拔 |
+| **双模公有云真实联调** | `local` Profile | `SampleSmsIntegrationTest` | 单测试套件双模自适应，配置 `application-local.yml` 真实凭证后一键全真贯通三大公有云发信 |
 
 ---
 
@@ -116,6 +117,21 @@ curl -X POST "http://localhost:8080/api/sms/verify-code/verify" \
     "phone": "13800139001",
     "bizType": "login",
     "code": "123456"
+  }'
+```
+
+#### 场景五：查询渠道列表与动态注册渠道
+```bash
+# 1. 查询渠道列表（已脱敏，无 accessKeySecret）
+curl -X GET "http://localhost:8080/api/sms/channel/list"
+
+# 2. 动态注册渠道
+curl -X POST "http://localhost:8080/api/sms/channel/dynamic" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "custom-dynamic",
+    "supplier": "MOCK",
+    "signName": "动态签名"
   }'
 ```
 

@@ -25,14 +25,12 @@ public class InMemorySmsVerifyCodeRepository implements SmsVerifyCodeRepository 
     private final Map<String, CodeEntry> storage = new ConcurrentHashMap<>();
 
     @Override
-    public void save(String phone, String bizType, String code, Duration ttl, Duration resendInterval, int maxRetryAttempts) {
-        BusinessAssert.hasText(phone, "目标手机号不能为空");
-        BusinessAssert.hasText(code, "验证码内容不能为空");
-
+    public void checkCooldown(String phone, String bizType) {
+        if (!org.springframework.util.StringUtils.hasText(phone)) {
+            return;
+        }
         String key = buildKey(phone, bizType);
         long now = Instant.now().toEpochMilli();
-
-        // 1. 检查是否存在未过期的验证码并校验重发冷却期
         CodeEntry existing = storage.get(key);
         if (existing != null && now < existing.getExpireAt()) {
             if (now < existing.getResendAfter()) {
@@ -42,12 +40,24 @@ public class InMemorySmsVerifyCodeRepository implements SmsVerifyCodeRepository 
                 throw new SmsRateLimitException("验证码发送过于频繁，请等待 " + waitSeconds + " 秒后再试", waitSeconds);
             }
         }
+    }
+
+    @Override
+    public void save(String phone, String bizType, String code, Duration ttl, Duration resendInterval, int maxRetryAttempts) {
+        BusinessAssert.hasText(phone, "目标手机号不能为空");
+        BusinessAssert.hasText(code, "验证码内容不能为空");
+
+        // 前置冷却检查
+        checkCooldown(phone, bizType);
+
+        String key = buildKey(phone, bizType);
+        long now = Instant.now().toEpochMilli();
 
         // 2. 组装并写入新验证码元数据
         long expireAt = now + (ttl != null ? ttl.toMillis() : Duration.ofMinutes(5).toMillis());
         long resendAfter = now + (resendInterval != null ? resendInterval.toMillis() : Duration.ofSeconds(60).toMillis());
 
-        CodeEntry newEntry = new CodeEntry(code, expireAt, resendAfter, maxRetryAttempts > 0 ? maxRetryAttempts : 5, false);
+        CodeEntry newEntry = new CodeEntry(code, expireAt, resendAfter, maxRetryAttempts > 0 ? maxRetryAttempts : 5, false, false);
         storage.put(key, newEntry);
     }
 
@@ -66,14 +76,20 @@ public class InMemorySmsVerifyCodeRepository implements SmsVerifyCodeRepository 
         }
 
         synchronized (entry) {
+            // 双重锁防并发重放：检查是否已被消费或被并发新码覆盖
+            if (entry.isConsumed() || storage.get(key) != entry) {
+                throw new SmsVerifyCodeException("验证码不存在或已过期", 0, false);
+            }
+
             // 1. 检查是否已被冻结
             if (entry.isFrozen()) {
                 throw new SmsVerifyCodeException("验证码连续错误过多，已被锁定", 0, true);
             }
 
-            // 2. 验证码匹配成功：立即物理删除，杜绝重放攻击
+            // 2. 验证码匹配成功：立即标记消费并原子条件销毁，杜绝重放与并发误删新码
             if (entry.getCode().equalsIgnoreCase(code.trim())) {
-                storage.remove(key);
+                entry.setConsumed(true);
+                storage.remove(key, entry);
                 log.info("[InMemorySmsVerifyCodeRepository] 验证码核验成功并立即物理销毁 (phone: {}, bizType: {})", phone, bizType);
                 return true;
             }
@@ -126,5 +142,6 @@ public class InMemorySmsVerifyCodeRepository implements SmsVerifyCodeRepository 
         private long resendAfter;
         private int remainingAttempts;
         private boolean frozen;
+        private volatile boolean consumed;
     }
 }

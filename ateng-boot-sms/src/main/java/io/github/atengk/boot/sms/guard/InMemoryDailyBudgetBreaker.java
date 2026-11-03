@@ -44,11 +44,13 @@ public class InMemoryDailyBudgetBreaker implements DailyBudgetBreaker {
             return;
         }
 
-        // 跨日自然翻转时自动归零
+        // 跨日自然翻转时自动原子归零，防御并发竞态
         LocalDate today = LocalDate.now();
-        if (!today.equals(currentDate.get())) {
-            currentDate.set(today);
-            currentCount.set(0);
+        LocalDate recordedDate = currentDate.get();
+        if (!today.equals(recordedDate)) {
+            if (currentDate.compareAndSet(recordedDate, today)) {
+                currentCount.set(0);
+            }
         }
 
         long quota = getDailyMaxQuota();

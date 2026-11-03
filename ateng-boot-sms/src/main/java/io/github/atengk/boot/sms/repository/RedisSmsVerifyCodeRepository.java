@@ -64,14 +64,12 @@ public class RedisSmsVerifyCodeRepository implements SmsVerifyCodeRepository {
     }
 
     @Override
-    public void save(String phone, String bizType, String code, Duration ttl, Duration resendInterval, int maxRetryAttempts) {
-        BusinessAssert.hasText(phone, "目标手机号不能为空");
-        BusinessAssert.hasText(code, "验证码内容不能为空");
-
+    public void checkCooldown(String phone, String bizType) {
+        if (!org.springframework.util.StringUtils.hasText(phone)) {
+            return;
+        }
         String key = buildKey(phone, bizType);
         long now = Instant.now().toEpochMilli();
-
-        // 1. 检查是否存在且在重发冷却期内
         String resendAfterStr = (String) redisTemplate.opsForHash().get(key, "resendAfter");
         if (resendAfterStr != null) {
             try {
@@ -81,9 +79,22 @@ public class RedisSmsVerifyCodeRepository implements SmsVerifyCodeRepository {
                     log.warn("[RedisSmsVerifyCodeRepository] 验证码处于冷却期内，拦截重发 (还需等待: {} 秒)", waitSeconds);
                     throw new SmsRateLimitException("验证码发送过于频繁，请等待 " + waitSeconds + " 秒后再试", waitSeconds);
                 }
-            } catch (NumberFormatException ignored) {
+            } catch (NumberFormatException ex) {
+                log.warn("[RedisSmsVerifyCodeRepository] 解析冷却时间戳格式异常: {}", resendAfterStr);
             }
         }
+    }
+
+    @Override
+    public void save(String phone, String bizType, String code, Duration ttl, Duration resendInterval, int maxRetryAttempts) {
+        BusinessAssert.hasText(phone, "目标手机号不能为空");
+        BusinessAssert.hasText(code, "验证码内容不能为空");
+
+        // 1. 前置检查是否存在且在重发冷却期内
+        checkCooldown(phone, bizType);
+
+        String key = buildKey(phone, bizType);
+        long now = Instant.now().toEpochMilli();
 
         // 2. 写入新验证码 Hash
         long expireSeconds = ttl != null ? ttl.toSeconds() : 300L;

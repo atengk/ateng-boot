@@ -76,6 +76,18 @@
             <artifactId>mockwebserver</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- Servlet API 与 Spring WebMvc (仅用于测试 Webhook 控制器 MockMvc，纯 test scope) -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-webmvc</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
 </project>

@@ -24,4 +24,9 @@ public class SmsCallbackProperties implements Serializable {
      * 回调网关 URL 路由前缀，默认 /ateng-sms/callback
      */
     private String pathPrefix = "/ateng-sms/callback";
+
+    /**
+     * 回调网关安全校验令牌 (Token/Secret)；若配置，请求头须携带 X-Callback-Token 或参数 token
+     */
+    private String token;
 }

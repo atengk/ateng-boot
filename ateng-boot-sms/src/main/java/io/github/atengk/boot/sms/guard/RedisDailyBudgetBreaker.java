@@ -105,6 +105,7 @@ public class RedisDailyBudgetBreaker implements DailyBudgetBreaker {
             String val = redisTemplate.opsForValue().get(getTodayKey());
             return val != null ? Long.parseLong(val) : 0L;
         } catch (Exception ex) {
+            log.warn("[RedisDailyBudgetBreaker] 获取单日累计发信量异常: {}", ex.getMessage());
             return 0L;
         }
     }
@@ -113,7 +114,8 @@ public class RedisDailyBudgetBreaker implements DailyBudgetBreaker {
     public void reset() {
         try {
             redisTemplate.delete(getTodayKey());
-        } catch (Exception ignored) {
+        } catch (Exception ex) {
+            log.warn("[RedisDailyBudgetBreaker] 重置单日预算计数器异常: {}", ex.getMessage());
         }
     }
 }

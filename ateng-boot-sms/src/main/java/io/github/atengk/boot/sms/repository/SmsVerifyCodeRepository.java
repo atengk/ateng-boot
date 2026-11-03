@@ -14,6 +14,16 @@ import java.time.Duration;
 public interface SmsVerifyCodeRepository {
 
     /**
+     * 前置检查是否处于重发冷却期间
+     *
+     * @param phone   目标手机号
+     * @param bizType 业务场景标识
+     * @throws SmsRateLimitException 若处于重发冷却期间，抛出频控拦截异常
+     */
+    default void checkCooldown(String phone, String bizType) {
+    }
+
+    /**
      * 保存验证码元数据并设置重发冷却期
      *
      * @param phone            目标手机号

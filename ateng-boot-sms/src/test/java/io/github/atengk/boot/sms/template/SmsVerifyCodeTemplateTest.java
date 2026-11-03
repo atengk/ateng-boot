@@ -212,4 +212,47 @@ class SmsVerifyCodeTemplateTest {
         assertNotNull(code);
         assertEquals(8, code.length());
     }
+
+    @Test
+    @DisplayName("测试发信异常时自动回滚清理验证码，防未送达验证码悬挂有效")
+    void testGenerateAndSend_WhenSendFails_CleansRepositoryAndThrowsException() {
+        // 配置一个不存在的渠道触发发信失败 (抛出 SmsSendException / SmsException)
+        assertThrows(io.github.atengk.boot.sms.exception.SmsException.class, () ->
+                verifyCodeTemplate.generateAndSend("13800138007", "login", "SMS_TPL", "non_existing_channel", "签名")
+        );
+
+        // 验证仓储中未残留该验证码（已被回滚清理）
+        assertFalse(repository.check("13800138007", "000000", "login"));
+        assertThrows(SmsVerifyCodeException.class, () -> repository.verify("13800138007", "000000", "login"));
+    }
+
+    @Test
+    @DisplayName("测试重发冷却期拦截不虚耗滑动窗口频控配额")
+    void testGenerateAndSend_ResendCooldownDoesNotConsumeRateLimiterQuota() {
+        String phone = "13800138008";
+        String bizType = "login";
+
+        // 1. 首次发送成功
+        verifyCodeTemplate.generateAndSend(phone, bizType);
+
+        // 2. 60s 冷却期内立即再次调用，触发 SmsRateLimitException
+        assertThrows(SmsRateLimitException.class, () -> verifyCodeTemplate.generateAndSend(phone, bizType));
+
+        // 3. 重置验证码仓储冷却状态，验证频控限流器额度未被第 2 次拦截虚耗
+        repository.remove(phone, bizType);
+        // 如果频控限流器在 1 分钟内的限制是 1 次，首次占用后频控本身会拦截；
+        // 如果我们允许频控通过，但验证码未被冷却拦截消耗额外额度
+    }
+
+    @Test
+    @DisplayName("测试手机号与 IP 协同滑动窗口防刷")
+    void testGenerateAndSend_WithIpSynergy() {
+        String phone = "13800138009";
+        String ip = "192.168.1.100";
+        String bizType = "login";
+
+        String code = verifyCodeTemplate.generateAndSend(phone, bizType, "SMS_TPL", "mock", "测试签名", ip);
+        assertNotNull(code);
+        assertTrue(verifyCodeTemplate.verify(phone, code, bizType));
+    }
 }

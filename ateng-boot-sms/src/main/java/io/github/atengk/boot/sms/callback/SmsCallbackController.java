@@ -6,13 +6,16 @@ import io.github.atengk.boot.sms.event.SmsDeliveryReportEvent;
 import io.github.atengk.boot.sms.event.SmsMoMessageEvent;
 import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsSupplier;
+import io.github.atengk.boot.sms.properties.SmsCallbackProperties;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.util.MultiValueMap;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
@@ -28,12 +31,25 @@ import java.util.*;
  */
 @Slf4j
 @RestController
-@RequiredArgsConstructor
 @RequestMapping("${ateng.boot.sms.callback.path-prefix:/ateng-sms/callback}")
 public class SmsCallbackController {
 
     private final SmsChannelRegistry channelRegistry;
     private final ApplicationEventPublisher eventPublisher;
+    private final SmsCallbackProperties callbackProperties;
+
+    public SmsCallbackController(SmsChannelRegistry channelRegistry,
+                                 ApplicationEventPublisher eventPublisher,
+                                 SmsCallbackProperties callbackProperties) {
+        this.channelRegistry = channelRegistry;
+        this.eventPublisher = eventPublisher;
+        this.callbackProperties = callbackProperties != null ? callbackProperties : new SmsCallbackProperties();
+    }
+
+    public SmsCallbackController(SmsChannelRegistry channelRegistry,
+                                 ApplicationEventPublisher eventPublisher) {
+        this(channelRegistry, eventPublisher, null);
+    }
 
     /**
      * 接收统一短信回调请求（支持 JSON Body 与表单提交）
@@ -45,13 +61,33 @@ public class SmsCallbackController {
      * @return 厂商规范约定的响应应答报文
      */
     @PostMapping(value = "/{channel}", consumes = {MediaType.APPLICATION_JSON_VALUE, MediaType.APPLICATION_FORM_URLENCODED_VALUE, MediaType.ALL_VALUE})
-    public Map<String, Object> handleCallback(
+    public ResponseEntity<Map<String, Object>> handleCallback(
             @PathVariable("channel") String channelName,
             @RequestBody(required = false) String rawBody,
             @RequestParam(required = false) MultiValueMap<String, String> formParams,
             @RequestHeader HttpHeaders headers) {
 
+        // 1. 渠道合法性前置防卫 (Fail-Fast)
         SmsChannel channel = channelRegistry != null ? channelRegistry.get(channelName) : null;
+        if (channel == null && !"mock".equalsIgnoreCase(channelName)) {
+            log.warn("[SmsCallbackController] 拒绝非法回调：未找到短信渠道 [{}]", channelName);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("code", 400, "message", "Channel not found: " + channelName));
+        }
+
+        // 2. 回调安全令牌防伪防刷校验 (若配置了 callback.token)
+        if (StringUtils.hasText(callbackProperties.getToken())) {
+            String token = headers.getFirst("X-Callback-Token");
+            if (!StringUtils.hasText(token) && formParams != null) {
+                token = formParams.getFirst("token");
+            }
+            if (!callbackProperties.getToken().equals(token)) {
+                log.warn("[SmsCallbackController] 渠道 [{}] 回调安全令牌校验失败，拒绝伪造请求", channelName);
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("code", 401, "message", "Invalid callback token"));
+            }
+        }
+
         SmsSupplier supplier = channel != null ? channel.getSupplier() : SmsSupplier.MOCK;
         String actualChannelName = channel != null ? channel.getName() : channelName;
 
@@ -59,15 +95,25 @@ public class SmsCallbackController {
             log.debug("[SmsCallbackController] 收到短信渠道 [{}] 异步回调通知 (厂商: {})", actualChannelName, supplier);
         }
 
-        // 解析并广播 Spring 领域事件
-        dispatchEvents(actualChannelName, supplier, rawBody, formParams);
+        // 3. 解析请求体明细，若格式非法则 Fail-Fast 返回 400，严禁静默吞咽异常误报成功
+        List<Map<String, Object>> items = parseCallbackPayload(rawBody, formParams);
+        if (items.isEmpty() && StringUtils.hasText(rawBody)) {
+            log.warn("[SmsCallbackController] 渠道 [{}] 回调报文格式无法识别: {}", actualChannelName, rawBody);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("code", 400, "message", "Invalid callback payload format"));
+        }
 
-        // 构造云厂商标准 ACK 应答
-        return buildAckResponse(supplier);
+        // 4. 解析并广播 Spring 领域事件
+        for (Map<String, Object> item : items) {
+            processItem(actualChannelName, supplier, item, rawBody);
+        }
+
+        // 5. 构造云厂商标准 ACK 应答
+        return ResponseEntity.ok(buildAckResponse(supplier));
     }
 
     @SuppressWarnings("unchecked")
-    private void dispatchEvents(String channel, SmsSupplier supplier, String rawBody, MultiValueMap<String, String> formParams) {
+    private List<Map<String, Object>> parseCallbackPayload(String rawBody, MultiValueMap<String, String> formParams) {
         List<Map<String, Object>> items = new ArrayList<>();
 
         if (rawBody != null && !rawBody.isBlank()) {
@@ -79,14 +125,14 @@ public class SmsCallbackController {
                         items.add(new LinkedHashMap<>(m));
                     }
                 } catch (Exception ex) {
-                    log.warn("[SmsCallbackController] 解析 JSON 数组回调报文失败: {}", ex.getMessage());
+                    log.warn("[SmsCallbackController] 解析 JSON 数组回调报文异常: {}", ex.getMessage());
                 }
             } else if (trimmed.startsWith("{")) {
                 try {
                     Map<String, Object> map = JsonUtil.parseMap(trimmed, String.class, Object.class);
                     items.add(new LinkedHashMap<>(map));
                 } catch (Exception ex) {
-                    log.warn("[SmsCallbackController] 解析 JSON 对象回调报文失败: {}", ex.getMessage());
+                    log.warn("[SmsCallbackController] 解析 JSON 对象回调报文异常: {}", ex.getMessage());
                 }
             }
         }
@@ -97,13 +143,7 @@ public class SmsCallbackController {
             items.add(formMap);
         }
 
-        if (items.isEmpty()) {
-            return;
-        }
-
-        for (Map<String, Object> item : items) {
-            processItem(channel, supplier, item, rawBody);
-        }
+        return items;
     }
 
     private void processItem(String channel, SmsSupplier supplier, Map<String, Object> item, String rawPayload) {
@@ -138,17 +178,12 @@ public class SmsCallbackController {
     }
 
     private boolean isMoMessage(SmsSupplier supplier, Map<String, Object> item) {
-        if (supplier == SmsSupplier.ALIYUN) {
-            return item.containsKey("content") && !item.containsKey("err_code") && !item.containsKey("report_time");
-        }
-        if (supplier == SmsSupplier.TENCENT) {
-            return item.containsKey("text");
-        }
-        if (supplier == SmsSupplier.HUAWEI) {
-            return item.containsKey("body");
-        }
-        // Generic / Mock: 若包含 content 且不包含 err_code/status 则视作上行回复
-        return item.containsKey("content") && !item.containsKey("status") && !item.containsKey("err_code");
+        return switch (supplier != null ? supplier : SmsSupplier.MOCK) {
+            case ALIYUN -> item.containsKey("content") && !item.containsKey("err_code") && !item.containsKey("report_time");
+            case TENCENT -> item.containsKey("text");
+            case HUAWEI -> item.containsKey("body");
+            default -> item.containsKey("content") && !item.containsKey("status") && !item.containsKey("err_code");
+        };
     }
 
     private SmsMoMessageEvent extractMoEvent(String channel, SmsSupplier supplier, Map<String, Object> item, String rawPayload) {
@@ -156,31 +191,34 @@ public class SmsCallbackController {
         String content;
         String signName = null;
 
-        if (supplier == SmsSupplier.ALIYUN) {
-            phone = getStr(item, "phone_number");
-            content = getStr(item, "content");
-            signName = getStr(item, "sign_name");
-        } else if (supplier == SmsSupplier.TENCENT) {
-            phone = getStr(item, "mobile");
-            content = getStr(item, "text");
-            signName = getStr(item, "sign");
-        } else if (supplier == SmsSupplier.HUAWEI) {
-            phone = getStr(item, "from");
-            content = getStr(item, "body");
-        } else {
-            phone = item.containsKey("phone_number") ? getStr(item, "phone_number")
-                    : (item.containsKey("phone") ? getStr(item, "phone") : getStr(item, "mobile"));
-            content = item.containsKey("content") ? getStr(item, "content")
-                    : (item.containsKey("text") ? getStr(item, "text") : getStr(item, "body"));
-            signName = item.containsKey("sign_name") ? getStr(item, "sign_name")
-                    : (item.containsKey("sign") ? getStr(item, "sign") : getStr(item, "signName"));
+        SmsSupplier safeSupplier = supplier != null ? supplier : SmsSupplier.MOCK;
+        switch (safeSupplier) {
+            case ALIYUN -> {
+                phone = getStr(item, "phone_number");
+                content = getStr(item, "content");
+                signName = getStr(item, "sign_name");
+            }
+            case TENCENT -> {
+                phone = getStr(item, "mobile");
+                content = getStr(item, "text");
+                signName = getStr(item, "sign");
+            }
+            case HUAWEI -> {
+                phone = getStr(item, "from");
+                content = getStr(item, "body");
+            }
+            default -> {
+                phone = getFirstStr(item, "phone_number", "phone", "mobile");
+                content = getFirstStr(item, "content", "text", "body");
+                signName = getFirstStr(item, "sign_name", "sign", "signName");
+            }
         }
 
         if (phone == null || phone.isBlank()) {
             return null;
         }
 
-        return new SmsMoMessageEvent(this, channel, supplier, phone, content, signName, Instant.now(), rawPayload);
+        return new SmsMoMessageEvent(this, channel, safeSupplier, phone, content, signName, Instant.now(), rawPayload);
     }
 
     private SmsDeliveryReportEvent extractReportEvent(String channel, SmsSupplier supplier, Map<String, Object> item, String rawPayload) {
@@ -190,47 +228,65 @@ public class SmsCallbackController {
         String resultMessage;
         String bizId;
 
-        if (supplier == SmsSupplier.ALIYUN) {
-            phone = getStr(item, "phone_number");
-            resultCode = getStr(item, "err_code");
-            resultMessage = getStr(item, "err_msg");
-            bizId = getStr(item, "biz_id");
-            success = Boolean.TRUE.equals(item.get("success")) || "DELIVRD".equalsIgnoreCase(resultCode);
-        } else if (supplier == SmsSupplier.TENCENT) {
-            phone = getStr(item, "mobile");
-            String status = getStr(item, "report_status");
-            resultCode = getStr(item, "errmsg");
-            resultMessage = getStr(item, "description");
-            bizId = getStr(item, "sid");
-            success = "SUCCESS".equalsIgnoreCase(status) || "DELIVRD".equalsIgnoreCase(resultCode);
-        } else if (supplier == SmsSupplier.HUAWEI) {
-            phone = item.containsKey("originTo") ? getStr(item, "originTo") : getStr(item, "to");
-            resultCode = getStr(item, "status");
-            resultMessage = getStr(item, "statusDesc");
-            bizId = getStr(item, "smsMsgId");
-            success = "DELIVRD".equalsIgnoreCase(resultCode);
-        } else {
-            phone = item.containsKey("phone_number") ? getStr(item, "phone_number")
-                    : (item.containsKey("phone") ? getStr(item, "phone")
-                    : (item.containsKey("mobile") ? getStr(item, "mobile") : getStr(item, "to")));
-            resultCode = item.containsKey("err_code") ? getStr(item, "err_code")
-                    : (item.containsKey("resultCode") ? getStr(item, "resultCode") : getStr(item, "status"));
-            resultMessage = item.containsKey("err_msg") ? getStr(item, "err_msg") : getStr(item, "resultMessage");
-            bizId = item.containsKey("biz_id") ? getStr(item, "biz_id")
-                    : (item.containsKey("bizId") ? getStr(item, "bizId") : getStr(item, "sid"));
-            success = Boolean.TRUE.equals(item.get("success")) || "DELIVRD".equalsIgnoreCase(resultCode) || "SUCCESS".equalsIgnoreCase(resultCode);
+        SmsSupplier safeSupplier = supplier != null ? supplier : SmsSupplier.MOCK;
+        switch (safeSupplier) {
+            case ALIYUN -> {
+                phone = getStr(item, "phone_number");
+                resultCode = getStr(item, "err_code");
+                resultMessage = getStr(item, "err_msg");
+                bizId = getStr(item, "biz_id");
+                success = Boolean.TRUE.equals(item.get("success")) || "DELIVRD".equalsIgnoreCase(resultCode);
+            }
+            case TENCENT -> {
+                phone = getStr(item, "mobile");
+                String status = getStr(item, "report_status");
+                resultCode = getStr(item, "errmsg");
+                resultMessage = getStr(item, "description");
+                bizId = getStr(item, "sid");
+                success = "SUCCESS".equalsIgnoreCase(status) || "DELIVRD".equalsIgnoreCase(resultCode);
+            }
+            case HUAWEI -> {
+                phone = getFirstStr(item, "originTo", "to");
+                resultCode = getStr(item, "status");
+                resultMessage = getStr(item, "statusDesc");
+                bizId = getStr(item, "smsMsgId");
+                success = "DELIVRD".equalsIgnoreCase(resultCode);
+            }
+            default -> {
+                phone = getFirstStr(item, "phone_number", "phone", "mobile", "to");
+                resultCode = getFirstStr(item, "err_code", "resultCode", "status");
+                resultMessage = getFirstStr(item, "err_msg", "resultMessage");
+                bizId = getFirstStr(item, "biz_id", "bizId", "sid");
+                success = Boolean.TRUE.equals(item.get("success")) || "DELIVRD".equalsIgnoreCase(resultCode) || "SUCCESS".equalsIgnoreCase(resultCode);
+            }
         }
 
         if (phone == null || phone.isBlank()) {
             return null;
         }
 
-        return new SmsDeliveryReportEvent(this, channel, supplier, phone, success, resultCode, resultMessage, bizId, Instant.now(), rawPayload);
+        return new SmsDeliveryReportEvent(this, channel, safeSupplier, phone, success, resultCode, resultMessage, bizId, Instant.now(), rawPayload);
     }
 
     private String getStr(Map<String, Object> map, String key) {
         Object val = map.get(key);
         return val != null ? String.valueOf(val).trim() : null;
+    }
+
+    private String getFirstStr(Map<String, Object> map, String... keys) {
+        if (map == null || keys == null) {
+            return null;
+        }
+        for (String key : keys) {
+            Object val = map.get(key);
+            if (val != null) {
+                String str = String.valueOf(val).trim();
+                if (!str.isEmpty()) {
+                    return str;
+                }
+            }
+        }
+        return null;
     }
 
     private Map<String, Object> buildAckResponse(SmsSupplier supplier) {

@@ -35,4 +35,10 @@ public class SmsVerifyCodeException extends SmsException {
         this.remainingAttempts = remainingAttempts;
         this.frozen = frozen;
     }
+
+    public SmsVerifyCodeException(String msg, Throwable cause) {
+        super(SmsResultCode.SMS_SEND_ERROR, msg, cause);
+        this.remainingAttempts = 0;
+        this.frozen = false;
+    }
 }

@@ -160,14 +160,18 @@ public class SmsTemplate {
         // 1. 三级级联解析目标发信渠道
         SmsChannel channel = resolveChannel(request.getChannel());
 
-        // 2. 出站黑名单前置静默拦截防卫
-        if (properties.getGuard().isBlacklistEnabled() && blacklistProvider != null && blacklistProvider.isBlacklisted(request.getPhone())) {
-            String reason = blacklistProvider.getReason(request.getPhone());
-            if (log.isWarnEnabled()) {
-                log.warn("[SmsTemplate] 目标手机号 [{}] 命中出站黑名单，前置静默拦截 (原因: {})",
-                        DesensitizeUtil.mobilePhone(request.getPhone()), reason);
+        // 2. 出站黑名单前置静默拦截防卫（多号码逐一校验，防漏检穿透）
+        if (properties.getGuard().isBlacklistEnabled() && blacklistProvider != null) {
+            for (String p : request.getPhones()) {
+                if (blacklistProvider.isBlacklisted(p)) {
+                    String reason = blacklistProvider.getReason(p);
+                    if (log.isWarnEnabled()) {
+                        log.warn("[SmsTemplate] 目标手机号 [{}] 命中出站黑名单，前置静默拦截 (原因: {})",
+                                DesensitizeUtil.mobilePhone(p), reason);
+                    }
+                    return SmsResult.blocked(channel.getName(), reason);
+                }
             }
-            return SmsResult.blocked(channel.getName(), reason);
         }
 
         // 3. 单日成本预算硬熔断防卫
@@ -398,15 +402,7 @@ public class SmsTemplate {
      * @return 单批最大手机号数量
      */
     public int resolveBatchLimit(SmsSupplier supplier) {
-        if (supplier == null) {
-            return 1000;
-        }
-        return switch (supplier) {
-            case TENCENT -> 200;
-            case HUAWEI -> 500;
-            case ALIYUN, MOCK -> 1000;
-            default -> 1000;
-        };
+        return supplier != null ? supplier.getBatchLimit() : 1000;
     }
 
     /**
@@ -463,7 +459,6 @@ public class SmsTemplate {
             return channel;
         }
 
-        log.error("[SmsTemplate] 指定或级联寻址的短信渠道 [{}] 不存在，请检查 ateng.boot.sms.channels 配置", targetName);
         throw new SmsSendException(targetName, "CHANNEL_NOT_FOUND", "短信渠道不存在: " + targetName,
                 SmsResultCode.SMS_CHANNEL_NOT_FOUND, "未找到指定的短信渠道配置: " + targetName);
     }

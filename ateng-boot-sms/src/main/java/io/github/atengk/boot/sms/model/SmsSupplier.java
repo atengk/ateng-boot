@@ -49,6 +49,19 @@ public enum SmsSupplier implements IBaseEnum<String> {
     private final String label;
 
     /**
+     * 获取云厂商单次 API 调用支持的最大手机号切片上限
+     *
+     * @return 单批最大手机号数量
+     */
+    public int getBatchLimit() {
+        return switch (this) {
+            case TENCENT -> 200;
+            case HUAWEI -> 500;
+            case ALIYUN, MOCK, CUSTOM -> 1000;
+        };
+    }
+
+    /**
      * 根据编码安全解析短信服务商枚举（不区分大小写）
      *
      * @param code 服务商编码

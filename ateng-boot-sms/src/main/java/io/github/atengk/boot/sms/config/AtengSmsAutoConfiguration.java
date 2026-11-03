@@ -31,6 +31,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.client.RestClient;
 
@@ -43,9 +44,14 @@ import java.util.concurrent.Executor;
  * @author Ateng
  * @since 2026-11-02
  */
-@AutoConfiguration
+@AutoConfiguration(afterName = "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration")
+@ConditionalOnClass({SmsTemplate.class, RestClient.class})
 @ConditionalOnProperty(prefix = "ateng.boot.sms", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(SmsProperties.class)
+@Import({
+        AtengSmsAutoConfiguration.RedisSmsConfiguration.class,
+        AtengSmsAutoConfiguration.InMemorySmsConfiguration.class
+})
 public class AtengSmsAutoConfiguration {
 
     /**
@@ -191,8 +197,9 @@ public class AtengSmsAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.sms.callback", name = "enabled", havingValue = "true")
     public SmsCallbackController smsCallbackController(SmsChannelRegistry channelRegistry,
-                                                       ApplicationEventPublisher eventPublisher) {
-        return new SmsCallbackController(channelRegistry, eventPublisher);
+                                                       ApplicationEventPublisher eventPublisher,
+                                                       SmsProperties properties) {
+        return new SmsCallbackController(channelRegistry, eventPublisher, properties.getCallback());
     }
 
     /**
@@ -215,15 +222,15 @@ public class AtengSmsAutoConfiguration {
 
     /**
      * Redis 分布式基础设施自动装配配置类
-     * 仅当类路径存在 StringRedisTemplate 时探测加载
+     * 仅当类路径存在 StringRedisTemplate 且容器中已声明该 Bean 时激活
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(name = "org.springframework.data.redis.core.StringRedisTemplate")
+    @ConditionalOnBean(type = "org.springframework.data.redis.core.StringRedisTemplate")
     static class RedisSmsConfiguration {
 
         @Bean
         @ConditionalOnMissingBean
-        @ConditionalOnBean(StringRedisTemplate.class)
         public DailyBudgetBreaker redisDailyBudgetBreaker(SmsProperties properties,
                                                           StringRedisTemplate redisTemplate,
                                                           ObjectProvider<ApplicationEventPublisher> eventPublisherProvider) {
@@ -232,14 +239,12 @@ public class AtengSmsAutoConfiguration {
 
         @Bean
         @ConditionalOnMissingBean
-        @ConditionalOnBean(StringRedisTemplate.class)
         public SmsRateLimiter redisSmsRateLimiter(SmsProperties properties, StringRedisTemplate redisTemplate) {
             return new RedisSmsRateLimiter(redisTemplate, properties.getRateLimit());
         }
 
         @Bean
         @ConditionalOnMissingBean
-        @ConditionalOnBean(StringRedisTemplate.class)
         public SmsVerifyCodeRepository redisSmsVerifyCodeRepository(StringRedisTemplate redisTemplate) {
             return new RedisSmsVerifyCodeRepository(redisTemplate);
         }
@@ -247,9 +252,10 @@ public class AtengSmsAutoConfiguration {
 
     /**
      * 纯内存自洽能力自动装配配置类
-     * 在未接入 Redis 或 RedisTemplate 不存在时优雅降级保底，确保 100% 离线自洽
+     * 在未接入 Redis 或 StringRedisTemplate 不存在时优雅降级保底，确保 100% 离线自洽
      */
     @Configuration(proxyBeanMethods = false)
+    @ConditionalOnMissingBean(type = "org.springframework.data.redis.core.StringRedisTemplate")
     static class InMemorySmsConfiguration {
 
         @Bean

@@ -11,7 +11,6 @@ import io.github.atengk.boot.sms.model.SmsResult;
 import io.github.atengk.boot.sms.model.SmsSupplier;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -34,7 +33,7 @@ import java.util.*;
  * @since 2026-11-02
  */
 @Slf4j
-public class HuaweiSmsProvider implements SmsProvider {
+public class HuaweiSmsProvider extends AbstractHttpSmsProvider {
 
     /**
      * 默认华为云短信官方接入公网端点 (华北-北京四)
@@ -62,10 +61,8 @@ public class HuaweiSmsProvider implements SmsProvider {
     private static final DateTimeFormatter UTC_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'")
             .withZone(ZoneOffset.UTC);
 
-    private final RestClient.Builder restClientBuilder;
-
     public HuaweiSmsProvider(RestClient.Builder restClientBuilder) {
-        this.restClientBuilder = restClientBuilder != null ? restClientBuilder : RestClient.builder();
+        super(restClientBuilder);
     }
 
     public HuaweiSmsProvider() {
@@ -112,9 +109,9 @@ public class HuaweiSmsProvider implements SmsProvider {
             formParams.put("signature", signName);
         }
 
-        // 业务流水与状态报告接收回调关联 (statusCallback)
+        // 业务流水与透传扩展字段 (extend)
         if (StringUtils.hasText(request.getBizId())) {
-            formParams.put("statusCallback", request.getBizId());
+            formParams.put("extend", request.getBizId());
         }
 
         // 4. 构建表单编码请求体字符串
@@ -154,8 +151,9 @@ public class HuaweiSmsProvider implements SmsProvider {
             parseAndThrowExceptionIfPossible(channel.getName(), errorBody, e);
             throw new SmsSendException(channel.getName(), "HTTP_" + e.getStatusCode().value(),
                     e.getStatusText(), SmsResultCode.SMS_SEND_ERROR, "华为云短信网关响应异常: " + e.getMessage(), e);
+        } catch (SmsSendException e) {
+            throw e;
         } catch (Exception e) {
-            log.error("[HuaweiSmsProvider] 华为云短信网络通信异常 (渠道: {}): {}", channel.getName(), e.getMessage(), e);
             throw new SmsSendException(channel.getName(), "NETWORK_ERROR", e.getMessage(),
                     SmsResultCode.SMS_SEND_ERROR, "华为云短信网络通信异常: " + e.getMessage(), e);
         }
@@ -203,7 +201,6 @@ public class HuaweiSmsProvider implements SmsProvider {
 
         // 1. 检查根状态码是否为 000000
         if (!SUCCESS_CODE.equals(code)) {
-            log.error("[HuaweiSmsProvider] 华为云短信发送失败 -> 渠道: {}, 错误码: {}, 描述: {}", channelName, code, description);
             throw new SmsSendException(channelName, code, description, SmsResultCode.SMS_SEND_ERROR,
                     "华为云短信发送失败: [" + code + "] " + description);
         }
@@ -221,8 +218,6 @@ public class HuaweiSmsProvider implements SmsProvider {
         for (Map<String, Object> item : resultList) {
             String itemStatus = String.valueOf(item.get("status"));
             if (!SUCCESS_CODE.equals(itemStatus)) {
-                log.error("[HuaweiSmsProvider] 华为云明细发送失败 -> 渠道: {}, status: {}, 目标号码: {}",
-                        channelName, itemStatus, DesensitizeUtil.mobilePhone(String.valueOf(item.get("originTo"))));
                 throw new SmsSendException(channelName, itemStatus, "明细条目投递失败", SmsResultCode.SMS_SEND_ERROR,
                         "华为云短信投递拒绝: [" + itemStatus + "]");
             }
@@ -255,7 +250,6 @@ public class HuaweiSmsProvider implements SmsProvider {
             String code = String.valueOf(respMap.get("code"));
             String description = String.valueOf(respMap.get("description"));
             if (StringUtils.hasText(code) && !"null".equals(code)) {
-                log.error("[HuaweiSmsProvider] 华为云网关拒绝 -> 渠道: {}, 错误码: {}, 描述: {}", channelName, code, description);
                 throw new SmsSendException(channelName, code, description, SmsResultCode.SMS_SEND_ERROR,
                         "华为云短信网关拒绝: [" + code + "] " + description, cause);
             }
@@ -282,27 +276,5 @@ public class HuaweiSmsProvider implements SmsProvider {
             return "";
         }
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> parseJsonSafely(String json) {
-        if (!StringUtils.hasText(json)) {
-            return Collections.emptyMap();
-        }
-        try {
-            return JsonUtil.parseObject(json, Map.class);
-        } catch (Exception e) {
-            log.warn("[HuaweiSmsProvider] 解析华为云响应 JSON 格式异常: {}", json, e);
-            return Collections.emptyMap();
-        }
-    }
-
-    private RestClient buildRestClient(Duration timeout) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(timeout);
-        factory.setReadTimeout(timeout);
-        return restClientBuilder.clone()
-                .requestFactory(factory)
-                .build();
     }
 }

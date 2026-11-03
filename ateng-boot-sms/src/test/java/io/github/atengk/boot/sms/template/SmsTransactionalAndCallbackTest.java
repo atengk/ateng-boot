@@ -21,9 +21,13 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionSynchronizationUtils;
 
@@ -34,6 +38,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * 本地事务感知发信、失败补偿扩展与异步回执/上行短信事件网关全维自洽单测
@@ -61,10 +68,16 @@ class SmsTransactionalAndCallbackTest {
     private SmsCallbackController smsCallbackController;
 
     @Autowired
+    private ApplicationEventPublisher eventPublisher;
+
+    @Autowired
     private TestEventListenerConfig.EventCaptureListener eventCaptureListener;
+
+    private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
+        mockMvc = MockMvcBuilders.standaloneSetup(smsCallbackController).build();
         mockSmsProvider.clear();
         eventCaptureListener.clear();
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
@@ -224,7 +237,7 @@ class SmsTransactionalAndCallbackTest {
                 ]
                 """;
 
-        Map<String, Object> resp = smsCallbackController.handleCallback("aliyun", aliyunReportJson, null, new HttpHeaders());
+        Map<String, Object> resp = smsCallbackController.handleCallback("aliyun", aliyunReportJson, null, new HttpHeaders()).getBody();
         assertNotNull(resp);
         assertEquals(0, resp.get("code"));
         assertEquals("成功", resp.get("msg"));
@@ -256,7 +269,7 @@ class SmsTransactionalAndCallbackTest {
                 ]
                 """;
 
-        Map<String, Object> resp = smsCallbackController.handleCallback("tencent", tencentReportJson, null, new HttpHeaders());
+        Map<String, Object> resp = smsCallbackController.handleCallback("tencent", tencentReportJson, null, new HttpHeaders()).getBody();
         assertNotNull(resp);
         assertEquals(0, resp.get("result"));
         assertEquals("OK", resp.get("errmsg"));
@@ -284,7 +297,7 @@ class SmsTransactionalAndCallbackTest {
                 }
                 """;
 
-        Map<String, Object> resp = smsCallbackController.handleCallback("huawei", huaweiReportJson, null, new HttpHeaders());
+        Map<String, Object> resp = smsCallbackController.handleCallback("huawei", huaweiReportJson, null, new HttpHeaders()).getBody();
         assertNotNull(resp);
         assertEquals("0", resp.get("result"));
 
@@ -312,7 +325,7 @@ class SmsTransactionalAndCallbackTest {
                 ]
                 """;
 
-        Map<String, Object> resp = smsCallbackController.handleCallback("aliyun", aliyunMoJson, null, new HttpHeaders());
+        Map<String, Object> resp = smsCallbackController.handleCallback("aliyun", aliyunMoJson, null, new HttpHeaders()).getBody();
         assertNotNull(resp);
         assertEquals(0, resp.get("code"));
 
@@ -340,7 +353,7 @@ class SmsTransactionalAndCallbackTest {
                 ]
                 """;
 
-        Map<String, Object> resp = smsCallbackController.handleCallback("tencent", tencentMoJson, null, new HttpHeaders());
+        Map<String, Object> resp = smsCallbackController.handleCallback("tencent", tencentMoJson, null, new HttpHeaders()).getBody();
         assertNotNull(resp);
         assertEquals(0, resp.get("result"));
 
@@ -351,6 +364,95 @@ class SmsTransactionalAndCallbackTest {
         assertEquals("13800030002", moEvent.getPhone());
         assertEquals("TD退订", moEvent.getContent());
         assertEquals("腾讯测试签名", moEvent.getSignName());
+    }
+
+    @Test
+    @DisplayName("测试：通过 MockMvc 模拟真实 HTTP POST 回调成功并广播领域事件")
+    void testCallback_ViaMockMvc_Success() throws Exception {
+        String reportJson = """
+                [
+                  {
+                    "phone_number": "13800050001",
+                    "send_time": "2026-11-02 20:00:00",
+                    "report_time": "2026-11-02 20:00:05",
+                    "success": true,
+                    "err_code": "DELIVRD",
+                    "err_msg": "用户接收成功",
+                    "biz_id": "MOCKMVC_BIZ_001"
+                  }
+                ]
+                """;
+
+        mockMvc.perform(post("/ateng-sms/callback/aliyun")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reportJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.msg").value("成功"));
+
+        assertEquals(1, eventCaptureListener.deliveryReportEvents.size());
+        SmsDeliveryReportEvent event = eventCaptureListener.deliveryReportEvents.get(0);
+        assertEquals("aliyun", event.getChannel());
+        assertEquals("13800050001", event.getPhone());
+        assertEquals("MOCKMVC_BIZ_001", event.getBizId());
+    }
+
+    @Test
+    @DisplayName("测试：通过 MockMvc 模拟非法渠道回调触发 Fail-Fast 返回 400 Bad Request")
+    void testCallback_ViaMockMvc_ChannelNotFound_ReturnsBadRequest() throws Exception {
+        mockMvc.perform(post("/ateng-sms/callback/unknown-illegal-channel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        assertEquals(0, eventCaptureListener.deliveryReportEvents.size());
+    }
+
+    @Test
+    @DisplayName("测试：通过 MockMvc 模拟畸形非 JSON 报文触发 400 Bad Request，杜绝静默误报成功")
+    void testCallback_ViaMockMvc_InvalidJsonPayload_ReturnsBadRequest() throws Exception {
+        mockMvc.perform(post("/ateng-sms/callback/aliyun")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("This is not a valid json payload!"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        assertEquals(0, eventCaptureListener.deliveryReportEvents.size());
+    }
+
+    @Test
+    @DisplayName("测试：配置安全 Token 时未授权请求被 401 Unauthorized 拦截")
+    void testCallback_ViaMockMvc_WithSecurityToken_UnauthorizedAndSuccess() throws Exception {
+        io.github.atengk.boot.sms.properties.SmsCallbackProperties secureProps = new io.github.atengk.boot.sms.properties.SmsCallbackProperties();
+        secureProps.setToken("SECURE_SECRET_TOKEN_999");
+        SmsCallbackController secureController = new SmsCallbackController(channelRegistry, eventPublisher, secureProps);
+        MockMvc secureMockMvc = MockMvcBuilders.standaloneSetup(secureController).build();
+
+        String validPayload = "[{\"phone_number\":\"13800060001\",\"err_code\":\"DELIVRD\",\"success\":true}]";
+
+        // 1. 无 Token 访问 -> 401
+        secureMockMvc.perform(post("/ateng-sms/callback/aliyun")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validPayload))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401));
+
+        // 2. 错误 Token 访问 -> 401
+        secureMockMvc.perform(post("/ateng-sms/callback/aliyun")
+                        .header("X-Callback-Token", "WRONG_TOKEN")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validPayload))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401));
+
+        // 3. 正确 Token 访问 -> 200 OK
+        secureMockMvc.perform(post("/ateng-sms/callback/aliyun")
+                        .header("X-Callback-Token", "SECURE_SECRET_TOKEN_999")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
     }
 
     /**

@@ -2,14 +2,17 @@ package io.github.atengk.boot.sample.sms;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.sample.sms.dto.BatchSmsSendRequest;
+import io.github.atengk.boot.sample.sms.dto.DynamicChannelRegisterRequest;
 import io.github.atengk.boot.sample.sms.dto.SendSmsRequest;
 import io.github.atengk.boot.sample.sms.dto.SendVerifyCodeRequest;
 import io.github.atengk.boot.sample.sms.dto.VerifyCodeCheckRequest;
 import io.github.atengk.boot.sample.sms.handler.SampleSmsFailureHandler;
 import io.github.atengk.boot.sample.sms.listener.SampleSmsEventListener;
+import io.github.atengk.boot.sample.sms.service.SmsScenarioService;
 import io.github.atengk.boot.sms.event.SmsDeliveryReportEvent;
 import io.github.atengk.boot.sms.event.SmsMoMessageEvent;
 import io.github.atengk.boot.sms.model.SmsChannel;
+import io.github.atengk.boot.sms.model.SmsResult;
 import io.github.atengk.boot.sms.model.SmsSupplier;
 import io.github.atengk.boot.sms.provider.MockSmsProvider;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
@@ -19,15 +22,18 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.env.Environment;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
@@ -62,9 +68,18 @@ class SampleSmsIntegrationTest {
     @Autowired
     private SampleSmsEventListener eventListener;
 
+    @Autowired
+    private SmsScenarioService smsScenarioService;
+
+    @Autowired
+    private Environment environment;
+
     @BeforeEach
     void setUp() {
-        mockSmsProvider.clear();
+        boolean isLocal = Arrays.asList(environment.getActiveProfiles()).contains("local");
+        if (!isLocal && mockSmsProvider != null) {
+            mockSmsProvider.clear();
+        }
         failureHandler.clear();
         eventListener.clear();
     }
@@ -349,5 +364,88 @@ class SampleSmsIntegrationTest {
         SmsMoMessageEvent moEvent = eventListener.getMoMessageEvents().get(0);
         assertEquals("13800088888", moEvent.getPhone());
         assertEquals("TD", moEvent.getContent());
+    }
+
+    @Test
+    @DisplayName("场景 11: 渠道列表查询与动态渠道注册 (安全脱敏 VO & 凭据隔离)")
+    void testChannel_ListAndDynamicRegister() throws Exception {
+        // 1. 查询所有已注册渠道，断言返回脱敏 VO 且绝对不泄露 accessKeySecret
+        mockMvc.perform(get("/api/sms/channel/list"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data[0].name").exists())
+                .andExpect(jsonPath("$.data[0].accessKeySecret").doesNotExist())
+                .andExpect(jsonPath("$.data[0].accessKeyId").doesNotExist());
+
+        // 2. 动态注册新渠道
+        DynamicChannelRegisterRequest req = DynamicChannelRegisterRequest.builder()
+                .name("custom-dynamic-test")
+                .supplier(SmsSupplier.MOCK)
+                .signName("动态测试签名")
+                .accessKeyId("mock-ak")
+                .accessKeySecret("mock-sk")
+                .build();
+
+        mockMvc.perform(post("/api/sms/channel/dynamic")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 3. 再次查询，验证动态渠道已成功注册
+        assertTrue(channelRegistry.getChannels().containsKey("custom-dynamic-test"), "动态注册渠道应存在于注册中心");
+    }
+
+    @Test
+    @DisplayName("场景 12: 动态注册渠道 JSR-303 参数校验 Fail-Fast")
+    void testChannel_DynamicRegisterValidationError() throws Exception {
+        DynamicChannelRegisterRequest badReq = DynamicChannelRegisterRequest.builder()
+                .name("") // 空名称
+                .supplier(null) // 空服务商
+                .build();
+
+        mockMvc.perform(post("/api/sms/channel/dynamic")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(badReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
+    }
+
+    @Test
+    @DisplayName("场景 13: 批量发信 JSR-303 集合元素级手机号格式防卫测试")
+    void testBatchSend_ElementValidationError() throws Exception {
+        // 集合内包含非法手机号 "12345"，验证集合元素校验生效
+        BatchSmsSendRequest badBatch = BatchSmsSendRequest.builder()
+                .phones(List.of("13800010001", "12345"))
+                .templateId("SMS_BATCH_TPL")
+                .build();
+
+        mockMvc.perform(post("/api/sms/batch")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(badBatch)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
+    }
+
+    @Test
+    @DisplayName("场景 14: 双模自适应本地真实公有云发信联调 (单测试套件双模)")
+    void testDualMode_RealCloudSend() {
+        boolean isLocal = Arrays.asList(environment.getActiveProfiles()).contains("local");
+        if (!isLocal) {
+            // 默认 / CI 模式下保证离线自洽，验证 Mock 渠道正常就绪
+            assertTrue(channelRegistry.getChannels().containsKey("mock"), "离线模式应包含 Mock 渠道");
+            return;
+        }
+
+        // 激活 local Profile 时全真执行发信
+        SendSmsRequest req = SendSmsRequest.builder()
+                .phone("13800138000")
+                .templateId("SMS_REAL_TEST")
+                .params(Map.of("code", "888888"))
+                .build();
+        SmsResult result = smsScenarioService.sendSingleSms(req);
+        assertNotNull(result);
+        assertTrue(result.isSuccess(), "本地真实公有云发信联调应投递成功");
     }
 }
