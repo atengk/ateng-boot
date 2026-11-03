@@ -69,6 +69,7 @@
         <module>ateng-boot-admin</module>
         <module>ateng-boot-sms</module>
         <module>ateng-boot-social</module>
+        <module>ateng-boot-liteflow</module>
     </modules>
 
     <properties>
@@ -101,6 +102,7 @@
         <xxl-job.version>3.5.0</xxl-job.version>
         <snail-job.version>1.10.0</snail-job.version>
         <dromara-anduin.version>2.2.0</dromara-anduin.version>
+        <liteflow.version>2.16.3.1</liteflow.version>
         <!-- 仅作为 ateng-boot-social 运行时支撑 dromara-anduin，严禁暴露至 ateng-boot-bom -->
         <tools-jackson.version>3.2.4</tools-jackson.version>
         <commons-lang3.version>3.18.0</commons-lang3.version>
@@ -434,6 +436,16 @@
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-social</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-liteflow</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.yomahub</groupId>
+                <artifactId>liteflow-spring-boot-starter</artifactId>
+                <version>${liteflow.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.dromara.anduin</groupId>

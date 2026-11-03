@@ -188,6 +188,11 @@
                 <version>${project.version}</version>
             </dependency>
             <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-liteflow</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>org.dromara.anduin</groupId>
                 <artifactId>dromara-anduin</artifactId>
                 <version>${dromara-anduin.version}</version>
@@ -355,6 +360,13 @@
                 <groupId>com.aizuda</groupId>
                 <artifactId>snail-job-common</artifactId>
                 <version>${snail-job.version}</version>
+            </dependency>
+
+            <!-- LiteFlow 规则编排与流程管道 Starter -->
+            <dependency>
+                <groupId>com.yomahub</groupId>
+                <artifactId>liteflow-spring-boot-starter</artifactId>
+                <version>${liteflow.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
