@@ -136,4 +136,53 @@ class DynamicRoutingChatLanguageModelTest {
 
         assertThat(response.content().text()).isEqualTo("{\"status\":\"PASSED\",\"score\":95}");
     }
+
+    @Test
+    @DisplayName("非 JSON 的普通 Markdown 代码块（如 Java/SQL）得到严格保护，不会被截断或脱壳")
+    void testPreserveNonJsonMarkdownCodeBlocks() {
+        String javaCodeOutput = """
+                以下是 Java 示例代码：
+                ```java
+                public class Hello {
+                    public static void main(String[] args) {
+                        System.out.println("Hello, World!");
+                    }
+                }
+                ```
+                祝你编程愉快！
+                """;
+        when(defaultModel.generate(anyList())).thenReturn(Response.from(AiMessage.from(javaCodeOutput)));
+
+        DynamicRoutingChatLanguageModel router = new DynamicRoutingChatLanguageModel(registry, "");
+        Response<AiMessage> response = router.generate(List.of(UserMessage.from("code")));
+
+        // 保持原始完整内容，不被错误判定为 JSON 或截取大括号
+        assertThat(response.content().text()).isEqualTo(javaCodeOutput);
+    }
+
+    @Test
+    @DisplayName("AgentCallContext 支持嵌套作用域安全入栈与退栈回溯")
+    void testNestedAgentCallContextScopeRestoration() {
+        Map<String, String> outer = Map.of("OuterMarker", "{\"layer\":1}");
+        Map<String, String> inner = Map.of("InnerMarker", "{\"layer\":2}");
+
+        try (var outerScope = AgentCallContext.openScope(outer)) {
+            assertThat(AgentCallContext.applyReplacements("Call OuterMarker"))
+                    .isEqualTo("Call {\"layer\":1}");
+
+            try (var innerScope = AgentCallContext.openScope(inner)) {
+                // 内部作用域同时可见外层与内层
+                assertThat(AgentCallContext.applyReplacements("Call OuterMarker and InnerMarker"))
+                        .isEqualTo("Call {\"layer\":1} and {\"layer\":2}");
+            }
+
+            // 退出内部作用域后，精准恢复外层上下文
+            assertThat(AgentCallContext.applyReplacements("Call OuterMarker and InnerMarker"))
+                    .isEqualTo("Call {\"layer\":1} and InnerMarker");
+        }
+
+        // 退出外层作用域后彻底清理
+        assertThat(AgentCallContext.applyReplacements("Call OuterMarker"))
+                .isEqualTo("Call OuterMarker");
+    }
 }

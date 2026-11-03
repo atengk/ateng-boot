@@ -88,4 +88,30 @@ class AiAgentRegistrarTest {
             assertThat(agent.echo("hello auto")).isEqualTo("auto echo");
         }
     }
+
+    @Configuration
+    @AiAgentScan(basePackages = "io.github.atengk.boot.ai.nonexistent")
+    @Import(AiAgentRegistrar.class)
+    static class OverrideScanConfig {
+        @Bean
+        public AiModelRegistry aiModelRegistry() {
+            AiModelRegistry registry = new AiModelRegistry();
+            ChatLanguageModel mockModel = mock(ChatLanguageModel.class);
+            registry.registerDefault(mockModel, null, "default");
+            return registry;
+        }
+    }
+
+    @Test
+    @DisplayName("显式声明 @AiAgentScan 时成功抑制并覆盖 AutoConfigurationPackages 默认主包探测")
+    void testExplicitScanOverridesAutoDetect() {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            AutoConfigurationPackages.register(context, ScannedAgent.class.getPackageName());
+            context.register(OverrideScanConfig.class);
+            context.refresh();
+
+            // 因为显式指定了不存在的子包，默认主包扫描被抑制，因此 ScannedAgent 不应被注册
+            assertThat(context.containsBean("scannedAgent")).isFalse();
+        }
+    }
 }

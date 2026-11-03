@@ -61,6 +61,12 @@ class AiAgentFactoryBeanTest {
         String askWithTemplate(@V("role") String role, @V("question") String question);
     }
 
+    @AiAgent
+    @dev.langchain4j.service.SystemMessage("你是一个企业级系统助理")
+    interface TestInterfaceLevelSystemAgent {
+        String answer(String question);
+    }
+
     private AiModelRegistry registry;
     private ChatLanguageModel defaultChatModel;
     private ChatLanguageModel deepseekChatModel;
@@ -202,5 +208,51 @@ class AiAgentFactoryBeanTest {
             verify(deepseekChatModel).generate(anyList());
             verifyNoInteractions(defaultChatModel);
         }
+    }
+
+    @Test
+    @DisplayName("完整支持接口级 @SystemMessage 声明并传递给底层模型")
+    void testInterfaceLevelSystemMessage() {
+        when(defaultChatModel.generate(anyList())).thenReturn(Response.from(AiMessage.from("已收到指令")));
+
+        AiAgentFactoryBean<TestInterfaceLevelSystemAgent> factoryBean = new AiAgentFactoryBean<>();
+        factoryBean.setAgentInterface(TestInterfaceLevelSystemAgent.class);
+        factoryBean.setApplicationContext(applicationContext);
+        factoryBean.afterPropertiesSet();
+
+        TestInterfaceLevelSystemAgent agent = factoryBean.getObject();
+        String result = agent.answer("系统状态");
+        assertThat(result).isEqualTo("已收到指令");
+
+        ArgumentCaptor<List> captor = ArgumentCaptor.forClass(List.class);
+        verify(defaultChatModel).generate(captor.capture());
+
+        List messages = captor.getValue();
+        boolean hasSystemPrompt = false;
+        for (Object msgObj : messages) {
+            if (msgObj instanceof dev.langchain4j.data.message.SystemMessage sm) {
+                if ("你是一个企业级系统助理".equals(sm.text())) {
+                    hasSystemPrompt = true;
+                }
+            }
+        }
+        assertThat(hasSystemPrompt).isTrue();
+    }
+
+    @Test
+    @DisplayName("显式指定 chatMemory Bean 名称时正确绑定指定的会话记忆提供者")
+    void testExplicitChatMemoryLookup() {
+        dev.langchain4j.memory.chat.ChatMemoryProvider mockProvider = mock(dev.langchain4j.memory.chat.ChatMemoryProvider.class);
+        when(applicationContext.getBean("customChatMemory")).thenReturn(mockProvider);
+
+        AiAgentFactoryBean<TestAuditAgent> factoryBean = new AiAgentFactoryBean<>();
+        factoryBean.setAgentInterface(TestAuditAgent.class);
+        factoryBean.setChatMemory("customChatMemory");
+        factoryBean.setApplicationContext(applicationContext);
+        factoryBean.afterPropertiesSet();
+
+        TestAuditAgent agent = factoryBean.getObject();
+        assertThat(agent).isNotNull();
+        verify(applicationContext).getBean("customChatMemory");
     }
 }

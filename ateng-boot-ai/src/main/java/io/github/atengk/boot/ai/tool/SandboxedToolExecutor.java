@@ -101,8 +101,8 @@ public class SandboxedToolExecutor implements ToolExecutor {
 
             // 致命系统级严重错误坚决 Fail-Fast
             if (targetEx instanceof Error error) {
-                log.error("[AI-TOOL-EXEC] [traceId: {}] Fatal system error executing tool [{}] in {} ms",
-                        traceId, toolName, duration, error);
+                log.error("[AI-TOOL-EXEC] [traceId: {}] Fatal system error executing tool [{}] in {} ms: {}",
+                        traceId, toolName, duration, error.getMessage());
                 throw error;
             }
 

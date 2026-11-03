@@ -57,7 +57,12 @@ public enum AiResultCode implements IResultCode {
     /**
      * 智能体代理配置或依赖装配错误
      */
-    AI_AGENT_CONFIG_ERROR(61009, "智能体代理配置或依赖装配错误");
+    AI_AGENT_CONFIG_ERROR(61009, "智能体代理配置或依赖装配错误"),
+
+    /**
+     * 智能体会话记忆存储读写失败
+     */
+    AI_MEMORY_STORE_ERROR(61010, "智能体会话记忆存储读写失败");
 
     private final Integer code;
     private final String msg;

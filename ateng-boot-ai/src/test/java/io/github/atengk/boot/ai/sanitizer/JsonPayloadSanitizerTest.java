@@ -163,4 +163,19 @@ class JsonPayloadSanitizerTest {
                 .hasFieldOrPropertyWithValue("resultCode", AiResultCode.AI_RESPONSE_PARSE_ERROR)
                 .hasMessageContaining("得分不能小于0");
     }
+
+    @Test
+    @DisplayName("精准识别 Markdown JSON 代码块，排除非 JSON 代码块（如 Java、SQL 等）")
+    void testHasMarkdownJsonBlockIdentification() {
+        assertThat(JsonPayloadSanitizer.hasMarkdownJsonBlock("```json\n{\"a\":1}\n```")).isTrue();
+        assertThat(JsonPayloadSanitizer.hasMarkdownJsonBlock("```\n{\"a\":1}\n```")).isTrue();
+        assertThat(JsonPayloadSanitizer.hasMarkdownJsonBlock("```\n[1, 2, 3]\n```")).isTrue();
+
+        // 非 JSON 代码块及普通文本
+        assertThat(JsonPayloadSanitizer.hasMarkdownJsonBlock("```java\nclass Foo {}\n```")).isFalse();
+        assertThat(JsonPayloadSanitizer.hasMarkdownJsonBlock("```sql\nSELECT 1;\n```")).isFalse();
+        assertThat(JsonPayloadSanitizer.hasMarkdownJsonBlock("```python\nprint(1)\n```")).isFalse();
+        assertThat(JsonPayloadSanitizer.hasMarkdownJsonBlock("这是一段普通问答文本，没有代码块")).isFalse();
+        assertThat(JsonPayloadSanitizer.hasMarkdownJsonBlock(null)).isFalse();
+    }
 }

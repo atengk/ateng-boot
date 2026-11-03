@@ -39,6 +39,8 @@ public class AiAgentRegistrar implements ImportBeanDefinitionRegistrar, Resource
 
     private static final Logger log = LoggerFactory.getLogger(AiAgentRegistrar.class);
 
+    private static final String SCAN_MARKER_BEAN_NAME = "io.github.atengk.boot.ai.registrar.AiAgentScanMarker";
+
     private ResourceLoader resourceLoader;
     private Environment environment;
     private BeanFactory beanFactory;
@@ -60,6 +62,14 @@ public class AiAgentRegistrar implements ImportBeanDefinitionRegistrar, Resource
 
     @Override
     public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
+        boolean isExplicitScan = importingClassMetadata != null && importingClassMetadata.hasAnnotation(AiAgentScan.class.getName());
+        if (isExplicitScan) {
+            markExplicitScan(registry);
+        } else if (hasExplicitAiAgentScan(registry)) {
+            log.info("检测到应用显式声明了 @AiAgentScan，跳过 AutoConfigurationPackages 默认主程序包探测扫描");
+            return;
+        }
+
         Set<String> basePackages = getBasePackages(importingClassMetadata, registry);
         if (basePackages.isEmpty()) {
             log.debug("未发现待扫描的智能体基础包，跳过 @AiAgent 接口注册");
@@ -91,6 +101,28 @@ public class AiAgentRegistrar implements ImportBeanDefinitionRegistrar, Resource
                 }
             }
         }
+    }
+
+    private void markExplicitScan(BeanDefinitionRegistry registry) {
+        if (!registry.containsBeanDefinition(SCAN_MARKER_BEAN_NAME)) {
+            registry.registerBeanDefinition(SCAN_MARKER_BEAN_NAME,
+                    BeanDefinitionBuilder.genericBeanDefinition(Object.class).getBeanDefinition());
+        }
+    }
+
+    private boolean hasExplicitAiAgentScan(BeanDefinitionRegistry registry) {
+        if (registry.containsBeanDefinition(SCAN_MARKER_BEAN_NAME)) {
+            return true;
+        }
+        for (String beanName : registry.getBeanDefinitionNames()) {
+            BeanDefinition bd = registry.getBeanDefinition(beanName);
+            if (bd instanceof AnnotatedBeanDefinition abd) {
+                if (abd.getMetadata().hasAnnotation(AiAgentScan.class.getName())) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void registerAgentBeanDefinition(AnnotatedBeanDefinition beanDefinition, BeanDefinitionRegistry registry) {

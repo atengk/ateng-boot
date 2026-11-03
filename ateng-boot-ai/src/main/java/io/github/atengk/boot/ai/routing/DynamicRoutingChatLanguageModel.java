@@ -54,27 +54,31 @@ public class DynamicRoutingChatLanguageModel implements ChatLanguageModel {
 
     @Override
     public Response<AiMessage> generate(List<ChatMessage> messages) {
-        List<ChatMessage> preprocessed = preprocessMessages(messages);
-        Response<AiMessage> response = resolveModel().generate(preprocessed);
-        return postprocessResponse(response);
+        return executeWithRouting(messages, (model, preprocessed) -> model.generate(preprocessed));
     }
 
     @Override
     public Response<AiMessage> generate(List<ChatMessage> messages, List<ToolSpecification> toolSpecifications) {
-        List<ChatMessage> preprocessed = preprocessMessages(messages);
-        Response<AiMessage> response = resolveModel().generate(preprocessed, toolSpecifications);
-        return postprocessResponse(response);
+        return executeWithRouting(messages, (model, preprocessed) -> model.generate(preprocessed, toolSpecifications));
     }
 
     @Override
     public Response<AiMessage> generate(List<ChatMessage> messages, ToolSpecification toolSpecification) {
+        return executeWithRouting(messages, (model, preprocessed) -> model.generate(preprocessed, toolSpecification));
+    }
+
+    /**
+     * 统一路由执行骨架：消息前置预处理 -> 解析目标模型 -> 底层调用 -> 响应安全后置处理
+     */
+    private Response<AiMessage> executeWithRouting(List<ChatMessage> messages,
+                                                   java.util.function.BiFunction<ChatLanguageModel, List<ChatMessage>, Response<AiMessage>> executor) {
         List<ChatMessage> preprocessed = preprocessMessages(messages);
-        Response<AiMessage> response = resolveModel().generate(preprocessed, toolSpecification);
+        Response<AiMessage> response = executor.apply(resolveModel(), preprocessed);
         return postprocessResponse(response);
     }
 
     /**
-     * 前置处理消息：针对包含复合对象入参的 UserMessage，自动应用 JSON 格式化替换
+     * 前置处理消息：针对包含复合对象入参的 UserMessage / SystemMessage，自动应用 JSON 格式化替换
      */
     private List<ChatMessage> preprocessMessages(List<ChatMessage> messages) {
         if (messages == null || messages.isEmpty()) {
@@ -84,31 +88,40 @@ public class DynamicRoutingChatLanguageModel implements ChatLanguageModel {
         boolean modified = false;
 
         for (ChatMessage msg : messages) {
-            if (msg instanceof UserMessage um) {
-                String original = um.singleText();
-                String replaced = AgentCallContext.applyReplacements(original);
-                if (replaced != null && !replaced.equals(original)) {
-                    result.add(UserMessage.from(replaced));
-                    modified = true;
-                    continue;
-                }
-            } else if (msg instanceof SystemMessage sm) {
-                String original = sm.text();
-                String replaced = AgentCallContext.applyReplacements(original);
-                if (replaced != null && !replaced.equals(original)) {
-                    result.add(SystemMessage.from(replaced));
-                    modified = true;
-                    continue;
-                }
+            ChatMessage processed = processSingleMessage(msg);
+            if (processed != msg) {
+                result.add(processed);
+                modified = true;
+            } else {
+                result.add(msg);
             }
-            result.add(msg);
         }
 
         return modified ? result : messages;
     }
 
     /**
-     * 后置处理响应：剥除返回内容中的 Markdown 代码块语法糖（```json ... ```）
+     * 对单条消息执行入参标记替换，收敛重复分支逻辑
+     */
+    private ChatMessage processSingleMessage(ChatMessage msg) {
+        if (msg instanceof UserMessage um) {
+            String original = um.singleText();
+            String replaced = AgentCallContext.applyReplacements(original);
+            if (replaced != null && !replaced.equals(original)) {
+                return UserMessage.from(replaced);
+            }
+        } else if (msg instanceof SystemMessage sm) {
+            String original = sm.text();
+            String replaced = AgentCallContext.applyReplacements(original);
+            if (replaced != null && !replaced.equals(original)) {
+                return SystemMessage.from(replaced);
+            }
+        }
+        return msg;
+    }
+
+    /**
+     * 后置处理响应：仅当包含 Markdown ```json 结构化代码块时剥除外壳，严格保护普通 Markdown 文本与非 JSON 代码块
      */
     private Response<AiMessage> postprocessResponse(Response<AiMessage> response) {
         if (response == null || response.content() == null) {
@@ -116,7 +129,7 @@ public class DynamicRoutingChatLanguageModel implements ChatLanguageModel {
         }
         AiMessage content = response.content();
         String text = content.text();
-        if (StringUtils.hasText(text) && text.contains("```")) {
+        if (StringUtils.hasText(text) && text.contains("```") && JsonPayloadSanitizer.hasMarkdownJsonBlock(text)) {
             String sanitized = JsonPayloadSanitizer.sanitize(text);
             if (StringUtils.hasText(sanitized) && !sanitized.equals(text)) {
                 AiMessage newContent = content.hasToolExecutionRequests()

@@ -23,6 +23,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -43,6 +44,7 @@ import java.util.List;
  * @since 2026-11-03
  */
 @AutoConfiguration
+@AutoConfigureAfter(name = "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration")
 @ConditionalOnClass(OpenAiChatModel.class)
 @ConditionalOnProperty(prefix = "ateng.boot.ai", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(AtengAiProperties.class)
@@ -205,16 +207,19 @@ public class AtengAiAutoConfiguration {
                     throw new AiException(AiResultCode.AI_CONFIG_ERROR,
                             "已配置 ateng.boot.ai.chat-memory.type=REDIS，但 Spring 容器中未找到 StringRedisTemplate Bean，请检查 Redis 依赖与连接配置");
                 }
-                log.info("AI 会话记忆启用分布式 Redis 存储 [keyPrefix={}, ttl={}]", config.getKeyPrefix(), config.getTtl());
-                return new RedisChatMemoryStore(redisTemplate, config.getKeyPrefix(), config.getTtl());
+                return createRedisStore(redisTemplate, config, "");
             }
 
             if (config.getType() == ChatMemoryStoreType.AUTO && redisTemplate != null) {
-                log.info("AI 会话记忆自动探测探测到 Redis，启用分布式 Redis 存储 [keyPrefix={}, ttl={}]", config.getKeyPrefix(), config.getTtl());
-                return new RedisChatMemoryStore(redisTemplate, config.getKeyPrefix(), config.getTtl());
+                return createRedisStore(redisTemplate, config, "自动探测到 Redis，");
             }
 
             return new InMemoryChatMemoryStore();
+        }
+
+        private ChatMemoryStore createRedisStore(StringRedisTemplate redisTemplate, ChatMemoryProperties config, String modeDesc) {
+            log.info("AI 会话记忆{}启用分布式 Redis 存储 [keyPrefix={}, ttl={}]", modeDesc, config.getKeyPrefix(), config.getTtl());
+            return new RedisChatMemoryStore(redisTemplate, config.getKeyPrefix(), config.getTtl());
         }
     }
 

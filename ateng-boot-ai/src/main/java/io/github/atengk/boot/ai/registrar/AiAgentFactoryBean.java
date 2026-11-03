@@ -66,7 +66,7 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
     private String chatMemory;
 
     private ApplicationContext applicationContext;
-    private T proxyInstance;
+    private volatile T proxyInstance;
 
     @Override
     public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
@@ -101,6 +101,20 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
         AiServices<T> builder = AiServices.builder(agentInterface)
                 .chatLanguageModel(routingModel);
 
+        // 3.1 解析接口级 @SystemMessage 系统提示词
+        dev.langchain4j.service.SystemMessage interfaceSystemMessage = agentInterface.getAnnotation(dev.langchain4j.service.SystemMessage.class);
+        if (interfaceSystemMessage != null) {
+            String systemText;
+            if (StringUtils.hasText(interfaceSystemMessage.fromResource())) {
+                systemText = loadResourceText(agentInterface, interfaceSystemMessage.fromResource().trim());
+            } else {
+                systemText = String.join(interfaceSystemMessage.delimiter(), interfaceSystemMessage.value());
+            }
+            if (StringUtils.hasText(systemText)) {
+                builder.systemMessageProvider(memoryId -> systemText);
+            }
+        }
+
         // 4. 解析受管工具类列表并接入 ToolExecutionSandbox 局部沙箱
         if (tools != null && tools.length > 0) {
             Map<ToolSpecification, ToolExecutor> sandboxedTools = ToolExecutionSandbox.buildSandboxedTools(
@@ -110,16 +124,37 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
             }
         }
 
-        // 5. 挂载 ChatMemoryProvider 会话记忆提供者
-        Map<String, ChatMemoryProvider> memoryProviders = applicationContext.getBeansOfType(ChatMemoryProvider.class);
-        if (memoryProviders.size() == 1) {
-            builder.chatMemoryProvider(memoryProviders.values().iterator().next());
-        } else if (memoryProviders.size() > 1) {
-            ChatMemoryProvider primaryProvider = applicationContext.getBeanProvider(ChatMemoryProvider.class).getIfUnique();
-            if (primaryProvider != null) {
-                builder.chatMemoryProvider(primaryProvider);
-            } else {
+        // 5. 挂载 ChatMemoryProvider / ChatMemory 会话记忆
+        if (StringUtils.hasText(chatMemory)) {
+            try {
+                Object memoryBean = applicationContext.getBean(chatMemory.trim());
+                if (memoryBean instanceof ChatMemoryProvider provider) {
+                    builder.chatMemoryProvider(provider);
+                } else if (memoryBean instanceof dev.langchain4j.memory.ChatMemory memory) {
+                    builder.chatMemory(memory);
+                } else {
+                    throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
+                            "智能体 [" + agentInterface.getSimpleName() + "] 显式指定的 chatMemory Bean ["
+                                    + chatMemory + "] 类型不是 ChatMemoryProvider 或 ChatMemory: " + memoryBean.getClass().getName());
+                }
+            } catch (NoSuchBeanDefinitionException e) {
+                throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
+                        "智能体 [" + agentInterface.getSimpleName() + "] 显式指定的 chatMemory Bean ["
+                                + chatMemory + "] 在 Spring 容器中未找到", e);
+            }
+        } else {
+            // 缺省自动装配单 Bean
+            Map<String, ChatMemoryProvider> memoryProviders = applicationContext.getBeansOfType(ChatMemoryProvider.class);
+            if (memoryProviders.size() == 1) {
                 builder.chatMemoryProvider(memoryProviders.values().iterator().next());
+            } else if (memoryProviders.size() > 1) {
+                ChatMemoryProvider primaryProvider = applicationContext.getBeanProvider(ChatMemoryProvider.class).getIfUnique();
+                if (primaryProvider != null) {
+                    builder.chatMemoryProvider(primaryProvider);
+                } else {
+                    log.warn("Spring 容器中存在多个 ChatMemoryProvider Bean，智能体 [{}] 未显式指定 chatMemory 名称且无 @Primary 标注，跳过自动装配",
+                            agentInterface.getSimpleName());
+                }
             }
         }
 
@@ -182,8 +217,6 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                 try {
                     ValidatorUtil.validate(result);
                 } catch (BusinessException be) {
-                    log.warn("智能体 [{}] 方法 [{}] 响应对象未通过 JSR-303 格式校验: {}",
-                            agentInterface.getSimpleName(), method.getName(), be.getMessage());
                     throw new AiException(AiResultCode.AI_RESPONSE_PARSE_ERROR,
                             "智能体响应结构化数据未通过 JSR-303 校验: " + be.getMessage(), be);
                 }
@@ -233,6 +266,22 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
             return false;
         }
         return true;
+    }
+
+    private static String loadResourceText(Class<?> clazz, String resourcePath) {
+        try (var in = clazz.getResourceAsStream(resourcePath)) {
+            if (in == null) {
+                throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
+                        "智能体接口 [" + clazz.getSimpleName() + "] 声明的 @SystemMessage 资源未找到: " + resourcePath);
+            }
+            return new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            if (e instanceof AiException aiException) {
+                throw aiException;
+            }
+            throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
+                    "读取智能体接口 [" + clazz.getSimpleName() + "] @SystemMessage 资源失败: " + resourcePath, e);
+        }
     }
 
     @Override

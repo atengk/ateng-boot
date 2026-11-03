@@ -4,6 +4,8 @@ import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.ChatMessageSerializer;
 import dev.langchain4j.data.message.UserMessage;
+import io.github.atengk.boot.ai.exception.AiException;
+import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.memory.store.RedisChatMemoryStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -16,6 +18,9 @@ import java.time.Duration;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -128,5 +133,25 @@ class RedisChatMemoryStoreTest {
         assertThat(store.getMessageCount(null)).isEqualTo(0);
         store.updateMessages(null, null);
         store.deleteMessages(null);
+    }
+
+    @Test
+    @DisplayName("写入或删除 Redis 会话记忆异常时抛出受管业务异常，杜绝静默失败")
+    void testUpdateAndDeleteFailureThrowsAiException() {
+        doThrow(new RuntimeException("Redis cluster down"))
+                .when(valueOperations).set(anyString(), anyString(), any(Duration.class));
+
+        assertThatThrownBy(() -> store.updateMessages("sess_fail", List.of(UserMessage.from("hi"))))
+                .isInstanceOf(AiException.class)
+                .hasFieldOrPropertyWithValue("resultCode", AiResultCode.AI_MEMORY_STORE_ERROR)
+                .hasMessageContaining("向 Redis 写入智能体会话记忆失败");
+
+        doThrow(new RuntimeException("Redis connection refused"))
+                .when(stringRedisTemplate).delete("ai:chat:memory:sess_fail");
+
+        assertThatThrownBy(() -> store.deleteMessages("sess_fail"))
+                .isInstanceOf(AiException.class)
+                .hasFieldOrPropertyWithValue("resultCode", AiResultCode.AI_MEMORY_STORE_ERROR)
+                .hasMessageContaining("从 Redis 删除智能体会话记忆失败");
     }
 }

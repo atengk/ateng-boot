@@ -26,15 +26,35 @@ public final class JsonPayloadSanitizer {
     private static final Logger log = LoggerFactory.getLogger(JsonPayloadSanitizer.class);
 
     /**
-     * 匹配 Markdown 代码块的正则表达式（捕获 ```json 或 ``` 包裹的内容）
+     * 匹配 Markdown 代码块的正则表达式（捕获语言标记与代码块内容）
      */
     private static final Pattern MARKDOWN_CODE_BLOCK_PATTERN = Pattern.compile(
-            "```(?:json)?\\s*([\\s\\S]*?)\\s*```",
-            Pattern.CASE_INSENSITIVE
+            "```([a-zA-Z0-9_-]*)\\s*([\\s\\S]*?)\\s*```"
     );
 
     private JsonPayloadSanitizer() {
         // 工具类私有构造
+    }
+
+    /**
+     * 判断文本中是否包含 Markdown JSON 代码块（```json ... ``` 或未标记语言但呈现纯 JSON 结构的 ``` ... ```）
+     *
+     * @param raw 原始文本
+     * @return 是否包含 Markdown JSON 代码块
+     */
+    public static boolean hasMarkdownJsonBlock(String raw) {
+        if (!StringUtils.hasText(raw) || !raw.contains("```")) {
+            return false;
+        }
+        Matcher matcher = MARKDOWN_CODE_BLOCK_PATTERN.matcher(raw);
+        while (matcher.find()) {
+            String lang = matcher.group(1).trim().toLowerCase();
+            String content = matcher.group(2).trim();
+            if ("json".equals(lang) || (lang.isEmpty() && isJsonLikely(content))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -59,17 +79,32 @@ public final class JsonPayloadSanitizer {
             return "";
         }
 
-        // 2. 尝试从 Markdown 代码块（```json ... ```）中提取内容
+        // 2. 尝试从 Markdown 代码块（```json ... ``` 或空语言 JSON 块）中提取内容
         Matcher matcher = MARKDOWN_CODE_BLOCK_PATTERN.matcher(text);
-        if (matcher.find()) {
-            String extracted = matcher.group(1).trim();
-            if (StringUtils.hasText(extracted)) {
-                return extractJsonBrackets(extracted);
+        while (matcher.find()) {
+            String lang = matcher.group(1).trim().toLowerCase();
+            String content = matcher.group(2).trim();
+            if ("json".equals(lang) || (lang.isEmpty() && isJsonLikely(content))) {
+                if (StringUtils.hasText(content)) {
+                    return extractJsonBrackets(content);
+                }
             }
         }
 
         // 3. 兜底处理：若无完整代码块，但在首尾包含非 JSON 对话噪点（如 "Here is the result: {...}"）
         return extractJsonBrackets(text);
+    }
+
+    /**
+     * 快速启发式判断字符串是否可能为 JSON 对象或数组
+     */
+    private static boolean isJsonLikely(String content) {
+        if (!StringUtils.hasText(content)) {
+            return false;
+        }
+        String trimmed = content.trim();
+        return (trimmed.startsWith("{") && trimmed.endsWith("}"))
+                || (trimmed.startsWith("[") && trimmed.endsWith("]"));
     }
 
     /**
@@ -131,7 +166,6 @@ public final class JsonPayloadSanitizer {
         try {
             result = JsonUtil.parseObject(sanitized, targetClass);
         } catch (Exception e) {
-            log.warn("大模型响应反序列化为类型 [{}] 失败，去噪后载荷: [{}]", targetClass.getSimpleName(), sanitized, e);
             throw new AiException(AiResultCode.AI_RESPONSE_PARSE_ERROR,
                     "大模型响应反序列化为 [" + targetClass.getSimpleName() + "] 失败: " + e.getMessage(), e);
         }
@@ -145,7 +179,6 @@ public final class JsonPayloadSanitizer {
         try {
             ValidatorUtil.validate(result, groups);
         } catch (BusinessException e) {
-            log.warn("大模型强类型输出 [{}] 未通过 JSR-303 校验: {}", targetClass.getSimpleName(), e.getMessage());
             throw new AiException(AiResultCode.AI_RESPONSE_PARSE_ERROR,
                     "大模型结构化响应未通过 JSR-303 校验: " + e.getMessage(), e);
         } catch (Throwable t) {

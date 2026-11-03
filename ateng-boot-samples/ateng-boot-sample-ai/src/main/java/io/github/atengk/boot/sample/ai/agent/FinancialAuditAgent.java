@@ -17,6 +17,7 @@ import io.github.atengk.boot.sample.ai.vo.FinancialAuditResult;
  * @since 2026-11-03
  */
 @AiAgent(tools = {OrderTools.class})
+@SystemMessage("你是一名资深财务合规审计专家，请调用工具查询订单与仓储履约状态，并给出客观严谨的合规审计决策报告。请以 JSON 格式输出，包含 status、analysis、riskScore、riskTags 字段。")
 public interface FinancialAuditAgent {
 
     /**
@@ -25,7 +26,6 @@ public interface FinancialAuditAgent {
      * @param request 财务合规审计请求
      * @return 财务合规审计决策报告
      */
-    @SystemMessage("你是一名资深财务合规审计专家，请调用工具查询订单与仓储履约状态，并给出客观严谨的合规审计决策报告。请以 JSON 格式输出，包含 status、analysis、riskScore、riskTags 字段。")
     FinancialAuditResult auditOrder(@UserMessage FinancialAuditRequest request);
 
     /**
@@ -35,6 +35,5 @@ public interface FinancialAuditAgent {
      * @param request   财务合规审计请求
      * @return 财务合规审计决策报告
      */
-    @SystemMessage("你是一名资深财务合规审计专家，请调用工具查询订单与仓储履约状态，并给出客观严谨的合规审计决策报告。请以 JSON 格式输出，包含 status、analysis、riskScore、riskTags 字段。")
     FinancialAuditResult auditOrderWithSession(@MemoryId String sessionId, @UserMessage FinancialAuditRequest request);
 }

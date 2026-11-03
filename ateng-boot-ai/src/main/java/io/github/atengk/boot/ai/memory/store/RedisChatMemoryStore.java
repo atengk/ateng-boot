@@ -3,6 +3,8 @@ package io.github.atengk.boot.ai.memory.store;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.ChatMessageDeserializer;
 import dev.langchain4j.data.message.ChatMessageSerializer;
+import io.github.atengk.boot.ai.exception.AiException;
+import io.github.atengk.boot.ai.exception.AiResultCode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -83,7 +85,8 @@ public class RedisChatMemoryStore implements ChatMemoryStore {
                 stringRedisTemplate.opsForValue().set(key, json);
             }
         } catch (Exception e) {
-            log.warn("[AI-REDIS-MEMORY] 写入 Redis 会话记忆失败 [key={}]: {}", key, e.getMessage(), e);
+            throw new AiException(AiResultCode.AI_MEMORY_STORE_ERROR,
+                    "向 Redis 写入智能体会话记忆失败 [key=" + key + "]: " + e.getMessage(), e);
         }
     }
 
@@ -96,7 +99,8 @@ public class RedisChatMemoryStore implements ChatMemoryStore {
         try {
             stringRedisTemplate.delete(key);
         } catch (Exception e) {
-            log.warn("[AI-REDIS-MEMORY] 删除 Redis 会话记忆失败 [key={}]: {}", key, e.getMessage(), e);
+            throw new AiException(AiResultCode.AI_MEMORY_STORE_ERROR,
+                    "从 Redis 删除智能体会话记忆失败 [key=" + key + "]: " + e.getMessage(), e);
         }
     }
 
