@@ -62,7 +62,32 @@ public enum AiResultCode implements IResultCode {
     /**
      * 智能体会话记忆存储读写失败
      */
-    AI_MEMORY_STORE_ERROR(61010, "智能体会话记忆存储读写失败");
+    AI_MEMORY_STORE_ERROR(61010, "智能体会话记忆存储读写失败"),
+
+    /**
+     * 未找到指定名称的认知状态图工作流
+     */
+    AI_GRAPH_WORKFLOW_NOT_FOUND(61011, "未找到指定名称的认知状态图工作流"),
+
+    /**
+     * 认知图检查点快照不存在
+     */
+    AI_GRAPH_SNAPSHOT_NOT_FOUND(61012, "认知图检查点快照不存在"),
+
+    /**
+     * 认知状态图工作流非挂起状态或已在执行，严禁重复恢复
+     */
+    AI_GRAPH_ALREADY_RESUMED(61013, "认知状态图工作流非挂起状态或已在执行，严禁重复恢复"),
+
+    /**
+     * 认知图并发审批竞争中，请勿重复操作
+     */
+    AI_GRAPH_LOCK_CONFLICT(61014, "认知图并发审批竞争中，请勿重复操作"),
+
+    /**
+     * 认知状态图工作流已被撤销，无法恢复执行
+     */
+    AI_GRAPH_ALREADY_CANCELLED(61015, "认知状态图工作流已被撤销，无法恢复执行");
 
     private final Integer code;
     private final String msg;

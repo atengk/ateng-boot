@@ -5,6 +5,8 @@ import io.github.atengk.boot.ai.checkpoint.MemoryCheckpointSaver;
 import io.github.atengk.boot.ai.checkpoint.RedisCheckpointSaver;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.graph.GraphWorkflow;
+import io.github.atengk.boot.ai.graph.GraphWorkflowRegistry;
 import io.github.atengk.boot.ai.properties.AtengAiGraphProperties;
 import io.github.atengk.boot.ai.properties.CheckpointStoreType;
 import org.bsc.langgraph4j.StateGraph;
@@ -20,6 +22,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.data.redis.core.StringRedisTemplate;
+
+import java.util.List;
 
 /**
  * 认知状态图底座自动装配类
@@ -74,5 +78,17 @@ public class AtengAiGraphAutoConfiguration {
 
         log.info("AI 状态图检查点启用单机内存存储 (MemoryCheckpointSaver)");
         return new MemoryCheckpointSaver();
+    }
+
+    /**
+     * 自动装配认知图工作流全局注册表
+     *
+     * @param workflowsProvider 工作流 Bean 列表提供者
+     * @return 注册表实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public GraphWorkflowRegistry graphWorkflowRegistry(ObjectProvider<List<GraphWorkflow<?>>> workflowsProvider) {
+        return new GraphWorkflowRegistry(workflowsProvider);
     }
 }

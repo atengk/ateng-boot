@@ -98,6 +98,15 @@ class AtengAiGraphAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("默认装配 GraphWorkflowRegistry 注册表单例 Bean")
+    void testGraphWorkflowRegistryAutoConfigured() {
+        contextRunner.run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(io.github.atengk.boot.ai.graph.GraphWorkflowRegistry.class);
+        });
+    }
+
+    @Test
     @DisplayName("Bean 缺省守卫：下游声明自定义 GraphCheckpointSaver 时平滑接管")
     void testCustomBeanTakesPrecedence() {
         contextRunner.withUserConfiguration(CustomSaverConfiguration.class, RedisMockConfiguration.class)
