@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<flow>
+    <!-- 动态规则底座预置链：入参校验 -> 回声输出 -->
+    <chain name="dynamic-preset-chain">
+        THEN(
+            dynamicValidateCmp,
+            dynamicEchoCmp
+        );
+    </chain>
+</flow>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<flow>
+    <!-- 订单履约流转编排：库存锁定扣减 -> 仓储物流运单派发 -> 发货通知投递（任一节点故障自动逆序 rollback 补偿） -->
+    <chain name="order-fulfillment-flow">
+        THEN(
+            deductInventoryCmp,
+            createWarehouseOrderCmp,
+            sendShippingNoticeCmp
+        );
+    </chain>
+</flow>

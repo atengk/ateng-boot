@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<flow>
+    <!-- 金融信贷风控审批编排：IF黑名单前置阻断 -> 并行反欺诈与征信评估 -> SWITCH三路决策分流(核准/人工/拒绝) -->
+    <chain name="risk-approval-flow">
+        IF(checkBlacklistIfCmp,
+            loanRejectCmp,
+            THEN(
+                WHEN(antiFraudCheckCmp, creditScoreCheckCmp),
+                SWITCH(riskDecisionSwitchCmp).to(loanPassCmp, manualReviewCmp, loanRejectCmp)
+            )
+        );
+    </chain>
+</flow>
