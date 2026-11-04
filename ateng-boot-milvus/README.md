@@ -371,40 +371,80 @@ milvusTemplate.dropDatabase("tenant_db_old");
 
 ---
 
-### 4.7 LangChain4j EmbeddingStore SPI 适配与 RAG 集成
+### 4.7 多模态以图搜图与商品特征检索实战
+
+#### 业务模型定义
+```java
+package com.example.demo.entity;
+
+import io.github.atengk.boot.milvus.annotation.*;
+import io.milvus.v2.common.IndexParam;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.List;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@MilvusCollection(name = "item_image_features", description = "电商商品视觉特征库")
+public class ItemImageEntity {
+
+    @MilvusId(description = "图片特征唯一ID")
+    private Long id;
+
+    @MilvusField(name = "item_id", description = "关联商品ID")
+    private Long itemId;
+
+    @MilvusPartitionKey(description = "商品一级类目分区键")
+    private String category;
+
+    @MilvusField(name = "image_url", maxLength = 512, description = "图片原始访问URL")
+    private String imageUrl;
+
+    @MilvusVector(dimension = 512, metricType = IndexParam.MetricType.COSINE, indexType = IndexParam.IndexType.HNSW)
+    private List<Float> featureVector;
+}
+```
 
 #### YAML 配置
 ```yaml
 ateng:
   boot:
     milvus:
-      langchain4j:
-        enabled: true
-        collection-name: rag_knowledge_base
-        dimension: 1536
-        metric-type: COSINE
-        auto-create-collection: true
+      enabled: true
+      uri: http://localhost:19530
+      database: default
+      consistency-level: BOUNDED
 ```
 
 #### 实战 Java 代码
 ```java
 @Autowired
-private EmbeddingStore<TextSegment> embeddingStore;
+private MilvusTemplate milvusTemplate;
 
-public void ragDemo() {
-    TextSegment segment = TextSegment.from("Spring Boot 3 结合 Milvus 构建智能 RAG 检索链路");
-    Embedding embedding = new Embedding(new float[]{0.1f, 0.2f, /* ...1536维... */});
+/**
+ * 根据上传图片抽取的视觉特征向量检索最相似的 TopK 商品
+ *
+ * @param queryVector 视觉模型抽取的 512 维特征向量
+ * @param category    商品所属分类 (利用 PartitionKey 物理分区加速)
+ * @return 相似商品列表 (附带余弦相似度分数)
+ */
+public List<MilvusHit<ItemImageEntity>> searchSimilarItems(List<Float> queryVector, String category) {
+    // 1. 初始化集合与 HNSW 向量索引
+    milvusTemplate.createCollectionAndIndex(ItemImageEntity.class);
 
-    // 存储向量与文本片段
-    String id = embeddingStore.add(embedding, segment);
-
-    // 语义检索
-    EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
-            .queryEmbedding(embedding)
-            .maxResults(3)
-            .minScore(0.7)
-            .build();
-    EmbeddingSearchResult<TextSegment> result = embeddingStore.search(request);
+    // 2. 带物理分区与分类过滤的近邻特征召回
+    String filter = String.format("category == '%s'", category);
+    return milvusTemplate.search(
+            ItemImageEntity.class,
+            queryVector,
+            10, // 召回前 10 个最相似商品
+            filter
+    );
 }
 ```
 
@@ -429,6 +469,48 @@ public class CustomMilvusConfig {
                 .build();
         return new MilvusClientV2(config);
     }
+}
+```
+
+### 5.2 LangChain4j 标准 SPI 适配与 RAG 上层解耦（可选弱依赖）
+
+> [!NOTE]
+> **领域边界澄清**：
+> `ateng-boot-milvus` 定位为面向全场景的纯正**通用向量基础设施底座**（涵盖以图搜图、商品推荐、人脸比对、风控聚类等场景），本身不包含任何文档切块（Splitter）、OCR 或大模型 Prompt 逻辑。
+> 本小节提供的 `MilvusEmbeddingStore` 是基于 `MilvusTemplate` 实现的**标准存储 SPI 弱适配器**（`<optional>true</optional>`），其核心价值在于让上层应用（如 `ateng-boot-ai` 或原生 LangChain4j 业务）在构建 RAG 知识库时，**100% 共享本底座的受管连接池、强类型配置、全链路 Trace 追踪与 SaaS 多租户防越权过滤**，彻底避免引入官方 `langchain4j-milvus` 时产生双重连接池与租户数据穿透漏洞。未引入 `langchain4j` 的纯向量微服务保持 100% 零依赖、零装配。
+
+#### YAML 开启配置
+```yaml
+ateng:
+  boot:
+    milvus:
+      langchain4j:
+        enabled: true
+        collection-name: rag_knowledge_base
+        dimension: 1536
+        metric-type: COSINE
+        auto-create-collection: true
+```
+
+#### 实战 Java 代码
+```java
+@Autowired
+private EmbeddingStore<TextSegment> embeddingStore;
+
+public void ragDemo() {
+    TextSegment segment = TextSegment.from("Spring Boot 3 结合 Milvus 构建智能 RAG 检索链路");
+    Embedding embedding = new Embedding(new float[]{0.1f, 0.2f, /* ...1536维... */});
+
+    // 1. 存储向量与文本片段
+    String id = embeddingStore.add(embedding, segment);
+
+    // 2. 语义检索
+    EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
+            .queryEmbedding(embedding)
+            .maxResults(3)
+            .minScore(0.7)
+            .build();
+    EmbeddingSearchResult<TextSegment> result = embeddingStore.search(request);
 }
 ```
 

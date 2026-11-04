@@ -142,10 +142,10 @@ flowchart TB
   - **物理分区加速**：原生支持指定字段为 `partition_key`，享受 Milvus 服务端物理分区路由性能提升；
   - **合法穿透**：严格遵循 `ignoreTenant` 契约，支持显式单次穿透与全局上下文穿透。
 
-### 决策 6：LangChain4j 标准 SPI（`MilvusEmbeddingStore`）条件装配弱依赖
-- `langchain4j` 核心依赖声明为 `<optional>true</optional>`；
-- 基于 `@ConditionalOnClass(EmbeddingStore.class)` 条件注解装配 `MilvusEmbeddingStore`；
-- 当引入 `ateng-boot-ai` 时自动激活，纯向量应用引入时不污染任何 AI 依赖。
+### 决策 6：存储底座自治提供 LangChain4j 标准 SPI（`MilvusEmbeddingStore`）弱适配器
+- **存储底座自治与单一连接池**：`ateng-boot-milvus` 定位为纯正的通用向量基础设施（覆盖以图搜图、商品推荐、特征比对等通用场景）。为了让上层 `ateng-boot-ai` 构建 RAG 知识库时能够 100% 共享本底座的受管连接池、强类型配置、全链路 Trace 追踪与 SaaS 多租户防越权过滤，由底座通过 `<optional>true</optional>` 弱依赖提供 `MilvusEmbeddingStore`，彻底消除引入官方 `langchain4j-milvus` 导致的双重 gRPC 连接池与租户隔离穿透漏洞；
+- **上层 AI 模块零侵入解耦**：`ateng-boot-ai` 专注于大模型对话、Prompt 编排与工作流，通过依赖注入直接接入已装配好的 `EmbeddingStore`，无需在 AI 模块内部反向依赖各种具体的向量底层驱动；
+- **条件装配与零污染防御**：基于 `@ConditionalOnClass(EmbeddingStore.class)` 与配置开关 `ateng.boot.milvus.langchain4j.enabled` 守卫，未引入 `langchain4j` 的纯向量微服务保持 100% 零依赖、零装配，主文档 100% 聚焦通用向量场景。
 
 ### 决策 7：因果异常体系与云原生健康探针
 - 定义专有异常 `MilvusException extends BusinessException` 与结果码枚举 `MilvusResultCode`；
