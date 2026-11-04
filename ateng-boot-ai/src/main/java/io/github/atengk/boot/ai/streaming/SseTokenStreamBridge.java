@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Spring MVC SseEmitter 与 LangChain4j 流式响应桥接器
- * 通过 event: reasoning 与 event: text 双通道独立推流，支持思考链解耦、全链路上下文透传与句柄安全排空
+ * 通过 event: reasoning 与 event: text 双通道独立推流，支持思考链解耦、全链路上下文透传与物理连接安全取消治理
  *
  * @author Ateng
  * @since 2026-11-03
@@ -27,25 +27,46 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
     private static final Logger log = LoggerFactory.getLogger(SseTokenStreamBridge.class);
 
     private final SseEmitter emitter;
+    private final String streamId;
+    private final ActiveStreamRegistry streamRegistry;
     private final ReasonerTokenExtractor extractor;
     private final AtomicBoolean completed = new AtomicBoolean(false);
     private final AsyncContext.ContextSnapshot contextSnapshot;
 
     public SseTokenStreamBridge(SseEmitter emitter) {
+        this(emitter, null, null);
+    }
+
+    public SseTokenStreamBridge(SseEmitter emitter, String streamId, ActiveStreamRegistry streamRegistry) {
         this.emitter = Objects.requireNonNull(emitter, "SseEmitter 不能为空");
+        this.streamId = streamId;
+        this.streamRegistry = streamRegistry;
         this.extractor = new ReasonerTokenExtractor();
         this.contextSnapshot = AsyncContext.ContextSnapshot.capture();
 
-        // 注册连接回调，防止客户端主动断连时出现句柄泄漏
-        this.emitter.onCompletion(() -> completed.set(true));
+        // 注册连接回调，防止客户端主动断连时出现句柄泄漏并立即物理切断底层 OkHttp 物理连接
+        this.emitter.onCompletion(() -> {
+            completed.set(true);
+            cancelStreamPhysically();
+        });
         this.emitter.onTimeout(() -> {
-            log.warn("SSE 连接响应超时，主动关闭推流管道");
+            log.warn("SSE 连接响应超时，主动关闭推流管道并切断物理连接 [streamId={}]", this.streamId);
             closeSafely();
+            cancelStreamPhysically();
         });
         this.emitter.onError(err -> {
             log.debug("SSE 管道发生异常中止: {}", err.getMessage());
             completed.set(true);
+            cancelStreamPhysically();
         });
+    }
+
+    public String getStreamId() {
+        return streamId;
+    }
+
+    public ActiveStreamRegistry getStreamRegistry() {
+        return streamRegistry;
     }
 
     @Override
@@ -78,8 +99,9 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
             // 2. 推送标准结束事件
             sendEvent("done", "[DONE]");
 
-            // 3. 闭合 HTTP SSE 连接管道
+            // 3. 闭合 HTTP SSE 连接管道并清理注册表
             closeSafely();
+            cleanupStreamSafely();
         });
     }
 
@@ -100,6 +122,7 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
             } catch (Throwable ignored) {
             } finally {
                 completed.set(true);
+                cancelStreamPhysically();
             }
         });
     }
@@ -115,7 +138,7 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
     }
 
     /**
-     * 发送 SSE 事件，针对网络套接字中断安全捕获
+     * 发送 SSE 事件，针对网络套接字中断安全捕获并迅速触发底层物理切断
      *
      * @param eventName 事件名称 (reasoning / text / done / error)
      * @param data      事件数据
@@ -129,9 +152,11 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
         } catch (IOException | IllegalStateException ex) {
             log.debug("客户端已断开 SSE 连接: {}", ex.getMessage());
             closeSafely();
+            cancelStreamPhysically();
         } catch (Throwable t) {
             log.warn("发送 SSE 分片异常: {}", t.getMessage());
             closeSafely();
+            cancelStreamPhysically();
         }
     }
 
@@ -141,6 +166,18 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
                 emitter.complete();
             } catch (Throwable ignored) {
             }
+        }
+    }
+
+    private void cancelStreamPhysically() {
+        if (streamRegistry != null && streamId != null) {
+            streamRegistry.cancel(streamId);
+        }
+    }
+
+    private void cleanupStreamSafely() {
+        if (streamRegistry != null && streamId != null) {
+            streamRegistry.unregister(streamId);
         }
     }
 }

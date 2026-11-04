@@ -18,10 +18,13 @@ import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
+import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
 import io.github.atengk.boot.ai.streaming.SseTokenStreamBridge;
+import io.github.atengk.boot.ai.streaming.StreamContextHolder;
 import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
 import io.github.atengk.boot.ai.util.ImageContentParser;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,6 +50,7 @@ public class AiTemplate {
     private final AtengAiProperties properties;
     private final AiTenantModelResolver tenantModelResolver;
     private final AiQuotaChecker quotaChecker;
+    private final ActiveStreamRegistry activeStreamRegistry;
 
     public AiTemplate(AiModelRegistry registry) {
         this(registry, new AtengAiProperties());
@@ -60,10 +64,41 @@ public class AiTemplate {
                       AtengAiProperties properties,
                       AiTenantModelResolver tenantModelResolver,
                       AiQuotaChecker quotaChecker) {
+        this(registry, properties, tenantModelResolver, quotaChecker, null);
+    }
+
+    public AiTemplate(AiModelRegistry registry,
+                      AtengAiProperties properties,
+                      AiTenantModelResolver tenantModelResolver,
+                      AiQuotaChecker quotaChecker,
+                      ActiveStreamRegistry activeStreamRegistry) {
         this.registry = Objects.requireNonNull(registry, "AiModelRegistry 不能为空");
         this.properties = properties != null ? properties : new AtengAiProperties();
         this.tenantModelResolver = tenantModelResolver;
         this.quotaChecker = quotaChecker;
+        this.activeStreamRegistry = activeStreamRegistry;
+    }
+
+    /**
+     * 获取活跃流式连接并发注册表
+     *
+     * @return ActiveStreamRegistry 实例，若未启用则可能为 null
+     */
+    public ActiveStreamRegistry getActiveStreamRegistry() {
+        return activeStreamRegistry;
+    }
+
+    /**
+     * 根据 streamId 主动物理切断指定流式推流连接并排空资源
+     *
+     * @param streamId 流式会话唯一标识
+     * @return 若找到活跃连接并触发取消成功返回 true，否则返回 false
+     */
+    public boolean cancelStream(String streamId) {
+        if (activeStreamRegistry != null && StringUtils.hasText(streamId)) {
+            return activeStreamRegistry.cancel(streamId.trim());
+        }
+        return false;
     }
 
     // -------------------------------------------------------------------------
@@ -269,7 +304,18 @@ public class AiTemplate {
      * @param emitter Spring MVC SseEmitter 实例
      */
     public void stream(String prompt, SseEmitter emitter) {
-        streamWithModel(null, prompt, emitter);
+        streamWithModel(null, prompt, emitter, IdUtil.fastSimpleUUID());
+    }
+
+    /**
+     * 流式文本对话 (使用当前上下文或默认模型并绑定指定 streamId)
+     *
+     * @param prompt   提示词
+     * @param emitter  Spring MVC SseEmitter 实例
+     * @param streamId 流式唯一标识
+     */
+    public void stream(String prompt, SseEmitter emitter, String streamId) {
+        streamWithModel(null, prompt, emitter, streamId);
     }
 
     /**
@@ -280,15 +326,28 @@ public class AiTemplate {
      * @param emitter   Spring MVC SseEmitter 实例
      */
     public void streamWithModel(String modelName, String prompt, SseEmitter emitter) {
+        streamWithModel(modelName, prompt, emitter, IdUtil.fastSimpleUUID());
+    }
+
+    /**
+     * 指定模型进行流式文本对话并绑定指定 streamId
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    提示词
+     * @param emitter   Spring MVC SseEmitter 实例
+     * @param streamId  流式唯一标识
+     */
+    public void streamWithModel(String modelName, String prompt, SseEmitter emitter, String streamId) {
         if (emitter == null) {
             throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "SseEmitter 不能为空");
         }
+        String effectiveStreamId = StringUtils.hasText(streamId) ? streamId.trim() : IdUtil.fastSimpleUUID();
         if (!StringUtils.hasText(prompt)) {
-            SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter);
+            SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, activeStreamRegistry);
             bridge.onError(new AiException(AiResultCode.AI_INVALID_PAYLOAD, "用户提示词 prompt 不能为空"));
             return;
         }
-        streamMessages(modelName, Collections.singletonList(UserMessage.from(prompt.trim())), emitter);
+        streamMessages(modelName, Collections.singletonList(UserMessage.from(prompt.trim())), emitter, effectiveStreamId);
     }
 
     /**
@@ -299,7 +358,19 @@ public class AiTemplate {
      * @param emitter   Spring MVC SseEmitter 实例
      */
     public void stream(String prompt, List<String> imageUrls, SseEmitter emitter) {
-        streamWithModel(null, prompt, imageUrls, emitter);
+        streamWithModel(null, prompt, imageUrls, emitter, IdUtil.fastSimpleUUID());
+    }
+
+    /**
+     * 图文多模态流式对话 (使用当前上下文或默认模型并绑定指定 streamId)
+     *
+     * @param prompt    提示词
+     * @param imageUrls 图片 URL 或 Base64 编码列表
+     * @param emitter   Spring MVC SseEmitter 实例
+     * @param streamId  流式唯一标识
+     */
+    public void stream(String prompt, List<String> imageUrls, SseEmitter emitter, String streamId) {
+        streamWithModel(null, prompt, imageUrls, emitter, streamId);
     }
 
     /**
@@ -311,7 +382,7 @@ public class AiTemplate {
      */
     public void stream(String prompt, SseEmitter emitter, String... imageUrls) {
         List<String> list = imageUrls != null ? Arrays.asList(imageUrls) : Collections.emptyList();
-        streamWithModel(null, prompt, list, emitter);
+        streamWithModel(null, prompt, list, emitter, IdUtil.fastSimpleUUID());
     }
 
     /**
@@ -324,7 +395,7 @@ public class AiTemplate {
      */
     public void streamWithModel(String modelName, String prompt, SseEmitter emitter, String... imageUrls) {
         List<String> list = imageUrls != null ? Arrays.asList(imageUrls) : Collections.emptyList();
-        streamWithModel(modelName, prompt, list, emitter);
+        streamWithModel(modelName, prompt, list, emitter, IdUtil.fastSimpleUUID());
     }
 
     /**
@@ -336,14 +407,28 @@ public class AiTemplate {
      * @param emitter   Spring MVC SseEmitter 实例
      */
     public void streamWithModel(String modelName, String prompt, List<String> imageUrls, SseEmitter emitter) {
+        streamWithModel(modelName, prompt, imageUrls, emitter, IdUtil.fastSimpleUUID());
+    }
+
+    /**
+     * 指定模型进行图文多模态流式对话并绑定指定 streamId
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    提示词
+     * @param imageUrls 图片 URL 或 Base64 编码列表
+     * @param emitter   Spring MVC SseEmitter 实例
+     * @param streamId  流式唯一标识
+     */
+    public void streamWithModel(String modelName, String prompt, List<String> imageUrls, SseEmitter emitter, String streamId) {
         if (emitter == null) {
             throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "SseEmitter 不能为空");
         }
+        String effectiveStreamId = StringUtils.hasText(streamId) ? streamId.trim() : IdUtil.fastSimpleUUID();
         try {
             UserMessage userMessage = ImageContentParser.toUserMessage(prompt, imageUrls);
-            streamMessages(modelName, Collections.singletonList(userMessage), emitter);
+            streamMessages(modelName, Collections.singletonList(userMessage), emitter, effectiveStreamId);
         } catch (Throwable t) {
-            SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter);
+            SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, activeStreamRegistry);
             bridge.onError(t);
         }
     }
@@ -355,7 +440,18 @@ public class AiTemplate {
      * @param emitter  Spring MVC SseEmitter 实例
      */
     public void streamMessages(List<ChatMessage> messages, SseEmitter emitter) {
-        streamMessages(null, messages, emitter);
+        streamMessages(null, messages, emitter, IdUtil.fastSimpleUUID());
+    }
+
+    /**
+     * 多轮对话消息列表流式推流 (使用当前上下文或默认模型并绑定指定 streamId)
+     *
+     * @param messages 消息历史列表
+     * @param emitter  Spring MVC SseEmitter 实例
+     * @param streamId 流式唯一标识
+     */
+    public void streamMessages(List<ChatMessage> messages, SseEmitter emitter, String streamId) {
+        streamMessages(null, messages, emitter, streamId);
     }
 
     /**
@@ -366,12 +462,30 @@ public class AiTemplate {
      * @param emitter   Spring MVC SseEmitter 实例
      */
     public void streamMessages(String modelName, List<ChatMessage> messages, SseEmitter emitter) {
+        streamMessages(modelName, messages, emitter, IdUtil.fastSimpleUUID());
+    }
+
+    /**
+     * 指定模型进行多轮对话消息流式推流并绑定指定 streamId
+     *
+     * @param modelName 模型名称或别名
+     * @param messages  消息历史列表
+     * @param emitter   Spring MVC SseEmitter 实例
+     * @param streamId  流式唯一标识
+     */
+    public void streamMessages(String modelName, List<ChatMessage> messages, SseEmitter emitter, String streamId) {
         if (emitter == null) {
             throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "SseEmitter 不能为空");
         }
-        SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter);
+        String effectiveStreamId = StringUtils.hasText(streamId) ? streamId.trim() : IdUtil.fastSimpleUUID();
+        SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, activeStreamRegistry);
         try {
-            stream(modelName, messages, bridge);
+            StreamContextHolder.setStreamId(effectiveStreamId);
+            try {
+                stream(modelName, messages, bridge);
+            } finally {
+                StreamContextHolder.clear();
+            }
         } catch (Throwable t) {
             bridge.onError(t);
         }
@@ -415,7 +529,21 @@ public class AiTemplate {
         StreamingResponseHandler<AiMessage> wrappedHandler = (quotaChecker != null)
                 ? new QuotaTrackingStreamingResponseHandler(handler, quotaChecker, tenantId, effectiveModelName, messages)
                 : handler;
-        model.generate(messages, wrappedHandler);
+
+        // 若当前未显式设置 streamId，但 handler 为带有 streamId 的 SseTokenStreamBridge，则自动填充与排空上下文
+        boolean locallySetStreamId = false;
+        if (StreamContextHolder.getStreamId() == null && handler instanceof SseTokenStreamBridge bridge && bridge.getStreamId() != null) {
+            StreamContextHolder.setStreamId(bridge.getStreamId());
+            locallySetStreamId = true;
+        }
+
+        try {
+            model.generate(messages, wrappedHandler);
+        } finally {
+            if (locallySetStreamId) {
+                StreamContextHolder.clear();
+            }
+        }
     }
 
     // -------------------------------------------------------------------------

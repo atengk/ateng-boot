@@ -6,8 +6,17 @@ import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
+import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
+import io.github.atengk.boot.ai.streaming.StreamCancellationInterceptor;
+import io.github.atengk.boot.ai.streaming.StreamEventListener;
+import io.github.atengk.boot.ai.streaming.StreamPropagatingExecutorService;
+import okhttp3.Dispatcher;
+import okhttp3.OkHttpClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.List;
 
@@ -18,6 +27,8 @@ import java.util.List;
  * @since 2026-11-03
  */
 public final class OpenAiModelFactory {
+
+    private static final Logger log = LoggerFactory.getLogger(OpenAiModelFactory.class);
 
     private OpenAiModelFactory() {
     }
@@ -66,6 +77,21 @@ public final class OpenAiModelFactory {
      * @return OpenAiStreamingChatModel 实例
      */
     public static OpenAiStreamingChatModel createStreamingChatModel(AiModelConfig config, List<ChatModelListener> listeners) {
+        return createStreamingChatModel(config, listeners, null);
+    }
+
+    /**
+     * 构建带有 OkHttp 连接物理取消治理能力的异步流式 OpenAiStreamingChatModel 实例
+     *
+     * @param config                模型配置属性
+     * @param listeners             链路监听器列表
+     * @param activeStreamRegistry  活跃流式连接注册表 (可选)
+     * @return OpenAiStreamingChatModel 实例
+     */
+    public static OpenAiStreamingChatModel createStreamingChatModel(
+            AiModelConfig config,
+            List<ChatModelListener> listeners,
+            ActiveStreamRegistry activeStreamRegistry) {
         validateConfig(config);
 
         OpenAiStreamingChatModel.OpenAiStreamingChatModelBuilder builder = OpenAiStreamingChatModel.builder()
@@ -90,7 +116,52 @@ public final class OpenAiModelFactory {
             builder.listeners(listeners);
         }
 
-        return builder.build();
+        OpenAiStreamingChatModel model = builder.build();
+        if (activeStreamRegistry != null) {
+            attachStreamCancellation(model, activeStreamRegistry);
+        }
+
+        return model;
+    }
+
+    private static void attachStreamCancellation(OpenAiStreamingChatModel model, ActiveStreamRegistry registry) {
+        try {
+            Field clientField = OpenAiStreamingChatModel.class.getDeclaredField("client");
+            clientField.setAccessible(true);
+            Object client = clientField.get(model);
+            if (client == null) {
+                return;
+            }
+
+            Field okHttpClientField = client.getClass().getDeclaredField("okHttpClient");
+            okHttpClientField.setAccessible(true);
+            OkHttpClient okHttpClient = (OkHttpClient) okHttpClientField.get(client);
+            if (okHttpClient == null) {
+                return;
+            }
+
+            // 1. 构建透传流式上下文与全链路快照的 OkHttp Dispatcher
+            Dispatcher originalDispatcher = okHttpClient.dispatcher();
+            StreamPropagatingExecutorService propagatingExecutor = new StreamPropagatingExecutorService(originalDispatcher.executorService());
+            Dispatcher newDispatcher = new Dispatcher(propagatingExecutor);
+            newDispatcher.setMaxRequests(originalDispatcher.getMaxRequests());
+            newDispatcher.setMaxRequestsPerHost(originalDispatcher.getMaxRequestsPerHost());
+
+            // 2. 组装取消拦截器与就绪事件监听器
+            StreamCancellationInterceptor interceptor = new StreamCancellationInterceptor(registry);
+            StreamEventListener eventListener = new StreamEventListener(registry);
+
+            OkHttpClient enhancedClient = okHttpClient.newBuilder()
+                    .dispatcher(newDispatcher)
+                    .eventListener(eventListener)
+                    .addInterceptor(interceptor)
+                    .build();
+
+            okHttpClientField.set(client, enhancedClient);
+            log.info("已为流式大模型 [{}] 成功挂载 OkHttp 物理连接安全取消治理设施", model.modelName());
+        } catch (Throwable t) {
+            log.warn("为流式大模型挂载 OkHttp 取消治理设施失败: {}", t.getMessage());
+        }
     }
 
     private static void validateConfig(AiModelConfig config) {

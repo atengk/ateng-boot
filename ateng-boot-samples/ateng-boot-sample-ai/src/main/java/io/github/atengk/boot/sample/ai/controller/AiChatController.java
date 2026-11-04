@@ -49,18 +49,45 @@ public class AiChatController {
 
     /**
      * 打字机流式推流接口 (SSE)
-     * 推送 reasoning 思考链分片、text 正文分片以及 [DONE] 结束标志
+     * 推送 reasoning 思考链分片、text 正文分片以及 [DONE] 结束标志，支持通过 streamId 绑定物理连接句柄
      *
-     * @param prompt 提示词
-     * @param model  可选指定大模型名称
+     * @param prompt   提示词
+     * @param model    可选指定大模型名称
+     * @param streamId 可选指定流式唯一标识 (未传时自动生成)
      * @return SseEmitter 实例
      */
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
     public SseEmitter streamChat(
             @RequestParam("prompt") @NotBlank(message = "用户提示词 prompt 不能为空") String prompt,
-            @RequestParam(name = "model", required = false) String model) {
+            @RequestParam(name = "model", required = false) String model,
+            @RequestParam(name = "streamId", required = false) String streamId) {
         SseEmitter emitter = new SseEmitter(AiTemplate.DEFAULT_SSE_TIMEOUT.toMillis());
-        aiTemplate.streamWithModel(model, prompt, emitter);
+        aiTemplate.streamWithModel(model, prompt, emitter, streamId);
         return emitter;
+    }
+
+    /**
+     * 主动物理切断指定流式推流连接
+     * 当前端用户点击“停止生成”或关闭会话时，由后端立即熔断 OkHttp 物理连接并终止大模型推流计费
+     *
+     * @param streamId 流式会话唯一标识
+     * @return 切断结果
+     */
+    @PostMapping("/stream/cancel")
+    public Result<Boolean> cancelStream(@RequestParam("streamId") @NotBlank(message = "流式标识 streamId 不能为空") String streamId) {
+        boolean cancelled = aiTemplate.cancelStream(streamId);
+        log.info("手动中断活跃流式连接 [streamId={}, success={}]", streamId, cancelled);
+        return Result.success(cancelled);
+    }
+
+    /**
+     * 获取当前处于活跃推流状态的物理连接总数
+     *
+     * @return 活跃连接数
+     */
+    @GetMapping("/stream/active-count")
+    public Result<Integer> getActiveStreamCount() {
+        int count = aiTemplate.getActiveStreamRegistry() != null ? aiTemplate.getActiveStreamRegistry().getActiveCount() : 0;
+        return Result.success(count);
     }
 }

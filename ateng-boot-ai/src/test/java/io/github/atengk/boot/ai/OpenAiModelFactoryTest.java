@@ -46,6 +46,10 @@ class OpenAiModelFactoryTest {
 
         OpenAiStreamingChatModel streamingChatModel = OpenAiModelFactory.createStreamingChatModel(config, Collections.emptyList());
         assertThat(streamingChatModel).isNotNull();
+
+        io.github.atengk.boot.ai.streaming.ActiveStreamRegistry registry = new io.github.atengk.boot.ai.streaming.ActiveStreamRegistry();
+        OpenAiStreamingChatModel streamingModelWithRegistry = OpenAiModelFactory.createStreamingChatModel(config, Collections.emptyList(), registry);
+        assertThat(streamingModelWithRegistry).isNotNull();
     }
 
     @Test

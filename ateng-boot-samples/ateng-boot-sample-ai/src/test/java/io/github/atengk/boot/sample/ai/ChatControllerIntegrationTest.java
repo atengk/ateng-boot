@@ -262,4 +262,32 @@ class ChatControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400));
     }
+
+    @Test
+    @DisplayName("端到端验证 POST /sample/ai/chat/stream/cancel 流式取消端点")
+    void testCancelStreamEndpoint() throws Exception {
+        mockMvc.perform(post("/sample/ai/chat/stream/cancel")
+                        .param("streamId", "test-stream-cancel-id"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isBoolean());
+    }
+
+    @Test
+    @DisplayName("端到端验证 POST /sample/ai/chat/stream/cancel 空标识参数校验拦截")
+    void testCancelStreamEmptyIdFailFast() throws Exception {
+        mockMvc.perform(post("/sample/ai/chat/stream/cancel")
+                        .param("streamId", "   "))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    @DisplayName("端到端验证 GET /sample/ai/chat/stream/active-count 活跃连接计数探测")
+    void testGetActiveStreamCount() throws Exception {
+        mockMvc.perform(get("/sample/ai/chat/stream/active-count"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isNumber());
+    }
 }

@@ -18,6 +18,7 @@ import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.ChatMemoryProperties;
 import io.github.atengk.boot.ai.properties.ChatMemoryStoreType;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
+import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
 import io.github.atengk.boot.ai.template.AiTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -98,19 +99,33 @@ public class AtengAiAutoConfiguration {
     }
 
     /**
+     * 自动装配 AI 流式推流活跃连接并发注册表
+     *
+     * @return ActiveStreamRegistry 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public ActiveStreamRegistry activeStreamRegistry() {
+        return new ActiveStreamRegistry();
+    }
+
+    /**
      * 自动装配默认异步流式大模型 (仅当配置了默认 apiKey 时初始化)
      *
-     * @param properties        AI 根配置属性
-     * @param listenersProvider 链路监听器提供者
+     * @param properties                  AI 根配置属性
+     * @param listenersProvider           链路监听器提供者
+     * @param activeStreamRegistryProvider 活跃流式注册表提供者
      * @return StreamingChatLanguageModel 实例
      */
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.ai.model", name = "api-key")
-    public StreamingChatLanguageModel openAiStreamingChatModel(AtengAiProperties properties,
-                                                               ObjectProvider<ChatModelListener> listenersProvider) {
+    public StreamingChatLanguageModel openAiStreamingChatModel(
+            AtengAiProperties properties,
+            ObjectProvider<ChatModelListener> listenersProvider,
+            ObjectProvider<ActiveStreamRegistry> activeStreamRegistryProvider) {
         List<ChatModelListener> listeners = listenersProvider.orderedStream().toList();
-        return OpenAiModelFactory.createStreamingChatModel(properties.getModel(), listeners);
+        return OpenAiModelFactory.createStreamingChatModel(properties.getModel(), listeners, activeStreamRegistryProvider.getIfAvailable());
     }
 
     /**
@@ -120,16 +135,20 @@ public class AtengAiAutoConfiguration {
      * @param defaultChatModelProvider          默认同步模型提供者
      * @param defaultStreamingChatModelProvider 默认流式模型提供者
      * @param listenersProvider                链路监听器提供者
+     * @param activeStreamRegistryProvider     活跃流式注册表提供者
      * @return AiModelRegistry 注册表实例
      */
     @Bean
     @ConditionalOnMissingBean
-    public AiModelRegistry aiModelRegistry(AtengAiProperties properties,
-                                           ObjectProvider<ChatLanguageModel> defaultChatModelProvider,
-                                           ObjectProvider<StreamingChatLanguageModel> defaultStreamingChatModelProvider,
-                                           ObjectProvider<ChatModelListener> listenersProvider) {
+    public AiModelRegistry aiModelRegistry(
+            AtengAiProperties properties,
+            ObjectProvider<ChatLanguageModel> defaultChatModelProvider,
+            ObjectProvider<StreamingChatLanguageModel> defaultStreamingChatModelProvider,
+            ObjectProvider<ChatModelListener> listenersProvider,
+            ObjectProvider<ActiveStreamRegistry> activeStreamRegistryProvider) {
         AiModelRegistry registry = new AiModelRegistry();
         List<ChatModelListener> listeners = listenersProvider.orderedStream().toList();
+        ActiveStreamRegistry activeStreamRegistry = activeStreamRegistryProvider.getIfAvailable();
 
         // 1. 注册默认模型 (若已由 Spring 容器装配或独立配置，优先使用唯一/Primary Bean，多 Bean 时平滑退避首个)
         ChatLanguageModel defaultChatModel = defaultChatModelProvider.getIfUnique();
@@ -146,7 +165,7 @@ public class AtengAiAutoConfiguration {
             registry.registerDefault(defaultChatModel, defaultStreamingChatModel, defaultAlias);
         } else if (properties.getModel() != null && properties.getModel().isConfigured()) {
             OpenAiChatModel chatModel = OpenAiModelFactory.createChatModel(properties.getModel(), listeners);
-            OpenAiStreamingChatModel streamingChatModel = OpenAiModelFactory.createStreamingChatModel(properties.getModel(), listeners);
+            OpenAiStreamingChatModel streamingChatModel = OpenAiModelFactory.createStreamingChatModel(properties.getModel(), listeners, activeStreamRegistry);
             registry.registerDefault(chatModel, streamingChatModel, properties.getModel().getModelName());
         }
 
@@ -155,7 +174,7 @@ public class AtengAiAutoConfiguration {
             properties.getModels().forEach((name, config) -> {
                 if (config != null && config.isConfigured()) {
                     OpenAiChatModel chatModel = OpenAiModelFactory.createChatModel(config, listeners);
-                    OpenAiStreamingChatModel streamingChatModel = OpenAiModelFactory.createStreamingChatModel(config, listeners);
+                    OpenAiStreamingChatModel streamingChatModel = OpenAiModelFactory.createStreamingChatModel(config, listeners, activeStreamRegistry);
                     registry.register(name, chatModel, streamingChatModel);
                 } else {
                     log.warn("跳过未配置有效 apiKey 的命名大模型: {}", name);
@@ -217,10 +236,11 @@ public class AtengAiAutoConfiguration {
     /**
      * 自动装配 AI 核心命令式操作门面
      *
-     * @param registry                   模型注册中心
-     * @param properties                 AI 根配置属性
-     * @param tenantModelResolverProvider 可选的多租户切源解析器
-     * @param quotaCheckerProvider       可选的配额风控检查器
+     * @param registry                     模型注册中心
+     * @param properties                   AI 根配置属性
+     * @param tenantModelResolverProvider   可选的多租户切源解析器
+     * @param quotaCheckerProvider         可选的配额风控检查器
+     * @param activeStreamRegistryProvider 可选的活跃流式并发注册表
      * @return AiTemplate 实例
      */
     @Bean
@@ -228,12 +248,14 @@ public class AtengAiAutoConfiguration {
     public AiTemplate aiTemplate(AiModelRegistry registry,
                                  AtengAiProperties properties,
                                  ObjectProvider<AiTenantModelResolver> tenantModelResolverProvider,
-                                 ObjectProvider<AiQuotaChecker> quotaCheckerProvider) {
+                                 ObjectProvider<AiQuotaChecker> quotaCheckerProvider,
+                                 ObjectProvider<ActiveStreamRegistry> activeStreamRegistryProvider) {
         return new AiTemplate(
                 registry,
                 properties,
                 tenantModelResolverProvider.getIfAvailable(),
-                quotaCheckerProvider.getIfAvailable()
+                quotaCheckerProvider.getIfAvailable(),
+                activeStreamRegistryProvider.getIfAvailable()
         );
     }
 

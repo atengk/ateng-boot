@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -121,6 +122,43 @@ class SseTokenStreamBridgeTest {
         // 再次调用 onNext 不会再触发任何操作
         bridge.onNext("world");
         verify(emitter, times(1)).complete();
+    }
+
+    @Test
+    @DisplayName("客户端断开导致发送失败时，自动触发 ActiveStreamRegistry 的物理切断回调")
+    void testClientDisconnectTriggersPhysicalCancel() throws Exception {
+        ActiveStreamRegistry registry = new ActiveStreamRegistry();
+        AtomicBoolean physicallyCancelled = new AtomicBoolean(false);
+        registry.register("stream-bridge-100", () -> physicallyCancelled.set(true));
+
+        SseEmitter emitter = mock(SseEmitter.class);
+        doThrow(new IOException("Broken pipe")).when(emitter).send(any(SseEmitter.SseEventBuilder.class));
+
+        SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, "stream-bridge-100", registry);
+
+        bridge.onNext("测试中断推流");
+
+        // 验证物理取消被触发
+        assertThat(physicallyCancelled.get()).isTrue();
+        assertThat(registry.isActive("stream-bridge-100")).isFalse();
+    }
+
+    @Test
+    @DisplayName("推流正常完成时，从 ActiveStreamRegistry 安全注销连接")
+    void testNormalCompletionCleansUpRegistry() throws Exception {
+        ActiveStreamRegistry registry = new ActiveStreamRegistry();
+        AtomicBoolean physicallyCancelled = new AtomicBoolean(false);
+        registry.register("stream-bridge-200", () -> physicallyCancelled.set(true));
+
+        SseEmitter emitter = mock(SseEmitter.class);
+        SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, "stream-bridge-200", registry);
+
+        bridge.onNext("顺利推流正文");
+        bridge.onComplete(Response.from(AiMessage.from("complete")));
+
+        // 验证正常完成不触发 cancel，但注销现场
+        assertThat(physicallyCancelled.get()).isFalse();
+        assertThat(registry.isActive("stream-bridge-200")).isFalse();
     }
 
     @Test
