@@ -1,18 +1,27 @@
 package io.github.atengk.boot.milvus.template;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.util.BatchSliceUtil;
+import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.milvus.exception.MilvusExceptionTranslator;
+import io.github.atengk.boot.milvus.model.MilvusEntityConverter;
 import io.github.atengk.boot.milvus.model.MilvusEntityMetadata;
+import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
+import io.github.atengk.boot.milvus.properties.MilvusConsistencyLevel;
+import io.github.atengk.boot.milvus.tenant.MilvusTenantHelper;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.common.IndexParam;
 import io.milvus.v2.service.collection.request.CreateCollectionReq;
 import io.milvus.v2.service.collection.request.DescribeCollectionReq;
 import io.milvus.v2.service.collection.request.DropCollectionReq;
+import io.milvus.v2.service.collection.request.GetCollectionStatsReq;
 import io.milvus.v2.service.collection.request.GetLoadStateReq;
 import io.milvus.v2.service.collection.request.HasCollectionReq;
 import io.milvus.v2.service.collection.request.LoadCollectionReq;
 import io.milvus.v2.service.collection.request.ReleaseCollectionReq;
 import io.milvus.v2.service.collection.response.DescribeCollectionResp;
+import io.milvus.v2.service.collection.response.GetCollectionStatsResp;
 import io.milvus.v2.service.database.request.CreateDatabaseReq;
 import io.milvus.v2.service.database.request.DropDatabaseReq;
 import io.milvus.v2.service.index.request.CreateIndexReq;
@@ -26,13 +35,30 @@ import io.milvus.v2.service.partition.request.HasPartitionReq;
 import io.milvus.v2.service.partition.request.ListPartitionsReq;
 import io.milvus.v2.service.partition.request.LoadPartitionsReq;
 import io.milvus.v2.service.partition.request.ReleasePartitionsReq;
+import io.milvus.v2.service.vector.request.DeleteReq;
+import io.milvus.v2.service.vector.request.GetReq;
+import io.milvus.v2.service.vector.request.InsertReq;
+import io.milvus.v2.service.vector.request.QueryReq;
+import io.milvus.v2.service.vector.request.SearchReq;
+import io.milvus.v2.service.vector.request.UpsertReq;
+import io.milvus.v2.service.vector.request.data.FloatVec;
+import io.milvus.v2.service.vector.response.GetResp;
+import io.milvus.v2.service.vector.response.InsertResp;
+import io.milvus.v2.service.vector.response.QueryResp;
+import io.milvus.v2.service.vector.response.SearchResp;
+import io.milvus.v2.service.vector.response.UpsertResp;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.Assert;
+import org.springframework.util.StringUtils;
 
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Milvus 向量数据库核心操作门面 (三层立体分工与双核穿透)
@@ -42,6 +68,14 @@ import java.util.function.Function;
  */
 @Slf4j
 public class MilvusTemplate {
+
+    public static final int DEFAULT_BATCH_SIZE = 1000;
+    private static final RetryUtil.RetryConfig DEFAULT_RETRY_CONFIG = RetryUtil.RetryConfig.builder()
+            .maxAttempts(3)
+            .delay(Duration.ofMillis(200))
+            .multiplier(2.0)
+            .maxDelay(Duration.ofSeconds(2))
+            .build();
 
     private final MilvusClientV2 client;
     private final AtengMilvusProperties properties;
@@ -187,6 +221,19 @@ public class MilvusTemplate {
     public DescribeCollectionResp describeCollection(String collectionName) {
         Assert.hasText(collectionName, "collectionName must not be empty");
         return execute("查看集合结构", c -> c.describeCollection(DescribeCollectionReq.builder()
+                .collectionName(collectionName)
+                .build()));
+    }
+
+    /**
+     * 获取集合统计信息 (包含集合实体总行数)
+     *
+     * @param collectionName 集合名称
+     * @return 集合统计详情响应
+     */
+    public GetCollectionStatsResp getCollectionStats(String collectionName) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        return execute("获取集合统计信息", c -> c.getCollectionStats(GetCollectionStatsReq.builder()
                 .collectionName(collectionName)
                 .build()));
     }
@@ -561,6 +608,990 @@ public class MilvusTemplate {
                     .build());
             return null;
         });
+    }
+
+    // =========================================================================
+    // 6. 极简数据写入与覆盖 (DML: Insert / Upsert Operations)
+    // =========================================================================
+
+    /**
+     * 向指定集合写入字典数据 (支持多租户自动补全与动态字段)
+     *
+     * @param collectionName 集合名称
+     * @param data           字典数据列表
+     * @param partitionName  物理分区名称 (可为 null)
+     */
+    public void insert(String collectionName, List<Map<String, Object>> data, String partitionName) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        if (data == null || data.isEmpty()) {
+            return;
+        }
+        ensurePartitionExists(collectionName, partitionName);
+        data.forEach(MilvusTenantHelper::fillRecordTenantField);
+        execute("数据写入", c -> {
+            c.insert(InsertReq.builder()
+                    .collectionName(collectionName)
+                    .partitionName(partitionName)
+                    .data(MilvusEntityConverter.toJsonObjectList(data))
+                    .build());
+            return null;
+        });
+    }
+
+    /**
+     * 向指定集合写入字典数据 (默认分区)
+     *
+     * @param collectionName 集合名称
+     * @param data           字典数据列表
+     */
+    public void insert(String collectionName, List<Map<String, Object>> data) {
+        insert(collectionName, data, null);
+    }
+
+    /**
+     * 写入强类型业务实体列表 (基于注解自动推导集合名、租户字段与向量字段)
+     *
+     * @param entities      实体列表
+     * @param partitionName 物理分区名称 (可为 null)
+     * @param <T>           实体泛型
+     */
+    public <T> void insertEntities(List<T> entities, String partitionName) {
+        if (entities == null || entities.isEmpty()) {
+            return;
+        }
+        Class<?> entityClass = entities.get(0).getClass();
+        MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
+        String collectionName = metadata.getCollectionName();
+        ensurePartitionExists(collectionName, partitionName);
+        entities.forEach(e -> MilvusTenantHelper.fillEntityTenantField(e, metadata, false));
+        execute("实体数据写入", c -> {
+            c.insert(InsertReq.builder()
+                    .collectionName(collectionName)
+                    .partitionName(partitionName)
+                    .data(MilvusEntityConverter.entitiesToJsonObjectList(entities))
+                    .build());
+            return null;
+        });
+    }
+
+    /**
+     * 写入强类型业务实体列表 (默认分区)
+     *
+     * @param entities 实体列表
+     * @param <T>      实体泛型
+     */
+    public <T> void insertEntities(List<T> entities) {
+        insertEntities(entities, null);
+    }
+
+    /**
+     * 向指定集合覆盖写入字典数据 (主键存在则更新，不存在则插入)
+     *
+     * @param collectionName 集合名称
+     * @param data           字典数据列表
+     * @param partitionName  物理分区名称 (可为 null)
+     */
+    public void upsert(String collectionName, List<Map<String, Object>> data, String partitionName) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        if (data == null || data.isEmpty()) {
+            return;
+        }
+        ensurePartitionExists(collectionName, partitionName);
+        data.forEach(MilvusTenantHelper::fillRecordTenantField);
+        execute("数据覆盖写入", c -> {
+            c.upsert(UpsertReq.builder()
+                    .collectionName(collectionName)
+                    .partitionName(partitionName)
+                    .data(MilvusEntityConverter.toJsonObjectList(data))
+                    .build());
+            return null;
+        });
+    }
+
+    /**
+     * 向指定集合覆盖写入字典数据 (默认分区)
+     *
+     * @param collectionName 集合名称
+     * @param data           字典数据列表
+     */
+    public void upsert(String collectionName, List<Map<String, Object>> data) {
+        upsert(collectionName, data, null);
+    }
+
+    /**
+     * 覆盖写入强类型业务实体列表 (主键存在则更新，不存在则插入)
+     *
+     * @param entities      实体列表
+     * @param partitionName 物理分区名称 (可为 null)
+     * @param <T>           实体泛型
+     */
+    public <T> void upsertEntities(List<T> entities, String partitionName) {
+        if (entities == null || entities.isEmpty()) {
+            return;
+        }
+        Class<?> entityClass = entities.get(0).getClass();
+        MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
+        String collectionName = metadata.getCollectionName();
+        ensurePartitionExists(collectionName, partitionName);
+        entities.forEach(e -> MilvusTenantHelper.fillEntityTenantField(e, metadata, false));
+        execute("实体数据覆盖写入", c -> {
+            c.upsert(UpsertReq.builder()
+                    .collectionName(collectionName)
+                    .partitionName(partitionName)
+                    .data(MilvusEntityConverter.entitiesToJsonObjectList(entities))
+                    .build());
+            return null;
+        });
+    }
+
+    /**
+     * 覆盖写入强类型业务实体列表 (默认分区)
+     *
+     * @param entities 实体列表
+     * @param <T>      实体泛型
+     */
+    public <T> void upsertEntities(List<T> entities) {
+        upsertEntities(entities, null);
+    }
+
+    // =========================================================================
+    // 7. 极简数据删除 (Delete Operations)
+    // =========================================================================
+
+    /**
+     * 按主键 ID 列表删除集合中的数据 (多租户环境下自动绑定租户隔离过滤)
+     *
+     * @param collectionName 集合名称
+     * @param ids            主键列表
+     * @param partitionName  物理分区名称 (可为 null)
+     */
+    public void deleteByIds(String collectionName, List<?> ids, String partitionName) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        if (ids == null || ids.isEmpty()) {
+            return;
+        }
+        if (!TenantContextHolder.isIgnoreTenant() && StringUtils.hasText(TenantContextHolder.getTenantId())) {
+            String primaryField = null;
+            try {
+                var desc = describeCollection(collectionName);
+                if (desc != null) {
+                    primaryField = desc.getPrimaryFieldName();
+                }
+            } catch (Exception e) {
+                log.debug("获取集合主键名异常: {}", e.getMessage());
+            }
+            if (StringUtils.hasText(primaryField)) {
+                String idListStr = ids.stream()
+                        .map(id -> id instanceof Number ? id.toString() : "'" + id.toString().replace("'", "\\'") + "'")
+                        .collect(Collectors.joining(", "));
+                String filter = String.format("%s in [%s]", primaryField, idListStr);
+                deleteByExpr(collectionName, filter, partitionName);
+                return;
+            }
+        }
+        execute("按主键删除数据", c -> {
+            c.delete(DeleteReq.builder()
+                    .collectionName(collectionName)
+                    .partitionName(partitionName)
+                    .ids((List<Object>) ids)
+                    .build());
+            return null;
+        });
+    }
+
+    /**
+     * 按主键 ID 列表删除集合中的数据
+     *
+     * @param collectionName 集合名称
+     * @param ids            主键列表
+     */
+    public void deleteByIds(String collectionName, List<?> ids) {
+        deleteByIds(collectionName, ids, null);
+    }
+
+    /**
+     * 按实体类型与主键 ID 列表删除数据
+     *
+     * @param entityClass   实体类
+     * @param ids           主键列表
+     * @param partitionName 物理分区名称 (可为 null)
+     * @param <T>           实体泛型
+     */
+    public <T> void deleteEntities(Class<T> entityClass, List<?> ids, String partitionName) {
+        Assert.notNull(entityClass, "entityClass must not be null");
+        if (ids == null || ids.isEmpty()) {
+            return;
+        }
+        MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
+        String collectionName = metadata.getCollectionName();
+        String primaryField = metadata.getIdField() != null ? metadata.getIdField().getFieldName() : "id";
+        if (!TenantContextHolder.isIgnoreTenant() && StringUtils.hasText(TenantContextHolder.getTenantId())) {
+            String idListStr = ids.stream()
+                    .map(id -> id instanceof Number ? id.toString() : "'" + id.toString().replace("'", "\\'") + "'")
+                    .collect(Collectors.joining(", "));
+            String filter = String.format("%s in [%s]", primaryField, idListStr);
+            deleteByExpr(collectionName, filter, partitionName);
+            return;
+        }
+        execute("按实体主键删除数据", c -> {
+            c.delete(DeleteReq.builder()
+                    .collectionName(collectionName)
+                    .partitionName(partitionName)
+                    .ids((List<Object>) ids)
+                    .build());
+            return null;
+        });
+    }
+
+    /**
+     * 按实体类型与主键 ID 列表删除数据
+     *
+     * @param entityClass 实体类
+     * @param ids         主键列表
+     * @param <T>         实体泛型
+     */
+    public <T> void deleteEntities(Class<T> entityClass, List<?> ids) {
+        deleteEntities(entityClass, ids, null);
+    }
+
+    /**
+     * 按标量表达式条件删除数据 (自动织入多租户防越权表达式)
+     *
+     * @param collectionName 集合名称
+     * @param expr           过滤表达式
+     * @param partitionName  物理分区名称 (可为 null)
+     */
+    public void deleteByExpr(String collectionName, String expr, String partitionName) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        String safeFilter = MilvusTenantHelper.weaveTenantFilter(expr, null, false);
+        Assert.hasText(safeFilter, "delete filter expression must not be empty");
+        execute("按条件删除数据", c -> {
+            c.delete(DeleteReq.builder()
+                    .collectionName(collectionName)
+                    .partitionName(partitionName)
+                    .filter(safeFilter)
+                    .build());
+            return null;
+        });
+    }
+
+    /**
+     * 按标量表达式条件删除数据
+     *
+     * @param collectionName 集合名称
+     * @param expr           过滤表达式
+     */
+    public void deleteByExpr(String collectionName, String expr) {
+        deleteByExpr(collectionName, expr, null);
+    }
+
+    /**
+     * 按实体类型与标量表达式条件删除数据
+     *
+     * @param entityClass   实体类
+     * @param expr          过滤表达式
+     * @param partitionName 物理分区名称 (可为 null)
+     * @param <T>           实体泛型
+     */
+    public <T> void deleteEntitiesByExpr(Class<T> entityClass, String expr, String partitionName) {
+        Assert.notNull(entityClass, "entityClass must not be null");
+        MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
+        deleteByExpr(metadata.getCollectionName(), expr, partitionName);
+    }
+
+    /**
+     * 按实体类型与标量表达式条件删除数据
+     *
+     * @param entityClass 实体类
+     * @param expr        过滤表达式
+     * @param <T>         实体泛型
+     */
+    public <T> void deleteEntitiesByExpr(Class<T> entityClass, String expr) {
+        deleteEntitiesByExpr(entityClass, expr, null);
+    }
+
+    // =========================================================================
+    // 8. 向量相似度检索 (DQL: Vector Search Operations)
+    // =========================================================================
+
+    /**
+     * 执行底层原生 SearchReq 相似度检索
+     *
+     * @param request SearchReq 请求对象
+     * @return 官方 SearchResp 响应
+     */
+    public SearchResp search(SearchReq request) {
+        Assert.notNull(request, "SearchReq must not be null");
+        return execute("向量相似度检索", c -> c.search(request));
+    }
+
+    /**
+     * 执行全量参数向量相似度检索并转换为标准化命中结果模型
+     *
+     * @param collectionName   集合名称
+     * @param annsField        向量索引字段名称 (可为空，默认推导)
+     * @param vector           查询向量
+     * @param topK             最大召回命中数
+     * @param expr             标量过滤表达式 (可为空)
+     * @param outputFields     出参字段列表 (为空且指定 entityClass 时默认 "*")
+     * @param consistencyLevel 一致性级别 (可为空，默认取配置项)
+     * @param entityClass      实体类型 (若为空则只填充 rawData)
+     * @param <T>              实体泛型
+     * @return 命中结果列表
+     */
+    @SuppressWarnings("unchecked")
+    public <T> List<MilvusHit<T>> search(String collectionName,
+                                         String annsField,
+                                         List<Float> vector,
+                                         int topK,
+                                         String expr,
+                                         List<String> outputFields,
+                                         MilvusConsistencyLevel consistencyLevel,
+                                         Class<T> entityClass) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        Assert.notNull(vector, "vector must not be null");
+        Assert.isTrue(topK > 0, "topK must be positive");
+
+        String safeFilter = MilvusTenantHelper.weaveTenantFilter(expr, null, false);
+        MilvusConsistencyLevel level = consistencyLevel != null ? consistencyLevel : properties.getConsistencyLevel();
+
+        List<String> effectiveOutputFields = outputFields;
+        if ((effectiveOutputFields == null || effectiveOutputFields.isEmpty()) && entityClass != null && !Map.class.isAssignableFrom(entityClass)) {
+            effectiveOutputFields = Collections.singletonList("*");
+        }
+
+        SearchReq.SearchReqBuilder<?, ?> builder = SearchReq.builder()
+                .collectionName(collectionName)
+                .data(Collections.singletonList(new FloatVec(vector)))
+                .topK(topK)
+                .consistencyLevel(level.getNativeLevel());
+
+        if (StringUtils.hasText(annsField)) {
+            builder.annsField(annsField);
+        }
+        if (StringUtils.hasText(safeFilter)) {
+            builder.filter(safeFilter);
+        }
+        if (effectiveOutputFields != null && !effectiveOutputFields.isEmpty()) {
+            builder.outputFields(effectiveOutputFields);
+        }
+
+        SearchResp resp = search(builder.build());
+        return extractHits(resp, entityClass);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> List<MilvusHit<T>> extractHits(SearchResp searchResp, Class<T> entityClass) {
+        if (searchResp == null || searchResp.getSearchResults() == null || searchResp.getSearchResults().isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<SearchResp.SearchResult> firstResult = searchResp.getSearchResults().get(0);
+        if (firstResult == null || firstResult.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<MilvusHit<T>> hits = new ArrayList<>(firstResult.size());
+        for (SearchResp.SearchResult r : firstResult) {
+            Map<String, Object> entityMap = r.getEntity();
+            T entity = null;
+            if (entityClass != null) {
+                if (Map.class.isAssignableFrom(entityClass)) {
+                    entity = (T) entityMap;
+                } else if (entityMap != null) {
+                    entity = MilvusEntityConverter.mapToEntity(entityMap, entityClass);
+                }
+            }
+            hits.add(MilvusHit.<T>builder()
+                    .id(r.getId())
+                    .score(r.getScore())
+                    .rawData(entityMap != null ? entityMap : Collections.emptyMap())
+                    .entity(entity)
+                    .build());
+        }
+        return hits;
+    }
+
+    /**
+     * 基于实体类的强类型向量相似度检索 (支持显式指定一致性级别与标量过滤)
+     *
+     * @param entityClass      实体类
+     * @param vector           查询向量
+     * @param topK             召回数量
+     * @param expr             标量表达式
+     * @param consistencyLevel 一致性级别
+     * @param <T>              实体泛型
+     * @return 命中结果列表
+     */
+    public <T> List<MilvusHit<T>> search(Class<T> entityClass, List<Float> vector, int topK, String expr, MilvusConsistencyLevel consistencyLevel) {
+        Assert.notNull(entityClass, "entityClass must not be null");
+        MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
+        String annsField = metadata.getVectorField() != null ? metadata.getVectorField().getFieldName() : null;
+        return search(metadata.getCollectionName(), annsField, vector, topK, expr, null, consistencyLevel, entityClass);
+    }
+
+    /**
+     * 基于实体类的强类型向量相似度检索 (支持标量过滤)
+     *
+     * @param entityClass 实体类
+     * @param vector      查询向量
+     * @param topK        召回数量
+     * @param expr        标量表达式
+     * @param <T>         实体泛型
+     * @return 命中结果列表
+     */
+    public <T> List<MilvusHit<T>> search(Class<T> entityClass, List<Float> vector, int topK, String expr) {
+        return search(entityClass, vector, topK, expr, null);
+    }
+
+    /**
+     * 基于实体类的极简强类型向量相似度检索
+     *
+     * @param entityClass 实体类
+     * @param vector      查询向量
+     * @param topK        召回数量
+     * @param <T>         实体泛型
+     * @return 命中结果列表
+     */
+    public <T> List<MilvusHit<T>> search(Class<T> entityClass, List<Float> vector, int topK) {
+        return search(entityClass, vector, topK, null, null);
+    }
+
+    /**
+     * 基于集合名的字典式向量相似度检索 (支持字段与一致性级别定制)
+     *
+     * @param collectionName   集合名称
+     * @param vector           查询向量
+     * @param topK             召回数量
+     * @param expr             标量表达式
+     * @param outputFields     出参字段
+     * @param consistencyLevel 一致性级别
+     * @return 命中结果列表
+     */
+    public List<MilvusHit<Map<String, Object>>> search(String collectionName,
+                                                       List<Float> vector,
+                                                       int topK,
+                                                       String expr,
+                                                       List<String> outputFields,
+                                                       MilvusConsistencyLevel consistencyLevel) {
+        return search(collectionName, null, vector, topK, expr, outputFields, consistencyLevel, null);
+    }
+
+    /**
+     * 基于集合名的字典式向量相似度检索 (支持标量表达式)
+     *
+     * @param collectionName 集合名称
+     * @param vector         查询向量
+     * @param topK           召回数量
+     * @param expr           标量表达式
+     * @return 命中结果列表
+     */
+    public List<MilvusHit<Map<String, Object>>> search(String collectionName, List<Float> vector, int topK, String expr) {
+        return search(collectionName, null, vector, topK, expr, null, null, null);
+    }
+
+    /**
+     * 基于集合名的极简字典式向量相似度检索
+     *
+     * @param collectionName 集合名称
+     * @param vector         查询向量
+     * @param topK           召回数量
+     * @return 命中结果列表
+     */
+    public List<MilvusHit<Map<String, Object>>> search(String collectionName, List<Float> vector, int topK) {
+        return search(collectionName, null, vector, topK, null, null, null, null);
+    }
+
+    // =========================================================================
+    // 9. 标量条件查询 (DQL: Scalar Query Operations)
+    // =========================================================================
+
+    /**
+     * 执行底层原生 QueryReq 标量查询
+     *
+     * @param request QueryReq 请求对象
+     * @return 官方 QueryResp 响应
+     */
+    public QueryResp query(QueryReq request) {
+        Assert.notNull(request, "QueryReq must not be null");
+        return execute("标量条件查询", c -> c.query(request));
+    }
+
+    /**
+     * 按集合名与标量表达式查询字典数据 (支持多租户安全织入与出参指定)
+     *
+     * @param collectionName   集合名称
+     * @param expr             过滤表达式
+     * @param outputFields     出参字段列表
+     * @param consistencyLevel 一致性级别 (可为 null)
+     * @return 字典结果列表
+     */
+    public List<Map<String, Object>> query(String collectionName,
+                                           String expr,
+                                           List<String> outputFields,
+                                           MilvusConsistencyLevel consistencyLevel) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        String safeFilter = MilvusTenantHelper.weaveTenantFilter(expr, null, false);
+        MilvusConsistencyLevel level = consistencyLevel != null ? consistencyLevel : properties.getConsistencyLevel();
+
+        QueryReq.QueryReqBuilder<?, ?> builder = QueryReq.builder()
+                .collectionName(collectionName)
+                .consistencyLevel(level.getNativeLevel());
+
+        if (StringUtils.hasText(safeFilter)) {
+            builder.filter(safeFilter);
+        }
+        if (outputFields != null && !outputFields.isEmpty()) {
+            builder.outputFields(outputFields);
+        } else {
+            builder.outputFields(Collections.singletonList("*"));
+        }
+
+        QueryResp resp = query(builder.build());
+        if (resp == null || resp.getQueryResults() == null || resp.getQueryResults().isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<Map<String, Object>> results = new ArrayList<>(resp.getQueryResults().size());
+        for (QueryResp.QueryResult r : resp.getQueryResults()) {
+            if (r.getEntity() != null) {
+                results.add(r.getEntity());
+            }
+        }
+        return results;
+    }
+
+    /**
+     * 按集合名与标量表达式查询字典数据
+     *
+     * @param collectionName 集合名称
+     * @param expr           过滤表达式
+     * @return 字典结果列表
+     */
+    public List<Map<String, Object>> query(String collectionName, String expr) {
+        return query(collectionName, expr, null, null);
+    }
+
+    /**
+     * 按实体类型与标量表达式查询业务实体列表 (支持一致性级别指定)
+     *
+     * @param entityClass      实体类型
+     * @param expr             过滤表达式
+     * @param consistencyLevel 一致性级别
+     * @param <T>              实体泛型
+     * @return 实体列表
+     */
+    public <T> List<T> query(Class<T> entityClass, String expr, MilvusConsistencyLevel consistencyLevel) {
+        Assert.notNull(entityClass, "entityClass must not be null");
+        MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
+        List<Map<String, Object>> list = query(metadata.getCollectionName(), expr, null, consistencyLevel);
+        return MilvusEntityConverter.mapListToEntities(list, entityClass);
+    }
+
+    /**
+     * 按实体类型与标量表达式查询业务实体列表
+     *
+     * @param entityClass 实体类型
+     * @param expr        过滤表达式
+     * @param <T>         实体泛型
+     * @return 实体列表
+     */
+    public <T> List<T> query(Class<T> entityClass, String expr) {
+        return query(entityClass, expr, null);
+    }
+
+    // =========================================================================
+    // 10. 主键点查与轻量探测 (Point Lookup & Probing Operations)
+    // =========================================================================
+
+    /**
+     * 按主键精确点查单条记录 (自动防御跨租户越权探测)
+     *
+     * @param collectionName 集合名称
+     * @param id             主键 ID
+     * @param outputFields   出参字段列表
+     * @return 记录字典，若不存在或跨租户越权则返回 null
+     */
+    public Map<String, Object> getById(String collectionName, Object id, List<String> outputFields) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        Assert.notNull(id, "id must not be null");
+        List<String> fields = outputFields != null && !outputFields.isEmpty() ? outputFields : Collections.singletonList("*");
+        return execute("按主键点查", c -> {
+            var resp = c.get(GetReq.builder()
+                    .collectionName(collectionName)
+                    .ids(Collections.singletonList(id))
+                    .outputFields(fields)
+                    .build());
+            if (resp != null && resp.getGetResults() != null && !resp.getGetResults().isEmpty()) {
+                Map<String, Object> entity = resp.getGetResults().get(0).getEntity();
+                if (entity != null && !TenantContextHolder.isIgnoreTenant()) {
+                    String tenantId = TenantContextHolder.getTenantId();
+                    if (StringUtils.hasText(tenantId)) {
+                        Object entityTenant = entity.get(MilvusTenantHelper.DEFAULT_TENANT_FIELD);
+                        if (entityTenant != null && !tenantId.trim().equals(String.valueOf(entityTenant).trim())) {
+                            return null;
+                        }
+                    }
+                }
+                return entity;
+            }
+            return null;
+        });
+    }
+
+    /**
+     * 按主键精确点查单条记录
+     *
+     * @param collectionName 集合名称
+     * @param id             主键 ID
+     * @return 记录字典，若不存在则返回 null
+     */
+    public Map<String, Object> getById(String collectionName, Object id) {
+        return getById(collectionName, id, null);
+    }
+
+    /**
+     * 按实体类型与主键精确点查单个实体
+     *
+     * @param entityClass 实体类型
+     * @param id          主键 ID
+     * @param <T>         实体泛型
+     * @return 业务实体，若不存在则返回 null
+     */
+    public <T> T getById(Class<T> entityClass, Object id) {
+        Assert.notNull(entityClass, "entityClass must not be null");
+        MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
+        Map<String, Object> map = getById(metadata.getCollectionName(), id);
+        return MilvusEntityConverter.mapToEntity(map, entityClass);
+    }
+
+    /**
+     * 按主键批量点查记录列表 (自动防御跨租户越权探测)
+     *
+     * @param collectionName 集合名称
+     * @param ids            主键列表
+     * @param outputFields   出参字段列表
+     * @return 记录字典列表
+     */
+    public List<Map<String, Object>> getByIds(String collectionName, List<?> ids, List<String> outputFields) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        if (ids == null || ids.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> fields = outputFields != null && !outputFields.isEmpty() ? outputFields : Collections.singletonList("*");
+        return execute("按主键批量点查", c -> {
+            var resp = c.get(GetReq.builder()
+                    .collectionName(collectionName)
+                    .ids((List<Object>) ids)
+                    .outputFields(fields)
+                    .build());
+            if (resp != null && resp.getGetResults() != null && !resp.getGetResults().isEmpty()) {
+                List<Map<String, Object>> list = new ArrayList<>(resp.getGetResults().size());
+                String tenantId = !TenantContextHolder.isIgnoreTenant() ? TenantContextHolder.getTenantId() : null;
+                for (var r : resp.getGetResults()) {
+                    Map<String, Object> entity = r.getEntity();
+                    if (entity != null) {
+                        if (StringUtils.hasText(tenantId)) {
+                            Object entityTenant = entity.get(MilvusTenantHelper.DEFAULT_TENANT_FIELD);
+                            if (entityTenant != null && !tenantId.trim().equals(String.valueOf(entityTenant).trim())) {
+                                continue;
+                            }
+                        }
+                        list.add(entity);
+                    }
+                }
+                return list;
+            }
+            return Collections.emptyList();
+        });
+    }
+
+    /**
+     * 按主键批量点查记录列表
+     *
+     * @param collectionName 集合名称
+     * @param ids            主键列表
+     * @return 记录字典列表
+     */
+    public List<Map<String, Object>> getByIds(String collectionName, List<?> ids) {
+        return getByIds(collectionName, ids, null);
+    }
+
+    /**
+     * 按实体类型与主键列表批量点查业务实体
+     *
+     * @param entityClass 实体类型
+     * @param ids         主键列表
+     * @param <T>         实体泛型
+     * @return 业务实体列表
+     */
+    public <T> List<T> getByIds(Class<T> entityClass, List<?> ids) {
+        Assert.notNull(entityClass, "entityClass must not be null");
+        MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
+        List<Map<String, Object>> list = getByIds(metadata.getCollectionName(), ids);
+        return MilvusEntityConverter.mapListToEntities(list, entityClass);
+    }
+
+    /**
+     * 判定指定主键是否存在
+     *
+     * @param collectionName 集合名称
+     * @param id             主键 ID
+     * @return 是否存在
+     */
+    public boolean existsById(String collectionName, Object id) {
+        return getById(collectionName, id) != null;
+    }
+
+    /**
+     * 按实体类型判定指定主键是否存在
+     *
+     * @param entityClass 实体类型
+     * @param id          主键 ID
+     * @return 是否存在
+     */
+    public boolean existsById(Class<?> entityClass, Object id) {
+        Assert.notNull(entityClass, "entityClass must not be null");
+        MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
+        return existsById(metadata.getCollectionName(), id);
+    }
+
+    /**
+     * 统计集合符合条件的实体数量 (无条件时极速读取统计，有条件时聚合统计)
+     *
+     * @param collectionName 集合名称
+     * @param expr           过滤表达式 (可为 null)
+     * @return 数量统计
+     */
+    public long count(String collectionName, String expr) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        String safeFilter = MilvusTenantHelper.weaveTenantFilter(expr, null, false);
+        if (!StringUtils.hasText(safeFilter)) {
+            try {
+                var stats = getCollectionStats(collectionName);
+                if (stats != null && stats.getNumOfEntities() != null) {
+                    return stats.getNumOfEntities();
+                }
+            } catch (Exception ignored) {
+                // 回退至 query count(*)
+            }
+        }
+        return execute("统计实体数量", c -> {
+            QueryReq.QueryReqBuilder<?, ?> builder = QueryReq.builder()
+                    .collectionName(collectionName)
+                    .outputFields(Collections.singletonList("count(*)"));
+            if (StringUtils.hasText(safeFilter)) {
+                builder.filter(safeFilter);
+            }
+            var resp = c.query(builder.build());
+            if (resp != null && resp.getQueryResults() != null && !resp.getQueryResults().isEmpty()) {
+                Map<String, Object> entity = resp.getQueryResults().get(0).getEntity();
+                if (entity != null) {
+                    Object cnt = entity.get("count(*)");
+                    if (cnt instanceof Number num) {
+                        return num.longValue();
+                    }
+                }
+            }
+            return 0L;
+        });
+    }
+
+    /**
+     * 统计集合中的全部实体数量
+     *
+     * @param collectionName 集合名称
+     * @return 集合总实体数
+     */
+    public long count(String collectionName) {
+        return count(collectionName, null);
+    }
+
+    /**
+     * 按实体类型统计符合条件的实体数量
+     *
+     * @param entityClass 实体类型
+     * @param expr        过滤表达式
+     * @param <T>         实体泛型
+     * @return 数量统计
+     */
+    public <T> long count(Class<T> entityClass, String expr) {
+        Assert.notNull(entityClass, "entityClass must not be null");
+        MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
+        return count(metadata.getCollectionName(), expr);
+    }
+
+    /**
+     * 按实体类型统计全部实体数量
+     *
+     * @param entityClass 实体类型
+     * @param <T>         实体泛型
+     * @return 集合总实体数
+     */
+    public <T> long count(Class<T> entityClass) {
+        return count(entityClass, null);
+    }
+
+    // =========================================================================
+    // 11. 海量数据透明分批切片摄取 (Batch Slicing Ingestion Operations)
+    // =========================================================================
+
+    /**
+     * 分批切片写入海量字典数据 (防 OOM 与 gRPC 帧超限，结合指数退避重试)
+     *
+     * @param collectionName 集合名称
+     * @param data           字典数据列表
+     * @param partitionName  物理分区名称 (可为 null)
+     * @param batchSize      每批切片大小 (默认 1000)
+     */
+    public void insertBatch(String collectionName, List<Map<String, Object>> data, String partitionName, int batchSize) {
+        if (data == null || data.isEmpty()) {
+            return;
+        }
+        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        BatchSliceUtil.forEachSlice(data, effectiveBatchSize, slice ->
+                RetryUtil.execute(() -> insert(collectionName, slice, partitionName), DEFAULT_RETRY_CONFIG));
+    }
+
+    /**
+     * 分批切片写入字典数据 (默认分区)
+     *
+     * @param collectionName 集合名称
+     * @param data           字典数据列表
+     * @param batchSize      每批切片大小
+     */
+    public void insertBatch(String collectionName, List<Map<String, Object>> data, int batchSize) {
+        insertBatch(collectionName, data, null, batchSize);
+    }
+
+    /**
+     * 分批切片写入字典数据 (默认分区与默认切片大小 1000)
+     *
+     * @param collectionName 集合名称
+     * @param data           字典数据列表
+     */
+    public void insertBatch(String collectionName, List<Map<String, Object>> data) {
+        insertBatch(collectionName, data, null, DEFAULT_BATCH_SIZE);
+    }
+
+    /**
+     * 分批切片写入海量业务实体数据 (防 OOM 与 gRPC 帧超限，结合指数退避重试)
+     *
+     * @param entities      实体列表
+     * @param partitionName 物理分区名称 (可为 null)
+     * @param batchSize     每批切片大小 (默认 1000)
+     * @param <T>           实体泛型
+     */
+    public <T> void insertBatchEntities(List<T> entities, String partitionName, int batchSize) {
+        if (entities == null || entities.isEmpty()) {
+            return;
+        }
+        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        BatchSliceUtil.forEachSlice(entities, effectiveBatchSize, slice ->
+                RetryUtil.execute(() -> insertEntities(slice, partitionName), DEFAULT_RETRY_CONFIG));
+    }
+
+    /**
+     * 分批切片写入业务实体数据 (默认分区)
+     *
+     * @param entities  实体列表
+     * @param batchSize 每批切片大小
+     * @param <T>       实体泛型
+     */
+    public <T> void insertBatchEntities(List<T> entities, int batchSize) {
+        insertBatchEntities(entities, null, batchSize);
+    }
+
+    /**
+     * 分批切片写入业务实体数据 (默认分区与默认切片大小 1000)
+     *
+     * @param entities 实体列表
+     * @param <T>      实体泛型
+     */
+    public <T> void insertBatchEntities(List<T> entities) {
+        insertBatchEntities(entities, null, DEFAULT_BATCH_SIZE);
+    }
+
+    /**
+     * 分批切片覆盖写入海量字典数据 (防 OOM 与 gRPC 帧超限，结合指数退避重试)
+     *
+     * @param collectionName 集合名称
+     * @param data           字典数据列表
+     * @param partitionName  物理分区名称 (可为 null)
+     * @param batchSize      每批切片大小 (默认 1000)
+     */
+    public void upsertBatch(String collectionName, List<Map<String, Object>> data, String partitionName, int batchSize) {
+        if (data == null || data.isEmpty()) {
+            return;
+        }
+        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        BatchSliceUtil.forEachSlice(data, effectiveBatchSize, slice ->
+                RetryUtil.execute(() -> upsert(collectionName, slice, partitionName), DEFAULT_RETRY_CONFIG));
+    }
+
+    /**
+     * 分批切片覆盖写入字典数据 (默认分区)
+     *
+     * @param collectionName 集合名称
+     * @param data           字典数据列表
+     * @param batchSize      每批切片大小
+     */
+    public void upsertBatch(String collectionName, List<Map<String, Object>> data, int batchSize) {
+        upsertBatch(collectionName, data, null, batchSize);
+    }
+
+    /**
+     * 分批切片覆盖写入字典数据 (默认分区与默认切片大小 1000)
+     *
+     * @param collectionName 集合名称
+     * @param data           字典数据列表
+     */
+    public void upsertBatch(String collectionName, List<Map<String, Object>> data) {
+        upsertBatch(collectionName, data, null, DEFAULT_BATCH_SIZE);
+    }
+
+    /**
+     * 分批切片覆盖写入海量业务实体数据 (防 OOM 与 gRPC 帧超限，结合指数退避重试)
+     *
+     * @param entities      实体列表
+     * @param partitionName 物理分区名称 (可为 null)
+     * @param batchSize     每批切片大小 (默认 1000)
+     * @param <T>           实体泛型
+     */
+    public <T> void upsertBatchEntities(List<T> entities, String partitionName, int batchSize) {
+        if (entities == null || entities.isEmpty()) {
+            return;
+        }
+        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        BatchSliceUtil.forEachSlice(entities, effectiveBatchSize, slice ->
+                RetryUtil.execute(() -> upsertEntities(slice, partitionName), DEFAULT_RETRY_CONFIG));
+    }
+
+    /**
+     * 分批切片覆盖写入业务实体数据 (默认分区)
+     *
+     * @param entities  实体列表
+     * @param batchSize 每批切片大小
+     * @param <T>       实体泛型
+     */
+    public <T> void upsertBatchEntities(List<T> entities, int batchSize) {
+        upsertBatchEntities(entities, null, batchSize);
+    }
+
+    /**
+     * 分批切片覆盖写入业务实体数据 (默认分区与默认切片大小 1000)
+     *
+     * @param entities 实体列表
+     * @param <T>      实体泛型
+     */
+    public <T> void upsertBatchEntities(List<T> entities) {
+        upsertBatchEntities(entities, null, DEFAULT_BATCH_SIZE);
+    }
+
+    private void ensurePartitionExists(String collectionName, String partitionName) {
+        if (partitionName != null && properties.isAutoCreatePartition()) {
+            if (!hasPartition(collectionName, partitionName)) {
+                log.info("时序物理分区自动创建: 集合 [{}] 分区 [{}] 不存在，正在自动创建", collectionName, partitionName);
+                createPartition(collectionName, partitionName);
+            }
+        }
     }
 
     // =========================================================================
