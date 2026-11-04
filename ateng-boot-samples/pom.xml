@@ -52,6 +52,7 @@
         <module>ateng-boot-sample-social</module>
         <module>ateng-boot-sample-liteflow</module>
         <module>ateng-boot-sample-ai</module>
+        <module>ateng-boot-sample-milvus</module>
     </modules>
 
     <properties>

@@ -1,0 +1,31 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-milvus
+  config:
+    import: "optional:classpath:application-local.yml"
+
+ateng:
+  boot:
+    milvus:
+      enabled: true
+      uri: http://127.0.0.1:19530
+      database: default
+      consistency-level: BOUNDED
+      auto-create-partition: true
+      connect-timeout: 5s
+      idle-timeout: 30s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "health,metrics,info"
+  endpoint:
+    health:
+      show-details: always
+  health:
+    milvus:
+      enabled: true
