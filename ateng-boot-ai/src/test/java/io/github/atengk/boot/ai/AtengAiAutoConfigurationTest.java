@@ -3,6 +3,7 @@ package io.github.atengk.boot.ai;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import io.github.atengk.boot.ai.autoconfigure.AtengAiAutoConfiguration;
+import io.github.atengk.boot.ai.observability.AtengAiObservabilityListener;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.template.AiTemplate;
 import org.junit.jupiter.api.DisplayName;
@@ -125,6 +126,47 @@ class AtengAiAutoConfigurationTest {
                     AiModelRegistry registry = context.getBean(AiModelRegistry.class);
                     assertThat(registry.hasChatModel(AiModelRegistry.DEFAULT_MODEL_NAME)).isTrue();
                 });
+    }
+
+    @Test
+    @DisplayName("可观测审计监听器默认自动装配测试")
+    void testObservabilityListenerAutoConfigured() {
+        contextRunner.run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(AtengAiObservabilityListener.class);
+        });
+    }
+
+    @Test
+    @DisplayName("审计开关禁用测试：ateng.boot.ai.audit.enabled=false 时不装配 AtengAiObservabilityListener")
+    void testObservabilityListenerDisabled() {
+        contextRunner.withPropertyValues("ateng.boot.ai.audit.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(AtengAiObservabilityListener.class);
+                });
+    }
+
+    @Test
+    @DisplayName("用户自定义 AtengAiObservabilityListener 时触发 @ConditionalOnMissingBean 接管")
+    void testCustomObservabilityListenerOverride() {
+        contextRunner.withUserConfiguration(CustomListenerConfig.class)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(AtengAiObservabilityListener.class);
+                    AtengAiObservabilityListener listener = context.getBean(AtengAiObservabilityListener.class);
+                    assertThat(listener).isSameAs(CustomListenerConfig.MOCK_LISTENER);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomListenerConfig {
+        static final AtengAiObservabilityListener MOCK_LISTENER = Mockito.mock(AtengAiObservabilityListener.class);
+
+        @Bean
+        public AtengAiObservabilityListener atengAiObservabilityListener() {
+            return MOCK_LISTENER;
+        }
     }
 
     @Configuration(proxyBeanMethods = false)

@@ -36,6 +36,12 @@ public class AtengAiProperties {
     private ChatMemoryProperties chatMemory = new ChatMemoryProperties();
 
     /**
+     * 全维链路可观测审计与脱敏配置
+     */
+    @NestedConfigurationProperty
+    private AiAuditProperties audit = new AiAuditProperties();
+
+    /**
      * 命名多模型配置拓扑 (key 为模型标识别名，例如 deepseek-r1, qwen-max, fast-chat 等)
      */
     private Map<String, AiModelConfig> models = new LinkedHashMap<>();

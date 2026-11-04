@@ -91,3 +91,31 @@ _Avoid_: WorkflowManager, HitlExecutor, ResumeService
 **StateSnapshotVo**:
 状态图执行快照传输视图对象，封装线程标识、工作流名称、执行状态、当前/下一节点、业务状态纯净视图与中断审批元数据。
 _Avoid_: SnapshotDto, GraphStatusResponse, WorkflowSnapshot
+
+**AtengAiObservabilityListener**:
+基于 LangChain4j ChatModelListener SPI 的全维可观测审计监听实现类，统一采集请求耗时、四维上下文透传与 Token 计数并挂载 Micrometer 云原生度量指标。
+_Avoid_: AiTracingInterceptor, LlmMetricsAspect, ModelAuditFilter
+
+**FallbackTokenEstimator**:
+流式打字机 Token 启发式保底估算纯函数工具类，在远程网关未返回 Usage 时基于中英加权算法推算 Token 消耗并标记 estimated=true 消除监控空洞。
+_Avoid_: TokenCalculator, UsageGuesser, TokenHeuristic
+
+**AiQuotaChecker**:
+多租户与用户级大模型调用额度风控拦截器 SPI 顶层接口，负责在远程模型调用发起前执行调用次数与 Token 配额校验，超额即刻 Fail-Fast 阻断以防巨额账单冲击。
+_Avoid_: QuotaService, RateLimiter, TokenGatekeeper
+
+**AiTenantModelResolver**:
+多租户动态模型切源与凭据解析 SPI 顶层接口，支持根据租户上下文动态路由至专有大模型实例或隔离配置。
+_Avoid_: TenantModelRouter, TenantModelFactory, ModelTenantMapping
+
+**AiAuditRecord**:
+结构化可观测审计记录契约模型对象，封装请求耗时、模型标识、四维上下文快照（MDC traceId、租户、用户）、Token 消耗明细与脱敏后出入参。
+_Avoid_: AuditEntry, AiLogItem, TelemetryEvent
+
+**AiAuditLogHandler**:
+可观测审计记录外部持久化扩展点 SPI 接口，支持企业无侵入对接 Kafka、Elasticsearch 或数据库落盘，默认受管异步安全调度防链路击穿。
+_Avoid_: AuditListener, LogConsumer, TelemetrySink
+
+**DefaultAiQuotaChecker**:
+多租户大模型调用配额风控默认实现类，自适应双模计数（无 Redis 单机并发内存淘汰，有 Redis 分布式天级滑动计数与 TTL 自动失效）。
+_Avoid_: SimpleQuotaChecker, StandardQuotaService, MemoryQuotaManager

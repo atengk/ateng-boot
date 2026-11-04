@@ -32,6 +32,9 @@ import io.github.atengk.boot.ai.registrar.AiAgentRegistrar;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import io.github.atengk.boot.ai.observability.AiAuditLogHandler;
+import io.github.atengk.boot.ai.observability.AtengAiObservabilityListener;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.util.Collections;
@@ -54,6 +57,24 @@ public class AtengAiAutoConfiguration {
     private static final Logger log = LoggerFactory.getLogger(AtengAiAutoConfiguration.class);
 
     /**
+     * 自动装配 AI 大模型全维链路可观测审计监听器
+     *
+     * @param properties               AI 根配置属性
+     * @param auditLogHandlerProvider 可选的审计记录持久化扩展点
+     * @param taskExecutorProvider     可选的受管异步线程池
+     * @return AtengAiObservabilityListener 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.audit", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public AtengAiObservabilityListener atengAiObservabilityListener(
+            AtengAiProperties properties,
+            ObjectProvider<AiAuditLogHandler> auditLogHandlerProvider,
+            ObjectProvider<TaskExecutor> taskExecutorProvider) {
+        return new AtengAiObservabilityListener(properties, auditLogHandlerProvider, taskExecutorProvider);
+    }
+
+    /**
      * 自动装配默认同步大模型 (仅当配置了默认 apiKey 时初始化，实现平滑探测防御)
      *
      * @param properties        AI 根配置属性
@@ -64,8 +85,8 @@ public class AtengAiAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.ai.model", name = "api-key")
     public ChatLanguageModel openAiChatModel(AtengAiProperties properties,
-                                             ObjectProvider<List<ChatModelListener>> listenersProvider) {
-        List<ChatModelListener> listeners = listenersProvider.getIfAvailable(Collections::emptyList);
+                                             ObjectProvider<ChatModelListener> listenersProvider) {
+        List<ChatModelListener> listeners = listenersProvider.orderedStream().toList();
         return OpenAiModelFactory.createChatModel(properties.getModel(), listeners);
     }
 
@@ -80,8 +101,8 @@ public class AtengAiAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.ai.model", name = "api-key")
     public StreamingChatLanguageModel openAiStreamingChatModel(AtengAiProperties properties,
-                                                               ObjectProvider<List<ChatModelListener>> listenersProvider) {
-        List<ChatModelListener> listeners = listenersProvider.getIfAvailable(Collections::emptyList);
+                                                               ObjectProvider<ChatModelListener> listenersProvider) {
+        List<ChatModelListener> listeners = listenersProvider.orderedStream().toList();
         return OpenAiModelFactory.createStreamingChatModel(properties.getModel(), listeners);
     }
 
@@ -99,9 +120,9 @@ public class AtengAiAutoConfiguration {
     public AiModelRegistry aiModelRegistry(AtengAiProperties properties,
                                            ObjectProvider<ChatLanguageModel> defaultChatModelProvider,
                                            ObjectProvider<StreamingChatLanguageModel> defaultStreamingChatModelProvider,
-                                           ObjectProvider<List<ChatModelListener>> listenersProvider) {
+                                           ObjectProvider<ChatModelListener> listenersProvider) {
         AiModelRegistry registry = new AiModelRegistry();
-        List<ChatModelListener> listeners = listenersProvider.getIfAvailable(Collections::emptyList);
+        List<ChatModelListener> listeners = listenersProvider.orderedStream().toList();
 
         // 1. 注册默认模型 (若已由 Spring 容器装配或独立配置，优先使用唯一/Primary Bean，多 Bean 时平滑退避首个)
         ChatLanguageModel defaultChatModel = defaultChatModelProvider.getIfUnique();
