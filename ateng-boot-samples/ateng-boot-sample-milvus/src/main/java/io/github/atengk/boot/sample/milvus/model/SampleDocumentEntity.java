@@ -66,4 +66,9 @@ public class SampleDocumentEntity implements Serializable {
      */
     @MilvusVector(name = "vector", dimension = 4, metricType = IndexParam.MetricType.COSINE, indexType = IndexParam.IndexType.AUTOINDEX, description = "4维稠密向量")
     private List<Float> vector;
+
+    /**
+     * 动态扩展属性字典 (自动对接 Milvus $meta 动态列)
+     */
+    private java.util.Map<String, Object> extra;
 }

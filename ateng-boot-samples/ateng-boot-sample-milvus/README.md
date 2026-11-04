@@ -7,9 +7,11 @@
 ## 1. 工程定位与核心能力
 
 - **Web 契约底座**: 基于 `ateng-boot-web` 统一传输契约，所有接口均显式返回强类型 `Result<T>`，彻底遵循传输对象与实体解耦（Zero-Entity-Leakage）。
-- **多领域 Controller 拆分**: 拒绝臃肿上帝类，拆分为 4 个职责单一的领域控制器：
+- **多领域 Controller 拆分**: 拒绝臃肿上帝类，拆分为 6 个职责单一的领域控制器：
   - `MilvusLifecycleController` (`/sample/milvus/lifecycle`): 服务端健康探针、集合一键初始化与预加载、加载/释放与集合元数据查看。
+  - `MilvusAliasController` (`/sample/milvus/alias`): 集合别名生命周期运维与蓝绿零停机无感发布平滑切流。
   - `MilvusVectorController` (`/sample/milvus/vector`): 单向量 CRUD、主键点查、标量表达式组合过滤、ANN 相似度检索与防 OOM 分批切片数据摄取。
+  - `MilvusAdvancedSearchController` (`/sample/milvus/search`): 单向量 GroupBy 去重聚合检索与 Range Search 范围区间检索。
   - `MilvusHybridController` (`/sample/milvus/hybrid`): 多向量多路召回、RRF 互逆排名融合与加权融合重排。
   - `MilvusTenantController` (`/sample/milvus/tenant`): SaaS 多租户隔离读写、请求头租户标识自动织入与线程上下文安全重置。
 - **双模自适应驱动**:
@@ -240,6 +242,75 @@ curl -X POST "http://localhost:8080/sample/milvus/tenant/search" \
 ```bash
 curl -X GET "http://localhost:8080/sample/milvus/tenant/count" \
   -H "X-Tenant-Id: tenant_corp_001"
+```
+
+---
+
+### 3.5 集合别名生命周期与蓝绿无感发布 (`MilvusAliasController`)
+
+#### 1) 为集合创建逻辑别名
+```bash
+curl -X POST "http://localhost:8080/sample/milvus/alias/create" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collectionName": "sample_document",
+    "alias": "doc_alias_prod"
+  }'
+```
+
+#### 2) 平滑切换别名 (蓝绿发布无感切流，带前置内存就绪校验)
+```bash
+curl -X POST "http://localhost:8080/sample/milvus/alias/alter" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collectionName": "sample_document",
+    "alias": "doc_alias_prod",
+    "checkLoaded": true
+  }'
+```
+
+#### 3) 查询集合绑定的所有别名
+```bash
+curl -X GET "http://localhost:8080/sample/milvus/alias/list?collectionName=sample_document"
+```
+
+#### 4) 查看别名元数据详情
+```bash
+curl -X GET "http://localhost:8080/sample/milvus/alias/detail?alias=doc_alias_prod"
+```
+
+#### 5) 解绑/删除别名
+```bash
+curl -X DELETE "http://localhost:8080/sample/milvus/alias/drop?alias=doc_alias_prod"
+```
+
+---
+
+### 3.6 高级特征检索：GroupBy 与 Range Search (`MilvusAdvancedSearchController`)
+
+#### 1) 单向量 GroupBy 去重聚合检索 (按分类每个组仅召回最匹配 Top 1)
+```bash
+curl -X POST "http://localhost:8080/sample/milvus/search/group-by" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collectionName": "sample_document",
+    "vector": [0.12, 0.34, 0.56, 0.78],
+    "groupByField": "category",
+    "topK": 3
+  }'
+```
+
+#### 2) 范围过滤检索 (Range Search，圈定置信度相似度区间)
+```bash
+curl -X POST "http://localhost:8080/sample/milvus/search/range" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collectionName": "sample_document",
+    "vector": [0.12, 0.34, 0.56, 0.78],
+    "radius": 0.85,
+    "rangeFilter": 0.60,
+    "topK": 5
+  }'
 ```
 
 ---

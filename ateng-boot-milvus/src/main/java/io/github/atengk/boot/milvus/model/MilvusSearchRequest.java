@@ -120,6 +120,10 @@ public class MilvusSearchRequest<T> implements Serializable {
         return new MilvusSearchRequest<>();
     }
 
+    public MilvusSearchRequest<T> build() {
+        return this;
+    }
+
     /**
      * 基于实体类创建单向量检索请求 (自动推导集合名称与主向量列)
      *
@@ -234,13 +238,28 @@ public class MilvusSearchRequest<T> implements Serializable {
         return this;
     }
 
+    public MilvusSearchRequest<T> groupByFieldName(String groupByFieldName) {
+        this.groupByFieldName = groupByFieldName;
+        return this;
+    }
+
     public MilvusSearchRequest<T> radius(Double radius) {
         this.radius = radius;
         return this;
     }
 
+    public MilvusSearchRequest<T> radius(Number radius) {
+        this.radius = radius != null ? radius.doubleValue() : null;
+        return this;
+    }
+
     public MilvusSearchRequest<T> rangeFilter(Double rangeFilter) {
         this.rangeFilter = rangeFilter;
+        return this;
+    }
+
+    public MilvusSearchRequest<T> rangeFilter(Number rangeFilter) {
+        this.rangeFilter = rangeFilter != null ? rangeFilter.doubleValue() : null;
         return this;
     }
 

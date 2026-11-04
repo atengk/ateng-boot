@@ -3,14 +3,20 @@ package io.github.atengk.boot.sample.milvus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.milvus.context.MilvusContextHolder;
+import io.github.atengk.boot.sample.milvus.dto.AliasAlterDto;
+import io.github.atengk.boot.sample.milvus.dto.AliasCreateDto;
 import io.github.atengk.boot.sample.milvus.dto.DocumentBatchInsertDto;
 import io.github.atengk.boot.sample.milvus.dto.DocumentInsertDto;
+import io.github.atengk.boot.sample.milvus.dto.GroupBySearchDto;
 import io.github.atengk.boot.sample.milvus.dto.HybridSearchDto;
+import io.github.atengk.boot.sample.milvus.dto.RangeSearchDto;
 import io.github.atengk.boot.sample.milvus.dto.VectorSearchDto;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.service.collection.response.DescribeCollectionResp;
 import io.milvus.v2.service.collection.response.GetCollectionStatsResp;
 import io.milvus.v2.service.collection.response.ListCollectionsResp;
+import io.milvus.v2.service.utility.response.DescribeAliasResp;
+import io.milvus.v2.service.utility.response.ListAliasResp;
 import io.milvus.v2.service.vector.request.GetReq;
 import io.milvus.v2.service.vector.request.HybridSearchReq;
 import io.milvus.v2.service.vector.request.InsertReq;
@@ -166,6 +172,19 @@ class SampleMilvusIntegrationTest {
                     .build();
             when(client.search(any(SearchReq.class))).thenReturn(searchResp);
             when(client.hybridSearch(any(HybridSearchReq.class))).thenReturn(searchResp);
+
+            // 6. 集合别名运维
+            ListAliasResp aliasResp = ListAliasResp.builder()
+                    .collectionName("sample_document")
+                    .alias(List.of("doc_alias_prod", "doc_alias_preview"))
+                    .build();
+            when(client.listAliases(any())).thenReturn(aliasResp);
+
+            DescribeAliasResp descAliasResp = DescribeAliasResp.builder()
+                    .alias("doc_alias_prod")
+                    .collectionName("sample_document")
+                    .build();
+            when(client.describeAlias(any())).thenReturn(descAliasResp);
 
             return client;
         }
@@ -412,7 +431,95 @@ class SampleMilvusIntegrationTest {
 
     @Test
     @Order(6)
-    @DisplayName("6. 测试集合释放与删除终态清理 (MilvusLifecycleController)")
+    @DisplayName("6. 测试集合别名运维与蓝绿无感切流 (MilvusAliasController)")
+    void testAliasOperations() throws Exception {
+        // 1. 创建别名
+        AliasCreateDto createDto = AliasCreateDto.builder()
+                .collectionName("sample_document")
+                .alias("doc_alias_prod")
+                .build();
+        mockMvc.perform(post("/sample/milvus/alias/create")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(createDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 2. 变更切流别名
+        AliasAlterDto alterDto = AliasAlterDto.builder()
+                .collectionName("sample_document")
+                .alias("doc_alias_prod")
+                .checkLoaded(true)
+                .build();
+        mockMvc.perform(post("/sample/milvus/alias/alter")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(alterDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 3. 列出别名列表
+        mockMvc.perform(get("/sample/milvus/alias/list")
+                        .param("collectionName", "sample_document"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", hasItem("doc_alias_prod")));
+
+        // 4. 查看别名详情
+        mockMvc.perform(get("/sample/milvus/alias/detail")
+                        .param("alias", "doc_alias_prod"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.alias").value("doc_alias_prod"))
+                .andExpect(jsonPath("$.data.collectionName").value("sample_document"));
+
+        // 5. 解绑/删除别名
+        mockMvc.perform(delete("/sample/milvus/alias/drop")
+                        .param("alias", "doc_alias_prod"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+    }
+
+    @Test
+    @Order(7)
+    @DisplayName("7. 测试高级特征检索：GroupBy 去重聚合与 Range Search 范围检索 (MilvusAdvancedSearchController)")
+    void testAdvancedSearchOperations() throws Exception {
+        // 1. GroupBy 去重聚合检索
+        GroupBySearchDto groupByDto = GroupBySearchDto.builder()
+                .collectionName("sample_document")
+                .vector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
+                .groupByField("category")
+                .topK(3)
+                .build();
+
+        mockMvc.perform(post("/sample/milvus/search/group-by")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(groupByDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 2. 范围检索 (Range Search)
+        RangeSearchDto rangeDto = RangeSearchDto.builder()
+                .collectionName("sample_document")
+                .vector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
+                .radius(0.8f)
+                .rangeFilter(0.5f)
+                .topK(5)
+                .build();
+
+        mockMvc.perform(post("/sample/milvus/search/range")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(rangeDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+    }
+
+    @Test
+    @Order(8)
+    @DisplayName("8. 测试集合释放与删除终态清理 (MilvusLifecycleController)")
     void testLifecycleReleaseAndDrop() throws Exception {
         // 1. 显式释放集合内存
         mockMvc.perform(post("/sample/milvus/lifecycle/collection/release")

@@ -6,6 +6,10 @@ import io.github.atengk.boot.sample.milvus.model.SampleDocumentEntity;
 import io.github.atengk.boot.sample.milvus.vo.DocumentHitVo;
 import io.github.atengk.boot.sample.milvus.vo.DocumentVo;
 
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+
 /**
  * 样例工程文档模型与传输对象转换器
  * 负责在 Controller 传输边界与持久层实体之间执行解耦映射
@@ -73,5 +77,18 @@ public final class DocumentConverter {
                 .score(hit.getScore())
                 .document(toVo(hit.getEntity()))
                 .build();
+    }
+
+    /**
+     * 批量将检索命中结果转换为视图对象列表
+     *
+     * @param hits 检索命中列表
+     * @return 命中项视图列表
+     */
+    public static List<DocumentHitVo> toHitVoList(List<MilvusHit<SampleDocumentEntity>> hits) {
+        if (hits == null || hits.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return hits.stream().map(DocumentConverter::toHitVo).filter(Objects::nonNull).toList();
     }
 }
