@@ -11,6 +11,7 @@ import io.github.atengk.boot.milvus.model.MilvusEntityConverter;
 import io.github.atengk.boot.milvus.model.MilvusEntityMetadata;
 import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.model.MilvusHybridSearchRequest;
+import io.github.atengk.boot.milvus.model.MilvusSearchRequest;
 import io.github.atengk.boot.milvus.model.ReRanker;
 import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.github.atengk.boot.milvus.properties.MilvusConsistencyLevel;
@@ -66,6 +67,7 @@ import org.springframework.util.StringUtils;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -1080,42 +1082,120 @@ public class MilvusTemplate {
                                          MilvusConsistencyLevel consistencyLevel,
                                          Class<T> entityClass,
                                          String tenantFieldName) {
-        Assert.hasText(collectionName, "collectionName must not be empty");
-        Assert.notNull(vector, "vector must not be null");
-        Assert.isTrue(topK > 0, "topK must be positive");
+        MilvusSearchRequest<T> request = MilvusSearchRequest.<T>builder()
+                .collectionName(collectionName)
+                .annsField(annsField)
+                .vector(vector)
+                .topK(topK)
+                .expr(expr)
+                .outputFields(outputFields)
+                .consistencyLevel(consistencyLevel)
+                .entityClass(entityClass)
+                .tenantFieldName(tenantFieldName);
+        return search(request);
+    }
 
+    /**
+     * 基于统一 Fluent 请求模型的单向量 ANN 相似度高级检索
+     *
+     * 支持标量过滤、GroupBy 去重聚合、Radius 与 RangeFilter 相似度绝对区间过滤、
+     * 浅分页 Offset、专属检索超参数字典及多租户防护。
+     *
+     * @param request 单向量检索请求模型
+     * @param <T>     实体泛型
+     * @return 命中结果列表
+     */
+    @SuppressWarnings("unchecked")
+    public <T> List<MilvusHit<T>> search(MilvusSearchRequest<T> request) {
+        Assert.notNull(request, "Search request must not be null");
+        request.validate();
+
+        Class<T> entityClass = request.getEntityClass();
         MilvusEntityMetadata metadata = (entityClass != null && !Map.class.isAssignableFrom(entityClass))
                 ? MilvusEntityMetadata.of(entityClass) : null;
+
+        String collectionName = request.getCollectionName();
+        if (!StringUtils.hasText(collectionName) && metadata != null) {
+            collectionName = metadata.getCollectionName();
+        }
+        Assert.hasText(collectionName, "collectionName must not be empty");
+
         String effectiveTenantField = (metadata != null && metadata.getPartitionKeyField() != null)
                 ? metadata.getPartitionKeyField().getFieldName()
-                : tenantFieldName;
-        String safeFilter = metadata != null
-                ? MilvusTenantHelper.weaveEntityTenantFilter(expr, metadata, false)
-                : MilvusTenantHelper.weaveTenantFilter(expr, effectiveTenantField, false);
-        MilvusConsistencyLevel level = consistencyLevel != null ? consistencyLevel : properties.getConsistencyLevel();
+                : request.getTenantFieldName();
 
-        List<String> effectiveOutputFields = outputFields;
+        String safeFilter = metadata != null
+                ? MilvusTenantHelper.weaveEntityTenantFilter(request.getExpr(), metadata, request.isIgnoreTenant())
+                : MilvusTenantHelper.weaveTenantFilter(request.getExpr(), effectiveTenantField, request.isIgnoreTenant());
+
+        MilvusConsistencyLevel level = request.getConsistencyLevel() != null
+                ? request.getConsistencyLevel()
+                : properties.getConsistencyLevel();
+
+        List<String> effectiveOutputFields = request.getOutputFields();
         if ((effectiveOutputFields == null || effectiveOutputFields.isEmpty()) && metadata != null) {
             effectiveOutputFields = metadata.getFieldNames();
         }
 
         SearchReq.SearchReqBuilder<?, ?> builder = SearchReq.builder()
                 .collectionName(collectionName)
-                .data(Collections.singletonList(new FloatVec(vector)))
-                .topK(topK)
+                .data(Collections.singletonList(request.getVector()))
+                .topK(request.getTopK())
                 .consistencyLevel(level.getNativeLevel());
 
+        String annsField = StringUtils.hasText(request.getAnnsField())
+                ? request.getAnnsField()
+                : (metadata != null && metadata.getVectorField() != null ? metadata.getVectorField().getFieldName() : null);
         if (StringUtils.hasText(annsField)) {
             builder.annsField(annsField);
         }
+
         if (StringUtils.hasText(safeFilter)) {
             builder.filter(safeFilter);
         }
+
         if (effectiveOutputFields != null && !effectiveOutputFields.isEmpty()) {
             builder.outputFields(effectiveOutputFields);
         }
 
-        SearchResp resp = search(builder.build());
+        if (request.getPartitionNames() != null && !request.getPartitionNames().isEmpty()) {
+            builder.partitionNames(request.getPartitionNames());
+        }
+
+        if (StringUtils.hasText(request.getGroupByFieldName())) {
+            builder.groupByFieldName(request.getGroupByFieldName().trim());
+        }
+
+        if (request.getOffset() > 0) {
+            builder.offset(request.getOffset());
+        }
+
+        if (request.getRoundDecimal() >= 0) {
+            builder.roundDecimal(request.getRoundDecimal());
+        }
+
+        Map<String, Object> effectiveSearchParams = new HashMap<>();
+        if (request.getSearchParams() != null && !request.getSearchParams().isEmpty()) {
+            effectiveSearchParams.putAll(request.getSearchParams());
+        }
+        if (request.getRadius() != null) {
+            effectiveSearchParams.put("radius", request.getRadius());
+        }
+        if (request.getRangeFilter() != null) {
+            effectiveSearchParams.put("range_filter", request.getRangeFilter());
+        }
+        if (!effectiveSearchParams.isEmpty()) {
+            builder.searchParams(effectiveSearchParams);
+        }
+
+        java.util.function.Supplier<SearchResp> searchAction = () -> search(builder.build());
+        SearchResp resp;
+        if (StringUtils.hasText(request.getDatabaseName())) {
+            resp = useDatabase(request.getDatabaseName().trim(), searchAction);
+        } else {
+            resp = searchAction.get();
+        }
+
         return extractHits(resp, entityClass);
     }
 
@@ -1138,6 +1218,8 @@ public class MilvusTemplate {
                 } else if (entityMap != null) {
                     entity = MilvusEntityConverter.mapToEntity(entityMap, entityClass);
                 }
+            } else if (entityMap != null) {
+                entity = (T) entityMap;
             }
             hits.add(MilvusHit.<T>builder()
                     .id(r.getId())
