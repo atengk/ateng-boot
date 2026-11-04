@@ -1089,6 +1089,48 @@ public class MilvusTemplate {
     }
 
     /**
+     * 基于集合名与指定向量列的字典式向量相似度检索 (支持字段与一致性级别定制)
+     *
+     * @param collectionName   集合名称
+     * @param annsField        向量字段名称
+     * @param vector           查询向量
+     * @param topK             召回数量
+     * @param expr             标量表达式
+     * @param outputFields     出参字段
+     * @param consistencyLevel 一致性级别
+     * @return 命中结果列表
+     */
+    public List<MilvusHit<Map<String, Object>>> search(String collectionName,
+                                                       String annsField,
+                                                       List<Float> vector,
+                                                       int topK,
+                                                       String expr,
+                                                       List<String> outputFields,
+                                                       MilvusConsistencyLevel consistencyLevel) {
+        return search(collectionName, annsField, vector, topK, expr, outputFields, consistencyLevel, null);
+    }
+
+    /**
+     * 基于集合名与指定向量列的字典式向量相似度检索 (出参默认全部字段)
+     *
+     * @param collectionName   集合名称
+     * @param annsField        向量字段名称
+     * @param vector           查询向量
+     * @param topK             召回数量
+     * @param expr             标量表达式
+     * @param consistencyLevel 一致性级别
+     * @return 命中结果列表
+     */
+    public List<MilvusHit<Map<String, Object>>> search(String collectionName,
+                                                       String annsField,
+                                                       List<Float> vector,
+                                                       int topK,
+                                                       String expr,
+                                                       MilvusConsistencyLevel consistencyLevel) {
+        return search(collectionName, annsField, vector, topK, expr, null, consistencyLevel, null);
+    }
+
+    /**
      * 基于集合名的字典式向量相似度检索 (支持标量表达式)
      *
      * @param collectionName 集合名称
@@ -1472,6 +1514,17 @@ public class MilvusTemplate {
      */
     public void insertBatch(String collectionName, List<Map<String, Object>> data, int batchSize) {
         insertBatch(collectionName, data, null, batchSize);
+    }
+
+    /**
+     * 分批切片写入字典数据 (指定分区与默认切片大小 1000)
+     *
+     * @param collectionName 集合名称
+     * @param data           字典数据列表
+     * @param partitionName  物理分区名称 (可为 null)
+     */
+    public void insertBatch(String collectionName, List<Map<String, Object>> data, String partitionName) {
+        insertBatch(collectionName, data, partitionName, DEFAULT_BATCH_SIZE);
     }
 
     /**

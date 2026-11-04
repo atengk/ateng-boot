@@ -1,1 +1,2 @@
 io.github.atengk.boot.milvus.autoconfigure.AtengMilvusAutoConfiguration
+io.github.atengk.boot.milvus.autoconfigure.langchain4j.MilvusLangChain4jAutoConfiguration
