@@ -52,10 +52,11 @@ class AtengAiRagAutoConfigurationTest {
             assertThat(context).hasNotFailed();
             assertThat(context).hasSingleBean(EmbeddingStore.class);
             assertThat(context.getBean(EmbeddingStore.class)).isInstanceOf(InMemoryEmbeddingStore.class);
-            // 未配置 API Key，因此不创建 EmbeddingModel 与 ContentRetriever
+            // 未配置 API Key 时，EmbeddingModel 不装配，EmbeddingTemplate 与 ContentRetriever 处于平滑待命状态
             assertThat(context).doesNotHaveBean(EmbeddingModel.class);
-            assertThat(context).doesNotHaveBean(EmbeddingTemplate.class);
-            assertThat(context).doesNotHaveBean(ContentRetriever.class);
+            assertThat(context).hasSingleBean(EmbeddingTemplate.class);
+            assertThat(context.getBean(EmbeddingTemplate.class).isAvailable()).isFalse();
+            assertThat(context).hasSingleBean(ContentRetriever.class);
         });
     }
 
