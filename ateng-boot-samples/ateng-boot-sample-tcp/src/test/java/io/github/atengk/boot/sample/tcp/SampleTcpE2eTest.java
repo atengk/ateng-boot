@@ -142,7 +142,7 @@ class SampleTcpE2eTest {
         assertThat(controlAck).isNotNull();
         assertThat(controlAck.getCommand()).isEqualTo("LOCK");
         assertThat(controlAck.getStatus()).isEqualTo("SUCCESS");
-        assertThat(sim1.getExecutedCommands()).contains("LOCK");
+        await().untilAsserted(() -> assertThat(sim1.getExecutedCommands()).contains("LOCK"));
 
         // 7. 下发全双工 RPC 参数查询指令，验证终端自动应答并同步返回结果
         VehicleParamQueryAck queryAck = scenarioService.queryDeviceParams(deviceId1, "SYSTEM");

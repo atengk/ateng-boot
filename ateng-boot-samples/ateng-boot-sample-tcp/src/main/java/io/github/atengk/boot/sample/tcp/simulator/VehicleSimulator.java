@@ -283,9 +283,9 @@ public class VehicleSimulator {
                     "SUCCESS",
                     "车机终端已成功执行指令: " + command
             );
+            executedCommands.add(command);
             TcpPacket ackPacket = TcpPacket.of(command + "_ACK", reqId, TcpPayload.fromJson(ack));
             channel.writeAndFlush(ackPacket);
-            executedCommands.add(command);
             log.info("车机终端模拟器已应答控制指令: deviceId={}, command={}, reqId={}", deviceId, command, reqId);
         } else if ("PARAM_QUERY".equalsIgnoreCase(command) && autoReplyParamQuery.get()) {
             // 2. 响应全双工参数查询请求
