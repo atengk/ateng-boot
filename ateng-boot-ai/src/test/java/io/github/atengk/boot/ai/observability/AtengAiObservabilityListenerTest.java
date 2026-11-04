@@ -11,6 +11,10 @@ import dev.langchain4j.model.output.TokenUsage;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -280,5 +284,213 @@ class AtengAiObservabilityListenerTest {
         listener.onResponse(respContext);
 
         assertThat(capturedRecord.get()).isNull();
+    }
+
+    @Test
+    @DisplayName("Micrometer 指标测试：成功响应时正确递增请求计数器、耗时 Timer 及带 estimated=false 标签的 Token 计数器")
+    void testMicrometerMetricsSuccessWithRealTokenUsage() {
+        MeterRegistry registry = new SimpleMeterRegistry();
+        AtengAiObservabilityListener listener = new AtengAiObservabilityListener(properties, registry);
+
+        ChatModelRequest request = ChatModelRequest.builder()
+                .model("deepseek-chat")
+                .messages(List.of(UserMessage.from("你好")))
+                .build();
+        ChatModelRequestContext reqContext = new ChatModelRequestContext(request, new ConcurrentHashMap<>());
+        listener.onRequest(reqContext);
+
+        ChatModelResponse response = ChatModelResponse.builder()
+                .model("deepseek-chat")
+                .tokenUsage(new TokenUsage(10, 20, 30))
+                .aiMessage(AiMessage.from("世界"))
+                .build();
+        ChatModelResponseContext respContext = new ChatModelResponseContext(response, request, reqContext.attributes());
+        listener.onResponse(respContext);
+
+        // 1. 验证 requests.total
+        Counter reqCounter = registry.find(AtengAiObservabilityListener.METRIC_REQUESTS_TOTAL)
+                .tag("model", "deepseek-chat")
+                .tag("status", "SUCCESS")
+                .counter();
+        assertThat(reqCounter).isNotNull();
+        assertThat(reqCounter.count()).isEqualTo(1.0);
+
+        // 2. 验证 duration.seconds
+        Timer timer = registry.find(AtengAiObservabilityListener.METRIC_DURATION_SECONDS)
+                .tag("model", "deepseek-chat")
+                .timer();
+        assertThat(timer).isNotNull();
+        assertThat(timer.count()).isEqualTo(1);
+
+        // 3. 验证 tokens.total (prompt / completion / total, estimated=false)
+        Counter promptCounter = registry.find(AtengAiObservabilityListener.METRIC_TOKENS_TOTAL)
+                .tag("model", "deepseek-chat")
+                .tag("type", "prompt")
+                .tag("estimated", "false")
+                .counter();
+        assertThat(promptCounter).isNotNull();
+        assertThat(promptCounter.count()).isEqualTo(10.0);
+
+        Counter completionCounter = registry.find(AtengAiObservabilityListener.METRIC_TOKENS_TOTAL)
+                .tag("model", "deepseek-chat")
+                .tag("type", "completion")
+                .tag("estimated", "false")
+                .counter();
+        assertThat(completionCounter).isNotNull();
+        assertThat(completionCounter.count()).isEqualTo(20.0);
+
+        Counter totalCounter = registry.find(AtengAiObservabilityListener.METRIC_TOKENS_TOTAL)
+                .tag("model", "deepseek-chat")
+                .tag("type", "total")
+                .tag("estimated", "false")
+                .counter();
+        assertThat(totalCounter).isNotNull();
+        assertThat(totalCounter.count()).isEqualTo(30.0);
+    }
+
+    @Test
+    @DisplayName("Micrometer 指标测试：流式响应缺失 TokenUsage 时自动触发保底估算并附带 estimated=true 标签")
+    void testMicrometerMetricsStreamingWithFallbackEstimatedTokens() {
+        MeterRegistry registry = new SimpleMeterRegistry();
+        AtomicReference<AiAuditRecord> capturedRecord = new AtomicReference<>();
+        AiAuditLogHandler handler = capturedRecord::set;
+
+        @SuppressWarnings("unchecked")
+        ObjectProvider<AiAuditLogHandler> handlerProvider = mock(ObjectProvider.class);
+        when(handlerProvider.getIfAvailable()).thenReturn(handler);
+
+        AtengAiObservabilityListener listener = new AtengAiObservabilityListener(properties, handlerProvider, null, registry);
+
+        ChatModelRequest request = ChatModelRequest.builder()
+                .model("gpt-4o")
+                .messages(List.of(UserMessage.from("你好世界"))) // 4 汉字 -> 6 tokens
+                .build();
+        ChatModelRequestContext reqContext = new ChatModelRequestContext(request, new ConcurrentHashMap<>());
+        listener.onRequest(reqContext);
+
+        // 流式响应无 tokenUsage
+        ChatModelResponse response = ChatModelResponse.builder()
+                .model("gpt-4o")
+                .tokenUsage(null)
+                .aiMessage(AiMessage.from("Hello world")) // 2 英文单词 -> 3 tokens
+                .build();
+        ChatModelResponseContext respContext = new ChatModelResponseContext(response, request, reqContext.attributes());
+        listener.onResponse(respContext);
+
+        // 验证审计记录
+        AiAuditRecord record = capturedRecord.get();
+        assertThat(record).isNotNull();
+        assertThat(record.isEstimated()).isTrue();
+        assertThat(record.getPromptTokens()).isEqualTo(6);
+        assertThat(record.getCompletionTokens()).isEqualTo(3);
+        assertThat(record.getTotalTokens()).isEqualTo(9);
+
+        // 验证 tokens.total 带有 estimated=true
+        Counter promptCounter = registry.find(AtengAiObservabilityListener.METRIC_TOKENS_TOTAL)
+                .tag("model", "gpt-4o")
+                .tag("type", "prompt")
+                .tag("estimated", "true")
+                .counter();
+        assertThat(promptCounter).isNotNull();
+        assertThat(promptCounter.count()).isEqualTo(6.0);
+
+        Counter completionCounter = registry.find(AtengAiObservabilityListener.METRIC_TOKENS_TOTAL)
+                .tag("model", "gpt-4o")
+                .tag("type", "completion")
+                .tag("estimated", "true")
+                .counter();
+        assertThat(completionCounter).isNotNull();
+        assertThat(completionCounter.count()).isEqualTo(3.0);
+
+        Counter totalCounter = registry.find(AtengAiObservabilityListener.METRIC_TOKENS_TOTAL)
+                .tag("model", "gpt-4o")
+                .tag("type", "total")
+                .tag("estimated", "true")
+                .counter();
+        assertThat(totalCounter).isNotNull();
+        assertThat(totalCounter.count()).isEqualTo(9.0);
+    }
+
+    @Test
+    @DisplayName("Micrometer 指标测试：普通报错记录 status=ERROR，客户端主动断开记录 status=CANCELLED")
+    void testMicrometerMetricsOnErrorAndCancelled() {
+        MeterRegistry registry = new SimpleMeterRegistry();
+        AtengAiObservabilityListener listener = new AtengAiObservabilityListener(properties, registry);
+
+        // 1. 普通业务报错
+        ChatModelRequest request1 = ChatModelRequest.builder().model("deepseek-r1").build();
+        ChatModelRequestContext reqContext1 = new ChatModelRequestContext(request1, new ConcurrentHashMap<>());
+        listener.onRequest(reqContext1);
+
+        ChatModelErrorContext errContext1 = new ChatModelErrorContext(
+                new RuntimeException("API 限流 Rate limit exceeded"),
+                request1, null, reqContext1.attributes());
+        listener.onError(errContext1);
+
+        Counter errCounter = registry.find(AtengAiObservabilityListener.METRIC_REQUESTS_TOTAL)
+                .tag("model", "deepseek-r1")
+                .tag("status", "ERROR")
+                .counter();
+        assertThat(errCounter).isNotNull();
+        assertThat(errCounter.count()).isEqualTo(1.0);
+
+        // 2. 客户端主动中断 (Broken pipe)
+        ChatModelRequest request2 = ChatModelRequest.builder().model("deepseek-r1").build();
+        ChatModelRequestContext reqContext2 = new ChatModelRequestContext(request2, new ConcurrentHashMap<>());
+        listener.onRequest(reqContext2);
+
+        ChatModelErrorContext errContext2 = new ChatModelErrorContext(
+                new IOException("Broken pipe"),
+                request2, null, reqContext2.attributes());
+        listener.onError(errContext2);
+
+        Counter cancelCounter = registry.find(AtengAiObservabilityListener.METRIC_REQUESTS_TOTAL)
+                .tag("model", "deepseek-r1")
+                .tag("status", "CANCELLED")
+                .counter();
+        assertThat(cancelCounter).isNotNull();
+        assertThat(cancelCounter.count()).isEqualTo(1.0);
+
+        // 3. 客户端取消 (CancellationException)
+        ChatModelRequest request3 = ChatModelRequest.builder().model("deepseek-r1").build();
+        ChatModelRequestContext reqContext3 = new ChatModelRequestContext(request3, new ConcurrentHashMap<>());
+        listener.onRequest(reqContext3);
+
+        ChatModelErrorContext errContext3 = new ChatModelErrorContext(
+                new java.util.concurrent.CancellationException("Stream cancelled by client"),
+                request3, null, reqContext3.attributes());
+        listener.onError(errContext3);
+
+        assertThat(cancelCounter.count()).isEqualTo(2.0);
+
+        // 4. 验证耗时 Timer 累计记录 3 次
+        Timer timer = registry.find(AtengAiObservabilityListener.METRIC_DURATION_SECONDS)
+                .tag("model", "deepseek-r1")
+                .timer();
+        assertThat(timer).isNotNull();
+        assertThat(timer.count()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("客户端中断判定测试：覆盖各类异常名、原因链与关键字")
+    void testIsClientAbortVariousScenarios() {
+        assertThat(AtengAiObservabilityListener.isClientAbort(null)).isFalse();
+        assertThat(AtengAiObservabilityListener.isClientAbort(new RuntimeException("普通异常"))).isFalse();
+
+        // 异常类名
+        assertThat(AtengAiObservabilityListener.isClientAbort(new java.util.concurrent.CancellationException())).isTrue();
+        assertThat(AtengAiObservabilityListener.isClientAbort(new InterruptedException())).isTrue();
+
+        // 错误消息关键字 (不区分大小写)
+        assertThat(AtengAiObservabilityListener.isClientAbort(new IOException("broken pipe"))).isTrue();
+        assertThat(AtengAiObservabilityListener.isClientAbort(new IOException("BROKEN PIPE"))).isTrue();
+        assertThat(AtengAiObservabilityListener.isClientAbort(new IOException("Connection reset by peer"))).isTrue();
+        assertThat(AtengAiObservabilityListener.isClientAbort(new IOException("An established connection was aborted by the software in your host machine"))).isTrue();
+        assertThat(AtengAiObservabilityListener.isClientAbort(new RuntimeException("Stream was closed"))).isTrue();
+        assertThat(AtengAiObservabilityListener.isClientAbort(new RuntimeException("Client has disconnected"))).isTrue();
+
+        // 嵌套原因链
+        RuntimeException wrapped = new RuntimeException("外层包装", new IOException("Broken pipe"));
+        assertThat(AtengAiObservabilityListener.isClientAbort(wrapped)).isTrue();
     }
 }

@@ -6,6 +6,8 @@ import io.github.atengk.boot.ai.autoconfigure.AtengAiAutoConfiguration;
 import io.github.atengk.boot.ai.observability.AtengAiObservabilityListener;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.template.AiTemplate;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -157,6 +159,27 @@ class AtengAiAutoConfigurationTest {
                     AtengAiObservabilityListener listener = context.getBean(AtengAiObservabilityListener.class);
                     assertThat(listener).isSameAs(CustomListenerConfig.MOCK_LISTENER);
                 });
+    }
+
+    @Test
+    @DisplayName("环境注入 MeterRegistry 时自动将其绑定到 AtengAiObservabilityListener")
+    void testMeterRegistryBinding() {
+        contextRunner.withUserConfiguration(MeterRegistryConfig.class)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(AtengAiObservabilityListener.class);
+                    AtengAiObservabilityListener listener = context.getBean(AtengAiObservabilityListener.class);
+                    assertThat(listener.getMeterRegistry()).isNotNull();
+                    assertThat(listener.getMeterRegistry()).isSameAs(context.getBean(MeterRegistry.class));
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MeterRegistryConfig {
+        @Bean
+        public MeterRegistry meterRegistry() {
+            return new SimpleMeterRegistry();
+        }
     }
 
     @Configuration(proxyBeanMethods = false)

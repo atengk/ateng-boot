@@ -34,6 +34,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import io.github.atengk.boot.ai.observability.AiAuditLogHandler;
 import io.github.atengk.boot.ai.observability.AtengAiObservabilityListener;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
@@ -257,6 +259,28 @@ public class AtengAiAutoConfiguration {
         public ChatMemoryStore inMemoryChatMemoryStore() {
             log.info("AI 会话记忆启用单机内存存储 (InMemoryChatMemoryStore)");
             return new InMemoryChatMemoryStore();
+        }
+    }
+
+    /**
+     * Micrometer 云原生度量监控扩展装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(MeterRegistry.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.audit", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class AiMetricsConfiguration {
+
+        @Bean
+        public SmartInitializingSingleton aiMetricsBinder(
+                ObjectProvider<AtengAiObservabilityListener> listenerProvider,
+                ObjectProvider<MeterRegistry> meterRegistryProvider) {
+            return () -> {
+                AtengAiObservabilityListener listener = listenerProvider.getIfAvailable();
+                MeterRegistry registry = meterRegistryProvider.getIfAvailable();
+                if (listener != null && registry != null) {
+                    listener.setMeterRegistry(registry);
+                }
+            };
         }
     }
 }

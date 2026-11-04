@@ -65,6 +65,13 @@
             <artifactId>langgraph4j-langchain4j</artifactId>
         </dependency>
 
+        <!-- Micrometer 核心度量 (用于大模型调用量、耗时直方图与 Token 消耗监控，可选依赖) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 编译期配置注解处理器 (自动生成 IDE 智能配置补全元数据) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
