@@ -44,6 +44,13 @@ import io.milvus.v2.service.partition.request.HasPartitionReq;
 import io.milvus.v2.service.partition.request.ListPartitionsReq;
 import io.milvus.v2.service.partition.request.LoadPartitionsReq;
 import io.milvus.v2.service.partition.request.ReleasePartitionsReq;
+import io.milvus.v2.service.utility.request.AlterAliasReq;
+import io.milvus.v2.service.utility.request.CreateAliasReq;
+import io.milvus.v2.service.utility.request.DescribeAliasReq;
+import io.milvus.v2.service.utility.request.DropAliasReq;
+import io.milvus.v2.service.utility.request.ListAliasesReq;
+import io.milvus.v2.service.utility.response.DescribeAliasResp;
+import io.milvus.v2.service.utility.response.ListAliasResp;
 import io.milvus.v2.service.vector.request.AnnSearchReq;
 import io.milvus.v2.service.vector.request.DeleteReq;
 import io.milvus.v2.service.vector.request.GetReq;
@@ -731,6 +738,186 @@ public class MilvusTemplate {
                     .build());
             return null;
         });
+    }
+
+    // =========================================================================
+    // 5.1 集合别名生命周期运维与蓝绿无感发布 (Collection Alias Operations)
+    // =========================================================================
+
+    /**
+     * 为集合创建逻辑别名
+     *
+     * @param collectionName 真实集合名称
+     * @param alias          逻辑别名
+     */
+    public void createAlias(String collectionName, String alias) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        Assert.hasText(alias, "alias must not be empty");
+        createAlias(CreateAliasReq.builder()
+                .collectionName(collectionName.trim())
+                .alias(alias.trim())
+                .build());
+    }
+
+    /**
+     * 根据自定义请求创建集合逻辑别名
+     *
+     * @param request 创建别名参数
+     */
+    public void createAlias(CreateAliasReq request) {
+        Assert.notNull(request, "CreateAliasReq must not be null");
+        Assert.hasText(request.getCollectionName(), "collectionName must not be empty");
+        Assert.hasText(request.getAlias(), "alias must not be empty");
+        execute("创建集合别名", c -> {
+            c.createAlias(request);
+            return null;
+        });
+    }
+
+    /**
+     * 变更逻辑别名指向的集合 (蓝绿发布无感切流)，默认强制前置探测目标集合是否已加载至内存
+     *
+     * @param collectionName 新目标集合名称
+     * @param alias          逻辑别名
+     */
+    public void alterAlias(String collectionName, String alias) {
+        alterAlias(collectionName, alias, true);
+    }
+
+    /**
+     * 变更逻辑别名指向的集合 (蓝绿发布无感切流)
+     *
+     * @param collectionName 新目标集合名称
+     * @param alias          逻辑别名
+     * @param checkLoaded    是否强制要求目标集合已预加载至内存 (防御性切流保护，推荐为 true)
+     */
+    public void alterAlias(String collectionName, String alias, boolean checkLoaded) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        Assert.hasText(alias, "alias must not be empty");
+        alterAlias(AlterAliasReq.builder()
+                .collectionName(collectionName.trim())
+                .alias(alias.trim())
+                .build(), checkLoaded);
+    }
+
+    /**
+     * 根据自定义请求变更集合别名指向
+     *
+     * @param request     变更别名参数
+     * @param checkLoaded 是否强制校验目标集合加载状态
+     */
+    public void alterAlias(AlterAliasReq request, boolean checkLoaded) {
+        Assert.notNull(request, "AlterAliasReq must not be null");
+        Assert.hasText(request.getCollectionName(), "collectionName must not be empty");
+        Assert.hasText(request.getAlias(), "alias must not be empty");
+
+        String targetCollection = request.getCollectionName().trim();
+        String alias = request.getAlias().trim();
+
+        // 防御性切流保护：校验目标新集合是否已通过 isCollectionLoaded 加载至内存
+        if (checkLoaded && !isCollectionLoaded(targetCollection)) {
+            throw new MilvusException("无法将别名 [" + alias + "] 切换至目标集合 ["
+                    + targetCollection + "]：目标集合尚未加载至内存 (Not Loaded)，请先执行 loadCollection 以免引发在线检索异常");
+        }
+
+        execute("变更集合别名", c -> {
+            c.alterAlias(request);
+            return null;
+        });
+    }
+
+    /**
+     * 删除指定的集合别名
+     *
+     * @param alias 逻辑别名
+     */
+    public void dropAlias(String alias) {
+        Assert.hasText(alias, "alias must not be empty");
+        dropAlias(DropAliasReq.builder()
+                .alias(alias.trim())
+                .build());
+    }
+
+    /**
+     * 根据自定义请求删除集合逻辑别名
+     *
+     * @param request 删除别名参数
+     */
+    public void dropAlias(DropAliasReq request) {
+        Assert.notNull(request, "DropAliasReq must not be null");
+        Assert.hasText(request.getAlias(), "alias must not be empty");
+        execute("删除集合别名", c -> {
+            c.dropAlias(request);
+            return null;
+        });
+    }
+
+    /**
+     * 获取指定集合绑定的所有别名列表
+     *
+     * @param collectionName 集合名称
+     * @return 别名列表 (保底返回空列表，绝不返回 null)
+     */
+    public List<String> listAliases(String collectionName) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        return listAliases(ListAliasesReq.builder()
+                .collectionName(collectionName.trim())
+                .build());
+    }
+
+    /**
+     * 根据自定义请求查询集合别名列表
+     *
+     * @param request 查询别名参数
+     * @return 别名列表 (保底返回空列表，绝不返回 null)
+     */
+    public List<String> listAliases(ListAliasesReq request) {
+        Assert.notNull(request, "ListAliasesReq must not be null");
+        Assert.hasText(request.getCollectionName(), "collectionName must not be empty");
+        return execute("查询集合别名列表", c -> {
+            ListAliasResp resp = c.listAliases(request);
+            return resp != null && resp.getAlias() != null ? resp.getAlias() : Collections.emptyList();
+        });
+    }
+
+    /**
+     * 查询指定别名的详细元数据信息 (绑定的目标集合等)
+     *
+     * @param alias 逻辑别名
+     * @return 别名元数据详情
+     */
+    public DescribeAliasResp describeAlias(String alias) {
+        Assert.hasText(alias, "alias must not be empty");
+        return describeAlias(DescribeAliasReq.builder()
+                .alias(alias.trim())
+                .build());
+    }
+
+    /**
+     * 根据自定义请求查询别名元数据详情
+     *
+     * @param request 查询别名请求
+     * @return 别名元数据详情
+     */
+    public DescribeAliasResp describeAlias(DescribeAliasReq request) {
+        Assert.notNull(request, "DescribeAliasReq must not be null");
+        Assert.hasText(request.getAlias(), "alias must not be empty");
+        return execute("查询集合别名详情", c -> c.describeAlias(request));
+    }
+
+    /**
+     * 探测指定集合是否绑定了指定别名
+     *
+     * @param collectionName 集合名称
+     * @param alias          逻辑别名
+     * @return 是否已绑定
+     */
+    public boolean hasAlias(String collectionName, String alias) {
+        if (!StringUtils.hasText(collectionName) || !StringUtils.hasText(alias)) {
+            return false;
+        }
+        List<String> aliases = listAliases(collectionName);
+        return aliases.contains(alias.trim());
     }
 
     // =========================================================================
