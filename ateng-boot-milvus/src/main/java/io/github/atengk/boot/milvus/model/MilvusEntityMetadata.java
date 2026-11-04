@@ -14,6 +14,7 @@ import io.milvus.v2.service.collection.request.CreateCollectionReq;
 import lombok.Builder;
 import lombok.Getter;
 import org.springframework.util.Assert;
+import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -45,6 +46,7 @@ public class MilvusEntityMetadata {
 
     private final FieldMetadata idField;
     private final FieldMetadata vectorField;
+    private final List<FieldMetadata> vectorFields;
     private final FieldMetadata partitionKeyField;
     private final List<FieldMetadata> scalarFields;
     private final List<FieldMetadata> allFields;
@@ -66,6 +68,7 @@ public class MilvusEntityMetadata {
         private final int dimension;
         private final IndexParam.MetricType metricType;
         private final IndexParam.IndexType indexType;
+        private final String indexName;
         private final String description;
 
         public Object getFieldValue(Object target) {
@@ -100,7 +103,7 @@ public class MilvusEntityMetadata {
                     .isPartitionKey(isPartitionKey)
                     .autoID(autoId);
 
-            if (isVector) {
+            if (isVector && dataType != DataType.SparseFloatVector && dimension > 0) {
                 fsBuilder.dimension(dimension);
             }
             if (dataType == DataType.VarChar) {
@@ -133,6 +136,7 @@ public class MilvusEntityMetadata {
 
         FieldMetadata idMetadata = null;
         FieldMetadata vectorMetadata = null;
+        List<FieldMetadata> vectorFields = new ArrayList<>();
         FieldMetadata partitionKeyMetadata = null;
         List<FieldMetadata> scalars = new ArrayList<>();
         List<FieldMetadata> all = new ArrayList<>();
@@ -170,12 +174,25 @@ public class MilvusEntityMetadata {
                         .build();
                 all.add(idMetadata);
             } else if (vectorAnn != null) {
-                if (vectorMetadata != null) {
-                    throw new MilvusException("实体类 [" + clazz.getName() + "] 暂仅支持配置一个主向量字段 @MilvusVector");
-                }
                 String name = !vectorAnn.name().isBlank() ? vectorAnn.name().trim() : field.getName();
                 DataType dataType = inferVectorDataType(field.getType());
-                vectorMetadata = FieldMetadata.builder()
+                IndexParam.MetricType metricType = vectorAnn.metricType();
+                IndexParam.IndexType indexType = vectorAnn.indexType();
+                int dim = vectorAnn.dimension();
+
+                if (dataType == DataType.SparseFloatVector) {
+                    metricType = IndexParam.MetricType.IP;
+                    if (indexType == IndexParam.IndexType.AUTOINDEX || indexType == IndexParam.IndexType.None) {
+                        indexType = IndexParam.IndexType.SPARSE_INVERTED_INDEX;
+                    }
+                    dim = -1;
+                } else {
+                    if (dim <= 0) {
+                        throw new MilvusException("实体类 [" + clazz.getName() + "] 稠密向量字段 [" + field.getName() + "] 必须配置有效维度 dimension > 0");
+                    }
+                }
+
+                FieldMetadata vm = FieldMetadata.builder()
                         .field(field)
                         .fieldName(name)
                         .dataType(dataType)
@@ -184,12 +201,17 @@ public class MilvusEntityMetadata {
                         .isVector(true)
                         .autoId(false)
                         .maxLength(0)
-                        .dimension(vectorAnn.dimension())
-                        .metricType(vectorAnn.metricType())
-                        .indexType(vectorAnn.indexType())
+                        .dimension(dim)
+                        .metricType(metricType)
+                        .indexType(indexType)
+                        .indexName("idx_" + name)
                         .description(vectorAnn.description())
                         .build();
-                all.add(vectorMetadata);
+                vectorFields.add(vm);
+                if (vectorMetadata == null) {
+                    vectorMetadata = vm;
+                }
+                all.add(vm);
             } else if (partitionKeyAnn != null) {
                 if (partitionKeyMetadata != null) {
                     throw new MilvusException("实体类 [" + clazz.getName() + "] 仅支持配置一个分区键字段 @MilvusPartitionKey");
@@ -214,6 +236,10 @@ public class MilvusEntityMetadata {
                 DataType dataType = inferDataType(field.getType(), fieldAnn != null ? fieldAnn.dataType() : DataType.None);
                 int maxLength = (fieldAnn != null) ? fieldAnn.maxLength() : 65535;
                 String desc = (fieldAnn != null) ? fieldAnn.description() : "";
+                IndexParam.IndexType indexType = (fieldAnn != null) ? fieldAnn.indexType() : IndexParam.IndexType.None;
+                String indexName = (fieldAnn != null && StringUtils.hasText(fieldAnn.indexName()))
+                        ? fieldAnn.indexName().trim()
+                        : (indexType != IndexParam.IndexType.None ? "idx_" + name : "");
 
                 FieldMetadata scalar = FieldMetadata.builder()
                         .field(field)
@@ -225,6 +251,8 @@ public class MilvusEntityMetadata {
                         .autoId(false)
                         .maxLength(maxLength)
                         .dimension(0)
+                        .indexType(indexType)
+                        .indexName(indexName)
                         .description(desc)
                         .build();
                 scalars.add(scalar);
@@ -236,7 +264,7 @@ public class MilvusEntityMetadata {
             throw new MilvusException(MilvusResultCode.OPERATION_FAILED,
                     "实体类 [" + clazz.getName() + "] 必须通过 @MilvusId 显式指定主键字段");
         }
-        if (vectorMetadata == null) {
+        if (vectorFields.isEmpty()) {
             throw new MilvusException(MilvusResultCode.OPERATION_FAILED,
                     "实体类 [" + clazz.getName() + "] 必须通过 @MilvusVector 显式指定向量字段");
         }
@@ -249,6 +277,7 @@ public class MilvusEntityMetadata {
                 .numShards(numShards)
                 .idField(idMetadata)
                 .vectorField(vectorMetadata)
+                .vectorFields(Collections.unmodifiableList(vectorFields))
                 .partitionKeyField(partitionKeyMetadata)
                 .scalarFields(Collections.unmodifiableList(scalars))
                 .allFields(Collections.unmodifiableList(all))
@@ -331,6 +360,9 @@ public class MilvusEntityMetadata {
     private static DataType inferVectorDataType(Class<?> type) {
         if (type == ByteBuffer.class) {
             return DataType.BinaryVector;
+        }
+        if (Map.class.isAssignableFrom(type)) {
+            return DataType.SparseFloatVector;
         }
         return DataType.FloatVector;
     }

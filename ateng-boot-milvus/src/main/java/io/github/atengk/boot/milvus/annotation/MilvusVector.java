@@ -25,9 +25,9 @@ public @interface MilvusVector {
     String name() default "";
 
     /**
-     * 向量特征维度 (如 OpenAI text-embedding-3-small 为 1536，bge-m3 为 1024)
+     * 向量特征维度 (如 OpenAI text-embedding-3-small 为 1536，bge-m3 为 1024；稀疏向量 SparseFloatVector 可设为 -1 或缺省)
      */
-    int dimension();
+    int dimension() default -1;
 
     /**
      * 默认距离度量类型 (默认 COSINE 余弦相似度，推荐文本语义检索)

@@ -359,6 +359,33 @@ public class MilvusTemplate {
     }
 
     /**
+     * 为指定标量字段创建标量索引 (支持 INVERTED 倒排索引、TRIE 前缀树、STL_SORT 排序等)
+     *
+     * @param collectionName 集合名称
+     * @param fieldName      标量字段名
+     * @param indexName      自定义索引名称 (可为空)
+     * @param indexType      标量索引算法类型
+     */
+    public void createIndex(String collectionName, String fieldName, String indexName, IndexParam.IndexType indexType) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        Assert.hasText(fieldName, "fieldName must not be empty");
+        Assert.notNull(indexType, "indexType must not be null");
+
+        IndexParam.IndexParamBuilder<?, ?> paramBuilder = IndexParam.builder()
+                .fieldName(fieldName)
+                .indexType(indexType);
+        if (StringUtils.hasText(indexName)) {
+            paramBuilder.indexName(indexName.trim());
+        }
+
+        CreateIndexReq req = CreateIndexReq.builder()
+                .collectionName(collectionName)
+                .indexParams(Collections.singletonList(paramBuilder.build()))
+                .build();
+        createIndex(req);
+    }
+
+    /**
      * 删除指定字段上的索引
      *
      * @param collectionName 集合名称
@@ -567,12 +594,47 @@ public class MilvusTemplate {
             createCollection(metadata.toCreateCollectionReq());
         }
 
-        // 2. 创建向量索引与内存预加载
-        MilvusEntityMetadata.FieldMetadata vectorField = metadata.getVectorField();
-        IndexParam.MetricType metricType = vectorField.getMetricType() != null ? vectorField.getMetricType() : IndexParam.MetricType.COSINE;
-        IndexParam.IndexType indexType = vectorField.getIndexType() != null ? vectorField.getIndexType() : IndexParam.IndexType.AUTOINDEX;
+        // 2. 为所有声明的向量列原子化创建索引 (稠密 FloatVector / 稀疏 SparseFloatVector)
+        List<MilvusEntityMetadata.FieldMetadata> vectorFields = metadata.getVectorFields() != null && !metadata.getVectorFields().isEmpty()
+                ? metadata.getVectorFields()
+                : Collections.singletonList(metadata.getVectorField());
 
-        ensureIndexAndLoaded(collectionName, vectorField.getFieldName(), metricType, indexType);
+        for (MilvusEntityMetadata.FieldMetadata vf : vectorFields) {
+            if (!hasIndex(collectionName, vf.getFieldName())) {
+                IndexParam.MetricType metricType = vf.getMetricType() != null
+                        ? vf.getMetricType()
+                        : (vf.getDataType() == io.milvus.v2.common.DataType.SparseFloatVector ? IndexParam.MetricType.IP : IndexParam.MetricType.COSINE);
+                IndexParam.IndexType indexType = vf.getIndexType() != null
+                        ? vf.getIndexType()
+                        : (vf.getDataType() == io.milvus.v2.common.DataType.SparseFloatVector ? IndexParam.IndexType.SPARSE_INVERTED_INDEX : IndexParam.IndexType.AUTOINDEX);
+
+                log.info("一键建表: 集合 [{}] 向量列 [{}] 正在创建索引 [type={}, metric={}]",
+                        collectionName, vf.getFieldName(), indexType, metricType);
+                createIndex(collectionName, vf.getFieldName(), metricType, indexType);
+            }
+        }
+
+        // 3. 为配置了标量索引的字段创建标量索引 (倒排索引/前缀树/排序等)
+        if (metadata.getScalarFields() != null) {
+            for (MilvusEntityMetadata.FieldMetadata scalarField : metadata.getScalarFields()) {
+                if (scalarField.getIndexType() != null && scalarField.getIndexType() != IndexParam.IndexType.None) {
+                    if (!hasIndex(collectionName, scalarField.getFieldName())) {
+                        String idxName = StringUtils.hasText(scalarField.getIndexName())
+                                ? scalarField.getIndexName().trim()
+                                : "idx_" + scalarField.getFieldName();
+                        log.info("一键建表: 集合 [{}] 标量列 [{}] 正在创建标量索引 [name={}, type={}]",
+                                collectionName, scalarField.getFieldName(), idxName, scalarField.getIndexType());
+                        createIndex(collectionName, scalarField.getFieldName(), idxName, scalarField.getIndexType());
+                    }
+                }
+            }
+        }
+
+        // 4. 若尚未加载至内存则预加载
+        if (!isCollectionLoaded(collectionName)) {
+            log.info("一键建表: 正在将集合 [{}] 加载至内存", collectionName);
+            loadCollection(collectionName);
+        }
     }
 
     /**
