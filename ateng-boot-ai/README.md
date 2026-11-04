@@ -49,6 +49,9 @@
 | **多租户治理** | 租户级动态模型路由解析 | `AiTenantModelResolver`<br>`DefaultAiTenantModelResolver` | `ateng.boot.ai.tenant-models.<tenantId>` | `resolveModelName(tenantId)`，从 `TenantContextHolder` 获取当前租户，命中映射自动重定向底层模型别名，未配置平滑回退默认模型 | `AiTenantModelResolverTest` / `AiTemplateTest` |
 | **多租户治理** | SaaS 租户日调用配额守卫与快速失败 | `AiQuotaChecker`<br>`DefaultAiQuotaChecker` | `ateng.boot.ai.quota.enabled`<br>`ateng.boot.ai.quota.daily-request-limit`<br>`ateng.boot.ai.quota.daily-token-limit`<br>`ateng.boot.ai.quota.tenant-request-limits.<tenantId>` | `checkQuota(tenantId, model, tokens)` / `recordUsage(tenantId, model, tokens)`，基于当日日期滑动计数，超额立即 Fail-Fast 抛出 `AI_QUOTA_EXCEEDED` 业务异常 | `DefaultAiQuotaCheckerTest` / `MetricsControllerIntegrationTest` |
 | **多租户治理** | 分布式 Redis 与并发内存双模配额自适应 | `DefaultAiQuotaChecker`<br>`RedisAiQuotaChecker` | `ateng.boot.ai.quota.key-prefix` | 检测到 Redis 时启用 `StringRedisTemplate` 原子计数并挂载 2 天 TTL 物理自毁；无 Redis 时无缝切换基于 `ConcurrentHashMap` 的单机滑动淘汰，防御内存无界膨胀 | `DefaultAiQuotaCheckerTest` |
+| **结构化抽取** | 强类型结构化对象提取门面 | `AiTemplate` | - | `chatForObject(prompt, Class<T>)` / `chatForObject(template, vars, Class<T>)`，自动脱壳去噪与 JSR-303 格式校验防卫 | `AiTemplateTest` / `ChatControllerIntegrationTest` |
+| **外部提示词文件** | 提示词模板 Classpath/Resource 外部化 | `PromptTemplate` | - | `fromClasspath(String)` / `fromResource(Resource)`，原生加载 Markdown/文本提示词文件 | `PromptTemplateTest` / `ChatControllerIntegrationTest` |
+| **Token 滑动窗口** | 基于 Token 数量会话记忆窗口截断 | `ChatMemoryProperties`<br>`ChatMemoryManager` | `ateng.boot.ai.chat-memory.window-type`<br>`ateng.boot.ai.chat-memory.max-tokens` | 支持 `MESSAGE`/`TOKEN` 双模式滑动裁剪，结合 `TokenWindowChatMemory` 与 `HeuristicTokenizer` 保底，保留首条系统指令防止上下文击穿 | `ChatMemoryManagerTest` |
 
 ---
 

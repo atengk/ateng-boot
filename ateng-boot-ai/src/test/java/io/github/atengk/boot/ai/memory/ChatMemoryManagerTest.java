@@ -95,4 +95,84 @@ class ChatMemoryManagerTest {
         assertThatThrownBy(() -> manager.appendMessage("sess", null))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    @DisplayName("启发式保底分词器 HeuristicTokenizer 纯原生离线估算测试")
+    void testHeuristicTokenizer() {
+        HeuristicTokenizer tokenizer = new HeuristicTokenizer();
+
+        int textTokens = tokenizer.estimateTokenCountInText("Hello 世界 12345");
+        assertThat(textTokens).isGreaterThan(0);
+
+        UserMessage msg = UserMessage.from("测试单条消息");
+        int msgTokens = tokenizer.estimateTokenCountInMessage(msg);
+        assertThat(msgTokens).isGreaterThan(3);
+
+        int msgsTokens = tokenizer.estimateTokenCountInMessages(List.of(
+                SystemMessage.from("你是一个助手"),
+                UserMessage.from("你好")
+        ));
+        assertThat(msgsTokens).isGreaterThan(msgTokens);
+    }
+
+    @Test
+    @DisplayName("Token 数量统计与基于 Token 上限的截断 truncateByTokens 测试 (保留首条系统指令)")
+    void testTruncateByTokens() {
+        InMemoryChatMemoryStore store = new InMemoryChatMemoryStore();
+        HeuristicTokenizer tokenizer = new HeuristicTokenizer();
+        io.github.atengk.boot.ai.properties.ChatMemoryProperties props = new io.github.atengk.boot.ai.properties.ChatMemoryProperties();
+        props.setWindowType(io.github.atengk.boot.ai.properties.ChatMemoryWindowType.TOKEN);
+        props.setMaxTokens(500);
+
+        ChatMemoryManager manager = new ChatMemoryManager(store, props, tokenizer);
+        String sessionId = "token_sess_001";
+
+        SystemMessage sysMsg = SystemMessage.from("系统预设人设：专业金融助理，请务必严谨回答。");
+        UserMessage u1 = UserMessage.from("请分析一下 2024 年第一季度的宏观经济走势以及科技板块的表现");
+        AiMessage a1 = AiMessage.from("2024年第一季度宏观经济呈现温和复苏态势，科技板块中人工智能产业链表现亮眼...");
+        UserMessage u2 = UserMessage.from("能否进一步说明半导体上下游产业链的库存周期变化情况？");
+        AiMessage a2 = AiMessage.from("半导体板块目前处于周期筑底回升阶段，存储芯片价格回暖，代工产能利用率逐步爬坡...");
+
+        manager.appendMessages(sessionId, List.of(sysMsg, u1, a1, u2, a2));
+
+        int tokenCount = manager.getTokenCount(sessionId);
+        assertThat(tokenCount).isGreaterThan(50);
+        assertThat(manager.getMessageCount(sessionId)).isEqualTo(5);
+
+        // 主动截断到较小的 Token 上限 (例如 60 tokens)
+        manager.truncateByTokens(sessionId, 60);
+
+        List<ChatMessage> remaining = manager.getMessages(sessionId);
+        // 首条 SystemMessage 必须保留
+        assertThat(remaining.get(0)).isInstanceOf(SystemMessage.class);
+        // 消息总数应该减少了（早期 u1, a1 先进先出被淘汰）
+        assertThat(remaining.size()).isLessThan(5);
+        // 保留的 token 估算值应在限制内
+        int remainingTokens = manager.getTokenCount(sessionId);
+        assertThat(remainingTokens).isLessThanOrEqualTo(60);
+    }
+
+    @Test
+    @DisplayName("TokenWindow 模式下追加消息自动触发 Token 上限裁剪防爆")
+    void testTokenWindowAutomaticTruncationOnAppend() {
+        InMemoryChatMemoryStore store = new InMemoryChatMemoryStore();
+        HeuristicTokenizer tokenizer = new HeuristicTokenizer();
+        io.github.atengk.boot.ai.properties.ChatMemoryProperties props = new io.github.atengk.boot.ai.properties.ChatMemoryProperties();
+        props.setWindowType(io.github.atengk.boot.ai.properties.ChatMemoryWindowType.TOKEN);
+        props.setMaxTokens(70);
+
+        ChatMemoryManager manager = new ChatMemoryManager(store, props, tokenizer);
+        String sessionId = "token_auto_001";
+
+        manager.appendMessage(sessionId, SystemMessage.from("核心指令"));
+        manager.appendMessage(sessionId, UserMessage.from("长长长长长长长长长长长长长长长长长长长长长长长长长问题1"));
+        manager.appendMessage(sessionId, AiMessage.from("长长长长长长长长长长长长长长长长长长长长长长长长长回答1"));
+        manager.appendMessage(sessionId, UserMessage.from("长长长长长长长长长长长长长长长长长长长长长长长长长问题2"));
+        manager.appendMessage(sessionId, AiMessage.from("长长长长长长长长长长长长长长长长长长长长长长长长长回答2"));
+
+        // 验证自动裁剪后 Token 总量不超过 70，且系统消息仍保留
+        assertThat(manager.getTokenCount(sessionId)).isLessThanOrEqualTo(70);
+        List<ChatMessage> messages = manager.getMessages(sessionId);
+        assertThat(messages.get(0)).isInstanceOf(SystemMessage.class);
+    }
 }

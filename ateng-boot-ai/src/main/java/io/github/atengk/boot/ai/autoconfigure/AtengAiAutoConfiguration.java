@@ -2,21 +2,26 @@ package io.github.atengk.boot.ai.autoconfigure;
 
 import dev.langchain4j.memory.chat.ChatMemoryProvider;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.memory.chat.TokenWindowChatMemory;
+import dev.langchain4j.model.Tokenizer;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.chat.listener.ChatModelListener;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+import dev.langchain4j.model.openai.OpenAiTokenizer;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
 import io.github.atengk.boot.ai.memory.ChatMemoryManager;
+import io.github.atengk.boot.ai.memory.HeuristicTokenizer;
 import io.github.atengk.boot.ai.memory.store.ChatMemoryStore;
 import io.github.atengk.boot.ai.memory.store.InMemoryChatMemoryStore;
 import io.github.atengk.boot.ai.memory.store.RedisChatMemoryStore;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.ChatMemoryProperties;
 import io.github.atengk.boot.ai.properties.ChatMemoryStoreType;
+import io.github.atengk.boot.ai.properties.ChatMemoryWindowType;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
 import io.github.atengk.boot.ai.template.AiTemplate;
@@ -260,17 +265,33 @@ public class AtengAiAutoConfiguration {
     }
 
     /**
-     * 自动装配默认基于滑动窗口的会话记忆提供者 ChatMemoryProvider
+     * 自动装配默认基于滑动窗口的会话记忆提供者 ChatMemoryProvider (支持 MESSAGE 条数与 TOKEN 容量双模策略)
      *
-     * @param chatMemoryStore 底层会话存储
-     * @param properties      AI 根配置属性
+     * @param chatMemoryStore   底层会话存储
+     * @param properties        AI 根配置属性
+     * @param tokenizerProvider 可选的自定义分词器提供者
      * @return ChatMemoryProvider 实例
      */
     @Bean
     @ConditionalOnMissingBean(ChatMemoryProvider.class)
     @ConditionalOnProperty(prefix = "ateng.boot.ai.chat-memory", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public ChatMemoryProvider chatMemoryProvider(ChatMemoryStore chatMemoryStore, AtengAiProperties properties) {
-        int maxMessages = properties.getChatMemory().getMaxMessages();
+    public ChatMemoryProvider chatMemoryProvider(ChatMemoryStore chatMemoryStore,
+                                                 AtengAiProperties properties,
+                                                 ObjectProvider<Tokenizer> tokenizerProvider) {
+        ChatMemoryProperties config = properties.getChatMemory();
+        if (config.getWindowType() == ChatMemoryWindowType.TOKEN) {
+            Tokenizer tokenizer = resolveTokenizer(tokenizerProvider);
+            int maxTokens = config.getMaxTokens();
+            log.info("AI 会话记忆启用基于 Token 的滑动窗口 (TokenWindowChatMemory) [maxTokens={}]", maxTokens);
+            return memoryId -> TokenWindowChatMemory.builder()
+                    .id(memoryId)
+                    .maxTokens(maxTokens, tokenizer)
+                    .chatMemoryStore(chatMemoryStore)
+                    .build();
+        }
+
+        int maxMessages = config.getMaxMessages();
+        log.info("AI 会话记忆启用基于消息条数的滑动窗口 (MessageWindowChatMemory) [maxMessages={}]", maxMessages);
         return memoryId -> MessageWindowChatMemory.builder()
                 .id(memoryId)
                 .maxMessages(maxMessages)
@@ -281,15 +302,32 @@ public class AtengAiAutoConfiguration {
     /**
      * 自动装配 AI 会话记忆对称管理门面 ChatMemoryManager
      *
-     * @param chatMemoryStore 底层会话存储
-     * @param properties      AI 根配置属性
+     * @param chatMemoryStore   底层会话存储
+     * @param properties        AI 根配置属性
+     * @param tokenizerProvider 可选的自定义分词器提供者
      * @return ChatMemoryManager 实例
      */
     @Bean
     @ConditionalOnMissingBean(ChatMemoryManager.class)
     @ConditionalOnProperty(prefix = "ateng.boot.ai.chat-memory", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public ChatMemoryManager chatMemoryManager(ChatMemoryStore chatMemoryStore, AtengAiProperties properties) {
-        return new ChatMemoryManager(chatMemoryStore, properties.getChatMemory().getMaxMessages());
+    public ChatMemoryManager chatMemoryManager(ChatMemoryStore chatMemoryStore,
+                                               AtengAiProperties properties,
+                                               ObjectProvider<Tokenizer> tokenizerProvider) {
+        Tokenizer tokenizer = resolveTokenizer(tokenizerProvider);
+        return new ChatMemoryManager(chatMemoryStore, properties.getChatMemory(), tokenizer);
+    }
+
+    private Tokenizer resolveTokenizer(ObjectProvider<Tokenizer> tokenizerProvider) {
+        Tokenizer tokenizer = tokenizerProvider.getIfAvailable();
+        if (tokenizer != null) {
+            return tokenizer;
+        }
+        try {
+            return new OpenAiTokenizer();
+        } catch (Throwable t) {
+            log.debug("初始化 OpenAiTokenizer 失败，使用纯原生 HeuristicTokenizer 保底: {}", t.getMessage());
+            return new HeuristicTokenizer();
+        }
     }
 
     /**

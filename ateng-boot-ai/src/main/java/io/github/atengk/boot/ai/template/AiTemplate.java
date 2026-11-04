@@ -18,6 +18,7 @@ import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
+import io.github.atengk.boot.ai.sanitizer.JsonPayloadSanitizer;
 import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
 import io.github.atengk.boot.ai.streaming.SseTokenStreamBridge;
 import io.github.atengk.boot.ai.streaming.StreamContextHolder;
@@ -261,6 +262,182 @@ public class AiTemplate {
     public String chatMessages(String modelName, List<ChatMessage> messages) {
         Response<AiMessage> response = generate(modelName, messages);
         return extractText(response);
+    }
+
+    // -------------------------------------------------------------------------
+    // 强类型结构化对象提取 (chatForObject)
+    // -------------------------------------------------------------------------
+
+    private static final String JSON_OUTPUT_GUIDANCE = "\n\n【输出格式要求】：请直接以合法 JSON 格式输出，切勿输出任何与 JSON 无关的解释性对话文字。";
+
+    /**
+     * 单提示词结构化抽取：自动注入 JSON 格式要求、脱壳清洗 Markdown 标记并进行 JSR-303 防卫校验 (使用默认/当前上下文模型)
+     *
+     * @param prompt       提示词文本
+     * @param responseType 目标反序列化类型 Class
+     * @param <T>          泛型类型
+     * @return 校验通过的结构化对象实例
+     */
+    public <T> T chatForObject(String prompt, Class<T> responseType) {
+        return chatForObject(null, prompt, responseType);
+    }
+
+    /**
+     * 单提示词结构化抽取 (带 JSR-303 分组校验)
+     *
+     * @param prompt           提示词文本
+     * @param responseType     目标反序列化类型 Class
+     * @param validationGroups JSR-303 分组
+     * @param <T>              泛型类型
+     * @return 校验通过的结构化对象实例
+     */
+    public <T> T chatForObject(String prompt, Class<T> responseType, Class<?>... validationGroups) {
+        return chatForObject(null, prompt, responseType, validationGroups);
+    }
+
+    /**
+     * 指定模型进行单提示词结构化抽取
+     *
+     * @param modelName    模型名称或别名
+     * @param prompt       提示词文本
+     * @param responseType 目标反序列化类型 Class
+     * @param <T>          泛型类型
+     * @return 校验通过的结构化对象实例
+     */
+    public <T> T chatForObject(String modelName, String prompt, Class<T> responseType) {
+        return chatForObject(modelName, prompt, responseType, new Class<?>[0]);
+    }
+
+    /**
+     * 指定模型进行单提示词结构化抽取 (带 JSR-303 分组校验)
+     *
+     * @param modelName        模型名称或别名
+     * @param prompt           提示词文本
+     * @param responseType     目标反序列化类型 Class
+     * @param validationGroups JSR-303 分组
+     * @param <T>              泛型类型
+     * @return 校验通过的结构化对象实例
+     */
+    public <T> T chatForObject(String modelName, String prompt, Class<T> responseType, Class<?>... validationGroups) {
+        Objects.requireNonNull(responseType, "目标反序列化类型 responseType 不能为空");
+        String guidedPrompt = appendJsonGuidance(prompt);
+        String rawReply = chatWithModel(modelName, guidedPrompt);
+        return JsonPayloadSanitizer.parseAndValidate(rawReply, responseType, validationGroups);
+    }
+
+    /**
+     * 基于 PromptTemplate 动态插值结构化抽取 (使用默认/当前上下文模型)
+     *
+     * @param template     提示词模板
+     * @param variables    变量键值映射
+     * @param responseType 目标反序列化类型 Class
+     * @param <T>          泛型类型
+     * @return 校验通过的结构化对象实例
+     */
+    public <T> T chatForObject(PromptTemplate template, Map<String, ?> variables, Class<T> responseType) {
+        return chatForObject(null, template, variables, responseType, new Class<?>[0]);
+    }
+
+    /**
+     * 指定模型并基于 PromptTemplate 动态插值结构化抽取 (带 JSR-303 分组校验)
+     *
+     * @param modelName        模型名称或别名
+     * @param template         提示词模板
+     * @param variables        变量键值映射
+     * @param responseType     目标反序列化类型 Class
+     * @param validationGroups JSR-303 分组
+     * @param <T>              泛型类型
+     * @return 校验通过的结构化对象实例
+     */
+    public <T> T chatForObject(String modelName, PromptTemplate template, Map<String, ?> variables, Class<T> responseType, Class<?>... validationGroups) {
+        if (template == null) {
+            throw new AiException(AiResultCode.AI_CONFIG_ERROR, "PromptTemplate 不能为空");
+        }
+        String renderedPrompt = template.render(variables);
+        return chatForObject(modelName, renderedPrompt, responseType, validationGroups);
+    }
+
+    /**
+     * 图文多模态结构化抽取 (使用默认/当前上下文模型)
+     *
+     * @param prompt       提示词文本
+     * @param imageUrls    图片 URL 或 Base64 列表
+     * @param responseType 目标反序列化类型 Class
+     * @param <T>          泛型类型
+     * @return 校验通过的结构化对象实例
+     */
+    public <T> T chatForObject(String prompt, List<String> imageUrls, Class<T> responseType) {
+        return chatForObject(null, prompt, imageUrls, responseType, new Class<?>[0]);
+    }
+
+    /**
+     * 指定模型进行图文多模态结构化抽取
+     *
+     * @param modelName        模型名称或别名
+     * @param prompt           提示词文本
+     * @param imageUrls        图片 URL 或 Base64 列表
+     * @param responseType     目标反序列化类型 Class
+     * @param validationGroups JSR-303 分组
+     * @param <T>              泛型类型
+     * @return 校验通过的结构化对象实例
+     */
+    public <T> T chatForObject(String modelName, String prompt, List<String> imageUrls, Class<T> responseType, Class<?>... validationGroups) {
+        Objects.requireNonNull(responseType, "目标反序列化类型 responseType 不能为空");
+        String guidedPrompt = appendJsonGuidance(prompt);
+        String rawReply = chatWithModel(modelName, guidedPrompt, imageUrls);
+        return JsonPayloadSanitizer.parseAndValidate(rawReply, responseType, validationGroups);
+    }
+
+    /**
+     * 多轮对话消息列表结构化抽取 (使用默认/当前上下文模型)
+     *
+     * @param messages     消息历史列表
+     * @param responseType 目标反序列化类型 Class
+     * @param <T>          泛型类型
+     * @return 校验通过的结构化对象实例
+     */
+    public <T> T chatForObject(List<ChatMessage> messages, Class<T> responseType) {
+        return chatForObject(null, messages, responseType, new Class<?>[0]);
+    }
+
+    /**
+     * 指定模型进行多轮对话消息列表结构化抽取
+     *
+     * @param modelName        模型名称或别名
+     * @param messages         消息历史列表
+     * @param responseType     目标反序列化类型 Class
+     * @param validationGroups JSR-303 分组
+     * @param <T>              泛型类型
+     * @return 校验通过的结构化对象实例
+     */
+    public <T> T chatForObject(String modelName, List<ChatMessage> messages, Class<T> responseType, Class<?>... validationGroups) {
+        Objects.requireNonNull(responseType, "目标反序列化类型 responseType 不能为空");
+        List<ChatMessage> guidedMessages = appendJsonGuidance(messages);
+        String rawReply = chatMessages(modelName, guidedMessages);
+        return JsonPayloadSanitizer.parseAndValidate(rawReply, responseType, validationGroups);
+    }
+
+    private String appendJsonGuidance(String prompt) {
+        if (!StringUtils.hasText(prompt)) {
+            return JSON_OUTPUT_GUIDANCE.trim();
+        }
+        return prompt.trim() + JSON_OUTPUT_GUIDANCE;
+    }
+
+    private List<ChatMessage> appendJsonGuidance(List<ChatMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return Collections.singletonList(UserMessage.from(JSON_OUTPUT_GUIDANCE.trim()));
+        }
+        List<ChatMessage> list = new ArrayList<>(messages);
+        int lastIndex = list.size() - 1;
+        ChatMessage last = list.get(lastIndex);
+        if (last instanceof UserMessage userMessage) {
+            String originalText = FallbackTokenEstimator.extractPromptText(Collections.singletonList(userMessage));
+            list.set(lastIndex, UserMessage.from(appendJsonGuidance(originalText)));
+        } else {
+            list.add(UserMessage.from(JSON_OUTPUT_GUIDANCE.trim()));
+        }
+        return list;
     }
 
     // -------------------------------------------------------------------------

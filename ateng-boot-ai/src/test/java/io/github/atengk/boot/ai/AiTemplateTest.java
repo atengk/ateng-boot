@@ -354,4 +354,96 @@ class AiTemplateTest {
                 .isInstanceOf(AiException.class)
                 .hasFieldOrPropertyWithValue("code", AiResultCode.AI_QUOTA_EXCEEDED.getCode());
     }
+
+    public static class TestUserVo {
+        @jakarta.validation.constraints.NotBlank(message = "姓名不能为空")
+        private String name;
+        @jakarta.validation.constraints.Min(value = 18, message = "年龄不能小于18")
+        private Integer age;
+
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
+        public Integer getAge() { return age; }
+        public void setAge(Integer age) { this.age = age; }
+    }
+
+    @Test
+    @DisplayName("结构化抽取：单提示词成功反序列化并完成校验")
+    void testChatForObjectSuccess() {
+        when(defaultChatModel.generate(anyList()))
+                .thenReturn(Response.from(AiMessage.from("{\"name\":\"张三\",\"age\":25}")));
+
+        TestUserVo user = aiTemplate.chatForObject("请提取用户信息", TestUserVo.class);
+        assertThat(user).isNotNull();
+        assertThat(user.getName()).isEqualTo("张三");
+        assertThat(user.getAge()).isEqualTo(25);
+    }
+
+    @Test
+    @DisplayName("结构化抽取：Markdown 代码块自动脱壳清洗并反序列化")
+    void testChatForObjectMarkdownFenceStripping() {
+        String markdownReply = "```json\n{\"name\":\"李四\",\"age\":30}\n```";
+        when(defaultChatModel.generate(anyList()))
+                .thenReturn(Response.from(AiMessage.from(markdownReply)));
+
+        TestUserVo user = aiTemplate.chatForObject("请提取李四信息", TestUserVo.class);
+        assertThat(user).isNotNull();
+        assertThat(user.getName()).isEqualTo("李四");
+        assertThat(user.getAge()).isEqualTo(30);
+    }
+
+    @Test
+    @DisplayName("结构化抽取：JSR-303 格式校验不通过时快速失败抛出 AI_RESPONSE_PARSE_ERROR")
+    void testChatForObjectValidationFailure() {
+        when(defaultChatModel.generate(anyList()))
+                .thenReturn(Response.from(AiMessage.from("{\"name\":\"\",\"age\":10}")));
+
+        assertThatThrownBy(() -> aiTemplate.chatForObject("提取未成年且名字为空的用户", TestUserVo.class))
+                .isInstanceOf(AiException.class)
+                .hasFieldOrPropertyWithValue("code", AiResultCode.AI_RESPONSE_PARSE_ERROR.getCode())
+                .hasMessageContaining("未通过 JSR-303 校验");
+    }
+
+    @Test
+    @DisplayName("结构化抽取：大模型返回非法 JSON 时快速失败抛出 AI_RESPONSE_PARSE_ERROR")
+    void testChatForObjectInvalidJsonFailure() {
+        when(defaultChatModel.generate(anyList()))
+                .thenReturn(Response.from(AiMessage.from("抱歉，我不能提供 JSON。")));
+
+        assertThatThrownBy(() -> aiTemplate.chatForObject("提取用户信息", TestUserVo.class))
+                .isInstanceOf(AiException.class)
+                .hasFieldOrPropertyWithValue("code", AiResultCode.AI_RESPONSE_PARSE_ERROR.getCode())
+                .hasMessageContaining("反序列化为 [TestUserVo] 失败");
+    }
+
+    @Test
+    @DisplayName("结构化抽取：基于 PromptTemplate 动态模板抽取")
+    void testChatForObjectWithPromptTemplate() {
+        when(defaultChatModel.generate(anyList()))
+                .thenReturn(Response.from(AiMessage.from("{\"name\":\"王五\",\"age\":28}")));
+
+        PromptTemplate template = PromptTemplate.of("请分析用户 {{targetUser}} 的基本信息");
+        TestUserVo user = aiTemplate.chatForObject(template, Map.of("targetUser", "王五"), TestUserVo.class);
+
+        assertThat(user).isNotNull();
+        assertThat(user.getName()).isEqualTo("王五");
+        assertThat(user.getAge()).isEqualTo(28);
+    }
+
+    @Test
+    @DisplayName("结构化抽取：基于多轮历史消息 ChatMessage 列表抽取")
+    void testChatForObjectWithMessages() {
+        when(defaultChatModel.generate(anyList()))
+                .thenReturn(Response.from(AiMessage.from("{\"name\":\"赵六\",\"age\":22}")));
+
+        List<ChatMessage> messages = List.of(
+                UserMessage.from("之前聊到的小李其实叫赵六"),
+                UserMessage.from("请根据对话提取用户")
+        );
+
+        TestUserVo user = aiTemplate.chatForObject(messages, TestUserVo.class);
+        assertThat(user).isNotNull();
+        assertThat(user.getName()).isEqualTo("赵六");
+        assertThat(user.getAge()).isEqualTo(22);
+    }
 }

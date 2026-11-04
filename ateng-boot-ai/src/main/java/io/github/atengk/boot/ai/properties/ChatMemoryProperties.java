@@ -19,9 +19,19 @@ public class ChatMemoryProperties {
     private boolean enabled = true;
 
     /**
-     * 会话记忆滑动窗口保留的最大消息条数（默认 20 条，基于消息条数修剪，零分词器开销防上下文溢出）
+     * 会话记忆滑动窗口裁剪策略 (MESSAGE: 基于消息条数裁剪, TOKEN: 基于 Token 数量裁剪)，默认为 MESSAGE
+     */
+    private ChatMemoryWindowType windowType = ChatMemoryWindowType.MESSAGE;
+
+    /**
+     * 会话记忆基于消息条数裁剪时保留的最大消息条数（默认 20 条，基于消息条数修剪，零分词器开销防上下文溢出）
      */
     private int maxMessages = 20;
+
+    /**
+     * 会话记忆基于 Token 窗口裁剪时保留的最大 Token 总量，默认为 8192
+     */
+    private int maxTokens = 8192;
 
     /**
      * 会话存储底座类型，默认为单机内存存储

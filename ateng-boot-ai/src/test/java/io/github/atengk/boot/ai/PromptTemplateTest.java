@@ -99,4 +99,49 @@ class PromptTemplateTest {
                 .isInstanceOf(AiException.class)
                 .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
     }
+
+    @Test
+    @DisplayName("从 Classpath 成功加载外部 Markdown 提示词文件")
+    void testFromClasspathSuccess() {
+        PromptTemplate template1 = PromptTemplate.fromClasspath("prompts/test-prompt.md");
+        assertThat(template1.getVariableNames()).containsExactlyInAnyOrder("userName", "content");
+
+        String rendered = template1.render(Map.of("userName", "张三", "content", "查询未完成订单"));
+        assertThat(rendered).contains("用户: 张三").contains("请求内容: 查询未完成订单");
+
+        PromptTemplate template2 = PromptTemplate.fromClasspath("classpath:prompts/test-prompt.md");
+        assertThat(template2.render(Map.of("userName", "李四", "content", "申请退款"))).contains("用户: 李四");
+
+        PromptTemplate template3 = PromptTemplate.fromClasspath("/prompts/test-prompt.md");
+        assertThat(template3.render(Map.of("userName", "王五", "content", "修改密码"))).contains("用户: 王五");
+    }
+
+    @Test
+    @DisplayName("从 Classpath 加载不存在或空白路径抛出 AI_CONFIG_ERROR")
+    void testFromClasspathFailure() {
+        assertThatThrownBy(() -> PromptTemplate.fromClasspath(null))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+
+        assertThatThrownBy(() -> PromptTemplate.fromClasspath("   "))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+
+        assertThatThrownBy(() -> PromptTemplate.fromClasspath("prompts/not-exist.md"))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+    }
+
+    @Test
+    @DisplayName("从 Resource 加载：null 或不存在资源抛出 AI_CONFIG_ERROR")
+    void testFromResourceFailure() {
+        assertThatThrownBy(() -> PromptTemplate.fromResource(null))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+
+        org.springframework.core.io.ClassPathResource missing = new org.springframework.core.io.ClassPathResource("non-exist-file.md");
+        assertThatThrownBy(() -> PromptTemplate.fromResource(missing))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+    }
 }

@@ -1,9 +1,12 @@
 package io.github.atengk.boot.sample.ai.controller;
 
+import io.github.atengk.boot.ai.prompt.PromptTemplate;
 import io.github.atengk.boot.ai.template.AiTemplate;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.ai.dto.AiChatRequestDto;
+import io.github.atengk.boot.sample.ai.dto.UserAnalysisRequestDto;
 import io.github.atengk.boot.sample.ai.vo.AiChatResponseVo;
+import io.github.atengk.boot.sample.ai.vo.UserAnalysisVo;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +16,8 @@ import org.springframework.util.StringUtils;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.util.Map;
 
 /**
  * AI 智能体对话控制器
@@ -89,5 +94,39 @@ public class AiChatController {
     public Result<Integer> getActiveStreamCount() {
         int count = aiTemplate.getActiveStreamRegistry() != null ? aiTemplate.getActiveStreamRegistry().getActiveCount() : 0;
         return Result.success(count);
+    }
+
+    /**
+     * 强类型结构化对象提取接口
+     * 结合外部 Markdown 提示词模板、自动注入 JSON 约束引导、清洗 Markdown 代码块并触发 JSR-303 格式防卫校验
+     *
+     * @param request 用户画像抽取请求 DTO
+     * @return 结构化分析结果 VO
+     */
+    @PostMapping("/extract")
+    public Result<UserAnalysisVo> extractUserAnalysis(@Valid @RequestBody UserAnalysisRequestDto request) {
+        PromptTemplate template = PromptTemplate.fromClasspath("prompts/user-analysis.md");
+        Map<String, Object> vars = Map.of(
+                "userName", request.getUserName(),
+                "content", request.getContent()
+        );
+        UserAnalysisVo analysisVo = aiTemplate.chatForObject(request.getModel(), template, vars, UserAnalysisVo.class);
+        return Result.success(analysisVo);
+    }
+
+    /**
+     * 加载并渲染外部 Markdown 提示词模板文件接口
+     *
+     * @param userName 用户称谓
+     * @param content  内容描述
+     * @return 渲染后的提示词正文
+     */
+    @GetMapping("/template/file")
+    public Result<String> renderExternalTemplate(
+            @RequestParam("userName") @NotBlank(message = "userName 不能为空") String userName,
+            @RequestParam("content") @NotBlank(message = "content 不能为空") String content) {
+        PromptTemplate template = PromptTemplate.fromClasspath("prompts/user-analysis.md");
+        String rendered = template.render(Map.of("userName", userName, "content", content));
+        return Result.success(rendered);
     }
 }

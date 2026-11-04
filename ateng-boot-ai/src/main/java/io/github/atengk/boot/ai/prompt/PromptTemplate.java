@@ -2,15 +2,20 @@ package io.github.atengk.boot.ai.prompt;
 
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.Resource;
 import org.springframework.util.StringUtils;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
  * 声明式轻量参数插值提示词模板
- * 支持 {{var}} 形式的动态参数安全替换，纯原生高效正则实现，零额外第三方模板引擎依赖
+ * 支持 {{var}} 形式的动态参数安全替换与外部 Markdown 文件加载，纯原生高效正则实现，零额外第三方模板引擎依赖
  *
  * @author Ateng
  * @since 2026-11-03
@@ -38,6 +43,48 @@ public final class PromptTemplate {
      */
     public static PromptTemplate of(String template) {
         return new PromptTemplate(template);
+    }
+
+    /**
+     * 静态工厂：从 Classpath 类路径加载提示词模板文件 (如 prompts/summary.md)
+     *
+     * @param location 类路径相对路径 (如 "prompts/order-summary.md" 或 "classpath:prompts/order-summary.md")
+     * @return PromptTemplate 实例
+     */
+    public static PromptTemplate fromClasspath(String location) {
+        if (!StringUtils.hasText(location)) {
+            throw new AiException(AiResultCode.AI_CONFIG_ERROR, "Classpath 模板路径不能为空");
+        }
+        String cleanPath = location.trim();
+        if (cleanPath.startsWith("classpath:")) {
+            cleanPath = cleanPath.substring("classpath:".length()).trim();
+        }
+        if (cleanPath.startsWith("/")) {
+            cleanPath = cleanPath.substring(1);
+        }
+        ClassPathResource resource = new ClassPathResource(cleanPath);
+        return fromResource(resource);
+    }
+
+    /**
+     * 静态工厂：从 Spring Resource 抽象资源加载提示词模板文件
+     *
+     * @param resource Spring Resource 实例
+     * @return PromptTemplate 实例
+     */
+    public static PromptTemplate fromResource(Resource resource) {
+        if (resource == null) {
+            throw new AiException(AiResultCode.AI_CONFIG_ERROR, "提示词资源 Resource 不能为空");
+        }
+        if (!resource.exists()) {
+            throw new AiException(AiResultCode.AI_CONFIG_ERROR, "提示词资源文件不存在: " + resource.getDescription());
+        }
+        try (InputStream in = resource.getInputStream()) {
+            String content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            return new PromptTemplate(content);
+        } catch (IOException ex) {
+            throw new AiException(AiResultCode.AI_CONFIG_ERROR, "读取提示词资源文件失败 [" + resource.getDescription() + "]: " + ex.getMessage(), ex);
+        }
     }
 
     /**

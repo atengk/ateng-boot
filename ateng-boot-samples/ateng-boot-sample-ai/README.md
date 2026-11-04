@@ -32,6 +32,8 @@
 | **同步对话分析** | `AiChatController` | `POST /sample/ai/chat/sync` | `curl -X POST "http://localhost:8080/sample/ai/chat/sync" -H "Content-Type: application/json" -d "{\"prompt\":\"请列举Spring Boot 3的核心特性\"}"` |
 | **指定命名模型对话** | `AiChatController` | `POST /sample/ai/chat/sync` | `curl -X POST "http://localhost:8080/sample/ai/chat/sync" -H "Content-Type: application/json" -d "{\"prompt\":\"求解数学难题\",\"model\":\"reasoner\"}"` |
 | **发票凭单图文识别** | `AiChatController` | `POST /sample/ai/chat/sync` | `curl -X POST "http://localhost:8080/sample/ai/chat/sync" -H "Content-Type: application/json" -d "{\"prompt\":\"请识别发票报销金额与纳税人识别号\",\"images\":[\"https://images.example.com/invoice.png\"]}"` |
+| **强类型结构化抽取** | `AiChatController` | `POST /sample/ai/chat/extract` | `curl -X POST "http://localhost:8080/sample/ai/chat/extract" -H "Content-Type: application/json" -d "{\"userName\":\"张三\",\"content\":\"频繁咨询微服务高可用方案\"}"` |
+| **外部提示词文件渲染** | `AiChatController` | `GET /sample/ai/chat/template/file` | `curl "http://localhost:8080/sample/ai/chat/template/file?userName=李四&content=咨询Starter配置"` |
 | **双通道打字机流式推流** | `AiChatController` | `GET /sample/ai/chat/stream` | `curl -N "http://localhost:8080/sample/ai/chat/stream?prompt=请深度推导高阶微积分定理"` |
 | **单轮智能体审计决策** | `AiAgentController` | `POST /sample/ai/agent/audit` | `curl -X POST "http://localhost:8080/sample/ai/agent/audit" -H "Content-Type: application/json" -d "{\"orderId\":\"ORD_20261103001\",\"remarks\":\"年度财务大额专项审计\"}"` |
 | **跨轮多会话智能体审计** | `AiAgentController` | `POST /sample/ai/agent/audit/{sessionId}` | `curl -X POST "http://localhost:8080/sample/ai/agent/audit/sess_audit_1001" -H "Content-Type: application/json" -d "{\"orderId\":\"ORD_20261103001\",\"remarks\":\"多轮复核第1轮\"}"` |

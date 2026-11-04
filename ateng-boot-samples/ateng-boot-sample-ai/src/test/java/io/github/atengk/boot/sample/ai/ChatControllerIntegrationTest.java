@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.ai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.sample.ai.dto.AiChatRequestDto;
+import io.github.atengk.boot.sample.ai.dto.UserAnalysisRequestDto;
 import okhttp3.mockwebserver.Dispatcher;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -91,6 +92,37 @@ class ChatControllerIntegrationTest {
                             .setResponseCode(200)
                             .setHeader("Content-Type", "text/event-stream; charset=utf-8")
                             .setBody(sseBody);
+                }
+
+                // 判断是否为结构化抽取请求
+                if (body.contains("用户画像") || body.contains("输出格式要求")) {
+                    String extractJson = """
+                            {
+                              "id": "chatcmpl-extract-test",
+                              "object": "chat.completion",
+                              "created": 1700000000,
+                              "model": "gpt-4o",
+                              "choices": [
+                                {
+                                  "index": 0,
+                                  "message": {
+                                    "role": "assistant",
+                                    "content": "```json\\n{\\"name\\":\\"张三\\",\\"intentLevel\\":4,\\"tags\\":[\\"高潜\\",\\"研发\\"],\\"summary\\":\\"高意向企业级开发者\\"}\\n```"
+                                  },
+                                  "finish_reason": "stop"
+                                }
+                              ],
+                              "usage": {
+                                "prompt_tokens": 15,
+                                "completion_tokens": 25,
+                                "total_tokens": 40
+                              }
+                            }
+                            """;
+                    return new MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json; charset=utf-8")
+                            .setBody(extractJson);
                 }
 
                 // 默认同步响应
@@ -289,5 +321,51 @@ class ChatControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").isNumber());
+    }
+
+    @Test
+    @DisplayName("端到端验证 POST /sample/ai/chat/extract 强类型结构化抽取")
+    void testExtractUserAnalysisSuccess() throws Exception {
+        UserAnalysisRequestDto request = new UserAnalysisRequestDto("张三", "经常在深夜查阅微服务架构与分布式事务文档，咨询高可用方案", null);
+
+        var actions = mockMvc.perform(post("/sample/ai/chat/extract")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        if (!isLocalProfile()) {
+            actions.andExpect(jsonPath("$.data.name").value("张三"))
+                    .andExpect(jsonPath("$.data.intentLevel").value(4))
+                    .andExpect(jsonPath("$.data.tags[0]").value("高潜"))
+                    .andExpect(jsonPath("$.data.summary").value("高意向企业级开发者"));
+        } else {
+            actions.andExpect(jsonPath("$.data.name").isString())
+                    .andExpect(jsonPath("$.data.intentLevel").isNumber());
+        }
+    }
+
+    @Test
+    @DisplayName("端到端验证 POST /sample/ai/chat/extract 空参数 JSR-303 防卫快速失败")
+    void testExtractUserAnalysisValidationFailFast() throws Exception {
+        UserAnalysisRequestDto badRequest = new UserAnalysisRequestDto("", "", null);
+
+        mockMvc.perform(post("/sample/ai/chat/extract")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(badRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    @DisplayName("端到端验证 GET /sample/ai/chat/template/file 外部 Markdown 模板加载与渲染")
+    void testRenderExternalTemplateSuccess() throws Exception {
+        mockMvc.perform(get("/sample/ai/chat/template/file")
+                        .param("userName", "李四")
+                        .param("content", "寻求中间件 Starter 最佳实践"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("【用户身份或代号】：李四")))
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("【用户行为/咨询记录】：寻求中间件 Starter 最佳实践")));
     }
 }
