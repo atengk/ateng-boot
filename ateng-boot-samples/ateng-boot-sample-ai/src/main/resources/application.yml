@@ -16,3 +16,14 @@ ateng:
         model-name: gpt-4o
         temperature: 0.7
         timeout: 60s
+      guardrail:
+        enabled: true
+        mode: FAIL_FAST
+        max-prompt-length: 5000
+        banned-keywords:
+          - 涉黄涉暴
+          - 违禁品
+          - 枪支
+          - 毒品
+        whitelist:
+          - 枪支管理条例

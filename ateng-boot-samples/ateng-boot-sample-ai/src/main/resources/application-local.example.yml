@@ -39,3 +39,15 @@ ateng:
         tenant-token-limits:
           tenant-vip: 10000000
           tenant-free: 50000
+      # 内容安全双向护栏配置
+      guardrail:
+        enabled: true
+        mode: FAIL_FAST
+        max-prompt-length: 5000
+        banned-keywords:
+          - 涉黄涉暴
+          - 违禁品
+          - 枪支
+          - 毒品
+        whitelist:
+          - 枪支管理条例

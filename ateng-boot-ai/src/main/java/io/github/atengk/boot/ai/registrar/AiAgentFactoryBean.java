@@ -1,6 +1,7 @@
 package io.github.atengk.boot.ai.registrar;
 
 import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.memory.chat.ChatMemoryProvider;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.service.AiServices;
@@ -8,6 +9,9 @@ import dev.langchain4j.service.tool.ToolExecutor;
 import io.github.atengk.boot.ai.context.AgentCallContext;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.guardrail.AiGuardrail;
+import io.github.atengk.boot.ai.guardrail.GuardrailAction;
+import io.github.atengk.boot.ai.guardrail.GuardrailResult;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.routing.DynamicRoutingChatLanguageModel;
@@ -216,6 +220,32 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                 return method.invoke(rawAgent, args);
             }
 
+            // 0. 前置内容安全护栏检查 (PRE_PROMPT 防注入/越狱/超长)
+            AiGuardrail guardrail = resolveGuardrail();
+            if (guardrail != null && args != null) {
+                for (int i = 0; i < args.length; i++) {
+                    Object arg = args[i];
+                    if (arg instanceof String text) {
+                        GuardrailResult preResult = guardrail.inspectPrompt(text);
+                        if (preResult.getAction() == GuardrailAction.BLOCK) {
+                            throw new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, preResult.getReason());
+                        } else if (preResult.getAction() == GuardrailAction.REPLACE) {
+                            if (method.getReturnType() == String.class) {
+                                return preResult.getSafeContent();
+                            }
+                            args[i] = preResult.getSafeContent();
+                        }
+                    } else if (arg instanceof ChatMessage chatMsg) {
+                        GuardrailResult preResult = guardrail.inspectMessages(Collections.singletonList(chatMsg));
+                        if (preResult.getAction() == GuardrailAction.BLOCK) {
+                            throw new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, preResult.getReason());
+                        } else if (preResult.getAction() == GuardrailAction.REPLACE && method.getReturnType() == String.class) {
+                            return preResult.getSafeContent();
+                        }
+                    }
+                }
+            }
+
             // 1. 提取复杂对象参数并构建 JSON 替换映射
             Map<String, String> replacements = buildArgumentReplacements(args);
 
@@ -232,7 +262,17 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                 throw ite;
             }
 
-            // 3. 对强类型结构化输出执行 JSR-303 数据防卫 (跳过 TokenStream 流式响应句柄)
+            // 3. 后置内容安全护栏检查 (POST_RESPONSE 防违禁敏感词)
+            if (guardrail != null && result instanceof String textResult) {
+                GuardrailResult postResult = guardrail.inspectResponse(textResult);
+                if (postResult.getAction() == GuardrailAction.BLOCK) {
+                    throw new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, postResult.getReason());
+                } else if (postResult.getAction() == GuardrailAction.REPLACE) {
+                    result = postResult.getSafeContent();
+                }
+            }
+
+            // 4. 对强类型结构化输出执行 JSR-303 数据防卫 (跳过 TokenStream 流式响应句柄)
             if (result != null && !(result instanceof dev.langchain4j.service.TokenStream) && isComplexObject(result)) {
                 try {
                     ValidatorUtil.validate(result);
@@ -250,6 +290,16 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                 new Class<?>[]{agentInterface},
                 handler
         );
+    }
+
+    private AiGuardrail resolveGuardrail() {
+        if (applicationContext != null) {
+            try {
+                return applicationContext.getBeanProvider(AiGuardrail.class).getIfAvailable();
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
     }
 
     /**

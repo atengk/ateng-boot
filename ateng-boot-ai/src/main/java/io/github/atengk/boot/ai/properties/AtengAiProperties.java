@@ -1,5 +1,6 @@
 package io.github.atengk.boot.ai.properties;
 
+import io.github.atengk.boot.ai.guardrail.AiGuardrailProperties;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
@@ -46,6 +47,12 @@ public class AtengAiProperties {
      */
     @NestedConfigurationProperty
     private AtengAiQuotaProperties quota = new AtengAiQuotaProperties();
+
+    /**
+     * AI 双向内容安全护栏强类型配置
+     */
+    @NestedConfigurationProperty
+    private AiGuardrailProperties guardrail = new AiGuardrailProperties();
 
     /**
      * SaaS 多租户专有模型绑定映射 (key 为租户标识 tenantId，value 为绑定的专有模型标识别名)

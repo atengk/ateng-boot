@@ -12,6 +12,7 @@ import io.github.atengk.boot.ai.context.AiContextHolder;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
 import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.guardrail.*;
 import io.github.atengk.boot.ai.observability.FallbackTokenEstimator;
 import io.github.atengk.boot.ai.prompt.PromptTemplate;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
@@ -52,6 +53,7 @@ public class AiTemplate {
     private final AiTenantModelResolver tenantModelResolver;
     private final AiQuotaChecker quotaChecker;
     private final ActiveStreamRegistry activeStreamRegistry;
+    private final AiGuardrail guardrail;
 
     public AiTemplate(AiModelRegistry registry) {
         this(registry, new AtengAiProperties());
@@ -73,11 +75,30 @@ public class AiTemplate {
                       AiTenantModelResolver tenantModelResolver,
                       AiQuotaChecker quotaChecker,
                       ActiveStreamRegistry activeStreamRegistry) {
+        this(registry, properties, tenantModelResolver, quotaChecker, activeStreamRegistry, null);
+    }
+
+    public AiTemplate(AiModelRegistry registry,
+                      AtengAiProperties properties,
+                      AiTenantModelResolver tenantModelResolver,
+                      AiQuotaChecker quotaChecker,
+                      ActiveStreamRegistry activeStreamRegistry,
+                      AiGuardrail guardrail) {
         this.registry = Objects.requireNonNull(registry, "AiModelRegistry 不能为空");
         this.properties = properties != null ? properties : new AtengAiProperties();
         this.tenantModelResolver = tenantModelResolver;
         this.quotaChecker = quotaChecker;
         this.activeStreamRegistry = activeStreamRegistry;
+        this.guardrail = guardrail != null ? guardrail : new DefaultAiGuardrail(this.properties.getGuardrail());
+    }
+
+    /**
+     * 获取 AI 双向内容安全护栏实例
+     *
+     * @return AiGuardrail 实例
+     */
+    public AiGuardrail getGuardrail() {
+        return guardrail;
     }
 
     /**
@@ -669,6 +690,30 @@ public class AiTemplate {
     }
 
     /**
+     * 单提示词底层流式响应消费接口 (使用当前上下文或默认模型)
+     *
+     * @param prompt  提示词
+     * @param handler 自定义流式响应处理器
+     */
+    public void stream(String prompt, StreamingResponseHandler<AiMessage> handler) {
+        streamWithModel(null, prompt, handler);
+    }
+
+    /**
+     * 指定模型进行单提示词底层流式响应消费接口
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    提示词
+     * @param handler   自定义流式响应处理器
+     */
+    public void streamWithModel(String modelName, String prompt, StreamingResponseHandler<AiMessage> handler) {
+        if (!StringUtils.hasText(prompt)) {
+            throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "用户提示词 prompt 不能为空");
+        }
+        stream(modelName, Collections.singletonList(UserMessage.from(prompt.trim())), handler);
+    }
+
+    /**
      * 底层流式响应消费接口 (使用当前上下文或默认模型)
      *
      * @param messages 消息历史列表
@@ -693,6 +738,19 @@ public class AiTemplate {
             throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "StreamingResponseHandler 不能为空");
         }
 
+        // 0. 前置内容安全护栏检查 (PRE_PROMPT 防注入/越狱/超长)
+        if (guardrail != null) {
+            GuardrailResult preResult = guardrail.inspectMessages(messages);
+            if (preResult.getAction() == GuardrailAction.BLOCK) {
+                throw new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, preResult.getReason());
+            }
+            if (preResult.getAction() == GuardrailAction.REPLACE) {
+                handler.onNext(preResult.getSafeContent());
+                handler.onComplete(Response.from(AiMessage.from(preResult.getSafeContent())));
+                return;
+            }
+        }
+
         String effectiveModelName = resolveEffectiveModelName(modelName);
         String tenantId = TenantContextHolder.getTenantId();
 
@@ -706,6 +764,9 @@ public class AiTemplate {
         StreamingResponseHandler<AiMessage> wrappedHandler = (quotaChecker != null)
                 ? new QuotaTrackingStreamingResponseHandler(handler, quotaChecker, tenantId, effectiveModelName, messages)
                 : handler;
+        StreamingResponseHandler<AiMessage> guardrailHandler = (guardrail != null)
+                ? new GuardrailStreamingResponseHandler(wrappedHandler, guardrail)
+                : wrappedHandler;
 
         // 若当前未显式设置 streamId，但 handler 为带有 streamId 的 SseTokenStreamBridge，则自动填充与排空上下文
         boolean locallySetStreamId = false;
@@ -715,7 +776,7 @@ public class AiTemplate {
         }
 
         try {
-            model.generate(messages, wrappedHandler);
+            model.generate(messages, guardrailHandler);
         } finally {
             if (locallySetStreamId) {
                 StreamContextHolder.clear();
@@ -747,6 +808,17 @@ public class AiTemplate {
     public Response<AiMessage> generate(String modelName, List<ChatMessage> messages) {
         if (messages == null || messages.isEmpty()) {
             throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "对话消息列表不能为空");
+        }
+
+        // 0. 前置内容安全护栏检查 (PRE_PROMPT 防注入/越狱/超长)
+        if (guardrail != null) {
+            GuardrailResult preResult = guardrail.inspectMessages(messages);
+            if (preResult.getAction() == GuardrailAction.BLOCK) {
+                throw new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, preResult.getReason());
+            }
+            if (preResult.getAction() == GuardrailAction.REPLACE) {
+                return Response.from(AiMessage.from(preResult.getSafeContent()));
+            }
         }
 
         String effectiveModelName = resolveEffectiveModelName(modelName);
@@ -782,6 +854,19 @@ public class AiTemplate {
                 int totalTokens = extractTotalTokens(messages, response);
                 quotaChecker.recordUsage(tenantId, effectiveModelName, totalTokens);
             }
+
+            // 3. 后置内容安全护栏检查 (POST_RESPONSE 防涉黄涉暴/违禁敏感词)
+            if (guardrail != null) {
+                String responseText = extractText(response);
+                GuardrailResult postResult = guardrail.inspectResponse(responseText);
+                if (postResult.getAction() == GuardrailAction.BLOCK) {
+                    throw new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, postResult.getReason());
+                }
+                if (postResult.getAction() == GuardrailAction.REPLACE) {
+                    return Response.from(AiMessage.from(postResult.getSafeContent()), response.tokenUsage(), response.finishReason());
+                }
+            }
+
             return response;
         } catch (Throwable t) {
             throw AiExceptionTranslator.translate(t);
@@ -916,6 +1001,45 @@ public class AiTemplate {
                 quotaChecker.recordUsage(tenantId, modelName, totalTokens);
             } catch (Throwable t) {
                 log.warn("流式调用完成后记录配额消耗失败: {}", t.getMessage());
+            }
+            delegate.onComplete(response);
+        }
+
+        @Override
+        public void onError(Throwable error) {
+            delegate.onError(error);
+        }
+    }
+
+    /**
+     * 流式调用内容安全护栏响应处理器包装器
+     */
+    private static class GuardrailStreamingResponseHandler implements StreamingResponseHandler<AiMessage> {
+
+        private final StreamingResponseHandler<AiMessage> delegate;
+        private final AiGuardrail guardrail;
+        private final StringBuilder fullContent = new StringBuilder();
+
+        GuardrailStreamingResponseHandler(StreamingResponseHandler<AiMessage> delegate, AiGuardrail guardrail) {
+            this.delegate = delegate;
+            this.guardrail = guardrail;
+        }
+
+        @Override
+        public void onNext(String token) {
+            if (token != null) {
+                fullContent.append(token);
+            }
+            delegate.onNext(token);
+        }
+
+        @Override
+        public void onComplete(Response<AiMessage> response) {
+            String fullText = fullContent.toString();
+            GuardrailResult postResult = guardrail.inspectResponse(fullText);
+            if (postResult.getAction() == GuardrailAction.BLOCK) {
+                delegate.onError(new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, postResult.getReason()));
+                return;
             }
             delegate.onComplete(response);
         }

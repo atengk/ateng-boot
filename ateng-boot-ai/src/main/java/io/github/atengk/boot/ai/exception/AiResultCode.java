@@ -97,7 +97,12 @@ public enum AiResultCode implements IResultCode {
     /**
      * 大模型调用配额用尽或超出风控上限
      */
-    AI_QUOTA_EXCEEDED(61017, "大模型调用配额用尽或超出风控上限");
+    AI_QUOTA_EXCEEDED(61017, "大模型调用配额用尽或超出风控上限"),
+
+    /**
+     * 检测到内容安全合规风险或越狱注入攻击
+     */
+    AI_CONTENT_RISK_DETECTED(61018, "检测到内容安全合规风险或越狱注入攻击");
 
     private final Integer code;
     private final String msg;

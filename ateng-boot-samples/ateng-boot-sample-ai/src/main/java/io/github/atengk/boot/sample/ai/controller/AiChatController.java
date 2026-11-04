@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.ai.controller;
 
+import io.github.atengk.boot.ai.guardrail.GuardrailResult;
 import io.github.atengk.boot.ai.prompt.PromptTemplate;
 import io.github.atengk.boot.ai.template.AiTemplate;
 import io.github.atengk.boot.core.model.Result;
@@ -50,6 +51,34 @@ public class AiChatController {
 
         String resolvedModel = StringUtils.hasText(request.getModel()) ? request.getModel().trim() : "default";
         return Result.success(new AiChatResponseVo(reply, resolvedModel));
+    }
+
+    /**
+     * 内容安全双向护栏体验接口
+     * 支持安全合规输入放行、前置越狱注入攻击与敏感违禁词拦截阻断
+     *
+     * @param request 对话请求 DTO
+     * @return 统一响应契约包装的对话结果 VO
+     */
+    @PostMapping("/guardrail")
+    public Result<AiChatResponseVo> chatWithGuardrail(@Valid @RequestBody AiChatRequestDto request) {
+        String reply = aiTemplate.chatWithModel(request.getModel(), request.getPrompt());
+        String resolvedModel = StringUtils.hasText(request.getModel()) ? request.getModel().trim() : "default";
+        return Result.success(new AiChatResponseVo(reply, resolvedModel));
+    }
+
+    /**
+     * 内容安全护栏前置规则判定审查接口 (不调用底层大模型)
+     * 用于前端输入前置预检与安全判定审计
+     *
+     * @param prompt 待审查提示词文本
+     * @return 护栏规则裁定结果 GuardrailResult
+     */
+    @PostMapping("/guardrail/inspect")
+    public Result<GuardrailResult> inspectPromptGuardrail(
+            @RequestParam("prompt") @NotBlank(message = "prompt 不能为空") String prompt) {
+        GuardrailResult result = aiTemplate.getGuardrail().inspectPrompt(prompt);
+        return Result.success(result);
     }
 
     /**

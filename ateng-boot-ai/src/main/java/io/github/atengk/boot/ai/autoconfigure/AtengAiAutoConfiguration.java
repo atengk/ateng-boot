@@ -13,6 +13,8 @@ import dev.langchain4j.model.openai.OpenAiTokenizer;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
+import io.github.atengk.boot.ai.guardrail.AiGuardrail;
+import io.github.atengk.boot.ai.guardrail.DefaultAiGuardrail;
 import io.github.atengk.boot.ai.memory.ChatMemoryManager;
 import io.github.atengk.boot.ai.memory.HeuristicTokenizer;
 import io.github.atengk.boot.ai.memory.store.ChatMemoryStore;
@@ -239,6 +241,18 @@ public class AtengAiAutoConfiguration {
     }
 
     /**
+     * 自动装配 AI 双向内容安全护栏
+     *
+     * @param properties AI 根配置属性
+     * @return AiGuardrail 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(AiGuardrail.class)
+    public AiGuardrail aiGuardrail(AtengAiProperties properties) {
+        return new DefaultAiGuardrail(properties.getGuardrail());
+    }
+
+    /**
      * 自动装配 AI 核心命令式操作门面
      *
      * @param registry                     模型注册中心
@@ -246,6 +260,7 @@ public class AtengAiAutoConfiguration {
      * @param tenantModelResolverProvider   可选的多租户切源解析器
      * @param quotaCheckerProvider         可选的配额风控检查器
      * @param activeStreamRegistryProvider 可选的活跃流式并发注册表
+     * @param guardrailProvider            可选的双向内容安全护栏
      * @return AiTemplate 实例
      */
     @Bean
@@ -254,13 +269,15 @@ public class AtengAiAutoConfiguration {
                                  AtengAiProperties properties,
                                  ObjectProvider<AiTenantModelResolver> tenantModelResolverProvider,
                                  ObjectProvider<AiQuotaChecker> quotaCheckerProvider,
-                                 ObjectProvider<ActiveStreamRegistry> activeStreamRegistryProvider) {
+                                 ObjectProvider<ActiveStreamRegistry> activeStreamRegistryProvider,
+                                 ObjectProvider<AiGuardrail> guardrailProvider) {
         return new AiTemplate(
                 registry,
                 properties,
                 tenantModelResolverProvider.getIfAvailable(),
                 quotaCheckerProvider.getIfAvailable(),
-                activeStreamRegistryProvider.getIfAvailable()
+                activeStreamRegistryProvider.getIfAvailable(),
+                guardrailProvider.getIfAvailable()
         );
     }
 

@@ -263,7 +263,7 @@ class AiTemplateTest {
         List<ChatMessage> messages = List.of(UserMessage.from("底层测试"));
 
         aiTemplate.stream(messages, handler);
-        verify(defaultStreamingModel, times(1)).generate(eq(messages), eq(handler));
+        verify(defaultStreamingModel, times(1)).generate(eq(messages), any());
     }
 
     @Test
