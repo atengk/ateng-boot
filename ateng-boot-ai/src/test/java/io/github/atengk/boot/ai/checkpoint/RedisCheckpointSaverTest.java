@@ -130,12 +130,19 @@ class RedisCheckpointSaverTest {
         CheckpointDto dto1 = new CheckpointDto("cp-01", "node1", null, Map.of(), System.currentTimeMillis());
         CheckpointDto dto2 = new CheckpointDto("cp-02", "node2", null, Map.of(), System.currentTimeMillis());
 
-        when(valueOperations.get(KEY_PREFIX + "data:thread-400:cp-01")).thenReturn(JsonUtil.toJsonString(dto1));
-        when(valueOperations.get(KEY_PREFIX + "data:thread-400:cp-02")).thenReturn(JsonUtil.toJsonString(dto2));
+        List<String> expectedKeys = List.of(
+                KEY_PREFIX + "data:thread-400:cp-02",
+                KEY_PREFIX + "data:thread-400:cp-01"
+        );
+        when(valueOperations.multiGet(expectedKeys)).thenReturn(List.of(
+                JsonUtil.toJsonString(dto2),
+                JsonUtil.toJsonString(dto1)
+        ));
 
         Collection<Checkpoint> list = saver.list(config);
         assertThat(list).hasSize(2);
         assertThat(list.stream().map(Checkpoint::getId).toList()).containsExactly("cp-02", "cp-01");
+        verify(valueOperations).multiGet(expectedKeys);
     }
 
     @Test

@@ -248,12 +248,7 @@ public class GraphResumeTemplate {
                 updateValues.put("cancelReason", reason);
             }
 
-            RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
-            try {
-                workflow.getCompiledGraph().updateState(config, updateValues);
-            } catch (Exception e) {
-                log.warn("更新工作流 [{}] 取消状态失败: {}", workflowName, e.getMessage());
-            }
+            workflow.updateState(threadId, updateValues);
 
             log.info("会话 [{}] 认知状态图工作流已主动撤销 [reason={}]", threadId, reason);
             return new StateSnapshotVo(

@@ -87,7 +87,12 @@ public enum AiResultCode implements IResultCode {
     /**
      * 认知状态图工作流已被撤销，无法恢复执行
      */
-    AI_GRAPH_ALREADY_CANCELLED(61015, "认知状态图工作流已被撤销，无法恢复执行");
+    AI_GRAPH_ALREADY_CANCELLED(61015, "认知状态图工作流已被撤销，无法恢复执行"),
+
+    /**
+     * 认知状态图工作流执行或状态持久化失败
+     */
+    AI_GRAPH_EXECUTION_ERROR(61016, "认知状态图工作流执行或状态持久化失败");
 
     private final Integer code;
     private final String msg;

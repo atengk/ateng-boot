@@ -57,17 +57,24 @@ public class RedisCheckpointSaver implements GraphCheckpointSaver {
             return Collections.emptyList();
         }
 
-        List<Checkpoint> result = new ArrayList<>(ids.size());
-        for (String id : ids) {
-            String json = redisTemplate.opsForValue().get(dataKey(threadId, id));
+        List<String> keys = ids.stream().map(id -> dataKey(threadId, id)).toList();
+        List<String> jsonList = redisTemplate.opsForValue().multiGet(keys);
+        if (jsonList == null || jsonList.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<Checkpoint> result = new ArrayList<>(jsonList.size());
+        for (int i = 0; i < jsonList.size(); i++) {
+            String json = jsonList.get(i);
             if (json != null && !json.isBlank()) {
+                String id = (i < ids.size()) ? ids.get(i) : "unknown";
                 try {
                     CheckpointDto dto = JsonUtil.parseObject(json, CheckpointDto.class);
                     if (dto != null) {
                         result.add(dto.toCheckpoint());
                     }
                 } catch (Exception e) {
-                    log.warn("反序列化 Redis 检查点数据失败 [threadId={}, id={}]: {}", threadId, id, e.getMessage());
+                    log.warn("反序列化 Redis 检查点数据失败 [threadId={}, id={}]: {}", threadId, id, e.getMessage(), e);
                 }
             }
         }
@@ -100,7 +107,7 @@ public class RedisCheckpointSaver implements GraphCheckpointSaver {
             CheckpointDto dto = JsonUtil.parseObject(json, CheckpointDto.class);
             return Optional.ofNullable(dto != null ? dto.toCheckpoint() : null);
         } catch (Exception e) {
-            log.warn("反序列化 Redis 检查点数据失败 [threadId={}, id={}]: {}", threadId, targetId, e.getMessage());
+            log.warn("反序列化 Redis 检查点数据失败 [threadId={}, id={}]: {}", threadId, targetId, e.getMessage(), e);
             return Optional.empty();
         }
     }

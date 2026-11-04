@@ -6,7 +6,9 @@ import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.properties.AtengAiGraphProperties;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import org.bsc.langgraph4j.GraphStateException;
+import org.bsc.langgraph4j.RunnableConfig;
 import org.bsc.langgraph4j.StateGraph;
+import org.bsc.langgraph4j.checkpoint.Checkpoint;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -24,6 +26,11 @@ import static org.bsc.langgraph4j.StateGraph.END;
 import static org.bsc.langgraph4j.StateGraph.START;
 import static org.bsc.langgraph4j.action.AsyncEdgeAction.edge_async;
 import static org.bsc.langgraph4j.action.AsyncNodeAction.node_async;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * 认知状态图人机协作门面 GraphResumeTemplate 单元测试
@@ -189,5 +196,50 @@ class GraphResumeTemplateTest {
                 .isInstanceOf(AiException.class)
                 .satisfies(e -> assertThat(((AiException) e).getResultCode())
                         .isEqualTo(AiResultCode.AI_GRAPH_SNAPSHOT_NOT_FOUND));
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    @DisplayName("撤销工作流更新状态失败：抛出 AI_GRAPH_EXECUTION_ERROR 并保留因果链")
+    void testCancelStateUpdateFailureThrowsAiException() {
+        String threadId = "tx-fault-999";
+        GraphWorkflowRegistry mockRegistry = mock(GraphWorkflowRegistry.class);
+        GraphWorkflow mockWorkflow = mock(GraphWorkflow.class);
+        when(mockRegistry.getRequired("faultWorkflow")).thenReturn(mockWorkflow);
+        doThrow(new AiException(AiResultCode.AI_GRAPH_EXECUTION_ERROR,
+                "认知状态图 [faultWorkflow] 更新状态失败: Redis connection refused",
+                new RuntimeException("Redis connection refused")))
+                .when(mockWorkflow).updateState(eq(threadId), any());
+
+        MemoryCheckpointSaver cpSaver = new MemoryCheckpointSaver();
+        GraphResumeTemplate template = new GraphResumeTemplate(
+                mockRegistry,
+                cpSaver,
+                new AtengAiGraphProperties(),
+                new LocalGraphLockManager(),
+                null
+        );
+
+        RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+        Checkpoint cp = Checkpoint.builder()
+                .id("cp-fault")
+                .nodeId("humanApproval")
+                .nextNodeId("humanApproval")
+                .state(Map.of(
+                        TypedKey.WORKFLOW_NAME.name(), "faultWorkflow",
+                        TypedKey.STATUS.name(), WorkflowStatus.SUSPENDED.name()
+                ))
+                .build();
+        try {
+            cpSaver.put(config, cp);
+        } catch (Exception ignored) {
+        }
+
+        assertThatThrownBy(() -> template.cancel(threadId, "取消订单"))
+                .isInstanceOf(AiException.class)
+                .hasCauseInstanceOf(RuntimeException.class)
+                .hasMessageContaining("更新状态失败")
+                .satisfies(e -> assertThat(((AiException) e).getResultCode())
+                        .isEqualTo(AiResultCode.AI_GRAPH_EXECUTION_ERROR));
     }
 }

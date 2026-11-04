@@ -22,6 +22,7 @@ public class OrderReviewState extends BaseGraphState {
     public static final TypedKey<String> RISK_LEVEL = TypedKey.of("riskLevel", String.class);
     public static final TypedKey<Integer> DOC_RETRY_COUNT = TypedKey.of("docRetryCount", Integer.class);
     public static final TypedKey<String> ADDITIONAL_DOCS = TypedKey.of("additionalDocs", String.class);
+    public static final TypedKey<String> REMARKS = TypedKey.of("remarks", String.class);
     public static final TypedKey<String> FINAL_STATUS = TypedKey.of("finalStatus", String.class);
     public static final TypedKey<String> REASON = TypedKey.of("reason", String.class);
 

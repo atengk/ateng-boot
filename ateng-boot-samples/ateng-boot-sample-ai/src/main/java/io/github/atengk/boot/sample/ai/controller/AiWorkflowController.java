@@ -1,9 +1,9 @@
 package io.github.atengk.boot.sample.ai.controller;
 
+import io.github.atengk.boot.ai.exception.AiException;
+import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.graph.GraphResumeTemplate;
 import io.github.atengk.boot.ai.graph.StateSnapshotVo;
-import io.github.atengk.boot.ai.graph.TypedKey;
-import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.ai.dto.OrderReviewCancelRequest;
 import io.github.atengk.boot.sample.ai.dto.OrderReviewResumeRequest;
@@ -59,7 +59,7 @@ public class AiWorkflowController {
         initState.set(OrderReviewState.AMOUNT, request.getAmount());
         initState.set(OrderReviewState.CREDIT_SCORE, request.getCreditScore());
         if (request.getRemarks() != null && !request.getRemarks().isBlank()) {
-            initState.set(TypedKey.of("remarks", String.class), request.getRemarks());
+            initState.set(OrderReviewState.REMARKS, request.getRemarks());
         }
 
         StateSnapshotVo snapshot = orderReviewWorkflow.start(initState);
@@ -77,7 +77,8 @@ public class AiWorkflowController {
             @PathVariable("threadId") @NotBlank(message = "会话标识 threadId 不能为空") String threadId) {
         log.info("[WORKFLOW-HTTP] 查询工作流执行快照: threadId={}", threadId);
         StateSnapshotVo snapshot = graphResumeTemplate.getSnapshot(threadId)
-                .orElseThrow(() -> new BusinessException("未找到工作流会话 [" + threadId + "] 快照"));
+                .orElseThrow(() -> new AiException(AiResultCode.AI_GRAPH_SNAPSHOT_NOT_FOUND,
+                        "未找到工作流会话 [" + threadId + "] 快照"));
         return Result.success(snapshot);
     }
 

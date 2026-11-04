@@ -1,7 +1,9 @@
 package io.github.atengk.boot.ai.graph;
 
 import io.github.atengk.boot.ai.checkpoint.GraphCheckpointSaver;
+import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
+import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.core.util.IdUtil;
 import org.bsc.langgraph4j.CompileConfig;
 import org.bsc.langgraph4j.CompiledGraph;
@@ -166,6 +168,28 @@ public abstract class GraphWorkflow<S extends BaseGraphState> implements Initial
         } catch (Exception e) {
             log.error("认知状态图 [{}] 恢复执行异常 [threadId={}]: {}", workflowName, threadId, e.getMessage(), e);
             throw AiExceptionTranslator.translate("工作流 [" + workflowName + "] 恢复执行失败", e);
+        }
+    }
+
+    /**
+     * 更新指定会话的状态快照数据（不触发后续节点调度，常用于挂起态撤销或修正）
+     *
+     * @param threadId 会话线程标识
+     * @param updateValues 待更新的状态字典
+     */
+    public void updateState(String threadId, Map<String, Object> updateValues) {
+        Objects.requireNonNull(threadId, "threadId must not be null");
+        if (updateValues == null || updateValues.isEmpty()) {
+            return;
+        }
+        ensureCompiled();
+        RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+        try {
+            compiledGraph.updateState(config, updateValues);
+        } catch (Exception e) {
+            log.error("认知状态图 [{}] 更新状态异常 [threadId={}]: {}", workflowName, threadId, e.getMessage(), e);
+            throw new AiException(AiResultCode.AI_GRAPH_EXECUTION_ERROR,
+                    "认知状态图 [" + workflowName + "] 更新状态失败: " + e.getMessage(), e);
         }
     }
 

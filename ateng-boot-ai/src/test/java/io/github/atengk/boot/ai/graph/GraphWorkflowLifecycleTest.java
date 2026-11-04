@@ -177,4 +177,27 @@ class GraphWorkflowLifecycleTest {
                 .satisfies(e -> assertThat(((AiException) e).getResultCode())
                         .isEqualTo(AiResultCode.AI_GRAPH_WORKFLOW_NOT_FOUND));
     }
+
+    @Test
+    @DisplayName("测试状态更新原语 updateState：就地持久化状态字典且不触发后续节点推进")
+    void testUpdateStateSnapshot() {
+        String threadId = "order-tx-update-state-999";
+        OrderState initState = new OrderState(Map.of());
+        initState.set(OrderState.AMOUNT, new BigDecimal("8888"));
+
+        // 1. 触发挂起
+        workflow.start(threadId, initState);
+
+        // 2. 局部更新状态字典
+        workflow.updateState(threadId, Map.of(
+                TypedKey.STATUS.name(), WorkflowStatus.CANCELLED.name(),
+                "cancelReason", "系统风控阻断"
+        ));
+
+        // 3. 验证快照读取
+        Optional<StateSnapshotVo> snapshotOpt = workflow.getSnapshot(threadId);
+        assertThat(snapshotOpt).isPresent();
+        assertThat(snapshotOpt.get().status()).isEqualTo(WorkflowStatus.CANCELLED);
+        assertThat(snapshotOpt.get().state()).containsEntry("cancelReason", "系统风控阻断");
+    }
 }
