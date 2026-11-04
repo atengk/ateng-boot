@@ -43,11 +43,15 @@ public class MilvusEntityMetadata {
     private final String description;
     private final boolean enableDynamicField;
     private final int numShards;
+    private final long ttlSeconds;
+    private final boolean mmap;
+    private final int replicaNumber;
 
     private final FieldMetadata idField;
     private final FieldMetadata vectorField;
     private final List<FieldMetadata> vectorFields;
     private final FieldMetadata partitionKeyField;
+    private final FieldMetadata extraField;
     private final List<FieldMetadata> scalarFields;
     private final List<FieldMetadata> allFields;
 
@@ -63,6 +67,7 @@ public class MilvusEntityMetadata {
         private final boolean isPrimaryKey;
         private final boolean isPartitionKey;
         private final boolean isVector;
+        private final boolean isExtra;
         private final boolean autoId;
         private final int maxLength;
         private final int dimension;
@@ -133,11 +138,15 @@ public class MilvusEntityMetadata {
         String description = (collAnn != null) ? collAnn.description() : "";
         boolean enableDynamicField = (collAnn == null) || collAnn.enableDynamicField();
         int numShards = (collAnn != null) ? collAnn.numShards() : 1;
+        long ttlSeconds = (collAnn != null) ? collAnn.ttlSeconds() : 0L;
+        boolean mmap = (collAnn != null) && collAnn.mmap();
+        int replicaNumber = (collAnn != null && collAnn.replicaNumber() > 0) ? collAnn.replicaNumber() : 1;
 
         FieldMetadata idMetadata = null;
         FieldMetadata vectorMetadata = null;
         List<FieldMetadata> vectorFields = new ArrayList<>();
         FieldMetadata partitionKeyMetadata = null;
+        FieldMetadata extraMetadata = null;
         List<FieldMetadata> scalars = new ArrayList<>();
         List<FieldMetadata> all = new ArrayList<>();
 
@@ -232,6 +241,24 @@ public class MilvusEntityMetadata {
                         .build();
                 all.add(partitionKeyMetadata);
             } else {
+                boolean isExtraField = "extra".equalsIgnoreCase(field.getName()) && Map.class.isAssignableFrom(field.getType());
+                if (isExtraField) {
+                    extraMetadata = FieldMetadata.builder()
+                            .field(field)
+                            .fieldName(field.getName())
+                            .dataType(DataType.JSON)
+                            .isPrimaryKey(false)
+                            .isPartitionKey(false)
+                            .isVector(false)
+                            .isExtra(true)
+                            .autoId(false)
+                            .maxLength(0)
+                            .dimension(0)
+                            .description("动态扩展字段")
+                            .build();
+                    continue;
+                }
+
                 String name = (fieldAnn != null && !fieldAnn.name().isBlank()) ? fieldAnn.name().trim() : field.getName();
                 DataType dataType = inferDataType(field.getType(), fieldAnn != null ? fieldAnn.dataType() : DataType.None);
                 int maxLength = (fieldAnn != null) ? fieldAnn.maxLength() : 65535;
@@ -275,10 +302,14 @@ public class MilvusEntityMetadata {
                 .description(description)
                 .enableDynamicField(enableDynamicField)
                 .numShards(numShards)
+                .ttlSeconds(ttlSeconds)
+                .mmap(mmap)
+                .replicaNumber(replicaNumber)
                 .idField(idMetadata)
                 .vectorField(vectorMetadata)
                 .vectorFields(Collections.unmodifiableList(vectorFields))
                 .partitionKeyField(partitionKeyMetadata)
+                .extraField(extraMetadata)
                 .scalarFields(Collections.unmodifiableList(scalars))
                 .allFields(Collections.unmodifiableList(all))
                 .build();

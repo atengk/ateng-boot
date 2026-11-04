@@ -10,8 +10,10 @@ import org.springframework.util.Assert;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Milvus 实体、字典与 Gson JsonObject 之间的双向自适应转换工具
@@ -78,6 +80,23 @@ public final class MilvusEntityConverter {
                     jsonObject.add(milvusName, jsonObject.remove(javaName));
                 }
             }
+
+            // 动态字段安全兜底：若实体声明了 extra 字典，将其扁平化写入根级别，由 Milvus 动态字段 ($meta) 自动捕获
+            if (metadata.getExtraField() != null) {
+                String extraFieldName = metadata.getExtraField().getField().getName();
+                if (jsonObject.has(extraFieldName)) {
+                    JsonElement extraElement = jsonObject.remove(extraFieldName);
+                    if (extraElement != null && extraElement.isJsonObject()) {
+                        JsonObject extraObj = extraElement.getAsJsonObject();
+                        for (Map.Entry<String, JsonElement> entry : extraObj.entrySet()) {
+                            if (!jsonObject.has(entry.getKey())) {
+                                jsonObject.add(entry.getKey(), entry.getValue());
+                            }
+                        }
+                    }
+                }
+            }
+
             return jsonObject;
         } catch (Exception e) {
             throw new MilvusException("将实体转换为 JsonObject 失败: " + entity.getClass().getName(), e);
@@ -149,6 +168,26 @@ public final class MilvusEntityConverter {
                     copy.put(javaName, copy.get(milvusName));
                 }
             }
+
+            // 4. 动态字段安全兜底：收集未定义动态列回填至 extra 字典
+            if (metadata.getExtraField() != null) {
+                Set<String> declaredNames = new HashSet<>();
+                for (MilvusEntityMetadata.FieldMetadata f : metadata.getAllFields()) {
+                    declaredNames.add(f.getField().getName());
+                    declaredNames.add(f.getFieldName());
+                }
+                String extraFieldName = metadata.getExtraField().getField().getName();
+                declaredNames.add(extraFieldName);
+
+                Map<String, Object> extraMap = new HashMap<>();
+                for (Map.Entry<String, Object> entry : new HashMap<>(copy).entrySet()) {
+                    if (!declaredNames.contains(entry.getKey())) {
+                        extraMap.put(entry.getKey(), copy.remove(entry.getKey()));
+                    }
+                }
+                copy.put(extraFieldName, extraMap);
+            }
+
             return JsonUtil.convertValue(copy, entityClass);
         } catch (Exception e) {
             throw new MilvusException("将 Milvus 数据行反序列化为实体 [" + entityClass.getName() + "] 失败", e);

@@ -91,6 +91,11 @@ public class AtengMilvusProperties {
     private boolean autoCreatePartition = false;
 
     /**
+     * 是否启用多租户切库自动路由 (开启后根据 TenantContextHolder.getTenantId() 自动切入租户专属数据库)
+     */
+    private boolean tenantDatabaseRouting = false;
+
+    /**
      * 计算并获取有效的连接端点 URI
      *
      * @return 格式化后的 Milvus 连接 URI

@@ -36,4 +36,19 @@ public @interface MilvusCollection {
      * 分片数量 (默认为 1)
      */
     int numShards() default 1;
+
+    /**
+     * 集合数据物理存活时间 (秒，0 表示永不过期；大于 0 时自动在底层注入 collection.ttl.seconds)
+     */
+    long ttlSeconds() default 0;
+
+    /**
+     * 是否启用 MMap 内存映射存储 (开启后将标量与原始向量数据交换至本地磁盘，以降低物理内存成本)
+     */
+    boolean mmap() default false;
+
+    /**
+     * 集合加载至内存的服务副本数量 (默认 1，多副本可线性提升只读 QPS 并实现高可用负载均衡)
+     */
+    int replicaNumber() default 1;
 }

@@ -21,6 +21,7 @@ import io.milvus.orm.iterator.QueryIterator;
 import io.milvus.response.QueryResultsWrapper;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.common.IndexParam;
+import io.milvus.v2.service.collection.request.AlterCollectionReq;
 import io.milvus.v2.service.collection.request.CreateCollectionReq;
 import io.milvus.v2.service.collection.request.DescribeCollectionReq;
 import io.milvus.v2.service.collection.request.DropCollectionReq;
@@ -75,6 +76,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -211,7 +213,7 @@ public class MilvusTemplate {
     }
 
     /**
-     * 根据实体类注解自动推导并创建集合
+     * 根据实体类注解自动推导并创建集合 (若实体配置了 ttlSeconds 或 mmap 则自动注入对应属性)
      *
      * @param entityClass 实体类
      */
@@ -219,6 +221,46 @@ public class MilvusTemplate {
         Assert.notNull(entityClass, "entityClass must not be null");
         MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
         createCollection(metadata.toCreateCollectionReq());
+
+        Map<String, String> properties = new LinkedHashMap<>();
+        if (metadata.getTtlSeconds() > 0) {
+            properties.put("collection.ttl.seconds", String.valueOf(metadata.getTtlSeconds()));
+        }
+        if (metadata.isMmap()) {
+            properties.put("mmap.enabled", "true");
+        }
+        if (!properties.isEmpty()) {
+            alterCollection(metadata.getCollectionName(), properties);
+        }
+    }
+
+    /**
+     * 修改集合属性 (如配置 collection.ttl.seconds、mmap.enabled 等)
+     *
+     * @param collectionName 集合名称
+     * @param properties     集合属性键值对字典
+     */
+    public void alterCollection(String collectionName, Map<String, String> properties) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        Assert.notEmpty(properties, "properties must not be empty");
+        alterCollection(AlterCollectionReq.builder()
+                .collectionName(collectionName.trim())
+                .properties(properties)
+                .build());
+    }
+
+    /**
+     * 根据自定义请求修改集合配置
+     *
+     * @param request 修改集合请求
+     */
+    public void alterCollection(AlterCollectionReq request) {
+        Assert.notNull(request, "AlterCollectionReq must not be null");
+        Assert.hasText(request.getCollectionName(), "collectionName must not be empty");
+        execute("修改集合配置", c -> {
+            c.alterCollection(request);
+            return null;
+        });
     }
 
     /**
@@ -280,11 +322,24 @@ public class MilvusTemplate {
      * @param collectionName 集合名称
      */
     public void loadCollection(String collectionName) {
+        loadCollection(collectionName, null);
+    }
+
+    /**
+     * 将集合全量加载至内存以备检索 (支持指定服务副本数)
+     *
+     * @param collectionName 集合名称
+     * @param numReplicas    服务副本数 (可为 null)
+     */
+    public void loadCollection(String collectionName, Integer numReplicas) {
         Assert.hasText(collectionName, "collectionName must not be empty");
         execute("加载集合到内存", c -> {
-            c.loadCollection(LoadCollectionReq.builder()
-                    .collectionName(collectionName)
-                    .build());
+            LoadCollectionReq.LoadCollectionReqBuilder<?, ?> builder = LoadCollectionReq.builder()
+                    .collectionName(collectionName.trim());
+            if (numReplicas != null && numReplicas > 0) {
+                builder.numReplicas(numReplicas);
+            }
+            c.loadCollection(builder.build());
             return null;
         });
     }
@@ -595,10 +650,10 @@ public class MilvusTemplate {
         MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
         String collectionName = metadata.getCollectionName();
 
-        // 1. 若集合不存在则创建
+        // 1. 若集合不存在则创建 (自动完成 Schema 构建并注入 TTL / MMap 等集合属性)
         if (!hasCollection(collectionName)) {
             log.info("一键建表: 集合 [{}] 不存在，正在根据实体 [{}] 创建 Schema", collectionName, entityClass.getSimpleName());
-            createCollection(metadata.toCreateCollectionReq());
+            createCollection(entityClass);
         }
 
         // 2. 为所有声明的向量列原子化创建索引 (稠密 FloatVector / 稀疏 SparseFloatVector)
@@ -637,10 +692,11 @@ public class MilvusTemplate {
             }
         }
 
-        // 4. 若尚未加载至内存则预加载
+        // 4. 若尚未加载至内存则预加载 (根据实体声明指定 replicaNumber)
         if (!isCollectionLoaded(collectionName)) {
-            log.info("一键建表: 正在将集合 [{}] 加载至内存", collectionName);
-            loadCollection(collectionName);
+            int replicaNumber = metadata.getReplicaNumber() > 0 ? metadata.getReplicaNumber() : 1;
+            log.info("一键建表: 正在将集合 [{}] 加载至内存 (replicaNumber={})", collectionName, replicaNumber);
+            loadCollection(collectionName, replicaNumber);
         }
     }
 
@@ -2467,15 +2523,26 @@ public class MilvusTemplate {
     // =========================================================================
 
     /**
-     * 获取当前生效的逻辑数据库名称 (优先自 ThreadLocal 上下文提取，否则回退全局默认配置)
+     * 获取当前生效的逻辑数据库名称 (优先自 ThreadLocal 上下文提取，次选多租户切库自动路由，最后回退全局默认配置)
      *
      * @return 逻辑数据库名称
      */
     public String resolveCurrentDatabase() {
+        // 1. 显式指定的数据库上下文优先级最高
         String db = MilvusContextHolder.getDatabase();
         if (StringUtils.hasText(db)) {
             return db.trim();
         }
+
+        // 2. 多租户切库自动路由：当配置开启且存在租户上下文时，自动路由至租户专属数据库
+        if (properties.isTenantDatabaseRouting() && !TenantContextHolder.isIgnoreTenant()) {
+            String tenantId = TenantContextHolder.getTenantId();
+            if (StringUtils.hasText(tenantId)) {
+                return tenantId.trim();
+            }
+        }
+
+        // 3. 回退至默认配置数据库
         return properties.getDatabase();
     }
 
