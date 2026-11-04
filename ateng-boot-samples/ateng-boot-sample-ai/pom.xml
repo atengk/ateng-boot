@@ -29,6 +29,12 @@
             <artifactId>ateng-boot-ai</artifactId>
         </dependency>
 
+        <!-- Micrometer 核心度量 (用于 AI 黄金指标监控与探查) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+        </dependency>
+
         <!-- OkHttp MockWebServer (纯内存离线测试，版本由 Spring Boot 统管) -->
         <dependency>
             <groupId>com.squareup.okhttp3</groupId>

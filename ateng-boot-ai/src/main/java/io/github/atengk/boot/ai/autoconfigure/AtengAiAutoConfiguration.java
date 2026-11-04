@@ -36,6 +36,7 @@ import io.github.atengk.boot.ai.observability.AiAuditLogHandler;
 import io.github.atengk.boot.ai.observability.AtengAiObservabilityListener;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.quota.DefaultAiQuotaChecker;
+import io.github.atengk.boot.ai.quota.RedisAiQuotaChecker;
 import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
 import io.github.atengk.boot.ai.tenant.DefaultAiTenantModelResolver;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -181,17 +182,36 @@ public class AtengAiAutoConfiguration {
     }
 
     /**
-     * 自动装配 SaaS 多租户大模型调用配额风控检查器
-     *
-     * @param properties            AI 根配置属性
-     * @param redisTemplateProvider 可选的 Redis 模板提供者 (存在时自动激活分布式滑动窗口)
-     * @return AiQuotaChecker 实例
+     * Redis 分布式配额风控自动装配配置类（当 StringRedisTemplate 在类路径存在时生效）
      */
-    @Bean
-    @ConditionalOnMissingBean
-    public AiQuotaChecker aiQuotaChecker(AtengAiProperties properties,
-                                         ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
-        return new DefaultAiQuotaChecker(properties.getQuota(), redisTemplateProvider.getIfAvailable());
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "org.springframework.data.redis.core.StringRedisTemplate")
+    static class RedisQuotaConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(AiQuotaChecker.class)
+        public AiQuotaChecker redisAiQuotaChecker(AtengAiProperties properties,
+                                                  ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+            StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+            if (redisTemplate != null) {
+                return new RedisAiQuotaChecker(properties.getQuota(), redisTemplate);
+            }
+            return new DefaultAiQuotaChecker(properties.getQuota());
+        }
+    }
+
+    /**
+     * 单机内存配额风控兜底装配配置类（当未引入 Redis 或无 StringRedisTemplate 时保底装配）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnMissingBean(AiQuotaChecker.class)
+    static class InMemoryQuotaFallbackConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(AiQuotaChecker.class)
+        public AiQuotaChecker inMemoryAiQuotaChecker(AtengAiProperties properties) {
+            return new DefaultAiQuotaChecker(properties.getQuota());
+        }
     }
 
     /**
@@ -311,6 +331,7 @@ public class AtengAiAutoConfiguration {
     static class AiMetricsConfiguration {
 
         @Bean
+        @ConditionalOnMissingBean(name = "aiMetricsBinder")
         public SmartInitializingSingleton aiMetricsBinder(
                 ObjectProvider<AtengAiObservabilityListener> listenerProvider,
                 ObjectProvider<MeterRegistry> meterRegistryProvider) {

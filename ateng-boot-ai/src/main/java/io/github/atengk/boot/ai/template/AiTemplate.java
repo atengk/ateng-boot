@@ -558,7 +558,6 @@ public class AiTemplate {
         return FallbackTokenEstimator.estimateTokens(promptText);
     }
 
-    @SuppressWarnings("deprecation")
     private static String extractPromptText(List<ChatMessage> messages) {
         if (messages == null || messages.isEmpty()) {
             return "";
@@ -566,13 +565,23 @@ public class AiTemplate {
         return messages.stream()
                 .map(msg -> {
                     if (msg instanceof UserMessage um) {
-                        return um.singleText();
+                        if (um.hasSingleText()) {
+                            return um.singleText();
+                        }
+                        if (um.contents() != null) {
+                            return um.contents().stream()
+                                    .filter(c -> c instanceof dev.langchain4j.data.message.TextContent)
+                                    .map(c -> ((dev.langchain4j.data.message.TextContent) c).text())
+                                    .filter(Objects::nonNull)
+                                    .collect(Collectors.joining(" "));
+                        }
+                        return "";
                     } else if (msg instanceof SystemMessage sm) {
                         return sm.text();
                     } else if (msg instanceof AiMessage am) {
                         return am.text();
                     }
-                    return msg.text();
+                    return "";
                 })
                 .filter(Objects::nonNull)
                 .collect(Collectors.joining("\n"));

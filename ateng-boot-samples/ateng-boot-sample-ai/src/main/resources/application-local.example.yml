@@ -19,3 +19,23 @@ ateng:
           api-key: YOUR_DASHSCOPE_API_KEY
           model-name: qwen-plus
           timeout: 60s
+      # 全维可观测审计与 PII 脱敏配置
+      audit:
+        enabled: true
+        mask-pii: true
+        log-payload: true
+      # SaaS 多租户模型切源映射 (tenantId -> modelName)
+      tenant-models:
+        tenant-finance: reasoner
+        tenant-vip: qwen
+      # 多租户配额风控配置
+      quota:
+        enabled: true
+        daily-request-limit: 1000
+        daily-token-limit: 1000000
+        tenant-request-limits:
+          tenant-vip: 10000
+          tenant-free: 50
+        tenant-token-limits:
+          tenant-vip: 10000000
+          tenant-free: 50000

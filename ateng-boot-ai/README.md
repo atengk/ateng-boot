@@ -41,6 +41,14 @@
 | **多图动态注册中心** | 工作流单例受管统一纳管与调度 | `GraphWorkflowRegistry` | - | 容器启动时自动探测并收集所有 `GraphWorkflow` Bean，提供基于名字的动态查找、注册与枚举探测 | `GraphWorkflowRegistryTest` / `AtengAiGraphAutoConfigurationTest` |
 | **分布式租约锁管理器** | 高熵令牌校验与 Lua 释放防卫 | `GraphLockManager`<br>`LocalGraphLockManager`<br>`RedisGraphLockManager` | `ateng.boot.ai.graph.checkpoint.lock-prefix`<br>`ateng.boot.ai.graph.checkpoint.lock-ttl` | Redis Lua 脚本校验令牌匹配原子释放锁，杜绝超时误删他人有效锁，无 Redis 依赖时本地并发安全平滑降级 | `GraphResumeTemplateTest` |
 | **人机协作恢复门面** | 断点恢复、CAS 跃迁与工单撤销 | `GraphResumeTemplate` | `ateng.boot.ai.graph.*` | 提供 `getSnapshot` 快照探查、`resume` 同步恢复、`resumeAsync` 异步透传四维上下文与 `cancel` 工单主动撤销完备对称门面 | `GraphResumeTemplateTest` / `WorkflowControllerIntegrationTest` |
+| **链路可观测** | 全维请求监听与审计事件捕获 | `AtengAiObservabilityListener`<br>`AiAuditRecord`<br>`AiAuditLogHandler` | `ateng.boot.ai.audit.enabled`<br>`ateng.boot.ai.audit.log-payload`<br>`ateng.boot.ai.audit.max-payload-chars` | 注册为 `ChatModelListener`，透明监听同步与流式生命周期，捕获 Model、Tokens、耗时、状态，异步投递至受管线程池与 `AiAuditLogHandler` SPI | `AtengAiObservabilityListenerTest` / `MetricsControllerIntegrationTest` |
+| **安全脱敏** | 多维度敏感信息正则脱敏 | `AiPiiMasker` | `ateng.boot.ai.audit.mask-pii` | `mask(String)`，自动对手机号、身份证、银行卡、邮箱、API Key 凭据执行掩码打星号，保障“内存真明文”与落盘安全 | `AiPiiMaskerTest` |
+| **指标度量** | Micrometer 云原生三大黄金指标 | `MeterRegistry`<br>`AtengAiObservabilityListener` | - | 自动上报 `ateng.ai.requests.total` (Counter)、`ateng.ai.duration.seconds` (Timer)、`ateng.ai.tokens.total` (Counter, tag: type=prompt/completion)，支持 Prometheus/Grafana | `AtengAiObservabilityListenerTest` / `MetricsControllerIntegrationTest` |
+| **指标度量** | 流式 Token 统计保底启发式估算 | `FallbackTokenEstimator` | - | `estimateTokens(String)`，当流式大模型网关未返回 usage 元数据时，执行 `chinese * 1.5 + english words * 1.3` 保底估算，防御指标断崖 | `FallbackTokenEstimatorTest` / `MetricsControllerIntegrationTest` |
+| **链路可观测** | 客户端断开与系统异常精确解耦 | `AtengAiObservabilityListener` | - | 探测 `ClientAbortException` / `AsyncRequestTimeoutException` / `SocketException`，转译为 `status=CANCELLED`，区分业务中断与真实系统故障 | `AtengAiObservabilityListenerTest` |
+| **多租户治理** | 租户级动态模型路由解析 | `AiTenantModelResolver`<br>`DefaultAiTenantModelResolver` | `ateng.boot.ai.tenant-models.<tenantId>` | `resolveModelName(tenantId)`，从 `TenantContextHolder` 获取当前租户，命中映射自动重定向底层模型别名，未配置平滑回退默认模型 | `AiTenantModelResolverTest` / `AiTemplateTest` |
+| **多租户治理** | SaaS 租户日调用配额守卫与快速失败 | `AiQuotaChecker`<br>`DefaultAiQuotaChecker` | `ateng.boot.ai.quota.enabled`<br>`ateng.boot.ai.quota.default-daily-limit`<br>`ateng.boot.ai.quota.tenant-daily-limits.<tenantId>` | `checkQuota(tenantId)` / `recordUsage(tenantId, tokens)`，基于当日日期滑动计数，超额立即 Fail-Fast 抛出 `AI_QUOTA_EXCEEDED` 业务异常 | `DefaultAiQuotaCheckerTest` / `MetricsControllerIntegrationTest` |
+| **多租户治理** | 分布式 Redis 与并发内存双模配额自适应 | `DefaultAiQuotaChecker`<br>`RedisAiQuotaChecker` | `ateng.boot.ai.quota.key-prefix` | 检测到 Redis 时启用 `StringRedisTemplate` 原子计数并挂载 2 天 TTL 物理自毁；无 Redis 时无缝切换基于 `ConcurrentHashMap` 的单机滑动淘汰，防御内存无界膨胀 | `DefaultAiQuotaCheckerTest` |
 
 ---
 
@@ -824,7 +832,138 @@ public class AiWorkflowController {
 
 ---
 
-## 9. 完整 YAML 配置属性清单 (全量速查附录)
+## 9. 全维链路可观测审计、多租户动态切源与配额风控套件
+
+### 9.1 全维链路可观测监听器与 Micrometer 黄金指标矩阵
+
+`ateng-boot-ai` 深度集成 LangChain4j 标准 `ChatModelListener` 契约，自动装配 `AtengAiObservabilityListener`。无论是同步对话还是异步流式推流，监听器透明捕获调用生命周期，并向 Micrometer 注册云原生黄金指标矩阵，全面消除大模型运行黑盒。
+
+#### 核心 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      audit:
+        # 是否启用全维可观测审计 (默认 true)
+        enabled: true
+        # 是否在审计记录中记录提示词与大模型响应文本内容 (默认 true)
+        log-payload: true
+        # 审计日志载荷最大字符截断长度 (默认 1000 字符，防内存暴涨)
+        max-payload-chars: 1000
+        # 是否对审计记录中的手机号、身份证、银行卡等 PII 执行正则掩码脱敏 (默认 true)
+        mask-pii: true
+```
+
+#### 指标度量大盘矩阵 (Micrometer Metrics)
+| 指标名称 | 类型 | 维度标签 (Tags) | 说明 |
+| :--- | :--- | :--- | :--- |
+| `ateng.ai.requests.total` | Counter | `model`, `tenant_id`, `status` (`SUCCESS`, `ERROR`, `CANCELLED`) | 大模型调用总次数统计 |
+| `ateng.ai.duration.seconds` | Timer | `model`, `tenant_id` | 大模型单次请求全链路耗时与直方图 |
+| `ateng.ai.tokens.total` | Counter | `model`, `tenant_id`, `type` (`prompt`, `completion`) | 输入与输出 Token 消耗量统计 |
+
+#### 结构化审计扩展点 (AiAuditLogHandler SPI)
+若业务需要将审计事件写入 MySQL、Elasticsearch 或投递至 Kafka，仅需声明 `AiAuditLogHandler` Spring Bean：
+
+```java
+@Component
+public class DatabaseAiAuditLogHandler implements AiAuditLogHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(DatabaseAiAuditLogHandler.class);
+
+    @Override
+    public void onAudit(AiAuditRecord record) {
+        // 异步由 Core 受管线程池调度，安全落盘数据库或外部数据分析中心
+        log.info("保存大模型审计记录: traceId={}, tenantId={}, model={}, tokens={}, duration={}ms",
+                record.getTraceId(), record.getTenantId(), record.getModelName(),
+                record.getTotalTokens(), record.getDuration().toMillis());
+    }
+}
+```
+
+---
+
+### 9.2 PII 敏感信息脱敏与流式保底启发式 Token 估算器
+
+#### PII 正则敏感信息脱敏引擎 (`AiPiiMasker`)
+遵循 ADR-0012“内存真明文”铁律，业务对象与提示词在内存中始终保持 100% 原始真实明文，仅在审计记录生成时调用 `AiPiiMasker.mask(text)` 执行安全脱敏：
+- **手机号**：前 3 后 4 保留，如 `138****1234`；
+- **18 位身份证**：前 6 后 4 保留，如 `110101********1234`；
+- **银行卡号**：前 6 后 4 保留，如 `622202******1234`；
+- **电子邮箱**：保留首字符与域名，如 `u***@example.com`；
+- **API Key 凭据**：`sk-` 凭据前 3 后 4 保留，如 `sk-abc****xyz1`。
+
+#### 流式保底启发式 Token 估算器 (`FallbackTokenEstimator`)
+在 SSE 流式推流场景下，部分网关未返回实际 `TokenUsage` 时，框架自动调用纯函数启发式估算器：
+$$\text{Token 预估} = \lceil\text{中文字符数} \times 1.5 + \text{英文单词数} \times 1.3 + \text{其他符号数}\rceil$$
+彻底避免指标断崖式归零，保障多租户用量核算的连续性。
+
+---
+
+### 9.3 客户端网络抖动与异常中断解耦机制
+
+用户在浏览器端关闭标签页、取消推流或移动端断网会触发 `ClientAbortException`、`AsyncRequestTimeoutException` 或 `SocketException`。框架在异常链中递归探测并自动转译为 `status=CANCELLED` 正常归档：
+- 仅输出 WARN 级轻量摘要日志，严禁打印巨幅错误堆栈；
+- 在 Prometheus 指标大盘中标记为 `status=CANCELLED`，坚决排除出 500 系统故障告警统计，防止报警风暴。
+
+---
+
+### 9.4 SaaS 多租户动态切源与平滑回退解析
+
+#### 核心 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      # 多租户模型别名映射拓扑 (tenantId -> modelName)
+      tenant-models:
+        tenant-vip: reasoner      # VIP 租户路由至 deepseek-reasoner
+        tenant-finance: qwen       # 金融租户路由至通义千问专网模型
+```
+
+#### 机制说明
+业务通过 `AiTemplate` 发起对话或通过 `@AiAgent` 调用时，框架自动从 Core 模块 `TenantContextHolder` 获取当前请求的租户标识：
+1. 命中 `tenant-models` 映射时，底层自动透明重定向至目标模型实例；
+2. 未配置或租户为空时，自动平滑回退至主默认模型（`ateng.boot.ai.model`）；
+3. 开发者可通过声明自定义 `AiTenantModelResolver` Bean 完全接管路由策略。
+
+---
+
+### 9.5 SaaS 多租户调用配额风控与双模自适应滑动窗口
+
+#### 核心 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      quota:
+        # 是否启用多租户配额风控守卫 (默认 true)
+        enabled: true
+        # 默认租户单日调用次数上限 (0 表示无限制)
+        default-daily-limit: 1000
+        # 默认租户单日 Token 消耗上限 (0 表示无限制)
+        default-daily-token-limit: 500000
+        # 专有租户单日调用次数上限映射
+        tenant-daily-limits:
+          tenant-free: 50
+          tenant-standard: 500
+        # 专有租户单日 Token 消耗上限映射
+        tenant-daily-token-limits:
+          tenant-free: 50000
+          tenant-standard: 200000
+        # Redis 存储键前缀 (默认 "ateng:ai:quota:")
+        key-prefix: "ateng:ai:quota:"
+```
+
+#### 架构与熔断机制
+- **前置 Fail-Fast 阻断**：在发起大模型远程网络交互前，配额守卫前置比对当前租户当日累计消耗量与本次预估输入 Token。凡超额即刻抛出强类型业务异常 `AiException(AiResultCode.AI_QUOTA_EXCEEDED)`，零网络 IO 开销；
+- **双模自适应存储**：
+  - **Redis 分布式集群模式**（引入 Redis 时）：依托 `StringRedisTemplate` 原子 `INCRBY` 计数，自动挂载 2 天滑动 TTL 物理自毁，支持高并发集群共享状态；
+  - **单机并发内存模式**（未引入 Redis 时）：基于 `ConcurrentHashMap` 与跨天原子滑动淘汰设计，保证本地单机开发与无外部中间件环境下 100% 离线自洽，防御无界内存泄漏；
+- **平台特权豁免**：在系统定时任务、超管后台等特殊操作中，可调用 `TenantContextHolder.setIgnoreTenant(true)` 声明式跳过配额风控防卫。
+
+---
+
+## 10. 完整 YAML 配置属性清单 (全量速查附录)
 
 ```yaml
 ateng:
@@ -858,7 +997,42 @@ ateng:
         # 自定义附加 HTTP 请求头 (可选，如特定网关鉴权标头)
         custom-headers:
           X-Tenant-Id: "10001"
-      
+
+      # 全维链路可观测与审计日志配置
+      audit:
+        # 是否启用全维可观测审计监听器 (默认 true)
+        enabled: true
+        # 是否记录提示词与模型响应文本载荷 (默认 true)
+        log-payload: true
+        # 载荷文本最大截断字符长度 (默认 1000)
+        max-payload-chars: 1000
+        # 是否对手机号/身份证/银行卡/邮箱等 PII 敏感信息执行正则掩码脱敏 (默认 true)
+        mask-pii: true
+
+      # SaaS 多租户动态切源拓扑映射 (Map<String, String>: tenantId -> modelName)
+      tenant-models:
+        tenant-vip: reasoner
+        tenant-finance: qwen
+
+      # SaaS 多租户配额风控治理配置
+      quota:
+        # 是否启用多租户配额风控守卫 (默认 true)
+        enabled: true
+        # 默认租户单日调用次数上限 (0 表示无限制)
+        default-daily-limit: 1000
+        # 默认租户单日 Token 消耗上限 (0 表示无限制)
+        default-daily-token-limit: 500000
+        # 专有租户单日调用次数上限映射
+        tenant-daily-limits:
+          tenant-free: 50
+          tenant-standard: 500
+        # 专有租户单日 Token 消耗上限映射
+        tenant-daily-token-limits:
+          tenant-free: 50000
+          tenant-standard: 200000
+        # Redis 存储键前缀 (默认 "ateng:ai:quota:")
+        key-prefix: "ateng:ai:quota:"
+
       # 会话记忆治理强类型配置
       chat-memory:
         # 是否启用会话记忆治理 (默认 true)

@@ -160,7 +160,7 @@ class DefaultAiQuotaCheckerTest {
         Instant day2 = Instant.parse("2026-11-05T10:00:00Z");
 
         MutableClock clock = new MutableClock(day1, ZoneId.of("UTC"));
-        DefaultAiQuotaChecker checker = new DefaultAiQuotaChecker(properties, null, clock);
+        DefaultAiQuotaChecker checker = new DefaultAiQuotaChecker(properties, clock);
 
         // Day 1: 消耗完配额
         checker.recordUsage("tenant-01", "model", 10);
@@ -199,7 +199,7 @@ class DefaultAiQuotaCheckerTest {
         ValueOperations<String, String> valueOps = Mockito.mock(ValueOperations.class);
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
 
-        DefaultAiQuotaChecker checker = new DefaultAiQuotaChecker(properties, redisTemplate);
+        DefaultAiQuotaChecker checker = new RedisAiQuotaChecker(properties, redisTemplate);
         assertThat(checker.isRedisMode()).isTrue();
 
         // 模拟 Redis 当前返回调用次数 2 次
@@ -228,7 +228,7 @@ class DefaultAiQuotaCheckerTest {
         StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
         when(redisTemplate.opsForValue()).thenThrow(new RuntimeException("Redis connection refused"));
 
-        DefaultAiQuotaChecker checker = new DefaultAiQuotaChecker(properties, redisTemplate);
+        DefaultAiQuotaChecker checker = new RedisAiQuotaChecker(properties, redisTemplate);
 
         // Redis 异常降级至内存计数，依然成功完成记录并在第 2 次触发超额
         checker.recordUsage("tenant-01", "model", 10);
