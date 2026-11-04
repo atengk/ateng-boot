@@ -48,7 +48,7 @@
 | **操作审计契约** | 操作日志模型与操作动作枚举 | `OperateLogModel`, `OperateTypeEnum` | - | `OperateLogModel.builder()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)`, `OperateTypeEnum.fromValue(val)` | `OperateLogModelTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **进程内滑动窗口流控** | 高性能单机内存滑动窗口限流器 | `SlidingWindowCounter` | - | `SlidingWindowCounter(duration, sliceCount)`, `incrementAndGet(delta)`, `tryAcquire(delta, threshold)`, `getCount()`, `reset()` (基于环形时间切片，零外部中间件平滑限流与防刷) | `SlidingWindowCounterTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **纳秒级任务秒表** | 阶梯多任务秒表与函数剖析门面 | `StopWatch` | - | `new StopWatch(id)`, `start(taskName)`, `stop()`, `getTotalTimeMillis()`, `prettyPrint()`, `measureMillis(runnable)`, `measure(supplier)` | `StopWatchTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **网络通信地址工具** | 强化物理网卡 IPv4 探测与端口可用性校验 | `NetUtil` | - | `NetUtil.getLocalIpv4()` 强化物理网卡 IPv4 探测（优先过滤 Docker/K8s/vEthernet/WSL 等虚拟网卡与回环，自适应保底）, `isPortAvailable(port)` / `isUsableLocalPort(...)`, `findAvailablePort(min, max)`, `isReachable(...)` / `canConnect(...)` | `NetUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreSystemScenarioServiceTest.java` |
+| **网络通信地址工具** | 内核路由嗅探、虚拟网卡全景过滤与端口校验 | `NetUtil`, `NetProperties` | `ateng.boot.core.net.preferred-ip`, `ateng.boot.core.net.preferred-networks`, `ateng.boot.core.net.ignored-interfaces` | `NetUtil.getLocalIpv4()` 智能解析本机最佳内网 IPv4（五级决策链：固定 IP -> 首选网段 -> OS 内核路由探测 -> 物理网卡黑名单过滤 -> 兜底）, `isPortAvailable(port)` / `isUsableLocalPort(...)`, `findAvailablePort(min, max)`, `isReachable(...)` / `canConnect(...)` | `NetUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreSystemScenarioServiceTest.java` |
 | **安全类型转换** | 纯原生强类型安全转换与保底默认值 | `ConvertUtil` | - | `ConvertUtil.toLong(obj, defaultVal)`, `toInt(obj, defaultVal)`, `toBoolean(obj, defaultVal)`, `toBigDecimal(obj, defaultVal)`, `toList(obj)` / `toList(obj, type)` (彻底杜绝 NPE 与 ClassCastException) | `ConvertUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **异常分析与堆栈截断** | 因果链深度分析与有界堆栈序列化 | `ExceptionUtil` | - | `ExceptionUtil.getRootCause(throwable)` (内置循环依赖防护), `getMessage(throwable)`, `stackTraceToString(throwable, maxLen)` (防日志/数据库撑爆优雅截断) | `ExceptionUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **通用字符串算法** | 高性能占位符替换、驼峰下划线互转与安全截断 | `StringUtil` | - | `StringUtil.format(template, args)`, `toCamelCase(str)`, `toUnderlineCase(str)`, `containsAny(...)`, `containsIgnoreCase(...)`, `truncate(...)`, `mask(...)` | `StringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
@@ -1163,9 +1163,15 @@ log.info("查询耗时: {} ms, 用户: {}", result.right(), result.left().getNam
 ### 17. 网络通信地址探测与端口工具 (`NetUtil`)
 
 #### 场景痛点与特性
-服务节点注册、全链路日志、告警通知中常需获取当前机器内网真实 IP。直接调用 `InetAddress.getLocalHost()` 在多网卡、Docker 容器或虚拟网卡（VMware/VirtualBox）环境下常被解析为 `127.0.0.1` 或无意义内网 IP；同时在本地动态绑定端口时缺乏可用端口探测防护。
-`NetUtil` 提供纯原生网络与通信门面：
-- **智能遍历多物理网卡**：`getLocalIpv4()` 遍历系统物理网卡，自动过滤回环、未激活网卡与常见虚拟网卡，优先获取 SiteLocal 私有局域网真实 IPv4（如 `192.168.x.x` 或 `10.x.x.x`），探测失败保底返回 `127.0.0.1`；
+服务节点注册、全链路日志、告警通知中常需获取当前机器内网真实 IP。直接调用 `InetAddress.getLocalHost()` 在多网卡、Docker 容器、VPN 代理或虚拟网卡（VirtualBox / VMware / Hyper-V）环境下常被解析为 `127.0.0.1` 或虚拟网段 IP（如 `192.168.157.1`）；同时在本地动态绑定端口时缺乏可用端口探测防护。
+`NetUtil` 提供纯原生网络与通信门面，执行工业级五级决策链：
+- **五级 IP 决策链**：
+  1. **首选固定 IP（逃生舱）**：最高优先级采用 `preferred-ip`（支持配置/系统属性/环境变量）；
+  2. **首选网段匹配**：支持通配符（`192.168.3.*`）与 CIDR 掩码（`192.168.3.0/24`）匹配非忽略物理网卡；
+  3. **OS 内核路由探测（UDP Socket Dummy Probe）**：通过无开销内核 UDP 连接提取操作系统默认网关物理出口 IP，0 网络 IO，防卫忽略网卡；
+  4. **全景黑名单物理网卡枚举**：全面过滤 VirtualBox、VMware、Hyper-V、WSL、Docker、VPN、抓包（Npcap）及中文“虚拟”等网卡，优先获取 SiteLocal 私网 IPv4；
+  5. **保底降级**：非回环 IPv4 降级，最终兜底 `127.0.0.1`。
+- **配置与排除无缝桥接**：支持通过 `application.yml`（`ateng.boot.core.net.*`）声明首选网段与 `ignored-interfaces` 自定义排除网卡，启动期由 `SystemEnvironmentPostProcessor` 自动同步并刷新缓存；
 - **本地端口安全探测**：`isUsableLocalPort(port)` 探查指定端口是否空闲未被占用；`findAvailablePort(min, max)` 在区间内快速探测并返回一个可用端口；
 - **远程服务连通性探针**：`canConnect(host, port, timeoutMillis)` 快速探测远程 Socket 连通性，防止网络不可达引发线程阻塞。
 
@@ -1173,8 +1179,8 @@ log.info("查询耗时: {} ms, 用户: {}", result.right(), result.left().getNam
 ```java
 import io.github.atengk.boot.core.util.NetUtil;
 
-// 1. 获取本机真实内网非回环 IPv4
-String localIp = NetUtil.getLocalIpv4(); // 如 "192.168.3.6"
+// 1. 获取本机真实内网物理 IPv4（智能绕过 VirtualBox/VMware/VPN 虚拟网卡）
+String localIp = NetUtil.getLocalIpv4(); // 如 "192.168.3.41"
 
 // 2. 本地端口状态校验与可用端口搜索
 boolean isPortFree = NetUtil.isUsableLocalPort(8080);
@@ -1182,6 +1188,23 @@ int freePort = NetUtil.findAvailablePort(9000, 9100);
 
 // 3. 远程网络探针
 boolean ping = NetUtil.canConnect("192.168.3.1", 3306, 200);
+```
+
+#### YAML 配置示例
+```yaml
+ateng:
+  boot:
+    core:
+      net:
+        # 首选固定 IP（逃生舱模式，默认空）
+        preferred-ip: ""
+        # 首选网段列表（支持通配符或 CIDR 掩码）
+        preferred-networks:
+          - "192.168.3.*"
+        # 自定义排除网卡名称列表（支持通配符 * 或正则）
+        ignored-interfaces:
+          - "VirtualBox.*"
+          - "Sangfor.*"
 ```
 
 ### 18. 纯原生强类型安全转换门面 (`ConvertUtil`)
@@ -1810,6 +1833,17 @@ ateng:
         default-max-capacity: 1024
         # LRU 缓存默认条目存活时间 TTL（默认 30m）
         default-ttl: 30m
+      # 网络通信与网卡探测配置 (NetProperties)
+      net:
+        # 首选固定 IP（逃生舱模式，默认空）
+        preferred-ip: ""
+        # 首选网段列表（支持通配符如 192.168.3.* 或 CIDR 格式如 192.168.3.0/24）
+        preferred-networks:
+          - "192.168.3.*"
+        # 自定义排除网卡名称列表（支持通配符如 VirtualBox.* 或正则，同时匹配逻辑名与显示名）
+        ignored-interfaces:
+          - "VirtualBox.*"
+          - "Sangfor.*"
 
     # ==================== 1. 全局默认主线程池配置 (taskExecutor) ====================
     async:

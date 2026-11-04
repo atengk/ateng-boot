@@ -1,5 +1,6 @@
 package io.github.atengk.boot.core.env;
 
+import io.github.atengk.boot.core.util.NetUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -44,6 +45,7 @@ class SystemEnvironmentPostProcessorTest {
 
     @AfterEach
     void tearDown() {
+        NetUtil.resetConfiguration();
         TimeZone.setDefault(originalTimeZone);
         restoreProperty("user.timezone", originalUserTimezone);
         restoreProperty("file.encoding", originalFileEncoding);
@@ -120,5 +122,21 @@ class SystemEnvironmentPostProcessorTest {
 
         assertThat(TimeZone.getDefault().getID()).isEqualTo("GMT");
         assertThat(environment.getPropertySources().contains(SystemEnvironmentPostProcessor.PROPERTY_SOURCE_NAME)).isFalse();
+    }
+
+    @Test
+    @DisplayName("环境后处理器自动绑定 ateng.boot.core.net 配置并无缝同步至 NetUtil")
+    void shouldBindAndApplyNetworkConfiguration() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setProperty("ateng.boot.core.net.preferred-ip", "10.99.88.77");
+        environment.setProperty("ateng.boot.core.net.preferred-networks", "10.99.*, 192.168.1.0/24");
+        environment.setProperty("ateng.boot.core.net.ignored-interfaces", "VirtualBox.*, Sangfor.*");
+
+        processor.postProcessEnvironment(environment, application);
+
+        assertThat(NetUtil.getEffectivePreferredIp()).isEqualTo("10.99.88.77");
+        assertThat(NetUtil.getEffectivePreferredNetworks()).containsExactly("10.99.*", "192.168.1.0/24");
+        assertThat(NetUtil.getEffectiveIgnoredInterfaces()).containsExactly("VirtualBox.*", "Sangfor.*");
+        assertThat(NetUtil.getLocalIpv4()).isEqualTo("10.99.88.77");
     }
 }

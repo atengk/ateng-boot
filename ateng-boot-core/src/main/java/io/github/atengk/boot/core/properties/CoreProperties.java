@@ -60,6 +60,12 @@ public class CoreProperties {
     private SlowAlertProperties slowAlert = new SlowAlertProperties();
 
     /**
+     * 网络通信与网卡探测配置
+     */
+    @NestedConfigurationProperty
+    private NetProperties net = new NetProperties();
+
+    /**
      * 获取有效的时钟回拨容忍时长
      * 优先采用 snowflake.clockBackoffTolerance，若未指定则回退到顶层 clockBackoffTolerance
      *

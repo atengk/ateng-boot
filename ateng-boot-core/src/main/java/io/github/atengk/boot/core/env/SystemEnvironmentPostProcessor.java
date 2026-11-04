@@ -1,6 +1,9 @@
 package io.github.atengk.boot.core.env;
 
+import io.github.atengk.boot.core.properties.NetProperties;
+import io.github.atengk.boot.core.util.NetUtil;
 import org.springframework.boot.SpringApplication;
+import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.env.EnvironmentPostProcessor;
 import org.springframework.core.Ordered;
 import org.springframework.core.env.ConfigurableEnvironment;
@@ -83,6 +86,29 @@ public class SystemEnvironmentPostProcessor implements EnvironmentPostProcessor,
             defaults.put("ateng.boot.core.system.timezone", timezone);
             defaults.put("user.timezone", timezone);
             environment.getPropertySources().addLast(new MapPropertySource(PROPERTY_SOURCE_NAME, defaults));
+        }
+
+        // 6. 绑定网络通信与网卡探测配置并同步至 NetUtil，同时强制刷新 IP 静态缓存
+        applyNetworkConfiguration(environment);
+    }
+
+    /**
+     * 绑定网络通信配置并同步至 NetUtil
+     *
+     * @param environment Spring 运行环境
+     */
+    private void applyNetworkConfiguration(ConfigurableEnvironment environment) {
+        try {
+            NetProperties netProperties = Binder.get(environment)
+                    .bind("ateng.boot.core.net", NetProperties.class)
+                    .orElseGet(NetProperties::new);
+            NetUtil.configure(
+                    netProperties.getPreferredIp(),
+                    netProperties.getPreferredNetworks(),
+                    netProperties.getIgnoredInterfaces()
+            );
+        } catch (Throwable ignored) {
+            // 防御配置绑定异常
         }
     }
 
