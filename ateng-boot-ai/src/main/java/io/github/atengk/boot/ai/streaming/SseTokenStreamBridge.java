@@ -32,6 +32,7 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
     private final ActiveStreamRegistry streamRegistry;
     private final ReasonerTokenExtractor extractor;
     private final AtomicBoolean completed = new AtomicBoolean(false);
+    private final AtomicBoolean normalCompleted = new AtomicBoolean(false);
     private final AsyncContext.ContextSnapshot contextSnapshot;
 
     public SseTokenStreamBridge(SseEmitter emitter) {
@@ -48,7 +49,11 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
         // 注册连接回调，防止客户端主动断连时出现句柄泄漏并立即物理切断底层 OkHttp 物理连接
         this.emitter.onCompletion(() -> {
             completed.set(true);
-            cancelStreamPhysically();
+            if (normalCompleted.get()) {
+                cleanupStreamSafely();
+            } else {
+                cancelStreamPhysically();
+            }
         });
         this.emitter.onTimeout(() -> {
             log.warn("SSE 连接响应超时，主动关闭推流管道并切断物理连接 [streamId={}]", this.streamId);
@@ -132,6 +137,7 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
             sendEvent("done", "[DONE]");
 
             // 3. 闭合 HTTP SSE 连接管道并清理注册表
+            normalCompleted.set(true);
             closeSafely();
             cleanupStreamSafely();
         });

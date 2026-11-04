@@ -1041,6 +1041,16 @@ public class AiTemplate {
                 delegate.onError(new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, postResult.getReason()));
                 return;
             }
+            if (postResult.getAction() == GuardrailAction.REPLACE) {
+                String safeText = postResult.getSafeContent();
+                Response<AiMessage> sanitizedResponse = Response.from(
+                        AiMessage.from(safeText != null ? safeText : ""),
+                        response != null ? response.tokenUsage() : null,
+                        response != null ? response.finishReason() : null
+                );
+                delegate.onComplete(sanitizedResponse);
+                return;
+            }
             delegate.onComplete(response);
         }
 

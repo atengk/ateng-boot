@@ -5,11 +5,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -43,11 +42,13 @@ class StreamCancellationInterceptorTest {
         Interceptor.Chain chain = mock(Interceptor.Chain.class);
         Call call = mock(Call.class);
         Request request = new Request.Builder().url("https://api.openai.com/v1/chat/completions").build();
+        ResponseBody responseBody = ResponseBody.create("data: hello", MediaType.get("text/event-stream"));
         Response response = new Response.Builder()
                 .request(request)
                 .protocol(Protocol.HTTP_1_1)
                 .code(200)
                 .message("OK")
+                .body(responseBody)
                 .build();
 
         when(chain.call()).thenReturn(call);
@@ -62,9 +63,13 @@ class StreamCancellationInterceptorTest {
 
         Response actualResponse = interceptor.intercept(chain);
 
-        assertThat(actualResponse).isSameAs(response);
+        assertThat(actualResponse).isNotNull();
         assertThat(wasActiveDuringCall.get()).isTrue();
-        // 请求结束后自动注销
+        // 关键断言：推流长连接未关闭前，注册表中必须保持活跃，以支持后续任意时刻客户端断连中断
+        assertThat(registry.isActive("stream-ctx-101")).isTrue();
+
+        // 模拟推流结束，OkHttp 响应流关闭，此时确定性自动注销排空
+        actualResponse.close();
         assertThat(registry.isActive("stream-ctx-101")).isFalse();
     }
 
@@ -80,11 +85,13 @@ class StreamCancellationInterceptorTest {
                 .url("https://api.openai.com/v1/chat/completions")
                 .header(StreamCancellationInterceptor.HEADER_STREAM_ID, "stream-header-202")
                 .build();
+        ResponseBody responseBody = ResponseBody.create("data: hello", MediaType.get("text/event-stream"));
         Response response = new Response.Builder()
                 .request(request)
                 .protocol(Protocol.HTTP_1_1)
                 .code(200)
                 .message("OK")
+                .body(responseBody)
                 .build();
 
         when(chain.call()).thenReturn(call);
@@ -96,9 +103,14 @@ class StreamCancellationInterceptorTest {
             return response;
         });
 
-        interceptor.intercept(chain);
+        Response actualResponse = interceptor.intercept(chain);
 
         assertThat(wasActiveDuringCall.get()).isTrue();
+        // 长连接未关闭前保持活跃
+        assertThat(registry.isActive("stream-header-202")).isTrue();
+
+        // 响应流关闭后注销排空
+        actualResponse.close();
         assertThat(registry.isActive("stream-header-202")).isFalse();
     }
 
@@ -161,8 +173,13 @@ class StreamCancellationInterceptorTest {
     @Test
     @DisplayName("StreamPropagatingExecutorService 跨线程透传 streamId 上下文")
     void testStreamPropagatingExecutorService() throws Exception {
-        ExecutorService singleThreadExecutor = Executors.newSingleThreadExecutor();
-        StreamPropagatingExecutorService propagatingExecutor = new StreamPropagatingExecutorService(singleThreadExecutor);
+        ThreadPoolTaskExecutor taskExecutor = new ThreadPoolTaskExecutor();
+        taskExecutor.setCorePoolSize(1);
+        taskExecutor.setMaxPoolSize(1);
+        taskExecutor.setThreadNamePrefix("test-stream-");
+        taskExecutor.initialize();
+
+        StreamPropagatingExecutorService propagatingExecutor = new StreamPropagatingExecutorService(taskExecutor.getThreadPoolExecutor());
 
         try {
             StreamContextHolder.setStreamId("stream-thread-505");
@@ -179,6 +196,7 @@ class StreamCancellationInterceptorTest {
             assertThat(workerStreamId.get()).isEqualTo("stream-thread-505");
         } finally {
             propagatingExecutor.shutdown();
+            taskExecutor.shutdown();
         }
     }
 }

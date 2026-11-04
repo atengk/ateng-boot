@@ -2,8 +2,11 @@ package io.github.atengk.boot.ai.streaming;
 
 import okhttp3.Call;
 import okhttp3.Interceptor;
+import okhttp3.MediaType;
 import okhttp3.Request;
 import okhttp3.Response;
+import okhttp3.ResponseBody;
+import okio.BufferedSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -44,24 +47,67 @@ public class StreamCancellationInterceptor implements Interceptor {
         String streamId = resolveStreamId(request);
 
         if (StringUtils.hasText(streamId)) {
+            // 确保请求头携带流式标识，以便后续生命周期事件监听器跨线程准确识别
+            if (request.header(HEADER_STREAM_ID) == null) {
+                request = request.newBuilder().header(HEADER_STREAM_ID, streamId).build();
+            }
+
             registry.register(streamId, () -> {
                 log.info("收到流式连接中断信号，物理切断底层 OkHttp 套接字 [streamId={}]", streamId);
                 call.cancel();
             });
         }
 
+        Response response;
         try {
-            return chain.proceed(request);
+            response = chain.proceed(request);
         } catch (IOException ex) {
             if (call.isCanceled()) {
                 log.info("流式推流 OkHttp 物理连接已成功切断并安全排空 [streamId={}]", streamId);
             }
-            throw ex;
-        } finally {
             if (StringUtils.hasText(streamId)) {
                 registry.unregister(streamId);
             }
+            throw ex;
         }
+
+        // 2. 长连接生命周期守护：HTTP Headers 返回后正文才开始流式推流，
+        // 绝不能在 intercept() 结束时注销；通过包装 ResponseBody 在响应流闭合 (close) 时确定性执行注销
+        if (StringUtils.hasText(streamId)) {
+            if (response.body() != null) {
+                ResponseBody originalBody = response.body();
+                ResponseBody wrappedBody = new ResponseBody() {
+                    @Override
+                    public MediaType contentType() {
+                        return originalBody.contentType();
+                    }
+
+                    @Override
+                    public long contentLength() {
+                        return originalBody.contentLength();
+                    }
+
+                    @Override
+                    public BufferedSource source() {
+                        return originalBody.source();
+                    }
+
+                    @Override
+                    public void close() {
+                        try {
+                            originalBody.close();
+                        } finally {
+                            registry.unregister(streamId);
+                        }
+                    }
+                };
+                return response.newBuilder().body(wrappedBody).build();
+            } else {
+                registry.unregister(streamId);
+            }
+        }
+
+        return response;
     }
 
     private String resolveStreamId(Request request) {

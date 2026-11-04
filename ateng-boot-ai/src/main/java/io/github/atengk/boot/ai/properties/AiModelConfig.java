@@ -18,6 +18,11 @@ import java.util.Map;
 public class AiModelConfig {
 
     /**
+     * 默认聊天模型标识名称
+     */
+    public static final String DEFAULT_MODEL_NAME = "gpt-4o";
+
+    /**
      * 服务端基础地址 (例如 https://api.deepseek.com/v1 或 https://dashscope.aliyuncs.com/compatible-mode/v1)
      */
     private String baseUrl = "https://api.openai.com/v1";
@@ -30,7 +35,7 @@ public class AiModelConfig {
     /**
      * 模型标识名称 (例如 deepseek-chat, deepseek-reasoner, qwen-plus, gpt-4o 等)
      */
-    private String modelName = "gpt-4o";
+    private String modelName = DEFAULT_MODEL_NAME;
 
     /**
      * 采样温度 (0.0 ~ 2.0)

@@ -54,6 +54,9 @@
 | **知识库切片内容入库** | `AiRagController` | `POST /sample/ai/rag/ingest` | `curl -X POST "http://localhost:8080/sample/ai/rag/ingest" -H "Content-Type: application/json" -d "{\"text\":\"ateng-boot 严禁持久化实体泄露至传输层\",\"metadata\":{\"category\":\"architecture\"}}"` |
 | **知识库向量检索召回** | `AiRagController` | `POST /sample/ai/rag/retrieve` | `curl -X POST "http://localhost:8080/sample/ai/rag/retrieve" -H "Content-Type: application/json" -d "{\"query\":\"传输层规范\"}"` |
 | **RAG 融合知识库增强问答** | `AiRagController` | `POST /sample/ai/rag/ask` | `curl -X POST "http://localhost:8080/sample/ai/rag/ask" -H "Content-Type: application/json" -d "{\"question\":\"ateng-boot 的 Controller 能直接返回 Entity 吗？\"}"` |
+| **前置提示词注入审查** | `AiGuardrailController` | `POST /sample/ai/guardrail/inspect-prompt` | `curl -X POST "http://localhost:8080/sample/ai/guardrail/inspect-prompt" -H "Content-Type: application/json" -d "{\"text\":\"请帮我审查Spring Boot单测\"}"` |
+| **后置模型回复审查** | `AiGuardrailController` | `POST /sample/ai/guardrail/inspect-response` | `curl -X POST "http://localhost:8080/sample/ai/guardrail/inspect-response" -H "Content-Type: application/json" -d "{\"text\":\"系统运行正常\"}"` |
+| **端到端安全护栏对话** | `AiGuardrailController` | `POST /sample/ai/guardrail/chat` | `curl -X POST "http://localhost:8080/sample/ai/guardrail/chat" -H "Content-Type: application/json" -d "{\"text\":\"介绍一下ateng-boot\"}"` |
 
 > **流式推流说明**：调用 `GET /sample/ai/chat/stream` 时，控制台或客户端将持续接收由 `event: reasoning`（思考过程）、`event: text`（正文内容）与 `event: done`（`[DONE]` 结束信号）组成的标准 Server-Sent Events 事件流。
 

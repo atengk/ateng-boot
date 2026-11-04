@@ -3,15 +3,9 @@ package io.github.atengk.boot.ai.routing;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
-import dev.langchain4j.data.message.Content;
-import dev.langchain4j.data.message.SystemMessage;
-import dev.langchain4j.data.message.TextContent;
-import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.output.Response;
-import io.github.atengk.boot.ai.context.AgentCallContext;
-import io.github.atengk.boot.ai.context.AiContextHolder;
 import io.github.atengk.boot.ai.observability.FallbackTokenEstimator;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
@@ -21,7 +15,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -65,21 +58,7 @@ public class DynamicRoutingStreamingChatLanguageModel implements StreamingChatLa
      * @return 生效的目标模型名称
      */
     public String resolveModelName() {
-        String threadModel = AiContextHolder.getModelName();
-        if (StringUtils.hasText(threadModel)) {
-            return threadModel.trim();
-        }
-        String target = configuredModelName;
-        if (tenantModelResolver != null && !TenantContextHolder.isIgnoreTenant()) {
-            String tenantId = TenantContextHolder.getTenantId();
-            if (StringUtils.hasText(tenantId)) {
-                target = tenantModelResolver.resolveModel(tenantId.trim(), target);
-            }
-        }
-        if (StringUtils.hasText(target)) {
-            return target;
-        }
-        return AiModelRegistry.DEFAULT_MODEL_NAME;
+        return DynamicRoutingSupport.resolveModelName(configuredModelName, tenantModelResolver);
     }
 
     /**
@@ -146,60 +125,7 @@ public class DynamicRoutingStreamingChatLanguageModel implements StreamingChatLa
     }
 
     private List<ChatMessage> preprocessMessages(List<ChatMessage> messages) {
-        if (messages == null || messages.isEmpty()) {
-            return messages;
-        }
-        List<ChatMessage> result = new ArrayList<>(messages.size());
-        boolean modified = false;
-
-        for (ChatMessage msg : messages) {
-            ChatMessage processed = processSingleMessage(msg);
-            if (processed != msg) {
-                result.add(processed);
-                modified = true;
-            } else {
-                result.add(msg);
-            }
-        }
-
-        return modified ? result : messages;
-    }
-
-    private ChatMessage processSingleMessage(ChatMessage msg) {
-        if (msg instanceof UserMessage um) {
-            if (um.contents() != null && !um.contents().isEmpty()) {
-                boolean anyReplaced = false;
-                List<Content> newContents = new ArrayList<>(um.contents().size());
-                for (Content c : um.contents()) {
-                    if (c instanceof TextContent tc) {
-                        String original = tc.text();
-                        String replaced = AgentCallContext.applyReplacements(original);
-                        if (replaced != null && !replaced.equals(original)) {
-                            newContents.add(TextContent.from(replaced));
-                            anyReplaced = true;
-                            continue;
-                        }
-                    }
-                    newContents.add(c);
-                }
-                if (anyReplaced) {
-                    return UserMessage.from(newContents);
-                }
-            } else if (um.hasSingleText()) {
-                String original = um.singleText();
-                String replaced = AgentCallContext.applyReplacements(original);
-                if (replaced != null && !replaced.equals(original)) {
-                    return UserMessage.from(replaced);
-                }
-            }
-        } else if (msg instanceof SystemMessage sm) {
-            String original = sm.text();
-            String replaced = AgentCallContext.applyReplacements(original);
-            if (replaced != null && !replaced.equals(original)) {
-                return SystemMessage.from(replaced);
-            }
-        }
-        return msg;
+        return DynamicRoutingSupport.preprocessMessages(messages);
     }
 
     private static class RoutingStreamingQuotaTrackingHandler implements StreamingResponseHandler<AiMessage> {

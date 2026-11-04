@@ -368,4 +368,80 @@ class AiAgentFactoryBeanTest {
         verify(deepseekStreamingModel).generate(anyList(), any());
         verifyNoInteractions(defaultStreamingModel);
     }
+
+    public static class WeatherTool {
+        @dev.langchain4j.agent.tool.Tool("查询城市天气")
+        public String queryWeather(String city) {
+            return city + ": 晴朗 25°C";
+        }
+    }
+
+    @Test
+    @DisplayName("声明式智能体流式推流与受管工具调用协同执行")
+    void testStreamingAgentWithToolsCoordination() {
+        WeatherTool weatherTool = new WeatherTool();
+        when(applicationContext.getBean(WeatherTool.class)).thenReturn(weatherTool);
+
+        // 模拟流式大模型在接收到 ToolSpecification 时触发工具调用与流式回复
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            List<ChatMessage> messages = invocation.getArgument(0);
+            @SuppressWarnings("unchecked")
+            List<dev.langchain4j.agent.tool.ToolSpecification> toolSpecs = invocation.getArgument(1);
+            @SuppressWarnings("unchecked")
+            StreamingResponseHandler<AiMessage> handler = invocation.getArgument(2);
+
+            assertThat(toolSpecs).isNotEmpty();
+            assertThat(toolSpecs.get(0).name()).isEqualTo("queryWeather");
+
+            // 第一次调用大模型，触发工具调用请求
+            dev.langchain4j.agent.tool.ToolExecutionRequest toolRequest = dev.langchain4j.agent.tool.ToolExecutionRequest.builder()
+                    .id("tool-call-1")
+                    .name("queryWeather")
+                    .arguments("{\"city\":\"杭州\"}")
+                    .build();
+            AiMessage toolCallAiMessage = AiMessage.from(toolRequest);
+            handler.onComplete(Response.from(toolCallAiMessage));
+            return null;
+        }).doAnswer(invocation -> {
+            // 工具执行完成后，LangChain4j 将工具结果回传给大模型发起第二轮推流
+            @SuppressWarnings("unchecked")
+            List<ChatMessage> messages = invocation.getArgument(0);
+            @SuppressWarnings("unchecked")
+            StreamingResponseHandler<AiMessage> handler = invocation.getArgument(2);
+
+            boolean hasToolResult = messages.stream().anyMatch(m -> m instanceof dev.langchain4j.data.message.ToolExecutionResultMessage);
+            assertThat(hasToolResult).isTrue();
+
+            handler.onNext("杭州");
+            handler.onNext("当前天气晴朗，气温25°C");
+            handler.onComplete(Response.from(AiMessage.from("杭州当前天气晴朗，气温25°C")));
+            return null;
+        }).when(defaultStreamingModel).generate(anyList(), anyList(), any());
+
+        AiAgentFactoryBean<TestStreamingAgent> factoryBean = new AiAgentFactoryBean<>();
+        factoryBean.setAgentInterface(TestStreamingAgent.class);
+        factoryBean.setTools(new Class<?>[]{WeatherTool.class});
+        factoryBean.setApplicationContext(applicationContext);
+        factoryBean.afterPropertiesSet();
+
+        TestStreamingAgent agent = factoryBean.getObject();
+        assertThat(agent).isNotNull();
+
+        TokenStream tokenStream = agent.streamAsk("杭州天气如何？");
+        assertThat(tokenStream).isNotNull();
+
+        StringBuilder sb = new StringBuilder();
+        java.util.concurrent.atomic.AtomicBoolean completed = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        tokenStream
+                .onNext(sb::append)
+                .onComplete(resp -> completed.set(true))
+                .onError(err -> {})
+                .start();
+
+        assertThat(sb.toString()).isEqualTo("杭州当前天气晴朗，气温25°C");
+        assertThat(completed.get()).isTrue();
+        verify(defaultStreamingModel, times(2)).generate(anyList(), anyList(), any());
+    }
 }

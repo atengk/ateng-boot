@@ -3,13 +3,9 @@ package io.github.atengk.boot.ai.routing;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
-import dev.langchain4j.data.message.SystemMessage;
-import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.model.output.TokenUsage;
-import io.github.atengk.boot.ai.context.AgentCallContext;
-import io.github.atengk.boot.ai.context.AiContextHolder;
 import io.github.atengk.boot.ai.observability.FallbackTokenEstimator;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
@@ -18,7 +14,6 @@ import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import org.springframework.util.StringUtils;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -60,21 +55,7 @@ public class DynamicRoutingChatLanguageModel implements ChatLanguageModel {
      * @return 生效的目标模型名称
      */
     public String resolveModelName() {
-        String threadModel = AiContextHolder.getModelName();
-        if (StringUtils.hasText(threadModel)) {
-            return threadModel.trim();
-        }
-        String target = configuredModelName;
-        if (tenantModelResolver != null && !TenantContextHolder.isIgnoreTenant()) {
-            String tenantId = TenantContextHolder.getTenantId();
-            if (StringUtils.hasText(tenantId)) {
-                target = tenantModelResolver.resolveModel(tenantId.trim(), target);
-            }
-        }
-        if (StringUtils.hasText(target)) {
-            return target;
-        }
-        return AiModelRegistry.DEFAULT_MODEL_NAME;
+        return DynamicRoutingSupport.resolveModelName(configuredModelName, tenantModelResolver);
     }
 
     /**
@@ -142,67 +123,8 @@ public class DynamicRoutingChatLanguageModel implements ChatLanguageModel {
         return postprocessResponse(response);
     }
 
-    /**
-     * 前置处理消息：针对包含复合对象入参的 UserMessage / SystemMessage，自动应用 JSON 格式化替换
-     */
     private List<ChatMessage> preprocessMessages(List<ChatMessage> messages) {
-        if (messages == null || messages.isEmpty()) {
-            return messages;
-        }
-        List<ChatMessage> result = new ArrayList<>(messages.size());
-        boolean modified = false;
-
-        for (ChatMessage msg : messages) {
-            ChatMessage processed = processSingleMessage(msg);
-            if (processed != msg) {
-                result.add(processed);
-                modified = true;
-            } else {
-                result.add(msg);
-            }
-        }
-
-        return modified ? result : messages;
-    }
-
-    /**
-     * 对单条消息执行入参标记替换，收敛重复分支逻辑
-     */
-    private ChatMessage processSingleMessage(ChatMessage msg) {
-        if (msg instanceof UserMessage um) {
-            if (um.contents() != null && !um.contents().isEmpty()) {
-                boolean anyReplaced = false;
-                List<dev.langchain4j.data.message.Content> newContents = new ArrayList<>(um.contents().size());
-                for (dev.langchain4j.data.message.Content c : um.contents()) {
-                    if (c instanceof dev.langchain4j.data.message.TextContent tc) {
-                        String original = tc.text();
-                        String replaced = AgentCallContext.applyReplacements(original);
-                        if (replaced != null && !replaced.equals(original)) {
-                            newContents.add(dev.langchain4j.data.message.TextContent.from(replaced));
-                            anyReplaced = true;
-                            continue;
-                        }
-                    }
-                    newContents.add(c);
-                }
-                if (anyReplaced) {
-                    return UserMessage.from(newContents);
-                }
-            } else if (um.hasSingleText()) {
-                String original = um.singleText();
-                String replaced = AgentCallContext.applyReplacements(original);
-                if (replaced != null && !replaced.equals(original)) {
-                    return UserMessage.from(replaced);
-                }
-            }
-        } else if (msg instanceof SystemMessage sm) {
-            String original = sm.text();
-            String replaced = AgentCallContext.applyReplacements(original);
-            if (replaced != null && !replaced.equals(original)) {
-                return SystemMessage.from(replaced);
-            }
-        }
-        return msg;
+        return DynamicRoutingSupport.preprocessMessages(messages);
     }
 
     /**

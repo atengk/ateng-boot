@@ -28,7 +28,7 @@ public class StreamEventListener extends EventListener {
 
     @Override
     public void callStart(Call call) {
-        String streamId = StreamContextHolder.getStreamId();
+        String streamId = resolveStreamId(call);
         if (StringUtils.hasText(streamId)) {
             registry.register(streamId, () -> {
                 log.info("EventListener 触发物理切断 OkHttp 套接字 [streamId={}]", streamId);
@@ -39,7 +39,7 @@ public class StreamEventListener extends EventListener {
 
     @Override
     public void callEnd(Call call) {
-        String streamId = StreamContextHolder.getStreamId();
+        String streamId = resolveStreamId(call);
         if (StringUtils.hasText(streamId)) {
             registry.unregister(streamId);
         }
@@ -47,9 +47,19 @@ public class StreamEventListener extends EventListener {
 
     @Override
     public void callFailed(Call call, IOException ioe) {
-        String streamId = StreamContextHolder.getStreamId();
+        String streamId = resolveStreamId(call);
         if (StringUtils.hasText(streamId)) {
             registry.unregister(streamId);
         }
+    }
+
+    private String resolveStreamId(Call call) {
+        if (call != null && call.request() != null) {
+            String header = call.request().header(StreamCancellationInterceptor.HEADER_STREAM_ID);
+            if (StringUtils.hasText(header)) {
+                return header.trim();
+            }
+        }
+        return StreamContextHolder.getStreamId();
     }
 }

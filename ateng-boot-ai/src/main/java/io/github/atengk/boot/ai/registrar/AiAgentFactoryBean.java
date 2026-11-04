@@ -293,7 +293,8 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
         if (applicationContext != null) {
             try {
                 return applicationContext.getBeanProvider(AiGuardrail.class).getIfAvailable();
-            } catch (Exception ignored) {
+            } catch (Exception ex) {
+                log.debug("获取 AiGuardrail Bean 失败或未注册，跳过安全护栏装配: {}", ex.getMessage());
             }
         }
         return null;

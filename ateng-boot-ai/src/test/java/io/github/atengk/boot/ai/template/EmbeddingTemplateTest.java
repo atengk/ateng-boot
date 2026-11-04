@@ -281,4 +281,37 @@ class EmbeddingTemplateTest {
         List<String> emptyIds = template.ingestAll(store, Collections.emptyList());
         assertThat(emptyIds).isEmpty();
     }
+
+    @Test
+    @DisplayName("验证 remove/removeAll 对称回收操作")
+    void testRemoveSymmetricOperations() {
+        InMemoryEmbeddingStore<TextSegment> store = new InMemoryEmbeddingStore<>();
+
+        when(mockEmbeddingModel.embed(any(TextSegment.class)))
+                .thenReturn(Response.from(Embedding.from(new float[]{0.1f, 0.2f, 0.3f})));
+
+        String id1 = template.ingest(store, "规范一");
+        String id2 = template.ingest(store, "规范二");
+        String id3 = template.ingest(store, "规范三");
+
+        // 1. 单条删除
+        template.remove(store, id1);
+
+        // 2. 批量删除
+        template.removeAll(store, List.of(id2));
+
+        // 3. 全部清空
+        template.removeAll(store);
+
+        // 4. 空安全防卫
+        template.remove(store, null);
+        template.removeAll(store, Collections.emptyList());
+
+        assertThatThrownBy(() -> template.remove(null, "id"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.removeAll(null, List.of("id")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.removeAll(null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }

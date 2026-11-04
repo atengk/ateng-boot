@@ -13,6 +13,7 @@ import io.github.atengk.boot.core.util.RetryUtil;
 import org.springframework.util.StringUtils;
 
 import java.time.Duration;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -221,6 +222,50 @@ public class EmbeddingTemplate {
         }
         Response<List<Embedding>> response = embedSegments(segments);
         return store.addAll(response.content(), segments);
+    }
+
+    /**
+     * 从指定向量存储库 (EmbeddingStore) 移除单条向量记录 (对称回收)
+     *
+     * @param store 目标向量数据库或存储实现
+     * @param id    待移除的主键 ID
+     */
+    public void remove(EmbeddingStore<TextSegment> store, String id) {
+        if (store == null) {
+            throw new IllegalArgumentException("目标 EmbeddingStore 存储库不能为空");
+        }
+        if (!StringUtils.hasText(id)) {
+            return;
+        }
+        store.remove(id.trim());
+    }
+
+    /**
+     * 从指定向量存储库 (EmbeddingStore) 批量移除向量记录 (对称回收)
+     *
+     * @param store 目标向量数据库或存储实现
+     * @param ids   待移除的主键 ID 集合
+     */
+    public void removeAll(EmbeddingStore<TextSegment> store, Collection<String> ids) {
+        if (store == null) {
+            throw new IllegalArgumentException("目标 EmbeddingStore 存储库不能为空");
+        }
+        if (ids == null || ids.isEmpty()) {
+            return;
+        }
+        store.removeAll(ids);
+    }
+
+    /**
+     * 排空并清空指定向量存储库 (EmbeddingStore) 中的所有向量记录 (对称回收)
+     *
+     * @param store 目标向量数据库或存储实现
+     */
+    public void removeAll(EmbeddingStore<TextSegment> store) {
+        if (store == null) {
+            throw new IllegalArgumentException("目标 EmbeddingStore 存储库不能为空");
+        }
+        store.removeAll();
     }
 
     /**

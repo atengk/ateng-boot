@@ -28,9 +28,14 @@ public class AtengAiRagProperties {
     private Double minScore = 0.6;
 
     /**
+     * 默认 Embedding 模型标识名称常量
+     */
+    public static final String DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
+
+    /**
      * 默认 Embedding 模型标识名称 (例如 text-embedding-3-small, text-embedding-3-large 等)
      */
-    private String modelName = "text-embedding-3-small";
+    private String modelName = DEFAULT_EMBEDDING_MODEL;
 
     /**
      * 向量维度 (可选，部分模型如 text-embedding-3 支持指定维度缩减)
@@ -69,7 +74,7 @@ public class AtengAiRagProperties {
         }
 
         // 2. 覆盖默认 embedding modelName
-        effective.setModelName(this.modelName != null && !this.modelName.isBlank() ? this.modelName : "text-embedding-3-small");
+        effective.setModelName(this.modelName != null && !this.modelName.isBlank() ? this.modelName : DEFAULT_EMBEDDING_MODEL);
 
         // 3. 若 rag.model 具备有效配置 (例如显式配置了专属 apiKey 或自定义 baseUrl/modelName)，进行就近覆盖
         if (this.model != null && (this.model.isConfigured() || (this.model.getBaseUrl() != null && !this.model.getBaseUrl().isBlank() && !"https://api.openai.com/v1".equals(this.model.getBaseUrl())))) {
@@ -80,7 +85,7 @@ public class AtengAiRagProperties {
                 effective.setApiKey(this.model.getApiKey());
             }
             if (this.model.getModelName() != null && !this.model.getModelName().isBlank()
-                    && !"gpt-4o".equals(this.model.getModelName())) {
+                    && !AiModelConfig.DEFAULT_MODEL_NAME.equals(this.model.getModelName())) {
                 effective.setModelName(this.model.getModelName());
             }
             if (this.model.getTimeout() != null) {

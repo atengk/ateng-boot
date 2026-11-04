@@ -167,6 +167,11 @@ public class DefaultAiGuardrail implements AiGuardrail {
 
     @Override
     public GuardrailResult inspectPrompt(String prompt) {
+        return inspectPrompt(prompt, Collections.emptyMap());
+    }
+
+    @Override
+    public GuardrailResult inspectPrompt(String prompt, Map<String, Object> context) {
         if (!properties.isEnabled() || !StringUtils.hasText(prompt)) {
             return GuardrailResult.allow(prompt, AiGuardrailPhase.PRE_PROMPT);
         }
@@ -176,7 +181,7 @@ public class DefaultAiGuardrail implements AiGuardrail {
         if (maxLength > 0 && prompt.length() > maxLength) {
             String rule = "MAX_LENGTH_EXCEEDED";
             String reason = "提示词字符长度 [" + prompt.length() + "] 超过系统允许的最大长度阈值 [" + maxLength + "]";
-            log.warn("AI 前置护栏拦截 (提示词超长): length={}, max={}", prompt.length(), maxLength);
+            log.warn("AI 前置护栏拦截 (提示词超长): length={}, max={}, context={}", prompt.length(), maxLength, context);
             return handleViolation(AiGuardrailPhase.PRE_PROMPT, rule, reason);
         }
 
@@ -186,7 +191,7 @@ public class DefaultAiGuardrail implements AiGuardrail {
             if (matcher.find()) {
                 String rule = "PROMPT_INJECTION:" + pattern.pattern();
                 String reason = "检测到潜在的提示词越狱或注入攻击指令";
-                log.warn("AI 前置护栏拦截 (提示词注入/越狱): pattern={}", pattern.pattern());
+                log.warn("AI 前置护栏拦截 (提示词注入/越狱): pattern={}, context={}", pattern.pattern(), context);
                 return handleViolation(AiGuardrailPhase.PRE_PROMPT, rule, reason);
             }
         }
@@ -196,7 +201,7 @@ public class DefaultAiGuardrail implements AiGuardrail {
         if (bannedWord != null) {
             String rule = "SENSITIVE_KEYWORD:" + bannedWord;
             String reason = "提示词包含违规敏感词: [" + bannedWord + "]";
-            log.warn("AI 前置护栏拦截 (敏感词匹配): bannedWord={}", bannedWord);
+            log.warn("AI 前置护栏拦截 (敏感词匹配): bannedWord={}, context={}", bannedWord, context);
             return handleViolation(AiGuardrailPhase.PRE_PROMPT, rule, reason);
         }
 
@@ -205,6 +210,11 @@ public class DefaultAiGuardrail implements AiGuardrail {
 
     @Override
     public GuardrailResult inspectResponse(String responseText) {
+        return inspectResponse(responseText, Collections.emptyMap());
+    }
+
+    @Override
+    public GuardrailResult inspectResponse(String responseText, Map<String, Object> context) {
         if (!properties.isEnabled() || !StringUtils.hasText(responseText)) {
             return GuardrailResult.allow(responseText, AiGuardrailPhase.POST_RESPONSE);
         }
@@ -214,7 +224,7 @@ public class DefaultAiGuardrail implements AiGuardrail {
         if (bannedWord != null) {
             String rule = "SENSITIVE_KEYWORD:" + bannedWord;
             String reason = "大模型回复内容包含违规敏感词: [" + bannedWord + "]";
-            log.warn("AI 后置护栏拦截 (敏感词匹配): bannedWord={}", bannedWord);
+            log.warn("AI 后置护栏拦截 (敏感词匹配): bannedWord={}, context={}", bannedWord, context);
             return handleViolation(AiGuardrailPhase.POST_RESPONSE, rule, reason);
         }
 
