@@ -48,6 +48,10 @@
 | **云原生度量大盘探查** | `AiMetricsController` | `GET /sample/ai/metrics/summary` | `curl "http://localhost:8080/sample/ai/metrics/summary?tenantId=tenant-sample"` |
 | **租户配额风控自验** | `AiMetricsController` | `POST /sample/ai/metrics/quota/test` | `curl -X POST "http://localhost:8080/sample/ai/metrics/quota/test" -H "Content-Type: application/json" -d "{\"tenantId\":\"tenant-sample\",\"promptTokens\":10,\"totalTokens\":50}"` |
 | **流式保底估算体验** | `AiMetricsController` | `POST /sample/ai/metrics/stream-fallback` | `curl -X POST "http://localhost:8080/sample/ai/metrics/stream-fallback" -H "Content-Type: application/json" -d "{\"prompt\":\"你好世界\",\"responseText\":\"Hello world\"}"` |
+| **单文本特征向量化** | `AiRagController` | `POST /sample/ai/rag/embed` | `curl -X POST "http://localhost:8080/sample/ai/rag/embed" -H "Content-Type: application/json" -d "{\"text\":\"ateng-boot 遵循纯原生零臃肿架构\"}"` |
+| **知识库切片内容入库** | `AiRagController` | `POST /sample/ai/rag/ingest` | `curl -X POST "http://localhost:8080/sample/ai/rag/ingest" -H "Content-Type: application/json" -d "{\"text\":\"ateng-boot 严禁持久化实体泄露至传输层\",\"metadata\":{\"category\":\"architecture\"}}"` |
+| **知识库向量检索召回** | `AiRagController` | `POST /sample/ai/rag/retrieve` | `curl -X POST "http://localhost:8080/sample/ai/rag/retrieve" -H "Content-Type: application/json" -d "{\"query\":\"传输层规范\"}"` |
+| **RAG 融合知识库增强问答** | `AiRagController` | `POST /sample/ai/rag/ask` | `curl -X POST "http://localhost:8080/sample/ai/rag/ask" -H "Content-Type: application/json" -d "{\"question\":\"ateng-boot 的 Controller 能直接返回 Entity 吗？\"}"` |
 
 > **流式推流说明**：调用 `GET /sample/ai/chat/stream` 时，控制台或客户端将持续接收由 `event: reasoning`（思考过程）、`event: text`（正文内容）与 `event: done`（`[DONE]` 结束信号）组成的标准 Server-Sent Events 事件流。
 

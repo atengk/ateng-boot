@@ -1,2 +1,3 @@
 io.github.atengk.boot.ai.autoconfigure.AtengAiAutoConfiguration
 io.github.atengk.boot.ai.autoconfigure.AtengAiGraphAutoConfiguration
+io.github.atengk.boot.ai.autoconfigure.AtengAiRagAutoConfiguration

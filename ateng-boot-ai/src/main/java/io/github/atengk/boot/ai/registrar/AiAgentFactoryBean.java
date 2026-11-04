@@ -182,24 +182,21 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
             }
         }
 
-        // 6. 挂载 ContentRetriever 知识库检索点
+        // 6. 挂载 ContentRetriever 知识库检索点 (仅在显式声明 @AiAgent(contentRetriever = "...") 时装配，遵循显式契约原则，杜绝无差别自动绑架无关业务智能体)
         if (StringUtils.hasText(contentRetriever)) {
+            String beanName = contentRetriever.trim();
             try {
-                ContentRetriever retriever = applicationContext.getBean(contentRetriever.trim(), ContentRetriever.class);
+                ContentRetriever retriever;
+                if ("auto".equalsIgnoreCase(beanName) || "default".equalsIgnoreCase(beanName)) {
+                    retriever = applicationContext.getBean(ContentRetriever.class);
+                } else {
+                    retriever = applicationContext.getBean(beanName, ContentRetriever.class);
+                }
                 builder.contentRetriever(retriever);
             } catch (NoSuchBeanDefinitionException e) {
                 throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
                         "智能体 [" + agentInterface.getSimpleName() + "] 显式指定的 ContentRetriever Bean ["
                                 + contentRetriever + "] 在 Spring 容器中未找到", e);
-            }
-        } else {
-            // 缺省单 Bean 自动装配
-            Map<String, ContentRetriever> retrievers = applicationContext.getBeansOfType(ContentRetriever.class);
-            if (retrievers.size() == 1) {
-                builder.contentRetriever(retrievers.values().iterator().next());
-            } else if (retrievers.size() > 1) {
-                log.warn("Spring 容器中存在多个 ContentRetriever Bean，智能体 [{}] 未显式指定名称，跳过自动装配",
-                        agentInterface.getSimpleName());
             }
         }
 

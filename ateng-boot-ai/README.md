@@ -54,6 +54,9 @@
 | **外部提示词文件** | 提示词模板 Classpath/Resource 外部化 | `PromptTemplate` | - | `fromClasspath(String)` / `fromResource(Resource)`，原生加载 Markdown/文本提示词文件 | `PromptTemplateTest` / `ChatControllerIntegrationTest` |
 | **Token 滑动窗口** | 基于 Token 数量会话记忆窗口截断 | `ChatMemoryProperties`<br>`ChatMemoryManager` | `ateng.boot.ai.chat-memory.window-type`<br>`ateng.boot.ai.chat-memory.max-tokens` | 支持 `MESSAGE`/`TOKEN` 双模式滑动裁剪，结合 `TokenWindowChatMemory` 与 `HeuristicTokenizer` 保底，保留首条系统指令防止上下文击穿 | `ChatMemoryManagerTest` |
 | **双向内容安全护栏** | 企业级 AI 双向内容安全护栏体系 | `AiGuardrail`<br>`DefaultAiGuardrail`<br>`GuardrailResult` | `ateng.boot.ai.guardrail.enabled`<br>`ateng.boot.ai.guardrail.mode`<br>`ateng.boot.ai.guardrail.max-prompt-length`<br>`ateng.boot.ai.guardrail.banned-keywords`<br>`ateng.boot.ai.guardrail.whitelist` | `inspectPrompt(prompt)` / `inspectResponse(text)`，前置防越狱注入/超长与后置违禁词 Trie 树极速匹配，FAIL_FAST 与 REPLACE 双模式 | `DefaultAiGuardrailTest` / `AiGuardrailIntegrationTest` / `ChatControllerIntegrationTest` |
+| **向量化门面** | 统一命令式向量化计算与入库门面 | `EmbeddingTemplate` | `ateng.boot.ai.rag.model-name`<br>`ateng.boot.ai.rag.dimensions` | `embed(String)` / `embed(List<String>)` / `embed(TextSegment)` / `embedVector(String)` / `ingest(...)`，挂载指数退避重试 | `EmbeddingTemplateTest` / `RagControllerIntegrationTest` |
+| **RAG 自动装配** | 向量知识库自适应装配与单机回退 | `AtengAiRagAutoConfiguration` | `ateng.boot.ai.rag.enabled` | 自动探测并注入外部 `EmbeddingStore`（如 `ateng-boot-milvus`），缺省自动平滑降级单机内存向量库 `InMemoryEmbeddingStore` | `AtengAiRagAutoConfigurationTest` |
+| **知识库检索器** | 统一知识库向量检索器受管 Bean | `ContentRetriever`<br>`EmbeddingStoreContentRetriever` | `ateng.boot.ai.rag.max-results`<br>`ateng.boot.ai.rag.min-score` | 自动根据配置组装 `ContentRetriever` Bean，支持 `@AiAgent(contentRetriever = "...")` 与编程式检索 | `AtengAiRagAutoConfigurationTest` / `RagControllerIntegrationTest` |
 
 ---
 
@@ -1052,7 +1055,157 @@ public class CustomGuardrailConfiguration {
 
 ---
 
-## 11. 完整 YAML 配置属性清单 (全量速查附录)
+## 11. 企业级 RAG 知识库与统一向量嵌入门面 (Enterprise RAG & Embedding Architecture)
+
+### 11.1 核心机制与架构优势
+传统企业级 RAG 方案往往强绑定特定的向量数据库 SDK（如 Milvus、Qdrant、Pinecone、PGVector），导致模块之间产生沉重传递依赖甚至类冲突，在离线测试或轻量单机场景下极难启动。
+`ateng-boot-ai` 遵循 **纯原生标准 SPI 零侵入解耦** 与 **自适应平滑降级** 核心原则：
+1. **统一命令式门面 (`EmbeddingTemplate`)**：封装底层 LangChain4j `EmbeddingModel`，提供对称的单文本、批量文本、`TextSegment` 向量化以及 `embedVector` 稠密向量提取；挂载 `RetryUtil` 带 Jitter 的指数退避重试，自动抵御 429 限流与网络瞬态超时；
+2. **知识库存储解耦与自适应降级 (`AtengAiRagAutoConfiguration`)**：
+   - 基于标准 `EmbeddingStore<TextSegment>` SPI 解耦，自动探测 Spring 容器中是否存在由外部持久化组件（例如 `ateng-boot-milvus`）注册的存储 Bean；
+   - **单机内存自洽兜底**：当未配置外部向量库时，自动降级启用 `InMemoryEmbeddingStore`，保障 100% 离线自洽与零外部网络极速构建；
+3. **检索器受管装配 (`ContentRetriever`)**：自动基于配置构建 `EmbeddingStoreContentRetriever` Bean，支持通过 `@AiAgent(contentRetriever = "...")` 或编程式快速注入，实现企业知识库切片相似度检索召回与 Prompt 融合增强问答。
+
+### 11.2 配置与开箱即用体验
+
+#### 1. YAML 配置
+在 `application.yml` 中声明 RAG 知识库参数：
+```yaml
+ateng:
+  boot:
+    ai:
+      # 全局主模型凭据 (若未单独指定 rag.model，向量化模型自动继承此凭据)
+      model:
+        base-url: https://api.openai.com/v1
+        api-key: YOUR_OPENAI_API_KEY
+      # RAG 知识库与向量检索配置
+      rag:
+        enabled: true
+        # 向量召回最大结果数 Top-K (默认 3)
+        max-results: 3
+        # 向量召回最低相关度得分阈值 0.0 ~ 1.0 (默认 0.6)
+        min-score: 0.6
+        # 默认 Embedding 模型名称 (默认 text-embedding-3-small)
+        model-name: text-embedding-3-small
+        # 可选：指定向量维度缩减
+        dimensions: 1536
+        # 可选：配置独立 Embedding 模型端点与密钥 (未配置时自动继承主模型凭据)
+        # model:
+        #   base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+        #   api-key: YOUR_DASHSCOPE_API_KEY
+        #   model-name: text-embedding-v3
+```
+
+#### 2. 命令式向量化与知识库入库实战 (`EmbeddingTemplate`)
+```java
+@Service
+@RequiredArgsConstructor
+public class EnterpriseKnowledgeService {
+
+    private final EmbeddingTemplate embeddingTemplate;
+    private final EmbeddingStore<TextSegment> embeddingStore;
+    private final ContentRetriever contentRetriever;
+    private final AiTemplate aiTemplate;
+
+    /**
+     * 1. 知识库内容向量化入库
+     */
+    public String ingestDoc(String content, String category) {
+        // 构建携带业务元数据的文本切片
+        TextSegment segment = TextSegment.from(content, Metadata.from("category", category));
+        // 一键向量化并写入向量数据库 (返回向量库分配的唯一主键 ID)
+        return embeddingTemplate.ingest(embeddingStore, segment);
+    }
+
+    /**
+     * 2. 向量相似度检索召回
+     */
+    public List<String> searchRelevant(String query) {
+        List<Content> contents = contentRetriever.retrieve(Query.from(query));
+        return contents.stream()
+                .map(c -> c.textSegment() != null ? c.textSegment().text() : "")
+                .toList();
+    }
+
+    /**
+     * 3. RAG 知识库增强问答
+     */
+    public String askWithKnowledge(String question) {
+        List<Content> contents = contentRetriever.retrieve(Query.from(question));
+        if (contents.isEmpty()) {
+            return "知识库中暂未找到相关参考内容。";
+        }
+
+        String context = contents.stream()
+                .map(c -> "- " + (c.textSegment() != null ? c.textSegment().text() : ""))
+                .collect(Collectors.joining("\n"));
+
+        String prompt = String.format("""
+                请严格基于以下已知参考资料准确回答用户提问：
+                %s
+                
+                用户提问：%s
+                """, context, question);
+
+        return aiTemplate.chat(prompt);
+    }
+}
+```
+
+### 11.3 声明式智能体一键挂载 (`@AiAgent(contentRetriever = "...")`)
+声明式智能体通过 `contentRetriever` 属性显式绑定知识检索点，LangChain4j 底层会在智能体调用时自动检索上下文并融合注入提示词：
+```java
+@AiAgent(contentRetriever = "contentRetriever")
+public interface EnterpriseQaAgent {
+
+    @SystemMessage("你是一个企业内部财务与技术规范问答专家，请基于知识库上下文准确作答。")
+    String answer(@UserMessage String question);
+}
+```
+
+### 11.4 生产扩展与自定义中间件接管
+
+#### 1. 接入外部生产级分布式向量库 (如 Milvus)
+当引入 `ateng-boot-starter-milvus` 或自定义注册 `EmbeddingStore<TextSegment>` Bean 时，框架遵循 `@ConditionalOnMissingBean` 守卫自动退让，无需修改任何业务代码：
+```java
+@Configuration
+public class CustomMilvusStoreConfiguration {
+
+    @Bean
+    public EmbeddingStore<TextSegment> embeddingStore(MilvusServiceClient client) {
+        return MilvusEmbeddingStore.builder()
+                .host("milvus.prod.internal")
+                .port(19530)
+                .collectionName("enterprise_knowledge_base")
+                .dimension(1536)
+                .build();
+    }
+}
+```
+
+#### 2. 自定义高级向量化模型 (如本地私有部署 Ollama / BGE / BCE)
+```java
+@Configuration
+public class CustomEmbeddingModelConfiguration {
+
+    @Bean
+    public EmbeddingModel customEmbeddingModel() {
+        return OllamaEmbeddingModel.builder()
+                .baseUrl("http://ollama-cluster.internal:11434")
+                .modelName("bge-large-zh-v1.5")
+                .build();
+    }
+}
+```
+
+### 11.5 核心生产边界与非功能语义防卫
+1. **防止无关智能体被隐式绑架**：`@AiAgent` 严格恪守显式契约原则，只有显式声明 `@AiAgent(contentRetriever = "...")` 的智能体才会挂载检索器，坚决杜绝全局注册单个 `ContentRetriever` 时导致所有纯逻辑或纯工具智能体被无差别注入知识库检索；
+2. **防幻觉与相似度阈值守卫**：配置 `ateng.boot.ai.rag.min-score`（默认 0.6）强制过滤低相关度噪声切片；结合业务层显式判定“检索结果为空时如实告知”，杜绝大模型无边界信口雌黄；
+3. **瞬态网络退避重试**：`EmbeddingTemplate` 挂载 `RetryUtil`（带 Jitter 的指数退避），对 429 限流与超时错误执行自动重试，对 401/403 认证错误 Fail-Fast，底层 SDK 裸重试数强制置 0，彻底根除重试乘积爆炸。
+
+---
+
+## 12. 完整 YAML 配置属性清单 (全量速查附录)
 
 ```yaml
 ateng:
@@ -1170,6 +1323,26 @@ ateng:
         # 免检白名单词汇 (命中白名单时豁免敏感词拦截)
         whitelist:
           - 枪支管理条例
+
+      # RAG 企业知识库与向量检索配置
+      rag:
+        # 是否启用 RAG 知识库与向量检索自动装配 (默认 true)
+        enabled: true
+        # 向量召回最大结果数 Top-K (默认 3)
+        max-results: 3
+        # 向量召回最低相关度得分阈值 (默认 0.6)
+        min-score: 0.6
+        # 默认 Embedding 模型标识名称 (默认 text-embedding-3-small)
+        model-name: text-embedding-3-small
+        # 向量特征维度 (可选，部分模型支持指定维度)
+        # dimensions: 1536
+        # 独立 Embedding 模型专属配置 (可选；未配置时平滑继承全局主模型凭据)
+        model:
+          # base-url: https://api.openai.com/v1
+          # api-key: YOUR_EMBEDDING_API_KEY
+          # model-name: text-embedding-3-small
+          # timeout: 60s
+          # max-retries: 3
 
       # 命名多模型拓扑配置 (Map<String, AiModelConfig>)
       models:

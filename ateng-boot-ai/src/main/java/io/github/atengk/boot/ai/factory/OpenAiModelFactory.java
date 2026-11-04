@@ -2,6 +2,7 @@ package io.github.atengk.boot.ai.factory;
 
 import dev.langchain4j.model.chat.listener.ChatModelListener;
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
@@ -64,6 +65,45 @@ public final class OpenAiModelFactory {
         }
         if (listeners != null && !listeners.isEmpty()) {
             builder.listeners(listeners);
+        }
+
+        return builder.build();
+    }
+
+    /**
+     * 构建 OpenAiEmbeddingModel 向量化模型实例
+     *
+     * @param config 模型配置属性
+     * @return OpenAiEmbeddingModel 实例
+     */
+    public static OpenAiEmbeddingModel createEmbeddingModel(AiModelConfig config) {
+        return createEmbeddingModel(config, null);
+    }
+
+    /**
+     * 构建 OpenAiEmbeddingModel 向量化模型实例
+     *
+     * @param config     模型配置属性
+     * @param dimensions 向量维度 (可选)
+     * @return OpenAiEmbeddingModel 实例
+     */
+    public static OpenAiEmbeddingModel createEmbeddingModel(AiModelConfig config, Integer dimensions) {
+        validateConfig(config);
+
+        OpenAiEmbeddingModel.OpenAiEmbeddingModelBuilder builder = OpenAiEmbeddingModel.builder()
+                .baseUrl(config.getBaseUrl())
+                .apiKey(config.getApiKey())
+                .modelName(config.getModelName())
+                .timeout(config.getTimeout() != null ? config.getTimeout() : Duration.ofSeconds(60))
+                .maxRetries(0) // 禁用底层 SDK 无抖动的裸重试，统一交由上层 EmbeddingTemplate 与 RetryUtil 实施带 Jitter 的指数退避治理，防御乘积级重试放大
+                .logRequests(Boolean.TRUE.equals(config.getLogRequests()))
+                .logResponses(Boolean.TRUE.equals(config.getLogResponses()));
+
+        if (dimensions != null && dimensions > 0) {
+            builder.dimensions(dimensions);
+        }
+        if (config.getCustomHeaders() != null && !config.getCustomHeaders().isEmpty()) {
+            builder.customHeaders(config.getCustomHeaders());
         }
 
         return builder.build();
