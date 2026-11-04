@@ -2,9 +2,12 @@ package io.github.atengk.boot.ai.registrar;
 
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.TokenStream;
 import dev.langchain4j.service.UserMessage;
 import dev.langchain4j.service.V;
 import io.github.atengk.boot.ai.annotation.AiAgent;
@@ -68,9 +71,17 @@ class AiAgentFactoryBeanTest {
         String answer(String question);
     }
 
+    @AiAgent
+    interface TestStreamingAgent {
+        @dev.langchain4j.service.SystemMessage("你是一个流式问答助理")
+        TokenStream streamAsk(@dev.langchain4j.service.UserMessage String question);
+    }
+
     private AiModelRegistry registry;
     private ChatLanguageModel defaultChatModel;
     private ChatLanguageModel deepseekChatModel;
+    private StreamingChatLanguageModel defaultStreamingModel;
+    private StreamingChatLanguageModel deepseekStreamingModel;
     private ApplicationContext applicationContext;
 
     @BeforeEach
@@ -78,9 +89,11 @@ class AiAgentFactoryBeanTest {
         registry = new AiModelRegistry();
         defaultChatModel = mock(ChatLanguageModel.class);
         deepseekChatModel = mock(ChatLanguageModel.class);
+        defaultStreamingModel = mock(StreamingChatLanguageModel.class);
+        deepseekStreamingModel = mock(StreamingChatLanguageModel.class);
 
-        registry.registerDefault(defaultChatModel, null, "default");
-        registry.register("deepseek", deepseekChatModel, null);
+        registry.registerDefault(defaultChatModel, defaultStreamingModel, "default");
+        registry.register("deepseek", deepseekChatModel, deepseekStreamingModel);
 
         applicationContext = mock(ApplicationContext.class);
         when(applicationContext.getBean(AiModelRegistry.class)).thenReturn(registry);
@@ -284,5 +297,75 @@ class AiAgentFactoryBeanTest {
         } finally {
             io.github.atengk.boot.core.context.TenantContextHolder.clear();
         }
+    }
+
+    @Test
+    @DisplayName("声明式智能体原生支持声明返回 TokenStream 流式响应方法")
+    void testStreamingAgentWithTokenStream() {
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            StreamingResponseHandler<AiMessage> handler = invocation.getArgument(1);
+            handler.onNext("流式");
+            handler.onNext("回复");
+            handler.onComplete(Response.from(AiMessage.from("流式回复")));
+            return null;
+        }).when(defaultStreamingModel).generate(anyList(), any());
+
+        AiAgentFactoryBean<TestStreamingAgent> factoryBean = new AiAgentFactoryBean<>();
+        factoryBean.setAgentInterface(TestStreamingAgent.class);
+        factoryBean.setApplicationContext(applicationContext);
+        factoryBean.afterPropertiesSet();
+
+        TestStreamingAgent agent = factoryBean.getObject();
+        assertThat(agent).isNotNull();
+
+        TokenStream tokenStream = agent.streamAsk("请流式回答");
+        assertThat(tokenStream).isNotNull();
+
+        StringBuilder sb = new StringBuilder();
+        java.util.concurrent.atomic.AtomicBoolean completed = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        tokenStream
+                .onNext(sb::append)
+                .onComplete(resp -> completed.set(true))
+                .onError(err -> {})
+                .start();
+
+        assertThat(sb.toString()).isEqualTo("流式回复");
+        assertThat(completed.get()).isTrue();
+        verify(defaultStreamingModel).generate(anyList(), any());
+    }
+
+    @Test
+    @DisplayName("声明式智能体流式响应支持与 AiContextHolder 线程级动态切源联动")
+    void testStreamingAgentDynamicRoutingWithContext() {
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            StreamingResponseHandler<AiMessage> handler = invocation.getArgument(1);
+            handler.onNext("DeepSeek-Stream");
+            handler.onComplete(Response.from(AiMessage.from("DeepSeek-Stream")));
+            return null;
+        }).when(deepseekStreamingModel).generate(anyList(), any());
+
+        AiAgentFactoryBean<TestStreamingAgent> factoryBean = new AiAgentFactoryBean<>();
+        factoryBean.setAgentInterface(TestStreamingAgent.class);
+        factoryBean.setApplicationContext(applicationContext);
+        factoryBean.afterPropertiesSet();
+
+        TestStreamingAgent agent = factoryBean.getObject();
+        assertThat(agent).isNotNull();
+
+        StringBuilder sb = new StringBuilder();
+        try (var ignored = AiContextHolder.useModel("deepseek")) {
+            TokenStream tokenStream = agent.streamAsk("使用推理模型流式回答");
+            tokenStream
+                    .onNext(sb::append)
+                    .onError(err -> {})
+                    .start();
+        }
+
+        assertThat(sb.toString()).isEqualTo("DeepSeek-Stream");
+        verify(deepseekStreamingModel).generate(anyList(), any());
+        verifyNoInteractions(defaultStreamingModel);
     }
 }

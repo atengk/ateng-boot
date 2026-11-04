@@ -11,6 +11,7 @@ import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.routing.DynamicRoutingChatLanguageModel;
+import io.github.atengk.boot.ai.routing.DynamicRoutingStreamingChatLanguageModel;
 import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
 import io.github.atengk.boot.ai.tool.ToolExecutionSandbox;
 import io.github.atengk.boot.core.exception.BusinessException;
@@ -109,7 +110,18 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
         AiServices<T> builder = AiServices.builder(agentInterface)
                 .chatLanguageModel(routingModel);
 
-        // 3.1 解析接口级 @SystemMessage 系统提示词
+        // 3.1 若接口声明了 TokenStream 流式响应方法或注册表中包含可用流式模型，构建并挂载流式动态路由代理
+        boolean hasStreaming = hasStreamingMethods(agentInterface);
+        boolean hasRegisteredStreamingModel = registry.hasStreamingChatModel(AiModelRegistry.DEFAULT_MODEL_NAME)
+                || (StringUtils.hasText(model) && registry.hasStreamingChatModel(model));
+
+        if (hasStreaming || hasRegisteredStreamingModel) {
+            DynamicRoutingStreamingChatLanguageModel streamingRoutingModel =
+                    new DynamicRoutingStreamingChatLanguageModel(registry, model, tenantModelResolver, quotaChecker);
+            builder.streamingChatLanguageModel(streamingRoutingModel);
+        }
+
+        // 3.2 解析接口级 @SystemMessage 系统提示词
         dev.langchain4j.service.SystemMessage interfaceSystemMessage = agentInterface.getAnnotation(dev.langchain4j.service.SystemMessage.class);
         if (interfaceSystemMessage != null) {
             String systemText;
@@ -220,8 +232,8 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                 throw ite;
             }
 
-            // 3. 对强类型结构化输出执行 JSR-303 数据防卫
-            if (result != null && isComplexObject(result)) {
+            // 3. 对强类型结构化输出执行 JSR-303 数据防卫 (跳过 TokenStream 流式响应句柄)
+            if (result != null && !(result instanceof dev.langchain4j.service.TokenStream) && isComplexObject(result)) {
                 try {
                     ValidatorUtil.validate(result);
                 } catch (BusinessException be) {
@@ -290,6 +302,18 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
             throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
                     "读取智能体接口 [" + clazz.getSimpleName() + "] @SystemMessage 资源失败: " + resourcePath, e);
         }
+    }
+
+    private static boolean hasStreamingMethods(Class<?> intf) {
+        if (intf == null) {
+            return false;
+        }
+        for (Method m : intf.getMethods()) {
+            if (dev.langchain4j.service.TokenStream.class.isAssignableFrom(m.getReturnType())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override

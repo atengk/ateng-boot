@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.ai.agent;
 
 import dev.langchain4j.service.MemoryId;
 import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.TokenStream;
 import dev.langchain4j.service.UserMessage;
 import io.github.atengk.boot.ai.annotation.AiAgent;
 import io.github.atengk.boot.sample.ai.dto.FinancialAuditRequest;
@@ -27,6 +28,15 @@ public interface FinancialAuditAgent {
      * @return 财务合规审计决策报告
      */
     FinancialAuditResult auditOrder(@UserMessage FinancialAuditRequest request);
+
+    /**
+     * 流式财务合规审计决策打字机推流
+     * 支持结合受管工具调用与 TokenStream 实时打字机推流
+     *
+     * @param request 财务合规审计请求
+     * @return 智能体 TokenStream 流式响应句柄
+     */
+    TokenStream auditStream(@UserMessage FinancialAuditRequest request);
 
     /**
      * 支持跨轮会话记忆漫游的财务审计交互

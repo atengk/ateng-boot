@@ -22,8 +22,11 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -75,6 +78,30 @@ class AgentControllerIntegrationTest {
             @Override
             public MockResponse dispatch(RecordedRequest request) {
                 String body = request.getBody().readUtf8();
+                String accept = request.getHeader("Accept");
+
+                // 流式请求识别 (检查 Accept 请求头或 JSON 中的 stream 标识)
+                boolean isStream = (accept != null && accept.contains("text/event-stream"))
+                        || body.contains("\"stream\":true")
+                        || body.contains("\"stream\": true")
+                        || body.contains("\"stream\"");
+
+                if (isStream) {
+                    String sseBody = """
+                            data: {"id":"chatcmpl-agent-stream-1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"订单审计核验中..."},"finish_reason":null}]}
+                            
+                            data: {"id":"chatcmpl-agent-stream-2","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"财务合规通过。"},"finish_reason":null}]}
+                            
+                            data: {"id":"chatcmpl-agent-stream-3","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+                            
+                            data: [DONE]
+                            
+                            """;
+                    return new MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "text/event-stream; charset=utf-8")
+                            .setBody(sseBody);
+                }
 
                 // 1. 触发 JSR-303 越界异常场景 (大模型输出 150 评分违反 @Max(100))
                 if (body.contains("ORD_VIOLATION_SCORE")) {
@@ -344,6 +371,42 @@ class AgentControllerIntegrationTest {
         mockMvc.perform(post("/sample/ai/agent/audit")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    @DisplayName("端到端验证 GET /sample/ai/agent/audit/stream 智能体打字机流式推流审计")
+    void testAuditOrderStreamSuccess() throws Exception {
+        var mvcResult = mockMvc.perform(get("/sample/ai/agent/audit/stream")
+                        .param("orderId", "ORD_STREAM_001")
+                        .param("remarks", "实时流式合规核查")
+                        .accept(MediaType.TEXT_EVENT_STREAM_VALUE))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(mvcResult))
+                .andExpect(status().isOk());
+
+        String sseOutput = mvcResult.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+
+        if (!isLocalProfile()) {
+            assertThat(sseOutput).contains("event:text");
+            assertThat(sseOutput).contains("data:订单审计核验中...");
+            assertThat(sseOutput).contains("data:财务合规通过。");
+            assertThat(sseOutput).contains("event:done");
+            assertThat(sseOutput).contains("data:[DONE]");
+        } else {
+            assertThat(sseOutput).contains("event:text");
+            assertThat(sseOutput).contains("data:[DONE]");
+        }
+    }
+
+    @Test
+    @DisplayName("端到端验证 GET /sample/ai/agent/audit/stream 空订单号 JSR-303 快速失败拦截")
+    void testAuditOrderStreamEmptyOrderIdFailFast() throws Exception {
+        mockMvc.perform(get("/sample/ai/agent/audit/stream")
+                        .param("orderId", "   "))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400));
     }

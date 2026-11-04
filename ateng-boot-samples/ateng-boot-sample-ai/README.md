@@ -36,6 +36,7 @@
 | **外部提示词文件渲染** | `AiChatController` | `GET /sample/ai/chat/template/file` | `curl "http://localhost:8080/sample/ai/chat/template/file?userName=李四&content=咨询Starter配置"` |
 | **双通道打字机流式推流** | `AiChatController` | `GET /sample/ai/chat/stream` | `curl -N "http://localhost:8080/sample/ai/chat/stream?prompt=请深度推导高阶微积分定理"` |
 | **单轮智能体审计决策** | `AiAgentController` | `POST /sample/ai/agent/audit` | `curl -X POST "http://localhost:8080/sample/ai/agent/audit" -H "Content-Type: application/json" -d "{\"orderId\":\"ORD_20261103001\",\"remarks\":\"年度财务大额专项审计\"}"` |
+| **智能体打字机流式推流** | `AiAgentController` | `GET /sample/ai/agent/audit/stream` | `curl -N "http://localhost:8080/sample/ai/agent/audit/stream?orderId=ORD_20261103001&remarks=实时流式审计"` |
 | **跨轮多会话智能体审计** | `AiAgentController` | `POST /sample/ai/agent/audit/{sessionId}` | `curl -X POST "http://localhost:8080/sample/ai/agent/audit/sess_audit_1001" -H "Content-Type: application/json" -d "{\"orderId\":\"ORD_20261103001\",\"remarks\":\"多轮复核第1轮\"}"` |
 | **启动订单风控状态图** | `AiWorkflowController` | `POST /sample/ai/workflow/order-review/start` | `curl -X POST "http://localhost:8080/sample/ai/workflow/order-review/start" -H "Content-Type: application/json" -d "{\"orderId\":\"ORD_9901\",\"amount\":8888.88,\"creditScore\":680,\"remarks\":\"高危审核挂起\"}"` |
 | **工作流快照探查** | `AiWorkflowController` | `GET /sample/ai/workflow/order-review/snapshot/{threadId}` | `curl "http://localhost:8080/sample/ai/workflow/order-review/snapshot/YOUR_THREAD_ID"` |

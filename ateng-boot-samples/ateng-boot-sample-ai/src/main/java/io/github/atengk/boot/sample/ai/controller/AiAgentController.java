@@ -1,5 +1,8 @@
 package io.github.atengk.boot.sample.ai.controller;
 
+import dev.langchain4j.service.TokenStream;
+import io.github.atengk.boot.ai.streaming.SseTokenStreamBridge;
+import io.github.atengk.boot.ai.template.AiTemplate;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.ai.agent.FinancialAuditAgent;
 import io.github.atengk.boot.sample.ai.dto.FinancialAuditRequest;
@@ -8,8 +11,11 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.MediaType;
+import org.springframework.util.StringUtils;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
  * 声明式大模型智能体控制器
@@ -55,5 +61,25 @@ public class AiAgentController {
         log.info("[AGENT-HTTP] 接收到会话财务审计请求: sessionId={}, orderId={}", sessionId, request.getOrderId());
         FinancialAuditResult result = financialAuditAgent.auditOrderWithSession(sessionId, request);
         return Result.success(result);
+    }
+
+    /**
+     * 智能体打字机流式推流审计接口 (SSE)
+     * 结合受管工具调用与 TokenStream 实时打字机推流
+     *
+     * @param orderId 订单编号
+     * @param remarks 可选审计说明
+     * @return SseEmitter 实例
+     */
+    @GetMapping(value = "/audit/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
+    public SseEmitter auditOrderStream(
+            @RequestParam("orderId") @NotBlank(message = "orderId 不能为空") String orderId,
+            @RequestParam(name = "remarks", required = false) String remarks) {
+        log.info("[AGENT-HTTP] 接收到智能体流式审计推流请求: orderId={}", orderId);
+        SseEmitter emitter = new SseEmitter(AiTemplate.DEFAULT_SSE_TIMEOUT.toMillis());
+        FinancialAuditRequest request = new FinancialAuditRequest(orderId, StringUtils.hasText(remarks) ? remarks : "实时流式审计");
+        TokenStream tokenStream = financialAuditAgent.auditStream(request);
+        SseTokenStreamBridge.pipe(tokenStream, emitter);
+        return emitter;
     }
 }

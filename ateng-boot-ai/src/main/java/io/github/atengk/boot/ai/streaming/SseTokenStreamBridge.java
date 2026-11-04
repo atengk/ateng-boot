@@ -3,6 +3,7 @@ package io.github.atengk.boot.ai.streaming;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.output.Response;
+import dev.langchain4j.service.TokenStream;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
 import io.github.atengk.boot.core.context.AsyncContext;
@@ -67,6 +68,37 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
 
     public ActiveStreamRegistry getStreamRegistry() {
         return streamRegistry;
+    }
+
+    /**
+     * 将 LangChain4j 的声明式智能体 TokenStream 流式管道自动绑定并桥接到 Spring SseEmitter
+     *
+     * @param tokenStream 智能体 TokenStream 流
+     * @param emitter     目标 SseEmitter 实例
+     * @return 绑定的 SseTokenStreamBridge 实例
+     */
+    public static SseTokenStreamBridge pipe(TokenStream tokenStream, SseEmitter emitter) {
+        return pipe(tokenStream, emitter, null, null);
+    }
+
+    /**
+     * 将 LangChain4j 的声明式智能体 TokenStream 流式管道自动绑定并桥接到 Spring SseEmitter (支持物理中断注册)
+     *
+     * @param tokenStream    智能体 TokenStream 流
+     * @param emitter        目标 SseEmitter 实例
+     * @param streamId       可选的流式标识
+     * @param streamRegistry 可选的活跃连接注册中心
+     * @return 绑定的 SseTokenStreamBridge 实例
+     */
+    public static SseTokenStreamBridge pipe(TokenStream tokenStream, SseEmitter emitter, String streamId, ActiveStreamRegistry streamRegistry) {
+        Objects.requireNonNull(tokenStream, "TokenStream 不能为空");
+        SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, streamId, streamRegistry);
+        tokenStream
+                .onNext(bridge::onNext)
+                .onComplete(bridge::onComplete)
+                .onError(bridge::onError)
+                .start();
+        return bridge;
     }
 
     @Override
