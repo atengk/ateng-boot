@@ -43,3 +43,11 @@ _Avoid_: MultiSearchRequest, HybridQuery, MixedSearch
 **MilvusEmbeddingStore (LangChain4j 知识库存储 SPI 适配器)**:
 实现 LangChain4j `EmbeddingStore<TextSegment>` 标准接口的适配器，基于条件装配弱依赖解耦，为大模型 RAG 提供知识切片持久化与语义检索底层。
 _Avoid_: MilvusVectorStore, LangChainMilvusStore, RagStorage
+
+**MilvusSearchRequest (单向量高级检索请求模型)**:
+单向量 ANN 相似度检索的高内聚 Fluent 请求构造器，支持标量过滤、GroupBy 去重聚合、Radius 与 RangeFilter 相似度绝对区间过滤、Offset 浅分页与专属检索超参数。
+_Avoid_: SingleSearchRequest, SearchQuery, VectorQueryReq
+
+**MilvusAlias (集合别名与蓝绿平滑切表机制)**:
+将业务逻辑别名绑定至实际物理向量集合的动态指针抽象，用于实现全量数据离线重建后的毫秒级流量切换、蓝绿发布与零停机冷热平滑切表。
+_Avoid_: CollectionPointer, VectorAlias, TableAlias

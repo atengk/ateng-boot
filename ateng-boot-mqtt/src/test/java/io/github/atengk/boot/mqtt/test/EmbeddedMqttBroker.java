@@ -154,9 +154,17 @@ public class EmbeddedMqttBroker {
                 serverChannel = null;
             }
         }
+        for (Channel ch : clientIds.keySet()) {
+            try {
+                if (ch.isOpen()) {
+                    ch.close().sync();
+                }
+            } catch (Throwable ignored) {
+            }
+        }
         if (workerGroup != null) {
             try {
-                workerGroup.shutdownGracefully();
+                workerGroup.shutdownGracefully(0, 5, java.util.concurrent.TimeUnit.SECONDS);
             } catch (Throwable ignored) {
             } finally {
                 workerGroup = null;
@@ -164,7 +172,7 @@ public class EmbeddedMqttBroker {
         }
         if (bossGroup != null) {
             try {
-                bossGroup.shutdownGracefully();
+                bossGroup.shutdownGracefully(0, 5, java.util.concurrent.TimeUnit.SECONDS);
             } catch (Throwable ignored) {
             } finally {
                 bossGroup = null;

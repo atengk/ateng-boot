@@ -377,6 +377,12 @@ class MqttTemplateTest {
         broker.stop();
         broker = null; // 标记已关闭，防御 tearDown 重复停止触发 Netty 线程拒绝
 
+        // 显式断开客户端连接，确保测试在任何宿主与并发环境下断网必定确定性快速失败
+        try {
+            clientRegistry.getClientHandle("primary").getAsyncClient().disconnectForcibly();
+        } catch (Throwable ignored) {
+        }
+
         assertThatThrownBy(() -> mqttTemplate.publish("test/failure", "fail-payload", 1))
                 .isInstanceOf(RuntimeException.class);
 
