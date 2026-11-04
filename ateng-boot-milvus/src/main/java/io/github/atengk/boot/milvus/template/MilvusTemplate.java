@@ -3,13 +3,20 @@ package io.github.atengk.boot.milvus.template;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.BatchSliceUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
+import io.github.atengk.boot.milvus.context.MilvusContextHolder;
+import io.github.atengk.boot.milvus.exception.MilvusException;
 import io.github.atengk.boot.milvus.exception.MilvusExceptionTranslator;
+import io.github.atengk.boot.milvus.model.AnnSearch;
 import io.github.atengk.boot.milvus.model.MilvusEntityConverter;
 import io.github.atengk.boot.milvus.model.MilvusEntityMetadata;
 import io.github.atengk.boot.milvus.model.MilvusHit;
+import io.github.atengk.boot.milvus.model.MilvusHybridSearchRequest;
+import io.github.atengk.boot.milvus.model.ReRanker;
 import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.github.atengk.boot.milvus.properties.MilvusConsistencyLevel;
 import io.github.atengk.boot.milvus.tenant.MilvusTenantHelper;
+import io.milvus.orm.iterator.QueryIterator;
+import io.milvus.response.QueryResultsWrapper;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.common.IndexParam;
 import io.milvus.v2.service.collection.request.CreateCollectionReq;
@@ -35,13 +42,17 @@ import io.milvus.v2.service.partition.request.HasPartitionReq;
 import io.milvus.v2.service.partition.request.ListPartitionsReq;
 import io.milvus.v2.service.partition.request.LoadPartitionsReq;
 import io.milvus.v2.service.partition.request.ReleasePartitionsReq;
+import io.milvus.v2.service.vector.request.AnnSearchReq;
 import io.milvus.v2.service.vector.request.DeleteReq;
 import io.milvus.v2.service.vector.request.GetReq;
+import io.milvus.v2.service.vector.request.HybridSearchReq;
 import io.milvus.v2.service.vector.request.InsertReq;
+import io.milvus.v2.service.vector.request.QueryIteratorReq;
 import io.milvus.v2.service.vector.request.QueryReq;
 import io.milvus.v2.service.vector.request.SearchReq;
 import io.milvus.v2.service.vector.request.UpsertReq;
 import io.milvus.v2.service.vector.request.data.FloatVec;
+import io.milvus.v2.service.vector.request.ranker.BaseRanker;
 import io.milvus.v2.service.vector.response.GetResp;
 import io.milvus.v2.service.vector.response.InsertResp;
 import io.milvus.v2.service.vector.response.QueryResp;
@@ -57,7 +68,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -1592,6 +1605,291 @@ public class MilvusTemplate {
                 createPartition(collectionName, partitionName);
             }
         }
+    }
+
+    // =========================================================================
+    // 12. 多向量混合检索 (Hybrid Search Operations)
+    // =========================================================================
+
+    /**
+     * 执行底层原生 HybridSearchReq 多向量混合检索
+     *
+     * @param request HybridSearchReq 请求对象
+     * @return 官方 SearchResp 响应
+     */
+    public SearchResp hybridSearch(HybridSearchReq request) {
+        Assert.notNull(request, "HybridSearchReq must not be null");
+        return execute("多向量混合检索", c -> c.hybridSearch(request));
+    }
+
+    /**
+     * 执行高级链式多向量混合检索 (融合 RRF/Weighted 重排并返回强类型标准化命中结果)
+     *
+     * @param request MilvusHybridSearchRequest 请求对象
+     * @param <T>     实体泛型
+     * @return 强类型命中结果列表
+     */
+    public <T> List<MilvusHit<T>> hybridSearch(MilvusHybridSearchRequest<T> request) {
+        Assert.notNull(request, "MilvusHybridSearchRequest must not be null");
+        Assert.hasText(request.getCollectionName(), "collectionName must not be empty");
+        Assert.notEmpty(request.getSearchRequests(), "searchRequests must not be empty");
+        Assert.isTrue(request.getTopK() > 0, "topK must be positive");
+
+        String effectiveDb = StringUtils.hasText(request.getDatabaseName()) ? request.getDatabaseName() : resolveCurrentDatabase();
+        MilvusConsistencyLevel level = request.getConsistencyLevel() != null ? request.getConsistencyLevel() : properties.getConsistencyLevel();
+        BaseRanker ranker = request.getRanker() != null ? request.getRanker() : ReRanker.rrf();
+
+        List<AnnSearchReq> annSearchReqs = new ArrayList<>(request.getSearchRequests().size());
+        for (AnnSearch annSearch : request.getSearchRequests()) {
+            String wovenExpr = MilvusTenantHelper.weaveTenantFilter(annSearch.getExpr(), null, request.isIgnoreTenant());
+            annSearchReqs.add(annSearch.toAnnSearchReq(wovenExpr));
+        }
+
+        List<String> effectiveOutFields = request.getOutputFields();
+        if ((effectiveOutFields == null || effectiveOutFields.isEmpty()) && request.getEntityClass() != null && !Map.class.isAssignableFrom(request.getEntityClass())) {
+            effectiveOutFields = Collections.singletonList("*");
+        }
+
+        HybridSearchReq.HybridSearchReqBuilder<?, ?> builder = HybridSearchReq.builder()
+                .collectionName(request.getCollectionName())
+                .searchRequests(annSearchReqs)
+                .ranker(ranker)
+                .topK(request.getTopK())
+                .consistencyLevel(level.getNativeLevel());
+
+        if (StringUtils.hasText(effectiveDb)) {
+            builder.databaseName(effectiveDb);
+        }
+        if (request.getPartitionNames() != null && !request.getPartitionNames().isEmpty()) {
+            builder.partitionNames(request.getPartitionNames());
+        }
+        if (effectiveOutFields != null && !effectiveOutFields.isEmpty()) {
+            builder.outFields(effectiveOutFields);
+        }
+        if (request.getRoundDecimal() >= 0) {
+            builder.roundDecimal(request.getRoundDecimal());
+        }
+
+        SearchResp resp = hybridSearch(builder.build());
+        return extractHits(resp, request.getEntityClass());
+    }
+
+    // =========================================================================
+    // 13. 大数据游标流式遍历 (Streaming Query Operations)
+    // =========================================================================
+
+    /**
+     * 基于官方 QueryIterator 执行大数据游标流式遍历 (突破 16384 offset 深度分页限制，零 OOM)
+     *
+     * @param collectionName 集合名称
+     * @param expr           过滤表达式 (可为 null)
+     * @param outputFields   出参字段列表 (为空默认 "*")
+     * @param batchSize      每批游标拉取大小 (默认 1000)
+     * @param batchConsumer  每批字典数据消费回调
+     */
+    public void streamingQuery(String collectionName,
+                               String expr,
+                               List<String> outputFields,
+                               int batchSize,
+                               Consumer<List<Map<String, Object>>> batchConsumer) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        Assert.notNull(batchConsumer, "batchConsumer must not be null");
+
+        String safeFilter = MilvusTenantHelper.weaveTenantFilter(expr, null, false);
+        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        List<String> effectiveOutFields = outputFields != null && !outputFields.isEmpty() ? outputFields : Collections.singletonList("*");
+        String effectiveDb = resolveCurrentDatabase();
+
+        QueryIteratorReq.QueryIteratorReqBuilder<?, ?> builder = QueryIteratorReq.builder()
+                .collectionName(collectionName)
+                .batchSize(effectiveBatchSize)
+                .outputFields(effectiveOutFields)
+                .consistencyLevel(properties.getConsistencyLevel().getNativeLevel());
+
+        if (StringUtils.hasText(effectiveDb)) {
+            builder.databaseName(effectiveDb);
+        }
+        if (StringUtils.hasText(safeFilter)) {
+            builder.expr(safeFilter);
+        }
+
+        execute("游标流式遍历", c -> {
+            QueryIterator iterator = null;
+            try {
+                iterator = c.queryIterator(builder.build());
+                while (true) {
+                    List<QueryResultsWrapper.RowRecord> records = iterator.next();
+                    if (records == null || records.isEmpty()) {
+                        break;
+                    }
+                    List<Map<String, Object>> batch = new ArrayList<>(records.size());
+                    String tenantId = !TenantContextHolder.isIgnoreTenant() ? TenantContextHolder.getTenantId() : null;
+                    for (QueryResultsWrapper.RowRecord record : records) {
+                        Map<String, Object> map = record.getFieldValues();
+                        if (map != null) {
+                            if (StringUtils.hasText(tenantId)) {
+                                Object rowTenant = map.get(MilvusTenantHelper.DEFAULT_TENANT_FIELD);
+                                if (rowTenant != null && !tenantId.trim().equals(String.valueOf(rowTenant).trim())) {
+                                    continue;
+                                }
+                            }
+                            batch.add(map);
+                        }
+                    }
+                    if (!batch.isEmpty()) {
+                        batchConsumer.accept(batch);
+                    }
+                }
+                return null;
+            } finally {
+                if (iterator != null) {
+                    try {
+                        iterator.close();
+                    } catch (Exception e) {
+                        log.warn("关闭 QueryIterator 游标异常: {}", e.getMessage());
+                    }
+                }
+            }
+        });
+    }
+
+    /**
+     * 基于官方 QueryIterator 执行大数据游标流式遍历 (默认拉取批次大小 1000)
+     *
+     * @param collectionName 集合名称
+     * @param expr           过滤表达式
+     * @param batchConsumer  每批字典数据消费回调
+     */
+    public void streamingQuery(String collectionName,
+                               String expr,
+                               Consumer<List<Map<String, Object>>> batchConsumer) {
+        streamingQuery(collectionName, expr, null, DEFAULT_BATCH_SIZE, batchConsumer);
+    }
+
+    /**
+     * 基于官方 QueryIterator 执行大数据游标流式遍历 (自定义批次大小)
+     *
+     * @param collectionName 集合名称
+     * @param expr           过滤表达式
+     * @param batchSize      每批游标拉取大小
+     * @param batchConsumer  每批字典数据消费回调
+     */
+    public void streamingQuery(String collectionName,
+                               String expr,
+                               int batchSize,
+                               Consumer<List<Map<String, Object>>> batchConsumer) {
+        streamingQuery(collectionName, expr, null, batchSize, batchConsumer);
+    }
+
+    /**
+     * 基于官方 QueryIterator 执行强类型实体大数据游标流式遍历
+     *
+     * @param entityClass   实体类型
+     * @param expr          过滤表达式
+     * @param batchSize     每批拉取大小
+     * @param batchConsumer 每批实体列表消费回调
+     * @param <T>           实体泛型
+     */
+    public <T> void streamingQueryEntities(Class<T> entityClass,
+                                           String expr,
+                                           int batchSize,
+                                           Consumer<List<T>> batchConsumer) {
+        Assert.notNull(entityClass, "entityClass must not be null");
+        Assert.notNull(batchConsumer, "batchConsumer must not be null");
+        MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
+        streamingQuery(metadata.getCollectionName(), expr, null, batchSize, batchMaps -> {
+            List<T> entities = MilvusEntityConverter.mapListToEntities(batchMaps, entityClass);
+            if (!entities.isEmpty()) {
+                batchConsumer.accept(entities);
+            }
+        });
+    }
+
+    /**
+     * 基于官方 QueryIterator 执行强类型实体大数据游标流式遍历 (默认批次大小 1000)
+     *
+     * @param entityClass   实体类型
+     * @param expr          过滤表达式
+     * @param batchConsumer 每批实体列表消费回调
+     * @param <T>           实体泛型
+     */
+    public <T> void streamingQueryEntities(Class<T> entityClass,
+                                           String expr,
+                                           Consumer<List<T>> batchConsumer) {
+        streamingQueryEntities(entityClass, expr, DEFAULT_BATCH_SIZE, batchConsumer);
+    }
+
+    // =========================================================================
+    // 14. 动态切库治理与上下文透传 (Database Routing Operations)
+    // =========================================================================
+
+    /**
+     * 获取当前生效的逻辑数据库名称 (优先自 ThreadLocal 上下文提取，否则回退全局默认配置)
+     *
+     * @return 逻辑数据库名称
+     */
+    public String resolveCurrentDatabase() {
+        String db = MilvusContextHolder.getDatabase();
+        if (StringUtils.hasText(db)) {
+            return db.trim();
+        }
+        return properties.getDatabase();
+    }
+
+    /**
+     * 在指定的逻辑数据库上下文中执行闭包任务 (在 finally 块中强制恢复现场，保障线程绝对安全)
+     *
+     * @param databaseName 目标数据库名称
+     * @param action       待执行闭包动作
+     * @param <T>          返回值泛型
+     * @return 执行结果
+     */
+    public <T> T useDatabase(String databaseName, Supplier<T> action) {
+        Assert.hasText(databaseName, "databaseName must not be empty");
+        Assert.notNull(action, "action must not be null");
+        String previousDb = MilvusContextHolder.getDatabase();
+        try {
+            MilvusContextHolder.setDatabase(databaseName.trim());
+            return action.get();
+        } finally {
+            if (previousDb != null) {
+                MilvusContextHolder.setDatabase(previousDb);
+            } else {
+                MilvusContextHolder.clearDatabase();
+            }
+        }
+    }
+
+    /**
+     * 在指定的逻辑数据库上下文中执行无返回值闭包任务
+     *
+     * @param databaseName 目标数据库名称
+     * @param action       待执行闭包动作
+     */
+    public void useDatabase(String databaseName, Runnable action) {
+        Assert.notNull(action, "action must not be null");
+        useDatabase(databaseName, () -> {
+            action.run();
+            return null;
+        });
+    }
+
+    /**
+     * 主动将底层客户端切换至指定的逻辑数据库
+     *
+     * @param databaseName 数据库名称
+     */
+    public void switchDatabase(String databaseName) {
+        Assert.hasText(databaseName, "databaseName must not be empty");
+        execute("切换逻辑数据库", c -> {
+            try {
+                c.useDatabase(databaseName.trim());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new MilvusException("切换数据库中断", e);
+            }
+            return null;
+        });
     }
 
     // =========================================================================
