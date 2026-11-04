@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
+import io.github.atengk.boot.sample.milvus.converter.DocumentConverter;
 import io.github.atengk.boot.sample.milvus.dto.DocumentInsertDto;
 import io.github.atengk.boot.sample.milvus.dto.VectorSearchDto;
 import io.github.atengk.boot.sample.milvus.model.SampleDocumentEntity;
@@ -60,7 +61,7 @@ public class MilvusTenantController {
             TenantContextHolder.setTenantId(effectiveTenantId);
         }
         try {
-            SampleDocumentEntity entity = toEntity(request);
+            SampleDocumentEntity entity = DocumentConverter.toEntity(request);
             if (StringUtils.hasText(effectiveTenantId)) {
                 entity.setTenantId(effectiveTenantId);
             }
@@ -91,7 +92,7 @@ public class MilvusTenantController {
                     request.getFilterExpr()
             );
             List<DocumentHitVo> voList = hits.stream()
-                    .map(this::toHitVo)
+                    .map(DocumentConverter::toHitVo)
                     .collect(Collectors.toList());
             return Result.success(voList);
         } finally {
@@ -117,44 +118,5 @@ public class MilvusTenantController {
         } finally {
             TenantContextHolder.clear();
         }
-    }
-
-    private SampleDocumentEntity toEntity(DocumentInsertDto dto) {
-        if (dto == null) {
-            return null;
-        }
-        return SampleDocumentEntity.builder()
-                .id(dto.getId())
-                .category(dto.getCategory())
-                .tenantId(dto.getTenantId())
-                .title(dto.getTitle())
-                .content(dto.getContent())
-                .vector(dto.getVector())
-                .build();
-    }
-
-    private DocumentVo toVo(SampleDocumentEntity entity) {
-        if (entity == null) {
-            return null;
-        }
-        return DocumentVo.builder()
-                .id(entity.getId())
-                .category(entity.getCategory())
-                .tenantId(entity.getTenantId())
-                .title(entity.getTitle())
-                .content(entity.getContent())
-                .vector(entity.getVector())
-                .build();
-    }
-
-    private DocumentHitVo toHitVo(MilvusHit<SampleDocumentEntity> hit) {
-        if (hit == null) {
-            return null;
-        }
-        return DocumentHitVo.builder()
-                .id(hit.getId())
-                .score(hit.getScore())
-                .document(toVo(hit.getEntity()))
-                .build();
     }
 }

@@ -13,6 +13,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
 /**
  * Milvus 向量数据库基础设施防御性自动装配
@@ -63,10 +64,15 @@ public class AtengMilvusAutoConfiguration {
         return new MilvusTemplate(milvusClientV2, properties);
     }
 
-    @Bean
-    @ConditionalOnMissingBean
+    @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(HealthIndicator.class)
-    public MilvusHealthIndicator milvusHealthIndicator(MilvusTemplate milvusTemplate) {
-        return new MilvusHealthIndicator(milvusTemplate);
+    @ConditionalOnProperty(prefix = "management.health.milvus", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class MilvusHealthIndicatorConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean
+        public MilvusHealthIndicator milvusHealthIndicator(MilvusTemplate milvusTemplate) {
+            return new MilvusHealthIndicator(milvusTemplate);
+        }
     }
 }

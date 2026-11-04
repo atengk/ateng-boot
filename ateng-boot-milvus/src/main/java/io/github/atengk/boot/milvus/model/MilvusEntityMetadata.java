@@ -85,6 +85,30 @@ public class MilvusEntityMetadata {
                 throw new MilvusException("写入实体属性值失败: " + field.getName(), e);
             }
         }
+
+        /**
+         * 将字段元数据转换为 MilvusClientV2 标准 FieldSchema
+         *
+         * @return FieldSchema 实例
+         */
+        public CreateCollectionReq.FieldSchema toFieldSchema() {
+            CreateCollectionReq.FieldSchema.FieldSchemaBuilder<?, ?> fsBuilder = CreateCollectionReq.FieldSchema.builder()
+                    .name(fieldName)
+                    .dataType(dataType)
+                    .description(description)
+                    .isPrimaryKey(isPrimaryKey)
+                    .isPartitionKey(isPartitionKey)
+                    .autoID(autoId);
+
+            if (isVector) {
+                fsBuilder.dimension(dimension);
+            }
+            if (dataType == DataType.VarChar) {
+                fsBuilder.maxLength(maxLength > 0 ? maxLength : 65535);
+            }
+
+            return fsBuilder.build();
+        }
     }
 
     /**
@@ -251,25 +275,9 @@ public class MilvusEntityMetadata {
         CreateCollectionReq.CollectionSchema schema = CreateCollectionReq.CollectionSchema.builder()
                 .build();
 
-        List<CreateCollectionReq.FieldSchema> fieldSchemaList = new ArrayList<>();
-        for (FieldMetadata fm : allFields) {
-            CreateCollectionReq.FieldSchema.FieldSchemaBuilder<?, ?> fsBuilder = CreateCollectionReq.FieldSchema.builder()
-                    .name(fm.getFieldName())
-                    .dataType(fm.getDataType())
-                    .description(fm.getDescription())
-                    .isPrimaryKey(fm.isPrimaryKey())
-                    .isPartitionKey(fm.isPartitionKey())
-                    .autoID(fm.isAutoId());
-
-            if (fm.isVector()) {
-                fsBuilder.dimension(fm.getDimension());
-            }
-            if (fm.getDataType() == DataType.VarChar) {
-                fsBuilder.maxLength(fm.getMaxLength() > 0 ? fm.getMaxLength() : 65535);
-            }
-
-            fieldSchemaList.add(fsBuilder.build());
-        }
+        List<CreateCollectionReq.FieldSchema> fieldSchemaList = allFields.stream()
+                .map(FieldMetadata::toFieldSchema)
+                .collect(Collectors.toList());
 
         schema.setFieldSchemaList(fieldSchemaList);
 

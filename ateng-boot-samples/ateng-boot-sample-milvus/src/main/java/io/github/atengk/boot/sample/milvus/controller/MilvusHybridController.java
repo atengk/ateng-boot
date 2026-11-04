@@ -5,10 +5,10 @@ import io.github.atengk.boot.milvus.model.AnnSearch;
 import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.model.MilvusHybridSearchRequest;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
+import io.github.atengk.boot.sample.milvus.converter.DocumentConverter;
 import io.github.atengk.boot.sample.milvus.dto.HybridSearchDto;
 import io.github.atengk.boot.sample.milvus.model.SampleDocumentEntity;
 import io.github.atengk.boot.sample.milvus.vo.DocumentHitVo;
-import io.github.atengk.boot.sample.milvus.vo.DocumentVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -60,33 +60,8 @@ public class MilvusHybridController {
 
         List<MilvusHit<SampleDocumentEntity>> hits = milvusTemplate.hybridSearch(hybridReq);
         List<DocumentHitVo> voList = hits.stream()
-                .map(this::toHitVo)
+                .map(DocumentConverter::toHitVo)
                 .collect(Collectors.toList());
         return Result.success(voList);
-    }
-
-    private DocumentVo toVo(SampleDocumentEntity entity) {
-        if (entity == null) {
-            return null;
-        }
-        return DocumentVo.builder()
-                .id(entity.getId())
-                .category(entity.getCategory())
-                .tenantId(entity.getTenantId())
-                .title(entity.getTitle())
-                .content(entity.getContent())
-                .vector(entity.getVector())
-                .build();
-    }
-
-    private DocumentHitVo toHitVo(MilvusHit<SampleDocumentEntity> hit) {
-        if (hit == null) {
-            return null;
-        }
-        return DocumentHitVo.builder()
-                .id(hit.getId())
-                .score(hit.getScore())
-                .document(toVo(hit.getEntity()))
-                .build();
     }
 }

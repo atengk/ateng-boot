@@ -2,6 +2,7 @@ package io.github.atengk.boot.milvus.tenant;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.milvus.model.MilvusEntityMetadata;
+import io.milvus.v2.common.DataType;
 import org.springframework.util.StringUtils;
 
 import java.util.Map;
@@ -25,10 +26,11 @@ public final class MilvusTenantHelper {
      *
      * @param originalFilter   原始过滤表达式 (可为空)
      * @param tenantFieldName 租户字段名称 (为空时默认为 "tenant_id")
+     * @param isNumeric       租户字段是否为数值类型 (如 INT64/INT32)
      * @param ignoreTenant    是否显式忽略租户隔离
      * @return 织入租户条件后的安全表达式
      */
-    public static String weaveTenantFilter(String originalFilter, String tenantFieldName, boolean ignoreTenant) {
+    public static String weaveTenantFilter(String originalFilter, String tenantFieldName, boolean isNumeric, boolean ignoreTenant) {
         if (ignoreTenant || TenantContextHolder.isIgnoreTenant()) {
             return originalFilter;
         }
@@ -39,13 +41,59 @@ public final class MilvusTenantHelper {
         }
 
         String field = StringUtils.hasText(tenantFieldName) ? tenantFieldName.trim() : DEFAULT_TENANT_FIELD;
-        String tenantCondition = String.format("%s == '%s'", field, tenantId.trim());
+        String tenantCondition;
+        if (isNumeric) {
+            tenantCondition = String.format("%s == %s", field, tenantId.trim());
+        } else {
+            tenantCondition = String.format("%s == '%s'", field, tenantId.trim().replace("'", "\\'"));
+        }
 
         if (!StringUtils.hasText(originalFilter)) {
             return tenantCondition;
         }
 
         return String.format("(%s) and (%s)", originalFilter.trim(), tenantCondition);
+    }
+
+    /**
+     * 为给定的原始查询表达式安全织入多租户过滤条件 (默认 VARCHAR 字符串类型)
+     *
+     * @param originalFilter   原始过滤表达式 (可为空)
+     * @param tenantFieldName 租户字段名称 (为空时默认为 "tenant_id")
+     * @param ignoreTenant    是否显式忽略租户隔离
+     * @return 织入租户条件后的安全表达式
+     */
+    public static String weaveTenantFilter(String originalFilter, String tenantFieldName, boolean ignoreTenant) {
+        return weaveTenantFilter(originalFilter, tenantFieldName, false, ignoreTenant);
+    }
+
+    /**
+     * 根据实体元数据安全织入多租户过滤条件 (自动判定租户字段名与数值/字符类型)
+     *
+     * @param originalFilter 原始过滤表达式 (可为空)
+     * @param metadata       实体元数据 (可为空)
+     * @param ignoreTenant   是否显式忽略租户隔离
+     * @return 织入租户条件后的安全表达式
+     */
+    public static String weaveEntityTenantFilter(String originalFilter, MilvusEntityMetadata metadata, boolean ignoreTenant) {
+        if (metadata != null && metadata.getPartitionKeyField() != null) {
+            String tenantField = metadata.getPartitionKeyField().getFieldName();
+            DataType dt = metadata.getPartitionKeyField().getDataType();
+            boolean isNumeric = (dt == DataType.Int64 || dt == DataType.Int32 || dt == DataType.Int16 || dt == DataType.Int8);
+            return weaveTenantFilter(originalFilter, tenantField, isNumeric, ignoreTenant);
+        }
+        return weaveTenantFilter(originalFilter, (String) null, false, ignoreTenant);
+    }
+
+    /**
+     * 根据实体元数据安全织入多租户过滤条件
+     *
+     * @param originalFilter 原始过滤表达式 (可为空)
+     * @param metadata       实体元数据 (可为空)
+     * @return 织入租户条件后的安全表达式
+     */
+    public static String weaveEntityTenantFilter(String originalFilter, MilvusEntityMetadata metadata) {
+        return weaveEntityTenantFilter(originalFilter, metadata, false);
     }
 
     /**

@@ -146,9 +146,11 @@ class MilvusTemplateLifecycleTest {
         when(mockClient.describeIndex(any(DescribeIndexReq.class))).thenReturn(descResp);
         assertThat(milvusTemplate.describeIndex("my_col", "vector")).isSameAs(descResp);
 
-        // listIndexes
+        // listIndexes (集合维度与字段维度)
         when(mockClient.listIndexes(any(ListIndexesReq.class))).thenReturn(List.of("vector_idx"));
         assertThat(milvusTemplate.listIndexes("my_col")).containsExactly("vector_idx");
+        assertThat(milvusTemplate.listIndexes("my_col", "vector")).containsExactly("vector_idx");
+        assertThat(milvusTemplate.hasIndex("my_col", "vector")).isTrue();
 
         // dropIndex
         milvusTemplate.dropIndex("my_col", "vector");
@@ -232,11 +234,35 @@ class MilvusTemplateLifecycleTest {
         when(mockClient.listIndexes(any(ListIndexesReq.class))).thenReturn(Collections.emptyList());
         when(mockClient.getLoadState(any(GetLoadStateReq.class))).thenReturn(false);
 
-        milvusTemplate.createCollectionAndIndex("param_col", "vector", 512,
+        milvusTemplate.createCollectionAndIndex("param_col", "custom_vector", 512,
                 IndexParam.MetricType.IP, IndexParam.IndexType.FLAT);
 
-        verify(mockClient).createCollection(any(CreateCollectionReq.class));
-        verify(mockClient).createIndex(any(CreateIndexReq.class));
+        ArgumentCaptor<CreateCollectionReq> createCaptor = ArgumentCaptor.forClass(CreateCollectionReq.class);
+        verify(mockClient).createCollection(createCaptor.capture());
+        assertThat(createCaptor.getValue().getCollectionName()).isEqualTo("param_col");
+        assertThat(createCaptor.getValue().getDimension()).isEqualTo(512);
+        assertThat(createCaptor.getValue().getVectorFieldName()).isEqualTo("custom_vector");
+        assertThat(createCaptor.getValue().getMetricType()).isEqualTo("IP");
+
+        ArgumentCaptor<CreateIndexReq> indexCaptor = ArgumentCaptor.forClass(CreateIndexReq.class);
+        verify(mockClient).createIndex(indexCaptor.capture());
+        assertThat(indexCaptor.getValue().getIndexParams().get(0).getFieldName()).isEqualTo("custom_vector");
+        assertThat(indexCaptor.getValue().getIndexParams().get(0).getMetricType()).isEqualTo(IndexParam.MetricType.IP);
+
         verify(mockClient).loadCollection(any(LoadCollectionReq.class));
+    }
+
+    @Test
+    @DisplayName("测试一键建表当向量索引已存在且已加载时幂等跳过")
+    void testCreateCollectionAndIndexIdempotent() {
+        when(mockClient.hasCollection(any(HasCollectionReq.class))).thenReturn(true);
+        when(mockClient.listIndexes(any(ListIndexesReq.class))).thenReturn(List.of("vector_idx"));
+        when(mockClient.getLoadState(any(GetLoadStateReq.class))).thenReturn(true);
+
+        milvusTemplate.createCollectionAndIndex(DemoVectorEntity.class);
+
+        verify(mockClient, Mockito.never()).createCollection(any(CreateCollectionReq.class));
+        verify(mockClient, Mockito.never()).createIndex(any(CreateIndexReq.class));
+        verify(mockClient, Mockito.never()).loadCollection(any(LoadCollectionReq.class));
     }
 }

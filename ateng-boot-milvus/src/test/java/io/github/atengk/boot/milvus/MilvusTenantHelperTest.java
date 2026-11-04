@@ -95,6 +95,16 @@ class MilvusTenantHelperTest {
         // 3. 自定义租户字段名
         String customField = MilvusTenantHelper.weaveTenantFilter("score >= 90", "org_id", false);
         assertThat(customField).isEqualTo("(score >= 90) and (org_id == 'tenant_001')");
+
+        // 4. 数值型租户字段 (无单引号)
+        TenantContextHolder.setTenantId("10086");
+        String numericField = MilvusTenantHelper.weaveTenantFilter("score >= 90", "tenant_id", true, false);
+        assertThat(numericField).isEqualTo("(score >= 90) and (tenant_id == 10086)");
+
+        // 5. 实体元数据自动推导数值型租户字段
+        MilvusEntityMetadata longMeta = MilvusEntityMetadata.of(LongTenantDoc.class);
+        String entityWoven = MilvusTenantHelper.weaveEntityTenantFilter("score >= 90", longMeta, false);
+        assertThat(entityWoven).isEqualTo("(score >= 90) and (tenantId == 10086)");
     }
 
     @Test

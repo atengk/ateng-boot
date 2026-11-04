@@ -1,6 +1,6 @@
-package io.github.atengk.boot.milvus.autoconfigure.langchain4j;
+package io.github.atengk.boot.milvus.properties;
 
-import io.github.atengk.boot.milvus.properties.MilvusConsistencyLevel;
+import io.milvus.v2.common.IndexParam;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -53,6 +53,16 @@ public class MilvusLangChain4jProperties {
      * 向量维度大小 (默认 1536，适配 text-embedding-3-small 等主流嵌入模型)
      */
     private int dimension = 1536;
+
+    /**
+     * 向量距离度量方式 (默认 COSINE)
+     */
+    private IndexParam.MetricType metricType = IndexParam.MetricType.COSINE;
+
+    /**
+     * 向量索引算法类型 (默认 AUTOINDEX)
+     */
+    private IndexParam.IndexType indexType = IndexParam.IndexType.AUTOINDEX;
 
     /**
      * 集合不存在时是否自动创建 Schema 并建立索引预加载

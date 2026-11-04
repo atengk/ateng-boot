@@ -15,6 +15,7 @@ import io.github.atengk.boot.milvus.model.ReRanker;
 import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.github.atengk.boot.milvus.properties.MilvusConsistencyLevel;
 import io.github.atengk.boot.milvus.tenant.MilvusTenantHelper;
+import io.github.atengk.boot.milvus.util.MilvusExprHelper;
 import io.milvus.orm.iterator.QueryIterator;
 import io.milvus.response.QueryResultsWrapper;
 import io.milvus.v2.client.MilvusClientV2;
@@ -178,13 +179,26 @@ public class MilvusTemplate {
      * @param dimension      向量维度
      */
     public void createCollection(String collectionName, int dimension) {
+        createCollection(collectionName, dimension, null);
+    }
+
+    /**
+     * 极简创建集合 (指定向量字段名，默认生成 id 主键)
+     *
+     * @param collectionName  集合名称
+     * @param dimension       向量维度
+     * @param vectorFieldName 向量字段名称 (可选，为空时 SDK 默认为 "vector")
+     */
+    public void createCollection(String collectionName, int dimension, String vectorFieldName) {
         Assert.hasText(collectionName, "collectionName must not be empty");
         Assert.isTrue(dimension > 0, "dimension must be positive");
-        CreateCollectionReq req = CreateCollectionReq.builder()
+        CreateCollectionReq.CreateCollectionReqBuilder<?, ?> builder = CreateCollectionReq.builder()
                 .collectionName(collectionName)
-                .dimension(dimension)
-                .build();
-        createCollection(req);
+                .dimension(dimension);
+        if (StringUtils.hasText(vectorFieldName)) {
+            builder.vectorFieldName(vectorFieldName.trim());
+        }
+        createCollection(builder.build());
     }
 
     /**
@@ -392,6 +406,37 @@ public class MilvusTemplate {
         });
     }
 
+    /**
+     * 列出集合指定字段上已建立的所有索引名称
+     *
+     * @param collectionName 集合名称
+     * @param fieldName      字段名称
+     * @return 索引名称列表
+     */
+    public List<String> listIndexes(String collectionName, String fieldName) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        Assert.hasText(fieldName, "fieldName must not be empty");
+        return execute("列出字段索引", c -> {
+            var indexes = c.listIndexes(ListIndexesReq.builder()
+                    .collectionName(collectionName)
+                    .fieldName(fieldName)
+                    .build());
+            return indexes != null ? indexes : Collections.emptyList();
+        });
+    }
+
+    /**
+     * 探测集合指定字段上是否已建立索引
+     *
+     * @param collectionName 集合名称
+     * @param fieldName      字段名称
+     * @return 是否已建索引
+     */
+    public boolean hasIndex(String collectionName, String fieldName) {
+        List<String> indexes = listIndexes(collectionName, fieldName);
+        return !indexes.isEmpty();
+    }
+
     // =========================================================================
     // 3. 物理分区生命周期运维 (Partition DDL Operations)
     // =========================================================================
@@ -520,23 +565,12 @@ public class MilvusTemplate {
             createCollection(metadata.toCreateCollectionReq());
         }
 
-        // 2. 创建向量索引
+        // 2. 创建向量索引与内存预加载
         MilvusEntityMetadata.FieldMetadata vectorField = metadata.getVectorField();
         IndexParam.MetricType metricType = vectorField.getMetricType() != null ? vectorField.getMetricType() : IndexParam.MetricType.COSINE;
         IndexParam.IndexType indexType = vectorField.getIndexType() != null ? vectorField.getIndexType() : IndexParam.IndexType.AUTOINDEX;
 
-        List<String> indexes = listIndexes(collectionName);
-        if (indexes.isEmpty()) {
-            log.info("一键建表: 集合 [{}] 向量列 [{}] 正在创建索引 [type={}, metric={}]",
-                    collectionName, vectorField.getFieldName(), indexType, metricType);
-            createIndex(collectionName, vectorField.getFieldName(), metricType, indexType);
-        }
-
-        // 3. 预加载集合到内存
-        if (!isCollectionLoaded(collectionName)) {
-            log.info("一键建表: 正在将集合 [{}] 加载至内存", collectionName);
-            loadCollection(collectionName);
-        }
+        ensureIndexAndLoaded(collectionName, vectorField.getFieldName(), metricType, indexType);
     }
 
     /**
@@ -557,22 +591,34 @@ public class MilvusTemplate {
         Assert.notNull(metricType, "metricType must not be null");
         Assert.notNull(indexType, "indexType must not be null");
 
-        // 1. 若不存在则创建集合
+        // 1. 若不存在则创建集合 (显式携带 vectorFieldName 与 metricType)
         if (!hasCollection(collectionName)) {
-            log.info("一键建表: 集合 [{}] 不存在，正在极简创建 (dim={})", collectionName, dimension);
-            createCollection(collectionName, dimension);
+            log.info("一键建表: 集合 [{}] 不存在，正在创建 (dim={}, vectorField={})", collectionName, dimension, vectorFieldName);
+            CreateCollectionReq req = CreateCollectionReq.builder()
+                    .collectionName(collectionName)
+                    .dimension(dimension)
+                    .vectorFieldName(vectorFieldName)
+                    .metricType(metricType.name())
+                    .build();
+            createCollection(req);
         }
 
-        // 2. 建立索引
-        List<String> indexes = listIndexes(collectionName);
-        if (indexes.isEmpty()) {
-            log.info("一键建表: 集合 [{}] 正在为字段 [{}] 创建索引", collectionName, vectorFieldName);
+        // 2. 创建向量索引与内存预加载
+        ensureIndexAndLoaded(collectionName, vectorFieldName, metricType, indexType);
+    }
+
+    private void ensureIndexAndLoaded(String collectionName, String vectorFieldName,
+                                      IndexParam.MetricType metricType, IndexParam.IndexType indexType) {
+        // 若指定向量列尚未建立索引则创建
+        if (!hasIndex(collectionName, vectorFieldName)) {
+            log.info("一键建表: 集合 [{}] 向量列 [{}] 正在创建索引 [type={}, metric={}]",
+                    collectionName, vectorFieldName, indexType, metricType);
             createIndex(collectionName, vectorFieldName, metricType, indexType);
         }
 
-        // 3. 预加载集合
+        // 若尚未加载至内存则预加载
         if (!isCollectionLoaded(collectionName)) {
-            log.info("一键建表: 正在加载集合 [{}] 至内存", collectionName);
+            log.info("一键建表: 正在将集合 [{}] 加载至内存", collectionName);
             loadCollection(collectionName);
         }
     }
@@ -772,6 +818,28 @@ public class MilvusTemplate {
     // =========================================================================
 
     /**
+     * 根据主键 ID 删除集合中的单条数据 (支持物理分区指定)
+     *
+     * @param collectionName 集合名称
+     * @param id             主键 ID
+     * @param partitionName  物理分区名称 (可为 null)
+     */
+    public void deleteById(String collectionName, Object id, String partitionName) {
+        Assert.notNull(id, "id must not be null");
+        deleteByIds(collectionName, Collections.singletonList(id), partitionName);
+    }
+
+    /**
+     * 根据主键 ID 删除集合中的单条数据
+     *
+     * @param collectionName 集合名称
+     * @param id             主键 ID
+     */
+    public void deleteById(String collectionName, Object id) {
+        deleteById(collectionName, id, null);
+    }
+
+    /**
      * 按主键 ID 列表删除集合中的数据 (多租户环境下自动绑定租户隔离过滤)
      *
      * @param collectionName 集合名称
@@ -784,23 +852,19 @@ public class MilvusTemplate {
             return;
         }
         if (!TenantContextHolder.isIgnoreTenant() && StringUtils.hasText(TenantContextHolder.getTenantId())) {
-            String primaryField = null;
+            String primaryField;
             try {
                 var desc = describeCollection(collectionName);
-                if (desc != null) {
-                    primaryField = desc.getPrimaryFieldName();
-                }
+                primaryField = desc != null ? desc.getPrimaryFieldName() : null;
             } catch (Exception e) {
-                log.debug("获取集合主键名异常: {}", e.getMessage());
+                throw new MilvusException("多租户安全拦截: 获取集合 [" + collectionName + "] 主键元数据失败，禁止执行无租户约束的裸 ID 删除", e);
             }
-            if (StringUtils.hasText(primaryField)) {
-                String idListStr = ids.stream()
-                        .map(id -> id instanceof Number ? id.toString() : "'" + id.toString().replace("'", "\\'") + "'")
-                        .collect(Collectors.joining(", "));
-                String filter = String.format("%s in [%s]", primaryField, idListStr);
-                deleteByExpr(collectionName, filter, partitionName);
-                return;
+            if (!StringUtils.hasText(primaryField)) {
+                throw new MilvusException("多租户安全拦截: 集合 [" + collectionName + "] 未定义主键，禁止执行无租户约束的裸 ID 删除");
             }
+            String filter = MilvusExprHelper.in(primaryField, ids);
+            deleteByExpr(collectionName, filter, partitionName);
+            return;
         }
         execute("按主键删除数据", c -> {
             var reqBuilder = DeleteReq.builder()
@@ -825,6 +889,30 @@ public class MilvusTemplate {
     }
 
     /**
+     * 根据实体类型与主键 ID 删除单条数据 (支持物理分区指定)
+     *
+     * @param entityClass   实体类型
+     * @param id            主键 ID
+     * @param partitionName 物理分区名称 (可为 null)
+     * @param <T>           实体泛型
+     */
+    public <T> void deleteById(Class<T> entityClass, Object id, String partitionName) {
+        Assert.notNull(id, "id must not be null");
+        deleteEntities(entityClass, Collections.singletonList(id), partitionName);
+    }
+
+    /**
+     * 根据实体类型与主键 ID 删除单条数据
+     *
+     * @param entityClass 实体类型
+     * @param id          主键 ID
+     * @param <T>         实体泛型
+     */
+    public <T> void deleteById(Class<T> entityClass, Object id) {
+        deleteById(entityClass, id, null);
+    }
+
+    /**
      * 按实体类型与主键 ID 列表删除数据
      *
      * @param entityClass   实体类
@@ -841,10 +929,7 @@ public class MilvusTemplate {
         String collectionName = metadata.getCollectionName();
         String primaryField = metadata.getIdField() != null ? metadata.getIdField().getFieldName() : "id";
         if (!TenantContextHolder.isIgnoreTenant() && StringUtils.hasText(TenantContextHolder.getTenantId())) {
-            String idListStr = ids.stream()
-                    .map(id -> id instanceof Number ? id.toString() : "'" + id.toString().replace("'", "\\'") + "'")
-                    .collect(Collectors.joining(", "));
-            String filter = String.format("%s in [%s]", primaryField, idListStr);
+            String filter = MilvusExprHelper.in(primaryField, ids);
             deleteByExpr(collectionName, filter, partitionName);
             return;
         }
@@ -967,16 +1052,51 @@ public class MilvusTemplate {
                                          List<String> outputFields,
                                          MilvusConsistencyLevel consistencyLevel,
                                          Class<T> entityClass) {
+        return search(collectionName, annsField, vector, topK, expr, outputFields, consistencyLevel, entityClass, null);
+    }
+
+    /**
+     * 底层综合向量相似度检索 (支持显式指定租户字段名)
+     *
+     * @param collectionName   集合名称
+     * @param annsField        向量检索字段
+     * @param vector           查询向量
+     * @param topK             召回条数
+     * @param expr             标量表达式
+     * @param outputFields     出参字段列表
+     * @param consistencyLevel 一致性级别
+     * @param entityClass      实体类型
+     * @param tenantFieldName  租户字段名 (可选，无实体类时生效)
+     * @param <T>              实体泛型
+     * @return 命中结果列表
+     */
+    @SuppressWarnings("unchecked")
+    public <T> List<MilvusHit<T>> search(String collectionName,
+                                         String annsField,
+                                         List<Float> vector,
+                                         int topK,
+                                         String expr,
+                                         List<String> outputFields,
+                                         MilvusConsistencyLevel consistencyLevel,
+                                         Class<T> entityClass,
+                                         String tenantFieldName) {
         Assert.hasText(collectionName, "collectionName must not be empty");
         Assert.notNull(vector, "vector must not be null");
         Assert.isTrue(topK > 0, "topK must be positive");
 
-        String safeFilter = MilvusTenantHelper.weaveTenantFilter(expr, null, false);
+        MilvusEntityMetadata metadata = (entityClass != null && !Map.class.isAssignableFrom(entityClass))
+                ? MilvusEntityMetadata.of(entityClass) : null;
+        String effectiveTenantField = (metadata != null && metadata.getPartitionKeyField() != null)
+                ? metadata.getPartitionKeyField().getFieldName()
+                : tenantFieldName;
+        String safeFilter = metadata != null
+                ? MilvusTenantHelper.weaveEntityTenantFilter(expr, metadata, false)
+                : MilvusTenantHelper.weaveTenantFilter(expr, effectiveTenantField, false);
         MilvusConsistencyLevel level = consistencyLevel != null ? consistencyLevel : properties.getConsistencyLevel();
 
         List<String> effectiveOutputFields = outputFields;
-        if ((effectiveOutputFields == null || effectiveOutputFields.isEmpty()) && entityClass != null && !Map.class.isAssignableFrom(entityClass)) {
-            effectiveOutputFields = MilvusEntityMetadata.of(entityClass).getFieldNames();
+        if ((effectiveOutputFields == null || effectiveOutputFields.isEmpty()) && metadata != null) {
+            effectiveOutputFields = metadata.getFieldNames();
         }
 
         SearchReq.SearchReqBuilder<?, ?> builder = SearchReq.builder()
@@ -1189,8 +1309,18 @@ public class MilvusTemplate {
                                            String expr,
                                            List<String> outputFields,
                                            MilvusConsistencyLevel consistencyLevel) {
+        return queryInternal(collectionName, expr, outputFields, consistencyLevel, null);
+    }
+
+    private List<Map<String, Object>> queryInternal(String collectionName,
+                                                    String expr,
+                                                    List<String> outputFields,
+                                                    MilvusConsistencyLevel consistencyLevel,
+                                                    MilvusEntityMetadata metadata) {
         Assert.hasText(collectionName, "collectionName must not be empty");
-        String safeFilter = MilvusTenantHelper.weaveTenantFilter(expr, null, false);
+        String safeFilter = metadata != null
+                ? MilvusTenantHelper.weaveEntityTenantFilter(expr, metadata, false)
+                : MilvusTenantHelper.weaveTenantFilter(expr, null, false);
         MilvusConsistencyLevel level = consistencyLevel != null ? consistencyLevel : properties.getConsistencyLevel();
 
         QueryReq.QueryReqBuilder<?, ?> builder = QueryReq.builder()
@@ -1242,7 +1372,7 @@ public class MilvusTemplate {
     public <T> List<T> query(Class<T> entityClass, String expr, MilvusConsistencyLevel consistencyLevel) {
         Assert.notNull(entityClass, "entityClass must not be null");
         MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
-        List<Map<String, Object>> list = query(metadata.getCollectionName(), expr, metadata.getFieldNames(), consistencyLevel);
+        List<Map<String, Object>> list = queryInternal(metadata.getCollectionName(), expr, metadata.getFieldNames(), consistencyLevel, metadata);
         return MilvusEntityConverter.mapListToEntities(list, entityClass);
     }
 
@@ -1271,6 +1401,19 @@ public class MilvusTemplate {
      * @return 记录字典，若不存在或跨租户越权则返回 null
      */
     public Map<String, Object> getById(String collectionName, Object id, List<String> outputFields) {
+        return getById(collectionName, id, outputFields, MilvusTenantHelper.DEFAULT_TENANT_FIELD);
+    }
+
+    /**
+     * 按主键精确点查单条记录 (支持显式指定租户字段名)
+     *
+     * @param collectionName  集合名称
+     * @param id              主键 ID
+     * @param outputFields    出参字段列表
+     * @param tenantFieldName 租户字段名称 (为空时默认为 "tenant_id")
+     * @return 记录字典，若不存在或跨租户越权则返回 null
+     */
+    public Map<String, Object> getById(String collectionName, Object id, List<String> outputFields, String tenantFieldName) {
         Assert.hasText(collectionName, "collectionName must not be empty");
         Assert.notNull(id, "id must not be null");
         List<String> fields = outputFields;
@@ -1283,7 +1426,23 @@ public class MilvusTemplate {
             } catch (Exception ignored) {
             }
         }
+
+        String effectiveTenantField = StringUtils.hasText(tenantFieldName) ? tenantFieldName.trim() : MilvusTenantHelper.DEFAULT_TENANT_FIELD;
+        // 多租户安全防线：若处于租户隔离上下文，强制将租户字段纳入出参以便后置严格验权
+        boolean removeTenantField = false;
+        String tenantId = !TenantContextHolder.isIgnoreTenant() ? TenantContextHolder.getTenantId() : null;
+        if (StringUtils.hasText(tenantId)) {
+            if (fields != null && !fields.isEmpty() && !fields.contains("*")) {
+                if (!fields.contains(effectiveTenantField)) {
+                    fields = new ArrayList<>(fields);
+                    fields.add(effectiveTenantField);
+                    removeTenantField = true;
+                }
+            }
+        }
+
         final List<String> finalFields = fields;
+        final boolean needRemoveTenant = removeTenantField;
         return execute("按主键点查", c -> {
             var getReqBuilder = GetReq.builder()
                     .collectionName(collectionName)
@@ -1294,13 +1453,14 @@ public class MilvusTemplate {
             var resp = c.get(getReqBuilder.build());
             if (resp != null && resp.getGetResults() != null && !resp.getGetResults().isEmpty()) {
                 Map<String, Object> entity = resp.getGetResults().get(0).getEntity();
-                if (entity != null && !TenantContextHolder.isIgnoreTenant()) {
-                    String tenantId = TenantContextHolder.getTenantId();
-                    if (StringUtils.hasText(tenantId)) {
-                        Object entityTenant = entity.get(MilvusTenantHelper.DEFAULT_TENANT_FIELD);
-                        if (entityTenant != null && !tenantId.trim().equals(String.valueOf(entityTenant).trim())) {
-                            return null;
-                        }
+                if (entity != null && StringUtils.hasText(tenantId)) {
+                    Object entityTenant = entity.get(effectiveTenantField);
+                    // 严格越权防线：租户字段缺失或与当前租户不匹配一律视为无权读取并返回 null
+                    if (entityTenant == null || !tenantId.trim().equals(String.valueOf(entityTenant).trim())) {
+                        return null;
+                    }
+                    if (needRemoveTenant) {
+                        entity.remove(effectiveTenantField);
                     }
                 }
                 return entity;
@@ -1332,7 +1492,10 @@ public class MilvusTemplate {
         Assert.notNull(entityClass, "entityClass must not be null");
         Assert.notNull(id, "id must not be null");
         MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
-        Map<String, Object> map = getById(metadata.getCollectionName(), id, metadata.getFieldNames());
+        String tenantField = (metadata.getPartitionKeyField() != null)
+                ? metadata.getPartitionKeyField().getFieldName()
+                : MilvusTenantHelper.DEFAULT_TENANT_FIELD;
+        Map<String, Object> map = getById(metadata.getCollectionName(), id, metadata.getFieldNames(), tenantField);
         return MilvusEntityConverter.mapToEntity(map, entityClass);
     }
 
@@ -1345,6 +1508,19 @@ public class MilvusTemplate {
      * @return 记录字典列表
      */
     public List<Map<String, Object>> getByIds(String collectionName, List<?> ids, List<String> outputFields) {
+        return getByIds(collectionName, ids, outputFields, MilvusTenantHelper.DEFAULT_TENANT_FIELD);
+    }
+
+    /**
+     * 按主键批量点查记录列表 (支持显式指定租户字段名)
+     *
+     * @param collectionName  集合名称
+     * @param ids             主键列表
+     * @param outputFields    出参字段列表
+     * @param tenantFieldName 租户字段名称 (为空时默认为 "tenant_id")
+     * @return 记录字典列表
+     */
+    public List<Map<String, Object>> getByIds(String collectionName, List<?> ids, List<String> outputFields, String tenantFieldName) {
         Assert.hasText(collectionName, "collectionName must not be empty");
         if (ids == null || ids.isEmpty()) {
             return Collections.emptyList();
@@ -1359,7 +1535,23 @@ public class MilvusTemplate {
             } catch (Exception ignored) {
             }
         }
+
+        String effectiveTenantField = StringUtils.hasText(tenantFieldName) ? tenantFieldName.trim() : MilvusTenantHelper.DEFAULT_TENANT_FIELD;
+        // 多租户安全防线：若处于租户隔离上下文，强制将租户字段纳入出参以便后置严格验权
+        boolean removeTenantField = false;
+        String tenantId = !TenantContextHolder.isIgnoreTenant() ? TenantContextHolder.getTenantId() : null;
+        if (StringUtils.hasText(tenantId)) {
+            if (fields != null && !fields.isEmpty() && !fields.contains("*")) {
+                if (!fields.contains(effectiveTenantField)) {
+                    fields = new ArrayList<>(fields);
+                    fields.add(effectiveTenantField);
+                    removeTenantField = true;
+                }
+            }
+        }
+
         final List<String> finalFields = fields;
+        final boolean needRemoveTenant = removeTenantField;
         return execute("按主键批量点查", c -> {
             var getReqBuilder = GetReq.builder()
                     .collectionName(collectionName)
@@ -1370,14 +1562,17 @@ public class MilvusTemplate {
             var resp = c.get(getReqBuilder.build());
             if (resp != null && resp.getGetResults() != null && !resp.getGetResults().isEmpty()) {
                 List<Map<String, Object>> list = new ArrayList<>(resp.getGetResults().size());
-                String tenantId = !TenantContextHolder.isIgnoreTenant() ? TenantContextHolder.getTenantId() : null;
                 for (var r : resp.getGetResults()) {
                     Map<String, Object> entity = r.getEntity();
                     if (entity != null) {
                         if (StringUtils.hasText(tenantId)) {
-                            Object entityTenant = entity.get(MilvusTenantHelper.DEFAULT_TENANT_FIELD);
-                            if (entityTenant != null && !tenantId.trim().equals(String.valueOf(entityTenant).trim())) {
+                            Object entityTenant = entity.get(effectiveTenantField);
+                            // 严格越权防线：租户字段缺失或与当前租户不匹配一律跳过
+                            if (entityTenant == null || !tenantId.trim().equals(String.valueOf(entityTenant).trim())) {
                                 continue;
+                            }
+                            if (needRemoveTenant) {
+                                entity.remove(effectiveTenantField);
                             }
                         }
                         list.add(entity);
@@ -1411,7 +1606,10 @@ public class MilvusTemplate {
     public <T> List<T> getByIds(Class<T> entityClass, List<?> ids) {
         Assert.notNull(entityClass, "entityClass must not be null");
         MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
-        List<Map<String, Object>> list = getByIds(metadata.getCollectionName(), ids, metadata.getFieldNames());
+        String tenantField = (metadata.getPartitionKeyField() != null)
+                ? metadata.getPartitionKeyField().getFieldName()
+                : MilvusTenantHelper.DEFAULT_TENANT_FIELD;
+        List<Map<String, Object>> list = getByIds(metadata.getCollectionName(), ids, metadata.getFieldNames(), tenantField);
         return MilvusEntityConverter.mapListToEntities(list, entityClass);
     }
 
@@ -1447,8 +1645,14 @@ public class MilvusTemplate {
      * @return 数量统计
      */
     public long count(String collectionName, String expr) {
+        return countInternal(collectionName, expr, null);
+    }
+
+    private long countInternal(String collectionName, String expr, MilvusEntityMetadata metadata) {
         Assert.hasText(collectionName, "collectionName must not be empty");
-        String safeFilter = MilvusTenantHelper.weaveTenantFilter(expr, null, false);
+        String safeFilter = metadata != null
+                ? MilvusTenantHelper.weaveEntityTenantFilter(expr, metadata, false)
+                : MilvusTenantHelper.weaveTenantFilter(expr, null, false);
         if (!StringUtils.hasText(safeFilter)) {
             try {
                 var stats = getCollectionStats(collectionName);
@@ -1501,7 +1705,7 @@ public class MilvusTemplate {
     public <T> long count(Class<T> entityClass, String expr) {
         Assert.notNull(entityClass, "entityClass must not be null");
         MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
-        return count(metadata.getCollectionName(), expr);
+        return countInternal(metadata.getCollectionName(), expr, metadata);
     }
 
     /**
@@ -1776,10 +1980,31 @@ public class MilvusTemplate {
                                List<String> outputFields,
                                int batchSize,
                                Consumer<List<Map<String, Object>>> batchConsumer) {
+        streamingQuery(collectionName, expr, outputFields, batchSize, null, batchConsumer);
+    }
+
+    /**
+     * 基于官方 QueryIterator 执行大数据游标流式遍历 (支持实体元数据多租户推导)
+     *
+     * @param collectionName 集合名称
+     * @param expr           过滤表达式
+     * @param outputFields   投影字段列表 (为空默认 "*")
+     * @param batchSize      每批游标拉取大小 (默认 1000)
+     * @param metadata       实体元数据 (可为 null)
+     * @param batchConsumer  每批字典数据消费回调
+     */
+    public void streamingQuery(String collectionName,
+                               String expr,
+                               List<String> outputFields,
+                               int batchSize,
+                               MilvusEntityMetadata metadata,
+                               Consumer<List<Map<String, Object>>> batchConsumer) {
         Assert.hasText(collectionName, "collectionName must not be empty");
         Assert.notNull(batchConsumer, "batchConsumer must not be null");
 
-        String safeFilter = MilvusTenantHelper.weaveTenantFilter(expr, null, false);
+        String safeFilter = metadata != null
+                ? MilvusTenantHelper.weaveEntityTenantFilter(expr, metadata, false)
+                : MilvusTenantHelper.weaveTenantFilter(expr, null, false);
         int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
         List<String> effectiveOutFields = outputFields != null && !outputFields.isEmpty() ? outputFields : Collections.singletonList("*");
         String effectiveDb = resolveCurrentDatabase();
@@ -1808,12 +2033,15 @@ public class MilvusTemplate {
                     }
                     List<Map<String, Object>> batch = new ArrayList<>(records.size());
                     String tenantId = !TenantContextHolder.isIgnoreTenant() ? TenantContextHolder.getTenantId() : null;
+                    String tenantField = (metadata != null && metadata.getPartitionKeyField() != null)
+                            ? metadata.getPartitionKeyField().getFieldName()
+                            : MilvusTenantHelper.DEFAULT_TENANT_FIELD;
                     for (QueryResultsWrapper.RowRecord record : records) {
                         Map<String, Object> map = record.getFieldValues();
                         if (map != null) {
                             if (StringUtils.hasText(tenantId)) {
-                                Object rowTenant = map.get(MilvusTenantHelper.DEFAULT_TENANT_FIELD);
-                                if (rowTenant != null && !tenantId.trim().equals(String.valueOf(rowTenant).trim())) {
+                                Object rowTenant = map.get(tenantField);
+                                if (rowTenant == null || !tenantId.trim().equals(String.valueOf(rowTenant).trim())) {
                                     continue;
                                 }
                             }
@@ -1881,7 +2109,7 @@ public class MilvusTemplate {
         Assert.notNull(entityClass, "entityClass must not be null");
         Assert.notNull(batchConsumer, "batchConsumer must not be null");
         MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
-        streamingQuery(metadata.getCollectionName(), expr, null, batchSize, batchMaps -> {
+        streamingQuery(metadata.getCollectionName(), expr, null, batchSize, metadata, batchMaps -> {
             List<T> entities = MilvusEntityConverter.mapListToEntities(batchMaps, entityClass);
             if (!entities.isEmpty()) {
                 batchConsumer.accept(entities);
@@ -1954,24 +2182,6 @@ public class MilvusTemplate {
         Assert.notNull(action, "action must not be null");
         useDatabase(databaseName, () -> {
             action.run();
-            return null;
-        });
-    }
-
-    /**
-     * 主动将底层客户端切换至指定的逻辑数据库
-     *
-     * @param databaseName 数据库名称
-     */
-    public void switchDatabase(String databaseName) {
-        Assert.hasText(databaseName, "databaseName must not be empty");
-        execute("切换逻辑数据库", c -> {
-            try {
-                c.useDatabase(databaseName.trim());
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new MilvusException("切换数据库中断", e);
-            }
             return null;
         });
     }

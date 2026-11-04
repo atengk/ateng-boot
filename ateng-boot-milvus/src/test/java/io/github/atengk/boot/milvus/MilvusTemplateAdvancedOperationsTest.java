@@ -247,11 +247,4 @@ class MilvusTemplateAdvancedOperationsTest {
         // 恢复为 prior_db
         assertThat(MilvusContextHolder.getDatabase()).isEqualTo("prior_db");
     }
-
-    @Test
-    @DisplayName("switchDatabase - 底层客户端动态切换数据库")
-    void testSwitchDatabase() throws InterruptedException {
-        template.switchDatabase("new_database");
-        verify(client).useDatabase("new_database");
-    }
 }

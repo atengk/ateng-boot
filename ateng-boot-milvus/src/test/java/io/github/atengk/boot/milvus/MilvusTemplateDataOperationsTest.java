@@ -6,6 +6,7 @@ import io.github.atengk.boot.milvus.annotation.MilvusCollection;
 import io.github.atengk.boot.milvus.annotation.MilvusId;
 import io.github.atengk.boot.milvus.annotation.MilvusPartitionKey;
 import io.github.atengk.boot.milvus.annotation.MilvusVector;
+import io.github.atengk.boot.milvus.exception.MilvusException;
 import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.github.atengk.boot.milvus.properties.MilvusConsistencyLevel;
@@ -43,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -86,7 +88,7 @@ class MilvusTemplateDataOperationsTest {
 
         private String content;
 
-        @MilvusPartitionKey
+        @MilvusPartitionKey(name = "tenant_id")
         private String tenantId;
 
         @MilvusVector(dimension = 3)
@@ -168,6 +170,29 @@ class MilvusTemplateDataOperationsTest {
         DeleteReq req = deleteCaptor.getValue();
         // 多租户模式下应该使用 filter 进行隔离防御
         assertThat(req.getFilter()).isEqualTo("(id in [101, 102]) and (tenant_id == 'tenant_isolated')");
+    }
+
+    @Test
+    @DisplayName("deleteByIds - 多租户模式下主键解析失败时快速失败，杜绝裸ID越权删除")
+    void testDeleteByIdsWithTenantFailFast() {
+        TenantContextHolder.setTenantId("tenant_isolated");
+        when(client.describeCollection(any(DescribeCollectionReq.class)))
+                .thenThrow(new RuntimeException("获取元数据失败"));
+
+        assertThatThrownBy(() -> template.deleteByIds("kb_doc", List.of(101L)))
+                .isInstanceOf(MilvusException.class)
+                .hasMessageContaining("多租户安全拦截");
+        verify(client, never()).delete(any(DeleteReq.class));
+    }
+
+    @Test
+    @DisplayName("deleteById - 单主键删除调用")
+    void testDeleteById() {
+        when(client.delete(any(DeleteReq.class))).thenReturn(null);
+        template.deleteById("kb_doc", 101L);
+        ArgumentCaptor<DeleteReq> captor = ArgumentCaptor.forClass(DeleteReq.class);
+        verify(client).delete(captor.capture());
+        assertThat(captor.getValue().getIds()).containsExactly(101L);
     }
 
     @Test
@@ -294,6 +319,19 @@ class MilvusTemplateDataOperationsTest {
 
         KbDoc interceptedDoc = template.getById(KbDoc.class, 3002L);
         assertThat(interceptedDoc).isNull();
+
+        // 3. 显式指定出参字段不含 tenant_id 时，点查仍强制拉取租户字段校验，跨租户严格拦截为 null
+        Map<String, Object> noTenantEntity = new HashMap<>();
+        noTenantEntity.put("id", 3003L);
+        noTenantEntity.put("content", "未授权租户数据");
+        noTenantEntity.put("tenant_id", "hacker_tenant");
+
+        when(client.get(any(GetReq.class))).thenReturn(GetResp.builder()
+                .getResults(List.of(QueryResp.QueryResult.builder().entity(noTenantEntity).build()))
+                .build());
+
+        Map<String, Object> interceptedMap = template.getById("kb_doc", 3003L, List.of("content"));
+        assertThat(interceptedMap).isNull();
     }
 
     @Test

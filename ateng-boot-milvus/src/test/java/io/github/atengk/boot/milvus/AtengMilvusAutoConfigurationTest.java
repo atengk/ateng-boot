@@ -26,6 +26,31 @@ class AtengMilvusAutoConfigurationTest {
             .withConfiguration(AutoConfigurations.of(AtengMilvusAutoConfiguration.class));
 
     @Test
+    @DisplayName("测试当存在客户端 Bean 时自动装配核心门面与健康探针")
+    void testAutoConfigurationWithClient() {
+        contextRunner.withUserConfiguration(CustomMilvusConfig.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MilvusClientV2.class);
+                    assertThat(context).hasSingleBean(MilvusTemplate.class);
+                    assertThat(context).hasSingleBean(MilvusHealthIndicator.class);
+
+                    MilvusTemplate template = context.getBean(MilvusTemplate.class);
+                    assertThat(template.getClient()).isNotNull();
+                });
+    }
+
+    @Test
+    @DisplayName("测试关闭健康探针配置时仅装配核心门面不装配探针")
+    void testHealthIndicatorDisabled() {
+        contextRunner.withUserConfiguration(CustomMilvusConfig.class)
+                .withPropertyValues("management.health.milvus.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MilvusTemplate.class);
+                    assertThat(context).doesNotHaveBean(MilvusHealthIndicator.class);
+                });
+    }
+
+    @Test
     @DisplayName("测试当 enabled=false 时自动装配完全不生效")
     void testDisabledConfiguration() {
         contextRunner.withPropertyValues("ateng.boot.milvus.enabled=false")

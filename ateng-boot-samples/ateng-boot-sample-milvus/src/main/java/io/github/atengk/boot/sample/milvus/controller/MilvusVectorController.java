@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.milvus.controller;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
+import io.github.atengk.boot.sample.milvus.converter.DocumentConverter;
 import io.github.atengk.boot.sample.milvus.dto.DocumentBatchInsertDto;
 import io.github.atengk.boot.sample.milvus.dto.DocumentInsertDto;
 import io.github.atengk.boot.sample.milvus.dto.VectorSearchDto;
@@ -50,7 +51,7 @@ public class MilvusVectorController {
      */
     @PostMapping("/insert")
     public Result<Long> insert(@Valid @RequestBody DocumentInsertDto request) {
-        SampleDocumentEntity entity = toEntity(request);
+        SampleDocumentEntity entity = DocumentConverter.toEntity(request);
         milvusTemplate.insertEntities(Collections.singletonList(entity));
         return Result.success(entity.getId());
     }
@@ -63,7 +64,7 @@ public class MilvusVectorController {
      */
     @PostMapping("/upsert")
     public Result<Long> upsert(@Valid @RequestBody DocumentInsertDto request) {
-        SampleDocumentEntity entity = toEntity(request);
+        SampleDocumentEntity entity = DocumentConverter.toEntity(request);
         milvusTemplate.upsertEntities(Collections.singletonList(entity));
         return Result.success(entity.getId());
     }
@@ -77,7 +78,7 @@ public class MilvusVectorController {
     @PostMapping("/batch-insert")
     public Result<Integer> batchInsert(@Valid @RequestBody DocumentBatchInsertDto request) {
         List<SampleDocumentEntity> entities = request.getDocuments().stream()
-                .map(this::toEntity)
+                .map(DocumentConverter::toEntity)
                 .collect(Collectors.toList());
         milvusTemplate.insertBatchEntities(entities);
         return Result.success(entities.size());
@@ -92,7 +93,7 @@ public class MilvusVectorController {
     @GetMapping("/get/{id}")
     public Result<DocumentVo> getById(@PathVariable("id") @NotNull(message = "文档ID不能为空") Long id) {
         SampleDocumentEntity entity = milvusTemplate.getById(SampleDocumentEntity.class, id);
-        return Result.success(toVo(entity));
+        return Result.success(DocumentConverter.toVo(entity));
     }
 
     /**
@@ -103,7 +104,7 @@ public class MilvusVectorController {
      */
     @DeleteMapping("/delete/{id}")
     public Result<Boolean> deleteById(@PathVariable("id") @NotNull(message = "文档ID不能为空") Long id) {
-        milvusTemplate.deleteEntities(SampleDocumentEntity.class, Collections.singletonList(id));
+        milvusTemplate.deleteById(SampleDocumentEntity.class, id);
         return Result.success(true);
     }
 
@@ -122,7 +123,7 @@ public class MilvusVectorController {
                 request.getFilterExpr()
         );
         List<DocumentHitVo> voList = hits.stream()
-                .map(this::toHitVo)
+                .map(DocumentConverter::toHitVo)
                 .collect(Collectors.toList());
         return Result.success(voList);
     }
@@ -138,7 +139,7 @@ public class MilvusVectorController {
             @RequestParam(name = "expr", defaultValue = "id > 0") String expr) {
         List<SampleDocumentEntity> entities = milvusTemplate.query(SampleDocumentEntity.class, expr);
         List<DocumentVo> voList = entities.stream()
-                .map(this::toVo)
+                .map(DocumentConverter::toVo)
                 .collect(Collectors.toList());
         return Result.success(voList);
     }
@@ -154,44 +155,5 @@ public class MilvusVectorController {
             @RequestParam(name = "expr", required = false) String expr) {
         long total = milvusTemplate.count(SampleDocumentEntity.class, expr);
         return Result.success(total);
-    }
-
-    private SampleDocumentEntity toEntity(DocumentInsertDto dto) {
-        if (dto == null) {
-            return null;
-        }
-        return SampleDocumentEntity.builder()
-                .id(dto.getId())
-                .category(dto.getCategory())
-                .tenantId(dto.getTenantId())
-                .title(dto.getTitle())
-                .content(dto.getContent())
-                .vector(dto.getVector())
-                .build();
-    }
-
-    private DocumentVo toVo(SampleDocumentEntity entity) {
-        if (entity == null) {
-            return null;
-        }
-        return DocumentVo.builder()
-                .id(entity.getId())
-                .category(entity.getCategory())
-                .tenantId(entity.getTenantId())
-                .title(entity.getTitle())
-                .content(entity.getContent())
-                .vector(entity.getVector())
-                .build();
-    }
-
-    private DocumentHitVo toHitVo(MilvusHit<SampleDocumentEntity> hit) {
-        if (hit == null) {
-            return null;
-        }
-        return DocumentHitVo.builder()
-                .id(hit.getId())
-                .score(hit.getScore())
-                .document(toVo(hit.getEntity()))
-                .build();
     }
 }

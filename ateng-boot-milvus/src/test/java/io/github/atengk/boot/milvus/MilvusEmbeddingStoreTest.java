@@ -8,6 +8,7 @@ import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import dev.langchain4j.store.embedding.EmbeddingSearchResult;
 import dev.langchain4j.store.embedding.filter.comparison.IsEqualTo;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.milvus.langchain4j.MilvusEmbeddingStore;
 import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
@@ -22,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
@@ -105,7 +107,7 @@ class MilvusEmbeddingStoreTest {
                 .rawData(hitData)
                 .build();
 
-        when(template.search(eq("rag_kb"), eq("vector"), anyList(), anyInt(), any(), any(), any()))
+        when(template.<Map<String, Object>>search(eq("rag_kb"), eq("vector"), anyList(), anyInt(), any(), any(), any(), any(), any()))
                 .thenReturn(List.of(hit));
 
         Embedding queryEmbedding = Embedding.from(new float[]{0.1f, 0.2f, 0.3f});
@@ -152,6 +154,33 @@ class MilvusEmbeddingStoreTest {
 
         store.removeAll();
         verify(template).deleteByExpr(eq("rag_kb"), eq("id != ''"), any());
+    }
+
+    @Test
+    @DisplayName("removeAll - 多租户上下文下织入租户隔离过滤条件")
+    void testRemoveAllWithTenant() {
+        when(template.hasCollection("rag_kb")).thenReturn(true);
+        TenantContextHolder.setTenantId("tenant_999");
+
+        store.removeAll();
+        verify(template).deleteByExpr(eq("rag_kb"), eq("tenant_id == 'tenant_999'"), any());
+    }
+
+    @Test
+    @DisplayName("对抗性测试 - 验证底层驱动异常与业务异常的受控转译与传递")
+    void testExceptionTranslation() {
+        when(template.hasCollection("rag_kb")).thenReturn(true);
+        when(template.<Map<String, Object>>search(eq("rag_kb"), eq("vector"), anyList(), anyInt(), any(), any(), any(), any(), any()))
+                .thenThrow(new BusinessException("Milvus 连接超时熔断"));
+
+        Embedding queryEmbedding = Embedding.from(new float[]{0.1f, 0.2f, 0.3f});
+        EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
+                .queryEmbedding(queryEmbedding)
+                .build();
+
+        assertThatThrownBy(() -> store.search(request))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Milvus 连接超时熔断");
     }
 
     @Test

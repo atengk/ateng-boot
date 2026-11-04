@@ -566,8 +566,8 @@ ateng:
       langchain4j:
         # 是否启用 LangChain4j EmbeddingStore 自动装配 (默认 true)
         enabled: true
-        # 绑定的集合名称 (默认 langchain4j_documents)
-        collection-name: langchain4j_documents
+        # 绑定的集合名称 (默认 langchain4j_embeddings)
+        collection-name: langchain4j_embeddings
         # 向量维度 (默认 1536)
         dimension: 1536
         # 距离度量方式：COSINE, IP, L2 (默认 COSINE)

@@ -64,6 +64,12 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
     private final int dimension = 1536;
 
     @Builder.Default
+    private final IndexParam.MetricType metricType = IndexParam.MetricType.COSINE;
+
+    @Builder.Default
+    private final IndexParam.IndexType indexType = IndexParam.IndexType.AUTOINDEX;
+
+    @Builder.Default
     private final boolean autoCreateCollection = true;
 
     @Builder.Default
@@ -75,8 +81,9 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
     public synchronized void ensureCollectionExists() {
         if (!initialized) {
             if (autoCreateCollection && !template.hasCollection(collectionName)) {
-                log.info("LangChain4j 向量存储: 集合 [{}] 不存在，正在极简初始化 (dim={})", collectionName, dimension);
-                template.createCollectionAndIndex(collectionName, vectorFieldName, dimension, IndexParam.MetricType.COSINE, IndexParam.IndexType.AUTOINDEX);
+                log.info("LangChain4j 向量存储: 集合 [{}] 不存在，正在极简初始化 (dim={}, metric={}, index={})",
+                        collectionName, dimension, metricType, indexType);
+                template.createCollectionAndIndex(collectionName, vectorFieldName, dimension, metricType, indexType);
             }
             initialized = true;
         }
@@ -102,6 +109,23 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
     }
 
     /**
+     * 将向量、切片与元数据统一装配为标准字典行
+     */
+    private Map<String, Object> toRow(String id, Embedding embedding, TextSegment textSegment) {
+        Map<String, Object> row = new HashMap<>();
+        row.put(idFieldName, id);
+        row.put(vectorFieldName, embedding.vectorAsList());
+        if (textSegment != null) {
+            row.put(textFieldName, textSegment.text());
+            if (textSegment.metadata() != null) {
+                row.putAll(textSegment.metadata().toMap());
+            }
+        }
+        MilvusTenantHelper.fillRecordTenantField(row, tenantFieldName, false);
+        return row;
+    }
+
+    /**
      * 指定主键 ID 写入单条向量与关联文本切片
      *
      * @param id          主键 ID
@@ -113,16 +137,7 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
         Assert.notNull(embedding, "embedding must not be null");
         ensureCollectionExists();
 
-        Map<String, Object> row = new HashMap<>();
-        row.put(idFieldName, id);
-        row.put(vectorFieldName, embedding.vectorAsList());
-        if (textSegment != null) {
-            row.put(textFieldName, textSegment.text());
-            if (textSegment.metadata() != null) {
-                row.putAll(textSegment.metadata().toMap());
-            }
-        }
-        MilvusTenantHelper.fillRecordTenantField(row, tenantFieldName, false);
+        Map<String, Object> row = toRow(id, embedding, textSegment);
         template.insert(collectionName, Collections.singletonList(row), partitionName);
     }
 
@@ -146,18 +161,7 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
             TextSegment segment = (embedded != null && i < embedded.size()) ? embedded.get(i) : null;
             String id = IdUtil.fastSimpleUUID();
             ids.add(id);
-
-            Map<String, Object> row = new HashMap<>();
-            row.put(idFieldName, id);
-            row.put(vectorFieldName, embedding.vectorAsList());
-            if (segment != null) {
-                row.put(textFieldName, segment.text());
-                if (segment.metadata() != null) {
-                    row.putAll(segment.metadata().toMap());
-                }
-            }
-            MilvusTenantHelper.fillRecordTenantField(row, tenantFieldName, false);
-            records.add(row);
+            records.add(toRow(id, embedding, segment));
         }
 
         template.insertBatch(collectionName, records, partitionName);
@@ -193,7 +197,11 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
     @Override
     public void removeAll() {
         ensureCollectionExists();
-        template.deleteByExpr(collectionName, String.format("%s != ''", idFieldName), partitionName);
+        String expr = MilvusTenantHelper.weaveTenantFilter(null, tenantFieldName, false);
+        if (!StringUtils.hasText(expr)) {
+            expr = String.format("%s != ''", idFieldName);
+        }
+        template.deleteByExpr(collectionName, expr, partitionName);
     }
 
     @Override
@@ -215,7 +223,9 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
                 maxResults,
                 filterExpr,
                 null,
-                consistencyLevel
+                consistencyLevel,
+                null,
+                tenantFieldName
         );
 
         List<EmbeddingMatch<TextSegment>> matches = new ArrayList<>();

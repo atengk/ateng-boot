@@ -3,6 +3,7 @@ package io.github.atengk.boot.milvus.autoconfigure.langchain4j;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import io.github.atengk.boot.milvus.autoconfigure.AtengMilvusAutoConfiguration;
 import io.github.atengk.boot.milvus.langchain4j.MilvusEmbeddingStore;
+import io.github.atengk.boot.milvus.properties.MilvusLangChain4jProperties;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -49,6 +50,8 @@ public class MilvusLangChain4jAutoConfiguration {
                 .tenantFieldName(properties.getTenantFieldName())
                 .partitionName(properties.getPartitionName())
                 .dimension(properties.getDimension())
+                .metricType(properties.getMetricType())
+                .indexType(properties.getIndexType())
                 .autoCreateCollection(properties.isAutoCreateCollection())
                 .consistencyLevel(properties.getConsistencyLevel())
                 .build();
