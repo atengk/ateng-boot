@@ -4,8 +4,10 @@ import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import io.github.atengk.boot.ai.autoconfigure.AtengAiAutoConfiguration;
 import io.github.atengk.boot.ai.observability.AtengAiObservabilityListener;
+import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.template.AiTemplate;
+import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
@@ -172,6 +174,47 @@ class AtengAiAutoConfigurationTest {
                     assertThat(listener.getMeterRegistry()).isNotNull();
                     assertThat(listener.getMeterRegistry()).isSameAs(context.getBean(MeterRegistry.class));
                 });
+    }
+
+    @Test
+    @DisplayName("自动装配多租户切源解析器与配额检查器，并自动注入至 AiTemplate")
+    void testTenantAndQuotaBeansAutoConfigured() {
+        contextRunner.run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(AiTenantModelResolver.class);
+            assertThat(context).hasSingleBean(AiQuotaChecker.class);
+
+            AiTemplate template = context.getBean(AiTemplate.class);
+            assertThat(template.getTenantModelResolver()).isSameAs(context.getBean(AiTenantModelResolver.class));
+            assertThat(template.getQuotaChecker()).isSameAs(context.getBean(AiQuotaChecker.class));
+        });
+    }
+
+    @Test
+    @DisplayName("用户自定义 AiTenantModelResolver 与 AiQuotaChecker 时触发 @ConditionalOnMissingBean 接管")
+    void testCustomTenantAndQuotaOverride() {
+        contextRunner.withUserConfiguration(CustomTenantAndQuotaConfig.class)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(AiTenantModelResolver.class)).isSameAs(CustomTenantAndQuotaConfig.MOCK_RESOLVER);
+                    assertThat(context.getBean(AiQuotaChecker.class)).isSameAs(CustomTenantAndQuotaConfig.MOCK_CHECKER);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomTenantAndQuotaConfig {
+        static final AiTenantModelResolver MOCK_RESOLVER = Mockito.mock(AiTenantModelResolver.class);
+        static final AiQuotaChecker MOCK_CHECKER = Mockito.mock(AiQuotaChecker.class);
+
+        @Bean
+        public AiTenantModelResolver aiTenantModelResolver() {
+            return MOCK_RESOLVER;
+        }
+
+        @Bean
+        public AiQuotaChecker aiQuotaChecker() {
+            return MOCK_CHECKER;
+        }
     }
 
     @Configuration(proxyBeanMethods = false)

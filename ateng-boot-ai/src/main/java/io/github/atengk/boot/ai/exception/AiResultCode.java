@@ -92,7 +92,12 @@ public enum AiResultCode implements IResultCode {
     /**
      * 认知状态图工作流执行或状态持久化失败
      */
-    AI_GRAPH_EXECUTION_ERROR(61016, "认知状态图工作流执行或状态持久化失败");
+    AI_GRAPH_EXECUTION_ERROR(61016, "认知状态图工作流执行或状态持久化失败"),
+
+    /**
+     * 大模型调用配额用尽或超出风控上限
+     */
+    AI_QUOTA_EXCEEDED(61017, "大模型调用配额用尽或超出风控上限");
 
     private final Integer code;
     private final String msg;

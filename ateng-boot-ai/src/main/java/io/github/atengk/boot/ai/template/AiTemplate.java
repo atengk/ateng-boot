@@ -2,20 +2,26 @@ package io.github.atengk.boot.ai.template;
 
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.output.Response;
+import io.github.atengk.boot.ai.context.AiContextHolder;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
 import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.observability.FallbackTokenEstimator;
 import io.github.atengk.boot.ai.prompt.PromptTemplate;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
+import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.streaming.SseTokenStreamBridge;
+import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
 import io.github.atengk.boot.ai.util.ImageContentParser;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.RetryUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +30,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.Duration;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * AI 智能体与大模型核心对称操作门面
@@ -38,14 +45,25 @@ public class AiTemplate {
 
     private final AiModelRegistry registry;
     private final AtengAiProperties properties;
+    private final AiTenantModelResolver tenantModelResolver;
+    private final AiQuotaChecker quotaChecker;
 
     public AiTemplate(AiModelRegistry registry) {
         this(registry, new AtengAiProperties());
     }
 
     public AiTemplate(AiModelRegistry registry, AtengAiProperties properties) {
+        this(registry, properties, null, null);
+    }
+
+    public AiTemplate(AiModelRegistry registry,
+                      AtengAiProperties properties,
+                      AiTenantModelResolver tenantModelResolver,
+                      AiQuotaChecker quotaChecker) {
         this.registry = Objects.requireNonNull(registry, "AiModelRegistry 不能为空");
         this.properties = properties != null ? properties : new AtengAiProperties();
+        this.tenantModelResolver = tenantModelResolver;
+        this.quotaChecker = quotaChecker;
     }
 
     // -------------------------------------------------------------------------
@@ -384,8 +402,20 @@ public class AiTemplate {
             throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "StreamingResponseHandler 不能为空");
         }
 
-        StreamingChatLanguageModel model = resolveStreamingChatModel(modelName);
-        model.generate(messages, handler);
+        String effectiveModelName = resolveEffectiveModelName(modelName);
+        String tenantId = TenantContextHolder.getTenantId();
+
+        // 1. 前置配额风控防卫 (Fail-Fast)
+        if (quotaChecker != null) {
+            int promptTokens = estimatePromptTokens(messages);
+            quotaChecker.checkQuota(tenantId, effectiveModelName, promptTokens);
+        }
+
+        StreamingChatLanguageModel model = resolveStreamingChatModel(effectiveModelName);
+        StreamingResponseHandler<AiMessage> wrappedHandler = (quotaChecker != null)
+                ? new QuotaTrackingStreamingResponseHandler(handler, quotaChecker, tenantId, effectiveModelName, messages)
+                : handler;
+        model.generate(messages, wrappedHandler);
     }
 
     // -------------------------------------------------------------------------
@@ -414,8 +444,17 @@ public class AiTemplate {
             throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "对话消息列表不能为空");
         }
 
-        ChatLanguageModel model = resolveChatModel(modelName);
-        AiModelConfig config = resolveModelConfig(modelName);
+        String effectiveModelName = resolveEffectiveModelName(modelName);
+        String tenantId = TenantContextHolder.getTenantId();
+
+        // 1. 前置配额风控防卫 (Fail-Fast)
+        if (quotaChecker != null) {
+            int promptTokens = estimatePromptTokens(messages);
+            quotaChecker.checkQuota(tenantId, effectiveModelName, promptTokens);
+        }
+
+        ChatLanguageModel model = resolveChatModel(effectiveModelName);
+        AiModelConfig config = resolveModelConfig(effectiveModelName);
         int maxRetries = config.getMaxRetries() != null ? config.getMaxRetries() : 3;
         Duration initialInterval = config.getRetryInitialInterval() != null ? config.getRetryInitialInterval() : Duration.ofMillis(500);
         Duration maxInterval = config.getRetryMaxInterval() != null ? config.getRetryMaxInterval() : Duration.ofSeconds(5);
@@ -432,7 +471,13 @@ public class AiTemplate {
                 .build();
 
         try {
-            return RetryUtil.execute(() -> model.generate(messages), retryConfig);
+            Response<AiMessage> response = RetryUtil.execute(() -> model.generate(messages), retryConfig);
+            // 2. 调用成功后累计记录租户配额消耗
+            if (quotaChecker != null) {
+                int totalTokens = extractTotalTokens(messages, response);
+                quotaChecker.recordUsage(tenantId, effectiveModelName, totalTokens);
+            }
+            return response;
         } catch (Throwable t) {
             throw AiExceptionTranslator.translate(t);
         }
@@ -445,6 +490,36 @@ public class AiTemplate {
      */
     public AiModelRegistry getRegistry() {
         return registry;
+    }
+
+    /**
+     * 获取多租户动态模型切源解析器
+     *
+     * @return AiTenantModelResolver
+     */
+    public AiTenantModelResolver getTenantModelResolver() {
+        return tenantModelResolver;
+    }
+
+    /**
+     * 获取配额风控检查器
+     *
+     * @return AiQuotaChecker
+     */
+    public AiQuotaChecker getQuotaChecker() {
+        return quotaChecker;
+    }
+
+    private String resolveEffectiveModelName(String modelName) {
+        String target = modelName;
+        if (!StringUtils.hasText(target)) {
+            target = AiContextHolder.getModelName();
+        }
+        if (tenantModelResolver != null) {
+            String tenantId = TenantContextHolder.getTenantId();
+            target = tenantModelResolver.resolveModel(tenantId, target);
+        }
+        return target;
     }
 
     private ChatLanguageModel resolveChatModel(String modelName) {
@@ -473,5 +548,97 @@ public class AiTemplate {
             return "";
         }
         return response.content().text() != null ? response.content().text() : "";
+    }
+
+    private int estimatePromptTokens(List<ChatMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return 0;
+        }
+        String promptText = extractPromptText(messages);
+        return FallbackTokenEstimator.estimateTokens(promptText);
+    }
+
+    @SuppressWarnings("deprecation")
+    private static String extractPromptText(List<ChatMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return "";
+        }
+        return messages.stream()
+                .map(msg -> {
+                    if (msg instanceof UserMessage um) {
+                        return um.singleText();
+                    } else if (msg instanceof SystemMessage sm) {
+                        return sm.text();
+                    } else if (msg instanceof AiMessage am) {
+                        return am.text();
+                    }
+                    return msg.text();
+                })
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining("\n"));
+    }
+
+    private static int extractTotalTokens(List<ChatMessage> messages, Response<AiMessage> response) {
+        if (response != null && response.tokenUsage() != null) {
+            Integer total = response.tokenUsage().totalTokenCount();
+            if (total != null && total > 0) {
+                return total;
+            }
+            Integer input = response.tokenUsage().inputTokenCount();
+            Integer output = response.tokenUsage().outputTokenCount();
+            if (input != null || output != null) {
+                return (input != null ? input : 0) + (output != null ? output : 0);
+            }
+        }
+        String promptText = extractPromptText(messages);
+        String responseText = response != null && response.content() != null && response.content().text() != null
+                ? response.content().text()
+                : "";
+        return FallbackTokenEstimator.estimate(promptText, responseText).totalTokenCount();
+    }
+
+    /**
+     * 流式调用配额追踪响应处理器包装器
+     */
+    private static class QuotaTrackingStreamingResponseHandler implements StreamingResponseHandler<AiMessage> {
+
+        private final StreamingResponseHandler<AiMessage> delegate;
+        private final AiQuotaChecker quotaChecker;
+        private final String tenantId;
+        private final String modelName;
+        private final List<ChatMessage> messages;
+
+        QuotaTrackingStreamingResponseHandler(StreamingResponseHandler<AiMessage> delegate,
+                                             AiQuotaChecker quotaChecker,
+                                             String tenantId,
+                                             String modelName,
+                                             List<ChatMessage> messages) {
+            this.delegate = delegate;
+            this.quotaChecker = quotaChecker;
+            this.tenantId = tenantId;
+            this.modelName = modelName;
+            this.messages = messages;
+        }
+
+        @Override
+        public void onNext(String token) {
+            delegate.onNext(token);
+        }
+
+        @Override
+        public void onComplete(Response<AiMessage> response) {
+            try {
+                int totalTokens = extractTotalTokens(messages, response);
+                quotaChecker.recordUsage(tenantId, modelName, totalTokens);
+            } catch (Throwable t) {
+                log.warn("流式调用完成后记录配额消耗失败: {}", t.getMessage());
+            }
+            delegate.onComplete(response);
+        }
+
+        @Override
+        public void onError(Throwable error) {
+            delegate.onError(error);
+        }
     }
 }

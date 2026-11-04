@@ -10,6 +10,7 @@ import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.routing.DynamicRoutingChatLanguageModel;
+import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
 import io.github.atengk.boot.ai.tool.ToolExecutionSandbox;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.JsonUtil;
@@ -94,8 +95,14 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                     "Spring 容器中未找到 AiModelRegistry Bean，无法初始化智能体代理: " + agentInterface.getName(), e);
         }
 
+        AiTenantModelResolver tenantModelResolver = null;
+        try {
+            tenantModelResolver = applicationContext.getBean(AiTenantModelResolver.class);
+        } catch (NoSuchBeanDefinitionException ignored) {
+        }
+
         // 2. 构建多模型动态路由代理
-        DynamicRoutingChatLanguageModel routingModel = new DynamicRoutingChatLanguageModel(registry, model);
+        DynamicRoutingChatLanguageModel routingModel = new DynamicRoutingChatLanguageModel(registry, model, tenantModelResolver);
 
         // 3. 构建 LangChain4j 原始 AiServices 代理
         AiServices<T> builder = AiServices.builder(agentInterface)

@@ -34,6 +34,10 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import io.github.atengk.boot.ai.observability.AiAuditLogHandler;
 import io.github.atengk.boot.ai.observability.AtengAiObservabilityListener;
+import io.github.atengk.boot.ai.quota.AiQuotaChecker;
+import io.github.atengk.boot.ai.quota.DefaultAiQuotaChecker;
+import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
+import io.github.atengk.boot.ai.tenant.DefaultAiTenantModelResolver;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.core.task.TaskExecutor;
@@ -165,16 +169,52 @@ public class AtengAiAutoConfiguration {
     }
 
     /**
+     * 自动装配 SaaS 多租户动态大模型切源解析器
+     *
+     * @param properties AI 根配置属性
+     * @return AiTenantModelResolver 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public AiTenantModelResolver aiTenantModelResolver(AtengAiProperties properties) {
+        return new DefaultAiTenantModelResolver(properties);
+    }
+
+    /**
+     * 自动装配 SaaS 多租户大模型调用配额风控检查器
+     *
+     * @param properties            AI 根配置属性
+     * @param redisTemplateProvider 可选的 Redis 模板提供者 (存在时自动激活分布式滑动窗口)
+     * @return AiQuotaChecker 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public AiQuotaChecker aiQuotaChecker(AtengAiProperties properties,
+                                         ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+        return new DefaultAiQuotaChecker(properties.getQuota(), redisTemplateProvider.getIfAvailable());
+    }
+
+    /**
      * 自动装配 AI 核心命令式操作门面
      *
-     * @param registry   模型注册中心
-     * @param properties AI 根配置属性
+     * @param registry                   模型注册中心
+     * @param properties                 AI 根配置属性
+     * @param tenantModelResolverProvider 可选的多租户切源解析器
+     * @param quotaCheckerProvider       可选的配额风控检查器
      * @return AiTemplate 实例
      */
     @Bean
     @ConditionalOnMissingBean
-    public AiTemplate aiTemplate(AiModelRegistry registry, AtengAiProperties properties) {
-        return new AiTemplate(registry, properties);
+    public AiTemplate aiTemplate(AiModelRegistry registry,
+                                 AtengAiProperties properties,
+                                 ObjectProvider<AiTenantModelResolver> tenantModelResolverProvider,
+                                 ObjectProvider<AiQuotaChecker> quotaCheckerProvider) {
+        return new AiTemplate(
+                registry,
+                properties,
+                tenantModelResolverProvider.getIfAvailable(),
+                quotaCheckerProvider.getIfAvailable()
+        );
     }
 
     /**

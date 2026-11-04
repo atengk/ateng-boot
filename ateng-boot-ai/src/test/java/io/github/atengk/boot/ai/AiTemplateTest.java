@@ -14,8 +14,11 @@ import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.prompt.PromptTemplate;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
+import io.github.atengk.boot.ai.quota.DefaultAiQuotaChecker;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.template.AiTemplate;
+import io.github.atengk.boot.ai.tenant.DefaultAiTenantModelResolver;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -77,6 +80,7 @@ class AiTemplateTest {
     @AfterEach
     void tearDown() {
         AiContextHolder.clearAll();
+        TenantContextHolder.clear();
     }
 
     @Test
@@ -272,5 +276,82 @@ class AiTemplateTest {
         SseEmitter emitter = mock(SseEmitter.class);
         aiTemplate.streamWithModel("deepseek-r1", "   ", emitter);
         verify(emitter, times(1)).completeWithError(any());
+    }
+
+    @Test
+    @DisplayName("SaaS 多租户切源测试：根据当前租户上下文自动路由至租户专属专有模型")
+    void testMultiTenantDynamicModelRouting() {
+        properties.setTenantModels(Map.of("tenant-finance", "deepseek-r1"));
+        DefaultAiTenantModelResolver resolver = new DefaultAiTenantModelResolver(properties);
+        AiTemplate multiTenantTemplate = new AiTemplate(registry, properties, resolver, null);
+
+        when(deepseekChatModel.generate(anyList())).thenReturn(Response.from(AiMessage.from("金融模型应答")));
+
+        // 注入租户上下文
+        TenantContextHolder.setTenantId("tenant-finance");
+        String reply = multiTenantTemplate.chat("查询季度财报");
+
+        assertThat(reply).isEqualTo("金融模型应答");
+        verify(deepseekChatModel, times(1)).generate(anyList());
+        verify(defaultChatModel, never()).generate(anyList());
+    }
+
+    @Test
+    @DisplayName("配额风控测试：当租户调用次数达到上限时，AiTemplate 立即 Fail-Fast 阻断调用")
+    void testQuotaBlockingFailFast() {
+        properties.getQuota().setEnabled(true);
+        properties.getQuota().setDailyRequestLimit(1);
+        DefaultAiQuotaChecker checker = new DefaultAiQuotaChecker(properties.getQuota());
+        AiTemplate quotaTemplate = new AiTemplate(registry, properties, null, checker);
+
+        when(defaultChatModel.generate(anyList())).thenReturn(Response.from(AiMessage.from("第 1 次成功")));
+
+        TenantContextHolder.setTenantId("tenant-quota-01");
+
+        // 第 1 次调用成功并消耗配额
+        String res1 = quotaTemplate.chat("你好");
+        assertThat(res1).isEqualTo("第 1 次成功");
+        assertThat(checker.getDailyRequests("tenant-quota-01")).isEqualTo(1);
+
+        // 第 2 次调用立即被前置风控阻断
+        assertThatThrownBy(() -> quotaTemplate.chat("再次提问"))
+                .isInstanceOf(AiException.class)
+                .hasFieldOrPropertyWithValue("code", AiResultCode.AI_QUOTA_EXCEEDED.getCode())
+                .hasMessageContaining("今日 AI 调用次数已达上限 (1/1 次)");
+
+        // 验证底层模型未发生第 2 次无效调用 (有效防御算力账单击穿)
+        verify(defaultChatModel, times(1)).generate(anyList());
+    }
+
+    @Test
+    @DisplayName("配额风控测试：流式对话前置配额阻断与完成时累计 Token 消耗")
+    void testStreamingQuotaTracking() {
+        properties.getQuota().setEnabled(true);
+        properties.getQuota().setDailyRequestLimit(1);
+        properties.getQuota().setDailyTokenLimit(500);
+        DefaultAiQuotaChecker checker = new DefaultAiQuotaChecker(properties.getQuota());
+        AiTemplate quotaTemplate = new AiTemplate(registry, properties, null, checker);
+
+        TenantContextHolder.setTenantId("tenant-stream-01");
+
+        // 模拟底层流式模型立即回调 onComplete
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            StreamingResponseHandler<AiMessage> handler = invocation.getArgument(1);
+            handler.onComplete(Response.from(AiMessage.from("流式回答"), new dev.langchain4j.model.output.TokenUsage(10, 20, 30)));
+            return null;
+        }).when(defaultStreamingModel).generate(anyList(), any());
+
+        StreamingResponseHandler<AiMessage> mockHandler = mock(StreamingResponseHandler.class);
+        quotaTemplate.stream(List.of(UserMessage.from("测试流式")), mockHandler);
+
+        // 验证已记录调用次数 1，Token 30
+        assertThat(checker.getDailyRequests("tenant-stream-01")).isEqualTo(1);
+        assertThat(checker.getDailyTokens("tenant-stream-01")).isEqualTo(30);
+
+        // 再次调用流式应被即刻阻断
+        assertThatThrownBy(() -> quotaTemplate.stream(List.of(UserMessage.from("超限流式")), mockHandler))
+                .isInstanceOf(AiException.class)
+                .hasFieldOrPropertyWithValue("code", AiResultCode.AI_QUOTA_EXCEEDED.getCode());
     }
 }

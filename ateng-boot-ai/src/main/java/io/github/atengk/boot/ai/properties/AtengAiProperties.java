@@ -42,9 +42,32 @@ public class AtengAiProperties {
     private AiAuditProperties audit = new AiAuditProperties();
 
     /**
+     * 调用配额与风控强类型配置
+     */
+    @NestedConfigurationProperty
+    private AtengAiQuotaProperties quota = new AtengAiQuotaProperties();
+
+    /**
+     * SaaS 多租户专有模型绑定映射 (key 为租户标识 tenantId，value 为绑定的专有模型标识别名)
+     */
+    private Map<String, String> tenantModels = new LinkedHashMap<>();
+
+    /**
      * 命名多模型配置拓扑 (key 为模型标识别名，例如 deepseek-r1, qwen-max, fast-chat 等)
      */
     private Map<String, AiModelConfig> models = new LinkedHashMap<>();
+
+    /**
+     * 获取不可变多租户模型绑定映射
+     *
+     * @return 只读多租户模型映射 Map
+     */
+    public Map<String, String> getTenantModels() {
+        if (tenantModels == null || tenantModels.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return Collections.unmodifiableMap(tenantModels);
+    }
 
     /**
      * 获取不可变多模型配置映射，防御外部无界篡改

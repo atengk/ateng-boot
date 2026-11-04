@@ -11,6 +11,8 @@ import io.github.atengk.boot.ai.context.AgentCallContext;
 import io.github.atengk.boot.ai.context.AiContextHolder;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.sanitizer.JsonPayloadSanitizer;
+import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
@@ -29,25 +31,35 @@ public class DynamicRoutingChatLanguageModel implements ChatLanguageModel {
 
     private final AiModelRegistry registry;
     private final String configuredModelName;
+    private final AiTenantModelResolver tenantModelResolver;
 
     public DynamicRoutingChatLanguageModel(AiModelRegistry registry, String configuredModelName) {
+        this(registry, configuredModelName, null);
+    }
+
+    public DynamicRoutingChatLanguageModel(AiModelRegistry registry, String configuredModelName, AiTenantModelResolver tenantModelResolver) {
         this.registry = Objects.requireNonNull(registry, "AiModelRegistry 不能为空");
         this.configuredModelName = StringUtils.hasText(configuredModelName) ? configuredModelName.trim() : "";
+        this.tenantModelResolver = tenantModelResolver;
     }
 
     /**
      * 动态推导当前应生效的底层大模型实例
-     * 优先级：AiContextHolder (线程级) > configuredModelName (@AiAgent 静态配置) > 默认模型
+     * 优先级：AiContextHolder (线程级) > AiTenantModelResolver (多租户动态切源) > configuredModelName (@AiAgent 静态配置) > 默认模型
      *
      * @return 生效的 ChatLanguageModel
      */
     public ChatLanguageModel resolveModel() {
-        String threadModel = AiContextHolder.getModelName();
-        if (StringUtils.hasText(threadModel)) {
-            return registry.getChatModel(threadModel);
+        String target = AiContextHolder.getModelName();
+        if (!StringUtils.hasText(target)) {
+            target = configuredModelName;
         }
-        if (StringUtils.hasText(configuredModelName)) {
-            return registry.getChatModel(configuredModelName);
+        if (tenantModelResolver != null) {
+            String tenantId = TenantContextHolder.getTenantId();
+            target = tenantModelResolver.resolveModel(tenantId, target);
+        }
+        if (StringUtils.hasText(target)) {
+            return registry.getChatModel(target);
         }
         return registry.getChatModel(AiModelRegistry.DEFAULT_MODEL_NAME);
     }
