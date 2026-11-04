@@ -19,15 +19,15 @@
 | **索引运维** | 向量索引生命周期与结构 | `MilvusTemplate` | - | `createIndex(...)` / `dropIndex(...)` / `describeIndex(...)` / `listIndexes(...)`，支持 AUTOINDEX/HNSW/IVF/SPARSE 等算法 | `MilvusTemplateLifecycleTest` |
 | **索引运维** | 标量倒排与排序索引 | `MilvusTemplate`<br>`@MilvusField` | - | `createIndex(coll, field, indexName, indexType)`，为文本标量列建立 INVERTED 倒排索引、TRIE 前缀树或 STL_SORT 标量排序 | `MilvusMultiVectorAndInvertedIndexTest` |
 | **数据操作** | 实体与字典数据极简写入 | `MilvusTemplate` | `ateng.boot.milvus.auto-create-partition` | `insert(collection, data)` / `insertEntities(entities)`，自动绑定多租户字段与时序分区探测 | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
-| **数据操作** | 动态扩展字段安全兜底 | `MilvusEntityConverter` | - | 实体 `extra` (Map) 属性在写入时自动扁平化由 `$meta` 捕获，查询反序列化时自动收集未知动态列回填 | `MilvusLifecycleAndRoutingTest` |
+| **数据操作** | 动态扩展字段安全兜底 | `@MilvusDynamic`<br>`MilvusEntityConverter` | - | 实体标注 `@MilvusDynamic`（或缺省 `extra`）的 Map 属性在写入时自动扁平化由 `$meta` 捕获，查询反序列化时自动收集未知动态列回填 | `MilvusLifecycleAndRoutingTest`<br>`MilvusMultimodalController` |
 | **数据操作** | 幂等覆盖写入 (Upsert) | `MilvusTemplate` | - | `upsert(collection, data)` / `upsertEntities(entities)`，主键存在则更新，不存在则新增插入 | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
 | **数据操作** | 批量分批切片摄取 | `MilvusTemplate` | - | `insertBatchEntities(list, size)` / `upsertBatchEntities(list, size)`，结合 `BatchSliceUtil` 与指数退避重试防 OOM 与帧超限 | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
 | **数据操作** | 主键点查与轻量探测 | `MilvusTemplate` | - | `getById(Class, id)` / `getByIds(Class, ids)` / `existsById(Class, id)`，毫秒级主键直接点查 | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
 | **数据操作** | 数据安全删除 | `MilvusTemplate` | - | `deleteByIds(Class, ids)` / `deleteByExpr(collection, expr)`，多租户环境下自动织入租户边界过滤 | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
-| **向量检索** | 单向量高级检索 Fluent 模型 | `MilvusTemplate`<br>`MilvusSearchRequest`<br>`MilvusHit<T>` | `ateng.boot.milvus.consistency-level` | `search(MilvusSearchRequest<T>)`，流式构建向量入参、标量过滤、浅分页 offset、GroupBy 聚合与范围过滤 | `MilvusSearchRequestTest`<br>`MilvusAdvancedSearchController` |
+| **向量检索** | 单向量高级检索 Fluent 模型 | `MilvusTemplate`<br>`MilvusSearchRequest`<br>`MilvusHit<T>` | `ateng.boot.milvus.consistency-level` | `search(MilvusSearchRequest<T>)`，流式构建向量入参、标量过滤、浅分页 offset、GroupBy 聚合与范围过滤 | `MilvusSearchRequestTest`<br>`MilvusAdvancedSearchController`<br>`MilvusMultimodalController` |
 | **向量检索** | 聚合去重与范围区间检索 | `MilvusSearchRequest` | - | `.groupBy(field)` 规避单文档垄断 TopK；`.range(radius, rangeFilter)` 圈定置信度相似度区间 | `MilvusSearchRequestTest`<br>`MilvusAdvancedSearchController` |
 | **标量查询** | 标量过滤与实体统计 | `MilvusTemplate` | - | `query(Class, expr)` / `count(Class, expr)`，支持标准布尔过滤表达式与聚合统计 | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
-| **混合检索** | 多向量多路召回与融合重排 | `MilvusTemplate`<br>`MilvusHybridSearchRequest`<br>`AnnSearch`<br>`ReRanker` | - | `hybridSearch(request)`，Fluent 请求构建，支持 RRF 互逆排名与 WEIGHTED 加权打分重排 | `MilvusTemplateAdvancedOperationsTest`<br>`MilvusHybridController` |
+| **混合检索** | 多向量多路召回与融合重排 | `MilvusTemplate`<br>`MilvusHybridSearchRequest`<br>`AnnSearch`<br>`ReRanker` | - | `hybridSearch(request)`，Fluent 请求构建，支持 RRF 互逆排名与 WEIGHTED 加权打分重排 | `MilvusTemplateAdvancedOperationsTest`<br>`MilvusHybridController`<br>`MilvusMultimodalController` |
 | **全文匹配** | BM25 分词匹配辅助构建 | `MilvusExprHelper` | - | `textMatch(field, query)` / `expr().eq().like().textMatch().build()`，标准化 `TEXT_MATCH` 表达式生成 | `MilvusExprHelperTest` |
 | **游标流式** | 深度遍历突破 16384 限制 | `MilvusTemplate`<br>`QueryIterator` | - | `streamingQuery(collection, expr, batchSize, consumer)` / `streamingQueryEntities(...)`，受管关流与分批拉取 | `MilvusTemplateAdvancedOperationsTest` |
 | **多库运维** | 动态切库与数据库管理 | `MilvusTemplate`<br>`MilvusContextHolder` | - | `useDatabase(db, action)` / `createDatabase(db)` / `dropDatabase(db)` / `listDatabases()`，支持线程级隔离切库 | `MilvusTemplateAdvancedOperationsTest`<br>`MilvusContextHolderTest` |
@@ -250,14 +250,15 @@ milvusTemplate.loadCollection("knowledge_document");
 
 // 4. 集合别名 (Alias) 与零停机蓝绿无感切流
 // 创建业务只读别名绑定到 v1 物理集合
-milvusTemplate.createAlias("knowledge_alias", "knowledge_document_v1");
+milvusTemplate.createAlias("knowledge_document_v1", "knowledge_alias");
 
 // 别名元数据查看与反查
-String targetCollection = milvusTemplate.describeAlias("knowledge_alias");
+DescribeAliasResp aliasResp = milvusTemplate.describeAlias("knowledge_alias");
+String targetCollection = aliasResp.getCollectionName();
 List<String> allAliases = milvusTemplate.listAliases("knowledge_document_v1");
 
-// 当新模型/新全量索引 v2 构建完成后，原子无感切流（业务流量零中断、无缝切换至 v2）
-milvusTemplate.alterAlias("knowledge_alias", "knowledge_document_v2");
+// 当新模型/新全量索引 v2 构建完成后，原子无感切流（默认开启目标集合内存加载前置校验）
+milvusTemplate.alterAlias("knowledge_document_v2", "knowledge_alias");
 
 // 卸载并删除旧别名
 milvusTemplate.dropAlias("knowledge_alias");

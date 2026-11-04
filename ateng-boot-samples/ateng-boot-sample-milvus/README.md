@@ -7,13 +7,14 @@
 ## 1. 工程定位与核心能力
 
 - **Web 契约底座**: 基于 `ateng-boot-web` 统一传输契约，所有接口均显式返回强类型 `Result<T>`，彻底遵循传输对象与实体解耦（Zero-Entity-Leakage）。
-- **多领域 Controller 拆分**: 拒绝臃肿上帝类，拆分为 6 个职责单一的领域控制器：
+- **多领域 Controller 拆分**: 拒绝臃肿上帝类，拆分为 7 个职责单一的领域控制器：
   - `MilvusLifecycleController` (`/sample/milvus/lifecycle`): 服务端健康探针、集合一键初始化与预加载、加载/释放与集合元数据查看。
   - `MilvusAliasController` (`/sample/milvus/alias`): 集合别名生命周期运维与蓝绿零停机无感发布平滑切流。
   - `MilvusVectorController` (`/sample/milvus/vector`): 单向量 CRUD、主键点查、标量表达式组合过滤、ANN 相似度检索与防 OOM 分批切片数据摄取。
   - `MilvusAdvancedSearchController` (`/sample/milvus/search`): 单向量 GroupBy 去重聚合检索与 Range Search 范围区间检索。
   - `MilvusHybridController` (`/sample/milvus/hybrid`): 多向量多路召回、RRF 互逆排名融合与加权融合重排。
   - `MilvusTenantController` (`/sample/milvus/tenant`): SaaS 多租户隔离读写、请求头租户标识自动织入与线程上下文安全重置。
+  - `MilvusMultimodalController` (`/sample/milvus/multimodal`): 多模态多特征向量集合生命周期、稠密语义检索、稀疏关键字 (BM25/SPLADE) 检索与稠密+稀疏多路混合召回。
 - **双模自适应驱动**:
   - **默认/CI 模式**: 自动装配 `@Profile("!local")` 纯内存离线测试桩，零网络依赖秒级全绿自洽；
   - **Local 真实模式**: 激活 `local` Profile 自动直连真实 Milvus 实例或云服务（如 Zilliz Cloud），全真走通生产链路。
@@ -307,8 +308,80 @@ curl -X POST "http://localhost:8080/sample/milvus/search/range" \
   -d '{
     "collectionName": "sample_document",
     "vector": [0.12, 0.34, 0.56, 0.78],
-    "radius": 0.85,
-    "rangeFilter": 0.60,
+    "radius": 0.50,
+    "rangeFilter": 0.85,
+    "topK": 5
+  }'
+```
+
+---
+
+### 3.7 多模态多特征与稀疏向量检索 (`MilvusMultimodalController`)
+
+#### 1) 一键初始化多模态集合与倒排/多向量混合索引
+```bash
+curl -X POST "http://localhost:8080/sample/milvus/multimodal/init"
+```
+
+#### 2) 单篇多模态文档新增写入 (含稠密、稀疏与动态扩展属性)
+```bash
+curl -X POST "http://localhost:8080/sample/milvus/multimodal/insert" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": 1001,
+    "title": "多模态检索技术白皮书",
+    "summary": "结合稠密语义与稀疏关键字的高精度检索架构",
+    "denseVector": [0.12, 0.34, 0.56, 0.78],
+    "sparseVector": {
+      "101": 0.85,
+      "202": 0.45
+    },
+    "extra": {
+      "source": "crawler",
+      "score": 99
+    }
+  }'
+```
+
+#### 3) 主键点查多模态文档详情
+```bash
+curl -X GET "http://localhost:8080/sample/milvus/multimodal/1001"
+```
+
+#### 4) 稠密语义向量 ANN 相似度检索
+```bash
+curl -X POST "http://localhost:8080/sample/milvus/multimodal/search/dense" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "vector": [0.12, 0.34, 0.56, 0.78],
+    "topK": 5,
+    "expr": "title LIKE '\''%检索%'\''"
+  }'
+```
+
+#### 5) 稀疏关键词向量 ANN 检索 (BM25 / SPLADE)
+```bash
+curl -X POST "http://localhost:8080/sample/milvus/multimodal/search/sparse" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sparseVector": {
+      "101": 0.85,
+      "202": 0.45
+    },
+    "topK": 5
+  }'
+```
+
+#### 6) 稠密与稀疏多模态多路混合召回融合重排 (RRF)
+```bash
+curl -X POST "http://localhost:8080/sample/milvus/multimodal/search/hybrid" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "denseVector": [0.12, 0.34, 0.56, 0.78],
+    "sparseVector": {
+      "101": 0.85,
+      "202": 0.45
+    },
     "topK": 5
   }'
 ```

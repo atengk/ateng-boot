@@ -169,6 +169,10 @@ public class MilvusSearchRequest<T> implements Serializable {
         return this;
     }
 
+    public MilvusSearchRequest<T> vectorFieldName(String vectorFieldName) {
+        return annsField(vectorFieldName);
+    }
+
     public MilvusSearchRequest<T> vector(List<Float> vector) {
         Assert.notNull(vector, "vector must not be null");
         this.vector = new FloatVec(vector);
@@ -278,6 +282,10 @@ public class MilvusSearchRequest<T> implements Serializable {
         return this;
     }
 
+    public MilvusSearchRequest<T> param(String key, Object value) {
+        return searchParam(key, value);
+    }
+
     public MilvusSearchRequest<T> searchParams(Map<String, Object> params) {
         if (params != null) {
             if (this.searchParams == null) {
@@ -286,6 +294,10 @@ public class MilvusSearchRequest<T> implements Serializable {
             this.searchParams.putAll(params);
         }
         return this;
+    }
+
+    public MilvusSearchRequest<T> params(Map<String, Object> params) {
+        return searchParams(params);
     }
 
     public MilvusSearchRequest<T> consistencyLevel(MilvusConsistencyLevel consistencyLevel) {
@@ -331,14 +343,49 @@ public class MilvusSearchRequest<T> implements Serializable {
     }
 
     /**
+     * 构建并返回聚合了 radius、range_filter 与专属 searchParams 的生效检索参数字典
+     *
+     * @return 完整的生效检索参数字典 (若无参数返回空 Map，非 null)
+     */
+    public Map<String, Object> buildEffectiveSearchParams() {
+        Map<String, Object> effectiveParams = new HashMap<>();
+        if (this.searchParams != null && !this.searchParams.isEmpty()) {
+            effectiveParams.putAll(this.searchParams);
+        }
+        if (this.radius != null) {
+            effectiveParams.put("radius", this.radius);
+        }
+        if (this.rangeFilter != null) {
+            effectiveParams.put("range_filter", this.rangeFilter);
+        }
+        return effectiveParams;
+    }
+
+    /**
      * 前置防卫校验
      */
     public void validate() {
-        if (!StringUtils.hasText(collectionName) && entityClass == null) {
-            throw new IllegalArgumentException("collectionName or entityClass must not be null/empty");
+        String effectiveCollection = collectionName;
+        if (!StringUtils.hasText(effectiveCollection) && entityClass != null && !Map.class.isAssignableFrom(entityClass)) {
+            effectiveCollection = MilvusEntityMetadata.of(entityClass).getCollectionName();
+        }
+        if (!StringUtils.hasText(effectiveCollection)) {
+            throw new IllegalArgumentException("collectionName must not be empty");
         }
         Assert.notNull(vector, "vector must not be null");
         Assert.isTrue(topK > 0, "topK must be positive");
         Assert.isTrue(offset >= 0, "offset must not be negative");
+        Assert.isTrue(offset + topK <= 16384, "offset + topK must not exceed 16384 (Milvus pagination limit)");
+
+        if (rangeFilter != null) {
+            Assert.notNull(radius, "radius must not be null when rangeFilter is specified");
+        }
+        if (radius != null) {
+            Assert.isTrue(!Double.isNaN(radius) && !Double.isInfinite(radius), "radius must be a finite number");
+            if (rangeFilter != null) {
+                Assert.isTrue(!Double.isNaN(rangeFilter) && !Double.isInfinite(rangeFilter), "rangeFilter must be a finite number");
+                Assert.isTrue(!radius.equals(rangeFilter), "radius and rangeFilter must not be equal");
+            }
+        }
     }
 }

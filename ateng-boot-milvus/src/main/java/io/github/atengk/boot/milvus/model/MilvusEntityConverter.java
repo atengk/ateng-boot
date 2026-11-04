@@ -171,17 +171,12 @@ public final class MilvusEntityConverter {
 
             // 4. 动态字段安全兜底：收集未定义动态列回填至 extra 字典
             if (metadata.getExtraField() != null) {
-                Set<String> declaredNames = new HashSet<>();
-                for (MilvusEntityMetadata.FieldMetadata f : metadata.getAllFields()) {
-                    declaredNames.add(f.getField().getName());
-                    declaredNames.add(f.getFieldName());
-                }
+                Set<String> declaredNames = metadata.getDeclaredFieldNames();
                 String extraFieldName = metadata.getExtraField().getField().getName();
-                declaredNames.add(extraFieldName);
 
                 Map<String, Object> extraMap = new HashMap<>();
                 for (Map.Entry<String, Object> entry : new HashMap<>(copy).entrySet()) {
-                    if (!declaredNames.contains(entry.getKey())) {
+                    if (!extraFieldName.equals(entry.getKey()) && !declaredNames.contains(entry.getKey())) {
                         extraMap.put(entry.getKey(), copy.remove(entry.getKey()));
                     }
                 }

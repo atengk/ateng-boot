@@ -1,11 +1,7 @@
 package io.github.atengk.boot.milvus.model;
 
 import io.github.atengk.boot.core.util.StringUtil;
-import io.github.atengk.boot.milvus.annotation.MilvusCollection;
-import io.github.atengk.boot.milvus.annotation.MilvusField;
-import io.github.atengk.boot.milvus.annotation.MilvusId;
-import io.github.atengk.boot.milvus.annotation.MilvusPartitionKey;
-import io.github.atengk.boot.milvus.annotation.MilvusVector;
+import io.github.atengk.boot.milvus.annotation.*;
 import io.github.atengk.boot.milvus.exception.MilvusException;
 import io.github.atengk.boot.milvus.exception.MilvusResultCode;
 import io.milvus.v2.common.DataType;
@@ -21,8 +17,10 @@ import java.lang.reflect.Modifier;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
@@ -54,6 +52,7 @@ public class MilvusEntityMetadata {
     private final FieldMetadata extraField;
     private final List<FieldMetadata> scalarFields;
     private final List<FieldMetadata> allFields;
+    private final Set<String> declaredFieldNames;
 
     /**
      * 单个字段属性元数据
@@ -201,7 +200,7 @@ public class MilvusEntityMetadata {
                     }
                 }
 
-                FieldMetadata vm = FieldMetadata.builder()
+                FieldMetadata vectorMeta = FieldMetadata.builder()
                         .field(field)
                         .fieldName(name)
                         .dataType(dataType)
@@ -216,11 +215,11 @@ public class MilvusEntityMetadata {
                         .indexName("idx_" + name)
                         .description(vectorAnn.description())
                         .build();
-                vectorFields.add(vm);
+                vectorFields.add(vectorMeta);
                 if (vectorMetadata == null) {
-                    vectorMetadata = vm;
+                    vectorMetadata = vectorMeta;
                 }
-                all.add(vm);
+                all.add(vectorMeta);
             } else if (partitionKeyAnn != null) {
                 if (partitionKeyMetadata != null) {
                     throw new MilvusException("实体类 [" + clazz.getName() + "] 仅支持配置一个分区键字段 @MilvusPartitionKey");
@@ -241,8 +240,12 @@ public class MilvusEntityMetadata {
                         .build();
                 all.add(partitionKeyMetadata);
             } else {
-                boolean isExtraField = "extra".equalsIgnoreCase(field.getName()) && Map.class.isAssignableFrom(field.getType());
+                boolean hasDynamicAnn = field.isAnnotationPresent(MilvusDynamic.class);
+                boolean isExtraField = hasDynamicAnn || ("extra".equalsIgnoreCase(field.getName()) && Map.class.isAssignableFrom(field.getType()));
                 if (isExtraField) {
+                    if (!Map.class.isAssignableFrom(field.getType())) {
+                        throw new MilvusException("实体类 [" + clazz.getName() + "] 标注了 @MilvusDynamic 的字段 [" + field.getName() + "] 必须为 Map 类型");
+                    }
                     extraMetadata = FieldMetadata.builder()
                             .field(field)
                             .fieldName(field.getName())
@@ -296,6 +299,12 @@ public class MilvusEntityMetadata {
                     "实体类 [" + clazz.getName() + "] 必须通过 @MilvusVector 显式指定向量字段");
         }
 
+        Set<String> declaredNames = new HashSet<>();
+        for (FieldMetadata f : all) {
+            declaredNames.add(f.getField().getName());
+            declaredNames.add(f.getFieldName());
+        }
+
         return MilvusEntityMetadata.builder()
                 .entityClass(clazz)
                 .collectionName(collectionName)
@@ -312,7 +321,17 @@ public class MilvusEntityMetadata {
                 .extraField(extraMetadata)
                 .scalarFields(Collections.unmodifiableList(scalars))
                 .allFields(Collections.unmodifiableList(all))
+                .declaredFieldNames(Collections.unmodifiableSet(declaredNames))
                 .build();
+    }
+
+    /**
+     * 获取当前实体声明的所有字段名与对应 Milvus 列名集合 (用于动态字段识别快速过滤)
+     *
+     * @return 声明字段与列名集合
+     */
+    public Set<String> getDeclaredFieldNames() {
+        return declaredFieldNames != null ? declaredFieldNames : Collections.emptySet();
     }
 
     /**

@@ -8,13 +8,22 @@ import io.milvus.v2.service.collection.request.GetLoadStateReq;
 import io.milvus.v2.service.utility.request.*;
 import io.milvus.v2.service.utility.response.DescribeAliasResp;
 import io.milvus.v2.service.utility.response.ListAliasResp;
+import io.milvus.v2.service.vector.request.DeleteReq;
+import io.milvus.v2.service.vector.request.InsertReq;
+import io.milvus.v2.service.vector.request.QueryReq;
+import io.milvus.v2.service.vector.request.SearchReq;
+import io.milvus.v2.service.vector.response.InsertResp;
+import io.milvus.v2.service.vector.response.QueryResp;
+import io.milvus.v2.service.vector.response.SearchResp;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -94,6 +103,59 @@ class MilvusAliasLifecycleTest {
         ArgumentCaptor<AlterAliasReq> captor = ArgumentCaptor.forClass(AlterAliasReq.class);
         verify(client).alterAlias(captor.capture());
         assertThat(captor.getValue().getCollectionName()).isEqualTo("article_v2");
+    }
+
+    @Test
+    @DisplayName("alterAlias - 支持 SDK 标准 AlterAliasReq 单参调用 (默认开启内存校验)")
+    void testAlterAliasWithRequestObject() {
+        when(client.getLoadState(any(GetLoadStateReq.class))).thenReturn(true);
+
+        AlterAliasReq req = AlterAliasReq.builder()
+                .collectionName("article_v2")
+                .alias("article_active_alias")
+                .build();
+        template.alterAlias(req);
+
+        ArgumentCaptor<AlterAliasReq> captor = ArgumentCaptor.forClass(AlterAliasReq.class);
+        verify(client).alterAlias(captor.capture());
+        assertThat(captor.getValue().getCollectionName()).isEqualTo("article_v2");
+        assertThat(captor.getValue().getAlias()).isEqualTo("article_active_alias");
+    }
+
+    @Test
+    @DisplayName("别名透明访问 - 验证在 search、query、insert、deleteByIds 中传入别名均天然透明透传")
+    void testAliasTransparentAccessInDmlAndDql() {
+        String alias = "article_active_alias";
+
+        // 1. search 验证
+        SearchResp mockSearchResp = SearchResp.builder().searchResults(List.of(Collections.emptyList())).build();
+        when(client.search(any(SearchReq.class))).thenReturn(mockSearchResp);
+        template.search(alias, List.of(0.1f, 0.2f), 5);
+        ArgumentCaptor<SearchReq> searchCaptor = ArgumentCaptor.forClass(SearchReq.class);
+        verify(client).search(searchCaptor.capture());
+        assertThat(searchCaptor.getValue().getCollectionName()).isEqualTo(alias);
+
+        // 2. query 验证
+        QueryResp mockQueryResp = QueryResp.builder().queryResults(Collections.emptyList()).build();
+        when(client.query(any(QueryReq.class))).thenReturn(mockQueryResp);
+        template.query(alias, "id == 1");
+        ArgumentCaptor<QueryReq> queryCaptor = ArgumentCaptor.forClass(QueryReq.class);
+        verify(client).query(queryCaptor.capture());
+        assertThat(queryCaptor.getValue().getCollectionName()).isEqualTo(alias);
+
+        // 3. insert 验证
+        InsertResp mockInsertResp = mock(InsertResp.class);
+        when(client.insert(any(InsertReq.class))).thenReturn(mockInsertResp);
+        template.insert(alias, List.of(new HashMap<>(java.util.Map.of("id", 100L, "title", "alias test"))));
+        ArgumentCaptor<InsertReq> insertCaptor = ArgumentCaptor.forClass(InsertReq.class);
+        verify(client).insert(insertCaptor.capture());
+        assertThat(insertCaptor.getValue().getCollectionName()).isEqualTo(alias);
+
+        // 4. delete 验证
+        template.deleteByIds(alias, List.of(100L));
+        ArgumentCaptor<DeleteReq> deleteCaptor = ArgumentCaptor.forClass(DeleteReq.class);
+        verify(client).delete(deleteCaptor.capture());
+        assertThat(deleteCaptor.getValue().getCollectionName()).isEqualTo(alias);
     }
 
     @Test

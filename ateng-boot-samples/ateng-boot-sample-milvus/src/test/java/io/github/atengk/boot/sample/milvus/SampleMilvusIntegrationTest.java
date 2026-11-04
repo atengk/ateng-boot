@@ -9,6 +9,10 @@ import io.github.atengk.boot.sample.milvus.dto.DocumentBatchInsertDto;
 import io.github.atengk.boot.sample.milvus.dto.DocumentInsertDto;
 import io.github.atengk.boot.sample.milvus.dto.GroupBySearchDto;
 import io.github.atengk.boot.sample.milvus.dto.HybridSearchDto;
+import io.github.atengk.boot.sample.milvus.dto.MultimodalDenseSearchDto;
+import io.github.atengk.boot.sample.milvus.dto.MultimodalHybridSearchDto;
+import io.github.atengk.boot.sample.milvus.dto.MultimodalInsertDto;
+import io.github.atengk.boot.sample.milvus.dto.MultimodalSparseSearchDto;
 import io.github.atengk.boot.sample.milvus.dto.RangeSearchDto;
 import io.github.atengk.boot.sample.milvus.dto.VectorSearchDto;
 import io.milvus.v2.client.MilvusClientV2;
@@ -147,14 +151,24 @@ class SampleMilvusIntegrationTest {
             entityMap.put("vector", List.of(0.1f, 0.2f, 0.3f, 0.4f));
             entityMap.put("count(*)", 1L);
 
+            Map<String, Object> multimodalMap = new HashMap<>();
+            multimodalMap.put("id", 1001L);
+            multimodalMap.put("title", "多模态检索技术白皮书");
+            multimodalMap.put("summary", "结合稠密语义与稀疏关键字的高精度检索架构");
+            multimodalMap.put("dense_vector", List.of(0.1f, 0.2f, 0.3f, 0.4f));
+            multimodalMap.put("sparse_vector", Map.of(101L, 0.85f, 202L, 0.45f));
+            multimodalMap.put("extra", Map.of("source", "crawler", "score", 99));
+
             QueryResp.QueryResult queryResult = QueryResp.QueryResult.builder()
                     .entity(entityMap)
                     .build();
 
-            GetResp getResp = GetResp.builder()
-                    .getResults(Collections.singletonList(queryResult))
-                    .build();
-            when(client.get(any(GetReq.class))).thenReturn(getResp);
+            when(client.get(any(GetReq.class))).thenAnswer(invocation -> {
+                GetReq req = invocation.getArgument(0);
+                Map<String, Object> targetMap = "sample_multimodal".equals(req.getCollectionName()) ? multimodalMap : entityMap;
+                QueryResp.QueryResult r = QueryResp.QueryResult.builder().entity(targetMap).build();
+                return GetResp.builder().getResults(Collections.singletonList(r)).build();
+            });
 
             QueryResp queryResp = QueryResp.builder()
                     .queryResults(Collections.singletonList(queryResult))
@@ -162,16 +176,31 @@ class SampleMilvusIntegrationTest {
             when(client.query(any(QueryReq.class))).thenReturn(queryResp);
 
             // 5. 向量检索与混合检索
-            SearchResp.SearchResult hitResult = SearchResp.SearchResult.builder()
-                    .id(1L)
-                    .score(0.96f)
-                    .entity(entityMap)
-                    .build();
-            SearchResp searchResp = SearchResp.builder()
-                    .searchResults(Collections.singletonList(Collections.singletonList(hitResult)))
-                    .build();
-            when(client.search(any(SearchReq.class))).thenReturn(searchResp);
-            when(client.hybridSearch(any(HybridSearchReq.class))).thenReturn(searchResp);
+            when(client.search(any(SearchReq.class))).thenAnswer(invocation -> {
+                SearchReq req = invocation.getArgument(0);
+                Map<String, Object> targetMap = "sample_multimodal".equals(req.getCollectionName()) ? multimodalMap : entityMap;
+                SearchResp.SearchResult hitResult = SearchResp.SearchResult.builder()
+                        .id(targetMap.get("id"))
+                        .score(0.96f)
+                        .entity(targetMap)
+                        .build();
+                return SearchResp.builder()
+                        .searchResults(Collections.singletonList(Collections.singletonList(hitResult)))
+                        .build();
+            });
+
+            when(client.hybridSearch(any(HybridSearchReq.class))).thenAnswer(invocation -> {
+                HybridSearchReq req = invocation.getArgument(0);
+                Map<String, Object> targetMap = "sample_multimodal".equals(req.getCollectionName()) ? multimodalMap : entityMap;
+                SearchResp.SearchResult hitResult = SearchResp.SearchResult.builder()
+                        .id(targetMap.get("id"))
+                        .score(0.96f)
+                        .entity(targetMap)
+                        .build();
+                return SearchResp.builder()
+                        .searchResults(Collections.singletonList(Collections.singletonList(hitResult)))
+                        .build();
+            });
 
             // 6. 集合别名运维
             ListAliasResp aliasResp = ListAliasResp.builder()
@@ -504,8 +533,8 @@ class SampleMilvusIntegrationTest {
         RangeSearchDto rangeDto = RangeSearchDto.builder()
                 .collectionName("sample_document")
                 .vector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
-                .radius(0.8f)
-                .rangeFilter(0.5f)
+                .radius(0.5f)
+                .rangeFilter(0.8f)
                 .topK(5)
                 .build();
 
@@ -531,6 +560,94 @@ class SampleMilvusIntegrationTest {
         // 2. 删除测试集合
         mockMvc.perform(delete("/sample/milvus/lifecycle/collection")
                         .param("collectionName", "sample_document"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+    }
+
+    @Test
+    @Order(9)
+    @DisplayName("9. 测试多模态多特征向量检索与混合召回 (MilvusMultimodalController)")
+    void testMultimodalOperations() throws Exception {
+        // 1. 初始化多模态集合
+        mockMvc.perform(post("/sample/milvus/multimodal/init"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("多模态集合与向量索引初始化成功并已就绪加载"));
+
+        // 2. 插入多模态文档
+        MultimodalInsertDto insertDto = MultimodalInsertDto.builder()
+                .id(1001L)
+                .title("多模态检索技术白皮书")
+                .summary("结合稠密语义与稀疏关键字的高精度检索架构")
+                .denseVector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
+                .sparseVector(Map.of(101L, 0.85f, 202L, 0.45f))
+                .extra(Map.of("source", "crawler", "score", 99))
+                .build();
+
+        mockMvc.perform(post("/sample/milvus/multimodal/insert")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(insertDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(1001L));
+
+        // 3. 点查多模态文档
+        mockMvc.perform(get("/sample/milvus/multimodal/1001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.id").value(1001L))
+                .andExpect(jsonPath("$.data.title").value("多模态检索技术白皮书"));
+
+        // 4. 稠密向量检索
+        MultimodalDenseSearchDto denseDto = MultimodalDenseSearchDto.builder()
+                .vector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
+                .topK(3)
+                .build();
+
+        mockMvc.perform(post("/sample/milvus/multimodal/search/dense")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(denseDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 5. 稀疏向量检索
+        MultimodalSparseSearchDto sparseDto = MultimodalSparseSearchDto.builder()
+                .sparseVector(Map.of(101L, 0.85f))
+                .topK(3)
+                .build();
+
+        mockMvc.perform(post("/sample/milvus/multimodal/search/sparse")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(sparseDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 6. 稠密与稀疏多路混合召回
+        MultimodalHybridSearchDto hybridDto = MultimodalHybridSearchDto.builder()
+                .denseVector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
+                .sparseVector(Map.of(101L, 0.85f))
+                .topK(5)
+                .build();
+
+        mockMvc.perform(post("/sample/milvus/multimodal/search/hybrid")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(hybridDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 7. 显式释放并删除多模态测试集合 (保证环境零残留)
+        mockMvc.perform(post("/sample/milvus/lifecycle/collection/release")
+                        .param("collectionName", "sample_multimodal"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        mockMvc.perform(delete("/sample/milvus/lifecycle/collection")
+                        .param("collectionName", "sample_multimodal"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));

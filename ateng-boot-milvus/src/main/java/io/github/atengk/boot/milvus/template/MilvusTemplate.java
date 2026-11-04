@@ -213,7 +213,11 @@ public class MilvusTemplate {
     }
 
     /**
-     * 根据实体类注解自动推导并创建集合 (若实体配置了 ttlSeconds 或 mmap 则自动注入对应属性)
+     * 根据实体类注解自动推导并创建集合
+     *
+     * <p>注意：Milvus Java SDK 2.4+ 协议约束中，{@link CreateCollectionReq} 仅负责基础 Schema 定义，
+     * 集合的高级生命周期与存储属性 (如 collection.ttl.seconds、mmap.enabled) 统一通过后续的
+     * {@link #alterCollection(String, Map)} 进行原子配置注入。</p>
      *
      * @param entityClass 实体类
      */
@@ -524,8 +528,29 @@ public class MilvusTemplate {
      * @return 是否已建索引
      */
     public boolean hasIndex(String collectionName, String fieldName) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        Assert.hasText(fieldName, "fieldName must not be empty");
         List<String> indexes = listIndexes(collectionName, fieldName);
-        return !indexes.isEmpty();
+        if (indexes == null || indexes.isEmpty()) {
+            return false;
+        }
+        boolean matched = indexes.stream().anyMatch(idx ->
+                fieldName.equalsIgnoreCase(idx)
+                || idx.equalsIgnoreCase("idx_" + fieldName)
+                || idx.toLowerCase().contains(fieldName.toLowerCase()));
+        if (matched) {
+            return true;
+        }
+        try {
+            var resp = describeIndex(collectionName, fieldName);
+            if (resp != null && resp.getIndexDescriptions() != null) {
+                return resp.getIndexDescriptions().stream()
+                        .anyMatch(d -> fieldName.equalsIgnoreCase(d.getFieldName()));
+            }
+        } catch (Exception ignored) {
+            // 静默降级
+        }
+        return false;
     }
 
     // =========================================================================
@@ -661,18 +686,18 @@ public class MilvusTemplate {
                 ? metadata.getVectorFields()
                 : Collections.singletonList(metadata.getVectorField());
 
-        for (MilvusEntityMetadata.FieldMetadata vf : vectorFields) {
-            if (!hasIndex(collectionName, vf.getFieldName())) {
-                IndexParam.MetricType metricType = vf.getMetricType() != null
-                        ? vf.getMetricType()
-                        : (vf.getDataType() == io.milvus.v2.common.DataType.SparseFloatVector ? IndexParam.MetricType.IP : IndexParam.MetricType.COSINE);
-                IndexParam.IndexType indexType = vf.getIndexType() != null
-                        ? vf.getIndexType()
-                        : (vf.getDataType() == io.milvus.v2.common.DataType.SparseFloatVector ? IndexParam.IndexType.SPARSE_INVERTED_INDEX : IndexParam.IndexType.AUTOINDEX);
+        for (MilvusEntityMetadata.FieldMetadata vectorField : vectorFields) {
+            if (!hasIndex(collectionName, vectorField.getFieldName())) {
+                IndexParam.MetricType metricType = vectorField.getMetricType() != null
+                        ? vectorField.getMetricType()
+                        : (vectorField.getDataType() == io.milvus.v2.common.DataType.SparseFloatVector ? IndexParam.MetricType.IP : IndexParam.MetricType.COSINE);
+                IndexParam.IndexType indexType = vectorField.getIndexType() != null
+                        ? vectorField.getIndexType()
+                        : (vectorField.getDataType() == io.milvus.v2.common.DataType.SparseFloatVector ? IndexParam.IndexType.SPARSE_INVERTED_INDEX : IndexParam.IndexType.AUTOINDEX);
 
                 log.info("一键建表: 集合 [{}] 向量列 [{}] 正在创建索引 [type={}, metric={}]",
-                        collectionName, vf.getFieldName(), indexType, metricType);
-                createIndex(collectionName, vf.getFieldName(), metricType, indexType);
+                        collectionName, vectorField.getFieldName(), indexType, metricType);
+                createIndex(collectionName, vectorField.getFieldName(), metricType, indexType);
             }
         }
 
@@ -854,6 +879,15 @@ public class MilvusTemplate {
                 .collectionName(collectionName.trim())
                 .alias(alias.trim())
                 .build(), checkLoaded);
+    }
+
+    /**
+     * 根据自定义请求变更集合别名指向 (默认执行目标集合内存已加载前置校验)
+     *
+     * @param request 变更别名参数
+     */
+    public void alterAlias(AlterAliasReq request) {
+        alterAlias(request, true);
     }
 
     /**
@@ -1479,16 +1513,7 @@ public class MilvusTemplate {
             builder.roundDecimal(request.getRoundDecimal());
         }
 
-        Map<String, Object> effectiveSearchParams = new HashMap<>();
-        if (request.getSearchParams() != null && !request.getSearchParams().isEmpty()) {
-            effectiveSearchParams.putAll(request.getSearchParams());
-        }
-        if (request.getRadius() != null) {
-            effectiveSearchParams.put("radius", request.getRadius());
-        }
-        if (request.getRangeFilter() != null) {
-            effectiveSearchParams.put("range_filter", request.getRangeFilter());
-        }
+        Map<String, Object> effectiveSearchParams = request.buildEffectiveSearchParams();
         if (!effectiveSearchParams.isEmpty()) {
             builder.searchParams(effectiveSearchParams);
         }
@@ -1523,8 +1548,6 @@ public class MilvusTemplate {
                 } else if (entityMap != null) {
                     entity = MilvusEntityConverter.mapToEntity(entityMap, entityClass);
                 }
-            } else if (entityMap != null) {
-                entity = (T) entityMap;
             }
             hits.add(MilvusHit.<T>builder()
                     .id(r.getId())
@@ -2598,6 +2621,17 @@ public class MilvusTemplate {
      */
     public <T> T execute(String operation, Function<MilvusClientV2, T> action) {
         Objects.requireNonNull(action, "Action must not be null");
+        String currentDb = MilvusContextHolder.getDatabase();
+        if (!StringUtils.hasText(currentDb)) {
+            String resolvedDb = resolveCurrentDatabase();
+            if (StringUtils.hasText(resolvedDb)) {
+                return useDatabase(resolvedDb, () -> executeInternal(operation, action));
+            }
+        }
+        return executeInternal(operation, action);
+    }
+
+    private <T> T executeInternal(String operation, Function<MilvusClientV2, T> action) {
         try {
             return action.apply(client);
         } catch (Throwable t) {

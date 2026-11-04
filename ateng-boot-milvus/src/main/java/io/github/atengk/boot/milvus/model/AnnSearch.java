@@ -14,6 +14,7 @@ import org.springframework.util.StringUtils;
 import java.io.Serializable;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.SortedMap;
 
 /**
@@ -133,6 +134,18 @@ public class AnnSearch implements Serializable {
     }
 
     /**
+     * 构建稀疏向量子检索 (原生 Map 字典，自动转换为有序字典)
+     *
+     * @param vectorFieldName 稀疏向量列名
+     * @param sparseVector    稀疏向量字典 (termId -> weight)
+     * @param topK            召回数量
+     * @return AnnSearch 实例
+     */
+    public static AnnSearch ofSparse(String vectorFieldName, Map<Long, Float> sparseVector, int topK) {
+        return ofSparse(vectorFieldName, sparseVector, topK, null);
+    }
+
+    /**
      * 构建稀疏向量子检索 (含标量过滤表达式)
      *
      * @param vectorFieldName 稀疏向量列名
@@ -150,6 +163,23 @@ public class AnnSearch implements Serializable {
                 .topK(topK)
                 .expr(expr)
                 .build();
+    }
+
+    /**
+     * 构建稀疏向量子检索 (原生 Map 字典及标量过滤表达式)
+     *
+     * @param vectorFieldName 稀疏向量列名
+     * @param sparseVector    稀疏向量字典
+     * @param topK            召回数量
+     * @param expr            过滤表达式
+     * @return AnnSearch 实例
+     */
+    public static AnnSearch ofSparse(String vectorFieldName, Map<Long, Float> sparseVector, int topK, String expr) {
+        Assert.notNull(sparseVector, "sparseVector must not be null");
+        SortedMap<Long, Float> sorted = (sparseVector instanceof SortedMap)
+                ? (SortedMap<Long, Float>) sparseVector
+                : new java.util.TreeMap<>(sparseVector);
+        return ofSparse(vectorFieldName, sorted, topK, expr);
     }
 
     /**

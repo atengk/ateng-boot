@@ -88,7 +88,8 @@ class MilvusSearchRequestTest {
                 .radius(0.85)
                 .rangeFilter(0.5)
                 .consistencyLevel(MilvusConsistencyLevel.STRONG)
-                .searchParam("nprobe", 16)
+                .param("nprobe", 16)
+                .params(Map.of("level", 1))
                 .partitionNames("p1", "p2");
 
         assertThat(request.getCollectionName()).isEqualTo("test_article");
@@ -100,7 +101,14 @@ class MilvusSearchRequestTest {
         assertThat(request.getRangeFilter()).isEqualTo(0.5);
         assertThat(request.getConsistencyLevel()).isEqualTo(MilvusConsistencyLevel.STRONG);
         assertThat(request.getSearchParams()).containsEntry("nprobe", 16);
+        assertThat(request.getSearchParams()).containsEntry("level", 1);
         assertThat(request.getPartitionNames()).containsExactly("p1", "p2");
+
+        Map<String, Object> effectiveSearchParams = request.buildEffectiveSearchParams();
+        assertThat(effectiveSearchParams).containsEntry("radius", 0.85);
+        assertThat(effectiveSearchParams).containsEntry("range_filter", 0.5);
+        assertThat(effectiveSearchParams).containsEntry("nprobe", 16);
+        assertThat(effectiveSearchParams).containsEntry("level", 1);
     }
 
     @Test
@@ -111,7 +119,15 @@ class MilvusSearchRequestTest {
                 .vector(List.of(0.1f, 0.2f));
         assertThatThrownBy(req1::validate)
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("collectionName or entityClass");
+                .hasMessageContaining("collectionName");
+
+        // Map 类型且未指定集合名称 (防止集合防卫穿透)
+        MilvusSearchRequest<Map<String, Object>> reqMap = MilvusSearchRequest.builder()
+                .entityClass((Class) Map.class)
+                .vector(List.of(0.1f, 0.2f));
+        assertThatThrownBy(reqMap::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("collectionName must not be empty");
 
         // 缺少向量
         MilvusSearchRequest<Object> req2 = MilvusSearchRequest.of("my_collection");
@@ -134,6 +150,40 @@ class MilvusSearchRequestTest {
         assertThatThrownBy(req4::validate)
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("offset must not be negative");
+
+        // offset + topK 超出 16384 硬限制
+        MilvusSearchRequest<Object> reqDeepPage = MilvusSearchRequest.of("my_collection")
+                .vector(List.of(0.1f))
+                .offset(16380)
+                .topK(10);
+        assertThatThrownBy(reqDeepPage::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("16384");
+
+        // 单独指定 rangeFilter 缺失 radius
+        MilvusSearchRequest<Object> reqRange1 = MilvusSearchRequest.of("my_collection")
+                .vector(List.of(0.1f))
+                .rangeFilter(0.5);
+        assertThatThrownBy(reqRange1::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("radius must not be null when rangeFilter is specified");
+
+        // radius 与 rangeFilter 相等
+        MilvusSearchRequest<Object> reqRange2 = MilvusSearchRequest.of("my_collection")
+                .vector(List.of(0.1f))
+                .radius(0.8)
+                .rangeFilter(0.8);
+        assertThatThrownBy(reqRange2::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("radius and rangeFilter must not be equal");
+
+        // radius 为 NaN
+        MilvusSearchRequest<Object> reqRange3 = MilvusSearchRequest.of("my_collection")
+                .vector(List.of(0.1f))
+                .radius(Double.NaN);
+        assertThatThrownBy(reqRange3::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("radius must be a finite number");
     }
 
     @Test
@@ -216,6 +266,7 @@ class MilvusSearchRequestTest {
         sparseMap.put(205L, 1.2f);
 
         MilvusSearchRequest<Map<String, Object>> request = MilvusSearchRequest.<Map<String, Object>>of("sparse_collection")
+                .entityClass((Class) Map.class)
                 .sparseVector(sparseMap)
                 .annsField("sparse_vector")
                 .topK(5)
@@ -226,6 +277,7 @@ class MilvusSearchRequestTest {
         assertThat(hits).hasSize(1);
         assertThat(hits.get(0).getId()).isEqualTo("doc_sparse_1");
         assertThat(hits.get(0).getEntity()).containsEntry("content", "稀疏向量关键词测试");
+        assertThat(hits.get(0).getRawData()).containsEntry("content", "稀疏向量关键词测试");
 
         ArgumentCaptor<SearchReq> captor = ArgumentCaptor.forClass(SearchReq.class);
         verify(client).search(captor.capture());
@@ -233,6 +285,67 @@ class MilvusSearchRequestTest {
         assertThat(actualReq.getCollectionName()).isEqualTo("sparse_collection");
         assertThat(actualReq.getAnnsField()).isEqualTo("sparse_vector");
         assertThat(actualReq.getData()).isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("MilvusTemplate.search - 存量重载方法 100% 向后兼容性全覆盖")
+    void testLegacySearchOverloadsBackwardCompatibility() {
+        Map<String, Object> entityMap = new HashMap<>();
+        entityMap.put("id", 1001L);
+        entityMap.put("authorId", "A200");
+        entityMap.put("title", "向后兼容性单测");
+
+        SearchResp.SearchResult searchResult = SearchResp.SearchResult.builder()
+                .id(1001L)
+                .score(0.95f)
+                .entity(entityMap)
+                .build();
+        SearchResp mockResp = SearchResp.builder()
+                .searchResults(List.of(List.of(searchResult)))
+                .build();
+        when(client.search(any(SearchReq.class))).thenReturn(mockResp);
+
+        List<Float> vector = List.of(0.1f, 0.2f, 0.3f, 0.4f);
+
+        // 1. search(Class<T>, vector, topK)
+        List<MilvusHit<ArticleDoc>> r1 = template.search(ArticleDoc.class, vector, 5);
+        assertThat(r1).hasSize(1);
+        assertThat(r1.get(0).getEntity().getTitle()).isEqualTo("向后兼容性单测");
+
+        // 2. search(Class<T>, vector, topK, expr)
+        List<MilvusHit<ArticleDoc>> r2 = template.search(ArticleDoc.class, vector, 5, "authorId == 'A200'");
+        assertThat(r2).hasSize(1);
+
+        // 3. search(Class<T>, vector, topK, expr, consistencyLevel)
+        List<MilvusHit<ArticleDoc>> r3 = template.search(ArticleDoc.class, vector, 5, "authorId == 'A200'", MilvusConsistencyLevel.STRONG);
+        assertThat(r3).hasSize(1);
+
+        // 4. search(collectionName, vector, topK)
+        List<MilvusHit<Map<String, Object>>> r4 = template.search("test_article", vector, 5);
+        assertThat(r4).hasSize(1);
+        assertThat(r4.get(0).getRawData()).containsEntry("title", "向后兼容性单测");
+
+        // 5. search(collectionName, vector, topK, expr)
+        List<MilvusHit<Map<String, Object>>> r5 = template.search("test_article", vector, 5, "authorId == 'A200'");
+        assertThat(r5).hasSize(1);
+
+        // 6. search(collectionName, vector, topK, expr, outputFields, consistencyLevel)
+        List<MilvusHit<Map<String, Object>>> r6 = template.search("test_article", vector, 5, "authorId == 'A200'", List.of("id", "title"), MilvusConsistencyLevel.BOUNDED);
+        assertThat(r6).hasSize(1);
+
+        // 7. search(collectionName, annsField, vector, topK, expr, outputFields, consistencyLevel)
+        List<MilvusHit<Map<String, Object>>> r7 = template.search("test_article", "vector", vector, 5, "authorId == 'A200'", List.of("id", "title"), MilvusConsistencyLevel.BOUNDED);
+        assertThat(r7).hasSize(1);
+
+        // 8. search(collectionName, annsField, vector, topK, expr, outputFields, consistencyLevel, entityClass)
+        List<MilvusHit<ArticleDoc>> r8 = template.search("test_article", "vector", vector, 5, "authorId == 'A200'", List.of("id", "title"), MilvusConsistencyLevel.BOUNDED, ArticleDoc.class);
+        assertThat(r8).hasSize(1);
+        assertThat(r8.get(0).getEntity().getTitle()).isEqualTo("向后兼容性单测");
+
+        // 9. search(collectionName, annsField, vector, topK, expr, outputFields, consistencyLevel, entityClass, tenantFieldName)
+        List<MilvusHit<ArticleDoc>> r9 = template.search("test_article", "vector", vector, 5, "authorId == 'A200'", List.of("id", "title"), MilvusConsistencyLevel.BOUNDED, ArticleDoc.class, "tenantId");
+        assertThat(r9).hasSize(1);
+        assertThat(r9.get(0).getEntity().getTitle()).isEqualTo("向后兼容性单测");
     }
 
     @Test

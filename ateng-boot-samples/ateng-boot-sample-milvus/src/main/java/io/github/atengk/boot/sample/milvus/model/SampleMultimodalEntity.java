@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.milvus.model;
 
 import io.github.atengk.boot.milvus.annotation.MilvusCollection;
+import io.github.atengk.boot.milvus.annotation.MilvusDynamic;
 import io.github.atengk.boot.milvus.annotation.MilvusField;
 import io.github.atengk.boot.milvus.annotation.MilvusId;
 import io.github.atengk.boot.milvus.annotation.MilvusVector;
@@ -24,7 +25,7 @@ import java.util.Map;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@MilvusCollection(name = "sample_multimodal", description = "多模态多特征向量集合", ttlSeconds = 604800, mmap = true, replicaNumber = 2)
+@MilvusCollection(name = "sample_multimodal", description = "多模态多特征向量集合", ttlSeconds = 604800, mmap = true, replicaNumber = 1)
 public class SampleMultimodalEntity implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -62,5 +63,6 @@ public class SampleMultimodalEntity implements Serializable {
     /**
      * 动态未知扩展属性 (透明对接 Milvus $meta 动态列)
      */
+    @MilvusDynamic
     private Map<String, Object> extra;
 }

@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.milvus.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.Positive;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -44,6 +45,7 @@ public class GroupBySearchDto implements Serializable {
     /**
      * 返回最大聚合结果组数 (TopK，默认 5)
      */
+    @Positive(message = "召回条数必须为正整数")
     @Builder.Default
     private Integer topK = 5;
 

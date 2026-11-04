@@ -2,10 +2,7 @@ package io.github.atengk.boot.milvus;
 
 import com.google.gson.JsonObject;
 import io.github.atengk.boot.core.context.TenantContextHolder;
-import io.github.atengk.boot.milvus.annotation.MilvusCollection;
-import io.github.atengk.boot.milvus.annotation.MilvusField;
-import io.github.atengk.boot.milvus.annotation.MilvusId;
-import io.github.atengk.boot.milvus.annotation.MilvusVector;
+import io.github.atengk.boot.milvus.annotation.*;
 import io.github.atengk.boot.milvus.context.MilvusContextHolder;
 import io.github.atengk.boot.milvus.model.MilvusEntityConverter;
 import io.github.atengk.boot.milvus.model.MilvusEntityMetadata;
@@ -18,6 +15,8 @@ import io.milvus.v2.service.collection.request.CreateCollectionReq;
 import io.milvus.v2.service.collection.request.LoadCollectionReq;
 import io.milvus.v2.service.index.request.CreateIndexReq;
 import io.milvus.v2.service.index.request.ListIndexesReq;
+import io.milvus.v2.service.vector.request.InsertReq;
+import io.milvus.v2.service.vector.response.InsertResp;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -76,6 +75,22 @@ class MilvusLifecycleAndRoutingTest {
         private List<Float> vector;
 
         private Map<String, Object> extra;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @MilvusCollection(name = "custom_dynamic_entity")
+    public static class CustomDynamicEntity {
+        @MilvusId
+        private Long id;
+
+        @MilvusVector(dimension = 4)
+        private List<Float> vector;
+
+        @MilvusDynamic
+        private Map<String, Object> attributes;
     }
 
     @Test
@@ -255,5 +270,50 @@ class MilvusLifecycleAndRoutingTest {
 
         // 闭包退出后现场完全恢复
         assertThat(template.resolveCurrentDatabase()).isEqualTo("tenant_milvus_corp_a");
+    }
+
+    @Test
+    @DisplayName("@MilvusDynamic - 支持自定义命名的动态列字典元数据解析与反序列化兜底")
+    void testDynamicAnnotationMetadataAndMapping() {
+        MilvusEntityMetadata metadata = MilvusEntityMetadata.of(CustomDynamicEntity.class);
+        assertThat(metadata.getExtraField()).isNotNull();
+        assertThat(metadata.getExtraField().getField().getName()).isEqualTo("attributes");
+        assertThat(metadata.getExtraField().isExtra()).isTrue();
+        assertThat(metadata.getDeclaredFieldNames()).contains("id", "vector");
+
+        // 模拟 Milvus 数据行包含未定义动态列 tag 和 category
+        Map<String, Object> rawData = new LinkedHashMap<>();
+        rawData.put("id", 888L);
+        rawData.put("vector", List.of(0.1f, 0.2f, 0.3f, 0.4f));
+        rawData.put("tag", "AI");
+        rawData.put("category", "Tech");
+
+        CustomDynamicEntity entity = MilvusEntityConverter.mapToEntity(rawData, CustomDynamicEntity.class);
+        assertThat(entity).isNotNull();
+        assertThat(entity.getId()).isEqualTo(888L);
+        assertThat(entity.getAttributes())
+                .isNotNull()
+                .containsEntry("tag", "AI")
+                .containsEntry("category", "Tech");
+    }
+
+    @Test
+    @DisplayName("execute - 多租户切库开启时自动向底层 DML/DQL 操作注入租户数据库上下文并清理")
+    void testExecuteAutomaticDatabaseRouting() {
+        properties.setTenantDatabaseRouting(true);
+        TenantContextHolder.setTenantId("tenant_corp_auto");
+
+        when(client.insert(any(InsertReq.class))).thenAnswer(invocation -> {
+            // 验证在底层驱动执行期间，当前线程绑定的数据库为租户专属库
+            assertThat(MilvusContextHolder.getDatabase()).isEqualTo("tenant_corp_auto");
+            return mock(InsertResp.class);
+        });
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("id", 100L);
+        template.insert("test_col", List.of(data));
+
+        // 验证执行完成后现场可靠恢复清空
+        assertThat(MilvusContextHolder.getDatabase()).isNull();
     }
 }

@@ -44,15 +44,13 @@ public class MilvusAdvancedSearchController {
      */
     @PostMapping("/group-by")
     public Result<List<DocumentHitVo>> searchWithGroupBy(@Valid @RequestBody GroupBySearchDto dto) {
-        String targetCollection = StringUtils.hasText(dto.getCollectionName())
-                ? dto.getCollectionName().trim()
-                : "sample_document";
+        String targetCollection = resolveCollectionName(dto.getCollectionName());
 
         MilvusSearchRequest<SampleDocumentEntity> request = MilvusSearchRequest.<SampleDocumentEntity>builder()
                 .collectionName(targetCollection)
                 .entityClass(SampleDocumentEntity.class)
                 .vector(dto.getVector())
-                .topK(dto.getTopK() != null && dto.getTopK() > 0 ? dto.getTopK() : 5)
+                .topK(dto.getTopK() != null ? dto.getTopK() : 5)
                 .groupByFieldName(dto.getGroupByField().trim())
                 .expr(dto.getExpr())
                 .build();
@@ -72,15 +70,13 @@ public class MilvusAdvancedSearchController {
      */
     @PostMapping("/range")
     public Result<List<DocumentHitVo>> searchWithRange(@Valid @RequestBody RangeSearchDto dto) {
-        String targetCollection = StringUtils.hasText(dto.getCollectionName())
-                ? dto.getCollectionName().trim()
-                : "sample_document";
+        String targetCollection = resolveCollectionName(dto.getCollectionName());
 
         MilvusSearchRequest<SampleDocumentEntity> request = MilvusSearchRequest.<SampleDocumentEntity>builder()
                 .collectionName(targetCollection)
                 .entityClass(SampleDocumentEntity.class)
                 .vector(dto.getVector())
-                .topK(dto.getTopK() != null && dto.getTopK() > 0 ? dto.getTopK() : 10)
+                .topK(dto.getTopK() != null ? dto.getTopK() : 10)
                 .radius(dto.getRadius())
                 .rangeFilter(dto.getRangeFilter())
                 .expr(dto.getExpr())
@@ -91,5 +87,9 @@ public class MilvusAdvancedSearchController {
 
         List<MilvusHit<SampleDocumentEntity>> hits = milvusTemplate.search(request);
         return Result.success(DocumentConverter.toHitVoList(hits));
+    }
+
+    private String resolveCollectionName(String collectionName) {
+        return StringUtils.hasText(collectionName) ? collectionName.trim() : "sample_document";
     }
 }
