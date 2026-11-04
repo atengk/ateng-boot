@@ -119,3 +119,31 @@ _Avoid_: AuditListener, LogConsumer, TelemetrySink
 **DefaultAiQuotaChecker**:
 多租户大模型调用配额风控默认实现类，自适应双模计数（无 Redis 单机并发内存淘汰，有 Redis 分布式天级滑动计数与 TTL 自动失效）。
 _Avoid_: SimpleQuotaChecker, StandardQuotaService, MemoryQuotaManager
+
+**EmbeddingTemplate**:
+统一命令式向量化计算与知识库切片入库门面具体类，提供对称的单文本、批量文本、`TextSegment` 稠密向量计算与 `ingest` 一键入库，自动挂载指数退避重试并平滑处理网络瞬态异常。
+_Avoid_: EmbeddingHelper, VectorUtil, EmbeddingService
+
+**InMemoryEmbeddingStore**:
+单机内存向量库存储实现类，基于余弦相似度计算与并发安全集合管理向量索引，作为无外部向量中间件时的自动降级兜底方案，确保 100% 离线自洽单测与轻量单机启动。
+_Avoid_: LocalVectorStore, SimpleEmbeddingStore, MemoryStore
+
+**AiGuardrail**:
+企业级 AI 双向内容安全护栏顶层 SPI 接口，定义前置提示词注入/越狱检测（`inspectPrompt`）与后置生成内容敏感词审查（`inspectResponse`）的双向安全防卫契约。
+_Avoid_: ContentFilter, PromptInspector, SecurityInterceptor
+
+**DefaultAiGuardrail**:
+基于高性能 Trie 前缀树与正则匹配的双向内容安全护栏默认实现类，内置越狱攻击特征库与免检白名单，支持 `FAIL_FAST` 熔断与 `REPLACE` 友好降级双模式。
+_Avoid_: SimpleGuardrail, StandardContentFilter
+
+**ActiveStreamRegistry**:
+活动流式连接物理注册中心具体类，基于 OkHttp 拦截器与弱引用安全追踪活跃的网络长连接 `Call`，支持在 SSE 客户端中断时主动执行物理取消（`call.cancel()`）以杜绝 Token 计费泄漏。
+_Avoid_: StreamManager, CallRegistry, ActiveConnectionPool
+
+**StreamCancellationInterceptor**:
+OkHttp 物理流式调用生命周期拦截器具体类，在发起网络请求时自动向 `ActiveStreamRegistry` 注册当前 `Call`，在请求正常完成或异常关闭时确定性注销。
+_Avoid_: CancelFilter, StreamInterceptor
+
+**TokenWindowChatMemory**:
+基于 Token 数量的会话记忆滑动裁剪窗口具体类，自动保留首条系统指令（`SystemMessage`）并在历史超出最大 Token 限制时由远及近淘汰旧消息，防止模型上下文超长击穿。
+_Avoid_: TokenMemory, TokenSlider, SlidingWindowMemory

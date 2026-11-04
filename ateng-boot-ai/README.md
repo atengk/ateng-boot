@@ -19,6 +19,7 @@
 | **多模态流式** | 图文多模态打字机流式推流 | `AiTemplate` | `ateng.boot.ai.model.*` | `stream(String, List<String>, SseEmitter)` / `streamWithModel(String, String, List<String>, SseEmitter)` | `AiTemplateTest` / `ChatControllerIntegrationTest` |
 | **思考链提炼** | DeepSeek-R1 `<think>` 状态机 | `ReasonerTokenExtractor` | - | `feed(String)` / `finish()` / `hasThinking()`，三状态机精准解耦思考链与正文，最长后缀匹配防断字残片泄露 | `ReasonerTokenExtractorTest` / `ChatControllerIntegrationTest` |
 | **SSE 桥接器** | 双通道流式响应桥接驱动 | `SseTokenStreamBridge` | - | `onNext(String)` / `onComplete(Response)` / `onError(Throwable)`，`reasoning` 与 `text` 双通道独立推流，`[DONE]` 安全闭合 | `SseTokenStreamBridgeTest` / `ChatControllerIntegrationTest` |
+| **流式取消熔断** | OkHttp 物理连接级流式取消 | `ActiveStreamRegistry`<br>`StreamCancellationInterceptor` | - | `register(id, call)` / `cancel(id)` / `getActiveCount()`，客户端断连时触发底层 `call.cancel()` 物理切断连接终止云端计费 | `ActiveStreamRegistryTest` / `ChatControllerIntegrationTest` |
 | **模型注册表** | 多模型纳管与实例缓存 | `AiModelRegistry` | `ateng.boot.ai.models.*` | `register(name, chatModel, streamModel)` / `getChatModel(name)` / `getStreamingChatModel(name)` / `listModels()` | `AiModelRegistryTest` |
 | **动态切源** | 线程级模型动态切源持有者 | `AiContextHolder` | - | `AiContextHolder.useModel(String)` (AutoCloseable 作用域) / `setModelName(String)` / `clear()`，ThreadLocal 无状态安全还原 | `AiContextHolderTest` / `AiTemplateTest` |
 | **退避重试** | 429 限流与超时指数退避重试 | `AiTemplate`<br>`AiExceptionTranslator` | `ateng.boot.ai.model.max-retries` | 接入 Core 模块 `RetryUtil`，遇 429 / 连接超时自动执行带 Jitter 的指数退避重试，401/403 快速失败 | `AiExceptionTranslatorTest` / `AiTemplateTest` |
@@ -347,6 +348,74 @@ public class OrderNotificationService {
 
 ---
 
+### 4.3 外部提示词文件安全装配 (fromClasspath / fromResource)
+
+针对复杂企业级业务提示词（动辄数百行规约与复杂角色定义），`PromptTemplate` 支持直接从 Classpath 或 Spring `Resource` 中外部化加载，实现业务提示词与 Java 源码物理隔离：
+
+```java
+@Service
+@RequiredArgsConstructor
+public class ExternalPromptService {
+
+    private final AiTemplate aiTemplate;
+
+    // 1. 从 classpath 路径加载提示词模板文件 (如 src/main/resources/prompts/customer-review.md)
+    private static final PromptTemplate PROMPT_TEMPLATE = 
+            PromptTemplate.fromClasspath("prompts/customer-review.md");
+
+    public String analyzeCustomer(String userName, String behavior) {
+        Map<String, Object> vars = Map.of(
+                "userName", userName,
+                "behavior", behavior
+        );
+        return aiTemplate.chat(PROMPT_TEMPLATE, vars);
+    }
+}
+```
+
+- **模板热装载与版本化**：支持 Markdown 与文本格式，便于提示词工程（Prompt Engineering）与版本控制；
+- **原生防注入**：依然支持 `{{var}}` 安全插值并进行边界防卫。
+
+---
+
+### 4.4 命令式强类型结构化抽取与 JSR-303 防卫 (chatForObject)
+
+针对需要直接将大语言模型问答结果转译为强类型 DTO 的场景，`AiTemplate` 提供命令式 `chatForObject` 门面，内聚“Markdown 脱壳去噪 + Jackson 反序列化 + JSR-303 防幻觉校验”三阶防卫：
+
+#### 实战业务 Java 示例
+```java
+public record UserInsightResult(
+        @NotBlank(message = "用户特征标签不能为空")
+        String tag,
+
+        @NotBlank(message = "意图分析不能为空")
+        String intent,
+
+        @NotNull(message = "转化概率不能为空")
+        @Min(value = 0, message = "概率不可小于 0")
+        @Max(value = 100, message = "概率不可大于 100")
+        Integer conversionProbability
+) {}
+
+@Service
+@RequiredArgsConstructor
+public class UserAnalysisService {
+
+    private final AiTemplate aiTemplate;
+
+    public UserInsightResult extractInsight(String userQuery) {
+        String prompt = "请分析以下用户咨询内容，并提取用户画像特征。输出纯 JSON 格式：\n" + userQuery;
+        
+        // 自动完成：提示词结构化引导 -> 大模型调用 -> JsonPayloadSanitizer 脱壳 -> ValidatorUtil 校验
+        return aiTemplate.chatForObject(prompt, UserInsightResult.class);
+    }
+}
+```
+
+- **三阶防幻觉校验**：若大模型输出格式畸形或数值越界（例如 `conversionProbability = 120`），直接熔断抛出 `AiException(AiResultCode.AI_RESPONSE_PARSE_ERROR)`，杜绝脏数据注入下游业务流程。
+
+---
+
 ## 5. DeepSeek-R1 思考链提炼与 SSE 双通道打字机流式推流
 
 ### 5.1 ReasonerTokenExtractor 三状态机与断字缓冲防泄露
@@ -433,6 +502,46 @@ eventSource.addEventListener('error', (event) => {
 
 - **四维上下文透传**：`SseTokenStreamBridge` 构造时在 Web 主线程捕获 `AsyncContext.ContextSnapshot` 快照。当 OkHttp 工作线程异步收到 `onNext`/`onComplete` 回调时，自动还原调用方线程的 MDC `traceId` 与 `UserContext`，推流过程日志具备 100% 完整追踪链；
 - **套接字断连安全治理**：当浏览器关闭标签页或网络断开时，`SseEmitter.send()` 抛出 `IOException` 或 `IllegalStateException`，桥接器自动捕获并执行 `closeSafely()` 释放底层通道，严禁异常抛出导致破坏 OkHttp 底层连接池。
+
+---
+
+### 5.4 活动网络流注册中心与 OkHttp 物理流式取消 (ActiveStreamRegistry)
+
+传统大模型推流在前端断开连接（如用户关闭浏览器标签页）后，Web 层虽已捕获连接关闭，但底层 HTTP Client（OkHttp）由于并未感知，依然在后台持续接收大模型后续数百个分片直到完整生成。这不仅造成严重的云端 Token 计费浪费，还会占用后端网络与线程资源。
+
+`ateng-boot-ai` 构建了全链路 OkHttp 物理连接级流式取消机制：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Browser as 客户端浏览器
+    participant Controller as AiChatController
+    participant Bridge as SseTokenStreamBridge
+    participant Registry as ActiveStreamRegistry
+    participant OkHttp as OkHttp Client (Call)
+    participant Gateway as 远程大模型网关
+
+    Browser->>Controller: GET /sample/ai/chat/stream
+    Controller->>Bridge: 建立 SseEmitter 桥接
+    Bridge->>Registry: 注册当前 streamId
+    OkHttp->>Gateway: 发起 SSE 流式网络请求
+    Note over Registry: StreamCancellationInterceptor<br>绑定底层 OkHttp Call
+    Gateway-->>OkHttp: 持续推送分片数据
+    OkHttp-->>Bridge: onNext(chunk)
+    Bridge-->>Browser: data: chunk
+
+    Note over Browser: 用户关闭页面 / 网络断开
+    Browser--xBridge: Socket 物理断开
+    Note over Bridge: SseEmitter 触发 onError/onCompletion/onTimeout
+    Bridge->>Registry: cancel(streamId)
+    Registry->>OkHttp: call.cancel() 物理切断
+    OkHttp--xGateway: 终止 TCP 连接与后续分片推流
+    Note over Registry: 彻底终止云厂商无效 Token 计费
+```
+
+- **活动流物理注册 (`ActiveStreamRegistry`)**：基于并发安全容器管理当前活跃的 `streamId` 与 OkHttp 物理连接句柄的映射关系；
+- **物理切断与计费防泄漏**：`SseTokenStreamBridge` 挂载 `emitter.onCompletion`、`emitter.onTimeout` 与 `emitter.onError`，当客户端主动离开时，即刻触发 `ActiveStreamRegistry.cancel(streamId)`，调用底层的 `call.cancel()` 物理切断网络长连接，远程网关感知中断立即停止生成，终止后续 Token 计费；
+- **对称注销与连接池复位**：推流正常完成或异常退出时，注册表确定性移除当前 `streamId`，杜绝句柄悬挂与内存泄漏。
 
 ---
 
@@ -553,6 +662,44 @@ public record FinancialAuditResult(
 
 ---
 
+### 6.5 智能体流式打字机推流 (TokenStream 与 SseTokenStreamBridge.pipe)
+
+声明式智能体代理 `@AiAgent` 原生支持声明返回 `dev.langchain4j.service.TokenStream`，配合 `SseTokenStreamBridge.pipe(...)` 一键无缝桥接至 Spring Web `SseEmitter`：
+
+```java
+@AiAgent(tools = {OrderTools.class})
+public interface FinancialAuditAgent {
+
+    @SystemMessage("你是一名资深财务合规审计专家，请调用工具查询订单与仓储履约状态，并给出客观严谨的合规审计决策报告。")
+    TokenStream auditStream(@UserMessage FinancialAuditRequest request);
+}
+```
+
+#### 控制器端一键桥接
+```java
+@RestController
+@RequestMapping("/sample/ai/agent")
+@RequiredArgsConstructor
+public class AiAgentController {
+
+    private final FinancialAuditAgent financialAuditAgent;
+
+    @GetMapping(value = "/audit/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
+    public SseEmitter auditStream(@RequestParam("orderId") String orderId,
+                                  @RequestParam(value = "remarks", required = false) String remarks) {
+        SseEmitter emitter = new SseEmitter(180_000L);
+        FinancialAuditRequest request = new FinancialAuditRequest(orderId, remarks);
+        
+        TokenStream tokenStream = financialAuditAgent.auditStream(request);
+        SseTokenStreamBridge.pipe(tokenStream, emitter);
+        return emitter;
+    }
+}
+```
+- **自动工具协同推流**：智能体在流式输出过程中触发受管工具调用时，沙箱与推流桥接器透明协同，并在工具调用完成后继续向前端打字机推流。
+
+---
+
 ## 7. 双模会话记忆治理与 RAG 知识检索挂载
 
 ### 7.1 双模会话存储与 Redis 强类型 TTL 漫游
@@ -567,12 +714,16 @@ ateng:
         enabled: true
         # 存储类型: AUTO (自动探测 Redis，未引入平滑回退内存), IN_MEMORY, REDIS
         type: AUTO
-        # Redis 存储键前缀 (默认 "ateng:ai:chat-memory:")
-        key-prefix: "ateng:ai:chat-memory:"
-        # 强类型滑动过期 TTL (每次读写自动重置续期，默认 24h)
-        ttl: 24h
-        # 默认滑动窗口保留的最大消息条数 (默认 20 条)
+        # 裁剪模式: MESSAGE (按消息条数裁剪), TOKEN (按 Token 数量裁剪)
+        window-type: MESSAGE
+        # 默认滑动窗口保留的最大消息条数 (默认 20 条，当 window-type=MESSAGE 时生效)
         max-messages: 20
+        # 默认滑动窗口保留的最大 Token 上限 (默认 8192，当 window-type=TOKEN 时生效)
+        max-tokens: 8192
+        # Redis 存储键前缀 (默认 "ai:chat:memory:")
+        key-prefix: "ai:chat:memory:"
+        # 强类型滑动过期 TTL (每次读写自动重置续期，默认 7d)
+        ttl: 7d
 ```
 
 - **统一 SPI 抽象**：`ChatMemoryStore` 统一封装底层会话状态存取，内置 `InMemoryChatMemoryStore` 与 `RedisChatMemoryStore` 两种实现；
@@ -649,6 +800,30 @@ public ContentRetriever financeRetriever(EmbeddingModel embeddingModel, Embeddin
 ```
 
 - **显式与缺省兼备**：未显式指定时，若容器中存在唯一的 `ContentRetriever` Bean，系统将自动绑定缺省检索点；存在多个时强制显式指定 Bean 名称，实现防御性隔离。
+
+---
+
+### 7.5 Token 级滑动窗口与保底轻量分词器 (ChatMemoryWindowType.TOKEN)
+
+当用户输入长篇技术文档、大型异常堆栈或密集业务报表时，单纯按“消息条数”裁剪（如固定保留 20 条）极易导致单条超长消息直接把大模型的上下文窗口撑爆，引发 API 网关 400 Context Length Exceeded 崩溃。
+
+`ateng-boot-ai` 提供基于 Token 数量的滑动窗口裁剪机制：
+
+```yaml
+ateng:
+  boot:
+    ai:
+      chat-memory:
+        enabled: true
+        # 裁剪模式: MESSAGE (按消息条数), TOKEN (按 Token 数量裁剪)
+        window-type: TOKEN
+        # 基于 Token 数量裁剪时保留的最大 Token 总量 (默认 8192)
+        max-tokens: 8192
+```
+
+- **系统指令绝对保全原则**：在执行 Token 级滑动淘汰时，窗口算法始终优先锁定并保全第一条系统预设指令（`SystemMessage`），确保大模型的人格设定、安全红线与业务约束永不丢失；
+- **由远及近滑动淘汰**：当总 Token 超过 `maxTokens` 时，从最早的历史消息开始逐步淘汰，直至剩余消息总 Token 小于阈值；
+- **保底分词器 (`HeuristicTokenizer`)**：采用纯原生中英文经验加权算法，无需引入几十兆的 BPE 二进制词表依赖，保障 100% 纯净与零膨胀。
 
 ---
 
@@ -1281,12 +1456,16 @@ ateng:
         enabled: true
         # 存储类型: AUTO (默认自动探测 Redis，未引入平滑回退内存), IN_MEMORY, REDIS
         type: AUTO
-        # Redis 存储键前缀 (默认 "ateng:ai:chat-memory:")
-        key-prefix: "ateng:ai:chat-memory:"
-        # 强类型滑动过期 TTL (每次读写自动续期，默认 24h)
-        ttl: 24h
-        # 默认滑动窗口保留的最大消息条数 (默认 20 条)
+        # 裁剪策略: MESSAGE (默认按消息条数裁剪), TOKEN (按 Token 数量裁剪)
+        window-type: MESSAGE
+        # 默认滑动窗口保留的最大消息条数 (默认 20 条，当 window-type=MESSAGE 时生效)
         max-messages: 20
+        # 默认滑动窗口保留的最大 Token 上限 (默认 8192，当 window-type=TOKEN 时生效)
+        max-tokens: 8192
+        # Redis 存储键前缀 (默认 "ai:chat:memory:")
+        key-prefix: "ai:chat:memory:"
+        # 强类型滑动过期 TTL (每次读写自动续期，默认 7d)
+        ttl: 7d
       
       # 认知状态图 (LangGraph4j) 与人机协作 (HITL) 配置
       graph:
