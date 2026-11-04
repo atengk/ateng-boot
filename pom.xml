@@ -71,6 +71,7 @@
         <module>ateng-boot-social</module>
         <module>ateng-boot-liteflow</module>
         <module>ateng-boot-ai</module>
+        <module>ateng-boot-milvus</module>
     </modules>
 
     <properties>
@@ -106,6 +107,7 @@
         <liteflow.version>2.16.3.1</liteflow.version>
         <langchain4j.version>0.36.2</langchain4j.version>
         <langgraph4j.version>1.3.1</langgraph4j.version>
+        <milvus-sdk.version>2.4.4</milvus-sdk.version>
         <!-- 仅作为 ateng-boot-social 运行时支撑 dromara-anduin，严禁暴露至 ateng-boot-bom -->
         <tools-jackson.version>3.2.4</tools-jackson.version>
         <commons-lang3.version>3.18.0</commons-lang3.version>
@@ -449,6 +451,17 @@
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-ai</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-milvus</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <!-- Milvus 官方原生 Java SDK -->
+            <dependency>
+                <groupId>io.milvus</groupId>
+                <artifactId>milvus-sdk-java</artifactId>
+                <version>${milvus-sdk.version}</version>
             </dependency>
             <!-- LangChain4j 核心与 OpenAI 兼容网关 -->
             <dependency>

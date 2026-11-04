@@ -198,6 +198,17 @@
                 <version>${project.version}</version>
             </dependency>
             <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-milvus</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <!-- Milvus 官方原生 Java SDK -->
+            <dependency>
+                <groupId>io.milvus</groupId>
+                <artifactId>milvus-sdk-java</artifactId>
+                <version>${milvus-sdk.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>org.dromara.anduin</groupId>
                 <artifactId>dromara-anduin</artifactId>
                 <version>${dromara-anduin.version}</version>
