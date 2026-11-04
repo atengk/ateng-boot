@@ -237,6 +237,47 @@ class DefaultAiQuotaCheckerTest {
                 .hasFieldOrPropertyWithValue("code", AiResultCode.AI_QUOTA_EXCEEDED.getCode());
     }
 
+    @Test
+    @DisplayName("AiQuotaChecker 对称门面读写契约与分布式标识测试")
+    void testAiQuotaCheckerSymmetricFacade() {
+        properties.setDailyRequestLimit(10);
+        AiQuotaChecker checker = new DefaultAiQuotaChecker(properties);
+
+        assertThat(checker.isDistributed()).isFalse();
+        checker.recordUsage("tenant-facade", "model", 100);
+
+        assertThat(checker.getDailyRequests("tenant-facade")).isEqualTo(1);
+        assertThat(checker.getDailyTokens("tenant-facade")).isEqualTo(100);
+
+        checker.resetQuota("tenant-facade");
+        assertThat(checker.getDailyRequests("tenant-facade")).isEqualTo(0);
+        assertThat(checker.getDailyTokens("tenant-facade")).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("Redis 模式并发首请求跳过 1 时防御性补充设置 TTL 避免无界残留")
+    void testRedisConcurrentFirstIncrementTtlDefense() {
+        properties.setDailyRequestLimit(100);
+
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        org.springframework.data.redis.core.ValueOperations<String, String> ops = Mockito.mock(org.springframework.data.redis.core.ValueOperations.class);
+        when(redisTemplate.opsForValue()).thenReturn(ops);
+
+        // 模拟高并发下 increment 直接返回 2 (跳过了 1)
+        when(ops.increment(anyString(), eq(1L))).thenReturn(2L);
+        when(ops.increment(anyString(), eq(50L))).thenReturn(100L);
+        // 模拟 Redis 中尚未设置 TTL (ttl < 0)
+        when(redisTemplate.getExpire(anyString())).thenReturn(-1L);
+
+        RedisAiQuotaChecker checker = new RedisAiQuotaChecker(properties, redisTemplate);
+        assertThat(checker.isDistributed()).isTrue();
+
+        checker.recordUsage("tenant-concurrent", "model", 50);
+
+        // 验证即使计数值非 1，也正确触发了 expire 补偿
+        verify(redisTemplate, Mockito.atLeastOnce()).expire(anyString(), any(Duration.class));
+    }
+
     static class MutableClock extends Clock {
         private Instant instant;
         private final ZoneId zone;

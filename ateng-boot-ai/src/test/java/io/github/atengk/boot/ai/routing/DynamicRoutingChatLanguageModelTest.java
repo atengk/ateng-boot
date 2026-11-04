@@ -185,4 +185,77 @@ class DynamicRoutingChatLanguageModelTest {
         assertThat(AgentCallContext.applyReplacements("Call OuterMarker"))
                 .isEqualTo("Call OuterMarker");
     }
+
+    @Test
+    @DisplayName("多模态图文混合 UserMessage 入参安全替换而不抛出 IllegalStateException")
+    void testMultimodalUserMessageReplacementSafety() {
+        when(defaultModel.generate(anyList())).thenReturn(Response.from(AiMessage.from("ok")));
+        DynamicRoutingChatLanguageModel router = new DynamicRoutingChatLanguageModel(registry, "");
+
+        Map<String, String> replacements = Map.of(
+                "OrderReq[id=2002]",
+                "{\"id\":2002}"
+        );
+
+        UserMessage multimodalMsg = UserMessage.from(
+                dev.langchain4j.data.message.TextContent.from("审核图片与订单: OrderReq[id=2002]"),
+                dev.langchain4j.data.message.ImageContent.from("https://example.com/receipt.png")
+        );
+
+        try (var ignored = AgentCallContext.openScope(replacements)) {
+            router.generate(List.of(multimodalMsg));
+        }
+
+        ArgumentCaptor<List> captor = ArgumentCaptor.forClass(List.class);
+        verify(defaultModel).generate(captor.capture());
+
+        List messages = captor.getValue();
+        UserMessage um = (UserMessage) messages.get(0);
+        assertThat(um.contents()).hasSize(2);
+        assertThat(um.contents().get(0)).isInstanceOf(dev.langchain4j.data.message.TextContent.class);
+        dev.langchain4j.data.message.TextContent tc = (dev.langchain4j.data.message.TextContent) um.contents().get(0);
+        assertThat(tc.text()).isEqualTo("审核图片与订单: {\"id\":2002}");
+        assertThat(um.contents().get(1)).isInstanceOf(dev.langchain4j.data.message.ImageContent.class);
+    }
+
+    @Test
+    @DisplayName("AiContextHolder 线程级模型优先级高于多租户动态切源")
+    void testThreadModelPriorityOverTenantModel() {
+        io.github.atengk.boot.ai.tenant.AiTenantModelResolver mockResolver = mock(io.github.atengk.boot.ai.tenant.AiTenantModelResolver.class);
+        when(mockResolver.resolveModel(eq("tenant-vip"), anyString())).thenReturn("custom-model");
+
+        when(threadModel.generate(anyList())).thenReturn(Response.from(AiMessage.from("from thread")));
+
+        DynamicRoutingChatLanguageModel router = new DynamicRoutingChatLanguageModel(registry, "default", mockResolver);
+
+        io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("tenant-vip");
+        try (var ignored = AiContextHolder.useModel("thread-model")) {
+            Response<AiMessage> response = router.generate(List.of(UserMessage.from("hello")));
+            assertThat(response.content().text()).isEqualTo("from thread");
+            verify(threadModel).generate(anyList());
+            verifyNoInteractions(customModel);
+        } finally {
+            io.github.atengk.boot.core.context.TenantContextHolder.clear();
+        }
+    }
+
+    @Test
+    @DisplayName("TenantContextHolder 忽略租户模式下阻断租户模型切源")
+    void testIgnoreTenantBypassesTenantModelResolution() {
+        io.github.atengk.boot.ai.tenant.AiTenantModelResolver mockResolver = mock(io.github.atengk.boot.ai.tenant.AiTenantModelResolver.class);
+        when(defaultModel.generate(anyList())).thenReturn(Response.from(AiMessage.from("from default")));
+
+        DynamicRoutingChatLanguageModel router = new DynamicRoutingChatLanguageModel(registry, "default", mockResolver);
+
+        io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("tenant-vip");
+        io.github.atengk.boot.core.context.TenantContextHolder.setIgnoreTenant(true);
+        try {
+            Response<AiMessage> response = router.generate(List.of(UserMessage.from("hello")));
+            assertThat(response.content().text()).isEqualTo("from default");
+            verifyNoInteractions(mockResolver);
+            verify(defaultModel).generate(anyList());
+        } finally {
+            io.github.atengk.boot.core.context.TenantContextHolder.clear();
+        }
+    }
 }

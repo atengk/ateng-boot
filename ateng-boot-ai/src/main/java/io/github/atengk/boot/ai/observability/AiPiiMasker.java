@@ -19,12 +19,14 @@ public final class AiPiiMasker {
     private static final Pattern ID_CARD_PATTERN = Pattern.compile("(?<!\\d)(\\d{6}(?:18|19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx])(?!\\d)");
     private static final Pattern BANK_CARD_PATTERN = Pattern.compile("(?<!\\d)([1-9]\\d{15,18})(?!\\d)");
     private static final Pattern API_KEY_PATTERN = Pattern.compile("(?i)(sk-[a-zA-Z0-9_\\-]{10,})");
+    private static final Pattern EMAIL_PATTERN = Pattern.compile("(?i)([a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,})");
+    private static final Pattern BEARER_PATTERN = Pattern.compile("(?i)(?<![a-zA-Z0-9_\\-])(bearer\\s+)([a-zA-Z0-9_\\-\\.~+/]{10,})");
 
     private AiPiiMasker() {
     }
 
     /**
-     * 对文本中的 API Key 及 PII 敏感信息进行脱敏处理
+     * 对文本中的 API Key、Bearer 凭证及 PII 敏感信息进行脱敏处理
      *
      * @param text 原始输入或回答文本
      * @return 脱敏后的纯净文本
@@ -35,7 +37,8 @@ public final class AiPiiMasker {
         }
 
         String result = text;
-        // 1. 优先脱敏 API Key (如 sk-proj-...)
+        // 1. 优先脱敏 Bearer 凭证与 API Key (如 Bearer xxx, sk-proj-...)
+        result = maskBearerPattern(result);
         result = maskPattern(result, API_KEY_PATTERN, DesensitizeUtil::secretKey);
         // 2. 脱敏手机号 (11位大陆号码)
         result = maskPattern(result, PHONE_PATTERN, DesensitizeUtil::mobilePhone);
@@ -43,8 +46,32 @@ public final class AiPiiMasker {
         result = maskPattern(result, ID_CARD_PATTERN, DesensitizeUtil::idCard);
         // 4. 脱敏银行卡号 (16-19位卡号)
         result = maskPattern(result, BANK_CARD_PATTERN, DesensitizeUtil::bankCard);
+        // 5. 脱敏电子邮箱 (前1后域名保留)
+        result = maskPattern(result, EMAIL_PATTERN, DesensitizeUtil::email);
 
         return result;
+    }
+
+    /**
+     * 针对 Bearer 凭证模式执行捕获与令牌脱敏，严格保留前缀大小写与空格
+     *
+     * @param input 输入文本
+     * @return 替换后的文本
+     */
+    private static String maskBearerPattern(String input) {
+        Matcher matcher = BEARER_PATTERN.matcher(input);
+        if (!matcher.find()) {
+            return input;
+        }
+        StringBuilder sb = new StringBuilder();
+        do {
+            String prefix = matcher.group(1);
+            String token = matcher.group(2);
+            String maskedToken = DesensitizeUtil.secretKey(token);
+            matcher.appendReplacement(sb, Matcher.quoteReplacement(prefix + (maskedToken != null ? maskedToken : token)));
+        } while (matcher.find());
+        matcher.appendTail(sb);
+        return sb.toString();
     }
 
     /**

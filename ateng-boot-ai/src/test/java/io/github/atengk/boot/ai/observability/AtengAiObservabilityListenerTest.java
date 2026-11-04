@@ -493,4 +493,133 @@ class AtengAiObservabilityListenerTest {
         RuntimeException wrapped = new RuntimeException("外层包装", new IOException("Broken pipe"));
         assertThat(AtengAiObservabilityListener.isClientAbort(wrapped)).isTrue();
     }
+
+    @Test
+    @DisplayName("多模态图文混合 UserMessage 提取防 NPE 与防 IllegalStateException 安全测试")
+    void testMultimodalUserMessagePromptExtraction() {
+        AtomicReference<AiAuditRecord> capturedRecord = new AtomicReference<>();
+        AiAuditLogHandler handler = capturedRecord::set;
+
+        @SuppressWarnings("unchecked")
+        ObjectProvider<AiAuditLogHandler> handlerProvider = mock(ObjectProvider.class);
+        when(handlerProvider.getIfAvailable()).thenReturn(handler);
+
+        AtengAiObservabilityListener listener = new AtengAiObservabilityListener(properties, handlerProvider, null, (MeterRegistry) null);
+
+        // 构建图文混合 UserMessage
+        UserMessage multimodalMsg = UserMessage.from(
+                dev.langchain4j.data.message.TextContent.from("请分析这张图表中的趋势"),
+                dev.langchain4j.data.message.ImageContent.from("https://example.com/chart.png")
+        );
+
+        ChatModelRequest request = ChatModelRequest.builder()
+                .model("gpt-4o")
+                .messages(List.of(multimodalMsg))
+                .build();
+        ChatModelRequestContext reqContext = new ChatModelRequestContext(request, new ConcurrentHashMap<>());
+        listener.onRequest(reqContext);
+
+        ChatModelResponse response = ChatModelResponse.builder()
+                .model("gpt-4o")
+                .aiMessage(AiMessage.from("图表显示稳步上升趋势。"))
+                .build();
+        ChatModelResponseContext respContext = new ChatModelResponseContext(response, request, reqContext.attributes());
+
+        // 执行 onResponse，验证未抛出 IllegalStateException 且安全提取文本
+        listener.onResponse(respContext);
+
+        AiAuditRecord record = capturedRecord.get();
+        assertThat(record).isNotNull();
+        assertThat(record.getPromptText()).contains("请分析这张图表中的趋势");
+    }
+
+    @Test
+    @DisplayName("客户端中断场景下触发保底 Token 估算并沉淀度量与审计记录")
+    void testClientAbortFallbackTokenEstimation() {
+        MeterRegistry registry = new SimpleMeterRegistry();
+        AtomicReference<AiAuditRecord> capturedRecord = new AtomicReference<>();
+        AiAuditLogHandler handler = capturedRecord::set;
+
+        @SuppressWarnings("unchecked")
+        ObjectProvider<AiAuditLogHandler> handlerProvider = mock(ObjectProvider.class);
+        when(handlerProvider.getIfAvailable()).thenReturn(handler);
+
+        AtengAiObservabilityListener listener = new AtengAiObservabilityListener(properties, handlerProvider, null, registry);
+
+        ChatModelRequest request = ChatModelRequest.builder()
+                .model("deepseek-chat")
+                .messages(List.of(UserMessage.from("你好世界测试流式中断"))) // 10 汉字 -> 15 tokens
+                .build();
+        ChatModelRequestContext reqContext = new ChatModelRequestContext(request, new ConcurrentHashMap<>());
+        listener.onRequest(reqContext);
+
+        // 模拟流式推流中途发生 Broken pipe 中断
+        ChatModelErrorContext errContext = new ChatModelErrorContext(
+                new IOException("Broken pipe"),
+                request,
+                null,
+                reqContext.attributes()
+        );
+        listener.onError(errContext);
+
+        AiAuditRecord record = capturedRecord.get();
+        assertThat(record).isNotNull();
+        assertThat(record.getStatus()).isEqualTo(AiAuditRecord.STATUS_CANCELLED);
+        assertThat(record.isEstimated()).isTrue();
+        assertThat(record.getPromptTokens()).isEqualTo(15);
+        assertThat(record.getTotalTokens()).isEqualTo(15);
+
+        // 验证 Cancelled 场景下的 Token 指标成功记录
+        Counter promptCounter = registry.find(AtengAiObservabilityListener.METRIC_TOKENS_TOTAL)
+                .tag("model", "deepseek-chat")
+                .tag("tenant_id", "default")
+                .tag("type", "prompt")
+                .tag("estimated", "true")
+                .counter();
+        assertThat(promptCounter).isNotNull();
+        assertThat(promptCounter.count()).isEqualTo(15.0);
+    }
+
+    @Test
+    @DisplayName("多租户上下文透传下 Micrometer 指标包含 tenant_id 标签验证")
+    void testMicrometerMetricsWithTenantIdTag() {
+        MeterRegistry registry = new SimpleMeterRegistry();
+        AtengAiObservabilityListener listener = new AtengAiObservabilityListener(properties, registry);
+
+        io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("tenant-corp-01");
+        try {
+            ChatModelRequest request = ChatModelRequest.builder()
+                    .model("qwen-max")
+                    .messages(List.of(UserMessage.from("测试租户标签")))
+                    .build();
+            ChatModelRequestContext reqContext = new ChatModelRequestContext(request, new ConcurrentHashMap<>());
+            listener.onRequest(reqContext);
+
+            ChatModelResponse response = ChatModelResponse.builder()
+                    .model("qwen-max")
+                    .aiMessage(AiMessage.from("租户标签测试应答"))
+                    .build();
+            ChatModelResponseContext respContext = new ChatModelResponseContext(response, request, reqContext.attributes());
+            listener.onResponse(respContext);
+
+            // 验证指标中带有 tenant_id="tenant-corp-01"
+            Counter reqCounter = registry.find(AtengAiObservabilityListener.METRIC_REQUESTS_TOTAL)
+                    .tag("model", "qwen-max")
+                    .tag("tenant_id", "tenant-corp-01")
+                    .tag("status", "SUCCESS")
+                    .counter();
+            assertThat(reqCounter).isNotNull();
+            assertThat(reqCounter.count()).isEqualTo(1.0);
+
+            Counter tokenCounter = registry.find(AtengAiObservabilityListener.METRIC_TOKENS_TOTAL)
+                    .tag("model", "qwen-max")
+                    .tag("tenant_id", "tenant-corp-01")
+                    .tag("type", "total")
+                    .counter();
+            assertThat(tokenCounter).isNotNull();
+            assertThat(tokenCounter.count()).isGreaterThan(0.0);
+        } finally {
+            io.github.atengk.boot.core.context.TenantContextHolder.clear();
+        }
+    }
 }

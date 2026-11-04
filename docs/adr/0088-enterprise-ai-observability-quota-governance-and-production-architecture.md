@@ -160,3 +160,32 @@ flowchart TB
   ```bash
   mvn test -pl ateng-boot-ai,ateng-boot-samples/ateng-boot-sample-ai -am -T 1C -nsu -B
   ```
+
+---
+
+## 5. 工业级代码成熟度九道防线依从性分析 (Robustness Invariants Compliance)
+
+对照框架九道代码成熟度防线，本架构落地执行情况如下：
+
+| 防线编号 | 核心防线要求 | 架构落地与对齐细节 |
+| :--- | :--- | :--- |
+| **防线一** | **对称语义完备性 (Symmetric Facades Invariant)** | `AiQuotaChecker` 提供对称方法契约：前置检查 `checkQuota` 与后置累计 `recordUsage` 对称；读配额状态 `getDailyRequests` / `getDailyTokens` 与清理重置 `resetQuota` 对称；`ChatMemoryManager` 与 `GraphResumeTemplate` 均提供完备的读写、保存与销毁对称门面。 |
+| **防线二** | **分层防卫与快速失败 (Defense-in-Depth & Fail-Fast)** | 双层防卫体系：传输边界（Controller）统一采用 JSR-303 注解（`@NotBlank`、`@Min(0)` 等）Fail-Fast；业务核心层（Service/Model）在执行远程调用前通过前置卫语句严格校验入参非空，配额超额即刻抛出 `AiException(AiResultCode.AI_QUOTA_EXCEEDED)` 熔断阻断。 |
+| **防线三** | **确定性生命周期与资源清理 (Deterministic Lifecycle & Cleanup)** | 流式推流 `SseTokenStreamBridge` 与可观测监听器在正常完成、异常中断与客户端断开（`ClientAbortException`）时，保证 SSE 连接与 MDC 现场确定性闭合与还原；Redis 租户配额键原子自增时统一挂载 2 天滑动 TTL 物理自毁，单机内存配额自动按日滑动淘汰，杜绝存储与内存无界泄漏。 |
+| **防线四** | **环境宿主中立与弹性防御 (Platform-Agnostic & Host Resilience)** | `AiPiiMasker` 正则脱敏与 `FallbackTokenEstimator` 保底估算纯函数均采用 JDK 17 原生算法与跨平台 UTF-8 字符集；多模态动态模型处理兼容 `TextContent` 与 `ImageContent`，消除跨操作系统与数据编码差异。 |
+| **防线五** | **严格无状态与并发纪律 (Strict Statelessness & Concurrency Safety)** | 单例监听器、解析器与配额检查器均保持严格无状态；异步审计日志投递接入受管线程池（`ThreadPoolTaskExecutor`）并透传四维上下文快照（MDC、TenantId、UserId 等），严禁私建野线程；单机内存配额采用 `ConcurrentHashMap` 与原子淘汰，Redis 采用原子 `INCRBY` 并防卫 TTL 遗漏。 |
+| **防线六** | **生产就绪配置与防无界悬挂 (Safe Config & Production Defaults)** | 所有配置项提供生产级默认值（`enabled=true`、合理请求上限与前缀）；网络交互与 SSE 推流统配连接超时与 180s 打字机生产安全超时，杜绝无超时无限挂起。 |
+| **防线七** | **因果异常体系与底层驱动解耦 (Causal Exceptions & SDK Decoupling)** | 底层网络通信、HTTP 与 SDK 驱动异常统一由 `AiExceptionTranslator` 转译为框架受管的语义化业务异常 `AiException(IResultCode)`，100% 传递原始 `cause` 保留因果链，杜绝 Log-and-Throw 双重污染与静默吞咽。 |
+| **防线八** | **原生优先与零臃肿底座收敛 (Zero-Bloat & Core Convergence)** | 坚持万能 OpenAI 兼容协议收敛主流模型，坚决杜绝引入厂商私有 SDK；通用原语（四维上下文、异步透传、安全校验、脱敏规则等）100% 收敛复用 `ateng-boot-core`。 |
+| **防线九** | **对抗性极限用例守护 (Adversarial & Edge-Case Testing)** | 单测与集成测试全面覆盖客户端主动中断、模型 usage 缺失流式保底估算、跨天跨模型滑动淘汰、租户忽略豁免、多模态图文混合过滤与非法入参拦截校验，全真覆盖非玩具场景。 |
+
+---
+
+## 6. 未来演进路线 (Roadmap)
+
+1. **多层配额缓冲架构 (L1 Local Memory + L2 Distributed Redis)**：
+   - 在高并发海量 QPS 场景下，引入本地内存微批缓冲（如每累计 10 次或每隔 1s 批量上报 Redis），进一步平滑网络毛刺，降低分布式缓存网络 IO 负载。
+2. **动态模型费率与多维成本核算**：
+   - 由单一的 Token 数量统计演进为支持不同大模型（如 deepseek-v3 vs deepseek-r1 vs gpt-4o）的动态费率折算系数（Ratio-weighted tokens），统一换算为标准计费单元或金额，实现精细化成本归因。
+3. **自适应熔断降级联动**：
+   - 联动自研或标准熔断中间件，当大模型网关发生高频 429、504 或延迟断崖式升高时，配额守卫与路由模块支持按租户优先级实行动态削峰与弹性降额。

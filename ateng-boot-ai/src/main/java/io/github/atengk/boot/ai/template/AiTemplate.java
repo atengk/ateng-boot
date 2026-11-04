@@ -511,13 +511,16 @@ public class AiTemplate {
     }
 
     private String resolveEffectiveModelName(String modelName) {
-        String target = modelName;
-        if (!StringUtils.hasText(target)) {
-            target = AiContextHolder.getModelName();
+        String threadModel = AiContextHolder.getModelName();
+        if (StringUtils.hasText(threadModel)) {
+            return threadModel;
         }
-        if (tenantModelResolver != null) {
+        String target = modelName;
+        if (tenantModelResolver != null && !TenantContextHolder.isIgnoreTenant()) {
             String tenantId = TenantContextHolder.getTenantId();
-            target = tenantModelResolver.resolveModel(tenantId, target);
+            if (StringUtils.hasText(tenantId)) {
+                target = tenantModelResolver.resolveModel(tenantId, target);
+            }
         }
         return target;
     }
@@ -551,40 +554,7 @@ public class AiTemplate {
     }
 
     private int estimatePromptTokens(List<ChatMessage> messages) {
-        if (messages == null || messages.isEmpty()) {
-            return 0;
-        }
-        String promptText = extractPromptText(messages);
-        return FallbackTokenEstimator.estimateTokens(promptText);
-    }
-
-    private static String extractPromptText(List<ChatMessage> messages) {
-        if (messages == null || messages.isEmpty()) {
-            return "";
-        }
-        return messages.stream()
-                .map(msg -> {
-                    if (msg instanceof UserMessage um) {
-                        if (um.hasSingleText()) {
-                            return um.singleText();
-                        }
-                        if (um.contents() != null) {
-                            return um.contents().stream()
-                                    .filter(c -> c instanceof dev.langchain4j.data.message.TextContent)
-                                    .map(c -> ((dev.langchain4j.data.message.TextContent) c).text())
-                                    .filter(Objects::nonNull)
-                                    .collect(Collectors.joining(" "));
-                        }
-                        return "";
-                    } else if (msg instanceof SystemMessage sm) {
-                        return sm.text();
-                    } else if (msg instanceof AiMessage am) {
-                        return am.text();
-                    }
-                    return "";
-                })
-                .filter(Objects::nonNull)
-                .collect(Collectors.joining("\n"));
+        return FallbackTokenEstimator.estimatePromptTokens(messages);
     }
 
     private static int extractTotalTokens(List<ChatMessage> messages, Response<AiMessage> response) {
@@ -599,7 +569,7 @@ public class AiTemplate {
                 return (input != null ? input : 0) + (output != null ? output : 0);
             }
         }
-        String promptText = extractPromptText(messages);
+        String promptText = FallbackTokenEstimator.extractPromptText(messages);
         String responseText = response != null && response.content() != null && response.content().text() != null
                 ? response.content().text()
                 : "";

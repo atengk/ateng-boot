@@ -17,6 +17,11 @@ import java.util.Map;
 @Builder
 public class AiAuditRecord {
 
+    public static final String STATUS_SUCCESS = "SUCCESS";
+    public static final String STATUS_ERROR = "ERROR";
+    public static final String STATUS_CANCELLED = "CANCELLED";
+    public static final String STATUS_CLIENT_ABORTED = STATUS_CANCELLED;
+
     /**
      * 全链路追踪标识 traceId
      */

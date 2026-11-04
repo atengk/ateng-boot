@@ -31,4 +31,34 @@ public interface AiQuotaChecker {
      * @param totalTokensUsed 实际消耗的 Token 总数 (prompt + completion)
      */
     void recordUsage(String tenantId, String modelName, int totalTokensUsed);
+
+    /**
+     * 获取指定租户今日累计调用次数
+     *
+     * @param tenantId 租户标识
+     * @return 今日累计调用次数
+     */
+    long getDailyRequests(String tenantId);
+
+    /**
+     * 获取指定租户今日累计 Token 消耗量
+     *
+     * @param tenantId 租户标识
+     * @return 今日累计 Token 消耗量
+     */
+    long getDailyTokens(String tenantId);
+
+    /**
+     * 重置指定租户今日配额计数
+     *
+     * @param tenantId 租户标识
+     */
+    void resetQuota(String tenantId);
+
+    /**
+     * 判断当前是否工作在分布式集群模式
+     *
+     * @return true 为分布式模式，false 为单机内存模式
+     */
+    boolean isDistributed();
 }

@@ -67,17 +67,42 @@ class AiPiiMaskerTest {
     }
 
     @Test
+    @DisplayName("敏感电子邮箱正则脱敏（前1后域名保留，中间打码）")
+    void testEmailMask() {
+        String input = "请将账单明细发送至财务邮箱 finance.audit@example.com，抄送 admin@company.cn。";
+        String masked = AiPiiMasker.mask(input);
+        assertThat(masked).doesNotContain("finance.audit@example.com");
+        assertThat(masked).doesNotContain("admin@company.cn");
+        assertThat(masked).contains("@example.com");
+        assertThat(masked).contains("@company.cn");
+    }
+
+    @Test
+    @DisplayName("Bearer Token 通用凭据正则脱敏")
+    void testBearerTokenMask() {
+        String input = "调用认证头信息: Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0";
+        String masked = AiPiiMasker.mask(input);
+        assertThat(masked).doesNotContain("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0");
+        assertThat(masked).contains("Bearer ");
+        assertThat(masked).contains("****");
+    }
+
+    @Test
     @DisplayName("复合多敏感实体混合长文本全真脱敏")
     void testCompositeTextMask() {
-        String input = "用户张伟（身份证：440301199505121234，手机号：13987654321）绑定了银行卡 6214830123456789，排查报错时请不要泄露 sk-test1234567890abcdef！";
+        String input = "用户张伟（身份证：440301199505121234，手机号：13987654321，邮箱：zhangwei@test.com）绑定了银行卡 6214830123456789，排查报错时请不要泄露 Bearer token1234567890abcdef 与 sk-test1234567890abcdef！";
         String masked = AiPiiMasker.mask(input);
 
         assertThat(masked).doesNotContain("440301199505121234");
         assertThat(masked).doesNotContain("13987654321");
+        assertThat(masked).doesNotContain("zhangwei@test.com");
         assertThat(masked).doesNotContain("6214830123456789");
+        assertThat(masked).doesNotContain("token1234567890abcdef");
         assertThat(masked).doesNotContain("sk-test1234567890abcdef");
 
         assertThat(masked).contains("139****4321");
         assertThat(masked).contains("440301********1234");
+        assertThat(masked).contains("@test.com");
+        assertThat(masked).contains("Bearer ");
     }
 }

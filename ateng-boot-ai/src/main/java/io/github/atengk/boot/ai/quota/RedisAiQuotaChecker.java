@@ -36,8 +36,13 @@ public class RedisAiQuotaChecker extends DefaultAiQuotaChecker {
     }
 
     @Override
-    public boolean isRedisMode() {
+    public boolean isDistributed() {
         return redisTemplate != null;
+    }
+
+    @Override
+    public boolean isRedisMode() {
+        return isDistributed();
     }
 
     @Override
@@ -106,16 +111,28 @@ public class RedisAiQuotaChecker extends DefaultAiQuotaChecker {
     private void recordUsageRedis(String tenantId, String date, int totalTokensUsed) {
         String reqKey = buildKey(tenantId, date, "requests");
         Long reqCount = redisTemplate.opsForValue().increment(reqKey, 1);
-        if (reqCount != null && reqCount == 1) {
-            redisTemplate.expire(reqKey, REDIS_KEY_TTL);
-        }
+        ensureTtl(reqKey, reqCount, 1);
 
         if (totalTokensUsed > 0) {
             String tokenKey = buildKey(tenantId, date, "tokens");
             Long tokenCount = redisTemplate.opsForValue().increment(tokenKey, totalTokensUsed);
-            if (tokenCount != null && tokenCount == totalTokensUsed) {
-                redisTemplate.expire(tokenKey, REDIS_KEY_TTL);
+            ensureTtl(tokenKey, tokenCount, totalTokensUsed);
+        }
+    }
+
+    private void ensureTtl(String key, Long currentVal, long expectedFirstIncrement) {
+        if (currentVal != null && currentVal == expectedFirstIncrement) {
+            redisTemplate.expire(key, REDIS_KEY_TTL);
+        } else {
+            Long ttl = redisTemplate.getExpire(key);
+            if (ttl == null || ttl < 0) {
+                redisTemplate.expire(key, REDIS_KEY_TTL);
             }
         }
+    }
+
+    private String buildKey(String tenantId, String date, String metricType) {
+        String prefix = properties.getKeyPrefix() != null ? properties.getKeyPrefix() : "ateng:ai:quota:";
+        return prefix + tenantId + ":" + date + ":" + metricType;
     }
 }

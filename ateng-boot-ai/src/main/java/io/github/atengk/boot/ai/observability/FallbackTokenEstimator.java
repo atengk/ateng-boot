@@ -1,9 +1,17 @@
 package io.github.atengk.boot.ai.observability;
 
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.TextContent;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.output.TokenUsage;
 
+import java.util.List;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * AI 大模型流式调用保底 Token 估算器
@@ -25,6 +33,53 @@ public final class FallbackTokenEstimator {
 
     private FallbackTokenEstimator() {
         // 工具类禁止实例化
+    }
+
+    /**
+     * 从 ChatMessage 消息列表中安全提取完整的提示词文本
+     * 防御多模态混合消息（包含 ImageContent 等）避免调用 singleText 抛出异常
+     *
+     * @param messages 消息列表
+     * @return 提取并合并后的纯文本
+     */
+    @SuppressWarnings("deprecation")
+    public static String extractPromptText(List<ChatMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return "";
+        }
+        return messages.stream()
+                .map(msg -> {
+                    if (msg instanceof UserMessage um) {
+                        if (um.contents() != null && !um.contents().isEmpty()) {
+                            return um.contents().stream()
+                                    .filter(c -> c instanceof TextContent)
+                                    .map(c -> ((TextContent) c).text())
+                                    .filter(Objects::nonNull)
+                                    .collect(Collectors.joining(" "));
+                        }
+                        if (um.hasSingleText()) {
+                            return um.singleText();
+                        }
+                        return "";
+                    } else if (msg instanceof SystemMessage sm) {
+                        return sm.text();
+                    } else if (msg instanceof AiMessage am) {
+                        return am.text();
+                    }
+                    return "";
+                })
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining("\n"));
+    }
+
+    /**
+     * 基于 ChatMessage 消息列表直接估算提示词 Token 消耗
+     *
+     * @param messages 消息列表
+     * @return 估算的 Token 数量
+     */
+    public static int estimatePromptTokens(List<ChatMessage> messages) {
+        return estimateTokens(extractPromptText(messages));
     }
 
     /**

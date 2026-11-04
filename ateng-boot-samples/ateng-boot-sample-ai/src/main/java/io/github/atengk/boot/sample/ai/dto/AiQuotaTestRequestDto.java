@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sample.ai.dto;
 
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
 /**
@@ -14,6 +16,7 @@ public class AiQuotaTestRequestDto {
     /**
      * 待测试的租户标识
      */
+    @NotBlank(message = "租户标识不能为空")
     private String tenantId = "tenant-sample";
 
     /**
@@ -24,11 +27,13 @@ public class AiQuotaTestRequestDto {
     /**
      * 本次预估消耗的输入 Token 数量
      */
+    @Min(value = 0, message = "预估提示词 Token 消耗不能为负数")
     private int promptTokens = 10;
 
     /**
      * 本次调用实际消耗的 Token 总量
      */
+    @Min(value = 0, message = "总 Token 消耗不能为负数")
     private int totalTokens = 20;
 
     /**

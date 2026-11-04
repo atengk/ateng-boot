@@ -83,4 +83,31 @@ class MetricsControllerIntegrationTest {
                 .andExpect(jsonPath("$.data.currentDailyRequests").isNotEmpty())
                 .andExpect(jsonPath("$.data.currentDailyTokens").isNotEmpty());
     }
+
+    @Test
+    @DisplayName("测试配额风控自验端点参数校验拦截 (租户为空)")
+    void testQuotaTestValidationFailure() throws Exception {
+        AiQuotaTestRequestDto request = new AiQuotaTestRequestDto();
+        request.setTenantId("");
+        request.setPromptTokens(-1);
+
+        mockMvc.perform(post("/sample/ai/metrics/quota/test")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    @DisplayName("测试流式保底估算体验端点参数校验拦截 (提示词为空)")
+    void testStreamFallbackValidationFailure() throws Exception {
+        AiStreamFallbackRequestDto request = new AiStreamFallbackRequestDto();
+        request.setPrompt("");
+
+        mockMvc.perform(post("/sample/ai/metrics/stream-fallback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+    }
 }

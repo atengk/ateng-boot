@@ -11,6 +11,7 @@ import io.github.atengk.boot.ai.annotation.AiAgent;
 import io.github.atengk.boot.ai.context.AiContextHolder;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -254,5 +255,34 @@ class AiAgentFactoryBeanTest {
         TestAuditAgent agent = factoryBean.getObject();
         assertThat(agent).isNotNull();
         verify(applicationContext).getBean("customChatMemory");
+    }
+
+    @Test
+    @DisplayName("通过 AiAgent 调用智能体时触发配额风控守卫拦截与用量记录")
+    void testAiAgentQuotaCheckerInterception() {
+        AiQuotaChecker mockQuotaChecker = mock(AiQuotaChecker.class);
+        @SuppressWarnings("unchecked")
+        org.springframework.beans.factory.ObjectProvider<AiQuotaChecker> provider = mock(org.springframework.beans.factory.ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(mockQuotaChecker);
+        when(applicationContext.getBeanProvider(AiQuotaChecker.class)).thenReturn(provider);
+
+        when(defaultChatModel.generate(anyList())).thenReturn(Response.from(AiMessage.from("回复内容")));
+
+        AiAgentFactoryBean<TestAuditAgent> factoryBean = new AiAgentFactoryBean<>();
+        factoryBean.setAgentInterface(TestAuditAgent.class);
+        factoryBean.setApplicationContext(applicationContext);
+        factoryBean.afterPropertiesSet();
+
+        TestAuditAgent agent = factoryBean.getObject();
+        assertThat(agent).isNotNull();
+
+        io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("tenant-quota-01");
+        try {
+            agent.ask("你好");
+            verify(mockQuotaChecker).checkQuota(eq("tenant-quota-01"), anyString(), anyInt());
+            verify(mockQuotaChecker).recordUsage(eq("tenant-quota-01"), anyString(), anyInt());
+        } finally {
+            io.github.atengk.boot.core.context.TenantContextHolder.clear();
+        }
     }
 }

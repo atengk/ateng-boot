@@ -147,11 +147,7 @@ public class AtengAiObservabilityListener implements ChatModelListener {
     }
 
     private void handleResponse(ChatModelResponseContext responseContext) {
-        Map<Object, Object> attributes = responseContext.attributes();
-        long startTime = getStartTime(attributes);
-        Instant startInstant = getStartInstant(attributes);
-        Instant endInstant = Instant.now();
-        long durationMs = Math.max(0, System.currentTimeMillis() - startTime);
+        InvocationSnapshot snapshot = InvocationSnapshot.capture(responseContext.attributes());
 
         ChatModelRequest request = responseContext.request();
         ChatModelResponse response = responseContext.response();
@@ -189,27 +185,23 @@ public class AtengAiObservabilityListener implements ChatModelListener {
         String promptText = auditProps.isMaskPii() ? AiPiiMasker.mask(rawPrompt) : rawPrompt;
         String responseText = auditProps.isMaskPii() ? AiPiiMasker.mask(rawResponse) : rawResponse;
 
-        String traceId = (String) (attributes != null ? attributes.get(ATTR_TRACE_ID) : MDC.get("traceId"));
-        String userId = (String) (attributes != null ? attributes.get(ATTR_USER_ID) : UserContextHolder.getUserId());
-        String tenantId = (String) (attributes != null ? attributes.get(ATTR_TENANT_ID) : TenantContextHolder.getTenantId());
-
         if (auditProps.isLogPayload()) {
             log.info("[AI-AUDIT-SUCCESS] [traceId={}] [tenant={}] [user={}] model={}, duration={}ms, promptTokens={}, completionTokens={}, totalTokens={}, estimated={}, prompt='{}', response='{}'",
-                    traceId, tenantId, userId, modelName, durationMs, promptTokens, completionTokens, totalTokens, estimated, promptText, responseText);
+                    snapshot.traceId(), snapshot.tenantId(), snapshot.userId(), modelName, snapshot.durationMs(), promptTokens, completionTokens, totalTokens, estimated, promptText, responseText);
         } else {
             log.info("[AI-AUDIT-SUCCESS] [traceId={}] [tenant={}] [user={}] model={}, duration={}ms, promptTokens={}, completionTokens={}, totalTokens={}, estimated={}",
-                    traceId, tenantId, userId, modelName, durationMs, promptTokens, completionTokens, totalTokens, estimated);
+                    snapshot.traceId(), snapshot.tenantId(), snapshot.userId(), modelName, snapshot.durationMs(), promptTokens, completionTokens, totalTokens, estimated);
         }
 
         AiAuditRecord record = AiAuditRecord.builder()
-                .traceId(traceId)
-                .userId(userId)
-                .tenantId(tenantId)
+                .traceId(snapshot.traceId())
+                .userId(snapshot.userId())
+                .tenantId(snapshot.tenantId())
                 .modelName(modelName)
-                .durationMs(durationMs)
-                .requestTime(startInstant)
-                .responseTime(endInstant)
-                .status("SUCCESS")
+                .durationMs(snapshot.durationMs())
+                .requestTime(snapshot.startInstant())
+                .responseTime(snapshot.endInstant())
+                .status(AiAuditRecord.STATUS_SUCCESS)
                 .promptTokens(promptTokens)
                 .completionTokens(completionTokens)
                 .totalTokens(totalTokens)
@@ -220,15 +212,11 @@ public class AtengAiObservabilityListener implements ChatModelListener {
                 .build();
 
         dispatchAuditLog(record);
-        recordMetricsOnResponse(modelName, durationMs, promptTokens, completionTokens, totalTokens, estimated);
+        recordMetricsOnResponse(modelName, snapshot.tenantId(), snapshot.durationMs(), promptTokens, completionTokens, totalTokens, estimated);
     }
 
     private void handleError(ChatModelErrorContext errorContext) {
-        Map<Object, Object> attributes = errorContext.attributes();
-        long startTime = getStartTime(attributes);
-        Instant startInstant = getStartInstant(attributes);
-        Instant endInstant = Instant.now();
-        long durationMs = Math.max(0, System.currentTimeMillis() - startTime);
+        InvocationSnapshot snapshot = InvocationSnapshot.capture(errorContext.attributes());
 
         ChatModelRequest request = errorContext.request();
         ChatModelResponse partialResponse = errorContext.partialResponse();
@@ -239,41 +227,83 @@ public class AtengAiObservabilityListener implements ChatModelListener {
         AiAuditProperties auditProps = getAuditProperties();
         String promptText = auditProps.isMaskPii() ? AiPiiMasker.mask(rawPrompt) : rawPrompt;
 
-        String traceId = (String) (attributes != null ? attributes.get(ATTR_TRACE_ID) : MDC.get("traceId"));
-        String userId = (String) (attributes != null ? attributes.get(ATTR_USER_ID) : UserContextHolder.getUserId());
-        String tenantId = (String) (attributes != null ? attributes.get(ATTR_TENANT_ID) : TenantContextHolder.getTenantId());
-
         boolean clientAbort = isClientAbort(error);
-        String status = clientAbort ? "CANCELLED" : "ERROR";
+        String status = clientAbort ? AiAuditRecord.STATUS_CANCELLED : AiAuditRecord.STATUS_ERROR;
         String errorMsg = error != null ? error.getMessage() : "Unknown error";
 
+        Integer promptTokens = null;
+        Integer completionTokens = null;
+        Integer totalTokens = null;
+        Boolean estimated = null;
+
         if (clientAbort) {
-            log.warn("[AI-AUDIT-CANCELLED] [traceId={}] [tenant={}] [user={}] model={}, duration={}ms, reason=客户端主动中断连接: {}",
-                    traceId, tenantId, userId, modelName, durationMs, errorMsg);
-        } else {
-            log.error("[AI-AUDIT-ERROR] [traceId={}] [tenant={}] [user={}] model={}, duration={}ms, error={}",
-                    traceId, tenantId, userId, modelName, durationMs, errorMsg);
+            String partialText = (partialResponse != null && partialResponse.aiMessage() != null)
+                    ? partialResponse.aiMessage().text() : null;
+            TokenUsage partialUsage = (partialResponse != null) ? partialResponse.tokenUsage() : null;
+            TokenUsage estimatedUsage = FallbackTokenEstimator.estimate(
+                    partialUsage != null ? partialUsage.inputTokenCount() : null,
+                    partialUsage != null ? partialUsage.outputTokenCount() : null,
+                    rawPrompt,
+                    partialText
+            );
+            promptTokens = estimatedUsage.inputTokenCount();
+            completionTokens = estimatedUsage.outputTokenCount();
+            totalTokens = estimatedUsage.totalTokenCount();
+            estimated = true;
         }
 
-        AiAuditRecord record = AiAuditRecord.builder()
-                .traceId(traceId)
-                .userId(userId)
-                .tenantId(tenantId)
+        if (clientAbort) {
+            log.warn("[AI-AUDIT-CANCELLED] [traceId={}] [tenant={}] [user={}] model={}, duration={}ms, promptTokens={}, completionTokens={}, totalTokens={}, reason=客户端主动中断连接: {}",
+                    snapshot.traceId(), snapshot.tenantId(), snapshot.userId(), modelName, snapshot.durationMs(), promptTokens, completionTokens, totalTokens, errorMsg);
+        } else {
+            log.error("[AI-AUDIT-ERROR] [traceId={}] [tenant={}] [user={}] model={}, duration={}ms, error={}",
+                    snapshot.traceId(), snapshot.tenantId(), snapshot.userId(), modelName, snapshot.durationMs(), errorMsg);
+        }
+
+        AiAuditRecord.AiAuditRecordBuilder recordBuilder = AiAuditRecord.builder()
+                .traceId(snapshot.traceId())
+                .userId(snapshot.userId())
+                .tenantId(snapshot.tenantId())
                 .modelName(modelName)
-                .durationMs(durationMs)
-                .requestTime(startInstant)
-                .responseTime(endInstant)
+                .durationMs(snapshot.durationMs())
+                .requestTime(snapshot.startInstant())
+                .responseTime(snapshot.endInstant())
                 .status(status)
                 .promptText(promptText)
                 .errorMessage(errorMsg)
-                .metadata(Collections.emptyMap())
-                .build();
+                .metadata(Collections.emptyMap());
 
+        if (clientAbort) {
+            recordBuilder.promptTokens(promptTokens)
+                    .completionTokens(completionTokens)
+                    .totalTokens(totalTokens)
+                    .estimated(estimated);
+        }
+
+        AiAuditRecord record = recordBuilder.build();
         dispatchAuditLog(record);
-        recordMetricsOnError(modelName, durationMs, status);
+        recordMetricsOnError(modelName, snapshot.tenantId(), snapshot.durationMs(), status, promptTokens, completionTokens, totalTokens, estimated);
     }
 
-    private void recordMetricsOnResponse(String modelName, long durationMs,
+    private void recordTokenMetric(MeterRegistry registry, String modelName, String tenantTag,
+                                   String type, String estimatedTag, Integer count) {
+        if (count != null && count > 0) {
+            Counter.builder(METRIC_TOKENS_TOTAL)
+                    .tag("model", modelName)
+                    .tag("tenant_id", tenantTag)
+                    .tag("type", type)
+                    .tag("estimated", estimatedTag)
+                    .description("AI 大模型 Token 累计消耗总数")
+                    .register(registry)
+                    .increment(count);
+        }
+    }
+
+    private static String resolveTenantTag(String tenantId) {
+        return (tenantId != null && !tenantId.isBlank()) ? tenantId : "default";
+    }
+
+    private void recordMetricsOnResponse(String modelName, String tenantId, long durationMs,
                                          Integer promptTokens, Integer completionTokens, Integer totalTokens,
                                          boolean estimated) {
         MeterRegistry registry = this.meterRegistry;
@@ -281,74 +311,68 @@ public class AtengAiObservabilityListener implements ChatModelListener {
             return;
         }
 
-        // 1. 请求计数器 ateng.ai.requests.total (tags: model, status=SUCCESS)
+        String tenantTag = resolveTenantTag(tenantId);
+
+        // 1. 请求计数器 ateng.ai.requests.total (tags: model, tenant_id, status=SUCCESS)
         Counter.builder(METRIC_REQUESTS_TOTAL)
                 .tag("model", modelName)
-                .tag("status", "SUCCESS")
+                .tag("tenant_id", tenantTag)
+                .tag("status", AiAuditRecord.STATUS_SUCCESS)
                 .description("AI 大模型调用累计请求总数")
                 .register(registry)
                 .increment();
 
-        // 2. 耗时直方图 ateng.ai.duration.seconds (tags: model)
+        // 2. 耗时直方图 ateng.ai.duration.seconds (tags: model, tenant_id)
         Timer.builder(METRIC_DURATION_SECONDS)
                 .tag("model", modelName)
+                .tag("tenant_id", tenantTag)
                 .description("AI 大模型调用耗时直方图")
                 .publishPercentiles(0.5, 0.9, 0.95, 0.99)
                 .register(registry)
                 .record(Duration.ofMillis(durationMs));
 
-        // 3. Token 消耗计数器 ateng.ai.tokens.total (tags: model, type, estimated)
+        // 3. Token 消耗计数器 ateng.ai.tokens.total (tags: model, tenant_id, type, estimated)
         String estimatedTag = String.valueOf(estimated);
-        if (promptTokens != null && promptTokens > 0) {
-            Counter.builder(METRIC_TOKENS_TOTAL)
-                    .tag("model", modelName)
-                    .tag("type", "prompt")
-                    .tag("estimated", estimatedTag)
-                    .description("AI 大模型 Token 累计消耗总数")
-                    .register(registry)
-                    .increment(promptTokens);
-        }
-        if (completionTokens != null && completionTokens > 0) {
-            Counter.builder(METRIC_TOKENS_TOTAL)
-                    .tag("model", modelName)
-                    .tag("type", "completion")
-                    .tag("estimated", estimatedTag)
-                    .description("AI 大模型 Token 累计消耗总数")
-                    .register(registry)
-                    .increment(completionTokens);
-        }
-        if (totalTokens != null && totalTokens > 0) {
-            Counter.builder(METRIC_TOKENS_TOTAL)
-                    .tag("model", modelName)
-                    .tag("type", "total")
-                    .tag("estimated", estimatedTag)
-                    .description("AI 大模型 Token 累计消耗总数")
-                    .register(registry)
-                    .increment(totalTokens);
-        }
+        recordTokenMetric(registry, modelName, tenantTag, "prompt", estimatedTag, promptTokens);
+        recordTokenMetric(registry, modelName, tenantTag, "completion", estimatedTag, completionTokens);
+        recordTokenMetric(registry, modelName, tenantTag, "total", estimatedTag, totalTokens);
     }
 
-    private void recordMetricsOnError(String modelName, long durationMs, String status) {
+    private void recordMetricsOnError(String modelName, String tenantId, long durationMs, String status,
+                                      Integer promptTokens, Integer completionTokens, Integer totalTokens,
+                                      Boolean estimated) {
         MeterRegistry registry = this.meterRegistry;
         if (registry == null) {
             return;
         }
 
-        // 1. 请求计数器 ateng.ai.requests.total (tags: model, status [ERROR | CANCELLED])
+        String tenantTag = resolveTenantTag(tenantId);
+
+        // 1. 请求计数器 ateng.ai.requests.total (tags: model, tenant_id, status [ERROR | CANCELLED])
         Counter.builder(METRIC_REQUESTS_TOTAL)
                 .tag("model", modelName)
+                .tag("tenant_id", tenantTag)
                 .tag("status", status)
                 .description("AI 大模型调用累计请求总数")
                 .register(registry)
                 .increment();
 
-        // 2. 耗时直方图 ateng.ai.duration.seconds (tags: model)
+        // 2. 耗时直方图 ateng.ai.duration.seconds (tags: model, tenant_id)
         Timer.builder(METRIC_DURATION_SECONDS)
                 .tag("model", modelName)
+                .tag("tenant_id", tenantTag)
                 .description("AI 大模型调用耗时直方图")
                 .publishPercentiles(0.5, 0.9, 0.95, 0.99)
                 .register(registry)
                 .record(Duration.ofMillis(durationMs));
+
+        // 3. 若客户端中断等场景估算并记录了 Token，同步沉淀指标
+        if (promptTokens != null || completionTokens != null || totalTokens != null) {
+            String estimatedTag = String.valueOf(Boolean.TRUE.equals(estimated));
+            recordTokenMetric(registry, modelName, tenantTag, "prompt", estimatedTag, promptTokens);
+            recordTokenMetric(registry, modelName, tenantTag, "completion", estimatedTag, completionTokens);
+            recordTokenMetric(registry, modelName, tenantTag, "total", estimatedTag, totalTokens);
+        }
     }
 
     private void executeWithRestoredContext(Map<Object, Object> attributes, Runnable task) {
@@ -376,21 +400,19 @@ public class AtengAiObservabilityListener implements ChatModelListener {
             return;
         }
 
-        TaskExecutor executor = taskExecutorProvider != null ? taskExecutorProvider.getIfAvailable() : null;
-        if (executor != null) {
-            executor.execute(AsyncContext.wrap(() -> {
-                try {
-                    handler.handle(record);
-                } catch (Throwable t) {
-                    log.warn("执行 AI 审计日志外部处理器失败: {}", t.getMessage(), t);
-                }
-            }));
-        } else {
+        Runnable invokeTask = () -> {
             try {
                 handler.handle(record);
             } catch (Throwable t) {
                 log.warn("执行 AI 审计日志外部处理器失败: {}", t.getMessage(), t);
             }
+        };
+
+        TaskExecutor executor = taskExecutorProvider != null ? taskExecutorProvider.getIfAvailable() : null;
+        if (executor != null) {
+            executor.execute(AsyncContext.wrap(invokeTask));
+        } else {
+            invokeTask.run();
         }
     }
 
@@ -400,20 +422,6 @@ public class AtengAiObservabilityListener implements ChatModelListener {
 
     private AiAuditProperties getAuditProperties() {
         return properties != null && properties.getAudit() != null ? properties.getAudit() : new AiAuditProperties();
-    }
-
-    private long getStartTime(Map<Object, Object> attributes) {
-        if (attributes != null && attributes.get(ATTR_START_TIME) instanceof Long t) {
-            return t;
-        }
-        return System.currentTimeMillis();
-    }
-
-    private Instant getStartInstant(Map<Object, Object> attributes) {
-        if (attributes != null && attributes.get(ATTR_START_INSTANT) instanceof Instant i) {
-            return i;
-        }
-        return Instant.now();
     }
 
     private String resolveModelName(ChatModelRequest request, ChatModelResponse response) {
@@ -426,34 +434,8 @@ public class AtengAiObservabilityListener implements ChatModelListener {
         return "unknown";
     }
 
-    @SuppressWarnings("deprecation")
     private String extractPromptText(ChatModelRequest request) {
-        if (request == null || request.messages() == null || request.messages().isEmpty()) {
-            return "";
-        }
-        return request.messages().stream()
-                .map(msg -> {
-                    if (msg instanceof UserMessage um) {
-                        if (um.hasSingleText()) {
-                            return um.singleText();
-                        }
-                        if (um.contents() != null) {
-                            return um.contents().stream()
-                                    .filter(c -> c instanceof dev.langchain4j.data.message.TextContent)
-                                    .map(c -> ((dev.langchain4j.data.message.TextContent) c).text())
-                                    .filter(Objects::nonNull)
-                                    .collect(Collectors.joining(" "));
-                        }
-                        return "";
-                    } else if (msg instanceof SystemMessage sm) {
-                        return sm.text();
-                    } else if (msg instanceof AiMessage am) {
-                        return am.text();
-                    }
-                    return "";
-                })
-                .filter(Objects::nonNull)
-                .collect(Collectors.joining("\n"));
+        return request != null ? FallbackTokenEstimator.extractPromptText(request.messages()) : "";
     }
 
     /**
@@ -498,6 +480,33 @@ public class AtengAiObservabilityListener implements ChatModelListener {
     private static void safePut(Map<Object, Object> map, Object key, Object value) {
         if (map != null && key != null && value != null) {
             map.put(key, value);
+        }
+    }
+
+    /**
+     * 内部调用快照元数据载体，统一封装耗时与四维上下文提取，防御数据泥团与代码重复
+     */
+    private record InvocationSnapshot(
+            Instant startInstant,
+            Instant endInstant,
+            long durationMs,
+            String traceId,
+            String userId,
+            String tenantId
+    ) {
+        static InvocationSnapshot capture(Map<Object, Object> attributes) {
+            long startTime = (attributes != null && attributes.get(ATTR_START_TIME) instanceof Long t)
+                    ? t : System.currentTimeMillis();
+            Instant startInstant = (attributes != null && attributes.get(ATTR_START_INSTANT) instanceof Instant i)
+                    ? i : Instant.now();
+            Instant endInstant = Instant.now();
+            long durationMs = Math.max(0, System.currentTimeMillis() - startTime);
+
+            String traceId = (String) (attributes != null ? attributes.get(ATTR_TRACE_ID) : MDC.get("traceId"));
+            String userId = (String) (attributes != null ? attributes.get(ATTR_USER_ID) : UserContextHolder.getUserId());
+            String tenantId = (String) (attributes != null ? attributes.get(ATTR_TENANT_ID) : TenantContextHolder.getTenantId());
+
+            return new InvocationSnapshot(startInstant, endInstant, durationMs, traceId, userId, tenantId);
         }
     }
 }

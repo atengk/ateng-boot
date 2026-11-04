@@ -122,12 +122,22 @@ public class DefaultAiQuotaChecker implements AiQuotaChecker {
     }
 
     /**
-     * 判断当前是否工作在 Redis 分布式集群模式
+     * 判断当前是否工作在分布式集群模式
+     *
+     * @return true 为分布式模式，false 为单机内存模式
+     */
+    @Override
+    public boolean isDistributed() {
+        return false;
+    }
+
+    /**
+     * 判断当前是否工作在 Redis 分布式集群模式 (兼容历史方法)
      *
      * @return true 为 Redis 模式，false 为内存模式
      */
     public boolean isRedisMode() {
-        return false;
+        return isDistributed();
     }
 
     protected long getDailyRequestsInternal(String tenantId, String date) {
@@ -170,11 +180,6 @@ public class DefaultAiQuotaChecker implements AiQuotaChecker {
 
     protected String getCurrentDate() {
         return LocalDate.now(clock).toString();
-    }
-
-    protected String buildKey(String tenantId, String date, String metricType) {
-        String prefix = properties.getKeyPrefix() != null ? properties.getKeyPrefix() : "ateng:ai:quota:";
-        return prefix + tenantId + ":" + date + ":" + metricType;
     }
 
     /**

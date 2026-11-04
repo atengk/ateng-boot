@@ -47,7 +47,7 @@
 | **指标度量** | 流式 Token 统计保底启发式估算 | `FallbackTokenEstimator` | - | `estimateTokens(String)`，当流式大模型网关未返回 usage 元数据时，执行 `chinese * 1.5 + english words * 1.3` 保底估算，防御指标断崖 | `FallbackTokenEstimatorTest` / `MetricsControllerIntegrationTest` |
 | **链路可观测** | 客户端断开与系统异常精确解耦 | `AtengAiObservabilityListener` | - | 探测 `ClientAbortException` / `AsyncRequestTimeoutException` / `SocketException`，转译为 `status=CANCELLED`，区分业务中断与真实系统故障 | `AtengAiObservabilityListenerTest` |
 | **多租户治理** | 租户级动态模型路由解析 | `AiTenantModelResolver`<br>`DefaultAiTenantModelResolver` | `ateng.boot.ai.tenant-models.<tenantId>` | `resolveModelName(tenantId)`，从 `TenantContextHolder` 获取当前租户，命中映射自动重定向底层模型别名，未配置平滑回退默认模型 | `AiTenantModelResolverTest` / `AiTemplateTest` |
-| **多租户治理** | SaaS 租户日调用配额守卫与快速失败 | `AiQuotaChecker`<br>`DefaultAiQuotaChecker` | `ateng.boot.ai.quota.enabled`<br>`ateng.boot.ai.quota.default-daily-limit`<br>`ateng.boot.ai.quota.tenant-daily-limits.<tenantId>` | `checkQuota(tenantId)` / `recordUsage(tenantId, tokens)`，基于当日日期滑动计数，超额立即 Fail-Fast 抛出 `AI_QUOTA_EXCEEDED` 业务异常 | `DefaultAiQuotaCheckerTest` / `MetricsControllerIntegrationTest` |
+| **多租户治理** | SaaS 租户日调用配额守卫与快速失败 | `AiQuotaChecker`<br>`DefaultAiQuotaChecker` | `ateng.boot.ai.quota.enabled`<br>`ateng.boot.ai.quota.daily-request-limit`<br>`ateng.boot.ai.quota.daily-token-limit`<br>`ateng.boot.ai.quota.tenant-request-limits.<tenantId>` | `checkQuota(tenantId, model, tokens)` / `recordUsage(tenantId, model, tokens)`，基于当日日期滑动计数，超额立即 Fail-Fast 抛出 `AI_QUOTA_EXCEEDED` 业务异常 | `DefaultAiQuotaCheckerTest` / `MetricsControllerIntegrationTest` |
 | **多租户治理** | 分布式 Redis 与并发内存双模配额自适应 | `DefaultAiQuotaChecker`<br>`RedisAiQuotaChecker` | `ateng.boot.ai.quota.key-prefix` | 检测到 Redis 时启用 `StringRedisTemplate` 原子计数并挂载 2 天 TTL 物理自毁；无 Redis 时无缝切换基于 `ConcurrentHashMap` 的单机滑动淘汰，防御内存无界膨胀 | `DefaultAiQuotaCheckerTest` |
 
 ---
@@ -938,16 +938,16 @@ ateng:
       quota:
         # 是否启用多租户配额风控守卫 (默认 true)
         enabled: true
-        # 默认租户单日调用次数上限 (0 表示无限制)
-        default-daily-limit: 1000
-        # 默认租户单日 Token 消耗上限 (0 表示无限制)
-        default-daily-token-limit: 500000
-        # 专有租户单日调用次数上限映射
-        tenant-daily-limits:
+        # 默认租户单日调用次数上限 (0 表示无限制，兼容别名 default-daily-limit)
+        daily-request-limit: 1000
+        # 默认租户单日 Token 消耗上限 (0 表示无限制，兼容别名 default-daily-token-limit)
+        daily-token-limit: 500000
+        # 专有租户单日调用次数上限映射 (兼容别名 tenant-daily-limits)
+        tenant-request-limits:
           tenant-free: 50
           tenant-standard: 500
-        # 专有租户单日 Token 消耗上限映射
-        tenant-daily-token-limits:
+        # 专有租户单日 Token 消耗上限映射 (兼容别名 tenant-daily-token-limits)
+        tenant-token-limits:
           tenant-free: 50000
           tenant-standard: 200000
         # Redis 存储键前缀 (默认 "ateng:ai:quota:")
@@ -1018,16 +1018,16 @@ ateng:
       quota:
         # 是否启用多租户配额风控守卫 (默认 true)
         enabled: true
-        # 默认租户单日调用次数上限 (0 表示无限制)
-        default-daily-limit: 1000
-        # 默认租户单日 Token 消耗上限 (0 表示无限制)
-        default-daily-token-limit: 500000
-        # 专有租户单日调用次数上限映射
-        tenant-daily-limits:
+        # 默认租户单日调用次数上限 (0 表示无限制，兼容别名 default-daily-limit)
+        daily-request-limit: 1000
+        # 默认租户单日 Token 消耗上限 (0 表示无限制，兼容别名 default-daily-token-limit)
+        daily-token-limit: 500000
+        # 专有租户单日调用次数上限映射 (兼容别名 tenant-daily-limits)
+        tenant-request-limits:
           tenant-free: 50
           tenant-standard: 500
-        # 专有租户单日 Token 消耗上限映射
-        tenant-daily-token-limits:
+        # 专有租户单日 Token 消耗上限映射 (兼容别名 tenant-daily-token-limits)
+        tenant-token-limits:
           tenant-free: 50000
           tenant-standard: 200000
         # Redis 存储键前缀 (默认 "ateng:ai:quota:")

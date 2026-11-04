@@ -4,11 +4,12 @@ import dev.langchain4j.model.output.TokenUsage;
 import io.github.atengk.boot.ai.observability.AtengAiObservabilityListener;
 import io.github.atengk.boot.ai.observability.FallbackTokenEstimator;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
-import io.github.atengk.boot.ai.quota.DefaultAiQuotaChecker;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.ai.dto.AiQuotaTestRequestDto;
 import io.github.atengk.boot.sample.ai.dto.AiStreamFallbackRequestDto;
 import io.github.atengk.boot.sample.ai.vo.AiMetricsSummaryVo;
+import io.github.atengk.boot.sample.ai.vo.AiQuotaTestVo;
+import io.github.atengk.boot.sample.ai.vo.AiStreamFallbackVo;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.validation.Valid;
@@ -22,9 +23,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.LinkedHashMap;
-import java.util.Map;
 
 /**
  * AI 云原生度量、配额风控与保底估算体验控制器
@@ -95,10 +93,10 @@ public class AiMetricsController {
         long tenantTokens = 0L;
         boolean redisMode = false;
 
-        if (checker instanceof DefaultAiQuotaChecker defaultChecker) {
-            tenantRequests = defaultChecker.getDailyRequests(tenantId);
-            tenantTokens = defaultChecker.getDailyTokens(tenantId);
-            redisMode = defaultChecker.isRedisMode();
+        if (checker != null) {
+            tenantRequests = checker.getDailyRequests(tenantId);
+            tenantTokens = checker.getDailyTokens(tenantId);
+            redisMode = checker.isDistributed();
         }
 
         AiMetricsSummaryVo vo = AiMetricsSummaryVo.builder()
@@ -127,7 +125,7 @@ public class AiMetricsController {
      * @return 当前租户配额消耗状态
      */
     @PostMapping("/quota/test")
-    public Result<Map<String, Object>> testQuota(@Valid @RequestBody AiQuotaTestRequestDto request) {
+    public Result<AiQuotaTestVo> testQuota(@Valid @RequestBody AiQuotaTestRequestDto request) {
         AiQuotaChecker checker = quotaCheckerProvider.getIfAvailable();
         if (checker != null) {
             // 1. 前置配额拦截校验 (超额即刻 Fail-Fast 抛出 AiException)
@@ -141,18 +139,19 @@ public class AiMetricsController {
 
         long currentDailyRequests = 0L;
         long currentDailyTokens = 0L;
-        if (checker instanceof DefaultAiQuotaChecker defaultChecker) {
-            currentDailyRequests = defaultChecker.getDailyRequests(request.getTenantId());
-            currentDailyTokens = defaultChecker.getDailyTokens(request.getTenantId());
+        if (checker != null) {
+            currentDailyRequests = checker.getDailyRequests(request.getTenantId());
+            currentDailyTokens = checker.getDailyTokens(request.getTenantId());
         }
 
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("status", "PASS");
-        result.put("tenantId", request.getTenantId());
-        result.put("currentDailyRequests", currentDailyRequests);
-        result.put("currentDailyTokens", currentDailyTokens);
+        AiQuotaTestVo vo = AiQuotaTestVo.builder()
+                .status("PASS")
+                .tenantId(request.getTenantId())
+                .currentDailyRequests(currentDailyRequests)
+                .currentDailyTokens(currentDailyTokens)
+                .build();
 
-        return Result.success(result);
+        return Result.success(vo);
     }
 
     /**
@@ -162,16 +161,17 @@ public class AiMetricsController {
      * @return 预估的 TokenUsage 详情
      */
     @PostMapping("/stream-fallback")
-    public Result<Map<String, Object>> testStreamFallback(@Valid @RequestBody AiStreamFallbackRequestDto request) {
+    public Result<AiStreamFallbackVo> testStreamFallback(@Valid @RequestBody AiStreamFallbackRequestDto request) {
         TokenUsage usage = FallbackTokenEstimator.estimate(request.getPrompt(), request.getResponseText());
 
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("prompt", request.getPrompt());
-        result.put("responseText", request.getResponseText());
-        result.put("promptTokens", usage.inputTokenCount());
-        result.put("completionTokens", usage.outputTokenCount());
-        result.put("totalTokens", usage.totalTokenCount());
+        AiStreamFallbackVo vo = AiStreamFallbackVo.builder()
+                .prompt(request.getPrompt())
+                .responseText(request.getResponseText())
+                .promptTokens(usage.inputTokenCount())
+                .completionTokens(usage.outputTokenCount())
+                .totalTokens(usage.totalTokenCount())
+                .build();
 
-        return Result.success(result);
+        return Result.success(vo);
     }
 }
