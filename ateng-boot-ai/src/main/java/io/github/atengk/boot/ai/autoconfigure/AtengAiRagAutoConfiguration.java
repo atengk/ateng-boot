@@ -6,6 +6,8 @@ import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import io.github.atengk.boot.ai.exception.AiException;
+import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
@@ -13,6 +15,7 @@ import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.AnyNestedCondition;
@@ -95,34 +98,47 @@ public class AtengAiRagAutoConfiguration {
     }
 
     /**
-     * 自动装配统一向量化嵌入门面 EmbeddingTemplate
+     * 自动装配统一向量化嵌入门面 EmbeddingTemplate (支持待命平滑探测)
      *
-     * @param embeddingModel 向量化模型
-     * @param properties     AI 根配置属性
+     * @param embeddingModelProvider 向量化模型提供者
+     * @param properties             AI 根配置属性
      * @return EmbeddingTemplate 实例
      */
     @Bean
     @ConditionalOnMissingBean(EmbeddingTemplate.class)
-    @ConditionalOnBean(EmbeddingModel.class)
-    public EmbeddingTemplate embeddingTemplate(EmbeddingModel embeddingModel, AtengAiProperties properties) {
+    public EmbeddingTemplate embeddingTemplate(
+            ObjectProvider<EmbeddingModel> embeddingModelProvider,
+            AtengAiProperties properties) {
+        EmbeddingModel embeddingModel = embeddingModelProvider.getIfAvailable();
+        if (embeddingModel == null) {
+            log.info("ateng-boot-ai 未检测到任何有效的大模型 API Key 配置，EmbeddingTemplate 处于待命状态。");
+        }
         return new EmbeddingTemplate(embeddingModel, properties);
     }
 
     /**
      * 自动组装并注册 RAG 向量检索组件 ContentRetriever (EmbeddingStoreContentRetriever)
      *
-     * @param embeddingStore 向量存储实现 (如 MilvusEmbeddingStore 或 InMemoryEmbeddingStore)
-     * @param embeddingModel 向量化模型
-     * @param properties     AI 根配置属性
+     * @param embeddingStoreProvider 向量存储实现提供者
+     * @param embeddingModelProvider 向量化模型提供者
+     * @param properties             AI 根配置属性
      * @return ContentRetriever 实例
      */
     @Bean
     @ConditionalOnMissingBean(ContentRetriever.class)
-    @ConditionalOnBean({EmbeddingStore.class, EmbeddingModel.class})
     public ContentRetriever contentRetriever(
-            EmbeddingStore<TextSegment> embeddingStore,
-            EmbeddingModel embeddingModel,
+            ObjectProvider<EmbeddingStore<TextSegment>> embeddingStoreProvider,
+            ObjectProvider<EmbeddingModel> embeddingModelProvider,
             AtengAiProperties properties) {
+        EmbeddingStore<TextSegment> embeddingStore = embeddingStoreProvider.getIfAvailable();
+        EmbeddingModel embeddingModel = embeddingModelProvider.getIfAvailable();
+        if (embeddingStore == null || embeddingModel == null) {
+            log.info("ateng-boot-ai 未检测到完整的 EmbeddingStore 或 EmbeddingModel 配置，ContentRetriever 处于待命状态。");
+            return query -> {
+                throw new AiException(AiResultCode.AI_CONFIG_ERROR,
+                        "未配置有效的 EmbeddingModel 或 EmbeddingStore，无法执行 RAG 知识库检索");
+            };
+        }
         AtengAiRagProperties rag = properties.getRag();
         EmbeddingStoreContentRetriever.EmbeddingStoreContentRetrieverBuilder builder = EmbeddingStoreContentRetriever.builder()
                 .embeddingStore(embeddingStore)

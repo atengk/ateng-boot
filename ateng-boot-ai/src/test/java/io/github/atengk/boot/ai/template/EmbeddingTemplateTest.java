@@ -314,4 +314,28 @@ class EmbeddingTemplateTest {
         assertThatThrownBy(() -> template.removeAll(null))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    @DisplayName("底层无模型时处于待命模式，调用计算接口抛出 AI_CONFIG_ERROR")
+    void testStandbyModeBehavior() {
+        EmbeddingTemplate standbyTemplate = new EmbeddingTemplate(null);
+        assertThat(standbyTemplate.isAvailable()).isFalse();
+        assertThat(standbyTemplate.getModel()).isNull();
+
+        assertThatThrownBy(() -> standbyTemplate.embed("test"))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+
+        assertThatThrownBy(() -> standbyTemplate.embed(TextSegment.from("test")))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+
+        assertThatThrownBy(() -> standbyTemplate.embedSegments(List.of(TextSegment.from("test"))))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+
+        assertThatThrownBy(standbyTemplate::dimension)
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+    }
 }

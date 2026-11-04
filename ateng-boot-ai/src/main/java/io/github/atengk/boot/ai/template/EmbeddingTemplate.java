@@ -5,7 +5,9 @@ import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.store.embedding.EmbeddingStore;
+import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
+import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
@@ -16,7 +18,6 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
 
 /**
  * 统一向量化嵌入门面 (EmbeddingTemplate)
@@ -64,8 +65,24 @@ public class EmbeddingTemplate {
     }
 
     private EmbeddingTemplate(EmbeddingModel embeddingModel, RetryUtil.RetryConfig retryConfig) {
-        this.embeddingModel = Objects.requireNonNull(embeddingModel, "EmbeddingModel 实例不能为空");
+        this.embeddingModel = embeddingModel;
         this.retryConfig = retryConfig != null ? retryConfig : buildDefaultRetryConfig();
+    }
+
+    /**
+     * 判断底层向量化模型是否已配置且就绪
+     *
+     * @return true 若已就绪，false 为待命状态
+     */
+    public boolean isAvailable() {
+        return this.embeddingModel != null;
+    }
+
+    private void ensureModelAvailable() {
+        if (this.embeddingModel == null) {
+            throw new AiException(AiResultCode.AI_CONFIG_ERROR,
+                    "未配置有效的 EmbeddingModel 向量化模型 (缺少 api-key 或未注册自定义模型 Bean)，无法执行向量化计算");
+        }
     }
 
     /**
@@ -78,6 +95,7 @@ public class EmbeddingTemplate {
         if (!StringUtils.hasText(text)) {
             throw new IllegalArgumentException("待向量化文本不能为空");
         }
+        ensureModelAvailable();
         try {
             return RetryUtil.execute(() -> embeddingModel.embed(text), retryConfig);
         } catch (Throwable t) {
@@ -111,6 +129,7 @@ public class EmbeddingTemplate {
         if (segment == null) {
             throw new IllegalArgumentException("TextSegment 文本片段对象不能为空");
         }
+        ensureModelAvailable();
         try {
             return RetryUtil.execute(() -> embeddingModel.embed(segment), retryConfig);
         } catch (Throwable t) {
@@ -128,6 +147,7 @@ public class EmbeddingTemplate {
         if (segments == null || segments.isEmpty()) {
             return Response.from(Collections.emptyList());
         }
+        ensureModelAvailable();
         try {
             return RetryUtil.execute(() -> embeddingModel.embedAll(segments), retryConfig);
         } catch (Throwable t) {
@@ -171,6 +191,7 @@ public class EmbeddingTemplate {
      * @return 向量维度数
      */
     public int dimension() {
+        ensureModelAvailable();
         return embeddingModel.dimension();
     }
 
