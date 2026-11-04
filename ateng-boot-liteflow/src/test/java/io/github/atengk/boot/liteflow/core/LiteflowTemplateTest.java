@@ -2,9 +2,11 @@ package io.github.atengk.boot.liteflow.core;
 
 import com.yomahub.liteflow.core.FlowExecutor;
 import com.yomahub.liteflow.core.NodeComponent;
+import com.yomahub.liteflow.flow.FlowBus;
 import com.yomahub.liteflow.flow.LiteflowResponse;
 import io.github.atengk.boot.liteflow.exception.LiteflowExecutionException;
 import lombok.Data;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,6 +40,11 @@ class LiteflowTemplateTest {
 
     @Autowired
     private FlowExecutor flowExecutor;
+
+    @AfterEach
+    void tearDown() {
+        FlowBus.removeChain("dynamicChain", "xmlDynamicChain");
+    }
 
     @Test
     @DisplayName("验证同步执行规则链并自动强类型解包成功")

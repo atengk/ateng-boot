@@ -627,6 +627,9 @@ public class LiteflowTemplate {
             throw new IllegalArgumentException("el 表达式不能为空");
         }
         try {
+            if (FlowBus.containChain(chainId)) {
+                FlowBus.removeChain(chainId);
+            }
             FlowBus.reloadChain(chainId, el);
             log.info("ateng-boot-liteflow: 成功动态更新/新建规则链 [{}] -> [{}]", chainId, el);
         } catch (Exception e) {

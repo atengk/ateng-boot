@@ -1,6 +1,7 @@
 package io.github.atengk.boot.liteflow.rule;
 
 import com.yomahub.liteflow.core.NodeComponent;
+import com.yomahub.liteflow.flow.FlowBus;
 import io.github.atengk.boot.liteflow.core.LiteflowTemplate;
 import io.github.atengk.boot.liteflow.exception.LiteflowExecutionException;
 import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
@@ -8,6 +9,7 @@ import io.github.atengk.boot.liteflow.rule.event.LiteflowRuleRefreshEvent;
 import io.github.atengk.boot.liteflow.rule.event.LiteflowRuleRefreshListener;
 import lombok.Data;
 import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -88,10 +90,17 @@ class LiteflowDynamicRuleSourceTest {
             stmt.execute("""
                     INSERT INTO sys_liteflow_rule (rule_id, rule_name, el_expression, status, route_group, description)
                     VALUES
-                    ('dbRuleChain1', '数据库订单规则1', 'THEN(stepA, stepB)', 1, 'DEFAULT', '初始数据库规则'),
-                    ('dbRuleChainDisabled', '停用规则', 'THEN(stepC)', 0, 'DEFAULT', '已禁用的规则')
+                    ('dbRuleChain1', '数据库订单规则1', 'THEN(dynStepA, dynStepB)', 1, 'DEFAULT', '初始数据库规则'),
+                    ('dbRuleChainDisabled', '停用规则', 'THEN(dynStepC)', 0, 'DEFAULT', '已禁用的规则')
                     """);
         }
+    }
+
+    @AfterEach
+    void tearDown() {
+        FlowBus.removeChain("dbRuleChain1", "dbRuleChain2", "dbRuleChainDisabled",
+                "eventChain1", "spiDynamicChain", "toBeDisabledChain", "eventRawXmlChain");
+        inMemoryProvider.clear();
     }
 
     @Test
@@ -106,7 +115,7 @@ class LiteflowDynamicRuleSourceTest {
         RuleSourceDefinition singleDef = jdbcRuleSourceProvider.loadRule("dbRuleChain1");
         assertThat(singleDef).isNotNull();
         assertThat(singleDef.getRuleName()).isEqualTo("数据库订单规则1");
-        assertThat(singleDef.getEl()).isEqualTo("THEN(stepA, stepB)");
+        assertThat(singleDef.getEl()).isEqualTo("THEN(dynStepA, dynStepB)");
 
         RuleSourceDefinition nonExist = jdbcRuleSourceProvider.loadRule("nonExistChain");
         assertThat(nonExist).isNull();
@@ -120,43 +129,43 @@ class LiteflowDynamicRuleSourceTest {
         assertThat(liteflowTemplate.containChain("dbRuleChain1")).isTrue();
 
         TestRuleContext context = liteflowTemplate.execute("dbRuleChain1", TestRuleContext.class);
-        assertThat(context.getTrace()).containsExactly("stepA", "stepB");
+        assertThat(context.getTrace()).containsExactly("dynStepA", "dynStepB");
     }
 
     @Test
     @DisplayName("验证发布领域事件驱动单条规则链 EL 即时热生效")
     void testEventDrivenSingleChainReloadWithEl() {
         // 初始装载单条链
-        liteflowTemplate.reloadChain("eventChain1", "THEN(stepA)");
+        liteflowTemplate.reloadChain("eventChain1", "THEN(dynStepA)");
         TestRuleContext ctx1 = liteflowTemplate.execute("eventChain1", TestRuleContext.class);
-        assertThat(ctx1.getTrace()).containsExactly("stepA");
+        assertThat(ctx1.getTrace()).containsExactly("dynStepA");
 
-        // 发布领域事件热更新为 THEN(stepB, stepC)
-        eventPublisher.publishEvent(LiteflowRuleRefreshEvent.refreshChain(this, "eventChain1", "THEN(stepB, stepC)"));
+        // 发布领域事件热更新为 THEN(dynStepB, dynStepC)
+        eventPublisher.publishEvent(LiteflowRuleRefreshEvent.refreshChain(this, "eventChain1", "THEN(dynStepB, dynStepC)"));
 
         // 即刻执行验证新规则生效
         TestRuleContext ctx2 = liteflowTemplate.execute("eventChain1", TestRuleContext.class);
-        assertThat(ctx2.getTrace()).containsExactly("stepB", "stepC");
+        assertThat(ctx2.getTrace()).containsExactly("dynStepB", "dynStepC");
     }
 
     @Test
     @DisplayName("验证发布领域事件驱动按 ID 从 SPI 规则源重新拉取最新规则热生效")
     void testEventDrivenSingleChainReloadFromProvider() {
-        inMemoryProvider.setRule("spiDynamicChain", "THEN(stepA)");
+        inMemoryProvider.setRule("spiDynamicChain", "THEN(dynStepA)");
         ruleSourceManager.refreshAll();
 
         TestRuleContext ctx1 = liteflowTemplate.execute("spiDynamicChain", TestRuleContext.class);
-        assertThat(ctx1.getTrace()).containsExactly("stepA");
+        assertThat(ctx1.getTrace()).containsExactly("dynStepA");
 
         // 更新规则源中的 EL 定义
-        inMemoryProvider.setRule("spiDynamicChain", "THEN(stepC)");
+        inMemoryProvider.setRule("spiDynamicChain", "THEN(dynStepC)");
 
         // 仅通过 chainId 触发事件（不显式传 el，由监听器自动从 provider 回源）
         eventPublisher.publishEvent(LiteflowRuleRefreshEvent.refreshChain(this, "spiDynamicChain"));
 
-        // 再次执行验证已变更为 stepC
+        // 再次执行验证已变更为 dynStepC
         TestRuleContext ctx2 = liteflowTemplate.execute("spiDynamicChain", TestRuleContext.class);
-        assertThat(ctx2.getTrace()).containsExactly("stepC");
+        assertThat(ctx2.getTrace()).containsExactly("dynStepC");
     }
 
     @Test
@@ -167,7 +176,7 @@ class LiteflowDynamicRuleSourceTest {
              Statement stmt = conn.createStatement()) {
             stmt.execute("""
                     INSERT INTO sys_liteflow_rule (rule_id, rule_name, el_expression, status, route_group, description)
-                    VALUES ('dbRuleChain2', '数据库新规则2', 'THEN(stepA, stepC)', 1, 'DEFAULT', '动态插入规则')
+                    VALUES ('dbRuleChain2', '数据库新规则2', 'THEN(dynStepA, dynStepC)', 1, 'DEFAULT', '动态插入规则')
                     """);
         }
 
@@ -177,19 +186,19 @@ class LiteflowDynamicRuleSourceTest {
         // 验证新插入的规则已自动加载并生效
         assertThat(liteflowTemplate.containChain("dbRuleChain2")).isTrue();
         TestRuleContext ctx = liteflowTemplate.execute("dbRuleChain2", TestRuleContext.class);
-        assertThat(ctx.getTrace()).containsExactly("stepA", "stepC");
+        assertThat(ctx.getTrace()).containsExactly("dynStepA", "dynStepC");
     }
 
     @Test
     @DisplayName("验证规则下线后通过全量刷新自动从内存执行器移除")
     void testDisableAndRemoveChain() {
         // 先注册启用
-        inMemoryProvider.setRule("toBeDisabledChain", "THEN(stepA)", true);
+        inMemoryProvider.setRule("toBeDisabledChain", "THEN(dynStepA)", true);
         ruleSourceManager.refreshAll();
         assertThat(liteflowTemplate.containChain("toBeDisabledChain")).isTrue();
 
         // 将规则标记为停用
-        inMemoryProvider.setRule("toBeDisabledChain", "THEN(stepA)", false);
+        inMemoryProvider.setRule("toBeDisabledChain", "THEN(dynStepA)", false);
         ruleSourceManager.refreshAll();
 
         // 验证已从内存移除
@@ -207,7 +216,7 @@ class LiteflowDynamicRuleSourceTest {
                 <?xml version="1.0" encoding="UTF-8"?>
                 <flow>
                     <chain name="eventRawXmlChain">
-                        THEN(stepB, stepA);
+                        THEN(dynStepB, dynStepA);
                     </chain>
                 </flow>
                 """;
@@ -216,7 +225,7 @@ class LiteflowDynamicRuleSourceTest {
 
         assertThat(liteflowTemplate.containChain("eventRawXmlChain")).isTrue();
         TestRuleContext ctx = liteflowTemplate.execute("eventRawXmlChain", TestRuleContext.class);
-        assertThat(ctx.getTrace()).containsExactly("stepB", "stepA");
+        assertThat(ctx.getTrace()).containsExactly("dynStepB", "dynStepA");
     }
 
     @Test
@@ -233,9 +242,9 @@ class LiteflowDynamicRuleSourceTest {
     @Test
     @DisplayName("验证 RuleSourceDefinition 领域模型契约自洽")
     void testRuleSourceDefinitionContracts() {
-        RuleSourceDefinition def1 = new RuleSourceDefinition("chain1", "THEN(stepA)");
-        RuleSourceDefinition def2 = new RuleSourceDefinition("chain1", "THEN(stepB)");
-        RuleSourceDefinition def3 = new RuleSourceDefinition("chain2", "THEN(stepC)");
+        RuleSourceDefinition def1 = new RuleSourceDefinition("chain1", "THEN(dynStepA)");
+        RuleSourceDefinition def2 = new RuleSourceDefinition("chain1", "THEN(dynStepB)");
+        RuleSourceDefinition def3 = new RuleSourceDefinition("chain2", "THEN(dynStepC)");
 
         assertThat(def1).isEqualTo(def2);
         assertThat(def1).isNotEqualTo(def3);
@@ -271,6 +280,10 @@ class LiteflowDynamicRuleSourceTest {
             list.add(new RuleSourceDefinition(chainId, el, "内存规则-" + chainId, enabled));
         }
 
+        public void clear() {
+            list.clear();
+        }
+
         @Override
         public List<RuleSourceDefinition> loadRules() {
             return new ArrayList<>(list);
@@ -287,35 +300,35 @@ class LiteflowDynamicRuleSourceTest {
         private List<String> trace = new ArrayList<>();
     }
 
-    @Component("stepA")
+    @Component("dynStepA")
     public static class StepA extends NodeComponent {
         @Override
         public void process() {
             TestRuleContext ctx = this.getContextBean(TestRuleContext.class);
             if (ctx != null) {
-                ctx.getTrace().add("stepA");
+                ctx.getTrace().add("dynStepA");
             }
         }
     }
 
-    @Component("stepB")
+    @Component("dynStepB")
     public static class StepB extends NodeComponent {
         @Override
         public void process() {
             TestRuleContext ctx = this.getContextBean(TestRuleContext.class);
             if (ctx != null) {
-                ctx.getTrace().add("stepB");
+                ctx.getTrace().add("dynStepB");
             }
         }
     }
 
-    @Component("stepC")
+    @Component("dynStepC")
     public static class StepC extends NodeComponent {
         @Override
         public void process() {
             TestRuleContext ctx = this.getContextBean(TestRuleContext.class);
             if (ctx != null) {
-                ctx.getTrace().add("stepC");
+                ctx.getTrace().add("dynStepC");
             }
         }
     }

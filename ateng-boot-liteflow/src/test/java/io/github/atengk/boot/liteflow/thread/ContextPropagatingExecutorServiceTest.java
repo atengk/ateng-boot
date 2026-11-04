@@ -10,6 +10,7 @@ import org.slf4j.MDC;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -35,6 +36,7 @@ class ContextPropagatingExecutorServiceTest {
         MDC.clear();
         UserContextHolder.clear();
         TenantContextHolder.clear();
+        rawPool.shutdownNow();
     }
 
     @Test
@@ -47,15 +49,19 @@ class ContextPropagatingExecutorServiceTest {
         AtomicReference<String> capturedTrace = new AtomicReference<>();
         AtomicReference<String> capturedUser = new AtomicReference<>();
         AtomicReference<String> capturedTenant = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
 
         executorService.execute(() -> {
-            capturedTrace.set(MDC.get("traceId"));
-            capturedUser.set(UserContextHolder.get());
-            capturedTenant.set(TenantContextHolder.getTenantId());
+            try {
+                capturedTrace.set(MDC.get("traceId"));
+                capturedUser.set(UserContextHolder.get());
+                capturedTenant.set(TenantContextHolder.getTenantId());
+            } finally {
+                latch.countDown();
+            }
         });
 
-        // 等待执行完成
-        Thread.sleep(100);
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
 
         assertThat(capturedTrace.get()).isEqualTo("trace-runnable-123");
         assertThat(capturedUser.get()).isEqualTo("user-runnable");
