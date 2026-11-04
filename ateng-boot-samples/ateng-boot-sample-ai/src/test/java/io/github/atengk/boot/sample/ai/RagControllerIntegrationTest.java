@@ -12,6 +12,7 @@ import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -180,6 +181,7 @@ class RagControllerIntegrationTest {
     @Test
     @DisplayName("验证 POST /sample/ai/rag/embed 文本特征向量化生成成功")
     void testEmbedSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
         AiRagEmbedRequest request = AiRagEmbedRequest.builder()
                 .text("ateng-boot 核心研发架构指南")
                 .build();
@@ -211,6 +213,7 @@ class RagControllerIntegrationTest {
     @Test
     @DisplayName("端到端验证 POST /sample/ai/rag/ingest 知识入库, retrieve 检索召回与 ask 增强问答全链路")
     void testEndToEndRagFlow() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
         // 1. 知识库切片入库
         AiRagIngestRequest ingestRequest = AiRagIngestRequest.builder()
                 .text("ateng-boot 遵循纯原生零臃肿架构设计，Controller 传输边界 100% 严禁接收或直接返回 ORM 实体。")
