@@ -803,11 +803,13 @@ public class MilvusTemplate {
             }
         }
         execute("按主键删除数据", c -> {
-            c.delete(DeleteReq.builder()
+            var reqBuilder = DeleteReq.builder()
                     .collectionName(collectionName)
-                    .partitionName(partitionName)
-                    .ids((List<Object>) ids)
-                    .build());
+                    .ids((List<Object>) ids);
+            if (StringUtils.hasText(partitionName)) {
+                reqBuilder.partitionName(partitionName);
+            }
+            c.delete(reqBuilder.build());
             return null;
         });
     }
@@ -847,11 +849,13 @@ public class MilvusTemplate {
             return;
         }
         execute("按实体主键删除数据", c -> {
-            c.delete(DeleteReq.builder()
+            var reqBuilder = DeleteReq.builder()
                     .collectionName(collectionName)
-                    .partitionName(partitionName)
-                    .ids((List<Object>) ids)
-                    .build());
+                    .ids((List<Object>) ids);
+            if (StringUtils.hasText(partitionName)) {
+                reqBuilder.partitionName(partitionName);
+            }
+            c.delete(reqBuilder.build());
             return null;
         });
     }
@@ -879,11 +883,13 @@ public class MilvusTemplate {
         String safeFilter = MilvusTenantHelper.weaveTenantFilter(expr, null, false);
         Assert.hasText(safeFilter, "delete filter expression must not be empty");
         execute("按条件删除数据", c -> {
-            c.delete(DeleteReq.builder()
+            var reqBuilder = DeleteReq.builder()
                     .collectionName(collectionName)
-                    .partitionName(partitionName)
-                    .filter(safeFilter)
-                    .build());
+                    .filter(safeFilter);
+            if (StringUtils.hasText(partitionName)) {
+                reqBuilder.partitionName(partitionName);
+            }
+            c.delete(reqBuilder.build());
             return null;
         });
     }
@@ -970,7 +976,7 @@ public class MilvusTemplate {
 
         List<String> effectiveOutputFields = outputFields;
         if ((effectiveOutputFields == null || effectiveOutputFields.isEmpty()) && entityClass != null && !Map.class.isAssignableFrom(entityClass)) {
-            effectiveOutputFields = Collections.singletonList("*");
+            effectiveOutputFields = MilvusEntityMetadata.of(entityClass).getFieldNames();
         }
 
         SearchReq.SearchReqBuilder<?, ?> builder = SearchReq.builder()
@@ -1236,7 +1242,7 @@ public class MilvusTemplate {
     public <T> List<T> query(Class<T> entityClass, String expr, MilvusConsistencyLevel consistencyLevel) {
         Assert.notNull(entityClass, "entityClass must not be null");
         MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
-        List<Map<String, Object>> list = query(metadata.getCollectionName(), expr, null, consistencyLevel);
+        List<Map<String, Object>> list = query(metadata.getCollectionName(), expr, metadata.getFieldNames(), consistencyLevel);
         return MilvusEntityConverter.mapListToEntities(list, entityClass);
     }
 
@@ -1267,13 +1273,25 @@ public class MilvusTemplate {
     public Map<String, Object> getById(String collectionName, Object id, List<String> outputFields) {
         Assert.hasText(collectionName, "collectionName must not be empty");
         Assert.notNull(id, "id must not be null");
-        List<String> fields = outputFields != null && !outputFields.isEmpty() ? outputFields : Collections.singletonList("*");
+        List<String> fields = outputFields;
+        if (fields == null || fields.isEmpty() || fields.contains("*")) {
+            try {
+                var desc = describeCollection(collectionName);
+                if (desc != null && desc.getFieldNames() != null && !desc.getFieldNames().isEmpty()) {
+                    fields = desc.getFieldNames();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        final List<String> finalFields = fields;
         return execute("按主键点查", c -> {
-            var resp = c.get(GetReq.builder()
+            var getReqBuilder = GetReq.builder()
                     .collectionName(collectionName)
-                    .ids(Collections.singletonList(id))
-                    .outputFields(fields)
-                    .build());
+                    .ids(Collections.singletonList(id));
+            if (finalFields != null && !finalFields.isEmpty()) {
+                getReqBuilder.outputFields(finalFields);
+            }
+            var resp = c.get(getReqBuilder.build());
             if (resp != null && resp.getGetResults() != null && !resp.getGetResults().isEmpty()) {
                 Map<String, Object> entity = resp.getGetResults().get(0).getEntity();
                 if (entity != null && !TenantContextHolder.isIgnoreTenant()) {
@@ -1312,8 +1330,9 @@ public class MilvusTemplate {
      */
     public <T> T getById(Class<T> entityClass, Object id) {
         Assert.notNull(entityClass, "entityClass must not be null");
+        Assert.notNull(id, "id must not be null");
         MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
-        Map<String, Object> map = getById(metadata.getCollectionName(), id);
+        Map<String, Object> map = getById(metadata.getCollectionName(), id, metadata.getFieldNames());
         return MilvusEntityConverter.mapToEntity(map, entityClass);
     }
 
@@ -1330,13 +1349,25 @@ public class MilvusTemplate {
         if (ids == null || ids.isEmpty()) {
             return Collections.emptyList();
         }
-        List<String> fields = outputFields != null && !outputFields.isEmpty() ? outputFields : Collections.singletonList("*");
+        List<String> fields = outputFields;
+        if (fields == null || fields.isEmpty() || fields.contains("*")) {
+            try {
+                var desc = describeCollection(collectionName);
+                if (desc != null && desc.getFieldNames() != null && !desc.getFieldNames().isEmpty()) {
+                    fields = desc.getFieldNames();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        final List<String> finalFields = fields;
         return execute("按主键批量点查", c -> {
-            var resp = c.get(GetReq.builder()
+            var getReqBuilder = GetReq.builder()
                     .collectionName(collectionName)
-                    .ids((List<Object>) ids)
-                    .outputFields(fields)
-                    .build());
+                    .ids((List<Object>) ids);
+            if (finalFields != null && !finalFields.isEmpty()) {
+                getReqBuilder.outputFields(finalFields);
+            }
+            var resp = c.get(getReqBuilder.build());
             if (resp != null && resp.getGetResults() != null && !resp.getGetResults().isEmpty()) {
                 List<Map<String, Object>> list = new ArrayList<>(resp.getGetResults().size());
                 String tenantId = !TenantContextHolder.isIgnoreTenant() ? TenantContextHolder.getTenantId() : null;
@@ -1380,7 +1411,7 @@ public class MilvusTemplate {
     public <T> List<T> getByIds(Class<T> entityClass, List<?> ids) {
         Assert.notNull(entityClass, "entityClass must not be null");
         MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
-        List<Map<String, Object>> list = getByIds(metadata.getCollectionName(), ids);
+        List<Map<String, Object>> list = getByIds(metadata.getCollectionName(), ids, metadata.getFieldNames());
         return MilvusEntityConverter.mapListToEntities(list, entityClass);
     }
 
@@ -1700,7 +1731,7 @@ public class MilvusTemplate {
 
         List<String> effectiveOutFields = request.getOutputFields();
         if ((effectiveOutFields == null || effectiveOutFields.isEmpty()) && request.getEntityClass() != null && !Map.class.isAssignableFrom(request.getEntityClass())) {
-            effectiveOutFields = Collections.singletonList("*");
+            effectiveOutFields = MilvusEntityMetadata.of(request.getEntityClass()).getFieldNames();
         }
 
         HybridSearchReq.HybridSearchReqBuilder<?, ?> builder = HybridSearchReq.builder()

@@ -23,6 +23,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * Milvus 实体模型元数据定义与解析器
@@ -228,6 +229,17 @@ public class MilvusEntityMetadata {
                 .scalarFields(Collections.unmodifiableList(scalars))
                 .allFields(Collections.unmodifiableList(all))
                 .build();
+    }
+
+    /**
+     * 获取当前实体映射的所有 Milvus 列名列表 (用于检索与点查出参 outputFields 投影)
+     *
+     * @return 字段列名列表
+     */
+    public List<String> getFieldNames() {
+        return allFields.stream()
+                .map(FieldMetadata::getFieldName)
+                .collect(Collectors.toList());
     }
 
     /**

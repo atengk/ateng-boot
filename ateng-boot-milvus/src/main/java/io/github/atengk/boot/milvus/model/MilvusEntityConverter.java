@@ -1,5 +1,6 @@
 package io.github.atengk.boot.milvus.model;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import io.github.atengk.boot.core.util.JsonUtil;
@@ -8,6 +9,7 @@ import org.springframework.util.Assert;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -67,7 +69,16 @@ public final class MilvusEntityConverter {
         Assert.notNull(entity, "entity must not be null");
         try {
             String json = JsonUtil.toJsonString(entity);
-            return JsonParser.parseString(json).getAsJsonObject();
+            JsonObject jsonObject = JsonParser.parseString(json).getAsJsonObject();
+            MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entity.getClass());
+            for (MilvusEntityMetadata.FieldMetadata field : metadata.getAllFields()) {
+                String javaName = field.getField().getName();
+                String milvusName = field.getFieldName();
+                if (!javaName.equals(milvusName) && jsonObject.has(javaName) && !jsonObject.has(milvusName)) {
+                    jsonObject.add(milvusName, jsonObject.remove(javaName));
+                }
+            }
+            return jsonObject;
         } catch (Exception e) {
             throw new MilvusException("将实体转换为 JsonObject 失败: " + entity.getClass().getName(), e);
         }
@@ -103,7 +114,42 @@ public final class MilvusEntityConverter {
             return null;
         }
         try {
-            return JsonUtil.convertValue(rawData, entityClass);
+            MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
+            Map<String, Object> copy = new HashMap<>(rawData);
+
+            // 1. 防御 Milvus 内部动态字段 $meta (Gson JsonObject) 导致 Jackson 反射序列化报错
+            Object metaObj = copy.remove("$meta");
+            if (metaObj instanceof JsonObject gsonMeta) {
+                for (Map.Entry<String, JsonElement> entry : gsonMeta.entrySet()) {
+                    if (!copy.containsKey(entry.getKey())) {
+                        copy.put(entry.getKey(), JsonUtil.parseObject(entry.getValue().toString(), Object.class));
+                    }
+                }
+            } else if (metaObj instanceof String metaStr) {
+                Map<String, Object> dynamicMap = JsonUtil.parseObject(metaStr, Map.class);
+                if (dynamicMap != null) {
+                    for (Map.Entry<String, Object> entry : dynamicMap.entrySet()) {
+                        copy.putIfAbsent(entry.getKey(), entry.getValue());
+                    }
+                }
+            }
+
+            // 2. 清洗可能残留的 Gson JsonElement 对象，转为原生 Java 类型
+            for (Map.Entry<String, Object> entry : new HashMap<>(copy).entrySet()) {
+                if (entry.getValue() instanceof JsonElement jsonElement) {
+                    copy.put(entry.getKey(), JsonUtil.parseObject(jsonElement.toString(), Object.class));
+                }
+            }
+
+            // 3. 属性名与 Milvus 列名双向映射对齐
+            for (MilvusEntityMetadata.FieldMetadata field : metadata.getAllFields()) {
+                String javaName = field.getField().getName();
+                String milvusName = field.getFieldName();
+                if (!javaName.equals(milvusName) && copy.containsKey(milvusName) && !copy.containsKey(javaName)) {
+                    copy.put(javaName, copy.get(milvusName));
+                }
+            }
+            return JsonUtil.convertValue(copy, entityClass);
         } catch (Exception e) {
             throw new MilvusException("将 Milvus 数据行反序列化为实体 [" + entityClass.getName() + "] 失败", e);
         }

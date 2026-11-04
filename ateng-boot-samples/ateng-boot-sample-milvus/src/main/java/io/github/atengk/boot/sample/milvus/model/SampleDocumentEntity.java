@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.milvus.model;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.github.atengk.boot.milvus.annotation.MilvusCollection;
 import io.github.atengk.boot.milvus.annotation.MilvusField;
 import io.github.atengk.boot.milvus.annotation.MilvusId;
@@ -45,6 +46,7 @@ public class SampleDocumentEntity implements Serializable {
      * SaaS 多租户隔离标识
      */
     @MilvusField(name = "tenant_id", maxLength = 64, description = "SaaS多租户标识")
+    @JsonProperty("tenant_id")
     private String tenantId;
 
     /**
