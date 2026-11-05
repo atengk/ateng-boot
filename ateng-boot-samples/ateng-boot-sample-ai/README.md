@@ -76,6 +76,11 @@
 | **前置提示词注入审查** | `AiGuardrailController` | `POST /sample/ai/guardrail/inspect-prompt` | `curl -X POST "http://localhost:8080/sample/ai/guardrail/inspect-prompt" -H "Content-Type: application/json" -d "{\"text\":\"请帮我审查Spring Boot单测\"}"` |
 | **后置模型回复审查** | `AiGuardrailController` | `POST /sample/ai/guardrail/inspect-response` | `curl -X POST "http://localhost:8080/sample/ai/guardrail/inspect-response" -H "Content-Type: application/json" -d "{\"text\":\"系统运行正常\"}"` |
 | **端到端安全护栏对话** | `AiGuardrailController` | `POST /sample/ai/guardrail/chat` | `curl -X POST "http://localhost:8080/sample/ai/guardrail/chat" -H "Content-Type: application/json" -d "{\"text\":\"介绍一下ateng-boot\"}"` |
+| **高危退款工具自动拦截** | `AiToolApprovalController` | `POST /sample/ai/approval/trigger-refund` | `curl -X POST "http://localhost:8080/sample/ai/approval/trigger-refund" -H "Content-Type: application/json" -d "{\"orderId\":\"ORD_20261106001\",\"amount\":199.99,\"reason\":\"商品质量问题申请退款\"}"` |
+| **查询待审批高危工单** | `AiToolApprovalController` | `GET /sample/ai/approval/tickets/pending` | `curl "http://localhost:8080/sample/ai/approval/tickets/pending"` |
+| **查询审批工单详情快照** | `AiToolApprovalController` | `GET /sample/ai/approval/tickets/{ticketId}` | `curl "http://localhost:8080/sample/ai/approval/tickets/YOUR_TICKET_ID"` |
+| **人工审批通过重放执行** | `AiToolApprovalController` | `POST /sample/ai/approval/tickets/{ticketId}/approve` | `curl -X POST "http://localhost:8080/sample/ai/approval/tickets/YOUR_TICKET_ID/approve" -H "Content-Type: application/json" -d "{\"comment\":\"财务审批通过准予退款\"}"` |
+| **人工审批驳回拒绝执行** | `AiToolApprovalController` | `POST /sample/ai/approval/tickets/{ticketId}/reject` | `curl -X POST "http://localhost:8080/sample/ai/approval/tickets/YOUR_TICKET_ID/reject" -H "Content-Type: application/json" -d "{\"reason\":\"风控检测疑似刷单驳回\"}"` |
 
 > **流式推流说明**：调用 `GET /sample/ai/chat/stream` 时，控制台或客户端将持续接收由 `event: reasoning`（思考过程）、`event: text`（正文内容）与 `event: done`（`[DONE]` 结束信号）组成的标准 Server-Sent Events 事件流。
 

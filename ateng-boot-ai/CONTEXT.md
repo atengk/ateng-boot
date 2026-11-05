@@ -183,3 +183,35 @@ _Avoid_: SummaryMemory, CompactingMemory, AbstractChatMemory
 **TokenCostCalculator**:
 大模型调用成本与财务账单计算纯函数工具类，基于配置的模型单价表（Input/Output 每百万 Tokens 定价）实时计算单次请求金额并挂载度量指标。
 _Avoid_: CostEstimator, PricingCalculator, TokenBillingUtil
+
+**SensitiveTool**:
+高危敏感工具声明式契约注解，标注于受管 `@Tool` 方法上，声明风险等级、审批分类与人机协同审批策略。
+_Avoid_: DangerousTool, ProtectedTool, ApprovalRequired
+
+**ToolApprovalTemplate**:
+高危工具人机协同审批生命周期治理门面具体类，提供挂起工单生成、快照持久化、审批授权、拒绝回填与方法安全重放等对称接口。
+_Avoid_: ToolApprovalManager, ToolApprovalService, ApprovalHelper
+
+**SupervisorWorkerWorkflow**:
+基于 LangGraph4j 的主管-专工分层认知状态图工作流基类，提供中心主管分解任务并动态调度专工 Agent 协同执行的标准拓扑。
+_Avoid_: AgentSupervisor, MultiAgentWorkflow, TeamWorkflow
+
+**EpisodicMemoryTemplate**:
+跨会话长期语义情景记忆门面具体类，提供基于大模型的事实知识抽取、用户画像沉淀、向量关联检索与跨会话自动注入。
+_Avoid_: LongTermMemoryService, UserPersonaManager, MemoryEngine
+
+**MemoryFact**:
+原子化用户长效记忆事实契约对象，封装主体、谓词、客体、事实陈述、置信度、时间戳与多租户/用户所有权元数据。
+_Avoid_: FactRecord, MemoryItem, UserFact
+
+**RagResponse**:
+强类型可信 RAG 问答响应契约对象，封装生成正文、证据切片精准溯源引用列表与可选事实忠实度评分。
+_Avoid_: RagResult, AnswerWithCitation, GroundedAnswer
+
+**Citation**:
+RAG 知识溯源引用结构化模型对象，封装引用序号、关联切片 ID、源文档名、页码定位、引用原文片段与语义相关度分数。
+_Avoid_: SourceReference, FootnoteItem, ReferenceDoc
+
+**CitationExtractor**:
+RAG 溯源引用确定性提取与上下文对齐纯函数工具类，负责将大模型回答中的引用锚点与召回切片元数据精确绑定并输出结构化引用列表。
+_Avoid_: ReferenceParser, CitationResolver, FootnoteExtractor

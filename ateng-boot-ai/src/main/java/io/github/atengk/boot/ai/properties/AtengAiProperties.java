@@ -73,6 +73,12 @@ public class AtengAiProperties {
     private AtengAiMcpProperties mcp = new AtengAiMcpProperties();
 
     /**
+     * 高危工具人机协同审批治理强类型配置
+     */
+    @NestedConfigurationProperty
+    private ToolApprovalProperties toolApproval = new ToolApprovalProperties();
+
+    /**
      * SaaS 多租户专有模型绑定映射 (key 为租户标识 tenantId，value 为绑定的专有模型标识别名)
      */
     private Map<String, String> tenantModels = new LinkedHashMap<>();

@@ -3,15 +3,25 @@ package io.github.atengk.boot.ai.tool;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.service.tool.DefaultToolExecutor;
 import dev.langchain4j.service.tool.ToolExecutor;
+import io.github.atengk.boot.ai.annotation.SensitiveTool;
+import io.github.atengk.boot.ai.tool.approval.ToolApprovalStatus;
+import io.github.atengk.boot.ai.tool.approval.ToolApprovalTemplate;
+import io.github.atengk.boot.ai.tool.approval.ToolApprovalTicket;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.Objects;
 
@@ -52,6 +62,7 @@ public class SandboxedToolExecutor implements ToolExecutor {
     private final Method method;
     private final String toolName;
     private final ToolExecutor delegate;
+    private final ToolApprovalTemplate approvalTemplate;
 
     /**
      * 构造基于反射的目标 Bean 方法沙箱工具执行器
@@ -61,10 +72,23 @@ public class SandboxedToolExecutor implements ToolExecutor {
      * @param toolName 工具方法名称
      */
     public SandboxedToolExecutor(Object target, Method method, String toolName) {
+        this(target, method, toolName, null);
+    }
+
+    /**
+     * 构造基于反射的目标 Bean 方法沙箱工具执行器（支持高危工具审批）
+     *
+     * @param target           目标工具 Bean 实例
+     * @param method           工具执行方法
+     * @param toolName         工具方法名称
+     * @param approvalTemplate 审批门面
+     */
+    public SandboxedToolExecutor(Object target, Method method, String toolName, ToolApprovalTemplate approvalTemplate) {
         this.target = Objects.requireNonNull(target, "工具目标实例不能为空");
         this.method = Objects.requireNonNull(method, "工具目标方法不能为空");
         this.toolName = StringUtils.hasText(toolName) ? toolName : method.getName();
         this.delegate = null;
+        this.approvalTemplate = approvalTemplate;
         this.method.setAccessible(true);
     }
 
@@ -75,10 +99,22 @@ public class SandboxedToolExecutor implements ToolExecutor {
      * @param delegate 委托执行器
      */
     public SandboxedToolExecutor(String toolName, ToolExecutor delegate) {
+        this(toolName, delegate, null);
+    }
+
+    /**
+     * 构造基于委托执行器的沙箱工具执行器（支持高危工具审批）
+     *
+     * @param toolName         工具方法名称
+     * @param delegate         委托执行器
+     * @param approvalTemplate 审批门面
+     */
+    public SandboxedToolExecutor(String toolName, ToolExecutor delegate, ToolApprovalTemplate approvalTemplate) {
         this.target = null;
         this.method = null;
         this.toolName = StringUtils.hasText(toolName) ? toolName : "UnknownTool";
         this.delegate = Objects.requireNonNull(delegate, "委托执行器 delegate 不能为空");
+        this.approvalTemplate = approvalTemplate;
     }
 
     /**
@@ -101,6 +137,42 @@ public class SandboxedToolExecutor implements ToolExecutor {
         String traceId = MDC.get("traceId");
         String arguments = request != null ? request.arguments() : null;
         log.debug("[AI-TOOL-EXEC] [traceId: {}] Calling tool: [{}] with args: {}", traceId, toolName, arguments);
+
+        // 0. 前置高危工具拦截与审批工单生成
+        if (method != null && approvalTemplate != null) {
+            SensitiveTool sensitiveTool = AnnotatedElementUtils.findMergedAnnotation(method, SensitiveTool.class);
+            if (sensitiveTool != null) {
+                String ticketId = IdUtil.fastSimpleUUID();
+                Duration ttl = parseTimeout(sensitiveTool.timeout(), approvalTemplate.getDefaultTimeout());
+                ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                        .ticketId(ticketId)
+                        .toolName(toolName)
+                        .methodName(method.getName())
+                        .targetClassName(target.getClass().getName())
+                        .argumentsJson(arguments)
+                        .riskLevel(sensitiveTool.riskLevel())
+                        .approvalType(StringUtils.hasText(sensitiveTool.approvalType()) ? sensitiveTool.approvalType() : "DEFAULT")
+                        .description(sensitiveTool.description())
+                        .callerUserId(UserContextHolder.getUserId())
+                        .tenantId(TenantContextHolder.getTenantId())
+                        .traceId(traceId)
+                        .status(ToolApprovalStatus.PENDING)
+                        .createTime(LocalDateTime.now())
+                        .expireTime(LocalDateTime.now().plus(ttl))
+                        .build();
+
+                approvalTemplate.submit(ticket, ttl);
+
+                log.warn("[AI-TOOL-EXEC] [traceId: {}] High-risk tool [{}] intercepted by @SensitiveTool. Ticket generated: {}",
+                        traceId, toolName, ticketId);
+
+                return String.format("[APPROVAL_REQUIRED] 该操作被标记为高危工具 [riskLevel=%s, type=%s]，已自动拦截并生成审批工单 [ticketId=%s]。请等待人工审批核准后方可执行。说明: %s",
+                        sensitiveTool.riskLevel(),
+                        sensitiveTool.approvalType(),
+                        ticketId,
+                        StringUtils.hasText(sensitiveTool.description()) ? sensitiveTool.description() : "高危受管操作");
+            }
+        }
 
         long start = System.currentTimeMillis();
         try {
@@ -161,6 +233,17 @@ public class SandboxedToolExecutor implements ToolExecutor {
             return "工具入参校验失败: " + iae.getMessage();
         }
         return "工具执行失败: " + targetEx.getMessage();
+    }
+
+    private Duration parseTimeout(String timeoutStr, Duration defaultTimeout) {
+        if (StringUtils.hasText(timeoutStr)) {
+            try {
+                return Duration.parse(timeoutStr.trim());
+            } catch (Exception e) {
+                log.warn("无法解析 @SensitiveTool timeout 表达式 [{}], 回退至默认超时: {}", timeoutStr, e.getMessage());
+            }
+        }
+        return defaultTimeout != null ? defaultTimeout : Duration.ofMinutes(30);
     }
 
     public Object getTarget() {

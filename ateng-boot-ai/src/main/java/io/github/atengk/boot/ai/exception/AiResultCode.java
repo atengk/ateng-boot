@@ -112,7 +112,32 @@ public enum AiResultCode implements IResultCode {
     /**
      * 文档内容提取或解析失败
      */
-    AI_PARSE_ERROR(61020, "文档内容提取或解析失败");
+    AI_PARSE_ERROR(61020, "文档内容提取或解析失败"),
+
+    /**
+     * 高危工具操作需要人工审批拦截
+     */
+    AI_TOOL_APPROVAL_REQUIRED(61021, "高危工具操作需要人工审批"),
+
+    /**
+     * 未找到指定的工具审批工单
+     */
+    AI_TOOL_APPROVAL_NOT_FOUND(61022, "未找到指定的工具审批工单"),
+
+    /**
+     * 工具审批工单处于非待审批状态
+     */
+    AI_TOOL_APPROVAL_INVALID_STATUS(61023, "工具审批工单处于非待审批状态"),
+
+    /**
+     * 工具审批工单已超时失效
+     */
+    AI_TOOL_APPROVAL_EXPIRED(61024, "工具审批工单已超时失效"),
+
+    /**
+     * 工具审批工单已被拒绝执行
+     */
+    AI_TOOL_APPROVAL_REJECTED(61025, "工具审批工单已被拒绝执行");
 
     private final Integer code;
     private final String msg;

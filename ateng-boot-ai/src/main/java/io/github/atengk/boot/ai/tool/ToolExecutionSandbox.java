@@ -8,6 +8,7 @@ import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.mcp.McpClientAdapter;
 import io.github.atengk.boot.ai.mcp.McpClientRegistry;
+import io.github.atengk.boot.ai.tool.approval.ToolApprovalTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
@@ -51,6 +52,14 @@ public final class ToolExecutionSandbox {
             return Collections.emptyMap();
         }
 
+        ToolApprovalTemplate approvalTemplate = null;
+        if (applicationContext != null) {
+            try {
+                approvalTemplate = applicationContext.getBeanProvider(ToolApprovalTemplate.class).getIfAvailable();
+            } catch (Exception ignored) {
+            }
+        }
+
         Map<ToolSpecification, ToolExecutor> sandboxedTools = new LinkedHashMap<>();
         Set<String> registeredToolNames = new HashSet<>();
 
@@ -70,7 +79,7 @@ public final class ToolExecutionSandbox {
             }
 
             // 2. 解析工具类中的所有 @Tool 方法并包装沙箱
-            wrapToolBean(toolBean, toolClass, registeredToolNames, sandboxedTools, agentName);
+            wrapToolBean(toolBean, toolClass, registeredToolNames, sandboxedTools, agentName, approvalTemplate);
         }
 
         return Collections.unmodifiableMap(sandboxedTools);
@@ -83,12 +92,23 @@ public final class ToolExecutionSandbox {
      * @return 智能体工具规格到沙箱执行器的映射字典
      */
     public static Map<ToolSpecification, ToolExecutor> wrapToolBean(Object toolBean) {
+        return wrapToolBean(toolBean, (ToolApprovalTemplate) null);
+    }
+
+    /**
+     * 包装指定的单个工具实例为沙箱工具映射并挂载高危审批门面（主要用于编程式调用与单测验证）
+     *
+     * @param toolBean         工具实例
+     * @param approvalTemplate 审批门面
+     * @return 智能体工具规格到沙箱执行器的映射字典
+     */
+    public static Map<ToolSpecification, ToolExecutor> wrapToolBean(Object toolBean, ToolApprovalTemplate approvalTemplate) {
         if (toolBean == null) {
             return Collections.emptyMap();
         }
         Map<ToolSpecification, ToolExecutor> sandboxedTools = new LinkedHashMap<>();
         Set<String> registeredToolNames = new HashSet<>();
-        wrapToolBean(toolBean, toolBean.getClass(), registeredToolNames, sandboxedTools, "AnonymousAgent");
+        wrapToolBean(toolBean, toolBean.getClass(), registeredToolNames, sandboxedTools, "AnonymousAgent", approvalTemplate);
         return Collections.unmodifiableMap(sandboxedTools);
     }
 
@@ -169,6 +189,16 @@ public final class ToolExecutionSandbox {
             Set<String> registeredToolNames,
             Map<ToolSpecification, ToolExecutor> sandboxedTools,
             String agentName) {
+        wrapToolBean(toolBean, toolClass, registeredToolNames, sandboxedTools, agentName, null);
+    }
+
+    private static void wrapToolBean(
+            Object toolBean,
+            Class<?> toolClass,
+            Set<String> registeredToolNames,
+            Map<ToolSpecification, ToolExecutor> sandboxedTools,
+            String agentName,
+            ToolApprovalTemplate approvalTemplate) {
 
         Method[] methods = toolClass.getDeclaredMethods();
         for (Method method : methods) {
@@ -189,7 +219,7 @@ public final class ToolExecutionSandbox {
                         "智能体 [" + agentName + "] 声明的工具方法存在同名冲突: [" + toolName + "]，请调整方法名称或 @Tool 注解声明");
             }
 
-            SandboxedToolExecutor executor = new SandboxedToolExecutor(toolBean, method, toolName);
+            SandboxedToolExecutor executor = new SandboxedToolExecutor(toolBean, method, toolName, approvalTemplate);
             sandboxedTools.put(specification, executor);
             log.debug("智能体 [{}] 成功注册受管沙箱工具: [{}] -> {}.{}()",
                     agentName, toolName, toolClass.getSimpleName(), method.getName());

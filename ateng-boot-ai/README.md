@@ -77,6 +77,7 @@
 | **长会话记忆摘要** | 后台受管非阻塞异步长会话摘要记忆 | `SummaryChatMemory`<br>`SummaryMemoryState`<br>`SummaryChatMemoryStore`<br>`InMemorySummaryChatMemoryStore`<br>`RedisSummaryChatMemoryStore` | `ateng.boot.ai.chat-memory.window-type: SUMMARY`<br>`ateng.boot.ai.chat-memory.max-messages-before-summary`<br>`ateng.boot.ai.chat-memory.keep-recent-messages` | `add(msg)` / `messages()` / `clear()`，双层上下文维护 [System: 长期摘要] + [近期 N 条明细]，异步受管线程池后台提炼，调用线程零阻塞 | `SummaryChatMemoryTest` / `SummaryControllerIntegrationTest` |
 | **原生约束解码** | 原生 JSON_SCHEMA 结构化约束模式 | `JsonSchemaGenerator`<br>`AiResponseFormat` | `ateng.boot.ai.model.response-format: JSON_SCHEMA`<br>`ateng.boot.ai.model.json-schema.*` | `generateSchema(Class<?>)`，递归解析 Java 实体类反射生成符合 OpenAI 规范的 JSON Schema 严格约束模式，消除结构化输出幻觉 | `JsonSchemaGeneratorTest` / `AiTemplateTest` |
 | **财务成本核算** | 实时大模型调用成本精算与财务度量 | `TokenCostCalculator`<br>`ModelPricingConfig` | `ateng.boot.ai.pricing.models.<name>.input-price-per-million-tokens`<br>`ateng.boot.ai.pricing.models.<name>.output-price-per-million-tokens` | `calculateCost(model, inTokens, outTokens)`，高精度 BigDecimal 核算美元/人民币成本，自动上报 `ateng.ai.cost.dollars.total` 财务指标 | `TokenCostCalculatorTest` / `MetricsControllerIntegrationTest` |
+| **高危工具审批** | 声明式高危工具人机协作审批双模治理 | `@SensitiveTool`<br>`ToolApprovalTemplate`<br>`ToolApprovalStore` | `ateng.boot.ai.tool-approval.enabled`<br>`ateng.boot.ai.tool-approval.type`<br>`ateng.boot.ai.tool-approval.default-timeout` | `approve(ticketId, reviewer, comment)` / `reject(...)` / `getTicket(ticketId)` / `listPendingTickets()`，自动拦截 `HIGH`/`CRITICAL` 风险工具生成待审批工单，四维上下文快照安全重放 | `ToolApprovalTemplateTest` / `ToolApprovalControllerIntegrationTest` |
 
 ---
 
@@ -894,6 +895,154 @@ public class DynamicFulfillmentService {
 - **轻量零侵入反射解析**：`AiTemplate.chatWithTools` 接收任意标注了 `@Tool` 的普通 POJO 对象，底层无需动态生成接口类，直接反射提取工具签名并在调用线程安全执行；
 - **Anthropic MCP 协议原生兼容**：遵循 Model Context Protocol 标准 JSON-RPC 2.0 协议，`HttpMcpClientAdapter` 纯基于 JDK 17 原生 `HttpClient` 驱动，零第三方重量级 SDK 依赖；
 - **网络隔离与超时防卫**：所有远程 MCP 工具调用受独立 `timeout` 严格保护；若外部 MCP 节点崩溃或不可达，沙箱优雅捕获并转译为业务受控错误，防止主对话线程挂起。
+
+---
+
+### 6.7 声明式高危工具防卫与人机协作审批双模治理 (@SensitiveTool 与 ToolApprovalTemplate)
+
+在企业级大模型与自主智能体（Autonomous Agents）执行真实业务操作时，资金划扣、退款退货、数据销毁、权限授予等动作具备不可逆的生产破坏性。若完全依赖大模型直接调用执行，存在严重的幻觉误触与越权风险。`ateng-boot-ai` 提供声明式高危工具防卫体系，基于 `@SensitiveTool` 细粒度定义风险等级，并在命中高危动作时自动拦截生成工单快照（HITL Human-In-The-Loop），由运维/业务人员通过 `ToolApprovalTemplate` 实施人机协同审批与上下文安全重放。
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      tool-approval:
+        # 是否启用高危工具人机协作审批机制 (默认 true)
+        enabled: true
+        # 存储实现类型: AUTO (默认自动探测 Redis，未引入平滑回退内存), REDIS, IN_MEMORY
+        type: AUTO
+        # 审批工单快照默认过期与保活时间 (默认 30m)
+        default-timeout: 30m
+        # Redis 存储键前缀 (默认 "ateng:ai:tool-approval:")
+        key-prefix: "ateng:ai:tool-approval:"
+```
+
+#### 实战业务 Java 示例
+
+##### 1. 声明高危工具 (`@SensitiveTool`)
+```java
+@Component
+public class OrderRefundTool {
+
+    @Tool("执行电商订单退款与原路原渠道逆向划扣资金")
+    @SensitiveTool(
+            level = RiskLevel.HIGH,
+            description = "涉及资金原路逆向退还，单笔限额 5000 元以上必须人工审批",
+            requireReason = true
+    )
+    public String refundOrder(
+            @P("订单编号") String orderNo,
+            @P("退款金额(元)") BigDecimal amount,
+            @P("申请退款原因") String reason
+    ) {
+        // 核心原路划扣逻辑...
+        return String.format("订单[%s]退款成功，金额: ￥%s，原因: %s", orderNo, amount, reason);
+    }
+}
+```
+
+##### 2. 挂载智能体并拦截触发工单
+```java
+@AiAgent(tools = {OrderRefundTool.class})
+public interface CustomerServiceAgent {
+
+    @SystemMessage("你是一家电商平台的资深客服智能体，根据用户诉求协助查询或办理退款业务。")
+    String chat(@UserMessage String userMessage);
+}
+```
+当大模型决策调用 `refundOrder` 时，受管沙箱 `SandboxedToolExecutor` 自动拦截判定：命中 `RiskLevel.HIGH`，自动持久化工单快照并向大模型反馈受控提示：“高危工具已拦截并生成人机协同审批工单 [ticketId=xxx]...”，大模型感知后友好引导用户等待人工审批。
+
+##### 3. 人机协作审批门面 (`ToolApprovalTemplate`) 与重放
+```java
+@RestController
+@RequestMapping("/sample/ai/approval")
+@RequiredArgsConstructor
+public class AiToolApprovalController {
+
+    private final ToolApprovalTemplate approvalTemplate;
+
+    /**
+     * 人工审核通过并无损重放执行高危工具
+     */
+    @PostMapping("/approve/{ticketId}")
+    public Result<ToolApprovalResultVo> approve(
+            @PathVariable String ticketId,
+            @RequestParam String reviewer,
+            @RequestParam(required = false) String comment
+    ) {
+        // 执行原子审批通过并在原租户/原链路 MDC 上下文中重放工具调用
+        ToolApprovalResult result = approvalTemplate.approve(ticketId, reviewer, comment);
+        return Result.success(new ToolApprovalResultVo(
+                result.getTicketId(),
+                result.getStatus().name(),
+                result.isSuccess(),
+                result.getResult(),
+                result.getErrorMessage(),
+                result.getExecutionTimeMs()
+        ));
+    }
+
+    /**
+     * 人工审核驳回高危工具工单
+     */
+    @PostMapping("/reject/{ticketId}")
+    public Result<ToolApprovalTicketVo> reject(
+            @PathVariable String ticketId,
+            @RequestParam String reviewer,
+            @RequestParam(required = false) String comment
+    ) {
+        ToolApprovalTicket ticket = approvalTemplate.reject(ticketId, reviewer, comment);
+        return Result.success(ToolApprovalTicketVo.from(ticket));
+    }
+
+    /**
+     * 查询指定审批工单详情
+     */
+    @GetMapping("/tickets/{ticketId}")
+    public Result<ToolApprovalTicketVo> getTicket(@PathVariable String ticketId) {
+        ToolApprovalTicket ticket = approvalTemplate.getTicket(ticketId);
+        return Result.success(ToolApprovalTicketVo.from(ticket));
+    }
+}
+```
+
+#### 生产扩展接管 (Customization & Extensibility)
+若框架内置的 `InMemoryToolApprovalStore` 或 `RedisToolApprovalStore` 无法满足多系统协同，可提供自定义 `ToolApprovalStore` Bean 轻松无缝接管持久化：
+
+```java
+@Component
+public class CustomDatabaseToolApprovalStore implements ToolApprovalStore {
+
+    @Override
+    public void save(ToolApprovalTicket ticket) {
+        // 持久化至 OA 审批流或业务审批表
+    }
+
+    @Override
+    public Optional<ToolApprovalTicket> findById(String ticketId) {
+        // 从审批中心检索工单
+        return Optional.ofNullable(...);
+    }
+
+    @Override
+    public List<ToolApprovalTicket> listPending() {
+        // 分页检索待审批工单
+        return ...;
+    }
+
+    @Override
+    public void delete(String ticketId) {
+        // 清理已归档或已超时的工单快照
+    }
+}
+```
+
+#### 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+- **四级风险判定梯度**：`RiskLevel` 划分 `LOW`（免审直接放行）、`MEDIUM`（仅记录审计日志放行）、`HIGH`（阻断并强制生成审批工单）、`CRITICAL`（阻断并要求强授权审批）；
+- **全链路四维上下文无损还原**：工单持久化时安全快照捕获发起智能体调用时的 `traceId` 与 `tenantId`；在审批人员触发 `approve` 时，通过 MDC 与 `TenantContextHolder` 恢复环境后执行反射重放，执行完毕严格清理，确保多租户隔离与全链路追踪断点对齐；
+- **防重复重放与状态机单向跃迁**：工单生命周期严格遵循 `PENDING` -> `APPROVED` / `REJECTED` / `EXPIRED` 单向流转；已审批或已执行的工单再次审批时直接熔断抛出业务异常，彻底杜绝重放攻击与重复退款；
+- **分布式双模平滑自适应**：`AUTO` 模式下自动探测 Redis，多微服务节点无缝共享审批工单与滑动 TTL 自动淘汰；未接入 Redis 时自动平滑回退基于并发安全容器的单机内存存储，确保 100% 离线自洽。
 
 ---
 
@@ -2289,6 +2438,17 @@ ateng:
             timeout: 10s
             api-key: YOUR_MCP_API_KEY
             eager-init: true
+
+      # 高危工具声明式防卫与人机协同审批治理配置
+      tool-approval:
+        # 是否启用高危工具人机协作审批机制 (默认 true)
+        enabled: true
+        # 存储实现类型: AUTO (默认自动探测 Redis，未引入平滑回退内存), REDIS, IN_MEMORY
+        type: AUTO
+        # 审批工单快照默认过期与保活时间 (默认 30m)
+        default-timeout: 30m
+        # Redis 存储键前缀 (默认 "ateng:ai:tool-approval:")
+        key-prefix: "ateng:ai:tool-approval:"
 
       # 大模型财务调用计价与成本核算配置
       pricing:

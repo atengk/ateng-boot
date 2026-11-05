@@ -40,6 +40,12 @@ import io.github.atengk.boot.ai.ratelimit.RedisAiRateLimiter;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
 import io.github.atengk.boot.ai.template.AiTemplate;
+import io.github.atengk.boot.ai.tool.approval.ToolApprovalTemplate;
+import io.github.atengk.boot.ai.tool.approval.store.InMemoryToolApprovalStore;
+import io.github.atengk.boot.ai.tool.approval.store.RedisToolApprovalStore;
+import io.github.atengk.boot.ai.tool.approval.store.ToolApprovalStore;
+import io.github.atengk.boot.ai.properties.ToolApprovalProperties;
+import org.springframework.context.ApplicationContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
@@ -632,5 +638,69 @@ public class AtengAiAutoConfiguration {
                 }
             };
         }
+    }
+
+    /**
+     * 高危工具人机协作审批存储自动装配（Redis 支持）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(StringRedisTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.tool-approval", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class RedisToolApprovalConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(ToolApprovalStore.class)
+        public ToolApprovalStore redisToolApprovalStore(AtengAiProperties properties,
+                                                        ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+            ToolApprovalProperties config = properties.getToolApproval();
+            StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+
+            if (config.getType() == ToolApprovalProperties.StorageType.REDIS) {
+                if (redisTemplate == null) {
+                    throw new AiException(AiResultCode.AI_CONFIG_ERROR,
+                            "已配置 ateng.boot.ai.tool-approval.type=REDIS，但 Spring 容器中未找到 StringRedisTemplate Bean");
+                }
+                log.info("高危工具审批启用分布式 Redis 存储 [keyPrefix={}, defaultTimeout={}]",
+                        config.getKeyPrefix(), config.getDefaultTimeout());
+                return new RedisToolApprovalStore(config, redisTemplate);
+            }
+
+            if (config.getType() == ToolApprovalProperties.StorageType.AUTO && redisTemplate != null) {
+                log.info("高危工具审批自动探测到 Redis，启用分布式存储 [keyPrefix={}, defaultTimeout={}]",
+                        config.getKeyPrefix(), config.getDefaultTimeout());
+                return new RedisToolApprovalStore(config, redisTemplate);
+            }
+
+            log.info("高危工具审批启用单机内存存储 (InMemoryToolApprovalStore)");
+            return new InMemoryToolApprovalStore();
+        }
+    }
+
+    /**
+     * 高危工具人机协作审批存储单机内存兜底装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnMissingBean(ToolApprovalStore.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.tool-approval", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class InMemoryToolApprovalFallbackConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(ToolApprovalStore.class)
+        public ToolApprovalStore inMemoryToolApprovalStore() {
+            log.info("高危工具审批启用单机内存存储兜底 (InMemoryToolApprovalStore)");
+            return new InMemoryToolApprovalStore();
+        }
+    }
+
+    /**
+     * 自动装配高危工具人机协同审批生命周期统一门面 ToolApprovalTemplate
+     */
+    @Bean
+    @ConditionalOnMissingBean(ToolApprovalTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.tool-approval", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ToolApprovalTemplate toolApprovalTemplate(ToolApprovalStore toolApprovalStore,
+                                                     AtengAiProperties properties,
+                                                     ApplicationContext applicationContext) {
+        return new ToolApprovalTemplate(toolApprovalStore, properties.getToolApproval(), applicationContext);
     }
 }
