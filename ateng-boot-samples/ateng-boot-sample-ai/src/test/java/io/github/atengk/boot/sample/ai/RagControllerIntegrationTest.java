@@ -373,14 +373,14 @@ class RagControllerIntegrationTest {
     }
 
     @Test
-    @DisplayName("验证 POST /sample/ai/rag/parse 多源异构文档解析与结构化抽取")
+    @DisplayName("验证 POST /sample/ai/rag/parser/parse 多源异构文档解析与结构化抽取")
     void testDocumentParseSuccess() throws Exception {
         AiRagParseRequest request = AiRagParseRequest.builder()
                 .filename("test-guide.md")
                 .content("# 系统架构规范\n1. 纯原生零臃肿\n2. 强类型契约自洽")
                 .build();
 
-        mockMvc.perform(post("/sample/ai/rag/parse")
+        mockMvc.perform(post("/sample/ai/rag/parser/parse")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
@@ -451,6 +451,24 @@ class RagControllerIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.query").value("架构规范流水线摄取"))
                 .andExpect(jsonPath("$.data.effectiveTenantId").value("tenant-alpha"))
+                .andExpect(jsonPath("$.data.matches").isArray());
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/retrieve/hybrid 稠密与稀疏多路混合检索与 RRF 融合")
+    void testHybridRetrieveSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        AiRagFilteredRetrieveRequest request = AiRagFilteredRetrieveRequest.builder()
+                .query("架构规范流水线摄取")
+                .maxResults(3)
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/retrieve/hybrid")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.query").value("架构规范流水线摄取"))
                 .andExpect(jsonPath("$.data.matches").isArray());
     }
 

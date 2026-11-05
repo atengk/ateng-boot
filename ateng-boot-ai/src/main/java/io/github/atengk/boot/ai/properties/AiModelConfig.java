@@ -152,4 +152,88 @@ public class AiModelConfig {
         }
         return Collections.unmodifiableMap(customHeaders);
     }
+
+    /**
+     * 将来源配置中的非空字段覆盖合并到当前实例中 (就近覆盖合并)
+     *
+     * @param source 来源模型配置
+     * @return 当前实例自身 (支持链式调用)
+     */
+    public AiModelConfig mergeFrom(AiModelConfig source) {
+        if (source == null) {
+            return this;
+        }
+        if (StringUtils.hasText(source.getBaseUrl())) {
+            this.baseUrl = source.getBaseUrl();
+        }
+        if (StringUtils.hasText(source.getApiKey())) {
+            this.apiKey = source.getApiKey();
+        }
+        if (StringUtils.hasText(source.getModelName()) && !DEFAULT_MODEL_NAME.equals(source.getModelName())) {
+            this.modelName = source.getModelName();
+        }
+        if (source.getTemperature() != null) {
+            this.temperature = source.getTemperature();
+        }
+        if (source.getTopP() != null) {
+            this.topP = source.getTopP();
+        }
+        if (source.getMaxTokens() != null) {
+            this.maxTokens = source.getMaxTokens();
+        }
+        if (source.getDimensions() != null) {
+            this.dimensions = source.getDimensions();
+        }
+        if (source.getMultimodal() != null) {
+            this.multimodal = source.getMultimodal();
+        }
+        if (source.getTimeout() != null) {
+            this.timeout = source.getTimeout();
+        }
+        if (source.getMaxRetries() != null) {
+            this.maxRetries = source.getMaxRetries();
+        }
+        if (source.getRetryInitialInterval() != null) {
+            this.retryInitialInterval = source.getRetryInitialInterval();
+        }
+        if (source.getRetryMaxInterval() != null) {
+            this.retryMaxInterval = source.getRetryMaxInterval();
+        }
+        if (source.getRetryMultiplier() != null) {
+            this.retryMultiplier = source.getRetryMultiplier();
+        }
+        if (source.getLogRequests() != null) {
+            this.logRequests = source.getLogRequests();
+        }
+        if (source.getLogResponses() != null) {
+            this.logResponses = source.getLogResponses();
+        }
+        if (source.getCustomHeaders() != null && !source.getCustomHeaders().isEmpty()) {
+            this.customHeaders.putAll(source.getCustomHeaders());
+        }
+        if (source.getResponseFormat() != null) {
+            this.responseFormat = source.getResponseFormat();
+        }
+        if (source.getTotalTimeout() != null) {
+            this.totalTimeout = source.getTotalTimeout();
+        }
+        return this;
+    }
+
+    /**
+     * 以 source 为底座克隆并创建一个新的 AiModelConfig 实例
+     *
+     * @param source 基础配置
+     * @return 新的 AiModelConfig 实例
+     */
+    public static AiModelConfig from(AiModelConfig source) {
+        AiModelConfig config = new AiModelConfig();
+        if (source != null) {
+            config.mergeFrom(source);
+            if (StringUtils.hasText(source.getModelName())) {
+                config.setModelName(source.getModelName());
+            }
+        }
+        return config;
+    }
 }

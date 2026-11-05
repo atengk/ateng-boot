@@ -277,6 +277,22 @@ class AtengAiRagAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("配置 hybrid.enabled=true 时自动装配 Bm25KeywordRetriever 并包装 HybridContentRetriever")
+    void testHybridContentRetrieverAutoConfiguration() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.ai.model.api-key=test-key",
+                "ateng.boot.ai.rag.hybrid.enabled=true",
+                "ateng.boot.ai.rag.hybrid.dense-weight=1.5",
+                "ateng.boot.ai.rag.hybrid.sparse-weight=0.8"
+        ).run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(io.github.atengk.boot.ai.rag.fusion.Bm25KeywordRetriever.class);
+            assertThat(context.getBean(ContentRetriever.class))
+                    .isInstanceOf(io.github.atengk.boot.ai.rag.fusion.HybridContentRetriever.class);
+        });
+    }
+
+    @Test
     @DisplayName("默认自动装配 DocumentSplitter 与 TableSplitter 实例")
     void testDocumentSplitterAutoConfiguration() {
         contextRunner.run(context -> {

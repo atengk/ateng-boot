@@ -8,11 +8,14 @@ import java.util.List;
  * Token 预算防溢出切片器 (TokenBudgetSplitter)
  * <p>
  * {@link TokenCharacterSplitter} 的语义别名，提供完全一致的 Token 预算截断与滑动窗口切片能力。
+ * 推荐直接使用更具明确表达力的 {@link TokenCharacterSplitter}。
  * </p>
  *
  * @author Ateng
  * @since 2026-11-05
+ * @deprecated 自 1.2.0 起已废弃，建议直接使用 {@link TokenCharacterSplitter}
  */
+@Deprecated(since = "1.2.0")
 public class TokenBudgetSplitter extends TokenCharacterSplitter {
 
     public TokenBudgetSplitter() {

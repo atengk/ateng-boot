@@ -108,4 +108,22 @@ public class ParseOptions {
     public static ParseOptions of(Charset charset, String filename) {
         return builder().charset(charset).filename(filename).build();
     }
+
+    /**
+     * 从源文件名中安全提取去除路径与后缀的基础文档标题 (环境宿主中立)
+     *
+     * @return 基础文件名标题；若未配置有效文件名则返回 null
+     */
+    public String extractTitleFromFilename() {
+        if (filename == null || filename.isBlank()) {
+            return null;
+        }
+        String cleanName = filename.trim();
+        int slashIdx = Math.max(cleanName.lastIndexOf('/'), cleanName.lastIndexOf('\\'));
+        if (slashIdx >= 0 && slashIdx < cleanName.length() - 1) {
+            cleanName = cleanName.substring(slashIdx + 1);
+        }
+        int dotIdx = cleanName.lastIndexOf('.');
+        return dotIdx > 0 ? cleanName.substring(0, dotIdx) : cleanName;
+    }
 }

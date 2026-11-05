@@ -121,6 +121,29 @@ public class EmbeddingModelRegistry {
     }
 
     /**
+     * 注销指定名称的向量化模型 (对称注销)
+     *
+     * @param name 模型标识名称
+     * @return 被注销的 EmbeddingModel 实例，若不存在返回 null
+     */
+    public EmbeddingModel unregister(String name) {
+        if (!StringUtils.hasText(name)) {
+            return null;
+        }
+        return models.remove(name.trim());
+    }
+
+    /**
+     * 移除指定名称的向量化模型 (别名映射，保障对称完备性)
+     *
+     * @param name 模型标识名称
+     * @return 被移除的 EmbeddingModel 实例，若不存在返回 null
+     */
+    public EmbeddingModel remove(String name) {
+        return unregister(name);
+    }
+
+    /**
      * 获取已注册模型数量
      *
      * @return 模型实例总数

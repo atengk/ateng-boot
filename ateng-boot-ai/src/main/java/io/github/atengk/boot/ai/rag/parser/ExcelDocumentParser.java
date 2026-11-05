@@ -151,10 +151,8 @@ public class ExcelDocumentParser implements DocumentParser {
         // 提取标题
         String title = null;
         if (effectiveOptions.isExtractTitle()) {
-            if (StringUtils.hasText(effectiveOptions.getFilename())) {
-                int dotIdx = effectiveOptions.getFilename().lastIndexOf('.');
-                title = dotIdx > 0 ? effectiveOptions.getFilename().substring(0, dotIdx) : effectiveOptions.getFilename();
-            } else if (!allSheetNames.isEmpty()) {
+            title = effectiveOptions.extractTitleFromFilename();
+            if (!StringUtils.hasText(title) && !allSheetNames.isEmpty()) {
                 title = allSheetNames.get(0);
             }
         }

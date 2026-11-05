@@ -1,6 +1,9 @@
 package io.github.atengk.boot.sample.ai.controller;
 
 import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.rag.content.Content;
+import dev.langchain4j.rag.content.retriever.ContentRetriever;
+import dev.langchain4j.rag.query.Query;
 import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.filter.Filter;
 import dev.langchain4j.store.embedding.filter.MetadataFilterBuilder;
@@ -11,6 +14,7 @@ import io.github.atengk.boot.sample.ai.dto.AiRagFilteredRetrieveRequest;
 import io.github.atengk.boot.sample.ai.vo.AiRagFilteredRetrieveVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -35,6 +39,50 @@ import java.util.Map;
 public class AiRagRetrievalController {
 
     private final EmbeddingTemplate embeddingTemplate;
+    private final ObjectProvider<ContentRetriever> contentRetrieverProvider;
+
+    /**
+     * 稠密向量与稀疏关键词混合多路检索演示 (RRF 倒数排名融合)
+     *
+     * @param request 检索请求入参
+     * @return 命中的相关切片及元数据
+     */
+    @PostMapping("/hybrid")
+    public Result<AiRagFilteredRetrieveVo> retrieveHybrid(@Valid @RequestBody AiRagFilteredRetrieveRequest request) {
+        String query = request.getQuery();
+        int maxResults = request.getMaxResults() != null && request.getMaxResults() > 0 ? request.getMaxResults() : 3;
+
+        ContentRetriever retriever = contentRetrieverProvider.getIfAvailable();
+        List<AiRagFilteredRetrieveVo.MatchItem> matchItems = new ArrayList<>();
+
+        if (retriever != null) {
+            List<Content> contents = retriever.retrieve(Query.from(query));
+            int limit = Math.min(contents.size(), maxResults);
+            for (int i = 0; i < limit; i++) {
+                Content c = contents.get(i);
+                TextSegment seg = c.textSegment();
+                String text = seg != null ? seg.text() : "";
+                Map<String, Object> metadata = (seg != null && seg.metadata() != null)
+                        ? new LinkedHashMap<>(seg.metadata().toMap())
+                        : Collections.emptyMap();
+
+                matchItems.add(AiRagFilteredRetrieveVo.MatchItem.builder()
+                        .text(text)
+                        .score(1.0 / (i + 1.0))
+                        .metadata(metadata)
+                        .build());
+            }
+        }
+
+        AiRagFilteredRetrieveVo vo = AiRagFilteredRetrieveVo.builder()
+                .query(query)
+                .effectiveTenantId(TenantContextHolder.getTenantId())
+                .effectiveCategory(request.getCategory())
+                .matches(matchItems)
+                .build();
+
+        return Result.success(vo);
+    }
 
     /**
      * 动态元数据与租户隔离安全检索 (底层自动下推 tenant_id 与业务 Filter 组合防越权)

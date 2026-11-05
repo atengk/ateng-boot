@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sample.ai.controller;
 
+import io.github.atengk.boot.ai.exception.AiException;
+import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.rag.parser.DocumentFormat;
 import io.github.atengk.boot.ai.rag.parser.DocumentParser;
 import io.github.atengk.boot.ai.rag.parser.DocumentParserManager;
@@ -10,6 +12,7 @@ import io.github.atengk.boot.sample.ai.dto.AiRagParseRequest;
 import io.github.atengk.boot.sample.ai.vo.AiRagParseVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -28,8 +31,9 @@ import java.util.Map;
  * @author Ateng
  * @since 2026-11-05
  */
+@Slf4j
 @RestController
-@RequestMapping("/sample/ai/rag")
+@RequestMapping("/sample/ai/rag/parser")
 @RequiredArgsConstructor
 public class AiRagParserController {
 
@@ -59,15 +63,18 @@ public class AiRagParserController {
         ParsedDocument parsed;
         try (InputStream in = new ByteArrayInputStream(bytes)) {
             parsed = parserManager.parse(in, options);
+        } catch (AiException e) {
+            throw e;
         } catch (Exception e) {
-            throw new RuntimeException("文档解析失败: " + e.getMessage(), e);
+            throw new AiException(AiResultCode.AI_PARSE_ERROR, "文档解析失败: " + e.getMessage(), e);
         }
 
         DocumentFormat format = DocumentFormat.fromFilename(filename);
         DocumentParser parser = null;
         try {
             parser = parserManager.findParser(format, filename);
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            log.debug("未找到该格式专属解析器实例，使用通用解析引擎 [format={}, filename={}]", format, filename);
         }
         String parserClass = parser != null ? parser.getClass().getSimpleName() : "Unknown";
 

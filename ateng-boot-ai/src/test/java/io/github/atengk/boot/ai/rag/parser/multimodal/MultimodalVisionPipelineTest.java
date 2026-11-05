@@ -32,6 +32,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -151,6 +152,24 @@ class MultimodalVisionPipelineTest {
             registry.register("qwen-vl-max", visionModel);
 
             VisionModelResolver resolver = new VisionModelResolver(multimodal, registry, null);
+            assertThat(resolver.resolveVisionModel()).isSameAs(visionModel);
+        }
+
+        @Test
+        @DisplayName("Tier 2: 别名无视觉特征但底层配置为多模态模型时成功探测命中")
+        void shouldResolveTier2RegistryAutoDetectionByUnderlyingConfig() {
+            AtengAiRagProperties.MultimodalProperties multimodal = new AtengAiRagProperties.MultimodalProperties();
+
+            AtengAiProperties rootProps = new AtengAiProperties();
+            AiModelConfig visionConfig = new AiModelConfig();
+            visionConfig.setModelName("gpt-4o");
+            rootProps.setModels(Map.of("primary-chat", visionConfig));
+
+            AiModelRegistry registry = new AiModelRegistry();
+            ChatLanguageModel visionModel = mock(ChatLanguageModel.class);
+            registry.register("primary-chat", visionModel);
+
+            VisionModelResolver resolver = new VisionModelResolver(multimodal, registry, rootProps);
             assertThat(resolver.resolveVisionModel()).isSameAs(visionModel);
         }
 
@@ -346,6 +365,47 @@ class MultimodalVisionPipelineTest {
             assertThat(parsed).isNotNull();
             assertThat(parsed.getText()).contains("PDF Architecture Documentation");
             assertThat(parsed.getText()).contains("💡 [图表/架构图语义描述");
+        }
+
+        @Test
+        @DisplayName("PDF 解析器开启图片上传时将生成的访问 URL 正确注入元数据")
+        void shouldAttachImageUrlMetadataWhenUploadEnabled() throws Exception {
+            ChatLanguageModel mockModel = mock(ChatLanguageModel.class);
+            when(mockModel.generate(any(UserMessage.class)))
+                    .thenReturn(Response.from(AiMessage.from("系统时序图")));
+
+            AtengAiRagProperties.MultimodalProperties properties = new AtengAiRagProperties.MultimodalProperties();
+            properties.setEnabled(true);
+            properties.setStorageUpload(true);
+            properties.setMinImageWidth(50);
+            properties.setMinImageHeight(50);
+
+            VisionCaptionEnhancer.ImageStorageUploader uploader = (bytes, name) -> "https://storage.local/" + name;
+            VisionCaptionEnhancer enhancer = new VisionCaptionEnhancer(mockModel, properties, uploader);
+            PdfDocumentParser parser = new PdfDocumentParser(enhancer);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            try (PDDocument doc = new PDDocument()) {
+                PDPage page = new PDPage();
+                doc.addPage(page);
+
+                BufferedImage bim = new BufferedImage(100, 100, BufferedImage.TYPE_INT_RGB);
+                PDImageXObject pdImage = LosslessFactory.createFromImage(doc, bim);
+
+                try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                    cs.beginText();
+                    cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
+                    cs.newLineAtOffset(50, 700);
+                    cs.showText("PDF Architecture Documentation with Embedded Diagram");
+                    cs.endText();
+                    cs.drawImage(pdImage, 50, 50, 100, 100);
+                }
+                doc.save(out);
+            }
+
+            ParsedDocument parsed = parser.parse(new ByteArrayInputStream(out.toByteArray()));
+            assertThat(parsed.getMetadata()).containsKey(ParsedDocument.METADATA_IMAGE_URL);
+            assertThat(parsed.getMetadata().get(ParsedDocument.METADATA_IMAGE_URL).toString()).startsWith("https://storage.local/");
         }
     }
 

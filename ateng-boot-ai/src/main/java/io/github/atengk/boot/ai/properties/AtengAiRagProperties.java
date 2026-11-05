@@ -1,6 +1,5 @@
 package io.github.atengk.boot.ai.properties;
 
-import io.github.atengk.boot.ai.rag.store.VectorStoreProperties;
 import lombok.Data;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
@@ -85,6 +84,38 @@ public class AtengAiRagProperties {
      */
     @NestedConfigurationProperty
     private VectorStoreProperties store = new VectorStoreProperties();
+
+    /**
+     * 稠密向量与稀疏关键词混合知识库检索专属配置
+     */
+    @NestedConfigurationProperty
+    private HybridProperties hybrid = new HybridProperties();
+
+    /**
+     * 混合检索强类型配置属性
+     */
+    @Data
+    public static class HybridProperties {
+        /**
+         * 是否启用稠密与稀疏混合多路召回 (默认 false)
+         */
+        private boolean enabled = false;
+
+        /**
+         * 稠密向量召回权重系数 (默认 1.0)
+         */
+        private double denseWeight = 1.0;
+
+        /**
+         * 稀疏关键词召回权重系数 (默认 1.0)
+         */
+        private double sparseWeight = 1.0;
+
+        /**
+         * RRF 排名融合常数 K (默认 60)
+         */
+        private int rrfK = 60;
+    }
 
     /**
      * 多轮对话查询改写 (QueryTransformer) 强类型配置属性
@@ -233,68 +264,17 @@ public class AtengAiRagProperties {
      * @return 最终生效的 AiModelConfig 实例，绝不返回 null
      */
     public AiModelConfig resolveEmbeddingConfig(AiModelConfig rootModel) {
-        AiModelConfig effective = new AiModelConfig();
-        // 1. 先用全局主模型配置填充通用连接与重试参数
-        if (rootModel != null) {
-            effective.setBaseUrl(rootModel.getBaseUrl());
-            effective.setApiKey(rootModel.getApiKey());
-            effective.setTimeout(rootModel.getTimeout());
-            effective.setMaxRetries(rootModel.getMaxRetries());
-            effective.setRetryInitialInterval(rootModel.getRetryInitialInterval());
-            effective.setRetryMaxInterval(rootModel.getRetryMaxInterval());
-            effective.setRetryMultiplier(rootModel.getRetryMultiplier());
-            effective.setLogRequests(rootModel.getLogRequests());
-            effective.setLogResponses(rootModel.getLogResponses());
-            if (rootModel.getCustomHeaders() != null) {
-                effective.getCustomHeaders().putAll(rootModel.getCustomHeaders());
-            }
-        }
+        AiModelConfig effective = AiModelConfig.from(rootModel);
 
-        // 2. 覆盖默认 embedding modelName 与 dimensions
+        // 覆盖默认 embedding modelName 与 dimensions
         effective.setModelName(this.modelName != null && !this.modelName.isBlank() ? this.modelName : DEFAULT_EMBEDDING_MODEL);
         if (this.dimensions != null) {
             effective.setDimensions(this.dimensions);
         }
 
-        // 3. 若 rag.model 具备有效配置 (例如显式配置了专属 apiKey 或自定义 baseUrl/modelName)，进行就近覆盖
+        // 若 rag.model 具备有效配置，进行就近合并覆盖
         if (this.model != null && (this.model.isConfigured() || (this.model.getBaseUrl() != null && !this.model.getBaseUrl().isBlank() && !"https://api.openai.com/v1".equals(this.model.getBaseUrl())))) {
-            if (this.model.getBaseUrl() != null && !this.model.getBaseUrl().isBlank()) {
-                effective.setBaseUrl(this.model.getBaseUrl());
-            }
-            if (this.model.getApiKey() != null && !this.model.getApiKey().isBlank()) {
-                effective.setApiKey(this.model.getApiKey());
-            }
-            if (this.model.getModelName() != null && !this.model.getModelName().isBlank()
-                    && !AiModelConfig.DEFAULT_MODEL_NAME.equals(this.model.getModelName())) {
-                effective.setModelName(this.model.getModelName());
-            }
-            if (this.model.getDimensions() != null) {
-                effective.setDimensions(this.model.getDimensions());
-            }
-            if (this.model.getTimeout() != null) {
-                effective.setTimeout(this.model.getTimeout());
-            }
-            if (this.model.getMaxRetries() != null) {
-                effective.setMaxRetries(this.model.getMaxRetries());
-            }
-            if (this.model.getRetryInitialInterval() != null) {
-                effective.setRetryInitialInterval(this.model.getRetryInitialInterval());
-            }
-            if (this.model.getRetryMaxInterval() != null) {
-                effective.setRetryMaxInterval(this.model.getRetryMaxInterval());
-            }
-            if (this.model.getRetryMultiplier() != null) {
-                effective.setRetryMultiplier(this.model.getRetryMultiplier());
-            }
-            if (this.model.getLogRequests() != null) {
-                effective.setLogRequests(this.model.getLogRequests());
-            }
-            if (this.model.getLogResponses() != null) {
-                effective.setLogResponses(this.model.getLogResponses());
-            }
-            if (this.model.getCustomHeaders() != null && !this.model.getCustomHeaders().isEmpty()) {
-                effective.getCustomHeaders().putAll(this.model.getCustomHeaders());
-            }
+            effective.mergeFrom(this.model);
         }
         return effective;
     }
@@ -309,68 +289,17 @@ public class AtengAiRagProperties {
      */
     public AiModelConfig resolveNamedEmbeddingConfig(String name, AiModelConfig rootModel) {
         AiModelConfig target = embeddings != null ? embeddings.get(name) : null;
-        AiModelConfig effective = new AiModelConfig();
-        // 1. 继承 rootModel 的基础连接凭据与重试配置
-        if (rootModel != null) {
-            effective.setBaseUrl(rootModel.getBaseUrl());
-            effective.setApiKey(rootModel.getApiKey());
-            effective.setTimeout(rootModel.getTimeout());
-            effective.setMaxRetries(rootModel.getMaxRetries());
-            effective.setRetryInitialInterval(rootModel.getRetryInitialInterval());
-            effective.setRetryMaxInterval(rootModel.getRetryMaxInterval());
-            effective.setRetryMultiplier(rootModel.getRetryMultiplier());
-            effective.setLogRequests(rootModel.getLogRequests());
-            effective.setLogResponses(rootModel.getLogResponses());
-            if (rootModel.getCustomHeaders() != null) {
-                effective.getCustomHeaders().putAll(rootModel.getCustomHeaders());
-            }
-        }
+        AiModelConfig effective = AiModelConfig.from(rootModel);
 
-        // 2. 覆盖默认 modelName 与 dimensions
+        // 覆盖默认 modelName 与 dimensions
         effective.setModelName(this.modelName != null && !this.modelName.isBlank() ? this.modelName : DEFAULT_EMBEDDING_MODEL);
         if (this.dimensions != null) {
             effective.setDimensions(this.dimensions);
         }
 
-        // 3. 命名模型配置就近覆盖
+        // 命名模型配置就近覆盖
         if (target != null) {
-            if (target.getBaseUrl() != null && !target.getBaseUrl().isBlank()) {
-                effective.setBaseUrl(target.getBaseUrl());
-            }
-            if (target.getApiKey() != null && !target.getApiKey().isBlank()) {
-                effective.setApiKey(target.getApiKey());
-            }
-            if (target.getModelName() != null && !target.getModelName().isBlank()
-                    && !AiModelConfig.DEFAULT_MODEL_NAME.equals(target.getModelName())) {
-                effective.setModelName(target.getModelName());
-            }
-            if (target.getDimensions() != null) {
-                effective.setDimensions(target.getDimensions());
-            }
-            if (target.getTimeout() != null) {
-                effective.setTimeout(target.getTimeout());
-            }
-            if (target.getMaxRetries() != null) {
-                effective.setMaxRetries(target.getMaxRetries());
-            }
-            if (target.getRetryInitialInterval() != null) {
-                effective.setRetryInitialInterval(target.getRetryInitialInterval());
-            }
-            if (target.getRetryMaxInterval() != null) {
-                effective.setRetryMaxInterval(target.getRetryMaxInterval());
-            }
-            if (target.getRetryMultiplier() != null) {
-                effective.setRetryMultiplier(target.getRetryMultiplier());
-            }
-            if (target.getLogRequests() != null) {
-                effective.setLogRequests(target.getLogRequests());
-            }
-            if (target.getLogResponses() != null) {
-                effective.setLogResponses(target.getLogResponses());
-            }
-            if (target.getCustomHeaders() != null && !target.getCustomHeaders().isEmpty()) {
-                effective.getCustomHeaders().putAll(target.getCustomHeaders());
-            }
+            effective.mergeFrom(target);
         }
         return effective;
     }

@@ -2,6 +2,7 @@ package io.github.atengk.boot.ai.rag.ingest;
 
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.store.embedding.EmbeddingStore;
+import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
 import io.github.atengk.boot.ai.rag.parser.ParseOptions;
 import io.github.atengk.boot.ai.rag.splitter.DocumentSplitter;
 import lombok.AllArgsConstructor;
@@ -49,6 +50,21 @@ public class IngestOptions {
      * 自定义长文档智能分块切片器 (为 null 时自动使用全局默认 DocumentSplitter 门面)
      */
     private DocumentSplitter splitter;
+
+    /**
+     * 单个文本分块的目标 Token / 字符大小 (可选；未配置时使用全局切片器默认配置)
+     */
+    private Integer chunkSize;
+
+    /**
+     * 分块重叠重合 Token / 字符大小 (可选；未配置时使用全局切片器默认配置)
+     */
+    private Integer chunkOverlap;
+
+    /**
+     * 智能分块切片算法类型 (可选；为 null 时自动使用全局默认 SplitterType)
+     */
+    private AtengAiRagProperties.SplitterType splitterType;
 
     /**
      * 文档底层解析专属配置选项 (可选)

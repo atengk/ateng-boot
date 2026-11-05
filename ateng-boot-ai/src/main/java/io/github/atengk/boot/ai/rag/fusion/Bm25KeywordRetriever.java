@@ -38,6 +38,13 @@ public class Bm25KeywordRetriever implements ContentRetriever {
     private final double k1;
     private final double b;
 
+    /**
+     * 默认构造方法 (默认空语料，最大检索条数 10)
+     */
+    public Bm25KeywordRetriever() {
+        this(Collections::emptyList, 10);
+    }
+
     public Bm25KeywordRetriever(List<TextSegment> segments, int maxResults) {
         this(() -> segments, maxResults, DEFAULT_K1, DEFAULT_B);
     }

@@ -354,14 +354,9 @@ public class EmbeddingTemplate {
      * @return 响应结果
      */
     public Response<Embedding> embedWithModel(String modelName, String text) {
-        if (!StringUtils.hasText(text)) {
-            throw new IllegalArgumentException("待向量化文本不能为空");
-        }
-        EmbeddingModel model = ensureModelAvailable(modelName);
-        try {
-            return RetryUtil.execute(() -> model.embed(text), retryConfig);
-        } catch (Throwable t) {
-            throw AiExceptionTranslator.translate("单文本向量化计算失败 [model=" + modelName + "]", t);
+        ensureModelAvailable(modelName);
+        try (EmbeddingModelScope ignored = useModel(modelName)) {
+            return embed(text);
         }
     }
 
@@ -373,13 +368,10 @@ public class EmbeddingTemplate {
      * @return 响应结果
      */
     public Response<List<Embedding>> embedWithModel(String modelName, List<String> texts) {
-        if (texts == null || texts.isEmpty()) {
-            return Response.from(Collections.emptyList());
+        ensureModelAvailable(modelName);
+        try (EmbeddingModelScope ignored = useModel(modelName)) {
+            return embed(texts);
         }
-        List<TextSegment> segments = texts.stream()
-                .map(t -> StringUtils.hasText(t) ? TextSegment.from(t) : TextSegment.from(""))
-                .toList();
-        return embedSegmentsWithModel(modelName, segments);
     }
 
     /**
@@ -390,14 +382,9 @@ public class EmbeddingTemplate {
      * @return 响应结果
      */
     public Response<Embedding> embedWithModel(String modelName, TextSegment segment) {
-        if (segment == null) {
-            throw new IllegalArgumentException("TextSegment 文本片段对象不能为空");
-        }
-        EmbeddingModel model = ensureModelAvailable(modelName);
-        try {
-            return RetryUtil.execute(() -> model.embed(segment), retryConfig);
-        } catch (Throwable t) {
-            throw AiExceptionTranslator.translate("文本片段向量化计算失败 [model=" + modelName + "]", t);
+        ensureModelAvailable(modelName);
+        try (EmbeddingModelScope ignored = useModel(modelName)) {
+            return embed(segment);
         }
     }
 
@@ -409,14 +396,9 @@ public class EmbeddingTemplate {
      * @return 响应结果
      */
     public Response<List<Embedding>> embedSegmentsWithModel(String modelName, List<TextSegment> segments) {
-        if (segments == null || segments.isEmpty()) {
-            return Response.from(Collections.emptyList());
-        }
-        EmbeddingModel model = ensureModelAvailable(modelName);
-        try {
-            return RetryUtil.execute(() -> model.embedAll(segments), retryConfig);
-        } catch (Throwable t) {
-            throw AiExceptionTranslator.translate("批量文本片段向量化计算失败 [model=" + modelName + "]", t);
+        ensureModelAvailable(modelName);
+        try (EmbeddingModelScope ignored = useModel(modelName)) {
+            return embedSegments(segments);
         }
     }
 
@@ -554,14 +536,10 @@ public class EmbeddingTemplate {
      * @return 向量存储主键 ID
      */
     public String ingestWithModel(String modelName, EmbeddingStore<TextSegment> store, TextSegment segment) {
-        if (store == null) {
-            throw new IllegalArgumentException("目标 EmbeddingStore 存储库不能为空");
+        ensureModelAvailable(modelName);
+        try (EmbeddingModelScope ignored = useModel(modelName)) {
+            return ingest(store, segment);
         }
-        if (segment == null) {
-            throw new IllegalArgumentException("待存储 TextSegment 不能为空");
-        }
-        Response<Embedding> response = embedWithModel(modelName, segment);
-        return store.add(response.content(), segment);
     }
 
     /**
@@ -584,14 +562,10 @@ public class EmbeddingTemplate {
      * @return 主键 ID 列表
      */
     public List<String> ingestAllWithModel(String modelName, EmbeddingStore<TextSegment> store, List<TextSegment> segments) {
-        if (store == null) {
-            throw new IllegalArgumentException("目标 EmbeddingStore 存储库不能为空");
+        ensureModelAvailable(modelName);
+        try (EmbeddingModelScope ignored = useModel(modelName)) {
+            return ingestAll(store, segments);
         }
-        if (segments == null || segments.isEmpty()) {
-            return Collections.emptyList();
-        }
-        Response<List<Embedding>> response = embedSegmentsWithModel(modelName, segments);
-        return store.addAll(response.content(), segments);
     }
 
     /**

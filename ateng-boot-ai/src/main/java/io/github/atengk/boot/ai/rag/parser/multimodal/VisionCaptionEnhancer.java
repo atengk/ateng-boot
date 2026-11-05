@@ -91,17 +91,26 @@ public class VisionCaptionEnhancer {
     }
 
     /**
-     * 对内嵌图表生成语义摘要描述
+     * 图表增强解析结果
+     *
+     * @param text     Markdown 格式文本或占位符
+     * @param imageUrl 上传到对象存储后的公开访问 URL (若未配置或上传失败则为 null)
+     */
+    public record ImageEnhanceResult(String text, String imageUrl) {
+    }
+
+    /**
+     * 对内嵌图表生成语义摘要描述并返回结构化结果 (包含 Markdown 文本与可能生成的图片访问 URL)
      *
      * @param imageBytes 图片二进制字节流 (非空)
      * @param filename   图片文件名 (可选)
      * @param mimeType   MIME 类型 (例如 image/png, image/jpeg)
-     * @return 格式化后的 Markdown 图表摘要块或平滑降级占位符
+     * @return 结构化图表摘要结果
      */
-    public String enhanceImage(byte[] imageBytes, String filename, String mimeType) {
+    public ImageEnhanceResult enhanceImageResult(byte[] imageBytes, String filename, String mimeType) {
         String safeFilename = StringUtils.hasText(filename) ? filename.trim() : "image_" + UUID.randomUUID().toString().substring(0, 8) + ".png";
         if (imageBytes == null || imageBytes.length == 0) {
-            return formatPlaceholder(safeFilename, null);
+            return new ImageEnhanceResult(formatPlaceholder(safeFilename, null), null);
         }
 
         // 1. 若配置并具备 ImageStorageUploader，上传原图至对象存储
@@ -117,7 +126,7 @@ public class VisionCaptionEnhancer {
         // 2. 检查多模态视觉模型是否就绪
         ChatLanguageModel visionModel = resolveActiveVisionModel();
         if (visionModel == null) {
-            return formatPlaceholder(safeFilename, imageUrl);
+            return new ImageEnhanceResult(formatPlaceholder(safeFilename, imageUrl), imageUrl);
         }
 
         // 3. 构造 Base64 Data URI 并调用视觉大模型
@@ -136,15 +145,27 @@ public class VisionCaptionEnhancer {
                     : "";
 
             if (!StringUtils.hasText(caption)) {
-                return formatPlaceholder(safeFilename, imageUrl);
+                return new ImageEnhanceResult(formatPlaceholder(safeFilename, imageUrl), imageUrl);
             }
 
-            return formatCaption(safeFilename, caption, imageUrl);
+            return new ImageEnhanceResult(formatCaption(safeFilename, caption, imageUrl), imageUrl);
         } catch (Exception e) {
             // 4. 防御性降级：主动拦截 400 Bad Request 或网络异常，杜绝污染并中断文档解析主管道
             log.warn("视觉大模型调用失败，自动平滑降级为图表占位符 [file={}, error={}]", safeFilename, e.getMessage());
-            return formatPlaceholder(safeFilename, imageUrl);
+            return new ImageEnhanceResult(formatPlaceholder(safeFilename, imageUrl), imageUrl);
         }
+    }
+
+    /**
+     * 对内嵌图表生成语义摘要描述
+     *
+     * @param imageBytes 图片二进制字节流 (非空)
+     * @param filename   图片文件名 (可选)
+     * @param mimeType   MIME 类型 (例如 image/png, image/jpeg)
+     * @return 格式化后的 Markdown 图表摘要块或平滑降级占位符
+     */
+    public String enhanceImage(byte[] imageBytes, String filename, String mimeType) {
+        return enhanceImageResult(imageBytes, filename, mimeType).text();
     }
 
     /**

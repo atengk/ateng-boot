@@ -10,6 +10,7 @@ import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import dev.langchain4j.store.embedding.EmbeddingSearchResult;
 import dev.langchain4j.store.embedding.filter.MetadataFilterBuilder;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
 import io.github.atengk.boot.ai.rag.parser.DocumentParserManager;
 import io.github.atengk.boot.ai.rag.parser.HtmlDocumentParser;
 import io.github.atengk.boot.ai.rag.parser.TextDocumentParser;
@@ -25,10 +26,13 @@ import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ByteArrayResource;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -307,6 +311,103 @@ class RagIngestionTemplateTest {
         assertThat(searchResult.matches()).isNotEmpty();
         String text = searchResult.matches().get(0).embedded().text();
         assertThat(text).contains("企业知识库标题").contains("这是段落内容").doesNotContain("<html>").doesNotContain("<body>");
+    }
+
+    @Test
+    @DisplayName("文本重载便捷摄取：ingest(text, options) 与 ingest(text) 自动解析 docName")
+    void testIngestTextOverloads() {
+        IngestOptions options = IngestOptions.builder()
+                .docId("DOC-TEXT-009")
+                .docName("user_guide.txt")
+                .build();
+
+        IngestResult res1 = ingestionTemplate.ingest("用户使用指南段落内容。", options);
+        assertThat(res1.isSuccess()).isTrue();
+        assertThat(res1.getDocId()).isEqualTo("DOC-TEXT-009");
+        assertThat(res1.getDocName()).isEqualTo("user_guide.txt");
+
+        IngestResult res2 = ingestionTemplate.ingest("极简摄取模式内容。");
+        assertThat(res2.isSuccess()).isTrue();
+        assertThat(res2.getDocName()).isEqualTo("document.txt");
+        assertThat(res2.getDocId()).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("批量摄取与事件回调：ingestBatchAsync 并发摄取并触发 onSuccess 回调")
+    void testIngestBatchAsyncWithCallbacks() throws Exception {
+        ByteArrayResource r1 = new ByteArrayResource("微服务架构设计文档内容。".getBytes(StandardCharsets.UTF_8), "res1.txt");
+        ByteArrayResource r2 = new ByteArrayResource("分布式缓存集群配置说明。".getBytes(StandardCharsets.UTF_8), "res2.txt");
+
+        List<IngestResult> successResults = new CopyOnWriteArrayList<>();
+        AtomicInteger errorCount = new AtomicInteger(0);
+
+        CompletableFuture<List<IngestResult>> future = ingestionTemplate.ingestBatchAsync(
+                List.of(r1, r2),
+                IngestOptions.defaults(),
+                successResults::add,
+                ex -> errorCount.incrementAndGet()
+        );
+
+        List<IngestResult> results = future.get(5, TimeUnit.SECONDS);
+        assertThat(results).hasSize(2);
+        assertThat(successResults).hasSize(2);
+        assertThat(errorCount.get()).isEqualTo(0);
+        assertThat(results.stream().allMatch(IngestResult::isSuccess)).isTrue();
+    }
+
+    @Test
+    @DisplayName("动态切片器解析：从 IngestOptions 动态生效 splitterType 与 chunkSize/chunkOverlap")
+    void testDynamicSplitterResolutionFromOptions() {
+        String longText = "第一段：Spring Boot 3 深度实战与生态。\n\n" +
+                "第二段：LangChain4j 向量化模型与 RAG 全景架构。\n\n" +
+                "第三段：分级检索与微观宏观上下文聚合机制。";
+
+        IngestOptions options = IngestOptions.builder()
+                .docId("DOC-DYNAMIC-010")
+                .splitterType(AtengAiRagProperties.SplitterType.TOKEN)
+                .chunkSize(15)
+                .chunkOverlap(2)
+                .build();
+
+        IngestResult result = ingestionTemplate.ingest(longText, options);
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getChunkCount()).isGreaterThanOrEqualTo(3);
+
+        // 验证元数据中必定包含规范 chunk_index 与 parent_id
+        EmbeddingSearchResult<TextSegment> searchResult = embeddingStore.search(
+                EmbeddingSearchRequest.builder()
+                        .queryEmbedding(new Embedding(new float[]{0.1f, 0.2f, 0.3f, 0.4f}))
+                        .filter(MetadataFilterBuilder.metadataKey("doc_id").isEqualTo("DOC-DYNAMIC-010"))
+                        .maxResults(10)
+                        .build()
+        );
+
+        for (EmbeddingMatch<TextSegment> match : searchResult.matches()) {
+            Metadata meta = match.embedded().metadata();
+            assertThat(meta.getInteger("chunk_index")).isNotNull();
+            assertThat(meta.getString("parent_id")).isNotNull();
+        }
+    }
+
+    @Test
+    @DisplayName("SKIP 策略基于 doc_hash 准确去重：未传 docId 时依然能根据内容哈希识别重复")
+    void testSkipDeduplicationByDocHash() {
+        String content = "全公司通用的企业级安全合规准则规范。";
+
+        // 首次入库，自动生成 UUID docId
+        IngestResult first = ingestionTemplate.ingest(content, IngestOptions.builder()
+                .policy(DeduplicationPolicy.SKIP)
+                .build());
+        assertThat(first.isSuccess()).isTrue();
+        assertThat(first.isSkipped()).isFalse();
+
+        // 再次入库同样内容，即使传入新的 docId，依据 doc_hash 仍能探测到已存在并触发 SKIP
+        IngestResult second = ingestionTemplate.ingest(content, IngestOptions.builder()
+                .policy(DeduplicationPolicy.SKIP)
+                .build());
+        assertThat(second.isSuccess()).isTrue();
+        assertThat(second.isSkipped()).isTrue();
+        assertThat(second.getDocHash()).isEqualTo(first.getDocHash());
     }
 
     @Test

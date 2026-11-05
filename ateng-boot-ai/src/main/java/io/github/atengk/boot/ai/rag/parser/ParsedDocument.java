@@ -48,6 +48,16 @@ public class ParsedDocument implements Serializable {
     public static final String METADATA_FILENAME = "filename";
 
     /**
+     * 元数据键：首要关联图表 URL
+     */
+    public static final String METADATA_IMAGE_URL = "image_url";
+
+    /**
+     * 元数据键：文档关联的所有图表 URL 列表
+     */
+    public static final String METADATA_IMAGE_URLS = "image_urls";
+
+    /**
      * 提取后的纯净文本内容 (保证非 null)
      */
     private final String text;

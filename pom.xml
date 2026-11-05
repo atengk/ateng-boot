@@ -475,6 +475,16 @@
                 <artifactId>langchain4j-open-ai</artifactId>
                 <version>${langchain4j.version}</version>
             </dependency>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-redis</artifactId>
+                <version>${langchain4j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-pgvector</artifactId>
+                <version>${langchain4j.version}</version>
+            </dependency>
             <!-- LangGraph4j 认知状态图编排底座 -->
             <dependency>
                 <groupId>org.bsc.langgraph4j</groupId>

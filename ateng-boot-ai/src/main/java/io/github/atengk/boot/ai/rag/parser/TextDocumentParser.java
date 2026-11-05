@@ -81,7 +81,7 @@ public class TextDocumentParser implements DocumentParser {
         DocumentFormat format = resolveFormat(effectiveOptions);
         String title = null;
         if (effectiveOptions.isExtractTitle()) {
-            title = extractTitle(content, format, effectiveOptions.getFilename());
+            title = extractTitle(content, format, effectiveOptions);
         }
 
         Map<String, Object> metadata = new LinkedHashMap<>();
@@ -124,7 +124,7 @@ public class TextDocumentParser implements DocumentParser {
     /**
      * 提取文档标题
      */
-    private String extractTitle(String content, DocumentFormat format, String filename) {
+    private String extractTitle(String content, DocumentFormat format, ParseOptions options) {
         if (format == DocumentFormat.MARKDOWN && StringUtils.hasText(content)) {
             // 1. 尝试匹配 YAML Frontmatter title
             Matcher fmMatcher = FRONTMATTER_PATTERN.matcher(content);
@@ -150,10 +150,9 @@ public class TextDocumentParser implements DocumentParser {
         }
 
         // 3. 回退基于文件名提取 (去除扩展名)
-        if (StringUtils.hasText(filename)) {
-            int dotIdx = filename.lastIndexOf('.');
-            String baseName = dotIdx > 0 ? filename.substring(0, dotIdx) : filename;
-            if (!baseName.isBlank()) {
+        if (options != null) {
+            String baseName = options.extractTitleFromFilename();
+            if (StringUtils.hasText(baseName)) {
                 return baseName.trim();
             }
         }

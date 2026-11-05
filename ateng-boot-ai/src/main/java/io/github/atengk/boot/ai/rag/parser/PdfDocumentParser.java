@@ -14,6 +14,8 @@ import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.text.PDFTextStripper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
 
 import javax.imageio.ImageIO;
@@ -37,6 +39,8 @@ import java.util.Map;
  * @since 2026-11-05
  */
 public class PdfDocumentParser implements DocumentParser {
+
+    private static final Logger log = LoggerFactory.getLogger(PdfDocumentParser.class);
 
     private final VisionCaptionEnhancer visionCaptionEnhancer;
 
@@ -73,6 +77,7 @@ public class PdfDocumentParser implements DocumentParser {
             stripper.setSortByPosition(true);
 
             String cleanText;
+            List<String> collectedImageUrls = new ArrayList<>();
             if (visionCaptionEnhancer != null && visionCaptionEnhancer.isEnabled()) {
                 StringBuilder pageTextSb = new StringBuilder();
                 PDFRenderer renderer = null;
@@ -94,18 +99,22 @@ public class PdfDocumentParser implements DocumentParser {
                     if (resources != null) {
                         for (COSName name : resources.getXObjectNames()) {
                             if (resources.isImageXObject(name)) {
-                                hasImages = true;
                                 try {
                                     if (resources.getXObject(name) instanceof PDImageXObject imgObj) {
                                         pageImages.add(imgObj);
+                                        // 仅当图像尺寸达到有效栅格阈值时才计入大图，避免 1x1 追踪像素误触发扫描件 OCR
+                                        if (imgObj.getWidth() >= minWidth && imgObj.getHeight() >= minHeight) {
+                                            hasImages = true;
+                                        }
                                     }
-                                } catch (Exception ignored) {
+                                } catch (Exception e) {
+                                    log.debug("读取 PDF 页面图片资源异常 [page={}, objectName={}]: {}", pageIdx + 1, name.getName(), e.getMessage());
                                 }
                             }
                         }
                     }
 
-                    // 扫描件探测：字符数过少且包含图片
+                    // 扫描件探测：字符数过少且包含大图片
                     if (trimmedPage.length() < ocrThreshold && hasImages) {
                         try {
                             if (renderer == null) {
@@ -117,6 +126,7 @@ public class PdfDocumentParser implements DocumentParser {
                             String ocrText = visionCaptionEnhancer.enhanceScannedPage(baos.toByteArray(), pageIdx + 1);
                             pageTextSb.append(ocrText).append("\n\n");
                         } catch (Exception e) {
+                            log.warn("渲染并 OCR 扫描件页面异常 [page={}]: {}", pageIdx + 1, e.getMessage());
                             if (!trimmedPage.isEmpty()) {
                                 pageTextSb.append(trimmedPage).append("\n\n");
                             }
@@ -134,13 +144,17 @@ public class PdfDocumentParser implements DocumentParser {
                                     BufferedImage bImg = img.getImage();
                                     ByteArrayOutputStream baos = new ByteArrayOutputStream();
                                     ImageIO.write(bImg, "png", baos);
-                                    String caption = visionCaptionEnhancer.enhanceImage(
+                                    VisionCaptionEnhancer.ImageEnhanceResult enhanceResult = visionCaptionEnhancer.enhanceImageResult(
                                             baos.toByteArray(),
                                             "chart_p" + (pageIdx + 1) + "_" + (++imgCounter) + ".png",
                                             "image/png"
                                     );
-                                    pageTextSb.append(caption).append("\n\n");
-                                } catch (Exception ignored) {
+                                    if (enhanceResult.imageUrl() != null) {
+                                        collectedImageUrls.add(enhanceResult.imageUrl());
+                                    }
+                                    pageTextSb.append(enhanceResult.text()).append("\n\n");
+                                } catch (Exception e) {
+                                    log.warn("提取并增强 PDF 内嵌图表异常 [page={}, index={}]: {}", pageIdx + 1, imgCounter, e.getMessage());
                                 }
                             }
                         }
@@ -159,9 +173,8 @@ public class PdfDocumentParser implements DocumentParser {
                 if (info != null && StringUtils.hasText(info.getTitle())) {
                     title = info.getTitle().trim();
                 }
-                if (!StringUtils.hasText(title) && StringUtils.hasText(effectiveOptions.getFilename())) {
-                    int dotIdx = effectiveOptions.getFilename().lastIndexOf('.');
-                    title = dotIdx > 0 ? effectiveOptions.getFilename().substring(0, dotIdx) : effectiveOptions.getFilename();
+                if (!StringUtils.hasText(title)) {
+                    title = effectiveOptions.extractTitleFromFilename();
                 }
                 if (!StringUtils.hasText(title) && StringUtils.hasText(cleanText)) {
                     for (String line : cleanText.split("\\r?\\n")) {
@@ -203,6 +216,10 @@ public class PdfDocumentParser implements DocumentParser {
                 }
                 if (StringUtils.hasText(effectiveOptions.getFilename())) {
                     metadata.put(ParsedDocument.METADATA_FILENAME, effectiveOptions.getFilename());
+                }
+                if (!collectedImageUrls.isEmpty()) {
+                    metadata.put(ParsedDocument.METADATA_IMAGE_URL, collectedImageUrls.get(0));
+                    metadata.put(ParsedDocument.METADATA_IMAGE_URLS, collectedImageUrls);
                 }
                 if (effectiveOptions.getCustomOptions() != null && !effectiveOptions.getCustomOptions().isEmpty()) {
                     metadata.putAll(effectiveOptions.getCustomOptions());

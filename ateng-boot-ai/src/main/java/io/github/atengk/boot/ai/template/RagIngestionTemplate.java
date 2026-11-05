@@ -10,6 +10,7 @@ import dev.langchain4j.store.embedding.filter.Filter;
 import dev.langchain4j.store.embedding.filter.MetadataFilterBuilder;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
 import io.github.atengk.boot.ai.rag.ingest.DeduplicationPolicy;
 import io.github.atengk.boot.ai.rag.ingest.IngestOptions;
 import io.github.atengk.boot.ai.rag.ingest.IngestResult;
@@ -18,7 +19,10 @@ import io.github.atengk.boot.ai.rag.parser.DocumentParserManager;
 import io.github.atengk.boot.ai.rag.parser.ParseOptions;
 import io.github.atengk.boot.ai.rag.parser.ParsedDocument;
 import io.github.atengk.boot.ai.rag.splitter.DocumentSplitter;
+import io.github.atengk.boot.ai.rag.splitter.ParentChildSplitter;
 import io.github.atengk.boot.ai.rag.splitter.RecursiveCharacterSplitter;
+import io.github.atengk.boot.ai.rag.splitter.TableSplitter;
+import io.github.atengk.boot.ai.rag.splitter.TokenCharacterSplitter;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
@@ -49,6 +53,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -205,6 +210,88 @@ public class RagIngestionTemplate {
         return ingest(text, docName, IngestOptions.defaults());
     }
 
+    /**
+     * 摄取纯文本或 Markdown 字符串内容 (使用 options 中的 docName 或保底 document.txt)
+     *
+     * @param text    长文本内容 (不能为空)
+     * @param options 摄取治理参数 (可选)
+     * @return 摄取执行结果
+     */
+    public IngestResult ingest(String text, IngestOptions options) {
+        String docName = options != null && StringUtils.hasText(options.getDocName()) ? options.getDocName().trim() : "document.txt";
+        return ingest(text, docName, options);
+    }
+
+    public IngestResult ingest(String text) {
+        return ingest(text, "document.txt", IngestOptions.defaults());
+    }
+
+    // ==================== 批量 Ingest API ====================
+
+    /**
+     * 同步批量摄取 Resource 文档列表
+     *
+     * @param resources 待摄取文档资源列表 (不能为空)
+     * @param options   摄取治理参数 (可选)
+     * @return 批量摄取结果列表
+     */
+    public List<IngestResult> ingestBatch(List<? extends Resource> resources, IngestOptions options) {
+        Assert.notNull(resources, "resources 不能为空");
+        return resources.stream().map(res -> ingest(res, options)).toList();
+    }
+
+    public List<IngestResult> ingestBatch(List<? extends Resource> resources) {
+        return ingestBatch(resources, IngestOptions.defaults());
+    }
+
+    /**
+     * 异步并发批量摄取 Resource 文档，支持完成与异常事件回调
+     *
+     * @param resources 待摄取文档资源列表 (不能为空)
+     * @param options   摄取治理参数 (可选)
+     * @param onSuccess 单个资源摄取成功时的回调函数 (可选)
+     * @param onError   单个资源摄取失败时的回调函数 (可选)
+     * @return 批量执行 CompletableFuture 结果列表
+     */
+    public CompletableFuture<List<IngestResult>> ingestBatchAsync(
+            List<? extends Resource> resources,
+            IngestOptions options,
+            Consumer<IngestResult> onSuccess,
+            Consumer<Throwable> onError) {
+        Assert.notNull(resources, "resources 不能为空");
+        if (resources.isEmpty()) {
+            return CompletableFuture.completedFuture(Collections.emptyList());
+        }
+
+        List<CompletableFuture<IngestResult>> futures = resources.stream()
+                .map(res -> ingestAsync(res, options)
+                        .whenComplete((resResult, ex) -> {
+                            if (ex != null) {
+                                if (onError != null) {
+                                    onError.accept(ex);
+                                }
+                            } else {
+                                if (onSuccess != null) {
+                                    onSuccess.accept(resResult);
+                                }
+                            }
+                        }))
+                .toList();
+
+        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                .thenApply(v -> futures.stream().map(CompletableFuture::join).toList());
+    }
+
+    public CompletableFuture<List<IngestResult>> ingestBatchAsync(
+            List<? extends Resource> resources,
+            IngestOptions options) {
+        return ingestBatchAsync(resources, options, null, null);
+    }
+
+    public CompletableFuture<List<IngestResult>> ingestBatchAsync(List<? extends Resource> resources) {
+        return ingestBatchAsync(resources, IngestOptions.defaults(), null, null);
+    }
+
     // ==================== 异步 Ingest API ====================
 
     /**
@@ -250,6 +337,22 @@ public class RagIngestionTemplate {
         return ingestAsync(text, docName, IngestOptions.defaults());
     }
 
+    /**
+     * 异步摄取纯文本或 Markdown 字符串内容 (使用 options 中的 docName 或保底 document.txt)
+     *
+     * @param text    长文本内容 (不能为空)
+     * @param options 摄取治理参数 (可选)
+     * @return 异步 CompletableFuture 结果
+     */
+    public CompletableFuture<IngestResult> ingestAsync(String text, IngestOptions options) {
+        String docName = options != null && StringUtils.hasText(options.getDocName()) ? options.getDocName().trim() : "document.txt";
+        return ingestAsync(text, docName, options);
+    }
+
+    public CompletableFuture<IngestResult> ingestAsync(String text) {
+        return ingestAsync(text, "document.txt", IngestOptions.defaults());
+    }
+
     // ==================== 级联清理 API ====================
 
     /**
@@ -264,8 +367,90 @@ public class RagIngestionTemplate {
             throw new IllegalArgumentException("目标 EmbeddingStore 不能为空");
         }
         Filter filter = MetadataFilterBuilder.metadataKey("doc_id").isEqualTo(docId.trim());
-        store.removeAll(filter);
-        log.info("RAG Ingestion: 成功依据 doc_id 级联清理知识库文档切片 [docId={}]", docId.trim());
+        try {
+            store.removeAll(filter);
+            log.info("RAG Ingestion: 成功依据 doc_id 级联清理知识库文档切片 [docId={}]", docId.trim());
+        } catch (UnsupportedOperationException e) {
+            log.warn("目标向量库 [{}] 不支持 removeAll(Filter) 级联物理删除，尝试适配降级清理: {}",
+                    store.getClass().getSimpleName(), e.getMessage());
+            cleanStoreIfUnsupported(store, docId.trim());
+        }
+    }
+
+    private void cleanStoreIfUnsupported(EmbeddingStore<TextSegment> store, String docId) {
+        if (store == null) {
+            return;
+        }
+        // 尝试针对 RedisEmbeddingStore 反射获取 Jedis 物理清理
+        if (store.getClass().getName().contains("RedisEmbeddingStore")) {
+            try {
+                java.lang.reflect.Field clientField = store.getClass().getDeclaredField("client");
+                clientField.setAccessible(true);
+                Object jedis = clientField.get(store);
+
+                java.lang.reflect.Field schemaField = store.getClass().getDeclaredField("schema");
+                schemaField.setAccessible(true);
+                Object schema = schemaField.get(store);
+
+                if (jedis != null && schema != null) {
+                    java.lang.reflect.Field prefixField = schema.getClass().getDeclaredField("prefix");
+                    prefixField.setAccessible(true);
+                    String prefix = (String) prefixField.get(schema);
+
+                    java.lang.reflect.Method keysMethod = jedis.getClass().getMethod("keys", String.class);
+                    @SuppressWarnings("unchecked")
+                    java.util.Set<String> keys = (java.util.Set<String>) keysMethod.invoke(jedis, (prefix != null ? prefix : "") + "*");
+
+                    if (keys != null && !keys.isEmpty()) {
+                        int deletedCount = 0;
+                        java.lang.reflect.Method delMethod = jedis.getClass().getMethod("del", String.class);
+                        java.lang.reflect.Method jsonGetMethod = null;
+                        java.lang.reflect.Method hgetAllMethod = null;
+                        try {
+                            jsonGetMethod = jedis.getClass().getMethod("jsonGet", String.class);
+                        } catch (NoSuchMethodException ignored) {
+                        }
+                        try {
+                            hgetAllMethod = jedis.getClass().getMethod("hgetAll", String.class);
+                        } catch (NoSuchMethodException ignored) {
+                        }
+
+                        for (String key : keys) {
+                            boolean match = false;
+                            // 优先检查 RedisJSON
+                            if (jsonGetMethod != null) {
+                                try {
+                                    Object jsonObj = jsonGetMethod.invoke(jedis, key);
+                                    if (jsonObj != null && String.valueOf(jsonObj).contains(docId)) {
+                                        match = true;
+                                    }
+                                } catch (Exception ignored) {
+                                }
+                            }
+                            // 其次检查 Hash
+                            if (!match && hgetAllMethod != null) {
+                                try {
+                                    @SuppressWarnings("unchecked")
+                                    java.util.Map<String, String> data = (java.util.Map<String, String>) hgetAllMethod.invoke(jedis, key);
+                                    if (data != null && docId.equals(data.get("doc_id"))) {
+                                        match = true;
+                                    }
+                                } catch (Exception ignored) {
+                                }
+                            }
+
+                            if (match) {
+                                delMethod.invoke(jedis, key);
+                                deletedCount++;
+                            }
+                        }
+                        log.info("RAG Ingestion: Redis 降级清理完成，成功物理清理匹配 [doc_id={}] 的切片 Key 数量: {}", docId, deletedCount);
+                    }
+                }
+            } catch (Exception ex) {
+                log.warn("Redis 降级清理切片发生异常 [docId={}]: {}", docId, ex.getMessage());
+            }
+        }
     }
 
     /**
@@ -298,7 +483,7 @@ public class RagIngestionTemplate {
 
         // 1. 幂等去重生命周期治理
         if (policy == DeduplicationPolicy.SKIP) {
-            boolean alreadyExists = checkDocumentHashExists(store, docId, docHash);
+            boolean alreadyExists = checkDocumentHashExists(store, docHash);
             if (alreadyExists) {
                 Duration duration = Duration.ofNanos(System.nanoTime() - startNano);
                 log.info("RAG Ingestion: 文档内容 SHA-256 哈希匹配，触发 SKIP 幂等策略跳过解析与切片 [docId={}, hash={}]", docId, docHash);
@@ -356,12 +541,26 @@ public class RagIngestionTemplate {
         }
 
         // 4. 智能分块切片
-        DocumentSplitter splitter = opts.getSplitter() != null ? opts.getSplitter() : this.defaultSplitter;
-        List<TextSegment> segments = splitter.split(text, baseMetadata);
+        DocumentSplitter splitter = resolveSplitter(opts);
+        List<TextSegment> rawSegments = splitter.split(text, baseMetadata);
 
-        if (segments.isEmpty()) {
+        if (rawSegments == null || rawSegments.isEmpty()) {
             Duration duration = Duration.ofNanos(System.nanoTime() - startNano);
             return IngestResult.success(docId, docName, docHash, tenantId, 0, Collections.emptyList(), duration, Map.of());
+        }
+
+        // 保底注入规范化分块元数据契约 (chunk_index, parent_id)
+        List<TextSegment> segments = new ArrayList<>(rawSegments.size());
+        for (int i = 0; i < rawSegments.size(); i++) {
+            TextSegment seg = rawSegments.get(i);
+            Metadata segMeta = seg.metadata() != null ? seg.metadata().copy() : new Metadata();
+            if (!segMeta.toMap().containsKey("chunk_index")) {
+                segMeta.put("chunk_index", i);
+            }
+            if (!segMeta.toMap().containsKey("parent_id")) {
+                segMeta.put("parent_id", "");
+            }
+            segments.add(TextSegment.from(seg.text(), segMeta));
         }
 
         // 5. 批处理向量化计算并持久化至向量库
@@ -379,16 +578,25 @@ public class RagIngestionTemplate {
         return IngestResult.success(docId, docName, docHash, tenantId, segments.size(), segmentIds, duration, Map.of());
     }
 
-    private boolean checkDocumentHashExists(EmbeddingStore<TextSegment> store, String docId, String docHash) {
+    private boolean checkDocumentHashExists(EmbeddingStore<TextSegment> store, String docHash) {
+        if (store == null || !StringUtils.hasText(docHash)) {
+            return false;
+        }
         try {
+            int dim = 1536;
+            try {
+                dim = this.embeddingTemplate.dimension();
+            } catch (Exception ignored) {
+                // 无法探测维度时保底回退 1536
+            }
             Embedding probe;
             try {
                 probe = this.embeddingTemplate.embed("probe").content();
-            } catch (Throwable t) {
-                probe = new Embedding(new float[]{0.0f});
+            } catch (Exception e) {
+                probe = new Embedding(new float[dim]);
             }
 
-            Filter filter = MetadataFilterBuilder.metadataKey("doc_id").isEqualTo(docId);
+            Filter filter = MetadataFilterBuilder.metadataKey("doc_hash").isEqualTo(docHash.trim());
             EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
                     .queryEmbedding(probe)
                     .filter(filter)
@@ -400,13 +608,55 @@ public class RagIngestionTemplate {
                 TextSegment matched = searchResult.matches().get(0).embedded();
                 if (matched != null && matched.metadata() != null) {
                     String existingHash = matched.metadata().getString("doc_hash");
-                    return docHash.equals(existingHash);
+                    return docHash.trim().equals(existingHash);
                 }
             }
-        } catch (Throwable t) {
-            log.debug("探测文档现有哈希发生容错忽略异常: {}", t.getMessage());
+        } catch (Exception e) {
+            log.warn("RAG Ingestion: 探测知识库文档现有哈希存在性异常，平滑降级执行摄取 [docHash={}, error={}]", docHash, e.getMessage());
         }
         return false;
+    }
+
+    /**
+     * 根据 IngestOptions 动态解析切片器实例
+     *
+     * @param options 摄取治理选项
+     * @return 生效的 DocumentSplitter 实例
+     */
+    public DocumentSplitter resolveSplitter(IngestOptions options) {
+        if (options != null && options.getSplitter() != null) {
+            return options.getSplitter();
+        }
+        if (options != null && (options.getSplitterType() != null || options.getChunkSize() != null)) {
+            AtengAiRagProperties.SplitterType type = options.getSplitterType() != null
+                    ? options.getSplitterType()
+                    : AtengAiRagProperties.SplitterType.RECURSIVE;
+            return switch (type) {
+                case RECURSIVE -> {
+                    int size = options.getChunkSize() != null ? options.getChunkSize() : RecursiveCharacterSplitter.DEFAULT_CHUNK_SIZE;
+                    int overlap = options.getChunkOverlap() != null ? options.getChunkOverlap() : Math.min(RecursiveCharacterSplitter.DEFAULT_CHUNK_OVERLAP, Math.max(0, size / 10));
+                    yield new RecursiveCharacterSplitter(size, overlap);
+                }
+                case TOKEN -> {
+                    int size = options.getChunkSize() != null ? options.getChunkSize() : TokenCharacterSplitter.DEFAULT_MAX_TOKENS;
+                    int overlap = options.getChunkOverlap() != null ? options.getChunkOverlap() : Math.min(TokenCharacterSplitter.DEFAULT_TOKEN_OVERLAP, Math.max(0, size / 10));
+                    yield new TokenCharacterSplitter(size, overlap);
+                }
+                case PARENT_CHILD -> {
+                    int childSize = options.getChunkSize() != null ? options.getChunkSize() : ParentChildSplitter.DEFAULT_CHILD_CHUNK_SIZE;
+                    int childOverlap = options.getChunkOverlap() != null ? options.getChunkOverlap() : ParentChildSplitter.DEFAULT_CHILD_CHUNK_OVERLAP;
+                    int parentSize = Math.max(childSize * 4, ParentChildSplitter.DEFAULT_PARENT_CHUNK_SIZE);
+                    int parentOverlap = Math.max(childOverlap * 2, ParentChildSplitter.DEFAULT_PARENT_CHUNK_OVERLAP);
+                    yield new ParentChildSplitter(parentSize, parentOverlap, childSize, childOverlap);
+                }
+                case TABLE -> {
+                    int rows = options.getChunkSize() != null ? options.getChunkSize() : TableSplitter.DEFAULT_ROWS_PER_CHUNK;
+                    int overlap = options.getChunkOverlap() != null ? options.getChunkOverlap() : TableSplitter.DEFAULT_ROW_OVERLAP;
+                    yield new TableSplitter(rows, overlap);
+                }
+            };
+        }
+        return this.defaultSplitter;
     }
 
     private <T> CompletableFuture<T> supplyAsync(Supplier<T> supplier) {

@@ -80,9 +80,8 @@ public class HtmlDocumentParser implements DocumentParser {
                 String rawTitle = titleMatcher.group(1);
                 title = cleanAndUnescape(rawTitle).trim();
             }
-            if (!StringUtils.hasText(title) && StringUtils.hasText(effectiveOptions.getFilename())) {
-                int dotIdx = effectiveOptions.getFilename().lastIndexOf('.');
-                title = dotIdx > 0 ? effectiveOptions.getFilename().substring(0, dotIdx) : effectiveOptions.getFilename();
+            if (!StringUtils.hasText(title)) {
+                title = effectiveOptions.extractTitleFromFilename();
             }
         }
 

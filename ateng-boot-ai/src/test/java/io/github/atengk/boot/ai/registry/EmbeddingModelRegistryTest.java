@@ -112,6 +112,23 @@ class EmbeddingModelRegistryTest {
     }
 
     @Test
+    @DisplayName("注销单模型操作具备对称性与空安全")
+    void testUnregisterAndRemoveModel() {
+        registry.register("bge-large", bgeLargeModel);
+        assertThat(registry.hasModel("bge-large")).isTrue();
+
+        EmbeddingModel removed = registry.unregister("bge-large");
+        assertThat(removed).isSameAs(bgeLargeModel);
+        assertThat(registry.hasModel("bge-large")).isFalse();
+        assertThat(registry.unregister("non-existent")).isNull();
+        assertThat(registry.unregister(null)).isNull();
+
+        registry.register("bge-large", bgeLargeModel);
+        assertThat(registry.remove("bge-large")).isSameAs(bgeLargeModel);
+        assertThat(registry.hasModel("bge-large")).isFalse();
+    }
+
+    @Test
     @DisplayName("清空注册中心后状态与大小正确清零")
     void testClearRegistry() {
         registry.register("bge-large", bgeLargeModel);

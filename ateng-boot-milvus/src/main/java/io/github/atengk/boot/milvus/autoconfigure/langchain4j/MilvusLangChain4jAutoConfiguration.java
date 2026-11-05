@@ -13,6 +13,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 
 /**
  * Milvus LangChain4j EmbeddingStore 自动装配配置
@@ -37,7 +38,8 @@ public class MilvusLangChain4jAutoConfiguration {
      * @return MilvusEmbeddingStore 实例
      */
     @Bean
-    @ConditionalOnMissingBean
+    @Primary
+    @ConditionalOnMissingBean(EmbeddingStore.class)
     public MilvusEmbeddingStore milvusEmbeddingStore(MilvusTemplate milvusTemplate, MilvusLangChain4jProperties properties) {
         log.info("初始化 LangChain4j MilvusEmbeddingStore 知识库向量存储 (集合: [{}], 维度: {})",
                 properties.getCollectionName(), properties.getDimension());

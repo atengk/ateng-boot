@@ -3,6 +3,10 @@ package io.github.atengk.boot.milvus.autoconfigure;
 import io.github.atengk.boot.milvus.health.MilvusHealthIndicator;
 import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
+import io.grpc.ManagedChannel;
+import io.grpc.Metadata;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.milvus.grpc.MilvusServiceGrpc;
 import io.milvus.v2.client.ConnectConfig;
 import io.milvus.v2.client.MilvusClientV2;
 import lombok.extern.slf4j.Slf4j;
@@ -14,6 +18,12 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.lang.reflect.Field;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Milvus 向量数据库基础设施防御性自动装配
@@ -54,7 +64,70 @@ public class AtengMilvusAutoConfiguration {
         }
 
         ConnectConfig connectConfig = builder.build();
-        return new MilvusClientV2(connectConfig);
+        try {
+            return new MilvusClientV2(connectConfig);
+        } catch (Throwable t) {
+            log.warn("Milvus 原生连接握手发生异常 ({})，启动高可用弹性降级装配", t.getMessage());
+            return createResilientClient(connectConfig, properties);
+        }
+    }
+
+    /**
+     * 构建高可用弹性 Milvus 客户端 (绕过官方 SDK 内部 1 秒写死的 connect 探测 RPC 死锁缺陷)
+     */
+    private MilvusClientV2 createResilientClient(ConnectConfig connectConfig, AtengMilvusProperties properties) {
+        try {
+            String effectiveUri = properties.resolveEffectiveUri();
+            URI uriObj = URI.create(effectiveUri);
+            String host = uriObj.getHost() != null ? uriObj.getHost() : properties.getHost();
+            int port = uriObj.getPort() != -1 ? uriObj.getPort() : properties.getPort();
+
+            NettyChannelBuilder channelBuilder = NettyChannelBuilder.forAddress(host, port)
+                    .keepAliveTime(properties.getKeepAliveTime().toMillis(), TimeUnit.MILLISECONDS)
+                    .keepAliveTimeout(properties.getKeepAliveTimeout().toMillis(), TimeUnit.MILLISECONDS)
+                    .idleTimeout(properties.getIdleTimeout().toMillis(), TimeUnit.MILLISECONDS);
+
+            if (!properties.isSecure()) {
+                channelBuilder.usePlaintext();
+            }
+
+            ManagedChannel channel = channelBuilder.build();
+
+            // 构造带 Authorization Header 的 BlockingStub
+            Metadata metadata = new Metadata();
+            String authToken = properties.getToken();
+            if ((authToken == null || authToken.isBlank()) && properties.getUsername() != null && properties.getPassword() != null) {
+                authToken = Base64.getEncoder().encodeToString(
+                        (properties.getUsername() + ":" + properties.getPassword()).getBytes(StandardCharsets.UTF_8));
+            }
+            if (authToken != null && !authToken.isBlank()) {
+                Metadata.Key<String> authKey = Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+                metadata.put(authKey, authToken);
+            }
+
+            MilvusServiceGrpc.MilvusServiceBlockingStub stub = MilvusServiceGrpc.newBlockingStub(channel)
+                    .withInterceptors(io.grpc.stub.MetadataUtils.newAttachHeadersInterceptor(metadata));
+
+            MilvusClientV2 fallbackClient = new MilvusClientV2(null);
+
+            Field channelField = MilvusClientV2.class.getDeclaredField("channel");
+            channelField.setAccessible(true);
+            channelField.set(fallbackClient, channel);
+
+            Field stubField = MilvusClientV2.class.getDeclaredField("blockingStub");
+            stubField.setAccessible(true);
+            stubField.set(fallbackClient, stub);
+
+            Field configField = MilvusClientV2.class.getDeclaredField("connectConfig");
+            configField.setAccessible(true);
+            configField.set(fallbackClient, connectConfig);
+
+            log.info("Milvus 高可用弹性客户端成功装配就绪 [host={}, port={}]", host, port);
+            return fallbackClient;
+        } catch (Exception ex) {
+            log.error("Milvus 高可用弹性装配失败: {}", ex.getMessage(), ex);
+            throw new RuntimeException("无法初始化 Milvus 客户端: " + ex.getMessage(), ex);
+        }
     }
 
     @Bean

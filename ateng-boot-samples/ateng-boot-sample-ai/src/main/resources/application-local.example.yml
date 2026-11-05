@@ -1,5 +1,10 @@
 # 本地真实服务联调配置模板 (复制为 application-local.yml 并激活 local profile 生效)
 # 警告：真实密钥请勿提交至 Git 仓库！
+spring:
+  config:
+    activate:
+      on-profile: local
+
 ateng:
   boot:
     ai:
@@ -62,3 +67,53 @@ ateng:
         #   base-url: https://api.openai.com/v1
         #   api-key: YOUR_OPENAI_API_KEY
         #   model-name: text-embedding-3-small
+        # 可选：多模态图文提取与视觉摘要增强 (配合 ateng-boot-storage)
+        parser:
+          multimodal:
+            enabled: true
+            storage-upload: true
+            prompt: "请对以下架构图、流程图或数据图表进行精确、结构化的语义摘要描述："
+
+    # 对象存储配置 (配合 RAG 多模态图片上传)
+    storage:
+      primary: default
+      sources:
+        default:
+          type: local
+          local:
+            base-path: target/sample-ai-storage/default
+            domain: http://localhost:8080
+            secret-key: YOUR_STORAGE_LOCAL_SECRET_KEY
+            download-endpoint: /storage/local/download
+            upload-endpoint: /storage/local/upload
+        # 也可选用 S3 / MinIO
+        # s3:
+        #   type: s3
+        #   s3:
+        #     endpoint: http://YOUR_S3_HOST:9000
+        #     bucket: YOUR_BUCKET
+        #     access-key: YOUR_ACCESS_KEY
+        #     secret-key: YOUR_SECRET_KEY
+        # store:
+        #   type: MILVUS # 或 REDIS / PGVECTOR / ELASTICSEARCH
+        #   milvus:
+        #     uri: http://YOUR_MILVUS_HOST:19530
+        #     token: YOUR_MILVUS_TOKEN
+        #     collection-name: rag_embeddings
+        #     dimension: 1536
+        #   redis:
+        #     host: YOUR_REDIS_HOST
+        #     port: 6379
+        #     password: YOUR_REDIS_PASSWORD
+        #     index-name: rag-index
+        #     prefix: "rag:"
+        #     dimension: 1536
+        #   pgvector:
+        #     host: YOUR_PG_HOST
+        #     port: 5432
+        #     database: postgres
+        #     user: postgres
+        #     password: YOUR_PG_PASSWORD
+        #     table: rag_embeddings
+        #     dimension: 1536
+        #     drop-table-first: false

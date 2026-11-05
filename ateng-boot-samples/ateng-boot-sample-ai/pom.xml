@@ -29,6 +29,36 @@
             <artifactId>ateng-boot-ai</artifactId>
         </dependency>
 
+        <!-- Milvus 向量数据库 Starter -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-milvus</artifactId>
+        </dependency>
+
+        <!-- Redis 向量数据库驱动 (LangChain4j) -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-redis</artifactId>
+        </dependency>
+
+        <!-- PostgreSQL PgVector 向量数据库驱动 (LangChain4j) -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-pgvector</artifactId>
+        </dependency>
+
+        <!-- 对象存储 Starter (用于 RAG 多模态文档内嵌图表持久化与 URL 链接生成) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-storage</artifactId>
+        </dependency>
+
+        <!-- 企业级 Word 与 PDF 文档综合治理 (用于 RAG 多模态文档解析与图表提取) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-document</artifactId>
+        </dependency>
+
         <!-- Micrometer 核心度量 (用于 AI 黄金指标监控与探查) -->
         <dependency>
             <groupId>io.micrometer</groupId>

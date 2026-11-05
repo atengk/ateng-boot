@@ -751,6 +751,10 @@ public class MilvusTemplate {
                     .dimension(dimension)
                     .vectorFieldName(vectorFieldName)
                     .metricType(metricType.name())
+                    .idType(io.milvus.v2.common.DataType.VarChar)
+                    .maxLength(64)
+                    .autoID(false)
+                    .enableDynamicField(true)
                     .build();
             createCollection(req);
         }

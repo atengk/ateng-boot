@@ -247,10 +247,7 @@ public class TokenCharacterSplitter implements DocumentSplitter {
             int combinedTokens = this.tokenizer.estimateTokenCountInText(candidateJoined);
 
             if (combinedTokens > this.effectiveMaxTokens && !currentDoc.isEmpty()) {
-                String chunk = String.join("", currentDoc).trim();
-                if (!chunk.isEmpty()) {
-                    addSafely(chunks, chunk);
-                }
+                flushChunk(chunks, currentDoc);
 
                 // 滑动窗口剔除头部片段，确保：
                 // 1. 剩余重叠片段 Token 计数 <= tokenOverlap
@@ -271,14 +268,18 @@ public class TokenCharacterSplitter implements DocumentSplitter {
             currentDoc.add(piece);
         }
 
+        flushChunk(chunks, currentDoc);
+
+        return chunks;
+    }
+
+    private void flushChunk(List<String> chunks, List<String> currentDoc) {
         if (!currentDoc.isEmpty()) {
             String chunk = String.join("", currentDoc).trim();
             if (!chunk.isEmpty()) {
                 addSafely(chunks, chunk);
             }
         }
-
-        return chunks;
     }
 
     private void addSafely(List<String> chunks, String chunk) {

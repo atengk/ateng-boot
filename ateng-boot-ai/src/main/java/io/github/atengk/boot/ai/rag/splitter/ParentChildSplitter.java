@@ -193,12 +193,13 @@ public class ParentChildSplitter implements DocumentSplitter {
             parentIdToChildren.put(parentId, Collections.unmodifiableList(childrenForParent));
         }
 
-        // 4. 注入全局子分块序号 (global_child_index, total_global_children)
+        // 4. 注入全局子分块序号 (global_child_index, total_global_children) 及规范 chunk_index
         int totalGlobalChildren = allChildren.size();
         List<TextSegment> finalChildren = new ArrayList<>(totalGlobalChildren);
         for (int gIdx = 0; gIdx < totalGlobalChildren; gIdx++) {
             TextSegment child = allChildren.get(gIdx);
             Metadata finalChildMeta = child.metadata().copy();
+            finalChildMeta.put("chunk_index", gIdx);
             finalChildMeta.put("global_child_index", gIdx);
             finalChildMeta.put("total_global_children", totalGlobalChildren);
             finalChildren.add(TextSegment.from(child.text(), finalChildMeta));

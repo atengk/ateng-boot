@@ -103,16 +103,7 @@ public final class ParentContextAggregator {
 
         List<TextSegment> result = new ArrayList<>(entries.size() + nonParentSegments.size());
         for (ParentAggregateEntry entry : entries) {
-            Metadata parentMeta = entry.baseMetadata != null ? entry.baseMetadata.copy() : new Metadata();
-            parentMeta.put("parent_id", entry.parentId);
-            if (entry.parentIndex != null) {
-                parentMeta.put("parent_index", entry.parentIndex);
-            }
-            parentMeta.put("matched_child_count", entry.matchedChildCount);
-            parentMeta.remove("child_index");
-            parentMeta.remove("parent_text");
-
-            result.add(TextSegment.from(entry.parentText, parentMeta));
+            result.add(entry.toTextSegment());
         }
 
         result.addAll(nonParentSegments);
@@ -165,6 +156,18 @@ public final class ParentContextAggregator {
 
         void incrementChildCount() {
             this.matchedChildCount++;
+        }
+
+        TextSegment toTextSegment() {
+            Metadata parentMeta = this.baseMetadata != null ? this.baseMetadata.copy() : new Metadata();
+            parentMeta.put("parent_id", this.parentId);
+            if (this.parentIndex != null) {
+                parentMeta.put("parent_index", this.parentIndex);
+            }
+            parentMeta.put("matched_child_count", this.matchedChildCount);
+            parentMeta.remove("child_index");
+            parentMeta.remove("parent_text");
+            return TextSegment.from(this.parentText, parentMeta);
         }
     }
 }

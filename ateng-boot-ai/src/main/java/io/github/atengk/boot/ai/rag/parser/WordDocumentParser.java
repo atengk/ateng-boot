@@ -67,6 +67,7 @@ public class WordDocumentParser implements DocumentParser {
         try (XWPFDocument doc = new XWPFDocument(in)) {
             StringBuilder sb = new StringBuilder();
             String title = null;
+            List<String> collectedImageUrls = new ArrayList<>();
 
             // 1. 尝试从 CoreProperties 读取文档标题
             if (effectiveOptions.isExtractTitle() && doc.getProperties() != null
@@ -115,9 +116,12 @@ public class WordDocumentParser implements DocumentParser {
                                 String fileName = picData.getFileName();
                                 String mimeType = resolveMimeType(fileName);
                                 if (visionCaptionEnhancer != null && visionCaptionEnhancer.isEnabled()) {
-                                    String caption = visionCaptionEnhancer.enhanceImage(picBytes, fileName, mimeType);
-                                    if (StringUtils.hasText(caption)) {
-                                        sb.append(caption).append("\n\n");
+                                    VisionCaptionEnhancer.ImageEnhanceResult result = visionCaptionEnhancer.enhanceImageResult(picBytes, fileName, mimeType);
+                                    if (result.imageUrl() != null) {
+                                        collectedImageUrls.add(result.imageUrl());
+                                    }
+                                    if (StringUtils.hasText(result.text())) {
+                                        sb.append(result.text()).append("\n\n");
                                     }
                                 } else {
                                     sb.append("> 🖼️ [内嵌图表: ").append(StringUtils.hasText(fileName) ? fileName : "image").append("]\n\n");
@@ -136,9 +140,8 @@ public class WordDocumentParser implements DocumentParser {
             String content = sb.toString().trim();
 
             // 3. 标题平滑回退 (文件名)
-            if (!StringUtils.hasText(title) && StringUtils.hasText(effectiveOptions.getFilename())) {
-                int dotIdx = effectiveOptions.getFilename().lastIndexOf('.');
-                title = dotIdx > 0 ? effectiveOptions.getFilename().substring(0, dotIdx) : effectiveOptions.getFilename();
+            if (!StringUtils.hasText(title)) {
+                title = effectiveOptions.extractTitleFromFilename();
             }
 
             // 4. 最大字符数截断
@@ -177,6 +180,10 @@ public class WordDocumentParser implements DocumentParser {
             if (effectiveOptions.isExtractMetadata()) {
                 if (StringUtils.hasText(effectiveOptions.getFilename())) {
                     metadata.put(ParsedDocument.METADATA_FILENAME, effectiveOptions.getFilename());
+                }
+                if (!collectedImageUrls.isEmpty()) {
+                    metadata.put(ParsedDocument.METADATA_IMAGE_URL, collectedImageUrls.get(0));
+                    metadata.put(ParsedDocument.METADATA_IMAGE_URLS, collectedImageUrls);
                 }
                 if (effectiveOptions.getCustomOptions() != null && !effectiveOptions.getCustomOptions().isEmpty()) {
                     metadata.putAll(effectiveOptions.getCustomOptions());

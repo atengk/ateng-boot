@@ -9,6 +9,9 @@ import dev.langchain4j.store.embedding.EmbeddingSearchResult;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.filter.Filter;
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.core.util.JsonUtil;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.properties.MilvusConsistencyLevel;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
@@ -216,28 +219,57 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
         double minScore = request.minScore();
         String filterExpr = MilvusFilterMapper.map(request.filter());
 
+        log.info("Milvus search request: collection={}, filter={}, topK={}, minScore={}", collectionName, filterExpr, maxResults, minScore);
         List<MilvusHit<Map<String, Object>>> hits = template.search(
                 collectionName,
                 vectorFieldName,
                 queryEmbedding.vectorAsList(),
                 maxResults,
                 filterExpr,
-                null,
+                Collections.singletonList("*"),
                 consistencyLevel,
                 null,
                 tenantFieldName
         );
+        log.info("Milvus search returned hits size={}", hits != null ? hits.size() : -1);
 
         List<EmbeddingMatch<TextSegment>> matches = new ArrayList<>();
         if (hits != null) {
             for (MilvusHit<Map<String, Object>> hit : hits) {
+                log.info("Milvus hit: id={}, score={}, rawDataKeys={}", hit.getId(), hit.getScore(), hit.getRawData() != null ? hit.getRawData().keySet() : null);
                 double score = hit.getScore() != null ? hit.getScore().doubleValue() : 0.0;
                 if (score < minScore) {
+                    log.info("Milvus hit id={} skipped due to score {} < minScore {}", hit.getId(), score, minScore);
                     continue;
                 }
                 String id = hit.getId() != null ? hit.getId().toString() : "";
-                Map<String, Object> rawData = hit.getRawData() != null ? hit.getRawData() : Collections.emptyMap();
-                String text = (String) rawData.get(textFieldName);
+                Map<String, Object> rawData = hit.getRawData() != null ? new HashMap<>(hit.getRawData()) : new HashMap<>();
+
+                // 解包 Milvus 动态字段 ($meta)
+                Object metaObj = rawData.remove("$meta");
+                log.info("Milvus metaObj: class={}, value={}", metaObj != null ? metaObj.getClass().getName() : "null", metaObj);
+                if (metaObj instanceof JsonObject gsonMeta) {
+                    for (Map.Entry<String, JsonElement> entry : gsonMeta.entrySet()) {
+                        if (!rawData.containsKey(entry.getKey())) {
+                            rawData.put(entry.getKey(), JsonUtil.parseObject(entry.getValue().toString(), Object.class));
+                        }
+                    }
+                } else if (metaObj instanceof Map<?, ?> mapMeta) {
+                    for (Map.Entry<?, ?> entry : mapMeta.entrySet()) {
+                        if (entry.getKey() != null && !rawData.containsKey(entry.getKey().toString())) {
+                            rawData.put(entry.getKey().toString(), entry.getValue());
+                        }
+                    }
+                } else if (metaObj instanceof String metaStr) {
+                    Map<String, Object> dynamicMap = JsonUtil.parseObject(metaStr, Map.class);
+                    if (dynamicMap != null) {
+                        for (Map.Entry<String, Object> entry : dynamicMap.entrySet()) {
+                            rawData.putIfAbsent(entry.getKey(), entry.getValue());
+                        }
+                    }
+                }
+
+                String text = rawData.get(textFieldName) != null ? String.valueOf(rawData.get(textFieldName)) : null;
 
                 // 提取除基础列外的标量属性为 Metadata
                 Map<String, Object> metaMap = new HashMap<>();
@@ -261,9 +293,11 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
                 }
 
                 matches.add(new EmbeddingMatch<>(score, id, matchedEmbedding, textSegment));
+                log.info("Milvus match added: textSegment={}, matchesSize={}", textSegment, matches.size());
             }
         }
 
+        log.info("Milvus search finished: totalMatches={}", matches.size());
         return new EmbeddingSearchResult<>(matches);
     }
 }

@@ -64,12 +64,16 @@ public class VisionModelResolver {
             }
         }
 
-        // Tier 2: 注册中心自动探测
+        // Tier 2: 注册中心自动探测 (优先依据命名模型配置及实际底层模型名称，再回退别名自身探测)
         if (aiModelRegistry != null && !aiModelRegistry.getChatModelNames().isEmpty()) {
-            for (String name : aiModelRegistry.getChatModelNames()) {
-                if (MultimodalModelDetector.isMultimodal(name)) {
-                    log.info("视觉模型解析成功 [Tier 2 注册中心自动探测命中: {}]", name);
-                    return aiModelRegistry.getChatModel(name);
+            for (String alias : aiModelRegistry.getChatModelNames()) {
+                AiModelConfig config = atengAiProperties != null ? atengAiProperties.resolveConfig(alias) : null;
+                String modelName = config != null && StringUtils.hasText(config.getModelName())
+                        ? config.getModelName()
+                        : alias;
+                if (MultimodalModelDetector.isMultimodal(config, modelName) || MultimodalModelDetector.isMultimodal(alias)) {
+                    log.info("视觉模型解析成功 [Tier 2 注册中心自动探测命中: alias={}, modelName={}]", alias, modelName);
+                    return aiModelRegistry.getChatModel(alias);
                 }
             }
         }

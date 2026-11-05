@@ -14,7 +14,10 @@ import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
+import io.github.atengk.boot.ai.properties.VectorStoreProperties;
 import io.github.atengk.boot.ai.rag.filter.DynamicFilterContentRetriever;
+import io.github.atengk.boot.ai.rag.fusion.Bm25KeywordRetriever;
+import io.github.atengk.boot.ai.rag.fusion.HybridContentRetriever;
 import io.github.atengk.boot.ai.rag.parser.DocumentParser;
 import io.github.atengk.boot.ai.rag.parser.DocumentParserManager;
 import io.github.atengk.boot.ai.rag.parser.ExcelDocumentParser;
@@ -36,7 +39,6 @@ import io.github.atengk.boot.ai.rag.splitter.RecursiveCharacterSplitter;
 import io.github.atengk.boot.ai.rag.splitter.TableSplitter;
 import io.github.atengk.boot.ai.rag.splitter.TokenCharacterSplitter;
 import io.github.atengk.boot.ai.rag.store.VectorStoreFactory;
-import io.github.atengk.boot.ai.rag.store.VectorStoreProperties;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
@@ -47,6 +49,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 
 import java.io.ByteArrayInputStream;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -83,7 +86,9 @@ import org.springframework.util.StringUtils;
 @AutoConfiguration
 @AutoConfigureAfter(name = {
         "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration",
-        "io.github.atengk.boot.ai.autoconfigure.AtengAiAutoConfiguration"
+        "io.github.atengk.boot.ai.autoconfigure.AtengAiAutoConfiguration",
+        "io.github.atengk.boot.storage.autoconfigure.AtengStorageAutoConfiguration",
+        "io.github.atengk.boot.milvus.autoconfigure.langchain4j.MilvusLangChain4jAutoConfiguration"
 })
 @ConditionalOnClass({EmbeddingModel.class, EmbeddingStore.class, ContentRetriever.class})
 @ConditionalOnProperty(prefix = "ateng.boot.ai.rag", name = "enabled", havingValue = "true", matchIfMissing = true)
@@ -246,20 +251,39 @@ public class AtengAiRagAutoConfiguration {
     }
 
     /**
-     * 自动组装并注册 RAG 知识库检索组件 ContentRetriever (支持向量召回、两阶段重排与多轮查询改写自适应包装)
+     * 自动装配默认纯内存轻量级 BM25 关键词稀疏检索器 (Bm25KeywordRetriever)
+     *
+     * @return Bm25KeywordRetriever 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(Bm25KeywordRetriever.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.rag.hybrid", name = "enabled", havingValue = "true")
+    public Bm25KeywordRetriever bm25KeywordRetriever(AtengAiProperties properties) {
+        int maxResults = properties.getRag() != null && properties.getRag().getMaxResults() > 0
+                ? properties.getRag().getMaxResults()
+                : 10;
+        log.info("自动装配默认纯内存 BM25 关键词稀疏检索器 (Bm25KeywordRetriever) [maxResults={}]", maxResults);
+        return new Bm25KeywordRetriever(Collections::emptyList, maxResults);
+    }
+
+    /**
+     * 自动组装并注册 RAG 知识库检索组件 ContentRetriever (支持向量召回、混合多路融合、两阶段重排与多轮查询改写自适应包装)
      *
      * @param embeddingStoreProvider   向量存储实现提供者
      * @param embeddingModelProvider   向量化模型提供者
+     * @param bm25RetrieverProvider    BM25 关键词稀疏检索器提供者 (可选)
      * @param rerankerProvider         重排模型提供者 (可选)
      * @param queryTransformerProvider 多轮查询改写器提供者 (可选)
      * @param properties               AI 根配置属性
      * @return ContentRetriever 实例
      */
     @Bean
-    @ConditionalOnMissingBean(ContentRetriever.class)
+    @Primary
+    @ConditionalOnMissingBean(name = "contentRetriever")
     public ContentRetriever contentRetriever(
             ObjectProvider<EmbeddingStore<TextSegment>> embeddingStoreProvider,
             ObjectProvider<EmbeddingModel> embeddingModelProvider,
+            ObjectProvider<Bm25KeywordRetriever> bm25RetrieverProvider,
             ObjectProvider<Reranker> rerankerProvider,
             ObjectProvider<QueryTransformer> queryTransformerProvider,
             AtengAiProperties properties) {
@@ -285,11 +309,32 @@ public class AtengAiRagAutoConfiguration {
         );
 
         ContentRetriever effectiveRetriever = baseRetriever;
+
+        // 若启用稠密与稀疏混合多路召回 (Hybrid Search)
+        AtengAiRagProperties.HybridProperties hybridProps = rag != null ? rag.getHybrid() : null;
+        if (hybridProps != null && hybridProps.isEnabled()) {
+            Bm25KeywordRetriever bm25Retriever = bm25RetrieverProvider.getIfAvailable();
+            if (bm25Retriever != null) {
+                log.info("自动装配并挂载 HybridContentRetriever 稠密与稀疏多路混合检索器 [denseWeight={}, sparseWeight={}, rrfK={}]",
+                        hybridProps.getDenseWeight(), hybridProps.getSparseWeight(), hybridProps.getRrfK());
+                effectiveRetriever = new HybridContentRetriever(
+                        baseRetriever,
+                        bm25Retriever,
+                        initialResults,
+                        hybridProps.getRrfK(),
+                        hybridProps.getDenseWeight(),
+                        hybridProps.getSparseWeight()
+                );
+            } else {
+                log.warn("已配置 ateng.boot.ai.rag.hybrid.enabled=true，但未检测到稀疏关键词检索器提供者，平滑回退仅使用稠密向量检索");
+            }
+        }
+
         if (reranker != null) {
             int topK = rag.getRerank() != null && rag.getRerank().getTopK() > 0 ? rag.getRerank().getTopK() : rag.getMaxResults();
             Double rerankMinScore = rag.getRerank() != null ? rag.getRerank().getMinScore() : rag.getMinScore();
             log.info("自动装配并挂载 RerankingContentRetriever 两阶段重排检索器 [topK={}, minScore={}]", topK, rerankMinScore);
-            effectiveRetriever = new RerankingContentRetriever(baseRetriever, reranker, topK, rerankMinScore);
+            effectiveRetriever = new RerankingContentRetriever(effectiveRetriever, reranker, topK, rerankMinScore);
         }
 
         QueryTransformer queryTransformer = queryTransformerProvider.getIfAvailable();
@@ -625,16 +670,13 @@ public class AtengAiRagAutoConfiguration {
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(name = "io.github.atengk.boot.storage.template.StorageTemplate")
+    @ConditionalOnBean(type = "io.github.atengk.boot.storage.template.StorageTemplate")
     static class StorageIntegrationConfiguration {
 
         @Bean
         @ConditionalOnMissingBean(VisionCaptionEnhancer.ImageStorageUploader.class)
         public VisionCaptionEnhancer.ImageStorageUploader storageTemplateImageUploader(
-                ObjectProvider<StorageTemplate> storageTemplateProvider) {
-            StorageTemplate storageTemplate = storageTemplateProvider.getIfAvailable();
-            if (storageTemplate == null) {
-                return null;
-            }
+                StorageTemplate storageTemplate) {
             log.info("检测到 ateng-boot-storage，自动装配图表对象存储上传适配器 (ImageStorageUploader)");
             return (imageBytes, filename) -> {
                 String safeName = StringUtils.hasText(filename) ? filename : "image.png";
