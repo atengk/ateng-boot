@@ -47,4 +47,29 @@ public class ChatMemoryProperties {
      * Redis 会话记忆 TTL 自动过期淘汰时长，默认为 7 天
      */
     private Duration ttl = Duration.ofDays(7);
+
+    /**
+     * 触发异步提炼摘要的消息条数阈值（当前详细消息条数达到此值时触发异步提炼，默认 20 条）
+     */
+    private int maxMessagesBeforeSummary = 20;
+
+    /**
+     * 触发异步提炼摘要的 Token 数量阈值（当前详细消息累计 Token 估算达到此值时触发异步提炼，默认 4096）
+     */
+    private int maxTokensBeforeSummary = 4096;
+
+    /**
+     * 触发摘要提炼后，保留在详细历史中的最新消息条数（默认 6 条，保证近期交互的高保真度）
+     */
+    private int keepRecentMessages = 6;
+
+    /**
+     * 长期摘要前缀提示语，拼装到双层上下文首条 SystemMessage 中
+     */
+    private String summaryPrefix = "以下是此前对话的事实摘要约束：\n";
+
+    /**
+     * Redis 长会话摘要存储物理键前缀，默认为 "ai:summary:memory:"
+     */
+    private String summaryKeyPrefix = "ai:summary:memory:";
 }

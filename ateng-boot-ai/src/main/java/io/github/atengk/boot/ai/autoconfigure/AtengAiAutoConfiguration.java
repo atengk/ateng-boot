@@ -22,9 +22,13 @@ import io.github.atengk.boot.ai.mcp.HttpMcpClientAdapter;
 import io.github.atengk.boot.ai.mcp.McpClientRegistry;
 import io.github.atengk.boot.ai.memory.ChatMemoryManager;
 import io.github.atengk.boot.ai.memory.HeuristicTokenizer;
+import io.github.atengk.boot.ai.memory.SummaryChatMemory;
 import io.github.atengk.boot.ai.memory.store.ChatMemoryStore;
 import io.github.atengk.boot.ai.memory.store.InMemoryChatMemoryStore;
+import io.github.atengk.boot.ai.memory.store.InMemorySummaryChatMemoryStore;
 import io.github.atengk.boot.ai.memory.store.RedisChatMemoryStore;
+import io.github.atengk.boot.ai.memory.store.RedisSummaryChatMemoryStore;
+import io.github.atengk.boot.ai.memory.store.SummaryChatMemoryStore;
 import io.github.atengk.boot.ai.properties.AtengAiMcpProperties;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.ChatMemoryProperties;
@@ -392,11 +396,15 @@ public class AtengAiAutoConfiguration {
     }
 
     /**
-     * 自动装配默认基于滑动窗口的会话记忆提供者 ChatMemoryProvider (支持 MESSAGE 条数与 TOKEN 容量双模策略)
+     * 自动装配默认基于滑动窗口或异步长会话摘要的会话记忆提供者 ChatMemoryProvider
+     * 支持 MESSAGE 条数、TOKEN 容量与 SUMMARY 异步长会话摘要三种策略
      *
-     * @param chatMemoryStore   底层会话存储
-     * @param properties        AI 根配置属性
-     * @param tokenizerProvider 可选的自定义分词器提供者
+     * @param chatMemoryStore           底层基础会话存储
+     * @param properties                AI 根配置属性
+     * @param tokenizerProvider         可选的自定义分词器提供者
+     * @param summaryStoreProvider      可选的长会话双层状态存储提供者
+     * @param chatLanguageModelProvider 可选的用于提炼摘要的聊天大模型提供者
+     * @param taskExecutorProvider      可选的受管异步线程池提供者
      * @return ChatMemoryProvider 实例
      */
     @Bean
@@ -404,8 +412,37 @@ public class AtengAiAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.ai.chat-memory", name = "enabled", havingValue = "true", matchIfMissing = true)
     public ChatMemoryProvider chatMemoryProvider(ChatMemoryStore chatMemoryStore,
                                                  AtengAiProperties properties,
-                                                 ObjectProvider<Tokenizer> tokenizerProvider) {
+                                                 ObjectProvider<Tokenizer> tokenizerProvider,
+                                                 ObjectProvider<SummaryChatMemoryStore> summaryStoreProvider,
+                                                 ObjectProvider<ChatLanguageModel> chatLanguageModelProvider,
+                                                 ObjectProvider<TaskExecutor> taskExecutorProvider) {
         ChatMemoryProperties config = properties.getChatMemory();
+
+        if (config.getWindowType() == ChatMemoryWindowType.SUMMARY) {
+            SummaryChatMemoryStore summaryStore = summaryStoreProvider.getIfAvailable();
+            if (summaryStore == null) {
+                summaryStore = new InMemorySummaryChatMemoryStore();
+            }
+            Tokenizer tokenizer = resolveTokenizer(tokenizerProvider);
+            ChatLanguageModel summaryModel = chatLanguageModelProvider.getIfAvailable();
+            TaskExecutor taskExecutor = taskExecutorProvider.getIfAvailable();
+            log.info("AI 会话记忆启用非阻塞异步长会话摘要 (SummaryChatMemory) [maxMessagesBeforeSummary={}, maxTokensBeforeSummary={}, keepRecentMessages={}]",
+                    config.getMaxMessagesBeforeSummary(), config.getMaxTokensBeforeSummary(), config.getKeepRecentMessages());
+
+            SummaryChatMemoryStore finalSummaryStore = summaryStore;
+            return memoryId -> SummaryChatMemory.builder()
+                    .id(memoryId)
+                    .store(finalSummaryStore)
+                    .chatLanguageModel(summaryModel)
+                    .executor(taskExecutor)
+                    .tokenizer(tokenizer)
+                    .maxMessagesBeforeSummary(config.getMaxMessagesBeforeSummary())
+                    .maxTokensBeforeSummary(config.getMaxTokensBeforeSummary())
+                    .keepRecentMessages(config.getKeepRecentMessages())
+                    .summaryPrefix(config.getSummaryPrefix())
+                    .build();
+        }
+
         if (config.getWindowType() == ChatMemoryWindowType.TOKEN) {
             Tokenizer tokenizer = resolveTokenizer(tokenizerProvider);
             int maxTokens = config.getMaxTokens();
@@ -521,6 +558,33 @@ public class AtengAiAutoConfiguration {
             log.info("AI 会话记忆{}启用分布式 Redis 存储 [keyPrefix={}, ttl={}]", modeDesc, config.getKeyPrefix(), config.getTtl());
             return new RedisChatMemoryStore(redisTemplate, config.getKeyPrefix(), config.getTtl());
         }
+
+        @Bean
+        @ConditionalOnMissingBean(SummaryChatMemoryStore.class)
+        public SummaryChatMemoryStore redisSummaryChatMemoryStore(AtengAiProperties properties,
+                                                                  ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+            ChatMemoryProperties config = properties.getChatMemory();
+            StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+
+            if (config.getType() == ChatMemoryStoreType.REDIS) {
+                if (redisTemplate == null) {
+                    throw new AiException(AiResultCode.AI_CONFIG_ERROR,
+                            "已配置 ateng.boot.ai.chat-memory.type=REDIS，但 Spring 容器中未找到 StringRedisTemplate Bean，请检查 Redis 依赖与连接配置");
+                }
+                return createRedisSummaryStore(redisTemplate, config, "");
+            }
+
+            if (config.getType() == ChatMemoryStoreType.AUTO && redisTemplate != null) {
+                return createRedisSummaryStore(redisTemplate, config, "自动探测到 Redis，");
+            }
+
+            return new InMemorySummaryChatMemoryStore();
+        }
+
+        private SummaryChatMemoryStore createRedisSummaryStore(StringRedisTemplate redisTemplate, ChatMemoryProperties config, String modeDesc) {
+            log.info("AI 长会话摘要记忆{}启用分布式 Redis 存储 [keyPrefix={}, ttl={}]", modeDesc, config.getSummaryKeyPrefix(), config.getTtl());
+            return new RedisSummaryChatMemoryStore(redisTemplate, config.getSummaryKeyPrefix(), config.getTtl());
+        }
     }
 
     /**
@@ -536,6 +600,13 @@ public class AtengAiAutoConfiguration {
         public ChatMemoryStore inMemoryChatMemoryStore() {
             log.info("AI 会话记忆启用单机内存存储 (InMemoryChatMemoryStore)");
             return new InMemoryChatMemoryStore();
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(SummaryChatMemoryStore.class)
+        public SummaryChatMemoryStore inMemorySummaryChatMemoryStore() {
+            log.info("AI 长会话摘要记忆启用单机内存存储 (InMemorySummaryChatMemoryStore)");
+            return new InMemorySummaryChatMemoryStore();
         }
     }
 

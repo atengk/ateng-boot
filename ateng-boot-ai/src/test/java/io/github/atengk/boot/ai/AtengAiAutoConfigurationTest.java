@@ -267,4 +267,22 @@ class AtengAiAutoConfigurationTest {
             return MOCK_TEMPLATE;
         }
     }
+
+    @Test
+    @DisplayName("配置 windowType=SUMMARY 时装配 SummaryChatMemory 与 SummaryChatMemoryStore")
+    void testSummaryChatMemoryAutoConfiguration() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.ai.chat-memory.window-type=SUMMARY",
+                "ateng.boot.ai.chat-memory.max-messages-before-summary=15",
+                "ateng.boot.ai.chat-memory.keep-recent-messages=5"
+        ).run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(dev.langchain4j.memory.chat.ChatMemoryProvider.class);
+            assertThat(context).hasSingleBean(io.github.atengk.boot.ai.memory.store.SummaryChatMemoryStore.class);
+
+            dev.langchain4j.memory.chat.ChatMemoryProvider provider = context.getBean(dev.langchain4j.memory.chat.ChatMemoryProvider.class);
+            dev.langchain4j.memory.ChatMemory memory = provider.get("sess-test-summary");
+            assertThat(memory).isInstanceOf(io.github.atengk.boot.ai.memory.SummaryChatMemory.class);
+        });
+    }
 }
