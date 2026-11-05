@@ -4,8 +4,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import io.github.atengk.boot.sample.ai.dto.AiRagAskRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagDocumentDeleteRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagEmbedRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagFilteredRetrieveRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagIngestPipelineRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagIngestRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagMultiModelEmbedRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagParentChildSplitRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagParseRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagRerankRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagRetrieveRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagSplitRequest;
@@ -347,5 +353,120 @@ class RagControllerIntegrationTest {
                 .andExpect(jsonPath("$.data.originalQuery").value("它在 Spring Boot 3 中有哪些自动装配改进？"))
                 .andExpect(jsonPath("$.data.transformedQuery").isNotEmpty())
                 .andExpect(jsonPath("$.data.historyCount").value(2));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/embed/models 多模型命名向量化计算与维度自省")
+    void testMultiModelEmbedSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        AiRagMultiModelEmbedRequest request = AiRagMultiModelEmbedRequest.builder()
+                .text("ateng-boot 多模型向量化测试")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/embed/models")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.models").isArray())
+                .andExpect(jsonPath("$.data.totalModels").value(org.hamcrest.Matchers.greaterThanOrEqualTo(0)));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/parse 多源异构文档解析与结构化抽取")
+    void testDocumentParseSuccess() throws Exception {
+        AiRagParseRequest request = AiRagParseRequest.builder()
+                .filename("test-guide.md")
+                .content("# 系统架构规范\n1. 纯原生零臃肿\n2. 强类型契约自洽")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/parse")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.filename").value("test-guide.md"))
+                .andExpect(jsonPath("$.data.characterCount").value(org.hamcrest.Matchers.greaterThan(0)))
+                .andExpect(jsonPath("$.data.parserClass").isNotEmpty())
+                .andExpect(jsonPath("$.data.textPreview").isNotEmpty());
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/split/parent-child 原生父子分级切片切分")
+    void testParentChildSplitSuccess() throws Exception {
+        AiRagParentChildSplitRequest request = AiRagParentChildSplitRequest.builder()
+                .text("第一章 基础底座。ateng-boot 遵循纯原生架构。第二章 数据安全。内存真明文与落盘加密分离。")
+                .parentChunkSize(50)
+                .childChunkSize(20)
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/split/parent-child")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.parentCount").value(org.hamcrest.Matchers.greaterThan(0)))
+                .andExpect(jsonPath("$.data.childCount").value(org.hamcrest.Matchers.greaterThan(0)))
+                .andExpect(jsonPath("$.data.parents").isArray());
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/ingest/pipeline 端到端文档清洗切片向量入库流水线")
+    void testIngestPipelineSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        AiRagIngestPipelineRequest request = AiRagIngestPipelineRequest.builder()
+                .docId("doc-pipeline-001")
+                .docName("architecture.txt")
+                .content("ateng-boot 架构规范流水线摄取测试，包含多维度元数据与父子分块切片。")
+                .tenantId("tenant-alpha")
+                .customMetadata(Map.of("category", "spec"))
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/ingest/pipeline")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.docId").value("doc-pipeline-001"))
+                .andExpect(jsonPath("$.data.chunkCount").value(org.hamcrest.Matchers.greaterThan(0)))
+                .andExpect(jsonPath("$.data.skipped").value(false));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/retrieve/filter 多维元数据过滤检索")
+    void testFilteredRetrieveSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        AiRagFilteredRetrieveRequest request = AiRagFilteredRetrieveRequest.builder()
+                .query("架构规范流水线摄取")
+                .tenantId("tenant-alpha")
+                .category("spec")
+                .maxResults(5)
+                .minScore(0.0)
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/retrieve/filter")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.query").value("架构规范流水线摄取"))
+                .andExpect(jsonPath("$.data.effectiveTenantId").value("tenant-alpha"))
+                .andExpect(jsonPath("$.data.matches").isArray());
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/document/delete 级联删除指定文档切片")
+    void testDocumentDeleteSuccess() throws Exception {
+        AiRagDocumentDeleteRequest request = AiRagDocumentDeleteRequest.builder()
+                .docId("doc-pipeline-001")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/document/delete")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.docId").value("doc-pipeline-001"))
+                .andExpect(jsonPath("$.data.deleted").value(true));
     }
 }

@@ -56,6 +56,8 @@
 | **Token 滑动窗口** | 基于 Token 数量会话记忆窗口截断 | `ChatMemoryProperties`<br>`ChatMemoryManager` | `ateng.boot.ai.chat-memory.window-type`<br>`ateng.boot.ai.chat-memory.max-tokens` | 支持 `MESSAGE`/`TOKEN` 双模式滑动裁剪，结合 `TokenWindowChatMemory` 与 `HeuristicTokenizer` 保底，保留首条系统指令防止上下文击穿 | `ChatMemoryManagerTest` |
 | **双向内容安全护栏** | 企业级 AI 双向内容安全护栏体系 | `AiGuardrail`<br>`DefaultAiGuardrail`<br>`GuardrailResult` | `ateng.boot.ai.guardrail.enabled`<br>`ateng.boot.ai.guardrail.mode`<br>`ateng.boot.ai.guardrail.max-prompt-length`<br>`ateng.boot.ai.guardrail.banned-keywords`<br>`ateng.boot.ai.guardrail.whitelist` | `inspectPrompt(prompt, context)` / `inspectResponse(text, context)`，前置防越狱注入/超长与后置违禁词 Trie 树极速匹配，支持租户安全上下文透传，FAIL_FAST 与 REPLACE 双模式 | `DefaultAiGuardrailTest` / `AiGuardrailIntegrationTest` / `GuardrailControllerIntegrationTest` |
 | **向量化门面** | 统一命令式向量化计算与对称入库门面 | `EmbeddingTemplate` | `ateng.boot.ai.rag.model-name`<br>`ateng.boot.ai.rag.dimensions` | `embed(String)` / `embed(List<String>)` / `embed(TextSegment)` / `embedVector(String)` / `ingest(...)` / `remove(...)` / `removeAll(...)`，具备完备对称操作与指数退避重试 | `EmbeddingTemplateTest` / `RagControllerIntegrationTest` |
+| **多向量模型** | 多模型命名 Embedding 统一注册表与维度自省 | `EmbeddingModelRegistry` | `ateng.boot.ai.rag.embeddings.<name>.*` | `register(name, model)` / `getModel(name)` / `getDefaultModel()` / `listModels()` / `hasModel(name)`，支持多嵌入模型动态并发计算与自省 | `EmbeddingModelRegistryTest` / `RagControllerIntegrationTest` |
+| **异构文档解析** | 多源异构文档解析与结构化抽取门面 | `DocumentParserManager`<br>`DocumentParser`<br>`ParseOptions`<br>`ParsedDocument` | - | `parse(InputStream, ParseOptions)` / `parse(Resource)` / `findParser(DocumentFormat, String)`，开箱支持 TXT/MD/HTML/Word/PDF/Excel 统一调度与解析 | `DocumentParserManagerTest` / `RagControllerIntegrationTest` |
 | **ETL 摄取管道** | 端到端 ETL Ingestion 摄取管道与生命周期治理 | `RagIngestionTemplate`<br>`IngestOptions`<br>`IngestResult`<br>`DeduplicationPolicy` | `ateng.boot.ai.rag.*` | `ingest(Resource, IngestOptions)` / `ingest(InputStream, ...)` / `ingest(String, ...)` / `ingestAsync(...)` / `deleteDocument(docId)`，自动化“格式嗅探 -> 结构化解析 -> 元数据治理 -> 智能分块 -> 向量化计算 -> 幂等入库”，支持 `OVERWRITE`/`SKIP` 去重与四维上下文透传 | `RagIngestionTemplateTest` |
 | **多向量库适配** | 多向量数据库统一适配与平滑回退 | `VectorStoreProperties`<br>`VectorStoreType`<br>`VectorStoreFactory` | `ateng.boot.ai.rag.store.type`<br>`ateng.boot.ai.rag.store.redis.*`<br>`ateng.boot.ai.rag.store.pgvector.*`<br>`ateng.boot.ai.rag.store.elasticsearch.*` | 支持 `auto`, `in-memory`, `milvus`, `redis`, `pgvector`, `elasticsearch`, `custom` 七大模式，与 `ateng-boot-milvus` 零冲突共存，无外部库时 100% 离线自洽回退 | `AtengAiRagAutoConfigurationTest` |
 | **动态权限过滤** | 动态元数据权限过滤与多租户安全下推 | `DynamicFilterContextHolder`<br>`DynamicFilterContentRetriever`<br>`EmbeddingTemplate#search` | `ateng.boot.ai.rag.*` | `useFilter(Filter)` / `resolveFilter(...)` / `search(..., Filter)`，自动感知 `TenantContextHolder` 并复合下推 `tenant_id`，杜绝跨租户与越权脏读 | `DynamicFilterTest` |
@@ -2457,6 +2459,16 @@ ateng:
           # model-name: text-embedding-3-small
           # timeout: 60s
           # max-retries: 3
+        # 多命名 Embedding 向量化模型拓扑映射 (可选，支持多向量模型统一注册中心与自省)
+        # embeddings:
+        #   bge:
+        #     base-url: https://api.siliconflow.cn/v1
+        #     api-key: YOUR_SILICONFLOW_API_KEY
+        #     model-name: BAAI/bge-m3
+        #     dimensions: 1024
+        #   openai-large:
+        #     model-name: text-embedding-3-large
+        #     dimensions: 3072
 
       # 命名多模型拓扑配置 (Map<String, AiModelConfig>)
       models:
