@@ -3,6 +3,7 @@ package io.github.atengk.boot.ai.observability;
 import lombok.Builder;
 import lombok.Value;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.Map;
@@ -81,6 +82,11 @@ public class AiAuditRecord {
      * Token 是否由保底估算器推算生成
      */
     boolean estimated;
+
+    /**
+     * 财务预估消耗金额 (基于百万 Token 定价计算，保留高精度)
+     */
+    BigDecimal estimatedCost;
 
     /**
      * 脱敏后的输入提示词内容 (当 logPayload=false 时可为脱敏摘要或元数据)

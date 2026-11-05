@@ -16,11 +16,13 @@ import io.github.atengk.boot.ai.guardrail.*;
 import io.github.atengk.boot.ai.observability.FallbackTokenEstimator;
 import io.github.atengk.boot.ai.prompt.PromptTemplate;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
+import io.github.atengk.boot.ai.properties.AiResponseFormat;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.ratelimit.AiRateLimiter;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.sanitizer.JsonPayloadSanitizer;
+import io.github.atengk.boot.ai.sanitizer.JsonSchemaGenerator;
 import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
 import io.github.atengk.boot.ai.streaming.SseTokenStreamBridge;
 import io.github.atengk.boot.ai.streaming.StreamContextHolder;
@@ -370,7 +372,14 @@ public class AiTemplate {
      */
     public <T> T chatForObject(String modelName, String prompt, Class<T> responseType, Class<?>... validationGroups) {
         Objects.requireNonNull(responseType, "目标反序列化类型 responseType 不能为空");
-        String guidedPrompt = appendJsonGuidance(prompt);
+        AiModelConfig modelConfig = properties.resolveConfig(modelName);
+        String guidedPrompt;
+        if (modelConfig.getResponseFormat() == AiResponseFormat.JSON_SCHEMA) {
+            String schema = JsonSchemaGenerator.generateSchema(responseType);
+            guidedPrompt = appendJsonSchemaGuidance(prompt, schema);
+        } else {
+            guidedPrompt = appendJsonGuidance(prompt);
+        }
         String rawReply = chatWithModel(modelName, guidedPrompt);
         return JsonPayloadSanitizer.parseAndValidate(rawReply, responseType, validationGroups);
     }
@@ -462,7 +471,14 @@ public class AiTemplate {
      */
     public <T> T chatForObject(String modelName, List<ChatMessage> messages, Class<T> responseType, Class<?>... validationGroups) {
         Objects.requireNonNull(responseType, "目标反序列化类型 responseType 不能为空");
-        List<ChatMessage> guidedMessages = appendJsonGuidance(messages);
+        AiModelConfig modelConfig = properties.resolveConfig(modelName);
+        List<ChatMessage> guidedMessages;
+        if (modelConfig.getResponseFormat() == AiResponseFormat.JSON_SCHEMA) {
+            String schema = JsonSchemaGenerator.generateSchema(responseType);
+            guidedMessages = appendJsonSchemaGuidance(messages, schema);
+        } else {
+            guidedMessages = appendJsonGuidance(messages);
+        }
         String rawReply = chatMessages(modelName, guidedMessages);
         return JsonPayloadSanitizer.parseAndValidate(rawReply, responseType, validationGroups);
     }
@@ -472,6 +488,14 @@ public class AiTemplate {
             return JSON_OUTPUT_GUIDANCE.trim();
         }
         return prompt.trim() + JSON_OUTPUT_GUIDANCE;
+    }
+
+    private String appendJsonSchemaGuidance(String prompt, String jsonSchema) {
+        String guidance = "\n\n【输出格式要求】：请严格遵守以下 JSON Schema 规范输出合法 JSON，切勿输出任何与 JSON 无关的解释性对话文字：\n" + jsonSchema;
+        if (!StringUtils.hasText(prompt)) {
+            return guidance.trim();
+        }
+        return prompt.trim() + guidance;
     }
 
     private List<ChatMessage> appendJsonGuidance(List<ChatMessage> messages) {
@@ -486,6 +510,23 @@ public class AiTemplate {
             list.set(lastIndex, UserMessage.from(appendJsonGuidance(originalText)));
         } else {
             list.add(UserMessage.from(JSON_OUTPUT_GUIDANCE.trim()));
+        }
+        return list;
+    }
+
+    private List<ChatMessage> appendJsonSchemaGuidance(List<ChatMessage> messages, String jsonSchema) {
+        String guidance = "\n\n【输出格式要求】：请严格遵守以下 JSON Schema 规范输出合法 JSON，切勿输出任何与 JSON 无关的解释性对话文字：\n" + jsonSchema;
+        if (messages == null || messages.isEmpty()) {
+            return Collections.singletonList(UserMessage.from(guidance.trim()));
+        }
+        List<ChatMessage> list = new ArrayList<>(messages);
+        int lastIndex = list.size() - 1;
+        ChatMessage last = list.get(lastIndex);
+        if (last instanceof UserMessage userMessage) {
+            String originalText = FallbackTokenEstimator.extractPromptText(Collections.singletonList(userMessage));
+            list.set(lastIndex, UserMessage.from(originalText.trim() + guidance));
+        } else {
+            list.add(UserMessage.from(guidance.trim()));
         }
         return list;
     }

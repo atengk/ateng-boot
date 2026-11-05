@@ -13,6 +13,7 @@ import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.prompt.PromptTemplate;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
+import io.github.atengk.boot.ai.properties.AiResponseFormat;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.quota.DefaultAiQuotaChecker;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
@@ -445,5 +446,32 @@ class AiTemplateTest {
         assertThat(user).isNotNull();
         assertThat(user.getName()).isEqualTo("赵六");
         assertThat(user.getAge()).isEqualTo(22);
+    }
+
+    @Test
+    @DisplayName("结构化抽取：配置 JSON_SCHEMA 约束解码时自动生成并注入 Schema 约束并完成解析校验")
+    void testChatForObjectWithJsonSchemaConstraint() {
+        properties.getModel().setResponseFormat(AiResponseFormat.JSON_SCHEMA);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<List<ChatMessage>> captor = org.mockito.ArgumentCaptor.forClass(List.class);
+        when(defaultChatModel.generate(captor.capture()))
+                .thenReturn(Response.from(AiMessage.from("{\"name\":\"钱七\",\"age\":35}")));
+
+        TestUserVo user = aiTemplate.chatForObject("请提取钱七的信息", TestUserVo.class);
+        assertThat(user).isNotNull();
+        assertThat(user.getName()).isEqualTo("钱七");
+        assertThat(user.getAge()).isEqualTo(35);
+
+        List<ChatMessage> sentMessages = captor.getValue();
+        assertThat(sentMessages).isNotEmpty();
+        String promptText = ((UserMessage) sentMessages.get(sentMessages.size() - 1)).singleText();
+        assertThat(promptText)
+                .contains("JSON Schema 规范")
+                .contains("\"properties\"")
+                .contains("\"name\"")
+                .contains("\"age\"");
+
+        properties.getModel().setResponseFormat(AiResponseFormat.TEXT);
     }
 }

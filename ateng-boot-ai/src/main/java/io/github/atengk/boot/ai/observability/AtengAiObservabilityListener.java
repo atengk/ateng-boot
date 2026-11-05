@@ -25,6 +25,7 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.task.TaskExecutor;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
@@ -60,8 +61,10 @@ public class AtengAiObservabilityListener implements ChatModelListener {
     public static final String METRIC_REQUESTS_TOTAL = "ateng.ai.requests.total";
     public static final String METRIC_DURATION_SECONDS = "ateng.ai.duration.seconds";
     public static final String METRIC_TOKENS_TOTAL = "ateng.ai.tokens.total";
+    public static final String METRIC_COST_TOTAL = "ateng.ai.cost.total";
 
     private final AtengAiProperties properties;
+    private final TokenCostCalculator tokenCostCalculator;
     private final ObjectProvider<AiAuditLogHandler> auditLogHandlerProvider;
     private final ObjectProvider<TaskExecutor> taskExecutorProvider;
     private volatile MeterRegistry meterRegistry;
@@ -84,6 +87,7 @@ public class AtengAiObservabilityListener implements ChatModelListener {
                                         ObjectProvider<TaskExecutor> taskExecutorProvider,
                                         MeterRegistry meterRegistry) {
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
+        this.tokenCostCalculator = new TokenCostCalculator(this.properties.getAudit());
         this.auditLogHandlerProvider = auditLogHandlerProvider;
         this.taskExecutorProvider = taskExecutorProvider;
         this.meterRegistry = meterRegistry;
@@ -184,13 +188,14 @@ public class AtengAiObservabilityListener implements ChatModelListener {
         AiAuditProperties auditProps = getAuditProperties();
         String promptText = auditProps.isMaskPii() ? AiPiiMasker.mask(rawPrompt) : rawPrompt;
         String responseText = auditProps.isMaskPii() ? AiPiiMasker.mask(rawResponse) : rawResponse;
+        BigDecimal estimatedCost = tokenCostCalculator.calculateCost(modelName, promptTokens, completionTokens);
 
         if (auditProps.isLogPayload()) {
-            log.info("[AI-AUDIT-SUCCESS] [traceId={}] [tenant={}] [user={}] model={}, duration={}ms, promptTokens={}, completionTokens={}, totalTokens={}, estimated={}, prompt='{}', response='{}'",
-                    snapshot.traceId(), snapshot.tenantId(), snapshot.userId(), modelName, snapshot.durationMs(), promptTokens, completionTokens, totalTokens, estimated, promptText, responseText);
+            log.info("[AI-AUDIT-SUCCESS] [traceId={}] [tenant={}] [user={}] model={}, duration={}ms, promptTokens={}, completionTokens={}, totalTokens={}, estimated={}, cost={}, prompt='{}', response='{}'",
+                    snapshot.traceId(), snapshot.tenantId(), snapshot.userId(), modelName, snapshot.durationMs(), promptTokens, completionTokens, totalTokens, estimated, estimatedCost, promptText, responseText);
         } else {
-            log.info("[AI-AUDIT-SUCCESS] [traceId={}] [tenant={}] [user={}] model={}, duration={}ms, promptTokens={}, completionTokens={}, totalTokens={}, estimated={}",
-                    snapshot.traceId(), snapshot.tenantId(), snapshot.userId(), modelName, snapshot.durationMs(), promptTokens, completionTokens, totalTokens, estimated);
+            log.info("[AI-AUDIT-SUCCESS] [traceId={}] [tenant={}] [user={}] model={}, duration={}ms, promptTokens={}, completionTokens={}, totalTokens={}, estimated={}, cost={}",
+                    snapshot.traceId(), snapshot.tenantId(), snapshot.userId(), modelName, snapshot.durationMs(), promptTokens, completionTokens, totalTokens, estimated, estimatedCost);
         }
 
         AiAuditRecord record = AiAuditRecord.builder()
@@ -206,13 +211,14 @@ public class AtengAiObservabilityListener implements ChatModelListener {
                 .completionTokens(completionTokens)
                 .totalTokens(totalTokens)
                 .estimated(estimated)
+                .estimatedCost(estimatedCost)
                 .promptText(promptText)
                 .responseText(responseText)
                 .metadata(Collections.emptyMap())
                 .build();
 
         dispatchAuditLog(record);
-        recordMetricsOnResponse(modelName, snapshot.tenantId(), snapshot.durationMs(), promptTokens, completionTokens, totalTokens, estimated);
+        recordMetricsOnResponse(modelName, snapshot.tenantId(), snapshot.durationMs(), promptTokens, completionTokens, totalTokens, estimated, estimatedCost);
     }
 
     private void handleError(ChatModelErrorContext errorContext) {
@@ -273,16 +279,18 @@ public class AtengAiObservabilityListener implements ChatModelListener {
                 .errorMessage(errorMsg)
                 .metadata(Collections.emptyMap());
 
+        BigDecimal estimatedCost = clientAbort ? tokenCostCalculator.calculateCost(modelName, promptTokens, completionTokens) : null;
         if (clientAbort) {
             recordBuilder.promptTokens(promptTokens)
                     .completionTokens(completionTokens)
                     .totalTokens(totalTokens)
-                    .estimated(estimated);
+                    .estimated(estimated)
+                    .estimatedCost(estimatedCost);
         }
 
         AiAuditRecord record = recordBuilder.build();
         dispatchAuditLog(record);
-        recordMetricsOnError(modelName, snapshot.tenantId(), snapshot.durationMs(), status, promptTokens, completionTokens, totalTokens, estimated);
+        recordMetricsOnError(modelName, snapshot.tenantId(), snapshot.durationMs(), status, promptTokens, completionTokens, totalTokens, estimated, estimatedCost);
     }
 
     private void recordTokenMetric(MeterRegistry registry, String modelName, String tenantTag,
@@ -305,7 +313,7 @@ public class AtengAiObservabilityListener implements ChatModelListener {
 
     private void recordMetricsOnResponse(String modelName, String tenantId, long durationMs,
                                          Integer promptTokens, Integer completionTokens, Integer totalTokens,
-                                         boolean estimated) {
+                                         boolean estimated, BigDecimal estimatedCost) {
         MeterRegistry registry = this.meterRegistry;
         if (registry == null) {
             return;
@@ -336,11 +344,21 @@ public class AtengAiObservabilityListener implements ChatModelListener {
         recordTokenMetric(registry, modelName, tenantTag, "prompt", estimatedTag, promptTokens);
         recordTokenMetric(registry, modelName, tenantTag, "completion", estimatedTag, completionTokens);
         recordTokenMetric(registry, modelName, tenantTag, "total", estimatedTag, totalTokens);
+
+        // 4. 财务成本累计指标 ateng.ai.cost.total (tags: model, tenant_id)
+        if (estimatedCost != null && estimatedCost.compareTo(BigDecimal.ZERO) > 0) {
+            Counter.builder(METRIC_COST_TOTAL)
+                    .tag("model", modelName)
+                    .tag("tenant_id", tenantTag)
+                    .description("AI 大模型累计财务成本消耗")
+                    .register(registry)
+                    .increment(estimatedCost.doubleValue());
+        }
     }
 
     private void recordMetricsOnError(String modelName, String tenantId, long durationMs, String status,
                                       Integer promptTokens, Integer completionTokens, Integer totalTokens,
-                                      Boolean estimated) {
+                                      Boolean estimated, BigDecimal estimatedCost) {
         MeterRegistry registry = this.meterRegistry;
         if (registry == null) {
             return;
@@ -372,6 +390,16 @@ public class AtengAiObservabilityListener implements ChatModelListener {
             recordTokenMetric(registry, modelName, tenantTag, "prompt", estimatedTag, promptTokens);
             recordTokenMetric(registry, modelName, tenantTag, "completion", estimatedTag, completionTokens);
             recordTokenMetric(registry, modelName, tenantTag, "total", estimatedTag, totalTokens);
+        }
+
+        // 4. 财务成本累计指标
+        if (estimatedCost != null && estimatedCost.compareTo(BigDecimal.ZERO) > 0) {
+            Counter.builder(METRIC_COST_TOTAL)
+                    .tag("model", modelName)
+                    .tag("tenant_id", tenantTag)
+                    .description("AI 大模型累计财务成本消耗")
+                    .register(registry)
+                    .increment(estimatedCost.doubleValue());
         }
     }
 

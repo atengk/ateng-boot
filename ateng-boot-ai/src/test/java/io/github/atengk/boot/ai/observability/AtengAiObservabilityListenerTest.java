@@ -622,4 +622,50 @@ class AtengAiObservabilityListenerTest {
             io.github.atengk.boot.core.context.TenantContextHolder.clear();
         }
     }
+
+    @Test
+    @DisplayName("财务成本实时核算与度量导出：AuditRecord 注入 estimatedCost 并累加 ateng.ai.cost.total")
+    void testCostCalculationAndMetricExport() {
+        // 配置定价字典：gpt-4o 输入 10 元/百万，输出 20 元/百万
+        properties.getAudit().setPricings(java.util.Map.of("gpt-4o", io.github.atengk.boot.ai.properties.ModelPricingConfig.of(10.00, 20.00)));
+
+        MeterRegistry registry = new SimpleMeterRegistry();
+        AtomicReference<AiAuditRecord> recordRef = new AtomicReference<>();
+        AiAuditLogHandler handler = recordRef::set;
+
+        @SuppressWarnings("unchecked")
+        ObjectProvider<AiAuditLogHandler> handlerProvider = mock(ObjectProvider.class);
+        when(handlerProvider.getIfAvailable()).thenReturn(handler);
+
+        AtengAiObservabilityListener listener = new AtengAiObservabilityListener(properties, handlerProvider, null, registry);
+
+        ChatModelRequest request = ChatModelRequest.builder()
+                .model("gpt-4o")
+                .messages(List.of(UserMessage.from("生成财务报表")))
+                .build();
+        ChatModelRequestContext reqContext = new ChatModelRequestContext(request, new ConcurrentHashMap<>());
+        listener.onRequest(reqContext);
+
+        TokenUsage usage = new TokenUsage(1000, 2000, 3000);
+        ChatModelResponse response = ChatModelResponse.builder()
+                .model("gpt-4o")
+                .tokenUsage(usage)
+                .aiMessage(AiMessage.from("报表内容已生成"))
+                .build();
+        ChatModelResponseContext respContext = new ChatModelResponseContext(response, request, reqContext.attributes());
+        listener.onResponse(respContext);
+
+        // 验证 AuditRecord 中已填充 estimatedCost
+        // 成本: 1000 * 10 / 1000000 + 2000 * 20 / 1000000 = 0.010000 + 0.040000 = 0.050000
+        AiAuditRecord record = recordRef.get();
+        assertThat(record).isNotNull();
+        assertThat(record.getEstimatedCost()).isEqualByComparingTo(new java.math.BigDecimal("0.050000"));
+
+        // 验证 Micrometer 计数器 ateng.ai.cost.total 正确累加
+        Counter costCounter = registry.find(AtengAiObservabilityListener.METRIC_COST_TOTAL)
+                .tag("model", "gpt-4o")
+                .counter();
+        assertThat(costCounter).isNotNull();
+        assertThat(costCounter.count()).isEqualTo(0.050000, org.assertj.core.data.Offset.offset(0.000001));
+    }
 }

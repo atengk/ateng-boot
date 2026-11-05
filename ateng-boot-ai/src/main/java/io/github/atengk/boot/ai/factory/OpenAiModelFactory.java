@@ -63,6 +63,11 @@ public final class OpenAiModelFactory {
         if (config.getCustomHeaders() != null && !config.getCustomHeaders().isEmpty()) {
             builder.customHeaders(config.getCustomHeaders());
         }
+        if (config.getResponseFormat() == io.github.atengk.boot.ai.properties.AiResponseFormat.JSON_OBJECT) {
+            builder.responseFormat("json_object");
+        } else if (config.getResponseFormat() == io.github.atengk.boot.ai.properties.AiResponseFormat.JSON_SCHEMA) {
+            builder.responseFormat("json_schema");
+        }
         if (listeners != null && !listeners.isEmpty()) {
             builder.listeners(listeners);
         }
@@ -151,6 +156,11 @@ public final class OpenAiModelFactory {
         }
         if (config.getCustomHeaders() != null && !config.getCustomHeaders().isEmpty()) {
             builder.customHeaders(config.getCustomHeaders());
+        }
+        if (config.getResponseFormat() == io.github.atengk.boot.ai.properties.AiResponseFormat.JSON_OBJECT) {
+            builder.responseFormat("json_object");
+        } else if (config.getResponseFormat() == io.github.atengk.boot.ai.properties.AiResponseFormat.JSON_SCHEMA) {
+            builder.responseFormat("json_schema");
         }
         if (listeners != null && !listeners.isEmpty()) {
             builder.listeners(listeners);

@@ -25,4 +25,14 @@ public class AiAuditProperties {
      * 是否在审计日志中输出完整 Payload（请求文本与回答文本），生产环境建议关闭以防日志打爆磁盘
      */
     private boolean logPayload = false;
+
+    /**
+     * 默认模型定价配置 (当未在 pricings 中匹配到特定模型时回退保底使用)
+     */
+    private ModelPricingConfig defaultPricing = new ModelPricingConfig();
+
+    /**
+     * 多模型定价配置字典 (key 为模型标识名称或别名，例如 gpt-4o, deepseek-chat, qwen-max 等)
+     */
+    private java.util.Map<String, ModelPricingConfig> pricings = new java.util.LinkedHashMap<>();
 }

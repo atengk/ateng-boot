@@ -95,6 +95,11 @@ public class AiModelConfig {
     private Map<String, String> customHeaders = new LinkedHashMap<>();
 
     /**
+     * 大模型响应格式约束 (TEXT: 自由文本, JSON_OBJECT: 标准 JSON 对象, JSON_SCHEMA: 严格 JSON Schema 语法约束解码)
+     */
+    private AiResponseFormat responseFormat = AiResponseFormat.TEXT;
+
+    /**
      * 故障自动转移备选模型名称序列 (按优先级排序，例如 [backup-a, backup-b])
      */
     private List<String> fallbacks = new ArrayList<>();
