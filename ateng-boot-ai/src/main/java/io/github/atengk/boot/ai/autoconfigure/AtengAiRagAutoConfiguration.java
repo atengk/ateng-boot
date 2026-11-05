@@ -37,6 +37,7 @@ import io.github.atengk.boot.ai.rag.splitter.TokenCharacterSplitter;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
+import io.github.atengk.boot.ai.template.RagIngestionTemplate;
 import io.github.atengk.boot.storage.template.StorageTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,6 +47,7 @@ import java.io.ByteArrayInputStream;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.AllNestedConditions;
@@ -468,6 +470,34 @@ public class AtengAiRagAutoConfiguration {
         List<DocumentParser> parsers = parsersProvider.orderedStream().toList();
         log.info("自动装配 RAG 统一文档解析门面 (DocumentParserManager) [已注册解析器数量: {}]", parsers.size());
         return new DocumentParserManager(parsers);
+    }
+
+    /**
+     * 自动装配 RAG 端到端 ETL Ingestion 摄取管道与生命周期治理门面 (RagIngestionTemplate)
+     *
+     * @param parserManager        统一文档解析门面
+     * @param embeddingTemplate    统一向量化嵌入门面
+     * @param documentSplitter     默认文档智能切片门面
+     * @param defaultStoreProvider 默认向量存储库提供者 (可选)
+     * @param executorProvider     受管异步线程池提供者 (可选)
+     * @return RagIngestionTemplate 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(RagIngestionTemplate.class)
+    public RagIngestionTemplate ragIngestionTemplate(
+            DocumentParserManager parserManager,
+            EmbeddingTemplate embeddingTemplate,
+            DocumentSplitter documentSplitter,
+            ObjectProvider<EmbeddingStore<TextSegment>> defaultStoreProvider,
+            ObjectProvider<Executor> executorProvider) {
+        log.info("自动装配 RAG 端到端 ETL Ingestion 摄取管道与生命周期治理门面 (RagIngestionTemplate)");
+        return new RagIngestionTemplate(
+                parserManager,
+                embeddingTemplate,
+                documentSplitter,
+                defaultStoreProvider,
+                executorProvider.getIfAvailable()
+        );
     }
 
     /**

@@ -20,6 +20,7 @@ import io.github.atengk.boot.ai.rag.splitter.TableSplitter;
 import io.github.atengk.boot.ai.rag.splitter.TokenCharacterSplitter;
 import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
+import io.github.atengk.boot.ai.template.RagIngestionTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -98,6 +99,9 @@ class AtengAiRagAutoConfigurationTest {
             // 验证多模态组件自动装配
             assertThat(context).hasSingleBean(VisionModelResolver.class);
             assertThat(context).hasSingleBean(VisionCaptionEnhancer.class);
+
+            // 验证 RAG ETL 摄取管道自动装配
+            assertThat(context).hasSingleBean(RagIngestionTemplate.class);
         });
     }
 

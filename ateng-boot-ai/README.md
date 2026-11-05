@@ -56,6 +56,7 @@
 | **Token 滑动窗口** | 基于 Token 数量会话记忆窗口截断 | `ChatMemoryProperties`<br>`ChatMemoryManager` | `ateng.boot.ai.chat-memory.window-type`<br>`ateng.boot.ai.chat-memory.max-tokens` | 支持 `MESSAGE`/`TOKEN` 双模式滑动裁剪，结合 `TokenWindowChatMemory` 与 `HeuristicTokenizer` 保底，保留首条系统指令防止上下文击穿 | `ChatMemoryManagerTest` |
 | **双向内容安全护栏** | 企业级 AI 双向内容安全护栏体系 | `AiGuardrail`<br>`DefaultAiGuardrail`<br>`GuardrailResult` | `ateng.boot.ai.guardrail.enabled`<br>`ateng.boot.ai.guardrail.mode`<br>`ateng.boot.ai.guardrail.max-prompt-length`<br>`ateng.boot.ai.guardrail.banned-keywords`<br>`ateng.boot.ai.guardrail.whitelist` | `inspectPrompt(prompt, context)` / `inspectResponse(text, context)`，前置防越狱注入/超长与后置违禁词 Trie 树极速匹配，支持租户安全上下文透传，FAIL_FAST 与 REPLACE 双模式 | `DefaultAiGuardrailTest` / `AiGuardrailIntegrationTest` / `GuardrailControllerIntegrationTest` |
 | **向量化门面** | 统一命令式向量化计算与对称入库门面 | `EmbeddingTemplate` | `ateng.boot.ai.rag.model-name`<br>`ateng.boot.ai.rag.dimensions` | `embed(String)` / `embed(List<String>)` / `embed(TextSegment)` / `embedVector(String)` / `ingest(...)` / `remove(...)` / `removeAll(...)`，具备完备对称操作与指数退避重试 | `EmbeddingTemplateTest` / `RagControllerIntegrationTest` |
+| **ETL 摄取管道** | 端到端 ETL Ingestion 摄取管道与生命周期治理 | `RagIngestionTemplate`<br>`IngestOptions`<br>`IngestResult`<br>`DeduplicationPolicy` | `ateng.boot.ai.rag.*` | `ingest(Resource, IngestOptions)` / `ingest(InputStream, ...)` / `ingest(String, ...)` / `ingestAsync(...)` / `deleteDocument(docId)`，自动化“格式嗅探 -> 结构化解析 -> 元数据治理 -> 智能分块 -> 向量化计算 -> 幂等入库”，支持 `OVERWRITE`/`SKIP` 去重与四维上下文透传 | `RagIngestionTemplateTest` |
 | **RAG 自动装配** | 向量知识库自适应装配与单机回退 | `AtengAiRagAutoConfiguration` | `ateng.boot.ai.rag.enabled` | 自动探测并注入外部 `EmbeddingStore`（如 `ateng-boot-milvus`），缺省自动平滑降级单机内存向量库 `InMemoryEmbeddingStore` | `AtengAiRagAutoConfigurationTest` |
 | **知识库检索器** | 统一知识库向量检索器受管 Bean | `ContentRetriever`<br>`EmbeddingStoreContentRetriever` | `ateng.boot.ai.rag.max-results`<br>`ateng.boot.ai.rag.min-score` | 自动根据配置组装 `ContentRetriever` Bean，支持 `@AiAgent(contentRetriever = "...")` 与编程式检索 | `AtengAiRagAutoConfigurationTest` / `RagControllerIntegrationTest` |
 | **文档分块切片** | 原生轻量长文档分块切片门面 | `DocumentSplitter`<br>`RecursiveCharacterSplitter`<br>`MarkdownHeaderSplitter` | `ateng.boot.ai.rag.chunk-size`<br>`ateng.boot.ai.rag.chunk-overlap` | `split(String)` / `split(Resource)` / `split(InputStream)`，支持递归字符分块与 Markdown 语义标题两级分块 | `DocumentSplitterTest` / `RagControllerIntegrationTest` |
@@ -1908,7 +1909,101 @@ ateng:
 
 ---
 
-### 11.7 生产扩展与自定义中间件接管
+### 11.7 端到端 ETL Ingestion 管道与幂等去重生命周期治理 (RagIngestionTemplate)
+
+传统企业 RAG 知识库摄取链路通常需要手动串联“读取文件 -> 选择解析器 -> 抽取纯文本 -> 组装切片器 -> 逐个切片计算 Embedding -> 写入向量数据库”，不仅业务代码样板臃肿，而且缺乏对**文档重复摄取、历史脏数据覆盖清理与异步线程上下文丢失**的工程治理。
+
+`RagIngestionTemplate` 提供了全自动化的一站式 ETL Ingestion 摄取管道：
+- **端到端流程编排**：依据文件扩展名/MIME 自动嗅探，委派 `DocumentParserManager` 执行纯文本、HTML 或多模态 Office/PDF 结构化解析，规范化注入六维治理元数据 (`doc_id`, `doc_name`, `doc_hash`, `tenant_id`, `created_at`, `chunk_index`)，智能切片并批量向量化入库；
+- **全生命周期幂等去重策略 (`DeduplicationPolicy`)**：
+  - `OVERWRITE`（默认）：入库前基于 `doc_id` 自动级联清空向量库中旧版本的全部已有分块，再原子追加新切片，杜绝文档更新引发的脏分块碎片堆积；
+  - `SKIP`：入库前精确比对文档内容 SHA-256 哈希，若一致则秒级幂等跳过，免除无意义的大模型 Embedding API 调用与计算开销；
+  - `APPEND`：纯追加模式，不触发历史分块探测与删除；
+- **完备对称物理级联清理**：提供 `deleteDocument(docId)` 与 `deleteDocument(store, docId)` 对称管理接口；
+- **全链路四维上下文透传异步摄取**：`ingestAsync(...)` 接入 Core 模块受管线程池设施，自动捕获 $\langle\text{MDC } traceId, \text{UserContext}, \text{TenantContext}, \text{IgnoreTenant}\rangle$ 快照并在任务完成后可靠清理。
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      rag:
+        # 是否启用 RAG 知识库套件 (默认 true)
+        enabled: true
+        # 默认切片大小与重叠窗口 (RagIngestionTemplate 缺省使用)
+        chunk-size: 500
+        chunk-overlap: 50
+        # 默认 Embedding 向量化模型
+        model-name: text-embedding-3-small
+```
+
+#### 实战业务场景示例：企业知识文档自动化摄取与生命周期管理
+```java
+@Service
+@RequiredArgsConstructor
+public class EnterpriseDocIngestionService {
+
+    private final RagIngestionTemplate ingestionTemplate;
+
+    /**
+     * 1. 同步摄取企业技术规范 (默认 OVERWRITE 覆盖策略，内容更新时自动清理旧分块)
+     */
+    public IngestResult ingestTechnicalDoc(Resource docResource, String docId) {
+        IngestOptions options = IngestOptions.builder()
+                .docId(docId)
+                .docName(docResource.getFilename())
+                .policy(DeduplicationPolicy.OVERWRITE)
+                .customMetadata(Map.of("category", "tech-spec", "author", "Ateng"))
+                .build();
+
+        // 一键完成：格式嗅探 -> 结构化解析 -> 六维元数据注入 -> 智能切片 -> 向量化计算 -> 幂等入库
+        return ingestionTemplate.ingest(docResource, options);
+    }
+
+    /**
+     * 2. 幂等跳过摄取 (静态规则库场景，SHA-256 相同则秒级跳过，杜绝重复调用大模型产生费用)
+     */
+    public IngestResult ingestStaticPolicyDoc(String docId, String docName, String content) {
+        IngestOptions options = IngestOptions.builder()
+                .docId(docId)
+                .docName(docName)
+                .policy(DeduplicationPolicy.SKIP)
+                .build();
+
+        return ingestionTemplate.ingest(content, options);
+    }
+
+    /**
+     * 3. 异步非阻塞摄取 (自动透传当前 MDC traceId、租户 TenantId 与操作员上下文)
+     */
+    public CompletableFuture<IngestResult> ingestLargeFileAsync(Resource largeDoc, String docId) {
+        IngestOptions options = IngestOptions.builder()
+                .docId(docId)
+                .docName(largeDoc.getFilename())
+                .policy(DeduplicationPolicy.OVERWRITE)
+                .build();
+
+        // 后台受管线程池异步执行，四维快照全链路透传，避免主 Web 线程阻塞超时
+        return ingestionTemplate.ingestAsync(largeDoc, options);
+    }
+
+    /**
+     * 4. 级联彻底删除文档 (文档下架或删除时，物理清空向量库中所有归属分块)
+     */
+    public void removeArchivedDoc(String docId) {
+        ingestionTemplate.deleteDocument(docId);
+    }
+}
+```
+
+#### 核心机制与边界防御
+- **多维度元数据自动注入**：每个持久化切片均被自动注入 `doc_id`、`doc_name`、`doc_hash`、`chunk_index`、`created_at` 以及当前线程绑定的 `tenant_id`。在上层 RAG 检索时，可直接通过 `Filter` 实施精细的多租户数据物理隔离与按文档过滤；
+- **哈希探测零额外开销**：在 `SKIP` 策略下，基于 `MetadataFilterBuilder.metadataKey("doc_id").isEqualTo(docId)` 仅探测 1 条记录，若 SHA-256 哈希吻合则直接返回 `skipped=true`，完全不触发解析器、切片器与 Embedding 计算；
+- **确定性资源管理与空安全**：`ingest(Resource, ...)` 与 `ingest(InputStream, ...)` 内部均通过 `try-with-resources` 严格管理并闭合底层 I/O 流，遇到空文件、空字符串或非法参数时 Fail-Fast 快速拦截，保障运行时系统弹性。
+
+---
+
+### 11.8 生产扩展与自定义中间件接管
 
 #### 1. 接入外部生产级分布式向量库 (如 Milvus)
 当引入 `ateng-boot-starter-milvus` 或自定义注册 `EmbeddingStore<TextSegment>` Bean 时，框架遵循 `@ConditionalOnMissingBean` 守卫自动退让，无需修改任何业务代码：
@@ -1943,7 +2038,7 @@ public class CustomEmbeddingModelConfiguration {
 }
 ```
 
-### 11.8 核心生产边界与非功能语义防卫
+### 11.9 核心生产边界与非功能语义防卫
 1. **防止无关智能体被隐式绑架**：`@AiAgent` 严格恪守显式契约原则，只有显式声明 `@AiAgent(contentRetriever = "...")` 的智能体才会挂载检索器，坚决杜绝全局注册单个 `ContentRetriever` 时导致所有纯逻辑或纯工具智能体被无差别注入知识库检索；
 2. **防幻觉与相似度阈值守卫**：配置 `ateng.boot.ai.rag.min-score`（默认 0.6）强制过滤低相关度噪声切片；结合业务层显式判定“检索结果为空时如实告知”，杜绝大模型无边界信口雌黄；
 3. **瞬态网络退避重试**：`EmbeddingTemplate` 挂载 `RetryUtil`（带 Jitter 的指数退避），对 429 限流与超时错误执行自动重试，对 401/403 认证错误 Fail-Fast，底层 SDK 裸重试数强制置 0，彻底根除重试乘积爆炸。

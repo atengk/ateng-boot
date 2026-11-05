@@ -5,6 +5,7 @@ import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.filter.Filter;
 import io.github.atengk.boot.ai.context.AiContextHolder;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
@@ -209,7 +210,13 @@ public class EmbeddingTemplate {
                 "未找到标识为 [" + modelName + "] 的 Embedding 向量化模型，请确认是否已在配置或 EmbeddingModelRegistry 中正确注册");
     }
 
-    private EmbeddingStore<TextSegment> resolveDefaultStore() {
+    /**
+     * 解析当前环境下的默认向量存储库实例
+     *
+     * @return 默认的 EmbeddingStore 实例
+     * @throws AiException 若未检测到任何可用的 EmbeddingStore
+     */
+    public EmbeddingStore<TextSegment> resolveDefaultStore() {
         if (defaultStoreProvider != null) {
             EmbeddingStore<TextSegment> store = defaultStoreProvider.getIfAvailable();
             if (store != null) {
@@ -661,6 +668,31 @@ public class EmbeddingTemplate {
      */
     public void removeAll() {
         removeAll(resolveDefaultStore());
+    }
+
+    /**
+     * 从指定向量存储库 (EmbeddingStore) 依据 Filter 过滤器条件批量移除向量记录 (对称回收)
+     *
+     * @param store  目标向量数据库或存储实现
+     * @param filter 匹配过滤表达式
+     */
+    public void removeAll(EmbeddingStore<TextSegment> store, Filter filter) {
+        if (store == null) {
+            throw new IllegalArgumentException("目标 EmbeddingStore 存储库不能为空");
+        }
+        if (filter == null) {
+            return;
+        }
+        store.removeAll(filter);
+    }
+
+    /**
+     * 从默认向量存储库依据 Filter 过滤器条件批量移除向量记录
+     *
+     * @param filter 匹配过滤表达式
+     */
+    public void removeAll(Filter filter) {
+        removeAll(resolveDefaultStore(), filter);
     }
 
     /**
