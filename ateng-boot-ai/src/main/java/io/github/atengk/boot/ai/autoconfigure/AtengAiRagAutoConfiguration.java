@@ -20,6 +20,8 @@ import io.github.atengk.boot.ai.rag.parser.HtmlDocumentParser;
 import io.github.atengk.boot.ai.rag.parser.PdfDocumentParser;
 import io.github.atengk.boot.ai.rag.parser.TextDocumentParser;
 import io.github.atengk.boot.ai.rag.parser.WordDocumentParser;
+import io.github.atengk.boot.ai.rag.parser.multimodal.VisionCaptionEnhancer;
+import io.github.atengk.boot.ai.rag.parser.multimodal.VisionModelResolver;
 import io.github.atengk.boot.ai.rag.query.LlmQueryTransformer;
 import io.github.atengk.boot.ai.rag.query.QueryTransformer;
 import io.github.atengk.boot.ai.rag.query.RewriteQueryRetriever;
@@ -29,14 +31,18 @@ import io.github.atengk.boot.ai.rag.rerank.RerankingContentRetriever;
 import io.github.atengk.boot.ai.rag.splitter.DocumentSplitter;
 import io.github.atengk.boot.ai.rag.splitter.RecursiveCharacterSplitter;
 import io.github.atengk.boot.ai.rag.splitter.TableSplitter;
+import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
+import io.github.atengk.boot.storage.template.StorageTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 
+import java.io.ByteArrayInputStream;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.AllNestedConditions;
@@ -388,7 +394,49 @@ public class AtengAiRagAutoConfiguration {
     }
 
     /**
-     * PDF 结构化文档解析条件配置类 (当检测到 Apache PDFBox 3.x 或 ateng-boot-document 时自适应激活)
+     * 自动装配多模态视觉模型四级解析链 (VisionModelResolver)
+     *
+     * @param properties            AI 根配置属性
+     * @param modelRegistryProvider AI 多模型注册中心提供者
+     * @return VisionModelResolver 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(VisionModelResolver.class)
+    public VisionModelResolver visionModelResolver(
+            AtengAiProperties properties,
+            ObjectProvider<AiModelRegistry> modelRegistryProvider) {
+        AtengAiRagProperties rag = properties.getRag();
+        AtengAiRagProperties.MultimodalProperties multimodal = rag != null && rag.getParser() != null
+                ? rag.getParser().getMultimodal()
+                : new AtengAiRagProperties.MultimodalProperties();
+        log.info("自动装配多模态视觉大模型解析器 (VisionModelResolver)");
+        return new VisionModelResolver(multimodal, modelRegistryProvider.getIfAvailable(), properties);
+    }
+
+    /**
+     * 自动装配文档图表视觉摘要与扫描件 OCR 增强器 (VisionCaptionEnhancer)
+     *
+     * @param visionModelResolver 视觉模型解析器
+     * @param properties          AI 根配置属性
+     * @param uploaderProvider    图片对象存储上传器提供者 (可选)
+     * @return VisionCaptionEnhancer 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(VisionCaptionEnhancer.class)
+    public VisionCaptionEnhancer visionCaptionEnhancer(
+            VisionModelResolver visionModelResolver,
+            AtengAiProperties properties,
+            ObjectProvider<VisionCaptionEnhancer.ImageStorageUploader> uploaderProvider) {
+        AtengAiRagProperties rag = properties.getRag();
+        AtengAiRagProperties.MultimodalProperties multimodal = rag != null && rag.getParser() != null
+                ? rag.getParser().getMultimodal()
+                : new AtengAiRagProperties.MultimodalProperties();
+        log.info("自动装配文档图表视觉摘要与扫描件 OCR 增强器 (VisionCaptionEnhancer) [enabled={}]", multimodal.isEnabled());
+        return new VisionCaptionEnhancer(visionModelResolver, multimodal, uploaderProvider.getIfAvailable());
+    }
+
+    /**
+     * PDF 结构化与多模态文档解析条件配置类 (当检测到 Apache PDFBox 3.x 或 ateng-boot-document 时自适应激活)
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(name = "org.apache.pdfbox.pdmodel.PDDocument")
@@ -396,14 +444,14 @@ public class AtengAiRagAutoConfiguration {
 
         @Bean
         @ConditionalOnMissingBean(PdfDocumentParser.class)
-        public PdfDocumentParser pdfDocumentParser() {
-            log.info("检测到 Apache PDFBox 3.x，自动装配 PDF 结构化文档解析器 (PdfDocumentParser)");
-            return new PdfDocumentParser();
+        public PdfDocumentParser pdfDocumentParser(ObjectProvider<VisionCaptionEnhancer> enhancerProvider) {
+            log.info("检测到 Apache PDFBox 3.x，自动装配 PDF 结构化与多模态文档解析器 (PdfDocumentParser)");
+            return new PdfDocumentParser(enhancerProvider.getIfAvailable());
         }
     }
 
     /**
-     * Word 结构化文档解析条件配置类 (当检测到 Apache POI / POI-TL 或 ateng-boot-document 时自适应激活)
+     * Word 结构化与多模态文档解析条件配置类 (当检测到 Apache POI / POI-TL 或 ateng-boot-document 时自适应激活)
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(name = "org.apache.poi.xwpf.usermodel.XWPFDocument")
@@ -411,9 +459,9 @@ public class AtengAiRagAutoConfiguration {
 
         @Bean
         @ConditionalOnMissingBean(WordDocumentParser.class)
-        public WordDocumentParser wordDocumentParser() {
-            log.info("检测到 Apache POI / POI-TL，自动装配 Word 结构化文档解析器 (WordDocumentParser)");
-            return new WordDocumentParser();
+        public WordDocumentParser wordDocumentParser(ObjectProvider<VisionCaptionEnhancer> enhancerProvider) {
+            log.info("检测到 Apache POI / POI-TL，自动装配 Word 结构化与多模态文档解析器 (WordDocumentParser)");
+            return new WordDocumentParser(enhancerProvider.getIfAvailable());
         }
     }
 
@@ -429,6 +477,31 @@ public class AtengAiRagAutoConfiguration {
         public ExcelDocumentParser excelDocumentParser() {
             log.info("检测到 Apache Fesod，自动装配 Excel 结构化文档解析器 (ExcelDocumentParser)");
             return new ExcelDocumentParser();
+        }
+    }
+
+    /**
+     * 对象存储与 RAG 多模态集成条件配置类 (当检测到 ateng-boot-storage 时自适应激活)
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "io.github.atengk.boot.storage.template.StorageTemplate")
+    static class StorageIntegrationConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(VisionCaptionEnhancer.ImageStorageUploader.class)
+        public VisionCaptionEnhancer.ImageStorageUploader storageTemplateImageUploader(
+                ObjectProvider<StorageTemplate> storageTemplateProvider) {
+            StorageTemplate storageTemplate = storageTemplateProvider.getIfAvailable();
+            if (storageTemplate == null) {
+                return null;
+            }
+            log.info("检测到 ateng-boot-storage，自动装配图表对象存储上传适配器 (ImageStorageUploader)");
+            return (imageBytes, filename) -> {
+                String safeName = StringUtils.hasText(filename) ? filename : "image.png";
+                String objectKey = "rag/images/" + UUID.randomUUID() + "_" + safeName;
+                storageTemplate.upload(objectKey, new ByteArrayInputStream(imageBytes));
+                return storageTemplate.getUrl(objectKey);
+            };
         }
     }
 }

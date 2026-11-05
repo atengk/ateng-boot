@@ -35,6 +35,16 @@ public final class OpenAiModelFactory {
     }
 
     /**
+     * 构建同步阻塞型 OpenAiChatModel 实例 (无监听器)
+     *
+     * @param config 模型配置属性
+     * @return OpenAiChatModel 实例
+     */
+    public static OpenAiChatModel createChatModel(AiModelConfig config) {
+        return createChatModel(config, null);
+    }
+
+    /**
      * 构建同步阻塞型 OpenAiChatModel 实例
      *
      * @param config    模型配置属性

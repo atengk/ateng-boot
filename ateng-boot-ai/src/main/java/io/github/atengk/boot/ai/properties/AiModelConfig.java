@@ -60,6 +60,11 @@ public class AiModelConfig {
     private Integer dimensions;
 
     /**
+     * 是否支持多模态视觉能力 (null: 自动基于模型名称特征探测, true: 显式强制启用, false: 显式强制关闭)
+     */
+    private Boolean multimodal;
+
+    /**
      * 网络连接与读取超时阈值
      */
     private Duration timeout = Duration.ofSeconds(60);

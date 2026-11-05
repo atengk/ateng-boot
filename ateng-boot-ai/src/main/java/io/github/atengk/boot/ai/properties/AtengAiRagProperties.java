@@ -68,6 +68,12 @@ public class AtengAiRagProperties {
     private QueryTransformProperties queryTransform = new QueryTransformProperties();
 
     /**
+     * 文档解析与图文多模态处理专属配置
+     */
+    @NestedConfigurationProperty
+    private ParserProperties parser = new ParserProperties();
+
+    /**
      * 多轮对话查询改写 (QueryTransformer) 强类型配置属性
      */
     @Data
@@ -86,6 +92,70 @@ public class AtengAiRagProperties {
          * 最大保留的历史消息轮数 (默认 6 轮)
          */
         private int maxHistoryMessages = 6;
+    }
+
+    /**
+     * 文档解析多模态强类型配置
+     */
+    @Data
+    public static class ParserProperties {
+        /**
+         * 视觉多模态摘要增强专属配置
+         */
+        @NestedConfigurationProperty
+        private MultimodalProperties multimodal = new MultimodalProperties();
+    }
+
+    /**
+     * 多模态视觉摘要与扫描件 OCR 强类型配置
+     */
+    @Data
+    public static class MultimodalProperties {
+        /**
+         * 是否启用文档解析中的图文多模态提取与视觉摘要增强 (默认 false)
+         */
+        private boolean enabled = false;
+
+        /**
+         * 用于视觉分析摘要的专属模型标识名称 (可选；未配置时自动从 AiModelRegistry 或全局主模型中探测)
+         */
+        private String model;
+
+        /**
+         * 视觉图表摘要提示词模板
+         */
+        private String prompt = "请对以下架构图、流程图或数据图表进行精确、结构化的语义摘要描述，提炼核心概念、逻辑关系、关键指标及说明，输出为纯净文字：";
+
+        /**
+         * 扫描件 PDF 触发视觉 OCR 的单页文本字符数阈值 (默认 30 字符)
+         */
+        private int scannedPdfThreshold = 30;
+
+        /**
+         * 扫描件 PDF 栅格化渲染分辨率 DPI (默认 150)
+         */
+        private int scannedPdfDpi = 150;
+
+        /**
+         * 是否将提取到的原始图表上传至对象存储 (需容器中存在 StorageTemplate，默认 true)
+         */
+        private boolean storageUpload = true;
+
+        /**
+         * 提取图表的最小宽度阈值 (像素，过滤小图标或装饰分割线，默认 100)
+         */
+        private int minImageWidth = 100;
+
+        /**
+         * 提取图表的最小高度阈值 (像素，过滤装饰性小元素，默认 100)
+         */
+        private int minImageHeight = 100;
+
+        /**
+         * 视觉模型独立配置 (可选；若未单独指定 baseUrl 或 apiKey，则平滑继承全局主模型凭据)
+         */
+        @NestedConfigurationProperty
+        private AiModelConfig modelConfig;
     }
 
     /**

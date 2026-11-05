@@ -55,6 +55,16 @@ public class AiModelRegistry {
      * @param name      模型标识名称
      * @param chatModel 同步聊天模型
      */
+    public void register(String name, ChatLanguageModel chatModel) {
+        register(name, chatModel, null);
+    }
+
+    /**
+     * 单独注册同步聊天模型
+     *
+     * @param name      模型标识名称
+     * @param chatModel 同步聊天模型
+     */
     public void registerChatModel(String name, ChatLanguageModel chatModel) {
         if (!StringUtils.hasText(name)) {
             throw new AiException(AiResultCode.AI_CONFIG_ERROR, "注册模型名称不能为空");
@@ -182,6 +192,15 @@ public class AiModelRegistry {
      */
     public boolean hasModels() {
         return !chatModels.isEmpty() || !streamingChatModels.isEmpty();
+    }
+
+    /**
+     * 获取所有已注册的同步聊天模型名称集合
+     *
+     * @return 只读模型名称集合
+     */
+    public Set<String> getChatModelNames() {
+        return Collections.unmodifiableSet(new LinkedHashSet<>(chatModels.keySet()));
     }
 
     /**

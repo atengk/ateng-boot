@@ -12,6 +12,8 @@ import io.github.atengk.boot.ai.rag.parser.HtmlDocumentParser;
 import io.github.atengk.boot.ai.rag.parser.PdfDocumentParser;
 import io.github.atengk.boot.ai.rag.parser.TextDocumentParser;
 import io.github.atengk.boot.ai.rag.parser.WordDocumentParser;
+import io.github.atengk.boot.ai.rag.parser.multimodal.VisionCaptionEnhancer;
+import io.github.atengk.boot.ai.rag.parser.multimodal.VisionModelResolver;
 import io.github.atengk.boot.ai.rag.splitter.TableSplitter;
 import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
@@ -85,6 +87,10 @@ class AtengAiRagAutoConfigurationTest {
 
             // 验证 TableSplitter 自动装配
             assertThat(context).hasSingleBean(TableSplitter.class);
+
+            // 验证多模态组件自动装配
+            assertThat(context).hasSingleBean(VisionModelResolver.class);
+            assertThat(context).hasSingleBean(VisionCaptionEnhancer.class);
         });
     }
 
