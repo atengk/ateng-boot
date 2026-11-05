@@ -147,3 +147,39 @@ _Avoid_: CancelFilter, StreamInterceptor
 **TokenWindowChatMemory**:
 基于 Token 数量的会话记忆滑动裁剪窗口具体类，自动保留首条系统指令（`SystemMessage`）并在历史超出最大 Token 限制时由远及近淘汰旧消息，防止模型上下文超长击穿。
 _Avoid_: TokenMemory, TokenSlider, SlidingWindowMemory
+
+**DocumentSplitter**:
+原生轻量长文本智能切片门面具体类，提供基于字符滑动窗口、换行段落及 Markdown 标题层级的有界重叠（Overlap）切片算法，直接产出 `TextSegment` 并继承元数据，零引入第三方臃肿解析包。
+_Avoid_: TextChunker, DocParser, FileSplitter
+
+**Reranker**:
+文档检索精排模型 SPI 顶层接口，定义对向量粗排召回候选集进行交叉打分（Cross-Encoder Scoring）与高精排序的规范契约。
+_Avoid_: Ranker, ReRankService, ScoreFilter
+
+**RerankingContentRetriever**:
+融合精排的复合知识检索器具体类，封装向量相似度召回与 `Reranker` 交叉重排两阶段检索管道，支持超时熔断与保底降级机制。
+_Avoid_: HybridRetriever, AdvancedRetriever, SmartRetriever
+
+**FailoverChatLanguageModel**:
+多模型高可用故障转移代理实现类，统管声明式主备模型降级链，具备共享超时时限（Total Deadline）与非业务错误精准熔断转移机制。
+_Avoid_: FallbackModel, BackupModel, RouterModel
+
+**McpClientAdapter**:
+模型上下文协议（Model Context Protocol）轻量客户端桥接 SPI 接口，支持将符合标准 MCP 规范的外部工具与资源一键注册为当前智能体受管工具。
+_Avoid_: McpConnector, McpProxy, McpHelper
+
+**QueryTransformer**:
+多轮对话检索查询重写与指代消解 SPI 顶层接口，负责将多轮历史中的模糊代词与上下文改写为语义完整独立的检索 Query，提升知识库精准命中率。
+_Avoid_: QueryRewriter, PromptTransformer, SearchReformulator
+
+**AiRateLimiter**:
+突发流量速率限流器 SPI 接口，基于滑动窗口提供微观秒级请求频次（RPS）与分钟级 Token 突发（TPM）双重流控卫语句，防御上游服务商 429 封禁风险。
+_Avoid_: AiThrottler, RateLimitService, TokenBucketFilter
+
+**SummaryChatMemory**:
+长期会话摘要记忆具体类，依托后台受管线程池异步归纳超长历史并生成长期摘要，维持 `[System: 长期摘要] + [近 N 轮原始明细]` 双段式结构，兼顾长期上下文与打字机推流零延迟。
+_Avoid_: SummaryMemory, CompactingMemory, AbstractChatMemory
+
+**TokenCostCalculator**:
+大模型调用成本与财务账单计算纯函数工具类，基于配置的模型单价表（Input/Output 每百万 Tokens 定价）实时计算单次请求金额并挂载度量指标。
+_Avoid_: CostEstimator, PricingCalculator, TokenBillingUtil

@@ -43,6 +43,16 @@ public class AtengAiRagProperties {
     private Integer dimensions;
 
     /**
+     * 默认文档切片分块大小 (字符数，默认 500)
+     */
+    private int chunkSize = 500;
+
+    /**
+     * 默认文档切片分块重叠大小 (字符数，默认 50)
+     */
+    private int chunkOverlap = 50;
+
+    /**
      * 独立 Embedding 模型专属配置 (可选；若未单独指定 baseUrl 或 apiKey，则平滑继承全局主模型 ateng.boot.ai.model 的凭据)
      */
     @NestedConfigurationProperty

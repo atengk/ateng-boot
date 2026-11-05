@@ -12,6 +12,8 @@ import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
+import io.github.atengk.boot.ai.rag.splitter.DocumentSplitter;
+import io.github.atengk.boot.ai.rag.splitter.RecursiveCharacterSplitter;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -150,5 +152,24 @@ public class AtengAiRagAutoConfiguration {
         log.info("自动装配 RAG 知识库向量检索器 (EmbeddingStoreContentRetriever) [maxResults={}, minScore={}]",
                 rag.getMaxResults(), rag.getMinScore());
         return builder.build();
+    }
+
+    /**
+     * 自动装配默认原生长文本智能切片门面 DocumentSplitter (RecursiveCharacterSplitter)
+     *
+     * @param properties AI 根配置属性
+     * @return DocumentSplitter 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(DocumentSplitter.class)
+    public DocumentSplitter documentSplitter(AtengAiProperties properties) {
+        AtengAiRagProperties rag = properties.getRag();
+        int chunkSize = rag != null && rag.getChunkSize() > 0 ? rag.getChunkSize() : RecursiveCharacterSplitter.DEFAULT_CHUNK_SIZE;
+        int chunkOverlap = rag != null && rag.getChunkOverlap() >= 0 && rag.getChunkOverlap() < chunkSize
+                ? rag.getChunkOverlap()
+                : RecursiveCharacterSplitter.DEFAULT_CHUNK_OVERLAP;
+        log.info("自动装配默认原生长文本智能切片器 (RecursiveCharacterSplitter) [chunkSize={}, chunkOverlap={}]",
+                chunkSize, chunkOverlap);
+        return new RecursiveCharacterSplitter(chunkSize, chunkOverlap);
     }
 }
