@@ -1,5 +1,6 @@
 package io.github.atengk.boot.ai.properties;
 
+import io.github.atengk.boot.ai.rag.store.VectorStoreProperties;
 import lombok.Data;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
@@ -78,6 +79,12 @@ public class AtengAiRagProperties {
      */
     @NestedConfigurationProperty
     private ParserProperties parser = new ParserProperties();
+
+    /**
+     * 统一向量存储库专属配置 (支持 auto, in-memory, milvus, redis, pgvector, elasticsearch 等)
+     */
+    @NestedConfigurationProperty
+    private VectorStoreProperties store = new VectorStoreProperties();
 
     /**
      * 多轮对话查询改写 (QueryTransformer) 强类型配置属性

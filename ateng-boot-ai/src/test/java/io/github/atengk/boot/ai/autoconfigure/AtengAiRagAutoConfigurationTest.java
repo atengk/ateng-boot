@@ -6,6 +6,7 @@ import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import io.github.atengk.boot.ai.rag.filter.DynamicFilterContentRetriever;
 import io.github.atengk.boot.ai.rag.parser.DocumentParserManager;
 import io.github.atengk.boot.ai.rag.parser.ExcelDocumentParser;
 import io.github.atengk.boot.ai.rag.parser.HtmlDocumentParser;
@@ -139,6 +140,43 @@ class AtengAiRagAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("向量数据库统一配置 store.type 切换与平滑回退测试")
+    void testVectorStoreTypeConfiguration() {
+        // 1. IN_MEMORY 显式配置
+        contextRunner.withPropertyValues("ateng.boot.ai.rag.store.type=IN_MEMORY")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(EmbeddingStore.class);
+                    assertThat(context.getBean(EmbeddingStore.class)).isInstanceOf(InMemoryEmbeddingStore.class);
+                });
+
+        // 2. AUTO 自动探测在无外部存储时平滑回退 InMemoryEmbeddingStore
+        contextRunner.withPropertyValues("ateng.boot.ai.rag.store.type=AUTO")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(EmbeddingStore.class);
+                    assertThat(context.getBean(EmbeddingStore.class)).isInstanceOf(InMemoryEmbeddingStore.class);
+                });
+
+        // 3. CUSTOM 自定义模式不注入默认 EmbeddingStore
+        contextRunner.withPropertyValues("ateng.boot.ai.rag.store.type=CUSTOM")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(EmbeddingStore.class);
+                });
+
+        // 4. 配置 REDIS 但缺少驱动时启动失败并提示缺少驱动
+        contextRunner.withPropertyValues("ateng.boot.ai.rag.store.type=REDIS")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasRootCauseInstanceOf(io.github.atengk.boot.ai.exception.AiException.class);
+                    assertThat(context.getStartupFailure().getMessage())
+                            .contains("langchain4j-community-redis");
+                });
+    }
+
+    @Test
     @DisplayName("配置全局主模型 API Key 时自动全链路装配 EmbeddingModel, EmbeddingTemplate 与 ContentRetriever")
     void testRagAutoConfigurationWithGlobalApiKey() {
         contextRunner.withPropertyValues(
@@ -151,7 +189,7 @@ class AtengAiRagAutoConfigurationTest {
             assertThat(context).hasSingleBean(EmbeddingTemplate.class);
             assertThat(context).hasSingleBean(EmbeddingStore.class);
             assertThat(context).hasSingleBean(ContentRetriever.class);
-            assertThat(context.getBean(ContentRetriever.class)).isInstanceOf(EmbeddingStoreContentRetriever.class);
+            assertThat(context.getBean(ContentRetriever.class)).isInstanceOf(DynamicFilterContentRetriever.class);
         });
     }
 

@@ -57,6 +57,9 @@
 | **双向内容安全护栏** | 企业级 AI 双向内容安全护栏体系 | `AiGuardrail`<br>`DefaultAiGuardrail`<br>`GuardrailResult` | `ateng.boot.ai.guardrail.enabled`<br>`ateng.boot.ai.guardrail.mode`<br>`ateng.boot.ai.guardrail.max-prompt-length`<br>`ateng.boot.ai.guardrail.banned-keywords`<br>`ateng.boot.ai.guardrail.whitelist` | `inspectPrompt(prompt, context)` / `inspectResponse(text, context)`，前置防越狱注入/超长与后置违禁词 Trie 树极速匹配，支持租户安全上下文透传，FAIL_FAST 与 REPLACE 双模式 | `DefaultAiGuardrailTest` / `AiGuardrailIntegrationTest` / `GuardrailControllerIntegrationTest` |
 | **向量化门面** | 统一命令式向量化计算与对称入库门面 | `EmbeddingTemplate` | `ateng.boot.ai.rag.model-name`<br>`ateng.boot.ai.rag.dimensions` | `embed(String)` / `embed(List<String>)` / `embed(TextSegment)` / `embedVector(String)` / `ingest(...)` / `remove(...)` / `removeAll(...)`，具备完备对称操作与指数退避重试 | `EmbeddingTemplateTest` / `RagControllerIntegrationTest` |
 | **ETL 摄取管道** | 端到端 ETL Ingestion 摄取管道与生命周期治理 | `RagIngestionTemplate`<br>`IngestOptions`<br>`IngestResult`<br>`DeduplicationPolicy` | `ateng.boot.ai.rag.*` | `ingest(Resource, IngestOptions)` / `ingest(InputStream, ...)` / `ingest(String, ...)` / `ingestAsync(...)` / `deleteDocument(docId)`，自动化“格式嗅探 -> 结构化解析 -> 元数据治理 -> 智能分块 -> 向量化计算 -> 幂等入库”，支持 `OVERWRITE`/`SKIP` 去重与四维上下文透传 | `RagIngestionTemplateTest` |
+| **多向量库适配** | 多向量数据库统一适配与平滑回退 | `VectorStoreProperties`<br>`VectorStoreType`<br>`VectorStoreFactory` | `ateng.boot.ai.rag.store.type`<br>`ateng.boot.ai.rag.store.redis.*`<br>`ateng.boot.ai.rag.store.pgvector.*`<br>`ateng.boot.ai.rag.store.elasticsearch.*` | 支持 `auto`, `in-memory`, `milvus`, `redis`, `pgvector`, `elasticsearch`, `custom` 七大模式，与 `ateng-boot-milvus` 零冲突共存，无外部库时 100% 离线自洽回退 | `AtengAiRagAutoConfigurationTest` |
+| **动态权限过滤** | 动态元数据权限过滤与多租户安全下推 | `DynamicFilterContextHolder`<br>`DynamicFilterContentRetriever`<br>`EmbeddingTemplate#search` | `ateng.boot.ai.rag.*` | `useFilter(Filter)` / `resolveFilter(...)` / `search(..., Filter)`，自动感知 `TenantContextHolder` 并复合下推 `tenant_id`，杜绝跨租户与越权脏读 | `DynamicFilterTest` |
+| **混合检索融合** | 稠密与稀疏混合检索及 RRF 倒数排名融合 | `HybridContentRetriever`<br>`ReciprocalRankFuser`<br>`Bm25KeywordRetriever` | `ateng.boot.ai.rag.*` | `fuse(...)` / `retrieve(Query)`，双路/多路召回基于标准 RRF 公式 $RRF = \sum \frac{w}{k + rank}$（默认 $k=60$）无监督加权排序去重，支持单路异常弹性降级 | `ReciprocalRankFuserTest` / `HybridContentRetrieverTest` / `Bm25KeywordRetrieverTest` |
 | **RAG 自动装配** | 向量知识库自适应装配与单机回退 | `AtengAiRagAutoConfiguration` | `ateng.boot.ai.rag.enabled` | 自动探测并注入外部 `EmbeddingStore`（如 `ateng-boot-milvus`），缺省自动平滑降级单机内存向量库 `InMemoryEmbeddingStore` | `AtengAiRagAutoConfigurationTest` |
 | **知识库检索器** | 统一知识库向量检索器受管 Bean | `ContentRetriever`<br>`EmbeddingStoreContentRetriever` | `ateng.boot.ai.rag.max-results`<br>`ateng.boot.ai.rag.min-score` | 自动根据配置组装 `ContentRetriever` Bean，支持 `@AiAgent(contentRetriever = "...")` 与编程式检索 | `AtengAiRagAutoConfigurationTest` / `RagControllerIntegrationTest` |
 | **文档分块切片** | 原生轻量长文档分块切片门面 | `DocumentSplitter`<br>`RecursiveCharacterSplitter`<br>`MarkdownHeaderSplitter` | `ateng.boot.ai.rag.chunk-size`<br>`ateng.boot.ai.rag.chunk-overlap` | `split(String)` / `split(Resource)` / `split(InputStream)`，支持递归字符分块与 Markdown 语义标题两级分块 | `DocumentSplitterTest` / `RagControllerIntegrationTest` |
@@ -2003,7 +2006,165 @@ public class EnterpriseDocIngestionService {
 
 ---
 
-### 11.8 生产扩展与自定义中间件接管
+### 11.8 多向量数据库统一适配与动态元数据权限过滤
+
+在企业级多租户 RAG 架构中，向量数据库的选型往往需要根据并发规模、云基础设施与业务体量进行弹性调整（从轻量内存到分布式 Milvus、PgVector 或 Redis）。同时，**多租户数据越权脏读**是企业安全第一道红线，必须确保向量检索严格限定在当前租户或指定元数据权限范围内。
+
+`ateng-boot-ai` 提供统一的向量数据库配置体系与全链路动态元数据权限下推能力：
+- **统一纳管七大存储模式 (`ateng.boot.ai.rag.store.type`)**：支持 `auto`（优先外部库，无库时 100% 离线自洽回退）、`in-memory`、`milvus`、`redis`、`pgvector`、`elasticsearch` 与 `custom`；与 `ateng-boot-milvus` 等外部 Starter 零命名冲突无缝共存；
+- **动态元数据权限下推 (`DynamicFilterContextHolder`)**：在发起检索时，自动感知 `TenantContextHolder` 中当前线程持有的 `tenantId`（若未配置忽略租户），自动生成 `tenant_id == ...` 过滤条件，并与调用方显式声明的 `Filter` 条件通过 `AND` 逻辑复合下推至底层向量数据库；
+- **声明式作用域与一键检索**：提供 `DynamicFilterContextHolder.useFilter(filter)` 作用域句柄（支持 try-with-resources）与 `EmbeddingTemplate.search(query, maxResults, minScore, filter)` 完备检索门面。
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      rag:
+        store:
+          # 向量库类型: auto (默认), in-memory, milvus, redis, pgvector, elasticsearch, custom
+          type: auto
+          # Redis 向量存储配置 (当 type=redis 且引入 langchain4j-community-redis 时激活)
+          redis:
+            host: localhost
+            port: 6379
+            index-name: enterprise-knowledge-index
+            prefix: "rag:"
+            dimension: 1536
+          # PostgreSQL pgvector 配置 (当 type=pgvector 时激活)
+          pgvector:
+            host: localhost
+            port: 5432
+            database: rag_db
+            user: postgres
+            table: rag_embeddings
+            dimension: 1536
+          # Elasticsearch 向量配置 (当 type=elasticsearch 时激活)
+          elasticsearch:
+            server-url: http://localhost:9200
+            index-name: enterprise_embeddings
+            dimension: 1536
+```
+
+#### 实战业务场景示例：多租户权限隔离与动态元数据检索
+```java
+@Service
+@RequiredArgsConstructor
+public class SecureKnowledgeRetrievalService {
+
+    private final EmbeddingTemplate embeddingTemplate;
+    private final ContentRetriever contentRetriever;
+
+    /**
+     * 1. 自动租户安全下推检索 (无需手动拼装租户过滤，框架自动下推 tenant_id 过滤防越权)
+     */
+    public List<String> searchWithinCurrentTenant(String query) {
+        // 当前线程若已通过 TenantContextHolder.setTenantId("TENANT-A") 注入租户
+        // 检索时底层将自动下推 Filter: tenant_id == 'TENANT-A'
+        List<EmbeddingMatch<TextSegment>> matches = embeddingTemplate.search(query, 5);
+        return matches.stream()
+                .map(m -> m.embedded().text())
+                .toList();
+    }
+
+    /**
+     * 2. 复合业务维度权限过滤 (部门/密级/分类过滤与租户隔离自动 AND 合并)
+     */
+    public List<String> searchConfidentialTechDocs(String query) {
+        // 显式指定业务元数据过滤：分类为技术规范且密级不为绝密
+        Filter businessFilter = MetadataFilterBuilder.metadataKey("category").isEqualTo("tech")
+                .and(MetadataFilterBuilder.metadataKey("security_level").isNotEqualTo("TOP_SECRET"));
+
+        // 框架自动执行: businessFilter AND (tenant_id == currentTenant)
+        List<EmbeddingMatch<TextSegment>> matches = embeddingTemplate.search(
+                query,
+                5,
+                0.75, // 相似度阈值
+                businessFilter
+        );
+
+        return matches.stream()
+                .map(m -> m.embedded().text())
+                .toList();
+    }
+
+    /**
+     * 3. 动态作用域检索 (适用于 @AiAgent 或 ContentRetriever 临时挂载动态权限范围)
+     */
+    public List<Content> searchWithTemporaryScope(String query, String departmentCode) {
+        Filter deptFilter = MetadataFilterBuilder.metadataKey("department").isEqualTo(departmentCode);
+
+        // 在 try-with-resources 作用域内绑定动态过滤条件，执行完毕自动安全清理
+        try (DynamicFilterContextHolder.DynamicFilterScope scope = DynamicFilterContextHolder.useFilter(deptFilter)) {
+            return contentRetriever.retrieve(Query.from(query));
+        }
+    }
+}
+```
+
+#### 核心机制与边界防御
+- **租户隔离零心智负担**：开发者无需在每次检索时手动拼接 SQL/Filter，`DynamicFilterContextHolder` 自动与框架核心上下文打通；若调用线程设置了 `TenantContextHolder.setIgnoreTenant(true)`，系统将合规豁免租户约束；
+- **底层驱动解耦与条件防护**：通过 `VectorStoreFactory` 采用条件反射探测与隔离加载，未引入对应中间件驱动包时保持纯净解耦，配置与驱动不匹配时 Fail-Fast 阻断，杜绝无意义的运行时 NPE。
+
+---
+
+### 11.9 稠密与稀疏混合检索及 RRF 倒数排名融合 (Hybrid Search & RRF Fusion)
+
+单一依赖向量相似度（稠密召回 Dense Recall）容易遭遇“专有名词、编号、型号匹配率低”的问题；而单一依赖关键词倒排（稀疏召回 Sparse Recall）则无法理解同义词与深层语义。混合检索结合了两者的优势，并通过标准的 **Reciprocal Rank Fusion (RRF)** 算法实现无监督的多路排名融合。
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      rag:
+        # 知识库召回最大结果数 Top-K
+        max-results: 5
+        # 向量最低相似度阈值
+        min-score: 0.6
+```
+
+#### 实战业务场景示例：稠密向量 + 稀疏关键词混合检索与 RRF 融合
+```java
+@Configuration
+public class HybridSearchConfiguration {
+
+    @Bean
+    public ContentRetriever hybridContentRetriever(
+            ContentRetriever denseRetriever, // 由框架自动装配的 DynamicFilterContentRetriever
+            EmbeddingStore<TextSegment> store) {
+
+        // 1. 构建稀疏检索器 (可采用轻量内置 Bm25KeywordRetriever 或外部全文检索引擎)
+        ContentRetriever sparseRetriever = new Bm25KeywordRetriever(
+                () -> List.of(
+                        TextSegment.from("Order-2026-X99 技术架构规范说明"),
+                        TextSegment.from("Spring Boot 3 与 Milvus 混合检索集成实践")
+                ),
+                10
+        );
+
+        // 2. 组装混合检索门面 (topK=5, rrfK=60, denseWeight=1.2, sparseWeight=1.0)
+        return new HybridContentRetriever(
+                denseRetriever,
+                sparseRetriever,
+                5,   // 最终 Top-K 结果数
+                60,  // RRF 平滑常数 k=60
+                1.2, // 稠密向量权重
+                1.0  // 稀疏关键词权重
+        );
+    }
+}
+```
+
+#### 核心机制与算法公式
+- **RRF 算法公式**：对于文档 $d$，其在稠密检索与稀疏检索两路召回中的综合排位得分为：
+  $$RRF(d) = \sum_{m \in \{\text{Dense, Sparse}\}} \frac{w_m}{k + rank_m(d)}$$
+  若某切片同时在稠密与稀疏召回中名列前茅，其综合得分将获得显著的非线性叠加优势，大幅提升多语义与精准型号的综合命中率；
+- **生产级弹性单路降级**：`HybridContentRetriever` 内置弹性降级防线，当稀疏检索器或稠密检索器单路发生网络超时或异常时，系统自动降级使用另一路召回结果，杜绝整条问答链路发生级联崩溃。
+
+---
+
+### 11.10 生产扩展与自定义中间件接管
 
 #### 1. 接入外部生产级分布式向量库 (如 Milvus)
 当引入 `ateng-boot-starter-milvus` 或自定义注册 `EmbeddingStore<TextSegment>` Bean 时，框架遵循 `@ConditionalOnMissingBean` 守卫自动退让，无需修改任何业务代码：
@@ -2038,7 +2199,7 @@ public class CustomEmbeddingModelConfiguration {
 }
 ```
 
-### 11.9 核心生产边界与非功能语义防卫
+### 11.11 核心生产边界与非功能语义防卫
 1. **防止无关智能体被隐式绑架**：`@AiAgent` 严格恪守显式契约原则，只有显式声明 `@AiAgent(contentRetriever = "...")` 的智能体才会挂载检索器，坚决杜绝全局注册单个 `ContentRetriever` 时导致所有纯逻辑或纯工具智能体被无差别注入知识库检索；
 2. **防幻觉与相似度阈值守卫**：配置 `ateng.boot.ai.rag.min-score`（默认 0.6）强制过滤低相关度噪声切片；结合业务层显式判定“检索结果为空时如实告知”，杜绝大模型无边界信口雌黄；
 3. **瞬态网络退避重试**：`EmbeddingTemplate` 挂载 `RetryUtil`（带 Jitter 的指数退避），对 429 限流与超时错误执行自动重试，对 401/403 认证错误 Fail-Fast，底层 SDK 裸重试数强制置 0，彻底根除重试乘积爆炸。
@@ -2265,6 +2426,30 @@ ateng:
         query-transform:
           enabled: false
           model-name: deepseek-chat
+        # 统一向量存储库专属配置
+        store:
+          # 存储模式: auto (默认), in-memory, milvus, redis, pgvector, elasticsearch, custom
+          type: auto
+          redis:
+            host: localhost
+            port: 6379
+            index-name: rag-index
+            prefix: "rag:"
+            dimension: 1536
+          pgvector:
+            host: localhost
+            port: 5432
+            database: postgres
+            user: postgres
+            table: rag_embeddings
+            dimension: 1536
+          elasticsearch:
+            server-url: http://localhost:9200
+            index-name: rag_embeddings
+            dimension: 1536
+          milvus:
+            collection-name: langchain4j_embeddings
+            dimension: 1536
         # 独立 Embedding 模型专属配置 (可选；未配置时平滑继承全局主模型凭据)
         model:
           # base-url: https://api.openai.com/v1

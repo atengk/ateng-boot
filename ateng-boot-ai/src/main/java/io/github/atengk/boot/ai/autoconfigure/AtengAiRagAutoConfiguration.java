@@ -14,6 +14,7 @@ import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
+import io.github.atengk.boot.ai.rag.filter.DynamicFilterContentRetriever;
 import io.github.atengk.boot.ai.rag.parser.DocumentParser;
 import io.github.atengk.boot.ai.rag.parser.DocumentParserManager;
 import io.github.atengk.boot.ai.rag.parser.ExcelDocumentParser;
@@ -34,6 +35,8 @@ import io.github.atengk.boot.ai.rag.splitter.ParentChildSplitter;
 import io.github.atengk.boot.ai.rag.splitter.RecursiveCharacterSplitter;
 import io.github.atengk.boot.ai.rag.splitter.TableSplitter;
 import io.github.atengk.boot.ai.rag.splitter.TokenCharacterSplitter;
+import io.github.atengk.boot.ai.rag.store.VectorStoreFactory;
+import io.github.atengk.boot.ai.rag.store.VectorStoreProperties;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
@@ -58,9 +61,12 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Condition;
+import org.springframework.context.annotation.ConditionContext;
 import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.type.AnnotatedTypeMetadata;
 import org.springframework.util.StringUtils;
 
 /**
@@ -119,6 +125,17 @@ public class AtengAiRagAutoConfiguration {
 
         @ConditionalOnProperty(prefix = "ateng.boot.ai.rag.rerank", name = "base-url")
         static class BaseUrlProperty {
+        }
+    }
+
+    /**
+     * 当且仅当 store.type 未显式配置为 CUSTOM 时生效的默认向量库自动装配守卫条件
+     */
+    static class VectorStoreCondition implements Condition {
+        @Override
+        public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
+            String type = context.getEnvironment().getProperty("ateng.boot.ai.rag.store.type");
+            return type == null || !type.equalsIgnoreCase("CUSTOM");
         }
     }
 
@@ -188,15 +205,20 @@ public class AtengAiRagAutoConfiguration {
     }
 
     /**
-     * 自动装配单机内存向量存储库 (当容器中未检测到由外部持久化中间件如 Milvus 注册的 EmbeddingStore 时平滑兜底降级)
+     * 自动装配 RAG 知识库向量存储库 (支持 AUTO 自动探测并平滑回退、IN_MEMORY、REDIS、PGVECTOR、ELASTICSEARCH 等)
      *
-     * @return InMemoryEmbeddingStore 实例
+     * @param properties AI 根配置属性
+     * @return EmbeddingStore 实例
      */
     @Bean
     @ConditionalOnMissingBean(EmbeddingStore.class)
-    public EmbeddingStore<TextSegment> inMemoryEmbeddingStore() {
-        log.info("未检测到自定义向量存储 Bean (如 MilvusEmbeddingStore)，AI RAG 知识库启用单机内存向量存储 (InMemoryEmbeddingStore)");
-        return new InMemoryEmbeddingStore<>();
+    @Conditional(VectorStoreCondition.class)
+    public EmbeddingStore<TextSegment> embeddingStore(AtengAiProperties properties) {
+        AtengAiRagProperties rag = properties.getRag();
+        VectorStoreProperties storeProps = rag != null && rag.getStore() != null
+                ? rag.getStore()
+                : new VectorStoreProperties();
+        return VectorStoreFactory.createEmbeddingStore(storeProps);
     }
 
     /**
@@ -254,14 +276,13 @@ public class AtengAiRagAutoConfiguration {
         Reranker reranker = rerankerProvider.getIfAvailable();
         int initialResults = reranker != null ? Math.max(rag.getMaxResults() * 3, 10) : rag.getMaxResults();
 
-        EmbeddingStoreContentRetriever.EmbeddingStoreContentRetrieverBuilder builder = EmbeddingStoreContentRetriever.builder()
-                .embeddingStore(embeddingStore)
-                .embeddingModel(embeddingModel)
-                .maxResults(initialResults);
-        if (rag.getMinScore() != null && reranker == null) {
-            builder.minScore(rag.getMinScore());
-        }
-        ContentRetriever baseRetriever = builder.build();
+        Double minScore = (rag.getMinScore() != null && reranker == null) ? rag.getMinScore() : null;
+        ContentRetriever baseRetriever = new DynamicFilterContentRetriever(
+                embeddingStore,
+                embeddingModel,
+                initialResults,
+                minScore
+        );
 
         ContentRetriever effectiveRetriever = baseRetriever;
         if (reranker != null) {

@@ -4,6 +4,9 @@ import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
+import dev.langchain4j.store.embedding.EmbeddingMatch;
+import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
+import dev.langchain4j.store.embedding.EmbeddingSearchResult;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.filter.Filter;
 import io.github.atengk.boot.ai.context.AiContextHolder;
@@ -13,6 +16,7 @@ import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
+import io.github.atengk.boot.ai.rag.filter.DynamicFilterContextHolder;
 import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
 import io.github.atengk.boot.core.util.RetryUtil;
 import org.springframework.beans.factory.ObjectProvider;
@@ -693,6 +697,139 @@ public class EmbeddingTemplate {
      */
     public void removeAll(Filter filter) {
         removeAll(resolveDefaultStore(), filter);
+    }
+
+    /**
+     * 在默认向量存储库中执行底层标准向量检索，自动融合租户与动态元数据过滤条件
+     *
+     * @param request 检索请求
+     * @return 匹配结果列表
+     */
+    public List<EmbeddingMatch<TextSegment>> search(EmbeddingSearchRequest request) {
+        return search(resolveDefaultStore(), request);
+    }
+
+    /**
+     * 在指定向量存储库中执行底层标准向量检索，自动融合租户与动态元数据过滤条件
+     *
+     * @param store   目标向量存储库
+     * @param request 检索请求
+     * @return 匹配结果列表
+     */
+    public List<EmbeddingMatch<TextSegment>> search(EmbeddingStore<TextSegment> store, EmbeddingSearchRequest request) {
+        if (store == null) {
+            throw new IllegalArgumentException("目标 EmbeddingStore 存储库不能为空");
+        }
+        if (request == null) {
+            return Collections.emptyList();
+        }
+        Filter effectiveFilter = DynamicFilterContextHolder.resolveFilter(request.filter());
+        EmbeddingSearchRequest effectiveRequest = EmbeddingSearchRequest.builder()
+                .queryEmbedding(request.queryEmbedding())
+                .maxResults(request.maxResults())
+                .minScore(request.minScore())
+                .filter(effectiveFilter)
+                .build();
+        EmbeddingSearchResult<TextSegment> result = store.search(effectiveRequest);
+        return result != null && result.matches() != null ? result.matches() : Collections.emptyList();
+    }
+
+    /**
+     * 在默认向量存储库中执行语义相似度检索 (使用默认模型与 Top-3 召回)
+     *
+     * @param query 查询文本
+     * @return 匹配结果列表
+     */
+    public List<EmbeddingMatch<TextSegment>> search(String query) {
+        return search(query, 3);
+    }
+
+    /**
+     * 在默认向量存储库中执行语义相似度检索
+     *
+     * @param query      查询文本
+     * @param maxResults 最大召回数
+     * @return 匹配结果列表
+     */
+    public List<EmbeddingMatch<TextSegment>> search(String query, int maxResults) {
+        return search(query, maxResults, null, null);
+    }
+
+    /**
+     * 在默认向量存储库中执行带元数据过滤的语义相似度检索
+     *
+     * @param query      查询文本
+     * @param maxResults 最大召回数
+     * @param filter     元数据过滤表达式 (可选)
+     * @return 匹配结果列表
+     */
+    public List<EmbeddingMatch<TextSegment>> search(String query, int maxResults, Filter filter) {
+        return search(query, maxResults, null, filter);
+    }
+
+    /**
+     * 在默认向量存储库中执行带阈值与元数据过滤的语义相似度检索
+     *
+     * @param query      查询文本
+     * @param maxResults 最大召回数
+     * @param minScore   相似度阈值 (可选)
+     * @param filter     元数据过滤表达式 (可选)
+     * @return 匹配结果列表
+     */
+    public List<EmbeddingMatch<TextSegment>> search(String query, int maxResults, Double minScore, Filter filter) {
+        return search(resolveDefaultStore(), query, maxResults, minScore, filter);
+    }
+
+    /**
+     * 在指定向量存储库中执行带阈值与元数据过滤的语义相似度检索
+     *
+     * @param store      目标向量存储库
+     * @param query      查询文本
+     * @param maxResults 最大召回数
+     * @param minScore   相似度阈值 (可选)
+     * @param filter     元数据过滤表达式 (可选)
+     * @return 匹配结果列表
+     */
+    public List<EmbeddingMatch<TextSegment>> search(EmbeddingStore<TextSegment> store,
+                                                    String query,
+                                                    int maxResults,
+                                                    Double minScore,
+                                                    Filter filter) {
+        return searchWithModel(null, store, query, maxResults, minScore, filter);
+    }
+
+    /**
+     * 使用指定模型在指定向量存储库中执行带阈值与元数据过滤的语义相似度检索
+     *
+     * @param modelName  指定模型名称 (传 null 时使用当前活跃模型)
+     * @param store      目标向量存储库
+     * @param query      查询文本
+     * @param maxResults 最大召回数
+     * @param minScore   相似度阈值 (可选)
+     * @param filter     元数据过滤表达式 (可选)
+     * @return 匹配结果列表
+     */
+    public List<EmbeddingMatch<TextSegment>> searchWithModel(String modelName,
+                                                             EmbeddingStore<TextSegment> store,
+                                                             String query,
+                                                             int maxResults,
+                                                             Double minScore,
+                                                             Filter filter) {
+        if (!StringUtils.hasText(query)) {
+            return Collections.emptyList();
+        }
+        Embedding embedding = modelName != null
+                ? embedWithModel(modelName, query).content()
+                : embed(query).content();
+        Filter effectiveFilter = DynamicFilterContextHolder.resolveFilter(filter);
+        EmbeddingSearchRequest.EmbeddingSearchRequestBuilder builder = EmbeddingSearchRequest.builder()
+                .queryEmbedding(embedding)
+                .maxResults(maxResults > 0 ? maxResults : 3)
+                .filter(effectiveFilter);
+        if (minScore != null) {
+            builder.minScore(minScore);
+        }
+        return search(store, builder.build());
     }
 
     /**
