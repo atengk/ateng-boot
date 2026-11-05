@@ -6,11 +6,14 @@ import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import io.github.atengk.boot.ai.context.AiContextHolder;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
+import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -48,6 +51,11 @@ class EmbeddingTemplateTest {
         properties.getModel().setRetryInitialInterval(Duration.ofMillis(10));
         properties.getModel().setRetryMaxInterval(Duration.ofMillis(50));
         template = new EmbeddingTemplate(mockEmbeddingModel, properties);
+    }
+
+    @AfterEach
+    void tearDown() {
+        AiContextHolder.clearAll();
     }
 
     @Test
@@ -311,7 +319,7 @@ class EmbeddingTemplateTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> template.removeAll(null, List.of("id")))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> template.removeAll(null))
+        assertThatThrownBy(() -> template.removeAll((dev.langchain4j.store.embedding.EmbeddingStore<TextSegment>) null))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -337,5 +345,119 @@ class EmbeddingTemplateTest {
         assertThatThrownBy(standbyTemplate::dimension)
                 .isInstanceOf(AiException.class)
                 .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+    }
+
+    @Test
+    @DisplayName("通过 useModel 动态切换向量模型并在作用域退出后自动还原")
+    void testUseModelDynamicSwitching() {
+        EmbeddingModel bgeModel = mock(EmbeddingModel.class);
+        when(bgeModel.embed("Hello BGE")).thenReturn(Response.from(new Embedding(new float[]{0.9f})));
+        when(mockEmbeddingModel.embed("Hello Default")).thenReturn(Response.from(new Embedding(new float[]{0.1f})));
+
+        EmbeddingModelRegistry registry = new EmbeddingModelRegistry();
+        registry.registerDefault(mockEmbeddingModel, "default");
+        registry.register("bge-large", bgeModel);
+
+        AtengAiProperties properties = new AtengAiProperties();
+        EmbeddingTemplate multiModelTemplate = new EmbeddingTemplate(mockEmbeddingModel, registry, (dev.langchain4j.store.embedding.EmbeddingStore<TextSegment>) null, properties);
+
+        // 1. 默认状态路由至默认模型
+        Response<Embedding> defaultResp = multiModelTemplate.embed("Hello Default");
+        assertThat(defaultResp.content().vector()).containsExactly(0.1f);
+        verify(mockEmbeddingModel, times(1)).embed("Hello Default");
+
+        // 2. 作用域内切换至 bge-large
+        try (EmbeddingTemplate.EmbeddingModelScope ignored = multiModelTemplate.useModel("bge-large")) {
+            Response<Embedding> bgeResp = multiModelTemplate.embed("Hello BGE");
+            assertThat(bgeResp.content().vector()).containsExactly(0.9f);
+            verify(bgeModel, times(1)).embed("Hello BGE");
+        }
+
+        // 3. 作用域外自动还原为默认模型
+        Response<Embedding> restoredResp = multiModelTemplate.embed("Hello Default");
+        assertThat(restoredResp.content().vector()).containsExactly(0.1f);
+        verify(mockEmbeddingModel, times(2)).embed("Hello Default");
+    }
+
+    @Test
+    @DisplayName("指定命名模型显式调用 embedWithModel 与 embedVectorWithModel")
+    void testNamedModelExplicitExecution() {
+        EmbeddingModel bgeModel = mock(EmbeddingModel.class);
+        when(bgeModel.embed("测试文本")).thenReturn(Response.from(new Embedding(new float[]{0.5f, 0.6f})));
+        when(bgeModel.dimension()).thenReturn(1024);
+
+        EmbeddingModelRegistry registry = new EmbeddingModelRegistry();
+        registry.register("bge-large", bgeModel);
+
+        AtengAiProperties properties = new AtengAiProperties();
+        EmbeddingTemplate multiModelTemplate = new EmbeddingTemplate(mockEmbeddingModel, registry, (dev.langchain4j.store.embedding.EmbeddingStore<TextSegment>) null, properties);
+
+        Response<Embedding> resp = multiModelTemplate.embedWithModel("bge-large", "测试文本");
+        assertThat(resp.content().vector()).containsExactly(0.5f, 0.6f);
+
+        float[] vector = multiModelTemplate.embedVectorWithModel("bge-large", "测试文本");
+        assertThat(vector).containsExactly(0.5f, 0.6f);
+
+        int dim = multiModelTemplate.dimensionWithModel("bge-large");
+        assertThat(dim).isEqualTo(1024);
+
+        // 查询不存在的模型抛出 AI_CONFIG_ERROR
+        assertThatThrownBy(() -> multiModelTemplate.embedWithModel("non-existent", "文本"))
+                .isInstanceOf(AiException.class)
+                .hasMessageContaining("未找到标识为 [non-existent] 的 Embedding 向量化模型");
+    }
+
+    @Test
+    @DisplayName("默认向量存储库自动绑定：免参入库与删除成功")
+    void testDefaultStoreBindingSuccess() {
+        InMemoryEmbeddingStore<TextSegment> defaultStore = new InMemoryEmbeddingStore<>();
+        EmbeddingModelRegistry registry = new EmbeddingModelRegistry();
+        registry.registerDefault(mockEmbeddingModel, "default");
+
+        AtengAiProperties properties = new AtengAiProperties();
+        EmbeddingTemplate boundTemplate = new EmbeddingTemplate(mockEmbeddingModel, registry, defaultStore, properties);
+
+        when(mockEmbeddingModel.embed(any(TextSegment.class))).thenReturn(Response.from(new Embedding(new float[]{0.1f, 0.2f})));
+        when(mockEmbeddingModel.embedAll(anyList())).thenReturn(Response.from(List.of(new Embedding(new float[]{0.1f}), new Embedding(new float[]{0.2f}))));
+
+        // 1. 免传 store 写入单个 TextSegment
+        TextSegment segment = TextSegment.from("默认库入库内容");
+        String id1 = boundTemplate.ingest(segment);
+        assertThat(id1).isNotBlank();
+
+        // 2. 免传 store 写入纯文本字符串
+        String id2 = boundTemplate.ingest("纯字符串入库");
+        assertThat(id2).isNotBlank();
+
+        // 3. 免传 store 批量入库
+        List<String> ids = boundTemplate.ingestAll(List.of(TextSegment.from("批量1"), TextSegment.from("批量2")));
+        assertThat(ids).hasSize(2);
+
+        // 4. 免传 store 删除
+        boundTemplate.remove(id1);
+        boundTemplate.removeAll(ids);
+        boundTemplate.removeAll();
+    }
+
+    @Test
+    @DisplayName("未配置默认向量存储库时调用免参入库防御性抛出 AI_CONFIG_ERROR")
+    void testMissingDefaultStoreThrowsException() {
+        EmbeddingTemplate noStoreTemplate = new EmbeddingTemplate(mockEmbeddingModel);
+
+        assertThatThrownBy(() -> noStoreTemplate.ingest("测试文本"))
+                .isInstanceOf(AiException.class)
+                .hasMessageContaining("未检测到任何可用的 EmbeddingStore 向量存储库 Bean");
+
+        assertThatThrownBy(() -> noStoreTemplate.ingest(TextSegment.from("测试")))
+                .isInstanceOf(AiException.class)
+                .hasMessageContaining("未检测到任何可用的 EmbeddingStore 向量存储库 Bean");
+
+        assertThatThrownBy(() -> noStoreTemplate.ingestAll(List.of(TextSegment.from("测试"))))
+                .isInstanceOf(AiException.class)
+                .hasMessageContaining("未检测到任何可用的 EmbeddingStore 向量存储库 Bean");
+
+        assertThatThrownBy(() -> noStoreTemplate.remove("id"))
+                .isInstanceOf(AiException.class)
+                .hasMessageContaining("未检测到任何可用的 EmbeddingStore 向量存储库 Bean");
     }
 }

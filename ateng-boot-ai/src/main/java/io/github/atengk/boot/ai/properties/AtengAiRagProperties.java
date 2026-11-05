@@ -3,6 +3,9 @@ package io.github.atengk.boot.ai.properties;
 import lombok.Data;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * AI RAG 企业知识库与向量检索强类型配置属性
  *
@@ -133,6 +136,13 @@ public class AtengAiRagProperties {
     private AiModelConfig model = new AiModelConfig();
 
     /**
+     * 命名多向量化模型配置拓扑字典 (name -> AiModelConfig)
+     * 例如 ateng.boot.ai.rag.embeddings.bge-large.model-name=BAAI/bge-large-zh-v1.5
+     */
+    @NestedConfigurationProperty
+    private Map<String, AiModelConfig> embeddings = new LinkedHashMap<>();
+
+    /**
      * 解析最终生效的 Embedding 模型配置
      * 若未在 rag.model 中指定 apiKey/baseUrl，平滑回退继承 rootModel 的 apiKey 与 baseUrl
      *
@@ -157,8 +167,11 @@ public class AtengAiRagProperties {
             }
         }
 
-        // 2. 覆盖默认 embedding modelName
+        // 2. 覆盖默认 embedding modelName 与 dimensions
         effective.setModelName(this.modelName != null && !this.modelName.isBlank() ? this.modelName : DEFAULT_EMBEDDING_MODEL);
+        if (this.dimensions != null) {
+            effective.setDimensions(this.dimensions);
+        }
 
         // 3. 若 rag.model 具备有效配置 (例如显式配置了专属 apiKey 或自定义 baseUrl/modelName)，进行就近覆盖
         if (this.model != null && (this.model.isConfigured() || (this.model.getBaseUrl() != null && !this.model.getBaseUrl().isBlank() && !"https://api.openai.com/v1".equals(this.model.getBaseUrl())))) {
@@ -171,6 +184,9 @@ public class AtengAiRagProperties {
             if (this.model.getModelName() != null && !this.model.getModelName().isBlank()
                     && !AiModelConfig.DEFAULT_MODEL_NAME.equals(this.model.getModelName())) {
                 effective.setModelName(this.model.getModelName());
+            }
+            if (this.model.getDimensions() != null) {
+                effective.setDimensions(this.model.getDimensions());
             }
             if (this.model.getTimeout() != null) {
                 effective.setTimeout(this.model.getTimeout());
@@ -195,6 +211,82 @@ public class AtengAiRagProperties {
             }
             if (this.model.getCustomHeaders() != null && !this.model.getCustomHeaders().isEmpty()) {
                 effective.getCustomHeaders().putAll(this.model.getCustomHeaders());
+            }
+        }
+        return effective;
+    }
+
+    /**
+     * 解析指定名称的命名 Embedding 模型配置
+     * 若未在命名配置中指定 apiKey/baseUrl，平滑回退继承 rootModel 的对应连接参数
+     *
+     * @param name      命名模型标识 (如 bge-large)
+     * @param rootModel 全局主模型配置
+     * @return 最终生效的 AiModelConfig 实例，绝不返回 null
+     */
+    public AiModelConfig resolveNamedEmbeddingConfig(String name, AiModelConfig rootModel) {
+        AiModelConfig target = embeddings != null ? embeddings.get(name) : null;
+        AiModelConfig effective = new AiModelConfig();
+        // 1. 继承 rootModel 的基础连接凭据与重试配置
+        if (rootModel != null) {
+            effective.setBaseUrl(rootModel.getBaseUrl());
+            effective.setApiKey(rootModel.getApiKey());
+            effective.setTimeout(rootModel.getTimeout());
+            effective.setMaxRetries(rootModel.getMaxRetries());
+            effective.setRetryInitialInterval(rootModel.getRetryInitialInterval());
+            effective.setRetryMaxInterval(rootModel.getRetryMaxInterval());
+            effective.setRetryMultiplier(rootModel.getRetryMultiplier());
+            effective.setLogRequests(rootModel.getLogRequests());
+            effective.setLogResponses(rootModel.getLogResponses());
+            if (rootModel.getCustomHeaders() != null) {
+                effective.getCustomHeaders().putAll(rootModel.getCustomHeaders());
+            }
+        }
+
+        // 2. 覆盖默认 modelName 与 dimensions
+        effective.setModelName(this.modelName != null && !this.modelName.isBlank() ? this.modelName : DEFAULT_EMBEDDING_MODEL);
+        if (this.dimensions != null) {
+            effective.setDimensions(this.dimensions);
+        }
+
+        // 3. 命名模型配置就近覆盖
+        if (target != null) {
+            if (target.getBaseUrl() != null && !target.getBaseUrl().isBlank()) {
+                effective.setBaseUrl(target.getBaseUrl());
+            }
+            if (target.getApiKey() != null && !target.getApiKey().isBlank()) {
+                effective.setApiKey(target.getApiKey());
+            }
+            if (target.getModelName() != null && !target.getModelName().isBlank()
+                    && !AiModelConfig.DEFAULT_MODEL_NAME.equals(target.getModelName())) {
+                effective.setModelName(target.getModelName());
+            }
+            if (target.getDimensions() != null) {
+                effective.setDimensions(target.getDimensions());
+            }
+            if (target.getTimeout() != null) {
+                effective.setTimeout(target.getTimeout());
+            }
+            if (target.getMaxRetries() != null) {
+                effective.setMaxRetries(target.getMaxRetries());
+            }
+            if (target.getRetryInitialInterval() != null) {
+                effective.setRetryInitialInterval(target.getRetryInitialInterval());
+            }
+            if (target.getRetryMaxInterval() != null) {
+                effective.setRetryMaxInterval(target.getRetryMaxInterval());
+            }
+            if (target.getRetryMultiplier() != null) {
+                effective.setRetryMultiplier(target.getRetryMultiplier());
+            }
+            if (target.getLogRequests() != null) {
+                effective.setLogRequests(target.getLogRequests());
+            }
+            if (target.getLogResponses() != null) {
+                effective.setLogResponses(target.getLogResponses());
+            }
+            if (target.getCustomHeaders() != null && !target.getCustomHeaders().isEmpty()) {
+                effective.getCustomHeaders().putAll(target.getCustomHeaders());
             }
         }
         return effective;

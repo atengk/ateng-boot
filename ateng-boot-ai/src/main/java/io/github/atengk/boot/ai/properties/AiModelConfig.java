@@ -55,6 +55,11 @@ public class AiModelConfig {
     private Integer maxTokens;
 
     /**
+     * 向量特征维度数 (针对 Embedding 向量模型可选配置，例如 1536, 1024, 768 等)
+     */
+    private Integer dimensions;
+
+    /**
      * 网络连接与读取超时阈值
      */
     private Duration timeout = Duration.ofSeconds(60);

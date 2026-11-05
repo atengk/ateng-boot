@@ -21,10 +21,13 @@ import io.github.atengk.boot.ai.rag.rerank.Reranker;
 import io.github.atengk.boot.ai.rag.rerank.RerankingContentRetriever;
 import io.github.atengk.boot.ai.rag.splitter.DocumentSplitter;
 import io.github.atengk.boot.ai.rag.splitter.RecursiveCharacterSplitter;
+import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+
+import java.util.Map;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.AllNestedConditions;
@@ -111,7 +114,55 @@ public class AtengAiRagAutoConfiguration {
         AiModelConfig config = rag.resolveEmbeddingConfig(properties.getModel());
         log.info("自动装配默认 OpenAiEmbeddingModel [modelName={}, baseUrl={}]",
                 config.getModelName(), config.getBaseUrl());
-        return OpenAiModelFactory.createEmbeddingModel(config, rag.getDimensions());
+        return OpenAiModelFactory.createEmbeddingModel(config, config.getDimensions());
+    }
+
+    /**
+     * 自动装配多向量化模型统一注册中心 (EmbeddingModelRegistry)
+     *
+     * @param defaultEmbeddingModelProvider 默认向量化模型提供者 (可选)
+     * @param properties                    AI 根配置属性
+     * @return EmbeddingModelRegistry 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(EmbeddingModelRegistry.class)
+    public EmbeddingModelRegistry embeddingModelRegistry(
+            ObjectProvider<EmbeddingModel> defaultEmbeddingModelProvider,
+            AtengAiProperties properties) {
+        EmbeddingModelRegistry registry = new EmbeddingModelRegistry();
+        AtengAiRagProperties rag = properties.getRag();
+
+        // 1. 注册默认主模型 (若存在)
+        EmbeddingModel defaultModel = defaultEmbeddingModelProvider.getIfAvailable();
+        if (defaultModel != null) {
+            String defaultAlias = rag != null && StringUtils.hasText(rag.getModelName()) ? rag.getModelName() : null;
+            registry.registerDefault(defaultModel, defaultAlias);
+        }
+
+        // 2. 遍历装配命名 embeddings 字典
+        if (rag != null && rag.getEmbeddings() != null && !rag.getEmbeddings().isEmpty()) {
+            for (Map.Entry<String, AiModelConfig> entry : rag.getEmbeddings().entrySet()) {
+                String name = entry.getKey();
+                AiModelConfig rawConfig = entry.getValue();
+                if (rawConfig == null) {
+                    continue;
+                }
+                AiModelConfig effectiveConfig = rag.resolveNamedEmbeddingConfig(name, properties.getModel());
+                if (effectiveConfig.isConfigured() || StringUtils.hasText(effectiveConfig.getApiKey())) {
+                    Integer dim = effectiveConfig.getDimensions();
+                    EmbeddingModel namedModel = OpenAiModelFactory.createEmbeddingModel(effectiveConfig, dim);
+                    registry.register(name, namedModel);
+                    if (StringUtils.hasText(effectiveConfig.getModelName()) && !name.equalsIgnoreCase(effectiveConfig.getModelName())) {
+                        registry.register(effectiveConfig.getModelName(), namedModel);
+                    }
+                    log.info("自动装配命名 EmbeddingModel [name={}, modelName={}, baseUrl={}, dimension={}]",
+                            name, effectiveConfig.getModelName(), effectiveConfig.getBaseUrl(), dim);
+                } else {
+                    log.warn("命名 EmbeddingModel [{}] 未配置有效 api-key，跳过自动注册", name);
+                }
+            }
+        }
+        return registry;
     }
 
     /**
@@ -127,22 +178,27 @@ public class AtengAiRagAutoConfiguration {
     }
 
     /**
-     * 自动装配统一向量化嵌入门面 EmbeddingTemplate (支持待命平滑探测)
+     * 自动装配统一向量化嵌入门面 EmbeddingTemplate (支持待命平滑探测、多模型动态路由与默认向量库自动绑定)
      *
-     * @param embeddingModelProvider 向量化模型提供者
-     * @param properties             AI 根配置属性
+     * @param embeddingModelProvider         向量化模型提供者
+     * @param embeddingModelRegistryProvider 多向量化模型注册中心提供者
+     * @param embeddingStoreProvider         默认向量存储库提供者
+     * @param properties                     AI 根配置属性
      * @return EmbeddingTemplate 实例
      */
     @Bean
     @ConditionalOnMissingBean(EmbeddingTemplate.class)
     public EmbeddingTemplate embeddingTemplate(
             ObjectProvider<EmbeddingModel> embeddingModelProvider,
+            ObjectProvider<EmbeddingModelRegistry> embeddingModelRegistryProvider,
+            ObjectProvider<EmbeddingStore<TextSegment>> embeddingStoreProvider,
             AtengAiProperties properties) {
         EmbeddingModel embeddingModel = embeddingModelProvider.getIfAvailable();
-        if (embeddingModel == null) {
+        EmbeddingModelRegistry registry = embeddingModelRegistryProvider.getIfAvailable();
+        if (embeddingModel == null && (registry == null || registry.size() == 0)) {
             log.info("ateng-boot-ai 未检测到任何有效的大模型 API Key 配置，EmbeddingTemplate 处于待命状态。");
         }
-        return new EmbeddingTemplate(embeddingModel, properties);
+        return new EmbeddingTemplate(embeddingModel, registry, embeddingStoreProvider, properties);
     }
 
     /**

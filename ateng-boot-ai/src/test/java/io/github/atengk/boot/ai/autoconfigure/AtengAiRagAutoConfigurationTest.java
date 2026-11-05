@@ -6,6 +6,7 @@ import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -185,6 +186,33 @@ class AtengAiRagAutoConfigurationTest {
         contextRunner.run(context -> {
             assertThat(context).hasNotFailed();
             assertThat(context).hasSingleBean(io.github.atengk.boot.ai.rag.splitter.DocumentSplitter.class);
+        });
+    }
+
+    @Test
+    @DisplayName("自动装配 EmbeddingModelRegistry 并在配置命名 embeddings 时自动注册多模型")
+    void testMultiModelEmbeddingRegistryAutoConfiguration() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.ai.model.api-key=default-key",
+                "ateng.boot.ai.rag.embeddings.bge-large.base-url=https://api.siliconflow.cn/v1",
+                "ateng.boot.ai.rag.embeddings.bge-large.api-key=silicon-key",
+                "ateng.boot.ai.rag.embeddings.bge-large.model-name=BAAI/bge-large-zh-v1.5",
+                "ateng.boot.ai.rag.embeddings.bge-large.dimensions=1024",
+                "ateng.boot.ai.rag.embeddings.text-3-large.model-name=text-embedding-3-large",
+                "ateng.boot.ai.rag.embeddings.text-3-large.dimensions=3072"
+        ).run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(EmbeddingModelRegistry.class);
+            EmbeddingModelRegistry registry = context.getBean(EmbeddingModelRegistry.class);
+
+            assertThat(registry.hasModel("default")).isTrue();
+            assertThat(registry.hasModel("bge-large")).isTrue();
+            assertThat(registry.hasModel("BAAI/bge-large-zh-v1.5")).isTrue();
+            assertThat(registry.hasModel("text-3-large")).isTrue();
+
+            EmbeddingTemplate template = context.getBean(EmbeddingTemplate.class);
+            assertThat(template.isAvailable()).isTrue();
+            assertThat(template.getRegistry()).isSameAs(registry);
         });
     }
 }
