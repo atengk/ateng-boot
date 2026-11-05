@@ -51,9 +51,10 @@ public class SandboxedToolExecutor implements ToolExecutor {
     private final Object target;
     private final Method method;
     private final String toolName;
+    private final ToolExecutor delegate;
 
     /**
-     * 构造沙箱工具执行器
+     * 构造基于反射的目标 Bean 方法沙箱工具执行器
      *
      * @param target   目标工具 Bean 实例
      * @param method   工具执行方法
@@ -63,7 +64,35 @@ public class SandboxedToolExecutor implements ToolExecutor {
         this.target = Objects.requireNonNull(target, "工具目标实例不能为空");
         this.method = Objects.requireNonNull(method, "工具目标方法不能为空");
         this.toolName = StringUtils.hasText(toolName) ? toolName : method.getName();
+        this.delegate = null;
         this.method.setAccessible(true);
+    }
+
+    /**
+     * 构造基于委托执行器的沙箱工具执行器（用于 MCP 客户端或外部动态工具）
+     *
+     * @param toolName 工具方法名称
+     * @param delegate 委托执行器
+     */
+    public SandboxedToolExecutor(String toolName, ToolExecutor delegate) {
+        this.target = null;
+        this.method = null;
+        this.toolName = StringUtils.hasText(toolName) ? toolName : "UnknownTool";
+        this.delegate = Objects.requireNonNull(delegate, "委托执行器 delegate 不能为空");
+    }
+
+    /**
+     * 将任意 ToolExecutor 包装为受管沙箱执行器
+     *
+     * @param toolName 工具方法名称
+     * @param delegate 目标执行器
+     * @return 沙箱包装执行器
+     */
+    public static ToolExecutor wrap(String toolName, ToolExecutor delegate) {
+        if (delegate instanceof SandboxedToolExecutor) {
+            return delegate;
+        }
+        return new SandboxedToolExecutor(toolName, delegate);
     }
 
     @Override
@@ -75,6 +104,14 @@ public class SandboxedToolExecutor implements ToolExecutor {
 
         long start = System.currentTimeMillis();
         try {
+            // 若为委托执行器（如 MCP 工具）
+            if (delegate != null) {
+                String result = delegate.execute(request, memoryId);
+                long duration = System.currentTimeMillis() - start;
+                log.info("[AI-TOOL-EXEC] [traceId: {}] Tool [{}] executed successfully in {} ms", traceId, toolName, duration);
+                return result != null ? result : "Success";
+            }
+
             // 1. 解析入参 JSON Map 并按方法签名对齐准备入参
             Map<String, Object> argumentsMap = (Map<String, Object>) ARGUMENTS_AS_MAP_METHOD.invoke(null, arguments);
             Object[] args = (Object[]) PREPARE_ARGUMENTS_METHOD.invoke(null, method, argumentsMap, memoryId);
@@ -98,34 +135,32 @@ public class SandboxedToolExecutor implements ToolExecutor {
         } catch (InvocationTargetException ite) {
             long duration = System.currentTimeMillis() - start;
             Throwable targetEx = ite.getTargetException();
-
-            // 致命系统级严重错误坚决 Fail-Fast
-            if (targetEx instanceof Error error) {
-                log.error("[AI-TOOL-EXEC] [traceId: {}] Fatal system error executing tool [{}] in {} ms: {}",
-                        traceId, toolName, duration, error.getMessage());
-                throw error;
-            }
-
-            log.warn("[AI-TOOL-EXEC] [traceId: {}] Tool [{}] execution intercepted exception in {} ms: {}",
-                    traceId, toolName, duration, targetEx.getMessage(), targetEx);
-
-            // 业务受控异常转译为语义化自愈反馈给大模型反思修正
-            if (targetEx instanceof BusinessException be) {
-                return "工具执行业务拦截: [" + be.getCode() + "] " + be.getMessage();
-            }
-            if (targetEx instanceof IllegalArgumentException iae) {
-                return "工具入参校验失败: " + iae.getMessage();
-            }
-            return "工具执行失败: " + targetEx.getMessage();
+            return handleException(traceId, duration, targetEx);
         } catch (Throwable t) {
             long duration = System.currentTimeMillis() - start;
-            if (t instanceof Error error) {
-                throw error;
-            }
-            log.warn("[AI-TOOL-EXEC] [traceId: {}] Tool [{}] invocation error in {} ms: {}",
-                    traceId, toolName, duration, t.getMessage(), t);
-            return "工具执行失败: " + t.getMessage();
+            return handleException(traceId, duration, t);
         }
+    }
+
+    private String handleException(String traceId, long duration, Throwable targetEx) {
+        // 致命系统级严重错误坚决 Fail-Fast
+        if (targetEx instanceof Error error) {
+            log.error("[AI-TOOL-EXEC] [traceId: {}] Fatal system error executing tool [{}] in {} ms: {}",
+                    traceId, toolName, duration, error.getMessage());
+            throw error;
+        }
+
+        log.warn("[AI-TOOL-EXEC] [traceId: {}] Tool [{}] execution intercepted exception in {} ms: {}",
+                traceId, toolName, duration, targetEx.getMessage(), targetEx);
+
+        // 业务受控异常转译为语义化自愈反馈给大模型反思修正
+        if (targetEx instanceof BusinessException be) {
+            return "工具执行业务拦截: [" + be.getCode() + "] " + be.getMessage();
+        }
+        if (targetEx instanceof IllegalArgumentException iae) {
+            return "工具入参校验失败: " + iae.getMessage();
+        }
+        return "工具执行失败: " + targetEx.getMessage();
     }
 
     public Object getTarget() {

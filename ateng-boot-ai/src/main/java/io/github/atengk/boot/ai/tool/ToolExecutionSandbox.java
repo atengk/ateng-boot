@@ -6,6 +6,8 @@ import dev.langchain4j.agent.tool.ToolSpecifications;
 import dev.langchain4j.service.tool.ToolExecutor;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.exception.AiException;
+import io.github.atengk.boot.ai.mcp.McpClientAdapter;
+import io.github.atengk.boot.ai.mcp.McpClientRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
@@ -88,6 +90,77 @@ public final class ToolExecutionSandbox {
         Set<String> registeredToolNames = new HashSet<>();
         wrapToolBean(toolBean, toolBean.getClass(), registeredToolNames, sandboxedTools, "AnonymousAgent");
         return Collections.unmodifiableMap(sandboxedTools);
+    }
+
+    /**
+     * 将任意给定的工具对象集合解析并包装为受管沙箱工具映射
+     * <p>
+     * 支持入参包含：
+     * 1. 声明了 @Tool 注解方法的 POJO 实例对象
+     * 2. 远程 {@link McpClientAdapter} 客户端适配器
+     * 3. 远程 {@link McpClientRegistry} 注册中心
+     * 4. 已有的 {@code Map<ToolSpecification, ToolExecutor>} 工具映射字典
+     * </p>
+     *
+     * @param toolObjects 动态工具对象集合
+     * @return 智能体工具规格到沙箱执行器的映射字典
+     */
+    public static Map<ToolSpecification, ToolExecutor> wrapToolBeans(Collection<?> toolObjects) {
+        if (toolObjects == null || toolObjects.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        Map<ToolSpecification, ToolExecutor> sandboxedTools = new LinkedHashMap<>();
+        Set<String> registeredToolNames = new HashSet<>();
+
+        for (Object item : toolObjects) {
+            if (item == null) {
+                continue;
+            }
+
+            if (item instanceof McpClientAdapter adapter) {
+                Map<ToolSpecification, ToolExecutor> tools = adapter.getTools();
+                if (tools != null) {
+                    for (Map.Entry<ToolSpecification, ToolExecutor> entry : tools.entrySet()) {
+                        registerSpecification(entry.getKey(), entry.getValue(), registeredToolNames, sandboxedTools, "Mcp-" + adapter.getServerName());
+                    }
+                }
+            } else if (item instanceof McpClientRegistry registry) {
+                Map<ToolSpecification, ToolExecutor> tools = registry.getAllTools();
+                if (tools != null) {
+                    for (Map.Entry<ToolSpecification, ToolExecutor> entry : tools.entrySet()) {
+                        registerSpecification(entry.getKey(), entry.getValue(), registeredToolNames, sandboxedTools, "McpRegistry");
+                    }
+                }
+            } else if (item instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (entry.getKey() instanceof ToolSpecification spec && entry.getValue() instanceof ToolExecutor executor) {
+                        registerSpecification(spec, executor, registeredToolNames, sandboxedTools, "DynamicMap");
+                    }
+                }
+            } else {
+                wrapToolBean(item, item.getClass(), registeredToolNames, sandboxedTools, "DynamicTool-" + item.getClass().getSimpleName());
+            }
+        }
+
+        return Collections.unmodifiableMap(sandboxedTools);
+    }
+
+    private static void registerSpecification(
+            ToolSpecification spec,
+            ToolExecutor executor,
+            Set<String> registeredToolNames,
+            Map<ToolSpecification, ToolExecutor> sandboxedTools,
+            String sourceName) {
+        if (spec == null || executor == null) {
+            return;
+        }
+        String toolName = spec.name();
+        if (!registeredToolNames.add(toolName)) {
+            log.warn("动态工具注册发现重名工具: [{}] (来源: {})，将覆盖原有同名工具", toolName, sourceName);
+        }
+        sandboxedTools.put(spec, SandboxedToolExecutor.wrap(toolName, executor));
+        log.debug("成功注册动态沙箱工具: [{}] (来源: {})", toolName, sourceName);
     }
 
     private static void wrapToolBean(

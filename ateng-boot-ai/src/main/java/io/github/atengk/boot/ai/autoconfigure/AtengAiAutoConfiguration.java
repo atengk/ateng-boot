@@ -18,11 +18,14 @@ import io.github.atengk.boot.ai.failover.NamedModel;
 import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
 import io.github.atengk.boot.ai.guardrail.AiGuardrail;
 import io.github.atengk.boot.ai.guardrail.DefaultAiGuardrail;
+import io.github.atengk.boot.ai.mcp.HttpMcpClientAdapter;
+import io.github.atengk.boot.ai.mcp.McpClientRegistry;
 import io.github.atengk.boot.ai.memory.ChatMemoryManager;
 import io.github.atengk.boot.ai.memory.HeuristicTokenizer;
 import io.github.atengk.boot.ai.memory.store.ChatMemoryStore;
 import io.github.atengk.boot.ai.memory.store.InMemoryChatMemoryStore;
 import io.github.atengk.boot.ai.memory.store.RedisChatMemoryStore;
+import io.github.atengk.boot.ai.properties.AtengAiMcpProperties;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.ChatMemoryProperties;
 import io.github.atengk.boot.ai.properties.ChatMemoryStoreType;
@@ -452,6 +455,36 @@ public class AtengAiAutoConfiguration {
             log.debug("初始化 OpenAiTokenizer 失败，使用纯原生 HeuristicTokenizer 保底: {}", t.getMessage());
             return new HeuristicTokenizer();
         }
+    }
+
+    /**
+     * 远程 MCP (Model Context Protocol) 客户端注册中心自动装配
+     *
+     * @param properties AI 根配置属性
+     * @return McpClientRegistry 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.mcp", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public McpClientRegistry mcpClientRegistry(AtengAiProperties properties) {
+        McpClientRegistry registry = new McpClientRegistry();
+        AtengAiMcpProperties mcpConfig = properties.getMcp();
+        if (mcpConfig != null && mcpConfig.getServers() != null && !mcpConfig.getServers().isEmpty()) {
+            mcpConfig.getServers().forEach((serverName, serverConfig) -> {
+                if (serverConfig != null && StringUtils.hasText(serverConfig.getUrl())) {
+                    log.info("[AI-MCP] 正在初始化远程 MCP 服务端端点 [name={}, url={}]", serverName, serverConfig.getUrl());
+                    HttpMcpClientAdapter adapter = new HttpMcpClientAdapter(
+                            serverName,
+                            serverConfig.getUrl(),
+                            serverConfig.getTimeout(),
+                            serverConfig.getApiKey(),
+                            serverConfig.isEagerInit()
+                    );
+                    registry.register(serverName, adapter);
+                }
+            });
+        }
+        return registry;
     }
 
     /**

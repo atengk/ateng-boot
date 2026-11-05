@@ -67,6 +67,12 @@ public class AtengAiProperties {
     private AtengAiRagProperties rag = new AtengAiRagProperties();
 
     /**
+     * MCP (Model Context Protocol) 标准客户端强类型配置
+     */
+    @NestedConfigurationProperty
+    private AtengAiMcpProperties mcp = new AtengAiMcpProperties();
+
+    /**
      * SaaS 多租户专有模型绑定映射 (key 为租户标识 tenantId，value 为绑定的专有模型标识别名)
      */
     private Map<String, String> tenantModels = new LinkedHashMap<>();

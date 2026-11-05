@@ -25,6 +25,9 @@ import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
 import io.github.atengk.boot.ai.streaming.SseTokenStreamBridge;
 import io.github.atengk.boot.ai.streaming.StreamContextHolder;
 import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
+import io.github.atengk.boot.ai.tool.DynamicToolChatService;
+import io.github.atengk.boot.ai.tool.DynamicToolStreamService;
+import io.github.atengk.boot.ai.tool.ToolExecutionSandbox;
 import io.github.atengk.boot.ai.util.ImageContentParser;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.IdUtil;
@@ -33,6 +36,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.TokenStream;
+import dev.langchain4j.service.tool.ToolExecutor;
 
 import java.time.Duration;
 import java.util.*;
@@ -708,6 +715,274 @@ public class AiTemplate {
             }
         } catch (Throwable t) {
             bridge.onError(t);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 编程式动态工具与 MCP 客户端对话 (chatWithTools / streamWithTools)
+    // -------------------------------------------------------------------------
+
+    /**
+     * 携带动态工具实例列表发起同步对话 (使用当前上下文或默认模型)
+     *
+     * @param prompt 用户提示词
+     * @param tools  动态工具对象列表 (支持标注 @Tool 的 POJO、McpClientAdapter、McpClientRegistry 或工具映射)
+     * @return 大模型响应文本
+     */
+    public String chatWithTools(String prompt, List<Object> tools) {
+        return chatWithTools(null, prompt, tools);
+    }
+
+    /**
+     * 携带动态工具实例列表发起同步对话 (变长参数便捷重载)
+     *
+     * @param prompt 用户提示词
+     * @param tools  动态工具对象数组
+     * @return 大模型响应文本
+     */
+    public String chatWithTools(String prompt, Object... tools) {
+        List<Object> list = tools != null ? Arrays.asList(tools) : Collections.emptyList();
+        return chatWithTools(null, prompt, list);
+    }
+
+    /**
+     * 指定模型名称并携带动态工具实例列表发起同步对话 (变长参数便捷重载)
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    用户提示词
+     * @param tools     动态工具对象数组
+     * @return 大模型响应文本
+     */
+    public String chatWithTools(String modelName, String prompt, Object... tools) {
+        List<Object> list = tools != null ? Arrays.asList(tools) : Collections.emptyList();
+        return chatWithTools(modelName, prompt, list);
+    }
+
+    /**
+     * 指定模型名称并携带动态工具实例列表发起同步对话
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    用户提示词
+     * @param tools     动态工具对象列表
+     * @return 大模型响应文本
+     */
+    public String chatWithTools(String modelName, String prompt, List<Object> tools) {
+        if (!StringUtils.hasText(prompt)) {
+            throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "用户提示词 prompt 不能为空");
+        }
+
+        // 0. 前置内容安全护栏检查
+        if (guardrail != null) {
+            GuardrailResult preResult = guardrail.inspectPrompt(prompt.trim());
+            if (preResult.getAction() == GuardrailAction.BLOCK) {
+                throw new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, preResult.getReason());
+            }
+            if (preResult.getAction() == GuardrailAction.REPLACE) {
+                return preResult.getSafeContent();
+            }
+        }
+
+        String effectiveModelName = resolveEffectiveModelName(modelName);
+        String tenantId = TenantContextHolder.getTenantId();
+
+        // 1. 前置配额与微观突发限流风控防卫 (Fail-Fast)
+        int promptTokens = estimatePromptTokens(Collections.singletonList(UserMessage.from(prompt.trim())));
+        if (rateLimiter != null) {
+            rateLimiter.acquire(tenantId, effectiveModelName, promptTokens);
+        }
+        if (quotaChecker != null) {
+            quotaChecker.checkQuota(tenantId, effectiveModelName, promptTokens);
+        }
+
+        try {
+            ChatLanguageModel model = resolveChatModel(effectiveModelName);
+            Map<ToolSpecification, ToolExecutor> sandboxedTools = ToolExecutionSandbox.wrapToolBeans(tools);
+
+            // 2. 构造 LangChain4j AiServices 局部代理并调用
+            AiServices<DynamicToolChatService> builder =
+                    AiServices.builder(DynamicToolChatService.class)
+                            .chatLanguageModel(model);
+            if (sandboxedTools != null && !sandboxedTools.isEmpty()) {
+                builder.tools(sandboxedTools);
+            }
+
+            DynamicToolChatService service = builder.build();
+            String responseText = service.chat(prompt.trim());
+
+            // 3. 统计并累计记录配额消耗
+            if (quotaChecker != null) {
+                int totalTokens = promptTokens + (StringUtils.hasText(responseText)
+                        ? estimatePromptTokens(Collections.singletonList(UserMessage.from(responseText)))
+                        : 0);
+                quotaChecker.recordUsage(tenantId, effectiveModelName, totalTokens);
+            }
+
+            // 4. 后置内容安全护栏检查
+            if (guardrail != null && StringUtils.hasText(responseText)) {
+                GuardrailResult postResult = guardrail.inspectResponse(responseText);
+                if (postResult.getAction() == GuardrailAction.BLOCK) {
+                    throw new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, postResult.getReason());
+                }
+                if (postResult.getAction() == GuardrailAction.REPLACE) {
+                    return postResult.getSafeContent();
+                }
+            }
+
+            return responseText;
+        } catch (Throwable t) {
+            throw AiExceptionTranslator.translate(t);
+        }
+    }
+
+    /**
+     * 携带动态工具实例列表发起流式对话并自动创建返回 SseEmitter (使用当前上下文或默认模型)
+     *
+     * @param prompt 用户提示词
+     * @param tools  动态工具对象列表
+     * @return SseEmitter 实例
+     */
+    public SseEmitter streamWithTools(String prompt, List<Object> tools) {
+        SseEmitter emitter = new SseEmitter(DEFAULT_SSE_TIMEOUT.toMillis());
+        streamWithTools(prompt, tools, emitter);
+        return emitter;
+    }
+
+    /**
+     * 指定模型并携带动态工具实例列表发起流式对话并自动创建返回 SseEmitter
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    用户提示词
+     * @param tools     动态工具对象列表
+     * @return SseEmitter 实例
+     */
+    public SseEmitter streamWithTools(String modelName, String prompt, List<Object> tools) {
+        SseEmitter emitter = new SseEmitter(DEFAULT_SSE_TIMEOUT.toMillis());
+        streamWithTools(modelName, prompt, tools, emitter);
+        return emitter;
+    }
+
+    /**
+     * 携带动态工具实例列表发起流式推流 (使用当前上下文或默认模型)
+     *
+     * @param prompt  用户提示词
+     * @param tools   动态工具对象列表
+     * @param emitter Spring MVC SseEmitter 实例
+     */
+    public void streamWithTools(String prompt, List<Object> tools, SseEmitter emitter) {
+        streamWithTools(null, prompt, tools, emitter, IdUtil.fastSimpleUUID());
+    }
+
+    /**
+     * 携带动态工具实例列表发起流式推流并绑定指定 streamId
+     *
+     * @param prompt   用户提示词
+     * @param tools    动态工具对象列表
+     * @param emitter  Spring MVC SseEmitter 实例
+     * @param streamId 流式唯一标识
+     */
+    public void streamWithTools(String prompt, List<Object> tools, SseEmitter emitter, String streamId) {
+        streamWithTools(null, prompt, tools, emitter, streamId);
+    }
+
+    /**
+     * 指定模型并携带动态工具实例列表发起流式推流
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    用户提示词
+     * @param tools     动态工具对象列表
+     * @param emitter   Spring MVC SseEmitter 实例
+     */
+    public void streamWithTools(String modelName, String prompt, List<Object> tools, SseEmitter emitter) {
+        streamWithTools(modelName, prompt, tools, emitter, IdUtil.fastSimpleUUID());
+    }
+
+    /**
+     * 携带动态工具实例变长参数发起流式推流 (变长语法糖)
+     *
+     * @param prompt  用户提示词
+     * @param emitter Spring MVC SseEmitter 实例
+     * @param tools   动态工具对象数组
+     */
+    public void streamWithTools(String prompt, SseEmitter emitter, Object... tools) {
+        List<Object> list = tools != null ? Arrays.asList(tools) : Collections.emptyList();
+        streamWithTools(null, prompt, list, emitter, IdUtil.fastSimpleUUID());
+    }
+
+    /**
+     * 指定模型并携带动态工具实例变长参数发起流式推流 (变长语法糖)
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    用户提示词
+     * @param emitter   Spring MVC SseEmitter 实例
+     * @param tools     动态工具对象数组
+     */
+    public void streamWithTools(String modelName, String prompt, SseEmitter emitter, Object... tools) {
+        List<Object> list = tools != null ? Arrays.asList(tools) : Collections.emptyList();
+        streamWithTools(modelName, prompt, list, emitter, IdUtil.fastSimpleUUID());
+    }
+
+    /**
+     * 指定模型并携带动态工具实例列表发起流式推流并绑定指定 streamId
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    用户提示词
+     * @param tools     动态工具对象列表
+     * @param emitter   Spring MVC SseEmitter 实例
+     * @param streamId  流式唯一标识
+     */
+    public void streamWithTools(String modelName, String prompt, List<Object> tools, SseEmitter emitter, String streamId) {
+        if (emitter == null) {
+            throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "SseEmitter 不能为空");
+        }
+        String effectiveStreamId = StringUtils.hasText(streamId) ? streamId.trim() : IdUtil.fastSimpleUUID();
+        if (!StringUtils.hasText(prompt)) {
+            SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, activeStreamRegistry);
+            bridge.onError(new AiException(AiResultCode.AI_INVALID_PAYLOAD, "用户提示词 prompt 不能为空"));
+            return;
+        }
+
+        // 0. 前置内容安全护栏检查
+        if (guardrail != null) {
+            GuardrailResult preResult = guardrail.inspectPrompt(prompt.trim());
+            if (preResult.getAction() == GuardrailAction.BLOCK) {
+                SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, activeStreamRegistry);
+                bridge.onError(new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, preResult.getReason()));
+                return;
+            }
+        }
+
+        String effectiveModelName = resolveEffectiveModelName(modelName);
+        String tenantId = TenantContextHolder.getTenantId();
+
+        // 1. 前置配额与微观突发限流防卫
+        int promptTokens = estimatePromptTokens(Collections.singletonList(UserMessage.from(prompt.trim())));
+        if (rateLimiter != null) {
+            rateLimiter.acquire(tenantId, effectiveModelName, promptTokens);
+        }
+        if (quotaChecker != null) {
+            quotaChecker.checkQuota(tenantId, effectiveModelName, promptTokens);
+        }
+
+        try {
+            StreamingChatLanguageModel streamingModel = resolveStreamingChatModel(effectiveModelName);
+            Map<ToolSpecification, ToolExecutor> sandboxedTools = ToolExecutionSandbox.wrapToolBeans(tools);
+
+            // 2. 构造 LangChain4j 流式 AiServices 代理
+            AiServices<DynamicToolStreamService> builder =
+                    AiServices.builder(DynamicToolStreamService.class)
+                            .streamingChatLanguageModel(streamingModel);
+            if (sandboxedTools != null && !sandboxedTools.isEmpty()) {
+                builder.tools(sandboxedTools);
+            }
+
+            DynamicToolStreamService service = builder.build();
+            TokenStream tokenStream = service.stream(prompt.trim());
+
+            // 3. 将 TokenStream 管道接入 SseTokenStreamBridge
+            SseTokenStreamBridge.pipe(tokenStream, emitter, effectiveStreamId, activeStreamRegistry);
+        } catch (Throwable t) {
+            SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, activeStreamRegistry);
+            bridge.onError(AiExceptionTranslator.translate(t));
         }
     }
 
