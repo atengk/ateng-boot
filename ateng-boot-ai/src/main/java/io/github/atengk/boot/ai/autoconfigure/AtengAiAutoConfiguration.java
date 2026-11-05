@@ -12,6 +12,9 @@ import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiTokenizer;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.failover.FailoverChatLanguageModel;
+import io.github.atengk.boot.ai.failover.FailoverStreamingChatLanguageModel;
+import io.github.atengk.boot.ai.failover.NamedModel;
 import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
 import io.github.atengk.boot.ai.guardrail.AiGuardrail;
 import io.github.atengk.boot.ai.guardrail.DefaultAiGuardrail;
@@ -29,6 +32,9 @@ import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
 import io.github.atengk.boot.ai.template.AiTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.util.StringUtils;
+
+import java.util.ArrayList;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
@@ -189,10 +195,86 @@ public class AtengAiAutoConfiguration {
             });
         }
 
+        // 3. 构建多模型故障自动转移 (Failover) 包装代理
+        applyFailoverWrappers(registry, properties);
+
         if (!registry.hasModels()) {
             log.info("ateng-boot-ai 未检测到任何有效的大模型 API Key 配置，模型注册表处于待命状态。");
         }
         return registry;
+    }
+
+    private void applyFailoverWrappers(AiModelRegistry registry, AtengAiProperties properties) {
+        if (properties == null) {
+            return;
+        }
+
+        // 3.1 遍历命名多模型拓扑
+        if (properties.getModels() != null && !properties.getModels().isEmpty()) {
+            properties.getModels().forEach((name, config) -> {
+                if (config != null && !config.getFallbacks().isEmpty()) {
+                    wrapModelWithFailover(registry, name, config);
+                }
+            });
+        }
+
+        // 3.2 检查主默认模型是否配置了 fallbacks
+        if (properties.getModel() != null && !properties.getModel().getFallbacks().isEmpty()) {
+            wrapModelWithFailover(registry, AiModelRegistry.DEFAULT_MODEL_NAME, properties.getModel());
+            String defaultAlias = properties.getModel().getModelName();
+            if (StringUtils.hasText(defaultAlias) && !AiModelRegistry.DEFAULT_MODEL_NAME.equalsIgnoreCase(defaultAlias.trim())) {
+                wrapModelWithFailover(registry, defaultAlias.trim(), properties.getModel());
+            }
+        }
+    }
+
+    private void wrapModelWithFailover(AiModelRegistry registry, String primaryName, io.github.atengk.boot.ai.properties.AiModelConfig config) {
+        List<String> fallbacks = config.getFallbacks();
+        java.time.Duration totalTimeout = config.getTotalTimeout() != null ? config.getTotalTimeout() : config.getTimeout();
+
+        // 同步聊天模型故障转移包装
+        if (registry.hasChatModel(primaryName)) {
+            ChatLanguageModel primaryChatModel = registry.getChatModel(primaryName);
+            List<NamedModel<ChatLanguageModel>> chatCandidates = new ArrayList<>();
+            chatCandidates.add(NamedModel.of(primaryName, primaryChatModel));
+
+            for (String fallbackName : fallbacks) {
+                if (registry.hasChatModel(fallbackName)) {
+                    chatCandidates.add(NamedModel.of(fallbackName, registry.getChatModel(fallbackName)));
+                } else {
+                    log.warn("[AI-FAILOVER] 大模型 [{}] 配置的备选模型 [{}] 未在注册中心找到，已忽略", primaryName, fallbackName);
+                }
+            }
+
+            if (chatCandidates.size() > 1) {
+                FailoverChatLanguageModel failoverChatModel = new FailoverChatLanguageModel(chatCandidates, totalTimeout);
+                registry.registerChatModel(primaryName, failoverChatModel);
+                log.info("已为大模型 [{}] 启用 FailoverChatLanguageModel 故障自动转移 [候选序列={}, totalTimeout={}]",
+                        primaryName, chatCandidates.stream().map(NamedModel::name).toList(), totalTimeout);
+            }
+        }
+
+        // 流式聊天模型故障转移包装
+        if (registry.hasStreamingChatModel(primaryName)) {
+            StreamingChatLanguageModel primaryStreamingModel = registry.getStreamingChatModel(primaryName);
+            List<NamedModel<StreamingChatLanguageModel>> streamingCandidates = new ArrayList<>();
+            streamingCandidates.add(NamedModel.of(primaryName, primaryStreamingModel));
+
+            for (String fallbackName : fallbacks) {
+                if (registry.hasStreamingChatModel(fallbackName)) {
+                    streamingCandidates.add(NamedModel.of(fallbackName, registry.getStreamingChatModel(fallbackName)));
+                } else {
+                    log.warn("[AI-FAILOVER-STREAM] 流式模型 [{}] 配置的备选模型 [{}] 未在注册中心找到，已忽略", primaryName, fallbackName);
+                }
+            }
+
+            if (streamingCandidates.size() > 1) {
+                FailoverStreamingChatLanguageModel failoverStreamingModel = new FailoverStreamingChatLanguageModel(streamingCandidates, totalTimeout);
+                registry.registerStreamingChatModel(primaryName, failoverStreamingModel);
+                log.info("已为大模型 [{}] 启用 FailoverStreamingChatLanguageModel 故障自动转移 [候选序列={}, totalTimeout={}]",
+                        primaryName, streamingCandidates.stream().map(NamedModel::name).toList(), totalTimeout);
+            }
+        }
     }
 
     /**

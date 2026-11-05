@@ -4,8 +4,10 @@ import lombok.Data;
 import org.springframework.util.StringUtils;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -91,6 +93,29 @@ public class AiModelConfig {
      * 自定义 HTTP 请求头拓扑
      */
     private Map<String, String> customHeaders = new LinkedHashMap<>();
+
+    /**
+     * 故障自动转移备选模型名称序列 (按优先级排序，例如 [backup-a, backup-b])
+     */
+    private List<String> fallbacks = new ArrayList<>();
+
+    /**
+     * 故障转移与重试的总全局时延预算 (Total Deadline Budget，例如 30s)
+     * 若未显式配置，则自动采用模型自身的 timeout 乘以候选模型数或采用单次 timeout
+     */
+    private Duration totalTimeout;
+
+    /**
+     * 获取不可变备选模型列表，防御外部篡改
+     *
+     * @return 只读备选模型名称 List
+     */
+    public List<String> getFallbacks() {
+        if (fallbacks == null || fallbacks.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Collections.unmodifiableList(fallbacks);
+    }
 
     /**
      * 判断当前模型配置是否具备有效的 API 访问凭据
