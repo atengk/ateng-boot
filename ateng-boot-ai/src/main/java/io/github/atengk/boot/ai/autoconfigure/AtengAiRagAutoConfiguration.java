@@ -12,6 +12,11 @@ import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
+import io.github.atengk.boot.ai.rag.query.QueryTransformer;
+import io.github.atengk.boot.ai.rag.query.RewriteQueryRetriever;
+import io.github.atengk.boot.ai.rag.rerank.OpenAiCompatibleReranker;
+import io.github.atengk.boot.ai.rag.rerank.Reranker;
+import io.github.atengk.boot.ai.rag.rerank.RerankingContentRetriever;
 import io.github.atengk.boot.ai.rag.splitter.DocumentSplitter;
 import io.github.atengk.boot.ai.rag.splitter.RecursiveCharacterSplitter;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
@@ -28,6 +33,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
+import org.springframework.util.StringUtils;
 
 /**
  * AI RAG 企业知识库与向量检索自适应自动装配
@@ -119,11 +125,13 @@ public class AtengAiRagAutoConfiguration {
     }
 
     /**
-     * 自动组装并注册 RAG 向量检索组件 ContentRetriever (EmbeddingStoreContentRetriever)
+     * 自动组装并注册 RAG 知识库检索组件 ContentRetriever (支持向量召回、两阶段重排与多轮查询改写自适应包装)
      *
-     * @param embeddingStoreProvider 向量存储实现提供者
-     * @param embeddingModelProvider 向量化模型提供者
-     * @param properties             AI 根配置属性
+     * @param embeddingStoreProvider   向量存储实现提供者
+     * @param embeddingModelProvider   向量化模型提供者
+     * @param rerankerProvider         重排模型提供者 (可选)
+     * @param queryTransformerProvider 多轮查询改写器提供者 (可选)
+     * @param properties               AI 根配置属性
      * @return ContentRetriever 实例
      */
     @Bean
@@ -131,6 +139,8 @@ public class AtengAiRagAutoConfiguration {
     public ContentRetriever contentRetriever(
             ObjectProvider<EmbeddingStore<TextSegment>> embeddingStoreProvider,
             ObjectProvider<EmbeddingModel> embeddingModelProvider,
+            ObjectProvider<Reranker> rerankerProvider,
+            ObjectProvider<QueryTransformer> queryTransformerProvider,
             AtengAiProperties properties) {
         EmbeddingStore<TextSegment> embeddingStore = embeddingStoreProvider.getIfAvailable();
         EmbeddingModel embeddingModel = embeddingModelProvider.getIfAvailable();
@@ -142,16 +152,58 @@ public class AtengAiRagAutoConfiguration {
             };
         }
         AtengAiRagProperties rag = properties.getRag();
+        Reranker reranker = rerankerProvider.getIfAvailable();
+        int initialResults = reranker != null ? Math.max(rag.getMaxResults() * 3, 10) : rag.getMaxResults();
+
         EmbeddingStoreContentRetriever.EmbeddingStoreContentRetrieverBuilder builder = EmbeddingStoreContentRetriever.builder()
                 .embeddingStore(embeddingStore)
                 .embeddingModel(embeddingModel)
-                .maxResults(rag.getMaxResults());
-        if (rag.getMinScore() != null) {
+                .maxResults(initialResults);
+        if (rag.getMinScore() != null && reranker == null) {
             builder.minScore(rag.getMinScore());
         }
-        log.info("自动装配 RAG 知识库向量检索器 (EmbeddingStoreContentRetriever) [maxResults={}, minScore={}]",
-                rag.getMaxResults(), rag.getMinScore());
-        return builder.build();
+        ContentRetriever baseRetriever = builder.build();
+
+        ContentRetriever effectiveRetriever = baseRetriever;
+        if (reranker != null) {
+            int topK = rag.getRerank() != null && rag.getRerank().getTopK() > 0 ? rag.getRerank().getTopK() : rag.getMaxResults();
+            Double rerankMinScore = rag.getRerank() != null ? rag.getRerank().getMinScore() : rag.getMinScore();
+            log.info("自动装配并挂载 RerankingContentRetriever 两阶段重排检索器 [topK={}, minScore={}]", topK, rerankMinScore);
+            effectiveRetriever = new RerankingContentRetriever(baseRetriever, reranker, topK, rerankMinScore);
+        }
+
+        QueryTransformer queryTransformer = queryTransformerProvider.getIfAvailable();
+        if (queryTransformer != null) {
+            log.info("自动装配并挂载 RewriteQueryRetriever 多轮意图消解检索器");
+            effectiveRetriever = new RewriteQueryRetriever(effectiveRetriever, queryTransformer);
+        }
+
+        return effectiveRetriever;
+    }
+
+    /**
+     * 自动装配默认 OpenAiCompatibleReranker (当配置 ateng.boot.ai.rag.rerank.enabled=true 时生效)
+     *
+     * @param properties AI 根配置属性
+     * @return Reranker 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(Reranker.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.rag.rerank", name = "enabled", havingValue = "true")
+    public Reranker openAiCompatibleReranker(AtengAiProperties properties) {
+        AtengAiRagProperties.RerankProperties rerankProps = properties.getRag().getRerank();
+        String apiKey = StringUtils.hasText(rerankProps.getApiKey())
+                ? rerankProps.getApiKey()
+                : properties.getModel().getApiKey();
+        log.info("自动装配默认 OpenAiCompatibleReranker [baseUrl={}, modelName={}]",
+                rerankProps.getBaseUrl(), rerankProps.getModelName());
+        return new OpenAiCompatibleReranker(
+                rerankProps.getBaseUrl(),
+                apiKey,
+                rerankProps.getModelName(),
+                rerankProps.getTimeout(),
+                rerankProps.getMinScore()
+        );
     }
 
     /**

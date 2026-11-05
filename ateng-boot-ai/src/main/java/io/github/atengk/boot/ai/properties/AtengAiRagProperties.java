@@ -53,6 +53,53 @@ public class AtengAiRagProperties {
     private int chunkOverlap = 50;
 
     /**
+     * 重排模型 (Reranker) 专属配置
+     */
+    @NestedConfigurationProperty
+    private RerankProperties rerank = new RerankProperties();
+
+    /**
+     * Reranker 交叉重排模型强类型配置属性
+     */
+    @Data
+    public static class RerankProperties {
+        /**
+         * 是否启用 Reranker 交叉重排二次精排
+         */
+        private boolean enabled = false;
+
+        /**
+         * Rerank 服务接口地址 (例如 https://api.siliconflow.cn/v1/rerank 或 http://localhost:8080/rerank)
+         */
+        private String baseUrl;
+
+        /**
+         * Rerank 服务认证令牌 API Key (可选；未配置时继承全局主模型 API Key)
+         */
+        private String apiKey;
+
+        /**
+         * Rerank 模型标识名称 (例如 BAAI/bge-reranker-v2-m3)
+         */
+        private String modelName = "BAAI/bge-reranker-v2-m3";
+
+        /**
+         * 重排调用超时时间
+         */
+        private java.time.Duration timeout = java.time.Duration.ofSeconds(5);
+
+        /**
+         * 最终精排保留的最大结果数 (Top-K)
+         */
+        private int topK = 3;
+
+        /**
+         * 最终精排最低相关度得分阈值 (可选，低于此分数的片段将被过滤)
+         */
+        private Double minScore;
+    }
+
+    /**
      * 独立 Embedding 模型专属配置 (可选；若未单独指定 baseUrl 或 apiKey，则平滑继承全局主模型 ateng.boot.ai.model 的凭据)
      */
     @NestedConfigurationProperty
