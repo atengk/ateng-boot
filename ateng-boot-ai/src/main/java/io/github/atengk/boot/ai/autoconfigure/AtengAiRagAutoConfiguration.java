@@ -13,6 +13,10 @@ import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
+import io.github.atengk.boot.ai.rag.parser.DocumentParser;
+import io.github.atengk.boot.ai.rag.parser.DocumentParserManager;
+import io.github.atengk.boot.ai.rag.parser.HtmlDocumentParser;
+import io.github.atengk.boot.ai.rag.parser.TextDocumentParser;
 import io.github.atengk.boot.ai.rag.query.LlmQueryTransformer;
 import io.github.atengk.boot.ai.rag.query.QueryTransformer;
 import io.github.atengk.boot.ai.rag.query.RewriteQueryRetriever;
@@ -27,6 +31,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 
+import java.util.List;
 import java.util.Map;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
@@ -325,5 +330,43 @@ public class AtengAiRagAutoConfiguration {
         log.info("自动装配默认原生长文本智能切片器 (RecursiveCharacterSplitter) [chunkSize={}, chunkOverlap={}]",
                 chunkSize, chunkOverlap);
         return new RecursiveCharacterSplitter(chunkSize, chunkOverlap);
+    }
+
+    /**
+     * 自动装配默认纯文本与 Markdown 文档解析器
+     *
+     * @return TextDocumentParser 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(TextDocumentParser.class)
+    public TextDocumentParser textDocumentParser() {
+        log.info("自动装配默认纯文本与 Markdown 文档解析器 (TextDocumentParser)");
+        return new TextDocumentParser();
+    }
+
+    /**
+     * 自动装配默认零臃肿 HTML 超文本解析器
+     *
+     * @return HtmlDocumentParser 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(HtmlDocumentParser.class)
+    public HtmlDocumentParser htmlDocumentParser() {
+        log.info("自动装配默认零臃肿 HTML 超文本文档解析器 (HtmlDocumentParser)");
+        return new HtmlDocumentParser();
+    }
+
+    /**
+     * 自动装配 RAG 多源异构文档解析统一调度门面 DocumentParserManager
+     *
+     * @param parsersProvider 容器中所有注册的 DocumentParser 提供者
+     * @return DocumentParserManager 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(DocumentParserManager.class)
+    public DocumentParserManager documentParserManager(ObjectProvider<DocumentParser> parsersProvider) {
+        List<DocumentParser> parsers = parsersProvider.orderedStream().toList();
+        log.info("自动装配 RAG 统一文档解析门面 (DocumentParserManager) [已注册解析器数量: {}]", parsers.size());
+        return new DocumentParserManager(parsers);
     }
 }

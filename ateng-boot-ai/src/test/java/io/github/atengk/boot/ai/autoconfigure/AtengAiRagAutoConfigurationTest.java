@@ -6,6 +6,9 @@ import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import io.github.atengk.boot.ai.rag.parser.DocumentParserManager;
+import io.github.atengk.boot.ai.rag.parser.HtmlDocumentParser;
+import io.github.atengk.boot.ai.rag.parser.TextDocumentParser;
 import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
 import org.junit.jupiter.api.DisplayName;
@@ -66,6 +69,12 @@ class AtengAiRagAutoConfigurationTest {
             assertThat(context).hasSingleBean(EmbeddingTemplate.class);
             assertThat(context.getBean(EmbeddingTemplate.class).isAvailable()).isFalse();
             assertThat(context).hasSingleBean(ContentRetriever.class);
+
+            // 验证 RAG 文档解析 SPI 组件自动装配
+            assertThat(context).hasSingleBean(TextDocumentParser.class);
+            assertThat(context).hasSingleBean(HtmlDocumentParser.class);
+            assertThat(context).hasSingleBean(DocumentParserManager.class);
+            assertThat(context.getBean(DocumentParserManager.class).getParsers()).hasSize(2);
         });
     }
 

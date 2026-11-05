@@ -107,7 +107,12 @@ public enum AiResultCode implements IResultCode {
     /**
      * 远程 MCP 服务通信或工具执行失败
      */
-    AI_MCP_CALL_FAILED(61019, "远程 MCP 服务通信或工具执行失败");
+    AI_MCP_CALL_FAILED(61019, "远程 MCP 服务通信或工具执行失败"),
+
+    /**
+     * 文档内容提取或解析失败
+     */
+    AI_PARSE_ERROR(61020, "文档内容提取或解析失败");
 
     private final Integer code;
     private final String msg;
