@@ -30,6 +30,18 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 文档与电子表格结构化解析可选依赖 (条件装配 PDFBox、POI-TL、Excel 解析器) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-document</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-excel</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Spring Boot 自动装配支持 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

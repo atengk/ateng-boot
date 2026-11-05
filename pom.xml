@@ -112,6 +112,7 @@
         <tools-jackson.version>3.2.4</tools-jackson.version>
         <commons-lang3.version>3.18.0</commons-lang3.version>
         <commons-collections4.version>4.4</commons-collections4.version>
+        <commons-io.version>2.20.0</commons-io.version>
         <guava.version>33.4.0-jre</guava.version>
         <!-- 仅作为 ateng-boot-social 运行时支撑 tools.jackson 3.x 所需的 FasterXML 专用兼容注解，严禁暴露至 ateng-boot-bom -->
         <jackson-annotations.version>2.22</jackson-annotations.version>
@@ -510,6 +511,11 @@
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-collections4</artifactId>
                 <version>${commons-collections4.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>commons-io</groupId>
+                <artifactId>commons-io</artifactId>
+                <version>${commons-io.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.google.guava</groupId>

@@ -15,8 +15,11 @@ import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
 import io.github.atengk.boot.ai.rag.parser.DocumentParser;
 import io.github.atengk.boot.ai.rag.parser.DocumentParserManager;
+import io.github.atengk.boot.ai.rag.parser.ExcelDocumentParser;
 import io.github.atengk.boot.ai.rag.parser.HtmlDocumentParser;
+import io.github.atengk.boot.ai.rag.parser.PdfDocumentParser;
 import io.github.atengk.boot.ai.rag.parser.TextDocumentParser;
+import io.github.atengk.boot.ai.rag.parser.WordDocumentParser;
 import io.github.atengk.boot.ai.rag.query.LlmQueryTransformer;
 import io.github.atengk.boot.ai.rag.query.QueryTransformer;
 import io.github.atengk.boot.ai.rag.query.RewriteQueryRetriever;
@@ -25,6 +28,7 @@ import io.github.atengk.boot.ai.rag.rerank.Reranker;
 import io.github.atengk.boot.ai.rag.rerank.RerankingContentRetriever;
 import io.github.atengk.boot.ai.rag.splitter.DocumentSplitter;
 import io.github.atengk.boot.ai.rag.splitter.RecursiveCharacterSplitter;
+import io.github.atengk.boot.ai.rag.splitter.TableSplitter;
 import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
 import org.slf4j.Logger;
@@ -44,6 +48,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.util.StringUtils;
 
 /**
@@ -368,5 +373,62 @@ public class AtengAiRagAutoConfiguration {
         List<DocumentParser> parsers = parsersProvider.orderedStream().toList();
         log.info("自动装配 RAG 统一文档解析门面 (DocumentParserManager) [已注册解析器数量: {}]", parsers.size());
         return new DocumentParserManager(parsers);
+    }
+
+    /**
+     * 自动装配默认表格感知智能分块切片器 (TableSplitter)
+     *
+     * @return TableSplitter 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(TableSplitter.class)
+    public TableSplitter tableSplitter() {
+        log.info("自动装配默认表格感知分块切片器 (TableSplitter)");
+        return new TableSplitter();
+    }
+
+    /**
+     * PDF 结构化文档解析条件配置类 (当检测到 Apache PDFBox 3.x 或 ateng-boot-document 时自适应激活)
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "org.apache.pdfbox.pdmodel.PDDocument")
+    static class PdfParserConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(PdfDocumentParser.class)
+        public PdfDocumentParser pdfDocumentParser() {
+            log.info("检测到 Apache PDFBox 3.x，自动装配 PDF 结构化文档解析器 (PdfDocumentParser)");
+            return new PdfDocumentParser();
+        }
+    }
+
+    /**
+     * Word 结构化文档解析条件配置类 (当检测到 Apache POI / POI-TL 或 ateng-boot-document 时自适应激活)
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "org.apache.poi.xwpf.usermodel.XWPFDocument")
+    static class WordParserConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(WordDocumentParser.class)
+        public WordDocumentParser wordDocumentParser() {
+            log.info("检测到 Apache POI / POI-TL，自动装配 Word 结构化文档解析器 (WordDocumentParser)");
+            return new WordDocumentParser();
+        }
+    }
+
+    /**
+     * Excel 结构化文档解析条件配置类 (当检测到 Apache Fesod 或 ateng-boot-excel 时自适应激活)
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "org.apache.fesod.sheet.FesodSheet")
+    static class ExcelParserConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(ExcelDocumentParser.class)
+        public ExcelDocumentParser excelDocumentParser() {
+            log.info("检测到 Apache Fesod，自动装配 Excel 结构化文档解析器 (ExcelDocumentParser)");
+            return new ExcelDocumentParser();
+        }
     }
 }
