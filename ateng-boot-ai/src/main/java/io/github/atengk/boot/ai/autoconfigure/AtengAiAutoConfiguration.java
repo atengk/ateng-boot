@@ -27,6 +27,9 @@ import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.ChatMemoryProperties;
 import io.github.atengk.boot.ai.properties.ChatMemoryStoreType;
 import io.github.atengk.boot.ai.properties.ChatMemoryWindowType;
+import io.github.atengk.boot.ai.ratelimit.AiRateLimiter;
+import io.github.atengk.boot.ai.ratelimit.DefaultAiRateLimiter;
+import io.github.atengk.boot.ai.ratelimit.RedisAiRateLimiter;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
 import io.github.atengk.boot.ai.template.AiTemplate;
@@ -40,6 +43,7 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import io.github.atengk.boot.ai.registrar.AiAgentRegistrar;
@@ -306,19 +310,38 @@ public class AtengAiAutoConfiguration {
             }
             return new DefaultAiQuotaChecker(properties.getQuota());
         }
+
+        @Bean
+        @ConditionalOnMissingBean(AiRateLimiter.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.ai.rate-limit", name = "enabled", havingValue = "true", matchIfMissing = true)
+        public AiRateLimiter redisAiRateLimiter(AtengAiProperties properties,
+                                                ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+            StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+            if (redisTemplate != null) {
+                return new RedisAiRateLimiter(properties.getRateLimit(), redisTemplate);
+            }
+            return new DefaultAiRateLimiter(properties.getRateLimit());
+        }
     }
 
     /**
-     * 单机内存配额风控兜底装配配置类（当未引入 Redis 或无 StringRedisTemplate 时保底装配）
+     * 单机内存配额与突发限流风控兜底装配配置类（当未引入 Redis 依赖即类路径无 StringRedisTemplate 时保底装配）
      */
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnMissingBean(AiQuotaChecker.class)
+    @ConditionalOnMissingClass("org.springframework.data.redis.core.StringRedisTemplate")
     static class InMemoryQuotaFallbackConfiguration {
 
         @Bean
         @ConditionalOnMissingBean(AiQuotaChecker.class)
         public AiQuotaChecker inMemoryAiQuotaChecker(AtengAiProperties properties) {
             return new DefaultAiQuotaChecker(properties.getQuota());
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(AiRateLimiter.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.ai.rate-limit", name = "enabled", havingValue = "true", matchIfMissing = true)
+        public AiRateLimiter inMemoryAiRateLimiter(AtengAiProperties properties) {
+            return new DefaultAiRateLimiter(properties.getRateLimit());
         }
     }
 
@@ -352,14 +375,16 @@ public class AtengAiAutoConfiguration {
                                  ObjectProvider<AiTenantModelResolver> tenantModelResolverProvider,
                                  ObjectProvider<AiQuotaChecker> quotaCheckerProvider,
                                  ObjectProvider<ActiveStreamRegistry> activeStreamRegistryProvider,
-                                 ObjectProvider<AiGuardrail> guardrailProvider) {
+                                 ObjectProvider<AiGuardrail> guardrailProvider,
+                                 ObjectProvider<AiRateLimiter> rateLimiterProvider) {
         return new AiTemplate(
                 registry,
                 properties,
                 tenantModelResolverProvider.getIfAvailable(),
                 quotaCheckerProvider.getIfAvailable(),
                 activeStreamRegistryProvider.getIfAvailable(),
-                guardrailProvider.getIfAvailable()
+                guardrailProvider.getIfAvailable(),
+                rateLimiterProvider.getIfAvailable()
         );
     }
 

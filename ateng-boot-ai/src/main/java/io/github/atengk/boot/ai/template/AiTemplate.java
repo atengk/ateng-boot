@@ -18,6 +18,7 @@ import io.github.atengk.boot.ai.prompt.PromptTemplate;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
+import io.github.atengk.boot.ai.ratelimit.AiRateLimiter;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.sanitizer.JsonPayloadSanitizer;
 import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
@@ -54,6 +55,7 @@ public class AiTemplate {
     private final AiQuotaChecker quotaChecker;
     private final ActiveStreamRegistry activeStreamRegistry;
     private final AiGuardrail guardrail;
+    private final AiRateLimiter rateLimiter;
 
     public AiTemplate(AiModelRegistry registry) {
         this(registry, new AtengAiProperties());
@@ -84,12 +86,32 @@ public class AiTemplate {
                       AiQuotaChecker quotaChecker,
                       ActiveStreamRegistry activeStreamRegistry,
                       AiGuardrail guardrail) {
+        this(registry, properties, tenantModelResolver, quotaChecker, activeStreamRegistry, guardrail, null);
+    }
+
+    public AiTemplate(AiModelRegistry registry,
+                      AtengAiProperties properties,
+                      AiTenantModelResolver tenantModelResolver,
+                      AiQuotaChecker quotaChecker,
+                      ActiveStreamRegistry activeStreamRegistry,
+                      AiGuardrail guardrail,
+                      AiRateLimiter rateLimiter) {
         this.registry = Objects.requireNonNull(registry, "AiModelRegistry 不能为空");
         this.properties = properties != null ? properties : new AtengAiProperties();
         this.tenantModelResolver = tenantModelResolver;
         this.quotaChecker = quotaChecker;
         this.activeStreamRegistry = activeStreamRegistry;
         this.guardrail = guardrail != null ? guardrail : new DefaultAiGuardrail(this.properties.getGuardrail());
+        this.rateLimiter = rateLimiter;
+    }
+
+    /**
+     * 获取 AI 微观突发流量限流器实例
+     *
+     * @return AiRateLimiter 实例，若未启用则可能为 null
+     */
+    public AiRateLimiter getRateLimiter() {
+        return rateLimiter;
     }
 
     /**
@@ -754,9 +776,12 @@ public class AiTemplate {
         String effectiveModelName = resolveEffectiveModelName(modelName);
         String tenantId = TenantContextHolder.getTenantId();
 
-        // 1. 前置配额风控防卫 (Fail-Fast)
+        // 1. 前置配额与微观突发限流风控防卫 (Fail-Fast)
+        int promptTokens = estimatePromptTokens(messages);
+        if (rateLimiter != null) {
+            rateLimiter.acquire(tenantId, effectiveModelName, promptTokens);
+        }
         if (quotaChecker != null) {
-            int promptTokens = estimatePromptTokens(messages);
             quotaChecker.checkQuota(tenantId, effectiveModelName, promptTokens);
         }
 
@@ -824,9 +849,12 @@ public class AiTemplate {
         String effectiveModelName = resolveEffectiveModelName(modelName);
         String tenantId = TenantContextHolder.getTenantId();
 
-        // 1. 前置配额风控防卫 (Fail-Fast)
+        // 1. 前置配额与微观突发限流风控防卫 (Fail-Fast)
+        int promptTokens = estimatePromptTokens(messages);
+        if (rateLimiter != null) {
+            rateLimiter.acquire(tenantId, effectiveModelName, promptTokens);
+        }
         if (quotaChecker != null) {
-            int promptTokens = estimatePromptTokens(messages);
             quotaChecker.checkQuota(tenantId, effectiveModelName, promptTokens);
         }
 

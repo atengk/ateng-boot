@@ -49,6 +49,12 @@ public class AtengAiProperties {
     private AtengAiQuotaProperties quota = new AtengAiQuotaProperties();
 
     /**
+     * AI 微观突发流量限流 (RPS & TPM) 强类型配置
+     */
+    @NestedConfigurationProperty
+    private AtengAiRateLimitProperties rateLimit = new AtengAiRateLimitProperties();
+
+    /**
      * AI 双向内容安全护栏强类型配置
      */
     @NestedConfigurationProperty
