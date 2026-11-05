@@ -219,7 +219,7 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
         double minScore = request.minScore();
         String filterExpr = MilvusFilterMapper.map(request.filter());
 
-        log.info("Milvus search request: collection={}, filter={}, topK={}, minScore={}", collectionName, filterExpr, maxResults, minScore);
+        log.debug("Milvus search request: collection={}, filter={}, topK={}, minScore={}", collectionName, filterExpr, maxResults, minScore);
         List<MilvusHit<Map<String, Object>>> hits = template.search(
                 collectionName,
                 vectorFieldName,
@@ -231,15 +231,15 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
                 null,
                 tenantFieldName
         );
-        log.info("Milvus search returned hits size={}", hits != null ? hits.size() : -1);
+        log.debug("Milvus search returned hits size={}", hits != null ? hits.size() : -1);
 
         List<EmbeddingMatch<TextSegment>> matches = new ArrayList<>();
         if (hits != null) {
             for (MilvusHit<Map<String, Object>> hit : hits) {
-                log.info("Milvus hit: id={}, score={}, rawDataKeys={}", hit.getId(), hit.getScore(), hit.getRawData() != null ? hit.getRawData().keySet() : null);
+                log.debug("Milvus hit: id={}, score={}, rawDataKeys={}", hit.getId(), hit.getScore(), hit.getRawData() != null ? hit.getRawData().keySet() : null);
                 double score = hit.getScore() != null ? hit.getScore().doubleValue() : 0.0;
                 if (score < minScore) {
-                    log.info("Milvus hit id={} skipped due to score {} < minScore {}", hit.getId(), score, minScore);
+                    log.debug("Milvus hit id={} skipped due to score {} < minScore {}", hit.getId(), score, minScore);
                     continue;
                 }
                 String id = hit.getId() != null ? hit.getId().toString() : "";
@@ -247,7 +247,7 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
 
                 // 解包 Milvus 动态字段 ($meta)
                 Object metaObj = rawData.remove("$meta");
-                log.info("Milvus metaObj: class={}, value={}", metaObj != null ? metaObj.getClass().getName() : "null", metaObj);
+                log.debug("Milvus metaObj: class={}, value={}", metaObj != null ? metaObj.getClass().getName() : "null", metaObj);
                 if (metaObj instanceof JsonObject gsonMeta) {
                     for (Map.Entry<String, JsonElement> entry : gsonMeta.entrySet()) {
                         if (!rawData.containsKey(entry.getKey())) {
@@ -293,11 +293,11 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
                 }
 
                 matches.add(new EmbeddingMatch<>(score, id, matchedEmbedding, textSegment));
-                log.info("Milvus match added: textSegment={}, matchesSize={}", textSegment, matches.size());
+                log.debug("Milvus match added: textSegment={}, matchesSize={}", textSegment, matches.size());
             }
         }
 
-        log.info("Milvus search finished: totalMatches={}", matches.size());
+        log.debug("Milvus search finished: totalMatches={}", matches.size());
         return new EmbeddingSearchResult<>(matches);
     }
 }

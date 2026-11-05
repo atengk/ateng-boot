@@ -78,6 +78,8 @@ public class PdfDocumentParser implements DocumentParser {
 
             String cleanText;
             List<String> collectedImageUrls = new ArrayList<>();
+            List<String> collectedStorageKeys = new ArrayList<>();
+            List<String> collectedCaptions = new ArrayList<>();
             if (visionCaptionEnhancer != null && visionCaptionEnhancer.isEnabled()) {
                 StringBuilder pageTextSb = new StringBuilder();
                 PDFRenderer renderer = null;
@@ -152,6 +154,12 @@ public class PdfDocumentParser implements DocumentParser {
                                     if (enhanceResult.imageUrl() != null) {
                                         collectedImageUrls.add(enhanceResult.imageUrl());
                                     }
+                                    if (enhanceResult.storageKey() != null) {
+                                        collectedStorageKeys.add(enhanceResult.storageKey());
+                                    }
+                                    if (enhanceResult.caption() != null) {
+                                        collectedCaptions.add(enhanceResult.caption());
+                                    }
                                     pageTextSb.append(enhanceResult.text()).append("\n\n");
                                 } catch (Exception e) {
                                     log.warn("提取并增强 PDF 内嵌图表异常 [page={}, index={}]: {}", pageIdx + 1, imgCounter, e.getMessage());
@@ -220,6 +228,13 @@ public class PdfDocumentParser implements DocumentParser {
                 if (!collectedImageUrls.isEmpty()) {
                     metadata.put(ParsedDocument.METADATA_IMAGE_URL, collectedImageUrls.get(0));
                     metadata.put(ParsedDocument.METADATA_IMAGE_URLS, collectedImageUrls);
+                }
+                if (!collectedStorageKeys.isEmpty()) {
+                    metadata.put(ParsedDocument.METADATA_IMAGE_STORAGE_KEY, collectedStorageKeys.get(0));
+                    metadata.put(ParsedDocument.METADATA_IMAGE_STORAGE_KEYS, collectedStorageKeys);
+                }
+                if (!collectedCaptions.isEmpty()) {
+                    metadata.put(ParsedDocument.METADATA_IMAGE_CAPTIONS, collectedCaptions);
                 }
                 if (effectiveOptions.getCustomOptions() != null && !effectiveOptions.getCustomOptions().isEmpty()) {
                     metadata.putAll(effectiveOptions.getCustomOptions());

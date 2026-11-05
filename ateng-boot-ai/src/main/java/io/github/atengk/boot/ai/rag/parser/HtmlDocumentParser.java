@@ -10,7 +10,9 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -32,6 +34,7 @@ public class HtmlDocumentParser implements DocumentParser {
     private static final Pattern STYLE_PATTERN = Pattern.compile("(?is)<style[^>]*>[\\s\\S]*?</style>");
     private static final Pattern COMMENT_PATTERN = Pattern.compile("(?s)<!--[\\s\\S]*?-->");
     private static final Pattern TITLE_PATTERN = Pattern.compile("(?is)<title[^>]*>([\\s\\S]*?)</title>");
+    private static final Pattern IMG_SRC_PATTERN = Pattern.compile("(?i)<img[^>]+src=[\"']([^\"']+)[\"'][^>]*>");
     private static final Pattern BLOCK_BREAK_PATTERN = Pattern.compile("(?i)<(?:br\\s*/?|hr\\s*/?|/p|/div|/h[1-6]|/tr|/li|/section|/article|/header|/footer|/blockquote|/table|/thead|/tbody|/tfoot|/body)>");
     private static final Pattern ALL_TAGS_PATTERN = Pattern.compile("<[^>]+>");
     private static final Pattern MULTI_NEWLINE_PATTERN = Pattern.compile("\\n{3,}");
@@ -100,6 +103,20 @@ public class HtmlDocumentParser implements DocumentParser {
             metadata.put("charset", charset.name());
             if (StringUtils.hasText(effectiveOptions.getFilename())) {
                 metadata.put(ParsedDocument.METADATA_FILENAME, effectiveOptions.getFilename());
+            }
+            if (StringUtils.hasText(rawHtml)) {
+                Matcher imgMatcher = IMG_SRC_PATTERN.matcher(rawHtml);
+                List<String> imageUrls = new ArrayList<>();
+                while (imgMatcher.find()) {
+                    String src = imgMatcher.group(1).trim();
+                    if (StringUtils.hasText(src) && !imageUrls.contains(src)) {
+                        imageUrls.add(src);
+                    }
+                }
+                if (!imageUrls.isEmpty()) {
+                    metadata.put(ParsedDocument.METADATA_IMAGE_URL, imageUrls.get(0));
+                    metadata.put(ParsedDocument.METADATA_IMAGE_URLS, imageUrls);
+                }
             }
             if (effectiveOptions.getCustomOptions() != null && !effectiveOptions.getCustomOptions().isEmpty()) {
                 metadata.putAll(effectiveOptions.getCustomOptions());

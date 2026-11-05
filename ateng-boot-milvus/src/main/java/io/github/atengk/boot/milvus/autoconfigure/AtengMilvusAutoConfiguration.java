@@ -1,5 +1,6 @@
 package io.github.atengk.boot.milvus.autoconfigure;
 
+import io.github.atengk.boot.milvus.exception.MilvusExceptionTranslator;
 import io.github.atengk.boot.milvus.health.MilvusHealthIndicator;
 import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
@@ -125,8 +126,7 @@ public class AtengMilvusAutoConfiguration {
             log.info("Milvus 高可用弹性客户端成功装配就绪 [host={}, port={}]", host, port);
             return fallbackClient;
         } catch (Exception ex) {
-            log.error("Milvus 高可用弹性装配失败: {}", ex.getMessage(), ex);
-            throw new RuntimeException("无法初始化 Milvus 客户端: " + ex.getMessage(), ex);
+            throw MilvusExceptionTranslator.translate("Milvus 客户端弹性初始化", ex);
         }
     }
 

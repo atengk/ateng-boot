@@ -40,4 +40,10 @@ public class AiRagAskVo implements Serializable {
      */
     @Builder.Default
     private List<String> referenceContexts = Collections.emptyList();
+
+    /**
+     * 召回知识或文档切片中关联的多模态图片直链列表
+     */
+    @Builder.Default
+    private List<String> imageUrls = Collections.emptyList();
 }

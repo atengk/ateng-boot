@@ -678,11 +678,21 @@ public class AtengAiRagAutoConfiguration {
         public VisionCaptionEnhancer.ImageStorageUploader storageTemplateImageUploader(
                 StorageTemplate storageTemplate) {
             log.info("检测到 ateng-boot-storage，自动装配图表对象存储上传适配器 (ImageStorageUploader)");
-            return (imageBytes, filename) -> {
-                String safeName = StringUtils.hasText(filename) ? filename : "image.png";
-                String objectKey = "rag/images/" + UUID.randomUUID() + "_" + safeName;
-                storageTemplate.upload(objectKey, new ByteArrayInputStream(imageBytes));
-                return storageTemplate.getUrl(objectKey);
+            return new VisionCaptionEnhancer.ImageStorageUploader() {
+                @Override
+                public String upload(byte[] imageBytes, String filename) {
+                    VisionCaptionEnhancer.StorageUploadResult res = uploadDetail(imageBytes, filename);
+                    return res != null ? res.url() : null;
+                }
+
+                @Override
+                public VisionCaptionEnhancer.StorageUploadResult uploadDetail(byte[] imageBytes, String filename) {
+                    String safeName = StringUtils.hasText(filename) ? filename : "image.png";
+                    String objectKey = "rag/images/" + UUID.randomUUID() + "_" + safeName;
+                    storageTemplate.upload(objectKey, new ByteArrayInputStream(imageBytes));
+                    String url = storageTemplate.getUrl(objectKey);
+                    return new VisionCaptionEnhancer.StorageUploadResult(objectKey, url);
+                }
             };
         }
     }

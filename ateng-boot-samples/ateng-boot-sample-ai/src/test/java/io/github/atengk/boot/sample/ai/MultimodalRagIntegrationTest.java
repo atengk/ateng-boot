@@ -7,12 +7,14 @@ import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.query.Query;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import io.github.atengk.boot.ai.rag.ingest.IngestOptions;
+import io.github.atengk.boot.ai.rag.ingest.IngestResult;
 import io.github.atengk.boot.ai.rag.parser.DocumentParserManager;
 import io.github.atengk.boot.ai.rag.parser.ParseOptions;
 import io.github.atengk.boot.ai.rag.parser.ParsedDocument;
 import io.github.atengk.boot.ai.template.RagIngestionTemplate;
 import io.github.atengk.boot.sample.ai.dto.AiRagAskRequest;
 import io.github.atengk.boot.storage.template.StorageTemplate;
+import lombok.extern.slf4j.Slf4j;
 import okhttp3.mockwebserver.Dispatcher;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -63,6 +65,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * @author Ateng
  * @since 2026-11-05
  */
+@Slf4j
 @SpringBootTest
 @AutoConfigureMockMvc
 @DisplayName("AI RAG 多模态图文解析与 Storage 联动端到端集成测试")
@@ -298,8 +301,8 @@ class MultimodalRagIntegrationTest {
         String objectKey = imageUrl.substring("http://localhost:8080/".length());
         assertThat(storageTemplate.exists(objectKey)).isTrue();
 
-        System.out.println("【DOCX 多模态提取成功】图片 URL: " + imageUrl);
-        System.out.println("【DOCX 抽取文本预览】:\n" + parsed.getText());
+        log.info("【DOCX 多模态提取成功】图片 URL: {}", imageUrl);
+        log.info("【DOCX 抽取文本预览】:\n{}", parsed.getText());
     }
 
     @Test
@@ -353,8 +356,8 @@ class MultimodalRagIntegrationTest {
         String objectKey = imageUrl.substring("http://localhost:8080/".length());
         assertThat(storageTemplate.exists(objectKey)).isTrue();
 
-        System.out.println("【PDF 多模态提取成功】图片 URL: " + imageUrl);
-        System.out.println("【PDF 抽取文本预览】:\n" + parsed.getText());
+        log.info("【PDF 多模态提取成功】图片 URL: {}", imageUrl);
+        log.info("【PDF 抽取文本预览】:\n{}", parsed.getText());
     }
 
     @Test
@@ -364,21 +367,41 @@ class MultimodalRagIntegrationTest {
             return;
         }
 
-        // 1. 模拟摄取图文切片 (带有图表摘要与对象存储图片 URL)
-        String docId = "doc-multimodal-001";
-        String docName = "2026_q3_report.md";
-        String multimodalContent = """
-                # 2026年度业务财务分析报告
-                
-                > 🖼️ ![q3_revenue_chart.png](http://localhost:8080/storage/local/download?path=rag/images/chart_sample.png)
-                > 💡 [图表/架构图语义描述 - q3_revenue_chart.png]: 本图表展示了 2026 年 Q1 至 Q3 业务营收情况，其中第 3 季度营业额为 5200 万元，同比增长 35%。
-                
-                根据上述财务图表，公司核心业务在第三季度实现显著提速。
-                """;
+        // 1. 动态生成包含真实内嵌图表的 DOCX 二进制文档
+        byte[] chartBytes = generateChartImage();
+        ByteArrayOutputStream docxOut = new ByteArrayOutputStream();
+        try (XWPFDocument doc = new XWPFDocument()) {
+            XWPFParagraph p1 = doc.createParagraph();
+            XWPFRun r1 = p1.createRun();
+            r1.setText("企业 2026 年度 Q3 业务财务营收分析报告");
 
-        ingestionTemplate.ingest(multimodalContent, docName, IngestOptions.builder().docId(docId).build());
+            XWPFParagraph p2 = doc.createParagraph();
+            XWPFRun r2 = p2.createRun();
+            r2.setText("以下为 2026 年各季度主营业务收入统计图表：");
 
-        // 2. 验证问答接口 POST /sample/ai/rag/ask 针对图表中的数据提问
+            XWPFParagraph p3 = doc.createParagraph();
+            XWPFRun r3 = p3.createRun();
+            r3.addPicture(new ByteArrayInputStream(chartBytes), XWPFDocument.PICTURE_TYPE_PNG, "q3_revenue_chart.png", 200, 120);
+
+            XWPFParagraph p4 = doc.createParagraph();
+            XWPFRun r4 = p4.createRun();
+            r4.setText("从上述主营业务柱状图可见，第三季度营收爆发式增长达到 5200 万元，同比增长 35%。");
+
+            doc.write(docxOut);
+        }
+
+        // 2. 将真实 DOCX 二进制文档全真摄取至 RAG 知识库 (自动触发格式解析、内嵌图表提取、Storage 上传与视觉增强)
+        String docId = "doc-multimodal-docx-001";
+        String docName = "q3_revenue_report.docx";
+        IngestResult ingestResult = ingestionTemplate.ingest(
+                new ByteArrayInputStream(docxOut.toByteArray()),
+                docName,
+                IngestOptions.builder().docId(docId).build()
+        );
+        assertThat(ingestResult).isNotNull();
+        assertThat(ingestResult.getChunkCount()).isGreaterThan(0);
+
+        // 3. 验证问答接口 POST /sample/ai/rag/ask 针对图表中的数据提问
         AiRagAskRequest askRequest = AiRagAskRequest.builder()
                 .question("请问根据图表分析，2026年第3季度的营业额和同比增长是多少？")
                 .build();
@@ -390,6 +413,8 @@ class MultimodalRagIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.question").value(askRequest.getQuestion()))
                 .andExpect(jsonPath("$.data.answer").isNotEmpty())
-                .andExpect(jsonPath("$.data.referenceContexts").isArray());
+                .andExpect(jsonPath("$.data.referenceContexts").isArray())
+                .andExpect(jsonPath("$.data.imageUrls").isArray())
+                .andExpect(jsonPath("$.data.imageUrls[0]").isNotEmpty());
     }
 }

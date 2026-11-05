@@ -397,9 +397,39 @@ public class RagIngestionTemplate {
                     prefixField.setAccessible(true);
                     String prefix = (String) prefixField.get(schema);
 
-                    java.lang.reflect.Method keysMethod = jedis.getClass().getMethod("keys", String.class);
-                    @SuppressWarnings("unchecked")
-                    java.util.Set<String> keys = (java.util.Set<String>) keysMethod.invoke(jedis, (prefix != null ? prefix : "") + "*");
+                    // 防御性使用 SCAN 游标非阻塞遍历，杜绝生产环境 KEYS * 导致 Redis 单线程事件循环瞬时阻塞
+                    java.util.Set<String> keys = new java.util.HashSet<>();
+                    try {
+                        String matchPattern = (prefix != null ? prefix : "") + "*";
+                        Class<?> scanParamsClass = Class.forName("redis.clients.jedis.params.ScanParams");
+                        Object scanParams = scanParamsClass.getDeclaredConstructor().newInstance();
+                        scanParamsClass.getMethod("match", String.class).invoke(scanParams, matchPattern);
+                        scanParamsClass.getMethod("count", int.class).invoke(scanParams, 200);
+
+                        java.lang.reflect.Method scanMethod = jedis.getClass().getMethod("scan", String.class, scanParamsClass);
+                        String cursor = "0";
+                        int scanLimit = 50; // 防御性限制最大迭代 50 轮 (覆盖约 10000 个 Key)，杜绝无界挂死
+                        do {
+                            Object scanResult = scanMethod.invoke(jedis, cursor, scanParams);
+                            cursor = (String) scanResult.getClass().getMethod("getCursor").invoke(scanResult);
+                            @SuppressWarnings("unchecked")
+                            java.util.List<String> batch = (java.util.List<String>) scanResult.getClass().getMethod("getResult").invoke(scanResult);
+                            if (batch != null) {
+                                keys.addAll(batch);
+                            }
+                        } while (!"0".equals(cursor) && --scanLimit > 0);
+                    } catch (Exception scanEx) {
+                        log.debug("Redis SCAN 迭代失败，降级尝试受限 keys 匹配: {}", scanEx.getMessage());
+                        try {
+                            java.lang.reflect.Method keysMethod = jedis.getClass().getMethod("keys", String.class);
+                            @SuppressWarnings("unchecked")
+                            java.util.Set<String> fallbackKeys = (java.util.Set<String>) keysMethod.invoke(jedis, (prefix != null ? prefix : "") + "*");
+                            if (fallbackKeys != null) {
+                                keys.addAll(fallbackKeys);
+                            }
+                        } catch (Exception ignored) {
+                        }
+                    }
 
                     if (keys != null && !keys.isEmpty()) {
                         int deletedCount = 0;

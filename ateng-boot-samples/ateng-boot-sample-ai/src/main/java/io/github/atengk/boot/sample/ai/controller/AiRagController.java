@@ -11,6 +11,7 @@ import dev.langchain4j.rag.content.Content;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.query.Query;
 import dev.langchain4j.store.embedding.EmbeddingStore;
+import io.github.atengk.boot.ai.rag.parser.ParsedDocument;
 import io.github.atengk.boot.ai.rag.query.QueryTransformer;
 import io.github.atengk.boot.ai.rag.rerank.RerankResult;
 import io.github.atengk.boot.ai.rag.rerank.Reranker;
@@ -48,6 +49,8 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -60,6 +63,8 @@ import java.util.stream.Collectors;
 @RequestMapping("/sample/ai/rag")
 @RequiredArgsConstructor
 public class AiRagController {
+
+    private static final Pattern MARKDOWN_IMAGE_PATTERN = Pattern.compile("!\\[([^\\]]*)\\]\\(([^)]+)\\)");
 
     private final EmbeddingTemplate embeddingTemplate;
     private final EmbeddingStore<TextSegment> embeddingStore;
@@ -322,17 +327,57 @@ public class AiRagController {
                 .filter(s -> !s.isBlank())
                 .toList();
 
-        // 2. 无匹配上下文时保底提示
+        // 2. 提取多模态图片直链 (从切片元数据及切片文本中提取)
+        List<String> imageUrls = new ArrayList<>();
+        for (Content c : contents) {
+            TextSegment seg = c.textSegment();
+            if (seg == null) {
+                continue;
+            }
+            if (seg.metadata() != null) {
+                Map<String, Object> metaMap = seg.metadata().toMap();
+                Object urlsObj = metaMap.get(ParsedDocument.METADATA_IMAGE_URLS);
+                if (urlsObj instanceof Iterable<?> iter) {
+                    for (Object item : iter) {
+                        if (item != null && StringUtils.hasText(item.toString())) {
+                            String u = item.toString().trim();
+                            if (!imageUrls.contains(u)) {
+                                imageUrls.add(u);
+                            }
+                        }
+                    }
+                }
+                Object singleObj = metaMap.get(ParsedDocument.METADATA_IMAGE_URL);
+                if (singleObj != null && StringUtils.hasText(singleObj.toString())) {
+                    String u = singleObj.toString().trim();
+                    if (!imageUrls.contains(u)) {
+                        imageUrls.add(u);
+                    }
+                }
+            }
+            if (StringUtils.hasText(seg.text())) {
+                Matcher matcher = MARKDOWN_IMAGE_PATTERN.matcher(seg.text());
+                while (matcher.find()) {
+                    String u = matcher.group(2).trim();
+                    if (StringUtils.hasText(u) && !imageUrls.contains(u)) {
+                        imageUrls.add(u);
+                    }
+                }
+            }
+        }
+
+        // 3. 无匹配上下文时保底提示
         if (referenceContexts.isEmpty()) {
             AiRagAskVo vo = AiRagAskVo.builder()
                     .question(request.getQuestion())
                     .answer("知识库中暂未检索到与提问相关的参考知识片段。")
                     .referenceContexts(Collections.emptyList())
+                    .imageUrls(Collections.emptyList())
                     .build();
             return Result.success(vo);
         }
 
-        // 3. 合成增强 Prompt
+        // 4. 合成增强 Prompt
         String contextText = referenceContexts.stream()
                 .map(ctx -> "- " + ctx)
                 .collect(Collectors.joining("\n"));
@@ -347,13 +392,14 @@ public class AiRagController {
                 【用户问题】: %s
                 """, contextText, request.getQuestion());
 
-        // 4. 调用大模型生成严谨回答
+        // 5. 调用大模型生成严谨回答
         String answer = aiTemplate.chat(augmentedPrompt);
 
         AiRagAskVo vo = AiRagAskVo.builder()
                 .question(request.getQuestion())
                 .answer(answer)
                 .referenceContexts(referenceContexts)
+                .imageUrls(imageUrls)
                 .build();
         return Result.success(vo);
     }

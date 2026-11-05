@@ -10,7 +10,9 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,6 +32,7 @@ public class TextDocumentParser implements DocumentParser {
     private static final Pattern FRONTMATTER_PATTERN = Pattern.compile("^---\\r?\\n([\\s\\S]*?)\\r?\\n---");
     private static final Pattern FRONTMATTER_TITLE_PATTERN = Pattern.compile("(?m)^title:\\s*[\"']?(.*?)[\"']?\\s*$");
     private static final Pattern MARKDOWN_H1_PATTERN = Pattern.compile("(?m)^#\\s+(.+?)\\s*$");
+    private static final Pattern MARKDOWN_IMAGE_PATTERN = Pattern.compile("!\\[([^\\]]*)\\]\\(([^)]+)\\)");
 
     @Override
     public boolean supports(DocumentFormat format, String filename) {
@@ -89,6 +92,20 @@ public class TextDocumentParser implements DocumentParser {
             metadata.put("charset", charset.name());
             if (StringUtils.hasText(effectiveOptions.getFilename())) {
                 metadata.put(ParsedDocument.METADATA_FILENAME, effectiveOptions.getFilename());
+            }
+            if (format == DocumentFormat.MARKDOWN && StringUtils.hasText(content)) {
+                Matcher imgMatcher = MARKDOWN_IMAGE_PATTERN.matcher(content);
+                List<String> imageUrls = new ArrayList<>();
+                while (imgMatcher.find()) {
+                    String url = imgMatcher.group(2).trim();
+                    if (StringUtils.hasText(url) && !imageUrls.contains(url)) {
+                        imageUrls.add(url);
+                    }
+                }
+                if (!imageUrls.isEmpty()) {
+                    metadata.put(ParsedDocument.METADATA_IMAGE_URL, imageUrls.get(0));
+                    metadata.put(ParsedDocument.METADATA_IMAGE_URLS, imageUrls);
+                }
             }
             if (effectiveOptions.getCustomOptions() != null && !effectiveOptions.getCustomOptions().isEmpty()) {
                 metadata.putAll(effectiveOptions.getCustomOptions());

@@ -68,6 +68,8 @@ public class WordDocumentParser implements DocumentParser {
             StringBuilder sb = new StringBuilder();
             String title = null;
             List<String> collectedImageUrls = new ArrayList<>();
+            List<String> collectedStorageKeys = new ArrayList<>();
+            List<String> collectedCaptions = new ArrayList<>();
 
             // 1. 尝试从 CoreProperties 读取文档标题
             if (effectiveOptions.isExtractTitle() && doc.getProperties() != null
@@ -110,29 +112,20 @@ public class WordDocumentParser implements DocumentParser {
                     // 提取并增强段落内嵌图表
                     if (!paraPictures.isEmpty()) {
                         for (XWPFPicture pic : paraPictures) {
-                            XWPFPictureData picData = pic.getPictureData();
-                            if (picData != null) {
-                                byte[] picBytes = picData.getData();
-                                String fileName = picData.getFileName();
-                                String mimeType = resolveMimeType(fileName);
-                                if (visionCaptionEnhancer != null && visionCaptionEnhancer.isEnabled()) {
-                                    VisionCaptionEnhancer.ImageEnhanceResult result = visionCaptionEnhancer.enhanceImageResult(picBytes, fileName, mimeType);
-                                    if (result.imageUrl() != null) {
-                                        collectedImageUrls.add(result.imageUrl());
-                                    }
-                                    if (StringUtils.hasText(result.text())) {
-                                        sb.append(result.text()).append("\n\n");
-                                    }
-                                } else {
-                                    sb.append("> 🖼️ [内嵌图表: ").append(StringUtils.hasText(fileName) ? fileName : "image").append("]\n\n");
-                                }
-                            }
+                            processPicture(pic, sb, collectedImageUrls, collectedStorageKeys, collectedCaptions);
                         }
                     }
                 } else if (element instanceof XWPFTable table) {
                     String tableMarkdown = formatTableToMarkdown(table);
                     if (StringUtils.hasText(tableMarkdown)) {
                         sb.append(tableMarkdown).append("\n\n");
+                    }
+                    // 补充扫描并提取表格单元格内嵌的图表
+                    List<XWPFPicture> tablePictures = extractTablePictures(table);
+                    if (!tablePictures.isEmpty()) {
+                        for (XWPFPicture pic : tablePictures) {
+                            processPicture(pic, sb, collectedImageUrls, collectedStorageKeys, collectedCaptions);
+                        }
                     }
                 }
             }
@@ -184,6 +177,13 @@ public class WordDocumentParser implements DocumentParser {
                 if (!collectedImageUrls.isEmpty()) {
                     metadata.put(ParsedDocument.METADATA_IMAGE_URL, collectedImageUrls.get(0));
                     metadata.put(ParsedDocument.METADATA_IMAGE_URLS, collectedImageUrls);
+                }
+                if (!collectedStorageKeys.isEmpty()) {
+                    metadata.put(ParsedDocument.METADATA_IMAGE_STORAGE_KEY, collectedStorageKeys.get(0));
+                    metadata.put(ParsedDocument.METADATA_IMAGE_STORAGE_KEYS, collectedStorageKeys);
+                }
+                if (!collectedCaptions.isEmpty()) {
+                    metadata.put(ParsedDocument.METADATA_IMAGE_CAPTIONS, collectedCaptions);
                 }
                 if (effectiveOptions.getCustomOptions() != null && !effectiveOptions.getCustomOptions().isEmpty()) {
                     metadata.putAll(effectiveOptions.getCustomOptions());
@@ -310,6 +310,59 @@ public class WordDocumentParser implements DocumentParser {
             return "image/svg+xml";
         }
         return "image/png";
+    }
+
+    /**
+     * 统一处理内嵌图表：执行对象存储持久化与视觉大模型摘要增强
+     */
+    private void processPicture(XWPFPicture pic, StringBuilder sb,
+                                List<String> collectedImageUrls,
+                                List<String> collectedStorageKeys,
+                                List<String> collectedCaptions) {
+        XWPFPictureData picData = pic.getPictureData();
+        if (picData != null) {
+            byte[] picBytes = picData.getData();
+            String fileName = picData.getFileName();
+            String mimeType = resolveMimeType(fileName);
+            if (visionCaptionEnhancer != null && visionCaptionEnhancer.isEnabled()) {
+                VisionCaptionEnhancer.ImageEnhanceResult result = visionCaptionEnhancer.enhanceImageResult(picBytes, fileName, mimeType);
+                if (result.imageUrl() != null) {
+                    collectedImageUrls.add(result.imageUrl());
+                }
+                if (result.storageKey() != null) {
+                    collectedStorageKeys.add(result.storageKey());
+                }
+                if (result.caption() != null) {
+                    collectedCaptions.add(result.caption());
+                }
+                if (StringUtils.hasText(result.text())) {
+                    sb.append(result.text()).append("\n\n");
+                }
+            } else {
+                sb.append("> 🖼️ [内嵌图表: ").append(StringUtils.hasText(fileName) ? fileName : "image").append("]\n\n");
+            }
+        }
+    }
+
+    /**
+     * 递归提取表格所有单元格段落中的内嵌图表
+     */
+    private List<XWPFPicture> extractTablePictures(XWPFTable table) {
+        List<XWPFPicture> pictures = new ArrayList<>();
+        if (table.getRows() != null) {
+            for (XWPFTableRow row : table.getRows()) {
+                if (row.getTableCells() != null) {
+                    for (XWPFTableCell cell : row.getTableCells()) {
+                        if (cell.getParagraphs() != null) {
+                            for (XWPFParagraph p : cell.getParagraphs()) {
+                                pictures.addAll(extractPictures(p));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return pictures;
     }
 
     @Override

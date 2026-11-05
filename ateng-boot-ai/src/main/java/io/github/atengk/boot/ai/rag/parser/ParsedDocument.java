@@ -58,6 +58,21 @@ public class ParsedDocument implements Serializable {
     public static final String METADATA_IMAGE_URLS = "image_urls";
 
     /**
+     * 元数据键：首要关联图表对象存储 Key
+     */
+    public static final String METADATA_IMAGE_STORAGE_KEY = "image_storage_key";
+
+    /**
+     * 元数据键：文档关联的所有图表对象存储 Key 列表
+     */
+    public static final String METADATA_IMAGE_STORAGE_KEYS = "image_storage_keys";
+
+    /**
+     * 元数据键：文档关联的所有图表视觉摘要描述列表
+     */
+    public static final String METADATA_IMAGE_CAPTIONS = "image_captions";
+
+    /**
      * 提取后的纯净文本内容 (保证非 null)
      */
     private final String text;

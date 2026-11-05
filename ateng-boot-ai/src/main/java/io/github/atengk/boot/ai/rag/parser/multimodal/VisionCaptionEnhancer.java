@@ -30,6 +30,15 @@ public class VisionCaptionEnhancer {
     private static final Logger log = LoggerFactory.getLogger(VisionCaptionEnhancer.class);
 
     /**
+     * 图片对象存储上传详细结果
+     *
+     * @param storageKey 对象存储中的唯一 Object Key / 路径
+     * @param url        公开可访问 URL
+     */
+    public record StorageUploadResult(String storageKey, String url) {
+    }
+
+    /**
      * 图片对象存储上传器 SPI 接口
      */
     @FunctionalInterface
@@ -42,6 +51,18 @@ public class VisionCaptionEnhancer {
          * @return 图片公开访问 URL；若上传失败或忽略则返回 null
          */
         String upload(byte[] imageBytes, String filename);
+
+        /**
+         * 上传图片二进制数据并返回包含 storageKey 与 url 的结构化结果
+         *
+         * @param imageBytes 图片字节数组
+         * @param filename   图片文件名
+         * @return 结构化上传结果
+         */
+        default StorageUploadResult uploadDetail(byte[] imageBytes, String filename) {
+            String url = upload(imageBytes, filename);
+            return new StorageUploadResult(null, url);
+        }
     }
 
     private final VisionModelResolver visionModelResolver;
@@ -93,10 +114,15 @@ public class VisionCaptionEnhancer {
     /**
      * 图表增强解析结果
      *
-     * @param text     Markdown 格式文本或占位符
-     * @param imageUrl 上传到对象存储后的公开访问 URL (若未配置或上传失败则为 null)
+     * @param text       Markdown 格式文本或占位符
+     * @param imageUrl   上传到对象存储后的公开访问 URL (若未配置或上传失败则为 null)
+     * @param storageKey 对象存储 Object Key (若未持久化则为 null)
+     * @param caption    视觉提炼纯净图表语义描述 (若无则为 null)
      */
-    public record ImageEnhanceResult(String text, String imageUrl) {
+    public record ImageEnhanceResult(String text, String imageUrl, String storageKey, String caption) {
+        public ImageEnhanceResult(String text, String imageUrl) {
+            this(text, imageUrl, null, null);
+        }
     }
 
     /**
@@ -110,14 +136,19 @@ public class VisionCaptionEnhancer {
     public ImageEnhanceResult enhanceImageResult(byte[] imageBytes, String filename, String mimeType) {
         String safeFilename = StringUtils.hasText(filename) ? filename.trim() : "image_" + UUID.randomUUID().toString().substring(0, 8) + ".png";
         if (imageBytes == null || imageBytes.length == 0) {
-            return new ImageEnhanceResult(formatPlaceholder(safeFilename, null), null);
+            return new ImageEnhanceResult(formatPlaceholder(safeFilename, null), null, null, null);
         }
 
-        // 1. 若配置并具备 ImageStorageUploader，上传原图至对象存储
+        // 1. 若配置并具备 ImageStorageUploader，上传原图至对象存储并保留 storageKey 与 URL
         String imageUrl = null;
+        String storageKey = null;
         if (properties.isStorageUpload() && imageStorageUploader != null) {
             try {
-                imageUrl = imageStorageUploader.upload(imageBytes, safeFilename);
+                StorageUploadResult uploadResult = imageStorageUploader.uploadDetail(imageBytes, safeFilename);
+                if (uploadResult != null) {
+                    imageUrl = uploadResult.url();
+                    storageKey = uploadResult.storageKey();
+                }
             } catch (Exception e) {
                 log.warn("上传文档内嵌图表至对象存储失败，忽略并继续视觉解析 [file={}, error={}]", safeFilename, e.getMessage());
             }
@@ -126,7 +157,7 @@ public class VisionCaptionEnhancer {
         // 2. 检查多模态视觉模型是否就绪
         ChatLanguageModel visionModel = resolveActiveVisionModel();
         if (visionModel == null) {
-            return new ImageEnhanceResult(formatPlaceholder(safeFilename, imageUrl), imageUrl);
+            return new ImageEnhanceResult(formatPlaceholder(safeFilename, imageUrl), imageUrl, storageKey, null);
         }
 
         // 3. 构造 Base64 Data URI 并调用视觉大模型
@@ -145,14 +176,14 @@ public class VisionCaptionEnhancer {
                     : "";
 
             if (!StringUtils.hasText(caption)) {
-                return new ImageEnhanceResult(formatPlaceholder(safeFilename, imageUrl), imageUrl);
+                return new ImageEnhanceResult(formatPlaceholder(safeFilename, imageUrl), imageUrl, storageKey, null);
             }
 
-            return new ImageEnhanceResult(formatCaption(safeFilename, caption, imageUrl), imageUrl);
+            return new ImageEnhanceResult(formatCaption(safeFilename, caption, imageUrl), imageUrl, storageKey, caption);
         } catch (Exception e) {
             // 4. 防御性降级：主动拦截 400 Bad Request 或网络异常，杜绝污染并中断文档解析主管道
             log.warn("视觉大模型调用失败，自动平滑降级为图表占位符 [file={}, error={}]", safeFilename, e.getMessage());
-            return new ImageEnhanceResult(formatPlaceholder(safeFilename, imageUrl), imageUrl);
+            return new ImageEnhanceResult(formatPlaceholder(safeFilename, imageUrl), imageUrl, storageKey, null);
         }
     }
 
