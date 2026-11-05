@@ -58,6 +58,16 @@
 | **向量化门面** | 统一命令式向量化计算与对称入库门面 | `EmbeddingTemplate` | `ateng.boot.ai.rag.model-name`<br>`ateng.boot.ai.rag.dimensions` | `embed(String)` / `embed(List<String>)` / `embed(TextSegment)` / `embedVector(String)` / `ingest(...)` / `remove(...)` / `removeAll(...)`，具备完备对称操作与指数退避重试 | `EmbeddingTemplateTest` / `RagControllerIntegrationTest` |
 | **RAG 自动装配** | 向量知识库自适应装配与单机回退 | `AtengAiRagAutoConfiguration` | `ateng.boot.ai.rag.enabled` | 自动探测并注入外部 `EmbeddingStore`（如 `ateng-boot-milvus`），缺省自动平滑降级单机内存向量库 `InMemoryEmbeddingStore` | `AtengAiRagAutoConfigurationTest` |
 | **知识库检索器** | 统一知识库向量检索器受管 Bean | `ContentRetriever`<br>`EmbeddingStoreContentRetriever` | `ateng.boot.ai.rag.max-results`<br>`ateng.boot.ai.rag.min-score` | 自动根据配置组装 `ContentRetriever` Bean，支持 `@AiAgent(contentRetriever = "...")` 与编程式检索 | `AtengAiRagAutoConfigurationTest` / `RagControllerIntegrationTest` |
+| **文档分块切片** | 原生轻量长文档分块切片门面 | `DocumentSplitter`<br>`RecursiveCharacterSplitter`<br>`MarkdownHeaderSplitter` | `ateng.boot.ai.rag.chunk-size`<br>`ateng.boot.ai.rag.chunk-overlap` | `split(String)` / `split(Resource)` / `split(InputStream)`，支持递归字符分块与 Markdown 语义标题两级分块 | `DocumentSplitterTest` / `RagControllerIntegrationTest` |
+| **检索交叉重排** | 两阶段 Cross-Encoder 语义交叉重排 | `Reranker`<br>`OpenAiCompatibleReranker`<br>`RerankingContentRetriever` | `ateng.boot.ai.rag.rerank.enabled`<br>`ateng.boot.ai.rag.rerank.model-name`<br>`ateng.boot.ai.rag.rerank.top-k`<br>`ateng.boot.ai.rag.rerank.min-score` | `rerank(query, segments, topK)`，对粗排召回结果实施二次精排打分与截断，透明提升 RAG 回答精准度 | `RerankerTest` / `RagControllerIntegrationTest` |
+| **查询意图改写** | 多轮会话意图消解与检索改写 | `QueryTransformer`<br>`LlmQueryTransformer`<br>`RewriteQueryRetriever` | `ateng.boot.ai.rag.query-transform.enabled`<br>`ateng.boot.ai.rag.query-transform.prompt-template` | `transform(query, history)`，自动消解代词与指代歧义，将多轮上下文重写为独立自洽的高质量检索 Prompt | `QueryTransformerTest` |
+| **容灾故障转移** | 声明式多模型故障自动转移与全局时延预算 | `FailoverChatLanguageModel`<br>`FailoverStreamingChatLanguageModel`<br>`NamedModel`<br>`FailoverClassifier` | `ateng.boot.ai.models.<name>.fallbacks`<br>`ateng.boot.ai.models.<name>.total-timeout` | `generate(messages)` / `generate(messages, handler)`，主模型遭遇 429/5xx/超时自动平滑无缝降级备用序列，共享全局时延预算 | `FailoverChatLanguageModelTest` / `FailoverControllerIntegrationTest` |
+| **突发滑动限流** | 微观突发滑动窗口限流器 (RPS & TPM) | `AiRateLimiter`<br>`DefaultAiRateLimiter`<br>`RedisAiRateLimiter` | `ateng.boot.ai.rate-limit.enabled`<br>`ateng.boot.ai.rate-limit.default-rps`<br>`ateng.boot.ai.rate-limit.default-tpm`<br>`ateng.boot.ai.rate-limit.tenants.<id>.*` | `tryAcquire(tenantId, model, tokens)` / `acquire(...)`，基于滑动窗口与令牌桶微观流控，防御下游大模型 API 触发 429 封禁 | `AiRateLimiterTest` / `RateLimitControllerIntegrationTest` |
+| **动态工具调用** | 编程式动态工具挂载与反射沙箱 | `AiTemplate#chatWithTools`<br>`AiTemplate#streamWithTools`<br>`DynamicToolChatService`<br>`DynamicToolStreamService` | - | `chatWithTools(prompt, tools...)` / `streamWithTools(prompt, tools...)`，无需注解硬编码，零侵入反射组装局部工具链 | `DynamicToolServiceTest` / `ToolsControllerIntegrationTest` |
+| **MCP 客户端** | 标准 Anthropic MCP 远程工具客户端桥接 | `McpClientAdapter`<br>`HttpMcpClientAdapter`<br>`McpClientRegistry`<br>`McpSchemaConverter` | `ateng.boot.ai.mcp.enabled`<br>`ateng.boot.ai.mcp.servers.<name>.url`<br>`ateng.boot.ai.mcp.servers.<name>.api-key` | `getTools()` / `callTool(name, args)` / `refreshTools()`，基于原生 HTTP JSON-RPC 2.0 桥接远程 MCP 动态工具清单 | `HttpMcpClientAdapterTest` / `ToolsControllerIntegrationTest` |
+| **长会话记忆摘要** | 后台受管非阻塞异步长会话摘要记忆 | `SummaryChatMemory`<br>`SummaryMemoryState`<br>`SummaryChatMemoryStore`<br>`InMemorySummaryChatMemoryStore`<br>`RedisSummaryChatMemoryStore` | `ateng.boot.ai.chat-memory.window-type: SUMMARY`<br>`ateng.boot.ai.chat-memory.max-messages-before-summary`<br>`ateng.boot.ai.chat-memory.keep-recent-messages` | `add(msg)` / `messages()` / `clear()`，双层上下文维护 [System: 长期摘要] + [近期 N 条明细]，异步受管线程池后台提炼，调用线程零阻塞 | `SummaryChatMemoryTest` / `SummaryControllerIntegrationTest` |
+| **原生约束解码** | 原生 JSON_SCHEMA 结构化约束模式 | `JsonSchemaGenerator`<br>`AiResponseFormat` | `ateng.boot.ai.model.response-format: JSON_SCHEMA`<br>`ateng.boot.ai.model.json-schema.*` | `generateSchema(Class<?>)`，递归解析 Java 实体类反射生成符合 OpenAI 规范的 JSON Schema 严格约束模式，消除结构化输出幻觉 | `JsonSchemaGeneratorTest` / `AiTemplateTest` |
+| **财务成本核算** | 实时大模型调用成本精算与财务度量 | `TokenCostCalculator`<br>`ModelPricingConfig` | `ateng.boot.ai.pricing.models.<name>.input-price-per-million-tokens`<br>`ateng.boot.ai.pricing.models.<name>.output-price-per-million-tokens` | `calculateCost(model, inTokens, outTokens)`，高精度 BigDecimal 核算美元/人民币成本，自动上报 `ateng.ai.cost.dollars.total` 财务指标 | `TokenCostCalculatorTest` / `MetricsControllerIntegrationTest` |
 
 ---
 
@@ -274,6 +284,63 @@ ateng:
 
 ---
 
+### 3.4 声明式多模型故障自动转移与全局时延预算 (FailoverChatLanguageModel)
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      model:
+        model-name: gpt-4o
+        timeout: 10s
+        # 主模型遭遇服务端宕机 (5xx)、限流 (429) 或网络超时时，自动顺位转移至备选候选列表
+        fallbacks:
+          - qwen-plus
+          - deepseek-chat
+        # 全局调用时延预算上限 (多个模型串行尝试的总耗时硬顶，防止下游级联超时崩溃)
+        total-timeout: 25s
+      models:
+        qwen-plus:
+          base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+          api-key: YOUR_DASHSCOPE_API_KEY
+          model-name: qwen-plus
+          timeout: 10s
+        deepseek-chat:
+          base-url: https://api.deepseek.com/v1
+          api-key: YOUR_DEEPSEEK_API_KEY
+          model-name: deepseek-chat
+          timeout: 10s
+```
+
+#### 实战业务 Java 示例
+```java
+@Service
+@RequiredArgsConstructor
+public class HighAvailabilityOrderService {
+
+    private final AiTemplate aiTemplate;
+
+    /**
+     * 高可用订单风险自动识别 (配置 fallbacks 后天然具备多模型容灾能力)
+     *
+     * @param orderDescription 订单业务摘要
+     * @return 风险核验结论
+     */
+    public String evaluateOrderRisk(String orderDescription) {
+        // 无需硬编码 try-catch 兜底，底座自动按序列故障转移：gpt-4o -> qwen-plus -> deepseek-chat
+        return aiTemplate.chat("请对以下订单交易行为进行反洗钱与黑灰产风险研判：\n" + orderDescription);
+    }
+}
+```
+
+#### 核心机制与边界防御
+- **可故障转移智能分类 (`FailoverClassifier`)**：精准甄别瞬态故障（HTTP 429 限流、500/502/503/504 网关异常、网络连接超时）与不可重试业务错误（400 参数格式非法、401 密钥失效、403 无权限）。对业务确定性错误坚决 Fail-Fast 立即抛出，杜绝将不可行入参向备选模型盲目透传；
+- **全局时延预算约束 (`TotalDeadline`)**：所有备选模型共享 `total-timeout` 时延预算。若主模型耗时 8 秒后超时，后续备选模型单次调用超时动态收缩为剩余的 17 秒；一旦预算耗尽立即熔断抛出超时异常，从物理上杜绝串行多模型累加导致的线程无界挂死；
+- **同步与流式双模覆盖**：不仅同步 `FailoverChatLanguageModel` 具备容灾转移能力，流式推流 `FailoverStreamingChatLanguageModel` 亦支持首字输出前的静默透明重试与转移，保障终端打字机推流平滑可用。
+
+---
+
 ## 4. 视觉多模态图文交互与动态提示词
 
 ### 4.1 发票凭单图文多模态识别
@@ -413,6 +480,64 @@ public class UserAnalysisService {
 ```
 
 - **三阶防幻觉校验**：若大模型输出格式畸形或数值越界（例如 `conversionProbability = 120`），直接熔断抛出 `AiException(AiResultCode.AI_RESPONSE_PARSE_ERROR)`，杜绝脏数据注入下游业务流程。
+
+---
+
+### 4.5 原生约束解码模式 (JSON_SCHEMA)
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      models:
+        structured-extractor:
+          base-url: https://api.openai.com/v1
+          api-key: YOUR_OPENAI_API_KEY
+          model-name: gpt-4o-mini
+          # 开启原生约束解码模式: TEXT (默认), JSON_OBJECT, JSON_SCHEMA
+          response-format: JSON_SCHEMA
+          json-schema:
+            name: "invoice_extraction_schema"
+            strict: true    # 启用 OpenAI 严格模式 (杜绝输出未定义字段)
+```
+
+#### 实战业务 Java 示例
+```java
+public record InvoiceExtractionVo(
+        @NotBlank(message = "发票代码不能为空")
+        String invoiceCode,
+
+        @NotBlank(message = "发票号码不能为空")
+        String invoiceNumber,
+
+        @NotNull(message = "开票金额不能为空")
+        Double totalAmount,
+
+        @NotBlank(message = "购买方名称不能为空")
+        String purchaserName
+) {}
+
+@Service
+@RequiredArgsConstructor
+public class InvoiceAnalysisService {
+
+    private final AiTemplate aiTemplate;
+
+    public InvoiceExtractionVo analyzeInvoiceText(String rawInvoiceOcrText) {
+        // 自动由 JsonSchemaGenerator 解析 InvoiceExtractionVo 反射生成严格 JSON Schema 契约注入网关
+        return aiTemplate.chatForObject(
+                "structured-extractor",
+                "请从以下 OCR 文本中提取发票关键元数据：\n" + rawInvoiceOcrText,
+                InvoiceExtractionVo.class
+        );
+    }
+}
+```
+
+#### 核心机制与边界防御
+- **OpenAI 规范原生严格对齐**：`JsonSchemaGenerator` 依据实体类的类型定义与字段声明，递归生成符合 OpenAI `json_schema` 规范的 Schema 树，自动为每个 object 类型节点挂载 `additionalProperties: false` 与全量必填 `required` 约束，彻底阻断大模型随意发挥与字段幻觉；
+- **纯原生无第三方依赖**：通过 JDK 17 反射与轻量原生 JSON 构造器递归组装，零第三方臃肿代码生成库，保持纯净轻量。
 
 ---
 
@@ -700,6 +825,69 @@ public class AiAgentController {
 
 ---
 
+### 6.6 编程式动态工具挂载与 Anthropic MCP 客户端桥接
+
+除了声明式 `@AiAgent(tools = ...)` 外，针对命令式工作流、临时工具调度以及跨微服务标准 MCP (Model Context Protocol) 调用的需求，`AiTemplate` 提供 `chatWithTools` 与 `streamWithTools` 门面：
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      mcp:
+        enabled: true    # 启用远程 MCP 客户端桥接 (默认 true)
+        servers:
+          filesystem-server:
+            url: http://127.0.0.1:8001/mcp
+            timeout: 10s
+            api-key: YOUR_MCP_SERVER_KEY
+            eager-init: true    # 启动时预热连接并发现远程工具清单
+          database-server:
+            url: http://127.0.0.1:8002/mcp
+            timeout: 15s
+```
+
+#### 实战业务 Java 示例
+```java
+@Component
+public class WarehouseInventoryTool {
+
+    @Tool("实时查询指定 SKU 在自动化立体仓库中的可用现货库存与库位")
+    public int checkInventory(@P("商品 SKU 唯一编码") String skuCode) {
+        // 业务查询逻辑...
+        return 420;
+    }
+}
+
+@Service
+@RequiredArgsConstructor
+public class DynamicFulfillmentService {
+
+    private final AiTemplate aiTemplate;
+    private final WarehouseInventoryTool warehouseTool;
+    private final McpClientRegistry mcpRegistry;
+
+    /**
+     * 编程式动态挂载本地 POJO 工具与远程 MCP 服务端工具执行智能履约决策
+     */
+    public String decideFulfillment(String userInstruction) {
+        // 动态聚合本地工具实例与远程 MCP 适配器，无需硬编码接口声明
+        return aiTemplate.chatWithTools(
+                "请根据用户履约诉求核验库存并给出调度方案：" + userInstruction,
+                warehouseTool,
+                mcpRegistry.getAdapter("database-server")
+        );
+    }
+}
+```
+
+#### 核心机制与边界防御
+- **轻量零侵入反射解析**：`AiTemplate.chatWithTools` 接收任意标注了 `@Tool` 的普通 POJO 对象，底层无需动态生成接口类，直接反射提取工具签名并在调用线程安全执行；
+- **Anthropic MCP 协议原生兼容**：遵循 Model Context Protocol 标准 JSON-RPC 2.0 协议，`HttpMcpClientAdapter` 纯基于 JDK 17 原生 `HttpClient` 驱动，零第三方重量级 SDK 依赖；
+- **网络隔离与超时防卫**：所有远程 MCP 工具调用受独立 `timeout` 严格保护；若外部 MCP 节点崩溃或不可达，沙箱优雅捕获并转译为业务受控错误，防止主对话线程挂起。
+
+---
+
 ## 7. 双模会话记忆治理与 RAG 知识检索挂载
 
 ### 7.1 双模会话存储与 Redis 强类型 TTL 漫游
@@ -800,6 +988,75 @@ public ContentRetriever financeRetriever(EmbeddingModel embeddingModel, Embeddin
 ```
 
 - **显式与缺省兼备**：未显式指定时，若容器中存在唯一的 `ContentRetriever` Bean，系统将自动绑定缺省检索点；存在多个时强制显式指定 Bean 名称，实现防御性隔离。
+
+---
+
+### 7.5 后台非阻塞异步长会话摘要记忆 (SummaryChatMemory)
+
+针对企业级客服顾问、长程技术问答等超长轮次对话场景，单纯按消息数或 Token 简单截断（Sliding Window）会导致前序关键事实和用户偏好永久丢失。`ateng-boot-ai` 提供工业级后台异步长会话摘要记忆：
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      chat-memory:
+        # 裁剪模式: MESSAGE (条数滑动), TOKEN (Token滑动), SUMMARY (长会话异步双层摘要)
+        window-type: SUMMARY
+        # 触发异步提炼的消息阈值 (达到 20 条即分发提炼任务)
+        max-messages-before-summary: 20
+        # 触发异步提炼的 Token 预估阈值 (可选，默认 0 表示不按 Token 阈值触发)
+        max-tokens-before-summary: 4096
+        # 提炼后保留的最新高保真明细消息条数 (保留最近 6 条明细)
+        keep-recent-messages: 6
+        # 系统提示词摘要前缀标识
+        summary-prefix: "【历史对话事实摘要与核心背景】: "
+        # 摘要专用 Redis 键前缀 (默认 "ai:chat:summary:")
+        summary-key-prefix: "ai:chat:summary:"
+        # 滑动过期 TTL (默认 7d)
+        ttl: 7d
+```
+
+#### 实战业务 Java 示例
+```java
+@Service
+@RequiredArgsConstructor
+public class WealthAdvisoryService {
+
+    private final SummaryChatMemoryStore summaryMemoryStore;
+    private final ChatLanguageModel chatLanguageModel;
+    private final TaskExecutor taskExecutor;
+
+    public String advise(String clientId, String userMessage) {
+        // 构建客户端专属长会话双层摘要记忆
+        SummaryChatMemory memory = SummaryChatMemory.builder()
+                .id(clientId)
+                .store(summaryMemoryStore)
+                .chatLanguageModel(chatLanguageModel)
+                .executor(taskExecutor)
+                .maxMessagesBeforeSummary(20)
+                .keepRecentMessages(6)
+                .build();
+
+        // 1. 同步毫秒级追加用户消息
+        memory.add(UserMessage.from(userMessage));
+
+        // 2. 获取双层组装上下文: [SystemMessage: 长期事实摘要] + [Recent 6 Messages]
+        List<ChatMessage> contextMessages = memory.messages();
+
+        // 3. 调用模型生成专业财富顾问建议
+        Response<AiMessage> response = chatLanguageModel.generate(contextMessages);
+        memory.add(response.content());
+
+        return response.content().text();
+    }
+}
+```
+
+#### 核心机制与边界防御
+- **双层上下文架构 (Two-Tier Context)**：`SummaryChatMemory` 将状态解耦为“长期事实摘要 (Long-term Summary)”与“近期对话明细 (Recent Detailed Messages)”。拼装 Prompt 时将摘要包装为系统级上下文置顶注入，近期消息原汁原味透传，兼顾长程跨天事实不丢失与即时上下文高保真；
+- **异步非阻塞 (Non-Blocking Zero Latency)**：达到提炼阈值时，向 Core 受管线程池分发异步大模型事实提炼任务，当前用户调用与打字机推流零毫秒等待阻塞；
+- **并发防重与无缝合并防卫**：同一会话同一时刻全局仅允许一个提炼任务运行；提炼期间用户并发输入的新消息在提炼完成后通过版本比对安全合并追加，杜绝消息丢失或状态覆盖。
 
 ---
 
@@ -1146,6 +1403,110 @@ ateng:
 
 ---
 
+### 9.6 微观突发流量滑动窗口限流器 (AiRateLimiter - RPS & TPM)
+
+除了基于自然日的粗粒度配额风控外，面向高并发流量洪峰与上游大模型 API 提供商严苛的 QPS/TPM 阈值，`ateng-boot-ai` 提供了微观毫秒级与分钟级双维突发限流器：
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      rate-limit:
+        # 是否启用微观突发滑动限流器 (默认 true)
+        enabled: true
+        # 全局默认每秒请求数上限 RPS (Requests Per Second)
+        default-rps: 20
+        # 全局默认每分钟 Token 吞吐量上限 TPM (Tokens Per Minute)
+        default-tpm: 100000
+        # 针对指定租户的专有细粒度限流规则
+        tenants:
+          tenant-vip:
+            rps: 100
+            tpm: 500000
+          tenant-free:
+            rps: 2
+            tpm: 10000
+        # 针对指定模型的专有细粒度限流规则
+        models:
+          gpt-4o:
+            rps: 50
+            tpm: 200000
+```
+
+#### 实战业务 Java 示例
+```java
+@Service
+@RequiredArgsConstructor
+public class HighThroughputChatService {
+
+    private final AiRateLimiter aiRateLimiter;
+    private final AiTemplate aiTemplate;
+
+    public String generateCopywriting(String tenantId, String modelName, String prompt) {
+        int estimatedTokens = prompt.length() * 2;
+
+        // 1. 尝试获取并发许可 (Fail-Fast 模式，超限即抛出 AI_RATE_LIMIT_EXCEEDED 业务异常)
+        aiRateLimiter.acquire(tenantId, modelName, estimatedTokens);
+
+        // 2. 许可核准后发起大模型安全调用
+        return aiTemplate.chat(prompt);
+    }
+}
+```
+
+#### 核心机制与边界防御
+- **RPS 与 TPM 联合双维流控**：不仅限制每秒请求总数（防止大模型服务连接数瞬时打满），同时追踪每分钟动态消耗的总 Token 数（防止大包并发导致触发供应商 TPM 429 封禁）；
+- **双模自适应底座**：
+  - **Redis 分布式集群模式**：基于 Redis 原生原子 Lua 脚本与微观时间戳分片滑动窗口，集群多实例共享限流状态；
+  - **单机内存自适应回退**：未引入 Redis 依赖时自动降级单机内存模式，基于高效无锁原子类与滑动区间淘汰，保障 100% 离线自洽；
+- **智能规则优先级解析 (`RateLimitRuleResolver`)**：解析优先级严格遵循 `租户专有规则 > 模型专有规则 > 全局默认规则`，支持生产精细化流量治理。
+
+---
+
+### 9.7 实时大模型调用成本精算与财务度量 (TokenCostCalculator)
+
+面向企业财务精细化核算与大模型成本归集审计，框架提供高精度财务成本计算引擎并自动联动 Micrometer 指标大盘：
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      pricing:
+        # 计价货币基准 (USD / CNY)
+        currency: USD
+        # 模型计价矩阵 (每百万 Token 费率)
+        models:
+          gpt-4o:
+            input-price-per-million-tokens: 2.50     # 输入 $2.50 / 1M tokens
+            output-price-per-million-tokens: 10.00   # 输出 $10.00 / 1M tokens
+          deepseek-chat:
+            input-price-per-million-tokens: 0.14     # 输入 $0.14 / 1M tokens
+            output-price-per-million-tokens: 0.28    # 输出 $0.28 / 1M tokens
+```
+
+#### 实战业务 Java 示例
+```java
+@Service
+@RequiredArgsConstructor
+public class ModelCostBillingService {
+
+    private final TokenCostCalculator costCalculator;
+
+    public BigDecimal computeCallFee(String modelName, int promptTokens, int completionTokens) {
+        // 基于精确 BigDecimal 进行财务级成本精算 (保留 8 位小数防除不尽截断)
+        return costCalculator.calculateCost(modelName, promptTokens, completionTokens);
+    }
+}
+```
+
+#### 核心机制与边界防御
+- **BigDecimal 财务级无损运算**：内部所有除法与乘法计算严格依托 `BigDecimal` 并在除以 1,000,000 时保留 8 位小数采用 `RoundingMode.HALF_UP`，彻底杜绝 `double` 浮点数截断误差累加造成的账单偏差；
+- **Prometheus 财务大盘联动**：在 `AtengAiObservabilityListener` 监听到调用成功后，自动根据配置的费率计算本次账单金额，累加至 Micrometer Counter 指标 `ateng.ai.cost.dollars.total`（带 `model` 与 `tenant_id` 维度标签），支持运维及财务人员在 Grafana 实时监控成本走势。
+
+---
+
 ## 10. 企业级 AI 双向内容安全护栏体系 (AiGuardrail)
 
 大模型应用落地生产面临两大核心安全风险：**前置提示词注入/越狱攻击**（试图诱导模型泄露内部指令或绕过安全限制）与**后置生成违禁敏感词**（模型生成不合规、侵权或违禁内容）。`ateng-boot-ai` 构建了零外部依赖的双向内容安全护栏体系，贯穿 `AiTemplate`（同步/流式/结构化）与声明式智能体代理 `@AiAgent` 全生命周期。
@@ -1338,7 +1699,137 @@ public interface EnterpriseQaAgent {
 }
 ```
 
-### 11.4 生产扩展与自定义中间件接管
+---
+
+### 11.4 智能长文档结构化切分 (DocumentSplitter)
+
+针对长篇企业技术规范、政策白皮书与 Markdown 架构文档，`ateng-boot-ai` 提供了纯原生轻量文档切片门面 `DocumentSplitter`：
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      rag:
+        # 默认长文本切片目标字符大小 (默认 500)
+        chunk-size: 500
+        # 文本切片重叠字符大小 (默认 50，防止切片边界上下文语义撕裂)
+        chunk-overlap: 50
+```
+
+#### 实战业务 Java 示例
+```java
+@Service
+@RequiredArgsConstructor
+public class KnowledgeIngestService {
+
+    private final DocumentSplitter documentSplitter;
+    private final EmbeddingTemplate embeddingTemplate;
+    private final EmbeddingStore<TextSegment> embeddingStore;
+
+    /**
+     * 读取类路径下的架构文档并切片入库
+     */
+    public int ingestMarkdownManual(Resource markdownFile) {
+        // 1. 支持直接传入 Spring Resource、InputStream 或纯文本进行切片
+        List<TextSegment> segments = documentSplitter.split(markdownFile);
+
+        // 2. 批量向量化并存储
+        for (TextSegment segment : segments) {
+            embeddingTemplate.ingest(embeddingStore, segment);
+        }
+        return segments.size();
+    }
+}
+```
+
+#### 核心机制与边界防御
+- **双模智能切片策略**：
+  - **递归字符切片器 (`RecursiveCharacterSplitter`)**：按 `\n\n`（段落）、`\n`（行）、句号、空格等自然边界自适应降级切分，严格确保切片大小不超过 `chunkSize`；
+  - **Markdown 语义切片器 (`MarkdownHeaderSplitter`)**：识别 Markdown `#`、`##`、`###` 标题层级，将标题元数据自动注入各切片的 `Metadata`，实现结构化语义切分；
+- **滑动重叠防撕裂 (`chunkOverlap`)**：每个切片与上一切片保持指定字符数的滑动重叠，彻底消除实体名称或断句正好落在切分边界造成的语义丢失。
+
+---
+
+### 11.5 检索两阶段交叉重排 (Reranker)
+
+基于向量相似度的单阶段稠密检索（Bi-Encoder 粗排）容易受文本表面特征影响。`ateng-boot-ai` 引入两阶段 Cross-Encoder 语义交叉精排架构：
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      rag:
+        rerank:
+          # 是否启用两阶段语义交叉重排 (默认 false)
+          enabled: true
+          # 重排模型端点地址 (支持兼容 OpenAI / SiliconFlow / 本地 TEI 规范)
+          base-url: https://api.siliconflow.cn/v1
+          # 重排服务 API Key (可选，未配置时自动继承全局主模型凭据)
+          api-key: YOUR_RERANK_API_KEY
+          # 重排模型标识名称 (如 bge-reranker-large, bge-reranker-v2-m3)
+          model-name: BAAI/bge-reranker-large
+          # 精排保留的最终候选切片 Top-K (默认 3)
+          top-k: 3
+          # 重排最低语义相关度得分阈值 (低于此得分的候选直接淘汰)
+          min-score: 0.5
+          # 重排网络调用超时时间 (默认 30s)
+          timeout: 30s
+```
+
+#### 实战业务 Java 示例
+```java
+@Service
+@RequiredArgsConstructor
+public class HighPrecisionRagService {
+
+    private final ContentRetriever contentRetriever; // 已自动由 RerankingContentRetriever 透明装饰
+    private final AiTemplate aiTemplate;
+
+    public String consultRegulation(String userQuery) {
+        // 自动完成：向量粗排召回 (放大 3 倍候选) -> Reranker 交叉注意力精排 -> 截取 Top-3 精确片段
+        List<Content> contents = contentRetriever.retrieve(Query.from(userQuery));
+        
+        String context = contents.stream()
+                .map(c -> "- " + (c.textSegment() != null ? c.textSegment().text() : ""))
+                .collect(Collectors.joining("\n"));
+
+        return aiTemplate.chat("请基于以下经过精准重排的权威资料回答：\n" + context + "\n\n用户提问：" + userQuery);
+    }
+}
+```
+
+#### 核心机制与边界防御
+- **两阶段检索协同**：启用重排后，底层向量检索自动将初筛候选集放大 3 倍（至少 10 条），交由 Cross-Encoder 计算全局交叉注意力得分，大幅降低“向量相似但语义不符”的伪召回率；
+- **透明无缝装配 (`RerankingContentRetriever`)**：重排器作为装饰器透明包裹标准 `ContentRetriever`，无需修改任何 `@AiAgent` 或上层调用代码；若重排服务发生瞬态故障，框架优雅降级回退原始粗排顺序，防御服务雪崩。
+
+---
+
+### 11.6 多轮会话意图消解与查询改写 (QueryTransformer)
+
+在多轮长对话中，用户的追问往往包含代词（“它”、“这个”、“上一个”）或省略主语，直接进行向量检索命中率极低。查询改写器在检索前自动消解上下文代词：
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      rag:
+        query-transform:
+          # 是否启用多轮会话检索改写 (默认 false)
+          enabled: true
+          # 意图改写使用的高速大模型名称 (可选，未配置时使用默认主模型)
+          model-name: deepseek-chat
+```
+
+#### 核心机制与边界防御
+- **上下文意图消解**：将当前会话的历史上下文与最新追问合成精简 Prompt，驱动大语言模型输出语义独立、无代词歧义的单句查询；
+- **透明装饰器 (`RewriteQueryRetriever`)**：若上下文为空或仅单轮对话，改写器直接放行原 query，零冗余开销；若意图改写失败，平滑退避原 query 检索，绝不阻塞用户问答流程。
+
+---
+
+### 11.7 生产扩展与自定义中间件接管
 
 #### 1. 接入外部生产级分布式向量库 (如 Milvus)
 当引入 `ateng-boot-starter-milvus` 或自定义注册 `EmbeddingStore<TextSegment>` Bean 时，框架遵循 `@ConditionalOnMissingBean` 守卫自动退让，无需修改任何业务代码：
@@ -1373,7 +1864,7 @@ public class CustomEmbeddingModelConfiguration {
 }
 ```
 
-### 11.5 核心生产边界与非功能语义防卫
+### 11.8 核心生产边界与非功能语义防卫
 1. **防止无关智能体被隐式绑架**：`@AiAgent` 严格恪守显式契约原则，只有显式声明 `@AiAgent(contentRetriever = "...")` 的智能体才会挂载检索器，坚决杜绝全局注册单个 `ContentRetriever` 时导致所有纯逻辑或纯工具智能体被无差别注入知识库检索；
 2. **防幻觉与相似度阈值守卫**：配置 `ateng.boot.ai.rag.min-score`（默认 0.6）强制过滤低相关度噪声切片；结合业务层显式判定“检索结果为空时如实告知”，杜绝大模型无边界信口雌黄；
 3. **瞬态网络退避重试**：`EmbeddingTemplate` 挂载 `RetryUtil`（带 Jitter 的指数退避），对 429 限流与超时错误执行自动重试，对 401/403 认证错误 Fail-Fast，底层 SDK 裸重试数强制置 0，彻底根除重试乘积爆炸。
@@ -1411,6 +1902,12 @@ ateng:
         log-requests: false
         # 是否在控制台打印原始响应报文日志 (生产环境建议 false)
         log-responses: false
+        # 结构化输出模式: TEXT (默认), JSON_OBJECT, JSON_SCHEMA
+        response-format: TEXT
+        # 故障自动转移备选模型候选序列 (按序顺位降级)
+        fallbacks: []
+        # 全局时延预算硬顶 (防止多模型串行累加超时挂死)
+        total-timeout: 60s
         # 自定义附加 HTTP 请求头 (可选，如特定网关鉴权标头)
         custom-headers:
           X-Tenant-Id: "10001"
@@ -1425,6 +1922,47 @@ ateng:
         max-payload-chars: 1000
         # 是否对手机号/身份证/银行卡/邮箱等 PII 敏感信息执行正则掩码脱敏 (默认 true)
         mask-pii: true
+
+      # 微观突发滑动限流器治理配置 (RPS & TPM)
+      rate-limit:
+        # 是否启用微观突发限流守卫 (默认 true)
+        enabled: true
+        # 全局默认每秒请求数上限 (默认 20 RPS)
+        default-rps: 20
+        # 全局默认每分钟 Token 吞吐量上限 (默认 100,000 TPM)
+        default-tpm: 100000
+        # 细粒度专有租户限流规则映射
+        tenants:
+          tenant-vip:
+            rps: 100
+            tpm: 500000
+        # 细粒度专有模型限流规则映射
+        models:
+          gpt-4o:
+            rps: 50
+            tpm: 200000
+
+      # 远程 MCP (Model Context Protocol) 客户端配置
+      mcp:
+        # 是否启用远程 MCP 客户端桥接 (默认 true)
+        enabled: true
+        servers:
+          filesystem-server:
+            url: http://127.0.0.1:8001/mcp
+            timeout: 10s
+            api-key: YOUR_MCP_API_KEY
+            eager-init: true
+
+      # 大模型财务调用计价与成本核算配置
+      pricing:
+        currency: USD
+        models:
+          gpt-4o:
+            input-price-per-million-tokens: 2.50
+            output-price-per-million-tokens: 10.00
+          deepseek-chat:
+            input-price-per-million-tokens: 0.14
+            output-price-per-million-tokens: 0.28
 
       # SaaS 多租户动态切源拓扑映射 (Map<String, String>: tenantId -> modelName)
       tenant-models:
@@ -1456,12 +1994,20 @@ ateng:
         enabled: true
         # 存储类型: AUTO (默认自动探测 Redis，未引入平滑回退内存), IN_MEMORY, REDIS
         type: AUTO
-        # 裁剪策略: MESSAGE (默认按消息条数裁剪), TOKEN (按 Token 数量裁剪)
+        # 裁剪策略: MESSAGE (默认按条数裁剪), TOKEN (按 Token 数量裁剪), SUMMARY (长会话异步双层摘要)
         window-type: MESSAGE
-        # 默认滑动窗口保留的最大消息条数 (默认 20 条，当 window-type=MESSAGE 时生效)
+        # 滑动窗口保留的最大消息条数 (默认 20 条，当 window-type=MESSAGE 时生效)
         max-messages: 20
-        # 默认滑动窗口保留的最大 Token 上限 (默认 8192，当 window-type=TOKEN 时生效)
+        # 滑动窗口保留的最大 Token 上限 (默认 8192，当 window-type=TOKEN 时生效)
         max-tokens: 8192
+        # 长会话摘要触发阈值消息条数 (当 window-type=SUMMARY 时生效，默认 20)
+        max-messages-before-summary: 20
+        # 长会话摘要保留最新高保真明细条数 (当 window-type=SUMMARY 时生效，默认 6)
+        keep-recent-messages: 6
+        # 系统提示词摘要前缀 (默认 "【历史对话事实摘要与核心背景】: ")
+        summary-prefix: "【历史对话事实摘要与核心背景】: "
+        # 摘要专用 Redis 键前缀 (默认 "ai:chat:summary:")
+        summary-key-prefix: "ai:chat:summary:"
         # Redis 存储键前缀 (默认 "ai:chat:memory:")
         key-prefix: "ai:chat:memory:"
         # 强类型滑动过期 TTL (每次读写自动续期，默认 7d)
@@ -1515,6 +2061,22 @@ ateng:
         model-name: text-embedding-3-small
         # 向量特征维度 (可选，部分模型支持指定维度)
         # dimensions: 1536
+        # 默认长文本切片目标字符大小 (默认 500)
+        chunk-size: 500
+        # 文本切片重叠字符大小 (默认 50)
+        chunk-overlap: 50
+        # 两阶段交叉重排配置
+        rerank:
+          enabled: false
+          base-url: https://api.siliconflow.cn/v1
+          model-name: BAAI/bge-reranker-large
+          top-k: 3
+          min-score: 0.5
+          timeout: 30s
+        # 多轮查询意图改写配置
+        query-transform:
+          enabled: false
+          model-name: deepseek-chat
         # 独立 Embedding 模型专属配置 (可选；未配置时平滑继承全局主模型凭据)
         model:
           # base-url: https://api.openai.com/v1

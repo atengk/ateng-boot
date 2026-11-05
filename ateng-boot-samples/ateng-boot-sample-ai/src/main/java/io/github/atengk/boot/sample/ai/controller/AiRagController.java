@@ -8,19 +8,29 @@ import dev.langchain4j.rag.content.Content;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.query.Query;
 import dev.langchain4j.store.embedding.EmbeddingStore;
+import io.github.atengk.boot.ai.rag.rerank.RerankResult;
+import io.github.atengk.boot.ai.rag.rerank.Reranker;
+import io.github.atengk.boot.ai.rag.splitter.DocumentSplitter;
+import io.github.atengk.boot.ai.rag.splitter.MarkdownHeaderSplitter;
+import io.github.atengk.boot.ai.rag.splitter.RecursiveCharacterSplitter;
 import io.github.atengk.boot.ai.template.AiTemplate;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.ai.dto.AiRagAskRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagEmbedRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagIngestRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagRerankRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagRetrieveRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagSplitRequest;
 import io.github.atengk.boot.sample.ai.vo.AiRagAskVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagEmbedVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagIngestVo;
+import io.github.atengk.boot.sample.ai.vo.AiRagRerankVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagRetrieveVo;
+import io.github.atengk.boot.sample.ai.vo.AiRagSplitVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -48,6 +58,119 @@ public class AiRagController {
     private final EmbeddingStore<TextSegment> embeddingStore;
     private final ContentRetriever contentRetriever;
     private final AiTemplate aiTemplate;
+    private final ObjectProvider<DocumentSplitter> documentSplitterProvider;
+    private final ObjectProvider<Reranker> rerankerProvider;
+
+    /**
+     * 长文档智能结构化切分体验
+     *
+     * @param request 文本切分入参
+     * @return 分块结果与元数据详情
+     */
+    @PostMapping("/split")
+    public Result<AiRagSplitVo> split(@Valid @RequestBody AiRagSplitRequest request) {
+        DocumentSplitter splitter;
+        String strategy = request.getStrategy() != null ? request.getStrategy().trim().toUpperCase() : "RECURSIVE";
+        int chunkSize = request.getChunkSize() != null && request.getChunkSize() > 0 ? request.getChunkSize() : 500;
+        int chunkOverlap = request.getChunkOverlap() != null && request.getChunkOverlap() >= 0 ? request.getChunkOverlap() : 50;
+
+        if ("MARKDOWN".equals(strategy)) {
+            splitter = new MarkdownHeaderSplitter(chunkSize, chunkOverlap);
+        } else if (request.getChunkSize() != null || request.getChunkOverlap() != null) {
+            splitter = new RecursiveCharacterSplitter(chunkSize, chunkOverlap);
+        } else {
+            splitter = documentSplitterProvider.getIfAvailable(() -> new RecursiveCharacterSplitter(chunkSize, chunkOverlap));
+        }
+
+        List<TextSegment> segments = splitter.split(request.getText());
+        List<AiRagSplitVo.SegmentItem> segmentItems = new ArrayList<>();
+        for (int i = 0; i < segments.size(); i++) {
+            TextSegment seg = segments.get(i);
+            Map<String, Object> metadata = seg.metadata() != null ? new LinkedHashMap<>(seg.metadata().toMap()) : Collections.emptyMap();
+            segmentItems.add(AiRagSplitVo.SegmentItem.builder()
+                    .index(i)
+                    .text(seg.text())
+                    .characterCount(seg.text() != null ? seg.text().length() : 0)
+                    .metadata(metadata)
+                    .build());
+        }
+
+        AiRagSplitVo vo = AiRagSplitVo.builder()
+                .totalSegments(segmentItems.size())
+                .strategy(strategy)
+                .segments(segmentItems)
+                .build();
+        return Result.success(vo);
+    }
+
+    /**
+     * 知识库候选检索片段两阶段交叉重排体验
+     *
+     * @param request 重排入参 (query 与 candidates)
+     * @return 经过语义精排的高相关度列表
+     */
+    @PostMapping("/rerank")
+    public Result<AiRagRerankVo> rerank(@Valid @RequestBody AiRagRerankRequest request) {
+        List<String> candidates = request.getCandidates();
+        int topK = request.getTopK() != null && request.getTopK() > 0 ? request.getTopK() : 3;
+
+        List<TextSegment> segments = new ArrayList<>();
+        for (int i = 0; i < candidates.size(); i++) {
+            segments.add(TextSegment.from(candidates.get(i), Metadata.from(Map.of("original_index", i))));
+        }
+
+        Reranker reranker = rerankerProvider.getIfAvailable();
+        List<AiRagRerankVo.RankedItem> rankedItems = new ArrayList<>();
+
+        if (reranker != null) {
+            List<RerankResult> results = reranker.rerank(request.getQuery(), segments, topK);
+            for (int rank = 0; rank < results.size(); rank++) {
+                RerankResult res = results.get(rank);
+                rankedItems.add(AiRagRerankVo.RankedItem.builder()
+                        .rank(rank + 1)
+                        .originalIndex(res.index())
+                        .score(res.score() != null ? res.score() : 0.0)
+                        .text(res.segment() != null ? res.segment().text() : "")
+                        .build());
+            }
+        } else {
+            // 本地启发式重排兜底 (根据关键词出现频率与子串匹配度打分，确保离线环境 100% 自洽可用)
+            String query = request.getQuery().toLowerCase();
+            String[] tokens = query.split("\\s+");
+            List<RerankResult> localResults = new ArrayList<>();
+            for (int i = 0; i < segments.size(); i++) {
+                TextSegment seg = segments.get(i);
+                String text = seg.text();
+                String textLower = text.toLowerCase();
+                double score = 0.0;
+                for (String token : tokens) {
+                    if (token.isBlank()) continue;
+                    if (textLower.contains(token)) {
+                        score += 1.0;
+                    }
+                }
+                localResults.add(new RerankResult(seg, i, score));
+            }
+            localResults.sort((a, b) -> Double.compare(b.score(), a.score()));
+            int limit = Math.min(topK, localResults.size());
+            for (int rank = 0; rank < limit; rank++) {
+                RerankResult res = localResults.get(rank);
+                rankedItems.add(AiRagRerankVo.RankedItem.builder()
+                        .rank(rank + 1)
+                        .originalIndex(res.index())
+                        .score(res.score() != null ? res.score() : 0.0)
+                        .text(res.segment() != null ? res.segment().text() : "")
+                        .build());
+            }
+        }
+
+        AiRagRerankVo vo = AiRagRerankVo.builder()
+                .query(request.getQuery())
+                .topK(rankedItems.size())
+                .results(rankedItems)
+                .build();
+        return Result.success(vo);
+    }
 
     /**
      * 单文本向量化计算体验

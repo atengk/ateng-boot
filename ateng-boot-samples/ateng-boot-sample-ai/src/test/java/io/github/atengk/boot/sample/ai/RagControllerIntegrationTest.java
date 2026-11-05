@@ -6,7 +6,9 @@ import dev.langchain4j.store.embedding.EmbeddingStore;
 import io.github.atengk.boot.sample.ai.dto.AiRagAskRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagEmbedRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagIngestRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagRerankRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagRetrieveRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagSplitRequest;
 import okhttp3.mockwebserver.Dispatcher;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -256,5 +258,72 @@ class RagControllerIntegrationTest {
                 .andExpect(jsonPath("$.data.question").value(askRequest.getQuestion()))
                 .andExpect(jsonPath("$.data.answer").value("根据知识库资料，ateng-boot 遵循纯原生零臃肿架构设计，严禁泄露持久化实体。"))
                 .andExpect(jsonPath("$.data.referenceContexts[0]").value(ingestRequest.getText()));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/split 递归字符分块与 Markdown 标题切分")
+    void testSplitSuccess() throws Exception {
+        // 1. 递归字符切片策略验证
+        AiRagSplitRequest recursiveReq = AiRagSplitRequest.builder()
+                .text("ateng-boot 坚持纯原生、零臃肿依赖与显式强类型契约设计。Controller 统一显式声明返回强类型 Result<T>。数据安全遵循内存真明文不变量，持久层与传输层彻底解耦。")
+                .strategy("RECURSIVE")
+                .chunkSize(40)
+                .chunkOverlap(10)
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/split")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(recursiveReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.totalSegments").value(org.hamcrest.Matchers.greaterThanOrEqualTo(2)))
+                .andExpect(jsonPath("$.data.strategy").value("RECURSIVE"))
+                .andExpect(jsonPath("$.data.segments").isArray());
+
+        // 2. Markdown 层级标题切片策略验证
+        String mdContent = """
+                # 系统概览
+                这是系统概览核心内容。
+                ## 架构规范
+                遵循 Spring Boot 3 工业级基础设施基线。
+                """;
+        AiRagSplitRequest mdReq = AiRagSplitRequest.builder()
+                .text(mdContent)
+                .strategy("MARKDOWN")
+                .chunkSize(200)
+                .chunkOverlap(20)
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/split")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(mdReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.strategy").value("MARKDOWN"))
+                .andExpect(jsonPath("$.data.totalSegments").value(org.hamcrest.Matchers.greaterThanOrEqualTo(1)));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/rerank 候选切片两阶段交叉重排")
+    void testRerankSuccess() throws Exception {
+        AiRagRerankRequest rerankReq = AiRagRerankRequest.builder()
+                .query("Spring Boot Controller 契约")
+                .candidates(java.util.List.of(
+                        "Redis 缓存穿透防卫与分布式锁",
+                        "Spring Boot Controller 统一显式声明返回强类型 Result 契约",
+                        "MyBatis-Plus 分页插件自动分页"
+                ))
+                .topK(2)
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/rerank")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(rerankReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.topK").value(2))
+                .andExpect(jsonPath("$.data.results").isArray())
+                .andExpect(jsonPath("$.data.results[0].text").value("Spring Boot Controller 统一显式声明返回强类型 Result 契约"))
+                .andExpect(jsonPath("$.data.results[0].rank").value(1));
     }
 }

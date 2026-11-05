@@ -1,0 +1,108 @@
+package io.github.atengk.boot.sample.ai.controller;
+
+import dev.langchain4j.agent.tool.ToolSpecification;
+import io.github.atengk.boot.ai.mcp.HttpMcpClientAdapter;
+import io.github.atengk.boot.ai.mcp.McpClientAdapter;
+import io.github.atengk.boot.ai.mcp.McpClientRegistry;
+import io.github.atengk.boot.ai.template.AiTemplate;
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.ai.dto.AiDynamicToolRequest;
+import io.github.atengk.boot.sample.ai.tool.CalculatorTool;
+import io.github.atengk.boot.sample.ai.vo.AiDynamicToolVo;
+import io.github.atengk.boot.sample.ai.vo.AiMcpListVo;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * AI 编程式动态工具与标准 MCP 客户端体验接口
+ *
+ * @author Ateng
+ * @since 2026-11-05
+ */
+@RestController
+@RequestMapping("/sample/ai/tools")
+@RequiredArgsConstructor
+public class AiToolsController {
+
+    private final AiTemplate aiTemplate;
+    private final CalculatorTool calculatorTool;
+    private final ObjectProvider<McpClientRegistry> mcpClientRegistryProvider;
+
+    /**
+     * 编程式动态工具挂载对话体验 (零注解声明式，按需反射与沙箱执行)
+     *
+     * @param request 对话请求
+     * @return 大模型结合工具执行结果生成的最终响应
+     */
+    @PostMapping("/chat-dynamic")
+    public Result<AiDynamicToolVo> chatDynamic(@Valid @RequestBody AiDynamicToolRequest request) {
+        String answer = aiTemplate.chatWithTools(request.getQuestion(), calculatorTool);
+
+        AiDynamicToolVo vo = AiDynamicToolVo.builder()
+                .question(request.getQuestion())
+                .answer(answer)
+                .toolsUsed(List.of("CalculatorTool.multiply", "CalculatorTool.add"))
+                .build();
+        return Result.success(vo);
+    }
+
+    /**
+     * 查询当前注册的远程 MCP 客户端服务端与工具列表
+     *
+     * @return MCP 服务端概览与动态工具清单
+     */
+    @GetMapping("/mcp-list")
+    public Result<AiMcpListVo> getMcpList() {
+        McpClientRegistry registry = mcpClientRegistryProvider.getIfAvailable();
+        if (registry == null) {
+            AiMcpListVo vo = AiMcpListVo.builder()
+                    .totalServers(0)
+                    .servers(Collections.emptyList())
+                    .build();
+            return Result.success(vo);
+        }
+
+        Map<String, McpClientAdapter> adapters = registry.getAllAdapters();
+        List<AiMcpListVo.ServerItem> serverItems = new ArrayList<>();
+
+        adapters.forEach((name, adapter) -> {
+            List<String> toolNames = Collections.emptyList();
+            try {
+                Map<ToolSpecification, ?> tools = adapter.getTools();
+                if (tools != null) {
+                    toolNames = tools.keySet().stream().map(ToolSpecification::name).toList();
+                }
+            } catch (Exception ignored) {
+                // MCP 服务未联通时容错展示
+            }
+
+            String endpoint = adapter instanceof HttpMcpClientAdapter httpAdapter
+                    ? httpAdapter.getEndpointUrl()
+                    : "custom";
+
+            serverItems.add(AiMcpListVo.ServerItem.builder()
+                    .serverName(adapter.getServerName())
+                    .url(endpoint)
+                    .toolCount(toolNames.size())
+                    .tools(toolNames)
+                    .build());
+        });
+
+        AiMcpListVo vo = AiMcpListVo.builder()
+                .totalServers(serverItems.size())
+                .servers(serverItems)
+                .build();
+        return Result.success(vo);
+    }
+}

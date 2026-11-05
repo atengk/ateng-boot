@@ -1,6 +1,6 @@
 # ateng-boot-sample-ai AI 智能体与认知图底座自验体验工程
 
-> 专注于演示与自验 `ateng-boot-ai` 核心特性在真实业务场景下的开箱使用，涵盖 OpenAI-Compatible 万能网关多模型路由、发票凭单视觉多模态分析、DeepSeek-R1 `<think>` 思考链提炼与双通道打字机流式推流。
+> 专注于演示与自验 `ateng-boot-ai` 核心特性在真实业务场景下的开箱使用，涵盖 OpenAI-Compatible 万能网关多模型路由、发票凭单视觉多模态分析、DeepSeek-R1 `<think>` 思考链提炼与双通道打字机流式推流、文档智能切片、交叉重排、多模型故障转移、突发滑动限流、动态函数调用与 MCP 客户端以及长会话异步摘要记忆。
 
 ---
 
@@ -54,6 +54,15 @@
 | **知识库切片内容入库** | `AiRagController` | `POST /sample/ai/rag/ingest` | `curl -X POST "http://localhost:8080/sample/ai/rag/ingest" -H "Content-Type: application/json" -d "{\"text\":\"ateng-boot 严禁持久化实体泄露至传输层\",\"metadata\":{\"category\":\"architecture\"}}"` |
 | **知识库向量检索召回** | `AiRagController` | `POST /sample/ai/rag/retrieve` | `curl -X POST "http://localhost:8080/sample/ai/rag/retrieve" -H "Content-Type: application/json" -d "{\"query\":\"传输层规范\"}"` |
 | **RAG 融合知识库增强问答** | `AiRagController` | `POST /sample/ai/rag/ask` | `curl -X POST "http://localhost:8080/sample/ai/rag/ask" -H "Content-Type: application/json" -d "{\"question\":\"ateng-boot 的 Controller 能直接返回 Entity 吗？\"}"` |
+| **长文档智能结构化切分** | `AiRagController` | `POST /sample/ai/rag/split` | `curl -X POST "http://localhost:8080/sample/ai/rag/split" -H "Content-Type: application/json" -d "{\"text\":\"# 规范\\nController 严禁返回实体\",\"strategy\":\"MARKDOWN\"}"` |
+| **候选切片两阶段交叉重排** | `AiRagController` | `POST /sample/ai/rag/rerank` | `curl -X POST "http://localhost:8080/sample/ai/rag/rerank" -H "Content-Type: application/json" -d "{\"query\":\"Controller规范\",\"candidates\":[\"Redis缓存\",\"Result强类型契约\"],\"topK\":2}"` |
+| **多模型故障转移容灾对话** | `AiFailoverController` | `POST /sample/ai/failover/chat` | `curl -X POST "http://localhost:8080/sample/ai/failover/chat" -H "Content-Type: application/json" -d "{\"prompt\":\"高并发系统设计\",\"simulatePrimaryFailure\":true}"` |
+| **突发限流与 Token 配额核验** | `AiRateLimitController` | `POST /sample/ai/ratelimit/try-acquire` | `curl -X POST "http://localhost:8080/sample/ai/ratelimit/try-acquire" -H "Content-Type: application/json" -d "{\"tenantId\":\"tenant-vip\",\"modelName\":\"gpt-4o\",\"tokens\":200}"` |
+| **编程式动态工具函数调用** | `AiToolsController` | `POST /sample/ai/tools/chat-dynamic` | `curl -X POST "http://localhost:8080/sample/ai/tools/chat-dynamic" -H "Content-Type: application/json" -d "{\"question\":\"请帮我计算 125 * 8 是多少\"}"` |
+| **远程 MCP 客户端清单概览** | `AiToolsController` | `GET /sample/ai/tools/mcp-list` | `curl "http://localhost:8080/sample/ai/tools/mcp-list"` |
+| **长会话多轮输入摘要对话** | `AiSummaryController` | `POST /sample/ai/summary/chat` | `curl -X POST "http://localhost:8080/sample/ai/summary/chat" -H "Content-Type: application/json" -d "{\"sessionId\":\"sess_001\",\"message\":\"我需要一个Spring Boot脚手架\"}"` |
+| **长会话双层上下文状态探查** | `AiSummaryController` | `GET /sample/ai/summary/state` | `curl "http://localhost:8080/sample/ai/summary/state?sessionId=sess_001"` |
+| **清空长会话记忆与历史摘要** | `AiSummaryController` | `POST /sample/ai/summary/clear` | `curl -X POST "http://localhost:8080/sample/ai/summary/clear?sessionId=sess_001"` |
 | **前置提示词注入审查** | `AiGuardrailController` | `POST /sample/ai/guardrail/inspect-prompt` | `curl -X POST "http://localhost:8080/sample/ai/guardrail/inspect-prompt" -H "Content-Type: application/json" -d "{\"text\":\"请帮我审查Spring Boot单测\"}"` |
 | **后置模型回复审查** | `AiGuardrailController` | `POST /sample/ai/guardrail/inspect-response` | `curl -X POST "http://localhost:8080/sample/ai/guardrail/inspect-response" -H "Content-Type: application/json" -d "{\"text\":\"系统运行正常\"}"` |
 | **端到端安全护栏对话** | `AiGuardrailController` | `POST /sample/ai/guardrail/chat` | `curl -X POST "http://localhost:8080/sample/ai/guardrail/chat" -H "Content-Type: application/json" -d "{\"text\":\"介绍一下ateng-boot\"}"` |
