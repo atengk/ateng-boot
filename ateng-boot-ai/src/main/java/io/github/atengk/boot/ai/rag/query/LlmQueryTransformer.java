@@ -29,8 +29,7 @@ public class LlmQueryTransformer implements QueryTransformer {
     private static final Logger log = LoggerFactory.getLogger(LlmQueryTransformer.class);
 
     private static final Pattern PRONOUN_PATTERN = Pattern.compile(
-            ".*(?:它|其|这|那|该|第[一二三四两1234]|上述|前面|刚才|还有吗|多少钱|怎么样|为什么|怎么做|多少|有哪些|是什么|区别|优势|缺点|在哪|何时|谁|怎么).*",
-            Pattern.DOTALL
+            "(?:它|其|这|那|该|第[一二三四两1234]|上述|前面|刚才|还有|另外|其它|其他|后者|前者)"
     );
 
     public static final String DEFAULT_PROMPT_TEMPLATE = """
@@ -69,9 +68,10 @@ public class LlmQueryTransformer implements QueryTransformer {
             return query;
         }
 
-        // 2. 启发式代词探测：若句子较长且明显不包含代词指代特征，直接跳过 LLM 改写
+        // 2. 启发式代词探测：若最新问题未包含指代词或上下文依赖特征，直接短路放行原查询，避免无谓 LLM 开销
         String text = query.text().trim();
-        if (text.length() > 30 && !PRONOUN_PATTERN.matcher(text).matches()) {
+        if (!PRONOUN_PATTERN.matcher(text).find()) {
+            log.debug("[AI-RAG-REWRITE] 最新问题未包含指代词或上下文依赖特征，直接短路放行原查询: '{}'", text);
             return query;
         }
 

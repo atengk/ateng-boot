@@ -57,34 +57,7 @@ public class AiFailoverController {
         boolean simulateFailure = Boolean.TRUE.equals(request.getSimulatePrimaryFailure());
 
         if (simulateFailure) {
-            // 构造多模型候选序列：主模型抛出可重试服务端 503 异常，备选模型正常返回
-            ChatLanguageModel failingPrimary = messages -> {
-                throw new AiException(AiResultCode.AI_CALL_FAILED, "模拟主模型服务过载 503 Service Unavailable");
-            };
-
-            ChatLanguageModel healthyFallback = messages -> {
-                // 如果容器中存在可用模型，则委托容器模型；否则保底返回容灾回复
-                if (aiModelRegistry.hasChatModel(AiModelRegistry.DEFAULT_MODEL_NAME)) {
-                    return aiModelRegistry.getChatModel(AiModelRegistry.DEFAULT_MODEL_NAME).generate(messages);
-                }
-                return Response.from(AiMessage.from("【备用模型 " + request.getFallbackModel() + " 成功接管】已为您处理该请求：" + prompt));
-            };
-
-            List<NamedModel<ChatLanguageModel>> candidates = new ArrayList<>();
-            candidates.add(NamedModel.of(request.getPrimaryModel(), failingPrimary));
-            candidates.add(NamedModel.of(request.getFallbackModel(), healthyFallback));
-
-            FailoverChatLanguageModel failoverModel = new FailoverChatLanguageModel(candidates, Duration.ofSeconds(10));
-            Response<AiMessage> response = failoverModel.generate(UserMessage.from(prompt));
-
-            AiFailoverChatVo vo = AiFailoverChatVo.builder()
-                    .prompt(prompt)
-                    .response(response.content().text())
-                    .resolvedModel(request.getFallbackModel())
-                    .failoverOccurred(true)
-                    .message("主模型故障，FailoverChatLanguageModel 触发无感转移至备选模型")
-                    .build();
-            return Result.success(vo);
+            return Result.success(executeSimulatedFailover(request, prompt));
         }
 
         // 正常生产路径：直接通过 AiTemplate 或模型注册表执行调用
@@ -97,5 +70,35 @@ public class AiFailoverController {
                 .message("主模型调用成功，无需故障转移")
                 .build();
         return Result.success(vo);
+    }
+
+    private AiFailoverChatVo executeSimulatedFailover(AiFailoverChatRequest request, String prompt) {
+        // 构造多模型候选序列：主模型抛出可重试服务端 503 异常，备选模型正常返回
+        ChatLanguageModel failingPrimary = messages -> {
+            throw new AiException(AiResultCode.AI_CALL_FAILED, "模拟主模型服务过载 503 Service Unavailable");
+        };
+
+        ChatLanguageModel healthyFallback = messages -> {
+            // 如果容器中存在可用模型，则委托容器模型；否则保底返回容灾回复
+            if (aiModelRegistry.hasChatModel(AiModelRegistry.DEFAULT_MODEL_NAME)) {
+                return aiModelRegistry.getChatModel(AiModelRegistry.DEFAULT_MODEL_NAME).generate(messages);
+            }
+            return Response.from(AiMessage.from("【备用模型 " + request.getFallbackModel() + " 成功接管】已为您处理该请求：" + prompt));
+        };
+
+        List<NamedModel<ChatLanguageModel>> candidates = new ArrayList<>();
+        candidates.add(NamedModel.of(request.getPrimaryModel(), failingPrimary));
+        candidates.add(NamedModel.of(request.getFallbackModel(), healthyFallback));
+
+        FailoverChatLanguageModel failoverModel = new FailoverChatLanguageModel(candidates, Duration.ofSeconds(10));
+        Response<AiMessage> response = failoverModel.generate(UserMessage.from(prompt));
+
+        return AiFailoverChatVo.builder()
+                .prompt(prompt)
+                .response(response.content().text())
+                .resolvedModel(request.getFallbackModel())
+                .failoverOccurred(true)
+                .message("主模型故障，FailoverChatLanguageModel 触发无感转移至备选模型")
+                .build();
     }
 }

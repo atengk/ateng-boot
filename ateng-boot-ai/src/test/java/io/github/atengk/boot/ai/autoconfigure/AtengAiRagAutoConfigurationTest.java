@@ -45,6 +45,14 @@ class AtengAiRagAutoConfigurationTest {
         }
     }
 
+    @Configuration
+    static class CustomChatModelConfiguration {
+        @Bean
+        public dev.langchain4j.model.chat.ChatLanguageModel customChatModel() {
+            return Mockito.mock(dev.langchain4j.model.chat.ChatLanguageModel.class);
+        }
+    }
+
     @Test
     @DisplayName("无外部向量存储 Bean 时自动平滑回退单机 InMemoryEmbeddingStore")
     void testDefaultInMemoryStoreFallbackWithoutExternalStore() {
@@ -129,6 +137,54 @@ class AtengAiRagAutoConfigurationTest {
             assertThat(context).doesNotHaveBean(EmbeddingModel.class);
             assertThat(context).doesNotHaveBean(EmbeddingTemplate.class);
             assertThat(context).doesNotHaveBean(ContentRetriever.class);
+        });
+    }
+
+    @Test
+    @DisplayName("配置 rerank.enabled=true 且具备有效 base-url 时自动装配 Reranker")
+    void testRerankAutoConfigurationWithBaseUrl() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.ai.model.api-key=test-key",
+                "ateng.boot.ai.rag.rerank.enabled=true",
+                "ateng.boot.ai.rag.rerank.base-url=https://api.siliconflow.cn/v1"
+        ).run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(io.github.atengk.boot.ai.rag.rerank.Reranker.class);
+        });
+    }
+
+    @Test
+    @DisplayName("配置 rerank.enabled=true 但遗漏 base-url 时平滑探测跳过装配，绝不导致启动崩溃")
+    void testRerankAutoConfigurationWithoutBaseUrlDoesNotCrash() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.ai.model.api-key=test-key",
+                "ateng.boot.ai.rag.rerank.enabled=true"
+        ).run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).doesNotHaveBean(io.github.atengk.boot.ai.rag.rerank.Reranker.class);
+        });
+    }
+
+    @Test
+    @DisplayName("配置 query-transform.enabled=true 且容器存在 ChatLanguageModel 时自动装配 LlmQueryTransformer")
+    void testQueryTransformerAutoConfiguration() {
+        contextRunner.withUserConfiguration(CustomChatModelConfiguration.class)
+                .withPropertyValues(
+                        "ateng.boot.ai.model.api-key=test-key",
+                        "ateng.boot.ai.rag.query-transform.enabled=true",
+                        "ateng.boot.ai.rag.query-transform.max-history-messages=8"
+                ).run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.ai.rag.query.QueryTransformer.class);
+                });
+    }
+
+    @Test
+    @DisplayName("默认自动装配 DocumentSplitter 实例")
+    void testDocumentSplitterAutoConfiguration() {
+        contextRunner.run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(io.github.atengk.boot.ai.rag.splitter.DocumentSplitter.class);
         });
     }
 }

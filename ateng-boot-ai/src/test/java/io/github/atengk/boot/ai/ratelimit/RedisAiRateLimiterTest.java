@@ -74,4 +74,30 @@ class RedisAiRateLimiterTest {
         // Redis 崩溃时自动降级平滑放行，避免造成业务雪崩
         assertThat(limiter.tryAcquire("t1", "gpt-4o", 50)).isTrue();
     }
+
+    @Test
+    @DisplayName("浮点数 RPS（如 0.5）传递给 Lua 时不应被强转截断为 0")
+    void testFloatRpsNotTruncated() {
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        AtengAiRateLimitProperties props = new AtengAiRateLimitProperties();
+        props.setDefaultRps(0.5); // 0.5 req/sec (每 2 秒 1 次)
+        props.setDefaultTpm(1000);
+
+        RedisAiRateLimiter limiter = new RedisAiRateLimiter(props, redisTemplate);
+
+        org.mockito.ArgumentCaptor<String> rpsCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        when(redisTemplate.execute(
+                any(DefaultRedisScript.class),
+                anyList(),
+                anyString(),
+                rpsCaptor.capture(),
+                anyString(),
+                anyString(),
+                anyString()
+        )).thenReturn(1L);
+
+        limiter.tryAcquire("t1", "gpt-4o", 100);
+
+        assertThat(rpsCaptor.getValue()).isEqualTo("0.5");
+    }
 }

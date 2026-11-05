@@ -82,7 +82,6 @@ public class FailoverChatLanguageModel implements ChatLanguageModel {
             try {
                 deadline.checkNotExpired("调用大模型 [" + modelName + "]");
             } catch (AiException timeoutEx) {
-                log.warn("[AI-FAILOVER] 全局时延预算已耗尽，终止后续故障转移: {}", timeoutEx.getMessage());
                 if (lastException != null) {
                     throw AiExceptionTranslator.translate("故障转移超时中断", lastException);
                 }
@@ -98,19 +97,17 @@ public class FailoverChatLanguageModel implements ChatLanguageModel {
                 boolean failoverable = FailoverClassifier.isFailoverable(t);
 
                 if (!failoverable) {
-                    log.warn("[AI-FAILOVER] 大模型 [{}] 抛出非瞬态异常 ({})，属于快速失败范畴，终止故障转移",
-                            modelName, t.getMessage());
+                    // 非瞬态错误快速失败，直接向外抛出转译异常，遵循无 Log-and-Throw 规范
                     throw AiExceptionTranslator.translate(t);
                 }
 
                 if (isLast) {
-                    log.error("[AI-FAILOVER] 候选大模型序列已全数耗尽，最终模型 [{}] 调用失败: {}", modelName, t.getMessage());
+                    // 候选序列耗尽直接向外抛出异常
                     throw AiExceptionTranslator.translate("全部候选大模型调用耗尽", t);
                 }
 
                 // 2. 检查是否有剩余预算尝试下一个备选模型
                 if (deadline.isExpired()) {
-                    log.warn("[AI-FAILOVER] 大模型 [{}] 失败且全局时延预算已耗尽，不再尝试下一个模型", modelName);
                     throw new AiException(AiResultCode.AI_TIMEOUT,
                             String.format("大模型 [%s] 失败且已耗尽全局时延预算 (总时限 %s): %s",
                                     modelName, totalTimeout, t.getMessage()), t);

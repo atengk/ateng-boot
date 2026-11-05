@@ -515,6 +515,7 @@ public class AtengAiAutoConfiguration {
                             serverConfig.getUrl(),
                             serverConfig.getTimeout(),
                             serverConfig.getApiKey(),
+                            serverConfig.getTransport(),
                             serverConfig.isEagerInit()
                     );
                     registry.register(serverName, adapter);

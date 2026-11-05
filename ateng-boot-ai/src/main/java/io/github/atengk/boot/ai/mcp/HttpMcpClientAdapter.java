@@ -2,6 +2,7 @@ package io.github.atengk.boot.ai.mcp;
 
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.service.tool.ToolExecutor;
+import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
@@ -10,11 +11,16 @@ import org.slf4j.LoggerFactory;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -40,15 +46,21 @@ public class HttpMcpClientAdapter implements McpClientAdapter {
     private final String endpointUrl;
     private final Duration timeout;
     private final String apiKey;
+    private final String transport;
     private final HttpClient httpClient;
     private final Map<ToolSpecification, ToolExecutor> toolsMap = new ConcurrentHashMap<>();
+    private volatile String resolvedPostUrl;
 
     public HttpMcpClientAdapter(String serverName, String endpointUrl) {
         this(serverName, endpointUrl, Duration.ofSeconds(30), null, true);
     }
 
     public HttpMcpClientAdapter(String serverName, String endpointUrl, Duration timeout, String apiKey, boolean eagerInit) {
-        this(serverName, endpointUrl, timeout, apiKey, HttpClient.newBuilder()
+        this(serverName, endpointUrl, timeout, apiKey, null, eagerInit);
+    }
+
+    public HttpMcpClientAdapter(String serverName, String endpointUrl, Duration timeout, String apiKey, String transport, boolean eagerInit) {
+        this(serverName, endpointUrl, timeout, apiKey, transport, HttpClient.newBuilder()
                 .connectTimeout(timeout != null ? timeout : Duration.ofSeconds(10))
                 .build());
         if (eagerInit) {
@@ -62,12 +74,17 @@ public class HttpMcpClientAdapter implements McpClientAdapter {
     }
 
     public HttpMcpClientAdapter(String serverName, String endpointUrl, Duration timeout, String apiKey, HttpClient httpClient) {
+        this(serverName, endpointUrl, timeout, apiKey, null, httpClient);
+    }
+
+    public HttpMcpClientAdapter(String serverName, String endpointUrl, Duration timeout, String apiKey, String transport, HttpClient httpClient) {
         Assert.hasText(serverName, "serverName 不能为空");
         Assert.hasText(endpointUrl, "endpointUrl 不能为空");
         this.serverName = serverName.trim();
         this.endpointUrl = endpointUrl.trim();
         this.timeout = timeout != null ? timeout : Duration.ofSeconds(30);
         this.apiKey = apiKey;
+        this.transport = transport != null ? transport.trim() : null;
         this.httpClient = httpClient != null ? httpClient : HttpClient.newHttpClient();
     }
 
@@ -104,7 +121,8 @@ public class HttpMcpClientAdapter implements McpClientAdapter {
         if (parsedResponse.containsKey("error")) {
             Map<String, Object> error = (Map<String, Object>) parsedResponse.get("error");
             String errorMsg = error != null ? String.valueOf(error.get("message")) : "未知错误";
-            throw new BusinessException(String.format("远程 MCP 服务 [%s] 工具发现失败: %s", serverName, errorMsg));
+            throw new BusinessException(AiResultCode.AI_MCP_CALL_FAILED,
+                    String.format("远程 MCP 服务 [%s] 工具发现失败: %s", serverName, errorMsg));
         }
 
         Map<String, Object> result = (Map<String, Object>) parsedResponse.get("result");
@@ -179,13 +197,15 @@ public class HttpMcpClientAdapter implements McpClientAdapter {
         String responseBody = sendJsonRpc(rpcRequest);
         Map<String, Object> parsed = JsonUtil.parseObject(responseBody, Map.class);
         if (parsed == null) {
-            throw new BusinessException(String.format("远程 MCP 服务 [%s] 工具 [%s] 调用返回空响应", serverName, toolName));
+            throw new BusinessException(AiResultCode.AI_MCP_CALL_FAILED,
+                    String.format("远程 MCP 服务 [%s] 工具 [%s] 调用返回空响应", serverName, toolName));
         }
 
         if (parsed.containsKey("error")) {
             Map<String, Object> error = (Map<String, Object>) parsed.get("error");
             String errorMsg = error != null ? String.valueOf(error.get("message")) : "未知错误";
-            throw new BusinessException(String.format("MCP 工具 [%s] 执行报错: %s", toolName, errorMsg));
+            throw new BusinessException(AiResultCode.AI_MCP_CALL_FAILED,
+                    String.format("MCP 工具 [%s] 执行报错: %s", toolName, errorMsg));
         }
 
         Map<String, Object> result = (Map<String, Object>) parsed.get("result");
@@ -196,7 +216,8 @@ public class HttpMcpClientAdapter implements McpClientAdapter {
         // 检查 isError 标记
         if (Boolean.TRUE.equals(result.get("isError"))) {
             String errContent = extractTextContent(result.get("content"));
-            throw new BusinessException(String.format("MCP 工具 [%s] 执行失败: %s", toolName, errContent));
+            throw new BusinessException(AiResultCode.AI_MCP_CALL_FAILED,
+                    String.format("MCP 工具 [%s] 执行失败: %s", toolName, errContent));
         }
 
         String contentText = extractTextContent(result.get("content"));
@@ -229,9 +250,10 @@ public class HttpMcpClientAdapter implements McpClientAdapter {
 
     private String sendJsonRpc(Map<String, Object> requestPayload) {
         String jsonPayload = JsonUtil.toJsonString(requestPayload);
+        String targetUrl = getEffectiveEndpointUrl();
 
         HttpRequest.Builder builder = HttpRequest.newBuilder()
-                .uri(URI.create(endpointUrl))
+                .uri(URI.create(targetUrl))
                 .timeout(timeout)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
@@ -245,17 +267,116 @@ public class HttpMcpClientAdapter implements McpClientAdapter {
             HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
             int statusCode = response.statusCode();
             if (statusCode < 200 || statusCode >= 300) {
-                throw new BusinessException(String.format(
+                throw new BusinessException(AiResultCode.AI_MCP_CALL_FAILED, String.format(
                         "调用远程 MCP 服务 [%s] 异常 (HTTP %d, url=%s, body=%s)",
-                        serverName, statusCode, endpointUrl, response.body()));
+                        serverName, statusCode, targetUrl, response.body()));
             }
             return response.body();
+        } catch (HttpTimeoutException e) {
+            throw new BusinessException(AiResultCode.AI_TIMEOUT,
+                    String.format("调用远程 MCP 服务 [%s] 超时 (url=%s): %s", serverName, targetUrl, e.getMessage()), e);
         } catch (IOException e) {
-            throw new BusinessException(String.format("调用远程 MCP 服务 [%s] 网络 IO 失败: %s", serverName, e.getMessage()), e);
+            throw new BusinessException(AiResultCode.AI_MCP_CALL_FAILED,
+                    String.format("调用远程 MCP 服务 [%s] 网络 IO 失败 (url=%s): %s", serverName, targetUrl, e.getMessage()), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new BusinessException(String.format("调用远程 MCP 服务 [%s] 被中断: %s", serverName, e.getMessage()), e);
+            throw new BusinessException(AiResultCode.AI_MCP_CALL_FAILED,
+                    String.format("调用远程 MCP 服务 [%s] 被中断: %s", serverName, e.getMessage()), e);
         }
+    }
+
+    /**
+     * 判断当前端点是否为 SSE (Server-Sent Events) 传输端点
+     *
+     * @return 是否为 SSE 端点
+     */
+    public boolean isSseEndpoint() {
+        if ("sse".equalsIgnoreCase(this.transport)) {
+            return true;
+        }
+        if (!StringUtils.hasText(endpointUrl)) {
+            return false;
+        }
+        String clean = endpointUrl.trim().toLowerCase();
+        return clean.endsWith("/sse") || clean.contains("/sse?") || clean.contains("/events");
+    }
+
+    /**
+     * 获取当前生效的实际 JSON-RPC POST 消息端点
+     * <p>
+     * 若端点为 SSE 协议，则通过握手解析远程返回的 {@code event: endpoint} 实际消息端点；
+     * 若为普通 HTTP 端点，则直接返回原始 {@code endpointUrl}。
+     * </p>
+     *
+     * @return 实际 POST 目标 URL
+     */
+    public synchronized String getEffectiveEndpointUrl() {
+        if (resolvedPostUrl != null) {
+            return resolvedPostUrl;
+        }
+        if (!isSseEndpoint()) {
+            this.resolvedPostUrl = this.endpointUrl;
+            return this.resolvedPostUrl;
+        }
+        this.resolvedPostUrl = discoverSseMessageEndpoint();
+        return this.resolvedPostUrl;
+    }
+
+    /**
+     * 连接 MCP SSE 端点执行握手并提取消息接收端点
+     */
+    private String discoverSseMessageEndpoint() {
+        log.info("[AI-MCP] 正在向远程 MCP SSE 端点 [{}] 发起连接握手...", endpointUrl);
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(endpointUrl))
+                .timeout(timeout)
+                .header("Accept", "text/event-stream")
+                .header("Cache-Control", "no-cache")
+                .GET();
+
+        if (StringUtils.hasText(apiKey)) {
+            builder.header("Authorization", "Bearer " + apiKey.trim());
+        }
+
+        try {
+            HttpResponse<InputStream> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+            int statusCode = response.statusCode();
+            if (statusCode < 200 || statusCode >= 300) {
+                log.warn("[AI-MCP] 远程 MCP 服务 [{}] SSE 握手响应状态码异常: HTTP {}，降级使用原始端点", serverName, statusCode);
+                return this.endpointUrl;
+            }
+
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+                String line;
+                String currentEvent = null;
+                long startTime = System.currentTimeMillis();
+                long maxWaitMs = Math.min(timeout.toMillis(), 10000L);
+
+                while ((line = reader.readLine()) != null) {
+                    if (System.currentTimeMillis() - startTime > maxWaitMs) {
+                        break;
+                    }
+                    line = line.trim();
+                    if (line.startsWith("event:")) {
+                        currentEvent = line.substring(6).trim();
+                    } else if (line.startsWith("data:")) {
+                        String data = line.substring(5).trim();
+                        if ("endpoint".equalsIgnoreCase(currentEvent) || data.startsWith("/") || data.startsWith("http")) {
+                            URI baseUri = URI.create(endpointUrl);
+                            URI resolved = baseUri.resolve(data);
+                            String postUrl = resolved.toString();
+                            log.info("[AI-MCP] 远程 MCP 服务 [{}] SSE 握手成功，解析得到消息接收端点: {}", serverName, postUrl);
+                            return postUrl;
+                        }
+                    } else if (line.isEmpty()) {
+                        currentEvent = null;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[AI-MCP] 远程 MCP 服务 [{}] SSE 握手失败: {}，回退使用原始端点", serverName, e.getMessage());
+        }
+        return this.endpointUrl;
     }
 
     @Override

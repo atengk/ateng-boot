@@ -22,12 +22,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 class FailoverClassifierTest {
 
     @Test
-    @DisplayName("HTTP 502/503/504 瞬态错误属于允许故障转移白名单")
+    @DisplayName("HTTP 502/503/504 瞬态错误属于允许故障转移白名单，500 内部服务错误不属于白名单")
     void testFailoverOnHttpTransientErrors() {
         assertThat(FailoverClassifier.isFailoverable(new OpenAiHttpException(502, "Bad Gateway"))).isTrue();
         assertThat(FailoverClassifier.isFailoverable(new OpenAiHttpException(503, "Service Unavailable"))).isTrue();
         assertThat(FailoverClassifier.isFailoverable(new OpenAiHttpException(504, "Gateway Timeout"))).isTrue();
-        assertThat(FailoverClassifier.isFailoverable(new OpenAiHttpException(500, "Internal Server Error"))).isTrue();
+        // 500 代表服务端非网关内部异常，不属于网络瞬态错误，不进行故障转移
+        assertThat(FailoverClassifier.isFailoverable(new OpenAiHttpException(500, "Internal Server Error"))).isFalse();
     }
 
     @Test

@@ -1,12 +1,12 @@
 package io.github.atengk.boot.ai.ratelimit;
 
 import io.github.atengk.boot.ai.properties.AtengAiRateLimitProperties;
+import io.github.atengk.boot.core.concurrent.ConcurrentLruCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -16,7 +16,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * <ul>
  *   <li><b>RPS 维度</b>：1 秒窗口细分为 10 个 100ms 纳秒级切片，滑动平滑消除毛刺突发；</li>
  *   <li><b>TPM 维度</b>：1 分钟窗口细分为 60 个 1s 滚动切片，精准追踪 Token 预算消耗；</li>
- *   <li><b>零锁高吞吐</b>：全程无 synchronized、无排他锁阻塞，毫秒级自旋 CAS 吞吐无损。</li>
+ *   <li><b>零锁高吞吐</b>：全程无 synchronized、无排他锁阻塞，毫秒级自旋 CAS 吞吐无损；</li>
+ *   <li><b>有界防御</b>：依托 Core 底座 {@link ConcurrentLruCache} 实现最大容量淘汰与 TTL 过期，彻底消除高基数无界内存溢出风险。</li>
  * </ul>
  * </p>
  *
@@ -27,11 +28,19 @@ public class DefaultAiRateLimiter implements AiRateLimiter {
 
     private static final Logger log = LoggerFactory.getLogger(DefaultAiRateLimiter.class);
 
+    private static final int DEFAULT_MAX_CAPACITY = 10_000;
+    private static final Duration DEFAULT_TRACKER_TTL = Duration.ofMinutes(10);
+
     private final AtengAiRateLimitProperties properties;
-    private final Map<String, LockFreeSlidingWindowTracker> trackers = new ConcurrentHashMap<>();
+    private final ConcurrentLruCache<String, LockFreeSlidingWindowTracker> trackers;
 
     public DefaultAiRateLimiter(AtengAiRateLimitProperties properties) {
+        this(properties, DEFAULT_MAX_CAPACITY, DEFAULT_TRACKER_TTL);
+    }
+
+    public DefaultAiRateLimiter(AtengAiRateLimitProperties properties, int maxCapacity, Duration trackerTtl) {
         this.properties = properties != null ? properties : new AtengAiRateLimitProperties();
+        this.trackers = new ConcurrentLruCache<>(Math.max(128, maxCapacity), trackerTtl);
     }
 
     @Override

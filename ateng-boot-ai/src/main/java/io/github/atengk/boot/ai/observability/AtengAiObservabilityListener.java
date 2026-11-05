@@ -346,14 +346,7 @@ public class AtengAiObservabilityListener implements ChatModelListener {
         recordTokenMetric(registry, modelName, tenantTag, "total", estimatedTag, totalTokens);
 
         // 4. 财务成本累计指标 ateng.ai.cost.total (tags: model, tenant_id)
-        if (estimatedCost != null && estimatedCost.compareTo(BigDecimal.ZERO) > 0) {
-            Counter.builder(METRIC_COST_TOTAL)
-                    .tag("model", modelName)
-                    .tag("tenant_id", tenantTag)
-                    .description("AI 大模型累计财务成本消耗")
-                    .register(registry)
-                    .increment(estimatedCost.doubleValue());
-        }
+        recordCostMetric(registry, modelName, tenantTag, estimatedCost);
     }
 
     private void recordMetricsOnError(String modelName, String tenantId, long durationMs, String status,
@@ -393,6 +386,10 @@ public class AtengAiObservabilityListener implements ChatModelListener {
         }
 
         // 4. 财务成本累计指标
+        recordCostMetric(registry, modelName, tenantTag, estimatedCost);
+    }
+
+    private void recordCostMetric(MeterRegistry registry, String modelName, String tenantTag, BigDecimal estimatedCost) {
         if (estimatedCost != null && estimatedCost.compareTo(BigDecimal.ZERO) > 0) {
             Counter.builder(METRIC_COST_TOTAL)
                     .tag("model", modelName)

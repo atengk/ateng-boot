@@ -60,7 +60,7 @@ public class TotalDeadline {
         if (infinite) {
             return false;
         }
-        return System.nanoTime() >= deadlineNanos;
+        return System.nanoTime() - deadlineNanos >= 0;
     }
 
     /**
@@ -70,7 +70,7 @@ public class TotalDeadline {
      */
     public Duration getRemaining() {
         if (infinite) {
-            return Duration.ofDays(365);
+            return Duration.ofSeconds(Integer.MAX_VALUE);
         }
         long remainingNanos = deadlineNanos - System.nanoTime();
         return remainingNanos > 0 ? Duration.ofNanos(remainingNanos) : Duration.ZERO;

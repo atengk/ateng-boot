@@ -63,10 +63,11 @@ public final class OpenAiModelFactory {
         if (config.getCustomHeaders() != null && !config.getCustomHeaders().isEmpty()) {
             builder.customHeaders(config.getCustomHeaders());
         }
-        if (config.getResponseFormat() == io.github.atengk.boot.ai.properties.AiResponseFormat.JSON_OBJECT) {
+        if (config.getResponseFormat() == io.github.atengk.boot.ai.properties.AiResponseFormat.JSON_OBJECT
+                || config.getResponseFormat() == io.github.atengk.boot.ai.properties.AiResponseFormat.JSON_SCHEMA) {
+            // OpenAI 规范中 json_schema 必须随每次请求附带具体 schema 结构体，无参裸设置 "json_schema" 会触发 HTTP 400；
+            // 故底层统一注入 "json_object" 开启严格 JSON 输出模式，具体 JSON Schema 约束由 AiTemplate 在请求级动态注入 Prompt 并在反序列化时执行 JSR-303 双防校验
             builder.responseFormat("json_object");
-        } else if (config.getResponseFormat() == io.github.atengk.boot.ai.properties.AiResponseFormat.JSON_SCHEMA) {
-            builder.responseFormat("json_schema");
         }
         if (listeners != null && !listeners.isEmpty()) {
             builder.listeners(listeners);
@@ -157,10 +158,11 @@ public final class OpenAiModelFactory {
         if (config.getCustomHeaders() != null && !config.getCustomHeaders().isEmpty()) {
             builder.customHeaders(config.getCustomHeaders());
         }
-        if (config.getResponseFormat() == io.github.atengk.boot.ai.properties.AiResponseFormat.JSON_OBJECT) {
+        if (config.getResponseFormat() == io.github.atengk.boot.ai.properties.AiResponseFormat.JSON_OBJECT
+                || config.getResponseFormat() == io.github.atengk.boot.ai.properties.AiResponseFormat.JSON_SCHEMA) {
+            // OpenAI 规范中 json_schema 必须随每次请求附带具体 schema 结构体，无参裸设置 "json_schema" 会触发 HTTP 400；
+            // 故底层统一注入 "json_object" 开启严格 JSON 输出模式，具体 JSON Schema 约束由 AiTemplate 在请求级动态注入 Prompt 并在反序列化时执行 JSR-303 双防校验
             builder.responseFormat("json_object");
-        } else if (config.getResponseFormat() == io.github.atengk.boot.ai.properties.AiResponseFormat.JSON_SCHEMA) {
-            builder.responseFormat("json_schema");
         }
         if (listeners != null && !listeners.isEmpty()) {
             builder.listeners(listeners);

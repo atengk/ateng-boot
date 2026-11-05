@@ -53,7 +53,7 @@ public final class FailoverClassifier {
             // (1) OpenAI / HTTP 状态码白名单检查
             if (current instanceof OpenAiHttpException httpEx) {
                 int code = httpEx.code();
-                if (code == 502 || code == 503 || code == 504 || code == 500) {
+                if (code == 502 || code == 503 || code == 504) {
                     return true;
                 }
                 if (code >= 400 && code < 500) {

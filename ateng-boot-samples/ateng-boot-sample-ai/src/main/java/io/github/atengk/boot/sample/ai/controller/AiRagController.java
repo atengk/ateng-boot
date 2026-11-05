@@ -2,12 +2,16 @@ package io.github.atengk.boot.sample.ai.controller;
 
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.embedding.Embedding;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.rag.content.Content;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.query.Query;
 import dev.langchain4j.store.embedding.EmbeddingStore;
+import io.github.atengk.boot.ai.rag.query.QueryTransformer;
 import io.github.atengk.boot.ai.rag.rerank.RerankResult;
 import io.github.atengk.boot.ai.rag.rerank.Reranker;
 import io.github.atengk.boot.ai.rag.splitter.DocumentSplitter;
@@ -22,15 +26,18 @@ import io.github.atengk.boot.sample.ai.dto.AiRagIngestRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagRerankRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagRetrieveRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagSplitRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagTransformRequest;
 import io.github.atengk.boot.sample.ai.vo.AiRagAskVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagEmbedVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagIngestVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagRerankVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagRetrieveVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagSplitVo;
+import io.github.atengk.boot.sample.ai.vo.AiRagTransformVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -60,6 +67,7 @@ public class AiRagController {
     private final AiTemplate aiTemplate;
     private final ObjectProvider<DocumentSplitter> documentSplitterProvider;
     private final ObjectProvider<Reranker> rerankerProvider;
+    private final ObjectProvider<QueryTransformer> queryTransformerProvider;
 
     /**
      * 长文档智能结构化切分体验
@@ -168,6 +176,49 @@ public class AiRagController {
                 .query(request.getQuery())
                 .topK(rankedItems.size())
                 .results(rankedItems)
+                .build();
+        return Result.success(vo);
+    }
+
+    /**
+     * 多轮对话指代消解与语义检索查询改写体验
+     *
+     * @param request 查询改写参数
+     * @return 独立完整检索 Query 与改写详情
+     */
+    @PostMapping("/transform")
+    public Result<AiRagTransformVo> transform(@Valid @RequestBody AiRagTransformRequest request) {
+        String rawQuery = request.getQuery();
+        List<String> history = request.getHistory() != null ? request.getHistory() : Collections.emptyList();
+
+        List<ChatMessage> chatMessages = new ArrayList<>();
+        for (int i = 0; i < history.size(); i++) {
+            String text = history.get(i);
+            if (i % 2 == 0) {
+                chatMessages.add(UserMessage.from(text));
+            } else {
+                chatMessages.add(AiMessage.from(text));
+            }
+        }
+
+        QueryTransformer transformer = queryTransformerProvider.getIfAvailable();
+        String transformedText = rawQuery;
+        boolean rewritten = false;
+
+        if (transformer != null && !chatMessages.isEmpty()) {
+            Query transformed = transformer.transform(Query.from(rawQuery), chatMessages);
+            if (transformed != null && StringUtils.hasText(transformed.text())) {
+                transformedText = transformed.text();
+                rewritten = !transformedText.trim().equalsIgnoreCase(rawQuery.trim());
+            }
+        }
+
+        AiRagTransformVo vo = AiRagTransformVo.builder()
+                .originalQuery(rawQuery)
+                .transformedQuery(transformedText)
+                .historyCount(chatMessages.size())
+                .hasRewritten(rewritten)
+                .message(rewritten ? "查询改写成功，已结合上下文消除代词指代" : "无需改写或未配置改写器，原样返回")
                 .build();
         return Result.success(vo);
     }

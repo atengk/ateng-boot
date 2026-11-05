@@ -33,7 +33,6 @@ public class MarkdownHeaderSplitter implements DocumentSplitter {
     private final Map<String, String> headersToSplitOn;
     private final int maxChunkSize;
     private final int chunkOverlap;
-    private final boolean returnEachLine;
 
     /**
      * 使用默认标题映射与最大切片 1000 字符创建切片器
@@ -69,7 +68,6 @@ public class MarkdownHeaderSplitter implements DocumentSplitter {
         this.headersToSplitOn = new LinkedHashMap<>(headersToSplitOn);
         this.maxChunkSize = maxChunkSize;
         this.chunkOverlap = chunkOverlap;
-        this.returnEachLine = false;
     }
 
     @Override

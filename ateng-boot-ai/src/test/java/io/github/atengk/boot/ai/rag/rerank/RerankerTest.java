@@ -85,17 +85,46 @@ class RerankerTest {
         assertThat(reranker.rerank("query", List.of(), 1)).isEmpty();
         assertThat(reranker.rerank("query", List.of(TextSegment.from("A")), 0)).isEmpty();
 
-        // 单切片优化直接返回
-        TextSegment single = TextSegment.from("唯一片段");
-        List<RerankResult> singleResult = reranker.rerank("query", List.of(single), 1);
-        assertThat(singleResult).hasSize(1);
-        assertThat(singleResult.get(0).segment()).isEqualTo(single);
-        assertThat(singleResult.get(0).score()).isEqualTo(1.0);
-
         // 非法 URL 断言
         assertThatThrownBy(() -> new OpenAiCompatibleReranker("", "key"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Rerank baseUrl 不能为空");
+    }
+
+    @Test
+    @DisplayName("OpenAiCompatibleReranker: 兼容 HuggingFace TEI 根数组响应格式与单切片真实精排")
+    @SuppressWarnings("unchecked")
+    void testOpenAiCompatibleRerankerTeiFormat() throws Exception {
+        HttpClient mockHttpClient = mock(HttpClient.class);
+        HttpResponse<String> mockResponse = mock(HttpResponse.class);
+
+        // TEI 返回根数组格式: [{"index": 0, "score": 0.88}]
+        String teiResponseBody = """
+                [
+                  {"index": 0, "score": 0.88}
+                ]
+                """;
+        when(mockResponse.statusCode()).thenReturn(200);
+        when(mockResponse.body()).thenReturn(teiResponseBody);
+        when(mockHttpClient.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+                .thenReturn(mockResponse);
+
+        OpenAiCompatibleReranker reranker = new OpenAiCompatibleReranker(
+                "http://tei-server:8080/rerank",
+                "test-api-key",
+                "BAAI/bge-reranker-base",
+                Duration.ofSeconds(3),
+                0.5,
+                mockHttpClient
+        );
+
+        TextSegment single = TextSegment.from("单个候选片段");
+        List<RerankResult> results = reranker.rerank("测试问题", List.of(single), 1);
+
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).segment()).isEqualTo(single);
+        assertThat(results.get(0).score()).isEqualTo(0.88);
+        assertThat(results.get(0).index()).isEqualTo(0);
     }
 
     @Test
@@ -186,6 +215,26 @@ class RerankerTest {
         assertThat(contents).hasSize(2);
         assertThat(contents.get(0).textSegment()).isEqualTo(seg1);
         assertThat(contents.get(1).textSegment()).isEqualTo(seg2);
+    }
+
+    @Test
+    @DisplayName("RerankingContentRetriever: 当重排模型因低于 minScore 正常返回空结果时，不应降级返回粗排结果，而是合规返回空列表")
+    void testRerankingContentRetrieverEmptyResultsWhenBelowMinScore() {
+        ContentRetriever mockDelegate = mock(ContentRetriever.class);
+        Reranker mockReranker = mock(Reranker.class);
+
+        TextSegment seg1 = TextSegment.from("不相关片段");
+        Query query = Query.from("问题");
+        when(mockDelegate.retrieve(query)).thenReturn(List.of(Content.from(seg1)));
+
+        // Reranker 正常响应，但因为相关度不足过滤后为空
+        when(mockReranker.rerank("问题", List.of(seg1), 2)).thenReturn(java.util.Collections.emptyList());
+
+        RerankingContentRetriever compositeRetriever = new RerankingContentRetriever(mockDelegate, mockReranker, 2, 0.8);
+
+        List<Content> contents = compositeRetriever.retrieve(query);
+
+        assertThat(contents).isEmpty();
     }
 
     @Test

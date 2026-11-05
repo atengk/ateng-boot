@@ -74,10 +74,6 @@ public class OpenAiCompatibleReranker implements Reranker {
             return Collections.emptyList();
         }
 
-        if (segments.size() == 1) {
-            return List.of(new RerankResult(segments.get(0), 0, 1.0));
-        }
-
         List<String> documents = segments.stream()
                 .map(TextSegment::text)
                 .toList();
@@ -86,6 +82,7 @@ public class OpenAiCompatibleReranker implements Reranker {
         requestBody.put("model", modelName);
         requestBody.put("query", query);
         requestBody.put("documents", documents);
+        requestBody.put("texts", documents);
         requestBody.put("top_n", topK);
 
         String jsonPayload = JsonUtil.toJsonString(requestBody);
@@ -137,12 +134,22 @@ public class OpenAiCompatibleReranker implements Reranker {
             return Collections.emptyList();
         }
 
-        Map<String, Object> parsed = JsonUtil.parseObject(responseBody, Map.class);
-        if (parsed == null || !parsed.containsKey("results")) {
-            return Collections.emptyList();
+        List<?> rawResults = null;
+        String trimmed = responseBody.trim();
+        if (trimmed.startsWith("[")) {
+            // 兼容 HuggingFace TEI 根数组响应格式: [{"index": 0, "score": 0.85}, ...]
+            rawResults = JsonUtil.parseList(trimmed, Map.class);
+        } else {
+            // 兼容标准 OpenAI / SiliconFlow / DashScope / Cohere 格式: {"results": [...]}
+            Map<String, Object> parsed = JsonUtil.parseObject(trimmed, Map.class);
+            if (parsed != null && parsed.containsKey("results")) {
+                Object resultsObj = parsed.get("results");
+                if (resultsObj instanceof List<?> list) {
+                    rawResults = list;
+                }
+            }
         }
 
-        List<?> rawResults = (List<?>) parsed.get("results");
         if (rawResults == null || rawResults.isEmpty()) {
             return Collections.emptyList();
         }

@@ -13,11 +13,14 @@ import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.ai.dto.AiSummaryChatRequest;
 import io.github.atengk.boot.sample.ai.vo.AiSummaryChatVo;
+import io.github.atengk.boot.sample.ai.vo.AiSummaryClearVo;
 import io.github.atengk.boot.sample.ai.vo.AiSummaryStateVo;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.task.TaskExecutor;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -34,6 +37,7 @@ import java.util.List;
  * @author Ateng
  * @since 2026-11-05
  */
+@Validated
 @RestController
 @RequestMapping("/sample/ai/summary")
 @RequiredArgsConstructor
@@ -119,7 +123,7 @@ public class AiSummaryController {
      * @return 状态详情
      */
     @GetMapping("/state")
-    public Result<AiSummaryStateVo> getState(@RequestParam("sessionId") String sessionId) {
+    public Result<AiSummaryStateVo> getState(@RequestParam("sessionId") @NotBlank(message = "sessionId 不能为空") String sessionId) {
         SummaryMemoryState state = getStore().getState(sessionId);
         List<String> formattedMessages = new ArrayList<>();
         if (state.getMessages() != null) {
@@ -145,9 +149,13 @@ public class AiSummaryController {
      * @return 操作成功结果
      */
     @PostMapping("/clear")
-    public Result<Void> clear(@RequestParam("sessionId") String sessionId) {
+    public Result<AiSummaryClearVo> clear(@RequestParam("sessionId") @NotBlank(message = "sessionId 不能为空") String sessionId) {
         SummaryChatMemory memory = buildMemory(sessionId);
         memory.clear();
-        return Result.success();
+        return Result.success(AiSummaryClearVo.builder()
+                .sessionId(sessionId)
+                .cleared(true)
+                .message("会话事实摘要与历史明细已全部清空")
+                .build());
     }
 }

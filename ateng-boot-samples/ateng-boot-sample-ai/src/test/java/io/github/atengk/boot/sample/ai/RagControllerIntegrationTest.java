@@ -9,6 +9,7 @@ import io.github.atengk.boot.sample.ai.dto.AiRagIngestRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagRerankRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagRetrieveRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagSplitRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagTransformRequest;
 import okhttp3.mockwebserver.Dispatcher;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -325,5 +326,26 @@ class RagControllerIntegrationTest {
                 .andExpect(jsonPath("$.data.results").isArray())
                 .andExpect(jsonPath("$.data.results[0].text").value("Spring Boot Controller 统一显式声明返回强类型 Result 契约"))
                 .andExpect(jsonPath("$.data.results[0].rank").value(1));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/transform 多轮指代消解查询改写")
+    void testTransformSuccess() throws Exception {
+        AiRagTransformRequest request = AiRagTransformRequest.builder()
+                .query("它在 Spring Boot 3 中有哪些自动装配改进？")
+                .history(java.util.List.of(
+                        "用户：什么是 LangChain4j？",
+                        "助手：LangChain4j 是 Java 生态流行的大语言模型应用开发框架。"
+                ))
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/transform")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.originalQuery").value("它在 Spring Boot 3 中有哪些自动装配改进？"))
+                .andExpect(jsonPath("$.data.transformedQuery").isNotEmpty())
+                .andExpect(jsonPath("$.data.historyCount").value(2));
     }
 }

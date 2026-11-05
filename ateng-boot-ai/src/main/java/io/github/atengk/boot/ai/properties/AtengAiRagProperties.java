@@ -59,6 +59,33 @@ public class AtengAiRagProperties {
     private RerankProperties rerank = new RerankProperties();
 
     /**
+     * 多轮对话查询改写 (QueryTransformer) 专属配置
+     */
+    @NestedConfigurationProperty
+    private QueryTransformProperties queryTransform = new QueryTransformProperties();
+
+    /**
+     * 多轮对话查询改写 (QueryTransformer) 强类型配置属性
+     */
+    @Data
+    public static class QueryTransformProperties {
+        /**
+         * 是否启用多轮对话查询改写与意图消解
+         */
+        private boolean enabled = false;
+
+        /**
+         * 用于意图改写的轻量模型标识名称 (可选；未配置时继承全局主模型名称)
+         */
+        private String modelName;
+
+        /**
+         * 最大保留的历史消息轮数 (默认 6 轮)
+         */
+        private int maxHistoryMessages = 6;
+    }
+
+    /**
      * Reranker 交叉重排模型强类型配置属性
      */
     @Data

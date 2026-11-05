@@ -1,17 +1,22 @@
 package io.github.atengk.boot.sample.ai.controller;
 
 import dev.langchain4j.agent.tool.ToolSpecification;
+import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.mcp.HttpMcpClientAdapter;
 import io.github.atengk.boot.ai.mcp.McpClientAdapter;
 import io.github.atengk.boot.ai.mcp.McpClientRegistry;
 import io.github.atengk.boot.ai.template.AiTemplate;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.ai.dto.AiDynamicToolRequest;
+import io.github.atengk.boot.sample.ai.dto.AiMcpCallRequest;
 import io.github.atengk.boot.sample.ai.tool.CalculatorTool;
 import io.github.atengk.boot.sample.ai.vo.AiDynamicToolVo;
+import io.github.atengk.boot.sample.ai.vo.AiMcpCallVo;
 import io.github.atengk.boot.sample.ai.vo.AiMcpListVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -19,7 +24,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +37,7 @@ import java.util.Map;
  * @author Ateng
  * @since 2026-11-05
  */
+@Slf4j
 @RestController
 @RequestMapping("/sample/ai/tools")
 @RequiredArgsConstructor
@@ -49,10 +57,16 @@ public class AiToolsController {
     public Result<AiDynamicToolVo> chatDynamic(@Valid @RequestBody AiDynamicToolRequest request) {
         String answer = aiTemplate.chatWithTools(request.getQuestion(), calculatorTool);
 
+        List<String> availableTools = Arrays.stream(calculatorTool.getClass().getDeclaredMethods())
+                .filter(m -> Modifier.isPublic(m.getModifiers()))
+                .map(m -> calculatorTool.getClass().getSimpleName() + "#" + m.getName())
+                .sorted()
+                .toList();
+
         AiDynamicToolVo vo = AiDynamicToolVo.builder()
                 .question(request.getQuestion())
                 .answer(answer)
-                .toolsUsed(List.of("CalculatorTool.multiply", "CalculatorTool.add"))
+                .toolsUsed(availableTools)
                 .build();
         return Result.success(vo);
     }
@@ -83,8 +97,8 @@ public class AiToolsController {
                 if (tools != null) {
                     toolNames = tools.keySet().stream().map(ToolSpecification::name).toList();
                 }
-            } catch (Exception ignored) {
-                // MCP 服务未联通时容错展示
+            } catch (Exception e) {
+                log.warn("[AI-SAMPLE-TOOLS] 远程 MCP 服务 [{}] 工具清单发现失败: {}", adapter.getServerName(), e.getMessage());
             }
 
             String endpoint = adapter instanceof HttpMcpClientAdapter httpAdapter
@@ -102,6 +116,34 @@ public class AiToolsController {
         AiMcpListVo vo = AiMcpListVo.builder()
                 .totalServers(serverItems.size())
                 .servers(serverItems)
+                .build();
+        return Result.success(vo);
+    }
+
+    /**
+     * 调用执行指定远程 MCP 服务端暴露的标准工具
+     *
+     * @param request MCP 工具调用参数
+     * @return 工具执行响应
+     */
+    @PostMapping("/mcp-call")
+    public Result<AiMcpCallVo> callMcpTool(@Valid @RequestBody AiMcpCallRequest request) {
+        McpClientRegistry registry = mcpClientRegistryProvider.getIfAvailable();
+        if (registry == null || !registry.contains(request.getServerName())) {
+            throw new BusinessException(AiResultCode.AI_MCP_CALL_FAILED,
+                    "未找到已配置或注册的远程 MCP 服务端: " + request.getServerName());
+        }
+
+        McpClientAdapter adapter = registry.getAdapter(request.getServerName());
+        long start = System.currentTimeMillis();
+        String result = adapter.callTool(request.getToolName(), request.getArguments());
+        long duration = System.currentTimeMillis() - start;
+
+        AiMcpCallVo vo = AiMcpCallVo.builder()
+                .serverName(request.getServerName())
+                .toolName(request.getToolName())
+                .result(result)
+                .durationMs(duration)
                 .build();
         return Result.success(vo);
     }

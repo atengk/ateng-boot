@@ -1,7 +1,10 @@
 package io.github.atengk.boot.sample.ai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.ai.mcp.McpClientAdapter;
+import io.github.atengk.boot.ai.mcp.McpClientRegistry;
 import io.github.atengk.boot.sample.ai.dto.AiDynamicToolRequest;
+import io.github.atengk.boot.sample.ai.dto.AiMcpCallRequest;
 import okhttp3.mockwebserver.Dispatcher;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -51,6 +54,9 @@ class ToolsControllerIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired(required = false)
+    private McpClientRegistry mcpClientRegistry;
 
     @BeforeAll
     static void startServer() throws IOException {
@@ -134,5 +140,46 @@ class ToolsControllerIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.totalServers").isNumber())
                 .andExpect(jsonPath("$.data.servers").isArray());
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/tools/mcp-call 远程工具调用成功")
+    void testCallMcpToolSuccess() throws Exception {
+        if (mcpClientRegistry != null) {
+            McpClientAdapter mockAdapter = org.mockito.Mockito.mock(McpClientAdapter.class);
+            org.mockito.Mockito.when(mockAdapter.getServerName()).thenReturn("mock-server");
+            org.mockito.Mockito.when(mockAdapter.callTool(org.mockito.ArgumentMatchers.eq("get_weather"), org.mockito.ArgumentMatchers.any()))
+                    .thenReturn("晴朗 22°C");
+            mcpClientRegistry.register("mock-server", mockAdapter);
+        }
+
+        AiMcpCallRequest request = AiMcpCallRequest.builder()
+                .serverName("mock-server")
+                .toolName("get_weather")
+                .arguments(java.util.Map.of("city", "Beijing"))
+                .build();
+
+        mockMvc.perform(post("/sample/ai/tools/mcp-call")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.serverName").value("mock-server"))
+                .andExpect(jsonPath("$.data.result").value("晴朗 22°C"));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/tools/mcp-call 服务未找到时返回受控业务错误")
+    void testCallMcpToolNotFound() throws Exception {
+        AiMcpCallRequest request = AiMcpCallRequest.builder()
+                .serverName("unknown-server-xyz")
+                .toolName("test_tool")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/tools/mcp-call")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(61019));
     }
 }

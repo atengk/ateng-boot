@@ -102,7 +102,12 @@ public enum AiResultCode implements IResultCode {
     /**
      * 检测到内容安全合规风险或越狱注入攻击
      */
-    AI_CONTENT_RISK_DETECTED(61018, "检测到内容安全合规风险或越狱注入攻击");
+    AI_CONTENT_RISK_DETECTED(61018, "检测到内容安全合规风险或越狱注入攻击"),
+
+    /**
+     * 远程 MCP 服务通信或工具执行失败
+     */
+    AI_MCP_CALL_FAILED(61019, "远程 MCP 服务通信或工具执行失败");
 
     private final Integer code;
     private final String msg;

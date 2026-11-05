@@ -121,6 +121,27 @@ class FailoverChatLanguageModelTest {
     }
 
     @Test
+    @DisplayName("非网关内部异常 (HTTP 500) 不属于故障转移白名单，触发 Fail-Fast 避免扩散雪崩")
+    void testFailFastOnHttp500() {
+        ChatLanguageModel primary = mock(ChatLanguageModel.class);
+        ChatLanguageModel fallback = mock(ChatLanguageModel.class);
+
+        when(primary.generate(anyList())).thenThrow(new OpenAiHttpException(500, "Internal Server Error"));
+
+        FailoverChatLanguageModel failoverModel = FailoverChatLanguageModel.builder()
+                .primary("primary-model", primary)
+                .fallback("fallback-model", fallback)
+                .build();
+
+        List<ChatMessage> messages = List.of(UserMessage.from("Hello"));
+        assertThatThrownBy(() -> failoverModel.generate(messages))
+                .isInstanceOf(AiException.class);
+
+        verify(primary, times(1)).generate(anyList());
+        verify(fallback, never()).generate(anyList());
+    }
+
+    @Test
     @DisplayName("全局时延预算 (Total Deadline Budget) 耗尽时，终止后续故障转移并抛出超时异常")
     void testTotalDeadlineExhausted() {
         ChatLanguageModel primary = mock(ChatLanguageModel.class);

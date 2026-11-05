@@ -46,6 +46,25 @@ class QueryTransformerTest {
     }
 
     @Test
+    @DisplayName("LlmQueryTransformer: 多轮历史下若最新问题不含指代代词（即使短于 30 字符）也直接绕过 LLM 改写")
+    void testLlmQueryTransformerBypassWhenNoPronounsDetected() {
+        ChatLanguageModel mockModel = mock(ChatLanguageModel.class);
+        LlmQueryTransformer transformer = new LlmQueryTransformer(mockModel);
+
+        List<ChatMessage> history = List.of(
+                UserMessage.from("介绍 Redis 架构"),
+                AiMessage.from("Redis 采用单线程 Reactor 模型...")
+        );
+
+        // 短问句 (<= 30 字符)，且不含任何指代代词
+        Query query = Query.from("Java 内存模型与并发机制");
+        Query result = transformer.transform(query, history);
+
+        assertThat(result.text()).isEqualTo("Java 内存模型与并发机制");
+        verifyNoInteractions(mockModel);
+    }
+
+    @Test
     @DisplayName("LlmQueryTransformer: 包含代词的多轮问答成功调用 LLM 完成指代消解改写")
     void testLlmQueryTransformerSuccess() {
         ChatLanguageModel mockModel = mock(ChatLanguageModel.class);

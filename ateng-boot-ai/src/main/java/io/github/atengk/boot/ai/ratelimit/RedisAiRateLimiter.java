@@ -121,7 +121,7 @@ public class RedisAiRateLimiter implements AiRateLimiter {
                     redisScript,
                     List.of(rpsKey, tpmKey),
                     String.valueOf(now),
-                    String.valueOf((long) rule.rps()),
+                    String.valueOf(rule.rps()),
                     String.valueOf(rule.tpm()),
                     String.valueOf(tokenAcquire),
                     memberId

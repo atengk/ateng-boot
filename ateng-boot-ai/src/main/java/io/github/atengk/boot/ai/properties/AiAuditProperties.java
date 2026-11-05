@@ -1,6 +1,7 @@
 package io.github.atengk.boot.ai.properties;
 
 import lombok.Data;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 /**
  * AI 大模型调用全维可观测审计与脱敏配置属性
@@ -29,6 +30,7 @@ public class AiAuditProperties {
     /**
      * 默认模型定价配置 (当未在 pricings 中匹配到特定模型时回退保底使用)
      */
+    @NestedConfigurationProperty
     private ModelPricingConfig defaultPricing = new ModelPricingConfig();
 
     /**

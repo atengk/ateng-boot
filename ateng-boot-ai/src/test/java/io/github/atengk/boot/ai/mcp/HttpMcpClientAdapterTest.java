@@ -4,6 +4,7 @@ import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 import dev.langchain4j.service.tool.ToolExecutor;
+import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -170,6 +171,7 @@ class HttpMcpClientAdapterTest {
 
         assertThatThrownBy(() -> adapter.callTool("get_weather", Map.of("city", "Atlantis")))
                 .isInstanceOf(BusinessException.class)
+                .satisfies(e -> assertThat(((BusinessException) e).getResultCode()).isEqualTo(AiResultCode.AI_MCP_CALL_FAILED))
                 .hasMessageContaining("未查询到指定城市 [Atlantis] 的气象数据");
     }
 
@@ -203,6 +205,7 @@ class HttpMcpClientAdapterTest {
 
         assertThatThrownBy(() -> adapter.callTool("unknown_tool", Collections.emptyMap()))
                 .isInstanceOf(BusinessException.class)
+                .satisfies(e -> assertThat(((BusinessException) e).getResultCode()).isEqualTo(AiResultCode.AI_MCP_CALL_FAILED))
                 .hasMessageContaining("Method not found");
     }
 
@@ -225,7 +228,58 @@ class HttpMcpClientAdapterTest {
 
         assertThatThrownBy(() -> adapter.callTool("get_weather", Collections.emptyMap()))
                 .isInstanceOf(BusinessException.class)
+                .satisfies(e -> assertThat(((BusinessException) e).getResultCode()).isEqualTo(AiResultCode.AI_MCP_CALL_FAILED))
                 .hasMessageContaining("HTTP 500");
+    }
+
+    @Test
+    @DisplayName("测试 SSE 传输端点握手并解析实际消息 POST 端点")
+    @SuppressWarnings("unchecked")
+    void testSseTransportHandshakeAndToolCall() throws Exception {
+        // 1. Mock SSE GET 握手返回 endpoint 事件
+        String sseStreamData = "event: endpoint\ndata: /messages?sessionId=session_xyz123\n\n";
+        HttpResponse<java.io.InputStream> sseResponse = mock(HttpResponse.class);
+        when(sseResponse.statusCode()).thenReturn(200);
+        when(sseResponse.body()).thenReturn(new java.io.ByteArrayInputStream(sseStreamData.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+
+        // 2. Mock 随后的 POST tools/call 响应
+        HttpResponse<String> postResponse = mock(HttpResponse.class);
+        when(postResponse.statusCode()).thenReturn(200);
+        when(postResponse.body()).thenReturn("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": "call-sse-1",
+                  "result": {
+                    "content": "SSE 传输调用成功"
+                  }
+                }
+                """);
+
+        when(httpClient.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+                .thenAnswer(invocation -> {
+                    HttpRequest req = invocation.getArgument(0);
+                    if ("GET".equalsIgnoreCase(req.method())) {
+                        return sseResponse;
+                    } else {
+                        return postResponse;
+                    }
+                });
+
+        HttpMcpClientAdapter adapter = new HttpMcpClientAdapter(
+                "sse-server",
+                "http://localhost:8080/sse",
+                Duration.ofSeconds(10),
+                "token-abc",
+                "sse",
+                httpClient
+        );
+
+        assertThat(adapter.isSseEndpoint()).isTrue();
+        String effectiveUrl = adapter.getEffectiveEndpointUrl();
+        assertThat(effectiveUrl).isEqualTo("http://localhost:8080/messages?sessionId=session_xyz123");
+
+        String result = adapter.callTool("echo", Map.of("msg", "hello"));
+        assertThat(result).isEqualTo("SSE 传输调用成功");
     }
 
     @Test

@@ -32,9 +32,14 @@ public class AtengAiMcpProperties {
     @Data
     public static class McpServerConfig {
         /**
-         * 远程 MCP 服务端 HTTP/SSE 端点 URL (例如 http://localhost:8080/mcp 或 https://mcp.internal.net/v1)
+         * 远程 MCP 服务端 HTTP/SSE 端点 URL (例如 http://localhost:8080/mcp 或 http://localhost:8080/sse)
          */
         private String url;
+
+        /**
+         * 传输层协议: "http" (标准 JSON-RPC POST) 或 "sse" (Server-Sent Events 端点)，默认自动根据 url 探测
+         */
+        private String transport = "http";
 
         /**
          * 可选的鉴权令牌 API Key 或 Bearer Token

@@ -58,10 +58,6 @@ public class RerankingContentRetriever implements ContentRetriever {
             return Collections.emptyList();
         }
 
-        if (initialContents.size() == 1) {
-            return initialContents;
-        }
-
         List<TextSegment> candidateSegments = initialContents.stream()
                 .map(Content::textSegment)
                 .toList();
@@ -70,8 +66,8 @@ public class RerankingContentRetriever implements ContentRetriever {
         try {
             List<RerankResult> rerankResults = reranker.rerank(query.text(), candidateSegments, topK);
             if (rerankResults == null || rerankResults.isEmpty()) {
-                log.warn("[AI-RAG-RERANK] 重排模型返回空结果，自动平滑降级采用原始向量召回前 {} 条结果", topK);
-                return initialContents.subList(0, Math.min(topK, initialContents.size()));
+                // 重排服务正常响应，但无切片满足相关度阈值或候选集为空，合规返回空列表
+                return Collections.emptyList();
             }
 
             return rerankResults.stream()
@@ -79,7 +75,7 @@ public class RerankingContentRetriever implements ContentRetriever {
                     .map(r -> Content.from(r.segment()))
                     .toList();
         } catch (Exception e) {
-            // 生产级弹性降级防线：重排外部服务不可用时，降级采用初筛前 topK 条结果，杜绝整条链路抛错中断
+            // 生产级弹性降级防线：仅在重排外部服务不可用或超时发生异常时，降级采用初筛前 topK 条结果，杜绝整条链路抛错中断
             log.warn("[AI-RAG-RERANK] 重排计算发生异常或超时 ({})，自动平滑降级为原始向量相似度排序", e.getMessage());
             return initialContents.subList(0, Math.min(topK, initialContents.size()));
         }

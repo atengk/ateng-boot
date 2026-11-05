@@ -10,6 +10,8 @@ import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.output.Response;
 import io.github.atengk.boot.ai.memory.store.InMemorySummaryChatMemoryStore;
 import io.github.atengk.boot.ai.memory.store.SummaryChatMemoryStore;
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
+import io.github.atengk.boot.core.context.AsyncContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.Assert;
@@ -21,7 +23,9 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 基于后台受管线程池非阻塞异步提炼的长会话摘要记忆实现
@@ -48,9 +52,17 @@ public class SummaryChatMemory implements ChatMemory {
     private static final ConcurrentHashMap<Object, Boolean> ACTIVE_SUMMARIES = new ConcurrentHashMap<>();
 
     /**
-     * 默认保底后台异步线程池
+     * 默认保底后台受管异步线程池 (有界队列与线程命名隔离，过载 CallerRunsPolicy 保护)
      */
-    private static final Executor DEFAULT_EXECUTOR = ForkJoinPool.commonPool();
+    private static final Executor DEFAULT_EXECUTOR = new ThreadPoolExecutor(
+            2,
+            Math.max(4, Runtime.getRuntime().availableProcessors()),
+            60L,
+            TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(1024),
+            new NamedThreadFactory("ai-summary-async", true),
+            new ThreadPoolExecutor.CallerRunsPolicy()
+    );
 
     /**
      * 默认长会话事实提炼提示词模板
@@ -180,7 +192,7 @@ public class SummaryChatMemory implements ChatMemory {
             return;
         }
 
-        executor.execute(() -> {
+        executor.execute(AsyncContext.wrap(() -> {
             try {
                 // 1. 划分早期待提炼消息与保留的近期消息
                 int splitIndex = currentMessages.size() - keepRecentMessages;
@@ -220,7 +232,7 @@ public class SummaryChatMemory implements ChatMemory {
             } finally {
                 ACTIVE_SUMMARIES.remove(id);
             }
-        });
+        }));
     }
 
     private String formatChatHistory(List<ChatMessage> chatHistory) {

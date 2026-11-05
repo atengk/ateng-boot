@@ -1,6 +1,7 @@
 package io.github.atengk.boot.ai.autoconfigure;
 
 import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
@@ -12,6 +13,7 @@ import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
+import io.github.atengk.boot.ai.rag.query.LlmQueryTransformer;
 import io.github.atengk.boot.ai.rag.query.QueryTransformer;
 import io.github.atengk.boot.ai.rag.query.RewriteQueryRetriever;
 import io.github.atengk.boot.ai.rag.rerank.OpenAiCompatibleReranker;
@@ -25,6 +27,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
+import org.springframework.boot.autoconfigure.condition.AllNestedConditions;
 import org.springframework.boot.autoconfigure.condition.AnyNestedCondition;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -73,6 +76,24 @@ public class AtengAiRagAutoConfiguration {
 
         @ConditionalOnProperty(prefix = "ateng.boot.ai.model", name = "api-key")
         static class ModelApiKeyProperty {
+        }
+    }
+
+    /**
+     * 当且仅当 rerank.enabled=true 且显式配置了 base-url 时生效的装配守卫条件
+     */
+    static class RerankCondition extends AllNestedConditions {
+
+        public RerankCondition() {
+            super(ConfigurationPhase.REGISTER_BEAN);
+        }
+
+        @ConditionalOnProperty(prefix = "ateng.boot.ai.rag.rerank", name = "enabled", havingValue = "true")
+        static class EnabledProperty {
+        }
+
+        @ConditionalOnProperty(prefix = "ateng.boot.ai.rag.rerank", name = "base-url")
+        static class BaseUrlProperty {
         }
     }
 
@@ -189,7 +210,7 @@ public class AtengAiRagAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(Reranker.class)
-    @ConditionalOnProperty(prefix = "ateng.boot.ai.rag.rerank", name = "enabled", havingValue = "true")
+    @Conditional(RerankCondition.class)
     public Reranker openAiCompatibleReranker(AtengAiProperties properties) {
         AtengAiRagProperties.RerankProperties rerankProps = properties.getRag().getRerank();
         String apiKey = StringUtils.hasText(rerankProps.getApiKey())
@@ -204,6 +225,31 @@ public class AtengAiRagAutoConfiguration {
                 rerankProps.getTimeout(),
                 rerankProps.getMinScore()
         );
+    }
+
+    /**
+     * 自动装配默认基于大模型的多轮意图消解查询改写器 (当配置 ateng.boot.ai.rag.query-transform.enabled=true 时生效)
+     *
+     * @param properties AI 根配置属性
+     * @param chatModelProvider 聊天模型提供者
+     * @return QueryTransformer 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(QueryTransformer.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.rag.query-transform", name = "enabled", havingValue = "true")
+    public QueryTransformer llmQueryTransformer(AtengAiProperties properties,
+                                                ObjectProvider<ChatLanguageModel> chatModelProvider) {
+        ChatLanguageModel chatModel = chatModelProvider.getIfAvailable();
+        if (chatModel == null) {
+            log.warn("已配置 ateng.boot.ai.rag.query-transform.enabled=true，但未检测到可用的 ChatLanguageModel Bean，跳过 LlmQueryTransformer 自动装配");
+            return null;
+        }
+        AtengAiRagProperties.QueryTransformProperties qtProps = properties.getRag().getQueryTransform();
+        int maxHistory = qtProps != null && qtProps.getMaxHistoryMessages() > 0
+                ? qtProps.getMaxHistoryMessages()
+                : 6;
+        log.info("自动装配默认 LlmQueryTransformer 多轮意图消解查询改写器 [maxHistoryMessages={}]", maxHistory);
+        return new LlmQueryTransformer(chatModel, maxHistory);
     }
 
     /**
