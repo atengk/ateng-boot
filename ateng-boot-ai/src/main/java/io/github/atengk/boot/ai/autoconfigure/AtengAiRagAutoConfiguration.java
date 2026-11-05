@@ -1,6 +1,7 @@
 package io.github.atengk.boot.ai.autoconfigure;
 
 import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.Tokenizer;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
@@ -29,8 +30,10 @@ import io.github.atengk.boot.ai.rag.rerank.OpenAiCompatibleReranker;
 import io.github.atengk.boot.ai.rag.rerank.Reranker;
 import io.github.atengk.boot.ai.rag.rerank.RerankingContentRetriever;
 import io.github.atengk.boot.ai.rag.splitter.DocumentSplitter;
+import io.github.atengk.boot.ai.rag.splitter.ParentChildSplitter;
 import io.github.atengk.boot.ai.rag.splitter.RecursiveCharacterSplitter;
 import io.github.atengk.boot.ai.rag.splitter.TableSplitter;
+import io.github.atengk.boot.ai.rag.splitter.TokenCharacterSplitter;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
@@ -55,6 +58,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.util.StringUtils;
 
 /**
@@ -325,15 +329,100 @@ public class AtengAiRagAutoConfiguration {
     }
 
     /**
-     * 自动装配默认原生长文本智能切片门面 DocumentSplitter (RecursiveCharacterSplitter)
+     * 自动装配基于 Token 预算防溢出切片器 (TokenCharacterSplitter)
      *
      * @param properties AI 根配置属性
+     * @param tokenizerProvider 可选分词器提供者 (缺省时平滑使用 OpenAiTokenizer 或启发式估算器保底)
+     * @return TokenCharacterSplitter 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(TokenCharacterSplitter.class)
+    public TokenCharacterSplitter tokenCharacterSplitter(AtengAiProperties properties,
+                                                         ObjectProvider<Tokenizer> tokenizerProvider) {
+        AtengAiRagProperties rag = properties.getRag();
+        AtengAiRagProperties.TokenSplitterProperties tokenProps = rag != null && rag.getSplitter() != null
+                ? rag.getSplitter().getToken()
+                : new AtengAiRagProperties.TokenSplitterProperties();
+        Tokenizer tokenizer = tokenizerProvider.getIfAvailable();
+        log.info("自动装配 Token 预算防溢出切片器 (TokenCharacterSplitter) [maxTokens={}, tokenOverlap={}, safetyMargin={}]",
+                tokenProps.getMaxTokens(), tokenProps.getTokenOverlap(), tokenProps.getSafetyMargin());
+        return new TokenCharacterSplitter(
+                tokenProps.getMaxTokens(),
+                tokenProps.getTokenOverlap(),
+                tokenizer,
+                tokenProps.getSafetyMargin()
+        );
+    }
+
+    /**
+     * 自动装配原生父子分级智能切片器 (ParentChildSplitter)
+     *
+     * @param properties AI 根配置属性
+     * @return ParentChildSplitter 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(ParentChildSplitter.class)
+    public ParentChildSplitter parentChildSplitter(AtengAiProperties properties) {
+        AtengAiRagProperties rag = properties.getRag();
+        AtengAiRagProperties.ParentChildSplitterProperties pcProps = rag != null && rag.getSplitter() != null
+                ? rag.getSplitter().getParentChild()
+                : new AtengAiRagProperties.ParentChildSplitterProperties();
+        log.info("自动装配父子分级切片器 (ParentChildSplitter) [parentSize={}, childSize={}, selfContained={}]",
+                pcProps.getParentChunkSize(), pcProps.getChildChunkSize(), pcProps.isSelfContainedParent());
+        return new ParentChildSplitter(
+                pcProps.getParentChunkSize(),
+                pcProps.getParentChunkOverlap(),
+                pcProps.getChildChunkSize(),
+                pcProps.getChildChunkOverlap(),
+                pcProps.isSelfContainedParent()
+        );
+    }
+
+    /**
+     * 自动装配默认原生长文本智能切片门面 DocumentSplitter
+     * <p>
+     * 依据 {@code ateng.boot.ai.rag.splitter.type} 配置类型自动切源绑定对应切片器门面，
+     * 默认采用高性能层级递归字符切片器 {@link RecursiveCharacterSplitter}。
+     * </p>
+     *
+     * @param properties AI 根配置属性
+     * @param tokenSplitterProvider Token 预算切片器提供者
+     * @param parentChildSplitterProvider 父子分级切片器提供者
+     * @param tableSplitterProvider 表格感知分块切片器提供者
      * @return DocumentSplitter 实例
      */
     @Bean
-    @ConditionalOnMissingBean(DocumentSplitter.class)
-    public DocumentSplitter documentSplitter(AtengAiProperties properties) {
+    @Primary
+    @ConditionalOnMissingBean(name = "documentSplitter")
+    public DocumentSplitter documentSplitter(AtengAiProperties properties,
+                                             ObjectProvider<TokenCharacterSplitter> tokenSplitterProvider,
+                                             ObjectProvider<ParentChildSplitter> parentChildSplitterProvider,
+                                             ObjectProvider<TableSplitter> tableSplitterProvider) {
         AtengAiRagProperties rag = properties.getRag();
+        AtengAiRagProperties.SplitterType type = rag != null && rag.getSplitter() != null && rag.getSplitter().getType() != null
+                ? rag.getSplitter().getType()
+                : AtengAiRagProperties.SplitterType.RECURSIVE;
+
+        if (type == AtengAiRagProperties.SplitterType.TOKEN) {
+            TokenCharacterSplitter splitter = tokenSplitterProvider.getIfAvailable();
+            if (splitter != null) {
+                log.info("根据配置选用 Token 预算防溢出切片器作为默认 DocumentSplitter 门面");
+                return splitter;
+            }
+        } else if (type == AtengAiRagProperties.SplitterType.PARENT_CHILD) {
+            ParentChildSplitter splitter = parentChildSplitterProvider.getIfAvailable();
+            if (splitter != null) {
+                log.info("根据配置选用父子分级切片器作为默认 DocumentSplitter 门面");
+                return splitter;
+            }
+        } else if (type == AtengAiRagProperties.SplitterType.TABLE) {
+            TableSplitter splitter = tableSplitterProvider.getIfAvailable();
+            if (splitter != null) {
+                log.info("根据配置选用表格感知切片器作为默认 DocumentSplitter 门面");
+                return splitter;
+            }
+        }
+
         int chunkSize = rag != null && rag.getChunkSize() > 0 ? rag.getChunkSize() : RecursiveCharacterSplitter.DEFAULT_CHUNK_SIZE;
         int chunkOverlap = rag != null && rag.getChunkOverlap() >= 0 && rag.getChunkOverlap() < chunkSize
                 ? rag.getChunkOverlap()

@@ -59,6 +59,9 @@
 | **RAG 自动装配** | 向量知识库自适应装配与单机回退 | `AtengAiRagAutoConfiguration` | `ateng.boot.ai.rag.enabled` | 自动探测并注入外部 `EmbeddingStore`（如 `ateng-boot-milvus`），缺省自动平滑降级单机内存向量库 `InMemoryEmbeddingStore` | `AtengAiRagAutoConfigurationTest` |
 | **知识库检索器** | 统一知识库向量检索器受管 Bean | `ContentRetriever`<br>`EmbeddingStoreContentRetriever` | `ateng.boot.ai.rag.max-results`<br>`ateng.boot.ai.rag.min-score` | 自动根据配置组装 `ContentRetriever` Bean，支持 `@AiAgent(contentRetriever = "...")` 与编程式检索 | `AtengAiRagAutoConfigurationTest` / `RagControllerIntegrationTest` |
 | **文档分块切片** | 原生轻量长文档分块切片门面 | `DocumentSplitter`<br>`RecursiveCharacterSplitter`<br>`MarkdownHeaderSplitter` | `ateng.boot.ai.rag.chunk-size`<br>`ateng.boot.ai.rag.chunk-overlap` | `split(String)` / `split(Resource)` / `split(InputStream)`，支持递归字符分块与 Markdown 语义标题两级分块 | `DocumentSplitterTest` / `RagControllerIntegrationTest` |
+| **Token 预算切片** | Token 预算防溢出智能切片门面 | `TokenCharacterSplitter`<br>`TokenBudgetSplitter` | `ateng.boot.ai.rag.splitter.type: TOKEN`<br>`ateng.boot.ai.rag.splitter.token.max-tokens`<br>`ateng.boot.ai.rag.splitter.token.token-overlap`<br>`ateng.boot.ai.rag.splitter.token.safety-margin` | 基于 Tokenizer 或启发式算法计量 Token，支持安全余量防卫，彻底杜绝下游 Embedding 模型 400 Bad Request 溢出 | `TokenCharacterSplitterTest` |
+| **父子分级切片** | 宏微双层切片与无外部 KV 上下文还原 | `ParentChildSplitter`<br>`ParentChildResult`<br>`ParentContextAggregator` | `ateng.boot.ai.rag.splitter.type: PARENT_CHILD`<br>`ateng.boot.ai.rag.splitter.parent-child.parent-chunk-size`<br>`ateng.boot.ai.rag.splitter.parent-child.child-chunk-size` | 宏观父分块保证完整长上下文，微观子分块用于高精度向量索引；子分块自包含父文本，检索时自动去重重组宏观上下文 | `ParentChildSplitterTest` |
+| **表格感知切片** | 结构化表格行列感知切分器 | `TableSplitter` | `ateng.boot.ai.rag.splitter.type: TABLE` | `split(String)`，智能解析 Excel/CSV/Markdown 表格，分块时强制下沉表头与列架构描述，防止数据行语义脱节 | `TableSplitterTest` |
 | **检索交叉重排** | 两阶段 Cross-Encoder 语义交叉重排 | `Reranker`<br>`OpenAiCompatibleReranker`<br>`RerankingContentRetriever` | `ateng.boot.ai.rag.rerank.enabled`<br>`ateng.boot.ai.rag.rerank.model-name`<br>`ateng.boot.ai.rag.rerank.top-k`<br>`ateng.boot.ai.rag.rerank.min-score` | `rerank(query, segments, topK)`，对粗排召回结果实施二次精排打分与截断，透明提升 RAG 回答精准度 | `RerankerTest` / `RagControllerIntegrationTest` |
 | **查询意图改写** | 多轮会话意图消解与检索改写 | `QueryTransformer`<br>`LlmQueryTransformer`<br>`RewriteQueryRetriever` | `ateng.boot.ai.rag.query-transform.enabled`<br>`ateng.boot.ai.rag.query-transform.prompt-template` | `transform(query, history)`，自动消解代词与指代歧义，将多轮上下文重写为独立自洽的高质量检索 Prompt | `QueryTransformerTest` |
 | **容灾故障转移** | 声明式多模型故障自动转移与全局时延预算 | `FailoverChatLanguageModel`<br>`FailoverStreamingChatLanguageModel`<br>`NamedModel`<br>`FailoverClassifier` | `ateng.boot.ai.models.<name>.fallbacks`<br>`ateng.boot.ai.models.<name>.total-timeout` | `generate(messages)` / `generate(messages, handler)`，主模型遭遇 429/5xx/超时自动平滑无缝降级备用序列，共享全局时延预算 | `FailoverChatLanguageModelTest` / `FailoverControllerIntegrationTest` |
@@ -1701,9 +1704,9 @@ public interface EnterpriseQaAgent {
 
 ---
 
-### 11.4 智能长文档结构化切分 (DocumentSplitter)
+### 11.4 工业级高级切分套件 (DocumentSplitter, Token & Parent-Child Splitters)
 
-针对长篇企业技术规范、政策白皮书与 Markdown 架构文档，`ateng-boot-ai` 提供了纯原生轻量文档切片门面 `DocumentSplitter`：
+长文本分块切片直接决定了 RAG 系统的向量相似度精准度与大模型推理上下文的完整性。`ateng-boot-ai` 构建了多维工业级切片矩阵，支持字符递归、Token 预算防溢出、父子分级层级切片以及结构化表格感知：
 
 #### 本节专属 YAML 配置
 ```yaml
@@ -1711,28 +1714,50 @@ ateng:
   boot:
     ai:
       rag:
-        # 默认长文本切片目标字符大小 (默认 500)
+        # 全局默认切片大小与滑动重叠
         chunk-size: 500
-        # 文本切片重叠字符大小 (默认 50，防止切片边界上下文语义撕裂)
         chunk-overlap: 50
+        # 高级切分套件专属配置
+        splitter:
+          # 默认切片门面类型: RECURSIVE (默认), TOKEN, PARENT_CHILD, TABLE
+          type: RECURSIVE
+          # Token 预算切片器专属配置
+          token:
+            max-tokens: 500
+            token-overlap: 50
+            # 安全余量比例 (0.0 ~ <1.0，如 0.1 预留 10% 缓冲预算防边界偏差)
+            safety-margin: 0.05
+          # 父子分级切片器专属配置
+          parent-child:
+            # 宏观父分块配置 (保留大篇幅长语义上下文)
+            parent-chunk-size: 1200
+            parent-chunk-overlap: 100
+            # 微观子分块配置 (高精度向量召回)
+            child-chunk-size: 300
+            child-chunk-overlap: 30
+            # 是否在子分块元数据中直接嵌入父分块完整文本 (默认 true，实现零外部 KV 单机自洽还原)
+            self-contained-parent: true
 ```
 
 #### 实战业务 Java 示例
+
+##### 1. 标准切片与 Token 预算防溢出入库
 ```java
 @Service
 @RequiredArgsConstructor
 public class KnowledgeIngestService {
 
     private final DocumentSplitter documentSplitter;
+    private final TokenCharacterSplitter tokenSplitter;
     private final EmbeddingTemplate embeddingTemplate;
     private final EmbeddingStore<TextSegment> embeddingStore;
 
     /**
-     * 读取类路径下的架构文档并切片入库
+     * 读取外部文档并切片入库
      */
-    public int ingestMarkdownManual(Resource markdownFile) {
+    public int ingestDocument(Resource documentFile) {
         // 1. 支持直接传入 Spring Resource、InputStream 或纯文本进行切片
-        List<TextSegment> segments = documentSplitter.split(markdownFile);
+        List<TextSegment> segments = documentSplitter.split(documentFile);
 
         // 2. 批量向量化并存储
         for (TextSegment segment : segments) {
@@ -1740,14 +1765,68 @@ public class KnowledgeIngestService {
         }
         return segments.size();
     }
+
+    /**
+     * 针对严格限制 Token 预算的场景 (如模型上限 512/8192 tokens)
+     */
+    public int ingestWithTokenBudget(String content, Map<String, Object> metadata) {
+        // 确保生成的每一个切片在 Token 维度绝对不超过预算，彻底杜绝 400 Bad Request
+        List<TextSegment> segments = tokenSplitter.split(content, metadata);
+        embeddingTemplate.ingestAll(embeddingStore, segments);
+        return segments.size();
+    }
+}
+```
+
+##### 2. 父子分级切片 (Parent-Child) 与召回宏观上下文重组
+```java
+@Service
+@RequiredArgsConstructor
+public class ParentChildRagService {
+
+    private final ParentChildSplitter parentChildSplitter;
+    private final EmbeddingTemplate embeddingTemplate;
+    private final EmbeddingStore<TextSegment> embeddingStore;
+
+    /**
+     * 知识库构建阶段：父子分级切片并仅将微观子分块入库向量存储
+     */
+    public int ingestKnowledgeDoc(String fullText, String docId) {
+        // split() 默认返回微观子分块 (Child Chunks)，元数据已自包含 parent_id 与 parent_text
+        Metadata initialMeta = Metadata.from(Map.of("doc_id", docId));
+        List<TextSegment> childSegments = parentChildSplitter.split(fullText, initialMeta);
+
+        // 将微观子分块送入向量库 (高语义密度，极高匹配率)
+        embeddingTemplate.ingestAll(embeddingStore, childSegments);
+        return childSegments.size();
+    }
+
+    /**
+     * 检索召回阶段：命中多个子块时自动去重并按原文顺序重组宏观父上下文
+     */
+    public String searchAndReconstructMacroContext(String query) {
+        // 1. 向量相似度检索出若干微观子分块
+        List<TextSegment> retrievedHits = embeddingTemplate.findRelevant(embeddingStore, query, 5);
+
+        // 2. 通过 ParentContextAggregator 自动根据 parent_id 去重并依原文位置重组宏观上下文
+        String promptContext = ParentContextAggregator.aggregateToPromptContext(retrievedHits);
+
+        // 3. 直接喂给大模型 System Prompt 或 User Prompt 作为参考上下文
+        return promptContext;
+    }
 }
 ```
 
 #### 核心机制与边界防御
-- **双模智能切片策略**：
-  - **递归字符切片器 (`RecursiveCharacterSplitter`)**：按 `\n\n`（段落）、`\n`（行）、句号、空格等自然边界自适应降级切分，严格确保切片大小不超过 `chunkSize`；
-  - **Markdown 语义切片器 (`MarkdownHeaderSplitter`)**：识别 Markdown `#`、`##`、`###` 标题层级，将标题元数据自动注入各切片的 `Metadata`，实现结构化语义切分；
-- **滑动重叠防撕裂 (`chunkOverlap`)**：每个切片与上一切片保持指定字符数的滑动重叠，彻底消除实体名称或断句正好落在切分边界造成的语义丢失。
+1. **Token 预算绝对防溢出 (`TokenCharacterSplitter` / `TokenBudgetSplitter`)**：
+   - 彻底解决中文多字节、特殊符号与代码导致按字符切片时 Token 膨胀超限的痛点；
+   - 兼容 LangChain4j `Tokenizer`（如 `OpenAiTokenizer`）或纯原生轻量 `HeuristicTokenizer` 保底，支持配置 `safetyMargin`（安全余量百分比），在切片边界实施双重滑动窗口防御，确保输出切片 100% 遵守 Token 上限。
+2. **父子分级切片与单机自洽还原 (`ParentChildSplitter` & `ParentContextAggregator`)**：
+   - **两级分块拓扑**：宏观父分块（1000~2000 字符，保留完整大篇幅语义）与微观子分块（200~400 字符，高精度向量匹配）；
+   - **自包含元数据契约**：子分块元数据自动挂载 `parent_id`、`parent_index`、`child_index` 与自包含完整文本 `parent_text`，**无需额外引入外部 Redis/KV 数据库即可单机闭环还原完整上下文**；
+   - **检索聚合去重**：`ParentContextAggregator` 在检索召回阶段对同一父块下的多个命中子块执行自动去重，按父块在文档中的原始次序排序，并生成未被碎片化的提示词上下文，同时兼容未挂载父元数据的普通切片平滑回退。
+3. **表格感知切片 (`TableSplitter`)**：
+   - 面向 Excel、CSV 与 Markdown 表格长数据，智能探测表格边界并在切片时强制下沉原始字段表头与列架构描述，彻底杜绝数据行脱离表头导致的语义断裂与检索失效。
 
 ---
 
@@ -2065,6 +2144,20 @@ ateng:
         chunk-size: 500
         # 文本切片重叠字符大小 (默认 50)
         chunk-overlap: 50
+        # 智能高级切分套件专属配置
+        splitter:
+          # 默认切片门面类型: RECURSIVE (默认), TOKEN, PARENT_CHILD, TABLE
+          type: RECURSIVE
+          token:
+            max-tokens: 500
+            token-overlap: 50
+            safety-margin: 0.0
+          parent-child:
+            parent-chunk-size: 1200
+            parent-chunk-overlap: 100
+            child-chunk-size: 300
+            child-chunk-overlap: 30
+            self-contained-parent: true
         # 两阶段交叉重排配置
         rerank:
           enabled: false

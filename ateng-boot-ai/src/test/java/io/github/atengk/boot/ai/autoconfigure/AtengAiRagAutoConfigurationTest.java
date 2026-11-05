@@ -14,7 +14,10 @@ import io.github.atengk.boot.ai.rag.parser.TextDocumentParser;
 import io.github.atengk.boot.ai.rag.parser.WordDocumentParser;
 import io.github.atengk.boot.ai.rag.parser.multimodal.VisionCaptionEnhancer;
 import io.github.atengk.boot.ai.rag.parser.multimodal.VisionModelResolver;
+import io.github.atengk.boot.ai.rag.splitter.DocumentSplitter;
+import io.github.atengk.boot.ai.rag.splitter.ParentChildSplitter;
 import io.github.atengk.boot.ai.rag.splitter.TableSplitter;
+import io.github.atengk.boot.ai.rag.splitter.TokenCharacterSplitter;
 import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
 import org.junit.jupiter.api.DisplayName;
@@ -85,13 +88,39 @@ class AtengAiRagAutoConfigurationTest {
             assertThat(context).hasSingleBean(DocumentParserManager.class);
             assertThat(context.getBean(DocumentParserManager.class).getParsers()).hasSize(5);
 
-            // 验证 TableSplitter 自动装配
+            // 验证高级切片套件自动装配
             assertThat(context).hasSingleBean(TableSplitter.class);
+            assertThat(context).hasSingleBean(TokenCharacterSplitter.class);
+            assertThat(context).hasSingleBean(ParentChildSplitter.class);
+            assertThat(context).hasBean("documentSplitter");
+            assertThat(context.getBean(DocumentSplitter.class)).isNotNull();
 
             // 验证多模态组件自动装配
             assertThat(context).hasSingleBean(VisionModelResolver.class);
             assertThat(context).hasSingleBean(VisionCaptionEnhancer.class);
         });
+    }
+
+    @Test
+    @DisplayName("根据 ateng.boot.ai.rag.splitter.type 配置平滑切换默认 DocumentSplitter 门面")
+    void testSplitterTypeSwitching() {
+        contextRunner.withPropertyValues("ateng.boot.ai.rag.splitter.type=TOKEN")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(DocumentSplitter.class)).isInstanceOf(TokenCharacterSplitter.class);
+                });
+
+        contextRunner.withPropertyValues("ateng.boot.ai.rag.splitter.type=PARENT_CHILD")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(DocumentSplitter.class)).isInstanceOf(ParentChildSplitter.class);
+                });
+
+        contextRunner.withPropertyValues("ateng.boot.ai.rag.splitter.type=TABLE")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(DocumentSplitter.class)).isInstanceOf(TableSplitter.class);
+                });
     }
 
     @Test

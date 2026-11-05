@@ -56,6 +56,12 @@ public class AtengAiRagProperties {
     private int chunkOverlap = 50;
 
     /**
+     * 智能文档切片套件专属配置 (Token 预算切片与父子分级切片)
+     */
+    @NestedConfigurationProperty
+    private SplitterProperties splitter = new SplitterProperties();
+
+    /**
      * 重排模型 (Reranker) 专属配置
      */
     @NestedConfigurationProperty
@@ -360,5 +366,102 @@ public class AtengAiRagProperties {
             }
         }
         return effective;
+    }
+
+    /**
+     * 智能切片套件强类型配置属性
+     */
+    @Data
+    public static class SplitterProperties {
+        /**
+         * 默认切片器类型 (RECURSIVE, TOKEN, PARENT_CHILD, TABLE)
+         */
+        private SplitterType type = SplitterType.RECURSIVE;
+
+        /**
+         * Token 预算切片器专属配置
+         */
+        @NestedConfigurationProperty
+        private TokenSplitterProperties token = new TokenSplitterProperties();
+
+        /**
+         * 父子分级切片器专属配置
+         */
+        @NestedConfigurationProperty
+        private ParentChildSplitterProperties parentChild = new ParentChildSplitterProperties();
+    }
+
+    /**
+     * 切片器类型枚举
+     */
+    public enum SplitterType {
+        /**
+         * 原生递归字符切片器
+         */
+        RECURSIVE,
+        /**
+         * Token 预算防溢出切片器
+         */
+        TOKEN,
+        /**
+         * 父子分级切片器
+         */
+        PARENT_CHILD,
+        /**
+         * 表格感知分块切片器
+         */
+        TABLE
+    }
+
+    /**
+     * Token 预算切片器强类型配置属性
+     */
+    @Data
+    public static class TokenSplitterProperties {
+        /**
+         * 单分块最大允许 Token 预算数 (默认 500)
+         */
+        private int maxTokens = 500;
+
+        /**
+         * 相邻分块重叠 Token 预算数 (默认 50)
+         */
+        private int tokenOverlap = 50;
+
+        /**
+         * Token 安全余量比例 (0.0 ~ <1.0，默认 0.0)
+         */
+        private double safetyMargin = 0.0;
+    }
+
+    /**
+     * 父子分级切片器强类型配置属性
+     */
+    @Data
+    public static class ParentChildSplitterProperties {
+        /**
+         * 宏观父分块最大字符数 (默认 1200)
+         */
+        private int parentChunkSize = 1200;
+
+        /**
+         * 宏观父分块重叠字符数 (默认 100)
+         */
+        private int parentChunkOverlap = 100;
+
+        /**
+         * 微观子分块最大字符数 (默认 300)
+         */
+        private int childChunkSize = 300;
+
+        /**
+         * 微观子分块重叠字符数 (默认 30)
+         */
+        private int childChunkOverlap = 30;
+
+        /**
+         * 是否在子分块元数据中直接嵌入父分块完整文本 (默认 true)
+         */
+        private boolean selfContainedParent = true;
     }
 }
