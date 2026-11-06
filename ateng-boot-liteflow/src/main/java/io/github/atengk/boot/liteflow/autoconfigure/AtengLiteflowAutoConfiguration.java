@@ -64,8 +64,9 @@ public class AtengLiteflowAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    public FlowTimeoutInterruptionLifeCycle flowTimeoutInterruptionLifeCycle() {
-        FlowTimeoutInterruptionLifeCycle lifeCycle = new FlowTimeoutInterruptionLifeCycle();
+    public FlowTimeoutInterruptionLifeCycle flowTimeoutInterruptionLifeCycle(AtengLiteflowProperties properties) {
+        boolean interruptOnTimeout = properties != null && properties.getThreadPool().isInterruptOnTimeout();
+        FlowTimeoutInterruptionLifeCycle lifeCycle = new FlowTimeoutInterruptionLifeCycle(interruptOnTimeout);
         boolean alreadyAdded = LifeCycleHolder.getPostProcessFlowExecuteLifeCycleList().stream()
                 .anyMatch(lc -> lc instanceof FlowTimeoutInterruptionLifeCycle);
         if (!alreadyAdded) {

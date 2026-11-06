@@ -137,4 +137,35 @@ public final class FlowThreadTracker {
             ACTIVE_THREADS.remove(requestId);
         }
     }
+
+    /**
+     * 获取指定 requestId 当前跟踪的活动子线程数量
+     *
+     * @param requestId 流程执行请求 ID
+     * @return 活动子线程数量
+     */
+    public static int getActiveThreadCount(String requestId) {
+        if (requestId == null || requestId.isBlank()) {
+            return 0;
+        }
+        Set<Thread> threads = ACTIVE_THREADS.get(requestId);
+        return threads != null ? threads.size() : 0;
+    }
+
+    /**
+     * 获取当前被跟踪的总请求数量
+     *
+     * @return 被跟踪的 requestId 数量
+     */
+    public static int getTotalTrackedRequests() {
+        return ACTIVE_THREADS.size();
+    }
+
+    /**
+     * 清理所有跟踪记录与 ThreadLocal 状态（供容器关闭或测试重置使用）
+     */
+    public static void clearAll() {
+        CURRENT_REQUEST_ID.remove();
+        ACTIVE_THREADS.clear();
+    }
 }

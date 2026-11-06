@@ -21,6 +21,7 @@ import io.github.atengk.boot.liteflow.trace.LiteflowTraceResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
@@ -35,6 +36,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
@@ -138,6 +140,53 @@ public class LiteflowTemplate {
         LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
         checkResponseSuccess(chainId, response, trace);
         return contextBean;
+    }
+
+    /**
+     * 同步执行规则链（传递多个已预初始化的上下文实例）
+     * 适用于需要跨多个领域上下文协同编排的复杂业务场景
+     *
+     * @param chainId      规则链 ID
+     * @param param        流程入参（可为 null）
+     * @param contextBeans 已初始化的多个上下文实例
+     * @return 传入的原样上下文实例数组
+     */
+    public Object[] executeMultipleWithContext(String chainId, Object param, Object... contextBeans) {
+        if (chainId == null || chainId.isBlank()) {
+            throw new IllegalArgumentException("chainId 不能为空");
+        }
+        if (contextBeans == null || contextBeans.length == 0) {
+            throw new IllegalArgumentException("contextBeans 不能为空");
+        }
+        long start = System.currentTimeMillis();
+        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextBeans);
+        long duration = System.currentTimeMillis() - start;
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        checkResponseSuccess(chainId, response, trace);
+        return contextBeans;
+    }
+
+    /**
+     * 同步执行规则链（传递多个已预初始化的上下文实例）并返回带有结构化链路轨迹的结果包装
+     *
+     * @param chainId      规则链 ID
+     * @param param        流程入参（可为 null）
+     * @param contextBeans 已初始化的多个上下文实例
+     * @return 包含上下文实例数组与时序轨迹的结果包装
+     */
+    public LiteflowTraceResult<Object[]> executeMultipleWithContextWithTrace(String chainId, Object param, Object... contextBeans) {
+        if (chainId == null || chainId.isBlank()) {
+            throw new IllegalArgumentException("chainId 不能为空");
+        }
+        if (contextBeans == null || contextBeans.length == 0) {
+            throw new IllegalArgumentException("contextBeans 不能为空");
+        }
+        long start = System.currentTimeMillis();
+        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextBeans);
+        long duration = System.currentTimeMillis() - start;
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        checkResponseSuccess(chainId, response, trace);
+        return new LiteflowTraceResult<>(contextBeans, trace);
     }
 
     /**
@@ -328,8 +377,27 @@ public class LiteflowTemplate {
      * @return 承载强类型上下文的 CompletableFuture
      */
     public <T> CompletableFuture<T> executeAsync(String chainId, Object param, Class<T> contextClass) {
+        return executeAsync(chainId, param, contextClass, null);
+    }
+
+    /**
+     * 受管异步流式执行规则链，带超时时间上限约束
+     * 自动挂载 {@link AsyncContext} 四维上下文跨线程快照透传与清理，失败或超时时通过 CompletableFuture 抛出受管异常
+     *
+     * @param chainId      规则链 ID
+     * @param param        流程入参
+     * @param contextClass 上下文类型
+     * @param timeout      异步执行硬超时时长约束（为 null 或 <= 0 则不设上限）
+     * @param <T>          上下文泛型
+     * @return 承载强类型上下文的 CompletableFuture
+     */
+    public <T> CompletableFuture<T> executeAsync(String chainId, Object param, Class<T> contextClass, Duration timeout) {
         Supplier<T> task = AsyncContext.wrapSupplier(() -> execute(chainId, param, contextClass));
-        return CompletableFuture.supplyAsync(task, resolveAsyncExecutor());
+        CompletableFuture<T> future = CompletableFuture.supplyAsync(task, resolveAsyncExecutor());
+        if (timeout != null && !timeout.isNegative() && !timeout.isZero()) {
+            return future.orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+        return future;
     }
 
     /**
@@ -341,7 +409,7 @@ public class LiteflowTemplate {
      * @return 承载同一强类型上下文的 CompletableFuture
      */
     public <T> CompletableFuture<T> executeAsyncWithContext(String chainId, T contextBean) {
-        return executeAsyncWithContext(chainId, null, contextBean);
+        return executeAsyncWithContext(chainId, null, contextBean, null);
     }
 
     /**
@@ -355,8 +423,115 @@ public class LiteflowTemplate {
      * @return 承载同一强类型上下文的 CompletableFuture
      */
     public <T> CompletableFuture<T> executeAsyncWithContext(String chainId, Object param, T contextBean) {
+        return executeAsyncWithContext(chainId, param, contextBean, null);
+    }
+
+    /**
+     * 受管异步流式执行规则链（预置上下文实例），带超时时间上限约束
+     * 自动挂载 {@link AsyncContext} 四维上下文跨线程快照透传与清理，失败或超时时通过 CompletableFuture 抛出受管异常
+     *
+     * @param chainId     规则链 ID
+     * @param param       流程入参
+     * @param contextBean 已初始化的上下文实例
+     * @param timeout     异步执行硬超时时长约束（为 null 或 <= 0 则不设上限）
+     * @param <T>         上下文泛型
+     * @return 承载同一强类型上下文的 CompletableFuture
+     */
+    public <T> CompletableFuture<T> executeAsyncWithContext(String chainId, Object param, T contextBean, Duration timeout) {
         Supplier<T> task = AsyncContext.wrapSupplier(() -> executeWithContext(chainId, param, contextBean));
-        return CompletableFuture.supplyAsync(task, resolveAsyncExecutor());
+        CompletableFuture<T> future = CompletableFuture.supplyAsync(task, resolveAsyncExecutor());
+        if (timeout != null && !timeout.isNegative() && !timeout.isZero()) {
+            return future.orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+        return future;
+    }
+
+    /**
+     * 受管异步流式执行规则链并返回带有结构化链路轨迹的结果包装（无入参重载）
+     *
+     * @param chainId      规则链 ID
+     * @param contextClass 上下文类型
+     * @param <T>          上下文泛型
+     * @return 包含强类型上下文与时序轨迹包装的 CompletableFuture
+     */
+    public <T> CompletableFuture<LiteflowTraceResult<T>> executeAsyncWithTrace(String chainId, Class<T> contextClass) {
+        return executeAsyncWithTrace(chainId, null, contextClass, null);
+    }
+
+    /**
+     * 受管异步流式执行规则链并返回带有结构化链路轨迹的结果包装
+     *
+     * @param chainId      规则链 ID
+     * @param param        流程入参
+     * @param contextClass 上下文类型
+     * @param <T>          上下文泛型
+     * @return 包含强类型上下文与时序轨迹包装的 CompletableFuture
+     */
+    public <T> CompletableFuture<LiteflowTraceResult<T>> executeAsyncWithTrace(String chainId, Object param, Class<T> contextClass) {
+        return executeAsyncWithTrace(chainId, param, contextClass, null);
+    }
+
+    /**
+     * 受管异步流式执行规则链并返回带有结构化链路轨迹的结果包装，带超时时间上限约束
+     *
+     * @param chainId      规则链 ID
+     * @param param        流程入参
+     * @param contextClass 上下文类型
+     * @param timeout      异步执行硬超时时长约束（为 null 或 <= 0 则不设上限）
+     * @param <T>          上下文泛型
+     * @return 包含强类型上下文与时序轨迹包装的 CompletableFuture
+     */
+    public <T> CompletableFuture<LiteflowTraceResult<T>> executeAsyncWithTrace(String chainId, Object param, Class<T> contextClass, Duration timeout) {
+        Supplier<LiteflowTraceResult<T>> task = AsyncContext.wrapSupplier(() -> executeWithTrace(chainId, param, contextClass));
+        CompletableFuture<LiteflowTraceResult<T>> future = CompletableFuture.supplyAsync(task, resolveAsyncExecutor());
+        if (timeout != null && !timeout.isNegative() && !timeout.isZero()) {
+            return future.orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+        return future;
+    }
+
+    /**
+     * 受管异步流式执行规则链（预置上下文实例无参重载）并返回带有结构化链路轨迹的结果包装
+     *
+     * @param chainId     规则链 ID
+     * @param contextBean 已初始化的上下文实例
+     * @param <T>         上下文泛型
+     * @return 包含同一上下文实例与时序轨迹包装的 CompletableFuture
+     */
+    public <T> CompletableFuture<LiteflowTraceResult<T>> executeAsyncWithTrace(String chainId, T contextBean) {
+        return executeAsyncWithTrace(chainId, null, contextBean, null);
+    }
+
+    /**
+     * 受管异步流式执行规则链（预置上下文实例）并返回带有结构化链路轨迹的结果包装
+     *
+     * @param chainId     规则链 ID
+     * @param param       流程入参
+     * @param contextBean 已初始化的上下文实例
+     * @param <T>         上下文泛型
+     * @return 包含同一上下文实例与时序轨迹包装的 CompletableFuture
+     */
+    public <T> CompletableFuture<LiteflowTraceResult<T>> executeAsyncWithTrace(String chainId, Object param, T contextBean) {
+        return executeAsyncWithTrace(chainId, param, contextBean, null);
+    }
+
+    /**
+     * 受管异步流式执行规则链（预置上下文实例）并返回带有结构化链路轨迹的结果包装，带超时时间上限约束
+     *
+     * @param chainId     规则链 ID
+     * @param param       流程入参
+     * @param contextBean 已初始化的上下文实例
+     * @param timeout     异步执行硬超时时长约束（为 null 或 <= 0 则不设上限）
+     * @param <T>         上下文泛型
+     * @return 包含同一上下文实例与时序轨迹包装的 CompletableFuture
+     */
+    public <T> CompletableFuture<LiteflowTraceResult<T>> executeAsyncWithTrace(String chainId, Object param, T contextBean, Duration timeout) {
+        Supplier<LiteflowTraceResult<T>> task = AsyncContext.wrapSupplier(() -> executeWithTrace(chainId, param, contextBean));
+        CompletableFuture<LiteflowTraceResult<T>> future = CompletableFuture.supplyAsync(task, resolveAsyncExecutor());
+        if (timeout != null && !timeout.isNegative() && !timeout.isZero()) {
+            return future.orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+        return future;
     }
 
     /**

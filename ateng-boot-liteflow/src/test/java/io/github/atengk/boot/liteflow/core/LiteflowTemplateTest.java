@@ -5,6 +5,7 @@ import com.yomahub.liteflow.core.NodeComponent;
 import com.yomahub.liteflow.flow.FlowBus;
 import com.yomahub.liteflow.flow.LiteflowResponse;
 import io.github.atengk.boot.liteflow.exception.LiteflowExecutionException;
+import io.github.atengk.boot.liteflow.trace.LiteflowTraceResult;
 import lombok.Data;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -16,8 +17,11 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -92,6 +96,97 @@ class LiteflowTemplateTest {
         LiteflowResponse response2 = liteflowTemplate.executeMultiple("testChainSuccess", "param",
                 SampleTestContext.class, SecondTestContext.class);
         assertThat(response2.isSuccess()).isTrue();
+    }
+
+    @Test
+    @DisplayName("验证多预置上下文实例执行并成功累积业务数据")
+    void testExecuteMultipleWithContext() {
+        SampleTestContext first = new SampleTestContext();
+        first.setData("init_first");
+        SecondTestContext second = new SecondTestContext();
+        second.setTag("init_second");
+
+        Object[] result = liteflowTemplate.executeMultipleWithContext("testChainSuccess", "param", first, second);
+
+        assertThat(result).isNotNull();
+        assertThat(result).containsExactly(first, second);
+        assertThat(first.getData()).isEqualTo("stepA_done");
+        assertThat(first.getCount()).isEqualTo(1);
+        assertThat(second.getTag()).isEqualTo("stepA_second_done");
+    }
+
+    @Test
+    @DisplayName("验证多预置上下文实例执行并返回带有链路轨迹的结果包装")
+    void testExecuteMultipleWithContextWithTrace() {
+        SampleTestContext first = new SampleTestContext();
+        SecondTestContext second = new SecondTestContext();
+
+        LiteflowTraceResult<Object[]> result = liteflowTemplate.executeMultipleWithContextWithTrace(
+                "testChainSuccess", "param", first, second);
+
+        assertThat(result).isNotNull();
+        assertThat(result.getContext()).containsExactly(first, second);
+        assertThat(result.getTrace()).isNotNull();
+        assertThat(result.getTrace().isSuccess()).isTrue();
+        assertThat(result.getTrace().getSteps()).hasSize(1);
+        assertThat(result.getTrace().getSteps().get(0).getNodeId()).isEqualTo("stepA");
+    }
+
+    @Test
+    @DisplayName("验证异步流式执行并提取时序轨迹包装")
+    void testExecuteAsyncWithTrace() throws Exception {
+        CompletableFuture<LiteflowTraceResult<SampleTestContext>> future = liteflowTemplate.executeAsyncWithTrace(
+                "testChainSuccess", "param", SampleTestContext.class);
+
+        LiteflowTraceResult<SampleTestContext> result = future.get(5, TimeUnit.SECONDS);
+
+        assertThat(result).isNotNull();
+        assertThat(result.getContext().getData()).isEqualTo("stepA_done");
+        assertThat(result.getTrace().isSuccess()).isTrue();
+        assertThat(result.getTrace().getSteps()).isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("验证异步流式执行（预置上下文）并提取时序轨迹包装")
+    void testExecuteAsyncWithTraceWithContext() throws Exception {
+        SampleTestContext context = new SampleTestContext();
+        context.setData("init");
+
+        CompletableFuture<LiteflowTraceResult<SampleTestContext>> future = liteflowTemplate.executeAsyncWithTrace(
+                "testChainSuccess", "param", context);
+
+        LiteflowTraceResult<SampleTestContext> result = future.get(5, TimeUnit.SECONDS);
+
+        assertThat(result).isNotNull();
+        assertThat(result.getContext()).isSameAs(context);
+        assertThat(context.getData()).isEqualTo("stepA_done");
+        assertThat(result.getTrace().isSuccess()).isTrue();
+    }
+
+    @Test
+    @DisplayName("验证带超时上限的异步执行在超时触发时中断并抛出 TimeoutException")
+    void testExecuteAsyncWithTimeout() {
+        liteflowTemplate.reloadChain("slowChain", "THEN(stepSlow);");
+
+        CompletableFuture<SampleTestContext> future = liteflowTemplate.executeAsync(
+                "slowChain", "param", SampleTestContext.class, Duration.ofMillis(50));
+
+        assertThatThrownBy(() -> future.get(2, TimeUnit.SECONDS))
+                .isInstanceOf(ExecutionException.class)
+                .hasCauseInstanceOf(TimeoutException.class);
+    }
+
+    @Test
+    @DisplayName("验证带超时上限的异步时序轨迹执行在超时触发时抛出 TimeoutException")
+    void testExecuteAsyncWithTraceWithTimeout() {
+        liteflowTemplate.reloadChain("slowTraceChain", "THEN(stepSlow);");
+
+        CompletableFuture<LiteflowTraceResult<SampleTestContext>> future = liteflowTemplate.executeAsyncWithTrace(
+                "slowTraceChain", "param", SampleTestContext.class, Duration.ofMillis(50));
+
+        assertThatThrownBy(() -> future.get(2, TimeUnit.SECONDS))
+                .isInstanceOf(ExecutionException.class)
+                .hasCauseInstanceOf(TimeoutException.class);
     }
 
     @Test
@@ -286,7 +381,7 @@ class LiteflowTemplateTest {
 
     @Configuration(proxyBeanMethods = false)
     @EnableAutoConfiguration
-    @Import({StepA.class, StepFail.class})
+    @Import({StepA.class, StepFail.class, StepSlow.class})
     static class TestConfig {
     }
 
@@ -305,10 +400,20 @@ class LiteflowTemplateTest {
     public static class StepA extends NodeComponent {
         @Override
         public void process() {
-            SampleTestContext context = this.getContextBean(SampleTestContext.class);
-            if (context != null) {
-                context.setData("stepA_done");
-                context.setCount(context.getCount() + 1);
+            try {
+                SampleTestContext context = this.getContextBean(SampleTestContext.class);
+                if (context != null) {
+                    context.setData("stepA_done");
+                    context.setCount(context.getCount() + 1);
+                }
+            } catch (Exception ignored) {
+            }
+            try {
+                SecondTestContext second = this.getContextBean(SecondTestContext.class);
+                if (second != null) {
+                    second.setTag("stepA_second_done");
+                }
+            } catch (Exception ignored) {
             }
         }
     }
@@ -318,6 +423,18 @@ class LiteflowTemplateTest {
         @Override
         public void process() {
             throw new IllegalStateException("模拟组件节点执行失败");
+        }
+    }
+
+    @Component("stepSlow")
+    public static class StepSlow extends NodeComponent {
+        @Override
+        public void process() {
+            try {
+                Thread.sleep(400);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 }

@@ -75,6 +75,9 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
                     }
                 }
             } catch (Exception e) {
+                if (properties.getDynamicRule().isFailFast()) {
+                    throw new IllegalStateException("从规则源 [" + provider.getName() + "] 加载规则列表失败", e);
+                }
                 log.error("ateng-boot-liteflow: 从规则源 [{}] 加载规则列表失败: {}", provider.getName(), e.getMessage(), e);
             }
         }
@@ -98,6 +101,9 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
                     return def;
                 }
             } catch (Exception e) {
+                if (properties.getDynamicRule().isFailFast()) {
+                    throw new IllegalStateException("从规则源 [" + provider.getName() + "] 查询规则 [" + chainId + "] 失败", e);
+                }
                 log.warn("ateng-boot-liteflow: 从规则源 [{}] 查询规则 [{}] 异常: {}", provider.getName(), chainId, e.getMessage());
             }
         }
@@ -116,20 +122,27 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
 
         for (RuleSourceDefinition def : definitions) {
             String chainId = def.getChainId();
-            if (def.isEnabled() && def.getEl() != null && !def.getEl().isBlank()) {
-                if (def.getRouteEl() != null && !def.getRouteEl().isBlank()) {
-                    String ns = (def.getNamespace() != null && !def.getNamespace().isBlank())
-                            ? def.getNamespace() : def.getRouteGroup();
-                    this.liteflowTemplate.reloadRouteChain(chainId, ns, def.getRouteEl(), def.getEl());
-                } else {
-                    this.liteflowTemplate.reloadChain(chainId, def.getEl());
+            try {
+                if (def.isEnabled() && def.getEl() != null && !def.getEl().isBlank()) {
+                    if (def.getRouteEl() != null && !def.getRouteEl().isBlank()) {
+                        String ns = (def.getNamespace() != null && !def.getNamespace().isBlank())
+                                ? def.getNamespace() : def.getRouteGroup();
+                        this.liteflowTemplate.reloadRouteChain(chainId, ns, def.getRouteEl(), def.getEl());
+                    } else {
+                        this.liteflowTemplate.reloadChain(chainId, def.getEl());
+                    }
+                    activeCount++;
+                } else if (!def.isEnabled()) {
+                    if (this.liteflowTemplate.containChain(chainId)) {
+                        this.liteflowTemplate.removeChain(chainId);
+                        disabledCount++;
+                    }
                 }
-                activeCount++;
-            } else if (!def.isEnabled()) {
-                if (this.liteflowTemplate.containChain(chainId)) {
-                    this.liteflowTemplate.removeChain(chainId);
-                    disabledCount++;
+            } catch (Exception e) {
+                if (properties.getDynamicRule().isFailFast()) {
+                    throw e instanceof RuntimeException ? (RuntimeException) e : new IllegalStateException("刷新规则链 [" + chainId + "] 失败", e);
                 }
+                log.error("ateng-boot-liteflow: 刷新规则链 [{}] 失败: {}", chainId, e.getMessage(), e);
             }
         }
 
@@ -153,18 +166,26 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
             log.warn("ateng-boot-liteflow: 未在已注册的规则源中检索到流程链 [{}]，无法热更新", chainId);
             return false;
         }
-        if (def.isEnabled() && def.getEl() != null && !def.getEl().isBlank()) {
-            if (def.getRouteEl() != null && !def.getRouteEl().isBlank()) {
-                String ns = (def.getNamespace() != null && !def.getNamespace().isBlank())
-                        ? def.getNamespace() : def.getRouteGroup();
-                this.liteflowTemplate.reloadRouteChain(chainId, ns, def.getRouteEl(), def.getEl());
+        try {
+            if (def.isEnabled() && def.getEl() != null && !def.getEl().isBlank()) {
+                if (def.getRouteEl() != null && !def.getRouteEl().isBlank()) {
+                    String ns = (def.getNamespace() != null && !def.getNamespace().isBlank())
+                            ? def.getNamespace() : def.getRouteGroup();
+                    this.liteflowTemplate.reloadRouteChain(chainId, ns, def.getRouteEl(), def.getEl());
+                } else {
+                    this.liteflowTemplate.reloadChain(chainId, def.getEl());
+                }
+                return true;
             } else {
-                this.liteflowTemplate.reloadChain(chainId, def.getEl());
+                this.liteflowTemplate.removeChain(chainId);
+                return true;
             }
-            return true;
-        } else {
-            this.liteflowTemplate.removeChain(chainId);
-            return true;
+        } catch (Exception e) {
+            if (properties.getDynamicRule().isFailFast()) {
+                throw e instanceof RuntimeException ? (RuntimeException) e : new IllegalStateException("热更新流程链 [" + chainId + "] 失败", e);
+            }
+            log.error("ateng-boot-liteflow: 热更新流程链 [{}] 失败: {}", chainId, e.getMessage(), e);
+            return false;
         }
     }
 

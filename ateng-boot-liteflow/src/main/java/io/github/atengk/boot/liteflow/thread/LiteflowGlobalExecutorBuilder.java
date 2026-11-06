@@ -8,6 +8,7 @@ import io.github.atengk.boot.core.util.SpringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -25,7 +26,7 @@ import java.util.concurrent.TimeUnit;
  * @author Ateng
  * @since 2026-11-03
  */
-public class LiteflowGlobalExecutorBuilder implements ExecutorBuilder, ApplicationContextAware {
+public class LiteflowGlobalExecutorBuilder implements ExecutorBuilder, ApplicationContextAware, DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(LiteflowGlobalExecutorBuilder.class);
     private static volatile ApplicationContext staticApplicationContext;
@@ -35,6 +36,12 @@ public class LiteflowGlobalExecutorBuilder implements ExecutorBuilder, Applicati
     public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
         this.applicationContext = applicationContext;
         staticApplicationContext = applicationContext;
+    }
+
+    @Override
+    public void destroy() {
+        staticApplicationContext = null;
+        this.applicationContext = null;
     }
 
     @Override
@@ -125,6 +132,7 @@ public class LiteflowGlobalExecutorBuilder implements ExecutorBuilder, Applicati
         }
 
         // 3. 统一使用四维上下文透传代理包装
-        return new ContextPropagatingExecutorService(targetExecutor, sharedSpringPool);
+        boolean propagateContext = properties == null || properties.getThreadPool().isPropagateContext();
+        return new ContextPropagatingExecutorService(targetExecutor, sharedSpringPool, propagateContext);
     }
 }

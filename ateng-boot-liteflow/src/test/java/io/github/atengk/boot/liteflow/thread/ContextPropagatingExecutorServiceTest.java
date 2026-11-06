@@ -107,4 +107,32 @@ class ContextPropagatingExecutorServiceTest {
         assertThat(runnables).isEmpty();
         assertThat(executorService.isShutdown()).isFalse();
     }
+
+    @Test
+    @DisplayName("验证 propagateContext 为 false 时不执行四维上下文穿透透传")
+    void testPropagateContextDisabled() throws Exception {
+        ContextPropagatingExecutorService nonPropagating = new ContextPropagatingExecutorService(rawPool, true, false);
+        assertThat(nonPropagating.isPropagateContext()).isFalse();
+
+        MDC.put("traceId", "trace-disabled-123");
+        UserContextHolder.set("user-disabled");
+        TenantContextHolder.setTenantId("tenant-disabled");
+
+        AtomicReference<String> capturedTrace = new AtomicReference<>("initial");
+        AtomicReference<String> capturedUser = new AtomicReference<>("initial");
+        CountDownLatch latch = new CountDownLatch(1);
+
+        nonPropagating.execute(() -> {
+            try {
+                capturedTrace.set(MDC.get("traceId"));
+                capturedUser.set(UserContextHolder.get());
+            } finally {
+                latch.countDown();
+            }
+        });
+
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(capturedTrace.get()).isNull();
+        assertThat(capturedUser.get()).isNull();
+    }
 }

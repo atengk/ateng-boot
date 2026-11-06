@@ -334,6 +334,62 @@ class LiteflowObservabilityTest {
         assertThat(trace.getSteps().get(1).getNodeId()).isEqualTo("obsNodeB");
     }
 
+    @Test
+    @DisplayName("验证动态即时 EL 表达式度量标签归一化为 DYNAMIC_EL 避免内存基数爆炸")
+    void testDynamicElMetricTagNormalization() {
+        // 1. 验证静态工具归一化规则
+        assertThat(LiteflowMetricsBinder.normalizeChainId("DYNAMIC_EL[THEN(obsNodeA, obsNodeB)]"))
+                .isEqualTo(LiteflowMetricsBinder.TAG_DYNAMIC_EL);
+        assertThat(LiteflowMetricsBinder.normalizeChainId("325abadb7b03472e902a9793fee6e971"))
+                .isEqualTo(LiteflowMetricsBinder.TAG_DYNAMIC_EL);
+        assertThat(LiteflowMetricsBinder.normalizeChainId("dynamic_temp_chain_123"))
+                .isEqualTo(LiteflowMetricsBinder.TAG_DYNAMIC_EL);
+        assertThat(LiteflowMetricsBinder.normalizeChainId("THEN(obsNodeA, obsNodeB);"))
+                .isEqualTo(LiteflowMetricsBinder.TAG_DYNAMIC_EL);
+        assertThat(LiteflowMetricsBinder.normalizeChainId("normalTraceChain"))
+                .isEqualTo("normalTraceChain");
+
+        // 2. 编程式记录动态 EL 度量并断言 Micrometer 中标签已被安全归一化为 DYNAMIC_EL
+        liteflowMetricsBinder.recordChainExecution("DYNAMIC_EL[THEN(obsNodeA, obsNodeB)]", "SUCCESS", 1000000L);
+
+        Counter dynamicCounter = meterRegistry.find(LiteflowMetricsBinder.METRIC_CHAIN_EXECUTIONS)
+                .tag(LiteflowMetricsBinder.TAG_CHAIN_ID, LiteflowMetricsBinder.TAG_DYNAMIC_EL)
+                .tag(LiteflowMetricsBinder.TAG_STATUS, LiteflowMetricsBinder.STATUS_SUCCESS)
+                .counter();
+        assertThat(dynamicCounter).isNotNull();
+        assertThat(dynamicCounter.count()).isGreaterThanOrEqualTo(1.0);
+
+        // 3. 执行动态 EL 表达式，验证底层生成的 32 位 UUID 规则链在节点级度量中已被安全归一化为 DYNAMIC_EL
+        liteflowTemplate.executeEl("THEN(obsNodeA, obsNodeB);", ObsContext.class);
+
+        Timer nodeTimer = meterRegistry.find(LiteflowMetricsBinder.METRIC_NODE_DURATION)
+                .tag(LiteflowMetricsBinder.TAG_CHAIN_ID, LiteflowMetricsBinder.TAG_DYNAMIC_EL)
+                .tag(LiteflowMetricsBinder.TAG_NODE_ID, "obsNodeA")
+                .timer();
+        assertThat(nodeTimer).isNotNull();
+        assertThat(nodeTimer.count()).isGreaterThanOrEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("验证 LiteflowMetricsBinder 实现 DisposableBean 能够安全从 LifeCycleHolder 注销")
+    void testMetricsBinderDisposableBeanUnbind() {
+        assertThat(com.yomahub.liteflow.lifecycle.LifeCycleHolder.getPostProcessChainExecuteLifeCycleList())
+                .contains(liteflowMetricsBinder.getChainLifeCycle());
+        assertThat(com.yomahub.liteflow.lifecycle.LifeCycleHolder.getPostProcessNodeExecuteLifeCycleList())
+                .contains(liteflowMetricsBinder.getNodeLifeCycle());
+
+        liteflowMetricsBinder.destroy();
+
+        assertThat(com.yomahub.liteflow.lifecycle.LifeCycleHolder.getPostProcessChainExecuteLifeCycleList())
+                .doesNotContain(liteflowMetricsBinder.getChainLifeCycle());
+        assertThat(com.yomahub.liteflow.lifecycle.LifeCycleHolder.getPostProcessNodeExecuteLifeCycleList())
+                .doesNotContain(liteflowMetricsBinder.getNodeLifeCycle());
+
+        // 重新注册回 LifeCycleHolder，避免影响其他单测
+        com.yomahub.liteflow.lifecycle.LifeCycleHolder.addLifeCycle(liteflowMetricsBinder.getChainLifeCycle());
+        com.yomahub.liteflow.lifecycle.LifeCycleHolder.addLifeCycle(liteflowMetricsBinder.getNodeLifeCycle());
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableAutoConfiguration
     @Import({

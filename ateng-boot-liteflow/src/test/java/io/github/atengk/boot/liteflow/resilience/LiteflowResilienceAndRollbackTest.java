@@ -3,6 +3,8 @@ package io.github.atengk.boot.liteflow.resilience;
 import io.github.atengk.boot.liteflow.component.BaseNodeComponent;
 import io.github.atengk.boot.liteflow.core.LiteflowTemplate;
 import io.github.atengk.boot.liteflow.exception.LiteflowExecutionException;
+import io.github.atengk.boot.liteflow.thread.FlowTimeoutInterruptionLifeCycle;
+import io.github.atengk.boot.liteflow.thread.LiteflowGlobalExecutorBuilder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -315,5 +317,34 @@ class LiteflowResilienceAndRollbackTest {
         assertThat(ResilienceTestContext.SLOW_NODE_INTERRUPTED.get())
                 .as("超时熔断后应协同向 slowHangNode 子线程发出中断信号")
                 .isTrue();
+    }
+
+    @Test
+    @DisplayName("验证 FlowTimeoutInterruptionLifeCycle 能够安全从 LifeCycleHolder 注销并且支持 interruptOnTimeout=false")
+    void testTimeoutInterruptionLifecycleAndDisposable() {
+        FlowTimeoutInterruptionLifeCycle lifeCycle = new FlowTimeoutInterruptionLifeCycle(false);
+        assertThat(lifeCycle.isInterruptOnTimeout()).isFalse();
+
+        com.yomahub.liteflow.lifecycle.LifeCycleHolder.addLifeCycle(lifeCycle);
+        assertThat(com.yomahub.liteflow.lifecycle.LifeCycleHolder.getPostProcessFlowExecuteLifeCycleList())
+                .contains(lifeCycle);
+
+        lifeCycle.destroy();
+
+        assertThat(com.yomahub.liteflow.lifecycle.LifeCycleHolder.getPostProcessFlowExecuteLifeCycleList())
+                .doesNotContain(lifeCycle);
+    }
+
+    @Test
+    @DisplayName("验证 LiteflowGlobalExecutorBuilder 实现 DisposableBean 能够安全清理静态 ApplicationContext")
+    void testGlobalExecutorBuilderDisposableBean() {
+        LiteflowGlobalExecutorBuilder builder = new LiteflowGlobalExecutorBuilder();
+        org.springframework.context.support.GenericApplicationContext testContext =
+                new org.springframework.context.support.GenericApplicationContext();
+        testContext.refresh();
+
+        builder.setApplicationContext(testContext);
+        builder.destroy();
+        testContext.close();
     }
 }

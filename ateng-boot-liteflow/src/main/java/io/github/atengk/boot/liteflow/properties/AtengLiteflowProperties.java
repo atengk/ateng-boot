@@ -72,6 +72,11 @@ public class AtengLiteflowProperties {
         private boolean propagateContext = true;
 
         /**
+         * 是否在流程执行超时或异常中断时协同向活动子线程发送中断信号（默认 true）
+         */
+        private boolean interruptOnTimeout = true;
+
+        /**
          * 是否使用全局受管线程池（true 则接管 Core 模块 ThreadPoolTaskExecutor；false 则使用隔离独立线程池）
          */
         private boolean useManagedPool = true;
@@ -127,6 +132,11 @@ public class AtengLiteflowProperties {
          * 动态规则历史版本快照最大保留数量（防御内存无界膨胀，默认 5）
          */
         private int maxHistorySnapshots = 5;
+
+        /**
+         * 启动或刷新规则源遇到规则加载或解析失败时是否快速失败（默认 false；设为 true 则抛出异常阻断启动/刷新，false 则记录告警日志并跳过错误规则）
+         */
+        private boolean failFast = false;
 
         /**
          * 数据库动态规则加载器配置

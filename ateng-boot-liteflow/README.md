@@ -12,6 +12,8 @@
 | **执行门面** | 链路时序轨迹抽取 | `LiteflowTemplate` | `trace.enabled = true`<br>`trace.audit-mdc = true` | `<T> LiteflowTraceResult<T> executeWithTrace(...)`<br>`LiteflowExecutionTrace extractTrace(...)` | `LiteflowObservabilityTest`<br>`LiteflowRiskControlController` |
 | **执行门面** | 在线即时 EL 执行 | `LiteflowTemplate` | `enabled = true` | `<T> LiteflowTraceResult<T> executeElWithTrace(String, ...)` | `LiteflowDynamicRuleController` |
 | **执行门面** | 多上下文解包编排 | `LiteflowTemplate` | `enabled = true` | `LiteflowResponse execute(String, Object, Class<?>, Class<?>, ...)` | `LiteflowTemplateTest` |
+| **执行门面** | 预置多上下文对称编排 | `LiteflowTemplate` | `enabled = true` | `Object[] executeMultipleWithContext(String, Object, Object...)`<br>`LiteflowTraceResult<Object[]> executeMultipleWithContextWithTrace(...)` | `LiteflowTemplateTest` |
+| **执行门面** | 受管异步流式编排与轨迹 | `LiteflowTemplate` | `enabled = true` | `<T> CompletableFuture<LiteflowTraceResult<T>> executeAsyncWithTrace(...)`<br>支持 `Duration timeout` 硬超时时间上限约束 | `LiteflowTemplateTest` |
 | **执行门面** | 规则链动态热重载 | `LiteflowTemplate` | `enabled = true` | `void reloadChain(String, String)`<br>`boolean containChain(String)` | `LiteflowDynamicRuleController` |
 | **决策路由** | 决策路由表（Route Chain）全链路编排 | `LiteflowTemplate` | `enabled = true` | `<T> T executeRoute(String, T)`<br>`<T> T executeRoute(String, Object, T)` | `LiteflowDynamicRuleSourceTest`<br>`LiteflowPromotionRoutingController` |
 | **决策路由** | 路由聚合与时序轨迹包装 | `LiteflowTemplate` | `trace.enabled = true` | `<T> LiteflowRouteResult<T> executeRouteWithTrace(...)` | `LiteflowDynamicRuleSourceTest`<br>`LiteflowPromotionRoutingController` |
@@ -25,11 +27,11 @@
 | **泛型组件** | 条件循环控制基类 | `BaseWhileComponent<T>` | - | `boolean processWhile(T)`<br>强类型循环退出条件判定 | `LiteflowComponentHierarchyTest` |
 | **泛型组件** | 循环中断跳出基类 | `BaseBreakComponent<T>` | - | `boolean processBreak(T)`<br>强类型循环中途熔断跳出 | `LiteflowComponentHierarchyTest` |
 | **规则源 SPI** | 外部规则源扩展点 | `LiteflowRuleSourceProvider` | `rule-source.type = jdbc/custom` | `List<RuleSourceDefinition> loadRuleSources()` | `LiteflowRuleSourceTest` |
-| **规则源 SPI** | 规则源统一调度中心 | `LiteflowRuleSourceManager` | `rule-source.fail-fast = true` | `void refreshAll()`<br>`void refreshChain(String, String)` | `LiteflowRuleSourceTest` |
+| **规则源 SPI** | 规则源统一调度中心 | `LiteflowRuleSourceManager` | `dynamic-rule.fail-fast = false` | `void refreshAll()`<br>`void refreshChain(String, String)` | `LiteflowRuleSourceTest` |
 | **规则热更** | Spring 领域事件总线 | `LiteflowRuleRefreshEvent`<br>`LiteflowRuleRefreshListener` | `enabled = true` | 发布全量或单链规则变更事件，触发即时平滑热生效 | `LiteflowRuleRefreshEventTest`<br>`LiteflowDynamicRuleController` |
-| **异步流式** | 四维上下文穿透线程池 | `LiteflowGlobalExecutorBuilder`<br>`ContextPropagatingExecutorService` | `thread-pool.when-max-workers = 32`<br>`thread-pool.when-queue-limit = 1024` | 自动透传 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 快照并在任务结束后彻底清理现场 | `LiteflowAsyncContextTest` |
-| **异步治理** | 线程跟踪与超时强中断 | `FlowThreadTracker`<br>`FlowTimeoutInterruptionLifeCycle` | `thread-pool.interruption-on-timeout = true` | WHEN 并行超时毫秒级精准中断工作线程，防止野线程悬挂 | `LiteflowAsyncContextTest` |
-| **可观测性** | 链路指标全景导出 | `LiteflowMetricsBinder`<br>`LiteflowMetricsAutoConfiguration` | `metrics.enabled = true` | 导出 Prometheus 标准指标：`liteflow.chain.executions`、`liteflow.chain.duration`、`liteflow.node.duration` | `LiteflowObservabilityTest` |
+| **异步流式** | 四维上下文穿透线程池 | `LiteflowGlobalExecutorBuilder`<br>`ContextPropagatingExecutorService` | `thread-pool.propagate-context = true` | 自动透传 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 快照并在任务结束后彻底清理现场 | `LiteflowAsyncContextTest` |
+| **异步治理** | 线程跟踪与超时强中断 | `FlowThreadTracker`<br>`FlowTimeoutInterruptionLifeCycle` | `thread-pool.interrupt-on-timeout = true` | WHEN 并行超时毫秒级精准中断工作线程，防止野线程悬挂 | `LiteflowAsyncContextTest` |
+| **可观测性** | 链路指标全景导出 | `LiteflowMetricsBinder`<br>`LiteflowMetricsAutoConfiguration` | `metrics.enabled = true` | 导出 Prometheus 标准指标：`liteflow.chain.executions`、`liteflow.chain.duration`、`liteflow.node.duration`（动态 EL 自动归一化为 DYNAMIC_EL 防内存泄漏） | `LiteflowObservabilityTest` |
 
 ---
 

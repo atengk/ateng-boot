@@ -1,9 +1,11 @@
 package io.github.atengk.boot.liteflow.thread;
 
+import com.yomahub.liteflow.lifecycle.LifeCycleHolder;
 import com.yomahub.liteflow.lifecycle.PostProcessFlowExecuteLifeCycle;
 import com.yomahub.liteflow.slot.Slot;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
 
 /**
  * LiteFlow 流程执行超时协同中断生命周期拦截器
@@ -13,9 +15,23 @@ import org.slf4j.LoggerFactory;
  * @author Ateng
  * @since 2026-11-03
  */
-public class FlowTimeoutInterruptionLifeCycle implements PostProcessFlowExecuteLifeCycle {
+public class FlowTimeoutInterruptionLifeCycle implements PostProcessFlowExecuteLifeCycle, DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(FlowTimeoutInterruptionLifeCycle.class);
+
+    private final boolean interruptOnTimeout;
+
+    public FlowTimeoutInterruptionLifeCycle() {
+        this(true);
+    }
+
+    public FlowTimeoutInterruptionLifeCycle(boolean interruptOnTimeout) {
+        this.interruptOnTimeout = interruptOnTimeout;
+    }
+
+    public boolean isInterruptOnTimeout() {
+        return interruptOnTimeout;
+    }
 
     @Override
     public void postProcessBeforeFlowExecute(String chainId, Slot slot) {
@@ -28,7 +44,7 @@ public class FlowTimeoutInterruptionLifeCycle implements PostProcessFlowExecuteL
     public void postProcessAfterFlowExecute(String chainId, Slot slot) {
         String requestId = slot != null ? slot.getRequestId() : null;
         try {
-            if (slot != null && slot.getException() != null && requestId != null) {
+            if (interruptOnTimeout && slot != null && slot.getException() != null && requestId != null) {
                 // 流程异常失败（如 WhenTimeoutException 等），协同向活动子线程发送中断信号
                 int interrupted = FlowThreadTracker.interruptRunningThreads(requestId);
                 if (interrupted > 0) {
@@ -44,5 +60,14 @@ public class FlowTimeoutInterruptionLifeCycle implements PostProcessFlowExecuteL
             }
             FlowThreadTracker.unbindCurrentSlot();
         }
+    }
+
+    @Override
+    public void destroy() {
+        try {
+            LifeCycleHolder.getPostProcessFlowExecuteLifeCycleList().remove(this);
+        } catch (Throwable ignored) {
+        }
+        FlowThreadTracker.clearAll();
     }
 }

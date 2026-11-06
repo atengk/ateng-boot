@@ -30,16 +30,29 @@ public class ContextPropagatingExecutorService implements ExecutorService {
 
     private final ExecutorService delegate;
     private final boolean shutdownProtected;
+    private final boolean propagateContext;
+
+    /**
+     * 构造上下文穿透执行器代理（默认开启上下文透传）
+     *
+     * @param delegate          底层真实线程池执行器
+     * @param shutdownProtected 是否对受管共享线程池实施关闭保护
+     */
+    public ContextPropagatingExecutorService(ExecutorService delegate, boolean shutdownProtected) {
+        this(delegate, shutdownProtected, true);
+    }
 
     /**
      * 构造上下文穿透执行器代理
      *
      * @param delegate          底层真实线程池执行器
      * @param shutdownProtected 是否对受管共享线程池实施关闭保护
+     * @param propagateContext  是否将四维上下文透传至子线程
      */
-    public ContextPropagatingExecutorService(ExecutorService delegate, boolean shutdownProtected) {
+    public ContextPropagatingExecutorService(ExecutorService delegate, boolean shutdownProtected, boolean propagateContext) {
         this.delegate = Objects.requireNonNull(delegate, "delegate ExecutorService must not be null");
         this.shutdownProtected = shutdownProtected;
+        this.propagateContext = propagateContext;
     }
 
     /**
@@ -58,6 +71,15 @@ public class ContextPropagatingExecutorService implements ExecutorService {
      */
     public boolean isShutdownProtected() {
         return shutdownProtected;
+    }
+
+    /**
+     * 是否启用四维上下文透传
+     *
+     * @return 若启用返回 true
+     */
+    public boolean isPropagateContext() {
+        return propagateContext;
     }
 
     @Override
@@ -128,7 +150,7 @@ public class ContextPropagatingExecutorService implements ExecutorService {
         }
         String requestId = FlowThreadTracker.getCurrentRequestId();
         if (requestId == null) {
-            return AsyncContext.wrap(command);
+            return propagateContext ? AsyncContext.wrap(command) : command;
         }
         Runnable tracked = () -> {
             Thread current = Thread.currentThread();
@@ -139,7 +161,7 @@ public class ContextPropagatingExecutorService implements ExecutorService {
                 FlowThreadTracker.unregister(requestId, current);
             }
         };
-        return AsyncContext.wrap(tracked);
+        return propagateContext ? AsyncContext.wrap(tracked) : tracked;
     }
 
     private <T> Callable<T> wrapTask(Callable<T> task) {
@@ -148,7 +170,7 @@ public class ContextPropagatingExecutorService implements ExecutorService {
         }
         String requestId = FlowThreadTracker.getCurrentRequestId();
         if (requestId == null) {
-            return AsyncContext.wrap(task);
+            return propagateContext ? AsyncContext.wrap(task) : task;
         }
         Callable<T> tracked = () -> {
             Thread current = Thread.currentThread();
@@ -159,7 +181,7 @@ public class ContextPropagatingExecutorService implements ExecutorService {
                 FlowThreadTracker.unregister(requestId, current);
             }
         };
-        return AsyncContext.wrap(tracked);
+        return propagateContext ? AsyncContext.wrap(tracked) : tracked;
     }
 
     @Override

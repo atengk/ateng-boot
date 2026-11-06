@@ -1,6 +1,7 @@
 package io.github.atengk.boot.liteflow.metrics;
 
 import com.yomahub.liteflow.core.NodeComponent;
+import com.yomahub.liteflow.lifecycle.LifeCycleHolder;
 import com.yomahub.liteflow.lifecycle.PostProcessChainExecuteLifeCycle;
 import com.yomahub.liteflow.lifecycle.PostProcessNodeExecuteLifeCycle;
 import com.yomahub.liteflow.slot.Slot;
@@ -10,6 +11,7 @@ import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.binder.MeterBinder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
 
 import java.util.concurrent.TimeUnit;
 
@@ -28,7 +30,7 @@ import java.util.concurrent.TimeUnit;
  * @author Ateng
  * @since 2026-11-03
  */
-public class LiteflowMetricsBinder implements MeterBinder {
+public class LiteflowMetricsBinder implements MeterBinder, DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(LiteflowMetricsBinder.class);
 
@@ -42,6 +44,10 @@ public class LiteflowMetricsBinder implements MeterBinder {
 
     public static final String STATUS_SUCCESS = "SUCCESS";
     public static final String STATUS_FAIL = "FAIL";
+
+    public static final String TAG_DYNAMIC_EL = "DYNAMIC_EL";
+
+    private static final java.util.regex.Pattern HEX_UUID_PATTERN = java.util.regex.Pattern.compile("^[0-9a-fA-F]{32}$");
 
     private static final String ATTACHMENT_START_NANO_PREFIX = "ATENG_LITEFLOW_START_NANO_";
 
@@ -70,6 +76,38 @@ public class LiteflowMetricsBinder implements MeterBinder {
         log.info("ateng-boot-liteflow: 成功绑定 Micrometer 监控指标导出器 [registry={}]", registry.getClass().getSimpleName());
     }
 
+    @Override
+    public void destroy() {
+        try {
+            LifeCycleHolder.getPostProcessChainExecuteLifeCycleList().remove(this.chainLifeCycle);
+        } catch (Throwable ignored) {
+        }
+        try {
+            LifeCycleHolder.getPostProcessNodeExecuteLifeCycleList().remove(this.nodeLifeCycle);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 规范化规则链标识标签，将动态即时 EL 表达式统一映射为 "DYNAMIC_EL"，防止高基数维度标签引发内存泄漏
+     *
+     * @param chainId 原始规则链 ID
+     * @return 规范化后的维度标签字符串
+     */
+    public static String normalizeChainId(String chainId) {
+        if (chainId == null || chainId.isBlank()) {
+            return "UNKNOWN";
+        }
+        if (chainId.startsWith("DYNAMIC_EL")
+                || chainId.startsWith("dynamic_")
+                || chainId.contains("(")
+                || chainId.contains(";")
+                || (chainId.length() == 32 && HEX_UUID_PATTERN.matcher(chainId).matches())) {
+            return TAG_DYNAMIC_EL;
+        }
+        return chainId;
+    }
+
     public MeterRegistry getMeterRegistry() {
         return this.meterRegistry;
     }
@@ -93,7 +131,7 @@ public class LiteflowMetricsBinder implements MeterBinder {
         if (this.meterRegistry == null) {
             return;
         }
-        String safeChainId = (chainId != null && !chainId.isBlank()) ? chainId : "UNKNOWN";
+        String safeChainId = normalizeChainId(chainId);
         String safeStatus = (status != null && !status.isBlank()) ? status : STATUS_SUCCESS;
 
         try {
@@ -130,7 +168,7 @@ public class LiteflowMetricsBinder implements MeterBinder {
         if (this.meterRegistry == null) {
             return;
         }
-        String safeChainId = (chainId != null && !chainId.isBlank()) ? chainId : "UNKNOWN";
+        String safeChainId = normalizeChainId(chainId);
         String safeNodeId = (nodeId != null && !nodeId.isBlank()) ? nodeId : "UNKNOWN";
         String safeStatus = (status != null && !status.isBlank()) ? status : STATUS_SUCCESS;
 

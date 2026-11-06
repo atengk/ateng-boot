@@ -411,6 +411,51 @@ class LiteflowDynamicRuleSourceTest {
         assertThat(singleRule.getRouteEl()).isEqualTo("routeCondTrue");
     }
 
+    @Test
+    @DisplayName("验证 LiteflowRuleSourceManager 严格遵循 dynamicRule.failFast 属性")
+    void testRuleSourceManagerFailFastProperty() {
+        LiteflowRuleSourceProvider failingProvider = new LiteflowRuleSourceProvider() {
+            @Override
+            public String getName() {
+                return "FAILING_PROVIDER";
+            }
+
+            @Override
+            public List<RuleSourceDefinition> loadRules() {
+                throw new RuntimeException("模拟底层规则加载超时或不可用");
+            }
+
+            @Override
+            public RuleSourceDefinition loadRule(String chainId) {
+                throw new RuntimeException("模拟单条规则加载失败");
+            }
+        };
+
+        // 1. failFast = true（默认）时，必须抛出 IllegalStateException 快速失败
+        AtengLiteflowProperties failFastProps = new AtengLiteflowProperties();
+        failFastProps.getDynamicRule().setFailFast(true);
+        LiteflowRuleSourceManager failFastMgr = new LiteflowRuleSourceManager(
+                List.of(failingProvider), liteflowTemplate, failFastProps);
+
+        assertThatThrownBy(failFastMgr::loadAllRules)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("从规则源 [FAILING_PROVIDER] 加载规则列表失败");
+
+        assertThatThrownBy(() -> failFastMgr.loadRule("anyChain"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("从规则源 [FAILING_PROVIDER] 查询规则 [anyChain] 失败");
+
+        // 2. failFast = false 时，记录日志并优雅跳过，返回空集合或 null
+        AtengLiteflowProperties permissiveProps = new AtengLiteflowProperties();
+        permissiveProps.getDynamicRule().setFailFast(false);
+        LiteflowRuleSourceManager permissiveMgr = new LiteflowRuleSourceManager(
+                List.of(failingProvider), liteflowTemplate, permissiveProps);
+
+        List<RuleSourceDefinition> rules = permissiveMgr.loadAllRules();
+        assertThat(rules).isEmpty();
+        assertThat(permissiveMgr.loadRule("anyChain")).isNull();
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableAutoConfiguration
     @Import({StepA.class, StepB.class, StepC.class, RouteCondTrue.class, RouteCondFalse.class, RouteCondContext.class, InMemoryTestRuleSourceProvider.class})
