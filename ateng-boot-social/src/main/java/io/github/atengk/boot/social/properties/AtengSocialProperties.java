@@ -6,7 +6,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -43,6 +45,26 @@ public class AtengSocialProperties {
      * 两阶段绑定票据 BindTicket 默认过期时长，默认 5 分钟
      */
     private Duration bindTicketTimeout = Duration.ofMinutes(5);
+
+    /**
+     * Redis 防伪 State 缓存键前缀，默认 social:state:
+     */
+    private String stateCacheKeyPrefix = "social:state:";
+
+    /**
+     * Redis 绑定票据缓存键前缀，默认 social:bind_ticket:
+     */
+    private String bindTicketKeyPrefix = "social:bind_ticket:";
+
+    /**
+     * 单机本地 Caffeine 缓存最大条目数上限，默认 10000
+     */
+    private long maxInMemoryCacheSize = 10_000L;
+
+    /**
+     * 允许的授权回调重定向域名白名单列表（为空表示不限制，支持精确域名与 *.example.com 泛域名）
+     */
+    private List<String> allowedRedirectDomains = new ArrayList<>();
 
     /**
      * 全局默认出站代理配置（可选）

@@ -141,4 +141,14 @@ class RedisSocialAuthStateCacheTest {
         when(valueOperations.get("social:state:s_none")).thenReturn(null);
         assertThat(cache.get("s_none")).isNull();
     }
+
+    @Test
+    @DisplayName("验证自定义 keyPrefix 与自定义 defaultTimeout")
+    void testCustomPrefixAndTimeout() {
+        RedisSocialAuthStateCache customCache = new RedisSocialAuthStateCache(redisTemplate, "custom:state:", Duration.ofMinutes(15));
+        StateContext context = StateContext.builder().tenantId("custom_t").build();
+        String state = customCache.generateState(context);
+
+        verify(valueOperations).set(eq("custom:state:" + state), any(), eq(Duration.ofMinutes(15)));
+    }
 }

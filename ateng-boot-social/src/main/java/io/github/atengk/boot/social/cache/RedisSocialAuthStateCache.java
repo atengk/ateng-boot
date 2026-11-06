@@ -27,16 +27,27 @@ public class RedisSocialAuthStateCache implements SocialAuthStateCache {
 
     private final StringRedisTemplate redisTemplate;
     private final String keyPrefix;
+    private final Duration defaultTimeout;
     private final DefaultRedisScript<String> getAndDeleteScript;
 
     public RedisSocialAuthStateCache(StringRedisTemplate redisTemplate) {
-        this(redisTemplate, DEFAULT_KEY_PREFIX);
+        this(redisTemplate, DEFAULT_KEY_PREFIX, DEFAULT_STATE_TIMEOUT);
     }
 
     public RedisSocialAuthStateCache(StringRedisTemplate redisTemplate, String keyPrefix) {
+        this(redisTemplate, keyPrefix, DEFAULT_STATE_TIMEOUT);
+    }
+
+    public RedisSocialAuthStateCache(StringRedisTemplate redisTemplate, String keyPrefix, Duration defaultTimeout) {
         this.redisTemplate = redisTemplate;
         this.keyPrefix = keyPrefix != null ? keyPrefix : DEFAULT_KEY_PREFIX;
+        this.defaultTimeout = defaultTimeout != null ? defaultTimeout : DEFAULT_STATE_TIMEOUT;
         this.getAndDeleteScript = new DefaultRedisScript<>(RedisLuaScripts.LUA_GET_AND_DELETE, String.class);
+    }
+
+    @Override
+    public String generateState(StateContext context) {
+        return generateState(context, this.defaultTimeout);
     }
 
     @Override
@@ -44,7 +55,7 @@ public class RedisSocialAuthStateCache implements SocialAuthStateCache {
         if (state == null || state.isBlank() || context == null) {
             return;
         }
-        Duration effectiveTimeout = timeout != null ? timeout : DEFAULT_STATE_TIMEOUT;
+        Duration effectiveTimeout = timeout != null ? timeout : this.defaultTimeout;
         String key = buildKey(state);
         String json = JsonUtil.toJsonString(context);
         redisTemplate.opsForValue().set(key, json, effectiveTimeout);

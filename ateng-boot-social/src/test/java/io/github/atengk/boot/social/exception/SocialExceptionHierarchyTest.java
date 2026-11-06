@@ -72,4 +72,19 @@ class SocialExceptionHierarchyTest {
         assertThat(ex.getResultCode()).isEqualTo(SocialResultCode.SOCIAL_APP_NOT_FOUND);
         assertThat(ex.getMessage()).contains("non_exist_app");
     }
+
+    @Test
+    @DisplayName("5. SocialRedirectUriInvalidException: 验证非法重定向地址异常与因果链")
+    void testSocialRedirectUriInvalidException() {
+        SocialRedirectUriInvalidException ex = new SocialRedirectUriInvalidException("重定向地址非法");
+
+        assertThat(ex).isInstanceOf(SocialException.class);
+        assertThat(ex).isInstanceOf(BusinessException.class);
+        assertThat(ex.getResultCode()).isEqualTo(SocialResultCode.SOCIAL_REDIRECT_URI_INVALID);
+        assertThat(ex.getMessage()).isEqualTo("重定向地址非法");
+
+        Throwable cause = new IllegalArgumentException("Invalid URI syntax");
+        SocialRedirectUriInvalidException exWithCause = new SocialRedirectUriInvalidException("URI格式错误", cause);
+        assertThat(exWithCause.getCause()).isSameAs(cause);
+    }
 }

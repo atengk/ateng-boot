@@ -24,12 +24,18 @@ import java.time.Duration;
 public class InMemorySocialAuthStateCache implements SocialAuthStateCache {
 
     private final Cache<String, StateContextHolder> cache;
+    private final Duration defaultTimeout;
 
     public InMemorySocialAuthStateCache() {
-        this(10_000);
+        this(10_000, DEFAULT_STATE_TIMEOUT);
     }
 
     public InMemorySocialAuthStateCache(long maximumSize) {
+        this(maximumSize, DEFAULT_STATE_TIMEOUT);
+    }
+
+    public InMemorySocialAuthStateCache(long maximumSize, Duration defaultTimeout) {
+        this.defaultTimeout = defaultTimeout != null ? defaultTimeout : DEFAULT_STATE_TIMEOUT;
         this.cache = Caffeine.newBuilder()
                 .maximumSize(maximumSize)
                 .expireAfter(new Expiry<String, StateContextHolder>() {
@@ -52,11 +58,16 @@ public class InMemorySocialAuthStateCache implements SocialAuthStateCache {
     }
 
     @Override
+    public String generateState(StateContext context) {
+        return generateState(context, this.defaultTimeout);
+    }
+
+    @Override
     public void set(String state, StateContext context, Duration timeout) {
         if (state == null || state.isBlank() || context == null) {
             return;
         }
-        Duration effectiveTimeout = timeout != null ? timeout : DEFAULT_STATE_TIMEOUT;
+        Duration effectiveTimeout = timeout != null ? timeout : this.defaultTimeout;
         long nanos = effectiveTimeout.toNanos();
         cache.put(state, new StateContextHolder(context, nanos));
     }

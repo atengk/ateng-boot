@@ -2,6 +2,7 @@ package io.github.atengk.boot.social.autoconfigure;
 
 import io.github.atengk.boot.social.cache.RedisSocialAuthStateCache;
 import io.github.atengk.boot.social.cache.SocialAuthStateCache;
+import io.github.atengk.boot.social.properties.AtengSocialProperties;
 import io.github.atengk.boot.social.ticket.BindTicketStore;
 import io.github.atengk.boot.social.ticket.RedisBindTicketStore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -27,13 +28,21 @@ public class RedisSocialCacheConfiguration {
 
     @Bean
     @ConditionalOnMissingBean(SocialAuthStateCache.class)
-    public SocialAuthStateCache redisSocialAuthStateCache(StringRedisTemplate stringRedisTemplate) {
-        return new RedisSocialAuthStateCache(stringRedisTemplate);
+    public SocialAuthStateCache redisSocialAuthStateCache(StringRedisTemplate stringRedisTemplate, AtengSocialProperties properties) {
+        return new RedisSocialAuthStateCache(
+                stringRedisTemplate,
+                properties.getStateCacheKeyPrefix(),
+                properties.getStateTimeout()
+        );
     }
 
     @Bean
     @ConditionalOnMissingBean(BindTicketStore.class)
-    public BindTicketStore redisBindTicketStore(StringRedisTemplate stringRedisTemplate) {
-        return new RedisBindTicketStore(stringRedisTemplate);
+    public BindTicketStore redisBindTicketStore(StringRedisTemplate stringRedisTemplate, AtengSocialProperties properties) {
+        return new RedisBindTicketStore(
+                stringRedisTemplate,
+                properties.getBindTicketKeyPrefix(),
+                properties.getBindTicketTimeout()
+        );
     }
 }

@@ -79,4 +79,14 @@ class InMemoryBindTicketStoreTest {
         assertThat(store.remove("")).isNull();
         assertThat(store.contains(null)).isFalse();
     }
+
+    @Test
+    @DisplayName("验证自定义容量与默认超时构造")
+    void testCustomConstructor() {
+        InMemoryBindTicketStore customStore = new InMemoryBindTicketStore(100, Duration.ofMinutes(15));
+        SocialUser user = SocialUser.builder().openId("custom_open_id").build();
+        String ticket = customStore.createTicket(user);
+        assertThat(customStore.contains(ticket)).isTrue();
+        assertThat(customStore.get(ticket).getOpenId()).isEqualTo("custom_open_id");
+    }
 }

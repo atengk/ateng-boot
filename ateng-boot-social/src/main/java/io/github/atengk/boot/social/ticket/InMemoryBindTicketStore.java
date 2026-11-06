@@ -23,12 +23,18 @@ import java.time.Duration;
 public class InMemoryBindTicketStore implements BindTicketStore {
 
     private final Cache<String, TicketHolder> cache;
+    private final Duration defaultTimeout;
 
     public InMemoryBindTicketStore() {
-        this(10_000);
+        this(10_000, DEFAULT_TICKET_TIMEOUT);
     }
 
     public InMemoryBindTicketStore(long maximumSize) {
+        this(maximumSize, DEFAULT_TICKET_TIMEOUT);
+    }
+
+    public InMemoryBindTicketStore(long maximumSize, Duration defaultTimeout) {
+        this.defaultTimeout = defaultTimeout != null ? defaultTimeout : DEFAULT_TICKET_TIMEOUT;
         this.cache = Caffeine.newBuilder()
                 .maximumSize(maximumSize)
                 .expireAfter(new Expiry<String, TicketHolder>() {
@@ -51,11 +57,16 @@ public class InMemoryBindTicketStore implements BindTicketStore {
     }
 
     @Override
+    public String createTicket(SocialUser socialUser) {
+        return createTicket(socialUser, this.defaultTimeout);
+    }
+
+    @Override
     public void save(String bindTicket, SocialUser socialUser, Duration timeout) {
         if (bindTicket == null || bindTicket.isBlank() || socialUser == null) {
             return;
         }
-        Duration effectiveTimeout = timeout != null ? timeout : DEFAULT_TICKET_TIMEOUT;
+        Duration effectiveTimeout = timeout != null ? timeout : this.defaultTimeout;
         long nanos = effectiveTimeout.toNanos();
         cache.put(bindTicket, new TicketHolder(socialUser, nanos));
     }

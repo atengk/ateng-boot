@@ -97,4 +97,14 @@ class InMemorySocialAuthStateCacheTest {
         assertThat(cache.removeContext("")).isNull();
         assertThat(cache.contains(null)).isFalse();
     }
+
+    @Test
+    @DisplayName("验证自定义容量与自定义默认超时构造")
+    void testCustomConstructor() {
+        InMemorySocialAuthStateCache customCache = new InMemorySocialAuthStateCache(500, Duration.ofMinutes(10));
+        StateContext context = StateContext.builder().tenantId("tenant_custom").build();
+        String state = customCache.generateState(context);
+        assertThat(customCache.contains(state)).isTrue();
+        assertThat(customCache.getContext(state).getTenantId()).isEqualTo("tenant_custom");
+    }
 }

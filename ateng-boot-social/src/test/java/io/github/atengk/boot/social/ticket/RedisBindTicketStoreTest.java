@@ -92,4 +92,14 @@ class RedisBindTicketStoreTest {
         assertThat(store.contains(null)).isFalse();
         assertThat(store.get(null)).isNull();
     }
+
+    @Test
+    @DisplayName("验证自定义 keyPrefix 与自定义 defaultTimeout")
+    void testCustomPrefixAndTimeout() {
+        RedisBindTicketStore customStore = new RedisBindTicketStore(redisTemplate, "custom:bind_ticket:", Duration.ofMinutes(15));
+        SocialUser user = SocialUser.builder().openId("custom_user").build();
+        String ticket = customStore.createTicket(user);
+
+        verify(valueOperations).set(eq("custom:bind_ticket:" + ticket), any(), eq(Duration.ofMinutes(15)));
+    }
 }

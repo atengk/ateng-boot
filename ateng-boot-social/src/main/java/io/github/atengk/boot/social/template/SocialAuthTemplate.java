@@ -1,5 +1,6 @@
 package io.github.atengk.boot.social.template;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.social.cache.SocialAuthStateCache;
 import io.github.atengk.boot.social.code.SocialResultCode;
 import io.github.atengk.boot.social.config.SocialAppConfig;
@@ -14,8 +15,10 @@ import io.github.atengk.boot.social.model.SocialAuthResult;
 import io.github.atengk.boot.social.model.SocialLoginOptions;
 import io.github.atengk.boot.social.model.SocialUser;
 import io.github.atengk.boot.social.model.StateContext;
+import io.github.atengk.boot.social.properties.AtengSocialProperties;
 import io.github.atengk.boot.social.session.SocialSessionManager;
 import io.github.atengk.boot.social.spi.SocialUserDetailsService;
+import io.github.atengk.boot.social.support.SocialRedirectUriValidator;
 import io.github.atengk.boot.social.ticket.BindTicketStore;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.anduin.model.AuthCallback;
@@ -47,6 +50,7 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
     private final BindTicketStore bindTicketStore;
     private final ObjectProvider<SocialUserDetailsService> userDetailsServiceObjectProvider;
     private final SocialSessionManager sessionManager;
+    private final AtengSocialProperties properties;
     private ApplicationEventPublisher eventPublisher;
 
     /**
@@ -64,11 +68,11 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             BindTicketStore bindTicketStore,
             ObjectProvider<SocialUserDetailsService> userDetailsServiceObjectProvider,
             SocialSessionManager sessionManager) {
-        this(socialAppFactory, stateCache, bindTicketStore, userDetailsServiceObjectProvider, sessionManager, null);
+        this(socialAppFactory, stateCache, bindTicketStore, userDetailsServiceObjectProvider, sessionManager, null, null);
     }
 
     /**
-     * 全参构造函数（支持直接注入事件发布者）
+     * 六参构造函数（支持直接注入事件发布者）
      *
      * @param socialAppFactory                  社交应用实例工厂
      * @param stateCache                        防伪状态缓存
@@ -84,12 +88,39 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             ObjectProvider<SocialUserDetailsService> userDetailsServiceObjectProvider,
             SocialSessionManager sessionManager,
             ApplicationEventPublisher eventPublisher) {
+        this(socialAppFactory, stateCache, bindTicketStore, userDetailsServiceObjectProvider, sessionManager, null, eventPublisher);
+    }
+
+    /**
+     * 全参构造函数（支持配置属性与事件发布者）
+     *
+     * @param socialAppFactory                  社交应用实例工厂
+     * @param stateCache                        防伪状态缓存
+     * @param bindTicketStore                   两阶段绑定票据仓库
+     * @param userDetailsServiceObjectProvider  持久化业务扩展点提供者
+     * @param sessionManager                    会话管理器
+     * @param properties                        社交登录配置属性
+     * @param eventPublisher                    领域事件发布者
+     */
+    public SocialAuthTemplate(
+            SocialAppFactory socialAppFactory,
+            SocialAuthStateCache stateCache,
+            BindTicketStore bindTicketStore,
+            ObjectProvider<SocialUserDetailsService> userDetailsServiceObjectProvider,
+            SocialSessionManager sessionManager,
+            AtengSocialProperties properties,
+            ApplicationEventPublisher eventPublisher) {
         this.socialAppFactory = socialAppFactory;
         this.stateCache = stateCache;
         this.bindTicketStore = bindTicketStore;
         this.userDetailsServiceObjectProvider = userDetailsServiceObjectProvider;
         this.sessionManager = sessionManager;
+        this.properties = properties != null ? properties : new AtengSocialProperties();
         this.eventPublisher = eventPublisher;
+    }
+
+    public AtengSocialProperties getProperties() {
+        return properties;
     }
 
     @Override
@@ -135,7 +166,18 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
 
         // 1. 组装并保存防伪 State 上下文
         StateContext safeContext = context != null ? context : new StateContext();
-        Duration timeout = stateTimeout != null ? stateTimeout : SocialAuthStateCache.DEFAULT_STATE_TIMEOUT;
+        if ((safeContext.getTenantId() == null || safeContext.getTenantId().isBlank())
+                && TenantContextHolder.getTenantId() != null
+                && !TenantContextHolder.getTenantId().isBlank()) {
+            safeContext.setTenantId(TenantContextHolder.getTenantId());
+        }
+
+        // 开放重定向安全防卫
+        if (safeContext.getRedirectUrl() != null && !safeContext.getRedirectUrl().isBlank()) {
+            SocialRedirectUriValidator.validate(safeContext.getRedirectUrl(), properties.getAllowedRedirectDomains());
+        }
+
+        Duration timeout = stateTimeout != null ? stateTimeout : (properties.getStateTimeout() != null ? properties.getStateTimeout() : SocialAuthStateCache.DEFAULT_STATE_TIMEOUT);
         String state = stateCache.generateState(safeContext, timeout);
 
         // 2. 绑定当前应用上下文并构建授权请求
@@ -509,6 +551,17 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
                                                SocialUser socialUser,
                                                SocialLoginOptions options,
                                                StateContext stateContext) {
+        String tenantId = stateContext != null ? stateContext.getTenantId() : null;
+        if (tenantId != null && !tenantId.isBlank()) {
+            return TenantContextHolder.runWithTenant(tenantId, () -> doResolveAuthResult(appKey, socialUser, options, stateContext));
+        }
+        return doResolveAuthResult(appKey, socialUser, options, stateContext);
+    }
+
+    private SocialAuthResult doResolveAuthResult(String appKey,
+                                                 SocialUser socialUser,
+                                                 SocialLoginOptions options,
+                                                 StateContext stateContext) {
         SocialUserDetailsService detailsService = userDetailsServiceObjectProvider.getIfAvailable();
         String userId = detailsService != null ? detailsService.loadUserIdBySocialUser(appKey, socialUser) : null;
 
@@ -520,7 +573,10 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             return SocialAuthResult.loggedIn(userId, tokenInfo, socialUser, stateContext);
         } else {
             // 分支 2：未绑定本地用户 -> 签发两阶段高熵绑定票据
-            String bindTicket = bindTicketStore.createTicket(socialUser);
+            Duration ticketTimeout = properties.getBindTicketTimeout() != null
+                    ? properties.getBindTicketTimeout()
+                    : BindTicketStore.DEFAULT_TICKET_TIMEOUT;
+            String bindTicket = bindTicketStore.createTicket(socialUser, ticketTimeout);
             log.info("Social user not bound, issued bindTicket: appKey=[{}], openId=[{}]",
                     appKey, socialUser.getOpenId());
             return SocialAuthResult.requireBind(bindTicket, socialUser, stateContext);

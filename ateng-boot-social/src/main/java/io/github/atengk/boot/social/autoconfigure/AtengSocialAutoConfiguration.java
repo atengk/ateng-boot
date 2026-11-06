@@ -113,7 +113,7 @@ public class AtengSocialAutoConfiguration {
     @ConditionalOnMissingBean(SocialAuthStateCache.class)
     public SocialAuthStateCache inMemorySocialAuthStateCache() {
         log.info("Initialized InMemorySocialAuthStateCache for OAuth2 state management");
-        return new InMemorySocialAuthStateCache();
+        return new InMemorySocialAuthStateCache(properties.getMaxInMemoryCacheSize(), properties.getStateTimeout());
     }
 
     /**
@@ -125,7 +125,7 @@ public class AtengSocialAutoConfiguration {
     @ConditionalOnMissingBean(BindTicketStore.class)
     public BindTicketStore inMemoryBindTicketStore() {
         log.info("Initialized InMemoryBindTicketStore for two-phase social user binding");
-        return new InMemoryBindTicketStore();
+        return new InMemoryBindTicketStore(properties.getMaxInMemoryCacheSize(), properties.getBindTicketTimeout());
     }
 
     /**
@@ -161,11 +161,8 @@ public class AtengSocialAutoConfiguration {
             SocialSessionManager sessionManager,
             ObjectProvider<ApplicationEventPublisher> eventPublisherObjectProvider) {
         log.info("Initialized SocialAuthTemplate core facade");
-        SocialAuthTemplate template = new SocialAuthTemplate(socialAppFactory, stateCache, bindTicketStore, userDetailsServiceObjectProvider, sessionManager);
-        if (eventPublisherObjectProvider != null && eventPublisherObjectProvider.getIfAvailable() != null) {
-            template.setApplicationEventPublisher(eventPublisherObjectProvider.getIfAvailable());
-        }
-        return template;
+        ApplicationEventPublisher publisher = (eventPublisherObjectProvider != null) ? eventPublisherObjectProvider.getIfAvailable() : null;
+        return new SocialAuthTemplate(socialAppFactory, stateCache, bindTicketStore, userDetailsServiceObjectProvider, sessionManager, properties, publisher);
     }
 
     /**

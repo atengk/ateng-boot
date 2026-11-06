@@ -27,16 +27,27 @@ public class RedisBindTicketStore implements BindTicketStore {
 
     private final StringRedisTemplate redisTemplate;
     private final String keyPrefix;
+    private final Duration defaultTimeout;
     private final DefaultRedisScript<String> getAndDeleteScript;
 
     public RedisBindTicketStore(StringRedisTemplate redisTemplate) {
-        this(redisTemplate, DEFAULT_KEY_PREFIX);
+        this(redisTemplate, DEFAULT_KEY_PREFIX, DEFAULT_TICKET_TIMEOUT);
     }
 
     public RedisBindTicketStore(StringRedisTemplate redisTemplate, String keyPrefix) {
+        this(redisTemplate, keyPrefix, DEFAULT_TICKET_TIMEOUT);
+    }
+
+    public RedisBindTicketStore(StringRedisTemplate redisTemplate, String keyPrefix, Duration defaultTimeout) {
         this.redisTemplate = redisTemplate;
         this.keyPrefix = keyPrefix != null ? keyPrefix : DEFAULT_KEY_PREFIX;
+        this.defaultTimeout = defaultTimeout != null ? defaultTimeout : DEFAULT_TICKET_TIMEOUT;
         this.getAndDeleteScript = new DefaultRedisScript<>(RedisLuaScripts.LUA_GET_AND_DELETE, String.class);
+    }
+
+    @Override
+    public String createTicket(SocialUser socialUser) {
+        return createTicket(socialUser, this.defaultTimeout);
     }
 
     @Override
@@ -44,7 +55,7 @@ public class RedisBindTicketStore implements BindTicketStore {
         if (bindTicket == null || bindTicket.isBlank() || socialUser == null) {
             return;
         }
-        Duration effectiveTimeout = timeout != null ? timeout : DEFAULT_TICKET_TIMEOUT;
+        Duration effectiveTimeout = timeout != null ? timeout : this.defaultTimeout;
         String key = buildKey(bindTicket);
         String json = JsonUtil.toJsonString(socialUser);
         redisTemplate.opsForValue().set(key, json, effectiveTimeout);

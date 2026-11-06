@@ -1,12 +1,14 @@
 package io.github.atengk.boot.social.template;
 
 import cn.dev33.satoken.stp.StpUtil;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.social.cache.InMemorySocialAuthStateCache;
 import io.github.atengk.boot.social.cache.SocialAuthStateCache;
 import io.github.atengk.boot.social.code.SocialResultCode;
 import io.github.atengk.boot.social.event.SocialUnboundEvent;
 import io.github.atengk.boot.social.exception.SocialAuthException;
 import io.github.atengk.boot.social.exception.SocialException;
+import io.github.atengk.boot.social.exception.SocialRedirectUriInvalidException;
 import io.github.atengk.boot.social.exception.SocialStateExpiredException;
 import io.github.atengk.boot.social.exception.SocialUnbindRejectedException;
 import io.github.atengk.boot.social.factory.SocialAppFactory;
@@ -125,7 +127,7 @@ class SocialAuthTemplateTest {
         beanFactory.addBean("socialAuthStateCache", stateCache);
 
         appFactory = new SocialAppFactory(properties, null, beanFactory.getBeanProvider(org.dromara.anduin.cache.AuthStateCache.class), httpAdapter);
-        authTemplate = new SocialAuthTemplate(appFactory, stateCache, bindTicketStore, beanFactory.getBeanProvider(SocialUserDetailsService.class), sessionManager, eventPublisher);
+        authTemplate = new SocialAuthTemplate(appFactory, stateCache, bindTicketStore, beanFactory.getBeanProvider(SocialUserDetailsService.class), sessionManager, properties, eventPublisher);
     }
 
     @AfterEach
@@ -133,6 +135,7 @@ class SocialAuthTemplateTest {
         mockWebServer.shutdown();
         AnduinHttpBridge.reset();
         MockSaTokenTestHelper.tearDown();
+        TenantContextHolder.clear();
     }
 
     @Test
@@ -635,6 +638,139 @@ class SocialAuthTemplateTest {
 
         // 验证因非法篡改被拒绝后，票据已被原子销毁（阅后即焚）
         assertThat(bindTicketStore.contains(bindTicket)).isFalse();
+    }
+
+    @Test
+    @DisplayName("23. getAuthorizeUrl: 校验开放重定向防御机制")
+    void testOpenRedirectProtectionInGetAuthorizeUrl() {
+        // 伪协议拦截
+        StateContext maliciousContext = StateContext.builder()
+                .redirectUrl("javascript:alert(1)")
+                .build();
+        assertThatThrownBy(() -> authTemplate.getAuthorizeUrl("github_app", maliciousContext))
+                .isInstanceOf(SocialRedirectUriInvalidException.class)
+                .hasMessageContaining("包含危险伪协议");
+
+        // 协议相对路径拦截
+        StateContext protocolRelativeContext = StateContext.builder()
+                .redirectUrl("//evil.com/phishing")
+                .build();
+        assertThatThrownBy(() -> authTemplate.getAuthorizeUrl("github_app", protocolRelativeContext))
+                .isInstanceOf(SocialRedirectUriInvalidException.class)
+                .hasMessageContaining("协议相对路径");
+
+        // 站内相对路径安全放行
+        StateContext safeRelativeContext = StateContext.builder()
+                .redirectUrl("/welcome/user")
+                .build();
+        String safeUrl = authTemplate.getAuthorizeUrl("github_app", safeRelativeContext);
+        assertThat(safeUrl).contains("redirect_uri=");
+
+        // 白名单域名校验拦截与放行
+        authTemplate.getProperties().setAllowedRedirectDomains(java.util.List.of("*.example.com", "ateng.com"));
+
+        StateContext nonWhitelistedContext = StateContext.builder()
+                .redirectUrl("https://evil.com/landing")
+                .build();
+        assertThatThrownBy(() -> authTemplate.getAuthorizeUrl("github_app", nonWhitelistedContext))
+                .isInstanceOf(SocialRedirectUriInvalidException.class)
+                .hasMessageContaining("不在允许的白名单列表中");
+
+        StateContext whitelistedContext = StateContext.builder()
+                .redirectUrl("https://sso.example.com/callback")
+                .build();
+        String allowedUrl = authTemplate.getAuthorizeUrl("github_app", whitelistedContext);
+        assertThat(allowedUrl).contains("state=");
+    }
+
+    @Test
+    @DisplayName("24. getAuthorizeUrl: 自动捕获当前线程 TenantContextHolder 租户标识")
+    void testTenantAutoCaptureInGetAuthorizeUrl() {
+        TenantContextHolder.setTenantId("tenant_auto_999");
+
+        // 未显式指定 tenantId，自动从当前线程捕获
+        StateContext emptyContext = new StateContext();
+        String authorizeUrl = authTemplate.getAuthorizeUrl("github_app", emptyContext);
+        String state = extractQueryParam(authorizeUrl, "state");
+        StateContext cachedContext = stateCache.getContext(state);
+        assertThat(cachedContext).isNotNull();
+        assertThat(cachedContext.getTenantId()).isEqualTo("tenant_auto_999");
+
+        // 若显式指定了 tenantId，优先使用显式指定的租户
+        StateContext explicitContext = StateContext.builder().tenantId("tenant_explicit_111").build();
+        String explicitUrl = authTemplate.getAuthorizeUrl("github_app", explicitContext);
+        String state2 = extractQueryParam(explicitUrl, "state");
+        StateContext cachedContext2 = stateCache.getContext(state2);
+        assertThat(cachedContext2).isNotNull();
+        assertThat(cachedContext2.getTenantId()).isEqualTo("tenant_explicit_111");
+    }
+
+    @Test
+    @DisplayName("25. login: 回调阶段自动透传 TenantContextHolder 并在处理完毕后恢复原上下文")
+    void testTenantContextBridgedDuringLogin() {
+        TenantContextHolder.setTenantId("tenant_base");
+
+        // 构造携带租户标识的 State
+        StateContext stateContext = StateContext.builder()
+                .tenantId("tenant_callback_888")
+                .build();
+        String state = stateCache.generateState(stateContext);
+
+        // Mock GitHub token & user info response
+        mockWebServer.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody("{\"access_token\":\"gh_token_tenant_test\",\"token_type\":\"bearer\",\"scope\":\"user\"}"));
+        mockWebServer.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody("{\"id\":998877,\"login\":\"tenant_user\",\"name\":\"Tenant User\",\"avatar_url\":\"https://avatar\"}"));
+
+        // 在 userDetailsService 中核验执行时当前线程的 TenantId 是否为 tenant_callback_888
+        when(userDetailsService.loadUserIdBySocialUser(eq("github_app"), any(SocialUser.class)))
+                .thenAnswer(invocation -> {
+                    assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant_callback_888");
+                    return "local_user_tenant_888";
+                });
+
+        AuthCallback callback = AuthCallback.builder().code("test_code_tenant").state(state).build();
+        SocialAuthResult result = authTemplate.login("github_app", callback);
+
+        assertThat(result.getState()).isEqualTo(SocialAuthState.LOGGED_IN);
+        assertThat(result.getUserId()).isEqualTo("local_user_tenant_888");
+
+        // 验证执行完毕后无条件恢复为原来的 tenant_base
+        assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant_base");
+    }
+
+    @Test
+    @DisplayName("26. login: 持久化 SPI 发生异常时依然确定性恢复 TenantContextHolder")
+    void testTenantContextRestoredOnLoginException() {
+        TenantContextHolder.setTenantId("tenant_base");
+
+        StateContext stateContext = StateContext.builder()
+                .tenantId("tenant_callback_999")
+                .build();
+        String state = stateCache.generateState(stateContext);
+
+        mockWebServer.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody("{\"access_token\":\"gh_token_tenant_err\",\"token_type\":\"bearer\",\"scope\":\"user\"}"));
+        mockWebServer.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody("{\"id\":998899,\"login\":\"tenant_err_user\",\"name\":\"Tenant Err\",\"avatar_url\":\"https://avatar\"}"));
+
+        when(userDetailsService.loadUserIdBySocialUser(eq("github_app"), any(SocialUser.class)))
+                .thenAnswer(invocation -> {
+                    assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant_callback_999");
+                    throw new RuntimeException("Simulated SPI Database Exception");
+                });
+
+        AuthCallback callback = AuthCallback.builder().code("test_code_err").state(state).build();
+        assertThatThrownBy(() -> authTemplate.login("github_app", callback))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Simulated SPI Database Exception");
+
+        // 验证异常发生后 TenantContextHolder 依然确定性恢复为 tenant_base
+        assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant_base");
     }
 
     private String extractQueryParam(String url, String paramName) {
