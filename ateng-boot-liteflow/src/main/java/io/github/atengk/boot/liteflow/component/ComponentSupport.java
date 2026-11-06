@@ -182,6 +182,23 @@ public final class ComponentSupport {
     }
 
     /**
+     * 向目标下游节点进行点对点私有数据投递（阅后即焚，不污染全局上下文）
+     *
+     * @param component    当前节点组件
+     * @param targetNodeId 目标节点 ID
+     * @param data         私有传输数据对象
+     */
+    public static void deliverTo(NodeComponent component, String targetNodeId, Object data) {
+        if (component == null) {
+            throw new IllegalArgumentException("component 不能为空");
+        }
+        if (targetNodeId == null || targetNodeId.isBlank()) {
+            throw new IllegalArgumentException("targetNodeId 不能为空");
+        }
+        component.sendPrivateDeliveryData(targetNodeId, data);
+    }
+
+    /**
      * 接收上游节点通过私有投递传递给当前节点的强类型私有数据
      *
      * @param component 当前节点组件

@@ -342,8 +342,9 @@ class LiteflowObservabilityTest {
                 .isEqualTo(LiteflowMetricsBinder.TAG_DYNAMIC_EL);
         assertThat(LiteflowMetricsBinder.normalizeChainId("325abadb7b03472e902a9793fee6e971"))
                 .isEqualTo(LiteflowMetricsBinder.TAG_DYNAMIC_EL);
-        assertThat(LiteflowMetricsBinder.normalizeChainId("dynamic_temp_chain_123"))
-                .isEqualTo(LiteflowMetricsBinder.TAG_DYNAMIC_EL);
+        // 静态业务规则链前缀（如 dynamic_pricing）保留原样，不发生过度折叠
+        assertThat(LiteflowMetricsBinder.normalizeChainId("dynamic_pricing_chain"))
+                .isEqualTo("dynamic_pricing_chain");
         assertThat(LiteflowMetricsBinder.normalizeChainId("THEN(obsNodeA, obsNodeB);"))
                 .isEqualTo(LiteflowMetricsBinder.TAG_DYNAMIC_EL);
         assertThat(LiteflowMetricsBinder.normalizeChainId("normalTraceChain"))

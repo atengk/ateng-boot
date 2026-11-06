@@ -232,10 +232,7 @@ public abstract class BaseNodeComponent<T> extends NodeComponent {
      * @param data         私有传输数据对象
      */
     public void deliverTo(String targetNodeId, Object data) {
-        if (targetNodeId == null || targetNodeId.isBlank()) {
-            throw new IllegalArgumentException("targetNodeId 不能为空");
-        }
-        this.sendPrivateDeliveryData(targetNodeId, data);
+        ComponentSupport.deliverTo(this, targetNodeId, data);
     }
 
     /**

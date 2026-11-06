@@ -633,13 +633,26 @@ class LiteflowComponentHierarchyTest {
     }
 
     @Test
-    @DisplayName("测试 invokeSubChain 子链失败时正确包装为业务受管异常")
+    @DisplayName("测试 invokeSubChain 子链失败时正确包装为业务受管异常并保留因果链路")
     void testInvokeSubChainFailure() {
         SubChainCallerNode node = new SubChainCallerNode();
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                 node.invokeSubChain(null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("chainId 不能为空");
+
+        // 构造真实子链执行失败场景，验证因果链完整保留且统一包装为 LiteflowExecutionException
+        liteflowTemplate.reloadChain("testSubChainTarget", "IF(failingIf, branchA, branchB);");
+        try {
+            HierarchyTestContext context = new HierarchyTestContext();
+            org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                    liteflowTemplate.executeWithContext("testSubChainCaller", context))
+                    .isInstanceOf(io.github.atengk.boot.liteflow.exception.LiteflowExecutionException.class)
+                    .hasMessageContaining("testSubChainTarget")
+                    .hasRootCauseMessage("Simulated IF failure without fallback");
+        } finally {
+            liteflowTemplate.reloadChain("testSubChainTarget", "THEN(subChainTargetNode);");
+        }
     }
 
     @Test

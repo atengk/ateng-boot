@@ -99,9 +99,9 @@ public class LiteflowMetricsBinder implements MeterBinder, DisposableBean {
             return "UNKNOWN";
         }
         if (chainId.startsWith("DYNAMIC_EL")
-                || chainId.startsWith("dynamic_")
                 || chainId.contains("(")
                 || chainId.contains(";")
+                || chainId.contains("\n")
                 || (chainId.length() == 32 && HEX_UUID_PATTERN.matcher(chainId).matches())) {
             return TAG_DYNAMIC_EL;
         }

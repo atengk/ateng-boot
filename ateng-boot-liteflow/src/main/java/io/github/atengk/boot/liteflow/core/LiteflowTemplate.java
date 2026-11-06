@@ -37,6 +37,8 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 /**
@@ -54,7 +56,7 @@ public class LiteflowTemplate {
     private final FlowExecutor flowExecutor;
     private final Executor asyncExecutor;
     private final AtengLiteflowProperties properties;
-    private final ConcurrentMap<String, Deque<String>> chainHistorySnapshots = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Deque<ChainSnapshot>> chainHistorySnapshots = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> activeChainEls = new ConcurrentHashMap<>();
 
     public LiteflowTemplate(FlowExecutor flowExecutor) {
@@ -152,18 +154,7 @@ public class LiteflowTemplate {
      * @return 传入的原样上下文实例数组
      */
     public Object[] executeMultipleWithContext(String chainId, Object param, Object... contextBeans) {
-        if (chainId == null || chainId.isBlank()) {
-            throw new IllegalArgumentException("chainId 不能为空");
-        }
-        if (contextBeans == null || contextBeans.length == 0) {
-            throw new IllegalArgumentException("contextBeans 不能为空");
-        }
-        long start = System.currentTimeMillis();
-        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextBeans);
-        long duration = System.currentTimeMillis() - start;
-        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
-        checkResponseSuccess(chainId, response, trace);
-        return contextBeans;
+        return executeMultipleWithContextWithTrace(chainId, param, contextBeans).getContext();
     }
 
     /**
@@ -392,12 +383,7 @@ public class LiteflowTemplate {
      * @return 承载强类型上下文的 CompletableFuture
      */
     public <T> CompletableFuture<T> executeAsync(String chainId, Object param, Class<T> contextClass, Duration timeout) {
-        Supplier<T> task = AsyncContext.wrapSupplier(() -> execute(chainId, param, contextClass));
-        CompletableFuture<T> future = CompletableFuture.supplyAsync(task, resolveAsyncExecutor());
-        if (timeout != null && !timeout.isNegative() && !timeout.isZero()) {
-            return future.orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS);
-        }
-        return future;
+        return submitAsync(() -> execute(chainId, param, contextClass), timeout);
     }
 
     /**
@@ -438,12 +424,7 @@ public class LiteflowTemplate {
      * @return 承载同一强类型上下文的 CompletableFuture
      */
     public <T> CompletableFuture<T> executeAsyncWithContext(String chainId, Object param, T contextBean, Duration timeout) {
-        Supplier<T> task = AsyncContext.wrapSupplier(() -> executeWithContext(chainId, param, contextBean));
-        CompletableFuture<T> future = CompletableFuture.supplyAsync(task, resolveAsyncExecutor());
-        if (timeout != null && !timeout.isNegative() && !timeout.isZero()) {
-            return future.orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS);
-        }
-        return future;
+        return submitAsync(() -> executeWithContext(chainId, param, contextBean), timeout);
     }
 
     /**
@@ -482,12 +463,7 @@ public class LiteflowTemplate {
      * @return 包含强类型上下文与时序轨迹包装的 CompletableFuture
      */
     public <T> CompletableFuture<LiteflowTraceResult<T>> executeAsyncWithTrace(String chainId, Object param, Class<T> contextClass, Duration timeout) {
-        Supplier<LiteflowTraceResult<T>> task = AsyncContext.wrapSupplier(() -> executeWithTrace(chainId, param, contextClass));
-        CompletableFuture<LiteflowTraceResult<T>> future = CompletableFuture.supplyAsync(task, resolveAsyncExecutor());
-        if (timeout != null && !timeout.isNegative() && !timeout.isZero()) {
-            return future.orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS);
-        }
-        return future;
+        return submitAsync(() -> executeWithTrace(chainId, param, contextClass), timeout);
     }
 
     /**
@@ -526,10 +502,31 @@ public class LiteflowTemplate {
      * @return 包含同一上下文实例与时序轨迹包装的 CompletableFuture
      */
     public <T> CompletableFuture<LiteflowTraceResult<T>> executeAsyncWithTrace(String chainId, Object param, T contextBean, Duration timeout) {
-        Supplier<LiteflowTraceResult<T>> task = AsyncContext.wrapSupplier(() -> executeWithTrace(chainId, param, contextBean));
-        CompletableFuture<LiteflowTraceResult<T>> future = CompletableFuture.supplyAsync(task, resolveAsyncExecutor());
+        return submitAsync(() -> executeWithTrace(chainId, param, contextBean), timeout);
+    }
+
+    private <R> CompletableFuture<R> submitAsync(Supplier<R> supplier, Duration timeout) {
+        AtomicReference<Thread> workerThread = new AtomicReference<>();
+        Supplier<R> task = AsyncContext.wrapSupplier(() -> {
+            workerThread.set(Thread.currentThread());
+            try {
+                return supplier.get();
+            } finally {
+                workerThread.set(null);
+            }
+        });
+        CompletableFuture<R> future = CompletableFuture.supplyAsync(task, resolveAsyncExecutor());
         if (timeout != null && !timeout.isNegative() && !timeout.isZero()) {
-            return future.orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            CompletableFuture<R> timedFuture = future.orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            timedFuture.whenComplete((res, ex) -> {
+                if (ex instanceof TimeoutException) {
+                    Thread t = workerThread.get();
+                    if (t != null && !t.isInterrupted()) {
+                        t.interrupt();
+                    }
+                }
+            });
+            return timedFuture;
         }
         return future;
     }
@@ -707,30 +704,7 @@ public class LiteflowTemplate {
      * @return 聚合所有命中规则变更后的同一强类型业务上下文实例
      */
     public <T> T executeRoute(String namespace, Object param, T contextBean) {
-        if (contextBean == null) {
-            throw new IllegalArgumentException("contextBean 不能为空");
-        }
-        List<LiteflowResponse> responses;
-        try {
-            responses = (namespace != null && !namespace.isBlank())
-                    ? this.flowExecutor.executeRouteChain(namespace.trim(), param, contextBean)
-                    : this.flowExecutor.executeRouteChain(param, contextBean);
-        } catch (RouteChainNotFoundException | NoMatchedRouteChainException e) {
-            log.debug("ateng-boot-liteflow: 命名空间 [{}] 未匹配到任何决策路由链，保底返回原始上下文: {}", namespace, e.getMessage());
-            responses = Collections.emptyList();
-        }
-
-        if (responses == null || responses.isEmpty()) {
-            log.debug("ateng-boot-liteflow: 决策路由表在命名空间 [{}] 未匹配到任何有效流程链，保底返回原始业务上下文", namespace);
-            return contextBean;
-        }
-
-        for (LiteflowResponse response : responses) {
-            String chainId = response != null ? response.getChainId() : "ROUTE_CHAIN";
-            LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, -1L);
-            checkResponseSuccess(chainId, response, trace);
-        }
-        return contextBean;
+        return executeRouteWithTrace(namespace, param, contextBean).getContext();
     }
 
     /**
@@ -767,6 +741,9 @@ public class LiteflowTemplate {
         } catch (RouteChainNotFoundException | NoMatchedRouteChainException e) {
             log.debug("ateng-boot-liteflow: 命名空间 [{}] 未匹配到任何决策路由链: {}", namespace, e.getMessage());
             responses = Collections.emptyList();
+        } catch (Exception e) {
+            throw new LiteflowExecutionException(namespace != null ? namespace : "ROUTE_CHAIN", null,
+                    "执行决策路由表 [" + namespace + "] 失败: " + e.getMessage(), e);
         }
         long totalDuration = System.currentTimeMillis() - start;
 
@@ -994,16 +971,19 @@ public class LiteflowTemplate {
                     "动态重载 LiteFlow 流程链 [" + chainId + "] 失败，EL 表达式语法校验未通过: " + validationResult.getErrorMessage(), null);
         }
 
-        // 1. 若当前规则链已有运行中定义，自动拍摄有界历史版本快照入栈
+        // 1. 获取当前规则链已有运行中定义与路由元数据
         String existingEl = resolveCurrentChainEl(chainId);
-        if (existingEl != null && !existingEl.equals(el)) {
-            recordSnapshot(chainId, existingEl);
-        }
+        Chain currentChain = FlowBus.containChain(chainId) ? FlowBus.getChain(chainId) : null;
+        String currentRouteEl = currentChain != null ? currentChain.getRouteEl() : null;
+        String currentNamespace = currentChain != null ? currentChain.getNamespace() : null;
 
-        // 2. 编译更新并同步记录当前活跃 EL
+        // 2. 编译更新并同步记录当前活跃 EL 与历史快照（成功后才入快照，防未生效脏记录）
         try {
             FlowBus.reloadChain(chainId, el);
             activeChainEls.put(chainId, el);
+            if (existingEl != null && !existingEl.equals(el)) {
+                recordSnapshot(chainId, existingEl, currentRouteEl, currentNamespace);
+            }
             log.info("ateng-boot-liteflow: 成功动态更新/新建规则链 [{}] -> [{}]", chainId, el);
         } catch (Exception e) {
             throw new LiteflowExecutionException(chainId, null,
@@ -1054,13 +1034,13 @@ public class LiteflowTemplate {
                     "动态重载决策路由链 [" + chainId + "] 失败，routeEl 表达式语法校验未通过: " + routeValidation.getErrorMessage(), null);
         }
 
-        // 1. 若当前规则链已有运行中定义，自动拍摄有界历史版本快照入栈
+        // 1. 获取当前规则链已有运行中定义与路由元数据
         String existingEl = resolveCurrentChainEl(chainId);
-        if (existingEl != null && !existingEl.equals(bodyEl)) {
-            recordSnapshot(chainId, existingEl);
-        }
+        Chain currentChain = FlowBus.containChain(chainId) ? FlowBus.getChain(chainId) : null;
+        String currentRouteEl = currentChain != null ? currentChain.getRouteEl() : null;
+        String currentNamespace = currentChain != null ? currentChain.getNamespace() : null;
 
-        // 2. 编译决策路由链并记录活跃 EL
+        // 2. 编译决策路由链并记录活跃 EL 与历史快照（成功后才入快照，防未生效脏记录）
         try {
             LiteFlowChainELBuilder builder = LiteFlowChainELBuilder.createChain()
                     .setChainId(chainId.trim())
@@ -1071,6 +1051,9 @@ public class LiteflowTemplate {
             }
             builder.build();
             activeChainEls.put(chainId, bodyEl);
+            if (existingEl != null && !existingEl.equals(bodyEl)) {
+                recordSnapshot(chainId, existingEl, currentRouteEl, currentNamespace);
+            }
             log.info("ateng-boot-liteflow: 成功动态更新/新建决策路由链 [{}] [namespace={}] [route={}] -> [{}]",
                     chainId, namespace, routeEl, bodyEl);
         } catch (Exception e) {
@@ -1089,25 +1072,40 @@ public class LiteflowTemplate {
         if (chainId == null || chainId.isBlank()) {
             return false;
         }
-        Deque<String> history = chainHistorySnapshots.get(chainId);
+        Deque<ChainSnapshot> history = chainHistorySnapshots.get(chainId);
         if (history == null || history.isEmpty()) {
             log.warn("ateng-boot-liteflow: 流程链 [{}] 无历史快照可供回退", chainId);
             return false;
         }
-        String previousEl;
+        ChainSnapshot previous;
         synchronized (history) {
             if (history.isEmpty()) {
                 return false;
             }
-            previousEl = history.removeFirst();
+            previous = history.removeFirst();
         }
         try {
-            FlowBus.reloadChain(chainId, previousEl);
-            activeChainEls.put(chainId, previousEl);
-            log.info("ateng-boot-liteflow: 成功将流程链 [{}] 故障回退至历史版本 -> [{}]", chainId, previousEl);
+            if (previous.routeEl() != null && !previous.routeEl().isBlank()) {
+                LiteFlowChainELBuilder builder = LiteFlowChainELBuilder.createChain()
+                        .setChainId(chainId.trim())
+                        .setRoute(previous.routeEl().trim())
+                        .setEL(previous.bodyEl().trim());
+                if (previous.namespace() != null && !previous.namespace().isBlank()) {
+                    builder.setNamespace(previous.namespace().trim());
+                }
+                builder.build();
+            } else {
+                FlowBus.reloadChain(chainId, previous.bodyEl());
+            }
+            activeChainEls.put(chainId, previous.bodyEl());
+            log.info("ateng-boot-liteflow: 成功将流程链 [{}] 故障回退至历史版本 -> [{}] [route={}]",
+                    chainId, previous.bodyEl(), previous.routeEl());
             return true;
         } catch (Exception e) {
-            log.error("ateng-boot-liteflow: 流程链 [{}] 回退至历史版本 [{}] 失败: {}", chainId, previousEl, e.getMessage(), e);
+            // 补偿压栈，防止因重载异常导致快照丢失
+            synchronized (history) {
+                history.addFirst(previous);
+            }
             throw new LiteflowExecutionException(chainId, null,
                     "流程链 [" + chainId + "] 回退至历史版本失败: " + e.getMessage(), e);
         }
@@ -1123,12 +1121,12 @@ public class LiteflowTemplate {
         if (chainId == null || chainId.isBlank()) {
             return Collections.emptyList();
         }
-        Deque<String> history = chainHistorySnapshots.get(chainId);
+        Deque<ChainSnapshot> history = chainHistorySnapshots.get(chainId);
         if (history == null || history.isEmpty()) {
             return Collections.emptyList();
         }
         synchronized (history) {
-            return Collections.unmodifiableList(new ArrayList<>(history));
+            return history.stream().map(ChainSnapshot::displayEl).toList();
         }
     }
 
@@ -1153,7 +1151,7 @@ public class LiteflowTemplate {
         return null;
     }
 
-    private void recordSnapshot(String chainId, String existingEl) {
+    private void recordSnapshot(String chainId, String existingEl, String routeEl, String namespace) {
         if (existingEl == null || existingEl.isBlank()) {
             return;
         }
@@ -1161,9 +1159,9 @@ public class LiteflowTemplate {
         if (max <= 0) {
             return;
         }
-        Deque<String> history = chainHistorySnapshots.computeIfAbsent(chainId, k -> new ConcurrentLinkedDeque<>());
+        Deque<ChainSnapshot> history = chainHistorySnapshots.computeIfAbsent(chainId, k -> new ConcurrentLinkedDeque<>());
         synchronized (history) {
-            history.addFirst(existingEl);
+            history.addFirst(new ChainSnapshot(existingEl, routeEl, namespace));
             while (history.size() > max) {
                 history.removeLast();
             }
@@ -1194,6 +1192,7 @@ public class LiteflowTemplate {
             return false;
         }
         activeChainEls.remove(chainId);
+        chainHistorySnapshots.remove(chainId);
         try {
             boolean removed = FlowBus.removeChain(chainId);
             log.info("ateng-boot-liteflow: 成功动态下线/移除规则链 [{}]", chainId);
@@ -1311,5 +1310,18 @@ public class LiteflowTemplate {
             }
         }
         throw new IllegalStateException("未注入受管异步线程池 Executor，禁止使用 ForkJoinPool 等野线程池执行 executeAsync；请向 LiteflowTemplate 注入受管 Executor (如 ThreadPoolTaskExecutor)");
+    }
+
+    /**
+     * 规则链有界历史快照元数据记录
+     *
+     * @param bodyEl    规则主体 EL 表达式
+     * @param routeEl   决策路由条件表达式（若为普通规则链则为 null）
+     * @param namespace 业务路由命名空间（若未指定或普通规则链则为 null）
+     */
+    public record ChainSnapshot(String bodyEl, String routeEl, String namespace) {
+        public String displayEl() {
+            return bodyEl;
+        }
     }
 }

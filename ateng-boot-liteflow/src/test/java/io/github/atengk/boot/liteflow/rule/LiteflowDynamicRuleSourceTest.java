@@ -313,6 +313,68 @@ class LiteflowDynamicRuleSourceTest {
     }
 
     @Test
+    @DisplayName("验证 removeChain 下线规则链时确定性清理历史快照与活跃映射，防御内存泄漏")
+    void testRemoveChainCleansHistorySnapshots() {
+        String chainId = "chainToRemove";
+        liteflowTemplate.reloadChain(chainId, "THEN(dynStepA);");
+        liteflowTemplate.reloadChain(chainId, "THEN(dynStepB);");
+        assertThat(liteflowTemplate.getChainHistorySnapshots(chainId)).containsExactly("THEN(dynStepA);");
+
+        boolean removed = liteflowTemplate.removeChain(chainId);
+        assertThat(removed).isTrue();
+        assertThat(liteflowTemplate.containChain(chainId)).isFalse();
+        assertThat(liteflowTemplate.getChainHistorySnapshots(chainId)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("验证 EL 语法错误或重载失败时绝不提前记录脏快照")
+    void testReloadChainFailureDoesNotRecordFalseSnapshot() {
+        String chainId = "preserveSnapshotChain";
+        liteflowTemplate.reloadChain(chainId, "THEN(dynStepA);");
+        assertThat(liteflowTemplate.getChainHistorySnapshots(chainId)).isEmpty();
+
+        // 尝试用无效语法更新
+        assertThatThrownBy(() -> liteflowTemplate.reloadChain(chainId, "INVALID_EL("))
+                .isInstanceOf(LiteflowExecutionException.class);
+
+        // 历史快照必须依旧为空，原链 dynStepA 保持生效且不产生重复脏快照
+        assertThat(liteflowTemplate.getChainHistorySnapshots(chainId)).isEmpty();
+        TestRuleContext ctx = liteflowTemplate.execute(chainId, TestRuleContext.class);
+        assertThat(ctx.getTrace()).containsExactly("dynStepA");
+    }
+
+    @Test
+    @DisplayName("验证决策路由链历史版本回退完整保留 route 条件与命名空间元数据")
+    void testRollbackRouteChainPreservesRouteCondition() {
+        String chainId = "rollbackRouteChain";
+        String ns = "TEST_ROLLBACK_ROUTE_NS";
+
+        // 1. 初始化版本 1：routeCondTrue 条件 -> dynStepA
+        liteflowTemplate.reloadRouteChain(chainId, ns, "routeCondTrue", "THEN(dynStepA);");
+        TestRuleContext ctx1 = new TestRuleContext();
+        liteflowTemplate.executeRoute(ns, ctx1);
+        assertThat(ctx1.getTrace()).containsExactly("dynStepA");
+
+        // 2. 更新为版本 2：routeCondFalse 条件 -> dynStepB (条件为假，不命中)
+        liteflowTemplate.reloadRouteChain(chainId, ns, "routeCondFalse", "THEN(dynStepB);");
+        TestRuleContext ctx2 = new TestRuleContext();
+        liteflowTemplate.executeRoute(ns, ctx2);
+        assertThat(ctx2.getTrace()).isEmpty();
+
+        // 3. 执行一键回退至版本 1
+        boolean rolledBack = liteflowTemplate.rollbackChain(chainId);
+        assertThat(rolledBack).isTrue();
+
+        // 4. 强断言：回滚后 routeCondTrue 条件依然完整生效（若退化为普通链则无法匹配路由命名空间）
+        TestRuleContext ctxRolledBack = new TestRuleContext();
+        liteflowTemplate.executeRoute(ns, ctxRolledBack);
+        assertThat(ctxRolledBack.getTrace()).containsExactly("dynStepA");
+
+        // 清理现场
+        liteflowTemplate.removeChain(chainId);
+    }
+
+    @Test
     @DisplayName("验证 RuleSourceDefinition 领域模型契约自洽")
     void testRuleSourceDefinitionContracts() {
         RuleSourceDefinition def1 = new RuleSourceDefinition("chain1", "THEN(dynStepA)");

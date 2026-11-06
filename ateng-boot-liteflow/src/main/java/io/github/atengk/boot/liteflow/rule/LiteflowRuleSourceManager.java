@@ -140,7 +140,7 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
                 }
             } catch (Exception e) {
                 if (properties.getDynamicRule().isFailFast()) {
-                    throw e instanceof RuntimeException ? (RuntimeException) e : new IllegalStateException("刷新规则链 [" + chainId + "] 失败", e);
+                    throw new IllegalStateException("刷新规则链 [" + chainId + "] 失败: " + e.getMessage(), e);
                 }
                 log.error("ateng-boot-liteflow: 刷新规则链 [{}] 失败: {}", chainId, e.getMessage(), e);
             }
@@ -182,7 +182,7 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
             }
         } catch (Exception e) {
             if (properties.getDynamicRule().isFailFast()) {
-                throw e instanceof RuntimeException ? (RuntimeException) e : new IllegalStateException("热更新流程链 [" + chainId + "] 失败", e);
+                throw new IllegalStateException("热更新流程链 [" + chainId + "] 失败: " + e.getMessage(), e);
             }
             log.error("ateng-boot-liteflow: 热更新流程链 [{}] 失败: {}", chainId, e.getMessage(), e);
             return false;

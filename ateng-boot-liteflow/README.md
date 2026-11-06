@@ -503,17 +503,20 @@ public class SettleItemIteratorCmp extends BaseIteratorComponent<BatchSettleCont
 public class SettleTaxCheckIfCmp extends BaseIfComponent<BatchSettleContext> {
     @Override
     public boolean processIf(BatchSettleContext context) {
-        SettleItem item = this.getCurrLoopObj();
-        if (item.isSimulateTaxError()) {
-            throw new BusinessException("税务计算网关超时");
+        SettleItem item = this.getCurrLoopObject(SettleItem.class);
+        if (item != null && item.isSimulateTaxError()) {
+            throw new IllegalStateException("模拟外部税务计算服务超时中断 [itemId=" + item.getItemId() + "]");
         }
-        return true;
+        // 金额大于等于 100 元需进行税务核算
+        return item != null && item.getAmount().doubleValue() >= 100.0;
     }
 
     @Override
-    public boolean onError(BatchSettleContext context, Exception e) {
-        log.warn("【税务校验降级】捕获异常并就地降级: error={}", e.getMessage());
-        context.addDegradedItem(this.getCurrLoopObj().getItemId());
+    public boolean onError(Exception e, BatchSettleContext context) {
+        SettleItem item = this.getCurrLoopObject(SettleItem.class);
+        String itemId = item != null ? item.getItemId() : "UNKNOWN";
+        log.warn("【税务校验降级】明细 [{}] 异常，触发 onError 就地优雅降级: {}", itemId, e.getMessage());
+        context.getDegradedItems().add(itemId);
         return false; // 返回 false 降级流转至备用分支
     }
 }
