@@ -7,6 +7,8 @@ import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import com.baomidou.mybatisplus.core.config.GlobalConfig;
 import com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils;
 import io.github.atengk.boot.core.audit.SqlLogModel;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.enums.SqlTypeEnum;
 import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
 import io.github.atengk.boot.mybatisplus.annotation.IgnoreSqlLog;
@@ -28,16 +30,26 @@ import org.apache.ibatis.session.SqlSessionFactory;
 import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
+import org.springframework.beans.factory.ObjectProvider;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -85,6 +97,9 @@ class SqlLogInterceptorTest {
         @Select("SELECT * FROM non_existent_table")
         List<TestUserEntity> queryInvalidTable();
 
+        @Select("SELECT CAST(username AS BIGINT) FROM t_sqllog_test_user WHERE id = #{id}")
+        Long selectFailedSql(@Param("id") Long id);
+
         @IgnoreSqlLog("测试忽略查询")
         @Select("SELECT id, username FROM t_sqllog_test_user WHERE id = #{id}")
         TestUserEntity selectIgnoredUser(@Param("id") Long id);
@@ -130,6 +145,13 @@ class SqlLogInterceptorTest {
             stmt.execute("INSERT INTO t_sqllog_test_user (id, username, password, phone, email) VALUES (1, 'alice', 'alice_pwd', '13800000001', 'alice@example.com');");
             stmt.execute("INSERT INTO t_sqllog_test_user (id, username, password, phone, email) VALUES (2, 'bob', 'bob_pwd', '13800000002', 'bob@example.com');");
         }
+    }
+
+    @AfterEach
+    void cleanupContext() {
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
     }
 
     private SqlSessionFactory createSessionFactory(SqlLogInterceptor interceptor) {
@@ -649,5 +671,136 @@ class SqlLogInterceptorTest {
             defaultProvider.store(null);
             defaultProvider.store(model);
         });
+    }
+
+    @Test
+    @DisplayName("失败现场采集：当 include-select=false 时，执行失败的 SELECT 语句仍必须全真记录审计")
+    void testFailedSelectCapturedInStorageEvenWhenIncludeSelectFalse() {
+        List<SqlLogModel> storedModels = new ArrayList<>();
+
+        SqlLogProperties properties = new SqlLogProperties();
+        properties.setEnabled(true);
+        properties.getStorage().setEnabled(true);
+        properties.getStorage().setAsync(false);
+        // 关键防护：关闭 SELECT 审计
+        properties.getStorage().setIncludeSelect(false);
+
+        SqlLogInterceptor interceptor = new SqlLogInterceptor(
+                properties,
+                null,
+                storedModels::add,
+                null,
+                null
+        );
+        SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
+
+        try (SqlSession sqlSession = sessionFactory.openSession()) {
+            TestUserMapper mapper = sqlSession.getMapper(TestUserMapper.class);
+
+            // 1. 正常的 SELECT 查询应被 include-select=false 过滤跳过
+            TestUserEntity user = mapper.selectUserById(1L);
+            assertThat(user).isNotNull();
+            assertThat(storedModels).isEmpty();
+
+            // 2. 失败的 SELECT 查询必须 100% 采集现场，不受 includeSelect 过滤
+            assertThatThrownBy(() -> mapper.selectFailedSql(1L))
+                    .isInstanceOf(Exception.class);
+        }
+
+        // 验证失败现场已被审计采集
+        assertThat(storedModels).hasSize(1);
+        SqlLogModel failModel = storedModels.get(0);
+        assertThat(failModel.getSqlType()).isEqualTo(SqlTypeEnum.SELECT);
+        assertThat(failModel.getStatus()).isEqualTo(1);
+        assertThat(failModel.isSuccess()).isFalse();
+        assertThat(failModel.getErrorMsg()).isNotBlank();
+        assertThat(failModel.getStatementId()).contains("selectFailedSql");
+    }
+
+    @Test
+    @DisplayName("异步调度与上下文透传：异步线程池调度时通过 AsyncContext 完整透传四维快照")
+    void testStorageAsyncDispatchWithContextSnapshot() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<String> asyncTraceId = new AtomicReference<>();
+        AtomicReference<String> asyncTenantId = new AtomicReference<>();
+        AtomicReference<String> asyncUserId = new AtomicReference<>();
+        AtomicReference<Thread> asyncThread = new AtomicReference<>();
+        List<SqlLogModel> storedModels = new CopyOnWriteArrayList<>();
+
+        ExecutorService executorService = Executors.newSingleThreadExecutor();
+        try {
+            SqlLogProperties properties = new SqlLogProperties();
+            properties.setEnabled(true);
+            properties.getStorage().setEnabled(true);
+            properties.getStorage().setAsync(true);
+            properties.getStorage().setIncludeSelect(true);
+
+            SqlLogStorageProvider customStorage = model -> {
+                storedModels.add(model);
+                asyncThread.set(Thread.currentThread());
+                asyncTraceId.set(MDC.get("traceId"));
+                asyncTenantId.set(TenantContextHolder.getTenantId());
+                asyncUserId.set(UserContextHolder.getUserId());
+                latch.countDown();
+            };
+
+            ObjectProvider<Executor> executorProvider = new ObjectProvider<>() {
+                @Override
+                public Executor getObject(Object... args) {
+                    return executorService;
+                }
+
+                @Override
+                public Executor getIfAvailable() {
+                    return executorService;
+                }
+
+                @Override
+                public Executor getIfUnique() {
+                    return executorService;
+                }
+
+                @Override
+                public Executor getObject() {
+                    return executorService;
+                }
+            };
+
+            SqlLogInterceptor interceptor = new SqlLogInterceptor(
+                    properties,
+                    null,
+                    customStorage,
+                    executorProvider,
+                    null
+            );
+            SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
+
+            // 主线程注入四维上下文
+            MDC.put("traceId", "async-trace-001");
+            TenantContextHolder.setTenantId("async-tenant-999");
+            UserContextHolder.setUserId("async-user-888");
+
+            try (SqlSession sqlSession = sessionFactory.openSession()) {
+                TestUserMapper mapper = sqlSession.getMapper(TestUserMapper.class);
+                mapper.selectUserById(1L);
+            }
+
+            boolean completed = latch.await(5, TimeUnit.SECONDS);
+            assertThat(completed).isTrue();
+
+            // 验证在不同的异步工作线程中执行
+            assertThat(asyncThread.get()).isNotEqualTo(Thread.currentThread());
+            // 验证四维上下文快照被 AsyncContext 完整还原
+            assertThat(asyncTraceId.get()).isEqualTo("async-trace-001");
+            assertThat(asyncTenantId.get()).isEqualTo("async-tenant-999");
+            assertThat(asyncUserId.get()).isEqualTo("async-user-888");
+
+            assertThat(storedModels).hasSize(1);
+            assertThat(storedModels.get(0).getTraceId()).isEqualTo("async-trace-001");
+            assertThat(storedModels.get(0).getTenantId()).isEqualTo("async-tenant-999");
+            assertThat(storedModels.get(0).getUserId()).isEqualTo("async-user-888");
+        } finally {
+            executorService.shutdownNow();
+        }
     }
 }

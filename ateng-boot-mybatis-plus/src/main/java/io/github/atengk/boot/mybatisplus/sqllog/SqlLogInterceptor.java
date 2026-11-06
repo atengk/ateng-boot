@@ -2,10 +2,10 @@ package io.github.atengk.boot.mybatisplus.sqllog;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.audit.SqlLogModel;
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.enums.SqlTypeEnum;
-import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.mybatisplus.annotation.IgnoreSqlLog;
 import io.github.atengk.boot.mybatisplus.properties.SqlLogProperties;
 import io.github.atengk.boot.mybatisplus.util.MybatisInterceptorUtil;
@@ -64,34 +64,73 @@ public class SqlLogInterceptor implements Interceptor {
     private static final Logger log = LoggerFactory.getLogger(SqlLogInterceptor.class);
     private static final String MDC_TRACE_ID_KEY = "traceId";
 
+    private static final Method DYNAMIC_DS_PEEK_METHOD;
+    static {
+        Method method = null;
+        try {
+            Class<?> clazz = Class.forName("com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder");
+            method = clazz.getMethod("peek");
+        } catch (Throwable ignored) {
+            // dynamic-datasource 依赖未引入时静默忽略
+        }
+        DYNAMIC_DS_PEEK_METHOD = method;
+    }
+
+    /**
+     * 内部 SQL 拦截执行四维与数据源上下文快照（消除数据泥团 Data Clump）
+     */
+    private record SqlExecutionContext(
+            String traceId,
+            String tenantId,
+            String userId,
+            String userName,
+            String datasource
+    ) {
+        static SqlExecutionContext capture(Invocation invocation) {
+            String traceId = MDC.get(MDC_TRACE_ID_KEY);
+            String tenantId = TenantContextHolder.getTenantId();
+            String userId = UserContextHolder.getUserId();
+            String userName = UserContextHolder.get();
+            String datasource = resolveDatasource(invocation);
+            return new SqlExecutionContext(traceId, tenantId, userId, userName, datasource);
+        }
+    }
+
     private final SqlLogProperties properties;
     private final Consumer<String> logConsumer;
     private final SqlLogStorageProvider storageProvider;
     private final ObjectProvider<Executor> taskExecutorProvider;
     private final ApplicationEventPublisher eventPublisher;
-    private final ObjectMapper objectMapper;
     private final ConcurrentMap<String, Boolean> ignoreAnnotationCache = new ConcurrentHashMap<>();
 
     public SqlLogInterceptor(SqlLogProperties properties) {
-        this(properties, null, null, null, null, null);
+        this(properties, null, null, null, null);
     }
 
     public SqlLogInterceptor(SqlLogProperties properties, Consumer<String> logConsumer) {
-        this(properties, logConsumer, null, null, null, null);
+        this(properties, logConsumer, null, null, null);
     }
 
     public SqlLogInterceptor(SqlLogProperties properties,
                              Consumer<String> logConsumer,
                              SqlLogStorageProvider storageProvider,
                              ObjectProvider<Executor> taskExecutorProvider,
-                             ApplicationEventPublisher eventPublisher,
-                             ObjectMapper objectMapper) {
+                             ApplicationEventPublisher eventPublisher) {
         this.properties = properties != null ? properties : new SqlLogProperties();
         this.logConsumer = logConsumer;
         this.storageProvider = storageProvider;
         this.taskExecutorProvider = taskExecutorProvider;
         this.eventPublisher = eventPublisher;
-        this.objectMapper = objectMapper != null ? objectMapper : JsonUtil.getObjectMapper();
+    }
+
+    @Deprecated
+    public SqlLogInterceptor(SqlLogProperties properties,
+                             Consumer<String> logConsumer,
+                             SqlLogStorageProvider storageProvider,
+                             ObjectProvider<Executor> taskExecutorProvider,
+                             ApplicationEventPublisher eventPublisher,
+                             ObjectMapper objectMapper) {
+        this(properties, logConsumer, storageProvider, taskExecutorProvider, eventPublisher);
     }
 
     public SqlLogProperties getProperties() {
@@ -131,24 +170,18 @@ public class SqlLogInterceptor implements Interceptor {
         }
 
         // 捕获上下文快照
-        String traceId = MDC.get(MDC_TRACE_ID_KEY);
-        String tenantId = TenantContextHolder.getTenantId();
-        String userId = UserContextHolder.getUserId();
-        String userName = UserContextHolder.get();
-        String datasource = resolveDatasource(invocation);
+        SqlExecutionContext ctx = SqlExecutionContext.capture(invocation);
 
         long startNanos = System.nanoTime();
         Object result = null;
         try {
             result = invocation.proceed();
             long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
-            processSuccess(statementHandler, mappedStatement, methodName, result, elapsedMillis,
-                    traceId, tenantId, userId, userName, datasource);
+            processSuccess(statementHandler, mappedStatement, methodName, result, elapsedMillis, ctx);
             return result;
         } catch (Throwable t) {
             long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
-            processFailure(statementHandler, mappedStatement, t, elapsedMillis,
-                    traceId, tenantId, userId, userName, datasource);
+            processFailure(statementHandler, mappedStatement, t, elapsedMillis, ctx);
             throw t;
         }
     }
@@ -199,11 +232,7 @@ public class SqlLogInterceptor implements Interceptor {
                                 String methodName,
                                 Object result,
                                 long elapsedMillis,
-                                String traceId,
-                                String tenantId,
-                                String userId,
-                                String userName,
-                                String datasource) {
+                                SqlExecutionContext ctx) {
         try {
             String statementId = mappedStatement.getId();
             Configuration configuration = mappedStatement.getConfiguration();
@@ -236,22 +265,8 @@ public class SqlLogInterceptor implements Interceptor {
                     String storageSql = formatAndTruncateSql(boundSql, configuration, storageMaxLen);
                     Long affectedRows = resolveAffectedRows(methodName, result);
 
-                    SqlLogModel logModel = SqlLogModel.builder()
-                            .traceId(traceId)
-                            .tenantId(tenantId)
-                            .userId(userId)
-                            .userName(userName)
-                            .datasource(datasource)
-                            .statementId(statementId)
-                            .sql(storageSql)
-                            .sqlType(sqlType)
-                            .costTime(elapsedMillis)
-                            .affectedRows(affectedRows)
-                            .status(0)
-                            .errorMsg(null)
-                            .callLocation(callLocation)
-                            .operateTime(LocalDateTime.now())
-                            .build();
+                    SqlLogModel logModel = buildLogModel(ctx, statementId, storageSql, sqlType,
+                            elapsedMillis, affectedRows, 0, null, callLocation);
 
                     dispatchLog(logModel);
                 }
@@ -265,11 +280,7 @@ public class SqlLogInterceptor implements Interceptor {
                                 MappedStatement mappedStatement,
                                 Throwable t,
                                 long elapsedMillis,
-                                String traceId,
-                                String tenantId,
-                                String userId,
-                                String userName,
-                                String datasource) {
+                                SqlExecutionContext ctx) {
         try {
             String statementId = mappedStatement.getId();
             Configuration configuration = mappedStatement.getConfiguration();
@@ -294,36 +305,47 @@ public class SqlLogInterceptor implements Interceptor {
                 outputLog(sb.toString(), true);
             }
 
-            // 2. 结构化 SPI 审计持久化管道（失败现场采集）
+            // 2. 结构化 SPI 审计持久化管道（失败现场 100% 采集，不受 includeSelect 过滤限制）
             if (isStorageActive()) {
                 SqlTypeEnum sqlType = resolveSqlType(mappedStatement.getSqlCommandType());
-                if (shouldDispatchToStorage(sqlType)) {
-                    int storageMaxLen = properties.getStorage().getMaxSqlLength();
-                    String storageSql = formatAndTruncateSql(boundSql, configuration, storageMaxLen);
+                int storageMaxLen = properties.getStorage().getMaxSqlLength();
+                String storageSql = formatAndTruncateSql(boundSql, configuration, storageMaxLen);
 
-                    SqlLogModel logModel = SqlLogModel.builder()
-                            .traceId(traceId)
-                            .tenantId(tenantId)
-                            .userId(userId)
-                            .userName(userName)
-                            .datasource(datasource)
-                            .statementId(statementId)
-                            .sql(storageSql)
-                            .sqlType(sqlType)
-                            .costTime(elapsedMillis)
-                            .affectedRows(0L)
-                            .status(1)
-                            .errorMsg(errorMessage)
-                            .callLocation(callLocation)
-                            .operateTime(LocalDateTime.now())
-                            .build();
+                SqlLogModel logModel = buildLogModel(ctx, statementId, storageSql, sqlType,
+                        elapsedMillis, 0L, 1, errorMessage, callLocation);
 
-                    dispatchLog(logModel);
-                }
+                dispatchLog(logModel);
             }
         } catch (Throwable ex) {
             log.error("输出 SQL 执行失败现场日志异常", ex);
         }
+    }
+
+    private SqlLogModel buildLogModel(SqlExecutionContext ctx,
+                                      String statementId,
+                                      String storageSql,
+                                      SqlTypeEnum sqlType,
+                                      long elapsedMillis,
+                                      Long affectedRows,
+                                      int status,
+                                      String errorMsg,
+                                      String callLocation) {
+        return SqlLogModel.builder()
+                .traceId(ctx.traceId())
+                .tenantId(ctx.tenantId())
+                .userId(ctx.userId())
+                .userName(ctx.userName())
+                .datasource(ctx.datasource())
+                .statementId(statementId)
+                .sql(storageSql)
+                .sqlType(sqlType)
+                .costTime(elapsedMillis)
+                .affectedRows(affectedRows)
+                .status(status)
+                .errorMsg(errorMsg)
+                .callLocation(callLocation)
+                .operateTime(LocalDateTime.now())
+                .build();
     }
 
     private boolean isStorageActive() {
@@ -348,7 +370,8 @@ public class SqlLogInterceptor implements Interceptor {
         Executor executor = (async && taskExecutorProvider != null) ? taskExecutorProvider.getIfAvailable() : null;
         if (executor != null) {
             try {
-                executor.execute(() -> safeStoreAndPublish(logModel));
+                Runnable task = AsyncContext.wrap(() -> safeStoreAndPublish(logModel));
+                executor.execute(task);
             } catch (Exception e) {
                 log.warn("[SQL_LOG] 异步派发 SQL 审计记录失败，降级同步执行: traceId={}, statementId={}, error={}",
                         logModel.getTraceId(), logModel.getStatementId(), e.getMessage());
@@ -386,16 +409,16 @@ public class SqlLogInterceptor implements Interceptor {
         };
     }
 
-    private String resolveDatasource(Invocation invocation) {
-        // 1. 优先探测第三方 dynamic-datasource 活跃数据源 key
-        try {
-            Class<?> holderClass = Class.forName("com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder");
-            Method peekMethod = holderClass.getMethod("peek");
-            Object dsKey = peekMethod.invoke(null);
-            if (dsKey != null && StringUtils.hasText(dsKey.toString())) {
-                return dsKey.toString();
+    private static String resolveDatasource(Invocation invocation) {
+        // 1. 优先探测第三方 dynamic-datasource 活跃数据源 key（静态缓存反射加速）
+        if (DYNAMIC_DS_PEEK_METHOD != null) {
+            try {
+                Object dsKey = DYNAMIC_DS_PEEK_METHOD.invoke(null);
+                if (dsKey != null && StringUtils.hasText(dsKey.toString())) {
+                    return dsKey.toString();
+                }
+            } catch (Throwable ignored) {
             }
-        } catch (Throwable ignored) {
         }
 
         // 2. 尝试从 Statement 活跃物理连接获取 catalog/database

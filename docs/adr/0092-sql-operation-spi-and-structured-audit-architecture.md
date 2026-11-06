@@ -54,13 +54,13 @@ flowchart TD
 - 只读查询（`SELECT`）默认跳过，通过配置开关 `storage.include-select=true` 满足等保合规全量审计诉求。
 
 ### 3. 跨层模型下沉与强类型契约 (Core Convergence & Strong Typing)
-- 遵循 [ADR-0021](./0021-core-baseline-convergence-and-zero-bloat-freeze-strategy.md) 底座收敛铁律，将通用物理 SQL 审计元数据模型 [`SqlLogModel`](file:///d:/My/dev/ateng-boot/ateng-boot-core/src/main/java/io/github/atengk/boot/core/audit/SqlLogModel.java) 与强类型枚举 [`SqlTypeEnum`](file:///d:/My/dev/ateng-boot/ateng-boot-core/src/main/java/io/github/atengk/boot/core/enums/SqlTypeEnum.java) 下沉收敛至 `ateng-boot-core`；
+- 遵循 [ADR-0021](./0021-core-baseline-convergence-and-zero-bloat-freeze-strategy.md) 底座收敛铁律，将通用物理 SQL 审计元数据模型 [`SqlLogModel`](../../ateng-boot-core/src/main/java/io/github/atengk/boot/core/audit/SqlLogModel.java) 与强类型枚举 [`SqlTypeEnum`](../../ateng-boot-core/src/main/java/io/github/atengk/boot/core/enums/SqlTypeEnum.java) 下沉收敛至 `ateng-boot-core`；
 - 模型包含 `traceId`、`tenantId`、`userId`、`userName`、`datasource`、`statementId`、`sql`、`sqlType`、`costTime`、`affectedRows`、`status`、`errorMsg`、`callLocation`、`operateTime` 与 `extra`，下游日志微服务无需依赖 MyBatis-Plus 即可直接反序列化。
 
 ### 4. 标准 SPI 契约与开箱即用保底 (SPI Contract & Out-of-the-Box Fallback)
-- 提供 [`SqlLogStorageProvider`](file:///d:/My/dev/ateng-boot/ateng-boot-mybatis-plus/src/main/java/io/github/atengk/boot/mybatisplus/sqllog/SqlLogStorageProvider.java) 函数式 SPI 契约供业务接入；
-- 当启用 `storage.enabled=true` 且下游未注册任何自定义 SPI Bean 时，自动装配 [`DefaultSqlLogStorageProvider`](file:///d:/My/dev/ateng-boot/ateng-boot-mybatis-plus/src/main/java/io/github/atengk/boot/mybatisplus/sqllog/DefaultSqlLogStorageProvider.java)，基于 SLF4J 打印标准紧凑 JSON 保底；
-- 同步通过 Spring 原生事件总线发布 [`SqlLogEvent`](file:///d:/My/dev/ateng-boot/ateng-boot-mybatis-plus/src/main/java/io/github/atengk/boot/mybatisplus/sqllog/SqlLogEvent.java)，支持单体应用内基于 `@EventListener` 异步消费。
+- 提供 [`SqlLogStorageProvider`](../../ateng-boot-mybatis-plus/src/main/java/io/github/atengk/boot/mybatisplus/sqllog/SqlLogStorageProvider.java) 函数式 SPI 契约供业务接入；
+- 当启用 `storage.enabled=true` 且下游未注册任何自定义 SPI Bean 时，自动装配 [`DefaultSqlLogStorageProvider`](../../ateng-boot-mybatis-plus/src/main/java/io/github/atengk/boot/mybatisplus/sqllog/DefaultSqlLogStorageProvider.java)，基于 SLF4J 打印标准紧凑 JSON 保底；
+- 同步通过 Spring 原生事件总线发布 [`SqlLogEvent`](../../ateng-boot-mybatis-plus/src/main/java/io/github/atengk/boot/mybatisplus/sqllog/SqlLogEvent.java)，支持单体应用内基于 `@EventListener` 异步消费。
 
 ### 5. 受管异步调度与失败现场采集 (Managed Async Dispatch & Failure Telemetry)
 - 默认接入 Core 受管异步线程池设施（`taskExecutorProvider`），携带 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 四维上下文快照跨线程透传；
@@ -68,7 +68,7 @@ flowchart TD
 - 当物理 SQL 执行发生异常（如唯一索引冲突、死锁等）时，全真捕获 `status = 1` 与异常错误信息派发至 SPI，随后将原始异常原样向外抛出以保障事务正常回滚。
 
 ### 6. 细粒度过滤与多数据源动态感知 (Granular Exclusion & Dynamic Datasource)
-- **代码级声明式防卫**：提供 [`@IgnoreSqlLog`](file:///d:/My/dev/ateng-boot/ateng-boot-mybatis-plus/src/main/java/io/github/atengk/boot/mybatisplus/annotation/IgnoreSqlLog.java) 注解，可标记于 Mapper 接口或方法，纳秒级缓存短路；
+- **代码级声明式防卫**：提供 [`@IgnoreSqlLog`](../../ateng-boot-mybatis-plus/src/main/java/io/github/atengk/boot/mybatisplus/annotation/IgnoreSqlLog.java) 注解，可标记于 Mapper 接口或方法，纳秒级缓存短路；
 - **配置级全局通配防卫**：提供 `exclude-statements` 配置项，支持 Ant 风格通配排除特定 StatementId；
 - **多数据源感知**：主动探测动态路由数据源上下文及活跃连接元数据，自动填充 `SqlLogModel.datasource` 标识。
 

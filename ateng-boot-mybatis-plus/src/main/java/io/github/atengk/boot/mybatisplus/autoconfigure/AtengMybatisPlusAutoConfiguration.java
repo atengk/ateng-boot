@@ -389,7 +389,7 @@ public class AtengMybatisPlusAutoConfiguration {
     @ConditionalOnMissingBean(SqlLogStorageProvider.class)
     @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.sql-log.storage", name = "enabled", havingValue = "true")
     public SqlLogStorageProvider defaultSqlLogStorageProvider(ObjectProvider<ObjectMapper> objectMapperProvider) {
-        return new DefaultSqlLogStorageProvider(objectMapperProvider.getIfAvailable(ObjectMapper::new));
+        return new DefaultSqlLogStorageProvider(objectMapperProvider.getIfAvailable(JsonUtil::getObjectMapper));
     }
 
     /**
@@ -398,7 +398,6 @@ public class AtengMybatisPlusAutoConfiguration {
      * @param storageProvider 可选的物理 SQL 审计存储 SPI 提供者
      * @param taskExecutorProvider 可选的受管异步任务执行器提供者
      * @param eventPublisher Spring 事件发布器
-     * @param objectMapperProvider Jackson ObjectMapper 提供者
      * @return SQL 日志拦截器实例
      */
     @Bean
@@ -407,15 +406,13 @@ public class AtengMybatisPlusAutoConfiguration {
     public SqlLogInterceptor sqlLogInterceptor(
             ObjectProvider<SqlLogStorageProvider> storageProvider,
             ObjectProvider<Executor> taskExecutorProvider,
-            ApplicationEventPublisher eventPublisher,
-            ObjectProvider<ObjectMapper> objectMapperProvider) {
+            ApplicationEventPublisher eventPublisher) {
         return new SqlLogInterceptor(
                 properties.getSqlLog(),
                 null,
                 storageProvider.getIfAvailable(),
                 taskExecutorProvider,
-                eventPublisher,
-                objectMapperProvider.getIfAvailable(ObjectMapper::new)
+                eventPublisher
         );
     }
 
