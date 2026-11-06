@@ -124,6 +124,11 @@ public class AtengLiteflowProperties {
         private boolean autoLoadOnStartup = true;
 
         /**
+         * 动态规则历史版本快照最大保留数量（防御内存无界膨胀，默认 5）
+         */
+        private int maxHistorySnapshots = 5;
+
+        /**
          * 数据库动态规则加载器配置
          */
         @NestedConfigurationProperty

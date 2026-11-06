@@ -144,4 +144,30 @@ public class LiteflowDynamicRuleController {
             return Result.success("全量规则源热重载事件已发布");
         }
     }
+
+    /**
+     * 一键故障回退指定流程链至上一个历史版本快照
+     *
+     * @param chainId 流程链标识
+     * @return 是否成功回退
+     */
+    @PostMapping("/rollback-chain")
+    public Result<Boolean> rollbackChain(@NotBlank(message = "规则链 chainId 不能为空") @RequestParam("chainId") String chainId) {
+        log.info("【动态规则】请求一键回退流程链至上一历史快照：chainId={}", chainId);
+        boolean success = liteflowTemplate.rollbackChain(chainId);
+        return Result.success(success);
+    }
+
+    /**
+     * 查询指定流程链的历史版本 EL 快照列表（按时间倒序排列）
+     *
+     * @param chainId 流程链标识
+     * @return 历史快照列表
+     */
+    @GetMapping("/chain-snapshots")
+    public Result<java.util.List<String>> getChainSnapshots(@NotBlank(message = "规则链 chainId 不能为空") @RequestParam("chainId") String chainId) {
+        java.util.List<String> snapshots = liteflowTemplate.getChainHistorySnapshots(chainId);
+        log.info("【动态规则】查询规则链历史快照：chainId={}, count={}", chainId, snapshots.size());
+        return Result.success(snapshots);
+    }
 }

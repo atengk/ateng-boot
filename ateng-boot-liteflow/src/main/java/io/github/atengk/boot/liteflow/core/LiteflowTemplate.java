@@ -6,6 +6,7 @@ import com.yomahub.liteflow.core.FlowExecutor;
 import com.yomahub.liteflow.enums.FlowParserTypeEnum;
 import com.yomahub.liteflow.flow.FlowBus;
 import com.yomahub.liteflow.flow.LiteflowResponse;
+import com.yomahub.liteflow.flow.element.Chain;
 import com.yomahub.liteflow.flow.entity.CmpStep;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.util.SpringUtil;
@@ -17,13 +18,19 @@ import io.github.atengk.boot.liteflow.trace.LiteflowTraceResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Queue;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 
@@ -42,6 +49,8 @@ public class LiteflowTemplate {
     private final FlowExecutor flowExecutor;
     private final Executor asyncExecutor;
     private final AtengLiteflowProperties properties;
+    private final ConcurrentMap<String, Deque<String>> chainHistorySnapshots = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, String> activeChainEls = new ConcurrentHashMap<>();
 
     public LiteflowTemplate(FlowExecutor flowExecutor) {
         this(flowExecutor, null, null);
@@ -680,7 +689,7 @@ public class LiteflowTemplate {
 
     /**
      * 动态热更新或新建单条规则流程链
-     * 先行校验 EL 表达式合法性，防御因非法表达式导致线上既有规则链被破坏
+     * 先行校验 EL 表达式合法性，并在热更新前自动捕获有界历史版本快照，防御因非法表达式导致线上既有规则链被破坏
      *
      * @param chainId 目标规则链 ID
      * @param el      新的 EL 表达式定义
@@ -697,12 +706,112 @@ public class LiteflowTemplate {
             throw new LiteflowExecutionException(chainId, null,
                     "动态重载 LiteFlow 流程链 [" + chainId + "] 失败，EL 表达式语法校验未通过: " + validationResult.getErrorMessage(), null);
         }
+
+        // 1. 若当前规则链已有运行中定义，自动拍摄有界历史版本快照入栈
+        String existingEl = resolveCurrentChainEl(chainId);
+        if (existingEl != null && !existingEl.equals(el)) {
+            recordSnapshot(chainId, existingEl);
+        }
+
+        // 2. 编译更新并同步记录当前活跃 EL
         try {
             FlowBus.reloadChain(chainId, el);
+            activeChainEls.put(chainId, el);
             log.info("ateng-boot-liteflow: 成功动态更新/新建规则链 [{}] -> [{}]", chainId, el);
         } catch (Exception e) {
             throw new LiteflowExecutionException(chainId, null,
                     "动态重载 LiteFlow 流程链 [" + chainId + "] 失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 将指定流程链一键故障回退至上一个有效的历史版本快照
+     *
+     * @param chainId 流程链 ID
+     * @return true 表示成功回退至上一个快照；false 表示无历史快照可供回退
+     */
+    public boolean rollbackChain(String chainId) {
+        if (chainId == null || chainId.isBlank()) {
+            return false;
+        }
+        Deque<String> history = chainHistorySnapshots.get(chainId);
+        if (history == null || history.isEmpty()) {
+            log.warn("ateng-boot-liteflow: 流程链 [{}] 无历史快照可供回退", chainId);
+            return false;
+        }
+        String previousEl;
+        synchronized (history) {
+            if (history.isEmpty()) {
+                return false;
+            }
+            previousEl = history.removeFirst();
+        }
+        try {
+            FlowBus.reloadChain(chainId, previousEl);
+            activeChainEls.put(chainId, previousEl);
+            log.info("ateng-boot-liteflow: 成功将流程链 [{}] 故障回退至历史版本 -> [{}]", chainId, previousEl);
+            return true;
+        } catch (Exception e) {
+            log.error("ateng-boot-liteflow: 流程链 [{}] 回退至历史版本 [{}] 失败: {}", chainId, previousEl, e.getMessage(), e);
+            throw new LiteflowExecutionException(chainId, null,
+                    "流程链 [" + chainId + "] 回退至历史版本失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 获取指定流程链的历史版本 EL 快照列表（按时间倒序排列，最新快照在前）
+     *
+     * @param chainId 流程链 ID
+     * @return 历史快照列表，若无快照则保底返回空列表
+     */
+    public List<String> getChainHistorySnapshots(String chainId) {
+        if (chainId == null || chainId.isBlank()) {
+            return Collections.emptyList();
+        }
+        Deque<String> history = chainHistorySnapshots.get(chainId);
+        if (history == null || history.isEmpty()) {
+            return Collections.emptyList();
+        }
+        synchronized (history) {
+            return Collections.unmodifiableList(new ArrayList<>(history));
+        }
+    }
+
+    private int getMaxHistorySnapshots() {
+        if (properties != null && properties.getDynamicRule() != null) {
+            return properties.getDynamicRule().getMaxHistorySnapshots();
+        }
+        return 5;
+    }
+
+    private String resolveCurrentChainEl(String chainId) {
+        String active = activeChainEls.get(chainId);
+        if (active != null && !active.isBlank()) {
+            return active;
+        }
+        if (FlowBus.containChain(chainId)) {
+            Chain chain = FlowBus.getChain(chainId);
+            if (chain != null && chain.getEl() != null && !chain.getEl().isBlank()) {
+                return chain.getEl();
+            }
+        }
+        return null;
+    }
+
+    private void recordSnapshot(String chainId, String existingEl) {
+        if (existingEl == null || existingEl.isBlank()) {
+            return;
+        }
+        int max = getMaxHistorySnapshots();
+        if (max <= 0) {
+            return;
+        }
+        Deque<String> history = chainHistorySnapshots.computeIfAbsent(chainId, k -> new ConcurrentLinkedDeque<>());
+        synchronized (history) {
+            history.addFirst(existingEl);
+            while (history.size() > max) {
+                history.removeLast();
+            }
         }
     }
 
@@ -729,6 +838,7 @@ public class LiteflowTemplate {
         if (chainId == null || chainId.isBlank()) {
             return false;
         }
+        activeChainEls.remove(chainId);
         try {
             boolean removed = FlowBus.removeChain(chainId);
             log.info("ateng-boot-liteflow: 成功动态下线/移除规则链 [{}]", chainId);

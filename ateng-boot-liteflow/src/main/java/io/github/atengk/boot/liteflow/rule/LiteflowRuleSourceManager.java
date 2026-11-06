@@ -167,6 +167,26 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
     }
 
     /**
+     * 将流程链一键故障回退至上一个历史版本快照
+     *
+     * @param chainId 流程链 ID
+     * @return true 表示成功回退；false 表示无历史快照
+     */
+    public boolean rollbackChain(String chainId) {
+        return this.liteflowTemplate.rollbackChain(chainId);
+    }
+
+    /**
+     * 获取指定流程链的历史版本 EL 快照列表（按时间倒序排列）
+     *
+     * @param chainId 流程链 ID
+     * @return 历史快照列表，若无快照则保底返回空列表
+     */
+    public List<String> getChainHistorySnapshots(String chainId) {
+        return this.liteflowTemplate.getChainHistorySnapshots(chainId);
+    }
+
+    /**
      * 获取所有已注册的规则源提供者列表（已按优先级排序）
      *
      * @return 规则源列表

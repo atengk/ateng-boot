@@ -240,6 +240,77 @@ class LiteflowDynamicRuleSourceTest {
     }
 
     @Test
+    @DisplayName("验证动态规则历史快照自动捕获与一键回退 (rollbackChain)")
+    void testChainHistorySnapshotsAndRollback() {
+        String chainId = "rollbackTestChain";
+        // 1. 首次加载 (v1)
+        liteflowTemplate.reloadChain(chainId, "THEN(dynStepA);");
+        assertThat(liteflowTemplate.getChainHistorySnapshots(chainId)).isEmpty();
+
+        // 2. 第二次更新 (v2)
+        liteflowTemplate.reloadChain(chainId, "THEN(dynStepB);");
+        assertThat(liteflowTemplate.getChainHistorySnapshots(chainId)).containsExactly("THEN(dynStepA);");
+
+        // 3. 第三次更新 (v3)
+        liteflowTemplate.reloadChain(chainId, "THEN(dynStepC);");
+        assertThat(liteflowTemplate.getChainHistorySnapshots(chainId))
+                .containsExactly("THEN(dynStepB);", "THEN(dynStepA);");
+
+        // 验证当前生效为 v3 (dynStepC)
+        TestRuleContext ctx3 = liteflowTemplate.execute(chainId, TestRuleContext.class);
+        assertThat(ctx3.getTrace()).containsExactly("dynStepC");
+
+        // 4. 一键回退至上一版本 (v2)
+        boolean rollback1 = liteflowTemplate.rollbackChain(chainId);
+        assertThat(rollback1).isTrue();
+        assertThat(liteflowTemplate.getChainHistorySnapshots(chainId)).containsExactly("THEN(dynStepA);");
+
+        TestRuleContext ctx2 = liteflowTemplate.execute(chainId, TestRuleContext.class);
+        assertThat(ctx2.getTrace()).containsExactly("dynStepB");
+
+        // 5. 再次回退至初始版本 (v1)
+        boolean rollback2 = ruleSourceManager.rollbackChain(chainId);
+        assertThat(rollback2).isTrue();
+        assertThat(ruleSourceManager.getChainHistorySnapshots(chainId)).isEmpty();
+
+        TestRuleContext ctx1 = liteflowTemplate.execute(chainId, TestRuleContext.class);
+        assertThat(ctx1.getTrace()).containsExactly("dynStepA");
+
+        // 6. 无历史快照时安全降级返回 false
+        boolean rollback3 = liteflowTemplate.rollbackChain(chainId);
+        assertThat(rollback3).isFalse();
+    }
+
+    @Test
+    @DisplayName("验证动态规则历史快照上限截断 (maxHistorySnapshots=5 防御内存膨胀)")
+    void testSnapshotRetentionBoundLimit() {
+        String chainId = "boundedChain";
+        // 连续更新 7 个不同版本 (v1 至 v7)
+        liteflowTemplate.reloadChain(chainId, "THEN(dynStepA);");
+        liteflowTemplate.reloadChain(chainId, "THEN(dynStepB);");
+        liteflowTemplate.reloadChain(chainId, "THEN(dynStepC);");
+        liteflowTemplate.reloadChain(chainId, "THEN(dynStepA, dynStepB);");
+        liteflowTemplate.reloadChain(chainId, "THEN(dynStepB, dynStepA);");
+        liteflowTemplate.reloadChain(chainId, "THEN(dynStepA, dynStepC);");
+        liteflowTemplate.reloadChain(chainId, "THEN(dynStepB, dynStepC);");
+
+        // 默认上限 maxHistorySnapshots = 5，历史快照最多保留 5 个
+        List<String> snapshots = liteflowTemplate.getChainHistorySnapshots(chainId);
+        assertThat(snapshots).hasSize(5);
+        // 最新的上一次更新为 "THEN(dynStepA, dynStepC);"
+        assertThat(snapshots.get(0)).isEqualTo("THEN(dynStepA, dynStepC);");
+    }
+
+    @Test
+    @DisplayName("验证回退不存在规则链或空链时的健壮性防卫")
+    void testRollbackSafeDegradationOnNonExistentChain() {
+        assertThat(liteflowTemplate.rollbackChain("nonExistentChain")).isFalse();
+        assertThat(liteflowTemplate.getChainHistorySnapshots("nonExistentChain")).isEmpty();
+        assertThat(liteflowTemplate.rollbackChain(null)).isFalse();
+        assertThat(liteflowTemplate.getChainHistorySnapshots(null)).isEmpty();
+    }
+
+    @Test
     @DisplayName("验证 RuleSourceDefinition 领域模型契约自洽")
     void testRuleSourceDefinitionContracts() {
         RuleSourceDefinition def1 = new RuleSourceDefinition("chain1", "THEN(dynStepA)");

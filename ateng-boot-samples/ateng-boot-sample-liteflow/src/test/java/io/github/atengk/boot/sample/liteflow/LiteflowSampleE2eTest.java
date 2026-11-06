@@ -520,4 +520,66 @@ class LiteflowSampleE2eTest {
         // settleSummaryCmp 位于 endFlow 之后，绝不执行
         assertThat(data.getSummary()).isEmpty();
     }
+
+    @Test
+    @DisplayName("测试场景 4.6：动态规则版本快照与一键回退接口 (rollback-chain & chain-snapshots)")
+    void testRollbackChainEndpoint() throws Exception {
+        String testChainId = "e2eRollbackChain";
+
+        // 1. 首次加载版本 1
+        DynamicChainReloadRequest req1 = new DynamicChainReloadRequest();
+        req1.setChainId(testChainId);
+        req1.setEl("THEN(dynamicValidateCmp, dynamicTransformCmp);");
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/reload-chain")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req1)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 2. 更新为版本 2
+        DynamicChainReloadRequest req2 = new DynamicChainReloadRequest();
+        req2.setChainId(testChainId);
+        req2.setEl("THEN(dynamicTransformCmp, dynamicValidateCmp);");
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/reload-chain")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req2)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 3. 查询历史快照列表，预期包含版本 1
+        mockMvc.perform(get("/sample/liteflow/dynamic/chain-snapshots")
+                        .param("chainId", testChainId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data[0]").value("THEN(dynamicValidateCmp, dynamicTransformCmp);"));
+
+        // 4. 执行一键回退
+        mockMvc.perform(post("/sample/liteflow/dynamic/rollback-chain")
+                        .param("chainId", testChainId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 5. 再次回退（已无历史快照，预期返回 false 优雅降级）
+        mockMvc.perform(post("/sample/liteflow/dynamic/rollback-chain")
+                        .param("chainId", testChainId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(false));
+
+        // 6. 不存在的流程链回退，预期返回 false
+        mockMvc.perform(post("/sample/liteflow/dynamic/rollback-chain")
+                        .param("chainId", "nonExistentChain_12345"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(false));
+
+        // 7. 测试结束后清理现场
+        mockMvc.perform(post("/sample/liteflow/dynamic/reload-chain")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(req1)));
+    }
 }
