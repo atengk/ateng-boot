@@ -181,6 +181,14 @@ _Avoid_: AuditActionEnum, LogTypeEnum, ActionType, OperationType, BusinessType
 结构化操作审计日志元数据模型 POJO，承载跨层（Web 切面、事件总线、持久层落库）流转的 18 项全要素审计元数据契约，包含全链路追踪、租户、操作人、模块端点、出入参、状态耗时、扩展字典与时间戳。
 _Avoid_: AuditLog, SysLog, OperationLogVO, AuditRecord, OperationAudit, AccessLog, SystemLog, AuditTrail
 
+**SqlTypeEnum**:
+底层持久层物理 SQL 操作类型枚举，集中收敛涵盖 5 种数据库操作动作类型（SELECT、INSERT、UPDATE、DELETE、OTHER），为持久层 SQL 审计与流转提供强类型契约。
+_Avoid_: SqlCommandTypeEnum, DatabaseActionEnum, SqlActionType
+
+**SqlLogModel**:
+结构化物理 SQL 操作审计元数据模型 POJO，收敛于 `core` 统一底座，承载跨持久层拦截器、异步线程池与外部存储 SPI 流转的全要素审计元数据契约（TraceId、租户、用户、数据源、StatementId、SQL 语句、SQL 类型、执行耗时、影响行数、状态、错误信息与调用位置）。
+_Avoid_: SqlAuditModel, SqlOperationModel, SqlRecord, DatabaseLogModel, SqlLogVO
+
 
 **DateTimeUtil**:
 纯 JDK 17 原生日期时间互转与跨度计算静态门面，提供 LocalDateTime、LocalDate、Date 与毫秒时间戳多向无损互转，绑定系统时区，支持天首天尾起止与任意 ChronoUnit / Duration / Period 时间跨度计算。
