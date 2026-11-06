@@ -47,7 +47,21 @@ class LiteflowComponentHierarchyTest {
             SampleIterator.class,
             SampleBreak.class,
             DataAndTagNode.class,
-            DataListNode.class
+            DataListNode.class,
+            EndFlowNode.class,
+            UnreachableNode.class,
+            DelivererNode.class,
+            ReceiverNode.class,
+            SubChainCallerNode.class,
+            SubChainTargetNode.class,
+            RequestDataNode.class,
+            FallbackIf.class,
+            FailingIf.class,
+            FallbackSwitch.class,
+            FallbackFor.class,
+            FallbackWhile.class,
+            FallbackIterator.class,
+            FallbackBreak.class
     })
     static class TestConfig {
     }
@@ -211,9 +225,10 @@ class LiteflowComponentHierarchyTest {
     public static class ItemNode extends BaseNodeComponent<HierarchyTestContext> {
         @Override
         public void process(HierarchyTestContext context) {
-            String item = this.getCurrLoopObj();
+            String item = this.getCurrLoopObject(String.class);
+            Integer loopIndex = this.getLoopIndex();
             context.getCollectedItems().add(item);
-            context.getExecutedNodes().add("item:" + item);
+            context.getExecutedNodes().add("item:" + item + ":" + loopIndex);
         }
     }
 
@@ -298,6 +313,168 @@ class LiteflowComponentHierarchyTest {
         }
     }
 
+    public record CustomParam(String name, int age) {
+    }
+
+    public record DeliveryPayload(String token, long expiry) {
+    }
+
+    // ==================== 9. 高阶编排原语测试组件 ====================
+
+    @Component("endFlowNode")
+    public static class EndFlowNode extends BaseNodeComponent<HierarchyTestContext> {
+        @Override
+        public void process(HierarchyTestContext context) {
+            context.getExecutedNodes().add("endFlowNode");
+            this.endFlow();
+        }
+    }
+
+    @Component("unreachableNode")
+    public static class UnreachableNode extends BaseNodeComponent<HierarchyTestContext> {
+        @Override
+        public void process(HierarchyTestContext context) {
+            context.getExecutedNodes().add("unreachableNode");
+        }
+    }
+
+    @Component("delivererNode")
+    public static class DelivererNode extends BaseNodeComponent<HierarchyTestContext> {
+        @Override
+        public void process(HierarchyTestContext context) {
+            context.getExecutedNodes().add("delivererNode");
+            this.deliverTo("receiverNode", new DeliveryPayload("secret-token", 3600L));
+        }
+    }
+
+    @Component("receiverNode")
+    public static class ReceiverNode extends BaseNodeComponent<HierarchyTestContext> {
+        @Override
+        public void process(HierarchyTestContext context) {
+            DeliveryPayload payload = this.receiveDelivery(DeliveryPayload.class);
+            if (payload != null) {
+                context.getExecutedNodes().add("receiverNode:" + payload.token());
+            }
+        }
+    }
+
+    @Component("subChainTargetNode")
+    public static class SubChainTargetNode extends BaseNodeComponent<HierarchyTestContext> {
+        @Override
+        public void process(HierarchyTestContext context) {
+            String param = this.getRequestData(String.class);
+            context.getExecutedNodes().add("subChainTarget:" + param);
+        }
+    }
+
+    @Component("subChainCallerNode")
+    public static class SubChainCallerNode extends BaseNodeComponent<HierarchyTestContext> {
+        @Override
+        public void process(HierarchyTestContext context) {
+            context.getExecutedNodes().add("callerNode");
+            this.invokeSubChain("testSubChainTarget", "helloSubChain");
+        }
+    }
+
+    @Component("requestDataNode")
+    public static class RequestDataNode extends BaseNodeComponent<HierarchyTestContext> {
+        @Override
+        public void process(HierarchyTestContext context) {
+            CustomParam param = this.getRequestData(CustomParam.class);
+            if (param != null) {
+                context.getExecutedNodes().add("requestData:" + param.name() + ":" + param.age());
+            }
+        }
+    }
+
+    // ==================== 10. 控制流 onError 降级测试组件 ====================
+
+    @Component("fallbackIf")
+    public static class FallbackIf extends BaseIfComponent<HierarchyTestContext> {
+        @Override
+        public boolean processIf(HierarchyTestContext context) throws Exception {
+            throw new RuntimeException("Simulated IF error");
+        }
+
+        @Override
+        public boolean onError(Exception e, HierarchyTestContext context) {
+            return false;
+        }
+    }
+
+    @Component("failingIf")
+    public static class FailingIf extends BaseIfComponent<HierarchyTestContext> {
+        @Override
+        public boolean processIf(HierarchyTestContext context) throws Exception {
+            throw new RuntimeException("Simulated IF failure without fallback");
+        }
+    }
+
+    @Component("fallbackSwitch")
+    public static class FallbackSwitch extends BaseSwitchComponent<HierarchyTestContext> {
+        @Override
+        public String processSwitch(HierarchyTestContext context) throws Exception {
+            throw new RuntimeException("Simulated Switch error");
+        }
+
+        @Override
+        public String onError(Exception e, HierarchyTestContext context) {
+            return "branchB";
+        }
+    }
+
+    @Component("fallbackFor")
+    public static class FallbackFor extends BaseForComponent<HierarchyTestContext> {
+        @Override
+        public int processFor(HierarchyTestContext context) throws Exception {
+            throw new RuntimeException("Simulated For error");
+        }
+
+        @Override
+        public int onError(Exception e, HierarchyTestContext context) {
+            return 2;
+        }
+    }
+
+    @Component("fallbackWhile")
+    public static class FallbackWhile extends BaseWhileComponent<HierarchyTestContext> {
+        @Override
+        public boolean processWhile(HierarchyTestContext context) throws Exception {
+            throw new RuntimeException("Simulated While error");
+        }
+
+        @Override
+        public boolean onError(Exception e, HierarchyTestContext context) {
+            return false;
+        }
+    }
+
+    @Component("fallbackIterator")
+    public static class FallbackIterator extends BaseIteratorComponent<HierarchyTestContext> {
+        @Override
+        public Iterator<?> processIterator(HierarchyTestContext context) throws Exception {
+            throw new RuntimeException("Simulated Iterator error");
+        }
+
+        @Override
+        public Iterator<?> onError(Exception e, HierarchyTestContext context) {
+            return List.of("fallbackItem").iterator();
+        }
+    }
+
+    @Component("fallbackBreak")
+    public static class FallbackBreak extends BaseBreakComponent<HierarchyTestContext> {
+        @Override
+        public boolean processBreak(HierarchyTestContext context) throws Exception {
+            throw new RuntimeException("Simulated Break error");
+        }
+
+        @Override
+        public boolean onError(Exception e, HierarchyTestContext context) {
+            return true;
+        }
+    }
+
     // ==================== 测试用例 ====================
 
     @Test
@@ -372,7 +549,7 @@ class LiteflowComponentHierarchyTest {
         liteflowTemplate.executeWithContext("testIteratorChain", context);
 
         assertThat(context.getCollectedItems()).containsExactly("apple", "banana", "cherry");
-        assertThat(context.getExecutedNodes()).containsExactly("item:apple", "item:banana", "item:cherry");
+        assertThat(context.getExecutedNodes()).containsExactly("item:apple:0", "item:banana:1", "item:cherry:2");
     }
 
     @Test
@@ -424,6 +601,152 @@ class LiteflowComponentHierarchyTest {
                 liteflowTemplate.executeWithContext("testNodeChain", new UnrelatedContext()))
                 .isInstanceOf(io.github.atengk.boot.liteflow.exception.LiteflowExecutionException.class)
                 .hasMessageContaining("不匹配，拒绝执行不安全的盲目类型转换");
+    }
+
+    @Test
+    @DisplayName("测试 endFlow 提前正常终止流程链路")
+    void testEndFlow() {
+        HierarchyTestContext context = new HierarchyTestContext();
+        HierarchyTestContext result = liteflowTemplate.executeWithContext("testEndFlowChain", context);
+
+        assertThat(result).isSameAs(context);
+        // endFlowNode 执行后终止，unreachableNode 绝不执行
+        assertThat(context.getExecutedNodes()).containsExactly("endFlowNode");
+    }
+
+    @Test
+    @DisplayName("测试 deliverTo 与 receiveDelivery 跨节点强类型私有数据投递")
+    void testDeliverToAndReceiveDelivery() {
+        HierarchyTestContext context = new HierarchyTestContext();
+        liteflowTemplate.executeWithContext("testDeliveryChain", context);
+
+        assertThat(context.getExecutedNodes()).containsExactly("delivererNode", "receiverNode:secret-token");
+    }
+
+    @Test
+    @DisplayName("测试 invokeSubChain 组件内隐式调用子规则链")
+    void testInvokeSubChain() {
+        HierarchyTestContext context = new HierarchyTestContext();
+        liteflowTemplate.executeWithContext("testSubChainCaller", context);
+
+        assertThat(context.getExecutedNodes()).containsExactly("callerNode", "subChainTarget:helloSubChain");
+    }
+
+    @Test
+    @DisplayName("测试 invokeSubChain 子链失败时正确包装为业务受管异常")
+    void testInvokeSubChainFailure() {
+        SubChainCallerNode node = new SubChainCallerNode();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                node.invokeSubChain(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("chainId 不能为空");
+    }
+
+    @Test
+    @DisplayName("测试 getRequestData 强类型提取入参对象及类型不匹配拦截")
+    void testGetRequestData() {
+        HierarchyTestContext context = new HierarchyTestContext();
+        CustomParam param = new CustomParam("Alice", 28);
+        HierarchyTestContext result = liteflowTemplate.executeWithContext("testRequestDataChain", param, context);
+
+        assertThat(result).isSameAs(context);
+        assertThat(context.getExecutedNodes()).containsExactly("requestData:Alice:28");
+
+        // 类型不匹配时抛出受管异常
+        HierarchyTestContext mismatchContext = new HierarchyTestContext();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                liteflowTemplate.executeWithContext("testRequestDataChain", "WrongTypeParam", mismatchContext))
+                .isInstanceOf(io.github.atengk.boot.liteflow.exception.LiteflowExecutionException.class)
+                .hasRootCauseMessage("流程入参类型 [java.lang.String] 与期望类型 [io.github.atengk.boot.liteflow.component.LiteflowComponentHierarchyTest$CustomParam] 不匹配，拒绝执行不安全的盲目转换");
+    }
+
+    @Test
+    @DisplayName("测试 BaseIfComponent onError 就地降级走假分支")
+    void testBaseIfComponentOnError() {
+        HierarchyTestContext context = new HierarchyTestContext();
+        liteflowTemplate.executeWithContext("testFallbackIfChain", context);
+
+        // 发生异常后降级返回 false，从而走向 branchB
+        assertThat(context.getExecutedNodes()).containsExactly("branchB");
+    }
+
+    @Test
+    @DisplayName("测试 BaseIfComponent 默认 onError 向上抛出异常中断")
+    void testBaseIfComponentDefaultError() {
+        HierarchyTestContext context = new HierarchyTestContext();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                liteflowTemplate.executeWithContext("testDefaultErrorIfChain", context))
+                .isInstanceOf(io.github.atengk.boot.liteflow.exception.LiteflowExecutionException.class);
+    }
+
+    @Test
+    @DisplayName("测试 BaseSwitchComponent onError 就地降级路由")
+    void testBaseSwitchComponentOnError() {
+        HierarchyTestContext context = new HierarchyTestContext();
+        liteflowTemplate.executeWithContext("testFallbackSwitchChain", context);
+
+        // 发生异常后降级返回 "branchB"
+        assertThat(context.getExecutedNodes()).containsExactly("branchB");
+    }
+
+    @Test
+    @DisplayName("测试 BaseForComponent onError 就地降级循环次数")
+    void testBaseForComponentOnError() {
+        HierarchyTestContext context = new HierarchyTestContext();
+        liteflowTemplate.executeWithContext("testFallbackForChain", context);
+
+        // 发生异常后降级返回 2 次循环
+        assertThat(context.getCounterExecutions()).isEqualTo(2);
+        assertThat(context.getExecutedNodes()).containsExactly("counter:1", "counter:2");
+    }
+
+    @Test
+    @DisplayName("测试 BaseWhileComponent onError 就地降级终止条件")
+    void testBaseWhileComponentOnError() {
+        HierarchyTestContext context = new HierarchyTestContext();
+        liteflowTemplate.executeWithContext("testFallbackWhileChain", context);
+
+        // 发生异常后降级返回 false，循环不执行
+        assertThat(context.getCounterExecutions()).isZero();
+    }
+
+    @Test
+    @DisplayName("测试 BaseIteratorComponent onError 就地降级保底迭代器")
+    void testBaseIteratorComponentOnError() {
+        HierarchyTestContext context = new HierarchyTestContext();
+        liteflowTemplate.executeWithContext("testFallbackIteratorChain", context);
+
+        // 发生异常后降级返回 fallbackItem 迭代器
+        assertThat(context.getCollectedItems()).containsExactly("fallbackItem");
+        assertThat(context.getExecutedNodes()).containsExactly("item:fallbackItem:0");
+    }
+
+    @Test
+    @DisplayName("测试 BaseBreakComponent onError 就地降级触发提前退出")
+    void testBaseBreakComponentOnError() {
+        HierarchyTestContext context = new HierarchyTestContext();
+        liteflowTemplate.executeWithContext("testFallbackBreakChain", context);
+
+        // 发生异常后降级返回 true，立即 break，因此只执行 1 次 counterNode
+        assertThat(context.getCounterExecutions()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("测试 ComponentSupport 各工具方法的边界防御与非空校验")
+    void testComponentSupportDefensiveGuards() {
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                ComponentSupport.getRequestData(null, String.class))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                ComponentSupport.getCurrLoopObject(null, String.class))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                ComponentSupport.receiveDelivery(null, String.class))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(ComponentSupport.getLoopIndex(null)).isNull();
     }
 
     public static class UnrelatedContext {

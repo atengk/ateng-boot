@@ -42,9 +42,28 @@ public abstract class BaseIfComponent<T> extends NodeBooleanComponent {
      */
     public abstract boolean processIf(T context) throws Exception;
 
+    /**
+     * 条件节点执行异常时的就地优雅降级钩子
+     * 默认行为：直接向上抛出原始异常，中断流水线。
+     * 降级范式：子类重写此方法并返回保底布尔分支（如 false），流水线将视为降级成功继续流转对应分支。
+     *
+     * @param e       捕获的业务执行异常
+     * @param context 强类型业务上下文
+     * @return 降级后的分支判定结果
+     * @throws Exception 若无需降级，继续抛出异常
+     */
+    public boolean onError(Exception e, T context) throws Exception {
+        throw e;
+    }
+
     @Override
     public boolean processBoolean() throws Exception {
-        return processIf(getContext());
+        T context = getContext();
+        try {
+            return processIf(context);
+        } catch (Exception e) {
+            return onError(e, context);
+        }
     }
 
     /**
@@ -91,5 +110,39 @@ public abstract class BaseIfComponent<T> extends NodeBooleanComponent {
      */
     public <D> List<D> getCmpDataList(Class<D> elementClass) {
         return ComponentSupport.getCmpDataList(this, elementClass);
+    }
+
+    /**
+     * 获取流程初始强类型请求入参
+     *
+     * @param paramClass 期望的入参 Class 类型
+     * @param <P>        入参泛型
+     * @return 强类型入参，若未传递则返回 null
+     * @throws IllegalStateException 若实际入参类型与期望类型不匹配
+     */
+    public <P> P getRequestData(Class<P> paramClass) {
+        return ComponentSupport.getRequestData(this, paramClass);
+    }
+
+    /**
+     * 获取当前循环组件的迭代轮次下标 (从 0 开始)
+     *
+     * @return 循环下标，若未在循环上下文执行则返回 null
+     */
+    @Override
+    public Integer getLoopIndex() {
+        return ComponentSupport.getLoopIndex(this);
+    }
+
+    /**
+     * 获取当前循环组件的强类型迭代对象
+     *
+     * @param elementClass 期望的迭代元素 Class 类型
+     * @param <E>          元素泛型
+     * @return 强类型当前迭代元素，若无迭代对象则返回 null
+     * @throws IllegalStateException 若当前迭代对象类型与期望类型不匹配
+     */
+    public <E> E getCurrLoopObject(Class<E> elementClass) {
+        return ComponentSupport.getCurrLoopObject(this, elementClass);
     }
 }

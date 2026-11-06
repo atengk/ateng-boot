@@ -120,4 +120,89 @@ public final class ComponentSupport {
         }
         return JsonUtil.parseList(cmpData, elementClass);
     }
+
+    /**
+     * 获取流程初始强类型请求入参
+     *
+     * @param component  当前节点组件
+     * @param paramClass 期望的入参 Class 类型
+     * @param <P>        入参泛型
+     * @return 强类型入参，若未传递则返回 null
+     * @throws IllegalStateException 若实际入参类型与期望类型不匹配
+     */
+    public static <P> P getRequestData(NodeComponent component, Class<P> paramClass) {
+        Objects.requireNonNull(paramClass, "paramClass 不能为空");
+        if (component == null) {
+            throw new IllegalArgumentException("component 不能为空");
+        }
+        Object raw = component.getRequestData();
+        if (raw == null) {
+            return null;
+        }
+        if (paramClass.isInstance(raw)) {
+            return paramClass.cast(raw);
+        }
+        throw new IllegalStateException("流程入参类型 [" + raw.getClass().getName()
+                + "] 与期望类型 [" + paramClass.getName() + "] 不匹配，拒绝执行不安全的盲目转换");
+    }
+
+    /**
+     * 获取当前循环组件的迭代轮次下标 (从 0 开始)
+     *
+     * @param component 当前节点组件
+     * @return 循环下标，若未在循环上下文执行则返回 null
+     */
+    public static Integer getLoopIndex(NodeComponent component) {
+        return (component != null && component.getRefNode() != null) ? component.getRefNode().getLoopIndex() : null;
+    }
+
+    /**
+     * 获取当前循环组件的强类型迭代对象
+     *
+     * @param component    当前节点组件
+     * @param elementClass 期望的迭代元素 Class 类型
+     * @param <E>          元素泛型
+     * @return 强类型当前迭代元素，若无迭代对象则返回 null
+     * @throws IllegalStateException 若当前迭代对象类型与期望类型不匹配
+     */
+    public static <E> E getCurrLoopObject(NodeComponent component, Class<E> elementClass) {
+        Objects.requireNonNull(elementClass, "elementClass 不能为空");
+        if (component == null) {
+            throw new IllegalArgumentException("component 不能为空");
+        }
+        Object raw = component.getCurrLoopObj();
+        if (raw == null) {
+            return null;
+        }
+        if (elementClass.isInstance(raw)) {
+            return elementClass.cast(raw);
+        }
+        throw new IllegalStateException("当前循环迭代对象类型 [" + raw.getClass().getName()
+                + "] 与期望类型 [" + elementClass.getName() + "] 不匹配，拒绝执行不安全的盲目转换");
+    }
+
+    /**
+     * 接收上游节点通过私有投递传递给当前节点的强类型私有数据
+     *
+     * @param component 当前节点组件
+     * @param dataClass 期望的私有数据 Class 类型
+     * @param <D>       数据泛型
+     * @return 强类型私有数据，若无投递数据则返回 null
+     * @throws IllegalStateException 若投递数据类型与期望类型不匹配
+     */
+    public static <D> D receiveDelivery(NodeComponent component, Class<D> dataClass) {
+        Objects.requireNonNull(dataClass, "dataClass 不能为空");
+        if (component == null) {
+            throw new IllegalArgumentException("component 不能为空");
+        }
+        Object raw = component.getPrivateDeliveryData();
+        if (raw == null) {
+            return null;
+        }
+        if (dataClass.isInstance(raw)) {
+            return dataClass.cast(raw);
+        }
+        throw new IllegalStateException("私有投递数据类型 [" + raw.getClass().getName()
+                + "] 与期望类型 [" + dataClass.getName() + "] 不匹配，拒绝执行不安全的盲目转换");
+    }
 }

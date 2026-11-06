@@ -35,4 +35,50 @@
     <chain name="testDataListChain">
         THEN(dataListNode.data('["item1","item2","item3"]'));
     </chain>
+
+    <!-- endFlow 提前正常终止测试链 -->
+    <chain name="testEndFlowChain">
+        THEN(endFlowNode, unreachableNode);
+    </chain>
+
+    <!-- deliverTo / receiveDelivery 私有投递测试链 -->
+    <chain name="testDeliveryChain">
+        THEN(delivererNode, receiverNode);
+    </chain>
+
+    <!-- invokeSubChain 隐式子链调用测试 -->
+    <chain name="testSubChainTarget">
+        THEN(subChainTargetNode);
+    </chain>
+    <chain name="testSubChainCaller">
+        THEN(subChainCallerNode);
+    </chain>
+
+    <!-- getRequestData 强类型入参测试 -->
+    <chain name="testRequestDataChain">
+        THEN(requestDataNode);
+    </chain>
+
+    <!-- 控制组件 onError 降级测试链 -->
+    <chain name="testFallbackIfChain">
+        IF(fallbackIf, branchA, branchB);
+    </chain>
+    <chain name="testDefaultErrorIfChain">
+        IF(failingIf, branchA, branchB);
+    </chain>
+    <chain name="testFallbackSwitchChain">
+        SWITCH(fallbackSwitch).to(branchA, branchB);
+    </chain>
+    <chain name="testFallbackForChain">
+        FOR(fallbackFor).DO(counterNode);
+    </chain>
+    <chain name="testFallbackWhileChain">
+        WHILE(fallbackWhile).DO(counterNode);
+    </chain>
+    <chain name="testFallbackIteratorChain">
+        ITERATOR(fallbackIterator).DO(itemNode);
+    </chain>
+    <chain name="testFallbackBreakChain">
+        FOR(10).DO(counterNode).BREAK(fallbackBreak);
+    </chain>
 </flow>

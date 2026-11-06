@@ -3,6 +3,8 @@ package io.github.atengk.boot.sample.liteflow;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.liteflow.model.BatchSettleRequest;
+import io.github.atengk.boot.sample.liteflow.model.BatchSettleResponse;
 import io.github.atengk.boot.sample.liteflow.model.DynamicChainReloadRequest;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteRequest;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteResponse;
@@ -13,6 +15,7 @@ import io.github.atengk.boot.sample.liteflow.model.PriceCalculationRequest;
 import io.github.atengk.boot.sample.liteflow.model.PriceCalculationResponse;
 import io.github.atengk.boot.sample.liteflow.model.RiskApprovalRequest;
 import io.github.atengk.boot.sample.liteflow.model.RiskApprovalResponse;
+import io.github.atengk.boot.sample.liteflow.model.SettleItem;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -364,5 +367,157 @@ class LiteflowSampleE2eTest {
                 .andExpect(jsonPath("$.data").isArray())
                 .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItem("price-calc-flow")))
                 .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItem("risk-approval-flow")));
+    }
+
+    @Test
+    @DisplayName("测试场景 5.1：批量路由结算正常循环流转（验证 ITERATOR 强类型迭代与纳税核算）")
+    void testBatchSettleNormal() throws Exception {
+        BatchSettleRequest request = BatchSettleRequest.builder()
+                .merchantId("M1001")
+                .batchNo("BATCH-20261106-001")
+                .terminateOnSuspicious(false)
+                .items(java.util.List.of(
+                        SettleItem.builder()
+                                .itemId("ITEM_001")
+                                .amount(new BigDecimal("150.00"))
+                                .category("ELECTRONICS")
+                                .simulateTaxError(false)
+                                .suspicious(false)
+                                .build(),
+                        SettleItem.builder()
+                                .itemId("ITEM_002")
+                                .amount(new BigDecimal("50.00"))
+                                .category("BOOKS")
+                                .simulateTaxError(false)
+                                .suspicious(false)
+                                .build()
+                ))
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/routing/batch-settle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.batchNo").value("BATCH-20261106-001"))
+                .andExpect(jsonPath("$.data.totalItems").value(2))
+                .andExpect(jsonPath("$.data.processedCount").value(2))
+                .andExpect(jsonPath("$.data.terminatedEarly").value(false))
+                .andReturn();
+
+        Result<BatchSettleResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        BatchSettleResponse data = result.getData();
+        assertThat(data).isNotNull();
+        assertThat(data.getSettledAmount()).isEqualByComparingTo("200.00");
+        assertThat(data.getSettledItemIds()).containsExactly("ITEM_001", "ITEM_002");
+        assertThat(data.getTaxAppliedItems()).containsExactly("ITEM_001");
+        assertThat(data.getDegradedItems()).isEmpty();
+        assertThat(data.getSummary()).contains("全量处理完成");
+    }
+
+    @Test
+    @DisplayName("测试场景 5.2：批量路由结算税控异常（验证 BaseIfComponent onError 就地优雅降级）")
+    void testBatchSettleTaxFallback() throws Exception {
+        BatchSettleRequest request = BatchSettleRequest.builder()
+                .merchantId("M1002")
+                .batchNo("BATCH-20261106-002")
+                .terminateOnSuspicious(false)
+                .items(java.util.List.of(
+                        SettleItem.builder()
+                                .itemId("ITEM_FALLBACK_01")
+                                .amount(new BigDecimal("120.00"))
+                                .category("DIGITAL")
+                                .simulateTaxError(true)
+                                .suspicious(false)
+                                .build(),
+                        SettleItem.builder()
+                                .itemId("ITEM_NORMAL_02")
+                                .amount(new BigDecimal("80.00"))
+                                .category("GROCERY")
+                                .simulateTaxError(false)
+                                .suspicious(false)
+                                .build()
+                ))
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/routing/batch-settle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        Result<BatchSettleResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        BatchSettleResponse data = result.getData();
+        assertThat(data).isNotNull();
+        // 异常被 onError 捕获就地优雅降级，整批仍结算成功
+        assertThat(data.getProcessedCount()).isEqualTo(2);
+        assertThat(data.getSettledAmount()).isEqualByComparingTo("200.00");
+        assertThat(data.getDegradedItems()).containsExactly("ITEM_FALLBACK_01");
+        assertThat(data.getTaxAppliedItems()).isEmpty();
+        assertThat(data.getSummary()).contains("降级 [1] 笔");
+    }
+
+    @Test
+    @DisplayName("测试场景 5.3：批量路由结算高危风控拦截（验证 BaseNodeComponent endFlow 提前正常熔断）")
+    void testBatchSettleEarlyTermination() throws Exception {
+        BatchSettleRequest request = BatchSettleRequest.builder()
+                .merchantId("M1003")
+                .batchNo("BATCH-20261106-003")
+                .terminateOnSuspicious(true)
+                .items(java.util.List.of(
+                        SettleItem.builder()
+                                .itemId("ITEM_SAFE_01")
+                                .amount(new BigDecimal("60.00"))
+                                .category("STATIONERY")
+                                .simulateTaxError(false)
+                                .suspicious(false)
+                                .build(),
+                        SettleItem.builder()
+                                .itemId("ITEM_RISK_02")
+                                .amount(new BigDecimal("500.00"))
+                                .category("UNKNOWN")
+                                .simulateTaxError(false)
+                                .suspicious(true)
+                                .build(),
+                        SettleItem.builder()
+                                .itemId("ITEM_UNREACHED_03")
+                                .amount(new BigDecimal("30.00"))
+                                .category("OFFICE")
+                                .simulateTaxError(false)
+                                .suspicious(false)
+                                .build()
+                ))
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/routing/batch-settle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        Result<BatchSettleResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        BatchSettleResponse data = result.getData();
+        assertThat(data).isNotNull();
+        // 命中可疑项目触发 endFlow()，提前正常终止，后续项目不执行
+        assertThat(data.isTerminatedEarly()).isTrue();
+        assertThat(data.getProcessedCount()).isEqualTo(1);
+        assertThat(data.getSettledAmount()).isEqualByComparingTo("60.00");
+        assertThat(data.getSettledItemIds()).containsExactly("ITEM_SAFE_01");
+        // settleSummaryCmp 位于 endFlow 之后，绝不执行
+        assertThat(data.getSummary()).isEmpty();
     }
 }

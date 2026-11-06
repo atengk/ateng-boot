@@ -1,7 +1,9 @@
 package io.github.atengk.boot.liteflow.component;
 
 import com.yomahub.liteflow.core.NodeComponent;
+import com.yomahub.liteflow.flow.LiteflowResponse;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.liteflow.exception.LiteflowExecutionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeanUtils;
@@ -178,5 +180,103 @@ public abstract class BaseNodeComponent<T> extends NodeComponent {
      */
     public <D> List<D> getCmpDataList(Class<D> elementClass) {
         return ComponentSupport.getCmpDataList(this, elementClass);
+    }
+
+    /**
+     * 获取流程初始强类型请求入参
+     *
+     * @param paramClass 期望的入参 Class 类型
+     * @param <P>        入参泛型
+     * @return 强类型入参，若未传递则返回 null
+     * @throws IllegalStateException 若实际入参类型与期望类型不匹配
+     */
+    public <P> P getRequestData(Class<P> paramClass) {
+        return ComponentSupport.getRequestData(this, paramClass);
+    }
+
+    /**
+     * 获取当前循环组件的迭代轮次下标 (从 0 开始)
+     *
+     * @return 循环下标，若未在循环上下文执行则返回 null
+     */
+    @Override
+    public Integer getLoopIndex() {
+        return ComponentSupport.getLoopIndex(this);
+    }
+
+    /**
+     * 获取当前循环组件的强类型迭代对象
+     *
+     * @param elementClass 期望的迭代元素 Class 类型
+     * @param <E>          元素泛型
+     * @return 强类型当前迭代元素，若无迭代对象则返回 null
+     * @throws IllegalStateException 若当前迭代对象类型与期望类型不匹配
+     */
+    public <E> E getCurrLoopObject(Class<E> elementClass) {
+        return ComponentSupport.getCurrLoopObject(this, elementClass);
+    }
+
+    /**
+     * 提前正常终止整条流水线流转
+     * 区别于抛出异常中断（不会触发前序已执行节点的 Saga 逆序补偿，上下文当前状态作为最终结果返回）
+     */
+    public void endFlow() {
+        this.setIsEnd(true);
+        log.debug("LiteFlow 节点 [{}] 触发提前正常终止流程链路 (endFlow)", getNodeId());
+    }
+
+    /**
+     * 向目标下游节点进行点对点私有数据投递（阅后即焚，不污染全局上下文）
+     *
+     * @param targetNodeId 目标节点 ID
+     * @param data         私有传输数据对象
+     */
+    public void deliverTo(String targetNodeId, Object data) {
+        if (targetNodeId == null || targetNodeId.isBlank()) {
+            throw new IllegalArgumentException("targetNodeId 不能为空");
+        }
+        this.sendPrivateDeliveryData(targetNodeId, data);
+    }
+
+    /**
+     * 接收上游节点私有投递给当前节点的强类型数据
+     *
+     * @param dataClass 期望的私有数据 Class 类型
+     * @param <D>       数据泛型
+     * @return 强类型私有数据，若无投递则返回 null
+     * @throws IllegalStateException 若实际投递数据类型不匹配
+     */
+    public <D> D receiveDelivery(Class<D> dataClass) {
+        return ComponentSupport.receiveDelivery(this, dataClass);
+    }
+
+    /**
+     * 在当前组件内部隐式调用子规则流程链（无额外参数重载）
+     * 若子流程链失败，自动转译为受管业务异常抛出
+     *
+     * @param chainId 子流程链 ID
+     */
+    public void invokeSubChain(String chainId) {
+        invokeSubChain(chainId, null);
+    }
+
+    /**
+     * 在当前组件内部隐式调用子规则流程链
+     * 若子流程链失败，自动转译为受管业务异常抛出
+     *
+     * @param chainId 子流程链 ID
+     * @param param   子流程链专属入参
+     */
+    public void invokeSubChain(String chainId, Object param) {
+        if (chainId == null || chainId.isBlank()) {
+            throw new IllegalArgumentException("chainId 不能为空");
+        }
+        LiteflowResponse response = this.invoke2Resp(chainId, param);
+        if (response != null && !response.isSuccess()) {
+            Throwable cause = response.getCause();
+            String msg = "组件 [" + getNodeId() + "] 隐式调用子流程链 [" + chainId + "] 失败: "
+                    + (response.getMessage() != null ? response.getMessage() : (cause != null ? cause.getMessage() : "未知异常"));
+            throw new LiteflowExecutionException(chainId, getNodeId(), msg, cause);
+        }
     }
 }
