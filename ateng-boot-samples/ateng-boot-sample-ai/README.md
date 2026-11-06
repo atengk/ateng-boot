@@ -98,6 +98,10 @@
 | **查询用户画像事实** | `AiAgentEpisodicController` | `GET /sample/ai/agent/episodic/facts/{userId}` | `curl "http://localhost:8080/sample/ai/agent/episodic/facts/u1001"` |
 | **预置长效情景事实** | `AiAgentEpisodicController` | `POST /sample/ai/agent/episodic/facts` | `curl -X POST "http://localhost:8080/sample/ai/agent/episodic/facts" -H "Content-Type: application/json" -d "{\"userId\":\"u1001\",\"subject\":\"user\",\"predicate\":\"drink_preference\",\"object\":\"Latte\",\"statement\":\"用户日常喜欢喝拿铁咖啡\"}"` |
 | **物理删除情景事实** | `AiAgentEpisodicController` | `DELETE /sample/ai/agent/episodic/facts/{factId}` | `curl -X DELETE "http://localhost:8080/sample/ai/agent/episodic/facts/YOUR_FACT_ID"` |
+| **OpenAPI 契约工具规格探查** | `AiOpenApiToolController` | `GET /sample/ai/agent/openapi-tools/specs` | `curl "http://localhost:8080/sample/ai/agent/openapi-tools/specs"` |
+| **OpenAPI 受管工具直接调用** | `AiOpenApiToolController` | `POST /sample/ai/agent/openapi-tools/execute` | `curl -X POST "http://localhost:8080/sample/ai/agent/openapi-tools/execute" -H "Content-Type: application/json" -d "{\"operationId\":\"getOrderById\",\"arguments\":{\"id\":1001,\"includeItems\":true}}"` |
+| **OpenAPI 工具驱动智能对话** | `AiOpenApiToolController` | `POST /sample/ai/agent/openapi-tools/chat` | `curl -X POST "http://localhost:8080/sample/ai/agent/openapi-tools/chat" -H "Content-Type: application/json" -d "{\"prompt\":\"请帮我查询订单 1001 的详情\"}"` |
+| **OpenAPI 契约工具热重载** | `AiOpenApiToolController` | `POST /sample/ai/agent/openapi-tools/reload` | `curl -X POST "http://localhost:8080/sample/ai/agent/openapi-tools/reload"` |
 
 > **流式推流说明**：调用 `GET /sample/ai/chat/stream` 或 `GET /sample/ai/rag/stream-with-citations` 时，控制台或客户端将持续接收由 `event: reasoning`（思考过程）、`event: text`（正文内容）、`event: citation`（证据溯源引用尾包，包含合法引用切片列表与事实忠实度评分）与 `event: done`（`[DONE]` 结束信号）组成的标准 Server-Sent Events 事件流。
 

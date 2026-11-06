@@ -8,6 +8,7 @@ import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.mcp.McpClientAdapter;
 import io.github.atengk.boot.ai.mcp.McpClientRegistry;
+import io.github.atengk.boot.ai.openapi.OpenApiToolAdapter;
 import io.github.atengk.boot.ai.tool.approval.ToolApprovalTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -168,6 +169,13 @@ public final class ToolExecutionSandbox {
                 if (tools != null) {
                     for (Map.Entry<ToolSpecification, ToolExecutor> entry : tools.entrySet()) {
                         registerSpecification(entry.getKey(), entry.getValue(), registeredToolNames, sandboxedTools, "McpRegistry");
+                    }
+                }
+            } else if (item instanceof OpenApiToolAdapter adapter) {
+                Map<ToolSpecification, ToolExecutor> tools = adapter.getTools();
+                if (tools != null) {
+                    for (Map.Entry<ToolSpecification, ToolExecutor> entry : tools.entrySet()) {
+                        registerSpecification(entry.getKey(), entry.getValue(), registeredToolNames, sandboxedTools, "OpenApi-" + adapter.getName());
                     }
                 }
             } else if (item instanceof Map<?, ?> map) {

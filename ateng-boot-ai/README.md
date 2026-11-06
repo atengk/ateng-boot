@@ -75,6 +75,7 @@
 | **突发滑动限流** | 微观突发滑动窗口限流器 (RPS & TPM) | `AiRateLimiter`<br>`DefaultAiRateLimiter`<br>`RedisAiRateLimiter` | `ateng.boot.ai.rate-limit.enabled`<br>`ateng.boot.ai.rate-limit.default-rps`<br>`ateng.boot.ai.rate-limit.default-tpm`<br>`ateng.boot.ai.rate-limit.tenants.<id>.*` | `tryAcquire(tenantId, model, tokens)` / `acquire(...)`，基于滑动窗口与令牌桶微观流控，防御下游大模型 API 触发 429 封禁 | `AiRateLimiterTest` / `RateLimitControllerIntegrationTest` |
 | **动态工具调用** | 编程式动态工具挂载与反射沙箱 | `AiTemplate#chatWithTools`<br>`AiTemplate#streamWithTools`<br>`DynamicToolChatService`<br>`DynamicToolStreamService` | - | `chatWithTools(prompt, tools...)` / `streamWithTools(prompt, tools...)`，无需注解硬编码，零侵入反射组装局部工具链 | `DynamicToolServiceTest` / `ToolsControllerIntegrationTest` |
 | **MCP 客户端** | 标准 Anthropic MCP 远程工具客户端桥接 | `McpClientAdapter`<br>`HttpMcpClientAdapter`<br>`McpClientRegistry`<br>`McpSchemaConverter` | `ateng.boot.ai.mcp.enabled`<br>`ateng.boot.ai.mcp.servers.<name>.url`<br>`ateng.boot.ai.mcp.servers.<name>.api-key` | `getTools()` / `callTool(name, args)` / `refreshTools()`，基于原生 HTTP JSON-RPC 2.0 桥接远程 MCP 动态工具清单 | `HttpMcpClientAdapterTest` / `ToolsControllerIntegrationTest` |
+| **OpenAPI 适配器** | 企业 OpenAPI 3.0 / Swagger 2.0 契约转沙箱工具 | `OpenApiToolAdapter`<br>`OpenApiToolProperties`<br>`OpenApiOperationMeta`<br>`OpenApiSchemaConverter` | - | `fromClasspath(...)` / `fromUrl(...)` / `fromString(...)` / `getTools()` / `execute(...)`，纯原生 Jackson 树模型与 Spring 6 RestClient 解析，自动 `$ref` 解析，4D 治理上下文透传与沙箱自愈 | `OpenApiToolAdapterTest` / `AiOpenApiToolControllerIntegrationTest` |
 | **长会话记忆摘要** | 后台受管非阻塞异步长会话摘要记忆 | `SummaryChatMemory`<br>`SummaryMemoryState`<br>`SummaryChatMemoryStore`<br>`InMemorySummaryChatMemoryStore`<br>`RedisSummaryChatMemoryStore` | `ateng.boot.ai.chat-memory.window-type: SUMMARY`<br>`ateng.boot.ai.chat-memory.max-messages-before-summary`<br>`ateng.boot.ai.chat-memory.keep-recent-messages` | `add(msg)` / `messages()` / `clear()`，双层上下文维护 [System: 长期摘要] + [近期 N 条明细]，异步受管线程池后台提炼，调用线程零阻塞 | `SummaryChatMemoryTest` / `SummaryControllerIntegrationTest` |
 | **原生约束解码** | 原生 JSON_SCHEMA 结构化约束模式 | `JsonSchemaGenerator`<br>`AiResponseFormat` | `ateng.boot.ai.model.response-format: JSON_SCHEMA`<br>`ateng.boot.ai.model.json-schema.*` | `generateSchema(Class<?>)`，递归解析 Java 实体类反射生成符合 OpenAI 规范的 JSON Schema 严格约束模式，消除结构化输出幻觉 | `JsonSchemaGeneratorTest` / `AiTemplateTest` |
 | **财务成本核算** | 实时大模型调用成本精算与财务度量 | `TokenCostCalculator`<br>`ModelPricingConfig` | `ateng.boot.ai.pricing.models.<name>.input-price-per-million-tokens`<br>`ateng.boot.ai.pricing.models.<name>.output-price-per-million-tokens` | `calculateCost(model, inTokens, outTokens)`，高精度 BigDecimal 核算美元/人民币成本，自动上报 `ateng.ai.cost.dollars.total` 财务指标 | `TokenCostCalculatorTest` / `MetricsControllerIntegrationTest` |
@@ -1068,6 +1069,76 @@ public class CustomDatabaseToolApprovalStore implements ToolApprovalStore {
 - **全链路四维上下文无损还原**：工单持久化时安全快照捕获发起智能体调用时的 `traceId`、`userId` 与 `tenantId`；在审批人员触发 `approve` 时，通过 MDC、`TenantContextHolder` 与 `UserContextHolder` 恢复环境后执行反射重放，执行完毕严格在 `finally` 中清理现场，确保多租户与操作人隔离以及全链路追踪断点对齐；
 - **防重复重放与状态机单向跃迁**：工单生命周期严格遵循 `PENDING` -> `APPROVED` / `REJECTED` / `EXPIRED` 单向流转；`approve` 执行前先行执行 CAS 状态流转占位，已审批或已执行的工单再次审批时直接熔断抛出业务异常，彻底杜绝重放攻击与重复退款；
 - **分布式双模平滑自适应**：`AUTO` 模式下自动探测 Redis，多微服务节点无缝共享审批工单与滑动 TTL 自动淘汰；未接入 Redis 时自动平滑回退基于并发安全容器的单机内存存储，确保 100% 离线自洽。
+
+---
+
+### 6.8 企业 OpenAPI / Swagger 契约转 Agent 受管沙箱工具适配器 (OpenApiToolAdapter)
+
+在企业微服务架构与产业中台演进中，存量业务系统沉淀了数以千计的 RESTful API 契约（广泛基于 OpenAPI 3.0 或 Swagger 2.0 规范暴露）。若要求开发者针对每一个业务接口逐一手工编写 Java 类和 `@Tool` 方法，将带来极高的开发与维护成本。
+
+`ateng-boot-ai` 独创纯原生、零臃肿的 `OpenApiToolAdapter` 设施，彻底摆脱 `swagger-parser` 或 `openapi-parser` 等百兆级第三方沉重解析依赖，100% 依托 Jackson 树模型与 Spring 6 原生 `RestClient`。仅需传入契约 JSON（类路径文件、远程 URL 或动态字符串），即可自动解析路径、查询参数、请求头、JSON Schema 与 `$ref` 模式引用，将全量或白名单 HTTP 接口无缝转译为 LangChain4j 标准 `ToolSpecification` 与受管沙箱执行器 `SandboxedToolExecutor`。
+
+#### 1. 最小起步体验 (Happy Path & Out-of-the-Box)
+
+```java
+@Service
+@RequiredArgsConstructor
+public class IntelligentOrderService {
+
+    private final AiTemplate aiTemplate;
+
+    /**
+     * 挂载企业 OpenAPI 契约发起端到端智能订单调度
+     */
+    public String handleCustomerOrder(String userInstruction) {
+        // 1. 从类路径装载 OpenAPI 3.0 或 Swagger 2.0 契约文档
+        OpenApiToolProperties properties = OpenApiToolProperties.builder()
+                .name("order-center-api")
+                .baseUrl("https://order-service.internal")
+                .propagateContext(true) // 自动向下游透传 MDC TraceId、UserId 与 TenantId
+                .build();
+
+        OpenApiToolAdapter adapter = OpenApiToolAdapter.fromClasspath("openapi/order-service-api.json", properties);
+
+        // 2. 将适配器作为动态工具直接传入 aiTemplate 发起对话
+        return aiTemplate.chatWithTools(
+                "请根据用户诉求查询订单详情并进行必要处理：" + userInstruction,
+                adapter
+        );
+    }
+}
+```
+
+#### 2. 生产扩展接管与高危写操作隔离 (Customization & Extensibility)
+
+对于生产关键集群，可按需配置白名单/黑名单过滤、HTTP 方法约束以及只读安全防御：
+
+```java
+OpenApiToolProperties properties = OpenApiToolProperties.builder()
+        .name("crm-service")
+        .baseUrl("https://crm.internal")
+        .connectTimeout(Duration.ofSeconds(3))
+        .readTimeout(Duration.ofSeconds(15))
+        // 1. 只读模式防御：强制仅暴露 GET、HEAD、OPTIONS 等安全幂等操作，自动屏蔽 POST/PUT/DELETE
+        .readOnly(true)
+        // 2. 细粒度操作白名单过滤 (仅暴露特定 operationId)
+        .includeOperations(Set.of("getCustomerProfile", "listContracts"))
+        // 3. 全局默认鉴权头
+        .addHeader("X-Internal-Token", "prod-secret-token")
+        .build();
+
+OpenApiToolAdapter adapter = OpenApiToolAdapter.fromClasspath("openapi/crm-api.json", properties);
+
+// 支持直接编程式精准调用指定的 OpenAPI 操作
+String resultJson = adapter.execute("getCustomerProfile", Map.of("customerId", "CUST_8801"));
+```
+
+#### 3. 核心机制与非功能边界防卫 (Production Boundary & Failure Modes)
+
+- **纯原生零依赖解析架构**：杜绝引入包含数百个传递依赖的 Swagger 解析库，100% 依托 Spring Boot 3 核心自带的 Jackson `JsonNode` 树模型，零包体积污染，毫秒级快速启动；
+- **全链路 4D 治理上下文透传**：当 `propagateContext = true` 时，适配器在发起下游 HTTP 请求时，自动提取并注入当前线程的 `X-Trace-Id`（MDC 追踪标识）、`X-User-Id`（`UserContextHolder` 登录用户）与 `X-Tenant-Id`（`TenantContextHolder` 多租户隔离），实现微服务网格全链路可观测性与权限上下文端到端不断链；
+- **自适应请求体扁平化重组**：大模型通常倾向于将所有入参展开为扁平键值对。适配器智能识别契约中的 Path 变量、Query 参数与 Header 参数，将其准确替换并剥离，剩余非参数字段自动聚合成合法的 JSON RequestBody 载荷；
+- **反思自愈错误模型**：当下游微服务返回 4xx/5xx 或网络超时异常时，适配器坚决不抛出未受管异常破坏对话链路，而是将 HTTP 状态码与错误报文结构化封装为 `{"error": true, "statusCode": 404, "message": "..."}` 语义化摘要回传给大模型，供其在 Function Calling 循环中自主反思自愈或向用户清晰解释失败原因。
 
 ---
 
