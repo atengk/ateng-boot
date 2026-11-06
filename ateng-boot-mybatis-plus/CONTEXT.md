@@ -208,8 +208,24 @@ _Avoid_: SqlAliasParser, ColumnExtractor, ProjectionMapper
 _Avoid_: CursorInjector, StreamMethod, SelectCursorMethod
 
 **SqlLogInterceptor**:
-持久层物理终态 SQL 日志打印与可执行带参诊断拦截器，拦截 MyBatis 原生 StatementHandler 物理执行，输出带参可执行 SQL、毫秒耗时、影响行数与业务代码行号看板，内建批量防刷屏、游标只读防卫与失败现场捕获。
+持久层物理终态 SQL 日志打印与可执行带参诊断拦截器，拦截 MyBatis 原生 StatementHandler 物理执行，输出带参可执行 SQL、毫秒耗时、影响行数与业务代码行号看板，内建批量防刷屏、游标只读防卫与失败现场捕获；同时作为结构化 SQL 审计数据源，驱动受管异步 SPI 持久化派发与事件广播。
 _Avoid_: P6SpyInterceptor, SqlPrintPlugin, MybatisLogInterceptor, DruidLogFilter
+
+**SqlLogStorageProvider**:
+持久层物理 SQL 操作审计日志存储解耦 SPI 函数式契约接口，定义结构化 SQL 日志模型持久化与外部投递契约，支持下游无缝对接数据库、Elasticsearch、Kafka 或 APM。
+_Avoid_: SqlStorageProvider, SqlAuditProvider, SqlLogDao, SqlAuditStore
+
+**DefaultSqlLogStorageProvider**:
+默认物理 SQL 操作日志存储提供者，当无自定义外部 SPI 实现时基于 SLF4J 打印标准紧凑 JSON 作为开箱即用保底。
+_Avoid_: SimpleSqlLogStorageProvider, Slf4jSqlLogProvider, FallbackSqlLogStorage
+
+**SqlLogEvent**:
+Spring 原生应用层 SQL 操作审计事件，继承 `ApplicationEvent`，支持在单体应用内基于 `@EventListener` 解耦监听与异步消费。
+_Avoid_: SqlEvent, SqlAuditEvent, SqlOperationEvent
+
+**IgnoreSqlLog**:
+声明式 SQL 日志与审计忽略注解，支持标注于 Mapper 接口或方法上，指示拦截器对特定心跳或内部操作跳过控制台诊断与 SPI 存储。
+_Avoid_: SkipSqlLog, NoSqlLog, DisableSqlLog, IgnoreSqlAudit
 
 **SqlParameterFormatter**:
 纯原生字符流 SQL 参数安全反填与敏感脱敏引擎，采用零依赖 Token 状态机流式逐字符扫描，智能跳过字符串常量与注释内的占位符，安全映射 JDBC 字面量，彻底杜绝正则替换特殊字符异常；内置属性提取 Fail-Safe 容错兜底、缓存容量上限守卫、超长 SQL 性能熔断旁路与 PII 个人敏感凭据脱敏。

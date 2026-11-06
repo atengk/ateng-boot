@@ -6,7 +6,10 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import com.baomidou.mybatisplus.core.config.GlobalConfig;
 import com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils;
+import io.github.atengk.boot.core.audit.SqlLogModel;
+import io.github.atengk.boot.core.enums.SqlTypeEnum;
 import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
+import io.github.atengk.boot.mybatisplus.annotation.IgnoreSqlLog;
 import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
 import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
@@ -81,6 +84,10 @@ class SqlLogInterceptorTest {
 
         @Select("SELECT * FROM non_existent_table")
         List<TestUserEntity> queryInvalidTable();
+
+        @IgnoreSqlLog("测试忽略查询")
+        @Select("SELECT id, username FROM t_sqllog_test_user WHERE id = #{id}")
+        TestUserEntity selectIgnoredUser(@Param("id") Long id);
     }
 
     private static DataSource dataSource;
@@ -396,5 +403,251 @@ class SqlLogInterceptorTest {
         assertThat(result).isNull();
         assertThat(capturedLogs).isEmpty();
         org.mockito.Mockito.verify(mockHandler).batch(null);
+    }
+
+    @Test
+    @DisplayName("SPI 结构化持久化管道：DML 写操作自动派发存储并发布 Spring SqlLogEvent 事件")
+    void testStorageDmlDispatchAndSpringEvent() {
+        List<String> capturedLogs = new ArrayList<>();
+        List<SqlLogModel> storedModels = new ArrayList<>();
+        List<SqlLogEvent> publishedEvents = new ArrayList<>();
+
+        SqlLogProperties properties = new SqlLogProperties();
+        properties.setEnabled(true);
+        properties.getStorage().setEnabled(true);
+        properties.getStorage().setAsync(false);
+        properties.getStorage().setIncludeSelect(false);
+
+        SqlLogStorageProvider storageProvider = storedModels::add;
+        org.springframework.context.ApplicationEventPublisher publisher = event -> {
+            if (event instanceof SqlLogEvent sqlLogEvent) {
+                publishedEvents.add(sqlLogEvent);
+            }
+        };
+
+        SqlLogInterceptor interceptor = new SqlLogInterceptor(
+                properties,
+                capturedLogs::add,
+                storageProvider,
+                null,
+                publisher,
+                null
+        );
+        SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
+
+        try (SqlSession sqlSession = sessionFactory.openSession(true)) {
+            TestUserMapper mapper = sqlSession.getMapper(TestUserMapper.class);
+
+            // 1. 执行 INSERT 写操作
+            TestUserEntity user = new TestUserEntity();
+            user.setId(100L);
+            user.setUsername("david");
+            user.setPassword("pwd123");
+            user.setPhone("13900000000");
+            user.setEmail("david@test.com");
+            int rows = mapper.insertRawUser(user);
+            assertThat(rows).isEqualTo(1);
+
+            // 2. 执行 SELECT 只读查询（includeSelect=false，不应进入存储）
+            TestUserEntity queried = mapper.selectUserById(100L);
+            assertThat(queried).isNotNull();
+
+            // 3. 执行 UPDATE 写操作
+            int updated = mapper.updateUsername(100L, "david_new");
+            assertThat(updated).isEqualTo(1);
+        }
+
+        // 验证控制台打印了 3 条
+        assertThat(capturedLogs).hasSize(3);
+
+        // 验证存储 SPI 仅接收了 2 条 DML（INSERT 与 UPDATE），SELECT 被自动忽略
+        assertThat(storedModels).hasSize(2);
+        assertThat(publishedEvents).hasSize(2);
+
+        // 验证 INSERT 模型
+        SqlLogModel insertModel = storedModels.get(0);
+        assertThat(insertModel.getSqlType()).isEqualTo(SqlTypeEnum.INSERT);
+        assertThat(insertModel.getStatementId()).contains("insertRawUser");
+        assertThat(insertModel.getStatus()).isEqualTo(0);
+        assertThat(insertModel.isSuccess()).isTrue();
+        assertThat(insertModel.getAffectedRows()).isEqualTo(1L);
+        assertThat(insertModel.getCostTime()).isNotNull();
+        assertThat(insertModel.getDatasource()).isNotBlank();
+        assertThat(insertModel.getSql()).contains("INSERT INTO");
+
+        // 验证 UPDATE 模型
+        SqlLogModel updateModel = storedModels.get(1);
+        assertThat(updateModel.getSqlType()).isEqualTo(SqlTypeEnum.UPDATE);
+        assertThat(updateModel.getStatementId()).contains("updateUsername");
+        assertThat(updateModel.getStatus()).isEqualTo(0);
+        assertThat(updateModel.isSuccess()).isTrue();
+        assertThat(updateModel.getAffectedRows()).isEqualTo(1L);
+        assertThat(updateModel.getSql()).contains("UPDATE");
+
+        // 验证 Spring 事件与模型对称性
+        assertThat(publishedEvents.get(0).getLogModel()).isSameAs(insertModel);
+        assertThat(publishedEvents.get(1).getLogModel()).isSameAs(updateModel);
+    }
+
+    @Test
+    @DisplayName("SPI 结构化持久化管道：includeSelect=true 时放行只读查询进入存储")
+    void testStorageIncludeSelectTrue() {
+        List<SqlLogModel> storedModels = new ArrayList<>();
+        SqlLogProperties properties = new SqlLogProperties();
+        properties.setEnabled(true);
+        properties.setConsoleEnabled(false); // 测试静默控制台，仅存 SPI
+        properties.getStorage().setEnabled(true);
+        properties.getStorage().setAsync(false);
+        properties.getStorage().setIncludeSelect(true);
+
+        SqlLogInterceptor interceptor = new SqlLogInterceptor(
+                properties,
+                null,
+                storedModels::add,
+                null,
+                null,
+                null
+        );
+        SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
+
+        try (SqlSession sqlSession = sessionFactory.openSession()) {
+            TestUserMapper mapper = sqlSession.getMapper(TestUserMapper.class);
+            mapper.selectUserById(1L);
+        }
+
+        assertThat(storedModels).hasSize(1);
+        SqlLogModel selectModel = storedModels.get(0);
+        assertThat(selectModel.getSqlType()).isEqualTo(SqlTypeEnum.SELECT);
+        assertThat(selectModel.getStatus()).isEqualTo(0);
+        assertThat(selectModel.getAffectedRows()).isEqualTo(1L);
+        assertThat(selectModel.getStatementId()).contains("selectUserById");
+    }
+
+    @Test
+    @DisplayName("细粒度防卫：@IgnoreSqlLog 注解声明式跳过控制台打印与 SPI 存储")
+    void testIgnoreSqlLogAnnotation() {
+        List<String> capturedLogs = new ArrayList<>();
+        List<SqlLogModel> storedModels = new ArrayList<>();
+
+        SqlLogProperties properties = new SqlLogProperties();
+        properties.setEnabled(true);
+        properties.getStorage().setEnabled(true);
+        properties.getStorage().setAsync(false);
+        properties.getStorage().setIncludeSelect(true);
+
+        SqlLogInterceptor interceptor = new SqlLogInterceptor(
+                properties,
+                capturedLogs::add,
+                storedModels::add,
+                null,
+                null,
+                null
+        );
+        SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
+
+        try (SqlSession sqlSession = sessionFactory.openSession()) {
+            TestUserMapper mapper = sqlSession.getMapper(TestUserMapper.class);
+            // 调用标注了 @IgnoreSqlLog 的方法
+            TestUserEntity user = mapper.selectIgnoredUser(1L);
+            assertThat(user).isNotNull();
+        }
+
+        // 控制台与存储双管道均应完全跳过
+        assertThat(capturedLogs).isEmpty();
+        assertThat(storedModels).isEmpty();
+    }
+
+    @Test
+    @DisplayName("细粒度防卫：excludeStatements 通配排除全局特定 MappedStatement")
+    void testExcludeStatements() {
+        List<String> capturedLogs = new ArrayList<>();
+        List<SqlLogModel> storedModels = new ArrayList<>();
+
+        SqlLogProperties properties = new SqlLogProperties();
+        properties.setEnabled(true);
+        properties.setExcludeStatements(List.of("*.updateUsername"));
+        properties.getStorage().setEnabled(true);
+        properties.getStorage().setAsync(false);
+
+        SqlLogInterceptor interceptor = new SqlLogInterceptor(
+                properties,
+                capturedLogs::add,
+                storedModels::add,
+                null,
+                null,
+                null
+        );
+        SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
+
+        try (SqlSession sqlSession = sessionFactory.openSession(true)) {
+            TestUserMapper mapper = sqlSession.getMapper(TestUserMapper.class);
+            mapper.updateUsername(1L, "new_name");
+        }
+
+        assertThat(capturedLogs).isEmpty();
+        assertThat(storedModels).isEmpty();
+    }
+
+    @Test
+    @DisplayName("失败现场采集：SQL 执行异常时捕获 status=1 与错误堆栈，派发 SPI 后重抛原始异常")
+    void testFailureSiteCapturedInStorage() {
+        List<SqlLogModel> storedModels = new ArrayList<>();
+
+        SqlLogProperties properties = new SqlLogProperties();
+        properties.setEnabled(true);
+        properties.getStorage().setEnabled(true);
+        properties.getStorage().setAsync(false);
+        properties.getStorage().setIncludeSelect(true);
+
+        SqlLogInterceptor interceptor = new SqlLogInterceptor(
+                properties,
+                null,
+                storedModels::add,
+                null,
+                null,
+                null
+        );
+        SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
+
+        try (SqlSession sqlSession = sessionFactory.openSession()) {
+            TestUserMapper mapper = sqlSession.getMapper(TestUserMapper.class);
+            // 构造主键冲突异常（id=1 已在 @BeforeEach 中存在）
+            TestUserEntity duplicateUser = new TestUserEntity();
+            duplicateUser.setId(1L);
+            duplicateUser.setUsername("duplicate_alice");
+            duplicateUser.setPassword("pwd");
+            duplicateUser.setPhone("13800000001");
+            duplicateUser.setEmail("dup@example.com");
+
+            assertThatThrownBy(() -> mapper.insertRawUser(duplicateUser))
+                    .isInstanceOf(Exception.class);
+        }
+
+        // 存储提供者应全真捕获失败现场
+        assertThat(storedModels).hasSize(1);
+        SqlLogModel failModel = storedModels.get(0);
+        assertThat(failModel.getStatus()).isEqualTo(1);
+        assertThat(failModel.isSuccess()).isFalse();
+        assertThat(failModel.getErrorMsg()).isNotBlank();
+        assertThat(failModel.getStatementId()).contains("insertRawUser");
+    }
+
+    @Test
+    @DisplayName("保底验证：DefaultSqlLogStorageProvider 在无外部实现时基于 SLF4J 安全输出 JSON")
+    void testDefaultSqlLogStorageProvider() {
+        DefaultSqlLogStorageProvider defaultProvider = new DefaultSqlLogStorageProvider();
+        SqlLogModel model = SqlLogModel.builder()
+                .traceId("trace-test")
+                .statementId("TestMapper.select")
+                .sql("SELECT 1")
+                .sqlType(SqlTypeEnum.SELECT)
+                .status(0)
+                .build();
+
+        // 验证空安全与常规调用均不抛出任何异常
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> {
+            defaultProvider.store(null);
+            defaultProvider.store(model);
+        });
     }
 }

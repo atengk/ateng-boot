@@ -43,9 +43,13 @@
 | **动态 SQL** | 外部 SQL 资源自动加载器 | `ExternalSqlLoader` / `ResourceExternalSqlLoader` | `ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 资源加载 SPI 与默认实现，启动时自动扫描指定路径并注册至 `DynamicSqlRegistry` | `ResourceExternalSqlLoaderTest` / `DynamicSqlScenarioTest` |
 | **流式游标** | 原生游标 SQL 注入器 | `SelectCursor` | - | 自动向 Mapper 注入 `selectCursor` MappedStatement，底层强制设置 `fetchSize = 1000`，杜绝内存溢出 | `AtengSqlInjectorTest` / `TenantOrderDomainIntegrationTest` |
 | **流式游标** | 受管流式游标查询模板 | `StreamingQueryTemplate` | - | `forEach` / `forEachBatch` / `forEachWhile` / `execute`，强制只读事务守护，`try-with-resources` 确定性闭合游标与连接归还，支持 Predicate 提前短路退出与不可变切片防卫 | `StreamingQueryTemplateTest` / `TenantOrderDomainIntegrationTest` |
-| **SQL 日志诊断** | SQL 日志打印与可执行带参诊断拦截器 | `SqlLogInterceptor` | `ateng.boot.mybatis-plus.sql-log.enabled`<br>`ateng.boot.mybatis-plus.sql-log.level`<br>`ateng.boot.mybatis-plus.sql-log.format-sql`<br>`ateng.boot.mybatis-plus.sql-log.mask-sensitive`<br>`ateng.boot.mybatis-plus.sql-log.show-call-location`<br>`ateng.boot.mybatis-plus.sql-log.max-sql-length` | 拦截 `StatementHandler` 物理终态，输出带参完整可执行 SQL、毫秒耗时、行数影响与代码行号看板，内建批量防刷屏、游标只读防卫与失败现场捕获 | `SqlLogInterceptorTest` / `SqlLogIntegrationTest` |
+| **SQL 日志诊断** | SQL 日志打印与可执行带参诊断拦截器 | `SqlLogInterceptor` | `ateng.boot.mybatis-plus.sql-log.enabled`<br>`ateng.boot.mybatis-plus.sql-log.console-enabled`<br>`ateng.boot.mybatis-plus.sql-log.level`<br>`ateng.boot.mybatis-plus.sql-log.format-sql`<br>`ateng.boot.mybatis-plus.sql-log.mask-sensitive`<br>`ateng.boot.mybatis-plus.sql-log.show-call-location`<br>`ateng.boot.mybatis-plus.sql-log.max-sql-length`<br>`ateng.boot.mybatis-plus.sql-log.exclude-statements`<br>`ateng.boot.mybatis-plus.sql-log.storage.*` | 拦截 `StatementHandler` 物理终态，输出带参完整可执行 SQL、毫秒耗时、行数影响与代码行号看板；驱动结构化 `SqlLogModel` 异步派发至存储 SPI 与 Spring 事件广播，内建批量防刷屏、游标只读防卫与失败现场捕获 | `SqlLogInterceptorTest` / `SqlLogIntegrationTest` |
 | **SQL 日志诊断** | 字符流参数安全反填与敏感脱敏引擎 | `SqlParameterFormatter` | - | `formatSql` / `formatValue` / `prettify` / `compress` / `extractParameters`，零依赖字符流 Token 状态机智能跳过常量与注释内问号，安全映射 ANSI JDBC 字面量，杜绝正则异常，自动探测 `@FieldEncrypt` 与敏感凭据脱敏 | `SqlParameterFormatterTest` |
-| **SQL 日志诊断** | SQL 日志诊断强类型配置模型 | `SqlLogProperties` | `ateng.boot.mybatis-plus.sql-log.*` | 强类型配置模型，提供 `enabled`、`level`、`formatSql`、`maskSensitive`、`showCallLocation`、`maxSqlLength` 6 大核心配置项及安全默认值 | `SqlLogPropertiesTest` / `AtengMybatisPlusAutoConfigurationTest` |
+| **SQL 审计存储** | SQL 操作审计存储解耦 SPI 契约 | `SqlLogStorageProvider` | `ateng.boot.mybatis-plus.sql-log.storage.enabled` | 结构化物理 SQL 操作审计日志存储解耦 SPI 契约，支持下游无缝对接数据库、Elasticsearch、Kafka、ClickHouse 或 APM 统一持久化 | `SqlLogInterceptorTest` |
+| **SQL 审计存储** | 默认 SQL 审计存储保底提供者 | `DefaultSqlLogStorageProvider` | `ateng.boot.mybatis-plus.sql-log.storage.enabled` | 当未配置外部自定义提供者时，基于 SLF4J 打印标准紧凑 JSON 审计日志，作为开箱即用保底实现 | `SqlLogInterceptorTest` |
+| **SQL 审计事件** | Spring 应用层 SQL 审计广播事件 | `SqlLogEvent` | `ateng.boot.mybatis-plus.sql-log.storage.enabled` | Spring 原生 `ApplicationEvent` 事件，在 SQL 执行完成或失败现场捕获后广播，支持进程内 `@EventListener` 异步非侵入监听 | `SqlLogInterceptorTest` |
+| **SQL 审计防卫** | 声明式 SQL 诊断与审计忽略注解 | `@IgnoreSqlLog` | - | 声明于 Mapper 接口类或特定方法上，指示拦截器对心跳探测或高频内部轮询等特定操作同时跳过控制台诊断与 SPI 存储 | `SqlLogInterceptorTest` |
+| **SQL 日志诊断** | SQL 日志与审计强类型配置模型 | `SqlLogProperties` | `ateng.boot.mybatis-plus.sql-log.*` | 强类型配置模型，提供 `consoleEnabled`、`excludeStatements` 及嵌套 `storage`（`enabled`、`includeSelect`、`async`、`maxSqlLength`）等全套双轨配置 | `SqlLogPropertiesTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **持久层底座** | 拦截器解包与调用栈穿透工具 | `MybatisInterceptorUtil` | - | `realTarget`（JDK 17 原生递归拆解 MyBatis Plugin 物理代理）/ `resolveCallLocation`（穿透持久层框架与切面，定位首个业务代码位置）/ `isFrameworkClass` | `MybatisInterceptorUtilTest` |
 | **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `DynamicDatasourceGuardScenarioTest` |
 | **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载批量方法与 `Cursor<T> selectCursor(@Param(Constants.WRAPPER) Wrapper<T> queryWrapper)` 原生流式游标查询 | `AtengSqlInjectorTest` / `TenantOrderDomainIntegrationTest` |
@@ -1407,20 +1411,72 @@ public class CustomSqlLogConfiguration {
 }
 ```
 
+#### 方案三：实现 `SqlLogStorageProvider` SPI 接入企业日志库或消息队列
+
+开启 `ateng.boot.mybatis-plus.sql-log.storage.enabled=true` 后，下游只需注册实现 `SqlLogStorageProvider` 的 Spring Bean，即可自动无缝接收结构化 `SqlLogModel`：
+
+```java
+@Component
+public class ElasticsearchSqlLogStorageProvider implements SqlLogStorageProvider {
+
+    private static final Logger log = LoggerFactory.getLogger(ElasticsearchSqlLogStorageProvider.class);
+
+    @Override
+    public void store(SqlLogModel logModel) {
+        // 自定义持久化：写入 Elasticsearch、ClickHouse、Kafka 或数据库专职审计表
+        log.info("接收到物理 SQL 审计记录: traceId={}, sqlType={}, statementId={}, costTime={}ms",
+                logModel.getTraceId(), logModel.getSqlType(), logModel.getStatementId(), logModel.getCostTime());
+    }
+}
+```
+
+未注册自定义 Provider 时，框架默认装配 `DefaultSqlLogStorageProvider`，基于 SLF4J 打印标准紧凑 JSON 格式（`[SQL_LOG] {...}`）作为保底。
+
+#### 方案四：基于 Spring 原生事件 `@EventListener` 异步消费 `SqlLogEvent`
+
+```java
+@Component
+public class SqlLogEventListener {
+
+    @Async("taskExecutor")
+    @EventListener
+    public void onSqlLogEvent(SqlLogEvent event) {
+        SqlLogModel logModel = event.getLogModel();
+        // 进程内解耦监听与告警
+    }
+}
+```
+
+#### 方案五：细粒度排除 `@IgnoreSqlLog` 与全局配置
+
+```java
+public interface UserMapper extends AtengBaseMapper<UserEntity> {
+
+    // 声明式跳过特定心跳或高频探测
+    @IgnoreSqlLog("心跳探测跳过审计")
+    @Select("SELECT 1")
+    Integer selectHeartbeat();
+}
+```
+
 ---
 
 ### 3. 核心生产边界与非功能语义 (Production Boundary & Invariants)
 
 1. **生产防灾默认关闭 (`enabled: false`)**：
    全量 SQL 日志涉及参数反射提取、类型映射与控制台 IO 输出。生产环境严禁默认开启，配置属性类严格设定 `enabled = false`。仅需在 `application-dev.yml` 或测试环境中开启即可开箱即用。
-2. **字符流 Token 状态机防误伤不变量**：
+2. **默认 DML 专属采集防存储暴涨**：
+   SPI 存储管道默认仅采集 `INSERT`、`UPDATE`、`DELETE` 写操作；只读 `SELECT` 默认忽略。仅当显式配置 `storage.include-select: true` 时才全量放行。
+3. **四维上下文快照跨线程透传**：
+   异步调度由 Core 受管异步线程池设施统一驱动，自动挂载 `ContextCopyingTaskDecorator` 透传 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 四维上下文快照，且 SPI 异常全量隔离，绝不反噬业务核心事务。
+4. **字符流 Token 状态机防误伤不变量**：
    SQL 中如果包含静态字符串常量（如 `WHERE question = 'How are you?'`）、转义单引号（`'It''s fine?'`）、双引号标识符（`"col?"`）或 SQL 注释（`/* why? */` / `-- line ?\n`），状态机将精准识别并跳过其中的问号，绝不会被误判定为参数占位符。
-3. **消除正则替换隐患**：
+5. **消除正则替换隐患**：
    参数值若包含 `$`（如价格 `$100`）或反斜杠 `\`（如 Windows 路径 `C:\Windows\System32`），使用 Java 原生 `String.replaceFirst` 会将其作为正则表达式的分组引用与转义符而崩溃报错。`SqlParameterFormatter` 坚持纯 `StringBuilder` 字符流拼装，彻底消除此类隐患。
-4. **受管流式游标只读防卫不变量**：
+6. **受管流式游标只读防卫不变量**：
    对 `selectCursor` 返回的 `Cursor<?>` 流式游标，拦截器严格禁止提前执行 `iterator()` 或 `forEach`，仅在看板输出 `执行结果影响 : [Cursor 延迟游标流]`，绝对不提前消费游标，确保下游流式大表导出业务正常。
-5. **异常失败现场完整捕获与因果链保全**：
-   当 SQL 执行遇到语法错误、主键冲突或外键死锁抛出 `SQLException` 异常时，拦截器在 `catch` 块中捕获执行失败现场，以 `ERROR` 级别打印 `[MyBatis-Plus SQL 执行失败诊断]` 看板，随后**原样向外抛出原始异常**，完整保留异常因果链，恪守“严禁吞咽异常”铁律。
+7. **异常失败现场完整捕获与因果链保全**：
+   当 SQL 执行遇到语法错误、主键冲突或外键死锁抛出 `SQLException` 异常时，拦截器在 `catch` 块中捕获执行失败现场，记录 `status = 1` 与错误信息并派发 SPI，随后**原样向外抛出原始异常**，完整保留异常因果链，恪守“严禁吞咽异常”铁律。
 
 ---
 
@@ -1433,11 +1489,20 @@ ateng:
       enabled: true               # 是否启用持久层增强装配（默认 true）
       sql-log:
         enabled: false            # 是否启用 SQL 日志打印与可执行带参诊断拦截器（默认 false，按需在 dev 开启）
+        console-enabled: true     # 是否在控制台输出 ASCII 诊断看板（默认 true）
         level: "INFO"             # 日志级别，支持 INFO 与 DEBUG（默认 INFO）
         format-sql: true          # 是否对 SQL 文本进行多行缩进美化（默认 true）
         mask-sensitive: true      # 是否对加密属性与密码凭据进行脱敏（默认 true）
         show-call-location: true  # 是否在控制台看板输出业务代码调用位置与行号（默认 true）
         max-sql-length: 4096      # 单条 SQL 打印最大字符长度（默认 4096，防超长 SQL 爆终端，<= 0 不限制）
+        exclude-statements:       # 全局排除的 MappedStatementId 通配规则清单
+          - "*.selectHeartbeat"
+          - "io.github.atengk.boot.job.*"
+        storage:
+          enabled: false          # 是否开启结构化 SPI 存储派发（默认 false，按需开启）
+          include-select: false   # 是否包含只读 SELECT 查询（默认 false，防存储暴涨）
+          async: true             # 是否通过受管异步线程池派发（默认 true）
+          max-sql-length: 8192    # 存储持久化时的 SQL 截断上限（默认 8192 字符）
       batch:
         default-size: 1000        # 原生批量插入默认单批次切片容量（默认 1000）
       audit:
