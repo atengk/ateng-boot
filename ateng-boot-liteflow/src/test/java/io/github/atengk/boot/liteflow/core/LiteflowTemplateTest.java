@@ -43,7 +43,7 @@ class LiteflowTemplateTest {
 
     @AfterEach
     void tearDown() {
-        FlowBus.removeChain("dynamicChain", "xmlDynamicChain");
+        FlowBus.removeChain("dynamicChain", "xmlDynamicChain", "preserveChain");
     }
 
     @Test
@@ -193,6 +193,69 @@ class LiteflowTemplateTest {
 
         assertThat(context).isNotNull();
         assertThat(context.getData()).isEqualTo("stepA_done");
+    }
+
+    @Test
+    @DisplayName("验证 EL 表达式快速布尔校验")
+    void testIsValidEl() {
+        assertThat(liteflowTemplate.isValidEl("THEN(stepA);")).isTrue();
+        assertThat(liteflowTemplate.isValidEl("THEN(stepA)")).isTrue();
+        assertThat(liteflowTemplate.isValidEl("THEN(stepA, stepFail);")).isTrue();
+        assertThat(liteflowTemplate.isValidEl("THEN(stepA, nonExistentStep);")).isFalse();
+        assertThat(liteflowTemplate.isValidEl("INVALID_SYNTAX(stepA")).isFalse();
+        assertThat(liteflowTemplate.isValidEl("")).isFalse();
+        assertThat(liteflowTemplate.isValidEl(null)).isFalse();
+    }
+
+    @Test
+    @DisplayName("验证 EL 表达式结构化语法校验")
+    void testValidateEl() {
+        LiteflowElValidationResult successResult = liteflowTemplate.validateEl("THEN(stepA);");
+        assertThat(successResult).isNotNull();
+        assertThat(successResult.isValid()).isTrue();
+        assertThat(successResult.getEl()).isEqualTo("THEN(stepA);");
+        assertThat(successResult.getErrorMessage()).isNull();
+
+        LiteflowElValidationResult syntaxFailResult = liteflowTemplate.validateEl("THEN(stepA");
+        assertThat(syntaxFailResult).isNotNull();
+        assertThat(syntaxFailResult.isValid()).isFalse();
+        assertThat(syntaxFailResult.getErrorMessage()).isNotEmpty();
+
+        LiteflowElValidationResult missingNodeResult = liteflowTemplate.validateEl("THEN(stepA, nonExistentStep);");
+        assertThat(missingNodeResult).isNotNull();
+        assertThat(missingNodeResult.isValid()).isFalse();
+        assertThat(missingNodeResult.getErrorMessage()).isNotEmpty();
+
+        LiteflowElValidationResult emptyResult = liteflowTemplate.validateEl("");
+        assertThat(emptyResult.isValid()).isFalse();
+        assertThat(emptyResult.getErrorMessage()).contains("不能为空");
+    }
+
+    @Test
+    @DisplayName("验证获取当前系统已加载就绪的规则链 ID 集合")
+    void testGetLoadedChainIds() {
+        java.util.Set<String> chainIds = liteflowTemplate.getLoadedChainIds();
+        assertThat(chainIds).isNotNull().isNotEmpty();
+        assertThat(chainIds).contains("testChainSuccess", "testChainFailure");
+    }
+
+    @Test
+    @DisplayName("验证非法 EL 表达式热更新失败且绝不破坏线上既有旧规则链")
+    void testReloadChainPreservesOldChainOnInvalidEl() {
+        // 1. 初始化并运行有效规则链
+        liteflowTemplate.reloadChain("preserveChain", "THEN(stepA);");
+        SampleTestContext first = liteflowTemplate.execute("preserveChain", SampleTestContext.class);
+        assertThat(first.getData()).isEqualTo("stepA_done");
+
+        // 2. 尝试使用非法语法的 EL 表达式进行更新，必须快速失败
+        assertThatThrownBy(() -> liteflowTemplate.reloadChain("preserveChain", "INVALID_SYNTAX(stepA"))
+                .isInstanceOf(LiteflowExecutionException.class)
+                .hasMessageContaining("EL 表达式语法校验未通过");
+
+        // 3. 核心断言：旧规则链完好无损，依然可以稳定正常执行
+        assertThat(liteflowTemplate.containChain("preserveChain")).isTrue();
+        SampleTestContext second = liteflowTemplate.execute("preserveChain", SampleTestContext.class);
+        assertThat(second.getData()).isEqualTo("stepA_done");
     }
 
     @Test

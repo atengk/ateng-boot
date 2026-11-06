@@ -6,6 +6,7 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.liteflow.model.DynamicChainReloadRequest;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteRequest;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteResponse;
+import io.github.atengk.boot.sample.liteflow.model.DynamicElValidateRequest;
 import io.github.atengk.boot.sample.liteflow.model.OrderFulfillmentRequest;
 import io.github.atengk.boot.sample.liteflow.model.OrderFulfillmentResponse;
 import io.github.atengk.boot.sample.liteflow.model.PriceCalculationRequest;
@@ -324,5 +325,44 @@ class LiteflowSampleE2eTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("全量")));
+    }
+
+    @Test
+    @DisplayName("测试场景 4.4：在线预校验 EL 表达式有效性 (validate-el)")
+    void testValidateElEndpoint() throws Exception {
+        // 1. 合法语法校验
+        DynamicElValidateRequest validReq = new DynamicElValidateRequest();
+        validReq.setEl("THEN(dynamicValidateCmp, dynamicEchoCmp);");
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/validate-el")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(validReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.valid").value(true))
+                .andExpect(jsonPath("$.data.errorMessage").isEmpty());
+
+        // 2. 非法语法校验
+        DynamicElValidateRequest invalidReq = new DynamicElValidateRequest();
+        invalidReq.setEl("THEN(dynamicValidateCmp");
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/validate-el")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.valid").value(false))
+                .andExpect(jsonPath("$.data.errorMessage").isNotEmpty());
+    }
+
+    @Test
+    @DisplayName("测试场景 4.5：查询系统当前已加载全部规则链 ID 集合 (chains)")
+    void testGetLoadedChainsEndpoint() throws Exception {
+        mockMvc.perform(get("/sample/liteflow/dynamic/chains"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItem("price-calc-flow")))
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItem("risk-approval-flow")));
     }
 }

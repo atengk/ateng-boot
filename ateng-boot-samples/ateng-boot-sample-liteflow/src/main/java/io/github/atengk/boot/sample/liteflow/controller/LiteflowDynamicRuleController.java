@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.liteflow.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.liteflow.core.LiteflowElValidationResult;
 import io.github.atengk.boot.liteflow.core.LiteflowTemplate;
 import io.github.atengk.boot.liteflow.rule.event.LiteflowRuleRefreshEvent;
 import io.github.atengk.boot.liteflow.trace.LiteflowTraceResult;
@@ -8,6 +9,7 @@ import io.github.atengk.boot.sample.liteflow.context.DynamicFlowContext;
 import io.github.atengk.boot.sample.liteflow.model.DynamicChainReloadRequest;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteRequest;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteResponse;
+import io.github.atengk.boot.sample.liteflow.model.DynamicElValidateRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.HashMap;
+import java.util.Set;
 
 /**
  * 动态规则热重载与在线即时 EL 执行接口控制器
@@ -80,6 +83,31 @@ public class LiteflowDynamicRuleController {
                 .build();
 
         return Result.success(response);
+    }
+
+    /**
+     * 在线预校验 EL 规则表达式语法有效性
+     *
+     * @param request 校验请求
+     * @return 结构化校验结果
+     */
+    @PostMapping("/validate-el")
+    public Result<LiteflowElValidationResult> validateEl(@Valid @RequestBody DynamicElValidateRequest request) {
+        log.info("【动态规则】在线校验 EL 表达式语法：el={}", request.getEl());
+        LiteflowElValidationResult result = liteflowTemplate.validateEl(request.getEl());
+        return Result.success(result);
+    }
+
+    /**
+     * 获取当前系统已编译加载的全部规则链 ID 集合
+     *
+     * @return 规则链 ID 集合
+     */
+    @GetMapping("/chains")
+    public Result<Set<String>> getLoadedChains() {
+        Set<String> chains = liteflowTemplate.getLoadedChainIds();
+        log.info("【动态规则】获取已加载流程链列表，当前数量: {}", chains.size());
+        return Result.success(chains);
     }
 
     /**

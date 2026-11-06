@@ -1,5 +1,7 @@
 package io.github.atengk.boot.liteflow.core;
 
+import com.yomahub.liteflow.builder.el.LiteFlowChainELBuilder;
+import com.yomahub.liteflow.common.entity.ValidationResp;
 import com.yomahub.liteflow.core.FlowExecutor;
 import com.yomahub.liteflow.enums.FlowParserTypeEnum;
 import com.yomahub.liteflow.flow.FlowBus;
@@ -15,8 +17,12 @@ import io.github.atengk.boot.liteflow.trace.LiteflowTraceResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Collections;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Queue;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
@@ -614,7 +620,67 @@ public class LiteflowTemplate {
     }
 
     /**
+     * 快速校验 EL 规则编排表达式语法是否合法有效
+     *
+     * @param el 待校验的 EL 表达式
+     * @return true 表示合法有效，false 表示存在语法或组件缺失等错误
+     */
+    public boolean isValidEl(String el) {
+        if (el == null || el.isBlank()) {
+            return false;
+        }
+        try {
+            return LiteFlowChainELBuilder.validate(el);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 校验 EL 规则编排表达式语法并返回结构化诊断结果
+     *
+     * @param el 待校验的 EL 表达式
+     * @return 结构化校验结果（包含成功状态与详细失败原因）
+     */
+    public LiteflowElValidationResult validateEl(String el) {
+        if (el == null || el.isBlank()) {
+            return LiteflowElValidationResult.fail(el, "EL 表达式不能为空");
+        }
+        try {
+            ValidationResp resp = LiteFlowChainELBuilder.validateWithEx(el);
+            if (resp != null && resp.isSuccess()) {
+                return LiteflowElValidationResult.success(el);
+            }
+            String errorMsg = (resp != null && resp.getCause() != null)
+                    ? resp.getCause().getMessage()
+                    : "EL 表达式语法校验未通过";
+            return LiteflowElValidationResult.fail(el, errorMsg);
+        } catch (Throwable t) {
+            return LiteflowElValidationResult.fail(el, "EL 表达式校验异常: " + t.getMessage());
+        }
+    }
+
+    /**
+     * 获取当前系统已编译加载就绪的全部规则流程链 ID 集合
+     *
+     * @return 规则流程链 ID 集合，保底返回不可变空集合
+     */
+    public Set<String> getLoadedChainIds() {
+        try {
+            Map<String, ?> chainMap = FlowBus.getChainMap();
+            if (chainMap == null || chainMap.isEmpty()) {
+                return Collections.emptySet();
+            }
+            return Collections.unmodifiableSet(new TreeSet<>(chainMap.keySet()));
+        } catch (Throwable t) {
+            log.warn("ateng-boot-liteflow: 获取已加载流程链列表异常: {}", t.getMessage());
+            return Collections.emptySet();
+        }
+    }
+
+    /**
      * 动态热更新或新建单条规则流程链
+     * 先行校验 EL 表达式合法性，防御因非法表达式导致线上既有规则链被破坏
      *
      * @param chainId 目标规则链 ID
      * @param el      新的 EL 表达式定义
@@ -626,10 +692,12 @@ public class LiteflowTemplate {
         if (el == null || el.isBlank()) {
             throw new IllegalArgumentException("el 表达式不能为空");
         }
+        LiteflowElValidationResult validationResult = validateEl(el);
+        if (!validationResult.isValid()) {
+            throw new LiteflowExecutionException(chainId, null,
+                    "动态重载 LiteFlow 流程链 [" + chainId + "] 失败，EL 表达式语法校验未通过: " + validationResult.getErrorMessage(), null);
+        }
         try {
-            if (FlowBus.containChain(chainId)) {
-                FlowBus.removeChain(chainId);
-            }
             FlowBus.reloadChain(chainId, el);
             log.info("ateng-boot-liteflow: 成功动态更新/新建规则链 [{}] -> [{}]", chainId, el);
         } catch (Exception e) {
