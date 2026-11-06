@@ -45,7 +45,7 @@ public abstract class SequentialPipelineWorkflow<S extends BaseGraphState> exten
      */
     public static final String NODE_FAILED = "failed";
 
-    private List<PipelineStage<S>> cachedStages;
+    private volatile List<PipelineStage<S>> cachedStages;
 
     /**
      * 构建确定性顺序流水线工作流
@@ -70,14 +70,21 @@ public abstract class SequentialPipelineWorkflow<S extends BaseGraphState> exten
      * @return 阶段列表
      */
     public List<PipelineStage<S>> getStages() {
-        if (cachedStages == null) {
-            List<PipelineStage<S>> registered = registerStages();
-            if (registered == null || registered.isEmpty()) {
-                throw new IllegalStateException("SequentialPipelineWorkflow [" + getWorkflowName() + "] 必须至少注册一个流水线阶段");
+        List<PipelineStage<S>> result = cachedStages;
+        if (result == null) {
+            synchronized (this) {
+                result = cachedStages;
+                if (result == null) {
+                    List<PipelineStage<S>> registered = registerStages();
+                    if (registered == null || registered.isEmpty()) {
+                        throw new IllegalStateException("SequentialPipelineWorkflow [" + getWorkflowName() + "] 必须至少注册一个流水线阶段");
+                    }
+                    result = Collections.unmodifiableList(new ArrayList<>(registered));
+                    cachedStages = result;
+                }
             }
-            cachedStages = Collections.unmodifiableList(new ArrayList<>(registered));
         }
-        return cachedStages;
+        return result;
     }
 
     /**
@@ -149,6 +156,9 @@ public abstract class SequentialPipelineWorkflow<S extends BaseGraphState> exten
 
         // 4. 记录阶段产出结果字典
         Map<String, Object> stageResults = new LinkedHashMap<>(state.get(PipelineState.STAGE_RESULTS).orElseGet(LinkedHashMap::new));
+        for (String skippedStage : skipped) {
+            stageResults.putIfAbsent(skippedStage, "SKIPPED");
+        }
         if (result != null) {
             stageResults.put(stage.getName(), result);
         }
@@ -237,6 +247,12 @@ public abstract class SequentialPipelineWorkflow<S extends BaseGraphState> exten
             }
         }
         patch.put(PipelineState.SKIPPED_STAGES.name(), skipped);
+
+        Map<String, Object> stageResults = new LinkedHashMap<>(state.get(PipelineState.STAGE_RESULTS).orElseGet(LinkedHashMap::new));
+        for (String skippedStage : skipped) {
+            stageResults.putIfAbsent(skippedStage, "SKIPPED");
+        }
+        patch.put(PipelineState.STAGE_RESULTS.name(), stageResults);
 
         String currentOutput = state.get(PipelineState.FINAL_OUTPUT).orElse(null);
         if (currentOutput == null || currentOutput.isBlank()) {

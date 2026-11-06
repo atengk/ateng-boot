@@ -442,7 +442,7 @@ public final class OpenApiSchemaConverter {
         return Character.toUpperCase(str.charAt(0)) + str.substring(1);
     }
 
-    private static String cleanTrailingSlash(String url) {
+    public static String cleanTrailingSlash(String url) {
         if (url != null && url.endsWith("/")) {
             return url.substring(0, url.length() - 1);
         }

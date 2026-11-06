@@ -255,6 +255,7 @@ class OpenApiToolAdapterTest {
         UserContextHolder.clear();
         TenantContextHolder.clear();
         MDC.clear();
+        org.springframework.web.context.request.RequestContextHolder.resetRequestAttributes();
     }
 
     @Test
@@ -387,6 +388,55 @@ class OpenApiToolAdapterTest {
         assertThat(resultJson).contains("12345");
         assertThat(resultJson).contains("ZhangSan");
         mockServer.verify();
+    }
+
+    @Test
+    @DisplayName("测试动态 HTTP 上下文透传：自动透传 RequestContextHolder 中的 Authorization 凭据")
+    void testDynamicAuthorizationPropagation() {
+        RestClient.Builder builder = RestClient.builder().baseUrl("https://order-service.internal/api/v1");
+        MockRestServiceServer mockServer = MockRestServiceServer.bindTo(builder).build();
+        RestClient restClient = builder.build();
+
+        OpenApiToolProperties props = OpenApiToolProperties.builder()
+                .baseUrl("https://order-service.internal/api/v1")
+                .propagateContext(true)
+                .build();
+
+        OpenApiToolAdapter adapter = OpenApiToolAdapter.fromString(OPENAPI_V3_SPEC, props, restClient);
+
+        org.springframework.web.context.request.RequestContextHolder.setRequestAttributes(new DummyRequestAttributes());
+
+        try {
+            mockServer.expect(requestTo("https://order-service.internal/api/v1/orders/8888"))
+                    .andExpect(method(HttpMethod.GET))
+                    .andExpect(header("Authorization", "Bearer dynamic-user-jwt-token-999"))
+                    .andRespond(withSuccess("{\"id\":8888,\"status\":\"SHIPPED\"}", MediaType.APPLICATION_JSON));
+
+            String result = adapter.execute("getOrderById", Map.of("id", 8888));
+            assertThat(result).contains("SHIPPED");
+            mockServer.verify();
+        } finally {
+            org.springframework.web.context.request.RequestContextHolder.resetRequestAttributes();
+        }
+    }
+
+    static class DummyRequestAttributes implements org.springframework.web.context.request.RequestAttributes {
+        public Object getRequest() {
+            return new Object() {
+                public String getHeader(String name) {
+                    return "Authorization".equalsIgnoreCase(name) ? "Bearer dynamic-user-jwt-token-999" : null;
+                }
+            };
+        }
+
+        @Override public Object getAttribute(String name, int scope) { return null; }
+        @Override public void setAttribute(String name, Object value, int scope) {}
+        @Override public void removeAttribute(String name, int scope) {}
+        @Override public String[] getAttributeNames(int scope) { return new String[0]; }
+        @Override public void registerDestructionCallback(String name, Runnable callback, int scope) {}
+        @Override public Object resolveReference(String key) { return null; }
+        @Override public String getSessionId() { return "dummy-session"; }
+        @Override public Object getSessionMutex() { return this; }
     }
 
     @Test

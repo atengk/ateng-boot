@@ -277,6 +277,7 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
             // 1. 若开启长效情景记忆 (episodicMemory)，执行三阶梯用户识别并召回 Persona 画像注入
             String resolvedUserId = null;
             String userQuery = null;
+            String personaPrompt = null;
             if (episodicMemory) {
                 resolvedUserId = resolveUserId(method, args);
                 userQuery = resolveUserQuery(method, args);
@@ -290,30 +291,34 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                         if (facts == null || facts.isEmpty()) {
                             facts = template.listFacts(resolvedUserId, 5);
                         }
-                        String personaPrompt = EpisodicMemoryTemplate.formatPersonaPrompt(facts);
-                        if (StringUtils.hasText(personaPrompt)) {
-                            EpisodicMemoryContext.setInjectedPrompt(personaPrompt);
-                        }
+                        personaPrompt = EpisodicMemoryTemplate.formatPersonaPrompt(facts);
                     } catch (Exception e) {
                         log.warn("智能体 [{}] 长效情景记忆召回受控跳过: {}", agentInterface.getSimpleName(), e.getMessage());
                     }
                 }
             }
 
-            // 2. 提取复杂对象参数并构建 JSON 替换映射
-            Map<String, String> replacements = buildArgumentReplacements(args);
-
-            // 3. 打开调用上下文作用域并执行底层调用
+            // 2. 注入情景记忆并在严格 finally 块中保证确定性清理
             Object result;
-            try (AgentCallContext.Scope ignored = AgentCallContext.openScope(replacements)) {
-                method.setAccessible(true);
-                result = method.invoke(rawAgent, args);
-            } catch (InvocationTargetException ite) {
-                Throwable target = ite.getTargetException();
-                if (target instanceof RuntimeException re) {
-                    throw re;
+            try {
+                if (StringUtils.hasText(personaPrompt)) {
+                    EpisodicMemoryContext.setInjectedPrompt(personaPrompt);
                 }
-                throw ite;
+
+                // 提取复杂对象参数并构建 JSON 替换映射
+                Map<String, String> replacements = buildArgumentReplacements(args);
+
+                // 打开调用上下文作用域并执行底层调用
+                try (AgentCallContext.Scope ignored = AgentCallContext.openScope(replacements)) {
+                    method.setAccessible(true);
+                    result = method.invoke(rawAgent, args);
+                } catch (InvocationTargetException ite) {
+                    Throwable target = ite.getTargetException();
+                    if (target instanceof RuntimeException re) {
+                        throw re;
+                    }
+                    throw ite;
+                }
             } finally {
                 // 确保 ThreadLocal 记忆提示词绝对清理，杜绝跨请求污染
                 if (episodicMemory) {
@@ -458,16 +463,9 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                     }
                 }
             }
-            // 阶梯二：方法参数标注 @MemoryId 或参数命名匹配 userId / memoryId / sessionId
+            // 阶梯二：方法参数标注 @MemoryId
             for (int i = 0; i < parameters.length && i < args.length; i++) {
                 if (parameters[i].isAnnotationPresent(dev.langchain4j.service.MemoryId.class)) {
-                    Object val = args[i];
-                    if (val != null && StringUtils.hasText(val.toString())) {
-                        return val.toString().trim();
-                    }
-                }
-                String paramName = parameters[i].getName();
-                if ("userId".equalsIgnoreCase(paramName) || "memoryId".equalsIgnoreCase(paramName) || "sessionId".equalsIgnoreCase(paramName)) {
                     Object val = args[i];
                     if (val != null && StringUtils.hasText(val.toString())) {
                         return val.toString().trim();

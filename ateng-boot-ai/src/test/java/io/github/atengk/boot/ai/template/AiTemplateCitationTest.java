@@ -106,8 +106,8 @@ class AiTemplateCitationTest {
     }
 
     @Test
-    @DisplayName("streamWithCitations：流式推流模式下在推流结束时下发 citation 事件")
-    void testStreamWithCitationsSuccess() {
+    @DisplayName("streamWithCitations：流式推流模式下下发 rag_retrieved 事件并在推流结束时下发 citation 事件")
+    void testStreamWithCitationsSuccess() throws Exception {
         TextSegment seg1 = TextSegment.from("ateng-boot 严禁持久化实体直接泄露至控制器传输层",
                 Metadata.from(Map.of("file_name", "standard.md", "id", "seg-002")));
         List<TextSegment> candidates = Collections.singletonList(seg1);
@@ -121,10 +121,14 @@ class AiTemplateCitationTest {
             return null;
         }).when(streamingChatModel).generate(anyList(), any(StreamingResponseHandler.class));
 
-        SseEmitter emitter = aiTemplate.streamWithCitations("控制器规范是什么", candidates);
+        SseEmitter mockEmitter = mock(SseEmitter.class);
+        aiTemplate.streamWithCitations("控制器规范是什么", candidates, mockEmitter);
 
-        assertThat(emitter).isNotNull();
         verify(streamingChatModel, times(1)).generate(anyList(), any(StreamingResponseHandler.class));
+
+        // 验证 mockEmitter 接收到了 rag_retrieved 候选事件，并最终下发了 citation 与 done 事件
+        ArgumentCaptor<SseEmitter.SseEventBuilder> captor = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        verify(mockEmitter, atLeast(4)).send(captor.capture());
     }
 
     @Test

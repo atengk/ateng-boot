@@ -23,6 +23,8 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
+import org.springframework.web.context.request.RequestAttributes;
+import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.InputStream;
@@ -56,7 +58,7 @@ public class OpenApiToolAdapter {
     private final RestClient restClient;
 
     private final Map<String, OpenApiOperationMeta> operationsMap = new ConcurrentHashMap<>();
-    private final Map<ToolSpecification, ToolExecutor> sandboxedTools = new LinkedHashMap<>();
+    private volatile Map<ToolSpecification, ToolExecutor> sandboxedTools = Collections.emptyMap();
     private final Map<String, ToolExecutor> executorByOperationId = new ConcurrentHashMap<>();
 
     private JsonNode rootSpecNode;
@@ -85,7 +87,7 @@ public class OpenApiToolAdapter {
 
         // 2. 确定 baseUrl
         if (StringUtils.hasText(this.properties.getBaseUrl())) {
-            this.resolvedBaseUrl = cleanTrailingSlash(this.properties.getBaseUrl());
+            this.resolvedBaseUrl = OpenApiSchemaConverter.cleanTrailingSlash(this.properties.getBaseUrl());
         } else {
             String detected = OpenApiSchemaConverter.detectBaseUrl(this.rootSpecNode);
             this.resolvedBaseUrl = StringUtils.hasText(detected) ? detected : "http://localhost:8080";
@@ -196,9 +198,9 @@ public class OpenApiToolAdapter {
      * 初始化解析全部工具
      */
     private synchronized void initializeTools() {
-        operationsMap.clear();
-        sandboxedTools.clear();
-        executorByOperationId.clear();
+        Map<String, OpenApiOperationMeta> localOperationsMap = new ConcurrentHashMap<>();
+        Map<ToolSpecification, ToolExecutor> localSandboxedTools = new LinkedHashMap<>();
+        Map<String, ToolExecutor> localExecutorByOperationId = new ConcurrentHashMap<>();
 
         List<OpenApiOperationMeta> operations = OpenApiSchemaConverter.parseOperations(rootSpecNode);
         for (OpenApiOperationMeta op : operations) {
@@ -236,16 +238,22 @@ public class OpenApiToolAdapter {
             ToolExecutor rawExecutor = (request, memoryId) -> executeRequest(op, request);
             ToolExecutor sandboxed = SandboxedToolExecutor.wrap(opId, rawExecutor);
 
-            operationsMap.put(opId, op);
-            sandboxedTools.put(specification, sandboxed);
-            executorByOperationId.put(opId, sandboxed);
+            localOperationsMap.put(opId, op);
+            localSandboxedTools.put(specification, sandboxed);
+            localExecutorByOperationId.put(opId, sandboxed);
 
             log.debug("[AI-OPENAPI-TOOL] 适配器 [{}] 成功转换受管工具: [{}] -> {} {}",
                     properties.getName(), opId, method, op.getPath());
         }
 
+        this.operationsMap.clear();
+        this.operationsMap.putAll(localOperationsMap);
+        this.executorByOperationId.clear();
+        this.executorByOperationId.putAll(localExecutorByOperationId);
+        this.sandboxedTools = Collections.unmodifiableMap(localSandboxedTools);
+
         log.info("[AI-OPENAPI-TOOL] 适配器 [{}] 解析完成，共注册 {} 个受管 OpenAPI 沙箱工具 (baseUrl: {})",
-                properties.getName(), sandboxedTools.size(), resolvedBaseUrl);
+                properties.getName(), localSandboxedTools.size(), resolvedBaseUrl);
     }
 
     /**
@@ -254,7 +262,7 @@ public class OpenApiToolAdapter {
      * @return 工具映射字典
      */
     public Map<ToolSpecification, ToolExecutor> getTools() {
-        return Collections.unmodifiableMap(sandboxedTools);
+        return sandboxedTools;
     }
 
     /**
@@ -390,6 +398,11 @@ public class OpenApiToolAdapter {
             // 静态或动态 Auth 请求头
             if (StringUtils.hasText(properties.getAuthToken())) {
                 requestSpec.header(properties.getAuthHeader(), properties.getAuthToken());
+            } else if (properties.isPropagateContext()) {
+                String dynamicAuth = resolveDynamicAuthorization();
+                if (StringUtils.hasText(dynamicAuth)) {
+                    requestSpec.header(properties.getAuthHeader(), dynamicAuth);
+                }
             }
 
             // 契约声明的 Header 参数
@@ -506,10 +519,22 @@ public class OpenApiToolAdapter {
         return properties;
     }
 
-    private static String cleanTrailingSlash(String url) {
-        if (url != null && url.endsWith("/")) {
-            return url.substring(0, url.length() - 1);
+    private String resolveDynamicAuthorization() {
+        try {
+            RequestAttributes attrs = RequestContextHolder.getRequestAttributes();
+            if (attrs != null) {
+                java.lang.reflect.Method getReqMethod = attrs.getClass().getMethod("getRequest");
+                Object req = getReqMethod.invoke(attrs);
+                if (req != null) {
+                    java.lang.reflect.Method getHeaderMethod = req.getClass().getMethod("getHeader", String.class);
+                    Object auth = getHeaderMethod.invoke(req, properties.getAuthHeader());
+                    if (auth != null && StringUtils.hasText(auth.toString())) {
+                        return auth.toString().trim();
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
         }
-        return url;
+        return null;
     }
 }

@@ -1,6 +1,7 @@
 package io.github.atengk.boot.ai.graph.debate;
 
 import io.github.atengk.boot.ai.checkpoint.MemoryCheckpointSaver;
+import io.github.atengk.boot.ai.checkpoint.RedisCheckpointSaver;
 import io.github.atengk.boot.ai.graph.GraphResumeTemplate;
 import io.github.atengk.boot.ai.graph.GraphWorkflowRegistry;
 import io.github.atengk.boot.ai.graph.StateSnapshotVo;
@@ -9,13 +10,23 @@ import io.github.atengk.boot.ai.properties.AtengAiGraphProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.redis.core.ListOperations;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 /**
  * 对抗式多智能体辩论与共识裁决工作流核心单元测试
@@ -253,5 +264,92 @@ class DebateConsensusWorkflowTest {
             };
             reservedWorkflow.afterPropertiesSet();
         }).isInstanceOf(IllegalStateException.class).hasRootCauseInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("验证辩论工作流与分布式 RedisCheckpointSaver 全链路集成与快照序列化持久化")
+    void testDebateExecutionWithRedisCheckpointSaver() {
+        RedisCheckpointSaver redisSaver = createInMemoryRedisSaver();
+        TwoRoundDebateWorkflow workflow = new TwoRoundDebateWorkflow();
+        workflow.setCheckpointSaver(redisSaver);
+
+        DebateState initState = new DebateState(Map.of("topic", "Redis检查点持久化验证辩题"));
+        StateSnapshotVo snapshot = workflow.start("test-redis-debate-001", initState);
+
+        assertThat(snapshot).isNotNull();
+        assertThat(snapshot.status()).isEqualTo(WorkflowStatus.COMPLETED);
+        assertThat(snapshot.state()).containsEntry(DebateState.CONSENSUS_REACHED.name(), true);
+        assertThat(snapshot.state()).containsEntry(DebateState.FINAL_VERDICT.name(), "APPROVED");
+
+        // 验证可通过 threadId 成功从 RedisCheckpointSaver 读取已持久化的快照
+        Optional<StateSnapshotVo> queried = workflow.getSnapshot("test-redis-debate-001");
+        assertThat(queried).isPresent();
+        assertThat(queried.get().status()).isEqualTo(WorkflowStatus.COMPLETED);
+        assertThat(queried.get().state()).containsEntry(DebateState.CONSENSUS_REACHED.name(), true);
+
+        @SuppressWarnings("unchecked")
+        List<?> history = (List<?>) queried.get().state().get(DebateState.DEBATE_HISTORY.name());
+        assertThat(history).hasSize(4);
+    }
+
+    private RedisCheckpointSaver createInMemoryRedisSaver() {
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        ValueOperations<String, String> valueOperations = mock(ValueOperations.class);
+        @SuppressWarnings("unchecked")
+        ListOperations<String, String> listOperations = mock(ListOperations.class);
+
+        Map<String, String> store = new ConcurrentHashMap<>();
+        Map<String, List<String>> listStore = new ConcurrentHashMap<>();
+
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(redisTemplate.opsForList()).thenReturn(listOperations);
+
+        doAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            String val = invocation.getArgument(1);
+            store.put(key, val);
+            return null;
+        }).when(valueOperations).set(anyString(), anyString(), any(Duration.class));
+
+        doAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            return store.get(key);
+        }).when(valueOperations).get(anyString());
+
+        doAnswer(invocation -> {
+            List<String> keys = invocation.getArgument(0);
+            List<String> result = new ArrayList<>();
+            for (String k : keys) {
+                result.add(store.get(k));
+            }
+            return result;
+        }).when(valueOperations).multiGet(anyList());
+
+        doAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            String val = invocation.getArgument(1);
+            listStore.computeIfAbsent(key, k -> new CopyOnWriteArrayList<>()).add(0, val);
+            return 1L;
+        }).when(listOperations).leftPush(anyString(), anyString());
+
+        doAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            List<String> l = listStore.get(key);
+            return (l != null && !l.isEmpty()) ? l.get(0) : null;
+        }).when(listOperations).index(anyString(), eq(0L));
+
+        doAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            List<String> l = listStore.get(key);
+            return l != null ? new ArrayList<>(l) : Collections.emptyList();
+        }).when(listOperations).range(anyString(), eq(0L), eq(-1L));
+
+        when(redisTemplate.hasKey(anyString())).thenAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            return listStore.containsKey(key) || store.containsKey(key);
+        });
+
+        return new RedisCheckpointSaver(redisTemplate, "ateng:ai:test:checkpoint:", Duration.ofDays(1));
     }
 }

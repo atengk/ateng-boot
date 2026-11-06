@@ -11,6 +11,8 @@ import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
 import io.github.atengk.boot.ai.rag.citation.Citation;
 import io.github.atengk.boot.ai.rag.citation.CitationExtractor;
+import io.github.atengk.boot.ai.streaming.event.AgentStreamEvent;
+import io.github.atengk.boot.ai.streaming.event.AgentStreamEventType;
 import io.github.atengk.boot.ai.streaming.event.AgentStreamListener;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.util.JsonUtil;
@@ -267,18 +269,20 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
 
             if (toolExecution.request() != null) {
                 // 1. 发送工具调用触发事件 tool_call
-                Map<String, Object> callPayload = new LinkedHashMap<>();
-                callPayload.put("id", toolExecution.request().id());
-                callPayload.put("name", toolExecution.request().name());
-                callPayload.put("arguments", toolExecution.request().arguments());
-                sendEvent("tool_call", JsonUtil.toJsonString(callPayload));
+                AgentStreamEvent.ToolCallPayload callPayload = new AgentStreamEvent.ToolCallPayload(
+                        toolExecution.request().id(),
+                        toolExecution.request().name(),
+                        toolExecution.request().arguments()
+                );
+                sendEvent(AgentStreamEventType.TOOL_CALL.getEventName(), JsonUtil.toJsonString(callPayload));
 
                 // 2. 发送工具执行返回事件 tool_result
-                Map<String, Object> resultPayload = new LinkedHashMap<>();
-                resultPayload.put("id", toolExecution.request().id());
-                resultPayload.put("name", toolExecution.request().name());
-                resultPayload.put("result", toolExecution.result() != null ? toolExecution.result() : "");
-                sendEvent("tool_result", JsonUtil.toJsonString(resultPayload));
+                AgentStreamEvent.ToolResultPayload resultPayload = new AgentStreamEvent.ToolResultPayload(
+                        toolExecution.request().id(),
+                        toolExecution.request().name(),
+                        toolExecution.result() != null ? toolExecution.result() : ""
+                );
+                sendEvent(AgentStreamEventType.TOOL_RESULT.getEventName(), JsonUtil.toJsonString(resultPayload));
             }
         });
     }

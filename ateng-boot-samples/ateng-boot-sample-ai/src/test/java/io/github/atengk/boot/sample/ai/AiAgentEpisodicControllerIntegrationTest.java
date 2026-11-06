@@ -301,4 +301,53 @@ class AiAgentEpisodicControllerIntegrationTest {
         // 4. 清空遗忘该用户所有事实
         episodicMemoryTemplate.forgetAll(testUserId);
     }
+
+    @Test
+    @DisplayName("语义槽位冲突覆盖验证：同用户相同 slotKey 再次提交事实自动覆盖旧事实")
+    void testSlotUpsertingViaApi() throws Exception {
+        String testUserId = "user-slot-upsert";
+
+        // 1. 提交初始事实：主题 user，谓词 diet，宾词 vegetarian
+        MemoryFactRememberRequest req1 = new MemoryFactRememberRequest();
+        req1.setUserId(testUserId);
+        req1.setSubject("user");
+        req1.setPredicate("diet");
+        req1.setObject("vegetarian");
+        req1.setStatement("用户习惯素食");
+        req1.setConfidence(0.9);
+
+        mockMvc.perform(post("/sample/ai/agent/episodic/facts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req1)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("200"))
+                .andExpect(jsonPath("$.data.slotKey").value("user:diet"));
+
+        // 2. 提交更新事实：同一 slotKey (user:diet)，宾词变为 vegan
+        MemoryFactRememberRequest req2 = new MemoryFactRememberRequest();
+        req2.setUserId(testUserId);
+        req2.setSubject("user");
+        req2.setPredicate("diet");
+        req2.setObject("vegan");
+        req2.setStatement("用户严格纯素饮食");
+        req2.setConfidence(1.0);
+
+        mockMvc.perform(post("/sample/ai/agent/episodic/facts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req2)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("200"))
+                .andExpect(jsonPath("$.data.slotKey").value("user:diet"));
+
+        // 3. 查询事实列表，验证旧事实已被覆盖，数量保持为 1，且内容更新为最新状态
+        mockMvc.perform(get("/sample/ai/agent/episodic/facts/" + testUserId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("200"))
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].object").value("vegan"))
+                .andExpect(jsonPath("$.data[0].statement").value("用户严格纯素饮食"));
+
+        // 清理
+        episodicMemoryTemplate.forgetAll(testUserId);
+    }
 }

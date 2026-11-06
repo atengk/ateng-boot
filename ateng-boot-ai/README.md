@@ -2141,7 +2141,7 @@ public class AiDebateWorkflowController {
 
 #### 5. 核心机制与非功能生产边界 (Production Boundary & Failure Modes)
 - **辩论轮转与发言保序 (Debate History Invariant)**：每一位辩手的每次发言封装为不可变强类型对象 `DebateSpeech`（包含发言轮次、辩手标识、立场观点与发言内容），统一汇聚至 `DebateState.DEBATE_HISTORY`。仲裁员节点可依据完整时序证据链出具公正判决；
-- **死循环硬看门狗安全兜底 (Watchdog Breaker)**：当辩论双方陷入死锁（`checkConsensus` 持续返回 `false`）时，`roundCount` 达到 `maxDebateTurns` 即刻触发看门狗熔断，状态机自动转向 `watchdog_fallback` 节点，状态标记为 `FAILED`，置位 `watchdogTripped=true` 并执行 `onWatchdogFallback` 降级，强力封堵 Token 烧毁风险；
+- **死循环硬看门狗安全兜底 (Watchdog Breaker)**：当辩论双方陷入死锁（`checkConsensus` 持续返回 `false`）时，`roundCount` 达到 `maxDebateTurns` 即刻触发看门狗熔断，状态机自动转向 `fallback_finish` 节点，状态标记为 `COMPLETED`（判定结论置为 `FORCED_ARBITRATION` 强制仲裁），置位 `watchdogTripped=true` 并执行 `onFallbackFinish` 降级，强力封堵 Token 烧毁风险；
 - **图引擎最大迭代数安全余量防卫**：LangGraph4j 内部有全局 `maxIterations` 保护机制。若业务辩论轮次较多，图引擎迭代数可能先于看门狗耗尽抛出未受管异常。`DebateConsensusWorkflow` 自动依据 `maxTurns * debatersCount + 10` 计算底层图编译参数，确保业务看门狗总是优先受控介入；
 - **双模检查点漫游与断点人机仲裁**：辩论状态全程持久化于 `GraphCheckpointSaver`，支持在特定轮次静态中断（`interruptBeforeNodes`）挂起，由真实人类专家介入注入裁决后再行恢复。
 

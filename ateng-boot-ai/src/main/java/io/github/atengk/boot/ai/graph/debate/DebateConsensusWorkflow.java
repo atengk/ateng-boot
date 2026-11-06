@@ -59,7 +59,7 @@ public abstract class DebateConsensusWorkflow<S extends BaseGraphState> extends 
 
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    private List<DebateParticipant<S>> cachedDebaters;
+    private volatile List<DebateParticipant<S>> cachedDebaters;
 
     /**
      * 构建对抗式多智能体辩论工作流
@@ -109,14 +109,21 @@ public abstract class DebateConsensusWorkflow<S extends BaseGraphState> extends 
      * @return 辩手列表
      */
     public List<DebateParticipant<S>> getDebaters() {
-        if (cachedDebaters == null) {
-            List<DebateParticipant<S>> registered = registerDebaters();
-            if (registered == null || registered.isEmpty()) {
-                throw new IllegalStateException("DebateConsensusWorkflow [" + getWorkflowName() + "] 必须至少注册一名辩论参与方");
+        List<DebateParticipant<S>> result = cachedDebaters;
+        if (result == null) {
+            synchronized (this) {
+                result = cachedDebaters;
+                if (result == null) {
+                    List<DebateParticipant<S>> registered = registerDebaters();
+                    if (registered == null || registered.isEmpty()) {
+                        throw new IllegalStateException("DebateConsensusWorkflow [" + getWorkflowName() + "] 必须至少注册一名辩论参与方");
+                    }
+                    result = Collections.unmodifiableList(new ArrayList<>(registered));
+                    cachedDebaters = result;
+                }
             }
-            cachedDebaters = Collections.unmodifiableList(new ArrayList<>(registered));
         }
-        return cachedDebaters;
+        return result;
     }
 
     @Override
@@ -272,13 +279,7 @@ public abstract class DebateConsensusWorkflow<S extends BaseGraphState> extends 
                 log.info("[DEBATE:{}] 辩手 [{}] (立场: {}) 开始执行第 {} 轮发言",
                         getWorkflowName(), debater.getName(), debater.getStance(), round);
 
-                Object speechResult;
-                try {
-                    speechResult = debater.getHandler().handle(state, round);
-                } catch (Exception e) {
-                    log.error("[DEBATE:{}] 辩手 [{}] 发言执行异常: {}", getWorkflowName(), debater.getName(), e.getMessage(), e);
-                    throw e;
-                }
+                Object speechResult = debater.getHandler().handle(state, round);
 
                 return onDebaterSpeech(debater, state, speechResult, round);
             }));

@@ -1199,6 +1199,7 @@ public class AiTemplate {
         try {
             StreamContextHolder.setStreamId(effectiveStreamId);
             try {
+                bridge.onRetrieved(safeCandidates.stream().map(Content::from).toList());
                 stream(modelName, Collections.singletonList(UserMessage.from(augmentedPrompt)), bridge);
             } finally {
                 StreamContextHolder.clear();

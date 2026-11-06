@@ -3,10 +3,13 @@ package io.github.atengk.boot.ai.tool.approval;
 import io.github.atengk.boot.ai.annotation.RiskLevel;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.memory.ChatMemoryManager;
 import io.github.atengk.boot.ai.properties.ToolApprovalProperties;
+import io.github.atengk.boot.ai.template.AiTemplate;
 import io.github.atengk.boot.ai.tool.approval.store.InMemoryToolApprovalStore;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.ai.memory.store.InMemoryChatMemoryStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -15,6 +18,7 @@ import org.slf4j.MDC;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -212,7 +216,7 @@ class ToolApprovalTemplateTest {
     }
 
     @Test
-    @DisplayName("测试审批通过并成功驱动智能体续跑完成作答")
+    @DisplayName("测试审批通过并成功驱动智能体续跑完成作答（验证四维上下文透传与现场恢复）")
     void testApproveAndResumeAgent_Completed() {
         MockAgent agent = new MockAgent("最终回答：已确认转账成功，交易入账正常。");
         template.registerAgentBean("financeAdvisorAgent", agent);
@@ -225,12 +229,20 @@ class ToolApprovalTemplateTest {
                 .agentBeanName("financeAdvisorAgent")
                 .agentInterfaceName(MockAgent.class.getName())
                 .memoryId("SESSION_USER_01")
+                .tenantId("TENANT_CORP_RESUME")
+                .callerUserId("USER_OPERATOR_RESUME")
+                .traceId("trace-resume-01")
                 .argumentsJson("{\"fromAccount\":\"ACC_001\",\"toAccount\":\"ACC_002\",\"amount\":999.0}")
                 .riskLevel(RiskLevel.HIGH)
                 .approvalType("TRANSFER")
                 .build();
 
         template.submit(ticket, Duration.ofMinutes(10));
+
+        // 设置当前调用者上下文 (例如管理员)
+        UserContextHolder.setUserId("ADMIN_CALLER");
+        TenantContextHolder.setTenantId("ADMIN_TENANT");
+        MDC.put("traceId", "trace-caller-admin");
 
         AgentResumeResult resumeResult = template.approveAndResumeAgent("TICKET_RESUME_01", "财务经理核准通过");
 
@@ -241,6 +253,77 @@ class ToolApprovalTemplateTest {
         assertThat(resumeResult.getToolExecutionResult().toString()).contains("转账成功");
         assertThat(agent.getLastMemoryId()).isEqualTo("SESSION_USER_01");
         assertThat(agent.getLastPrompt()).contains("【系统通知：人工审批已通过】");
+
+        // 验证 MockAgent 续跑时接收到了工单的 4D 上下文
+        assertThat(agent.getLastCapturedTenantId()).isEqualTo("TENANT_CORP_RESUME");
+        assertThat(agent.getLastCapturedUserId()).isEqualTo("USER_OPERATOR_RESUME");
+        assertThat(agent.getLastCapturedTraceId()).isEqualTo("trace-resume-01");
+
+        // 验证调用完成后当前线程现场恢复为管理员调用者
+        assertThat(UserContextHolder.getUserId()).isEqualTo("ADMIN_CALLER");
+        assertThat(TenantContextHolder.getTenantId()).isEqualTo("ADMIN_TENANT");
+        assertThat(MDC.get("traceId")).isEqualTo("trace-caller-admin");
+    }
+
+    @Test
+    @DisplayName("测试审批重放时成功注入 @MemoryId 形参")
+    void testApproveReplayWithMemoryIdInjection() {
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_MEM_01")
+                .toolName("transferFundsWithMemory")
+                .methodName("transferWithMemory")
+                .targetClassName(MockFinanceService.class.getName())
+                .memoryId("MEM_SESSION_888")
+                .argumentsJson("{\"fromAccount\":\"A\",\"toAccount\":\"B\",\"amount\":100.0}")
+                .riskLevel(RiskLevel.HIGH)
+                .build();
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        ToolApprovalResult result = template.approve("TICKET_MEM_01", "通过");
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(mockFinanceService.getLastCapturedMemoryId()).isEqualTo("MEM_SESSION_888");
+    }
+
+    @Test
+    @DisplayName("测试智能体续跑时存在 toolExecutionId 则向 ChatMemoryManager 压入 ToolExecutionResultMessage")
+    void testApproveAndResumeWithToolExecutionResultMessage() {
+        InMemoryChatMemoryStore chatStore = new InMemoryChatMemoryStore();
+        ChatMemoryManager memoryManager = new ChatMemoryManager(chatStore, 20);
+        template.setChatMemoryManager(memoryManager);
+
+        // 初始化会话历史：用户提问
+        memoryManager.appendMessage("SESSION_TOOL_01", dev.langchain4j.data.message.UserMessage.from("帮我转账 100 元"));
+
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_TOOL_EXEC_01")
+                .toolName("transfer")
+                .methodName("transfer")
+                .targetClassName(MockFinanceService.class.getName())
+                .memoryId("SESSION_TOOL_01")
+                .toolExecutionId("call_exec_999")
+                .argumentsJson("{\"fromAccount\":\"A\",\"toAccount\":\"B\",\"amount\":100.0}")
+                .riskLevel(RiskLevel.HIGH)
+                .build();
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        // 模拟外部 AiTemplate 注入用于续跑
+        AiTemplate mockAiTemplate = org.mockito.Mockito.mock(AiTemplate.class);
+        org.mockito.Mockito.when(mockAiTemplate.chat(org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn("已为您完成转账操作！");
+        template.setAiTemplate(mockAiTemplate);
+
+        AgentResumeResult resumeResult = template.approveAndResumeAgent("TICKET_TOOL_EXEC_01", "核准");
+        assertThat(resumeResult.isSuccess()).isTrue();
+        assertThat(resumeResult.getFinalResponse()).isEqualTo("已为您完成转账操作！");
+
+        // 验证 ChatMemoryManager 中压入了 ToolExecutionResultMessage 且 toolExecutionId 对齐
+        List<dev.langchain4j.data.message.ChatMessage> messages = memoryManager.getMessages("SESSION_TOOL_01");
+        assertThat(messages).hasSize(3); // UserMessage, ToolExecutionResultMessage, AiMessage
+        assertThat(messages.get(1)).isInstanceOf(dev.langchain4j.data.message.ToolExecutionResultMessage.class);
+        dev.langchain4j.data.message.ToolExecutionResultMessage toolMsg = (dev.langchain4j.data.message.ToolExecutionResultMessage) messages.get(1);
+        assertThat(toolMsg.id()).isEqualTo("call_exec_999");
+        assertThat(toolMsg.toolName()).isEqualTo("transfer");
+        assertThat(toolMsg.text()).contains("转账成功");
     }
 
     @Test
@@ -298,6 +381,9 @@ class ToolApprovalTemplateTest {
         private final String answer;
         private String lastMemoryId;
         private String lastPrompt;
+        private String lastCapturedTenantId;
+        private String lastCapturedUserId;
+        private String lastCapturedTraceId;
 
         public MockAgent(String answer) {
             this.answer = answer;
@@ -306,7 +392,22 @@ class ToolApprovalTemplateTest {
         public String chat(String memoryId, String prompt) {
             this.lastMemoryId = memoryId;
             this.lastPrompt = prompt;
+            this.lastCapturedTenantId = TenantContextHolder.getTenantId();
+            this.lastCapturedUserId = UserContextHolder.getUserId();
+            this.lastCapturedTraceId = MDC.get("traceId");
             return answer;
+        }
+
+        public String getLastCapturedTenantId() {
+            return lastCapturedTenantId;
+        }
+
+        public String getLastCapturedUserId() {
+            return lastCapturedUserId;
+        }
+
+        public String getLastCapturedTraceId() {
+            return lastCapturedTraceId;
         }
 
         public String getLastMemoryId() {
@@ -323,6 +424,7 @@ class ToolApprovalTemplateTest {
         private String lastCapturedTenantId;
         private String lastCapturedUserId;
         private String lastCapturedTraceId;
+        private Object lastCapturedMemoryId;
 
         public String transfer(String fromAccount, String toAccount, Double amount) {
             this.executedCount++;
@@ -330,6 +432,12 @@ class ToolApprovalTemplateTest {
             this.lastCapturedUserId = UserContextHolder.getUserId();
             this.lastCapturedTraceId = MDC.get("traceId");
             return String.format("转账成功: %s -> %s, 金额: %.2f", fromAccount, toAccount, amount);
+        }
+
+        public String transferWithMemory(@dev.langchain4j.agent.tool.ToolMemoryId Object memoryId, String fromAccount, String toAccount, Double amount) {
+            this.executedCount++;
+            this.lastCapturedMemoryId = memoryId;
+            return String.format("转账成功(memory=%s): %s -> %s", memoryId, fromAccount, toAccount);
         }
 
         public String failMethod() {
@@ -350,6 +458,10 @@ class ToolApprovalTemplateTest {
 
         public String getLastCapturedTraceId() {
             return lastCapturedTraceId;
+        }
+
+        public Object getLastCapturedMemoryId() {
+            return lastCapturedMemoryId;
         }
     }
 }

@@ -2,6 +2,7 @@ package io.github.atengk.boot.ai.tool.approval;
 
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.service.MemoryId;
@@ -235,7 +236,7 @@ public class ToolApprovalTemplate {
             if (StringUtils.hasText(ticket.getArgumentsJson())) {
                 argumentsMap = (Map<String, Object>) ARGUMENTS_AS_MAP_METHOD.invoke(null, ticket.getArgumentsJson());
             }
-            Object[] args = (Object[]) PREPARE_ARGUMENTS_METHOD.invoke(null, method, argumentsMap, null);
+            Object[] args = (Object[]) PREPARE_ARGUMENTS_METHOD.invoke(null, method, argumentsMap, ticket.getMemoryId());
 
             // 6. 受管安全反射重放执行
             long start = System.currentTimeMillis();
@@ -362,7 +363,21 @@ public class ToolApprovalTemplate {
                 StringUtils.hasText(comment) ? comment : "无"
         );
 
+        String resumeOriginalTraceId = MDC.get("traceId");
+        String resumeOriginalTenantId = TenantContextHolder.getTenantId();
+        String resumeOriginalUserId = UserContextHolder.getUserId();
+
         try {
+            if (StringUtils.hasText(ticket.getTraceId())) {
+                MDC.put("traceId", ticket.getTraceId());
+            }
+            if (StringUtils.hasText(ticket.getTenantId())) {
+                TenantContextHolder.setTenantId(ticket.getTenantId());
+            }
+            if (StringUtils.hasText(ticket.getCallerUserId())) {
+                UserContextHolder.setUserId(ticket.getCallerUserId());
+            }
+
             String finalResponse = doResumeAgent(ticket, resumeInstruction);
             if (SandboxedToolExecutor.isApprovalRequired(finalResponse)) {
                 Optional<String> nextTicketOpt = SandboxedToolExecutor.extractTicketId(finalResponse);
@@ -380,6 +395,22 @@ public class ToolApprovalTemplate {
                     .toolExecutionResult(toolResult)
                     .duration(duration)
                     .build();
+        } finally {
+            if (resumeOriginalTraceId != null) {
+                MDC.put("traceId", resumeOriginalTraceId);
+            } else {
+                MDC.remove("traceId");
+            }
+            if (resumeOriginalTenantId != null) {
+                TenantContextHolder.setTenantId(resumeOriginalTenantId);
+            } else {
+                TenantContextHolder.clear();
+            }
+            if (resumeOriginalUserId != null) {
+                UserContextHolder.setUserId(resumeOriginalUserId);
+            } else {
+                UserContextHolder.clear();
+            }
         }
     }
 
@@ -402,7 +433,15 @@ public class ToolApprovalTemplate {
         AiTemplate template = resolveAiTemplate();
 
         if (memoryMgr != null && StringUtils.hasText(ticket.getMemoryId())) {
-            memoryMgr.appendMessage(ticket.getMemoryId(), UserMessage.from(resumeInstruction));
+            if (StringUtils.hasText(ticket.getToolExecutionId())) {
+                String toolResultStr = ticket.getExecutionResultJson() != null
+                        ? ticket.getExecutionResultJson()
+                        : "Success";
+                memoryMgr.appendMessage(ticket.getMemoryId(),
+                        ToolExecutionResultMessage.from(ticket.getToolExecutionId(), ticket.getToolName(), toolResultStr));
+            } else {
+                memoryMgr.appendMessage(ticket.getMemoryId(), UserMessage.from(resumeInstruction));
+            }
             List<ChatMessage> messages = memoryMgr.getMessages(ticket.getMemoryId());
             if (template != null) {
                 String response = template.chat(messages);
@@ -518,17 +557,56 @@ public class ToolApprovalTemplate {
                     Parameter[] params = m.getParameters();
                     int memIdx = -1;
                     int msgIdx = -1;
+
+                    // 1. 优先通过 LangChain4j 显式契约注解确定
                     for (int i = 0; i < 2; i++) {
-                        if (params[i].isAnnotationPresent(MemoryId.class)
-                                || params[i].getType() == Object.class
-                                || params[i].getName().toLowerCase().contains("memory")
-                                || params[i].getName().toLowerCase().contains("session")) {
+                        if (params[i].isAnnotationPresent(MemoryId.class)) {
                             memIdx = i;
-                        } else if (params[i].getType() == String.class
-                                || params[i].isAnnotationPresent(dev.langchain4j.service.UserMessage.class)) {
+                            msgIdx = 1 - i;
+                            break;
+                        } else if (params[i].isAnnotationPresent(dev.langchain4j.service.UserMessage.class)) {
                             msgIdx = i;
+                            memIdx = 1 - i;
+                            break;
                         }
                     }
+
+                    // 2. 若无注解，尝试通过类型差异判断 (如 Object/Long 等非 String 类型作为 memoryId)
+                    if (memIdx == -1) {
+                        if (params[0].getType() != String.class && params[1].getType() == String.class) {
+                            memIdx = 0;
+                            msgIdx = 1;
+                        } else if (params[0].getType() == String.class && params[1].getType() != String.class) {
+                            memIdx = 1;
+                            msgIdx = 0;
+                        }
+                    }
+
+                    // 3. 若类型均为 String 或相同，通过形参命名启发式探测 (防御 -parameters 开启的场景)
+                    if (memIdx == -1) {
+                        String name0 = params[0].getName().toLowerCase();
+                        String name1 = params[1].getName().toLowerCase();
+                        if (name0.contains("memory") || name0.contains("session")) {
+                            memIdx = 0;
+                            msgIdx = 1;
+                        } else if (name1.contains("memory") || name1.contains("session")) {
+                            memIdx = 1;
+                            msgIdx = 0;
+                        } else if (name0.contains("message") || name0.contains("prompt") || name0.contains("text")) {
+                            msgIdx = 0;
+                            memIdx = 1;
+                        } else if (name1.contains("message") || name1.contains("prompt") || name1.contains("text")) {
+                            msgIdx = 1;
+                            memIdx = 0;
+                        }
+                    }
+
+                    // 4. 若未开启 -parameters (形如 arg0, arg1) 且均为 String，按行业默认标准规范第 0 位为 memoryId、第 1 位为 message
+                    if (memIdx == -1 && params[0].getType() == String.class && params[1].getType() == String.class) {
+                        memIdx = 0;
+                        msgIdx = 1;
+                    }
+
                     if (memIdx != -1 && msgIdx != -1 && memIdx != msgIdx) {
                         candidateMethod = m;
                         hasMemoryParam = true;

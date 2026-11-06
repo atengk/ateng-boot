@@ -17,6 +17,7 @@ import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sample.ai.dto.OrderRefundTriggerRequest;
 import io.github.atengk.boot.sample.ai.dto.ToolApprovalDecisionRequest;
 import io.github.atengk.boot.sample.ai.tool.OrderRefundTool;
+import io.github.atengk.boot.sample.ai.vo.AgentResumeResultVo;
 import io.github.atengk.boot.sample.ai.vo.OrderRefundTriggerVo;
 import io.github.atengk.boot.sample.ai.vo.ToolApprovalResultVo;
 import io.github.atengk.boot.sample.ai.vo.ToolApprovalTicketVo;
@@ -170,7 +171,7 @@ public class AiToolApprovalController {
      * @return 智能体续跑执行结果
      */
     @PostMapping("/tickets/{ticketId}/approve-and-resume")
-    public Result<AgentResumeResult> approveAndResumeTicket(
+    public Result<AgentResumeResultVo> approveAndResumeTicket(
             @PathVariable String ticketId,
             @RequestBody(required = false) ToolApprovalDecisionRequest request) {
         String comment = (request != null && StringUtils.hasText(request.getComment()))
@@ -178,7 +179,7 @@ public class AiToolApprovalController {
                 : "管理员审批通过并驱动续跑";
         log.info("[AI-APPROVAL-SAMPLE] 管理员核准工单并触发智能体续跑: ticketId={}, comment={}", ticketId, comment);
         AgentResumeResult result = toolApprovalTemplate.approveAndResumeAgent(ticketId, comment);
-        return Result.success(result);
+        return Result.success(toResumeVo(result));
     }
 
     /**
@@ -240,6 +241,22 @@ public class AiToolApprovalController {
                 .result(result.getResult())
                 .errorMessage(result.getErrorMessage())
                 .executionTimeMs(result.getExecutionTimeMs())
+                .build();
+    }
+
+    private AgentResumeResultVo toResumeVo(AgentResumeResult result) {
+        if (result == null) {
+            return null;
+        }
+        return AgentResumeResultVo.builder()
+                .ticketId(result.getTicketId())
+                .completed(result.isCompleted())
+                .finalResponse(result.getFinalResponse())
+                .nextPendingTicketId(result.getNextPendingTicketId())
+                .toolExecutionResult(result.getToolExecutionResult())
+                .duration(result.getDuration())
+                .errorMessage(result.getErrorMessage())
+                .success(result.isSuccess())
                 .build();
     }
 }

@@ -389,13 +389,20 @@ public class EpisodicMemoryTemplate {
      */
     public CompletableFuture<List<MemoryFact>> extractAndRememberAsync(String conversationText, String userId, String tenantId) {
         ensureExtractorConfigured();
+        AsyncContext.ContextSnapshot snapshot = AsyncContext.ContextSnapshot.capture();
         return this.extractor.extractAsync(conversationText, userId, tenantId)
                 .thenApply(facts -> {
-                    if (facts != null && !facts.isEmpty()) {
-                        rememberAll(facts);
-                        return facts;
+                    AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
+                    try {
+                        snapshot.apply();
+                        if (facts != null && !facts.isEmpty()) {
+                            rememberAll(facts);
+                            return facts;
+                        }
+                        return Collections.emptyList();
+                    } finally {
+                        previous.restore();
                     }
-                    return Collections.emptyList();
                 });
     }
 
@@ -430,13 +437,20 @@ public class EpisodicMemoryTemplate {
      */
     public CompletableFuture<List<MemoryFact>> extractAndRememberAsync(List<ChatMessage> messages, String userId, String tenantId) {
         ensureExtractorConfigured();
+        AsyncContext.ContextSnapshot snapshot = AsyncContext.ContextSnapshot.capture();
         return this.extractor.extractAsync(messages, userId, tenantId)
                 .thenApply(facts -> {
-                    if (facts != null && !facts.isEmpty()) {
-                        rememberAll(facts);
-                        return facts;
+                    AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
+                    try {
+                        snapshot.apply();
+                        if (facts != null && !facts.isEmpty()) {
+                            rememberAll(facts);
+                            return facts;
+                        }
+                        return Collections.emptyList();
+                    } finally {
+                        previous.restore();
                     }
-                    return Collections.emptyList();
                 });
     }
 
