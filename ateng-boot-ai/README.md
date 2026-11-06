@@ -80,6 +80,7 @@
 | **财务成本核算** | 实时大模型调用成本精算与财务度量 | `TokenCostCalculator`<br>`ModelPricingConfig` | `ateng.boot.ai.pricing.models.<name>.input-price-per-million-tokens`<br>`ateng.boot.ai.pricing.models.<name>.output-price-per-million-tokens` | `calculateCost(model, inTokens, outTokens)`，高精度 BigDecimal 核算美元/人民币成本，自动上报 `ateng.ai.cost.dollars.total` 财务指标 | `TokenCostCalculatorTest` / `MetricsControllerIntegrationTest` |
 | **高危工具审批** | 声明式高危工具人机协作审批双模治理 | `@SensitiveTool`<br>`ToolApprovalTemplate`<br>`ToolApprovalStore` | `ateng.boot.ai.tool-approval.enabled`<br>`ateng.boot.ai.tool-approval.type`<br>`ateng.boot.ai.tool-approval.default-timeout` | `approve(ticketId, reviewer, comment)` / `reject(...)` / `getTicket(ticketId)` / `listPendingTickets()`，自动拦截 `HIGH`/`CRITICAL` 风险工具生成待审批工单，四维上下文快照安全重放 | `ToolApprovalTemplateTest` / `ToolApprovalControllerIntegrationTest` |
 | **长效情景记忆** | 跨会话原子化长效情景语义记忆门面与槽位覆写 | `EpisodicMemoryTemplate`<br>`MemoryFactExtractor`<br>`MemoryFact` | `ateng.boot.ai.episodic-memory.enabled`<br>`ateng.boot.ai.episodic-memory.max-recall-results`<br>`ateng.boot.ai.episodic-memory.min-score` | `remember(fact)` / `recall(query, userId)` / `forget(...)` / `extractAndRemember(text, userId)`，支持语义槽位覆写去重 (Upsert by Semantic Key) 与多租户物理隔离 | `MemoryFactTest` / `EpisodicMemoryTemplateTest` / `AiEpisodicMemoryControllerIntegrationTest` |
+| **证据溯源引用** | 可信 RAG 证据溯源强类型契约与 SSE 尾包增量推流 | `RagResponse`<br>`Citation`<br>`CitationExtractor`<br>`AiTemplate#chatWithCitations`<br>`AiTemplate#streamWithCitations` | - | `chatWithCitations(prompt, candidates)` / `streamWithCitations(prompt, candidates)`，基于正则与双向指针对齐清洗 `[N]` 引用，流式增量下发 `event: citation` 数据包 | `CitationExtractorTest` / `AiTemplateCitationTest` / `RagControllerIntegrationTest` |
 
 ---
 
@@ -2518,7 +2519,50 @@ public class HybridSearchConfiguration {
 
 ---
 
-### 11.10 生产扩展与自定义中间件接管
+### 11.10 可信 RAG 证据溯源强类型契约与 SSE 尾包增量推流 (RagResponse & CitationExtractor)
+
+企业级知识库问答必须具备严密的证据链溯源体系与可解释性。传统 RAG 仅返回无约束的自由文本，无法向用户与业务审计端证明“回答的依据来源于哪篇文档的哪一个切片”，且极易产生大模型虚构引用序号的“幻觉引用”。
+
+`ateng-boot-ai` 提供工业级可信 RAG 证据溯源强类型契约与双向清洗机制：
+- **显式强类型出参契约 (`RagResponse<T>`)**：包含生成回答正文 `result`、结构化证据切片清单 `citations`（含引用序号 `index`、切片唯一标识 `segmentId`、源文档名 `docName`、切片文本片段 `chunkContent` 与相关度置信度 `similarityScore`）以及事实忠实度评分 `groundingScore`；
+- **纯函数确定性双向对齐与清洗 (`CitationExtractor`)**：基于正则与双向指针扫描模型输出的 `[N]` 引用锚点标记，严格与召回的真实候选切片比对；若模型输出了超出候选切片范围的越界非法序号（如仅召回 2 条却引用 `[99]`），自动执行安全清洗剔除，保障前端绝对安全渲染；
+- **SSE 打字机尾包增量推流 (`event: citation`)**：在流式推流模式下，客户端通过 `event: text` 持续接收流式打字机正文；正文传输完毕后，系统增量推送专属 `event: citation`（载荷为 `List<Citation>` JSON），最后发送 `[DONE]` 标识安全闭合连接。
+
+#### 实战业务场景示例：带引用证据溯源的同步问答与打字机推流
+```java
+@Service
+@RequiredArgsConstructor
+public class GroundedKnowledgeService {
+
+    private final ContentRetriever contentRetriever;
+    private final AiTemplate aiTemplate;
+
+    /**
+     * 1. 结构化证据溯源同步问答 (返回强类型 RagResponse<String>)
+     */
+    public RagResponse<String> askWithVerification(String question) {
+        // 自动根据问题召回切片并对齐引用清单与事实忠实度
+        return aiTemplate.chatWithCitations(question, contentRetriever);
+    }
+
+    /**
+     * 2. SSE 打字机流式推流并追加增量引用尾包
+     */
+    public SseEmitter streamWithVerification(String question) {
+        // 客户端将先后接收: event: text -> event: citation -> event: done ([DONE])
+        return aiTemplate.streamWithCitations(question, contentRetriever);
+    }
+}
+```
+
+#### 核心机制与边界防卫
+- **越界非法引用双向清洗**：当检索召回 $N$ 条候选切片时，合法引用序号区间严格限定为 $1 \le index \le N$。`CitationExtractor.sanitizeText` 扫描文本，将越界序号（如 `[5]`、`[1, 99]`）精准清洗为合法子集或完全剔除，杜绝前端点击引用锚点时发生 404 空引用崩溃；
+- **事实忠实度度量 (`groundingScore`)**：基于公式 $Score = \frac{U_{\text{valid}}}{U_{\text{valid}} + U_{\text{invalid}}}$ 动态度量引用健康度，为上层风控与可信审计提供量化指标；
+- **流式上下文全生命周期闭环**：流式推流通过 `SseTokenStreamBridge` 自动聚合正文，在 `onComplete` 生命周期钩子中完成引用提取并增量推流，网络异常中断时由受管设施触发底层物理切断，保障资源绝对确定性释放。
+
+---
+
+### 11.11 生产扩展与自定义中间件接管
 
 #### 1. 接入外部生产级分布式向量库 (如 Milvus)
 当引入 `ateng-boot-starter-milvus` 或自定义注册 `EmbeddingStore<TextSegment>` Bean 时，框架遵循 `@ConditionalOnMissingBean` 守卫自动退让，无需修改任何业务代码：
@@ -2553,7 +2597,7 @@ public class CustomEmbeddingModelConfiguration {
 }
 ```
 
-### 11.11 核心生产边界与非功能语义防卫
+### 11.12 核心生产边界与非功能语义防卫
 1. **防止无关智能体被隐式绑架**：`@AiAgent` 严格恪守显式契约原则，只有显式声明 `@AiAgent(contentRetriever = "...")` 的智能体才会挂载检索器，坚决杜绝全局注册单个 `ContentRetriever` 时导致所有纯逻辑或纯工具智能体被无差别注入知识库检索；
 2. **防幻觉与相似度阈值守卫**：配置 `ateng.boot.ai.rag.min-score`（默认 0.6）强制过滤低相关度噪声切片；结合业务层显式判定“检索结果为空时如实告知”，杜绝大模型无边界信口雌黄；
 3. **瞬态网络退避重试**：`EmbeddingTemplate` 挂载 `RetryUtil`（带 Jitter 的指数退避），对 429 限流与超时错误执行自动重试，对 401/403 认证错误 Fail-Fast，底层 SDK 裸重试数强制置 0，彻底根除重试乘积爆炸。

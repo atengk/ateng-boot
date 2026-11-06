@@ -11,6 +11,7 @@ import dev.langchain4j.rag.content.Content;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.query.Query;
 import dev.langchain4j.store.embedding.EmbeddingStore;
+import io.github.atengk.boot.ai.rag.citation.RagResponse;
 import io.github.atengk.boot.ai.rag.parser.ParsedDocument;
 import io.github.atengk.boot.ai.rag.query.QueryTransformer;
 import io.github.atengk.boot.ai.rag.rerank.RerankResult;
@@ -38,17 +39,22 @@ import io.github.atengk.boot.sample.ai.vo.AiRagTransformVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -402,5 +408,40 @@ public class AiRagController {
                 .imageUrls(imageUrls)
                 .build();
         return Result.success(vo);
+    }
+
+    /**
+     * 可信 RAG 证据溯源问答体验 (返回强类型 RagResponse<String>，包含正文回答、结构化引用与事实忠实度)
+     *
+     * @param request 问答提问入参
+     * @return 包含生成回答、有效引用清单与忠实度评分的强类型响应
+     */
+    @PostMapping("/ask-with-citations")
+    public Result<RagResponse<String>> askWithCitations(@Valid @RequestBody AiRagAskRequest request) {
+        List<Content> contents = contentRetriever.retrieve(Query.from(request.getQuestion()));
+        List<TextSegment> segments = contents.stream()
+                .map(Content::textSegment)
+                .filter(Objects::nonNull)
+                .toList();
+
+        RagResponse<String> response = aiTemplate.chatWithCitations(request.getQuestion(), segments);
+        return Result.success(response);
+    }
+
+    /**
+     * 可信 RAG 证据溯源 SSE 打字机流式推流体验 (正文流式推流 -> event: citation 增量下发 -> event: done 安全结束)
+     *
+     * @param question 用户提问问题
+     * @return Spring MVC SseEmitter 实例
+     */
+    @GetMapping(value = "/stream-with-citations", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamWithCitations(@RequestParam("question") String question) {
+        List<Content> contents = contentRetriever.retrieve(Query.from(question));
+        List<TextSegment> segments = contents.stream()
+                .map(Content::textSegment)
+                .filter(Objects::nonNull)
+                .toList();
+
+        return aiTemplate.streamWithCitations(question, segments);
     }
 }

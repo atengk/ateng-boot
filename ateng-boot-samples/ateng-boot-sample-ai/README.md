@@ -60,6 +60,8 @@
 | **多路混合检索排名融合** | `AiRagRetrievalController` | `POST /sample/ai/rag/retrieve/hybrid` | `curl -X POST "http://localhost:8080/sample/ai/rag/retrieve/hybrid" -H "Content-Type: application/json" -d "{\"query\":\"传输层规范\",\"maxResults\":3}"` |
 | **知识库文档级联清理** | `AiRagDocumentController` | `POST /sample/ai/rag/document/delete` | `curl -X POST "http://localhost:8080/sample/ai/rag/document/delete" -H "Content-Type: application/json" -d "{\"docId\":\"DOC_001\"}"` |
 | **RAG 融合知识库增强问答** | `AiRagController` | `POST /sample/ai/rag/ask` | `curl -X POST "http://localhost:8080/sample/ai/rag/ask" -H "Content-Type: application/json" -d "{\"question\":\"ateng-boot 的 Controller 能直接返回 Entity 吗？\"}"` |
+| **可信 RAG 证据溯源问答** | `AiRagController` | `POST /sample/ai/rag/ask-with-citations` | `curl -X POST "http://localhost:8080/sample/ai/rag/ask-with-citations" -H "Content-Type: application/json" -d "{\"question\":\"ateng-boot 的响应契约是什么？\"}"` |
+| **可信 RAG 证据溯源推流** | `AiRagController` | `GET /sample/ai/rag/stream-with-citations` | `curl -N "http://localhost:8080/sample/ai/rag/stream-with-citations?question=ateng-boot的响应契约是什么？"` |
 | **长文档智能结构化切分** | `AiRagController` | `POST /sample/ai/rag/split` | `curl -X POST "http://localhost:8080/sample/ai/rag/split" -H "Content-Type: application/json" -d "{\"text\":\"# 规范\\nController 严禁返回实体\",\"strategy\":\"MARKDOWN\"}"` |
 | **原生父子分级切片切分** | `AiRagSplitterController` | `POST /sample/ai/rag/split/parent-child` | `curl -X POST "http://localhost:8080/sample/ai/rag/split/parent-child" -H "Content-Type: application/json" -d "{\"text\":\"第一章 基础底座。第二章 数据安全。\",\"parentChunkSize\":1000,\"childChunkSize\":200}"` |
 | **候选切片两阶段交叉重排** | `AiRagController` | `POST /sample/ai/rag/rerank` | `curl -X POST "http://localhost:8080/sample/ai/rag/rerank" -H "Content-Type: application/json" -d "{\"query\":\"Controller规范\",\"candidates\":[\"Redis缓存\",\"Result强类型契约\"],\"topK\":2}"` |
@@ -92,7 +94,7 @@
 | **槽位事实遗忘删除** | `AiEpisodicMemoryController` | `DELETE /sample/ai/memory/episodic/slots` | `curl -X DELETE "http://localhost:8080/sample/ai/memory/episodic/slots?userId=u1001&slotKey=用户:语言偏好"` |
 | **用户记忆全量遗忘** | `AiEpisodicMemoryController` | `DELETE /sample/ai/memory/episodic/users/{userId}` | `curl -X DELETE "http://localhost:8080/sample/ai/memory/episodic/users/u1001"` |
 
-> **流式推流说明**：调用 `GET /sample/ai/chat/stream` 时，控制台或客户端将持续接收由 `event: reasoning`（思考过程）、`event: text`（正文内容）与 `event: done`（`[DONE]` 结束信号）组成的标准 Server-Sent Events 事件流。
+> **流式推流说明**：调用 `GET /sample/ai/chat/stream` 或 `GET /sample/ai/rag/stream-with-citations` 时，控制台或客户端将持续接收由 `event: reasoning`（思考过程）、`event: text`（正文内容）、`event: citation`（证据溯源引用尾包，包含合法引用切片列表与事实忠实度评分）与 `event: done`（`[DONE]` 结束信号）组成的标准 Server-Sent Events 事件流。
 
 ---
 

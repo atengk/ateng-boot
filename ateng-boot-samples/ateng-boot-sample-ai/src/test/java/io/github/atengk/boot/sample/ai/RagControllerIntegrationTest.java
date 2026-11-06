@@ -32,12 +32,17 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -135,8 +140,31 @@ class RagControllerIntegrationTest {
                             .setBody(embeddingJson);
                 }
 
+                // 1.5 流式对话模拟 (当带有 stream 标识或 Accept: text/event-stream)
+                String accept = request.getHeader("Accept");
+                boolean isStream = (accept != null && accept.contains("text/event-stream"))
+                        || body.contains("\"stream\":true")
+                        || body.contains("\"stream\": true");
+                if (isStream) {
+                    String sseBody = """
+                            data: {"id":"chatcmpl-stream-1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"根据知识库资料[1]，ateng-boot 遵循纯原生架构。"},"finish_reason":null}]}
+                            
+                            data: {"id":"chatcmpl-stream-2","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+                            
+                            data: [DONE]
+                            
+                            """;
+                    return new MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "text/event-stream; charset=utf-8")
+                            .setBody(sseBody);
+                }
+
                 // 2. Chat Completions 对话与问答接口模拟
-                String chatJson = """
+                String chatContent = body.contains("【参考资料列表】")
+                        ? "根据知识库资料[1]，ateng-boot 遵循纯原生零臃肿架构设计，严禁泄露持久化实体。"
+                        : "根据知识库资料，ateng-boot 遵循纯原生零臃肿架构设计，严禁泄露持久化实体。";
+                String chatJson = String.format("""
                         {
                           "id": "chatcmpl-rag-test-1",
                           "object": "chat.completion",
@@ -147,7 +175,7 @@ class RagControllerIntegrationTest {
                               "index": 0,
                               "message": {
                                 "role": "assistant",
-                                "content": "根据知识库资料，ateng-boot 遵循纯原生零臃肿架构设计，严禁泄露持久化实体。"
+                                "content": "%s"
                               },
                               "finish_reason": "stop"
                             }
@@ -158,7 +186,7 @@ class RagControllerIntegrationTest {
                             "total_tokens": 65
                           }
                         }
-                        """;
+                        """, chatContent);
                 return new MockResponse()
                         .setResponseCode(200)
                         .setHeader("Content-Type", "application/json; charset=utf-8")
@@ -486,5 +514,53 @@ class RagControllerIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.docId").value("doc-pipeline-001"))
                 .andExpect(jsonPath("$.data.deleted").value(true));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/ask-with-citations 可信证据溯源问答返回强类型契约")
+    void testAskWithCitationsSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        // 先入库一条带文档元数据的测试知识切片
+        AiRagIngestRequest ingestReq = AiRagIngestRequest.builder()
+                .text("ateng-boot 遵循纯原生零臃肿依赖设计理念")
+                .metadata(Map.of("file_name", "architecture.md", "id", "seg-citation-001"))
+                .build();
+        mockMvc.perform(post("/sample/ai/rag/ingest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ingestReq)))
+                .andExpect(status().isOk());
+
+        AiRagAskRequest request = AiRagAskRequest.builder()
+                .question("ateng-boot 的设计理念是什么？")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/ask-with-citations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.result").isNotEmpty())
+                .andExpect(jsonPath("$.data.citations").isArray())
+                .andExpect(jsonPath("$.data.groundingScore").isNumber());
+    }
+
+    @Test
+    @DisplayName("验证 GET /sample/ai/rag/stream-with-citations 可信证据溯源 SSE 尾包增量推流")
+    void testStreamWithCitationsSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        MvcResult mvcResult = mockMvc.perform(get("/sample/ai/rag/stream-with-citations")
+                        .param("question", "ateng-boot 设计理念")
+                        .accept(MediaType.TEXT_EVENT_STREAM_VALUE))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mvcResult.getAsyncResult(isLocalProfile() ? 30000 : 5000);
+
+        String result = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        assertThat(result).contains("event:text");
+        assertThat(result).contains("event:citation");
+        assertThat(result).contains("event:done");
+        assertThat(result).contains("[DONE]");
     }
 }

@@ -1,20 +1,28 @@
 package io.github.atengk.boot.ai.streaming;
 
 import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.service.TokenStream;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
+import io.github.atengk.boot.ai.rag.citation.Citation;
+import io.github.atengk.boot.ai.rag.citation.CitationExtractor;
 import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.util.JsonUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 /**
  * Spring MVC SseEmitter 与 LangChain4j 流式响应桥接器
@@ -34,6 +42,9 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
     private final AtomicBoolean completed = new AtomicBoolean(false);
     private final AtomicBoolean normalCompleted = new AtomicBoolean(false);
     private final AsyncContext.ContextSnapshot contextSnapshot;
+    private final StringBuilder textAccumulator = new StringBuilder();
+    private List<TextSegment> citationCandidates;
+    private Function<String, List<Citation>> citationExtractor;
 
     public SseTokenStreamBridge(SseEmitter emitter) {
         this(emitter, null, null);
@@ -76,6 +87,28 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
     }
 
     /**
+     * 配置可信 RAG 证据溯源候选切片，流式推流结束时将自动提取引用并增量推送 event: citation 专属数据包
+     *
+     * @param candidates 知识库候选切片列表
+     * @return 当前 SseTokenStreamBridge 实例
+     */
+    public SseTokenStreamBridge withCitationCandidates(List<TextSegment> candidates) {
+        this.citationCandidates = candidates != null ? new ArrayList<>(candidates) : Collections.emptyList();
+        return this;
+    }
+
+    /**
+     * 配置自定义引用提取器，流式推流结束时将自动提取引用并增量推送 event: citation 专属数据包
+     *
+     * @param extractor 自定义引用提取逻辑
+     * @return 当前 SseTokenStreamBridge 实例
+     */
+    public SseTokenStreamBridge withCitationExtractor(Function<String, List<Citation>> extractor) {
+        this.citationExtractor = extractor;
+        return this;
+    }
+
+    /**
      * 将 LangChain4j 的声明式智能体 TokenStream 流式管道自动绑定并桥接到 Spring SseEmitter
      *
      * @param tokenStream 智能体 TokenStream 流
@@ -115,6 +148,9 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
         runWithContext(() -> {
             List<StreamToken> tokens = extractor.feed(token);
             for (StreamToken streamToken : tokens) {
+                if (streamToken.channel() == TokenChannel.TEXT) {
+                    textAccumulator.append(streamToken.text());
+                }
                 sendEvent(streamToken.channel().getEventName(), streamToken.text());
             }
         });
@@ -130,8 +166,14 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
             // 1. 排空思考链状态机中残留的最后一个 Token
             List<StreamToken> remaining = extractor.finish();
             for (StreamToken streamToken : remaining) {
+                if (streamToken.channel() == TokenChannel.TEXT) {
+                    textAccumulator.append(streamToken.text());
+                }
                 sendEvent(streamToken.channel().getEventName(), streamToken.text());
             }
+
+            // 1.5 如果配置了引用提取，在正文打字机推流完成后增量下发专属 event: citation 数据包
+            sendCitationEventIfConfigured(response);
 
             // 2. 推送标准结束事件
             sendEvent("done", "[DONE]");
@@ -141,6 +183,25 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
             closeSafely();
             cleanupStreamSafely();
         });
+    }
+
+    private void sendCitationEventIfConfigured(Response<AiMessage> response) {
+        if (citationExtractor != null || citationCandidates != null) {
+            try {
+                String fullText = (response != null && response.content() != null && StringUtils.hasText(response.content().text()))
+                        ? response.content().text()
+                        : textAccumulator.toString();
+                List<Citation> citations;
+                if (citationExtractor != null) {
+                    citations = citationExtractor.apply(fullText);
+                } else {
+                    citations = CitationExtractor.extractCitations(fullText, citationCandidates);
+                }
+                sendEvent("citation", JsonUtil.toJsonString(citations != null ? citations : Collections.emptyList()));
+            } catch (Throwable t) {
+                log.warn("提取并推送 SSE citation 增量数据包异常: {}", t.getMessage());
+            }
+        }
     }
 
     @Override

@@ -1,6 +1,8 @@
 package io.github.atengk.boot.ai.streaming;
 
+import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.output.Response;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import org.junit.jupiter.api.AfterEach;
@@ -12,7 +14,9 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -188,6 +192,48 @@ class SseTokenStreamBridgeTest {
 
         assertThat(capturedTraceId.get()).isEqualTo("trace-test-8888");
         assertThat(capturedUser.get()).isEqualTo("user-admin-999");
+    }
+
+    @Test
+    @DisplayName("可信 RAG 证据溯源：完成推流时增量下发 event: citation 并在结束前发送 [DONE]")
+    void testCitationStreamingOnComplete() throws Exception {
+        SseEmitter emitter = mock(SseEmitter.class);
+        TextSegment seg1 = TextSegment.from("ateng-boot 遵循纯原生零臃肿依赖设计理念",
+                Metadata.from(Map.of("file_name", "architecture.md", "id", "seg-001")));
+        List<TextSegment> candidates = Collections.singletonList(seg1);
+
+        SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter)
+                .withCitationCandidates(candidates);
+
+        // 模拟打字机推流正文包含引用 [1]
+        bridge.onNext("根据设计规范，");
+        bridge.onNext("ateng-boot 遵循纯原生零臃肿依赖设计理念[1]。");
+
+        // 触发完成
+        bridge.onComplete(Response.from(AiMessage.from("根据设计规范，ateng-boot 遵循纯原生零臃肿依赖设计理念[1]。")));
+
+        ArgumentCaptor<SseEmitter.SseEventBuilder> captor = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        verify(emitter, times(4)).send(captor.capture());
+
+        List<SseEmitter.SseEventBuilder> builders = captor.getAllValues();
+        assertThat(builders).hasSize(4);
+
+        // 1 & 2: event: text
+        assertThat(extractSseString(builders.get(0))).contains("event:text");
+        assertThat(extractSseString(builders.get(1))).contains("event:text");
+
+        // 3: event: citation
+        String citationEvent = extractSseString(builders.get(2));
+        assertThat(citationEvent).contains("event:citation");
+        assertThat(citationEvent).contains("architecture.md");
+        assertThat(citationEvent).contains("seg-001");
+
+        // 4: event: done
+        String doneEvent = extractSseString(builders.get(3));
+        assertThat(doneEvent).contains("event:done");
+        assertThat(doneEvent).contains("data:[DONE]");
+
+        verify(emitter, times(1)).complete();
     }
 
     private static String extractSseString(SseEmitter.SseEventBuilder builder) {

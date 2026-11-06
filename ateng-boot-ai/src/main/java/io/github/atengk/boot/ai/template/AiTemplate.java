@@ -4,10 +4,14 @@ import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.output.Response;
+import dev.langchain4j.rag.content.Content;
+import dev.langchain4j.rag.content.retriever.ContentRetriever;
+import dev.langchain4j.rag.query.Query;
 import io.github.atengk.boot.ai.context.AiContextHolder;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
@@ -19,6 +23,9 @@ import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AiResponseFormat;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
+import io.github.atengk.boot.ai.rag.citation.Citation;
+import io.github.atengk.boot.ai.rag.citation.CitationExtractor;
+import io.github.atengk.boot.ai.rag.citation.RagResponse;
 import io.github.atengk.boot.ai.ratelimit.AiRateLimiter;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.sanitizer.JsonPayloadSanitizer;
@@ -1025,6 +1032,222 @@ public class AiTemplate {
             SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, activeStreamRegistry);
             bridge.onError(AiExceptionTranslator.translate(t));
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // 可信 RAG 证据溯源问答 (chatWithCitations / streamWithCitations)
+    // -------------------------------------------------------------------------
+
+    /**
+     * 结合知识库候选切片发起可信 RAG 问答，返回带结构化引用溯源的强类型 RagResponse (使用当前上下文或默认模型)
+     *
+     * @param prompt     用户提问提示词
+     * @param candidates 知识库候选切片列表
+     * @return 包含生成回答、有效引用清单与忠实度评分的 RagResponse
+     */
+    public RagResponse<String> chatWithCitations(String prompt, List<TextSegment> candidates) {
+        return chatWithCitations(null, prompt, candidates);
+    }
+
+    /**
+     * 指定模型结合知识库候选切片发起可信 RAG 问答，返回带结构化引用溯源的强类型 RagResponse
+     *
+     * @param modelName  模型名称或别名
+     * @param prompt     用户提问提示词
+     * @param candidates 知识库候选切片列表
+     * @return 包含生成回答、有效引用清单与忠实度评分的 RagResponse
+     */
+    public RagResponse<String> chatWithCitations(String modelName, String prompt, List<TextSegment> candidates) {
+        if (!StringUtils.hasText(prompt)) {
+            throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "问答提问 prompt 不能为空");
+        }
+        List<TextSegment> safeCandidates = candidates != null ? candidates : Collections.emptyList();
+        if (safeCandidates.isEmpty()) {
+            return RagResponse.of("知识库中暂未检索到与提问相关的参考知识片段。", Collections.emptyList(), 0.0);
+        }
+        String augmentedPrompt = CitationExtractor.buildPrompt(prompt.trim(), safeCandidates);
+        String rawAnswer = chatWithModel(modelName, augmentedPrompt);
+        return CitationExtractor.extract(rawAnswer, safeCandidates);
+    }
+
+    /**
+     * 结合 ContentRetriever 知识检索器发起可信 RAG 问答 (自动检索并对齐引用，使用当前上下文或默认模型)
+     *
+     * @param prompt    用户提问提示词
+     * @param retriever 知识库检索器
+     * @return 包含生成回答、有效引用清单与忠实度评分的 RagResponse
+     */
+    public RagResponse<String> chatWithCitations(String prompt, ContentRetriever retriever) {
+        return chatWithCitations(null, prompt, retriever);
+    }
+
+    /**
+     * 指定模型结合 ContentRetriever 知识检索器发起可信 RAG 问答 (自动检索并对齐引用)
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    用户提问提示词
+     * @param retriever 知识库检索器
+     * @return 包含生成回答、有效引用清单与忠实度评分的 RagResponse
+     */
+    public RagResponse<String> chatWithCitations(String modelName, String prompt, ContentRetriever retriever) {
+        if (!StringUtils.hasText(prompt)) {
+            throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "问答提问 prompt 不能为空");
+        }
+        List<TextSegment> candidates = Collections.emptyList();
+        if (retriever != null) {
+            List<Content> contents = retriever.retrieve(Query.from(prompt.trim()));
+            candidates = CitationExtractor.fromContents(contents);
+        }
+        return chatWithCitations(modelName, prompt, candidates);
+    }
+
+    /**
+     * 结合知识库候选切片发起可信 RAG 流式问答，自动创建并返回 SseEmitter (使用当前上下文或默认模型)
+     *
+     * @param prompt     用户提问提示词
+     * @param candidates 知识库候选切片列表
+     * @return SseEmitter 实例
+     */
+    public SseEmitter streamWithCitations(String prompt, List<TextSegment> candidates) {
+        SseEmitter emitter = new SseEmitter(DEFAULT_SSE_TIMEOUT.toMillis());
+        streamWithCitations(null, prompt, candidates, emitter);
+        return emitter;
+    }
+
+    /**
+     * 指定模型结合知识库候选切片发起可信 RAG 流式问答，自动创建并返回 SseEmitter
+     *
+     * @param modelName  模型名称或别名
+     * @param prompt     用户提问提示词
+     * @param candidates 知识库候选切片列表
+     * @return SseEmitter 实例
+     */
+    public SseEmitter streamWithCitations(String modelName, String prompt, List<TextSegment> candidates) {
+        SseEmitter emitter = new SseEmitter(DEFAULT_SSE_TIMEOUT.toMillis());
+        streamWithCitations(modelName, prompt, candidates, emitter);
+        return emitter;
+    }
+
+    /**
+     * 结合知识库候选切片发起可信 RAG 流式问答 (使用当前上下文或默认模型)
+     *
+     * @param prompt     用户提问提示词
+     * @param candidates 知识库候选切片列表
+     * @param emitter    Spring MVC SseEmitter 实例
+     */
+    public void streamWithCitations(String prompt, List<TextSegment> candidates, SseEmitter emitter) {
+        streamWithCitations(null, prompt, candidates, emitter, IdUtil.fastSimpleUUID());
+    }
+
+    /**
+     * 指定模型结合知识库候选切片发起可信 RAG 流式问答
+     *
+     * @param modelName  模型名称或别名
+     * @param prompt     用户提问提示词
+     * @param candidates 知识库候选切片列表
+     * @param emitter    Spring MVC SseEmitter 实例
+     */
+    public void streamWithCitations(String modelName, String prompt, List<TextSegment> candidates, SseEmitter emitter) {
+        streamWithCitations(modelName, prompt, candidates, emitter, IdUtil.fastSimpleUUID());
+    }
+
+    /**
+     * 指定模型结合知识库候选切片发起可信 RAG 流式问答并绑定指定 streamId
+     *
+     * @param modelName  模型名称或别名
+     * @param prompt     用户提问提示词
+     * @param candidates 知识库候选切片列表
+     * @param emitter    Spring MVC SseEmitter 实例
+     * @param streamId   流式唯一标识
+     */
+    public void streamWithCitations(String modelName, String prompt, List<TextSegment> candidates, SseEmitter emitter, String streamId) {
+        if (emitter == null) {
+            throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "SseEmitter 不能为空");
+        }
+        String effectiveStreamId = StringUtils.hasText(streamId) ? streamId.trim() : IdUtil.fastSimpleUUID();
+        if (!StringUtils.hasText(prompt)) {
+            SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, activeStreamRegistry);
+            bridge.onError(new AiException(AiResultCode.AI_INVALID_PAYLOAD, "问答提问 prompt 不能为空"));
+            return;
+        }
+        List<TextSegment> safeCandidates = candidates != null ? candidates : Collections.emptyList();
+        if (safeCandidates.isEmpty()) {
+            SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, activeStreamRegistry)
+                    .withCitationCandidates(Collections.emptyList());
+            bridge.onNext("知识库中暂未检索到与提问相关的参考知识片段。");
+            bridge.onComplete(null);
+            return;
+        }
+        String augmentedPrompt = CitationExtractor.buildPrompt(prompt.trim(), safeCandidates);
+        SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, activeStreamRegistry)
+                .withCitationCandidates(safeCandidates);
+        try {
+            StreamContextHolder.setStreamId(effectiveStreamId);
+            try {
+                stream(modelName, Collections.singletonList(UserMessage.from(augmentedPrompt)), bridge);
+            } finally {
+                StreamContextHolder.clear();
+            }
+        } catch (Throwable t) {
+            bridge.onError(t);
+        }
+    }
+
+    /**
+     * 结合 ContentRetriever 知识检索器发起可信 RAG 流式问答，自动创建并返回 SseEmitter
+     *
+     * @param prompt    用户提问提示词
+     * @param retriever 知识库检索器
+     * @return SseEmitter 实例
+     */
+    public SseEmitter streamWithCitations(String prompt, ContentRetriever retriever) {
+        return streamWithCitations(null, prompt, retriever);
+    }
+
+    /**
+     * 指定模型结合 ContentRetriever 知识检索器发起可信 RAG 流式问答，自动创建并返回 SseEmitter
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    用户提问提示词
+     * @param retriever 知识库检索器
+     * @return SseEmitter 实例
+     */
+    public SseEmitter streamWithCitations(String modelName, String prompt, ContentRetriever retriever) {
+        SseEmitter emitter = new SseEmitter(DEFAULT_SSE_TIMEOUT.toMillis());
+        streamWithCitations(modelName, prompt, retriever, emitter);
+        return emitter;
+    }
+
+    /**
+     * 结合 ContentRetriever 知识检索器发起可信 RAG 流式问答
+     *
+     * @param prompt    用户提问提示词
+     * @param retriever 知识库检索器
+     * @param emitter   Spring MVC SseEmitter 实例
+     */
+    public void streamWithCitations(String prompt, ContentRetriever retriever, SseEmitter emitter) {
+        streamWithCitations(null, prompt, retriever, emitter);
+    }
+
+    /**
+     * 指定模型结合 ContentRetriever 知识检索器发起可信 RAG 流式问答
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    用户提问提示词
+     * @param retriever 知识库检索器
+     * @param emitter   Spring MVC SseEmitter 实例
+     */
+    public void streamWithCitations(String modelName, String prompt, ContentRetriever retriever, SseEmitter emitter) {
+        if (!StringUtils.hasText(prompt)) {
+            streamWithCitations(modelName, prompt, Collections.emptyList(), emitter, IdUtil.fastSimpleUUID());
+            return;
+        }
+        List<TextSegment> candidates = Collections.emptyList();
+        if (retriever != null) {
+            List<Content> contents = retriever.retrieve(Query.from(prompt.trim()));
+            candidates = CitationExtractor.fromContents(contents);
+        }
+        streamWithCitations(modelName, prompt, candidates, emitter, IdUtil.fastSimpleUUID());
     }
 
     /**
