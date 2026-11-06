@@ -5,6 +5,12 @@ import io.github.atengk.boot.ai.tool.approval.ToolApprovalStatus;
 import io.github.atengk.boot.sample.ai.dto.OrderRefundTriggerRequest;
 import io.github.atengk.boot.sample.ai.dto.ToolApprovalDecisionRequest;
 import io.github.atengk.boot.sample.ai.tool.OrderRefundTool;
+import okhttp3.mockwebserver.Dispatcher;
+import okhttp3.mockwebserver.MockResponse;
+import okhttp3.mockwebserver.MockWebServer;
+import okhttp3.mockwebserver.RecordedRequest;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -12,8 +18,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+
+import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -31,6 +41,68 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @DisplayName("AI 高危工具人机协作审批控制器端到端集成测试")
 class ToolApprovalControllerIntegrationTest {
+
+    private static MockWebServer server;
+
+    private static boolean isLocalProfile() {
+        String active = System.getProperty("spring.profiles.active");
+        if (active == null) {
+            active = System.getenv("SPRING_PROFILES_ACTIVE");
+        }
+        return active != null && active.contains("local");
+    }
+
+    @BeforeAll
+    static void startServer() throws IOException {
+        if (isLocalProfile()) {
+            return;
+        }
+        server = new MockWebServer();
+        server.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                return new MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json; charset=utf-8")
+                        .setBody("""
+                                {
+                                  "id": "chatcmpl-resume-01",
+                                  "object": "chat.completion",
+                                  "created": 1700000000,
+                                  "model": "gpt-4o",
+                                  "choices": [
+                                    {
+                                      "index": 0,
+                                      "message": {
+                                        "role": "assistant",
+                                        "content": "订单退款已成功审批并执行完毕，已为您向用户账户原路退款 ￥299.00。"
+                                      },
+                                      "finish_reason": "stop"
+                                    }
+                                  ]
+                                }
+                                """);
+            }
+        });
+        server.start();
+    }
+
+    @AfterAll
+    static void shutdownServer() throws IOException {
+        if (server != null) {
+            server.shutdown();
+        }
+    }
+
+    @DynamicPropertySource
+    static void configureProperties(DynamicPropertyRegistry registry) {
+        if (!isLocalProfile() && server != null) {
+            String baseUrl = server.url("/v1").toString();
+            registry.add("ateng.boot.ai.model.base-url", () -> baseUrl);
+            registry.add("ateng.boot.ai.model.api-key", () -> "mock-test-key-ci");
+            registry.add("ateng.boot.ai.model.model-name", () -> "gpt-4o");
+        }
+    }
 
     @Autowired
     private MockMvc mockMvc;
@@ -156,5 +228,51 @@ class ToolApprovalControllerIntegrationTest {
         mockMvc.perform(get("/sample/ai/approval/tickets/" + ticketId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value(ToolApprovalStatus.REJECTED.name()));
+    }
+
+    @Test
+    @DisplayName("高危工具拦截后管理员审批通过并驱动智能体主动续跑闭环测试")
+    void testTriggerRefundAndApproveAndResumeLifecycle() throws Exception {
+        OrderRefundTriggerRequest request = OrderRefundTriggerRequest.builder()
+                .orderId("ORD_TEST_RESUME_777")
+                .amount(299.00)
+                .reason("用户商品质量问题售后退款")
+                .build();
+
+        MvcResult triggerResult = mockMvc.perform(post("/sample/ai/approval/trigger-refund")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("200"))
+                .andExpect(jsonPath("$.data.approvalRequired").value(true))
+                .andExpect(jsonPath("$.data.ticketId").isNotEmpty())
+                .andReturn();
+
+        String ticketId = objectMapper.readTree(triggerResult.getResponse().getContentAsString())
+                .path("data").path("ticketId").asText();
+
+        // 调用 approve-and-resume 接口驱动智能体主动续跑
+        ToolApprovalDecisionRequest approveRequest = ToolApprovalDecisionRequest.builder()
+                .comment("财务审核无误，同意退款并驱动智能体继续作答")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/approval/tickets/" + ticketId + "/approve-and-resume")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(approveRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("200"))
+                .andExpect(jsonPath("$.data.ticketId").value(ticketId))
+                .andExpect(jsonPath("$.data.completed").value(true))
+                .andExpect(jsonPath("$.data.finalResponse").isNotEmpty())
+                .andExpect(jsonPath("$.data.toolExecutionResult").value("订单 [ORD_TEST_RESUME_777] 退款成功，金额: ￥299.00，原因: 用户商品质量问题售后退款"));
+
+        // 验证真实工具业务逻辑已执行
+        assertThat(orderRefundTool.getRefundExecutionCount()).isGreaterThanOrEqualTo(1);
+
+        // 验证工单状态为 APPROVED
+        mockMvc.perform(get("/sample/ai/approval/tickets/" + ticketId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.reviewComment").value("财务审核无误，同意退款并驱动智能体继续作答"));
     }
 }

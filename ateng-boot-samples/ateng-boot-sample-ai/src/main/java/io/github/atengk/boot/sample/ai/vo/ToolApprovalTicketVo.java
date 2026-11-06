@@ -45,6 +45,26 @@ public class ToolApprovalTicketVo implements Serializable {
     private String methodName;
 
     /**
+     * 触发调用的智能体 Bean 名称
+     */
+    private String agentBeanName;
+
+    /**
+     * 触发调用的智能体接口全限定类名
+     */
+    private String agentInterfaceName;
+
+    /**
+     * 触发调用的智能体会话隔离标识
+     */
+    private String memoryId;
+
+    /**
+     * 工具执行请求标识
+     */
+    private String toolExecutionId;
+
+    /**
      * 调用入参 JSON 序列化字符串
      */
     private String argumentsJson;

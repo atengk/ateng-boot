@@ -211,6 +211,113 @@ class ToolApprovalTemplateTest {
         assertThat(result.getErrorMessage()).contains("模拟业务故障: 账户余额不足");
     }
 
+    @Test
+    @DisplayName("测试审批通过并成功驱动智能体续跑完成作答")
+    void testApproveAndResumeAgent_Completed() {
+        MockAgent agent = new MockAgent("最终回答：已确认转账成功，交易入账正常。");
+        template.registerAgentBean("financeAdvisorAgent", agent);
+
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_RESUME_01")
+                .toolName("transferFunds")
+                .methodName("transfer")
+                .targetClassName(MockFinanceService.class.getName())
+                .agentBeanName("financeAdvisorAgent")
+                .agentInterfaceName(MockAgent.class.getName())
+                .memoryId("SESSION_USER_01")
+                .argumentsJson("{\"fromAccount\":\"ACC_001\",\"toAccount\":\"ACC_002\",\"amount\":999.0}")
+                .riskLevel(RiskLevel.HIGH)
+                .approvalType("TRANSFER")
+                .build();
+
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        AgentResumeResult resumeResult = template.approveAndResumeAgent("TICKET_RESUME_01", "财务经理核准通过");
+
+        assertThat(resumeResult.isSuccess()).isTrue();
+        assertThat(resumeResult.isCompleted()).isTrue();
+        assertThat(resumeResult.getFinalResponse()).contains("最终回答：已确认转账成功");
+        assertThat(resumeResult.getToolExecutionResult()).isNotNull();
+        assertThat(resumeResult.getToolExecutionResult().toString()).contains("转账成功");
+        assertThat(agent.getLastMemoryId()).isEqualTo("SESSION_USER_01");
+        assertThat(agent.getLastPrompt()).contains("【系统通知：人工审批已通过】");
+    }
+
+    @Test
+    @DisplayName("测试审批通过后智能体续跑触发级联二次高危工具拦截挂起")
+    void testApproveAndResumeAgent_PendingNext() {
+        String cascadingIntercept = "[APPROVAL_REQUIRED] 该操作被标记为高危工具 [riskLevel=HIGH, type=CLEAR_CACHE]，已自动拦截并生成审批工单 [ticketId=TICKET_NEXT_999]。";
+        MockAgent agent = new MockAgent(cascadingIntercept);
+        template.registerAgentBean("cascadingAgent", agent);
+
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_RESUME_02")
+                .toolName("transferFunds")
+                .methodName("transfer")
+                .targetClassName(MockFinanceService.class.getName())
+                .agentBeanName("cascadingAgent")
+                .agentInterfaceName(MockAgent.class.getName())
+                .memoryId("SESSION_USER_02")
+                .argumentsJson("{\"fromAccount\":\"ACC_A\",\"toAccount\":\"ACC_B\",\"amount\":100.0}")
+                .riskLevel(RiskLevel.HIGH)
+                .approvalType("TRANSFER")
+                .build();
+
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        AgentResumeResult resumeResult = template.approveAndResumeAgent("TICKET_RESUME_02", "核准转账");
+
+        assertThat(resumeResult.isSuccess()).isTrue();
+        assertThat(resumeResult.isCompleted()).isFalse();
+        assertThat(resumeResult.getNextPendingTicketId()).isEqualTo("TICKET_NEXT_999");
+        assertThat(resumeResult.getToolExecutionResult()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("测试目标工具执行失败时智能体续跑直接返回失败结果")
+    void testApproveAndResumeAgent_ToolExecutionFailed() {
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_RESUME_FAIL")
+                .toolName("failMethod")
+                .methodName("failMethod")
+                .targetClassName(MockFinanceService.class.getName())
+                .argumentsJson("{}")
+                .riskLevel(RiskLevel.HIGH)
+                .build();
+
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        AgentResumeResult resumeResult = template.approveAndResumeAgent("TICKET_RESUME_FAIL", "核准");
+
+        assertThat(resumeResult.isSuccess()).isFalse();
+        assertThat(resumeResult.isCompleted()).isFalse();
+        assertThat(resumeResult.getErrorMessage()).contains("模拟业务故障: 账户余额不足");
+    }
+
+    public static class MockAgent {
+        private final String answer;
+        private String lastMemoryId;
+        private String lastPrompt;
+
+        public MockAgent(String answer) {
+            this.answer = answer;
+        }
+
+        public String chat(String memoryId, String prompt) {
+            this.lastMemoryId = memoryId;
+            this.lastPrompt = prompt;
+            return answer;
+        }
+
+        public String getLastMemoryId() {
+            return lastMemoryId;
+        }
+
+        public String getLastPrompt() {
+            return lastPrompt;
+        }
+    }
+
     public static class MockFinanceService {
         private int executedCount = 0;
         private String lastCapturedTenantId;

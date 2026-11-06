@@ -48,6 +48,23 @@ public final class ToolExecutionSandbox {
             ApplicationContext applicationContext,
             Class<?>[] toolClasses,
             String agentName) {
+        return buildSandboxedTools(applicationContext, toolClasses, agentName, null);
+    }
+
+    /**
+     * 依据声明的工具类数组，从 Spring 容器解析受管 Bean 并构建沙箱工具映射（携带接口全限定名元数据）
+     *
+     * @param applicationContext Spring 上下文容器
+     * @param toolClasses        工具类声明数组
+     * @param agentName          智能体简短标识（用于错误信息溯源）
+     * @param agentInterfaceName 智能体接口全限定类名（用于审批工单快照恢复）
+     * @return 智能体工具规格到沙箱执行器的映射字典
+     */
+    public static Map<ToolSpecification, ToolExecutor> buildSandboxedTools(
+            ApplicationContext applicationContext,
+            Class<?>[] toolClasses,
+            String agentName,
+            String agentInterfaceName) {
         if (toolClasses == null || toolClasses.length == 0) {
             return Collections.emptyMap();
         }
@@ -80,7 +97,7 @@ public final class ToolExecutionSandbox {
             }
 
             // 2. 解析工具类中的所有 @Tool 方法并包装沙箱
-            wrapToolBean(toolBean, toolClass, registeredToolNames, sandboxedTools, agentName, approvalTemplate);
+            wrapToolBean(toolBean, toolClass, registeredToolNames, sandboxedTools, agentName, agentInterfaceName, approvalTemplate);
         }
 
         return Collections.unmodifiableMap(sandboxedTools);
@@ -190,7 +207,7 @@ public final class ToolExecutionSandbox {
             Set<String> registeredToolNames,
             Map<ToolSpecification, ToolExecutor> sandboxedTools,
             String agentName) {
-        wrapToolBean(toolBean, toolClass, registeredToolNames, sandboxedTools, agentName, null);
+        wrapToolBean(toolBean, toolClass, registeredToolNames, sandboxedTools, agentName, null, null);
     }
 
     private static void wrapToolBean(
@@ -199,6 +216,17 @@ public final class ToolExecutionSandbox {
             Set<String> registeredToolNames,
             Map<ToolSpecification, ToolExecutor> sandboxedTools,
             String agentName,
+            ToolApprovalTemplate approvalTemplate) {
+        wrapToolBean(toolBean, toolClass, registeredToolNames, sandboxedTools, agentName, null, approvalTemplate);
+    }
+
+    private static void wrapToolBean(
+            Object toolBean,
+            Class<?> toolClass,
+            Set<String> registeredToolNames,
+            Map<ToolSpecification, ToolExecutor> sandboxedTools,
+            String agentName,
+            String agentInterfaceName,
             ToolApprovalTemplate approvalTemplate) {
 
         Method[] methods = toolClass.getDeclaredMethods();
@@ -220,7 +248,8 @@ public final class ToolExecutionSandbox {
                         "智能体 [" + agentName + "] 声明的工具方法存在同名冲突: [" + toolName + "]，请调整方法名称或 @Tool 注解声明");
             }
 
-            SandboxedToolExecutor executor = new SandboxedToolExecutor(toolBean, method, toolName, approvalTemplate);
+            SandboxedToolExecutor executor = new SandboxedToolExecutor(
+                    toolBean, method, toolName, approvalTemplate, agentName, agentInterfaceName);
             sandboxedTools.put(specification, executor);
             log.debug("智能体 [{}] 成功注册受管沙箱工具: [{}] -> {}.{}()",
                     agentName, toolName, toolClass.getSimpleName(), method.getName());

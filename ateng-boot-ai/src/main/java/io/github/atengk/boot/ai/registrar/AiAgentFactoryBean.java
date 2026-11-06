@@ -26,6 +26,7 @@ import lombok.Setter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.BeanNameAware;
 import org.springframework.beans.factory.FactoryBean;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
@@ -48,9 +49,13 @@ import java.util.*;
  * @author Ateng
  * @since 2026-11-03
  */
-public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContextAware, InitializingBean {
+public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContextAware, BeanNameAware, InitializingBean {
 
     private static final Logger log = LoggerFactory.getLogger(AiAgentFactoryBean.class);
+
+    @Getter
+    @Setter
+    private String beanName;
 
     @Getter
     @Setter
@@ -141,8 +146,9 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
 
         // 4. 解析受管工具类列表并接入 ToolExecutionSandbox 局部沙箱
         if (tools != null && tools.length > 0) {
+            String effectiveBeanName = StringUtils.hasText(beanName) ? beanName : agentInterface.getSimpleName();
             Map<ToolSpecification, ToolExecutor> sandboxedTools = ToolExecutionSandbox.buildSandboxedTools(
-                    applicationContext, tools, agentInterface.getSimpleName());
+                    applicationContext, tools, effectiveBeanName, agentInterface.getName());
             if (!sandboxedTools.isEmpty()) {
                 builder.tools(sandboxedTools);
             }

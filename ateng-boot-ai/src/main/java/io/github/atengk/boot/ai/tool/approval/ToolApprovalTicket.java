@@ -49,6 +49,26 @@ public class ToolApprovalTicket implements Serializable {
     private String targetBeanName;
 
     /**
+     * 触发调用的智能体 Bean 名称
+     */
+    private String agentBeanName;
+
+    /**
+     * 触发调用的智能体接口全限定类名
+     */
+    private String agentInterfaceName;
+
+    /**
+     * 触发调用的智能体会话记忆隔离标识 (sessionId / memoryId)
+     */
+    private String memoryId;
+
+    /**
+     * LangChain4j 工具执行唯一请求标识 (ToolExecutionRequest ID)
+     */
+    private String toolExecutionId;
+
+    /**
      * 工具方法调用的完整反序列化入参快照 JSON
      */
     private String argumentsJson;

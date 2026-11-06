@@ -6,6 +6,7 @@ import dev.langchain4j.service.tool.ToolExecutor;
 import io.github.atengk.boot.ai.annotation.RiskLevel;
 import io.github.atengk.boot.ai.tool.SandboxedToolExecutor;
 import io.github.atengk.boot.ai.tool.ToolExecutionSandbox;
+import io.github.atengk.boot.ai.tool.approval.AgentResumeResult;
 import io.github.atengk.boot.ai.tool.approval.ToolApprovalResult;
 import io.github.atengk.boot.ai.tool.approval.ToolApprovalTemplate;
 import io.github.atengk.boot.ai.tool.approval.ToolApprovalTicket;
@@ -162,6 +163,25 @@ public class AiToolApprovalController {
     }
 
     /**
+     * 人工审批核准通过并驱动智能体主动续跑完成最终作答
+     *
+     * @param ticketId 工单标识
+     * @param request  审批意见请求
+     * @return 智能体续跑执行结果
+     */
+    @PostMapping("/tickets/{ticketId}/approve-and-resume")
+    public Result<AgentResumeResult> approveAndResumeTicket(
+            @PathVariable String ticketId,
+            @RequestBody(required = false) ToolApprovalDecisionRequest request) {
+        String comment = (request != null && StringUtils.hasText(request.getComment()))
+                ? request.getComment().trim()
+                : "管理员审批通过并驱动续跑";
+        log.info("[AI-APPROVAL-SAMPLE] 管理员核准工单并触发智能体续跑: ticketId={}, comment={}", ticketId, comment);
+        AgentResumeResult result = toolApprovalTemplate.approveAndResumeAgent(ticketId, comment);
+        return Result.success(result);
+    }
+
+    /**
      * 人工审批驳回拒绝高危工具执行
      *
      * @param ticketId 工单标识
@@ -189,6 +209,10 @@ public class AiToolApprovalController {
                 .toolName(ticket.getToolName())
                 .targetClassName(ticket.getTargetClassName())
                 .methodName(ticket.getMethodName())
+                .agentBeanName(ticket.getAgentBeanName())
+                .agentInterfaceName(ticket.getAgentInterfaceName())
+                .memoryId(ticket.getMemoryId())
+                .toolExecutionId(ticket.getToolExecutionId())
                 .argumentsJson(ticket.getArgumentsJson())
                 .riskLevel(ticket.getRiskLevel())
                 .approvalType(ticket.getApprovalType())

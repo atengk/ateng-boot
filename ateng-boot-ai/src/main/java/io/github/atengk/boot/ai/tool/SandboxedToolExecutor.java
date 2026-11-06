@@ -103,6 +103,8 @@ public class SandboxedToolExecutor implements ToolExecutor {
     private final String toolName;
     private final ToolExecutor delegate;
     private final ToolApprovalTemplate approvalTemplate;
+    private final String agentBeanName;
+    private final String agentInterfaceName;
 
     /**
      * 构造基于反射的目标 Bean 方法沙箱工具执行器
@@ -112,7 +114,7 @@ public class SandboxedToolExecutor implements ToolExecutor {
      * @param toolName 工具方法名称
      */
     public SandboxedToolExecutor(Object target, Method method, String toolName) {
-        this(target, method, toolName, null);
+        this(target, method, toolName, null, null, null);
     }
 
     /**
@@ -124,11 +126,28 @@ public class SandboxedToolExecutor implements ToolExecutor {
      * @param approvalTemplate 审批门面
      */
     public SandboxedToolExecutor(Object target, Method method, String toolName, ToolApprovalTemplate approvalTemplate) {
+        this(target, method, toolName, approvalTemplate, null, null);
+    }
+
+    /**
+     * 构造基于反射的目标 Bean 方法沙箱工具执行器（支持高危工具审批与智能体调用元数据快照）
+     *
+     * @param target             目标工具 Bean 实例
+     * @param method             工具执行方法
+     * @param toolName           工具方法名称
+     * @param approvalTemplate   审批门面
+     * @param agentBeanName      所属智能体 Bean 名称
+     * @param agentInterfaceName 所属智能体接口全限定名
+     */
+    public SandboxedToolExecutor(Object target, Method method, String toolName, ToolApprovalTemplate approvalTemplate,
+                                 String agentBeanName, String agentInterfaceName) {
         this.target = Objects.requireNonNull(target, "工具目标实例不能为空");
         this.method = Objects.requireNonNull(method, "工具目标方法不能为空");
         this.toolName = StringUtils.hasText(toolName) ? toolName : method.getName();
         this.delegate = null;
         this.approvalTemplate = approvalTemplate;
+        this.agentBeanName = agentBeanName;
+        this.agentInterfaceName = agentInterfaceName;
         this.method.setAccessible(true);
     }
 
@@ -139,7 +158,7 @@ public class SandboxedToolExecutor implements ToolExecutor {
      * @param delegate 委托执行器
      */
     public SandboxedToolExecutor(String toolName, ToolExecutor delegate) {
-        this(toolName, delegate, null);
+        this(toolName, delegate, null, null, null);
     }
 
     /**
@@ -150,11 +169,27 @@ public class SandboxedToolExecutor implements ToolExecutor {
      * @param approvalTemplate 审批门面
      */
     public SandboxedToolExecutor(String toolName, ToolExecutor delegate, ToolApprovalTemplate approvalTemplate) {
+        this(toolName, delegate, approvalTemplate, null, null);
+    }
+
+    /**
+     * 构造基于委托执行器的沙箱工具执行器（支持高危工具审批与智能体调用元数据快照）
+     *
+     * @param toolName           工具方法名称
+     * @param delegate           委托执行器
+     * @param approvalTemplate   审批门面
+     * @param agentBeanName      所属智能体 Bean 名称
+     * @param agentInterfaceName 所属智能体接口全限定名
+     */
+    public SandboxedToolExecutor(String toolName, ToolExecutor delegate, ToolApprovalTemplate approvalTemplate,
+                                 String agentBeanName, String agentInterfaceName) {
         this.target = null;
         this.method = null;
         this.toolName = StringUtils.hasText(toolName) ? toolName : "UnknownTool";
         this.delegate = Objects.requireNonNull(delegate, "委托执行器 delegate 不能为空");
         this.approvalTemplate = approvalTemplate;
+        this.agentBeanName = agentBeanName;
+        this.agentInterfaceName = agentInterfaceName;
     }
 
     /**
@@ -184,11 +219,17 @@ public class SandboxedToolExecutor implements ToolExecutor {
             if (sensitiveTool != null) {
                 String ticketId = IdUtil.fastSimpleUUID();
                 Duration ttl = parseTimeout(sensitiveTool.timeout(), approvalTemplate.getDefaultTimeout());
+                String memIdStr = memoryId != null ? memoryId.toString() : null;
+                String toolReqId = request != null ? request.id() : null;
                 ToolApprovalTicket ticket = ToolApprovalTicket.builder()
                         .ticketId(ticketId)
                         .toolName(toolName)
                         .methodName(method.getName())
                         .targetClassName(target.getClass().getName())
+                        .agentBeanName(agentBeanName)
+                        .agentInterfaceName(agentInterfaceName)
+                        .memoryId(memIdStr)
+                        .toolExecutionId(toolReqId)
                         .argumentsJson(arguments)
                         .riskLevel(sensitiveTool.riskLevel())
                         .approvalType(StringUtils.hasText(sensitiveTool.approvalType()) ? sensitiveTool.approvalType() : "DEFAULT")
