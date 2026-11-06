@@ -82,6 +82,10 @@
 | **高危工具审批** | 声明式高危工具人机协作审批双模治理 | `@SensitiveTool`<br>`ToolApprovalTemplate`<br>`ToolApprovalStore` | `ateng.boot.ai.tool-approval.enabled`<br>`ateng.boot.ai.tool-approval.type`<br>`ateng.boot.ai.tool-approval.default-timeout` | `approve(ticketId, comment)` / `reject(ticketId, reason)` / `cancel(ticketId)` / `getTicket(ticketId)` / `listPending()`，自动拦截 `HIGH`/`CRITICAL` 风险工具生成待审批工单，四维上下文快照安全重放 | `ToolApprovalTemplateTest` / `ToolApprovalControllerIntegrationTest` |
 | **长效情景记忆** | 跨会话原子化长效情景语义记忆门面与槽位覆写 | `EpisodicMemoryTemplate`<br>`MemoryFactExtractor`<br>`MemoryFact`<br>`@AiAgent(episodicMemory)`<br>`@UserId` | `ateng.boot.ai.episodic-memory.enabled`<br>`ateng.boot.ai.episodic-memory.max-recall-results`<br>`ateng.boot.ai.episodic-memory.min-score`<br>`ateng.boot.ai.episodic-memory.enable-local-cache`<br>`ateng.boot.ai.episodic-memory.local-cache-capacity` | `remember(fact)` / `recall(query, userId)` / `forget(...)` / `extractAndRemember(text, userId)` / `listFacts(userId)`，支持声明式智能体自动感知与提炼 (`episodicMemory = true`)、三阶梯用户识别 (`@UserId` -> `@MemoryId` -> `UserContextHolder`)、语义槽位覆写去重 (Upsert by Semantic Key) 与多租户物理隔离 | `MemoryFactTest` / `EpisodicMemoryTemplateTest` / `AiAgentEpisodicMemoryTest` / `AiAgentEpisodicControllerIntegrationTest` |
 | **证据溯源引用** | 可信 RAG 证据溯源强类型契约与 SSE 尾包增量推流 | `RagResponse`<br>`Citation`<br>`CitationExtractor`<br>`AiTemplate#chatWithCitations`<br>`AiTemplate#streamWithCitations` | `ateng.boot.ai.rag.max-results`<br>`ateng.boot.ai.rag.min-score` | `chatWithCitations(prompt, candidates)` / `streamWithCitations(prompt, candidates)`，基于正则与双向指针对齐清洗 `[N]` 引用，流式增量下发 `event: citation` 数据包 | `CitationExtractorTest` / `AiTemplateCitationTest` / `RagControllerIntegrationTest` |
+| **智能体过程事件流** | 多通道流式过程事件协议与监听器 | `AgentStreamEvent`<br>`AgentStreamEventType`<br>`AgentStreamListener`<br>`SseTokenStreamBridge#pipe` | - | `onEvent(AgentStreamEvent)` / `pipe(TokenStream, SseEmitter, streamId, registry, listener)`，实时捕获并多通道分发思考链（reasoning）、工具执行开始/结束（tool_start/tool_end）、高危审批拦截通知（approval_required）与工作流步骤（workflow_step）全生命周期事件 | `SseTokenStreamBridgeTest` / `AiAgentStreamingControllerIntegrationTest` |
+| **高危工具主动续跑** | 高危工具审批与智能体对话主动续跑闭环 | `ToolApprovalTemplate#approveAndResumeAgent`<br>`AgentResumeResult` | `ateng.boot.ai.tool-approval.enabled`<br>`ateng.boot.ai.tool-approval.type`<br>`ateng.boot.ai.tool-approval.default-timeout` | `approveAndResumeAgent(ticketId, comment)` / `approveAndResumeAgent(ticketId, comment, agentSupplier)`，审批高危工单后在原 4D 上下文中受管重放工具并驱动智能体主动续跑完成最终作答，CAS 防双击并发 | `ToolApprovalTemplateTest` / `ToolApprovalControllerIntegrationTest` |
+| **确定性顺序流水线** | 基于 LangGraph4j 的确定性多阶段流水线认知工作流 | `SequentialPipelineWorkflow<S>`<br>`PipelineStage<S>`<br>`PipelineState`<br>`StageHandler<S>` | `ateng.boot.ai.graph.enabled` | `PipelineStage.of(...)` / `start(S)` / `resume(threadId, approvalData)`，确定性多阶段流水线、条件式前瞻跳过（Lookahead skip）、前置静态挂起中断（HITL）与断点恢复 | `SequentialPipelineWorkflowTest` / `AiSequentialWorkflowControllerIntegrationTest` |
+| **对抗式辩论共识** | 基于 LangGraph4j 的对抗式多智能体评审与共识裁决工作流 | `DebateConsensusWorkflow<S>`<br>`DebateParticipant<S>`<br>`DebateSpeech`<br>`DebateState`<br>`DebateHandler<S>` | `ateng.boot.ai.graph.enabled` | `DebateParticipant.of(...)` / `checkConsensus(state)` / `adjudicate(state)` / `onWatchdogFallback(state)`，红蓝多方轮转辩论、收敛判定与仲裁员终局裁决，强置 `maxDebateTurns` 硬看门狗安全熔断 | `DebateConsensusWorkflowTest` / `AiDebateWorkflowControllerIntegrationTest` |
 
 ---
 
@@ -684,6 +688,108 @@ sequenceDiagram
 
 ---
 
+### 5.5 智能体多通道流式过程事件协议 (AgentStreamEvent & AgentStreamListener)
+
+#### 1. 背景与业务痛点
+在传统的流式大模型调用中，服务端通常仅向客户端推送无结构的正文 Token。然而在企业级复杂智能体（Agent）场景中，智能体的单次交互往往伴随着**思考链推导、受管工具调用、中间执行结果回填、高危工单拦截通知以及工作流阶段跃迁**等多种丰富的生命周期事件。若推流仅限于纯文本，前端交互只能处于长时间的空白等待，无法呈现“智能体正在执行哪个工具”、“正在思考什么”等关键过程信息。
+
+`ateng-boot-ai` 构建了标准化的智能体流式过程事件协议，将大模型与工具交互全生命周期拆解为强类型领域事件 `AgentStreamEvent`，通过 `AgentStreamListener` SPI 与 `SseTokenStreamBridge` 实现统一的多通道 SSE 打字机流式推送。
+
+#### 2. 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      enabled: true
+      model:
+        base-url: https://api.deepseek.com/v1
+        api-key: YOUR_DEEPSEEK_API_KEY
+        model-name: deepseek-chat
+        timeout: 60s
+        log-requests: false
+        log-responses: false
+```
+
+#### 3. 实战业务 Java 示例
+```java
+@Slf4j
+@RestController
+@RequestMapping("/sample/ai/agent/stream")
+@RequiredArgsConstructor
+public class AiAgentStreamingController {
+
+    private final FinancialAuditAgent financialAuditAgent;
+    private final ObjectProvider<ActiveStreamRegistry> activeStreamRegistryProvider;
+
+    /**
+     * 智能体全生命周期多通道过程事件推流接口
+     */
+    @GetMapping(value = "/audit", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
+    public SseEmitter auditStream(@RequestParam("orderId") String orderId,
+                                 @RequestParam(value = "remarks", required = false) String remarks) {
+        SseEmitter emitter = new SseEmitter(AiTemplate.DEFAULT_SSE_TIMEOUT.toMillis());
+        FinancialAuditRequest request = new FinancialAuditRequest(orderId, remarks != null ? remarks : "实时全维过程流式审计");
+
+        // 1. 声明式智能体返回 TokenStream
+        TokenStream tokenStream = financialAuditAgent.auditStream(request);
+        String streamId = IdUtil.fastSimpleUUID();
+        ActiveStreamRegistry registry = activeStreamRegistryProvider.getIfAvailable();
+
+        // 2. 自定义事件监听器 (可选)：业务层感知思考、工具调用与完成事件
+        AgentStreamListener listener = event -> {
+            log.info("[STREAM-EVENT] 接收到智能体流式事件: type={}, toolName={}",
+                    event.getEventType(), event.getToolName());
+        };
+
+        // 3. 一键桥接推流至 Spring SseEmitter 并注册物理流断连熔断
+        SseTokenStreamBridge.pipe(tokenStream, emitter, streamId, registry, listener);
+        return emitter;
+    }
+}
+```
+
+#### 4. 过程事件分类与前端消费规范 (`AgentStreamEventType`)
+推流桥接器向客户端推送标准 SSE 数据包，包含以下专用 `event:` 通道：
+
+| 事件标识 (`event:`) | 对应枚举类型 (`AgentStreamEventType`) | 说明与载荷内容 |
+| :--- | :--- | :--- |
+| `reasoning` | `THINKING` | 推理模型或 Agent 思考链增量文本切片（`<think>` 状态机解耦分流） |
+| `text` | `TEXT` | 最终面向用户输出的回答正文 Token 增量切片 |
+| `tool_start` | `TOOL_EXECUTION_START` | 智能体决策触发工具调用，载荷携带 `toolName` 与参数 JSON `arguments` |
+| `tool_end` | `TOOL_EXECUTION_END` | 受管工具沙箱执行完毕，载荷携带 `toolName` 与执行结果 JSON `toolResult` |
+| `approval_required` | `TOOL_APPROVAL_REQUIRED` | 高危工具被拦截并转为人机协同审批，载荷携带 `ticketId` 与待审批详情 |
+| `workflow_step` | `WORKFLOW_STEP` | 认知状态图工作流节点跃迁事件，载荷携带 `nodeName` 与阶段执行快照 |
+| `complete` | `COMPLETE` | 智能体交互完整结束信号 |
+| `error` | `ERROR` | 智能体执行发生不可恢复异常 |
+| `done` | - | 标准 SSE 结束标识 `data: [DONE]`，客户端感知后安全关闭 EventSource |
+
+前端 JavaScript 消费范式：
+```javascript
+const eventSource = new EventSource('/sample/ai/agent/stream/audit?orderId=ORD_20261103001');
+
+// 1. 监听思考链推流
+eventSource.addEventListener('reasoning', e => updateThinkingBubble(e.data));
+
+// 2. 监听工具执行提示（例如显示“正在查询仓储库存...”）
+eventSource.addEventListener('tool_start', e => {
+    const data = JSON.parse(e.data);
+    showToolStatus(`智能体正在调用工具 [${data.toolName}]...`);
+});
+
+// 3. 监听正文回答
+eventSource.addEventListener('text', e => appendAnswerText(e.data));
+
+// 4. 监听结束
+eventSource.addEventListener('done', () => eventSource.close());
+```
+
+#### 5. 核心机制与非功能边界防卫 (Production Boundary & Failure Modes)
+- **四维上下文无损还原**：`SseTokenStreamBridge` 构造时在 Web 主线程捕获 `AsyncContext.ContextSnapshot` 快照。当 OkHttp 工作线程异步收到 `onNext`/`onComplete` 回调时，自动还原调用方线程的 MDC `traceId` 与 `UserContext`，推流过程日志具备 100% 完整追踪链；
+- **套接字断连安全治理**：当浏览器关闭标签页或网络断开时，`SseEmitter.send()` 抛出 `IOException` 或 `IllegalStateException`，桥接器自动捕获并执行 `closeSafely()` 释放底层通道，严禁异常抛出导致破坏 OkHttp 底层连接池；
+- **弱依赖与零开销**：当未挂载自定义 `AgentStreamListener` 时，系统自动采用 `AgentStreamListener.noop()` 单例空实现，不产生任何额外内存开销或反射损耗。
+
+---
+
 ## 6. 声明式智能体与受管工具沙箱体系
 
 ### 6.1 声明式接口定义与包扫描机制 (@AiAgent & @AiAgentScan)
@@ -1018,8 +1124,32 @@ public class AiToolApprovalController {
                 .orElseThrow(() -> new BusinessException(CommonResultCode.NOT_FOUND, "未找到指定的工具审批工单: " + ticketId));
         return Result.success(toTicketVo(ticket));
     }
+
+    /**
+     * 人工审核通过并驱动智能体主动续跑完成最终作答闭环
+     */
+    @PostMapping("/tickets/{ticketId}/approve-and-resume")
+    public Result<AgentResumeResult> approveAndResume(
+            @PathVariable String ticketId,
+            @RequestBody(required = false) ToolApprovalDecisionRequest request
+    ) {
+        String comment = (request != null && StringUtils.hasText(request.getComment()))
+                ? request.getComment().trim()
+                : "管理员审批通过并驱动续跑";
+        // 原子审批通过、安全重放工具执行，并无缝驱动原智能体会话在原 4D 上下文中续跑完成最终作答
+        AgentResumeResult result = approvalTemplate.approveAndResumeAgent(ticketId, comment);
+        return Result.success(result);
+    }
 }
 ```
+
+##### 4. 智能体会话主动续跑闭环机制 (`AgentResumeResult`)
+在传统审批流中，人工审批通过并执行工具后，往往需要通知用户“审核已通过，请重新提问”，这不仅割裂了对话体验，还丢失了会话上下文。
+
+`ToolApprovalTemplate#approveAndResumeAgent` 实现了**“审批即续跑”**的闭环：
+1. **原子 CAS 状态跃迁**：首先原子校验工单处于 `PENDING` 态并跃迁为 `APPROVED`，彻底杜绝并发重复执行；
+2. **4D 上下文受管重放**：在捕获的原始 MDC `traceId`、`userId` 与 `tenantId` 环境中执行高危工具，产出结构化执行结果；
+3. **会话上下文动态续跑**：若注册了 `agentSupplier` 或会话记忆具备连续性，框架自动将工具执行结果作为 ToolExecutionResultMessage 回填模型，驱动智能体继续生成最终回答，返回包含 `ticket`、`approvalResult`、`resumed=true` 与 `agentResponse` 的强类型 `AgentResumeResult` 对象。
 
 #### 生产扩展接管 (Customization & Extensibility)
 若框架内置的 `InMemoryToolApprovalStore` 或 `RedisToolApprovalStore` 无法满足多系统协同，可提供自定义 `ToolApprovalStore` Bean 轻松无缝接管持久化：
@@ -1752,6 +1882,268 @@ public class AiMultiAgentController {
 - **死循环硬看门狗不变量**：当决断轮次超过 `maxTurns()` 时，框架记录 WARN 告警，自动置位 `isFinished=true` 并将状态机强制路由至 `fallback_finish` 降级终态节点（状态置为 `WorkflowStatus.FAILED` 并记录看门狗错误说明），彻底杜绝多智能体无限自指与 Token 烧毁；
 - **异常因果隔离与降级**：专工执行发生异常时，统一受控转译为语义化 `AiException` 并 100% 保留原始因果链；主管若返回不存在的专工标识，框架自动告警并优雅降级至终态，防止主线程挂死；
 - **多图命名空间严格隔离**：检查点在持久层存储时自包含 `workflowName`，在多工作流共享同一存储介质时严格执行名称匹配过滤，杜绝跨工作流快照串读与状态错乱。
+
+---
+
+### 8.6 基于 LangGraph4j 的确定性顺序流水线多智能体工作流 (SequentialPipelineWorkflow)
+
+#### 1. 背景与业务痛点
+在电商订单履约、信贷审批流转、DevOps 发布管道等业务场景中，流程通常遵循严格的**线性阶段演进顺序**（例如：参数核验 -> 风险评估 -> 人工复审 -> 资金结算 -> 自动交付）。传统的 DAG 引擎缺乏图状态机的检查点持久化与人机协作（HITL）中断能力，而手写状态图往往存在：
+1. 阶段连线模板代码繁重且易错；
+2. 动态跳过某阶段时（如 VIP 豁免风控、低风险免人工审），若该阶段配置了 `interruptBefore`，容易引发框架过早非预期挂起；
+3. 单一阶段失败缺乏可控的 Fail-Fast 或 Continue-On-Error 策略。
+
+`ateng-boot-ai` 提供 `SequentialPipelineWorkflow<S>` 泛型工作流基类，基于 LangGraph4j 抽象出高阶阶段契约模型 `PipelineStage<S>` 与强类型状态模型 `PipelineState`。支持声明式阶段定义、前瞻跳过条件求值（Lookahead skip）、前置静态挂起中断（HITL）与断点恢复闭环。
+
+#### 2. 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      graph:
+        # 是否启用认知状态图工作流底座 (默认 true)
+        enabled: true
+        checkpoint:
+          # 存储引擎: AUTO (自动探测 Redis，未引入平滑回退并发内存), IN_MEMORY, REDIS
+          type: AUTO
+          key-prefix: "ateng:ai:graph:checkpoint:"
+          lock-prefix: "ateng:ai:graph:lock:"
+          lock-ttl: 30s
+          checkpoint-ttl: 7d
+```
+
+#### 3. 实战业务 Java 示例：订单履约全流程流水线
+```java
+@Component
+public class OrderFulfillmentPipelineWorkflow extends SequentialPipelineWorkflow<OrderFulfillmentState> {
+
+    public OrderFulfillmentPipelineWorkflow() {
+        super("orderFulfillmentPipelineWorkflow", OrderFulfillmentState::new);
+    }
+
+    @Override
+    protected List<PipelineStage<OrderFulfillmentState>> defineStages() {
+        return List.of(
+            // 阶段 1: 订单信息合规校验 (快速失败)
+            PipelineStage.of("verification", "订单信息校验", state -> {
+                if (state.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
+                    throw new BusinessException(CommonResultCode.PARAM_INVALID, "订单金额必须大于0");
+                }
+                return Map.of("verified", true);
+            }),
+
+            // 阶段 2: 订单风险评估 (VIP 客户自动跳过)
+            PipelineStage.<OrderFulfillmentState>builder()
+                .name("risk_evaluation")
+                .description("风控等级评估")
+                .handler(state -> {
+                    boolean highRisk = state.getAmount().compareTo(new BigDecimal("1000")) > 0
+                            && state.getCreditScore() < 650;
+                    return Map.of("riskLevel", highRisk ? "HIGH" : "LOW");
+                })
+                .skipCondition(state -> Boolean.TRUE.equals(state.getVipBypass()))
+                .build(),
+
+            // 阶段 3: 高危人工复审 (仅当高风险订单触发，配置前置挂起中断)
+            PipelineStage.<OrderFulfillmentState>builder()
+                .name("manual_audit")
+                .description("高风险订单人工复审")
+                .handler(state -> {
+                    Object approvalData = state.data().get(TypedKey.APPROVAL_DATA.name());
+                    String action = approvalData instanceof Map<?, ?> m ? String.valueOf(m.get("action")) : "REJECTED";
+                    if (!"APPROVED".equalsIgnoreCase(action)) {
+                        throw new BusinessException(CommonResultCode.FORBIDDEN, "人工审核未通过");
+                    }
+                    return Map.of("manualAuditPassed", true);
+                })
+                .skipCondition(state -> !"HIGH".equalsIgnoreCase(state.getRiskLevel()))
+                .interruptBefore(true) // 高危订单在此挂起等待人工审批
+                .build(),
+
+            // 阶段 4: 支付结算流水
+            PipelineStage.of("payment_clearing", "资金清算", state -> 
+                Map.of("paid", true, "payTxId", "TX_" + IdUtil.fastSimpleUUID())
+            ),
+
+            // 阶段 5: 物流发货 / 虚拟资产自动交付
+            PipelineStage.of("auto_delivery", "自动交付", state -> 
+                Map.of("delivered", true, "deliveryTime", LocalDateTime.now().toString())
+            )
+        );
+    }
+}
+```
+
+#### 4. RESTful 接入控制器与断点恢复
+```java
+@RestController
+@RequestMapping("/sample/ai/workflow/pipeline")
+@RequiredArgsConstructor
+public class AiSequentialWorkflowController {
+
+    private final OrderFulfillmentPipelineWorkflow orderFulfillmentWorkflow;
+    private final GraphResumeTemplate graphResumeTemplate;
+
+    /**
+     * 1. 启动订单履约流水线
+     * 低风险或 VIP 订单直接执行完毕返回 COMPLETED；高危订单在 manual_audit 节点前挂起返回 SUSPENDED
+     */
+    @PostMapping("/start")
+    public Result<StateSnapshotVo> start(@Valid @RequestBody OrderPipelineStartRequest request) {
+        OrderFulfillmentState state = new OrderFulfillmentState();
+        state.setOrderId(request.getOrderId());
+        state.setAmount(request.getAmount());
+        state.setCreditScore(request.getCreditScore());
+        state.setVipBypass(request.getVipBypass());
+        return Result.success(orderFulfillmentWorkflow.start(state));
+    }
+
+    /**
+     * 2. 人工审核通过恢复挂起流程
+     */
+    @PostMapping("/resume")
+    public Result<StateSnapshotVo> resume(@Valid @RequestBody OrderPipelineResumeRequest request) {
+        StateSnapshotVo snapshot = graphResumeTemplate.resume(
+                request.getThreadId(),
+                Map.of("action", request.getAction(), "operator", request.getOperator()),
+                state -> state.set(TypedKey.of("auditRemarks", String.class), request.getRemarks())
+        );
+        return Result.success(snapshot);
+    }
+}
+```
+
+#### 5. 核心机制与非功能生产边界 (Production Boundary & Failure Modes)
+- **前瞻条件跳过 (Lookahead Skip Invariant)**：
+  在 LangGraph4j 中，静态声明 `interruptBefore` 会使引擎在踏入节点前强制挂起。若该阶段同时配置了 `skipCondition`（例如非高危订单无需人工审），简单的静态线性连线将导致非高危订单错误挂起。`SequentialPipelineWorkflow` 独创前瞻条件分流算法（Lookahead Conditional Edges）：在每个阶段结束时，动态向前扫描后续阶段，命中 `shouldSkip(state) == true` 的阶段直接平滑跳过，直接跃迁至下一个需要执行的真实阶段或 `END`，彻底消除过早误挂起；
+- **状态不可变性防卫**：LangGraph4j 状态机的 `state.data()` 为 `Collections.unmodifiableMap`，框架在初始化与节点流转中严格推行 `new LinkedHashMap<>()` 隔离与 `TypedKey<T>` 强类型存取，严禁直接对不可变 Map 进行写操作；
+- **完备错误策略与终态回调**：支持单阶段 `continueOnError(true)`（记录阶段失败信息并继续后续无依赖阶段）与全局 Fail-Fast；重写 `onPipelineCompleted(S state)` 与 `onPipelineFailed(S state, PipelineStage<S> stage, Throwable error)` 钩子可在流水线终态执行业务对账与审计。
+
+---
+
+### 8.7 基于 LangGraph4j 的对抗式多智能体评审与共识裁决工作流 (DebateConsensusWorkflow)
+
+#### 1. 背景与业务痛点
+在大语言模型驱动的架构评审、高危代码审查、合规决断与技术方案选型中，单一智能体容易陷入偏见、盲目自信与幻觉。而在现实软件工程中，最严谨的设计决策往往来自于**红蓝对抗评审（Debate & Adversarial Review）**：
+- **正方辩手 (Proposer)**：主张方案收益、高吞吐、低延迟与业务敏捷度；
+- **反方辩手 (Critic)**：质疑方案风险、单点故障、一致性缺陷与运维成本；
+- **共识评估 (Consensus Check)**：在每一轮辩论结束时判定双方是否已就关键分歧达成共识；
+- **中立仲裁员 (Arbiter)**：当辩论达到指定深度或满足共识条件时，由仲裁委员会综合双方论据与论据历史，出具客观严谨的最终裁决报告。
+
+若无状态图基础设施管控，多智能体辩论容易陷入**互不相让、无休止死循环争论与 Token 巨额消耗**。`ateng-boot-ai` 提供 `DebateConsensusWorkflow<S>` 泛型基类，将多方辩论建模为闭环拓扑，内置 `maxDebateTurns` 硬看门狗熔断防线。
+
+#### 2. 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      graph:
+        enabled: true
+        checkpoint:
+          type: AUTO
+          key-prefix: "ateng:ai:graph:checkpoint:"
+          lock-prefix: "ateng:ai:graph:lock:"
+          lock-ttl: 30s
+          checkpoint-ttl: 7d
+```
+
+#### 3. 实战业务 Java 示例：架构技术选型红蓝对抗评审
+```java
+@Component
+public class ArchitectureReviewDebateWorkflow extends DebateConsensusWorkflow<ArchitectureDebateState> {
+
+    public ArchitectureReviewDebateWorkflow() {
+        super("architectureReviewDebateWorkflow", ArchitectureDebateState::new);
+    }
+
+    @Override
+    protected int maxDebateTurns() {
+        return 3; // 限制最多辩论 3 轮，超限硬看门狗介入防死锁
+    }
+
+    @Override
+    protected List<DebateParticipant<ArchitectureDebateState>> registerDebaters() {
+        return List.of(
+            // 正方：高性能微服务倡导架构师
+            DebateParticipant.of("proposer", "PRO", "高性能架构师", (state, round) ->
+                "提议采用 Spring Boot 3 + Redis 缓存集群方案，目标承载 QPS=" + state.getTargetQps()
+            ),
+            // 反方：金融级稳定性审查员
+            DebateParticipant.of("critic", "CON", "稳定性与合规专家", (state, round) ->
+                "质疑缓存与数据库双写一致性，要求补充分布式延时双删或 Canal 监听 binlog 方案"
+            )
+        );
+    }
+
+    @Override
+    protected boolean checkConsensus(ArchitectureDebateState state) {
+        // 判定双方论据是否已对齐（例如已讨论超 2 轮或正方已补充一致性方案）
+        return state.getRoundCount() >= 2 && !state.isForceDeadlock();
+    }
+
+    @Override
+    protected Map<String, Object> adjudicate(ArchitectureDebateState state) {
+        // 仲裁员调取全部 debateHistory 发言历史，输出综合裁决
+        return Map.of(
+            "verdict", "CONDITIONAL_APPROVAL",
+            "summary", "【仲裁结论】准予立项，必须补充 Canal 异步 binlog 刷新保障数据最终一致性！"
+        );
+    }
+
+    @Override
+    protected Map<String, Object> onWatchdogFallback(ArchitectureDebateState state) {
+        // 当达到 maxDebateTurns 辩论僵持不下时，硬看门狗介入兜底
+        return Map.of(
+            "verdict", "DEADLOCKED_REJECTED",
+            "summary", "【看门狗熔断】双方分歧过大且超出轮次上限，技术委员会建议冻结该方案！"
+        );
+    }
+}
+```
+
+#### 4. RESTful 接入控制器与状态快照检索
+```java
+@RestController
+@RequestMapping("/sample/ai/workflow/debate")
+@RequiredArgsConstructor
+public class AiDebateWorkflowController {
+
+    private final ArchitectureReviewDebateWorkflow debateWorkflow;
+    private final GraphResumeTemplate graphResumeTemplate;
+
+    /**
+     * 1. 发起架构技术选型红蓝对抗评审
+     */
+    @PostMapping("/start")
+    public Result<StateSnapshotVo> startDebate(@Valid @RequestBody ArchitectureDebateStartRequest request) {
+        ArchitectureDebateState state = new ArchitectureDebateState();
+        state.setTopic("架构方案对抗评审: " + request.getProposalTitle());
+        state.setProposalTitle(request.getProposalTitle());
+        state.setProposalDesc(request.getProposalDesc());
+        state.setTargetQps(request.getTargetQps());
+        state.setForceDeadlock(Boolean.TRUE.equals(request.getForceDeadlock()));
+
+        StateSnapshotVo snapshot = debateWorkflow.start(state);
+        return Result.success(snapshot);
+    }
+
+    /**
+     * 2. 查询评审快照与全轮次辩论发言历史
+     */
+    @GetMapping("/snapshot/{threadId}")
+    public Result<StateSnapshotVo> getSnapshot(@PathVariable String threadId) {
+        StateSnapshotVo snapshot = graphResumeTemplate.getSnapshot(threadId)
+                .orElseThrow(() -> new BusinessException("未找到指定的辩论会话快照"));
+        return Result.success(snapshot);
+    }
+}
+```
+
+#### 5. 核心机制与非功能生产边界 (Production Boundary & Failure Modes)
+- **辩论轮转与发言保序 (Debate History Invariant)**：每一位辩手的每次发言封装为不可变强类型对象 `DebateSpeech`（包含发言轮次、辩手标识、立场观点与发言内容），统一汇聚至 `DebateState.DEBATE_HISTORY`。仲裁员节点可依据完整时序证据链出具公正判决；
+- **死循环硬看门狗安全兜底 (Watchdog Breaker)**：当辩论双方陷入死锁（`checkConsensus` 持续返回 `false`）时，`roundCount` 达到 `maxDebateTurns` 即刻触发看门狗熔断，状态机自动转向 `watchdog_fallback` 节点，状态标记为 `FAILED`，置位 `watchdogTripped=true` 并执行 `onWatchdogFallback` 降级，强力封堵 Token 烧毁风险；
+- **图引擎最大迭代数安全余量防卫**：LangGraph4j 内部有全局 `maxIterations` 保护机制。若业务辩论轮次较多，图引擎迭代数可能先于看门狗耗尽抛出未受管异常。`DebateConsensusWorkflow` 自动依据 `maxTurns * debatersCount + 10` 计算底层图编译参数，确保业务看门狗总是优先受控介入；
+- **双模检查点漫游与断点人机仲裁**：辩论状态全程持久化于 `GraphCheckpointSaver`，支持在特定轮次静态中断（`interruptBeforeNodes`）挂起，由真实人类专家介入注入裁决后再行恢复。
 
 ---
 

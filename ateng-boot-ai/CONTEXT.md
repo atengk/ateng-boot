@@ -215,3 +215,51 @@ _Avoid_: SourceReference, FootnoteItem, ReferenceDoc
 **CitationExtractor**:
 RAG 溯源引用确定性提取与上下文对齐纯函数工具类，负责将大模型回答中的引用锚点与召回切片元数据精确绑定并输出结构化引用列表。
 _Avoid_: ReferenceParser, CitationResolver, FootnoteExtractor
+
+**AgentStreamEvent**:
+智能体多通道流式过程事件领域模型契约，封装事件类型（`AgentStreamEventType`）、事件时间戳、节点标识、工具名称、参数、思考链片断、正文分片等全流程生命周期事件载荷。
+_Avoid_: StreamPayload, AgentEvent, EventNotification
+
+**AgentStreamListener**:
+智能体流式事件监听器 SPI 接口，定义思考链生成、工具执行启动与返回、高危审批拦截、工作流节点流转等生命周期事件的捕获与响应契约。
+_Avoid_: StreamConsumer, AgentEventListener, EventCallback
+
+**AgentResumeResult**:
+高危工具人机协作审批（HITL）主动续跑契约模型，封装审批工单、是否触发续跑、续跑状态与智能体最终回答结果。
+_Avoid_: ResumeResponse, AgentApprovalResult, ToolResumeVo
+
+**OpenApiToolAdapter**:
+企业 OpenAPI 3.0 / Swagger 2.0 契约转 Agent 受管沙箱工具适配器具体类，纯原生解析端点契约并转换为 LangChain4j ToolSpecification，支持 4D 治理上下文透传与沙箱自愈。
+_Avoid_: SwaggerToolAdapter, ApiToolBridge, OpenApiHelper
+
+**OpenApiToolProperties**:
+OpenAPI 工具适配器强类型配置属性类，规范服务基础路径、鉴权头、超时时限与端点过滤白名单。
+_Avoid_: ApiConfig, OpenApiConfig, SwaggerProperties
+
+**SequentialPipelineWorkflow**:
+基于 LangGraph4j 的确定性多阶段顺序流水线工作流基类，提供声明式阶段编排（`PipelineStage`）、前瞻跳过条件求值（Lookahead skip）、前置静态中断与断点续跑闭环。
+_Avoid_: LinearWorkflow, StagePipeline, StepWorkflow
+
+**PipelineStage**:
+顺序流水线阶段契约模型，封装阶段名称、阶段描述、阶段处理器（`StageHandler`）、跳过断言（skipCondition）及前置中断配置（interruptBefore）。
+_Avoid_: PipelineStep, WorkflowStage, GraphStep
+
+**PipelineState**:
+顺序流水线工作流强类型基类，继承 `BaseGraphState`，提供当前阶段、跳过阶段集、完成阶段集与阶段执行结果强类型 TypedKey。
+_Avoid_: PipelineContext, StageState, StepContext
+
+**DebateConsensusWorkflow**:
+基于 LangGraph4j 的对抗式多智能体评审与共识裁决工作流基类，统管多方轮转辩论（`DebateParticipant`）、共识判定（`checkConsensus`）、仲裁员终局裁决与 `maxDebateTurns` 硬看门狗安全兜底。
+_Avoid_: ArgumentWorkflow, MultiAgentDebate, ConsensusEngine
+
+**DebateParticipant**:
+对抗式辩论参与者契约模型，封装辩手名称、预设立场、职责描述与辩论动作处理器（`DebateHandler`）。
+_Avoid_: Debater, DebateMember, AgentParticipant
+
+**DebateSpeech**:
+不可变结构化辩论发言契约模型，封装发言轮次、辩论者标识、立场观点、论述内容与时间戳。
+_Avoid_: SpeechRecord, ArgumentItem, DebateUtterance
+
+**DebateState**:
+对抗式多智能体辩论强类型状态基类，继承 `BaseGraphState`，提供辩题、轮次计数、历史发言记录集、共识达成标志与仲裁终局裁决 TypedKey。
+_Avoid_: DebateContext, ArgumentState, ConsensusState
