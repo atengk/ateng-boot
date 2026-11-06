@@ -13,6 +13,9 @@
 | **执行门面** | 在线即时 EL 执行 | `LiteflowTemplate` | `enabled = true` | `<T> LiteflowTraceResult<T> executeElWithTrace(String, ...)` | `LiteflowDynamicRuleController` |
 | **执行门面** | 多上下文解包编排 | `LiteflowTemplate` | `enabled = true` | `LiteflowResponse execute(String, Object, Class<?>, Class<?>, ...)` | `LiteflowTemplateTest` |
 | **执行门面** | 规则链动态热重载 | `LiteflowTemplate` | `enabled = true` | `void reloadChain(String, String)`<br>`boolean containChain(String)` | `LiteflowDynamicRuleController` |
+| **决策路由** | 决策路由表（Route Chain）全链路编排 | `LiteflowTemplate` | `enabled = true` | `<T> T executeRoute(String, T)`<br>`<T> T executeRoute(String, Object, T)` | `LiteflowDynamicRuleSourceTest`<br>`LiteflowPromotionRoutingController` |
+| **决策路由** | 路由聚合与时序轨迹包装 | `LiteflowTemplate` | `trace.enabled = true` | `<T> LiteflowRouteResult<T> executeRouteWithTrace(...)` | `LiteflowDynamicRuleSourceTest`<br>`LiteflowPromotionRoutingController` |
+| **决策路由** | 动态决策路由链热重载 | `LiteflowTemplate` | `enabled = true` | `void reloadRouteChain(String, String, String, String)` | `LiteflowDynamicRuleSourceTest` |
 | **执行门面** | 官方原生逃生通道 | `LiteflowTemplate` | `enabled = true` | `LiteflowResponse execute2Resp(...)`<br>`LiteflowResponse execute2RespWithEL(...)` | `LiteflowTemplateTest` |
 | **泛型组件** | 普通处理组件基类 | `BaseNodeComponent<T>` | - | `void process(T)`<br>`void rollback(T)`（自动探测并激活 Saga 逆序补偿） | `LiteflowComponentHierarchyTest`<br>`DeductInventoryCmp` |
 | **泛型组件** | 逻辑条件分支基类 | `BaseIfComponent<T>` | - | `boolean processIf(T)`<br>强类型条件路由真伪判定 | `LiteflowComponentHierarchyTest`<br>`CheckBlacklistIfCmp` |

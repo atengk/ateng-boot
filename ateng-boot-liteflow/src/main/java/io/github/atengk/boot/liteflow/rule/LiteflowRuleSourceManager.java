@@ -117,7 +117,13 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
         for (RuleSourceDefinition def : definitions) {
             String chainId = def.getChainId();
             if (def.isEnabled() && def.getEl() != null && !def.getEl().isBlank()) {
-                this.liteflowTemplate.reloadChain(chainId, def.getEl());
+                if (def.getRouteEl() != null && !def.getRouteEl().isBlank()) {
+                    String ns = (def.getNamespace() != null && !def.getNamespace().isBlank())
+                            ? def.getNamespace() : def.getRouteGroup();
+                    this.liteflowTemplate.reloadRouteChain(chainId, ns, def.getRouteEl(), def.getEl());
+                } else {
+                    this.liteflowTemplate.reloadChain(chainId, def.getEl());
+                }
                 activeCount++;
             } else if (!def.isEnabled()) {
                 if (this.liteflowTemplate.containChain(chainId)) {
@@ -148,7 +154,13 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
             return false;
         }
         if (def.isEnabled() && def.getEl() != null && !def.getEl().isBlank()) {
-            this.liteflowTemplate.reloadChain(chainId, def.getEl());
+            if (def.getRouteEl() != null && !def.getRouteEl().isBlank()) {
+                String ns = (def.getNamespace() != null && !def.getNamespace().isBlank())
+                        ? def.getNamespace() : def.getRouteGroup();
+                this.liteflowTemplate.reloadRouteChain(chainId, ns, def.getRouteEl(), def.getEl());
+            } else {
+                this.liteflowTemplate.reloadChain(chainId, def.getEl());
+            }
             return true;
         } else {
             this.liteflowTemplate.removeChain(chainId);
@@ -164,6 +176,18 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
      */
     public void refreshChain(String chainId, String el) {
         this.liteflowTemplate.reloadChain(chainId, el);
+    }
+
+    /**
+     * 编程式显式热更新单条决策路由流程链
+     *
+     * @param chainId   流程链 ID
+     * @param namespace 业务路由命名空间（可选）
+     * @param routeEl   决策路由条件表达式
+     * @param bodyEl    规则流程主体 EL 表达式
+     */
+    public void refreshRouteChain(String chainId, String namespace, String routeEl, String bodyEl) {
+        this.liteflowTemplate.reloadRouteChain(chainId, namespace, routeEl, bodyEl);
     }
 
     /**

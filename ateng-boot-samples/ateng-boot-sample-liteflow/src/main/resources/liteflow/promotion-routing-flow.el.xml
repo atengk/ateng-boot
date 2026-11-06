@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<flow>
+    <!-- 决策路由表（Route Chain）：电商促销决策表 (Namespace: PROMOTION) -->
+    <!-- 1. VIP 专享优惠路由链：条件满足即自动执行 VIP 9 折立减 -->
+    <chain name="promotionVipRouteChain" namespace="PROMOTION">
+        <route>vipPromotionCondCmp</route>
+        <body>THEN(vipDiscountCmp);</body>
+    </chain>
+
+    <!-- 2. 满额大促优惠路由链：订单实付满 200 元即自动执行立减 30 元 -->
+    <chain name="promotionThresholdRouteChain" namespace="PROMOTION">
+        <route>thresholdPromotionCondCmp</route>
+        <body>THEN(thresholdDiscountCmp);</body>
+    </chain>
+
+    <!-- 3. 数码专属品类券路由链：数码品类专享立减 20 元 -->
+    <chain name="promotionCategoryRouteChain" namespace="PROMOTION">
+        <route>categoryPromotionCondCmp</route>
+        <body>THEN(categoryDiscountCmp);</body>
+    </chain>
+</flow>

@@ -4,6 +4,8 @@ import com.yomahub.liteflow.builder.el.LiteFlowChainELBuilder;
 import com.yomahub.liteflow.common.entity.ValidationResp;
 import com.yomahub.liteflow.core.FlowExecutor;
 import com.yomahub.liteflow.enums.FlowParserTypeEnum;
+import com.yomahub.liteflow.exception.NoMatchedRouteChainException;
+import com.yomahub.liteflow.exception.RouteChainNotFoundException;
 import com.yomahub.liteflow.flow.FlowBus;
 import com.yomahub.liteflow.flow.LiteflowResponse;
 import com.yomahub.liteflow.flow.element.Chain;
@@ -12,6 +14,7 @@ import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.util.SpringUtil;
 import io.github.atengk.boot.liteflow.exception.LiteflowExecutionException;
 import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
+import io.github.atengk.boot.liteflow.route.LiteflowRouteResult;
 import io.github.atengk.boot.liteflow.thread.FlowThreadTracker;
 import io.github.atengk.boot.liteflow.trace.LiteflowExecutionTrace;
 import io.github.atengk.boot.liteflow.trace.LiteflowTraceResult;
@@ -502,6 +505,115 @@ public class LiteflowTemplate {
     }
 
     /**
+     * 同步执行决策路由表（Route Chain）全链路编排并聚合至共享强类型上下文（无入参重载）
+     * 自动在指定业务命名空间下根据所有路由条件进行多规则并行/串行匹配，
+     * 所有命中的流程链将按序在同一强类型上下文实例上累计应用业务状态变更；
+     * 若未匹配到任何路由链，保底静默返回原始未修改上下文
+     *
+     * @param namespace   业务路由命名空间（可选，留空则匹配默认命名空间下的所有路由链）
+     * @param contextBean 共享预置强类型业务上下文实例
+     * @param <T>         上下文泛型
+     * @return 聚合所有命中规则变更后的同一强类型业务上下文实例
+     */
+    public <T> T executeRoute(String namespace, T contextBean) {
+        return executeRoute(namespace, null, contextBean);
+    }
+
+    /**
+     * 同步执行决策路由表（Route Chain）全链路编排并聚合至共享强类型上下文
+     * 自动在指定业务命名空间下根据所有路由条件进行多规则匹配，
+     * 所有命中的流程链将按序在同一强类型上下文实例上累计应用业务状态变更；
+     * 若未匹配到任何路由链，保底静默返回原始未修改上下文；若任何命中规则执行失败，立即中断并抛出携带完整因果链的受管业务异常
+     *
+     * @param namespace   业务路由命名空间（可选，留空则匹配默认命名空间下的所有路由链）
+     * @param param       流程通用入参
+     * @param contextBean 共享预置强类型业务上下文实例
+     * @param <T>         上下文泛型
+     * @return 聚合所有命中规则变更后的同一强类型业务上下文实例
+     */
+    public <T> T executeRoute(String namespace, Object param, T contextBean) {
+        if (contextBean == null) {
+            throw new IllegalArgumentException("contextBean 不能为空");
+        }
+        List<LiteflowResponse> responses;
+        try {
+            responses = (namespace != null && !namespace.isBlank())
+                    ? this.flowExecutor.executeRouteChain(namespace.trim(), param, contextBean)
+                    : this.flowExecutor.executeRouteChain(param, contextBean);
+        } catch (RouteChainNotFoundException | NoMatchedRouteChainException e) {
+            log.debug("ateng-boot-liteflow: 命名空间 [{}] 未匹配到任何决策路由链，保底返回原始上下文: {}", namespace, e.getMessage());
+            responses = Collections.emptyList();
+        }
+
+        if (responses == null || responses.isEmpty()) {
+            log.debug("ateng-boot-liteflow: 决策路由表在命名空间 [{}] 未匹配到任何有效流程链，保底返回原始业务上下文", namespace);
+            return contextBean;
+        }
+
+        for (LiteflowResponse response : responses) {
+            String chainId = response != null ? response.getChainId() : "ROUTE_CHAIN";
+            LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, -1L);
+            checkResponseSuccess(chainId, response, trace);
+        }
+        return contextBean;
+    }
+
+    /**
+     * 同步执行决策路由表（Route Chain）全链路编排并返回携带结构化时序轨迹与命中元数据的聚合结果包装（无入参重载）
+     *
+     * @param namespace   业务路由命名空间（可选，留空则匹配默认命名空间下的所有路由链）
+     * @param contextBean 共享预置强类型业务上下文实例
+     * @param <T>         上下文泛型
+     * @return 决策路由聚合执行结果包装（包含聚合上下文、命中流程链列表、全时序轨迹与耗时）
+     */
+    public <T> LiteflowRouteResult<T> executeRouteWithTrace(String namespace, T contextBean) {
+        return executeRouteWithTrace(namespace, null, contextBean);
+    }
+
+    /**
+     * 同步执行决策路由表（Route Chain）全链路编排并返回携带结构化时序轨迹与命中元数据的聚合结果包装
+     *
+     * @param namespace   业务路由命名空间（可选，留空则匹配默认命名空间下的所有路由链）
+     * @param param       流程通用入参
+     * @param contextBean 共享预置强类型业务上下文实例
+     * @param <T>         上下文泛型
+     * @return 决策路由聚合执行结果包装（包含聚合上下文、命中流程链列表、全时序轨迹与耗时）
+     */
+    public <T> LiteflowRouteResult<T> executeRouteWithTrace(String namespace, Object param, T contextBean) {
+        if (contextBean == null) {
+            throw new IllegalArgumentException("contextBean 不能为空");
+        }
+        long start = System.currentTimeMillis();
+        List<LiteflowResponse> responses;
+        try {
+            responses = (namespace != null && !namespace.isBlank())
+                    ? this.flowExecutor.executeRouteChain(namespace.trim(), param, contextBean)
+                    : this.flowExecutor.executeRouteChain(param, contextBean);
+        } catch (RouteChainNotFoundException | NoMatchedRouteChainException e) {
+            log.debug("ateng-boot-liteflow: 命名空间 [{}] 未匹配到任何决策路由链: {}", namespace, e.getMessage());
+            responses = Collections.emptyList();
+        }
+        long totalDuration = System.currentTimeMillis() - start;
+
+        if (responses == null || responses.isEmpty()) {
+            log.debug("ateng-boot-liteflow: 决策路由表在命名空间 [{}] 未匹配到任何有效流程链", namespace);
+            return new LiteflowRouteResult<>(contextBean, Collections.emptyList(), Collections.emptyList(), totalDuration);
+        }
+
+        List<String> matchedChainIds = new ArrayList<>(responses.size());
+        List<LiteflowExecutionTrace> traces = new ArrayList<>(responses.size());
+
+        for (LiteflowResponse response : responses) {
+            String chainId = response != null ? response.getChainId() : "ROUTE_CHAIN";
+            LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, -1L);
+            checkResponseSuccess(chainId, response, trace);
+            matchedChainIds.add(chainId);
+            traces.add(trace);
+        }
+        return new LiteflowRouteResult<>(contextBean, matchedChainIds, traces, totalDuration);
+    }
+
+    /**
      * 从原始 LiteflowResponse 中提取结构化时序轨迹
      *
      * @param response LiteFlow 执行响应
@@ -721,6 +833,74 @@ public class LiteflowTemplate {
         } catch (Exception e) {
             throw new LiteflowExecutionException(chainId, null,
                     "动态重载 LiteFlow 流程链 [" + chainId + "] 失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 动态热更新或新建带有决策路由条件的规则流程链（默认命名空间）
+     *
+     * @param chainId 目标规则链 ID
+     * @param routeEl 决策路由条件表达式
+     * @param bodyEl  规则流程主体 EL 表达式
+     */
+    public void reloadRouteChain(String chainId, String routeEl, String bodyEl) {
+        reloadRouteChain(chainId, null, routeEl, bodyEl);
+    }
+
+    /**
+     * 动态热更新或新建带有决策路由条件的规则流程链
+     * 先行校验主体 EL 与路由条件表达式语法合法性，并在热更新前自动捕获有界历史版本快照，
+     * 防御因非法表达式导致线上既有规则链被破坏
+     *
+     * @param chainId   目标规则链 ID
+     * @param namespace 业务路由命名空间（可选）
+     * @param routeEl   决策路由条件表达式
+     * @param bodyEl    规则流程主体 EL 表达式
+     */
+    public void reloadRouteChain(String chainId, String namespace, String routeEl, String bodyEl) {
+        if (chainId == null || chainId.isBlank()) {
+            throw new IllegalArgumentException("chainId 不能为空");
+        }
+        if (bodyEl == null || bodyEl.isBlank()) {
+            throw new IllegalArgumentException("bodyEl 表达式不能为空");
+        }
+        if (routeEl == null || routeEl.isBlank()) {
+            throw new IllegalArgumentException("routeEl 表达式不能为空");
+        }
+
+        LiteflowElValidationResult bodyValidation = validateEl(bodyEl);
+        if (!bodyValidation.isValid()) {
+            throw new LiteflowExecutionException(chainId, null,
+                    "动态重载决策路由链 [" + chainId + "] 失败，bodyEl 表达式语法校验未通过: " + bodyValidation.getErrorMessage(), null);
+        }
+        LiteflowElValidationResult routeValidation = validateEl(routeEl);
+        if (!routeValidation.isValid()) {
+            throw new LiteflowExecutionException(chainId, null,
+                    "动态重载决策路由链 [" + chainId + "] 失败，routeEl 表达式语法校验未通过: " + routeValidation.getErrorMessage(), null);
+        }
+
+        // 1. 若当前规则链已有运行中定义，自动拍摄有界历史版本快照入栈
+        String existingEl = resolveCurrentChainEl(chainId);
+        if (existingEl != null && !existingEl.equals(bodyEl)) {
+            recordSnapshot(chainId, existingEl);
+        }
+
+        // 2. 编译决策路由链并记录活跃 EL
+        try {
+            LiteFlowChainELBuilder builder = LiteFlowChainELBuilder.createChain()
+                    .setChainId(chainId.trim())
+                    .setRoute(routeEl.trim())
+                    .setEL(bodyEl.trim());
+            if (namespace != null && !namespace.isBlank()) {
+                builder.setNamespace(namespace.trim());
+            }
+            builder.build();
+            activeChainEls.put(chainId, bodyEl);
+            log.info("ateng-boot-liteflow: 成功动态更新/新建决策路由链 [{}] [namespace={}] [route={}] -> [{}]",
+                    chainId, namespace, routeEl, bodyEl);
+        } catch (Exception e) {
+            throw new LiteflowExecutionException(chainId, null,
+                    "动态重载决策路由链 [" + chainId + "] 失败: " + e.getMessage(), e);
         }
     }
 

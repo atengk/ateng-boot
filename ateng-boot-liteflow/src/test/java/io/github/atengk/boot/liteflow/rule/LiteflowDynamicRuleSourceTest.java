@@ -1,10 +1,12 @@
 package io.github.atengk.boot.liteflow.rule;
 
+import com.yomahub.liteflow.core.NodeBooleanComponent;
 import com.yomahub.liteflow.core.NodeComponent;
 import com.yomahub.liteflow.flow.FlowBus;
 import io.github.atengk.boot.liteflow.core.LiteflowTemplate;
 import io.github.atengk.boot.liteflow.exception.LiteflowExecutionException;
 import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
+import io.github.atengk.boot.liteflow.route.LiteflowRouteResult;
 import io.github.atengk.boot.liteflow.rule.event.LiteflowRuleRefreshEvent;
 import io.github.atengk.boot.liteflow.rule.event.LiteflowRuleRefreshListener;
 import lombok.Data;
@@ -321,11 +323,97 @@ class LiteflowDynamicRuleSourceTest {
         assertThat(def1).isNotEqualTo(def3);
         assertThat(def1.hashCode()).isEqualTo(def2.hashCode());
         assertThat(def1.toString()).contains("chain1");
+
+        RuleSourceDefinition defRoute = new RuleSourceDefinition("routeChain1", "路由规则1", "THEN(dynStepA)", true, "PROMO", "描述", "routeCondTrue");
+        assertThat(defRoute.getRouteEl()).isEqualTo("routeCondTrue");
+        assertThat(defRoute.getRouteGroup()).isEqualTo("PROMO");
+        assertThat(defRoute.toString()).contains("routeCondTrue");
+    }
+
+    @Test
+    @DisplayName("验证决策路由表（Route Chain）全链路编排与共享上下文多规则聚合")
+    void testExecuteRouteMultiRuleContextAggregation() {
+        String ns = "TEST_ROUTE_NS";
+        // 注册 3 条决策路由链：
+        // 1. routeChainA: 条件恒为 true -> 执行 dynStepA
+        // 2. routeChainB: 条件依赖 context.routeFlag -> 执行 dynStepB
+        // 3. routeChainC: 条件恒为 false -> 执行 dynStepC
+        liteflowTemplate.reloadRouteChain("routeChainA", ns, "routeCondTrue", "THEN(dynStepA);");
+        liteflowTemplate.reloadRouteChain("routeChainB", ns, "routeCondContext", "THEN(dynStepB);");
+        liteflowTemplate.reloadRouteChain("routeChainC", ns, "routeCondFalse", "THEN(dynStepC);");
+
+        // 场景 1: routeFlag = true，chainA 与 chainB 均命中，共享 context 依次聚合变更
+        TestRuleContext ctxTrue = new TestRuleContext();
+        ctxTrue.setRouteFlag(true);
+
+        LiteflowRouteResult<TestRuleContext> result = liteflowTemplate.executeRouteWithTrace(ns, ctxTrue);
+        assertThat(result).isNotNull();
+        assertThat(result.hasMatched()).isTrue();
+        assertThat(result.getMatchedCount()).isEqualTo(2);
+        assertThat(result.getMatchedChainIds()).containsExactlyInAnyOrder("routeChainA", "routeChainB");
+        assertThat(result.getContext().getTrace()).containsExactlyInAnyOrder("dynStepA", "dynStepB");
+        assertThat(result.getTraces()).hasSize(2);
+        assertThat(result.getTotalDurationMs()).isGreaterThanOrEqualTo(0);
+
+        // 场景 2: routeFlag = false，仅 chainA 命中
+        TestRuleContext ctxFalse = new TestRuleContext();
+        ctxFalse.setRouteFlag(false);
+
+        TestRuleContext returnedCtx = liteflowTemplate.executeRoute(ns, ctxFalse);
+        assertThat(returnedCtx).isSameAs(ctxFalse);
+        assertThat(returnedCtx.getTrace()).containsExactly("dynStepA");
+
+        // 场景 3: 空命名空间或无任何路由命中，保底静默返回原始未修改上下文
+        TestRuleContext ctxEmptyNs = new TestRuleContext();
+        TestRuleContext resEmpty = liteflowTemplate.executeRoute("NON_EXISTENT_NS", ctxEmptyNs);
+        assertThat(resEmpty).isSameAs(ctxEmptyNs);
+        assertThat(resEmpty.getTrace()).isEmpty();
+
+        LiteflowRouteResult<TestRuleContext> resultEmpty = liteflowTemplate.executeRouteWithTrace("NON_EXISTENT_NS", ctxEmptyNs);
+        assertThat(resultEmpty.hasMatched()).isFalse();
+        assertThat(resultEmpty.getMatchedCount()).isEqualTo(0);
+        assertThat(resultEmpty.getMatchedChainIds()).isEmpty();
+        assertThat(resultEmpty.getTraces()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("验证 JDBC 动态规则加载器支持 6 列兼容模式与 7 列决策路由扩展模式")
+    void testJdbcRuleSourceProviderCompatibilityAndRouteExtension() throws Exception {
+        // 1. 验证默认 6 列兼容模式：routeEl 为 null
+        List<RuleSourceDefinition> defaultRules = jdbcRuleSourceProvider.loadRules();
+        assertThat(defaultRules).isNotEmpty();
+        for (RuleSourceDefinition def : defaultRules) {
+            assertThat(def.getRouteEl()).isNull();
+        }
+
+        // 2. 动态向 H2 添加第 7 列 route_el
+        try (Connection conn = dataSource.getConnection();
+             Statement stmt = conn.createStatement()) {
+            stmt.execute("ALTER TABLE sys_liteflow_rule ADD COLUMN route_el VARCHAR(255) DEFAULT NULL");
+            stmt.execute("UPDATE sys_liteflow_rule SET route_el = 'routeCondTrue' WHERE rule_id = 'dbRuleChain1'");
+        }
+
+        // 3. 配置启用第 7 列 routeElColumn
+        AtengLiteflowProperties.DatabaseRuleProperties props7 = new AtengLiteflowProperties.DatabaseRuleProperties();
+        props7.setRouteElColumn("route_el");
+        JdbcLiteflowRuleSourceProvider provider7 = new JdbcLiteflowRuleSourceProvider(dataSource, props7);
+
+        List<RuleSourceDefinition> rules7 = provider7.loadRules();
+        assertThat(rules7).isNotEmpty();
+        RuleSourceDefinition dbRule1 = rules7.stream()
+                .filter(r -> "dbRuleChain1".equals(r.getChainId()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(dbRule1.getRouteEl()).isEqualTo("routeCondTrue");
+
+        RuleSourceDefinition singleRule = provider7.loadRule("dbRuleChain1");
+        assertThat(singleRule).isNotNull();
+        assertThat(singleRule.getRouteEl()).isEqualTo("routeCondTrue");
     }
 
     @Configuration(proxyBeanMethods = false)
     @EnableAutoConfiguration
-    @Import({StepA.class, StepB.class, StepC.class, InMemoryTestRuleSourceProvider.class})
+    @Import({StepA.class, StepB.class, StepC.class, RouteCondTrue.class, RouteCondFalse.class, RouteCondContext.class, InMemoryTestRuleSourceProvider.class})
     static class TestConfig {
 
         @Bean
@@ -368,7 +456,33 @@ class LiteflowDynamicRuleSourceTest {
 
     @Data
     public static class TestRuleContext {
+        private boolean routeFlag;
         private List<String> trace = new ArrayList<>();
+    }
+
+    @Component("routeCondTrue")
+    public static class RouteCondTrue extends NodeBooleanComponent {
+        @Override
+        public boolean processBoolean() {
+            return true;
+        }
+    }
+
+    @Component("routeCondFalse")
+    public static class RouteCondFalse extends NodeBooleanComponent {
+        @Override
+        public boolean processBoolean() {
+            return false;
+        }
+    }
+
+    @Component("routeCondContext")
+    public static class RouteCondContext extends NodeBooleanComponent {
+        @Override
+        public boolean processBoolean() {
+            TestRuleContext ctx = this.getContextBean(TestRuleContext.class);
+            return ctx != null && ctx.isRouteFlag();
+        }
     }
 
     @Component("dynStepA")

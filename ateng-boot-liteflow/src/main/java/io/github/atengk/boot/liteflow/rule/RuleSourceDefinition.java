@@ -40,6 +40,16 @@ public class RuleSourceDefinition implements Serializable {
     private String routeGroup = "DEFAULT";
 
     /**
+     * 规则所属命名空间（默认为空，缺省时继承 routeGroup）
+     */
+    private String namespace;
+
+    /**
+     * 决策路由条件 EL 表达式（可选，用于构建决策路由表 Route Chain）
+     */
+    private String routeEl;
+
+    /**
      * 规则详细描述说明
      */
     private String description;
@@ -66,6 +76,16 @@ public class RuleSourceDefinition implements Serializable {
         this.enabled = enabled;
         this.routeGroup = routeGroup;
         this.description = description;
+    }
+
+    public RuleSourceDefinition(String chainId, String ruleName, String el, boolean enabled, String routeGroup, String description, String routeEl) {
+        this.chainId = chainId;
+        this.ruleName = ruleName;
+        this.el = el;
+        this.enabled = enabled;
+        this.routeGroup = routeGroup;
+        this.description = description;
+        this.routeEl = routeEl;
     }
 
     public String getChainId() {
@@ -108,6 +128,22 @@ public class RuleSourceDefinition implements Serializable {
         this.routeGroup = routeGroup;
     }
 
+    public String getNamespace() {
+        return namespace;
+    }
+
+    public void setNamespace(String namespace) {
+        this.namespace = namespace;
+    }
+
+    public String getRouteEl() {
+        return routeEl;
+    }
+
+    public void setRouteEl(String routeEl) {
+        this.routeEl = routeEl;
+    }
+
     public String getDescription() {
         return description;
     }
@@ -137,6 +173,8 @@ public class RuleSourceDefinition implements Serializable {
                 ", el='" + el + '\'' +
                 ", enabled=" + enabled +
                 ", routeGroup='" + routeGroup + '\'' +
+                ", namespace='" + namespace + '\'' +
+                ", routeEl='" + routeEl + '\'' +
                 ", description='" + description + '\'' +
                 '}';
     }

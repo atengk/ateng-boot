@@ -185,6 +185,11 @@ public class AtengLiteflowProperties {
          * 规则描述备注列名
          */
         private String descriptionColumn = "description";
+
+        /**
+         * 决策路由条件 EL 表达式列名（留空或未配置则保持 6 列兼容模式，非空时启用 7 列查询并映射 routeEl）
+         */
+        private String routeElColumn;
     }
 
     /**

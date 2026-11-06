@@ -13,6 +13,8 @@ import io.github.atengk.boot.sample.liteflow.model.OrderFulfillmentRequest;
 import io.github.atengk.boot.sample.liteflow.model.OrderFulfillmentResponse;
 import io.github.atengk.boot.sample.liteflow.model.PriceCalculationRequest;
 import io.github.atengk.boot.sample.liteflow.model.PriceCalculationResponse;
+import io.github.atengk.boot.sample.liteflow.model.PromotionMatchRequest;
+import io.github.atengk.boot.sample.liteflow.model.PromotionMatchResponse;
 import io.github.atengk.boot.sample.liteflow.model.RiskApprovalRequest;
 import io.github.atengk.boot.sample.liteflow.model.RiskApprovalResponse;
 import io.github.atengk.boot.sample.liteflow.model.SettleItem;
@@ -581,5 +583,98 @@ class LiteflowSampleE2eTest {
         mockMvc.perform(post("/sample/liteflow/dynamic/reload-chain")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(req1)));
+    }
+
+    @Test
+    @DisplayName("测试场景 4.7：决策路由表（Route Chain）全命中多优惠累加与共享上下文聚合")
+    void testPromotionRoutingAllMatch() throws Exception {
+        PromotionMatchRequest request = PromotionMatchRequest.builder()
+                .userId("user_vip_super")
+                .userLevel("VIP")
+                .cartAmount(new BigDecimal("300.00"))
+                .category("DIGITAL")
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/routing/match-promotions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.matchedCount").value(3))
+                .andReturn();
+
+        Result<PromotionMatchResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        PromotionMatchResponse data = result.getData();
+        assertThat(data).isNotNull();
+        // 原价 300，VIP 9折立减 30，满 200 减 30，数码专享减 20，总优惠 80，最终应付 220
+        assertThat(data.getOriginalAmount()).isEqualByComparingTo("300.00");
+        assertThat(data.getTotalDiscount()).isEqualByComparingTo("80.00");
+        assertThat(data.getFinalAmount()).isEqualByComparingTo("220.00");
+        assertThat(data.getAppliedPromotions()).containsExactlyInAnyOrder(
+                "VIP_9折特惠", "满200减30大促", "数码专属品类券"
+        );
+        assertThat(data.getMatchedChainIds()).containsExactlyInAnyOrder(
+                "promotionVipRouteChain", "promotionThresholdRouteChain", "promotionCategoryRouteChain"
+        );
+        assertThat(data.getAuditLogs()).hasSize(3);
+    }
+
+    @Test
+    @DisplayName("测试场景 4.8：决策路由表（Route Chain）部分命中与零命中保底返回")
+    void testPromotionRoutingPartialAndZeroMatch() throws Exception {
+        // 场景 1: 普通用户，仅满 200 减 30 生效
+        PromotionMatchRequest partialReq = PromotionMatchRequest.builder()
+                .userId("user_reg_001")
+                .userLevel("REGULAR")
+                .cartAmount(new BigDecimal("250.00"))
+                .category("FOOD")
+                .build();
+
+        MvcResult partialMvc = mockMvc.perform(post("/sample/liteflow/routing/match-promotions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(partialReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.matchedCount").value(1))
+                .andReturn();
+
+        Result<PromotionMatchResponse> partialResult = objectMapper.readValue(
+                partialMvc.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+        PromotionMatchResponse partialData = partialResult.getData();
+        assertThat(partialData.getTotalDiscount()).isEqualByComparingTo("30.00");
+        assertThat(partialData.getFinalAmount()).isEqualByComparingTo("220.00");
+        assertThat(partialData.getAppliedPromotions()).containsExactly("满200减30大促");
+
+        // 场景 2: 小额非 VIP 普通商品，零命中保底
+        PromotionMatchRequest zeroReq = PromotionMatchRequest.builder()
+                .userId("user_reg_002")
+                .userLevel("REGULAR")
+                .cartAmount(new BigDecimal("100.00"))
+                .category("BOOK")
+                .build();
+
+        MvcResult zeroMvc = mockMvc.perform(post("/sample/liteflow/routing/match-promotions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(zeroReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.matchedCount").value(0))
+                .andReturn();
+
+        Result<PromotionMatchResponse> zeroResult = objectMapper.readValue(
+                zeroMvc.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+        PromotionMatchResponse zeroData = zeroResult.getData();
+        assertThat(zeroData.getTotalDiscount()).isEqualByComparingTo("0.00");
+        assertThat(zeroData.getFinalAmount()).isEqualByComparingTo("100.00");
+        assertThat(zeroData.getAppliedPromotions()).isEmpty();
+        assertThat(zeroData.getMatchedChainIds()).isEmpty();
     }
 }

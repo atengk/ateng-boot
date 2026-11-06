@@ -18,7 +18,7 @@
 
 ## 2. 运行环境与双模切换
 
-- **默认/CI 模式**：原生具备 100% 离线自洽规则与内存级执行能力，预置 `price-flow.el.xml`、`risk-flow.el.xml`、`fulfillment-flow.el.xml`、`dynamic-flow.el.xml` 规则，无需依赖任何外部物理中间件或数据库即可极速启动与运行；
+- **默认/CI 模式**：原生具备 100% 离线自洽规则与内存级执行能力，预置 `price-flow.el.xml`、`risk-flow.el.xml`、`fulfillment-flow.el.xml`、`dynamic-flow.el.xml`、`promotion-routing-flow.el.xml` 规则，无需依赖任何外部物理中间件或数据库即可极速启动与运行；
 - **Local 真实模式**：若需开启本地扩展配置或自定义参数覆盖，复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml`，启动自动生效（该文件已被 `.gitignore` 严格忽略，CI 构建零风险）。
 
 ---
@@ -37,6 +37,7 @@
 | **在线即时 EL 表达式执行** | `LiteflowDynamicRuleController` | `POST /sample/liteflow/dynamic/execute-el` | `curl -X POST "http://localhost:8080/sample/liteflow/dynamic/execute-el" -H "Content-Type: application/json" -d "{\"el\":\"THEN(dynamicValidateCmp, dynamicEchoCmp);\",\"payload\":\"Antigravity-LiteFlow\"}"` |
 | **动态规则热重载** | `LiteflowDynamicRuleController` | `POST /sample/liteflow/dynamic/reload-chain` | `curl -X POST "http://localhost:8080/sample/liteflow/dynamic/reload-chain" -H "Content-Type: application/json" -d "{\"chainId\":\"dynamic-custom-chain\",\"el\":\"THEN(dynamicValidateCmp, dynamicTransformCmp);\"}"` |
 | **发布领域事件热更总线** | `LiteflowDynamicRuleController` | `POST /sample/liteflow/dynamic/refresh-event` | `curl -X POST "http://localhost:8080/sample/liteflow/dynamic/refresh-event?chainId=price-calc-flow&el=THEN(validateOrderCmp,calculatePostageCmp);"` |
+| **促销决策路由与上下文聚合** | `LiteflowPromotionRoutingController` | `POST /sample/liteflow/routing/match-promotions` | `curl -X POST "http://localhost:8080/sample/liteflow/routing/match-promotions" -H "Content-Type: application/json" -d "{\"userId\":\"VIP_USER_101\",\"userLevel\":\"VIP\",\"cartAmount\":450.00,\"category\":\"DIGITAL\"}"` |
 
 ---
 

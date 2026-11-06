@@ -49,6 +49,8 @@ public class JdbcLiteflowRuleSourceProvider implements LiteflowRuleSourceProvide
         String routeGroupCol = properties.getRouteGroupColumn();
         String descCol = properties.getDescriptionColumn();
         String routeGroup = properties.getRouteGroup();
+        String routeElCol = properties.getRouteElColumn();
+        boolean hasRouteEl = routeElCol != null && !routeElCol.isBlank();
 
         boolean filterByRoute = routeGroup != null && !routeGroup.isBlank();
         StringBuilder sql = new StringBuilder();
@@ -57,8 +59,11 @@ public class JdbcLiteflowRuleSourceProvider implements LiteflowRuleSourceProvide
                 .append(elCol).append(", ")
                 .append(statusCol).append(", ")
                 .append(routeGroupCol).append(", ")
-                .append(descCol)
-                .append(" FROM ").append(tableName)
+                .append(descCol);
+        if (hasRouteEl) {
+            sql.append(", ").append(routeElCol);
+        }
+        sql.append(" FROM ").append(tableName)
                 .append(" WHERE ").append(statusCol).append(" = 1");
 
         if (filterByRoute) {
@@ -75,7 +80,7 @@ public class JdbcLiteflowRuleSourceProvider implements LiteflowRuleSourceProvide
 
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    RuleSourceDefinition definition = mapRow(rs);
+                    RuleSourceDefinition definition = mapRow(rs, hasRouteEl);
                     result.add(definition);
                 }
             }
@@ -101,6 +106,8 @@ public class JdbcLiteflowRuleSourceProvider implements LiteflowRuleSourceProvide
         String routeGroupCol = properties.getRouteGroupColumn();
         String descCol = properties.getDescriptionColumn();
         String routeGroup = properties.getRouteGroup();
+        String routeElCol = properties.getRouteElColumn();
+        boolean hasRouteEl = routeElCol != null && !routeElCol.isBlank();
 
         boolean filterByRoute = routeGroup != null && !routeGroup.isBlank();
         StringBuilder sql = new StringBuilder();
@@ -109,8 +116,11 @@ public class JdbcLiteflowRuleSourceProvider implements LiteflowRuleSourceProvide
                 .append(elCol).append(", ")
                 .append(statusCol).append(", ")
                 .append(routeGroupCol).append(", ")
-                .append(descCol)
-                .append(" FROM ").append(tableName)
+                .append(descCol);
+        if (hasRouteEl) {
+            sql.append(", ").append(routeElCol);
+        }
+        sql.append(" FROM ").append(tableName)
                 .append(" WHERE ").append(ruleIdCol).append(" = ?");
 
         if (filterByRoute) {
@@ -127,7 +137,7 @@ public class JdbcLiteflowRuleSourceProvider implements LiteflowRuleSourceProvide
 
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
-                    return mapRow(rs);
+                    return mapRow(rs, hasRouteEl);
                 }
             }
             return null;
@@ -147,7 +157,7 @@ public class JdbcLiteflowRuleSourceProvider implements LiteflowRuleSourceProvide
         return 100;
     }
 
-    private RuleSourceDefinition mapRow(ResultSet rs) throws SQLException {
+    private RuleSourceDefinition mapRow(ResultSet rs, boolean hasRouteEl) throws SQLException {
         String chainId = rs.getString(1);
         String ruleName = rs.getString(2);
         String el = rs.getString(3);
@@ -161,7 +171,12 @@ public class JdbcLiteflowRuleSourceProvider implements LiteflowRuleSourceProvide
         def.setEl(el);
         def.setEnabled(status == 1);
         def.setRouteGroup(routeGroup);
+        def.setNamespace(routeGroup);
         def.setDescription(description);
+        if (hasRouteEl) {
+            String routeEl = rs.getString(7);
+            def.setRouteEl(routeEl);
+        }
         return def;
     }
 
@@ -173,6 +188,9 @@ public class JdbcLiteflowRuleSourceProvider implements LiteflowRuleSourceProvide
         validateIdentifier("statusColumn", props.getStatusColumn());
         validateIdentifier("routeGroupColumn", props.getRouteGroupColumn());
         validateIdentifier("descriptionColumn", props.getDescriptionColumn());
+        if (props.getRouteElColumn() != null && !props.getRouteElColumn().isBlank()) {
+            validateIdentifier("routeElColumn", props.getRouteElColumn());
+        }
     }
 
     private void validateIdentifier(String fieldName, String value) {
