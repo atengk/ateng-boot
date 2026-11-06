@@ -4,11 +4,14 @@ import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.output.Response;
+import dev.langchain4j.rag.content.Content;
 import dev.langchain4j.service.TokenStream;
+import dev.langchain4j.service.tool.ToolExecution;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
 import io.github.atengk.boot.ai.rag.citation.Citation;
 import io.github.atengk.boot.ai.rag.citation.CitationExtractor;
+import io.github.atengk.boot.ai.streaming.event.AgentStreamListener;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.util.JsonUtil;
 import org.slf4j.Logger;
@@ -17,16 +20,17 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 /**
  * Spring MVC SseEmitter 与 LangChain4j 流式响应桥接器
- * 通过 event: reasoning 与 event: text 双通道独立推流，支持思考链解耦、全链路上下文透传与物理连接安全取消治理
+ * <p>
+ * 支持多通道推流（reasoning/agent_thought 思考链、text 正文打字机、tool_call 工具调用、tool_result 工具结果、rag_retrieved 知识切片、citation 证据溯源与 done 结束信号）。
+ * 同时挂载 {@link AgentStreamListener} SPI，支持全链路四维上下文透传与物理网络连接安全取消治理。
+ * </p>
  *
  * @author Ateng
  * @since 2026-11-03
@@ -43,6 +47,7 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
     private final AtomicBoolean normalCompleted = new AtomicBoolean(false);
     private final AsyncContext.ContextSnapshot contextSnapshot;
     private final StringBuilder textAccumulator = new StringBuilder();
+    private final List<AgentStreamListener> listeners = new CopyOnWriteArrayList<>();
     private List<TextSegment> citationCandidates;
     private Function<String, List<Citation>> citationExtractor;
 
@@ -87,6 +92,41 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
     }
 
     /**
+     * 添加过程流式事件监听器
+     *
+     * @param listener 监听器实例
+     * @return 当前桥接器实例
+     */
+    public SseTokenStreamBridge addListener(AgentStreamListener listener) {
+        if (listener != null) {
+            this.listeners.add(listener);
+        }
+        return this;
+    }
+
+    /**
+     * 移除过程流式事件监听器
+     *
+     * @param listener 监听器实例
+     * @return 当前桥接器实例
+     */
+    public SseTokenStreamBridge removeListener(AgentStreamListener listener) {
+        if (listener != null) {
+            this.listeners.remove(listener);
+        }
+        return this;
+    }
+
+    /**
+     * 获取所有已注册的流式事件监听器
+     *
+     * @return 监听器只读列表
+     */
+    public List<AgentStreamListener> getListeners() {
+        return Collections.unmodifiableList(this.listeners);
+    }
+
+    /**
      * 配置可信 RAG 证据溯源候选切片，流式推流结束时将自动提取引用并增量推送 event: citation 专属数据包
      *
      * @param candidates 知识库候选切片列表
@@ -126,13 +166,28 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
      * @param emitter        目标 SseEmitter 实例
      * @param streamId       可选的流式标识
      * @param streamRegistry 可选的活跃连接注册中心
+     * @param listeners      可选的过程事件监听器
      * @return 绑定的 SseTokenStreamBridge 实例
      */
-    public static SseTokenStreamBridge pipe(TokenStream tokenStream, SseEmitter emitter, String streamId, ActiveStreamRegistry streamRegistry) {
+    public static SseTokenStreamBridge pipe(
+            TokenStream tokenStream,
+            SseEmitter emitter,
+            String streamId,
+            ActiveStreamRegistry streamRegistry,
+            AgentStreamListener... listeners) {
         Objects.requireNonNull(tokenStream, "TokenStream 不能为空");
         SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, streamId, streamRegistry);
+        if (listeners != null) {
+            for (AgentStreamListener listener : listeners) {
+                if (listener != null) {
+                    bridge.addListener(listener);
+                }
+            }
+        }
         tokenStream
                 .onNext(bridge::onNext)
+                .onRetrieved(bridge::onRetrieved)
+                .onToolExecuted(bridge::onToolExecuted)
                 .onComplete(bridge::onComplete)
                 .onError(bridge::onError)
                 .start();
@@ -150,8 +205,80 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
             for (StreamToken streamToken : tokens) {
                 if (streamToken.channel() == TokenChannel.TEXT) {
                     textAccumulator.append(streamToken.text());
+                    notifyListenersText(streamToken.text());
+                } else if (streamToken.channel() == TokenChannel.REASONING) {
+                    notifyListenersReasoning(streamToken.text());
                 }
                 sendEvent(streamToken.channel().getEventName(), streamToken.text());
+            }
+        });
+    }
+
+    /**
+     * 响应外部 RAG 检索候选切片内容事件
+     *
+     * @param contents 检索到的切片列表
+     */
+    public void onRetrieved(List<Content> contents) {
+        if (completed.get() || contents == null || contents.isEmpty()) {
+            return;
+        }
+        runWithContext(() -> {
+            for (AgentStreamListener listener : listeners) {
+                try {
+                    listener.onRetrieved(contents);
+                } catch (Throwable t) {
+                    log.warn("AgentStreamListener onRetrieved 回调异常: {}", t.getMessage());
+                }
+            }
+
+            List<Map<String, Object>> payload = new ArrayList<>(contents.size());
+            for (Content content : contents) {
+                if (content != null && content.textSegment() != null) {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("text", content.textSegment().text());
+                    if (content.textSegment().metadata() != null) {
+                        item.put("metadata", content.textSegment().metadata().toMap());
+                    }
+                    payload.add(item);
+                }
+            }
+            sendEvent("rag_retrieved", JsonUtil.toJsonString(payload));
+        });
+    }
+
+    /**
+     * 响应受管工具执行生命周期事件
+     *
+     * @param toolExecution 工具执行请求与返回结果快照
+     */
+    public void onToolExecuted(ToolExecution toolExecution) {
+        if (completed.get() || toolExecution == null) {
+            return;
+        }
+        runWithContext(() -> {
+            for (AgentStreamListener listener : listeners) {
+                try {
+                    listener.onToolExecuted(toolExecution);
+                } catch (Throwable t) {
+                    log.warn("AgentStreamListener onToolExecuted 回调异常: {}", t.getMessage());
+                }
+            }
+
+            if (toolExecution.request() != null) {
+                // 1. 发送工具调用触发事件 tool_call
+                Map<String, Object> callPayload = new LinkedHashMap<>();
+                callPayload.put("id", toolExecution.request().id());
+                callPayload.put("name", toolExecution.request().name());
+                callPayload.put("arguments", toolExecution.request().arguments());
+                sendEvent("tool_call", JsonUtil.toJsonString(callPayload));
+
+                // 2. 发送工具执行返回事件 tool_result
+                Map<String, Object> resultPayload = new LinkedHashMap<>();
+                resultPayload.put("id", toolExecution.request().id());
+                resultPayload.put("name", toolExecution.request().name());
+                resultPayload.put("result", toolExecution.result() != null ? toolExecution.result() : "");
+                sendEvent("tool_result", JsonUtil.toJsonString(resultPayload));
             }
         });
     }
@@ -168,12 +295,24 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
             for (StreamToken streamToken : remaining) {
                 if (streamToken.channel() == TokenChannel.TEXT) {
                     textAccumulator.append(streamToken.text());
+                    notifyListenersText(streamToken.text());
+                } else if (streamToken.channel() == TokenChannel.REASONING) {
+                    notifyListenersReasoning(streamToken.text());
                 }
                 sendEvent(streamToken.channel().getEventName(), streamToken.text());
             }
 
             // 1.5 如果配置了引用提取，在正文打字机推流完成后增量下发专属 event: citation 数据包
             sendCitationEventIfConfigured(response);
+
+            // 1.8 通知监听器完成
+            for (AgentStreamListener listener : listeners) {
+                try {
+                    listener.onComplete(response);
+                } catch (Throwable t) {
+                    log.warn("AgentStreamListener onComplete 回调异常: {}", t.getMessage());
+                }
+            }
 
             // 2. 推送标准结束事件
             sendEvent("done", "[DONE]");
@@ -211,6 +350,14 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
         }
 
         runWithContext(() -> {
+            for (AgentStreamListener listener : listeners) {
+                try {
+                    listener.onError(error);
+                } catch (Throwable t) {
+                    log.warn("AgentStreamListener onError 回调异常: {}", t.getMessage());
+                }
+            }
+
             AiException aiEx = AiExceptionTranslator.translate(error);
             log.error("大模型流式输出发生未决异常: {}", aiEx.getMessage());
 
@@ -226,6 +373,26 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
         });
     }
 
+    private void notifyListenersText(String text) {
+        for (AgentStreamListener listener : listeners) {
+            try {
+                listener.onText(text);
+            } catch (Throwable t) {
+                log.warn("AgentStreamListener onText 回调异常: {}", t.getMessage());
+            }
+        }
+    }
+
+    private void notifyListenersReasoning(String reasoning) {
+        for (AgentStreamListener listener : listeners) {
+            try {
+                listener.onReasoning(reasoning);
+            } catch (Throwable t) {
+                log.warn("AgentStreamListener onReasoning 回调异常: {}", t.getMessage());
+            }
+        }
+    }
+
     private void runWithContext(Runnable task) {
         AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
         try {
@@ -239,7 +406,7 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
     /**
      * 发送 SSE 事件，针对网络套接字中断安全捕获并迅速触发底层物理切断
      *
-     * @param eventName 事件名称 (reasoning / text / done / error)
+     * @param eventName 事件名称 (reasoning / text / tool_call / tool_result / rag_retrieved / citation / done / error)
      * @param data      事件数据
      */
     private synchronized void sendEvent(String eventName, Object data) {

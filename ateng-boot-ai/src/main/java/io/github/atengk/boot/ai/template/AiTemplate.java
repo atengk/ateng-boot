@@ -33,6 +33,7 @@ import io.github.atengk.boot.ai.sanitizer.JsonSchemaGenerator;
 import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
 import io.github.atengk.boot.ai.streaming.SseTokenStreamBridge;
 import io.github.atengk.boot.ai.streaming.StreamContextHolder;
+import io.github.atengk.boot.ai.streaming.event.AgentStreamListener;
 import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
 import io.github.atengk.boot.ai.tool.DynamicToolChatService;
 import io.github.atengk.boot.ai.tool.DynamicToolStreamService;
@@ -979,6 +980,20 @@ public class AiTemplate {
      * @param streamId  流式唯一标识
      */
     public void streamWithTools(String modelName, String prompt, List<Object> tools, SseEmitter emitter, String streamId) {
+        streamWithTools(modelName, prompt, tools, emitter, streamId, (AgentStreamListener[]) null);
+    }
+
+    /**
+     * 指定模型并携带动态工具实例列表发起流式推流并绑定指定 streamId 与过程事件监听器
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    用户提示词
+     * @param tools     动态工具对象列表
+     * @param emitter   Spring MVC SseEmitter 实例
+     * @param streamId  流式唯一标识
+     * @param listeners 过程事件监听器
+     */
+    public void streamWithTools(String modelName, String prompt, List<Object> tools, SseEmitter emitter, String streamId, AgentStreamListener... listeners) {
         if (emitter == null) {
             throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "SseEmitter 不能为空");
         }
@@ -1027,7 +1042,7 @@ public class AiTemplate {
             TokenStream tokenStream = service.stream(prompt.trim());
 
             // 3. 将 TokenStream 管道接入 SseTokenStreamBridge
-            SseTokenStreamBridge.pipe(tokenStream, emitter, effectiveStreamId, activeStreamRegistry);
+            SseTokenStreamBridge.pipe(tokenStream, emitter, effectiveStreamId, activeStreamRegistry, listeners);
         } catch (Throwable t) {
             SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, activeStreamRegistry);
             bridge.onError(AiExceptionTranslator.translate(t));

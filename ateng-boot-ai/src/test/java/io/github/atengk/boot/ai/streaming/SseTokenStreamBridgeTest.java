@@ -1,9 +1,15 @@
 package io.github.atengk.boot.ai.streaming;
 
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.output.Response;
+import dev.langchain4j.rag.content.Content;
+import dev.langchain4j.service.TokenStream;
+import dev.langchain4j.service.tool.ToolExecution;
+import io.github.atengk.boot.ai.streaming.event.AgentStreamEvent;
+import io.github.atengk.boot.ai.streaming.event.AgentStreamListener;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -234,6 +240,147 @@ class SseTokenStreamBridgeTest {
         assertThat(doneEvent).contains("data:[DONE]");
 
         verify(emitter, times(1)).complete();
+    }
+
+    @Test
+    @DisplayName("onRetrieved 事件：正确下发 rag_retrieved 事件并通知 AgentStreamListener")
+    void testOnRetrievedEventAndListener() throws Exception {
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentStreamListener listener = mock(AgentStreamListener.class);
+        SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter);
+        bridge.addListener(listener);
+
+        TextSegment segment = TextSegment.from("知识库参考文本片段", Metadata.from(Map.of("doc_id", "doc_999")));
+        Content content = Content.from(segment);
+        List<Content> contents = Collections.singletonList(content);
+
+        bridge.onRetrieved(contents);
+
+        // 验证监听器收到回调
+        verify(listener, times(1)).onRetrieved(contents);
+
+        // 验证 SSE 接收到 rag_retrieved 事件
+        ArgumentCaptor<SseEmitter.SseEventBuilder> captor = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        verify(emitter, times(1)).send(captor.capture());
+
+        String sseString = extractSseString(captor.getValue());
+        assertThat(sseString).contains("event:rag_retrieved");
+        assertThat(sseString).contains("知识库参考文本片段");
+        assertThat(sseString).contains("doc_999");
+    }
+
+    @Test
+    @DisplayName("onToolExecuted 事件：顺序下发 tool_call 与 tool_result 双通道事件并通知监听器")
+    void testOnToolExecutedEventsAndListener() throws Exception {
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentStreamListener listener = mock(AgentStreamListener.class);
+        SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter);
+        bridge.addListener(listener);
+
+        ToolExecutionRequest request = ToolExecutionRequest.builder()
+                .id("call_007")
+                .name("queryOrder")
+                .arguments("{\"orderId\":\"ORD_8888\"}")
+                .build();
+        ToolExecution execution = ToolExecution.builder()
+                .request(request)
+                .result("{\"status\":\"DELIVERED\",\"amount\":500}")
+                .build();
+
+        bridge.onToolExecuted(execution);
+
+        // 验证监听器收到回调
+        verify(listener, times(1)).onToolExecuted(execution);
+
+        // 验证 SSE 接收到 tool_call 与 tool_result 两条事件
+        ArgumentCaptor<SseEmitter.SseEventBuilder> captor = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        verify(emitter, times(2)).send(captor.capture());
+
+        List<SseEmitter.SseEventBuilder> events = captor.getAllValues();
+        String callEvent = extractSseString(events.get(0));
+        assertThat(callEvent).contains("event:tool_call");
+        assertThat(callEvent).contains("call_007");
+        assertThat(callEvent).contains("queryOrder");
+        assertThat(callEvent).contains("ORD_8888");
+
+        String resultEvent = extractSseString(events.get(1));
+        assertThat(resultEvent).contains("event:tool_result");
+        assertThat(resultEvent).contains("call_007");
+        assertThat(resultEvent).contains("queryOrder");
+        assertThat(resultEvent).contains("DELIVERED");
+    }
+
+    @Test
+    @DisplayName("pipe 桥接：全量绑定 TokenStream 的 5 个生命周期钩子并正确启动")
+    void testPipeWiresAllCallbacks() {
+        TokenStream tokenStream = mock(TokenStream.class);
+        when(tokenStream.onNext(any())).thenReturn(tokenStream);
+        when(tokenStream.onRetrieved(any())).thenReturn(tokenStream);
+        when(tokenStream.onToolExecuted(any())).thenReturn(tokenStream);
+        when(tokenStream.onComplete(any())).thenReturn(tokenStream);
+        when(tokenStream.onError(any())).thenReturn(tokenStream);
+
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentStreamListener listener = mock(AgentStreamListener.class);
+
+        SseTokenStreamBridge bridge = SseTokenStreamBridge.pipe(
+                tokenStream, emitter, "stream_test_001", null, listener);
+
+        assertThat(bridge.getStreamId()).isEqualTo("stream_test_001");
+        assertThat(bridge.getListeners()).contains(listener);
+
+        // 验证 5 个回调方法均被正确链式绑定
+        verify(tokenStream, times(1)).onNext(any());
+        verify(tokenStream, times(1)).onRetrieved(any());
+        verify(tokenStream, times(1)).onToolExecuted(any());
+        verify(tokenStream, times(1)).onComplete(any());
+        verify(tokenStream, times(1)).onError(any());
+        verify(tokenStream, times(1)).start();
+    }
+
+    @Test
+    @DisplayName("AgentStreamListener 默认契约与 AgentStreamEvent 结构化载荷完整性")
+    void testAgentStreamEventAndDefaultListenerContract() {
+        List<AgentStreamEvent> capturedEvents = new java.util.ArrayList<>();
+        AgentStreamListener defaultListener = new AgentStreamListener() {
+            @Override
+            public void onEvent(AgentStreamEvent event) {
+                capturedEvents.add(event);
+            }
+        };
+
+        defaultListener.onReasoning("推理片段");
+        defaultListener.onText("正文片段");
+
+        ToolExecutionRequest request = ToolExecutionRequest.builder()
+                .id("t-1")
+                .name("testTool")
+                .arguments("{}")
+                .build();
+        ToolExecution execution = ToolExecution.builder()
+                .request(request)
+                .result("success")
+                .build();
+        defaultListener.onToolExecuted(execution);
+
+        defaultListener.onComplete(null);
+        defaultListener.onError(new RuntimeException("boom"));
+
+        assertThat(capturedEvents).hasSize(6);
+        assertThat(capturedEvents.get(0).eventType()).isEqualTo("reasoning");
+        assertThat(capturedEvents.get(0).data()).isEqualTo("推理片段");
+
+        assertThat(capturedEvents.get(1).eventType()).isEqualTo("text");
+        assertThat(capturedEvents.get(1).data()).isEqualTo("正文片段");
+
+        assertThat(capturedEvents.get(2).eventType()).isEqualTo("tool_call");
+        assertThat(capturedEvents.get(2).data()).isInstanceOf(AgentStreamEvent.ToolCallPayload.class);
+
+        assertThat(capturedEvents.get(3).eventType()).isEqualTo("tool_result");
+        assertThat(capturedEvents.get(3).data()).isInstanceOf(AgentStreamEvent.ToolResultPayload.class);
+
+        assertThat(capturedEvents.get(4).eventType()).isEqualTo("done");
+        assertThat(capturedEvents.get(5).eventType()).isEqualTo("error");
     }
 
     private static String extractSseString(SseEmitter.SseEventBuilder builder) {
