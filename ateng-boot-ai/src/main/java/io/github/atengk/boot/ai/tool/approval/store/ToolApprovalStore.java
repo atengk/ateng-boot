@@ -27,7 +27,7 @@ public interface ToolApprovalStore {
      * 根据工单标识查找工单快照
      *
      * @param ticketId 工单标识
-     * @return 匹配的工单快照（若不存在或已过期则返回空）
+     * @return 匹配的工单快照（若不存在或已被物理淘汰则返回空 Optional，若已超过有效期则工单状态自动判定为 EXPIRED）
      */
     Optional<ToolApprovalTicket> findById(String ticketId);
 

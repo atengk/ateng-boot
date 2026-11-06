@@ -7,6 +7,8 @@ import io.github.atengk.boot.core.util.JsonUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.util.StringUtils;
 
 import java.time.Duration;
@@ -33,9 +35,32 @@ public class RedisToolApprovalStore implements ToolApprovalStore {
 
     private static final Logger log = LoggerFactory.getLogger(RedisToolApprovalStore.class);
 
+    private static final String UPDATE_STATUS_LUA =
+            "local current = redis.call('get', KEYS[1])\n" +
+            "if not current then\n" +
+            "    return 0\n" +
+            "end\n" +
+            "local expected = ARGV[1]\n" +
+            "local pattern = '\"status\"%s*:%s*\"' .. expected .. '\"'\n" +
+            "if not string.find(current, pattern) then\n" +
+            "    return 0\n" +
+            "end\n" +
+            "local ttl = redis.call('ttl', KEYS[1])\n" +
+            "if ttl <= 0 then\n" +
+            "    ttl = tonumber(ARGV[4])\n" +
+            "end\n" +
+            "redis.call('setex', KEYS[1], ttl, ARGV[2])\n" +
+            "if ARGV[3] ~= 'PENDING' then\n" +
+            "    redis.call('zrem', KEYS[2], ARGV[5])\n" +
+            "end\n" +
+            "return 1";
+
+    private static final RedisScript<Long> UPDATE_STATUS_SCRIPT = new DefaultRedisScript<>(UPDATE_STATUS_LUA, Long.class);
+
     private final String keyPrefix;
     private final String pendingZSetKey;
     private final StringRedisTemplate redisTemplate;
+    private final long defaultTimeoutSeconds;
 
     public RedisToolApprovalStore(ToolApprovalProperties properties, StringRedisTemplate redisTemplate) {
         Objects.requireNonNull(properties, "properties must not be null");
@@ -46,6 +71,8 @@ public class RedisToolApprovalStore implements ToolApprovalStore {
         }
         this.keyPrefix = prefix;
         this.pendingZSetKey = prefix + "pending";
+        Duration defaultTimeout = properties.getDefaultTimeout() != null ? properties.getDefaultTimeout() : Duration.ofMinutes(30);
+        this.defaultTimeoutSeconds = defaultTimeout.getSeconds() > 0 ? defaultTimeout.getSeconds() : 1800L;
     }
 
     private String getTicketKey(String ticketId) {
@@ -88,6 +115,12 @@ public class RedisToolApprovalStore implements ToolApprovalStore {
             if (LocalDateTime.now().isAfter(ticket.getExpireTime())) {
                 ticket.setStatus(ToolApprovalStatus.EXPIRED);
                 redisTemplate.opsForZSet().remove(pendingZSetKey, ticketId);
+            } else {
+                // 活跃工单访问时滑动续期 Redis 物理 TTL，防止被 Redis 过早淘汰
+                long remainingSeconds = Duration.between(LocalDateTime.now(), ticket.getExpireTime()).getSeconds();
+                if (remainingSeconds > 0) {
+                    redisTemplate.expire(ticketKey, Duration.ofSeconds(remainingSeconds));
+                }
             }
         }
         return Optional.of(ticket);
@@ -119,14 +152,16 @@ public class RedisToolApprovalStore implements ToolApprovalStore {
         ticket.setExecutionResultJson(executionResultJson);
         ticket.setErrorMessage(errorMessage);
 
-        Long expireSeconds = redisTemplate.getExpire(ticketKey, TimeUnit.SECONDS);
-        Duration remainingTtl = (expireSeconds != null && expireSeconds > 0)
-                ? Duration.ofSeconds(expireSeconds)
-                : Duration.ofMinutes(30);
-
-        redisTemplate.opsForValue().set(ticketKey, JsonUtil.toJsonString(ticket), remainingTtl);
-        redisTemplate.opsForZSet().remove(pendingZSetKey, ticketId);
-        return true;
+        Long result = redisTemplate.execute(
+                UPDATE_STATUS_SCRIPT,
+                List.of(ticketKey, pendingZSetKey),
+                expectedStatus.name(),
+                JsonUtil.toJsonString(ticket),
+                newStatus.name(),
+                String.valueOf(defaultTimeoutSeconds),
+                ticketId
+        );
+        return Long.valueOf(1L).equals(result);
     }
 
     @Override
@@ -152,13 +187,32 @@ public class RedisToolApprovalStore implements ToolApprovalStore {
             return Collections.emptyList();
         }
 
-        List<ToolApprovalTicket> list = new ArrayList<>();
-        for (String id : activeIds) {
-            findById(id).ifPresent(ticket -> {
+        List<String> idList = new ArrayList<>(activeIds);
+        List<String> keys = idList.stream().map(this::getTicketKey).toList();
+        List<String> jsonList = redisTemplate.opsForValue().multiGet(keys);
+        if (jsonList == null || jsonList.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<ToolApprovalTicket> list = new ArrayList<>(jsonList.size());
+        LocalDateTime currentDateTime = LocalDateTime.now();
+        for (int i = 0; i < jsonList.size(); i++) {
+            String json = jsonList.get(i);
+            String ticketId = idList.get(i);
+            if (!StringUtils.hasText(json)) {
+                redisTemplate.opsForZSet().remove(pendingZSetKey, ticketId);
+                continue;
+            }
+            ToolApprovalTicket ticket = JsonUtil.parseObject(json, ToolApprovalTicket.class);
+            if (ticket != null) {
                 if (ticket.getStatus() == ToolApprovalStatus.PENDING) {
-                    list.add(ticket);
+                    if (ticket.getExpireTime() != null && currentDateTime.isAfter(ticket.getExpireTime())) {
+                        redisTemplate.opsForZSet().remove(pendingZSetKey, ticketId);
+                    } else {
+                        list.add(ticket);
+                    }
                 }
-            });
+            }
         }
         return Collections.unmodifiableList(list);
     }

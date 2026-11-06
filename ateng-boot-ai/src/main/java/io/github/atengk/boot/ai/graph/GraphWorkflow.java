@@ -210,8 +210,7 @@ public abstract class GraphWorkflow<S extends BaseGraphState> implements Initial
             Optional<StateSnapshot<S>> snapshotOpt = compiledGraph.stateOf(config);
             if (snapshotOpt.isPresent() && snapshotOpt.get().state() != null) {
                 S state = snapshotOpt.get().state();
-                Object wfName = state.data().get(TypedKey.WORKFLOW_NAME.name());
-                if (wfName != null && !Objects.equals(wfName, workflowName)) {
+                if (!isWorkflowMatched(state.data())) {
                     return Optional.empty();
                 }
                 return Optional.of(toSnapshotVo(threadId, snapshotOpt.get(), null));
@@ -221,11 +220,8 @@ public abstract class GraphWorkflow<S extends BaseGraphState> implements Initial
                 Optional<Checkpoint> cpOpt = checkpointSaver.get(config);
                 if (cpOpt.isPresent()) {
                     Map<String, Object> cpState = cpOpt.get().getState();
-                    if (cpState != null) {
-                        Object wfName = cpState.get(TypedKey.WORKFLOW_NAME.name());
-                        if (wfName != null && !Objects.equals(wfName, workflowName)) {
-                            return Optional.empty();
-                        }
+                    if (!isWorkflowMatched(cpState)) {
+                        return Optional.empty();
                     }
                     StateSnapshot<S> snap = StateSnapshot.of(cpOpt.get(), config, stateFactory);
                     return Optional.of(toSnapshotVo(threadId, snap, null));
@@ -235,6 +231,14 @@ public abstract class GraphWorkflow<S extends BaseGraphState> implements Initial
             log.warn("查询工作流 [{}] 快照异常 [threadId={}]: {}", workflowName, threadId, e.getMessage());
         }
         return Optional.empty();
+    }
+
+    private boolean isWorkflowMatched(Map<String, Object> stateData) {
+        if (stateData == null) {
+            return true;
+        }
+        Object wfName = stateData.get(TypedKey.WORKFLOW_NAME.name());
+        return wfName == null || Objects.equals(wfName, workflowName);
     }
 
     public String getWorkflowName() {

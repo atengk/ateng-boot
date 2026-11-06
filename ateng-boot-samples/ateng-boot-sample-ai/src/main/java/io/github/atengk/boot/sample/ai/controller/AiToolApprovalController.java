@@ -4,6 +4,7 @@ import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.service.tool.ToolExecutor;
 import io.github.atengk.boot.ai.annotation.RiskLevel;
+import io.github.atengk.boot.ai.tool.SandboxedToolExecutor;
 import io.github.atengk.boot.ai.tool.ToolExecutionSandbox;
 import io.github.atengk.boot.ai.tool.approval.ToolApprovalResult;
 import io.github.atengk.boot.ai.tool.approval.ToolApprovalTemplate;
@@ -33,8 +34,6 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * 声明式高危工具防卫与人机协作审批双模治理体验控制器
@@ -49,8 +48,6 @@ import java.util.regex.Pattern;
 @RequestMapping("/sample/ai/approval")
 @RequiredArgsConstructor
 public class AiToolApprovalController {
-
-    private static final Pattern TICKET_ID_PATTERN = Pattern.compile("ticketId=([a-zA-Z0-9_-]+)");
 
     private final OrderRefundTool orderRefundTool;
     private final ToolApprovalTemplate toolApprovalTemplate;
@@ -102,16 +99,12 @@ public class AiToolApprovalController {
         // 沙箱执行并捕获高危拦截响应
         String response = refundExecutor.execute(toolRequest, null);
 
-        String ticketId = null;
-        Matcher matcher = TICKET_ID_PATTERN.matcher(response);
-        if (matcher.find()) {
-            ticketId = matcher.group(1);
-        }
+        String ticketId = SandboxedToolExecutor.extractTicketId(response).orElse(null);
 
         OrderRefundTriggerVo vo = OrderRefundTriggerVo.builder()
                 .ticketId(ticketId)
                 .interceptedMessage(response)
-                .approvalRequired(response != null && response.contains("[APPROVAL_REQUIRED]"))
+                .approvalRequired(SandboxedToolExecutor.isApprovalRequired(response))
                 .riskLevel(RiskLevel.HIGH)
                 .approvalType("ORDER_REFUND")
                 .orderId(request.getOrderId())

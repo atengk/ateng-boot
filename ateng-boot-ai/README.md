@@ -62,7 +62,7 @@
 | **ETL 摄取管道** | 端到端 ETL Ingestion 摄取管道与生命周期治理 | `RagIngestionTemplate`<br>`IngestOptions`<br>`IngestResult`<br>`DeduplicationPolicy` | `ateng.boot.ai.rag.*` | `ingest(Resource, IngestOptions)` / `ingest(InputStream, ...)` / `ingest(String, ...)` / `ingestAsync(...)` / `deleteDocument(docId)`，自动化“格式嗅探 -> 结构化解析 -> 元数据治理 -> 智能分块 -> 向量化计算 -> 幂等入库”，支持 `OVERWRITE`/`SKIP` 去重与四维上下文透传 | `RagIngestionTemplateTest` |
 | **多向量库适配** | 多向量数据库统一适配与平滑回退 | `VectorStoreProperties`<br>`VectorStoreType`<br>`VectorStoreFactory` | `ateng.boot.ai.rag.store.type`<br>`ateng.boot.ai.rag.store.redis.*`<br>`ateng.boot.ai.rag.store.pgvector.*`<br>`ateng.boot.ai.rag.store.elasticsearch.*` | 支持 `auto`, `in-memory`, `milvus`, `redis`, `pgvector`, `elasticsearch`, `custom` 七大模式，与 `ateng-boot-milvus` 零冲突共存，无外部库时 100% 离线自洽回退 | `AtengAiRagAutoConfigurationTest` |
 | **动态权限过滤** | 动态元数据权限过滤与多租户安全下推 | `DynamicFilterContextHolder`<br>`DynamicFilterContentRetriever`<br>`EmbeddingTemplate#search` | `ateng.boot.ai.rag.*` | `useFilter(Filter)` / `resolveFilter(...)` / `search(..., Filter)`，自动感知 `TenantContextHolder` 并复合下推 `tenant_id`，杜绝跨租户与越权脏读 | `DynamicFilterTest` |
-| **混合检索融合** | 稠密与稀疏混合检索及 RRF 倒数排名融合 | `HybridContentRetriever`<br>`ReciprocalRankFuser`<br>`Bm25KeywordRetriever` | `ateng.boot.ai.rag.*` | `fuse(...)` / `retrieve(Query)`，双路/多路召回基于标准 RRF 公式 $RRF = \sum \frac{w}{k + rank}$（默认 $k=60$）无监督加权排序去重，支持单路异常弹性降级 | `ReciprocalRankFuserTest` / `HybridContentRetrieverTest` / `Bm25KeywordRetrieverTest` |
+| **混合检索融合** | 稠密与稀疏混合检索及 RRF 倒数排名融合 | `HybridContentRetriever`<br>`ReciprocalRankFuser`<br>`Bm25KeywordRetriever` | `ateng.boot.ai.rag.hybrid.enabled`<br>`ateng.boot.ai.rag.hybrid.dense-weight`<br>`ateng.boot.ai.rag.hybrid.sparse-weight`<br>`ateng.boot.ai.rag.hybrid.rrf-k` | `fuse(...)` / `retrieve(Query)`，双路/多路召回基于标准 RRF 公式 $RRF = \sum \frac{w}{k + rank}$（默认 $k=60$）无监督加权排序去重，支持单路异常弹性降级 | `ReciprocalRankFuserTest` / `HybridContentRetrieverTest` / `Bm25KeywordRetrieverTest` |
 | **RAG 自动装配** | 向量知识库自适应装配与单机回退 | `AtengAiRagAutoConfiguration` | `ateng.boot.ai.rag.enabled` | 自动探测并注入外部 `EmbeddingStore`（如 `ateng-boot-milvus`），缺省自动平滑降级单机内存向量库 `InMemoryEmbeddingStore` | `AtengAiRagAutoConfigurationTest` |
 | **知识库检索器** | 统一知识库向量检索器受管 Bean | `ContentRetriever`<br>`EmbeddingStoreContentRetriever` | `ateng.boot.ai.rag.max-results`<br>`ateng.boot.ai.rag.min-score` | 自动根据配置组装 `ContentRetriever` Bean，支持 `@AiAgent(contentRetriever = "...")` 与编程式检索 | `AtengAiRagAutoConfigurationTest` / `RagControllerIntegrationTest` |
 | **文档分块切片** | 原生轻量长文档分块切片门面 | `DocumentSplitter`<br>`RecursiveCharacterSplitter`<br>`MarkdownHeaderSplitter` | `ateng.boot.ai.rag.chunk-size`<br>`ateng.boot.ai.rag.chunk-overlap` | `split(String)` / `split(Resource)` / `split(InputStream)`，支持递归字符分块与 Markdown 语义标题两级分块 | `DocumentSplitterTest` / `RagControllerIntegrationTest` |
@@ -78,8 +78,8 @@
 | **长会话记忆摘要** | 后台受管非阻塞异步长会话摘要记忆 | `SummaryChatMemory`<br>`SummaryMemoryState`<br>`SummaryChatMemoryStore`<br>`InMemorySummaryChatMemoryStore`<br>`RedisSummaryChatMemoryStore` | `ateng.boot.ai.chat-memory.window-type: SUMMARY`<br>`ateng.boot.ai.chat-memory.max-messages-before-summary`<br>`ateng.boot.ai.chat-memory.keep-recent-messages` | `add(msg)` / `messages()` / `clear()`，双层上下文维护 [System: 长期摘要] + [近期 N 条明细]，异步受管线程池后台提炼，调用线程零阻塞 | `SummaryChatMemoryTest` / `SummaryControllerIntegrationTest` |
 | **原生约束解码** | 原生 JSON_SCHEMA 结构化约束模式 | `JsonSchemaGenerator`<br>`AiResponseFormat` | `ateng.boot.ai.model.response-format: JSON_SCHEMA`<br>`ateng.boot.ai.model.json-schema.*` | `generateSchema(Class<?>)`，递归解析 Java 实体类反射生成符合 OpenAI 规范的 JSON Schema 严格约束模式，消除结构化输出幻觉 | `JsonSchemaGeneratorTest` / `AiTemplateTest` |
 | **财务成本核算** | 实时大模型调用成本精算与财务度量 | `TokenCostCalculator`<br>`ModelPricingConfig` | `ateng.boot.ai.pricing.models.<name>.input-price-per-million-tokens`<br>`ateng.boot.ai.pricing.models.<name>.output-price-per-million-tokens` | `calculateCost(model, inTokens, outTokens)`，高精度 BigDecimal 核算美元/人民币成本，自动上报 `ateng.ai.cost.dollars.total` 财务指标 | `TokenCostCalculatorTest` / `MetricsControllerIntegrationTest` |
-| **高危工具审批** | 声明式高危工具人机协作审批双模治理 | `@SensitiveTool`<br>`ToolApprovalTemplate`<br>`ToolApprovalStore` | `ateng.boot.ai.tool-approval.enabled`<br>`ateng.boot.ai.tool-approval.type`<br>`ateng.boot.ai.tool-approval.default-timeout` | `approve(ticketId, reviewer, comment)` / `reject(...)` / `getTicket(ticketId)` / `listPendingTickets()`，自动拦截 `HIGH`/`CRITICAL` 风险工具生成待审批工单，四维上下文快照安全重放 | `ToolApprovalTemplateTest` / `ToolApprovalControllerIntegrationTest` |
-| **长效情景记忆** | 跨会话原子化长效情景语义记忆门面与槽位覆写 | `EpisodicMemoryTemplate`<br>`MemoryFactExtractor`<br>`MemoryFact` | `ateng.boot.ai.episodic-memory.enabled`<br>`ateng.boot.ai.episodic-memory.max-recall-results`<br>`ateng.boot.ai.episodic-memory.min-score` | `remember(fact)` / `recall(query, userId)` / `forget(...)` / `extractAndRemember(text, userId)`，支持语义槽位覆写去重 (Upsert by Semantic Key) 与多租户物理隔离 | `MemoryFactTest` / `EpisodicMemoryTemplateTest` / `AiEpisodicMemoryControllerIntegrationTest` |
+| **高危工具审批** | 声明式高危工具人机协作审批双模治理 | `@SensitiveTool`<br>`ToolApprovalTemplate`<br>`ToolApprovalStore` | `ateng.boot.ai.tool-approval.enabled`<br>`ateng.boot.ai.tool-approval.type`<br>`ateng.boot.ai.tool-approval.default-timeout` | `approve(ticketId, comment)` / `reject(ticketId, reason)` / `cancel(ticketId)` / `getTicket(ticketId)` / `listPending()`，自动拦截 `HIGH`/`CRITICAL` 风险工具生成待审批工单，四维上下文快照安全重放 | `ToolApprovalTemplateTest` / `ToolApprovalControllerIntegrationTest` |
+| **长效情景记忆** | 跨会话原子化长效情景语义记忆门面与槽位覆写 | `EpisodicMemoryTemplate`<br>`MemoryFactExtractor`<br>`MemoryFact` | `ateng.boot.ai.episodic-memory.enabled`<br>`ateng.boot.ai.episodic-memory.max-recall-results`<br>`ateng.boot.ai.episodic-memory.min-score`<br>`ateng.boot.ai.episodic-memory.enable-local-cache`<br>`ateng.boot.ai.episodic-memory.local-cache-capacity` | `remember(fact)` / `recall(query, userId)` / `forget(...)` / `extractAndRemember(text, userId)` / `listFacts(userId)`，支持语义槽位覆写去重 (Upsert by Semantic Key) 与多租户物理隔离 | `MemoryFactTest` / `EpisodicMemoryTemplateTest` / `AiEpisodicMemoryControllerIntegrationTest` |
 | **证据溯源引用** | 可信 RAG 证据溯源强类型契约与 SSE 尾包增量推流 | `RagResponse`<br>`Citation`<br>`CitationExtractor`<br>`AiTemplate#chatWithCitations`<br>`AiTemplate#streamWithCitations` | `ateng.boot.ai.rag.max-results`<br>`ateng.boot.ai.rag.min-score` | `chatWithCitations(prompt, candidates)` / `streamWithCitations(prompt, candidates)`，基于正则与双向指针对齐清洗 `[N]` 引用，流式增量下发 `event: citation` 数据包 | `CitationExtractorTest` / `AiTemplateCitationTest` / `RagControllerIntegrationTest` |
 
 ---
@@ -930,9 +930,9 @@ public class OrderRefundTool {
 
     @Tool("执行电商订单退款与原路原渠道逆向划扣资金")
     @SensitiveTool(
-            level = RiskLevel.HIGH,
-            description = "涉及资金原路逆向退还，单笔限额 5000 元以上必须人工审批",
-            requireReason = true
+            riskLevel = RiskLevel.HIGH,
+            approvalType = "ORDER_REFUND",
+            description = "涉及资金原路逆向退还，单笔限额 5000 元以上必须人工审批"
     )
     public String refundOrder(
             @P("订单编号") String orderNo,
@@ -966,37 +966,46 @@ public class AiToolApprovalController {
     private final ToolApprovalTemplate approvalTemplate;
 
     /**
-     * 人工审核通过并无损重放执行高危工具
+     * 人工审核通过并受管安全重放执行高危工具
      */
-    @PostMapping("/approve/{ticketId}")
+    @PostMapping("/tickets/{ticketId}/approve")
     public Result<ToolApprovalResultVo> approve(
             @PathVariable String ticketId,
-            @RequestParam String reviewer,
-            @RequestParam(required = false) String comment
+            @RequestBody(required = false) ToolApprovalDecisionRequest request
     ) {
-        // 执行原子审批通过并在原租户/原链路 MDC 上下文中重放工具调用
-        ToolApprovalResult result = approvalTemplate.approve(ticketId, reviewer, comment);
-        return Result.success(new ToolApprovalResultVo(
-                result.getTicketId(),
-                result.getStatus().name(),
-                result.isSuccess(),
-                result.getResult(),
-                result.getErrorMessage(),
-                result.getExecutionTimeMs()
-        ));
+        String comment = (request != null && StringUtils.hasText(request.getComment()))
+                ? request.getComment().trim()
+                : "管理员审批通过";
+        // 执行原子审批通过并在原租户/原操作人/原链路 MDC 四维上下文中安全重放工具调用
+        ToolApprovalResult result = approvalTemplate.approve(ticketId, comment);
+        return Result.success(ToolApprovalResultVo.builder()
+                .ticketId(result.getTicketId())
+                .status(result.getStatus())
+                .success(result.isSuccess())
+                .result(result.getResult())
+                .errorMessage(result.getErrorMessage())
+                .executionTimeMs(result.getExecutionTimeMs())
+                .build());
     }
 
     /**
      * 人工审核驳回高危工具工单
      */
-    @PostMapping("/reject/{ticketId}")
-    public Result<ToolApprovalTicketVo> reject(
+    @PostMapping("/tickets/{ticketId}/reject")
+    public Result<ToolApprovalResultVo> reject(
             @PathVariable String ticketId,
-            @RequestParam String reviewer,
-            @RequestParam(required = false) String comment
+            @RequestBody(required = false) ToolApprovalDecisionRequest request
     ) {
-        ToolApprovalTicket ticket = approvalTemplate.reject(ticketId, reviewer, comment);
-        return Result.success(ToolApprovalTicketVo.from(ticket));
+        String reason = (request != null && StringUtils.hasText(request.getReason()))
+                ? request.getReason().trim()
+                : "人工审核拒绝执行";
+        ToolApprovalResult result = approvalTemplate.reject(ticketId, reason);
+        return Result.success(ToolApprovalResultVo.builder()
+                .ticketId(result.getTicketId())
+                .status(result.getStatus())
+                .success(result.isSuccess())
+                .errorMessage(result.getErrorMessage())
+                .build());
     }
 
     /**
@@ -1004,8 +1013,9 @@ public class AiToolApprovalController {
      */
     @GetMapping("/tickets/{ticketId}")
     public Result<ToolApprovalTicketVo> getTicket(@PathVariable String ticketId) {
-        ToolApprovalTicket ticket = approvalTemplate.getTicket(ticketId);
-        return Result.success(ToolApprovalTicketVo.from(ticket));
+        ToolApprovalTicket ticket = approvalTemplate.getTicket(ticketId)
+                .orElseThrow(() -> new BusinessException(CommonResultCode.NOT_FOUND, "未找到指定的工具审批工单: " + ticketId));
+        return Result.success(toTicketVo(ticket));
     }
 }
 ```
@@ -1018,33 +1028,45 @@ public class AiToolApprovalController {
 public class CustomDatabaseToolApprovalStore implements ToolApprovalStore {
 
     @Override
-    public void save(ToolApprovalTicket ticket) {
-        // 持久化至 OA 审批流或业务审批表
+    public void save(ToolApprovalTicket ticket, Duration ttl) {
+        // 持久化至 OA 审批流或业务审批表并挂载生存时间 TTL
     }
 
     @Override
     public Optional<ToolApprovalTicket> findById(String ticketId) {
-        // 从审批中心检索工单
+        // 从审批中心检索工单快照（若超时失效状态自动判定为 EXPIRED）
         return Optional.ofNullable(...);
     }
 
     @Override
-    public List<ToolApprovalTicket> listPending() {
-        // 分页检索待审批工单
-        return ...;
+    public boolean updateStatus(String ticketId,
+                                ToolApprovalStatus expectedStatus,
+                                ToolApprovalStatus newStatus,
+                                String comment,
+                                String executionResultJson,
+                                String errorMessage) {
+        // 基于 CAS 原子更新工单状态及执行结果（防御并发重复重放）
+        return true;
     }
 
     @Override
-    public void delete(String ticketId) {
+    public boolean delete(String ticketId) {
         // 清理已归档或已超时的工单快照
+        return true;
+    }
+
+    @Override
+    public List<ToolApprovalTicket> listPending() {
+        // 分页检索处于 PENDING 待审批状态的有效工单列表
+        return Collections.emptyList();
     }
 }
 ```
 
 #### 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
 - **四级风险判定梯度**：`RiskLevel` 划分 `LOW`（免审直接放行）、`MEDIUM`（仅记录审计日志放行）、`HIGH`（阻断并强制生成审批工单）、`CRITICAL`（阻断并要求强授权审批）；
-- **全链路四维上下文无损还原**：工单持久化时安全快照捕获发起智能体调用时的 `traceId` 与 `tenantId`；在审批人员触发 `approve` 时，通过 MDC 与 `TenantContextHolder` 恢复环境后执行反射重放，执行完毕严格清理，确保多租户隔离与全链路追踪断点对齐；
-- **防重复重放与状态机单向跃迁**：工单生命周期严格遵循 `PENDING` -> `APPROVED` / `REJECTED` / `EXPIRED` 单向流转；已审批或已执行的工单再次审批时直接熔断抛出业务异常，彻底杜绝重放攻击与重复退款；
+- **全链路四维上下文无损还原**：工单持久化时安全快照捕获发起智能体调用时的 `traceId`、`userId` 与 `tenantId`；在审批人员触发 `approve` 时，通过 MDC、`TenantContextHolder` 与 `UserContextHolder` 恢复环境后执行反射重放，执行完毕严格在 `finally` 中清理现场，确保多租户与操作人隔离以及全链路追踪断点对齐；
+- **防重复重放与状态机单向跃迁**：工单生命周期严格遵循 `PENDING` -> `APPROVED` / `REJECTED` / `EXPIRED` 单向流转；`approve` 执行前先行执行 CAS 状态流转占位，已审批或已执行的工单再次审批时直接熔断抛出业务异常，彻底杜绝重放攻击与重复退款；
 - **分布式双模平滑自适应**：`AUTO` 模式下自动探测 Redis，多微服务节点无缝共享审批工单与滑动 TTL 自动淘汰；未接入 Redis 时自动平滑回退基于并发安全容器的单机内存存储，确保 100% 离线自洽。
 
 ---
@@ -1263,6 +1285,10 @@ ateng:
         min-score: 0.6
         # 原子事实抽取所使用的大模型标识 (可选；缺省使用全局默认大模型)
         extract-model: ""
+        # 是否启用进程内二级快速索引缓存 (默认 true，采用有界 LRU 防 OOM)
+        enable-local-cache: true
+        # 进程内二级快速索引最大缓存用户数容量上限 (默认 1000)
+        local-cache-capacity: 1000
 ```
 
 #### 实战业务 Java 示例
@@ -1314,8 +1340,8 @@ public class UserProfilingService {
   依托 Core 受管线程池调度大模型非阻塞抽取原子事实，并通过 `AsyncContext.wrapSupplier` 自动透传 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 四维快照，调用主线程零阻塞，线程上下文零丢失；
 - **多租户与用户级物理隔离 (Multi-Tenant & User DynamicFilter)**：
   检索召回时自动感知 `TenantContextHolder` 与当前 `userId`，无缝联动 `DynamicFilterContextHolder` 复合下推物理过滤条件，彻底杜绝跨租户与跨用户数据越权与脏读；
-- **双轨事实自省与保底检索 (Dual-Track Fact List)**：
-  `listFacts(userId, limit)` 具备内存槽位索引与向量存储兜底双轨自省能力，查询列表无匹配时保底返回 `Collections.emptyList()`，严禁返回 `null`。
+- **双轨事实自省与底层真理源 (Dual-Track Fact List & Source of Truth)**：
+  底层向量数据库（Vector Store）为情景事实的唯一全局真理源。`listFacts(userId, limit)` 具备内存有界 LRU 缓存与底层向量存储兜底双轨自省能力；当集群多 Pod 部署时，向量存储保障跨节点数据强一致性，本地 LRU 缓存具备固定容量防 OOM 淘汰机制，查询列表无匹配时保底返回 `Collections.emptyList()`，严禁返回 `null`。
 
 ---
 
@@ -1628,12 +1654,12 @@ public class AiMultiAgentController {
 ```
 
 #### 生产扩展接管 (Customization & Extensibility)
-- **大模型驱动动态决断**：`decide(S state)` 支持注入 `AiTemplate`，依托 `chatForObject(prompt, SupervisorDecision.class)` 生成纯结构化调度指令，实现自适应动态派工；
+- **大模型驱动动态决断**：`decide(S state)` 支持调用内置辅助方法 `decideWithLlm(aiTemplate, systemPrompt, state)`，依托 `AiTemplate.chatForObject(prompt, SupervisorDecision.class)` 生成强类型结构化调度指令，实现自适应动态派工；
 - **自定义状态扩展**：可继承 `SupervisorState` 扩展业务专属属性，并在 `WorkerHandler` 中返回 `Map<String, Object>`，框架自动将键值展开合并至状态机；
-- **自定义终态收敛**：重写 `onFinish(S state)` 钩子，可在任务完成时统一执行指标上报、落库归档或向用户发送通知事件。
+- **自定义终态收敛**：重写 `onFinish(S state)` 正常完成钩子或 `onWatchdogFallback(S state)` 熔断钩子，可在任务完成或熔断时统一执行指标上报、落库归档或向用户发送通知事件。
 
 #### 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
-- **死循环硬看门狗不变量**：当决断轮次超过 `maxTurns()` 时，框架记录 WARN 告警，自动置位 `isFinished=true` 并将状态机强制路由至 `finish` 终态节点，彻底杜绝多智能体无限自指与 Token 烧毁；
+- **死循环硬看门狗不变量**：当决断轮次超过 `maxTurns()` 时，框架记录 WARN 告警，自动置位 `isFinished=true` 并将状态机强制路由至 `fallback_finish` 降级终态节点（状态置为 `WorkflowStatus.FAILED` 并记录看门狗错误说明），彻底杜绝多智能体无限自指与 Token 烧毁；
 - **异常因果隔离与降级**：专工执行发生异常时，统一受控转译为语义化 `AiException` 并 100% 保留原始因果链；主管若返回不存在的专工标识，框架自动告警并优雅降级至终态，防止主线程挂死；
 - **多图命名空间严格隔离**：检查点在持久层存储时自包含 `workflowName`，在多工作流共享同一存储介质时严格执行名称匹配过滤，杜绝跨工作流快照串读与状态错乱。
 

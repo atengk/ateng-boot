@@ -79,13 +79,11 @@ public class AiEpisodicMemoryController {
         log.info("[AI-EPISODIC-SAMPLE] 接收到对话事实抽取入库请求: userId={}, textLength={}",
                 request.getUserId(), request.getConversationText().length());
 
-        List<MemoryFact> extracted = episodicMemoryTemplate.getExtractor() != null
-                ? episodicMemoryTemplate.getExtractor().extract(request.getConversationText(), request.getUserId(), request.getTenantId())
-                : Collections.emptyList();
-
-        if (extracted != null && !extracted.isEmpty()) {
-            episodicMemoryTemplate.rememberAll(extracted);
-        }
+        List<MemoryFact> extracted = episodicMemoryTemplate.extractAndRemember(
+                request.getConversationText(),
+                request.getUserId(),
+                request.getTenantId()
+        );
 
         List<MemoryFactVo> voList = (extracted != null && !extracted.isEmpty())
                 ? extracted.stream().map(this::toVo).toList()

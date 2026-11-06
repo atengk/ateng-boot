@@ -1,5 +1,6 @@
 package io.github.atengk.boot.ai.graph.supervisor;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -28,6 +29,11 @@ public class SupervisorDecision implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
+     * 终态专工名称常量
+     */
+    public static final String FINISH_WORKER = "FINISH";
+
+    /**
      * 下一步指派的专工 Worker 标识名称（如 "researcher", "coder", "reviewer"，若完成可为 "FINISH" 或 null）
      */
     private String nextWorker;
@@ -40,6 +46,7 @@ public class SupervisorDecision implements Serializable {
     /**
      * 全局任务是否已执行完毕
      */
+    @JsonProperty("isFinished")
     private boolean isFinished;
 
     /**
@@ -61,7 +68,7 @@ public class SupervisorDecision implements Serializable {
     public static SupervisorDecision finish(String finalOutput) {
         return SupervisorDecision.builder()
                 .isFinished(true)
-                .nextWorker("FINISH")
+                .nextWorker(FINISH_WORKER)
                 .finalOutput(finalOutput)
                 .build();
     }

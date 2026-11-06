@@ -563,4 +563,15 @@ class RagControllerIntegrationTest {
         assertThat(result).contains("event:done");
         assertThat(result).contains("[DONE]");
     }
+
+    @Test
+    @DisplayName("验证 GET /sample/ai/rag/stream-with-citations 空参数前置快速失败校验")
+    void testStreamWithCitationsBlankQuestionValidation() throws Exception {
+        mockMvc.perform(get("/sample/ai/rag/stream-with-citations")
+                        .param("question", "  ")
+                        .accept(MediaType.TEXT_EVENT_STREAM_VALUE, MediaType.APPLICATION_JSON_VALUE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.msg").value("提问内容 question 不能为空"));
+    }
 }

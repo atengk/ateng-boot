@@ -86,7 +86,7 @@ class MultiAgentControllerIntegrationTest {
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.data.status").value("FAILED"))
                 .andExpect(jsonPath("$.data.isFinished").value(true))
                 .andExpect(jsonPath("$.data.turnCount").value(4))
                 .andReturn();

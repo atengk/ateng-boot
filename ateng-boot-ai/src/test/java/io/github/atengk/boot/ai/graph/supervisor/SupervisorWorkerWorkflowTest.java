@@ -4,6 +4,8 @@ import io.github.atengk.boot.ai.checkpoint.MemoryCheckpointSaver;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.graph.StateSnapshotVo;
 import io.github.atengk.boot.ai.graph.WorkflowStatus;
+import io.github.atengk.boot.ai.template.AiTemplate;
+import io.github.atengk.boot.core.util.JsonUtil;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -13,6 +15,10 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * 主管-专工认知状态图工作流与死循环硬看门狗单元测试
@@ -175,14 +181,44 @@ class SupervisorWorkerWorkflowTest {
         StateSnapshotVo snapshot = workflow.start("watchdog-thread-001", initState);
 
         assertThat(snapshot).isNotNull();
-        assertThat(snapshot.status()).isEqualTo(WorkflowStatus.COMPLETED);
-        assertThat(snapshot.isCompleted()).isTrue();
+        assertThat(snapshot.status()).isEqualTo(WorkflowStatus.FAILED);
+        assertThat(snapshot.isCompleted()).isFalse();
 
         Map<String, Object> stateMap = snapshot.state();
         // 轮次应该达到 4 (1, 2, 3 正常流转，第 4 轮超限看门狗熔断)
         assertThat(stateMap.get("turnCount")).isEqualTo(4);
         assertThat(stateMap.get("isFinished")).isEqualTo(true);
         assertThat(String.valueOf(stateMap.get("finalOutput"))).contains("触发安全熔断终止");
+        assertThat(String.valueOf(stateMap.get("error"))).contains("主管多智能体协同工作流达到最大轮次看门狗上限");
+    }
+
+    @Test
+    @DisplayName("验证 SupervisorDecision 大模型 JSON 结构化反序列化绑定 isFinished 属性")
+    void testSupervisorDecisionJacksonBinding() {
+        String json = "{\"nextWorker\":\"coder\",\"instructions\":\"编写代码\",\"isFinished\":true,\"currentPlan\":\"规划中\",\"finalOutput\":\"完成\"}";
+        SupervisorDecision decision = JsonUtil.parseObject(json, SupervisorDecision.class);
+        assertThat(decision).isNotNull();
+        assertThat(decision.isFinished()).isTrue();
+        assertThat(decision.getNextWorker()).isEqualTo("coder");
+        assertThat(decision.getFinalOutput()).isEqualTo("完成");
+    }
+
+    @Test
+    @DisplayName("验证 decideWithLlm 辅助方法组装 Prompt 并调用 AiTemplate 结构化输出")
+    void testDecideWithLlm() {
+        AiTemplate aiTemplate = mock(AiTemplate.class);
+        SupervisorDecision mockDecision = SupervisorDecision.next("coder", "根据调研编写代码");
+        when(aiTemplate.chatForObject(anyString(), eq(SupervisorDecision.class))).thenReturn(mockDecision);
+
+        RndSupervisorWorkflow workflow = new RndSupervisorWorkflow();
+        SupervisorState state = new SupervisorState();
+        state.setTaskObjective("开发功能");
+        state.setTurnCount(1);
+
+        SupervisorDecision decision = workflow.decideWithLlm(aiTemplate, "研发主管", state);
+        assertThat(decision).isNotNull();
+        assertThat(decision.getNextWorker()).isEqualTo("coder");
+        assertThat(decision.getInstructions()).isEqualTo("根据调研编写代码");
     }
 
     @Test

@@ -56,7 +56,8 @@ public final class ToolExecutionSandbox {
         if (applicationContext != null) {
             try {
                 approvalTemplate = applicationContext.getBeanProvider(ToolApprovalTemplate.class).getIfAvailable();
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                log.debug("[AI-SANDBOX] 未能从 ApplicationContext 解析 ToolApprovalTemplate: {}", e.getMessage());
             }
         }
 

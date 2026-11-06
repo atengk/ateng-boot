@@ -259,4 +259,56 @@ class EpisodicMemoryTemplateTest {
         List<MemoryFact> fallbackList = episodicMemoryTemplate.extractAndRemember("无关对话");
         assertThat(fallbackList).isEmpty();
     }
+
+    @Test
+    @DisplayName("显式指定 userId 的事实抽取与持久化重载方法测试")
+    void testExtractAndRememberWithExplicitUserId() throws Exception {
+        String mockLlmJson = """
+                [
+                  {
+                    "subject": "user",
+                    "predicate": "framework",
+                    "object": "Spring Boot 3",
+                    "statement": "用户主要技术栈是 Spring Boot 3",
+                    "confidence": 0.99
+                  }
+                ]
+                """;
+
+        when(mockChatModel.generate(any(UserMessage.class)))
+                .thenReturn(Response.from(AiMessage.from(mockLlmJson)));
+
+        // 同步带 userId 抽取
+        List<MemoryFact> factsSync = episodicMemoryTemplate.extractAndRemember("对话内容", "user-explicit-01");
+        assertThat(factsSync).hasSize(1);
+        assertThat(factsSync.get(0).getUserId()).isEqualTo("user-explicit-01");
+
+        // 异步带 userId 抽取
+        CompletableFuture<List<MemoryFact>> future = episodicMemoryTemplate.extractAndRememberAsync("对话内容", "user-explicit-02");
+        List<MemoryFact> factsAsync = future.get();
+        assertThat(factsAsync).hasSize(1);
+        assertThat(factsAsync.get(0).getUserId()).isEqualTo("user-explicit-02");
+    }
+
+    @Test
+    @DisplayName("禁用本地缓存时直接从底层向量存储检索与覆写 (验证单例无状态一致性)")
+    void testListFactsDirectlyFromStoreWhenLocalCacheDisabled() {
+        properties.setEnableLocalCache(false);
+
+        UserContextHolder.setUserId("user-no-cache");
+        TenantContextHolder.setTenantId("tenant-no-cache");
+
+        MemoryFact fact = MemoryFact.builder()
+                .subject("user")
+                .predicate("os")
+                .object("Linux")
+                .statement("用户偏好 Linux 操作系统")
+                .build();
+        episodicMemoryTemplate.remember(fact);
+
+        // 验证直接通过向量存储查询出事实
+        List<MemoryFact> list = episodicMemoryTemplate.listFacts("user-no-cache");
+        assertThat(list).isNotEmpty();
+        assertThat(list.get(0).getObject()).isEqualTo("Linux");
+    }
 }

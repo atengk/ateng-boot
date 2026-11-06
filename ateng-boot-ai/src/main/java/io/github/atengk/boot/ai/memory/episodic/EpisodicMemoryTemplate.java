@@ -24,6 +24,7 @@ import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -42,7 +43,8 @@ import java.util.concurrent.TimeUnit;
  *   <li>完备对称门面：支持 {@link #remember} 记住、{@link #recall} 召回、{@link #forget} 遗忘与 {@link #listFacts} 事实清单全套对称 API；</li>
  *   <li>语义槽位覆写 (Upsert by Semantic Key)：以 {@code subject:predicate} 计算语义指纹槽位，写入新事实时自动精准清理旧知识，消除知识冲突与幻觉堆叠；</li>
  *   <li>多租户与用户物理隔离：元数据强置 {@code tenant_id} 与 {@code user_id}，检索时联动 {@link DynamicFilterContextHolder} 复合下推过滤表达式；</li>
- *   <li>异步非阻塞执行：支持四维上下文透传异步抽取与批量记忆入库。</li>
+ *   <li>异步非阻塞执行：支持四维上下文透传异步抽取与批量记忆入库；</li>
+ *   <li>防无界有界缓存：运行时辅助缓存采用有界 LRU 结构并支持按需开闭，主存储以底层向量数据库为权威真理源。</li>
  * </ul>
  * </p>
  *
@@ -71,9 +73,10 @@ public class EpisodicMemoryTemplate {
     private final Executor executor;
 
     /**
-     * 运行时快速槽位索引与缓存登记表: key 为 "tenantId:userId"，value 为 Map<slotKey, MemoryFact>
+     * 进程内二级快速索引有界 LRU 辅助缓存: key 为 "tenantId:userId"，value 为 Map<slotKey, MemoryFact>
+     * 具备固定容量上限淘汰机制，彻底防御单例长周期运行下的无界累积与 OOM 隐患。
      */
-    private final ConcurrentHashMap<String, Map<String, MemoryFact>> localIndex = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, MemoryFact>> localIndex;
 
     public EpisodicMemoryTemplate(EmbeddingTemplate embeddingTemplate) {
         this(embeddingTemplate, null, null, null, null, null);
@@ -106,6 +109,14 @@ public class EpisodicMemoryTemplate {
         this.dedicatedStore = resolveDedicatedStore(dedicatedStore, this.properties);
         this.extractor = extractor;
         this.executor = executor != null ? executor : DEFAULT_EXECUTOR;
+
+        int capacity = (this.properties.getLocalCacheCapacity() > 0) ? this.properties.getLocalCacheCapacity() : 1000;
+        this.localIndex = Collections.synchronizedMap(new LinkedHashMap<String, Map<String, MemoryFact>>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, Map<String, MemoryFact>> eldest) {
+                return size() > capacity;
+            }
+        });
     }
 
     private static EmbeddingStore<TextSegment> resolveDedicatedStore(EmbeddingStore<TextSegment> explicitStore,
@@ -169,7 +180,7 @@ public class EpisodicMemoryTemplate {
         if (!StringUtils.hasText(fact.getUserId())) {
             fact.setUserId(UserContextHolder.getUserId());
         }
-        if (!StringUtils.hasText(fact.getTenantId())) {
+        if (!StringUtils.hasText(fact.getTenantId()) && !TenantContextHolder.isIgnoreTenant()) {
             fact.setTenantId(TenantContextHolder.getTenantId());
         }
         if (!StringUtils.hasText(fact.getStatement())) {
@@ -190,8 +201,11 @@ public class EpisodicMemoryTemplate {
         if (StringUtils.hasText(fact.getUserId())) {
             slotFilter = slotFilter.and(MetadataFilterBuilder.metadataKey("user_id").isEqualTo(fact.getUserId().trim()));
         }
-        if (StringUtils.hasText(fact.getTenantId())) {
-            slotFilter = slotFilter.and(MetadataFilterBuilder.metadataKey("tenant_id").isEqualTo(fact.getTenantId().trim()));
+        String effectiveTenantId = (!TenantContextHolder.isIgnoreTenant() && StringUtils.hasText(fact.getTenantId()))
+                ? fact.getTenantId().trim()
+                : null;
+        if (StringUtils.hasText(effectiveTenantId)) {
+            slotFilter = slotFilter.and(MetadataFilterBuilder.metadataKey("tenant_id").isEqualTo(effectiveTenantId));
         }
 
         try {
@@ -208,9 +222,11 @@ public class EpisodicMemoryTemplate {
             fact.setId(assignedId);
         }
 
-        // 4. 同步更新本地快速索引
-        String cacheKey = buildCacheKey(fact.getTenantId(), fact.getUserId());
-        localIndex.computeIfAbsent(cacheKey, k -> new ConcurrentHashMap<>()).put(slotKey, fact);
+        // 4. 同步更新本地快速索引 (若启用)
+        if (this.properties.isEnableLocalCache()) {
+            String cacheKey = buildCacheKey(effectiveTenantId, fact.getUserId());
+            localIndex.computeIfAbsent(cacheKey, k -> new ConcurrentHashMap<>()).put(slotKey, fact);
+        }
 
         log.info("[EPISODIC-MEMORY] 成功持久化情景事实 [id={}, slotKey={}, statement={}]",
                 fact.getId(), slotKey, fact.getStatement());
@@ -265,14 +281,37 @@ public class EpisodicMemoryTemplate {
     // ==================== 2. 对话事实抽取并自动入库 (Extract & Remember) ====================
 
     /**
-     * 从对话文本中提炼原子事实并自动入库 (同步阻塞)
+     * 从对话文本中提炼原子事实并自动入库 (同步阻塞，当前上下文用户)
      *
      * @param conversationText 对话文本
      * @return 抽取并成功记住的事实列表
      */
     public List<MemoryFact> extractAndRemember(String conversationText) {
+        return extractAndRemember(conversationText, null);
+    }
+
+    /**
+     * 从对话文本中提炼原子事实并自动入库 (同步阻塞，显式指定用户标识)
+     *
+     * @param conversationText 对话文本
+     * @param userId 目标用户标识
+     * @return 抽取并成功记住的事实列表
+     */
+    public List<MemoryFact> extractAndRemember(String conversationText, String userId) {
+        return extractAndRemember(conversationText, userId, null);
+    }
+
+    /**
+     * 从对话文本中提炼原子事实并自动入库 (同步阻塞，显式指定用户标识与租户标识)
+     *
+     * @param conversationText 对话文本
+     * @param userId 目标用户标识
+     * @param tenantId 目标租户标识
+     * @return 抽取并成功记住的事实列表
+     */
+    public List<MemoryFact> extractAndRemember(String conversationText, String userId, String tenantId) {
         ensureExtractorConfigured();
-        List<MemoryFact> extracted = this.extractor.extract(conversationText);
+        List<MemoryFact> extracted = this.extractor.extract(conversationText, userId, tenantId);
         if (extracted != null && !extracted.isEmpty()) {
             rememberAll(extracted);
             return extracted;
@@ -281,14 +320,37 @@ public class EpisodicMemoryTemplate {
     }
 
     /**
-     * 从 ChatMessage 消息列表中提炼原子事实并自动入库 (同步阻塞)
+     * 从 ChatMessage 消息列表中提炼原子事实并自动入库 (同步阻塞，当前上下文用户)
      *
      * @param messages 消息列表
      * @return 抽取并成功记住的事实列表
      */
     public List<MemoryFact> extractAndRemember(List<ChatMessage> messages) {
+        return extractAndRemember(messages, null, null);
+    }
+
+    /**
+     * 从 ChatMessage 消息列表中提炼原子事实并自动入库 (同步阻塞，显式指定用户标识)
+     *
+     * @param messages 消息列表
+     * @param userId 目标用户标识
+     * @return 抽取并成功记住的事实列表
+     */
+    public List<MemoryFact> extractAndRemember(List<ChatMessage> messages, String userId) {
+        return extractAndRemember(messages, userId, null);
+    }
+
+    /**
+     * 从 ChatMessage 消息列表中提炼原子事实并自动入库 (同步阻塞，显式指定用户标识与租户标识)
+     *
+     * @param messages 消息列表
+     * @param userId 目标用户标识
+     * @param tenantId 目标租户标识
+     * @return 抽取并成功记住的事实列表
+     */
+    public List<MemoryFact> extractAndRemember(List<ChatMessage> messages, String userId, String tenantId) {
         ensureExtractorConfigured();
-        List<MemoryFact> extracted = this.extractor.extract(messages);
+        List<MemoryFact> extracted = this.extractor.extract(messages, userId, tenantId);
         if (extracted != null && !extracted.isEmpty()) {
             rememberAll(extracted);
             return extracted;
@@ -297,14 +359,37 @@ public class EpisodicMemoryTemplate {
     }
 
     /**
-     * 异步非阻塞从对话文本提炼事实并自动入库 (四维上下文全链路透传)
+     * 异步非阻塞从对话文本提炼事实并自动入库 (四维上下文全链路透传，当前上下文用户)
      *
      * @param conversationText 对话文本
      * @return CompletableFuture 结果
      */
     public CompletableFuture<List<MemoryFact>> extractAndRememberAsync(String conversationText) {
+        return extractAndRememberAsync(conversationText, null, null);
+    }
+
+    /**
+     * 异步非阻塞从对话文本提炼事实并自动入库 (四维上下文全链路透传，显式指定用户标识)
+     *
+     * @param conversationText 对话文本
+     * @param userId 目标用户标识
+     * @return CompletableFuture 结果
+     */
+    public CompletableFuture<List<MemoryFact>> extractAndRememberAsync(String conversationText, String userId) {
+        return extractAndRememberAsync(conversationText, userId, null);
+    }
+
+    /**
+     * 异步非阻塞从对话文本提炼事实并自动入库 (四维上下文全链路透传，显式指定用户与租户标识)
+     *
+     * @param conversationText 对话文本
+     * @param userId 目标用户标识
+     * @param tenantId 目标租户标识
+     * @return CompletableFuture 结果
+     */
+    public CompletableFuture<List<MemoryFact>> extractAndRememberAsync(String conversationText, String userId, String tenantId) {
         ensureExtractorConfigured();
-        return this.extractor.extractAsync(conversationText)
+        return this.extractor.extractAsync(conversationText, userId, tenantId)
                 .thenApply(facts -> {
                     if (facts != null && !facts.isEmpty()) {
                         rememberAll(facts);
@@ -315,14 +400,37 @@ public class EpisodicMemoryTemplate {
     }
 
     /**
-     * 异步非阻塞从 ChatMessage 列表提炼事实并自动入库 (四维上下文全链路透传)
+     * 异步非阻塞从 ChatMessage 列表提炼事实并自动入库 (四维上下文全链路透传，当前上下文用户)
      *
      * @param messages 消息列表
      * @return CompletableFuture 结果
      */
     public CompletableFuture<List<MemoryFact>> extractAndRememberAsync(List<ChatMessage> messages) {
+        return extractAndRememberAsync(messages, null, null);
+    }
+
+    /**
+     * 异步非阻塞从 ChatMessage 列表提炼事实并自动入库 (四维上下文全链路透传，显式指定用户标识)
+     *
+     * @param messages 消息列表
+     * @param userId 目标用户标识
+     * @return CompletableFuture 结果
+     */
+    public CompletableFuture<List<MemoryFact>> extractAndRememberAsync(List<ChatMessage> messages, String userId) {
+        return extractAndRememberAsync(messages, userId, null);
+    }
+
+    /**
+     * 异步非阻塞从 ChatMessage 列表提炼事实并自动入库 (四维上下文全链路透传，显式指定用户与租户标识)
+     *
+     * @param messages 消息列表
+     * @param userId 目标用户标识
+     * @param tenantId 目标租户标识
+     * @return CompletableFuture 结果
+     */
+    public CompletableFuture<List<MemoryFact>> extractAndRememberAsync(List<ChatMessage> messages, String userId, String tenantId) {
         ensureExtractorConfigured();
-        return this.extractor.extractAsync(messages)
+        return this.extractor.extractAsync(messages, userId, tenantId)
                 .thenApply(facts -> {
                     if (facts != null && !facts.isEmpty()) {
                         rememberAll(facts);
@@ -431,18 +539,28 @@ public class EpisodicMemoryTemplate {
         }
         String trimmedId = factId.trim();
         EmbeddingStore<TextSegment> store = resolveStore();
+        boolean removed = false;
         try {
             store.remove(trimmedId);
-        } catch (Exception ignored) {
+            removed = true;
+        } catch (Exception e) {
+            log.debug("[EPISODIC-MEMORY] store.remove(id) 尝试清理跳过或底层存储直接移除不受支持: {}", e.getMessage());
         }
         try {
             Filter idFilter = MetadataFilterBuilder.metadataKey("id").isEqualTo(trimmedId);
             store.removeAll(idFilter);
-        } catch (Exception ignored) {
+            removed = true;
+        } catch (Exception e) {
+            log.debug("[EPISODIC-MEMORY] store.removeAll(idFilter) 尝试清理跳过或底层存储直接移除不受支持: {}", e.getMessage());
+        }
+        if (!removed) {
+            log.warn("[EPISODIC-MEMORY] 物理遗忘事实 [factId={}] 执行完成 (底层存储未直接报错)", trimmedId);
         }
 
-        // 清理本地索引
-        localIndex.values().forEach(slotMap -> slotMap.values().removeIf(f -> trimmedId.equals(f.getId())));
+        // 清理本地索引 (若启用)
+        if (this.properties.isEnableLocalCache()) {
+            localIndex.values().forEach(slotMap -> slotMap.values().removeIf(f -> trimmedId.equals(f.getId())));
+        }
         log.info("[EPISODIC-MEMORY] 成功依据 factId 物理遗忘事实 [factId={}]", trimmedId);
     }
 
@@ -467,13 +585,15 @@ public class EpisodicMemoryTemplate {
         }
         String trimmedSlot = slotKey.trim().toLowerCase();
         String effectiveUserId = StringUtils.hasText(userId) ? userId.trim() : UserContextHolder.getUserId();
-        String effectiveTenantId = TenantContextHolder.getTenantId();
+        String effectiveTenantId = (!TenantContextHolder.isIgnoreTenant() && StringUtils.hasText(TenantContextHolder.getTenantId()))
+                ? TenantContextHolder.getTenantId().trim()
+                : null;
 
         Filter filter = MetadataFilterBuilder.metadataKey("slot_key").isEqualTo(trimmedSlot);
         if (StringUtils.hasText(effectiveUserId)) {
             filter = filter.and(MetadataFilterBuilder.metadataKey("user_id").isEqualTo(effectiveUserId));
         }
-        if (StringUtils.hasText(effectiveTenantId) && !TenantContextHolder.isIgnoreTenant()) {
+        if (StringUtils.hasText(effectiveTenantId)) {
             filter = filter.and(MetadataFilterBuilder.metadataKey("tenant_id").isEqualTo(effectiveTenantId));
         }
 
@@ -484,10 +604,12 @@ public class EpisodicMemoryTemplate {
             log.warn("[EPISODIC-MEMORY] 槽位遗忘物理清理异常: {}", e.getMessage());
         }
 
-        String cacheKey = buildCacheKey(effectiveTenantId, effectiveUserId);
-        Map<String, MemoryFact> slotMap = localIndex.get(cacheKey);
-        if (slotMap != null) {
-            slotMap.remove(trimmedSlot);
+        if (this.properties.isEnableLocalCache()) {
+            String cacheKey = buildCacheKey(effectiveTenantId, effectiveUserId);
+            Map<String, MemoryFact> slotMap = localIndex.get(cacheKey);
+            if (slotMap != null) {
+                slotMap.remove(trimmedSlot);
+            }
         }
     }
 
@@ -501,9 +623,11 @@ public class EpisodicMemoryTemplate {
         if (!StringUtils.hasText(effectiveUserId)) {
             return;
         }
-        String effectiveTenantId = TenantContextHolder.getTenantId();
+        String effectiveTenantId = (!TenantContextHolder.isIgnoreTenant() && StringUtils.hasText(TenantContextHolder.getTenantId()))
+                ? TenantContextHolder.getTenantId().trim()
+                : null;
         Filter filter = MetadataFilterBuilder.metadataKey("user_id").isEqualTo(effectiveUserId);
-        if (StringUtils.hasText(effectiveTenantId) && !TenantContextHolder.isIgnoreTenant()) {
+        if (StringUtils.hasText(effectiveTenantId)) {
             filter = filter.and(MetadataFilterBuilder.metadataKey("tenant_id").isEqualTo(effectiveTenantId));
         }
 
@@ -514,8 +638,10 @@ public class EpisodicMemoryTemplate {
             log.warn("[EPISODIC-MEMORY] 遗忘用户全量事实异常: {}", e.getMessage());
         }
 
-        String cacheKey = buildCacheKey(effectiveTenantId, effectiveUserId);
-        localIndex.remove(cacheKey);
+        if (this.properties.isEnableLocalCache()) {
+            String cacheKey = buildCacheKey(effectiveTenantId, effectiveUserId);
+            localIndex.remove(cacheKey);
+        }
     }
 
     // ==================== 5. 事实清单查询 (List Facts) ====================
@@ -548,18 +674,22 @@ public class EpisodicMemoryTemplate {
      */
     public List<MemoryFact> listFacts(String userId, int limit) {
         String effectiveUserId = StringUtils.hasText(userId) ? userId.trim() : UserContextHolder.getUserId();
-        String effectiveTenantId = TenantContextHolder.getTenantId();
+        String effectiveTenantId = (!TenantContextHolder.isIgnoreTenant() && StringUtils.hasText(TenantContextHolder.getTenantId()))
+                ? TenantContextHolder.getTenantId().trim()
+                : null;
         int effectiveLimit = limit > 0 ? limit : 50;
 
-        String cacheKey = buildCacheKey(effectiveTenantId, effectiveUserId);
-        Map<String, MemoryFact> slotMap = localIndex.get(cacheKey);
-        if (slotMap != null && !slotMap.isEmpty()) {
-            return slotMap.values().stream()
-                    .sorted((a, b) -> Long.compare(
-                            b.getTimestamp() != null ? b.getTimestamp() : 0L,
-                            a.getTimestamp() != null ? a.getTimestamp() : 0L))
-                    .limit(effectiveLimit)
-                    .toList();
+        if (this.properties.isEnableLocalCache()) {
+            String cacheKey = buildCacheKey(effectiveTenantId, effectiveUserId);
+            Map<String, MemoryFact> slotMap = localIndex.get(cacheKey);
+            if (slotMap != null && !slotMap.isEmpty()) {
+                return slotMap.values().stream()
+                        .sorted((a, b) -> Long.compare(
+                                b.getTimestamp() != null ? b.getTimestamp() : 0L,
+                                a.getTimestamp() != null ? a.getTimestamp() : 0L))
+                        .limit(effectiveLimit)
+                        .toList();
+            }
         }
 
         // 缓存未命中时回退至向量存储过滤召回

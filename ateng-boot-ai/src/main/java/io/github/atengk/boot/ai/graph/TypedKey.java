@@ -33,6 +33,11 @@ public final class TypedKey<T> {
      */
     public static final TypedKey<String> STATUS = TypedKey.of("status", String.class);
 
+    /**
+     * 系统保留键：工作流异常或失败信息
+     */
+    public static final TypedKey<String> ERROR = TypedKey.of("error", String.class);
+
     private final String name;
     private final Class<T> targetClass;
     private final TypeReference<T> typeReference;

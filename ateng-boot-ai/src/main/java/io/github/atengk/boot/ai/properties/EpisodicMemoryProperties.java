@@ -33,6 +33,16 @@ public class EpisodicMemoryProperties {
     private String extractModel;
 
     /**
+     * 是否启用进程内二级快速索引缓存 (默认开启，采用有界 LRU 防 OOM)
+     */
+    private boolean enableLocalCache = true;
+
+    /**
+     * 进程内二级快速索引最大缓存用户数容量上限 (防无界悬挂与 OOM)
+     */
+    private int localCacheCapacity = 1000;
+
+    /**
      * 专属长效情景记忆向量数据库配置 (若为空则自动复用 RAG 知识库配置或默认单机内存库)
      */
     @NestedConfigurationProperty

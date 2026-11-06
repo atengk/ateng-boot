@@ -1,9 +1,11 @@
 package io.github.atengk.boot.ai.graph.supervisor;
 
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
+import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.graph.GraphWorkflow;
 import io.github.atengk.boot.ai.graph.TypedKey;
 import io.github.atengk.boot.ai.graph.WorkflowStatus;
+import io.github.atengk.boot.ai.template.AiTemplate;
 import org.bsc.langgraph4j.GraphStateException;
 import org.bsc.langgraph4j.StateGraph;
 import org.bsc.langgraph4j.state.AgentStateFactory;
@@ -40,9 +42,19 @@ public abstract class SupervisorWorkerWorkflow<S extends SupervisorState> extend
     public static final String NODE_SUPERVISOR = "supervisor";
 
     /**
-     * 终态节点固定标识
+     * 正常完成终态节点固定标识
      */
     public static final String NODE_FINISH = "finish";
+
+    /**
+     * 看门狗熔断降级终态节点固定标识
+     */
+    public static final String NODE_FALLBACK_FINISH = "fallback_finish";
+
+    /**
+     * 终态动作关键字
+     */
+    public static final String FINISH_ACTION = "FINISH";
 
     /**
      * 默认最大轮次硬看门狗限制（10 轮）
@@ -106,6 +118,71 @@ public abstract class SupervisorWorkerWorkflow<S extends SupervisorState> extend
         return patch;
     }
 
+    /**
+     * 死循环硬看门狗熔断降级终态钩子方法
+     * <p>
+     * 工作流达到 {@link #maxTurns()} 硬看门狗限制时流转至 {@link #NODE_FALLBACK_FINISH} 节点调用，
+     * 记录熔断错误并将状态置为 {@link WorkflowStatus#FAILED}。
+     * </p>
+     *
+     * @param state 当前状态模型
+     * @return 需要合并入状态机的增量补丁字典
+     */
+    protected Map<String, Object> onWatchdogFallback(S state) {
+        Map<String, Object> patch = new LinkedHashMap<>();
+        patch.put(TypedKey.STATUS.name(), WorkflowStatus.FAILED.name());
+        patch.put(TypedKey.ERROR.name(), AiResultCode.AI_SUPERVISOR_WATCHDOG_TRIPPED.getMsg()
+                + " (turnCount=" + state.getTurnCount() + ", maxTurns=" + maxTurns() + ")");
+        if (state.getFinalOutput() == null || state.getFinalOutput().isBlank()) {
+            patch.put(SupervisorState.FINAL_OUTPUT.name(), "已达到最大主管调度轮次限制 (" + maxTurns() + " 轮)，触发安全熔断终止");
+        }
+        return patch;
+    }
+
+    /**
+     * 辅助主管节点调用大模型执行结构化决断
+     * <p>
+     * 依托 {@link AiTemplate#chatForObject} 将当前任务目标、整体规划、历史专工产出结构化组装 Prompt
+     * 并输出强类型 {@link SupervisorDecision}。
+     * </p>
+     *
+     * @param aiTemplate   AI 统一操作门面
+     * @param systemPrompt 主管角色设定与分工说明
+     * @param state        当前认知状态快照
+     * @return 强类型调度决策对象
+     */
+    protected SupervisorDecision decideWithLlm(AiTemplate aiTemplate, String systemPrompt, S state) {
+        if (aiTemplate == null) {
+            throw new IllegalArgumentException("aiTemplate must not be null");
+        }
+        String prompt = String.format("""
+                %s
+                
+                [全局任务目标]
+                %s
+                
+                [当前整体规划]
+                %s
+                
+                [当前调度轮次]
+                %d (最大允许轮次: %d)
+                
+                [历史专工执行产出]
+                %s
+                
+                请基于上述上下文分析当前进度，并输出下一步结构化决策 SupervisorDecision。
+                若任务已全部达成，请将 isFinished 设为 true 并提供 finalOutput；若需继续推进，请指定 nextWorker 与 instructions。
+                """,
+                systemPrompt != null ? systemPrompt : "你是一名资深团队主管 Agent，负责分析任务并将子任务合理分拆派发给专工。",
+                state.getTaskObjective(),
+                state.getCurrentPlan() != null ? state.getCurrentPlan() : "尚未制定初步规划",
+                state.getTurnCount(),
+                maxTurns(),
+                state.getWorkerResults() != null ? state.getWorkerResults() : Collections.emptyMap()
+        );
+        return aiTemplate.chatForObject(prompt, SupervisorDecision.class);
+    }
+
     @Override
     protected int maxIterations() {
         // LangGraph4j 内部步数防卫：主管+专工每轮至少2步，外加余量，确保由业务看门狗 maxTurns() 优先决断
@@ -133,7 +210,7 @@ public abstract class SupervisorWorkerWorkflow<S extends SupervisorState> extend
                 log.warn("[SUPERVISOR-WATCHDOG:{}] 工作流达到最大轮次硬看门狗限制 [turnCount={}, maxTurns={}]，强制熔断终止流转至终态",
                         getWorkflowName(), newTurn, maxTurns());
                 patch.put(SupervisorState.IS_FINISHED.name(), true);
-                patch.put(SupervisorState.NEXT_WORKER.name(), NODE_FINISH);
+                patch.put(SupervisorState.NEXT_WORKER.name(), NODE_FALLBACK_FINISH);
                 String fallbackOutput = state.get(SupervisorState.FINAL_OUTPUT)
                         .filter(s -> !s.isBlank())
                         .orElseGet(() -> "已达到最大主管调度轮次限制 (" + maxTurns() + " 轮)，触发安全熔断终止");
@@ -145,7 +222,6 @@ public abstract class SupervisorWorkerWorkflow<S extends SupervisorState> extend
             try {
                 decision = decide(state);
             } catch (Exception e) {
-                log.error("[SUPERVISOR:{}] 主管决断异常: {}", getWorkflowName(), e.getMessage(), e);
                 throw AiExceptionTranslator.translate("主管 [" + getWorkflowName() + "] 规划决断失败", e);
             }
 
@@ -186,7 +262,6 @@ public abstract class SupervisorWorkerWorkflow<S extends SupervisorState> extend
                 try {
                     result = handler.handle(state, instructions);
                 } catch (Exception e) {
-                    log.error("[WORKER:{}:{}] 专工执行发生异常: {}", getWorkflowName(), workerName, e.getMessage(), e);
                     throw AiExceptionTranslator.translate("专工 [" + workerName + "] 执行失败", e);
                 }
 
@@ -218,28 +293,37 @@ public abstract class SupervisorWorkerWorkflow<S extends SupervisorState> extend
             return finishPatch != null ? finishPatch : Collections.emptyMap();
         }));
 
-        // 4. 起始连线
+        // 4. 看门狗熔断降级终态节点 (Fallback Finish Node)
+        graph.addNode(NODE_FALLBACK_FINISH, node_async(state -> {
+            log.warn("[SUPERVISOR-WATCHDOG:{}] 工作流到达看门狗熔断降级终态节点，总轮次: {}", getWorkflowName(), state.getTurnCount());
+            Map<String, Object> fallbackPatch = onWatchdogFallback(state);
+            return fallbackPatch != null ? fallbackPatch : Collections.emptyMap();
+        }));
+
+        // 5. 起始连线
         graph.addEdge(START, NODE_SUPERVISOR);
 
-        // 5. 条件路由分发
+        // 6. 条件路由分发
         Map<String, String> edgeMappings = new LinkedHashMap<>();
         edgeMappings.put(NODE_FINISH, NODE_FINISH);
+        edgeMappings.put(NODE_FALLBACK_FINISH, NODE_FALLBACK_FINISH);
         edgeMappings.put(END, END);
         for (String workerName : workers.keySet()) {
             edgeMappings.put(workerName, workerName);
         }
 
         graph.addConditionalEdges(NODE_SUPERVISOR, edge_async(state -> {
-            // 条件 1: 标记完成或轮次已达看门狗上限
-            if (state.isFinished() || state.getTurnCount() > maxTurns()) {
-                log.info("[SUPERVISOR:{}] 任务标记完成或看门狗触发，跳转终态", getWorkflowName());
-                return NODE_FINISH;
+            // 条件 1: 轮次已超限或显式指派 fallback_finish
+            if (state.getTurnCount() > maxTurns() || NODE_FALLBACK_FINISH.equalsIgnoreCase(state.getNextWorker())) {
+                log.warn("[SUPERVISOR-WATCHDOG:{}] 看门狗触发，跳转降级终态 [{}]", getWorkflowName(), NODE_FALLBACK_FINISH);
+                return NODE_FALLBACK_FINISH;
             }
 
             String nextWorker = state.getNextWorker();
             // 条件 2: 指向完成或空
-            if (nextWorker == null || nextWorker.isBlank() || "FINISH".equalsIgnoreCase(nextWorker) || END.equalsIgnoreCase(nextWorker)) {
-                log.info("[SUPERVISOR:{}] 未指派专工或指派 FINISH，跳转终态", getWorkflowName());
+            if (state.isFinished() || nextWorker == null || nextWorker.isBlank()
+                    || FINISH_ACTION.equalsIgnoreCase(nextWorker) || NODE_FINISH.equalsIgnoreCase(nextWorker) || END.equalsIgnoreCase(nextWorker)) {
+                log.info("[SUPERVISOR:{}] 任务标记完成或指派 FINISH，跳转终态", getWorkflowName());
                 return NODE_FINISH;
             }
 
@@ -249,12 +333,13 @@ public abstract class SupervisorWorkerWorkflow<S extends SupervisorState> extend
             }
 
             // 条件 4: 未知专工，告警并安全降级到终态
-            log.warn("[SUPERVISOR:{}] 未知专工 [{}]，可用专工: {}，安全跳转终态",
-                    getWorkflowName(), nextWorker, workers.keySet());
+            log.warn("[SUPERVISOR:{}] 未知专工 [{}]，错误码: {}，可用专工: {}，安全跳转终态",
+                    getWorkflowName(), nextWorker, AiResultCode.AI_SUPERVISOR_WORKER_NOT_FOUND.getCode(), workers.keySet());
             return NODE_FINISH;
         }), edgeMappings);
 
-        // 6. 终态节点连向 END
+        // 7. 终态节点连向 END
         graph.addEdge(NODE_FINISH, END);
+        graph.addEdge(NODE_FALLBACK_FINISH, END);
     }
 }

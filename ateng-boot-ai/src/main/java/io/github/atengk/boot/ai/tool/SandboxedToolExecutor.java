@@ -24,6 +24,9 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 局部受管智能体工具执行沙箱执行器
@@ -40,6 +43,43 @@ import java.util.Objects;
 public class SandboxedToolExecutor implements ToolExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(SandboxedToolExecutor.class);
+
+    /**
+     * 高危工具拦截挂起提示前缀
+     */
+    public static final String APPROVAL_REQUIRED_PREFIX = "[APPROVAL_REQUIRED]";
+
+    /**
+     * 工单标识提取正则表达式模式
+     */
+    private static final Pattern TICKET_ID_PATTERN = Pattern.compile("ticketId=([a-zA-Z0-9_-]+)");
+
+    /**
+     * 判断工具调用响应是否为拦截挂起提示
+     *
+     * @param response 工具调用响应文本
+     * @return 是否已拦截挂起
+     */
+    public static boolean isApprovalRequired(String response) {
+        return response != null && response.startsWith(APPROVAL_REQUIRED_PREFIX);
+    }
+
+    /**
+     * 从拦截挂起响应文本中结构化提取工单唯一标识
+     *
+     * @param response 工具调用响应文本
+     * @return 工单标识 Optional
+     */
+    public static Optional<String> extractTicketId(String response) {
+        if (!StringUtils.hasText(response)) {
+            return Optional.empty();
+        }
+        Matcher matcher = TICKET_ID_PATTERN.matcher(response);
+        if (matcher.find()) {
+            return Optional.of(matcher.group(1));
+        }
+        return Optional.empty();
+    }
 
     private static final Method PREPARE_ARGUMENTS_METHOD;
     private static final Method ARGUMENTS_AS_MAP_METHOD;
@@ -166,7 +206,7 @@ public class SandboxedToolExecutor implements ToolExecutor {
                 log.warn("[AI-TOOL-EXEC] [traceId: {}] High-risk tool [{}] intercepted by @SensitiveTool. Ticket generated: {}",
                         traceId, toolName, ticketId);
 
-                return String.format("[APPROVAL_REQUIRED] 该操作被标记为高危工具 [riskLevel=%s, type=%s]，已自动拦截并生成审批工单 [ticketId=%s]。请等待人工审批核准后方可执行。说明: %s",
+                return String.format(APPROVAL_REQUIRED_PREFIX + " 该操作被标记为高危工具 [riskLevel=%s, type=%s]，已自动拦截并生成审批工单 [ticketId=%s]。请等待人工审批核准后方可执行。说明: %s",
                         sensitiveTool.riskLevel(),
                         sensitiveTool.approvalType(),
                         ticketId,

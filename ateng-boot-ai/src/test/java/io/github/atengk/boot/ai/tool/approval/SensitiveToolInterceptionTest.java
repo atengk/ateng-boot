@@ -7,15 +7,18 @@ import dev.langchain4j.service.tool.ToolExecutor;
 import io.github.atengk.boot.ai.annotation.RiskLevel;
 import io.github.atengk.boot.ai.annotation.SensitiveTool;
 import io.github.atengk.boot.ai.properties.ToolApprovalProperties;
+import io.github.atengk.boot.ai.tool.SandboxedToolExecutor;
 import io.github.atengk.boot.ai.tool.ToolExecutionSandbox;
 import io.github.atengk.boot.ai.tool.approval.store.InMemoryToolApprovalStore;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -41,6 +44,13 @@ class SensitiveToolInterceptionTest {
         approvalTemplate.registerTargetBean(toolsBean);
 
         sandboxedTools = ToolExecutionSandbox.wrapToolBean(toolsBean, approvalTemplate);
+    }
+
+    @AfterEach
+    void tearDown() {
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
     }
 
     @Test
@@ -76,19 +86,17 @@ class SensitiveToolInterceptionTest {
         String interceptedResponse = executor.execute(request, null);
 
         // 验证沙箱返回包含工单挂起标识的提示文本
+        assertThat(SandboxedToolExecutor.isApprovalRequired(interceptedResponse)).isTrue();
         assertThat(interceptedResponse)
-                .contains("[APPROVAL_REQUIRED]")
+                .contains(SandboxedToolExecutor.APPROVAL_REQUIRED_PREFIX)
                 .contains("ORDER_REFUND")
                 .contains("涉及用户退款出金操作");
 
         // 确保目标真实业务逻辑尚未执行
         assertThat(toolsBean.getRefundExecutedCount()).isZero();
 
-        // 2. 从响应中提取工单 ID
-        Pattern pattern = Pattern.compile("ticketId=([a-zA-Z0-9_-]+)");
-        Matcher matcher = pattern.matcher(interceptedResponse);
-        assertThat(matcher.find()).isTrue();
-        String ticketId = matcher.group(1);
+        // 2. 从响应中结构化提取工单 ID
+        String ticketId = SandboxedToolExecutor.extractTicketId(interceptedResponse).orElseThrow();
 
         // 3. 验证工单状态为 PENDING
         ToolApprovalTicket ticket = approvalTemplate.getTicket(ticketId).orElseThrow();

@@ -6,6 +6,7 @@ import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.properties.ToolApprovalProperties;
 import io.github.atengk.boot.ai.tool.approval.store.InMemoryToolApprovalStore;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -45,6 +46,7 @@ class ToolApprovalTemplateTest {
     void tearDown() {
         MDC.clear();
         TenantContextHolder.clear();
+        UserContextHolder.clear();
     }
 
     @Test
@@ -80,10 +82,16 @@ class ToolApprovalTemplateTest {
                 .riskLevel(RiskLevel.HIGH)
                 .approvalType("TRANSFER")
                 .tenantId("TENANT_CORP_01")
+                .callerUserId("USER_OPERATOR_99")
                 .traceId("trace-hitl-test-101")
                 .build();
 
         template.submit(ticket, Duration.ofMinutes(10));
+
+        // 模拟当前操作员环境并设置调用线程初始上下文
+        UserContextHolder.setUserId("ADMIN_APPROVER");
+        TenantContextHolder.setTenantId("ADMIN_TENANT");
+        MDC.put("traceId", "trace-admin");
 
         // 模拟管理员审批通过
         ToolApprovalResult result = template.approve("TICKET_101", "财务总监审批核准通过");
@@ -92,16 +100,48 @@ class ToolApprovalTemplateTest {
         assertThat(result.getStatus()).isEqualTo(ToolApprovalStatus.APPROVED);
         assertThat(result.getResult()).isEqualTo("转账成功: ACC_001 -> ACC_002, 金额: 888.88");
 
-        // 验证目标业务服务被真实调用
+        // 验证目标业务服务被真实调用，且捕获到了工单原始的四维上下文
         assertThat(mockFinanceService.getExecutedCount()).isEqualTo(1);
         assertThat(mockFinanceService.getLastCapturedTenantId()).isEqualTo("TENANT_CORP_01");
+        assertThat(mockFinanceService.getLastCapturedUserId()).isEqualTo("USER_OPERATOR_99");
         assertThat(mockFinanceService.getLastCapturedTraceId()).isEqualTo("trace-hitl-test-101");
+
+        // 验证调用线程在审批完成后，现场被准确恢复为原始状态
+        assertThat(UserContextHolder.getUserId()).isEqualTo("ADMIN_APPROVER");
+        assertThat(TenantContextHolder.getTenantId()).isEqualTo("ADMIN_TENANT");
+        assertThat(MDC.get("traceId")).isEqualTo("trace-admin");
 
         // 验证工单状态已跃迁为 APPROVED
         ToolApprovalTicket updatedTicket = template.getTicket("TICKET_101").orElseThrow();
         assertThat(updatedTicket.getStatus()).isEqualTo(ToolApprovalStatus.APPROVED);
         assertThat(updatedTicket.getReviewComment()).isEqualTo("财务总监审批核准通过");
         assertThat(updatedTicket.getExecutionResultJson()).contains("转账成功");
+    }
+
+    @Test
+    @DisplayName("测试审批重放时防重复执行：并发双击时仅允许单次物理重放")
+    void testAntiConcurrentDuplicateApprove() {
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_CONCURRENT")
+                .toolName("transferFunds")
+                .methodName("transfer")
+                .targetClassName(MockFinanceService.class.getName())
+                .argumentsJson("{\"fromAccount\":\"ACC_001\",\"toAccount\":\"ACC_002\",\"amount\":100.0}")
+                .riskLevel(RiskLevel.HIGH)
+                .build();
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        ToolApprovalResult firstResult = template.approve("TICKET_CONCURRENT", "第一次审批");
+        assertThat(firstResult.isSuccess()).isTrue();
+        assertThat(mockFinanceService.getExecutedCount()).isEqualTo(1);
+
+        // 第二次审批应该被 CAS 拦截并抛出无效状态异常
+        assertThatThrownBy(() -> template.approve("TICKET_CONCURRENT", "第二次审批双击"))
+                .isInstanceOf(AiException.class)
+                .hasMessageContaining("处于非待审批状态");
+
+        // 确保目标真实业务方法绝未被调用第二次
+        assertThat(mockFinanceService.getExecutedCount()).isEqualTo(1);
     }
 
     @Test
@@ -174,11 +214,13 @@ class ToolApprovalTemplateTest {
     public static class MockFinanceService {
         private int executedCount = 0;
         private String lastCapturedTenantId;
+        private String lastCapturedUserId;
         private String lastCapturedTraceId;
 
         public String transfer(String fromAccount, String toAccount, Double amount) {
             this.executedCount++;
             this.lastCapturedTenantId = TenantContextHolder.getTenantId();
+            this.lastCapturedUserId = UserContextHolder.getUserId();
             this.lastCapturedTraceId = MDC.get("traceId");
             return String.format("转账成功: %s -> %s, 金额: %.2f", fromAccount, toAccount, amount);
         }
@@ -193,6 +235,10 @@ class ToolApprovalTemplateTest {
 
         public String getLastCapturedTenantId() {
             return lastCapturedTenantId;
+        }
+
+        public String getLastCapturedUserId() {
+            return lastCapturedUserId;
         }
 
         public String getLastCapturedTraceId() {

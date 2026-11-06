@@ -6,6 +6,7 @@ import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.properties.ToolApprovalProperties;
 import io.github.atengk.boot.ai.tool.approval.store.ToolApprovalStore;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.JsonUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -156,32 +157,44 @@ public class ToolApprovalTemplate {
             throw new AiException(AiResultCode.AI_TOOL_APPROVAL_EXPIRED, "工单 [" + ticketId + "] 已超时失效");
         }
 
-        // 1. 保存当前线程上下文现场
+        // 1. 先进行 CAS 状态流转（PENDING -> APPROVED），防止并发竞争导致高危工具被重复重放执行
+        boolean claimed = store.updateStatus(ticketId, ToolApprovalStatus.PENDING, ToolApprovalStatus.APPROVED,
+                comment, null, null);
+        if (!claimed) {
+            throw new AiException(AiResultCode.AI_TOOL_APPROVAL_INVALID_STATUS,
+                    "并发竞争导致工单状态跃迁失败，工单可能已被其他线程处理: " + ticketId);
+        }
+
+        // 2. 保存当前线程上下文现场
         String originalTraceId = MDC.get("traceId");
         String originalTenantId = TenantContextHolder.getTenantId();
+        String originalUserId = UserContextHolder.getUserId();
 
         try {
-            // 2. 还原工单创建时的四维上下文
+            // 3. 还原工单创建时的四维上下文
             if (StringUtils.hasText(ticket.getTraceId())) {
                 MDC.put("traceId", ticket.getTraceId());
             }
             if (StringUtils.hasText(ticket.getTenantId())) {
                 TenantContextHolder.setTenantId(ticket.getTenantId());
             }
+            if (StringUtils.hasText(ticket.getCallerUserId())) {
+                UserContextHolder.setUserId(ticket.getCallerUserId());
+            }
 
-            // 3. 定位目标 Bean 实例与方法
+            // 4. 定位目标 Bean 实例与方法
             Object targetBean = resolveTargetBean(ticket);
             Method method = resolveTargetMethod(targetBean, ticket.getMethodName());
             method.setAccessible(true);
 
-            // 4. 反序列化参数
+            // 5. 反序列化参数
             Map<String, Object> argumentsMap = Collections.emptyMap();
             if (StringUtils.hasText(ticket.getArgumentsJson())) {
                 argumentsMap = (Map<String, Object>) ARGUMENTS_AS_MAP_METHOD.invoke(null, ticket.getArgumentsJson());
             }
             Object[] args = (Object[]) PREPARE_ARGUMENTS_METHOD.invoke(null, method, argumentsMap, null);
 
-            // 5. 反射重放执行
+            // 6. 受管安全反射重放执行
             long start = System.currentTimeMillis();
             Object result;
             try {
@@ -190,7 +203,7 @@ public class ToolApprovalTemplate {
                 long duration = System.currentTimeMillis() - start;
                 Throwable targetEx = ite.getTargetException();
                 String errorMsg = targetEx != null ? targetEx.getMessage() : "Invocation error";
-                store.updateStatus(ticketId, ToolApprovalStatus.PENDING, ToolApprovalStatus.APPROVED,
+                store.updateStatus(ticketId, ToolApprovalStatus.APPROVED, ToolApprovalStatus.APPROVED,
                         comment, null, errorMsg);
                 log.error("[AI-APPROVAL] 工单 [{}] 审批重放目标方法执行异常 (耗时 {} ms): {}", ticketId, duration, errorMsg);
                 return ToolApprovalResult.failed(ticketId, errorMsg, duration);
@@ -199,13 +212,9 @@ public class ToolApprovalTemplate {
             long duration = System.currentTimeMillis() - start;
             String resultJson = (result instanceof String text) ? text : JsonUtil.toJsonString(result);
 
-            // 6. 原子更新工单状态为 APPROVED
-            boolean updated = store.updateStatus(ticketId, ToolApprovalStatus.PENDING, ToolApprovalStatus.APPROVED,
+            // 7. 更新执行结果快照
+            store.updateStatus(ticketId, ToolApprovalStatus.APPROVED, ToolApprovalStatus.APPROVED,
                     comment, resultJson, null);
-            if (!updated) {
-                throw new AiException(AiResultCode.AI_TOOL_APPROVAL_INVALID_STATUS,
-                        "并发竞争导致工单状态跃迁失败，可能已被其他线程处理: " + ticketId);
-            }
 
             log.info("[AI-APPROVAL] 工单 [{}] 审批通过并重放执行成功 (耗时 {} ms)", ticketId, duration);
             return ToolApprovalResult.success(ticketId, result, duration);
@@ -214,11 +223,11 @@ public class ToolApprovalTemplate {
             throw ae;
         } catch (Throwable t) {
             log.error("[AI-APPROVAL] 工单 [{}] 审批恢复执行失败: {}", ticketId, t.getMessage(), t);
-            store.updateStatus(ticketId, ToolApprovalStatus.PENDING, ToolApprovalStatus.APPROVED,
+            store.updateStatus(ticketId, ToolApprovalStatus.APPROVED, ToolApprovalStatus.APPROVED,
                     comment, null, t.getMessage());
             return ToolApprovalResult.failed(ticketId, t.getMessage(), 0L);
         } finally {
-            // 7. 严格恢复当前调用线程的原始上下文现场
+            // 8. 严格恢复当前调用线程的原始四维上下文现场
             if (originalTraceId != null) {
                 MDC.put("traceId", originalTraceId);
             } else {
@@ -228,6 +237,11 @@ public class ToolApprovalTemplate {
                 TenantContextHolder.setTenantId(originalTenantId);
             } else {
                 TenantContextHolder.clear();
+            }
+            if (originalUserId != null) {
+                UserContextHolder.setUserId(originalUserId);
+            } else {
+                UserContextHolder.clear();
             }
         }
     }

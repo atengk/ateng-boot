@@ -37,10 +37,13 @@ import io.github.atengk.boot.sample.ai.vo.AiRagRetrieveVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagSplitVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagTransformVo;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.MediaType;
+import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -65,6 +68,7 @@ import java.util.stream.Collectors;
  * @author Ateng
  * @since 2026-11-04
  */
+@Validated
 @RestController
 @RequestMapping("/sample/ai/rag")
 @RequiredArgsConstructor
@@ -435,7 +439,8 @@ public class AiRagController {
      * @return Spring MVC SseEmitter 实例
      */
     @GetMapping(value = "/stream-with-citations", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter streamWithCitations(@RequestParam("question") String question) {
+    public SseEmitter streamWithCitations(@NotBlank(message = "提问内容 question 不能为空") @RequestParam("question") String question) {
+        Assert.hasText(question, "提问内容 question 不能为空");
         List<Content> contents = contentRetriever.retrieve(Query.from(question));
         List<TextSegment> segments = contents.stream()
                 .map(Content::textSegment)
