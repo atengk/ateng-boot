@@ -80,7 +80,7 @@
 | **财务成本核算** | 实时大模型调用成本精算与财务度量 | `TokenCostCalculator`<br>`ModelPricingConfig` | `ateng.boot.ai.pricing.models.<name>.input-price-per-million-tokens`<br>`ateng.boot.ai.pricing.models.<name>.output-price-per-million-tokens` | `calculateCost(model, inTokens, outTokens)`，高精度 BigDecimal 核算美元/人民币成本，自动上报 `ateng.ai.cost.dollars.total` 财务指标 | `TokenCostCalculatorTest` / `MetricsControllerIntegrationTest` |
 | **高危工具审批** | 声明式高危工具人机协作审批双模治理 | `@SensitiveTool`<br>`ToolApprovalTemplate`<br>`ToolApprovalStore` | `ateng.boot.ai.tool-approval.enabled`<br>`ateng.boot.ai.tool-approval.type`<br>`ateng.boot.ai.tool-approval.default-timeout` | `approve(ticketId, reviewer, comment)` / `reject(...)` / `getTicket(ticketId)` / `listPendingTickets()`，自动拦截 `HIGH`/`CRITICAL` 风险工具生成待审批工单，四维上下文快照安全重放 | `ToolApprovalTemplateTest` / `ToolApprovalControllerIntegrationTest` |
 | **长效情景记忆** | 跨会话原子化长效情景语义记忆门面与槽位覆写 | `EpisodicMemoryTemplate`<br>`MemoryFactExtractor`<br>`MemoryFact` | `ateng.boot.ai.episodic-memory.enabled`<br>`ateng.boot.ai.episodic-memory.max-recall-results`<br>`ateng.boot.ai.episodic-memory.min-score` | `remember(fact)` / `recall(query, userId)` / `forget(...)` / `extractAndRemember(text, userId)`，支持语义槽位覆写去重 (Upsert by Semantic Key) 与多租户物理隔离 | `MemoryFactTest` / `EpisodicMemoryTemplateTest` / `AiEpisodicMemoryControllerIntegrationTest` |
-| **证据溯源引用** | 可信 RAG 证据溯源强类型契约与 SSE 尾包增量推流 | `RagResponse`<br>`Citation`<br>`CitationExtractor`<br>`AiTemplate#chatWithCitations`<br>`AiTemplate#streamWithCitations` | - | `chatWithCitations(prompt, candidates)` / `streamWithCitations(prompt, candidates)`，基于正则与双向指针对齐清洗 `[N]` 引用，流式增量下发 `event: citation` 数据包 | `CitationExtractorTest` / `AiTemplateCitationTest` / `RagControllerIntegrationTest` |
+| **证据溯源引用** | 可信 RAG 证据溯源强类型契约与 SSE 尾包增量推流 | `RagResponse`<br>`Citation`<br>`CitationExtractor`<br>`AiTemplate#chatWithCitations`<br>`AiTemplate#streamWithCitations` | `ateng.boot.ai.rag.max-results`<br>`ateng.boot.ai.rag.min-score` | `chatWithCitations(prompt, candidates)` / `streamWithCitations(prompt, candidates)`，基于正则与双向指针对齐清洗 `[N]` 引用，流式增量下发 `event: citation` 数据包 | `CitationExtractorTest` / `AiTemplateCitationTest` / `RagControllerIntegrationTest` |
 
 ---
 
@@ -1301,6 +1301,11 @@ public class UserProfilingService {
     }
 }
 ```
+
+#### 生产扩展接管 (Customization & Extensibility)
+- **事实抽取模型与提示词接管**：通过 `ateng.boot.ai.episodic-memory.extract-model` 配置指定轻量专用模型（如 `fast-chat` 或 `qwen-turbo`）专门负责非阻塞后台抽取，与前端交互主模型解耦，极大缩短响应耗时并节约 Token 成本；
+- **独立长效向量存储物理隔离**：支持通过 `ateng.boot.ai.episodic-memory.store.*` 配置专属存储实例（如专属 Redis 或 Milvus 集合），实现用户长期记忆库与企业通用公共 RAG 知识库的存储级物理隔离；
+- **语义槽位自定义编排**：业务层可使用 `MemoryFact.buildSlotKey(subject, predicate)` 自由定义槽位粒度（如 `用户:语言偏好`、`用户:所属部门`、`设备:网卡配置` 等），框架自动保障同一主体在同一语义维度下的知识原子更新。
 
 #### 核心机制与生产边界防卫
 - **语义槽位覆写去重 (Upsert by Semantic Key)**：
@@ -2528,6 +2533,21 @@ public class HybridSearchConfiguration {
 - **纯函数确定性双向对齐与清洗 (`CitationExtractor`)**：基于正则与双向指针扫描模型输出的 `[N]` 引用锚点标记，严格与召回的真实候选切片比对；若模型输出了超出候选切片范围的越界非法序号（如仅召回 2 条却引用 `[99]`），自动执行安全清洗剔除，保障前端绝对安全渲染；
 - **SSE 打字机尾包增量推流 (`event: citation`)**：在流式推流模式下，客户端通过 `event: text` 持续接收流式打字机正文；正文传输完毕后，系统增量推送专属 `event: citation`（载荷为 `List<Citation>` JSON），最后发送 `[DONE]` 标识安全闭合连接。
 
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      rag:
+        # 知识库向量检索单次最大召回候选切片数 Top-K (默认 3)
+        max-results: 3
+        # 向量召回最低相关度得分阈值 (低于阈值的切片被自动过滤，默认 0.6)
+        min-score: 0.6
+      model:
+        # 流式推流与问答 HTTP 连接与响应读取超时 (默认 60s)
+        timeout: 60s
+```
+
 #### 实战业务场景示例：带引用证据溯源的同步问答与打字机推流
 ```java
 @Service
@@ -2554,6 +2574,11 @@ public class GroundedKnowledgeService {
     }
 }
 ```
+
+#### 生产扩展接管 (Customization & Extensibility)
+- **自定义检索器与混合召回集成**：`AiTemplate.chatWithCitations` 与 `streamWithCitations` 均接收通用的 `ContentRetriever` SPI，可无缝对接两阶段重排器 `RerankingContentRetriever`、稠密与稀疏混合检索器 `HybridContentRetriever` 或动态权限过滤 `DynamicFilterContentRetriever`；
+- **底层切片元数据丰富与前端跳转**：`Citation` 自动解构 LangChain4j 的 `TextSegment` 元数据字典，提取 `id`/`segment_id` 与 `file_name`/`doc_name`；上层应用可在入库时注入外部知识库 URL、页码 `page` 或版本号，前端捕获 `event: citation` 后即可一键高亮跳转原文锚点；
+- **纯函数提取器算法扩展**：`CitationExtractor` 所有核心校验与清洗逻辑均为纯函数，调用方可直接通过 `CitationExtractor.extractCitations`、`CitationExtractor.sanitizeText` 与 `CitationExtractor.calculateGroundingScore` 定制上层业务风控逻辑。
 
 #### 核心机制与边界防卫
 - **越界非法引用双向清洗**：当检索召回 $N$ 条候选切片时，合法引用序号区间严格限定为 $1 \le index \le N$。`CitationExtractor.sanitizeText` 扫描文本，将越界序号（如 `[5]`、`[1, 99]`）精准清洗为合法子集或完全剔除，杜绝前端点击引用锚点时发生 404 空引用崩溃；
@@ -2767,6 +2792,9 @@ ateng:
         min-score: 0.6
         # 原子事实抽取所使用的大模型标识 (可选；缺省使用全局默认大模型)
         extract-model: ""
+        # 专属长效向量存储库配置 (可选；未配置时平滑复用 rag.store 或单机内存存储)
+        # store:
+        #   type: auto
       
       # 认知状态图 (LangGraph4j) 与人机协作 (HITL) 配置
       graph:
@@ -2846,6 +2874,16 @@ ateng:
         query-transform:
           enabled: false
           model-name: deepseek-chat
+        # 稠密与稀疏混合多路召回及 RRF 排名融合配置
+        hybrid:
+          # 是否启用稠密与稀疏混合多路召回 (默认 false)
+          enabled: false
+          # 稠密向量召回权重系数 (默认 1.0)
+          dense-weight: 1.0
+          # 稀疏关键词召回权重系数 (默认 1.0)
+          sparse-weight: 1.0
+          # RRF 倒数排名融合常数 K (默认 60)
+          rrf-k: 60
         # 统一向量存储库专属配置
         store:
           # 存储模式: auto (默认), in-memory, milvus, redis, pgvector, elasticsearch, custom
