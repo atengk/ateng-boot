@@ -730,6 +730,36 @@ public class EpisodicMemoryTemplate {
         }
     }
 
+    /**
+     * 判断事实抽取器是否已就绪可用
+     *
+     * @return true 若就绪
+     */
+    public boolean isExtractorAvailable() {
+        return this.extractor != null && this.extractor.isAvailable();
+    }
+
+    /**
+     * 将命中的情景事实格式化为注入系统提示词的 Persona 画像块
+     *
+     * @param facts 事实列表
+     * @return 格式化后的系统提示词片段，若无事实则返回 null
+     */
+    public static String formatPersonaPrompt(List<MemoryFact> facts) {
+        if (facts == null || facts.isEmpty()) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("[用户历史长效画像与情景记忆]\n");
+        for (MemoryFact fact : facts) {
+            if (fact != null && StringUtils.hasText(fact.getStatement())) {
+                sb.append("- ").append(fact.getStatement().trim()).append("\n");
+            }
+        }
+        sb.append("请在后续对话中自然遵循并参考上述用户背景与偏好，无需刻意向用户机械复述上述事实。");
+        return sb.toString();
+    }
+
     private static String buildCacheKey(String tenantId, String userId) {
         return (tenantId != null ? tenantId.trim() : "") + ":" + (userId != null ? userId.trim() : "");
     }

@@ -54,4 +54,25 @@ public @interface AiAgent {
      * @return 会话记忆 Bean 名称
      */
     String chatMemory() default "";
+
+    /**
+     * 是否自动挂载长效情景记忆 (Episodic Memory)
+     * <p>
+     * 开启后，智能体将在调用前依据三级探测回溯用户身份并检索长效记忆画像注入系统提示词，
+     * 并在调用结束后异步提炼新的用户事实并持久化。
+     * </p>
+     *
+     * @return 是否启用长效情景记忆，默认 false
+     */
+    boolean episodicMemory() default false;
+
+    /**
+     * 在启用 long-term 情景记忆时，是否在对话完成后自动异步提炼并沉淀新事实
+     * <p>
+     * 设为 false 时仅在调用前执行事实画像检索注入（适用于纯只读或评测场景），不反写提炼新事实。
+     * </p>
+     *
+     * @return 是否自动提炼记忆，默认 true
+     */
+    boolean extractMemory() default true;
 }

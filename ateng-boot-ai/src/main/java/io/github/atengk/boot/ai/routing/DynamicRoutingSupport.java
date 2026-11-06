@@ -7,6 +7,7 @@ import dev.langchain4j.data.message.TextContent;
 import dev.langchain4j.data.message.UserMessage;
 import io.github.atengk.boot.ai.context.AgentCallContext;
 import io.github.atengk.boot.ai.context.AiContextHolder;
+import io.github.atengk.boot.ai.context.EpisodicMemoryContext;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
 import io.github.atengk.boot.core.context.TenantContextHolder;
@@ -73,6 +74,31 @@ final class DynamicRoutingSupport {
                 modified = true;
             } else {
                 result.add(msg);
+            }
+        }
+
+        // 若当前上下文存在召回的长效情景记忆画像提示词，自动增强 SystemMessage
+        String episodicPrompt = EpisodicMemoryContext.getInjectedPrompt();
+        if (StringUtils.hasText(episodicPrompt)) {
+            boolean systemMessageFound = false;
+            for (int i = 0; i < result.size(); i++) {
+                ChatMessage msg = result.get(i);
+                if (msg instanceof SystemMessage sm) {
+                    systemMessageFound = true;
+                    String text = sm.text();
+                    if (text == null || (!text.contains(episodicPrompt) && !text.contains("[用户历史长效画像与情景记忆]"))) {
+                        String newText = (text != null && !text.isEmpty())
+                                ? episodicPrompt + "\n\n" + text
+                                : episodicPrompt;
+                        result.set(i, SystemMessage.from(newText));
+                        modified = true;
+                    }
+                    break;
+                }
+            }
+            if (!systemMessageFound) {
+                result.add(0, SystemMessage.from(episodicPrompt));
+                modified = true;
             }
         }
 

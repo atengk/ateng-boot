@@ -93,6 +93,11 @@
 | **单条事实遗忘删除** | `AiEpisodicMemoryController` | `DELETE /sample/ai/episodic-memory/facts/{factId}` | `curl -X DELETE "http://localhost:8080/sample/ai/episodic-memory/facts/YOUR_FACT_ID"` |
 | **槽位事实遗忘删除** | `AiEpisodicMemoryController` | `DELETE /sample/ai/episodic-memory/slots` | `curl -X DELETE "http://localhost:8080/sample/ai/episodic-memory/slots?userId=u1001&slotKey=用户:语言偏好"` |
 | **用户记忆全量遗忘** | `AiEpisodicMemoryController` | `DELETE /sample/ai/episodic-memory/users/{userId}` | `curl -X DELETE "http://localhost:8080/sample/ai/episodic-memory/users/u1001"` |
+| **情景记忆智能体对话** | `AiAgentEpisodicController` | `POST /sample/ai/agent/episodic/chat` | `curl -X POST "http://localhost:8080/sample/ai/agent/episodic/chat" -H "Content-Type: application/json" -d "{\"userId\":\"u1001\",\"message\":\"请帮我推荐下午茶饮品\"}"` |
+| **只读顾问模式咨询** | `AiAgentEpisodicController` | `POST /sample/ai/agent/episodic/consult-readonly` | `curl -X POST "http://localhost:8080/sample/ai/agent/episodic/consult-readonly" -H "Content-Type: application/json" -d "{\"userId\":\"u1001\",\"message\":\"请推荐资产配置方案\"}"` |
+| **查询用户画像事实** | `AiAgentEpisodicController` | `GET /sample/ai/agent/episodic/facts/{userId}` | `curl "http://localhost:8080/sample/ai/agent/episodic/facts/u1001"` |
+| **预置长效情景事实** | `AiAgentEpisodicController` | `POST /sample/ai/agent/episodic/facts` | `curl -X POST "http://localhost:8080/sample/ai/agent/episodic/facts" -H "Content-Type: application/json" -d "{\"userId\":\"u1001\",\"subject\":\"user\",\"predicate\":\"drink_preference\",\"object\":\"Latte\",\"statement\":\"用户日常喜欢喝拿铁咖啡\"}"` |
+| **物理删除情景事实** | `AiAgentEpisodicController` | `DELETE /sample/ai/agent/episodic/facts/{factId}` | `curl -X DELETE "http://localhost:8080/sample/ai/agent/episodic/facts/YOUR_FACT_ID"` |
 
 > **流式推流说明**：调用 `GET /sample/ai/chat/stream` 或 `GET /sample/ai/rag/stream-with-citations` 时，控制台或客户端将持续接收由 `event: reasoning`（思考过程）、`event: text`（正文内容）、`event: citation`（证据溯源引用尾包，包含合法引用切片列表与事实忠实度评分）与 `event: done`（`[DONE]` 结束信号）组成的标准 Server-Sent Events 事件流。
 

@@ -79,7 +79,7 @@
 | **原生约束解码** | 原生 JSON_SCHEMA 结构化约束模式 | `JsonSchemaGenerator`<br>`AiResponseFormat` | `ateng.boot.ai.model.response-format: JSON_SCHEMA`<br>`ateng.boot.ai.model.json-schema.*` | `generateSchema(Class<?>)`，递归解析 Java 实体类反射生成符合 OpenAI 规范的 JSON Schema 严格约束模式，消除结构化输出幻觉 | `JsonSchemaGeneratorTest` / `AiTemplateTest` |
 | **财务成本核算** | 实时大模型调用成本精算与财务度量 | `TokenCostCalculator`<br>`ModelPricingConfig` | `ateng.boot.ai.pricing.models.<name>.input-price-per-million-tokens`<br>`ateng.boot.ai.pricing.models.<name>.output-price-per-million-tokens` | `calculateCost(model, inTokens, outTokens)`，高精度 BigDecimal 核算美元/人民币成本，自动上报 `ateng.ai.cost.dollars.total` 财务指标 | `TokenCostCalculatorTest` / `MetricsControllerIntegrationTest` |
 | **高危工具审批** | 声明式高危工具人机协作审批双模治理 | `@SensitiveTool`<br>`ToolApprovalTemplate`<br>`ToolApprovalStore` | `ateng.boot.ai.tool-approval.enabled`<br>`ateng.boot.ai.tool-approval.type`<br>`ateng.boot.ai.tool-approval.default-timeout` | `approve(ticketId, comment)` / `reject(ticketId, reason)` / `cancel(ticketId)` / `getTicket(ticketId)` / `listPending()`，自动拦截 `HIGH`/`CRITICAL` 风险工具生成待审批工单，四维上下文快照安全重放 | `ToolApprovalTemplateTest` / `ToolApprovalControllerIntegrationTest` |
-| **长效情景记忆** | 跨会话原子化长效情景语义记忆门面与槽位覆写 | `EpisodicMemoryTemplate`<br>`MemoryFactExtractor`<br>`MemoryFact` | `ateng.boot.ai.episodic-memory.enabled`<br>`ateng.boot.ai.episodic-memory.max-recall-results`<br>`ateng.boot.ai.episodic-memory.min-score`<br>`ateng.boot.ai.episodic-memory.enable-local-cache`<br>`ateng.boot.ai.episodic-memory.local-cache-capacity` | `remember(fact)` / `recall(query, userId)` / `forget(...)` / `extractAndRemember(text, userId)` / `listFacts(userId)`，支持语义槽位覆写去重 (Upsert by Semantic Key) 与多租户物理隔离 | `MemoryFactTest` / `EpisodicMemoryTemplateTest` / `AiEpisodicMemoryControllerIntegrationTest` |
+| **长效情景记忆** | 跨会话原子化长效情景语义记忆门面与槽位覆写 | `EpisodicMemoryTemplate`<br>`MemoryFactExtractor`<br>`MemoryFact`<br>`@AiAgent(episodicMemory)`<br>`@UserId` | `ateng.boot.ai.episodic-memory.enabled`<br>`ateng.boot.ai.episodic-memory.max-recall-results`<br>`ateng.boot.ai.episodic-memory.min-score`<br>`ateng.boot.ai.episodic-memory.enable-local-cache`<br>`ateng.boot.ai.episodic-memory.local-cache-capacity` | `remember(fact)` / `recall(query, userId)` / `forget(...)` / `extractAndRemember(text, userId)` / `listFacts(userId)`，支持声明式智能体自动感知与提炼 (`episodicMemory = true`)、三阶梯用户识别 (`@UserId` -> `@MemoryId` -> `UserContextHolder`)、语义槽位覆写去重 (Upsert by Semantic Key) 与多租户物理隔离 | `MemoryFactTest` / `EpisodicMemoryTemplateTest` / `AiAgentEpisodicMemoryTest` / `AiAgentEpisodicControllerIntegrationTest` |
 | **证据溯源引用** | 可信 RAG 证据溯源强类型契约与 SSE 尾包增量推流 | `RagResponse`<br>`Citation`<br>`CitationExtractor`<br>`AiTemplate#chatWithCitations`<br>`AiTemplate#streamWithCitations` | `ateng.boot.ai.rag.max-results`<br>`ateng.boot.ai.rag.min-score` | `chatWithCitations(prompt, candidates)` / `streamWithCitations(prompt, candidates)`，基于正则与双向指针对齐清洗 `[N]` 引用，流式增量下发 `event: citation` 数据包 | `CitationExtractorTest` / `AiTemplateCitationTest` / `RagControllerIntegrationTest` |
 
 ---
@@ -1331,7 +1331,26 @@ public class UserProfilingService {
 #### 生产扩展接管 (Customization & Extensibility)
 - **事实抽取模型与提示词接管**：通过 `ateng.boot.ai.episodic-memory.extract-model` 配置指定轻量专用模型（如 `fast-chat` 或 `qwen-turbo`）专门负责非阻塞后台抽取，与前端交互主模型解耦，极大缩短响应耗时并节约 Token 成本；
 - **独立长效向量存储物理隔离**：支持通过 `ateng.boot.ai.episodic-memory.store.*` 配置专属存储实例（如专属 Redis 或 Milvus 集合），实现用户长期记忆库与企业通用公共 RAG 知识库的存储级物理隔离；
-- **语义槽位自定义编排**：业务层可使用 `MemoryFact.buildSlotKey(subject, predicate)` 自由定义槽位粒度（如 `用户:语言偏好`、`用户:所属部门`、`设备:网卡配置` 等），框架自动保障同一主体在同一语义维度下的知识原子更新。
+- **语义槽位自定义编排**：业务层可使用 `MemoryFact.buildSlotKey(subject, predicate)` 自由定义槽位粒度（如 `用户:语言偏好`、`用户:所属部门`、`设备:网卡配置` 等），框架自动保障同一主体在同一语义维度下的知识原子更新；
+- **声明式智能体长效记忆 (@AiAgent episodicMemory & @UserId)**：在 `@AiAgent` 接口上声明 `episodicMemory = true`，框架即可实现无侵入的用户画像长效感知与双向自动沉淀：
+  - **三阶梯用户识别**：优先解析方法入参上的 `@UserId`；若无则解析 `@MemoryId`（或会话标识参数）；若无则自动回退至上下文 `UserContextHolder.getUserId()`；
+  - **Persona 画像前置注入**：调用大模型前，框架依据当前问询自动向 `EpisodicMemoryTemplate` 召回用户背景事实，格式化为 `[用户历史长效画像与情景记忆]` 动态注入系统提示词；
+  - **非阻塞异步事实提炼**：调用完成后，若 `extractMemory = true`（默认），受管线程池后台异步提取本次对话中涌现的新偏好并写入向量库，主线程零延迟；若设置 `extractMemory = false` 则进入只读模式，仅感知注入不提取，适合投资顾问、客诉等专职只读场景。
+
+```java
+@AiAgent(episodicMemory = true, extractMemory = true)
+public interface CustomerPersonaAgent {
+
+    @SystemMessage("你是一个企业级贴心客户助理，请根据用户的背景与偏好提供个性化服务")
+    String chatWithUser(@UserId @UserName String userId, @UserMessage String message);
+
+    @SystemMessage("你是一个企业级贴心客户助理，请根据用户的背景与偏好提供个性化服务")
+    String chatWithSession(@MemoryId String sessionId, @UserMessage String message);
+
+    @SystemMessage("你是一个企业级贴心客户助理，请根据用户的背景与偏好提供个性化服务")
+    String chat(@UserMessage String message);
+}
+```
 
 #### 核心机制与生产边界防卫
 - **语义槽位覆写去重 (Upsert by Semantic Key)**：

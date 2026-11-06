@@ -7,17 +7,22 @@ import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.tool.ToolExecutor;
 import io.github.atengk.boot.ai.context.AgentCallContext;
+import io.github.atengk.boot.ai.context.EpisodicMemoryContext;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.guardrail.AiGuardrail;
 import io.github.atengk.boot.ai.guardrail.GuardrailAction;
 import io.github.atengk.boot.ai.guardrail.GuardrailResult;
+import io.github.atengk.boot.ai.memory.episodic.EpisodicMemoryTemplate;
+import io.github.atengk.boot.ai.memory.episodic.MemoryFact;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.routing.DynamicRoutingChatLanguageModel;
 import io.github.atengk.boot.ai.routing.DynamicRoutingStreamingChatLanguageModel;
 import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
 import io.github.atengk.boot.ai.tool.ToolExecutionSandbox;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.core.util.ValidatorUtil;
@@ -77,6 +82,17 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
     @Setter
     private String chatMemory;
 
+    @Getter
+    @Setter
+    private boolean episodicMemory;
+
+    @Getter
+    @Setter
+    private boolean extractMemory = true;
+
+    @Setter
+    private EpisodicMemoryTemplate episodicMemoryTemplate;
+
     private ApplicationContext applicationContext;
     private volatile T proxyInstance;
 
@@ -130,18 +146,27 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
             builder.streamingChatLanguageModel(streamingRoutingModel);
         }
 
-        // 3.2 解析接口级 @SystemMessage 系统提示词
+        // 3.2 解析接口级 @SystemMessage 系统提示词与长效情景记忆 Persona 提示词注入
         dev.langchain4j.service.SystemMessage interfaceSystemMessage = agentInterface.getAnnotation(dev.langchain4j.service.SystemMessage.class);
+        String systemText = null;
         if (interfaceSystemMessage != null) {
-            String systemText;
             if (StringUtils.hasText(interfaceSystemMessage.fromResource())) {
                 systemText = loadResourceText(agentInterface, interfaceSystemMessage.fromResource().trim());
             } else {
                 systemText = String.join(interfaceSystemMessage.delimiter(), interfaceSystemMessage.value());
             }
-            if (StringUtils.hasText(systemText)) {
-                builder.systemMessageProvider(memoryId -> systemText);
-            }
+        }
+        final String baseSystemText = systemText;
+        if (StringUtils.hasText(baseSystemText) || episodicMemory) {
+            builder.systemMessageProvider(memoryId -> {
+                String episodicPersona = EpisodicMemoryContext.getInjectedPrompt();
+                if (StringUtils.hasText(episodicPersona)) {
+                    return StringUtils.hasText(baseSystemText)
+                            ? episodicPersona + "\n\n" + baseSystemText
+                            : episodicPersona;
+                }
+                return baseSystemText != null ? baseSystemText : "";
+            });
         }
 
         // 4. 解析受管工具类列表并接入 ToolExecutionSandbox 局部沙箱
@@ -249,10 +274,36 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                 }
             }
 
-            // 1. 提取复杂对象参数并构建 JSON 替换映射
+            // 1. 若开启长效情景记忆 (episodicMemory)，执行三阶梯用户识别并召回 Persona 画像注入
+            String resolvedUserId = null;
+            String userQuery = null;
+            if (episodicMemory) {
+                resolvedUserId = resolveUserId(method, args);
+                userQuery = resolveUserQuery(method, args);
+                EpisodicMemoryTemplate template = resolveEpisodicMemoryTemplate();
+                if (template != null && StringUtils.hasText(resolvedUserId)) {
+                    try {
+                        List<MemoryFact> facts = null;
+                        if (StringUtils.hasText(userQuery)) {
+                            facts = template.recall(userQuery, resolvedUserId, 5, 0.6);
+                        }
+                        if (facts == null || facts.isEmpty()) {
+                            facts = template.listFacts(resolvedUserId, 5);
+                        }
+                        String personaPrompt = EpisodicMemoryTemplate.formatPersonaPrompt(facts);
+                        if (StringUtils.hasText(personaPrompt)) {
+                            EpisodicMemoryContext.setInjectedPrompt(personaPrompt);
+                        }
+                    } catch (Exception e) {
+                        log.warn("智能体 [{}] 长效情景记忆召回受控跳过: {}", agentInterface.getSimpleName(), e.getMessage());
+                    }
+                }
+            }
+
+            // 2. 提取复杂对象参数并构建 JSON 替换映射
             Map<String, String> replacements = buildArgumentReplacements(args);
 
-            // 2. 打开调用上下文作用域并执行底层调用
+            // 3. 打开调用上下文作用域并执行底层调用
             Object result;
             try (AgentCallContext.Scope ignored = AgentCallContext.openScope(replacements)) {
                 method.setAccessible(true);
@@ -263,9 +314,14 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                     throw re;
                 }
                 throw ite;
+            } finally {
+                // 确保 ThreadLocal 记忆提示词绝对清理，杜绝跨请求污染
+                if (episodicMemory) {
+                    EpisodicMemoryContext.clear();
+                }
             }
 
-            // 3. 后置内容安全护栏检查 (POST_RESPONSE 防违禁敏感词)
+            // 4. 后置内容安全护栏检查 (POST_RESPONSE 防违禁敏感词)
             if (guardrail != null && result instanceof String textResult) {
                 GuardrailResult postResult = guardrail.inspectResponse(textResult);
                 if (postResult.getAction() == GuardrailAction.BLOCK) {
@@ -275,7 +331,7 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                 }
             }
 
-            // 4. 对强类型结构化输出执行 JSR-303 数据防卫 (跳过 TokenStream 流式响应句柄)
+            // 5. 对强类型结构化输出执行 JSR-303 数据防卫 (跳过 TokenStream 流式响应句柄)
             if (result != null && !(result instanceof dev.langchain4j.service.TokenStream) && isComplexObject(result)) {
                 try {
                     ValidatorUtil.validate(result);
@@ -283,6 +339,11 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                     throw new AiException(AiResultCode.AI_RESPONSE_PARSE_ERROR,
                             "智能体响应结构化数据未通过 JSR-303 校验: " + be.getMessage(), be);
                 }
+            }
+
+            // 6. 若启用长效事实自动提炼 (episodicMemory && extractMemory)，异步提取新事实并写入向量库
+            if (episodicMemory && extractMemory && StringUtils.hasText(resolvedUserId) && result != null && !(result instanceof dev.langchain4j.service.TokenStream)) {
+                dispatchPostConversationExtraction(userQuery, result, resolvedUserId);
             }
 
             return result;
@@ -368,6 +429,130 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
             }
         }
         return false;
+    }
+
+    private EpisodicMemoryTemplate resolveEpisodicMemoryTemplate() {
+        if (this.episodicMemoryTemplate != null) {
+            return this.episodicMemoryTemplate;
+        }
+        if (this.applicationContext != null) {
+            try {
+                this.episodicMemoryTemplate = this.applicationContext.getBeanProvider(EpisodicMemoryTemplate.class).getIfAvailable();
+                return this.episodicMemoryTemplate;
+            } catch (Exception ex) {
+                log.debug("获取 EpisodicMemoryTemplate 失败或未注册: {}", ex.getMessage());
+            }
+        }
+        return null;
+    }
+
+    private String resolveUserId(Method method, Object[] args) {
+        if (method != null && args != null && args.length > 0) {
+            java.lang.reflect.Parameter[] parameters = method.getParameters();
+            // 阶梯一：方法参数标注 @UserId
+            for (int i = 0; i < parameters.length && i < args.length; i++) {
+                if (parameters[i].isAnnotationPresent(io.github.atengk.boot.ai.annotation.UserId.class)) {
+                    Object val = args[i];
+                    if (val != null && StringUtils.hasText(val.toString())) {
+                        return val.toString().trim();
+                    }
+                }
+            }
+            // 阶梯二：方法参数标注 @MemoryId 或参数命名匹配 userId / memoryId / sessionId
+            for (int i = 0; i < parameters.length && i < args.length; i++) {
+                if (parameters[i].isAnnotationPresent(dev.langchain4j.service.MemoryId.class)) {
+                    Object val = args[i];
+                    if (val != null && StringUtils.hasText(val.toString())) {
+                        return val.toString().trim();
+                    }
+                }
+                String paramName = parameters[i].getName();
+                if ("userId".equalsIgnoreCase(paramName) || "memoryId".equalsIgnoreCase(paramName) || "sessionId".equalsIgnoreCase(paramName)) {
+                    Object val = args[i];
+                    if (val != null && StringUtils.hasText(val.toString())) {
+                        return val.toString().trim();
+                    }
+                }
+            }
+        }
+        // 阶梯三：当前调用上下文 UserContextHolder.getUserId()
+        String contextUserId = UserContextHolder.getUserId();
+        if (StringUtils.hasText(contextUserId)) {
+            return contextUserId.trim();
+        }
+        return null;
+    }
+
+    private String resolveUserQuery(Method method, Object[] args) {
+        if (method == null || args == null || args.length == 0) {
+            return null;
+        }
+        java.lang.reflect.Parameter[] parameters = method.getParameters();
+        // 优先匹配 @UserMessage
+        for (int i = 0; i < parameters.length && i < args.length; i++) {
+            if (parameters[i].isAnnotationPresent(dev.langchain4j.service.UserMessage.class)) {
+                Object val = args[i];
+                if (val != null) {
+                    return val instanceof String s ? s : JsonUtil.toJsonString(val);
+                }
+            }
+        }
+        // 次选：第一个非控制参数的 String
+        for (int i = 0; i < parameters.length && i < args.length; i++) {
+            if (parameters[i].isAnnotationPresent(io.github.atengk.boot.ai.annotation.UserId.class)
+                    || parameters[i].isAnnotationPresent(dev.langchain4j.service.MemoryId.class)
+                    || parameters[i].isAnnotationPresent(dev.langchain4j.service.SystemMessage.class)) {
+                continue;
+            }
+            Object val = args[i];
+            if (val instanceof String s && StringUtils.hasText(s)) {
+                return s;
+            }
+        }
+        // 保底：第一个非控制参数对象
+        for (int i = 0; i < parameters.length && i < args.length; i++) {
+            if (parameters[i].isAnnotationPresent(io.github.atengk.boot.ai.annotation.UserId.class)
+                    || parameters[i].isAnnotationPresent(dev.langchain4j.service.MemoryId.class)) {
+                continue;
+            }
+            Object val = args[i];
+            if (val != null) {
+                return val instanceof String s ? s : JsonUtil.toJsonString(val);
+            }
+        }
+        return null;
+    }
+
+    private void dispatchPostConversationExtraction(String userQuery, Object result, String userId) {
+        EpisodicMemoryTemplate template = resolveEpisodicMemoryTemplate();
+        if (template == null || !template.isExtractorAvailable()) {
+            return;
+        }
+        String outputText = (result instanceof String s) ? s : JsonUtil.toJsonString(result);
+        if (!StringUtils.hasText(outputText)) {
+            return;
+        }
+        String conversationText;
+        if (StringUtils.hasText(userQuery)) {
+            conversationText = "用户: " + userQuery + "\n助手: " + outputText;
+        } else {
+            conversationText = "助手: " + outputText;
+        }
+        String tenantId = (!TenantContextHolder.isIgnoreTenant() && StringUtils.hasText(TenantContextHolder.getTenantId()))
+                ? TenantContextHolder.getTenantId().trim()
+                : null;
+        try {
+            template.extractAndRememberAsync(conversationText, userId, tenantId)
+                    .whenComplete((facts, ex) -> {
+                        if (ex != null) {
+                            log.warn("智能体 [{}] 异步抽取情景事实异常: {}", agentInterface.getSimpleName(), ex.getMessage());
+                        } else if (facts != null && !facts.isEmpty()) {
+                            log.debug("智能体 [{}] 异步抽取并持久化了 {} 条情景事实", agentInterface.getSimpleName(), facts.size());
+                        }
+                    });
+        } catch (Exception ex) {
+            log.warn("智能体 [{}] 派发异步事实抽取任务受控跳过: {}", agentInterface.getSimpleName(), ex.getMessage());
+        }
     }
 
     @Override
