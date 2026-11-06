@@ -79,6 +79,7 @@
 | **原生约束解码** | 原生 JSON_SCHEMA 结构化约束模式 | `JsonSchemaGenerator`<br>`AiResponseFormat` | `ateng.boot.ai.model.response-format: JSON_SCHEMA`<br>`ateng.boot.ai.model.json-schema.*` | `generateSchema(Class<?>)`，递归解析 Java 实体类反射生成符合 OpenAI 规范的 JSON Schema 严格约束模式，消除结构化输出幻觉 | `JsonSchemaGeneratorTest` / `AiTemplateTest` |
 | **财务成本核算** | 实时大模型调用成本精算与财务度量 | `TokenCostCalculator`<br>`ModelPricingConfig` | `ateng.boot.ai.pricing.models.<name>.input-price-per-million-tokens`<br>`ateng.boot.ai.pricing.models.<name>.output-price-per-million-tokens` | `calculateCost(model, inTokens, outTokens)`，高精度 BigDecimal 核算美元/人民币成本，自动上报 `ateng.ai.cost.dollars.total` 财务指标 | `TokenCostCalculatorTest` / `MetricsControllerIntegrationTest` |
 | **高危工具审批** | 声明式高危工具人机协作审批双模治理 | `@SensitiveTool`<br>`ToolApprovalTemplate`<br>`ToolApprovalStore` | `ateng.boot.ai.tool-approval.enabled`<br>`ateng.boot.ai.tool-approval.type`<br>`ateng.boot.ai.tool-approval.default-timeout` | `approve(ticketId, reviewer, comment)` / `reject(...)` / `getTicket(ticketId)` / `listPendingTickets()`，自动拦截 `HIGH`/`CRITICAL` 风险工具生成待审批工单，四维上下文快照安全重放 | `ToolApprovalTemplateTest` / `ToolApprovalControllerIntegrationTest` |
+| **长效情景记忆** | 跨会话原子化长效情景语义记忆门面与槽位覆写 | `EpisodicMemoryTemplate`<br>`MemoryFactExtractor`<br>`MemoryFact` | `ateng.boot.ai.episodic-memory.enabled`<br>`ateng.boot.ai.episodic-memory.max-recall-results`<br>`ateng.boot.ai.episodic-memory.min-score` | `remember(fact)` / `recall(query, userId)` / `forget(...)` / `extractAndRemember(text, userId)`，支持语义槽位覆写去重 (Upsert by Semantic Key) 与多租户物理隔离 | `MemoryFactTest` / `EpisodicMemoryTemplateTest` / `AiEpisodicMemoryControllerIntegrationTest` |
 
 ---
 
@@ -1219,7 +1220,7 @@ public class WealthAdvisoryService {
 
 ---
 
-### 7.5 Token 级滑动窗口与保底轻量分词器 (ChatMemoryWindowType.TOKEN)
+### 7.6 Token 级滑动窗口与保底轻量分词器 (ChatMemoryWindowType.TOKEN)
 
 当用户输入长篇技术文档、大型异常堆栈或密集业务报表时，单纯按“消息条数”裁剪（如固定保留 20 条）极易导致单条超长消息直接把大模型的上下文窗口撑爆，引发 API 网关 400 Context Length Exceeded 崩溃。
 
@@ -1240,6 +1241,75 @@ ateng:
 - **系统指令绝对保全原则**：在执行 Token 级滑动淘汰时，窗口算法始终优先锁定并保全第一条系统预设指令（`SystemMessage`），确保大模型的人格设定、安全红线与业务约束永不丢失；
 - **由远及近滑动淘汰**：当总 Token 超过 `maxTokens` 时，从最早的历史消息开始逐步淘汰，直至剩余消息总 Token 小于阈值；
 - **保底分词器 (`HeuristicTokenizer`)**：采用纯原生中英文经验加权算法，无需引入几十兆的 BPE 二进制词表依赖，保障 100% 纯净与零膨胀。
+
+---
+
+### 7.7 跨会话原子化长效情景语义记忆体系 (EpisodicMemoryTemplate)
+
+会话级滑动窗口与长会话摘要本质上仍受限于单次交互会话的生命周期。为了赋予智能体真正的“长期个性化记忆能力”（如记住用户的个人喜好、编程语言偏好、设备配置、历史交互习惯等），`ateng-boot-ai` 提供跨会话原子化长效情景语义记忆门面 `EpisodicMemoryTemplate`。
+
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      episodic-memory:
+        # 是否启用跨会话长效情景语义记忆 (默认 true)
+        enabled: true
+        # 默认语义召回最大事实数 (默认 5)
+        max-recall-results: 5
+        # 默认语义召回最低相似度阈值 (默认 0.6)
+        min-score: 0.6
+        # 原子事实抽取所使用的大模型标识 (可选；缺省使用全局默认大模型)
+        extract-model: ""
+```
+
+#### 实战业务 Java 示例
+```java
+@Service
+@RequiredArgsConstructor
+public class UserProfilingService {
+
+    private final EpisodicMemoryTemplate episodicMemoryTemplate;
+
+    // 1. 从用户交互对话中异步非阻塞提炼长效事实并持久化
+    public CompletableFuture<List<MemoryFact>> extractFromDialogue(String userId, String dialogue) {
+        return episodicMemoryTemplate.extractAndRememberAsync(dialogue, userId);
+    }
+
+    // 2. 编程式原子事实写入与语义槽位覆写 (Upsert by Semantic Key: subject + predicate)
+    public void updateUserPreference(String userId, String category, String preference) {
+        MemoryFact fact = MemoryFact.builder()
+                .userId(userId)
+                .subject("用户")
+                .predicate(category) // 例如 "语言偏好"
+                .object(preference)   // 例如 "精通 Java，主推 Spring Boot 3"
+                .confidence(0.95)
+                .build();
+        episodicMemoryTemplate.remember(fact);
+    }
+
+    // 3. 多租户与用户级物理隔离下的情景语义召回
+    public List<MemoryFact> recallPreferences(String userId, String query) {
+        return episodicMemoryTemplate.recall(query, userId, 3, 0.65);
+    }
+
+    // 4. 对称遗忘清理 (槽位级别或用户全量)
+    public void forgetPreference(String userId, String category) {
+        episodicMemoryTemplate.forgetBySlot(userId, MemoryFact.buildSlotKey("用户", category));
+    }
+}
+```
+
+#### 核心机制与生产边界防卫
+- **语义槽位覆写去重 (Upsert by Semantic Key)**：
+  在长效情景记忆中，同一主体的同一属性（如 `用户:语言偏好`）应当具备确定性唯一状态，不能随对话增多产生陈旧知识堆叠与语义冲突。`EpisodicMemoryTemplate` 在写入事实前自动依据 `slot_key + user_id + tenant_id` 执行原子下推过滤与清理，实现新知识平滑覆盖旧事实，杜绝向量库知识污染；
+- **四维上下文透传与异步抽取 (AsyncContext)**：
+  依托 Core 受管线程池调度大模型非阻塞抽取原子事实，并通过 `AsyncContext.wrapSupplier` 自动透传 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 四维快照，调用主线程零阻塞，线程上下文零丢失；
+- **多租户与用户级物理隔离 (Multi-Tenant & User DynamicFilter)**：
+  检索召回时自动感知 `TenantContextHolder` 与当前 `userId`，无缝联动 `DynamicFilterContextHolder` 复合下推物理过滤条件，彻底杜绝跨租户与跨用户数据越权与脏读；
+- **双轨事实自省与保底检索 (Dual-Track Fact List)**：
+  `listFacts(userId, limit)` 具备内存槽位索引与向量存储兜底双轨自省能力，查询列表无匹配时保底返回 `Collections.emptyList()`，严禁返回 `null`。
 
 ---
 
@@ -2642,6 +2712,17 @@ ateng:
         key-prefix: "ai:chat:memory:"
         # 强类型滑动过期 TTL (每次读写自动续期，默认 7d)
         ttl: 7d
+
+      # 跨会话原子化长效情景语义记忆配置
+      episodic-memory:
+        # 是否启用跨会话长效情景语义记忆体系 (默认 true)
+        enabled: true
+        # 默认语义召回最大结果数 (默认 5)
+        max-recall-results: 5
+        # 默认语义召回最低相似度阈值 (默认 0.6)
+        min-score: 0.6
+        # 原子事实抽取所使用的大模型标识 (可选；缺省使用全局默认大模型)
+        extract-model: ""
       
       # 认知状态图 (LangGraph4j) 与人机协作 (HITL) 配置
       graph:

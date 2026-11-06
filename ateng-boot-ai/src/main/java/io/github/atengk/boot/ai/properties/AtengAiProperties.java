@@ -79,6 +79,12 @@ public class AtengAiProperties {
     private ToolApprovalProperties toolApproval = new ToolApprovalProperties();
 
     /**
+     * 跨会话原子化长效情景语义记忆强类型配置
+     */
+    @NestedConfigurationProperty
+    private EpisodicMemoryProperties episodicMemory = new EpisodicMemoryProperties();
+
+    /**
      * SaaS 多租户专有模型绑定映射 (key 为租户标识 tenantId，value 为绑定的专有模型标识别名)
      */
     private Map<String, String> tenantModels = new LinkedHashMap<>();

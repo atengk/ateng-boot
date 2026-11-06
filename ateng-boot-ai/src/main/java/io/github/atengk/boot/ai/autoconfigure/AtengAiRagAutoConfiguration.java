@@ -11,6 +11,8 @@ import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
+import io.github.atengk.boot.ai.memory.episodic.EpisodicMemoryTemplate;
+import io.github.atengk.boot.ai.memory.episodic.MemoryFactExtractor;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
@@ -562,6 +564,62 @@ public class AtengAiRagAutoConfiguration {
                 embeddingTemplate,
                 documentSplitter,
                 defaultStoreProvider,
+                executorProvider.getIfAvailable()
+        );
+    }
+
+    /**
+     * 自动装配长效情景记忆原子事实抽取器 (MemoryFactExtractor)
+     *
+     * @param chatModelProvider     大语言模型提供者
+     * @param modelRegistryProvider AI 多模型注册中心提供者 (可选)
+     * @param properties            AI 根配置属性
+     * @param executorProvider      受管异步线程池提供者 (可选)
+     * @return MemoryFactExtractor 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(MemoryFactExtractor.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.episodic-memory", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public MemoryFactExtractor memoryFactExtractor(
+            ObjectProvider<ChatLanguageModel> chatModelProvider,
+            ObjectProvider<AiModelRegistry> modelRegistryProvider,
+            AtengAiProperties properties,
+            ObjectProvider<Executor> executorProvider) {
+        log.info("自动装配长效情景记忆原子事实抽取器 (MemoryFactExtractor)");
+        return new MemoryFactExtractor(
+                chatModelProvider.getIfAvailable(),
+                modelRegistryProvider.getIfAvailable(),
+                properties.getEpisodicMemory(),
+                properties,
+                executorProvider.getIfAvailable()
+        );
+    }
+
+    /**
+     * 自动装配跨会话长效情景语义记忆统一治理门面 (EpisodicMemoryTemplate)
+     *
+     * @param embeddingTemplate     统一向量化嵌入门面
+     * @param defaultStoreProvider 默认向量存储库提供者 (可选)
+     * @param extractorProvider    长效事实抽取器提供者 (可选)
+     * @param properties           AI 根配置属性
+     * @param executorProvider     受管异步线程池提供者 (可选)
+     * @return EpisodicMemoryTemplate 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(EpisodicMemoryTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.episodic-memory", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public EpisodicMemoryTemplate episodicMemoryTemplate(
+            EmbeddingTemplate embeddingTemplate,
+            ObjectProvider<EmbeddingStore<TextSegment>> defaultStoreProvider,
+            ObjectProvider<MemoryFactExtractor> extractorProvider,
+            AtengAiProperties properties,
+            ObjectProvider<Executor> executorProvider) {
+        log.info("自动装配跨会话长效情景语义记忆统一治理门面 (EpisodicMemoryTemplate)");
+        return new EpisodicMemoryTemplate(
+                embeddingTemplate,
+                defaultStoreProvider,
+                extractorProvider.getIfAvailable(),
+                properties.getEpisodicMemory(),
                 executorProvider.getIfAvailable()
         );
     }

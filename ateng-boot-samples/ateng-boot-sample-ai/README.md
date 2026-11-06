@@ -84,6 +84,13 @@
 | **多智能体研发协同启动** | `AiMultiAgentController` | `POST /sample/ai/multi-agent/start` | `curl -X POST "http://localhost:8080/sample/ai/multi-agent/start" -H "Content-Type: application/json" -d "{\"taskObjective\":\"实现订单延时双删一致性系统\",\"requirementDetails\":\"基于 Redis 与 Spring 事件\"}"` |
 | **死循环硬看门狗熔断测试** | `AiMultiAgentController` | `POST /sample/ai/multi-agent/watchdog-test` | `curl -X POST "http://localhost:8080/sample/ai/multi-agent/watchdog-test" -H "Content-Type: application/json" -d "{\"taskObjective\":\"死循环看门狗压力测试\"}"` |
 | **查询多智能体协同快照** | `AiMultiAgentController` | `GET /sample/ai/multi-agent/snapshot/{threadId}` | `curl "http://localhost:8080/sample/ai/multi-agent/snapshot/YOUR_THREAD_ID"` |
+| **原子事实记忆写入** | `AiEpisodicMemoryController` | `POST /sample/ai/memory/episodic/remember` | `curl -X POST "http://localhost:8080/sample/ai/memory/episodic/remember" -H "Content-Type: application/json" -d "{\"userId\":\"u1001\",\"subject\":\"用户\",\"predicate\":\"语言偏好\",\"object\":\"Java\",\"confidence\":0.95}"` |
+| **非阻塞提炼并记忆** | `AiEpisodicMemoryController` | `POST /sample/ai/memory/episodic/extract` | `curl -X POST "http://localhost:8080/sample/ai/memory/episodic/extract" -H "Content-Type: application/json" -d "{\"userId\":\"u1001\",\"text\":\"我平时主要用 Java 和 Spring Boot 3\"}"` |
+| **情景语义记忆召回** | `AiEpisodicMemoryController` | `POST /sample/ai/memory/episodic/recall` | `curl -X POST "http://localhost:8080/sample/ai/memory/episodic/recall" -H "Content-Type: application/json" -d "{\"userId\":\"u1001\",\"query\":\"用户的技术栈偏好是什么？\",\"maxResults\":3}"` |
+| **用户事实列表查询** | `AiEpisodicMemoryController` | `GET /sample/ai/memory/episodic/facts` | `curl \"http://localhost:8080/sample/ai/memory/episodic/facts?userId=u1001\"` |
+| **单条事实遗忘删除** | `AiEpisodicMemoryController` | `DELETE /sample/ai/memory/episodic/facts/{factId}` | `curl -X DELETE "http://localhost:8080/sample/ai/memory/episodic/facts/YOUR_FACT_ID"` |
+| **槽位事实遗忘删除** | `AiEpisodicMemoryController` | `DELETE /sample/ai/memory/episodic/slots` | `curl -X DELETE "http://localhost:8080/sample/ai/memory/episodic/slots?userId=u1001&slotKey=用户:语言偏好"` |
+| **用户记忆全量遗忘** | `AiEpisodicMemoryController` | `DELETE /sample/ai/memory/episodic/users/{userId}` | `curl -X DELETE "http://localhost:8080/sample/ai/memory/episodic/users/u1001"` |
 
 > **流式推流说明**：调用 `GET /sample/ai/chat/stream` 时，控制台或客户端将持续接收由 `event: reasoning`（思考过程）、`event: text`（正文内容）与 `event: done`（`[DONE]` 结束信号）组成的标准 Server-Sent Events 事件流。
 
