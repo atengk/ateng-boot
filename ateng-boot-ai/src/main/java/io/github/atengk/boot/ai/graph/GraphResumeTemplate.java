@@ -74,7 +74,10 @@ public class GraphResumeTemplate {
         for (GraphWorkflow<?> workflow : workflowRegistry.getAll()) {
             Optional<StateSnapshotVo> snapshotOpt = workflow.getSnapshot(threadId);
             if (snapshotOpt.isPresent()) {
-                return snapshotOpt;
+                StateSnapshotVo vo = snapshotOpt.get();
+                if (vo.workflowName() == null || Objects.equals(vo.workflowName(), workflow.getWorkflowName())) {
+                    return snapshotOpt;
+                }
             }
         }
 

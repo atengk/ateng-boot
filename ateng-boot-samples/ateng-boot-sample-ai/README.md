@@ -81,6 +81,9 @@
 | **查询审批工单详情快照** | `AiToolApprovalController` | `GET /sample/ai/approval/tickets/{ticketId}` | `curl "http://localhost:8080/sample/ai/approval/tickets/YOUR_TICKET_ID"` |
 | **人工审批通过重放执行** | `AiToolApprovalController` | `POST /sample/ai/approval/tickets/{ticketId}/approve` | `curl -X POST "http://localhost:8080/sample/ai/approval/tickets/YOUR_TICKET_ID/approve" -H "Content-Type: application/json" -d "{\"comment\":\"财务审批通过准予退款\"}"` |
 | **人工审批驳回拒绝执行** | `AiToolApprovalController` | `POST /sample/ai/approval/tickets/{ticketId}/reject` | `curl -X POST "http://localhost:8080/sample/ai/approval/tickets/YOUR_TICKET_ID/reject" -H "Content-Type: application/json" -d "{\"reason\":\"风控检测疑似刷单驳回\"}"` |
+| **多智能体研发协同启动** | `AiMultiAgentController` | `POST /sample/ai/multi-agent/start` | `curl -X POST "http://localhost:8080/sample/ai/multi-agent/start" -H "Content-Type: application/json" -d "{\"taskObjective\":\"实现订单延时双删一致性系统\",\"requirementDetails\":\"基于 Redis 与 Spring 事件\"}"` |
+| **死循环硬看门狗熔断测试** | `AiMultiAgentController` | `POST /sample/ai/multi-agent/watchdog-test` | `curl -X POST "http://localhost:8080/sample/ai/multi-agent/watchdog-test" -H "Content-Type: application/json" -d "{\"taskObjective\":\"死循环看门狗压力测试\"}"` |
+| **查询多智能体协同快照** | `AiMultiAgentController` | `GET /sample/ai/multi-agent/snapshot/{threadId}` | `curl "http://localhost:8080/sample/ai/multi-agent/snapshot/YOUR_THREAD_ID"` |
 
 > **流式推流说明**：调用 `GET /sample/ai/chat/stream` 时，控制台或客户端将持续接收由 `event: reasoning`（思考过程）、`event: text`（正文内容）与 `event: done`（`[DONE]` 结束信号）组成的标准 Server-Sent Events 事件流。
 

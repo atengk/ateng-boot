@@ -137,7 +137,17 @@ public enum AiResultCode implements IResultCode {
     /**
      * 工具审批工单已被拒绝执行
      */
-    AI_TOOL_APPROVAL_REJECTED(61025, "工具审批工单已被拒绝执行");
+    AI_TOOL_APPROVAL_REJECTED(61025, "工具审批工单已被拒绝执行"),
+
+    /**
+     * 主管多智能体协同工作流达到最大轮次看门狗上限
+     */
+    AI_SUPERVISOR_WATCHDOG_TRIPPED(61026, "主管多智能体协同工作流达到最大轮次看门狗上限"),
+
+    /**
+     * 未找到指定名称的专工 Worker
+     */
+    AI_SUPERVISOR_WORKER_NOT_FOUND(61027, "未找到指定名称的专工 Worker");
 
     private final Integer code;
     private final String msg;

@@ -209,12 +209,24 @@ public abstract class GraphWorkflow<S extends BaseGraphState> implements Initial
         try {
             Optional<StateSnapshot<S>> snapshotOpt = compiledGraph.stateOf(config);
             if (snapshotOpt.isPresent() && snapshotOpt.get().state() != null) {
+                S state = snapshotOpt.get().state();
+                Object wfName = state.data().get(TypedKey.WORKFLOW_NAME.name());
+                if (wfName != null && !Objects.equals(wfName, workflowName)) {
+                    return Optional.empty();
+                }
                 return Optional.of(toSnapshotVo(threadId, snapshotOpt.get(), null));
             }
 
             if (checkpointSaver != null) {
                 Optional<Checkpoint> cpOpt = checkpointSaver.get(config);
                 if (cpOpt.isPresent()) {
+                    Map<String, Object> cpState = cpOpt.get().getState();
+                    if (cpState != null) {
+                        Object wfName = cpState.get(TypedKey.WORKFLOW_NAME.name());
+                        if (wfName != null && !Objects.equals(wfName, workflowName)) {
+                            return Optional.empty();
+                        }
+                    }
                     StateSnapshot<S> snap = StateSnapshot.of(cpOpt.get(), config, stateFactory);
                     return Optional.of(toSnapshotVo(threadId, snap, null));
                 }

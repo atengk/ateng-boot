@@ -43,6 +43,7 @@
 | **多图动态注册中心** | 工作流单例受管统一纳管与调度 | `GraphWorkflowRegistry` | - | 容器启动时自动探测并收集所有 `GraphWorkflow` Bean，提供基于名字的动态查找、注册与枚举探测 | `GraphWorkflowRegistryTest` / `AtengAiGraphAutoConfigurationTest` |
 | **分布式租约锁管理器** | 高熵令牌校验与 Lua 释放防卫 | `GraphLockManager`<br>`LocalGraphLockManager`<br>`RedisGraphLockManager` | `ateng.boot.ai.graph.checkpoint.lock-prefix`<br>`ateng.boot.ai.graph.checkpoint.lock-ttl` | Redis Lua 脚本校验令牌匹配原子释放锁，杜绝超时误删他人有效锁，无 Redis 依赖时本地并发安全平滑降级 | `GraphResumeTemplateTest` |
 | **人机协作恢复门面** | 断点恢复、CAS 跃迁与工单撤销 | `GraphResumeTemplate` | `ateng.boot.ai.graph.*` | 提供 `getSnapshot` 快照探查、`resume` 同步恢复、`resumeAsync` 异步透传四维上下文与 `cancel` 工单主动撤销完备对称门面 | `GraphResumeTemplateTest` / `WorkflowControllerIntegrationTest` |
+| **主管专工协同** | 基于 LangGraph4j 的主管-专工分层认知状态图与死循环硬看门狗 | `SupervisorWorkerWorkflow`<br>`SupervisorState`<br>`SupervisorDecision`<br>`WorkerHandler` | `ateng.boot.ai.graph.enabled` | 抽象泛型多智能体拓扑基类，中心主管生成强类型调度决策并条件路由至专工节点池，专工自动回流主管，内置 `maxTurns`（默认 10 轮）死循环硬看门狗安全熔断 | `SupervisorWorkerWorkflowTest` / `MultiAgentControllerIntegrationTest` |
 | **链路可观测** | 全维请求监听与审计事件捕获 | `AtengAiObservabilityListener`<br>`AiAuditRecord`<br>`AiAuditLogHandler` | `ateng.boot.ai.audit.enabled`<br>`ateng.boot.ai.audit.log-payload`<br>`ateng.boot.ai.audit.max-payload-chars` | 注册为 `ChatModelListener`，透明监听同步与流式生命周期，捕获 Model、Tokens、耗时、状态，异步投递至受管线程池与 `AiAuditLogHandler` SPI | `AtengAiObservabilityListenerTest` / `MetricsControllerIntegrationTest` |
 | **安全脱敏** | 多维度敏感信息正则脱敏 | `AiPiiMasker` | `ateng.boot.ai.audit.mask-pii` | `mask(String)`，自动对手机号、身份证、银行卡、邮箱、API Key 凭据执行掩码打星号，保障“内存真明文”与落盘安全 | `AiPiiMaskerTest` |
 | **指标度量** | Micrometer 云原生三大黄金指标 | `MeterRegistry`<br>`AtengAiObservabilityListener` | - | 自动上报 `ateng.ai.requests.total` (Counter)、`ateng.ai.duration.seconds` (Timer)、`ateng.ai.tokens.total` (Counter, tag: type=prompt/completion)，支持 Prometheus/Grafana | `AtengAiObservabilityListenerTest` / `MetricsControllerIntegrationTest` |
@@ -1427,6 +1428,138 @@ public class AiWorkflowController {
 - **分布式租约锁防卫**：优先使用 Redis 结合高熵 UUID 令牌与 Lua 脚本原子释放；无 Redis 依赖时自动优雅降级为本地 `ConcurrentHashMap` 租约锁，杜绝超时误删他人有效锁；
 - **CAS 原子状态跃迁防卫**：严格校验快照必须为 `SUSPENDED` 态方可恢复；对已撤销（`CANCELLED`）抛出 `AI_GRAPH_ALREADY_CANCELLED`，对已终态/运行中工单抛出 `AI_GRAPH_ALREADY_RESUMED`，杜绝并发双击；
 - **四维上下文异步透传**：`resumeAsync` 深度融合 Core 底座 `AsyncContext.wrapSupplier`，自动捕获并在异步线程池中还原 MDC `traceId` 与操作人上下文。
+
+---
+
+### 8.5 主管-专工分层认知状态图与死循环硬看门狗 (`SupervisorWorkerWorkflow`)
+
+在企业级复杂任务规划与协同开发中，单一智能体往往难以兼顾架构调研、业务编码与安全审查等多重复杂职责。`ateng-boot-ai` 提供基于 LangGraph4j 的主管-专工（Supervisor-Worker）分层认知状态图抽象，由中心主管 Agent 动态分拆子任务并调度各专工 Worker 协同流转，专工产出结果自动汇聚回流至主管决策，形成闭环。
+
+拓扑状态图内置 **死循环硬看门狗（Watchdog）**，强置 `maxTurns`（默认 10 轮）上限；当多 Agent 陷入互相推诿或无限循环时，看门狗强制熔断跳转至终态，彻底杜绝模型失控发散与 Token 空转消耗。
+
+#### 核心 YAML 配置
+```yaml
+ateng:
+  boot:
+    ai:
+      graph:
+        # 是否启用认知状态图工作流底座 (默认 true)
+        enabled: true
+        checkpoint:
+          # 双模自适应持久化存储: AUTO (默认自动探测 Redis，未引入平滑回退内存), IN_MEMORY, REDIS
+          type: AUTO
+          # 检查点键前缀
+          key-prefix: "ateng:ai:graph:checkpoint:"
+          # 检查点保留时长与淘汰 TTL
+          checkpoint-ttl: 7d
+```
+
+#### 实战业务 Java 示例
+
+##### 1. 定义主管-专工认知工作流
+```java
+@Component
+public class SoftwareDevSupervisorWorkflow extends SupervisorWorkerWorkflow<SupervisorState> {
+
+    public SoftwareDevSupervisorWorkflow() {
+        super("softwareDevSupervisorWorkflow", SupervisorState::new);
+    }
+
+    @Override
+    protected int maxTurns() {
+        return 10; // 允许主管调度最大轮次上限（默认 10 轮，超限硬看门狗熔断）
+    }
+
+    @Override
+    protected SupervisorDecision decide(SupervisorState state) {
+        Map<String, Object> results = state.getWorkerResults();
+
+        // 阶段 1: 尚未预研，指派架构调研员
+        if (!results.containsKey("researcher")) {
+            return SupervisorDecision.next("researcher",
+                    "针对目标 [" + state.getTaskObjective() + "] 输出架构设计与选型方案",
+                    "阶段1: 架构预研与方案选型");
+        }
+
+        // 阶段 2: 调研完成，指派核心研发员
+        if (!results.containsKey("coder")) {
+            return SupervisorDecision.next("coder",
+                    "根据调研方案实现核心业务代码并编写单元测试",
+                    "阶段2: 业务编码与单测落地");
+        }
+
+        // 阶段 3: 编码完成，指派质量审查员
+        if (!results.containsKey("reviewer")) {
+            return SupervisorDecision.next("reviewer",
+                    "审查编码实现的架构规范、圈复杂度与并发安全",
+                    "阶段3: 质量合规与安全审查");
+        }
+
+        // 阶段 4: 全部专工完成，主管最终收敛归档
+        return SupervisorDecision.finish("【软件研发协同完成】架构预研、核心编码与质量审查全流程达成，交付物就绪！");
+    }
+
+    @Override
+    protected Map<String, WorkerHandler<SupervisorState>> registerWorkers() {
+        Map<String, WorkerHandler<SupervisorState>> workers = new LinkedHashMap<>();
+
+        // 架构调研专工
+        workers.put("researcher", (state, instructions) -> 
+                "架构方案确立：采用 Spring Boot 3 + Redis 延时队列保证数据最终一致性");
+
+        // 核心编码专工（支持返回 Map 增量补丁自动展开合并至状态机）
+        workers.put("coder", (state, instructions) -> Map.of(
+                "serviceClass", "OrderFulfillmentService",
+                "coverageRate", "92%",
+                "gitCommit", "feat(order): implement fulfillment workflow"
+        ));
+
+        // 质量审查专工
+        workers.put("reviewer", (state, instructions) -> 
+                "审查通过：代码结构清晰、无线程安全隐患、无持久层实体泄漏");
+
+        return workers;
+    }
+}
+```
+
+##### 2. 暴露体验 Controller 接入端点
+```java
+@RestController
+@RequestMapping("/sample/ai/multi-agent")
+@RequiredArgsConstructor
+public class AiMultiAgentController {
+
+    private final SoftwareDevSupervisorWorkflow workflow;
+    private final GraphResumeTemplate resumeTemplate;
+
+    @PostMapping("/start")
+    public Result<MultiAgentTaskVo> start(@Valid @RequestBody MultiAgentTaskRequest request) {
+        SupervisorState state = new SupervisorState();
+        state.setTaskObjective(request.getTaskObjective());
+        
+        StateSnapshotVo snapshot = workflow.start(state);
+        return Result.success(MultiAgentTaskVo.from(snapshot));
+    }
+
+    @GetMapping("/snapshot/{threadId}")
+    public Result<MultiAgentTaskVo> getSnapshot(@PathVariable String threadId) {
+        StateSnapshotVo snapshot = resumeTemplate.getSnapshot(threadId)
+                .orElseThrow(() -> new BusinessException("未找到工作流快照"));
+        return Result.success(MultiAgentTaskVo.from(snapshot));
+    }
+}
+```
+
+#### 生产扩展接管 (Customization & Extensibility)
+- **大模型驱动动态决断**：`decide(S state)` 支持注入 `AiTemplate`，依托 `chatForObject(prompt, SupervisorDecision.class)` 生成纯结构化调度指令，实现自适应动态派工；
+- **自定义状态扩展**：可继承 `SupervisorState` 扩展业务专属属性，并在 `WorkerHandler` 中返回 `Map<String, Object>`，框架自动将键值展开合并至状态机；
+- **自定义终态收敛**：重写 `onFinish(S state)` 钩子，可在任务完成时统一执行指标上报、落库归档或向用户发送通知事件。
+
+#### 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+- **死循环硬看门狗不变量**：当决断轮次超过 `maxTurns()` 时，框架记录 WARN 告警，自动置位 `isFinished=true` 并将状态机强制路由至 `finish` 终态节点，彻底杜绝多智能体无限自指与 Token 烧毁；
+- **异常因果隔离与降级**：专工执行发生异常时，统一受控转译为语义化 `AiException` 并 100% 保留原始因果链；主管若返回不存在的专工标识，框架自动告警并优雅降级至终态，防止主线程挂死；
+- **多图命名空间严格隔离**：检查点在持久层存储时自包含 `workflowName`，在多工作流共享同一存储介质时严格执行名称匹配过滤，杜绝跨工作流快照串读与状态错乱。
 
 ---
 
