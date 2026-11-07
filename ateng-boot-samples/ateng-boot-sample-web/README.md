@@ -48,6 +48,23 @@
 | **异步处理超时 (503 拦截)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/async-timeout` | `curl "http://localhost:8080/sample/web/contract/error/async-timeout"` |
 | **协议契约解包视图** | `WebContractAndExceptionController` | `GET /sample/web/contract/unpack` | `curl "http://localhost:8080/sample/web/contract/unpack"` |
 
+### 3.2 全链路追踪、请求体缓存与双向可观测审计 (`WebObservabilityAndAuditController`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **全链路 TraceId 提取** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/trace` | `curl "http://localhost:8080/sample/web/observability/trace"` |
+| **自定义 TraceId 传入** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/trace` | `curl "http://localhost:8080/sample/web/observability/trace" -H "X-Trace-Id: custom-trace-888"` |
+| **虚拟线程与 Trace 状态探测** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/virtual-thread` | `curl "http://localhost:8080/sample/web/observability/virtual-thread"` |
+| **请求体多次重复读取验证** | `WebObservabilityAndAuditController` | `POST /sample/web/observability/body-cache` | `curl -X POST "http://localhost:8080/sample/web/observability/body-cache" -H "Content-Type: application/json" -d "{\"action\":\"test-cache\",\"amount\":100}"` |
+| **双向报文采样与凭据掩码** | `WebObservabilityAndAuditController` | `POST /sample/web/observability/payload-echo` | `curl -X POST "http://localhost:8080/sample/web/observability/payload-echo" -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"Secret123\",\"token\":\"tok-xyz\"}"` |
+| **免采样白名单路径验证** | `WebObservabilityAndAuditController` | `POST /sample/web/observability/payload-excluded` | `curl -X POST "http://localhost:8080/sample/web/observability/payload-excluded" -H "Content-Type: application/json" -d "{\"exempt\":\"data\"}"` |
+| **新增操作员审计 (动态脱敏)** | `WebObservabilityAndAuditController` | `POST /sample/web/observability/audit/operator` | `curl -X POST "http://localhost:8080/sample/web/observability/audit/operator" -H "Content-Type: application/json" -d "{\"username\":\"operator_a\",\"password\":\"AdminPass123\",\"email\":\"op@example.com\",\"phone\":\"13812345678\"}"` |
+| **查询操作员审计记录** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/audit/operator/10086` | `curl "http://localhost:8080/sample/web/observability/audit/operator/10086"` |
+| **操作异常审计状态捕获** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/audit/error` | `curl "http://localhost:8080/sample/web/observability/audit/error"` |
+| **接口调用耗时日志审计** | `WebObservabilityAndAuditController` | `POST /sample/web/observability/weblog` | `curl -X POST "http://localhost:8080/sample/web/observability/weblog" -H "Content-Type: application/json" -d "{\"username\":\"audited_user\",\"password\":\"pass456\"}"` |
+| **慢报表查询耗时告警模拟** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/slow-query` | `curl "http://localhost:8080/sample/web/observability/slow-query?delayMs=60"` |
+| **慢请求白名单免告警放行** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/slow-excluded` | `curl "http://localhost:8080/sample/web/observability/slow-excluded?delayMs=60"` |
+
 ---
 
 ## 4. 全真自动化回归命令

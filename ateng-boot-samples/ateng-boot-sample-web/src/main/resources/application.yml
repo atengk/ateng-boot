@@ -32,11 +32,18 @@ ateng:
         secret-key: "TestSecretKey123"
         app-id: "test-app"
         expire: 60s
+      payload-log:
+        enabled: true
+        max-payload-size: 4KB
+        exclude-urls:
+          - "/actuator/**"
+          - "/sample/web/observability/payload-excluded"
       slow-request:
         enabled: true
         threshold: 3s
         exclude-urls:
           - "/actuator/**"
+          - "/sample/web/observability/slow-excluded"
           - "/api/sample/runtime/slow-excluded"
       operate-log:
         enabled: true

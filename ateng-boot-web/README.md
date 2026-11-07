@@ -8,18 +8,18 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **链路追踪** | HTTP 链路追踪过滤器与门面 | `TraceFilter`, `TraceUtil` | `ateng.boot.web.trace.enabled`, `header` (或 `header-name`) | `TraceUtil.getTraceId()`, `setTraceId(id)`, `clear()`, MDC `traceId` 注入并在 `finally` 严格清理 | `TraceFilterTest.java`, `TraceUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
+| **链路追踪** | HTTP 链路追踪过滤器与门面 | `TraceFilter`, `TraceUtil` | `ateng.boot.web.trace.enabled`, `header` (或 `header-name`) | `TraceUtil.getTraceId()`, `setTraceId(id)`, `clear()`, MDC `traceId` 注入并在 `finally` 严格清理 | `TraceFilterTest.java`, `TraceUtilTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **全局异常防御** | 全局统一异常拦截与生产脱敏 | `GlobalExceptionHandler`, `GlobalExceptionCustomizer` | - | 挂载 `GlobalExceptionCustomizer` SPI 链式定制，拦截 `BusinessException`（双模因果堆栈）、`MethodArgumentNotValidException`、`HandlerMethodValidationException`、`BindException`、`ConstraintViolationException`、400/404/405/406/413/415/503/500 精细化转译与生产脱敏 | `GlobalExceptionHandlerTest.java`, `WebContractAndExceptionControllerTest.java`, `WebExceptionSampleControllerTest.java` |
 | **精度与时间规范** | 53 位雪花精度防截断与时间序列化 | `JacksonCustomizer` | `ateng.boot.web.long-to-string` | Long/BigInteger 序列化为 String，标准 `yyyy-MM-dd HH:mm:ss` 格式化，不覆盖原生 `ObjectMapper` | `JacksonCustomizerTest.java`, `WebContractAndExceptionControllerTest.java`, `WebContractSampleControllerTest.java` |
-| **接口审计日志** | 声明式接口耗时审计与安全防 OOM | `@WebLog`, `WebLogAspect` | `ateng.boot.web.log.enabled` | `@WebLog(value, printParams, printResult, excludeParams)`，大文件 Multipart 自动占位防 OOM | `WebLogAspectTest.java`, `WebAuditSampleControllerTest.java` |
+| **接口审计日志** | 声明式接口耗时审计与安全防 OOM | `@WebLog`, `WebLogAspect` | `ateng.boot.web.log.enabled` | `@WebLog(value, printParams, printResult, excludeParams)`，大文件 Multipart 自动占位防 OOM | `WebLogAspectTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **动态 CORS 跨域** | 动态跨域来源校验与凭证安全反射 | `CorsOriginProvider`, `DefaultCorsOriginProvider`, `DynamicCorsConfigurationSource` | `ateng.boot.web.cors.enabled`, `allowed-origins`, `allow-credentials`, `allow-localhost`, `max-age` | 基于配置属性通配或 SPI 动态扩展校验 Origin，安全反射并支持凭据传输（Cookie），放行本地 localhost 调试 | `DynamicCorsTest.java`, `WebTrafficSampleControllerTest.java` |
 | **自适应限流防刷** | 三级自适应令牌桶与多维限流 | `@RateLimiter`, `LimitType`, `RateLimiterStore`, `InMemoryRateLimiterStore`, `RedisRateLimiterStore`, `RedissonRateLimiterStore` | `ateng.boot.web.ratelimit.enabled`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@RateLimiter(key, time, count, limitType)`，支持默认/IP/用户/租户（LimitType.TENANT）多维限流防刷与租户流量隔离 | `RateLimiterAspectTest.java`, `AtengRateLimiterAutoConfigurationTest.java`, `InMemoryRateLimiterStoreTest.java`, `WebTrafficSampleControllerTest.java`, `WebTenantRateLimiterSampleTest.java` |
 | **自适应防重幂等** | 三级自适应防重幂等引擎 | `@Idempotent`, `IdempotentKeyStore`, `InMemoryIdempotentKeyStore`, `RedisIdempotentKeyStore`, `RedissonIdempotentKeyStore` | `ateng.boot.web.idempotent.enabled`, `key-prefix`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@Idempotent(key, timeout, message, delKeyOnException)`，支持 SpEL 动态提取业务键、自动防抖、业务异常释放 | `IdempotentAspectTest.java`, `AtengIdempotentAutoConfigurationTest.java`, `InMemoryIdempotentKeyStoreTest.java`, `WebTrafficSampleControllerTest.java` |
 | **云原生优雅停机** | K8s 就绪探针排空与容器生命周期治理 | `AtengGracefulShutdownHandler`, `PreStopEndpoint`, `PreStopController` | `ateng.boot.web.shutdown.enabled`, `drain-timeout`, `smart-lifecycle-enabled`, `actuator-endpoint-enabled`, `mvc-endpoint-enabled`, `mvc-endpoint-path` | 翻转 `ReadinessState.REFUSING_TRAFFIC`，受管静默排空等待（`drain-timeout: 10s`），`AtomicBoolean` 状态机排空幂等，支持 Actuator `/actuator/pre-stop` 与 MVC `/pre-stop` 双模端点，`SmartLifecycle` 兜底 | `AtengGracefulShutdownHandlerTest.java`, `PreStopEndpointTest.java`, `PreStopControllerTest.java`, `AtengGracefulShutdownAutoConfigurationTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
-| **慢请求主动告警** | 长耗时慢请求性能主动告警与长连接放行 | `SlowRequestFilter` | `ateng.boot.web.slow-request.enabled`, `threshold`, `exclude-urls` | 请求出口处计算总耗时，超过阈值（强类型 Duration）输出包含 TraceId、URI、Method、耗时与 ClientIp 的 `[SLOW_REQUEST]` 格式化 WARN 日志，自动放行 WebSocket、SSE、文件下载与异步挂起请求，支持 Ant 路径白名单 | `SlowRequestFilterTest.java`, `SlowRequestMockMvcTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
-| **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogModel` | `ateng.boot.web.operate-log.enabled` | `@OperateLog(module, type, description, saveParams, saveResult, excludeParams)`，自动关联线程上下文（操作人/租户），出参自动联动 `@FieldSensitive` 视图脱敏，保留原始异常因果链，支持异步存储 SPI 与开箱即用 JSON 保底 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java`, `WebAuditSampleControllerTest.java` |
-| **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流，单次超限（DataSize）快速失败截断防 OOM，自动跳过表单与文件上传，旧版 `RequestBodyCachingFilter` 保持向后兼容委托 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
-| **载荷采样日志** | HTTP 请求/响应双向安全采样与截断防 OOM | `PayloadLoggingFilter` | `ateng.boot.web.payload-log.enabled`, `max-payload-size`, `exclude-urls` | 请求出口处单行聚合输出包含 TraceId、Method、URI、Status、Cost、ReqBody 与 RespBody 的 `[HTTP_PAYLOAD]` 日志，内建 MIME 过滤、凭据正则掩码（`***`）、强类型截断（默认 4KB）、状态自适应提升（$\ge 400$ 提升为 WARN）并在 `finally` 确定性执行 `copyBodyToResponse()` | `PayloadLoggingFilterTest.java`, `PayloadLoggingMockMvcTest.java` |
+| **慢请求主动告警** | 长耗时慢请求性能主动告警与长连接放行 | `SlowRequestFilter` | `ateng.boot.web.slow-request.enabled`, `threshold`, `exclude-urls` | 请求出口处计算总耗时，超过阈值（强类型 Duration）输出包含 TraceId、URI、Method、耗时与 ClientIp 的 `[SLOW_REQUEST]` 格式化 WARN 日志，自动放行 WebSocket、SSE、文件下载与异步挂起请求，支持 Ant 路径白名单 | `SlowRequestFilterTest.java`, `SlowRequestMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
+| **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogModel` | `ateng.boot.web.operate-log.enabled` | `@OperateLog(module, type, description, saveParams, saveResult, excludeParams)`，自动关联线程上下文（操作人/租户），出参自动联动 `@FieldSensitive` 视图脱敏，保留原始异常因果链，支持异步存储 SPI 与开箱即用 JSON 保底 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java`, `WebObservabilityAndAuditControllerTest.java` |
+| **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流，单次超限（DataSize）快速失败截断防 OOM，自动跳过表单与文件上传，旧版 `RequestBodyCachingFilter` 保持向后兼容委托 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
+| **载荷采样日志** | HTTP 请求/响应双向安全采样与截断防 OOM | `PayloadLoggingFilter` | `ateng.boot.web.payload-log.enabled`, `max-payload-size`, `exclude-urls` | 请求出口处单行聚合输出包含 TraceId、Method、URI、Status、Cost、ReqBody 与 RespBody 的 `[HTTP_PAYLOAD]` 日志，内建 MIME 过滤、凭据正则掩码（`***`）、强类型截断（默认 4KB）、状态自适应提升（$\ge 400$ 提升为 WARN）并在 `finally` 确定性执行 `copyBodyToResponse()` | `PayloadLoggingFilterTest.java`, `PayloadLoggingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `SignAlgorithm`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `RequestBodyCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature` | `@ApiSign(expireSeconds, signResponse)`，支持 HMAC-SHA256 对称、RSA 非对称与国密 SM2/SM3 非对称算法，请求体可重读包装，Nonce 防重放与响应加签 | `ApiSignerTest.java`, `Sm2SignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `RequestBodyCachingFilterTest.java`, `WebSecuritySignSampleControllerTest.java`, `WebSecuritySignRsaSampleTest.java`, `WebSecuritySignSm2SampleTest.java` |
 | **安全响应头防御** | 等保三级基线安全响应头注入与容器指纹剥离 | `SecurityHeadersFilter`, `SecurityHeadersProperties` | `ateng.boot.web.security-headers.enabled`, `content-type-options`, `frame-options`, `xss-protection`, `referrer-policy`, `content-security-policy`, `permissions-policy`, `remove-server-header` | 注入 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`X-XSS-Protection: 1; mode=block`、`Referrer-Policy: strict-origin-when-cross-origin` 等基准头，剥离容器 `Server` 头，`containsHeader` 守卫防覆盖 | `SecurityHeadersFilterTest.java`, `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **ETag 协商缓存** | 基于浅层哈希的内容协商缓存与 304 节省带宽 | `ShallowEtagHeaderFilter`, `EtagProperties` | `ateng.boot.web.etag.enabled`, `write-weak-etag` | 条件自动装配 Spring 原生 `ShallowEtagHeaderFilter`，自动计算内容摘要并生成 `ETag` 响应头，配合 `If-None-Match` 返回 `304 Not Modified` 节省网络带宽 | `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
@@ -721,56 +721,375 @@ public Result<WebEnumUserResponse> bindEnum(@Valid @RequestBody WebEnumUserReque
 
 ---
 
-## 4. 全链路追踪与 MDC 安全流转 (`TraceFilter` & `TraceUtil`)
+## 4. 全链路追踪、请求体缓存与双向可观测审计
 
+### 4.1 全链路追踪与 MDC 安全流转 (`TraceFilter` & `TraceUtil`)
 
-### 场景痛点
-微服务或单体应用在排查生产异常时，若没有全局链路 ID，海量并发日志交织在一起无法还原现场链路。
+#### 场景痛点
+微服务或高并发单体应用在排查生产异常时，若缺乏唯一的全链路追踪 ID，海量并发日志交织在一起无法还原现场调用上下文；若异步线程池或虚拟线程未透传该上下文，排障链条将在异步边界彻底断裂；若请求出口处未彻底清理 ThreadLocal，将引发线程复用下的上下文脏读与内存泄露。
 
-### 核心机制
-- 在 HTTP 请求入口处自动提取入站请求头 `X-Trace-Id`；若无则通过 `IdUtil.fastSimpleUUID()`（无锁并发生成）自动初始化；
-- 写入日志框架 MDC `traceId`，自动回写至 HTTP 响应头 `X-Trace-Id`；
-- 在请求出口处（`finally` 块）严格清理当前线程的 MDC 现场，绝无线程池内存泄露或跨请求污染；
-- 配合 Core 模块的 `ContextCopyingTaskDecorator`，异步线程池可自动无缝透传该 `traceId`。
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      trace:
+        # 是否启用全链路追踪过滤器（默认 true）
+        enabled: true
+        # HTTP 链路追踪请求头/响应头名称（默认 X-Trace-Id）
+        header: X-Trace-Id
+```
 
-### 核心代码范式
+#### 核心机制与全链路流转
+- **入口自洽提取与生成**：在 HTTP 入口处自动提取入站请求头 `X-Trace-Id`；若调用方未传，则基于无锁 `IdUtil.fastSimpleUUID()` 极速初始化；
+- **MDC 注入与响应头回写**：将 TraceId 注入 SLF4J MDC `traceId`，并在 HTTP 响应头自动回写 `X-Trace-Id`，便于前端与网关协同溯源；
+- **确定性出口现场清理**：在 `TraceFilter` 的 `finally` 块中严格执行 `TraceUtil.clear()`（MDC 现场清空），杜绝 Servlet 容器线程池内存泄露或跨请求污染；
+- **虚拟线程与异步透传**：配合 Core 模块的 `ContextCopyingTaskDecorator` 与受管线程池，异步任务与虚拟线程可无感透传 `traceId`。
+
+#### 1:1 实测业务代码范式
 ```java
-import io.github.atengk.boot.web.trace.TraceUtil;
+// Controller 端点：获取当前请求的全局 TraceId 与虚拟线程透传状态
+@GetMapping("/trace")
+public Result<String> getTraceId() {
+    return Result.success(TraceUtil.getTraceId());
+}
 
-// 1. 获取当前请求全链路 TraceId
-String traceId = TraceUtil.getTraceId();
+@GetMapping("/virtual-thread")
+public Result<Map<String, Object>> checkVirtualThread() throws Exception {
+    Map<String, Object> data = new LinkedHashMap<>();
+    Executor executor = taskExecutorProvider.getIfAvailable();
+    if (executor != null) {
+        CompletableFuture<Boolean> future = CompletableFuture.supplyAsync(
+                () -> isVirtualThread(Thread.currentThread()),
+                executor
+        );
+        data.put("isVirtual", future.get(3, TimeUnit.SECONDS));
+    } else {
+        data.put("isVirtual", isVirtualThread(Thread.currentThread()));
+    }
+    data.put("threadName", Thread.currentThread().getName());
+    data.put("traceId", TraceUtil.getTraceId());
+    return Result.success(data);
+}
+```
 
-// 2. 编程式注入自定义 TraceId
-TraceUtil.setTraceId("CUSTOM_TRACE_999");
+#### 真实 HTTP 响应报文验证 (`GET /sample/web/observability/trace`)
+```http
+HTTP/1.1 200 OK
+X-Trace-Id: custom-trace-88889999
+Content-Type: application/json
 
-// 3. 安全清理现场
-TraceUtil.clear();
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": "custom-trace-88889999",
+  "success": true,
+  "traceId": "custom-trace-88889999"
+}
 ```
 
 ---
 
-## 6. Web 请求接口审计日志与耗时观测 (`@WebLog`)
+### 4.2 通用请求体可重读管道与载荷防爆 (`ContentCachingFilter`)
 
-### 场景痛点
-排查接口偶发慢响应或线上参数复现，手工写 `log.info` 繁琐易漏，且容易因序列化大文件导致 OOM。
+#### 场景痛点
+Servlet 标准的 `HttpServletRequest.getInputStream()` 属于单向瞬态流，一旦被加签验签切面、操作审计或认证过滤器读取一次后流便耗尽，后续 Controller 将直接抛出 `HttpMessageNotReadableException`；若盲目缓冲所有报文，攻击者投递超大载荷将瞬间引发应用内存溢出（OOM）。
 
-### 核心代码范式
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      body-cache:
+        # 单次请求体最大缓存与重读容量限制（超限快速失败截断防 OOM，默认 2MB）
+        max-body-size: 2MB
+```
+
+#### 核心机制
+- **按需条件装配**：仅在开启 API 加签验签或 Payload 采样日志时激活，关闭时零包装开销；
+- **安全可重读包装**：自动将 POST/PUT/PATCH 请求升级为 `CachedBodyHttpServletRequest`，支持多次重复调用 `getInputStream()`；
+- **智能跳过与载荷截断**：自动跳过 `multipart/form-data` 文件上传与普通表单；单次请求体超出 `max-body-size`（强类型 DataSize）时安全截断防 OOM。
+
+#### 1:1 实测业务代码范式
 ```java
-@RestController
-@RequestMapping("/orders")
-public class OrderController {
+// Controller 端点：多次连续读取输入流验证可重复消费能力
+@PostMapping("/body-cache")
+public Result<Map<String, Object>> testBodyCache(HttpServletRequest request) throws IOException {
+    // 第一次读取
+    byte[] firstRead = request.getInputStream().readAllBytes();
+    // 第二次在同一次请求中再次读取输入流
+    byte[] secondRead = request.getInputStream().readAllBytes();
 
-    @PostMapping("/create")
-    @WebLog(value = "创建订单", excludeParams = {"password", "pinCode"}, printCostTime = true)
-    public Result<String> createOrder(@RequestBody OrderCreateDTO dto) {
-        return Result.success(orderService.create(dto));
-    }
+    boolean isCachedWrapper = request instanceof CachedBodyHttpServletRequest;
+    byte[] cachedBodyBytes = isCachedWrapper
+            ? ((CachedBodyHttpServletRequest) request).getCachedBody()
+            : new byte[0];
+
+    Map<String, Object> map = new LinkedHashMap<>();
+    map.put("firstReadLength", firstRead.length);
+    map.put("secondReadLength", secondRead.length);
+    map.put("isCachedWrapper", isCachedWrapper);
+    map.put("cachedLength", cachedBodyBytes.length);
+    map.put("contentMatch", firstRead.length == secondRead.length);
+    return Result.success(map);
 }
 ```
-### 日志呈现
-```log
-2026-10-16 16:00:00.123 [http-nio-8080-exec-1] [c8a14b0365734fb4864f7bdf753b890a] INFO  WebLogAspect : [WebLog] 开始请求: URL=[/orders/create], Method=[POST], IP=[192.168.1.1], Description=[创建订单], Params=[{"orderNo":"ORD001","amount":88.00}]
-2026-10-16 16:00:00.155 [http-nio-8080-exec-1] [c8a14b0365734fb4864f7bdf753b890a] INFO  WebLogAspect : [WebLog] 请求完成: URL=[/orders/create], TimeCost=[32ms], Result=[{"code":200,"msg":"操作成功"}]
+
+#### 真实 HTTP 响应报文验证 (`POST /sample/web/observability/body-cache`)
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "firstReadLength": 47,
+    "secondReadLength": 47,
+    "isCachedWrapper": true,
+    "cachedLength": 47,
+    "contentMatch": true
+  },
+  "success": true,
+  "traceId": "a1b2c3d4e5f60718"
+}
+```
+
+---
+
+### 4.3 HTTP Payload 双向安全采样打印与截断防 OOM (`PayloadLoggingFilter`)
+
+#### 场景痛点
+线上排查接口交互纠纷或第三方回调对接时，往往需要完整的请求体与响应体日志。但传统 LogFilter 极易引发三个致命问题：①日志被拆分为多行，在多线程高并发下交织断裂无法检索；②密码、Token、私钥等凭据在日志中裸奔泄露；③文件上传或大报文导致日志巨幅膨胀与内存爆仓。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      payload-log:
+        # 是否启用 HTTP 请求/响应双向安全采样日志（默认 false）
+        enabled: true
+        # 单次最大采样打印字节上限（超限自动截断防爆，默认 4KB）
+        max-payload-size: 4KB
+        # 免采样路径白名单（支持 Ant 通配符）
+        exclude-urls:
+          - "/actuator/**"
+          - "/sample/web/observability/payload-excluded"
+```
+
+#### 核心机制
+- **单行聚合日志**：在请求出口处单行聚合输出包含 `traceId`、`method`、`uri`、`status`、`cost`、`reqBody` 与 `respBody` 的 `[HTTP_PAYLOAD]` 日志；
+- **凭据正则掩码**：内建高性能正则过滤器，对 JSON、表单及 XML 格式中的 `password`、`pwd`、`secret`、`token`、`authorization` 等凭据自动打码替换为 `***`；
+- **强类型截断防爆**：超出 `max-payload-size`（默认 4KB）的超长报文自动截断并追加 `... [TRUNCATED]` 标识；
+- **状态码自适应提升**：正常请求输出 INFO 级别日志；状态码 $\ge 400$ 自动提升为 WARN 级别；并在 `finally` 中确定性调用 `responseWrapper.copyBodyToResponse()`，杜绝丢包。
+
+#### 1:1 实测业务代码范式
+```java
+// 1. 业务回显端点（自动触发双向采样与凭据打码）
+@PostMapping("/payload-echo")
+public Result<Map<String, Object>> echoPayload(@RequestBody Map<String, Object> payload) {
+    return Result.success(payload);
+}
+
+// 2. 免采样白名单端点（匹配 exclude-urls 跳过日志打印）
+@PostMapping("/payload-excluded")
+public Result<Map<String, Object>> excludedPayload(@RequestBody Map<String, Object> payload) {
+    return Result.success(payload);
+}
+```
+
+#### 后台聚合日志输出范式
+```text
+2026-11-07 23:43:48.905 INFO  [main] [trace-payload-001] i.g.a.b.web.filter.PayloadLoggingFilter : [HTTP_PAYLOAD] traceId=[trace-payload-001], method=[POST], uri=[/sample/web/observability/payload-echo], status=[200], cost=[4ms], reqBody=[{"username":"audit-admin","password":"***","token":"***","amount":100}], respBody=[{"code":200,"msg":"操作成功","data":{"username":"audit-admin","password":"***","token":"***","amount":100},"traceId":"trace-payload-001","success":true}]
+```
+
+---
+
+### 4.4 声明式企业级操作审计切面与存储解耦 SPI (`@OperateLog` & `OperateLogStorageProvider`)
+
+#### 场景痛点
+等保合规要求核心业务系统对操作员的重要行为（新增、修改、删除、导出等）留存结构化审计痕迹。然而手写审计日志极易入侵业务代码，且容易在审计日志中遗留密码明文，或在脱敏过程中污染 JVM 内存实体导致写回数据库被二次损坏。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      operate-log:
+        # 是否启用企业级声明式操作审计切面（默认 true）
+        enabled: true
+```
+
+#### 核心机制与五维生产模型
+- **声明式无侵入拦截**：通过 `@OperateLog(module, type, description, excludeParams)` 标注 Controller 即可完成审计采集；
+- **四维上下文全息关联**：自动关联当前请求的 $\langle\text{MDC traceId}, \text{User}, \text{TenantId}, \text{ClientIp}\rangle$，无须业务显式传参；
+- **敏感入参安全排除**：配置 `excludeParams = {"password"}`，切面自动将入参中的对应字段安全替换为 `[EXCLUDED]`；
+- **出参动态脱敏与内存真明文守卫**：出参序列化时自动联动 Core 模块的 `@FieldSensitive` 对手机号等敏感字段掩码入库（如 `138****5678`），同时断言 JVM 内存实体中的字段 100% 保持原始真明文；
+- **异常捕获与透明重抛**：业务方法异常时，切面捕获并记录错误信息与状态（`status = 1`），保留原始异常因果链原样向外抛出；
+- **存储架构解耦 SPI**：提供 `OperateLogStorageProvider` SPI 接口，默认通过 `DefaultOperateLogStorageProvider` 以 SLF4J 格式化 JSON 保底输出，业务系统可轻松扩展投递至 MySQL、Elasticsearch 或 Kafka。
+
+#### 1:1 实测业务代码范式
+```java
+// 1. 新增操作员审计（排除 password 入参，出参 phone 动态脱敏）
+@PostMapping("/audit/operator")
+@OperateLog(
+        module = "权限中心",
+        type = OperateTypeEnum.INSERT,
+        description = "新增系统操作员",
+        excludeParams = {"password"}
+)
+public Result<UserRegisterVO> createOperator(@Valid @RequestBody AuditUserDTO dto) {
+    UserRegisterVO vo = UserRegisterVO.builder()
+            .id(1846182948192841920L)
+            .name(dto.getUsername())
+            .age(28)
+            .email(dto.getEmail() != null ? dto.getEmail() : "operator@example.com")
+            .phone(dto.getPhone() != null ? dto.getPhone() : "13812345678")
+            .build();
+    return Result.success(vo);
+}
+
+// 2. 查询操作员详情审计
+@GetMapping("/audit/operator/{id}")
+@OperateLog(
+        module = "权限中心",
+        type = OperateTypeEnum.QUERY,
+        description = "查询操作员详情"
+)
+public Result<UserRegisterVO> getOperator(@PathVariable Long id) {
+    UserRegisterVO vo = UserRegisterVO.builder()
+            .id(id)
+            .name("系统管理员")
+            .age(30)
+            .email("admin@example.com")
+            .phone("13912345678")
+            .build();
+    return Result.success(vo);
+}
+
+// 3. 业务操作异常审计（记录失败状态并原样重抛）
+@GetMapping("/audit/error")
+@OperateLog(
+        module = "权限中心",
+        type = OperateTypeEnum.OTHER,
+        description = "异常操作审计"
+)
+public Result<Void> triggerAuditError() {
+    throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), "操作员状态已冻结，禁止变更");
+}
+```
+
+#### 存储模型快照 (`OperateLogModel`)
+```json
+{
+  "traceId": "trace-audit-001",
+  "userName": "admin-operator",
+  "tenantId": "tenant-888",
+  "clientIp": "127.0.0.1",
+  "module": "权限中心",
+  "operateType": "INSERT",
+  "description": "新增系统操作员",
+  "requestParams": "{\"username\":\"audit-user\",\"password\":\"[EXCLUDED]\",\"email\":\"audit@example.com\",\"phone\":\"13812345678\"}",
+  "responseResult": "{\"code\":200,\"msg\":\"操作成功\",\"data\":{\"id\":\"1846182948192841920\",\"name\":\"audit-user\",\"age\":28,\"email\":\"audit@example.com\",\"phone\":\"138****5678\"},\"success\":true}",
+  "status": 0,
+  "costTime": 4,
+  "errorMsg": null
+}
+```
+
+---
+
+### 4.5 轻量级接口耗时日志与出入参审计 (`@WebLog`)
+
+#### 场景痛点
+排查接口偶发慢响应或线上入参复现时，业务开发常常在方法开头与结尾手工编写繁琐且易漏的 `log.info`，不仅产生面条代码，还容易因序列化大文件（如 `MultipartFile`）导致内存 OOM。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      log:
+        # 是否启用接口耗时与出入参审计日志切面（默认 true）
+        enabled: true
+```
+
+#### 核心机制
+- **声明式一行标注**：使用 `@WebLog(value = "...", printParams = true, printResult = true, printCostTime = true)` 即可自动打印请求开始与结束日志；
+- **敏感参数过滤**：配置 `excludeParams = {"password"}`，入参敏感字段自动替换为 `[EXCLUDED]`；
+- **防 OOM 占位保护**：自动检测 `MultipartFile`、`HttpServletRequest`、`HttpServletResponse` 等不可序列化或大对象，并以 `[MultipartFile: filename, size]` 自动占位，杜绝内存爆仓。
+
+#### 1:1 实测业务代码范式
+```java
+// Controller 端点：操作员档案更新耗时审计
+@PostMapping("/weblog")
+@WebLog(value = "操作员档案更新耗时审计", excludeParams = {"password"}, printCostTime = true)
+public Result<Map<String, Object>> webLogDemo(@Valid @RequestBody AuditUserDTO dto) {
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("operator", dto.getUsername());
+    data.put("status", "AUDITED");
+    data.put("traceId", TraceUtil.getTraceId());
+    return Result.success(data);
+}
+```
+
+#### 后台日志输出范式
+```text
+2026-11-07 23:43:48.755 INFO  [main] [8eb3869ffe6423ed77edfd47e3a65d88] i.g.atengk.boot.web.aspect.WebLogAspect : [WebLog] 开始请求: URL=[POST /sample/web/observability/weblog], IP=[127.0.0.1], 操作=[操作员档案更新耗时审计], 目标=[io.github.atengk.boot.sample.web.controller.WebObservabilityAndAuditController#webLogDemo], 入参={"dto":{"username":"weblog-tester","password":"[EXCLUDED]","email":null,"phone":null}}
+2026-11-07 23:43:48.757 INFO  [main] [8eb3869ffe6423ed77edfd47e3a65d88] i.g.atengk.boot.web.aspect.WebLogAspect : [WebLog] 结束请求: URL=[POST /sample/web/observability/weblog], 耗时=[2ms], 出参={"code":200,"msg":"操作成功","data":{"operator":"weblog-tester","status":"AUDITED","traceId":"8eb3869ffe6423ed77edfd47e3a65d88"},"success":true}
+```
+
+---
+
+### 4.6 长耗时慢请求性能主动告警 (`SlowRequestFilter`)
+
+#### 场景痛点
+生产环境中偶发的大报表统计、复杂多表联查或网络调用卡顿容易拖垮容器吞吐量。若依赖排查日志逐条定位，滞后性极大；若无脑拦截所有长连接，又会误伤 WebSocket、SSE 流式推送与大文件下载。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      slow-request:
+        # 是否启用慢请求性能主动告警过滤器（默认 true）
+        enabled: true
+        # 慢请求耗时判定阈值（超过该时长输出 WARN 告警日志，默认 3s）
+        threshold: 3s
+        # 慢请求告警豁免白名单路径（支持 Ant 通配符，自动放行免打扰）
+        exclude-urls:
+          - "/actuator/**"
+          - "/sample/web/observability/slow-excluded"
+```
+
+#### 核心机制
+- **出口主动告警**：在请求出口处统计总耗时，超过阈值（强类型 Duration）输出包含 TraceId、URI、Method、耗时与 ClientIp 的 `[SLOW_REQUEST]` 格式化 WARN 日志；
+- **智能长连接放行**：自动识别并放行 WebSocket、SSE、流式大文件下载及异步挂起请求；
+- **白名单免打扰**：配置 `exclude-urls`（如定时报表跑批端点）实施全局告警豁免。
+
+#### 1:1 实测业务代码范式
+```java
+// 1. 模拟慢报表查询（耗时超出阈值触发 [SLOW_REQUEST] 告警）
+@GetMapping("/slow-query")
+public Result<Map<String, Object>> slowQueryDemo(@RequestParam(defaultValue = "60") long delayMs) throws InterruptedException {
+    Thread.sleep(delayMs);
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("reportName", "2026年度财务汇总对账单");
+    data.put("records", 100000);
+    data.put("costMs", delayMs);
+    data.put("status", "SUCCESS");
+    return Result.success(data);
+}
+
+// 2. 慢请求白名单排除（即使耗时超限也不输出告警日志）
+@GetMapping("/slow-excluded")
+public Result<String> slowExcludedDemo(@RequestParam(defaultValue = "60") long delayMs) throws InterruptedException {
+    Thread.sleep(delayMs);
+    return Result.success("excluded-ok");
+}
+```
+
+#### 后台告警日志范式
+```text
+2026-11-07 23:43:48.758 WARN  [main] [8eb3869ffe6423ed77edfd47e3a65d88] i.g.a.boot.web.filter.SlowRequestFilter : [SLOW_REQUEST] 检测到慢 HTTP 请求: method=[GET], uri=[/sample/web/observability/slow-query], cost=[68ms], threshold=[50ms], clientIp=[127.0.0.1], traceId=[8eb3869ffe6423ed77edfd47e3a65d88]
 ```
 
 ---
@@ -936,117 +1255,6 @@ ServletUtil.setDownloadHeader(response, "用户花名册.xlsx");
 
 ---
 
-## 12. 声明式企业级操作审计切面与存储解耦 SPI (`@OperateLog` & `OperateLogStorageProvider`)
-
-### 场景痛点
-企业级系统通常要求对关键业务操作（如增、删、改、查敏感数据）记录完整的结构化审计轨迹。然而传统手写审计方案面临严重痛点：
-1. **代码侵入与繁琐耦合**：在各个 Controller 或 Service 中侵入式手写审计入库代码，与核心业务杂糅；
-2. **上下文缺失断层**：难以自动且完整对齐全链路四维上下文（TraceId、UserId、Username、TenantId、ClientIp）；
-3. **敏感数据污染与内存真明文破坏**：在记录出参时，若直接对实体属性打星号脱敏，将严重破坏 [ADR-0012](../docs/adr/0012-lifecycle-separated-data-security.md) 确立的“内存真明文”不变量，导致掩码脏数据被持久化回写至数据库；
-4. **存储紧密耦合**：审计日志若硬编码死绑定于某张本地数据表，系统难以向 Elasticsearch、Kafka 等大数据或集中审计分析平台平滑演进。
-
-### 核心机制
-- **声明式 AOP 切面**：在 Controller 方法上标注 `@OperateLog`，支持声明模块名称（`module` 或 `title`）、操作类型（`type`，依托 Core 模块的 `OperateTypeEnum`）、业务描述（`description`）、入参/出参保存开关（`saveParams`/`saveResult`）及敏感参数排除列表（`excludeParams`）；
-- **四维上下文全链路对齐**：切面执行时自动穿透并提取全链路快照：MDC `traceId`、当前操作人 ID/姓名（`UserContextHolder`）、当前租户 ID（`TenantContextHolder`）及真实客户端 IP（`IpUtil.getClientIp()`）；
-- **坚守“内存真明文”不变量**：出参记录时，自动联动实体上的 `@FieldSensitive` 注解完成脱敏；脱敏仅针对克隆/序列化副本生效，实体在 JVM 内存中始终 100% 保持原始真明文；
-- **存储解耦 SPI 架构**：对外暴露 `OperateLogStorageProvider` SPI 扩展点，开箱提供 `DefaultOperateLogStorageProvider`（基于受管 SLF4J 异步格式化输出 JSON），用户可通过实现接口自由投递至 Kafka、Elasticsearch 或业务表；
-- **异常因果透明传递**：若业务方法抛出异常，切面在捕获后准确标记操作状态为失败（`status = 1`）并记录异常摘要，在 `finally` 块完成异步事件投递后 100% 原样重抛原始异常，绝不吞咽污染调用链。
-
-### 核心代码范式
-```java
-@RestController
-@RequestMapping("/users")
-public class UserController {
-
-    @PostMapping
-    @OperateLog(
-        module = "用户管理",
-        type = OperateTypeEnum.INSERT,
-        description = "新增系统用户",
-        excludeParams = {"password"} // 敏感入参参数名自动脱敏排除
-    )
-    public Result<String> createUser(@RequestBody CreateUserDTO dto) {
-        return Result.success(userService.create(dto));
-    }
-
-    @GetMapping("/{id}")
-    @OperateLog(module = "用户中心", type = OperateTypeEnum.QUERY, description = "查询用户详情")
-    public Result<UserVO> getUser(@PathVariable Long id) {
-        // 出参 UserVO 挂载的 @FieldSensitive 手机号/身份证字段在审计日志中自动脱敏，但内存中保持真明文
-        return Result.success(userService.getById(id));
-    }
-}
-```
-
-### 全真控制台日志呈现
-```log
-2026-10-18 19:43:02.311 INFO  [http-nio-8080-exec-1] [traceId: trace-user-001] i.g.a.b.w.a.DefaultOperateLogStorageProvider : [OPERATE_LOG] {"traceId":"trace-user-001","module":"用户管理","type":"INSERT","description":"新增系统用户","method":"io.github.atengk.boot.web.controller.UserController.createUser()","reqMethod":"POST","clientIp":"127.0.0.1","operUserId":10001,"operUserName":"ateng","tenantId":1,"operParams":"{\"username\":\"ateng\",\"password\":\"[EXCLUDED]\"}","jsonResult":"\"created:ateng\"","status":0,"costTime":15,"operTime":"2026-10-18T19:43:02.310"}
-```
-
-### 生产扩展接管：自定义存储 SPI
-当需要将审计事件集中投递至 Kafka 或 Elasticsearch 时，仅需实现 `OperateLogStorageProvider` 并声明为 Spring Bean：
-```java
-@Component
-public class KafkaOperateLogStorageProvider implements OperateLogStorageProvider {
-
-    private final KafkaTemplate<String, String> kafkaTemplate;
-
-    public KafkaOperateLogStorageProvider(KafkaTemplate<String, String> kafkaTemplate) {
-        this.kafkaTemplate = kafkaTemplate;
-    }
-
-    @Override
-    public void store(OperateLogModel model) {
-        kafkaTemplate.send("topic-audit-logs", JsonUtil.toJson(model));
-    }
-}
-```
-
----
-
-## 13. 通用请求体可重读管道与载荷防爆 (`ContentCachingFilter`)
-
-### 场景痛点
-Servlet 规范中的原生 `ServletInputStream` 为阅后即焚的一次性输入流。在 API 验签（`@ApiSign`）、请求报文采样日志（`PayloadLoggingFilter`）以及业务流式解析等多个组件并存时，极易发生流枯竭冲突；同时若无边界地在内存中随意全量缓存，极易遭超大文件上传或恶意超大报文攻击，导致 JVM 堆内存瞬间被打爆产生 OOM。
-
-### 核心机制
-- **通用可重复消费底座**：自动包装为 `CachedBodyHttpServletRequest`，将原始字节缓存于受管的内存数组中，并发重写 `getInputStream()` 与 `getReader()`，支持同一次请求内下游所有过滤器、切面与 Controller 多次重复读取；
-- **强类型载荷上限截断防 OOM**：受 `ateng.boot.web.body-cache.max-body-size: 2MB`（强类型 `DataSize`）严格约束。无论是 `Content-Length` 标头超限，还是无长度分块传输在读取中达到上限，均立即抛出 `BusinessException(CommonResultCode.REQUEST_BODY_TOO_LARGE)` 实施快速失败；
-- **智能免打扰放行**：仅拦截 POST/PUT/PATCH 且为文本或 JSON 的请求；文件上传（`multipart/form-data`）与表单（`application/x-www-form-urlencoded`）自动穿透放行；
-- **零开销按需激活**：由 `ContentCachingCondition` 驱动，仅在配置开启了加签验签（`sign.enabled=true`）或 Payload 采样（`payload-log.enabled=true`）时才自动激活；两者均未开启时跳过装配，实现运行时零额外包装与零性能损耗；
-- **向后兼容**：旧版 `RequestBodyCachingFilter` 声明 `@Deprecated`，内部 100% 委托至 `ContentCachingFilter`。
-
-### 核心代码范式
-下游 Controller 或 Filter 无需任何特殊感知，直接按标准 Servlet API 重复消费即可：
-```java
-@PostMapping("/api/verify")
-public Result<String> verify(HttpServletRequest request) throws IOException {
-    // 第一次读取请求体
-    byte[] firstRead = request.getInputStream().readAllBytes();
-    
-    // 第二次在同一次请求中再次读取输入流（验证流重复消费能力）
-    byte[] secondRead = request.getInputStream().readAllBytes();
-    
-    // 亦可直接强转获取底层缓存字节副本
-    if (request instanceof CachedBodyHttpServletRequest cachedRequest) {
-        byte[] body = cachedRequest.getCachedBody();
-    }
-    return Result.success("ok");
-}
-```
-
-### 生产配置范式
-```yaml
-ateng:
-  boot:
-    web:
-      body-cache:
-        # 通用请求体可重读最大缓存载荷上限（强类型 DataSize 防 OOM，默认 2MB）
-        max-body-size: 2MB
-```
-
----
-
 ## 14. 云原生就绪探针排空与优雅停机治理 (`AtengGracefulShutdownHandler`)
 
 ### 场景痛点
@@ -1080,102 +1288,6 @@ spec:
                 port: 8080
           # 终止宽限期（建议大于 drain-timeout）
           terminationGracePeriodSeconds: 30
-```
-
----
-
-## 15. 长耗时慢请求性能主动告警 (`SlowRequestFilter`)
-
-### 场景痛点
-在高并发微服务与 Web 应用中，部分接口可能因慢 SQL、第三方外部 RPC 延迟或计算密集导致响应时间劣化。若缺乏主动监控手段，运维人员往往只能等到客户端报超时或系统负载飙升时才后知后觉。同时，若无脑拦截所有长耗时请求，极易对本就需要长时间保持的长连接（如 WebSocket、Server-Sent Events、大文件下载分块）产生大量无意义误报。
-
-### 核心机制
-- **出口统一耗时统计**：过滤器注册于 `TraceFilter.ORDER + 3`，在请求出口 `finally` 阶段精确统计处理耗时；
-- **强类型阈值判定**：耗时达到或超过配置阈值（`threshold: 3s`，支持 `Duration` 格式如 `500ms`, `3s` 等）时，输出格式化 WARN 告警日志；
-- **全链路四维元数据**：告警日志完整携带 MDC 全链路 `traceId`、HTTP 方法、请求 URI、耗时（ms）、阈值（ms）与真实客户端 IP；
-- **智能长连接免打扰放行**：
-  - 自动识别并放行请求/响应中的 `Upgrade` 握手标头（WebSocket 升级）；
-  - 自动识别并放行 `text/event-stream`（SSE 事件流）；
-  - 自动识别并放行 `application/octet-stream`（二进制流与文件分块下载）；
-  - 自动识别并放行 `request.isAsyncStarted()` 异步调度与挂起任务；
-- **白名单精准排除**：支持通过 `exclude-urls`（Ant 风格路径匹配，如 `/actuator/**`）自由排除运维或特殊业务路径；
-- **因果异常链透明**：若下游控制器或过滤器抛出异常，在 `finally` 记录慢请求告警后 100% 原样重抛原始异常，绝不吞咽污染。
-
-### 全真控制台日志呈现
-```log
-2026-10-18 20:29:14.888 WARN  [http-nio-8080-exec-1] [traceId: trace-mock-888] i.g.a.b.w.f.SlowRequestFilter : [SLOW_REQUEST] 检测到慢 HTTP 请求: method=[POST], uri=[/mock/slow], cost=[82ms], threshold=[50ms], clientIp=[127.0.0.1], traceId=[trace-mock-888]
-```
-
-### 生产配置与扩展范式
-```yaml
-ateng:
-  boot:
-    web:
-      slow-request:
-        # 是否启用慢请求性能告警过滤器（默认 true）
-        enabled: true
-        # 慢请求判定阈值（强类型 Duration，默认 3s，支持 500ms、3s 等）
-        threshold: 3s
-        # 慢请求监控排除路径白名单（Ant 风格匹配）
-        exclude-urls:
-          - "/actuator/**"
-          - "/mock/slow-excluded"
-```
-
-当框架默认行为无法满足需要时，可通过覆盖 `@Bean` 自定义扩展接管：
-```java
-@Bean
-public SlowRequestFilter customSlowRequestFilter() {
-    return new SlowRequestFilter(Duration.ofSeconds(5), List.of("/actuator/**", "/special/**"));
-}
-```
-
----
-
-## 16. HTTP Payload 双向安全采样打印与截断防 OOM (`PayloadLoggingFilter`)
-
-### 场景痛点
-生产环境排查业务交互故障或审计三方数据往来时，往往需要完整的请求与响应报文。然而直接打印原始载荷面临三大高危隐患：
-1. **OOM 崩溃风险**：大文件上传、下载或深层大数据量分页若无脑转为全量内存字符串，极易迅速耗尽 JVM 堆内存导致服务雪崩；
-2. **凭据安全泄露**：用户的登录密码、API Token、SecretKey 等若以明文被打印至日志，将触犯数据安全合规红线；
-3. **响应截留挂起**：若使用 `ContentCachingResponseWrapper` 拦截响应体后，因异常等分支遗漏调用 `copyBodyToResponse()`，将直接导致客户端无法接收任何响应内容。
-
-### 核心机制
-- **底座管道协同与流可重读**：位于 `ContentCachingFilter`（`ORDER + 1`）之后，执行优先级为 `TraceFilter.ORDER + 2`，无缝复用可重读请求包装器 `CachedBodyHttpServletRequest`；
-- **MIME 智能过滤防卫**：仅对纯文本与结构化数据（`application/json`、`application/xml`、`text/plain`、`application/x-www-form-urlencoded` 等）进行采样，二进制媒体（`multipart/*`、`application/octet-stream`、`image/*` 等）直接跳过并输出 `[BINARY_STREAM]` 占位；
-- **强类型截断防卫**：严格遵循 `max-payload-size`（强类型 `DataSize`，默认 `4KB`），超出阈值部分强制截断并追加 ` ... [TRUNCATED]` 标识；
-- **敏感凭据正则掩码**：对请求体与响应体中出现的 `password`、`secret`、`token`、`authorization` 等字段，内建轻量纯原生正则表达式自动掩码替换为 `***`；
-- **响应确定性释放不变量**：在 `finally` 嵌套块中 100% 确保调用 `responseWrapper.copyBodyToResponse()`，彻底杜绝异常中止导致的客户端挂起；
-- **状态码自适应提升**：HTTP 响应状态码 $\ge 400$ 时，单行聚合日志级别自动由 `INFO` 提升为 `WARN`；
-- **单行聚合日志**：日志统筹聚合 MDC `traceId`、HTTP 方法、请求 URI、状态码、耗时、请求体与响应体，单行呈现无日志交错。
-
-### 全真控制台日志呈现
-```log
-2026-10-18 20:43:16.120 INFO  [http-nio-8080-exec-1] [traceId: trace-payload-001] i.g.a.b.w.f.PayloadLoggingFilter : [HTTP_PAYLOAD] traceId=[trace-payload-001], method=[POST], uri=[/mock/payload/echo], status=[200], cost=[12ms], reqBody=[{"username":"ateng","password":"***","token":"***"}], respBody=[{"code":200,"msg":"操作成功","data":{"username":"ateng","password":"***","token":"***"}}]
-```
-
-### 生产配置与扩展范式
-```yaml
-ateng:
-  boot:
-    web:
-      payload-log:
-        # 是否启用 HTTP Payload 双向采样安全日志过滤器（默认 false，按需开启）
-        enabled: true
-        # 单次最大采样截断字节数上限（强类型 DataSize，默认 4KB）
-        max-payload-size: 4KB
-        # 采样日志排除路径白名单（Ant 风格匹配）
-        exclude-urls:
-          - "/actuator/**"
-          - "/mock/payload/excluded"
-```
-
-当框架默认行为无法满足需要时，可通过覆盖 `@Bean` 自定义扩展接管：
-```java
-@Bean
-public PayloadLoggingFilter customPayloadLoggingFilter() {
-    return new PayloadLoggingFilter(DataSize.ofKilobytes(8), List.of("/actuator/**", "/internal/**"));
-}
 ```
 
 ---
