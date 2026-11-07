@@ -4,11 +4,14 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.sms.dto.BlacklistAddRequest;
 import io.github.atengk.boot.sample.sms.dto.SendSmsRequest;
 import io.github.atengk.boot.sample.sms.service.SmsScenarioService;
-import io.github.atengk.boot.sms.event.SmsSendAuditEvent;
+import io.github.atengk.boot.sample.sms.vo.SmsSendAuditVO;
 import io.github.atengk.boot.sms.model.SmsResult;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -22,6 +25,7 @@ import java.util.Set;
  * @since 2026-11-07
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/sample/sms/guard")
 @RequiredArgsConstructor
@@ -57,11 +61,15 @@ public class SmsGuardAndCallbackController {
     /**
      * 从出站黑名单移除手机号码
      *
-     * @param phone 目标手机号
+     * @param phone 目标手机号 (E.164 或标准国内手机号)
      * @return 空结果成功标识
      */
     @PostMapping("/blacklist/remove")
-    public Result<Void> removeBlacklist(@RequestParam(name = "phone") String phone) {
+    public Result<Void> removeBlacklist(
+            @RequestParam(name = "phone")
+            @NotBlank(message = "手机号不能为空")
+            @Pattern(regexp = "^(\\+?86)?1[3-9]\\d{9}$", message = "手机号格式不正确")
+            String phone) {
         log.info("[SmsGuardAndCallbackController] 从出站黑名单移除手机号");
         smsScenarioService.removeBlacklist(phone);
         return Result.success();
@@ -108,12 +116,12 @@ public class SmsGuardAndCallbackController {
     /**
      * 查询全链路发信审计事件流水
      *
-     * @return 发信审计事件列表
+     * @return 发信审计视图对象列表
      */
     @GetMapping("/audit-events")
-    public Result<List<SmsSendAuditEvent>> getAuditEvents() {
+    public Result<List<SmsSendAuditVO>> getAuditEvents() {
         log.info("[SmsGuardAndCallbackController] 查询全链路发信审计事件流水");
-        List<SmsSendAuditEvent> events = smsScenarioService.getAuditEvents();
+        List<SmsSendAuditVO> events = smsScenarioService.getAuditEvents();
         return Result.success(events);
     }
 }

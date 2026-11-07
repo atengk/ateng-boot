@@ -5,7 +5,8 @@ import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sample.sms.dto.*;
 import io.github.atengk.boot.sample.sms.listener.SampleSmsEventListener;
 import io.github.atengk.boot.sample.sms.vo.SmsChannelVO;
-import io.github.atengk.boot.sms.event.SmsSendAuditEvent;
+import io.github.atengk.boot.sample.sms.vo.SmsCircuitBreakerStatusVO;
+import io.github.atengk.boot.sample.sms.vo.SmsSendAuditVO;
 import io.github.atengk.boot.sms.guard.SmsChannelCircuitBreaker;
 import io.github.atengk.boot.sms.model.*;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
@@ -75,6 +76,30 @@ public class SmsScenarioService {
 
         // 1. 注册事务提交后投递钩子
         smsTemplate.sendAfterCommit(request);
+
+        // 2. 模拟业务逻辑执行（如抛出异常回滚）
+        if (shouldRollback) {
+            log.warn("[SmsScenarioService] 触发业务异常，预期事务回滚并自动取消短信发信！");
+            throw new BusinessException("模拟业务异常触发事务回滚，防幽灵短信生效");
+        }
+
+        log.info("[SmsScenarioService] 业务逻辑正常结束，事务即将物理 COMMIT！");
+    }
+
+    /**
+     * 本地事务提交后受管异步发信 (演示事务提交后异步发信与回滚防幽灵短信)
+     *
+     * @param req            发信请求
+     * @param shouldRollback 是否模拟业务异常触发事务回滚
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void sendTransactionalAsync(SendSmsRequest req, boolean shouldRollback) {
+        SmsRequest request = buildRequest(req);
+        log.info("[SmsScenarioService] 开启本地物理事务，注册发信提交后受管异步投递钩子 (目标号码: {})",
+                DesensitizeUtil.mobilePhone(req.getPhone()));
+
+        // 1. 注册事务提交后受管异步发信钩子
+        smsTemplate.sendAsyncAfterCommit(request);
 
         // 2. 模拟业务逻辑执行（如抛出异常回滚）
         if (shouldRollback) {
@@ -264,18 +289,18 @@ public class SmsScenarioService {
     /**
      * 获取所有渠道健康度熔断状态
      *
-     * @return 渠道名称 -> 熔断状态信息
+     * @return 渠道名称 -> 熔断状态视图对象
      */
-    public Map<String, Object> getCircuitBreakerStatus() {
+    public Map<String, SmsCircuitBreakerStatusVO> getCircuitBreakerStatus() {
         SmsChannelCircuitBreaker cb = smsTemplate.getCircuitBreaker();
-        Map<String, Object> statusMap = new LinkedHashMap<>();
+        Map<String, SmsCircuitBreakerStatusVO> statusMap = new LinkedHashMap<>();
         for (String channelName : channelRegistry.getChannels().keySet()) {
             boolean open = cb != null && cb.isOpen(channelName);
-            statusMap.put(channelName, Map.of(
-                    "channel", channelName,
-                    "isOpen", open,
-                    "status", open ? "OPEN" : "CLOSED"
-            ));
+            statusMap.put(channelName, SmsCircuitBreakerStatusVO.builder()
+                    .channel(channelName)
+                    .isOpen(open)
+                    .status(open ? "OPEN" : "CLOSED")
+                    .build());
         }
         return statusMap;
     }
@@ -342,10 +367,12 @@ public class SmsScenarioService {
     /**
      * 获取全链路发信审计事件流水
      *
-     * @return 审计事件列表
+     * @return 审计视图对象列表
      */
-    public List<SmsSendAuditEvent> getAuditEvents() {
-        return new ArrayList<>(eventListener.getAuditEvents());
+    public List<SmsSendAuditVO> getAuditEvents() {
+        return eventListener.getAuditEvents().stream()
+                .map(SmsSendAuditVO::fromEvent)
+                .toList();
     }
 
     private SmsRequest buildRequest(SendSmsRequest req) {

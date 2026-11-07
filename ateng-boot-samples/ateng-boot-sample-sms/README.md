@@ -90,7 +90,26 @@ curl -X POST "http://localhost:8080/sample/sms/send/tx?shouldRollback=true" \
   }'
 ```
 
-#### (4) 跨渠道模板逻辑标识映射发信 (`POST /sample/sms/send/mapping`)
+#### (4) 本地物理事务提交后受管异步发信 (`POST /sample/sms/send/tx-async`)
+```bash
+# 模拟业务正常完成，本地事务成功 COMMIT，触发受管异步真实投递
+curl -X POST "http://localhost:8080/sample/sms/send/tx-async?shouldRollback=false" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phone": "13899990003",
+    "templateId": "SMS_TX_ASYNC_COMMIT"
+  }'
+
+# 模拟业务异常回滚，本地事务 ROLLBACK，异步发信请求自动撤销（彻底防幽灵短信）
+curl -X POST "http://localhost:8080/sample/sms/send/tx-async?shouldRollback=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phone": "13899990004",
+    "templateId": "SMS_TX_ASYNC_ROLLBACK"
+  }'
+```
+
+#### (5) 跨渠道模板逻辑标识映射发信 (`POST /sample/sms/send/mapping`)
 ```bash
 curl -X POST "http://localhost:8080/sample/sms/send/mapping" \
   -H "Content-Type: application/json" \

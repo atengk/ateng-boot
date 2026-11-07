@@ -1,6 +1,8 @@
 package io.github.atengk.boot.sms.event;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import io.github.atengk.boot.sms.model.BatchSmsRequest;
+import io.github.atengk.boot.sms.model.BatchSmsResult;
 import io.github.atengk.boot.sms.model.SmsDeliveryStatus;
 import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.model.SmsResult;
@@ -33,6 +35,11 @@ public class SmsSendAuditEvent extends ApplicationEvent {
     private final SmsRequest request;
 
     /**
+     * 批量发信请求值对象（若为单条发信则为 null）
+     */
+    private final BatchSmsRequest batchRequest;
+
+    /**
      * 决策执行的目标渠道标识
      */
     private final String channelName;
@@ -46,6 +53,11 @@ public class SmsSendAuditEvent extends ApplicationEvent {
      * 发信执行结果（为 null 表示未产生正常结果即抛出底层不可控异常）
      */
     private final SmsResult result;
+
+    /**
+     * 批量发信执行聚合结果（若为单条发信则为 null）
+     */
+    private final BatchSmsResult batchResult;
 
     /**
      * 抛出的发信异常因果对象（若正常返回结果则为 null）
@@ -73,12 +85,68 @@ public class SmsSendAuditEvent extends ApplicationEvent {
                              Instant auditTimestamp) {
         super(source);
         this.request = request;
+        this.batchRequest = null;
         this.channelName = channelName;
         this.supplier = supplier;
         this.result = result;
+        this.batchResult = null;
         this.exception = exception;
         this.costMillis = costMillis;
         this.auditTimestamp = auditTimestamp != null ? auditTimestamp : Instant.now();
+    }
+
+    /**
+     * 批量发信全链路审计事件构造器
+     *
+     * @param source         事件发布源
+     * @param batchRequest   批量发信请求
+     * @param channelName    渠道名称
+     * @param supplier       服务商类型
+     * @param batchResult    批量聚合结果
+     * @param exception      执行异常
+     * @param costMillis     全链路耗时
+     * @param auditTimestamp 审计时间戳
+     */
+    public SmsSendAuditEvent(Object source,
+                             BatchSmsRequest batchRequest,
+                             String channelName,
+                             SmsSupplier supplier,
+                             BatchSmsResult batchResult,
+                             Throwable exception,
+                             long costMillis,
+                             Instant auditTimestamp) {
+        super(source);
+        this.batchRequest = batchRequest;
+        this.batchResult = batchResult;
+        this.channelName = channelName;
+        this.supplier = supplier;
+        this.exception = exception;
+        this.costMillis = costMillis;
+        this.auditTimestamp = auditTimestamp != null ? auditTimestamp : Instant.now();
+
+        // 构造代表性的单发请求与结果适配对象，保障下游监听器既有方法 100% 兼容
+        if (batchRequest != null) {
+            this.request = SmsRequest.builder()
+                    .phones(batchRequest.getPhones())
+                    .templateId(batchRequest.getTemplateId())
+                    .signName(batchRequest.getSignName())
+                    .channel(channelName)
+                    .bizId(batchRequest.getBizId())
+                    .urgent(batchRequest.isUrgent())
+                    .build();
+        } else {
+            this.request = null;
+        }
+
+        if (batchResult != null && !batchResult.getBatchResults().isEmpty()) {
+            this.result = batchResult.getBatchResults().get(0);
+        } else if (batchResult != null && batchResult.isSuccess()) {
+            this.result = SmsResult.success(channelName, supplier, batchRequest != null ? batchRequest.getBizId() : null, null, batchResult.getSuccessCount());
+        } else if (batchResult != null) {
+            this.result = SmsResult.blocked(channelName, "批量发信拦截或全部失败");
+        } else {
+            this.result = null;
+        }
     }
 
     /**

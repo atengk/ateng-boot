@@ -68,6 +68,21 @@ public class SmsSendController {
     }
 
     /**
+     * 本地事务感知异步发信接口（演示事务提交后受管异步发信与异常回滚防幽灵短信）
+     *
+     * @param request        发信请求传输对象
+     * @param shouldRollback 是否模拟业务异常触发事务回滚
+     * @return 空结果成功标识
+     */
+    @PostMapping("/tx-async")
+    public Result<Void> sendTransactionalAsync(@Valid @RequestBody SendSmsRequest request,
+                                               @RequestParam(name = "shouldRollback", defaultValue = "false") boolean shouldRollback) {
+        log.info("[SmsSendController] 收到本地事务感知异步发信请求 -> 触发回滚: {}", shouldRollback);
+        smsScenarioService.sendTransactionalAsync(request, shouldRollback);
+        return Result.success();
+    }
+
+    /**
      * 模板逻辑映射发信接口（支持跨厂商多渠道逻辑模板标识自动解析物理模板ID）
      *
      * @param request 发信请求传输对象（templateId 传入渠道映射表中的逻辑模板标识）

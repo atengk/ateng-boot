@@ -140,39 +140,16 @@ public class SmsCallbackController {
         // 云片网特殊表单参数支持 (sms_status / sms_reply 挂载 JSON 数组)
         if (formParams != null && !formParams.isEmpty()) {
             if (formParams.containsKey("sms_status")) {
-                String json = formParams.getFirst("sms_status");
-                try {
-                    List<Map> list = JsonUtil.parseList(json, Map.class);
-                    for (Map m : list) {
-                        items.add(new LinkedHashMap<>(m));
-                    }
-                } catch (Exception ex) {
-                    log.warn("[SmsCallbackController] 解析云片网 sms_status 回调报文异常: {}", ex.getMessage());
-                }
+                appendJsonArrayItems(formParams.getFirst("sms_status"), "云片网 sms_status", items);
             } else if (formParams.containsKey("sms_reply")) {
-                String json = formParams.getFirst("sms_reply");
-                try {
-                    List<Map> list = JsonUtil.parseList(json, Map.class);
-                    for (Map m : list) {
-                        items.add(new LinkedHashMap<>(m));
-                    }
-                } catch (Exception ex) {
-                    log.warn("[SmsCallbackController] 解析云片网 sms_reply 回调报文异常: {}", ex.getMessage());
-                }
+                appendJsonArrayItems(formParams.getFirst("sms_reply"), "云片网 sms_reply", items);
             }
         }
 
         if (items.isEmpty() && rawBody != null && !rawBody.isBlank()) {
             String trimmed = rawBody.trim();
             if (trimmed.startsWith("[")) {
-                try {
-                    List<Map> list = JsonUtil.parseList(trimmed, Map.class);
-                    for (Map m : list) {
-                        items.add(new LinkedHashMap<>(m));
-                    }
-                } catch (Exception ex) {
-                    log.warn("[SmsCallbackController] 解析 JSON 数组回调报文异常: {}", ex.getMessage());
-                }
+                appendJsonArrayItems(trimmed, "JSON 数组", items);
             } else if (trimmed.startsWith("{")) {
                 try {
                     Map<String, Object> map = JsonUtil.parseMap(trimmed, String.class, Object.class);
@@ -201,10 +178,7 @@ public class SmsCallbackController {
                     int eqIdx = decoded.indexOf('=');
                     if (eqIdx != -1) {
                         String jsonPart = decoded.substring(eqIdx + 1).trim();
-                        List<Map> list = JsonUtil.parseList(jsonPart, Map.class);
-                        for (Map m : list) {
-                            items.add(new LinkedHashMap<>(m));
-                        }
+                        appendJsonArrayItems(jsonPart, "URL-Encoded 云片网", items);
                     }
                 } catch (Exception ex) {
                     log.warn("[SmsCallbackController] 解析 URL-Encoded 云片网报文异常: {}", ex.getMessage());
@@ -219,6 +193,21 @@ public class SmsCallbackController {
         }
 
         return items;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void appendJsonArrayItems(String json, String sourceName, List<Map<String, Object>> targetList) {
+        if (!StringUtils.hasText(json)) {
+            return;
+        }
+        try {
+            List<Map> list = JsonUtil.parseList(json.trim(), Map.class);
+            for (Map m : list) {
+                targetList.add(new LinkedHashMap<>(m));
+            }
+        } catch (Exception ex) {
+            log.warn("[SmsCallbackController] 解析 {} 回调报文异常: {}", sourceName, ex.getMessage());
+        }
     }
 
     private void processItem(String channel, SmsSupplier supplier, Map<String, Object> item, String rawPayload) {

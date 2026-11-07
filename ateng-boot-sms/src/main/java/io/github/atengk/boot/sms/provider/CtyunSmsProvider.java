@@ -2,6 +2,8 @@ package io.github.atengk.boot.sms.provider;
 
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
+import io.github.atengk.boot.core.util.DigestUtil;
+import io.github.atengk.boot.core.util.HmacUtil;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
 import io.github.atengk.boot.sms.model.SmsChannel;
@@ -14,10 +16,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -44,11 +43,6 @@ public class CtyunSmsProvider extends AbstractHttpSmsProvider {
      * 天翼云接口动作名称
      */
     private static final String DEFAULT_ACTION = "SendSms";
-
-    /**
-     * 签名算法标识
-     */
-    private static final String HMAC_ALGORITHM = "HmacSHA256";
 
     /**
      * 中国标准时间时区 (Asia/Shanghai, GMT+8)
@@ -158,30 +152,18 @@ public class CtyunSmsProvider extends AbstractHttpSmsProvider {
     }
 
     /**
-     * 规范化手机号格式至天翼云标准（国内号码自动前缀 +86）
+     * 规范化手机号格式至天翼云标准（复用通用 E.164 规范化规则，国内号码自动前缀 +86）
      *
      * @param phone 原始号码
      * @return 格式化后的号码
      */
     public static String formatPhone(String phone) {
-        if (!StringUtils.hasText(phone)) {
-            return "";
-        }
-        String clean = phone.trim().replace("-", "").replace(" ", "");
-        if (clean.startsWith("+")) {
-            return clean;
-        }
-        if (clean.startsWith("00")) {
-            return "+" + clean.substring(2);
-        }
-        if (clean.startsWith("86") && clean.length() == 13) {
-            return "+" + clean;
-        }
-        return "+86" + clean;
+        return TencentSmsProvider.formatE164(phone);
     }
 
     /**
      * 生成天翼云 EOP 鉴权请求头集合
+     * 复用 Core 模块原生 DigestUtil 与 HmacUtil，杜绝重复实现加签
      *
      * @param accessKeyId     Access Key
      * @param accessKeySecret Secret Key
@@ -198,18 +180,18 @@ public class CtyunSmsProvider extends AbstractHttpSmsProvider {
                                                           String signatureTime,
                                                           String signatureDate) {
         // 1. 报文原封不动进行 SHA-256 摘要
-        String contentHash = sha256Hex(payloadJson != null ? payloadJson : "");
+        String contentHash = DigestUtil.sha256Hex(payloadJson != null ? payloadJson : "");
 
         // 2. 三级级联 HMAC-SHA256 派生签名密钥
-        byte[] kTime = hmacSha256(signatureTime.getBytes(StandardCharsets.UTF_8), accessKeySecret.getBytes(StandardCharsets.UTF_8));
-        byte[] kAk = hmacSha256(accessKeyId.getBytes(StandardCharsets.UTF_8), kTime);
-        byte[] kDate = hmacSha256(signatureDate.getBytes(StandardCharsets.UTF_8), kAk);
+        byte[] kTime = HmacUtil.hmacSha256(signatureTime.getBytes(StandardCharsets.UTF_8), accessKeySecret.getBytes(StandardCharsets.UTF_8));
+        byte[] kAk = HmacUtil.hmacSha256(accessKeyId.getBytes(StandardCharsets.UTF_8), kTime);
+        byte[] kDate = HmacUtil.hmacSha256(signatureDate.getBytes(StandardCharsets.UTF_8), kAk);
 
         // 3. 构造待签名字符串
         String signatureStr = String.format("ctyun-eop-request-id:%s\neop-date:%s\n\n\n%s", requestId, signatureTime, contentHash);
 
         // 4. 计算最终 Base64 签名值
-        String signature = Base64.getEncoder().encodeToString(hmacSha256(signatureStr.getBytes(StandardCharsets.UTF_8), kDate));
+        String signature = Base64.getEncoder().encodeToString(HmacUtil.hmacSha256(signatureStr.getBytes(StandardCharsets.UTF_8), kDate));
         String signHeader = String.format("%s Headers=ctyun-eop-request-id;eop-date Signature=%s", accessKeyId, signature);
 
         Map<String, String> headers = new HashMap<>(4);
@@ -254,32 +236,12 @@ public class CtyunSmsProvider extends AbstractHttpSmsProvider {
                 String code = String.valueOf(rootMap.get("code"));
                 String message = rootMap.get("message") != null ? String.valueOf(rootMap.get("message")) : "网关拒绝";
                 throw new SmsSendException(channelName, code, message, SmsResultCode.SMS_SEND_ERROR,
-                        "天翼云短信网关拒绝: [" + code + "] " + message, cause);
+                    "天翼云短信网关拒绝: [" + code + "] " + message, cause);
             }
         } catch (SmsSendException e) {
             throw e;
         } catch (Exception ignored) {
             // 解析失败时由外部继续抛出兜底异常
-        }
-    }
-
-    private static String sha256Hex(String input) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(hash);
-        } catch (Exception e) {
-            throw new IllegalStateException("计算 SHA-256 异常: " + e.getMessage(), e);
-        }
-    }
-
-    private static byte[] hmacSha256(byte[] data, byte[] key) {
-        try {
-            Mac mac = Mac.getInstance(HMAC_ALGORITHM);
-            mac.init(new SecretKeySpec(key, HMAC_ALGORITHM));
-            return mac.doFinal(data);
-        } catch (Exception e) {
-            throw new IllegalStateException("计算 HMAC-SHA256 异常: " + e.getMessage(), e);
         }
     }
 }

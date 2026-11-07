@@ -5,6 +5,7 @@ import io.github.atengk.boot.sample.sms.dto.DynamicChannelRegisterRequest;
 import io.github.atengk.boot.sample.sms.dto.SendSmsRequest;
 import io.github.atengk.boot.sample.sms.service.SmsScenarioService;
 import io.github.atengk.boot.sample.sms.vo.SmsChannelVO;
+import io.github.atengk.boot.sample.sms.vo.SmsCircuitBreakerStatusVO;
 import io.github.atengk.boot.sms.model.SmsResult;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -87,9 +88,9 @@ public class SmsChannelController {
      * @return 各渠道熔断状态详情字典
      */
     @GetMapping("/circuit-breaker")
-    public Result<Map<String, Object>> getCircuitBreakerStatus() {
+    public Result<Map<String, SmsCircuitBreakerStatusVO>> getCircuitBreakerStatus() {
         log.info("[SmsChannelController] 查询渠道健康度熔断状态");
-        Map<String, Object> status = smsScenarioService.getCircuitBreakerStatus();
+        Map<String, SmsCircuitBreakerStatusVO> status = smsScenarioService.getCircuitBreakerStatus();
         return Result.success(status);
     }
 

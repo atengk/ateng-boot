@@ -153,12 +153,65 @@ class SmsQuietHoursAndAuditTest {
                 .isInstanceOf(SmsIdempotentException.class)
                 .hasMessageContaining("幂等窗口");
 
+        // 核心对抗断言：被幂等拦截后，前置持有的排他锁绝对不能被误释放，紧接着再次请求依然必须被严格拦截！
+        assertThatThrownBy(() -> template.send(request))
+                .isInstanceOf(SmsIdempotentException.class)
+                .hasMessageContaining("幂等窗口");
+
         // 手动释放锁后，允许重试
         String key = idempotentGuard.generateKey(request);
         idempotentGuard.releaseLock(key);
 
         SmsResult res3 = template.send(request);
         assertThat(res3.isSuccess()).isTrue();
+    }
+
+    @Test
+    @DisplayName("SmsTemplate: 批量营销短信夜间免打扰拦截与紧急批量 (urgent) 豁免穿透")
+    void testBatchQuietHoursInterceptionAndUrgentBypass() {
+        SmsProperties properties = new SmsProperties();
+        properties.getGuard().setQuietHoursEnabled(true);
+        properties.getGuard().setQuietHoursStart("00:00");
+        properties.getGuard().setQuietHoursEnd("23:59:59");
+
+        SmsChannelProperties channelProps = new SmsChannelProperties();
+        channelProps.setSupplier(SmsSupplier.MOCK);
+        channelProps.setDefaultTemplateId("TPL_BATCH_QUIET");
+        properties.getChannels().put("mock", channelProps);
+
+        SmsTemplate template = new SmsTemplate(
+                properties,
+                List.of(new MockSmsProvider()),
+                new SmsChannelRegistry(properties),
+                null, null, null, null, null, null, null, eventPublisher, null
+        );
+
+        // 1. 普通非紧急批量短信在免打扰时段被前置静默拦截
+        BatchSmsRequest normalBatch = BatchSmsRequest.builder()
+                .phones(List.of("13800138001", "13800138002"))
+                .templateId("TPL_BATCH_QUIET")
+                .urgent(false)
+                .build();
+
+        BatchSmsResult blockedBatch = template.sendBatch(normalBatch);
+        assertThat(blockedBatch.isSuccess()).isFalse();
+        assertThat(blockedBatch.getSuccessCount()).isEqualTo(0);
+        assertThat(blockedBatch.getBatchResults()).isNotEmpty();
+        assertThat(blockedBatch.getBatchResults().get(0).getDeliveryStatus()).isEqualTo(SmsDeliveryStatus.BLOCKED);
+
+        // 验证广播了批量审计事件且标记为 blocked
+        ArgumentCaptor<SmsSendAuditEvent> batchCaptor = ArgumentCaptor.forClass(SmsSendAuditEvent.class);
+        verify(eventPublisher, atLeastOnce()).publishEvent(batchCaptor.capture());
+        SmsSendAuditEvent blockedEvent = batchCaptor.getValue();
+        assertThat(blockedEvent.isBlocked()).isTrue();
+        assertThat(blockedEvent.getPhones()).containsExactly("13800138001", "13800138002");
+        assertThat(blockedEvent.getBatchRequest()).isNotNull();
+
+        // 2. 紧急批量短信 (urgent=true) 自动豁免穿透夜间免打扰
+        BatchSmsRequest urgentBatch = normalBatch.withUrgent(true);
+        BatchSmsResult urgentResult = template.sendBatch(urgentBatch);
+        assertThat(urgentResult.isSuccess()).isTrue();
+        assertThat(urgentResult.getSuccessCount()).isEqualTo(2);
     }
 
     @Test
@@ -199,5 +252,45 @@ class SmsQuietHoursAndAuditTest {
         assertThat(event.isBlocked()).isFalse();
         assertThat(event.getCostMillis()).isGreaterThanOrEqualTo(0L);
         assertThat(event.getAuditTimestamp()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("SmsSendAuditEvent: 批量发信领域事件数据完整性与批次结果捕获")
+    void testBatchAuditEventAttributes() {
+        SmsProperties properties = new SmsProperties();
+        SmsChannelProperties channelProps = new SmsChannelProperties();
+        channelProps.setSupplier(SmsSupplier.MOCK);
+        channelProps.setDefaultTemplateId("TPL_BATCH_AUDIT");
+        properties.getChannels().put("mock", channelProps);
+
+        SmsTemplate template = new SmsTemplate(
+                properties,
+                List.of(new MockSmsProvider()),
+                new SmsChannelRegistry(properties),
+                null, null, null, null, null, null, null, eventPublisher, null
+        );
+
+        BatchSmsRequest request = BatchSmsRequest.builder()
+                .phones(List.of("13500135001", "13500135002"))
+                .templateId("TPL_BATCH_AUDIT")
+                .build();
+
+        template.sendBatch(request);
+
+        ArgumentCaptor<SmsSendAuditEvent> captor = ArgumentCaptor.forClass(SmsSendAuditEvent.class);
+        verify(eventPublisher, times(1)).publishEvent(captor.capture());
+
+        SmsSendAuditEvent event = captor.getValue();
+        assertThat(event.getPhones()).containsExactly("13500135001", "13500135002");
+        assertThat(event.getTemplateId()).isEqualTo("TPL_BATCH_AUDIT");
+        assertThat(event.getChannelName()).isEqualTo("mock");
+        assertThat(event.getSupplier()).isEqualTo(SmsSupplier.MOCK);
+        assertThat(event.getBatchRequest()).isNotNull();
+        assertThat(event.getBatchResult()).isNotNull();
+        assertThat(event.getBatchResult().getSuccessCount()).isEqualTo(2);
+        assertThat(event.isSuccess()).isTrue();
+        assertThat(event.isFailed()).isFalse();
+        assertThat(event.isBlocked()).isFalse();
+        assertThat(event.getCostMillis()).isGreaterThanOrEqualTo(0L);
     }
 }

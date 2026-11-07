@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sms.provider;
 
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.sms.model.SmsChannel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -96,33 +97,45 @@ public abstract class AbstractHttpSmsProvider implements SmsProvider {
                 ? channel.getRetryInterval()
                 : Duration.ofSeconds(1);
 
-        Exception lastException = null;
-        for (int attempt = 0; attempt <= maxRetries; attempt++) {
-            try {
-                return callback.execute();
-            } catch (Exception ex) {
-                lastException = ex;
-                if (attempt >= maxRetries || !isRetryableException(ex)) {
-                    throw ex;
-                }
-                if (log.isWarnEnabled()) {
-                    log.warn("[AbstractHttpSmsProvider] 渠道 [{}] 执行 [{}] 遭遇瞬态异常 ({})，准备进行第 {}/{} 次重试 (等待: {}ms)",
-                            channel != null ? channel.getName() : "unknown",
-                            actionName,
-                            ex.getMessage(),
-                            attempt + 1,
-                            maxRetries,
-                            retryInterval.toMillis());
-                }
+        RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
+                .maxAttempts(maxRetries + 1)
+                .delay(retryInterval)
+                .multiplier(1.0)
+                .maxDelay(retryInterval)
+                .retryPredicate(th -> {
+                    Throwable target = (th instanceof RuntimeException && th.getCause() instanceof Exception) ? th.getCause() : th;
+                    return target instanceof Exception ex && isRetryableException(ex);
+                })
+                .onRetry((attempt, error) -> {
+                    Throwable target = (error instanceof RuntimeException && error.getCause() instanceof Exception) ? error.getCause() : error;
+                    if (log.isWarnEnabled()) {
+                        log.warn("[AbstractHttpSmsProvider] 渠道 [{}] 执行 [{}] 遭遇瞬态异常 ({})，准备进行第 {}/{} 次重试 (等待: {}ms)",
+                                channel != null ? channel.getName() : "unknown",
+                                actionName,
+                                target.getMessage(),
+                                attempt,
+                                maxRetries,
+                                retryInterval.toMillis());
+                    }
+                })
+                .build();
+
+        try {
+            return RetryUtil.execute(() -> {
                 try {
-                    Thread.sleep(retryInterval.toMillis());
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    throw ex;
+                    return callback.execute();
+                } catch (RuntimeException re) {
+                    throw re;
+                } catch (Exception ex) {
+                    throw new RuntimeException(ex);
                 }
+            }, retryConfig);
+        } catch (RuntimeException re) {
+            if (re.getCause() instanceof Exception ex && !(re instanceof RestClientResponseException)) {
+                throw ex;
             }
+            throw re;
         }
-        throw lastException;
     }
 
     /**

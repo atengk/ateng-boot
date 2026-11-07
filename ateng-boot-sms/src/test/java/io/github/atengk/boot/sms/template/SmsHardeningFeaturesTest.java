@@ -426,6 +426,85 @@ class SmsHardeningFeaturesTest {
         }
     }
 
+    @Test
+    @DisplayName("测试：个性化批量发信在非原生厂商并发降级时发生顺延容灾能正确转译备用渠道异构模板")
+    void testPersonalizedBatchFailoverCrossCloudTemplateTranslation() {
+        SmsTemplateProperties primaryProp = new SmsTemplateProperties();
+        primaryProp.setTemplateId("PRIMARY_TPL_001");
+        primaryProp.setSignName("主渠道专属签名");
+
+        SmsChannel primaryChannel = SmsChannel.builder()
+                .name("primary-failing")
+                .supplier(SmsSupplier.MOCK)
+                .signName("主默认签名")
+                .failoverChannel("secondary-backup")
+                .templates(Map.of("BATCH_NOTIFY", primaryProp))
+                .build();
+
+        SmsTemplateProperties secondaryProp = new SmsTemplateProperties();
+        secondaryProp.setTemplateId("SECONDARY_TPL_002");
+        secondaryProp.setSignName("备渠道专属签名");
+
+        SmsChannel secondaryChannel = SmsChannel.builder()
+                .name("secondary-backup")
+                .supplier(SmsSupplier.MOCK)
+                .signName("备默认签名")
+                .templates(Map.of("BATCH_NOTIFY", secondaryProp))
+                .build();
+
+        channelRegistry.register(primaryChannel);
+        channelRegistry.register(secondaryChannel);
+
+        SmsProvider failoverMockProvider = new SmsProvider() {
+            @Override
+            public SmsSupplier getSupplier() {
+                return SmsSupplier.MOCK;
+            }
+
+            @Override
+            public SmsResult send(SmsRequest request, SmsChannel channel) {
+                if ("primary-failing".equals(channel.getName())) {
+                    assertEquals("PRIMARY_TPL_001", request.getTemplateId());
+                    throw new SmsSendException("primary-failing", "NETWORK_ERROR", "主渠道故障",
+                            io.github.atengk.boot.sms.exception.SmsResultCode.SMS_SEND_ERROR, "主渠道故障");
+                }
+                // 备用渠道必须成功基于原始逻辑模板 BATCH_NOTIFY 转译为备用渠道专属模板 SECONDARY_TPL_002
+                assertEquals("SECONDARY_TPL_002", request.getTemplateId(),
+                        "个性化批量顺延容灾时，备用渠道必须基于逻辑模板 BATCH_NOTIFY 转译为 SECONDARY_TPL_002，而非继承主渠道物理模板");
+                assertEquals("备渠道专属签名", request.getSignName());
+                return SmsResult.mock(channel.getName(), "BIZ_SEC_" + request.getPhone(), "REQ_SEC");
+            }
+        };
+
+        SmsTemplate customTemplate = new SmsTemplate(
+                new io.github.atengk.boot.sms.properties.SmsProperties(),
+                List.of(failoverMockProvider),
+                channelRegistry,
+                null,
+                null,
+                null,
+                new org.springframework.core.task.SyncTaskExecutor()
+        );
+
+        Map<String, SmsParam> phoneParams = Map.of(
+                "13800000011", SmsParam.of("msg", "hello"),
+                "13800000012", SmsParam.of("msg", "world")
+        );
+        BatchSmsRequest batchRequest = BatchSmsRequest.builder()
+                .phoneParams(phoneParams)
+                .templateId("BATCH_NOTIFY")
+                .channel("primary-failing")
+                .build();
+
+        BatchSmsResult batchResult = customTemplate.sendBatch(batchRequest);
+        assertNotNull(batchResult);
+        assertEquals(2, batchResult.getTotalCount());
+        assertEquals(2, batchResult.getSuccessCount());
+        assertEquals(0, batchResult.getFailedCount());
+        assertEquals(2, batchResult.getBatchResults().size());
+        assertEquals("secondary-backup", batchResult.getBatchResults().get(0).getChannel());
+    }
+
     /**
      * 测试用 HTTP 短信驱动基类暴露器
      */

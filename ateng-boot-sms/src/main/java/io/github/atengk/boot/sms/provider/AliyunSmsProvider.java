@@ -83,7 +83,7 @@ public class AliyunSmsProvider extends AbstractHttpSmsProvider {
         BusinessAssert.hasText(request.getPhone(), "接收短信的目标手机号不能为空");
         BusinessAssert.hasText(request.getTemplateId(), "短信模板 ID (TemplateCode) 不能为空");
 
-        String signName = StringUtils.hasText(request.getSignName()) ? request.getSignName() : channel.getSignName();
+        String signName = channel.resolveSignName(request.getTemplateId(), request.getSignName());
         BusinessAssert.hasText(signName, "短信签名 (SignName) 不能为空，请在请求或渠道配置中显式指定");
 
         // 2. 组装待发送业务与公共参数
@@ -247,7 +247,7 @@ public class AliyunSmsProvider extends AbstractHttpSmsProvider {
         BusinessAssert.notEmpty(request.getPhones(), "接收短信的目标手机号列表不能为空");
         BusinessAssert.hasText(request.getTemplateId(), "短信模板 ID (TemplateCode) 不能为空");
 
-        String signName = StringUtils.hasText(request.getSignName()) ? request.getSignName() : channel.getSignName();
+        String signName = channel.resolveSignName(request.getTemplateId(), request.getSignName());
         BusinessAssert.hasText(signName, "短信签名 (SignName) 不能为空，请在请求或渠道配置中显式指定");
 
         String endpoint = StringUtils.hasText(channel.getEndpoint()) ? channel.getEndpoint() : DEFAULT_ENDPOINT;

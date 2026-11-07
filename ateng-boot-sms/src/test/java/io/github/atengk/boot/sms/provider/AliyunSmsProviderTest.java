@@ -400,6 +400,44 @@ class AliyunSmsProviderTest {
         assertTrue(formParams.get("TemplateParamJson").contains("2222"));
     }
 
+    @Test
+    @DisplayName("测试个性化批量发信遵从模板专属签名转译决策")
+    void testSendPersonalizedBatch_WithTemplateSignNameResolution() throws Exception {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=utf-8")
+                .setBody("{\"Code\":\"OK\",\"Message\":\"OK\",\"BizId\":\"BIZ_TPL_SIGN\",\"RequestId\":\"REQ_TPL_01\"}"));
+
+        io.github.atengk.boot.sms.properties.SmsTemplateProperties templateProp = new io.github.atengk.boot.sms.properties.SmsTemplateProperties();
+        templateProp.setTemplateId("SMS_PHYSICAL_CODE");
+        templateProp.setSignName("阿里逻辑模板专属签名");
+
+        SmsChannel channel = SmsChannel.builder()
+                .name("aliyun-batch")
+                .supplier(SmsSupplier.ALIYUN)
+                .accessKeyId("mock-ak")
+                .accessKeySecret("mock-sk")
+                .signName("全局兜底签名")
+                .endpoint(serverUrl)
+                .templates(Map.of("LOGIN_AUTH", templateProp))
+                .build();
+
+        Map<String, SmsParam> phoneParams = Map.of(
+                "13800138001", SmsParam.of("code", "1234")
+        );
+
+        BatchSmsRequest batchRequest = BatchSmsRequest.ofPersonalized(phoneParams, "LOGIN_AUTH");
+        BatchSmsResult result = aliyunSmsProvider.sendPersonalizedBatch(batchRequest, channel);
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        Map<String, String> formParams = parseFormBody(recordedRequest.getBody().readUtf8());
+        assertTrue(formParams.get("SignNameJson").contains("阿里逻辑模板专属签名"),
+                "个性化批量发信应解析模板级专属签名而非全局默认签名");
+    }
+
     private Map<String, String> parseFormBody(String body) {
         Map<String, String> map = new HashMap<>();
         String[] pairs = body.split("&");

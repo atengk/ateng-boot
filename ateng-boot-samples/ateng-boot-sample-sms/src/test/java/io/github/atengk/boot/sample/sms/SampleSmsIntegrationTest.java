@@ -182,6 +182,51 @@ class SampleSmsIntegrationTest {
     }
 
     @Test
+    @DisplayName("场景 5.1: 本地物理事务感知受管异步发信 (COMMIT 成功触发异步真实投递)")
+    void testSendTransactionalAsync_SuccessOnCommit() throws Exception {
+        SendSmsRequest req = SendSmsRequest.builder()
+                .phone("13899990003")
+                .templateId("SMS_TX_ASYNC_COMMIT")
+                .build();
+
+        mockMvc.perform(post("/sample/sms/send/tx-async")
+                        .param("shouldRollback", "false")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 事务提交后受管异步执行，等待至多 1 秒轮询底层到达
+        long deadline = System.currentTimeMillis() + 1000;
+        while (mockSmsProvider.getSentCount() == 0 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
+        }
+
+        assertEquals(1, mockSmsProvider.getSentCount());
+        assertEquals("13899990003", mockSmsProvider.getLastRequest().getPhone());
+    }
+
+    @Test
+    @DisplayName("场景 5.2: 本地物理事务感知受管异步发信 (ROLLBACK 自动取消，防幽灵短信)")
+    void testSendTransactionalAsync_CancelledOnRollback() throws Exception {
+        SendSmsRequest req = SendSmsRequest.builder()
+                .phone("13899990004")
+                .templateId("SMS_TX_ASYNC_ROLLBACK")
+                .build();
+
+        mockMvc.perform(post("/sample/sms/send/tx-async")
+                        .param("shouldRollback", "true")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
+
+        // 等待 150ms 确认异步未被触发
+        Thread.sleep(150);
+        assertEquals(0, mockSmsProvider.getSentCount(), "事务回滚时异步任务应绝对取消防幽灵短信");
+    }
+
+    @Test
     @DisplayName("场景 6: 模板逻辑映射发信测试")
     void testSend_TemplateMapping() throws Exception {
         SendSmsRequest req = SendSmsRequest.builder()
@@ -396,7 +441,9 @@ class SampleSmsIntegrationTest {
         mockMvc.perform(get("/sample/sms/channel/circuit-breaker"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.mock").exists());
+                .andExpect(jsonPath("$.data.mock.channel").value("mock"))
+                .andExpect(jsonPath("$.data.mock.open").value(false))
+                .andExpect(jsonPath("$.data.mock.status").value("CLOSED"));
 
         mockMvc.perform(post("/sample/sms/channel/circuit-breaker/reset")
                         .param("channelName", "mock"))
@@ -446,7 +493,12 @@ class SampleSmsIntegrationTest {
                 .andExpect(jsonPath("$.data.success").value(false))
                 .andExpect(jsonPath("$.data.rawCode").value("BLOCKED"));
 
-        // 4. 移除黑名单
+        // 4. 移除黑名单 (先测试 JSR-303 参数校验 Fail-Fast，再测试正常移除)
+        mockMvc.perform(post("/sample/sms/guard/blacklist/remove")
+                        .param("phone", "invalid-phone"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
+
         mockMvc.perform(post("/sample/sms/guard/blacklist/remove")
                         .param("phone", "13999998888"))
                 .andExpect(status().isOk())
@@ -477,11 +529,14 @@ class SampleSmsIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(5809));
 
-        // 6. 审计事件流水查询
+        // 6. 审计事件流水查询 (验证返回 SmsSendAuditVO 强类型视图结构)
         mockMvc.perform(get("/sample/sms/guard/audit-events"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").isArray());
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data[0].costMillis").exists())
+                .andExpect(jsonPath("$.data[0].templateId").isNotEmpty())
+                .andExpect(jsonPath("$.data[0].auditTimestamp").isNotEmpty());
     }
 
     @Test
