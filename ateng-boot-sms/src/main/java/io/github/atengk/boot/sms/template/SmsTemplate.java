@@ -6,15 +6,13 @@ import io.github.atengk.boot.core.util.BatchSliceUtil;
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sms.context.SmsContextHolder;
+import io.github.atengk.boot.sms.event.SmsSendAuditEvent;
 import io.github.atengk.boot.sms.exception.SmsBudgetExceededException;
+import io.github.atengk.boot.sms.exception.SmsIdempotentException;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
 import io.github.atengk.boot.sms.failover.SmsFailoverChain;
-import io.github.atengk.boot.sms.guard.DailyBudgetBreaker;
-import io.github.atengk.boot.sms.guard.InMemoryDailyBudgetBreaker;
-import io.github.atengk.boot.sms.guard.InMemorySmsBlacklistProvider;
-import io.github.atengk.boot.sms.guard.SmsBlacklistProvider;
-import io.github.atengk.boot.sms.guard.SmsChannelCircuitBreaker;
+import io.github.atengk.boot.sms.guard.*;
 import io.github.atengk.boot.sms.handler.SmsSendFailureHandler;
 import io.github.atengk.boot.sms.loadbalancer.SmsChannelLoadBalancer;
 import io.github.atengk.boot.sms.model.*;
@@ -25,9 +23,14 @@ import io.github.atengk.boot.sms.registry.SmsChannelResolver;
 import io.github.atengk.boot.sms.registry.TenantSmsChannelResolver;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.util.StringUtils;
+
+import java.time.Instant;
+import java.time.LocalTime;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -80,6 +83,12 @@ public class SmsTemplate {
     private final DailyBudgetBreaker dailyBudgetBreaker;
 
     @Getter
+    private final SmsIdempotentGuard idempotentGuard;
+
+    @Getter
+    private final ApplicationEventPublisher eventPublisher;
+
+    @Getter
     private final Executor executor;
 
     public SmsTemplate(SmsProperties properties,
@@ -91,6 +100,8 @@ public class SmsTemplate {
                        DailyBudgetBreaker dailyBudgetBreaker,
                        SmsChannelCircuitBreaker circuitBreaker,
                        SmsChannelLoadBalancer loadBalancer,
+                       SmsIdempotentGuard idempotentGuard,
+                       ApplicationEventPublisher eventPublisher,
                        Executor executor) {
         this.properties = properties != null ? properties : new SmsProperties();
         if (providers != null) {
@@ -117,7 +128,22 @@ public class SmsTemplate {
         this.failoverChain = new SmsFailoverChain(this.channelRegistry, this.providerMap, this.failureHandlers, this.circuitBreaker);
         this.blacklistProvider = blacklistProvider != null ? blacklistProvider : new InMemorySmsBlacklistProvider(this.properties.getGuard().getBlacklist());
         this.dailyBudgetBreaker = dailyBudgetBreaker != null ? dailyBudgetBreaker : new InMemoryDailyBudgetBreaker(this.properties.getGuard());
+        this.idempotentGuard = idempotentGuard != null ? idempotentGuard : new InMemorySmsIdempotentGuard();
+        this.eventPublisher = eventPublisher;
         this.executor = executor != null ? executor : AsyncUtil.getExecutor();
+    }
+
+    public SmsTemplate(SmsProperties properties,
+                       List<SmsProvider> providers,
+                       SmsChannelRegistry channelRegistry,
+                       List<SmsChannelResolver> channelResolvers,
+                       List<SmsSendFailureHandler> failureHandlers,
+                       SmsBlacklistProvider blacklistProvider,
+                       DailyBudgetBreaker dailyBudgetBreaker,
+                       SmsChannelCircuitBreaker circuitBreaker,
+                       SmsChannelLoadBalancer loadBalancer,
+                       Executor executor) {
+        this(properties, providers, channelRegistry, channelResolvers, failureHandlers, blacklistProvider, dailyBudgetBreaker, circuitBreaker, loadBalancer, null, null, executor);
     }
 
     public SmsTemplate(SmsProperties properties,
@@ -184,43 +210,109 @@ public class SmsTemplate {
         BusinessAssert.notNull(request, "发信请求 SmsRequest 不能为空");
         BusinessAssert.hasText(request.getPhone(), "目标手机号不能为空");
 
-        // 1. 三级级联解析目标发信渠道
-        SmsChannel channel = resolveChannel(request.getChannel());
+        long startTime = System.currentTimeMillis();
+        SmsChannel channel = null;
+        SmsResult result = null;
+        Throwable failure = null;
+        String idempotentKey = null;
 
-        // 验证当前渠道或请求中是否存在有效模板
-        String effectiveTemplateId = channel.resolveTemplateId(request.getTemplateId());
-        BusinessAssert.hasText(effectiveTemplateId,
-                () -> "短信模板编码不能为空 (渠道 [" + channel.getName() + "] 未配置 defaultTemplateId 且发信请求未指定模板)");
+        try {
+            // 1. 三级级联解析目标发信渠道
+            channel = resolveChannel(request.getChannel());
 
-        // 2. 出站黑名单前置静默拦截防卫（多号码逐一校验，防漏检穿透）
-        if (properties.getGuard().isBlacklistEnabled() && blacklistProvider != null) {
-            for (String p : request.getPhones()) {
-                if (blacklistProvider.isBlacklisted(p)) {
-                    String reason = blacklistProvider.getReason(p);
-                    if (log.isWarnEnabled()) {
-                        log.warn("[SmsTemplate] 目标手机号 [{}] 命中出站黑名单，前置静默拦截 (原因: {})",
-                                DesensitizeUtil.mobilePhone(p), reason);
+            // 验证当前渠道或请求中是否存在有效模板
+            String effectiveTemplateId = channel.resolveTemplateId(request.getTemplateId());
+            String channelName = channel.getName();
+            BusinessAssert.hasText(effectiveTemplateId,
+                    () -> "短信模板编码不能为空 (渠道 [" + channelName + "] 未配置 defaultTemplateId 且发信请求未指定模板)");
+
+            // 2. 出站黑名单前置静默拦截防卫（多号码逐一校验，防漏检穿透）
+            if (properties.getGuard().isBlacklistEnabled() && blacklistProvider != null) {
+                for (String p : request.getPhones()) {
+                    if (blacklistProvider.isBlacklisted(p)) {
+                        String reason = blacklistProvider.getReason(p);
+                        if (log.isWarnEnabled()) {
+                            log.warn("[SmsTemplate] 目标手机号 [{}] 命中出站黑名单，前置静默拦截 (原因: {})",
+                                    DesensitizeUtil.mobilePhone(p), reason);
+                        }
+                        result = SmsResult.blocked(channel.getName(), reason);
+                        return result;
                     }
-                    return SmsResult.blocked(channel.getName(), reason);
+                }
+            }
+
+            // 3. 营销短信夜间免打扰时段静默拦截 (验证码与 urgent 短信自动豁免)
+            if (properties.getGuard().isQuietHoursEnabled() && !request.isUrgent() && isInQuietHours()) {
+                String quietReason = "夜间免打扰时段 (" + properties.getGuard().getQuietHoursStart() + "-" + properties.getGuard().getQuietHoursEnd() + ") 限制发信";
+                if (log.isWarnEnabled()) {
+                    log.warn("[SmsTemplate] 目标手机号 [{}] 触发夜间免打扰拦截 ({})",
+                            DesensitizeUtil.mobilePhone(request.getPhone()), quietReason);
+                }
+                result = SmsResult.blocked(channel.getName(), quietReason);
+                return result;
+            }
+
+            // 4. 出站发信幂等防重卫士拦截
+            if (properties.getGuard().isIdempotentEnabled() && idempotentGuard != null) {
+                idempotentKey = idempotentGuard.generateKey(request);
+                boolean acquired = idempotentGuard.acquireLock(idempotentKey, properties.getGuard().getIdempotentWindow());
+                if (!acquired) {
+                    if (log.isWarnEnabled()) {
+                        log.warn("[SmsTemplate] 发信请求命中出站幂等窗口防重拦截 -> 手机号: {}, 幂等键: {}",
+                                DesensitizeUtil.mobilePhone(request.getPhone()), idempotentKey);
+                    }
+                    throw new SmsIdempotentException(request.getPhone(), idempotentKey);
+                }
+            }
+
+            // 5. 单日成本预算硬熔断防卫
+            if (dailyBudgetBreaker != null) {
+                dailyBudgetBreaker.checkAndIncrement(request.getPhones().size());
+            }
+
+            // 6. 经由高可用顺延容灾链执行物理发信
+            if (log.isDebugEnabled()) {
+                log.debug("[SmsTemplate] 准备发送短信 -> 目标号码: {}, 初始渠道: {}, 服务商: {}, 模板: {}",
+                        DesensitizeUtil.mobilePhone(request.getPhone()),
+                        channel.getName(),
+                        channel.getSupplier(),
+                        effectiveTemplateId);
+            }
+
+            result = failoverChain.execute(request, channel);
+
+            // 若物理发信显式返回失败，释放幂等锁以允许业务重试
+            if (result != null && !result.isSuccess() && idempotentKey != null && idempotentGuard != null) {
+                idempotentGuard.releaseLock(idempotentKey);
+            }
+
+            return result;
+        } catch (Throwable ex) {
+            failure = ex;
+            // 底层发送遭遇异常失败时自动释放幂等锁以允许重试
+            if (idempotentKey != null && idempotentGuard != null) {
+                idempotentGuard.releaseLock(idempotentKey);
+            }
+            if (ex instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new SmsSendException(channel != null ? channel.getName() : request.getChannel(),
+                    "UNEXPECTED_ERROR", ex.getMessage(), SmsResultCode.SMS_SEND_ERROR, ex.getMessage(), ex);
+        } finally {
+            // 7. 广播全链路出站发信审计事件
+            if (eventPublisher != null) {
+                long cost = System.currentTimeMillis() - startTime;
+                String channelName = channel != null ? channel.getName() : request.getChannel();
+                SmsSupplier supplier = channel != null ? channel.getSupplier() : null;
+                try {
+                    eventPublisher.publishEvent(new SmsSendAuditEvent(
+                            this, request, channelName, supplier, result, failure, cost, Instant.now()
+                    ));
+                } catch (Exception pubEx) {
+                    log.error("[SmsTemplate] 广播发信审计事件异常: {}", pubEx.getMessage());
                 }
             }
         }
-
-        // 3. 单日成本预算硬熔断防卫
-        if (dailyBudgetBreaker != null) {
-            dailyBudgetBreaker.checkAndIncrement(request.getPhones().size());
-        }
-
-        // 4. 经由高可用顺延容灾链执行物理发信
-        if (log.isDebugEnabled()) {
-            log.debug("[SmsTemplate] 准备发送短信 -> 目标号码: {}, 初始渠道: {}, 服务商: {}, 模板: {}",
-                    DesensitizeUtil.mobilePhone(request.getPhone()),
-                    channel.getName(),
-                    channel.getSupplier(),
-                    effectiveTemplateId);
-        }
-
-        return failoverChain.execute(request, channel);
     }
 
     /**
@@ -768,6 +860,103 @@ public class SmsTemplate {
     public void resetLoadBalancer() {
         if (loadBalancer != null) {
             loadBalancer.reset();
+        }
+    }
+
+    /**
+     * 将指定手机号纳入出站黑名单（使用默认拦截原因）
+     *
+     * @param phone 手机号
+     */
+    public void addBlacklist(String phone) {
+        if (blacklistProvider != null) {
+            blacklistProvider.add(phone);
+        }
+    }
+
+    /**
+     * 将指定手机号及拦截原因纳入出站黑名单
+     *
+     * @param phone  手机号
+     * @param reason 自定义拦截原因
+     */
+    public void addBlacklist(String phone, String reason) {
+        if (blacklistProvider != null) {
+            blacklistProvider.add(phone, reason);
+        }
+    }
+
+    /**
+     * 将指定手机号从出站黑名单移除
+     *
+     * @param phone 手机号
+     */
+    public void removeBlacklist(String phone) {
+        if (blacklistProvider != null) {
+            blacklistProvider.remove(phone);
+        }
+    }
+
+    /**
+     * 判断指定手机号是否处于出站黑名单中
+     *
+     * @param phone 手机号
+     * @return true 处于黑名单中
+     */
+    public boolean isBlacklisted(String phone) {
+        return blacklistProvider != null && blacklistProvider.isBlacklisted(phone);
+    }
+
+    /**
+     * 获取当前黑名单手机号列表快照
+     *
+     * @return 黑名单手机号集合
+     */
+    public Set<String> getBlacklist() {
+        return blacklistProvider != null ? blacklistProvider.getBlacklist() : Collections.emptySet();
+    }
+
+    /**
+     * 判断当前系统时刻是否处于夜间免打扰时段
+     *
+     * @return true 处于免打扰窗口内
+     */
+    public boolean isInQuietHours() {
+        return isInQuietHours(LocalTime.now());
+    }
+
+    /**
+     * 判断指定时刻是否处于夜间免打扰时段
+     * 支持跨零点时段（如 22:00 ~ 08:00）及当日时段（如 12:00 ~ 14:00）精确检测
+     *
+     * @param time 待判定时刻
+     * @return true 处于免打扰窗口内
+     */
+    public boolean isInQuietHours(LocalTime time) {
+        if (time == null || !properties.getGuard().isQuietHoursEnabled()) {
+            return false;
+        }
+        String startStr = properties.getGuard().getQuietHoursStart();
+        String endStr = properties.getGuard().getQuietHoursEnd();
+        if (!StringUtils.hasText(startStr) || !StringUtils.hasText(endStr)) {
+            return false;
+        }
+        try {
+            LocalTime start = LocalTime.parse(startStr.trim());
+            LocalTime end = LocalTime.parse(endStr.trim());
+            if (start.equals(end)) {
+                return false;
+            }
+            if (start.isAfter(end)) {
+                // 跨零点窗口 (如 22:00 ~ 08:00)
+                return !time.isBefore(start) || time.isBefore(end);
+            } else {
+                // 当日闭合窗口 (如 12:00 ~ 14:00)
+                return !time.isBefore(start) && time.isBefore(end);
+            }
+        } catch (Exception ex) {
+            log.warn("[SmsTemplate] 解析夜间免打扰时段异常: {}", ex.getMessage());
+            return false;
         }
     }
 

@@ -57,12 +57,19 @@ public class SmsRequest implements Serializable {
      */
     private final String bizId;
 
-    public SmsRequest(String phone, List<String> phones, String templateId, SmsParam params, String signName, String channel, String bizId) {
+    /**
+     * 是否为紧急优先短信（验证码/告警通知等，自动豁免夜间免打扰时段拦截），默认 false
+     */
+    @Builder.Default
+    private final boolean urgent = false;
+
+    public SmsRequest(String phone, List<String> phones, String templateId, SmsParam params, String signName, String channel, String bizId, boolean urgent) {
         this.templateId = (templateId != null && !templateId.isBlank()) ? templateId.trim() : null;
         this.params = params != null ? params : SmsParam.create();
         this.signName = signName != null ? signName.trim() : null;
         this.channel = channel != null ? channel.trim() : null;
         this.bizId = bizId != null ? bizId.trim() : null;
+        this.urgent = urgent;
 
         if (phones != null && !phones.isEmpty()) {
             this.phones = Collections.unmodifiableList(phones);
@@ -74,8 +81,12 @@ public class SmsRequest implements Serializable {
         }
     }
 
+    public SmsRequest(String phone, List<String> phones, String templateId, SmsParam params, String signName, String channel, String bizId) {
+        this(phone, phones, templateId, params, signName, channel, bizId, false);
+    }
+
     public SmsRequest(String phone, String templateId, SmsParam params, String signName, String channel, String bizId) {
-        this(phone, null, templateId, params, signName, channel, bizId);
+        this(phone, null, templateId, params, signName, channel, bizId, false);
     }
 
     /**
@@ -87,7 +98,7 @@ public class SmsRequest implements Serializable {
      * @return 新的 SmsRequest 实例
      */
     public SmsRequest withTemplateSignAndChannel(String targetTemplateId, String targetSignName, String targetChannel) {
-        return new SmsRequest(this.phone, this.phones, targetTemplateId, this.params, targetSignName, targetChannel, this.bizId);
+        return new SmsRequest(this.phone, this.phones, targetTemplateId, this.params, targetSignName, targetChannel, this.bizId, this.urgent);
     }
 
     /**
@@ -108,7 +119,17 @@ public class SmsRequest implements Serializable {
      * @return 新的 SmsRequest 实例
      */
     public SmsRequest withChannel(String targetChannel) {
-        return new SmsRequest(this.phone, this.phones, this.templateId, this.params, this.signName, targetChannel, this.bizId);
+        return new SmsRequest(this.phone, this.phones, this.templateId, this.params, this.signName, targetChannel, this.bizId, this.urgent);
+    }
+
+    /**
+     * 基于当前发信请求复制并设置紧急优先标志
+     *
+     * @param urgent 是否紧急
+     * @return 新的 SmsRequest 实例
+     */
+    public SmsRequest withUrgent(boolean urgent) {
+        return new SmsRequest(this.phone, this.phones, this.templateId, this.params, this.signName, this.channel, this.bizId, urgent);
     }
 
     /**

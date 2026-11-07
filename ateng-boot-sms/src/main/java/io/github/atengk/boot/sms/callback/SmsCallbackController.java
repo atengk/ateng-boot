@@ -4,9 +4,12 @@ import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sms.event.SmsDeliveryReportEvent;
 import io.github.atengk.boot.sms.event.SmsMoMessageEvent;
+import io.github.atengk.boot.sms.guard.SmsBlacklistProvider;
 import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsSupplier;
 import io.github.atengk.boot.sms.properties.SmsCallbackProperties;
+import io.github.atengk.boot.sms.properties.SmsGuardProperties;
+import io.github.atengk.boot.sms.properties.SmsProperties;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -18,6 +21,8 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
 
@@ -25,6 +30,7 @@ import java.util.*;
  * 统一运营商短信异步送达回执与用户上行回复 Webhook 控制器
  * 统一接入端点：${ateng.boot.sms.callback.path-prefix:/ateng-sms/callback}/{channel}
  * 自动识别并转译各云厂商推送报文，向 Spring 容器广播标准领域事件
+ * 支持捕获用户上行退订回复 (TD/退订/T) 自动闭环将手机号写入出站黑名单
  *
  * @author Ateng
  * @since 2026-11-02
@@ -36,14 +42,29 @@ public class SmsCallbackController {
 
     private final SmsChannelRegistry channelRegistry;
     private final ApplicationEventPublisher eventPublisher;
+    private final SmsBlacklistProvider blacklistProvider;
     private final SmsCallbackProperties callbackProperties;
+    private final SmsGuardProperties guardProperties;
+
+    public SmsCallbackController(SmsChannelRegistry channelRegistry,
+                                 ApplicationEventPublisher eventPublisher,
+                                 SmsBlacklistProvider blacklistProvider,
+                                 SmsProperties properties) {
+        this.channelRegistry = channelRegistry;
+        this.eventPublisher = eventPublisher;
+        this.blacklistProvider = blacklistProvider;
+        this.callbackProperties = properties != null && properties.getCallback() != null ? properties.getCallback() : new SmsCallbackProperties();
+        this.guardProperties = properties != null && properties.getGuard() != null ? properties.getGuard() : new SmsGuardProperties();
+    }
 
     public SmsCallbackController(SmsChannelRegistry channelRegistry,
                                  ApplicationEventPublisher eventPublisher,
                                  SmsCallbackProperties callbackProperties) {
         this.channelRegistry = channelRegistry;
         this.eventPublisher = eventPublisher;
+        this.blacklistProvider = null;
         this.callbackProperties = callbackProperties != null ? callbackProperties : new SmsCallbackProperties();
+        this.guardProperties = new SmsGuardProperties();
     }
 
     public SmsCallbackController(SmsChannelRegistry channelRegistry,
@@ -116,7 +137,32 @@ public class SmsCallbackController {
     private List<Map<String, Object>> parseCallbackPayload(String rawBody, MultiValueMap<String, String> formParams) {
         List<Map<String, Object>> items = new ArrayList<>();
 
-        if (rawBody != null && !rawBody.isBlank()) {
+        // 云片网特殊表单参数支持 (sms_status / sms_reply 挂载 JSON 数组)
+        if (formParams != null && !formParams.isEmpty()) {
+            if (formParams.containsKey("sms_status")) {
+                String json = formParams.getFirst("sms_status");
+                try {
+                    List<Map> list = JsonUtil.parseList(json, Map.class);
+                    for (Map m : list) {
+                        items.add(new LinkedHashMap<>(m));
+                    }
+                } catch (Exception ex) {
+                    log.warn("[SmsCallbackController] 解析云片网 sms_status 回调报文异常: {}", ex.getMessage());
+                }
+            } else if (formParams.containsKey("sms_reply")) {
+                String json = formParams.getFirst("sms_reply");
+                try {
+                    List<Map> list = JsonUtil.parseList(json, Map.class);
+                    for (Map m : list) {
+                        items.add(new LinkedHashMap<>(m));
+                    }
+                } catch (Exception ex) {
+                    log.warn("[SmsCallbackController] 解析云片网 sms_reply 回调报文异常: {}", ex.getMessage());
+                }
+            }
+        }
+
+        if (items.isEmpty() && rawBody != null && !rawBody.isBlank()) {
             String trimmed = rawBody.trim();
             if (trimmed.startsWith("[")) {
                 try {
@@ -130,9 +176,38 @@ public class SmsCallbackController {
             } else if (trimmed.startsWith("{")) {
                 try {
                     Map<String, Object> map = JsonUtil.parseMap(trimmed, String.class, Object.class);
-                    items.add(new LinkedHashMap<>(map));
+                    boolean unnested = false;
+                    for (String listKey : List.of("reports", "replies", "data", "list", "items")) {
+                        Object val = map.get(listKey);
+                        if (val instanceof List<?> list) {
+                            for (Object el : list) {
+                                if (el instanceof Map m) {
+                                    items.add(new LinkedHashMap<>(m));
+                                    unnested = true;
+                                }
+                            }
+                        }
+                    }
+                    if (!unnested) {
+                        items.add(new LinkedHashMap<>(map));
+                    }
                 } catch (Exception ex) {
                     log.warn("[SmsCallbackController] 解析 JSON 对象回调报文异常: {}", ex.getMessage());
+                }
+            } else if (trimmed.contains("sms_status=") || trimmed.contains("sms_reply=")) {
+                // 云片网 Raw URL-Encoded 格式
+                try {
+                    String decoded = URLDecoder.decode(trimmed, StandardCharsets.UTF_8);
+                    int eqIdx = decoded.indexOf('=');
+                    if (eqIdx != -1) {
+                        String jsonPart = decoded.substring(eqIdx + 1).trim();
+                        List<Map> list = JsonUtil.parseList(jsonPart, Map.class);
+                        for (Map m : list) {
+                            items.add(new LinkedHashMap<>(m));
+                        }
+                    }
+                } catch (Exception ex) {
+                    log.warn("[SmsCallbackController] 解析 URL-Encoded 云片网报文异常: {}", ex.getMessage());
                 }
             }
         }
@@ -154,12 +229,28 @@ public class SmsCallbackController {
         // 1. 判断是否为用户上行回复短信 (MO)
         if (isMoMessage(supplier, item)) {
             SmsMoMessageEvent moEvent = extractMoEvent(channel, supplier, item, rawPayload);
-            if (moEvent != null && eventPublisher != null) {
-                if (log.isInfoEnabled()) {
-                    log.info("[SmsCallbackController] 捕获用户上行回复短信 (MO) -> 渠道: {}, 号码: {}, 内容: {}",
-                            channel, DesensitizeUtil.mobilePhone(moEvent.getPhone()), moEvent.getContent());
+            if (moEvent != null) {
+                // 上行退订指令检测：TD / 退订 / T
+                if (guardProperties != null && guardProperties.isAutoBlacklistOnUnsubscribe() && blacklistProvider != null) {
+                    String moContent = moEvent.getContent();
+                    if (moContent != null) {
+                        String trimmed = moContent.trim();
+                        if ("TD".equalsIgnoreCase(trimmed) || "退订".equals(trimmed) || "T".equalsIgnoreCase(trimmed)) {
+                            String reason = "用户通过上行回复 [" + trimmed + "] 触发自动退订";
+                            blacklistProvider.add(moEvent.getPhone(), reason);
+                            log.info("[SmsCallbackController] 捕获用户上行退订指令 [{}]，自动将手机号 [{}] 纳入出站黑名单",
+                                    trimmed, DesensitizeUtil.mobilePhone(moEvent.getPhone()));
+                        }
+                    }
                 }
-                eventPublisher.publishEvent(moEvent);
+
+                if (eventPublisher != null) {
+                    if (log.isInfoEnabled()) {
+                        log.info("[SmsCallbackController] 捕获用户上行回复短信 (MO) -> 渠道: {}, 号码: {}, 内容: {}",
+                                channel, DesensitizeUtil.mobilePhone(moEvent.getPhone()), moEvent.getContent());
+                    }
+                    eventPublisher.publishEvent(moEvent);
+                }
             }
             return;
         }
@@ -182,6 +273,8 @@ public class SmsCallbackController {
             case ALIYUN -> item.containsKey("content") && !item.containsKey("err_code") && !item.containsKey("report_time");
             case TENCENT -> item.containsKey("text");
             case HUAWEI -> item.containsKey("body");
+            case YUNPIAN -> item.containsKey("reply_time") || (item.containsKey("text") && !item.containsKey("report_status"));
+            case CTYUN -> item.containsKey("content") && !item.containsKey("status") && !item.containsKey("statusCode");
             default -> item.containsKey("content") && !item.containsKey("status") && !item.containsKey("err_code");
         };
     }
@@ -206,6 +299,14 @@ public class SmsCallbackController {
             case HUAWEI -> {
                 phone = getStr(item, "from");
                 content = getStr(item, "body");
+            }
+            case YUNPIAN -> {
+                phone = getStr(item, "mobile");
+                content = getFirstStr(item, "text", "content");
+            }
+            case CTYUN -> {
+                phone = getFirstStr(item, "phoneNumber", "phone", "mobile");
+                content = getFirstStr(item, "content", "message");
             }
             default -> {
                 phone = getFirstStr(item, "phone_number", "phone", "mobile");
@@ -252,6 +353,21 @@ public class SmsCallbackController {
                 bizId = getStr(item, "smsMsgId");
                 success = "DELIVRD".equalsIgnoreCase(resultCode);
             }
+            case YUNPIAN -> {
+                phone = getStr(item, "mobile");
+                String reportStatus = getStr(item, "report_status");
+                resultCode = getStr(item, "error_msg");
+                resultMessage = getStr(item, "error_msg");
+                bizId = getStr(item, "sid");
+                success = "SUCCESS".equalsIgnoreCase(reportStatus) || "DELIVRD".equalsIgnoreCase(resultCode);
+            }
+            case CTYUN -> {
+                phone = getFirstStr(item, "phoneNumber", "phone_number", "phone", "mobile", "to");
+                resultCode = getFirstStr(item, "status", "statusCode", "code");
+                resultMessage = getFirstStr(item, "statusMsg", "message", "msg");
+                bizId = getFirstStr(item, "taskId", "bizId", "messageId", "msgId");
+                success = "0".equals(resultCode) || "DELIVRD".equalsIgnoreCase(resultCode) || "OK".equalsIgnoreCase(resultCode);
+            }
             default -> {
                 phone = getFirstStr(item, "phone_number", "phone", "mobile", "to");
                 resultCode = getFirstStr(item, "err_code", "resultCode", "status");
@@ -297,6 +413,8 @@ public class SmsCallbackController {
             case ALIYUN -> Map.of("code", 0, "msg", "成功");
             case TENCENT -> Map.of("result", 0, "errmsg", "OK");
             case HUAWEI -> Map.of("result", "0");
+            case YUNPIAN -> Map.of("code", 0, "msg", "OK");
+            case CTYUN -> Map.of("code", "0", "message", "OK");
             default -> Map.of("code", 0, "message", "OK");
         };
     }

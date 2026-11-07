@@ -132,6 +132,7 @@ public class SmsVerifyCodeTemplate {
                 .channel(channel)
                 .signName(signName)
                 .bizId(bizType)
+                .urgent(true)
                 .build();
 
         log.info("[SmsVerifyCodeTemplate] 触发验证码短信投递 -> 目标号码: {}, 业务类型: {}, 模板ID: {}",

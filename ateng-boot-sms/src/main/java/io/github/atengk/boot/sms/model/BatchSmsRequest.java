@@ -56,7 +56,13 @@ public class BatchSmsRequest implements Serializable {
      */
     private final String bizId;
 
-    public BatchSmsRequest(List<String> phones, String templateId, SmsParam params, Map<String, SmsParam> phoneParams, String signName, String channel, String bizId) {
+    /**
+     * 是否为紧急优先批量发信（自动豁免夜间免打扰时段拦截），默认 false
+     */
+    @Builder.Default
+    private final boolean urgent = false;
+
+    public BatchSmsRequest(List<String> phones, String templateId, SmsParam params, Map<String, SmsParam> phoneParams, String signName, String channel, String bizId, boolean urgent) {
         List<String> targetPhones = phones;
         if ((targetPhones == null || targetPhones.isEmpty()) && phoneParams != null && !phoneParams.isEmpty()) {
             targetPhones = new ArrayList<>(phoneParams.keySet());
@@ -78,10 +84,25 @@ public class BatchSmsRequest implements Serializable {
         this.signName = signName != null ? signName.trim() : null;
         this.channel = channel != null ? channel.trim() : null;
         this.bizId = bizId != null ? bizId.trim() : null;
+        this.urgent = urgent;
+    }
+
+    public BatchSmsRequest(List<String> phones, String templateId, SmsParam params, Map<String, SmsParam> phoneParams, String signName, String channel, String bizId) {
+        this(phones, templateId, params, phoneParams, signName, channel, bizId, false);
     }
 
     public BatchSmsRequest(List<String> phones, String templateId, SmsParam params, String signName, String channel, String bizId) {
-        this(phones, templateId, params, null, signName, channel, bizId);
+        this(phones, templateId, params, null, signName, channel, bizId, false);
+    }
+
+    /**
+     * 基于当前请求复制并设置紧急优先标志
+     *
+     * @param urgent 是否紧急
+     * @return 新的 BatchSmsRequest 实例
+     */
+    public BatchSmsRequest withUrgent(boolean urgent) {
+        return new BatchSmsRequest(this.phones, this.templateId, this.params, this.phoneParams, this.signName, this.channel, this.bizId, urgent);
     }
 
     /**

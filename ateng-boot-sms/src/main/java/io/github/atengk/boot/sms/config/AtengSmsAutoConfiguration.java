@@ -158,18 +158,6 @@ public class AtengSmsAutoConfiguration {
     }
 
     /**
-     * 自动装配手机号出站黑名单过滤器
-     *
-     * @param properties 配置属性
-     * @return SmsBlacklistProvider
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    public SmsBlacklistProvider smsBlacklistProvider(SmsProperties properties) {
-        return new InMemorySmsBlacklistProvider(properties.getGuard().getBlacklist());
-    }
-
-    /**
      * 自动装配默认发信失败后置补偿处理器
      *
      * @return SmsSendFailureHandler
@@ -232,6 +220,8 @@ public class AtengSmsAutoConfiguration {
                                    ObjectProvider<DailyBudgetBreaker> budgetBreaker,
                                    ObjectProvider<SmsChannelCircuitBreaker> circuitBreakerProvider,
                                    ObjectProvider<SmsChannelLoadBalancer> loadBalancerProvider,
+                                   ObjectProvider<SmsIdempotentGuard> idempotentGuardProvider,
+                                   ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
                                    ObjectProvider<Executor> taskExecutorProvider) {
         return new SmsTemplate(
                 properties,
@@ -243,6 +233,8 @@ public class AtengSmsAutoConfiguration {
                 budgetBreaker.getIfAvailable(),
                 circuitBreakerProvider.getIfAvailable(),
                 loadBalancerProvider.getIfAvailable(),
+                idempotentGuardProvider.getIfAvailable(),
+                eventPublisherProvider.getIfAvailable(),
                 taskExecutorProvider.getIfAvailable()
         );
     }
@@ -250,8 +242,10 @@ public class AtengSmsAutoConfiguration {
     /**
      * 自动装配入站 Webhook 回调网关控制器
      *
-     * @param channelRegistry 渠道注册中心
-     * @param eventPublisher  领域事件发布器
+     * @param channelRegistry   渠道注册中心
+     * @param eventPublisher    领域事件发布器
+     * @param blacklistProvider 出站黑名单过滤器提供者
+     * @param properties        配置属性
      * @return SmsCallbackController
      */
     @Bean
@@ -259,8 +253,9 @@ public class AtengSmsAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.sms.callback", name = "enabled", havingValue = "true")
     public SmsCallbackController smsCallbackController(SmsChannelRegistry channelRegistry,
                                                        ApplicationEventPublisher eventPublisher,
+                                                       ObjectProvider<SmsBlacklistProvider> blacklistProvider,
                                                        SmsProperties properties) {
-        return new SmsCallbackController(channelRegistry, eventPublisher, properties.getCallback());
+        return new SmsCallbackController(channelRegistry, eventPublisher, blacklistProvider.getIfAvailable(), properties);
     }
 
     /**
@@ -309,6 +304,18 @@ public class AtengSmsAutoConfiguration {
         public SmsVerifyCodeRepository redisSmsVerifyCodeRepository(StringRedisTemplate redisTemplate) {
             return new RedisSmsVerifyCodeRepository(redisTemplate);
         }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public SmsBlacklistProvider redisSmsBlacklistProvider(SmsProperties properties, StringRedisTemplate redisTemplate) {
+            return new RedisSmsBlacklistProvider(redisTemplate, properties.getGuard());
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public SmsIdempotentGuard redisSmsIdempotentGuard(StringRedisTemplate redisTemplate) {
+            return new RedisSmsIdempotentGuard(redisTemplate);
+        }
     }
 
     /**
@@ -336,6 +343,18 @@ public class AtengSmsAutoConfiguration {
         @ConditionalOnMissingBean
         public SmsVerifyCodeRepository inMemorySmsVerifyCodeRepository() {
             return new InMemorySmsVerifyCodeRepository();
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public SmsBlacklistProvider inMemorySmsBlacklistProvider(SmsProperties properties) {
+            return new InMemorySmsBlacklistProvider(properties.getGuard().getBlacklist());
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public SmsIdempotentGuard inMemorySmsIdempotentGuard() {
+            return new InMemorySmsIdempotentGuard();
         }
     }
 }

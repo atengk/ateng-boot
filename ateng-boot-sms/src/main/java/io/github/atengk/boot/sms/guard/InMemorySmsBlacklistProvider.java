@@ -1,6 +1,8 @@
 package io.github.atengk.boot.sms.guard;
 
 import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -13,7 +15,9 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class InMemorySmsBlacklistProvider implements SmsBlacklistProvider {
 
-    private final Set<String> blacklist = ConcurrentHashMap.newKeySet();
+    private static final String DEFAULT_REASON = "目标手机号已退订或处于出站安全风控黑名单";
+
+    private final ConcurrentHashMap<String, String> blacklistMap = new ConcurrentHashMap<>();
 
     public InMemorySmsBlacklistProvider() {
     }
@@ -31,25 +35,30 @@ public class InMemorySmsBlacklistProvider implements SmsBlacklistProvider {
         if (phone == null || phone.isBlank()) {
             return false;
         }
-        return blacklist.contains(phone.trim());
+        return blacklistMap.containsKey(phone.trim());
     }
 
-    /**
-     * 将指定手机号加入黑名单
-     *
-     * @param phone 手机号
-     */
+    @Override
+    public String getReason(String phone) {
+        if (phone == null || phone.isBlank()) {
+            return DEFAULT_REASON;
+        }
+        return blacklistMap.getOrDefault(phone.trim(), DEFAULT_REASON);
+    }
+
+    @Override
     public void add(String phone) {
+        add(phone, DEFAULT_REASON);
+    }
+
+    @Override
+    public void add(String phone, String reason) {
         if (phone != null && !phone.isBlank()) {
-            blacklist.add(phone.trim());
+            blacklistMap.put(phone.trim(), (reason != null && !reason.isBlank()) ? reason.trim() : DEFAULT_REASON);
         }
     }
 
-    /**
-     * 批量添加手机号到黑名单
-     *
-     * @param phones 手机号集合
-     */
+    @Override
     public void addAll(Collection<String> phones) {
         if (phones != null) {
             for (String phone : phones) {
@@ -58,30 +67,34 @@ public class InMemorySmsBlacklistProvider implements SmsBlacklistProvider {
         }
     }
 
-    /**
-     * 将指定手机号从黑名单移除
-     *
-     * @param phone 手机号
-     */
+    @Override
     public void remove(String phone) {
-        if (phone != null) {
-            blacklist.remove(phone.trim());
+        if (phone != null && !phone.isBlank()) {
+            blacklistMap.remove(phone.trim());
         }
     }
 
-    /**
-     * 清空黑名单集合
-     */
-    public void clear() {
-        blacklist.clear();
+    @Override
+    public void removeAll(Collection<String> phones) {
+        if (phones != null) {
+            for (String phone : phones) {
+                remove(phone);
+            }
+        }
     }
 
-    /**
-     * 获取当前黑名单数量
-     *
-     * @return 黑名单条数
-     */
+    @Override
+    public Set<String> getBlacklist() {
+        return Collections.unmodifiableSet(new LinkedHashSet<>(blacklistMap.keySet()));
+    }
+
+    @Override
+    public void clear() {
+        blacklistMap.clear();
+    }
+
+    @Override
     public int size() {
-        return blacklist.size();
+        return blacklistMap.size();
     }
 }

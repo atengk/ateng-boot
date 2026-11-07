@@ -52,7 +52,12 @@ public enum SmsResultCode implements IResultCode {
     /**
      * 短信入参不合法
      */
-    SMS_PARAM_INVALID(5808, "短信入参不合法");
+    SMS_PARAM_INVALID(5808, "短信入参不合法"),
+
+    /**
+     * 短信发信请求过于频繁或处于幂等拦截窗口内
+     */
+    SMS_IDEMPOTENT_REJECTED(5809, "短信发信请求过于频繁或重复投递，已拦截");
 
     private final Integer code;
     private final String msg;
