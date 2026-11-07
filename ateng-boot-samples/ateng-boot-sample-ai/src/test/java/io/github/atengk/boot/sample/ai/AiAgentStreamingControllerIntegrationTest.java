@@ -125,8 +125,8 @@ class AiAgentStreamingControllerIntegrationTest {
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
-        mockMvc.perform(asyncDispatch(mvcResult))
-                .andExpect(status().isOk());
+        // 异步等待推流完成 (离线自洽 MockWebServer 5 秒超时，本地模型 30 秒超时)
+        mvcResult.getAsyncResult(isLocalProfile() ? 30000 : 5000);
 
         String sseOutput = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(sseOutput).contains("event:text");
@@ -152,8 +152,8 @@ class AiAgentStreamingControllerIntegrationTest {
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
-        mockMvc.perform(asyncDispatch(mvcResult))
-                .andExpect(status().isOk());
+        // 异步等待推流完成 (离线自洽 MockWebServer 5 秒超时，本地模型 30 秒超时)
+        mvcResult.getAsyncResult(isLocalProfile() ? 30000 : 5000);
 
         String sseOutput = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(sseOutput).contains("event:text");
@@ -169,8 +169,8 @@ class AiAgentStreamingControllerIntegrationTest {
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
-        mockMvc.perform(asyncDispatch(mvcResult))
-                .andExpect(status().isOk());
+        // 异步等待推流完成 (离线自洽 MockWebServer 5 秒超时，本地模型 30 秒超时)
+        mvcResult.getAsyncResult(isLocalProfile() ? 30000 : 5000);
 
         String sseOutput = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(sseOutput).contains("event:reasoning");
