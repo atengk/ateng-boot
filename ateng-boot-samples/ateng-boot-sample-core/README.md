@@ -1,76 +1,52 @@
-# ateng-boot-sample-core 核心底座原语场景自验工程
+# ateng-boot-sample-core 核心底座场景体验工程
 
-> 专一 `ateng-boot-core` 核心通用底座原语自验：四维上下文透传、敏感数据动态脱敏、原生加解密、树形装配、退避重试与分布式发号器。
-
----
-
-## 1. 场景痛点与功能定位
-
-`ateng-boot-core` 是整个框架的公共底座，坚守零重型外部依赖与纯原生标准库原则。`ateng-boot-sample-core` 专注于轻量、纯粹的底层算法与中间件原语自验：
-- **纯内存零依赖（Zero Web & Zero DB Dependency）**：无需任何网络端口、Servlet 容器与关系数据库，`spring.main.web-application-type: none` 极速自洽运行；
-- **四维异步上下文传播**：验证 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 跨受管线程池流转与工作现场安全还原；
-- **全场景脱敏与“内存真明文”**：验证 12 大类敏感信息动态掩码，保证 JVM 内存中实体保持 100% 原始明文；
-- **纯原生加解密与摘要**：AES/GCM 认证加解密、AES/CBC 对称加密与 SHA-256/MD5 摘要；
-- **通用数据处理与工具标准件**：JsonUtil 门面、CollectionUtil 分批切片、TreeUtil 线性装配与剪枝、ValidatorUtil 校验；
-- **弹性与因果体系**：RetryUtil 指数退避与平滑随机抖动、2026 纪元雪花发号器与 BusinessException 双模堆栈治理。
+> 专注于演示与自验 `ateng-boot-core` 核心通用底座在真实业务场景下的开箱使用：统一响应契约、传输分页解耦、因果异常与业务语义断言、分层防卫校验与通用字典枚举、分布式雪花发号与短码、敏感数据动态脱敏（内存真明文）、纯原生对称加解密与验签、四维上下文跨线程传播与多业务线程池舱壁隔离、高可用弹性重试、单机流控与业务责任链编排、高性能树形装配与流式分批切片、系统运行基线防卫与零 XML 工业级日志引擎。
 
 ---
 
-## 2. 场景服务架构与代码示例
+## 1. 快速启动与服务端口
 
-工程内聚四大领域场景服务，与核心底座特性 100% 对齐：
-
-| 场景服务 | 覆盖核心门面与特性 | 对应端到端测试 |
-| :--- | :--- | :--- |
-| `CoreContextScenarioService` | `UserContextHolder`, `TenantContextHolder`, `AsyncContext`, `ContextCopyingTaskDecorator`, `NamedThreadFactory`, `TransactionUtil` | `CoreContextScenarioServiceTest` |
-| `CoreSecurityScenarioService` | `DesensitizeUtil`, `@FieldSensitive`, `SensitiveJsonSerializer`, `CryptoUtil`, `DigestUtil` | `CoreSecurityScenarioServiceTest` |
-| `CoreDataProcessingScenarioService` | `JsonUtil`, `CollectionUtil`, `MoreCollectors`, `TreeUtil`, `ValidatorUtil`, `ValidList`, `BeanUtil`, `LambdaUtil`, `FileUtil`, `DateTimeUtil`, `RandomUtil` | `CoreDataProcessingScenarioServiceTest` |
-| `CoreResilienceScenarioService` | `RetryUtil`, `IdUtil`, `BusinessAssert`, `BusinessException`, `Result<T>`, `PageQuery`, `PageResult<T>`, `OperateLogModel`, `SpringUtil` | `CoreResilienceScenarioServiceTest` |
-
-### 核心代码片段示例
-
-#### 1. 敏感数据脱敏与内存真明文校验
-```java
-// 实体字段标注动态脱敏注解
-public class SampleUserDTO {
-    @FieldSensitive(SensitiveType.MOBILE_PHONE)
-    private String phone; // "13812345678"
-}
-
-// 序列化输出自动掩码，内存对象严守真明文
-Pair<String, SampleUserDTO> pair = securityScenarioService.verifyInMemoryPlaintextAndJsonMasking();
-// JSON 输出: {"phone":"138****5678", ...}
-// 内存真明文: user.getPhone() -> "13812345678"
-```
-
-#### 2. 指数退避重试与 Fallback 降级
-```java
-RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
-        .maxAttempts(3)
-        .delay(Duration.ofMillis(20))
-        .multiplier(1.5)
-        .jitter(true)
-        .retryPredicate(ex -> ex instanceof IllegalStateException)
-        .build();
-
-String result = RetryUtil.execute(() -> remoteRpcCall(), config, ex -> "FALLBACK_VALUE");
-```
+- **默认 HTTP 端口**：`8080` (可在 `application.yml` 中通过 `server.port` 修改)
+- **启动方式**：
+  ```bash
+  # 方式一：IDE 中运行 SampleCoreApplication.java 的 main 方法
+  # 方式二：命令行启动
+  mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-core
+  ```
 
 ---
 
-## 3. 定向集成测试准出
+## 2. 运行环境与双模切换
+
+- **默认/CI 模式**：本工程坚守纯原生零重型外部依赖原则，无需安装任何外部中间件（零 Redis/DB/MQ 依赖），开箱即用，默认模式与 CI 流水线均 100% 全真自洽运行；
+- **Local 真实环境调优模式**：复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并按需调整（该文件已被 Git 忽略，CI 零风险），启动自动探测生效：
+  - 支持在本地开启 **JDK 21+ 虚拟线程模式**（`spring.threads.virtual.enabled: true`）；
+  - 支持开启 **磁盘双文件异步切片落盘日志**（`ateng.boot.core.logging.file.enabled: true`）；
+  - 支持配置 **多网卡环境首选物理网段**（`ateng.boot.core.net.preferred-networks`）。
+
+---
+
+## 3. 核心 Controller 接口与一键体验
+
+应用启动后，可通过以下 cURL 命令或浏览器直接发起调用体验各业务领域特性：
+
+### 3.1 传输契约与分层校验领域 (`CoreContractController` -> `/sample/core/contract`)
+
+| 功能场景 | 请求方式与路径 | 核心门面 / 注解 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **订单结算前置断言与双模堆栈** | `POST /sample/core/contract/order-check` | `Result<T>`<br>`BusinessAssert`<br>`BusinessException`<br>`ResultCodeUtil` | `curl -X POST "http://localhost:8080/sample/core/contract/order-check" -H "Content-Type: application/json" -d '{"orderNo":"ORD-20261107-1001","amount":199.50,"simulateDriverFailure":true}'` |
+| **订单分页查询与排序解耦** | `GET /sample/core/contract/orders/page` | `PageQuery`<br>`SortItem`<br>`PageResult<T>` | `curl "http://localhost:8080/sample/core/contract/orders/page?current=1&size=10&sorts[0].property=orderTime&sorts[0].direction=DESC"` |
+| **批量客户入驻级联校验与枚举拦截** | `POST /sample/core/contract/users/batch-validate` | `ValidList<E>`<br>`ValidationGroups`<br>`ValidatorUtil`<br>`@InEnum` | `curl -X POST "http://localhost:8080/sample/core/contract/users/batch-validate" -H "Content-Type: application/json" -d '[{"name":"张三","phone":"13812345678","statusCode":1},{"name":"李四","phone":"13987654321","statusCode":2}]'` |
+| **通用字典枚举下拉选项渲染** | `GET /sample/core/contract/enums/options` | `IBaseEnum`<br>`@EnumAlias`<br>`EnumUtil`<br>`OptionItem` | `curl "http://localhost:8080/sample/core/contract/enums/options"` |
+
+> 注：其余领域 Controller（安全密码学、异步与上下文、弹性流控、数据结构、系统与审计）将随后续工单逐步交付并补充 cURL。
+
+---
+
+## 4. 全真自动化回归命令
 
 ```bash
-mvn test -pl ateng-boot-samples/ateng-boot-sample-core -am -T 1C -nsu -B
+mvn test -pl ateng-boot-core,ateng-boot-samples/ateng-boot-sample-core -am -T 1C -nsu -B
 ```
 
-测试全自洽、零外部依赖，毫秒级极速执行通过：
-```
-[INFO] Results:
-[INFO] 
-[INFO] Tests run: 32, Failures: 0, Errors: 0, Skipped: 0
-[INFO] 
-[INFO] ------------------------------------------------------------------------
-[INFO] BUILD SUCCESS
-[INFO] ------------------------------------------------------------------------
-```
+> 详细原理机制、配置清单与扩展定制，请参阅核心 Starter 文档：[ateng-boot-core README](../../ateng-boot-core/README.md)。

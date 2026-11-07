@@ -22,6 +22,8 @@ import io.github.atengk.boot.core.util.SpringUtil;
 import io.github.atengk.boot.core.util.TreeUtil;
 import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.core.validation.ValidList;
+import io.github.atengk.boot.core.util.BusinessAssert;
+import io.github.atengk.boot.sample.core.dto.CustomerOnboardingRequest;
 import io.github.atengk.boot.sample.core.model.SampleMenuNodeDTO;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
 import lombok.extern.slf4j.Slf4j;
@@ -407,5 +409,27 @@ public class CoreDataProcessingScenarioService {
 
         log.info("SpelUtil 场景求值结果: {}", results);
         return results;
+    }
+
+    /**
+     * 19. 批量客户入驻校验（JSR-303 级联校验与编程式防卫）
+     *
+     * @param customerList 客户列表
+     * @return 成功通过校验的客户数
+     */
+    public int batchOnboardCustomers(ValidList<CustomerOnboardingRequest> customerList) {
+        ValidatorUtil.validate(customerList);
+        for (CustomerOnboardingRequest customer : customerList) {
+            if (customer.getPhone() != null) {
+                BusinessAssert.isTrue(ValidatorUtil.isMobile(customer.getPhone()), "客户 [{}] 手机号码格式不合法", customer.getName());
+            }
+            if (customer.getIdCard() != null && !customer.getIdCard().isBlank()) {
+                BusinessAssert.isTrue(ValidatorUtil.isIdCard(customer.getIdCard()), "客户 [{}] 身份证号码不合法", customer.getName());
+            }
+            if (customer.getSocialCreditCode() != null && !customer.getSocialCreditCode().isBlank()) {
+                BusinessAssert.isTrue(ValidatorUtil.isSocialCreditCode(customer.getSocialCreditCode()), "统一社会信用代码不合法");
+            }
+        }
+        return customerList.size();
     }
 }

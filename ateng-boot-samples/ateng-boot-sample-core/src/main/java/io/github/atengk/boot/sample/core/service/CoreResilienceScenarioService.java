@@ -19,6 +19,9 @@ import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.core.util.SpringUtil;
+import io.github.atengk.boot.sample.core.dto.OrderCheckRequest;
+import io.github.atengk.boot.sample.core.vo.OrderCheckVO;
+import io.github.atengk.boot.sample.core.vo.OrderSummaryVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -184,7 +187,7 @@ public class CoreResilienceScenarioService {
         long queryCurrent = query.getCurrent();
         long querySize = query.getSize();
 
-        List<String> list = List.of("Item-1", "Item-2");
+        List<String> list = List.of("ORD-20261107-001", "ORD-20261107-002");
         PageResult<String> pageResult = PageResult.of(list, 100L, queryCurrent, querySize);
 
         log.info("PageQuery 与 PageResult: current={}, size={}, sorts={}, totalPages={}",
@@ -286,7 +289,7 @@ public class CoreResilienceScenarioService {
      * @return 分页结果实例
      */
     public PageResult<String> demonstratePageResultNavigation() {
-        PageResult<String> pageResult = PageResult.of(List.of("Data-A", "Data-B"), 100L, 2L, 10L);
+        PageResult<String> pageResult = PageResult.of(List.of("ORD-20261107-001", "ORD-20261107-002"), 100L, 2L, 10L);
         log.info("PageResult 导航属性: hasPrevious={}, hasNext={}, isEmpty={}",
                 pageResult.hasPrevious(), pageResult.hasNext(), pageResult.isEmpty());
         return pageResult;
@@ -378,5 +381,77 @@ public class CoreResilienceScenarioService {
         long datacenterId = instance.getDatacenterId();
         log.info("Spring 容器受管 Snowflake: id={}, workerId={}, datacenterId={}", id, workerId, datacenterId);
         return Triple.of(id, workerId, datacenterId);
+    }
+
+    /**
+     * 16. 执行订单结算前置业务语义断言与双模异常堆栈分析
+     *
+     * @param request 订单校验请求
+     * @return 订单校验结果视图模型
+     */
+    public OrderCheckVO checkOrderCheckout(OrderCheckRequest request) {
+        BusinessAssert.notNull(request, "订单校验请求参数不能为空");
+        BusinessAssert.hasText(request.getOrderNo(), "订单编号不能为空");
+        BusinessAssert.notNull(request.getAmount(), "订单金额不能为空");
+        BusinessAssert.gt(request.getAmount(), java.math.BigDecimal.ZERO, "订单金额必须大于0");
+
+        // 1. 双模堆栈治理自验
+        BusinessException lightweightEx = new BusinessException(CommonResultCode.BAD_REQUEST);
+        int lightweightLen = lightweightEx.getStackTrace().length;
+
+        int causalLen;
+        if (Boolean.TRUE.equals(request.getSimulateDriverFailure())) {
+            BusinessException causalEx = new BusinessException(
+                    CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "外部支付网关通信超时",
+                    new java.io.IOException("Socket read timeout")
+            );
+            causalLen = causalEx.getStackTrace().length;
+        } else {
+            causalLen = 0;
+        }
+
+        // 2. 状态码号段归属分析（演示 1000~1999 核心底座系统号段 SYSTEM_CORE）
+        ResultCodeSegment segment = ResultCodeUtil.getSegment(SampleBusinessResultCode.USER_NOT_FOUND);
+        String segmentName = segment != null ? segment.name() : "UNKNOWN";
+
+        return OrderCheckVO.builder()
+                .orderNo(request.getOrderNo())
+                .checkStatus("CHECKED_PASSED")
+                .amount(request.getAmount())
+                .lightweightStackLength(lightweightLen)
+                .causalStackLength(causalLen)
+                .resultCodeSegment(segmentName)
+                .build();
+    }
+
+    /**
+     * 17. 查询订单分页摘要列表
+     *
+     * @param query 分页入参
+     * @return 强类型订单分页结果
+     */
+    public PageResult<OrderSummaryVO> queryOrderPage(PageQuery query) {
+        long current = query.getCurrent();
+        long size = query.getSize();
+
+        List<OrderSummaryVO> orders = List.of(
+                OrderSummaryVO.builder()
+                        .orderNo("ORD-20261107-1001")
+                        .productName("Spring Boot 3 企业级架构实战指南")
+                        .amount(new java.math.BigDecimal("129.00"))
+                        .statusDesc("已支付")
+                        .orderTime(LocalDateTime.of(2026, 11, 7, 10, 30, 0))
+                        .build(),
+                OrderSummaryVO.builder()
+                        .orderNo("ORD-20261107-1002")
+                        .productName("分布式微服务高可用中间件核心套件")
+                        .amount(new java.math.BigDecimal("299.00"))
+                        .statusDesc("待发货")
+                        .orderTime(LocalDateTime.of(2026, 11, 7, 11, 15, 0))
+                        .build()
+        );
+
+        return PageResult.of(orders, 100L, current, size);
     }
 }

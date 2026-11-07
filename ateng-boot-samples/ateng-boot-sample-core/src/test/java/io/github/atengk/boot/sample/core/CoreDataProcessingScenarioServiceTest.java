@@ -49,7 +49,7 @@ class CoreDataProcessingScenarioServiceTest {
                 .build();
 
         Pair<String, SampleUserDTO> pair = dataProcessingService.processJson(user);
-        assertThat(pair.left()).contains("\"id\":1");
+        assertThat(pair.left()).contains("\"id\":\"1\"");
         assertThat(pair.right().getId()).isEqualTo(1L);
     }
 

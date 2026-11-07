@@ -17,10 +17,10 @@
     <description>ateng-boot 核心底座原语场景样例（纯内存自验: 序列化 / 脱敏 / 上下文 / 重试 / 分批切片）</description>
 
     <dependencies>
-        <!-- 参数校验 Starter (Hibernate Validator) -->
+        <!-- Web 接入底座 -->
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-validation</artifactId>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
         </dependency>
 
         <!-- Core 核心底座原语 -->

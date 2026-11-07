@@ -314,4 +314,61 @@ _Avoid_: EnumHelper, Enums, EnumTool
 基于 JSR-303 规范的强类型枚举入参合法性校验注解，依托 EnumUtil 在传输层第一道防线实现非法状态快速失败。
 _Avoid_: EnumPattern, EnumValue, CheckEnum, ValidEnum
 
+**SortItem**:
+传输层分页查询的强类型单字段排序契约载体，封装排序字段名与正逆序标记，与底层持久层排序对象严格解耦。
+_Avoid_: OrderItem, SortField, OrderBy
+
+**OperateLogEvent**:
+承载 OperateLogModel 结构化操作审计元数据的 Spring 领域事件，解耦业务操作切面采集与下游异步审计持久化。
+_Avoid_: AuditEvent, SysLogEvent, OperationEvent
+
+**AsyncContextSnapshotProvider**:
+面向跨模块扩展的异步上下文快照捕获、应用与现场还原 SPI 契约，支持在基础四维上下文之上无侵入挂载附加维度上下文。
+_Avoid_: ContextPropagatorSpi, ThreadLocalSnapshot, AsyncHook
+
+**TransactionCompletionStatus**:
+表征 Spring 物理事务最终完成状态的强类型枚举（COMMITTED、ROLLED_BACK、UNKNOWN），供事务终态回调契约消费。
+_Avoid_: TxStatus, CompletionState, TransactionState
+
+**IdempotentException**:
+表征接口重复提交、消息重复投递或业务幂等锁冲突的受控业务异常，继承自 BusinessException 并默认绑定 REPEAT_SUBMIT 状态码。
+_Avoid_: RepeatSubmitException, DuplicateException, IdempotencyError
+
+**MessagePayloadSerializer**:
+跨中间件异步消息载荷序列化与反序列化 SPI 契约，默认提供基于 JsonUtil 的零 `@class` 注入风险实现。
+_Avoid_: MqSerializer, PayloadConverter, MessageCodec
+
+**BatchSliceUtil**:
+基于原生 subList 视图实现的零额外内存分配大批量列表分批切片与流式消费工具。
+_Avoid_: ListSplitter, BatchHelper, ChunkUtil
+
+**CidrMatcher**:
+纯 JDK 原生 IPv4/IPv6 地址与 CIDR 子网掩码位运算匹配器，内置反代端口剥离与防 DNS 阻塞数值校验。
+_Avoid_: IpMatcher, SubnetUtil, IpWhitelistChecker
+
+**SystemEnvironmentPostProcessor**:
+在 Spring 容器初始化前校准默认时区、UTF-8 编码、Headless 模式与底层网络默认超时的系统环境防卫后置处理器。
+_Avoid_: SystemInitConfig, TimezoneInitializer, EnvBootstrap
+
+**LoggingEnvironmentPostProcessor**:
+无需维护 XML 配置文件即可自动注入彩色控制台、MDC traceId 追踪格式与双文件滚动落盘的零 XML 日志引擎后置处理器。
+_Avoid_: LogbackConfig, LoggingInitializer, XmlFreeLogConfig
+
+**SlowAlert**:
+声明式方法级慢调用监控与告警注解，当业务方法执行耗时超出阈值时输出带脱敏与有界截断入参快照的结构化告警。
+_Avoid_: SlowLog, MonitorTime, PerformanceTrack
+
+**SlowBeanDiagnosticPostProcessor**:
+统计并诊断 Spring 容器启动期单例 Bean 初始化耗时的后置处理器，超阈值时输出告警以定位冷启动性能瓶颈。
+_Avoid_: BeanInitMonitor, StartupProfiler, SlowBeanWatcher
+
+**AppTempDirCleanupListener**:
+统管应用专属隔离临时目录并在 JVM 退出时自动递归清理残留临时文件的生命周期监听器。
+_Avoid_: TempFileCleaner, DiskCleanupHook
+
+**AppShutdownListener**:
+监听 Spring 容器关闭事件并计算打印应用总存活时长（Uptime）摘要的优雅停机监听器。
+_Avoid_: ShutdownLogger, UptimeListener, ExitHook
+
+
 

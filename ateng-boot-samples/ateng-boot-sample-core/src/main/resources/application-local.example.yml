@@ -1,0 +1,37 @@
+# ==============================================================================
+# ateng-boot-sample-core 本地个性化与环境自适应调优配置示例
+# 复制当前文件为 application-local.yml 即可在本地生效（该文件已被 .gitignore 忽略）
+# ==============================================================================
+
+server:
+  port: 8080
+
+spring:
+  # 开启虚拟线程（需在 JDK 21+ 运行，开启后自动将全局异步执行器切换为虚拟线程）
+  threads:
+    virtual:
+      enabled: false
+
+ateng:
+  boot:
+    core:
+      # 1. 开启磁盘双文件异步滚动落盘日志 (logs/app.log 与 logs/app-error.log)
+      logging:
+        file:
+          enabled: false
+          path: logs
+          max-file-size: 100MB
+          max-history: 30
+
+      # 2. 网络探测与首选物理网卡配置（多网卡/VPN 环境调优）
+      net:
+        preferred-ip: ""
+        preferred-networks:
+          - "192.168.*"
+        ignored-interfaces:
+          - "VirtualBox.*"
+          - "VMware.*"
+
+    async:
+      # 异步执行模式: AUTO (默认) | PLATFORM (强制平台线程) | VIRTUAL (强制虚拟线程)
+      mode: AUTO
