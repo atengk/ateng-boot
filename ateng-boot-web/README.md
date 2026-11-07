@@ -13,8 +13,8 @@
 | **精度与时间规范** | 53 位雪花精度防截断与时间序列化 | `JacksonCustomizer` | `ateng.boot.web.long-to-string` | Long/BigInteger 序列化为 String，标准 `yyyy-MM-dd HH:mm:ss` 格式化，不覆盖原生 `ObjectMapper` | `JacksonCustomizerTest.java`, `WebContractAndExceptionControllerTest.java`, `WebContractSampleControllerTest.java` |
 | **接口审计日志** | 声明式接口耗时审计与安全防 OOM | `@WebLog`, `WebLogAspect` | `ateng.boot.web.log.enabled` | `@WebLog(value, printParams, printResult, excludeParams)`，大文件 Multipart 自动占位防 OOM | `WebLogAspectTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **动态 CORS 跨域** | 动态跨域来源校验与凭证安全反射 | `CorsOriginProvider`, `DefaultCorsOriginProvider`, `DynamicCorsConfigurationSource` | `ateng.boot.web.cors.enabled`, `allowed-origins`, `allow-credentials`, `allow-localhost`, `max-age` | 基于配置属性通配或 SPI 动态扩展校验 Origin，安全反射并支持凭据传输（Cookie），放行本地 localhost 调试 | `DynamicCorsTest.java`, `WebTrafficSampleControllerTest.java` |
-| **自适应限流防刷** | 三级自适应令牌桶与多维限流 | `@RateLimiter`, `LimitType`, `RateLimiterStore`, `InMemoryRateLimiterStore`, `RedisRateLimiterStore`, `RedissonRateLimiterStore` | `ateng.boot.web.ratelimit.enabled`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@RateLimiter(key, time, count, limitType)`，支持默认/IP/用户/租户（LimitType.TENANT）多维限流防刷与租户流量隔离 | `RateLimiterAspectTest.java`, `AtengRateLimiterAutoConfigurationTest.java`, `InMemoryRateLimiterStoreTest.java`, `WebTrafficSampleControllerTest.java`, `WebTenantRateLimiterSampleTest.java` |
-| **自适应防重幂等** | 三级自适应防重幂等引擎 | `@Idempotent`, `IdempotentKeyStore`, `InMemoryIdempotentKeyStore`, `RedisIdempotentKeyStore`, `RedissonIdempotentKeyStore` | `ateng.boot.web.idempotent.enabled`, `key-prefix`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@Idempotent(key, timeout, message, delKeyOnException)`，支持 SpEL 动态提取业务键、自动防抖、业务异常释放 | `IdempotentAspectTest.java`, `AtengIdempotentAutoConfigurationTest.java`, `InMemoryIdempotentKeyStoreTest.java`, `WebTrafficSampleControllerTest.java` |
+| **自适应限流防刷** | 三级自适应令牌桶与多维限流 | `@RateLimiter`, `LimitType`, `RateLimiterStore`, `InMemoryRateLimiterStore`, `RedisRateLimiterStore`, `RedissonRateLimiterStore` | `ateng.boot.web.ratelimit.enabled`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@RateLimiter(key, time, count, limitType)`，支持默认/IP/用户/租户（LimitType.TENANT）多维限流防刷与租户流量隔离 | `RateLimiterAspectTest.java`, `AtengRateLimiterAutoConfigurationTest.java`, `InMemoryRateLimiterStoreTest.java`, `WebTrafficGovernanceControllerTest.java`, `WebTenantRateLimiterSampleTest.java` |
+| **自适应防重幂等** | 三级自适应防重幂等引擎 | `@Idempotent`, `IdempotentKeyStore`, `InMemoryIdempotentKeyStore`, `RedisIdempotentKeyStore`, `RedissonIdempotentKeyStore` | `ateng.boot.web.idempotent.enabled`, `key-prefix`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@Idempotent(key, timeout, message, delKeyOnException)`，支持 SpEL 动态提取业务键、自动防抖、业务异常释放 | `IdempotentAspectTest.java`, `AtengIdempotentAutoConfigurationTest.java`, `InMemoryIdempotentKeyStoreTest.java`, `WebTrafficGovernanceControllerTest.java` |
 | **云原生优雅停机** | K8s 就绪探针排空与容器生命周期治理 | `AtengGracefulShutdownHandler`, `PreStopEndpoint`, `PreStopController` | `ateng.boot.web.shutdown.enabled`, `drain-timeout`, `smart-lifecycle-enabled`, `actuator-endpoint-enabled`, `mvc-endpoint-enabled`, `mvc-endpoint-path` | 翻转 `ReadinessState.REFUSING_TRAFFIC`，受管静默排空等待（`drain-timeout: 10s`），`AtomicBoolean` 状态机排空幂等，支持 Actuator `/actuator/pre-stop` 与 MVC `/pre-stop` 双模端点，`SmartLifecycle` 兜底 | `AtengGracefulShutdownHandlerTest.java`, `PreStopEndpointTest.java`, `PreStopControllerTest.java`, `AtengGracefulShutdownAutoConfigurationTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 | **慢请求主动告警** | 长耗时慢请求性能主动告警与长连接放行 | `SlowRequestFilter` | `ateng.boot.web.slow-request.enabled`, `threshold`, `exclude-urls` | 请求出口处计算总耗时，超过阈值（强类型 Duration）输出包含 TraceId、URI、Method、耗时与 ClientIp 的 `[SLOW_REQUEST]` 格式化 WARN 日志，自动放行 WebSocket、SSE、文件下载与异步挂起请求，支持 Ant 路径白名单 | `SlowRequestFilterTest.java`, `SlowRequestMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogModel` | `ateng.boot.web.operate-log.enabled` | `@OperateLog(module, type, description, saveParams, saveResult, excludeParams)`，自动关联线程上下文（操作人/租户），出参自动联动 `@FieldSensitive` 视图脱敏，保留原始异常因果链，支持异步存储 SPI 与开箱即用 JSON 保底 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java`, `WebObservabilityAndAuditControllerTest.java` |
@@ -1094,61 +1094,200 @@ public Result<String> slowExcludedDemo(@RequestParam(defaultValue = "60") long d
 
 ---
 
-## 7. 三级自适应防重幂等引擎 (`@Idempotent`)
+## 5. 接口防刷限流与防重幂等治理套件
 
-### 场景痛点
-用户误触多次提交、网络抖动重发或前端无防抖导致订单重复创建。
+### 5.1 三级自适应令牌桶限流防刷引擎 (`@RateLimiter`)
 
-### 自适应架构
-采用 **Tier 1 (Redisson) -> Tier 2 (Redis) -> Tier 3 (单机内存)** 三级自适应抢占与兜底体系：引入 Redisson 时自动升级为分布式原子锁，仅有 Redis 时通过 `SETNX` 升级，无任何中间件时由纯原生单机内存安全支撑。
+#### 场景痛点
+恶意爬虫高频扫库、短信网关遭遇黑产盗刷短信、突发秒杀流量压垮数据库；单体小项目引入 Redis 往往带来额外运维成本，而分布式集群仅用单机内存又无法统管全局配额；多租户 SaaS 架构下若无法按租户实现流量隔离，某一租户的突发流量将直接挤占全站资源引发系统雪崩。
 
-### 核心代码范式
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      ratelimit:
+        # 是否启用三级自适应令牌桶限流引擎（默认 true）
+        enabled: true
+        in-memory:
+          # 单机内存限流存储最大令牌桶容量（防 OOM 软上限，默认 10000）
+          max-capacity: 10000
+          # 内存过期令牌桶后台定时清理周期（默认 5m）
+          clean-interval: 5m
+```
+
+#### Tier 1 $\rightarrow$ Tier 2 $\rightarrow$ Tier 3 三级自适应架构
+- **Tier 1 (Redisson 分布式令牌桶)**：检测到类路径存在 `RedissonClient` 时自动装配 `RedissonRateLimiterStore`，依托 Redis 原生 `RRateLimiter` 实施微秒级集群全局分布式精准限流；
+- **Tier 2 (Redis Lua 脚本原子限流)**：仅检测到 `StringRedisTemplate` 时自动装配 `RedisRateLimiterStore`，基于原子 Lua 脚本与 Sliding Window 算法实现分布式限流；
+- **Tier 3 (纯原生单机内存令牌桶保底)**：无任何中间件连接时，平滑降级为 `InMemoryRateLimiterStore`，基于并发无锁哈希表与定时清理守护线程提供极速单机防护，零外部网络依赖与内存泄漏风险；
+- **SPI 扩展接管**：支持通过实现 `RateLimiterStore` 并在 Spring 容器注册自定义 Bean，全权接管限流底层存储（如自建 Guava RateLimiter 或 Sentinel 集成）。
+
+#### 多维限流防御模型
+- `LimitType.DEFAULT`：方法全局维度统一限流；
+- `LimitType.IP`：基于客户端真实 IP（经由 `IpUtil` 穿透多级反向代理）实施联合防刷（如短信验证码防刷）；
+- `LimitType.USER`：提取 `UserContextHolder.get()` 实施登录用户配额限流；
+- `LimitType.TENANT`：自动提取 `TenantContextHolder.getTenantId()` 实施 SaaS 多租户原生流量隔离，超限返回 `429 Too Many Requests` 并注入 `Retry-After` 响应标头；
+- **SpEL 复合维度**：支持通过 `key = "#tenantId"` 与 `limitType = LimitType.IP` 组合出“IP + 业务租户”双重联合限流键。
+
+#### 1:1 实测业务代码范式
 ```java
-@PostMapping("/pay")
-@Idempotent(
-    key = "#order.orderNo",            // 支持 SpEL 表达式动态提取业务键
-    timeout = 10,                      // 幂等锁定时间（默认秒）
-    message = "支付请求处理中，请勿重复操作",
-    delKeyOnException = true           // 业务异常时是否自动释放锁允许重试
-)
-public Result<String> payOrder(@RequestBody PayOrderDTO order) {
-    return Result.success(payService.pay(order));
+// 1. 全局默认接口限流（10秒内最多允许2次请求）
+@GetMapping("/ratelimit/default")
+@RateLimiter(count = 2, time = 10, message = "默认接口限流拦截")
+public Result<String> testDefaultRateLimit() {
+    return Result.success("全局接口访问成功");
+}
+
+// 2. 短信验证码客户端 IP 防刷限流（10秒内同一客户端 IP 最多允许2次发送）
+@GetMapping("/ratelimit/ip")
+@RateLimiter(limitType = LimitType.IP, count = 2, time = 10, message = "短信验证码请求过于频繁，请稍后再试")
+public Result<String> testIpRateLimit(HttpServletRequest request) {
+    String clientIp = IpUtil.getClientIp(request);
+    return Result.success("验证码已发送至客户端 IP: " + clientIp);
+}
+
+// 3. 用户维度限流（10秒内同一已登录用户最多允许2次调用）
+@GetMapping("/ratelimit/user")
+@RateLimiter(limitType = LimitType.USER, count = 2, time = 10, message = "用户操作过于频繁，请稍后再试")
+public Result<String> testUserRateLimit() {
+    String userName = UserContextHolder.get();
+    return Result.success("用户资料操作成功: " + (userName != null ? userName : "anonymous"));
+}
+
+// 4. SpEL 与客户端 IP 复合限流（10秒内同一 IP 与同一租户最多允许2次调用）
+@GetMapping("/ratelimit/composite")
+@RateLimiter(limitType = LimitType.IP, key = "#tenantId", count = 2, time = 10, message = "复合租户限流拦截")
+public Result<String> testCompositeRateLimit(@RequestParam String tenantId) {
+    return Result.success("租户配额请求成功: " + tenantId);
+}
+
+// 5. SaaS 多租户原生流量隔离限流（每个租户 60 秒内最多允许 2 次调用，租户间完全隔离）
+@GetMapping("/ratelimit/tenant")
+@RateLimiter(limitType = LimitType.TENANT, count = 2, time = 60, timeUnit = TimeUnit.SECONDS, message = "当前租户请求过于频繁，请稍后再试")
+public Result<String> testTenantRateLimit() {
+    String tenantId = TenantContextHolder.getTenantId();
+    return Result.success("tenant=" + (tenantId != null ? tenantId : "default"));
+}
+```
+
+#### 真实 HTTP 响应报文验证
+
+##### (1) 正常放行响应 (`GET /sample/web/traffic/ratelimit/default`)
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": "全局接口访问成功",
+  "success": true,
+  "traceId": "9b1c2d3e4f5a6b7c"
+}
+```
+
+##### (2) 超限熔断拦截响应 (HTTP 200 + Code 429 + 标头注入)
+```http
+HTTP/1.1 200 OK
+Retry-After: 60
+Content-Type: application/json
+
+{
+  "code": 429,
+  "msg": "当前租户请求过于频繁，请稍后再试",
+  "data": null,
+  "success": false,
+  "traceId": "aba6866f993f3bb5"
 }
 ```
 
 ---
 
-## 8. 三级自适应令牌桶限流防刷 (`@RateLimiter`)
+### 5.2 三级自适应防重幂等治理引擎 (`@Idempotent`)
 
-### 场景痛点
-恶意刷接口、短信被盗刷或秒杀突发瞬时流量压垮下游持久层。
+#### 场景痛点
+用户弱网环境下反复双击提交、网络抖动引发网关自动重发重试，或者前端未做防抖，导致电商系统重复创建订单、重复扣款或生成多笔重复流水；当业务校验发生异常（如库存不足、密码错误）被捕获时，若幂等锁未主动释放，用户将被强制等待数秒锁超时方可再次提交，严重损害交互体验。
 
-### 核心代码范式
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      idempotent:
+        # 是否启用三级自适应防重幂等引擎（默认 true）
+        enabled: true
+        # 幂等锁全局缓存键前缀（默认 idempotent:）
+        key-prefix: "idempotent:"
+        in-memory:
+          # 单机内存幂等存储最大键容量（防 OOM 软上限，默认 10000）
+          max-capacity: 10000
+          # 内存过期防重键定时清理周期（默认 5m）
+          clean-interval: 5m
+```
+
+#### Tier 1 $\rightarrow$ Tier 2 $\rightarrow$ Tier 3 自适应抢占架构
+- **Tier 1 (Redisson 分布式原子锁)**：类路径存在 `RedissonClient` 时装配 `RedissonIdempotentKeyStore`，通过分布式锁实现精准并发互斥与自动看门狗续期；
+- **Tier 2 (Redis SETNX 原子抢占)**：仅存在 `StringRedisTemplate` 时装配 `RedisIdempotentKeyStore`，通过 `setIfAbsent` 带过期时间实现毫秒级轻量分布式防重；
+- **Tier 3 (纯原生单机内存防抖)**：零中间件环境下平滑装配 `InMemoryIdempotentKeyStore`，基于原子 `ConcurrentHashMap` 与带容量阈值的清理引擎保障单机安全运行；
+- **SPI 扩展接管**：提供 `IdempotentKeyStore` SPI，支持自定义第三方存储（如分布式缓存或数据库唯一流水表）。
+
+#### 核心防重机制与参数配置
+- **精准 SpEL 业务键锁定**：通过 `key = "#dto.orderNo"` 动态从入参中提取全局唯一业务流水号，配合 `prefix = "order:pay:"` 实现细粒度防重；
+- **无参请求特征指纹自动哈希**：未指定 `key` 时，系统自动提取调用方类名、方法名、用户标识及入参哈希值组装为请求指纹，实现通用的防连击防抖；
+- **业务异常锁确定性释放 (`delKeyOnException = true`)**：业务方法抛出异常时，切面在 `finally` 块中立即主动释放当前线程持有的幂等键，无需等待 `timeout` 超时即可允许用户修正参数后立即重试。
+
+#### 1:1 实测业务代码范式
 ```java
-// 1. 基于客户端 IP 联合防刷
-@GetMapping("/sendSms")
-@RateLimiter(
-    key = "#phone",                    // 基于入参手机号限流
-    time = 60,                         // 60 秒时间窗口
-    count = 1,                         // 限制 1 次请求
-    limitType = LimitType.IP,          // 叠加客户端 IP 联合防刷
-    message = "短信发送过于频繁，请稍后再试"
-)
-public Result<Void> sendSms(@RequestParam String phone) {
-    smsService.send(phone);
-    return Result.success();
+// 1. 电商订单支付 SpEL 业务键精准防重（以订单号为业务锁，锁定2秒）
+@PostMapping("/idempotent/order")
+@Idempotent(key = "#dto.orderNo", prefix = "order:pay:", timeout = 2, message = "订单处理中，请勿重复提交")
+public Result<String> createOrder(@Valid @RequestBody TrafficOrderDTO dto) {
+    return Result.success(dto.getOrderNo());
 }
 
-// 2. 原生多租户流量隔离限流（自动读取 TenantContextHolder 租户标识，未指定时回退为 default）
-@GetMapping("/tenant/data")
-@RateLimiter(
-    limitType = LimitType.TENANT,      // 租户维度限流
-    count = 100,                       // 每 60 秒允许 100 次
-    time = 60,
-    message = "当前租户请求过于频繁，请稍后再试"
-)
-public Result<String> getTenantData() {
-    return Result.success("ok");
+// 2. 营销领券按钮特征指纹自动哈希防抖（基于入参特征自动生成防抖指纹）
+@PostMapping("/idempotent/button")
+@Idempotent(timeout = 2, message = "操作过于频繁，请稍后再试")
+public Result<String> submitButton(@RequestParam String formToken) {
+    return Result.success("表单提交成功: " + formToken);
+}
+
+// 3. 优惠券领取精准业务防重
+@PostMapping("/idempotent/coupon")
+@Idempotent(key = "#couponCode", prefix = "coupon:claim:", timeout = 2, message = "领券操作过于频繁，请稍后再试")
+public Result<String> claimCoupon(@RequestParam String couponCode) {
+    return Result.success("优惠券领取成功: " + couponCode);
+}
+
+// 4. 业务异常时锁自动释放（delKeyOnException = true，业务可恢复异常时立即允许重试）
+@PostMapping("/idempotent/fail-retry")
+@Idempotent(key = "#bizId", prefix = "biz:retry:", timeout = 5, delKeyOnException = true)
+public Result<String> failAndRetry(@RequestParam String bizId, @RequestParam boolean fail) {
+    if (fail) {
+        throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), "可恢复业务校验失败");
+    }
+    return Result.success("success: " + bizId);
+}
+```
+
+#### 真实 HTTP 响应报文验证
+
+##### (1) 首次提交成功放行 (`POST /sample/web/traffic/idempotent/order`)
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": "ORD_TRAFFIC_1729000000000",
+  "success": true,
+  "traceId": "7ebf8152661ffdaf"
+}
+```
+
+##### (2) 快速重复提交被切面拦截 (Code 40003)
+```json
+{
+  "code": 40003,
+  "msg": "订单处理中，请勿重复提交",
+  "data": null,
+  "success": false,
+  "traceId": "9c8b7a6f5e4d3c2b"
 }
 ```
 

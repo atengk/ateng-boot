@@ -65,6 +65,20 @@
 | **慢报表查询耗时告警模拟** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/slow-query` | `curl "http://localhost:8080/sample/web/observability/slow-query?delayMs=60"` |
 | **慢请求白名单免告警放行** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/slow-excluded` | `curl "http://localhost:8080/sample/web/observability/slow-excluded?delayMs=60"` |
 
+### 3.3 接口防刷限流与防重幂等治理 (`WebTrafficGovernanceController`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **全局默认接口限流 (2次/10秒)** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/ratelimit/default` | `curl "http://localhost:8080/sample/web/traffic/ratelimit/default"` |
+| **短信验证码 IP 限流防刷** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/ratelimit/ip` | `curl "http://localhost:8080/sample/web/traffic/ratelimit/ip"` |
+| **登录用户配额限流 (2次/10秒)** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/ratelimit/user` | `curl "http://localhost:8080/sample/web/traffic/ratelimit/user"` |
+| **IP 与租户复合维度限流** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/ratelimit/composite` | `curl "http://localhost:8080/sample/web/traffic/ratelimit/composite?tenantId=tenant-A"` |
+| **SaaS 多租户原生隔离限流** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/ratelimit/tenant` | `curl "http://localhost:8080/sample/web/traffic/ratelimit/tenant"` |
+| **电商订单支付 SpEL 防重** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/order` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/order" -H "Content-Type: application/json" -d "{\"orderNo\":\"ORD_1001\",\"amount\":99.9}"` |
+| **表单特征指纹自动哈希防抖** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/button` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/button?formToken=TOKEN_A1B2"` |
+| **营销优惠券领取精准防重** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/coupon` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/coupon?couponCode=CPN_8888"` |
+| **业务异常幂等锁自动释放** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/fail-retry` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/fail-retry?bizId=BIZ_001&fail=false"` |
+
 ---
 
 ## 4. 全真自动化回归命令
