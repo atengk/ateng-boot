@@ -1,10 +1,14 @@
 package io.github.atengk.boot.social.template;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.social.cache.SocialAuthStateCache;
 import io.github.atengk.boot.social.code.SocialResultCode;
 import io.github.atengk.boot.social.config.SocialAppConfig;
 import io.github.atengk.boot.social.context.CurrentSocialAppContextHolder;
+import io.github.atengk.boot.social.event.SocialAuthenticatedEvent;
+import io.github.atengk.boot.social.event.SocialBindTicketIssuedEvent;
+import io.github.atengk.boot.social.event.SocialBoundEvent;
 import io.github.atengk.boot.social.event.SocialUnboundEvent;
 import io.github.atengk.boot.social.exception.SocialAuthException;
 import io.github.atengk.boot.social.exception.SocialException;
@@ -389,10 +393,15 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             log.warn("SocialUserDetailsService is not provided, skipping local user binding persistence: userId=[{}], appKey=[{}]", userId, effectiveAppKey);
         }
 
-        // 4. 自动签发登录会话
+        // 4. 广播账号绑定完成领域事件
+        publishEvent(new SocialBoundEvent(this, userId, effectiveAppKey, socialUser));
+
+        // 5. 自动签发登录会话并广播登录认证成功事件
         Object tokenInfo = sessionManager.createSession(userId, options, socialUser);
         log.info("Social user successfully bound and logged in: userId=[{}], appKey=[{}], openId=[{}]",
                 userId, effectiveAppKey, socialUser.getOpenId());
+
+        publishEvent(new SocialAuthenticatedEvent(this, userId, effectiveAppKey, socialUser, options, null));
 
         return SocialAuthResult.loggedIn(userId, tokenInfo, socialUser, null);
     }
@@ -566,20 +575,66 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
         String userId = detailsService != null ? detailsService.loadUserIdBySocialUser(appKey, socialUser) : null;
 
         if (userId != null && !userId.isBlank()) {
-            // 分支 1：已绑定本地系统用户 -> 自动签发受管登录会话
+            // 分支 1：已绑定本地系统用户 -> 自动签发受管登录会话并广播登录认证成功事件
             Object tokenInfo = sessionManager.createSession(userId, options, socialUser);
             log.info("Social user authenticated and logged in: appKey=[{}], userId=[{}], openId=[{}]",
                     appKey, userId, socialUser.getOpenId());
+            publishEvent(new SocialAuthenticatedEvent(this, userId, appKey, socialUser, options, stateContext));
             return SocialAuthResult.loggedIn(userId, tokenInfo, socialUser, stateContext);
-        } else {
-            // 分支 2：未绑定本地用户 -> 签发两阶段高熵绑定票据
-            Duration ticketTimeout = properties.getBindTicketTimeout() != null
-                    ? properties.getBindTicketTimeout()
-                    : BindTicketStore.DEFAULT_TICKET_TIMEOUT;
-            String bindTicket = bindTicketStore.createTicket(socialUser, ticketTimeout);
-            log.info("Social user not bound, issued bindTicket: appKey=[{}], openId=[{}]",
-                    appKey, socialUser.getOpenId());
-            return SocialAuthResult.requireBind(bindTicket, socialUser, stateContext);
         }
+
+        // 分支 2：未绑定本地用户，探测是否开启自动注册 (autoSignUp)
+        boolean isAutoSignUp = isAutoSignUpEnabled(appKey);
+        if (isAutoSignUp && detailsService != null) {
+            String autoUserId = detailsService.autoRegisterUser(appKey, socialUser);
+            if (autoUserId != null && !autoUserId.isBlank()) {
+                log.info("Social user auto-registered successfully: appKey=[{}], userId=[{}], openId=[{}]",
+                        appKey, autoUserId, socialUser.getOpenId());
+                // 依次广播绑定完成与登录认证成功领域事件
+                publishEvent(new SocialBoundEvent(this, autoUserId, appKey, socialUser));
+                Object tokenInfo = sessionManager.createSession(autoUserId, options, socialUser);
+                publishEvent(new SocialAuthenticatedEvent(this, autoUserId, appKey, socialUser, options, stateContext));
+                return SocialAuthResult.loggedIn(autoUserId, tokenInfo, socialUser, stateContext);
+            }
+        }
+
+        // 分支 3：未开启自动注册或自动注册返回 null -> 签发两阶段高熵绑定票据并广播票据签发事件
+        Duration ticketTimeout = properties.getBindTicketTimeout() != null
+                ? properties.getBindTicketTimeout()
+                : BindTicketStore.DEFAULT_TICKET_TIMEOUT;
+        String bindTicket = bindTicketStore.createTicket(socialUser, ticketTimeout);
+        log.info("Social user not bound, issued bindTicket: appKey=[{}], openId=[{}]",
+                appKey, socialUser.getOpenId());
+
+        String maskedTicket = maskTicket(bindTicket);
+        publishEvent(new SocialBindTicketIssuedEvent(this, maskedTicket, appKey, socialUser));
+
+        return SocialAuthResult.requireBind(bindTicket, socialUser, stateContext);
+    }
+
+    private boolean isAutoSignUpEnabled(String appKey) {
+        if (appKey == null || appKey.isBlank()) {
+            return properties != null && properties.isAutoSignUp();
+        }
+        try {
+            SocialAppConfig appConfig = socialAppFactory.getAppConfig(appKey);
+            if (appConfig != null && appConfig.getAutoSignUp() != null) {
+                return appConfig.getAutoSignUp();
+            }
+        } catch (Exception ignored) {
+            // 回退到全局配置
+        }
+        return properties != null && properties.isAutoSignUp();
+    }
+
+    private static String maskTicket(String ticket) {
+        if (ticket == null || ticket.isBlank()) {
+            return ticket;
+        }
+        int len = ticket.length();
+        if (len <= 8) {
+            return DesensitizeUtil.mask(ticket, 1, len - 1);
+        }
+        return DesensitizeUtil.mask(ticket, 4, len - 4);
     }
 }

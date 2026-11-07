@@ -86,4 +86,9 @@ public class SocialAppItemProperties {
      * 应用专有读取超时（可选，若配置则覆盖全局）
      */
     private Duration readTimeout;
+
+    /**
+     * 当前应用首次社交登录未匹配本地用户时是否自动注册开户（可选，若配置则覆盖全局 autoSignUp）
+     */
+    private Boolean autoSignUp;
 }

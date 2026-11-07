@@ -177,6 +177,7 @@ public class SocialAppFactory {
                 .proxy(props.getProxy())
                 .connectTimeout(props.getConnectTimeout())
                 .readTimeout(props.getReadTimeout())
+                .autoSignUp(props.getAutoSignUp())
                 .build();
     }
 }

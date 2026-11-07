@@ -30,6 +30,22 @@ public interface SocialUserDetailsService {
     String loadUserIdBySocialUser(String appKey, SocialUser socialUser);
 
     /**
+     * 首次社交登录未匹配到本地用户时，静默自动注册创建本地用户并完成绑定
+     * <p>
+     * 仅当应用或全局开启 {@code autoSignUp=true} 且 {@link #loadUserIdBySocialUser(String, SocialUser)} 返回 null 时调用。
+     * 由宿主应用实现自动创建本地用户账号（如生成用户主数据、分配初始角色、落库第三方绑定关系），并返回新用户的唯一标识。
+     * 若返回非空 userId，框架将直接为其签发登录会话；若返回 null，框架将平滑回退至两阶段绑定流程并签发 BindTicket。
+     * </p>
+     *
+     * @param appKey     发起登录请求的应用唯一标识
+     * @param socialUser 第三方授权获取的标准化用户画像
+     * @return 新创建并绑定的本地用户 ID；若不执行自动注册则返回 null
+     */
+    default String autoRegisterUser(String appKey, SocialUser socialUser) {
+        return null;
+    }
+
+    /**
      * 孤儿账号解绑前置守卫校验
      * <p>
      * 检查当前本地用户是否允许解除指定的第三方应用绑定。

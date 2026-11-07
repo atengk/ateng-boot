@@ -67,6 +67,11 @@ public class AtengSocialProperties {
     private List<String> allowedRedirectDomains = new ArrayList<>();
 
     /**
+     * 全局默认首次社交登录未匹配本地用户时是否自动注册开户，默认 false
+     */
+    private boolean autoSignUp = false;
+
+    /**
      * 全局默认出站代理配置（可选）
      */
     @NestedConfigurationProperty

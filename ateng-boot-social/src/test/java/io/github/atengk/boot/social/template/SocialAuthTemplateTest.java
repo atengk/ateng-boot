@@ -5,6 +5,9 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.social.cache.InMemorySocialAuthStateCache;
 import io.github.atengk.boot.social.cache.SocialAuthStateCache;
 import io.github.atengk.boot.social.code.SocialResultCode;
+import io.github.atengk.boot.social.event.SocialAuthenticatedEvent;
+import io.github.atengk.boot.social.event.SocialBindTicketIssuedEvent;
+import io.github.atengk.boot.social.event.SocialBoundEvent;
 import io.github.atengk.boot.social.event.SocialUnboundEvent;
 import io.github.atengk.boot.social.exception.SocialAuthException;
 import io.github.atengk.boot.social.exception.SocialException;
@@ -36,6 +39,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
+import org.springframework.context.ApplicationEvent;
 import org.springframework.context.ApplicationEventPublisher;
 
 import java.io.IOException;
@@ -771,6 +775,146 @@ class SocialAuthTemplateTest {
 
         // 验证异常发生后 TenantContextHolder 依然确定性恢复为 tenant_base
         assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant_base");
+    }
+
+    @Test
+    @DisplayName("27. autoSignUp: 开启全局自动注册且 SPI 返回用户ID时直接完成绑定与登录")
+    void testAutoSignUpSuccess() {
+        authTemplate.getProperties().setAutoSignUp(true);
+
+        when(userDetailsService.loadUserIdBySocialUser(eq("wechat_mp_app"), any(SocialUser.class)))
+                .thenReturn(null);
+        when(userDetailsService.autoRegisterUser(eq("wechat_mp_app"), any(SocialUser.class)))
+                .thenReturn("auto_new_user_100");
+
+        mockWebServer.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody("{\"openid\":\"wx_auto_open_100\",\"session_key\":\"sess_100\",\"unionid\":\"wx_union_100\"}"));
+
+        SocialAuthResult result = authTemplate.directLogin("wechat_mp_app", "code_auto_100");
+
+        assertThat(result.getState()).isEqualTo(SocialAuthState.LOGGED_IN);
+        assertThat(result.getUserId()).isEqualTo("auto_new_user_100");
+        assertThat(result.getTokenInfo()).isNotNull();
+
+        // 验证领域事件依次触发：SocialBoundEvent -> SocialAuthenticatedEvent
+        ArgumentCaptor<ApplicationEvent> eventCaptor = ArgumentCaptor.forClass(ApplicationEvent.class);
+        verify(eventPublisher, org.mockito.Mockito.atLeast(2)).publishEvent(eventCaptor.capture());
+
+        boolean hasBoundEvent = eventCaptor.getAllValues().stream()
+                .anyMatch(e -> e instanceof SocialBoundEvent bound && bound.getUserId().equals("auto_new_user_100"));
+        boolean hasAuthEvent = eventCaptor.getAllValues().stream()
+                .anyMatch(e -> e instanceof SocialAuthenticatedEvent auth && auth.getUserId().equals("auto_new_user_100"));
+
+        assertThat(hasBoundEvent).isTrue();
+        assertThat(hasAuthEvent).isTrue();
+    }
+
+    @Test
+    @DisplayName("28. autoSignUp: 开启自动注册但 SPI 返回 null 时平滑回退至两阶段绑定")
+    void testAutoSignUpReturnsNullFallbacksToBindTicket() {
+        authTemplate.getProperties().setAutoSignUp(true);
+
+        when(userDetailsService.loadUserIdBySocialUser(eq("wechat_mp_app"), any(SocialUser.class)))
+                .thenReturn(null);
+        when(userDetailsService.autoRegisterUser(eq("wechat_mp_app"), any(SocialUser.class)))
+                .thenReturn(null); // SPI 拒绝自动开户，要求回退
+
+        mockWebServer.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody("{\"openid\":\"wx_fallback_open\",\"session_key\":\"sess_fb\"}"));
+
+        SocialAuthResult result = authTemplate.directLogin("wechat_mp_app", "code_fb");
+
+        assertThat(result.getState()).isEqualTo(SocialAuthState.REQUIRE_BIND);
+        assertThat(result.getBindTicket()).isNotBlank();
+
+        // 验证广播了脱敏票据事件，未广播绑定事件
+        ArgumentCaptor<ApplicationEvent> eventCaptor = ArgumentCaptor.forClass(ApplicationEvent.class);
+        verify(eventPublisher).publishEvent(eventCaptor.capture());
+
+        Object published = eventCaptor.getValue();
+        assertThat(published).isInstanceOf(SocialBindTicketIssuedEvent.class);
+        SocialBindTicketIssuedEvent ticketEvent = (SocialBindTicketIssuedEvent) published;
+        assertThat(ticketEvent.getMaskedTicket()).contains("*");
+        assertThat(ticketEvent.getAppKey()).isEqualTo("wechat_mp_app");
+        assertThat(ticketEvent.getSocialUser().getOpenId()).isEqualTo("wx_fallback_open");
+    }
+
+    @Test
+    @DisplayName("29. autoSignUp: 默认关闭时未绑定用户直接进入两阶段绑定且不调用 autoRegisterUser")
+    void testAutoSignUpDisabledByDefault() {
+        authTemplate.getProperties().setAutoSignUp(false);
+
+        when(userDetailsService.loadUserIdBySocialUser(eq("wechat_mp_app"), any(SocialUser.class)))
+                .thenReturn(null);
+
+        mockWebServer.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody("{\"openid\":\"wx_def_open\",\"session_key\":\"sess_def\"}"));
+
+        SocialAuthResult result = authTemplate.directLogin("wechat_mp_app", "code_def");
+
+        assertThat(result.getState()).isEqualTo(SocialAuthState.REQUIRE_BIND);
+        verify(userDetailsService, never()).autoRegisterUser(any(), any());
+
+        ArgumentCaptor<ApplicationEvent> eventCaptor = ArgumentCaptor.forClass(ApplicationEvent.class);
+        verify(eventPublisher).publishEvent(eventCaptor.capture());
+        assertThat(eventCaptor.getValue()).isInstanceOf(SocialBindTicketIssuedEvent.class);
+    }
+
+    @Test
+    @DisplayName("30. autoSignUp: 应用级 autoSignUp 配置覆盖全局配置")
+    void testAppLevelAutoSignUpOverridesGlobal() {
+        // 全局关闭
+        authTemplate.getProperties().setAutoSignUp(false);
+
+        // 应用级为 wechat_mp_app 单独开启
+        SocialAppItemProperties mpProps = authTemplate.getProperties().getApps().get("wechat_mp_app");
+        mpProps.setAutoSignUp(true);
+
+        when(userDetailsService.loadUserIdBySocialUser(eq("wechat_mp_app"), any(SocialUser.class)))
+                .thenReturn(null);
+        when(userDetailsService.autoRegisterUser(eq("wechat_mp_app"), any(SocialUser.class)))
+                .thenReturn("user_app_level_override");
+
+        mockWebServer.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody("{\"openid\":\"wx_override_open\",\"session_key\":\"sess_ov\"}"));
+
+        SocialAuthResult result = authTemplate.directLogin("wechat_mp_app", "code_ov");
+
+        assertThat(result.getState()).isEqualTo(SocialAuthState.LOGGED_IN);
+        assertThat(result.getUserId()).isEqualTo("user_app_level_override");
+
+        // 恢复应用级配置
+        mpProps.setAutoSignUp(null);
+    }
+
+    @Test
+    @DisplayName("31. domainEvents: 验证两阶段绑定 bind 成功触发 SocialBoundEvent 与 SocialAuthenticatedEvent")
+    void testDomainEventsInBind() {
+        SocialUser pendingUser = SocialUser.builder()
+                .openId("open_bind_event")
+                .source("GITHUB")
+                .appKey("github_app")
+                .username("bindUser")
+                .build();
+        String bindTicket = bindTicketStore.createTicket(pendingUser);
+
+        SocialAuthResult result = authTemplate.bind("github_app", bindTicket, "user_bound_events", null);
+        assertThat(result.getState()).isEqualTo(SocialAuthState.LOGGED_IN);
+
+        ArgumentCaptor<ApplicationEvent> eventCaptor = ArgumentCaptor.forClass(ApplicationEvent.class);
+        verify(eventPublisher, org.mockito.Mockito.atLeast(2)).publishEvent(eventCaptor.capture());
+
+        boolean hasBound = eventCaptor.getAllValues().stream()
+                .anyMatch(e -> e instanceof SocialBoundEvent b && b.getUserId().equals("user_bound_events"));
+        boolean hasAuth = eventCaptor.getAllValues().stream()
+                .anyMatch(e -> e instanceof SocialAuthenticatedEvent a && a.getUserId().equals("user_bound_events"));
+
+        assertThat(hasBound).isTrue();
+        assertThat(hasAuth).isTrue();
     }
 
     private String extractQueryParam(String url, String paramName) {
