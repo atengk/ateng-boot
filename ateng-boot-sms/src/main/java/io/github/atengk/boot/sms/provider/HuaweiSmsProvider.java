@@ -114,6 +114,11 @@ public class HuaweiSmsProvider extends AbstractHttpSmsProvider {
             formParams.put("extend", request.getBizId());
         }
 
+        // 厂商状态报告回调地址
+        if (StringUtils.hasText(channel.getStatusCallback())) {
+            formParams.put("statusCallback", channel.getStatusCallback().trim());
+        }
+
         // 4. 构建表单编码请求体字符串
         StringBuilder bodyBuilder = new StringBuilder();
         for (Map.Entry<String, String> entry : formParams.entrySet()) {
@@ -138,14 +143,14 @@ public class HuaweiSmsProvider extends AbstractHttpSmsProvider {
 
         String responseBody;
         try {
-            responseBody = client.post()
+            responseBody = executeWithRetry(channel, "SendSms", () -> client.post()
                     .uri(endpoint)
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                     .header("Authorization", AUTH_HEADER_VALUE)
                     .header("X-WSSE", wsseHeader)
                     .body(requestBody)
                     .retrieve()
-                    .body(String.class);
+                    .body(String.class));
         } catch (RestClientResponseException e) {
             String errorBody = e.getResponseBodyAsString();
             parseAndThrowExceptionIfPossible(channel.getName(), errorBody, e);

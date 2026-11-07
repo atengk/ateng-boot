@@ -58,8 +58,7 @@ public class SmsRequest implements Serializable {
     private final String bizId;
 
     public SmsRequest(String phone, List<String> phones, String templateId, SmsParam params, String signName, String channel, String bizId) {
-        BusinessAssert.hasText(templateId, "短信模板编码不能为空");
-        this.templateId = templateId.trim();
+        this.templateId = (templateId != null && !templateId.isBlank()) ? templateId.trim() : null;
         this.params = params != null ? params : SmsParam.create();
         this.signName = signName != null ? signName.trim() : null;
         this.channel = channel != null ? channel.trim() : null;
@@ -80,6 +79,29 @@ public class SmsRequest implements Serializable {
     }
 
     /**
+     * 基于当前发信请求复制并绑定目标物理模板、签名与执行渠道
+     *
+     * @param targetTemplateId 转译后的目标物理模板 ID
+     * @param targetSignName   决策后的目标签名
+     * @param targetChannel    实际执行发信的目标渠道名称
+     * @return 新的 SmsRequest 实例
+     */
+    public SmsRequest withTemplateSignAndChannel(String targetTemplateId, String targetSignName, String targetChannel) {
+        return new SmsRequest(this.phone, this.phones, targetTemplateId, this.params, targetSignName, targetChannel, this.bizId);
+    }
+
+    /**
+     * 基于当前发信请求复制并绑定目标物理模板与签名
+     *
+     * @param targetTemplateId 转译后的目标物理模板 ID
+     * @param targetSignName   决策后的目标签名
+     * @return 新的 SmsRequest 实例
+     */
+    public SmsRequest withTemplateAndSign(String targetTemplateId, String targetSignName) {
+        return withTemplateSignAndChannel(targetTemplateId, targetSignName, this.channel);
+    }
+
+    /**
      * 获取发信手机号码列表（保底返回非空列表）
      *
      * @return 手机号码列表
@@ -95,6 +117,16 @@ public class SmsRequest implements Serializable {
     }
 
     /**
+     * 便捷静态构建器（缺省模板编码，回退采用渠道 defaultTemplateId）
+     *
+     * @param phone 目标手机号
+     * @return SmsRequestBuilder
+     */
+    public static SmsRequestBuilder newBuilder(String phone) {
+        return builder().phone(phone);
+    }
+
+    /**
      * 便捷静态构建器
      *
      * @param phone      目标手机号
@@ -106,6 +138,17 @@ public class SmsRequest implements Serializable {
     }
 
     /**
+     * 便捷静态工厂：单号码与参数（缺省模板编码，回退采用渠道 defaultTemplateId）
+     *
+     * @param phone  目标手机号
+     * @param params 模板参数
+     * @return SmsRequest 实例
+     */
+    public static SmsRequest of(String phone, SmsParam params) {
+        return builder().phone(phone).params(params).build();
+    }
+
+    /**
      * 便捷静态工厂：单号码与模板
      *
      * @param phone      目标手机号
@@ -113,6 +156,7 @@ public class SmsRequest implements Serializable {
      * @return SmsRequest 实例
      */
     public static SmsRequest of(String phone, String templateId) {
+        BusinessAssert.hasText(templateId, "短信模板编码不能为空");
         return builder().phone(phone).templateId(templateId).build();
     }
 
@@ -125,6 +169,7 @@ public class SmsRequest implements Serializable {
      * @return SmsRequest 实例
      */
     public static SmsRequest of(String phone, String templateId, SmsParam params) {
+        BusinessAssert.hasText(templateId, "短信模板编码不能为空");
         return builder().phone(phone).templateId(templateId).params(params).build();
     }
 

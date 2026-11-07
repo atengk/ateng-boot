@@ -155,10 +155,14 @@ public class SmsTemplate {
     public SmsResult send(SmsRequest request) {
         BusinessAssert.notNull(request, "发信请求 SmsRequest 不能为空");
         BusinessAssert.hasText(request.getPhone(), "目标手机号不能为空");
-        BusinessAssert.hasText(request.getTemplateId(), "短信模板编码不能为空");
 
         // 1. 三级级联解析目标发信渠道
         SmsChannel channel = resolveChannel(request.getChannel());
+
+        // 验证当前渠道或请求中是否存在有效模板
+        String effectiveTemplateId = channel.resolveTemplateId(request.getTemplateId());
+        BusinessAssert.hasText(effectiveTemplateId,
+                () -> "短信模板编码不能为空 (渠道 [" + channel.getName() + "] 未配置 defaultTemplateId 且发信请求未指定模板)");
 
         // 2. 出站黑名单前置静默拦截防卫（多号码逐一校验，防漏检穿透）
         if (properties.getGuard().isBlacklistEnabled() && blacklistProvider != null) {
@@ -185,7 +189,7 @@ public class SmsTemplate {
                     DesensitizeUtil.mobilePhone(request.getPhone()),
                     channel.getName(),
                     channel.getSupplier(),
-                    request.getTemplateId());
+                    effectiveTemplateId);
         }
 
         return failoverChain.execute(request, channel);
@@ -213,15 +217,18 @@ public class SmsTemplate {
         BusinessAssert.notNull(request, "发信请求 SmsRequest 不能为空");
 
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            Runnable action = AsyncContext.wrap(() -> {
+                try {
+                    send(request);
+                } catch (Exception ex) {
+                    log.error("[SmsTemplate] 事务提交后发信异常 (目标号码: {}): {}",
+                            DesensitizeUtil.mobilePhone(request.getPhone()), ex.getMessage(), ex);
+                }
+            });
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    try {
-                        send(request);
-                    } catch (Exception ex) {
-                        log.error("[SmsTemplate] 事务提交后异步发信异常 (目标号码: {}): {}",
-                                DesensitizeUtil.mobilePhone(request.getPhone()), ex.getMessage(), ex);
-                    }
+                    action.run();
                 }
             });
             if (log.isDebugEnabled()) {
@@ -230,6 +237,60 @@ public class SmsTemplate {
             }
         } else {
             send(request);
+        }
+    }
+
+    /**
+     * 本地事务感知异步发信
+     * 仅在 Spring 本地事务成功 COMMIT 后触发受管异步发信，事务回滚时自动安全取消
+     * 若当前线程无活动事务，则降级为直接异步发送
+     *
+     * @param request 发信请求值对象
+     * @return CompletableFuture 异步结果
+     */
+    public CompletableFuture<SmsResult> sendAsyncAfterCommit(SmsRequest request) {
+        BusinessAssert.notNull(request, "发信请求 SmsRequest 不能为空");
+
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            CompletableFuture<SmsResult> future = new CompletableFuture<>();
+            Runnable task = AsyncContext.wrap(() -> {
+                CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> send(request)), executor)
+                        .whenComplete((res, ex) -> {
+                            if (ex != null) {
+                                log.error("[SmsTemplate] 事务提交后异步发信异常 (目标号码: {}): {}",
+                                        DesensitizeUtil.mobilePhone(request.getPhone()), ex.getMessage(), ex);
+                                future.completeExceptionally(ex);
+                            } else {
+                                future.complete(res);
+                            }
+                        });
+            });
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    task.run();
+                }
+
+                @Override
+                public void afterCompletion(int status) {
+                    if (status != STATUS_COMMITTED && !future.isDone()) {
+                        future.completeExceptionally(new SmsSendException(
+                                request.getChannel() != null ? request.getChannel() : "default",
+                                "TRANSACTION_ROLLED_BACK",
+                                "事务回滚，取消事务后异步发信",
+                                SmsResultCode.SMS_SEND_ERROR,
+                                "事务回滚，取消发信"
+                        ));
+                    }
+                }
+            });
+            if (log.isDebugEnabled()) {
+                log.debug("[SmsTemplate] 检测到活动事务，已注册事务提交后受管异步投递钩子 (目标号码: {})",
+                        DesensitizeUtil.mobilePhone(request.getPhone()));
+            }
+            return future;
+        } else {
+            return sendAsync(request);
         }
     }
 
@@ -245,10 +306,13 @@ public class SmsTemplate {
     public BatchSmsResult sendBatch(BatchSmsRequest request) {
         BusinessAssert.notNull(request, "批量发信请求 BatchSmsRequest 不能为空");
         BusinessAssert.notEmpty(request.getPhones(), "目标手机号列表不能为空");
-        BusinessAssert.hasText(request.getTemplateId(), "短信模板编码不能为空");
 
         // 1. 三级级联解析目标渠道
         SmsChannel channel = resolveChannel(request.getChannel());
+
+        String effectiveTemplateId = channel.resolveTemplateId(request.getTemplateId());
+        BusinessAssert.hasText(effectiveTemplateId,
+                () -> "短信模板编码不能为空 (渠道 [" + channel.getName() + "] 未配置 defaultTemplateId 且批量发信请求未指定模板)");
 
         // 2. 出站黑名单前置静默拦截
         List<String> rawPhones = request.getPhones();
@@ -374,15 +438,18 @@ public class SmsTemplate {
         BusinessAssert.notNull(request, "批量发信请求 BatchSmsRequest 不能为空");
 
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            Runnable action = AsyncContext.wrap(() -> {
+                try {
+                    sendBatch(request);
+                } catch (Exception ex) {
+                    log.error("[SmsTemplate] 事务提交后批量发信异常 (总号码数: {}): {}",
+                            request.getPhones().size(), ex.getMessage(), ex);
+                }
+            });
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    try {
-                        sendBatch(request);
-                    } catch (Exception ex) {
-                        log.error("[SmsTemplate] 事务提交后批量发信异常 (总号码数: {}): {}",
-                                request.getPhones().size(), ex.getMessage(), ex);
-                    }
+                    action.run();
                 }
             });
             if (log.isDebugEnabled()) {
@@ -391,6 +458,60 @@ public class SmsTemplate {
             }
         } else {
             sendBatch(request);
+        }
+    }
+
+    /**
+     * 本地事务感知异步批量发信
+     * 仅在 Spring 本地事务成功 COMMIT 后触发受管异步批量发信，事务回滚时自动安全取消
+     * 若当前线程无活动事务，则降级为直接异步批量发送
+     *
+     * @param request 批量发信请求
+     * @return CompletableFuture 异步批量结果
+     */
+    public CompletableFuture<BatchSmsResult> sendBatchAsyncAfterCommit(BatchSmsRequest request) {
+        BusinessAssert.notNull(request, "批量发信请求 BatchSmsRequest 不能为空");
+
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            CompletableFuture<BatchSmsResult> future = new CompletableFuture<>();
+            Runnable task = AsyncContext.wrap(() -> {
+                CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendBatch(request)), executor)
+                        .whenComplete((res, ex) -> {
+                            if (ex != null) {
+                                log.error("[SmsTemplate] 事务提交后异步批量发信异常 (总号码数: {}): {}",
+                                        request.getPhones().size(), ex.getMessage(), ex);
+                                future.completeExceptionally(ex);
+                            } else {
+                                future.complete(res);
+                            }
+                        });
+            });
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    task.run();
+                }
+
+                @Override
+                public void afterCompletion(int status) {
+                    if (status != STATUS_COMMITTED && !future.isDone()) {
+                        future.completeExceptionally(new SmsSendException(
+                                request.getChannel() != null ? request.getChannel() : "default",
+                                "TRANSACTION_ROLLED_BACK",
+                                "事务回滚，取消事务后异步批量发信",
+                                SmsResultCode.SMS_SEND_ERROR,
+                                "事务回滚，取消批量发信"
+                        ));
+                    }
+                }
+            });
+            if (log.isDebugEnabled()) {
+                log.debug("[SmsTemplate] 检测到活动事务，已注册事务提交后受管异步批量投递钩子 (总号码数: {})",
+                        request.getPhones().size());
+            }
+            return future;
+        } else {
+            return sendBatchAsync(request);
         }
     }
 

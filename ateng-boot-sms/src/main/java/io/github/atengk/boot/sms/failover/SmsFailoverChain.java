@@ -57,30 +57,43 @@ public class SmsFailoverChain {
         SmsChannel currentChannel = initialChannel;
         Exception lastException = null;
 
-        while (currentChannel != null) {
-            visitedChannels.add(currentChannel.getName());
+        SmsRequest lastAttemptRequest = request;
 
-            SmsProvider provider = providerMap.get(currentChannel.getSupplier());
+        while (currentChannel != null) {
+            final SmsChannel attemptChannel = currentChannel;
+            visitedChannels.add(attemptChannel.getName());
+
+            // 针对当前尝试渠道执行逻辑模板 ID 与专属签名转译
+            String targetTemplateId = attemptChannel.resolveTemplateId(request.getTemplateId());
+            BusinessAssert.hasText(targetTemplateId,
+                    () -> "短信模板编码不能为空 (渠道 [" + attemptChannel.getName() + "] 未配置 defaultTemplateId 且发信请求未指定模板)");
+            String targetSignName = attemptChannel.resolveSignName(request.getTemplateId(), request.getSignName());
+            SmsRequest channelRequest = request.withTemplateSignAndChannel(targetTemplateId, targetSignName, attemptChannel.getName());
+            lastAttemptRequest = channelRequest;
+
+            SmsProvider provider = providerMap.get(attemptChannel.getSupplier());
             if (provider == null) {
-                lastException = new SmsSendException(currentChannel.getName(), "PROVIDER_NOT_FOUND",
-                        "未找到云厂商驱动: " + currentChannel.getSupplier(), SmsResultCode.SMS_CHANNEL_NOT_FOUND,
-                        "未找到云厂商驱动: " + currentChannel.getSupplier());
+                lastException = new SmsSendException(attemptChannel.getName(), "PROVIDER_NOT_FOUND",
+                        "未找到云厂商驱动: " + attemptChannel.getSupplier(), SmsResultCode.SMS_CHANNEL_NOT_FOUND,
+                        "未找到云厂商驱动: " + attemptChannel.getSupplier());
             } else {
                 try {
                     if (log.isDebugEnabled()) {
-                        log.debug("[SmsFailoverChain] 尝试通过渠道 [{}] 投递短信 -> 厂商: {}, 目标号码: {}",
-                                currentChannel.getName(),
-                                currentChannel.getSupplier(),
+                        log.debug("[SmsFailoverChain] 尝试通过渠道 [{}] 投递短信 -> 厂商: {}, 模板: {}, 签名: {}, 目标号码: {}",
+                                attemptChannel.getName(),
+                                attemptChannel.getSupplier(),
+                                targetTemplateId,
+                                targetSignName,
                                 DesensitizeUtil.mobilePhone(request.getPhone()));
                     }
 
-                    SmsResult result = provider.send(request, currentChannel);
+                    SmsResult result = provider.send(channelRequest, attemptChannel);
                     if (result != null && result.isSuccess()) {
-                        if (!currentChannel.getName().equals(initialChannel.getName())) {
+                        if (!attemptChannel.getName().equals(initialChannel.getName())) {
                             log.warn("[SmsFailoverChain] 顺延容灾降级投递成功 -> 主渠道: [{}], 降级渠道: [{}], 厂商: {}, 目标号码: {}",
                                     initialChannel.getName(),
-                                    currentChannel.getName(),
-                                    currentChannel.getSupplier(),
+                                    attemptChannel.getName(),
+                                    attemptChannel.getSupplier(),
                                     DesensitizeUtil.mobilePhone(request.getPhone()));
                         }
                         return result;
@@ -89,7 +102,7 @@ public class SmsFailoverChain {
                     // 厂商未抛异常但显式返回失败
                     String rawCode = result != null ? result.getRawCode() : "UNKNOWN";
                     String rawMsg = result != null ? result.getRawMessage() : "Send failed";
-                    lastException = new SmsSendException(currentChannel.getName(), rawCode, rawMsg,
+                    lastException = new SmsSendException(attemptChannel.getName(), rawCode, rawMsg,
                             SmsResultCode.SMS_SEND_ERROR, rawMsg);
                 } catch (Exception ex) {
                     lastException = ex;
@@ -133,7 +146,7 @@ public class SmsFailoverChain {
             for (SmsSendFailureHandler handler : failureHandlers) {
                 if (handler != null) {
                     try {
-                        handler.handle(request, currentChannel != null ? currentChannel : initialChannel, lastException);
+                        handler.handle(lastAttemptRequest != null ? lastAttemptRequest : request, currentChannel != null ? currentChannel : initialChannel, lastException);
                     } catch (Exception handlerEx) {
                         log.error("[SmsFailoverChain] 失败补偿处理器 [{}] 执行异常: {}", handler.getClass().getName(), handlerEx.getMessage());
                     }

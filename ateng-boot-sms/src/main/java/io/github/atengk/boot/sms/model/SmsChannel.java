@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sms.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import io.github.atengk.boot.sms.properties.SmsTemplateProperties;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.ToString;
@@ -77,21 +78,115 @@ public class SmsChannel implements Serializable {
     private final Duration timeout;
 
     /**
+     * 渠道默认短信模板 ID（发信请求未指定模板时的保底模板）
+     */
+    private final String defaultTemplateId;
+
+    /**
+     * 厂商状态报告回调 URL
+     */
+    private final String statusCallback;
+
+    /**
+     * 渠道权重（用于加权负载均衡调度），默认 1
+     */
+    @Builder.Default
+    private final int weight = 1;
+
+    /**
+     * 单渠道网络/瞬态异常重试次数上限（默认 0 表示不重试）
+     */
+    @Builder.Default
+    private final int maxRetries = 0;
+
+    /**
+     * 单渠道重试间隔，默认 1 秒
+     */
+    @Builder.Default
+    private final Duration retryInterval = Duration.ofSeconds(1);
+
+    /**
+     * 渠道下绑定的特定模板配置映射（模板编码 -> 模板配置）
+     */
+    private final Map<String, SmsTemplateProperties> templates;
+
+    /**
      * 模板参数顺序配置（模板ID -> 有序参数名列表）
      */
     private final Map<String, List<String>> templateParamOrders;
 
     /**
+     * 跨云逻辑模板 ID 转译
+     * 若配置了 templates 且命中逻辑模板，返回配置的物理 templateId；
+     * 若未配置物理 templateId 但 logicalTemplateId 非空，原样返回 logicalTemplateId（向后兼容）；
+     * 若 logicalTemplateId 为空，回退返回渠道 defaultTemplateId
+     *
+     * @param logicalTemplateId 逻辑模板标识 / 模板 ID
+     * @return 物理模板 ID 或 defaultTemplateId，未找到时返回 null
+     */
+    public String resolveTemplateId(String logicalTemplateId) {
+        if (logicalTemplateId != null && !logicalTemplateId.isBlank()) {
+            String key = logicalTemplateId.trim();
+            if (templates != null) {
+                SmsTemplateProperties prop = templates.get(key);
+                if (prop != null && prop.getTemplateId() != null && !prop.getTemplateId().isBlank()) {
+                    return prop.getTemplateId().trim();
+                }
+            }
+            return key;
+        }
+        return (defaultTemplateId != null && !defaultTemplateId.isBlank()) ? defaultTemplateId.trim() : null;
+    }
+
+    /**
+     * 短信签名动态决策
+     * 优先级：显式入参 > 逻辑模板专属签名 > 渠道默认签名
+     *
+     * @param logicalTemplateId 逻辑模板标识
+     * @param explicitSignName  显式指定的签名（可为 null）
+     * @return 最终决策的签名
+     */
+    public String resolveSignName(String logicalTemplateId, String explicitSignName) {
+        if (explicitSignName != null && !explicitSignName.isBlank()) {
+            return explicitSignName.trim();
+        }
+        if (logicalTemplateId != null && !logicalTemplateId.isBlank() && templates != null) {
+            SmsTemplateProperties prop = templates.get(logicalTemplateId.trim());
+            if (prop != null && prop.getSignName() != null && !prop.getSignName().isBlank()) {
+                return prop.getSignName().trim();
+            }
+        }
+        return this.signName;
+    }
+
+    /**
      * 获取指定模板的参数映射顺序
      *
-     * @param templateId 模板编码
+     * @param templateId 模板编码或逻辑标识
      * @return 参数名顺序列表，无配置时返回空列表
      */
     public List<String> getParamOrder(String templateId) {
-        if (templateParamOrders == null || templateId == null) {
+        if (templateId == null || templateId.isBlank()) {
             return Collections.emptyList();
         }
-        List<String> order = templateParamOrders.get(templateId);
-        return order != null ? order : Collections.emptyList();
+        String key = templateId.trim();
+        if (templates != null) {
+            SmsTemplateProperties prop = templates.get(key);
+            if (prop != null && prop.getParamOrder() != null && !prop.getParamOrder().isEmpty()) {
+                return Collections.unmodifiableList(prop.getParamOrder());
+            }
+            for (SmsTemplateProperties p : templates.values()) {
+                if (p != null && key.equalsIgnoreCase(p.getTemplateId()) && p.getParamOrder() != null && !p.getParamOrder().isEmpty()) {
+                    return Collections.unmodifiableList(p.getParamOrder());
+                }
+            }
+        }
+        if (templateParamOrders != null) {
+            List<String> order = templateParamOrders.get(key);
+            if (order != null && !order.isEmpty()) {
+                return Collections.unmodifiableList(order);
+            }
+        }
+        return Collections.emptyList();
     }
 }

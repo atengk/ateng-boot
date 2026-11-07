@@ -54,7 +54,6 @@ public class BatchSmsRequest implements Serializable {
 
     public BatchSmsRequest(List<String> phones, String templateId, SmsParam params, String signName, String channel, String bizId) {
         BusinessAssert.notEmpty(phones, "批量发信目标手机号列表不能为空");
-        BusinessAssert.hasText(templateId, "短信模板编码不能为空");
 
         List<String> validPhones = new ArrayList<>(phones.size());
         for (String p : phones) {
@@ -65,11 +64,45 @@ public class BatchSmsRequest implements Serializable {
         BusinessAssert.notEmpty(validPhones, "目标手机号列表中无有效号码");
 
         this.phones = Collections.unmodifiableList(validPhones);
-        this.templateId = templateId.trim();
+        this.templateId = (templateId != null && !templateId.isBlank()) ? templateId.trim() : null;
         this.params = params != null ? params : SmsParam.create();
         this.signName = signName != null ? signName.trim() : null;
         this.channel = channel != null ? channel.trim() : null;
         this.bizId = bizId != null ? bizId.trim() : null;
+    }
+
+    /**
+     * 基于当前批量发信请求复制并绑定目标物理模板、签名与执行渠道
+     *
+     * @param targetTemplateId 转译后的目标物理模板 ID
+     * @param targetSignName   决策后的目标签名
+     * @param targetChannel    实际执行发信的目标渠道名称
+     * @return 新的 BatchSmsRequest 实例
+     */
+    public BatchSmsRequest withTemplateSignAndChannel(String targetTemplateId, String targetSignName, String targetChannel) {
+        return new BatchSmsRequest(this.phones, targetTemplateId, this.params, targetSignName, targetChannel, this.bizId);
+    }
+
+    /**
+     * 基于当前批量发信请求复制并绑定目标物理模板与签名
+     *
+     * @param targetTemplateId 转译后的目标物理模板 ID
+     * @param targetSignName   决策后的目标签名
+     * @return 新的 BatchSmsRequest 实例
+     */
+    public BatchSmsRequest withTemplateAndSign(String targetTemplateId, String targetSignName) {
+        return withTemplateSignAndChannel(targetTemplateId, targetSignName, this.channel);
+    }
+
+    /**
+     * 便捷静态构建器（缺省模板编码，回退采用渠道 defaultTemplateId）
+     *
+     * @param phones 目标手机号列表
+     * @param params 动态参数模型
+     * @return BatchSmsRequest 实例
+     */
+    public static BatchSmsRequest create(List<String> phones, SmsParam params) {
+        return new BatchSmsRequest(phones, null, params, null, null, null);
     }
 
     /**
@@ -81,6 +114,7 @@ public class BatchSmsRequest implements Serializable {
      * @return BatchSmsRequest 实例
      */
     public static BatchSmsRequest create(List<String> phones, String templateId, SmsParam params) {
+        BusinessAssert.hasText(templateId, "短信模板编码不能为空");
         return new BatchSmsRequest(phones, templateId, params, null, null, null);
     }
 }

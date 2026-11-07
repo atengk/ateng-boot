@@ -130,10 +130,9 @@ public class TencentSmsProvider extends AbstractHttpSmsProvider {
         // 5. 确定请求端点与 Host 头
         String endpoint = StringUtils.hasText(channel.getEndpoint()) ? channel.getEndpoint() : DEFAULT_ENDPOINT;
         URI uri = URI.create(endpoint);
-        String host = uri.getHost();
-        if (uri.getPort() > 0 && uri.getPort() != 80 && uri.getPort() != 443) {
-            host = host + ":" + uri.getPort();
-        }
+        final String finalHost = (uri.getPort() > 0 && uri.getPort() != 80 && uri.getPort() != 443)
+                ? uri.getHost() + ":" + uri.getPort()
+                : uri.getHost();
 
         // 6. TC3-HMAC-SHA256 签名派生
         Instant now = Instant.now();
@@ -142,7 +141,7 @@ public class TencentSmsProvider extends AbstractHttpSmsProvider {
         String authorization = generateAuthorization(
                 channel.getAccessKeyId(),
                 channel.getAccessKeySecret(),
-                host,
+                finalHost,
                 payloadJson,
                 timestamp,
                 date
@@ -156,10 +155,10 @@ public class TencentSmsProvider extends AbstractHttpSmsProvider {
 
         String responseBody;
         try {
-            responseBody = client.post()
+            responseBody = executeWithRetry(channel, "SendSms", () -> client.post()
                     .uri(endpoint)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .header("Host", host)
+                    .header("Host", finalHost)
                     .header("X-TC-Action", ACTION)
                     .header("X-TC-Version", API_VERSION)
                     .header("X-TC-Timestamp", String.valueOf(timestamp))
@@ -167,7 +166,7 @@ public class TencentSmsProvider extends AbstractHttpSmsProvider {
                     .header("Authorization", authorization)
                     .body(payloadJson)
                     .retrieve()
-                    .body(String.class);
+                    .body(String.class));
         } catch (RestClientResponseException e) {
             String errorBody = e.getResponseBodyAsString();
             parseAndThrowExceptionIfPossible(channel.getName(), errorBody, e);

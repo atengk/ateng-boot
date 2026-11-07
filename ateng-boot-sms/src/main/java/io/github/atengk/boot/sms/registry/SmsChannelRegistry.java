@@ -63,6 +63,12 @@ public class SmsChannelRegistry {
                         .endpoint(prop.getEndpoint())
                         .failoverChannel(prop.getFailoverChannel())
                         .timeout(prop.getTimeout())
+                        .defaultTemplateId(prop.getDefaultTemplateId())
+                        .statusCallback(prop.getStatusCallback())
+                        .weight(prop.getWeight() > 0 ? prop.getWeight() : 1)
+                        .maxRetries(prop.getMaxRetries())
+                        .retryInterval(prop.getRetryInterval() != null ? prop.getRetryInterval() : java.time.Duration.ofSeconds(1))
+                        .templates(prop.getTemplates() != null ? Collections.unmodifiableMap(new LinkedHashMap<>(prop.getTemplates())) : Collections.emptyMap())
                         .templateParamOrders(paramOrders)
                         .build();
                 register(channel);

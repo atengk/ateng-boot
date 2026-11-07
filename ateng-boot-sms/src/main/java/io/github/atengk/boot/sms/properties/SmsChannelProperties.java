@@ -66,6 +66,31 @@ public class SmsChannelProperties implements Serializable {
     private Duration timeout = Duration.ofSeconds(10);
 
     /**
+     * 渠道默认短信模板 ID（发信请求未指定模板时的默认保底模板）
+     */
+    private String defaultTemplateId;
+
+    /**
+     * 厂商状态报告回调 URL
+     */
+    private String statusCallback;
+
+    /**
+     * 渠道权重（用于加权负载均衡调度），默认 1
+     */
+    private int weight = 1;
+
+    /**
+     * 单渠道网络/瞬态异常重试次数上限（默认 0 表示不重试）
+     */
+    private int maxRetries = 0;
+
+    /**
+     * 单渠道重试间隔，默认 1 秒
+     */
+    private Duration retryInterval = Duration.ofSeconds(1);
+
+    /**
      * 渠道下绑定的特定模板配置映射（模板编码 -> 模板配置）
      */
     @NestedConfigurationProperty

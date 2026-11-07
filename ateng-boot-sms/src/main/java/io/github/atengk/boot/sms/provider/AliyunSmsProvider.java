@@ -136,12 +136,12 @@ public class AliyunSmsProvider extends AbstractHttpSmsProvider {
 
         String responseBody;
         try {
-            responseBody = client.post()
+            responseBody = executeWithRetry(channel, "SendSms", () -> client.post()
                     .uri(endpoint)
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                     .body(formBody.toString())
                     .retrieve()
-                    .body(String.class);
+                    .body(String.class));
         } catch (RestClientResponseException e) {
             String errorBody = e.getResponseBodyAsString();
             parseAndThrowExceptionIfPossible(channel.getName(), errorBody, e);
