@@ -7,6 +7,7 @@ import io.github.atengk.boot.sms.handler.SmsSendFailureHandler;
 import io.github.atengk.boot.sms.limiter.InMemorySmsRateLimiter;
 import io.github.atengk.boot.sms.limiter.RedisSmsRateLimiter;
 import io.github.atengk.boot.sms.limiter.SmsRateLimiter;
+import io.github.atengk.boot.sms.loadbalancer.SmsChannelLoadBalancer;
 import io.github.atengk.boot.sms.properties.SmsProperties;
 import io.github.atengk.boot.sms.provider.AliyunSmsProvider;
 import io.github.atengk.boot.sms.provider.CtyunSmsProvider;
@@ -180,6 +181,32 @@ public class AtengSmsAutoConfiguration {
     }
 
     /**
+     * 自动装配短信渠道健康度短时熔断器
+     *
+     * @param properties 配置属性
+     * @return SmsChannelCircuitBreaker
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SmsChannelCircuitBreaker smsChannelCircuitBreaker(SmsProperties properties) {
+        return new SmsChannelCircuitBreaker(properties.getGuard());
+    }
+
+    /**
+     * 自动装配平滑加权轮询负载均衡器
+     *
+     * @param channelRegistry 渠道注册中心
+     * @param circuitBreaker  渠道健康度熔断器
+     * @return SmsChannelLoadBalancer
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SmsChannelLoadBalancer smsChannelLoadBalancer(SmsChannelRegistry channelRegistry,
+                                                         SmsChannelCircuitBreaker circuitBreaker) {
+        return new SmsChannelLoadBalancer(channelRegistry, circuitBreaker);
+    }
+
+    /**
      * 自动装配顶层短信操作门面
      *
      * @param properties               配置属性
@@ -189,6 +216,8 @@ public class AtengSmsAutoConfiguration {
      * @param failureHandlersProvider  失败补偿处理器列表提供者
      * @param blacklistProvider        出站黑名单过滤器提供者
      * @param budgetBreaker            单日成本预算熔断器提供者
+     * @param circuitBreakerProvider   渠道熔断器提供者
+     * @param loadBalancerProvider     负载均衡器提供者
      * @param taskExecutorProvider     异步执行器提供者
      * @return SmsTemplate
      */
@@ -201,6 +230,8 @@ public class AtengSmsAutoConfiguration {
                                    ObjectProvider<List<SmsSendFailureHandler>> failureHandlersProvider,
                                    ObjectProvider<SmsBlacklistProvider> blacklistProvider,
                                    ObjectProvider<DailyBudgetBreaker> budgetBreaker,
+                                   ObjectProvider<SmsChannelCircuitBreaker> circuitBreakerProvider,
+                                   ObjectProvider<SmsChannelLoadBalancer> loadBalancerProvider,
                                    ObjectProvider<Executor> taskExecutorProvider) {
         return new SmsTemplate(
                 properties,
@@ -210,6 +241,8 @@ public class AtengSmsAutoConfiguration {
                 failureHandlersProvider.getIfAvailable(),
                 blacklistProvider.getIfAvailable(),
                 budgetBreaker.getIfAvailable(),
+                circuitBreakerProvider.getIfAvailable(),
+                loadBalancerProvider.getIfAvailable(),
                 taskExecutorProvider.getIfAvailable()
         );
     }

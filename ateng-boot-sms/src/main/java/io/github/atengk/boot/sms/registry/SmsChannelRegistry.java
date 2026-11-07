@@ -161,6 +161,15 @@ public class SmsChannelRegistry {
     }
 
     /**
+     * 获取所有已注册渠道的列表
+     *
+     * @return 渠道列表
+     */
+    public List<SmsChannel> getAll() {
+        return new ArrayList<>(channelMap.values());
+    }
+
+    /**
      * 获取当前已注册渠道数量
      *
      * @return 渠道数量

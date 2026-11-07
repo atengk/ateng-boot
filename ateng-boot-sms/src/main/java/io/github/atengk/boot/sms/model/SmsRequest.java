@@ -102,6 +102,16 @@ public class SmsRequest implements Serializable {
     }
 
     /**
+     * 基于当前发信请求复制并指定执行渠道
+     *
+     * @param targetChannel 目标发信渠道名称
+     * @return 新的 SmsRequest 实例
+     */
+    public SmsRequest withChannel(String targetChannel) {
+        return new SmsRequest(this.phone, this.phones, this.templateId, this.params, this.signName, targetChannel, this.bizId);
+    }
+
+    /**
      * 获取发信手机号码列表（保底返回非空列表）
      *
      * @return 手机号码列表

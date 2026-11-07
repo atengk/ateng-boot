@@ -14,7 +14,9 @@ import io.github.atengk.boot.sms.guard.DailyBudgetBreaker;
 import io.github.atengk.boot.sms.guard.InMemoryDailyBudgetBreaker;
 import io.github.atengk.boot.sms.guard.InMemorySmsBlacklistProvider;
 import io.github.atengk.boot.sms.guard.SmsBlacklistProvider;
+import io.github.atengk.boot.sms.guard.SmsChannelCircuitBreaker;
 import io.github.atengk.boot.sms.handler.SmsSendFailureHandler;
+import io.github.atengk.boot.sms.loadbalancer.SmsChannelLoadBalancer;
 import io.github.atengk.boot.sms.model.*;
 import io.github.atengk.boot.sms.properties.SmsProperties;
 import io.github.atengk.boot.sms.provider.SmsProvider;
@@ -36,13 +38,18 @@ import java.util.function.Supplier;
 /**
  * 短信统一操作核心门面
  * 对外暴露高内聚、易于使用的发信 API（单发、群发透明切片、异步投递），屏蔽底层异构云厂商网络与鉴权细节
- * 集成三级级联寻址引擎（SmsContextHolder -> SmsChannelResolver -> default-channel）、多命名渠道注册中心、自动顺延容灾链、黑名单前置静默防卫与单日成本预算硬熔断器
+ * 集成三级级联寻址引擎（SmsContextHolder -> SmsChannelResolver -> default-channel）、多命名渠道注册中心、自动顺延容灾链、平滑加权负载均衡器、渠道健康度熔断器、黑名单前置静默防卫与单日成本预算硬熔断器
  *
  * @author Ateng
  * @since 2026-11-02
  */
 @Slf4j
 public class SmsTemplate {
+
+    /**
+     * 负载均衡虚拟渠道标识
+     */
+    public static final String LOAD_BALANCE_CHANNEL = "load-balance";
 
     @Getter
     private final SmsProperties properties;
@@ -61,6 +68,12 @@ public class SmsTemplate {
     private final SmsFailoverChain failoverChain;
 
     @Getter
+    private final SmsChannelCircuitBreaker circuitBreaker;
+
+    @Getter
+    private final SmsChannelLoadBalancer loadBalancer;
+
+    @Getter
     private final SmsBlacklistProvider blacklistProvider;
 
     @Getter
@@ -76,6 +89,8 @@ public class SmsTemplate {
                        List<SmsSendFailureHandler> failureHandlers,
                        SmsBlacklistProvider blacklistProvider,
                        DailyBudgetBreaker dailyBudgetBreaker,
+                       SmsChannelCircuitBreaker circuitBreaker,
+                       SmsChannelLoadBalancer loadBalancer,
                        Executor executor) {
         this.properties = properties != null ? properties : new SmsProperties();
         if (providers != null) {
@@ -97,10 +112,23 @@ public class SmsTemplate {
         this.channelResolvers = Collections.unmodifiableList(resolversList);
 
         this.failureHandlers = failureHandlers != null ? Collections.unmodifiableList(new ArrayList<>(failureHandlers)) : Collections.emptyList();
-        this.failoverChain = new SmsFailoverChain(this.channelRegistry, this.providerMap, this.failureHandlers);
+        this.circuitBreaker = circuitBreaker != null ? circuitBreaker : new SmsChannelCircuitBreaker(this.properties.getGuard());
+        this.loadBalancer = loadBalancer != null ? loadBalancer : new SmsChannelLoadBalancer(this.channelRegistry, this.circuitBreaker);
+        this.failoverChain = new SmsFailoverChain(this.channelRegistry, this.providerMap, this.failureHandlers, this.circuitBreaker);
         this.blacklistProvider = blacklistProvider != null ? blacklistProvider : new InMemorySmsBlacklistProvider(this.properties.getGuard().getBlacklist());
         this.dailyBudgetBreaker = dailyBudgetBreaker != null ? dailyBudgetBreaker : new InMemoryDailyBudgetBreaker(this.properties.getGuard());
         this.executor = executor != null ? executor : AsyncUtil.getExecutor();
+    }
+
+    public SmsTemplate(SmsProperties properties,
+                       List<SmsProvider> providers,
+                       SmsChannelRegistry channelRegistry,
+                       List<SmsChannelResolver> channelResolvers,
+                       List<SmsSendFailureHandler> failureHandlers,
+                       SmsBlacklistProvider blacklistProvider,
+                       DailyBudgetBreaker dailyBudgetBreaker,
+                       Executor executor) {
+        this(properties, providers, channelRegistry, channelResolvers, failureHandlers, blacklistProvider, dailyBudgetBreaker, null, null, executor);
     }
 
     public SmsTemplate(SmsProperties properties,
@@ -664,6 +692,12 @@ public class SmsTemplate {
     public SmsChannel resolveChannel(String channelName) {
         String targetName = resolveChannelName(channelName);
 
+        if (LOAD_BALANCE_CHANNEL.equalsIgnoreCase(targetName)) {
+            SmsChannel selected = loadBalancer != null ? loadBalancer.selectChannel() : null;
+            BusinessAssert.notNull(selected, "负载均衡未找到可用短信渠道");
+            return selected;
+        }
+
         SmsChannel channel = channelRegistry.get(targetName);
         if (channel != null) {
             return channel;
@@ -671,6 +705,70 @@ public class SmsTemplate {
 
         throw new SmsSendException(targetName, "CHANNEL_NOT_FOUND", "短信渠道不存在: " + targetName,
                 SmsResultCode.SMS_CHANNEL_NOT_FOUND, "未找到指定的短信渠道配置: " + targetName);
+    }
+
+    /**
+     * 基于平滑加权轮询 (SWRR) 负载均衡策略发送单条短信
+     * 自动跳过处于短时熔断开路态 (OPEN) 的故障渠道
+     *
+     * @param request 发信请求值对象
+     * @return SmsResult 发送结果
+     */
+    public SmsResult sendByLoadBalance(SmsRequest request) {
+        BusinessAssert.notNull(request, "发信请求 SmsRequest 不能为空");
+        SmsChannel selected = loadBalancer != null ? loadBalancer.selectChannel() : null;
+        BusinessAssert.notNull(selected, "负载均衡未找到可用短信渠道");
+        return send(request.withChannel(selected.getName()));
+    }
+
+    /**
+     * 异步基于平滑加权轮询 (SWRR) 负载均衡策略发送单条短信
+     *
+     * @param request 发信请求值对象
+     * @return CompletableFuture 异步结果
+     */
+    public CompletableFuture<SmsResult> sendByLoadBalanceAsync(SmsRequest request) {
+        BusinessAssert.notNull(request, "发信请求 SmsRequest 不能为空");
+        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendByLoadBalance(request)), executor);
+    }
+
+    /**
+     * 查询指定渠道当前是否处于短时熔断开路态 (OPEN)
+     *
+     * @param channelName 渠道名称
+     * @return true 处于短时熔断态
+     */
+    public boolean isChannelOpen(String channelName) {
+        return circuitBreaker != null && circuitBreaker.isOpen(channelName);
+    }
+
+    /**
+     * 手动重置指定渠道的短时熔断状态为 CLOSED
+     *
+     * @param channelName 渠道名称
+     */
+    public void resetChannelCircuitBreaker(String channelName) {
+        if (circuitBreaker != null) {
+            circuitBreaker.reset(channelName);
+        }
+    }
+
+    /**
+     * 手动重置所有渠道的短时熔断状态为 CLOSED
+     */
+    public void resetAllChannelCircuitBreakers() {
+        if (circuitBreaker != null) {
+            circuitBreaker.resetAll();
+        }
+    }
+
+    /**
+     * 重置负载均衡器所有渠道的动态当前权重
+     */
+    public void resetLoadBalancer() {
+        if (loadBalancer != null) {
+            loadBalancer.reset();
+        }
     }
 
     /**

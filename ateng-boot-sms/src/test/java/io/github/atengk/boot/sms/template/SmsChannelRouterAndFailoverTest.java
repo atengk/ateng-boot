@@ -301,4 +301,178 @@ class SmsChannelRouterAndFailoverTest {
         // A 执行失败后降级到 B，B 准备切回 A 时检测到环路终止，总调用次数恰好为 2 次
         assertEquals(2, callCount.get());
     }
+
+    @Test
+    @DisplayName("测试：渠道处于短时熔断开路 (OPEN) 态且配置了备用渠道时，毫秒级短路切换至备用渠道且不发起主渠道网络调用")
+    void testCircuitBreaker_ShortCircuitToFailoverChannel() {
+        AtomicInteger primaryCalls = new AtomicInteger(0);
+        AtomicInteger backupCalls = new AtomicInteger(0);
+
+        SmsProvider provider = new SmsProvider() {
+            @Override
+            public SmsSupplier getSupplier() {
+                return SmsSupplier.MOCK;
+            }
+
+            @Override
+            public SmsResult send(SmsRequest req, SmsChannel ch) {
+                if ("cb-primary".equals(ch.getName())) {
+                    primaryCalls.incrementAndGet();
+                    return SmsResult.mock(ch.getName(), "BIZ_PRI", "REQ_PRI");
+                }
+                if ("cb-backup".equals(ch.getName())) {
+                    backupCalls.incrementAndGet();
+                    return SmsResult.mock(ch.getName(), "BIZ_BAK", "REQ_BAK");
+                }
+                return SmsResult.mock(ch.getName(), "BIZ_MOCK", "REQ_MOCK");
+            }
+        };
+
+        SmsChannelRegistry testRegistry = new SmsChannelRegistry();
+        testRegistry.register(SmsChannel.builder()
+                .name("cb-backup")
+                .supplier(SmsSupplier.MOCK)
+                .signName("备用")
+                .build());
+        testRegistry.register(SmsChannel.builder()
+                .name("cb-primary")
+                .supplier(SmsSupplier.MOCK)
+                .signName("主渠道")
+                .failoverChannel("cb-backup")
+                .build());
+
+        SmsTemplate template = new SmsTemplate(null, List.of(provider), testRegistry, null, null, null, null, null);
+
+        // 模拟 cb-primary 连续失败 5 次触发 OPEN
+        for (int i = 0; i < 5; i++) {
+            template.getCircuitBreaker().recordFailure("cb-primary");
+        }
+        assertTrue(template.isChannelOpen("cb-primary"), "cb-primary 应当已触发短时熔断 (OPEN)");
+
+        // 向 cb-primary 发信
+        SmsRequest request = SmsRequest.builder()
+                .phone("13800005555")
+                .templateId("TPL_CB")
+                .channel("cb-primary")
+                .build();
+
+        SmsResult result = template.send(request);
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertEquals("cb-backup", result.getChannel(), "应当毫秒级短路切换并由备用渠道 cb-backup 承接发信");
+        assertEquals(0, primaryCalls.get(), "主渠道处于 OPEN 态，绝对严禁发起物理网络调用");
+        assertEquals(1, backupCalls.get(), "备用渠道应当被成功调用 1 次");
+
+        // 手动重置后，主渠道恢复
+        template.resetChannelCircuitBreaker("cb-primary");
+        assertFalse(template.isChannelOpen("cb-primary"));
+
+        SmsResult resPrimary = template.send(request);
+        assertEquals("cb-primary", resPrimary.getChannel());
+        assertEquals(1, primaryCalls.get());
+    }
+
+    @Test
+    @DisplayName("测试：无备用渠道时处于短时熔断 (OPEN) 态直接抛出 CIRCUIT_BREAKER_OPEN 异常")
+    void testCircuitBreaker_NoFailoverThrowsException() {
+        SmsChannelRegistry testRegistry = new SmsChannelRegistry();
+        testRegistry.register(SmsChannel.builder()
+                .name("cb-solo")
+                .supplier(SmsSupplier.MOCK)
+                .signName("独立渠道")
+                .build());
+
+        SmsTemplate template = new SmsTemplate(null, List.of(new MockSmsProvider()), testRegistry, null, null, null, null, null);
+
+        for (int i = 0; i < 5; i++) {
+            template.getCircuitBreaker().recordFailure("cb-solo");
+        }
+        assertTrue(template.isChannelOpen("cb-solo"));
+
+        SmsRequest request = SmsRequest.builder()
+                .phone("13800006666")
+                .templateId("TPL_SOLO")
+                .channel("cb-solo")
+                .build();
+
+        SmsSendException ex = assertThrows(SmsSendException.class, () -> template.send(request));
+        assertEquals("CIRCUIT_BREAKER_OPEN", ex.getRawCode());
+    }
+
+    @Test
+    @DisplayName("测试：平滑加权轮询 (SWRR) sendByLoadBalance 与 channel='load-balance' 自动选路")
+    void testSendByLoadBalance_SmoothDistribution() {
+        SmsChannelRegistry testRegistry = new SmsChannelRegistry();
+        testRegistry.register(SmsChannel.builder()
+                .name("lb-alpha")
+                .supplier(SmsSupplier.MOCK)
+                .signName("ALPHA")
+                .weight(3)
+                .build());
+        testRegistry.register(SmsChannel.builder()
+                .name("lb-beta")
+                .supplier(SmsSupplier.MOCK)
+                .signName("BETA")
+                .weight(1)
+                .build());
+
+        SmsTemplate template = new SmsTemplate(null, List.of(mockSmsProvider), testRegistry, null, null, null, null, null);
+
+        SmsRequest req = SmsRequest.of("13800007777", "SMS_LB", SmsParam.create());
+
+        // 1. 通过 sendByLoadBalance 发送 4 次，验证 A, A, B, A 平滑选路
+        List<String> sequence = new java.util.ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            SmsResult res = template.sendByLoadBalance(req);
+            sequence.add(res.getChannel());
+        }
+        assertEquals(List.of("lb-alpha", "lb-alpha", "lb-beta", "lb-alpha"), sequence);
+
+        // 2. 通过指定 channel="load-balance" 触发通用 send 自动选路
+        template.resetLoadBalancer();
+        SmsRequest reqVirtual = req.withChannel("load-balance");
+        SmsResult resVirtual = template.send(reqVirtual);
+        assertEquals("lb-alpha", resVirtual.getChannel());
+    }
+
+    @Test
+    @DisplayName("测试：加权负载均衡在主渠道熔断时自动剔除故障渠道并在自愈后恢复")
+    void testSendByLoadBalance_SkipOpenChannelAndRecover() {
+        SmsChannelRegistry testRegistry = new SmsChannelRegistry();
+        testRegistry.register(SmsChannel.builder()
+                .name("lb-healthy")
+                .supplier(SmsSupplier.MOCK)
+                .weight(1)
+                .build());
+        testRegistry.register(SmsChannel.builder()
+                .name("lb-failing")
+                .supplier(SmsSupplier.MOCK)
+                .weight(5)
+                .build());
+
+        SmsTemplate template = new SmsTemplate(null, List.of(mockSmsProvider), testRegistry, null, null, null, null, null);
+
+        // 将 lb-failing 触发熔断
+        for (int i = 0; i < 5; i++) {
+            template.getCircuitBreaker().recordFailure("lb-failing");
+        }
+        assertTrue(template.isChannelOpen("lb-failing"));
+
+        SmsRequest req = SmsRequest.of("13800008888", "SMS_LB_GUARD", SmsParam.create());
+
+        // 连续发送 3 次，因 lb-failing 处于 OPEN 态被自动过滤，全部路由至 lb-healthy
+        for (int i = 0; i < 3; i++) {
+            SmsResult res = template.sendByLoadBalance(req);
+            assertEquals("lb-healthy", res.getChannel());
+        }
+
+        // 手动恢复 lb-failing 后，lb-failing (weight 5) 重新参与选路并立即被高权重选中
+        template.resetChannelCircuitBreaker("lb-failing");
+        assertFalse(template.isChannelOpen("lb-failing"));
+        template.resetLoadBalancer();
+
+        SmsResult resAfterRecover = template.sendByLoadBalance(req);
+        assertEquals("lb-failing", resAfterRecover.getChannel());
+    }
 }

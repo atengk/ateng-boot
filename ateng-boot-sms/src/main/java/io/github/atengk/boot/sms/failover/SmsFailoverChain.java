@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
+import io.github.atengk.boot.sms.guard.SmsChannelCircuitBreaker;
 import io.github.atengk.boot.sms.handler.SmsSendFailureHandler;
 import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsRequest;
@@ -11,6 +12,7 @@ import io.github.atengk.boot.sms.model.SmsResult;
 import io.github.atengk.boot.sms.model.SmsSupplier;
 import io.github.atengk.boot.sms.provider.SmsProvider;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
@@ -28,17 +30,27 @@ public class SmsFailoverChain {
     private final SmsChannelRegistry channelRegistry;
     private final Map<SmsSupplier, SmsProvider> providerMap;
     private final List<SmsSendFailureHandler> failureHandlers;
+    @Getter
+    private final SmsChannelCircuitBreaker circuitBreaker;
+
+    public SmsFailoverChain(SmsChannelRegistry channelRegistry,
+                            Map<SmsSupplier, SmsProvider> providerMap,
+                            List<SmsSendFailureHandler> failureHandlers,
+                            SmsChannelCircuitBreaker circuitBreaker) {
+        this.channelRegistry = channelRegistry;
+        this.providerMap = providerMap != null ? providerMap : Collections.emptyMap();
+        this.failureHandlers = failureHandlers != null ? failureHandlers : Collections.emptyList();
+        this.circuitBreaker = circuitBreaker;
+    }
 
     public SmsFailoverChain(SmsChannelRegistry channelRegistry,
                             Map<SmsSupplier, SmsProvider> providerMap,
                             List<SmsSendFailureHandler> failureHandlers) {
-        this.channelRegistry = channelRegistry;
-        this.providerMap = providerMap != null ? providerMap : Collections.emptyMap();
-        this.failureHandlers = failureHandlers != null ? failureHandlers : Collections.emptyList();
+        this(channelRegistry, providerMap, failureHandlers, null);
     }
 
     public SmsFailoverChain(SmsChannelRegistry channelRegistry, Map<SmsSupplier, SmsProvider> providerMap) {
-        this(channelRegistry, providerMap, null);
+        this(channelRegistry, providerMap, null, null);
     }
 
     /**
@@ -62,6 +74,35 @@ public class SmsFailoverChain {
         while (currentChannel != null) {
             final SmsChannel attemptChannel = currentChannel;
             visitedChannels.add(attemptChannel.getName());
+
+            // 检查健康度熔断：若渠道处于熔断开路态 (OPEN) 且配置了备用容灾渠道，短路毫秒级跳过网络调用
+            if (circuitBreaker != null && !circuitBreaker.allowRequest(attemptChannel.getName())) {
+                String failoverChannelName = attemptChannel.getFailoverChannel();
+                if (failoverChannelName != null && !failoverChannelName.isBlank()) {
+                    String nextName = failoverChannelName.trim();
+                    if (!visitedChannels.contains(nextName)) {
+                        SmsChannel backupChannel = channelRegistry != null ? channelRegistry.get(nextName) : null;
+                        if (backupChannel != null) {
+                            log.warn("[SmsFailoverChain] 渠道 [{}] 处于短时熔断开路态 (OPEN)，短路毫秒级跳过 -> 自动切换至备用渠道: [{}] (目标号码: {})",
+                                    attemptChannel.getName(),
+                                    backupChannel.getName(),
+                                    DesensitizeUtil.mobilePhone(request.getPhone()));
+                            lastException = new SmsSendException(attemptChannel.getName(), "CIRCUIT_BREAKER_OPEN",
+                                    "渠道处于短时熔断开路态: " + attemptChannel.getName(),
+                                    SmsResultCode.SMS_SEND_ERROR,
+                                    "渠道处于短时熔断开路态: " + attemptChannel.getName());
+                            currentChannel = backupChannel;
+                            continue;
+                        }
+                    }
+                }
+                log.warn("[SmsFailoverChain] 渠道 [{}] 处于短时熔断开路态 (OPEN) 且无可用备用渠道，终止顺延", attemptChannel.getName());
+                lastException = new SmsSendException(attemptChannel.getName(), "CIRCUIT_BREAKER_OPEN",
+                        "渠道处于短时熔断开路态: " + attemptChannel.getName(),
+                        SmsResultCode.SMS_SEND_ERROR,
+                        "渠道处于短时熔断开路态: " + attemptChannel.getName());
+                break;
+            }
 
             // 针对当前尝试渠道执行逻辑模板 ID 与专属签名转译
             String targetTemplateId = attemptChannel.resolveTemplateId(request.getTemplateId());
@@ -89,6 +130,9 @@ public class SmsFailoverChain {
 
                     SmsResult result = provider.send(channelRequest, attemptChannel);
                     if (result != null && result.isSuccess()) {
+                        if (circuitBreaker != null) {
+                            circuitBreaker.recordSuccess(attemptChannel.getName());
+                        }
                         if (!attemptChannel.getName().equals(initialChannel.getName())) {
                             log.warn("[SmsFailoverChain] 顺延容灾降级投递成功 -> 主渠道: [{}], 降级渠道: [{}], 厂商: {}, 目标号码: {}",
                                     initialChannel.getName(),
@@ -100,11 +144,17 @@ public class SmsFailoverChain {
                     }
 
                     // 厂商未抛异常但显式返回失败
+                    if (circuitBreaker != null) {
+                        circuitBreaker.recordFailure(attemptChannel.getName());
+                    }
                     String rawCode = result != null ? result.getRawCode() : "UNKNOWN";
                     String rawMsg = result != null ? result.getRawMessage() : "Send failed";
                     lastException = new SmsSendException(attemptChannel.getName(), rawCode, rawMsg,
                             SmsResultCode.SMS_SEND_ERROR, rawMsg);
                 } catch (Exception ex) {
+                    if (circuitBreaker != null) {
+                        circuitBreaker.recordFailure(attemptChannel.getName());
+                    }
                     lastException = ex;
                 }
             }
