@@ -329,6 +329,52 @@ class HuaweiSmsProviderTest {
         assertThrows(BusinessException.class, () -> huaweiSmsProvider.send(validRequest, noSkChannel));
     }
 
+    @Test
+    @DisplayName("测试渠道配置 statusCallback 时正确包含在出站表单请求体中")
+    void testSendSuccess_WithStatusCallback() throws Exception {
+        String responseJson = """
+                {
+                  "code": "000000",
+                  "description": "Success",
+                  "result": [
+                    {
+                      "originTo": "13800138000",
+                      "createTime": "2026-11-02T12:00:00Z",
+                      "from": "106900000001",
+                      "smsMsgId": "20261102_HW_001",
+                      "status": "000000",
+                      "msgId": "MSG_001"
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=utf-8")
+                .setBody(responseJson));
+
+        SmsChannel channel = SmsChannel.builder()
+                .name("huawei-callback")
+                .supplier(SmsSupplier.HUAWEI)
+                .accessKeyId("app_key")
+                .accessKeySecret("app_secret")
+                .appId("106900000001")
+                .signName("华为签名")
+                .endpoint(serverUrl)
+                .statusCallback("https://sms.example.com/status/report")
+                .build();
+
+        SmsRequest request = SmsRequest.of("13800138000", "HW_TPL");
+        SmsResult result = huaweiSmsProvider.send(request, channel);
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        Map<String, String> formParams = parseFormBody(recordedRequest.getBody().readUtf8());
+        assertEquals("https://sms.example.com/status/report", formParams.get("statusCallback"));
+    }
+
     private Map<String, String> parseFormBody(String body) {
         Map<String, String> map = new HashMap<>();
         String[] pairs = body.split("&");

@@ -1,13 +1,12 @@
 package io.github.atengk.boot.sms.provider;
 
+import io.github.atengk.boot.core.util.BatchSliceUtil;
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
-import io.github.atengk.boot.sms.model.SmsChannel;
-import io.github.atengk.boot.sms.model.SmsRequest;
-import io.github.atengk.boot.sms.model.SmsResult;
-import io.github.atengk.boot.sms.model.SmsSupplier;
+import io.github.atengk.boot.sms.model.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
@@ -237,6 +236,104 @@ public class AliyunSmsProvider extends AbstractHttpSmsProvider {
 
         throw new SmsSendException(channelName, code, message, SmsResultCode.SMS_SEND_ERROR,
                 "阿里云短信发送失败: [" + code + "] " + message);
+    }
+
+    @Override
+    public BatchSmsResult sendPersonalizedBatch(BatchSmsRequest request, SmsChannel channel) {
+        BusinessAssert.notNull(request, "批量发信请求 BatchSmsRequest 不能为空");
+        BusinessAssert.notNull(channel, "短信渠道 SmsChannel 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeyId(), "阿里云短信 AccessKeyId 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeySecret(), "阿里云短信 AccessKeySecret 不能为空");
+        BusinessAssert.notEmpty(request.getPhones(), "接收短信的目标手机号列表不能为空");
+        BusinessAssert.hasText(request.getTemplateId(), "短信模板 ID (TemplateCode) 不能为空");
+
+        String signName = StringUtils.hasText(request.getSignName()) ? request.getSignName() : channel.getSignName();
+        BusinessAssert.hasText(signName, "短信签名 (SignName) 不能为空，请在请求或渠道配置中显式指定");
+
+        String endpoint = StringUtils.hasText(channel.getEndpoint()) ? channel.getEndpoint() : DEFAULT_ENDPOINT;
+        Duration timeout = channel.getTimeout() != null ? channel.getTimeout() : Duration.ofSeconds(10);
+        RestClient client = buildRestClient(timeout);
+
+        List<List<String>> slices = BatchSliceUtil.slice(request.getPhones(), 100);
+        int successCount = 0;
+        List<String> failedPhones = new ArrayList<>();
+        List<SmsResult> batchResults = new ArrayList<>(slices.size());
+
+        for (List<String> slice : slices) {
+            Map<String, String> params = new HashMap<>();
+            params.put("Action", "SendBatchSms");
+            params.put("Version", API_VERSION);
+            params.put("Format", "JSON");
+            params.put("SignatureMethod", SIGNATURE_METHOD);
+            params.put("SignatureVersion", "1.0");
+            params.put("SignatureNonce", UUID.randomUUID().toString());
+            params.put("Timestamp", UTC_FORMATTER.format(Instant.now()));
+            params.put("AccessKeyId", channel.getAccessKeyId());
+            params.put("RegionId", StringUtils.hasText(channel.getRegion()) ? channel.getRegion() : "cn-hangzhou");
+            params.put("TemplateCode", request.getTemplateId());
+
+            params.put("PhoneNumberJson", JsonUtil.toJsonString(slice));
+            params.put("SignNameJson", JsonUtil.toJsonString(Collections.nCopies(slice.size(), signName)));
+
+            List<Map<String, Object>> paramMaps = new ArrayList<>(slice.size());
+            for (String phone : slice) {
+                SmsParam p = request.getPhoneParams().get(phone);
+                paramMaps.add(p != null ? p.asMap() : Collections.emptyMap());
+            }
+            params.put("TemplateParamJson", JsonUtil.toJsonString(paramMaps));
+
+            String signature = generateSignature(params, "POST", channel.getAccessKeySecret());
+
+            StringBuilder formBody = new StringBuilder();
+            formBody.append("Signature=").append(percentEncode(signature));
+            for (Map.Entry<String, String> entry : params.entrySet()) {
+                if (entry.getValue() != null) {
+                    formBody.append("&")
+                            .append(percentEncode(entry.getKey()))
+                            .append("=")
+                            .append(percentEncode(entry.getValue()));
+                }
+            }
+
+            try {
+                String responseBody = executeWithRetry(channel, "SendBatchSms", () -> client.post()
+                        .uri(endpoint)
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .body(formBody.toString())
+                        .retrieve()
+                        .body(String.class));
+
+                Map<String, Object> respMap = parseJsonSafely(responseBody);
+                String code = getFieldIgnoreCase(respMap, "Code");
+                String message = getFieldIgnoreCase(respMap, "Message");
+                String bizId = getFieldIgnoreCase(respMap, "BizId");
+                String requestId = getFieldIgnoreCase(respMap, "RequestId");
+
+                if ("OK".equalsIgnoreCase(code)) {
+                    batchResults.add(SmsResult.success(channel.getName(), SmsSupplier.ALIYUN, bizId, requestId, slice.size()));
+                    successCount += slice.size();
+                } else {
+                    failedPhones.addAll(slice);
+                    batchResults.add(SmsResult.failure(channel.getName(), SmsSupplier.ALIYUN, code, message));
+                }
+            } catch (RestClientResponseException e) {
+                failedPhones.addAll(slice);
+                String errorBody = e.getResponseBodyAsString();
+                batchResults.add(SmsResult.failure(channel.getName(), SmsSupplier.ALIYUN, "HTTP_" + e.getStatusCode().value(), errorBody));
+            } catch (Exception ex) {
+                failedPhones.addAll(slice);
+                String rawCode = ex instanceof SmsSendException sse ? sse.getRawCode() : "SEND_ERROR";
+                batchResults.add(SmsResult.failure(channel.getName(), SmsSupplier.ALIYUN, rawCode, ex.getMessage()));
+            }
+        }
+
+        return BatchSmsResult.of(
+                request.getPhones().size(),
+                successCount,
+                failedPhones,
+                Collections.emptyList(),
+                batchResults
+        );
     }
 
     /**

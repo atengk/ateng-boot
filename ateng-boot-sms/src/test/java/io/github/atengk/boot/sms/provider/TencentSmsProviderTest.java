@@ -371,4 +371,23 @@ class TencentSmsProviderTest {
         SmsChannel noSignChannel = SmsChannel.builder().name("c").accessKeyId("AK").accessKeySecret("SK").appId("APP").build();
         assertThrows(BusinessException.class, () -> tencentSmsProvider.send(validRequest, noSignChannel));
     }
+
+    @Test
+    @DisplayName("测试 E.164 手机号国际区号规范化与特殊前缀处理")
+    void testFormatE164_InternationalAndPrefixes() {
+        assertEquals("", TencentSmsProvider.formatE164(null));
+        assertEquals("", TencentSmsProvider.formatE164("   "));
+
+        // 普通国内号码
+        assertEquals("+8613800138000", TencentSmsProvider.formatE164("13800138000"));
+        // 带破折号与空格的国内号码
+        assertEquals("+8613800138000", TencentSmsProvider.formatE164(" 138-0013-8000 "));
+        // 已有 86 前缀的国内 13 位号码
+        assertEquals("+8613800138000", TencentSmsProvider.formatE164("8613800138000"));
+        // 国际标准格式带加号与破折号
+        assertEquals("+85212345678", TencentSmsProvider.formatE164("+852-1234-5678"));
+        // 国际标准格式 00 前缀替换为 +
+        assertEquals("+85212345678", TencentSmsProvider.formatE164("0085212345678"));
+        assertEquals("+14155552671", TencentSmsProvider.formatE164("0014155552671"));
+    }
 }

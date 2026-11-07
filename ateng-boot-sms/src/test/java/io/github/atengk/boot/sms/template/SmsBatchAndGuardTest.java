@@ -21,6 +21,7 @@ import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -59,6 +60,8 @@ class SmsBatchAndGuardTest {
         assertEquals(1000, smsTemplate.resolveBatchLimit(SmsSupplier.ALIYUN));
         assertEquals(500, smsTemplate.resolveBatchLimit(SmsSupplier.HUAWEI));
         assertEquals(200, smsTemplate.resolveBatchLimit(SmsSupplier.TENCENT));
+        assertEquals(1000, smsTemplate.resolveBatchLimit(SmsSupplier.YUNPIAN));
+        assertEquals(1000, smsTemplate.resolveBatchLimit(SmsSupplier.CTYUN));
         assertEquals(1000, smsTemplate.resolveBatchLimit(SmsSupplier.MOCK));
         assertEquals(1000, smsTemplate.resolveBatchLimit(null));
     }
@@ -357,5 +360,119 @@ class SmsBatchAndGuardTest {
         assertEquals(2, result.getFailedCount());
         assertEquals(2, result.getFailedPhones().size());
         assertTrue(secondBatchFailed.get());
+    }
+
+    @Test
+    @DisplayName("测试：个性化批量发信经由云厂商原生驱动原生批量执行")
+    void testSendPersonalizedBatch_NativeProvider() {
+        AtomicBoolean nativeCalled = new AtomicBoolean(false);
+        SmsProvider nativeBatchProvider = new MockSmsProvider() {
+            @Override
+            public BatchSmsResult sendPersonalizedBatch(BatchSmsRequest req, SmsChannel ch) {
+                nativeCalled.set(true);
+                return BatchSmsResult.of(
+                        req.getPhones().size(),
+                        req.getPhones().size(),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        List.of(SmsResult.mock(ch.getName(), "NATIVE_BIZ", "NATIVE_REQ"))
+                );
+            }
+        };
+
+        SmsProperties props = new SmsProperties();
+        SmsTemplate customTemplate = new SmsTemplate(props, List.of(nativeBatchProvider));
+        customTemplate.registerChannel(SmsChannel.builder()
+                .name("mock")
+                .supplier(SmsSupplier.MOCK)
+                .defaultTemplateId("TPL_DEFAULT")
+                .signName("测试签名")
+                .build());
+
+        Map<String, SmsParam> phoneParams = new LinkedHashMap<>();
+        phoneParams.put("13800000001", SmsParam.of("name", "Alice"));
+        phoneParams.put("13800000002", SmsParam.of("name", "Bob"));
+
+        BatchSmsRequest req = BatchSmsRequest.ofPersonalized(phoneParams, "TPL_PERSON");
+        BatchSmsResult result = customTemplate.sendBatch(req);
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertTrue(nativeCalled.get());
+        assertEquals(2, result.getTotalCount());
+        assertEquals(2, result.getSuccessCount());
+        assertEquals(0, result.getFailedCount());
+    }
+
+    @Test
+    @DisplayName("测试：个性化批量发信在厂商未实现原生批量时优雅降级为受管线程池并发投递")
+    void testSendPersonalizedBatch_FallbackThreadPool() {
+        Map<String, String> receivedParams = new ConcurrentHashMap<>();
+        SmsProvider fallbackProvider = new MockSmsProvider() {
+            @Override
+            public SmsResult send(SmsRequest req, SmsChannel ch) {
+                if (req.getParams() != null && req.getParams().asMap().containsKey("name")) {
+                    receivedParams.put(req.getPhone(), String.valueOf(req.getParams().asMap().get("name")));
+                }
+                return SmsResult.mock(ch.getName(), "FALLBACK_BIZ", "FALLBACK_REQ");
+            }
+        };
+
+        SmsProperties props = new SmsProperties();
+        SmsTemplate customTemplate = new SmsTemplate(props, List.of(fallbackProvider));
+        customTemplate.registerChannel(SmsChannel.builder()
+                .name("mock")
+                .supplier(SmsSupplier.MOCK)
+                .defaultTemplateId("TPL_DEFAULT")
+                .signName("测试签名")
+                .build());
+
+        Map<String, SmsParam> phoneParams = new LinkedHashMap<>();
+        phoneParams.put("13800000001", SmsParam.of("name", "Alice"));
+        phoneParams.put("13800000002", SmsParam.of("name", "Bob"));
+        phoneParams.put("13800000003", SmsParam.of("name", "Charlie"));
+
+        BatchSmsRequest req = BatchSmsRequest.ofPersonalized(phoneParams, "TPL_PERSON");
+        BatchSmsResult result = customTemplate.sendBatch(req);
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertEquals(3, result.getTotalCount());
+        assertEquals(3, result.getSuccessCount());
+        assertEquals(0, result.getFailedCount());
+        assertEquals(3, receivedParams.size());
+        assertEquals("Alice", receivedParams.get("13800000001"));
+        assertEquals("Bob", receivedParams.get("13800000002"));
+        assertEquals("Charlie", receivedParams.get("13800000003"));
+    }
+
+    @Test
+    @DisplayName("测试：个性化批量发信出站黑名单前置静默拦截")
+    void testSendPersonalizedBatch_WithBlacklist() {
+        SmsProperties props = new SmsProperties();
+        props.getGuard().setBlacklistEnabled(true);
+        props.getGuard().setBlacklist(List.of("13800000002"));
+
+        SmsTemplate customTemplate = new SmsTemplate(props, List.of(new MockSmsProvider()));
+        customTemplate.registerChannel(SmsChannel.builder()
+                .name("mock")
+                .supplier(SmsSupplier.MOCK)
+                .defaultTemplateId("TPL_DEFAULT")
+                .signName("测试签名")
+                .build());
+
+        Map<String, SmsParam> phoneParams = new LinkedHashMap<>();
+        phoneParams.put("13800000001", SmsParam.of("name", "Alice"));
+        phoneParams.put("13800000002", SmsParam.of("name", "Bob_Blacklisted"));
+
+        BatchSmsRequest req = BatchSmsRequest.ofPersonalized(phoneParams, "TPL_PERSON");
+        BatchSmsResult result = customTemplate.sendBatch(req);
+
+        assertNotNull(result);
+        assertEquals(2, result.getTotalCount());
+        assertEquals(1, result.getSuccessCount());
+        assertEquals(0, result.getFailedCount());
+        assertEquals(1, result.getBlacklistedCount());
+        assertEquals(List.of("13800000002"), result.getBlacklistedPhones());
     }
 }

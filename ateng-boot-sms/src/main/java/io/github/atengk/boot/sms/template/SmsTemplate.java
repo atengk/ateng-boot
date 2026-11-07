@@ -98,7 +98,7 @@ public class SmsTemplate {
 
         this.failureHandlers = failureHandlers != null ? Collections.unmodifiableList(new ArrayList<>(failureHandlers)) : Collections.emptyList();
         this.failoverChain = new SmsFailoverChain(this.channelRegistry, this.providerMap, this.failureHandlers);
-        this.blacklistProvider = blacklistProvider != null ? blacklistProvider : new InMemorySmsBlacklistProvider();
+        this.blacklistProvider = blacklistProvider != null ? blacklistProvider : new InMemorySmsBlacklistProvider(this.properties.getGuard().getBlacklist());
         this.dailyBudgetBreaker = dailyBudgetBreaker != null ? dailyBudgetBreaker : new InMemoryDailyBudgetBreaker(this.properties.getGuard());
         this.executor = executor != null ? executor : AsyncUtil.getExecutor();
     }
@@ -349,7 +349,96 @@ public class SmsTemplate {
             dailyBudgetBreaker.checkAndIncrement(allowedPhones.size());
         }
 
-        // 4. 依据厂商上限使用 BatchSliceUtil 透明切片
+        // 4. 个性化批量发信分支（每个号码拥有独立的动态参数模型）
+        if (request.isPersonalized()) {
+            SmsProvider provider = providerMap.get(channel.getSupplier());
+            if (provider != null) {
+                Map<String, SmsParam> filteredParams = new LinkedHashMap<>();
+                for (String p : allowedPhones) {
+                    filteredParams.put(p, request.getPhoneParams().get(p));
+                }
+                BatchSmsRequest filteredRequest = BatchSmsRequest.builder()
+                        .phones(allowedPhones)
+                        .templateId(effectiveTemplateId)
+                        .params(request.getParams())
+                        .phoneParams(filteredParams)
+                        .signName(request.getSignName())
+                        .channel(channel.getName())
+                        .bizId(request.getBizId())
+                        .build();
+
+                BatchSmsResult nativeResult = provider.sendPersonalizedBatch(filteredRequest, channel);
+                if (nativeResult != null) {
+                    if (blacklistedPhones.isEmpty()) {
+                        return nativeResult;
+                    }
+                    return BatchSmsResult.of(
+                            rawPhones.size(),
+                            nativeResult.getSuccessCount(),
+                            nativeResult.getFailedPhones(),
+                            blacklistedPhones,
+                            nativeResult.getBatchResults()
+                    );
+                }
+            }
+
+            // 云厂商未实现原生个性化批量发送，降级为受管线程池并发投递单条发信
+            List<CompletableFuture<SliceExecutionResult>> futures = new ArrayList<>(allowedPhones.size());
+            for (String phone : allowedPhones) {
+                SmsParam phoneParam = request.getPhoneParams().get(phone);
+                SmsRequest singleReq = SmsRequest.builder()
+                        .phone(phone)
+                        .templateId(effectiveTemplateId)
+                        .params(phoneParam != null ? phoneParam : request.getParams())
+                        .signName(request.getSignName())
+                        .channel(channel.getName())
+                        .bizId(request.getBizId())
+                        .build();
+
+                Supplier<SliceExecutionResult> singleTask = () -> {
+                    try {
+                        SmsResult res = failoverChain.execute(singleReq, channel);
+                        return new SliceExecutionResult(List.of(phone), res, null);
+                    } catch (Exception ex) {
+                        log.error("[SmsTemplate] 个性化批次号码投递异常 -> 号码: {}, 错误: {}",
+                                DesensitizeUtil.mobilePhone(phone), ex.getMessage());
+                        return new SliceExecutionResult(List.of(phone), null, ex);
+                    }
+                };
+                futures.add(CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(singleTask), executor));
+            }
+
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+            int successCount = 0;
+            List<String> failedPhones = new ArrayList<>();
+            List<SmsResult> batchResults = new ArrayList<>(futures.size());
+
+            for (CompletableFuture<SliceExecutionResult> future : futures) {
+                SliceExecutionResult execRes = future.join();
+                if (execRes.exception != null) {
+                    failedPhones.addAll(execRes.slicePhones);
+                    String rawCode = execRes.exception instanceof SmsSendException sse ? sse.getRawCode() : "BATCH_SEND_ERROR";
+                    batchResults.add(SmsResult.failure(channel.getName(), channel.getSupplier(), rawCode, execRes.exception.getMessage()));
+                } else if (execRes.result != null && execRes.result.isSuccess()) {
+                    successCount += execRes.slicePhones.size();
+                    batchResults.add(execRes.result);
+                } else {
+                    failedPhones.addAll(execRes.slicePhones);
+                    batchResults.add(execRes.result != null ? execRes.result : SmsResult.failure(channel.getName(), channel.getSupplier(), "UNKNOWN", "Unknown error"));
+                }
+            }
+
+            return BatchSmsResult.of(
+                    rawPhones.size(),
+                    successCount,
+                    failedPhones,
+                    blacklistedPhones,
+                    batchResults
+            );
+        }
+
+        // 5. 依据厂商上限使用 BatchSliceUtil 透明切片
         int sliceLimit = resolveBatchLimit(channel.getSupplier());
         List<List<String>> slices = BatchSliceUtil.slice(allowedPhones, sliceLimit);
 
@@ -359,7 +448,7 @@ public class SmsTemplate {
                     blacklistedPhones.size(), slices.size(), sliceLimit);
         }
 
-        // 5. 通过 Core 受管异步线程池设施受控并发调度并在各切片批次内部支持顺延容灾
+        // 6. 通过 Core 受管异步线程池设施受控并发调度并在各切片批次内部支持顺延容灾
         List<CompletableFuture<SliceExecutionResult>> futures = new ArrayList<>(slices.size());
         for (List<String> slice : slices) {
             SmsRequest sliceRequest = SmsRequest.builder()
@@ -387,7 +476,7 @@ public class SmsTemplate {
         // 等待所有切片批次执行完成
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
-        // 6. 聚合统计结果
+        // 7. 聚合统计结果
         int successCount = 0;
         List<String> failedPhones = new ArrayList<>();
         List<SmsResult> batchResults = new ArrayList<>(slices.size());

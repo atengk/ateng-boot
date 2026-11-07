@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sms.provider;
 
+import io.github.atengk.boot.sms.model.BatchSmsRequest;
+import io.github.atengk.boot.sms.model.BatchSmsResult;
 import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.model.SmsResult;
@@ -29,6 +31,18 @@ public interface SmsProvider {
      * @return SmsResult 发送结果
      */
     SmsResult send(SmsRequest request, SmsChannel channel);
+
+    /**
+     * 执行原生个性化批量发送（如阿里云 SendBatchSms）
+     * 若云厂商不支持原生个性化批量，默认返回 null，由底座 SmsTemplate 自动降级为受管线程池并发执行单条
+     *
+     * @param request 个性化批量发信请求
+     * @param channel 目标发信渠道配置
+     * @return BatchSmsResult 批量发送结果，不支持原生批量时返回 null
+     */
+    default BatchSmsResult sendPersonalizedBatch(BatchSmsRequest request, SmsChannel channel) {
+        return null;
+    }
 
     /**
      * 校验当前驱动在目标渠道配置下是否可用

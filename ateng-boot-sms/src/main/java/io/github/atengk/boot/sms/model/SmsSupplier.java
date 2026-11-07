@@ -34,6 +34,16 @@ public enum SmsSupplier implements IBaseEnum<String> {
     HUAWEI("huawei", "华为云短信"),
 
     /**
+     * 云片网短信 (Yunpian)
+     */
+    YUNPIAN("yunpian", "云片网短信"),
+
+    /**
+     * 天翼云短信 (CTYun)
+     */
+    CTYUN("ctyun", "天翼云短信"),
+
+    /**
      * 本地测试内存沙箱
      */
     MOCK("mock", "本地Mock沙箱"),
@@ -57,7 +67,7 @@ public enum SmsSupplier implements IBaseEnum<String> {
         return switch (this) {
             case TENCENT -> 200;
             case HUAWEI -> 500;
-            case ALIYUN, MOCK, CUSTOM -> 1000;
+            case ALIYUN, YUNPIAN, CTYUN, MOCK, CUSTOM -> 1000;
         };
     }
 

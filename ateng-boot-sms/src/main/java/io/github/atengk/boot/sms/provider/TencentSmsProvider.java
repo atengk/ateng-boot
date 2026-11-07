@@ -249,7 +249,10 @@ public class TencentSmsProvider extends AbstractHttpSmsProvider {
         if (clean.startsWith("+")) {
             return clean;
         }
-        if (clean.startsWith("86")) {
+        if (clean.startsWith("00")) {
+            return "+" + clean.substring(2);
+        }
+        if (clean.startsWith("86") && clean.length() == 13) {
             return "+" + clean;
         }
         return "+86" + clean;

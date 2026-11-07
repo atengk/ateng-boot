@@ -9,10 +9,12 @@ import io.github.atengk.boot.sms.limiter.RedisSmsRateLimiter;
 import io.github.atengk.boot.sms.limiter.SmsRateLimiter;
 import io.github.atengk.boot.sms.properties.SmsProperties;
 import io.github.atengk.boot.sms.provider.AliyunSmsProvider;
+import io.github.atengk.boot.sms.provider.CtyunSmsProvider;
 import io.github.atengk.boot.sms.provider.HuaweiSmsProvider;
 import io.github.atengk.boot.sms.provider.MockSmsProvider;
 import io.github.atengk.boot.sms.provider.SmsProvider;
 import io.github.atengk.boot.sms.provider.TencentSmsProvider;
+import io.github.atengk.boot.sms.provider.YunpianSmsProvider;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
 import io.github.atengk.boot.sms.registry.SmsChannelResolver;
 import io.github.atengk.boot.sms.registry.TenantSmsChannelResolver;
@@ -102,6 +104,32 @@ public class AtengSmsAutoConfiguration {
     public HuaweiSmsProvider huaweiSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
         RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
         return new HuaweiSmsProvider(builder);
+    }
+
+    /**
+     * 自动装配云片网短信驱动 (纯原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return YunpianSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public YunpianSmsProvider yunpianSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new YunpianSmsProvider(builder);
+    }
+
+    /**
+     * 自动装配天翼云短信驱动 (CT EOP 协议原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return CtyunSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public CtyunSmsProvider ctyunSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new CtyunSmsProvider(builder);
     }
 
     /**

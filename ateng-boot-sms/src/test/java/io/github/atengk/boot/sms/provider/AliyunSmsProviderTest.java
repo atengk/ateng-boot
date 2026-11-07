@@ -3,10 +3,7 @@ package io.github.atengk.boot.sms.provider;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
-import io.github.atengk.boot.sms.model.SmsChannel;
-import io.github.atengk.boot.sms.model.SmsRequest;
-import io.github.atengk.boot.sms.model.SmsResult;
-import io.github.atengk.boot.sms.model.SmsSupplier;
+import io.github.atengk.boot.sms.model.*;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
@@ -348,6 +345,59 @@ class AliyunSmsProviderTest {
         // 5. 缺少签名 (request 和 channel 均无)
         SmsChannel noSignChannel = SmsChannel.builder().name("c").accessKeyId("AK").accessKeySecret("SK").build();
         assertThrows(BusinessException.class, () -> aliyunSmsProvider.send(validRequest, noSignChannel));
+    }
+
+    @Test
+    @DisplayName("测试个性化批量发信 SendBatchSms 原生协议调用与切片断言")
+    void testSendPersonalizedBatch_HappyPath() throws Exception {
+        String mockResponse = """
+                {
+                  "Code": "OK",
+                  "Message": "OK",
+                  "BizId": "900619746936498440^0",
+                  "RequestId": "F655A8D5-B967-440B-8683-DAD6FF8DE990"
+                }
+                """;
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=utf-8")
+                .setBody(mockResponse));
+
+        SmsChannel channel = SmsChannel.builder()
+                .name("aliyun-batch")
+                .supplier(SmsSupplier.ALIYUN)
+                .accessKeyId("mock-ak")
+                .accessKeySecret("mock-sk")
+                .signName("阿里签名")
+                .endpoint(serverUrl)
+                .build();
+
+        Map<String, SmsParam> phoneParams = new HashMap<>();
+        phoneParams.put("13800138001", SmsParam.of("code", "1111"));
+        phoneParams.put("13800138002", SmsParam.of("code", "2222"));
+
+        BatchSmsRequest batchRequest = BatchSmsRequest.ofPersonalized(phoneParams, "SMS_BATCH_TPL");
+
+        BatchSmsResult result = aliyunSmsProvider.sendPersonalizedBatch(batchRequest, channel);
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertEquals(2, result.getTotalCount());
+        assertEquals(2, result.getSuccessCount());
+        assertEquals(0, result.getFailedCount());
+        assertEquals(1, result.getBatchResults().size());
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertEquals("POST", recordedRequest.getMethod());
+
+        Map<String, String> formParams = parseFormBody(recordedRequest.getBody().readUtf8());
+        assertEquals("SendBatchSms", formParams.get("Action"));
+        assertEquals("SMS_BATCH_TPL", formParams.get("TemplateCode"));
+        assertTrue(formParams.get("PhoneNumberJson").contains("13800138001"));
+        assertTrue(formParams.get("PhoneNumberJson").contains("13800138002"));
+        assertTrue(formParams.get("SignNameJson").contains("阿里签名"));
+        assertTrue(formParams.get("TemplateParamJson").contains("1111"));
+        assertTrue(formParams.get("TemplateParamJson").contains("2222"));
     }
 
     private Map<String, String> parseFormBody(String body) {
