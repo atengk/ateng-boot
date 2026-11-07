@@ -7,6 +7,8 @@ import org.hibernate.validator.messageinterpolation.ParameterMessageInterpolator
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -46,6 +48,7 @@ class SocialTokenTest {
         assertThat(socialToken.getAccessToken()).isEqualTo("access_token_123");
         assertThat(socialToken.getRefreshToken()).isEqualTo("refresh_token_456");
         assertThat(socialToken.getExpireIn()).isEqualTo(7200);
+        assertThat(socialToken.getExpireDuration()).isEqualTo(Duration.ofSeconds(7200));
         assertThat(socialToken.getOpenId()).isEqualTo("open_id_789");
         assertThat(socialToken.getUnionId()).isEqualTo("union_id_abc");
         assertThat(socialToken.getScope()).isEqualTo("read,write");

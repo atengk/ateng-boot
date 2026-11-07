@@ -41,6 +41,7 @@ import org.springframework.context.ApplicationEventPublisherAware;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * 社交登录与 OAuth2 核心操作门面
@@ -191,15 +192,12 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
         String state = stateCache.generateState(safeContext, timeout);
 
         // 2. 绑定当前应用上下文并构建授权请求
-        CurrentSocialAppContextHolder.setAppKey(appKey);
-        try {
+        return executeWithAppKey(appKey, () -> {
             AuthRequest authRequest = socialAppFactory.createAuthRequest(appKey);
             String authorizeUrl = authRequest.authorize(state);
             log.info("Rendered authorize URL for appKey: [{}], state: [{}]", appKey, state);
             return authorizeUrl;
-        } finally {
-            CurrentSocialAppContextHolder.clear();
-        }
+        });
     }
 
     // ==================== 2. Web 浏览器端 OAuth2 回调换码认证 ====================
@@ -473,26 +471,27 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             stateContext = stateCache.getContext(state);
         }
 
-        // 若 State 包含租户上下文且当前上下文未设置租户，恢复租户上下文
-        if (stateContext != null && stateContext.getTenantId() != null && !stateContext.getTenantId().isBlank()) {
-            TenantContextHolder.setTenantId(stateContext.getTenantId());
-        }
-
         SocialUser socialUser;
         try {
             socialUser = exchangeSocialUser(appKey, appConfig, callback);
-        } catch (Throwable ex) {
+        } finally {
+            // 换码后原子消费并销毁防伪 StateContext（阅后即焚防重放）
             if (state != null && !state.isBlank()) {
                 stateCache.removeContext(state);
             }
-            throw ex;
         }
 
-        // 换码成功后，原子消费并销毁防伪 StateContext（阅后即焚防重放）
-        if (state != null && !state.isBlank()) {
-            stateCache.removeContext(state);
+        // 若 State 包含租户标识，基于闭包确定性透传租户上下文并在执行后完全恢复现场
+        String tenantId = (stateContext != null && stateContext.getTenantId() != null && !stateContext.getTenantId().isBlank())
+                ? stateContext.getTenantId()
+                : null;
+        if (tenantId != null && !tenantId.isBlank()) {
+            return TenantContextHolder.runWithTenant(tenantId, () -> executeDirectBindPersistence(userId, appKey, socialUser));
         }
+        return executeDirectBindPersistence(userId, appKey, socialUser);
+    }
 
+    private SocialUser executeDirectBindPersistence(String userId, String appKey, SocialUser socialUser) {
         // 跨号抢占冲突防卫拦截
         SocialUserDetailsService detailsService = userDetailsServiceObjectProvider != null
                 ? userDetailsServiceObjectProvider.getIfAvailable()
@@ -685,8 +684,7 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             throw new IllegalArgumentException("授权令牌凭据 [authToken] 不能为空");
         }
 
-        CurrentSocialAppContextHolder.setAppKey(appKey);
-        try {
+        return executeWithAppKey(appKey, () -> {
             AuthRequest authRequest = socialAppFactory.createAuthRequest(appKey);
             AuthResponse<AuthToken> authResponse;
             try {
@@ -698,15 +696,12 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             if (authResponse == null || !authResponse.ok() || authResponse.getData() == null
                     || authResponse.getData().getAccessToken() == null || authResponse.getData().getAccessToken().isBlank()) {
                 String errorMsg = authResponse != null && authResponse.getMsg() != null ? authResponse.getMsg() : "底层驱动未返回有效访问令牌";
-                log.warn("Social auth token refresh failed: appKey=[{}], msg=[{}]", appKey, errorMsg);
                 throw new SocialAuthException("第三方平台令牌续期失败: " + errorMsg);
             }
 
             log.info("Social auth token refreshed successfully for appKey: [{}]", appKey);
             return SocialToken.fromAuthToken(authResponse.getData());
-        } finally {
-            CurrentSocialAppContextHolder.clear();
-        }
+        });
     }
 
     /**
@@ -739,8 +734,7 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             throw new IllegalArgumentException("授权令牌凭据 [authToken] 不能为空");
         }
 
-        CurrentSocialAppContextHolder.setAppKey(appKey);
-        try {
+        executeWithAppKey(appKey, () -> {
             AuthRequest authRequest = socialAppFactory.createAuthRequest(appKey);
             AuthResponse<?> authResponse;
             try {
@@ -751,14 +745,11 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
 
             if (authResponse == null || !authResponse.ok()) {
                 String errorMsg = authResponse != null ? authResponse.getMsg() : "底层驱动未返回响应";
-                log.warn("Social auth revoke failed: appKey=[{}], msg=[{}]", appKey, errorMsg);
                 throw new SocialAuthException("第三方平台授权吊销失败: " + errorMsg);
             }
 
             log.info("Social auth revoked successfully for appKey: [{}]", appKey);
-        } finally {
-            CurrentSocialAppContextHolder.clear();
-        }
+        });
     }
 
     /**
@@ -780,8 +771,7 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
      * 执行底层第三方 HTTP 换码与用户信息拉取
      */
     private SocialUser exchangeSocialUser(String appKey, SocialAppConfig appConfig, AuthCallback callback) {
-        CurrentSocialAppContextHolder.setAppKey(appKey);
-        try {
+        return executeWithAppKey(appKey, () -> {
             AuthRequest authRequest = socialAppFactory.createAuthRequest(appKey);
             AuthResponse<AuthUser> authResponse;
             try {
@@ -792,7 +782,6 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
 
             if (authResponse == null || !authResponse.ok() || authResponse.getData() == null) {
                 String errorMsg = authResponse != null ? authResponse.getMsg() : "第三方未返回有效响应";
-                log.warn("Third-party OAuth2 login rejected: appKey=[{}], msg=[{}]", appKey, errorMsg);
                 throw new SocialAuthException("第三方授权认证失败: " + errorMsg);
             }
 
@@ -801,9 +790,7 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
                 socialUser.setAppKey(appKey);
             }
             return socialUser;
-        } finally {
-            CurrentSocialAppContextHolder.clear();
-        }
+        });
     }
 
     /**
@@ -874,8 +861,8 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             if (appConfig != null && appConfig.getAutoSignUp() != null) {
                 return appConfig.getAutoSignUp();
             }
-        } catch (Exception ignored) {
-            // 回退到全局配置
+        } catch (Exception ex) {
+            log.debug("获取应用配置失败，回退至全局 autoSignUp 配置: appKey=[{}], cause=[{}]", appKey, ex.getMessage());
         }
         return properties != null && properties.isAutoSignUp();
     }
@@ -889,5 +876,29 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             return DesensitizeUtil.mask(ticket, 1, len - 1);
         }
         return DesensitizeUtil.mask(ticket, 4, len - 4);
+    }
+
+    /**
+     * 在受管应用上下文中执行操作，确保应用标识绑定与确定性现场清理
+     */
+    private <T> T executeWithAppKey(String appKey, Supplier<T> action) {
+        CurrentSocialAppContextHolder.setAppKey(appKey);
+        try {
+            return action.get();
+        } finally {
+            CurrentSocialAppContextHolder.clear();
+        }
+    }
+
+    /**
+     * 在受管应用上下文中执行操作（无返回值版本）
+     */
+    private void executeWithAppKey(String appKey, Runnable action) {
+        CurrentSocialAppContextHolder.setAppKey(appKey);
+        try {
+            action.run();
+        } finally {
+            CurrentSocialAppContextHolder.clear();
+        }
     }
 }

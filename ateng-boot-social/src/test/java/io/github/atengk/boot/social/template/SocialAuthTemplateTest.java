@@ -1157,34 +1157,45 @@ class SocialAuthTemplateTest {
     @Test
     @DisplayName("44. bindDirect: Web 回调模式直绑成功并核验 State 与恢复租户")
     void testBindDirectCallbackSuccess() {
-        StateContext context = StateContext.builder().tenantId("tenant_direct_01").build();
-        String state = stateCache.generateState(context);
+        TenantContextHolder.setTenantId("tenant_before_bind");
+        try {
+            StateContext context = StateContext.builder().tenantId("tenant_direct_01").build();
+            String state = stateCache.generateState(context);
 
-        mockWebServer.enqueue(new MockResponse()
-                .setResponseCode(200)
-                .setHeader("Content-Type", "application/json;charset=UTF-8")
-                .setBody("{\"access_token\":\"gho_web_token\",\"token_type\":\"bearer\"}"));
-        mockWebServer.enqueue(new MockResponse()
-                .setResponseCode(200)
-                .setHeader("Content-Type", "application/json;charset=UTF-8")
-                .setBody("{\"id\":998877,\"login\":\"web_direct_user\",\"name\":\"Web直绑用户\"}"));
+            mockWebServer.enqueue(new MockResponse()
+                    .setResponseCode(200)
+                    .setHeader("Content-Type", "application/json;charset=UTF-8")
+                    .setBody("{\"access_token\":\"gho_web_token\",\"token_type\":\"bearer\"}"));
+            mockWebServer.enqueue(new MockResponse()
+                    .setResponseCode(200)
+                    .setHeader("Content-Type", "application/json;charset=UTF-8")
+                    .setBody("{\"id\":998877,\"login\":\"web_direct_user\",\"name\":\"Web直绑用户\"}"));
 
-        when(userDetailsService.loadUserIdBySocialUser(eq("github_app"), any(SocialUser.class)))
-                .thenReturn(null);
+            when(userDetailsService.loadUserIdBySocialUser(eq("github_app"), any(SocialUser.class)))
+                    .thenAnswer(inv -> {
+                        assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant_direct_01");
+                        return null;
+                    });
 
-        AuthCallback callback = AuthCallback.builder()
-                .code("mock_web_code_456")
-                .state(state)
-                .build();
+            AuthCallback callback = AuthCallback.builder()
+                    .code("mock_web_code_456")
+                    .state(state)
+                    .build();
 
-        SocialUser socialUser = authTemplate.bindDirect("user_web_200", "github_app", callback);
+            SocialUser socialUser = authTemplate.bindDirect("user_web_200", "github_app", callback);
 
-        assertThat(socialUser).isNotNull();
-        assertThat(socialUser.getUsername()).isEqualTo("web_direct_user");
-        assertThat(stateCache.containsKey(state)).isFalse();
+            assertThat(socialUser).isNotNull();
+            assertThat(socialUser.getUsername()).isEqualTo("web_direct_user");
+            assertThat(stateCache.containsKey(state)).isFalse();
 
-        verify(userDetailsService).bindSocialUser(eq("user_web_200"), eq("github_app"), any(SocialUser.class));
-        verify(eventPublisher).publishEvent(any(SocialBoundEvent.class));
+            // 验证执行完毕后无条件恢复为原来的 tenant_before_bind
+            assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant_before_bind");
+
+            verify(userDetailsService).bindSocialUser(eq("user_web_200"), eq("github_app"), any(SocialUser.class));
+            verify(eventPublisher).publishEvent(any(SocialBoundEvent.class));
+        } finally {
+            TenantContextHolder.clear();
+        }
     }
 
     @Test

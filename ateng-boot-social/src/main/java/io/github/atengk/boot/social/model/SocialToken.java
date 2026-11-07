@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 import org.dromara.anduin.model.AuthToken;
 
 import java.io.Serializable;
+import java.time.Duration;
 
 /**
  * 标准化第三方社交平台授权令牌领域模型
@@ -96,5 +97,14 @@ public class SocialToken implements Serializable {
                 .unionId(this.unionId)
                 .scope(this.scope)
                 .build();
+    }
+
+    /**
+     * 获取访问令牌有效时长 Duration 抽象
+     *
+     * @return 访问令牌有效时长 Duration
+     */
+    public Duration getExpireDuration() {
+        return Duration.ofSeconds(this.expireIn);
     }
 }

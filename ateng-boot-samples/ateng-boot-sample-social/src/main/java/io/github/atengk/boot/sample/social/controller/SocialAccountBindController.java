@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.social.controller;
 
 import cn.dev33.satoken.stp.StpUtil;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.social.service.SampleSocialScenarioService;
 import io.github.atengk.boot.social.model.SocialAuthResult;
@@ -131,6 +132,9 @@ public class SocialAccountBindController {
     public Result<List<SocialBoundAccount>> listBindings(
             @RequestParam(value = "userId", required = false) String userId) {
         String targetUserId = userId;
+        if (targetUserId == null || targetUserId.isBlank()) {
+            targetUserId = UserContextHolder.get();
+        }
         if ((targetUserId == null || targetUserId.isBlank()) && StpUtil.isLogin()) {
             targetUserId = StpUtil.getLoginIdAsString();
         }

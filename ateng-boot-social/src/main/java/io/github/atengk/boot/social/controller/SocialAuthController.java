@@ -1,6 +1,6 @@
 package io.github.atengk.boot.social.controller;
 
-import cn.dev33.satoken.stp.StpUtil;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.social.model.SocialAuthResult;
 import io.github.atengk.boot.social.model.SocialBindRequest;
@@ -19,6 +19,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.anduin.model.AuthCallback;
+import org.springframework.util.ClassUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -196,20 +197,59 @@ public class SocialAuthController {
      * 支持显式传入 userId 查询，或默认自动从当前 Sa-Token 登录态中获取 userId。
      * </p>
      *
-     * @param userId 本地用户标识（可选，若为空则自动探测 Sa-Token 登录会话）
+     * @param userId 本地用户标识（可选，若为空则自动探测登录会话）
      * @return 已绑定的第三方社交账号视图列表
      */
     @GetMapping("/bindings")
     public Result<List<SocialBoundAccount>> listBindings(
             @RequestParam(value = "userId", required = false) String userId) {
-        String targetUserId = userId;
-        if ((targetUserId == null || targetUserId.isBlank()) && StpUtil.isLogin()) {
-            targetUserId = StpUtil.getLoginIdAsString();
-        }
+        String targetUserId = resolveCurrentUserId(userId);
         if (targetUserId == null || targetUserId.isBlank()) {
             throw new IllegalArgumentException("本地用户标识 [userId] 不能为空");
         }
         List<SocialBoundAccount> accounts = socialAuthTemplate.listBoundAccounts(targetUserId);
         return Result.success(accounts);
+    }
+
+    private String resolveCurrentUserId(String userId) {
+        if (userId != null && !userId.isBlank()) {
+            return userId;
+        }
+        String currentUserId = UserContextHolder.get();
+        if (currentUserId != null && !currentUserId.isBlank()) {
+            return currentUserId;
+        }
+        if (SaTokenBridge.isAvailable()) {
+            return SaTokenBridge.getLoginId();
+        }
+        return null;
+    }
+
+    private static final class SaTokenBridge {
+        private static final boolean AVAILABLE = ClassUtils.isPresent(
+                "cn.dev33.satoken.stp.StpUtil",
+                SocialAuthController.class.getClassLoader()
+        );
+
+        static boolean isAvailable() {
+            return AVAILABLE;
+        }
+
+        static String getLoginId() {
+            if (AVAILABLE) {
+                return SaTokenAccessor.getLoginId();
+            }
+            return null;
+        }
+
+        private static final class SaTokenAccessor {
+            static String getLoginId() {
+                try {
+                    return cn.dev33.satoken.stp.StpUtil.isLogin() ? cn.dev33.satoken.stp.StpUtil.getLoginIdAsString() : null;
+                } catch (Throwable ex) {
+                    return null;
+                }
+            }
+        }
     }
 }

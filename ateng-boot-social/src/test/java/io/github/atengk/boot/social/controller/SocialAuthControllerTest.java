@@ -2,6 +2,7 @@ package io.github.atengk.boot.social.controller;
 
 import cn.dev33.satoken.stp.StpUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.social.model.SocialAuthResult;
 import io.github.atengk.boot.social.model.SocialBindRequest;
 import io.github.atengk.boot.social.model.SocialBoundAccount;
@@ -418,5 +419,26 @@ class SocialAuthControllerTest {
                 .andExpect(jsonPath("$.data").isEmpty());
 
         verify(authTemplate).listBoundAccounts("user_satoken_999");
+    }
+
+    @Test
+    @DisplayName("18. listBindings: 缺省 userId 自动从 UserContextHolder 中解析")
+    void testListBindingsFromUserContextHolder() throws Exception {
+        StpUtil.logout();
+        UserContextHolder.set("user_context_888");
+        try {
+            when(authTemplate.listBoundAccounts("user_context_888"))
+                    .thenReturn(Collections.emptyList());
+
+            mockMvc.perform(get("/auth/social/bindings"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").isArray())
+                    .andExpect(jsonPath("$.data").isEmpty());
+
+            verify(authTemplate).listBoundAccounts("user_context_888");
+        } finally {
+            UserContextHolder.clear();
+        }
     }
 }
