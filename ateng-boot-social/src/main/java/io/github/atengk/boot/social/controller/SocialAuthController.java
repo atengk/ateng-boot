@@ -5,6 +5,9 @@ import io.github.atengk.boot.social.model.SocialAuthResult;
 import io.github.atengk.boot.social.model.SocialBindRequest;
 import io.github.atengk.boot.social.model.SocialDirectLoginRequest;
 import io.github.atengk.boot.social.model.SocialLoginOptions;
+import io.github.atengk.boot.social.model.SocialToken;
+import io.github.atengk.boot.social.model.SocialTokenRefreshRequest;
+import io.github.atengk.boot.social.model.SocialTokenRevokeRequest;
 import io.github.atengk.boot.social.model.SocialUnbindRequest;
 import io.github.atengk.boot.social.model.StateContext;
 import io.github.atengk.boot.social.template.SocialAuthTemplate;
@@ -124,6 +127,36 @@ public class SocialAuthController {
             @PathVariable("appKey") String appKey,
             @Valid @RequestBody SocialUnbindRequest request) {
         socialAuthTemplate.unbind(request.getUserId(), appKey);
+        return Result.success();
+    }
+
+    /**
+     * 刷新第三方 OAuth2 访问令牌
+     *
+     * @param appKey  社交应用唯一标识
+     * @param request 刷新令牌请求对象
+     * @return 刷新后的最新令牌领域模型
+     */
+    @PostMapping("/refresh/{appKey}")
+    public Result<SocialToken> refresh(
+            @PathVariable("appKey") String appKey,
+            @Valid @RequestBody SocialTokenRefreshRequest request) {
+        SocialToken socialToken = socialAuthTemplate.refreshToken(appKey, request.getRefreshToken());
+        return Result.success(socialToken);
+    }
+
+    /**
+     * 吊销第三方 OAuth2 授权凭证
+     *
+     * @param appKey  社交应用唯一标识
+     * @param request 吊销令牌请求对象
+     * @return 操作成功响应
+     */
+    @PostMapping("/revoke/{appKey}")
+    public Result<Void> revoke(
+            @PathVariable("appKey") String appKey,
+            @Valid @RequestBody SocialTokenRevokeRequest request) {
+        socialAuthTemplate.revokeAuth(appKey, request.getAccessToken());
         return Result.success();
     }
 }

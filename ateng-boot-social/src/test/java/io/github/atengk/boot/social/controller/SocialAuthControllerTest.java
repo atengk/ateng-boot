@@ -5,6 +5,9 @@ import io.github.atengk.boot.social.model.SocialAuthResult;
 import io.github.atengk.boot.social.model.SocialBindRequest;
 import io.github.atengk.boot.social.model.SocialDirectLoginRequest;
 import io.github.atengk.boot.social.model.SocialLoginOptions;
+import io.github.atengk.boot.social.model.SocialToken;
+import io.github.atengk.boot.social.model.SocialTokenRefreshRequest;
+import io.github.atengk.boot.social.model.SocialTokenRevokeRequest;
 import io.github.atengk.boot.social.model.SocialUnbindRequest;
 import io.github.atengk.boot.social.model.SocialUser;
 import io.github.atengk.boot.social.model.StateContext;
@@ -201,6 +204,78 @@ class SocialAuthControllerTest {
                 .build();
 
         mockMvc.perform(post("/auth/social/unbind/github_app")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRequest)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("9. refresh: 刷新第三方访问令牌端点")
+    void testRefresh() throws Exception {
+        SocialToken mockToken = SocialToken.builder()
+                .accessToken("new_access_token_777")
+                .refreshToken("new_refresh_token_888")
+                .expireIn(3600)
+                .openId("open_999")
+                .build();
+
+        when(authTemplate.refreshToken(eq("github_app"), eq("old_refresh_token_123")))
+                .thenReturn(mockToken);
+
+        SocialTokenRefreshRequest request = SocialTokenRefreshRequest.builder()
+                .refreshToken("old_refresh_token_123")
+                .build();
+
+        mockMvc.perform(post("/auth/social/refresh/github_app")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.accessToken").value("new_access_token_777"))
+                .andExpect(jsonPath("$.data.refreshToken").value("new_refresh_token_888"))
+                .andExpect(jsonPath("$.data.expireIn").value(3600))
+                .andExpect(jsonPath("$.data.openId").value("open_999"));
+
+        verify(authTemplate).refreshToken("github_app", "old_refresh_token_123");
+    }
+
+    @Test
+    @DisplayName("10. refresh: refreshToken 为空时触发 JSR-303 参数校验拦截")
+    void testRefreshValidation() throws Exception {
+        SocialTokenRefreshRequest invalidRequest = SocialTokenRefreshRequest.builder()
+                .refreshToken("  ")
+                .build();
+
+        mockMvc.perform(post("/auth/social/refresh/github_app")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRequest)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("11. revoke: 吊销第三方授权凭证端点")
+    void testRevoke() throws Exception {
+        SocialTokenRevokeRequest request = SocialTokenRevokeRequest.builder()
+                .accessToken("access_token_to_revoke")
+                .build();
+
+        mockMvc.perform(post("/auth/social/revoke/github_app")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        verify(authTemplate).revokeAuth("github_app", "access_token_to_revoke");
+    }
+
+    @Test
+    @DisplayName("12. revoke: accessToken 为空时触发 JSR-303 参数校验拦截")
+    void testRevokeValidation() throws Exception {
+        SocialTokenRevokeRequest invalidRequest = SocialTokenRevokeRequest.builder()
+                .accessToken("   ")
+                .build();
+
+        mockMvc.perform(post("/auth/social/revoke/github_app")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(invalidRequest)))
                 .andExpect(status().isBadRequest());

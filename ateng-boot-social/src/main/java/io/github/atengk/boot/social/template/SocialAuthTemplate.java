@@ -17,6 +17,7 @@ import io.github.atengk.boot.social.exception.SocialUnbindRejectedException;
 import io.github.atengk.boot.social.factory.SocialAppFactory;
 import io.github.atengk.boot.social.model.SocialAuthResult;
 import io.github.atengk.boot.social.model.SocialLoginOptions;
+import io.github.atengk.boot.social.model.SocialToken;
 import io.github.atengk.boot.social.model.SocialUser;
 import io.github.atengk.boot.social.model.StateContext;
 import io.github.atengk.boot.social.properties.AtengSocialProperties;
@@ -27,6 +28,7 @@ import io.github.atengk.boot.social.ticket.BindTicketStore;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.anduin.model.AuthCallback;
 import org.dromara.anduin.model.AuthResponse;
+import org.dromara.anduin.model.AuthToken;
 import org.dromara.anduin.model.AuthUser;
 import org.dromara.anduin.request.AuthRequest;
 import org.springframework.beans.factory.ObjectProvider;
@@ -521,7 +523,117 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
         return exchangeSocialUser(appKey, appConfig, callback);
     }
 
-    // ==================== 7. 内部编排辅助方法 ====================
+    // ==================== 7. 第三方 OAuth2 访问令牌续期与授权吊销门面 ====================
+
+    /**
+     * 刷新第三方 OAuth2 访问令牌（基于 refreshToken 字符串）
+     *
+     * @param appKey       社交应用唯一标识
+     * @param refreshToken 刷新令牌
+     * @return 刷新后的最新令牌领域模型
+     */
+    public SocialToken refreshToken(String appKey, String refreshToken) {
+        if (appKey == null || appKey.isBlank()) {
+            throw new IllegalArgumentException("应用标识 [appKey] 不能为空");
+        }
+        if (refreshToken == null || refreshToken.isBlank()) {
+            throw new IllegalArgumentException("刷新令牌 [refreshToken] 不能为空");
+        }
+        return refreshToken(appKey, AuthToken.builder().refreshToken(refreshToken).build());
+    }
+
+    /**
+     * 刷新第三方 OAuth2 访问令牌（基于原生 AuthToken 凭据）
+     *
+     * @param appKey    社交应用唯一标识
+     * @param authToken 包含 refreshToken 的授权令牌对象
+     * @return 刷新后的最新令牌领域模型
+     */
+    public SocialToken refreshToken(String appKey, AuthToken authToken) {
+        if (appKey == null || appKey.isBlank()) {
+            throw new IllegalArgumentException("应用标识 [appKey] 不能为空");
+        }
+        if (authToken == null) {
+            throw new IllegalArgumentException("授权令牌凭据 [authToken] 不能为空");
+        }
+
+        CurrentSocialAppContextHolder.setAppKey(appKey);
+        try {
+            AuthRequest authRequest = socialAppFactory.createAuthRequest(appKey);
+            AuthResponse<AuthToken> authResponse;
+            try {
+                authResponse = authRequest.refresh(authToken);
+            } catch (Exception ex) {
+                throw new SocialAuthException("第三方平台令牌续期异常: " + ex.getMessage(), ex);
+            }
+
+            if (authResponse == null || !authResponse.ok() || authResponse.getData() == null
+                    || authResponse.getData().getAccessToken() == null || authResponse.getData().getAccessToken().isBlank()) {
+                String errorMsg = authResponse != null && authResponse.getMsg() != null ? authResponse.getMsg() : "底层驱动未返回有效访问令牌";
+                log.warn("Social auth token refresh failed: appKey=[{}], msg=[{}]", appKey, errorMsg);
+                throw new SocialAuthException("第三方平台令牌续期失败: " + errorMsg);
+            }
+
+            log.info("Social auth token refreshed successfully for appKey: [{}]", appKey);
+            return SocialToken.fromAuthToken(authResponse.getData());
+        } finally {
+            CurrentSocialAppContextHolder.clear();
+        }
+    }
+
+    /**
+     * 吊销第三方 OAuth2 授权凭据（基于 accessToken 字符串）
+     *
+     * @param appKey      社交应用唯一标识
+     * @param accessToken 访问令牌
+     */
+    public void revokeAuth(String appKey, String accessToken) {
+        if (appKey == null || appKey.isBlank()) {
+            throw new IllegalArgumentException("应用标识 [appKey] 不能为空");
+        }
+        if (accessToken == null || accessToken.isBlank()) {
+            throw new IllegalArgumentException("访问令牌 [accessToken] 不能为空");
+        }
+        revokeAuth(appKey, AuthToken.builder().accessToken(accessToken).build());
+    }
+
+    /**
+     * 吊销第三方 OAuth2 授权凭据（基于原生 AuthToken 凭据）
+     *
+     * @param appKey    社交应用唯一标识
+     * @param authToken 包含 accessToken 的授权令牌对象
+     */
+    public void revokeAuth(String appKey, AuthToken authToken) {
+        if (appKey == null || appKey.isBlank()) {
+            throw new IllegalArgumentException("应用标识 [appKey] 不能为空");
+        }
+        if (authToken == null) {
+            throw new IllegalArgumentException("授权令牌凭据 [authToken] 不能为空");
+        }
+
+        CurrentSocialAppContextHolder.setAppKey(appKey);
+        try {
+            AuthRequest authRequest = socialAppFactory.createAuthRequest(appKey);
+            AuthResponse<?> authResponse;
+            try {
+                authResponse = authRequest.revoke(authToken);
+            } catch (Exception ex) {
+                throw new SocialAuthException("第三方平台授权吊销异常: " + ex.getMessage(), ex);
+            }
+
+            if (authResponse == null || !authResponse.ok()) {
+                String errorMsg = authResponse != null ? authResponse.getMsg() : "底层驱动未返回响应";
+                log.warn("Social auth revoke failed: appKey=[{}], msg=[{}]", appKey, errorMsg);
+                throw new SocialAuthException("第三方平台授权吊销失败: " + errorMsg);
+            }
+
+            log.info("Social auth revoked successfully for appKey: [{}]", appKey);
+        } finally {
+            CurrentSocialAppContextHolder.clear();
+        }
+    }
+
+    // ==================== 8. 内部编排辅助方法 ====================
 
     /**
      * 执行底层第三方 HTTP 换码与用户信息拉取

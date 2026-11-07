@@ -20,6 +20,7 @@ import io.github.atengk.boot.social.http.SpringRestClientHttpImpl;
 import io.github.atengk.boot.social.model.SocialAuthResult;
 import io.github.atengk.boot.social.model.SocialAuthState;
 import io.github.atengk.boot.social.model.SocialLoginOptions;
+import io.github.atengk.boot.social.model.SocialToken;
 import io.github.atengk.boot.social.model.SocialUser;
 import io.github.atengk.boot.social.model.StateContext;
 import io.github.atengk.boot.social.properties.AtengSocialProperties;
@@ -33,6 +34,7 @@ import io.github.atengk.boot.social.ticket.InMemoryBindTicketStore;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import org.dromara.anduin.model.AuthCallback;
+import org.dromara.anduin.model.AuthToken;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -117,6 +119,13 @@ class SocialAuthTemplateTest {
         wechatMpProps.setIgnoreCheckState(true);
         wechatMpProps.setIgnoreCheckRedirectUri(true);
         properties.getApps().put("wechat_mp_app", wechatMpProps);
+
+        SocialAppItemProperties baiduProps = new SocialAppItemProperties();
+        baiduProps.setSource("BAIDU");
+        baiduProps.setClientId("mock_client_id_baidu");
+        baiduProps.setClientSecret("mock_client_secret_baidu");
+        baiduProps.setRedirectUri("https://ateng.example.com/oauth/callback/baidu");
+        properties.getApps().put("baidu_app", baiduProps);
 
         // 4. 组装缓存与会话管理器
         stateCache = new InMemorySocialAuthStateCache();
@@ -915,6 +924,103 @@ class SocialAuthTemplateTest {
 
         assertThat(hasBound).isTrue();
         assertThat(hasAuth).isTrue();
+    }
+
+    @Test
+    @DisplayName("32. refreshToken: 参数校验前置卫语句拦截")
+    void testRefreshTokenValidation() {
+        assertThatThrownBy(() -> authTemplate.refreshToken(null, "some_refresh_token"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.refreshToken("   ", "some_refresh_token"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.refreshToken("baidu_app", (String) null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.refreshToken("baidu_app", "   "))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.refreshToken("baidu_app", (AuthToken) null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("33. refreshToken: 成功续期并返回标准化 SocialToken")
+    void testRefreshTokenSuccess() {
+        mockWebServer.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody("{\"access_token\":\"baidu_new_access_token\",\"expires_in\":2592000,\"refresh_token\":\"baidu_new_refresh_token\",\"session_key\":\"sk_123\",\"session_secret\":\"ss_123\",\"scope\":\"basic\"}"));
+
+        SocialToken token = authTemplate.refreshToken("baidu_app", "baidu_old_refresh");
+        assertThat(token).isNotNull();
+        assertThat(token.getAccessToken()).isEqualTo("baidu_new_access_token");
+        assertThat(token.getRefreshToken()).isEqualTo("baidu_new_refresh_token");
+        assertThat(token.getExpireIn()).isEqualTo(2592000);
+        assertThat(token.getScope()).isEqualTo("basic");
+    }
+
+    @Test
+    @DisplayName("34. refreshToken: 底层平台抛出异常时转译为 SocialAuthException 并保留因果链")
+    void testRefreshTokenExceptionWrapping() {
+        assertThatThrownBy(() -> authTemplate.refreshToken("github_app", "gh_refresh_token"))
+                .isInstanceOf(SocialAuthException.class)
+                .hasMessageContaining("第三方平台令牌续期异常")
+                .hasCauseInstanceOf(Exception.class);
+    }
+
+    @Test
+    @DisplayName("35. refreshToken: 底层返回错误或未返回有效访问令牌时转译为 SocialAuthException")
+    void testRefreshTokenHttpError() {
+        mockWebServer.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody("{\"error\":\"invalid_grant\",\"error_description\":\"refresh token expired\"}"));
+
+        assertThatThrownBy(() -> authTemplate.refreshToken("baidu_app", "baidu_refresh_token"))
+                .isInstanceOf(SocialAuthException.class)
+                .hasMessageContaining("第三方平台令牌续期异常");
+    }
+
+    @Test
+    @DisplayName("35b. refreshToken: 底层返回 500 或未返回有效 access_token 时转译为 SocialAuthException")
+    void testRefreshTokenEmptyAccessToken() {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(500)
+                .setBody("Internal Server Error"));
+
+        assertThatThrownBy(() -> authTemplate.refreshToken("baidu_app", "baidu_refresh_token"))
+                .isInstanceOf(SocialAuthException.class)
+                .hasMessageContaining("第三方平台令牌续期失败");
+    }
+
+    @Test
+    @DisplayName("36. revokeAuth: 参数校验前置卫语句拦截")
+    void testRevokeAuthValidation() {
+        assertThatThrownBy(() -> authTemplate.revokeAuth(null, "some_access_token"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.revokeAuth("   ", "some_access_token"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.revokeAuth("baidu_app", (String) null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.revokeAuth("baidu_app", "   "))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.revokeAuth("baidu_app", (AuthToken) null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("37. revokeAuth: 成功吊销授权凭据")
+    void testRevokeAuthSuccess() {
+        mockWebServer.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json; charset=utf-8")
+                .setBody("{\"result\":1}"));
+
+        authTemplate.revokeAuth("baidu_app", "baidu_access_token_123");
+    }
+
+    @Test
+    @DisplayName("38. revokeAuth: 底层平台不支持或异常时转译为 SocialAuthException 并保留因果链")
+    void testRevokeAuthExceptionWrapping() {
+        assertThatThrownBy(() -> authTemplate.revokeAuth("github_app", "gh_access_token"))
+                .isInstanceOf(SocialAuthException.class)
+                .hasMessageContaining("第三方平台授权吊销异常")
+                .hasCauseInstanceOf(Exception.class);
     }
 
     private String extractQueryParam(String url, String paramName) {
