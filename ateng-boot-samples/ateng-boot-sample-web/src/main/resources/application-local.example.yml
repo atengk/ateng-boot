@@ -1,0 +1,72 @@
+# ==============================================================================
+# ateng-boot-sample-web 本地个性化与环境自适应调优配置示例
+# 复制当前文件为 application-local.yml 即可在本地生效（该文件已被 .gitignore 忽略）
+# ==============================================================================
+
+server:
+  port: 8080
+
+spring:
+  # 开启虚拟线程（需在 JDK 21+ 运行，开启后自动将全局异步执行器切换为虚拟线程）
+  threads:
+    virtual:
+      enabled: true
+
+ateng:
+  boot:
+    web:
+      # 1. 慢请求性能告警阈值调优（强类型 Duration）
+      slow-request:
+        enabled: true
+        threshold: 1s
+        exclude-urls:
+          - "/actuator/**"
+          - "/sample/web/observability/slow-excluded"
+
+      # 2. HTTP 报文双向安全采样日志（本地调试按需开启）
+      payload-log:
+        enabled: false
+        max-payload-size: 8KB
+        exclude-urls:
+          - "/actuator/**"
+          - "/sample/web/observability/payload-excluded"
+
+      # 3. 跨域 CORS 本地联调配置
+      cors:
+        enabled: false
+        allow-credentials: true
+        allow-localhost: true
+        allowed-origins:
+          - "http://localhost:3000"
+          - "http://127.0.0.1:5173"
+
+      # 4. XSS 安全清洗模式调优（ESCAPE 实体转义 | STRIP 标签剔除）
+      xss:
+        enabled: false
+        mode: STRIP
+
+      # 5. ETag 协商缓存
+      etag:
+        enabled: false
+        write-weak-etag: false
+
+      # 6. 云原生就绪探针排空等待时长（本地调试建议设为 0s 以免停机等待过长）
+      shutdown:
+        enabled: true
+        drain-timeout: 0s
+
+# ==============================================================================
+# 分布式中间件拓展体验说明（可选）：
+# 若在 pom.xml 中引入 RedissonClient 或 StringRedisTemplate，
+# 接口防重幂等 (@Idempotent) 与接口限流 (@RateLimiter) 将自动升级为分布式存储：
+# Tier 1: RedissonClient (最高优先级)
+# Tier 2: StringRedisTemplate (次级优先级)
+# Tier 3: InMemory (单机内存兜底，当前 Sample 默认)
+# ==============================================================================
+# spring:
+#   data:
+#     redis:
+#       host: YOUR_REDIS_HOST
+#       port: 6379
+#       password: YOUR_REDIS_PASSWORD
+#       database: 0

@@ -20,13 +20,9 @@ _Avoid_: ObjectMapperConfig, JsonConfig, JacksonConfig
 基于属性开关动态启闭与配置允许跨域源、HTTP 方法及请求头的 Web 安全规则。
 _Avoid_: CrossFilter, WebCorsConfig
 
-**AtengAsyncAutoConfiguration**:
-上下文感知受管异步线程池自动装配类（已下沉收敛至 `ateng-boot-core` 统一底座），web 模块直接依赖继承，为 Spring 异步体系统一提供四维上下文快照（MDC、用户、租户、忽略租户）调度与未捕获异常处理。
-_Avoid_: AsyncConfig, ThreadPoolConfiguration, AsyncThreadPoolAutoConfiguration
-
-**AsyncProperties**:
-异步线程池运行时增强配置属性（位于 `ateng-boot-core`），以 ateng.boot.async 为前缀，提供基于 CPU 核心数自适应的线程池容量、队列缓冲与优雅停机超时控制。
-_Avoid_: ThreadPoolProperties, AsyncConfigProperties
+**TraceUtil**:
+全链路追踪 MDC 与 HTTP 上下文操作门面，提供 traceId 的安全读取、写入与确定性清理。
+_Avoid_: TraceHelper, MdcUtil, LogTraceUtil
 
 **IpUtil**:
 多级反向代理客户端真实 IP 提取工具，按序解析 X-Forwarded-For 首个有效 IP，并安全兼容本地环回与 IPv6 规整。
@@ -231,4 +227,65 @@ _Avoid_: EnumController, DictController, EnumEndpoint
 **BaseEnumDeserializer**:
 Jackson 泛型反序列化定制器，拦截 IBaseEnum 实现类型，支持将前端传入的整数或字符串状态码自动解析为强类型枚举实例。
 _Avoid_: EnumJsonDeserializer, BaseEnumJsonCreator
+
+**SignAlgorithm**:
+API 数据签名算法枚举，支持 HMAC_SHA256 对称哈希、RSA 非对称与 SM2 国密非对称算法。
+_Avoid_: SignatureType, SignMode, CryptoAlgorithm
+
+**SignKeyProvider**:
+签名密钥对与 SecretKey 动态提供者 SPI 接口，支持根据 appId 动态获取加验签密钥。
+_Avoid_: KeyManager, SecretProvider, ApiKeyStore
+
+**DefaultSignKeyProvider**:
+基于本地配置属性（SignProperties）加载密钥的开箱即用默认提供者实现。
+_Avoid_: SimpleSignKeyProvider, ConfigSignKeyProvider
+
+**HmacSha256Signer**:
+基于纯 JDK 原生 Mac 实现的 HMAC-SHA256 对称签名与验签引擎。
+_Avoid_: HmacSigner, Sha256Signer
+
+**RsaSigner**:
+基于纯 JDK 原生 SHA256withRSA 实现的非对称数字签名与验签引擎。
+_Avoid_: RsaSignatureEngine, RsaCryptoSigner
+
+**SignCanonicalUtil**:
+API 签名规范化规约工具，提供 Query 参数与 JSON 请求体字典序排序、键值拼接与防重放摘要基底构造。
+_Avoid_: CanonicalHelper, SignUtil, UrlParamUtil
+
+**LimitType**:
+接口限流防刷维度枚举，支持默认接口方法级（DEFAULT）、客户端真实 IP（IP）、用户身份（USER）与多租户（TENANT）维度。
+_Avoid_: RateLimitType, LimitDimension, FlowRuleType
+
+**InMemoryRateLimiterStore**:
+基于纯 JDK 原生并发容器与防爆容量软上限的单机令牌桶限流存储实现（Tier 3 兜底）。
+_Avoid_: LocalRateLimiterStore, MemoryRateLimiterStore
+
+**RedisRateLimiterStore**:
+基于 Spring Data Redis 与原子 Lua 脚本的分布式令牌桶限流存储实现（Tier 2 次级）。
+_Avoid_: DistributedRedisRateLimiter, RedisLimitStore
+
+**RedissonRateLimiterStore**:
+基于 RedissonClient RRateLimiter 原生分布式令牌桶的限流存储实现（Tier 1 最高优先级）。
+_Avoid_: RedissonLimitStore, DistributedRedissonStore
+
+**AtengRateLimiterAutoConfiguration**:
+限流治理三级自适应自动装配类，负责按序探测 Redisson/Redis/InMemory 存储并装配 RateLimiterAspect。
+_Avoid_: RateLimiterAutoConfig, RateLimiterConfiguration
+
+**PreStopEndpoint**:
+基于 Spring Boot Actuator 的云原生 Pod 生命周期流量排空端点，暴露 /actuator/pre-stop。
+_Avoid_: PreStopActuator, DrainEndpoint
+
+**PreStopController**:
+无 Actuator 依赖时的轻量级 Spring MVC 流量排空控制器，暴露 /pre-stop。
+_Avoid_: PreStopMvcController, ShutdownController
+
+**ApplicationReadyCardListener**:
+应用启动就绪事件监听器，探测服务端口、真实内网 IP 与接口文档端点并渲染一体化 ASCII 欢迎卡片。
+_Avoid_: StartupCardListener, BannerPrinter, ReadyListener
+
+**ProductionSanityChecker**:
+生产环境（prod/production）高危配置防呆自检器，启动期探测 Swagger 公网暴露、Payload 全量日志与 H2 控制台并输出安全警示。
+_Avoid_: SecuritySanityChecker, ProductionGuard, StartupChecker
+
 

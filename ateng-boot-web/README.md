@@ -4,26 +4,13 @@
 
 ---
 
-## 1. 模块定位与 Maven 坐标
-
-`ateng-boot-web` 专注于提升 Web 接口层的高可用、安全性与工程规范。依托 Spring MVC 与 Servlet 标准，通过防御性自动装配为 Controller 传输边界提供全方位开箱即用护航。**坚守显式强类型契约不变量**，坚决杜绝 `@ResponseBodyAdvice` 全局自动拦截包装，所有接口返回值 100% 由强类型 `Result<T>` 显式自洽。
-
-```xml
-<dependency>
-    <groupId>io.github.atengk</groupId>
-    <artifactId>ateng-boot-web</artifactId>
-</dependency>
-```
-
----
-
-## 2. 特性与公共 API 全景速查矩阵
+## 0. 特性与公共 API 全景速查矩阵 (100% 覆盖)
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **链路追踪** | HTTP 链路追踪过滤器与门面 | `TraceFilter`, `TraceUtil` | `ateng.boot.web.trace.enabled`, `header` (或 `header-name`) | `TraceUtil.getTraceId()`, `setTraceId(id)`, `clear()`, MDC `traceId` 注入并在 `finally` 严格清理 | `TraceFilterTest.java`, `TraceUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
-| **全局异常防御** | 全局统一异常拦截与生产脱敏 | `GlobalExceptionHandler`, `GlobalExceptionCustomizer` | - | 挂载 `GlobalExceptionCustomizer` SPI 链式定制，拦截 `BusinessException`（双模因果堆栈）、`MethodArgumentNotValidException`、`HandlerMethodValidationException`、`BindException`、`ConstraintViolationException`、400/404/405/406/413/415/503/500 精细化转译与生产脱敏 | `GlobalExceptionHandlerTest.java`, `WebContractSampleControllerTest.java`, `WebExceptionSampleControllerTest.java` |
-| **精度与时间规范** | 53 位雪花精度防截断与时间序列化 | `JacksonCustomizer` | `ateng.boot.web.long-to-string` | Long/BigInteger 序列化为 String，标准 `yyyy-MM-dd HH:mm:ss` 格式化，不覆盖原生 `ObjectMapper` | `JacksonCustomizerTest.java`, `WebContractSampleControllerTest.java` |
+| **全局异常防御** | 全局统一异常拦截与生产脱敏 | `GlobalExceptionHandler`, `GlobalExceptionCustomizer` | - | 挂载 `GlobalExceptionCustomizer` SPI 链式定制，拦截 `BusinessException`（双模因果堆栈）、`MethodArgumentNotValidException`、`HandlerMethodValidationException`、`BindException`、`ConstraintViolationException`、400/404/405/406/413/415/503/500 精细化转译与生产脱敏 | `GlobalExceptionHandlerTest.java`, `WebContractAndExceptionControllerTest.java`, `WebExceptionSampleControllerTest.java` |
+| **精度与时间规范** | 53 位雪花精度防截断与时间序列化 | `JacksonCustomizer` | `ateng.boot.web.long-to-string` | Long/BigInteger 序列化为 String，标准 `yyyy-MM-dd HH:mm:ss` 格式化，不覆盖原生 `ObjectMapper` | `JacksonCustomizerTest.java`, `WebContractAndExceptionControllerTest.java`, `WebContractSampleControllerTest.java` |
 | **接口审计日志** | 声明式接口耗时审计与安全防 OOM | `@WebLog`, `WebLogAspect` | `ateng.boot.web.log.enabled` | `@WebLog(value, printParams, printResult, excludeParams)`，大文件 Multipart 自动占位防 OOM | `WebLogAspectTest.java`, `WebAuditSampleControllerTest.java` |
 | **动态 CORS 跨域** | 动态跨域来源校验与凭证安全反射 | `CorsOriginProvider`, `DefaultCorsOriginProvider`, `DynamicCorsConfigurationSource` | `ateng.boot.web.cors.enabled`, `allowed-origins`, `allow-credentials`, `allow-localhost`, `max-age` | 基于配置属性通配或 SPI 动态扩展校验 Origin，安全反射并支持凭据传输（Cookie），放行本地 localhost 调试 | `DynamicCorsTest.java`, `WebTrafficSampleControllerTest.java` |
 | **自适应限流防刷** | 三级自适应令牌桶与多维限流 | `@RateLimiter`, `LimitType`, `RateLimiterStore`, `InMemoryRateLimiterStore`, `RedisRateLimiterStore`, `RedissonRateLimiterStore` | `ateng.boot.web.ratelimit.enabled`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@RateLimiter(key, time, count, limitType)`，支持默认/IP/用户/租户（LimitType.TENANT）多维限流防刷与租户流量隔离 | `RateLimiterAspectTest.java`, `AtengRateLimiterAutoConfigurationTest.java`, `InMemoryRateLimiterStoreTest.java`, `WebTrafficSampleControllerTest.java`, `WebTenantRateLimiterSampleTest.java` |
@@ -47,7 +34,695 @@
 
 ---
 
-## 3. 全链路追踪与 MDC 安全流转 (`TraceFilter` & `TraceUtil`)
+## 1. 模块定位与 Maven 坐标
+
+`ateng-boot-web` 专注于提升 Web 接口层的高可用、安全性与工程规范。依托 Spring MVC 与 Servlet 标准，通过防御性自动装配为 Controller 传输边界提供全方位开箱即用护航。
+
+```xml
+<dependency>
+    <groupId>io.github.atengk</groupId>
+    <artifactId>ateng-boot-web</artifactId>
+</dependency>
+```
+
+---
+
+## 2. 核心架构与设计不变量
+
+### 2.1 Web 过滤器链 (Filter Chain) 优先级拓扑
+
+框架内建完整的 Web 过滤器防线，基于 `FilterRegistrationBean.setOrder()` 严格控制执行先后次序：
+
+```mermaid
+flowchart TD
+    Client(["HTTP Client"]) --> TraceFilter["1. TraceFilter<br>(HIGHEST_PRECEDENCE)<br>MDC traceId 注入与回写"]
+    TraceFilter --> IpFilter["2. IpAccessControlFilter<br>(HIGHEST_PRECEDENCE + 1)<br>路径级 IP/CIDR 白黑名单防火墙"]
+    IpFilter --> CacheFilter["3. ContentCachingFilter<br>(HIGHEST_PRECEDENCE + 1)<br>请求体可重复读包装与超限防爆"]
+    CacheFilter --> PayloadFilter["4. PayloadLoggingFilter<br>(HIGHEST_PRECEDENCE + 2)<br>双向报文安全采样与凭据打码"]
+    PayloadFilter --> SlowFilter["5. SlowRequestFilter<br>(HIGHEST_PRECEDENCE + 3)<br>长耗时慢请求耗时主动告警"]
+    SlowFilter --> SecurityFilter["6. SecurityHeadersFilter<br>(HIGHEST_PRECEDENCE + 4)<br>等保三级安全头注入与指纹剥离"]
+    SecurityFilter --> EtagFilter["7. ShallowEtagHeaderFilter<br>(HIGHEST_PRECEDENCE + 5)<br>ETag 协商缓存与 304 节省带宽"]
+    EtagFilter --> XssFilter["8. XssFilter<br>(HIGHEST_PRECEDENCE + 6)<br>XSS 跨站脚本双轨无害化清洗"]
+    XssFilter --> Dispatcher["Spring MVC DispatcherServlet"]
+```
+
+### 2.2 AOP 切面防护链优先级拓扑
+
+当请求抵达 Spring MVC 调度层后，Controller 业务方法周围构建起纵深防御切面链：
+
+```mermaid
+flowchart TD
+    Dispatcher["Spring MVC HandlerMapping"] --> IpAspect["1. @IpAccessControl<br>方法级 IP/CIDR 精准拦截"]
+    IpAspect --> RateAspect["2. @RateLimiter<br>三级自适应令牌桶防刷限流"]
+    RateAspect --> IdempAspect["3. @Idempotent<br>三级自适应防重幂等与 SpEL 防抖"]
+    IdempAspect --> SignAspect["4. @ApiSign<br>防篡改防重放验签与双向加签"]
+    SignAspect --> AuditAspect["5. @OperateLog<br>结构化操作审计与出参动态脱敏"]
+    AuditAspect --> LogAspect["6. @WebLog<br>轻量接口调用耗时与出入参日志"]
+    LogAspect --> TargetAction["Controller 业务方法执行"]
+    TargetAction --> ExceptionHandler["全局异常处理器 GlobalExceptionHandler<br>(因果链追踪、生产脱敏与 SPI 扩展)"]
+```
+
+### 2.3 四大核心设计不变量
+
+1. **显式响应契约 (Explicit Result Contract, No `@ResponseBodyAdvice`)**：
+   - 遵循 [ADR-0002](./docs/adr/0002-explicit-result-contract-no-response-body-advice.md)，坚决杜绝全局 `@ResponseBodyAdvice` 自动拦截隐式包装；
+   - Controller 接口必须显式声明并返回强类型 `Result<T>`，依托强类型契约实现自洽与全链路确定性。
+2. **53 位雪花精度防失真 (Long to String Invariant)**：
+   - JavaScript `Number` 遵循 IEEE 754 双精度浮点标准，最大安全整数为 $2^{53}-1$（`9007199254740991`）；
+   - 后端 64 位雪花算法 ID（如 `1846182948192841920L`）通过 `JacksonCustomizer` 统一序列化为字符串输出，标准日期时间统一格式化为 `yyyy-MM-dd HH:mm:ss`，且坚决不覆盖底座 `ObjectMapper` Bean。
+3. **内存真明文与脱敏收敛于视图 (In-Memory Plaintext Invariant)**：
+   - 遵循 [ADR-0012](./docs/adr/0012-lifecycle-separated-data-security.md)，业务层与实体对象在 JVM 内存中 100% 保持真实原始明文，严禁在业务逻辑中直接对实体属性打星号；
+   - 敏感数据脱敏展示（如 `@FieldSensitive`）统一收敛于视图序列化与操作审计切面，彻底杜绝掩码脏数据写回数据库。
+4. **分层双防校验体系 (Fail-Fast First Line of Defense Validation)**：
+   - 遵循 [ADR-0027](./docs/adr/0027-defense-in-depth-validation-and-standardized-primitives.md)，传输边界（Controller）作为第一道防线，统一采用 JSR-303 注解声明语法与格式校验以实现 Fail-Fast；
+   - 批量列表入参强制使用 `ValidList<E>` 杜绝 Spring 默认漏检，分组校验统一使用 `ValidationGroups` 标准标记。
+
+---
+
+## 3. 传输契约、序列化规范与全局异常防御体系
+
+### 3.1 显式强类型契约与分层防卫校验
+
+#### 场景痛点与设计原则
+- 杜绝隐式 `@ResponseBodyAdvice` 导致的 Swagger 契约失真、文件下载/第三方接口被误包装次生灾难；
+- 杜绝 ORM 实体（Entity）直接暴露在 Controller 传输边界引发的信息泄露与无权限字段篡改；
+- 解决 Spring MVC 默认对 `List<UserDTO>` 批量入参直接忽略 `@Valid` 级联校验的隐蔽漏检缺陷；
+- 通过 `ValidationGroups.Create` 与 `ValidationGroups.Update` 实现单 DTO 复用与差分校验。
+
+#### 1:1 实测业务代码范式
+
+```java
+package io.github.atengk.boot.sample.web.dto;
+
+import io.github.atengk.boot.core.validation.ValidationGroups;
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
+import lombok.Data;
+
+/**
+ * 用户注册与更新传输载荷对象
+ */
+@Data
+public class UserRegisterDTO {
+
+    @NotNull(groups = ValidationGroups.Update.class, message = "更新操作用户ID不能为空")
+    private Long id;
+
+    @NotBlank(message = "用户姓名不能为空")
+    private String name;
+
+    @NotNull(message = "年龄不能为空")
+    @Min(value = 1, message = "年龄必须大于0")
+    @Max(value = 150, message = "年龄不能超过150岁")
+    private Integer age;
+
+    @NotBlank(message = "邮箱不能为空")
+    @Email(message = "邮箱格式不正确")
+    private String email;
+
+    @NotBlank(message = "手机号不能为空")
+    @Pattern(regexp = "^1[3-9]\d{9}$", message = "手机号格式不正确")
+    private String phone;
+
+    private String password;
+}
+```
+
+```java
+package io.github.atengk.boot.sample.web.vo;
+
+import io.github.atengk.boot.core.annotation.FieldSensitive;
+import io.github.atengk.boot.core.enums.SensitiveType;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+/**
+ * 用户注册成功返回视图对象
+ */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class UserRegisterVO {
+
+    // 64 位雪花算法主键 ID（由 Jackson 序列化为 String 防失真）
+    private Long id;
+
+    private String name;
+
+    private Integer age;
+
+    private String email;
+
+    // 手机号码（出库动态脱敏掩码呈现，如 138****5678）
+    @FieldSensitive(SensitiveType.MOBILE_PHONE)
+    private String phone;
+}
+```
+
+```java
+package io.github.atengk.boot.sample.web.controller;
+
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.validation.ValidList;
+import io.github.atengk.boot.core.validation.ValidationGroups;
+import io.github.atengk.boot.sample.web.dto.UserRegisterDTO;
+import io.github.atengk.boot.sample.web.vo.UserRegisterVO;
+import jakarta.validation.Valid;
+import jakarta.validation.groups.Default;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/sample/web/contract")
+public class WebContractAndExceptionController {
+
+    // 1. 会员实名注册（第一道防线 JSR-303 格式校验）
+    @PostMapping("/user")
+    public Result<UserRegisterVO> createUser(@Valid @RequestBody UserRegisterDTO dto) {
+        UserRegisterVO vo = UserRegisterVO.builder()
+                .id(1846182948192841920L)
+                .name(dto.getName())
+                .age(dto.getAge())
+                .email(dto.getEmail())
+                .phone(dto.getPhone())
+                .build();
+        return Result.success(vo);
+    }
+
+    // 2. 渠道商批量入驻（依托 ValidList 实现 Fail-Fast 级联校验）
+    @PostMapping("/users/batch")
+    public Result<Integer> batchCreateUsers(@Valid @RequestBody ValidList<UserRegisterDTO> users) {
+        return Result.success(users.size());
+    }
+
+    // 3. 会员信息更新（演示 ValidationGroups.Update 分组校验，必须校验 id 非空）
+    @PutMapping("/user")
+    public Result<UserRegisterVO> updateUser(@Validated({Default.class, ValidationGroups.Update.class}) @RequestBody UserRegisterDTO dto) {
+        UserRegisterVO vo = UserRegisterVO.builder()
+                .id(dto.getId())
+                .name(dto.getName())
+                .age(dto.getAge())
+                .email(dto.getEmail())
+                .phone(dto.getPhone())
+                .build();
+        return Result.success(vo);
+    }
+}
+```
+
+#### 真实 HTTP 响应报文验证
+
+##### (1) 会员注册成功响应 (`POST /sample/web/contract/user`)
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "id": "1846182948192841920",
+    "name": "张三",
+    "age": 25,
+    "email": "zhangsan@example.com",
+    "phone": "138****5678"
+  },
+  "success": true,
+  "traceId": "c8a14b0365734fb4864f7bdf753b890a"
+}
+```
+
+##### (2) 校验失败快速阻断响应 (入参手机号格式错误)
+```json
+{
+  "code": 400,
+  "msg": "手机号格式不正确",
+  "data": null,
+  "success": false,
+  "traceId": "d1e2f3a4b5c6d7e8"
+}
+```
+
+---
+
+### 3.2 53 位雪花精度防失真与时间标准化
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      # 是否将 Long/BigInteger 序列化为 String（防前端 JS 53 位雪花 ID 精度截断，默认 true）
+      long-to-string: true
+```
+
+#### 核心机制
+- 挂载 `Jackson2ObjectMapperBuilderCustomizer`，在序列化时将 `Long`、`long`、`BigInteger` 自动转为 `String` 输出；
+- 统一格式化时间类型：`LocalDateTime` (`yyyy-MM-dd HH:mm:ss`)、`LocalDate` (`yyyy-MM-dd`)、`LocalTime` (`HH:mm:ss`)；
+- **坚决不覆盖底座 `ObjectMapper` Bean**，完美保留下游 Spring Boot 原生定制链条。
+
+#### 1:1 实测业务代码范式
+```java
+package io.github.atengk.boot.sample.web.vo;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class DateTimeDemoVO {
+    private Long id;
+    private LocalDateTime dateTime;
+    private LocalDate date;
+    private LocalTime time;
+}
+```
+
+```java
+// Controller 端点：获取日期时间与雪花 ID 序列化视图
+@GetMapping("/datetime")
+public Result<DateTimeDemoVO> getDateTimeDemo() {
+    DateTimeDemoVO vo = DateTimeDemoVO.builder()
+            .id(1846182948192841920L)
+            .dateTime(LocalDateTime.of(2026, 10, 19, 14, 30, 0))
+            .date(LocalDate.of(2026, 10, 19))
+            .time(LocalTime.of(14, 30, 0))
+            .build();
+    return Result.success(vo);
+}
+```
+
+#### 真实 HTTP 响应报文验证 (`GET /sample/web/contract/datetime`)
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "id": "1846182948192841920",
+    "dateTime": "2026-10-19 14:30:00",
+    "date": "2026-10-19",
+    "time": "14:30:00"
+  },
+  "success": true,
+  "traceId": "e3f4a5b6c7d8e9f0"
+}
+```
+
+---
+
+### 3.3 全局异常防御体系与因果堆栈双模治理
+
+#### 核心机制与异常边界
+1. **业务受控异常双模治理 (`BusinessException`)**：
+   - **无 `cause` 异常**：属于前置常规业务阻断，记录 INFO 级别日志，返回业务错误码与提示，无须打印巨幅堆栈；
+   - **有 `cause` 异常**：属于底层驱动或依赖异常转译，记录 ERROR 级别日志并打印完整因果链调用栈与 `traceId`，对外返回受管提示。
+2. **JSR-303 参数校验失败**：
+   - 统一拦截 `MethodArgumentNotValidException`、`HandlerMethodValidationException`（Spring 6.1+）、`ConstraintViolationException` 与 `BindException`，自动提取首个不合规字段的友好提示返回 HTTP 200 + Code 400。
+3. **精细化 Web 传输层协议异常拦截**：
+   - `MaxUploadSizeExceededException` $
+ightarrow$ 413 "上传文件大小超出限制"；
+   - `HttpMediaTypeNotSupportedException` $
+ightarrow$ 415 "不支持的媒体类型"；
+   - `HttpMediaTypeNotAcceptableException` $
+ightarrow$ 406 直接回写 JSON 契约，彻底杜绝 MVC 内容协商次生死锁；
+   - `AsyncRequestTimeoutException` $
+ightarrow$ 503 "异步请求处理超时"；
+   - `MissingServletRequestPartException` $
+ightarrow$ 400 "缺少必要的文件或表单分片"。
+4. **未知根异常强制生产脱敏**：
+   - 未捕获的系统根异常（如 `NullPointerException`、`SQLException`）统一脱敏返回 `{"code":500, "msg":"系统繁忙，请稍后再试"}`，严防向前端泄露数据表结构、SQL 或私有类名；后端日志全量打印原始堆栈与 MDC `traceId`。
+
+#### 1:1 实测业务代码范式
+```java
+// 1. 业务受控异常中断（无 cause：轻量级日志记录，返回业务错误码）
+@GetMapping("/error/business")
+public Result<Void> triggerBusinessException() {
+    throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), "用户积分余额不足");
+}
+
+// 2. 携带底层驱动 cause 根因的因果业务异常（保留完整异常因果链）
+@GetMapping("/error/causal")
+public Result<Void> triggerCausalException() {
+    throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "网关代理服务通信异常",
+            new IOException("Connection reset by peer"));
+}
+
+// 3. 未捕获未知根异常（生产强制脱敏，MDC traceId 闭环溯源）
+@GetMapping("/error/unexpected")
+public Result<Void> triggerUnexpectedException() {
+    throw new NullPointerException("内部系统模拟空指针异常");
+}
+
+// 4. 大文件超限异常（MaxUploadSizeExceededException -> 413 Payload Too Large）
+@GetMapping("/error/payload-too-large")
+public Result<Void> triggerMaxUploadSizeExceeded() {
+    throw new MaxUploadSizeExceededException(10485760L);
+}
+
+// 5. 异步请求处理超时异常（AsyncRequestTimeoutException -> 503 Service Unavailable）
+@GetMapping("/error/async-timeout")
+public Result<Void> triggerAsyncTimeout() {
+    throw new AsyncRequestTimeoutException();
+}
+```
+
+#### 真实 HTTP 响应报文验证
+
+##### (1) 业务受控异常 (`GET /sample/web/contract/error/business`)
+```json
+{
+  "code": 400,
+  "msg": "用户积分余额不足",
+  "data": null,
+  "success": false,
+  "traceId": "f1a2b3c4d5e6f7a8"
+}
+```
+
+##### (2) 未知系统异常生产脱敏 (`GET /sample/web/contract/error/unexpected`)
+```json
+{
+  "code": 500,
+  "msg": "系统繁忙，请稍后再试",
+  "data": null,
+  "success": false,
+  "traceId": "a9b8c7d6e5f4a3b2"
+}
+```
+
+##### (3) 上传文件超限拦截 (`GET /sample/web/contract/error/payload-too-large`)
+```json
+{
+  "code": 413,
+  "msg": "上传文件大小超出限制",
+  "data": null,
+  "success": false,
+  "traceId": "b1c2d3e4f5a6b7c8"
+}
+```
+
+---
+
+### 3.4 业务领域异常定制扩展点 (`GlobalExceptionCustomizer` SPI)
+
+#### 场景痛点与扩展机制
+- 业务系统常需集成第三方 SDK（如微信/支付宝支付 SDK、短信网关、风控云服务），其抛出的专有受检异常需要转译为自定义业务错误码（如 `40020`）；
+- 严禁直接侵入修改 Starter 内部的 `GlobalExceptionHandler` 源码；
+- 框架提供 `GlobalExceptionCustomizer` SPI 接口，支持通过 `@Order` 声明链式优先级。当转译器识别目标异常时返回非空 `Result<?>` 即完成处理；返回 `null` 则平滑穿透至下一定制器或默认处理器。
+
+#### 1:1 实测业务代码范式
+
+```java
+package io.github.atengk.boot.sample.web.exception;
+
+/**
+ * 支付通道专有受控异常
+ */
+public class PaymentChannelException extends RuntimeException {
+    private final String channelCode;
+
+    public PaymentChannelException(String channelCode, String message) {
+        super(message);
+        this.channelCode = channelCode;
+    }
+
+    public String getChannelCode() { return channelCode; }
+}
+```
+
+```java
+package io.github.atengk.boot.sample.web.handler;
+
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.web.exception.PaymentChannelException;
+import io.github.atengk.boot.web.handler.GlobalExceptionCustomizer;
+import org.springframework.core.annotation.Order;
+import org.springframework.stereotype.Component;
+
+/**
+ * 支付通道异常自定义转译器
+ */
+@Component
+@Order(10)
+public class PaymentExceptionCustomizer implements GlobalExceptionCustomizer {
+
+    @Override
+    public Result<?> customize(Throwable throwable) {
+        if (throwable instanceof PaymentChannelException pce) {
+            // 转译为自定义领域状态码 40020
+            return Result.fail(40020, "支付通道异常 [" + pce.getChannelCode() + "]: " + pce.getMessage());
+        }
+        return null;
+    }
+}
+```
+
+#### 真实 HTTP 响应报文验证 (`GET /sample/web/contract/error/payment`)
+```json
+{
+  "code": 40020,
+  "msg": "支付通道异常 [ALIPAY]: 通道账户可用余额不足",
+  "data": null,
+  "success": false,
+  "traceId": "c3d4e5f6a7b8c9d0"
+}
+```
+
+---
+
+### 3.5 Web 只读枚举字典与 Jackson 强类型双向反序列化
+
+#### 场景痛点
+1. **下拉字典割裂**：前端下拉选项依赖零散接口，重复开发且无法随后端枚举变动即时同步；
+2. **反射穿透隐患**：传统字典方案往往通过“传类全路径”任意反射枚举，存在严重的安全代码执行漏洞（RCE）与 GC 压力；
+3. **入参反序列化断层**：Controller Request DTO 接收枚举参数时，Jackson 原生默认只认常量名，前端传入数字 code（如 `1`）或字符串 code（如 `"1"`）直接反序列化崩溃；
+4. **多语言割裂**：国际化应用中，枚举选项文案无法随请求头 `Accept-Language` 动态切换。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      enum:
+        # 是否启用只读枚举字典与反序列化增强（默认 true）
+        enabled: true
+        # 枚举字典 HTTP 端点前缀（默认 /api/system/enums）
+        path-prefix: /api/system/enums
+        # 枚举命名策略（LOWER_CAMEL / LOWER_UNDERSCORE，默认 LOWER_CAMEL）
+        naming-strategy: LOWER_CAMEL
+        # 枚举扫描包路径（建议配置具体业务包）
+        scan-packages:
+          - io.github.atengk.boot.sample.web.enums
+```
+
+#### 核心机制与五维生产模型
+- **启动期白名单扫描与 Fail-Fast 阻断**：严格依据 `scan-packages` 白名单扫描，绝不运行时任意类反射；启动期发现同名或别名碰撞立即终止应用启动；
+- **只读不可变预热与零 GC 分配**：预编译构建为不可变 Map，运行时提供 $O(1)$ 无锁纯内存检索，零锁争用与零瞬态垃圾对象；
+- **三阶只读 HTTP 端点矩阵**：
+  - 单枚举查询：`GET /api/system/enums/{name}` $
+ightarrow$ `Result<List<OptionItem<Object>>>`
+  - 批量聚合查询：`POST /api/system/enums/batch` 或 `GET /api/system/enums/batch?names=userStatus,orderType` $
+ightarrow$ `Result<Map<String, List<OptionItem<Object>>>>`
+  - 全量目录检索：`GET /api/system/enums` $
+ightarrow$ `Result<Map<String, List<OptionItem<Object>>>>`，供前端系统初始化时一次性拉取并持久化至 Pinia / Vuex 全局状态；
+- **Jackson 强类型双向反序列化**：自动装配 `BaseEnumDeserializer`，Controller DTO 可直接声明强类型枚举字段（如 `private UserStatusEnum status;`），前端无论传入数字 `1`、字符串 `"1"` 还是常量名 `"ACTIVE"`（大小写不敏感），均能精准自动映射为枚举实例；
+- **多语言 (i18n) 透明适配与平滑回退**：弱依赖接入 Spring `MessageSource` 与 `LocaleContextHolder`，自动按 `enum.{SimpleName}.{NAME}` 规则提取当前请求区域设置文案；未配置国际化时平滑回退为枚举自带的 `getLabel()`。
+
+#### 1:1 实测业务代码范式
+
+```java
+package io.github.atengk.boot.sample.web.enums;
+
+import io.github.atengk.boot.core.annotation.EnumAlias;
+import io.github.atengk.boot.core.enums.IBaseEnum;
+import java.util.Map;
+
+// 1. 实现 IBaseEnum<Integer>，重写 getDisabled 与 getExtra 携带扩展样式
+public enum UserStatusEnum implements IBaseEnum<Integer> {
+    ACTIVE(1, "启用"),
+    DISABLED(2, "禁用") {
+        @Override
+        public Boolean getDisabled() { return true; }
+        @Override
+        public Map<String, Object> getExtra() { return Map.of("color", "red", "reason", "违规停用"); }
+    },
+    LOCKED(3, "锁定");
+
+    private final Integer code;
+    private final String label;
+
+    UserStatusEnum(Integer code, String label) {
+        this.code = code;
+        this.label = label;
+    }
+
+    @Override public Integer getCode() { return code; }
+    @Override public String getLabel() { return label; }
+}
+
+// 2. 显式标注 @EnumAlias 别名覆盖
+@EnumAlias("orderType")
+public enum OrderTypeEnum implements IBaseEnum<String> {
+    NORMAL("normal", "普通订单"),
+    SECKILL("seckill", "秒杀订单"),
+    PROMOTION("promotion", "促销订单");
+
+    private final String code;
+    private final String label;
+
+    OrderTypeEnum(String code, String label) {
+        this.code = code;
+        this.label = label;
+    }
+
+    @Override public String getCode() { return code; }
+    @Override public String getLabel() { return label; }
+}
+```
+
+```java
+package io.github.atengk.boot.sample.web.dto;
+
+import io.github.atengk.boot.core.annotation.InEnum;
+import io.github.atengk.boot.sample.web.enums.OrderTypeEnum;
+import io.github.atengk.boot.sample.web.enums.UserStatusEnum;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import java.io.Serializable;
+import lombok.Data;
+
+@Data
+public class WebEnumUserRequest implements Serializable {
+    @NotBlank(message = "用户名不能为空")
+    private String username;
+
+    // 第一道防线：校验原始编码合法性
+    @NotNull(message = "状态编码不能为空")
+    @InEnum(value = UserStatusEnum.class, message = "用户状态编码不合法")
+    private Integer statusCode;
+
+    // Jackson 强类型双向反序列化绑定：前端传 1, "1", "ACTIVE" 均可自动解析
+    private UserStatusEnum status;
+
+    private OrderTypeEnum orderType;
+}
+```
+
+```java
+// Controller 端点：接收强类型枚举绑定请求
+@PostMapping("/enum-bind")
+public Result<WebEnumUserResponse> bindEnum(@Valid @RequestBody WebEnumUserRequest request) {
+    return Result.success(new WebEnumUserResponse(
+            request.getUsername(),
+            request.getStatusCode(),
+            request.getStatus(),
+            request.getOrderType()
+    ));
+}
+```
+
+#### 真实 HTTP 响应报文验证
+
+##### (1) 查询单枚举字典 (`GET /api/system/enums/userStatus`)
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": [
+    {
+      "code": 1,
+      "label": "启用",
+      "disabled": false,
+      "extra": {}
+    },
+    {
+      "code": 2,
+      "label": "禁用",
+      "disabled": true,
+      "extra": {
+        "color": "red",
+        "reason": "违规停用"
+      }
+    },
+    {
+      "code": 3,
+      "label": "锁定",
+      "disabled": false,
+      "extra": {}
+    }
+  ],
+  "success": true,
+  "traceId": "9b1c2d3e4f5a6b7c"
+}
+```
+
+##### (2) 批量聚合字典 (`POST /api/system/enums/batch` 入参 `["userStatus", "orderType"]`)
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "userStatus": [
+      { "code": 1, "label": "启用", "disabled": false, "extra": {} },
+      { "code": 2, "label": "禁用", "disabled": true, "extra": { "color": "red", "reason": "违规停用" } },
+      { "code": 3, "label": "锁定", "disabled": false, "extra": {} }
+    ],
+    "orderType": [
+      { "code": "normal", "label": "普通订单", "disabled": false, "extra": {} },
+      { "code": "seckill", "label": "秒杀订单", "disabled": false, "extra": {} },
+      { "code": "promotion", "label": "促销订单", "disabled": false, "extra": {} }
+    ]
+  },
+  "success": true,
+  "traceId": "a1b2c3d4e5f60718"
+}
+```
+
+##### (3) Jackson 强类型枚举自动反序列化 (`POST /sample/web/contract/enum-bind`)
+入参无论传整型 `1` 还是字符串 `"1"` 亦或常量名 `"ACTIVE"`，后端均能精准映射为强类型枚举：
+```json
+// 请求体
+{
+  "username": "张三",
+  "statusCode": 1,
+  "status": "ACTIVE",
+  "orderType": "normal"
+}
+
+// 响应体 (HTTP 200)
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "username": "张三",
+    "statusCode": 1,
+    "status": "ACTIVE",
+    "orderType": "NORMAL"
+  },
+  "success": true,
+  "traceId": "7ebf8152661ffdafc927a86c0646e1d9"
+}
+```
+
+---
+
+## 4. 全链路追踪与 MDC 安全流转 (`TraceFilter` & `TraceUtil`)
+
 
 ### 场景痛点
 微服务或单体应用在排查生产异常时，若没有全局链路 ID，海量并发日志交织在一起无法还原现场链路。
@@ -71,76 +746,6 @@ TraceUtil.setTraceId("CUSTOM_TRACE_999");
 // 3. 安全清理现场
 TraceUtil.clear();
 ```
-
----
-
-## 4. 全局统一异常安全防御拦截 (`GlobalExceptionHandler`) 与 SPI 扩展 (`GlobalExceptionCustomizer`)
-
-### 场景痛点
-1. 杜绝向前端直接泄露底层 SQL 语法报错、数据表结构、类名或死锁堆栈；
-2. 将 JSR-303 参数校验错误、路由不存在、方法不支持、超限与媒体类型错误统一转译为标准 `Result<Void>` 契约；
-3. 对携带根因 `cause` 的业务异常保留完整日志调用栈以供排障，对轻量前置校验保持低日志开销；
-4. 业务模块可能存在第三方 SDK 抛出的特定领域异常（如第三方支付通道异常、风控阻断异常），需要对外转译为特定业务状态码，但不宜侵入全局异常处理器核心源码。
-
-### 核心表现与精细化转译机制
-```java
-// 1. 业务逻辑抛出自定义受控异常（无 cause：INFO 日志，轻量响应）
-throw new BusinessException(403, "账户已被封禁");
-// 统一返回 HTTP 200: {"code":403, "msg":"账户已被封禁", "data":null, "success":false, "traceId":"..."}
-
-// 2. 转译底层驱动异常（有 cause：ERROR 日志打印完整堆栈与 traceId，前端安全脱敏）
-try {
-    gatewayClient.invoke();
-} catch (IOException e) {
-    throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "网关代理服务通信异常", e);
-}
-
-// 3. JSR-303 参数校验失败 (@Valid / @NotBlank / @Validated ValidList<T>)
-// 拦截 MethodArgumentNotValidException、HandlerMethodValidationException (Spring 6.1+)、ConstraintViolationException 与 BindException
-// 自动提取首个不合规字段的友好提示: {"code":400, "msg":"手机号格式不正确", "success":false, "traceId":"..."}
-
-// 4. 精细化 Web 传输层异常拦截
-// 413: MaxUploadSizeExceededException -> {"code":413, "msg":"上传文件大小超出限制", "success":false, "traceId":"..."}
-// 415: HttpMediaTypeNotSupportedException -> {"code":415, "msg":"不支持的媒体类型: ...", "success":false, "traceId":"..."}
-// 406: HttpMediaTypeNotAcceptableException -> 直接回写 JSON 契约防次生异常: {"code":406, "msg":"不接受的媒体类型", "success":false, "traceId":"..."}
-// 503: AsyncRequestTimeoutException -> {"code":503, "msg":"异步请求处理超时", "success":false, "traceId":"..."}
-// 400: MissingServletRequestPartException -> {"code":400, "msg":"缺少必要的文件或表单分片: file", "success":false, "traceId":"..."}
-
-// 5. 未知根异常（如 NullPointerException, SQLException）
-// 生产强制脱敏: {"code":500, "msg":"系统繁忙，请稍后再试", "success":false, "traceId":"..."}
-// 真实完整异常堆栈仅打印在后台日志中，并强制携带 traceId 便于快速溯源排查
-```
-
-### 业务领域异常定制 SPI 扩展 (`GlobalExceptionCustomizer`)
-通过实现 `GlobalExceptionCustomizer` 接口并注入 Spring 容器，即可在 `GlobalExceptionHandler` 默认处理链之前挂载自定义转译逻辑。支持通过 `@Order` 控制链式探测顺序：
-```java
-@Component
-@Order(10)
-public class PaymentExceptionCustomizer implements GlobalExceptionCustomizer {
-
-    @Override
-    public Result<?> customize(Throwable throwable) {
-        if (throwable instanceof PaymentChannelException pce) {
-            // 转译为自定义领域状态码 40020
-            return Result.fail(40020, "支付通道异常 [" + pce.getChannelCode() + "]: " + pce.getMessage());
-        }
-        // 返回 null 表示未命中，平滑穿透至下一定制器或默认处理器
-        return null;
-    }
-}
-```
-
----
-
-## 5. Jackson 53 位精度防失真与时间格式化 (`JacksonCustomizer`)
-
-### 场景痛点
-JavaScript 的 `Number` 遵循 IEEE 754 双精度浮点标准，最大安全整数为 $2^{53}-1$（`9007199254740991`）。后端 64 位雪花 ID（如 `104485532445560832`）传输至前端末尾几位会被强制截断归零。
-
-### 解决方案
-- 挂载 `Jackson2ObjectMapperBuilderCustomizer`，在序列化时将 `Long`、`long`、`BigInteger` 自动转换为 `String` 输出；
-- 统一格式化时间类型：`LocalDateTime` (`yyyy-MM-dd HH:mm:ss`)、`LocalDate` (`yyyy-MM-dd`)、`LocalTime` (`HH:mm:ss`)；
-- **坚决不覆盖底座 ObjectMapper Bean**，完美保留 Spring Boot 原生定制链条。
 
 ---
 
@@ -892,219 +1497,6 @@ public class WebVersionV2SampleController {
   - `GET /api/sample/version-user/info` + `X-API-Version: 1` -> 路由至 V1
 - **缺省回退访问**：
   - `GET /api/sample/version-user/info`（不带版本标识） -> 自动回退至默认版本 V1
-
----
-
-## 21. Web 只读枚举字典与 Jackson 强类型双向反序列化
-
-### 场景痛点
-1. **下拉字典割裂**：前端表单下拉选项依赖硬编码或零散接口，重复开发且无法随后端枚举变动而即时同步；
-2. **反射穿透隐患**：传统字典方案往往通过“传类全路径”任意反射枚举，存在严重的安全代码执行漏洞（RCE）与 GC 压力；
-3. **入参反序列化断层**：Controller Request DTO 接收枚举参数时，Jackson 原生默认只认常量名，前端传入数字 code（如 `1`）或数值字符串（如 `"1"`）直接导致反序列化崩溃；
-4. **多语言割裂**：国际化应用中，枚举选项展示文案无法随请求头 `Accept-Language` 动态切换。
-
-### 核心机制与五维生产模型
-- **启动期白名单扫描与 Fail-Fast 阻断**：严格依据 `scan-packages` 白名单扫描，绝不运行时任意类反射；启动期发现同名或别名碰撞立即抛出 `IllegalStateException` 终止应用启动，杜绝线上静默覆盖事故；
-- **只读不可变预热与零 GC 分配**：预编译构建为不可变 Map，运行时提供 $O(1)$ 无锁纯内存检索，零锁争用与零瞬态垃圾对象；
-- **三阶只读 HTTP 端点矩阵**：
-  - 单枚举查询：`GET /api/system/enums/{name}` $\rightarrow$ `Result<List<OptionItem<Object>>>`
-  - 批量聚合查询：`POST /api/system/enums/batch` 或 `GET /api/system/enums/batch?names=userStatus,orderType` $\rightarrow$ `Result<Map<String, List<OptionItem<Object>>>>`，降低前端多请求风暴
-  - 全量目录检索：`GET /api/system/enums` $\rightarrow$ `Result<Map<String, List<OptionItem<Object>>>>`，供前端系统初始化时一次性拉取并持久化至 Pinia / Vuex 全局状态；
-- **Jackson 强类型双向反序列化**：自动装配 `BaseEnumDeserializer`，Controller DTO 可直接声明强类型枚举字段（如 `private UserStatusEnum status;`），前端无论传入数字 `1`、字符串 `"1"` 还是常量名 `"ACTIVE"`（大小写不敏感），均能精准自动映射为枚举实例；
-- **多语言 (i18n) 透明适配与平滑回退**：弱依赖接入 Spring `MessageSource` 与 `LocaleContextHolder`，自动按 `enum.{SimpleName}.{NAME}` 规则提取当前请求区域设置文案；未配置国际化时平滑回退为枚举自带的 `getLabel()`。
-
-### 1:1 端到端样例代码
-
-#### 1. 业务枚举定义 (`UserStatusEnum` & `OrderTypeEnum`)
-```java
-package io.github.atengk.boot.sample.web.enums;
-
-import io.github.atengk.boot.core.annotation.EnumAlias;
-import io.github.atengk.boot.core.enums.IBaseEnum;
-import java.util.Map;
-
-// 1. 实现 IBaseEnum<Integer>，重写 getDisabled 与 getExtra 携带扩展样式
-public enum UserStatusEnum implements IBaseEnum<Integer> {
-    ACTIVE(1, "启用"),
-    DISABLED(2, "禁用") {
-        @Override
-        public Boolean getDisabled() { return true; }
-        @Override
-        public Map<String, Object> getExtra() { return Map.of("color", "red", "reason", "违规停用"); }
-    },
-    LOCKED(3, "锁定");
-
-    private final Integer code;
-    private final String label;
-
-    UserStatusEnum(Integer code, String label) {
-        this.code = code;
-        this.label = label;
-    }
-
-    @Override public Integer getCode() { return code; }
-    @Override public String getLabel() { return label; }
-}
-
-// 2. 显式标注 @EnumAlias 别名覆盖
-@EnumAlias("orderType")
-public enum OrderTypeEnum implements IBaseEnum<String> {
-    NORMAL("normal", "普通订单"),
-    SECKILL("seckill", "秒杀订单"),
-    PROMOTION("promotion", "促销订单");
-
-    private final String code;
-    private final String label;
-
-    OrderTypeEnum(String code, String label) {
-        this.code = code;
-        this.label = label;
-    }
-
-    @Override public String getCode() { return code; }
-    @Override public String getLabel() { return label; }
-}
-```
-
-#### 2. DTO 入参绑定与 Controller 接口
-```java
-package io.github.atengk.boot.sample.web.dto;
-
-import io.github.atengk.boot.core.annotation.InEnum;
-import io.github.atengk.boot.sample.web.enums.OrderTypeEnum;
-import io.github.atengk.boot.sample.web.enums.UserStatusEnum;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
-import java.io.Serializable;
-
-public class WebEnumUserRequest implements Serializable {
-    @NotBlank(message = "用户名不能为空")
-    private String username;
-
-    // 第一道防线：校验原始编码合法性
-    @NotNull(message = "状态编码不能为空")
-    @InEnum(value = UserStatusEnum.class, message = "用户状态编码不合法")
-    private Integer statusCode;
-
-    // Jackson 强类型双向反序列化绑定：前端传 1, "1", "ACTIVE" 均可自动解析
-    private UserStatusEnum status;
-
-    private OrderTypeEnum orderType;
-
-    // getters and setters...
-}
-```
-
-```java
-package io.github.atengk.boot.sample.web.controller;
-
-import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.sample.web.dto.WebEnumUserRequest;
-import io.github.atengk.boot.sample.web.dto.WebEnumUserResponse;
-import jakarta.validation.Valid;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
-@RestController
-@RequestMapping("/api/sample/enum")
-public class WebEnumSampleController {
-
-    @PostMapping("/user")
-    public Result<WebEnumUserResponse> createUser(@Valid @RequestBody WebEnumUserRequest request) {
-        return Result.success(new WebEnumUserResponse(
-                request.getUsername(),
-                request.getStatusCode(),
-                request.getStatus(),
-                request.getOrderType()
-        ));
-    }
-}
-```
-
-#### 3. 真实 HTTP 响应报文验证
-
-##### (1) 查询单枚举字典 (`GET /api/system/enums/userStatus`)
-```json
-{
-  "code": 200,
-  "msg": "操作成功",
-  "data": [
-    {
-      "code": 1,
-      "label": "启用",
-      "disabled": false,
-      "extra": {}
-    },
-    {
-      "code": 2,
-      "label": "禁用",
-      "disabled": true,
-      "extra": {
-        "color": "red",
-        "reason": "违规停用"
-      }
-    },
-    {
-      "code": 3,
-      "label": "锁定",
-      "disabled": false,
-      "extra": {}
-    }
-  ],
-  "success": true,
-  "traceId": "9b1c2d3e4f5a6b7c"
-}
-```
-
-##### (2) 批量聚合字典 (`POST /api/system/enums/batch` 入参 `["userStatus", "orderType"]`)
-```json
-{
-  "code": 200,
-  "msg": "操作成功",
-  "data": {
-    "userStatus": [
-      { "code": 1, "label": "启用", "disabled": false, "extra": {} },
-      { "code": 2, "label": "禁用", "disabled": true, "extra": { "color": "red", "reason": "违规停用" } },
-      { "code": 3, "label": "锁定", "disabled": false, "extra": {} }
-    ],
-    "orderType": [
-      { "code": "normal", "label": "普通订单", "disabled": false, "extra": {} },
-      { "code": "seckill", "label": "秒杀订单", "disabled": false, "extra": {} },
-      { "code": "promotion", "label": "促销订单", "disabled": false, "extra": {} }
-    ]
-  },
-  "success": true,
-  "traceId": "a1b2c3d4e5f60718"
-}
-```
-
-##### (3) Jackson 强类型枚举自动反序列化 (`POST /api/sample/enum/user`)
-入参无论传整型 `1` 还是字符串 `"1"` 亦或常量名 `"ACTIVE"`，后端均能精准映射为强类型枚举：
-```json
-// 请求体
-{
-  "username": "张三",
-  "statusCode": 1,
-  "status": "ACTIVE",
-  "orderType": "normal"
-}
-
-// 响应体 (HTTP 200)
-{
-  "code": 200,
-  "msg": "操作成功",
-  "data": {
-    "username": "张三",
-    "statusCode": 1,
-    "status": "ACTIVE",
-    "orderType": "NORMAL"
-  },
-  "success": true,
-  "traceId": "7ebf8152661ffdafc927a86c0646e1d9"
-}
-```
 
 ---
 

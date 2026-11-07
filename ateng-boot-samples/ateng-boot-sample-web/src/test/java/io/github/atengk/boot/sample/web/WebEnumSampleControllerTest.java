@@ -106,10 +106,10 @@ class WebEnumSampleControllerTest {
     }
 
     @Test
-    @DisplayName("POST /api/sample/enum/user 数字 code 正确反序列化为强类型枚举")
+    @DisplayName("POST /sample/web/contract/enum-bind 数字 code 正确反序列化为强类型枚举")
     void shouldDeserializeNumericCodeIntoEnumField() throws Exception {
         String json = "{\"username\": \"张三\", \"statusCode\": 1, \"status\": 1, \"orderType\": \"normal\"}";
-        mockMvc.perform(post("/api/sample/enum/user")
+        mockMvc.perform(post("/sample/web/contract/enum-bind")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())
@@ -121,10 +121,10 @@ class WebEnumSampleControllerTest {
     }
 
     @Test
-    @DisplayName("POST /api/sample/enum/user 字符串 code 正确反序列化为强类型枚举")
+    @DisplayName("POST /sample/web/contract/enum-bind 字符串 code 正确反序列化为强类型枚举")
     void shouldDeserializeStringCodeIntoEnumField() throws Exception {
         String json = "{\"username\": \"李四\", \"statusCode\": 1, \"status\": \"1\", \"orderType\": \"seckill\"}";
-        mockMvc.perform(post("/api/sample/enum/user")
+        mockMvc.perform(post("/sample/web/contract/enum-bind")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())
@@ -134,10 +134,10 @@ class WebEnumSampleControllerTest {
     }
 
     @Test
-    @DisplayName("POST /api/sample/enum/user 常量名称正确反序列化为强类型枚举")
+    @DisplayName("POST /sample/web/contract/enum-bind 常量名称正确反序列化为强类型枚举")
     void shouldDeserializeConstantNameIntoEnumField() throws Exception {
         String json = "{\"username\": \"王五\", \"statusCode\": 2, \"status\": \"ACTIVE\", \"orderType\": \"PROMOTION\"}";
-        mockMvc.perform(post("/api/sample/enum/user")
+        mockMvc.perform(post("/sample/web/contract/enum-bind")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())
@@ -147,10 +147,10 @@ class WebEnumSampleControllerTest {
     }
 
     @Test
-    @DisplayName("POST /api/sample/enum/user 触发 @InEnum 校验防线拦截非法编码并返回 400 错误")
+    @DisplayName("POST /sample/web/contract/enum-bind 触发 @InEnum 校验防线拦截非法编码并返回 400 错误")
     void shouldFailWhenInEnumValidationFails() throws Exception {
         String json = "{\"username\": \"赵六\", \"statusCode\": 999, \"status\": 1, \"orderType\": \"normal\"}";
-        mockMvc.perform(post("/api/sample/enum/user")
+        mockMvc.perform(post("/sample/web/contract/enum-bind")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())
@@ -159,13 +159,28 @@ class WebEnumSampleControllerTest {
     }
 
     @Test
-    @DisplayName("POST /api/sample/enum/user 传入未知枚举 code 触发 Jackson 反序列化异常拦截")
+    @DisplayName("POST /sample/web/contract/enum-bind 传入未知枚举 code 触发 Jackson 反序列化异常拦截")
     void shouldFailWhenInvalidEnumCodePassedToJackson() throws Exception {
         String json = "{\"username\": \"钱七\", \"statusCode\": 1, \"status\": 999, \"orderType\": \"normal\"}";
-        mockMvc.perform(post("/api/sample/enum/user")
+        mockMvc.perform(post("/sample/web/contract/enum-bind")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", is(400)));
+    }
+
+    @Test
+    @DisplayName("POST /sample/web/contract/enum-bind 新规范路由枚举强类型双向绑定实测")
+    void shouldBindEnumOnNewSampleWebRoute() throws Exception {
+        String json = "{\"username\": \"诸葛孔明\", \"statusCode\": 1, \"status\": \"ACTIVE\", \"orderType\": \"normal\"}";
+        mockMvc.perform(post("/sample/web/contract/enum-bind")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.data.username", is("诸葛孔明")))
+                .andExpect(jsonPath("$.data.statusCode", is(1)))
+                .andExpect(jsonPath("$.data.status", is("ACTIVE")))
+                .andExpect(jsonPath("$.data.orderType", is("NORMAL")));
     }
 }

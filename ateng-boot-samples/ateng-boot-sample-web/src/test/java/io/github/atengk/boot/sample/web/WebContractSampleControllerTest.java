@@ -65,7 +65,7 @@ class WebContractSampleControllerTest {
                 }
                 """;
 
-        MvcResult mvcResult = mockMvc.perform(post("/api/sample/contract/user")
+        MvcResult mvcResult = mockMvc.perform(post("/sample/web/contract/user")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())
@@ -101,7 +101,7 @@ class WebContractSampleControllerTest {
                 }
                 """;
 
-        mockMvc.perform(post("/api/sample/contract/user")
+        mockMvc.perform(post("/sample/web/contract/user")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(invalidJson))
                 .andExpect(status().isOk())
@@ -132,7 +132,7 @@ class WebContractSampleControllerTest {
                 ]
                 """;
 
-        mockMvc.perform(post("/api/sample/contract/users/batch")
+        mockMvc.perform(post("/sample/web/contract/users/batch")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(batchJson))
                 .andExpect(status().isOk())
@@ -161,7 +161,7 @@ class WebContractSampleControllerTest {
                 ]
                 """;
 
-        mockMvc.perform(post("/api/sample/contract/users/batch")
+        mockMvc.perform(post("/sample/web/contract/users/batch")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(batchJson))
                 .andExpect(status().isOk())
@@ -182,7 +182,7 @@ class WebContractSampleControllerTest {
                 }
                 """;
 
-        mockMvc.perform(put("/api/sample/contract/user")
+        mockMvc.perform(put("/sample/web/contract/user")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(updateJsonWithoutId))
                 .andExpect(status().isOk())
@@ -200,7 +200,7 @@ class WebContractSampleControllerTest {
                 }
                 """;
 
-        mockMvc.perform(put("/api/sample/contract/user")
+        mockMvc.perform(put("/sample/web/contract/user")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(updateJsonWithId))
                 .andExpect(status().isOk())
@@ -211,7 +211,7 @@ class WebContractSampleControllerTest {
     @Test
     @DisplayName("6. 精度与时间规范：超大 Long 转为 String 防失真，标准日期时间 yyyy-MM-dd HH:mm:ss 格式化")
     void shouldSerializeLargeLongAsStringAndFormatDateTime() throws Exception {
-        MvcResult result = mockMvc.perform(get("/api/sample/contract/datetime"))
+        MvcResult result = mockMvc.perform(get("/sample/web/contract/datetime"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.dateTime").value("2026-10-19 14:30:00"))
@@ -227,7 +227,7 @@ class WebContractSampleControllerTest {
     @Test
     @DisplayName("7. 业务异常转译：受控 BusinessException 映射为语义化 HTTP 200 业务错误")
     void shouldTranslateBusinessException() throws Exception {
-        mockMvc.perform(get("/api/sample/contract/error/business"))
+        mockMvc.perform(get("/sample/web/contract/error/business"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.success").value(false))
@@ -238,7 +238,7 @@ class WebContractSampleControllerTest {
     @Test
     @DisplayName("8. 因果异常转译：带有 cause 根因的 BusinessException 保留因果调用栈并在前端安全呈现")
     void shouldTranslateCausalBusinessException() throws Exception {
-        mockMvc.perform(get("/api/sample/contract/error/causal"))
+        mockMvc.perform(get("/sample/web/contract/error/causal"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(500))
                 .andExpect(jsonPath("$.success").value(false))
@@ -249,7 +249,7 @@ class WebContractSampleControllerTest {
     @Test
     @DisplayName("9. 生产脱敏防线：未知根异常统一脱敏为友好文案，严禁泄露内部堆栈，traceId 闭环溯源")
     void shouldMaskUnexpectedExceptionInProduction() throws Exception {
-        mockMvc.perform(get("/api/sample/contract/error/unexpected"))
+        mockMvc.perform(get("/sample/web/contract/error/unexpected"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(500))
                 .andExpect(jsonPath("$.success").value(false))
@@ -267,5 +267,17 @@ class WebContractSampleControllerTest {
         assertThatThrownBy(failResult::getOrThrow)
                 .isInstanceOf(BusinessException.class)
                 .hasMessage("无权限访问");
+    }
+
+    @Test
+    @DisplayName("11. 新规范路由端到端契约验证：GET /sample/web/contract/unpack 会员契约解包")
+    void shouldReturnMemberContractOnNewSampleWebRoute() throws Exception {
+        mockMvc.perform(get("/sample/web/contract/unpack"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("X-Trace-Id"))
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.data.contractVersion").value("2026.1"))
+                .andExpect(jsonPath("$.data.verified").value(true));
     }
 }
