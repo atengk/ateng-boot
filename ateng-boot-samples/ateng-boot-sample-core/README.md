@@ -72,7 +72,13 @@
 | **大批量切片流转与有界租户配额缓存** | `POST /sample/core/data/batch-and-cache` | `BatchSliceUtil`<br>`CollectionUtil`<br>`MoreCollectors`<br>`ConcurrentLruCache`<br>`JsonUtil.deepClone` | `curl -X POST "http://localhost:8080/sample/core/data/batch-and-cache" -H "Content-Type: application/json" -d '{"orderCodes":["ORD-001","ORD-002","ORD-003","ORD-004","ORD-005","ORD-006","ORD-007"],"sliceSize":3,"tenantId":"tenant-vip-001","tenantName":"VIP电商租户","quotaLimit":1000}'` |
 | **安全受限 SpEL 沙箱与高频算法原语** | `POST /sample/core/data/spel-and-primitives` | `SpelUtil`<br>`BeanUtil`<br>`LambdaUtil`<br>`DateTimeUtil`<br>`ConvertUtil`<br>`StringUtil`<br>`RandomUtil` | `curl -X POST "http://localhost:8080/sample/core/data/spel-and-primitives" -H "Content-Type: application/json" -d '{"expression":"#user.name + \"-\" + #user.status","simulateMaliciousSpel":true,"user":{"id":10086,"name":"诸葛孔明","status":1},"patchUser":{"name":"诸葛亮"},"rawString":"order_delivery_address","rawNumberStr":"1234567890123","baseDate":"2026-11-06"}'` |
 
-> 注：第 6 个领域 Controller（系统环境基线与审计契约）将随后续工单 [#770](https://github.com/atengk/ateng-boot/issues/770) 交付收官并补充对应 cURL。
+### 3.6 系统运行环境基线、慢方法治理与运维审计诊断领域 (`CoreSystemAndAuditController` -> `/sample/core/system`)
+
+| 功能场景 | 请求方式与路径 | 核心门面 / 注解 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **系统环境基线防卫与网络探测** | `GET /sample/core/system/baseline-and-net` | `SystemEnvironmentPostProcessor`<br>`NetUtil`<br>`CidrMatcher`<br>`SpringUtil` | `curl "http://localhost:8080/sample/core/system/baseline-and-net?clientIp=192.168.1.188:8443&cidrPattern=192.168.1.0/24"` |
+| **慢方法告警与受管安全文件治理** | `POST /sample/core/system/slow-alert-and-file` | `@SlowAlert`<br>`StopWatch`<br>`FileUtil`<br>`readNBytesSafe` | `curl -X POST "http://localhost:8080/sample/core/system/slow-alert-and-file" -H "Content-Type: application/json" -d '{"taskId":"bench-task-999","secretToken":"secretToken-ABC-123456","filename":"../../malicious/path/export-audit.txt","content":"Ateng-Boot 2026 Core Baseline Audit File Content","maxReadBytes":512}'` |
+| **结构化操作/SQL 审计与异常诊断** | `POST /sample/core/system/audit-and-diagnose` | `OperateLogModel`<br>`OperateLogEvent`<br>`SqlLogModel`<br>`SqlTypeEnum`<br>`ExceptionUtil` | `curl -X POST "http://localhost:8080/sample/core/system/audit-and-diagnose" -H "Content-Type: application/json" -d '{"module":"系统基线管理","operateType":"INSERT","description":"新增系统参数配置","sql":"INSERT INTO sys_config (config_key, config_value) VALUES (\x27sys.timeout\x27, \x2730s\x27)","errorMessage":"底层数据库连接池耗尽拒绝连接"}'` |
 
 ---
 

@@ -25,21 +25,21 @@
 | **敏感数据脱敏** | 15 大类敏感信息动态掩码与内存真明文防护 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.mobilePhone(str)`, `idCard(str)`, `unifiedCreditCode(str)`, `secretKey(str)`, `passport(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **退避指数重试** | 纯原生轻量无第三方重试工具 | `RetryUtil` | - | `execute(supplier, config, fallback)`, `executeAction(runnable, config, fallback)`，支持 Equal Jitter 平滑随机抖动、onRetry 监听器、指数退避与 Fallback 降级兜底 | `RetryUtilTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
 | **加解密与十六进制** | 原生安全加解密、摘要算法与 Hex 编解码 | `CryptoUtil`, `DigestUtil`, `HexUtil` | - | `CryptoUtil.encryptGcm/decryptGcm`, `encryptCbc/decryptCbc`, `DigestUtil.sha256Hex`, `md5Hex`, `HexUtil.encodeHex(bytes)`, `HexUtil.decodeHex(hexStr)` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `HexUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
-| **安全文件与流处理** | 路径穿越防御、安全有界读取与临时文件 | `FileUtil` | - | `FileUtil.cleanFilename(name)`（防御 `../` 路径穿越）, `cleanPath(path)`, `getExtName(name)`, `formatSize(bytes)`, `readNBytesSafe(stream, maxBytes)` (防 OOM 安全有界读取与边界防溢出), `createTempFile(prefix, suffix)`, `createTempFile(dir, prefix, suffix)` | `FileUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **安全文件与流处理** | 路径穿越防御、安全有界读取与临时文件 | `FileUtil` | - | `FileUtil.cleanFilename(name)`（防御 `../` 路径穿越）, `cleanPath(path)`, `getExtName(name)`, `formatSize(bytes)`, `readNBytesSafe(stream, maxBytes)` (防 OOM 安全有界读取与边界防溢出), `createTempFile(prefix, suffix)`, `createTempFile(dir, prefix, suffix)` | `FileUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **集合切片与大批量安全流转** | 零内存拷贝分批切片、函数式去重与大批量流转原语 | `CollectionUtil`, `BatchSliceUtil`, `MoreCollectors` | - | `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转）, `BatchSliceUtil.slice(list, sliceSize)`, `BatchSliceUtil.forEachSlice(list, sliceSize, consumer)`, `CollectionUtil.distinctByKey(keyExtractor)`, `MoreCollectors.toSafeMap(...)`, `MoreCollectors.toDistinctList(...)` | `CollectionUtilTest.java`, `BatchSliceUtilTest.java`, `MoreCollectorsTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **树形森林装配与析取** | O(N) 线性组装、递归剪枝、展平与路径探寻 | `TreeUtil` | - | `TreeUtil.build(...)`, `buildForest(...)`, `filter(...)`, `flatten(roots, childrenGetter)` / `flattenTree(...)` (先序深度优先展平), `findPath(...)` (面包屑导航路径), `getLeafNodes(...)` (提取所有叶子终端节点) | `TreeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **类型安全引用** | SerializedLambda 强类型字段推导 | `LambdaUtil`, `PropertyFunc` | - | `LambdaUtil.getFieldName(func)`（解析 `User::getName` -> `"name"`，带本地并发缓存）, `LambdaUtil.resolve(func)` | `LambdaUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **标准日期与工作日** | 标准日期常量、无损互转与工作日推演 | `DatePattern`, `DateTimeUtil` | - | `DateTimeUtil.toLocalDateTime(date)`, `toDate(ldt)`, `toEpochMilli(ldt)`, `beginOfDay(ldt)`, `endOfDay(ldt)`, `betweenDays(...)`, `isWorkday(date)`, `plusWorkdays(date, workdays)`, `betweenWorkdays(start, end)` | `DatePatternTest.java`, `DateTimeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **高性能随机件** | 无锁安全随机与列表抽样洗牌 | `RandomUtil` | - | `RandomUtil.randomNumbers(len)`, `randomString(len)`, `randomInt(min, max)`, `randomEle(list)`, `randomEles(list, count)`, `shuffle(list)`, `shuffleNew(list)` | `RandomUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
-| **通用辅助原语** | 对象属性安全拷贝、不可变元组与 Spring 容器门面 | `BeanUtil`, `Pair`, `Triple`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copy(...)`, `copyList(...)`, `BeanUtil.copyIgnoreNull(source, target)`, `Pair.of(...)`, `Triple.of(...)`, `SpringUtil.getBean(...)`, `containsBean(...)`, `isDev/isProd/isTest()`, `getServerPort()` | `BeanUtilTest.java`, `PairTripleTest.java`, `SpringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
+| **通用辅助原语** | 对象属性安全拷贝、不可变元组与 Spring 容器门面 | `BeanUtil`, `Pair`, `Triple`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copy(...)`, `copyList(...)`, `BeanUtil.copyIgnoreNull(source, target)`, `Pair.of(...)`, `Triple.of(...)`, `SpringUtil.getBean(...)`, `containsBean(...)`, `isDev/isProd/isTest()`, `getServerPort()` | `BeanUtilTest.java`, `PairTripleTest.java`, `SpringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **事务同步门面与状态枚举** | 事务生命周期门面、上下文穿透与事务状态枚举 | `TransactionUtil`, `TransactionCompletionStatus` | - | `executeAfterCommit(task)`, `executeAfterRollback(task)`, `executeAfterCommitAsync(task)`, `publishAfterCommit(event)`, `isActualTransactionActive()`, `isSynchronizationActive()`, `TransactionCompletionStatus.COMMITTED/ROLLED_BACK/UNKNOWN` | `TransactionUtilTest.java`, `CoreContextScenarioServiceTest.java`, `CoreAsyncAndContextControllerTest.java` |
-| **操作审计契约与事件发布** | 操作日志模型、操作动作枚举与解耦事件 | `OperateLogModel`, `OperateTypeEnum`, `OperateLogEvent` | - | `OperateLogModel.builder()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)`, `new OperateLogEvent(source, model)` 异步事件解耦发布 | `OperateLogModelTest.java`, `CoreResilienceScenarioServiceTest.java` |
-| **持久层无侵入 SQL 审计** | SQL 审计结构体与语法类型判定 | `SqlLogModel`, `SqlTypeEnum` | - | `SqlLogModel.builder()`, `model.getSql()`, `model.getExecutionTimeMs()`, `SqlTypeEnum.fromSql(sql)` 识别 SELECT/INSERT/UPDATE/DELETE/DDL | `SqlLogModelTest.java`, `SqlTypeEnumTest.java` |
+| **操作审计契约与事件发布** | 操作日志模型、操作动作枚举与解耦事件 | `OperateLogModel`, `OperateTypeEnum`, `OperateLogEvent` | - | `OperateLogModel.builder()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)`, `new OperateLogEvent(source, model)` 异步事件解耦发布 | `OperateLogModelTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
+| **持久层无侵入 SQL 审计** | SQL 审计结构体与语法类型判定 | `SqlLogModel`, `SqlTypeEnum` | - | `SqlLogModel.builder()`, `model.getSql()`, `model.getExecutionTimeMs()`, `SqlTypeEnum.fromSql(sql)` 识别 SELECT/INSERT/UPDATE/DELETE/DDL | `SqlLogModelTest.java`, `SqlTypeEnumTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **进程内滑动窗口流控** | 高性能单机内存滑动窗口限流器 | `SlidingWindowCounter` | - | `SlidingWindowCounter(duration, sliceCount)`, `incrementAndGet(delta)`, `tryAcquire(delta, threshold)`, `getCount()`, `reset()` (基于环形时间切片，零外部中间件平滑限流与防刷) | `SlidingWindowCounterTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
-| **纳秒级任务秒表** | 阶梯多任务秒表与函数剖析门面 | `StopWatch` | - | `new StopWatch(id)`, `start(taskName)`, `stop()`, `getTotalTimeMillis()`, `prettyPrint()`, `measureMillis(runnable)`, `measure(supplier)` | `StopWatchTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **网络通信地址与网段匹配** | 内核路由嗅探、CIDR 网段匹配与虚拟网卡过滤 | `NetUtil`, `CidrMatcher`, `NetProperties` | `ateng.boot.core.net.preferred-ip`, `ateng.boot.core.net.preferred-networks`, `ateng.boot.core.net.ignored-interfaces` | `NetUtil.getLocalIpv4()` 智能解析最佳内网 IP（五级决策链）, `isPortAvailable(port)`, `findAvailablePort(min, max)`; `new CidrMatcher(patterns).matches(ip)`, `CidrMatcher.matches(ip, cidr)`, `stripPort(rawIp)` | `NetUtilTest.java`, `CidrMatcherTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreSystemScenarioServiceTest.java` |
+| **纳秒级任务秒表** | 阶梯多任务秒表与函数剖析门面 | `StopWatch` | - | `new StopWatch(id)`, `start(taskName)`, `stop()`, `getTotalTimeMillis()`, `prettyPrint()`, `measureMillis(runnable)`, `measure(supplier)` | `StopWatchTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
+| **网络通信地址与网段匹配** | 内核路由嗅探、CIDR 网段匹配与虚拟网卡过滤 | `NetUtil`, `CidrMatcher`, `NetProperties` | `ateng.boot.core.net.preferred-ip`, `ateng.boot.core.net.preferred-networks`, `ateng.boot.core.net.ignored-interfaces` | `NetUtil.getLocalIpv4()` 智能解析最佳内网 IP（五级决策链）, `isPortAvailable(port)`, `findAvailablePort(min, max)`; `new CidrMatcher(patterns).matches(ip)`, `CidrMatcher.matches(ip, cidr)`, `stripPort(rawIp)` | `NetUtilTest.java`, `CidrMatcherTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **安全类型转换** | 纯原生强类型安全转换与保底默认值 | `ConvertUtil` | - | `ConvertUtil.toLong(obj, defaultVal)`, `toInt(obj, defaultVal)`, `toBoolean(obj, defaultVal)`, `toBigDecimal(obj, defaultVal)`, `toList(obj)` / `toList(obj, type)` (彻底杜绝 NPE 与 ClassCastException) | `ConvertUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
-| **异常分析与堆栈截断** | 因果链深度分析与有界堆栈序列化 | `ExceptionUtil` | - | `ExceptionUtil.getRootCause(throwable)` (内置循环依赖防护), `getMessage(throwable)`, `stackTraceToString(throwable, maxLen)` (防日志/数据库撑爆优雅截断) | `ExceptionUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **异常分析与堆栈截断** | 因果链深度分析与有界堆栈序列化 | `ExceptionUtil` | - | `ExceptionUtil.getRootCause(throwable)` (内置循环依赖防护), `getMessage(throwable)`, `stackTraceToString(throwable, maxLen)` (防日志/数据库撑爆优雅截断) | `ExceptionUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **通用字符串算法** | 高性能占位符替换、驼峰下划线互转与安全截断 | `StringUtil` | - | `StringUtil.format(template, args)`, `toCamelCase(str)`, `toUnderlineCase(str)`, `containsAny(...)`, `containsIgnoreCase(...)`, `truncate(...)`, `mask(...)` | `StringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **跨中间件消息传播契约与载荷序列化 SPI** | 消息头标准常量、四维透传、序列化 SPI、毒丸判定与异常 | `MessageHeaderConstants`, `MessageContextPropagator`, `MessagePayloadSerializer`, `FatalExceptionClassifier`, `MessageDeliveryException` | - | `MessageHeaderConstants.TRACE_ID`, `TENANT_ID`, `USER_ID`, `TIMESTAMP`; `MessageContextPropagator.inject(...)`, `extractAndSet(...)`; SPI `MessagePayloadSerializer.serialize/deserialize`; `FatalExceptionClassifier.isFatal(ex)` | `MessageContextPropagatorTest.java`, `FatalExceptionClassifierTest.java`, `MessageDeliveryExceptionTest.java`, `CoreAsyncAndContextControllerTest.java` |
 | **纯原生有界 LRU 缓存** | 纯原生有界 LRU 缓存原语与底层防 OOM 加固 | `ConcurrentLruCache<K, V>` | - | `ConcurrentLruCache(maxCapacity, ttl)`, `get(key)`, `put(key, val)`, `computeIfAbsent(key, mappingFunc)`, `remove(key)`, `clear()`, `size()`, `containsKey(key)`, `cleanUp()` | `ConcurrentLruCacheTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
@@ -49,11 +49,11 @@
 | **数据传输与硬件校验和** | 纯原生数据传输与硬件报文校验和计算 | `ChecksumUtil` | - | `ChecksumUtil.crc32(data)`, `crc32Hex(data)`, `crc32c(data)`, `crc32cHex(data)`, `adler32(data)`, `adler32Hex(data)`, `verifyCrc32`, `verifyCrc32c`, `verifyAdler32`，支持 `InputStream` 流式计算 | `ChecksumUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **单机流量整形与限流** | 纯无锁 CAS 纳秒级平滑令牌桶限流器 | `TokenBucketLimiter` | - | `new TokenBucketLimiter(capacity, refillRatePerSecond)`, `tryAcquire()`, `tryAcquire(permits)`, `tryAcquire(permits, timeout)`, `acquire()`, `acquire(permits)`, `getAvailableTokens()` | `TokenBucketLimiterTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
 | **核心配置外置化与发号器装配** | Core 配置属性绑定与受管雪花发号器自动装配 | `CoreProperties`, `SnowflakeProperties`, `CacheProperties`, `AtengCoreAutoConfiguration`, `Snowflake` | `ateng.boot.core.clock-backoff-tolerance`, `ateng.boot.core.cache-ttl`, `ateng.boot.core.snowflake.enabled`, `worker-id`, `datacenter-id`, `epoch`, `clock-backoff-tolerance`, `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | 自动装配 `@Bean Snowflake`，优雅自适应网卡/IP推导；时钟回拨熔断转译为 `BusinessException(INTERNAL_SERVER_ERROR)` | `AtengCoreAutoConfigurationTest.java`, `SnowflakeTest.java`, `CoreSecurityControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
-| **系统环境基线防卫** | 启动前置校准时区、编码、Headless 与底层网络防死锁超时 | `SystemEnvironmentPostProcessor`, `SystemProperties` | `ateng.boot.core.system.enabled`, `timezone`, `timezone-guard-enabled`, `shutdown-uptime-enabled` | 容器与应用启动前置校准 JVM 默认时区 (`Asia/Shanghai`)、UTF-8 字符集与 Headless，强制注入底层 Socket 默认连接与读取超时 (`10000ms`)，彻底防御网络无限挂死 | `SystemEnvironmentPostProcessorTest.java`, `CoreSystemScenarioServiceTest.java` |
-| **零 XML 工业级日志引擎** | 零 XML 模式高亮彩色控制台、traceId 注入与双文件异步切片落盘 | `LoggingEnvironmentPostProcessor`, `LoggingProperties` | `ateng.boot.core.logging.enabled`, `console.enabled`, `file.enabled`, `file.path`, `file.max-file-size`, `file.max-history`, `file.total-size-cap`, `file.split-error`, `file.clean-history-on-start` | 零 XML 自动注入控制台彩色高亮与 MDC `traceId` 追踪格式；支持纯配置开启磁盘双文件落盘 (`app.log` / `app-error.log`)、大小时间滚动切片与启动自清理 | `LoggingEnvironmentPostProcessorTest.java`, `CoreSystemScenarioServiceTest.java` |
-| **方法级慢调用主动告警** | 声明式慢方法执行耗时毫秒级监控与安全参数快照 | `@SlowAlert`, `SlowAlertAspect`, `SlowAlertProperties` | `ateng.boot.core.slow-alert.enabled`, `default-threshold`, `include-args`, `max-args-length` | `@SlowAlert(threshold = 30, includeArgs = true)` 监控业务方法执行耗时，超阈值输出 `[SLOW_METHOD]` WARN 告警，自动快照入参、1KB 截断防爆并安全脱敏 | `SlowAlertAspectTest.java`, `CoreSystemScenarioServiceTest.java` |
+| **系统环境基线防卫** | 启动前置校准时区、编码、Headless 与底层网络防死锁超时 | `SystemEnvironmentPostProcessor`, `SystemProperties` | `ateng.boot.core.system.enabled`, `timezone`, `timezone-guard-enabled`, `shutdown-uptime-enabled` | 容器与应用启动前置校准 JVM 默认时区 (`Asia/Shanghai`)、UTF-8 字符集与 Headless，强制注入底层 Socket 默认连接与读取超时 (`10000ms`)，彻底防御网络无限挂死 | `SystemEnvironmentPostProcessorTest.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
+| **零 XML 工业级日志引擎** | 零 XML 模式高亮彩色控制台、traceId 注入与双文件异步切片落盘 | `LoggingEnvironmentPostProcessor`, `LoggingProperties` | `ateng.boot.core.logging.enabled`, `console.enabled`, `file.enabled`, `file.path`, `file.max-file-size`, `file.max-history`, `file.total-size-cap`, `file.split-error`, `file.clean-history-on-start` | 零 XML 自动注入控制台彩色高亮与 MDC `traceId` 追踪格式；支持纯配置开启磁盘双文件落盘 (`app.log` / `app-error.log`)、大小时间滚动切片与启动自清理 | `LoggingEnvironmentPostProcessorTest.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
+| **方法级慢调用主动告警** | 声明式慢方法执行耗时毫秒级监控与安全参数快照 | `@SlowAlert`, `SlowAlertAspect`, `SlowAlertProperties` | `ateng.boot.core.slow-alert.enabled`, `default-threshold`, `include-args`, `max-args-length` | `@SlowAlert(threshold = 30, includeArgs = true)` 监控业务方法执行耗时，超阈值输出 `[SLOW_METHOD]` WARN 告警，自动快照入参、1KB 截断防爆并安全脱敏 | `SlowAlertAspectTest.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **慢 Bean 初始化耗时诊断** | Spring 容器启动期慢 Bean 耗时精准诊断定位 | `SlowBeanDiagnosticPostProcessor` | `ateng.boot.core.system.slow-bean-threshold` | 监听 Spring 容器内部所有 Bean 初始化耗时，超出阈值（默认 500ms）主动输出 `[SLOW_BEAN]` 告警并定位目标类与耗时，辅助冷启动性能分析调优 | `SlowBeanDiagnosticPostProcessorTest.java` |
-| **受管临时目录与生命周期治理** | 应用专属隔离临时目录、安全递归清理与关机存活时长摘要 | `FileUtil`, `AppTempDirCleanupListener`, `AppShutdownListener` | `ateng.boot.core.system.shutdown-uptime-enabled` | `FileUtil.getAppTempDirectory(appName)` 生成受管隔离临时目录，`cleanDirectorySafely(dir)` 递归安全清理，JVM 关闭钩子自动清理临时目录并输出优雅关机 Uptime 摘要 | `FileUtilTest.java`, `AppTempDirCleanupListenerTest.java`, `AppShutdownListenerTest.java`, `CoreSystemScenarioServiceTest.java` |
+| **受管临时目录与生命周期治理** | 应用专属隔离临时目录、安全递归清理与关机存活时长摘要 | `FileUtil`, `AppTempDirCleanupListener`, `AppShutdownListener` | `ateng.boot.core.system.shutdown-uptime-enabled` | `FileUtil.getAppTempDirectory(appName)` 生成受管隔离临时目录，`cleanDirectorySafely(dir)` 递归安全清理，JVM 关闭钩子自动清理临时目录并输出优雅关机 Uptime 摘要 | `FileUtilTest.java`, `AppTempDirCleanupListenerTest.java`, `AppShutdownListenerTest.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
 
 ---
 
@@ -2365,37 +2365,99 @@ public class UserCreateRequest {
 ## 8. 系统基线防卫、零 XML 工业级日志引擎与运行时诊断
 
 ### 场景痛点
-1. **环境差异与时区漂移**：Docker 容器默认运行在 UTC 时区，或宿主机环境编码并非 UTF-8，导致持久化时间偏移 8 小时或乱码；
-2. **网络无界挂死**：JDK 默认的 `sun.net.client.defaultConnectTimeout` 与 `defaultReadTimeout` 为 `-1`（无限等待），当下游网络抖动时导致工作线程全部悬挂在原生 Socket 读写上引发线程耗尽与雪崩；
-3. **日志 XML 维护灾难**：各微服务到处拷贝一份上百行的 `logback-spring.xml`，格式混乱且缺乏 MDC `traceId` 注入与大小/时间双维度压缩切片策略；
-4. **性能黑盒与慢调用**：线上偶发核心业务变慢缺乏轻量的方法级监控手段；大型微服务启动慢，排查具体是哪个 Bean 初始化耗时过长如同盲盒；
-5. **临时文件失控堆积**：报表流式导出或文件上传产生的临时文件散落在宿主机各处，长期运行导致磁盘被挤爆。
+1. **环境差异与时区漂移**：Docker 容器默认运行在 UTC 时区，或宿主机环境编码并非 UTF-8，导致持久化时间偏移 8 小时或中文乱码；
+2. **网络无界挂死与网卡干扰**：JDK 默认网络连接与读取超时为 `-1`（无限等待），当下游网络抖动时导致工作线程全部悬挂在原生 Socket 读写上引发线程耗尽与雪崩；多网卡与云原生容器环境下宿主机物理 IP 常被 VMware/VirtualBox/Docker 等虚拟网卡误判劫持；
+3. **日志 XML 维护灾难**：各微服务到处拷贝冗长脆弱的 `logback-spring.xml`，格式混乱且缺乏全链路 MDC `traceId` 注入与大小/时间双维度压缩切片分流策略；
+4. **性能黑盒与慢调用**：线上核心业务偶发波动缺乏轻量方法级监控；Spring 容器冷启动缓慢，排查拖慢启动的底层 Bean 如同开盲盒；
+5. **临时文件失控堆积与路径穿越风险**：报表流式导出或文件上传产生的临时文件散落各处，缺乏隔离命名与自动清理机制导致磁盘被撑爆，且未防范 `../` 路径穿越攻击；
+6. **运维审计契约割裂与深层异常根因丢失**：各业务自行拼装 Map 审计，缺乏标准化 18 项全要素元数据契约与事件总线解耦；深层因果链在多层框架异常包装下丢失真实 Root Cause，且未经截断的堆栈撑爆日志库。
 
 ---
 
-### 8.1 系统运行环境基线防卫 (`SystemEnvironmentPostProcessor` & `NetUtil`)
+### 8.1 系统运行环境基线防卫与网络探测 (`SystemEnvironmentPostProcessor`, `NetUtil` & `CidrMatcher`)
 
-在 Spring Boot 容器与日志系统初始化前，`SystemEnvironmentPostProcessor`（通过 `EnvironmentPostProcessor` 标准规范自动触发）自动执行四重系统安全基线防卫：
+代码锚定样例：[`CoreSystemAndAuditController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSystemAndAuditController.java)、[`CoreSystemAndAuditControllerTest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/test/java/io/github/atengk/boot/sample/core/CoreSystemAndAuditControllerTest.java)
+
+#### 核心机制与特性
+在 Spring Boot 容器与日志系统初始化前，`SystemEnvironmentPostProcessor`（通过 `EnvironmentPostProcessor` 标准规范自动触发）自动执行系统安全基线防卫：
 1. **时区一致性校准**：将当前 JVM 默认时区校准为 `Asia/Shanghai`（可通过 `ateng.boot.core.system.timezone` 灵活定制），彻底消除 UTC 时区漂移；
 2. **字符集防卫**：前置校验 `file.encoding`，优先确保 UTF-8 运行环境；
 3. **Headless 无头模式**：强制设置 `java.awt.headless=true`，防御缺少图形环境的云原生容器环境因绘图崩溃；
 4. **网络通信防挂死超时**：前置设置 `sun.net.client.defaultConnectTimeout=10000` 与 `sun.net.client.defaultReadTimeout=10000`（10 秒默认超时），彻底杜绝原生网络调用无界悬挂；
-5. **强化物理网卡 IPv4 探测 (`NetUtil.getLocalIpv4()`)**：主动过滤回环、虚拟（如 `vEthernet`、`docker0`、`flannel`、`cni0`、`wsl`、`vmnet`、`virtualbox`）及下线网卡，精准提取宿主机第一张真实可用的物理网卡 IPv4 地址，杜绝微服务注册中心与欢迎卡片展示虚拟网段 IP。
+5. **五级物理网卡 IPv4 决策链 (`NetUtil.getLocalIpv4()`)**：主动过滤回环、虚拟网卡（如 `vEthernet`、`docker0`、`flannel`、`cni0`、`wsl`、`vmnet`、`virtualbox`）及下线网卡，结合 UDP Socket Dummy Probe 嗅探系统默认出口物理 IP；
+6. **纯 JDK 17 原生 CIDR 子网与白名单匹配 (`CidrMatcher`)**：依托位运算实现零外部依赖的 IPv4（如 `192.168.1.0/24`）与 IPv6（如 `fe80::/10`）CIDR 掩码匹配，0 DNS 解析开销，并提供反代端口安全剥离清洗 (`CidrMatcher.stripPort`)。
 
-#### 核心使用范式
+#### 就近专属 YAML 配置 (系统环境与网络通信)
+```yaml
+ateng:
+  boot:
+    core:
+      # 系统运行环境基线防卫配置 (SystemProperties)
+      system:
+        # 是否启用系统环境防卫总开关（默认 true，为 false 时彻底熔断所有系统级干预）
+        enabled: true
+        # 默认校准时区标识（默认 Asia/Shanghai，支持 UTC 等合法 ZoneId）
+        timezone: "Asia/Shanghai"
+        # 是否开启时区、UTF-8 字符集与 JVM 底层网络超时防卫（默认 true）
+        timezone-guard-enabled: true
+        # 慢 Bean 初始化耗时诊断阈值（强类型 Duration，默认 500ms；设为 0 或 null 禁用）
+        slow-bean-threshold: 500ms
+        # 应用关闭时是否输出存活 Uptime 摘要（默认 true）
+        shutdown-uptime-enabled: true
+
+      # 网络通信与网卡探测配置 (NetProperties)
+      net:
+        # 首选固定 IP（逃生舱模式，非空时最高优先级直接采用）
+        preferred-ip: ""
+        # 首选网段列表（支持通配符如 192.168.3.* 或 CIDR 格式如 192.168.3.0/24）
+        preferred-networks:
+          - "192.168.3.*"
+        # 自定义排除网卡名称列表（支持通配符如 VirtualBox.* 或正则，同时匹配逻辑名与显示名）
+        ignored-interfaces:
+          - "VirtualBox.*"
+          - "Sangfor.*"
+```
+
+#### 核心代码范式
 ```java
-// 1. 获取精准物理网卡 IPv4 地址（优先提取真实物理网卡）
-String localIpv4 = NetUtil.getLocalIpv4();
+import io.github.atengk.boot.core.util.CidrMatcher;
+import io.github.atengk.boot.core.util.NetUtil;
+import io.github.atengk.boot.core.util.SpringUtil;
 
-// 2. 获取当前系统基线运行状态
+import java.time.ZoneId;
+
+// 1. 获取精准物理网卡 IPv4 地址（五级决策链智能绕过 VMware/VirtualBox/VPN 虚拟网卡）
+String physicalIpv4 = NetUtil.getLocalIpv4(); // 如 "192.168.3.41"
+
+// 2. 动态探测并分配当前宿主机可用端口（区间 28000~29000）
+int freePort = NetUtil.findAvailablePort(28000, 29000);
+
+// 3. 反向代理客户端 IP 端口剥离清洗（兼容 IPv4:port 与 [IPv6]:port 格式）
+String cleanedIpv4 = CidrMatcher.stripPort("192.168.1.188:8443"); // "192.168.1.188"
+String cleanedIpv6 = CidrMatcher.stripPort("[fe80::1]:8080");       // "fe80::1"
+
+// 4. CIDR 子网掩码与白名单匹配判定（0 DNS 解析，高性能纯位运算）
+boolean isInternal = CidrMatcher.matches("192.168.1.188", "192.168.1.0/24"); // true
+boolean isIpv6Match = CidrMatcher.matches("fe80::1", "fe80::/10");           // true
+
+// 5. 校验运行基线环境状态
 ZoneId zoneId = ZoneId.systemDefault(); // Asia/Shanghai
 String connectTimeout = System.getProperty("sun.net.client.defaultConnectTimeout"); // 10000
+String activeProfile = SpringUtil.getActiveProfile(); // "default"
 ```
+
+#### 核心生产边界与非功能语义
+- **0 DNS 解析安全防卫**：`CidrMatcher` 严格执行数值点分十进制与冒号十六进制前置格式校验，遇到非法字符串立即快速失败返回 `false`，坚决杜绝因错误入参触发底层网络 DNS 解析导致请求线程挂起；
+- **UDP Socket Dummy Probe 机制**：`NetUtil` 路由嗅探仅借由内核路由表确定最佳出口网卡，不产生任何真实网络 I/O 报文，耗时低于 1 微秒；
+- **逃生舱最高优先级**：在多虚拟网卡或复杂云混合网络环境下，若自动嗅探受阻，可通过 `ateng.boot.core.net.preferred-ip` 显式硬编码指定内网 IP。
 
 ---
 
 ### 8.2 零 XML 工业级日志引擎 (`LoggingEnvironmentPostProcessor`)
 
+代码锚定样例：[`CoreSystemScenarioServiceTest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/test/java/io/github/atengk/boot/sample/core/CoreSystemScenarioServiceTest.java)
+
+#### 核心机制与特性
 无需在各工程中维护脆弱冗长的 `logback-spring.xml`，`LoggingEnvironmentPostProcessor` 纯原生接管 Logback 配置：
 1. **控制台日志（默认开启）**：自动注入高亮彩色与 MDC `traceId` 追踪格式（`[%clr(%d{...}){faint}] [%clr(%5p)] [%clr(%X{traceId:-}){magenta}] ...`），天然打通全链路追踪；
 2. **磁盘双文件异步切片落盘（可选开启）**：
@@ -2404,16 +2466,68 @@ String connectTimeout = System.getProperty("sun.net.client.defaultConnectTimeout
    - 支持基于大小（默认 100MB）与时间（天）的滚动压缩归档（`.gz`），支持历史保留天数（默认 30 天）与磁盘总占用上限（默认 10GB）自动清理；
    - 支持启动期自动清理历史日志（`clean-history-on-start`），适用于边缘端或临时测试容器。
 
+#### 就近专属 YAML 配置 (日志引擎与文件切片)
+```yaml
+ateng:
+  boot:
+    core:
+      # 零 XML 工业级日志引擎与持久化配置 (LoggingProperties)
+      logging:
+        # 日志引擎总开关（默认 true，为 false 时完全保留 Spring 官方原生裸行为）
+        enabled: true
+        console:
+          # 是否开启高亮彩色 + traceId 控制台输出（默认 true）
+          enabled: true
+        file:
+          # 是否开启磁盘文件持久化落盘（默认 false）
+          enabled: false
+          # 日志文件输出目录路径（默认 logs）
+          path: "logs"
+          # 单日志文件滚动切片阈值（强类型 DataSize 格式，默认 100MB）
+          max-file-size: 100MB
+          # 历史归档日志保留天数（默认 30 天）
+          max-history: 30
+          # 磁盘日志总占用上限（强类型 DataSize 格式，默认 10GB）
+          total-size-cap: 10GB
+          # 是否独立分流生成 app-error.log 错误日志（默认 true）
+          split-error: true
+          # 是否在应用启动时清理历史日志文件（默认 false）
+          clean-history-on-start: false
+```
+
 #### 控制台真实输出示例
 ```text
-2026-10-30 18:00:00.123  INFO 12345 --- [ateng-boot-sample-core] [main] [a1b2c3d4e5f67890] i.g.a.b.s.c.s.CoreSystemScenarioService : 系统运行基线校准完成
+2026-11-07 18:00:00.123  INFO 12345 --- [ateng-boot-sample-core] [main] [a1b2c3d4e5f67890] i.g.a.b.s.c.s.CoreSystemScenarioService : 系统运行基线校准完成
 ```
 
 ---
 
 ### 8.3 方法级慢调用主动告警 (`@SlowAlert`)
 
-对于可能存在性能波动的核心计算、第三方调用或批处理方法，直接在方法上标注 `@SlowAlert` 声明耗时阈值与告警策略：
+代码锚定样例：[`CoreSystemAndAuditController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSystemAndAuditController.java)、[`CoreSystemAndAuditControllerTest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/test/java/io/github/atengk/boot/sample/core/CoreSystemAndAuditControllerTest.java)
+
+#### 核心机制与特性
+对于可能存在性能波动的核心计算、第三方调用或批处理方法，直接在方法或类上标注 `@SlowAlert` 声明耗时阈值与告警策略：
+- **微秒级高精度拦截**：依托 `System.nanoTime()` 精确度量方法绝对耗时，达到阈值时自动输出结构化 WARN 告警；
+- **参数快照与敏感凭据脱敏**：默认记录入参 JSON 快照，内置敏感词正则（`password`、`token`、`secret`、`key` 等）自动掩码替换为 `******`；
+- **1KB 刚性截断防 OOM**：入参快照严格限制最大字符数（默认 1024 字符），超过时优雅追加 `... [TRUNCATED]`，防止超大报文引发内存溢出。
+
+#### 就近专属 YAML 配置 (慢调用告警)
+```yaml
+ateng:
+  boot:
+    core:
+      # 方法级慢调用告警配置 (SlowAlertProperties)
+      slow-alert:
+        # 是否启用 @SlowAlert 慢调用告警切面（默认 true）
+        enabled: true
+        # 默认慢方法判定耗时阈值（强类型 Duration 格式，默认 500ms）
+        default-threshold: 500ms
+        # 告警日志中是否记录方法入参快照（默认 true）
+        include-args: true
+        # 入参快照最大字符截断长度（默认 1024 字符 = 1KB，防大报文引发 OOM）
+        max-args-length: 1024
+```
 
 #### 核心代码范式
 ```java
@@ -2423,62 +2537,163 @@ import org.springframework.stereotype.Service;
 @Service
 public class CoreSystemScenarioService {
 
-    // 标注慢调用阈值 30ms，自动记录入参快照（敏感参数自动脱敏）
+    // 声明慢调用阈值 30ms，自动记录入参快照（敏感参数自动脱敏掩码）
     @SlowAlert(threshold = 30, includeArgs = true)
     public long processSlowComputation(String taskId, String secretToken) {
-        // 模拟耗时业务计算...
+        long start = System.currentTimeMillis();
         try {
             Thread.sleep(45);
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
         }
-        return 45L;
+        return System.currentTimeMillis() - start;
     }
 }
 ```
 
 #### 告警日志输出规范
-当方法执行耗时超出阈值时，自动在日志中输出结构化 WARN 告警，并对入参执行 1KB 截断以防御超大报文引发 OOM：
 ```text
-2026-10-30 18:00:00.180  WARN 12345 --- [ateng-boot-sample-core] [main] [a1b2c3d4e5f67890] i.g.a.b.c.a.SlowAlertAspect : [SLOW_METHOD] 方法执行耗时超过阈值! class=io.github.atengk.boot.sample.core.service.CoreSystemScenarioService, method=processSlowComputation, cost=46ms, threshold=30ms, args=[taskId="order-bench-99", secretToken="******"]
+2026-11-07 18:00:00.180  WARN 12345 --- [ateng-boot-sample-core] [main] [a1b2c3d4e5f67890] i.g.a.boot.core.aspect.SlowAlertAspect : [SLOW-ALERT] 方法调用超时告警：[CoreSystemScenarioService#processSlowComputation] 执行耗时 47 ms (阈值: 30 ms), 入参: {"taskId":"bench-task-999","secretToken":"******"}
 ```
 
 ---
 
 ### 8.4 慢 Bean 初始化耗时诊断 (`SlowBeanDiagnosticPostProcessor`)
 
+代码锚定样例：[`SlowBeanDiagnosticPostProcessorTest.java`](./src/test/java/io/github/atengk/boot/core/diagnostic/SlowBeanDiagnosticPostProcessorTest.java)
+
+#### 核心机制与特性
 Spring 启动时，`SlowBeanDiagnosticPostProcessor`（基于 Spring 原生 `BeanPostProcessor`）在底层纳秒级统计每个单例 Bean 的初始化耗时。
 - 凡耗时超过阈值（默认 `500ms`，由 `ateng.boot.core.system.slow-bean-threshold` 配置）的 Bean，自动在控制台输出醒目的 WARN 诊断日志，精确展示 Bean 名称、目标类与耗时毫秒数；
 - 辅助运维与开发人员在应用冷启动缓慢时迅速定位拖慢启动的组件（如某些重量级外部客户端连接池、反射扫描类等）。
 
 #### 诊断日志输出示例
 ```text
-2026-10-30 18:00:00.950  WARN 12345 --- [ateng-boot-sample-core] [main] [] i.g.a.b.c.a.SlowBeanDiagnosticPostProcessor : [SLOW_BEAN] Spring Bean 初始化耗时过长! beanName='heavyDataEngine', targetClass=com.example.HeavyDataEngine, cost=752ms, threshold=500ms
+2026-11-07 18:00:00.950  WARN 12345 --- [ateng-boot-sample-core] [main] [] i.g.a.b.c.a.SlowBeanDiagnosticPostProcessor : [SLOW_BEAN] Spring Bean 初始化耗时过长! beanName='heavyDataEngine', targetClass=com.example.HeavyDataEngine, cost=752ms, threshold=500ms
 ```
 
 ---
 
-### 8.5 受管临时目录治理与优雅关机摘要 (`FileUtil` & `AppShutdownListener`)
+### 8.5 受管临时目录治理与安全清理 (`FileUtil` & `AppShutdownListener`)
 
-#### 受管临时目录与安全清理
-框架提供受管且业务隔离的应用专属临时目录（位于系统临时目录下以应用名命名的子目录），杜绝跨系统或全局 `/tmp` 混乱：
+代码锚定样例：[`CoreSystemAndAuditController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSystemAndAuditController.java)、[`CoreSystemAndAuditControllerTest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/test/java/io/github/atengk/boot/sample/core/CoreSystemAndAuditControllerTest.java)
+
+#### 核心机制与特性
+在文件上传、报表流式导出与数据批处理过程中，若临时文件散落于宿主机各处且未及时回收，极易引发磁盘占满或目录遍历逃逸。`FileUtil` 提供工业级临时文件生命周期防线：
+- **路径穿越防御清洗 (`cleanFilename`)**：递归剔除 `\0` 空字符、`../` 相对路径标记与反斜杠，确保文件名纯净安全；
+- **应用专属受管工作空间 (`getAppTempDirectory`)**：路径规范统一收敛于 `${java.io.tmpdir}/ateng-boot/${appName}/`，具备自动递归建目录能力；
+- **防 OOM 有界流式安全读取 (`readNBytesSafe`)**：支持限定最大读取字节数，严格探测流实际大小，杜绝超大流撑爆内存；
+- **确定性递归清理 (`cleanDirectorySafely`)**：递归清理目录内所有临时文件，并在 JVM 关闭钩子（`AppTempDirCleanupListener`）中提供终极保底销毁；
+- **优雅停机存活摘要 (`AppShutdownListener`)**：应用关闭时自动计算并输出存活 Uptime 摘要。
+
+#### 核心代码范式
 ```java
-// 1. 获取当前应用专属受管临时目录（自动递归创建）
+import io.github.atengk.boot.core.util.FileUtil;
+
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+// 1. 安全清洗文件名（防御 ../ 恶意路径遍历提权）
+String safeFilename = FileUtil.cleanFilename("../../malicious/path/export-audit.txt"); // "export-audit.txt"
+
+// 2. 获取当前应用专属隔离受管临时目录（自动递归创建）
 Path appTempDir = FileUtil.getAppTempDirectory("sample-core");
+Path targetFile = appTempDir.resolve(safeFilename);
 
-// 2. 在临时目录下创建业务临时文件
-Path targetFile = appTempDir.resolve("report-temp-1.txt");
-Files.writeString(targetFile, "Sample Content");
+// 3. 写入业务临时文件
+Files.writeString(targetFile, "Sample Content", StandardCharsets.UTF_8);
 
-// 3. 业务完成时安全递归清理目录（防止文件句柄泄露）
+// 4. 有界安全流式读取（最大允许读取 1024 字节，超限抛出 IllegalArgumentException 快速失败）
+try (InputStream in = Files.newInputStream(targetFile)) {
+    byte[] safeBytes = FileUtil.readNBytesSafe(in, 1024);
+    String content = new String(safeBytes, StandardCharsets.UTF_8);
+}
+
+// 5. 业务结束时确定性清理临时工作空间（保证磁盘零残留）
 int cleanedCount = FileUtil.cleanDirectorySafely(appTempDir);
 ```
-- **自动关机兜底清理**：`AppTempDirCleanupListener` 注册了 JVM 关机钩子，在进程终止时自动递归清理受管临时目录，彻底杜绝磁盘垃圾堆积。
 
-#### 优雅停机存活时长摘要
-应用正常关闭时，`AppShutdownListener` 自动捕获 `ContextClosedEvent`，计算并打印服务总存活时长（Uptime），辅助排查意外停机或滚动发布记录：
-```text
-2026-10-30 18:30:00.000  INFO 12345 --- [ateng-boot-sample-core] [main] [] i.g.a.b.c.l.AppShutdownListener : [SHUTDOWN] 应用正在优雅关闭... 总存活时长: 1h 25m 43s (Uptime: 5143000ms)
+---
+
+### 8.6 结构化操作与物理 SQL 审计契约与事件总线 (`OperateLogEvent`, `SqlLogModel` & `ExceptionUtil`)
+
+代码锚定样例：[`CoreSystemAndAuditController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSystemAndAuditController.java)、[`CoreSystemAndAuditControllerTest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/test/java/io/github/atengk/boot/sample/core/CoreSystemAndAuditControllerTest.java)
+
+#### 核心机制与特性
+分布式微服务审计体系通常涉及操作审计与持久层物理 SQL 审计两大核心契约。`ateng-boot-core` 下沉通用审计标准模型与解耦设施：
+- **18 项全要素操作审计契约 (`OperateLogModel`)**：涵盖链路追踪（`traceId`）、多租户（`tenantId`）、操作人（`userId`, `userName`）、模块动作（`module`, `operateType`）、端点入参（`requestMethod`, `requestUrl`, `clientIp`, `requestParams`, `responseResult`）、耗时度量与扩展字典；
+- **事件总线解耦发布与异步消费 (`OperateLogEvent`)**：业务通过 Spring `ApplicationEventPublisher` 发布审计事件，业务模块只需声明 `@EventListener` 即可独立消费并持久化，实现与业务主链路 100% 解耦；
+- **物理 SQL 审计契约 (`SqlLogModel` & `SqlTypeEnum`)**：规范数据源标识（`datasource`）、执行语句（`sql`）、语句类型（`SqlTypeEnum` DML / SELECT 识别）、执行耗时与影响行数；
+- **异常深度因果分析与有界堆栈截断 (`ExceptionUtil`)**：多层包裹异常递归提取 Root Cause（内置循环依赖防死循环），并将错误堆栈限制在安全长度内优雅截断，彻底消除日志风暴与存储溢出。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.audit.OperateLogEvent;
+import io.github.atengk.boot.core.audit.OperateLogModel;
+import io.github.atengk.boot.core.audit.OperateTypeEnum;
+import io.github.atengk.boot.core.audit.SqlLogModel;
+import io.github.atengk.boot.core.enums.SqlTypeEnum;
+import io.github.atengk.boot.core.util.ExceptionUtil;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
+import org.springframework.stereotype.Component;
+
+import java.time.LocalDateTime;
+
+// 1. 构建结构化操作审计模型
+OperateLogModel operateLog = OperateLogModel.builder()
+        .traceId("a1b2c3d4e5f67890")
+        .tenantId("tenant-finance-001")
+        .userId("user-admin-1001")
+        .userName("系统管理员")
+        .module("系统基线管理")
+        .operateType(OperateTypeEnum.INSERT)
+        .description("新增系统参数配置")
+        .requestMethod("POST")
+        .requestUrl("/sample/core/system/audit-and-diagnose")
+        .clientIp("192.168.3.41")
+        .status(0)
+        .costTime(15L)
+        .operateTime(LocalDateTime.now())
+        .build();
+
+// 2. 通过 Spring 事件总线解耦发布领域事件
+eventPublisher.publishEvent(new OperateLogEvent(this, operateLog));
+
+// 3. 业务模块通过 @EventListener 解耦消费审计事件
+@Component
+public class AuditEventListener {
+    @EventListener
+    public void onOperateLog(OperateLogEvent event) {
+        OperateLogModel model = event.getLogModel();
+        // 异步入库至 MySQL / Elasticsearch / Kafka
+    }
+}
+
+// 4. 构建物理 SQL 审计模型与动作判定
+SqlTypeEnum sqlType = SqlTypeEnum.of("INSERT");
+boolean isDml = sqlType.isDml();     // true
+boolean isQuery = sqlType.isQuery(); // false
+
+SqlLogModel sqlLog = SqlLogModel.builder()
+        .traceId("a1b2c3d4e5f67890")
+        .sql("INSERT INTO sys_config (config_key, config_value) VALUES ('sys.timeout', '30s')")
+        .sqlType(sqlType)
+        .costTime(8L)
+        .affectedRows(1L)
+        .status(0)
+        .build();
+
+// 5. 异常因果链深度追溯与有界截断
+try {
+    // 模拟底层驱动抛出异常
+} catch (Throwable e) {
+    Throwable rootCause = ExceptionUtil.getRootCause(e); // 提取真正最深层根因
+    String rootMessage = ExceptionUtil.getMessage(rootCause);
+    String safeStackTrace = ExceptionUtil.stackTraceToString(e, 500); // 截断并附加 ... [truncated]
+}
 ```
 
 ---
