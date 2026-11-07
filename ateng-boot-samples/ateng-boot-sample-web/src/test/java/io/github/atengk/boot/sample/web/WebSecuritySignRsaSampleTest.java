@@ -91,7 +91,7 @@ class WebSecuritySignRsaSampleTest {
 
         String canonical = SignCanonicalUtil.buildRequestCanonicalString(
                 "POST",
-                "/api/sample/sign/orders",
+                "/sample/web/security/sign/orders",
                 timestamp,
                 nonce,
                 Map.of(),
@@ -101,7 +101,7 @@ class WebSecuritySignRsaSampleTest {
         // 客户端使用自己的私钥对请求内容加签
         String clientSignature = rsaSigner.sign(canonical, CLIENT_PRIVATE_KEY_PEM);
 
-        MvcResult result = mockMvc.perform(post("/api/sample/sign/orders")
+        MvcResult result = mockMvc.perform(post("/sample/web/security/sign/orders")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonBody)
                         .header(ApiSignAspect.HEADER_TIMESTAMP, timestamp)
@@ -109,7 +109,8 @@ class WebSecuritySignRsaSampleTest {
                         .header(ApiSignAspect.HEADER_SIGNATURE, clientSignature))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("ORD_SIGNED_ORD_RSA_001"))
+                .andExpect(jsonPath("$.data.orderNo").value("ORD_RSA_001"))
+                .andExpect(jsonPath("$.data.status").value("CONFIRMED"))
                 .andExpect(header().exists(ApiSignAspect.HEADER_SIGNATURE))
                 .andReturn();
 
@@ -135,7 +136,7 @@ class WebSecuritySignRsaSampleTest {
 
         String canonical = SignCanonicalUtil.buildRequestCanonicalString(
                 "POST",
-                "/api/sample/sign/orders",
+                "/sample/web/security/sign/orders",
                 timestamp,
                 nonce,
                 Map.of(),
@@ -146,7 +147,7 @@ class WebSecuritySignRsaSampleTest {
         // 篡改金额为 0.01 发送
         String tampered = jsonBody.replace("500.00", "0.01");
 
-        mockMvc.perform(post("/api/sample/sign/orders")
+        mockMvc.perform(post("/sample/web/security/sign/orders")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(tampered)
                         .header(ApiSignAspect.HEADER_TIMESTAMP, timestamp)

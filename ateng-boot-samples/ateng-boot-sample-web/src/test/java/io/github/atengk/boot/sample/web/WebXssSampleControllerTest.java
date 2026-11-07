@@ -23,7 +23,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(properties = {
         "ateng.boot.web.xss.enabled=true",
         "ateng.boot.web.xss.mode=ESCAPE",
-        "ateng.boot.web.xss.exclude-urls[0]=/api/sample/xss/excluded/**"
+        "ateng.boot.web.xss.exclude-urls[0]=/sample/web/security/xss/excluded/**"
 })
 @AutoConfigureMockMvc
 @DisplayName("XSS 安全清洗与字段级富文本豁免场景端到端测试 (ESCAPE 模式)")
@@ -37,7 +37,7 @@ class WebXssSampleControllerTest {
     void shouldEscapeNormalFieldsAndPreserveFieldLevelXssIgnore() throws Exception {
         String json = "{\"title\":\"<script>alert('title')</script>\",\"content\":\"<p>Safe HTML</p><script>evil</script>\",\"author\":\"<b>admin</b>\"}";
 
-        mockMvc.perform(post("/api/sample/xss/article")
+        mockMvc.perform(post("/sample/web/security/xss/article")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())
@@ -52,7 +52,7 @@ class WebXssSampleControllerTest {
     void shouldPreserveAllFieldsWhenClassAnnotatedWithXssIgnore() throws Exception {
         String json = "{\"title\":\"<h1>Announcement Title</h1>\",\"content\":\"<div>Announcement Body</div>\"}";
 
-        mockMvc.perform(post("/api/sample/xss/announcement")
+        mockMvc.perform(post("/sample/web/security/xss/announcement")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())
@@ -64,7 +64,7 @@ class WebXssSampleControllerTest {
     @Test
     @DisplayName("3. Query 参数清洗：XssHttpServletRequestWrapper 自动转义 GET 请求入参")
     void shouldCleanQueryParams() throws Exception {
-        mockMvc.perform(get("/api/sample/xss/query")
+        mockMvc.perform(get("/sample/web/security/xss/query")
                         .param("keyword", "<script>alert('query')</script>"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
@@ -74,7 +74,7 @@ class WebXssSampleControllerTest {
     @Test
     @DisplayName("4. Form 表单参数清洗：XssHttpServletRequestWrapper 自动转义 POST 表单参数")
     void shouldCleanFormParams() throws Exception {
-        mockMvc.perform(post("/api/sample/xss/form")
+        mockMvc.perform(post("/sample/web/security/xss/form")
                         .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                         .param("title", "<script>alert('form')</script>")
                         .param("summary", "<b>summary</b>"))
@@ -89,7 +89,7 @@ class WebXssSampleControllerTest {
     void shouldSkipXssCleaningWhenPathMatchesExcludeUrls() throws Exception {
         String json = "{\"title\":\"<script>not-cleaned</script>\",\"content\":\"<p>raw</p>\",\"author\":\"<b>raw</b>\"}";
 
-        mockMvc.perform(post("/api/sample/xss/excluded/article")
+        mockMvc.perform(post("/sample/web/security/xss/excluded/article")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())

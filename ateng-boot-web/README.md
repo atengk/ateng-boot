@@ -12,7 +12,7 @@
 | **全局异常防御** | 全局统一异常拦截与生产脱敏 | `GlobalExceptionHandler`, `GlobalExceptionCustomizer` | - | 挂载 `GlobalExceptionCustomizer` SPI 链式定制，拦截 `BusinessException`（双模因果堆栈）、`MethodArgumentNotValidException`、`HandlerMethodValidationException`、`BindException`、`ConstraintViolationException`、400/404/405/406/413/415/503/500 精细化转译与生产脱敏 | `GlobalExceptionHandlerTest.java`, `WebContractAndExceptionControllerTest.java`, `WebExceptionSampleControllerTest.java` |
 | **精度与时间规范** | 53 位雪花精度防截断与时间序列化 | `JacksonCustomizer` | `ateng.boot.web.long-to-string` | Long/BigInteger 序列化为 String，标准 `yyyy-MM-dd HH:mm:ss` 格式化，不覆盖原生 `ObjectMapper` | `JacksonCustomizerTest.java`, `WebContractAndExceptionControllerTest.java`, `WebContractSampleControllerTest.java` |
 | **接口审计日志** | 声明式接口耗时审计与安全防 OOM | `@WebLog`, `WebLogAspect` | `ateng.boot.web.log.enabled` | `@WebLog(value, printParams, printResult, excludeParams)`，大文件 Multipart 自动占位防 OOM | `WebLogAspectTest.java`, `WebObservabilityAndAuditControllerTest.java` |
-| **动态 CORS 跨域** | 动态跨域来源校验与凭证安全反射 | `CorsOriginProvider`, `DefaultCorsOriginProvider`, `DynamicCorsConfigurationSource` | `ateng.boot.web.cors.enabled`, `allowed-origins`, `allow-credentials`, `allow-localhost`, `max-age` | 基于配置属性通配或 SPI 动态扩展校验 Origin，安全反射并支持凭据传输（Cookie），放行本地 localhost 调试 | `DynamicCorsTest.java`, `WebTrafficSampleControllerTest.java` |
+| **动态 CORS 跨域** | 动态跨域来源校验与凭证安全反射 | `CorsOriginProvider`, `DefaultCorsOriginProvider`, `DynamicCorsConfigurationSource` | `ateng.boot.web.cors.enabled`, `allowed-origins`, `allow-credentials`, `allow-localhost`, `max-age` | 基于配置属性通配或 SPI 动态扩展校验 Origin，安全反射并支持凭据传输（Cookie），放行本地 localhost 调试 | `DynamicCorsTest.java`, `WebSecurityAndSignControllerTest.java` |
 | **自适应限流防刷** | 三级自适应令牌桶与多维限流 | `@RateLimiter`, `LimitType`, `RateLimiterStore`, `InMemoryRateLimiterStore`, `RedisRateLimiterStore`, `RedissonRateLimiterStore` | `ateng.boot.web.ratelimit.enabled`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@RateLimiter(key, time, count, limitType)`，支持默认/IP/用户/租户（LimitType.TENANT）多维限流防刷与租户流量隔离 | `RateLimiterAspectTest.java`, `AtengRateLimiterAutoConfigurationTest.java`, `InMemoryRateLimiterStoreTest.java`, `WebTrafficGovernanceControllerTest.java`, `WebTenantRateLimiterSampleTest.java` |
 | **自适应防重幂等** | 三级自适应防重幂等引擎 | `@Idempotent`, `IdempotentKeyStore`, `InMemoryIdempotentKeyStore`, `RedisIdempotentKeyStore`, `RedissonIdempotentKeyStore` | `ateng.boot.web.idempotent.enabled`, `key-prefix`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@Idempotent(key, timeout, message, delKeyOnException)`，支持 SpEL 动态提取业务键、自动防抖、业务异常释放 | `IdempotentAspectTest.java`, `AtengIdempotentAutoConfigurationTest.java`, `InMemoryIdempotentKeyStoreTest.java`, `WebTrafficGovernanceControllerTest.java` |
 | **云原生优雅停机** | K8s 就绪探针排空与容器生命周期治理 | `AtengGracefulShutdownHandler`, `PreStopEndpoint`, `PreStopController` | `ateng.boot.web.shutdown.enabled`, `drain-timeout`, `smart-lifecycle-enabled`, `actuator-endpoint-enabled`, `mvc-endpoint-enabled`, `mvc-endpoint-path` | 翻转 `ReadinessState.REFUSING_TRAFFIC`，受管静默排空等待（`drain-timeout: 10s`），`AtomicBoolean` 状态机排空幂等，支持 Actuator `/actuator/pre-stop` 与 MVC `/pre-stop` 双模端点，`SmartLifecycle` 兜底 | `AtengGracefulShutdownHandlerTest.java`, `PreStopEndpointTest.java`, `PreStopControllerTest.java`, `AtengGracefulShutdownAutoConfigurationTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
@@ -20,7 +20,7 @@
 | **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogModel` | `ateng.boot.web.operate-log.enabled` | `@OperateLog(module, type, description, saveParams, saveResult, excludeParams)`，自动关联线程上下文（操作人/租户），出参自动联动 `@FieldSensitive` 视图脱敏，保留原始异常因果链，支持异步存储 SPI 与开箱即用 JSON 保底 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流，单次超限（DataSize）快速失败截断防 OOM，自动跳过表单与文件上传，旧版 `RequestBodyCachingFilter` 保持向后兼容委托 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **载荷采样日志** | HTTP 请求/响应双向安全采样与截断防 OOM | `PayloadLoggingFilter` | `ateng.boot.web.payload-log.enabled`, `max-payload-size`, `exclude-urls` | 请求出口处单行聚合输出包含 TraceId、Method、URI、Status、Cost、ReqBody 与 RespBody 的 `[HTTP_PAYLOAD]` 日志，内建 MIME 过滤、凭据正则掩码（`***`）、强类型截断（默认 4KB）、状态自适应提升（$\ge 400$ 提升为 WARN）并在 `finally` 确定性执行 `copyBodyToResponse()` | `PayloadLoggingFilterTest.java`, `PayloadLoggingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
-| **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `SignAlgorithm`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `RequestBodyCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature` | `@ApiSign(expireSeconds, signResponse)`，支持 HMAC-SHA256 对称、RSA 非对称与国密 SM2/SM3 非对称算法，请求体可重读包装，Nonce 防重放与响应加签 | `ApiSignerTest.java`, `Sm2SignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `RequestBodyCachingFilterTest.java`, `WebSecuritySignSampleControllerTest.java`, `WebSecuritySignRsaSampleTest.java`, `WebSecuritySignSm2SampleTest.java` |
+| **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `SignAlgorithm`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `RequestBodyCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature` | `@ApiSign(expireSeconds, signResponse)`，支持 HMAC-SHA256 对称、RSA 非对称与国密 SM2/SM3 非对称算法，请求体可重读包装，Nonce 防重放与响应加签 | `ApiSignerTest.java`, `Sm2SignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `RequestBodyCachingFilterTest.java`, `WebSecurityAndSignControllerTest.java`, `WebSecuritySignRsaSampleTest.java`, `WebSecuritySignSm2SampleTest.java` |
 | **安全响应头防御** | 等保三级基线安全响应头注入与容器指纹剥离 | `SecurityHeadersFilter`, `SecurityHeadersProperties` | `ateng.boot.web.security-headers.enabled`, `content-type-options`, `frame-options`, `xss-protection`, `referrer-policy`, `content-security-policy`, `permissions-policy`, `remove-server-header` | 注入 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`X-XSS-Protection: 1; mode=block`、`Referrer-Policy: strict-origin-when-cross-origin` 等基准头，剥离容器 `Server` 头，`containsHeader` 守卫防覆盖 | `SecurityHeadersFilterTest.java`, `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **ETag 协商缓存** | 基于浅层哈希的内容协商缓存与 304 节省带宽 | `ShallowEtagHeaderFilter`, `EtagProperties` | `ateng.boot.web.etag.enabled`, `write-weak-etag` | 条件自动装配 Spring 原生 `ShallowEtagHeaderFilter`，自动计算内容摘要并生成 `ETag` 响应头，配合 `If-None-Match` 返回 `304 Not Modified` 节省网络带宽 | `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **XSS 安全清洗与放行** | 双轨无害化清洗与字段级富文本放行 | `XssFilter`, `XssHttpServletRequestWrapper`, `XssCleaner`, `XssMode`, `XssStringDeserializer`, `@XssIgnore` | `ateng.boot.web.xss.enabled`, `mode`, `exclude-urls` | 支持 `XssMode.ESCAPE`（默认 HTML 转义）与 `STRIP`（标签剔除），拦截 Query/Form 表单参数与 JSON 请求体，通过 `@XssIgnore` 声明式在字段或类级别豁免富文本，支持 Ant 白名单路径排除 | `XssCleanerTest.java`, `XssFilterTest.java`, `XssHttpServletRequestWrapperTest.java`, `XssStringDeserializerTest.java`, `WebXssSampleControllerTest.java`, `WebXssStripModeSampleTest.java` |
@@ -1293,67 +1293,453 @@ public Result<String> failAndRetry(@RequestParam String bizId, @RequestParam boo
 
 ---
 
-## 9. 安全动态 CORS 跨域与凭证反射 (`CorsOriginProvider`)
+## 6. 传输安全防护网、双向加签与边界防火墙
 
-### 场景痛点
-开启 `allowCredentials=true` 允许携带 Cookie 跨域时，W3C 规范严禁配置 `allowedOrigins: *`，否则会被浏览器直接拦截拒绝；硬编码域名又无法应对多测试环境动态切换。
+### 6.1 双向 API 数据加签验签与防重放 (`@ApiSign` & `ApiSigner`)
 
-### 核心代码范式
-- **配置文件声明式通配匹配**：支持精确域名、通配符（如 `*.ateng.com`）与本地环回调试；
-- **SPI 动态加载扩展**：
+#### 场景痛点
+开放平台商户 API 与外部 Webhook 回调暴露在公网，面临恶意嗅探、参数篡改（如篡改支付金额、收款账户）以及黑产网络重放攻击（重复扣款、虚假结算）；传统接口签名往往缺少严格待签串拼装规范，极易因 JSON 字段乱序或空格引起哈希漂移，且大多数框架仅支持入站验签而无法保障服务端出站数据的防篡改。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      sign:
+        # 是否启用 API 双向数据加签验签引擎（默认 false）
+        enabled: true
+        # 签名算法（HMAC_SHA256 | RSA | SM2，默认 HMAC_SHA256）
+        algorithm: HMAC_SHA256
+        # 应用系统标识（用于多商户/多应用隔离）
+        app-id: "test-app"
+        # 对称签名密钥（HMAC-SHA256 对称加验签时使用）
+        secret-key: "TestSecretKey123"
+        # 非对称签名公钥（RSA/SM2 时入站验签使用）
+        public-key: ""
+        # 非对称签名私钥（RSA/SM2 时出站加签使用）
+        private-key: ""
+        # 签名时效窗口（强类型 Duration，防重放时间窗口，默认 60s）
+        expire: 60s
+        # 请求体可重读最大缓存容量（强类型 DataSize，默认 2MB）
+        max-body-size: 2MB
+        # 自定义请求头映射规范
+        header-app-id: "X-App-Id"
+        header-timestamp: "X-Timestamp"
+        header-nonce: "X-Nonce"
+        header-signature: "X-Signature"
+```
+
+#### 核心机制与不变量
+- **金融级标准化待签串规范**：严格遵循 `Method
+URI
+Timestamp
+Nonce
+SortedQueryString
+BodySha256` 六段拼装协议，消解排版空格与参数乱序引起的签名哈希漂移；
+- **全算法矩阵原生支持**：
+  - `HMAC_SHA256`：基于共享对称密钥的高性能对称加验签；
+  - `RSA`：基于 2048 位标准公私钥对的金融级非对称数字签名；
+  - `SM2`：100% 依托原生标准库实现的纯原生国密 SM2/SM3 算法，零第三方外部依赖；
+- **原子 Nonce 防重放**：基于自适应幂等存储引擎（Tier 1 Redisson $ightarrow$ Tier 2 Redis $ightarrow$ Tier 3 In-Memory），在 `expire` 时效窗口内严密防范请求重放拦截（返回 `40003` 业务错误）；
+- **实时签名请求头预生成辅助端点 (`POST /sample/web/security/sign/prepare-headers`)**：为接入方前端或测试客户端动态拼装并计算签名请求头，一键输出开箱可用的 cURL 命令；
+- **密钥提供者扩展点 (`SignKeyProvider` SPI)**：支持实现 `SignKeyProvider` 接口并在 Spring 容器注册 Bean，对接 KMS、HashiCorp Vault 或企业数据库密钥中心。
+
+#### 1:1 实测业务代码范式
 ```java
-import io.github.atengk.boot.web.cors.CorsOriginProvider;
-import org.springframework.stereotype.Component;
+// 1. 开放平台商户提单双向加验签：验签入站请求并对返回的 Result 加签回写响应头
+@PostMapping({"/sign/orders", "/sign/order"})
+@ApiSign(verifyRequest = true, signResponse = true, expireSeconds = 10)
+public Result<Map<String, Object>> createOrder(@Valid @RequestBody OrderSignDTO dto) {
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("orderNo", dto.getOrderNo());
+    data.put("amount", dto.getAmount());
+    data.put("status", "CONFIRMED");
+    data.put("message", "商户订单验签通过并建单成功");
+    return Result.success(data);
+}
 
-@Component
-public class DatabaseCorsOriginProvider implements CorsOriginProvider {
-    @Override
-    public boolean isAllowed(String requestOrigin) {
-        // 从数据库或缓存中动态校验租户自定义独立域名
-        return tenantDomainService.exists(requestOrigin);
-    }
+// 2. 国密 SM2/SM3 非对称双向加验签
+@PostMapping("/sign/sm2")
+@ApiSign(verifyRequest = true, signResponse = true, expireSeconds = 10)
+public Result<Map<String, Object>> createOrderSm2(@Valid @RequestBody OrderSignDTO dto) {
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("orderNo", dto.getOrderNo());
+    data.put("amount", dto.getAmount());
+    data.put("algorithm", "SM2");
+    data.put("status", "CONFIRMED");
+    data.put("message", "国密SM2/SM3双向加验签成功");
+    return Result.success(data);
+}
+
+// 3. GET Query 查询参数防篡改加签验签
+@GetMapping("/sign/query")
+@ApiSign(verifyRequest = true, signResponse = true, expireSeconds = 10)
+public Result<Map<String, Object>> queryData(@RequestParam("code") String code) {
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("merchantCode", code);
+    data.put("verified", true);
+    data.put("qualificationStatus", "NORMAL");
+    return Result.success(data);
+}
+
+// 4. 单向验签：仅校验入站数据签名（第三方 Webhook 支付结果异步通知场景）
+@PostMapping("/sign/inbound")
+@ApiSign(verifyRequest = true, signResponse = false, expireSeconds = 10)
+public Result<Map<String, Object>> inboundOnly(@Valid @RequestBody OrderSignDTO dto) {
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("orderNo", dto.getOrderNo());
+    data.put("inboundStatus", "RECEIVED");
+    data.put("message", "第三方支付通知验签成功");
+    return Result.success(data);
+}
+
+// 5. 单向加签：入站免签，服务端出站数据强制加签（对账单或高敏感数据查询）
+@GetMapping("/sign/outbound")
+@ApiSign(verifyRequest = false, signResponse = true, expireSeconds = 10)
+public Result<Map<String, Object>> outboundOnly() {
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("reportTitle", "2026年第四季度结算报表");
+    data.put("settlementAmount", 88888.88);
+    data.put("currency", "CNY");
+    data.put("securityLevel", "HIGH");
+    return Result.success(data);
+}
+
+// 6. 实时签名请求头预生成辅助端点（一键动态生成签名头与 cURL 命令）
+@PostMapping("/sign/prepare-headers")
+public Result<Map<String, Object>> prepareHeaders(@RequestBody(required = false) PrepareSignHeadersDTO dto) {
+    // 动态计算标准化待签串，按配置调用 ApiSigner 生成签名头与一键体验命令
+    return Result.success(result);
+}
+```
+
+#### 真实 HTTP 响应报文验证
+
+##### (1) 商户提单验签放行并回写签名头 (`POST /sample/web/security/sign/orders`)
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json;charset=UTF-8
+X-Timestamp: 1729000000000
+X-Nonce: e8d4f0a1c3b2e9d8f7a6b5c4d3e2f1a0
+X-Signature: MEQCIA2+...==
+X-Trace-Id: 5d1f8a7e3b9c2a10
+
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "orderNo": "ORD_SIGN_001",
+    "amount": 99.99,
+    "status": "CONFIRMED",
+    "message": "商户订单验签通过并建单成功"
+  },
+  "success": true,
+  "traceId": "5d1f8a7e3b9c2a10"
+}
+```
+
+##### (2) 签名超时或遭篡改拦截 (Code 400)
+```json
+{
+  "code": 400,
+  "msg": "请求签名已过期",
+  "data": null,
+  "success": false,
+  "traceId": "9b8a7c6d5e4f3a2b"
 }
 ```
 
 ---
 
-## 10. 双向 API 数据加签验签与防重放 (`@ApiSign`)
+### 6.2 XSS 跨站脚本双轨无害化清洗与字段级富文本豁免 (`XssFilter` & `@XssIgnore`)
 
-### 场景痛点
-对外开放 OpenAPI、移动端通信防数据篡改与重放反爬攻击；政企、金融信创场景强制合规要求中国商用密码（国密 SM2/SM3）数字签名，且严禁引入沉重外部加密包。
+#### 场景痛点
+用户在输入框中提交恶意 `<script>alert('xss')</script>` 或 `<img>` 畸变标签，若未做防护极易在展示时盗取用户 Token、Cookie 凭证甚至篡改页面 DOM；若全量一刀切过滤，会导致 CMS 文章、运营公告等合法富文本编辑器内容中的 HTML 格式被全部破坏；且传统的清洗往往遗漏了 URL Query 与 Form 表单入参。
 
-### 核心代码范式
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      xss:
+        # 是否启用全局 XSS 跨站脚本安全清洗（默认 false）
+        enabled: true
+        # 清洗模式（ESCAPE 实体转义 | STRIP 标签剔除，默认 ESCAPE）
+        mode: ESCAPE
+        # 排除白名单路径列表（Ant 匹配规则，整条路径整体跳过 XSS 清洗）
+        exclude-urls:
+          - "/sample/web/security/xss/excluded/**"
+```
+
+#### 双轨清洗模式与字段级精准豁免
+- **`XssMode.ESCAPE`（默认推荐）**：将 `<`、`>`、`"`、`'` 等特殊字符转换为 `&lt;`、`&gt;`、`&quot;`、`&#39;`，既消除执行风险又保留原始文本可视内容；
+- **`XssMode.STRIP`**：彻底剔除 HTML 标签与 `<script>` 代码块，保留纯净文本内容；
+- **全链路双防线覆盖**：
+  - `XssHttpServletRequestWrapper`：负责对 GET Query 参数与 POST Form 表单入参做无害化清洗；
+  - `XssStringDeserializer`：注入 Jackson 反序列化管道，深度递归清洗 JSON 请求体中所有字符串属性；
+- **声明式富文本豁免 (`@XssIgnore`)**：
+  - **字段级豁免**：在 DTO 的特定字段上标注 `@XssIgnore`（如 `private String content;`），仅该富文本属性保留原样 HTML，同对象其他字段（如 `title`、`author`）依然强制安全清洗；
+  - **类级豁免**：在 DTO 类头部标注 `@XssIgnore`，整个实体内所有字符串属性均跳过清洗（如内部全站公告发布）。
+
+#### 1:1 实测业务代码范式
 ```java
-@RestController
-@RequestMapping("/api/open")
-@ApiSign(
-    expireSeconds = 300,                  // 5分钟防重放时间戳校验窗口（算法由 YAML 全局配置）
-    signResponse = true                   // 是否在响应时对返回数据加签 (回传 X-Signature)
-)
-public class OpenApiController {
+// 1. 混合 DTO 资讯发布：普通字段自动清洗，@XssIgnore 标注的 content 字段安全豁免放行
+@PostMapping("/xss/article")
+public Result<ArticlePublishDTO> publishArticle(@Valid @RequestBody ArticlePublishDTO dto) {
+    return Result.success(dto);
+}
 
-    @PostMapping("/data")
-    public Result<DataVO> process(@RequestBody DataDTO dto) {
-        return Result.success(dataService.handle(dto));
+// 2. 类级别 @XssIgnore 豁免：全站公告实体内所有字符串属性均跳过清洗
+@PostMapping("/xss/announcement")
+public Result<AnnouncementPublishDTO> publishAnnouncement(@Valid @RequestBody AnnouncementPublishDTO dto) {
+    return Result.success(dto);
+}
+
+// 3. Query 参数 XSS 清洗（基于 XssHttpServletRequestWrapper 自动转义）
+@GetMapping("/xss/query")
+public Result<String> searchByQuery(@RequestParam String keyword) {
+    return Result.success(keyword);
+}
+
+// 4. Form 表单参数 XSS 清洗
+@PostMapping("/xss/form")
+public Result<Map<String, String>> submitForm(@RequestParam String title, @RequestParam String summary) {
+    Map<String, String> map = new LinkedHashMap<>();
+    map.put("title", title);
+    map.put("summary", summary);
+    return Result.success(map);
+}
+
+// 5. 白名单 URL 排除：整条路径跳过 XSS 清洗
+@PostMapping("/xss/excluded/article")
+public Result<ArticlePublishDTO> publishExcludedArticle(@Valid @RequestBody ArticlePublishDTO dto) {
+    return Result.success(dto);
+}
+```
+
+---
+
+### 6.3 IP 访问控制双重防火墙与 CIDR 子网判定 (`@IpAccessControl` & `IpAccessControlFilter`)
+
+#### 场景痛点
+管理后台、内部监控与敏感特许通道暴露在公网，极易遭遇越权探测与黑产爆破；传统硬编码 IP 拦截缺乏 IPv6 与 CIDR 子网掩码支持，无法满足企业混合云专线（如 `172.16.0.0/12`）或 IPv6 集群（如 `2001:db8::/32`）的批量访问控制需求；同时不同场景下需要灵活在“统一业务拦截”与“物理 403 切断”间切换。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      ip-access-control:
+        # 是否启用 IP 访问控制防火墙引擎（默认 true）
+        enabled: true
+        # 默认模式（WHITE_LIST 白名单 | BLACK_LIST 黑名单，默认 WHITE_LIST）
+        mode: WHITE_LIST
+        # 全局默认规则列表（支持单 IP、CIDR 子网掩码与 IPv6）
+        rules:
+          - "127.0.0.1"
+          - "192.168.1.0/24"
+        # 全局拦截是否强制切断为物理 HTTP 403 状态码（默认 false，遵循统一 HTTP 200 + Result 403）
+        http-status-403: false
+        filter:
+          # 是否启用 URL 路径级 IP 防火墙过滤器（默认 false）
+          enabled: true
+          mode: WHITE_LIST
+          rules:
+            - "192.168.1.0/24"
+          url-patterns:
+            - "/sample/web/security/ip/filter-admin/**"
+          exclude-urls:
+            - "/sample/web/security/ip/filter-admin/public-ping"
+```
+
+#### 双重防火墙与核心机制
+- **第一道防线：URL 路径级过滤器 (`IpAccessControlFilter`)**：在 Servlet 容器最外层实施路径阻断，不经过 Spring MVC HandlerMapping 调度，高效拦截恶意流量，保护管理员控制台；
+- **第二道防线：方法级声明式切面 (`@IpAccessControl`)**：精准贴附于 Controller 方法，为特定高危操作配置专属独立黑白名单与自定义拦截文案；
+- **纯原生 CIDR 位运算无 DNS 依赖**：依托 `IpUtil.isInRange()` 支持 IPv4 CIDR、IPv6 CIDR 与本地环回（`::1`），杜绝因 DNS 解析引发的性能卡顿与超时；
+- **双模响应治理**：
+  - **默认业务优雅拦截**：遵循 ADR-0004 统一返回 HTTP 200 + `Result.fail(403)`，并注入 `X-Denied-Reason: IP_BLOCKED` 响应标头供前端与网关快速识别；
+  - **物理 403 切断**：配置 `httpStatus403 = true` 时，直接响应物理 HTTP 403 Forbidden 状态码。
+
+#### 1:1 实测业务代码范式
+```java
+// 1. 方法级白名单控制：仅允许 127.0.0.1 及 192.168.1.0/24 访问
+@GetMapping("/ip/whitelist")
+@IpAccessControl(mode = IpAccessMode.WHITE_LIST, rules = {"127.0.0.1", "192.168.1.0/24"})
+public Result<String> whitelistEndpoint() {
+    return Result.success("白名单放行成功");
+}
+
+// 2. 方法级黑名单控制：拒绝 10.0.0.0/8 与 203.0.113.100 访问
+@GetMapping("/ip/blacklist")
+@IpAccessControl(mode = IpAccessMode.BLACK_LIST, rules = {"10.0.0.0/8", "203.0.113.100"})
+public Result<String> blacklistEndpoint() {
+    return Result.success("黑名单未命中，放行成功");
+}
+
+// 3. CIDR 子网掩码与 IPv6 网段白名单
+@GetMapping("/ip/cidr-ipv6")
+@IpAccessControl(mode = IpAccessMode.WHITE_LIST, rules = {"172.16.0.0/12", "2001:db8::/32", "::1"})
+public Result<Map<String, String>> cidrIpv6Endpoint() {
+    return Result.success(Map.of("network", "CIDR-IPv6-Allowed"));
+}
+
+// 4. 自定义拒绝文案（HTTP 200 + Result 403 + X-Denied-Reason）
+@GetMapping("/ip/custom-message")
+@IpAccessControl(
+        mode = IpAccessMode.WHITE_LIST,
+        rules = {"192.168.1.200"},
+        message = "内部核心机房特许通道，当前 IP 无权访问"
+)
+public Result<String> customMessageEndpoint() {
+    return Result.success("特许通道放行成功");
+}
+
+// 5. 物理 403 切断模式（直接返回 HTTP 403 状态码）
+@GetMapping("/ip/http-403")
+@IpAccessControl(
+        mode = IpAccessMode.WHITE_LIST,
+        rules = {"192.168.1.200"},
+        httpStatus403 = true
+)
+public Result<String> http403Endpoint() {
+    return Result.success("特许通道放行成功");
+}
+```
+
+---
+
+### 6.4 等保三级安全响应头防御与 Server 容器特征剥离 (`SecurityHeadersFilter`)
+
+#### 场景痛点
+网络安全等保三级基线与 OWASP ASVS 强制要求生产环境必须注入防 MIME 嗅探、防点击劫持等安全标头，且严禁泄露 Undertow/Tomcat 等底层容器指纹特征；传统在各个 Controller 中手动设置容易遗漏，且若框架粗暴覆盖业务已声明的头会导致特定业务定制失效。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      security-headers:
+        # 是否启用安全响应头自动注入与容器指纹剥离（默认 true）
+        enabled: true
+        # 防 MIME 类型嗅探标头（默认 nosniff）
+        content-type-options: "nosniff"
+        # 防点击劫持 iframe 嵌套标头（DENY | SAMEORIGIN，默认 SAMEORIGIN）
+        frame-options: "SAMEORIGIN"
+        # 浏览器内置 XSS 拦截标头（默认 1; mode=block）
+        xss-protection: "1; mode=block"
+        # 跨域引用策略（默认 strict-origin-when-cross-origin）
+        referrer-policy: "strict-origin-when-cross-origin"
+        # 内容安全策略 CSP（可选，默认空）
+        content-security-policy: ""
+        # 浏览器权限策略（可选，默认空）
+        permissions-policy: ""
+        # 是否强制剥离底层容器 Server 特征标识头（默认 true）
+        remove-server-header: true
+```
+
+#### 核心机制与防覆盖保护
+- **等保三级基准全覆盖**：无感自动为全站外发响应注入合规安全响应标头；
+- **容器指纹剥离**：拦截并移除 `Server` 响应头，隐藏底座运行时版本特征；
+- **`containsHeader` 防覆盖保护**：注入前优先执行 `response.containsHeader()`，若业务方法或网关已主动设置特定安全头（如 `X-Frame-Options: DENY`），框架绝对保持开发者设定值，绝不覆盖。
+
+#### 1:1 实测业务代码范式
+```java
+// 业务自定义响应头：验证 SecurityHeadersFilter 的 containsHeader 防覆盖保护机制
+@GetMapping("/headers/custom")
+public Result<String> getCustomSecurityHeaders(HttpServletResponse response) {
+    // 业务主动设置 DENY，框架不强制覆盖为全局默认的 SAMEORIGIN
+    response.setHeader("X-Frame-Options", "DENY");
+    return Result.success("自定义安全响应头已设置");
+}
+```
+
+---
+
+### 6.5 ETag 304 协商缓存加速 (`ShallowEtagHeaderFilter`)
+
+#### 场景痛点
+高频调用的静态配置、枚举字典或系统元数据，客户端每次请求服务端都全量生成并传输相同 JSON 报文，浪费网络出口带宽与客户端渲染时间；客户端若缺乏有效的服务端协商校验机制，容易引发重复渲染或数据陈旧。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      etag:
+        # 是否启用 Spring 原生 ShallowEtagHeaderFilter 协商缓存（默认 false）
+        enabled: true
+        # 是否生成 W/ 弱 ETag 标记（默认 false 生成强 ETag）
+        write-weak-etag: false
+```
+
+#### 核心机制与不变量
+- **内容哈希摘要自动计算**：基于响应载荷内容哈希自动计算 `ETag: "0123456789abcdef"` 响应头；
+- **标准 304 协商**：当客户端二次请求携带 `If-None-Match` 时，若摘要匹配则直接响应 `HTTP 304 Not Modified`，响应体大小降为 0 字节，大幅节省网络带宽。
+
+#### 1:1 实测业务代码范式
+```java
+// 配合 ShallowEtagHeaderFilter 验证 ETag 协商缓存与 304 Not Modified
+@GetMapping("/etag/dict")
+public Result<Map<String, String>> getCachedDict() {
+    Result<Map<String, String>> result = Result.success(
+            Map.of("status", "ACTIVE", "locale", "zh_CN", "app", "ateng-boot-sample-web")
+    );
+    // 固定时间戳保证内容摘要一致
+    result.setTimestamp(1700000000000L);
+    return result;
+}
+```
+
+---
+
+### 6.6 安全动态 CORS 跨域凭证反射 (`CorsOriginProvider` & `DynamicCorsConfigurationSource`)
+
+#### 场景痛点
+在跨域预检与允许携带 Cookie 凭证（`allow-credentials: true`）场景下，W3C 规范严禁将 `Access-Control-Allow-Origin` 设为通配符 `*`；传统做法直接反射所有客户端请求的 `Origin`，极易导致任何恶意网站跨站读取用户的受限数据（CORS 凭证盗取漏洞）；多租户微服务架构下租户域名动态增加，静态配置难以维系。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      cors:
+        # 是否启用安全动态跨域过滤器（默认 false）
+        enabled: true
+        # 允许跨域的白名单来源列表（支持精确域名与通配符 *.example.com）
+        allowed-origins:
+          - "https://atengk.github.io"
+          - "https://*.example.com"
+        # 是否允许携带安全凭证（Cookie/Authorization，默认 true）
+        allow-credentials: true
+        # 是否允许本地开发环境环回放行（http://localhost:* 与 http://127.0.0.1:*，默认 true）
+        allow-localhost: true
+        # 预检请求 OPTIONS 浏览器缓存时长（强类型 Duration，默认 1800s）
+        max-age: 1800s
+```
+
+#### 核心机制与不变量
+- **安全动态反射**：仅当请求 `Origin` 匹配 `allowed-origins` 白名单或为 localhost 环回时，才动态将当前请求 Origin 写入响应头，杜绝通配符漏洞与任意来源反射；非法来源直接返回 `null` 拒绝跨域；
+- **`CorsOriginProvider` SPI 扩展点**：支持实现 `CorsOriginProvider` 并在 Spring 容器注册 Bean，从租户数据库或分布式缓存中动态查询校验 Origin 合法性。
+
+#### 1:1 实测业务代码范式
+```java
+// 1. 动态跨域调用体验端点
+@GetMapping("/cors/ping")
+public Result<String> testCorsPing() {
+    return Result.success("CORS 动态跨域凭证校验成功");
+}
+
+// 2. 自定义 CorsOriginProvider SPI 扩展实现（生产动态接管）
+@Component
+public class DatabaseCorsOriginProvider implements CorsOriginProvider {
+    @Override
+    public boolean isAllowed(String origin) {
+        // 从租户数据库或 Redis 中动态查询是否为合法租户域名
+        return tenantDomainService.isValidOrigin(origin);
     }
 }
 ```
 
-### 国密 SM2/SM3 签名算法引擎
-模块内建纯 JDK 17 原生国密 `Sm2Signer`（实现 `ApiSigner` 接口），零引入任何 Bouncy Castle 外部依赖：
-```java
-// 1. 生成全新 SM2 密钥对（包含 Hex 与 Base64 格式）
-Sm2Signer.Sm2KeyPair keyPair = Sm2Signer.generateKeyPair();
-String privateKeyHex = keyPair.privateKeyHex();
-String publicKeyHex = keyPair.publicKeyHex();
-
-// 2. 客户端使用私钥加签
-Sm2Signer signer = new Sm2Signer();
-String signature = signer.sign(canonicalString, privateKeyHex);
-
-// 3. 服务端或验签方使用公钥验签（自动支持 ASN.1 DER 与裸 64 字节 Base64 签名）
-boolean valid = signer.verify(canonicalString, signature, publicKeyHex);
-```
 
 ---
 
@@ -1394,6 +1780,8 @@ ServletUtil.setDownloadHeader(response, "用户花名册.xlsx");
 
 ---
 
+---
+
 ## 14. 云原生就绪探针排空与优雅停机治理 (`AtengGracefulShutdownHandler`)
 
 ### 场景痛点
@@ -1430,256 +1818,6 @@ spec:
 ```
 
 ---
-
-## 17. HTTP 安全响应头防御与 ETag 协商缓存 (`SecurityHeadersFilter` & `ShallowEtagHeaderFilter`)
-
-### 场景痛点
-1. **容器指纹泄露**：Web 容器默认向外暴露 `Server: Apache-Coyote/1.1` 等响应头，极易被自动化探测扫描识别出确切底层中间件版本进而遭受定向漏洞攻击；
-2. **等保三级基线防御缺失**：缺失 `X-Content-Type-Options: nosniff`（MIME 类型嗅探）、`X-Frame-Options`（点击劫持）、`X-XSS-Protection` 与 `Referrer-Policy` 响应头，难以通过企业安全合规基线与第三方渗透审计；
-3. **低频静态/字典接口带宽浪费**：客户端频繁轮询或读取相对固定的业务字典与元数据，缺乏标准 ETag / 304 协商缓存机制，造成不必要的网络带宽与服务器吞吐消耗。
-
-### 核心机制与不变量
-- **安全响应头防御 (`SecurityHeadersFilter`)**：
-  - 默认开启（`ateng.boot.web.security-headers.enabled=true`），优先级仅次于慢请求过滤器（`ORDER = Ordered.HIGHEST_PRECEDENCE + 4`）；
-  - 自动向 HTTP 响应注入标准基线响应头：
-    - `X-Content-Type-Options: nosniff`
-    - `X-Frame-Options: SAMEORIGIN`
-    - `X-XSS-Protection: 1; mode=block`
-    - `Referrer-Policy: strict-origin-when-cross-origin`
-    - 可选配置 `Content-Security-Policy` 与 `Permissions-Policy`
-  - **`containsHeader` 守卫不变量**：仅在响应中不存在同名响应头时注入，严格保障反向代理网关或下游业务 Controller 自定义设置的特定安全头不被覆盖；
-  - **`Server` 容器特征彻底压制**：通过 `SecurityHeadersResponseWrapper` 拦截并过滤下游所有写向 `Server` 响应头的操作，彻底消除应用服务器特征。
-- **ETag 协商缓存 (`ShallowEtagHeaderFilter`)**：
-  - 按需启用（`ateng.boot.web.etag.enabled=true`，默认 `false`）；
-  - 条件装配 Spring 官方 `ShallowEtagHeaderFilter`（`ORDER = SecurityHeadersFilter.ORDER + 1`），自动对响应体字节计算哈希并输出 `ETag` 响应头；
-  - 当客户端在后续请求头携带 `If-None-Match` 时，服务端自动校验摘要，命中未变更时立即返回 `304 Not Modified` 并清空响应体，节省网络带宽。
-
-### 场景端到端代码范式
-```java
-// 1. 固定或低频变动字典数据接口（配合 ETag 实现 304 协商缓存）
-@GetMapping("/cached-dict")
-public Result<Map<String, String>> getCachedDict() {
-    Result<Map<String, String>> result = Result.success(Map.of("status", "ACTIVE", "locale", "zh_CN"));
-    result.setTimestamp(1700000000000L); // 生产场景中亦可返回静态资源或固定业务快照
-    return result;
-}
-
-// 2. 控制器显式设置特定安全头（验证 containsHeader 防覆盖机制）
-@GetMapping("/custom-security-headers")
-public Result<String> getCustomSecurityHeaders(HttpServletResponse response) {
-    response.setHeader("X-Frame-Options", "DENY"); // 保持 DENY，绝不被默认 SAMEORIGIN 覆盖
-    return Result.success("custom-headers-ok");
-}
-```
-
-### 生产配置与扩展范式
-```yaml
-ateng:
-  boot:
-    web:
-      security-headers:
-        # 是否启用安全响应头防御过滤器（默认 true）
-        enabled: true
-        # 是否注入 X-Content-Type-Options: nosniff（默认 true）
-        content-type-options: true
-        # X-Frame-Options 配置（默认 SAMEORIGIN；为 null 或空字符串则不注入）
-        frame-options: "SAMEORIGIN"
-        # X-XSS-Protection 配置（默认 1; mode=block；为 null 或空字符串则不注入）
-        xss-protection: "1; mode=block"
-        # Referrer-Policy 配置（默认 strict-origin-when-cross-origin；为 null 或空字符串则不注入）
-        referrer-policy: "strict-origin-when-cross-origin"
-        # Content-Security-Policy 配置（默认 null，按需配置 CSP 策略字符串）
-        content-security-policy: null
-        # Permissions-Policy 配置（默认 null，按需配置特性权限策略）
-        permissions-policy: null
-        # 是否压制并剥离容器 Server 响应头（默认 true，消除 Tomcat/Undertow 容器指纹）
-        remove-server-header: true
-      etag:
-        # 是否启用基于 ShallowEtagHeaderFilter 的 ETag 协商缓存（默认 false，按需开启）
-        enabled: true
-        # 是否生成弱 ETag（形如 W/"..."，默认 false 为强 ETag）
-        write-weak-etag: false
-```
-
----
-
-## 18. XSS 跨站脚本双轨无害化清洗与字段级富文本豁免 (`XssFilter` & `@XssIgnore`)
-
-### 场景痛点
-1. **跨站脚本注入攻击**：攻击者在 Query 参数、Form 表单或 JSON 请求体注入恶意 `<script>` 脚本或带 `onerror` 事件的 HTML 标签，一旦未经处理存入数据库并回显给用户，极易引发会话劫持与数据泄露；
-2. **富文本业务误伤冲突**：电商商品详情、系统公告、博客文章等业务字段天然需要接收与存储合法的 HTML/Markdown 标签，若采取全局一刀切的硬编码过滤，将导致合法富文本标签被粗暴破坏；
-3. **多协议传输入口不一致**：部分过滤器仅清洗 Servlet 的 Query 参数，而漏掉当下主流的 RESTful JSON 请求体（`@RequestBody`），形成安全死角。
-
-### 核心机制与不变量
-- **双轨无害化清洗模式 (`XssMode`)**：
-  - `XssMode.ESCAPE`（默认）：将 HTML 关键特殊字符转义为标准 HTML 实体（如 `<` 转为 `&lt;`，`>` 转为 `&gt;`，`"` 转为 `&quot;` 等），既消除脚本执行能力，又完整保留用户输入意图；
-  - `XssMode.STRIP`：彻底剥离 `<script>...</script>`、`<style>...</style>`、HTML 注释与 HTML 标签，循环收敛对抗畸形嵌套标签构造，仅保留纯文本；
-- **传输边界全覆盖管道**：
-  - **Query 与 Form 表单**：通过 `XssFilter`（`ORDER = SecurityHeadersFilter.ORDER + 2`）与 `XssHttpServletRequestWrapper` 拦截 `getParameter`、`getParameterValues` 与 `getParameterMap` 并无害化清洗；
-  - **JSON 请求体**：通过 `XssStringDeserializer` 挂载至 Jackson 反序列化管道，对入站 JSON 对象的字符串属性透明清洗；
-- **声明式细粒度豁免 (`@XssIgnore`)**：
-  - 可标注于 DTO 实体字段：精准放行单个富文本字段（如公告正文、Markdown 内容），Jackson 反序列化时跳过清洗；
-  - 可标注于 DTO 实体类：批量放行该 DTO 下的所有 String 属性；
-- **Ant 白名单路径排除 (`exclude-urls`)**：
-  - 命中的 URL 路径（如后台富文本发布端点）自动跳过 `XssFilter` 请求包装，并在请求上下文注入 `XssFilter.XSS_SKIP_ATTRIBUTE` 标记，促使下游 Jackson 反序列化器整体跳过清洗。
-
-### 场景端到端代码范式
-```java
-// 1. 混合 DTO：普通字段自动转义/剔除，正文字段使用 @XssIgnore 安全放行
-@Data
-public class ArticlePublishDTO {
-
-    @NotBlank(message = "文章标题不能为空")
-    private String title; // 自动转义：<script>alert(1)</script> -> &lt;script&gt;alert(1)&lt;/script&gt;
-
-    @NotBlank(message = "文章正文不能为空")
-    @XssIgnore
-    private String content; // 豁免清洗：保留原始 HTML <h1>Title</h1><p>Content</p>
-
-    private String author; // 自动清洗
-}
-
-// 2. 类级别豁免 DTO：整实体放行
-@Data
-@XssIgnore
-public class AnnouncementPublishDTO {
-    private String title;
-    private String content;
-}
-
-// 3. 控制器接收并处理
-@RestController
-@RequestMapping("/api/sample/xss")
-public class WebXssSampleController {
-
-    @PostMapping("/article")
-    public Result<ArticlePublishDTO> publishArticle(@Valid @RequestBody ArticlePublishDTO dto) {
-        return Result.success(dto);
-    }
-
-    @GetMapping("/query")
-    public Result<String> search(@RequestParam String keyword) {
-        return Result.success(keyword); // Query 参数经 XssHttpServletRequestWrapper 自动清洗
-    }
-}
-```
-
-### 生产配置与扩展范式
-```yaml
-ateng:
-  boot:
-    web:
-      xss:
-        # 是否启用 XSS 跨站脚本安全清洗（默认 false，按需开启）
-        enabled: true
-        # 清洗模式（默认 ESCAPE 转义实体；可选 STRIP 剔除标签）
-        mode: ESCAPE
-        # XSS 清洗排除路径白名单（Ant 风格匹配）
-        exclude-urls:
-          - "/api/sample/xss/excluded/**"
-          - "/api/admin/announcement/**"
-```
-
----
-
-## 19. IP 访问控制防火墙与 CIDR 子网判定 (`@IpAccessControl` & `IpAccessControlFilter`)
-
-### 场景痛点
-1. **敏感内部端点公网暴露风险**：运维管理端点（如 `/admin/**`、`/actuator/**`）或特定核心业务接口若暴露在外网，极易遭遇撞库、未授权越权扫描或恶意滥用；
-2. **传统单 IP 规则难以适配复杂网段**：内网 VPC、云原生微服务集群及企业专用通道通常基于 CIDR 子网分配（如 `10.0.0.0/8`、`192.168.1.0/24` 或 IPv6 `2001:db8::/32`），传统框架仅支持单 IP 穷举，维护繁琐且极易疏漏；
-3. **拦截体验与协议标准失衡**：部分防护组件直接断开连接或粗暴返回非标文本，缺乏兼顾交互统一契约（ADR-0004 统一 HTTP 200 + Result 403）与物理阻断（HTTP 403）的双模能力，且缺乏可审计的阻断标识。
-
-### 核心机制与不变量
-- **纯 JDK 原生零依赖位运算引擎 (`IpUtil.isInRange`)**：
-  - 基于 JDK 17 `InetAddress` 原生字节与掩码位运算，精确支持 IPv4（0~32 位前缀）与 IPv6（0~128 位前缀）单 IP 与 CIDR 网段判定；
-  - 内建纯数值 IP 格式预先校验机制，**绝对杜绝域名网络 DNS 递归解析**，保障离线自洽与亚微秒级判定性能；
-- **路径级与方法级双重防卫体系**：
-  - **路径级全局过滤器 (`IpAccessControlFilter`)**：执行优先级置于 `TraceFilter` 之后（`ORDER = TraceFilter.ORDER + 1`），在进入 Controller 前执行无状态快速判定，支持 Ant 风格通配符与 `exclude-urls` 白名单路径豁免；
-  - **方法级/类级别声明式切面 (`@IpAccessControl`)**：支持标注于 Controller 类或具体方法上，方法级配置强覆盖类级别，实现粒度精细化的接口访问权限治理；
-- **白名单与黑名单双模策略 (`IpAccessMode`)**：
-  - `IpAccessMode.WHITE_LIST`（默认）：仅允许规则清单内的客户端 IP 访问，未命中直接阻断；
-  - `IpAccessMode.BLACK_LIST`：阻断规则清单内的恶意 IP，未命中平滑放行；
-- **契约规范与物理切断双模响应**：
-  - **默认规范（ADR-0004 契约）**：阻断时统一返回 HTTP 200，响应体封装为 `Result.fail(403, ...)`，并在 HTTP 响应头注入 `X-Denied-Reason: IP_BLOCKED`；
-  - **物理切断模式 (`httpStatus403 = true`)**：直接返回 HTTP 403 Forbidden 物理状态码，适配防火墙或负载均衡层前置快速中断。
-
-### 场景端到端代码范式
-```java
-// 1. 方法级白名单控制：仅允许 127.0.0.1 及 192.168.1.0/24 访问
-@GetMapping("/whitelist")
-@IpAccessControl(mode = IpAccessMode.WHITE_LIST, rules = {"127.0.0.1", "192.168.1.0/24"})
-public Result<String> whitelistEndpoint() {
-    return Result.success("白名单放行成功");
-}
-
-// 2. 方法级黑名单控制：拒绝 10.0.0.0/8 与 203.0.113.100 访问
-@GetMapping("/blacklist")
-@IpAccessControl(mode = IpAccessMode.BLACK_LIST, rules = {"10.0.0.0/8", "203.0.113.100"})
-public Result<String> blacklistEndpoint() {
-    return Result.success("黑名单未命中，放行成功");
-}
-
-// 3. CIDR 子网与 IPv6 网段白名单
-@GetMapping("/cidr-ipv6")
-@IpAccessControl(mode = IpAccessMode.WHITE_LIST, rules = {"172.16.0.0/12", "2001:db8::/32", "::1"})
-public Result<Map<String, String>> cidrIpv6Endpoint() {
-    return Result.success(Map.of("network", "CIDR-IPv6-Allowed"));
-}
-
-// 4. 自定义拒绝提示文案
-@GetMapping("/custom-message")
-@IpAccessControl(
-        mode = IpAccessMode.WHITE_LIST,
-        rules = {"192.168.1.200"},
-        message = "内部核心机房特许通道，当前 IP 无权访问"
-)
-public Result<String> customMessageEndpoint() {
-    return Result.success("特许通道放行成功");
-}
-
-// 5. 物理 403 切断模式：返回 HTTP 403 状态码
-@GetMapping("/http-403")
-@IpAccessControl(
-        mode = IpAccessMode.WHITE_LIST,
-        rules = {"192.168.1.200"},
-        httpStatus403 = true
-)
-public Result<String> http403Endpoint() {
-    return Result.success("特许通道放行成功");
-}
-```
-
-### 生产配置与扩展范式
-```yaml
-ateng:
-  boot:
-    web:
-      ip-access-control:
-        # 是否启用 IP 访问控制模块（默认 true）
-        enabled: true
-        # 是否启用 HTTP 403 物理切断模式（默认 false，遵循 ADR-0004 返回 HTTP 200 + Result.fail(403)）
-        http-status-403: false
-        # 全局默认拒绝提示文案
-        default-denied-message: "IP 访问受限，拒绝访问"
-        # 全局校验模式（默认 WHITE_LIST）
-        mode: WHITE_LIST
-        # 全局 IP / CIDR 规则清单
-        rules:
-          - "127.0.0.1"
-          - "192.168.1.0/24"
-        filter:
-          # 是否启用 URL 路径级全局过滤器（默认 false，按需开启）
-          enabled: true
-          # 过滤器拦截匹配的 URL 路径模式列表（Ant 风格匹配）
-          url-patterns:
-            - "/api/sample/ip-access/filter-admin/**"
-          # 过滤器排除放行的 URL 路径模式列表（Ant 风格匹配）
-          exclude-urls:
-            - "/api/sample/ip-access/filter-admin/public-ping"
-          # 过滤器专用规则清单（为空时自动回退继承全局 rules）
-          rules:
-            - "192.168.1.0/24"
-```
 
 ---
 

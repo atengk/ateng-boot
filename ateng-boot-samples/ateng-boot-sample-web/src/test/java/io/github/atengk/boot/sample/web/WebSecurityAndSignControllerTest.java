@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.web;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.util.DigestUtil;
 import io.github.atengk.boot.sample.web.dto.OrderSignDTO;
+import io.github.atengk.boot.sample.web.dto.PrepareSignHeadersDTO;
 import io.github.atengk.boot.web.sign.aspect.ApiSignAspect;
 import io.github.atengk.boot.web.sign.signer.HmacSha256Signer;
 import io.github.atengk.boot.web.sign.util.SignCanonicalUtil;
@@ -28,15 +29,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * API 双向数据加签验签与防重放端到端集成测试（HMAC-SHA256 算法）
+ * 传输安全防护网与 API 双向加签验签端到端集成测试（HMAC-SHA256 算法）
+ * 覆盖合法请求加签放行、防重放阻断、篡改拦截、辅助头生成及安全接口
  *
  * @author Ateng
- * @since 2026-10-19
+ * @since 2026-11-08
  */
 @SpringBootTest
 @AutoConfigureMockMvc
 @DisplayName("API 双向数据加签验签与防重放集成测试 (HMAC-SHA256)")
-class WebSecuritySignSampleControllerTest {
+class WebSecurityAndSignControllerTest {
 
     private static final String SECRET_KEY = "TestSecretKey123";
 
@@ -62,7 +64,7 @@ class WebSecuritySignSampleControllerTest {
 
         String canonical = SignCanonicalUtil.buildRequestCanonicalString(
                 "POST",
-                "/api/sample/sign/orders",
+                "/sample/web/security/sign/orders",
                 timestamp,
                 nonce,
                 Map.of(),
@@ -70,7 +72,7 @@ class WebSecuritySignSampleControllerTest {
         );
         String signature = signer.sign(canonical, SECRET_KEY);
 
-        MvcResult result = mockMvc.perform(post("/api/sample/sign/orders")
+        MvcResult result = mockMvc.perform(post("/sample/web/security/sign/orders")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonBody)
                         .header(ApiSignAspect.HEADER_TIMESTAMP, timestamp)
@@ -78,7 +80,8 @@ class WebSecuritySignSampleControllerTest {
                         .header(ApiSignAspect.HEADER_SIGNATURE, signature))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("ORD_SIGNED_ORD_SIGN_001"))
+                .andExpect(jsonPath("$.data.orderNo").value("ORD_SIGN_001"))
+                .andExpect(jsonPath("$.data.status").value("CONFIRMED"))
                 .andExpect(header().exists(ApiSignAspect.HEADER_SIGNATURE))
                 .andExpect(header().string(ApiSignAspect.HEADER_NONCE, nonce))
                 .andExpect(header().string(ApiSignAspect.HEADER_TIMESTAMP, timestamp))
@@ -100,14 +103,14 @@ class WebSecuritySignSampleControllerTest {
         dto.setAmount(new BigDecimal("10.00"));
         String jsonBody = objectMapper.writeValueAsString(dto);
 
-        // 构造 120 秒前的时间戳（超出 10 秒窗口）
+        // 构造 120 秒前的时间戳（超出 60 秒窗口）
         String expiredTimestamp = String.valueOf(System.currentTimeMillis() - 120_000L);
         String nonce = UUID.randomUUID().toString().replace("-", "");
         String bodySha256 = DigestUtil.sha256Hex(jsonBody);
 
         String canonical = SignCanonicalUtil.buildRequestCanonicalString(
                 "POST",
-                "/api/sample/sign/orders",
+                "/sample/web/security/sign/orders",
                 expiredTimestamp,
                 nonce,
                 Map.of(),
@@ -115,7 +118,7 @@ class WebSecuritySignSampleControllerTest {
         );
         String signature = signer.sign(canonical, SECRET_KEY);
 
-        mockMvc.perform(post("/api/sample/sign/orders")
+        mockMvc.perform(post("/sample/web/security/sign/orders")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonBody)
                         .header(ApiSignAspect.HEADER_TIMESTAMP, expiredTimestamp)
@@ -140,7 +143,7 @@ class WebSecuritySignSampleControllerTest {
 
         String canonical = SignCanonicalUtil.buildRequestCanonicalString(
                 "POST",
-                "/api/sample/sign/orders",
+                "/sample/web/security/sign/orders",
                 timestamp,
                 sharedNonce,
                 Map.of(),
@@ -149,7 +152,7 @@ class WebSecuritySignSampleControllerTest {
         String signature = signer.sign(canonical, SECRET_KEY);
 
         // 首次请求成功
-        mockMvc.perform(post("/api/sample/sign/orders")
+        mockMvc.perform(post("/sample/web/security/sign/orders")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonBody)
                         .header(ApiSignAspect.HEADER_TIMESTAMP, timestamp)
@@ -159,7 +162,7 @@ class WebSecuritySignSampleControllerTest {
                 .andExpect(jsonPath("$.code").value(200));
 
         // 第二次携带相同 Nonce 重放被阻断
-        mockMvc.perform(post("/api/sample/sign/orders")
+        mockMvc.perform(post("/sample/web/security/sign/orders")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonBody)
                         .header(ApiSignAspect.HEADER_TIMESTAMP, timestamp)
@@ -184,7 +187,7 @@ class WebSecuritySignSampleControllerTest {
 
         String canonical = SignCanonicalUtil.buildRequestCanonicalString(
                 "POST",
-                "/api/sample/sign/orders",
+                "/sample/web/security/sign/orders",
                 timestamp,
                 nonce,
                 Map.of(),
@@ -195,7 +198,7 @@ class WebSecuritySignSampleControllerTest {
         // 篡改请求体内容
         String tamperedJson = originalJson.replace("100.00", "0.01");
 
-        mockMvc.perform(post("/api/sample/sign/orders")
+        mockMvc.perform(post("/sample/web/security/sign/orders")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(tamperedJson)
                         .header(ApiSignAspect.HEADER_TIMESTAMP, timestamp)
@@ -214,7 +217,7 @@ class WebSecuritySignSampleControllerTest {
         dto.setAmount(new BigDecimal("10.00"));
         String jsonBody = objectMapper.writeValueAsString(dto);
 
-        mockMvc.perform(post("/api/sample/sign/orders")
+        mockMvc.perform(post("/sample/web/security/sign/orders")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonBody))
                 .andExpect(status().isOk())
@@ -231,7 +234,7 @@ class WebSecuritySignSampleControllerTest {
 
         String canonical = SignCanonicalUtil.buildRequestCanonicalString(
                 "GET",
-                "/api/sample/sign/query",
+                "/sample/web/security/sign/query",
                 timestamp,
                 nonce,
                 Map.of("code", new String[]{"VIP001"}),
@@ -239,14 +242,14 @@ class WebSecuritySignSampleControllerTest {
         );
         String signature = signer.sign(canonical, SECRET_KEY);
 
-        mockMvc.perform(get("/api/sample/sign/query")
+        mockMvc.perform(get("/sample/web/security/sign/query")
                         .param("code", "VIP001")
                         .header(ApiSignAspect.HEADER_TIMESTAMP, timestamp)
                         .header(ApiSignAspect.HEADER_NONCE, nonce)
                         .header(ApiSignAspect.HEADER_SIGNATURE, signature))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("DATA_VIP001"))
+                .andExpect(jsonPath("$.data.merchantCode").value("VIP001"))
                 .andExpect(header().exists(ApiSignAspect.HEADER_SIGNATURE));
     }
 
@@ -264,7 +267,7 @@ class WebSecuritySignSampleControllerTest {
 
         String canonical = SignCanonicalUtil.buildRequestCanonicalString(
                 "POST",
-                "/api/sample/sign/inbound",
+                "/sample/web/security/sign/inbound",
                 timestamp,
                 nonce,
                 Map.of(),
@@ -272,7 +275,7 @@ class WebSecuritySignSampleControllerTest {
         );
         String signature = signer.sign(canonical, SECRET_KEY);
 
-        mockMvc.perform(post("/api/sample/sign/inbound")
+        mockMvc.perform(post("/sample/web/security/sign/inbound")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonBody)
                         .header(ApiSignAspect.HEADER_TIMESTAMP, timestamp)
@@ -280,18 +283,71 @@ class WebSecuritySignSampleControllerTest {
                         .header(ApiSignAspect.HEADER_SIGNATURE, signature))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderNo").value("ORD_INBOUND_ONLY"))
                 .andExpect(header().doesNotExist(ApiSignAspect.HEADER_SIGNATURE));
     }
 
     @Test
     @DisplayName("8. 仅开启出站加签（verifyRequest=false）入站免签，出站强制加签")
     void shouldSignOutboundOnlyWithoutInboundVerification() throws Exception {
-        mockMvc.perform(get("/api/sample/sign/outbound"))
+        mockMvc.perform(get("/sample/web/security/sign/outbound"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("SECRET_REPORT_DATA"))
+                .andExpect(jsonPath("$.data.reportTitle").value("2026年第四季度结算报表"))
                 .andExpect(header().exists(ApiSignAspect.HEADER_SIGNATURE))
                 .andExpect(header().exists(ApiSignAspect.HEADER_TIMESTAMP))
                 .andExpect(header().exists(ApiSignAspect.HEADER_NONCE));
+    }
+
+    @Test
+    @DisplayName("9. 辅助接口：POST /sign/prepare-headers 动态计算签名头与 cURL 体验命令")
+    void shouldPrepareSignHeadersSuccessfully() throws Exception {
+        PrepareSignHeadersDTO dto = PrepareSignHeadersDTO.builder()
+                .method("POST")
+                .uri("/sample/web/security/sign/orders")
+                .body("{\"orderNo\":\"ORD_PREPARE_001\",\"amount\":66.66}")
+                .algorithm("HMAC")
+                .secretOrPrivateKey(SECRET_KEY)
+                .appId("test-app")
+                .build();
+
+        MvcResult result = mockMvc.perform(post("/sample/web/security/sign/prepare-headers")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(dto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.X-Timestamp").isNotEmpty())
+                .andExpect(jsonPath("$.data.X-Nonce").isNotEmpty())
+                .andExpect(jsonPath("$.data.X-Signature").isNotEmpty())
+                .andExpect(jsonPath("$.data.curlSample").isNotEmpty())
+                .andReturn();
+
+        // 提取计算出的签名头，全真请求受保护端点
+        String respJson = result.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> respMap = (Map<String, Object>) objectMapper.readValue(respJson, Map.class).get("data");
+
+        String timestamp = (String) respMap.get("X-Timestamp");
+        String nonce = (String) respMap.get("X-Nonce");
+        String signature = (String) respMap.get("X-Signature");
+
+        mockMvc.perform(post("/sample/web/security/sign/orders")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(dto.getBody())
+                        .header("X-Timestamp", timestamp)
+                        .header("X-Nonce", nonce)
+                        .header("X-Signature", signature))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderNo").value("ORD_PREPARE_001"));
+    }
+
+    @Test
+    @DisplayName("10. 基础端点直接响应成功：CORS 预留端点探测")
+    void shouldAccessCorsPingDirectly() throws Exception {
+        mockMvc.perform(get("/sample/web/security/cors/ping"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("CORS 动态跨域凭证校验成功"));
     }
 }

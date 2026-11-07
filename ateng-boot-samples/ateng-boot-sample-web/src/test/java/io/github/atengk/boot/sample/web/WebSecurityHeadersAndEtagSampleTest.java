@@ -34,7 +34,7 @@ class WebSecurityHeadersAndEtagSampleTest {
     @Test
     @DisplayName("1. 安全响应头：自动注入等保三级基准安全响应头，并压制剥离 Server 容器特征")
     void shouldInjectDefaultSecurityHeadersAndSuppressServerHeader() throws Exception {
-        mockMvc.perform(get("/api/sample/runtime/cached-dict"))
+        mockMvc.perform(get("/sample/web/security/etag/dict"))
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-Content-Type-Options", "nosniff"))
                 .andExpect(header().string("X-Frame-Options", "SAMEORIGIN"))
@@ -48,14 +48,14 @@ class WebSecurityHeadersAndEtagSampleTest {
     @Test
     @DisplayName("2. 防覆盖保护：上游或控制器已设置特定安全头时，containsHeader 守卫保持用户自定义值")
     void shouldPreserveCustomSecurityHeaderWhenAlreadyPresent() throws Exception {
-        mockMvc.perform(get("/api/sample/runtime/custom-security-headers"))
+        mockMvc.perform(get("/sample/web/security/headers/custom"))
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-Frame-Options", "DENY"))
                 .andExpect(header().string("X-Content-Type-Options", "nosniff"))
                 .andExpect(header().string("X-XSS-Protection", "1; mode=block"))
                 .andExpect(header().string("Referrer-Policy", "strict-origin-when-cross-origin"))
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("custom-headers-ok"));
+                .andExpect(jsonPath("$.data").value("自定义安全响应头已设置"));
     }
 
     @Test
@@ -64,7 +64,7 @@ class WebSecurityHeadersAndEtagSampleTest {
         String fixedTrace = "fixed-trace-etag-001";
 
         // 1. 首次请求：期望返回 200，并生成响应头 ETag
-        MvcResult firstResult = mockMvc.perform(get("/api/sample/runtime/cached-dict")
+        MvcResult firstResult = mockMvc.perform(get("/sample/web/security/etag/dict")
                         .header("X-Trace-Id", fixedTrace))
                 .andExpect(status().isOk())
                 .andExpect(header().exists("ETag"))
@@ -75,7 +75,7 @@ class WebSecurityHeadersAndEtagSampleTest {
         assertThat(firstResult.getResponse().getContentAsString()).isNotEmpty();
 
         // 2. 二次请求：携带相同 If-None-Match 条件头，期望返回 304 Not Modified，且响应体为空
-        MvcResult secondResult = mockMvc.perform(get("/api/sample/runtime/cached-dict")
+        MvcResult secondResult = mockMvc.perform(get("/sample/web/security/etag/dict")
                         .header("X-Trace-Id", fixedTrace)
                         .header("If-None-Match", etag))
                 .andExpect(status().isNotModified())
@@ -90,7 +90,7 @@ class WebSecurityHeadersAndEtagSampleTest {
     void shouldReturn200WhenEtagMismatched() throws Exception {
         String fixedTrace = "fixed-trace-etag-002";
 
-        mockMvc.perform(get("/api/sample/runtime/cached-dict")
+        mockMvc.perform(get("/sample/web/security/etag/dict")
                         .header("X-Trace-Id", fixedTrace)
                         .header("If-None-Match", "\"mismatched-etag-value\""))
                 .andExpect(status().isOk())

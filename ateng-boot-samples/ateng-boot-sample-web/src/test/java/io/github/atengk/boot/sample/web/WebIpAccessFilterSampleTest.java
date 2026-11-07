@@ -25,8 +25,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "ateng.boot.web.ip-access-control.filter.enabled=true",
         "ateng.boot.web.ip-access-control.filter.mode=WHITE_LIST",
         "ateng.boot.web.ip-access-control.filter.rules[0]=192.168.1.0/24",
-        "ateng.boot.web.ip-access-control.filter.url-patterns[0]=/api/sample/ip-access/filter-admin/**",
-        "ateng.boot.web.ip-access-control.filter.exclude-urls[0]=/api/sample/ip-access/filter-admin/public-ping"
+        "ateng.boot.web.ip-access-control.filter.url-patterns[0]=/sample/web/security/ip/filter-admin/**",
+        "ateng.boot.web.ip-access-control.filter.exclude-urls[0]=/sample/web/security/ip/filter-admin/public-ping"
 })
 @AutoConfigureMockMvc
 @DisplayName("URL 路径级 IP 访问控制过滤器场景端到端测试")
@@ -38,20 +38,20 @@ class WebIpAccessFilterSampleTest {
     @Test
     @DisplayName("1. 路径级过滤器白名单放行：符合 rules 的客户端 IP 访问受限路径")
     void shouldAllowWhitelistedIpOnFilterPath() throws Exception {
-        mockMvc.perform(get("/api/sample/ip-access/filter-admin/dashboard")
+        mockMvc.perform(get("/sample/web/security/ip/filter-admin/dashboard")
                         .with(request -> {
                             request.setRemoteAddr("192.168.1.66");
                             return request;
                         }))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("管理员仪表盘数据"));
+                .andExpect(jsonPath("$.data").value("管理员特权控制台数据"));
     }
 
     @Test
     @DisplayName("2. 路径级过滤器拦截：非白名单客户端 IP 访问受限路径被优雅拦截")
     void shouldBlockNonWhitelistedIpOnFilterPath() throws Exception {
-        mockMvc.perform(get("/api/sample/ip-access/filter-admin/dashboard")
+        mockMvc.perform(get("/sample/web/security/ip/filter-admin/dashboard")
                         .with(request -> {
                             request.setRemoteAddr("10.0.0.99");
                             return request;
@@ -65,7 +65,7 @@ class WebIpAccessFilterSampleTest {
     @Test
     @DisplayName("3. 路径级过滤器排除白名单：exclude-urls 路径跳过 IP 校验放行")
     void shouldBypassFilterOnExcludedUrl() throws Exception {
-        mockMvc.perform(get("/api/sample/ip-access/filter-admin/public-ping")
+        mockMvc.perform(get("/sample/web/security/ip/filter-admin/public-ping")
                         .with(request -> {
                             request.setRemoteAddr("10.0.0.99"); // 非白名单 IP
                             return request;

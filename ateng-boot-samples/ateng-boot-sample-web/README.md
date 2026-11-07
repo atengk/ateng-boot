@@ -79,6 +79,24 @@
 | **营销优惠券领取精准防重** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/coupon` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/coupon?couponCode=CPN_8888"` |
 | **业务异常幂等锁自动释放** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/fail-retry` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/fail-retry?bizId=BIZ_001&fail=false"` |
 
+### 3.4 传输安全防护网、双向加签与边界防火墙 (`WebSecurityAndSignController`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **实时计算签名头 (一键体验利器)** | `WebSecurityAndSignController` | `POST /sample/web/security/sign/prepare-headers` | `curl -X POST "http://localhost:8080/sample/web/security/sign/prepare-headers" -H "Content-Type: application/json" -d "{\"uri\":\"/sample/web/security/sign/orders\",\"body\":\"{\\\"orderNo\\\":\\\"ORD_001\\\",\\\"amount\\\":99.9}\"}"` |
+| **敏感报表出站强制加签** | `WebSecurityAndSignController` | `GET /sample/web/security/sign/outbound` | `curl "http://localhost:8080/sample/web/security/sign/outbound"` |
+| **资讯发布与富文本豁免 (XSS)** | `WebSecurityAndSignController` | `POST /sample/web/security/xss/article` | `curl -X POST "http://localhost:8080/sample/web/security/xss/article" -H "Content-Type: application/json" -d "{\"title\":\"<script>alert(1)</script>安全资讯\",\"content\":\"<p>富文本HTML内容</p>\",\"author\":\"admin\"}"` |
+| **类级 XSS 豁免公告发布** | `WebSecurityAndSignController` | `POST /sample/web/security/xss/announcement` | `curl -X POST "http://localhost:8080/sample/web/security/xss/announcement" -H "Content-Type: application/json" -d "{\"title\":\"<h1>全站系统公告</h1>\",\"content\":\"<div>全站公告富文本</div>\"}"` |
+| **Query 搜索参数 XSS 清洗** | `WebSecurityAndSignController` | `GET /sample/web/security/xss/query` | `curl "http://localhost:8080/sample/web/security/xss/query?keyword=%3Cscript%3Ealert(1)%3C/script%3E关键词"` |
+| **方法级 IP 白名单放行** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/whitelist` | `curl "http://localhost:8080/sample/web/security/ip/whitelist"` |
+| **方法级 IP 黑名单校验** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/blacklist` | `curl "http://localhost:8080/sample/web/security/ip/blacklist"` |
+| **CIDR 子网掩码与 IPv6 网段** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/cidr-ipv6` | `curl "http://localhost:8080/sample/web/security/ip/cidr-ipv6"` |
+| **自定义拒绝文案 (HTTP 200)** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/custom-message` | `curl "http://localhost:8080/sample/web/security/ip/custom-message"` |
+| **物理 403 切断模式** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/http-403` | `curl -i "http://localhost:8080/sample/web/security/ip/http-403"` |
+| **业务安全响应头防覆盖** | `WebSecurityAndSignController` | `GET /sample/web/security/headers/custom` | `curl -i "http://localhost:8080/sample/web/security/headers/custom"` |
+| **ETag 协商缓存与 304 校验** | `WebSecurityAndSignController` | `GET /sample/web/security/etag/dict` | `curl -i "http://localhost:8080/sample/web/security/etag/dict"` |
+| **CORS 动态跨域凭证反射** | `WebSecurityAndSignController` | `GET /sample/web/security/cors/ping` | `curl -i "http://localhost:8080/sample/web/security/cors/ping" -H "Origin: http://localhost:3000"` |
+
 ---
 
 ## 4. 全真自动化回归命令

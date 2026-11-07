@@ -36,7 +36,7 @@ class WebXssStripModeSampleTest {
     void shouldStripNormalFieldAndPreserveXssIgnoreField() throws Exception {
         String json = "{\"title\":\"<b>Clean Title</b><script>alert(1)</script>\",\"content\":\"<h1>Rich Body</h1>\",\"author\":\"<img src=x onerror=alert(1)>admin\"}";
 
-        mockMvc.perform(post("/api/sample/xss/article")
+        mockMvc.perform(post("/sample/web/security/xss/article")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())
@@ -49,7 +49,7 @@ class WebXssStripModeSampleTest {
     @Test
     @DisplayName("2. STRIP 模式：Query 搜索参数中 HTML 标签与恶意脚本被彻底剔除")
     void shouldStripQueryParams() throws Exception {
-        mockMvc.perform(get("/api/sample/xss/query")
+        mockMvc.perform(get("/sample/web/security/xss/query")
                         .param("keyword", "<script>alert('x')</script>keyword-only"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
