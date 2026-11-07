@@ -390,19 +390,7 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
         }
 
         // 3. 跨号抢占冲突防卫拦截与持久化业务 SPI 绑定账号
-        SocialUserDetailsService detailsService = userDetailsServiceObjectProvider.getIfAvailable();
-        if (detailsService != null) {
-            String existingUserId = detailsService.loadUserIdBySocialUser(effectiveAppKey, socialUser);
-            if (existingUserId != null && !existingUserId.isBlank() && !existingUserId.equals(userId)) {
-                log.warn("Social account already bound to another user: appKey=[{}], openId=[{}], existingUserId=[{}], currentUserId=[{}]",
-                        effectiveAppKey, socialUser.getOpenId(), existingUserId, userId);
-                throw new SocialAlreadyBoundException("该第三方社交账号已被其他本地用户绑定: existingUserId=" + existingUserId
-                        + ", appKey=" + effectiveAppKey + ", openId=" + socialUser.getOpenId());
-            }
-            detailsService.bindSocialUser(userId, effectiveAppKey, socialUser);
-        } else {
-            log.warn("SocialUserDetailsService is not provided, skipping local user binding persistence: userId=[{}], appKey=[{}]", userId, effectiveAppKey);
-        }
+        checkConflictAndBind(userId, effectiveAppKey, socialUser);
 
         // 4. 广播账号绑定完成领域事件
         publishEvent(new SocialBoundEvent(this, userId, effectiveAppKey, socialUser));
@@ -492,7 +480,23 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
     }
 
     private SocialUser executeDirectBindPersistence(String userId, String appKey, SocialUser socialUser) {
-        // 跨号抢占冲突防卫拦截
+        // 跨号抢占冲突防卫拦截与持久化业务 SPI 绑定账号
+        checkConflictAndBind(userId, appKey, socialUser);
+
+        log.info("Social account directly bound successfully: userId=[{}], appKey=[{}], openId=[{}]",
+                userId, appKey, socialUser.getOpenId());
+        publishEvent(new SocialBoundEvent(this, userId, appKey, socialUser));
+        return socialUser;
+    }
+
+    /**
+     * 校验跨号抢占冲突并调用持久化业务 SPI 绑定账号
+     *
+     * @param userId     本地系统用户唯一标识
+     * @param appKey     社交应用唯一标识
+     * @param socialUser 第三方用户信息
+     */
+    private void checkConflictAndBind(String userId, String appKey, SocialUser socialUser) {
         SocialUserDetailsService detailsService = userDetailsServiceObjectProvider != null
                 ? userDetailsServiceObjectProvider.getIfAvailable()
                 : null;
@@ -508,11 +512,6 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
         } else {
             log.warn("SocialUserDetailsService is not provided, skipping local user binding persistence: userId=[{}], appKey=[{}]", userId, appKey);
         }
-
-        log.info("Social account directly bound successfully: userId=[{}], appKey=[{}], openId=[{}]",
-                userId, appKey, socialUser.getOpenId());
-        publishEvent(new SocialBoundEvent(this, userId, appKey, socialUser));
-        return socialUser;
     }
 
     /**
@@ -882,23 +881,13 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
      * 在受管应用上下文中执行操作，确保应用标识绑定与确定性现场清理
      */
     private <T> T executeWithAppKey(String appKey, Supplier<T> action) {
-        CurrentSocialAppContextHolder.setAppKey(appKey);
-        try {
-            return action.get();
-        } finally {
-            CurrentSocialAppContextHolder.clear();
-        }
+        return CurrentSocialAppContextHolder.runWithAppKey(appKey, action);
     }
 
     /**
      * 在受管应用上下文中执行操作（无返回值版本）
      */
     private void executeWithAppKey(String appKey, Runnable action) {
-        CurrentSocialAppContextHolder.setAppKey(appKey);
-        try {
-            action.run();
-        } finally {
-            CurrentSocialAppContextHolder.clear();
-        }
+        CurrentSocialAppContextHolder.runWithAppKey(appKey, action);
     }
 }

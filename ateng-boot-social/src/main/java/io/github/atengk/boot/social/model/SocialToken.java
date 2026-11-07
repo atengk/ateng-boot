@@ -38,7 +38,7 @@ public class SocialToken implements Serializable {
     private String refreshToken;
 
     /**
-     * 访问令牌有效时长（秒）
+     * 访问令牌有效时长（单位：秒，遵循 OAuth2 规范与 Anduin 原始契约；应用侧建议优先使用 {@link #getExpireDuration()} 获取强类型对象）
      */
     private int expireIn;
 

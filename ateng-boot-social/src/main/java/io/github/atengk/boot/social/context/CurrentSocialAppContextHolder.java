@@ -1,5 +1,8 @@
 package io.github.atengk.boot.social.context;
 
+import java.util.Objects;
+import java.util.function.Supplier;
+
 /**
  * 当前线程社交应用调用上下文持有者
  * <p>
@@ -45,5 +48,42 @@ public final class CurrentSocialAppContextHolder {
      */
     public static void clear() {
         CURRENT_APP_KEY.remove();
+    }
+
+    /**
+     * 在指定应用上下文中执行业务逻辑并安全恢复现场
+     *
+     * @param appKey   社交应用唯一标识
+     * @param supplier 业务执行块
+     * @param <T>      返回类型
+     * @return 执行结果
+     */
+    public static <T> T runWithAppKey(String appKey, Supplier<T> supplier) {
+        Objects.requireNonNull(supplier, "supplier 不能为空");
+        String previous = CURRENT_APP_KEY.get();
+        setAppKey(appKey);
+        try {
+            return supplier.get();
+        } finally {
+            if (previous != null) {
+                CURRENT_APP_KEY.set(previous);
+            } else {
+                CURRENT_APP_KEY.remove();
+            }
+        }
+    }
+
+    /**
+     * 在指定应用上下文中执行业务逻辑（无返回值）并安全恢复现场
+     *
+     * @param appKey   社交应用唯一标识
+     * @param runnable 业务执行块
+     */
+    public static void runWithAppKey(String appKey, Runnable runnable) {
+        Objects.requireNonNull(runnable, "runnable 不能为空");
+        runWithAppKey(appKey, () -> {
+            runnable.run();
+            return null;
+        });
     }
 }

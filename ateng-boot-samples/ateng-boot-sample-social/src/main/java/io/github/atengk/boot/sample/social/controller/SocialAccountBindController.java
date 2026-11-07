@@ -131,17 +131,25 @@ public class SocialAccountBindController {
     @GetMapping("/bindings")
     public Result<List<SocialBoundAccount>> listBindings(
             @RequestParam(value = "userId", required = false) String userId) {
-        String targetUserId = userId;
-        if (targetUserId == null || targetUserId.isBlank()) {
-            targetUserId = UserContextHolder.get();
-        }
-        if ((targetUserId == null || targetUserId.isBlank()) && StpUtil.isLogin()) {
-            targetUserId = StpUtil.getLoginIdAsString();
-        }
+        String targetUserId = resolveUserId(userId);
         if (targetUserId == null || targetUserId.isBlank()) {
             throw new IllegalArgumentException("本地用户标识 [userId] 不能为空");
         }
         List<SocialBoundAccount> accounts = scenarioService.listBoundAccounts(targetUserId);
         return Result.success(accounts);
+    }
+
+    private String resolveUserId(String userId) {
+        if (userId != null && !userId.isBlank()) {
+            return userId;
+        }
+        String currentUserId = UserContextHolder.get();
+        if (currentUserId != null && !currentUserId.isBlank()) {
+            return currentUserId;
+        }
+        if (StpUtil.isLogin()) {
+            return StpUtil.getLoginIdAsString();
+        }
+        return null;
     }
 }
