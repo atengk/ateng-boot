@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sms.event.SmsBudgetExceededEvent;
 import io.github.atengk.boot.sms.event.SmsDeliveryReportEvent;
 import io.github.atengk.boot.sms.event.SmsMoMessageEvent;
+import io.github.atengk.boot.sms.event.SmsSendAuditEvent;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
@@ -30,6 +31,9 @@ public class SampleSmsEventListener {
     @Getter
     private final CopyOnWriteArrayList<SmsBudgetExceededEvent> budgetExceededEvents = new CopyOnWriteArrayList<>();
 
+    @Getter
+    private final CopyOnWriteArrayList<SmsSendAuditEvent> auditEvents = new CopyOnWriteArrayList<>();
+
     @EventListener
     public void onDeliveryReport(SmsDeliveryReportEvent event) {
         deliveryReportEvents.add(event);
@@ -51,9 +55,17 @@ public class SampleSmsEventListener {
                 event.getCurrentSent(), event.getDailyQuota());
     }
 
+    @EventListener
+    public void onAuditEvent(SmsSendAuditEvent event) {
+        auditEvents.add(event);
+        log.info("[SampleSmsEventListener] 监听到全链路发信审计事件 -> 目标: {}, 渠道: {}, 成功: {}, 拦截: {}, 耗时: {}ms",
+                DesensitizeUtil.mobilePhone(event.getPhone()), event.getChannelName(), event.isSuccess(), event.isBlocked(), event.getCostMillis());
+    }
+
     public void clear() {
         deliveryReportEvents.clear();
         moMessageEvents.clear();
         budgetExceededEvents.clear();
+        auditEvents.clear();
     }
 }

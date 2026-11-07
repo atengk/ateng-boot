@@ -71,4 +71,14 @@ public class DynamicChannelRegisterRequest implements Serializable {
      * 顺延容灾降级备用渠道名称
      */
     private String failoverChannel;
+
+    /**
+     * 负载均衡权重（默认 1）
+     */
+    private Integer weight;
+
+    /**
+     * 模板逻辑标识与服务商物理模板ID映射关系
+     */
+    private java.util.Map<String, String> templates;
 }

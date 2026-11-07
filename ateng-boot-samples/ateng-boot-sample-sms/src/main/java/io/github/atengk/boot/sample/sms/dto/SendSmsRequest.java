@@ -48,4 +48,15 @@ public class SendSmsRequest {
      * 模板动态变量占位符键值对
      */
     private Map<String, String> params;
+
+    /**
+     * 业务追踪流水号（用于出站幂等防重与回执关联）
+     */
+    private String bizId;
+
+    /**
+     * 是否为紧急短信（自动豁免夜间免打扰时段拦截）
+     */
+    @Builder.Default
+    private boolean urgent = false;
 }

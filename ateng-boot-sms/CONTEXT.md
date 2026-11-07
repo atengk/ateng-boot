@@ -91,3 +91,27 @@ _Avoid_: MoEvent, UpstreamSmsEvent, ReplyMessageEvent
 **SmsSendFailureHandler**:
 短信最终发送失败补偿扩展点 SPI，在主通道与 Failover 容灾通道均投递失败时触发后置补偿。
 _Avoid_: SendFailCallback, SmsErrorHandler, FallbackHandler
+
+**YunpianSmsProvider**:
+云片网（Yunpian）纯原生 HTTP REST 驱动实现，基于 Spring 6 RestClient 与 APIKEY 标头直连官方网关，支持单条与批量个性化群发。
+_Avoid_: YunpianClient, YunpianSender
+
+**CtyunSmsProvider**:
+中国电信天翼云纯原生驱动实现，基于 Spring 6 RestClient 与天翼云 OpenAPI HmacSHA256 签名体系直连官方专线。
+_Avoid_: CtyunClient, TianyiSmsSender
+
+**SmsChannelCircuitBreaker**:
+短信渠道健康度故障自愈熔断器，监控通道连续失败率，自动熔断隔离故障渠道并支持半开探测自愈与一键重置。
+_Avoid_: ChannelBreaker, SmsFuse, CircuitGuard
+
+**SmsChannelLoadBalancer**:
+短信多渠道平滑加权轮询负载均衡器，依托 Nginx 平滑加权轮询算法（SWWR）动态分发虚拟渠道流量。
+_Avoid_: ChannelBalancer, SmsRouter, LoadBalanceHandler
+
+**SmsIdempotentGuard**:
+业务防重出站幂等防卫卫士，基于业务流水号 bizId 实施时间窗口内的发信防重去重。
+_Avoid_: IdempotentChecker, DuplicateFilter, SmsDeduplicator
+
+**SmsSendAuditEvent**:
+全链路出站发信审计领域事件，广播每次单条与批量发信的执行终态、MDC 快照、渠道标识与物理耗时。
+_Avoid_: SmsLogEvent, AuditNotice, SendTrackEvent

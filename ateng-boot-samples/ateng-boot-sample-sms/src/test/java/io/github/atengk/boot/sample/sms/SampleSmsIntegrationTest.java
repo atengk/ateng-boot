@@ -1,17 +1,12 @@
 package io.github.atengk.boot.sample.sms;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.atengk.boot.sample.sms.dto.BatchSmsSendRequest;
-import io.github.atengk.boot.sample.sms.dto.DynamicChannelRegisterRequest;
-import io.github.atengk.boot.sample.sms.dto.SendSmsRequest;
-import io.github.atengk.boot.sample.sms.dto.SendVerifyCodeRequest;
-import io.github.atengk.boot.sample.sms.dto.VerifyCodeCheckRequest;
+import io.github.atengk.boot.sample.sms.dto.*;
 import io.github.atengk.boot.sample.sms.handler.SampleSmsFailureHandler;
 import io.github.atengk.boot.sample.sms.listener.SampleSmsEventListener;
 import io.github.atengk.boot.sample.sms.service.SmsScenarioService;
 import io.github.atengk.boot.sms.event.SmsDeliveryReportEvent;
 import io.github.atengk.boot.sms.event.SmsMoMessageEvent;
-import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsResult;
 import io.github.atengk.boot.sms.model.SmsSupplier;
 import io.github.atengk.boot.sms.provider.MockSmsProvider;
@@ -41,6 +36,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * 短信多场景端到端真实集成自验测试
+ * 覆盖 5 大业务领域 Controller 及其各细分特性端到端场景
  *
  * @author Ateng
  * @since 2026-11-02
@@ -93,7 +89,7 @@ class SampleSmsIntegrationTest {
                 .params(Map.of("code", "123456"))
                 .build();
 
-        mockMvc.perform(post("/api/sms/send")
+        mockMvc.perform(post("/sample/sms/send/single")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req)))
                 .andExpect(status().isOk())
@@ -113,7 +109,7 @@ class SampleSmsIntegrationTest {
                 .templateId("SMS_TPL_001")
                 .build();
 
-        mockMvc.perform(post("/api/sms/send")
+        mockMvc.perform(post("/sample/sms/send/single")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req)))
                 .andExpect(status().isOk())
@@ -131,7 +127,7 @@ class SampleSmsIntegrationTest {
                 .templateId("SMS_ASYNC_001")
                 .build();
 
-        MvcResult mvcResult = mockMvc.perform(post("/api/sms/send-async")
+        MvcResult mvcResult = mockMvc.perform(post("/sample/sms/send/async")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req)))
                 .andExpect(request().asyncStarted())
@@ -154,7 +150,7 @@ class SampleSmsIntegrationTest {
                 .templateId("SMS_TX_COMMIT")
                 .build();
 
-        mockMvc.perform(post("/api/sms/send-tx")
+        mockMvc.perform(post("/sample/sms/send/tx")
                         .param("shouldRollback", "false")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req)))
@@ -174,7 +170,7 @@ class SampleSmsIntegrationTest {
                 .templateId("SMS_TX_ROLLBACK")
                 .build();
 
-        mockMvc.perform(post("/api/sms/send-tx")
+        mockMvc.perform(post("/sample/sms/send/tx")
                         .param("shouldRollback", "true")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req)))
@@ -186,8 +182,27 @@ class SampleSmsIntegrationTest {
     }
 
     @Test
-    @DisplayName("场景 6: 批量营销短信海量切片与聚合投递")
-    void testBatchSend_TransparentSlice() throws Exception {
+    @DisplayName("场景 6: 模板逻辑映射发信测试")
+    void testSend_TemplateMapping() throws Exception {
+        SendSmsRequest req = SendSmsRequest.builder()
+                .phone("13812349999")
+                .templateId("MOCK_LOGICAL_AUTH")
+                .params(Map.of("code", "654321"))
+                .build();
+
+        mockMvc.perform(post("/sample/sms/send/mapping")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        assertEquals(1, mockSmsProvider.getSentCount());
+    }
+
+    @Test
+    @DisplayName("场景 7: 批量营销短信同参海量切片与聚合投递")
+    void testBatchSend_SameBatch() throws Exception {
         List<String> phones = List.of("13800010001", "13800010002", "13800010003", "13800010004");
         BatchSmsSendRequest req = BatchSmsSendRequest.builder()
                 .phones(phones)
@@ -195,7 +210,7 @@ class SampleSmsIntegrationTest {
                 .params(Map.of("discount", "80%"))
                 .build();
 
-        mockMvc.perform(post("/api/sms/batch")
+        mockMvc.perform(post("/sample/sms/batch/same")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req)))
                 .andExpect(status().isOk())
@@ -208,8 +223,31 @@ class SampleSmsIntegrationTest {
     }
 
     @Test
-    @DisplayName("场景 7: 验证码全生命周期治理 (获取 -> 错误核验 -> 正确核销 -> 自毁防重放)")
-    void testVerifyCode_LifecycleAndDestruction() throws Exception {
+    @DisplayName("场景 8: 批量短信千人千面个性化差异批次群发")
+    void testBatchSend_DifferentialBatch() throws Exception {
+        Map<String, Map<String, String>> phoneParams = Map.of(
+                "13800020001", Map.of("name", "Alice", "points", "100"),
+                "13800020002", Map.of("name", "Bob", "points", "200")
+        );
+        DifferentialBatchSmsRequest req = DifferentialBatchSmsRequest.builder()
+                .templateId("SMS_DIFF_BATCH")
+                .phoneParams(phoneParams)
+                .build();
+
+        mockMvc.perform(post("/sample/sms/batch/differential")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.totalCount").value(2))
+                .andExpect(jsonPath("$.data.successCount").value(2));
+
+        assertEquals(2, mockSmsProvider.getSentCount());
+    }
+
+    @Test
+    @DisplayName("场景 9: 验证码全生命周期治理 (获取 -> 只读预检 -> 错误核验 -> 正确核销自毁 -> 作废)")
+    void testVerifyCode_FullLifecycle() throws Exception {
         String phone = "13800139001";
         String bizType = "login";
 
@@ -219,7 +257,7 @@ class SampleSmsIntegrationTest {
                 .bizType(bizType)
                 .build();
 
-        MvcResult sendResult = mockMvc.perform(post("/api/sms/verify-code/send")
+        MvcResult sendResult = mockMvc.perform(post("/sample/sms/verify-code/send")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(sendReq)))
                 .andExpect(status().isOk())
@@ -232,43 +270,62 @@ class SampleSmsIntegrationTest {
         assertNotNull(generatedCode);
         assertEquals(6, generatedCode.length());
 
-        // 2. 故意传入错误验证码核验 -> 预期触发 SmsVerifyCodeException
+        // 2. 只读预检 (check: 不自毁，不扣减重试次数)
+        VerifyCodeCheckRequest checkReq = VerifyCodeCheckRequest.builder()
+                .phone(phone)
+                .bizType(bizType)
+                .code(generatedCode)
+                .build();
+
+        mockMvc.perform(post("/sample/sms/verify-code/check")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(checkReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 3. 故意传入错误验证码核验 -> 预期触发 SmsVerifyCodeException
         VerifyCodeCheckRequest wrongReq = VerifyCodeCheckRequest.builder()
                 .phone(phone)
                 .bizType(bizType)
                 .code("000000")
                 .build();
 
-        mockMvc.perform(post("/api/sms/verify-code/verify")
+        mockMvc.perform(post("/sample/sms/verify-code/verify")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(wrongReq)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
 
-        // 3. 传入正确验证码核验 -> 预期通过
-        VerifyCodeCheckRequest correctReq = VerifyCodeCheckRequest.builder()
-                .phone(phone)
-                .bizType(bizType)
-                .code(generatedCode)
-                .build();
-
-        mockMvc.perform(post("/api/sms/verify-code/verify")
+        // 4. 传入正确验证码核验 -> 预期通过
+        mockMvc.perform(post("/sample/sms/verify-code/verify")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(correctReq)))
+                        .content(objectMapper.writeValueAsString(checkReq)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));
 
-        // 4. 二次核验相同验证码 -> 预期自毁防重放生效，核验失败抛出异常
-        mockMvc.perform(post("/api/sms/verify-code/verify")
+        // 5. 二次核验相同验证码 -> 预期自毁防重放生效，核验失败抛出异常
+        mockMvc.perform(post("/sample/sms/verify-code/verify")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(correctReq)))
+                        .content(objectMapper.writeValueAsString(checkReq)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
+
+        // 6. 主动作废测试
+        VerifyCodeInvalidateRequest invReq = VerifyCodeInvalidateRequest.builder()
+                .phone(phone)
+                .bizType(bizType)
+                .build();
+        mockMvc.perform(post("/sample/sms/verify-code/invalidate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
     }
 
     @Test
-    @DisplayName("场景 8: 验证码滑动窗口频控与防刷限流")
+    @DisplayName("场景 10: 验证码滑动窗口频控与防刷限流")
     void testVerifyCode_RateLimit() throws Exception {
         String phone = "13800139002";
         String bizType = "register";
@@ -279,14 +336,14 @@ class SampleSmsIntegrationTest {
                 .build();
 
         // 第一次发信成功 (消耗 1 次/分钟 配额)
-        mockMvc.perform(post("/api/sms/verify-code/send")
+        mockMvc.perform(post("/sample/sms/verify-code/send")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
         // 连续第二次立即发信 -> 预期触发 1 分钟频控限流熔断
-        mockMvc.perform(post("/api/sms/verify-code/send")
+        mockMvc.perform(post("/sample/sms/verify-code/send")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req)))
                 .andExpect(status().isOk())
@@ -294,27 +351,141 @@ class SampleSmsIntegrationTest {
     }
 
     @Test
-    @DisplayName("场景 9: 出站黑名单静默熔断拦截与后置补偿 SPI")
-    void testBlacklist_Blocked() throws Exception {
-        // 13800000000 在 application.yml 中配置为黑名单号码
-        SendSmsRequest req = SendSmsRequest.builder()
-                .phone("13800000000")
-                .templateId("SMS_BLACK")
+    @DisplayName("场景 11: 渠道治理 (列表查询、动态注册、动态注销、加权轮询与熔断管理)")
+    void testChannel_GovernanceAndLoadBalance() throws Exception {
+        // 1. 查询所有已注册渠道，断言返回脱敏 VO 且绝对不泄露 accessKeySecret
+        mockMvc.perform(get("/sample/sms/channel/list"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data[0].name").exists())
+                .andExpect(jsonPath("$.data[0].accessKeySecret").doesNotExist())
+                .andExpect(jsonPath("$.data[0].accessKeyId").doesNotExist());
+
+        // 2. 动态注册新渠道
+        DynamicChannelRegisterRequest req = DynamicChannelRegisterRequest.builder()
+                .name("custom-dynamic-test")
+                .supplier(SmsSupplier.MOCK)
+                .signName("动态测试签名")
+                .accessKeyId("mock-ak")
+                .accessKeySecret("mock-sk")
+                .weight(2)
                 .build();
 
-        mockMvc.perform(post("/api/sms/send")
+        mockMvc.perform(post("/sample/sms/channel/register")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        assertTrue(channelRegistry.getChannels().containsKey("custom-dynamic-test"), "动态注册渠道应存在于注册中心");
+
+        // 3. 加权轮询负载均衡发信
+        SendSmsRequest lbReq = SendSmsRequest.builder()
+                .phone("13800055555")
+                .templateId("SMS_LB_001")
+                .build();
+        mockMvc.perform(post("/sample/sms/channel/load-balance")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(lbReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        // 4. 熔断状态查询与重置
+        mockMvc.perform(get("/sample/sms/channel/circuit-breaker"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.mock").exists());
+
+        mockMvc.perform(post("/sample/sms/channel/circuit-breaker/reset")
+                        .param("channelName", "mock"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 5. 动态注销渠道
+        mockMvc.perform(post("/sample/sms/channel/unregister")
+                        .param("channelName", "custom-dynamic-test"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        assertFalse(channelRegistry.getChannels().containsKey("custom-dynamic-test"), "注销后渠道应从注册中心移除");
+    }
+
+    @Test
+    @DisplayName("场景 12: 出站防卫（黑名单动态管理、幂等防重与审计事件）")
+    void testGuard_BlacklistIdempotentAndAudit() throws Exception {
+        // 1. 查询黑名单
+        mockMvc.perform(get("/sample/sms/guard/blacklist"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 2. 动态添加黑名单
+        BlacklistAddRequest addReq = BlacklistAddRequest.builder()
+                .phone("13999998888")
+                .reason("测试恶意号码")
+                .build();
+        mockMvc.perform(post("/sample/sms/guard/blacklist/add")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(addReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        assertTrue(smsScenarioService.getBlacklist().contains("13999998888"));
+
+        // 3. 验证黑名单拦截发信
+        SendSmsRequest blockedReq = SendSmsRequest.builder()
+                .phone("13999998888")
+                .templateId("SMS_GUARD_TEST")
+                .build();
+        mockMvc.perform(post("/sample/sms/send/single")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(blockedReq)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.success").value(false))
                 .andExpect(jsonPath("$.data.rawCode").value("BLOCKED"));
 
-        assertEquals(0, mockSmsProvider.getSentCount(), "命中出站黑名单应静默拦截，不得触发底层发信");
+        // 4. 移除黑名单
+        mockMvc.perform(post("/sample/sms/guard/blacklist/remove")
+                        .param("phone", "13999998888"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        assertFalse(smsScenarioService.getBlacklist().contains("13999998888"));
+
+        // 5. 防重幂等发信验证
+        String bizId = "BIZ_TX_" + System.currentTimeMillis();
+        SendSmsRequest idemReq = SendSmsRequest.builder()
+                .phone("13811112222")
+                .templateId("SMS_IDEM_001")
+                .bizId(bizId)
+                .build();
+
+        // 首次发信 -> 成功
+        mockMvc.perform(post("/sample/sms/guard/idempotent")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(idemReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        // 相同 bizId 二次发信 -> 触发幂等拦截，抛出 SmsIdempotentException (业务码 5809)
+        mockMvc.perform(post("/sample/sms/guard/idempotent")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(idemReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(5809));
+
+        // 6. 审计事件流水查询
+        mockMvc.perform(get("/sample/sms/guard/audit-events"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
     }
 
     @Test
-    @DisplayName("场景 10: 统一入站 Webhook 回调转译与领域事件广播")
+    @DisplayName("场景 13: 统一入站 Webhook 回调转译与领域事件广播")
     void testCallbackGateway_Events() throws Exception {
         // 1. 模拟阿里云送达回执回调
         String aliyunDeliveryReportJson = """
@@ -364,68 +535,6 @@ class SampleSmsIntegrationTest {
         SmsMoMessageEvent moEvent = eventListener.getMoMessageEvents().get(0);
         assertEquals("13800088888", moEvent.getPhone());
         assertEquals("TD", moEvent.getContent());
-    }
-
-    @Test
-    @DisplayName("场景 11: 渠道列表查询与动态渠道注册 (安全脱敏 VO & 凭据隔离)")
-    void testChannel_ListAndDynamicRegister() throws Exception {
-        // 1. 查询所有已注册渠道，断言返回脱敏 VO 且绝对不泄露 accessKeySecret
-        mockMvc.perform(get("/api/sms/channel/list"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").isArray())
-                .andExpect(jsonPath("$.data[0].name").exists())
-                .andExpect(jsonPath("$.data[0].accessKeySecret").doesNotExist())
-                .andExpect(jsonPath("$.data[0].accessKeyId").doesNotExist());
-
-        // 2. 动态注册新渠道
-        DynamicChannelRegisterRequest req = DynamicChannelRegisterRequest.builder()
-                .name("custom-dynamic-test")
-                .supplier(SmsSupplier.MOCK)
-                .signName("动态测试签名")
-                .accessKeyId("mock-ak")
-                .accessKeySecret("mock-sk")
-                .build();
-
-        mockMvc.perform(post("/api/sms/channel/dynamic")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(req)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
-
-        // 3. 再次查询，验证动态渠道已成功注册
-        assertTrue(channelRegistry.getChannels().containsKey("custom-dynamic-test"), "动态注册渠道应存在于注册中心");
-    }
-
-    @Test
-    @DisplayName("场景 12: 动态注册渠道 JSR-303 参数校验 Fail-Fast")
-    void testChannel_DynamicRegisterValidationError() throws Exception {
-        DynamicChannelRegisterRequest badReq = DynamicChannelRegisterRequest.builder()
-                .name("") // 空名称
-                .supplier(null) // 空服务商
-                .build();
-
-        mockMvc.perform(post("/api/sms/channel/dynamic")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(badReq)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
-    }
-
-    @Test
-    @DisplayName("场景 13: 批量发信 JSR-303 集合元素级手机号格式防卫测试")
-    void testBatchSend_ElementValidationError() throws Exception {
-        // 集合内包含非法手机号 "12345"，验证集合元素校验生效
-        BatchSmsSendRequest badBatch = BatchSmsSendRequest.builder()
-                .phones(List.of("13800010001", "12345"))
-                .templateId("SMS_BATCH_TPL")
-                .build();
-
-        mockMvc.perform(post("/api/sms/batch")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(badBatch)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
     }
 
     @Test

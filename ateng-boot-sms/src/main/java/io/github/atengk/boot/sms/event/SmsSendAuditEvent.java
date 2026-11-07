@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sms.event;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.github.atengk.boot.sms.model.SmsDeliveryStatus;
 import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.model.SmsResult;
@@ -49,6 +50,7 @@ public class SmsSendAuditEvent extends ApplicationEvent {
     /**
      * 抛出的发信异常因果对象（若正常返回结果则为 null）
      */
+    @JsonIgnore
     private final Throwable exception;
 
     /**
@@ -77,6 +79,26 @@ public class SmsSendAuditEvent extends ApplicationEvent {
         this.exception = exception;
         this.costMillis = costMillis;
         this.auditTimestamp = auditTimestamp != null ? auditTimestamp : Instant.now();
+    }
+
+    /**
+     * 忽略底层 Spring 事件源以防止序列化污染
+     *
+     * @return 原始事件源对象
+     */
+    @JsonIgnore
+    @Override
+    public Object getSource() {
+        return super.getSource();
+    }
+
+    /**
+     * 获取异常原因摘要
+     *
+     * @return 异常消息
+     */
+    public String getExceptionMessage() {
+        return exception != null ? exception.getMessage() : null;
     }
 
     /**

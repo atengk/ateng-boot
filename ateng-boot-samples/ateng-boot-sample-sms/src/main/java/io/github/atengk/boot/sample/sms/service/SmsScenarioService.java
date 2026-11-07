@@ -2,23 +2,21 @@ package io.github.atengk.boot.sample.sms.service;
 
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
+import io.github.atengk.boot.sample.sms.dto.*;
+import io.github.atengk.boot.sample.sms.listener.SampleSmsEventListener;
+import io.github.atengk.boot.sample.sms.vo.SmsChannelVO;
+import io.github.atengk.boot.sms.event.SmsSendAuditEvent;
+import io.github.atengk.boot.sms.guard.SmsChannelCircuitBreaker;
 import io.github.atengk.boot.sms.model.*;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
 import io.github.atengk.boot.sms.template.SmsTemplate;
 import io.github.atengk.boot.sms.template.SmsVerifyCodeTemplate;
-import io.github.atengk.boot.sample.sms.dto.BatchSmsSendRequest;
-import io.github.atengk.boot.sample.sms.dto.DynamicChannelRegisterRequest;
-import io.github.atengk.boot.sample.sms.dto.SendSmsRequest;
-import io.github.atengk.boot.sample.sms.dto.SendVerifyCodeRequest;
-import io.github.atengk.boot.sample.sms.dto.VerifyCodeCheckRequest;
-import io.github.atengk.boot.sample.sms.vo.SmsChannelVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Collection;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -35,6 +33,7 @@ public class SmsScenarioService {
     private final SmsTemplate smsTemplate;
     private final SmsVerifyCodeTemplate verifyCodeTemplate;
     private final SmsChannelRegistry channelRegistry;
+    private final SampleSmsEventListener eventListener;
 
     /**
      * 单条短信同步发送
@@ -107,6 +106,32 @@ public class SmsScenarioService {
     }
 
     /**
+     * 千人千面差异化个性化批量发信
+     *
+     * @param req 差异化批量请求
+     * @return BatchSmsResult
+     */
+    public BatchSmsResult sendDifferentialBatchSms(DifferentialBatchSmsRequest req) {
+        Map<String, SmsParam> phoneParams = new LinkedHashMap<>();
+        if (req.getPhoneParams() != null) {
+            req.getPhoneParams().forEach((p, paramMap) -> phoneParams.put(p, toSmsParam(paramMap)));
+        }
+
+        BatchSmsRequest request = BatchSmsRequest.builder()
+                .templateId(req.getTemplateId())
+                .signName(req.getSignName())
+                .channel(req.getChannel())
+                .bizId(req.getBizId())
+                .urgent(req.isUrgent())
+                .phoneParams(phoneParams)
+                .build();
+
+        log.info("[SmsScenarioService] 发起千人千面差异化批量群发 -> 目标号码数: {}, 模板: {}",
+                request.getPhones().size(), req.getTemplateId());
+        return smsTemplate.sendBatch(request);
+    }
+
+    /**
      * 发送业务验证码 (全生命周期治理 + 滑动窗口防刷限流)
      *
      * @param req 验证码请求
@@ -116,6 +141,18 @@ public class SmsScenarioService {
         log.info("[SmsScenarioService] 触发业务验证码生成与投递 -> 号码: {}, 业务类型: {}",
                 DesensitizeUtil.mobilePhone(req.getPhone()), req.getBizType());
         return verifyCodeTemplate.generateAndSend(req.getPhone(), req.getBizType());
+    }
+
+    /**
+     * 验证码只读预检（不自毁，不扣减重试次数）
+     *
+     * @param req 核验请求
+     * @return 是否有效
+     */
+    public boolean checkVerifyCode(VerifyCodeCheckRequest req) {
+        log.info("[SmsScenarioService] 触发业务验证码只读预检 -> 号码: {}, 业务类型: {}",
+                DesensitizeUtil.mobilePhone(req.getPhone()), req.getBizType());
+        return verifyCodeTemplate.check(req.getPhone(), req.getCode(), req.getBizType());
     }
 
     /**
@@ -131,11 +168,32 @@ public class SmsScenarioService {
     }
 
     /**
+     * 验证码主动作废
+     *
+     * @param req 作废请求
+     */
+    public void invalidateVerifyCode(VerifyCodeInvalidateRequest req) {
+        log.info("[SmsScenarioService] 触发业务验证码主动作废 -> 号码: {}, 业务类型: {}",
+                DesensitizeUtil.mobilePhone(req.getPhone()), req.getBizType());
+        verifyCodeTemplate.invalidate(req.getPhone(), req.getBizType());
+    }
+
+    /**
      * 动态注册或更新短信渠道
      *
      * @param req 渠道注册请求传输对象
      */
     public void registerDynamicChannel(DynamicChannelRegisterRequest req) {
+        Map<String, io.github.atengk.boot.sms.properties.SmsTemplateProperties> templateMap = null;
+        if (req.getTemplates() != null) {
+            templateMap = new LinkedHashMap<>();
+            for (Map.Entry<String, String> entry : req.getTemplates().entrySet()) {
+                io.github.atengk.boot.sms.properties.SmsTemplateProperties prop = new io.github.atengk.boot.sms.properties.SmsTemplateProperties();
+                prop.setTemplateId(entry.getValue());
+                templateMap.put(entry.getKey(), prop);
+            }
+        }
+
         SmsChannel channel = SmsChannel.builder()
                 .name(req.getName())
                 .supplier(req.getSupplier())
@@ -146,8 +204,20 @@ public class SmsScenarioService {
                 .region(req.getRegion())
                 .endpoint(req.getEndpoint())
                 .failoverChannel(req.getFailoverChannel())
+                .templates(templateMap)
+                .weight(req.getWeight() != null ? req.getWeight() : 1)
                 .build();
         channelRegistry.register(channel);
+    }
+
+    /**
+     * 注销短信渠道
+     *
+     * @param channelName 渠道名称
+     */
+    public void unregisterChannel(String channelName) {
+        log.info("[SmsScenarioService] 动态注销短信渠道 -> 名称: {}", channelName);
+        channelRegistry.unregister(channelName);
     }
 
     /**
@@ -157,16 +227,125 @@ public class SmsScenarioService {
      */
     public Collection<SmsChannelVO> getChannels() {
         return channelRegistry.getChannels().values().stream()
-                .map(c -> SmsChannelVO.builder()
-                        .name(c.getName())
-                        .supplier(c.getSupplier())
-                        .signName(c.getSignName())
-                        .appId(c.getAppId())
-                        .region(c.getRegion())
-                        .endpoint(c.getEndpoint())
-                        .failoverChannel(c.getFailoverChannel())
-                        .build())
+                .map(c -> {
+                    Map<String, String> tplMap = null;
+                    if (c.getTemplates() != null) {
+                        tplMap = new LinkedHashMap<>();
+                        for (Map.Entry<String, io.github.atengk.boot.sms.properties.SmsTemplateProperties> entry : c.getTemplates().entrySet()) {
+                            tplMap.put(entry.getKey(), entry.getValue() != null ? entry.getValue().getTemplateId() : null);
+                        }
+                    }
+                    return SmsChannelVO.builder()
+                            .name(c.getName())
+                            .supplier(c.getSupplier())
+                            .signName(c.getSignName())
+                            .appId(c.getAppId())
+                            .region(c.getRegion())
+                            .endpoint(c.getEndpoint())
+                            .failoverChannel(c.getFailoverChannel())
+                            .weight(c.getWeight())
+                            .templates(tplMap)
+                            .build();
+                })
                 .toList();
+    }
+
+    /**
+     * 平滑加权轮询负载均衡发信
+     *
+     * @param req 发信请求
+     * @return SmsResult
+     */
+    public SmsResult sendLoadBalanced(SendSmsRequest req) {
+        req.setChannel(SmsTemplate.LOAD_BALANCE_CHANNEL);
+        return sendSingleSms(req);
+    }
+
+    /**
+     * 获取所有渠道健康度熔断状态
+     *
+     * @return 渠道名称 -> 熔断状态信息
+     */
+    public Map<String, Object> getCircuitBreakerStatus() {
+        SmsChannelCircuitBreaker cb = smsTemplate.getCircuitBreaker();
+        Map<String, Object> statusMap = new LinkedHashMap<>();
+        for (String channelName : channelRegistry.getChannels().keySet()) {
+            boolean open = cb != null && cb.isOpen(channelName);
+            statusMap.put(channelName, Map.of(
+                    "channel", channelName,
+                    "isOpen", open,
+                    "status", open ? "OPEN" : "CLOSED"
+            ));
+        }
+        return statusMap;
+    }
+
+    /**
+     * 重置渠道健康度熔断状态
+     *
+     * @param channelName 渠道名称（为 null 或 blank 时重置全部渠道）
+     */
+    public void resetCircuitBreaker(String channelName) {
+        SmsChannelCircuitBreaker cb = smsTemplate.getCircuitBreaker();
+        if (cb != null) {
+            if (channelName != null && !channelName.isBlank()) {
+                cb.reset(channelName);
+                log.info("[SmsScenarioService] 重置渠道 [{}] 熔断状态为 CLOSED", channelName);
+            } else {
+                cb.resetAll();
+                log.info("[SmsScenarioService] 重置全部渠道熔断状态为 CLOSED");
+            }
+        }
+    }
+
+    /**
+     * 获取当前出站黑名单号码集合
+     *
+     * @return 黑名单手机号集合
+     */
+    public Set<String> getBlacklist() {
+        return smsTemplate.getBlacklist();
+    }
+
+    /**
+     * 添加手机号到出站黑名单
+     *
+     * @param phone  手机号
+     * @param reason 拉黑原因
+     */
+    public void addBlacklist(String phone, String reason) {
+        log.info("[SmsScenarioService] 将手机号 [{}] 纳入出站黑名单 (原因: {})",
+                DesensitizeUtil.mobilePhone(phone), reason);
+        smsTemplate.addBlacklist(phone, reason != null ? reason : "手动添加黑名单");
+    }
+
+    /**
+     * 从出站黑名单移除手机号
+     *
+     * @param phone 手机号
+     */
+    public void removeBlacklist(String phone) {
+        log.info("[SmsScenarioService] 将手机号 [{}] 从出站黑名单移除", DesensitizeUtil.mobilePhone(phone));
+        smsTemplate.removeBlacklist(phone);
+    }
+
+    /**
+     * 清空出站黑名单
+     */
+    public void clearBlacklist() {
+        if (smsTemplate.getBlacklistProvider() != null) {
+            smsTemplate.getBlacklistProvider().clear();
+            log.info("[SmsScenarioService] 清空出站黑名单");
+        }
+    }
+
+    /**
+     * 获取全链路发信审计事件流水
+     *
+     * @return 审计事件列表
+     */
+    public List<SmsSendAuditEvent> getAuditEvents() {
+        return new ArrayList<>(eventListener.getAuditEvents());
     }
 
     private SmsRequest buildRequest(SendSmsRequest req) {
@@ -175,6 +354,8 @@ public class SmsScenarioService {
                 .templateId(req.getTemplateId())
                 .signName(req.getSignName())
                 .channel(req.getChannel())
+                .bizId(req.getBizId())
+                .urgent(req.isUrgent())
                 .params(toSmsParam(req.getParams()))
                 .build();
     }

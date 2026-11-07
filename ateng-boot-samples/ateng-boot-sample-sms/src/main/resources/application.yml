@@ -35,6 +35,7 @@ ateng:
       guard:
         daily-max-quota: 1000
         blacklist-enabled: true
+        idempotent-enabled: true
         blacklist:
           - "13800000000"
           - "13900000000"
