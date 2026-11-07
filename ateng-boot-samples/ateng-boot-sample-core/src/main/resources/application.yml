@@ -29,3 +29,9 @@ ateng:
           queue-capacity: 50
           thread-name-prefix: sample-export-async-
           rejected-policy: CALLER_RUNS
+        report:
+          core-pool-size: 2
+          max-pool-size: 4
+          queue-capacity: 50
+          thread-name-prefix: sample-report-async-
+          rejected-policy: CALLER_RUNS
