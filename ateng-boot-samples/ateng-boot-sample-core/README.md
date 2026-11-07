@@ -56,7 +56,15 @@
 | **线程池监控探测与在线动态调优** | `POST /sample/core/async/pool-governance` | `AsyncUtil.getStatus`<br>`AsyncUtil.resize`<br>`ThreadPoolStatus` | `curl -X POST "http://localhost:8080/sample/core/async/pool-governance" -H "Content-Type: application/json" -d '{"poolName":"export","newCorePoolSize":6,"newMaxPoolSize":12}'` |
 | **事务生命周期钩子与消息传播协同** | `POST /sample/core/async/tx-and-mq` | `TransactionUtil`<br>`MessageContextPropagator`<br>`FatalExceptionClassifier`<br>`MessagePayloadSerializer` | `curl -X POST "http://localhost:8080/sample/core/async/tx-and-mq" -H "Content-Type: application/json" -d '{"bizKey":"ORDER-20261107-001","payload":"{\"amount\":199.00,\"sku\":\"SKU-BOOK-001\"}","simulateFatalError":false}'` |
 
-> 注：其余领域 Controller（弹性流控、数据结构、系统与审计）将随后续工单逐步交付并补充 cURL。
+### 3.4 高可用弹性重试、流控整形与业务管道编排领域 (`CoreResilienceAndPipelineController` -> `/sample/core/resilience`)
+
+| 功能场景 | 请求方式与路径 | 核心门面 / 注解 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **跨境汇率网关弹性查询与保底降级** | `POST /sample/core/resilience/retry-exchange-rate` | `RetryUtil`<br>`RetryConfig`<br>`Equal Jitter`<br>`Fallback` | `curl -X POST "http://localhost:8080/sample/core/resilience/retry-exchange-rate" -H "Content-Type: application/json" -d '{"fromCurrency":"USD","toCurrency":"CNY","simulateFailures":1}'` |
+| **单机防刷、令牌桶限流与幂等防重** | `POST /sample/core/resilience/rate-limit` | `SlidingWindowCounter`<br>`TokenBucketLimiter`<br>`IdempotentException`<br>`CommonResultCode` | `curl -X POST "http://localhost:8080/sample/core/resilience/rate-limit" -H "Content-Type: application/json" -d '{"clientId":"client-app-01","reqToken":"REQ-20261107-1001","triggerIdempotentCheck":true}'` |
+| **电商提单责任链编排与风控短路** | `POST /sample/core/resilience/order-pipeline` | `Pipeline`<br>`PipelineStage`<br>`PipelineInterruptible`<br>`PipelineResult` | `curl -X POST "http://localhost:8080/sample/core/resilience/order-pipeline" -H "Content-Type: application/json" -d '{"orderNo":"ORD202611070001","userId":1001,"orderAmount":200.00,"skuCode":"SKU-8888","buyCount":2,"availableStock":20}'` |
+
+> 注：其余领域 Controller（数据结构、系统与审计）将随后续工单逐步交付并补充 cURL。
 
 ---
 

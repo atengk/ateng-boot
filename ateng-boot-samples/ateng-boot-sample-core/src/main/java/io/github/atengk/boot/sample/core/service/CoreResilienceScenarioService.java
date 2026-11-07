@@ -19,16 +19,26 @@ import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.core.util.SpringUtil;
+import io.github.atengk.boot.core.exception.IdempotentException;
+import io.github.atengk.boot.sample.core.dto.ExchangeRateRequest;
 import io.github.atengk.boot.sample.core.dto.OrderCheckRequest;
+import io.github.atengk.boot.sample.core.dto.RateLimitRequest;
+import io.github.atengk.boot.sample.core.vo.ExchangeRateVO;
 import io.github.atengk.boot.sample.core.vo.OrderCheckVO;
 import io.github.atengk.boot.sample.core.vo.OrderSummaryVO;
+import io.github.atengk.boot.sample.core.vo.RateLimitVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -43,6 +53,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class CoreResilienceScenarioService {
 
     private final Snowflake springManagedSnowflake;
+    private final SlidingWindowCounter sharedSlidingWindow = new SlidingWindowCounter(Duration.ofSeconds(1), 5);
+    private final TokenBucketLimiter sharedTokenBucket = new TokenBucketLimiter(10, 5.0);
+    private final Map<String, Long> idempotentTokens = new ConcurrentHashMap<>();
+
+    private static final Map<String, BigDecimal> LIVE_RATES = Map.of(
+            "USD/CNY", new BigDecimal("7.2350"),
+            "EUR/CNY", new BigDecimal("7.8520"),
+            "GBP/CNY", new BigDecimal("9.3150"),
+            "JPY/CNY", new BigDecimal("0.0485")
+    );
+    private static final BigDecimal FALLBACK_DEFAULT_RATE = new BigDecimal("7.0000");
 
     public CoreResilienceScenarioService(@Autowired(required = false) Snowflake springManagedSnowflake) {
         this.springManagedSnowflake = springManagedSnowflake;
@@ -453,5 +474,102 @@ public class CoreResilienceScenarioService {
         );
 
         return PageResult.of(orders, 100L, current, size);
+    }
+
+    /**
+     * 18. 跨境汇率网关弹性查询（支持指数退避、Equal Jitter 抖动、onRetry 监控与 Fallback 降级）
+     *
+     * @param request 汇率查询请求
+     * @return 汇率响应视图对象
+     */
+    public ExchangeRateVO queryExchangeRateWithRetry(ExchangeRateRequest request) {
+        String pair = request.getFromCurrency().toUpperCase() + "/" + request.getToCurrency().toUpperCase();
+        AtomicInteger attemptCounter = new AtomicInteger(0);
+        List<String> retryLogs = new CopyOnWriteArrayList<>();
+
+        RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+                .maxAttempts(3)
+                .delay(Duration.ofMillis(30))
+                .multiplier(1.5)
+                .maxDelay(Duration.ofMillis(150))
+                .jitter(true)
+                .retryPredicate(ex -> ex instanceof java.io.IOException || ex instanceof IllegalStateException)
+                .onRetry((attempt, ex) -> {
+                    String logMsg = String.format("汇率网关重试 [attempt=%d, reason=%s]", attempt, ex.getMessage());
+                    log.warn(logMsg);
+                    retryLogs.add(logMsg);
+                })
+                .build();
+
+        return RetryUtil.execute(() -> {
+            int currentAttempt = attemptCounter.incrementAndGet();
+            if (currentAttempt <= request.getSimulateFailures()) {
+                log.info("模拟跨境汇率网关临时网络超时: attempt={}, pair={}", currentAttempt, pair);
+                throw new IllegalStateException("跨境汇率网关网络通信波动超时: attempt=" + currentAttempt);
+            }
+
+            BigDecimal rate = LIVE_RATES.getOrDefault(pair, new BigDecimal("7.1500"));
+            return ExchangeRateVO.builder()
+                    .currencyPair(pair)
+                    .rate(rate)
+                    .attempts(currentAttempt)
+                    .fallbackTriggered(false)
+                    .source("LIVE_GATEWAY")
+                    .retryLogs(new ArrayList<>(retryLogs))
+                    .build();
+        }, config, ex -> {
+            log.warn("跨境汇率网关多次重试耗尽，平滑触发本地 Fallback 保底缓存汇率: {}", ex.getMessage());
+            return ExchangeRateVO.builder()
+                    .currencyPair(pair)
+                    .rate(FALLBACK_DEFAULT_RATE)
+                    .attempts(attemptCounter.get())
+                    .fallbackTriggered(true)
+                    .source("FALLBACK_CACHE")
+                    .retryLogs(new ArrayList<>(retryLogs))
+                    .build();
+        });
+    }
+
+    /**
+     * 19. 接口防刷与流量整形（滑动窗口计数 + 令牌桶限流 + 幂等防重拦截）
+     *
+     * @param request 防刷请求参数
+     * @return 流量整形与防重响应视图对象
+     */
+    public RateLimitVO executeRateLimitCheck(RateLimitRequest request) {
+        // 1. 幂等防重检测
+        if (request.isTriggerIdempotentCheck()) {
+            Long previous = idempotentTokens.putIfAbsent(request.getReqToken(), System.currentTimeMillis());
+            if (previous != null) {
+                log.warn("检测到重复提交请求，触发幂等防重拦截: token={}", request.getReqToken());
+                throw new IdempotentException("短时间内重复提交请求，被防重幂等拦截: " + request.getReqToken());
+            }
+        }
+
+        // 2. 进程内滑动窗口防刷计数与放行判定 (1 秒窗口 5 切片，阈值 10)
+        long currentWindowCount = sharedSlidingWindow.incrementAndGet();
+        boolean slidingWindowAllowed = sharedSlidingWindow.tryAcquire(1, 10);
+
+        // 3. 纯无锁 CAS 令牌桶流量整形 (容量 10，每秒 5 令牌)
+        boolean tokenBucketAcquired = sharedTokenBucket.tryAcquire();
+        double availableTokens = sharedTokenBucket.getAvailableTokens();
+
+        return RateLimitVO.builder()
+                .clientId(request.getClientId())
+                .slidingWindowCount(currentWindowCount)
+                .slidingWindowAllowed(slidingWindowAllowed)
+                .tokenBucketAcquired(tokenBucketAcquired)
+                .availableTokens(availableTokens)
+                .idempotentPassed(true)
+                .build();
+    }
+
+    /**
+     * 清理幂等 Token 缓存与计数状态（用于测试现场清理）
+     */
+    public void resetResilienceState() {
+        idempotentTokens.clear();
+        sharedSlidingWindow.reset();
+        sharedTokenBucket.reset();
     }
 }
