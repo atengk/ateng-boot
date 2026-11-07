@@ -9,6 +9,7 @@ import io.github.atengk.boot.social.event.SocialAuthenticatedEvent;
 import io.github.atengk.boot.social.event.SocialBindTicketIssuedEvent;
 import io.github.atengk.boot.social.event.SocialBoundEvent;
 import io.github.atengk.boot.social.event.SocialUnboundEvent;
+import io.github.atengk.boot.social.exception.SocialAlreadyBoundException;
 import io.github.atengk.boot.social.exception.SocialAuthException;
 import io.github.atengk.boot.social.exception.SocialException;
 import io.github.atengk.boot.social.exception.SocialRedirectUriInvalidException;
@@ -19,6 +20,7 @@ import io.github.atengk.boot.social.http.AnduinHttpBridge;
 import io.github.atengk.boot.social.http.SpringRestClientHttpImpl;
 import io.github.atengk.boot.social.model.SocialAuthResult;
 import io.github.atengk.boot.social.model.SocialAuthState;
+import io.github.atengk.boot.social.model.SocialBoundAccount;
 import io.github.atengk.boot.social.model.SocialLoginOptions;
 import io.github.atengk.boot.social.model.SocialToken;
 import io.github.atengk.boot.social.model.SocialUser;
@@ -47,7 +49,9 @@ import org.springframework.context.ApplicationEventPublisher;
 import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -1021,6 +1025,226 @@ class SocialAuthTemplateTest {
                 .isInstanceOf(SocialAuthException.class)
                 .hasMessageContaining("第三方平台授权吊销异常")
                 .hasCauseInstanceOf(Exception.class);
+    }
+
+    @Test
+    @DisplayName("39. bind: 跨号抢占防卫拦截（已被其他用户绑定时刚性拦截）")
+    void testBindConflictDefense() {
+        SocialUser pendingUser = SocialUser.builder()
+                .appKey("github_app")
+                .source("GITHUB")
+                .openId("gh_conflict_001")
+                .build();
+        String bindTicket = bindTicketStore.createTicket(pendingUser);
+
+        // 模拟第三方账号已经被 user_owner 绑定
+        when(userDetailsService.loadUserIdBySocialUser(eq("github_app"), any(SocialUser.class)))
+                .thenReturn("user_owner");
+
+        // user_attacker 尝试绑定，应当被拦截阻断
+        assertThatThrownBy(() -> authTemplate.bind(bindTicket, "user_attacker"))
+                .isInstanceOf(SocialAlreadyBoundException.class)
+                .hasMessageContaining("user_owner")
+                .hasMessageContaining("github_app");
+
+        // 验证未调用 bindSocialUser
+        verify(userDetailsService, never()).bindSocialUser(any(), any(), any());
+        // 验证票据已被阅后即焚原子销毁（防重放）
+        assertThat(bindTicketStore.contains(bindTicket)).isFalse();
+    }
+
+    @Test
+    @DisplayName("40. bind: 同用户幂等重复绑定顺利放行")
+    void testBindIdempotentSameUser() {
+        SocialUser pendingUser = SocialUser.builder()
+                .appKey("github_app")
+                .source("GITHUB")
+                .openId("gh_same_001")
+                .build();
+        String bindTicket = bindTicketStore.createTicket(pendingUser);
+
+        // 模拟第三方账号本身就是 user_same 绑定的
+        when(userDetailsService.loadUserIdBySocialUser(eq("github_app"), any(SocialUser.class)))
+                .thenReturn("user_same");
+
+        SocialAuthResult result = authTemplate.bind(bindTicket, "user_same");
+        assertThat(result).isNotNull();
+        assertThat(result.isLoggedIn()).isTrue();
+        assertThat(result.getUserId()).isEqualTo("user_same");
+
+        verify(userDetailsService).bindSocialUser(eq("user_same"), eq("github_app"), any(SocialUser.class));
+    }
+
+    @Test
+    @DisplayName("41. bindDirect: 参数校验前置快速失败")
+    void testBindDirectValidation() {
+        // direct code mode
+        assertThatThrownBy(() -> authTemplate.bindDirect(null, "github_app", "code_123"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.bindDirect("user_1", null, "code_123"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.bindDirect("user_1", "github_app", (String) null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.bindDirect("user_1", "github_app", "   "))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // callback mode
+        assertThatThrownBy(() -> authTemplate.bindDirect(null, "github_app", AuthCallback.builder().code("c").state("s").build()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.bindDirect("user_1", null, AuthCallback.builder().code("c").state("s").build()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.bindDirect("user_1", "github_app", (AuthCallback) null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("42. bindDirect: direct code 模式直绑成功且不生成新会话")
+    void testBindDirectCodeSuccess() {
+        String code2SessionJson = "{\"openid\":\"wx_mock_open_777\",\"unionid\":\"wx_mock_union_888\",\"session_key\":\"sess_key_999\"}";
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody(code2SessionJson));
+
+        // 模拟未被任何用户绑定
+        when(userDetailsService.loadUserIdBySocialUser(eq("wechat_mp_app"), any(SocialUser.class)))
+                .thenReturn(null);
+
+        // 执行直绑
+        SocialUser socialUser = authTemplate.bindDirect("user_login_100", "wechat_mp_app", "mock_wechat_js_code_123");
+
+        assertThat(socialUser).isNotNull();
+        assertThat(socialUser.getOpenId()).isEqualTo("wx_mock_open_777");
+        assertThat(socialUser.getUnionId()).isEqualTo("wx_mock_union_888");
+
+        // 验证未产生新的登录会话
+        assertThat(StpUtil.isLogin()).isFalse();
+
+        // 验证 SPI 被调用
+        verify(userDetailsService).bindSocialUser(eq("user_login_100"), eq("wechat_mp_app"), any(SocialUser.class));
+
+        // 验证发布了 SocialBoundEvent 领域事件
+        ArgumentCaptor<SocialBoundEvent> eventCaptor = ArgumentCaptor.forClass(SocialBoundEvent.class);
+        verify(eventPublisher).publishEvent(eventCaptor.capture());
+        SocialBoundEvent boundEvent = eventCaptor.getValue();
+        assertThat(boundEvent.getUserId()).isEqualTo("user_login_100");
+        assertThat(boundEvent.getAppKey()).isEqualTo("wechat_mp_app");
+        assertThat(boundEvent.getSocialUser().getOpenId()).isEqualTo("wx_mock_open_777");
+    }
+
+    @Test
+    @DisplayName("43. bindDirect: direct code 模式跨号抢占拦截")
+    void testBindDirectCodeConflictDefense() {
+        String code2SessionJson = "{\"openid\":\"wx_mock_open_777\",\"unionid\":\"wx_mock_union_888\",\"session_key\":\"sess_key_999\"}";
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody(code2SessionJson));
+
+        // 模拟已被 user_other 绑定
+        when(userDetailsService.loadUserIdBySocialUser(eq("wechat_mp_app"), any(SocialUser.class)))
+                .thenReturn("user_other");
+
+        assertThatThrownBy(() -> authTemplate.bindDirect("user_current", "wechat_mp_app", "mock_wechat_js_code_123"))
+                .isInstanceOf(SocialAlreadyBoundException.class)
+                .hasMessageContaining("user_other")
+                .hasMessageContaining("wechat_mp_app");
+
+        verify(userDetailsService, never()).bindSocialUser(any(), any(), any());
+        verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    @Test
+    @DisplayName("44. bindDirect: Web 回调模式直绑成功并核验 State 与恢复租户")
+    void testBindDirectCallbackSuccess() {
+        StateContext context = StateContext.builder().tenantId("tenant_direct_01").build();
+        String state = stateCache.generateState(context);
+
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"access_token\":\"gho_web_token\",\"token_type\":\"bearer\"}"));
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"id\":998877,\"login\":\"web_direct_user\",\"name\":\"Web直绑用户\"}"));
+
+        when(userDetailsService.loadUserIdBySocialUser(eq("github_app"), any(SocialUser.class)))
+                .thenReturn(null);
+
+        AuthCallback callback = AuthCallback.builder()
+                .code("mock_web_code_456")
+                .state(state)
+                .build();
+
+        SocialUser socialUser = authTemplate.bindDirect("user_web_200", "github_app", callback);
+
+        assertThat(socialUser).isNotNull();
+        assertThat(socialUser.getUsername()).isEqualTo("web_direct_user");
+        assertThat(stateCache.containsKey(state)).isFalse();
+
+        verify(userDetailsService).bindSocialUser(eq("user_web_200"), eq("github_app"), any(SocialUser.class));
+        verify(eventPublisher).publishEvent(any(SocialBoundEvent.class));
+    }
+
+    @Test
+    @DisplayName("45. bindDirect: Web 回调模式跨号抢占拦截")
+    void testBindDirectCallbackConflictDefense() {
+        String state = stateCache.generateState(StateContext.builder().build());
+
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"access_token\":\"gho_web_token\",\"token_type\":\"bearer\"}"));
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"id\":998877,\"login\":\"web_direct_user\",\"name\":\"Web直绑用户\"}"));
+
+        when(userDetailsService.loadUserIdBySocialUser(eq("github_app"), any(SocialUser.class)))
+                .thenReturn("user_other_bind");
+
+        AuthCallback callback = AuthCallback.builder()
+                .code("mock_web_code_456")
+                .state(state)
+                .build();
+
+        assertThatThrownBy(() -> authTemplate.bindDirect("user_web_200", "github_app", callback))
+                .isInstanceOf(SocialAlreadyBoundException.class)
+                .hasMessageContaining("user_other_bind")
+                .hasMessageContaining("github_app");
+
+        verify(userDetailsService, never()).bindSocialUser(any(), any(), any());
+        verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    @Test
+    @DisplayName("46. listBoundAccounts: 参数校验、列表查询与底层返回 null 时的空安全保底")
+    void testListBoundAccounts() {
+        // 1. 参数校验
+        assertThatThrownBy(() -> authTemplate.listBoundAccounts(null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> authTemplate.listBoundAccounts("   "))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 2. 底层返回 null 时，防御性返回空列表 Collections.emptyList()
+        when(userDetailsService.listBoundAccounts("user_empty")).thenReturn(null);
+        List<SocialBoundAccount> emptyResult = authTemplate.listBoundAccounts("user_empty");
+        assertThat(emptyResult).isNotNull().isEmpty();
+
+        // 3. 正常查询返回列表
+        SocialBoundAccount account = SocialBoundAccount.builder()
+                .appKey("github_app")
+                .source("GITHUB")
+                .openId("gh_123")
+                .username("ateng_gh")
+                .build();
+        when(userDetailsService.listBoundAccounts("user_normal")).thenReturn(List.of(account));
+
+        List<SocialBoundAccount> accounts = authTemplate.listBoundAccounts("user_normal");
+        assertThat(accounts).hasSize(1);
+        assertThat(accounts.get(0).getAppKey()).isEqualTo("github_app");
+        assertThat(accounts.get(0).getUsername()).isEqualTo("ateng_gh");
     }
 
     private String extractQueryParam(String url, String paramName) {

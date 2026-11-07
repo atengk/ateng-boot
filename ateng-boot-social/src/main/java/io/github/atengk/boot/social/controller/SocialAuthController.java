@@ -1,14 +1,18 @@
 package io.github.atengk.boot.social.controller;
 
+import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.social.model.SocialAuthResult;
 import io.github.atengk.boot.social.model.SocialBindRequest;
+import io.github.atengk.boot.social.model.SocialBoundAccount;
+import io.github.atengk.boot.social.model.SocialDirectBindRequest;
 import io.github.atengk.boot.social.model.SocialDirectLoginRequest;
 import io.github.atengk.boot.social.model.SocialLoginOptions;
 import io.github.atengk.boot.social.model.SocialToken;
 import io.github.atengk.boot.social.model.SocialTokenRefreshRequest;
 import io.github.atengk.boot.social.model.SocialTokenRevokeRequest;
 import io.github.atengk.boot.social.model.SocialUnbindRequest;
+import io.github.atengk.boot.social.model.SocialUser;
 import io.github.atengk.boot.social.model.StateContext;
 import io.github.atengk.boot.social.template.SocialAuthTemplate;
 import jakarta.validation.Valid;
@@ -22,6 +26,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * 社交登录与 OAuth2 统一 REST 接入端点控制器
@@ -158,5 +164,52 @@ public class SocialAuthController {
             @Valid @RequestBody SocialTokenRevokeRequest request) {
         socialAuthTemplate.revokeAuth(appKey, request.getAccessToken());
         return Result.success();
+    }
+
+    /**
+     * 个人中心已登录态直接绑定第三方社交账号
+     *
+     * @param appKey  社交应用唯一标识
+     * @param request 直接绑定请求对象
+     * @return 绑定的第三方标准化用户画像
+     */
+    @PostMapping("/bind-direct/{appKey}")
+    public Result<SocialUser> bindDirect(
+            @PathVariable("appKey") String appKey,
+            @Valid @RequestBody SocialDirectBindRequest request) {
+        SocialUser socialUser;
+        if (request.getState() != null && !request.getState().isBlank()) {
+            AuthCallback callback = AuthCallback.builder()
+                    .code(request.getCode())
+                    .state(request.getState())
+                    .build();
+            socialUser = socialAuthTemplate.bindDirect(request.getUserId(), appKey, callback);
+        } else {
+            socialUser = socialAuthTemplate.bindDirect(request.getUserId(), appKey, request.getCode());
+        }
+        return Result.success(socialUser);
+    }
+
+    /**
+     * 查询指定本地用户已绑定的第三方社交账号列表
+     * <p>
+     * 支持显式传入 userId 查询，或默认自动从当前 Sa-Token 登录态中获取 userId。
+     * </p>
+     *
+     * @param userId 本地用户标识（可选，若为空则自动探测 Sa-Token 登录会话）
+     * @return 已绑定的第三方社交账号视图列表
+     */
+    @GetMapping("/bindings")
+    public Result<List<SocialBoundAccount>> listBindings(
+            @RequestParam(value = "userId", required = false) String userId) {
+        String targetUserId = userId;
+        if ((targetUserId == null || targetUserId.isBlank()) && StpUtil.isLogin()) {
+            targetUserId = StpUtil.getLoginIdAsString();
+        }
+        if (targetUserId == null || targetUserId.isBlank()) {
+            throw new IllegalArgumentException("本地用户标识 [userId] 不能为空");
+        }
+        List<SocialBoundAccount> accounts = socialAuthTemplate.listBoundAccounts(targetUserId);
+        return Result.success(accounts);
     }
 }

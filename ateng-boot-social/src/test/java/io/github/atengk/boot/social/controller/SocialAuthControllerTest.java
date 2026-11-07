@@ -1,8 +1,11 @@
 package io.github.atengk.boot.social.controller;
 
+import cn.dev33.satoken.stp.StpUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.social.model.SocialAuthResult;
 import io.github.atengk.boot.social.model.SocialBindRequest;
+import io.github.atengk.boot.social.model.SocialBoundAccount;
+import io.github.atengk.boot.social.model.SocialDirectBindRequest;
 import io.github.atengk.boot.social.model.SocialDirectLoginRequest;
 import io.github.atengk.boot.social.model.SocialLoginOptions;
 import io.github.atengk.boot.social.model.SocialToken;
@@ -12,8 +15,10 @@ import io.github.atengk.boot.social.model.SocialUnbindRequest;
 import io.github.atengk.boot.social.model.SocialUser;
 import io.github.atengk.boot.social.model.StateContext;
 import io.github.atengk.boot.social.template.SocialAuthTemplate;
+import io.github.atengk.boot.social.test.MockSaTokenTestHelper;
 import org.dromara.anduin.model.AuthCallback;
 import org.hibernate.validator.messageinterpolation.ParameterMessageInterpolator;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -21,6 +26,9 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
+
+import java.util.Collections;
+import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -47,6 +55,7 @@ class SocialAuthControllerTest {
 
     @BeforeEach
     void setUp() {
+        MockSaTokenTestHelper.setUp();
         authTemplate = mock(SocialAuthTemplate.class);
         SocialAuthController controller = new SocialAuthController(authTemplate);
         LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
@@ -54,6 +63,11 @@ class SocialAuthControllerTest {
         validator.afterPropertiesSet();
         mockMvc = MockMvcBuilders.standaloneSetup(controller).setValidator(validator).build();
         objectMapper = new ObjectMapper();
+    }
+
+    @AfterEach
+    void tearDown() {
+        MockSaTokenTestHelper.tearDown();
     }
 
     @Test
@@ -279,5 +293,130 @@ class SocialAuthControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(invalidRequest)))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("13. bindDirect: 个人中心已登录直绑（纯 code 直传模式）")
+    void testBindDirectWithCode() throws Exception {
+        SocialUser mockUser = SocialUser.builder()
+                .appKey("wechat_mp_app")
+                .source("WECHAT_MINI_PROGRAM")
+                .openId("wx_bound_direct_100")
+                .username("wxDirectUser")
+                .build();
+
+        when(authTemplate.bindDirect(eq("user_local_100"), eq("wechat_mp_app"), eq("code_direct_123")))
+                .thenReturn(mockUser);
+
+        SocialDirectBindRequest request = SocialDirectBindRequest.builder()
+                .userId("user_local_100")
+                .code("code_direct_123")
+                .build();
+
+        mockMvc.perform(post("/auth/social/bind-direct/wechat_mp_app")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.openId").value("wx_bound_direct_100"))
+                .andExpect(jsonPath("$.data.appKey").value("wechat_mp_app"));
+
+        verify(authTemplate).bindDirect("user_local_100", "wechat_mp_app", "code_direct_123");
+    }
+
+    @Test
+    @DisplayName("14. bindDirect: 个人中心已登录直绑（携带 state 回调参数模式）")
+    void testBindDirectWithCallback() throws Exception {
+        SocialUser mockUser = SocialUser.builder()
+                .appKey("github_app")
+                .source("GITHUB")
+                .openId("gh_bound_direct_200")
+                .username("ghDirectUser")
+                .build();
+
+        when(authTemplate.bindDirect(eq("user_local_200"), eq("github_app"), any(AuthCallback.class)))
+                .thenReturn(mockUser);
+
+        SocialDirectBindRequest request = SocialDirectBindRequest.builder()
+                .userId("user_local_200")
+                .code("code_web_callback")
+                .state("state_web_csrf")
+                .build();
+
+        mockMvc.perform(post("/auth/social/bind-direct/github_app")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.openId").value("gh_bound_direct_200"));
+
+        verify(authTemplate).bindDirect(eq("user_local_200"), eq("github_app"), any(AuthCallback.class));
+    }
+
+    @Test
+    @DisplayName("15. bindDirect: 必填字段缺失触发 JSR-303 参数校验拦截")
+    void testBindDirectValidation() throws Exception {
+        SocialDirectBindRequest invalidReq1 = SocialDirectBindRequest.builder()
+                .userId("   ")
+                .code("code_123")
+                .build();
+
+        mockMvc.perform(post("/auth/social/bind-direct/wechat_mp_app")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidReq1)))
+                .andExpect(status().isBadRequest());
+
+        SocialDirectBindRequest invalidReq2 = SocialDirectBindRequest.builder()
+                .userId("user_123")
+                .code("   ")
+                .build();
+
+        mockMvc.perform(post("/auth/social/bind-direct/wechat_mp_app")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidReq2)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("16. listBindings: 显式传入 userId 查询绑定账号列表")
+    void testListBindingsWithExplicitUserId() throws Exception {
+        SocialBoundAccount account = SocialBoundAccount.builder()
+                .appKey("github_app")
+                .source("GITHUB")
+                .openId("gh_open_300")
+                .username("ateng300")
+                .nickname("Ateng 300")
+                .avatar("https://avatar.example.com/300.png")
+                .build();
+
+        when(authTemplate.listBoundAccounts("user_query_100"))
+                .thenReturn(List.of(account));
+
+        mockMvc.perform(get("/auth/social/bindings")
+                        .param("userId", "user_query_100"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data[0].appKey").value("github_app"))
+                .andExpect(jsonPath("$.data[0].openId").value("gh_open_300"))
+                .andExpect(jsonPath("$.data[0].nickname").value("Ateng 300"));
+
+        verify(authTemplate).listBoundAccounts("user_query_100");
+    }
+
+    @Test
+    @DisplayName("17. listBindings: 缺省 userId 自动从当前 Sa-Token 会话中解析")
+    void testListBindingsFromSaTokenSession() throws Exception {
+        StpUtil.login("user_satoken_999");
+
+        when(authTemplate.listBoundAccounts("user_satoken_999"))
+                .thenReturn(Collections.emptyList());
+
+        mockMvc.perform(get("/auth/social/bindings"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data").isEmpty());
+
+        verify(authTemplate).listBoundAccounts("user_satoken_999");
     }
 }

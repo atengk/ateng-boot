@@ -45,6 +45,11 @@ public enum SocialResultCode implements IResultCode {
     SOCIAL_USER_NOT_FOUND(7006, "未查找到绑定的本地用户"),
 
     /**
+     * 该第三方社交账号已被其他本地用户绑定
+     */
+    SOCIAL_ALREADY_BOUND(7007, "该第三方社交账号已被其他本地用户绑定"),
+
+    /**
      * 非法的授权回调重定向地址
      */
     SOCIAL_REDIRECT_URI_INVALID(7008, "非法的授权回调重定向地址"),

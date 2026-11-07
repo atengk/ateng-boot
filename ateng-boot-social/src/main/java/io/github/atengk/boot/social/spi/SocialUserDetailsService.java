@@ -1,6 +1,10 @@
 package io.github.atengk.boot.social.spi;
 
+import io.github.atengk.boot.social.model.SocialBoundAccount;
 import io.github.atengk.boot.social.model.SocialUser;
+
+import java.util.Collections;
+import java.util.List;
 
 /**
  * 社交登录用户持久化与身份绑定业务 SPI 扩展点
@@ -88,4 +92,19 @@ public interface SocialUserDetailsService {
      * @param appKey 发起解绑的应用唯一标识
      */
     void unbind(String userId, String appKey);
+
+    /**
+     * 查询指定本地用户已绑定的第三方社交账号列表
+     * <p>
+     * 支撑个人中心展示已绑定的第三方社交账号（如微信、GitHub、QQ 等），
+     * 便于用户查看绑定状态、昵称、绑定时间及进行解绑或换绑操作。
+     * 默认返回空集合。
+     * </p>
+     *
+     * @param userId 本地用户唯一标识
+     * @return 已绑定的第三方账号视图列表；若未绑定任何第三方或未提供实现则返回空列表（严禁返回 null）
+     */
+    default List<SocialBoundAccount> listBoundAccounts(String userId) {
+        return Collections.emptyList();
+    }
 }

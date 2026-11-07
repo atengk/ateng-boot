@@ -10,12 +10,14 @@ import io.github.atengk.boot.social.event.SocialAuthenticatedEvent;
 import io.github.atengk.boot.social.event.SocialBindTicketIssuedEvent;
 import io.github.atengk.boot.social.event.SocialBoundEvent;
 import io.github.atengk.boot.social.event.SocialUnboundEvent;
+import io.github.atengk.boot.social.exception.SocialAlreadyBoundException;
 import io.github.atengk.boot.social.exception.SocialAuthException;
 import io.github.atengk.boot.social.exception.SocialException;
 import io.github.atengk.boot.social.exception.SocialStateExpiredException;
 import io.github.atengk.boot.social.exception.SocialUnbindRejectedException;
 import io.github.atengk.boot.social.factory.SocialAppFactory;
 import io.github.atengk.boot.social.model.SocialAuthResult;
+import io.github.atengk.boot.social.model.SocialBoundAccount;
 import io.github.atengk.boot.social.model.SocialLoginOptions;
 import io.github.atengk.boot.social.model.SocialToken;
 import io.github.atengk.boot.social.model.SocialUser;
@@ -37,6 +39,8 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.ApplicationEventPublisherAware;
 
 import java.time.Duration;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * 社交登录与 OAuth2 核心操作门面
@@ -387,9 +391,16 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             effectiveAppKey = socialUser.getSource();
         }
 
-        // 3. 联动持久化业务 SPI 绑定账号
+        // 3. 跨号抢占冲突防卫拦截与持久化业务 SPI 绑定账号
         SocialUserDetailsService detailsService = userDetailsServiceObjectProvider.getIfAvailable();
         if (detailsService != null) {
+            String existingUserId = detailsService.loadUserIdBySocialUser(effectiveAppKey, socialUser);
+            if (existingUserId != null && !existingUserId.isBlank() && !existingUserId.equals(userId)) {
+                log.warn("Social account already bound to another user: appKey=[{}], openId=[{}], existingUserId=[{}], currentUserId=[{}]",
+                        effectiveAppKey, socialUser.getOpenId(), existingUserId, userId);
+                throw new SocialAlreadyBoundException("该第三方社交账号已被其他本地用户绑定: existingUserId=" + existingUserId
+                        + ", appKey=" + effectiveAppKey + ", openId=" + socialUser.getOpenId());
+            }
             detailsService.bindSocialUser(userId, effectiveAppKey, socialUser);
         } else {
             log.warn("SocialUserDetailsService is not provided, skipping local user binding persistence: userId=[{}], appKey=[{}]", userId, effectiveAppKey);
@@ -406,6 +417,123 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
         publishEvent(new SocialAuthenticatedEvent(this, userId, effectiveAppKey, socialUser, options, null));
 
         return SocialAuthResult.loggedIn(userId, tokenInfo, socialUser, null);
+    }
+
+    /**
+     * 个人中心已登录态直接绑定第三方社交账号（基于授权凭据 code 直传模式，如微信小程序）
+     *
+     * @param userId 本地系统用户唯一标识
+     * @param appKey 社交应用唯一标识
+     * @param code   授权凭证 code
+     * @return 绑定的第三方标准化用户画像
+     */
+    public SocialUser bindDirect(String userId, String appKey, String code) {
+        if (code == null || code.isBlank()) {
+            throw new IllegalArgumentException("授权凭证 [code] 不能为空");
+        }
+        AuthCallback callback = AuthCallback.builder().code(code).build();
+        return doBindDirect(userId, appKey, callback, false);
+    }
+
+    /**
+     * 个人中心已登录态直接绑定第三方社交账号（基于 Web 重定向回调参数模式，包含防伪 State 核验）
+     *
+     * @param userId   本地系统用户唯一标识
+     * @param appKey   社交应用唯一标识
+     * @param callback 第三方回调凭证参数
+     * @return 绑定的第三方标准化用户画像
+     */
+    public SocialUser bindDirect(String userId, String appKey, AuthCallback callback) {
+        return doBindDirect(userId, appKey, callback, true);
+    }
+
+    private SocialUser doBindDirect(String userId, String appKey, AuthCallback callback, boolean checkState) {
+        if (userId == null || userId.isBlank()) {
+            throw new IllegalArgumentException("本地用户标识 [userId] 不能为空");
+        }
+        if (appKey == null || appKey.isBlank()) {
+            throw new IllegalArgumentException("应用标识 [appKey] 不能为空");
+        }
+        if (callback == null) {
+            throw new IllegalArgumentException("回调参数 [callback] 不能为空");
+        }
+
+        SocialAppConfig appConfig = socialAppFactory.getAppConfig(appKey);
+
+        String state = callback.getState();
+        StateContext stateContext = null;
+        if (checkState && !appConfig.isIgnoreCheckState()) {
+            if (state == null || state.isBlank()) {
+                throw new SocialStateExpiredException("第三方回调参数中未携带防伪状态码 [state]");
+            }
+            if (!stateCache.containsKey(state)) {
+                log.warn("OAuth2 state invalid or expired: appKey=[{}], state=[{}]", appKey, state);
+                throw new SocialStateExpiredException(state);
+            }
+            stateContext = stateCache.getContext(state);
+        }
+
+        // 若 State 包含租户上下文且当前上下文未设置租户，恢复租户上下文
+        if (stateContext != null && stateContext.getTenantId() != null && !stateContext.getTenantId().isBlank()) {
+            TenantContextHolder.setTenantId(stateContext.getTenantId());
+        }
+
+        SocialUser socialUser;
+        try {
+            socialUser = exchangeSocialUser(appKey, appConfig, callback);
+        } catch (Throwable ex) {
+            if (state != null && !state.isBlank()) {
+                stateCache.removeContext(state);
+            }
+            throw ex;
+        }
+
+        // 换码成功后，原子消费并销毁防伪 StateContext（阅后即焚防重放）
+        if (state != null && !state.isBlank()) {
+            stateCache.removeContext(state);
+        }
+
+        // 跨号抢占冲突防卫拦截
+        SocialUserDetailsService detailsService = userDetailsServiceObjectProvider != null
+                ? userDetailsServiceObjectProvider.getIfAvailable()
+                : null;
+        if (detailsService != null) {
+            String existingUserId = detailsService.loadUserIdBySocialUser(appKey, socialUser);
+            if (existingUserId != null && !existingUserId.isBlank() && !existingUserId.equals(userId)) {
+                log.warn("Social account already bound to another user: appKey=[{}], openId=[{}], existingUserId=[{}], currentUserId=[{}]",
+                        appKey, socialUser.getOpenId(), existingUserId, userId);
+                throw new SocialAlreadyBoundException("该第三方社交账号已被其他本地用户绑定: existingUserId=" + existingUserId
+                        + ", appKey=" + appKey + ", openId=" + socialUser.getOpenId());
+            }
+            detailsService.bindSocialUser(userId, appKey, socialUser);
+        } else {
+            log.warn("SocialUserDetailsService is not provided, skipping local user binding persistence: userId=[{}], appKey=[{}]", userId, appKey);
+        }
+
+        log.info("Social account directly bound successfully: userId=[{}], appKey=[{}], openId=[{}]",
+                userId, appKey, socialUser.getOpenId());
+        publishEvent(new SocialBoundEvent(this, userId, appKey, socialUser));
+        return socialUser;
+    }
+
+    /**
+     * 查询指定本地用户已绑定的第三方社交账号列表
+     *
+     * @param userId 本地系统用户唯一标识
+     * @return 已绑定的第三方账号视图列表（保底返回空列表，严禁返回 null）
+     */
+    public List<SocialBoundAccount> listBoundAccounts(String userId) {
+        if (userId == null || userId.isBlank()) {
+            throw new IllegalArgumentException("本地用户标识 [userId] 不能为空");
+        }
+        SocialUserDetailsService detailsService = userDetailsServiceObjectProvider != null
+                ? userDetailsServiceObjectProvider.getIfAvailable()
+                : null;
+        if (detailsService == null) {
+            return Collections.emptyList();
+        }
+        List<SocialBoundAccount> accounts = detailsService.listBoundAccounts(userId);
+        return accounts != null ? accounts : Collections.emptyList();
     }
 
     // ==================== 5. 解绑操作与孤儿账号安全防卫 ====================
