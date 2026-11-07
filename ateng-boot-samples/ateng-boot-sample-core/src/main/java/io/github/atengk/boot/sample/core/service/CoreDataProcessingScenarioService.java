@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import io.github.atengk.boot.core.concurrent.ConcurrentLruCache;
 import io.github.atengk.boot.core.model.Pair;
 import io.github.atengk.boot.core.model.Triple;
+import io.github.atengk.boot.core.util.BatchSliceUtil;
 import io.github.atengk.boot.core.util.BeanUtil;
 import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.core.util.ConvertUtil;
@@ -23,9 +24,20 @@ import io.github.atengk.boot.core.util.TreeUtil;
 import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.core.util.BusinessAssert;
+import io.github.atengk.boot.sample.core.dto.BatchAndCacheRequest;
 import io.github.atengk.boot.sample.core.dto.CustomerOnboardingRequest;
+import io.github.atengk.boot.sample.core.dto.SpelAndPrimitivesRequest;
 import io.github.atengk.boot.sample.core.model.SampleMenuNodeDTO;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
+import io.github.atengk.boot.sample.core.vo.BatchAndCacheVO;
+import io.github.atengk.boot.sample.core.vo.CategoryNodeVO;
+import io.github.atengk.boot.sample.core.vo.CategoryTreeVO;
+import io.github.atengk.boot.sample.core.vo.CustomerPrivacyVO;
+import io.github.atengk.boot.sample.core.vo.SpelAndPrimitivesVO;
+import io.github.atengk.boot.sample.core.vo.StringTransformVO;
+import io.github.atengk.boot.sample.core.vo.TenantCacheStatusVO;
+import io.github.atengk.boot.sample.core.vo.TenantQuotaVO;
+import io.github.atengk.boot.sample.core.vo.WorkdayCalcVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -35,6 +47,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -329,35 +343,35 @@ public class CoreDataProcessingScenarioService {
     }
 
     /**
-     * 17. 验证 ConcurrentLruCache 纯原生有界 LRU 缓存（容量淘汰、命中刷新与原子计算）
+     * 17. 验证 ConcurrentLruCache 纯原生有界 LRU 缓存（租户配额缓存容量淘汰、命中刷新与原子计算）
      *
      * @return 缓存验证结果状态 Map
      */
     public Map<String, Object> demonstrateConcurrentLruCache() {
         Map<String, Object> results = new HashMap<>();
 
-        // 构造最大容量为 2 的 LRU 缓存
-        ConcurrentLruCache<String, String> cache = new ConcurrentLruCache<>(2);
-        cache.put("k1", "v1");
-        cache.put("k2", "v2");
+        // 构造最大容量为 2 的租户配额 LRU 缓存
+        ConcurrentLruCache<String, TenantQuotaVO> cache = new ConcurrentLruCache<>(2);
+        cache.put("tenant-standard-001", new TenantQuotaVO("tenant-standard-001", "标准企业租户", 200, 50));
+        cache.put("tenant-enterprise-002", new TenantQuotaVO("tenant-enterprise-002", "旗舰企业租户", 500, 120));
         results.put("initialSize", cache.size()); // 2
 
-        // 读取 k1 刷新访问热度（使 k2 变为最久未访问）
-        String k1Value = cache.get("k1");
-        results.put("k1Value", k1Value);
+        // 读取 tenant-standard-001 刷新访问热度（使 tenant-enterprise-002 变为最久未访问条目）
+        TenantQuotaVO tenant1 = cache.get("tenant-standard-001");
+        results.put("tenant1Quota", tenant1 != null ? tenant1.getQuotaLimit() : null);
 
-        // 写入 k3 触发容量超限淘汰最久未访问条目 (k2)
-        cache.put("k3", "v3");
+        // 写入 tenant-vip-003 触发容量超限淘汰最久未访问条目 (tenant-enterprise-002)
+        cache.put("tenant-vip-003", new TenantQuotaVO("tenant-vip-003", "VIP定制租户", 1000, 0));
         results.put("afterEvictSize", cache.size()); // 2
-        results.put("hasK1", cache.containsKey("k1")); // true
-        results.put("hasK2", cache.containsKey("k2")); // false (淘汰)
-        results.put("hasK3", cache.containsKey("k3")); // true
+        results.put("hasTenant1", cache.containsKey("tenant-standard-001")); // true
+        results.put("hasTenant2", cache.containsKey("tenant-enterprise-002")); // false (淘汰)
+        results.put("hasTenant3", cache.containsKey("tenant-vip-003")); // true
 
-        // 原子计算计算写入
-        String computed = cache.computeIfAbsent("k4", key -> "computed_" + key);
-        results.put("computedValue", computed);
+        // 原子计算写入
+        TenantQuotaVO computed = cache.computeIfAbsent("tenant-computed-004", key -> new TenantQuotaVO(key, "原子算力租户", 800, 10));
+        results.put("computedQuota", computed != null ? computed.getQuotaLimit() : null);
 
-        log.info("ConcurrentLruCache 验证结果: {}", results);
+        log.info("ConcurrentLruCache 租户配额缓存演进验证结果: {}", results);
         return results;
     }
 
@@ -431,5 +445,286 @@ public class CoreDataProcessingScenarioService {
             }
         }
         return customerList.size();
+    }
+
+    /**
+     * 20. 商品类目树构建与多维全景导航业务场景
+     * 验证 TreeUtil 线性装配、自定义谓词成林、递归剪枝、深度优先先序展平、面包屑路径探寻及终端叶子提取
+     *
+     * @param keyword        剪枝过滤关键词（可为空）
+     * @param targetNodeName 面包屑导航目标节点名（为空时默认取 "5G智能手机"）
+     * @return 商品类目树与全景导航视图对象
+     */
+    public CategoryTreeVO processCategoryTreeScenario(String keyword, String targetNodeName) {
+        // 1. 构建标准商品多级类目扁平原始数据
+        List<CategoryNodeVO> flatList = new ArrayList<>();
+        // 数码电脑分支
+        flatList.add(CategoryNodeVO.builder().id(100L).parentId(0L).name("数码电脑").sortOrder(1).build());
+        flatList.add(CategoryNodeVO.builder().id(101L).parentId(100L).name("智能设备").sortOrder(1).build());
+        flatList.add(CategoryNodeVO.builder().id(1011L).parentId(101L).name("5G智能手机").sortOrder(1).build());
+        flatList.add(CategoryNodeVO.builder().id(1012L).parentId(101L).name("折叠屏手机").sortOrder(2).build());
+        flatList.add(CategoryNodeVO.builder().id(102L).parentId(100L).name("电脑办公").sortOrder(2).build());
+        flatList.add(CategoryNodeVO.builder().id(1021L).parentId(102L).name("轻薄便携本").sortOrder(1).build());
+        flatList.add(CategoryNodeVO.builder().id(1022L).parentId(102L).name("高性能台式机").sortOrder(2).build());
+        // 家用电器分支
+        flatList.add(CategoryNodeVO.builder().id(200L).parentId(0L).name("家用电器").sortOrder(2).build());
+        flatList.add(CategoryNodeVO.builder().id(201L).parentId(200L).name("大家电").sortOrder(1).build());
+        flatList.add(CategoryNodeVO.builder().id(2011L).parentId(201L).name("超薄壁画电视").sortOrder(1).build());
+        flatList.add(CategoryNodeVO.builder().id(2012L).parentId(201L).name("双系统风冷冰箱").sortOrder(2).build());
+        // 户外运动分支
+        flatList.add(CategoryNodeVO.builder().id(300L).parentId(0L).name("户外运动").sortOrder(3).build());
+        flatList.add(CategoryNodeVO.builder().id(301L).parentId(300L).name("运动穿戴").sortOrder(1).build());
+        flatList.add(CategoryNodeVO.builder().id(3011L).parentId(301L).name("GPS运动手表").sortOrder(1).build());
+
+        // 2. TreeUtil.build O(N) 线性装配完整树形结构
+        List<CategoryNodeVO> fullTree = TreeUtil.build(
+                flatList,
+                0L,
+                CategoryNodeVO::getId,
+                CategoryNodeVO::getParentId,
+                CategoryNodeVO::setChildren
+        );
+
+        // 3. TreeUtil.filter 递归剪枝过滤（深拷贝副本以防引用破坏）
+        List<CategoryNodeVO> filteredTree = Collections.emptyList();
+        if (keyword != null && !keyword.isBlank()) {
+            List<CategoryNodeVO> copyForFilter = JsonUtil.deepClone(fullTree);
+            filteredTree = TreeUtil.filter(
+                    copyForFilter,
+                    node -> node.getName() != null && node.getName().contains(keyword),
+                    CategoryNodeVO::getChildren,
+                    CategoryNodeVO::setChildren
+            );
+        }
+
+        // 4. TreeUtil.flatten 深度优先先序遍历展平
+        List<CategoryNodeVO> flattened = TreeUtil.flatten(fullTree, CategoryNodeVO::getChildren);
+
+        // 5. TreeUtil.findPath 面包屑全链路寻路
+        String targetName = (targetNodeName != null && !targetNodeName.isBlank()) ? targetNodeName : "5G智能手机";
+        List<CategoryNodeVO> breadcrumbPath = TreeUtil.findPath(
+                fullTree,
+                node -> targetName.equals(node.getName()),
+                CategoryNodeVO::getChildren
+        );
+
+        // 6. TreeUtil.getLeafNodes 终端叶子节点提取
+        List<CategoryNodeVO> leafCategories = TreeUtil.getLeafNodes(fullTree, CategoryNodeVO::getChildren);
+
+        log.info("商品类目树组装完成: totalRoots={}, flattenedCount={}, leafCount={}, breadcrumbStep={}",
+                fullTree.size(), flattened.size(), leafCategories.size(), breadcrumbPath.size());
+
+        return CategoryTreeVO.builder()
+                .categoryTree(fullTree)
+                .filteredTree(filteredTree)
+                .flattenedCategories(flattened)
+                .breadcrumbPath(breadcrumbPath)
+                .leafCategories(leafCategories)
+                .totalCount(flattened.size())
+                .leafCount(leafCategories.size())
+                .build();
+    }
+
+    /**
+     * 21. 大批量切片流转消费与有界租户配额缓存演进
+     * 验证 BatchSliceUtil 零内存额外分配分批切片、MoreCollectors 安全流式收集、ConcurrentLruCache 租户配额淘汰与 JsonUtil.deepClone 内存真明文
+     *
+     * @param request 切片与缓存演进请求载荷
+     * @return 业务切片与缓存状态演进视图
+     */
+    public BatchAndCacheVO processBatchAndCacheScenario(BatchAndCacheRequest request) {
+        // 1. 验证 BatchSliceUtil 基于 subList 原生视图的零拷贝分批切片与 Consumer 流式消费
+        List<String> orderCodes = request.getOrderCodes();
+        int sliceSize = request.getSliceSize() != null && request.getSliceSize() > 0 ? request.getSliceSize() : 3;
+        List<List<String>> slices = BatchSliceUtil.slice(orderCodes, sliceSize);
+
+        List<String> consumedOrders = new ArrayList<>();
+        BatchSliceUtil.forEachSlice(orderCodes, sliceSize, consumedOrders::addAll);
+
+        // 2. 验证 MoreCollectors.distinctByKey 函数式去重与 toSafeMap 安全收集
+        List<String> distinctOrders = orderCodes.stream()
+                .filter(MoreCollectors.distinctByKey(code -> code))
+                .collect(Collectors.toList());
+
+        Map<String, Integer> safeMap = distinctOrders.stream()
+                .collect(MoreCollectors.toSafeMap(code -> code, String::length));
+
+        // 3. 验证 ConcurrentLruCache 纯原生有界 LRU 缓存演进（容量上限为 2，淘汰最久未访问租户）
+        ConcurrentLruCache<String, TenantQuotaVO> tenantCache = new ConcurrentLruCache<>(2);
+        // 初始写入两组租户配额条目
+        tenantCache.put("tenant-standard-001", new TenantQuotaVO("tenant-standard-001", "标准企业租户", 200, 50));
+        tenantCache.put("tenant-enterprise-002", new TenantQuotaVO("tenant-enterprise-002", "旗舰企业租户", 500, 120));
+        int initialCacheSize = tenantCache.size(); // 2
+
+        // 读取 tenant-standard-001 刷新热度，使 tenant-enterprise-002 成为最久未访问条目
+        TenantQuotaVO activeTenant = tenantCache.get("tenant-standard-001");
+
+        // 写入请求中的新租户触发淘汰
+        TenantQuotaVO newTenant = TenantQuotaVO.builder()
+                .tenantId(request.getTenantId())
+                .tenantName(request.getTenantName())
+                .quotaLimit(request.getQuotaLimit())
+                .usedQuota(0)
+                .build();
+        tenantCache.put(request.getTenantId(), newTenant);
+
+        // 验证 tenant-enterprise-002 已被物理淘汰
+        boolean isEvicted = !tenantCache.containsKey("tenant-enterprise-002");
+
+        // 原子计算 computeIfAbsent 写入
+        TenantQuotaVO computedTenant = tenantCache.computeIfAbsent(
+                "tenant-computed-004",
+                id -> TenantQuotaVO.builder().tenantId(id).tenantName("动态计算算力租户").quotaLimit(800).usedQuota(0).build()
+        );
+
+        TenantCacheStatusVO cacheStatusVO = TenantCacheStatusVO.builder()
+                .initialSize(initialCacheSize)
+                .activeTenant(activeTenant)
+                .evictedTenantId("tenant-enterprise-002")
+                .evicted(isEvicted)
+                .computedTenant(computedTenant)
+                .currentCacheSize(tenantCache.size())
+                .build();
+
+        // 4. 验证 JsonUtil.deepClone 纯内存真明文深度克隆（防掩码脏数据）
+        CustomerPrivacyVO privacyVO = CustomerPrivacyVO.builder()
+                .customerId(9999L)
+                .realName("诸葛孔明")
+                .phone("13812345678")
+                .fixedPhone("010-88886678")
+                .idCard("110101199003072345")
+                .build();
+        CustomerPrivacyVO cloned = JsonUtil.deepClone(privacyVO);
+
+        log.info("大批量切片与租户缓存执行完成: sliceCount={}, distinctCount={}, cacheSize={}, clonedPhone={}",
+                slices.size(), distinctOrders.size(), tenantCache.size(), cloned.getPhone());
+
+        return BatchAndCacheVO.builder()
+                .batchCount(slices.size())
+                .sliceDetails(slices)
+                .distinctItemCount(distinctOrders.size())
+                .cacheStatus(cacheStatusVO)
+                .clonedPlaintextPhone(cloned.getPhone())
+                .clonedPlaintextIdCard(cloned.getIdCard())
+                .build();
+    }
+
+    /**
+     * 22. 大批量切片消费端到端方法
+     *
+     * @param orderCodes 订单编号列表
+     * @param sliceSize  分批切片大小
+     * @return 分批列表
+     */
+    public List<List<String>> processBatchSliceOrders(List<String> orderCodes, int sliceSize) {
+        List<List<String>> batches = BatchSliceUtil.slice(orderCodes, sliceSize);
+        List<String> consumed = new ArrayList<>();
+        BatchSliceUtil.forEachSlice(orderCodes, sliceSize, consumed::addAll);
+        log.info("BatchSliceUtil 切片流转: total={}, batches={}, consumedCount={}",
+                orderCodes != null ? orderCodes.size() : 0, batches.size(), consumed.size());
+        return batches;
+    }
+
+    /**
+     * 23. 安全受限 SpEL 表达式求值与高频通用算法原语业务场景
+     * 验证 SpelUtil 只读只解沙箱与防 RCE、BeanUtil.copyIgnoreNull 局部增量合并、LambdaUtil 字段推导、DateTimeUtil 工作日、ConvertUtil、StringUtil、RandomUtil 与元组
+     *
+     * @param request 请求载荷
+     * @return 响应视图对象
+     */
+    public SpelAndPrimitivesVO processSpelAndPrimitivesScenario(SpelAndPrimitivesRequest request) {
+        // 1. SpelUtil 安全只读沙箱求值
+        Object spelResult = null;
+        if (request.getExpression() != null && !request.getExpression().isBlank()) {
+            Map<String, Object> variables = new HashMap<>();
+            if (request.getUser() != null) {
+                variables.put("user", request.getUser());
+            }
+            spelResult = SpelUtil.evaluate(request.getExpression(), request.getUser(), variables, Object.class);
+        }
+
+        // 验证防注入沙箱拦截
+        boolean rceBlocked = false;
+        String blockedMsg = null;
+        if (request.isSimulateMaliciousSpel()) {
+            try {
+                SpelUtil.evaluate("T(java.lang.Runtime).getRuntime().exec('calc')");
+            } catch (Exception ex) {
+                rceBlocked = true;
+                blockedMsg = ex.getMessage();
+                log.info("SpelUtil 成功阻断恶意注入: {}", ex.getMessage());
+            }
+        }
+
+        // 2. BeanUtil.copyIgnoreNull 局部非空增量合并
+        SampleUserDTO mergedUser = null;
+        if (request.getUser() != null) {
+            mergedUser = BeanUtil.copy(request.getUser(), SampleUserDTO.class);
+            if (request.getPatchUser() != null) {
+                BeanUtil.copyIgnoreNull(request.getPatchUser(), mergedUser);
+            }
+        }
+
+        // 3. LambdaUtil 字段名推导
+        String lambdaFieldName = LambdaUtil.getFieldName(SampleUserDTO::getName);
+
+        // 4. DateTimeUtil 工作日智能推演
+        LocalDate baseDate = request.getBaseDate() != null ? request.getBaseDate() : LocalDate.of(2026, 11, 6);
+        boolean workday = DateTimeUtil.isWorkday(baseDate);
+        LocalDate plus3Workdays = DateTimeUtil.plusWorkdays(baseDate, 3);
+        long betweenDays = DateTimeUtil.betweenWorkdays(baseDate, plus3Workdays);
+
+        WorkdayCalcVO workdayCalcVO = WorkdayCalcVO.builder()
+                .baseDate(baseDate)
+                .workday(workday)
+                .plus3Workdays(plus3Workdays)
+                .betweenDays(betweenDays)
+                .build();
+
+        // 5. ConvertUtil 安全数值容错转换
+        String rawNumberStr = (request.getRawNumberStr() != null && !request.getRawNumberStr().isBlank())
+                ? request.getRawNumberStr()
+                : "9876543210";
+        Long convertedLong = ConvertUtil.toLong(rawNumberStr, 0L);
+
+        // 6. StringUtil 算法变换
+        String rawStr = (request.getRawString() != null && !request.getRawString().isBlank())
+                ? request.getRawString()
+                : "order_shipping_address";
+        String camelCase = StringUtil.toCamelCase(rawStr);
+        String underlineCase = StringUtil.toUnderlineCase(camelCase);
+        String truncatedText = StringUtil.truncate(rawStr, 10);
+        String formattedText = StringUtil.format("User [{}] action is {}", "Admin", "LOGIN");
+
+        StringTransformVO stringTransformVO = StringTransformVO.builder()
+                .camelCase(camelCase)
+                .underlineCase(underlineCase)
+                .truncatedText(truncatedText)
+                .formattedText(formattedText)
+                .build();
+
+        // 7. RandomUtil 无锁安全随机
+        String randomSmsCode = RandomUtil.randomNumbers(6);
+
+        // 8. Pair 与 Triple 不可变元组实战
+        Pair<String, Integer> pair = Pair.of("AUDIT_PASS", 200);
+        Triple<String, String, Long> triple = Triple.of("NODE_A", "SUCCESS", 1024L);
+        String tupleDemo = "Pair=" + pair.left() + ":" + pair.right() + ", Triple=" + triple.left() + "/" + triple.middle() + "/" + triple.right();
+
+        log.info("SpEL与高频原语执行完成: lambdaField={}, convertedLong={}, rceBlocked={}",
+                lambdaFieldName, convertedLong, rceBlocked);
+
+        return SpelAndPrimitivesVO.builder()
+                .spelResult(spelResult)
+                .rceBlocked(rceBlocked)
+                .blockedMessage(blockedMsg)
+                .lambdaFieldName(lambdaFieldName)
+                .mergedUser(mergedUser)
+                .workdayResult(workdayCalcVO)
+                .stringTransformResult(stringTransformVO)
+                .convertedLong(convertedLong)
+                .randomSmsCode(randomSmsCode)
+                .tupleDemo(tupleDemo)
+                .build();
     }
 }

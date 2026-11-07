@@ -300,17 +300,29 @@ class CoreDataProcessingScenarioServiceTest {
     }
 
     @Test
-    @DisplayName("测试ConcurrentLruCache纯原生有界LRU缓存淘汰与原子计算")
+    @DisplayName("测试ConcurrentLruCache纯原生有界LRU缓存淘汰与原子计算（租户配额业务语义演进）")
     void testDemonstrateConcurrentLruCache() {
         Map<String, Object> results = dataProcessingService.demonstrateConcurrentLruCache();
 
         assertThat(results.get("initialSize")).isEqualTo(2);
-        assertThat(results.get("k1Value")).isEqualTo("v1");
+        assertThat(results.get("tenant1Quota")).isEqualTo(200);
         assertThat(results.get("afterEvictSize")).isEqualTo(2);
-        assertThat(results.get("hasK1")).isEqualTo(true);
-        assertThat(results.get("hasK2")).isEqualTo(false); // 淘汰
-        assertThat(results.get("hasK3")).isEqualTo(true);
-        assertThat(results.get("computedValue")).isEqualTo("computed_k4");
+        assertThat(results.get("hasTenant1")).isEqualTo(true);
+        assertThat(results.get("hasTenant2")).isEqualTo(false); // 淘汰
+        assertThat(results.get("hasTenant3")).isEqualTo(true);
+        assertThat(results.get("computedQuota")).isEqualTo(800);
+    }
+
+    @Test
+    @DisplayName("测试BatchSliceUtil基于subList原生视图零内存拷贝分批与流式遍历消费")
+    void testProcessBatchSliceOrders() {
+        List<String> orderCodes = List.of("ORD-001", "ORD-002", "ORD-003", "ORD-004", "ORD-005", "ORD-006", "ORD-007");
+        List<List<String>> batches = dataProcessingService.processBatchSliceOrders(orderCodes, 3);
+
+        assertThat(batches).hasSize(3);
+        assertThat(batches.get(0)).containsExactly("ORD-001", "ORD-002", "ORD-003");
+        assertThat(batches.get(1)).containsExactly("ORD-004", "ORD-005", "ORD-006");
+        assertThat(batches.get(2)).containsExactly("ORD-007");
     }
 
     @Test

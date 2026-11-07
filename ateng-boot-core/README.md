@@ -26,24 +26,24 @@
 | **退避指数重试** | 纯原生轻量无第三方重试工具 | `RetryUtil` | - | `execute(supplier, config, fallback)`, `executeAction(runnable, config, fallback)`，支持 Equal Jitter 平滑随机抖动、onRetry 监听器、指数退避与 Fallback 降级兜底 | `RetryUtilTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
 | **加解密与十六进制** | 原生安全加解密、摘要算法与 Hex 编解码 | `CryptoUtil`, `DigestUtil`, `HexUtil` | - | `CryptoUtil.encryptGcm/decryptGcm`, `encryptCbc/decryptCbc`, `DigestUtil.sha256Hex`, `md5Hex`, `HexUtil.encodeHex(bytes)`, `HexUtil.decodeHex(hexStr)` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `HexUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **安全文件与流处理** | 路径穿越防御、安全有界读取与临时文件 | `FileUtil` | - | `FileUtil.cleanFilename(name)`（防御 `../` 路径穿越）, `cleanPath(path)`, `getExtName(name)`, `formatSize(bytes)`, `readNBytesSafe(stream, maxBytes)` (防 OOM 安全有界读取与边界防溢出), `createTempFile(prefix, suffix)`, `createTempFile(dir, prefix, suffix)` | `FileUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **集合切片与大批量安全流转** | 零内存拷贝分批切片、函数式去重与大批量流转原语 | `CollectionUtil`, `BatchSliceUtil`, `MoreCollectors` | - | `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转）, `BatchSliceUtil.slice(list, sliceSize)`, `BatchSliceUtil.forEachSlice(list, sliceSize, consumer)`, `CollectionUtil.distinctByKey(keyExtractor)`, `MoreCollectors.toSafeMap(...)`, `MoreCollectors.toDistinctList(...)` | `CollectionUtilTest.java`, `BatchSliceUtilTest.java`, `MoreCollectorsTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **树形森林装配与析取** | O(N) 线性组装、递归剪枝、展平与路径探寻 | `TreeUtil` | - | `TreeUtil.build(...)`, `buildForest(...)`, `filter(...)`, `flatten(roots, childrenGetter)` / `flattenTree(...)` (先序深度优先展平), `findPath(...)` (面包屑导航路径), `getLeafNodes(...)` (提取所有叶子终端节点) | `TreeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **类型安全引用** | SerializedLambda 强类型字段推导 | `LambdaUtil`, `PropertyFunc` | - | `LambdaUtil.getFieldName(func)`（解析 `User::getName` -> `"name"`，带本地并发缓存）, `LambdaUtil.resolve(func)` | `LambdaUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **标准日期与工作日** | 标准日期常量、无损互转与工作日推演 | `DatePattern`, `DateTimeUtil` | - | `DateTimeUtil.toLocalDateTime(date)`, `toDate(ldt)`, `toEpochMilli(ldt)`, `beginOfDay(ldt)`, `endOfDay(ldt)`, `betweenDays(...)`, `isWorkday(date)`, `plusWorkdays(date, workdays)`, `betweenWorkdays(start, end)` | `DatePatternTest.java`, `DateTimeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **高性能随机件** | 无锁安全随机与列表抽样洗牌 | `RandomUtil` | - | `RandomUtil.randomNumbers(len)`, `randomString(len)`, `randomInt(min, max)`, `randomEle(list)`, `randomEles(list, count)`, `shuffle(list)`, `shuffleNew(list)` | `RandomUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **通用辅助原语** | 对象属性安全拷贝、不可变元组与 Spring 容器门面 | `BeanUtil`, `Pair`, `Triple`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copy(...)`, `copyList(...)`, `BeanUtil.copyIgnoreNull(source, target)`, `Pair.of(...)`, `Triple.of(...)`, `SpringUtil.getBean(...)`, `containsBean(...)`, `isDev/isProd/isTest()`, `getServerPort()` | `BeanUtilTest.java`, `PairTripleTest.java`, `SpringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **集合切片与大批量安全流转** | 零内存拷贝分批切片、函数式去重与大批量流转原语 | `CollectionUtil`, `BatchSliceUtil`, `MoreCollectors` | - | `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转）, `BatchSliceUtil.slice(list, sliceSize)`, `BatchSliceUtil.forEachSlice(list, sliceSize, consumer)`, `CollectionUtil.distinctByKey(keyExtractor)`, `MoreCollectors.toSafeMap(...)`, `MoreCollectors.toDistinctList(...)` | `CollectionUtilTest.java`, `BatchSliceUtilTest.java`, `MoreCollectorsTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
+| **树形森林装配与析取** | O(N) 线性组装、递归剪枝、展平与路径探寻 | `TreeUtil` | - | `TreeUtil.build(...)`, `buildForest(...)`, `filter(...)`, `flatten(roots, childrenGetter)` / `flattenTree(...)` (先序深度优先展平), `findPath(...)` (面包屑导航路径), `getLeafNodes(...)` (提取所有叶子终端节点) | `TreeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
+| **类型安全引用** | SerializedLambda 强类型字段推导 | `LambdaUtil`, `PropertyFunc` | - | `LambdaUtil.getFieldName(func)`（解析 `User::getName` -> `"name"`，带本地并发缓存）, `LambdaUtil.resolve(func)` | `LambdaUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
+| **标准日期与工作日** | 标准日期常量、无损互转与工作日推演 | `DatePattern`, `DateTimeUtil` | - | `DateTimeUtil.toLocalDateTime(date)`, `toDate(ldt)`, `toEpochMilli(ldt)`, `beginOfDay(ldt)`, `endOfDay(ldt)`, `betweenDays(...)`, `isWorkday(date)`, `plusWorkdays(date, workdays)`, `betweenWorkdays(start, end)` | `DatePatternTest.java`, `DateTimeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
+| **高性能随机件** | 无锁安全随机与列表抽样洗牌 | `RandomUtil` | - | `RandomUtil.randomNumbers(len)`, `randomString(len)`, `randomInt(min, max)`, `randomEle(list)`, `randomEles(list, count)`, `shuffle(list)`, `shuffleNew(list)` | `RandomUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
+| **通用辅助原语** | 对象属性安全拷贝、不可变元组与 Spring 容器门面 | `BeanUtil`, `Pair`, `Triple`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copy(...)`, `copyList(...)`, `BeanUtil.copyIgnoreNull(source, target)`, `Pair.of(...)`, `Triple.of(...)`, `SpringUtil.getBean(...)`, `containsBean(...)`, `isDev/isProd/isTest()`, `getServerPort()` | `BeanUtilTest.java`, `PairTripleTest.java`, `SpringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **事务同步门面与状态枚举** | 事务生命周期门面、上下文穿透与事务状态枚举 | `TransactionUtil`, `TransactionCompletionStatus` | - | `executeAfterCommit(task)`, `executeAfterRollback(task)`, `executeAfterCommitAsync(task)`, `publishAfterCommit(event)`, `isActualTransactionActive()`, `isSynchronizationActive()`, `TransactionCompletionStatus.COMMITTED/ROLLED_BACK/UNKNOWN` | `TransactionUtilTest.java`, `CoreContextScenarioServiceTest.java`, `CoreAsyncAndContextControllerTest.java` |
 | **操作审计契约与事件发布** | 操作日志模型、操作动作枚举与解耦事件 | `OperateLogModel`, `OperateTypeEnum`, `OperateLogEvent` | - | `OperateLogModel.builder()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)`, `new OperateLogEvent(source, model)` 异步事件解耦发布 | `OperateLogModelTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **持久层无侵入 SQL 审计** | SQL 审计结构体与语法类型判定 | `SqlLogModel`, `SqlTypeEnum` | - | `SqlLogModel.builder()`, `model.getSql()`, `model.getExecutionTimeMs()`, `SqlTypeEnum.fromSql(sql)` 识别 SELECT/INSERT/UPDATE/DELETE/DDL | `SqlLogModelTest.java`, `SqlTypeEnumTest.java` |
 | **进程内滑动窗口流控** | 高性能单机内存滑动窗口限流器 | `SlidingWindowCounter` | - | `SlidingWindowCounter(duration, sliceCount)`, `incrementAndGet(delta)`, `tryAcquire(delta, threshold)`, `getCount()`, `reset()` (基于环形时间切片，零外部中间件平滑限流与防刷) | `SlidingWindowCounterTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
 | **纳秒级任务秒表** | 阶梯多任务秒表与函数剖析门面 | `StopWatch` | - | `new StopWatch(id)`, `start(taskName)`, `stop()`, `getTotalTimeMillis()`, `prettyPrint()`, `measureMillis(runnable)`, `measure(supplier)` | `StopWatchTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **网络通信地址与网段匹配** | 内核路由嗅探、CIDR 网段匹配与虚拟网卡过滤 | `NetUtil`, `CidrMatcher`, `NetProperties` | `ateng.boot.core.net.preferred-ip`, `ateng.boot.core.net.preferred-networks`, `ateng.boot.core.net.ignored-interfaces` | `NetUtil.getLocalIpv4()` 智能解析最佳内网 IP（五级决策链）, `isPortAvailable(port)`, `findAvailablePort(min, max)`; `new CidrMatcher(patterns).matches(ip)`, `CidrMatcher.matches(ip, cidr)`, `stripPort(rawIp)` | `NetUtilTest.java`, `CidrMatcherTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreSystemScenarioServiceTest.java` |
-| **安全类型转换** | 纯原生强类型安全转换与保底默认值 | `ConvertUtil` | - | `ConvertUtil.toLong(obj, defaultVal)`, `toInt(obj, defaultVal)`, `toBoolean(obj, defaultVal)`, `toBigDecimal(obj, defaultVal)`, `toList(obj)` / `toList(obj, type)` (彻底杜绝 NPE 与 ClassCastException) | `ConvertUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **安全类型转换** | 纯原生强类型安全转换与保底默认值 | `ConvertUtil` | - | `ConvertUtil.toLong(obj, defaultVal)`, `toInt(obj, defaultVal)`, `toBoolean(obj, defaultVal)`, `toBigDecimal(obj, defaultVal)`, `toList(obj)` / `toList(obj, type)` (彻底杜绝 NPE 与 ClassCastException) | `ConvertUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **异常分析与堆栈截断** | 因果链深度分析与有界堆栈序列化 | `ExceptionUtil` | - | `ExceptionUtil.getRootCause(throwable)` (内置循环依赖防护), `getMessage(throwable)`, `stackTraceToString(throwable, maxLen)` (防日志/数据库撑爆优雅截断) | `ExceptionUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **通用字符串算法** | 高性能占位符替换、驼峰下划线互转与安全截断 | `StringUtil` | - | `StringUtil.format(template, args)`, `toCamelCase(str)`, `toUnderlineCase(str)`, `containsAny(...)`, `containsIgnoreCase(...)`, `truncate(...)`, `mask(...)` | `StringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **通用字符串算法** | 高性能占位符替换、驼峰下划线互转与安全截断 | `StringUtil` | - | `StringUtil.format(template, args)`, `toCamelCase(str)`, `toUnderlineCase(str)`, `containsAny(...)`, `containsIgnoreCase(...)`, `truncate(...)`, `mask(...)` | `StringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **跨中间件消息传播契约与载荷序列化 SPI** | 消息头标准常量、四维透传、序列化 SPI、毒丸判定与异常 | `MessageHeaderConstants`, `MessageContextPropagator`, `MessagePayloadSerializer`, `FatalExceptionClassifier`, `MessageDeliveryException` | - | `MessageHeaderConstants.TRACE_ID`, `TENANT_ID`, `USER_ID`, `TIMESTAMP`; `MessageContextPropagator.inject(...)`, `extractAndSet(...)`; SPI `MessagePayloadSerializer.serialize/deserialize`; `FatalExceptionClassifier.isFatal(ex)` | `MessageContextPropagatorTest.java`, `FatalExceptionClassifierTest.java`, `MessageDeliveryExceptionTest.java`, `CoreAsyncAndContextControllerTest.java` |
-| **纯原生有界 LRU 缓存** | 纯原生有界 LRU 缓存原语与底层防 OOM 加固 | `ConcurrentLruCache<K, V>` | - | `ConcurrentLruCache(maxCapacity, ttl)`, `get(key)`, `put(key, val)`, `computeIfAbsent(key, mappingFunc)`, `remove(key)`, `clear()`, `size()`, `containsKey(key)`, `cleanUp()` | `ConcurrentLruCacheTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **安全受限 SpEL 求值门面** | 安全受限 SpEL 表达式求值门面与 AST 缓存 | `SpelUtil` | - | `SpelUtil.evaluate(expr, root, vars, type)`, `SpelUtil.evaluateMethod(method, args, expr, type)`, `evaluateTrusted(...)`, `parseExpression(expr)`, `getCacheSize()`, `clearCache()` | `SpelUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **纯原生有界 LRU 缓存** | 纯原生有界 LRU 缓存原语与底层防 OOM 加固 | `ConcurrentLruCache<K, V>` | - | `ConcurrentLruCache(maxCapacity, ttl)`, `get(key)`, `put(key, val)`, `computeIfAbsent(key, mappingFunc)`, `remove(key)`, `clear()`, `size()`, `containsKey(key)`, `cleanUp()` | `ConcurrentLruCacheTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
+| **安全受限 SpEL 求值门面** | 安全受限 SpEL 表达式求值门面与 AST 缓存 | `SpelUtil` | - | `SpelUtil.evaluate(expr, root, vars, type)`, `SpelUtil.evaluateMethod(method, args, expr, type)`, `evaluateTrusted(...)`, `parseExpression(expr)`, `getCacheSize()`, `clearCache()` | `SpelUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **函数式业务管道** | 轻量函数式管道编排与中断异常隔离 | `Pipeline<C>`, `PipelineStage<C>`, `PipelineInterruptible`, `PipelineResult`, `PipelineErrorHandler` | - | `Pipeline.builder().addStage(...).build()`, `pipeline.execute(ctx)`, `result.isSuccess()`, `result.isTerminated()`, `result.orThrow()` | `PipelineTest.java`, `CorePipelineScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
 | **原生安全 HMAC 加签** | 纯原生密钥散列加签与恒定时间防侧信道比对 | `HmacUtil` | - | `HmacUtil.hmacSha256Hex(data, key)`, `hmacSha256Base64(data, key)`, `hmacSha1Hex`, `hmacMd5Hex`, `verifyHex(expected, actual)`, `verifyBase64(expected, actual)`（恒定时间安全比对） | `HmacUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **数据传输与硬件校验和** | 纯原生数据传输与硬件报文校验和计算 | `ChecksumUtil` | - | `ChecksumUtil.crc32(data)`, `crc32Hex(data)`, `crc32c(data)`, `crc32cHex(data)`, `adler32(data)`, `adler32Hex(data)`, `verifyCrc32`, `verifyCrc32c`, `verifyAdler32`，支持 `InputStream` 流式计算 | `ChecksumUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
@@ -1502,52 +1502,64 @@ if (result.isSuccess()) {
 > 为未来扩展存储（Storage）、消息队列（MQ）、分布式任务调度（Job）、邮件短信及数据处理等功能模块提供统一的纯原生零外部依赖基础设施标准件。
 
 ### 7.1 通用线性树形与森林装配工具 (`TreeUtil`)
-菜单树、组织架构树、品类目录等递归组装是业务极高频操作，传统两层循环性能为 $O(N^2)$，容易发生栈溢出。`TreeUtil` 采用哈希辅助表实现 $O(N)$ 极速装配，并支持多根谓词成林、递归剪枝、展平与路径探寻：
+
+代码锚定样例：[`CoreDataAndTreeController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreDataAndTreeController.java)、[`CoreDataAndTreeControllerTest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/test/java/io/github/atengk/boot/sample/core/CoreDataAndTreeControllerTest.java)
+
+商品类目树、组织架构树、权限菜单树等层级结构组装是企业业务极高频操作。传统嵌套递归循环的时间复杂度为 $O(N^2)$，在数据量膨胀时极易导致响应迟缓甚至深层调用栈溢出（StackOverflowError）。`TreeUtil` 坚持纯函数式设计，依托哈希辅助索引表执行两遍线性扫描，实现严格 $O(N)$ 极速装配，并原生支持多根谓词成林、递归深拷贝剪枝、先序深度优先展平、全链路面包屑寻路与终端叶子节点提取：
+
 ```java
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.core.util.TreeUtil;
+import io.github.atengk.boot.sample.core.vo.CategoryNodeVO;
 
-// 待组装的平铺扁平集合
-List<MenuNode> flatList = menuService.listAll();
+// 原始商品分类扁平数据集（平铺列表）
+List<CategoryNodeVO> flatCategories = categoryService.listAllCategories();
 
-// 1. 指定根节点父 ID 组装单根/多根树（O(N) 线性装配）
-List<MenuNode> menuTree = TreeUtil.build(
-        flatList,
-        0L,                        // 根节点父 ID 标识
-        MenuNode::getId,           // 节点 ID 提取器
-        MenuNode::getParentId,     // 父节点 ID 提取器
-        MenuNode::setChildren      // 子节点集合设置器
+// 1. 指定根父级 ID 组装标准商品类目树（O(N) 线性装配，空安全回写子集合）
+List<CategoryNodeVO> categoryTree = TreeUtil.build(
+        flatCategories,
+        0L,                             // 根节点父 ID 标记（0L 表示顶级分类）
+        CategoryNodeVO::getId,          // 当前节点 ID 提取函数
+        CategoryNodeVO::getParentId,    // 父节点 ID 提取函数
+        CategoryNodeVO::setChildren     // 子节点集合回写函数
 );
 
 // 2. 基于自定义谓词成林（适用于非固定 parentId、孤儿节点或复杂根规则森林）
-List<MenuNode> forest = TreeUtil.buildForest(
-        flatList,
+List<CategoryNodeVO> forest = TreeUtil.buildForest(
+        flatCategories,
         node -> node.getParentId() == null || node.getParentId() <= 0,
-        MenuNode::getId,
-        MenuNode::getParentId,
-        MenuNode::setChildren
+        CategoryNodeVO::getId,
+        CategoryNodeVO::getParentId,
+        CategoryNodeVO::setChildren
 );
 
-// 3. 递归条件剪枝过滤（保留命中文本的节点及其祖先链路，剔除无关分支）
-List<MenuNode> filteredTree = TreeUtil.filter(
-        menuTree,
-        node -> node.getName().contains("导出"),
-        MenuNode::getChildren,
-        MenuNode::setChildren
+// 3. 递归条件剪枝过滤（保留命中文本的节点及其完整祖先链路，剪除无关分支；深拷贝防引用脏突变）
+List<CategoryNodeVO> copyForFilter = JsonUtil.deepClone(categoryTree);
+List<CategoryNodeVO> filteredTree = TreeUtil.filter(
+        copyForFilter,
+        node -> node.getName() != null && node.getName().contains("手机"),
+        CategoryNodeVO::getChildren,
+        CategoryNodeVO::setChildren
 );
 
-// 4. 将嵌套树形结构反向扁平展平为列表（深度优先先序遍历）
-List<MenuNode> allNodes = TreeUtil.flatten(menuTree, MenuNode::getChildren);
+// 4. 将嵌套树形结构反向扁平展平为一维列表（深度优先先序遍历 DFS）
+List<CategoryNodeVO> allNodes = TreeUtil.flatten(categoryTree, CategoryNodeVO::getChildren);
 
-// 5. 探寻根节点到目标节点的完整路径（面包屑导航）
-List<MenuNode> breadcrumbs = TreeUtil.findPath(
-        menuTree,
-        node -> "用户导出".equals(node.getName()),
-        MenuNode::getChildren
+// 5. 探寻根节点到目标节点的完整链路（电商商品详情页面包屑导航：数码电脑 -> 智能设备 -> 5G智能手机）
+List<CategoryNodeVO> breadcrumbs = TreeUtil.findPath(
+        categoryTree,
+        node -> "5G智能手机".equals(node.getName()),
+        CategoryNodeVO::getChildren
 );
 
-// 6. 提取树形结构中的所有终端叶子节点（无子节点节点）
-List<MenuNode> leafNodes = TreeUtil.getLeafNodes(menuTree, MenuNode::getChildren);
+// 6. 提取树形结构中的所有终端叶子类目（无子节点的末端商品品类）
+List<CategoryNodeVO> leafCategories = TreeUtil.getLeafNodes(categoryTree, CategoryNodeVO::getChildren);
 ```
+
+#### 核心生产边界与非功能语义
+- **$O(N)$ 线性时间复杂度保障**：第一遍扫描哈希分组归类，第二遍扫描回写子列表，无论节点数据量多大均维持线性执行耗时，彻底消除 $O(N^2)$ 嵌套循环性能隐患；
+- **空安全与保底集合返回**：入参为空集合或无匹配根节点时保底返回 `Collections.emptyList()`，无子节点的节点自动回写空列表，彻底杜绝下游前端与业务调用产生空指针异常（NPE）；
+- **深拷贝剪枝防污染不变量**：`TreeUtil.filter` 会就地重构满足条件的子节点列表；在业务流转中若需复用原始树引用，强烈推荐结合 `JsonUtil.deepClone` 深度克隆后再行剪枝，防御多线程并发脏读或视图状态污染。
 
 ### 7.2 Spring 容器静态门面 (`SpringUtil`)
 在非受管 POJO、静态工具类或异步闭包中安全获取 Spring Bean、环境变量与发布事件：
@@ -1589,42 +1601,67 @@ String deletedField = LambdaUtil.getFieldName(User::isDeleted); // "deleted"
 String urlField = LambdaUtil.getFieldName(User::getURL); // "URL"
 ```
 
-### 7.4 内存零拷贝分批与安全收集器 (`CollectionUtil` & `MoreCollectors`)
+### 7.4 内存零拷贝分批、流式切片消费与安全收集器 (`CollectionUtil`, `BatchSliceUtil` & `MoreCollectors`)
+
+代码锚定样例：[`CoreDataAndTreeController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreDataAndTreeController.java)、[`CoreDataAndTreeControllerTest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/test/java/io/github/atengk/boot/sample/core/CoreDataAndTreeControllerTest.java)
+
+在大数据量分页流转、批处理插入与流式计算场景中，传统硬拆分集合往往伴随大量堆内存额外拷贝与频繁 GC；而 JDK 原生 `Collectors.toMap` 在遇到 Value 为 `null` 时会无脑抛出空指针异常，遇到重复 Key 时会抛出 `IllegalStateException`。`ateng-boot-core` 下沉纯原生集合强化标准套件：
+
 ```java
+import io.github.atengk.boot.core.util.BatchSliceUtil;
 import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.core.util.MoreCollectors;
 
-// 1. 基于 subList 原生视图的零拷贝安全分批（内存防 OOM 批量流转）
-List<Order> orders = orderMapper.selectHugeList();
-List<List<Order>> batches = CollectionUtil.partition(orders, 500);
-for (List<Order> batch : batches) {
-    orderService.processBatch(batch);
+// 1. 基于 subList 原生视图的零拷贝分批（防 OOM 批量流转与批处理落库）
+List<OrderDTO> orders = orderService.queryPendingOrders();
+List<List<OrderDTO>> batches = CollectionUtil.partition(orders, 500);
+for (List<OrderDTO> batch : batches) {
+    orderService.processBatchOrders(batch);
 }
 
-// 2. 防 NPE 与防 DuplicateKey 的流收集器（原生 Collectors.toMap 当 Value 为 null 时会抛出 NPE）
-Map<Long, String> userMap = userList.stream()
-        .collect(MoreCollectors.toSafeMap(User::getId, User::getRemark));
+// 2. BatchSliceUtil 流式切片遍历消费（语义化分批管道）
+BatchSliceUtil.forEachSlice(orders, 500, batch -> {
+    orderSyncService.pushToDataWarehouse(batch);
+});
 
-// 3. 基于键提取函数的 Stream.filter 去重谓词
-List<User> distinctUsers = userList.stream()
-        .filter(MoreCollectors.distinctByKey(User::getName))
+// 3. 防 NPE 与防 DuplicateKey 的安全收集器（原生 Collectors.toMap 当 Value 为 null 时会抛出 NPE）
+Map<Long, String> orderRemarkMap = orders.stream()
+        .collect(MoreCollectors.toSafeMap(OrderDTO::getId, OrderDTO::getRemark));
+
+// 4. 基于属性提取函数的 Stream.filter 去重谓词
+List<OrderDTO> distinctOrders = orders.stream()
+        .filter(MoreCollectors.distinctByKey(OrderDTO::getOrderNo))
         .collect(Collectors.toList());
 ```
 
+#### 核心生产边界与非功能语义
+- **零内存分配视图切片**：`CollectionUtil.partition` 与 `BatchSliceUtil.slice` 100% 依托 `List.subList` 原生视图实现，切片过程零额外对象拷贝，彻底防御海量数据分批引发的瞬态内存暴涨与 OOM；
+- **空安全与保底返回**：原始列表为空集合或 `null` 时返回不可变空集合，切片大小非法（$\le 0$）时立即抛出语义化 `IllegalArgumentException` 快速失败；
+- **Null-Tolerant Map 收集契约**：`MoreCollectors.toSafeMap` 原生兼容 `null` 值映射，并在遇到重复 Key 时执行幂等保留后项策略，消除生产级异常。
+
 ### 7.5 自动实例化反射拷贝与非空合并 (`BeanUtil`)
-基于 Spring `BeanUtils` 提供强类型自动实例化与 Patch 增量覆盖：
+
+代码锚定样例：[`CoreDataAndTreeController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreDataAndTreeController.java)、[`CoreDataAndTreeControllerTest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/test/java/io/github/atengk/boot/sample/core/CoreDataAndTreeControllerTest.java)
+
+基于 Spring `BeanUtils` 原生能力，提供强类型安全的单实体自动实例化拷贝、集合批量拷贝与 PATCH 增量非空覆盖原语：
+
 ```java
 import io.github.atengk.boot.core.util.BeanUtil;
 
-// 1. 单实体自动实例化拷贝
+// 1. 单实体自动实例化拷贝（目标类型须具备无参构造方法，空安全入参返回 null）
 UserVO vo = BeanUtil.copy(userEntity, UserVO.class);
 
-// 2. 列表批量拷贝（空安全返回空列表）
+// 2. 列表批量拷贝（源集合为空时保底返回不可变空集合 Collections.emptyList()）
 List<UserVO> voList = BeanUtil.copyList(userEntityList, UserVO.class);
 
-// 3. 局部非空覆盖（仅用 source 的非 null 字段覆盖 target，保留 target 原有字段）
+// 3. 局部非空增量合并（严格遵循 void copyIgnoreNull(Object source, Object target) 签名契约）
+// 仅用 patchDTO 中非 null 的属性覆盖 existEntity，已有字段完整保留，特别适合 HTTP PATCH 局部更新
 BeanUtil.copyIgnoreNull(patchDTO, existEntity);
 ```
+
+#### 核心生产边界与非功能语义
+- **`copyIgnoreNull` 签名一致性与原位覆盖契约**：方法签名严格为 `void copyIgnoreNull(Object source, Object target)`，底层依托 `BeanWrapperImpl` 动态扫描并提取 `source` 对象中全部为 `null` 的属性名数组，并在调用 Spring `BeanUtils.copyProperties` 时作为 `ignoreProperties` 传入，直接原位更新 `target` 实例，严禁产生冗余中间实例；
+- **构造异常转译防护**：当目标类缺失公有无参构造方法或反射受阻时，底层主动捕获异常并转译为带有清晰上下文的 `IllegalArgumentException`，严禁让反射原始受检异常击穿模块边界。
 
 ### 7.6 路径穿越安全清洗与容量格式化 (`FileUtil`)
 ```java
@@ -2049,34 +2086,60 @@ String truncated = StringUtil.truncate("这是一个非常长的业务备注文�
 
 ### 7.20 纯原生有界 LRU 缓存容器 (`ConcurrentLruCache`)
 
-#### 场景痛点与特性
-在高性能中间件底座中，若直接使用未受保护的 `ConcurrentHashMap` 缓存元数据，在遭遇高基数动态输入时极易导致无界内存膨胀甚至 OOM 崩溃。
-`ateng-boot-core` 下沉 `ConcurrentLruCache<K, V>` 纯原生有界并发缓存原语：
-- **纯 JDK 17 原生零臃肿**：基于 access-order `LinkedHashMap` 与 `ReentrantLock` 构建，无第三方缓存工具库依赖；
-- **容量自动淘汰**：达到最大容量时自动以 LRU 策略淘汰最久未访问条目；
-- **可选 TTL 惰性过期**：支持 `Duration` 存活时间过期防腐并提供主动 `cleanUp()` 回收；
-- **原子计算写入**：提供并发安全的 `computeIfAbsent` 原语，杜绝并发击穿与重复计算。
+代码锚定样例：[`CoreDataAndTreeController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreDataAndTreeController.java)、[`CoreDataAndTreeControllerTest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/test/java/io/github/atengk/boot/sample/core/CoreDataAndTreeControllerTest.java)
 
-#### 核心代码范式
+#### 场景痛点与特性
+在高性能中间件底座与多租户业务系统中，若直接使用缺乏容量上限防护的 `ConcurrentHashMap` 缓存动态租户配额、SpEL 解析树或认证令牌，在遭遇高基数海量请求时极易导致无界内存膨胀甚至 OOM 宕机。`ateng-boot-core` 下沉纯原生高性能并发有界缓存标准件：
+- **纯 JDK 17 原生零臃肿**：依托 access-order `LinkedHashMap` 与 `ReentrantLock` 构建，无任何第三方缓存包引入；
+- **容量上限与访问热度自动淘汰**：达到最大容量阈值时自动以 LRU 策略淘汰最久未访问条目，杜绝内存泄漏；
+- **可选 TTL 强类型存活过期**：支持 `Duration` 时间颗粒度过期防腐，兼顾惰性清理与主动 `cleanUp()` 扫描；
+- **线程安全与原子计算防击穿**：提供并发安全的 `computeIfAbsent` 原语，底层严格遵循防御性锁释放范式，消除高并发击穿与重复计算。
+
+#### 就近专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    core:
+      cache:
+        # LRU 缓存默认最大条目容量（无量纲整型，默认 1024，防无界内存膨胀与 OOM）
+        default-max-capacity: 1024
+        # LRU 缓存条目存活时间 TTL（强类型 Duration 格式，支持 30m, 1h 等，默认 30m；为 null 或 0 表示永不过期）
+        default-ttl: 30m
+```
+
+#### 核心代码范式（多租户配额与流控缓存演进）
 ```java
 import io.github.atengk.boot.core.concurrent.ConcurrentLruCache;
+import io.github.atengk.boot.sample.core.vo.TenantQuotaVO;
 
-// 1. 构造容量上限为 2 的有界 LRU 缓存
-ConcurrentLruCache<String, String> cache = new ConcurrentLruCache<>(2);
-cache.put("k1", "v1");
-cache.put("k2", "v2");
+import java.time.Duration;
 
-// 2. 读取条目自动刷新访问热度（使 k2 变为最久未访问）
-String k1Value = cache.get("k1"); // "v1"
+// 1. 构造容量上限为 2、条目 TTL 为 30 分钟的有界租户配额缓存
+ConcurrentLruCache<String, TenantQuotaVO> tenantCache = new ConcurrentLruCache<>(2, Duration.ofMinutes(30));
 
-// 3. 写入超限自动淘汰最久未访问条目 (k2)
-cache.put("k3", "v3");
-boolean hasK2 = cache.containsKey("k2"); // false (已被淘汰)
-boolean hasK1 = cache.containsKey("k1"); // true
+// 2. 写入初始租户配额数据
+tenantCache.put("tenant-standard-001", new TenantQuotaVO("tenant-standard-001", "标准企业租户", 200, 50));
+tenantCache.put("tenant-enterprise-002", new TenantQuotaVO("tenant-enterprise-002", "旗舰企业租户", 500, 120));
 
-// 4. 原子计算写入
-String computed = cache.computeIfAbsent("k4", key -> "computed_" + key);
+// 3. 读取条目自动刷新访问热度（使 tenant-enterprise-002 成为最久未访问条目）
+TenantQuotaVO standardTenant = tenantCache.get("tenant-standard-001");
+
+// 4. 写入超限新条目，自动触发容量淘汰最久未访问条目 (tenant-enterprise-002)
+tenantCache.put("tenant-vip-003", new TenantQuotaVO("tenant-vip-003", "VIP尊享租户", 1000, 0));
+boolean hasEnterpriseTenant = tenantCache.containsKey("tenant-enterprise-002"); // false (已被物理淘汰出内存)
+boolean hasStandardTenant = tenantCache.containsKey("tenant-standard-001");     // true (命中保留)
+
+// 5. 线程安全原子计算写入（防并发击穿与重复加载）
+TenantQuotaVO computedTenant = tenantCache.computeIfAbsent(
+        "tenant-computed-004",
+        id -> new TenantQuotaVO(id, "动态计算算力租户", 800, 0)
+);
 ```
+
+#### 核心生产边界与非功能语义
+- **锁粒度与防御性释放铁律**：内部写操作与访问热度调整采用独占 `ReentrantLock` 保护，并在 `finally` 块中通过状态判断范式可靠释放锁，严禁产生锁泄露；
+- **内存防溢出与容量刚性约束**：重写 `LinkedHashMap.removeEldestEntry`，严格保障当前容器实际大小永不超越 `maxCapacity`，彻底杜绝单机内存无界雪崩；
+- **惰性清理与主动回收协同**：读取与写入时顺带触发过期探测；必要时可定时调度 `cleanUp()` 进行主动巡检，释放无效条目内存。
 
 ### 7.21 状态码号段规约与唯一性防重校验 (`ResultCodeSegment` & `ResultCodeUtil`)
 
@@ -2105,6 +2168,8 @@ ResultCodeUtil.assertUnique(SampleBusinessResultCode.values());
 
 ### 7.22 安全受限 SpEL 表达式求值门面与 AST 缓存 (`SpelUtil`)
 
+代码锚定样例：[`CoreDataAndTreeController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreDataAndTreeController.java)、[`CoreDataAndTreeControllerTest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/test/java/io/github/atengk/boot/sample/core/CoreDataAndTreeControllerTest.java)
+
 #### 场景痛点与特性
 在分布式锁动态 Key 计算、操作审计占位符求值与业务规则解析中，直接使用 SpEL 默认配置极易触发高危 RCE 注入漏洞（如恶意反射调用 `Runtime.exec`）；且高频重复解析表达式会导致严重 CPU 尖刺与 GC 压力。
 `SpelUtil` 提供跨中间件通用的安全受限表达式求值门面：
@@ -2121,19 +2186,31 @@ import io.github.atengk.boot.core.util.SpelUtil;
 Integer math = SpelUtil.evaluate("100 * 2 + 50", Integer.class); // 250
 String userName = SpelUtil.evaluate("name", user, String.class);
 
-// 2. 外部变量映射求值
+// 2. 外部变量映射求值（同时支持 #user 变量名绑定与直接对象属性访问）
 String varResult = SpelUtil.evaluate("#prefix + '-' + #seq", Map.of("prefix", "ORD", "seq", 9999), String.class);
 
-// 3. 针对方法参数求值（形参名与 #p0/#a0 别名双向支持）
+// 3. 针对方法形参求值（形参名与 #p0/#a0 别名双向支持）
 Method method = getClass().getMethod("demonstrateSpelEvaluation", Long.class, String.class, SampleUserDTO.class);
 Object[] args = new Object[]{orderId, clientType, user};
 String paramBinding = SpelUtil.evaluateMethod(method, args, "#orderId + ':' + #clientType + ':' + #user.name", String.class);
 String positionalBinding = SpelUtil.evaluateMethod(method, args, "#p0 + '-' + #a1", String.class);
 
-// 4. AST 缓存状态与清空
+// 4. 防高危 RCE 注入拦截验证（恶意表达式被沙箱阻断并抛出 BusinessException 400）
+try {
+    SpelUtil.evaluate("T(java.lang.Runtime).getRuntime().exec('calc')");
+} catch (Exception ex) {
+    log.warn("SpEL 安全沙箱成功拦截恶意反射调用: {}", ex.getMessage());
+}
+
+// 5. AST 编译解析树缓存状态探测与清理
 int cacheSize = SpelUtil.getCacheSize();
 SpelUtil.clearCache();
 ```
+
+#### 核心生产边界与非功能语义
+- **只读数据绑定防逃逸机制**：`SimpleEvaluationContext` 在解析期直接拒绝类型引用 `T(...)`、反射构造与非只读属性突变，将可能被黑客利用的 RCE 风险从底层彻底清零；
+- **AST 解析缓存与防 OOM**：表达式字符串统一由内部容量为 1024 的 `ConcurrentLruCache` 纳管，解析语法错误立即转译为清晰的 `BusinessException(BAD_REQUEST)`，严禁未受控异常穿透；
+- **可信逃逸舱边界审计**：非受信用户输入严禁调用 `evaluateTrusted`，该方法仅限系统内网白名单环境执行受信任脚本。
 
 ### 7.23 纯原生安全 HMAC 密钥散列加签与恒定时间比对 (`HmacUtil`)
 纯 JDK 原生标准库实现，基于 `javax.crypto.Mac`，零第三方工具包依赖。提供基于 `MessageDigest.isEqual` 的防侧信道时序攻击（Timing Attack Safe）恒定时间比对：

@@ -64,7 +64,15 @@
 | **单机防刷、令牌桶限流与幂等防重** | `POST /sample/core/resilience/rate-limit` | `SlidingWindowCounter`<br>`TokenBucketLimiter`<br>`IdempotentException`<br>`CommonResultCode` | `curl -X POST "http://localhost:8080/sample/core/resilience/rate-limit" -H "Content-Type: application/json" -d '{"clientId":"client-app-01","reqToken":"REQ-20261107-1001","triggerIdempotentCheck":true}'` |
 | **电商提单责任链编排与风控短路** | `POST /sample/core/resilience/order-pipeline` | `Pipeline`<br>`PipelineStage`<br>`PipelineInterruptible`<br>`PipelineResult` | `curl -X POST "http://localhost:8080/sample/core/resilience/order-pipeline" -H "Content-Type: application/json" -d '{"orderNo":"ORD202611070001","userId":1001,"orderAmount":200.00,"skuCode":"SKU-8888","buyCount":2,"availableStock":20}'` |
 
-> 注：其余领域 Controller（数据结构、系统与审计）将随后续工单逐步交付并补充 cURL。
+### 3.5 高性能数据结构、集合切片与通用算法领域 (`CoreDataAndTreeController` -> `/sample/core/data`)
+
+| 功能场景 | 请求方式与路径 | 核心门面 / 注解 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **商品类目树构建、剪枝与全景导航** | `GET /sample/core/data/category-tree` | `TreeUtil`<br>`build`<br>`filter`<br>`findPath`<br>`getLeafNodes` | `curl "http://localhost:8080/sample/core/data/category-tree?keyword=手机&targetNodeName=折叠屏手机"` |
+| **大批量切片流转与有界租户配额缓存** | `POST /sample/core/data/batch-and-cache` | `BatchSliceUtil`<br>`CollectionUtil`<br>`MoreCollectors`<br>`ConcurrentLruCache`<br>`JsonUtil.deepClone` | `curl -X POST "http://localhost:8080/sample/core/data/batch-and-cache" -H "Content-Type: application/json" -d '{"orderCodes":["ORD-001","ORD-002","ORD-003","ORD-004","ORD-005","ORD-006","ORD-007"],"sliceSize":3,"tenantId":"tenant-vip-001","tenantName":"VIP电商租户","quotaLimit":1000}'` |
+| **安全受限 SpEL 沙箱与高频算法原语** | `POST /sample/core/data/spel-and-primitives` | `SpelUtil`<br>`BeanUtil`<br>`LambdaUtil`<br>`DateTimeUtil`<br>`ConvertUtil`<br>`StringUtil`<br>`RandomUtil` | `curl -X POST "http://localhost:8080/sample/core/data/spel-and-primitives" -H "Content-Type: application/json" -d '{"expression":"#user.name + \"-\" + #user.status","simulateMaliciousSpel":true,"user":{"id":10086,"name":"诸葛孔明","status":1},"patchUser":{"name":"诸葛亮"},"rawString":"order_delivery_address","rawNumberStr":"1234567890123","baseDate":"2026-11-06"}'` |
+
+> 注：第 6 个领域 Controller（系统环境基线与审计契约）将随后续工单 [#770](https://github.com/atengk/ateng-boot/issues/770) 交付收官并补充对应 cURL。
 
 ---
 
