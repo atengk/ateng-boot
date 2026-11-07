@@ -1,7 +1,11 @@
 package io.github.atengk.boot.sample.social.service;
 
+import io.github.atengk.boot.social.config.SocialAppConfig;
 import io.github.atengk.boot.social.model.SocialAuthResult;
+import io.github.atengk.boot.social.model.SocialBoundAccount;
 import io.github.atengk.boot.social.model.SocialLoginOptions;
+import io.github.atengk.boot.social.model.SocialToken;
+import io.github.atengk.boot.social.model.SocialUser;
 import io.github.atengk.boot.social.model.StateContext;
 import io.github.atengk.boot.social.template.SocialAuthTemplate;
 import lombok.RequiredArgsConstructor;
@@ -9,10 +13,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.dromara.anduin.model.AuthCallback;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
+
 /**
  * 社交登录业务场景门面服务样例
  * <p>
- * 演示在业务层直接注入 {@link SocialAuthTemplate}，编排 Web 授权、小程序直传登录、两阶段绑定与孤儿死号解绑防御。
+ * 演示在业务层直接注入 {@link SocialAuthTemplate}，编排 Web 授权、小程序直传登录、两阶段绑定、
+ * 个人中心直绑、令牌续期吊销与孤儿死号解绑防御。
  * </p>
  *
  * @author Ateng
@@ -99,6 +106,32 @@ public class SampleSocialScenarioService {
     }
 
     /**
+     * 个人中心已登录态直接绑定第三方社交账号（直传 code 模式）
+     *
+     * @param userId 本地用户标识
+     * @param appKey 社交应用唯一标识
+     * @param code   授权凭证 code
+     * @return 绑定的第三方标准化画像
+     */
+    public SocialUser bindDirect(String userId, String appKey, String code) {
+        log.info("业务场景编排：执行已登录直接绑定, userId={}, appKey={}", userId, appKey);
+        return socialAuthTemplate.bindDirect(userId, appKey, code);
+    }
+
+    /**
+     * 个人中心已登录态直接绑定第三方社交账号（Web 回调带 State 模式）
+     *
+     * @param userId   本地用户标识
+     * @param appKey   社交应用唯一标识
+     * @param callback 回调参数
+     * @return 绑定的第三方标准化画像
+     */
+    public SocialUser bindDirect(String userId, String appKey, AuthCallback callback) {
+        log.info("业务场景编排：执行已登录 Web 回调直接绑定, userId={}, appKey={}", userId, appKey);
+        return socialAuthTemplate.bindDirect(userId, appKey, callback);
+    }
+
+    /**
      * 解除本地用户与第三方账号绑定关系
      *
      * @param userId 本地用户 ID
@@ -107,5 +140,49 @@ public class SampleSocialScenarioService {
     public void unbindUser(String userId, String appKey) {
         log.info("业务场景编排：执行社交账号解绑与孤儿防卫前置探测, userId={}, appKey={}", userId, appKey);
         socialAuthTemplate.unbind(userId, appKey);
+    }
+
+    /**
+     * 刷新第三方访问令牌
+     *
+     * @param appKey       社交应用唯一标识
+     * @param refreshToken 刷新令牌
+     * @return 续期后的第三方令牌
+     */
+    public SocialToken refreshToken(String appKey, String refreshToken) {
+        log.info("业务场景编排：刷新第三方平台访问令牌, appKey={}", appKey);
+        return socialAuthTemplate.refreshToken(appKey, refreshToken);
+    }
+
+    /**
+     * 吊销第三方授权
+     *
+     * @param appKey      社交应用唯一标识
+     * @param accessToken 访问令牌
+     */
+    public void revokeAuth(String appKey, String accessToken) {
+        log.info("业务场景编排：吊销第三方平台访问授权, appKey={}", appKey);
+        socialAuthTemplate.revokeAuth(appKey, accessToken);
+    }
+
+    /**
+     * 查询本地用户已绑定的第三方社交账号列表
+     *
+     * @param userId 本地用户标识
+     * @return 已绑定账号列表
+     */
+    public List<SocialBoundAccount> listBoundAccounts(String userId) {
+        log.info("业务场景编排：查询本地用户已绑定账号列表, userId={}", userId);
+        return socialAuthTemplate.listBoundAccounts(userId);
+    }
+
+    /**
+     * 获取指定应用的标准化配置
+     *
+     * @param appKey 社交应用唯一标识
+     * @return 应用配置
+     */
+    public SocialAppConfig getAppConfig(String appKey) {
+        return socialAuthTemplate.getAppConfig(appKey);
     }
 }

@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sample.social.service;
 
+import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.social.model.SocialBoundAccount;
 import io.github.atengk.boot.social.model.SocialUser;
 import io.github.atengk.boot.social.spi.SocialUserDetailsService;
 import jakarta.annotation.PostConstruct;
@@ -10,6 +12,10 @@ import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -48,9 +54,11 @@ public class SampleSocialUserDetailsService implements SocialUserDetailsService 
                 .boundAppKeys(ConcurrentHashMap.newKeySet())
                 .build();
         userA.getBoundAppKeys().add("github_app");
+        userA.getBoundAppKeys().add("wechat_mp_app");
         userDatabase.put(userA.getUserId(), userA);
         bindingDatabase.put("github_app:gh_open_1001", userA.getUserId());
         bindingDatabase.put("github_app:1001", userA.getUserId());
+        bindingDatabase.put("wechat_mp_app:wx_open_bound_1001", userA.getUserId());
 
         // 初始化用户 B：无独立密码、无绑定手机号（社交登录为唯一登入凭据，解绑时必须阻断）
         UserProfile userB = UserProfile.builder()
@@ -147,6 +155,56 @@ public class SampleSocialUserDetailsService implements SocialUserDetailsService 
         );
 
         log.info("Removed social binding: userId=[{}], appKey=[{}]", userId, appKey);
+    }
+
+    @Override
+    public String autoRegisterUser(String appKey, SocialUser socialUser) {
+        String newUserId = "auto_user_" + IdUtil.fastSimpleUUID().substring(0, 8);
+        UserProfile profile = UserProfile.builder()
+                .userId(newUserId)
+                .username("auto_" + (socialUser.getUsername() != null ? socialUser.getUsername() : socialUser.getOpenId()))
+                .hasPassword(false)
+                .hasMobile(false)
+                .boundAppKeys(ConcurrentHashMap.newKeySet())
+                .build();
+        profile.getBoundAppKeys().add(appKey);
+        userDatabase.put(newUserId, profile);
+
+        String bindingKey = appKey + ":" + socialUser.getOpenId();
+        bindingDatabase.put(bindingKey, newUserId);
+        if (socialUser.getUnionId() != null && !socialUser.getUnionId().isBlank()) {
+            bindingDatabase.put("unionId:" + socialUser.getUnionId(), newUserId);
+        }
+        log.info("Auto-registered new local user: userId=[{}], appKey=[{}], openId=[{}]",
+                newUserId, appKey, socialUser.getOpenId());
+        return newUserId;
+    }
+
+    @Override
+    public List<SocialBoundAccount> listBoundAccounts(String userId) {
+        UserProfile user = userDatabase.get(userId);
+        if (user == null || user.getBoundAppKeys() == null || user.getBoundAppKeys().isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<SocialBoundAccount> list = new ArrayList<>();
+        for (String appKey : user.getBoundAppKeys()) {
+            String openId = null;
+            for (Map.Entry<String, String> entry : bindingDatabase.entrySet()) {
+                if (entry.getValue().equals(userId) && entry.getKey().startsWith(appKey + ":")) {
+                    openId = entry.getKey().substring(appKey.length() + 1);
+                    break;
+                }
+            }
+            list.add(SocialBoundAccount.builder()
+                    .appKey(appKey)
+                    .source(appKey.contains("github") ? "GITHUB" : "WECHAT_MP")
+                    .openId(openId != null ? openId : "mock_openid")
+                    .username(user.getUsername())
+                    .nickname(user.getUsername())
+                    .boundAt(Instant.now())
+                    .build());
+        }
+        return list;
     }
 
     /**

@@ -761,6 +761,19 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
         }
     }
 
+    /**
+     * 获取指定社交应用的标准化配置
+     *
+     * @param appKey 社交应用唯一标识
+     * @return 标准化应用配置
+     */
+    public SocialAppConfig getAppConfig(String appKey) {
+        if (appKey == null || appKey.isBlank()) {
+            throw new IllegalArgumentException("应用标识 [appKey] 不能为空");
+        }
+        return socialAppFactory.getAppConfig(appKey);
+    }
+
     // ==================== 8. 内部编排辅助方法 ====================
 
     /**
