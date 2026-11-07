@@ -1,16 +1,26 @@
 package io.github.atengk.boot.sample.core.service;
 
+import io.github.atengk.boot.core.id.Snowflake;
+import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.model.Pair;
 import io.github.atengk.boot.core.model.Triple;
+import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.CryptoUtil;
 import io.github.atengk.boot.core.util.ChecksumUtil;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.DigestUtil;
 import io.github.atengk.boot.core.util.HexUtil;
 import io.github.atengk.boot.core.util.HmacUtil;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.sample.core.dto.PaymentCryptoRequest;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
+import io.github.atengk.boot.sample.core.vo.CustomerPrivacyVO;
+import io.github.atengk.boot.sample.core.vo.IdGenerateVO;
+import io.github.atengk.boot.sample.core.vo.PaymentCryptoVO;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -25,7 +35,10 @@ import java.time.LocalDateTime;
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor(onConstructor_ = {@Autowired})
 public class CoreSecurityScenarioService {
+
+    private final Snowflake snowflake;
 
     /**
      * 1. 验证 DesensitizeUtil 高频隐私数据掩码能力
@@ -187,5 +200,144 @@ public class CoreSecurityScenarioService {
         log.info("ChecksumUtil 校验和计算: data={}, crc32={}, crc32c={}, adler32={}",
                 data, crc32Hex, crc32cHex, adler32Hex);
         return Triple.of(crc32Hex, crc32cHex, adler32Hex);
+    }
+
+    /**
+     * 10. 演示分布式业务发号、雪花元数据逆向反解与 Base62 紧凑短码双向编解码
+     *
+     * @return 分布式发号完整结构体
+     */
+    public IdGenerateVO generateDistributedId() {
+        long id = snowflake != null ? snowflake.nextId() : IdUtil.nextId();
+        String idStr = String.valueOf(id);
+        String base62 = IdUtil.toBase62(id);
+        long restoredId = IdUtil.fromBase62(base62);
+        SnowflakeIdInfo info = IdUtil.parseSnowflake(id);
+        String simpleUuid = IdUtil.fastSimpleUUID();
+        String uuid = IdUtil.fastUUID();
+        String nanoId = IdUtil.nanoId();
+
+        log.info("分布式发号器生成 ID: id={}, base62={}, datacenterId={}, workerId={}, seq={}",
+                id, base62, info.datacenterId(), info.workerId(), info.sequence());
+
+        return IdGenerateVO.builder()
+                .id(id)
+                .idStr(idStr)
+                .base62(base62)
+                .restoredId(restoredId)
+                .datacenterId(info.datacenterId())
+                .workerId(info.workerId())
+                .sequence(info.sequence())
+                .timestamp(info.timestamp())
+                .dateTime(info.dateTime())
+                .simpleUuid(simpleUuid)
+                .uuid(uuid)
+                .nanoId(nanoId)
+                .build();
+    }
+
+    /**
+     * 11. 获取客户隐私档案，验证服务层 JVM 内存对象保持 100% 原始真明文
+     *
+     * @return 客户隐私视图对象 (出界序列化时将自动触发 @FieldSensitive 掩码)
+     */
+    public CustomerPrivacyVO getCustomerPrivacyProfile() {
+        CustomerPrivacyVO vo = CustomerPrivacyVO.builder()
+                .customerId(104485532445560832L)
+                .realName("诸葛孔明")
+                .phone("13812345678")
+                .fixedPhone("010-88889978")
+                .idCard("110101199003072345")
+                .email("atengk@example.com")
+                .bankCard("6222020200001234012")
+                .password("MySecr3tP@ss")
+                .address("北京市海淀区中关村南大街1号院")
+                .carLicense("京A88888")
+                .clientIpv4("192.168.1.100")
+                .clientIpv6("2001:0db8:85a3:0000:0000:8a2e:0370:7334")
+                .creditCode("91110000000000000X")
+                .secretKey("sk-proj-1234567890abcdef")
+                .passport("G12345678")
+                .customToken("AB998877CD")
+                .internalCode("PR123456US")
+                .build();
+
+        // 内存真明文严格守卫断言（业务层严禁直接打星号污染实体）
+        BusinessAssert.isTrue("诸葛孔明".equals(vo.getRealName()), "内存真明文校验失败: 姓名受损");
+        BusinessAssert.isTrue("13812345678".equals(vo.getPhone()), "内存真明文校验失败: 手机号受损");
+        BusinessAssert.isTrue("110101199003072345".equals(vo.getIdCard()), "内存真明文校验失败: 身份证受损");
+        BusinessAssert.isTrue("atengk@example.com".equals(vo.getEmail()), "内存真明文校验失败: 邮箱受损");
+        BusinessAssert.isTrue("MySecr3tP@ss".equals(vo.getPassword()), "内存真明文校验失败: 密码受损");
+
+        log.info("内存真明文不变量验证通过: name={}, phone={}, idCard={}",
+                vo.getRealName(), vo.getPhone(), vo.getIdCard());
+
+        return vo;
+    }
+
+    /**
+     * 12. 支付报文原生加解密、HMAC 恒定时间防侧信道验签与多算法校验和计算
+     *
+     * @param request 支付加密请求体
+     * @return 支付加解密与验签响应模型
+     */
+    public PaymentCryptoVO processPaymentCryptoAndVerify(PaymentCryptoRequest request) {
+        BusinessAssert.notNull(request, "支付加解密请求体不能为空");
+        BusinessAssert.hasText(request.getRawPayload(), "交易明文载荷不能为空");
+
+        String raw = request.getRawPayload();
+        String secretKey = request.getSecretKey();
+
+        // 1. AES/GCM 认证加解密 (推荐现代加密标准)
+        byte[] gcmKey = CryptoUtil.generateKey(256);
+        byte[] gcmIv = CryptoUtil.generateGcmIv();
+        String gcmCiphertext = CryptoUtil.encryptGcm(raw, gcmKey, gcmIv);
+        String gcmDecrypted = CryptoUtil.decryptGcm(gcmCiphertext, gcmKey, gcmIv);
+        BusinessAssert.isTrue(raw.equals(gcmDecrypted), "AES/GCM 解密明文与原始明文不匹配");
+
+        // 2. AES/CBC 对称加解密
+        byte[] cbcKey = CryptoUtil.generateKey(128);
+        byte[] cbcIv = CryptoUtil.generateIv();
+        String cbcCiphertext = CryptoUtil.encryptCbc(raw, cbcKey, cbcIv);
+        String cbcDecrypted = CryptoUtil.decryptCbc(cbcCiphertext, cbcKey, cbcIv);
+        BusinessAssert.isTrue(raw.equals(cbcDecrypted), "AES/CBC 解密明文与原始明文不匹配");
+
+        // 3. HMAC-SHA256 密钥散列加签与恒定时间防侧信道比对验签
+        String hmacHex = HmacUtil.hmacSha256Hex(raw, secretKey);
+        String hmacBase64 = HmacUtil.hmacSha256Base64(raw, secretKey);
+        String recomputedHex = HmacUtil.hmacSha256Hex(raw, secretKey);
+        boolean signatureVerified = HmacUtil.verifyHex(recomputedHex, hmacHex);
+
+        // 4. DigestUtil 消息摘要
+        String sha256Hex = DigestUtil.sha256Hex(raw);
+        String md5Hex = DigestUtil.md5Hex(raw);
+
+        // 5. HexUtil 编解码
+        String encodedHex = HexUtil.encodeHex(raw.getBytes(StandardCharsets.UTF_8));
+
+        // 6. ChecksumUtil 校验和计算
+        String crc32Hex = ChecksumUtil.crc32Hex(raw);
+        String crc32cHex = ChecksumUtil.crc32cHex(raw);
+        String adler32Hex = ChecksumUtil.adler32Hex(raw);
+
+        log.info("支付报文加解密与验签完成 [tradeNo={}]: verified={}, gcmCipher={}, hmacHex={}",
+                request.getTradeNo(), signatureVerified, gcmCiphertext, hmacHex);
+
+        return PaymentCryptoVO.builder()
+                .tradeNo(request.getTradeNo())
+                .gcmCiphertext(gcmCiphertext)
+                .gcmDecrypted(gcmDecrypted)
+                .cbcCiphertext(cbcCiphertext)
+                .cbcDecrypted(cbcDecrypted)
+                .hmacSha256Hex(hmacHex)
+                .hmacSha256Base64(hmacBase64)
+                .signatureVerified(signatureVerified)
+                .sha256Hex(sha256Hex)
+                .md5Hex(md5Hex)
+                .encodedHex(encodedHex)
+                .crc32Hex(crc32Hex)
+                .crc32cHex(crc32cHex)
+                .adler32Hex(adler32Hex)
+                .build();
     }
 }

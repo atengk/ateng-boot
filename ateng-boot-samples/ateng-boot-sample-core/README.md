@@ -37,9 +37,17 @@
 | **订单结算前置断言与双模堆栈** | `POST /sample/core/contract/order-check` | `Result<T>`<br>`BusinessAssert`<br>`BusinessException`<br>`ResultCodeUtil` | `curl -X POST "http://localhost:8080/sample/core/contract/order-check" -H "Content-Type: application/json" -d '{"orderNo":"ORD-20261107-1001","amount":199.50,"simulateDriverFailure":true}'` |
 | **订单分页查询与排序解耦** | `GET /sample/core/contract/orders/page` | `PageQuery`<br>`SortItem`<br>`PageResult<T>` | `curl "http://localhost:8080/sample/core/contract/orders/page?current=1&size=10&sorts[0].property=orderTime&sorts[0].direction=DESC"` |
 | **批量客户入驻级联校验与枚举拦截** | `POST /sample/core/contract/users/batch-validate` | `ValidList<E>`<br>`ValidationGroups`<br>`ValidatorUtil`<br>`@InEnum` | `curl -X POST "http://localhost:8080/sample/core/contract/users/batch-validate" -H "Content-Type: application/json" -d '[{"name":"张三","phone":"13812345678","statusCode":1},{"name":"李四","phone":"13987654321","statusCode":2}]'` |
-| **通用字典枚举下拉选项渲染** | `GET /sample/core/contract/enums/options` | `IBaseEnum`<br>`@EnumAlias`<br>`EnumUtil`<br>`OptionItem` | `curl "http://localhost:8080/sample/core/contract/enums/options"` |
+| **通用字典枚举下拉选项渲染** | `GET /sample/core/contract/enums/options` | `IBaseEnum`<br>`@EnumAlias`<br>`EnumUtil`<br>`OptionItem` | `curl "http://localhost:8080/sample/core/contract/enums/options?alias=orderStatus"` |
 
-> 注：其余领域 Controller（安全密码学、异步与上下文、弹性流控、数据结构、系统与审计）将随后续工单逐步交付并补充 cURL。
+### 3.2 标识发号、数据脱敏与密码学套件领域 (`CoreSecurityController` -> `/sample/core/security`)
+
+| 功能场景 | 请求方式与路径 | 核心门面 / 注解 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **分布式业务发号与紧凑短链** | `GET /sample/core/security/ids/generate` | `Snowflake`<br>`IdUtil`<br>`Base62`<br>`SnowflakeIdInfo` | `curl "http://localhost:8080/sample/core/security/ids/generate"` |
+| **客户隐私档案动态脱敏与内存真明文** | `GET /sample/core/security/customer/masked` | `@FieldSensitive`<br>`SensitiveJsonSerializer`<br>`DesensitizeUtil` | `curl "http://localhost:8080/sample/core/security/customer/masked"` |
+| **支付报文加解密与 HMAC 恒定时间验签** | `POST /sample/core/security/crypto/verify` | `CryptoUtil`<br>`HmacUtil`<br>`DigestUtil`<br>`ChecksumUtil` | `curl -X POST "http://localhost:8080/sample/core/security/crypto/verify" -H "Content-Type: application/json" -d '{"tradeNo":"TX-20261107-8899","amount":299.90,"channel":"WXPAY","secretKey":"mySecretApiKey2026","rawPayload":"orderId=10086&currency=CNY&amount=299.90"}'` |
+
+> 注：其余领域 Controller（异步与上下文、弹性流控、数据结构、系统与审计）将随后续工单逐步交付并补充 cURL。
 
 ---
 

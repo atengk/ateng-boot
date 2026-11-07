@@ -15,16 +15,16 @@
 | **业务语义断言** | 快速失败业务语义前置防卫门面 | `BusinessAssert` | - | `isTrue(...)`, `isFalse(...)`, `notNull(...)`, `isNull(...)`, `hasText(...)`, `notEmpty(...)`, `equals(...)`, `{}` 占位符惰性格式化, `Supplier<String>`, 数值区间断言 (`gt`, `gte`, `lt`, `lte`, `between`) | `BusinessAssertTest.java`, `CoreContractControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **分层双防校验** | 批量列表防漏检、分组标记与编程式防卫 | `ValidList<E>`, `ValidationGroups`, `ValidatorUtil` | - | `ValidList<E>` 解决 Spring 默认直接注入 `List<T>` 漏检 JSR-303 问题；`ValidationGroups.Create/Update`；`ValidatorUtil.validate(obj)` 非 Web 边界快速失败 | `ValidListTest.java`, `ValidatorUtilTest.java`, `CoreContractControllerTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **强类型通用枚举** | 通用枚举契约、标准选项模型、别名注解、高速解析门面与 JSR-303 格式防卫 | `IBaseEnum<T>`, `OptionItem<T>`, `@EnumAlias`, `EnumUtil`, `@InEnum`, `InEnumValidator` | - | `IBaseEnum.getCode()`, `getLabel()`, `matches(code)`, `toOption()`, `getValue()`; `OptionItem.of(...)`; `EnumUtil.fromCode(...)`, `getByCodeOrThrow(...)`, `getLabelByCode(...)`, `isValidCode(...)`, `toOptions(...)`, `getAllCodes(...)`; `@InEnum(value = StatusEnum.class)` 第一道防线校验拦截 | `EnumUtilTest.java`, `InEnumValidatorTest.java`, `CoreContractControllerTest.java` |
-| **分布式发号器与短码** | 2026 纪元雪花发号器、逆向反解与 Base62 短码 | `IdUtil`, `Snowflake`, `SnowflakeIdInfo` | - | `IdUtil.nextId()`, `IdUtil.nextIdStr()`, `IdUtil.parseSnowflake(id)` / `Snowflake.parse(id)` 逆向反解元数据，`IdUtil.toBase62(long)`, `IdUtil.fromBase62(str)`, `IdUtil.fastSimpleUUID()`, `IdUtil.fastUUID()`, `IdUtil.nanoId()` | `IdUtilTest.java`, `SnowflakeTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **分布式发号器与短码** | 2026 纪元雪花发号器、逆向反解与 Base62 短码 | `IdUtil`, `Snowflake`, `SnowflakeIdInfo` | - | `IdUtil.nextId()`, `IdUtil.nextIdStr()`, `IdUtil.parseSnowflake(id)` / `Snowflake.parse(id)` 逆向反解元数据，`IdUtil.toBase62(long)`, `IdUtil.fromBase62(str)`, `IdUtil.fastSimpleUUID()`, `IdUtil.fastUUID()`, `IdUtil.nanoId()` | `IdUtilTest.java`, `SnowflakeTest.java`, `CoreSecurityControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **四维异步传播与快照扩展** | 受管线程池上下文捕获、还原与自定义快照 SPI | `AsyncContext`, `ContextCopyingTaskDecorator`, `AsyncContextSnapshotProvider` | `ateng.boot.async.*` | `AsyncContext.wrap(runnable)`, `wrap(callable)`, `wrapSupplier(supplier)`, 传递 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 快照；SPI `AsyncContextSnapshotProvider` 扩展外部上下文透传 | `AsyncContextTest.java`, `ContextCopyingTaskDecoratorTest.java`, `AsyncContextSnapshotProviderTest.java`, `CoreContextScenarioServiceTest.java` |
 | **多业务异步底座与治理** | 多业务受管线程池、动态调参、状态监控与告警策略 | `AsyncProperties`, `AsyncPoolProperties`, `DynamicAsyncPoolRegistrar`, `AtengAsyncAutoConfiguration`, `AsyncExecutionMode`, `AsyncRejectedPolicy`, `AsyncUtil`, `ThreadPoolStatus` | `ateng.boot.async.enabled`, `core-pool-size`, `max-pool-size`, `queue-capacity`, `keep-alive`, `thread-name-prefix`, `virtual-thread-name-prefix`, `concurrency-limit`, `mode`, `rejected-policy` (`WARN_CALLER_RUNS`, `WARN_ABORT`), `pools.*` | 声明式多业务线程池注册；`AsyncUtil.getStatus(poolName)` 提取 `ThreadPoolStatus` 监控指标；`AsyncUtil.resize(poolName, corePoolSize, maxPoolSize)` 动态热调参；`AsyncUtil.run(...)`, `AsyncUtil.supply(...)`, `AsyncUtil.allOf(...)` 编程式异步协调 | `AtengAsyncAutoConfigurationTest.java`, `AsyncUtilTest.java`, `CoreReportExportScenarioServiceTest.java`, `CoreContextScenarioServiceTest.java` |
 | **命名线程工厂** | 线程池命名与异常处理标准件 | `NamedThreadFactory` | - | `NamedThreadFactory(prefix)`, `newThread(runnable)`（支持自定义前缀、守护属性与 UncaughtExceptionHandler，消除匿名线程池） | `NamedThreadFactoryTest.java`, `CoreContextScenarioServiceTest.java` |
 | **上下文持有者** | 用户身份与多租户无状态隔离 | `UserContextHolder`, `TenantContextHolder` | - | `getUserId()`, `setUserId()`, `getTenantId()`, `setTenantId()`, `ignoreTenant(supplier)`, `clear()` | `UserContextHolderTest.java`, `TenantContextHolderTest.java`, `CoreContextScenarioServiceTest.java` |
 | **审计/租户 SPI** | 跨中间件解耦上下文扩展点 | `CurrentUserProvider`, `CurrentTenantProvider` | - | `getUserId()`, `getUserName()`, `getTenantId()`（供下游 Sa-Token / MyBatis-Plus 无缝对接） | `CoreContextScenarioServiceTest.java` |
 | **安全序列化与内存深克隆** | 零 `@class` 污染高性能 Jackson 门面与脱敏安全深克隆 | `JsonUtil` | - | `toJsonString(obj)`, `toPrettyJsonString(obj)`, `parseObject(...)`, `parseList(...)`, `parseMap(...)`, `isValidJson(json)`, `readTree(String/byte[]/InputStream)`, `deepClone(obj)`（内存真明文深克隆，杜绝掩码星号污染） | `JsonUtilTest.java`, `JsonUtilDeepCloneTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **敏感数据脱敏** | 15 大类敏感信息动态掩码与内存真明文防护 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.mobilePhone(str)`, `idCard(str)`, `unifiedCreditCode(str)`, `secretKey(str)`, `passport(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java`, `CoreSecurityScenarioServiceTest.java` |
+| **敏感数据脱敏** | 15 大类敏感信息动态掩码与内存真明文防护 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.mobilePhone(str)`, `idCard(str)`, `unifiedCreditCode(str)`, `secretKey(str)`, `passport(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **退避指数重试** | 纯原生轻量无第三方重试工具 | `RetryUtil` | - | `execute(supplier, config, fallback)`, `executeAction(runnable, config, fallback)`，支持 Equal Jitter 平滑随机抖动、onRetry 监听器、指数退避与 Fallback 降级兜底 | `RetryUtilTest.java`, `CoreResilienceScenarioServiceTest.java` |
-| **加解密与十六进制** | 原生安全加解密、摘要算法与 Hex 编解码 | `CryptoUtil`, `DigestUtil`, `HexUtil` | - | `CryptoUtil.encryptGcm/decryptGcm`, `encryptCbc/decryptCbc`, `DigestUtil.sha256Hex`, `md5Hex`, `HexUtil.encodeHex(bytes)`, `HexUtil.decodeHex(hexStr)` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `HexUtilTest.java`, `CoreSecurityScenarioServiceTest.java` |
+| **加解密与十六进制** | 原生安全加解密、摘要算法与 Hex 编解码 | `CryptoUtil`, `DigestUtil`, `HexUtil` | - | `CryptoUtil.encryptGcm/decryptGcm`, `encryptCbc/decryptCbc`, `DigestUtil.sha256Hex`, `md5Hex`, `HexUtil.encodeHex(bytes)`, `HexUtil.decodeHex(hexStr)` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `HexUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **安全文件与流处理** | 路径穿越防御、安全有界读取与临时文件 | `FileUtil` | - | `FileUtil.cleanFilename(name)`（防御 `../` 路径穿越）, `cleanPath(path)`, `getExtName(name)`, `formatSize(bytes)`, `readNBytesSafe(stream, maxBytes)` (防 OOM 安全有界读取与边界防溢出), `createTempFile(prefix, suffix)`, `createTempFile(dir, prefix, suffix)` | `FileUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **集合切片与大批量安全流转** | 零内存拷贝分批切片、函数式去重与大批量流转原语 | `CollectionUtil`, `BatchSliceUtil`, `MoreCollectors` | - | `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转）, `BatchSliceUtil.slice(list, sliceSize)`, `BatchSliceUtil.forEachSlice(list, sliceSize, consumer)`, `CollectionUtil.distinctByKey(keyExtractor)`, `MoreCollectors.toSafeMap(...)`, `MoreCollectors.toDistinctList(...)` | `CollectionUtilTest.java`, `BatchSliceUtilTest.java`, `MoreCollectorsTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **树形森林装配与析取** | O(N) 线性组装、递归剪枝、展平与路径探寻 | `TreeUtil` | - | `TreeUtil.build(...)`, `buildForest(...)`, `filter(...)`, `flatten(roots, childrenGetter)` / `flattenTree(...)` (先序深度优先展平), `findPath(...)` (面包屑导航路径), `getLeafNodes(...)` (提取所有叶子终端节点) | `TreeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
@@ -45,10 +45,10 @@
 | **纯原生有界 LRU 缓存** | 纯原生有界 LRU 缓存原语与底层防 OOM 加固 | `ConcurrentLruCache<K, V>` | - | `ConcurrentLruCache(maxCapacity, ttl)`, `get(key)`, `put(key, val)`, `computeIfAbsent(key, mappingFunc)`, `remove(key)`, `clear()`, `size()`, `containsKey(key)`, `cleanUp()` | `ConcurrentLruCacheTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **安全受限 SpEL 求值门面** | 安全受限 SpEL 表达式求值门面与 AST 缓存 | `SpelUtil` | - | `SpelUtil.evaluate(expr, root, vars, type)`, `SpelUtil.evaluateMethod(method, args, expr, type)`, `evaluateTrusted(...)`, `parseExpression(expr)`, `getCacheSize()`, `clearCache()` | `SpelUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **函数式业务管道** | 轻量函数式管道编排与中断异常隔离 | `Pipeline<C>`, `PipelineStage<C>`, `PipelineInterruptible`, `PipelineResult`, `PipelineErrorHandler` | - | `Pipeline.builder().addStage(...).build()`, `pipeline.execute(ctx)`, `result.isSuccess()`, `result.isTerminated()`, `result.orThrow()` | `PipelineTest.java`, `CorePipelineScenarioServiceTest.java` |
-| **原生安全 HMAC 加签** | 纯原生密钥散列加签与恒定时间防侧信道比对 | `HmacUtil` | - | `HmacUtil.hmacSha256Hex(data, key)`, `hmacSha256Base64(data, key)`, `hmacSha1Hex`, `hmacMd5Hex`, `verifyHex(expected, actual)`, `verifyBase64(expected, actual)`（恒定时间安全比对） | `HmacUtilTest.java`, `CoreSecurityScenarioServiceTest.java` |
-| **数据传输与硬件校验和** | 纯原生数据传输与硬件报文校验和计算 | `ChecksumUtil` | - | `ChecksumUtil.crc32(data)`, `crc32Hex(data)`, `crc32c(data)`, `crc32cHex(data)`, `adler32(data)`, `adler32Hex(data)`, `verifyCrc32`, `verifyCrc32c`, `verifyAdler32`，支持 `InputStream` 流式计算 | `ChecksumUtilTest.java`, `CoreSecurityScenarioServiceTest.java` |
+| **原生安全 HMAC 加签** | 纯原生密钥散列加签与恒定时间防侧信道比对 | `HmacUtil` | - | `HmacUtil.hmacSha256Hex(data, key)`, `hmacSha256Base64(data, key)`, `hmacSha1Hex`, `hmacMd5Hex`, `verifyHex(expected, actual)`, `verifyBase64(expected, actual)`（恒定时间安全比对） | `HmacUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
+| **数据传输与硬件校验和** | 纯原生数据传输与硬件报文校验和计算 | `ChecksumUtil` | - | `ChecksumUtil.crc32(data)`, `crc32Hex(data)`, `crc32c(data)`, `crc32cHex(data)`, `adler32(data)`, `adler32Hex(data)`, `verifyCrc32`, `verifyCrc32c`, `verifyAdler32`，支持 `InputStream` 流式计算 | `ChecksumUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **单机流量整形与限流** | 纯无锁 CAS 纳秒级平滑令牌桶限流器 | `TokenBucketLimiter` | - | `new TokenBucketLimiter(capacity, refillRatePerSecond)`, `tryAcquire()`, `tryAcquire(permits)`, `tryAcquire(permits, timeout)`, `acquire()`, `acquire(permits)`, `getAvailableTokens()` | `TokenBucketLimiterTest.java`, `CoreResilienceScenarioServiceTest.java` |
-| **核心配置外置化与发号器装配** | Core 配置属性绑定与受管雪花发号器自动装配 | `CoreProperties`, `SnowflakeProperties`, `CacheProperties`, `AtengCoreAutoConfiguration`, `Snowflake` | `ateng.boot.core.clock-backoff-tolerance`, `ateng.boot.core.cache-ttl`, `ateng.boot.core.snowflake.enabled`, `worker-id`, `datacenter-id`, `epoch`, `clock-backoff-tolerance`, `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | 自动装配 `@Bean Snowflake`，优雅自适应网卡/IP推导；时钟回拨熔断转译为 `BusinessException(INTERNAL_SERVER_ERROR)` | `AtengCoreAutoConfigurationTest.java`, `SnowflakeTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **核心配置外置化与发号器装配** | Core 配置属性绑定与受管雪花发号器自动装配 | `CoreProperties`, `SnowflakeProperties`, `CacheProperties`, `AtengCoreAutoConfiguration`, `Snowflake` | `ateng.boot.core.clock-backoff-tolerance`, `ateng.boot.core.cache-ttl`, `ateng.boot.core.snowflake.enabled`, `worker-id`, `datacenter-id`, `epoch`, `clock-backoff-tolerance`, `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | 自动装配 `@Bean Snowflake`，优雅自适应网卡/IP推导；时钟回拨熔断转译为 `BusinessException(INTERNAL_SERVER_ERROR)` | `AtengCoreAutoConfigurationTest.java`, `SnowflakeTest.java`, `CoreSecurityControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **系统环境基线防卫** | 启动前置校准时区、编码、Headless 与底层网络防死锁超时 | `SystemEnvironmentPostProcessor`, `SystemProperties` | `ateng.boot.core.system.enabled`, `timezone`, `timezone-guard-enabled`, `shutdown-uptime-enabled` | 容器与应用启动前置校准 JVM 默认时区 (`Asia/Shanghai`)、UTF-8 字符集与 Headless，强制注入底层 Socket 默认连接与读取超时 (`10000ms`)，彻底防御网络无限挂死 | `SystemEnvironmentPostProcessorTest.java`, `CoreSystemScenarioServiceTest.java` |
 | **零 XML 工业级日志引擎** | 零 XML 模式高亮彩色控制台、traceId 注入与双文件异步切片落盘 | `LoggingEnvironmentPostProcessor`, `LoggingProperties` | `ateng.boot.core.logging.enabled`, `console.enabled`, `file.enabled`, `file.path`, `file.max-file-size`, `file.max-history`, `file.total-size-cap`, `file.split-error`, `file.clean-history-on-start` | 零 XML 自动注入控制台彩色高亮与 MDC `traceId` 追踪格式；支持纯配置开启磁盘双文件落盘 (`app.log` / `app-error.log`)、大小时间滚动切片与启动自清理 | `LoggingEnvironmentPostProcessorTest.java`, `CoreSystemScenarioServiceTest.java` |
 | **方法级慢调用主动告警** | 声明式慢方法执行耗时毫秒级监控与安全参数快照 | `@SlowAlert`, `SlowAlertAspect`, `SlowAlertProperties` | `ateng.boot.core.slow-alert.enabled`, `default-threshold`, `include-args`, `max-args-length` | `@SlowAlert(threshold = 30, includeArgs = true)` 监控业务方法执行耗时，超阈值输出 `[SLOW_METHOD]` WARN 告警，自动快照入参、1KB 截断防爆并安全脱敏 | `SlowAlertAspectTest.java`, `CoreSystemScenarioServiceTest.java` |
@@ -497,202 +497,316 @@ String label = EnumUtil.getLabelByCode(OrderStatusEnum.class, 30); // "已发货
 
 ---
 
-## 4. 纯原生分布式雪花发号器 (`Snowflake`) 与 ID 门面 (`IdUtil`)
+## 4. 标识发号、数据脱敏与密码学防护网
 
-### 场景痛点
-摆脱大型第三方依赖与集中式协调中间件，在纯 JDK 17 环境下实现高并发、递增、趋势有序的 64 位分布式主键发号与轻量短 ID。
+### 4.1 纯原生分布式雪花发号器 (`Snowflake`)、ID 门面 (`IdUtil`) 与 Base62 短码
 
-### 特性矩阵
-- **2026 自定义纪元**：`1767225600000L`，ID 紧凑优雅，提供长达 69 年生命周期；
-- **时钟回拨容错与受管熔断**：$\le 5\text{ms}$（或可配置 `clock-backoff-tolerance`）自旋容错等待追平，超出阈值时严格快速熔断并抛出 `BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR)`，绝不发重复号；
-- **四级自适应节点推导**：按序探测 `CoreProperties` 配置属性 -> JVM 系统属性 -> 本地环境变量 -> 网卡 MAC / IP 哈希 -> 安全随机数兜底，零配置开箱即用；
-- **Spring 容器自动装配**：`AtengCoreAutoConfiguration` 提供 `@Bean @ConditionalOnMissingBean Snowflake`，开箱即用且支持平滑接管；
-- **高性能无锁短 ID**：基于 `ThreadLocalRandom` 的无横线 32 位 UUID 与 21 位 URL 安全 NanoId。
+#### 业务场景与痛点
+1. **分布式趋势有序发号**：大型分布式与高并发微服务需要趋势递增、紧凑不重复的 64 位全局主键，彻底消除数据库自增 ID 的单点瓶颈与分库分表冲突；
+2. **时钟回拨隐患防护**：NTP 网络时钟同步或闰秒可能导致服务器系统时钟倒退，无保护的发号算法会直接生成重复 ID 引发重大灾难；
+3. **前端精度截断与短链存储**：JavaScript 只能精确表示 53 位整数（超过 $2^{53}-1$ 将发生精度截断导致后几位全变 0）；传统 18~19 位雪花 ID 作为推广短链接或代号时体积冗长。
 
-### 核心代码范式
-```java
-import io.github.atengk.boot.core.id.Snowflake;
-import io.github.atengk.boot.core.id.SnowflakeIdInfo;
-import io.github.atengk.boot.core.util.IdUtil;
-import org.springframework.beans.factory.annotation.Autowired;
-
-// ==================== 1. Spring 容器受管 Snowflake Bean 注入 ====================
-@Autowired
-private Snowflake snowflake;
-
-long managedId = snowflake.nextId(); // 优先采用 application.yml 中配置的 workerId/datacenterId 与容忍阈值
-
-// ==================== 2. 静态门面 IdUtil 全局极速发号 ====================
-// 生成 64 位全局唯一递增雪花 Long ID
-long id = IdUtil.nextId(); // 如 104485532445560832L
-
-// 生成雪花 ID 字符串（前端防精度截断）
-String idStr = IdUtil.nextIdStr(); // "104485532445560832"
-
-// 高性能 32 位无横线 UUID（比标准 UUID.randomUUID() 快 2~3 倍）
-String simpleUuid = IdUtil.fastSimpleUUID(); // "4a6df7a0bc1249b8918231012ab987de"
-
-// 高性能标准 36 位 UUID
-String uuid = IdUtil.fastUUID(); // "4a6df7a0-bc12-49b8-9182-31012ab987de"
-
-// 21 位 URL 安全 NanoId（随机无碰撞短链接/文件代号）
-String nanoId = IdUtil.nanoId(); // "V1StGXR8_Z5jdHi6B-myT"
-
-// 雪花 ID 逆向反解结构化不可变元数据 (SnowflakeIdInfo)
-SnowflakeIdInfo info = IdUtil.parseSnowflake(id);
-log.info("发号时间戳: {}, 时间: {}, 数据中心: {}, 工作节点: {}, 序列号: {}",
-        info.timestamp(), info.dateTime(), info.datacenterId(), info.workerId(), info.sequence());
-
-// 纯原生零依赖无锁 Base62 双向短码（将 18~19 位十进制雪花 ID 压缩为 10~11 位紧凑短码）
-String base62 = IdUtil.toBase62(id); // 如 "7zWk0S0l8K"
-long restoredId = IdUtil.fromBase62(base62); // 100% 无损还原原始雪花长整型 ID
-```
-
-### 部署与节点自定义覆盖
-在集群部署中，可通过配置文件、JVM 参数或环境变量显式指定节点编号（0~31）与时钟回拨容忍时长：
+#### 专属 YAML 配置块
 ```yaml
 ateng:
   boot:
     core:
       snowflake:
-        worker-id: 1
-        datacenter-id: 1
-        clock-backoff-tolerance: 10ms
+        enabled: true                 # 是否开启受管 Snowflake Bean 自动装配，默认 true
+        worker-id: 1                  # 工作节点编号 (0~31)，未显式配置时自适应网卡/IP哈希推导
+        datacenter-id: 1              # 数据中心编号 (0~31)，未显式配置时自适应推导
+        epoch: 1767225600000          # 2026 自定义纪元起始时间戳 (2026-01-01 00:00:00 UTC)
+        clock-backoff-tolerance: 5ms   # 时钟回拨最大容忍等待时长，默认 5ms (超出则熔断转译为 BusinessException)
 ```
-或通过 JVM 参数 / 环境变量覆盖：
-```bash
-java -Dateng.boot.snowflake.worker-id=2 -Dateng.boot.snowflake.datacenter-id=1 -jar app.jar
+
+#### 核心代码范式
+代码锚定样例：[`CoreSecurityController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSecurityController.java)、[`CoreSecurityScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreSecurityScenarioService.java)
+
+```java
+import io.github.atengk.boot.core.id.Snowflake;
+import io.github.atengk.boot.core.id.SnowflakeIdInfo;
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.sample.core.vo.IdGenerateVO;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/sample/core/security")
+public class CoreSecurityController {
+
+    @Autowired
+    private Snowflake snowflake;
+
+    @GetMapping("/ids/generate")
+    public Result<IdGenerateVO> generateDistributedId() {
+        // 1. 生成 64 位全局唯一递增雪花 Long ID
+        long id = snowflake.nextId(); // 如 104485532445560832L
+
+        // 2. 生成雪花 ID 字符串（前端防 JS 精度截断）
+        String idStr = String.valueOf(id);
+
+        // 3. 纯原生零依赖 Base62 双向紧凑短码（18~19 位十进制 ID 压缩为 10~11 位紧凑短码）
+        String base62 = IdUtil.toBase62(id); // 如 "7zWk0S0l8K"
+        long restoredId = IdUtil.fromBase62(base62); // 100% 无损还原原始长整型 ID
+
+        // 4. 雪花 ID 逆向反解结构化不可变元数据 (SnowflakeIdInfo)
+        SnowflakeIdInfo info = IdUtil.parseSnowflake(id);
+
+        // 5. 高性能无锁 UUID 与 URL 安全 NanoId 短代号
+        String simpleUuid = IdUtil.fastSimpleUUID(); // 32 位无横线 UUID
+        String uuid = IdUtil.fastUUID();             // 36 位标准 UUID
+        String nanoId = IdUtil.nanoId();             // 21 位 URL 安全短代号
+
+        IdGenerateVO vo = IdGenerateVO.builder()
+                .id(id).idStr(idStr).base62(base62).restoredId(restoredId)
+                .datacenterId(info.datacenterId()).workerId(info.workerId())
+                .sequence(info.sequence()).timestamp(info.timestamp()).dateTime(info.dateTime())
+                .simpleUuid(simpleUuid).uuid(uuid).nanoId(nanoId).build();
+
+        return Result.success(vo);
+    }
+}
+```
+
+#### 核心机制与生产边界
+- **2026 自定义纪元**：起始基准为 `1767225600000L`，生成的 ID 更紧凑低位，提供长达 69 年的超长生命周期；
+- **时钟回拨容错与受管熔断**：时钟回拨 $\le 5\text{ms}$（可配置 `clock-backoff-tolerance`）时，发号器执行无锁自旋等待追平时钟；若时钟回拨超出容忍上限，发号器立即执行**受管快速熔断**，抛出带清晰错误码的 `BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR)`，绝对杜绝发重复号；
+- **四级自适应节点推导**：按序探测 `CoreProperties` 配置属性 -> JVM 系统属性 -> 本地环境变量 -> 网卡 MAC/IP 哈希 -> 安全随机数兜底，零配置开箱即用。
+
+#### 预期响应 JSON 契约
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "id": "104485532445560832",
+    "idStr": "104485532445560832",
+    "base62": "7zWk0S0l8K",
+    "restoredId": "104485532445560832",
+    "datacenterId": 1,
+    "workerId": 1,
+    "sequence": 0,
+    "timestamp": 1794052800000,
+    "dateTime": "2026-11-07T20:45:00",
+    "simpleUuid": "4a6df7a0bc1249b8918231012ab987de",
+    "uuid": "4a6df7a0-bc12-49b8-9182-31012ab987de",
+    "nanoId": "V1StGXR8_Z5jdHi6B-myT"
+  },
+  "timestamp": 1794052800000,
+  "success": true,
+  "traceId": "a1b2c3d4e5f647890abcdef123456789"
+}
 ```
 
 ---
 
-## 5. 全场景敏感数据脱敏体系 (`DesensitizeUtil` & `@FieldSensitive`)
+### 4.2 全场景敏感数据脱敏体系 (`DesensitizeUtil`, `@FieldSensitive`, `SensitiveJsonSerializer`) 与“内存真明文”防卫
 
-### 场景痛点
-涵盖国内常见的所有隐私合规字段，纯 JDK 算法实现，毫秒级脱敏。支持静态工具调用与视图层出界动态打码（配合 Jackson），源数据在 JVM 内存中 100% 保持未脱敏真明文，严格防范打星号脏数据写回持久层引发数据损毁（[ADR-0012](./docs/adr/0012-lifecycle-separated-data-security.md)）。
+#### 业务场景与“内存真明文”核心不变量
+- **业务痛点**：全链路数据隐私合规监管（个保法、GDPR、等保2.0）；若直接在业务层或持久层对象属性打掩码星号（如把手机号改为 `138****5678`），一旦对象被后续业务逻辑流转或触发 MyBatis-Plus 的 `updateById`，将导致打星号的掩码脏数据永久写回数据库，造成不可逆的灾难性业务资产破坏；
+- **内存真明文不变量 (In-Memory Plaintext Invariant)**：
+  - **业务层与持久层**：在 JVM 堆内存中 100% 始终保持原始未脱敏真实明文；
+  - **脱敏边界隔离**：脱敏仅在传输层（Controller HTTP 响应出界时通过 Jackson 注解驱动的 `SensitiveJsonSerializer` 自动掩码）或数据导出层生效；
+  - **安全深克隆保障**：`JsonUtil.deepClone(obj)` 采用内存明文深克隆，杜绝任何中间状态掩码污染。
 
-### 核心代码范式
-#### 1. 视图层 / DTO 字段动态脱敏（自动适配 Controller JSON 响应）
+#### 15 大类敏感规则速查矩阵
+| 敏感类型 (`SensitiveType`) | 掩码规则与示例 |
+| :--- | :--- |
+| `CHINESE_NAME` | 中文姓名：两字隐藏后一位（张\*），三字及以上仅保留首尾字符（诸\*\*明） |
+| `MOBILE_PHONE` | 11 位手机号码：保留前 3 后 4，中间 4 位掩码（138\*\*\*\*5678） |
+| `FIXED_PHONE` | 固定电话：保留区号与后 2 位，中间掩码（010-\*\*\*\*\*\*78） |
+| `ID_CARD` | 18 位居民身份证号：保留前 6 后 4，中间 8 位掩码（110101\*\*\*\*\*\*\*\*2345） |
+| `EMAIL` | 电子邮箱：保留前缀首尾字符与域名后缀（a\*\*\*\*k@example.com） |
+| `BANK_CARD` | 银行卡号：保留前 6 后 4，中间掩码（622202\*\*\*\*\*\*\*\*\*4012） |
+| `PASSWORD` | 密码凭据：无论原长一律输出 6 位星号（\*\*\*\*\*\*） |
+| `ADDRESS` | 国内地址：保留前 6 位省市区，详细门牌全部掩码（北京市海淀区\*\*\*\*\*\*\*\*\*） |
+| `CAR_LICENSE` | 车牌号：普通燃油 7 位（京A\*\*\*88）与新能源 8 位绿牌（粤B\*\*\*\*5D）自适应掩码 |
+| `IPV4` | IPv4 地址：仅掩码末位段（192.168.1.\*） |
+| `IPV6` | IPv6 地址：掩码中间段（2001:\*\*\*\*:7334） |
+| `UNIFIED_CREDIT_CODE` | 统一社会信用代码：18 位法人证照保留前 2 后 4，中间 12 位掩码（91\*\*\*\*\*\*\*\*\*\*\*\*000X） |
+| `SECRET_KEY` | 开发者密钥 / Token：保留前 4 后 4，中间等长掩码（sk-p\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*cdef） |
+| `PASSPORT` | 护照号码：保留前 2 后 3，中间等长掩码（G1\*\*\*\*678） |
+| `KEEP_HEAD_TAIL` / `CUSTOM` | 首尾保留（`keepHead`, `keepTail`, `maskChar`）或自定义区间（`startInclude`, `endExclude`） |
+
+#### 核心代码范式
+代码锚定样例：[`CustomerPrivacyVO.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/vo/CustomerPrivacyVO.java)、[`CoreSecurityController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSecurityController.java)
+
 ```java
 import io.github.atengk.boot.core.annotation.FieldSensitive;
 import io.github.atengk.boot.core.enums.SensitiveType;
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.core.vo.CustomerPrivacyVO;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-public class UserVO {
-    private Long id;
+// 1. 视图层 VO 声明脱敏注解（严禁直接标注在数据库 Entity 实体上）
+public class CustomerPrivacyVO {
+    private Long customerId;
 
-    // 预设脱敏策略：手机号（138****5678）
+    @FieldSensitive(SensitiveType.CHINESE_NAME)
+    private String realName;
+
     @FieldSensitive(SensitiveType.MOBILE_PHONE)
     private String phone;
 
-    // 预设脱敏策略：身份证号（110101********2345）
     @FieldSensitive(SensitiveType.ID_CARD)
     private String idCard;
 
-    // 预设脱敏策略：中文姓名（两字变 张*，多字变 诸**明）
-    @FieldSensitive(SensitiveType.CHINESE_NAME)
-    private String name;
+    @FieldSensitive(SensitiveType.EMAIL)
+    private String email;
 
-    // 自定义区间脱敏：索引 [2, 5) 替换为 '#'
-    @FieldSensitive(startInclude = 2, endExclude = 5, maskChar = '#')
-    private String customCode;
+    @FieldSensitive(SensitiveType.BANK_CARD)
+    private String bankCard;
 
-    // 首尾保留字符数脱敏：保留前2位与后2位
+    @FieldSensitive(SensitiveType.PASSWORD)
+    private String password;
+
+    @FieldSensitive(SensitiveType.ADDRESS)
+    private String address;
+
+    @FieldSensitive(SensitiveType.CAR_LICENSE)
+    private String carLicense;
+
+    @FieldSensitive(SensitiveType.IPV4)
+    private String clientIpv4;
+
+    @FieldSensitive(SensitiveType.UNIFIED_CREDIT_CODE)
+    private String creditCode;
+
+    @FieldSensitive(SensitiveType.SECRET_KEY)
+    private String secretKey;
+
     @FieldSensitive(value = SensitiveType.KEEP_HEAD_TAIL, keepHead = 2, keepTail = 2, maskChar = '#')
-    private String token;
+    private String customToken;
+}
+
+// 2. Controller 正常返回明文 VO，由 SensitiveJsonSerializer 在出界序列化为 JSON 时自动动态掩码
+@RestController
+public class CustomerController {
+    @GetMapping("/sample/core/security/customer/masked")
+    public Result<CustomerPrivacyVO> getCustomerMaskedProfile() {
+        CustomerPrivacyVO vo = customerService.getProfile();
+        // 核心不变量：此时 vo.getPhone() 在内存中依然是 "13812345678" 真实明文
+        return Result.success(vo);
+    }
 }
 ```
 
-#### 2. 底层通用脱敏原语 (`DesensitizeUtil`)
-```java
-import io.github.atengk.boot.core.util.DesensitizeUtil;
-
-// 1. 手机号码：保留前3后4，中间4位掩码
-DesensitizeUtil.mobilePhone("13812345678"); // 138****5678
-
-// 2. 居民身份证号：18位保留前6后4
-DesensitizeUtil.idCard("110101199003072345"); // 110101********2345
-
-// 3. 中文姓名：两字隐藏后一位，三字以上仅保留首尾
-DesensitizeUtil.chineseName("张三");   // 张*
-DesensitizeUtil.chineseName("诸葛孔明"); // 诸**明
-
-// 4. 电子邮箱：保留前缀首尾及域名
-DesensitizeUtil.email("atengk@example.com"); // a****k@example.com
-
-// 5. 固定电话：区号与后两位保留
-DesensitizeUtil.fixedPhone("010-88886666"); // 010-****6666
-
-// 6. 国内地址：隐藏详细门牌门牌号
-DesensitizeUtil.address("北京市海淀区中关村南大街1号院8号楼502"); // 北京市海淀区中关村南大街********
-
-// 7. 车牌号（普通7位燃油车与8位新能源绿牌）
-DesensitizeUtil.carLicense("京A88888");  // 京A***88
-DesensitizeUtil.carLicense("粤B12345D"); // 粤B****5D
-
-// 8. IP 地址（IPv4 / IPv6）
-DesensitizeUtil.ipv4("192.168.1.100"); // 192.168.*.*
-DesensitizeUtil.ipv6("2001:0db8:85a3:0000:0000:8a2e:0370:7334"); // 2001:db8:****:7334
-
-// 9. 统一社会信用代码（18位法人证照，保留前2后4）
-DesensitizeUtil.unifiedCreditCode("91110000000000000X"); // 91************000X
-
-// 10. 密钥 / Token / 凭据（保留前4后4，中间等长掩码）
-DesensitizeUtil.secretKey("sk-proj-1234567890abcdef"); // sk-p****************cdef
-
-// 11. 护照号码（保留前2后3，中间等长掩码）
-DesensitizeUtil.passport("G12345678"); // G1****678
-
-// 12. 自定义首尾保留位数（例如保留前2位、后2位）
-DesensitizeUtil.keepHeadAndTail("TOPSECRETTOKEN123456", 2, 2); // TO****************56
-```
-
-### 预期响应 JSON 呈现
+#### 预期响应 JSON 呈现（出界序列化结果）
 ```json
 {
-  "id": "104485532445560832",
-  "phone": "138****5678",
-  "idCard": "110101********2345",
-  "name": "张*",
-  "customCode": "12###67890",
-  "token": "TO################56"
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "customerId": "104485532445560832",
+    "realName": "诸**明",
+    "phone": "138****5678",
+    "fixedPhone": "010-******78",
+    "idCard": "110101********2345",
+    "email": "a****k@example.com",
+    "bankCard": "622202*********4012",
+    "password": "******",
+    "address": "北京市海淀区*********",
+    "carLicense": "京A***88",
+    "clientIpv4": "192.168.1.*",
+    "creditCode": "91************000X",
+    "secretKey": "sk-p****************cdef",
+    "passport": "G1****678",
+    "customToken": "AB######CD",
+    "internalCode": "PR****56US"
+  },
+  "timestamp": 1794052800000,
+  "success": true,
+  "traceId": "91a0c841bb2f4e3c9c64be630c71049c"
 }
 ```
 
 ---
 
-## 6. 轻量原生加解密与哈希摘要 (`CryptoUtil` & `DigestUtil`)
+### 4.3 原生安全对称加解密 (`CryptoUtil`)、哈希摘要 (`DigestUtil`) 与 Hex 编解码 (`HexUtil`)
 
-### 场景痛点
-提供符合现代密码学安全规范的纯 JDK 原生加解密封装，杜绝由于硬编码 IV 或 ECB 模式导致的重放攻击漏洞，100% 零第三方加密依赖。
+#### 业务场景与痛点
+支付敏感凭据存储、金融交易载荷签名及系统间机密通信需要高度可靠的加解密算法。传统实现常常由于误用 ECB 模式、硬编码全零 IV 或缺乏防篡改机制，导致容易遭受重放攻击与 Padding Oracle 攻击；引入第三方大型密码学包又极易引发依赖冲突。`ateng-boot-core` 提供 100% 依托 JDK 17 原生能力的安全加解密标准门面。
 
-### 核心代码范式
+#### 密码学算法选型与规范
+- **AES/GCM 认证加解密 (推荐现代工业级标准)**：
+  - 采用 Galois/Counter Mode（GCM），自动附带 128 位 GCM Tag，集数据机密性加密与完整性防篡改认证于一身；
+  - 密钥长度推荐 256 位，推荐配置 12 字节（96 位）安全随机 IV（`CryptoUtil.generateGcmIv()`），彻底杜绝 Padding Oracle 漏洞；
+- **AES/CBC 对称加解密 (经典兼容模式)**：
+  - 采用 Cipher Block Chaining 配合 PKCS5Padding；
+  - 强制严格搭配 16 字节随机初始向量 IV（`CryptoUtil.generateIv()`），严禁复用固定静态 IV；
+- **安全摘要与十六进制编解码**：
+  - `DigestUtil.sha256Hex(text)` / `DigestUtil.md5Hex(text)`：纯原生高并发无锁哈希计算；
+  - `HexUtil.encodeHex(bytes)` / `HexUtil.decodeHex(hexStr)`：高性能字节与 Hex 串双向转换。
+
+#### 核心代码范式
+代码锚定样例：[`PaymentCryptoRequest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/dto/PaymentCryptoRequest.java)、[`CoreSecurityScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreSecurityScenarioService.java)
+
 ```java
 import io.github.atengk.boot.core.util.CryptoUtil;
 import io.github.atengk.boot.core.util.DigestUtil;
+import io.github.atengk.boot.core.util.HexUtil;
+import java.nio.charset.StandardCharsets;
 
-// ==================== 1. AES/GCM 认证加解密 (推荐，认证防篡改) ====================
-// 生成 256 位安全密钥与 12 字节 GCM 推荐 IV
-byte[] gcmKey = CryptoUtil.generateKey(256);
-byte[] gcmIv = CryptoUtil.generateGcmIv();
+// 1. AES/GCM 认证加密与解密（推荐用于支付交易核心载荷）
+byte[] gcmKey = CryptoUtil.generateKey(256); // 256 位高强度密钥
+byte[] gcmIv = CryptoUtil.generateGcmIv();    // 12 字节标准 GCM IV
+String gcmCiphertext = CryptoUtil.encryptGcm(rawPayload, gcmKey, gcmIv);
+String gcmDecrypted = CryptoUtil.decryptGcm(gcmCiphertext, gcmKey, gcmIv);
 
-// 字符串 Base64 契约（带可选 AAD 附加认证数据防篡改）
-String cipherText = CryptoUtil.encryptGcm("机密密码123", gcmKey, gcmIv);
-String plainText = CryptoUtil.decryptGcm(cipherText, gcmKey, gcmIv);
+// 2. AES/CBC 对称加密与解密（兼容存量三方系统）
+byte[] cbcKey = CryptoUtil.generateKey(128); // 128 位密钥
+byte[] cbcIv = CryptoUtil.generateIv();       // 16 字节 CBC IV
+String cbcCiphertext = CryptoUtil.encryptCbc(rawPayload, cbcKey, cbcIv);
+String cbcDecrypted = CryptoUtil.decryptCbc(cbcCiphertext, cbcKey, cbcIv);
 
-// ==================== 2. AES/CBC 对称加解密 ====================
-byte[] cbcKey = CryptoUtil.generateKey(128);
-byte[] cbcIv = CryptoUtil.generateIv(); // 16 字节 IV
-String cbcCipher = CryptoUtil.encryptCbc("明文凭证", cbcKey, cbcIv);
-String cbcPlain = CryptoUtil.decryptCbc(cbcCipher, cbcKey, cbcIv);
+// 3. 安全哈希消息摘要计算
+String sha256Hex = DigestUtil.sha256Hex(rawPayload); // 64 位十六进制散列
+String md5Hex = DigestUtil.md5Hex(rawPayload);       // 32 位十六进制散列
 
-// ==================== 3. 消息哈希与摘要 (DigestUtil) ====================
-String sha256Hex = DigestUtil.sha256Hex("raw_text");
-String md5Hex = DigestUtil.md5Hex("raw_text");
+// 4. Hex 十六进制双向编解码
+String hexString = HexUtil.encodeHex(rawPayload.getBytes(StandardCharsets.UTF_8));
+byte[] decodedBytes = HexUtil.decodeHex(hexString);
 ```
 
 ---
 
-## 7. 通用线性树形与森林装配工具 (`TreeUtil`)
+### 4.4 原生安全 HMAC 密钥加签 (`HmacUtil`) 与硬件级数据校验和 (`ChecksumUtil`)
+
+#### 业务场景与痛点
+1. **防侧信道时序攻击 (Timing Attack)**：在开放平台 API 签名校验与 Webhook 回调验签中，若使用普通字符串 `equals` 比对签名，攻击者可通过测量比对耗时（微秒级时间差，当首字符匹配时耗时略长于首字符不匹配）逐字节暴力破解签名密文；`HmacUtil` 采用恒定时间防侧信道比对算法，比对耗时与内容无关；
+2. **数据传输报文完整性检验**：网络报文或文件流流转时需要极速计算校验和防传输位翻转。
+
+#### 核心代码范式
+代码锚定样例：[`PaymentCryptoRequest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/dto/PaymentCryptoRequest.java)、[`CoreSecurityScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreSecurityScenarioService.java)
+
+```java
+import io.github.atengk.boot.core.util.ChecksumUtil;
+import io.github.atengk.boot.core.util.HmacUtil;
+
+// 1. HMAC-SHA256 密钥散列加签（支持十六进制 Hex 与 Base64 两种输出契约）
+String hmacHex = HmacUtil.hmacSha256Hex(rawPayload, merchantSecretKey);
+String hmacBase64 = HmacUtil.hmacSha256Base64(rawPayload, merchantSecretKey);
+
+// 2. 恒定时间防侧信道验签（底层基于 MessageDigest.isEqual 恒定时间比对，杜绝时序攻击）
+String recomputedHex = HmacUtil.hmacSha256Hex(rawPayload, merchantSecretKey);
+boolean verified = HmacUtil.verifyHex(recomputedHex, hmacHex); // true
+
+// 篡改载荷或伪造密钥验签必定失败
+boolean tampered = HmacUtil.verifyHex(HmacUtil.hmacSha256Hex(rawPayload + "&tampered=1", merchantSecretKey), hmacHex); // false
+
+// 3. 数据传输校验和计算 (CRC32, 现代 CPU 硬件指令加速的 CRC32C, 以及极速轻量 Adler32)
+String crc32Hex = ChecksumUtil.crc32Hex(rawPayload);
+String crc32cHex = ChecksumUtil.crc32cHex(rawPayload);
+String adler32Hex = ChecksumUtil.adler32Hex(rawPayload);
+```
+
+---
+
+## 5. 通用线性树形与森林装配工具 (`TreeUtil`)
 
 ### 场景痛点
 菜单树、组织架构树、品类目录等递归组装是业务极高频操作，传统两层循环性能为 $O(N^2)$，容易发生栈溢出。`TreeUtil` 采用哈希辅助表实现 $O(N)$ 极速装配，并支持多根谓词成林与递归剪枝过滤。
@@ -746,7 +860,7 @@ List<MenuNode> leafNodes = TreeUtil.getLeafNodes(menuTree, MenuNode::getChildren
 
 ---
 
-## 8. 原生不可变元组标准件 (`Pair<L, R>` & `Triple<L, M, R>`)
+## 6. 原生不可变元组标准件 (`Pair<L, R>` & `Triple<L, M, R>`)
 
 ### 场景痛点
 业务方法常需要返回多个关联属性（如 `count` 与 `totalAmount`，或 `min/avg/max` 区间三要素），创建专用 DTO 过重，使用 `Map<String, Object>` 丧失强类型安全。
@@ -775,7 +889,7 @@ Boolean enabled = triple.right();
 
 ---
 
-## 9. 用户与多租户上下文及四维异步透传 (`UserContextHolder`, `TenantContextHolder` & `AsyncContext`)
+## 7. 用户与多租户上下文及四维异步透传 (`UserContextHolder`, `TenantContextHolder` & `AsyncContext`)
 
 ### 场景痛点
 在分布式与 SaaS 架构下，异步线程池（如 `@Async`、`CompletableFuture`、自定义线程池）执行任务时，主线程的链路追踪 `traceId`、当前登录操作人、多租户上下文与忽略租户状态极易发生上下文丢失或线程池污染，导致跨租户越权漏洞。
@@ -997,7 +1111,7 @@ CompletableFuture<List<String>> allOfFuture = AsyncUtil.allOf(
 
 ---
 
-## 10. 未来中间件孵化通用原语套件
+## 8. 未来中间件孵化通用原语套件
 
 > 为未来扩展存储（Storage）、消息队列（MQ）、分布式任务调度（Job）、邮件短信及 AI 等功能模块提供统一的纯原生零外部依赖基础设施标准件。
 
@@ -1944,7 +2058,7 @@ public class UserCreateRequest {
 
 ---
 
-## 11. 系统基线防卫、零 XML 工业级日志引擎与运行时诊断
+## 9. 系统基线防卫、零 XML 工业级日志引擎与运行时诊断
 
 ### 场景痛点
 1. **环境差异与时区漂移**：Docker 容器默认运行在 UTC 时区，或宿主机环境编码并非 UTF-8，导致持久化时间偏移 8 小时或乱码；
@@ -2065,7 +2179,7 @@ int cleanedCount = FileUtil.cleanDirectorySafely(appTempDir);
 
 ---
 
-## 12. 模块配置属性参考 (`application.yml`)
+## 10. 模块配置属性参考 (`application.yml`)
 
 `ateng-boot-core` 提供核心底座全局配置属性（`CoreProperties`）与自适应双模受管异步任务执行器（`AtengAsyncAutoConfiguration`），支持开箱即用与按需定制：
 
