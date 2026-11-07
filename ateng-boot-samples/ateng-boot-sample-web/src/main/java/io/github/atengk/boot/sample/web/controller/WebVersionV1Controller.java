@@ -8,27 +8,28 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * API 版本控制 V1 演示控制器
+ * 会员档案 API 版本控制 V1 演示控制器
+ * 演示通过类级别标注 {@link ApiVersion}("1") 声明基础版本契约
  *
  * @author Ateng
- * @since 2026-10-27
+ * @since 2026-11-08
  */
 @RestController
-@RequestMapping("/api/sample/version-user")
+@RequestMapping("/sample/web/routing/member")
 @ApiVersion("1")
-public class WebVersionV1SampleController {
+public class WebVersionV1Controller {
 
     /**
-     * 获取用户信息 V1 版本
+     * 获取会员档案 V1 基础版本信息
      *
-     * @return V1 版本数据
+     * @return V1 基础版本数据
      */
     @GetMapping("/info")
     public Result<UserVersionInfoVO> getUserInfo() {
         return Result.success(UserVersionInfoVO.builder()
                 .version("1")
                 .name("张三")
-                .contract("legacy")
+                .contract("standard_v1")
                 .build());
     }
 }

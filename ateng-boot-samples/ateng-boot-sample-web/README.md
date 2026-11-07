@@ -97,6 +97,29 @@
 | **ETag 协商缓存与 304 校验** | `WebSecurityAndSignController` | `GET /sample/web/security/etag/dict` | `curl -i "http://localhost:8080/sample/web/security/etag/dict"` |
 | **CORS 动态跨域凭证反射** | `WebSecurityAndSignController` | `GET /sample/web/security/cors/ping` | `curl -i "http://localhost:8080/sample/web/security/cors/ping" -H "Origin: http://localhost:3000"` |
 
+### 3.5 API 多版本路由分流与 Servlet 运行时工具集 (`WebRoutingAndUtilityController` & `WebVersionV1/V2Controller`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **URL 前缀路由至 V1 版本** | `WebVersionV1Controller` | `GET /v1/sample/web/routing/member/info` | `curl "http://localhost:8080/v1/sample/web/routing/member/info"` |
+| **URL 前缀路由至 V2 版本** | `WebVersionV2Controller` | `GET /v2/sample/web/routing/member/info` | `curl "http://localhost:8080/v2/sample/web/routing/member/info"` |
+| **请求头分流至 V2 版本** | `WebVersionV2Controller` | `GET /sample/web/routing/member/info` | `curl "http://localhost:8080/sample/web/routing/member/info" -H "X-API-Version: 2"` |
+| **缺省无头路由回退默认版本** | `WebVersionV1Controller` | `GET /sample/web/routing/member/info` | `curl "http://localhost:8080/sample/web/routing/member/info"` |
+| **方法级细粒度版本覆盖 (V2.1)** | `WebVersionV2Controller` | `GET /v2.1/sample/web/routing/member/feature` | `curl "http://localhost:8080/v2.1/sample/web/routing/member/feature"` |
+| **客户端真实 IP 提取** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/client-ip` | `curl "http://localhost:8080/sample/web/routing/client-ip" -H "X-Forwarded-For: 203.0.113.195"` |
+| **RFC 6266 安全防乱码下载** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/download` | `curl -i "http://localhost:8080/sample/web/routing/download"` |
+| **CIDR 子网掩码范围匹配** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/ip-check` | `curl "http://localhost:8080/sample/web/routing/ip-check?ip=192.168.1.50&cidr=192.168.1.0/24"` |
+
+### 3.6 云原生生命周期治理与安全防呆自检 (`WebCloudLifecycleController` & 内置端点)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **就绪探针与防呆自检聚合视图** | `WebCloudLifecycleController` | `GET /sample/web/lifecycle/ready-and-sanity` | `curl "http://localhost:8080/sample/web/lifecycle/ready-and-sanity"` |
+| **就绪状态卡片格式化视图** | `WebCloudLifecycleController` | `GET /sample/web/lifecycle/ready-card` | `curl "http://localhost:8080/sample/web/lifecycle/ready-card"` |
+| **高危配置主动防呆安全自检** | `WebCloudLifecycleController` | `GET /sample/web/lifecycle/sanity-check` | `curl "http://localhost:8080/sample/web/lifecycle/sanity-check"` |
+| **K8s 优雅停机就绪探针翻转探测 (GET)** | `PreStopController` (内置) | `GET /pre-stop` | `curl -i "http://localhost:8080/pre-stop"` |
+| **K8s preStop 钩子触发流量排空 (POST)** | `PreStopController` (内置) | `POST /pre-stop` | `curl -i -X POST "http://localhost:8080/pre-stop"` |
+
 ---
 
 ## 4. 全真自动化回归命令

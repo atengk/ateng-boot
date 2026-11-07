@@ -15,7 +15,7 @@
 | **动态 CORS 跨域** | 动态跨域来源校验与凭证安全反射 | `CorsOriginProvider`, `DefaultCorsOriginProvider`, `DynamicCorsConfigurationSource` | `ateng.boot.web.cors.enabled`, `allowed-origins`, `allow-credentials`, `allow-localhost`, `max-age` | 基于配置属性通配或 SPI 动态扩展校验 Origin，安全反射并支持凭据传输（Cookie），放行本地 localhost 调试 | `DynamicCorsTest.java`, `WebSecurityAndSignControllerTest.java` |
 | **自适应限流防刷** | 三级自适应令牌桶与多维限流 | `@RateLimiter`, `LimitType`, `RateLimiterStore`, `InMemoryRateLimiterStore`, `RedisRateLimiterStore`, `RedissonRateLimiterStore` | `ateng.boot.web.ratelimit.enabled`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@RateLimiter(key, time, count, limitType)`，支持默认/IP/用户/租户（LimitType.TENANT）多维限流防刷与租户流量隔离 | `RateLimiterAspectTest.java`, `AtengRateLimiterAutoConfigurationTest.java`, `InMemoryRateLimiterStoreTest.java`, `WebTrafficGovernanceControllerTest.java`, `WebTenantRateLimiterSampleTest.java` |
 | **自适应防重幂等** | 三级自适应防重幂等引擎 | `@Idempotent`, `IdempotentKeyStore`, `InMemoryIdempotentKeyStore`, `RedisIdempotentKeyStore`, `RedissonIdempotentKeyStore` | `ateng.boot.web.idempotent.enabled`, `key-prefix`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@Idempotent(key, timeout, message, delKeyOnException)`，支持 SpEL 动态提取业务键、自动防抖、业务异常释放 | `IdempotentAspectTest.java`, `AtengIdempotentAutoConfigurationTest.java`, `InMemoryIdempotentKeyStoreTest.java`, `WebTrafficGovernanceControllerTest.java` |
-| **云原生优雅停机** | K8s 就绪探针排空与容器生命周期治理 | `AtengGracefulShutdownHandler`, `PreStopEndpoint`, `PreStopController` | `ateng.boot.web.shutdown.enabled`, `drain-timeout`, `smart-lifecycle-enabled`, `actuator-endpoint-enabled`, `mvc-endpoint-enabled`, `mvc-endpoint-path` | 翻转 `ReadinessState.REFUSING_TRAFFIC`，受管静默排空等待（`drain-timeout: 10s`），`AtomicBoolean` 状态机排空幂等，支持 Actuator `/actuator/pre-stop` 与 MVC `/pre-stop` 双模端点，`SmartLifecycle` 兜底 | `AtengGracefulShutdownHandlerTest.java`, `PreStopEndpointTest.java`, `PreStopControllerTest.java`, `AtengGracefulShutdownAutoConfigurationTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
+| **云原生优雅停机** | K8s 就绪探针排空与容器生命周期治理 | `AtengGracefulShutdownHandler`, `PreStopEndpoint`, `PreStopController` | `ateng.boot.web.shutdown.enabled`, `drain-timeout`, `smart-lifecycle-enabled`, `actuator-endpoint-enabled`, `mvc-endpoint-enabled`, `mvc-endpoint-path` | 翻转 `ReadinessState.REFUSING_TRAFFIC`，受管静默排空等待（`drain-timeout: 10s`），`AtomicBoolean` 状态机排空幂等，支持 Actuator `/actuator/pre-stop` 与 MVC `/pre-stop` 双模端点，`SmartLifecycle` 兜底 | `AtengGracefulShutdownHandlerTest.java`, `PreStopEndpointTest.java`, `PreStopControllerTest.java`, `AtengGracefulShutdownAutoConfigurationTest.java`, `WebCloudLifecycleControllerTest.java` |
 | **慢请求主动告警** | 长耗时慢请求性能主动告警与长连接放行 | `SlowRequestFilter` | `ateng.boot.web.slow-request.enabled`, `threshold`, `exclude-urls` | 请求出口处计算总耗时，超过阈值（强类型 Duration）输出包含 TraceId、URI、Method、耗时与 ClientIp 的 `[SLOW_REQUEST]` 格式化 WARN 日志，自动放行 WebSocket、SSE、文件下载与异步挂起请求，支持 Ant 路径白名单 | `SlowRequestFilterTest.java`, `SlowRequestMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogModel` | `ateng.boot.web.operate-log.enabled` | `@OperateLog(module, type, description, saveParams, saveResult, excludeParams)`，自动关联线程上下文（操作人/租户），出参自动联动 `@FieldSensitive` 视图脱敏，保留原始异常因果链，支持异步存储 SPI 与开箱即用 JSON 保底 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流，单次超限（DataSize）快速失败截断防 OOM，自动跳过表单与文件上传，旧版 `RequestBodyCachingFilter` 保持向后兼容委托 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
@@ -25,12 +25,12 @@
 | **ETag 协商缓存** | 基于浅层哈希的内容协商缓存与 304 节省带宽 | `ShallowEtagHeaderFilter`, `EtagProperties` | `ateng.boot.web.etag.enabled`, `write-weak-etag` | 条件自动装配 Spring 原生 `ShallowEtagHeaderFilter`，自动计算内容摘要并生成 `ETag` 响应头，配合 `If-None-Match` 返回 `304 Not Modified` 节省网络带宽 | `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **XSS 安全清洗与放行** | 双轨无害化清洗与字段级富文本放行 | `XssFilter`, `XssHttpServletRequestWrapper`, `XssCleaner`, `XssMode`, `XssStringDeserializer`, `@XssIgnore` | `ateng.boot.web.xss.enabled`, `mode`, `exclude-urls` | 支持 `XssMode.ESCAPE`（默认 HTML 转义）与 `STRIP`（标签剔除），拦截 Query/Form 表单参数与 JSON 请求体，通过 `@XssIgnore` 声明式在字段或类级别豁免富文本，支持 Ant 白名单路径排除 | `XssCleanerTest.java`, `XssFilterTest.java`, `XssHttpServletRequestWrapperTest.java`, `XssStringDeserializerTest.java`, `WebXssSampleControllerTest.java`, `WebXssStripModeSampleTest.java` |
 | **IP 访问控制防火墙** | 声明式 IP 防火墙与 CIDR 子网判定 | `@IpAccessControl`, `IpAccessMode`, `IpAccessControlFilter`, `IpAccessControlAspect`, `IpAccessControlProperties` | `ateng.boot.web.ip-access-control.enabled`, `http-status-403`, `mode`, `rules`, `filter.enabled`, `filter.mode`, `filter.rules`, `filter.url-patterns`, `filter.exclude-urls` | `@IpAccessControl(mode, rules, message, httpStatus403)`，单 IP 与 IPv4/IPv6 CIDR 子网位运算判定，白名单/黑名单双模，方法级切面与 URL 路径级过滤器双重防线，默认遵循 ADR-0004 返回 HTTP 200 + Result 403 并注入 `X-Denied-Reason: IP_BLOCKED`，支持物理 403 切断 | `IpUtilTest.java`, `IpAccessControlFilterTest.java`, `IpAccessControlAspectTest.java`, `WebIpAccessSampleControllerTest.java`, `WebIpAccessFilterSampleTest.java` |
-| **客户端 IP 提取** | 多级反向代理穿透与 CIDR 判定 | `IpUtil` | - | `IpUtil.getClientIp()`, `getClientIp(request)`, `isInRange(ip, cidrOrIp)`, `isInRange(ip, rules)`，穿透 X-Forwarded-For 等多级代理，纯 JDK 原生无 DNS 依赖 CIDR/单 IP 子网判定 | `IpUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
-| **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader()`, `writeDownload(response, filename, bytes/stream)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
+| **客户端 IP 提取** | 多级反向代理穿透与 CIDR 判定 | `IpUtil` | - | `IpUtil.getClientIp()`, `getClientIp(request)`, `isInRange(ip, cidrOrIp)`, `isInRange(ip, rules)`，穿透 X-Forwarded-For 等多级代理，纯 JDK 原生无 DNS 依赖 CIDR/单 IP 子网判定 | `IpUtilTest.java`, `WebRoutingAndUtilityControllerTest.java` |
+| **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader()`, `writeDownload(response, filename, bytes/stream)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java`, `WebRoutingAndUtilityControllerTest.java` |
 | **声明式 API 多版本分流** | 路径前缀与请求头双模版本控制 | `@ApiVersion`, `ApiVersionCondition`, `ApiVersionRequestMappingHandlerMapping`, `ApiVersionProperties` | `ateng.boot.web.api-version.enabled`, `default-version`, `header`, `path-prefix-enabled` | 支持 Controller 类或方法标注，URL 路径前缀（`/v{version}/`）与请求头（`X-API-Version`）双向自动分流，缺省默认版本回退与方法级覆盖类级 | `ApiVersionConditionTest.java`, `ApiVersionRequestMappingHandlerMappingTest.java`, `WebVersionSampleControllerTest.java` |
 | **枚举字典与反序列化** | 启动期枚举扫描注册表、三阶只读 HTTP 字典端点与 Jackson 强类型双向反序列化器 | `EnumDictionaryRegistry`, `EnumDictionaryController`, `EnumDictionaryProperties`, `EnumNamingStrategy`, `BaseEnumDeserializer`, `AtengEnumDictionaryAutoConfiguration` | `ateng.boot.web.enum.enabled`, `path-prefix`, `naming-strategy`, `scan-packages` | `GET {prefix}` 全量目录索引; `GET {prefix}/{name}` 单枚举查询; `POST/GET {prefix}/batch` 批量聚合; 别名冲突启动期 Fail-Fast; i18n 多语言透明适配 (`enum.{SimpleName}.{NAME}`) 与平滑回退; `BaseEnumDeserializer` 自动拦截数字 code、字符串 code 与常量名精准反序列化为 `IBaseEnum` 实例 | `EnumDictionaryTest.java`, `EnumDictionaryI18nTest.java`, `BaseEnumDeserializerTest.java`, `WebEnumSampleControllerTest.java` |
 | **启动一体化就绪卡片** | 启动完成规整 ASCII 欢迎卡片与在线文档直达 | `ApplicationReadyCardListener`, `ApplicationReadyEvent` | `ateng.boot.web.ready-card.enabled` | 容器启动就绪输出一体化 ASCII 卡片，自适应探测 Local/Network 访问地址、Swagger/SpringDoc 接口文档、运行环境、进程 PID、JVM 堆内存与秒级启动耗时 | `ApplicationReadyCardListenerTest.java`, `WebReadyCardSampleTest.java` |
-| **生产环境高危安全防呆** | 生产环境高危配置主动探测与启动防呆自检 | `ProductionSanityChecker`, `ApplicationReadyEvent` | `ateng.boot.web.sanity-check.enabled` | 生产环境 (`prod`/`production`) 启动就绪安全防呆自检，前置扫描并告警 Swagger/Knife4j 文档公网暴露、HTTP Payload 全量双向采样日志与 H2 控制台暴露，输出高危安全告警日志 | `ProductionSanityCheckerTest.java`, `WebReadyCardSampleTest.java`, `WebProductionSanitySampleTest.java` |
+| **生产环境高危安全防呆** | 生产环境高危配置主动探测与启动防呆自检 | `ProductionSanityChecker`, `ApplicationReadyEvent` | `ateng.boot.web.sanity-check.enabled` | 生产环境 (`prod`/`production`) 启动就绪安全防呆自检，前置扫描并告警 Swagger/Knife4j 文档公网暴露、HTTP Payload 全量双向采样日志与 H2 控制台暴露，输出高危安全告警日志 | `ProductionSanityCheckerTest.java`, `WebReadyCardSampleTest.java`, `WebProductionSanitySampleTest.java`, `WebCloudLifecycleControllerTest.java` |
 
 ---
 
@@ -1340,7 +1340,9 @@ BodySha256` 六段拼装协议，消解排版空格与参数乱序引起的签�
   - `HMAC_SHA256`：基于共享对称密钥的高性能对称加验签；
   - `RSA`：基于 2048 位标准公私钥对的金融级非对称数字签名；
   - `SM2`：100% 依托原生标准库实现的纯原生国密 SM2/SM3 算法，零第三方外部依赖；
-- **原子 Nonce 防重放**：基于自适应幂等存储引擎（Tier 1 Redisson $ightarrow$ Tier 2 Redis $ightarrow$ Tier 3 In-Memory），在 `expire` 时效窗口内严密防范请求重放拦截（返回 `40003` 业务错误）；
+- **原子 Nonce 防重放**：基于自适应幂等存储引擎（Tier 1 Redisson $
+ightarrow$ Tier 2 Redis $
+ightarrow$ Tier 3 In-Memory），在 `expire` 时效窗口内严密防范请求重放拦截（返回 `40003` 业务错误）；
 - **实时签名请求头预生成辅助端点 (`POST /sample/web/security/sign/prepare-headers`)**：为接入方前端或测试客户端动态拼装并计算签名请求头，一键输出开箱可用的 cURL 命令；
 - **密钥提供者扩展点 (`SignKeyProvider` SPI)**：支持实现 `SignKeyProvider` 接口并在 Spring 容器注册 Bean，对接 KMS、HashiCorp Vault 或企业数据库密钥中心。
 
@@ -1743,119 +1745,62 @@ public class DatabaseCorsOriginProvider implements CorsOriginProvider {
 
 ---
 
-## 11. Web 运行时工具集 (`IpUtil` & `ServletUtil`)
+## 7. API 多版本路由分流与 Servlet 运行时工具集
 
-### 真实客户端 IP 提取 (`IpUtil`)
-```java
-// 穿透 Nginx / HAProxy / SLB 等多级反向代理，安全过滤内网伪造 IP 并规整 IPv6 本地环回 (::1 -> 127.0.0.1)
-String clientIp = IpUtil.getClientIp();
-```
+### 7.1 声明式 API 多版本控制与动态分流 (`@ApiVersion`)
 
-### Servlet 上下文门面与安全流式下载 (`ServletUtil`)
-```java
-import io.github.atengk.boot.web.util.ServletUtil;
+#### 场景痛点
+1. **多端平滑灰度演进困难**：随着业务迭代演进，移动端旧 App、三方开放平台旧商户需继续使用老接口（如 V1 标准版），而新前端需接入增强版接口（如 V2 VIP 版）；传统硬编码 Controller URL 前缀导致代码臃肿、版本割裂且无法支持通过 Header 优雅平滑升级；
+2. **缺省版本回退缺失**：当客户端未传递任何版本标识时，系统缺乏统一优雅的缺省默认版本保底回退机制；
+3. **分流维度单一**：需要同时兼顾 URL 路径前缀（如 `/v1/...`, `/v2/...`）与请求头（`X-API-Version: 2`）双向自动路由分流，且要求方法级能够优先覆盖类级别版本。
 
-// 1. 获取当前请求与响应对象
-HttpServletRequest request = ServletUtil.getRequest();
-HttpServletResponse response = ServletUtil.getResponse();
-
-// 2. 快捷获取请求头与 Cookie
-String token = ServletUtil.getHeader("Authorization");
-String cookie = ServletUtil.getCookieValue("SESSION_ID");
-
-// 3. 判断是否为 JSON 或 AJAX 请求
-boolean isJson = ServletUtil.isJsonRequest(request);
-
-// 4. 一键安全流式下载文件（RFC 6266 双重文件名编码，彻底杜绝 Edge/Chrome/Safari 中文乱码）
-byte[] pdfBytes = reportService.exportPdf();
-ServletUtil.writeDownload(response, "2026年半年度财务分析.pdf", pdfBytes);
-
-// 5. 或通过输入流零拷贝写出
-InputStream in = fileService.openStream();
-ServletUtil.writeDownload(response, "数据清单.csv", in);
-
-// 6. 配合 EasyExcel 等报表引擎仅设置安全下载头
-ServletUtil.setDownloadHeader(response, "用户花名册.xlsx");
-```
-
----
-
----
-
-## 14. 云原生就绪探针排空与优雅停机治理 (`AtengGracefulShutdownHandler`)
-
-### 场景痛点
-Kubernetes 在滚动发布或 Pod 缩容销毁时，默认会并行向 Pod 发送 `SIGTERM` 信号并将 Pod 从 Service Endpoints 中摘除。然而，由于 kube-proxy 与 Ingress 网关路由表同步存在客观延迟（通常需 1~5 秒），若容器直接关闭端口停止监听，极易导致上游在途请求遭遇连接重置、HTTP 502 Bad Gateway 或 504 超时。
-
-### 核心机制
-- **就绪探针主动拒绝**：收到下线信号时，自动调用 Spring 核心事件 `AvailabilityChangeEvent.publish(publisher, this, ReadinessState.REFUSING_TRAFFIC)`，使就绪探针即刻失效，驱动网关主动剔除实例；
-- **静默排空与在途保活**：在就绪探针拒绝后，受管安全阻塞等待可配置的静默排空时长（`drain-timeout: 10s`），为在途请求提供充足时间处理完毕；
-- **双模主动端点**：
-  - **Actuator 环境**：自动注册 `@Endpoint(id = "preStop")`，暴露 `/actuator/pre-stop`（支持 GET 与 POST）；
-  - **无 Actuator 环境**：条件降级自动注册轻量级 MVC 控制器 `PreStopController`，暴露 `/pre-stop`（支持 GET 与 POST）；
-- **SIGTERM 兜底保护**：实现 `SmartLifecycle`（优先级 `Integer.MAX_VALUE`，早于 WebServer 停机执行），在未配置 K8s preStop 脚本直接收到终止信号时也能自动触发就绪探针拒绝与静默排空保护；
-- **原子布尔幂等防重入**：内部基于 `AtomicBoolean` 状态机抢占，保证无论是 preStop 钩子还是 SIGTERM 信号触发，多次调用仅执行一次排空等待，绝不叠加延时。
-
-### K8s Deployment 生产配置范式
+#### 专属 YAML 配置片段
 ```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ateng-app
-spec:
-  template:
-    spec:
-      containers:
-        - name: app
-          image: ateng-app:1.0.0
-          lifecycle:
-            preStop:
-              httpGet:
-                path: /actuator/pre-stop  # 无 Actuator 时自动降级改为 /pre-stop
-                port: 8080
-          # 终止宽限期（建议大于 drain-timeout）
-          terminationGracePeriodSeconds: 30
+ateng:
+  boot:
+    web:
+      api-version:
+        # 是否启用声明式 API 多版本控制（默认 true）
+        enabled: true
+        # 缺省兜底版本号（客户端未传版本标识时生效，默认 "1"）
+        default-version: "1"
+        # 自定义版本请求头名称（默认 X-API-Version）
+        header-name: "X-API-Version"
+        # 是否启用 URL 路径前缀模式识别 /v{version}/（默认 true）
+        path-prefix-enabled: true
 ```
 
----
+#### 核心机制与不变量
+- **Spring MVC 原生 `RequestCondition` 优雅扩展**：依托 `ApiVersionCondition` 深度融入 HandlerMapping 路由匹配管道，在保留基础路径的同时，自动扩展注册 `/v{version}/` 路径前缀模式，零额外 Servlet Filter 性能开销；
+- **双向智能分流算法**：
+  1. **URL 路径前缀优先**：若请求 URL 以 `/v{version}/` 开头（如 `/v1/sample/web/routing/member/info`），优先提取路径版本并剥离前缀后进行映射分流；
+  2. **请求头次级分流**：若 URL 无版本前缀，系统自动提取 `X-API-Version` 请求头（如 `X-API-Version: 2`）；
+  3. **缺省版本保底**：若路径与 Header 均未指定版本标识，平滑回退至配置的 `default-version`（默认 `"1"`）；
+- **方法级优先覆盖原则**：方法上显式声明的 `@ApiVersion("2.1")` 绝对优先覆盖 Controller 类级别声明的 `@ApiVersion("2")`。
 
----
-
-## 20. 声明式 API 多版本控制与分流 (`@ApiVersion`)
-
-### 场景痛点
-1. 业务迭代演进时，老版本客户端需继续维护，新版本接口需快速上线；传统硬编码 URL 前缀繁琐且无法支持通过 Header 优雅平滑升级；
-2. 当客户端未传递任何版本时，缺乏统一优雅的缺省默认版本回退机制；
-3. 需要同时兼顾 URL 路径前缀（如 `/v1/user`, `/v2/user`）与请求头（`X-API-Version`）双向自动路由分流。
-
-### 核心机制
-- 依托 Spring MVC 原生扩展点 `RequestCondition` 实现 `ApiVersionCondition`，在保留原有路径的同时，自动扩展注册 `/v{version}` 路径前缀模式；
-- 双向智能识别：优先提取 URL 路径中的版本标识（`/v1/`、`/v2/`），若无则提取请求头（`X-API-Version`），若均未提供则安全回退至配置的 `default-version`（默认 `"1"`）；
-- 方法级优先覆盖：方法上声明的 `@ApiVersion` 优先级高于 Controller 类级别注解。
-
-### 核心代码范式
+#### 1:1 实测业务代码范式
 ```java
-// 1. V1 版本控制器
+// 1. 会员档案 V1 版本控制器（基础标准契约）
 @RestController
-@RequestMapping("/api/sample/version-user")
+@RequestMapping("/sample/web/routing/member")
 @ApiVersion("1")
-public class WebVersionV1SampleController {
+public class WebVersionV1Controller {
 
     @GetMapping("/info")
     public Result<UserVersionInfoVO> getUserInfo() {
         return Result.success(UserVersionInfoVO.builder()
                 .version("1")
                 .name("张三")
-                .contract("legacy")
+                .contract("standard_v1")
                 .build());
     }
 }
 
-// 2. V2 版本控制器（增强契约）与方法级覆盖
+// 2. 会员档案 V2 增强版本控制器（返回 VIP 等级与拓展字段）及 2.1 特性覆盖
 @RestController
-@RequestMapping("/api/sample/version-user")
+@RequestMapping("/sample/web/routing/member")
 @ApiVersion("2")
-public class WebVersionV2SampleController {
+public class WebVersionV2Controller {
 
     @GetMapping("/info")
     public Result<UserVersionInfoVO> getUserInfo() {
@@ -1863,11 +1808,11 @@ public class WebVersionV2SampleController {
                 .version("2")
                 .name("张三")
                 .level("VIP")
-                .contract("enhanced")
+                .contract("enhanced_v2")
                 .build());
     }
 
-    // 方法级显式指定 2.1 版本
+    // 方法级显式指定 2.1 专有特性版本（覆盖类级别 "2"）
     @GetMapping("/feature")
     @ApiVersion("2.1")
     public Result<String> getV21Feature() {
@@ -1876,75 +1821,217 @@ public class WebVersionV2SampleController {
 }
 ```
 
-### 多维调用方式
-- **URL 路径前缀访问**：
-  - `GET /v1/api/sample/version-user/info` -> 路由至 V1
-  - `GET /v2/api/sample/version-user/info` -> 路由至 V2
-  - `GET /v2.1/api/sample/version-user/feature` -> 路由至 2.1 特性端点
-- **请求头分流访问**：
-  - `GET /api/sample/version-user/info` + `X-API-Version: 2` -> 路由至 V2
-  - `GET /api/sample/version-user/info` + `X-API-Version: 1` -> 路由至 V1
-- **缺省回退访问**：
-  - `GET /api/sample/version-user/info`（不带版本标识） -> 自动回退至默认版本 V1
+#### 多维调用与路由分流矩阵
+- **URL 路径前缀分流访问**：
+  - `GET /v1/sample/web/routing/member/info` $ightarrow$ 路由至 `WebVersionV1Controller.getUserInfo()` (返回 V1 基础数据)
+  - `GET /v2/sample/web/routing/member/info` $ightarrow$ 路由至 `WebVersionV2Controller.getUserInfo()` (返回 V2 增强数据)
+  - `GET /v2.1/sample/web/routing/member/feature` $ightarrow$ 路由至 `WebVersionV2Controller.getV21Feature()` (返回 2.1 特性数据)
+- **请求头智能分流访问**：
+  - `GET /sample/web/routing/member/info` 携带请求头 `X-API-Version: 2` $ightarrow$ 路由至 V2
+  - `GET /sample/web/routing/member/info` 携带请求头 `X-API-Version: 1` $ightarrow$ 路由至 V1
+- **缺省版本保底访问**：
+  - `GET /sample/web/routing/member/info`（未携带任何版本标识） $ightarrow$ 自动回退至默认版本 V1
 
 ---
 
-## 22. 一体化启动就绪总览卡片与生产安全防呆
+### 7.2 客户端真实 IP 安全穿透提取 (`IpUtil`)
 
-### 场景痛点
-1. **控制台信息淹没**：Spring Boot 启动后输出海量框架初始化与组件日志，开发者需要向上大幅翻滚才能找到应用实际绑定的端口；多网卡环境下不清楚哪个物理局域网 IP 可供外部设备访问；
-2. **文档寻址困难**：在线接口文档（如 Swagger / Knife4j / SpringDoc）路径多样，各项目配置不同，测试人员或前端同学反复询问文档地址；
-3. **生产高危配置裸奔**：在开发或测试环境开启的 H2 Web Console（`spring.h2.console.enabled=true`）、Druid 默认弱口令监控页、未授权暴露的敏感 Actuator 端点或 Swagger，一旦带上生产环境直接构成重大等保漏洞。
+#### 场景痛点
+生产应用通常部署在 Nginx、HAProxy、SLB、K8s Ingress 等多级反向代理之后；直接调用 `request.getRemoteAddr()` 仅能获取上一跳反向代理服务器的内网 IP；而恶意攻击者极易在请求头中伪造虚假 IP（如通过伪造的 `X-Forwarded-For` 注入假 IP 绕过防火墙或污染风控日志）。
+
+#### 核心机制与不变量
+- **穿透多级反向代理标准头**：依次按安全优先级探测 `X-Forwarded-For`、`X-Real-IP`、`Proxy-Client-IP`、`WL-Proxy-Client-IP`、`HTTP_CLIENT_IP`、`HTTP_X_FORWARDED_FOR`；
+- **首个外网真实 IP 提取**：在多级代理以逗号分隔的 IP 链路中（如 `203.0.113.195, 10.0.0.1, 192.168.1.1`），自动提取首个有效客户端真实 IP 并剔除内网跳数；
+- **本地环回安全标准化**：自动将 IPv6 本地环回地址 `0:0:0:0:0:0:0:1` 与 `::1` 规整化为标准的 `127.0.0.1`；
+- **纯 JDK 原生无 DNS 依赖 CIDR 子网判定**：提供 `IpUtil.isInRange(ip, cidr)` 工具方法，基于位运算高效支持 IPv4 与 IPv6 网段判定，杜绝域名递归解析。
+
+#### 1:1 实测业务代码范式
+```java
+// 1. 穿透多级反向代理提取真实客户端 IP
+@GetMapping("/client-ip")
+public Result<String> getClientIp(HttpServletRequest request) {
+    String clientIp = IpUtil.getClientIp(request);
+    return Result.success(clientIp);
+}
+
+// 2. 纯内存位运算快速校验客户端 IP 是否位于授权 CIDR 网段
+@GetMapping("/ip-check")
+public Result<Map<String, Object>> checkIpCidr(@RequestParam String ip, @RequestParam String cidr) {
+    boolean inRange = IpUtil.isInRange(ip, cidr);
+    return Result.success(Map.of("ip", ip, "cidr", cidr, "inRange", inRange));
+}
+```
 
 ---
 
-### 22.1 一体化启动就绪总览卡片 (`ApplicationReadyCardListener`)
+### 7.3 RFC 6266 双重文件名编码防乱码流式下载 (`ServletUtil`)
 
+#### 场景痛点
+传统文件流式下载在设置 `Content-Disposition` 响应头时，若直接使用中文字符，Chrome、Edge、Firefox 与 Safari 各主流浏览器因编码实现标准不一（URL 编码、ISO-8859-1、UTF-8 原生），极易出现文件扩展名丢失或文件名变成乱码（如 `%E8%B4%A2%E5%8A%A1` 或下划线）；且缺乏便捷的静态上下文门面。
+
+#### 核心机制与不变量
+- **RFC 6266 & RFC 5987 双重文件名编码标准**：自动组装 `filename="fallback.txt"` 与 `filename*=UTF-8''%E4%B8%AD%E6%96%87.txt`，兼顾老旧浏览器回退与现代浏览器无损解析；
+- **零拷贝高性能写出**：支持直接接收字节数组 `byte[]` 或 `InputStream`，在 `try-with-resources` 中确保流句柄安全关闭，防止连接悬挂；
+- **全能 Servlet 静态门面**：提供无状态的 `ServletUtil.getRequest()`、`getResponse()`、`getHeader()`、`getCookieValue()` 及 `isJsonRequest()`，方便非 Controller 边界安全访问当前上下文。
+
+#### 1:1 实测业务代码范式
+```java
+// 财务对账单 RFC 6266 防乱码双重编码安全流式下载
+@GetMapping("/download")
+public void downloadSampleFile(HttpServletResponse response) throws IOException {
+    byte[] data = "ateng-boot 企业级运行时对账单文件下载内容 (RFC 6266 标准编码)".getBytes(StandardCharsets.UTF_8);
+    // 自动设置 Content-Disposition 响应头与 MIME 类型并刷出流
+    ServletUtil.writeDownload(response, "财务对账月度报表-202611.txt", data);
+}
+```
+
+---
+
+## 8. 云原生优雅停机排空与生产启动自检
+
+### 8.1 K8s 就绪探针流量排空与优雅停机治理 (`AtengGracefulShutdownHandler` & `PreStopController`)
+
+#### 场景痛点
+Kubernetes 在滚动发布、金丝雀发布或 Pod 缩容销毁时，默认并行向 Pod 发送 `SIGTERM` 信号并将 Pod 从 Service Endpoints 中摘除。然而，由于 kube-proxy、CoreDNS 与 Ingress 网关路由表同步存在客观延迟（通常需 1~5 秒），若容器在收到信号后立即关闭端口停止监听，极易导致上游在途请求遭遇连接重置、HTTP 502 Bad Gateway 或 504 超时。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      shutdown:
+        # 是否启用云原生就绪探针排空与优雅停机治理（默认 true）
+        enabled: true
+        # 就绪探针主动拒绝后的在途请求排空等待时长（强类型 Duration，默认 10s；本地开发建议设为 0s）
+        drain-timeout: 10s
+        # 是否启用 SmartLifecycle 兜底保护（未配 preStop 收到 SIGTERM 时自动排空，默认 true）
+        smart-lifecycle-enabled: true
+        # 是否启用 Actuator preStop 端点（默认 true，当类路径存在 Actuator 时生效）
+        actuator-endpoint-enabled: true
+        # 是否启用 Spring MVC preStop 降级端点（默认 null 自动判定：无 Actuator 时自动启用）
+        mvc-endpoint-enabled: true
+        # MVC 降级端点访问路径（默认 /pre-stop）
+        mvc-endpoint-path: "/pre-stop"
+```
+
+#### 核心机制与不变量
+- **就绪探针主动拒绝**：收到下线信号时，自动调用 Spring 核心事件 `AvailabilityChangeEvent.publish(publisher, this, ReadinessState.REFUSING_TRAFFIC)`，使就绪探针即刻失效，驱动 K8s 网关与负载均衡主动切断新流量；
+- **静默排空与在途保活**：在就绪探针拒绝后，受管安全阻塞等待可配置的静默排空时长（`drain-timeout: 10s`），在此期间 WebServer 保持端口监听，确保在途已接收的业务请求 100% 正常处理完毕；
+- **Actuator 与轻量 MVC 双模端点自适应**：
+  - **Actuator 环境**：自动注册 `@Endpoint(id = "preStop")`，暴露 `/actuator/pre-stop`（支持 GET 与 POST）；
+  - **无 Actuator 环境**：条件降级自动注册轻量级 MVC 控制器 `PreStopController`，暴露 `/pre-stop`（支持 GET 与 POST）；
+- **`SmartLifecycle` SIGTERM 信号兜底**：实现 `SmartLifecycle`（优先级 `Integer.MAX_VALUE`，早于 WebServer 停机执行），在未配置 K8s preStop 脚本直接收到终止信号时也能自动触发排空保护；
+- **原子布尔幂等防重入**：内部基于 `AtomicBoolean` 状态机抢占，保证无论是 preStop 钩子还是 SIGTERM 信号触发，多次调用仅执行一次排空等待，绝不叠加延迟。
+
+#### K8s Deployment 生产配置范式
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ateng-web-app
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ateng-web-app:1.2.0
+          lifecycle:
+            preStop:
+              httpGet:
+                path: /actuator/pre-stop  # 无 Actuator 环境时平滑配置为 /pre-stop
+                port: 8080
+          # 容器终止宽限期（建议大于 drain-timeout）
+          terminationGracePeriodSeconds: 30
+```
+
+---
+
+### 8.2 一体化启动就绪总览卡片 (`ApplicationReadyCardListener`)
+
+#### 场景痛点
+Spring Boot 启动后输出海量框架初始化与组件日志，开发者需要向上大幅翻滚才能找到应用实际绑定的端口；多网卡环境下不清楚哪个物理局域网 IP 可供外部设备访问；在线接口文档（如 Swagger / Knife4j / SpringDoc）路径多样，各项目配置不同，测试人员或前端同学反复询问文档地址。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      ready-card:
+        # 是否启用启动就绪总览卡片打印（默认 true）
+        enabled: true
+```
+
+#### 核心机制与不变量
 当 Spring Boot 容器完全就绪并触发 `ApplicationReadyEvent` 时，`ApplicationReadyCardListener` 自动计算并输出统一且美观的双线 ASCII 卡片：
 - **自适应地址探测**：
   - **Local URL**：准确获取 `server.port`（支持动态随机端口 `0`）与 `server.servlet.context-path` 拼接完整本地访问 URL；
   - **Network URL**：联动 `ateng-boot-core` 的 `NetUtil.getLocalIpv4()`，智能过滤虚拟与容器网卡，输出真实宿主机内网物理 IPv4 访问 URL；
   - **Doc URL**：自动嗅探 SpringDoc（`/swagger-ui/index.html`）、Knife4j（`/doc.html`）或原生 Swagger 接口文档端点，探测存在即自动展示直达超链接；
-- **环境与运行时快照**：
-  - 激活 Profile 环境、操作系统进程 PID、Java 运行版本（含供应商）、JVM 初始堆与最大堆容量；
-  - 从进程启动到完全就绪的秒级启动耗时（精确至毫秒）。
+- **环境与运行时快照**：展示当前激活 Profile、操作系统进程 PID、Java 运行版本（含供应商）、JVM 初始堆与最大堆容量，以及精确到毫秒的秒级启动耗时。
 
-#### 控制台真实呈现效果（实测逆向提取）
+#### 控制台真实呈现效果
 ```text
-╔══════════════════════════════════════════════════════════════════════════════════╗
-║     ___  _____ _____ _   _  ____                                                 ║
-║    / _ \_   _| ____| \ | |/ ___|   :: Ateng Boot :: (v1.2.0)                     ║
-║   / /_\ \| | |  _| |  \| | |  _                                                  ║
-║  / /   \ \ | | |___| |\  | |_| |                                                 ║
-║ /_/     \_\_| |_____|_| \_|\____|                                                ║
-╠══════════════════════════════════════════════════════════════════════════════════╣
-║ Application   : ateng-boot-sample-web                                            ║
-║ Active Profile: local                                                            ║
-║ Startup Time  : 2.15 s                                                           ║
-║ Local URL     : http://localhost:8080/                                           ║
-║ Network URL   : http://192.168.1.100:8080/                                       ║
-║ Doc URL       : http://192.168.1.100:8080/swagger-ui/index.html                 ║
-╠══════════════════════════════════════════════════════════════════════════════════╣
-║ Process PID   : 12345                                                            ║
-║ OS / Arch     : Windows 11 (amd64)                                               ║
-║ Java Runtime  : 17.0.12 (Eclipse Adoptium)                                       ║
-║ Heap Memory   : 128MB / 4096MB                                                   ║
-╚══════════════════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════════╗
+║     ___  _____ _____ _   _  ____                                           ║
+║    / _ \_   _| ____| \ | |/ ___|   :: Ateng Boot :: (v1.2.0)               ║
+║   / /_\ \| | |  _| |  \| | |  _                                            ║
+║  / /   \ \ | | |___| |\  | |_| |                                           ║
+║ /_/     \_\_| |_____|_| \_|\____|                                          ║
+╠════════════════════════════════════════════════════════════════════════════╣
+║ Application   : ateng-boot-sample-web                                      ║
+║ Active Profile: default                                                    ║
+║ Startup Time  : 1.25 s                                                     ║
+║ Local URL     : http://localhost:8080                                      ║
+║ Network URL   : http://192.168.3.41:8080                                   ║
+║ Doc URL       : http://192.168.3.41:8080/swagger-ui/index.html             ║
+╠════════════════════════════════════════════════════════════════════════════╣
+║ Process PID   : 18276                                                      ║
+║ OS / Arch     : Windows 11 (amd64)                                         ║
+║ Java Runtime  : 21.0.11 (Eclipse Adoptium)                                 ║
+║ Heap Memory   : 267MB / 10176MB                                            ║
+╚════════════════════════════════════════════════════════════════════════════╝
 ```
 
 ---
 
-### 22.2 生产环境高危安全防呆自检 (`ProductionSanityChecker`)
+### 8.3 生产环境高危安全防呆自检 (`ProductionSanityChecker`)
 
+#### 场景痛点
+在开发或测试环境开启的 H2 Web Console（`spring.h2.console.enabled=true`）、Druid 默认弱口令监控页、未授权暴露的敏感 Actuator 端点或 Swagger 在线调试文档，一旦被误带上生产环境直接构成重大等保合规漏洞。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      sanity-check:
+        # 是否启用生产环境安全防呆自检（默认 true）
+        enabled: true
+```
+
+#### 核心防呆策略
 在生产环境（激活 `prod` 或 `production` Profile）下，`ProductionSanityChecker` 在就绪事件中主动执行红线安全自检：
 1. **Swagger / OpenAPI / Knife4j 公网暴露拦截**：检测在线接口文档是否被意外暴露于公网，输出 `[SECURITY-WARN]` 告警提示关闭；
 2. **HTTP Payload 采样日志防呆**：检测 `ateng.boot.web.payload-log.enabled` 是否在生产环境误开启，避免高并发性能损耗与敏感凭据全量落盘；
 3. **H2 控制台泄露拦截**：检测 `spring.h2.console.enabled` 是否在生产环境误开启，防御数据库管理控制台公网暴露风险；
 4. **防御策略**：发现违规配置时，控制台输出醒目的 `[SECURITY-WARN]` 警示日志并打印危险配置项，指引运维与开发快速排查隐患。
 
+#### 1:1 实测业务代码范式
+```java
+// 一体化获取启动就绪总览卡片与生产环境高危配置防呆自检综合报告
+@GetMapping("/ready-and-sanity")
+public Result<Map<String, Object>> getReadyCardAndSanityReport() {
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("readyCard", readyCardListener.buildCard(applicationContext, environment, Duration.ofMillis(1200)));
+    data.put("isProductionProfile", sanityChecker.isProductionProfile(environment));
+    data.put("sanityWarnings", sanityChecker.checkSanity(environment, applicationContext));
+    return Result.success(data);
+}
+```
+
 ---
 
-## 23. 模块配置属性参考 (`application.yml`)
+## 9. 完整 YAML 配置属性清单 (全量速查附录)
 
 ```yaml
 ateng:
