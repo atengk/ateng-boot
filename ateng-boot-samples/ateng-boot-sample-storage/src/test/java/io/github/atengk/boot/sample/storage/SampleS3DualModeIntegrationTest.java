@@ -2,57 +2,53 @@ package io.github.atengk.boot.sample.storage;
 
 import io.github.atengk.boot.sample.storage.config.SampleStorageTestS3Config;
 import io.github.atengk.boot.sample.storage.service.S3StorageScenarioService;
-import io.github.atengk.boot.storage.driver.StorageDriver;
-import io.github.atengk.boot.storage.exception.StorageException;
-import io.github.atengk.boot.storage.exception.StorageResultCode;
-import io.github.atengk.boot.storage.factory.StorageDriverFactory;
-import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
-import io.github.atengk.boot.storage.properties.StorageProperties;
-import io.github.atengk.boot.storage.properties.StorageSourceProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
-import org.springframework.context.annotation.Profile;
 import org.springframework.core.env.Environment;
+import org.springframework.test.web.servlet.MockMvc;
 
 import java.io.ByteArrayInputStream;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * 云原生 S3 样例工程双模自适应端到端集成测试
  * 遵循 ADR-0028 与 ADR-0061 规范，实现单测试套件双模自适应架构：
  * 1. 默认/CI 模式 (!local profile)：自动装配 MockS3StorageDriver 内存桩，100% 离线秒级通过
- * 2. Local 真实模式 (local profile)：Mock 桩自动失效，直连物理 RustFS 真实服务进行全真读写与清理断言
+ * 2. Local 真实模式 (local profile)：Mock 桩自动失效，直连物理 S3/RustFS 真实服务进行全真读写与清理断言
  *
  * @author Ateng
  * @since 2026-10-28
  */
 @Slf4j
 @SpringBootTest
+@AutoConfigureMockMvc
 @Import(SampleStorageTestS3Config.class)
 @DisplayName("ateng-boot-sample-storage S3 样例双模自适应集成测试")
 class SampleS3DualModeIntegrationTest {
+
+    @Autowired
+    private MockMvc mockMvc;
 
     @Autowired
     private S3StorageScenarioService scenarioService;
@@ -84,18 +80,22 @@ class SampleS3DualModeIntegrationTest {
 
     @Test
     @DisplayName("场景 1：未知流长自适应流式分片上传（双阶缓冲防 OOM）")
-    void testUploadAdaptiveStream_ShouldSucceed() {
+    void testUploadAdaptiveStream_ShouldSucceed() throws Exception {
         String path = "test-s3/adaptive-stream-" + System.currentTimeMillis() + ".txt";
         createdPaths.add(path);
 
-        byte[] payload = "Hello Adaptive Streaming Upload with Unknown Size!".getBytes(StandardCharsets.UTF_8);
-        ByteArrayInputStream in = new ByteArrayInputStream(payload);
+        String content = "2026年度经营大报表实时动态生成流数据（未知流长双阶缓冲防OOM）";
+        byte[] payload = content.getBytes(StandardCharsets.UTF_8);
 
-        StorageObject result = scenarioService.uploadAdaptiveStream(path, in, "text/plain");
-
-        assertThat(result).isNotNull();
-        assertThat(result.getPath()).isEqualTo(path);
-        assertThat(result.getSize()).isEqualTo((long) payload.length);
+        mockMvc.perform(post("/sample/storage/transfer/upload-adaptive")
+                        .param("path", path)
+                        .param("content", content)
+                        .param("contentType", "text/plain")
+                        .param("source", "s3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.path").value(path))
+                .andExpect(jsonPath("$.data.size").value(payload.length));
 
         StorageObject details = scenarioService.getObjectDetails(path);
         assertThat(details).isNotNull();
@@ -128,7 +128,7 @@ class SampleS3DualModeIntegrationTest {
 
     @Test
     @DisplayName("场景 3：分段切片字节范围读取 (Byte-Range Read)")
-    void testByteRangePartialDownload_ShouldSucceed() {
+    void testByteRangePartialDownload_ShouldSucceed() throws Exception {
         String path = "test-s3/range-data-" + System.currentTimeMillis() + ".dat";
         createdPaths.add(path);
 
@@ -138,10 +138,15 @@ class SampleS3DualModeIntegrationTest {
 
         scenarioService.uploadAdaptiveStream(path, new ByteArrayInputStream(payload), "text/plain");
 
-        // 截取索引 10 开始，长度为 5 的切片，预期为 "abcde"
-        byte[] slice = scenarioService.downloadByteRange(path, 10, 5);
-
-        assertThat(new String(slice, StandardCharsets.UTF_8)).isEqualTo("abcde");
+        // 通过 HTTP 端点截取索引 10 开始，长度为 5 的切片，预期为 "abcde"
+        mockMvc.perform(get("/sample/storage/transfer/download-range")
+                        .param("path", path)
+                        .param("startOffset", "10")
+                        .param("length", "5")
+                        .param("source", "s3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("abcde"));
     }
 
     @Test
