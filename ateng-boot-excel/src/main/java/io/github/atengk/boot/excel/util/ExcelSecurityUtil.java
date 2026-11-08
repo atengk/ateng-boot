@@ -140,7 +140,7 @@ public final class ExcelSecurityUtil {
 
         Path tempPlainFile = null;
         try {
-            tempPlainFile = Files.createTempFile("ateng-excel-enc-plain-", ".tmp");
+            tempPlainFile = ExcelUtil.createTempFile("ateng-excel-enc-plain-", ".tmp");
             try (OutputStream fos = Files.newOutputStream(tempPlainFile)) {
                 in.transferTo(fos);
             }
@@ -234,7 +234,7 @@ public final class ExcelSecurityUtil {
     public static Path decryptWorkbookToTempFile(InputStream in, String password) {
         Path tempFile = null;
         try {
-            tempFile = Files.createTempFile("ateng-excel-dec-", ".tmp");
+            tempFile = ExcelUtil.createTempFile("ateng-excel-dec-", ".tmp");
             try (OutputStream fos = Files.newOutputStream(tempFile)) {
                 decryptWorkbook(in, fos, password);
                 return tempFile;

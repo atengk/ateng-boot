@@ -1,0 +1,18 @@
+# ===================================================================
+# 本地真实联调配置模板（复制为 application-local.yml 并填写真实凭据）
+# 严禁将包含真实机密与公网 IP 的 application-local.yml 提交至 Git 仓库
+# ===================================================================
+spring:
+  data:
+    redis:
+      host: YOUR_REDIS_HOST
+      port: 6379
+      password: YOUR_REDIS_PASSWORD
+      database: 0
+
+ateng:
+  boot:
+    excel:
+      async-export:
+        redis:
+          enabled: true

@@ -1,8 +1,5 @@
 package io.github.atengk.boot.sample.excel.vo;
 
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
 import org.apache.fesod.sheet.annotation.ExcelProperty;
 
 import java.io.Serializable;
@@ -14,9 +11,6 @@ import java.io.Serializable;
  * @author Ateng
  * @since 2026-10-20
  */
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
 public class I18nUserExcelVO implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -32,4 +26,46 @@ public class I18nUserExcelVO implements Serializable {
 
     @ExcelProperty(value = "{i18n:user.department:默认部门}", index = 3)
     private String department;
+
+    public I18nUserExcelVO() {
+    }
+
+    public I18nUserExcelVO(Long id, String name, String email, String department) {
+        this.id = id;
+        this.name = name;
+        this.email = email;
+        this.department = department;
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public void setEmail(String email) {
+        this.email = email;
+    }
+
+    public String getDepartment() {
+        return department;
+    }
+
+    public void setDepartment(String department) {
+        this.department = department;
+    }
 }

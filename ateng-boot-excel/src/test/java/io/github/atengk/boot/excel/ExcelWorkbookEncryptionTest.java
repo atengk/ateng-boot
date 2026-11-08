@@ -1,9 +1,11 @@
 package io.github.atengk.boot.excel;
 
 import io.github.atengk.boot.excel.builder.ExcelReaderBuilder;
+import io.github.atengk.boot.excel.enums.HeaderValidationStrategy;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
 import io.github.atengk.boot.excel.model.DemoUser;
 import io.github.atengk.boot.excel.model.ExcelMultiSheetResult;
+import io.github.atengk.boot.excel.model.ExcelReadResult;
 import io.github.atengk.boot.excel.util.ExcelSecurityUtil;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import org.apache.poi.poifs.filesystem.FileMagic;
@@ -243,5 +245,45 @@ class ExcelWorkbookEncryptionTest {
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
                 ExcelSecurityUtil.isEncryptedWorkbook(nonMarkable));
         assertTrue(ex.getMessage().contains("mark/reset"), "必须提示流必须支持 mark/reset");
+    }
+
+    @Test
+    @DisplayName("测试 readWithResult 带密码读取加密工作簿：成功解析并返回合法行")
+    void testReadWithResultEncryptedWithPassword() {
+        ExcelReadResult<DemoUser> result = ExcelUtil.readWithResult(
+                new ByteArrayInputStream(encryptedBytes),
+                DemoUser.class,
+                HeaderValidationStrategy.LOOSE,
+                PASSWORD
+        );
+        assertNotNull(result);
+        assertEquals(testData.size(), result.getData().size());
+        assertTrue(result.getErrors().isEmpty());
+    }
+
+    @Test
+    @DisplayName("测试 validateHeader 带密码校验加密工作簿：前置表头契约校验成功")
+    void testValidateHeaderEncryptedWithPassword() {
+        assertDoesNotThrow(() -> ExcelUtil.validateHeader(
+                new ByteArrayInputStream(encryptedBytes),
+                DemoUser.class,
+                HeaderValidationStrategy.LOOSE,
+                PASSWORD
+        ));
+    }
+
+    @Test
+    @DisplayName("测试 readBatchWithValidation 带密码分批读取加密工作簿：分批回调成功消费")
+    void testReadBatchWithValidationEncryptedWithPassword() {
+        List<DemoUser> consumed = new ArrayList<>();
+        ExcelUtil.readBatchWithValidation(
+                new ByteArrayInputStream(encryptedBytes),
+                DemoUser.class,
+                2,
+                PASSWORD,
+                consumed::addAll,
+                null
+        );
+        assertEquals(testData.size(), consumed.size());
     }
 }

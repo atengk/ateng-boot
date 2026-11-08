@@ -225,6 +225,9 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
         taskMap.entrySet().removeIf(entry -> {
             ExportTask task = entry.getValue();
             if (task.getFinishTime() != null && task.getFinishTime().isBefore(threshold)) {
+                if (task.getStorageKey() != null) {
+                    fileStorage.delete(entry.getKey(), task.getStorageKey());
+                }
                 if (task.getFilePath() != null) {
                     try {
                         Files.deleteIfExists(Paths.get(task.getFilePath()));

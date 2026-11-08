@@ -29,7 +29,32 @@ class AtengExcelAutoConfigurationTest {
             ExcelProperties properties = context.getBean(ExcelProperties.class);
             assertThat(properties.isEnabled()).isTrue();
             assertThat(properties.getDefaultBatchSize()).isEqualTo(1000);
+            assertThat(properties.getAsyncExport().getDownloadUrlPrefix()).isEqualTo("/api/excel/async-download?taskId=");
         });
+    }
+
+    @Test
+    @DisplayName("测试自定义 downloadUrlPrefix 与 tempDir 配置生效")
+    void testCustomPropertiesBinding() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.excel.temp-dir=/custom/excel/tmp",
+                "ateng.boot.excel.async-export.download-url-prefix=/custom/download?id="
+        ).run(context -> {
+            ExcelProperties properties = context.getBean(ExcelProperties.class);
+            assertThat(properties.getTempDir()).isEqualTo("/custom/excel/tmp");
+            assertThat(properties.getAsyncExport().getDownloadUrlPrefix()).isEqualTo("/custom/download?id=");
+        });
+    }
+
+    @Test
+    @DisplayName("测试 excelStaticFacadeInitializer 可被自定义 Bean 覆盖")
+    void testExcelStaticFacadeInitializerOverride() {
+        org.springframework.beans.factory.SmartInitializingSingleton customBean = () -> {};
+        contextRunner.withBean("excelStaticFacadeInitializer", org.springframework.beans.factory.SmartInitializingSingleton.class, () -> customBean)
+                .run(context -> {
+                    assertThat(context).hasBean("excelStaticFacadeInitializer");
+                    assertThat(context.getBean("excelStaticFacadeInitializer")).isSameAs(customBean);
+                });
     }
 
     @Test

@@ -12,6 +12,7 @@ import io.github.atengk.boot.excel.util.ExcelUtil;
 import org.apache.fesod.sheet.FesodSheet;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -28,6 +29,10 @@ import org.springframework.data.redis.core.StringRedisTemplate;
  * @since 2026-10-16
  */
 @AutoConfiguration
+@AutoConfigureAfter(name = {
+        "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration",
+        "org.springframework.boot.autoconfigure.context.MessageSourceAutoConfiguration"
+})
 @ConditionalOnClass(FesodSheet.class)
 @ConditionalOnProperty(prefix = "ateng.boot.excel", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(ExcelProperties.class)
@@ -42,6 +47,7 @@ public class AtengExcelAutoConfiguration {
      * @return SmartInitializingSingleton 实例
      */
     @Bean
+    @ConditionalOnMissingBean(name = "excelStaticFacadeInitializer")
     public org.springframework.beans.factory.SmartInitializingSingleton excelStaticFacadeInitializer(
             ExcelProperties properties,
             ObjectProvider<DictProvider> dictProviderProvider) {

@@ -1,7 +1,7 @@
 package io.github.atengk.boot.sample.excel.service;
 
 import io.github.atengk.boot.excel.util.ExcelUtil;
-import io.github.atengk.boot.sample.excel.fixture.SampleDataFixture;
+import io.github.atengk.boot.sample.excel.enums.SampleGenderEnum;
 import io.github.atengk.boot.sample.excel.vo.DepartmentUserMergeVO;
 import io.github.atengk.boot.sample.excel.vo.I18nUserExcelVO;
 import io.github.atengk.boot.sample.excel.vo.UserExcelVO;
@@ -98,7 +98,12 @@ public class DynamicColumnProjectionScenarioService {
      * @return 用户列表
      */
     public List<UserExcelVO> getMockUserList() {
-        return SampleDataFixture.createMockUserList();
+        return List.of(
+                new UserExcelVO(1L, "张三", "13800138000", "zhangsan@example.com", SampleGenderEnum.MALE, "研发部", "0"),
+                new UserExcelVO(2L, "李四", "13900139000", "lisi@example.com", SampleGenderEnum.FEMALE, "研发部", "0"),
+                new UserExcelVO(3L, "王五", "13700137000", "wangwu@example.com", SampleGenderEnum.MALE, "市场部", "1"),
+                new UserExcelVO(4L, "赵六", "13600136000", "zhaoliu@example.com", SampleGenderEnum.FEMALE, "财务部", "0")
+        );
     }
 
     /**
@@ -107,6 +112,12 @@ public class DynamicColumnProjectionScenarioService {
      * @return 部门员工列表
      */
     public List<DepartmentUserMergeVO> getMockDepartmentMergeList() {
-        return SampleDataFixture.createMockDepartmentMergeList();
+        return List.of(
+                new DepartmentUserMergeVO("研发部", "张三", "Java 架构师"),
+                new DepartmentUserMergeVO("研发部", "李雷", "前端工程师"),
+                new DepartmentUserMergeVO("市场部", "韩梅梅", "商务经理"),
+                new DepartmentUserMergeVO("市场部", "王五", "运营专员"),
+                new DepartmentUserMergeVO("财务部", "赵六", "总账会计")
+        );
     }
 }

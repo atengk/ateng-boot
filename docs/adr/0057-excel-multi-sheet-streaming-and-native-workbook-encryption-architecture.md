@@ -80,6 +80,7 @@ flowchart TD
 5. **样例工程业务场景驱动重构**：
    - 将原单体 Controller 解耦为 6 个真实业务场景组件（`*ScenarioService`）并配套 `@SpringBootTest` 全真测试；
    - 保留极简 `ExcelWebContractController` 仅演示标准响应头编码与文件上传。
+   - *(演进修订说明：依据 [ADR-0093](./0093-excel-sample-multi-controller-and-production-hardening-architecture.md) 与《工业级文档与样例工程标准规范》，本条款已被全面演进替代为按能力领域拆分的 6 大 `@RestController` 多控制器分治与纯 `curl` 体验架构)*。
 
 ---
 

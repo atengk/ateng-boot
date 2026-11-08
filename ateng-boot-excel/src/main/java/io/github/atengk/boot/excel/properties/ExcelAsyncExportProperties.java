@@ -25,6 +25,11 @@ public class ExcelAsyncExportProperties {
     private String tempDir;
 
     /**
+     * 异步导出下载链接前缀（默认 "/api/excel/async-download?taskId="）
+     */
+    private String downloadUrlPrefix = "/api/excel/async-download?taskId=";
+
+    /**
      * 临时文件默认保留过期时长（默认 24h，支持 24h、1d 等标准 Duration 格式）
      */
     private Duration retentionPeriod = Duration.ofHours(24);

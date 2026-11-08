@@ -23,6 +23,7 @@ public class LocalFileSystemStorage implements ExportFileStorage {
     private static final Logger log = LoggerFactory.getLogger(LocalFileSystemStorage.class);
 
     private final Path basePath;
+    private final String downloadUrlPrefix;
 
     public LocalFileSystemStorage() {
         this(new ExcelProperties());
@@ -38,6 +39,13 @@ public class LocalFileSystemStorage implements ExportFileStorage {
         } else {
             this.basePath = Paths.get(dir);
         }
+
+        String prefix = (properties != null && properties.getAsyncExport() != null)
+                ? properties.getAsyncExport().getDownloadUrlPrefix()
+                : null;
+        this.downloadUrlPrefix = (prefix != null && !prefix.isBlank())
+                ? prefix
+                : "/api/excel/async-download?taskId=";
 
         try {
             Files.createDirectories(this.basePath);
@@ -70,7 +78,7 @@ public class LocalFileSystemStorage implements ExportFileStorage {
 
     @Override
     public String getDownloadUrl(String taskId, String storageKey) {
-        return "/api/excel/async-download?taskId=" + taskId;
+        return downloadUrlPrefix + taskId;
     }
 
     @Override
