@@ -50,4 +50,14 @@ public interface DynamicDatasourceGuardScenarioService {
      * @return true 表示检测到多数据源
      */
     boolean isMultiDataSourceDetected();
+
+    /**
+     * 按演练模式执行多数据源上下文隔离自检与异常阻断验证（供 Web 控制器调用）
+     *
+     * @param mode             演练模式（clean / active-tx / super-admin / ignore-permission / tenant-check）
+     * @param currentTenantId  当前租户 ID（tenant-check 模式下使用）
+     * @param expectedTenantId 期望租户 ID（tenant-check 模式下使用）
+     * @return 校验通过时的诊断信息字典；阻断时转译抛出携带原始 IllegalStateException 因果链的 BusinessException
+     */
+    java.util.Map<String, Object> verifyGuardByMode(String mode, String currentTenantId, String expectedTenantId);
 }

@@ -50,6 +50,38 @@ public interface MultiTableDynamicQueryScenarioService extends AtengBaseService<
     boolean existsUserDeptByTemplate(DynamicQueryRequest request);
 
     /**
+     * 基于方法引用执行多表联查列表查询（依托 AtengBaseService.listDynamic 与方法引用）
+     *
+     * @param request 动态查询请求
+     * @return 多表联查视图列表
+     */
+    java.util.List<UserDeptDetailVO> listUserDeptByMethodRef(DynamicQueryRequest request);
+
+    /**
+     * 解析 URL Query 冒号语法并执行多表联查分页（按需初始化部门与用户演示数据）
+     *
+     * @param queryString 原始 URL Query 字符串
+     * @return 多表联查分页结果
+     */
+    PageResult<UserDeptDetailVO> pageUserDeptByUrl(String queryString);
+
+    /**
+     * 解析 URL Query 冒号语法并执行多表联查列表查询（按需初始化部门与用户演示数据）
+     *
+     * @param queryString 原始 URL Query 字符串
+     * @return 多表联查视图列表
+     */
+    java.util.List<UserDeptDetailVO> listUserDeptByUrl(String queryString);
+
+    /**
+     * 解析 URL Query 冒号语法并执行多表存在性单页 Page(1, 1, false) 短路判定（按需初始化部门与用户演示数据）
+     *
+     * @param queryString 原始 URL Query 字符串
+     * @return 是否存在匹配记录
+     */
+    boolean existsUserDeptByUrl(String queryString);
+
+    /**
      * 获取受管 DynamicQueryTemplate 实例
      *
      * @return 动态查询模板

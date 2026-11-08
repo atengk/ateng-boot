@@ -49,6 +49,30 @@
 | **查询会员画像详情 (支持种子自愈)** | `MpSecurityAndJsonController` | `GET /sample/mybatis-plus/security-json/member-profile/1` | `curl "http://localhost:8080/sample/mybatis-plus/security-json/member-profile/1"` |
 | **验证 JSON 集合列 NULL 空安全保底** | `MpSecurityAndJsonController` | `POST /sample/mybatis-plus/security-json/member-profile/null-safety` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/security-json/member-profile/null-safety?memberName=空集合保底用户"` |
 
+### 3.3 多租户隔离、AST 数据权限与多源守卫 (`MpTenantAndPermissionController`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **租户订单行级自动隔离查询** | `MpTenantAndPermissionController` | `GET /sample/mybatis-plus/governance/tenant/orders` | `curl "http://localhost:8080/sample/mybatis-plus/governance/tenant/orders?tenantId=tenant_A"` |
+| **多租户隔离与双轨豁免全量对比** | `MpTenantAndPermissionController` | `GET /sample/mybatis-plus/governance/tenant/compare` | `curl "http://localhost:8080/sample/mybatis-plus/governance/tenant/compare?currentTenantId=tenant_A"` |
+| **@DataScope 部门与本人数据权限过滤** | `MpTenantAndPermissionController` | `GET /sample/mybatis-plus/governance/data-permission/users` | `curl "http://localhost:8080/sample/mybatis-plus/governance/data-permission/users?deptIds=10&selfOperator=creator-bob"` |
+| **数据权限过滤、超管短路与闭包豁免对比** | `MpTenantAndPermissionController` | `GET /sample/mybatis-plus/governance/data-permission/compare` | `curl "http://localhost:8080/sample/mybatis-plus/governance/data-permission/compare?deptIds=10"` |
+| **多数据源上下文守卫纯净校验** | `MpTenantAndPermissionController` | `POST /sample/mybatis-plus/governance/datasource-guard/check` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/governance/datasource-guard/check?mode=clean"` |
+| **多数据源活跃事务内假切源阻断验证** | `MpTenantAndPermissionController` | `POST /sample/mybatis-plus/governance/datasource-guard/check` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/governance/datasource-guard/check?mode=active-tx"` |
+
+### 3.4 动态查询安全转译、多表别名自愈与外部动态 SQL (`MpDynamicQueryAndSqlController`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **PageUtil 白名单安全排序与流式 VO 分页** | `MpDynamicQueryAndSqlController` | `GET /sample/mybatis-plus/query/page-safe` | `curl "http://localhost:8080/sample/mybatis-plus/query/page-safe?current=1&size=10&sort=age:desc,internalRemark:asc,phone:desc"` |
+| **URL 冒号高阶语法（含 ~ 与 or_组号:）检索** | `MpDynamicQueryAndSqlController` | `GET /sample/mybatis-plus/query/dynamic/url` | `curl "http://localhost:8080/sample/mybatis-plus/query/dynamic/url?current=1&size=10&age:between=20~32&or_1:name:like=张&or_1:deptId:eq=20&internalRemark:eq=hack&sort=age:asc"` |
+| **@QueryField 业务检索 DTO 驱动分页** | `MpDynamicQueryAndSqlController` | `POST /sample/mybatis-plus/query/dynamic/dto` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/query/dynamic/dto" -H "Content-Type: application/json" -d "{\"current\":1,\"size\":10,\"minAge\":28,\"maxAge\":36,\"deptIds\":[20,30],\"internalRemark\":\"试图探测受限字段\"}"` |
+| **多表 JOIN 方法引用分页与 AST 别名自愈** | `MpDynamicQueryAndSqlController` | `GET /sample/mybatis-plus/query/multi-table/page` | `curl "http://localhost:8080/sample/mybatis-plus/query/multi-table/page?current=1&size=10&deptName:like=研发&age:gte=26&sort=userId:asc"` |
+| **多表 JOIN 方法引用列表查询** | `MpDynamicQueryAndSqlController` | `GET /sample/mybatis-plus/query/multi-table/list` | `curl "http://localhost:8080/sample/mybatis-plus/query/multi-table/list?deptName:eq=运营中心"` |
+| **多表 existsDynamic 单页物理短路判定** | `MpDynamicQueryAndSqlController` | `GET /sample/mybatis-plus/query/multi-table/exists` | `curl "http://localhost:8080/sample/mybatis-plus/query/multi-table/exists?deptName:eq=研发二部&age:gte=30"` |
+| **外部动态 SQL 免 Mapper 分页查询** | `MpDynamicQueryAndSqlController` | `GET /sample/mybatis-plus/query/dynamic-sql/page` | `curl "http://localhost:8080/sample/mybatis-plus/query/dynamic-sql/page?name=张&minAge=20&current=1&size=10"` |
+| **外部动态 SQL 零停机热替换与执行验证** | `MpDynamicQueryAndSqlController` | `POST /sample/mybatis-plus/query/dynamic-sql/hot-swap` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/query/dynamic-sql/hot-swap" -H "Content-Type: application/json" -d "{\"statementId\":\"custom.webHotSwapDemo\",\"sqlScript\":\"SELECT id, name, age FROM sys_user WHERE id = #{id}\",\"description\":\"运行时热替换示例\",\"sampleParams\":{\"id\":1001}}"` |
+
 ---
 
 ## 4. 全真自动化回归命令

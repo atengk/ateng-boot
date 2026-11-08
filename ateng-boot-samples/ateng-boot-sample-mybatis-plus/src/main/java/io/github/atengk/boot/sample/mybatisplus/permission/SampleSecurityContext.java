@@ -12,6 +12,7 @@ import java.util.List;
 public final class SampleSecurityContext {
 
     private static final ThreadLocal<List<Long>> ACCESSIBLE_DEPT_IDS = new ThreadLocal<>();
+    private static final ThreadLocal<String> SELF_OPERATOR = new ThreadLocal<>();
 
     private SampleSecurityContext() {
     }
@@ -24,7 +25,16 @@ public final class SampleSecurityContext {
         return ACCESSIBLE_DEPT_IDS.get();
     }
 
+    public static void setSelfOperator(String operator) {
+        SELF_OPERATOR.set(operator);
+    }
+
+    public static String getSelfOperator() {
+        return SELF_OPERATOR.get();
+    }
+
     public static void clear() {
         ACCESSIBLE_DEPT_IDS.remove();
+        SELF_OPERATOR.remove();
     }
 }

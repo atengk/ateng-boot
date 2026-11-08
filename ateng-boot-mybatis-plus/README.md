@@ -14,16 +14,16 @@
 | **实体体系** | 四要素全审计业务基类 | `BaseEntity` | `ateng.boot.mybatis-plus.audit.*` | 提供 `createBy`、`updateBy`、`createTime`、`updateTime` 四要素全审计 | `BaseEntityTest` / `TenantOrderDomainIntegrationTest` |
 | **实体体系** | 全要素状态业务基类 | `BaseFullEntity` | `ateng.boot.mybatis-plus.optimistic-locker.*` | 在审计基类上追加 `@Version private Integer version` (乐观锁) 与 `@TableLogic @JsonIgnore private Integer deleted` (逻辑删除) | `BaseEntityTest` / `UserDomainIntegrationTest` |
 | **实体体系** | 唯一索引防冲突占位基类 | `BaseDeleteIdEntity` | - | 继承 `BaseEntity`，`deleted` 为 `BIGINT`（`@TableLogic(value = "0", delval = "id")`）并在软删除时动态以自身雪花主键 ID 占位，彻底杜绝业务组合唯一索引逻辑删除冲突 | `BaseDeleteIdEntityTest` / `SoftDeleteUniqueKeyScenarioTest` / `MpLifecycleAndSecurityControllerTest` |
-| **实体体系** | 多租户实体标记接口 | `TenantEntity` | `ateng.boot.mybatis-plus.tenant.*` | 声明 `getTenantId()` / `setTenantId(String)` 租户标识契约 | `TenantOrderDomainIntegrationTest` |
+| **实体体系** | 多租户实体标记接口 | `TenantEntity` | `ateng.boot.mybatis-plus.tenant.*` | 声明 `getTenantId()` / `setTenantId(String)` 租户标识契约 | `TenantOrderDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
 | **自动填充** | 防御性审计元数据填充 | `DefaultMetaObjectHandler` | `ateng.boot.mybatis-plus.audit.enabled`<br>`ateng.boot.mybatis-plus.audit.default-operator` | 插入/更新自动提取操作人并填充审计字段，若已显式赋值则绝不覆盖 | `DefaultMetaObjectHandlerTest` / `UserDomainIntegrationTest` / `MpLifecycleAndSecurityControllerTest` |
 | **审计贯通** | 当前操作人上下文提供者 | `CurrentUserProvider` | - | Core 统一操作人 SPI，驱动 `DefaultMetaObjectHandler` 解析操作人字符串/ID | `DefaultMetaObjectHandlerTest` / `UserDomainIntegrationTest` |
-| **多租户隔离** | AST 动态行级多租户拦截器 | `AtengTenantLineInnerInterceptor` | `ateng.boot.mybatis-plus.tenant.enabled`<br>`ateng.boot.mybatis-plus.tenant.column`<br>`ateng.boot.mybatis-plus.tenant.ignore-tables` | 基于 JSqlParser 在 AST 语法树层级改写 SQL，自动拼接 `tenant_id = ?` 条件，支持多表 JOIN 与子查询精准注入 | `AtengTenantLineInnerInterceptorTest` / `TenantOrderDomainIntegrationTest` |
-| **多租户解析** | 默认租户上下文处理器 | `DefaultTenantLineHandler` | `ateng.boot.mybatis-plus.tenant.column` | 桥接 `TenantContextHolder` 获取租户 ID，支持动态与静态表忽略过滤 | `DefaultTenantLineHandlerTest` / `TenantOrderDomainIntegrationTest` |
-| **多租户绕过** | 声明式租户忽略注解 | `@IgnoreTenant` | - | 声明于 Mapper 方法或类上，自动绕过多租户行级过滤；支持与 `TenantContextHolder.runWithoutTenant(...)` 协同 | `AtengTenantLineInnerInterceptorTest` / `TenantOrderDomainIntegrationTest` |
-| **数据权限** | AST 细粒度数据权限拦截器 | `AtengDataPermissionInnerInterceptor` | `ateng.boot.mybatis-plus.data-permission.enabled` | 基于 JSqlParser 在 AST 层级拦截改写 SQL，无缝拼接数据权限过滤表达式 | `AtengDataPermissionInnerInterceptorTest` / `UserDomainIntegrationTest` |
-| **数据权限** | 动态数据权限处理器 | `DataPermissionHandler` / `DefaultDataPermissionHandler` | - | 数据权限 SPI 与默认处理器，结合上下文提取注入数据过滤 SQL 片段 | `AtengDataPermissionInnerInterceptorTest` / `UserDomainIntegrationTest` |
-| **数据权限** | 声明式数据权限范围注解 | `@DataScope` | - | 细粒度声明式数据权限注解，支持按用户、部门或自定义表达式进行数据范围收敛 | `AtengDataPermissionInnerInterceptorTest` / `UserDomainIntegrationTest` |
-| **数据权限** | 数据权限上下文保持器 | `DataPermissionContextHolder` | - | 线程安全透传数据权限上下文与过滤表达式，支持链式构建与自动现场清理 | `DataPermissionContextHolderTest` / `UserDomainIntegrationTest` |
+| **多租户隔离** | AST 动态行级多租户拦截器 | `AtengTenantLineInnerInterceptor` | `ateng.boot.mybatis-plus.tenant.enabled`<br>`ateng.boot.mybatis-plus.tenant.column`<br>`ateng.boot.mybatis-plus.tenant.ignore-tables` | 基于 JSqlParser 在 AST 语法树层级改写 SQL，自动拼接 `tenant_id = ?` 条件，支持多表 JOIN 与子查询精准注入 | `AtengTenantLineInnerInterceptorTest` / `TenantOrderDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
+| **多租户解析** | 默认租户上下文处理器 | `DefaultTenantLineHandler` | `ateng.boot.mybatis-plus.tenant.column` | 桥接 `TenantContextHolder` 获取租户 ID，支持动态与静态表忽略过滤 | `DefaultTenantLineHandlerTest` / `TenantOrderDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
+| **多租户绕过** | 声明式租户忽略注解 | `@IgnoreTenant` | - | 声明于 Mapper 方法或类上，自动绕过多租户行级过滤；支持与 `TenantContextHolder.runWithoutTenant(...)` 协同 | `AtengTenantLineInnerInterceptorTest` / `TenantOrderDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
+| **数据权限** | AST 细粒度数据权限拦截器 | `AtengDataPermissionInnerInterceptor` | `ateng.boot.mybatis-plus.data-permission.enabled` | 基于 JSqlParser 在 AST 层级拦截改写 SQL，无缝拼接数据权限过滤表达式 | `AtengDataPermissionInnerInterceptorTest` / `UserDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
+| **数据权限** | 动态数据权限处理器 | `DataPermissionHandler` / `DefaultDataPermissionHandler` | - | 数据权限 SPI 与默认处理器，结合上下文提取注入数据过滤 SQL 片段 | `AtengDataPermissionInnerInterceptorTest` / `UserDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
+| **数据权限** | 声明式数据权限范围注解 | `@DataScope` | - | 细粒度声明式数据权限注解，支持按用户、部门或自定义表达式进行数据范围收敛 | `AtengDataPermissionInnerInterceptorTest` / `UserDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
+| **数据权限** | 数据权限上下文保持器 | `DataPermissionContextHolder` | - | 线程安全透传数据权限上下文与过滤表达式，支持链式构建与自动现场清理 | `DataPermissionContextHolderTest` / `UserDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
 | **原生批量操作** | 原生分批操作通用门面 | `BatchUtil` | `ateng.boot.mybatis-plus.batch.default-size` | `insertBatch` / `upsertBatch` / `updateBatch`（含 `*SomeColumn` 别名），内置切片分批（默认 1000）、内存防死锁升序排序与六要素轻量自愈补偿 | `BatchUtilTest` / `BatchUpsertTest` / `BatchUpdateTest` / `TenantOrderDomainIntegrationTest` |
 | **原生批量操作** | 双方言批量 Upsert 注入器 | `UpsertBatchSomeColumn` / `@ConflictKeys` | - | 原生单条多值 Upsert SQL 注入器（MySQL `ON DUPLICATE KEY UPDATE` / PostgreSQL `ON CONFLICT DO UPDATE`），支持 `@ConflictKeys` 复合唯一键 | `BatchUpsertTest` / `TenantOrderDomainIntegrationTest` |
 | **原生批量操作** | 原生单条批量更新注入器 | `UpdateBatchSomeColumn` | - | 原生 ANSI CASE WHEN 多值更新 SQL 注入器，内置 `AntiDeadlockSqlSource` 强制按主键 ID 升序防死锁，动态回退保护未提供字段 | `BatchUpdateTest` / `TenantOrderDomainIntegrationTest` |
@@ -31,16 +31,16 @@
 | **存储加解密** | 字段级透明存储加密注解 | `@FieldEncrypt` | `ateng.boot.mybatis-plus.crypto.secret-key` | 标注于实体属性上，声明该字段由 `EncryptTypeHandler` 执行持久化透明加解密并自动免疫未授权动态排序探测 | `EncryptTypeHandlerTest` / `UserDomainIntegrationTest` / `MpLifecycleAndSecurityControllerTest` |
 | **存储加解密** | 存储透明加解密类型转换器 | `EncryptTypeHandler` | `ateng.boot.mybatis-plus.crypto.secret-key` | 持久化时入库 `v1:` 版本化 AES-GCM 密文，查询出库解密为真实明文，严格坚守“内存真明文”铁律 | `EncryptTypeHandlerTest` / `UserDomainIntegrationTest` / `MpLifecycleAndSecurityControllerTest` |
 | **乐观锁重试** | 乐观锁防冲突重试模板 | `OptimisticLockTemplate` | `ateng.boot.mybatis-plus.optimistic-locker.enabled` | `executeWithRetry(Supplier<Boolean>)` / `executeWithRetry(Supplier<Boolean>, int, Duration)`，高并发更新冲突自动退避重试 | `OptimisticLockTemplateTest` / `TenantOrderDomainIntegrationTest` |
-| **分页契约** | 分页对象流式解耦与安全转译 | `PageUtil` | `ateng.boot.mybatis-plus.pagination.max-limit` | `toPage(PageQuery)` / `toPage(PageQuery, Class<T>)`（安全转译 sorts 并依托实体白名单过滤） / `toPageResult(IPage<T>)` / `toPageResult(IPage<S>, Function<S, T>)`，彻底解耦传输契约与持久实体（Zero-Entity-Leakage） | `PageUtilTest` |
-| **分页拦截** | 原生分页拦截与防刷守护 | `PaginationInnerInterceptor` | `ateng.boot.mybatis-plus.pagination.enabled`<br>`ateng.boot.mybatis-plus.pagination.max-limit`<br>`ateng.boot.mybatis-plus.pagination.overflow`<br>`ateng.boot.mybatis-plus.pagination.db-type` | 原生分页拦截，注入单页最大条数限制（默认 500）与防刷超限防御，自动识别数据库方言 | `AtengMybatisPlusAutoConfigurationTest` |
+| **分页契约** | 分页对象流式解耦与安全转译 | `PageUtil` | `ateng.boot.mybatis-plus.pagination.max-limit` | `toPage(PageQuery)` / `toPage(PageQuery, Class<T>)`（安全转译 sorts 并依托实体白名单过滤） / `toPageResult(IPage<T>)` / `toPageResult(IPage<S>, Function<S, T>)`，彻底解耦传输契约与持久实体（Zero-Entity-Leakage） | `PageUtilTest` / `MpGovernanceAndQueryControllerTest` |
+| **分页拦截** | 原生分页拦截与防刷守护 | `PaginationInnerInterceptor` | `ateng.boot.mybatis-plus.pagination.enabled`<br>`ateng.boot.mybatis-plus.pagination.max-limit`<br>`ateng.boot.mybatis-plus.pagination.overflow`<br>`ateng.boot.mybatis-plus.pagination.db-type` | 原生分页拦截，注入单页最大条数限制（默认 500）与防刷超限防御，自动识别数据库方言 | `AtengMybatisPlusAutoConfigurationTest` / `MpGovernanceAndQueryControllerTest` |
 | **安全阻断** | 防全表更新/删除拦截器 | `BlockAttackInnerInterceptor` | `ateng.boot.mybatis-plus.block-attack.enabled` | 拦截无 `WHERE` 条件的全表更新与删除操作，防止误操作摧毁生产库数据 | `AtengMybatisPlusAutoConfigurationTest` |
 | **性能审计** | 慢 SQL 性能审计拦截器 | `SlowSqlInterceptor` | `ateng.boot.mybatis-plus.slow-sql.enabled`<br>`ateng.boot.mybatis-plus.slow-sql.threshold`<br>`ateng.boot.mybatis-plus.slow-sql.format-sql`<br>`ateng.boot.mybatis-plus.slow-sql.mask-sensitive` | 拦截 `StatementHandler` 执行，基于 `System.nanoTime()` 高精度快速比对放行；超时输出美化 SQL、真实脱敏参数及调用位置；严禁自动 EXPLAIN | `SlowSqlInterceptorTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **告警通知** | 慢 SQL 告警通知 SPI | `SlowSqlAlertProvider` | - | 函数式 SPI 扩展契约，支持下游无缝对接飞书/钉钉群机器人或外部 APM 平台 | `SlowSqlInterceptorTest` / `SlowSqlAlertScenarioTest` |
 | **审计事件** | 慢 SQL 审计事件模型 | `SlowSqlEvent` | - | 继承 Spring 原生 `ApplicationEvent`，发布执行耗时、格式化 SQL、脱敏参数、线程名与代码调用栈位置 | `SlowSqlInterceptorTest` / `SlowSqlAlertScenarioTest` |
 | **发号器** | 分布式雪花算法发号器 | `DefaultIdentifierGenerator` | `ateng.boot.mybatis-plus.snowflake.enabled`<br>`ateng.boot.mybatis-plus.snowflake.worker-id`<br>`ateng.boot.mybatis-plus.snowflake.datacenter-id` | 提供趋势递增的 64 位全局唯一分布式 ID 发号支持 | `AtengMybatisPlusAutoConfigurationTest` / `UserDomainIntegrationTest` |
-| **动态 SQL** | 外部动态 SQL 增强注册中心 | `DynamicSqlRegistry` | `ateng.boot.mybatis-plus.dynamic-sql.enabled`<br>`ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 注册、AST 投影字典解析提取与热加载中心，支持运行时动态注册/移除外部 XML 脚本，联动缓存失效通知 | `DynamicSqlRegistryTest` / `DynamicSqlScenarioTest` |
-| **动态 SQL** | 外部动态 SQL 统一执行门面 | `DynamicSqlExecutor` | `ateng.boot.mybatis-plus.dynamic-sql.auto-script-wrap` | `selectPage` / `selectList` / `selectOne` / `count` / `insert` / `update` / `delete`，原生支持接收 `DynamicQueryRequest` 及业务 DTO，多表 AST 投影自愈与 ADR-0010 强类型 VO 映射 | `DynamicSqlExecutorTest` / `DynamicSqlScenarioTest` |
-| **动态 SQL** | 外部 SQL 资源自动加载器 | `ExternalSqlLoader` / `ResourceExternalSqlLoader` | `ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 资源加载 SPI 与默认实现，启动时自动扫描指定路径并注册至 `DynamicSqlRegistry` | `ResourceExternalSqlLoaderTest` / `DynamicSqlScenarioTest` |
+| **动态 SQL** | 外部动态 SQL 增强注册中心 | `DynamicSqlRegistry` | `ateng.boot.mybatis-plus.dynamic-sql.enabled`<br>`ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 注册、AST 投影字典解析提取与热加载中心，支持运行时动态注册/移除外部 XML 脚本，联动缓存失效通知 | `DynamicSqlRegistryTest` / `DynamicSqlScenarioTest` / `MpGovernanceAndQueryControllerTest` |
+| **动态 SQL** | 外部动态 SQL 统一执行门面 | `DynamicSqlExecutor` | `ateng.boot.mybatis-plus.dynamic-sql.auto-script-wrap` | `selectPage` / `selectList` / `selectOne` / `count` / `insert` / `update` / `delete`，原生支持接收 `DynamicQueryRequest` 及业务 DTO，多表 AST 投影自愈与 ADR-0010 强类型 VO 映射 | `DynamicSqlExecutorTest` / `DynamicSqlScenarioTest` / `MpGovernanceAndQueryControllerTest` |
+| **动态 SQL** | 外部 SQL 资源自动加载器 | `ExternalSqlLoader` / `ResourceExternalSqlLoader` | `ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 资源加载 SPI 与默认实现，启动时自动扫描指定路径并注册至 `DynamicSqlRegistry` | `ResourceExternalSqlLoaderTest` / `DynamicSqlScenarioTest` / `MpGovernanceAndQueryControllerTest` |
 | **流式游标** | 原生游标 SQL 注入器 | `SelectCursor` | - | 自动向 Mapper 注入 `selectCursor` MappedStatement，底层强制设置 `fetchSize = 1000`，杜绝内存溢出 | `AtengSqlInjectorTest` / `TenantOrderDomainIntegrationTest` |
 | **流式游标** | 受管流式游标查询模板 | `StreamingQueryTemplate` | - | `forEach` / `forEachBatch` / `forEachWhile` / `execute`，强制只读事务守护，`try-with-resources` 确定性闭合游标与连接归还，支持 Predicate 提前短路退出与不可变切片防卫 | `StreamingQueryTemplateTest` / `TenantOrderDomainIntegrationTest` |
 | **SQL 日志诊断** | SQL 日志打印与可执行带参诊断拦截器 | `SqlLogInterceptor` | `ateng.boot.mybatis-plus.sql-log.enabled`<br>`ateng.boot.mybatis-plus.sql-log.console-enabled`<br>`ateng.boot.mybatis-plus.sql-log.level`<br>`ateng.boot.mybatis-plus.sql-log.format-sql`<br>`ateng.boot.mybatis-plus.sql-log.mask-sensitive`<br>`ateng.boot.mybatis-plus.sql-log.show-call-location`<br>`ateng.boot.mybatis-plus.sql-log.max-sql-length`<br>`ateng.boot.mybatis-plus.sql-log.exclude-statements`<br>`ateng.boot.mybatis-plus.sql-log.storage.*` | 拦截 `StatementHandler` 物理终态，输出带参完整可执行 SQL、毫秒耗时、行数影响与代码行号看板；驱动结构化 `SqlLogModel` 异步派发至存储 SPI 与 Spring 事件广播，内建批量防刷屏、游标只读防卫与失败现场捕获 | `SqlLogInterceptorTest` / `SqlLogIntegrationTest` |
@@ -51,17 +51,17 @@
 | **SQL 审计防卫** | 声明式 SQL 诊断与审计忽略注解 | `@IgnoreSqlLog` | - | 声明于 Mapper 接口类或特定方法上，指示拦截器对心跳探测或高频内部轮询等特定操作同时跳过控制台诊断与 SPI 存储 | `SqlLogInterceptorTest` |
 | **SQL 日志诊断** | SQL 日志与审计强类型配置模型 | `SqlLogProperties` | `ateng.boot.mybatis-plus.sql-log.*` | 强类型配置模型，提供 `consoleEnabled`、`excludeStatements` 及嵌套 `storage`（`enabled`、`includeSelect`、`async`、`maxSqlLength`）等全套双轨配置 | `SqlLogPropertiesTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **持久层底座** | 拦截器解包与调用栈穿透工具 | `MybatisInterceptorUtil` | - | `realTarget`（JDK 17 原生递归拆解 MyBatis Plugin 物理代理）/ `resolveCallLocation`（穿透持久层框架与切面，定位首个业务代码位置）/ `isFrameworkClass` | `MybatisInterceptorUtilTest` |
-| **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `DynamicDatasourceGuardScenarioTest` |
+| **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `DynamicDatasourceGuardScenarioTest` / `MpGovernanceAndQueryControllerTest` |
 | **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载批量方法与 `Cursor<T> selectCursor(@Param(Constants.WRAPPER) Wrapper<T> queryWrapper)` 原生流式游标查询 | `AtengSqlInjectorTest` / `TenantOrderDomainIntegrationTest` |
-| **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，提供零实体泄露基础 VO 投影（`getById` / `listByIds` / `list` / `getOne`）、批量写入、受管流式查询体系、单表/多表动态查询及存在性判断（`existsDynamic`），以及乐观锁高并发自旋重试（`updateWithOptimisticRetry`），支持严格 `throwEx` 快速失败、分批切片与短路退出 | `AtengBaseServiceBatchTest` / `AtengBaseServiceStreamTest` / `AtengBaseServiceDynamicTest` / `AtengBaseServiceOptimisticLockTest` / `TenantOrderDomainIntegrationTest` |
-| **动态查询** | 通用受管执行模板门面 | `DynamicQueryTemplate` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `selectPage` / `selectList` / `selectOne` / `count` / `exists`，跨单表实体、Mapper XML 语句或外部动态 SQL 提供对称完备的强类型动态查询与单页物理短路直出，内建 AST 别名自愈与自适应条件追加 | `DynamicQueryTemplateTest` / `MultiTableDynamicQueryScenarioTest` |
-| **动态查询** | Service 联表方法引用与短方法名直出 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `pageDynamic` / `listDynamic` / `getOneDynamic` / `countDynamic` / `existsDynamic`，支持基于方法引用（`mapper::method`）或短方法名执行多表联表极速直出与单页 `Page(1, 1, false)` 物理短路判定 | `AtengBaseServiceMultiTableDynamicTest` / `MultiTableDynamicQueryScenarioTest` |
-| **动态查询** | AST 多表别名与物理列投影自愈解析器 | `DynamicSqlProjectionResolver` | - | 基于 JSqlParser 解析 Mapper XML / 外部 SQL 投影字典，纳秒级缓存，运行时无感知将 VO 属性名与多表别名透明映射为底层物理列表达式（如 `deptName` -> `d.name`） | `DynamicSqlProjectionResolverTest` / `MultiTableDynamicQueryScenarioTest` |
-| **动态查询** | 联表方法引用契约与解析辅助 | `DynamicMapperPageMethod`, `DynamicMapperListMethod`, `DynamicLambdaHelper` | - | 原生 `SerializedLambda` 纳秒级提取 Mapper 联表方法名与所属类，函数式强类型接口规范 | `DynamicLambdaHelperTest` / `AtengBaseServiceMultiTableDynamicTest` |
-| **动态查询** | 动态查询安全转译引擎门面 | `DynamicQueryHelper` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `buildWrapper(DynamicQueryRequest, Class<T>)` / `buildWrapper(String, Class<T>)` / `buildWrapper(Map, Class<T>)` / `buildWrapper(Object, Class<T>)`，纳秒级元数据白名单缓存与六重安全防卫编译 | `DynamicQueryHelperTest` / `UserDomainIntegrationTest` |
-| **动态查询** | URL Query 与 Map 高阶语法解析器 | `DynamicQueryParser` | - | `parse(String)` / `parse(Map)` / `parseToWrapper(String, Class<T>)`，支持冒号操作符、波浪线 between 切分与 `or_组号` 作用域分组解析 | `DynamicQueryParserTest` |
-| **动态查询** | 动态查询请求与条件契约 | `DynamicQueryRequest`, `QueryCondition`, `QueryOperator` | - | 13 种受控操作符与流式链式构建，支持 `or(orGroup, condition)` 独立嵌套 OR 逻辑块 | `DynamicQueryHelperTest` / `DynamicQueryParserTest` |
-| **动态查询** | 字段映射与敏感防卫注解 | `@QueryField`, `@DynamicQueryIgnore` | - | `@QueryField(property, operator, ignoreNull)` 声明式 DTO 驱动转译；`@DynamicQueryIgnore` 实体敏感列防越权探测 | `DynamicQueryHelperTest` |
+| **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，提供零实体泄露基础 VO 投影（`getById` / `listByIds` / `list` / `getOne`）、批量写入、受管流式查询体系、单表/多表动态查询及存在性判断（`existsDynamic`），以及乐观锁高并发自旋重试（`updateWithOptimisticRetry`），支持严格 `throwEx` 快速失败、分批切片与短路退出 | `AtengBaseServiceBatchTest` / `AtengBaseServiceStreamTest` / `AtengBaseServiceDynamicTest` / `AtengBaseServiceOptimisticLockTest` / `TenantOrderDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
+| **动态查询** | 通用受管执行模板门面 | `DynamicQueryTemplate` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `selectPage` / `selectList` / `selectOne` / `count` / `exists`，跨单表实体、Mapper XML 语句或外部动态 SQL 提供对称完备的强类型动态查询与单页物理短路直出，内建 AST 别名自愈与自适应条件追加 | `DynamicQueryTemplateTest` / `MultiTableDynamicQueryScenarioTest` / `MpGovernanceAndQueryControllerTest` |
+| **动态查询** | Service 联表方法引用与短方法名直出 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `pageDynamic` / `listDynamic` / `getOneDynamic` / `countDynamic` / `existsDynamic`，支持基于方法引用（`mapper::method`）或短方法名执行多表联表极速直出与单页 `Page(1, 1, false)` 物理短路判定 | `AtengBaseServiceMultiTableDynamicTest` / `MultiTableDynamicQueryScenarioTest` / `MpGovernanceAndQueryControllerTest` |
+| **动态查询** | AST 多表别名与物理列投影自愈解析器 | `DynamicSqlProjectionResolver` | - | 基于 JSqlParser 解析 Mapper XML / 外部 SQL 投影字典，纳秒级缓存，运行时无感知将 VO 属性名与多表别名透明映射为底层物理列表达式（如 `deptName` -> `d.name`） | `DynamicSqlProjectionResolverTest` / `MultiTableDynamicQueryScenarioTest` / `MpGovernanceAndQueryControllerTest` |
+| **动态查询** | 联表方法引用契约与解析辅助 | `DynamicMapperPageMethod`, `DynamicMapperListMethod`, `DynamicLambdaHelper` | - | 原生 `SerializedLambda` 纳秒级提取 Mapper 联表方法名与所属类，函数式强类型接口规范 | `DynamicLambdaHelperTest` / `AtengBaseServiceMultiTableDynamicTest` / `MpGovernanceAndQueryControllerTest` |
+| **动态查询** | 动态查询安全转译引擎门面 | `DynamicQueryHelper` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `buildWrapper(DynamicQueryRequest, Class<T>)` / `buildWrapper(String, Class<T>)` / `buildWrapper(Map, Class<T>)` / `buildWrapper(Object, Class<T>)`，纳秒级元数据白名单缓存与六重安全防卫编译 | `DynamicQueryHelperTest` / `UserDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
+| **动态查询** | URL Query 与 Map 高阶语法解析器 | `DynamicQueryParser` | - | `parse(String)` / `parse(Map)` / `parseToWrapper(String, Class<T>)`，支持冒号操作符、波浪线 between 切分与 `or_组号` 作用域分组解析 | `DynamicQueryParserTest` / `MpGovernanceAndQueryControllerTest` |
+| **动态查询** | 动态查询请求与条件契约 | `DynamicQueryRequest`, `QueryCondition`, `QueryOperator` | - | 13 种受控操作符与流式链式构建，支持 `or(orGroup, condition)` 独立嵌套 OR 逻辑块 | `DynamicQueryHelperTest` / `DynamicQueryParserTest` / `MpGovernanceAndQueryControllerTest` |
+| **动态查询** | 字段映射与敏感防卫注解 | `@QueryField`, `@DynamicQueryIgnore` | - | `@QueryField(property, operator, ignoreNull)` 声明式 DTO 驱动转译；`@DynamicQueryIgnore` 实体敏感列防越权探测 | `DynamicQueryHelperTest` / `MpGovernanceAndQueryControllerTest` |
 | **动态查询** | 动态查询模板自动装配组件 | `AtengMybatisPlusDynamicQueryAutoConfiguration` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | 声明 `@AutoConfigureAfter(MybatisPlusAutoConfiguration.class)` 与 `@ConditionalOnBean(SqlSessionFactory.class)`，保障晚期动态查询模板在 SqlSessionFactory 初始化完成后平滑装配 | `AtengMybatisPlusAutoConfigurationTest` / `MultiTableDynamicQueryScenarioTest` |
 | **变更审计** | 声明式数据变更审计注解 | `@AuditChange` | - | 声明于实体类或 Mapper 接口/方法上，声明开启字段级 Diff 变更追踪与前后快照捕获，支持属性包含与排除 | `DataChangeAuditInterceptorTest` / `TenantOrderDomainIntegrationTest` |
 | **变更审计** | 数据变更 Diff 审计拦截器 | `DataChangeAuditInterceptor` | `ateng.boot.mybatis-plus.audit-change.enabled`<br>`ateng.boot.mybatis-plus.audit-change.max-diff-rows`<br>`ateng.boot.mybatis-plus.audit-change.async`<br>`ateng.boot.mybatis-plus.audit-change.publish-event` | 拦截 MyBatis `Executor.update`，事务提交后（`afterCommit`）异步分发，集成超限熔断降级与缺 Provider 自动休眠 | `DataChangeAuditInterceptorTest` / `AtengMybatisPlusAutoConfigurationTest` / `TenantOrderDomainIntegrationTest` |
@@ -457,67 +457,569 @@ public class MemberProfileEntity extends BaseEntity {
 
 ---
 
-## 5. 基于 JSqlParser AST 的行级多租户安全隔离 (`@IgnoreTenant`)
+## 5. SaaS 行级多租户隔离、AST 细粒度数据权限与多源守卫
 
-### 场景痛点
-SaaS 多租户系统最忌讳数据越权访问。采用 AST 动态改写 SQL，无需开发者手工在每条 SQL 中手写 `AND tenant_id = ?`。
+### 5.1 基于 JSqlParser AST 的行级多租户安全隔离 (`AtengTenantLineInnerInterceptor` & `@IgnoreTenant`)
 
-### 核心机制
-- 无论查询、更新或删除，自动解析 SQL 语法树并在 WHERE 与 JOIN 关联中注入租户条件；
-- 支持字符串租户与纯数字租户自适应推导；
-- 全局表白名单配置（如字典表、系统配置表免隔离）。
+#### 场景痛点
+SaaS 多租户平台最核心的安全红线是租户间数据越权串读与串写。若依赖开发者在每个查询、更新或关联 SQL 中手工拼接 `AND tenant_id = ?`，一旦在复杂业务分支中漏写即构成严重生产安全事故。
 
-### 忽略多租户注解与闭包放行
+`ateng-boot-mybatis-plus` 基于 JSqlParser 在 AST 语法树层级透明改写 SQL，自动桥接 `ateng-boot-core` 的 `TenantContextHolder`，兼顾默认强制行级隔离、全局白名单表放行与受控跨租户汇总豁免。
+
+#### 本特性配置片段 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      tenant:
+        enabled: true             # 是否启用多租户行级隔离拦截器（需显式开启，默认 false）
+        column: tenant_id         # 数据库租户标识物理列名（默认 tenant_id）
+        ignore-tables:            # 全局免租户隔离的公共表白名单（支持精确表名与 * 通配符）
+          - sys_user
+          - sys_dept
+          - sys_product_sku
+          - sys_member_profile
+```
+
+#### 实战代码示例
 ```java
-// 多租户上下文统一来自 ateng-boot-core 底座
-import io.github.atengk.boot.core.context.TenantContextHolder;
-import io.github.atengk.boot.mybatisplus.annotation.IgnoreTenant;
-
-// 1. Mapper 接口方法级显式忽略多租户（如跨租户统计）
-public interface UserMapper extends BaseMapper<UserEntity> {
-    @IgnoreTenant
-    List<UserEntity> selectGlobalUsers();
+// 1. 实体实现 TenantEntity 接口并继承 BaseEntity
+@Data
+@EqualsAndHashCode(callSuper = true)
+@TableName("sys_tenant_order")
+public class TenantOrderEntity extends BaseEntity implements TenantEntity {
+    private String tenantId;
+    private String orderNo;
+    private String title;
+    private String skuCode;
+    private BigDecimal totalAmount;
+    private String status;
 }
 
-// 2. 编程式闭包受控忽略（执行完毕后自动安全恢复）
-TenantContextHolder.runWithoutTenant(() -> {
-    sysDictService.initSystemCache();
-});
+// 2. Mapper 接口支持声明式 @IgnoreTenant 跨租户放行
+@Mapper
+public interface TenantOrderMapper extends AtengBaseMapper<TenantOrderEntity> {
+
+    @IgnoreTenant
+    @Select("SELECT * FROM sys_tenant_order ORDER BY id ASC")
+    List<TenantOrderEntity> selectAllOrdersIgnoreTenant();
+}
+
+// 3. Service 层行级隔离与双轨豁免对比（锚定 Sample: TenantOrderServiceImpl）
+@Service
+public class TenantOrderServiceImpl extends AtengServiceImpl<TenantOrderMapper, TenantOrderEntity>
+        implements TenantOrderService {
+
+    @Override
+    public TenantIsolationCompareVO compareTenantIsolationAndBypass(String currentTenantId) {
+        TenantContextHolder.setTenantId(currentTenantId);
+        try {
+            // 1. 常规查询：AST 自动改写追加 WHERE tenant_id = 'tenant_A'
+            List<TenantOrderEntity> scopedOrders = list();
+
+            // 2. 声明式豁免：通过 Mapper 方法 @IgnoreTenant 查询全平台订单
+            List<TenantOrderEntity> byAnnotation = baseMapper.selectAllOrdersIgnoreTenant();
+
+            // 3. 编程式闭包豁免：通过 TenantContextHolder.runWithoutTenant 临时跳过租户过滤
+            List<TenantOrderEntity> byClosure = TenantContextHolder.runWithoutTenant(() -> list());
+
+            TenantIsolationCompareVO compareVO = new TenantIsolationCompareVO();
+            compareVO.setCurrentTenantId(currentTenantId);
+            compareVO.setTenantScopedCount(scopedOrders.size());
+            compareVO.setIgnoreTenantAnnotationCount(byAnnotation.size());
+            compareVO.setRunWithoutTenantClosureCount(byClosure.size());
+            compareVO.setTenantScopedOrders(scopedOrders.stream().map(TenantOrderVO::fromEntity).toList());
+            compareVO.setGlobalOrders(byAnnotation.stream().map(TenantOrderVO::fromEntity).toList());
+            return compareVO;
+        } finally {
+            // 严守确定性生命周期铁律：必须在 finally 中清理线程上下文
+            TenantContextHolder.clear();
+        }
+    }
+}
 ```
+
+#### 核心机制与生产边界
+- **AST 全语句覆盖与类型自适应**：`AtengTenantLineInnerInterceptor` 自动对 `SELECT`（含 `JOIN` 关联表与子查询）、`INSERT`、`UPDATE`、`DELETE` 注入租户条件；`DefaultTenantLineHandler` 自动识别纯数字租户 ID（转为 `LongValue`）与字符串租户 ID（转为 `StringValue`）；
+- **三级放行体系**：
+  1. **静态表级放行**：通过 `ateng.boot.mybatis-plus.tenant.ignore-tables` 配置公共字典表、系统配置表（支持 `*` 前后缀通配）；
+  2. **声明式方法/类级放行**：在 Mapper 接口或方法上标注 `@IgnoreTenant`，拦截器自动识别并跳过当前语句的租户拼接；
+  3. **编程式可重入闭包放行**：调用 `TenantContextHolder.runWithoutTenant(() -> ...)`，底层维护线程级重入深度计数器（`IGNORE_DEPTH`），支持多层嵌套调用并在 `finally` 中精准恢复原状态；
+- **自定义接管扩展**：若需定制复杂租户值提取或动态表放行规则，只需声明自定义 `TenantLineHandler` Bean（装配类标配 `@ConditionalOnMissingBean(TenantLineHandler.class)`）。
 
 ---
 
-## 6. 基于 JSqlParser AST 的声明式细粒度数据权限 (`@DataScope`)
+### 5.2 基于 JSqlParser AST 的声明式细粒度数据权限 (`AtengDataPermissionInnerInterceptor` & `@DataScope`)
 
-### 场景痛点
-根据当前登录用户的部门权限、本人数据权限等动态过滤 SQL，传统拼接 SQL 极易引发 SQL 注入漏洞。
+#### 场景痛点
+企业级后台管理普遍需要根据当前登录人的组织架构（本部门及子部门 `dept_id IN (...)`）与个人归属（本人创建 `create_by = ?`）动态收敛可见数据范围。传统方案将 SQL 字符串直接拼接到 XML 中，不仅污染业务 SQL，且极易引发 SQL 注入与分页 `COUNT` 语句漏检。
 
-### 核心代码范式
+`ateng-boot-mybatis-plus` 提供声明式 `@DataScope` 注解与基于 JSqlParser AST 的 `AtengDataPermissionInnerInterceptor`，将权限表达式以强类型语法树节点安全挂载至 `WHERE` 子句。
+
+#### 本特性配置片段 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      data-permission:
+        enabled: true             # 是否启用基于 AST 的声明式细粒度数据权限拦截器（默认 false）
+```
+
+#### 实战代码示例
 ```java
-public interface DocumentMapper extends BaseMapper<DocumentEntity> {
+// 1. Mapper 方法声明 @DataScope 约束范围（锚定 Sample: UserMapper）
+@Mapper
+public interface UserMapper extends AtengBaseMapper<UserEntity> {
 
-    // 声明数据权限过滤：自动在 SQL 注入部门列与本人列过滤条件
-    @DataScope(
-        deptColumn = "dept_id",
-        userColumn = "create_by",
-        alias = "d" // 针对多表 JOIN 场景限定目标表别名
-    )
-    List<DocumentVO> queryAccessibleDocs(@Param("ew") Wrapper<DocumentEntity> wrapper);
+    @DataScope(deptColumn = "dept_id", userColumn = "create_by")
+    @Select("SELECT * FROM sys_user ${ew.customSqlSegment}")
+    List<UserEntity> selectAccessibleUsers(@Param(Constants.WRAPPER) Wrapper<UserEntity> queryWrapper);
+}
+
+// 2. 实现 DataPermissionHandler SPI 定制部门与本人组合 AST 表达式（锚定 Sample: SampleDataPermissionHandler）
+@Component
+public class SampleDataPermissionHandler implements DataPermissionHandler {
+
+    @Override
+    public Expression getSqlSegment(Table table, Expression where, String mappedStatementId, DataScope dataScope) {
+        List<Long> deptIds = SampleSecurityContext.getAccessibleDeptIds();
+        String selfOperator = SampleSecurityContext.getSelfOperator();
+        boolean hasDepts = deptIds != null && !deptIds.isEmpty();
+        boolean hasSelf = selfOperator != null && !selfOperator.isBlank()
+                && dataScope.userColumn() != null && !dataScope.userColumn().isBlank();
+        if (!hasDepts && !hasSelf) {
+            return null;
+        }
+        String prefix = (dataScope.alias() != null && !dataScope.alias().isBlank())
+                ? dataScope.alias() + "." : "";
+
+        Expression deptExpression = null;
+        if (hasDepts) {
+            ParenthesedExpressionList<LongValue> list = new ParenthesedExpressionList<>();
+            deptIds.forEach(id -> list.add(new LongValue(id)));
+            InExpression inExpression = new InExpression();
+            inExpression.setLeftExpression(new Column(prefix + dataScope.deptColumn()));
+            inExpression.setRightExpression(list);
+            deptExpression = inExpression;
+        }
+
+        Expression selfExpression = null;
+        if (hasSelf) {
+            EqualsTo equalsTo = new EqualsTo();
+            equalsTo.setLeftExpression(new Column(prefix + dataScope.userColumn()));
+            equalsTo.setRightExpression(new StringValue(selfOperator));
+            selfExpression = equalsTo;
+        }
+
+        if (deptExpression != null && selfExpression != null) {
+            // 组合生成 (dept_id IN (...) OR create_by = '...') 强类型括号表达式
+            return new ParenthesedExpressionList<>(new OrExpression(deptExpression, selfExpression));
+        }
+        return deptExpression != null ? deptExpression : selfExpression;
+    }
+}
+
+// 3. Service 层常规权限过滤、超管短路与编程式豁免对比（锚定 Sample: UserServiceImpl）
+public DataPermissionCompareVO compareDataPermissionAndBypass(List<Long> deptIds, String selfOperator) {
+    SampleSecurityContext.setAccessibleDeptIds(deptIds);
+    SampleSecurityContext.setSelfOperator(selfOperator);
+    try {
+        // 1. 常规 @DataScope AST 权限过滤：自动追加 WHERE (dept_id IN (10) OR create_by = 'creator-bob')
+        List<UserEntity> scoped = baseMapper.selectAccessibleUsers(new QueryWrapper<>());
+
+        // 2. 超级管理员秒级短路放行：直接跳过 AST 语法树解析，返回全量数据
+        List<UserEntity> superAdmin = DataPermissionContextHolder.runAsSuperAdmin(
+                () -> baseMapper.selectAccessibleUsers(new QueryWrapper<>())
+        );
+
+        // 3. 编程式闭包豁免：临时忽略数据权限过滤，退出闭包后自动恢复深度
+        List<UserEntity> withoutPermission = DataPermissionContextHolder.runWithoutPermission(
+                () -> baseMapper.selectAccessibleUsers(new QueryWrapper<>())
+        );
+        // ... 封装返回 DataPermissionCompareVO
+    } finally {
+        SampleSecurityContext.clear();
+    }
 }
 ```
 
-### 超管放行与编程式闭包
-```java
-// 超级管理员身份自动秒级放行，跳过 AST 语法树解析
-DataPermissionContextHolder.runAsSuperAdmin(() -> {
-    documentMapper.selectList(null);
-});
+#### 核心机制与生产边界
+- **超管与忽略状态秒级短路**：`AtengDataPermissionInnerInterceptor` 在进入 AST 解析前优先检查 `DataPermissionContextHolder.isSuperAdmin()` 与 `isIgnore()`；一旦命中立即短路放行，零语法树解析开销；
+- **分页 Count 与动态自适应后缀穿透**：当 MyBatis-Plus 分页插件生成 `_mpCount` 派生语句或动态查询生成 `$dynamicAdaptive` 派生语句时，拦截器自动剥离派生后缀还原原始 Mapper 方法名，确保 `COUNT(*)` 统计与数据列表 100% 遵循完全一致的 `@DataScope` 权限边界；
+- **多表 JOIN 别名精确定位**：在联表查询场景下，通过 `@DataScope(alias = "u", deptColumn = "dept_id")` 指定主表别名，防止多表同名字段引发 `Column 'dept_id' in where clause is ambiguous` 语法错误。
 
-// 临时跳过数据权限限制
-DataPermissionContextHolder.runWithoutPermission(() -> {
-    documentMapper.selectList(null);
-});
+---
+
+### 5.3 多数据源协同诊断探针与上下文守卫 (`DynamicDatasourceGuard`)
+
+#### 场景痛点
+在引入多数据源或读写分离路由的系统中，开发者常遭遇三大隐蔽陷阱：
+1. **活跃事务内假切源串库**：Spring `@Transactional` 开启后已将物理连接绑定至当前线程，此时在事务内部切换数据源会被底层连接无声忽略，导致写操作落入错误数据库；
+2. **上下文残留跨库越权**：跨数据源调用前若未清理 `DataPermissionContextHolder`（如残留 `isSuperAdmin=true`），会导致目标库权限防线被穿透；
+3. **租户上下文错位**：分库租户路由与当前线程 `TenantContextHolder` 租户标识不一致，引发跨租户串库。
+
+`DynamicDatasourceGuard` 提供启动期多源健康诊断探针与运行时 `validateContextIsolated()` 静态守卫断言。
+
+#### 本特性配置片段 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      guard:
+        dynamic-datasource: true  # 是否启用多数据源协同诊断探针（默认 true）
 ```
+
+#### 实战代码示例
+```java
+// 切源边界或跨库服务前执行静态隔离守卫校验（锚定 Sample: DynamicDatasourceGuardScenarioServiceImpl）
+@Service
+@RequiredArgsConstructor
+public class DynamicDatasourceGuardScenarioServiceImpl implements DynamicDatasourceGuardScenarioService {
+
+    private final TransactionTemplate transactionTemplate;
+
+    public String verifyGuardByMode(String mode, String currentTenantId, String expectedTenantId) {
+        try {
+            return switch (mode) {
+                case "clean" -> {
+                    // 1. 纯净上下文：无活跃事务、无权限残留，守卫校验顺利通过
+                    DynamicDatasourceGuard.validateContextIsolated();
+                    yield "CLEAN_CONTEXT_PASSED";
+                }
+                case "active-tx" -> {
+                    // 2. 活跃事务内切源：检测到 TransactionSynchronizationManager.isActualTransactionActive() 为 true，立即阻断
+                    transactionTemplate.execute(status -> {
+                        DynamicDatasourceGuard.validateContextIsolated();
+                        return null;
+                    });
+                    yield "UNEXPECTED";
+                }
+                case "tenant-check" -> {
+                    // 3. 租户上下文一致性强校验：当前租户与目标库期望租户不匹配时立即阻断
+                    TenantContextHolder.setTenantId(currentTenantId);
+                    try {
+                        DynamicDatasourceGuard.validateContextIsolated(expectedTenantId);
+                        yield "TENANT_CHECK_PASSED";
+                    } finally {
+                        TenantContextHolder.clear();
+                    }
+                }
+                default -> throw new BusinessException(CommonResultCode.BAD_REQUEST, "不支持的守卫验证模式: " + mode);
+            };
+        } catch (IllegalStateException e) {
+            // 模块边界捕获底层守卫状态异常并转译为带因果链的受管业务异常
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, e.getMessage(), e);
+        }
+    }
+}
+```
+
+#### 核心机制与生产边界
+- **零臃肿无侵入探针**：依托 Spring 原生 `SmartInitializingSingleton` 与 `TransactionSynchronizationManager`，不强制绑定任何第三方多数据源 SDK；当探测到容器存在多个 `DataSource` 或动态路由数据源时，自动输出多租户白名单、事务切源禁忌与上下文隔离自检指南；
+- **四重状态断言防线**：`DynamicDatasourceGuard.validateContextIsolated(expectedTenantId)` 依次校验：
+  1. 是否被 `markContextTainted(reason)` 显式标记为污染状态；
+  2. 是否处于活跃 Spring 事务（`isActualTransactionActive() == true`）；
+  3. 是否残留未清理的 `DataPermissionContextHolder` 超管或忽略状态；
+  4. 当前线程 `TenantContextHolder.getTenantId()` 是否与期望租户严格匹配。
+
+---
+
+## 6. 动态查询安全转译、外部动态 SQL 引擎与零实体泄露分页
+
+### 6.1 零实体泄露分页契约与基础 VO 投影 (`PageUtil` & `AtengBaseService`)
+
+#### 场景痛点
+直接向前端暴露 ORM 持久层实体（Entity）或直接透传未受控的前端排序字段，极易导致未授权内部字段泄露、全表百万行拉取 OOM 以及利用敏感列排序进行盲注探测。
+
+严格遵循 [ADR-0010](../docs/adr/0010-transport-pagination-contract-decoupling.md) 传输契约解耦规范，`PageUtil` 与 `AtengBaseService` 提供从入参 `PageQuery` 实体白名单安全转译到出参 `PageResult<VO>` 流式映射的全套零实体泄露门面。
+
+#### 本特性配置片段 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      pagination:
+        enabled: true             # 是否启用原生物理分页插件（默认 true）
+        max-limit: 500            # 单页最大允许查询条数软上限，防超大 size 打爆内存（默认 500）
+        overflow: false           # 超出总页数时是否回到第一页（默认 false，返回空列表）
+```
+
+#### 实战代码示例
+```java
+// 1. PageUtil 实体白名单安全排序与流式 VO 转换（锚定 Sample: UserServiceImpl#pageUsersSafely）
+@Override
+public PageResult<UserVO> pageUsersSafely(PageQuery pageQuery) {
+    // 依托 UserEntity 元数据白名单安全转译排序项，自动过滤 @DynamicQueryIgnore、@FieldEncrypt 与不存在字段
+    Page<UserEntity> page = PageUtil.toPage(pageQuery, UserEntity.class);
+    // 执行物理分页并流式映射为纯传输对象 PageResult<UserVO>
+    return PageUtil.toPageResult(page(page), UserVO::fromEntity);
+}
+
+// 2. AtengBaseService 零实体泄露基础查询一步直出 VO
+UserVO userVo = userService.getById(1001L, UserVO.class);
+List<UserVO> userVoList = userService.listByIds(List.of(1001L, 1002L), UserVO.class);
+List<UserVO> deptUsers = userService.list(
+        Wrappers.<UserEntity>lambdaQuery().eq(UserEntity::getDeptId, 10L),
+        UserVO.class
+);
+```
+
+#### 核心机制与生产边界
+- **排序白名单与敏感列免疫**：调用 `PageUtil.toPage(pageQuery, Entity.class)` 时，底层联动 `DynamicQueryHelper` 元数据缓存，仅放行实体真实持久化属性且自动剔除 `@DynamicQueryIgnore`、`@FieldEncrypt` 密文列（密文随机 IV 排序无业务意义且暴露侧信道风险）与逻辑删除列；
+- **空安全保底不变量**：`toPageResult` 与 `AtengBaseService.list*` 在查无数据时始终保底返回 `Collections.emptyList()`，绝不返回 `null`。
+
+---
+
+### 6.2 动态查询安全转译引擎、URL 冒号高阶语法与 `@QueryField` 检索 (`DynamicQueryHelper` & `DynamicQueryParser`)
+
+#### 场景痛点
+管理后台检索往往包含多字段模糊匹配、数值/时间区间筛选、跨字段 `OR` 组合搜索与多列排序。手写冗长的 `if (dto.getXxx() != null) wrapper.eq(...)` 极易遗漏，而直接暴露反射查询又面临越权探测受限内部字段（如内部风控备注、加密手机号）的安全风险。
+
+`DynamicQueryParser` 与 `DynamicQueryHelper` 提供 **URL 冒号高阶语法解析** 与 **`@QueryField` 声明式 DTO 检索**，内置六重安全防卫编译。
+
+#### 本特性配置片段 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      dynamic-query:
+        enabled: true             # 是否启用动态查询安全转译引擎与 DynamicQueryTemplate（默认 true）
+```
+
+#### 实战代码示例
+```java
+// 1. 实体受限字段标注 @DynamicQueryIgnore 防越权探测（锚定 Sample: UserEntity）
+@TableName("sys_user")
+public class UserEntity extends BaseFullEntity {
+    private String name;
+    private Integer age;
+    @FieldEncrypt
+    private String phone;
+
+    /** 内部风控备注：禁止前端通过动态条件过滤或动态排序越权探测 */
+    @DynamicQueryIgnore
+    private String internalRemark;
+}
+
+// 2. 声明式业务检索载荷 UserSearchDTO（锚定 Sample: UserSearchDTO）
+@Data
+@EqualsAndHashCode(callSuper = true)
+public class UserSearchDTO extends PageQuery {
+
+    @QueryField(operator = QueryOperator.LIKE)
+    private String name;
+
+    @QueryField(property = "age", operator = QueryOperator.GE)
+    private Integer minAge;
+
+    @QueryField(property = "age", operator = QueryOperator.LE)
+    private Integer maxAge;
+
+    @QueryField(property = "deptId", operator = QueryOperator.IN)
+    private List<Long> deptIds;
+
+    /** 即便 DTO 暴露了同名字段，因 UserEntity 标注了 @DynamicQueryIgnore，编译时仍被强制拦截忽略 */
+    @QueryField(property = "internalRemark", operator = QueryOperator.EQ)
+    private String internalRemark;
+}
+
+// 3. Controller 与 Service 极简调用（锚定 Sample: MpDynamicQueryAndSqlController & UserServiceImpl）
+@GetMapping("/dynamic/url")
+public Result<PageResult<UserVO>> queryUsersByDynamicUrl(HttpServletRequest request) {
+    // 支持 URL 如：current=1&size=10&age:between=20~32&or_1:name:like=张&or_1:deptId:eq=20&sort=age:asc
+    DynamicQueryRequest queryRequest = DynamicQueryParser.parse(request.getQueryString());
+    return Result.success(userService.pageDynamic(queryRequest, UserVO.class));
+}
+
+@PostMapping("/dynamic/dto")
+public Result<PageResult<UserVO>> queryUsersBySearchDto(@RequestBody UserSearchDTO searchDTO) {
+    return Result.success(userService.pageDynamic(searchDTO, UserVO.class));
+}
+```
+
+#### 核心机制与生产边界
+- **六重安全防卫 (The 6-Layer Security Guard)**：
+  1. **实体元数据白名单**：仅允许目标实体声明的持久化字段，未知属性直接安全忽略并记录告警；
+  2. **敏感黑名单硬阻断**：强制拦截 `@DynamicQueryIgnore` 字段、`@FieldEncrypt` 加密列、内置敏感词（`password`、`secret`、`salt`）及逻辑删除列；
+  3. **受控操作符枚举**：仅开放 `EQ`、`NE`、`GT`、`GE`、`LT`、`LE`、`LIKE`、`LIKE_LEFT`、`LIKE_RIGHT`、`IN`、`NOT_IN`、`BETWEEN`、`IS_NULL`、`IS_NOT_NULL`；
+  4. **标识符正则校验**：属性名必须匹配 `^[a-zA-Z0-9_]+$`，彻底阻断 SQL 注入字符；
+  5. **波浪线 `~` 范围防错切分**：`BETWEEN` 优先按 `~` 切分双边界（如 `2026-01-01 00:00:00~2026-12-31 23:59:59`），消除日期时间内部的空格与冒号歧义；
+  6. **零次生异常保底**：任何非法操作符或畸形参数均由前置卫语句平滑忽略，绝不引发未捕获异常导致 HTTP 500；
+- **作用域 OR 嵌套分组 (`or_组号:`)**：URL 参数携带 `or_1:name:like=张&or_1:deptId:eq=20` 时，同组条件自动聚合为独立嵌套括号块 `AND (name LIKE ? OR dept_id = ?)`，多组之间自然以 `AND` 连接。
+
+---
+
+### 6.3 多表 JOIN 方法引用极速直出、AST 别名自愈与单页物理短路 (`DynamicQueryTemplate` & `existsDynamic`)
+
+#### 场景痛点
+在多表 `LEFT JOIN` 关联查询中，前端传输层往往使用 VO 属性名（如 `deptName`、`userId`）发起筛选或排序，而底层 SQL 分布在 `u.id` 与 `d.dept_name` 等不同表别名下。传统做法要么在业务代码中手写硬编码表别名映射，要么执行全量 `COUNT(*)` 判断存在性导致慢查询。
+
+`DynamicQueryTemplate` 与 `AtengBaseService` 原生支持 **Mapper 方法引用（`mapper::method`）联表直出**、**`DynamicSqlProjectionResolver` AST 投影别名自愈** 以及 **`existsDynamic` 单页 `Page(1, 1, false)` 物理短路判定**。
+
+#### 本特性配置片段 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      dynamic-query:
+        enabled: true             # 自动装配 DynamicQueryTemplate 并注入 AtengServiceImpl
+```
+
+#### 实战代码示例
+```xml
+<!-- 1. UserMapper.xml 编写标准多表 JOIN 查询 -->
+<select id="selectUserDeptPage" resultType="io.github.atengk.boot.sample.mybatisplus.model.UserDeptDetailVO">
+    SELECT
+        u.id AS user_id,
+        u.name AS user_name,
+        u.age,
+        u.dept_id,
+        d.dept_name,
+        d.status AS dept_status,
+        u.create_time
+    FROM sys_user u
+    LEFT JOIN sys_dept d ON u.dept_id = d.id
+    ${ew.customSqlSegment}
+</select>
+```
+
+```java
+// 2. Service 层通过 Mapper 方法引用一行直出（锚定 Sample: MultiTableDynamicQueryScenarioServiceImpl）
+@Service
+public class MultiTableDynamicQueryScenarioServiceImpl extends AtengServiceImpl<UserMapper, UserEntity>
+        implements MultiTableDynamicQueryScenarioService {
+
+    @Override
+    public PageResult<UserDeptDetailVO> pageUserDeptByUrl(String queryString) {
+        // 前端传入：current=1&size=10&deptName:like=研发&age:gte=26&sort=userId:asc
+        // 自动自愈为：WHERE (d.dept_name LIKE '%研发%' AND u.age >= 26) ORDER BY u.id ASC
+        DynamicQueryRequest request = DynamicQueryParser.parse(queryString);
+        return pageDynamic(baseMapper::selectUserDeptPage, request, UserDeptDetailVO.class);
+    }
+
+    @Override
+    public List<UserDeptDetailVO> listUserDeptByUrl(String queryString) {
+        DynamicQueryRequest request = DynamicQueryParser.parse(queryString);
+        return listDynamic(baseMapper::selectUserDeptList, request, UserDeptDetailVO.class);
+    }
+
+    @Override
+    public boolean existsUserDeptByUrl(String queryString) {
+        // 底层自动构造 Page(1, 1, false) 关闭 COUNT 查询并追加物理 LIMIT 1 短路探测
+        DynamicQueryRequest request = DynamicQueryParser.parse(queryString);
+        return existsDynamic(baseMapper::selectUserDeptPage, request);
+    }
+}
+```
+
+#### 核心机制与生产边界
+- **AST 投影字典纳秒级缓存 (`DynamicSqlProjectionResolver`)**：首次执行时通过 JSqlParser 解析 SELECT 投影项（如 `d.dept_name`、`u.id AS user_id`），自动注册驼峰、下划线与小写变体映射并按 `statementId` 永久缓存于 `ConcurrentHashMap`，后续调用零语法解析开销；
+- **纯 POJO 零注解 VO**：`UserDeptDetailVO` 保持 100% 纯净 POJO，无需污染任何 ORM 注解；
+- **单页物理短路 (`existsDynamic`)**：单表调用 `baseMapper.exists` 生成 `SELECT 1 ... LIMIT 1`；多表联查调用 `Page(1, 1, false)` 关闭 `searchCount` 并仅拉取 1 条记录即刻短路返回，彻底杜绝大表联查 `COUNT(*)` 性能雪崩。
+
+---
+
+### 6.4 外部动态 SQL 引擎与运行时零停机热更新 (`DynamicSqlExecutor` & `DynamicSqlRegistry`)
+
+#### 场景痛点
+复杂报表统计、临时运营取数或线上紧急 SQL 调优往往受制于传统 MyBatis XML 编译期静态打包，任何微小的 SQL 调整都迫使应用重新打包发版。
+
+`ateng-boot-mybatis-plus` 原生交付 `DynamicSqlRegistry` 与 `DynamicSqlExecutor`：支持外部 XML 脚本启动扫描、免 Mapper 接口编程式分页/列表/增删改查、运行时零停机原子热替换，以及语法错误内存沙箱预检回滚。
+
+#### 本特性配置片段 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      dynamic-sql:
+        enabled: true                                   # 是否启用外部动态 SQL 引擎（默认 true）
+        locations: classpath*:dynamic-sql/**/*.xml      # 外部动态 SQL 脚本扫描路径（支持多路径逗号分隔）
+        auto-script-wrap: true                          # 是否自动为含动态标签的 SQL 包裹 <script>（默认 true）
+```
+
+#### 实战代码示例
+```xml
+<!-- 1. 外部动态 SQL 脚本：src/main/resources/dynamic-sql/user-dynamic.xml -->
+<?xml version="1.0" encoding="UTF-8"?>
+<dynamic-sql namespace="user">
+    <select id="findUsersDynamic" resultType="java.util.Map" description="动态条件查询系统用户列表">
+        SELECT id, name, age, email, phone, dept_id, create_time, update_time
+        FROM sys_user
+        <where>
+            deleted = 0
+            <if test="name != null and name != ''">
+                AND name LIKE CONCAT('%', #{name}, '%')
+            </if>
+            <if test="minAge != null">
+                AND age &gt;= #{minAge}
+            </if>
+        </where>
+        ORDER BY id ASC
+    </select>
+</dynamic-sql>
+```
+
+```java
+// 2. 免 Mapper 分页查询与运行时零停机热替换（锚定 Sample: DynamicSqlScenarioServiceImpl）
+@Service
+@RequiredArgsConstructor
+public class DynamicSqlScenarioServiceImpl implements DynamicSqlScenarioService {
+
+    private final DynamicSqlExecutor dynamicSqlExecutor;
+    private final DynamicSqlRegistry dynamicSqlRegistry;
+
+    @Override
+    public PageResult<UserDynamicVO> findUsersDynamicPage(String name, Integer minAge, PageQuery pageQuery) {
+        Map<String, Object> params = new HashMap<>(4);
+        params.put("name", name);
+        params.put("minAge", minAge);
+        // 免建 Mapper 接口，直接驱动物理分页并归一化转换至强类型 UserDynamicVO
+        return dynamicSqlExecutor.selectPage("user.findUsersDynamic", params, pageQuery, UserDynamicVO.class);
+    }
+
+    @Override
+    public List<Map<String, Object>> hotSwapAndExecute(DynamicSqlHotSwapDTO dto) {
+        DynamicSqlDefinition definition = DynamicSqlDefinition.builder()
+                .id(dto.getStatementId())
+                .sqlScript(dto.getSqlScript())
+                .commandType(SqlCommandType.SELECT)
+                .description(dto.getDescription())
+                .autoScriptWrap(true)
+                .build();
+        // 沙箱预编译校验：若存在未闭合标签等语法错误则返回 false 并保留旧版本稳定运行
+        boolean success = dynamicSqlRegistry.register(definition);
+        BusinessAssert.isTrue(success, "动态 SQL 语法预编译校验未通过，已被内存沙箱安全拦截并回滚");
+        return dynamicSqlExecutor.selectList(dto.getStatementId(), dto.getSampleParams());
+    }
+}
+```
+
+#### 生产扩展接管：自定义外部 SQL 加载器 (`ExternalSqlLoader`)
+若需在启动或配置刷新时从数据库表、Nacos 或 Apollo 拉取动态 SQL，只需注册自定义 `ExternalSqlLoader` Bean（装配类标配 `@ConditionalOnMissingBean(ExternalSqlLoader.class)`）：
+```java
+@Component
+@RequiredArgsConstructor
+public class DatabaseExternalSqlLoader implements ExternalSqlLoader {
+
+    private final JdbcTemplate jdbcTemplate;
+
+    @Override
+    public List<DynamicSqlDefinition> loadAll() {
+        String sql = "SELECT sql_id, sql_content, command_type FROM sys_dynamic_sql WHERE enabled = 1";
+        return jdbcTemplate.query(sql, (rs, rowNum) -> DynamicSqlDefinition.builder()
+                .id(rs.getString("sql_id"))
+                .sqlScript(rs.getString("sql_content"))
+                .commandType(SqlCommandType.valueOf(rs.getString("command_type")))
+                .autoScriptWrap(true)
+                .build());
+    }
+}
+```
+
+#### 核心机制与生产边界
+- **零缝隙原子热替换 (Zero-Gap Safe Put)**：`DynamicSqlRegistry` 直接操作底层 `Configuration` 的 `mappedStatements` 容器执行原子覆盖，绝不采用“先 `remove` 后 `add`”导致高并发下瞬间报 `Mapped Statements collection does not contain value`；同时自动触发 `DynamicSqlProjectionResolver` 与 `DynamicQueryTemplate` 投影缓存联动失效；
+- **内存沙箱预检与防灾回滚**：每次注册或热更新前，先在隔离构建器中完成 OGNL 与 XML 语法树预编译；若脚本存在未闭合标签或非法语法，立即拦截并返回 `false`，线上已有旧版语句毫发无损；
+- **事务与拦截器链 100% 贯通**：`DynamicSqlExecutor` 底层复用 Spring 受管 `SqlSessionTemplate`，与 `BaseMapper` / `ServiceImpl` 共享同一物理事务连接，且 100% 穿透多租户、数据权限、分页与 SQL 审计拦截器链。
 
 ---
 
@@ -690,190 +1192,6 @@ public class AccountServiceImpl extends AtengServiceImpl<AccountMapper, Account>
 > [!IMPORTANT]
 > **关键架构约束 (非全局事务编排 + 独立单条更新事务)**：
 > `updateWithOptimisticRetry` 方法本身**严禁标注全局 `@Transactional`**。在 MySQL `REPEATABLE READ` 默认隔离级别下，若由外层开启全局事务，事务内多次查询默认使用首个快照视图（MVCC Snapshot Read），导致循环重试中 `getById(id)` 永远读不到其他已提交事务修改的新版本号，陷入死循环冲突；本门面采用无全局事务编排，每次自旋重试独立调用 `getById(id)` 读取最新已提交快照，由单次 `updateById(entity)` 承载独立原子更新，彻底消除旧读陷阱。
-
----
-
-## 11. 持久层与传输契约解耦工具 (`PageUtil`)
-
-### 核心代码范式
-```java
-import io.github.atengk.boot.mybatisplus.util.PageUtil;
-import io.github.atengk.boot.core.model.PageResult;
-
-@Service
-public class UserServiceImpl implements UserService {
-
-    @Override
-    public PageResult<UserVO> queryUserPage(PageQuery pageQuery) {
-        // 1. 将 PageQuery 转换为 MyBatis-Plus Page 对象（默认限制最大不超过 500 条防 OOM）
-        Page<UserEntity> page = PageUtil.toPage(pageQuery);
-
-        // 2. 执行持久层分页查询
-        userMapper.selectPage(page, new LambdaQueryWrapper<UserEntity>().like(UserEntity::getName, "张"));
-
-        // 3. 流式转换为前端契约 PageResult<UserVO>，抹平 ORM 内部属性
-        return PageUtil.toPageResult(page, UserVO::fromEntity);
-    }
-}
-```
-
----
-
-## 12. 外部动态 SQL 引擎与运行时热更新 (`DynamicSqlEngine`)
-
-### 场景痛点
-传统 MyBatis 必须在编译期将 XML 固化打包于应用 JAR 包内部，任何 SQL 调整均需重新编译发版。
-`ateng-boot-mybatis-plus` 提供了开箱即用的外部动态 SQL 引擎：
-1. **全语法动态支持**：原生支持 `<script>`、`<where>`、`<if>`、`<trim>`、`<choose>`、`<foreach>` 等全部 MyBatis 动态标签；
-2. **零停机原子热替换 (Zero-Gap Safe Put)**：基于底层反射原子覆盖，彻底消除 MyBatis 原生 `StrictMap` 冲突，杜绝先删后加带来的毫秒级并发读穿透空洞；
-3. **沙箱语法校验与防灾回滚**：新 SQL 在沙箱隔离预编译，若存在语法错误自动拦截并阻断更新，保留旧版稳定运行；
-4. **拦截器链 100% 透明穿透**：外部动态注入的语句自动享有行级多租户隔离、细粒度数据权限改写、防全表误操作阻断与敏感字段透明加解密；
-5. **双模调用生态**：既支持与已有 Java Mapper 接口无缝透明绑定，又提供全功能编程式执行器 `DynamicSqlExecutor`（原生融入 ADR-0010 分页契约）；
-6. **事务与会话完全统一**：底层统一桥接 Spring 受管的 `SqlSessionTemplate`，与 MyBatis-Plus 的 `ServiceImpl` / `BaseMapper` 100% 共享相同事务上下文与数据库连接。
-
-### 1. 外部 XML 脚本编写示例
-在 `src/main/resources/dynamic-sql/user-dynamic.xml` 中定义外部 SQL：
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<dynamic-sql>
-    <select id="user.findActiveUsers" resultType="java.util.Map" description="动态查询活跃用户列表">
-        SELECT id, name, email, status
-        FROM sys_user
-        <where>
-            <if test="status != null">
-                AND status = #{status}
-            </if>
-            <if test="keyword != null and keyword != ''">
-                AND name LIKE CONCAT('%', #{keyword}, '%')
-            </if>
-        </where>
-        ORDER BY id DESC
-    </select>
-</dynamic-sql>
-```
-
-### 2. 编程式全功能调用示例 (`DynamicSqlExecutor`)
-```java
-@Service
-public class DynamicReportService {
-
-    @Autowired
-    private DynamicSqlExecutor dynamicSqlExecutor;
-
-    public void executeReports() {
-        // 1. 结构化动态条件分页查询（原生融合 DynamicQueryRequest，AST 别名自愈与强类型 VO 映射）
-        DynamicQueryRequest request = new DynamicQueryRequest();
-        request.setCurrent(1L);
-        request.setSize(10L);
-        request.addCondition(QueryCondition.like("userName", "Ateng"));
-        request.addCondition(QueryCondition.ge("age", 20));
-        request.addSort(SortItem.desc("age"));
-
-        PageResult<UserDeptVO> dynamicPage = dynamicSqlExecutor.selectPage(
-                "exec.userWithDept",
-                request,
-                UserDeptVO.class
-        );
-
-        // 2. 业务查询 DTO 驱动分页查询（支持 @QueryField 或继承 PageQuery）
-        UserQueryDTO dto = new UserQueryDTO();
-        dto.setCurrent(1L);
-        dto.setSize(10L);
-        dto.setUserName("Ateng");
-        dto.setDeptName("研发部");
-
-        PageResult<UserDeptVO> dtoPage = dynamicSqlExecutor.selectPage(
-                "exec.userWithDept",
-                dto,
-                UserDeptVO.class
-        );
-
-        // 3. 动态列表与记录数统计
-        List<UserDeptVO> list = dynamicSqlExecutor.selectList("exec.userWithDept", request, UserDeptVO.class);
-        long totalCount = dynamicSqlExecutor.count("exec.userWithDept", request);
-
-        // 4. 深度融合 ADR-0010 传统入参分页：物理方言分页并流式转换为前端标准 PageResult<VO>
-        PageQuery query = new PageQuery(1L, 10L);
-        PageResult<UserVO> pageResult = dynamicSqlExecutor.selectPage(
-                "user.findActiveUsers",
-                Map.of("status", 1),
-                query,
-                UserVO.class
-        );
-
-        // 5. 动态 INSERT / UPDATE / DELETE 编程式执行
-        int affected = dynamicSqlExecutor.update(
-                "user.updateDynamicStatus",
-                Map.of("id", 1001L, "status", 2)
-        );
-    }
-}
-```
-
-### 3. 运行时零缝隙原子热更新与 AST 投影自愈 (`DynamicSqlRegistry`)
-```java
-@Component
-public class SqlHotReloadManager {
-
-    @Autowired
-    private DynamicSqlRegistry dynamicSqlRegistry;
-
-    public void updateSqlRuntime(String sqlId, String newXmlScript) {
-        DynamicSqlDefinition definition = DynamicSqlDefinition.builder()
-                .id(sqlId)
-                .sqlScript(newXmlScript)
-                .commandType(SqlCommandType.SELECT)
-                .resultType(UserVO.class)
-                .autoScriptWrap(true) // 自动容错包裹 <script>
-                .build();
-
-        // 1. 预编译语法校验与 AST 投影字典解析：自动从 SQL 中提取别名字典挂载至 definition.getProjections()
-        // 2. 原子覆盖：语法错误时返回 false 并自动保留旧版 SQL，成功则瞬间无感生效
-        // 3. 缓存多级协同失效：自动联动清空 DynamicSqlProjectionResolver 与 DynamicQueryTemplate 本地缓存
-        boolean success = dynamicSqlRegistry.register(definition);
-        if (!success) {
-            throw new BusinessException("SQL 语法校验失败，热更新已自动回滚");
-        }
-    }
-}
-```
-
-### 4. 接入自定义外部 SQL 加载器 SPI (`ExternalSqlLoader`)
-若需从数据库表、Nacos 配置中心、Redis 或远程 HTTP 端点动态拉取 SQL 定义，只需实现 `ExternalSqlLoader` 并注册为 Spring Bean，框架自动装配的 `@ConditionalOnMissingBean` 会无感优先采用业务自定义实现：
-
-```java
-@Component
-public class DatabaseExternalSqlLoader implements ExternalSqlLoader {
-
-    @Autowired
-    private JdbcTemplate jdbcTemplate;
-
-    @Override
-    public List<DynamicSqlDefinition> loadAll() {
-        // 从自定义配置表读取动态 SQL 元数据
-        String sql = "SELECT sql_id, sql_content, command_type FROM sys_dynamic_sql WHERE enabled = 1";
-        return jdbcTemplate.query(sql, (rs, rowNum) -> DynamicSqlDefinition.builder()
-                .id(rs.getString("sql_id"))
-                .sqlScript(rs.getString("sql_content"))
-                .commandType(SqlCommandType.valueOf(rs.getString("command_type")))
-                .autoScriptWrap(true)
-                .build());
-    }
-}
-```
-
-### 5. 事务与 SqlSession 会话一致性机制
-- **共享同一事务会话**：`DynamicSqlExecutor` 底层使用的是 Spring 容器受管的 `SqlSessionTemplate`。当业务方法标注 `@Transactional` 时，MyBatis-Plus 的 `ServiceImpl` / `BaseMapper` 与 `DynamicSqlExecutor` 自动绑定到同一个底层数据库事务与连接；
-- **读写立即可见**：在同一个 `@Transactional` 方法内，使用 Service 更新实体后紧接着调用 `DynamicSqlExecutor` 查询，可 100% 读到未提交事务内的最新变更；
-- **异常原子回滚**：动态 SQL 执行的任何更新、插入或删除操作，均严格遵循 Spring 事务边界，抛出异常时与业务数据一同原子回滚。
-
-### 6. 真实控制台输出与执行契约
-```text
-10:47:24.730 [main] INFO  i.g.a.b.m.d.DynamicSqlRegistry - 外部动态 SQL [user.findActiveUsers] 成功注册/热更新至持久层容器
-==>  Preparing: SELECT id, name, email, status FROM sys_user WHERE (tenant_id = ?) AND (status = ?) AND (name LIKE CONCAT('%', ?, '%')) ORDER BY id DESC LIMIT ?
-==> Parameters: 100(Long), 1(Integer), Ateng(String), 10(Integer)
-<==      Total: 1
-```
 
 ---
 
@@ -1149,330 +1467,6 @@ public class CustomStreamingConfig {
    `streamBatch` / `forEachBatch` 传出的每批 `List<T>` 均经由 `Collections.unmodifiableList` 封装，防止下游误操作对其执行 `add` / `remove` 导致数据脏读，并在每批消费完毕后立即解除引用协助 JVM 极速 GC。
 6. **未装配快速失败防卫**：
    若业务环境中未注入 `StreamingQueryTemplate`（例如未启用 Spring 事务管理器或配置排除了装配），调用 `AtengBaseService` 流式方法时立即抛出语义清晰的 `IllegalStateException`，Fail-Fast 阻断潜在运行期风险。
-
----
-
-## 15. 多数据源协同诊断探针与上下文守卫 (`DynamicDatasourceGuard`)
-
-### 1. 痛点场景与最小起步 (Happy Path & Out-of-the-Box)
-
-在引入第三方动态切源框架（如 `dynamic-datasource-spring-boot-starter` 或自定义 `AbstractRoutingDataSource`）的场景下，业务系统常面临以下致命痛点：
-1. **活跃事务假切源串库**：Spring 声明式事务在开启后会固定绑定物理连接，若在 `@Transactional` 事务内部切换数据源，切源会被底层物理连接无声覆盖导致更新操作写错数据源；
-2. **多租户越权/报错**：多租户拦截器默认改写所有数据源 SQL，导致公共库或报表库被强行拼接 `tenant_id = ?` 报错；
-3. **数据权限跨库穿透**：上一数据源未及时清理的超管状态（`isSuperAdmin=true`）在切换到新库后引发越权穿透。
-
-`ateng-boot-mybatis-plus` 原生交付 `DynamicDatasourceGuard`：
-- **启动期无感健康诊断探针**：基于 Spring 原生 `SmartInitializingSingleton` 自动感知多数据源环境，输出持久层协同自检建议；
-- **编程式上下文隔离断言**：提供 `validateContextIsolated()` 静态断言门面，供切源切面或业务边界进行 Fail-Fast 快速防卫。
-
-#### 核心配置 (`application.yml`)
-```yaml
-ateng:
-  boot:
-    mybatis-plus:
-      guard:
-        dynamic-datasource: true   # 是否启用多数据源协同诊断探针，默认 true
-```
-
-#### 启动期健康诊断日志输出示例
-当检测到容器中存在多个 `DataSource` 或动态路由数据源时，自动在控制台打印标准诊断排查建议：
-
-```text
-23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - ====== [ateng-boot-mybatis-plus 多数据源协同诊断探针] ======
-23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - 环境特征: 检测到 Spring 容器中注册了 2 个 DataSource Bean: [masterDataSource, slaveDataSource]
-23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - 协同自检建议:
-23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - 1. [行级多租户] 若启用多租户拦截器，请核查非业务库（如公共字典库、定时任务库、报表从库）是否已通过 ignore-tables 或 @IgnoreTenant 声明放行；
-23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - 2. [事务切源禁忌] Spring 声明式事务在开启后会固定绑定物理连接，严禁在 @Transactional 事务方法内部执行切源操作，否则切源将静默失效；
-23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - 3. [上下文隔离] 跨数据源访问前，建议调用 DynamicDatasourceGuard.validateContextIsolated() 校验当前线程事务与数据权限上下文纯净性。
-23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - ==============================================================
-```
-
----
-
-### 2. 生产扩展与接管 (Customization & Extensibility)
-
-#### 方案一：在切源切面或业务边界主动调用静态断言
-在自定义切源切面（如处理 `@DS` 注解的前置通知）或跨库 RPC 边界中，直接调用断言防卫：
-
-```java
-@Aspect
-@Component
-public class DynamicDataSourceAspect {
-
-    @Before("@annotation(ds)")
-    public void beforeSwitchDataSource(JoinPoint point, DS ds) {
-        // 1. 切换数据源前，校验当前线程是否处于隔离纯净状态
-        DynamicDatasourceGuard.validateContextIsolated();
-
-        // 2. 若需严格匹配当前租户与期望租户，可传入期望租户 ID 进行强校验
-        // DynamicDatasourceGuard.validateContextIsolated(expectedTenantId);
-
-        // 3. 执行数据源切换上下文绑定...
-    }
-}
-```
-
-#### 方案二：完全接管 `DynamicDatasourceGuard` Bean
-装配类标配 `@ConditionalOnMissingBean(DynamicDatasourceGuard.class)`，下游若有特殊多数据源探针逻辑，可自由声明自定义 Bean 实现 100% 接管覆盖。
-
----
-
-### 3. 核心生产边界与非功能语义 (Production Boundary & Invariants)
-
-1. **零臃肿与不重造轮子**：
-   本组件恪守纯原生与底座优先原则，绝不引入或重造多数据源路由轮子；纯粹依托 Spring 原生 `SmartInitializingSingleton` 与 `TransactionSynchronizationManager`，针对持久层在多源环境下的痛点实施外围防卫与诊断。
-2. **活跃事务假切源主动阻断**：
-   当检测到 `TransactionSynchronizationManager.isActualTransactionActive() == true` 时，`validateContextIsolated()` 立即抛出 `IllegalStateException`，杜绝调用方在事务内无意识切源导致假切源和串库更新。
-3. **数据权限未闭合残留防卫**：
-   若当前线程残留有 `DataPermissionContextHolder.isSuperAdmin() == true` 或 `isIgnore() == true`（通常是前置任务异常且未在 `finally` 块清理导致），在跨数据源操作时立即触发阻断，防御越权风险。
-4. **显式污染标记与安全恢复**：
-   支持通过 `DynamicDatasourceGuard.markContextTainted(reason)` 与 `clearTaintedContext()` 对线程上下文实施受控标记与恢复，方便在分布式链路或拦截器管道中传递上下文异常状态。
-
----
-
-## 16. 动态查询安全转译引擎与 URL 冒号高阶语法解析器 (`DynamicQueryHelper` & `DynamicQueryParser`)
-
-### 1. 痛点场景与最小起步 (Happy Path & Out-of-the-Box)
-
-在后台管理系统与数据检索场景中，前端检索表单往往高度动态（多字段组合、范围筛选、模糊匹配、多列 OR 联合过滤、排序定制）。传统开发面临两难困境：
-1. **XML / 硬编码冗长脆弱**：手写海量 `<if test="...">` 或在 Service 层不断 `wrapper.eq().like()`，不仅样板代码泛滥，且字段增减极易引发遗漏；
-2. **SQL 注入与敏感探测漏洞**：若直接透传前端拼接的 SQL 片段，极易产生 SQL 注入；若直接通过未经白名单校验的反射，前端可通过遍历字段试探系统内存与敏感字段（如 `password`、`secretKey` 等）。
-
-`ateng-boot-mybatis-plus` 原生提供 **工业级动态查询安全转译引擎与 URL Query 冒号高阶语法解析器**：
-- **六重安全防卫 (The 6-Layer Security Guard)**：
-  1. 字段白名单强校验：仅允许目标实体显式声明的持久化属性，未声明属性直接安全忽略并记录警告；
-  2. 敏感黑名单拦截：严格阻断 `@DynamicQueryIgnore` 标注字段、`@FieldEncrypt` 加密字段、`password` / `secret` 等敏感列及基类逻辑删除字段；
-  3. 13 种受控操作符收敛：仅开放 `EQ`、`NE`、`GT`、`GE`、`LT`、`LE`、`LIKE`、`LIKE_LEFT`、`LIKE_RIGHT`、`IN`、`NOT_IN`、`BETWEEN`、`IS_NULL`、`IS_NOT_NULL` 白名单操作符；
-  4. 语法字符与 SQL 注入过滤：字段名必须完全符合 `[a-zA-Z0-9_]+` 安全标识符规范，坚决拦截 `;`、`--`、`'`、`()`、空格等非法注入字符；
-  5. 数组与范围边界深度防穿透：`BETWEEN` 强制校验双边界有效性（优先采用 `~` 波浪线防错切分，避免时间格式空格冒号歧义），`IN` 自动过滤空元素与非法字符；
-  6. 空值安全保底：单实体或无匹配查询严格保底，杜绝产生畸形 SQL。
-- **作用域 OR 嵌套分组**：支持 `or_组号` 语法前缀，同组条件自动聚合为独立嵌套的 `AND (col1 = ? OR col2 = ?)` 块，多组间自然以 `AND` 并列；
-- **纯原生无第三方依赖**：100% 依托 JDK 17 与 MyBatis-Plus 原生条件构造器，零臃肿依赖。
-
-#### 场景一：直接解析 HTTP URL Query 冒号高阶语法 (Controller 极速体验)
-
-```java
-@GetMapping("/search")
-public Result<List<UserVO>> search(HttpServletRequest request) {
-    // 1. 传入 URL Query 字符串（如 "name:like=张&status:eq=1&age:between=20~30"）
-    QueryWrapper<UserEntity> wrapper = DynamicQueryParser.parseToWrapper(
-            request.getQueryString(), 
-            UserEntity.class
-    );
-
-    // 2. 传递给 Mapper / Service 执行原生安全查询
-    List<UserEntity> list = userMapper.selectList(wrapper);
-    return Result.success(UserVO.fromList(list));
-}
-```
-
-#### 场景二：Map 参数驱动构建
-
-```java
-Map<String, String[]> parameterMap = request.getParameterMap();
-DynamicQueryRequest queryRequest = DynamicQueryParser.parse(parameterMap);
-QueryWrapper<UserEntity> wrapper = DynamicQueryHelper.buildWrapper(queryRequest, UserEntity.class);
-```
-
-#### 场景三：作用域 OR 分组语法 (`or_组号:`)
-
-当前端需要跨字段关键字检索时（例如：同时匹配姓名或邮箱，且必须满足账户处于激活状态）：
-- 请求参数：`or_1:name:like=张&or_1:email:like=zhang&status:eq=1`
-- 自动编译生成的标准 SQL：
-  ```sql
-  WHERE (name LIKE ? OR email LIKE ?) AND status = ?
-  ```
-
----
-
-### 2. 生产扩展与接管 (Customization & Extensibility)
-
-#### 方案一：业务 DTO 声明式驱动 (`@QueryField`)
-
-除了直接解析 URL Query 外，系统支持通过业务 DTO 挂载 `@QueryField` 声明式转译：
-
-```java
-@Data
-public class UserSearchDTO {
-
-    @QueryField(operator = QueryOperator.LIKE)
-    private String name;
-
-    @QueryField(property = "userAge", operator = QueryOperator.GE)
-    private Integer minAge;
-
-    @QueryField(operator = QueryOperator.IN)
-    private List<Integer> status;
-}
-
-// Service 层一行代码安全转译：
-QueryWrapper<UserEntity> wrapper = DynamicQueryHelper.buildWrapper(dto, UserEntity.class);
-```
-
-#### 方案二：编程式链式与作用域 OR 构建
-
-```java
-DynamicQueryRequest request = new DynamicQueryRequest()
-        .eq("status", 1)
-        .or("g1", "name", QueryOperator.LIKE, "张")
-        .or("g1", "email", QueryOperator.LIKE, "zhang");
-
-QueryWrapper<UserEntity> wrapper = DynamicQueryHelper.buildWrapper(request, UserEntity.class);
-```
-
----
-
----
-
-### 3. 通用受管执行门面与 Mapper XML 联表方法引用直出 (`DynamicQueryTemplate` & Method References)
-
-在实际企业级业务中，查询往往涉及多表联表（如用户关联部门、角色、机构）或既有历史 Mapper XML。传统方式需要开发者手写 Wrapper 并手动调用 `PageUtil.toPageResult` 逐条转换 VO。
-
-`ateng-boot-mybatis-plus` 原生提供 **通用受管执行门面 `DynamicQueryTemplate`** 并深度赋能 `AtengBaseService`，支持方法引用强类型直出与 AST 别名自愈：
-
-#### 场景一：基于自定义 Mapper 联表方法引用极速直出 (强烈推荐)
-
-```java
-// 1. Mapper 接口定义多表联表分页方法（支持在 XML 中编写多表 JOIN）
-public interface UserMapper extends AtengBaseMapper<UserEntity> {
-    IPage<UserDeptVO> selectUserDeptPage(IPage<UserDeptVO> page, @Param(Constants.WRAPPER) Wrapper<UserDeptVO> wrapper);
-    List<UserDeptVO> selectUserDeptList(@Param(Constants.WRAPPER) Wrapper<UserDeptVO> wrapper);
-}
-
-// 2. Service 业务层通过方法引用一行直出（纯 POJO 零注解 VO 投影与物理分页）
-@Service
-public class UserServiceImpl extends AtengServiceImpl<UserMapper, UserEntity> implements UserService {
-
-    public PageResult<UserDeptVO> queryUserDeptPage(DynamicQueryRequest request) {
-        // 自动完成：AST 投影别名自愈（如 deptName -> d.name） + 物理分页 + VO 强类型投影返回
-        return pageDynamic(baseMapper::selectUserDeptPage, request, UserDeptVO.class);
-    }
-
-    public List<UserDeptVO> queryUserDeptList(DynamicQueryRequest request) {
-        return listDynamic(baseMapper::selectUserDeptList, request, UserDeptVO.class);
-    }
-}
-```
-
-#### 场景二：基于短方法名直接调用
-
-```java
-// 支持直接通过短方法名执行动态分页/列表查询
-PageResult<UserDeptVO> page = userService.pageDynamic("selectUserDeptPage", request, UserDeptVO.class);
-List<UserDeptVO> list = userService.listDynamic("selectUserDeptList", request, UserDeptVO.class);
-UserDeptVO one = userService.getOneDynamic("selectUserDeptList", request, UserDeptVO.class);
-```
-
-#### 场景三：注入 `DynamicQueryTemplate` 编程式门面调用
-
-```java
-@Autowired
-private DynamicQueryTemplate dynamicQueryTemplate;
-
-// 1. 单表实体分页直出并投影为 VO
-PageResult<UserVO> page = dynamicQueryTemplate.selectPage(request, UserEntity.class, UserVO.class);
-
-// 2. 业务 DTO 驱动的单表实体分页
-PageResult<UserVO> pageByDto = dynamicQueryTemplate.selectPage(searchDto, UserEntity.class, UserVO.class);
-
-// 3. 基于 StatementId 的外部/XML SQL 统计与单条查询
-UserDeptVO vo = dynamicQueryTemplate.selectOne("selectUserDeptList", request, UserDeptVO.class);
-long activeCount = dynamicQueryTemplate.count("selectUserDeptList", request);
-
-// 4. 基于 StatementId 与单表实体的物理短路存在性判断
-boolean hasUser = dynamicQueryTemplate.exists("selectUserDeptList", request);
-boolean hasAdmin = dynamicQueryTemplate.exists(request, UserEntity.class);
-```
-
-#### 场景四：动态查询存在性判断与单页物理短路 (`existsDynamic`)
-
-在很多业务前置校验中（如注册排重、状态流转校验、关联引用前置探测），只需知道是否存在满足条件的记录，传统 `count > 0` 会迫使数据库全表扫描执行高昂的 `COUNT(*)`。
-
-`ateng-boot-mybatis-plus` 原生提供单表与多表复杂联表的物理短路判定：
-1. **单表存在性 (`existsDynamic`)**：底层安全编译为 `QueryWrapper` 并调用 `baseMapper.exists`，生成原生 `SELECT 1 ... LIMIT 1` 物理短路；
-2. **多表复杂联表存在性 (`existsDynamic`)**：支持基于方法引用（`baseMapper::selectUserDeptPage`）或短方法名（`"selectUserDeptPage"`），通过单页 `Page(1, 1, false)`（关闭 count 查询并追加物理 `LIMIT 1`）瞬间判定是否存在匹配记录，零多余 IO。
-
-```java
-@Service
-public class UserServiceImpl extends AtengServiceImpl<UserMapper, UserEntity> implements UserService {
-
-    // 1. 单表动态请求存在性判断（SELECT 1 FROM t_user WHERE status = 1 LIMIT 1）
-    public boolean checkUserActive(DynamicQueryRequest request) {
-        return existsDynamic(request);
-    }
-
-    // 2. 单表业务 DTO 驱动存在性判断
-    public boolean checkUserExists(UserSearchDTO dto) {
-        return existsDynamic(dto);
-    }
-
-    // 3. 多表联表方法引用存在性判断（单页物理短路 LIMIT 1，免除 COUNT(*) 慢查询）
-    public boolean checkUserDeptExists(DynamicQueryRequest request) {
-        return existsDynamic(baseMapper::selectUserDeptPage, request);
-    }
-
-    // 4. 多表短方法名与 DTO 驱动存在性判断
-    public boolean checkUserDeptExistsByDto(UserSearchDTO dto) {
-        return existsDynamic("selectUserDeptPage", dto);
-    }
-}
-```
-
-#### 场景五：零持久层实体泄露基础查询 VO 投影与严格单条查询
-
-严格遵循 [ADR-0010](./docs/adr/0010-transport-pagination-contract-decoupling.md) 传输契约与持久层解耦铁律，`AtengBaseService` 为基础主键与单条查询提供一步直出强类型 VO 门面，彻底杜绝持久层实体（Entity）穿透至传输层：
-
-```java
-// 1. 主键单条查询一步直出 VO（查无记录或 id 为 null 时安全保底返回 null）
-UserVO userVo = userService.getById(1L, UserVO.class);
-
-// 2. 主键批量查询一步直出 VO 列表（查无记录或入参为空时保底返回 Collections.emptyList()，严禁返回 null）
-List<UserVO> userVoList = userService.listByIds(List.of(1L, 2L, 3L), UserVO.class);
-
-// 3. Wrapper 条件列表查询一步直出 VO 列表
-List<UserVO> activeUsers = userService.list(
-        Wrappers.<UserEntity>lambdaQuery().eq(UserEntity::getStatus, 1),
-        UserVO.class
-);
-
-// 4. 严格单条查询（throwEx = true：多条记录匹配时严正抛出 TooManyResultsException 快速失败）
-UserVO singleVo = userService.getOneDynamic(request, UserVO.class, true);
-UserVO singleDtoVo = userService.getOneDynamic(dto, UserVO.class, true);
-
-// 5. 宽松单条查询（throwEx = false：多条记录匹配时宽容返回首条）
-UserVO firstVo = userService.getOneDynamic(request, UserVO.class, false);
-```
-
-#### 场景六：Mapper XML 占位符原生绑定与 JSqlParser AST 自适应兼容
-
-1. **显式占位符（推荐）**：在 Mapper XML 中声明 `${ew.customSqlSegment}`，框架自动完成安全的参数化绑定：
-   ```xml
-   <select id="selectUserDeptPage" resultType="io.github.atengk.boot.sample.vo.UserDeptVO">
-       SELECT u.id, u.username, u.age, d.name AS dept_name, d.code AS dept_code
-       FROM t_user u
-       LEFT JOIN t_dept d ON u.dept_id = d.id
-       ${ew.customSqlSegment}
-   </select>
-   ```
-2. **零改动自适应兼容**：对于未声明 `${ew.customSqlSegment}` 的既有普通 XML SQL，框架通过 JSqlParser AST 自适应改写动态注册，无需修改历史 XML 即可享受动态查询与表别名自愈。
-
----
-
-### 4. 核心生产边界与非功能语义 (Production Boundary & Invariants)
-
-1. **纳秒级元数据与 AST 投影双缓存**：
-   - 目标实体的白名单字段、`@DynamicQueryIgnore` 忽略标记、加密注解解析结果永久驻留于 `ConcurrentHashMap`；
-   - Mapper XML SQL 语句经 JSqlParser 解析生成的物理列映射字典（`DynamicSqlProjectionResolver`）以 StatementId 为主键进行纳秒级缓存，彻底杜绝重复 AST 语法树解析开销。
-2. **纯 POJO 零注解与“零实体泄露”铁律 (Zero-Entity-Leakage)**：
-   传输层请求（`DynamicQueryRequest` / DTO）与目标 VO 均为 100% 纯 POJO，无需在 VO 上堆砌任何 `@TableField` 或别名映射注解；底层通过 AST 解析自动抹平表别名差异，出参严格返回 `PageResult<VO>`，严禁 ORM 实体越界穿透至 Controller。
-3. **零次生异常与空安全保底契约 (Null Safety & Defensive Return)**：
-   - `DynamicQueryParser` 对任何畸形语法字符、非法操作符均由前置卫语句安全忽略，绝不触发未捕获异常导致 HTTP 500；
-   - 查询列表或无匹配记录时统一返回保底空集合（`Collections.emptyList()`）或空分页（`PageResult.empty()`），严禁返回 `null`。
-4. **波浪线 `~` 语法防错保障**：
-   针对时间字符串范围查询（如 `2026-01-01 00:00:00~2026-12-31 23:59:59`），推行波浪线 `~` 作为 Between 边界切分符，彻底消除时分秒空格与冒号歧义。
-5. **与 `@DataScope` 数据权限及行级多租户拦截器链正交协同机制**：
-   - **拦截器时序与 AST 语法树层级叠加**：动态查询编译生成的 `Wrapper` / 自适应改写 SQL 进入 MyBatis 执行链路时，与 `AtengTenantLineInnerInterceptor`（行级租户）及 `AtengDataPermissionInnerInterceptor`（数据权限）按规范时序正交协同；
-   - **自适应 MappedStatement 与注解防丢失**：针对动态自适应代理方法（`$dynamicAdaptive`）与分页统计方法（`_mpCount`），拦截器通过方法名清洗策略剥离动态后缀并安全穿透反射提取原始 Mapper 接口上的 `@DataScope` 注解；租户隔离条件与用户/部门数据权限条件以 `AND (...)` 形式无缝注入 AST 根节点，绝不发生条件覆盖、短路或 SQL 语法断裂（已在 `SampleDynamicQueryIntegrationTest` 全真端到端闭环验证）。
 
 ---
 

@@ -103,4 +103,22 @@ public interface DynamicSqlScenarioService {
      * @return 外部 SQL 资源加载器
      */
     ExternalSqlLoader getLoader();
+
+    /**
+     * 面向 Web 体验端点的免 Mapper 外部动态 SQL 分页查询（若表为空按需初始化演示数据）
+     *
+     * @param name      用户姓名模糊匹配
+     * @param minAge    最小年龄
+     * @param pageQuery 分页参数
+     * @return 分页结果 PageResult<UserDynamicVO>
+     */
+    PageResult<UserDynamicVO> pageUsersDynamicWithSeed(String name, Integer minAge, PageQuery pageQuery);
+
+    /**
+     * 运行时零停机原子热替换动态 SQL 并立即执行验证（若语法错误被沙箱拦截回滚则抛出受控 BusinessException）
+     *
+     * @param dto 热替换请求载荷
+     * @return 热替换后立即执行的查询结果列表
+     */
+    List<Map<String, Object>> hotSwapAndExecute(io.github.atengk.boot.sample.mybatisplus.model.DynamicSqlHotSwapDTO dto);
 }

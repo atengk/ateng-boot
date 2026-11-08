@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS sys_user (
     email VARCHAR(256),
     phone VARCHAR(256),
     dept_id BIGINT,
+    internal_remark VARCHAR(256),
     create_time TIMESTAMP,
     update_time TIMESTAMP,
     create_by VARCHAR(64),

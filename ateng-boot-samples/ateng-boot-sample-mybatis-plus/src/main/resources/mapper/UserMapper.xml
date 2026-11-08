@@ -19,4 +19,21 @@
         ${ew.customSqlSegment}
     </select>
 
+    <!-- 多表联查用户与部门全量列表（支持 listDynamic 方法引用直出与 AST 别名推导） -->
+    <select id="selectUserDeptList" resultType="io.github.atengk.boot.sample.mybatisplus.model.UserDeptDetailVO">
+        SELECT 
+            u.id AS user_id,
+            u.name AS user_name,
+            u.age,
+            u.email,
+            u.phone,
+            u.dept_id,
+            d.dept_name,
+            d.status AS dept_status,
+            u.create_time
+        FROM sys_user u
+        LEFT JOIN sys_dept d ON u.dept_id = d.id
+        ${ew.customSqlSegment}
+    </select>
+
 </mapper>

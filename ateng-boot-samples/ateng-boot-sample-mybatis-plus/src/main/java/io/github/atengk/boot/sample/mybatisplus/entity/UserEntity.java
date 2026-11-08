@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.mybatisplus.entity;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
+import io.github.atengk.boot.mybatisplus.dynamicquery.annotation.DynamicQueryIgnore;
 import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
 import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
 import lombok.Getter;
@@ -54,6 +55,12 @@ public class UserEntity extends BaseFullEntity {
      * 所属部门 ID（用于细粒度数据权限过滤）
      */
     private Long deptId;
+
+    /**
+     * 内部风控备注（标注 @DynamicQueryIgnore 禁止外部动态查询与排序越权探测）
+     */
+    @DynamicQueryIgnore
+    private String internalRemark;
 
     public UserEntity(String name, Integer age, String email, String phone, Long deptId) {
         this.name = name;

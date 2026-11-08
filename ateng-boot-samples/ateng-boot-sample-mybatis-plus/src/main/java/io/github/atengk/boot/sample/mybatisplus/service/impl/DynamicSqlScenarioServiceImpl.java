@@ -1,13 +1,19 @@
 package io.github.atengk.boot.sample.mybatisplus.service.impl;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlDefinition;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlExecutor;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry;
 import io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader;
+import io.github.atengk.boot.sample.mybatisplus.entity.UserEntity;
+import io.github.atengk.boot.sample.mybatisplus.mapper.UserMapper;
+import io.github.atengk.boot.sample.mybatisplus.model.DynamicSqlHotSwapDTO;
 import io.github.atengk.boot.sample.mybatisplus.model.UserDynamicVO;
 import io.github.atengk.boot.sample.mybatisplus.service.DynamicSqlScenarioService;
+import org.apache.ibatis.mapping.SqlCommandType;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;
@@ -27,14 +33,17 @@ public class DynamicSqlScenarioServiceImpl implements DynamicSqlScenarioService 
     private final DynamicSqlRegistry registry;
     private final DynamicSqlExecutor executor;
     private final ExternalSqlLoader loader;
+    private final UserMapper userMapper;
 
     public DynamicSqlScenarioServiceImpl(
             DynamicSqlRegistry registry,
             DynamicSqlExecutor executor,
-            ExternalSqlLoader loader) {
+            ExternalSqlLoader loader,
+            UserMapper userMapper) {
         this.registry = registry;
         this.executor = executor;
         this.loader = loader;
+        this.userMapper = userMapper;
     }
 
     @Override
@@ -95,6 +104,54 @@ public class DynamicSqlScenarioServiceImpl implements DynamicSqlScenarioService 
     @Override
     public ExternalSqlLoader getLoader() {
         return loader;
+    }
+
+    @Override
+    public PageResult<UserDynamicVO> pageUsersDynamicWithSeed(String name, Integer minAge, PageQuery pageQuery) {
+        ensureSeedUsersIfEmpty();
+        return findUsersDynamicPage(name, minAge, pageQuery);
+    }
+
+    @Override
+    public List<Map<String, Object>> hotSwapAndExecute(DynamicSqlHotSwapDTO dto) {
+        ensureSeedUsersIfEmpty();
+
+        // 1. 构造动态 SQL 元数据定义，交由 DynamicSqlRegistry 内存沙箱预编译校验并原子覆盖
+        DynamicSqlDefinition definition = DynamicSqlDefinition.builder()
+                .id(dto.getStatementId())
+                .sqlScript(dto.getSqlScript())
+                .commandType(SqlCommandType.SELECT)
+                .description(dto.getDescription())
+                .autoScriptWrap(true)
+                .build();
+
+        boolean registered = replaceCustomSql(definition);
+        if (!registered) {
+            throw new BusinessException(
+                    CommonResultCode.BAD_REQUEST,
+                    "外部动态 SQL 语法校验失败，内存沙箱已安全拦截并保留上一版本: " + dto.getStatementId()
+            );
+        }
+
+        // 2. 热替换成功后立即执行最新版本的动态 SQL 语句
+        return executeCustomQuery(dto.getStatementId(), dto.getSampleParams());
+    }
+
+    private void ensureSeedUsersIfEmpty() {
+        Long total = userMapper.selectCount(null);
+        if (total == null || total == 0L) {
+            UserEntity u1 = new UserEntity("张三", 25, "zhangsan@example.com", "13800000001", 101L);
+            u1.setId(1001L);
+            userMapper.insert(u1);
+
+            UserEntity u2 = new UserEntity("李四", 30, "lisi@example.com", "13800000002", 101L);
+            u2.setId(1002L);
+            userMapper.insert(u2);
+
+            UserEntity u3 = new UserEntity("张伟", 38, "zhangwei@example.com", "13800000003", 102L);
+            u3.setId(1003L);
+            userMapper.insert(u3);
+        }
     }
 
     /**
