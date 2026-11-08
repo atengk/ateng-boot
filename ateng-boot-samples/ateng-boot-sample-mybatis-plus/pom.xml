@@ -23,6 +23,12 @@
             <artifactId>ateng-boot-mybatis-plus</artifactId>
         </dependency>
 
+        <!-- Web 接入底座（提供 Result<T> 响应契约、参数校验、全局异常拦截与 TraceId） -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+        </dependency>
+
         <!-- SpringDoc OpenAPI (用于接口文档生成自验) -->
         <dependency>
             <groupId>org.springdoc</groupId>

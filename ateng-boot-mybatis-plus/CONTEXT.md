@@ -24,21 +24,21 @@ _Avoid_: Model, SuperEntity, CommonEntity, RootEntity
 全要素受管业务实体抽象基类，在 BaseEntity 基础上追加 CAS 乐观锁版本号与在 JSON 中自动忽略的逻辑删除标记。
 _Avoid_: FullModel, AllInOneEntity
 
-**AuditMetaObjectHandler**:
-在实体持久化插入与更新时智能感知字段存在性，并防御性自动填充时间与当前操作人的元对象处理器。
-_Avoid_: FieldFiller, AutoFillHandler, MetaHandler
+**DefaultMetaObjectHandler**:
+在实体持久化插入与更新时智能感知字段存在性，并防御性自动填充时间与当前操作人的默认元对象处理器。
+_Avoid_: AuditMetaObjectHandler, FieldFiller, AutoFillHandler, MetaHandler
 
-**AdaptivePaginationInterceptor**:
+**PaginationInnerInterceptor**:
 支持动态探测底层数据库方言（杜绝硬编码 MySQL），并带有单页 500 条上限内存防爆保护的分页内拦截器。
-_Avoid_: MybatisPaging, PageHelper
+_Avoid_: AdaptivePaginationInterceptor, MybatisPaging, PageHelper
 
-**BlockAttackInterceptor**:
-自动阻断无 WHERE 条件的全表更新与全表物理删除的防灾安全拦截器。
-_Avoid_: SafeDeleteInterceptor, TableAttackBlocker
+**BlockAttackInnerInterceptor**:
+自动阻断无 WHERE 条件的全表更新与全表物理删除的防灾安全内拦截器。
+_Avoid_: BlockAttackInterceptor, SafeDeleteInterceptor, TableAttackBlocker
 
-**OptimisticLockerInterceptor**:
-基于实体标记的版本号字段实现并发原子递增与 CAS 防护的乐观锁拦截器。
-_Avoid_: VersionInterceptor, ConcurrencyInterceptor
+**OptimisticLockerInnerInterceptor**:
+基于实体标记的版本号字段实现并发原子递增与 CAS 防护的乐观锁内拦截器。
+_Avoid_: OptimisticLockerInterceptor, VersionInterceptor, ConcurrencyInterceptor
 
 **FieldEncrypt**:
 声明在实体敏感属性上的持久化透明加密注解，在落盘写入数据库时自动加密为 AES 密文，在查询读取时自动解密为真实明文。配合 `@TableField(typeHandler = EncryptTypeHandler.class)` 使用。
@@ -258,3 +258,35 @@ _Avoid_: TypeReferenceJsonHandler, JacksonGenericHandler, ComplexJsonHandler
 **AtengLogicDeleteInnerInterceptor**:
 基于 JSqlParser AST 语法树动态解耦的逻辑删除穿透拦截器，集成于 MyBatis-Plus 拦截器插件链，当 `LogicDeleteContextHolder` 激活时自动定位并安全剥离 WHERE 子句中的逻辑删除过滤表达式，支持回收站查询与安全恢复。
 _Avoid_: LogicDeleteInterceptor, CustomLogicDeleteHandler, BypassDeletePlugin
+
+**AtengTenantLineInnerInterceptor**:
+基于 JSqlParser AST 语法树的增强型行级多租户内拦截器，支持 `@IgnoreTenant` 声明式豁免与 `TenantContextHolder` 闭包短路放行。
+_Avoid_: CustomTenantInterceptor, TenantSqlInterceptor
+
+**DefaultTenantLineHandler**:
+默认行级多租户处理器，桥接 `TenantContextHolder` 动态提取当前租户标识并结合配置表白名单判定忽略规则。
+_Avoid_: SimpleTenantHandler, CustomTenantLineHandler
+
+**AtengSqlInjector**:
+全局增强型 SQL 注入器，自动向持久层 Mapper 注入 `insertBatchSomeColumn`、`upsertBatchSomeColumn`、`updateBatchSomeColumn` 与 `selectCursor` 原生高性能方法。
+_Avoid_: CustomSqlInjector, BatchSqlInjector
+
+**UpsertBatchSomeColumn**:
+双方言原生单条多值 Upsert SQL 注入器节点，自适应生成 MySQL `ON DUPLICATE KEY UPDATE` 与 PostgreSQL `ON CONFLICT DO UPDATE` 语句。
+_Avoid_: BatchUpsertMethod, UpsertInjector
+
+**SlowSqlEvent**:
+慢 SQL 性能审计 Spring 领域事件，承载超时 SQL 文本、脱敏参数、执行耗时与业务调用栈位置。
+_Avoid_: SlowQueryEvent, SqlTimeoutEvent
+
+**DataChangeEvent**:
+事务提交后触发的数据变更 Diff 审计 Spring 领域事件，承载本次事务捕获的 `DataChangeRecord` 列表。
+_Avoid_: AuditChangeEvent, EntityDiffEvent
+
+**FieldDiff**:
+单字段变更前后对比明细值对象，包含属性名、旧值与新值。
+_Avoid_: ColumnChange, PropertyDiff
+
+**SqlLogModel**:
+定义于 `ateng-boot-core` 的结构化物理 SQL 操作审计元数据模型，承载可执行 SQL、耗时、影响行数、四维上下文与状态信息。
+_Avoid_: SqlAuditEntity, SqlLogRecord

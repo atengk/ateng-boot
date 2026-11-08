@@ -13,9 +13,9 @@
 | **实体体系** | 时间流转基类 | `BaseTimeEntity` | `ateng.boot.mybatis-plus.audit.*` | 提供 `createTime` (`FieldFill.INSERT`) 与 `updateTime` (`FieldFill.INSERT_UPDATE`) | `BaseEntityTest` / `UserDomainIntegrationTest` |
 | **实体体系** | 四要素全审计业务基类 | `BaseEntity` | `ateng.boot.mybatis-plus.audit.*` | 提供 `createBy`、`updateBy`、`createTime`、`updateTime` 四要素全审计 | `BaseEntityTest` / `TenantOrderDomainIntegrationTest` |
 | **实体体系** | 全要素状态业务基类 | `BaseFullEntity` | `ateng.boot.mybatis-plus.optimistic-locker.*` | 在审计基类上追加 `@Version private Integer version` (乐观锁) 与 `@TableLogic @JsonIgnore private Integer deleted` (逻辑删除) | `BaseEntityTest` / `UserDomainIntegrationTest` |
-| **实体体系** | 唯一索引防冲突占位基类 | `BaseDeleteIdEntity` | - | 继承 `BaseFullEntity`，`deleted` 为 `BIGINT` 并在删除时以雪花 ID 占位，彻底杜绝联合唯一索引逻辑删除冲突 | `BaseDeleteIdEntityTest` / `SoftDeleteUniqueKeyScenarioTest` |
+| **实体体系** | 唯一索引防冲突占位基类 | `BaseDeleteIdEntity` | - | 继承 `BaseEntity`，`deleted` 为 `BIGINT`（`@TableLogic(value = "0", delval = "id")`）并在软删除时动态以自身雪花主键 ID 占位，彻底杜绝业务组合唯一索引逻辑删除冲突 | `BaseDeleteIdEntityTest` / `SoftDeleteUniqueKeyScenarioTest` / `MpLifecycleAndSecurityControllerTest` |
 | **实体体系** | 多租户实体标记接口 | `TenantEntity` | `ateng.boot.mybatis-plus.tenant.*` | 声明 `getTenantId()` / `setTenantId(String)` 租户标识契约 | `TenantOrderDomainIntegrationTest` |
-| **自动填充** | 防御性审计元数据填充 | `DefaultMetaObjectHandler` | `ateng.boot.mybatis-plus.audit.enabled`<br>`ateng.boot.mybatis-plus.audit.default-operator` | 插入/更新自动提取操作人并填充审计字段，若已显式赋值则绝不覆盖覆盖 | `DefaultMetaObjectHandlerTest` / `UserDomainIntegrationTest` |
+| **自动填充** | 防御性审计元数据填充 | `DefaultMetaObjectHandler` | `ateng.boot.mybatis-plus.audit.enabled`<br>`ateng.boot.mybatis-plus.audit.default-operator` | 插入/更新自动提取操作人并填充审计字段，若已显式赋值则绝不覆盖 | `DefaultMetaObjectHandlerTest` / `UserDomainIntegrationTest` / `MpLifecycleAndSecurityControllerTest` |
 | **审计贯通** | 当前操作人上下文提供者 | `CurrentUserProvider` | - | Core 统一操作人 SPI，驱动 `DefaultMetaObjectHandler` 解析操作人字符串/ID | `DefaultMetaObjectHandlerTest` / `UserDomainIntegrationTest` |
 | **多租户隔离** | AST 动态行级多租户拦截器 | `AtengTenantLineInnerInterceptor` | `ateng.boot.mybatis-plus.tenant.enabled`<br>`ateng.boot.mybatis-plus.tenant.column`<br>`ateng.boot.mybatis-plus.tenant.ignore-tables` | 基于 JSqlParser 在 AST 语法树层级改写 SQL，自动拼接 `tenant_id = ?` 条件，支持多表 JOIN 与子查询精准注入 | `AtengTenantLineInnerInterceptorTest` / `TenantOrderDomainIntegrationTest` |
 | **多租户解析** | 默认租户上下文处理器 | `DefaultTenantLineHandler` | `ateng.boot.mybatis-plus.tenant.column` | 桥接 `TenantContextHolder` 获取租户 ID，支持动态与静态表忽略过滤 | `DefaultTenantLineHandlerTest` / `TenantOrderDomainIntegrationTest` |
@@ -28,8 +28,8 @@
 | **原生批量操作** | 双方言批量 Upsert 注入器 | `UpsertBatchSomeColumn` / `@ConflictKeys` | - | 原生单条多值 Upsert SQL 注入器（MySQL `ON DUPLICATE KEY UPDATE` / PostgreSQL `ON CONFLICT DO UPDATE`），支持 `@ConflictKeys` 复合唯一键 | `BatchUpsertTest` / `TenantOrderDomainIntegrationTest` |
 | **原生批量操作** | 原生单条批量更新注入器 | `UpdateBatchSomeColumn` | - | 原生 ANSI CASE WHEN 多值更新 SQL 注入器，内置 `AntiDeadlockSqlSource` 强制按主键 ID 升序防死锁，动态回退保护未提供字段 | `BatchUpdateTest` / `TenantOrderDomainIntegrationTest` |
 | **原生批量操作** | 全局增强 SQL 注入器 | `AtengSqlInjector` | - | 自动向 MyBatis-Plus 注入 `InsertBatchSomeColumn`、`UpsertBatchSomeColumn` 与 `UpdateBatchSomeColumn` 原生批量操作方法 | `AtengSqlInjectorTest` / `TenantOrderDomainIntegrationTest` |
-| **存储加解密** | 字段级透明存储加密注解 | `@FieldEncrypt` | `ateng.boot.mybatis-plus.crypto.secret-key` | 标注于实体属性上，声明该字段由 `EncryptTypeHandler` 执行持久化透明加解密 | `EncryptTypeHandlerTest` / `UserDomainIntegrationTest` |
-| **存储加解密** | 存储透明加解密类型转换器 | `EncryptTypeHandler` | `ateng.boot.mybatis-plus.crypto.secret-key` | 持久化时入库 AES 密文，查询出库解密为真实明文，严格坚守“内存真明文”铁律 | `EncryptTypeHandlerTest` / `UserDomainIntegrationTest` |
+| **存储加解密** | 字段级透明存储加密注解 | `@FieldEncrypt` | `ateng.boot.mybatis-plus.crypto.secret-key` | 标注于实体属性上，声明该字段由 `EncryptTypeHandler` 执行持久化透明加解密并自动免疫未授权动态排序探测 | `EncryptTypeHandlerTest` / `UserDomainIntegrationTest` / `MpLifecycleAndSecurityControllerTest` |
+| **存储加解密** | 存储透明加解密类型转换器 | `EncryptTypeHandler` | `ateng.boot.mybatis-plus.crypto.secret-key` | 持久化时入库 `v1:` 版本化 AES-GCM 密文，查询出库解密为真实明文，严格坚守“内存真明文”铁律 | `EncryptTypeHandlerTest` / `UserDomainIntegrationTest` / `MpLifecycleAndSecurityControllerTest` |
 | **乐观锁重试** | 乐观锁防冲突重试模板 | `OptimisticLockTemplate` | `ateng.boot.mybatis-plus.optimistic-locker.enabled` | `executeWithRetry(Supplier<Boolean>)` / `executeWithRetry(Supplier<Boolean>, int, Duration)`，高并发更新冲突自动退避重试 | `OptimisticLockTemplateTest` / `TenantOrderDomainIntegrationTest` |
 | **分页契约** | 分页对象流式解耦与安全转译 | `PageUtil` | `ateng.boot.mybatis-plus.pagination.max-limit` | `toPage(PageQuery)` / `toPage(PageQuery, Class<T>)`（安全转译 sorts 并依托实体白名单过滤） / `toPageResult(IPage<T>)` / `toPageResult(IPage<S>, Function<S, T>)`，彻底解耦传输契约与持久实体（Zero-Entity-Leakage） | `PageUtilTest` |
 | **分页拦截** | 原生分页拦截与防刷守护 | `PaginationInnerInterceptor` | `ateng.boot.mybatis-plus.pagination.enabled`<br>`ateng.boot.mybatis-plus.pagination.max-limit`<br>`ateng.boot.mybatis-plus.pagination.overflow`<br>`ateng.boot.mybatis-plus.pagination.db-type` | 原生分页拦截，注入单页最大条数限制（默认 500）与防刷超限防御，自动识别数据库方言 | `AtengMybatisPlusAutoConfigurationTest` |
@@ -68,20 +68,20 @@
 | **变更审计** | 数据变更审计消费 SPI | `DataChangeAuditProvider` | - | 函数式消费 SPI，供业务自由对接审计日志落盘、Elasticsearch 或消息队列 | `DataChangeAuditInterceptorTest` / `TenantOrderDomainIntegrationTest` |
 | **变更审计** | 数据变更审计 Spring 事件 | `DataChangeEvent` | `ateng.boot.mybatis-plus.audit-change.publish-event` | 变更提交后发布 Spring 原生应用事件，供下游声明式 `@EventListener` 解耦监听 | `DataChangeAuditInterceptorTest` |
 | **变更审计** | 数据变更审计上下文持有者 | `DataChangeAuditContextHolder` | - | 提供 `runWithoutAudit` 与 `callWithoutAudit` 编程式闭包，安全短路跳过当前线程的变更审计 | `DataChangeAuditInterceptorTest` |
-| **JSON 类型转换** | Spring 受管 JSON 字段类型转换器 | `AtengJacksonTypeHandler<T>` | - | 继承 `JacksonTypeHandler`，自动接入 Spring Boot 受管 `ObjectMapper`，对 `List`、`Set`、`Map` 字段读取到 NULL 或空字符串时保底返回不可变空容器，彻底终结 NPE | `AtengJacksonTypeHandlerTest` / `JsonFieldScenarioTest` |
-| **JSON 类型转换** | 复杂深层泛型 JSON 类型转换基类 | `GenericJsonTypeHandler<T>` | - | 基于 `TypeReference<T>` 提取深层泛型 JavaType，深度解析复杂泛型嵌套结构，兼具空安全保底 | `GenericJsonTypeHandlerTest` / `JsonFieldScenarioTest` |
+| **JSON 类型转换** | Spring 受管 JSON 字段类型转换器 | `AtengJacksonTypeHandler<T>` | - | 继承 `JacksonTypeHandler`，自动接入 Spring Boot 受管 `ObjectMapper`，对 `List`、`Set`、`Map` 字段读取到 NULL 或空字符串时保底返回不可变空容器，彻底终结 NPE | `AtengJacksonTypeHandlerTest` / `JsonFieldScenarioTest` / `MpLifecycleAndSecurityControllerTest` |
+| **JSON 类型转换** | 复杂深层泛型 JSON 类型转换基类 | `GenericJsonTypeHandler<T>` | - | 基于泛型超类签名自动提取深层嵌套 `JavaType`（如 `List<ShippingAddress>`），兼具集合与 Map 空安全保底 | `GenericJsonTypeHandlerTest` / `JsonFieldScenarioTest` / `MpLifecycleAndSecurityControllerTest` |
 | **悲观并发控制** | 强类型悲观加锁模式枚举 | `LockMode` | - | 包含 `FOR_UPDATE`、`NOWAIT`、`SKIP_LOCKED` 与 `FOR_SHARE` 4 大强类型加锁模式，消除裸魔法字符串 | `PessimisticLockUtilTest` / `PessimisticLockScenarioTest` |
 | **悲观并发控制** | 悲观锁方言自适应与快速失败工具 | `PessimisticLockUtil` | - | `apply(wrapper, lockMode)` / `forUpdate(wrapper, lockMode)`，前置探测底层数据库方言，在 MySQL 5.7 或 SQLite 等不支持跳锁引擎上调用立即抛出异常快速失败 | `PessimisticLockUtilTest` / `PessimisticLockScenarioTest` |
 | **悲观并发控制** | 悲观排队锁与跳锁 Service 门面 | `AtengBaseService` / `AtengServiceImpl` | - | `getByIdForUpdate(id)` / `getByIdForUpdate(id, lockMode)` / `listForUpdate(wrapper, lockMode)`，开箱即用的悲观行锁与并发任务抢单拉取门面 | `AtengBaseServicePessimisticLockTest` / `PessimisticLockScenarioTest` |
-| **逻辑删除闭环** | 逻辑删除穿透审计上下文持有者 | `LogicDeleteContextHolder` | `ateng.boot.mybatis-plus.logic-delete.enabled` | 提供 `runWithDeleted` 与 `callWithDeleted` 编程式闭包（带计数器防重入），在审计与回收站场景下安全穿透逻辑删除 | `LogicDeleteContextHolderTest` / `SoftDeleteUniqueKeyScenarioTest` |
-| **逻辑删除闭环** | JSqlParser AST 逻辑删除动态穿透拦截器 | `AtengLogicDeleteInnerInterceptor` | `ateng.boot.mybatis-plus.logic-delete.enabled` | 拦截器层动态递归剥离 WHERE 子句中的 `deleted = 0` 等值表达式，保留业务显式条件 | `AtengLogicDeleteInnerInterceptorTest` / `SoftDeleteUniqueKeyScenarioTest` |
-| **逻辑删除闭环** | 逻辑删除数据恢复与回收站 Service 门面 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.logic-delete.enabled` | `restoreById(id)` / `restore(wrapper)`（将 `deleted` 重置为 0 并自动触发审计字段更新）及 `getByIdWithDeleted` / `listWithDeleted` / `pageWithDeleted` | `AtengBaseServiceRestoreTest` / `SoftDeleteUniqueKeyScenarioTest` |
+| **逻辑删除闭环** | 逻辑删除穿透审计上下文持有者 | `LogicDeleteContextHolder` | `ateng.boot.mybatis-plus.logic-delete.enabled` | 提供 `runWithDeleted` 与 `callWithDeleted` 编程式闭包（带重入深度计数器），在审计与回收站场景下安全穿透逻辑删除 | `LogicDeleteContextHolderTest` / `SoftDeleteUniqueKeyScenarioTest` |
+| **逻辑删除闭环** | JSqlParser AST 逻辑删除动态穿透拦截器 | `AtengLogicDeleteInnerInterceptor` | `ateng.boot.mybatis-plus.logic-delete.enabled`<br>`ateng.boot.mybatis-plus.logic-delete.columns` | 拦截器层动态递归剥离 WHERE 子句中的 `deleted = 0` 等值表达式，保留业务显式条件 | `AtengLogicDeleteInnerInterceptorTest` / `SoftDeleteUniqueKeyScenarioTest` |
+| **逻辑删除闭环** | 逻辑删除数据恢复与回收站 Service 门面 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.logic-delete.enabled` | `restoreById(id)` / `restore(wrapper)`（重置 `deleted = 0` 并自动刷新 `updateTime`/`updateBy`）及 `getByIdWithDeleted` / `listWithDeleted` / `pageWithDeleted` / `getOneWithDeleted` | `AtengBaseServiceRestoreTest` / `SoftDeleteUniqueKeyScenarioTest` / `MpLifecycleAndSecurityControllerTest` |
 
 ---
 
 ## 1. 模块定位与 Maven 坐标
 
-`ateng-boot-mybatis-plus` 深度融合 MyBatis-Plus 官方体系，针对企业级 SaaS、多租户及高安全持久层场景提供深度增强。
+`ateng-boot-mybatis-plus` 深度融合 MyBatis-Plus `3.5.17` 官方生态与 `ateng-boot-core` 原生底座，面向企业级 SaaS、高并发分布式系统与金融合规持久层提供零反射侵入、零实体泄露、全链路可观测的工业级 ORM 基础设施。
 
 ```xml
 <dependency>
@@ -92,88 +92,368 @@
 
 ---
 
-## 2. 实体五级继承阶梯体系 (Tiered Entity Hierarchy)
+## 2. 核心架构与设计不变量 (Architecture & Design Invariants)
 
-### 场景痛点
-避免每个实体都重复定义主键、时间与审计字段，按业务复杂度提供五个阶梯基类按需继承：
+### 2.1 内外双层拦截器链与执行时序架构
 
+模块严格区分 **`MybatisPlusInterceptor` 内部 AST 改写链** 与 **MyBatis 原生外层 `Executor` / `StatementHandler` 审计诊断链**，确保逻辑删除穿透、多租户行级隔离、细粒度数据权限、分页 count 优化及终态物理 SQL 诊断严格按确定性时序正交协同：
+
+```mermaid
+flowchart TD
+    subgraph ServiceAndFacade["业务与门面层 (Service & Template Facades)"]
+        direction LR
+        S1["AtengBaseService / AtengServiceImpl"]
+        S2["DynamicQueryTemplate / DynamicSqlExecutor"]
+        S3["BatchUtil / StreamingQueryTemplate / OptimisticLockTemplate"]
+    end
+
+    subgraph OuterExecutorChain["外层 Executor 拦截链 (事务提交后 Diff 审计)"]
+        E1["DataChangeAuditInterceptor (@AuditChange 前置快照 + afterCommit 异步分发)"]
+    end
+
+    subgraph InnerMpChain["MybatisPlusInterceptor 内部 AST 改写链 (严格时序)"]
+        direction TB
+        I1["1. AtengTenantLineInnerInterceptor (AST 注入 WHERE/JOIN tenant_id = ?)"]
+        I2["2. AtengDataPermissionInnerInterceptor (@DataScope AST 部门/本人条件注入)"]
+        I3["3. AtengLogicDeleteInnerInterceptor (按需递归剥离 WHERE deleted = 0)"]
+        I4["4. PaginationInnerInterceptor (单页 500 软上限防刷 + 方言物理分页)"]
+        I5["5. BlockAttackInnerInterceptor (阻断无 WHERE 全表 UPDATE/DELETE)"]
+        I6["6. OptimisticLockerInnerInterceptor (@Version CAS 乐观锁比对)"]
+        I1 --> I2 --> I3 --> I4 --> I5 --> I6
+    end
+
+    subgraph OuterStatementChain["外层 StatementHandler 物理终态链 (可观测与慢 SQL 治理)"]
+        direction TB
+        ST1["SlowSqlInterceptor (System.nanoTime 阈值比对 + SlowSqlEvent 广播)"]
+        ST2["SqlLogInterceptor (SqlParameterFormatter 状态机反填 + 脱敏看板 + SPI 存储)"]
+        ST1 --> ST2
+    end
+
+    ServiceAndFacade --> OuterExecutorChain --> InnerMpChain --> OuterStatementChain
 ```
-BaseGenericEntity<ID>          (泛型主键基类)
-  └── BaseIdEntity             (64位雪花 ID 主键基类，Long id)
-        └── BaseTimeEntity     (含时间流转基类，createTime, updateTime)
-              └── BaseEntity   (四要素全审计业务基类，createBy, updateBy, createTime, updateTime)
-                    └── BaseFullEntity (全要素状态基类，追加乐观锁 version 与逻辑删除 deleted)
+
+### 2.2 四大核心架构不变量
+
+1. **传输契约与持久层绝对解耦 (Zero-Entity-Leakage, ADR-0010)**：
+   Controller 传输边界 **100% 严禁接收或直接返回 ORM 实体（Entity）**。入参统一使用专用 DTO / `PageQuery` / `DynamicQueryRequest`，出参依托 `AtengBaseService` 投影门面或 `PageUtil.toPageResult(page, VO::fromEntity)` 统一返回 `Result<VO>` 或 `Result<PageResult<VO>>`。
+2. **数据安全三态分离与“内存真明文”不变量 (In-Memory Plaintext Invariant, ADR-0012)**：
+   - **持久层密文落盘**：由 `@FieldEncrypt` + `EncryptTypeHandler` 在 JDBC 边界透明完成 `v1:` 版本化 AES-GCM 加解密；
+   - **Service 内存 100% 原始真明文**：业务计算、长度校验、外部 RPC 调用读取实体属性时始终为未打码的真实明文，彻底根除“星号掩码脏数据写回数据库”的生产事故；
+   - **视图序列化动态脱敏**：仅在 VO 序列化为 HTTP JSON 响应的最后一公里，由 `@FieldSensitive` 动态打码。
+3. **对称语义完备性不变量 (Symmetric Facades Invariant)**：
+   既有 `@TableLogic` 软删除（`removeById`），就必须成对提供穿透检索（`getByIdWithDeleted` / `listWithDeleted` / `pageWithDeleted`）与误删恢复（`restoreById` / `restore`）；既有上下文压栈（`TenantContextHolder` / `LogicDeleteContextHolder` / `DataPermissionContextHolder`），就必须在 `try-finally` 或函数式闭包（`runWith*` / `callWith*`）中确定性恢复与清理现场。
+4. **原生多值批处理与主键升序防死锁不变量 (Anti-Deadlock Batch Invariant)**：
+   摒弃循环单发伪批处理，通过 `AtengSqlInjector` 注入原生多值 `INSERT`、双方言 `UPSERT` 与 ANSI `CASE WHEN` 批量更新；批量更新前由 `BatchUtil` 与 `AntiDeadlockSqlSource` 双重强制按主键 ID 升序重排，从数学机理上消除并发交叉行锁死锁。
+
+---
+
+## 3. 实体五级继承阶梯、生命周期自动填充与逻辑删除闭环
+
+> **对应样例控制器**：`MpEntityLifecycleController`（路由前缀 `/sample/mybatis-plus/lifecycle`）  
+> **锚定集成测试**：`MpLifecycleAndSecurityControllerTest`、`SoftDeleteUniqueKeyScenarioTest`、`UserDomainIntegrationTest`
+
+### 3.1 实体五级阶梯体系与雪花发号桥接 (`BaseGenericEntity` -> `BaseFullEntity`)
+
+#### 场景痛点
+在大型工程中，若每个实体类各自手写 `id`、`createTime`、`version`、`deleted` 字段，极易出现字段命名不一、漏配 `@JsonIgnore` 导致逻辑删除位泄露给前端、或多套雪花发号器混用引发时钟回拨冲突。
+
+#### 本特性配置片段 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      snowflake:
+        enabled: true             # 启用持久层雪花发号桥接，自动委托至 Core IdUtil（默认 true）
+        worker-id: 1              # 工作机器 ID（0~31，未配置时基于网卡 MAC/IP 四级自适应推导）
+        datacenter-id: 1          # 数据中心 ID（0~31，未配置时自适应推导）
 ```
 
-### 实体选择决策指南
-| 业务场景 | 推荐基类 | 包含的核心属性 |
+#### 五级实体继承阶梯与选型指南
+```text
+BaseGenericEntity<ID>          (第 1 阶：泛型主键契约 getId/setId)
+  └── BaseIdEntity             (第 2 阶：64 位 Long 雪花主键 @TableId(type = IdType.ASSIGN_ID))
+        └── BaseTimeEntity     (第 3 阶：时间流转基类 createTime, updateTime)
+              └── BaseEntity   (第 4 阶：四要素全审计业务基类 createBy, updateBy, createTime, updateTime)
+                    ├── BaseFullEntity     (第 5A 阶：标准状态基类，追加 @Version version 与 Integer deleted)
+                    └── BaseDeleteIdEntity (第 5B 阶：唯一键防冲突基类，追加 @Version version 与 Long deleted=id)
+```
+
+| 业务表类型 | 推荐继承基类 | 內置受管字段与核心行为 |
 | :--- | :--- | :--- |
-| 关联映射表、配置映射表 | `BaseIdEntity` | `id` |
-| 日志表、不可篡改流水表 | `BaseTimeEntity` | `id`, `createTime`, `updateTime` |
-| 绝大部分标准业务表（默认） | `BaseEntity` | `id`, `createBy`, `updateBy`, `createTime`, `updateTime` |
-| 核心交易、订单、资产流转表 | `BaseFullEntity` | 追加 `version` (乐观锁) 与 `deleted` (逻辑删除，标配 `@JsonIgnore`) |
-| 多租户数据表 | 继承上述基类并实现 `TenantEntity` | 追加 `tenantId` |
+| 自定义主键类型表（如 String 编码主键） | `BaseGenericEntity<ID>` | 泛型 `id` |
+| 中间关联映射表、静态字典表 | `BaseIdEntity` | `Long id`（自动桥接 `DefaultIdentifierGenerator` 2026 纪元雪花算法） |
+| 不可变流水表、系统监控日志表 | `BaseTimeEntity` | `id`, `createTime` (`INSERT`), `updateTime` (`INSERT_UPDATE`) |
+| 常规业务主表（默认首选） | `BaseEntity` | `id`, `createBy`, `updateBy`, `createTime`, `updateTime` |
+| 核心状态流转表（无业务唯一索引软删重建诉求） | `BaseFullEntity` | 追加 `@Version Integer version` 与 `@TableLogic @JsonIgnore Integer deleted` |
+| 含业务唯一索引且需支持多次软删重建的档案表 | `BaseDeleteIdEntity` | 追加 `@Version Integer version` 与 `@TableLogic(value = "0", delval = "id") @JsonIgnore Long deleted` |
+| SaaS 多租户隔离表 | 继承上述任一基类并实现 `TenantEntity` | 强制契约 `getTenantId()` / `setTenantId(String)` |
 
-### 核心实体代码示例
+#### 实战代码示例（提取自 Sample `UserEntity`）
 ```java
+@Getter
+@Setter
+@NoArgsConstructor
+@ToString(callSuper = true)
 @TableName(value = "sys_user", autoResultMap = true)
 public class UserEntity extends BaseFullEntity {
+
     private String name;
     private Integer age;
+
+    @FieldEncrypt
+    @TableField(typeHandler = EncryptTypeHandler.class)
     private String email;
+
+    @FieldEncrypt
+    @TableField(typeHandler = EncryptTypeHandler.class)
+    private String phone;
+
+    private Long deptId;
 }
 ```
 
 ---
 
-## 3. 防御性审计自动填充 (`DefaultMetaObjectHandler`)
+### 3.2 防御性审计元数据自动填充 (`DefaultMetaObjectHandler` & `CurrentUserProvider`)
 
-### 场景痛点
-开发人员无需手动 `setCreateTime` 或获取操作人。
-- 自动提取当前上下文操作人（由 `CurrentUserProvider` SPI 提供，支持字符串或 Long 用户 ID）；
-- 插入时自动填充 `createTime`、`createBy`、`updateTime`、`updateBy`；
-- 更新时自动填充 `updateTime`、`updateBy`；
-- **防御性赋值**：若业务代码已经显式 `setCreateTime(...)`，自动填充策略绝不覆盖开发者显式赋值。
+#### 场景痛点
+手工在每个 Service 方法中调用 `setCreateTime(LocalDateTime.now())` 与 `setCreateBy(currentUser)` 既繁琐又容易遗漏；而粗暴的 `MetaObjectHandler` 直接覆盖赋值又会抹杀数据迁移或管理员代创建时显式指定的 `createBy`。
+
+#### 本特性配置片段 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      audit:
+        enabled: true               # 是否启用审计字段自动填充（默认 true）
+        default-operator: "SYSTEM"  # 当上下文无登录用户时的兜底操作人标识（默认 SYSTEM）
+```
+
+#### 实战代码示例（提取自 Sample `MpEntityLifecycleController`）
+```java
+@PostMapping("/user")
+public Result<UserVO> createUser(@Valid @RequestBody UserCreateDTO dto) {
+    boolean boundContext = StringUtils.hasText(dto.getOperator());
+    if (boundContext) {
+        // 模拟当前线程登录操作人（生产环境由认证过滤器自动注入 UserContextHolder）
+        UserContextHolder.set(dto.getOperator());
+    }
+    try {
+        UserEntity entity = new UserEntity(
+                dto.getName(), dto.getAge(), dto.getEmail(), dto.getPhone(), dto.getDeptId()
+        );
+        // 防御性不覆盖：若业务显式指定了 createBy，DefaultMetaObjectHandler 绝不覆盖该值
+        if (StringUtils.hasText(dto.getExplicitCreateBy())) {
+            entity.setCreateBy(dto.getExplicitCreateBy());
+        }
+        userService.save(entity);
+        return Result.success(UserVO.fromEntity(userService.getById(entity.getId())));
+    } finally {
+        if (boundContext) {
+            UserContextHolder.clear();
+        }
+    }
+}
+```
+
+#### 生产扩展接管：自定义 `CurrentUserProvider` SPI
+默认情况下，模块从 `ateng-boot-core` 的 `UserContextHolder.get()` 提取当前操作人，无值时回退至 `default-operator`（`SYSTEM`）。若需直接对接自定义安全框架，只需声明 `CurrentUserProvider` Bean：
+```java
+@Component
+public class CustomSecurityUserProvider implements CurrentUserProvider {
+    @Override
+    public String getCurrentUser() {
+        return Optional.ofNullable(UserContextHolder.get()).orElse("SYSTEM");
+    }
+}
+```
 
 ---
 
-## 4. 数据安全生命周期分离：存储透明加密与视图动态脱敏
+### 3.3 联合唯一索引防冲突基类与逻辑删除 AST 穿透恢复闭环 (`BaseDeleteIdEntity` & `AtengLogicDeleteInnerInterceptor`)
 
-### 场景痛点与“内存真明文”铁律
-传统做法直接在业务 Service 中给手机号打星号，导致“星号脏数据写回数据库”的数据损毁事故。`ateng-boot` 严格分离生命周期：
-- **存储加密**：收敛于 MyBatis `TypeHandler`（入库为 AES/SM4 密文，出库反序列化为真实明文）；
-- **内存状态**：Service 业务逻辑与实体对象在内存中始终保持 100% 原始真实明文；
-- **视图脱敏**：依托 `ateng-boot-core` 底座提供的 `@FieldSensitive` 与 `SensitiveJsonSerializer`，仅在向前端响应输出 JSON 时动态掩码。
+#### 场景痛点
+1. **软删除唯一索引冲突死局**：若表上建有 `UNIQUE KEY (sku_code, deleted)` 且 `deleted` 仅取 `0/1`，当同一个商品编码 `SKU-999` 被第二次软删除时，数据库中将出现两条 `('SKU-999', 1)`，直接触发 `Duplicate entry 'SKU-999-1'` 物理唯一键崩溃；
+2. **MyBatis-Plus 逻辑删除不可逆**：官方 `@TableLogic` 在启动预编译期将 `WHERE deleted = 0` 硬编码进 `selectById` 与 `updateById`，导致业务无法通过常规 Service 门面查询回收站数据或将误删数据恢复为 `deleted = 0`。
 
-### 核心代码范式
+#### 本特性配置片段 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      logic-delete:
+        enabled: true             # 启用 JSqlParser AST 逻辑删除动态穿透拦截器（默认 true）
+        columns:                  # 识别并支持穿透剥离的逻辑删除列名集合
+          - deleted
+          - is_deleted
+          - del_flag
+```
+
+#### 实战代码示例（提取自 Sample `ProductSkuEntity` 与 `MpEntityLifecycleController`）
 ```java
-import io.github.atengk.boot.core.annotation.FieldSensitive;
-import io.github.atengk.boot.core.enums.SensitiveType;
-import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
-import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
+// 1. 实体继承 BaseDeleteIdEntity：软删除时自动执行 SET deleted = id（以自身 64 位雪花主键占位）
+@TableName("product_sku")
+public class ProductSkuEntity extends BaseDeleteIdEntity {
+    private String skuCode;
+    private String skuName;
+    private String category;
+    private BigDecimal price;
+}
 
-@TableName(value = "sys_user", autoResultMap = true) // 必须开启 autoResultMap
-public class UserEntity extends BaseEntity {
+// 2. 循环“上架 -> 软删除 -> 同编码再上架”零冲突 + 穿透查询 + 误删恢复闭环
+@PostMapping("/sku/cycle-soft-delete")
+public Result<List<ProductSkuVO>> cycleSoftDelete(@RequestParam(defaultValue = "SKU-999") String skuCode) {
+    // 首次创建并软删除：底层执行 UPDATE product_sku SET deleted = id WHERE id = ? AND deleted = 0
+    ProductSkuEntity firstGen = new ProductSkuEntity(skuCode, "无线降噪耳机初代版", "数码影音", new BigDecimal("1299.00"));
+    softDeleteService.save(firstGen);
+    softDeleteService.removeById(firstGen.getId());
 
-    // 1. 数据库存储透明加密（入库自动 AES 加密，查询自动解密）
+    // 同编码再次上架：新记录为 ('SKU-999', 0)，旧记录为 ('SKU-999', 18461829...)，联合唯一键零冲突
+    ProductSkuEntity secondGen = new ProductSkuEntity(skuCode, "无线降噪耳机二代旗舰版", "数码影音", new BigDecimal("1599.00"));
+    softDeleteService.save(secondGen);
+
+    // 穿透逻辑删除过滤：同时查出已下架历史版本与当前在售版本
+    List<ProductSkuEntity> all = softDeleteService.listWithDeleted(
+            new LambdaQueryWrapper<ProductSkuEntity>().eq(ProductSkuEntity::getSkuCode, skuCode)
+    );
+    return Result.success(all.stream().map(ProductSkuVO::fromEntity).toList());
+}
+
+// 3. 误删一键恢复（自动剥离 WHERE deleted = 0 锁死，将 deleted 重置为 0 并刷新 updateTime / updateBy）
+@PostMapping("/sku/{id}/restore")
+public Result<ProductSkuVO> restoreSkuById(@PathVariable Long id) {
+    boolean restored = softDeleteService.restoreById(id);
+    BusinessAssert.isTrue(restored, "未找到可恢复的商品 SKU 记录: id=" + id);
+    return Result.success(ProductSkuVO.fromEntity(softDeleteService.getById(id)));
+}
+```
+
+#### 核心生产边界与非功能语义
+- **嵌套重入安全的穿透上下文 (`LogicDeleteContextHolder`)**：底层采用 `ThreadLocal<Integer>` 引用计数深度管理，支持 `LogicDeleteContextHolder.callWithDeleted(() -> ...)` 任意层级嵌套调用，最外层退出时在 `finally` 中确定性归零清理；
+- **AST 精准剥离不伤业务条件**：`AtengLogicDeleteInnerInterceptor` 仅在当前线程激活穿透标记时介入，通过 JSqlParser 递归剥离 `WHERE` 与 `JOIN ON` 中的 `deleted = 0` 条件，100% 保留业务自身的查询与排序条件；
+- **防全表误恢复强卫语句**：调用 `softDeleteService.restore(wrapper)` 时，若传入 `null` 或不包含任何有效 `WHERE` 条件的空 `Wrapper`，底层立即抛出 `IllegalArgumentException` 快速失败，严防将全表历史软删数据一次性全部复活。
+
+---
+
+## 4. 字段级透明加解密、视图动态脱敏与受管 JSON 映射
+
+> **对应样例控制器**：`MpSecurityAndJsonController`（路由前缀 `/sample/mybatis-plus/security-json`）  
+> **锚定集成测试**：`MpLifecycleAndSecurityControllerTest`、`JsonFieldScenarioTest`、`UserDomainIntegrationTest`
+
+### 4.1 存储透明加解密与“内存真明文”生命周期分离 (`@FieldEncrypt` & `EncryptTypeHandler`)
+
+#### 场景痛点
+许多项目在 Service 层查出用户实体后直接执行 `user.setPhone("138****5678")` 再返回前端；一旦后续业务在同一事务或对象上调用 `updateById(user)`，星号掩码就会直接覆盖数据库真实手机号，造成不可逆的生产数据损毁。
+
+#### 本特性配置片段 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      crypto:
+        # AES-GCM 存储透明加密主密钥（生产环境强烈建议通过环境变量 ${MP_CRYPTO_SECRET_KEY} 注入）
+        secret-key: "${MP_CRYPTO_SECRET_KEY:AtengBootDefaultSecretKey2026!}"
+```
+
+#### 三态数据安全流转架构與实战代码（提取自 Sample `MpSecurityAndJsonController`）
+```mermaid
+flowchart LR
+    DB[("1. 数据库物理列 (sys_user)\n密文: v1:Yd33MOmv...")]
+    MEM["2. Service 内存实体 (UserEntity)\n100% 原始真明文: 13812345678"]
+    JSON["3. HTTP 响应视图 (UserVO)\n@FieldSensitive 动态掩码: 138****5678"]
+
+    DB -- "EncryptTypeHandler\n出库自动解密" --> MEM
+    MEM -- "EncryptTypeHandler\n入库透明加密" --> DB
+    MEM -- "UserVO.fromEntity\nJackson 序列化脱敏" --> JSON
+```
+
+```java
+// 1. 持久层实体：声明 @FieldEncrypt 与 EncryptTypeHandler（必须开启 autoResultMap = true）
+@TableName(value = "sys_user", autoResultMap = true)
+public class UserEntity extends BaseFullEntity {
     @FieldEncrypt
     @TableField(typeHandler = EncryptTypeHandler.class)
-    // 2. 接口对外返回时动态脱敏打码（内存与数据库依然保持真明文，来自 ateng-boot-core）
+    private String phone;
+}
+
+// 2. 传输层视图 VO：声明 @FieldSensitive，仅在 JSON 序列化出站时动态打星号
+@Data
+public class UserVO implements Serializable {
     @FieldSensitive(SensitiveType.MOBILE_PHONE)
     private String phone;
 
-    @FieldEncrypt
-    @TableField(typeHandler = EncryptTypeHandler.class)
-    @FieldSensitive(SensitiveType.ID_CARD)
-    private String idCard;
+    @FieldSensitive(SensitiveType.EMAIL)
+    private String email;
+}
 
-    @FieldSensitive(SensitiveType.ADDRESS)
-    private String address;
+// 3. 三态对比验证：JDBC 底层密文 vs Service 内存真明文 vs UserVO 序列化动态脱敏
+Map<String, Object> rawRow = jdbcTemplate.queryForMap("SELECT phone FROM sys_user WHERE id = ?", userId);
+String dbCipherPhone = (String) rawRow.get("phone");              // "v1:..." (AES 密文)
+
+UserEntity loaded = userService.getById(userId);
+boolean isPlain = "13812345678".equals(loaded.getPhone());        // true (内存 100% 原始真明文)
+UserVO responseVo = UserVO.fromEntity(loaded);                    // JSON 序列化输出 "138****5678"
+```
+
+#### 核心生产边界与非功能语义
+- **必须显式开启 `autoResultMap = true`**：MyBatis-Plus 仅在 `@TableName(value = "...", autoResultMap = true)` 开启时才会在查询结果集映射阶段自动触发字段上的 `typeHandler`；若漏配会导致写入加密但查询原样返回密文；
+- **密文列查询与排序约束**：由于 AES-GCM 每次加密携带随机 IV（保障语义安全，相同明文每次生成不同 `v1:` 密文），加密字段不支持数据库层面的 `LIKE '%...%'` 模糊匹配与 `ORDER BY` 排序；`PageUtil` 与 `DynamicQueryHelper` 已内置白名单防卫，自动拦截并忽略针对 `@FieldEncrypt` 字段的排序探测。
+
+---
+
+### 4.2 Spring 受管 JSON 字段类型转换器与复杂泛型空安全保底 (`AtengJacksonTypeHandler` & `GenericJsonTypeHandler`)
+
+#### 场景痛点
+1. **原生 `JacksonTypeHandler` 与 Spring 容器割裂**：MyBatis-Plus 官方 `JacksonTypeHandler` 默认通过私有 `new ObjectMapper()` 初始化，丢失了 Spring Boot 容器中的 `JavaTimeModule`，导致包含 `LocalDateTime` 的 JSON 字段在序列化时直接报错崩溃；
+2. **深层泛型擦除与空指针（NPE）陷阱**：当实体字段为 `List<ShippingAddress>` 时，普通 `TypeHandler` 因 Java 泛型擦除会将元素反序列化为 `LinkedHashMap`，强转时触发 `ClassCastException`；且当数据库列为 `NULL` 时直接返回 `null`，极易引发业务遍历 `NullPointerException`。
+
+#### 实战代码示例（提取自 Sample `MemberProfileEntity`）
+```java
+@Getter
+@Setter
+@TableName(value = "member_profile", autoResultMap = true)
+public class MemberProfileEntity extends BaseEntity {
+
+    private String memberName;
+
+    // 1. 标准集合与 Map：绑定 AtengJacksonTypeHandler，数据库为 NULL 时自动保底返回 Collections.emptyList/Set/Map()
+    @TableField(typeHandler = AtengJacksonTypeHandler.class)
+    private List<String> tags;
+
+    @TableField(typeHandler = AtengJacksonTypeHandler.class)
+    private Set<String> roles;
+
+    @TableField(typeHandler = AtengJacksonTypeHandler.class)
+    private Map<String, Object> extraInfo;
+
+    // 2. 含 LocalDateTime 的复杂 POJO：自动复用 Spring Boot 受管 ObjectMapper，原生支持 JSR-310 时间格式
+    @TableField(typeHandler = AtengJacksonTypeHandler.class)
+    private UserProfile profile;
+
+    // 3. 深层嵌套泛型集合 List<ShippingAddress>：继承 GenericJsonTypeHandler 保留完整泛型签名
+    @TableField(typeHandler = ShippingAddressListTypeHandler.class)
+    private List<ShippingAddress> shippingAddresses;
+
+    /**
+     * 继承 GenericJsonTypeHandler<List<ShippingAddress>> 并透传构造器，即可完整保留深层泛型并享空集合保底
+     */
+    public static class ShippingAddressListTypeHandler extends GenericJsonTypeHandler<List<ShippingAddress>> {
+        public ShippingAddressListTypeHandler() {
+            super();
+        }
+        public ShippingAddressListTypeHandler(Class<?> type) {
+            super(type);
+        }
+        public ShippingAddressListTypeHandler(Class<?> type, Field field) {
+            super(type, field);
+        }
+    }
 }
 ```
-**数据库存储呈现**：`8a1d7c4b...`（加密密文）  
-**Service 业务计算取值**：`user.getPhone()` -> `"13812345678"`（真实明文）  
-**前端接口响应呈现**：`"phone": "138****5678"`（安全掩码）
+
+#### 核心生产边界与非功能语义
+- **Spring 受管 `ObjectMapper` 自动桥接**：`AtengMybatisPlusAutoConfiguration` 通过 `SmartInitializingSingleton` 在容器单例就绪后自动将全局 `ObjectMapper` 注入 `AtengJacksonTypeHandler`、`GenericJsonTypeHandler` 及官方 `JacksonTypeHandler`，100% 遵循 ADR-0005 序列化规范；
+- **空安全保底契约 (Null Safety Invariant)**：当数据库 JSON 列值为 `NULL`、空字符串 `""` 或 `"null"` 时，`List` 属性保底返回 `Collections.emptyList()`，`Set` 属性保底返回 `Collections.emptySet()`，`Map` 属性保底返回 `Collections.emptyMap()`，单对象 POJO（如 `UserProfile`）返回 `null`，彻底消灭业务层集合遍历 NPE。
 
 ---
 
@@ -337,14 +617,6 @@ int affectedRows = BatchUtil.updateBatch(userMapper, List.of(u3, u1, u2));
 // 方式二：通过 AtengBaseService 注入执行（受声明式事务守护）
 userService.updateBatch(List.of(u3, u1, u2));
 ```
-
----
-
-## 8. 持久层发号器大一统桥接
-
-模块自动桥接并注册 `IdentifierGenerator` 适配器，将 MyBatis-Plus 默认主键生成策略委托至 `ateng-boot-core` 的原生雪花算法引擎与 `IdUtil`。
-- 实体类只需标准声明 `@TableId(type = IdType.ASSIGN_ID)` 即可自动享受 2026 纪元与时钟回拨保护；
-- 彻底终结多套发号器时间戳割裂与节点冲突问题。
 
 ---
 
@@ -1558,104 +1830,7 @@ ateng:
 
 ---
 
-## 20. Spring Boot 3 受管 JSON 类型转换器与空安全保底 (`AtengJacksonTypeHandler` & `GenericJsonTypeHandler`)
-
-### 痛点背景与架构决策 (ADR-0056)
-- **Spring Boot 3 原生 Jackson 割裂**：MyBatis-Plus 原生 `JacksonTypeHandler` 默认在类加载期通过私有 `new ObjectMapper()` 初始化，丢失了 Spring 上下文中配置的 `JavaTimeModule`（导致 `LocalDateTime` 反序列化崩溃）、自定义命名策略以及 ADR-0005 规范的脱敏与全局定制；
-- **空安全与保底返回违规**：数据库字段为 `NULL` 或空字符串时，原生反序列化直接返回 `null`，导致上游调用方在遍历集合或读取字典时极易抛出空指针异常（NPE）。
-
-### 解决方案与核心特性
-1. **全局生命周期注入**：在 `AtengMybatisPlusAutoConfiguration` 中通过 `SmartInitializingSingleton` 将 Spring Boot 受管 `ObjectMapper` 注入 `JacksonTypeHandler.setObjectMapper`；
-2. **`AtengJacksonTypeHandler<T>` 空安全保底**：重写 `getNullableResult` 方法，对 `List`、`Set`、`Map` 实体属性在读取到 `NULL` 或空白字符串时，保底返回不可变空容器（`Collections.emptyList()` / `Collections.emptySet()` / `Collections.emptyMap()`），普通 POJO 返回 `null`；
-3. **`GenericJsonTypeHandler<T>` 深度泛型解析**：抽象泛型基类，支持通过子类携带 `TypeReference<T>` 精确解析深层嵌套泛型（如 `Map<String, List<ItemVO>>`）。
-
-### 核心代码范式 (逆向提取自 Sample `JsonFieldScenario`)
-```java
-@Data
-@EqualsAndHashCode(callSuper = true)
-@ToString(callSuper = true)
-@NoArgsConstructor
-@AllArgsConstructor
-@TableName(value = "demo_json_user", autoResultMap = true)
-public class DemoJsonUserEntity extends BaseEntity {
-
-    private static final long serialVersionUID = 1L;
-
-    /**
-     * 用户名
-     */
-    private String username;
-
-    /**
-     * 字符串列表：空值保底返回不可变 Collections.emptyList()
-     */
-    @TableField(typeHandler = AtengJacksonTypeHandler.class)
-    private List<String> tags;
-
-    /**
-     * 集合属性：空值保底返回不可变 Collections.emptySet()
-     */
-    @TableField(typeHandler = AtengJacksonTypeHandler.class)
-    private Set<String> roles;
-
-    /**
-     * 扩展字典：空值保底返回不可变 Collections.emptyMap()
-     */
-    @TableField(typeHandler = AtengJacksonTypeHandler.class)
-    private Map<String, Object> extraInfo;
-
-    /**
-     * 嵌套复杂 POJO（支持 LocalDateTime JSR-310 自动序列化）：空值返回 null
-     */
-    @TableField(typeHandler = AtengJacksonTypeHandler.class)
-    private UserProfile profile;
-
-    @Data
-    @NoArgsConstructor
-    @AllArgsConstructor
-    public static class UserProfile implements Serializable {
-        private String bio;
-        private Integer level;
-        private LocalDateTime registerTime;
-    }
-}
-```
-
----
-
-## 21. 基于 JSqlParser AST 的逻辑删除穿透与对称恢复闭环 (`LogicDeleteContextHolder` & `AtengLogicDeleteInnerInterceptor`)
-
-### 痛点背景与“对称语义完备性”铁律 (ADR-0056)
-MyBatis-Plus 在启动期就将 `@TableLogic`（`WHERE deleted = 0`）静态固化在预编译 SQL 中，导致原生 `updateById` 和 `selectList` 默认无法作用于已删除记录。系统管理员误删数据后，持久层缺乏标准的恢复门面；历史数据归档审计或回收站查询时，无法通过常规 Wrapper 查询已删除记录，触碰了九道防线中“对称语义完备性”红线。
-
-### 解决方案与核心机制
-1. **`LogicDeleteContextHolder`**：基于 ThreadLocal 结合嵌套调用计数器实现，提供 `runWithDeleted` 与 `callWithDeleted` 编程式闭包，`finally` 块中绝对可靠清理现场；
-2. **`AtengLogicDeleteInnerInterceptor`**：JSqlParser AST 递归动态剥离 WHERE 条件中的 `deleted = 0` 等值表达式，保留业务显式条件；
-3. **`AtengBaseService` 对称恢复与查询门面**：
-   - `restoreById(Serializable id)` / `restore(Wrapper<T> wrapper)`：穿透闭包将 `deleted` 恢复为 0 并自动填充更新审计字段；
-   - `getByIdWithDeleted(Serializable id)` / `listWithDeleted(Wrapper<T> wrapper)` / `pageWithDeleted(IPage<T> page, Wrapper<T> wrapper)`；
-4. **`BaseDeleteIdEntity` 联合唯一键兼容**：`deleted` 为 `Long`，未删除为 `0L`，删除时填充分布式雪花 ID，完美兼容 `UNIQUE KEY (code, deleted)`。
-
-### 核心代码范式 (逆向提取自 Sample `SoftDeleteUniqueKeyScenario`)
-```java
-// 1. 穿透闭包查询包含已逻辑删除的历史数据
-SoftDeleteItemEntity item = LogicDeleteContextHolder.callWithDeleted(() -> softDeleteItemMapper.selectById(itemId));
-
-// 2. 依托 AtengBaseService 门面极速恢复误删数据（重置 deleted = 0 并自动触发审计字段更新）
-boolean restored = softDeleteService.restoreById(itemId);
-
-// 3. 回收站专用语法糖：穿透查询已删除全量列表与分页
-List<SoftDeleteItemEntity> allList = softDeleteService.listWithDeleted(
-        new LambdaQueryWrapper<SoftDeleteItemEntity>().eq(SoftDeleteItemEntity::getCode, "SKU-999"));
-
-// 4. 批量条件恢复（带参数条件的 QueryWrapper 批量安全恢复，内置防全表误恢复卫语句）
-int restoredCount = softDeleteService.restore(
-        new LambdaQueryWrapper<SoftDeleteItemEntity>().eq(SoftDeleteItemEntity::getCode, "SKU-999"));
-```
-
----
-
-## 22. 强类型悲观排队锁与并发跳锁方言自适应原语 (`LockMode` & `PessimisticLockUtil`)
+## 20. 强类型悲观排队锁与并发跳锁方言自适应原语 (`LockMode` & `PessimisticLockUtil`)
 
 ### 痛点背景与防雪崩守卫 (ADR-0056)
 在利用数据库实现轻量任务队列、抢单分配或分布式批处理时，`SELECT ... FOR UPDATE SKIP LOCKED` / `NOWAIT` 是避免 Worker 线程锁等待堵塞的工业解法。过去开发人员拼接脆弱的 `.last("FOR UPDATE SKIP LOCKED")` 魔法字符串，且在低版本方言（如 MySQL 5.7 或 SQLite）上缺乏防御性快速失败校验，极易在生产环境造成连接池耗尽雪崩。

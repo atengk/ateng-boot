@@ -28,13 +28,14 @@ CREATE TABLE IF NOT EXISTS tenant_order (
     version INT DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS demo_json_user (
+CREATE TABLE IF NOT EXISTS member_profile (
     id BIGINT NOT NULL PRIMARY KEY,
-    username VARCHAR(64) NOT NULL,
+    member_name VARCHAR(64) NOT NULL,
     tags VARCHAR(512),
     roles VARCHAR(512),
     extra_info VARCHAR(1024),
     profile VARCHAR(2048),
+    shipping_addresses VARCHAR(2048),
     create_time TIMESTAMP,
     update_time TIMESTAMP,
     create_by VARCHAR(64),
@@ -52,17 +53,19 @@ CREATE TABLE IF NOT EXISTS task_queue (
     update_by VARCHAR(64)
 );
 
-CREATE TABLE IF NOT EXISTS soft_delete_item (
+CREATE TABLE IF NOT EXISTS product_sku (
     id BIGINT NOT NULL PRIMARY KEY,
-    code VARCHAR(64) NOT NULL,
-    name VARCHAR(128) NOT NULL,
+    sku_code VARCHAR(64) NOT NULL,
+    sku_name VARCHAR(128) NOT NULL,
+    category VARCHAR(64),
+    price DECIMAL(10, 2),
     deleted BIGINT DEFAULT 0,
     version INT DEFAULT 0,
     create_time TIMESTAMP,
     update_time TIMESTAMP,
     create_by VARCHAR(64),
     update_by VARCHAR(64),
-    CONSTRAINT uk_code_deleted UNIQUE (code, deleted)
+    CONSTRAINT uk_sku_code_deleted UNIQUE (sku_code, deleted)
 );
 
 CREATE TABLE IF NOT EXISTS sys_dept (

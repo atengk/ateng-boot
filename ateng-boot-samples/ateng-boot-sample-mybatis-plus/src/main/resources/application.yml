@@ -1,5 +1,5 @@
 server:
-  port: 8081
+  port: 8080
 
 spring:
   config:
@@ -24,6 +24,10 @@ mybatis-plus:
 
 ateng:
   boot:
+    web:
+      shutdown:
+        enabled: true
+        drain-timeout: 0s
     mybatis-plus:
       sql-log:
         enabled: true
@@ -44,9 +48,9 @@ ateng:
         column: tenant_id
         ignore-tables:
           - sys_user
-          - demo_json_user
+          - member_profile
           - task_queue
-          - soft_delete_item
+          - product_sku
           - sys_dept
       data-permission:
         enabled: true
