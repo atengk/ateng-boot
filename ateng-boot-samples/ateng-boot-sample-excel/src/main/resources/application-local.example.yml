@@ -1,14 +1,16 @@
-# ===================================================================
-# 本地真实联调配置模板（复制为 application-local.yml 并填写真实凭据）
-# 严禁将包含真实机密与公网 IP 的 application-local.yml 提交至 Git 仓库
-# ===================================================================
+# 本地真实 Redis 联调配置示例模板（请复制为 application-local.yml 并填入真实连接串）
+# 真实 application-local.yml 已被根目录 .gitignore 忽略，绝对严禁提交公网真实 IP 与密码凭据至 Git
 spring:
+  config:
+    activate:
+      on-profile: local
   data:
     redis:
       host: YOUR_REDIS_HOST
       port: 6379
       password: YOUR_REDIS_PASSWORD
       database: 0
+      timeout: 3000ms
 
 ateng:
   boot:
@@ -16,3 +18,5 @@ ateng:
       async-export:
         redis:
           enabled: true
+          key-prefix: "ateng:excel:sample-async:"
+          ttl: 24h

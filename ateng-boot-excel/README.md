@@ -14,8 +14,8 @@
 | **Web 门面** | Web 流式导出与客户端中断防卫 | `ExcelWebUtil` | - | `toResponseEntity(fileName, data, clazz)` / `createDownloadHeaders(fileName)` / `export(response, ...)` / `builder(response, fileName)`：一等公民支持 `ResponseEntity<StreamingResponseBody>` 与 `HttpServletResponse`，遵循 RFC 5987 / RFC 6266 防乱码，自动识别并静默抑制 `ClientAbortException`、`Broken pipe` | `ExcelWebUtilTest`<br>`EmployeeRosterController`<br>`SampleExcelIntegrationTest` |
 | **核心读取** | 同步全量与流式分批读取 | `ExcelUtil` | `default-batch-size`<br>`max-sync-rows` | `read(in, clazz)`（超限自动 fail-fast 阻断防 OOM）；`readBatch(in, clazz, batchSize, consumer)`（每次达到批次回调并即刻清空内存引用）；支持带 `password` 透明解密重载 | `ExcelUtilTest`<br>`SampleExcelIntegrationTest` |
 | **多表流式读取** | 异构多工作表读取构建器 | `ExcelReaderBuilder`<br>`ExcelMultiSheetResult`<br>`ExcelUtil.reader` | `default-batch-size`<br>`max-sync-rows` | `ExcelUtil.reader(in).sheet(0, ClassA).sheet(1, ClassB, consumer).read()`：支持按 Sheet 绑定独立模型，提供同步全量与流式分批读取，默认全局 `maxTotalRows` 防爆上限 200,000 行 | `ExcelReaderBuilderTest`<br>`MultiSheetScenarioService`<br>`SampleExcelIntegrationTest` |
-| **数据校验** | JSR-303 行级校验导入 | `ExcelUtil`<br>`BatchValidationListener` | `validation.max-error-rows` | `readWithResult(in, clazz)` / `readBatchWithValidation(in, clazz, size, dataConsumer, errConsumer)`：精准捕获行号与列字段，聚合校验错误行与合法数据；支持带 `password` 透明解密重载 | `ExcelValidationTest`<br>`OnboardingImportController`<br>`SampleExcelIntegrationTest` |
-| **错题集隔离** | 差错数据隔离提取与标红回写 | `ExcelUtil`<br>`ExcelWebUtil`<br>`ExcelFeedbackUtil`<br>`FailSplitRowWriteHandler` | - | `exportFailedRows(...)`（仅将失败数据提取生成独立纠错文件并高亮）；`exportErrorFeedback(...)`（原表单元格浅粉色高亮并嵌入浮动批注回写） | `ExcelFailSplitTest`<br>`OnboardingImportController`<br>`SampleExcelIntegrationTest` |
+| **数据校验** | JSR-303 行级校验导入 | `ExcelUtil`<br>`BatchValidationListener`<br>`ExcelReadResult`<br>`ExcelErrorRow` | `validation.max-error-rows` | `readWithResult(in, clazz)` / `readBatchWithValidation(in, clazz, size, dataConsumer, errConsumer)`：精准捕获行号与列字段，聚合校验错误行与合法数据；支持带 `password` 透明解密重载 | `ExcelValidationTest`<br>`OnboardingImportController`<br>`SampleExcelIntegrationTest` |
+| **错题集隔离** | 差错数据隔离提取与标红回写 | `ExcelUtil`<br>`ExcelWebUtil`<br>`ExcelFeedbackUtil`<br>`FailSplitRowWriteHandler`<br>`TypeConvertUtil` | - | `exportFailedRows(...)`（仅将失败数据提取生成独立纠错文件并高亮）；`exportErrorFeedback(...)`（原表单元格浅粉色高亮并嵌入浮动批注回写） | `ExcelFailSplitTest`<br>`OnboardingImportController`<br>`SampleExcelIntegrationTest` |
 | **数据安全** | 导出动态脱敏 | `@ExcelSensitive`<br>`SensitiveCellWriteHandler` | - | `@ExcelSensitive(type, keepHead, keepTail, maskChar)`：写出时流式拦截掩码，源实体在 JVM 内存中 100% 保持原始明文不变量，彻底根除掩码脏写 | `ExcelSensitiveTest`<br>`EmployeeRosterController`<br>`SampleExcelIntegrationTest` |
 | **企业主题** | 模版主题与智能列宽 | `@ExcelTheme`<br>`ExcelThemeEnum`<br>`ExcelThemeWriteHandler`<br>`SmartAutoColumnWidthWriteHandler` | `style.enabled`<br>`style.theme`<br>`style.zebra-stripe`<br>`style.auto-column-width` | 5 套企业级内置主题（`MINIMAL_CLEAN`, `BUSINESS_BLUE`, `CLASSIC_GREY`, `FRESH_GREEN`, `WARM_ORANGE`）；中英文双字节补偿列宽防数值变 `###` | `ExcelThemeWriteHandlerTest`<br>`EmployeeRosterController`<br>`SampleExcelIntegrationTest` |
 | **链式编排** | 多 Sheet 链式构建器 | `ExcelBuilder` | - | `ExcelUtil.builder(out).theme(theme).sheet(name, clazz, list).finish()`：实现了 `AutoCloseable`，支持在单个工作簿内连续编排实体与动态 Sheet | `ExcelAdvancedFeaturesTest`<br>`EmployeeRosterController`<br>`SampleExcelIntegrationTest` |
@@ -1036,7 +1036,7 @@ try (InputStream in = file.getInputStream()) {
 
 ---
 
-### 7.3 海量数据异步导出任务中心 (`AsyncExportTaskService`)
+### 7.3 海量数据异步导出任务中心 (`AsyncExportTaskService` & `ExportFileStorage`)
 
 #### 本节专属 YAML 配置
 ```yaml
@@ -1046,16 +1046,19 @@ ateng:
       async-export:
         # 是否启用异步导出中心（默认 true）
         enabled: true
-        # 异步下载 URL 前缀（用于拼接下载链接）
+        # 异步导出产物物理文件落盘目录（留空时使用 java.io.tmpdir/ateng-excel-async）
+        temp-dir: /data/tmp/ateng-excel-async
+        # 异步文件下载前缀（用于拼接生成的 downloadUrl，默认 "/api/excel/async-download?taskId="）
         download-url-prefix: "/api/excel/async-download?taskId="
-        # 核心/最大线程池大小与队列容量
+        # 核心/最大线程池大小与等待队列容量
         core-pool-size: 4
         max-pool-size: 8
         queue-capacity: 200
-        # 产物保留过期时长与租约超时时间
+        # 产物保留过期时长（支持 24h、1d 等 Duration 标准单位，默认 24h）
         retention-period: 24h
+        # 单任务执行租约超时时间（默认 30m，执行期间自动心跳续期，防宕机悬挂）
         lease-timeout: 30m
-        # Redis 分布式集群模式（当应用引入 Redis 时自适应激活）
+        # Redis 分布式集群模式（当引入 spring-boot-starter-data-redis 时自适应激活）
         redis:
           enabled: true
           key-prefix: "ateng:excel:async-task:"
@@ -1064,13 +1067,25 @@ ateng:
 
 #### 实战业务代码范式
 ```java
+import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.excel.async.AsyncExportTaskService;
 import io.github.atengk.boot.excel.async.ExportTask;
+import io.github.atengk.boot.excel.async.storage.ExportFileStorage;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import io.github.atengk.boot.sample.excel.vo.OrderBillVO;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.io.InputStream;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/excel/async")
@@ -1079,29 +1094,62 @@ public class ExcelAsyncExportController {
     @Autowired
     private AsyncExportTaskService taskService;
 
+    @Autowired
+    private ExportFileStorage fileStorage;
+
+    // 1. 提交异步海量导出任务（受管线程池后台执行，自动透传四维上下文与 X-Trace-Id）
     @PostMapping("/submit")
-    public String submitTask(@RequestParam String taskName) {
-        return taskService.submit(taskName, (task, out) -> {
-            task.updateProgress(10, "正在拉取数据...");
-            List<EmployeeRosterVO> data = loadData();
-            task.updateProgress(50, "正在生成 Excel...");
-            ExcelUtil.export(out, data, EmployeeRosterVO.class);
-            task.updateProgress(100, "导出完成");
+    public Result<Map<String, Object>> submitTask(
+            @RequestParam(defaultValue = "海量交易账单异步导出") String taskName,
+            @RequestParam(defaultValue = "1000") int count) {
+        
+        String taskId = taskService.submit(taskName, outputStream -> {
+            // 后台线程池异步执行流式写出（常量级常数内存占用）
+            List<OrderBillVO> dataList = loadLargeBillData(count);
+            ExcelUtil.export(outputStream, "交易账单", dataList, OrderBillVO.class);
         });
+
+        return Result.success(Map.of("taskId", taskId, "status", "PENDING"));
     }
 
+    // 2. 轮询异步任务进度与状态
     @GetMapping("/status")
-    public ExportTask getStatus(@RequestParam String taskId) {
-        return taskService.getTask(taskId);
+    public Result<ExportTask> getStatus(@RequestParam String taskId) {
+        ExportTask task = taskService.getTask(taskId);
+        return Result.success(task);
+    }
+
+    // 3. 取消排队中或执行中的任务
+    @PostMapping("/cancel")
+    public Result<Boolean> cancelTask(@RequestParam String taskId) {
+        return Result.success(taskService.cancel(taskId));
+    }
+
+    // 4. 受管流式文件下载
+    @GetMapping("/download")
+    public void download(@RequestParam String taskId, HttpServletResponse response) throws Exception {
+        ExportTask task = taskService.getTask(taskId);
+        try (InputStream in = fileStorage.getInputStream(taskId, task.getStorageKey())) {
+            String fileName = URLEncoder.encode(task.getTaskName() + ".xlsx", StandardCharsets.UTF_8).replace("+", "%20");
+            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            response.setHeader("Content-Disposition", "attachment; filename=\"" + fileName + "\"");
+            in.transferTo(response.getOutputStream());
+        }
     }
 }
 ```
+
+#### 核心机制与架构边界
+- **全链路四维上下文透传**：`taskService.submit` 内部通过 `AsyncContext.wrap(...)` 捕获提交方线程的 MDC（`traceId`）、`UserContext`、`TenantContext` 等环境快照，在受管后台执行线程中透明恢复并在任务完成后严格清理现场；
+- **Redis 租约心跳续期机制**：`RedisAsyncExportTaskService` 在任务开始时初始化租约超时（`leaseTimeout`，默认 30 分钟），后台调度器以 `leaseTimeout / 3` 周期自动发起心跳续期；若执行节点意外宕机，其他节点在查询该任务时原子探测到租约过期并自动标记为 `FAILED`，杜绝假死悬挂；
+- **物理资源对称清理**：单机内存实现 `cleanExpiredTasks` 在清理过期任务时，不仅删除本地临时文件，还对称回调 `fileStorage.delete(taskId, storageKey)`，杜绝远端对象存储残留垃圾；
+- **`ExportFileStorage` SPI 扩展**：底层存储默认装配 `LocalFileSystemStorage`，上层系统只需注册自定义 `ExportFileStorage` 实现 Bean 即可无缝替换为 MinIO、阿里云 OSS 或腾讯云 COS 直传架构。
 
 ---
 
 ## 8. 模块全量配置属性清单
 
-与 `ExcelProperties` 及其 6 个嵌套配置类逐字段 100% 对齐的全量 YAML 字典：
+与 `ExcelProperties` 及其 7 个嵌套配置类逐字段 100% 对齐的全量 YAML 字典：
 
 ```yaml
 ateng:
@@ -1116,51 +1164,75 @@ ateng:
       # 大文件磁盘溢出与加解密临时隔离目录（留空时使用系统默认临时目录）
       temp-dir: /data/tmp/ateng-excel
 
+      # 样式与模版主题配置
+      style:
+        # 是否启用企业级优雅样式体系（设为 false 则完全还原为 Fesod 原生裸输出，默认 true）
+        enabled: true
+        # 全局预设主题名称（minimal-clean, business-blue, classic-grey, fresh-green, warm-orange，默认 minimal-clean）
+        theme: minimal-clean
+        # 是否开启正文奇偶行斑马纹交替浅底纹（默认 true）
+        zebra-stripe: true
+        # 是否开启中英文智能自适应列宽（默认 true）
+        auto-column-width: true
+        # 自适应最小列宽字符数（默认 12）
+        min-column-width: 12
+        # 自适应最大列宽字符数（默认 60）
+        max-column-width: 60
+        # 自适应内边距补偿字符数（默认 2）
+        padding-column-width: 2
+        # 全局字体族名称（默认 "微软雅黑"）
+        font-name: "微软雅黑"
+
       # 异步导出任务中心配置
       async-export:
+        # 是否启用异步导出中心（默认 true）
         enabled: true
         # 异步导出产物物理文件落盘目录（留空时使用 java.io.tmpdir/ateng-excel-async）
         temp-dir: /data/tmp/ateng-excel-async
-        # 异步文件下载前缀（用于拼接生成的 downloadUrl）
+        # 异步文件下载前缀（用于拼接生成的 downloadUrl，默认 "/api/excel/async-download?taskId="）
         download-url-prefix: "/api/excel/async-download?taskId="
-        core-pool-size: 4
-        max-pool-size: 8
-        queue-capacity: 200
+        # 产物保留过期时长（支持 24h、1d 等 Duration 标准单位，默认 24h）
         retention-period: 24h
+        # 单任务执行租约超时时间（默认 30m，执行期间自动心跳续期，防宕机悬挂）
         lease-timeout: 30m
+        # 核心线程池大小（默认 4）
+        core-pool-size: 4
+        # 最大线程池大小（默认 8）
+        max-pool-size: 8
+        # 任务等待队列容量（默认 200）
+        queue-capacity: 200
+        # Redis 分布式任务中心配置
         redis:
+          # 是否启用基于 Redis 的分布式异步导出任务中心（默认 true）
           enabled: true
+          # 任务在 Redis 中的键前缀（默认 "ateng:excel:async-task:"）
           key-prefix: "ateng:excel:async-task:"
+          # 任务元数据在 Redis 中的保留与有效时长（默认 24h）
           ttl: 24h
 
       # 海量数据流式分页导出配置
       streaming-export:
+        # 单个工作表最大允许写入行数（超过时自动换 Sheet，默认 1,000,000）
         max-rows-per-sheet: 1000000
+        # 分页拉取步长（默认 1000）
         default-page-size: 1000
 
       # 导入数据校验与错误熔断配置
       validation:
+        # 导入表头契约校验策略（LOOSE / STRICT / DISABLED，默认 LOOSE）
         header-strategy: LOOSE
+        # 错误行数熔断阈值（默认 500 行）
         max-error-rows: 500
 
       # 安全防护与公式注入防御配置
       security:
+        # 是否开启公式注入安全防御（默认 true）
         formula-protection: true
 
       # 国际化多语言表头转译配置
       i18n:
+        # 是否开启多语言国际化表头动态转译（默认 true）
         enabled: true
-
-      # 样式与主题配置
-      style:
-        enabled: true
-        theme: minimal-clean
-        zebra-stripe: true
-        auto-column-width: true
-        min-column-width: 12
-        max-column-width: 60
-        padding-column-width: 2
-        font-name: "微软雅黑"
 ```
 
 ---

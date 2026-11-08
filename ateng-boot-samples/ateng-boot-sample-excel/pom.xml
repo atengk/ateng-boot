@@ -28,6 +28,12 @@
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-web</artifactId>
         </dependency>
+
+        <!-- Redis 数据中间件（用于演示分布式异步任务双模自适应切换） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
     </dependencies>
 
     <build>

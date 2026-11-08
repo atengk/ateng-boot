@@ -220,7 +220,7 @@ public class OrderStreamingController {
         return list;
     }
 
-    private List<OrderBillVO> generateMockOrders(int count) {
+    public static List<OrderBillVO> generateMockOrders(int count) {
         List<OrderBillVO> list = new ArrayList<>(count);
         String nowStr = LocalDateTime.now().format(TIME_FORMATTER);
         for (int i = 1; i <= count; i++) {

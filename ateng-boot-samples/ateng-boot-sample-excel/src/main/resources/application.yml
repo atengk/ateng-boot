@@ -19,3 +19,38 @@ ateng:
       long-to-string: true
       log:
         enabled: true
+
+---
+# 默认与 CI 离线自洽配置（未激活 local Profile 时生效）：
+# 排除 Redis 自动装配并关闭分布式 Redis 任务服务，保证纯内存 InMemoryAsyncExportTaskService 离线自洽运行（Zero-Mock）
+spring:
+  config:
+    activate:
+      on-profile: "!local"
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisReactiveAutoConfiguration
+
+ateng:
+  boot:
+    excel:
+      async-export:
+        redis:
+          enabled: false
+
+---
+# Local 真实服务联调配置（激活 local Profile 时生效）：
+# 启用 Redis 自动装配并无缝激活分布式 RedisAsyncExportTaskService
+spring:
+  config:
+    activate:
+      on-profile: "local"
+
+ateng:
+  boot:
+    excel:
+      async-export:
+        redis:
+          enabled: true
+

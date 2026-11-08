@@ -66,6 +66,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -857,6 +858,117 @@ class SampleExcelIntegrationTest {
         JsonNode node = objectMapper.readTree(importResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
         assertThat(node.get("code").asInt()).isEqualTo(200);
         assertThat(node.get("data").get("totalRead").asInt()).isEqualTo(80);
+    }
+
+    // ==========================================
+    // 领域控制器 6：ExcelAsyncExportController 测试 (/sample/excel/async/*)
+    // ==========================================
+
+    @Test
+    @DisplayName("异步导出端点 1 & 2 & 4：异步提交、X-Trace-Id 跨线程透传、状态轮询与受管文件下载")
+    void testAsync_Submit_And_CheckTraceId_And_Download() throws Exception {
+        String testTraceId = "trace-excel-async-7777";
+
+        // 1. 发起异步导出任务提交并显式携带 X-Trace-Id 请求头
+        MvcResult submitResult = mockMvc.perform(post("/sample/excel/async/submit")
+                        .header("X-Trace-Id", testTraceId)
+                        .param("taskName", "海量交易账单自动化自验")
+                        .param("count", "120"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode submitNode = objectMapper.readTree(submitResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(submitNode.get("code").asInt()).isEqualTo(200);
+        String taskId = submitNode.get("data").get("taskId").asText();
+        assertThat(taskId).isNotBlank();
+
+        // 2. 轮询任务状态直至 SUCCESS（至多等待 5 秒）
+        JsonNode statusNode = null;
+        int maxAttempts = 50;
+        for (int i = 0; i < maxAttempts; i++) {
+            MvcResult statusResult = mockMvc.perform(get("/sample/excel/async/status")
+                            .param("taskId", taskId))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            statusNode = objectMapper.readTree(statusResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            String taskStatus = statusNode.get("data").get("status").asText();
+            if ("SUCCESS".equals(taskStatus)) {
+                break;
+            }
+            Thread.sleep(100);
+        }
+
+        assertThat(statusNode).isNotNull();
+        assertThat(statusNode.get("code").asInt()).isEqualTo(200);
+        JsonNode data = statusNode.get("data");
+        assertThat(data.get("status").asText()).isEqualTo("SUCCESS");
+        assertThat(data.get("progress").asInt()).isEqualTo(100);
+        assertThat(data.get("downloadUrl").asText()).isEqualTo("/sample/excel/async/download?taskId=" + taskId);
+        assertThat(data.get("fileSize").asLong()).isGreaterThan(0L);
+
+        // 验证 X-Trace-Id 在后台工作线程中的 100% 完整透传
+        assertThat(data.get("workerTraceId").asText()).isEqualTo(testTraceId);
+
+        // 3. 通过受管下载端点拉取二进制 Excel 并核验
+        MvcResult downloadResult = mockMvc.perform(get("/sample/excel/async/download")
+                        .param("taskId", taskId))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] downloadBytes = downloadResult.getResponse().getContentAsByteArray();
+        assertThat(downloadBytes).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(downloadBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getSheetName()).isEqualTo("交易账单");
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(121); // 1 表头 + 120 行数据
+        }
+
+        saveTempExcel("async-export-result.xlsx", downloadBytes);
+    }
+
+    @Test
+    @DisplayName("异步导出端点 3：任务取消生命周期验证")
+    void testAsync_Cancel_Task() throws Exception {
+        // 1. 提交一个任务
+        MvcResult submitResult = mockMvc.perform(post("/sample/excel/async/submit")
+                        .param("taskName", "待取消测试任务")
+                        .param("count", "500"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode submitNode = objectMapper.readTree(submitResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        String taskId = submitNode.get("data").get("taskId").asText();
+
+        // 2. 取消该任务
+        MvcResult cancelResult = mockMvc.perform(post("/sample/excel/async/cancel")
+                        .param("taskId", taskId))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode cancelNode = objectMapper.readTree(cancelResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(cancelNode.get("code").asInt()).isEqualTo(200);
+        assertThat(cancelNode.get("data").get("taskId").asText()).isEqualTo(taskId);
+    }
+
+    @Test
+    @DisplayName("SPI 扩展验证：自定义 ExportFileStorage 条件化装配")
+    void testAsync_CustomStorage_SPI_Verification() {
+        new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+                .withUserConfiguration(
+                        io.github.atengk.boot.sample.excel.storage.CustomOssExportFileStorage.class,
+                        io.github.atengk.boot.excel.properties.ExcelProperties.class
+                )
+                .withPropertyValues("ateng.boot.excel.sample.custom-storage.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.excel.async.storage.ExportFileStorage.class);
+                    io.github.atengk.boot.excel.async.storage.ExportFileStorage storage =
+                            context.getBean(io.github.atengk.boot.excel.async.storage.ExportFileStorage.class);
+                    assertThat(storage).isInstanceOf(io.github.atengk.boot.sample.excel.storage.CustomOssExportFileStorage.class);
+                    assertThat(storage.getDownloadUrl("task_999", "key_999"))
+                            .startsWith(io.github.atengk.boot.sample.excel.storage.CustomOssExportFileStorage.OSS_URL_PREFIX);
+                });
     }
 
     // ==========================================

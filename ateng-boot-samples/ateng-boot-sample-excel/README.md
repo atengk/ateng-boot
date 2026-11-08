@@ -19,7 +19,8 @@
 ## 2. 运行环境与双模切换
 
 - **默认/CI 模式**（未激活 `local` Profile）：内置内存自洽存储与自洽配置，无需启动任何外部依赖即可启动运行与跑通全套自动化测试；
-- **Local 真实模式**（激活 `local` Profile）：若需连接本地或远程物理中间件（如 Redis 异步导出任务中心），复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并填入真实连接串，启动应用时添加 `--spring.profiles.active=local` 自动生效（该文件已被 `.gitignore` 严格忽略，保证 CI 零风险与凭据安全）。
+- **Local 真实模式**（激活 `local` Profile）：若需连接本地或远程物理中间件（如 Redis 异步导出任务中心），复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并填入真实连接串，启动应用时添加 `--spring.profiles.active=local` 自动生效（该文件已被 `.gitignore` 严格忽略，保证 CI 零风险与凭据安全）；
+- **自定义对象存储 SPI 扩展模式**：启动时附加配置 `--ateng.boot.excel.sample.custom-storage.enabled=true`，即可激活 `CustomOssExportFileStorage` 替换默认本地存储，验证自定义云分发 URL 前缀（`https://oss.example.com/excel-exports/`）接管能力。
 
 ---
 
@@ -58,6 +59,10 @@
 | **流式分页模板显式写控制导出** | `OrderStreamingController` | `GET /sample/excel/streaming/export-template` | `curl -i "http://localhost:8080/sample/excel/streaming/export-template" -o 订单流水_模板显式写.xlsx` |
 | **下载海量交易订单测试样本** | `OrderStreamingController` | `GET /sample/excel/streaming/sample-order-bill` | `curl -i "http://localhost:8080/sample/excel/streaming/sample-order-bill?count=300" -o 海量订单交易账单样本.xlsx` |
 | **大文件常量内存分批流式解析消费** | `OrderStreamingController` | `POST /sample/excel/streaming/import-batch` | `curl -X POST "http://localhost:8080/sample/excel/streaming/import-batch?batchSize=100" -F "file=@海量订单交易账单样本.xlsx"` |
+| **异步海量大账单任务提交 (透传Trace)** | `ExcelAsyncExportController` | `POST /sample/excel/async/submit` | `curl -X POST "http://localhost:8080/sample/excel/async/submit?taskName=季度财务大账单&count=500" -H "X-Trace-Id: trace-async-demo-001"` |
+| **异步任务执行进度与状态轮询** | `ExcelAsyncExportController` | `GET /sample/excel/async/status` | `curl -i "http://localhost:8080/sample/excel/async/status?taskId=YOUR_TASK_ID"` |
+| **取消排队或执行中的异步任务** | `ExcelAsyncExportController` | `POST /sample/excel/async/cancel` | `curl -X POST "http://localhost:8080/sample/excel/async/cancel?taskId=YOUR_TASK_ID"` |
+| **异步导出完成文件受管流式下载** | `ExcelAsyncExportController` | `GET /sample/excel/async/download` | `curl -i "http://localhost:8080/sample/excel/async/download?taskId=YOUR_TASK_ID" -o 异步导出大账单.xlsx` |
 
 ---
 
