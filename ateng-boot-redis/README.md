@@ -320,7 +320,22 @@ return 1 -- 领取成功
 - **智能租期守护**：缺省 `leaseTime = -1` 自动启用 Redisson 看门狗 (Watchdog) 30s 自动续期；指定具体租期则强制超时熔断防死锁；
 - **慢锁告警网关**：锁持有耗时超过阈值（默认 3 秒）自动输出 WARN 级别慢锁审计日志。
 
-### 核心代码示例（1:1 逆向自 `StockDeductScenarioService`）
+### 专属 YAML 配置片段
+
+```yaml
+ateng:
+  boot:
+    redis:
+      lock:
+        enabled: true                         # 是否启用分布式锁功能 (默认 true)
+        key-prefix: "lock:"                   # 锁键统一定义前缀 (默认 lock:)
+        default-wait-time: 3000               # 默认等待锁超时时间 (毫秒，默认 3000ms)
+        default-lease-time: -1                # 默认锁持有租期 (-1 表示激活看门狗 30s 自动续期)
+        slow-lock-threshold: 3000             # 慢锁审计日志打印阈值 (毫秒，默认 3000ms)
+```
+
+### 核心代码示例（1:1 逆向自 `StockDeductScenarioService`、`OrderSettlementService` 与 `RedisLockController`）
+
 ```java
 @Slf4j
 @Service
@@ -328,76 +343,189 @@ return 1 -- 领取成功
 public class StockDeductScenarioService {
 
     private final DistributedLockTemplate distributedLockTemplate;
+    private final Map<Long, Integer> stockTable = new ConcurrentHashMap<>();
+    private final Map<String, PromotionRuleVO> promoRuleTable = new ConcurrentHashMap<>();
+    private final AtomicInteger fairQueueCounter = new AtomicInteger(0);
 
     /**
-     * 1. 声明式分布式锁扣减库存（防超卖）
+     * 1. 声明式可重入锁扣减秒杀库存（防超卖，LockMode.REENTRANT）
      */
-    @DistributedLock(key = "'product:' + #productId", waitTime = 3000, leaseTime = 5000, mode = LockMode.REENTRANT)
-    public int deductStock(Long productId, int count) {
+    @DistributedLock(key = "'product:' + #request.productId", waitTime = 3000, leaseTime = 5000, mode = LockMode.REENTRANT)
+    public StockDeductResultVO deductStock(StockDeductRequest request) {
+        Long productId = request.getProductId();
+        int count = request.getCount();
         log.info("[StockDeduct] 获取分布式锁成功，开始扣减库存: productId={}, count={}", productId, count);
+
         Integer currentStock = stockTable.get(productId);
         if (currentStock == null || currentStock < count) {
             throw new BusinessException("库存不足，当前库存: " + currentStock + ", 拟扣减: " + count);
         }
         int remaining = currentStock - count;
         stockTable.put(productId, remaining);
-        return remaining;
+        return StockDeductResultVO.builder()
+                .productId(productId)
+                .remainingStock(remaining)
+                .success(true)
+                .message("库存扣减成功")
+                .build();
     }
 
     /**
-     * 2. 分布式锁可重入自验（外层注解加锁，内层通过 DistributedLockTemplate 同一线程重入同一锁）
+     * 2. 促销规则写锁更新（排他写锁 LockMode.WRITE，阻塞所有读写操作）
      */
-    @DistributedLock(key = "'reentrant:' + #orderId", mode = LockMode.REENTRANT)
-    public String executeReentrantBusiness(String orderId) {
-        log.info("[StockDeduct] 外层方法获取分布式锁成功: orderId={}", orderId);
-        return distributedLockTemplate.execute("reentrant:" + orderId, () -> {
-            log.info("[StockDeduct] 内层闭包同一线程重入同一锁成功: orderId={}", orderId);
-            return "REENTRANT_SUCCESS_" + orderId;
-        });
-    }
-
-    /**
-     * 3. 分布式锁争锁超时降级演示（利用 fallback 闭包防御并发风暴）
-     */
-    public String executeWithFallback(String resourceId) {
+    public PromotionRuleVO updatePromotionRule(PromotionRuleUpdateRequest request) {
+        String lockKey = "promo:rule:" + request.getRuleId();
         return distributedLockTemplate.execute(
-                "resource:" + resourceId,
-                () -> "NORMAL_SUCCESS_" + resourceId,
-                () -> "FALLBACK_TRIGGERED_" + resourceId
+                lockKey,
+                LockMode.WRITE,
+                3000L,
+                5000L,
+                TimeUnit.MILLISECONDS,
+                () -> {
+                    log.info("[StockDeduct] 获取排他写锁成功，更新促销规则: ruleId={}", request.getRuleId());
+                    PromotionRuleVO vo = PromotionRuleVO.builder()
+                            .ruleId(request.getRuleId())
+                            .ruleName(request.getRuleName())
+                            .discountRate(request.getDiscountRate())
+                            .updateTime(System.currentTimeMillis())
+                            .build();
+                    promoRuleTable.put(request.getRuleId(), vo);
+                    return vo;
+                }
         );
     }
 
     /**
-     * 4. 看门狗自动续期长事务业务自验（leaseTime = -1）
+     * 3. 促销规则读锁查询（共享读锁 LockMode.READ，允许多线程并发读取，阻塞写操作）
      */
-    @DistributedLock(key = "'watchdog:' + #taskId", leaseTime = -1)
-    public String executeWithWatchdog(String taskId) {
-        log.info("[StockDeduct] 激活 Redisson 看门狗持锁执行长事务: taskId={}", taskId);
-        return "WATCHDOG_SUCCESS_" + taskId;
+    public PromotionRuleVO getPromotionRule(String ruleId) {
+        String lockKey = "promo:rule:" + ruleId;
+        return distributedLockTemplate.execute(
+                lockKey,
+                LockMode.READ,
+                3000L,
+                5000L,
+                TimeUnit.MILLISECONDS,
+                () -> {
+                    PromotionRuleVO rule = promoRuleTable.get(ruleId);
+                    if (rule == null) {
+                        throw new BusinessException("促销规则不存在: " + ruleId);
+                    }
+                    return rule;
+                }
+        );
     }
 
     /**
-     * 5. 编程式批量多锁执行 (MultiLock)
+     * 4. 稀缺名额排队获取（公平锁 LockMode.FAIR，严格遵循 FIFO 排队）
      */
-    public String executeMultiLock(String orderId, Long productId) {
+    @DistributedLock(key = "'fair:activity:' + #request.activityId", waitTime = 3000, leaseTime = 5000, mode = LockMode.FAIR)
+    public FairQuotaVO acquireFairQuota(FairQuotaRequest request) {
+        int queueNo = fairQueueCounter.incrementAndGet();
+        return FairQuotaVO.builder()
+                .activityId(request.getActivityId())
+                .userId(request.getUserId())
+                .queueNumber(queueNo)
+                .acquired(true)
+                .message("成功排队获取稀缺活动名额")
+                .build();
+    }
+
+    /**
+     * 5. 组合套餐多 SKU 批量原子联锁 (MultiLock，自动去重与跨资源加锁)
+     */
+    public MultiSkuDeductVO deductMultiSku(MultiSkuDeductRequest request) {
+        List<String> lockKeys = request.getProductIds().stream()
+                .map(id -> "product:" + id)
+                .toList();
+
         return distributedLockTemplate.execute(
-                List.of("lock:order:" + orderId, "lock:product:" + productId),
+                lockKeys,
                 LockMode.REENTRANT,
                 3000L,
                 5000L,
                 TimeUnit.MILLISECONDS,
-                () -> "MULTI_LOCK_SUCCESS_" + orderId + "_" + productId
+                () -> {
+                    log.info("[StockDeduct] 批量联锁获取成功，扣减组合套餐: comboId={}", request.getComboId());
+                    for (Long productId : request.getProductIds()) {
+                        Integer current = stockTable.get(productId);
+                        if (current == null || current < request.getQuantity()) {
+                            throw new BusinessException("商品库存不足，扣减终止: productId=" + productId);
+                        }
+                    }
+                    for (Long productId : request.getProductIds()) {
+                        stockTable.compute(productId, (k, v) -> v - request.getQuantity());
+                    }
+                    return MultiSkuDeductVO.builder()
+                            .comboId(request.getComboId())
+                            .deductedCount(request.getQuantity())
+                            .success(true)
+                            .message("组合套餐联锁扣减成功")
+                            .build();
+                }
         );
+    }
+
+    /**
+     * 6. 争锁超时降级排队（fallback 闭包引导）
+     */
+    public LockFallbackVO executeWithFallback(LockFallbackRequest request) {
+        String resourceId = request.getResourceId();
+        return distributedLockTemplate.execute(
+                "resource:" + resourceId,
+                () -> LockFallbackVO.builder().resourceId(resourceId).fallbackTriggered(false).result("NORMAL_SUCCESS").build(),
+                () -> LockFallbackVO.builder().resourceId(resourceId).fallbackTriggered(true).result("FALLBACK_TRIGGERED").build()
+        );
+    }
+
+    /**
+     * 7. 静态门面 RedisLockUtil 加锁（免注入 Spring Bean）
+     */
+    public StaticLockVO executeStaticLock(StaticLockRequest request) {
+        String key = "static:" + request.getResourceId();
+        return RedisLockUtil.execute(key, () -> StaticLockVO.builder()
+                .resourceId(request.getResourceId())
+                .locked(true)
+                .message("静态门面锁执行成功")
+                .build());
     }
 }
 ```
 
-### 预期控制台呈现
-```text
-2026-10-27 16:55:12.029 DEBUG [main] [NO-TRACE] i.g.a.b.r.l.t.DistributedLockTemplate    : [DistributedLock] 加锁成功: keys=[lock:product:1001], mode=REENTRANT
-2026-10-27 16:55:12.031 INFO  [main] [NO-TRACE] i.g.a.b.s.r.s.StockDeductScenarioService : [StockDeduct] 获取分布式锁成功，开始扣减库存: productId=1001, count=2
-2026-10-27 16:55:12.032 DEBUG [main] [NO-TRACE] i.g.a.b.r.l.t.DistributedLockTemplate    : [DistributedLock] 释放分布式锁成功: keys=[lock:product:1001]
+```java
+/**
+ * 跨 Bean 服务嵌套重入锁演示
+ */
+@Service
+@RequiredArgsConstructor
+public class OrderSettlementService {
+
+    private final StockDeductScenarioService stockDeductScenarioService;
+
+    @DistributedLock(key = "'product:' + #request.productId", waitTime = 3000, leaseTime = 5000, mode = LockMode.REENTRANT)
+    public OrderSettleVO settleOrder(OrderSettleRequest request) {
+        // 同一线程内跨 Service 调用挂载同一锁键的方法，自动重入持锁，不发生死锁
+        StockDeductResultVO deductResult = stockDeductScenarioService.deductStock(
+                StockDeductRequest.builder()
+                        .productId(request.getProductId())
+                        .count(request.getQuantity())
+                        .build()
+        );
+        return OrderSettleVO.builder()
+                .orderId(request.getOrderId())
+                .productId(request.getProductId())
+                .remainingStock(deductResult.getRemainingStock())
+                .status("SETTLED")
+                .build();
+    }
+}
 ```
+
+### 核心生产机制与异常边界
+1. **状态判断释放范式**：模板在 `finally` 块中严格检查 `lock.isHeldByCurrentThread()`，仅当当前线程真实持有锁时才执行 `unlock()`，彻底消除锁超时后误删其他线程所持新锁引发的严重次生异常；
+2. **看门狗与租期互斥**：当 `leaseTime = -1` 时，由 Redisson 看门狗每隔 10 秒自动续期至 30 秒，直至业务线程主动退出；一旦显式指定 `leaseTime > 0`，看门狗自动失效，到达指定租期硬熔断防死锁；
+3. **慢锁审计告警**：业务执行耗时若超出 `slow-lock-threshold`（默认 3 秒），模板自动打印 WARN 级审计日志，并携带锁键、模式与精确毫秒耗时；
+4. **MultiLock 键排序去重**：传递给 MultiLock 的键列表会自动执行去重，确保底层以固定顺序一次性尝试获取所有联锁，规避循环等待引起的死锁。
 
 ---
 
@@ -500,15 +628,28 @@ public class StreamEventScenarioService {
 ## 7. 通用业务级分布式防重幂等 (`@RedisIdempotent` & `RedisIdempotentTemplate` & `RedisIdempotentUtil`)
 
 ### 场景痛点
-在非 Web 链路（MQ 消费者、定时任务批处理、分布式 RPC 调用）中，重复投递与重试是常态。若单纯依赖数据库唯一键，会引发大量的死锁或数据库回滚开销；若手写 Redis `SETNX`，极易发生业务执行失败时未删除防重 Key 导致上游永远无法再次重试的“假死锁”故障。
+在非 Web 链路（第三方支付回调通知、MQ 消费者、定时任务批处理、分布式 RPC 调用）中，重复投递与网络重试是常态。若单纯依赖数据库唯一键，会引发大量的死锁或数据库回滚开销；若手写 Redis `SETNX`，极易发生业务执行失败时未删除防重 Key 导致上游永远无法再次重试的“假死锁”故障。
 
-### 增强解决方案
+### 特性矩阵
 - **三模一体化支持**：声明式切面 `@RedisIdempotent`、编程式模板 `RedisIdempotentTemplate` 与静态门面 `RedisIdempotentUtil`；
 - **SpEL 动态业务键**：支持基于方法入参表达式动态拼装全局防重唯一标识；
 - **`deleteOnFailure` 故障自愈机制**：业务成功执行后保留防重 Key 直至 TTL 超时；当业务方法抛出异常时，模板自动识别并**原子删除防重 Key**，确保上游重试机制能够平滑再次触发执行；
-- **异常语义清晰**：并发防重冲突时抛出语义明确的 `BusinessException`。
+- **异常语义清晰**：并发防重冲突时抛出语义明确的 `BusinessException` 并携带自定义错误提示。
 
-### 核心代码示例（1:1 逆向自 `IdempotentScenarioService`）
+### 专属 YAML 配置片段
+
+```yaml
+ateng:
+  boot:
+    redis:
+      idempotent:
+        enabled: true                         # 是否启用分布式防重幂等功能 (默认 true)
+        key-prefix: "idemp:"                   # 防重键统一定义前缀 (默认 idemp:)
+        default-expire: 60s                   # 默认防重凭据有效租期 (默认 60s)
+```
+
+### 核心代码示例（1:1 逆向自 `IdempotentScenarioService` 与 `RedisIdempotentController`）
+
 ```java
 @Slf4j
 @Service
@@ -518,47 +659,108 @@ public class IdempotentScenarioService {
     private final RedisIdempotentTemplate redisIdempotentTemplate;
 
     /**
-     * 1. 声明式防重处理订单（deleteOnFailure = true 支持异常自动释放凭据以供重试）
+     * 1. 声明式防重处理第三方支付回调（deleteOnFailure = false，成功入账后锁死防重凭据直至 TTL 超时）
      */
-    @RedisIdempotent(key = "'idemp:order:' + #orderId", expire = "30s", deleteOnFailure = true)
-    public String processOrder(String orderId, boolean shouldFail) {
-        log.info("[IdempotentScenario] 进入幂等业务执行: orderId={}, shouldFail={}", orderId, shouldFail);
-        if (shouldFail) {
-            throw new BusinessException("模拟业务处理失败，自动释放幂等凭据以供重试: orderId=" + orderId);
+    @RedisIdempotent(key = "'idemp:pay:' + #request.paymentNo", expire = "120s", deleteOnFailure = false, message = "支付流水正在处理中，请勿重复回调")
+    public PaymentCallbackVO handlePaymentCallback(PaymentCallbackRequest request) {
+        log.info("[IdempotentScenario] 处理第三方支付异步通知: paymentNo={}, amount={}",
+                request.getPaymentNo(), request.getAmount());
+        return PaymentCallbackVO.builder()
+                .paymentNo(request.getPaymentNo())
+                .orderId(request.getOrderId())
+                .processed(true)
+                .message("支付回调成功处理并入账")
+                .build();
+    }
+
+    /**
+     * 2. 模拟账务瞬时异常验证 deleteOnFailure = true 自动释放凭据并二次重试入账自愈
+     */
+    @RedisIdempotent(key = "'idemp:retry:' + #request.paymentNo", expire = "60s", deleteOnFailure = true, message = "支付流水处理中，请勿重复提交")
+    public PaymentCallbackVO simulateFailureAndRetry(PaymentFailureRetryRequest request) {
+        log.info("[IdempotentScenario] 处理瞬时故障模拟流水: paymentNo={}, shouldFail={}",
+                request.getPaymentNo(), request.getShouldFail());
+
+        if (Boolean.TRUE.equals(request.getShouldFail())) {
+            throw new BusinessException("模拟业务处理失败，自动回滚释放幂等凭据以供重试: paymentNo=" + request.getPaymentNo());
         }
-        return "SUCCESS_" + orderId;
+
+        return PaymentCallbackVO.builder()
+                .paymentNo(request.getPaymentNo())
+                .orderId("ORD_" + request.getPaymentNo())
+                .processed(true)
+                .message("重试入账成功")
+                .build();
     }
 
     /**
-     * 2. 编程式防重幂等模板执行
+     * 3. 编程式防重核销退款单（RedisIdempotentTemplate）
      */
-    public <T, E extends Throwable> T executeProgrammatic(String key, Duration timeout, IdempotentSupplier<T, E> supplier) throws E {
-        return redisIdempotentTemplate.execute(key, timeout, supplier);
+    public RefundVO executeRefundTemplate(RefundRequest request) {
+        String key = "idemp:refund:tpl:" + request.getRefundNo();
+        return redisIdempotentTemplate.execute(key, Duration.ofMinutes(1), () -> {
+            log.info("[IdempotentScenario] 编程式模板防重处理退款: refundNo={}, amount={}",
+                    request.getRefundNo(), request.getRefundAmount());
+            return RefundVO.builder()
+                    .refundNo(request.getRefundNo())
+                    .refundAmount(request.getRefundAmount())
+                    .success(true)
+                    .message("编程式模板退款核销成功")
+                    .build();
+        });
     }
 
     /**
-     * 3. 静态门面防重幂等执行
+     * 4. 静态门面防重核销退款单（RedisIdempotentUtil）
      */
-    public <T, E extends Throwable> T executeStatic(String key, IdempotentSupplier<T, E> supplier) throws E {
-        return RedisIdempotentUtil.execute(key, supplier);
+    public RefundVO executeRefundStatic(RefundRequest request) {
+        String key = "idemp:refund:sta:" + request.getRefundNo();
+        return RedisIdempotentUtil.execute(key, () -> {
+            log.info("[IdempotentScenario] 静态门面防重处理退款: refundNo={}, amount={}",
+                    request.getRefundNo(), request.getRefundAmount());
+            return RefundVO.builder()
+                    .refundNo(request.getRefundNo())
+                    .refundAmount(request.getRefundAmount())
+                    .success(true)
+                    .message("静态门面退款核销成功")
+                    .build();
+        });
     }
 }
 ```
 
+### 核心生产机制与异常边界
+1. **失败自愈与防死锁设计**：当 `deleteOnFailure = true` 时，业务闭包若发生非预期受控或未受控异常，切面在捕获异常后立即执行原子 `redisTemplate.delete(key)`，保证由于网络闪断、第三方接口瞬时超时等软故障时，上游重试机制能够无缝进入重新核销；
+2. **正常成功凭据锁死**：业务成功执行退出后，防重凭据严格驻留至设定的 TTL 超时（如 60s 或 2h），后续重复回调直接在切面层被拒绝并抛出 `BusinessException`，彻底阻断下游重复入账与资金双花风险；
+3. **SpEL 安全解析**：若 SpEL 表达式计算结果为 null，自动回退抛出显式防御异常，严禁因表达式拼写错误导致裸空键生效。
+
 ---
 
-## 8. 分布式受管信号量与并发度治理 (`RedisSemaphoreTemplate` & `RedisSemaphoreUtil`)
+## 8. 分布式流控与并发度治理 (`RedisSemaphoreTemplate` & `RedisRateLimiterClient` & `RedisAtomicUtil`)
 
 ### 场景痛点
-当调用外部计费 API、高负载推理服务或有限并发配额的第三方接口时，传统的限流仅能限制单位时间内的 QPS，无法限制**同一时刻正在处理中的最大并发线程数（Concurrency In-Flight）**。一旦外部接口耗时变慢，请求在服务端持续堆积导致连接池迅速枯竭。
+传统的 QPS 限流仅能控制单位时间内的吞吐量，当调用外部计费征信 API、高昂 AI 大模型推理服务或资源有限的内部重型报表计算时，一旦外部服务响应缓慢，海量请求在服务端持续堆积导致线程池与数据库连接池迅速被耗尽。此外，开放网关需要高平滑度的令牌桶限流，短信/邮件发送则需要毫秒级精确滑动窗口防刷。
 
-### 增强解决方案
-- **受管闭包安全释放**：底层封装 Redisson `RSemaphore`，在 `finally` 块中通过状态判断保证许可证安全归还；
-- **动态配额调配 (`resetPermits`)**：支持在运行时原子调整总许可证配额；
-- **争抢超时优雅降级 (`fallback`)**：在等待超时后不抛出异常打断业务，平滑触发降级闭包返回兜底结果；
-- **静态操作门面 (`RedisSemaphoreUtil`)**：免注入快速接入。
+### 特性矩阵
+- **集群全局在途并发管控 (`RedisSemaphoreTemplate`)**：限制同一时刻集群全局正在处理中的最大线程数（In-Flight Concurrency），底层安全释放许可证；
+- **争抢超时优雅降级 (`fallback`)**：槽位占满等待超时后不抛出粗暴异常，而是优雅执行降级回调返回友好响应；
+- **动态配额调配 (`resetPermits`)**：支持在不重启应用的前提下运行时动态扩缩容信号量总许可证；
+- **分布式令牌桶流控 (`RedisRateLimiterClient`)**：基于 Redisson `RRateLimiter` 算法，支持毫秒至天级窗口的平滑令牌桶限流、实时可用令牌查询与动态重置；
+- **毫秒级滑动窗口防刷 (`RedisAtomicUtil.slidingWindowCheck`)**：基于 Redis ZSet 与原子 Lua 脚本，毫秒级清理历史窗口记录并完成当前访问计数与超限拦截。
 
-### 核心代码示例（1:1 逆向自 `SemaphoreThrottlingScenarioService`）
+### 专属 YAML 配置片段
+
+```yaml
+ateng:
+  boot:
+    redis:
+      semaphore:
+        enabled: true                         # 是否启用分布式信号量模板 (默认 true)
+      key-prefix: "sample:"                   # 全局键前缀自动挂载至 RateLimiter
+```
+
+### 核心代码示例（1:1 逆向自 `SemaphoreThrottlingScenarioService` 与 `RedisTrafficController`）
+
 ```java
 @Slf4j
 @Service
@@ -568,35 +770,139 @@ public class SemaphoreThrottlingScenarioService {
     private final RedisSemaphoreTemplate redisSemaphoreTemplate;
 
     /**
-     * 1. 模拟高昂下游接口调用，带并发度治理与超时降级
+     * 1. 外部征信评估在途并发槽位管控（编程式模板带超时降级）
      */
-    public String callHeavyDownstream(String serviceName, int totalPermits, Duration timeout) {
-        String semaphoreKey = "sem:heavy:" + serviceName;
+    public CreditCheckVO checkCredit(CreditCheckRequest request) {
+        String semaphoreKey = "sem:credit:eval";
+        String masked = maskIdCard(request.getIdCard());
         return redisSemaphoreTemplate.execute(
                 semaphoreKey,
-                totalPermits,
+                10,
                 1,
-                timeout,
+                Duration.ofMillis(500),
                 () -> {
-                    log.info("[Semaphore] 成功获取信号量许可证，执行高并发下游调用: service={}", serviceName);
-                    return "SUCCESS_DOWNSTREAM_" + serviceName;
+                    log.info("[SemaphoreThrottling] 获取槽位成功，执行征信核验: name={}, idCard={}",
+                            request.getCustomerName(), masked);
+                    return CreditCheckVO.builder()
+                            .idCard(masked)
+                            .customerName(request.getCustomerName())
+                            .creditScore(750)
+                            .fallback(false)
+                            .message("征信评估成功，信用等级极佳")
+                            .build();
                 },
                 () -> {
-                    log.warn("[Semaphore] 获取信号量许可证超时，触发兜底降级响应: service={}", serviceName);
-                    return "FALLBACK_DOWNSTREAM_" + serviceName;
+                    log.warn("[SemaphoreThrottling] 获取槽位超时，触发排队降级: name={}", request.getCustomerName());
+                    return CreditCheckVO.builder()
+                            .idCard(masked)
+                            .customerName(request.getCustomerName())
+                            .creditScore(null)
+                            .fallback(true)
+                            .message("征信下游通道在途并发饱和，已触发弹性降级保护")
+                            .build();
                 }
         );
     }
 
     /**
-     * 2. 动态设置/重置信号量总许可证配额
+     * 2. 静态门面征信评估（RedisSemaphoreUtil）
+     */
+    public CreditCheckVO checkCreditStatic(CreditCheckRequest request) {
+        String semaphoreKey = "sem:static:eval";
+        String masked = maskIdCard(request.getIdCard());
+        return RedisSemaphoreUtil.execute(
+                semaphoreKey,
+                10,
+                Duration.ofMillis(500),
+                () -> CreditCheckVO.builder()
+                        .idCard(masked)
+                        .customerName(request.getCustomerName())
+                        .creditScore(780)
+                        .fallback(false)
+                        .message("静态门面征信评估成功")
+                        .build(),
+                () -> CreditCheckVO.builder()
+                        .idCard(masked)
+                        .customerName(request.getCustomerName())
+                        .creditScore(null)
+                        .fallback(true)
+                        .message("静态门面并发槽位繁忙，已触发弹性降级")
+                        .build()
+        );
+    }
+
+    /**
+     * 3. 运行时动态重置信号量总许可证配额
      */
     public boolean resetPermits(String serviceName, int newPermits) {
-        String semaphoreKey = "sem:heavy:" + serviceName;
+        String semaphoreKey = serviceName.startsWith("sem:") ? serviceName : "sem:heavy:" + serviceName;
         return redisSemaphoreTemplate.resetPermits(semaphoreKey, newPermits);
+    }
+
+    /**
+     * 4. 实时查询当前可用许可证配额
+     */
+    public int getAvailablePermits(String serviceName) {
+        String semaphoreKey = serviceName.startsWith("sem:") ? serviceName : "sem:heavy:" + serviceName;
+        return redisSemaphoreTemplate.availablePermits(semaphoreKey);
     }
 }
 ```
+
+```java
+/**
+ * 令牌桶与滑动窗口多维流控演示
+ */
+@RestController
+@RequestMapping("/sample/redis/traffic")
+@RequiredArgsConstructor
+public class RedisTrafficController {
+
+    private final RedisRateLimiterClient redisRateLimiterClient;
+    private final RedisAtomicUtil redisAtomicUtil;
+
+    /**
+     * 5. 分布式令牌桶流控获取与剩余查询
+     */
+    @PostMapping("/rate-limit/token-bucket")
+    public Result<RateLimitResultVO> tokenBucketRateLimit(@Valid @RequestBody TokenBucketRateLimitRequest request) {
+        boolean allowed = redisRateLimiterClient.tryAcquire(
+                request.getApiKey(),
+                request.getRate(),
+                Duration.ofSeconds(request.getIntervalSeconds())
+        );
+        long remaining = redisRateLimiterClient.getAvailablePermits(request.getApiKey());
+        return Result.success(RateLimitResultVO.builder()
+                .key(request.getApiKey())
+                .allowed(allowed)
+                .remainingPermits(remaining)
+                .build());
+    }
+
+    /**
+     * 6. 短信发送滑动窗口频控校验（毫秒级精确 ZSet 窗口防刷）
+     */
+    @PostMapping("/rate-limit/sms-sliding-window")
+    public Result<RateLimitResultVO> smsSlidingWindowLimit(@Valid @RequestBody SmsRateLimitRequest request) {
+        String key = "rate:sms:" + request.getPhoneNumber();
+        boolean allowed = redisAtomicUtil.slidingWindowCheck(
+                key,
+                request.getMaxAttempts(),
+                Duration.ofSeconds(request.getWindowSeconds())
+        );
+        return Result.success(RateLimitResultVO.builder()
+                .key(key)
+                .allowed(allowed)
+                .remainingPermits(null)
+                .build());
+    }
+}
+```
+
+### 核心生产机制与异常边界
+1. **在途并发 vs QPS 限流**：在途并发管控的是系统同时承载的“存量”负载，而 QPS 管控的是单位时间到达的“增量”速率。当外部接口发生卡顿时，QPS 限流仍会放行新请求造成服务端堆积崩溃，而信号量则能在在途请求达到上限时坚决阻断新请求；
+2. **许可证零泄漏防线**：信号量模板在 `finally` 块中严格依托当前线程获取标记，仅在真实成功 `tryAcquire` 到许可证后才执行释放归还，严禁在获取超时或发生异常时误调用释放导致许可证数量虚增；
+3. **令牌桶与滑动窗口互补**：API 网关级别推行令牌桶（平滑应对突发流量），短信与验证码等敏感接口推行滑动窗口（严格防范任意微小时间窗口内的集中暴力破解攻击）。
 
 ---
 
@@ -691,9 +997,28 @@ public class NoticeBroadcastScenarioService {
 ## 11. 分布式布隆过滤器 (`RedisBloomFilter` & `RedisBloomUtil`)
 
 ### 场景痛点
-海量用户判重、防爬虫 IP 过滤与防止非法 Key 穿透至数据库时，直接存入 Redis Set 占用巨大内存，且原生 Redisson 布隆过滤器缺乏启动预热机制与容量逼近 80% 安全告警。
+海量用户判重、防爬虫 IP 过滤与防止恶意黑客使用不存在的非法 ID 频繁穿透查询数据库时，若直接存入 Redis Set 会占用巨大内存，且原生 Redisson 布隆过滤器缺乏启动声明式自动预热与容量逼近 80% 安全告警。
 
-### 核心代码示例（1:1 逆向自 `CacheScenarioService`）
+### 特性矩阵
+- **极小空间极速过滤**：万级至亿级数据量仅占用数兆内存即可实现 99% 精确度的存在性判定；
+- **声明式配置与自动预热**：通过 `ateng.boot.redis.bloom-filters.*` 声明布隆过滤器预估容量与误判率，容器启动时自动初始化位图；
+- **80% 容量预警指标**：提供 `getUsageRate` 实时监控使用率，逼近 80% 触发容量预警，防止误判率陡增；
+- **双模访问**：注入 `RedisBloomFilter` 或直接使用 `RedisBloomUtil` 静态门面。
+
+### 专属 YAML 配置片段
+
+```yaml
+ateng:
+  boot:
+    redis:
+      bloom-filters:
+        user-blacklist:
+          expected-insertions: 50000          # 预期容纳元素总量 (默认 10000)
+          false-probability: 0.01             # 容许误判率 (默认 0.01 即 1%)
+```
+
+### 核心代码示例（1:1 逆向自 `CacheScenarioService` 与 `RedisCacheController`）
+
 ```java
 @Slf4j
 @Service
@@ -702,17 +1027,27 @@ public class CacheScenarioService {
 
     private final RedisBloomFilter redisBloomFilter;
 
-    // 1. 将元素添加至布隆过滤器（亦支持 RedisBloomUtil.add 静态门面）
+    /**
+     * 1. 将用户加入黑名单（支持注入门面与 RedisBloomUtil.add 静态门面）
+     */
     public boolean addBlacklist(String userId) {
-        return redisBloomFilter.add("user-blacklist", userId);
+        boolean added = redisBloomFilter.add("user-blacklist", userId);
+        log.info("[CacheScenario] 添加用户至布隆黑名单: userId={}, added={}", userId, added);
+        return added;
     }
 
-    // 2. 判定元素是否可能存在
+    /**
+     * 2. 判定用户是否存在于黑名单中（不存在绝对准确，存在有 1% 极低误判率）
+     */
     public boolean checkBlacklist(String userId) {
-        return redisBloomFilter.contains("user-blacklist", userId);
+        boolean inBlacklist = redisBloomFilter.contains("user-blacklist", userId);
+        log.info("[CacheScenario] 检测用户是否在布隆黑名单: userId={}, exists={}", userId, inBlacklist);
+        return inBlacklist;
     }
 
-    // 3. 查询布隆过滤器健康指标（元素数、预估容量、使用率、误判率）
+    /**
+     * 3. 查询布隆过滤器健康运行指标（元素数、预估容量、使用率、误判率）
+     */
     public BloomFilterMetricsVO getBlacklistMetrics() {
         return BloomFilterMetricsVO.builder()
                 .filterName("user-blacklist")
@@ -725,39 +1060,87 @@ public class CacheScenarioService {
 }
 ```
 
+### 核心生产机制与异常边界
+1. **单向存在性判断**：布隆过滤器返回 `false` 时，该元素**100% 绝对不存在**，可直接在前置拦截返回（防穿透第一道防线）；返回 `true` 时，元素可能存在，允许放行进一步校验；
+2. **容量逼近 80% 预警机制**：当插入元素数量超过 `expected-insertions * 0.8` 时，哈希碰撞率急剧攀升导致误判率显著高于声明的 1%。通过 `getBlacklistMetrics()` 对接监控系统，可在容量耗尽前实施布隆过滤器重建与双写切换；
+3. **不可逆删除**：标准布隆过滤器不支持物理 `remove` 单个元素，如需重置只能调用 `delete("user-blacklist")` 全量清空重建。
+
 ---
 
-## 12. 工业级增强缓存管理器 (`RedisCacheManager`)
+## 12. 工业级增强单级缓存管理器 (`RedisCacheManager`)
 
-### 核心增强
-1. **分 Cache 个性化 TTL**：通过 YAML 配置为每个 `@Cacheable(value = "...")` 指定专属过期时间；
-2. **防穿透空对象缓存**：默认启用空值缓存，防止空 Key 重复穿透；
-3. **原生随机抖动防雪崩 (`JitterTtlFunction`)**：在基准 TTL 基础上自适应随机叠加抖动偏移量，打散热点失效时间。
+### 场景痛点
+Spring Boot 默认提供的 `RedisCacheManager` 缺乏针对不同业务缓存空间的独立 TTL 配置能力；空值默认不缓存引发高并发缓存穿透；热点缓存同一时刻集中失效引发数据库瞬时被打崩（缓存雪崩）。
+
+### 特性矩阵
+- **分空间个性化独立 TTL 隔离**：通过 YAML 配置为每个 `cacheName` 指定专属过期时间（如字典缓存 2h，验证码 5m）；
+- **防穿透短 TTL 空对象缓存**：默认启用空值缓存，回源为 null 时自动写入缓存并赋予较短的 `null-ttl`（默认 3m），防止空 Key 反复回源；
+- **原生随机抖动防雪崩 (`JitterTtlFunction`)**：在基准 TTL 基础上自适应随机叠加抖动偏移量，平滑打散缓存失效时间点。
+
+### 专属 YAML 配置片段
 
 ```yaml
 ateng:
   boot:
     redis:
       cache:
-        enabled: true
-        default-ttl: 30m
-        jitter-enabled: true
-        max-jitter: 5m
-        cache-null-values: true
+        enabled: true                         # 是否启用单级增强 RedisCacheManager (默认 true)
+        default-ttl: 30m                      # 默认缓存过期时间 (默认 30m)
+        null-ttl: 3m                          # 空值防穿透专门短 TTL (默认 3m)
+        jitter-enabled: true                  # 启用随机抖动防雪崩 (默认 true)
+        max-jitter: 5m                        # 最大随机抖动时间 (默认 5m)
+        cache-null-values: true               # 是否缓存空对象防穿透 (默认 true)
         expires:
-          sys_dict: 24h
-          user_profile: 2h
-          sms_code: 5m
+          sys-dict: 2h                        # 系统字典空间独立 TTL (2小时)
+          sms-code: 5m                        # 验证码空间独立 TTL (5分钟)
+```
+
+### 核心代码示例（1:1 逆向自 `CacheScenarioService` 与 `RedisCacheController`）
+
+```java
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class CacheScenarioService {
+
+    /**
+     * 1. 显式指定单级缓存管理器 redisCacheManager 查询系统字典
+     */
+    @Cacheable(cacheNames = "sys-dict", key = "#dictCode", cacheManager = "redisCacheManager")
+    public SysDictVO getSysDict(String dictCode) {
+        log.info("[CacheScenario] 单级字典缓存未命中，回源模拟数据库: dictCode={}", dictCode);
+        return SysDictVO.builder()
+                .dictCode(dictCode)
+                .dictName("字典_" + dictCode)
+                .dictValue("VAL_" + dictCode)
+                .sortOrder(1)
+                .build();
+    }
+
+    /**
+     * 2. 淘汰单级系统字典缓存
+     */
+    @CacheEvict(cacheNames = "sys-dict", key = "#dictCode", cacheManager = "redisCacheManager")
+    public void evictSysDict(String dictCode) {
+        log.info("[CacheScenario] 淘汰单级字典缓存: dictCode={}", dictCode);
+    }
+}
 ```
 
 ---
 
 ## 13. 全景缓存防卫模板 (`RedisCacheTemplate`)
 
-### 核心能力
-单键与批量防击穿（互斥锁 + DCL）、防穿透（短 TTL 空哨兵 `__ATENG_CACHE_NULL__`）、防雪崩（随机抖动 Jitter）、批量 MGET 探测 + 字典序排序锁去重，彻底杜绝 N+1 查询。
+### 场景痛点
+在高并发秒杀或热点活动大促中，单键缓存突然失效会引发海量并发线程同时穿透回源查库（缓存击穿）；批量查询时各元素分别查缓存与数据库，引发严重的 N+1 网络往返与数据库连接耗尽。
 
-### 核心代码示例（1:1 逆向自 `CacheScenarioService`）
+### 特性矩阵
+- **单键全景防卫 (`getOrLoad`)**：双重检查锁（DCL + Redisson 分布式互斥锁）+ 短 TTL 空哨兵（`__ATENG_CACHE_NULL__`）+ 随机抖动，单键并发回源严格限制为 1 个请求；
+- **批量商品安全防 N+1 (`batchGetOrLoad`)**：底层基于 Redis `MGET` 单次往返拉取全部缓存命中项；未命中项按字典序排序加锁，一次性批量回源后通过 Pipeline 批量回写 Redis，彻底杜绝 N+1；
+- **对称优雅驱逐 (`evict`)**：对称清理键值与空哨兵标记。
+
+### 核心代码示例（1:1 逆向自 `CacheScenarioService` 与 `RedisCacheController`）
+
 ```java
 @Slf4j
 @Service
@@ -765,26 +1148,38 @@ ateng:
 public class CacheScenarioService {
 
     private final RedisCacheTemplate redisCacheTemplate;
+    private static final Map<Long, ProductVO> MOCK_PRODUCT_DB = Map.of(
+            1001L, new ProductVO(1001L, "iPhone 16 Pro", new BigDecimal("7999.00"), 50),
+            1002L, new ProductVO(1002L, "MacBook Pro M4", new BigDecimal("12999.00"), 20)
+    );
 
-    // 1. 单商品安全查询（防击穿 + 防穿透 + 防雪崩）
+    /**
+     * 1. 单商品安全查询（互斥锁 DCL + 短 TTL 空哨兵防击穿/防穿透/防雪崩）
+     */
     public ProductVO getProduct(Long productId) {
         return redisCacheTemplate.getOrLoad(
                 "product:" + productId,
                 ProductVO.class,
-                key -> mockProductDb.get(productId)
+                key -> {
+                    log.info("[CacheScenario] 缓存未命中，回源模拟数据库查询: productId={}", productId);
+                    return MOCK_PRODUCT_DB.get(productId);
+                }
         );
     }
 
-    // 2. 批量商品安全查询（MGET + 字典序排序锁 + Pipeline 批量回写，彻底杜绝 N+1）
+    /**
+     * 2. 批量商品安全查询（MGET 探测 + 字典序排序锁 + 单次批量回源防 N+1）
+     */
     public Map<Long, ProductVO> batchGetProducts(List<Long> productIds) {
         return redisCacheTemplate.batchGetOrLoad(
                 productIds,
                 id -> "product:" + id,
                 ProductVO.class,
                 missingIds -> {
+                    log.info("[CacheScenario] 批量缓存未命中，单次批量回源模拟数据库: missingCount={}", missingIds.size());
                     Map<Long, ProductVO> result = new LinkedHashMap<>();
                     for (Long id : missingIds) {
-                        ProductVO p = mockProductDb.get(id);
+                        ProductVO p = MOCK_PRODUCT_DB.get(id);
                         if (p != null) {
                             result.put(id, p);
                         }
@@ -794,9 +1189,12 @@ public class CacheScenarioService {
         );
     }
 
-    // 3. 对称缓存驱逐
+    /**
+     * 3. 对称清理商品缓存
+     */
     public void evictProduct(Long productId) {
         redisCacheTemplate.evict("product:" + productId);
+        log.info("[CacheScenario] 已驱逐商品缓存: productId={}", productId);
     }
 }
 ```
@@ -806,34 +1204,62 @@ public class CacheScenarioService {
 ## 14. 生产级内存+Redis 两级缓存体系 (`TwoLevelCache` & `TwoLevelCacheManager`)
 
 ### 场景痛点
-微服务单用 Redis 存在网络 I/O 往返延迟，单用本地 JVM 堆缓存存在多节点脏读；跨节点广播失效若不加防环会引发自重入死循环。
+微服务架构下单用 Redis 存在网络 I/O 往返延迟（毫秒级），单用本地 JVM 堆缓存存在多节点更新脏读；跨节点通过广播同步失效时若处理不当，容易引发节点监听到自身发出的通知而进行二次无意义清理的自重入死循环。
 
-### 增强解决方案
-- **纳秒级 L1 内存直读**：优先探测可选依赖 Caffeine（W-TinyLFU）；缺依赖时自动平滑退化为内置有界 `ConcurrentLruMemoryCache`，严格限制容量防 OOM；
-- **集中式 Pub/Sub 广播失效**：淘汰时集中向 `ateng:cache:evict:topic` 广播携带 `instanceId` 的失效消息；
-- **`instanceId` 防自重入防环机制**：各节点监听到广播时比对 `instanceId`，主动忽略自身发出的失效消息，杜绝自身二次淘汰与死循环。
+### 特性矩阵
+- **纳秒级 L1 内存直读**：优先自动探测装载 Caffeine（W-TinyLFU）；缺依赖时自动平滑退化为内置有界 `ConcurrentLruMemoryCache`，严格限制容量上限防 OOM；
+- **微秒级 L2 Redis 集中共享**：L1 未命中时平滑穿透至 L2 Redis 读取，并异步回填 L1，兼顾性能与分布式全局一致性；
+- **Pub/Sub 广播淘汰与防环机制**：节点在执行 `@CacheEvict` 时，自动向 `ateng:cache:evict:topic` 广播携带当前实例唯一 `instanceId` 的淘汰事件；其他节点监听到后清理各自 L1 本地缓存，本节点因匹配自身 `instanceId` 而主动忽略，坚决杜绝死循环自重入。
 
-### 核心代码示例（1:1 逆向自 `CacheScenarioService`）
+### 专属 YAML 配置片段
+
+```yaml
+ateng:
+  boot:
+    redis:
+      two-level:
+        enabled: true                         # 是否启用两级缓存体系 (默认 true)
+        l1:
+          default-ttl: 5m                     # L1 本地缓存默认 TTL (默认 5m)
+          max-size: 10000                     # L1 最大元素容量限制，超出按 LRU 淘汰防 OOM (默认 10000)
+          ttls:
+            user-profile: 10m                 # 会员档案 L1 专属个性化 TTL (10分钟)
+```
+
+### 核心代码示例（1:1 逆向自 `CacheScenarioService` 与 `RedisCacheController`）
+
 ```java
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class CacheScenarioService {
 
-    // 1. Spring Cache 声明式两级缓存查询（首次查库回填 L1 与 L2，后续直接从本地 L1 纳秒级返回）
+    /**
+     * 1. Spring Cache 声明式两级缓存查询（默认 @Primary TwoLevelCacheManager）
+     * 首次调用查库并回填 L1 与 L2；二次调用直接从 L1 内存纳秒级返回
+     */
     @Cacheable(cacheNames = "user-profile", key = "#userId")
-    public String getUserProfile(Long userId) {
+    public UserProfileVO getUserProfileVO(Long userId) {
         log.info("[CacheScenario] 两级缓存未命中，执行模拟数据库查询: userId={}", userId);
-        return "Role_VIP_" + userId;
+        return UserProfileVO.builder()
+                .userId(userId)
+                .username("user_" + userId)
+                .membershipTier("VIP")
+                .points(1000)
+                .build();
     }
 
-    // 2. Spring Cache 声明式定向淘汰（清除本地 L1 与 L2，并广播协同淘汰集群其他节点 L1）
+    /**
+     * 2. Spring Cache 声明式定向淘汰（清除本地 L1 与 L2，并向集群广播淘汰其他实例 L1）
+     */
     @CacheEvict(cacheNames = "user-profile", key = "#userId")
     public void evictUserProfile(Long userId) {
         log.info("[CacheScenario] 淘汰用户档案两级缓存: userId={}", userId);
     }
 
-    // 3. Spring Cache 声明式全量清空
+    /**
+     * 3. Spring Cache 声明式全量清空两级缓存
+     */
     @CacheEvict(cacheNames = "user-profile", allEntries = true)
     public void clearUserProfileCache() {
         log.info("[CacheScenario] 清空用户档案全量两级缓存");

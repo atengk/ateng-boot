@@ -40,7 +40,37 @@
 | **跨天自重置流水号** | `RedisOpsAndScriptController` | `POST /sample/redis/ops/sequence/daily` | `curl -X POST "http://localhost:8080/sample/redis/ops/sequence/daily?bizPrefix=order&length=6"` |
 | **CAS 原子水位更新** | `RedisOpsAndScriptController` | `POST /sample/redis/ops/watermark/cas` | `curl -X POST "http://localhost:8080/sample/redis/ops/watermark/cas" -H "Content-Type: application/json" -d '{"resourceId":"stock_watermark","expectedValue":100,"newValue":90}'` |
 
-> 注：其余 7 大领域 Controller（分布式锁扣减库存、延时队列投递/死信、Stream 消息生产/待决认领、非 Web 业务防重、受管信号量并发治理、Pub/Sub 主题广播、两级缓存与布隆防卫）将在后续工单切片中陆续暴露并挂载体验。
+| **秒杀库存扣减 (分布式锁)** | `RedisLockController` | `POST /sample/redis/lock/deduct-stock` | `curl -X POST "http://localhost:8080/sample/redis/lock/deduct-stock" -H "Content-Type: application/json" -d '{"productId":1001,"count":5}'` |
+| **跨服务订单重入结算 (分布式锁)** | `RedisLockController` | `POST /sample/redis/lock/order-settle-reentrant` | `curl -X POST "http://localhost:8080/sample/redis/lock/order-settle-reentrant" -H "Content-Type: application/json" -d '{"orderId":"ORD_SETTLE_1001","productId":1001,"quantity":2}'` |
+| **促销规则更新 (排他写锁)** | `RedisLockController` | `POST /sample/redis/lock/promotion-rule` | `curl -X POST "http://localhost:8080/sample/redis/lock/promotion-rule" -H "Content-Type: application/json" -d '{"ruleId":"RULE_VIP_88","ruleName":"VIP专享八折券","discountRate":0.80}'` |
+| **促销规则查询 (共享读锁)** | `RedisLockController` | `GET /sample/redis/lock/promotion-rule/{ruleId}` | `curl "http://localhost:8080/sample/redis/lock/promotion-rule/RULE_VIP_88"` |
+| **排队抢占名额 (公平锁)** | `RedisLockController` | `POST /sample/redis/lock/fair-quota/acquire` | `curl -X POST "http://localhost:8080/sample/redis/lock/fair-quota/acquire" -H "Content-Type: application/json" -d '{"activityId":"ACT_FAIR_99","userId":"USER_001"}'` |
+| **组合套餐扣减 (MultiLock)** | `RedisLockController` | `POST /sample/redis/lock/multi-sku/deduct` | `curl -X POST "http://localhost:8080/sample/redis/lock/multi-sku/deduct" -H "Content-Type: application/json" -d '{"comboId":"COMBO_PHONE_WATCH","productIds":[1001,1002],"quantity":1}'` |
+| **争锁超时排队降级 (Fallback)** | `RedisLockController` | `POST /sample/redis/lock/try-acquire-fallback` | `curl -X POST "http://localhost:8080/sample/redis/lock/try-acquire-fallback" -H "Content-Type: application/json" -d '{"resourceId":"hot_goods_1"}'` |
+| **静态门面加锁 (RedisLockUtil)** | `RedisLockController` | `POST /sample/redis/lock/static-lock` | `curl -X POST "http://localhost:8080/sample/redis/lock/static-lock" -H "Content-Type: application/json" -d '{"resourceId":"daily_report"}'` |
+| **支付异步通知防重入账 (幂等)** | `RedisIdempotentController` | `POST /sample/redis/idempotent/payment/notify` | `curl -X POST "http://localhost:8080/sample/redis/idempotent/payment/notify" -H "Content-Type: application/json" -d '{"paymentNo":"PAY_20261108_001","orderId":"ORD_1001","amount":99.00,"payStatus":"SUCCESS"}'` |
+| **瞬时故障自愈重试 (幂等)** | `RedisIdempotentController` | `POST /sample/redis/idempotent/payment/simulate-failure-retry` | `curl -X POST "http://localhost:8080/sample/redis/idempotent/payment/simulate-failure-retry" -H "Content-Type: application/json" -d '{"paymentNo":"PAY_20261108_002","amount":199.00,"shouldFail":false}'` |
+| **编程式退款核销 (幂等)** | `RedisIdempotentController` | `POST /sample/redis/idempotent/refund/template` | `curl -X POST "http://localhost:8080/sample/redis/idempotent/refund/template" -H "Content-Type: application/json" -d '{"refundNo":"REFUND_001","refundAmount":50.00,"reason":"七天无理由"}'` |
+| **静态门面退款核销 (幂等)** | `RedisIdempotentController` | `POST /sample/redis/idempotent/refund/static` | `curl -X POST "http://localhost:8080/sample/redis/idempotent/refund/static" -H "Content-Type: application/json" -d '{"refundNo":"REFUND_002","refundAmount":80.00,"reason":"降价补差"}'` |
+| **外部征信在途并发管控 (信号量)** | `RedisTrafficController` | `POST /sample/redis/traffic/semaphore/credit-check` | `curl -X POST "http://localhost:8080/sample/redis/traffic/semaphore/credit-check" -H "Content-Type: application/json" -d '{"idCard":"110101199003072345","customerName":"张三"}'` |
+| **静态门面征信评估 (信号量)** | `RedisTrafficController` | `POST /sample/redis/traffic/semaphore/static-check` | `curl -X POST "http://localhost:8080/sample/redis/traffic/semaphore/static-check" -H "Content-Type: application/json" -d '{"idCard":"110101199003072345","customerName":"张三"}'` |
+| **动态调整信号量配额** | `RedisTrafficController` | `POST /sample/redis/traffic/semaphore/permits/reset` | `curl -X POST "http://localhost:8080/sample/redis/traffic/semaphore/permits/reset" -H "Content-Type: application/json" -d '{"semaphoreName":"sem:credit:eval","newPermits":20}'` |
+| **查询信号量剩余配额** | `RedisTrafficController` | `GET /sample/redis/traffic/semaphore/permits/{name}` | `curl "http://localhost:8080/sample/redis/traffic/semaphore/permits/sem:credit:eval"` |
+| **令牌桶流控获取 (RateLimiter)** | `RedisTrafficController` | `POST /sample/redis/traffic/rate-limit/token-bucket` | `curl -X POST "http://localhost:8080/sample/redis/traffic/rate-limit/token-bucket" -H "Content-Type: application/json" -d '{"apiKey":"app_gateway_order","rate":10,"intervalSeconds":1}'` |
+| **重置令牌桶限流配置** | `RedisTrafficController` | `POST /sample/redis/traffic/rate-limit/token-bucket/reset` | `curl -X POST "http://localhost:8080/sample/redis/traffic/rate-limit/token-bucket/reset" -H "Content-Type: application/json" -d '{"apiKey":"app_gateway_order"}'` |
+| **短信滑动窗口防刷 (ZSet)** | `RedisTrafficController` | `POST /sample/redis/traffic/rate-limit/sms-sliding-window` | `curl -X POST "http://localhost:8080/sample/redis/traffic/rate-limit/sms-sliding-window" -H "Content-Type: application/json" -d '{"phoneNumber":"13800138000","windowSeconds":60,"maxAttempts":5}'` |
+| **单级系统字典缓存查询** | `RedisCacheController` | `GET /sample/redis/cache/dict/{code}` | `curl "http://localhost:8080/sample/redis/cache/dict/GENDER"` |
+| **单级系统字典缓存驱逐** | `RedisCacheController` | `DELETE /sample/redis/cache/dict/{code}` | `curl -X DELETE "http://localhost:8080/sample/redis/cache/dict/GENDER"` |
+| **单商品安全防卫查询 (DCL+防穿透)** | `RedisCacheController` | `GET /sample/redis/cache/product/{id}` | `curl "http://localhost:8080/sample/redis/cache/product/1001"` |
+| **批量商品安全查询 (MGET防N+1)** | `RedisCacheController` | `POST /sample/redis/cache/products/batch` | `curl -X POST "http://localhost:8080/sample/redis/cache/products/batch" -H "Content-Type: application/json" -d '[1001, 1002]'` |
+| **驱逐商品缓存** | `RedisCacheController` | `DELETE /sample/redis/cache/product/{id}` | `curl -X DELETE "http://localhost:8080/sample/redis/cache/product/1001"` |
+| **用户档案两级缓存查询 (L1+L2)** | `RedisCacheController` | `GET /sample/redis/cache/user-profile/{userId}` | `curl "http://localhost:8080/sample/redis/cache/user-profile/1001"` |
+| **驱逐用户两级缓存 (广播失效)** | `RedisCacheController` | `DELETE /sample/redis/cache/user-profile/{userId}` | `curl -X DELETE "http://localhost:8080/sample/redis/cache/user-profile/1001"` |
+| **加入黑名单布隆过滤器** | `RedisCacheController` | `POST /sample/redis/cache/blacklist/{userId}` | `curl -X POST "http://localhost:8080/sample/redis/cache/blacklist/risk_user_99"` |
+| **布隆过滤器存在性核验** | `RedisCacheController` | `GET /sample/redis/cache/blacklist/check/{userId}` | `curl "http://localhost:8080/sample/redis/cache/blacklist/check/risk_user_99"` |
+| **布隆过滤器80%容量监控指标** | `RedisCacheController` | `GET /sample/redis/cache/blacklist/metrics` | `curl "http://localhost:8080/sample/redis/cache/blacklist/metrics"` |
+
+> 注：其余 3 大领域 Controller（延时队列投递/死信运维、Stream 消息生产/待决认领、Pub/Sub 主题广播）将在后续工单切片中陆续暴露并挂载体验。
 
 ---
 

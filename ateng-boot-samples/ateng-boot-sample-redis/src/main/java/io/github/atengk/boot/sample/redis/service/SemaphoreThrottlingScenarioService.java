@@ -2,6 +2,8 @@ package io.github.atengk.boot.sample.redis.service;
 
 import io.github.atengk.boot.redis.semaphore.RedisSemaphoreTemplate;
 import io.github.atengk.boot.redis.semaphore.RedisSemaphoreUtil;
+import io.github.atengk.boot.sample.redis.model.traffic.CreditCheckRequest;
+import io.github.atengk.boot.sample.redis.model.traffic.CreditCheckVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -23,7 +25,92 @@ public class SemaphoreThrottlingScenarioService {
     private final RedisSemaphoreTemplate redisSemaphoreTemplate;
 
     /**
-     * 模拟高昂下游接口调用，带并发度治理与超时降级
+     * 外部征信评估在途并发槽位管控（带超时降级）
+     *
+     * @param request 征信评估请求
+     * @return 征信评估结果 VO
+     */
+    public CreditCheckVO checkCredit(CreditCheckRequest request) {
+        String semaphoreKey = "sem:credit:eval";
+        String masked = maskIdCard(request.getIdCard());
+        return redisSemaphoreTemplate.execute(
+                semaphoreKey,
+                10,
+                1,
+                Duration.ofMillis(500),
+                () -> {
+                    log.info("[SemaphoreThrottling] 成功获取信号量槽位，执行征信评估: customerName={}, idCard={}",
+                            request.getCustomerName(), masked);
+                    return CreditCheckVO.builder()
+                            .idCard(masked)
+                            .customerName(request.getCustomerName())
+                            .creditScore(750)
+                            .fallback(false)
+                            .message("征信评估成功，信用等级极佳")
+                            .build();
+                },
+                () -> {
+                    log.warn("[SemaphoreThrottling] 获取信号量槽位超时，触发兜底排队降级: customerName={}", request.getCustomerName());
+                    return CreditCheckVO.builder()
+                            .idCard(masked)
+                            .customerName(request.getCustomerName())
+                            .creditScore(null)
+                            .fallback(true)
+                            .message("征信下游通道在途并发饱和，已触发弹性降级保护")
+                            .build();
+                }
+        );
+    }
+
+    /**
+     * 基于 RedisSemaphoreUtil 静态门面的外部征信评估
+     *
+     * @param request 征信评估请求
+     * @return 征信评估结果 VO
+     */
+    public CreditCheckVO checkCreditStatic(CreditCheckRequest request) {
+        String semaphoreKey = "sem:static:eval";
+        String masked = maskIdCard(request.getIdCard());
+        return RedisSemaphoreUtil.execute(
+                semaphoreKey,
+                10,
+                Duration.ofMillis(500),
+                () -> {
+                    log.info("[SemaphoreThrottling] 静态门面获取信号量成功: customerName={}, idCard={}",
+                            request.getCustomerName(), masked);
+                    return CreditCheckVO.builder()
+                            .idCard(masked)
+                            .customerName(request.getCustomerName())
+                            .creditScore(780)
+                            .fallback(false)
+                            .message("静态门面征信评估成功")
+                            .build();
+                },
+                () -> {
+                    log.warn("[SemaphoreThrottling] 静态门面获取信号量超时降级: customerName={}", request.getCustomerName());
+                    return CreditCheckVO.builder()
+                            .idCard(masked)
+                            .customerName(request.getCustomerName())
+                            .creditScore(null)
+                            .fallback(true)
+                            .message("静态门面并发槽位繁忙，已触发弹性降级")
+                            .build();
+                }
+        );
+    }
+
+    /**
+     * 身份证脱敏清洗辅助方法
+     */
+    private String maskIdCard(String idCard) {
+        if (idCard == null || idCard.length() < 8) {
+            return "***";
+        }
+        return idCard.substring(0, 3) + "******" + idCard.substring(idCard.length() - 4);
+    }
+
+    /**
+     * 模拟高昂下游接口调用，带并发度治理与超时降级（兼容存量单测）
      *
      * @param serviceName  下游服务名
      * @param totalPermits 总配额
@@ -49,7 +136,7 @@ public class SemaphoreThrottlingScenarioService {
     }
 
     /**
-     * 基于 RedisSemaphoreUtil 静态门面执行并发度限制
+     * 基于 RedisSemaphoreUtil 静态门面执行并发度限制（兼容存量单测）
      *
      * @param serviceName  下游服务名
      * @param totalPermits 总配额
@@ -74,7 +161,7 @@ public class SemaphoreThrottlingScenarioService {
      * @param newPermits  新配额
      */
     public boolean resetPermits(String serviceName, int newPermits) {
-        String semaphoreKey = "sem:heavy:" + serviceName;
+        String semaphoreKey = serviceName.startsWith("sem:") ? serviceName : "sem:heavy:" + serviceName;
         boolean success = redisSemaphoreTemplate.resetPermits(semaphoreKey, newPermits);
         log.info("[Semaphore] 动态调配信号量许可证: key={}, newPermits={}, success={}", semaphoreKey, newPermits, success);
         return success;
@@ -84,7 +171,7 @@ public class SemaphoreThrottlingScenarioService {
      * 获取当前可用许可证数量
      */
     public int getAvailablePermits(String serviceName) {
-        String semaphoreKey = "sem:heavy:" + serviceName;
+        String semaphoreKey = serviceName.startsWith("sem:") ? serviceName : "sem:heavy:" + serviceName;
         return redisSemaphoreTemplate.availablePermits(semaphoreKey);
     }
 }

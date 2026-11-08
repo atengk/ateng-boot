@@ -11,8 +11,15 @@ ateng:
   boot:
     redis:
       enabled: true
+      cache:
+        enabled: true
+        expires:
+          sys-dict: 2h
       two-level:
         enabled: true
+        l1:
+          ttls:
+            user-profile: 10m
       delay-queue:
         enabled: true
       stream:

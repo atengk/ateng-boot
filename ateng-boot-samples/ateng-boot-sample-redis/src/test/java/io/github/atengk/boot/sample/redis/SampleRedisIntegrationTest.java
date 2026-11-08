@@ -26,7 +26,11 @@ import io.github.atengk.boot.sample.redis.model.NoticeBroadcastPayload;
 import io.github.atengk.boot.sample.redis.model.OrderDelayPayload;
 import io.github.atengk.boot.sample.redis.model.OrderStreamEvent;
 import io.github.atengk.boot.sample.redis.model.ProductVO;
+import io.github.atengk.boot.sample.redis.model.cache.*;
+import io.github.atengk.boot.sample.redis.model.idempotent.*;
+import io.github.atengk.boot.sample.redis.model.lock.*;
 import io.github.atengk.boot.sample.redis.model.ops.*;
+import io.github.atengk.boot.sample.redis.model.traffic.*;
 import io.github.atengk.boot.sample.redis.service.CacheScenarioService;
 import io.github.atengk.boot.sample.redis.service.IdempotentScenarioService;
 import io.github.atengk.boot.sample.redis.service.NoticeBroadcastScenarioService;
@@ -874,5 +878,358 @@ class SampleRedisIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.key").value("sample:watermark:sync"));
+    }
+
+    // =========================================================================
+    // 控制器端点集成测试: RedisLockController
+    // =========================================================================
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/lock/deduct-stock 秒杀减库存")
+    void testRedisLockDeductStockEndpoint() throws Exception {
+        StockDeductRequest request = StockDeductRequest.builder()
+                .productId(1001L)
+                .count(10)
+                .build();
+
+        mockMvc.perform(post("/sample/redis/lock/deduct-stock")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.productId").value(1001))
+                .andExpect(jsonPath("$.data.success").value(true));
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/lock/order-settle-reentrant 跨服务嵌套重入锁结算")
+    void testRedisLockOrderSettleReentrantEndpoint() throws Exception {
+        OrderSettleRequest request = OrderSettleRequest.builder()
+                .orderId("ORD_SETTLE_2001")
+                .productId(1001L)
+                .quantity(5)
+                .build();
+
+        mockMvc.perform(post("/sample/redis/lock/order-settle-reentrant")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderId").value("ORD_SETTLE_2001"))
+                .andExpect(jsonPath("$.data.status").value("SETTLED"));
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/lock/promotion-rule 读写锁更新与查询")
+    void testRedisLockPromotionRuleReadWriteEndpoint() throws Exception {
+        PromotionRuleUpdateRequest updateRequest = PromotionRuleUpdateRequest.builder()
+                .ruleId("PROMO_88")
+                .ruleName("双十一八折券")
+                .discountRate(new BigDecimal("0.80"))
+                .build();
+
+        mockMvc.perform(post("/sample/redis/lock/promotion-rule")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(updateRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.ruleId").value("PROMO_88"));
+
+        mockMvc.perform(get("/sample/redis/lock/promotion-rule/PROMO_88"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.ruleId").value("PROMO_88"))
+                .andExpect(jsonPath("$.data.ruleName").value("双十一八折券"));
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/lock/fair-quota/acquire 公平锁抢占稀缺名额")
+    void testRedisLockFairQuotaEndpoint() throws Exception {
+        FairQuotaRequest request = FairQuotaRequest.builder()
+                .activityId("ACT_FAIR_99")
+                .userId("USER_FAIR_01")
+                .build();
+
+        mockMvc.perform(post("/sample/redis/lock/fair-quota/acquire")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.acquired").value(true));
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/lock/multi-sku/deduct 组合套餐联锁 MultiLock")
+    void testRedisLockMultiSkuDeductEndpoint() throws Exception {
+        MultiSkuDeductRequest request = MultiSkuDeductRequest.builder()
+                .comboId("COMBO_PHONE_WATCH")
+                .productIds(List.of(1001L, 1002L))
+                .quantity(1)
+                .build();
+
+        mockMvc.perform(post("/sample/redis/lock/multi-sku/deduct")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.comboId").value("COMBO_PHONE_WATCH"))
+                .andExpect(jsonPath("$.data.success").value(true));
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/lock/try-acquire-fallback 争锁超时排队降级")
+    void testRedisLockFallbackEndpoint() throws Exception {
+        LockFallbackRequest request = LockFallbackRequest.builder()
+                .resourceId("fallback_res_api")
+                .build();
+
+        mockMvc.perform(post("/sample/redis/lock/try-acquire-fallback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.resourceId").value("fallback_res_api"));
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/lock/static-lock RedisLockUtil 静态加锁")
+    void testRedisLockStaticEndpoint() throws Exception {
+        StaticLockRequest request = StaticLockRequest.builder()
+                .resourceId("sync:report:001")
+                .build();
+
+        mockMvc.perform(post("/sample/redis/lock/static-lock")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.resourceId").value("sync:report:001"))
+                .andExpect(jsonPath("$.data.locked").value(true));
+    }
+
+    // =========================================================================
+    // 控制器端点集成测试: RedisIdempotentController
+    // =========================================================================
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/idempotent/payment/notify 异步支付通知防重入账")
+    void testRedisIdempotentPaymentNotifyEndpoint() throws Exception {
+        PaymentCallbackRequest request = PaymentCallbackRequest.builder()
+                .paymentNo("PAY_NOTIFY_1001")
+                .orderId("ORD_NOTIFY_1001")
+                .amount(new BigDecimal("99.00"))
+                .payStatus("SUCCESS")
+                .build();
+
+        mockMvc.perform(post("/sample/redis/idempotent/payment/notify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.paymentNo").value("PAY_NOTIFY_1001"))
+                .andExpect(jsonPath("$.data.processed").value(true));
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/idempotent/payment/simulate-failure-retry 失败自动自愈二次重试")
+    void testRedisIdempotentFailureRetryEndpoint() throws Exception {
+        PaymentFailureRetryRequest request = PaymentFailureRetryRequest.builder()
+                .paymentNo("PAY_RETRY_1002")
+                .amount(new BigDecimal("199.00"))
+                .shouldFail(false)
+                .build();
+
+        mockMvc.perform(post("/sample/redis/idempotent/payment/simulate-failure-retry")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.paymentNo").value("PAY_RETRY_1002"))
+                .andExpect(jsonPath("$.data.processed").value(true));
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/idempotent/refund/template & static 编程式与静态退款防重")
+    void testRedisIdempotentRefundEndpoints() throws Exception {
+        RefundRequest tplRequest = RefundRequest.builder()
+                .refundNo("REFUND_TPL_001")
+                .refundAmount(new BigDecimal("50.00"))
+                .reason("协商一致退款")
+                .build();
+
+        mockMvc.perform(post("/sample/redis/idempotent/refund/template")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(tplRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.refundNo").value("REFUND_TPL_001"))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        RefundRequest staRequest = RefundRequest.builder()
+                .refundNo("REFUND_STA_002")
+                .refundAmount(new BigDecimal("80.00"))
+                .reason("多付退款")
+                .build();
+
+        mockMvc.perform(post("/sample/redis/idempotent/refund/static")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(staRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.refundNo").value("REFUND_STA_002"))
+                .andExpect(jsonPath("$.data.success").value(true));
+    }
+
+    // =========================================================================
+    // 控制器端点集成测试: RedisTrafficController
+    // =========================================================================
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/traffic/semaphore 征信并发槽位管控与配额调配")
+    void testRedisTrafficSemaphoreEndpoints() throws Exception {
+        CreditCheckRequest request = CreditCheckRequest.builder()
+                .idCard("110101199003072345")
+                .customerName("张三")
+                .build();
+
+        mockMvc.perform(post("/sample/redis/traffic/semaphore/credit-check")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.customerName").value("张三"))
+                .andExpect(jsonPath("$.data.creditScore").value(750));
+
+        mockMvc.perform(post("/sample/redis/traffic/semaphore/static-check")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.customerName").value("张三"))
+                .andExpect(jsonPath("$.data.creditScore").value(780));
+
+        SemaphoreResetRequest resetRequest = SemaphoreResetRequest.builder()
+                .semaphoreName("sem:heavy:credit-eval")
+                .newPermits(20)
+                .build();
+
+        mockMvc.perform(post("/sample/redis/traffic/semaphore/permits/reset")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(resetRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        mockMvc.perform(get("/sample/redis/traffic/semaphore/permits/credit-eval"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.currentPermits").isNumber());
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/traffic/rate-limit 令牌桶限流与滑动窗口防刷")
+    void testRedisTrafficRateLimitEndpoints() throws Exception {
+        TokenBucketRateLimitRequest tbRequest = TokenBucketRateLimitRequest.builder()
+                .apiKey("api:gateway:order")
+                .rate(10L)
+                .intervalSeconds(1L)
+                .build();
+
+        mockMvc.perform(post("/sample/redis/traffic/rate-limit/token-bucket")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(tbRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.allowed").value(true));
+
+        TokenBucketResetRequest tbReset = TokenBucketResetRequest.builder()
+                .apiKey("api:gateway:order")
+                .build();
+
+        mockMvc.perform(post("/sample/redis/traffic/rate-limit/token-bucket/reset")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(tbReset)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        SmsRateLimitRequest smsRequest = SmsRateLimitRequest.builder()
+                .phoneNumber("13800138000")
+                .windowSeconds(60)
+                .maxAttempts(5)
+                .build();
+
+        mockMvc.perform(post("/sample/redis/traffic/rate-limit/sms-sliding-window")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(smsRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.allowed").value(true));
+    }
+
+    // =========================================================================
+    // 控制器端点集成测试: RedisCacheController
+    // =========================================================================
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/cache 单级字典、商品安全缓存、两级用户档案与布隆黑名单")
+    void testRedisCacheEndpoints() throws Exception {
+        // 1. 单级字典查询与驱逐
+        mockMvc.perform(get("/sample/redis/cache/dict/GENDER"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.dictCode").value("GENDER"));
+
+        mockMvc.perform(delete("/sample/redis/cache/dict/GENDER"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 2. 单商品与批量商品
+        mockMvc.perform(get("/sample/redis/cache/product/1001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.productId").value(1001))
+                .andExpect(jsonPath("$.data.name").value("iPhone 16 Pro"));
+
+        mockMvc.perform(post("/sample/redis/cache/products/batch")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(List.of(1001L, 1002L))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data['1001'].name").value("iPhone 16 Pro"));
+
+        mockMvc.perform(delete("/sample/redis/cache/product/1001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 3. 用户档案两级缓存
+        mockMvc.perform(get("/sample/redis/cache/user-profile/3001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.userId").value(3001))
+                .andExpect(jsonPath("$.data.membershipTier").value("VIP"));
+
+        mockMvc.perform(delete("/sample/redis/cache/user-profile/3001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 4. 布隆黑名单
+        mockMvc.perform(post("/sample/redis/cache/blacklist/risk_user_99"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        mockMvc.perform(get("/sample/redis/cache/blacklist/check/risk_user_99"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        mockMvc.perform(get("/sample/redis/cache/blacklist/metrics"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.filterName").value("user-blacklist"));
     }
 }

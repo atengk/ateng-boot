@@ -89,22 +89,49 @@ public class SampleInMemoryRedisConfig {
     }
 
     private static RedisConnection createConnectionProxy() {
+        RedisKeyCommands keyCommands = createKeyCommandsProxy();
+        RedisStreamCommands streamCommands = createStreamCommandsProxy();
+        RedisStringCommands stringCommands = createStringCommandsProxy();
         return (RedisConnection) Proxy.newProxyInstance(
                 RedisConnection.class.getClassLoader(),
                 new Class<?>[]{RedisConnection.class},
                 (proxy, method, args) -> {
                     String mName = method.getName();
                     if ("keyCommands".equals(mName)) {
-                        return createKeyCommandsProxy();
+                        return keyCommands;
                     }
                     if ("streamCommands".equals(mName)) {
-                        return createStreamCommandsProxy();
+                        return streamCommands;
+                    }
+                    if ("stringCommands".equals(mName)) {
+                        return stringCommands;
                     }
                     if ("isClosed".equals(mName)) {
                         return false;
                     }
                     if ("ping".equals(mName)) {
                         return "PONG";
+                    }
+                    if ("get".equals(mName) && args != null && args.length == 1 && args[0] instanceof byte[] bKey) {
+                        String k = new String(bKey, StandardCharsets.UTF_8);
+                        Object val = VALUE_STORE.get(k);
+                        if (val instanceof byte[] bVal) {
+                            return bVal;
+                        } else if (val instanceof String sVal) {
+                            return sVal.getBytes(StandardCharsets.UTF_8);
+                        }
+                        return null;
+                    }
+                    if ("set".equals(mName) && args != null && args.length >= 2 && args[0] instanceof byte[] bKey) {
+                        String k = new String(bKey, StandardCharsets.UTF_8);
+                        VALUE_STORE.put(k, args[1]);
+                        return true;
+                    }
+                    if ("del".equals(mName) && args != null && args.length > 0) {
+                        return method.invoke(keyCommands, args);
+                    }
+                    if ("keys".equals(mName)) {
+                        return method.invoke(keyCommands, args);
                     }
                     return defaultValue(method.getReturnType());
                 }
@@ -133,6 +160,18 @@ public class SampleInMemoryRedisConfig {
                                 }
                         );
                     }
+                    if ("keys".equals(mName)) {
+                        Set<byte[]> list = new HashSet<>();
+                        byte[] patternBytes = (args != null && args.length > 0 && args[0] instanceof byte[]) ? (byte[]) args[0] : null;
+                        String pattern = patternBytes != null ? new String(patternBytes, StandardCharsets.UTF_8) : "*";
+                        String prefix = pattern.replace("*", "");
+                        for (String key : VALUE_STORE.keySet()) {
+                            if (key.startsWith(prefix) || "*".equals(pattern)) {
+                                list.add(key.getBytes(StandardCharsets.UTF_8));
+                            }
+                        }
+                        return list;
+                    }
                     if ("del".equals(mName)) {
                         if (args != null && args.length > 0 && args[0] instanceof byte[][] bArr) {
                             long count = 0;
@@ -145,6 +184,32 @@ public class SampleInMemoryRedisConfig {
                             return count;
                         }
                         return 1L;
+                    }
+                    return defaultValue(method.getReturnType());
+                }
+        );
+    }
+
+    private static RedisStringCommands createStringCommandsProxy() {
+        return (RedisStringCommands) Proxy.newProxyInstance(
+                RedisStringCommands.class.getClassLoader(),
+                new Class<?>[]{RedisStringCommands.class},
+                (proxy, method, args) -> {
+                    String mName = method.getName();
+                    if ("get".equals(mName) && args != null && args.length == 1 && args[0] instanceof byte[] bKey) {
+                        String k = new String(bKey, StandardCharsets.UTF_8);
+                        Object val = VALUE_STORE.get(k);
+                        if (val instanceof byte[] bVal) {
+                            return bVal;
+                        } else if (val instanceof String sVal) {
+                            return sVal.getBytes(StandardCharsets.UTF_8);
+                        }
+                        return null;
+                    }
+                    if ("set".equals(mName) && args != null && args.length >= 2 && args[0] instanceof byte[] bKey) {
+                        String k = new String(bKey, StandardCharsets.UTF_8);
+                        VALUE_STORE.put(k, args[1]);
+                        return true;
                     }
                     return defaultValue(method.getReturnType());
                 }
