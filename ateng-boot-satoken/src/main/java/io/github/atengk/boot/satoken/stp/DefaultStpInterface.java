@@ -1,6 +1,10 @@
 package io.github.atengk.boot.satoken.stp;
 
+import cn.dev33.satoken.session.SaSession;
 import cn.dev33.satoken.stp.StpInterface;
+import cn.dev33.satoken.stp.StpLogic;
+import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 
@@ -20,6 +24,9 @@ public class DefaultStpInterface implements StpInterface {
     @Override
     public List<String> getPermissionList(Object loginId, String loginType) {
         LoginUser user = resolveLoginUser(loginType);
+        if (user == null && loginId != null) {
+            user = resolveUserFromSession(String.valueOf(loginId), loginType);
+        }
         if (user != null && user.getPermissions() != null && !user.getPermissions().isEmpty()) {
             return new ArrayList<>(user.getPermissions());
         }
@@ -29,6 +36,9 @@ public class DefaultStpInterface implements StpInterface {
     @Override
     public List<String> getRoleList(Object loginId, String loginType) {
         LoginUser user = resolveLoginUser(loginType);
+        if (user == null && loginId != null) {
+            user = resolveUserFromSession(String.valueOf(loginId), loginType);
+        }
         if (user != null && user.getRoles() != null && !user.getRoles().isEmpty()) {
             return new ArrayList<>(user.getRoles());
         }
@@ -50,5 +60,25 @@ public class DefaultStpInterface implements StpInterface {
             }
         }
         return LoginHelper.getLoginUser();
+    }
+
+    private LoginUser resolveUserFromSession(String userId, String loginType) {
+        if (userId == null || userId.isBlank()) {
+            return null;
+        }
+        try {
+            StpLogic logic = LoginHelper.getStpLogic(loginType);
+            SaSession userSession = logic.getSessionByLoginId(userId, false);
+            if (userSession != null) {
+                Object rawVal = userSession.get(SaTokenConstant.LOGIN_USER_KEY);
+                if (rawVal instanceof LoginUser u) {
+                    return u;
+                } else if (rawVal instanceof String jsonStr && !jsonStr.isBlank()) {
+                    return JsonUtil.parseObject(jsonStr, LoginUser.class);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 }

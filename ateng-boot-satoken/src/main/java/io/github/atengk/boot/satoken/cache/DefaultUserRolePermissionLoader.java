@@ -1,5 +1,9 @@
 package io.github.atengk.boot.satoken.cache;
 
+import cn.dev33.satoken.session.SaSession;
+import cn.dev33.satoken.stp.StpLogic;
+import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 
@@ -28,6 +32,11 @@ public class DefaultUserRolePermissionLoader implements UserRolePermissionLoader
             if (loginUser != null && loginUser.getRoles() != null && !loginUser.getRoles().isEmpty()) {
                 return new ArrayList<>(loginUser.getRoles());
             }
+            // 当无法从当前请求上下文直接解析出用户时，尝试根据 userId 从目标账号体系的 Account-Session 中解析
+            LoginUser sessionUser = resolveUserFromSession(userId, loginType);
+            if (sessionUser != null && sessionUser.getRoles() != null && !sessionUser.getRoles().isEmpty()) {
+                return new ArrayList<>(sessionUser.getRoles());
+            }
         } catch (Exception ignored) {
             // 当不在活跃 Web 请求上下文或无当前会话时，安全回退返回空集合
         }
@@ -52,6 +61,11 @@ public class DefaultUserRolePermissionLoader implements UserRolePermissionLoader
             if (loginUser != null && loginUser.getPermissions() != null && !loginUser.getPermissions().isEmpty()) {
                 return new ArrayList<>(loginUser.getPermissions());
             }
+            // 当无法从当前请求上下文直接解析出用户时，尝试根据 userId 从目标账号体系的 Account-Session 中解析
+            LoginUser sessionUser = resolveUserFromSession(userId, loginType);
+            if (sessionUser != null && sessionUser.getPermissions() != null && !sessionUser.getPermissions().isEmpty()) {
+                return new ArrayList<>(sessionUser.getPermissions());
+            }
         } catch (Exception ignored) {
             // 当不在活跃 Web 请求上下文或无当前会话时，安全回退返回空集合
         }
@@ -73,5 +87,25 @@ public class DefaultUserRolePermissionLoader implements UserRolePermissionLoader
             }
         }
         return LoginHelper.getLoginUser();
+    }
+
+    private LoginUser resolveUserFromSession(String userId, String loginType) {
+        if (userId == null || userId.isBlank()) {
+            return null;
+        }
+        try {
+            StpLogic logic = LoginHelper.getStpLogic(loginType);
+            SaSession userSession = logic.getSessionByLoginId(userId, false);
+            if (userSession != null) {
+                Object rawVal = userSession.get(SaTokenConstant.LOGIN_USER_KEY);
+                if (rawVal instanceof LoginUser u) {
+                    return u;
+                } else if (rawVal instanceof String jsonStr && !jsonStr.isBlank()) {
+                    return JsonUtil.parseObject(jsonStr, LoginUser.class);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 }

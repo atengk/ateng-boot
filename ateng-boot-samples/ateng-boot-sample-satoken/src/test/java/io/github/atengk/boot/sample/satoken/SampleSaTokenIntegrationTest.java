@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.sample.satoken.dto.DefenseLoginRequestDTO;
 import io.github.atengk.boot.sample.satoken.dto.LoginRequestDTO;
 import io.github.atengk.boot.sample.satoken.dto.OrderCreateDTO;
 import io.github.atengk.boot.sample.satoken.dto.SettlementRequestDTO;
@@ -1888,6 +1889,506 @@ class SampleSaTokenIntegrationTest {
                     .andExpect(jsonPath("$.code").value(200));
         } finally {
             LoginHelper.kickoutByToken(token);
+        }
+    }
+
+    @Test
+    @DisplayName("40. 验证 LoginDefenseController 账号与客户端 IP 双轨防爆破、锁定状态查询与管理员紧急解锁")
+    void shouldVerifyLoginDefenseControllerEndpoints() throws Exception {
+        String testAccount = "defense_slice_user";
+        String testIp = "192.168.10.88";
+
+        try {
+            // 0. 初始防爆破锁定状态查询
+            mockMvc.perform(get("/sample/satoken/defense/account-status")
+                            .param("account", testAccount))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.locked").value(false))
+                    .andExpect(jsonPath("$.data.failureCount").value(0))
+                    .andExpect(jsonPath("$.data.remainRetryCount").value(5));
+
+            mockMvc.perform(get("/sample/satoken/defense/ip-status")
+                            .param("clientIp", testIp))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.locked").value(false))
+                    .andExpect(jsonPath("$.data.whiteListed").value(false));
+
+            // 1. 模拟连续 4 次输错密码（剩余机会 4 -> 1 递减，HTTP 200 + 业务码 401）
+            for (int i = 1; i <= 4; i++) {
+                int expectedRemain = 5 - i;
+                DefenseLoginRequestDTO failReq = new DefenseLoginRequestDTO();
+                failReq.setAccount(testAccount);
+                failReq.setPassword("wrong_pwd_" + i);
+                failReq.setClientIp(testIp);
+
+                mockMvc.perform(post("/sample/satoken/defense/login")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(objectMapper.writeValueAsString(failReq)))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.code").value(401))
+                        .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("剩余重试机会: " + expectedRemain + " 次")));
+            }
+
+            // 2. 第 5 次输错密码：达到阈值，触发锁定阻断（HTTP 200 + 业务码 403）
+            DefenseLoginRequestDTO lockReq = new DefenseLoginRequestDTO();
+            lockReq.setAccount(testAccount);
+            lockReq.setPassword("wrong_pwd_5");
+            lockReq.setClientIp(testIp);
+
+            mockMvc.perform(post("/sample/satoken/defense/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(lockReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403))
+                    .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("登录失败次数过多，已被锁定")));
+
+            // 3. 验证锁定状态
+            mockMvc.perform(get("/sample/satoken/defense/account-status")
+                            .param("account", testAccount))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.locked").value(true))
+                    .andExpect(jsonPath("$.data.failureCount").value(5))
+                    .andExpect(jsonPath("$.data.remainRetryCount").value(0))
+                    .andExpect(jsonPath("$.data.lockTime").value(org.hamcrest.Matchers.notNullValue()));
+
+            mockMvc.perform(get("/sample/satoken/defense/ip-status")
+                            .param("clientIp", testIp))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.locked").value(true));
+
+            // 4. 被锁定后，即使输入正确密码也直接在防卫拦截处 Fail-Fast（HTTP 200 + 业务码 403）
+            DefenseLoginRequestDTO blockedReq = new DefenseLoginRequestDTO();
+            blockedReq.setAccount(testAccount);
+            blockedReq.setPassword("123456");
+            blockedReq.setClientIp(testIp);
+
+            mockMvc.perform(post("/sample/satoken/defense/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(blockedReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            // 5. 管理员紧急解锁账号与解除客户端 IP 熔断
+            mockMvc.perform(post("/sample/satoken/defense/unlock-account")
+                            .param("account", testAccount))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString(testAccount)));
+
+            mockMvc.perform(post("/sample/satoken/defense/unlock-ip")
+                            .param("clientIp", testIp))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString(testIp)));
+
+            // 6. 解锁后验证状态恢复正常
+            mockMvc.perform(get("/sample/satoken/defense/account-status")
+                            .param("account", testAccount))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.locked").value(false))
+                    .andExpect(jsonPath("$.data.remainRetryCount").value(5));
+
+            mockMvc.perform(get("/sample/satoken/defense/ip-status")
+                            .param("clientIp", testIp))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.locked").value(false));
+
+            // 7. 解锁后使用正确密码成功登录并下发 Token
+            MvcResult successRes = mockMvc.perform(post("/sample/satoken/defense/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(blockedReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").isString())
+                    .andReturn();
+
+            String token = objectMapper.readTree(successRes.getResponse().getContentAsString()).get("data").asText();
+            assertThat(token).isNotBlank();
+            LoginHelper.kickoutByToken(token);
+        } finally {
+            if (loginDefenseService != null) {
+                loginDefenseService.clearAllFailure(testAccount, testIp);
+            }
+            LoginHelper.untieDisable(testAccount);
+            LoginHelper.kickout("user-" + testAccount);
+        }
+    }
+
+    @Test
+    @DisplayName("41. 验证 OnlineSessionController 在线会话统计与检索、按Token/设备/全端强退、顶替下线、阶梯封禁解封与受限业务校验")
+    void shouldVerifyOnlineSessionControllerEndpoints() throws Exception {
+        LoginRequestDTO user1Req = new LoginRequestDTO();
+        user1Req.setUserId("online_user_a");
+        user1Req.setUsername("online_user_a");
+        user1Req.setDevice("PC");
+
+        MvcResult login1Res = mockMvc.perform(post("/sample/satoken/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(user1Req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        String token1 = objectMapper.readTree(login1Res.getResponse().getContentAsString()).get("data").asText();
+
+        LoginRequestDTO user2Req = new LoginRequestDTO();
+        user2Req.setUserId("online_user_b");
+        user2Req.setUsername("online_user_b");
+
+        MvcResult login2Res = mockMvc.perform(post("/sample/satoken/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(user2Req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        String token2 = objectMapper.readTree(login2Res.getResponse().getContentAsString()).get("data").asText();
+
+        try {
+            // 1. 获取在线会话总数
+            mockMvc.perform(get("/sample/satoken/online/count"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.notNullValue()));
+
+            // 2. 分页检索在线会话
+            mockMvc.perform(get("/sample/satoken/online/page")
+                            .param("keyword", "online_user")
+                            .param("page", "1")
+                            .param("size", "10"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.records").isArray())
+                    .andExpect(jsonPath("$.data.total").value(org.hamcrest.Matchers.notNullValue()));
+
+            // 3. 初始阶梯封禁状态与受限操作调用
+            mockMvc.perform(get("/sample/satoken/online/disable-status")
+                            .param("userId", "online_user_a"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.disabled").value(false));
+
+            mockMvc.perform(get("/sample/satoken/online/restricted-action")
+                            .header("satoken", token1))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 4. 对 online_user_a 施加阶梯封禁 (120 秒)
+            mockMvc.perform(post("/sample/satoken/online/disable")
+                            .param("userId", "online_user_a")
+                            .param("durationSeconds", "120"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(get("/sample/satoken/online/disable-status")
+                            .param("userId", "online_user_a"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.disabled").value(true))
+                    .andExpect(jsonPath("$.data.disableTime").value(org.hamcrest.Matchers.notNullValue()));
+
+            // 5. 封禁期间受限操作被 @SaCheckDisable 拦截 (HTTP 200 + 业务码 403)
+            mockMvc.perform(get("/sample/satoken/online/restricted-action")
+                            .header("satoken", token1))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            // 6. 解封账号并验证恢复可用
+            mockMvc.perform(post("/sample/satoken/online/untie-disable")
+                            .param("userId", "online_user_a"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(get("/sample/satoken/online/restricted-action")
+                            .header("satoken", token1))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 7. 模拟同端顶替下线 (replaced)
+            mockMvc.perform(post("/sample/satoken/online/replaced")
+                            .param("userId", "online_user_a")
+                            .param("device", "PC"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 顶替后原 Token 调用受限接口被识别为 401 顶替下线
+            mockMvc.perform(get("/sample/satoken/online/restricted-action")
+                            .header("satoken", token1))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(401));
+
+            // 8. 强退测试 (kickout-token, kickout-device, kickout-user)
+            mockMvc.perform(post("/sample/satoken/online/kickout-token")
+                            .param("tokenValue", token2))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(post("/sample/satoken/online/kickout-device")
+                            .param("userId", "online_user_b")
+                            .param("device", "PC"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(post("/sample/satoken/online/kickout-user")
+                            .param("userId", "online_user_b"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+        } finally {
+            LoginHelper.untieDisable("online_user_a");
+            LoginHelper.untieDisable("online_user_b");
+            LoginHelper.kickoutByToken(token1);
+            LoginHelper.kickoutByToken(token2);
+            LoginHelper.kickout("online_user_a");
+            LoginHelper.kickout("online_user_b");
+        }
+    }
+
+    @Test
+    @DisplayName("42. 验证 MultiAccountController 管理端与会员端独立双轨登录、凭据隔离、基于 loginType 权限校验与独立注销")
+    void shouldVerifyMultiAccountControllerEndpoints() throws Exception {
+        LoginRequestDTO adminReq = new LoginRequestDTO();
+        adminReq.setUserId("admin_multi_01");
+        adminReq.setUsername("admin_multi_01");
+        adminReq.setRoles(Set.of("super_admin"));
+        adminReq.setPermissions(Set.of("system:manage"));
+
+        LoginRequestDTO memberReq = new LoginRequestDTO();
+        memberReq.setUserId("member_multi_01");
+        memberReq.setUsername("member_multi_01");
+        memberReq.setRoles(Set.of("vip_member"));
+        memberReq.setPermissions(Set.of("member:points:view"));
+
+        // 1. 管理端登录并获取 admin Token
+        MvcResult adminRes = mockMvc.perform(post("/sample/satoken/multi-account/admin/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(adminReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isString())
+                .andReturn();
+        String adminToken = objectMapper.readTree(adminRes.getResponse().getContentAsString()).get("data").asText();
+        assertThat(adminToken).isNotBlank();
+
+        // 2. 会员端登录并获取 member Token
+        MvcResult memberRes = mockMvc.perform(post("/sample/satoken/multi-account/member/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(memberReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isString())
+                .andReturn();
+        String memberToken = objectMapper.readTree(memberRes.getResponse().getContentAsString()).get("data").asText();
+        assertThat(memberToken).isNotBlank();
+
+        try {
+            // 3. 管理端身份校验与特权角色校验 (satoken-admin 请求头)
+            mockMvc.perform(get("/sample/satoken/multi-account/admin/me")
+                            .header("satoken-admin", adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.userId").value("admin_multi_01"));
+
+            mockMvc.perform(get("/sample/satoken/multi-account/admin/manage-roles")
+                            .header("satoken-admin", adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 跨体系越权防卫：使用会员凭据请求管理端特权接口触发 401
+            mockMvc.perform(get("/sample/satoken/multi-account/admin/manage-roles")
+                            .header("satoken-admin", memberToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(401));
+
+            // 4. 会员端身份校验与特权权限校验 (satoken-member 请求头)
+            mockMvc.perform(get("/sample/satoken/multi-account/member/me")
+                            .header("satoken-member", memberToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.userId").value("member_multi_01"));
+
+            mockMvc.perform(get("/sample/satoken/multi-account/member/points")
+                            .header("satoken-member", memberToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 跨体系越权防卫：使用管理员凭据请求会员专属积分特权接口触发 401
+            mockMvc.perform(get("/sample/satoken/multi-account/member/points")
+                            .header("satoken-member", adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(401));
+
+            // 5. 注销管理端会话
+            mockMvc.perform(post("/sample/satoken/multi-account/admin/logout")
+                            .header("satoken-admin", adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 验证管理端会话已注销失效 (401)
+            mockMvc.perform(get("/sample/satoken/multi-account/admin/me")
+                            .header("satoken-admin", adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(401));
+
+            // 验证会员端会话依然完全活跃，独立不受影响 (200)
+            mockMvc.perform(get("/sample/satoken/multi-account/member/me")
+                            .header("satoken-member", memberToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.userId").value("member_multi_01"));
+
+            // 6. 注销会员端会话
+            mockMvc.perform(post("/sample/satoken/multi-account/member/logout")
+                            .header("satoken-member", memberToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(get("/sample/satoken/multi-account/member/me")
+                            .header("satoken-member", memberToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(401));
+        } finally {
+            try {
+                LoginHelper.logoutByTokenValue("admin", adminToken);
+            } catch (Exception ignored) {
+            }
+            try {
+                LoginHelper.logoutByTokenValue("member", memberToken);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("43. 验证 ImpersonateAuditController 客服持久会话切换、瞬态函数式模拟订单补偿与安全审计事件流水")
+    void shouldVerifyImpersonateAuditControllerEndpoints() throws Exception {
+        LoginRequestDTO operatorReq = new LoginRequestDTO();
+        operatorReq.setUserId("operator_88001");
+        operatorReq.setUsername("operator_88001");
+        operatorReq.setTenantId("tenant_sz");
+
+        MvcResult loginRes = mockMvc.perform(post("/sample/satoken/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(operatorReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        String token = objectMapper.readTree(loginRes.getResponse().getContentAsString()).get("data").asText();
+        assertThat(token).isNotBlank();
+
+        try {
+            // 0. 清空审计事件流水
+            mockMvc.perform(post("/sample/satoken/impersonate/events/clear"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 1. 查询初始模拟状态
+            mockMvc.perform(get("/sample/satoken/impersonate/status")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.isRunAs").value(false))
+                    .andExpect(jsonPath("$.data.currentUserId").value("operator_88001"))
+                    .andExpect(jsonPath("$.data.realUserId").value("operator_88001"));
+
+            // 2. 开启客服持久会话切换 (switchTo)
+            mockMvc.perform(post("/sample/satoken/impersonate/switch")
+                            .header("satoken", token)
+                            .param("targetUserId", "target_user_10086"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 3. 验证切换后身份状态 (currentUserId 变为 10086，real/original 仍为 operator_88001)
+            mockMvc.perform(get("/sample/satoken/impersonate/status")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.isRunAs").value(true))
+                    .andExpect(jsonPath("$.data.currentUserId").value("target_user_10086"))
+                    .andExpect(jsonPath("$.data.realUserId").value("operator_88001"))
+                    .andExpect(jsonPath("$.data.originalUserId").value("operator_88001"));
+
+            // 4. 结束会话切换 (endSwitch)
+            mockMvc.perform(post("/sample/satoken/impersonate/end-switch")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 验证恢复原始身份
+            mockMvc.perform(get("/sample/satoken/impersonate/status")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.isRunAs").value(false))
+                    .andExpect(jsonPath("$.data.currentUserId").value("operator_88001"));
+
+            // 5. 瞬态函数式模拟补偿客诉订单 (runAs)
+            MvcResult orderRes = mockMvc.perform(post("/sample/satoken/impersonate/compensate-order")
+                            .header("satoken", token)
+                            .param("targetUserId", "vip_client_20002")
+                            .param("orderNo", "COMP-ORD-9999")
+                            .param("amount", "188.50"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.notNullValue()))
+                    .andReturn();
+
+            Long orderId = objectMapper.readTree(orderRes.getResponse().getContentAsString()).get("data").asLong();
+            assertThat(orderId).isNotNull();
+
+            // 验证数据库持久层：createBy 自动注入瞬态模拟的目标用户 vip_client_20002
+            TenantOrderEntity order = orderMapper.selectById(orderId);
+            assertThat(order).isNotNull();
+            assertThat(order.getCreateBy()).isEqualTo("vip_client_20002");
+            assertThat(order.getOrderNo()).isEqualTo("COMP-ORD-9999");
+            assertThat(order.getAmount()).isEqualByComparingTo(new BigDecimal("188.50"));
+
+            // 验证代码块执行完毕后，现场自动恢复为 operator_88001
+            mockMvc.perform(get("/sample/satoken/impersonate/status")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.isRunAs").value(false))
+                    .andExpect(jsonPath("$.data.currentUserId").value("operator_88001"));
+
+            // 6. 审计事件流水检索与清空验证
+            // 触发一次封禁与解封以产生安全事件
+            mockMvc.perform(post("/sample/satoken/online/disable")
+                            .param("userId", "audit_test_user")
+                            .param("durationSeconds", "60"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(get("/sample/satoken/impersonate/events"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").isArray())
+                    .andExpect(jsonPath("$.data[0].eventType").exists());
+
+            mockMvc.perform(post("/sample/satoken/online/untie-disable")
+                            .param("userId", "audit_test_user"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(post("/sample/satoken/impersonate/events/clear"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(get("/sample/satoken/impersonate/events"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").isEmpty());
+        } finally {
+            if (LoginHelper.isRunAs()) {
+                LoginHelper.endSwitch();
+            }
+            LoginHelper.kickoutByToken(token);
+            LoginHelper.kickout("operator_88001");
+            LoginHelper.kickout("target_user_10086");
         }
     }
 }

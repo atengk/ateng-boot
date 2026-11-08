@@ -569,112 +569,203 @@ public class PermissionCacheController {
 
 ## 6. 多账号体系独立登录与物理会话隔离（Multi-Account Architecture）
 
-### 场景痛点
+### 6.1 场景痛点与架构方案
 现代化综合业务系统往往同时包含管理后台（`admin`）、C 端商城会员（`member`）、开放平台应用（`app`）等多种完全不同的账号体系。若共用同一个 `StpUtil`，会导致 Token Header 冲突（如 `satoken` 串读）、登录凭据踩踏（C 端用户登录将同数字 ID 的后台管理员踢下线）等灾难性故障。原生 Sa-Token 虽支持自定义 `StpLogic`，但需要繁琐的手动配置和样板代码。
 
-### 核心架构与隔离机制
 `LoginHelper` 深度支持**多账号体系动态懒加载与物理隔离治理**：
-- **动态懒加载注册**：通过 `LoginHelper.getStpLogic(loginType)` 在首次使用时线程安全注册对应体系的独立 `StpLogic`；
+- **动态懒加载注册**：通过 `LoginHelper.getStpLogic(loginType)` 在首次使用时采用线程安全双重检查锁定 (DCL) 自动实例化并注册对应体系的独立 `StpLogic`；
 - **独立 Token 命名规范**：非主体系自动采用 `satoken-{loginType}` 作为独立 Token 请求头（例如 `satoken-admin`、`satoken-member`），主体系遵循默认 `satoken`；
-- **全生命周期方法镜像**：所有会话操作（`login`, `logout`, `getLoginUser`, `getUserId`, `isLogin`, `checkLogin`, `getTokenValue`, `kickout`）均提供重载直接支持传入 `loginType`，保障多账号间会话完全物理隔离。
+- **全生命周期方法镜像**：所有会话操作（`login`, `logout`, `getLoginUser`, `getUserId`, `isLogin`, `checkLogin`, `getTokenValue`, `kickout`）均提供重载直接支持传入 `loginType`，保障多账号间会话完全物理隔离；
+- **声明式类型隔离鉴权**：注解 `@SaCheckRole(type = "admin", value = "super_admin")` 与 `@SaCheckPermission(type = "member", value = "member:points:view")` 严格按账号体系路由，杜绝跨端提权。
 
-### 核心代码示例（源自 `SampleMultiAccountController.java` 与 `SampleSaTokenIntegrationTest.java`）
+### 6.2 专属 YAML 配置片段
+```yaml
+# Sa-Token 原生核心配置与多账号体系请求头映射
+sa-token:
+  token-name: satoken             # 主账号体系 Token 标识（默认 satoken）
+  timeout: 86400                  # 默认会话超时时间 24 小时 (单位: 秒)
+  active-timeout: 1800            # 临时有效期/超时无操作下线 30 分钟 (单位: 秒)
+  is-concurrent: true             # 是否允许同一账号多地同时登录
+  is-share: false                 # 同一账号在同一个设备端是否共用同一个 Token
+  # 多账号体系下：admin 体系自动下发请求头 satoken-admin，member 体系自动下发 satoken-member
+```
 
+### 6.3 生产级实战示例（源自 `MultiAccountController.java`）
 ```java
+@Slf4j
+@Validated
 @RestController
-@RequestMapping("/api/multi-account")
-public class SampleMultiAccountController {
+@RequestMapping("/sample/satoken/multi-account")
+@RequiredArgsConstructor
+public class MultiAccountController {
+
+    // ==================== 管理端 (admin) 体系 ====================
 
     /**
-     * 后台管理员登录（独立账号体系 admin，下发独立 Token 头 satoken-admin）
+     * 管理端用户登录（下发独立 Token 头 satoken-admin）
      */
     @PostMapping("/admin/login")
-    public Result<String> adminLogin(@RequestBody LoginUser loginUser) {
+    public Result<String> adminLogin(@RequestBody LoginRequestDTO request) {
+        String userId = (request != null && request.getUserId() != null && !request.getUserId().isBlank())
+                ? request.getUserId() : "admin-001";
+        String username = (request != null && request.getUsername() != null && !request.getUsername().isBlank())
+                ? request.getUsername() : userId;
+
+        LoginUser loginUser = LoginUser.builder()
+                .userId(userId)
+                .userAccount(username)
+                .userName(username)
+                .roles(request != null && request.getRoles() != null ? request.getRoles() : Set.of("super_admin"))
+                .permissions(request != null && request.getPermissions() != null ? request.getPermissions() : Set.of("system:manage"))
+                .build();
+
         LoginHelper.login("admin", loginUser);
         return Result.success(LoginHelper.getTokenValue("admin"));
     }
 
     /**
-     * C端商城会员登录（独立账号体系 member，下发独立 Token 头 satoken-member）
-     */
-    @PostMapping("/member/login")
-    public Result<String> memberLogin(@RequestBody LoginUser loginUser) {
-        LoginHelper.login("member", loginUser);
-        return Result.success(LoginHelper.getTokenValue("member"));
-    }
-
-    /**
-     * 获取管理员端信息（仅校验 admin 账号体系登录态）
+     * 获取当前管理端登录人主体资料
      */
     @GetMapping("/admin/me")
-    public Result<LoginUser> getAdminUser() {
+    public Result<LoginUser> getAdminMe() {
         LoginHelper.checkLogin("admin");
         return Result.success(LoginHelper.getLoginUser("admin"));
     }
 
     /**
-     * 获取会员端信息（仅校验 member 账号体系登录态）
+     * 校验管理端专属角色权限（必须具备 admin 体系下的 super_admin 角色）
      */
-    @GetMapping("/member/me")
-    public Result<LoginUser> getMemberUser() {
-        LoginHelper.checkLogin("member");
-        return Result.success(LoginHelper.getLoginUser("member"));
+    @GetMapping("/admin/manage-roles")
+    @SaCheckRole(type = "admin", value = "super_admin")
+    public Result<String> checkAdminManageRoles() {
+        return Result.success("管理员特权接口校验通过");
+    }
+
+    /**
+     * 管理端用户注销下线
+     */
+    @PostMapping("/admin/logout")
+    public Result<Void> adminLogout() {
+        LoginHelper.logout("admin");
+        return Result.success();
+    }
+
+    // ==================== 移动会员端 (member) 体系 ====================
+
+    /**
+     * 会员端用户登录（下发独立 Token 头 satoken-member）
+     */
+    @PostMapping("/member/login")
+    public Result<String> memberLogin(@RequestBody LoginRequestDTO request) {
+        String userId = (request != null && request.getUserId() != null && !request.getUserId().isBlank())
+                ? request.getUserId() : "member-001";
+        String username = (request != null && request.getUsername() != null && !request.getUsername().isBlank())
+                ? request.getUsername() : userId;
+
+        LoginUser loginUser = LoginUser.builder()
+                .userId(userId)
+                .userAccount(username)
+                .userName(username)
+                .roles(request != null && request.getRoles() != null ? request.getRoles() : Set.of("vip_member"))
+                .permissions(request != null && request.getPermissions() != null ? request.getPermissions() : Set.of("member:points:view"))
+                .build();
+
+        LoginHelper.login("member", loginUser);
+        return Result.success(LoginHelper.getTokenValue("member"));
+    }
+
+    /**
+     * 校验会员端专属特权（必须具备 member 体系下的 member:points:view 权限）
+     */
+    @GetMapping("/member/points")
+    @SaCheckPermission(type = "member", value = "member:points:view")
+    public Result<String> checkMemberPoints() {
+        return Result.success("会员积分特权接口校验通过");
+    }
+
+    /**
+     * 会员端用户注销下线
+     */
+    @PostMapping("/member/logout")
+    public Result<Void> memberLogout() {
+        LoginHelper.logout("member");
+        return Result.success();
     }
 }
 ```
 
-### 预期多账号请求隔离呈现
-- 管理员请求携带：
-  ```http
-  satoken-admin: b38e4a11-8c43-4ef0-951a-d4a9ec03df6a
-  ```
-- 会员请求携带：
-  ```http
-  satoken-member: c76f9202-2d1b-4b2a-a9e3-e18fa4d9bb10
-  ```
-两者互相独立，管理员下线或注销不会影响同 ID 的普通会员。
+### 6.4 核心机制与非功能边界
+1. **多账号物理隔离**：管理员下线或注销仅作用于 `admin` 命名空间，完全不影响同 ID 的普通会员（如 `admin_01` 与 `member_01` 互不干扰）；
+2. **跨体系越权防卫**：若使用 `satoken-member` 凭据访问标记 `@SaCheckRole(type = "admin", ...)` 的管理端接口，Sa-Token 自动按 `admin` 体系嗅探请求头未果，直接返回 401 未登录，杜绝跨端提权；
+3. **两级缓存维度隔离**：`CachedStpInterface` 与 `DefaultUserRolePermissionLoader` 会传入当前操作的 `loginType`，确保不同账号体系的角色/权限在 Account-Session 与 Redis/Caffeine 缓存中严格隔离。
 
 ---
 
 ## 7. 客户端 IP 自动嗅探与双轨防爆破熔断（Dual-Track Brute Force Defense）
 
-### 场景痛点
+### 7.1 场景痛点与架构方案
 在开放互联网接入环境下，黑客常用的攻击手段不仅包括针对单个账号的字典爆破，还包括从同一攻击 IP 针对海量不同账号发起的**分布式撞库攻击**。若仅防护账号维度，恶意攻击 IP 可以轮流尝试不同用户名，导致系统整体鉴权接口被刷爆。此外，企业办公内网、跳板机或网关出口 IP 若被一并封禁，将导致大批合法员工被集体误杀。
 
-### 架构方案
 `LoginFailureLockService` 采用**双轨自适应防暴力破解与 IP 嗅探熔断体系**：
 1. **自动透明 IP 嗅探**：支持从 `X-Forwarded-For`、`X-Real-IP`、反向代理候选头及 Spring Web `RequestContextHolder` / Jakarta Servlet 中弹性嗅探客户端真实 IP；
 2. **账号 + IP 双轨滑动计数**：
    - **账号轨**：统计同一账号连续密码错误次数，达到上限触发账号封禁；
-   - **IP 轨**：统计同一客户端 IP 连续密码错误次数，达到上限触发 IP 临时熔断；
+   - **IP 轨**：统计同一客户端 IP 连续跨账号密码错误次数，达到上限触发 IP 临时熔断；
 3. **Fail-Fast 快速失败**：第 6 次来自被熔断 IP 的任何登录请求（即便尝试全新账号），直接在认证最前线拦截并返回 403，保护底层数据库与密码 Hash 计算不被穿透；
-4. **CIDR 与 IP 白名单豁免**：配置 `ip-white-list`（支持纯 IP 如 `127.0.0.1`、`::1` 及 CIDR 网段如 `192.168.1.0/24`、`10.0.0.0/8`），白名单 IP 永远豁免 IP 维度惩罚熔断。
+4. **CIDR 与 IP 白名单豁免**：配置 `ip-white-list`（支持纯 IP 如 `127.0.0.1`、`0:0:0:0:0:0:0:1` 及 CIDR 网段如 `192.168.0.0/16`、`10.0.0.0/8`），白名单 IP 永远豁免 IP 维度惩罚熔断。
 
-### 核心代码示例（源自 `SaTokenSampleController.java` 与 `SaTokenSampleService.java`）
+### 7.2 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    satoken:
+      login-defense:
+        enabled: true                           # 开启登录防暴力破解双轨熔断
+        max-retry-count: 5                      # 单账号连续错误重试上限（达阈值后锁定账号）
+        lock-duration: PT15M                    # 账号封禁持续时长 (ISO-8601 或 Spring Duration 格式)
+        ip-defense-enabled: true                # 开启客户端真实 IP 维度防撞库熔断
+        max-ip-retry-count: 10                  # 同一 IP 连续跨账号错误上限（达阈值后临时阻断该 IP）
+        ip-lock-duration: PT30M                 # IP 熔断持续时长
+        ip-white-list:                          # IP 豁免白名单（支持单个 IP 与 CIDR 网段）
+          - 127.0.0.1
+          - 0:0:0:0:0:0:0:1
+          - 192.168.0.0/16
+```
 
+### 7.3 生产级实战示例（源自 `LoginDefenseController.java`）
 ```java
-@Service
-public class SaTokenSampleService {
+@Slf4j
+@Validated
+@RestController
+@RequestMapping("/sample/satoken/defense")
+@RequiredArgsConstructor
+public class LoginDefenseController {
 
-    @Autowired
-    private ObjectProvider<LoginFailureLockService> loginDefenseServiceProvider;
+    private final ObjectProvider<LoginFailureLockService> loginDefenseServiceProvider;
 
-    public String loginWithDefense(LoginDefenseRequest request) {
-        String username = request.getUsername();
+    /**
+     * 具备账号+IP双轨防爆破保护的登录接口
+     */
+    @PostMapping("/login")
+    public Result<String> loginWithDefense(@Validated @RequestBody DefenseLoginRequestDTO request,
+                                           HttpServletRequest servletRequest) {
+        String account = request.getAccount();
         String password = request.getPassword();
+        String clientIp = (request.getClientIp() != null && !request.getClientIp().isBlank())
+                ? request.getClientIp() : servletRequest.getRemoteAddr();
 
         LoginFailureLockService lockService = loginDefenseServiceProvider.getIfAvailable();
         if (lockService != null) {
-            // 前置快速失败防卫：若账号已被锁定或客户端 IP 已被熔断直接 Fail-Fast 403 阻断
-            lockService.checkLocked(username);
+            // 1. 前置快速失败防卫：若账号已被锁定或客户端 IP 已被熔断直接 Fail-Fast 403 阻断
+            lockService.checkLocked(account, clientIp);
         }
 
-        // 校验密码
-        boolean passwordCorrect = checkPassword(username, password);
+        // 2. 模拟真实密码比对逻辑（约定密码为 123456）
+        boolean passwordCorrect = "123456".equals(password);
         if (!passwordCorrect) {
             if (lockService != null) {
-                // 原子累计账号与客户端 IP 失败次数（自动嗅探当前 HTTP 客户端 IP）
-                int remain = lockService.recordFailure(username);
+                // 原子累计账号与客户端 IP 失败次数
+                int remain = lockService.recordFailure(account, clientIp);
                 if (remain == 0) {
                     throw new BusinessException(CommonResultCode.FORBIDDEN, "登录失败次数过多，已被锁定，请稍后再试");
                 }
@@ -683,54 +774,91 @@ public class SaTokenSampleService {
             throw new BusinessException(CommonResultCode.UNAUTHORIZED, "账号或密码错误");
         }
 
-        // 登录成功，对称清空失败计数器
+        // 3. 登录成功，对称清空账号与客户端 IP 的失败计数器
         if (lockService != null) {
-            lockService.clearFailure(username);
+            lockService.clearAllFailure(account, clientIp);
         }
 
-        // 签发凭据...
-        return LoginHelper.getTokenValue();
+        LoginUser loginUser = LoginUser.builder()
+                .userId(account)
+                .userAccount(account)
+                .userName(account)
+                .build();
+        LoginHelper.login(loginUser);
+        return Result.success(LoginHelper.getTokenValue());
+    }
+
+    /**
+     * 查询指定账号的锁定状态与剩余重试次数
+     */
+    @GetMapping("/status/account")
+    public Result<AccountDefenseStatusVO> getAccountDefenseStatus(@RequestParam String account) {
+        LoginFailureLockService lockService = loginDefenseServiceProvider.getIfAvailable();
+        if (lockService == null) {
+            return Result.success(AccountDefenseStatusVO.builder().account(account).locked(false).build());
+        }
+        return Result.success(AccountDefenseStatusVO.builder()
+                .account(account)
+                .locked(lockService.isLocked(account))
+                .lockTime(lockService.getLockTime(account))
+                .remainRetries(lockService.getRemainRetries(account))
+                .build());
+    }
+
+    /**
+     * 管理员手动解封被锁定的账号并清零失败计数器
+     */
+    @PostMapping("/unlock/account")
+    public Result<Void> unlockAccount(@RequestParam String account) {
+        LoginFailureLockService lockService = loginDefenseServiceProvider.getIfAvailable();
+        if (lockService != null) {
+            lockService.clearAccountFailure(account);
+        }
+        LoginHelper.untieDisable(account);
+        return Result.success();
     }
 }
 ```
 
-### 预期 IP 熔断拦截日志与响应
-- 攻击 IP 连续尝试 5 次不同账号均失败后，控制台触发告警：
-```text
-2026-10-28 16:16:14.350 WARN  i.g.a.b.s.d.LoginFailureLockService : 【防暴力破解/内存模式】客户端 IP 连续登录失败次数达到上限，已触发 IP 临时熔断: ip=198.51.100.99, count=5, lockDuration=PT15M
-```
-- 第 6 次请求直接被快速失败前置阻断（HTTP 200 + 403）：
-```json
-{
-  "code": 403,
-  "msg": "客户端 IP 连续登录失败次数超限，已被临时锁定，剩余锁定时间: 899 秒",
-  "data": null,
-  "success": false
-}
-```
+### 7.4 核心机制与非功能边界
+1. **原子双轨计数**：基于 Redis Lua 脚本或内存 `AtomicInteger` 实现无锁原子递增与 TTL 滑动窗口，并发无竞态；
+2. **前置 Fail-Fast 保护**：未通过 `checkLocked` 时直接抛出 403 业务异常，绝不执行后续高耗时的 BCrypt 密码 Hash 计算或数据库查询，保护应用不受算力耗尽冲击；
+3. **对称清空与白名单安全**：认证通过后立即执行 `clearAllFailure` 清理所有计数；对于企业网关白名单 IP，仅封禁具体受害账号，永不熔断整个网关出口 IP。
 
 ---
 
 ## 8. 在线会话实时监控与精准强退治理（Online User Governance）
 
-### 场景痛点
-生产系统运营与运维审计要求实时查看“当前有哪些用户在线”、“各用户是从 PC 还是 APP 登录的”、“累计在线会话总数是多少”，并在发现异常会话、员工离职或账号失窃时，能够**精准按 Token 凭据或指定设备类型踢人下线**。如果采用传统 `keys *` 或全量拉取，会导致 Redis 单线程阻塞或应用内存 OOM。
+### 8.1 场景痛点与架构方案
+生产系统运营与运维审计要求实时查看“当前有哪些用户在线”、“各用户是从 PC 还是 APP 登录的”、“累计在线会话总数是多少”，并在发现异常会话、员工离职或账号失窃时，能够**精准按 Token 凭据、指定设备类型或阶梯封禁踢人下线**。如果采用传统 `keys *` 或全量拉取，会导致 Redis 单线程阻塞或应用内存 OOM。
 
-### 核心架构与增量游标检索
 `LoginHelper` 提供了安全受管的在线用户治理能力：
 - **安全增量游标检索**：底层统一基于 Redis `SCAN` 增量游标（纯内存模式基于线程安全快照迭代），支持模糊关键字匹配（匹配账号、用户名、用户 ID、Token），严格分页切片，杜绝大 key 阻塞与内存膨胀；
-- **多账号与多设备识别**：自动聚合会话关联的 `LoginUser`，提取 `loginDevice`、`loginTime`、`tokenTimeout` 等多维监控字段；
-- **精准下线治理**：支持按指定 Token 强退（`kickoutByToken`）与按指定设备类型强退（`kickoutByDevice`）。
+- **多端设备精准下线**：支持按指定 Token 强退（`kickoutByToken`）、按指定设备类型强退（`kickoutByDevice`）以及全局注销；
+- **同端顶替下线**：支持同端顶替下线（`replaced`），被顶替后原 Token 访问接口统一返回 401；
+- **阶梯封禁与解封**：支持带有效期的阶梯惩罚封禁（`disable(userId, durationSeconds)`）与即时解封（`untieDisable`），配合 `@SaCheckDisable` 保护敏感受限端点。
 
-### 核心代码示例（源自 `SampleOnlineUserController.java` 与 `SampleSaTokenIntegrationTest.java`）
+### 8.2 专属 YAML 配置片段
+```yaml
+# Sa-Token 原生配置
+sa-token:
+  token-name: satoken             # 访问凭据 Token 头
+  timeout: 86400                  # Token 绝对有效期 24h
+  active-timeout: 1800            # 活跃空闲超时 30m
+  is-concurrent: true             # 允许同一账号多设备同时在线
+```
 
+### 8.3 生产级实战示例（源自 `OnlineSessionController.java`）
 ```java
+@Slf4j
+@Validated
 @RestController
-@RequestMapping("/api/auth/online")
-public class SampleOnlineUserController {
+@RequestMapping("/sample/satoken/online")
+@RequiredArgsConstructor
+public class OnlineSessionController {
 
     /**
-     * 获取在线用户会话总数
+     * 获取当前系统在线会话总数
      */
     @GetMapping("/count")
     public Result<Long> getOnlineCount(@RequestParam(value = "loginType", required = false) String loginType) {
@@ -741,7 +869,7 @@ public class SampleOnlineUserController {
     }
 
     /**
-     * 分页查询在线用户 PageResult
+     * 分页模糊检索在线会话
      */
     @GetMapping("/page")
     public Result<PageResult<OnlineUser>> searchOnlineUserPage(
@@ -752,25 +880,76 @@ public class SampleOnlineUserController {
     }
 
     /**
-     * 根据 Token 强制指定会话下线
+     * 根据指定 Token 强制会话下线（单会话强退）
      */
     @PostMapping("/kickout-token")
-    public Result<Void> kickoutByToken(@RequestParam("tokenValue") String tokenValue) {
+    public Result<Void> kickoutByToken(@RequestParam String tokenValue) {
         LoginHelper.kickoutByToken(tokenValue);
         return Result.success();
     }
 
     /**
-     * 根据设备类型精准强退用户指定端会话（例如仅强退 APP 端，保留 PC 端活跃）
+     * 模拟将指定用户在指定终端设备上顶替下线 (replaced)
      */
-    @PostMapping("/kickout-device")
-    public Result<Void> kickoutDevice(@RequestParam("userId") String userId,
-                                      @RequestParam("device") String device) {
-        LoginHelper.kickoutDevice(userId, device);
+    @PostMapping("/replaced")
+    public Result<Void> replaced(@RequestParam String userId,
+                                 @RequestParam(required = false) String device) {
+        if (device != null && !device.isBlank()) {
+            LoginHelper.replaced(userId, device);
+        } else {
+            LoginHelper.replaced(userId);
+        }
         return Result.success();
+    }
+
+    /**
+     * 对违规账号施加阶梯封禁（指定时长，单位：秒）
+     */
+    @PostMapping("/disable")
+    public Result<Void> disableAccount(@RequestParam String userId,
+                                       @RequestParam(defaultValue = "86400") long durationSeconds) {
+        LoginHelper.disable(userId, durationSeconds);
+        return Result.success();
+    }
+
+    /**
+     * 解封账号
+     */
+    @PostMapping("/untie-disable")
+    public Result<Void> untieDisableAccount(@RequestParam String userId) {
+        LoginHelper.untieDisable(userId);
+        return Result.success();
+    }
+
+    /**
+     * 查询账号封禁状态及剩余封禁秒数
+     */
+    @GetMapping("/disable-status")
+    public Result<DisableStatusVO> getDisableStatus(@RequestParam String userId) {
+        return Result.success(DisableStatusVO.builder()
+                .userId(userId)
+                .disabled(LoginHelper.isDisable(userId))
+                .disableTime(LoginHelper.getDisableTime(userId))
+                .build());
+    }
+
+    /**
+     * 封禁敏感受限接口验证（受 @SaCheckDisable 保护）
+     */
+    @GetMapping("/restricted-action")
+    @SaCheckDisable
+    public Result<String> performRestrictedAction() {
+        return Result.success("受限高危业务操作成功");
     }
 }
 ```
+
+### 8.4 核心机制与非功能边界
+1. **增量游标无锁迭代**：`LoginHelper.searchOnlineUserPage` 内部采用 Redis `SCAN`，单次分批拉取限定数量 key，检索完成后再提取 `LoginUser` 组装 `OnlineUser`，绝不阻塞 Redis 主线程；
+2. **多设备顶替与下线语义区分**：
+   - `kickout`（踢人下线）：被踢用户下次请求收到 401 未登录异常；
+   - `replaced`（顶替下线）：同端新登录覆盖旧端，旧 Token 请求收到 401 顶替异常；
+3. **阶梯封禁精准阻断**：账号被 `disable` 后，携带该用户 Token 访问标记 `@SaCheckDisable` 的接口时，框架立即返回 403 禁用响应，并提示剩余解封时长。
 
 ---
 
@@ -892,43 +1071,141 @@ public class RemoteCallService {
 
 ---
 
-## 11. Spring 原生安全事件总线
+## 11. Spring 原生安全事件总线（Spring Native Security Event Bus）
 
-### 场景痛点
+### 11.1 场景痛点与架构方案
 安全合规与风控要求记录登录日志、异常登出、踢人下线、账号封禁等关键事件。如果把审计日志代码写在登录方法中，会造成强耦合；原生 Sa-Token 的监听器接口非 Spring 标准生态，不便于与其他组件解耦。
 
-### 核心代码示例
-`ateng-boot-satoken` 内置 `SaTokenEventPublisher`，自动将 Sa-Token 生命周期事件桥接并广播为 Spring 原生 `ApplicationEvent`。业务模块只需声明普通 `@EventListener` 即可非侵入式接收：
+`ateng-boot-satoken` 内置 `SaTokenEventPublisher`，自动将 Sa-Token 生命周期事件桥接并广播为 Spring 原生 `ApplicationEvent`。业务模块只需声明普通 `@EventListener` 即可非侵入式接收 8 类核心安全事件：
+- `SaLoginEvent`（用户登录事件）
+- `SaLogoutEvent`（用户注销事件）
+- `SaKickoutEvent`（用户被踢下线事件）
+- `SaReplacedEvent`（用户被顶替下线事件）
+- `SaDisableEvent`（账号封禁事件）
+- `SaUntieDisableEvent`（账号解封事件）
+- `SaOpenSafeEvent`（开启二级认证事件）
+- `SaCloseSafeEvent`（关闭二级认证事件）
 
+### 11.2 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    satoken:
+      # 框架全自动注册 SaTokenEventPublisher，桥接 Sa-Token 原生 8 类生命周期事件至 Spring 事件总线
+      enabled: true
+```
+
+### 11.3 生产级实战示例（源自 `SampleSecurityEventListener.java` 与 `ImpersonateAuditController.java`）
 ```java
+@Slf4j
+@Getter
 @Component
-public class SecurityAuditListener {
+public class SampleSecurityEventListener {
 
-    private static final Logger log = LoggerFactory.getLogger(SecurityAuditListener.class);
+    private final List<SecurityEventVO> allEvents = new CopyOnWriteArrayList<>();
 
     @EventListener
     public void onLogin(SaLoginEvent event) {
-        log.info("[安全审计] 用户登录成功! loginType={}, loginId={}, token={}", 
-                event.getLoginType(), event.getLoginId(), event.getTokenValue());
+        log.info("【安全事件监听】收到用户登录事件: userId={}, token={}", event.getLoginId(), event.getTokenValue());
+        allEvents.add(SecurityEventVO.builder()
+                .eventType("LOGIN")
+                .loginType(event.getLoginType())
+                .loginId(String.valueOf(event.getLoginId()))
+                .tokenValue(event.getTokenValue())
+                .details("用户登录成功")
+                .timestamp(LocalDateTime.now())
+                .build());
     }
 
     @EventListener
     public void onLogout(SaLogoutEvent event) {
-        log.info("[安全审计] 用户安全注销! loginId={}, token={}", event.getLoginId(), event.getTokenValue());
+        log.info("【安全事件监听】收到用户注销事件: userId={}, token={}", event.getLoginId(), event.getTokenValue());
+        allEvents.add(SecurityEventVO.builder()
+                .eventType("LOGOUT")
+                .loginType(event.getLoginType())
+                .loginId(String.valueOf(event.getLoginId()))
+                .tokenValue(event.getTokenValue())
+                .details("用户主动注销")
+                .timestamp(LocalDateTime.now())
+                .build());
     }
 
     @EventListener
     public void onKickout(SaKickoutEvent event) {
-        log.warn("[安全审计] 用户被管理员踢下线! loginId={}, token={}", event.getLoginId(), event.getTokenValue());
+        log.info("【安全事件监听】收到用户被踢下线事件: userId={}, token={}", event.getLoginId(), event.getTokenValue());
+        allEvents.add(SecurityEventVO.builder()
+                .eventType("KICKOUT")
+                .loginType(event.getLoginType())
+                .loginId(String.valueOf(event.getLoginId()))
+                .tokenValue(event.getTokenValue())
+                .details("用户被强制踢下线")
+                .timestamp(LocalDateTime.now())
+                .build());
+    }
+
+    @EventListener
+    public void onReplaced(SaReplacedEvent event) {
+        log.info("【安全事件监听】收到用户被顶替下线事件: userId={}, token={}", event.getLoginId(), event.getTokenValue());
+        allEvents.add(SecurityEventVO.builder()
+                .eventType("REPLACED")
+                .loginType(event.getLoginType())
+                .loginId(String.valueOf(event.getLoginId()))
+                .tokenValue(event.getTokenValue())
+                .details("用户同端被新登录顶替")
+                .timestamp(LocalDateTime.now())
+                .build());
     }
 
     @EventListener
     public void onDisable(SaDisableEvent event) {
-        log.warn("[安全审计] 用户被安全封禁! loginId={}, 服务={}, 封禁时长={}秒", 
+        log.info("【安全事件监听】收到账号封禁事件: userId={}, service={}, time={}s",
                 event.getLoginId(), event.getService(), event.getDisableTime());
+        allEvents.add(SecurityEventVO.builder()
+                .eventType("DISABLE")
+                .loginType(event.getLoginType())
+                .loginId(String.valueOf(event.getLoginId()))
+                .details("账号被封禁: service=" + event.getService() + ", duration=" + event.getDisableTime() + "s")
+                .timestamp(LocalDateTime.now())
+                .build());
+    }
+
+    @EventListener
+    public void onUntieDisable(SaUntieDisableEvent event) {
+        log.info("【安全事件监听】收到账号解封事件: userId={}, service={}", event.getLoginId(), event.getService());
+        allEvents.add(SecurityEventVO.builder()
+                .eventType("UNTIE_DISABLE")
+                .loginType(event.getLoginType())
+                .loginId(String.valueOf(event.getLoginId()))
+                .details("账号解封成功: service=" + event.getService())
+                .timestamp(LocalDateTime.now())
+                .build());
     }
 }
 ```
+
+配合 `ImpersonateAuditController` 提供安全审计流水查询与清空端点：
+```java
+    /**
+     * 检索全景安全审计事件流水（支持登录、注销、踢人、顶替、封禁与二级认证）
+     */
+    @GetMapping("/events")
+    public Result<List<SecurityEventVO>> getSecurityEvents() {
+        return Result.success(securityEventListener.getAllEventsList());
+    }
+
+    /**
+     * 清空审计事件流水
+     */
+    @PostMapping("/events/clear")
+    public Result<Void> clearSecurityEvents() {
+        securityEventListener.clearEvents();
+        return Result.success();
+    }
+```
+
+### 11.4 核心机制与非功能边界
+1. **完全解耦与异步扩展**：监听方法支持挂载 `@Async` 异步处理，耗时日志落库或消息投递不阻塞核心鉴权主流程；
+2. **全生命周期无死角感知**：涵盖从登录、注销到封禁、解封全生命周期，事件携带真实账号标识、会话 Token 与服务类型，满足 SOC/合规审计严苛要求。
 
 ---
 
@@ -1026,62 +1303,97 @@ public class CustomPluginWhitelistProvider implements SaTokenWhitelistProvider {
 
 ---
 
-## 14. 身份模拟与双维运维审计体系 (RunAs / Impersonate)
+## 14. 身份模拟与双维运维审计体系（RunAs / Impersonate）
 
-### 场景痛点
+### 14.1 场景痛点与架构方案
 在大型企业系统中，客服代客下单、技术运维排障、故障复现等场景下，管理员需要临时以特定用户的身份调用业务接口。如果直接篡改当前会话，会导致真实操作人丢失引发重大审计盲区；若手工在 Service 层层透传 `impersonateUserId`，则持久层审计（`create_by` / `update_by`）与数据权限断言无法透明生效。
 
-### 核心代码示例
+`LoginHelper` 提供了**双维身份模拟体系**：
+- **跨请求会话级模拟 (`switchTo` / `endSwitch`)**：适用于客服工作台长期模拟某客户操作，模拟态信息跨 HTTP 请求持久维护于会话 Session 中；
+- **瞬态代码块安全模拟 (`runAs`)**：适用于在特定方法内部临时以目标用户身份运行，基于 ThreadLocal 栈式暂存现场与 `finally` 可靠清理；
+- **真实人与模拟人双维追踪**：`LoginHelper.getUserId()` 自动返回当前生效的用户标识，`LoginHelper.getRealUserId()` / `LoginHelper.getOriginalUserId()` 始终锁定最初的真实登录人，MyBatis-Plus 审计自动填入模拟人，而审计日志同时记录双维操作链路。
 
-#### 1. 跨请求会话模拟 (`switchTo` / `endSwitch`)
-适用于客服会话模拟与运维后台代客操作，模拟态信息跨 HTTP 请求持久维护于会话 Session 中：
+### 14.2 专属 YAML 配置片段
+```yaml
+# Sa-Token 原生配置
+sa-token:
+  token-name: satoken             # 访问凭据 Token 头
+  timeout: 86400                  # Token 绝对有效期 24h
+  active-timeout: 1800            # 活跃空闲超时 30m
+```
 
+### 14.3 生产级实战示例（源自 `ImpersonateAuditController.java`）
 ```java
+@Slf4j
+@Validated
 @RestController
-@RequestMapping("/api/auth/impersonate")
-public class ImpersonateController {
+@RequestMapping("/sample/satoken/impersonate")
+@RequiredArgsConstructor
+public class ImpersonateAuditController {
+
+    private final TenantOrderMapper orderMapper;
 
     /**
-     * 运维管理员切换为目标用户身份
+     * 查询当前会话模拟状态及双维操作人详情
+     */
+    @GetMapping("/status")
+    public Result<ImpersonateStatusVO> getImpersonateStatus() {
+        LoginHelper.checkLogin();
+        return Result.success(ImpersonateStatusVO.builder()
+                .isRunAs(LoginHelper.isRunAs())
+                .currentUserId(LoginHelper.getUserId())
+                .realUserId(LoginHelper.getRealUserId())
+                .originalUserId(LoginHelper.getOriginalUserId())
+                .build());
+    }
+
+    /**
+     * 开启客服持久会话切换 (switchTo)
      */
     @PostMapping("/switch")
-    public Result<String> impersonateSwitch(@NotBlank(message = "目标用户标识不能为空") @RequestParam("targetUserId") String targetUserId) {
+    public Result<Void> switchToUser(@RequestParam String targetUserId) {
         LoginHelper.checkLogin();
-        // 切换身份（自动记录原始登录管理员为 originalUserId，即便多次连续切换也不丢失最初源头）
         LoginHelper.switchTo(targetUserId);
-        return Result.success("成功切换身份至: " + targetUserId);
+        return Result.success();
     }
 
     /**
-     * 结束身份模拟，恢复真实登录人
+     * 结束会话切换并恢复原始身份 (endSwitch)
      */
-    @PostMapping("/end")
-    public Result<String> impersonateEnd() {
+    @PostMapping("/end-switch")
+    public Result<Void> endSwitch() {
         LoginHelper.checkLogin();
-        // 结束模拟并彻底清理会话模拟元数据
         LoginHelper.endSwitch();
-        return Result.success("身份模拟已结束，已恢复原始身份");
+        return Result.success();
     }
-}
-```
 
-#### 2. 瞬态代码块安全模拟 (`runAs`)
-适用于在特定业务方法或异步任务内部瞬态以目标用户身份运行，基于 ThreadLocal 栈式暂存现场与 `finally` 可靠清理：
-
-```java
-@Service
-public class OrderCompensationService {
-
-    public void compensateUserOrder(String targetUserId) {
-        // 瞬态切换为 targetUserId 执行，异常或正常退出均确定性恢复现场
-        LoginHelper.runAs(targetUserId, () -> {
-            log.info("当前临时生效用户: {}, 发起人: {}", LoginHelper.getUserId(), LoginHelper.getOriginalUserId());
-            // 此时调用业务方法，MyBatis-Plus 审计自动填入 targetUserId
-            doCreateOrder();
+    /**
+     * 瞬态函数式安全模拟补偿客诉订单 (runAs)
+     */
+    @PostMapping("/compensate-order")
+    public Result<Long> compensateOrder(@RequestParam String targetUserId,
+                                        @RequestParam String orderNo,
+                                        @RequestParam BigDecimal amount) {
+        LoginHelper.checkLogin();
+        // 瞬态函数式模拟：在 lambda 代码块内，LoginHelper.getUserId() 变为 targetUserId
+        // 代码块执行完毕后（无论成功还是异常），现场 100% 自动恢复为原始登录人
+        Long orderId = LoginHelper.runAs(targetUserId, () -> {
+            TenantOrderEntity order = new TenantOrderEntity();
+            order.setOrderNo(orderNo);
+            order.setAmount(amount);
+            // 插入数据库：自动审计填充 createBy 会透明捕获 targetUserId
+            orderMapper.insert(order);
+            return order.getId();
         });
+        return Result.success(orderId);
     }
 }
 ```
+
+### 14.4 核心机制与非功能边界
+1. **源头身份防篡改**：`originalUserId` 在首次执行 `switchTo` 时一次性深层锁定于 Session 属性中，即便后续多次连续切换身份，`getOriginalUserId()` 也绝不被覆盖；
+2. **栈式 ThreadLocal 确定性清理**：`LoginHelper.runAs` 内部维护深度计数器并在 `finally` 块中执行现场还原与清理，杜绝线程池工作线程的 ThreadLocal 内存泄露；
+3. **ORM 审计与数据权限透明穿透**：Core 模块的 `CurrentUserProvider` 与 `MetaObjectHandler` 深度集成 `LoginHelper`，插入与更新实体时 `createBy` / `updateBy` 自动识别模拟身份，同时业务日志记录 `realUserId`，审计合规链路天衣无缝。
 
 ---
 

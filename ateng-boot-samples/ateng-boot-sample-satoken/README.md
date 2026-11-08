@@ -49,6 +49,35 @@
 | **精准刷新单角色缓存** | `PermissionCacheController` | `POST /sample/satoken/permission-cache/refresh-role` | `curl -X POST "http://localhost:8080/sample/satoken/permission-cache/refresh-role?roleCode=audit_manager" -H "satoken: <TOKEN>"` |
 | **精准刷新单用户缓存** | `PermissionCacheController` | `POST /sample/satoken/permission-cache/refresh-user` | `curl -X POST "http://localhost:8080/sample/satoken/permission-cache/refresh-user?userId=10086" -H "satoken: <TOKEN>"` |
 | **全量清空两级权限缓存** | `PermissionCacheController` | `POST /sample/satoken/permission-cache/clear-all` | `curl -X POST "http://localhost:8080/sample/satoken/permission-cache/clear-all" -H "satoken: <TOKEN>"` |
+| **防爆破安全登录** | `LoginDefenseController` | `POST /sample/satoken/defense/login` | `curl -X POST "http://localhost:8080/sample/satoken/defense/login" -H "Content-Type: application/json" -d '{"account":"test_user","password":"wrong_password","clientIp":"192.168.1.100"}'` |
+| **查询账号防爆破锁定状态** | `LoginDefenseController` | `GET /sample/satoken/defense/account-status` | `curl "http://localhost:8080/sample/satoken/defense/account-status?account=test_user"` |
+| **查询IP防爆破熔断状态** | `LoginDefenseController` | `GET /sample/satoken/defense/ip-status` | `curl "http://localhost:8080/sample/satoken/defense/ip-status?clientIp=192.168.1.100"` |
+| **管理员紧急解锁账号** | `LoginDefenseController` | `POST /sample/satoken/defense/unlock-account` | `curl -X POST "http://localhost:8080/sample/satoken/defense/unlock-account?account=test_user"` |
+| **管理员解除客户端IP熔断** | `LoginDefenseController` | `POST /sample/satoken/defense/unlock-ip` | `curl -X POST "http://localhost:8080/sample/satoken/defense/unlock-ip?clientIp=192.168.1.100"` |
+| **在线会话总数统计** | `OnlineSessionController` | `GET /sample/satoken/online/count` | `curl "http://localhost:8080/sample/satoken/online/count"` |
+| **增量游标分页检索在线会话** | `OnlineSessionController` | `GET /sample/satoken/online/page` | `curl "http://localhost:8080/sample/satoken/online/page?keyword=admin&page=1&size=10"` |
+| **按Token强制会话下线** | `OnlineSessionController` | `POST /sample/satoken/online/kickout-token` | `curl -X POST "http://localhost:8080/sample/satoken/online/kickout-token?tokenValue=<TOKEN>"` |
+| **按设备类型精准踢人** | `OnlineSessionController` | `POST /sample/satoken/online/kickout-device` | `curl -X POST "http://localhost:8080/sample/satoken/online/kickout-device?userId=10086&device=PC"` |
+| **用户全端强制下线** | `OnlineSessionController` | `POST /sample/satoken/online/kickout-user` | `curl -X POST "http://localhost:8080/sample/satoken/online/kickout-user?userId=10086"` |
+| **模拟同端顶替下线** | `OnlineSessionController` | `POST /sample/satoken/online/replaced` | `curl -X POST "http://localhost:8080/sample/satoken/online/replaced?userId=10086&device=PC"` |
+| **对违规账号阶梯封禁** | `OnlineSessionController` | `POST /sample/satoken/online/disable` | `curl -X POST "http://localhost:8080/sample/satoken/online/disable?userId=10086&durationSeconds=300"` |
+| **解除账号阶梯封禁** | `OnlineSessionController` | `POST /sample/satoken/online/untie-disable` | `curl -X POST "http://localhost:8080/sample/satoken/online/untie-disable?userId=10086"` |
+| **查询账号封禁状态** | `OnlineSessionController` | `GET /sample/satoken/online/disable-status` | `curl "http://localhost:8080/sample/satoken/online/disable-status?userId=10086"` |
+| **受限业务接口校验(@SaCheckDisable)** | `OnlineSessionController` | `GET /sample/satoken/online/restricted-action` | `curl "http://localhost:8080/sample/satoken/online/restricted-action" -H "satoken: <TOKEN>"` |
+| **管理端独立登录** | `MultiAccountController` | `POST /sample/satoken/multi-account/admin/login` | `curl -X POST "http://localhost:8080/sample/satoken/multi-account/admin/login" -H "Content-Type: application/json" -d '{"userId":"admin-001","username":"admin"}'` |
+| **获取管理端当前资料** | `MultiAccountController` | `GET /sample/satoken/multi-account/admin/me` | `curl "http://localhost:8080/sample/satoken/multi-account/admin/me" -H "satoken-admin: <ADMIN_TOKEN>"` |
+| **管理端特权角色校验** | `MultiAccountController` | `GET /sample/satoken/multi-account/admin/manage-roles` | `curl "http://localhost:8080/sample/satoken/multi-account/admin/manage-roles" -H "satoken-admin: <ADMIN_TOKEN>"` |
+| **管理端独立注销** | `MultiAccountController` | `POST /sample/satoken/multi-account/admin/logout` | `curl -X POST "http://localhost:8080/sample/satoken/multi-account/admin/logout" -H "satoken-admin: <ADMIN_TOKEN>"` |
+| **会员端独立登录** | `MultiAccountController` | `POST /sample/satoken/multi-account/member/login` | `curl -X POST "http://localhost:8080/sample/satoken/multi-account/member/login" -H "Content-Type: application/json" -d '{"userId":"member-001","username":"vip_user"}'` |
+| **获取会员端当前资料** | `MultiAccountController` | `GET /sample/satoken/multi-account/member/me` | `curl "http://localhost:8080/sample/satoken/multi-account/member/me" -H "satoken-member: <MEMBER_TOKEN>"` |
+| **会员端特权权限校验** | `MultiAccountController` | `GET /sample/satoken/multi-account/member/points` | `curl "http://localhost:8080/sample/satoken/multi-account/member/points" -H "satoken-member: <MEMBER_TOKEN>"` |
+| **会员端独立注销** | `MultiAccountController` | `POST /sample/satoken/multi-account/member/logout` | `curl -X POST "http://localhost:8080/sample/satoken/multi-account/member/logout" -H "satoken-member: <MEMBER_TOKEN>"` |
+| **开启客服会话模拟切换** | `ImpersonateAuditController` | `POST /sample/satoken/impersonate/switch` | `curl -X POST "http://localhost:8080/sample/satoken/impersonate/switch?targetUserId=10086" -H "satoken: <TOKEN>"` |
+| **结束客服会话模拟** | `ImpersonateAuditController` | `POST /sample/satoken/impersonate/end-switch` | `curl -X POST "http://localhost:8080/sample/satoken/impersonate/end-switch" -H "satoken: <TOKEN>"` |
+| **查询会话模拟状态** | `ImpersonateAuditController` | `GET /sample/satoken/impersonate/status` | `curl "http://localhost:8080/sample/satoken/impersonate/status" -H "satoken: <TOKEN>"` |
+| **瞬态模拟补偿客诉订单** | `ImpersonateAuditController` | `POST /sample/satoken/impersonate/compensate-order` | `curl -X POST "http://localhost:8080/sample/satoken/impersonate/compensate-order?targetUserId=10086&orderNo=COMP-001&amount=99.00" -H "satoken: <TOKEN>"` |
+| **查询系统安全审计事件** | `ImpersonateAuditController` | `GET /sample/satoken/impersonate/events` | `curl "http://localhost:8080/sample/satoken/impersonate/events"` |
+| **清空系统安全审计事件** | `ImpersonateAuditController` | `POST /sample/satoken/impersonate/events/clear` | `curl -X POST "http://localhost:8080/sample/satoken/impersonate/events/clear"` |
 
 ---
 
