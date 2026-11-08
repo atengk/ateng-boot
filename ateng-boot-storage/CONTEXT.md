@@ -91,3 +91,27 @@ _Avoid_: StorageChecker, HealthProbe
 **StorageException**:
 存储模块受管业务异常，继承自 `BusinessException` 并绑定 `StorageResultCode` 承载存储错误码与异常因果链。
 _Avoid_: FileException, S3Exception
+
+**ContractAuditSnapshot**:
+企业电子合同归档审计快照强类型 DTO/VO 模型，承载合同编号、标题、签署人、归属部门与审计状态，挂载 JSR-303 格式校验注解。
+_Avoid_: ContractSnapshotDto, TestUser, AuditData
+
+**StorageObjectController**:
+样例工程核心对象存取领域控制器（`/sample/storage/object/*`），负责电子合同上传、自定义元数据、批注与审计快照便捷读写、零拷贝复制与归档移动、目录列举与分页检索及天然幂等删除。
+_Avoid_: FileController, ObjectApi, StorageController
+
+**StorageTransferController**:
+样例工程流式传输与秒传领域控制器（`/sample/storage/transfer/*`），负责 Spring StorageResource HTTP Range 206 断点续传、Byte-Range 字节范围读取、未知流长双阶自适应流式分片上传防 OOM、多凭证流式打包 ZIP 与知识库极速秒传。
+_Avoid_: FileTransferController, DownloadController, TransferApi
+
+**StoragePresignedController**:
+样例工程预签名外链与直传领域控制器（`/sample/storage/presigned/*`），负责 Local 与 S3 预签名只读外链、友好中文文件名重写、客户端 HTTP PUT 预签名直传、公开素材公共读授权直传与永久直接访问直链。
+_Avoid_: PresignController, DirectUploadController, LinkController
+
+**StorageChunkController**:
+样例工程大文件分片状态机领域控制器（`/sample/storage/chunk/*`），负责服务端分片会话生命周期（初始化、逐片上传、正序合并与缺片 40012 防卫）、端侧分块直传预签名外链、主动中止清理与后台孤儿碎片守护巡检。
+_Avoid_: MultipartController, ChunkUploadController, SliceController
+
+**StorageGovernanceController**:
+样例工程存储多源与云原生治理领域控制器（`/sample/storage/governance/*`），负责声明式 @Storage 与编程式 use(...) 跨源双活备份、对象业务标签（Tagging）生命周期治理、冷热分层与加密探查、连通性探针 (ping) 与连接池/配置诊断字典提取。
+_Avoid_: MultiSourceController, S3AdminController, StorageManageController

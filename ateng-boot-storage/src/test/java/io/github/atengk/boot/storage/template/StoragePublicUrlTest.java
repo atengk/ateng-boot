@@ -58,12 +58,12 @@ class StoragePublicUrlTest {
     @DisplayName("测试 S3Driver getUrl: Path-Style 模式 (MinIO / RustFS)")
     void testS3GetUrlPathStyle() {
         S3StorageProperties properties = new S3StorageProperties();
-        properties.setEndpoint("http://103.236.97.120:47875");
+        properties.setEndpoint("http://127.0.0.1:9000");
         properties.setBucket("ateng-test");
         properties.setPathStyle(true);
 
         S3Driver driver = new S3Driver(s3Client, null, properties.getBucket(), null, null, properties.getEndpoint(), properties.isPathStyle());
-        assertEquals("http://103.236.97.120:47875/ateng-test/docs/readme.txt", driver.getUrl("docs/readme.txt"));
+        assertEquals("http://127.0.0.1:9000/ateng-test/docs/readme.txt", driver.getUrl("docs/readme.txt"));
     }
 
     @Test

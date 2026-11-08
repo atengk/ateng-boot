@@ -48,6 +48,27 @@
 | **多份凭证纯流式打包 ZIP 下载** | `StorageTransferController` | `GET /sample/storage/transfer/download-zip` | `curl -i "http://localhost:8080/sample/storage/transfer/download-zip?paths=contracts/2026/procurement-ht001.txt&zipFilename=2026Q1_vouchers.zip" -o 2026Q1_vouchers.zip` |
 | **流式零拷贝计算 SHA-256 指纹** | `StorageTransferController` | `GET /sample/storage/transfer/hash` | `curl "http://localhost:8080/sample/storage/transfer/hash?path=contracts/2026/procurement-ht001.txt&algorithm=SHA256"` |
 | **知识库文档极速秒传** | `StorageTransferController` | `POST /sample/storage/transfer/fast-upload` | `curl -X POST "http://localhost:8080/sample/storage/transfer/fast-upload?targetPath=knowledge-base/whitepaper.txt&hash=YOUR_SHA256_HASH"` |
+| **预签名只读安全外链** | `StoragePresignedController` | `GET /sample/storage/presigned/download-url` | `curl "http://localhost:8080/sample/storage/presigned/download-url?path=secure/data.txt&durationSeconds=600"` |
+| **友好中文名预签名外链** | `StoragePresignedController` | `GET /sample/storage/presigned/friendly-download-url` | `curl "http://localhost:8080/sample/storage/presigned/friendly-download-url?path=reports/audit.xlsx&filename=2026年度审计总表.xlsx&source=s3"` |
+| **客户端直传预签名外链** | `StoragePresignedController` | `GET /sample/storage/presigned/upload-url` | `curl "http://localhost:8080/sample/storage/presigned/upload-url?path=direct/upload.txt&durationSeconds=300"` |
+| **公共读权限素材直传** | `StoragePresignedController` | `POST /sample/storage/presigned/upload-public` | `curl -X POST "http://localhost:8080/sample/storage/presigned/upload-public" -F "file=@README.md" -F "path=public/assets/logo.png" -F "source=s3"` |
+| **永久直接访问直链获取** | `StoragePresignedController` | `GET /sample/storage/presigned/public-url` | `curl "http://localhost:8080/sample/storage/presigned/public-url?path=public/assets/logo.png&source=s3"` |
+| **初始化分片会话** | `StorageChunkController` | `POST /sample/storage/chunk/initiate` | `curl -X POST "http://localhost:8080/sample/storage/chunk/initiate?path=chunked/large.bin"` |
+| **服务端分片上传** | `StorageChunkController` | `POST /sample/storage/chunk/upload` | `curl -X POST "http://localhost:8080/sample/storage/chunk/upload" -F "file=@chunk1.part" -F "uploadId=YOUR_UPLOAD_ID" -F "chunkIndex=1"` |
+| **分片直传预签名外链** | `StorageChunkController` | `GET /sample/storage/chunk/presigned-part-url` | `curl "http://localhost:8080/sample/storage/chunk/presigned-part-url?path=chunked/large.bin&uploadId=YOUR_UPLOAD_ID&chunkIndex=1"` |
+| **分片合并落盘** | `StorageChunkController` | `POST /sample/storage/chunk/complete` | `curl -X POST "http://localhost:8080/sample/storage/chunk/complete?uploadId=YOUR_UPLOAD_ID&path=chunked/large.bin&totalChunks=2"` |
+| **中止分片清理会话** | `StorageChunkController` | `POST /sample/storage/chunk/abort` | `curl -X POST "http://localhost:8080/sample/storage/chunk/abort?uploadId=YOUR_UPLOAD_ID"` |
+| **手动触发孤儿碎片清理** | `StorageChunkController` | `POST /sample/storage/chunk/clean-expired` | `curl -X POST "http://localhost:8080/sample/storage/chunk/clean-expired"` |
+| **备份源隔离上传 (@Storage)** | `StorageGovernanceController` | `POST /sample/storage/governance/upload-backup` | `curl -X POST "http://localhost:8080/sample/storage/governance/upload-backup" -F "file=@README.md" -F "path=backup/contracts/secret.txt"` |
+| **跨源同步双活备份** | `StorageGovernanceController` | `POST /sample/storage/governance/sync-backup` | `curl -X POST "http://localhost:8080/sample/storage/governance/sync-backup?sourcePath=contracts/2026/procurement-ht001.txt&backupPath=backup/contracts/2026/procurement-ht001.txt"` |
+| **检索备份源文件列表** | `StorageGovernanceController` | `GET /sample/storage/governance/list-backup` | `curl "http://localhost:8080/sample/storage/governance/list-backup?prefix=backup/"` |
+| **设置/更新对象业务标签** | `StorageGovernanceController` | `POST /sample/storage/governance/tags` | `curl -X POST "http://localhost:8080/sample/storage/governance/tags?path=reports/audit.xlsx&source=s3" -H "Content-Type: application/json" -d "{\"dept\":\"finance\",\"project\":\"ateng-boot\"}"` |
+| **查询对象业务标签** | `StorageGovernanceController` | `GET /sample/storage/governance/tags` | `curl "http://localhost:8080/sample/storage/governance/tags?path=reports/audit.xlsx&source=s3"` |
+| **清空对象业务标签** | `StorageGovernanceController` | `DELETE /sample/storage/governance/tags` | `curl -X DELETE "http://localhost:8080/sample/storage/governance/tags?path=reports/audit.xlsx&source=s3"` |
+| **标准上传与冷热分层元数据** | `StorageGovernanceController` | `POST /sample/storage/governance/upload-standard` | `curl -X POST "http://localhost:8080/sample/storage/governance/upload-standard" -F "file=@README.md" -F "path=standard/doc.txt" -F "source=s3"` |
+| **反查对象元数据** | `StorageGovernanceController` | `GET /sample/storage/governance/metadata` | `curl "http://localhost:8080/sample/storage/governance/metadata?path=standard/doc.txt&source=s3"` |
+| **存储源健康连通探测 (ping)** | `StorageGovernanceController` | `GET /sample/storage/governance/ping` | `curl "http://localhost:8080/sample/storage/governance/ping?source=s3"` |
+| **存储连接池/配置诊断** | `StorageGovernanceController` | `GET /sample/storage/governance/diagnostics` | `curl "http://localhost:8080/sample/storage/governance/diagnostics?source=s3"` |
 
 ---
 

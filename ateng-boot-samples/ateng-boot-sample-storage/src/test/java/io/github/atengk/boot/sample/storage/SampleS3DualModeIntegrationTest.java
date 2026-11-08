@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.storage;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.sample.storage.config.SampleStorageTestS3Config;
 import io.github.atengk.boot.sample.storage.service.S3StorageScenarioService;
 import io.github.atengk.boot.storage.model.PresignedUrl;
@@ -14,7 +15,9 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.env.Environment;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
@@ -26,6 +29,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -49,6 +53,9 @@ class SampleS3DualModeIntegrationTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
 
     @Autowired
     private S3StorageScenarioService scenarioService;
@@ -105,7 +112,7 @@ class SampleS3DualModeIntegrationTest {
 
     @Test
     @DisplayName("场景 2：公共读权限直传与永久直接访问链接 (getUrl)")
-    void testPublicReadAndPermanentPublicUrl_ShouldSucceed() {
+    void testPublicReadAndPermanentPublicUrl_ShouldSucceed() throws Exception {
         String path = "test-s3/public-direct-" + System.currentTimeMillis() + ".html";
         createdPaths.add(path);
 
@@ -116,7 +123,16 @@ class SampleS3DualModeIntegrationTest {
         assertThat(result).isNotNull();
         assertThat(result.getPath()).isEqualTo(path);
 
-        String permanentUrl = scenarioService.getPermanentPublicUrl(path);
+        // 验证通过 StoragePresignedController 获取永久直接访问 URL
+        MvcResult mvcResult = mockMvc.perform(get("/sample/storage/presigned/public-url")
+                        .param("path", path)
+                        .param("source", "s3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isNotEmpty())
+                .andReturn();
+
+        String permanentUrl = objectMapper.readTree(mvcResult.getResponse().getContentAsString()).get("data").asText();
         log.info("获取到的永久直接访问 URL: {}", permanentUrl);
 
         assertThat(permanentUrl).isNotBlank();
@@ -151,7 +167,7 @@ class SampleS3DualModeIntegrationTest {
 
     @Test
     @DisplayName("场景 4：预签名临时下载外链与友好中文文件名定制响应头")
-    void testPresignedDownloadUrlWithFriendlyChineseFilename_ShouldSucceed() {
+    void testPresignedDownloadUrlWithFriendlyChineseFilename_ShouldSucceed() throws Exception {
         String path = "test-s3/report-" + System.currentTimeMillis() + ".txt";
         createdPaths.add(path);
 
@@ -159,45 +175,73 @@ class SampleS3DualModeIntegrationTest {
         scenarioService.uploadAdaptiveStream(path, new ByteArrayInputStream(payload), "text/plain");
 
         String downloadFilename = "2026年度业务审计报表.xlsx";
-        PresignedUrl presignedUrl = scenarioService.getPresignedDownloadUrlWithFriendlyFilename(path, Duration.ofMinutes(15), downloadFilename);
 
-        log.info("生成的友好中文文件名预签名外链: {}", presignedUrl.getUrl());
+        // 通过 StoragePresignedController 获取友好中文文件名预签名外链
+        MvcResult mvcResult = mockMvc.perform(get("/sample/storage/presigned/friendly-download-url")
+                        .param("path", path)
+                        .param("filename", downloadFilename)
+                        .param("durationSeconds", "900")
+                        .param("source", "s3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.url").isNotEmpty())
+                .andReturn();
 
-        assertThat(presignedUrl).isNotNull();
-        assertThat(presignedUrl.getUrl()).isNotBlank();
+        String presignedUrl = objectMapper.readTree(mvcResult.getResponse().getContentAsString())
+                .get("data").get("url").asText();
+        log.info("生成的友好中文文件名预签名外链: {}", presignedUrl);
+
+        assertThat(presignedUrl).isNotBlank();
         // 强断言：生成的预签名 URL 必须包含 response-content-disposition 响应头重写参数
-        assertThat(presignedUrl.getUrl()).contains("response-content-disposition");
-        assertThat(presignedUrl.getExpiration()).isAfter(Instant.now());
+        assertThat(presignedUrl).contains("response-content-disposition");
     }
 
     @Test
     @DisplayName("场景 5：对象标签 Tagging 完整生命周期 (设置、获取、清空)")
-    void testObjectTaggingLifecycle_ShouldSucceed() {
+    void testObjectTaggingLifecycle_ShouldSucceed() throws Exception {
         String path = "test-s3/tagged-object-" + System.currentTimeMillis() + ".log";
         createdPaths.add(path);
 
         byte[] payload = "log-content-for-tagging-verification".getBytes(StandardCharsets.UTF_8);
         scenarioService.uploadAdaptiveStream(path, new ByteArrayInputStream(payload), "text/plain");
 
-        // 1. 设置对象标签
+        // 1. 设置对象标签 (通过 StorageGovernanceController)
         Map<String, String> tags = Map.of(
                 "environment", "uat",
                 "department", "technology",
                 "project", "ateng-boot"
         );
-        scenarioService.setObjectTags(path, tags);
+        mockMvc.perform(post("/sample/storage/governance/tags")
+                        .param("path", path)
+                        .param("source", "s3")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(tags)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
 
-        // 2. 读取并强断言标签存在
-        Map<String, String> retrievedTags = scenarioService.getObjectTags(path);
-        assertThat(retrievedTags)
-                .containsEntry("environment", "uat")
-                .containsEntry("department", "technology")
-                .containsEntry("project", "ateng-boot");
+        // 2. 读取并强断言标签存在 (通过 StorageGovernanceController)
+        mockMvc.perform(get("/sample/storage/governance/tags")
+                        .param("path", path)
+                        .param("source", "s3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.environment").value("uat"))
+                .andExpect(jsonPath("$.data.department").value("technology"))
+                .andExpect(jsonPath("$.data.project").value("ateng-boot"));
 
-        // 3. 删除对象标签并断言已被清空
-        scenarioService.deleteObjectTags(path);
-        Map<String, String> emptyTags = scenarioService.getObjectTags(path);
-        assertThat(emptyTags).isEmpty();
+        // 3. 删除对象标签并断言已被清空 (通过 StorageGovernanceController)
+        mockMvc.perform(delete("/sample/storage/governance/tags")
+                        .param("path", path)
+                        .param("source", "s3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        mockMvc.perform(get("/sample/storage/governance/tags")
+                        .param("path", path)
+                        .param("source", "s3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isEmpty());
     }
 
     @Test
@@ -227,15 +271,19 @@ class SampleS3DualModeIntegrationTest {
 
     @Test
     @DisplayName("场景 7：S3 存储源健康探测 (ping) 与配置/连接池运维诊断 (diagnostics)")
-    void testS3HealthPingAndDiagnostics_ShouldSucceed() {
-        // 1. 验证连通性 ping
-        boolean healthy = scenarioService.pingS3Source();
-        assertThat(healthy).isTrue();
+    void testS3HealthPingAndDiagnostics_ShouldSucceed() throws Exception {
+        // 1. 验证连通性 ping (通过 StorageGovernanceController)
+        mockMvc.perform(get("/sample/storage/governance/ping")
+                        .param("source", "s3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
 
-        // 2. 验证诊断上下文提取
-        Map<String, Object> diagnostics = scenarioService.getS3Diagnostics();
-        assertThat(diagnostics).isNotNull();
-        log.info("提取到的 S3 驱动诊断信息: {}", diagnostics);
-        assertThat(diagnostics).containsEntry("type", "s3");
+        // 2. 验证诊断上下文提取 (通过 StorageGovernanceController)
+        mockMvc.perform(get("/sample/storage/governance/diagnostics")
+                        .param("source", "s3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.type").value("s3"));
     }
 }

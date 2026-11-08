@@ -81,7 +81,7 @@ flowchart TD
 ### 5. 双模自适应集成测试架构 (Dual-Mode Integration Testing)
 - 遵循 ADR-0028 规范，在 `ateng-boot-sample-storage` 建立双模测试沙箱：
   - 默认/CI 模式：使用 Mock 桩自洽秒级运行通过；
-  - Local 真实模式（激活 `local` profile）：基于 `application-local.yml`（由 `application-local.example.yml` 模板衍生），直连真实 RustFS（`http://103.236.97.120:47875`）进行核心读写、预签名直传、分片合并与全真断言。
+  - Local 真实模式（激活 `local` profile）：基于 `application-local.yml`（由 `application-local.example.yml` 模板衍生），直连真实 RustFS（`http://YOUR_S3_ENDPOINT:9000`）进行核心读写、预签名直传、分片合并与全真断言。
 
 ---
 

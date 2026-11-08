@@ -170,7 +170,7 @@ class SampleStorageIntegrationTest {
         storageTemplate.upload("secure/data.txt", new ByteArrayInputStream(dataBytes), "text/plain", dataBytes.length);
 
         // 获取预签名外链
-        MvcResult presignedResult = mockMvc.perform(get("/api/storage/presigned-url")
+        MvcResult presignedResult = mockMvc.perform(get("/sample/storage/presigned/download-url")
                         .param("path", "secure/data.txt")
                         .param("durationSeconds", "60"))
                 .andExpect(status().isOk())
@@ -227,13 +227,13 @@ class SampleStorageIntegrationTest {
         // 1. 上传到默认存储源
         byte[] defaultBytes = "Default Source Payload".getBytes(StandardCharsets.UTF_8);
         MockMultipartFile defaultFile = new MockMultipartFile("file", filename, "text/plain", defaultBytes);
-        mockMvc.perform(multipart("/api/storage/upload").file(defaultFile))
+        mockMvc.perform(multipart("/sample/storage/object/upload").file(defaultFile))
                 .andExpect(status().isOk());
 
         // 2. 通过 @Storage("backup") 上传到备份源
         byte[] backupBytes = "Backup Source Isolated Payload".getBytes(StandardCharsets.UTF_8);
         MockMultipartFile backupFile = new MockMultipartFile("file", filename, "text/plain", backupBytes);
-        mockMvc.perform(multipart("/api/storage/upload-backup").file(backupFile))
+        mockMvc.perform(multipart("/sample/storage/governance/upload-backup").file(backupFile))
                 .andExpect(status().isOk());
 
         // 3. 校验物理文件隔离情况
@@ -450,7 +450,7 @@ class SampleStorageIntegrationTest {
         String targetPath = "chunks/large-file.bin";
 
         // 1. 初始化分片会话
-        MvcResult initResult = mockMvc.perform(post("/api/storage/chunk/initiate")
+        MvcResult initResult = mockMvc.perform(post("/sample/storage/chunk/initiate")
                         .param("path", targetPath))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
@@ -466,7 +466,7 @@ class SampleStorageIntegrationTest {
         for (int i = 0; i < 500; i++) chunk1[i] = (byte) 1;
         MockMultipartFile part1 = new MockMultipartFile("file", "part1.bin", "application/octet-stream", chunk1);
 
-        mockMvc.perform(multipart("/api/storage/chunk/upload")
+        mockMvc.perform(multipart("/sample/storage/chunk/upload")
                         .file(part1)
                         .param("uploadId", uploadId)
                         .param("chunkIndex", "1"))
@@ -474,7 +474,7 @@ class SampleStorageIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200));
 
         // 3. 故意尝试以 totalChunks=2 合并（此时缺少第 2 片），验证 STORAGE_CHUNK_MISSING (40012)
-        mockMvc.perform(post("/api/storage/chunk/complete")
+        mockMvc.perform(post("/sample/storage/chunk/complete")
                         .param("uploadId", uploadId)
                         .param("path", targetPath)
                         .param("totalChunks", "2"))
@@ -486,7 +486,7 @@ class SampleStorageIntegrationTest {
         for (int i = 0; i < 500; i++) chunk2[i] = (byte) 2;
         MockMultipartFile part2 = new MockMultipartFile("file", "part2.bin", "application/octet-stream", chunk2);
 
-        mockMvc.perform(multipart("/api/storage/chunk/upload")
+        mockMvc.perform(multipart("/sample/storage/chunk/upload")
                         .file(part2)
                         .param("uploadId", uploadId)
                         .param("chunkIndex", "2"))
@@ -494,7 +494,7 @@ class SampleStorageIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200));
 
         // 5. 再次合并（totalChunks=2），校验合并成功
-        mockMvc.perform(post("/api/storage/chunk/complete")
+        mockMvc.perform(post("/sample/storage/chunk/complete")
                         .param("uploadId", uploadId)
                         .param("path", targetPath)
                         .param("totalChunks", "2"))
@@ -512,19 +512,19 @@ class SampleStorageIntegrationTest {
         assertThat(mergedBytes[999]).isEqualTo((byte) 2);
 
         // 7. 验证分片中止清理 (abort)
-        MvcResult initAbortResult = mockMvc.perform(post("/api/storage/chunk/initiate")
+        MvcResult initAbortResult = mockMvc.perform(post("/sample/storage/chunk/initiate")
                         .param("path", "chunks/aborted.bin"))
                 .andExpect(status().isOk())
                 .andReturn();
         String abortUploadId = objectMapper.readTree(initAbortResult.getResponse().getContentAsString()).get("data").asText();
 
-        mockMvc.perform(multipart("/api/storage/chunk/upload")
+        mockMvc.perform(multipart("/sample/storage/chunk/upload")
                         .file(part1)
                         .param("uploadId", abortUploadId)
                         .param("chunkIndex", "1"))
                 .andExpect(status().isOk());
 
-        mockMvc.perform(post("/api/storage/chunk/abort")
+        mockMvc.perform(post("/sample/storage/chunk/abort")
                         .param("uploadId", abortUploadId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
@@ -596,7 +596,7 @@ class SampleStorageIntegrationTest {
         byte[] payload = "Direct PUT Content".getBytes(StandardCharsets.UTF_8);
 
         // 1. 获取预签名直传写入外链凭据
-        MvcResult presignResult = mockMvc.perform(get("/api/storage/presigned-upload")
+        MvcResult presignResult = mockMvc.perform(get("/sample/storage/presigned/upload-url")
                         .param("path", "direct/doc.txt")
                         .param("durationSeconds", "300"))
                 .andExpect(status().isOk())
@@ -627,7 +627,7 @@ class SampleStorageIntegrationTest {
         byte[] part2Bytes = "Part 2 Chunk Data".getBytes(StandardCharsets.UTF_8);
 
         // 1. 初始化分片会话
-        MvcResult initResult = mockMvc.perform(post("/api/storage/chunk/initiate")
+        MvcResult initResult = mockMvc.perform(post("/sample/storage/chunk/initiate")
                         .param("path", "chunked/large.bin"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
@@ -635,7 +635,7 @@ class SampleStorageIntegrationTest {
         String uploadId = objectMapper.readTree(initResult.getResponse().getContentAsString()).get("data").asText();
 
         // 2. 获取分片 1 直传外链并上传
-        MvcResult part1Result = mockMvc.perform(get("/api/storage/presigned-upload-part")
+        MvcResult part1Result = mockMvc.perform(get("/sample/storage/chunk/presigned-part-url")
                         .param("path", "chunked/large.bin")
                         .param("uploadId", uploadId)
                         .param("chunkIndex", "1"))
@@ -645,7 +645,7 @@ class SampleStorageIntegrationTest {
         mockMvc.perform(put(java.net.URI.create(part1Url)).content(part1Bytes)).andExpect(status().isOk());
 
         // 3. 获取分片 2 直传外链并上传
-        MvcResult part2Result = mockMvc.perform(get("/api/storage/presigned-upload-part")
+        MvcResult part2Result = mockMvc.perform(get("/sample/storage/chunk/presigned-part-url")
                         .param("path", "chunked/large.bin")
                         .param("uploadId", uploadId)
                         .param("chunkIndex", "2"))
@@ -655,7 +655,7 @@ class SampleStorageIntegrationTest {
         mockMvc.perform(put(java.net.URI.create(part2Url)).content(part2Bytes)).andExpect(status().isOk());
 
         // 4. 完成合并
-        mockMvc.perform(post("/api/storage/chunk/complete")
+        mockMvc.perform(post("/sample/storage/chunk/complete")
                         .param("uploadId", uploadId)
                         .param("path", "chunked/large.bin")
                         .param("totalChunks", "2"))
