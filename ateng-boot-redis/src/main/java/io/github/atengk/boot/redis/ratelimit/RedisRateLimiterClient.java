@@ -20,9 +20,26 @@ import java.util.concurrent.TimeUnit;
 public class RedisRateLimiterClient {
 
     private final RedissonClient redissonClient;
+    private final io.github.atengk.boot.redis.properties.RedisProperties redisProperties;
 
     public RedisRateLimiterClient(RedissonClient redissonClient) {
+        this(redissonClient, null);
+    }
+
+    public RedisRateLimiterClient(RedissonClient redissonClient, io.github.atengk.boot.redis.properties.RedisProperties redisProperties) {
         this.redissonClient = Objects.requireNonNull(redissonClient, "redissonClient must not be null");
+        this.redisProperties = redisProperties;
+    }
+
+    /**
+     * 解析并附加全局键名前缀（若配置）
+     *
+     * @param key 原始键名
+     * @return 附加全局前缀后的完整键名
+     */
+    private String resolveKey(String key) {
+        Assert.hasText(key, "key must not be blank");
+        return redisProperties != null ? redisProperties.buildKey(key) : key;
     }
 
     /**
@@ -153,8 +170,8 @@ public class RedisRateLimiterClient {
      * @return 可用令牌数
      */
     public long getAvailablePermits(String key) {
-        Assert.hasText(key, "key must not be blank");
-        return redissonClient.getRateLimiter(key).availablePermits();
+        String resolvedKey = resolveKey(key);
+        return redissonClient.getRateLimiter(resolvedKey).availablePermits();
     }
 
     /**
@@ -164,8 +181,8 @@ public class RedisRateLimiterClient {
      * @return 是否成功删除
      */
     public boolean delete(String key) {
-        Assert.hasText(key, "key must not be blank");
-        return redissonClient.getRateLimiter(key).delete();
+        String resolvedKey = resolveKey(key);
+        return redissonClient.getRateLimiter(resolvedKey).delete();
     }
 
     /**
@@ -193,7 +210,8 @@ public class RedisRateLimiterClient {
         Assert.isTrue(!rateInterval.isZero() && !rateInterval.isNegative(), "rateInterval must be positive");
 
         delete(key);
-        return redissonClient.getRateLimiter(key).trySetRate(RateType.OVERALL, rate, rateInterval);
+        String resolvedKey = resolveKey(key);
+        return redissonClient.getRateLimiter(resolvedKey).trySetRate(RateType.OVERALL, rate, rateInterval);
     }
 
     /**
@@ -212,7 +230,8 @@ public class RedisRateLimiterClient {
         Assert.isTrue(!rateInterval.isZero() && !rateInterval.isNegative(), "rateInterval must be positive");
         Assert.notNull(rateType, "rateType must not be null");
 
-        RRateLimiter rateLimiter = redissonClient.getRateLimiter(key);
+        String resolvedKey = resolveKey(key);
+        RRateLimiter rateLimiter = redissonClient.getRateLimiter(resolvedKey);
         rateLimiter.trySetRate(rateType, rate, rateInterval);
         return rateLimiter;
     }

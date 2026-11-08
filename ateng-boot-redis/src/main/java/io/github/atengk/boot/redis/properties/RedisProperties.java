@@ -417,6 +417,28 @@ public class RedisProperties {
              * 针对特定 cacheName 的 L1 写入后过期时长映射
              */
             private Map<String, Duration> ttls = new HashMap<>();
+
+            /**
+             * 兼容历史文档 expires 属性命名（等价于 ttls）
+             *
+             * @return 独立过期时间映射
+             * @deprecated 请使用 {@link #getTtls()}
+             */
+            @Deprecated
+            public Map<String, Duration> getExpires() {
+                return this.ttls;
+            }
+
+            /**
+             * 兼容历史文档 expires 属性命名（等价于 ttls）
+             *
+             * @param expires 独立过期时间映射
+             * @deprecated 请使用 {@link #setTtls(Map)}
+             */
+            @Deprecated
+            public void setExpires(Map<String, Duration> expires) {
+                this.ttls = expires != null ? expires : new HashMap<>();
+            }
         }
 
         /**
@@ -454,6 +476,28 @@ public class RedisProperties {
              * 针对特定 cacheName 的 L2 独立过期时间映射
              */
             private Map<String, Duration> ttls = new HashMap<>();
+
+            /**
+             * 兼容历史文档 expires 属性命名（等价于 ttls）
+             *
+             * @return 独立过期时间映射
+             * @deprecated 请使用 {@link #getTtls()}
+             */
+            @Deprecated
+            public Map<String, Duration> getExpires() {
+                return this.ttls;
+            }
+
+            /**
+             * 兼容历史文档 expires 属性命名（等价于 ttls）
+             *
+             * @param expires 独立过期时间映射
+             * @deprecated 请使用 {@link #setTtls(Map)}
+             */
+            @Deprecated
+            public void setExpires(Map<String, Duration> expires) {
+                this.ttls = expires != null ? expires : new HashMap<>();
+            }
         }
     }
 

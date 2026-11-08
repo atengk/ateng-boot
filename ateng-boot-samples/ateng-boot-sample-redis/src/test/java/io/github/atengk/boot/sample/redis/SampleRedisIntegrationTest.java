@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.redis;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.redis.atomic.RedisAtomicUtil;
 import io.github.atengk.boot.redis.bloom.RedisBloomFilter;
@@ -19,11 +20,13 @@ import io.github.atengk.boot.redis.semaphore.RedisSemaphoreUtil;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import io.github.atengk.boot.redis.stream.RedisStreamTemplate;
 import io.github.atengk.boot.redis.util.RedisUtil;
+import io.github.atengk.boot.sample.redis.config.SampleInMemoryRedisConfig;
 import io.github.atengk.boot.sample.redis.model.BloomFilterMetricsVO;
 import io.github.atengk.boot.sample.redis.model.NoticeBroadcastPayload;
 import io.github.atengk.boot.sample.redis.model.OrderDelayPayload;
 import io.github.atengk.boot.sample.redis.model.OrderStreamEvent;
 import io.github.atengk.boot.sample.redis.model.ProductVO;
+import io.github.atengk.boot.sample.redis.model.ops.*;
 import io.github.atengk.boot.sample.redis.service.CacheScenarioService;
 import io.github.atengk.boot.sample.redis.service.IdempotentScenarioService;
 import io.github.atengk.boot.sample.redis.service.NoticeBroadcastScenarioService;
@@ -45,14 +48,11 @@ import org.redisson.api.RRateLimiter;
 import org.redisson.api.RSemaphore;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
 import org.springframework.core.env.Environment;
+import org.springframework.http.MediaType;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
-import org.springframework.context.annotation.Primary;
-import org.springframework.context.annotation.Profile;
 import org.springframework.data.redis.connection.DefaultMessage;
 import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.connection.RedisConnection;
@@ -80,6 +80,7 @@ import org.springframework.data.redis.listener.PatternTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.data.redis.listener.Topic;
 import org.springframework.data.redis.serializer.RedisSerializer;
+import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -101,14 +102,9 @@ import java.util.concurrent.locks.ReentrantLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyDouble;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.hamcrest.Matchers.not;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
  * 样例工程 Redis 基础设施与分布式协同全场景端到端实测
@@ -129,479 +125,19 @@ import static org.mockito.Mockito.when;
         "ateng.boot.redis.enabled=true",
         "ateng.boot.redis.two-level.enabled=true",
         "ateng.boot.redis.delay-queue.enabled=true",
-        "ateng.boot.redis.stream.enabled=true"
+        "ateng.boot.redis.stream.enabled=true",
+        "ateng.boot.web.shutdown.enabled=false"
 })
-@Import({SampleRedisIntegrationTest.TestRedisConfig.class})
+@AutoConfigureMockMvc
 @Slf4j
 @DisplayName("样例工程 Redis 基础设施与分布式协同全场景端到端实测")
 class SampleRedisIntegrationTest {
 
-    @TestConfiguration
-    @Profile("!local")
-    static class TestRedisConfig {
+    @Autowired
+    private MockMvc mockMvc;
 
-        private final ReentrantLock jvmLock = new ReentrantLock();
-        private static final Map<String, BlockingQueue<Object>> internalQueues = new ConcurrentHashMap<>();
-        private static final Map<String, BlockingQueue<MapRecord<String, Object, Object>>> internalStreams = new ConcurrentHashMap<>();
-        private static final Map<String, Object> cacheStore = new ConcurrentHashMap<>();
-        private final Map<MessageListener, Collection<? extends Topic>> internalListeners = new ConcurrentHashMap<>();
-
-        private static BlockingQueue<Object> getOrCreateQueue(String name) {
-            return internalQueues.computeIfAbsent(name, k -> new LinkedBlockingQueue<>());
-        }
-
-        public static void clearAll() {
-            internalQueues.values().forEach(Collection::clear);
-            internalStreams.values().forEach(Collection::clear);
-            cacheStore.clear();
-        }
-
-        @Bean
-        @Primary
-        public RLock sampleRLock() {
-            RLock lock = mock(RLock.class);
-            try {
-                when(lock.tryLock(anyLong(), anyLong(), any(TimeUnit.class))).thenAnswer(inv -> {
-                    long waitTime = inv.getArgument(0);
-                    TimeUnit unit = inv.getArgument(2);
-                    return jvmLock.tryLock(waitTime, unit);
-                });
-                when(lock.tryLock(anyLong(), any(TimeUnit.class))).thenAnswer(inv -> {
-                    long waitTime = inv.getArgument(0);
-                    TimeUnit unit = inv.getArgument(1);
-                    return jvmLock.tryLock(waitTime, unit);
-                });
-                when(lock.tryLock()).thenAnswer(inv -> jvmLock.tryLock());
-                when(lock.isHeldByCurrentThread()).thenAnswer(inv -> jvmLock.isHeldByCurrentThread());
-                doAnswer(inv -> {
-                    if (jvmLock.isHeldByCurrentThread()) {
-                        jvmLock.unlock();
-                    }
-                    return null;
-                }).when(lock).unlock();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            return lock;
-        }
-
-        @Bean
-        @Primary
-        @SuppressWarnings("unchecked")
-        public org.redisson.api.RBloomFilter<Object> sampleRBloomFilter() {
-            org.redisson.api.RBloomFilter<Object> filter = mock(org.redisson.api.RBloomFilter.class);
-            Set<Object> set = ConcurrentHashMap.newKeySet();
-            when(filter.tryInit(anyLong(), anyDouble())).thenReturn(true);
-            when(filter.add((Object) any())).thenAnswer(addInv -> set.add(addInv.getArgument(0)));
-            when(filter.contains((Object) any())).thenAnswer(containsInv -> set.contains(containsInv.getArgument(0)));
-            when(filter.count()).thenAnswer(countInv -> (long) set.size());
-            when(filter.getExpectedInsertions()).thenReturn(50_000L);
-            when(filter.getFalseProbability()).thenReturn(0.01);
-            when(filter.isExists()).thenReturn(true);
-            when(filter.delete()).thenAnswer(delInv -> {
-                set.clear();
-                return true;
-            });
-            return filter;
-        }
-
-        @Bean
-        @Primary
-        @SuppressWarnings("unchecked")
-        public RedissonClient redissonClient(RLock sampleRLock, org.redisson.api.RBloomFilter<Object> sampleRBloomFilter) {
-            RedissonClient client = mock(RedissonClient.class);
-
-            // 分布式锁模拟：对于包含 timeout/fallback 的 Key 模拟争锁超时失败
-            when(client.getLock(anyString())).thenAnswer(inv -> {
-                String lockKey = inv.getArgument(0);
-                if (lockKey.contains("timeout") || lockKey.contains("fallback")) {
-                    RLock timeoutLock = mock(RLock.class);
-                    when(timeoutLock.tryLock(anyLong(), any(TimeUnit.class))).thenReturn(false);
-                    when(timeoutLock.tryLock(anyLong(), anyLong(), any(TimeUnit.class))).thenReturn(false);
-                    return timeoutLock;
-                }
-                return sampleRLock;
-            });
-
-            // 批量 MultiLock 模拟
-            when(client.getMultiLock(any(RLock[].class))).thenAnswer(inv -> {
-                RLock multiLock = mock(RLock.class);
-                when(multiLock.tryLock(anyLong(), anyLong(), any(TimeUnit.class))).thenReturn(true);
-                when(multiLock.isHeldByCurrentThread()).thenReturn(true);
-                return multiLock;
-            });
-
-            // 限流令牌桶模拟
-            RRateLimiter rateLimiter = mock(RRateLimiter.class);
-            when(rateLimiter.tryAcquire(anyLong())).thenReturn(true);
-            when(client.getRateLimiter(anyString())).thenReturn(rateLimiter);
-
-            // 幂等防重 Bucket 模拟
-            when(client.getBucket(anyString())).thenAnswer(inv -> {
-                String bucketKey = inv.getArgument(0);
-                RBucket<Object> bucket = mock(RBucket.class);
-                when(bucket.setIfAbsent(any(), any(Duration.class))).thenAnswer(setInv -> {
-                    if (cacheStore.containsKey(bucketKey)) {
-                        return false;
-                    }
-                    cacheStore.put(bucketKey, setInv.getArgument(0));
-                    return true;
-                });
-                when(bucket.setIfAbsent(any())).thenAnswer(setInv -> {
-                    if (cacheStore.containsKey(bucketKey)) {
-                        return false;
-                    }
-                    cacheStore.put(bucketKey, setInv.getArgument(0));
-                    return true;
-                });
-                when(bucket.delete()).thenAnswer(delInv -> cacheStore.remove(bucketKey) != null);
-                when(bucket.get()).thenAnswer(getInv -> cacheStore.get(bucketKey));
-                return bucket;
-            });
-
-            when(client.getBucket(anyString(), any(org.redisson.client.codec.Codec.class))).thenAnswer(inv -> client.getBucket(inv.getArgument(0, String.class)));
-
-            // 受管信号量模拟
-            when(client.getSemaphore(anyString())).thenAnswer(inv -> {
-                String semName = inv.getArgument(0);
-                RSemaphore sem = mock(RSemaphore.class);
-                boolean shouldFail = semName.contains("timeout") || semName.contains("busy");
-                when(sem.tryAcquire(anyInt(), any(Duration.class))).thenReturn(!shouldFail);
-                when(sem.tryAcquire(anyInt(), anyLong(), any(TimeUnit.class))).thenReturn(!shouldFail);
-                when(sem.tryAcquire(anyInt())).thenReturn(!shouldFail);
-                when(sem.trySetPermits(anyInt())).thenReturn(true);
-                when(sem.availablePermits()).thenReturn(10);
-                when(sem.delete()).thenReturn(true);
-                return sem;
-            });
-
-            // 延时队列与阻塞队列模拟（按队列名独立路由隔离）
-            when(client.getBlockingQueue(anyString())).thenAnswer(inv -> {
-                String queueName = inv.getArgument(0);
-                BlockingQueue<Object> queue = getOrCreateQueue(queueName);
-                RBlockingQueue<Object> mockQueue = mock(RBlockingQueue.class);
-                when(mockQueue.getName()).thenReturn(queueName);
-                try {
-                    when(mockQueue.poll(anyLong(), any(TimeUnit.class))).thenAnswer(pollInv -> {
-                        long timeout = pollInv.getArgument(0);
-                        TimeUnit unit = pollInv.getArgument(1);
-                        return queue.poll(timeout, unit);
-                    });
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                when(mockQueue.poll()).thenAnswer(pollInv -> queue.poll());
-                when(mockQueue.peek()).thenAnswer(peekInv -> queue.peek());
-                when(mockQueue.size()).thenAnswer(sizeInv -> queue.size());
-                when(mockQueue.offer(any())).thenAnswer(offerInv -> queue.offer(offerInv.getArgument(0)));
-                return mockQueue;
-            });
-
-            when(client.getDelayedQueue(any())).thenAnswer(inv -> {
-                RBlockingQueue<?> destQueue = inv.getArgument(0);
-                String destName = destQueue != null ? destQueue.getName() : null;
-                BlockingQueue<Object> queue = (destName != null) ? getOrCreateQueue(destName) : getOrCreateQueue("default");
-                RDelayedQueue<Object> delayedQueue = mock(RDelayedQueue.class);
-                doAnswer(offerInv -> {
-                    Object msg = offerInv.getArgument(0);
-                    queue.offer(msg);
-                    return null;
-                }).when(delayedQueue).offer(any(), anyLong(), any(TimeUnit.class));
-                when(delayedQueue.size()).thenAnswer(sizeInv -> queue.size());
-                return delayedQueue;
-            });
-
-            // 分布式布隆过滤器模拟
-            when(client.getBloomFilter(anyString())).thenReturn(sampleRBloomFilter);
-
-            return client;
-        }
-
-        @Bean
-        @Primary
-        public RedisMessageListenerContainer redisMessageListenerContainer(RedisConnectionFactory connectionFactory) {
-            RedisMessageListenerContainer container = mock(RedisMessageListenerContainer.class);
-            doAnswer(inv -> {
-                MessageListener listener = inv.getArgument(0);
-                Object topicArg = inv.getArgument(1);
-                if (topicArg instanceof Topic topic) {
-                    internalListeners.put(listener, List.of(topic));
-                } else if (topicArg instanceof Collection<?> topics) {
-                    internalListeners.put(listener, (Collection<? extends Topic>) topics);
-                }
-                return null;
-            }).when(container).addMessageListener(any(MessageListener.class), any(Collection.class));
-
-            doAnswer(inv -> {
-                MessageListener listener = inv.getArgument(0);
-                Topic topic = inv.getArgument(1);
-                internalListeners.put(listener, List.of(topic));
-                return null;
-            }).when(container).addMessageListener(any(MessageListener.class), any(Topic.class));
-
-            doAnswer(inv -> {
-                MessageListener listener = inv.getArgument(0);
-                internalListeners.remove(listener);
-                return null;
-            }).when(container).removeMessageListener(any(MessageListener.class), any(Collection.class));
-
-            return container;
-        }
-
-        @Bean
-        @Primary
-        public RedisConnectionFactory redisConnectionFactory() {
-            return mock(RedisConnectionFactory.class);
-        }
-
-        @Bean
-        @Primary
-        @SuppressWarnings("unchecked")
-        public RedisTemplate<String, Object> redisTemplate(RedisConnectionFactory connectionFactory) {
-            RedisTemplate<String, Object> template = mock(RedisTemplate.class);
-            ValueOperations<String, Object> valOps = mock(ValueOperations.class);
-            ZSetOperations<String, Object> zSetOps = mock(ZSetOperations.class);
-            StreamOperations<String, Object, Object> streamOps = mock(StreamOperations.class);
-
-            when(template.getConnectionFactory()).thenReturn(connectionFactory);
-            when(template.getStringSerializer()).thenReturn(RedisSerializer.string());
-            when(template.opsForValue()).thenReturn(valOps);
-            when(template.opsForZSet()).thenReturn(zSetOps);
-            when(template.opsForStream()).thenReturn(streamOps);
-
-            // Stream 基础操作模拟
-            when(streamOps.createGroup(anyString(), anyString())).thenReturn("OK");
-            when(streamOps.createGroup(anyString(), any(ReadOffset.class), anyString())).thenReturn("OK");
-            when(streamOps.acknowledge(anyString(), anyString(), any(RecordId.class))).thenReturn(1L);
-            when(streamOps.delete(anyString(), any(RecordId[].class))).thenReturn(1L);
-            when(streamOps.trim(anyString(), anyLong())).thenReturn(0L);
-            when(streamOps.trim(anyString(), anyLong(), any(Boolean.class))).thenReturn(0L);
-            when(streamOps.size(anyString())).thenReturn(5L);
-            when(streamOps.add(any(MapRecord.class))).thenAnswer(inv -> {
-                MapRecord record = inv.getArgument(0);
-                internalStreams.computeIfAbsent(String.valueOf(record.getStream()), k -> new LinkedBlockingQueue<>()).offer(record);
-                return RecordId.of(System.currentTimeMillis() + "-0");
-            });
-            when(streamOps.add(anyString(), any(Map.class))).thenAnswer(inv -> {
-                String streamKey = inv.getArgument(0);
-                Map<Object, Object> body = inv.getArgument(1);
-                RecordId recordId = RecordId.of(System.currentTimeMillis() + "-0");
-                MapRecord<String, Object, Object> record = MapRecord.create(streamKey, body).withId(recordId);
-                internalStreams.computeIfAbsent(streamKey, k -> new LinkedBlockingQueue<>()).offer(record);
-                return recordId;
-            });
-            when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class))).thenAnswer(inv -> {
-                StreamOffset<String> offset = inv.getArgument(2);
-                String streamKey = offset.getKey();
-                BlockingQueue<MapRecord<String, Object, Object>> streamQueue = internalStreams.get(streamKey);
-                if (streamQueue != null) {
-                    MapRecord<String, Object, Object> polled = streamQueue.poll(200, TimeUnit.MILLISECONDS);
-                    if (polled != null) {
-                        return List.of(polled);
-                    }
-                }
-                return Collections.emptyList();
-            });
-
-            // 缓存存取与防穿透
-            when(valOps.get(anyString())).thenAnswer(inv -> cacheStore.get(inv.getArgument(0)));
-            doAnswer(inv -> {
-                cacheStore.put(inv.getArgument(0), inv.getArgument(1));
-                return null;
-            }).when(valOps).set(anyString(), any(), any());
-            doAnswer(inv -> {
-                cacheStore.put(inv.getArgument(0), inv.getArgument(1));
-                return null;
-            }).when(valOps).set(anyString(), any());
-            when(valOps.setIfAbsent(anyString(), any(), any(Duration.class))).thenAnswer(inv -> {
-                String k = inv.getArgument(0);
-                if (cacheStore.containsKey(k)) {
-                    return false;
-                }
-                cacheStore.put(k, inv.getArgument(1));
-                return true;
-            });
-            when(valOps.multiGet(any(Collection.class))).thenAnswer(inv -> {
-                Collection<String> keys = inv.getArgument(0);
-                List<Object> list = new java.util.ArrayList<>();
-                for (String k : keys) {
-                    list.add(cacheStore.get(k));
-                }
-                return list;
-            });
-            when(valOps.getAndSet(anyString(), any())).thenAnswer(inv -> cacheStore.put(inv.getArgument(0), inv.getArgument(1)));
-            when(valOps.increment(anyString(), anyLong())).thenAnswer(inv -> {
-                String k = inv.getArgument(0);
-                long delta = inv.getArgument(1);
-                Object curr = cacheStore.get(k);
-                long next = (curr instanceof Number num ? num.longValue() : 0L) + delta;
-                cacheStore.put(k, next);
-                return next;
-            });
-            when(valOps.increment(anyString())).thenAnswer(inv -> {
-                String k = inv.getArgument(0);
-                Object curr = cacheStore.get(k);
-                long next = (curr instanceof Number num ? num.longValue() : 0L) + 1L;
-                cacheStore.put(k, next);
-                return next;
-            });
-
-            when(template.delete(anyString())).thenAnswer(inv -> cacheStore.remove(inv.getArgument(0)) != null);
-            when(template.delete(any(Collection.class))).thenAnswer(inv -> {
-                Collection<?> keys = inv.getArgument(0);
-                long count = 0;
-                for (Object k : keys) {
-                    if (cacheStore.remove(k) != null) {
-                        count++;
-                    }
-                }
-                return count;
-            });
-            when(template.hasKey(anyString())).thenAnswer(inv -> cacheStore.containsKey(inv.getArgument(0)));
-            when(template.executePipelined(any(SessionCallback.class))).thenAnswer(inv -> {
-                SessionCallback<?> cb = inv.getArgument(0);
-                RedisOperations ops = mock(RedisOperations.class);
-                when(ops.opsForValue()).thenReturn(valOps);
-                cb.execute(ops);
-                return Collections.emptyList();
-            });
-
-            // Pub/Sub 广播发送模拟与内存分发
-            when(template.convertAndSend(anyString(), any())).thenAnswer(inv -> {
-                String ch = inv.getArgument(0);
-                Object msg = inv.getArgument(1);
-                byte[] bodyBytes;
-                if (msg instanceof String str) {
-                    bodyBytes = str.getBytes(StandardCharsets.UTF_8);
-                } else if (msg instanceof byte[] bytes) {
-                    bodyBytes = bytes;
-                } else {
-                    bodyBytes = RedisSerializerFactory.createSafeObjectMapper().writeValueAsBytes(msg);
-                }
-                byte[] chBytes = ch.getBytes(StandardCharsets.UTF_8);
-                DefaultMessage redisMsg = new DefaultMessage(chBytes, bodyBytes);
-
-                internalListeners.forEach((listener, topics) -> {
-                    for (Topic topic : topics) {
-                        if (topic instanceof ChannelTopic ct && ct.getTopic().equals(ch)) {
-                            listener.onMessage(redisMsg, null);
-                            break;
-                        } else if (topic instanceof PatternTopic pt) {
-                            String pattern = pt.getTopic();
-                            if (matchesPattern(ch, pattern)) {
-                                listener.onMessage(redisMsg, pattern.getBytes(StandardCharsets.UTF_8));
-                                break;
-                            }
-                        }
-                    }
-                });
-                return 1L;
-            });
-
-            // 安全游标模糊扫描模拟
-            when(template.scan(any(ScanOptions.class))).thenAnswer(inv -> {
-                ScanOptions options = inv.getArgument(0);
-                List<String> matchedKeys = new java.util.ArrayList<>();
-                if (options != null && options.getPattern() != null) {
-                    String pattern = options.getPattern();
-                    for (String k : cacheStore.keySet()) {
-                        if (matchesPattern(k, pattern)) {
-                            matchedKeys.add(k);
-                        }
-                    }
-                }
-                if (matchedKeys.isEmpty()) {
-                    matchedKeys.add("sample:user:1001");
-                    matchedKeys.add("sample:user:1002");
-                }
-                java.util.Iterator<String> it = matchedKeys.iterator();
-                Cursor<String> cursor = mock(Cursor.class);
-                when(cursor.hasNext()).thenAnswer(i -> it.hasNext());
-                when(cursor.next()).thenAnswer(i -> it.next());
-                return cursor;
-            });
-
-            // 支持基于 RedisCallback 的安全游标 scan 与批量 del
-            when(template.execute(any(RedisCallback.class))).thenAnswer(inv -> {
-                RedisCallback<?> callback = inv.getArgument(0);
-                RedisConnection conn = mock(RedisConnection.class);
-                RedisKeyCommands keyCommands = mock(RedisKeyCommands.class);
-                RedisStreamCommands streamCommands = mock(RedisStreamCommands.class);
-                when(conn.keyCommands()).thenReturn(keyCommands);
-                when(conn.streamCommands()).thenReturn(streamCommands);
-
-                List<byte[]> matchedKeys = new java.util.ArrayList<>();
-                cacheStore.keySet().forEach(k -> matchedKeys.add(k.getBytes(StandardCharsets.UTF_8)));
-                java.util.Iterator<byte[]> it = matchedKeys.iterator();
-
-                Cursor<byte[]> cursor = mock(Cursor.class);
-                when(cursor.hasNext()).thenAnswer(i -> it.hasNext());
-                when(cursor.next()).thenAnswer(i -> it.next());
-                when(keyCommands.scan(any(ScanOptions.class))).thenReturn(cursor);
-
-                doAnswer(delInv -> {
-                    Object[] args = delInv.getArguments();
-                    for (Object arg : args) {
-                        if (arg instanceof byte[] b) {
-                            cacheStore.remove(new String(b, StandardCharsets.UTF_8));
-                        } else if (arg instanceof byte[][] bArr) {
-                            for (byte[] b : bArr) {
-                                cacheStore.remove(new String(b, StandardCharsets.UTF_8));
-                            }
-                        }
-                    }
-                    return (long) args.length;
-                }).when(keyCommands).del(any(byte[][].class));
-
-                return callback.doInRedis(conn);
-            });
-
-            // RedisAtomicUtil & RedisScriptExecutor Lua 脚本模拟
-            when(template.execute(
-                    any(RedisScript.class),
-                    any(RedisSerializer.class),
-                    any(),
-                    any(List.class),
-                    any()
-            )).thenReturn(1L);
-
-            when(template.execute(
-                    any(RedisScript.class),
-                    any(RedisSerializer.class),
-                    any(),
-                    any(List.class)
-            )).thenReturn(1L);
-
-            when(template.execute(
-                    any(RedisScript.class),
-                    any(),
-                    any(),
-                    any(List.class),
-                    any(Object[].class)
-            )).thenReturn(1L);
-
-            when(template.execute(
-                    any(RedisScript.class),
-                    any(List.class),
-                    any(Object[].class)
-            )).thenReturn(1L);
-
-            when(template.execute(
-                    any(RedisScript.class),
-                    any(List.class)
-            )).thenReturn(1L);
-
-            return template;
-        }
-
-        private boolean matchesPattern(String ch, String pattern) {
-            if (pattern.endsWith("*")) {
-                String prefix = pattern.substring(0, pattern.length() - 1);
-                return ch.startsWith(prefix);
-            }
-            return ch.equals(pattern);
-        }
-    }
+    @Autowired
+    private ObjectMapper objectMapper;
 
     @Autowired
     private StockDeductScenarioService stockDeductScenarioService;
@@ -681,7 +217,7 @@ class SampleRedisIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        TestRedisConfig.clearAll();
+        SampleInMemoryRedisConfig.clearAll();
         stockDeductScenarioService.resetStock(1001L, 100);
         cacheScenarioService.resetDbQueryCount();
         idempotentScenarioService.resetCounts();
@@ -689,7 +225,7 @@ class SampleRedisIntegrationTest {
 
     @AfterEach
     void tearDown() {
-        TestRedisConfig.clearAll();
+        SampleInMemoryRedisConfig.clearAll();
         // 在本地真实 Redis 模式下，确定性清理测试残留数据，保证测试间零污染与幂等自洽
         if (redisTemplate != null && redisTemplate.getConnectionFactory() != null) {
             try {
@@ -1176,5 +712,167 @@ class SampleRedisIntegrationTest {
         assertThat(twoLevelCacheManager).isNotNull();
         assertThat(redisBloomFilter).isNotNull();
         assertThat(redisAtomicUtil).isNotNull();
+    }
+
+    // =========================================================================
+    // 控制器实测: RedisOpsAndScriptController (/sample/redis/ops/**)
+    // =========================================================================
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/ops/cart 购物车 Hash 明细添加、查询与移除")
+    void testRedisOpsCartEndpoints() throws Exception {
+        CartItemRequest request = CartItemRequest.builder()
+                .userId("user_1001")
+                .skuId("SKU_IPHONE_16")
+                .skuName("iPhone 16 Pro")
+                .quantity(2)
+                .price(new BigDecimal("7999.00"))
+                .build();
+
+        // 1. 添加商品到购物车
+        mockMvc.perform(post("/sample/redis/ops/cart/items")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.userId").value("user_1001"))
+                .andExpect(jsonPath("$.data.items[0].skuId").value("SKU_IPHONE_16"))
+                .andExpect(jsonPath("$.data.totalQuantity").value(2))
+                .andExpect(jsonPath("$.data.totalPrice").value(15998.00));
+
+        // 2. 校验参数防御：非法入参 Fail-Fast
+        CartItemRequest invalidReq = CartItemRequest.builder()
+                .userId("")
+                .skuId("")
+                .quantity(0)
+                .price(BigDecimal.ZERO)
+                .build();
+        mockMvc.perform(post("/sample/redis/ops/cart/items")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)));
+
+        // 3. 查询购物车
+        mockMvc.perform(get("/sample/redis/ops/cart/user_1001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.items").isArray())
+                .andExpect(jsonPath("$.data.items[0].skuName").value("iPhone 16 Pro"));
+
+        // 4. 移除商品
+        mockMvc.perform(delete("/sample/redis/ops/cart/user_1001/items/SKU_IPHONE_16"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/ops/rank 热销榜 ZSet 累加与 TopN 查询")
+    void testRedisOpsRankEndpoints() throws Exception {
+        ProductScoreRequest req1 = ProductScoreRequest.builder()
+                .productId("PROD_101")
+                .productName("华为 Mate 70")
+                .deltaScore(88.5)
+                .build();
+        ProductScoreRequest req2 = ProductScoreRequest.builder()
+                .productId("PROD_102")
+                .productName("小米 15 Ultra")
+                .deltaScore(95.0)
+                .build();
+
+        mockMvc.perform(post("/sample/redis/ops/rank/score")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req1)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        mockMvc.perform(post("/sample/redis/ops/rank/score")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req2)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        mockMvc.perform(get("/sample/redis/ops/rank/top").param("limit", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/ops/keys/scan 游标安全扫描巡检")
+    void testRedisOpsScanKeysEndpoint() throws Exception {
+        mockMvc.perform(get("/sample/redis/ops/keys/scan")
+                        .param("pattern", "sample:*")
+                        .param("count", "50"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.pattern").value("sample:*"));
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/ops/pipeline/warmup Pipeline 批量预热")
+    void testRedisOpsPipelineWarmupEndpoint() throws Exception {
+        PipelineWarmupRequest request = PipelineWarmupRequest.builder()
+                .stockMap(Map.of(
+                        "SKU_A", 100,
+                        "SKU_B", 200,
+                        "SKU_C", 300
+                ))
+                .build();
+
+        mockMvc.perform(post("/sample/redis/ops/pipeline/warmup")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.totalItems").value(3))
+                .andExpect(jsonPath("$.data.success").value(true));
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/ops/coupon/deduct Lua 优惠券原子核销")
+    void testRedisOpsCouponDeductEndpoint() throws Exception {
+        CouponDeductRequest request = CouponDeductRequest.builder()
+                .couponId("COUPON_NEW_USER")
+                .deductCount(1)
+                .build();
+
+        mockMvc.perform(post("/sample/redis/ops/coupon/deduct")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.couponId").value("COUPON_NEW_USER"))
+                .andExpect(jsonPath("$.data.success").value(true));
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/ops/seq/daily 跨天自重置流水号生成")
+    void testRedisOpsDailySeqEndpoint() throws Exception {
+        mockMvc.perform(post("/sample/redis/ops/seq/daily")
+                        .param("prefix", "ORD")
+                        .param("width", "6"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.prefix").value("ORD"))
+                .andExpect(jsonPath("$.data.fullOrderNo").isString());
+    }
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/ops/watermark/cas 水位原子比较置换")
+    void testRedisOpsWatermarkCasEndpoint() throws Exception {
+        WatermarkCasRequest request = WatermarkCasRequest.builder()
+                .key("sample:watermark:sync")
+                .expect(0L)
+                .update(100L)
+                .build();
+
+        mockMvc.perform(post("/sample/redis/ops/watermark/cas")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.key").value("sample:watermark:sync"));
     }
 }

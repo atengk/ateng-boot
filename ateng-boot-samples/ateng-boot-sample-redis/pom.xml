@@ -17,6 +17,12 @@
     <description>ateng-boot 分布式 Redis 与 Redisson 场景自验样例</description>
 
     <dependencies>
+        <!-- Web 交互底座 Starter -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+        </dependency>
+
         <!-- Redis 基础设施与分布式协同 Starter -->
         <dependency>
             <groupId>io.github.atengk</groupId>

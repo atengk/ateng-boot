@@ -10,7 +10,7 @@
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **基础运维** | 自动装配与主配置 | `RedisProperties` / `AtengRedisAutoConfiguration` | `ateng.boot.redis.enabled`<br>`ateng.boot.redis.key-prefix` | 统管双核装配开关与全局统一 Key 命名前缀隔离 | `AtengRedisAutoConfigurationTest` |
 | **基础运维** | Redisson 连接保活与连接池治理 | `RedissonClient` / `AtengRedisAutoConfiguration` | `ateng.boot.redis.redisson.ping-connection-interval`<br>`ateng.boot.redis.redisson.connection-pool-size`<br>`ateng.boot.redis.redisson.connection-minimum-idle-size`<br>`ateng.boot.redis.redisson.retry-attempts`<br>`ateng.boot.redis.redisson.retry-interval`<br>`ateng.boot.redis.redisson.threads`<br>`ateng.boot.redis.redisson.netty-threads`<br>`ateng.boot.redis.redisson.config` | TCP 心跳 PING 保活机制（默认 30s）防御云原生 NAT 网关静默切断连接；单机/集群/哨兵连接池容量与超时重试统管 | `AtengRedisAutoConfigurationTest` |
-| **数据操作** | 全能操作门面 | `RedisUtil` | `ateng.boot.redis.key-prefix` | `hasKey(key)` / `expire(key, duration)` / `scanKeys(pattern, count)` / `get(key, clazz)` / `set(key, val, duration)` / `buildKey(key)` / `hScan` / `executePipelined`：纯游标分批拉取彻底杜绝 `keys *` 阻塞 | `RedisUtilTest`<br>`SampleRedisIntegrationTest` |
+| **数据操作** | 全能操作门面 | `RedisUtil` | `ateng.boot.redis.key-prefix` | `hasKey(key)` / `expire(key, duration)` / `scanKeys(pattern, count)` / `get(key, clazz)` / `set(key, val, duration)` / `buildKey(key)` / `hGet` / `hSet` / `hDelete` / `hGetAll` / `hIncr` / `zAdd` / `reverseRangeWithScores` / `executePipelined`：纯游标分批拉取彻底杜绝 `keys *` 阻塞，丰富数据结构与单 RTT 批处理 | `RedisUtilTest`<br>`RedisOpsAndScriptController`<br>`SampleRedisIntegrationTest` |
 | **序列化** | 纯净安全序列化工厂 | `RedisSerializerFactory` | - | `createSafeObjectMapper()` / `createJsonSerializer()` / `stringSerializer()`：无 `@class` 多态 RCE 漏洞，内置 JSR-310 与 Long 精度保护 | `RedisSerializerFactoryTest` |
 | **分布式锁** | 声明式分布式锁 | `@DistributedLock` / `DistributedLockAspect` | `ateng.boot.redis.lock.enabled`<br>`ateng.boot.redis.lock.prefix`<br>`ateng.boot.redis.lock.wait-time`<br>`ateng.boot.redis.lock.lease-time`<br>`ateng.boot.redis.lock.time-unit`<br>`ateng.boot.redis.lock.slow-threshold` | `@DistributedLock(key, keys, mode, waitTime, leaseTime, timeUnit, message)`：支持 SpEL、四阶锁模式、看门狗自动续期、防误删释放与慢锁审计 | `DistributedLockAspectTest`<br>`SampleRedisIntegrationTest` |
 | **分布式锁** | 编程式锁受管模板 | `DistributedLockTemplate` | `ateng.boot.redis.lock.wait-time`<br>`ateng.boot.redis.lock.lease-time`<br>`ateng.boot.redis.lock.slow-threshold` | `execute(key, supplier)` / `execute(key, supplier, fallback)` / `execute(keys, mode, wait, lease, unit, supplier, fallback)` / `tryExecute(key, action)`：闭包内业务异常无损透传 | `DistributedLockTemplateTest`<br>`SampleRedisIntegrationTest` |
@@ -27,16 +27,16 @@
 | **业务防重** | 静态防重操作门面 | `RedisIdempotentUtil` | `ateng.boot.redis.idempotent.*` | `RedisIdempotentUtil.execute(key, supplier)` / `RedisIdempotentUtil.execute(key, timeout, supplier)`：静态上下文无需注入 Spring Bean 一键安全执行防重逻辑 | `RedisIdempotentUtilTest`<br>`SampleRedisIntegrationTest` |
 | **并发治理** | 分布式受管信号量模板 | `RedisSemaphoreTemplate` | `ateng.boot.redis.key-prefix` | `execute(key, totalPermits, acquirePermits, waitTime, supplier, fallback)` / `tryAcquire(key, permits, timeout)` / `release(key, permits)` / `availablePermits(key)` / `resetPermits(key, newPermits)`：集群全局并发硬阈值控制、自动初始化配额、争锁超时优雅降级与动态扩缩容 | `RedisSemaphoreTemplateTest`<br>`SampleRedisIntegrationTest` |
 | **并发治理** | 静态信号量操作门面 | `RedisSemaphoreUtil` | `ateng.boot.redis.key-prefix` | `RedisSemaphoreUtil.execute(key, totalPermits, waitTime, supplier, fallback)` / `RedisSemaphoreUtil.resetPermits(key, newPermits)`：静态上下文轻量并发度治理 | `RedisSemaphoreUtilTest`<br>`SampleRedisIntegrationTest` |
-| **脚本执行** | 受管原子 Lua 脚本执行器 | `RedisScriptExecutor` | - | `execute(script, resultType, keys, args)` / `executeClasspath(path, resultType, keys, args)`：自动 SHA1 预编译缓存、EVALSHA 优先执行、底层脚本加载异常安全转译 | `RedisScriptExecutorTest`<br>`SampleRedisIntegrationTest` |
+| **脚本执行** | 受管原子 Lua 脚本执行器 | `RedisScriptExecutor` | - | `execute(script, resultType, keys, args)` / `executeClasspath(path, resultType, keys, args)`：自动 SHA1 预编译缓存、EVALSHA 优先执行、底层脚本加载异常安全转译 | `RedisScriptExecutorTest`<br>`RedisOpsAndScriptController`<br>`SampleRedisIntegrationTest` |
 | **广播订阅** | 主题广播发布者 | `RedisMessagePublisher` | `ateng.boot.redis.pub-sub.enabled` | `publish(channel, message)` / `subscribe(listener, channel)` / `unsubscribe(listener, channel)`：跨节点广播通知与动态订阅 | `RedisMessagePublisherTest` |
 | **广播订阅** | 声明式频道监听 | `@ChannelTopicListener` / `ChannelTopicBootstrap` | `ateng.boot.redis.pub-sub.enabled` | `@ChannelTopicListener(topics, patterns, concurrency)`：支持 `${...}` 占位符、精确主题与通配模式，支持单参 POJO/String/byte[]/Message、双参及三参多态安全反序列化，受管 `ThreadPoolTaskExecutor` 并发驱动与 MDC `traceId` 透传 | `ChannelTopicBootstrapTest`<br>`SampleRedisIntegrationTest` |
 | **布隆过滤** | 分布式布隆过滤器 | `RedisBloomFilter` | `ateng.boot.redis.key-prefix`<br>`ateng.boot.redis.bloom-filters.<name>.expected-insertions`<br>`ateng.boot.redis.bloom-filters.<name>.false-probability` | `tryInit(name, expected, prob)` / `add(name, val)` / `addAll(name, coll)` / `contains(name, val)` / `containsAll(name, coll)` / `count(name)` / `getUsageRate(name)` / `isOverCapacity(name, threshold)` / `delete(name)`：支持依赖注入操作范式、80% 容量安全预警与全局 KeyPrefix 隔离 | `RedisBloomFilterTest`<br>`SampleRedisIntegrationTest` |
 | **布隆过滤** | 声明式自动预热调度器 | `BloomFilterBootstrap` | `ateng.boot.redis.bloom-filters.*` | 容器就绪后自动遍历 YAML 中声明的规则，原子幂等调用 `tryInit` 完成预热 | `RedisBloomFilterTest`<br>`AtengRedisAutoConfigurationTest` |
 | **布隆过滤** | 静态布隆过滤门面 | `RedisBloomUtil` | `ateng.boot.redis.key-prefix`<br>`ateng.boot.redis.bloom-filters.*` | `tryInit(name, expected, prob)` / `add(name, val)` / `addAll(name, coll)` / `contains(name, val)` / `containsAll(name, coll)` / `count(name)` / `getUsageRate(name)` / `isOverCapacity(name, threshold)` / `delete(name)`：静态上下文开箱即用门面，底层统一委托受管单例 `RedisBloomFilter` | `RedisBloomFilterTest`<br>`SampleRedisIntegrationTest` |
-| **原子发号** | 结构化发号与自增 | `RedisAtomicUtil` | `ateng.boot.redis.key-prefix` | `generateDailySeq(bizPrefix, length)`：跨天自重置且带 48h TTL 防泄露流水号；`incrWithExpire(key, delta, duration)` / `compareAndSet(key, expect, update)` / `getAndSet(key, update)` | `RedisAtomicUtilTest`<br>`SampleRedisIntegrationTest` |
+| **原子发号** | 结构化发号与自增 | `RedisAtomicUtil` | `ateng.boot.redis.key-prefix` | `generateDailySeq(bizPrefix, length)`：跨天自重置且带 48h TTL 防泄露流水号；`incrWithExpire(key, delta, duration)` / `compareAndSet(key, expect, update)` / `getAndSet(key, update)` | `RedisAtomicUtilTest`<br>`RedisOpsAndScriptController`<br>`SampleRedisIntegrationTest` |
 | **并发流控** | 滑动窗口严格限流 | `RedisAtomicUtil` | - | `isAllowedBySlidingWindow(key, maxLimit, window)`：基于 ZSet 毫秒级时间戳实现精准滑动窗口防突刺 | `RedisAtomicUtilTest`<br>`SampleRedisIntegrationTest` |
-| **并发流控** | 分布式令牌桶流控 | `RedisRateLimiterClient` | - | `tryAcquire(key, rate, interval)` / `tryAcquire(key, rate, interval, permits, timeout)` / `acquire` / `delete`：基于 Redisson 令牌桶平滑流控 | `RedisRateLimiterClientTest`<br>`SampleRedisIntegrationTest` |
-| **缓存增强** | 多级 TTL 缓存管理 | `RedisCacheManager` / `AtengRedisAutoConfiguration` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.expires` | 个性化为不同 `@Cacheable(value = "...")` 声明独立 TTL；支持空值防穿透 | `AtengRedisAutoConfigurationTest` |
+| **并发流控** | 分布式令牌桶流控 | `RedisRateLimiterClient` | `ateng.boot.redis.key-prefix` | `tryAcquire(key, rate, interval)` / `tryAcquire(key, rate, interval, permits, timeout)` / `acquire(key, permits)` / `delete(key)` / `getAvailablePermits(key)`：基于 Redisson 令牌桶平滑流控，自动挂载全局键前缀 | `RedisRateLimiterClientTest`<br>`SampleRedisIntegrationTest` |
+| **缓存增强** | 多级 TTL 缓存管理 | `RedisCacheManager` / `AtengRedisAutoConfiguration` | `ateng.boot.redis.enabled`<br>`ateng.boot.redis.key-prefix`<br>`ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.expires` | 适配 Spring Cache 注解，个性化为不同 `@Cacheable(value = "...")` 声明独立 TTL；配置全局前缀时统一挂载，空前缀时保持原生 `cacheName::key` | `AtengRedisAutoConfigurationTest` |
 | **缓存防卫** | 统一缓存执行模板 | `RedisCacheTemplate` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.null-ttl`<br>`ateng.boot.redis.cache.max-jitter`<br>`ateng.boot.redis.cache.jitter-enabled`<br>`ateng.boot.redis.cache.cache-null-values`<br>`ateng.boot.redis.cache.lock-wait-time` | `getOrLoad(key, clazz, loader)` / `getOrLoad(key, typeRef, loader)`：单键 DCL + 互斥锁防击穿 + 短 TTL 空哨兵防穿透 + 随机抖动防雪崩 + 争锁超时降级<br>`batchGetOrLoad(keys, mapper, clazz/typeRef, batchLoader)`：批量 MGET 探测 + 字典序排序锁去重 + 降级自愈回填 + Pipeline 回写彻底杜绝 N+1<br>`get` / `put` / `evict` / `batchEvict` / `hasKey`：对称运维门面 | `RedisCacheTemplateTest`<br>`SampleRedisIntegrationTest` |
 | **两级缓存** | 两级缓存核心门面 | `TwoLevelCache` / `DefaultTwoLevelCache` | `ateng.boot.redis.two-level.*`<br>`ateng.boot.redis.key-prefix` | `getName()` / `get(key)` / `get(key, clazz)` / `get(key, loader)` / `put(key, val, ttl)` / `putIfAbsent` / `evict(key)` / `evictLocal(key)` / `clear()` / `clearLocal()`：纳秒级 L1 本地命中、分布式 L2 兜底、空哨兵防穿透与游标安全 scan 清理 | `TwoLevelCacheTest`<br>`SampleRedisIntegrationTest` |
 | **两级缓存** | Spring Cache 适配器 | `TwoLevelCacheManager` | `ateng.boot.redis.two-level.enabled`<br>`ateng.boot.redis.two-level.topic`<br>`ateng.boot.redis.two-level.l1.*`<br>`ateng.boot.redis.two-level.l2.*` | `@Cacheable` / `@CacheEvict` 无缝注解驱动、动态按需创建缓存空间、`instanceId` 唯一标识防环、`ateng:cache:evict:topic` 跨节点集中广播协同失效 | `TwoLevelCacheManagerTest`<br>`SampleRedisIntegrationTest` |
@@ -49,6 +49,10 @@
 ## 1. 模块定位与 Maven 坐标
 
 `ateng-boot-redis` 坚持双核融合架构，摒弃“Spring Data Redis 与 Redisson 二选一”的传统割裂思维，同时规避了官方 `redisson-spring-boot-starter` 强行覆盖官方 `RedisConnectionFactory` 带来的隐式冲突与序列化漂移。
+
+- **JDK 基线**：JDK 17 LTS（字节码 17，兼容 21+ 运行）
+- **Spring Boot 基线**：`3.3.13`
+- **核心依赖**：Spring Data Redis (`Lettuce` 高性能异步驱动) + Redisson `3.38.1`（原生分布式协调内核）
 
 ```xml
 <dependency>
@@ -96,35 +100,208 @@
 - **Key 序列化**：统一采用 `StringRedisSerializer`，保证所有键名在 Redis 控制台原生可读；
 - **Value 序列化**：统一采用无 `@class` 污染的纯净 `Jackson2JsonRedisSerializer`，集成 Java 8 日期模块（JSR-310，默认格式 `yyyy-MM-dd HH:mm:ss`）、统一东八区时区，并将超出 JavaScript 安全整数范围的 Long/BigInteger 序列化为 String 防前端精度丢失。
 
+### 全局 Key 前缀隔离与各组件生效规则
+
+在多环境共享 Redis 集群或微服务多租户隔离场景中，前缀边界治理是防止键冲突与误清理的核心防线。`ateng-boot-redis` 提供统一全局配置项 `ateng.boot.redis.key-prefix`，各组件遵循以下规范自洽响应：
+
+| 组件 / 门面 / 注解 | 前缀生效机制与行为 | 典型配置项 (`ateng.boot.redis.*`) | 典型键结构示例 (`key-prefix: "sample:"`) |
+| :--- | :--- | :--- | :--- |
+| **`RedisUtil` (通用数据门面)** | 静态门面保留底层 key 灵活度；开发者可通过 `RedisUtil.buildKey(key)` 显式包装拼接全局前缀 | `key-prefix: "sample:"` | `RedisUtil.buildKey("cart:1001")` -> `sample:cart:1001` |
+| **`RedisAtomicUtil` (流水号与CAS)** | `generateDailySeq(bizPrefix, length)` 结构化发号自动注入全局前缀；原子增减与 CAS 支持自动/显式前缀 | `key-prefix: "sample:"` | `ORD20261108000001` (底层 Redis 存储键为 `sample:order:seq:20261108`) |
+| **`RedisBloomFilter` / `RedisBloomUtil`** | 分布式布隆过滤器名称在初始化与访问时自动拼接全局前缀 | `key-prefix: "sample:"` | 逻辑过滤器 `user-blacklist` -> 底层存储为 `sample:user-blacklist` |
+| **`RedisRateLimiterClient`** | 令牌桶限流器键名自动统一拼接全局前缀隔离 | `key-prefix: "sample:"` | 逻辑限流键 `api:sms:13800000000` -> 底层存储为 `sample:api:sms:13800000000` |
+| **`@DistributedLock` / `DistributedLockTemplate` / `RedisLockUtil`** | 锁前缀优先使用专有配置 `lock.prefix`（默认 `lock:`），叠加在业务 Key 之前，防止与业务缓存数据混淆 | `lock.prefix: "lock:"` | 业务 Key `order:ORD_1001` -> 加锁键为 `lock:order:ORD_1001` |
+| **`RedisDelayedQueue` / `@DelayedQueueListener`** | 业务延时队列名保持定义字面量；重试耗尽死信队列自动追加 `:dlq`（可配置）后缀 | `delay-queue.dead-letter-suffix: ":dlq"` | 业务队列 `sample:order:cancel`，对应死信队列 `sample:order:cancel:dlq` |
+| **`RedisStreamTemplate` / `@RedisStreamListener`** | 流名称（Stream Key）保持定义字面量；死信流自动追加 `:dlq`（可配置）后缀 | `stream.dlq-suffix: ":dlq"` | 业务流 `stream:order:events`，对应死信流 `stream:order:events:dlq` |
+| **`RedisCacheManager` (单级 Spring Cache)** | 当配置全局非空前缀时自动挂载；前缀为空时保持 Spring Data Redis 原生 `cacheName::key` 规范 | `key-prefix: "sample:"` | 注解 `@Cacheable(value = "user", key = "#id")` -> 缓存键为 `sample:user::1001` |
+| **`TwoLevelCacheManager` (两级缓存)** | 本地 L1 内存 + Redis L2 存储；跨节点广播失效主题集中解耦；L2 缓存名按 `cacheName:key` 隔离 | `two-level.topic: "ateng:cache:evict:topic"` | 广播主题 `ateng:cache:evict:topic`，L2 Redis 键 `user-profile:2001` |
+
 ---
 
-## 3. 全能 RedisUtil 操作门面与安全游标扫描
+## 3. 通用数据操作门面、原子 Lua 脚本与跨天分布式流水号
 
-### 场景痛点
-生产环境严禁直接调用 `KEYS *`、`HKEYS` 或 `SMEMBERS`，当集合包含百万级大 Key 时会导致单线程 Redis 发生秒级阻塞停机。`RedisUtil` 彻底封装了游标分批扫描算法，对外暴露安全流式 API。
+### 场景痛点与工业级防卫
+1. **单线程阻塞与大 Key 隐患**：生产环境绝对严禁调用 `KEYS *`、`HKEYS` 或 `SMEMBERS`，当集合包含百万级大 Key 时会导致单线程 Redis 发生秒级阻塞停机。`RedisUtil.scanKeys` 与 `hScan` 封装了游标分批拉取机制（基于 `SCAN` / `HSCAN` 原语），对外暴露纯流式安全 API，单次拉取数量受控，杜绝 CPU 突刺与连接超时。
+2. **多往返网络风暴与并发扣减超卖**：高频优惠券/库存核销场景若采用“GET 查询 -> 校验资格 -> SET 扣减 -> SADD 记录”多步网络交互，既产生多次 RTT 网络延迟，更在并发场景下引发严重超卖。`RedisScriptExecutor` 采用受管 Lua 脚本引擎，自动执行 SHA1 预编译缓存与 `EVALSHA` 优先执行策略，保证核销判定与扣减在单原子事务内完成。
+3. **流水号跨天未归零与内存无界泄露**：传统分布式发号要么强依赖数据库自增主键（并发性能低、事务开销大），要么使用简单的 Redis 自增 key（跨天无法平滑重置，或永久保留导致键空间持续膨胀泄露）。`RedisAtomicUtil.generateDailySeq` 采用跨天自然日结构化 Key，原子自增并内置 **48 小时安全 TTL**，既能实现跨天自然归零与补零对齐，又彻底防止历史废弃键永久残留泄露。
 
-### 核心代码示例（逆向自 `ScriptExecutionScenarioService`）
+### YAML 配置闭环
+
+```yaml
+ateng:
+  boot:
+    redis:
+      enabled: true
+      key-prefix: "sample:"
+```
+
+### 真实业务实战代码（1:1 提取自 `ateng-boot-sample-redis`）
+
+以下代码 1:1 提取自场景样例工程中的业务控制器 [`RedisOpsAndScriptController`](../../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/controller/RedisOpsAndScriptController.java) 与核销脚本 [`coupon_deduct.lua`](../../ateng-boot-samples/ateng-boot-sample-redis/src/main/resources/scripts/coupon_deduct.lua)：
+
 ```java
-@Service
+@Slf4j
+@RestController
+@RequestMapping("/sample/redis/ops")
 @RequiredArgsConstructor
-public class ScriptExecutionScenarioService {
+public class RedisOpsAndScriptController {
 
-    private final RedisAtomicUtil redisAtomicUtil;
+    private final RedisScriptExecutor redisScriptExecutor;
 
-    /**
-     * 基于 RedisUtil 安全游标扫描匹配的键集合（底层 SCAN 游标分批拉取，杜绝阻塞 Redis）
-     */
-    public Set<String> scanKeys(String pattern, long count) {
-        Set<String> keys = RedisUtil.scanKeys(pattern, count);
-        log.info("[ScriptExecution] 游标扫描完成: pattern={}, count={}, matchedSize={}", pattern, count, keys.size());
-        return keys;
+    // ==========================================
+    // 1. 购物车管理：RedisUtil 散列 Hash 结构
+    // ==========================================
+
+    @PostMapping("/cart/items")
+    public Result<Boolean> addCartItem(@Valid @RequestBody CartItemRequest request) {
+        String cartKey = RedisUtil.buildKey("cart:" + request.getUserId());
+        String skuId = request.getSkuId();
+
+        // 检查商品是否已在购物车中：存在则增量累计，不存在则全量写入并设置 7 天滑动过期
+        CartItemVO existing = RedisUtil.hGet(cartKey, skuId, CartItemVO.class);
+        if (existing != null) {
+            existing.setQuantity(existing.getQuantity() + request.getQuantity());
+            existing.setPrice(request.getPrice());
+            RedisUtil.hSet(cartKey, skuId, existing);
+        } else {
+            CartItemVO item = CartItemVO.builder()
+                    .skuId(skuId)
+                    .skuName(request.getSkuName())
+                    .quantity(request.getQuantity())
+                    .price(request.getPrice())
+                    .build();
+            RedisUtil.hSet(cartKey, skuId, item);
+        }
+        RedisUtil.expire(cartKey, Duration.ofDays(7));
+        return Result.success(true);
+    }
+
+    @GetMapping("/cart/{userId}")
+    public Result<CartVO> getCart(@PathVariable String userId) {
+        String cartKey = RedisUtil.buildKey("cart:" + userId);
+        Map<Object, Object> entries = RedisUtil.hGetAll(cartKey);
+        // 组装返回购物车明细列表与总金额
+        List<CartItemVO> items = entries.values().stream()
+                .map(val -> JsonUtil.toObject(JsonUtil.toJson(val), CartItemVO.class))
+                .toList();
+        return Result.success(new CartVO(userId, items));
+    }
+
+    // ==========================================
+    // 2. 热销榜单：RedisUtil 有序集合 ZSet 结构
+    // ==========================================
+
+    @PostMapping("/rank/score")
+    public Result<Double> addProductScore(@Valid @RequestBody ProductScoreRequest request) {
+        String rankKey = RedisUtil.buildKey("rank:daily_hot");
+        // 为商品累加销售热度积分
+        Double newScore = RedisUtil.zIncrScore(rankKey, request.getProductId(), request.getScoreDelta());
+        return Result.success(newScore);
+    }
+
+    @GetMapping("/rank/top/{limit}")
+    public Result<List<ProductRankVO>> getTopRank(@PathVariable int limit) {
+        String rankKey = RedisUtil.buildKey("rank:daily_hot");
+        // 倒序拉取 Top N 热销商品与热度值
+        Set<ZSetOperations.TypedTuple<Object>> tuples = RedisUtil.reverseRangeWithScores(rankKey, 0, limit - 1);
+        List<ProductRankVO> ranks = tuples.stream()
+                .map(t -> new ProductRankVO(String.valueOf(t.getValue()), t.getScore()))
+                .toList();
+        return Result.success(ranks);
+    }
+
+    // ==========================================
+    // 3. 安全游标扫描：RedisUtil 纯 SCAN 分批拉取
+    // ==========================================
+
+    @GetMapping("/keys/scan")
+    public Result<ScanResultVO> scanKeys(@RequestParam String pattern, @RequestParam(defaultValue = "100") long count) {
+        // 底层封装 SCAN 游标分批分段遍历，彻底杜绝 KEYS * 阻塞单线程
+        Set<String> matchedKeys = RedisUtil.scanKeys(pattern, count);
+        return Result.success(new ScanResultVO(pattern, matchedKeys.size(), matchedKeys));
+    }
+
+    // ==========================================
+    // 4. 原子核销优惠券：受管 Lua 脚本执行器
+    // ==========================================
+
+    @PostMapping("/coupon/deduct")
+    public Result<CouponDeductVO> deductCoupon(@Valid @RequestBody CouponDeductRequest request) {
+        String stockKey = RedisUtil.buildKey("coupon:" + request.getCouponId() + ":stock");
+        String usersKey = RedisUtil.buildKey("coupon:" + request.getCouponId() + ":users");
+
+        // 一次性原子判定：库存检查 -> 防重复领取检查 -> 扣减库存 -> 用户入集合记录
+        Long code = redisScriptExecutor.executeClasspath(
+                "scripts/coupon_deduct.lua",
+                Long.class,
+                List.of(stockKey, usersKey),
+                request.getUserId()
+        );
+
+        // 返回码语义：1-成功扣减，-1-已领过，-2-库存不足，-3-优惠券活动未初始化
+        boolean success = (code != null && code == 1L);
+        return Result.success(new CouponDeductVO(request.getCouponId(), request.getUserId(), success, code));
+    }
+
+    // ==========================================
+    // 5. 跨天自重置流水号与 CAS 水位：RedisAtomicUtil
+    // ==========================================
+
+    @PostMapping("/sequence/daily")
+    public Result<SequenceVO> generateDailySequence(@RequestParam(defaultValue = "order") String bizPrefix,
+                                                   @RequestParam(defaultValue = "6") int length) {
+        // 自动按当天日期 formatKey 生成类似 ORD20261108000001 的序列号，内置 48h TTL
+        String seq = RedisAtomicUtil.generateDailySeq(bizPrefix, length);
+        return Result.success(new SequenceVO(bizPrefix, seq));
+    }
+
+    @PostMapping("/watermark/cas")
+    public Result<WatermarkUpdateVO> updateWatermark(@Valid @RequestBody WatermarkCasRequest request) {
+        String key = RedisUtil.buildKey("watermark:" + request.getResourceId());
+        // CAS 原子比较置换：仅当当前值等于 expectedValue 时更新为 newValue
+        boolean updated = RedisAtomicUtil.compareAndSet(key, request.getExpectedValue(), request.getNewValue());
+        return Result.success(new WatermarkUpdateVO(request.getResourceId(), updated));
     }
 }
 ```
 
-### 预期控制台日志呈现
+配套原子优惠券核销 Lua 脚本 [`scripts/coupon_deduct.lua`](../../ateng-boot-samples/ateng-boot-sample-redis/src/main/resources/scripts/coupon_deduct.lua)：
+```lua
+-- KEYS[1]: 优惠券库存键 (String)
+-- KEYS[2]: 已领券用户集合键 (Set)
+-- ARGV[1]: 当前用户 ID
+
+local stock_key = KEYS[1]
+local users_key = KEYS[2]
+local user_id = ARGV[1]
+
+-- 1. 校验优惠券库存键是否存在
+if redis.call('EXISTS', stock_key) == 0 then
+    return -3 -- 优惠券不存在或未初始化
+end
+
+-- 2. 校验用户是否已领取过该券（防重领）
+if redis.call('SISMEMBER', users_key, user_id) == 1 then
+    return -1 -- 用户已领取过
+end
+
+-- 3. 校验并扣减库存
+local current_stock = tonumber(redis.call('GET', stock_key) or '0')
+if current_stock <= 0 then
+    return -2 -- 库存不足
+end
+
+-- 4. 原子扣减库存并记录用户领券集合
+redis.call('DECR', stock_key)
+redis.call('SADD', users_key, user_id)
+return 1 -- 领取成功
+```
+
+### 预期控制台呈现
+
 ```text
-2026-10-27 16:55:12.158 INFO  [main] [ea52411c7e479cd39e04bbf3f0f9317e] i.g.a.b.s.r.s.ScriptExecutionScenarioService : 游标扫描完成: pattern=sample:user:*, count=50, matchedSize=2
+2026-11-08 11:46:57.202 DEBUG [main] [5aed6f6373722bd1337d215175b9fbe1] m.ApiVersionRequestMappingHandlerMapping : Mapped to io.github.atengk.boot.sample.redis.controller.RedisOpsAndScriptController#addCartItem(CartItemRequest)
+2026-11-08 11:47:05.150 DEBUG [main] [8a1290bb4ce5a7186bcebb716f410214] i.g.a.b.r.s.RedisScriptExecutor             : [RedisScript] 优先通过 EVALSHA 执行 Lua 脚本成功: sha=4ad20bf1832d73
 ```
 
 ---

@@ -265,6 +265,49 @@ class AtengRedisAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("测试单级 RedisCacheManager 在全局 key-prefix 非空时附加前缀、空时保持原生行为")
+    void shouldApplyKeyPrefixToRedisCacheManagerWhenConfigured() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues("ateng.boot.redis.key-prefix=myapp:")
+                .run(context -> {
+                    org.springframework.data.redis.cache.RedisCacheManager cacheManager =
+                            context.getBean(org.springframework.data.redis.cache.RedisCacheManager.class);
+                    org.springframework.data.redis.cache.RedisCache cache =
+                            (org.springframework.data.redis.cache.RedisCache) cacheManager.getCache("testCache");
+                    assertThat(cache).isNotNull();
+                    assertThat(cache.getCacheConfiguration().getKeyPrefixFor("testCache")).isEqualTo("myapp:testCache::");
+                });
+
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .run(context -> {
+                    org.springframework.data.redis.cache.RedisCacheManager cacheManager =
+                            context.getBean(org.springframework.data.redis.cache.RedisCacheManager.class);
+                    org.springframework.data.redis.cache.RedisCache cache =
+                            (org.springframework.data.redis.cache.RedisCache) cacheManager.getCache("testCache");
+                    assertThat(cache).isNotNull();
+                    assertThat(cache.getCacheConfiguration().getKeyPrefixFor("testCache")).isEqualTo("testCache::");
+                });
+    }
+
+    @Test
+    @DisplayName("测试 TwoLevelCacheProperties 兼容绑定 expires 属性别名")
+    void shouldBindTwoLevelCacheExpiresAlias() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues(
+                        "ateng.boot.redis.two-level.l1.expires.dictCache=3m",
+                        "ateng.boot.redis.two-level.l2.expires.dictCache=15m"
+                )
+                .run(context -> {
+                    io.github.atengk.boot.redis.properties.RedisProperties properties =
+                            context.getBean(io.github.atengk.boot.redis.properties.RedisProperties.class);
+                    assertThat(properties.getTwoLevel().getL1().getTtls()).containsEntry("dictCache", Duration.ofMinutes(3));
+                    assertThat(properties.getTwoLevel().getL2().getTtls()).containsEntry("dictCache", Duration.ofMinutes(15));
+                    assertThat(properties.getTwoLevel().getL1().getExpires()).containsEntry("dictCache", Duration.ofMinutes(3));
+                    assertThat(properties.getTwoLevel().getL2().getExpires()).containsEntry("dictCache", Duration.ofMinutes(15));
+                });
+    }
+
+    @Test
     @DisplayName("单机模式配置映射：正确解析 Host, Port, Database, Password 与 Timeout")
     void shouldMapSingleServerConfigCorrectly() {
         AtengRedisAutoConfiguration autoConfiguration = new AtengRedisAutoConfiguration();

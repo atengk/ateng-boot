@@ -133,9 +133,22 @@ flowchart TD
 5. **Redis 5.0+ Stream 可靠消息流引擎与声明式消费组切面 (#402)**：
    - 落地 `RedisStreamTemplate`，封装流追加、消费组自动创建、Pending 积压检查、XCLAIM 孤儿认领与 XTRIM 定长裁剪；
    - 落地 `@RedisStreamListener` 声明式监听切面与 `StreamBootstrap` 调度器，受管线程池驱动，支持 At-Least-Once 可靠投递、MDC 上下文透传与死信流 (`:dlq`) + `StreamFailureHandler` SPI。
-6. **样例工程去 Web 污染重构与 1:1 全场景驱动实测 (#403)**：
-   - 彻底废除非 Web 模块样例工程违规引入的 Controller 与 MockMvc，打造 8 大独立场景业务组件（`StockDeductScenarioService`, `OrderDelayScenarioService`, `StreamEventScenarioService`, `IdempotentScenarioService`, `SemaphoreThrottlingScenarioService`, `ScriptExecutionScenarioService`, `NoticeBroadcastScenarioService`, `CacheScenarioService`）；
-   - 以纯粹 `@SpringBootTest` 驱动 21 个端到端集成测试，实现 100% 场景真实闭环与离线自洽。
+6. **样例工程去 Web 污染重构与 1:1 全场景驱动实测 (#403)**（*注：本条关于“零 Controller”的阶段性约定已被下文 Phase 4 演进决策正式废止替代*）：
+   - 早期阶段曾移除样例工程中的独立 Controller，构建 8 大场景业务组件并以 `@SpringBootTest` 验证。
+
+### 9. Phase 4 全面 Web 体验化重构、双模内存仿真桩与全局前缀一致性加固 (Full Web Experience & KeyPrefix Unification)
+遵循全仓统一的《工业级文档与样例工程标准规范》（`docs/agents/documentation-specification.md`），经由 `/grill-with-docs` 决策推演，对 `ateng-boot-redis` 及其配套 `ateng-boot-sample-redis` 确立以下增量架构演进决策：
+1. **废止“零 Controller”旧规，升级为 8 领域高内聚 Web 交互沙箱**：
+   - 正式废止 Phase 3 (#403) 中关于“非 Web 模块保持零 Controller”的历史过渡约定；
+   - `ateng-boot-sample-redis` 引入 `ateng-boot-web` 底座，按单一职责拆分为 8 个领域 `@RestController`（`RedisOpsAndScriptController`、`RedisLockController`、`RedisIdempotentController`、`RedisTrafficController`、`RedisCacheController`、`RedisDelayQueueController`、`RedisStreamController`、`RedisPubSubController`），统一挂载 `/sample/redis/<feature>/<action>` 语义路由并返回强类型 `Result<T>`。
+2. **`src/main` 纯 JDK 原生动态代理离线内存仿真桩与 `local` 双模切换**：
+   - 针对 `Redisson.create(config)` 与后台监听容器在启动期强依赖物理连接的特性，在 `ateng-boot-sample-redis/src/main` 中内置标注 `@Profile("!local")` 的纯 JDK 原生动态代理内存仿真配置（零 Mockito 生产依赖），统一驱动 `mvn spring-boot:run` 离线交互体验与 `@SpringBootTest` + `MockMvc` 端到端测试；
+   - 当激活 `local` Profile 并加载 `application-local.yml` 时，内存仿真桩自动退出，100% 切换至真实物理 Redis 与 Redisson 客户端联调。
+3. **全局 `key-prefix` 高级组件全覆盖对齐与两级缓存配置向后兼容**：
+   - 补齐 `RedisRateLimiterClient` 与单级 `RedisCacheManager` 对 `ateng.boot.redis.key-prefix` 的统一前置拼接能力，消除多环境/多租户共享实例下的局部串键盲区（仅最底层 `RedisUtil` 保持显式原生透传并提供 `buildKey` 辅助）；
+   - `RedisProperties.TwoLevelCacheProperties` 的 `L1Properties` 与 `L2Properties` 在保持 `ttls` 标准属性名的同时，提供 `expires` 兼容绑定入口，实现向后平滑兼容。
+4. **权威文档 0~7 章领域大章收敛与三要素同屏闭环**：
+   - 彻底重构 `ateng-boot-redis/README.md`，将原 17 个散落章节收敛为 0~7 八大领域章节，原第 16 章（SPI 扩展定制）与第 17 章（生产边界与故障模式）全量拆解并就近内聚至各特性子节内部；Sample 自身 `README.md` 收敛为四段式极简体验卡。
 
 ---
 
@@ -153,7 +166,7 @@ flowchart TD
 
 ---
 
-## 9. 演进落地状态与交付审计 (Delivery & Verification Audit)
+## 演进落地状态与交付审计 (Delivery & Verification Audit)
 
 - **当前状态**：`Accepted & Implemented (已全面落地交付)`
 - **工单切片闭环**：

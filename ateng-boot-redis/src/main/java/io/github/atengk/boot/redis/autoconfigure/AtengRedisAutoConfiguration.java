@@ -389,12 +389,13 @@ public class AtengRedisAutoConfiguration {
      * 装配分布式业务级并发限流客户端 RedisRateLimiterClient
      *
      * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
      * @return RedisRateLimiterClient 门面
      */
     @Bean
     @ConditionalOnMissingBean(RedisRateLimiterClient.class)
-    public RedisRateLimiterClient redisRateLimiterClient(RedissonClient redissonClient) {
-        return new RedisRateLimiterClient(redissonClient);
+    public RedisRateLimiterClient redisRateLimiterClient(RedissonClient redissonClient, RedisProperties redisProperties) {
+        return new RedisRateLimiterClient(redissonClient, redisProperties);
     }
 
     /**
@@ -455,6 +456,11 @@ public class AtengRedisAutoConfiguration {
         RedisCacheConfiguration defaultConfig = RedisCacheConfiguration.defaultCacheConfig()
                 .serializeKeysWith(RedisSerializationContext.SerializationPair.fromSerializer(new StringRedisSerializer()))
                 .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(redisValueSerializer));
+
+        // 注入全局 key-prefix 前缀（非空时挂载，空时严格保持原生 cacheName:: 行为）
+        if (org.springframework.util.StringUtils.hasText(redisProperties.getKeyPrefix())) {
+            defaultConfig = defaultConfig.computePrefixWith(cacheName -> redisProperties.buildKey(cacheName + "::"));
+        }
 
         // 2. 注入带随机抖动的 TtlFunction
         Duration defaultTtl = cacheProps.getDefaultTtl();
