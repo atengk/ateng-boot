@@ -52,9 +52,21 @@ _Avoid_: PathPermissionChecker, UrlAuthService, DynamicRbacSPI
 企业级在线会话聚合模型，封装在线用户 `userId`、`userAccount`、`userName`、`tokenValue`、`loginDevice`、`loginIp`、`loginTime` 及当前 Token 剩余有效时间（`tokenTimeout`），专供管理后台在线用户列表监控与强退治理。
 _Avoid_: OnlineSessionVO, ActiveUser, SessionDetail
 
-**RunAs / Impersonate**:
-双维身份模拟机制，区分跨请求会话级持久模拟（`LoginHelper.switchTo` / `endSwitch`）与代码块瞬态安全模拟（`LoginHelper.runAs`）。内部自动固化记录最初源头 `originalUserId`，确保多次连续切换源头不漂移；瞬态模式采用 ThreadLocal 栈式保护并在 `finally` 块确定性恢复；业务层 `LoginHelper.getUserId()` 自动对齐被模拟人，同时向 Core/Web `@OperateLog` 切面提供双维身份（真实运维人与被模拟人）审计穿透。
-_Avoid_: SwitchUser, MockUser, FakeLogin, ImpersonationHelper
+**Multi-Account Isolation (loginType)**:
+企业级多账号体系隔离机制。通过在同一进程内显式指定 `loginType`（如 `admin` 运营后台、`member` 商城会员），实现多端会话 Cookie/Header 隔离、独立 Token 密钥空间以及独立的 `StpInterface` 角色与权限隔离加载，杜绝多端用户串号越权。
+_Avoid_: MultiLogin, DualAccount, AccountIsolation
+
+**Multi-Source Whitelist Convergence**:
+多源免鉴权白名单自动汇聚机制。支持通过静态 YAML 配置、声明式注解（`@Anonymous` 及类级放行下的 `@Anonymous(false)` 反向方法保护）以及动态 SPI（`SaTokenWhitelistProvider`）多源提供免检路径，由 `AnonymousUrlProcessor` 在应用就绪时自动标准化转译并去重汇聚至拦截器，免除多处手工拼装。
+_Avoid_: WhitelistMerger, UrlAggregation, PublicPathCollector
+
+**Session Switch (switchTo / endSwitch)**:
+跨请求会话级持久身份模拟。客服或平台管理员在排查客诉问题时，将当前会话主体临时切换为目标用户，内部自动固化记录最初真实操作人 `originalUserId`；连续多次切换时源头不漂移，调用 `endSwitch()` 时精准还原为最初操作人身份。
+_Avoid_: SwitchUser, UserSwitching, SessionImpersonation
+
+**Transient RunAs (runAs)**:
+函数式代码块瞬态安全模拟。采用 ThreadLocal 栈式快照机制与 `Supplier` / `Runnable` 函数式接口，在代码块执行期间以目标被模拟人身份运行（自动对齐 `LoginHelper.getUserId()` 与租户上下文），在 `finally` 块中绝对可靠地确定性恢复，杜绝异常退出导致的线程上下文污染。
+_Avoid_: RunAsHelper, FakeRun, TemporaryLogin
 
 **SaTokenClusterBroadcaster**:
 基于 Redis Pub/Sub 的分布式集群即时同步广播器。每个节点启动时通过 `fastSimpleUUID()` 生成不可变节点实例标识 `instanceId`；在权限热刷新或安全注销事件触发时，向指定 Topic 广播强类型 `SaTokenClusterMessage`，无 Redis 时自动安全静默降级。
@@ -85,8 +97,12 @@ _Avoid_: SwaggerSecurityCustomizer, Knife4jAuthInjector, OpenApiDocCustomizer
 _Avoid_: @InternalOnly, @RequireSameToken, @VerifyServiceToken
 
 **SaTokenCurrentUserProvider**:
-对接 `ateng-boot-core` 的 `CurrentUserProvider` 与 `CurrentTenantProvider` SPI 适配机制，在 `AtengSaTokenAutoConfiguration` 初始化时自动完成 `UserContextHolder.setUserProvider(LoginHelper::getUserId)` 与 `TenantContextHolder.setTenantProvider(LoginHelper::getTenantId)` 双向挂载，无缝透传至 MyBatis-Plus 审计自动填充引擎（自动写入 `createBy`、`updateBy`）与行级多租户隔离上下文（`TenantContextHolder`）。
-_Avoid_: UserAuditorProvider, SecurityContextAdapter
+对接 `ateng-boot-core` 的 `CurrentUserProvider` SPI 适配机制，在 `AtengSaTokenAutoConfiguration` 初始化时自动完成 `UserContextHolder.setUserProvider(new SaTokenCurrentUserProvider(properties))` 挂载，在无 Web 请求或离线调用时安全防卫并提供用户上下文，无缝透传至 MyBatis-Plus 审计自动填充引擎（自动写入 `createBy`、`updateBy`）。
+_Avoid_: UserAuditorProvider, SecurityUserAdapter
+
+**SaTokenCurrentTenantProvider**:
+对接 `ateng-boot-core` 的 `CurrentTenantProvider` SPI 适配机制，在 `AtengSaTokenAutoConfiguration` 初始化时自动完成 `TenantContextHolder.setTenantProvider(new SaTokenCurrentTenantProvider(properties))` 挂载，无缝透传至 MyBatis-Plus 多租户行级与列级数据隔离引擎。
+_Avoid_: TenantAuditorProvider, SecurityTenantAdapter
 
 **Zero-Trust Same-Token Defense**:
 微服务内网零信任防穿透壁垒。在服务端通过 `@CheckSameToken` 切面强制校验内部受信签名，阻断绕过网关直连内部微服务暴露端口的非法探测；原生客户端通过 `SameTokenClientHttpRequestInterceptor` 自动注入出站标头；微服务跨服务 RPC 治理（Feign / Dubbo）与响应式网关（WebFlux Gateway）统一由 `ateng-cloud` 套件正交承接。

@@ -21,6 +21,17 @@ public interface UserRolePermissionLoader {
     List<String> loadRolesByUserId(String userId);
 
     /**
+     * 根据用户 ID 与账号体系标识加载其拥有的角色编码列表（多账号隔离扩展）
+     *
+     * @param userId    用户唯一标识
+     * @param loginType 账号体系类型标识（如 admin / member）
+     * @return 角色列表
+     */
+    default List<String> loadRolesByUserId(String userId, String loginType) {
+        return loadRolesByUserId(userId);
+    }
+
+    /**
      * 根据角色编码加载该角色关联的权限码列表
      *
      * @param roleCode 角色编码
@@ -36,5 +47,16 @@ public interface UserRolePermissionLoader {
      */
     default List<String> loadDirectPermissionsByUserId(String userId) {
         return Collections.emptyList();
+    }
+
+    /**
+     * 根据用户 ID 与账号体系标识加载用户个人特有的额外直属权限码列表（多账号隔离扩展）
+     *
+     * @param userId    用户唯一标识
+     * @param loginType 账号体系类型标识（如 admin / member）
+     * @return 直属权限码列表
+     */
+    default List<String> loadDirectPermissionsByUserId(String userId, String loginType) {
+        return loadDirectPermissionsByUserId(userId);
     }
 }

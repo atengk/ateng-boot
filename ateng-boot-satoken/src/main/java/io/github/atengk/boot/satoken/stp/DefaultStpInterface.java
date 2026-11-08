@@ -19,7 +19,7 @@ public class DefaultStpInterface implements StpInterface {
 
     @Override
     public List<String> getPermissionList(Object loginId, String loginType) {
-        LoginUser user = LoginHelper.getLoginUser();
+        LoginUser user = resolveLoginUser(loginType);
         if (user != null && user.getPermissions() != null && !user.getPermissions().isEmpty()) {
             return new ArrayList<>(user.getPermissions());
         }
@@ -28,10 +28,27 @@ public class DefaultStpInterface implements StpInterface {
 
     @Override
     public List<String> getRoleList(Object loginId, String loginType) {
-        LoginUser user = LoginHelper.getLoginUser();
+        LoginUser user = resolveLoginUser(loginType);
         if (user != null && user.getRoles() != null && !user.getRoles().isEmpty()) {
             return new ArrayList<>(user.getRoles());
         }
         return Collections.emptyList();
+    }
+
+    private LoginUser resolveLoginUser(String loginType) {
+        if (loginType != null && !loginType.isBlank()) {
+            LoginUser typedUser = LoginHelper.getLoginUser(loginType);
+            if (typedUser != null) {
+                return typedUser;
+            }
+        }
+        String activeLoginType = LoginHelper.getActiveLoginType();
+        if (activeLoginType != null && !activeLoginType.isBlank()) {
+            LoginUser activeUser = LoginHelper.getLoginUser(activeLoginType);
+            if (activeUser != null) {
+                return activeUser;
+            }
+        }
+        return LoginHelper.getLoginUser();
     }
 }

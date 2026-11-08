@@ -52,28 +52,28 @@ class CachedStpInterfaceTest {
     @Test
     @DisplayName("1. 角色缓存命中：首次查询回源 loader 并写入缓存，二次查询直接从缓存命中")
     void testGetRoleListCached() {
-        when(loader.loadRolesByUserId("1001")).thenReturn(List.of("admin", "manager"));
+        when(loader.loadRolesByUserId("1001", "login")).thenReturn(List.of("admin", "manager"));
 
         // 第一次调用：回源 loader
         List<String> roles1 = cachedStpInterface.getRoleList("1001", "login");
         assertThat(roles1).containsExactly("admin", "manager");
-        verify(loader, times(1)).loadRolesByUserId("1001");
+        verify(loader, times(1)).loadRolesByUserId("1001", "login");
 
         // 第二次调用：直接从缓存命中，loader 调用次数仍为 1
         List<String> roles2 = cachedStpInterface.getRoleList("1001", "login");
         assertThat(roles2).containsExactly("admin", "manager");
-        verify(loader, times(1)).loadRolesByUserId("1001");
+        verify(loader, times(1)).loadRolesByUserId("1001", "login");
     }
 
     @Test
     @DisplayName("2. 空哨兵防穿透：用户无任何角色时，写入 __EMPTY__ 哨兵，后续查询直接返回空列表不再击穿 loader")
     void testAntiPenetrationWithEmptySentinel() {
-        when(loader.loadRolesByUserId("none-user")).thenReturn(List.of());
+        when(loader.loadRolesByUserId("none-user", "login")).thenReturn(List.of());
 
         // 第一次调用：发现为空，写入哨兵
         List<String> roles1 = cachedStpInterface.getRoleList("none-user", "login");
         assertThat(roles1).isEmpty();
-        verify(loader, times(1)).loadRolesByUserId("none-user");
+        verify(loader, times(1)).loadRolesByUserId("none-user", "login");
 
         // 验证底层缓存已写入哨兵
         String cachedVal = cacheService.get(PermissionCacheService.USER_ROLES_PREFIX + "none-user");
@@ -82,16 +82,16 @@ class CachedStpInterfaceTest {
         // 第二次调用：命中哨兵直接返回空列表，loader 未被二次击穿
         List<String> roles2 = cachedStpInterface.getRoleList("none-user", "login");
         assertThat(roles2).isEmpty();
-        verify(loader, times(1)).loadRolesByUserId("none-user");
+        verify(loader, times(1)).loadRolesByUserId("none-user", "login");
     }
 
     @Test
     @DisplayName("3. 两级权限汇总与去重：聚合所有角色的权限与直属权限")
     void testTwoLevelPermissionAggregationAndDeduplication() {
-        when(loader.loadRolesByUserId("2001")).thenReturn(List.of("role_a", "role_b"));
+        when(loader.loadRolesByUserId("2001", "login")).thenReturn(List.of("role_a", "role_b"));
         when(loader.loadPermissionsByRole("role_a")).thenReturn(List.of("user:query", "user:export"));
         when(loader.loadPermissionsByRole("role_b")).thenReturn(List.of("user:export", "order:view"));
-        when(loader.loadDirectPermissionsByUserId("2001")).thenReturn(List.of("report:view"));
+        when(loader.loadDirectPermissionsByUserId("2001", "login")).thenReturn(List.of("report:view"));
 
         List<String> permissions = cachedStpInterface.getPermissionList("2001", "login");
         // 去重后应包含 user:query, user:export, order:view, report:view
@@ -101,18 +101,18 @@ class CachedStpInterfaceTest {
         List<String> permissions2 = cachedStpInterface.getPermissionList("2001", "login");
         assertThat(permissions2).containsExactlyInAnyOrder("user:query", "user:export", "order:view", "report:view");
 
-        verify(loader, times(1)).loadRolesByUserId("2001");
+        verify(loader, times(1)).loadRolesByUserId("2001", "login");
         verify(loader, times(1)).loadPermissionsByRole("role_a");
         verify(loader, times(1)).loadPermissionsByRole("role_b");
-        verify(loader, times(1)).loadDirectPermissionsByUserId("2001");
+        verify(loader, times(1)).loadDirectPermissionsByUserId("2001", "login");
     }
 
     @Test
     @DisplayName("4. 权限即时热刷新：修改角色权限后调用 refreshRolePermissions，缓存即刻失效并重新加载最新权限")
     void testHotRefreshRolePermissions() {
-        when(loader.loadRolesByUserId("3001")).thenReturn(List.of("admin"));
+        when(loader.loadRolesByUserId("3001", "login")).thenReturn(List.of("admin"));
         when(loader.loadPermissionsByRole("admin")).thenReturn(List.of("user:query"));
-        when(loader.loadDirectPermissionsByUserId("3001")).thenReturn(List.of());
+        when(loader.loadDirectPermissionsByUserId("3001", "login")).thenReturn(List.of());
 
         // 首次加载
         List<String> perms1 = cachedStpInterface.getPermissionList("3001", "login");
@@ -131,29 +131,57 @@ class CachedStpInterfaceTest {
     @Test
     @DisplayName("5. 用户角色即时热刷新：分配新角色后调用 refreshUserPermissions，用户角色缓存即刻清理")
     void testHotRefreshUserRoles() {
-        when(loader.loadRolesByUserId("4001")).thenReturn(List.of("common_user"));
+        when(loader.loadRolesByUserId("4001", "login")).thenReturn(List.of("common_user"));
 
         List<String> roles1 = cachedStpInterface.getRoleList("4001", "login");
         assertThat(roles1).containsExactly("common_user");
 
         // 分配新角色并热刷新
-        when(loader.loadRolesByUserId("4001")).thenReturn(List.of("common_user", "vip_user"));
+        when(loader.loadRolesByUserId("4001", "login")).thenReturn(List.of("common_user", "vip_user"));
         cacheService.refreshUserPermissions("4001");
 
         List<String> roles2 = cachedStpInterface.getRoleList("4001", "login");
         assertThat(roles2).containsExactly("common_user", "vip_user");
-        verify(loader, times(2)).loadRolesByUserId("4001");
+        verify(loader, times(2)).loadRolesByUserId("4001", "login");
     }
 
     @Test
     @DisplayName("6. 全域清空：clearAll 清理所有两级缓存")
     void testClearAll() {
-        when(loader.loadRolesByUserId("5001")).thenReturn(List.of("role_x"));
+        when(loader.loadRolesByUserId("5001", "login")).thenReturn(List.of("role_x"));
         cachedStpInterface.getRoleList("5001", "login");
 
         assertThat(cacheService.getLocalCacheSize()).isGreaterThan(0);
 
         cacheService.clearAll();
         assertThat(cacheService.getLocalCacheSize()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("7. 向后兼容验证：当自定义 loader 仅实现单参数方法时，默认方法正确回退调用单参数方法")
+    void testFallbackToSingleArgMethodWhenDefaultInterfaceMethodUsed() {
+        UserRolePermissionLoader fallbackLoader = new UserRolePermissionLoader() {
+            @Override
+            public List<String> loadRolesByUserId(String userId) {
+                return List.of("legacy_role");
+            }
+
+            @Override
+            public List<String> loadPermissionsByRole(String roleCode) {
+                return List.of("legacy:perm");
+            }
+
+            @Override
+            public List<String> loadDirectPermissionsByUserId(String userId) {
+                return List.of("direct:perm");
+            }
+        };
+
+        CachedStpInterface fallbackStp = new CachedStpInterface(fallbackLoader, cacheService, properties);
+        List<String> roles = fallbackStp.getRoleList("9001", "admin");
+        assertThat(roles).containsExactly("legacy_role");
+
+        List<String> permissions = fallbackStp.getPermissionList("9001", "admin");
+        assertThat(permissions).containsExactlyInAnyOrder("legacy:perm", "direct:perm");
     }
 }

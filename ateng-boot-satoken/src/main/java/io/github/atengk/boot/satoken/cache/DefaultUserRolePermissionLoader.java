@@ -18,8 +18,13 @@ public class DefaultUserRolePermissionLoader implements UserRolePermissionLoader
 
     @Override
     public List<String> loadRolesByUserId(String userId) {
+        return loadRolesByUserId(userId, null);
+    }
+
+    @Override
+    public List<String> loadRolesByUserId(String userId, String loginType) {
         try {
-            LoginUser loginUser = LoginHelper.getLoginUser();
+            LoginUser loginUser = resolveLoginUser(loginType);
             if (loginUser != null && loginUser.getRoles() != null && !loginUser.getRoles().isEmpty()) {
                 return new ArrayList<>(loginUser.getRoles());
             }
@@ -37,8 +42,13 @@ public class DefaultUserRolePermissionLoader implements UserRolePermissionLoader
 
     @Override
     public List<String> loadDirectPermissionsByUserId(String userId) {
+        return loadDirectPermissionsByUserId(userId, null);
+    }
+
+    @Override
+    public List<String> loadDirectPermissionsByUserId(String userId, String loginType) {
         try {
-            LoginUser loginUser = LoginHelper.getLoginUser();
+            LoginUser loginUser = resolveLoginUser(loginType);
             if (loginUser != null && loginUser.getPermissions() != null && !loginUser.getPermissions().isEmpty()) {
                 return new ArrayList<>(loginUser.getPermissions());
             }
@@ -46,5 +56,22 @@ public class DefaultUserRolePermissionLoader implements UserRolePermissionLoader
             // 当不在活跃 Web 请求上下文或无当前会话时，安全回退返回空集合
         }
         return Collections.emptyList();
+    }
+
+    private LoginUser resolveLoginUser(String loginType) {
+        if (loginType != null && !loginType.isBlank()) {
+            LoginUser typedUser = LoginHelper.getLoginUser(loginType);
+            if (typedUser != null) {
+                return typedUser;
+            }
+        }
+        String activeLoginType = LoginHelper.getActiveLoginType();
+        if (activeLoginType != null && !activeLoginType.isBlank()) {
+            LoginUser activeUser = LoginHelper.getLoginUser(activeLoginType);
+            if (activeUser != null) {
+                return activeUser;
+            }
+        }
+        return LoginHelper.getLoginUser();
     }
 }

@@ -102,6 +102,40 @@ class SaCheckSameTokenAspectTest {
     }
 
     @Test
+    @DisplayName("测试配置静态 token-value 且请求头匹配时校验通过")
+    void testPassWithConfiguredStaticToken() {
+        io.github.atengk.boot.satoken.properties.SaTokenProperties properties = new io.github.atengk.boot.satoken.properties.SaTokenProperties();
+        properties.getSameToken().setTokenValue("MY_STATIC_SECRET_TOKEN_999");
+
+        when(mockRequest.getHeader(SaSameUtil.SAME_TOKEN)).thenReturn("MY_STATIC_SECRET_TOKEN_999");
+
+        TestServiceImpl target = new TestServiceImpl();
+        AspectJProxyFactory factory = new AspectJProxyFactory(target);
+        factory.addAspect(new SaCheckSameTokenAspect(properties));
+        TestService proxy = factory.getProxy();
+
+        String result = proxy.callInternal();
+        assertThat(result).isEqualTo("SUCCESS_INTERNAL");
+    }
+
+    @Test
+    @DisplayName("测试配置静态 token-value 但请求头不匹配或为空时抛出 SameTokenInvalidException")
+    void testFailWithConfiguredStaticTokenMismatch() {
+        io.github.atengk.boot.satoken.properties.SaTokenProperties properties = new io.github.atengk.boot.satoken.properties.SaTokenProperties();
+        properties.getSameToken().setTokenValue("MY_STATIC_SECRET_TOKEN_999");
+
+        when(mockRequest.getHeader(SaSameUtil.SAME_TOKEN)).thenReturn("WRONG_TOKEN");
+
+        TestServiceImpl target = new TestServiceImpl();
+        AspectJProxyFactory factory = new AspectJProxyFactory(target);
+        factory.addAspect(new SaCheckSameTokenAspect(properties));
+        TestService proxy = factory.getProxy();
+
+        assertThatThrownBy(proxy::callInternal)
+                .isInstanceOf(SameTokenInvalidException.class);
+    }
+
+    @Test
     @DisplayName("测试 Same-Token 显式禁用 (enabled=false) 时即便无凭据也直接放行")
     void testDisabledSameTokenPasses() {
         io.github.atengk.boot.satoken.properties.SaTokenProperties properties = new io.github.atengk.boot.satoken.properties.SaTokenProperties();

@@ -4,6 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.sample.satoken.dto.LoginRequestDTO;
+import io.github.atengk.boot.sample.satoken.dto.OrderCreateDTO;
+import io.github.atengk.boot.sample.satoken.dto.SettlementRequestDTO;
 import io.github.atengk.boot.sample.satoken.dto.UserProfileDTO;
 import io.github.atengk.boot.sample.satoken.entity.TenantOrderEntity;
 import io.github.atengk.boot.sample.satoken.mapper.TenantOrderMapper;
@@ -38,9 +41,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import org.springframework.context.annotation.Import;
-import io.github.atengk.boot.sample.satoken.config.SampleSaTokenTestRedisConfig;
-
 /**
  * Sa-Token 安全鉴权与单机内存会话端到端集成测试
  * 覆盖单机会话登录、双轨路由白名单拦截、Controller/Service 全域 AOP 注解鉴权、CurrentUserProvider SPI 审计自动填充与多租户上下文生命周期治理
@@ -50,7 +50,6 @@ import io.github.atengk.boot.sample.satoken.config.SampleSaTokenTestRedisConfig;
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@Import(SampleSaTokenTestRedisConfig.class)
 @DisplayName("Sa-Token 全栈安全鉴权与多租户持久层协同端到端集成测试")
 class SampleSaTokenIntegrationTest {
 
@@ -1573,6 +1572,320 @@ class SampleSaTokenIntegrationTest {
                 assertThat(defenseKeys).isNotEmpty();
                 loginDefenseService.clearFailure("test-defense-account");
             }
+        } finally {
+            LoginHelper.kickoutByToken(token);
+        }
+    }
+
+    @Test
+    @DisplayName("37. 验证 AuthSessionController 会话认证、多端登录、租户上下文提取与租户订单全链路")
+    void shouldVerifyAuthSessionControllerEndpoints() throws Exception {
+        LoginRequestDTO req = new LoginRequestDTO();
+        req.setUserId("10086");
+        req.setUsername("admin-satoken");
+        req.setTenantId("tenant_sz");
+        req.setDevice("PC");
+        req.setRoles(Set.of("audit_manager"));
+        req.setPermissions(Set.of("order:query"));
+
+        MvcResult loginRes = mockMvc.perform(post("/sample/satoken/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        String token = objectMapper.readTree(loginRes.getResponse().getContentAsString()).get("data").asText();
+        assertThat(token).isNotBlank();
+
+        try {
+            // 验证 /sample/satoken/auth/me
+            mockMvc.perform(get("/sample/satoken/auth/me")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.userId").value("10086"))
+                    .andExpect(jsonPath("$.data.tenantId").value("tenant_sz"));
+
+            // 验证 /sample/satoken/auth/user-id
+            mockMvc.perform(get("/sample/satoken/auth/user-id")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("10086"));
+
+            // 验证 /sample/satoken/auth/current-tenant
+            mockMvc.perform(get("/sample/satoken/auth/current-tenant")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("tenant_sz"));
+
+            // 验证 /sample/satoken/auth/check-login
+            mockMvc.perform(get("/sample/satoken/auth/check-login")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("已登录"));
+
+            // 验证 /sample/satoken/auth/orders 与 /sample/satoken/auth/orders/{orderId}
+            OrderCreateDTO orderReq = new OrderCreateDTO();
+            orderReq.setOrderNo("ORDER-SAMPLE-AUTH-001");
+            orderReq.setAmount(new BigDecimal("199.99"));
+
+            MvcResult orderRes = mockMvc.perform(post("/sample/satoken/auth/orders")
+                            .header("satoken", token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(orderReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andReturn();
+
+            Long orderId = objectMapper.readTree(orderRes.getResponse().getContentAsString()).get("data").asLong();
+            assertThat(orderId).isNotNull();
+
+            mockMvc.perform(get("/sample/satoken/auth/orders/" + orderId)
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.orderNo").value("ORDER-SAMPLE-AUTH-001"))
+                    .andExpect(jsonPath("$.data.tenantId").value("tenant_sz"))
+                    .andExpect(jsonPath("$.data.createBy").value("10086"));
+
+            // 验证 /sample/satoken/auth/logout-device
+            mockMvc.perform(post("/sample/satoken/auth/logout-device")
+                            .param("device", "PC")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 注销后访问受保护接口返回 401
+            mockMvc.perform(get("/sample/satoken/auth/check-login")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(401));
+        } finally {
+            LoginHelper.kickoutByToken(token);
+        }
+    }
+
+    @Test
+    @DisplayName("38. 验证 AccessControlController RBAC 角色/权限注解校验、二级安全认证与防水平越权防御")
+    void shouldVerifyAccessControlControllerEndpoints() throws Exception {
+        LoginRequestDTO req = new LoginRequestDTO();
+        req.setUserId("10086");
+        req.setUsername("admin-access");
+        req.setTenantId("tenant_sz");
+        req.setRoles(Set.of("audit_manager"));
+        req.setPermissions(Set.of("order:query", "order:cancel"));
+
+        MvcResult loginRes = mockMvc.perform(post("/sample/satoken/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        String token = objectMapper.readTree(loginRes.getResponse().getContentAsString()).get("data").asText();
+        assertThat(token).isNotBlank();
+
+        try {
+            // 1. RBAC 角色注解校验
+            mockMvc.perform(get("/sample/satoken/access/role-audit")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("审计角色鉴权通过"));
+
+            mockMvc.perform(get("/sample/satoken/access/role-finance-only")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            // 2. RBAC 权限注解校验
+            mockMvc.perform(get("/sample/satoken/access/perm-order-query")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("订单查询权限鉴权通过"));
+
+            mockMvc.perform(get("/sample/satoken/access/perm-order-delete")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            // 3. Service 层切面拦截
+            mockMvc.perform(get("/sample/satoken/access/service-role")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            mockMvc.perform(get("/sample/satoken/access/service-permission")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("Service 权限校验通过"));
+
+            // 4. 二级安全认证
+            SettlementRequestDTO settleDto = new SettlementRequestDTO();
+            settleDto.setSettlementNo("SETTLE-20261108-001");
+            settleDto.setAmount(new BigDecimal("8888.00"));
+            settleDto.setRecipientAccount("ACC-6222-0001-9999");
+
+            mockMvc.perform(post("/sample/satoken/access/safe-settle")
+                            .header("satoken", token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(settleDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            mockMvc.perform(post("/sample/satoken/access/open-safe")
+                            .header("satoken", token)
+                            .param("timeout", "60"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(60));
+
+            mockMvc.perform(post("/sample/satoken/access/safe-settle")
+                            .header("satoken", token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(settleDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(post("/sample/satoken/access/safe-settle-anno")
+                            .header("satoken", token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(settleDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(post("/sample/satoken/access/close-safe")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(post("/sample/satoken/access/safe-settle")
+                            .header("satoken", token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(settleDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            // 5. @CheckDataOwner 防水平越权
+            UserProfileDTO selfProfile = new UserProfileDTO();
+            selfProfile.setUserId("10086");
+            selfProfile.setNickname("本人昵称");
+            mockMvc.perform(post("/sample/satoken/access/profile/update")
+                            .header("satoken", token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(selfProfile)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            UserProfileDTO otherProfile = new UserProfileDTO();
+            otherProfile.setUserId("20001");
+            otherProfile.setNickname("越权昵称");
+            mockMvc.perform(post("/sample/satoken/access/profile/update")
+                            .header("satoken", token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(otherProfile)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            // 6. @CheckDataOwner + Provider 反查所有者
+            mockMvc.perform(post("/sample/satoken/access/orders/88001/cancel")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(post("/sample/satoken/access/orders/88002/cancel")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            // 7. 编程式断言本人与租户
+            mockMvc.perform(post("/sample/satoken/access/assert-self")
+                            .header("satoken", token)
+                            .param("userId", "10086"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(post("/sample/satoken/access/assert-self")
+                            .header("satoken", token)
+                            .param("userId", "99999"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            mockMvc.perform(post("/sample/satoken/access/assert-tenant")
+                            .header("satoken", token)
+                            .param("tenantId", "tenant_sz"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            mockMvc.perform(post("/sample/satoken/access/assert-tenant")
+                            .header("satoken", token)
+                            .param("tenantId", "tenant_other"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+        } finally {
+            LoginHelper.kickoutByToken(token);
+        }
+    }
+
+    @Test
+    @DisplayName("39. 验证 PermissionCacheController 缓存角色与权限查询、单角色/单用户刷新与全量清空")
+    void shouldVerifyPermissionCacheControllerEndpoints() throws Exception {
+        LoginRequestDTO req = new LoginRequestDTO();
+        req.setUserId("10086");
+        req.setUsername("admin-cache");
+        req.setTenantId("tenant_sz");
+        req.setRoles(Set.of("audit_manager"));
+        req.setPermissions(Set.of("order:query"));
+
+        MvcResult loginRes = mockMvc.perform(post("/sample/satoken/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        String token = objectMapper.readTree(loginRes.getResponse().getContentAsString()).get("data").asText();
+        assertThat(token).isNotBlank();
+
+        try {
+            // 1. 查询当前角色与权限
+            mockMvc.perform(get("/sample/satoken/permission-cache/roles")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data[0]").value("audit_manager"));
+
+            mockMvc.perform(get("/sample/satoken/permission-cache/permissions")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data[0]").value("order:query"));
+
+            // 2. 刷新角色缓存
+            mockMvc.perform(post("/sample/satoken/permission-cache/refresh-role")
+                            .param("roleCode", "audit_manager")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 3. 刷新用户缓存
+            mockMvc.perform(post("/sample/satoken/permission-cache/refresh-user")
+                            .param("userId", "10086")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 4. 清空全量缓存
+            mockMvc.perform(post("/sample/satoken/permission-cache/clear-all")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
         } finally {
             LoginHelper.kickoutByToken(token);
         }

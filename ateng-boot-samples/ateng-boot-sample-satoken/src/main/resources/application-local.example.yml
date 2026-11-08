@@ -2,6 +2,9 @@
 # 真实 application-local.yml 已被 .gitignore 忽略，绝对严禁提交公网真实 IP 与凭据至 Git
 
 spring:
+  config:
+    activate:
+      on-profile: local
   # 1. 真实数据库连接配置（覆盖默认 H2 内存库）
   datasource:
     # MySQL 示例：

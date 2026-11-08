@@ -109,6 +109,29 @@ class SameTokenClientHttpRequestInterceptorTest {
     }
 
     @Test
+    @DisplayName("2.1. 静态 Token 配置：配置 tokenValue 时出站请求直接携带配置的静态凭据")
+    void testInterceptWithConfiguredTokenValue() {
+        SaTokenProperties properties = new SaTokenProperties();
+        properties.getSameToken().setTokenValue("STATIC_CLUSTER_SECRET_777");
+
+        SameTokenClientHttpRequestInterceptor interceptor = new SameTokenClientHttpRequestInterceptor(properties);
+        RestTemplate restTemplate = new RestTemplate();
+        restTemplate.getInterceptors().add(interceptor);
+
+        MockRestServiceServer mockServer = MockRestServiceServer.createServer(restTemplate);
+
+        mockServer.expect(requestTo("http://internal-service/api/settle"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("SA-SAME-TOKEN", "STATIC_CLUSTER_SECRET_777"))
+                .andRespond(withStatus(HttpStatus.OK)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"code\":200}"));
+
+        restTemplate.postForObject("http://internal-service/api/settle", null, String.class);
+        mockServer.verify();
+    }
+
+    @Test
     @DisplayName("3. 开关关闭时：sameToken.enabled=false 不注入请求头")
     void testInterceptWhenDisabled() {
         SaTokenProperties properties = new SaTokenProperties();

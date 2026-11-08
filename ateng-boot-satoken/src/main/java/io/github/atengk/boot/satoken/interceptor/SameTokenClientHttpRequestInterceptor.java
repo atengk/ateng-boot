@@ -55,7 +55,7 @@ public class SameTokenClientHttpRequestInterceptor implements ClientHttpRequestI
         String header = resolveHeaderName();
         if (header != null && !header.isBlank() && !request.getHeaders().containsKey(header)) {
             try {
-                String sameToken = SaSameUtil.getToken();
+                String sameToken = resolveTokenValue();
                 if (sameToken != null && !sameToken.isBlank()) {
                     request.getHeaders().set(header, sameToken);
                     log.debug("微服务出站请求已成功注入 Same-Token 凭据 [header={}]", header);
@@ -66,6 +66,21 @@ public class SameTokenClientHttpRequestInterceptor implements ClientHttpRequestI
         }
 
         return execution.execute(request, body);
+    }
+
+    /**
+     * 解析生效的 Same-Token 凭据值（优先读取静态配置 token-value，未配置时回退至 SaSameUtil 动态生成）
+     *
+     * @return Same-Token 凭据值
+     */
+    public String resolveTokenValue() {
+        if (properties != null && properties.getSameToken() != null) {
+            String configuredToken = properties.getSameToken().getTokenValue();
+            if (configuredToken != null && !configuredToken.isBlank()) {
+                return configuredToken.trim();
+            }
+        }
+        return SaSameUtil.getToken();
     }
 
     /**

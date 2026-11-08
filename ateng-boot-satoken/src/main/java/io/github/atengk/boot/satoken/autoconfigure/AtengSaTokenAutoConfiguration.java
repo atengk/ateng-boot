@@ -43,6 +43,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springdoc.core.customizers.GlobalOpenApiCustomizer;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.core.env.Environment;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
@@ -185,6 +186,10 @@ public class AtengSaTokenAutoConfiguration {
         return registration;
     }
 
+    private static boolean isRedisEnabled(Environment environment) {
+        return environment == null || Boolean.parseBoolean(environment.getProperty("ateng.boot.redis.enabled", "true"));
+    }
+
     /**
      * 具备 ateng-boot-redis 类路径时的自适应两级权限缓存自动装配
      */
@@ -195,9 +200,13 @@ public class AtengSaTokenAutoConfiguration {
         @Bean
         @ConditionalOnMissingBean
         public PermissionCacheService permissionCacheService(
+                Environment environment,
                 ObjectProvider<TwoLevelCacheManager> twoLevelCacheManagerProvider,
                 ObjectProvider<StringRedisTemplate> redisTemplateProvider,
                 ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider) {
+            if (!isRedisEnabled(environment)) {
+                return new PermissionCacheService();
+            }
             return new PermissionCacheService(twoLevelCacheManagerProvider, redisTemplateProvider, broadcasterProvider);
         }
     }
@@ -212,8 +221,12 @@ public class AtengSaTokenAutoConfiguration {
         @Bean
         @ConditionalOnMissingBean
         public PermissionCacheService permissionCacheService(
+                Environment environment,
                 ObjectProvider<StringRedisTemplate> redisTemplateProvider,
                 ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider) {
+            if (!isRedisEnabled(environment)) {
+                return new PermissionCacheService();
+            }
             return new PermissionCacheService(redisTemplateProvider, broadcasterProvider);
         }
     }
@@ -227,7 +240,12 @@ public class AtengSaTokenAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.cluster-sync", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public SaTokenClusterBroadcaster saTokenClusterBroadcaster(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+    public SaTokenClusterBroadcaster saTokenClusterBroadcaster(
+            Environment environment,
+            ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+        if (!isRedisEnabled(environment)) {
+            return new SaTokenClusterBroadcaster(null, properties);
+        }
         return new SaTokenClusterBroadcaster(redisTemplateProvider, properties);
     }
 
@@ -256,7 +274,12 @@ public class AtengSaTokenAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.login-defense", name = "enabled", havingValue = "true", matchIfMissing = false)
-    public LoginFailureLockService loginFailureLockService(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+    public LoginFailureLockService loginFailureLockService(
+            Environment environment,
+            ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+        if (!isRedisEnabled(environment)) {
+            return new LoginFailureLockService(null, properties);
+        }
         return new LoginFailureLockService(redisTemplateProvider, properties);
     }
 
@@ -527,6 +550,7 @@ public class AtengSaTokenAutoConfiguration {
          */
         @Bean
         @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "ateng.boot.redis", name = "enabled", havingValue = "true", matchIfMissing = true)
         public SaTokenClusterRedisMessageSubscriber saTokenClusterRedisMessageSubscriber(SaTokenClusterSyncListener listener) {
             return new SaTokenClusterRedisMessageSubscriber(listener);
         }
@@ -543,6 +567,7 @@ public class AtengSaTokenAutoConfiguration {
         @Bean
         @ConditionalOnBean(RedisConnectionFactory.class)
         @ConditionalOnMissingBean(name = "saTokenClusterRedisMessageListenerContainer")
+        @ConditionalOnProperty(prefix = "ateng.boot.redis", name = "enabled", havingValue = "true", matchIfMissing = true)
         public RedisMessageListenerContainer saTokenClusterRedisMessageListenerContainer(
                 RedisConnectionFactory connectionFactory,
                 SaTokenClusterRedisMessageSubscriber subscriber,

@@ -52,7 +52,7 @@ public class CachedStpInterface implements StpInterface {
         }
 
         // 2. 缓存未命中，回源业务加载器
-        List<String> roles = loader.loadRolesByUserId(userId);
+        List<String> roles = loader.loadRolesByUserId(userId, loginType);
         if (roles == null || roles.isEmpty()) {
             cacheService.set(cacheKey, EMPTY_SENTINEL, properties.getPermissionCache().getEmptyTtlSeconds());
             return Collections.emptyList();
@@ -91,7 +91,7 @@ public class CachedStpInterface implements StpInterface {
         }
 
         // 3. 汇总用户个人特有的额外直属权限集
-        permissionSet.addAll(getDirectPermissions(userId));
+        permissionSet.addAll(getDirectPermissions(userId, loginType));
 
         return new ArrayList<>(permissionSet);
     }
@@ -139,6 +139,17 @@ public class CachedStpInterface implements StpInterface {
      * @return 直属权限码集合
      */
     public List<String> getDirectPermissions(String userId) {
+        return getDirectPermissions(userId, null);
+    }
+
+    /**
+     * 根据用户 ID 与账号体系标识从辅助缓存或业务数据源获取个人直属权限码集合
+     *
+     * @param userId    用户唯一标识
+     * @param loginType 账号体系类型标识
+     * @return 直属权限码集合
+     */
+    public List<String> getDirectPermissions(String userId, String loginType) {
         String cacheKey = PermissionCacheService.USER_PERMS_PREFIX + userId;
 
         // 1. 查询用户直属权限缓存
@@ -151,7 +162,7 @@ public class CachedStpInterface implements StpInterface {
         }
 
         // 2. 缓存未命中，回源业务加载器
-        List<String> directPermissions = loader.loadDirectPermissionsByUserId(userId);
+        List<String> directPermissions = loader.loadDirectPermissionsByUserId(userId, loginType);
         if (directPermissions == null || directPermissions.isEmpty()) {
             cacheService.set(cacheKey, EMPTY_SENTINEL, properties.getPermissionCache().getEmptyTtlSeconds());
             return Collections.emptyList();

@@ -44,8 +44,38 @@ public class SaTokenSampleService {
         TenantOrderEntity order = new TenantOrderEntity();
         order.setOrderNo(orderNo);
         order.setAmount(amount);
+        String tenantId = io.github.atengk.boot.core.context.TenantContextHolder.getTenantId();
+        if (tenantId != null && !tenantId.isBlank()) {
+            order.setTenantId(tenantId);
+        }
         orderMapper.insert(order);
         return order.getId();
+    }
+
+    /**
+     * 根据主键查询租户订单详情并转换为 VO（严格遵循零实体泄露原则）
+     *
+     * @param orderId 订单标识
+     * @return 订单展示视图对象
+     */
+    public io.github.atengk.boot.sample.satoken.vo.TenantOrderVO getOrderById(Long orderId) {
+        if (orderId == null) {
+            return null;
+        }
+        TenantOrderEntity entity = orderMapper.selectById(orderId);
+        if (entity == null) {
+            return null;
+        }
+        return io.github.atengk.boot.sample.satoken.vo.TenantOrderVO.builder()
+                .id(entity.getId())
+                .orderNo(entity.getOrderNo())
+                .amount(entity.getAmount())
+                .tenantId(entity.getTenantId())
+                .createBy(entity.getCreateBy())
+                .createTime(entity.getCreateTime())
+                .updateBy(entity.getUpdateBy())
+                .updateTime(entity.getUpdateTime())
+                .build();
     }
 
     /**

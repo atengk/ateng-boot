@@ -115,4 +115,24 @@ class SaTokenPropertiesTest {
                     assertThat(config.getTokenStyle()).isEqualTo("tik");
                 });
     }
+
+    @Test
+    @DisplayName("验证 SameTokenConstant 常量与默认配置属性对齐")
+    void testSameTokenConstantAlignment() {
+        assertThat(io.github.atengk.boot.satoken.constant.SaTokenConstant.SAME_TOKEN_HEADER).isEqualTo("SA-SAME-TOKEN");
+        SaTokenProperties properties = new SaTokenProperties();
+        assertThat(properties.getSameToken().getHeaderName()).isEqualTo("SA-SAME-TOKEN");
+    }
+
+    @Test
+    @DisplayName("验证 ateng.boot.redis.enabled=false 时确定性装配纯内存模式组件")
+    void testRedisDisabledDeterministicInMemoryMode() {
+        contextRunner
+                .withPropertyValues("ateng.boot.redis.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.satoken.cache.PermissionCacheService.class);
+                    assertThat(context).doesNotHaveBean("saTokenClusterRedisMessageListenerContainer");
+                });
+    }
 }
