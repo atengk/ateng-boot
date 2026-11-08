@@ -7,6 +7,7 @@ import io.github.atengk.boot.sample.satoken.dto.LoginRequestDTO;
 import io.github.atengk.boot.sample.satoken.dto.OrderCreateDTO;
 import io.github.atengk.boot.sample.satoken.service.SaTokenSampleService;
 import io.github.atengk.boot.sample.satoken.vo.TenantOrderVO;
+import io.github.atengk.boot.satoken.annotation.Anonymous;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import jakarta.validation.Valid;
@@ -38,6 +39,29 @@ public class AuthSessionController {
     private final SaTokenSampleService sampleService;
 
     /**
+     * 免鉴权健康探针接口（演示方法级 @Anonymous）
+     *
+     * @return 探针响应
+     */
+    @GetMapping("/public/ping")
+    @Anonymous
+    public Result<String> ping() {
+        return Result.success("pong");
+    }
+
+    /**
+     * 免鉴权公开文章接口（演示方法级 @Anonymous 支持路径变量通配）
+     *
+     * @param articleId 文章标识
+     * @return 文章详情
+     */
+    @GetMapping("/public/article/{articleId}")
+    @Anonymous
+    public Result<String> getPublicArticle(@PathVariable("articleId") String articleId) {
+        return Result.success("公开文章详情: " + articleId);
+    }
+
+    /**
      * 用户登录接口
      * 支持多端设备与多租户复合身份签发
      *
@@ -45,6 +69,7 @@ public class AuthSessionController {
      * @return 签发的访问凭据 Token
      */
     @PostMapping("/login")
+    @Anonymous
     public Result<String> login(@RequestBody LoginRequestDTO request) {
         String userId = (request != null && request.getUserId() != null && !request.getUserId().isBlank())
                 ? request.getUserId()

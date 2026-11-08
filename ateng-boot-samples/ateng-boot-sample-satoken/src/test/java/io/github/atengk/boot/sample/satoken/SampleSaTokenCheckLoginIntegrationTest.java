@@ -32,7 +32,7 @@ class SampleSaTokenCheckLoginIntegrationTest {
     @Test
     @DisplayName("1. 严格模式拦截：普通未标注 @Anonymous 接口在未携带 Token 时被拦截返回 401")
     void shouldInterceptProtectedEndpointWhenCheckLoginEnabled() throws Exception {
-        mockMvc.perform(get("/api/auth/current-tenant"))
+        mockMvc.perform(get("/sample/satoken/auth/current-tenant"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(401))
                 .andExpect(jsonPath("$.success").value(false))
@@ -42,37 +42,46 @@ class SampleSaTokenCheckLoginIntegrationTest {
     @Test
     @DisplayName("2. 严格模式放行：方法级 @Anonymous 普通接口与路径参数通配接口无需 Token 成功放行")
     void shouldAllowAnonymousMethodEndpointsWhenCheckLoginEnabled() throws Exception {
-        mockMvc.perform(get("/api/auth/public/ping"))
+        mockMvc.perform(get("/sample/satoken/auth/public/ping"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("pong"));
 
-        mockMvc.perform(get("/api/auth/public/article/777888"))
+        mockMvc.perform(get("/sample/satoken/auth/public/article/777888"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("公开文章详情: 777888"));
     }
 
     @Test
-    @DisplayName("3. 严格模式放行：类级 @Anonymous 控制器所有接口无需 Token 成功放行")
+    @DisplayName("3. 严格模式放行：类级 @Anonymous 控制器公开接口无需 Token 成功放行")
     void shouldAllowAnonymousClassEndpointsWhenCheckLoginEnabled() throws Exception {
-        mockMvc.perform(get("/api/anonymous/hello"))
+        mockMvc.perform(get("/sample/satoken/portal/announcement"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("类级匿名访问成功"));
+                .andExpect(jsonPath("$.data").value("【系统公告】双十一全场云原生基础设施 Starter 限时特惠开启！"));
 
-        mockMvc.perform(get("/api/anonymous/item/SEC-001"))
+        mockMvc.perform(get("/sample/satoken/portal/products/SEC-001"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("类级匿名条目详情: SEC-001"));
+                .andExpect(jsonPath("$.data.productId").value("SEC-001"));
     }
 
     @Test
-    @DisplayName("4. 严格模式放行：SaTokenWhitelistProvider SPI 动态注册白名单无需 Token 成功放行")
+    @DisplayName("4. 严格模式拦截：类级 @Anonymous 下方法级标注 @Anonymous(false) 强制要求登录，未携带 Token 被拦截返回 401")
+    void shouldInterceptMethodLevelAnonymousFalseUnderClassLevelAnonymous() throws Exception {
+        mockMvc.perform(get("/sample/satoken/portal/products/SEC-001/vip-price"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(401))
+                .andExpect(jsonPath("$.success").value(false));
+    }
+
+    @Test
+    @DisplayName("5. 严格模式放行：SaTokenWhitelistProvider SPI 动态注册白名单无需 Token 成功放行")
     void shouldAllowSpiWhitelistWhenCheckLoginEnabled() throws Exception {
-        mockMvc.perform(get("/api/custom-spi/data"))
+        mockMvc.perform(get("/sample/satoken/portal/categories"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("SPI白名单访问成功"));
+                .andExpect(jsonPath("$.data[0]").value("云计算"));
     }
 }

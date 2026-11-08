@@ -30,6 +30,9 @@ ateng:
         enabled: true
         default-operator: SYSTEM
     satoken:
+      same-token:
+        enabled: true
+        token-value: "SATOKEN_INTERNAL_SAME_TOKEN_SECRET_987654"
       login-defense:
         enabled: true
         max-retry-count: 5

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.satoken.controller;
 
+import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.util.LoginHelper;
@@ -38,7 +39,8 @@ public class PermissionCacheController {
     @GetMapping("/roles")
     public Result<Set<String>> getCurrentRoles() {
         LoginHelper.checkLogin();
-        return Result.success(LoginHelper.getRoles());
+        java.util.List<String> roleList = StpUtil.getRoleList();
+        return Result.success(roleList != null ? Set.copyOf(roleList) : java.util.Collections.emptySet());
     }
 
     /**
@@ -49,7 +51,8 @@ public class PermissionCacheController {
     @GetMapping("/permissions")
     public Result<Set<String>> getCurrentPermissions() {
         LoginHelper.checkLogin();
-        return Result.success(LoginHelper.getPermissions());
+        java.util.List<String> permissionList = StpUtil.getPermissionList();
+        return Result.success(permissionList != null ? Set.copyOf(permissionList) : java.util.Collections.emptySet());
     }
 
     /**

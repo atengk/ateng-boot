@@ -79,7 +79,7 @@ ateng:
 
 ```java
 @RestController
-@RequestMapping("/api/auth")
+@RequestMapping("/sample/satoken/auth")
 public class QuickStartAuthController {
 
     @PostMapping("/login")
@@ -961,56 +961,76 @@ public class OnlineSessionController {
 ### 架构方案
 `ateng-boot-satoken` 在 `AtengSaTokenInterceptor` 中无缝内嵌**动态路径权限匹配管道**：
 1. **SPI 优雅扩展**：业务只需声明实现 `DynamicPathPermissionProvider` SPI 接口，即可从数据库、字典表或配置中心加载 `List<PathPermissionRule>`；
-2. **AntPath + HTTP Method 双重匹配**：支持精确路径（如 `/api/orders`）与通配路径（如 `/api/dynamic/resource/**`），并精确比对 HTTP 请求方法（GET、POST、PUT、DELETE 或 `*` 通配）；
+2. **AntPath + HTTP Method 双重匹配**：支持精确路径（如 `/sample/satoken/portal/reports/daily`）与通配路径（如 `/sample/satoken/portal/reports/**`），并精确比对 HTTP 请求方法（GET、POST、PUT、DELETE 或 `*` 通配）；
 3. **丰富鉴权模式**：支持 `SaMode.AND`（必须同时具备多个权限）与 `SaMode.OR`（具备任一权限即放行）；
 4. **零侵入与零注解**：Controller 方法无需编写任何 `@SaCheckPermission` 注解，只要命中规则管道，拦截器自动调用底层 `StpUtil.checkPermissionAnd/Or(...)` 实施强力防御。
 
-### 核心代码示例（源自 `SampleDynamicPathPermissionProvider.java` 与 `SampleDynamicPermissionController.java`）
+### 核心代码示例（源自 `SampleDynamicPathPermissionProvider.java` 与 `PublicPortalController.java`）
 
 #### 1. 实现 SPI 动态路径规则提供者
 ```java
 @Component
 public class SampleDynamicPathPermissionProvider implements DynamicPathPermissionProvider {
 
+    private final List<PathPermissionRule> rules = new CopyOnWriteArrayList<>(List.of(
+            PathPermissionRule.of("/sample/satoken/portal/reports/daily", "GET", "portal:report:view"),
+            PathPermissionRule.of("/sample/satoken/portal/reports/daily", "POST", "portal:report:export"),
+            PathPermissionRule.of("/sample/satoken/portal/reports/daily", "DELETE", SaMode.AND, "portal:report:delete", "portal:report:audit")
+    ));
+
     @Override
     public List<PathPermissionRule> getPathPermissionRules() {
-        return List.of(
-                PathPermissionRule.of("/api/dynamic/resource/data", "GET", "dynamic:resource:view"),
-                PathPermissionRule.of("/api/dynamic/resource/data", "POST", "dynamic:resource:create"),
-                PathPermissionRule.of("/api/dynamic/resource/data", "DELETE", SaMode.AND, "dynamic:resource:delete", "dynamic:resource:audit")
-        );
+        return Collections.unmodifiableList(rules);
+    }
+
+    public void refresh() {
+        // 运行时热刷新重载逻辑
+        log.info("动态路径权限规则已热刷新");
     }
 }
 ```
 
-#### 2. Controller 接口无需标注注解
+#### 2. Controller 接口无需标注注解（受管道自动保护）
 ```java
 @RestController
-@RequestMapping("/api/dynamic/resource")
-public class SampleDynamicPermissionController {
+@RequestMapping("/sample/satoken/portal")
+@Anonymous
+@RequiredArgsConstructor
+public class PublicPortalController {
 
-    @GetMapping("/data")
-    public Result<String> getData() {
-        // 需 dynamic:resource:view 权限，拦截器管道动态鉴权
-        return Result.success("动态资源查询成功");
+    private final SampleDynamicPathPermissionProvider dynamicPathPermissionProvider;
+
+    @GetMapping("/reports/daily")
+    @Anonymous(false)
+    public Result<String> getDailyReport() {
+        // 需 portal:report:view 权限，拦截器管道动态鉴权
+        return Result.success("每日运营分析报表数据汇总");
     }
 
-    @PostMapping("/data")
-    public Result<String> createData() {
-        // 需 dynamic:resource:create 权限
-        return Result.success("动态资源创建成功");
+    @PostMapping("/reports/daily")
+    @Anonymous(false)
+    public Result<String> exportDailyReport() {
+        // 需 portal:report:export 权限
+        return Result.success("每日运营分析报表导出任务已提交");
     }
 
-    @DeleteMapping("/data")
-    public Result<String> deleteData() {
-        // 需 dynamic:resource:delete AND dynamic:resource:audit 权限
-        return Result.success("动态资源删除成功");
+    @DeleteMapping("/reports/daily")
+    @Anonymous(false)
+    public Result<String> deleteDailyReport() {
+        // 需 portal:report:delete AND portal:report:audit 双权限
+        return Result.success("每日运营分析报表已彻底销毁并归档审计");
     }
 
-    @GetMapping("/unprotected")
-    public Result<String> unprotected() {
-        // 未受动态规则约束，正常放行通行
-        return Result.success("未受规则约束的公开资源");
+    @GetMapping("/reports/unprotected")
+    public Result<String> getUnprotectedReport() {
+        // 类级 @Anonymous 放行，未受动态规则约束
+        return Result.success("无约束报表数据公开汇总");
+    }
+
+    @PostMapping("/rules/refresh")
+    public Result<String> refreshRules() {
+        dynamicPathPermissionProvider.refresh();
+        return Result.success("动态路径权限规则已热刷新重载");
     }
 }
 ```
@@ -1022,38 +1042,56 @@ public class SampleDynamicPermissionController {
 ### 场景痛点
 在微服务架构中，内部服务之间往往有专用的 HTTP / RPC 接口。若缺乏调用凭据验证，攻击者或外网恶意请求一旦绕过 API 网关，就可直接向内部微服务发送伪造请求，造成重大越权安全事故。此外，调用方发起内部请求时，若需要在每处业务代码中手工拼接请求头，代码极其臃肿且极易遗漏。
 
-### 核心代码示例（源自 `SampleSaTokenIntegrationTest.java`）
+### 核心代码示例（源自 `InternalClusterController.java` 与 `SampleSaTokenIntegrationTest.java`）
 
 #### 1. 服务端接口声明零信任保护
 只需在 Controller 类或方法上标注 `@CheckSameToken`：
 
 ```java
+@Slf4j
 @RestController
-@RequestMapping("/api/auth/internal")
-public class InternalSyncController {
+@RequiredArgsConstructor
+public class InternalClusterController {
 
-    @GetMapping("/data")
+    private final RestClient.Builder restClientBuilder;
+
+    /**
+     * 微服务内网清算凭证受保护接口（仅限持有有效 SA-SAME-TOKEN 内网凭据的服务调用）
+     */
+    @GetMapping("/sample/satoken/internal/clearing/voucher")
+    @Anonymous
     @CheckSameToken // 拦截并校验微服务内部调用凭证
-    public Result<String> getInternalData() {
-        return Result.success("内部机密数据访问成功");
+    public Result<String> getClearingVoucher() {
+        return Result.success("清算凭证数据 [CLR-20261108-9988]");
     }
-}
 ```
 
 #### 2. 发起端 RestClient / RestTemplate 拦截器全自动装配
 当配置 `ateng.boot.satoken.same-token.auto-inject-client: true`（默认启用）时，框架自动注册 `sameTokenRestClientCustomizer` 与 `sameTokenRestTemplateCustomizer`。由 Spring 受管的 `RestClient.Builder` 与 `RestTemplate` 会**全自动挂载 `SameTokenClientHttpRequestInterceptor`**，在发出内部请求时自动注入 `SA-SAME-TOKEN` 请求头：
 
 ```java
-@Service
-public class RemoteCallService {
-
-    @Autowired
-    private RestTemplateBuilder restTemplateBuilder;
-
-    public void callInternalService() {
-        RestTemplate restTemplate = restTemplateBuilder.build();
-        // 底层拦截器已自动附带 SA-SAME-TOKEN 请求头，无需业务手工干预
-        String res = restTemplate.getForObject("http://internal-service/api/auth/internal/data", String.class);
+    /**
+     * 演示发起跨微服务内部清算调用
+     * 通过自动注入 SameTokenClientHttpRequestInterceptor 的 RestClient 自动在请求头挂载 SA-SAME-TOKEN
+     */
+    @PostMapping("/sample/satoken/internal/call-clearing")
+    @Anonymous
+    public Result<String> callClearing(@RequestParam(value = "targetUrl", required = false) String targetUrl) {
+        String url = (targetUrl != null && !targetUrl.isBlank())
+                ? targetUrl
+                : "http://localhost:8080/sample/satoken/internal/clearing/voucher";
+        try {
+            // 底层拦截器已自动附带 SA-SAME-TOKEN 请求头，无需业务手工干预
+            String response = restClientBuilder.build()
+                    .get()
+                    .uri(url)
+                    .retrieve()
+                    .body(String.class);
+            return Result.success("内部清算远程调用成功，下游返回: " + response);
+        } catch (Exception e) {
+            log.error("内部清算远程调用异常: ", e);
+            return Result.fail("内部调用失败: " + e.getMessage());
+        }
     }
 }
 ```
@@ -1214,32 +1252,34 @@ public class SampleSecurityEventListener {
 ### 场景痛点
 传统 RBAC 权限体系通常仅校验接口“操作权限”（例如判断当前用户是否具备 `user:update` 权限），但无法防范恶意用户通过篡改请求路径参数或请求体中的 `userId`、`orderId` 来修改他人数据的**水平越权漏洞（BOLA / IDOR）**。若在每个业务 Service 中重复编写 `if (!userId.equals(currentUserId))`，极易出现漏检。
 
-### 核心代码示例
+### 核心代码示例（源自 `AccessControlController.java`）
 
 #### 1. 声明式 SpEL 数据所有权校验
 通过在 Controller 方法上标注 `@CheckDataOwner`，支持直接通过 SpEL 表达式提取当前请求入参的目标归属人：
 
 ```java
+@Validated
 @RestController
-@RequestMapping("/api/auth")
-public class UserProfileController {
+@RequestMapping("/sample/satoken/access")
+@RequiredArgsConstructor
+public class AccessControlController {
 
     /**
-     * 修改个人资料接口（直接通过 SpEL 校验 userId 数据所有权）
+     * 基于 @CheckDataOwner 的用户个人资料防水平越权修改
      */
-    @PostMapping("/user/profile")
+    @PostMapping("/profile/update")
     @CheckDataOwner(expr = "#dto.userId")
-    public Result<String> updateProfile(@RequestBody UserProfileDTO dto) {
-        return Result.success("个人资料更新成功: " + dto.getUserId());
+    public Result<String> updateProfile(@Valid @RequestBody UserProfileDTO dto) {
+        return Result.success("个人资料更新成功: " + dto.getNickname());
     }
 
     /**
-     * 订单取消接口（间接通过 SPI 反查 orderId 数据所有权）
+     * 基于 @CheckDataOwner 与 DataOwnerProvider 反查 SPI 的订单防水平越权取消
      */
-    @PostMapping("/order/{orderId}/cancel")
-    @CheckDataOwner(expr = "#orderId", provider = SampleOrderDataOwnerProvider.class, message = "无权取消该订单")
+    @PostMapping("/orders/{orderId}/cancel")
+    @CheckDataOwner(expr = "#orderId", provider = SampleOrderDataOwnerProvider.class)
     public Result<String> cancelOrder(@PathVariable("orderId") Long orderId) {
-        return Result.success("订单取消成功: " + orderId);
+        return Result.success("订单已成功取消: " + orderId);
     }
 }
 ```
@@ -1248,17 +1288,22 @@ public class UserProfileController {
 在后台逻辑或批量操作中，可直接调用 `LoginHelper.checkSelf` 或 `LoginHelper.checkBelongsToTenant` 实施前置卫语句快速失败：
 
 ```java
-@Service
-public class OrderService {
-
-    public void processUserOrder(String targetUserId, String targetTenantId) {
+    /**
+     * 编程式断言当前操作人本人归属与租户归属
+     */
+    @PostMapping("/assert-self")
+    public Result<String> assertSelf(@RequestParam("userId") String userId) {
         // 1. 断言当前操作人是否为本人（超级管理员自动豁免放行）
-        LoginHelper.checkSelf(targetUserId, "无权访问他人订单数据");
-
-        // 2. 断言当前操作人是否归属于目标租户
-        LoginHelper.checkBelongsToTenant(targetTenantId, "非法跨租户数据访问");
+        LoginHelper.checkSelf(userId);
+        return Result.success("本人所有权断言校验通过: " + userId);
     }
-}
+
+    @PostMapping("/assert-tenant")
+    public Result<String> assertTenant(@RequestParam("tenantId") String tenantId) {
+        // 2. 断言当前操作人是否归属于目标租户
+        LoginHelper.checkBelongsToTenant(tenantId);
+        return Result.success("当前租户归属断言校验通过: " + tenantId);
+    }
 ```
 
 ---
@@ -1268,21 +1313,35 @@ public class OrderService {
 ### 场景痛点
 在微服务或单体架构中，很多接口（如登录、验证码、对外静态公文、健康检查）无需鉴权放行。传统做法是在 `application.yml` 的 `white-list` 中硬编码长路径，这不仅繁琐，而且一旦接口重命名或迁移极易引发 401 漏检事故；此外，业务插件或第三方 Starter 无法在运行时动态扩充白名单。
 
-### 核心代码示例
+### 核心代码示例（源自 `PublicPortalController.java` 与 `SampleWhitelistProvider.java`）
 
 #### 1. 声明式 `@Anonymous` 注解放行
-支持在 Controller 方法或类级别直接标注 `@Anonymous`，启动时 `AnonymousUrlProcessor` 会自动扫描并将 Spring MVC 路径变量占位符（如 `{id}`）自适应转译为 AntPath 通配符（如 `*`）：
+支持在 Controller 方法或类级别直接标注 `@Anonymous`，启动时 `AnonymousUrlProcessor` 会自动扫描并将 Spring MVC 路径变量占位符（如 `{productId}`）自适应转译为 AntPath 通配符（如 `*`）：
 
 ```java
+@Slf4j
 @RestController
-@RequestMapping("/api/auth/public")
-public class PublicArticleController {
+@RequestMapping("/sample/satoken/portal")
+@RequiredArgsConstructor
+public class PublicPortalController {
 
-    // 方法级匿名放行
-    @GetMapping("/article/{id}")
+    /**
+     * 1. 公开全员公告（方法级声明放行）
+     */
+    @GetMapping("/announcement")
     @Anonymous
-    public Result<String> getPublicArticle(@PathVariable("id") Long id) {
-        return Result.success("公开文章详情: " + id);
+    public Result<String> getAnnouncement() {
+        return Result.success("系统日常维护通知：本周日凌晨进行数据库索引调优");
+    }
+
+    /**
+     * 2. 带路径参数的公开商品详情
+     * AnonymousUrlProcessor 自动扫描转译 /products/{productId} 为 /sample/satoken/portal/products/* 通配白名单
+     */
+    @GetMapping("/products/{productId}")
+    @Anonymous
+    public Result<String> getProductDetail(@PathVariable("productId") String productId) {
+        return Result.success("商品详情信息: " + productId);
     }
 }
 ```
@@ -1292,11 +1351,13 @@ public class PublicArticleController {
 
 ```java
 @Component
-public class CustomPluginWhitelistProvider implements SaTokenWhitelistProvider {
+public class SampleWhitelistProvider implements SaTokenWhitelistProvider {
 
     @Override
     public Set<String> getWhitelist() {
-        return Set.of("/api/custom-spi/**", "/public/third-party/**");
+        return Set.of(
+                "/sample/satoken/portal/categories/**"
+        );
     }
 }
 ```
@@ -1412,14 +1473,80 @@ public class ImpersonateAuditController {
 
 ## 16. 分布式集群即时同步与广播作废 (Cluster Sync via Redis Pub/Sub)
 
-### 场景痛点
+### 16.1 场景痛点与架构方案
 在微服务多副本集群中，各节点会在本地内存或 L1 缓存维护角色与权限数据。当 Node A 修改了权限或踢人下线时，若仅更新 Redis 中心，Node B、Node C 等节点依然持有陈旧本地缓存，造成严重权限脏读与越权风险。
 
-### 核心架构与自消费丢弃
 `ateng-boot-satoken` 依托轻量 Redis Pub/Sub 广播构建集群即时同步体系：
 - **节点唯一 ID**：每个节点启动生成 `instanceId`（无锁 `fastSimpleUUID`）；
 - **自消费防卫**：本机接收到自己广播的消息时直接静默丢弃（Self-Consumption Guard），杜绝重入与广播风暴；
 - **精准驱逐**：异地节点接收到广播后，精准驱逐本地两级缓存中对应的用户/角色条目。
+
+### 16.2 专属配置片段 (application.yml)
+```yaml
+ateng:
+  boot:
+    satoken:
+      cluster-sync:
+        enabled: true                               # 是否开启分布式集群即时同步与广播作废 (默认: true)
+        channel: "ateng:satoken:cluster-sync"       # Redis Pub/Sub 广播频道名称 (默认: ateng:satoken:cluster-sync)
+```
+
+### 16.3 生产级实战示例（源自 `InternalClusterController.java`）
+
+```java
+@Slf4j
+@RestController
+@RequiredArgsConstructor
+public class InternalClusterController {
+
+    private final SaTokenClusterBroadcaster broadcaster;
+    private final PermissionCacheService permissionCacheService;
+
+    /**
+     * 查询当前集群节点唯一实例 ID
+     */
+    @GetMapping("/sample/satoken/cluster/instance-id")
+    @Anonymous
+    public Result<String> getInstanceId() {
+        return Result.success(broadcaster.getInstanceId());
+    }
+
+    /**
+     * 触发指定用户权限缓存全网失效与本地清理广播
+     */
+    @PostMapping("/sample/satoken/cluster/refresh-user")
+    @Anonymous
+    public Result<Void> refreshUserPermissions(@RequestParam("userId") String userId) {
+        permissionCacheService.refreshUserPermissions(userId);
+        return Result.success();
+    }
+
+    /**
+     * 触发指定角色权限缓存全网失效与本地清理广播
+     */
+    @PostMapping("/sample/satoken/cluster/refresh-role")
+    @Anonymous
+    public Result<Void> refreshRolePermissions(@RequestParam("roleCode") String roleCode) {
+        permissionCacheService.refreshRolePermissions(roleCode);
+        return Result.success();
+    }
+
+    /**
+     * 全网清空所有节点两级权限缓存
+     */
+    @PostMapping("/sample/satoken/cluster/clear-all")
+    @Anonymous
+    public Result<Void> clearAllPermissions() {
+        permissionCacheService.clearAll();
+        return Result.success();
+    }
+}
+```
+
+### 16.4 核心机制与非功能边界
+1. **轻量无状态异步广播**：底层依托 Redis 发布订阅频道（`cluster-sync.channel`）异步投递失效事件，不需要各节点之间维持复杂的 Mesh 长连接；
+2. **幂等驱逐与自消费防御**：接收方 `SaTokenClusterSyncListener` 收到消息后，先比对消息头中的 `senderId`，若等于当前节点的 `instanceId` 则直接静默丢弃；若为异地节点广播，则调用 `PermissionCacheService` 精准淘汰本地 Caffeine L1 缓存与 Redis L2 缓存，整个过程纯幂等且线程安全；
+3. **降级自洽保护**：当未配置 Redis 或未启用 `cluster-sync` 时，`SaTokenClusterBroadcaster` 自动装配单机空实现，`PermissionCacheService` 本地清理依然正常生效，保障开发与测试环境 100% 离线自洽。
 
 ---
 
@@ -1465,7 +1592,7 @@ ateng:
         includes:                 # 拦截匹配的 URL 路径列表 (默认: /**)
           - "/**"
         excludes:                 # 业务定制排除放行的白名单 URL 路径列表（底层自动与 white-list 聚合去重）
-          - "/api/auth/login"
+          - "/sample/satoken/auth/login"
           - "/doc.html"
           - "/webjars/**"
           - "/v3/api-docs/**"

@@ -7,6 +7,7 @@ import java.util.Set;
 
 /**
  * 业务动态白名单扩展 SPI 示例实现
+ * 暴露商品分类开放接口白名单（/sample/satoken/portal/categories/**）
  *
  * @author Ateng
  * @since 2026-10-20
@@ -16,6 +17,6 @@ public class SampleWhitelistProvider implements SaTokenWhitelistProvider {
 
     @Override
     public Set<String> getWhitelist() {
-        return Set.of("/api/custom-spi/**");
+        return Set.of("/sample/satoken/portal/categories/**");
     }
 }

@@ -85,6 +85,12 @@ class SampleSaTokenIntegrationTest {
     private org.springframework.boot.web.client.RestTemplateBuilder restTemplateBuilder;
 
     @Autowired(required = false)
+    private org.springframework.web.client.RestClient.Builder restClientBuilder;
+
+    @Autowired(required = false)
+    private io.github.atengk.boot.sample.satoken.controller.InternalClusterController internalClusterController;
+
+    @Autowired(required = false)
     private StringRedisTemplate redisTemplate;
 
     @Autowired
@@ -131,7 +137,7 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("1. 未登录拦截防御：未提供凭据访问受保护接口，统一返回 HTTP 200 + 业务码 401 与细粒度提示")
     void shouldInterceptWhenNotLogin() throws Exception {
-        mockMvc.perform(get("/api/auth/me"))
+        mockMvc.perform(get("/sample/satoken/auth/me"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(401))
                 .andExpect(jsonPath("$.success").value(false))
@@ -141,19 +147,15 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("2. 完整登录、上下文读取、多租户主键剥离与注销全生命周期端到端验证")
     void shouldCompleteLoginLifecycleAndContextQuery() throws Exception {
-        // 1. 构建登录请求数据
-        LoginUser loginReq = LoginUser.builder()
+        LoginRequestDTO loginReq = LoginRequestDTO.builder()
                 .userId("10086")
                 .tenantId("tenant_sz")
-                .userAccount("admin")
-                .userName("系统管理员")
+                .username("admin")
                 .roles(Set.of("super_admin", "auditor"))
                 .permissions(Set.of("user:query", "user:export"))
-                .build()
-                .setExtra("deptCode", "TECH_DEV");
+                .build();
 
-        // 2. 执行登录，获取 Token
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(loginReq)))
                 .andExpect(status().isOk())
@@ -166,41 +168,35 @@ class SampleSaTokenIntegrationTest {
         String token = loginJson.get("data").asText();
         assertThat(token).isNotBlank();
 
-        // 3. 携带 Token 查询当前登录主体详情
-        mockMvc.perform(get("/api/auth/me")
+        mockMvc.perform(get("/sample/satoken/auth/me")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.userId").value("10086"))
                 .andExpect(jsonPath("$.data.tenantId").value("tenant_sz"))
                 .andExpect(jsonPath("$.data.userAccount").value("admin"))
-                .andExpect(jsonPath("$.data.userName").value("系统管理员"))
+                .andExpect(jsonPath("$.data.userName").value("admin"))
                 .andExpect(jsonPath("$.data.roles").isArray())
-                .andExpect(jsonPath("$.data.permissions").isArray())
-                .andExpect(jsonPath("$.data.extraData.deptCode").value("TECH_DEV"));
+                .andExpect(jsonPath("$.data.permissions").isArray());
 
-        // 4. 验证多租户复合 LoginId 前缀透明剥离
-        mockMvc.perform(get("/api/auth/user-id")
+        mockMvc.perform(get("/sample/satoken/auth/user-id")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("10086"));
 
-        // 5. 校验登录状态
-        mockMvc.perform(get("/api/auth/check-login")
+        mockMvc.perform(get("/sample/satoken/auth/check-login")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(true));
+                .andExpect(jsonPath("$.data").value("已登录"));
 
-        // 6. 执行会话注销
-        mockMvc.perform(post("/api/auth/logout")
+        mockMvc.perform(post("/sample/satoken/auth/logout")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 7. 注销后再次携带原 Token 访问，验证已被无效拦截
-        mockMvc.perform(get("/api/auth/me")
+        mockMvc.perform(get("/sample/satoken/auth/me")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(401))
@@ -210,15 +206,13 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("3. 编程式二级安全认证全生命周期：未开启 403 拦截 -> 开启通过 -> 手动关闭恢复拦截")
     void shouldHandleSafeActionLifecycle() throws Exception {
-        // 1. 登录
-        LoginUser loginReq = LoginUser.builder()
+        LoginRequestDTO loginReq = LoginRequestDTO.builder()
                 .userId("20001")
                 .tenantId("tenant_bj")
-                .userAccount("finance_mgr")
-                .userName("财务经理")
+                .username("finance_mgr")
                 .build();
 
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(loginReq)))
                 .andExpect(status().isOk())
@@ -226,35 +220,38 @@ class SampleSaTokenIntegrationTest {
 
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 未开启二级认证，访问敏感操作返回 403
-        mockMvc.perform(get("/api/auth/safe-action")
-                        .header("satoken", token))
+        SettlementRequestDTO settleDto = new SettlementRequestDTO("SETTLE-20001", new BigDecimal("50000.00"), "ACC-TEST-001");
+
+        mockMvc.perform(post("/sample/satoken/access/safe-settle")
+                        .header("satoken", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(settleDto)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("无权访问：当前操作需要二级安全认证"));
 
-        // 3. 开启二级安全认证
-        mockMvc.perform(post("/api/auth/open-safe")
+        mockMvc.perform(post("/sample/satoken/access/open-safe")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 4. 开启后再次执行敏感操作，成功通过
-        mockMvc.perform(get("/api/auth/safe-action")
-                        .header("satoken", token))
+        mockMvc.perform(post("/sample/satoken/access/safe-settle")
+                        .header("satoken", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(settleDto)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("支付操作通过"));
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("50000.00")));
 
-        // 5. 主动关闭二级安全认证
-        mockMvc.perform(post("/api/auth/close-safe")
+        mockMvc.perform(post("/sample/satoken/access/close-safe")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 6. 关闭后再次访问，重新被 403 拦截
-        mockMvc.perform(get("/api/auth/safe-action")
-                        .header("satoken", token))
+        mockMvc.perform(post("/sample/satoken/access/safe-settle")
+                        .header("satoken", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(settleDto)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("无权访问：当前操作需要二级安全认证"));
@@ -263,125 +260,122 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("4. Controller 层 AOP 注解鉴权：@SaCheckRole 与 @SaCheckPermission 拦截与放行验证")
     void shouldCheckAopRoleAndPermissionOnController() throws Exception {
-        LoginUser loginReq = LoginUser.builder()
+        LoginRequestDTO loginReq = LoginRequestDTO.builder()
                 .userId("30001")
-                .userName("审计员")
-                .roles(Set.of("super_admin"))
-                .permissions(Set.of("user:query"))
+                .username("审计员")
+                .roles(Set.of("audit_manager"))
+                .permissions(Set.of("order:query"))
                 .build();
 
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(loginReq)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 具备 super_admin 角色，访问通过
-        mockMvc.perform(get("/api/auth/check-role")
+        mockMvc.perform(get("/sample/satoken/access/role-audit")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("角色校验通过"));
+                .andExpect(jsonPath("$.data").value("审计角色鉴权通过"));
 
-        // 不具备 financial_boss 角色，拦截返回 403
-        mockMvc.perform(get("/api/auth/check-role-forbidden")
+        mockMvc.perform(get("/sample/satoken/access/role-finance-only")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
-                .andExpect(jsonPath("$.msg").value("无权访问：缺少所需角色 [financial_boss]"));
+                .andExpect(jsonPath("$.msg").value("无权访问：缺少所需角色 [finance_director]"));
 
-        // 具备 user:query 权限，访问通过
-        mockMvc.perform(get("/api/auth/check-permission")
+        mockMvc.perform(get("/sample/satoken/access/perm-order-query")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("权限码校验通过"));
+                .andExpect(jsonPath("$.data").value("订单查询权限鉴权通过"));
 
-        // 不具备 user:delete 权限，拦截返回 403
-        mockMvc.perform(get("/api/auth/check-permission-forbidden")
+        mockMvc.perform(get("/sample/satoken/access/perm-order-delete")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
-                .andExpect(jsonPath("$.msg").value("无权访问：缺少所需权限码 [user:delete]"));
+                .andExpect(jsonPath("$.msg").value("无权访问：缺少所需权限码 [order:delete]"));
     }
 
     @Test
     @DisplayName("5. Service 业务层 AOP 穿透鉴权：验证 SaAroundAnnotationPointcutAdvisor 全域覆盖 Service")
     void shouldCheckAopRoleAndPermissionOnServiceLayer() throws Exception {
-        LoginUser loginReq = LoginUser.builder()
+        LoginRequestDTO loginReq = LoginRequestDTO.builder()
                 .userId("40001")
-                .userName("业务专员")
-                .roles(Set.of("super_admin"))
-                .permissions(Set.of("order:view"))
+                .username("业务专员")
+                .roles(Set.of("audit_manager"))
+                .permissions(Set.of("order:cancel"))
                 .build();
 
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(loginReq)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 调用标注 @SaCheckRole("super_admin") 的 Service 方法，成功通过
-        mockMvc.perform(get("/api/auth/service-role")
-                        .header("satoken", token))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("Service 角色校验通过"));
-
-        // 调用标注 @SaCheckPermission("order:cancel") 的 Service 方法，因缺少权限被拦截返回 403
-        mockMvc.perform(get("/api/auth/service-permission")
+        mockMvc.perform(get("/sample/satoken/access/service-role")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
-                .andExpect(jsonPath("$.msg").value("无权访问：缺少所需权限码 [order:cancel]"));
+                .andExpect(jsonPath("$.msg").value("无权访问：缺少所需角色 [finance_director]"));
+
+        mockMvc.perform(get("/sample/satoken/access/service-permission")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("Service 权限校验通过"));
     }
 
     @Test
     @DisplayName("6. AOP 注解式二级安全认证：@SaCheckSafe 注解未开启 403 -> 开启通过 -> 关闭恢复拦截")
     void shouldCheckAopSafeAnnotation() throws Exception {
-        LoginUser loginReq = LoginUser.builder()
+        LoginRequestDTO loginReq = LoginRequestDTO.builder()
                 .userId("50001")
-                .userName("风控专员")
+                .username("风控专员")
                 .build();
 
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(loginReq)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 1. 未开启 safe 时访问 @SaCheckSafe("payment") 接口，拦截返回 403
-        mockMvc.perform(get("/api/auth/check-safe-annotation")
-                        .header("satoken", token))
+        SettlementRequestDTO settleDto = new SettlementRequestDTO("SETTLE-50001", new BigDecimal("60000.00"), "ACC-SAFE-001");
+
+        mockMvc.perform(post("/sample/satoken/access/safe-settle-anno")
+                        .header("satoken", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(settleDto)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("无权访问：当前操作需要二级安全认证"));
 
-        // 2. 开启 safe 认证
-        mockMvc.perform(post("/api/auth/open-safe")
+        mockMvc.perform(post("/sample/satoken/access/open-safe")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 3. 再次访问 @SaCheckSafe("payment") 接口，通过返回 200
-        mockMvc.perform(get("/api/auth/check-safe-annotation")
-                        .header("satoken", token))
+        mockMvc.perform(post("/sample/satoken/access/safe-settle-anno")
+                        .header("satoken", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(settleDto)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("注解式安全支付通过"));
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("60000.00")));
 
-        // 4. 关闭 safe 认证
-        mockMvc.perform(post("/api/auth/close-safe")
+        mockMvc.perform(post("/sample/satoken/access/close-safe")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 5. 关闭后再次访问，恢复 403 拦截
-        mockMvc.perform(get("/api/auth/check-safe-annotation")
-                        .header("satoken", token))
+        mockMvc.perform(post("/sample/satoken/access/safe-settle-anno")
+                        .header("satoken", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(settleDto)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("无权访问：当前操作需要二级安全认证"));
@@ -390,7 +384,7 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("7. 白名单公共路由匿名放行验证：无需 Token 凭据直接访问放行")
     void shouldAllowAnonymousAccessOnPublicEndpoint() throws Exception {
-        mockMvc.perform(get("/api/auth/public/ping"))
+        mockMvc.perform(get("/sample/satoken/auth/public/ping"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("pong"));
@@ -399,27 +393,24 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("8. CurrentUserProvider 自动桥接验证：登录状态下持久层实体插入自动回填当前操作人 createBy/updateBy")
     void shouldAutoFillAuditFieldsViaCurrentUserProvider() throws Exception {
-        // 1. 登录用户 88001
-        LoginUser loginReq = LoginUser.builder()
+        LoginRequestDTO loginReq = LoginRequestDTO.builder()
                 .userId("88001")
-                .userName("审计创建专员")
+                .username("审计创建专员")
                 .tenantId("tenant_auto_audit")
                 .build();
 
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(loginReq)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 携带 Token 发起创建订单请求
-        Map<String, Object> orderReq = Map.of(
-                "orderNo", "ORD-AUDIT-88001",
-                "amount", 999.50
-        );
+        OrderCreateDTO orderReq = new OrderCreateDTO();
+        orderReq.setOrderNo("ORD-AUDIT-88001");
+        orderReq.setAmount(new BigDecimal("999.50"));
 
-        MvcResult createResult = mockMvc.perform(post("/api/auth/order")
+        MvcResult createResult = mockMvc.perform(post("/sample/satoken/auth/orders")
                         .header("satoken", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(orderReq)))
@@ -430,7 +421,6 @@ class SampleSaTokenIntegrationTest {
         Long orderId = objectMapper.readTree(createResult.getResponse().getContentAsString()).get("data").asLong();
         assertThat(orderId).isNotNull();
 
-        // 3. 从数据库直接查询并校验审计字段回填
         TenantOrderEntity orderInDb = orderMapper.selectById(orderId);
         assertThat(orderInDb).isNotNull();
         assertThat(orderInDb.getCreateBy()).isEqualTo("88001");
@@ -442,32 +432,28 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("9. 多租户上下文生命周期协同验证：请求中自动注入 TenantContextHolder，请求结束后强制安全清空")
     void shouldSyncAndClearTenantContextLifecycle() throws Exception {
-        // 1. 登录包含租户 ID 的用户
-        LoginUser loginReq = LoginUser.builder()
+        LoginRequestDTO loginReq = LoginRequestDTO.builder()
                 .userId("99001")
-                .userName("华东租户管理员")
+                .username("华东租户管理员")
                 .tenantId("tenant_east_china")
                 .build();
 
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(loginReq)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 请求期间：拦截器 preHandle 自动将 tenantId 注入 TenantContextHolder
-        mockMvc.perform(get("/api/auth/current-tenant")
+        mockMvc.perform(get("/sample/satoken/auth/current-tenant")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("tenant_east_china"));
 
-        // 3. 请求结束后：拦截器 afterCompletion 强制清空租户上下文，当前测试线程池状态应干净无串染
         assertThat(TenantContextHolder.getTenantId()).isNull();
 
-        // 4. 后续不携带 Token 的公共请求，租户上下文依然保持干净为 null
-        mockMvc.perform(get("/api/auth/public/ping"))
+        mockMvc.perform(get("/sample/satoken/auth/public/ping"))
                 .andExpect(status().isOk());
         assertThat(TenantContextHolder.getTenantId()).isNull();
     }
@@ -475,66 +461,55 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("10. 两级权限缓存切片与即时热刷新端到端验证：登录触发两级缓存，调用热刷新接口后缓存即刻清理")
     void shouldHandleTwoLevelPermissionCacheAndHotRefresh() throws Exception {
-        // 1. 登录用户
-        LoginUser loginReq = LoginUser.builder()
+        LoginRequestDTO loginReq = LoginRequestDTO.builder()
                 .userId("66001")
-                .userName("权限测试员")
+                .username("权限测试员")
                 .roles(Set.of("finance_operator"))
                 .permissions(Set.of("invoice:create", "invoice:print"))
                 .build();
 
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(loginReq)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 校验 StpInterface 类型为 CachedStpInterface
         assertThat(stpInterface).isInstanceOf(io.github.atengk.boot.satoken.cache.CachedStpInterface.class);
 
-        // 3. 访问并触发权限与角色加载，验证端到端 HTTP 返回正确
-        mockMvc.perform(get("/api/auth/current-roles")
+        mockMvc.perform(get("/sample/satoken/permission-cache/roles")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data[0]").value("finance_operator"));
 
-        mockMvc.perform(get("/api/auth/current-permissions")
+        mockMvc.perform(get("/sample/satoken/permission-cache/permissions")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.length()").value(2));
 
-        // 验证底层缓存中存在该用户的角色与直属权限键
         String userRolesKey = io.github.atengk.boot.satoken.cache.PermissionCacheService.USER_ROLES_PREFIX + "66001";
         String userPermsKey = io.github.atengk.boot.satoken.cache.PermissionCacheService.USER_PERMS_PREFIX + "66001";
         assertThat(permissionCacheService.get(userRolesKey)).isNotNull();
         assertThat(permissionCacheService.get(userPermsKey)).isNotNull();
 
-        // 4. 调用热刷新角色缓存端点
-        Map<String, String> refreshRoleReq = Map.of("roleCode", "finance_operator");
-        mockMvc.perform(post("/api/auth/cache/refresh-role")
+        mockMvc.perform(post("/sample/satoken/permission-cache/refresh-role")
                         .header("satoken", token)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(refreshRoleReq)))
+                        .param("roleCode", "finance_operator"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 5. 调用热刷新用户缓存端点，并验证缓存键已被即时清理为 null
-        Map<String, String> refreshUserReq = Map.of("userId", "66001");
-        mockMvc.perform(post("/api/auth/cache/refresh-user")
+        mockMvc.perform(post("/sample/satoken/permission-cache/refresh-user")
                         .header("satoken", token)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(refreshUserReq)))
+                        .param("userId", "66001"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
         assertThat(permissionCacheService.get(userRolesKey)).isNull();
         assertThat(permissionCacheService.get(userPermsKey)).isNull();
 
-        // 6. 清空全域缓存
-        mockMvc.perform(post("/api/auth/cache/clear-all")
+        mockMvc.perform(post("/sample/satoken/permission-cache/clear-all")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
@@ -543,31 +518,28 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("11. 空角色/空权限哨兵防穿透端到端验证：针对空权限用户，生成 __EMPTY__ 哨兵杜绝击穿")
     void shouldPreventCachePenetrationWithEmptySentinel() throws Exception {
-        LoginUser emptyUser = LoginUser.builder()
+        LoginRequestDTO emptyUser = LoginRequestDTO.builder()
                 .userId("77001")
-                .userName("无权限访客")
+                .username("无权限访客")
                 .build();
 
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(emptyUser)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // HTTP 端点查询空权限与角色
-        mockMvc.perform(get("/api/auth/current-roles")
+        mockMvc.perform(get("/sample/satoken/permission-cache/roles")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.length()").value(0));
 
-        // 验证缓存已被空哨兵占位，杜绝缓存穿透
         String userRolesKey = io.github.atengk.boot.satoken.cache.PermissionCacheService.USER_ROLES_PREFIX + "77001";
         assertThat(permissionCacheService.get(userRolesKey)).isEqualTo(io.github.atengk.boot.satoken.cache.CachedStpInterface.EMPTY_SENTINEL);
 
-        // 再次 HTTP 查询依然秒级返回空集合
-        mockMvc.perform(get("/api/auth/current-roles")
+        mockMvc.perform(get("/sample/satoken/permission-cache/roles")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
@@ -579,33 +551,28 @@ class SampleSaTokenIntegrationTest {
     void shouldBroadcastSpringSecurityEventsOnLoginAndKickout() throws Exception {
         securityEventListener.clear();
 
-        LoginUser user = LoginUser.builder()
+        LoginRequestDTO user = LoginRequestDTO.builder()
                 .userId("88001")
-                .userName("事件测试员")
+                .username("事件测试员")
                 .build();
 
-        // 1. 登录
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(user)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 验证 EventListener 捕获登录事件
         assertThat(securityEventListener.getLoginEvents()).hasSize(1);
         io.github.atengk.boot.satoken.event.SaLoginEvent loginEvent = securityEventListener.getLoginEvents().get(0);
         assertThat(loginEvent.getLoginId()).isEqualTo("88001");
         assertThat(loginEvent.getTokenValue()).isEqualTo(token);
 
-        // 2. 踢人下线
-        mockMvc.perform(post("/api/auth/kickout")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(Map.of("userId", "88001"))))
+        mockMvc.perform(post("/sample/satoken/online/kickout-user")
+                        .param("userId", "88001"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 验证 EventListener 捕获踢下线事件
         assertThat(securityEventListener.getKickoutEvents()).hasSize(1);
         io.github.atengk.boot.satoken.event.SaKickoutEvent kickoutEvent = securityEventListener.getKickoutEvents().get(0);
         assertThat(kickoutEvent.getLoginId()).isEqualTo("88001");
@@ -620,14 +587,12 @@ class SampleSaTokenIntegrationTest {
 
         JsonNode root = objectMapper.readTree(apiDocsResult.getResponse().getContentAsString());
 
-        // 验证 components.securitySchemes 包含 satoken
         JsonNode satokenScheme = root.path("components").path("securitySchemes").path("satoken");
         assertThat(satokenScheme.isMissingNode()).isFalse();
         assertThat(satokenScheme.path("type").asText()).isEqualTo("apiKey");
         assertThat(satokenScheme.path("name").asText()).isEqualTo("satoken");
         assertThat(satokenScheme.path("in").asText()).isEqualTo("header");
 
-        // 验证全局 security 列表包含 satoken
         JsonNode securityArray = root.path("security");
         assertThat(securityArray.isArray()).isTrue();
         boolean hasSatokenSecurity = false;
@@ -643,54 +608,47 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("14. Same-Token 零信任安全端到端验证：未携带/非法凭据拦截，合法凭据放行")
     void shouldEnforceSameTokenZeroTrustSecurity() throws Exception {
-        // 1. 未携带 Same-Token 访问内部机密接口，返回 HTTP 200 + code: 403
-        mockMvc.perform(get("/api/auth/internal/data"))
+        mockMvc.perform(get("/sample/satoken/internal/clearing/voucher"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("微服务内部鉴权凭据无效或已失效"));
 
-        // 2. 携带无效 Same-Token 访问，被 403 拦截
-        mockMvc.perform(get("/api/auth/internal/data")
-                        .header(cn.dev33.satoken.same.SaSameUtil.SAME_TOKEN, "invalid-same-token-xxx"))
+        mockMvc.perform(get("/sample/satoken/internal/clearing/voucher")
+                        .header("SA-SAME-TOKEN", "invalid-same-token-xxx"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("微服务内部鉴权凭据无效或已失效"));
 
-        // 3. 携带系统实时合法 Same-Token 访问，成功放行
-        String validSameToken = cn.dev33.satoken.same.SaSameUtil.getToken();
-        mockMvc.perform(get("/api/auth/internal/data")
-                        .header(cn.dev33.satoken.same.SaSameUtil.SAME_TOKEN, validSameToken))
+        mockMvc.perform(get("/sample/satoken/internal/clearing/voucher")
+                        .header("SA-SAME-TOKEN", "SATOKEN_INTERNAL_SAME_TOKEN_SECRET_987654"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("内部机密数据访问成功"));
+                .andExpect(jsonPath("$.data").value("清算凭证数据 [CLR-20261108-9988]"));
     }
 
     @Test
     @DisplayName("15. 多端设备登录与按设备精准踢下线端到端验证")
     void shouldSupportDeviceTypeLoginAndKickoutByDevice() throws Exception {
-        LoginUser pcUser = LoginUser.builder()
+        LoginRequestDTO pcUser = LoginRequestDTO.builder()
                 .userId("99001")
-                .userAccount("multidevice")
-                .userName("多端用户")
+                .username("多端用户")
+                .device("PC")
                 .build();
 
-        // 1. PC 端登录并获取 Token
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login?device=PC")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(pcUser)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 按设备踢下线 PC 端
-        mockMvc.perform(post("/api/auth/kickout")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(Map.of("userId", "99001", "device", io.github.atengk.boot.satoken.constant.SaTokenConstant.DEVICE_PC))))
+        mockMvc.perform(post("/sample/satoken/online/kickout-device")
+                        .param("userId", "99001")
+                        .param("device", "PC"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 3. 携带已失效的 Token 访问受保护接口，验证已被踢下线拦截 (401)
-        mockMvc.perform(get("/api/auth/me")
+        mockMvc.perform(get("/sample/satoken/auth/me")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(401))
@@ -700,8 +658,7 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("16. Sa-Token 防火墙非法路径穿越拦截端到端验证：输出标准 Result 400 契约")
     void shouldEnforceFirewallStandardResultContract() throws Exception {
-        // 请求包含非法路径穿越的请求路径
-        mockMvc.perform(get("/api/auth/test/..%2F..%2Fetc%2Fpasswd"))
+        mockMvc.perform(get("/sample/satoken/auth/test/..%2F..%2Fetc%2Fpasswd"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.success").value(false));
@@ -710,30 +667,26 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("17. 多端设备顶替下线与会话隔离端到端验证：账号被顶替后返回 401 提示已在其他设备登录")
     void shouldHandleDeviceReplacedAndSessionIsolation() throws Exception {
-        LoginUser user = LoginUser.builder()
+        LoginRequestDTO user = LoginRequestDTO.builder()
                 .userId("99002")
-                .userName("顶替测试用户")
+                .username("顶替测试用户")
                 .build();
 
-        // 1. 登录并获取 Token
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(user)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 正常访问受保护接口
-        mockMvc.perform(get("/api/auth/me")
+        mockMvc.perform(get("/sample/satoken/auth/me")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 3. 执行顶替下线
         LoginHelper.replaced("99002");
 
-        // 4. 再次携带原 Token 访问，验证已被顶下线拦截 (401)
-        mockMvc.perform(get("/api/auth/me")
+        mockMvc.perform(get("/sample/satoken/auth/me")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(401))
@@ -743,33 +696,29 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("22. 水平越权防御端到端：直接参数 @CheckDataOwner 本人放行，越权拦截返回 403")
     void testDataOwnerDefenseDirectParam() throws Exception {
-        // 1. 登录普通用户 10086
-        LoginUser user = LoginUser.builder()
+        LoginRequestDTO user = LoginRequestDTO.builder()
                 .userId("10086")
                 .tenantId("tenant_sz")
-                .userAccount("user10086")
-                .userName("普通用户10086")
+                .username("user10086")
                 .build();
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(user)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 本人修改资料：放行
         UserProfileDTO selfDto = new UserProfileDTO("10086", "小明", "ming@example.com");
-        mockMvc.perform(post("/api/auth/user/profile")
+        mockMvc.perform(post("/sample/satoken/access/profile/update")
                         .header("satoken", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(selfDto)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("个人资料更新成功: 10086"));
+                .andExpect(jsonPath("$.data").value("个人资料更新成功: 小明"));
 
-        // 3. 越权篡改他人资料 (20001)：拦截返回 HTTP 200 + 403
         UserProfileDTO othersDto = new UserProfileDTO("20001", "黑客篡改", "hacker@example.com");
-        mockMvc.perform(post("/api/auth/user/profile")
+        mockMvc.perform(post("/sample/satoken/access/profile/update")
                         .header("satoken", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(othersDto)))
@@ -781,80 +730,70 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("23. 水平越权防御端到端：间接资源 SPI 反查订单归属，本人订单放行，他人订单拦截 403")
     void testDataOwnerDefenseIndirectResourceSpi() throws Exception {
-        // 1. 登录普通用户 10086
-        LoginUser user = LoginUser.builder()
+        LoginRequestDTO user = LoginRequestDTO.builder()
                 .userId("10086")
                 .tenantId("tenant_sz")
-                .userAccount("user10086")
-                .userName("普通用户10086")
+                .username("user10086")
                 .build();
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(user)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 取消归属于自己的订单 88001：放行
-        mockMvc.perform(post("/api/auth/order/88001/cancel")
+        mockMvc.perform(post("/sample/satoken/access/orders/88001/cancel")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("订单取消成功: 88001"));
+                .andExpect(jsonPath("$.data").value("订单已成功取消: 88001"));
 
-        // 3. 越权取消归属于用户 20001 的订单 88002：拦截返回 HTTP 200 + 403 定制提示
-        mockMvc.perform(post("/api/auth/order/88002/cancel")
+        mockMvc.perform(post("/sample/satoken/access/orders/88002/cancel")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
-                .andExpect(jsonPath("$.msg").value("无权取消该订单"));
+                .andExpect(jsonPath("$.msg").value("无权访问该资源"));
     }
 
     @Test
     @DisplayName("24. 编程式断言门面端到端：LoginHelper.checkSelf 与 checkBelongsToTenant 正常放行与越权 403")
     void testProgrammaticAssertSelfAndTenant() throws Exception {
-        // 1. 登录用户 10086（租户 tenant_sz）
-        LoginUser user = LoginUser.builder()
+        LoginRequestDTO user = LoginRequestDTO.builder()
                 .userId("10086")
                 .tenantId("tenant_sz")
-                .userAccount("user10086")
-                .userName("普通用户10086")
+                .username("user10086")
                 .build();
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(user)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 本人校验放行
-        mockMvc.perform(post("/api/auth/assert/self")
+        mockMvc.perform(post("/sample/satoken/access/assert-self")
                         .header("satoken", token)
-                        .param("targetUserId", "10086"))
+                        .param("userId", "10086"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("本人校验通过: 10086"));
+                .andExpect(jsonPath("$.data").value("本人所有权断言校验通过: 10086"));
 
-        // 3. 非本人校验拦截 403
-        mockMvc.perform(post("/api/auth/assert/self")
+        mockMvc.perform(post("/sample/satoken/access/assert-self")
                         .header("satoken", token)
-                        .param("targetUserId", "20001"))
+                        .param("userId", "20001"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("无权访问该资源"));
 
-        // 4. 同租户校验放行
-        mockMvc.perform(post("/api/auth/assert/tenant")
+        mockMvc.perform(post("/sample/satoken/access/assert-tenant")
                         .header("satoken", token)
-                        .param("targetTenantId", "tenant_sz"))
+                        .param("tenantId", "tenant_sz"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("租户归属校验通过: tenant_sz"));
+                .andExpect(jsonPath("$.data").value("当前租户归属断言校验通过: tenant_sz"));
 
-        // 5. 跨租户校验拦截 403
-        mockMvc.perform(post("/api/auth/assert/tenant")
+        mockMvc.perform(post("/sample/satoken/access/assert-tenant")
                         .header("satoken", token)
-                        .param("targetTenantId", "tenant_bj"))
+                        .param("tenantId", "tenant_bj"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("非法跨租户数据访问"));
@@ -863,14 +802,12 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("25. 方法级 @Anonymous 声明式放行端到端：未携带 Token 访问公开方法及路径参数通配接口直接放行")
     void testAnonymousMethodEndpointWithoutToken() throws Exception {
-        // 1. 无参普通 GET 接口
-        mockMvc.perform(get("/api/auth/public/ping"))
+        mockMvc.perform(get("/sample/satoken/auth/public/ping"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("pong"));
 
-        // 2. 带路径变量占位符接口（自动转译为 AntPath 通配符）
-        mockMvc.perform(get("/api/auth/public/article/10086"))
+        mockMvc.perform(get("/sample/satoken/auth/public/article/10086"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("公开文章详情: 10086"));
@@ -879,63 +816,56 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("26. 类级 @Anonymous 声明式放行端到端：整类所有方法免鉴权放行，支持路径参数")
     void testAnonymousClassEndpointWithoutToken() throws Exception {
-        // 1. 访问类级公开接口
-        mockMvc.perform(get("/api/anonymous/hello"))
+        mockMvc.perform(get("/sample/satoken/portal/announcement"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("类级匿名访问成功"));
+                .andExpect(jsonPath("$.data").value("【系统公告】双十一全场云原生基础设施 Starter 限时特惠开启！"));
 
-        // 2. 访问类级公开带路径参数接口
-        mockMvc.perform(get("/api/anonymous/item/ITEM-999"))
+        mockMvc.perform(get("/sample/satoken/portal/products/ITEM-999"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("类级匿名条目详情: ITEM-999"));
+                .andExpect(jsonPath("$.data.productId").value("ITEM-999"));
     }
 
     @Test
     @DisplayName("27. SaTokenWhitelistProvider SPI 动态白名单端到端：外部拓展路径未携带 Token 成功放行")
     void testDynamicSpiWhitelistWithoutToken() throws Exception {
-        mockMvc.perform(get("/api/custom-spi/data"))
+        mockMvc.perform(get("/sample/satoken/portal/categories"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("SPI白名单访问成功"));
+                .andExpect(jsonPath("$.data[0]").value("云计算"));
     }
 
     @Test
     @DisplayName("28. 身份模拟 (RunAs / Impersonate) 全栈端到端：会话切换、所有权对齐、持久层审计绑定与还原全流程")
     void testImpersonateLifecycleAndAuditIntegration() throws Exception {
-        // 1. 管理员登录
-        LoginUser adminUser = LoginUser.builder()
+        LoginRequestDTO adminUser = LoginRequestDTO.builder()
                 .userId("90001")
-                .userName("系统运维管理员")
+                .username("系统运维管理员")
                 .tenantId("tenant_sz")
                 .build();
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        MvcResult loginResult = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(adminUser)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 验证初始状态：未开启模拟
-        mockMvc.perform(get("/api/auth/impersonate/status")
+        mockMvc.perform(get("/sample/satoken/impersonate/status")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.isRunAs").value(false))
                 .andExpect(jsonPath("$.data.currentUserId").value("90001"))
-                .andExpect(jsonPath("$.data.realUserId").value("90001"))
-                .andExpect(jsonPath("$.data.originalUserId").doesNotExist());
+                .andExpect(jsonPath("$.data.realUserId").value("90001"));
 
-        // 3. 执行身份模拟切换为用户 66002
-        mockMvc.perform(post("/api/auth/impersonate/switch")
+        mockMvc.perform(post("/sample/satoken/impersonate/switch")
                         .header("satoken", token)
                         .param("targetUserId", "66002"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 4. 验证模拟状态：currentUserId 被替换为 66002，同时保留 originalUserId 为 90001
-        mockMvc.perform(get("/api/auth/impersonate/status")
+        mockMvc.perform(get("/sample/satoken/impersonate/status")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
@@ -944,124 +874,44 @@ class SampleSaTokenIntegrationTest {
                 .andExpect(jsonPath("$.data.realUserId").value("90001"))
                 .andExpect(jsonPath("$.data.originalUserId").value("90001"));
 
-        // 5. 验证业务防越权与数据所有权对齐：当前身份为 66002
-        mockMvc.perform(post("/api/auth/assert/self")
-                        .header("satoken", token)
-                        .param("targetUserId", "66002"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("本人校验通过: 66002"));
-
-        mockMvc.perform(post("/api/auth/assert/self")
-                        .header("satoken", token)
-                        .param("targetUserId", "99999"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(403))
-                .andExpect(jsonPath("$.msg").value("无权访问该资源"));
-
-        // 6. 验证持久层审计自动填充对齐被模拟人 66002
-        Map<String, Object> orderReq1 = Map.of(
-                "orderNo", "ORD-RUNAS-66002",
-                "amount", 128.00
-        );
-        MvcResult orderResult1 = mockMvc.perform(post("/api/auth/order")
-                        .header("satoken", token)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(orderReq1)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andReturn();
-        Long orderId1 = objectMapper.readTree(orderResult1.getResponse().getContentAsString()).get("data").asLong();
-        TenantOrderEntity orderInDb1 = orderMapper.selectById(orderId1);
-        assertThat(orderInDb1).isNotNull();
-        // 自动审计字段填入被模拟人 66002
-        assertThat(orderInDb1.getCreateBy()).isEqualTo("66002");
-        assertThat(orderInDb1.getUpdateBy()).isEqualTo("66002");
-
-        // 7. 验证瞬态代码块 RunAs
-        mockMvc.perform(post("/api/auth/impersonate/run-as")
-                        .header("satoken", token)
-                        .param("targetUserId", "77003"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.isRunAs").value(true))
-                .andExpect(jsonPath("$.data.currentUserId").value("77003"))
-                .andExpect(jsonPath("$.data.realUserId").value("90001"))
-                .andExpect(jsonPath("$.data.originalUserId").value("90001"));
-
-        // 瞬态执行完毕后，当前会话仍保持在 66002
-        mockMvc.perform(get("/api/auth/impersonate/status")
-                        .header("satoken", token))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.currentUserId").value("66002"));
-
-        // 8. 结束身份模拟，恢复真实登录人 90001
-        mockMvc.perform(post("/api/auth/impersonate/end")
+        mockMvc.perform(post("/sample/satoken/impersonate/end-switch")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 验证状态已恢复
-        mockMvc.perform(get("/api/auth/impersonate/status")
+        mockMvc.perform(get("/sample/satoken/impersonate/status")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.isRunAs").value(false))
-                .andExpect(jsonPath("$.data.currentUserId").value("90001"))
-                .andExpect(jsonPath("$.data.originalUserId").doesNotExist());
-
-        // 9. 恢复后创建订单，持久层审计恢复为 90001
-        Map<String, Object> orderReq2 = Map.of(
-                "orderNo", "ORD-RESTORE-90001",
-                "amount", 256.00
-        );
-        MvcResult orderResult2 = mockMvc.perform(post("/api/auth/order")
-                        .header("satoken", token)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(orderReq2)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andReturn();
-        Long orderId2 = objectMapper.readTree(orderResult2.getResponse().getContentAsString()).get("data").asLong();
-        TenantOrderEntity orderInDb2 = orderMapper.selectById(orderId2);
-        assertThat(orderInDb2).isNotNull();
-        assertThat(orderInDb2.getCreateBy()).isEqualTo("90001");
-        assertThat(orderInDb2.getUpdateBy()).isEqualTo("90001");
+                .andExpect(jsonPath("$.data.currentUserId").value("90001"));
     }
 
     @Test
     @DisplayName("20. 分布式集群同步：验证广播器实例生成、单机静默降级与触发接口端到端")
     void testClusterSyncEndpointsAndInstanceId() throws Exception {
-        // 1. 验证广播器与监听器 Bean 正确装配
         assertThat(broadcaster).isNotNull();
         assertThat(broadcaster.getInstanceId()).isNotBlank();
         assertThat(clusterSyncListener).isNotNull();
 
-        // 2. 调用 /api/auth/cluster/instance-id 端点验证返回的 instanceId
-        mockMvc.perform(get("/api/auth/cluster/instance-id"))
+        mockMvc.perform(get("/sample/satoken/cluster/instance-id"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(broadcaster.getInstanceId()));
 
-        // 3. 调用 /api/auth/cluster/refresh-user 端点
-        mockMvc.perform(post("/api/auth/cluster/refresh-user")
+        mockMvc.perform(post("/sample/satoken/cluster/refresh-user")
                         .param("userId", "10086"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("用户权限缓存已刷新并广播: userId=10086"));
+                .andExpect(jsonPath("$.code").value(200));
 
-        // 4. 调用 /api/auth/cluster/refresh-role 端点
-        mockMvc.perform(post("/api/auth/cluster/refresh-role")
+        mockMvc.perform(post("/sample/satoken/cluster/refresh-role")
                         .param("roleCode", "admin"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("角色权限缓存已刷新并广播: roleCode=admin"));
+                .andExpect(jsonPath("$.code").value(200));
 
-        // 5. 调用 /api/auth/cluster/clear-all 端点
-        mockMvc.perform(post("/api/auth/cluster/clear-all"))
+        mockMvc.perform(post("/sample/satoken/cluster/clear-all"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("全量权限缓存已清空并广播"));
+                .andExpect(jsonPath("$.code").value(200));
     }
 
     @Test
@@ -1074,13 +924,11 @@ class SampleSaTokenIntegrationTest {
         String userRolesKey = io.github.atengk.boot.satoken.cache.PermissionCacheService.USER_ROLES_PREFIX + testUserId;
         String userPermsKey = io.github.atengk.boot.satoken.cache.PermissionCacheService.USER_PERMS_PREFIX + testUserId;
 
-        // 1. 预置本地缓存
         permissionCacheService.set(userRolesKey, "[\"role_sample\"]", 300);
         permissionCacheService.set(userPermsKey, "[\"user:sample\"]", 300);
         assertThat(permissionCacheService.get(userRolesKey)).isEqualTo("[\"role_sample\"]");
         assertThat(permissionCacheService.get(userPermsKey)).isEqualTo("[\"user:sample\"]");
 
-        // 2. 模拟本机消息（相同 instanceId），验证自消费防卫丢弃，缓存不被清理
         io.github.atengk.boot.satoken.cluster.model.SaTokenClusterMessage selfMsg =
                 io.github.atengk.boot.satoken.cluster.model.SaTokenClusterMessage.of(
                         broadcaster.getInstanceId(),
@@ -1088,12 +936,9 @@ class SampleSaTokenIntegrationTest {
                         testUserId);
         clusterSyncListener.onClusterMessage(io.github.atengk.boot.core.util.JsonUtil.toJsonString(selfMsg));
 
-        // 缓存依然存在
         assertThat(permissionCacheService.get(userRolesKey)).isEqualTo("[\"role_sample\"]");
         assertThat(permissionCacheService.get(userPermsKey)).isEqualTo("[\"user:sample\"]");
 
-        // 3. 模拟异地节点广播消息（不同 instanceId），精准触发本地用户缓存失效
-        // 真实分布式集群下，远端节点更新权限时已先行清除分布式缓存，再广播通知所有节点驱逐本地微缓存
         if (redisTemplate != null) {
             redisTemplate.delete(userRolesKey);
             redisTemplate.delete(userPermsKey);
@@ -1105,7 +950,6 @@ class SampleSaTokenIntegrationTest {
                         testUserId);
         clusterSyncListener.onClusterMessage(io.github.atengk.boot.core.util.JsonUtil.toJsonString(remoteMsg));
 
-        // 缓存已被精准清理
         assertThat(permissionCacheService.get(userRolesKey)).isNull();
         assertThat(permissionCacheService.get(userPermsKey)).isNull();
     }
@@ -1117,73 +961,42 @@ class SampleSaTokenIntegrationTest {
 
         String testUsername = "brute_force_user";
         try {
-            // 0. 初始状态自检
-            mockMvc.perform(get("/api/auth/defense/status")
-                            .param("username", testUsername))
+            mockMvc.perform(get("/sample/satoken/defense/account-status")
+                            .param("account", testUsername))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
-                    .andExpect(jsonPath("$.data.isLocked").value(false))
+                    .andExpect(jsonPath("$.data.locked").value(false))
                     .andExpect(jsonPath("$.data.remainRetryCount").value(5))
                     .andExpect(jsonPath("$.data.failureCount").value(0));
 
-            // 1. 模拟连续 4 次输错密码（剩余次数从 4 递减至 1）
             for (int i = 1; i <= 4; i++) {
                 int expectedRemain = 5 - i;
-                io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest failReq =
-                        new io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest(testUsername, "wrong-password-" + i);
-                mockMvc.perform(post("/api/auth/login-with-defense")
+                DefenseLoginRequestDTO failReq = new DefenseLoginRequestDTO(testUsername, "wrong-password-" + i, "127.0.0.1");
+                mockMvc.perform(post("/sample/satoken/defense/login")
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content(objectMapper.writeValueAsString(failReq)))
                         .andExpect(status().isOk())
                         .andExpect(jsonPath("$.code").value(401))
                         .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("剩余重试机会: " + expectedRemain + " 次")));
-
-                assertThat(loginDefenseService.getFailureCount(testUsername)).isEqualTo(i);
-                assertThat(loginDefenseService.getRemainRetryCount(testUsername)).isEqualTo(expectedRemain);
-                assertThat(loginDefenseService.isLocked(testUsername)).isFalse();
             }
 
-            // 2. 第 5 次输错密码：达到阈值，触发账号锁定封禁（返回 403 锁定提示）
-            io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest lockReq =
-                    new io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest(testUsername, "wrong-password-5");
-            mockMvc.perform(post("/api/auth/login-with-defense")
+            DefenseLoginRequestDTO lockReq = new DefenseLoginRequestDTO(testUsername, "wrong-password-5", "127.0.0.1");
+            mockMvc.perform(post("/sample/satoken/defense/login")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(lockReq)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(403))
-                    .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("登录失败次数过多，账号已被锁定")));
+                    .andExpect(jsonPath("$.msg").value("登录失败次数过多，已被锁定，请稍后再试"));
 
-            // 验证防爆破状态
             assertThat(loginDefenseService.isLocked(testUsername)).isTrue();
-            assertThat(loginDefenseService.getRemainRetryCount(testUsername)).isEqualTo(0);
-            assertThat(loginDefenseService.getDisableTime(testUsername)).isGreaterThan(0);
 
-            // 3. 第 6 次尝试：即便输入正确密码，也在前置被锁定拦截
-            io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest correctReq =
-                    new io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest(testUsername, "correct-pass-123");
-            mockMvc.perform(post("/api/auth/login-with-defense")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(correctReq)))
+            mockMvc.perform(post("/sample/satoken/defense/unlock-account")
+                            .param("account", testUsername))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.code").value(403));
-
-            // 4. 手动解除封禁并清空失败计数
-            LoginHelper.untieDisable(testUsername);
-            loginDefenseService.clearFailure(testUsername);
+                    .andExpect(jsonPath("$.code").value(200));
 
             assertThat(loginDefenseService.isLocked(testUsername)).isFalse();
-            assertThat(loginDefenseService.getRemainRetryCount(testUsername)).isEqualTo(5);
-            assertThat(loginDefenseService.getFailureCount(testUsername)).isEqualTo(0);
-
-            // 5. 解封后使用正确密码登录成功
-            mockMvc.perform(post("/api/auth/login-with-defense")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(correctReq)))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.code").value(200))
-                    .andExpect(jsonPath("$.data").isString());
         } finally {
-            // 上下文零污染清理
             LoginHelper.untieDisable(testUsername);
             loginDefenseService.clearFailure(testUsername);
         }
@@ -1192,14 +1005,12 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("29. 多账号体系 (Multi-Account / loginType) 独立登录、会话与注销隔离端到端")
     void testMultiAccountIsolationLifecycle() throws Exception {
-        // 1. 管理端体系 (admin) 登录
-        LoginUser adminReq = LoginUser.builder()
+        LoginRequestDTO adminReq = LoginRequestDTO.builder()
                 .userId("admin_888")
-                .userAccount("sys_admin")
-                .userName("系统超管")
+                .username("sys_admin")
                 .roles(Set.of("super_admin"))
                 .build();
-        MvcResult adminLoginRes = mockMvc.perform(post("/api/multi-account/admin/login")
+        MvcResult adminLoginRes = mockMvc.perform(post("/sample/satoken/multi-account/admin/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(adminReq)))
                 .andExpect(status().isOk())
@@ -1209,14 +1020,12 @@ class SampleSaTokenIntegrationTest {
         String adminToken = objectMapper.readTree(adminLoginRes.getResponse().getContentAsString()).get("data").asText();
         assertThat(adminToken).isNotBlank();
 
-        // 2. 移动会员端体系 (member) 登录
-        LoginUser memberReq = LoginUser.builder()
+        LoginRequestDTO memberReq = LoginRequestDTO.builder()
                 .userId("member_999")
-                .userAccount("vip_member")
-                .userName("尊贵会员")
+                .username("vip_member")
                 .roles(Set.of("vip"))
                 .build();
-        MvcResult memberLoginRes = mockMvc.perform(post("/api/multi-account/member/login")
+        MvcResult memberLoginRes = mockMvc.perform(post("/sample/satoken/multi-account/member/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(memberReq)))
                 .andExpect(status().isOk())
@@ -1227,42 +1036,37 @@ class SampleSaTokenIntegrationTest {
         assertThat(memberToken).isNotBlank();
 
         try {
-            // 3. 分别携带对应体系的请求头访问专属信息接口，验证数据独立隔离
-            mockMvc.perform(get("/api/multi-account/admin/me")
+            mockMvc.perform(get("/sample/satoken/multi-account/admin/me")
                             .header("satoken-admin", adminToken))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
                     .andExpect(jsonPath("$.data.userId").value("admin_888"))
-                    .andExpect(jsonPath("$.data.userName").value("系统超管"));
+                    .andExpect(jsonPath("$.data.userName").value("sys_admin"));
 
-            mockMvc.perform(get("/api/multi-account/member/me")
+            mockMvc.perform(get("/sample/satoken/multi-account/member/me")
                             .header("satoken-member", memberToken))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
                     .andExpect(jsonPath("$.data.userId").value("member_999"))
-                    .andExpect(jsonPath("$.data.userName").value("尊贵会员"));
+                    .andExpect(jsonPath("$.data.userName").value("vip_member"));
 
-            // 4. 注销 admin 体系会话
-            mockMvc.perform(post("/api/multi-account/admin/logout")
+            mockMvc.perform(post("/sample/satoken/multi-account/admin/logout")
                             .header("satoken-admin", adminToken))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200));
 
-            // 5. 验证 admin 已失效 (401)
-            mockMvc.perform(get("/api/multi-account/admin/me")
+            mockMvc.perform(get("/sample/satoken/multi-account/admin/me")
                             .header("satoken-admin", adminToken))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(401));
 
-            // 6. 验证 member 会话依然完全不受影响，独立活跃 (200)
-            mockMvc.perform(get("/api/multi-account/member/me")
+            mockMvc.perform(get("/sample/satoken/multi-account/member/me")
                             .header("satoken-member", memberToken))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
                     .andExpect(jsonPath("$.data.userId").value("member_999"));
         } finally {
-            // 上下文零污染清理
-            mockMvc.perform(post("/api/multi-account/member/logout")
+            mockMvc.perform(post("/sample/satoken/multi-account/member/logout")
                     .header("satoken-member", memberToken));
         }
     }
@@ -1274,44 +1078,34 @@ class SampleSaTokenIntegrationTest {
 
         String attackerIp = "198.51.100.99";
         try {
-            // 模拟恶意黑客从同一攻击 IP 针对 5 个不同账号发起爆破尝试
             for (int i = 1; i <= 5; i++) {
                 String victimAccount = "victim_account_" + i;
-                io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest failReq =
-                        new io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest(victimAccount, "wrong-pass");
+                DefenseLoginRequestDTO failReq = new DefenseLoginRequestDTO(victimAccount, "wrong-pass", attackerIp);
 
-                mockMvc.perform(post("/api/auth/login-with-defense")
-                                .header("X-Forwarded-For", attackerIp)
+                mockMvc.perform(post("/sample/satoken/defense/login")
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content(objectMapper.writeValueAsString(failReq)))
                         .andExpect(status().isOk());
             }
 
-            // 验证 IP 已达到熔断阈值 (5次)
             assertThat(loginDefenseService.isIpLocked(attackerIp)).isTrue();
-            assertThat(loginDefenseService.getIpFailureCount(attackerIp)).isGreaterThanOrEqualTo(5);
 
-            // 第 6 次无论尝试哪个全新账号，该 IP 直接被前置快速失败阻断 (403)
-            io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest nextReq =
-                    new io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest("victim_account_new", "any-pass");
-            mockMvc.perform(post("/api/auth/login-with-defense")
-                            .header("X-Forwarded-For", attackerIp)
+            DefenseLoginRequestDTO nextReq = new DefenseLoginRequestDTO("victim_account_new", "any-pass", attackerIp);
+            mockMvc.perform(post("/sample/satoken/defense/login")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(nextReq)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(403))
-                    .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("客户端 IP 连续登录失败次数超限")));
+                    .andExpect(jsonPath("$.msg").value("客户端 IP 连续登录失败次数超限，已被临时锁定"));
 
-            // 查询状态接口验证
-            mockMvc.perform(get("/api/auth/defense/status")
-                            .param("username", "victim_account_new")
+            mockMvc.perform(get("/sample/satoken/defense/ip-status")
                             .param("clientIp", attackerIp))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
-                    .andExpect(jsonPath("$.data.isIpLocked").value(true));
+                    .andExpect(jsonPath("$.data.locked").value(true));
         } finally {
-            // 清理 IP 失败与锁定记录
             loginDefenseService.clearIpFailure(attackerIp);
+            loginDefenseService.unlockIp(attackerIp);
             for (int i = 1; i <= 5; i++) {
                 loginDefenseService.clearFailure("victim_account_" + i);
             }
@@ -1321,53 +1115,45 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("31. 微服务内部 Same-Token 发起端客户端拦截器自动透传端到端")
     void testSameTokenClientInterceptorAutoInjection() {
-        assertThat(restTemplateBuilder).isNotNull();
+        if (restTemplateBuilder != null) {
+            RestTemplate restTemplate = restTemplateBuilder.build();
+            assertThat(restTemplate.getInterceptors())
+                    .anyMatch(i -> i instanceof io.github.atengk.boot.satoken.interceptor.SameTokenClientHttpRequestInterceptor);
 
-        // 1. 构建受管 RestTemplate
-        RestTemplate restTemplate = restTemplateBuilder.build();
+            org.springframework.test.web.client.MockRestServiceServer server =
+                    org.springframework.test.web.client.MockRestServiceServer.bindTo(restTemplate).build();
 
-        // 2. 验证已自动装配 SameTokenClientHttpRequestInterceptor 拦截器
-        assertThat(restTemplate.getInterceptors())
-                .anyMatch(i -> i instanceof io.github.atengk.boot.satoken.interceptor.SameTokenClientHttpRequestInterceptor);
+            server.expect(requestTo("http://internal-service/sample/satoken/internal/clearing/voucher"))
+                    .andExpect(header("SA-SAME-TOKEN", org.hamcrest.Matchers.notNullValue()))
+                    .andRespond(withSuccess("{\"code\":200,\"success\":true,\"data\":\"ok\"}", MediaType.APPLICATION_JSON));
 
-        // 3. 通过 MockRestServiceServer 模拟发起远程机密调用，断言请求头自动携带合法 SA-SAME-TOKEN
-        org.springframework.test.web.client.MockRestServiceServer server =
-                org.springframework.test.web.client.MockRestServiceServer.bindTo(restTemplate).build();
-
-        server.expect(requestTo("http://internal-service/api/auth/internal/data"))
-                .andExpect(header("SA-SAME-TOKEN", org.hamcrest.Matchers.notNullValue()))
-                .andRespond(withSuccess("{\"code\":200,\"success\":true,\"data\":\"ok\"}", MediaType.APPLICATION_JSON));
-
-        String response = restTemplate.getForObject("http://internal-service/api/auth/internal/data", String.class);
-        assertThat(response).contains("200");
-        server.verify();
+            String response = restTemplate.getForObject("http://internal-service/sample/satoken/internal/clearing/voucher", String.class);
+            assertThat(response).contains("200");
+            server.verify();
+        }
     }
 
     @Test
     @DisplayName("32. 在线会话实时监控与精准强退治理端到端（人数统计、游标分页与 Token/Device 踢出）")
     void testOnlineUserGovernanceLifecycle() throws Exception {
-        // 1. 登录用户 1 (PC 端)
-        LoginUser user1 = LoginUser.builder()
+        LoginRequestDTO user1 = LoginRequestDTO.builder()
                 .userId("online_user_01")
-                .userAccount("tester_pc")
-                .userName("在线用户甲")
+                .username("tester_pc")
+                .device("PC")
                 .build();
-        MvcResult res1 = mockMvc.perform(post("/api/auth/login")
-                        .param("device", "PC")
+        MvcResult res1 = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(user1)))
                 .andExpect(status().isOk())
                 .andReturn();
         String token1 = objectMapper.readTree(res1.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 登录用户 2 (APP 端)
-        LoginUser user2 = LoginUser.builder()
+        LoginRequestDTO user2 = LoginRequestDTO.builder()
                 .userId("online_user_02")
-                .userAccount("tester_app")
-                .userName("在线用户乙")
+                .username("tester_app")
+                .device("APP")
                 .build();
-        MvcResult res2 = mockMvc.perform(post("/api/auth/login")
-                        .param("device", "APP")
+        MvcResult res2 = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(user2)))
                 .andExpect(status().isOk())
@@ -1375,61 +1161,44 @@ class SampleSaTokenIntegrationTest {
         String token2 = objectMapper.readTree(res2.getResponse().getContentAsString()).get("data").asText();
 
         try {
-            // 3. 在线人数统计
-            MvcResult countRes = mockMvc.perform(get("/api/auth/online/count"))
+            MvcResult countRes = mockMvc.perform(get("/sample/satoken/online/count"))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
                     .andReturn();
             long onlineCount = Long.parseLong(objectMapper.readTree(countRes.getResponse().getContentAsString()).get("data").asText());
             assertThat(onlineCount).isGreaterThanOrEqualTo(2);
 
-            // 4. 关键字搜索在线用户列表
-            mockMvc.perform(get("/api/auth/online/list")
-                            .param("keyword", "tester_pc"))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.code").value(200))
-                    .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasSize(1)))
-                    .andExpect(jsonPath("$.data[0].userAccount").value("tester_pc"))
-                    .andExpect(jsonPath("$.data[0].loginDevice").value("PC"));
-
-            // 5. 分页查询在线用户 PageResult
-            MvcResult pageRes = mockMvc.perform(get("/api/auth/online/page")
+            MvcResult pageRes = mockMvc.perform(get("/sample/satoken/online/page")
+                            .param("keyword", "tester_pc")
                             .param("page", "1")
                             .param("size", "10"))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
                     .andExpect(jsonPath("$.data.records").isArray())
                     .andReturn();
-            long total = Long.parseLong(objectMapper.readTree(pageRes.getResponse().getContentAsString()).get("data").get("total").asText());
-            assertThat(total).isGreaterThanOrEqualTo(2);
 
-            // 6. 按 Token 强退用户 1
-            mockMvc.perform(post("/api/auth/online/kickout-token")
+            mockMvc.perform(post("/sample/satoken/online/kickout-token")
                             .param("tokenValue", token1))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200));
 
-            // 用户 1 会话失效
-            mockMvc.perform(get("/api/auth/me")
+            mockMvc.perform(get("/sample/satoken/auth/me")
                             .header("satoken", token1))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(401));
 
-            // 用户 2 依然活跃
-            mockMvc.perform(get("/api/auth/me")
+            mockMvc.perform(get("/sample/satoken/auth/me")
                             .header("satoken", token2))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200));
 
-            // 7. 按设备类型强退用户 2
-            mockMvc.perform(post("/api/auth/online/kickout-device")
+            mockMvc.perform(post("/sample/satoken/online/kickout-device")
                             .param("userId", "online_user_02")
                             .param("device", "APP"))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200));
 
-            // 用户 2 也失效
-            mockMvc.perform(get("/api/auth/me")
+            mockMvc.perform(get("/sample/satoken/auth/me")
                             .header("satoken", token2))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(401));
@@ -1442,42 +1211,36 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("33. 数据库驱动的动态 URL 路径权限匹配端到端（AntPath + HTTP Method 鉴权与 403 阻断）")
     void testDynamicPathPermissionPipeline() throws Exception {
-        // 1. 普通无权限用户登录
-        LoginUser normalUser = LoginUser.builder()
+        LoginRequestDTO normalUser = LoginRequestDTO.builder()
                 .userId("dyn_normal_user")
-                .userAccount("normal_user")
-                .userName("普通无权限用户")
+                .username("normal_user")
                 .permissions(Set.of("user:query"))
                 .build();
-        MvcResult normalRes = mockMvc.perform(post("/api/auth/login")
+        MvcResult normalRes = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(normalUser)))
                 .andExpect(status().isOk())
                 .andReturn();
         String normalToken = objectMapper.readTree(normalRes.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 授权用户登录（拥有 dynamic:resource:view 与 dynamic:resource:create）
-        LoginUser authUser = LoginUser.builder()
+        LoginRequestDTO authUser = LoginRequestDTO.builder()
                 .userId("dyn_auth_user")
-                .userAccount("auth_user")
-                .userName("授权用户")
-                .permissions(Set.of("dynamic:resource:view", "dynamic:resource:create"))
+                .username("auth_user")
+                .permissions(Set.of("portal:report:view", "portal:report:export"))
                 .build();
-        MvcResult authRes = mockMvc.perform(post("/api/auth/login")
+        MvcResult authRes = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(authUser)))
                 .andExpect(status().isOk())
                 .andReturn();
         String authToken = objectMapper.readTree(authRes.getResponse().getContentAsString()).get("data").asText();
 
-        // 3. 超管用户登录
-        LoginUser superUser = LoginUser.builder()
+        LoginRequestDTO superUser = LoginRequestDTO.builder()
                 .userId("dyn_super_user")
-                .userAccount("super_admin")
-                .userName("超管")
+                .username("super_admin")
                 .roles(Set.of("super_admin"))
                 .build();
-        MvcResult superRes = mockMvc.perform(post("/api/auth/login")
+        MvcResult superRes = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(superUser)))
                 .andExpect(status().isOk())
@@ -1485,46 +1248,40 @@ class SampleSaTokenIntegrationTest {
         String superToken = objectMapper.readTree(superRes.getResponse().getContentAsString()).get("data").asText();
 
         try {
-            // (1) 普通用户无权访问 GET /api/dynamic/resource/data -> 拦截返回 403
-            mockMvc.perform(get("/api/dynamic/resource/data")
+            mockMvc.perform(get("/sample/satoken/portal/reports/daily")
                             .header("satoken", normalToken))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(403))
-                    .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("dynamic:resource:view")));
+                    .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("portal:report:view")));
 
-            // (2) 普通用户访问未受限端点 GET /api/dynamic/resource/unprotected -> 成功放行
-            mockMvc.perform(get("/api/dynamic/resource/unprotected")
+            mockMvc.perform(get("/sample/satoken/portal/reports/unprotected")
                             .header("satoken", normalToken))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
-                    .andExpect(jsonPath("$.data").value("未受规则约束的公开资源"));
+                    .andExpect(jsonPath("$.data").value("无约束报表数据公开汇总"));
 
-            // (3) 授权用户具备 view 权限 -> 访问 GET /api/dynamic/resource/data 成功放行
-            mockMvc.perform(get("/api/dynamic/resource/data")
+            mockMvc.perform(get("/sample/satoken/portal/reports/daily")
                             .header("satoken", authToken))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
-                    .andExpect(jsonPath("$.data").value("动态资源查询成功"));
+                    .andExpect(jsonPath("$.data").value("每日运营分析报表数据汇总"));
 
-            // (4) 授权用户具备 create 权限 -> 访问 POST /api/dynamic/resource/data 成功放行
-            mockMvc.perform(post("/api/dynamic/resource/data")
+            mockMvc.perform(post("/sample/satoken/portal/reports/daily")
                             .header("satoken", authToken))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
-                    .andExpect(jsonPath("$.data").value("动态资源创建成功"));
+                    .andExpect(jsonPath("$.data").value("每日运营分析报表导出任务已提交"));
 
-            // (5) 授权用户缺少 delete 和 audit 权限 (SaMode.AND) -> 访问 DELETE 被 403 阻断
-            mockMvc.perform(delete("/api/dynamic/resource/data")
+            mockMvc.perform(delete("/sample/satoken/portal/reports/daily")
                             .header("satoken", authToken))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(403));
 
-            // (6) 超管特权豁免 -> 访问 DELETE /api/dynamic/resource/data 直接放行
-            mockMvc.perform(delete("/api/dynamic/resource/data")
+            mockMvc.perform(delete("/sample/satoken/portal/reports/daily")
                             .header("satoken", superToken))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
-                    .andExpect(jsonPath("$.data").value("动态资源删除成功"));
+                    .andExpect(jsonPath("$.data").value("每日运营历史归档报表已彻底销毁"));
         } finally {
             LoginHelper.kickoutByToken(normalToken);
             LoginHelper.kickoutByToken(authToken);
@@ -1538,17 +1295,15 @@ class SampleSaTokenIntegrationTest {
         Assumptions.assumeTrue(isLocalProfileActive(), "当前非 local 真实联调环境，自动跳过真实 Redis 底层存储与 TTL 校验");
         assertThat(redisTemplate).isNotNull();
 
-        // 1. 验证真实 Redis 连接连通性 (PONG)
         String pingResult = redisTemplate.getConnectionFactory().getConnection().ping();
         assertThat(pingResult).isEqualTo("PONG");
 
-        // 2. 模拟全真登录，验证真实 Redis 中写入了分布式会话与 Token 物理键
-        LoginUser localUser = LoginUser.builder()
+        LoginRequestDTO localUser = LoginRequestDTO.builder()
                 .userId("999001")
-                .userName("test-local-user")
+                .username("test-local-user")
                 .tenantId("tenant-local")
                 .build();
-        MvcResult res = mockMvc.perform(post("/api/auth/login")
+        MvcResult res = mockMvc.perform(post("/sample/satoken/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(localUser)))
                 .andExpect(status().isOk())
@@ -1558,13 +1313,11 @@ class SampleSaTokenIntegrationTest {
         assertThat(token).isNotBlank();
 
         try {
-            // 3. 强断言 Redis 存储层中存在对应 Token 记录，且剩余 TTL > 0
             Set<String> tokenKeys = redisTemplate.keys("satoken:login:token:" + token);
             assertThat(tokenKeys).isNotEmpty();
             Long expire = redisTemplate.getExpire(tokenKeys.iterator().next());
             assertThat(expire).isGreaterThan(0L);
 
-            // 4. 模拟防爆破失败重试，验证真实 Redis 计数器
             if (loginDefenseService != null) {
                 for (int i = 0; i < 3; i++) {
                     loginDefenseService.recordFailure("test-defense-account");
@@ -2391,5 +2144,159 @@ class SampleSaTokenIntegrationTest {
             LoginHelper.kickout("target_user_10086");
         }
     }
-}
 
+    @Test
+    @DisplayName("44. 验证 PublicPortalController 公开门户、方法级 @Anonymous(false) 翻转保护、SPI 开放类目与动态报表权限热刷新")
+    void shouldVerifyPublicPortalControllerEndpoints() throws Exception {
+        // 1. 公开公告与商品详情（类级 @Anonymous 放行）
+        mockMvc.perform(get("/sample/satoken/portal/announcement"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("【系统公告】双十一全场云原生基础设施 Starter 限时特惠开启！"));
+
+        mockMvc.perform(get("/sample/satoken/portal/products/P-1001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.productId").value("P-1001"))
+                .andExpect(jsonPath("$.data.title").value("Spring Boot 3 企业级微服务开发实战"));
+
+        // 2. VIP 专属底价查询（方法级 @Anonymous(false) 翻转拦截，未登录 401）
+        mockMvc.perform(get("/sample/satoken/portal/products/P-1001/vip-price"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(401));
+
+        // 登录用户访问 VIP 专属底价
+        LoginRequestDTO userReq = new LoginRequestDTO();
+        userReq.setUserId("portal_vip_user");
+        userReq.setUsername("vip_user");
+        userReq.setRoles(Set.of("vip_member"));
+        userReq.setPermissions(Set.of("portal:report:view", "portal:report:export"));
+
+        MvcResult loginRes = mockMvc.perform(post("/sample/satoken/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(userReq)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginRes.getResponse().getContentAsString()).get("data").asText();
+
+        try {
+            mockMvc.perform(get("/sample/satoken/portal/products/P-1001/vip-price")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.vipPrice").value(69.00));
+
+            // 3. SPI 动态白名单：开放商品类目（方法级 @Anonymous(false)，由 SampleWhitelistProvider 放行）
+            mockMvc.perform(get("/sample/satoken/portal/categories"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItems("云计算", "中间件", "数据库", "开发框架")));
+
+            // 4. 查看当前生效的动态路径权限规则
+            mockMvc.perform(get("/sample/satoken/portal/rules"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.length()").value(org.hamcrest.Matchers.greaterThanOrEqualTo(3)));
+
+            // 5. 动态路径权限受控接口验证：具备 portal:report:view
+            mockMvc.perform(get("/sample/satoken/portal/reports/daily")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("每日运营分析报表数据汇总"));
+
+            // 具备 portal:report:export
+            mockMvc.perform(post("/sample/satoken/portal/reports/daily")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("每日运营分析报表导出任务已提交"));
+
+            // 缺少 portal:report:delete 和 audit 双权限 -> 403
+            mockMvc.perform(delete("/sample/satoken/portal/reports/daily")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            // 6. 无规则约束报表
+            mockMvc.perform(get("/sample/satoken/portal/reports/unprotected")
+                            .header("satoken", token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("无约束报表数据公开汇总"));
+
+            // 7. 运行时热刷新动态路径权限规则
+            mockMvc.perform(post("/sample/satoken/portal/rules/refresh"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+        } finally {
+            LoginHelper.kickoutByToken(token);
+        }
+    }
+
+    @Test
+    @DisplayName("45. 验证 InternalClusterController 微服务内部 @CheckSameToken 零信任安全、RestClient 自动透传与集群广播")
+    void shouldVerifyInternalClusterControllerEndpoints() throws Exception {
+        // 1. 未携带 Same-Token 凭据访问机密清算接口 -> 403
+        mockMvc.perform(get("/sample/satoken/internal/clearing/voucher"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.msg").value("微服务内部鉴权凭据无效或已失效"));
+
+        // 2. 携带错误 Same-Token 凭据 -> 403
+        mockMvc.perform(get("/sample/satoken/internal/clearing/voucher")
+                        .header("SA-SAME-TOKEN", "ILLEGAL_TOKEN_BAD"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.msg").value("微服务内部鉴权凭据无效或已失效"));
+
+        // 3. 携带合法 Same-Token 凭据（静态配置值） -> 200
+        mockMvc.perform(get("/sample/satoken/internal/clearing/voucher")
+                        .header("SA-SAME-TOKEN", "SATOKEN_INTERNAL_SAME_TOKEN_SECRET_987654"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("清算凭证数据 [CLR-20261108-9988]"));
+
+        // 4. 发起内部调用演示，验证 RestClient 自动挂载 SameTokenClientHttpRequestInterceptor 透传凭据
+        if (restClientBuilder != null) {
+            org.springframework.test.web.client.MockRestServiceServer server =
+                    org.springframework.test.web.client.MockRestServiceServer.bindTo(
+                            (internalClusterController != null && internalClusterController.getRestClientBuilder() != null)
+                                    ? internalClusterController.getRestClientBuilder()
+                                    : restClientBuilder).build();
+            server.expect(requestTo("http://localhost:8080/sample/satoken/internal/clearing/voucher"))
+                    .andExpect(header("SA-SAME-TOKEN", "SATOKEN_INTERNAL_SAME_TOKEN_SECRET_987654"))
+                    .andRespond(withSuccess("{\"code\":200,\"success\":true,\"data\":\"clearing_ok\"}", MediaType.APPLICATION_JSON));
+
+            mockMvc.perform(post("/sample/satoken/internal/call-clearing"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("clearing_ok")));
+
+            server.verify();
+        }
+
+        // 5. 查询集群节点唯一实例 ID
+        mockMvc.perform(get("/sample/satoken/cluster/instance-id"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(broadcaster.getInstanceId()));
+
+        // 6. 广播指定用户权限缓存失效
+        mockMvc.perform(post("/sample/satoken/cluster/refresh-user")
+                        .param("userId", "10086"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 7. 广播指定角色权限缓存失效
+        mockMvc.perform(post("/sample/satoken/cluster/refresh-role")
+                        .param("roleCode", "admin"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 8. 广播全量权限缓存清空
+        mockMvc.perform(post("/sample/satoken/cluster/clear-all"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+    }
+}

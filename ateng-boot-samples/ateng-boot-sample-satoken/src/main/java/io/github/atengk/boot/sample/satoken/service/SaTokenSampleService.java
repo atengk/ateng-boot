@@ -83,7 +83,7 @@ public class SaTokenSampleService {
      *
      * @return 业务结果
      */
-    @SaCheckRole("super_admin")
+    @SaCheckRole("finance_director")
     public String checkServiceRole() {
         return "Service 角色校验通过";
     }

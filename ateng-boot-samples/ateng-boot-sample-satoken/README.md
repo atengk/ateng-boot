@@ -29,6 +29,8 @@
 
 | 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- | :--- |
+| **方法级免鉴权探针** | `AuthSessionController` | `GET /sample/satoken/auth/public/ping` | `curl "http://localhost:8080/sample/satoken/auth/public/ping"` |
+| **方法级免鉴权文章(通配)** | `AuthSessionController` | `GET /sample/satoken/auth/public/article/{articleId}` | `curl "http://localhost:8080/sample/satoken/auth/public/article/10086"` |
 | **多端登录签发凭据** | `AuthSessionController` | `POST /sample/satoken/auth/login` | `curl -X POST "http://localhost:8080/sample/satoken/auth/login" -H "Content-Type: application/json" -d '{"userId":"10086","username":"admin","tenantId":"tenant_sz","device":"PC","roles":["audit_manager"],"permissions":["order:query"]}'` |
 | **查询当前登录主体** | `AuthSessionController` | `GET /sample/satoken/auth/me` | `curl "http://localhost:8080/sample/satoken/auth/me" -H "satoken: <TOKEN>"` |
 | **透明剥离读取用户ID** | `AuthSessionController` | `GET /sample/satoken/auth/user-id` | `curl "http://localhost:8080/sample/satoken/auth/user-id" -H "satoken: <TOKEN>"` |
@@ -78,6 +80,19 @@
 | **瞬态模拟补偿客诉订单** | `ImpersonateAuditController` | `POST /sample/satoken/impersonate/compensate-order` | `curl -X POST "http://localhost:8080/sample/satoken/impersonate/compensate-order?targetUserId=10086&orderNo=COMP-001&amount=99.00" -H "satoken: <TOKEN>"` |
 | **查询系统安全审计事件** | `ImpersonateAuditController` | `GET /sample/satoken/impersonate/events` | `curl "http://localhost:8080/sample/satoken/impersonate/events"` |
 | **清空系统安全审计事件** | `ImpersonateAuditController` | `POST /sample/satoken/impersonate/events/clear` | `curl -X POST "http://localhost:8080/sample/satoken/impersonate/events/clear"` |
+| **公开商城广播公告(@Anonymous)** | `PublicPortalController` | `GET /sample/satoken/portal/announcement` | `curl "http://localhost:8080/sample/satoken/portal/announcement"` |
+| **公开商品详情(路径通配)** | `PublicPortalController` | `GET /sample/satoken/portal/products/{productId}` | `curl "http://localhost:8080/sample/satoken/portal/products/SEC-001"` |
+| **VIP底价查询(@Anonymous(false))** | `PublicPortalController` | `GET /sample/satoken/portal/products/{productId}/vip-price` | `curl "http://localhost:8080/sample/satoken/portal/products/SEC-001/vip-price" -H "satoken: <TOKEN>"` |
+| **SPI动态白名单开放商品类目** | `PublicPortalController` | `GET /sample/satoken/portal/categories` | `curl "http://localhost:8080/sample/satoken/portal/categories"` |
+| **查看当前动态路径权限规则** | `PublicPortalController` | `GET /sample/satoken/portal/rules` | `curl "http://localhost:8080/sample/satoken/portal/rules"` |
+| **动态权限受控接口查询** | `PublicPortalController` | `GET /sample/satoken/portal/reports/daily` | `curl "http://localhost:8080/sample/satoken/portal/reports/daily" -H "satoken: <TOKEN>"` |
+| **运行时热刷新动态路由规则** | `PublicPortalController` | `POST /sample/satoken/portal/rules/refresh` | `curl -X POST "http://localhost:8080/sample/satoken/portal/rules/refresh"` |
+| **内网机密清算凭证(@CheckSameToken)** | `InternalClusterController` | `GET /sample/satoken/internal/clearing/voucher` | `curl "http://localhost:8080/sample/satoken/internal/clearing/voucher" -H "SA-SAME-TOKEN: SATOKEN_INTERNAL_SAME_TOKEN_SECRET_987654"` |
+| **演示跨微服务内部清算调用** | `InternalClusterController` | `POST /sample/satoken/internal/call-clearing` | `curl -X POST "http://localhost:8080/sample/satoken/internal/call-clearing"` |
+| **查询当前集群节点唯一实例ID** | `InternalClusterController` | `GET /sample/satoken/cluster/instance-id` | `curl "http://localhost:8080/sample/satoken/cluster/instance-id"` |
+| **广播指定用户权限缓存全网失效** | `InternalClusterController` | `POST /sample/satoken/cluster/refresh-user` | `curl -X POST "http://localhost:8080/sample/satoken/cluster/refresh-user?userId=10086"` |
+| **广播指定角色权限缓存全网失效** | `InternalClusterController` | `POST /sample/satoken/cluster/refresh-role` | `curl -X POST "http://localhost:8080/sample/satoken/cluster/refresh-role?roleCode=admin"` |
+| **广播全网清空两级权限缓存** | `InternalClusterController` | `POST /sample/satoken/cluster/clear-all` | `curl -X POST "http://localhost:8080/sample/satoken/cluster/clear-all"` |
 
 ---
 
