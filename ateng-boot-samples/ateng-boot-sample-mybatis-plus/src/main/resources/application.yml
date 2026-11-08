@@ -36,6 +36,10 @@ ateng:
         mask-sensitive: true
         show-call-location: true
         max-sql-length: 4096
+        storage:
+          enabled: true
+          include-select: true
+          async: false
       crypto:
         secret-key: "1234567890123456"
       slow-sql:

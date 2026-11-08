@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Constants;
 import io.github.atengk.boot.mybatisplus.annotation.DataScope;
+import io.github.atengk.boot.mybatisplus.annotation.IgnoreSqlLog;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.sample.mybatisplus.entity.UserEntity;
 import io.github.atengk.boot.sample.mybatisplus.model.UserDeptDetailVO;
@@ -57,4 +58,13 @@ public interface UserMapper extends AtengBaseMapper<UserEntity> {
      */
     @Select("SELECT * FROM sys_user WHERE name = #{username} AND #{password} IS NOT NULL")
     List<UserEntity> selectByUsernameAndPassword(@Param("username") String username, @Param("password") String password);
+
+    /**
+     * 心跳探测查询方法（声明 @IgnoreSqlLog 豁免 SQL 审计拦截与控制台看板输出）
+     *
+     * @return 探测返回值 1
+     */
+    @IgnoreSqlLog
+    @Select("SELECT 1")
+    Integer pingHeartbeat();
 }

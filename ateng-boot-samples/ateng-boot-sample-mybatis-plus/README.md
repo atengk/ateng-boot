@@ -73,6 +73,31 @@
 | **外部动态 SQL 免 Mapper 分页查询** | `MpDynamicQueryAndSqlController` | `GET /sample/mybatis-plus/query/dynamic-sql/page` | `curl "http://localhost:8080/sample/mybatis-plus/query/dynamic-sql/page?name=张&minAge=20&current=1&size=10"` |
 | **外部动态 SQL 零停机热替换与执行验证** | `MpDynamicQueryAndSqlController` | `POST /sample/mybatis-plus/query/dynamic-sql/hot-swap` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/query/dynamic-sql/hot-swap" -H "Content-Type: application/json" -d "{\"statementId\":\"custom.webHotSwapDemo\",\"sqlScript\":\"SELECT id, name, age FROM sys_user WHERE id = #{id}\",\"description\":\"运行时热替换示例\",\"sampleParams\":{\"id\":1001}}"` |
 
+### 3.5 原生高性能批量操作、受管流式游标与并发锁控制 (`MpBatchStreamAndLockController`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **原生单条多值批量插入 (BatchUtil.insertBatch)** | `MpBatchStreamAndLockController` | `POST /sample/mybatis-plus/high-perf/batch/insert` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/high-perf/batch/insert" -H "Content-Type: application/json" -d "[{\"skuCode\":\"SKU-CURL-001\",\"skuName\":\"键盘\",\"price\":299.00,\"stock\":50},{\"skuCode\":\"SKU-CURL-002\",\"skuName\":\"鼠标\",\"price\":199.00,\"stock\":100}]"` |
+| **双方言原生批量 Upsert (@ConflictKeys)** | `MpBatchStreamAndLockController` | `POST /sample/mybatis-plus/high-perf/batch/upsert` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/high-perf/batch/upsert" -H "Content-Type: application/json" -d "[{\"skuCode\":\"SKU-CURL-001\",\"skuName\":\"机械键盘Pro\",\"price\":399.00,\"stock\":80}]"` |
+| **主键排序防死锁批量更新 (updateBatch & CASE WHEN)** | `MpBatchStreamAndLockController` | `POST /sample/mybatis-plus/high-perf/batch/update` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/high-perf/batch/update" -H "Content-Type: application/json" -d "[{\"id\":1001,\"price\":350.00,\"stock\":70}]"` |
+| **受管流式游标分批大表导出 (StreamingQueryTemplate)** | `MpBatchStreamAndLockController` | `GET /sample/mybatis-plus/high-perf/stream/export` | `curl "http://localhost:8080/sample/mybatis-plus/high-perf/stream/export?minStock=10"` |
+| **流式游标提前短路退出 (streamWhile)** | `MpBatchStreamAndLockController` | `GET /sample/mybatis-plus/high-perf/stream/while` | `curl "http://localhost:8080/sample/mybatis-plus/high-perf/stream/while?targetSkuCode=SKU-CURL-001"` |
+| **CAS 乐观锁并发退避自旋重试扣减 (updateWithOptimisticRetry)** | `MpBatchStreamAndLockController` | `POST /sample/mybatis-plus/high-perf/lock/optimistic/deduct` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/high-perf/lock/optimistic/deduct?skuId=1001&deductAmount=50.00"` |
+| **强类型悲观排队跳锁抢单 (LockMode.SKIP_LOCKED)** | `MpBatchStreamAndLockController` | `POST /sample/mybatis-plus/high-perf/lock/pessimistic/grab` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/high-perf/lock/pessimistic/grab?workerId=worker-node-1"` |
+| **防全表误更新删除安全拦截 (BlockAttackInnerInterceptor)** | `MpBatchStreamAndLockController` | `POST /sample/mybatis-plus/high-perf/security/block-attack` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/high-perf/security/block-attack"` |
+
+### 3.6 持久层全链路可观测：SQL 诊断看板、慢 SQL 告警与数据变更 Diff 审计 (`MpObservabilityAndAuditController`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **查看最近结构化可执行 SQL 审计日志** | `MpObservabilityAndAuditController` | `GET /sample/mybatis-plus/observability/sql-log/recent` | `curl "http://localhost:8080/sample/mybatis-plus/observability/sql-log/recent?limit=5"` |
+| **@IgnoreSqlLog 心跳探测排除日志与存储验证** | `MpObservabilityAndAuditController` | `GET /sample/mybatis-plus/observability/sql-log/ignore-probe` | `curl "http://localhost:8080/sample/mybatis-plus/observability/sql-log/ignore-probe"` |
+| **模拟触发慢 SQL (耗时超 500ms 阈值触发告警)** | `MpObservabilityAndAuditController` | `POST /sample/mybatis-plus/observability/slow-sql/trigger` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/observability/slow-sql/trigger?sleepMs=600"` |
+| **拉取慢 SQL 告警事件记录 (SlowSqlAlertProvider SPI)** | `MpObservabilityAndAuditController` | `GET /sample/mybatis-plus/observability/slow-sql/events` | `curl "http://localhost:8080/sample/mybatis-plus/observability/slow-sql/events"` |
+| **订单业务更新触发 @AuditChange 字段级 Diff** | `MpObservabilityAndAuditController` | `POST /sample/mybatis-plus/observability/audit-change/update-order` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/observability/audit-change/update-order" -H "Content-Type: application/json" -d "{\"id\":2001,\"orderStatus\":\"PAID\",\"paymentAmount\":6999.00,\"remark\":\"用户已通过支付宝完成支付\"}"` |
+| **runWithoutAudit 闭包旁路安全跳过变更审计** | `MpObservabilityAndAuditController` | `POST /sample/mybatis-plus/observability/audit-change/without-audit` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/observability/audit-change/without-audit" -H "Content-Type: application/json" -d "{\"id\":2001,\"orderStatus\":\"SHIPPED\",\"paymentAmount\":6999.00,\"remark\":\"系统自动化批量履约\"}"` |
+| **拉取数据变更 Diff 审计记录 (DataChangeAuditProvider SPI)** | `MpObservabilityAndAuditController` | `GET /sample/mybatis-plus/observability/audit-change/records` | `curl "http://localhost:8080/sample/mybatis-plus/observability/audit-change/records"` |
+
 ---
 
 ## 4. 全真自动化回归命令

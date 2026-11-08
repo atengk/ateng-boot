@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.mybatisplus.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
+import io.github.atengk.boot.mybatisplus.annotation.ConflictKeys;
 import io.github.atengk.boot.mybatisplus.entity.BaseDeleteIdEntity;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -24,6 +25,7 @@ import java.math.BigDecimal;
 @NoArgsConstructor
 @AllArgsConstructor
 @TableName("product_sku")
+@ConflictKeys({"sku_code", "deleted"})
 public class ProductSkuEntity extends BaseDeleteIdEntity {
 
     private static final long serialVersionUID = 1L;
