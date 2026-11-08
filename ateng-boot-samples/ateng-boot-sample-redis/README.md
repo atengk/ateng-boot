@@ -70,7 +70,29 @@
 | **布隆过滤器存在性核验** | `RedisCacheController` | `GET /sample/redis/cache/blacklist/check/{userId}` | `curl "http://localhost:8080/sample/redis/cache/blacklist/check/risk_user_99"` |
 | **布隆过滤器80%容量监控指标** | `RedisCacheController` | `GET /sample/redis/cache/blacklist/metrics` | `curl "http://localhost:8080/sample/redis/cache/blacklist/metrics"` |
 
-> 注：其余 3 大领域 Controller（延时队列投递/死信运维、Stream 消息生产/待决认领、Pub/Sub 主题广播）将在后续工单切片中陆续暴露并挂载体验。
+| **投递订单延时取消任务** | `RedisDelayQueueController` | `POST /sample/redis/delay-queue/order/cancel/send` | `curl -X POST "http://localhost:8080/sample/redis/delay-queue/order/cancel/send" -H "Content-Type: application/json" -d '{"orderId":"ORD_DELAY_001","delaySeconds":15,"reason":"未支付超时自动取消"}'` |
+| **查询已消费订单取消记录** | `RedisDelayQueueController` | `GET /sample/redis/delay-queue/order/cancel/consumed` | `curl "http://localhost:8080/sample/redis/delay-queue/order/cancel/consumed"` |
+| **投递毒丸订单触发重试死信演练** | `RedisDelayQueueController` | `POST /sample/redis/delay-queue/order/cancel/send-poison` | `curl -X POST "http://localhost:8080/sample/redis/delay-queue/order/cancel/send-poison?orderId=POISON_ORD_999"` |
+| **查询延时死信积压统计** | `RedisDelayQueueController` | `GET /sample/redis/delay-queue/dead-letter/count` | `curl "http://localhost:8080/sample/redis/delay-queue/dead-letter/count"` |
+| **拉取延时死信消息 (运维探针)** | `RedisDelayQueueController` | `GET /sample/redis/delay-queue/dead-letter/poll` | `curl "http://localhost:8080/sample/redis/delay-queue/dead-letter/poll"` |
+| **清空延时队列死信消息** | `RedisDelayQueueController` | `DELETE /sample/redis/delay-queue/dead-letter/clear` | `curl -X DELETE "http://localhost:8080/sample/redis/delay-queue/dead-letter/clear"` |
+| **查询延时队列 SPI 告警快照** | `RedisDelayQueueController` | `GET /sample/redis/delay-queue/alerts` | `curl "http://localhost:8080/sample/redis/delay-queue/alerts"` |
+
+| **模板门面投递订单流事件** | `RedisStreamController` | `POST /sample/redis/stream/events/template` | `curl -X POST "http://localhost:8080/sample/redis/stream/events/template" -H "Content-Type: application/json" -d '{"orderId":"ORD_STREAM_001","eventType":"ORDER_CREATED","amount":199.00}'` |
+| **静态门面投递订单流事件** | `RedisStreamController` | `POST /sample/redis/stream/events/static` | `curl -X POST "http://localhost:8080/sample/redis/stream/events/static" -H "Content-Type: application/json" -d '{"orderId":"ORD_STREAM_002","eventType":"ORDER_PAID","amount":88.50}'` |
+| **查询消费组已消费事件记录** | `RedisStreamController` | `GET /sample/redis/stream/consumed` | `curl "http://localhost:8080/sample/redis/stream/consumed"` |
+| **查询待决消息概要统计 (XPENDING)** | `RedisStreamController` | `GET /sample/redis/stream/pending/summary` | `curl "http://localhost:8080/sample/redis/stream/pending/summary"` |
+| **查询待决消息明细列表 (XPENDING)** | `RedisStreamController` | `GET /sample/redis/stream/pending/messages` | `curl "http://localhost:8080/sample/redis/stream/pending/messages?count=10"` |
+| **认领孤儿待决消息 (XCLAIM)** | `RedisStreamController` | `POST /sample/redis/stream/claim` | `curl -X POST "http://localhost:8080/sample/redis/stream/claim" -H "Content-Type: application/json" -d '{"stream":"stream:order:events","group":"group:order:processor","newConsumer":"consumer-standby-01","minIdleSeconds":60,"recordIds":["1700000000000-0"]}'` |
+| **定长修剪裁剪 Stream 长度 (XTRIM)** | `RedisStreamController` | `POST /sample/redis/stream/trim` | `curl -X POST "http://localhost:8080/sample/redis/stream/trim" -H "Content-Type: application/json" -d '{"stream":"stream:order:events","maxLen":100}'` |
+| **投递毒丸 Stream 事件演练** | `RedisStreamController` | `POST /sample/redis/stream/events/poison` | `curl -X POST "http://localhost:8080/sample/redis/stream/events/poison?orderId=POISON_STREAM_999"` |
+| **查询死信流清单 ({stream}:dlq)** | `RedisStreamController` | `GET /sample/redis/stream/dead-letter` | `curl "http://localhost:8080/sample/redis/stream/dead-letter?count=10"` |
+| **查询 Stream SPI 告警快照** | `RedisStreamController` | `GET /sample/redis/stream/alerts` | `curl "http://localhost:8080/sample/redis/stream/alerts"` |
+
+| **广播全站系统维护公告** | `RedisPubSubController` | `POST /sample/redis/pubsub/broadcast/notice` | `curl -X POST "http://localhost:8080/sample/redis/pubsub/broadcast/notice" -H "Content-Type: application/json" -d '{"noticeId":"NOT_20261108","title":"系统维护通知","content":"系统将于今晚 02:00 进行停机升级","level":"WARN"}'` |
+| **通配模式系统配置刷新广播** | `RedisPubSubController` | `POST /sample/redis/pubsub/broadcast/system-config` | `curl -X POST "http://localhost:8080/sample/redis/pubsub/broadcast/system-config" -H "Content-Type: application/json" -d '{"eventType":"config_refresh","eventData":"{\"refreshKey\":\"ALL_CACHE\"}"}'` |
+| **查询已接收系统公告广播历史** | `RedisPubSubController` | `GET /sample/redis/pubsub/history/notices` | `curl "http://localhost:8080/sample/redis/pubsub/history/notices"` |
+| **查询已接收系统通配事件历史** | `RedisPubSubController` | `GET /sample/redis/pubsub/history/system-events` | `curl "http://localhost:8080/sample/redis/pubsub/history/system-events"` |
 
 ---
 

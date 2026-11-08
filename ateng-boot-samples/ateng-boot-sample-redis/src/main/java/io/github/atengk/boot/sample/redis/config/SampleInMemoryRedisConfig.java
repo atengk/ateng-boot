@@ -6,6 +6,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
+import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.*;
 import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.*;
@@ -45,6 +46,7 @@ public class SampleInMemoryRedisConfig {
     private static final Map<String, Map<Object, Object>> HASH_STORE = new ConcurrentHashMap<>();
     private static final Map<String, ConcurrentSkipListMap<Double, Set<Object>>> ZSET_STORE = new ConcurrentHashMap<>();
     private static final Map<String, BlockingQueue<Object>> QUEUE_STORE = new ConcurrentHashMap<>();
+    private static final Map<String, List<MapRecord<String, Object, Object>>> STREAM_LOG = new ConcurrentHashMap<>();
     private static final Map<String, BlockingQueue<MapRecord<String, Object, Object>>> STREAM_STORE = new ConcurrentHashMap<>();
     private static final Map<String, Set<Object>> BLOOM_STORE = new ConcurrentHashMap<>();
     private static final Map<String, AtomicInteger> SEMAPHORE_STORE = new ConcurrentHashMap<>();
@@ -61,6 +63,7 @@ public class SampleInMemoryRedisConfig {
         HASH_STORE.clear();
         ZSET_STORE.clear();
         QUEUE_STORE.clear();
+        STREAM_LOG.clear();
         STREAM_STORE.clear();
         BLOOM_STORE.clear();
         SEMAPHORE_STORE.clear();
@@ -220,7 +223,12 @@ public class SampleInMemoryRedisConfig {
         return (RedisStreamCommands) Proxy.newProxyInstance(
                 RedisStreamCommands.class.getClassLoader(),
                 new Class<?>[]{RedisStreamCommands.class},
-                (proxy, method, args) -> defaultValue(method.getReturnType())
+                (proxy, method, args) -> {
+                    String mName = method.getName();
+                    if ("xGroupDestroy".equals(mName)) return true;
+                    if ("xGroupCreate".equals(mName)) return "OK";
+                    return defaultValue(method.getReturnType());
+                }
         );
     }
 
@@ -533,6 +541,14 @@ public class SampleInMemoryRedisConfig {
                 (proxy, method, args) -> {
                     String mName = method.getName();
                     if ("getName".equals(mName)) return name;
+                    if ("clear".equals(mName)) {
+                        queue.clear();
+                        return null;
+                    }
+                    if ("delete".equals(mName)) {
+                        queue.clear();
+                        return true;
+                    }
                     if ("poll".equals(mName)) {
                         if (args != null && args.length >= 2 && args[0] instanceof Long timeout && args[1] instanceof TimeUnit unit) {
                             return queue.poll(timeout, unit);
@@ -985,18 +1001,61 @@ public class SampleInMemoryRedisConfig {
                         if ("createGroup".equals(mName)) return "OK";
                         if ("acknowledge".equals(mName)) return 1L;
                         if ("delete".equals(mName)) return 1L;
-                        if ("trim".equals(mName)) return 0L;
-                        if ("size".equals(mName)) return 5L;
-                        if ("add".equals(mName)) {
-                            if (args[0] instanceof MapRecord rec) {
-                                STREAM_STORE.computeIfAbsent(String.valueOf(rec.getStream()), k -> new LinkedBlockingQueue<>()).offer(rec);
-                                return RecordId.of(System.currentTimeMillis() + "-0");
-                            }
+                        if ("trim".equals(mName)) {
                             String streamKey = (String) args[0];
-                            Map<Object, Object> body = (Map<Object, Object>) args[1];
-                            RecordId recordId = RecordId.of(System.currentTimeMillis() + "-0");
-                            MapRecord<String, Object, Object> record = MapRecord.create(streamKey, body).withId(recordId);
-                            STREAM_STORE.computeIfAbsent(streamKey, k -> new LinkedBlockingQueue<>()).offer(record);
+                            long count = ((Number) args[1]).longValue();
+                            List<MapRecord<String, Object, Object>> list = STREAM_LOG.get(streamKey);
+                            if (list != null && list.size() > count) {
+                                long trimmed = 0;
+                                while (list.size() > count) {
+                                    list.remove(0);
+                                    trimmed++;
+                                }
+                                return trimmed;
+                            }
+                            return 0L;
+                        }
+                        if ("size".equals(mName)) {
+                            String streamKey = (String) args[0];
+                            List<MapRecord<String, Object, Object>> list = STREAM_LOG.get(streamKey);
+                            return list != null ? (long) list.size() : 0L;
+                        }
+                        if ("pending".equals(mName)) {
+                            if (args != null && args.length == 2) {
+                                String group = (String) args[1];
+                                return new PendingMessagesSummary(group, 0L, Range.closed("0-0", "0-0"), Collections.emptyMap());
+                            }
+                            if (args != null && args.length >= 4) {
+                                String group = (String) args[1];
+                                return new PendingMessages(group, Range.closed("0-0", "0-0"), Collections.emptyList());
+                            }
+                        }
+                        if ("claim".equals(mName)) {
+                            return Collections.emptyList();
+                        }
+                        if ("range".equals(mName)) {
+                            String streamKey = (String) args[0];
+                            List<MapRecord<String, Object, Object>> list = STREAM_LOG.get(streamKey);
+                            if (list != null) {
+                                return new ArrayList<>(list);
+                            }
+                            return Collections.emptyList();
+                        }
+                        if ("add".equals(mName)) {
+                            RecordId recordId;
+                            MapRecord<String, Object, Object> record;
+                            if (args[0] instanceof MapRecord rec) {
+                                record = rec;
+                                recordId = rec.getId() != null ? rec.getId() : RecordId.of(System.currentTimeMillis() + "-0");
+                            } else {
+                                String streamKey = (String) args[0];
+                                Map<Object, Object> body = (Map<Object, Object>) args[1];
+                                recordId = RecordId.of(System.currentTimeMillis() + "-0");
+                                record = MapRecord.create(streamKey, body).withId(recordId);
+                            }
+                            String sKey = String.valueOf(record.getStream());
+                            STREAM_LOG.computeIfAbsent(sKey, k -> new CopyOnWriteArrayList<>()).add(record);
+                            STREAM_STORE.computeIfAbsent(sKey, k -> new LinkedBlockingQueue<>()).offer(record);
                             return recordId;
                         }
                         if ("read".equals(mName)) {

@@ -22,8 +22,12 @@ ateng:
             user-profile: 10m
       delay-queue:
         enabled: true
+        retry-times: 3
+        retry-delay: 200ms
+        dead-letter-enabled: true
       stream:
         enabled: true
+        retry-times: 3
       bloom-filters:
         user-blacklist:
           expected-insertions: 50000

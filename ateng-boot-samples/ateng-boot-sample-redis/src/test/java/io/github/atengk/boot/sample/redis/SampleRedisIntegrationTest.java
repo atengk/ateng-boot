@@ -27,9 +27,12 @@ import io.github.atengk.boot.sample.redis.model.OrderDelayPayload;
 import io.github.atengk.boot.sample.redis.model.OrderStreamEvent;
 import io.github.atengk.boot.sample.redis.model.ProductVO;
 import io.github.atengk.boot.sample.redis.model.cache.*;
+import io.github.atengk.boot.sample.redis.model.delay.*;
 import io.github.atengk.boot.sample.redis.model.idempotent.*;
 import io.github.atengk.boot.sample.redis.model.lock.*;
 import io.github.atengk.boot.sample.redis.model.ops.*;
+import io.github.atengk.boot.sample.redis.model.pubsub.*;
+import io.github.atengk.boot.sample.redis.model.stream.*;
 import io.github.atengk.boot.sample.redis.model.traffic.*;
 import io.github.atengk.boot.sample.redis.service.CacheScenarioService;
 import io.github.atengk.boot.sample.redis.service.IdempotentScenarioService;
@@ -370,17 +373,23 @@ class SampleRedisIntegrationTest {
 
     @Test
     @DisplayName("场景2：订单延时队列死信消息流转与拉取运维自验")
-    void testOrderDelayDeadLetterTransferAndPoll() {
-        orderDelayScenarioService.sendOrderToDeadLetter("ORD_DLQ_002", 3, "模拟消费重试耗尽");
+    void testOrderDelayDeadLetterTransferAndPoll() throws Exception {
+        orderDelayScenarioService.sendPoisonOrder("POISON_ORD_DLQ_002");
+
+        // 轮询等待重试耗尽并自动封送死信队列（3 次重试 * 200ms）
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline && orderDelayScenarioService.getCancelOrderDeadLetterSize() == 0) {
+            Thread.sleep(100);
+        }
 
         int deadLetterSize = orderDelayScenarioService.getCancelOrderDeadLetterSize();
         assertThat(deadLetterSize).isGreaterThanOrEqualTo(1);
 
         DeadLetterMessage<OrderDelayPayload> deadLetter = orderDelayScenarioService.pollCancelOrderDeadLetter();
         assertThat(deadLetter).isNotNull();
-        assertThat(deadLetter.payload().getOrderId()).isEqualTo("ORD_DLQ_002");
+        assertThat(deadLetter.payload().getOrderId()).isEqualTo("POISON_ORD_DLQ_002");
         assertThat(deadLetter.retryTimes()).isEqualTo(3);
-        assertThat(deadLetter.errorMessage()).isEqualTo("模拟消费重试耗尽");
+        assertThat(deadLetter.errorMessage()).contains("毒丸订单触发模拟异常");
     }
 
     // =========================================================================
@@ -1231,5 +1240,228 @@ class SampleRedisIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.filterName").value("user-blacklist"));
+    }
+
+    // =========================================================================
+    // 控制器端点集成测试: RedisDelayQueueController
+    // =========================================================================
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/delay-queue 订单延时投递、到期消费、毒丸重试死信与告警快照")
+    void testRedisDelayQueueEndpoints() throws Exception {
+        // 1. 投递未支付订单延时取消任务
+        OrderDelaySendRequest sendReq = OrderDelaySendRequest.builder()
+                .orderId("ORD_DELAY_CTRL_001")
+                .delaySeconds(1L)
+                .reason("超时未支付自动关单")
+                .build();
+
+        mockMvc.perform(post("/sample/redis/delay-queue/order/cancel/send")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(sendReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderId").value("ORD_DELAY_CTRL_001"))
+                .andExpect(jsonPath("$.data.status").value("SCHEDULED"));
+
+        // 2. 查询已消费列表
+        mockMvc.perform(get("/sample/redis/delay-queue/order/cancel/consumed"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 3. 投递毒丸演练订单
+        mockMvc.perform(post("/sample/redis/delay-queue/order/cancel/send-poison")
+                        .param("orderId", "POISON_ORD_CTRL_002"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("POISON_ORD_CTRL_002")));
+
+        // 等待重试耗尽并自动封送死信队列（3 次重试 * 200ms）
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline && orderDelayScenarioService.getCancelOrderDeadLetterSize() == 0) {
+            Thread.sleep(100);
+        }
+
+        // 4. 查询死信积压统计
+        mockMvc.perform(get("/sample/redis/delay-queue/dead-letter/count"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.deadLetterCount").value(org.hamcrest.Matchers.greaterThanOrEqualTo(1)));
+
+        // 5. 拉取死信消息
+        mockMvc.perform(get("/sample/redis/delay-queue/dead-letter/poll"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.payload.orderId").value("POISON_ORD_CTRL_002"))
+                .andExpect(jsonPath("$.data.retryTimes").value(3));
+
+        // 6. 查询 SPI 告警快照
+        mockMvc.perform(get("/sample/redis/delay-queue/alerts"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 7. 清空死信队列
+        mockMvc.perform(delete("/sample/redis/delay-queue/dead-letter/clear"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+    }
+
+    // =========================================================================
+    // 控制器端点集成测试: RedisStreamController
+    // =========================================================================
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/stream 模板与静态投递、PEL 待决探查、XCLAIM、XTRIM、毒丸死信与告警快照")
+    void testRedisStreamEndpoints() throws Exception {
+        // 1. 模板门面投递订单流事件
+        OrderStreamSendRequest streamReq1 = OrderStreamSendRequest.builder()
+                .orderId("ORD_STREAM_CTRL_001")
+                .eventType("ORDER_CREATED")
+                .amount(new BigDecimal("199.99"))
+                .build();
+
+        mockMvc.perform(post("/sample/redis/stream/events/template")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(streamReq1)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderId").value("ORD_STREAM_CTRL_001"))
+                .andExpect(jsonPath("$.data.recordId").isNotEmpty());
+
+        // 2. 静态门面投递订单流事件
+        OrderStreamSendRequest streamReq2 = OrderStreamSendRequest.builder()
+                .orderId("ORD_STREAM_CTRL_002")
+                .eventType("ORDER_PAID")
+                .amount(new BigDecimal("88.00"))
+                .build();
+
+        mockMvc.perform(post("/sample/redis/stream/events/static")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(streamReq2)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderId").value("ORD_STREAM_CTRL_002"))
+                .andExpect(jsonPath("$.data.recordId").isNotEmpty());
+
+        // 3. 查询已消费事件
+        mockMvc.perform(get("/sample/redis/stream/consumed"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 4. 查询待决消息概要 (XPENDING summary)
+        mockMvc.perform(get("/sample/redis/stream/pending/summary"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.stream").value("stream:order:events"));
+
+        // 5. 查询待决消息明细 (XPENDING detail)
+        mockMvc.perform(get("/sample/redis/stream/pending/messages")
+                        .param("count", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 6. 认领孤儿待决消息 (XCLAIM)
+        StreamClaimRequest claimReq = StreamClaimRequest.builder()
+                .stream("stream:order:events")
+                .group("group:order:processor")
+                .newConsumer("consumer-standby-01")
+                .minIdleSeconds(0L)
+                .recordIds(List.of("1700000000000-0"))
+                .build();
+
+        mockMvc.perform(post("/sample/redis/stream/claim")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(claimReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 7. 定长裁剪 Stream 长度 (XTRIM)
+        StreamTrimRequest trimReq = StreamTrimRequest.builder()
+                .stream("stream:order:events")
+                .maxLen(100L)
+                .build();
+
+        mockMvc.perform(post("/sample/redis/stream/trim")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(trimReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("0"));
+
+        // 8. 投递毒丸 Stream 事件演练
+        mockMvc.perform(post("/sample/redis/stream/events/poison")
+                        .param("orderId", "POISON_STREAM_CTRL_001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("POISON_STREAM_CTRL_001")));
+
+        // 9. 查询死信流清单
+        mockMvc.perform(get("/sample/redis/stream/dead-letter")
+                        .param("count", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 10. 查询 Stream SPI 告警快照
+        mockMvc.perform(get("/sample/redis/stream/alerts"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+    }
+
+    // =========================================================================
+    // 控制器端点集成测试: RedisPubSubController
+    // =========================================================================
+
+    @Test
+    @DisplayName("控制器端点：/sample/redis/pubsub 精确主题全站公告广播、通配模式配置刷新与历史记录探查")
+    void testRedisPubSubEndpoints() throws Exception {
+        // 1. 广播全站停机维护公告
+        NoticeBroadcastRequest noticeReq = NoticeBroadcastRequest.builder()
+                .noticeId("NOT_CTRL_001")
+                .title("全站停机维护公告")
+                .content("全站将于今晚 00:00~02:00 进行停机升级")
+                .level("CRITICAL")
+                .build();
+
+        mockMvc.perform(post("/sample/redis/pubsub/broadcast/notice")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(noticeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.topic").value(NoticeBroadcastScenarioService.TOPIC_NOTICE_BROADCAST))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        // 2. 广播系统通配模式事件
+        SystemEventBroadcastRequest eventReq = SystemEventBroadcastRequest.builder()
+                .eventType("config_refresh")
+                .eventData("{\"refreshKey\":\"ALL_CACHE\"}")
+                .build();
+
+        mockMvc.perform(post("/sample/redis/pubsub/broadcast/system-config")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(eventReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.topic").value("sample:system:config_refresh"))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        // 3. 查询已接收公告历史
+        mockMvc.perform(get("/sample/redis/pubsub/history/notices"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 4. 查询已接收系统事件历史
+        mockMvc.perform(get("/sample/redis/pubsub/history/system-events"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
     }
 }

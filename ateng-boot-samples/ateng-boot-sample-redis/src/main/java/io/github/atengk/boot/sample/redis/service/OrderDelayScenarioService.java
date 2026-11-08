@@ -1,22 +1,24 @@
 package io.github.atengk.boot.sample.redis.service;
 
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.annotation.DelayedQueueListener;
 import io.github.atengk.boot.redis.delay.model.DeadLetterMessage;
+import io.github.atengk.boot.sample.redis.handler.SampleDelayedQueueFailureHandler;
 import io.github.atengk.boot.sample.redis.model.OrderDelayPayload;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.time.Duration;
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 
 /**
  * 订单延时队列场景服务
- * 演示 Redisson 双模延时队列：编程式投递、@DelayedQueueListener 声明式消费与死信队列流转
+ * 演示 Redisson 双模延时队列：编程式投递、@DelayedQueueListener 声明式消费、毒丸重试耗尽与死信队列运维
  *
  * @author Ateng
  * @since 2026-10-27
@@ -29,6 +31,8 @@ public class OrderDelayScenarioService {
     public static final String QUEUE_ORDER_CANCEL = "sample:order:cancel";
 
     private final RedisDelayedQueue redisDelayedQueue;
+    private final SampleDelayedQueueFailureHandler failureHandler;
+
     private final List<OrderDelayPayload> consumedOrders = new CopyOnWriteArrayList<>();
     private volatile CountDownLatch latch = new CountDownLatch(1);
 
@@ -39,18 +43,44 @@ public class OrderDelayScenarioService {
      * @param delay   延时时长
      */
     public void sendOrderCancelTask(String orderId, Duration delay) {
-        OrderDelayPayload payload = new OrderDelayPayload(orderId, "订单未支付超时自动取消", System.currentTimeMillis());
+        sendOrderCancelTask(orderId, delay, "订单未支付超时自动取消");
+    }
+
+    /**
+     * 编程式全参数投递订单延时取消任务
+     *
+     * @param orderId 订单 ID
+     * @param delay   延时时长
+     * @param reason  取消原因
+     */
+    public void sendOrderCancelTask(String orderId, Duration delay, String reason) {
+        String effectiveReason = StringUtils.hasText(reason) ? reason : "订单未支付超时自动取消";
+        OrderDelayPayload payload = new OrderDelayPayload(orderId, effectiveReason, System.currentTimeMillis());
         log.info("[OrderDelay] 编程式投递延时取消任务: queue={}, orderId={}, delay={}", QUEUE_ORDER_CANCEL, orderId, delay);
         redisDelayedQueue.offer(QUEUE_ORDER_CANCEL, payload, delay);
     }
 
     /**
+     * 投递毒丸订单演练任务（触发 3 次退避重试耗尽并转入死信队列）
+     *
+     * @param orderId 毒丸订单编号（建议携带 POISON 标记）
+     */
+    public void sendPoisonOrder(String orderId) {
+        sendOrderCancelTask(orderId, Duration.ZERO, "模拟毒丸重试耗尽演练任务");
+    }
+
+    /**
      * 声明式监听延时队列消费
+     * 遇到毒丸订单时主动抛出业务异常，触发框架内部重试与死信流转
      *
      * @param payload 订单延时载荷
      */
     @DelayedQueueListener(queue = QUEUE_ORDER_CANCEL, concurrency = 1)
     public void onOrderCancel(OrderDelayPayload payload) {
+        if (payload != null && payload.getOrderId() != null && payload.getOrderId().contains("POISON")) {
+            log.error("[OrderDelay] 声明式监听捕获毒丸订单，抛出异常触发重试: orderId={}", payload.getOrderId());
+            throw new BusinessException("毒丸订单触发模拟异常: orderId=" + payload.getOrderId());
+        }
         log.info("[OrderDelay] 声明式监听到期消费: orderId={}, reason={}", payload.getOrderId(), payload.getReason());
         consumedOrders.add(payload);
         latch.countDown();
@@ -93,23 +123,23 @@ public class OrderDelayScenarioService {
     }
 
     /**
-     * 手动将异常订单流转至死信队列（模拟消费重试耗尽场景）
-     *
-     * @param orderId      订单 ID
-     * @param retryCount   重试次数
-     * @param errorMessage 失败原因
+     * 清空取消订单队列的死信消息
      */
-    public void sendOrderToDeadLetter(String orderId, int retryCount, String errorMessage) {
-        OrderDelayPayload payload = new OrderDelayPayload(orderId, "模拟重试耗尽死信订单", System.currentTimeMillis());
-        DeadLetterMessage<OrderDelayPayload> deadLetter = new DeadLetterMessage<>(
-                QUEUE_ORDER_CANCEL,
-                payload,
-                retryCount,
-                errorMessage,
-                "BusinessRetryExhaustedException",
-                LocalDateTime.now()
-        );
-        redisDelayedQueue.sendToDeadLetter(QUEUE_ORDER_CANCEL, deadLetter);
-        log.info("[OrderDelay] 订单重试耗尽转入死信队列: orderId={}, retryCount={}, error={}", orderId, retryCount, errorMessage);
+    public void clearCancelOrderDeadLetter() {
+        redisDelayedQueue.clearDeadLetterQueue(QUEUE_ORDER_CANCEL);
+    }
+
+    /**
+     * 获取最近死信告警快照
+     */
+    public List<DeadLetterMessage<?>> getRecentAlerts() {
+        return failureHandler.getRecentAlerts();
+    }
+
+    /**
+     * 清空告警快照
+     */
+    public void clearAlerts() {
+        failureHandler.clearAlerts();
     }
 }

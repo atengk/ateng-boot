@@ -116,6 +116,30 @@
 | **`RedisCacheManager` (单级 Spring Cache)** | 当配置全局非空前缀时自动挂载；前缀为空时保持 Spring Data Redis 原生 `cacheName::key` 规范 | `key-prefix: "sample:"` | 注解 `@Cacheable(value = "user", key = "#id")` -> 缓存键为 `sample:user::1001` |
 | **`TwoLevelCacheManager` (两级缓存)** | 本地 L1 内存 + Redis L2 存储；跨节点广播失效主题集中解耦；L2 缓存名按 `cacheName:key` 隔离 | `two-level.topic: "ateng:cache:evict:topic"` | 广播主题 `ateng:cache:evict:topic`，L2 Redis 键 `user-profile:2001` |
 
+### RedissonClient 生产自定义接管与缺省守卫
+当现有自动化配置无法满足集群特异性参数（如特定 SSL 证书、自定义编解码管道或监控指标导出）时，下游应用仅需声明同类型 Bean 即可 100% 接管 Redisson 装配（恪守 `@ConditionalOnMissingBean` 守卫铁律）：
+
+```java
+@Configuration(proxyBeanMethods = false)
+public class CustomRedissonConfiguration {
+
+    @Bean
+    public RedissonClient redissonClient() {
+        Config config = new Config();
+        config.useSingleServer()
+                .setAddress("redis://127.0.0.1:6379")
+                .setConnectionMinimumIdleSize(16)
+                .setConnectionPoolSize(64)
+                .setPingConnectionInterval(30000);
+        return Redisson.create(config);
+    }
+}
+```
+
+### Redisson TCP 心跳保活与云原生 NAT 静默切断弹性防御机制
+- **PING 心跳保活机制**：在云原生容器网络、跨可用区专线或公有云 NAT 网关环境下，长时间无数据通信的空闲 TCP 连接常被防火墙或网关静默切断（Silent Drop），导致应用在下一次发起 Redis 命令时因使用失效连接出现 `Connection reset by peer` 错误。`AtengRedisAutoConfiguration` 统一配置 `pingConnectionInterval`（默认 30s），由 Redisson 客户端后台定期向 Redis 服务端发送 PING 命令检测并维系物理链路活跃，彻底解决长连接偶发断开难题；
+- **弹性重试与连接池治理**：标配生产合理默认值（主连接池 64，最小空闲 16，重试 3 次，重试间隔 1500ms），保障生产突发流量洪峰下平稳过渡。
+
 ---
 
 ## 3. 通用数据操作门面、原子 Lua 脚本与跨天分布式流水号
@@ -531,11 +555,39 @@ public class OrderSettlementService {
 
 ## 5. 轻量可靠延时队列 (`RedisDelayedQueue` & `@DelayedQueueListener`)
 
-### 场景痛点
-在超时自动取消订单、订单未支付催付提醒等延时场景中，直接轮询数据库性能低下，而引入 RocketMQ/Kafka 延时队列又极大增加了运维复杂度。
+### 场景痛点与工业级防卫
+在超时自动关单、未支付催付提醒、工单超时自动流转等延时场景中，直接定时轮询数据库会对存储带来巨大的读写压力；而引入 RocketMQ/Kafka 延时队列会显著提高系统的部署与运维门槛。
+`ateng-boot-redis` 基于 Redisson `RDelayedQueue` + `RBlockingQueue` 构建高可靠双模延时队列底座：
+- **双模一体化消费**：既支持编程式按需投递与拉取（`RedisDelayedQueue`），也支持 Spring 容器托管的声明式注解消费（`@DelayedQueueListener`）；
+- **全受管线程池与四维上下文透传**：`DelayedQueueBootstrap` 调度容器严禁私自创建野线程，完全接入 Spring 容器受管的 `ThreadPoolTaskExecutor`，并通过 `ContextCopyingTaskDecorator` 完整透传 $\langle\text{MDC traceId}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$；
+- **真实退避重试与自动封送死信 (DLQ)**：当消费逻辑抛出未捕获异常时，框架根据配置的 `retry-times` 与 `retry-delay` 实施退避重试；重试耗尽后自动将包装完整的 `DeadLetterMessage<T>` 封送至 `{queue}:dlq` 死信队列，并回调 `DelayedQueueFailureHandler` SPI；
+- **平滑优雅停机**：监听容器实现 `DisposableBean`，在 JVM 停止时平滑退出阻塞循环，杜绝正在处理的延时任务发生句柄悬挂或丢单。
 
-### 核心代码示例（1:1 逆向自 `OrderDelayScenarioService`）
+### 特性矩阵
+| 特性能力 | 核心类 / 注解 / SPI | 关键行为与配置 |
+| :--- | :--- | :--- |
+| **编程式延时投递** | `RedisDelayedQueue.offer(queue, payload, delay)` | 精确延时投递，底层基于 Redis ZSet 时间戳分值调度 |
+| **声明式监听消费** | `@DelayedQueueListener(queue, concurrency)` | 自动扫描注册守护线程，多并发受管线程池驱动 |
+| **死信自动封送** | `redisDelayedQueue.sendToDeadLetterQueue` | 重试耗尽自动封送 `{queue}:dlq`，包含重试次数与异常堆栈 |
+| **死信队列运维** | `pollDeadLetter` / `clearDeadLetterQueue` / `deadLetterSize` | 运维端点拉取、统计、探针诊断与清空 |
+| **失败处理 SPI** | `DelayedQueueFailureHandler` | 重试耗尽终态告警回调，支持外部通知（钉钉/飞书）与审计落库 |
+
+### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    redis:
+      delay-queue:
+        enabled: true                 # 开启轻量可靠延时队列 (默认 false)
+        retry-times: 3                # 消费异常最大重试次数 (默认 3)
+        retry-delay: 200ms            # 重试退避间隔时长 (默认 3s)
+        dead-letter-enabled: true     # 重试耗尽是否流转至死信队列 (默认 true)
+        dead-letter-suffix: ":dlq"    # 死信队列名称后缀 (默认 :dlq)
+```
+
+### 真实业务实战代码（1:1 提取自 `ateng-boot-sample-redis`）
 ```java
+// 1. 业务场景服务：编程式投递、声明式监听与毒丸演练
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -544,49 +596,156 @@ public class OrderDelayScenarioService {
     public static final String QUEUE_ORDER_CANCEL = "sample:order:cancel";
 
     private final RedisDelayedQueue redisDelayedQueue;
+    private final SampleDelayedQueueFailureHandler failureHandler;
+    private final List<OrderDelayPayload> consumedOrders = new CopyOnWriteArrayList<>();
 
-    // 1. 编程式投递订单延时取消任务
-    public void sendOrderCancelTask(String orderId, Duration delay) {
-        OrderDelayPayload payload = new OrderDelayPayload(orderId, "订单未支付超时自动取消", System.currentTimeMillis());
+    // 编程式投递订单延时取消任务
+    public void sendOrderCancelTask(String orderId, Duration delay, String reason) {
+        OrderDelayPayload payload = new OrderDelayPayload(orderId, reason, System.currentTimeMillis());
         log.info("[OrderDelay] 编程式投递延时取消任务: queue={}, orderId={}, delay={}", QUEUE_ORDER_CANCEL, orderId, delay);
         redisDelayedQueue.offer(QUEUE_ORDER_CANCEL, payload, delay);
     }
 
-    // 2. 声明式监听延时队列到期消费（支持受管线程池并发驱动）
+    // 声明式监听延时队列到期消费（遇到毒丸订单抛出异常触发重试与死信流转）
     @DelayedQueueListener(queue = QUEUE_ORDER_CANCEL, concurrency = 1)
     public void onOrderCancel(OrderDelayPayload payload) {
+        if (payload != null && payload.getOrderId() != null && payload.getOrderId().contains("POISON")) {
+            log.error("[OrderDelay] 声明式监听捕获毒丸订单，抛出异常触发重试: orderId={}", payload.getOrderId());
+            throw new BusinessException("毒丸订单触发模拟异常: orderId=" + payload.getOrderId());
+        }
         log.info("[OrderDelay] 声明式监听到期消费: orderId={}, reason={}", payload.getOrderId(), payload.getReason());
+        consumedOrders.add(payload);
     }
 
-    // 3. 死信队列运维与排查拉取
+    // 运维探针：死信拉取与清空
     public DeadLetterMessage<OrderDelayPayload> pollCancelOrderDeadLetter() {
         return redisDelayedQueue.pollDeadLetter(QUEUE_ORDER_CANCEL, OrderDelayPayload.class);
+    }
+
+    public void clearCancelOrderDeadLetter() {
+        redisDelayedQueue.clearDeadLetterQueue(QUEUE_ORDER_CANCEL);
+    }
+}
+
+// 2. 生产扩展与 SPI 接管：有界环形缓冲告警处理器
+@Slf4j
+@Component
+public class SampleDelayedQueueFailureHandler implements DelayedQueueFailureHandler {
+
+    private static final int MAX_CAPACITY = 50;
+    private final Queue<DeadLetterMessage<?>> recentAlerts = new ConcurrentLinkedQueue<>();
+
+    @Override
+    public void onFailed(DeadLetterMessage<?> deadLetterMessage, Throwable cause) {
+        log.warn("[DelayedQueueAlert] 捕获延时任务重试耗尽告警: queue={}, retryCount={}, error={}",
+                deadLetterMessage.originalQueue(), deadLetterMessage.retryTimes(), deadLetterMessage.errorMessage(), cause);
+        while (recentAlerts.size() >= MAX_CAPACITY) {
+            recentAlerts.poll();
+        }
+        recentAlerts.offer(deadLetterMessage);
+    }
+
+    public List<DeadLetterMessage<?>> getRecentAlerts() {
+        return Collections.unmodifiableList(new ArrayList<>(recentAlerts));
+    }
+}
+
+// 3. Web 接入层控制器：7 大 RESTful 端点
+@Validated
+@RestController
+@RequestMapping("/sample/redis/delay-queue")
+@RequiredArgsConstructor
+public class RedisDelayQueueController {
+
+    private final OrderDelayScenarioService orderDelayScenarioService;
+
+    @PostMapping("/order/cancel/send")
+    public Result<OrderDelayVO> sendOrderCancel(@Valid @RequestBody OrderDelaySendRequest request) {
+        orderDelayScenarioService.sendOrderCancelTask(
+                request.getOrderId(), Duration.ofSeconds(request.getDelaySeconds()), request.getReason());
+        return Result.success(OrderDelayVO.builder().orderId(request.getOrderId()).status("SCHEDULED").build());
+    }
+
+    @GetMapping("/order/cancel/consumed")
+    public Result<List<OrderDelayPayload>> getConsumedOrders() {
+        return Result.success(orderDelayScenarioService.getConsumedOrders());
+    }
+
+    @PostMapping("/order/cancel/send-poison")
+    public Result<String> sendPoisonOrder(@RequestParam(value = "orderId", required = false) String orderId) {
+        String effectiveOrderId = StringUtils.hasText(orderId) ? orderId : "POISON-ORD-" + IdUtil.fastSimpleUUID();
+        orderDelayScenarioService.sendPoisonOrder(effectiveOrderId);
+        return Result.success("毒丸演练订单投递成功: orderId=" + effectiveOrderId);
+    }
+
+    @GetMapping("/dead-letter/count")
+    public Result<DeadLetterSummaryVO> getDeadLetterCount() {
+        int count = orderDelayScenarioService.getCancelOrderDeadLetterSize();
+        return Result.success(DeadLetterSummaryVO.builder().deadLetterCount(count).build());
+    }
+
+    @GetMapping("/dead-letter/poll")
+    public Result<DeadLetterMessage<OrderDelayPayload>> pollDeadLetter() {
+        return Result.success(orderDelayScenarioService.pollCancelOrderDeadLetter());
+    }
+
+    @DeleteMapping("/dead-letter/clear")
+    public Result<Boolean> clearDeadLetter() {
+        orderDelayScenarioService.clearCancelOrderDeadLetter();
+        return Result.success(true);
+    }
+
+    @GetMapping("/alerts")
+    public Result<List<DeadLetterMessage<?>>> getAlerts() {
+        return Result.success(orderDelayScenarioService.getRecentAlerts());
     }
 }
 ```
 
-### 预期控制台呈现
-```text
-2026-10-27 16:55:12.499 INFO  [main] [NO-TRACE] i.g.a.b.s.r.s.OrderDelayScenarioService : [OrderDelay] 编程式投递延时取消任务: queue=sample:order:cancel, orderId=ORD_DELAY_999, delay=PT1S
-2026-10-27 16:55:13.513 INFO  [:order:cancel-1] [cff82f2353553ebd092601e87767de84] i.g.a.b.s.r.s.OrderDelayScenarioService : [OrderDelay] 声明式监听到期消费: orderId=ORD_DELAY_999, reason=订单未支付超时自动取消
-```
+### 核心生产机制与异常边界
+1. **受管线程池与四维上下文透传**：`DelayedQueueBootstrap` 消费轮询彻底淘汰裸 `Executors`，接入 Spring 容器受管的 `ThreadPoolTaskExecutor` 并挂载 `ContextCopyingTaskDecorator`，确保 `traceId` 等上下文在延时队列消费线程中合规生效；
+2. **死信流转与错误隔离**：内置异常受控重试；重试耗尽后若 `deadLetterEnabled=true` 则将包装完整的 `DeadLetterMessage<T>` 投递至 `${queueName}:dlq` 并触发 `DelayedQueueFailureHandler` SPI，杜绝毒丸消息阻塞队列并保障可追溯审计；
+3. **平滑优雅停机**：监听容器实现了 `DisposableBean`，在 JVM 或 Spring 容器销毁时首先停止拉取新消息，等待在途任务执行完成并注销内部阻塞循环与受管线程池，保障零消息悬挂。
 
 ---
 
-## 6. Redis 5.0+ Stream 可靠流式消息引擎 (`RedisStreamTemplate` & `@RedisStreamListener`)
+## 6. Redis 5.0+ Stream 可靠流式消息引擎 (`RedisStreamTemplate` & `RedisStreamUtil` & `@RedisStreamListener`)
 
-### 场景痛点
-Pub/Sub 模式虽然轻量，但不支持持久化、不支持 ACK 确认、无法追溯历史消费偏离且缺少消费组集群均衡模型。一旦订阅者短暂网络抖动断线，期间发布的所有通知全部静默丢失。
-
-### 增强解决方案
+### 场景痛点与工业级防卫
+传统 Redis Pub/Sub 广播虽然轻量，但不支持消息持久化、不支持 ACK 确认、无法追溯历史消费偏离且缺少消费组集群均衡模型。一旦订阅节点在瞬态发布期间短暂重启或网络抖动断线，期间发布的所有通知全部静默丢失。
+`ateng-boot-redis` 深度封装 Redis 5.0+ 原生 Stream 原语，提供全套生产级可靠流引擎底座：
 - **消费组模型与自动创建**：支持分布式消费组（Consumer Group），通过 `@RedisStreamListener(autoCreateGroup = true)` 自动幂等创建目标消费组，多实例集群协同消费分摊负载；
 - **显式与自动 ACK 治理**：支持 `autoAck = true`（消费成功由框架自动执行 XACK）以及手动 ACK 模式，保证消息 At-Least-Once 可靠投递；
-- **PEL 积压排查与孤儿认领**：`RedisStreamTemplate` 原生提供 `getPendingMessages` 与 `claim` 接口，支持对超时挂起消息实施安全抢占补偿；
-- **流长度自动裁剪 (XTRIM)**：支持 `trim(stream, maxLen)` 对流式队列进行物理定长裁剪，防止流历史无限膨胀占用过多内存；
-- **死信流转 (DLQ)**：消费重试耗尽后封装 `StreamDeadLetterMessage<T>` 流转至目标死信流（默认 `${stream}:dlq`），同时触发 `StreamFailureHandler` SPI。
+- **PEL 待决排查与孤儿认领 (XCLAIM)**：`RedisStreamTemplate` 与 `RedisStreamUtil` 原生提供 `pendingSummary`、`pending` 与 `claim` 接口，支持对超时挂起消息实施安全探查与孤儿抢占补偿；
+- **流长度定长裁剪 (XTRIM)**：支持 `trim(stream, maxLen)` 对流式队列进行物理定长裁剪，防止流历史无限膨胀占用过多内存；
+- **死信流转 (DLQ)**：消费重试耗尽后封装 `StreamDeadLetterMessage` 流转至目标死信流（默认 `${stream}:dlq`），同时触发 `StreamFailureHandler` SPI。
 
-### 核心代码示例（1:1 逆向自 `StreamEventScenarioService`）
+### 特性矩阵
+| 特性能力 | 核心类 / 注解 / SPI | 关键行为与配置 |
+| :--- | :--- | :--- |
+| **流消息投递** | `RedisStreamTemplate.send` / `RedisStreamUtil.send` | 模板与静态门面双路径投递，自动注入 `traceId` 与时间戳 |
+| **声明式组消费** | `@RedisStreamListener(stream, group, concurrency, autoAck)` | 受管线程池并发驱动，自动反序列化为强类型 POJO |
+| **PEL 待决探查** | `pendingSummary` / `pending` | XPENDING 概要统计与明细拉取，实时掌握未确认积压情况 |
+| **孤儿消息认领** | `claim(stream, group, newConsumer, minIdleTime, ids)` | XCLAIM 孤儿消息转移至健康消费者，防止消息永久悬挂 |
+| **定长修剪** | `trim(stream, maxLen)` | XTRIM 精确/近似定长裁剪，控制流内存物理占用 |
+| **死信与失败 SPI** | `transferToDeadLetter` / `StreamFailureHandler` | 重试耗尽转移至 `${stream}:dlq`，触发 SPI 告警，成功后安全 ACK 原消息 |
+
+### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    redis:
+      stream:
+        enabled: true                 # 开启 Redis 5.0+ Stream 流消息引擎 (默认 false)
+        poll-timeout: 2s              # 轮询阻塞等待超时时间 (默认 2s)
+        batch-size: 10                # 单次批量拉取消息最大条数 (默认 10)
+        retry-times: 3                # 消费重试次数上限 (默认 3)
+        dlq-suffix: ":dlq"            # 死信流名称后缀 (默认 :dlq)
+```
+
+### 真实业务实战代码（1:1 提取自 `ateng-boot-sample-redis`）
 ```java
+// 1. 业务场景服务：模板与静态门面投递、声明式消费、PEL 探查与 XCLAIM 认领
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -596,32 +755,117 @@ public class StreamEventScenarioService {
     public static final String GROUP_ORDER_PROCESSOR = "group:order:processor";
 
     private final RedisStreamTemplate redisStreamTemplate;
+    private final SampleStreamFailureHandler failureHandler;
+    private final List<OrderStreamEvent> receivedEvents = new CopyOnWriteArrayList<>();
 
-    // 1. 发送订单 Stream 事件消息
+    // 模板门面投递
     public RecordId sendOrderEvent(OrderStreamEvent event) {
-        log.info("[StreamEvent] 投递订单流事件: stream={}, event={}", STREAM_ORDER_EVENTS, event);
         return redisStreamTemplate.send(STREAM_ORDER_EVENTS, event);
     }
 
-    // 2. 声明式监听 Stream 消费组消费（自动 XACK 与上下文透传）
-    @RedisStreamListener(stream = STREAM_ORDER_EVENTS, group = GROUP_ORDER_PROCESSOR, concurrency = 1, autoAck = true)
-    public void onOrderEvent(OrderStreamEvent event) {
-        log.info("[StreamEvent] 监听到消费组流事件: orderId={}, eventType={}, amount={}",
-                event.getOrderId(), event.getEventType(), event.getAmount());
+    // 静态工具门面投递
+    public RecordId sendOrderEventStatic(OrderStreamEvent event) {
+        return RedisStreamUtil.send(STREAM_ORDER_EVENTS, event);
     }
 
-    // 3. 裁剪 Stream 长度 (XTRIM)
+    // 声明式监听 Stream 消费组消费（自动 XACK 与 MDC traceId 透传）
+    @RedisStreamListener(stream = STREAM_ORDER_EVENTS, group = GROUP_ORDER_PROCESSOR, concurrency = 1, autoAck = true)
+    public void onOrderEvent(OrderStreamEvent event) {
+        if (event != null && event.getOrderId() != null && event.getOrderId().contains("POISON")) {
+            log.error("[StreamEvent] 监听到毒丸流事件，抛出异常触发重试: orderId={}", event.getOrderId());
+            throw new BusinessException("Stream 流事件毒丸订单触发模拟异常: orderId=" + event.getOrderId());
+        }
+        log.info("[StreamEvent] 监听到消费组流事件: orderId={}, eventType={}, amount={}",
+                event.getOrderId(), event.getEventType(), event.getAmount());
+        receivedEvents.add(event);
+    }
+
+    // PEL 待决概要探查
+    public PendingMessagesSummary getPendingSummary() {
+        return redisStreamTemplate.pendingSummary(STREAM_ORDER_EVENTS, GROUP_ORDER_PROCESSOR);
+    }
+
+    // XCLAIM 孤儿消息认领
+    public List<MapRecord<String, Object, Object>> claimOrphan(String newConsumer, Duration minIdleTime, String... recordIds) {
+        RecordId[] ids = Arrays.stream(recordIds).map(RecordId::of).toArray(RecordId[]::new);
+        return redisStreamTemplate.claim(STREAM_ORDER_EVENTS, GROUP_ORDER_PROCESSOR, newConsumer, minIdleTime, ids);
+    }
+
+    // XTRIM 定长修剪
     public Long trimStream(long maxLen) {
         return redisStreamTemplate.trim(STREAM_ORDER_EVENTS, maxLen);
     }
 }
+
+// 2. 生产扩展与 SPI 接管：有界环形缓冲告警处理器
+@Slf4j
+@Component
+public class SampleStreamFailureHandler implements StreamFailureHandler {
+
+    private static final int MAX_CAPACITY = 50;
+    private final Queue<StreamDeadLetterMessage> recentAlerts = new ConcurrentLinkedQueue<>();
+
+    @Override
+    public void onFailure(StreamDeadLetterMessage deadLetterMessage) {
+        log.warn("[StreamAlert] 捕获 Stream 消费重试耗尽告警: stream={}, group={}, consumer={}, recordId={}, error={}",
+                deadLetterMessage.getStream(), deadLetterMessage.getGroup(), deadLetterMessage.getConsumer(),
+                deadLetterMessage.getRecordId(), deadLetterMessage.getExceptionMessage());
+        while (recentAlerts.size() >= MAX_CAPACITY) {
+            recentAlerts.poll();
+        }
+        recentAlerts.offer(deadLetterMessage);
+    }
+
+    public List<StreamDeadLetterMessage> getRecentAlerts() {
+        return Collections.unmodifiableList(new ArrayList<>(recentAlerts));
+    }
+}
+
+// 3. Web 接入层控制器：10 大 RESTful 端点
+@Validated
+@RestController
+@RequestMapping("/sample/redis/stream")
+@RequiredArgsConstructor
+public class RedisStreamController {
+
+    private final StreamEventScenarioService streamEventScenarioService;
+
+    @PostMapping("/events/template")
+    public Result<StreamEventVO> sendEventByTemplate(@Valid @RequestBody OrderStreamSendRequest request) { ... }
+
+    @PostMapping("/events/static")
+    public Result<StreamEventVO> sendEventByStatic(@Valid @RequestBody OrderStreamSendRequest request) { ... }
+
+    @GetMapping("/consumed")
+    public Result<List<OrderStreamEvent>> getConsumedEvents() { ... }
+
+    @GetMapping("/pending/summary")
+    public Result<StreamPendingSummaryVO> getPendingSummary() { ... }
+
+    @GetMapping("/pending/messages")
+    public Result<List<PendingMessageVO>> getPendingMessages(@RequestParam(value = "count", defaultValue = "10") long count) { ... }
+
+    @PostMapping("/claim")
+    public Result<List<String>> claimOrphans(@Valid @RequestBody StreamClaimRequest request) { ... }
+
+    @PostMapping("/trim")
+    public Result<Long> trimStream(@Valid @RequestBody StreamTrimRequest request) { ... }
+
+    @PostMapping("/events/poison")
+    public Result<String> sendPoisonEvent(@RequestParam(value = "orderId", required = false) String orderId) { ... }
+
+    @GetMapping("/dead-letter")
+    public Result<List<Map<String, Object>>> getDeadLetterRecords(@RequestParam(value = "count", defaultValue = "10") long count) { ... }
+
+    @GetMapping("/alerts")
+    public Result<List<StreamDeadLetterMessage>> getAlerts() { ... }
+}
 ```
 
-### 预期控制台呈现
-```text
-2026-10-27 16:55:12.710 INFO  [main] [NO-TRACE] i.g.a.b.s.r.s.StreamEventScenarioService : [StreamEvent] 投递订单流事件: stream=stream:order:events, event=OrderStreamEvent(orderId=ORD_STREAM_1001, eventType=ORDER_CREATED, amount=199.00)
-2026-10-27 16:55:12.725 INFO  [stream:order:events-1] [f821b017b20349bcae2837bc901a88c2] i.g.a.b.s.r.s.StreamEventScenarioService : [StreamEvent] 监听到消费组流事件: orderId=ORD_STREAM_1001, eventType=ORDER_CREATED, amount=199.00
-```
+### 核心生产机制与异常边界
+1. **At-Least-Once 可靠交付保证**：消费者从消费组拉取消息后，消息自动进入该消费者的挂起列表（Pending Entries List, PEL）。仅当业务消费方法成功返回且通过 `redisStreamTemplate.acknowledge(stream, group, recordId)` 确认后，消息才从 PEL 中移除；
+2. **孤儿挂起消息自动/手动抢占 (Claim)**：若某个消费者节点在消费中途崩溃宕机，未 ACK 的消息将长期滞留在 PEL 中。通过 `RedisStreamTemplate.claim`，健康的存活节点可指定最小空闲时间（`minIdleTime`）将孤儿消息转移至自身名下重新处理，防止消息永久悬挂；
+3. **死信流转与安全确认**：毒丸消息重试耗尽后，`StreamBootstrap` 先将消息转移至 `${stream}:dlq` 死信流，并触发 `StreamFailureHandler` SPI 回调，确认死信入队成功后再对原消息执行 XACK 释放，保障原消费组不阻塞且消息不丢失。
 
 ---
 
@@ -949,13 +1193,35 @@ public class ScriptExecutionScenarioService {
 
 ---
 
-## 10. 广播发布与订阅引擎 (Pub/Sub)
+## 10. 广播发布与订阅引擎 (Pub/Sub: `RedisMessagePublisher` & `@ChannelTopicListener`)
 
-### 场景痛点
-在集群部署中，某个节点更新了本地 JVM 缓存或系统配置后，需要即时同步给所有集群节点刷新内存。传统手写 Spring Data Redis `MessageListener` 配置繁琐、缺乏统一类型反序列化，且在监听回调线程中直接执行阻塞业务容易导致监听连接假死。
+### 场景痛点与工业级防卫
+在多节点集群部署中，某个节点更新了系统字典、网关黑名单或配置项后，需要即时通知所有微服务实例刷新本地 JVM 内存或状态。传统手写 Spring Data Redis `MessageListener` 配置繁琐、缺乏统一类型反序列化，且在监听回调线程中直接执行阻塞业务容易导致监听连接假死。
+`ateng-boot-redis` 构建了声明式全托管 Pub/Sub 广播引擎：
+- **声明式注解驱动**：使用 `@ChannelTopicListener` 声明式监听广播，支持精确主题（`topics`）、通配模式（`patterns` 如 `sample:system:*`）以及 `${...}` 属性占位符；
+- **全多态类型自适应反序列化**：支持单参（自动反序列化为强类型 POJO、String、byte[]、原生 Message）、双参（报文 + 实际触发频道）及三参安全适配；
+- **全受管线程池与并发度隔离**：每个广播监听器由 Spring 容器受管的 `ThreadPoolTaskExecutor` 并发驱动，内置 MDC `traceId` 透传与优雅停机，杜绝阻塞 Redis 核心连接池。
 
-### 核心代码示例（1:1 逆向自 `NoticeBroadcastScenarioService`）
+### 特性矩阵
+| 特性能力 | 核心类 / 注解 / SPI | 关键行为与配置 |
+| :--- | :--- | :--- |
+| **广播消息发布** | `RedisMessagePublisher.publish(channel, msg)` | 向精确频道或通配模式广播 POJO 结构体或纯文本，返回在线订阅客户端数 |
+| **声明式精确监听** | `@ChannelTopicListener(topics = "...")` | 精确主题订阅，自动反序列化为目标强类型实体 |
+| **声明式通配监听** | `@ChannelTopicListener(patterns = "...")` | 通配模式匹配（如 `sample:system:*`），双参获取报文及具体触发频道 |
+| **受管并发调度** | `ChannelTopicBootstrap` | 受管 `ThreadPoolTaskExecutor` 异步消费驱动，MDC `traceId` 透传与异常隔离 |
+
+### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    redis:
+      pub-sub:
+        enabled: true                 # 开启主题广播发布与声明式监听容器 (默认 true)
+```
+
+### 真实业务实战代码（1:1 提取自 `ateng-boot-sample-redis`）
 ```java
+// 1. 业务场景服务：精确主题公告广播与通配模式系统事件监听
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -965,32 +1231,79 @@ public class NoticeBroadcastScenarioService {
     public static final String PATTERN_SYSTEM_EVENT = "sample:system:*";
 
     private final RedisMessagePublisher redisMessagePublisher;
+    private final List<NoticeBroadcastPayload> receivedNotices = new CopyOnWriteArrayList<>();
+    private final List<String> receivedSystemEvents = new CopyOnWriteArrayList<>();
 
-    /**
-     * 1. 广播发布系统通知
-     */
+    // 1. 广播发布全站系统维护通知
     public Long publishNotice(NoticeBroadcastPayload notice) {
         log.info("[NoticeBroadcast] 广播发布系统通知: topic={}, noticeId={}", TOPIC_NOTICE_BROADCAST, notice.getNoticeId());
         return redisMessagePublisher.publish(TOPIC_NOTICE_BROADCAST, notice);
     }
 
-    /**
-     * 2. 声明式精确主题监听：自动反序列化为强类型 POJO
-     */
+    // 2. 广播发布系统通配事件
+    public Long publishSystemEvent(String eventType, String eventData) {
+        String channel = "sample:system:" + eventType;
+        log.info("[NoticeBroadcast] 广播发布系统事件: channel={}, data={}", channel, eventData);
+        return redisMessagePublisher.publish(channel, eventData);
+    }
+
+    // 3. 声明式精确主题监听：自动反序列化为强类型 POJO
     @ChannelTopicListener(topics = TOPIC_NOTICE_BROADCAST, concurrency = 1)
     public void onNoticeBroadcast(NoticeBroadcastPayload notice) {
         log.info("[NoticeBroadcast] 声明式接收系统公告广播: noticeId={}, title={}", notice.getNoticeId(), notice.getTitle());
+        receivedNotices.add(notice);
     }
 
-    /**
-     * 3. 声明式通配模式监听：多参数接收 payload 与触发频道
-     */
+    // 4. 声明式通配模式监听：多参数接收 payload 与具体触发频道
     @ChannelTopicListener(patterns = PATTERN_SYSTEM_EVENT, concurrency = 1)
     public void onSystemEvent(String eventData, String channel) {
         log.info("[NoticeBroadcast] 声明式通配监听到系统事件: channel={}, data={}", channel, eventData);
+        receivedSystemEvents.add(channel + "=" + eventData);
+    }
+}
+
+// 2. Web 接入层控制器：RESTful 广播触发与历史探查端点
+@Validated
+@RestController
+@RequestMapping("/sample/redis/pubsub")
+@RequiredArgsConstructor
+public class RedisPubSubController {
+
+    private final NoticeBroadcastScenarioService noticeBroadcastScenarioService;
+
+    @PostMapping("/broadcast/notice")
+    public Result<BroadcastResultVO> broadcastNotice(@Valid @RequestBody NoticeBroadcastRequest request) {
+        NoticeBroadcastPayload payload = new NoticeBroadcastPayload(
+                request.getNoticeId(), request.getTitle(), request.getContent(), System.currentTimeMillis());
+        Long subscribers = noticeBroadcastScenarioService.publishNotice(payload);
+        return Result.success(BroadcastResultVO.builder()
+                .topic(NoticeBroadcastScenarioService.TOPIC_NOTICE_BROADCAST)
+                .subscriberCount(subscribers).success(true).build());
+    }
+
+    @PostMapping("/broadcast/system-config")
+    public Result<BroadcastResultVO> broadcastSystemConfig(@Valid @RequestBody SystemEventBroadcastRequest request) {
+        Long subscribers = noticeBroadcastScenarioService.publishSystemEvent(request.getEventType(), request.getEventData());
+        return Result.success(BroadcastResultVO.builder()
+                .topic("sample:system:" + request.getEventType())
+                .subscriberCount(subscribers).success(true).build());
+    }
+
+    @GetMapping("/history/notices")
+    public Result<List<NoticeBroadcastPayload>> getNoticeHistory() {
+        return Result.success(noticeBroadcastScenarioService.getReceivedNotices());
+    }
+
+    @GetMapping("/history/system-events")
+    public Result<List<String>> getSystemEventHistory() {
+        return Result.success(noticeBroadcastScenarioService.getReceivedSystemEvents());
     }
 }
 ```
+
+### 核心生产机制与异常边界
+1. **瞬态无持久化特性**：Redis Pub/Sub 为“发后即忘”的轻量瞬态广播协议，消息在 Redis 内部不落盘存储，客户端离线断网期间发布的广播消息将永久丢失。关键核心业务（如订单状态、交易流水）应选用 Redis 5.0+ Stream 或专业 MQ；
+2. **广播风暴与反自重入**：广播监听器应保持轻量，耗时异步操作需提交至受管线程池；同时像两级缓存失效广播需携带全局唯一 `instanceId` 进行自重入拦截，防止本节点重复淘汰。
 
 ---
 
@@ -1303,7 +1616,7 @@ ateng:
         time-unit: SECONDS              # 默认时间单位 (默认 SECONDS)
         slow-threshold: 3s              # 慢锁监控告警阈值 (默认 3s，超出记录 WARN 日志)
       delay-queue:
-        enabled: true                   # 是否启用延时队列支持 (默认 true)
+        enabled: true                   # 是否启用延时队列支持与生命周期调度器 (默认 true)
         retry-times: 3                  # 延时消费失败最大重试次数 (默认 3)
         retry-delay: 3s                 # 延时消费失败重试间隔 (默认 3s)
         dead-letter-enabled: true       # 是否启用消费重试耗尽转入死信队列 (默认 true)
@@ -1329,10 +1642,10 @@ ateng:
       cache:
         enabled: true                   # 是否启用增强单级 Redis 缓存基础设施 (默认 true)
         default-ttl: 30m                # 缓存默认生存时间 (默认 30m)
-        jitter-enabled: true            # 是否启用随机抖动防雪崩 (默认 true)
-        max-jitter: 60s                 # 随机抖动最大时间跨度 (默认 60s)
         cache-null-values: true         # 是否缓存 null 防穿透 (默认 true)
         null-ttl: 5m                    # 空对象防穿透独立短过期时间 (默认 5m)
+        jitter-enabled: true            # 是否启用随机抖动防雪崩 (默认 true)
+        max-jitter: 60s                 # 随机抖动最大时间跨度 (默认 60s)
         lock-wait-time: 3s              # 缓存防击穿互斥锁最大等待时长 (默认 3s)
         expires:                        # 针对不同 CacheName 的个性化 TTL (`Map<String, Duration>`)
           short_cache: 10m
@@ -1342,164 +1655,17 @@ ateng:
         topic: "ateng:cache:evict:topic"# 跨节点两级缓存失效广播主题 (默认 "ateng:cache:evict:topic")
         l1:
           default-ttl: 5m               # L1 堆内存本地缓存默认过期时间 (默认 5m)
-          default-max-size: 10000       # L1 堆内存最大元素容量，严格防 OOM (默认 10000)
-          expires:                      # 针对特定 CacheName 的 L1 独立 TTL
+          default-max-size: 10000       # L1 堆内存最大元素容量，超出 LRU 淘汰严格防 OOM (默认 10000)
+          ttls:                         # 针对特定 CacheName 的 L1 独立 TTL
             user-profile: 2m
+          max-sizes:                    # 针对特定 CacheName 的 L1 独立容量上限
+            user-profile: 5000
         l2:
           default-ttl: 30m              # L2 集中式 Redis 缓存默认过期时间 (默认 30m)
-          jitter-enabled: true          # L2 写入是否启用随机抖动防雪崩 (默认 true)
-          max-jitter: 60s               # L2 随机抖动最大时间跨度 (默认 60s)
           cache-null-values: true       # L2 是否缓存空哨兵防穿透 (默认 true)
           null-ttl: 5m                  # L2 空对象防穿透独立短过期时间 (默认 5m)
-          expires:                      # 针对特定 CacheName 的 L2 独立 TTL
+          jitter-enabled: true          # L2 写入是否启用随机抖动防雪崩 (默认 true)
+          max-jitter: 60s               # L2 随机抖动最大时间跨度 (默认 60s)
+          ttls:                         # 针对特定 CacheName 的 L2 独立 TTL
             user-profile: 1h
 ```
-
----
-
-## 16. 生产扩展与高阶定制 (Customization & Extensibility)
-
-`ateng-boot-redis` 坚持 `@ConditionalOnMissingBean` 缺省守卫铁律，支持企业级生产场景深度定制与平滑无缝接管：
-
-### 16.1 自定义 RedissonClient 接管
-当现有自动化配置无法满足集群特异性参数（如特定 SSL 证书、自定义编解码管道或监控指标导出）时，下游应用仅需声明同类型 Bean 即可 100% 接管 Redisson 装配：
-
-```java
-@Configuration(proxyBeanMethods = false)
-public class CustomRedissonConfiguration {
-
-    @Bean
-    public RedissonClient redissonClient() {
-        Config config = new Config();
-        config.useSingleServer()
-                .setAddress("redis://127.0.0.1:6379")
-                .setConnectionMinimumIdleSize(10)
-                .setConnectionPoolSize(64);
-        return Redisson.create(config);
-    }
-}
-```
-
-### 16.2 编程式延时队列平滑接管
-`RedisDelayedQueue` 既支持作为 Spring 托管单例由容器注入，也支持在离线测试或轻量客户端中通过构造器原生初始化：
-
-```java
-RedisDelayedQueue delayedQueue = new RedisDelayedQueue(redissonClient, objectMapper, redisProperties);
-delayedQueue.offer("custom_queue", new TaskPayload(1001L), Duration.ofMinutes(10));
-```
-
-### 16.3 自定义死信失败处理 SPI 接管 (`DelayedQueueFailureHandler`)
-框架默认注入 `LoggingDelayedQueueFailureHandler` 打印 ERROR 堆栈日志。当下游需要对接企业微信/钉钉报警、流转告警中心或落库持久化时，仅需声明同类型 Bean 即可一键接管：
-
-```java
-@Component
-public class AlertDelayedQueueFailureHandler implements DelayedQueueFailureHandler {
-
-    @Override
-    public void onFailed(DeadLetterMessage<?> deadLetterMessage, Throwable cause) {
-        log.error("延时队列死信告警触发: queue={}, retryTimes={}", deadLetterMessage.originalQueue(), deadLetterMessage.retryTimes(), cause);
-        // 发送钉钉机器人告警通知...
-    }
-}
-```
-
-### 16.4 自定义 Stream 失败处理 SPI 接管 (`StreamFailureHandler`)
-Stream 消费组重试耗尽后默认由 `LoggingStreamFailureHandler` 打印错误堆栈。若需要将失败事件存入审计数据库或发送告警卡片，只需声明实现类 Bean：
-
-```java
-@Component
-public class CustomStreamFailureHandler implements StreamFailureHandler {
-
-    @Override
-    public void onFailed(StreamDeadLetterMessage<?> deadLetterMessage, Throwable cause) {
-        log.error("Stream 消费组死信触发: stream={}, group={}, recordId={}",
-                deadLetterMessage.originalStream(), deadLetterMessage.group(), deadLetterMessage.recordId(), cause);
-        // 执行持久化或告警...
-    }
-}
-```
-
-### 16.5 编程式动态布隆过滤器与原生 Redisson 句柄扩展
-除了在 YAML 中静态声明，`RedisBloomFilter` 亦完全支持在动态业务运行时按需初始化与底层句柄扩展：
-
-```java
-// 1. 动态按需原子初始化
-boolean initialized = redisBloomFilter.tryInit("dynamic_promo_users", 200_000L, 0.005);
-
-// 2. 获取原生 Redisson 句柄以进行异步操作或高级监听
-RBloomFilter<String> nativeFilter = redisBloomFilter.getFilter("dynamic_promo_users");
-RFuture<Boolean> future = nativeFilter.containsAsync("user_10086");
-```
-
-### 16.6 两级缓存 L1 内存引擎平滑退化与 SPI 适配
-`ateng-boot-redis` 在设计两级缓存 L1 抽象时恪守零臃肿与底座优先原则：
-- **编译期可选依赖 (Optional Dependency)**：`com.github.ben-manes.caffeine:caffeine` 标配 `<optional>true</optional>`，下游可按需引入享受 Caffeine 的 W-TinyLFU 高命中淘汰算法；
-- **纯原生 JVM 零依赖平滑退化**：若下游未引入 Caffeine，`L1MemoryCacheFactory` 在类加载期通过 `ClassUtils.isPresent` 与私有静态内部类完成隔离探测，自动退化为内置的 `ConcurrentLruMemoryCache`，基于原生 `LinkedHashMap`（写锁防护、`accessOrder = true`）与 `l1.default-max-size` 严格容量控制，保障生产环境无外部重依赖下平稳运行且绝不 OOM。
-
-### 16.7 受管 Lua 脚本原子执行器与自定义加载扩展
-`RedisScriptExecutor` 允许将常用脚本收敛至 `resources/scripts/*.lua`，避免代码中硬编码字符串：
-
-```java
-@Autowired
-private RedisScriptExecutor redisScriptExecutor;
-
-public Long executeCustomLua(String key, Long delta) {
-    return redisScriptExecutor.executeClasspath("scripts/custom_counter.lua", Long.class, List.of(key), delta);
-}
-```
-
-### 16.8 分布式信号量配额治理与动态扩缩容
-针对外部突发流量与服务升降级，可随时通过模板动态调配许可证总数：
-
-```java
-@Autowired
-private RedisSemaphoreTemplate redisSemaphoreTemplate;
-
-public void adjustCapacity(String serviceKey, int newQuota) {
-    redisSemaphoreTemplate.resetPermits(serviceKey, newQuota);
-}
-```
-
----
-
-## 17. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
-
-### 17.1 分布式锁防御性释放与防误删不变量
-- **状态判断释放范式**：在 `DistributedLockTemplate.safeUnlockAndAudit` 释放锁前，强制通过 `rLock.isHeldByCurrentThread()` 校验当前线程是否真正持有锁；若因业务耗时严重超出 `leaseTime` 导致锁已被 Redis 自动过期并由其他节点的线程获取，当前线程会主动跳过 `unlock()` 并记录 WARN 日志，**绝对杜绝误删其他线程持有的锁造成级联并发穿透**。
-- **次生异常彻底隔离**：锁释放逻辑在 `finally` 块中受到全面保护并捕获底层网络断开等偶发异常，确保业务方法本身抛出的原始业务异常（如业务断言失败、校验未通过等）不被次生异常冲刷掩盖。
-
-### 17.2 看门狗自动续期与固定租期选择策略
-- **`leaseTime <= 0`（推荐）**：默认 `leaseTime = -1ms`，此时 Redisson 会自动激活看门狗（Watchdog，默认每隔 10s 自动续期至 30s）。适合绝大多数长事务与复杂业务逻辑，只要业务节点存活即可确保持锁不中断，进程宕机后 30s 自动失效。
-- **`leaseTime > 0`（显式固定时长）**：一旦显式指定具体租期（例如 `leaseTime = 10`），Redisson 将**彻底禁用看门狗自动延期**。若业务执行耗时超出指定租期，锁将强制自动释放；请确保设置的租期显著大于业务最大可能耗时。
-
-### 17.3 延时队列生命周期消费、受管线程池与死信流转
-- **受管线程池与四维上下文透传**：`DelayedQueueBootstrap` 消费轮询彻底淘汰裸 `Executors`，接入 Spring 容器受管的 `ThreadPoolTaskExecutor` 并挂载 `ContextCopyingTaskDecorator`，确保 TraceId、TenantId 等上下文在延时队列消费线程中合规生效；
-- **死信流转与错误隔离**：内置异常受控重试；重试耗尽后若 `deadLetterEnabled=true` 则将包装完整的 `DeadLetterMessage<T>` 投递至 `${queueName}:dlq` 并触发 `DelayedQueueFailureHandler` SPI，杜绝毒药消息阻塞队列并保障可追溯审计；
-- **平滑优雅停机**：监听容器实现了 `DisposableBean`，在 JVM 或 Spring 容器销毁时首先停止拉取新消息，等待在途任务执行完成并注销内部阻塞循环与受管线程池，保障零消息悬挂。
-
-### 17.4 布隆过滤器容量 80% 安全预警与生命周期清理
-- **元素填充率实时预警**：布隆过滤器的误判率由预估容量与已插入元素数决定。当实际元素数超过预估容量的 80%（`getUsageRate() >= 0.8`）时，`RedisBloomFilter` 在添加操作后自动记录 WARN 日志告警，提示运维及时扩容或重建双过滤器平滑迁移；
-- **对称物理销毁**：通过 `RedisBloomFilter.delete(filterName)` 可一键原子销毁底层 Redis 位图，释放内存占用。
-
-### 17.5 RedisCacheTemplate 争锁超时容灾与死锁防御
-- **争锁超时平滑降级（Resilience Pass-Through）**：当极端高并发争抢热点 Key 时，若等待互斥锁超时（超出 `lockWaitTime`，默认 3s），模板记录 WARN 日志后平滑降级穿透查库，并将查库结果异步尝试回填 Redis，严禁向外抛出异常阻断正常业务流；
-- **批量缺失键字典序排序加锁**：在 `batchGetOrLoad` 处理并发缺失多键时，所有物理锁 Key 严格执行字典序升序排序（`Collections.sort(lockKeys)`）后再申请 MultiLock，从数学机制上杜绝并发请求中不同顺序加锁引发的死锁悬挂隐患。
-
-### 17.6 两级缓存广播失效、反自重入与雪崩/穿透防御语义
-- **全局唯一实例 ID 与自重入防环机制**：`TwoLevelCacheManager` 在初始化时分配全局递增无锁 `instanceId`。当业务线程执行 `@CacheEvict` 或 `cache.evict(...)` 时，本地优先清除 L1 与 L2 并向 Redis 集中频道（默认 `ateng:cache:evict:topic`）广播 `CacheEvictMessage`。各实例的消息监听器收到消息后比对 `instanceId`，若等于当前实例 ID 则立即判定为本地自身触发的广播并主动丢弃，仅对其他实例的本地 L1 触发清除，**从拓扑机制上 100% 杜绝自身二次淘汰、广播回环与自重入死锁**；
-- **防穿透空哨兵机制**：当查库为空时，`DefaultTwoLevelCache` 向 Redis 写入专用空哨兵标识符 `__ATENG_CACHE_NULL__`（带有独立短过期时间 `l2.null-ttl`，默认 5m），并发请求命中空哨兵时立即返回 `null`，严防恶意不存在 Key 击穿底层存储；
-- **防雪崩随机抖动 (Jitter)**：回填 L2 Redis 缓存时，系统自动在基准 TTL 基础上叠加 0 ~ `max-jitter` 的随机动态偏移，打散相同批次热点数据的集中过期时间。
-
-### 17.7 Stream ACK 确认、PEL 挂起排查与孤儿消息认领机制
-- **At-Least-Once 可靠交付保证**：消费者从消费组拉取消息后，消息自动进入该消费者的挂起列表（Pending Entries List, PEL）。仅当业务消费方法成功返回且通过 `redisStreamTemplate.ack(stream, group, recordId)` 确认后，消息才从 PEL 中移除；
-- **孤儿挂起消息自动/手动抢占 (Claim)**：若某个消费者节点在消费中途崩溃宕机，未 ACK 的消息将长期滞留在 PEL 中。通过 `RedisStreamTemplate.claim`，健康的存活节点可指定最小空闲时间（`minIdle`）将孤儿消息转移至自身名下重新处理，防止消息永久悬挂。
-
-### 17.8 分布式信号量持有人防误还与状态判断归还保底
-- **槽位释放防御**：`RedisSemaphoreTemplate` 统一管理信号量许可证的申请与归还；业务代码执行完毕或异常中断时，在 `finally` 块中严格确保仅当本线程成功获取了相应数量许可证时才调用 `release(permits)`，严禁未持锁或超额释放导致许可证虚假膨胀。
-
-### 17.9 分布式防重幂等 deleteOnFailure 故障自愈机制与业务隔离
-- **业务失败自动回滚凭据**：传统 SETNX 防重若在业务异常后不释放，会导致上游重试机制因防重拦截而失败。`@RedisIdempotent` 标配 `deleteOnFailure = true`，当捕获到业务抛出异常时立即安全清理防重键，允许外部系统（如消息队列、支付网关）重新发起补偿调用；
-- **成功持久留存**：仅当方法正常无异常返回时，防重键才会在 Redis 中留存完整的 `expire` 时长，抵御后续重复提交。
-
-### 17.10 Redisson TCP 心跳保活与云原生 NAT 静默切断弹性防御机制
-- **PING 心跳保活机制**：在云原生容器网络、跨可用区专线或公有云 NAT 网关环境下，长时间无数据通信的空闲 TCP 连接常被防火墙或网关静默切断（Silent Drop），导致应用在下一次发起 Redis 命令时因使用失效连接出现 `Connection reset by peer` 错误。`AtengRedisAutoConfiguration` 统一配置 `pingConnectionInterval`（默认 30s），由 Redisson 客户端后台定期向 Redis 服务端发送 PING 命令检测并维系物理链路活跃，彻底解决长连接偶发断开难题。
