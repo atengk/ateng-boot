@@ -42,6 +42,22 @@
 | **导入差错数据独立剥离导出** | `OnboardingImportController` | `POST /sample/excel/onboarding/export-failed-rows` | `curl -X POST "http://localhost:8080/sample/excel/onboarding/export-failed-rows" -F "file=@入职含错测试样本.xlsx" -o 入职导入失败明细.xlsx` |
 | **导入错误原样标红批注回写反馈** | `OnboardingImportController` | `POST /sample/excel/onboarding/export-feedback` | `curl -X POST "http://localhost:8080/sample/excel/onboarding/export-feedback" -F "file=@入职含错测试样本.xlsx" -o 入职导入错误反馈_标红批注.xlsx` |
 | **海量入职数据流式分批校验消费** | `OnboardingImportController` | `POST /sample/excel/onboarding/import-batch` | `curl -X POST "http://localhost:8080/sample/excel/onboarding/import-batch?batchSize=100" -F "file=@入职合规测试样本.xlsx"` |
+| **异构多 Sheet 联合报表写出** | `WorkbookReportController` | `GET /sample/excel/report/multi-sheet` | `curl -i "http://localhost:8080/sample/excel/report/multi-sheet" -o 经营综合分析多表报表.xlsx` |
+| **异构多 Sheet 联合动态解析** | `WorkbookReportController` | `POST /sample/excel/report/multi-sheet-parse` | `curl -X POST "http://localhost:8080/sample/excel/report/multi-sheet-parse" -F "file=@经营综合分析多表报表.xlsx"` |
+| **动态表头与键值对 Map 导出** | `WorkbookReportController` | `GET /sample/excel/report/dynamic` | `curl -i "http://localhost:8080/sample/excel/report/dynamic" -o 动态扩展属性报表.xlsx` |
+| **商品图文画册图文混排导出** | `WorkbookReportController` | `GET /sample/excel/report/image-catalog` | `curl -i "http://localhost:8080/sample/excel/report/image-catalog" -o 企业商品图文画册.xlsx` |
+| **空白差旅报销单模板下载** | `WorkbookReportController` | `GET /sample/excel/report/template-blank` | `curl -i "http://localhost:8080/sample/excel/report/template-blank" -o 差旅报销结算单_空白模板.xlsx` |
+| **报销单占位符与列表循环填充** | `WorkbookReportController` | `GET /sample/excel/report/fill` | `curl -i "http://localhost:8080/sample/excel/report/fill" -o 差旅报销结算单_已填充.xlsx` |
+| **脱敏与公式防注入对照导出** | `PayrollSecurityController` | `GET /sample/excel/security/export-contrast` | `curl -i "http://localhost:8080/sample/excel/security/export-contrast" -o 薪酬敏感信息与公式防护对照表.xlsx` |
+| **-30° 暗水印与工作表只读保护导出** | `PayrollSecurityController` | `GET /sample/excel/security/export-watermark` | `curl -i "http://localhost:8080/sample/excel/security/export-watermark" -o 薪酬机密_防拍照暗水印锁定.xlsx` |
+| **整工作簿 AES-256 强加密导出** | `PayrollSecurityController` | `GET /sample/excel/security/export-encrypt` | `curl -i "http://localhost:8080/sample/excel/security/export-encrypt?password=PayrollSecret%402026" -o 薪酬机密_AES256加密.xlsx` |
+| **下载加密测试样本工作簿** | `PayrollSecurityController` | `GET /sample/excel/security/sample-encrypted` | `curl -i "http://localhost:8080/sample/excel/security/sample-encrypted" -o 薪酬机密_样本加密.xlsx` |
+| **密文工作簿透明对称解密导入** | `PayrollSecurityController` | `POST /sample/excel/security/import-decrypt` | `curl -X POST "http://localhost:8080/sample/excel/security/import-decrypt?password=PayrollSecret%402026" -F "file=@薪酬机密_样本加密.xlsx"` |
+| **PageResult 流式跨表轮转导出** | `OrderStreamingController` | `GET /sample/excel/streaming/export-page` | `curl -i "http://localhost:8080/sample/excel/streaming/export-page?totalRows=250&pageSize=100&maxRowsPerSheet=100" -o 订单流水_分页跨表分片导出.xlsx` |
+| **主键游标流式分页跨表导出** | `OrderStreamingController` | `GET /sample/excel/streaming/export-cursor` | `curl -i "http://localhost:8080/sample/excel/streaming/export-cursor?totalRows=250&pageSize=100&maxRowsPerSheet=100" -o 订单流水_游标分片导出.xlsx` |
+| **流式分页模板显式写控制导出** | `OrderStreamingController` | `GET /sample/excel/streaming/export-template` | `curl -i "http://localhost:8080/sample/excel/streaming/export-template" -o 订单流水_模板显式写.xlsx` |
+| **下载海量交易订单测试样本** | `OrderStreamingController` | `GET /sample/excel/streaming/sample-order-bill` | `curl -i "http://localhost:8080/sample/excel/streaming/sample-order-bill?count=300" -o 海量订单交易账单样本.xlsx` |
+| **大文件常量内存分批流式解析消费** | `OrderStreamingController` | `POST /sample/excel/streaming/import-batch` | `curl -X POST "http://localhost:8080/sample/excel/streaming/import-batch?batchSize=100" -F "file=@海量订单交易账单样本.xlsx"` |
 
 ---
 

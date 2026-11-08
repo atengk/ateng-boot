@@ -38,6 +38,7 @@ import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -109,6 +110,22 @@ class SampleExcelIntegrationTest {
 
     @TempDir
     Path tempDir;
+
+    @BeforeAll
+    static void initTemplates() throws Exception {
+        Path templateDir = Path.of("src/main/resources/templates");
+        Files.createDirectories(templateDir);
+        Path templateFile = templateDir.resolve("expense_reimbursement_template.xlsx");
+        byte[] bytes = io.github.atengk.boot.sample.excel.controller.WorkbookReportController.generateReimbursementTemplateBytes();
+        if (!Files.exists(templateFile)) {
+            Files.write(templateFile, bytes);
+        }
+        Path targetDir = Path.of("target/classes/templates");
+        if (Files.exists(Path.of("target/classes"))) {
+            Files.createDirectories(targetDir);
+            Files.write(targetDir.resolve("expense_reimbursement_template.xlsx"), bytes);
+        }
+    }
 
     private void saveTempExcel(String fileName, byte[] bytes) throws Exception {
         Path target = tempDir.resolve(fileName);
@@ -471,6 +488,375 @@ class SampleExcelIntegrationTest {
         assertThat(node.get("code").asInt()).isEqualTo(200);
         assertThat(node.get("data").get("totalSuccess").asInt()).isEqualTo(3);
         assertThat(node.get("data").get("totalErrors").asInt()).isEqualTo(0);
+    }
+
+    // ==========================================
+    // 领域控制器 3：WorkbookReportController 测试 (/sample/excel/report/*)
+    // ==========================================
+
+    @Test
+    @DisplayName("报表端点 1 & 2：异构多 Sheet 联合导出与反向解析闭环")
+    void testReport_MultiSheet_ExportAndParse() throws Exception {
+        // 1. 导出多 Sheet 报表
+        MvcResult exportResult = mockMvc.perform(get("/sample/excel/report/multi-sheet"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = exportResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            assertThat(wb.getNumberOfSheets()).isEqualTo(3);
+            assertThat(wb.getSheetAt(0).getSheetName()).isEqualTo("员工花名册");
+            assertThat(wb.getSheetAt(1).getSheetName()).isEqualTo("部门考勤");
+            assertThat(wb.getSheetAt(2).getSheetName()).isEqualTo("财务动态流水");
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(3); // 1 表头 + 2 数据
+            assertThat(wb.getSheetAt(1).getPhysicalNumberOfRows()).isEqualTo(4); // 1 表头 + 3 数据
+        }
+
+        saveTempExcel("report-multi-sheet.xlsx", content);
+
+        // 2. 上传该多 Sheet 文件执行联合解析
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "multi-sheet.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                content
+        );
+
+        MvcResult parseResult = mockMvc.perform(multipart("/sample/excel/report/multi-sheet-parse")
+                        .file(file))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode node = objectMapper.readTree(parseResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(node.get("code").asInt()).isEqualTo(200);
+        assertThat(node.get("data").get("rosterCount").asInt()).isEqualTo(2);
+        assertThat(node.get("data").get("attendanceCount").asInt()).isEqualTo(3);
+        assertThat(node.get("data").get("totalRowCount").asInt()).isEqualTo(5);
+    }
+
+    @Test
+    @DisplayName("报表端点 3：无实体动态表头与 Map 键值映射动态导出")
+    void testReport_ExportDynamic() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/report/dynamic"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = wb.getSheet("指标统计");
+            assertThat(sheet).isNotNull();
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(4); // 1 表头 + 3 行数据
+            Row headRow = sheet.getRow(0);
+            assertThat(headRow.getCell(0).getStringCellValue()).isEqualTo("指标代号");
+            assertThat(headRow.getCell(1).getStringCellValue()).isEqualTo("统计维度");
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(0).getStringCellValue()).isEqualTo("MTR-001");
+            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("华东大区");
+        }
+
+        saveTempExcel("report-dynamic.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("报表端点 4：商品图文画册导出（@ExcelImage 75pt 行高与图片内嵌）")
+    void testReport_ExportImageCatalog() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/report/image-catalog"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(4); // 1 表头 + 3 条商品
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("旗舰智能手机 Pro");
+            // 验证自适应撑起的行高约为 75pt
+            assertThat(row1.getHeightInPoints()).isGreaterThanOrEqualTo(70.0f);
+            assertThat(sheet.getDrawingPatriarch()).isNotNull();
+        }
+
+        saveTempExcel("report-image-catalog.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("报表端点 5 & 6：费用报销单空白模板下载与数据复合填充导出")
+    void testReport_Template_BlankAndFill() throws Exception {
+        // 1. 空白模板下载
+        MvcResult blankResult = mockMvc.perform(get("/sample/excel/report/template-blank"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] blankBytes = blankResult.getResponse().getContentAsByteArray();
+        assertThat(blankBytes).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(blankBytes))) {
+            Sheet sheet = wb.getSheet("费用报销单");
+            assertThat(sheet).isNotNull();
+            assertThat(sheet.getRow(0).getCell(0).getStringCellValue()).contains("费用报销审批单");
+        }
+
+        saveTempExcel("report-blank-template.xlsx", blankBytes);
+
+        // 2. 复合数据填充导出
+        MvcResult fillResult = mockMvc.perform(get("/sample/excel/report/fill"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] filledBytes = fillResult.getResponse().getContentAsByteArray();
+        assertThat(filledBytes).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(filledBytes))) {
+            Sheet sheet = wb.getSheet("费用报销单");
+            assertThat(sheet).isNotNull();
+            // 验证单对象占位符替换
+            assertThat(sheet.getRow(1).getCell(0).getStringCellValue()).contains("EXP-202611-0089");
+            assertThat(sheet.getRow(2).getCell(0).getStringCellValue()).contains("张三");
+            // 验证列表行填充
+            assertThat(sheet.getRow(4).getCell(0).getStringCellValue()).isEqualTo("差旅交通费");
+            assertThat(sheet.getRow(5).getCell(0).getStringCellValue()).isEqualTo("差旅住宿费");
+            assertThat(sheet.getRow(6).getCell(0).getStringCellValue()).isEqualTo("餐饮招待费");
+        }
+
+        saveTempExcel("report-filled-reimbursement.xlsx", filledBytes);
+    }
+
+    // ==========================================
+    // 领域控制器 4：PayrollSecurityController 测试 (/sample/excel/security/*)
+    // ==========================================
+
+    @Test
+    @DisplayName("薪酬安全端点 1：脱敏与公式防注入对照演示导出")
+    void testSecurity_ExportContrast() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/security/export-contrast"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = wb.getSheetAt(0);
+            Row row1 = sheet.getRow(1);
+
+            // 验证 @ExcelSensitive 脱敏
+            assertThat(row1.getCell(1).getStringCellValue()).contains("*"); // 姓名脱敏
+            assertThat(row1.getCell(2).getStringCellValue()).isEqualTo("138****8000"); // 手机脱敏
+            assertThat(row1.getCell(3).getStringCellValue()).contains("********"); // 身份证脱敏
+
+            // 验证 @ExcelFormulaAllowed 白名单豁免（不被转义）
+            assertThat(row1.getCell(5).getStringCellValue()).isEqualTo("=SUM(E2*1.2)");
+
+            // 验证未豁免公式注入字符前置单引号转义
+            assertThat(row1.getCell(6).getStringCellValue()).startsWith("'=");
+        }
+
+        saveTempExcel("security-contrast.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("薪酬安全端点 2：防伪暗水印与工作表只读保护导出")
+    void testSecurity_ExportWatermark() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/security/export-watermark"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getProtect()).isTrue();
+        }
+
+        saveTempExcel("security-watermark.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("薪酬安全端点 3 & 5：整工作簿 AES-256 强加密导出与带密码解密上传闭环")
+    void testSecurity_ExportEncrypt_And_ImportDecrypt() throws Exception {
+        String testPassword = "AgilePass@2026";
+
+        // 1. 导出 AES-256 密文工作簿
+        MvcResult encryptResult = mockMvc.perform(get("/sample/excel/security/export-encrypt")
+                        .param("password", testPassword))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] cipherBytes = encryptResult.getResponse().getContentAsByteArray();
+        assertThat(cipherBytes).isNotEmpty();
+
+        // 验证文件已被 OLE2 AES-256 强加密
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(cipherBytes))).isTrue();
+
+        saveTempExcel("security-encrypted.xlsx", cipherBytes);
+
+        // 2. 正确密码解密上传：成功还原 3 条数据
+        MockMultipartFile validFile = new MockMultipartFile(
+                "file", "encrypted.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                cipherBytes
+        );
+
+        MvcResult decryptSuccess = mockMvc.perform(multipart("/sample/excel/security/import-decrypt")
+                        .file(validFile)
+                        .param("password", testPassword))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode successNode = objectMapper.readTree(decryptSuccess.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(successNode.get("code").asInt()).isEqualTo(200);
+        assertThat(successNode.get("data").get("data").size()).isEqualTo(3);
+
+        // 3. 错误密码解密上传：快速失败阻断
+        MvcResult decryptWrong = mockMvc.perform(multipart("/sample/excel/security/import-decrypt")
+                        .file(validFile)
+                        .param("password", "WrongPassword!"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode wrongNode = objectMapper.readTree(decryptWrong.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(wrongNode.get("code").asInt()).isNotEqualTo(200);
+
+        // 4. 未传密码解密上传：快速失败阻断
+        MvcResult decryptNoPwd = mockMvc.perform(multipart("/sample/excel/security/import-decrypt")
+                        .file(validFile))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode noPwdNode = objectMapper.readTree(decryptNoPwd.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(noPwdNode.get("code").asInt()).isNotEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("薪酬安全端点 4：下载加密测试样本工作簿")
+    void testSecurity_DownloadEncryptedSample() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/security/sample-encrypted"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(content))).isTrue();
+    }
+
+    // ==========================================
+    // 领域控制器 5：OrderStreamingController 测试 (/sample/excel/streaming/*)
+    // ==========================================
+
+    @Test
+    @DisplayName("海量流式端点 1：基于 PageResult 的多 Sheet 自动阈值分片轮转导出")
+    void testStreaming_ExportPage_WithSheetRotation() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/streaming/export-page")
+                        .param("totalRows", "250")
+                        .param("pageSize", "100")
+                        .param("maxRowsPerSheet", "100"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            assertThat(wb.getNumberOfSheets()).isEqualTo(3);
+            assertThat(wb.getSheetAt(0).getSheetName()).isEqualTo("订单流水");
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(101); // 1 表头 + 100 数据
+            assertThat(wb.getSheetAt(1).getSheetName()).isEqualTo("订单流水_2");
+            assertThat(wb.getSheetAt(1).getPhysicalNumberOfRows()).isEqualTo(101);
+            assertThat(wb.getSheetAt(2).getSheetName()).isEqualTo("订单流水_3");
+            assertThat(wb.getSheetAt(2).getPhysicalNumberOfRows()).isEqualTo(51); // 1 表头 + 50 数据
+        }
+
+        saveTempExcel("streaming-page-rotation.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("海量流式端点 2：基于主键游标的零深分页跨表流式导出")
+    void testStreaming_ExportCursor() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/streaming/export-cursor")
+                        .param("totalRows", "180")
+                        .param("pageSize", "50")
+                        .param("maxRowsPerSheet", "100"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            assertThat(wb.getNumberOfSheets()).isEqualTo(2);
+            assertThat(wb.getSheetAt(0).getSheetName()).isEqualTo("交易账单");
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(101);
+            assertThat(wb.getSheetAt(1).getSheetName()).isEqualTo("交易账单_2");
+            assertThat(wb.getSheetAt(1).getPhysicalNumberOfRows()).isEqualTo(81);
+        }
+
+        saveTempExcel("streaming-cursor-export.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("海量流式端点 3：流式分页模板显式写控制导出")
+    void testStreaming_ExportTemplate() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/streaming/export-template"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            assertThat(wb.getNumberOfSheets()).isEqualTo(1);
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(151);
+        }
+
+        saveTempExcel("streaming-template-export.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("海量流式端点 4 & 5：下载模拟订单账单并执行 readBatch 流式消费")
+    void testStreaming_DownloadSample_And_ImportBatch() throws Exception {
+        // 1. 下载 80 条模拟订单样本
+        MvcResult sampleResult = mockMvc.perform(get("/sample/excel/streaming/sample-order-bill")
+                        .param("count", "80"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] sampleBytes = sampleResult.getResponse().getContentAsByteArray();
+        assertThat(sampleBytes).isNotEmpty();
+
+        // 2. 上传该样本文件，以批次 25 条进行分批消费解析
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "orders.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                sampleBytes
+        );
+
+        MvcResult importResult = mockMvc.perform(multipart("/sample/excel/streaming/import-batch")
+                        .file(file)
+                        .param("batchSize", "25"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode node = objectMapper.readTree(importResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(node.get("code").asInt()).isEqualTo(200);
+        assertThat(node.get("data").get("totalRead").asInt()).isEqualTo(80);
     }
 
     // ==========================================

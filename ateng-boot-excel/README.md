@@ -820,15 +820,24 @@ public class SecurityFormulaVO {
 
 ---
 
-### 6.3 防拍照全屏暗水印与工作表只读保护 (`ExcelWatermarkUtil`)
+### 6.3 防拍照全屏暗水印与工作表只读保护 (`ExcelWebUtil` & `ExcelUtil`)
+
+#### 本节专属 YAML 配置
+```yaml
+# 水印与工作表保护为编程式与注解声明式驱动，免额外强制配置
+```
 
 #### 实战业务代码范式
 ```java
-import io.github.atengk.boot.excel.util.ExcelWatermarkUtil;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import io.github.atengk.boot.excel.util.ExcelWebUtil;
 import jakarta.servlet.http.HttpServletResponse;
 
-// 导出带全屏防拍照背景暗水印（-30° 倾斜、半透明）与工作表只读密码锁定
-ExcelWatermarkUtil.exportWithWatermark(
+import java.io.FileOutputStream;
+import java.io.OutputStream;
+
+// 1. Web 场景导出：带全屏防拍照背景暗水印（-30° 倾斜、半透明）与工作表只读密码锁定
+ExcelWebUtil.exportWithWatermark(
         response,
         "绝密花名册.xlsx",
         dataList,
@@ -836,12 +845,24 @@ ExcelWatermarkUtil.exportWithWatermark(
         "绝密 · 张三 (E1001) · 2026-11-08",
         "ProtectPassword@2026"
 );
+
+// 2. 本地/流式场景导出
+try (OutputStream out = new FileOutputStream("绝密花名册.xlsx")) {
+    ExcelUtil.exportWithWatermark(
+            out,
+            "员工花名册",
+            dataList,
+            EmployeeRosterVO.class,
+            "内部机密 · 请勿外传",
+            "ProtectPassword@2026"
+    );
+}
 ```
-- **核心机制**：暗水印基于 POI 底层关系注入全屏平铺背景（Background Picture），默认倾角为 `-30°`，完全不占用 Drawing 绘图层，零点击遮挡。
+- **核心机制**：暗水印基于 POI 底层关系注入全屏平铺背景（Background Picture），默认倾角为 `-30°`，完全不占用 Drawing 绘图层，零点击遮挡；工作表保护启用后，仅允许用户选中单元格查看，禁止编辑、插入行或格式调整。
 
 ---
 
-### 6.4 整工作簿 POI 原生 Agile AES-256 强加解密 (`ExcelSecurityUtil`)
+### 6.4 整工作簿 POI 原生 Agile AES-256 强加解密 (`ExcelSecurityUtil` & `ExcelUtil`)
 
 #### 本节专属 YAML 配置
 ```yaml
@@ -854,12 +875,17 @@ ateng:
 
 #### 实战业务代码范式
 ```java
+import io.github.atengk.boot.excel.model.ExcelReadResult;
 import io.github.atengk.boot.excel.util.ExcelSecurityUtil;
 import io.github.atengk.boot.excel.util.ExcelUtil;
+import io.github.atengk.boot.excel.util.ExcelWebUtil;
+import jakarta.servlet.http.HttpServletResponse;
 
 String password = "AgileStrongPassword@2026";
 
-// 1. 导出生成原生 AES-256 强加密工作簿
+// 1. 导出生成原生 AES-256 强加密工作簿（支持 Web 响应与本地输出流）
+ExcelWebUtil.export(response, "薪酬机密_加密.xlsx", "薪酬机密", salaryList, SalaryVO.class, password);
+
 try (FileOutputStream out = new FileOutputStream("薪酬机密_加密.xlsx")) {
     ExcelUtil.export(out, "薪酬机密", salaryList, SalaryVO.class, null, null, password);
 }
@@ -875,11 +901,16 @@ try (InputStream in = new BufferedInputStream(new FileInputStream("薪酬机密_
     boolean encrypted = ExcelSecurityUtil.isEncryptedWorkbook(in); // true
 }
 
-// 4. 对称解密读取重载（输入流加密时自动解密至受管临时文件并在 finally 确定性物理销毁）
+// 4. 对称解密读取重载（加密工作簿自动解密并经由 JSR-303 防卫校验）
 try (InputStream in = new FileInputStream("薪酬机密_加密.xlsx")) {
     ExcelReadResult<SalaryVO> result = ExcelUtil.readWithResult(in, SalaryVO.class, password);
 }
 ```
+
+#### 核心机制与临时文件安全边界
+> [!IMPORTANT]
+> **临时文件零泄漏与确定性生命周期治理**：
+> `ExcelSecurityUtil` 与 `ExcelUtil` 处理 AES-256 加解密与中转落盘时，采用受管物理隔离目录（`ateng.boot.excel.temp-dir`），并在底层框架执行中通过 `try-finally` 块与显式清理钩子（`cleanups.add(...)`）实现即刻物理删除与句柄闭合。杜绝依赖不可靠的 JVM 关闭钩子（如 `File.deleteOnExit()`），确保在高并发与异常中止场景下零临时文件残留。
 
 ---
 
@@ -887,24 +918,36 @@ try (InputStream in = new FileInputStream("薪酬机密_加密.xlsx")) {
 
 ### 7.1 Fluent 链式多 Sheet 独立编排 (`ExcelBuilder` & `ExcelReaderBuilder`)
 
+#### 本节专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    excel:
+      # 同步全量读取最大允许行数上限（默认 100,000，多 Sheet 累计超过 maxTotalRows 时快速失败防御 OOM）
+      max-sync-rows: 100000
+```
+
 #### 实战业务代码范式
 ```java
 import io.github.atengk.boot.excel.builder.ExcelBuilder;
 import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.model.ExcelMultiSheetResult;
 import io.github.atengk.boot.excel.util.ExcelUtil;
+import io.github.atengk.boot.excel.util.ExcelWebUtil;
+import jakarta.servlet.http.HttpServletResponse;
 
-// 1. 写出多工作表
-try (ExcelBuilder builder = ExcelUtil.builder(outputStream)) {
+// 1. 写出多工作表（支持独立主题定制与动态表头）
+try (ExcelBuilder builder = ExcelWebUtil.builder(response, "经营综合报表.xlsx")) {
     builder.theme(ExcelThemeEnum.BUSINESS_BLUE)
            .sheet("员工花名册", EmployeeRosterVO.class, rosterList)
            .theme(ExcelThemeEnum.WARM_ORANGE)
            .sheet("部门考勤", DepartmentAttendanceMergeVO.class, attendanceList);
 }
 
-// 2. 异构多 Sheet 声明式链式读取
+// 2. 异构多 Sheet 声明式链式读取（各 Sheet 独立映射目标 VO）
 try (InputStream in = file.getInputStream()) {
     ExcelMultiSheetResult result = ExcelUtil.reader(in)
+            .maxTotalRows(200000) // 防御内存爆仓，累计总行数上限（默认 200,000）
             .sheet(0, EmployeeRosterVO.class)
             .sheet("部门考勤", DepartmentAttendanceMergeVO.class)
             .read();
@@ -914,9 +957,13 @@ try (InputStream in = file.getInputStream()) {
 }
 ```
 
+#### 核心机制与防卫边界
+- **样式隔离**：各工作表之间的单元格样式与配色方案相互隔离，互不污染。
+- **全量行数熔断**：`ExcelReaderBuilder` 内置 `maxTotalRows` 生产防卫阈值（默认 200,000 行），跨工作表累计数据行超过阈值时抛出 `ExcelSecurityException`，杜绝恶意或过大文件击穿堆内存。
+
 ---
 
-### 7.2 海量数据游标分页与跨 Sheet 自动轮转 (`StreamingPageExportTemplate`)
+### 7.2 海量数据流式分页与跨 Sheet 自动轮转 (`StreamingPageExportTemplate` & `readBatch`)
 
 #### 本节专属 YAML 配置
 ```yaml
@@ -932,22 +979,60 @@ ateng:
 
 #### 实战业务代码范式
 ```java
+import io.github.atengk.boot.core.model.PageResult;
+import io.github.atengk.boot.excel.template.StreamingPageExportTemplate;
+import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.excel.util.ExcelWebUtil;
 import jakarta.servlet.http.HttpServletResponse;
 
+// 1. 传统 PageResult 流式分页导出（自动侦测单表行数上限并平滑开启新 Sheet 轮转）
+@GetMapping("/export-streaming-page")
+public void exportStreamingPage(HttpServletResponse response) {
+    ExcelWebUtil.exportStreaming(
+            response,
+            "海量订单流水_分页导出.xlsx",
+            OrderBillVO.class,
+            1000, // 每页拉取数量
+            pageQuery -> orderService.queryByPage(pageQuery) // 返回 PageResult<OrderBillVO>
+    );
+}
+
+// 2. 主键游标流式分页导出（彻底消除 LIMIT offset, size 深分页性能雪崩）
 @GetMapping("/export-streaming-cursor")
 public void exportStreamingByCursor(HttpServletResponse response) {
     ExcelWebUtil.exportStreamingByCursor(
             response,
-            "海量订单流水.xlsx",
-            OrderExportVO.class,
+            "海量订单流水_游标分片.xlsx",
+            OrderBillVO.class,
             0L, // 初始游标
             1000, // 批次步长
             (cursor, size) -> orderService.queryOrdersAfterCursor(cursor, size),
-            OrderExportVO::getId
+            OrderBillVO::getId
     );
 }
+
+// 3. 显式模板流式写控制
+try (StreamingPageExportTemplate<OrderBillVO> template = ExcelUtil.streaming(outputStream, OrderBillVO.class)) {
+    template.sheetName("交易账单")
+            .maxRowsPerSheet(500000);
+    List<OrderBillVO> batch;
+    while (!(batch = fetchNextBatch()).isEmpty()) {
+        template.writeChunk(batch);
+    }
+}
+
+// 4. 大文件常量内存分批流式解析（readBatch）
+try (InputStream in = file.getInputStream()) {
+    ExcelUtil.readBatch(in, OrderBillVO.class, 1000, batchList -> {
+        // 常量内存消费：每 1000 条消费一次并即刻释放对象引用，有效防御 OOM
+        orderService.saveBatch(batchList);
+    });
+}
 ```
+
+#### 核心机制与生产边界
+- **平滑换表**：`StreamingPageExportTemplate` 内部维护行计数器，当累加行数达到 `maxRowsPerSheet` 时，自动创建新 Sheet（如 `交易账单_2`、`交易账单_3`）并重新渲染表头，避免超出 Excel 单表 1,048,576 行硬性限制。
+- **内存零膨胀**：`readBatch` 每次仅保留 `batchSize` 批次大小的数据，并在回调结束后清空缓冲区，GC 能够即时回收已消费对象。
 
 ---
 
