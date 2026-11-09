@@ -1114,8 +1114,8 @@ ateng:
         # 存储后端不可达时是否平滑放行（默认 true 容灾放行并 WARN 告警；false 抛出保留原始 cause 的 BusinessException）
         fail-open: true
         in-memory:
-          # 单机内存限流存储最大令牌桶容量（防 OOM 软上限，默认 10000）
-          max-capacity: 10000
+          # 单机内存限流存储最大令牌桶容量（防 OOM 软上限，默认 100000）
+          max-capacity: 100000
           # 内存过期令牌桶后台定时清理周期（默认 5m）
           clean-interval: 5m
 ```
@@ -1230,8 +1230,8 @@ ateng:
         # 存储后端不可达时是否平滑放行（默认 true 容灾放行并 WARN 告警；false 抛出保留原始 cause 的 BusinessException）
         fail-open: true
         in-memory:
-          # 单机内存幂等存储最大键容量（防 OOM 软上限，默认 10000）
-          max-capacity: 10000
+          # 单机内存幂等存储最大键容量（防 OOM 软上限，默认 100000）
+          max-capacity: 100000
           # 内存过期防重键定时清理周期（默认 5m）
           clean-interval: 5m
 ```
@@ -1947,9 +1947,6 @@ public void testWriteJson(HttpServletResponse response) throws IOException {
     ServletUtil.writeJson(response, HttpServletResponse.SC_OK, Result.success("JSON 直接写出成功"));
 }
 ```
-    ServletUtil.writeDownload(response, "财务对账月度报表-202611.txt", data);
-}
-```
 
 ---
 
@@ -2207,8 +2204,8 @@ ateng:
         # 存储后端不可达时是否平滑放行（默认 true 容灾放行并 WARN 告警；false 抛出保留原始 cause 的 BusinessException）
         fail-open: true
         in-memory:
-          # 单机内存存储软上限（防爆防 OOM，默认 10000）
-          max-capacity: 10000
+          # 单机内存存储软上限（防爆防 OOM，默认 100000）
+          max-capacity: 100000
           # 定时清理过期 Key 周期（强类型 Duration，默认 60s）
           clean-interval: 60s
       ratelimit:
@@ -2217,8 +2214,8 @@ ateng:
         # 存储后端不可达时是否平滑放行（默认 true 容灾放行并 WARN 告警；false 抛出保留原始 cause 的 BusinessException）
         fail-open: true
         in-memory:
-          # 单机内存令牌桶最大容量软上限（默认 10000）
-          max-capacity: 10000
+          # 单机内存令牌桶最大容量软上限（默认 100000）
+          max-capacity: 100000
           # 过期淘汰扫描周期（强类型 Duration，默认 60s）
           clean-interval: 60s
       sign:

@@ -39,9 +39,9 @@ public class RateLimiterProperties {
     public static class InMemory {
 
         /**
-         * 内存最大限流令牌桶元素容量软上限（防止海量 IP 导致 OOM）
+         * 内存最大限流令牌桶元素容量软上限（防止海量 IP 导致 OOM，默认 100,000）
          */
-        private int maxCapacity = 10000;
+        private int maxCapacity = 100_000;
 
         /**
          * 后台定期过期淘汰扫描周期

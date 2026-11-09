@@ -144,55 +144,47 @@ public final class IpUtil {
             return normalizedRemote != null ? normalizedRemote : "";
         }
 
-        // 授信代理场景：遍历候选请求头，从转发链中剔除授信代理跳点提取真实客户端 IP
-        String ip = null;
+        // 授信代理场景：遍历候选请求头，从转发链中逆向剔除授信代理跳点提取真实客户端 IP
+        String clientIp = null;
+        String fallbackTrustedIp = null;
         for (String header : IP_HEADER_CANDIDATES) {
             String value = request.getHeader(header);
             if (value == null || value.isBlank()) {
                 continue;
             }
-            if (value.contains(",")) {
-                String[] parts = value.split(",");
-                List<String> ipList = new ArrayList<>();
-                for (String part : parts) {
-                    String candidate = normalizeIp(part);
-                    if (isValidIp(candidate)) {
-                        ipList.add(candidate);
-                    }
-                }
-                if (!ipList.isEmpty()) {
-                    // 从右向左（距当前代理最近的上一跳开始）查找首个非授信代理的客户端 IP
-                    for (int i = ipList.size() - 1; i >= 0; i--) {
-                        String candidate = ipList.get(i);
-                        if (!isInRange(candidate, trustedProxies)) {
-                            ip = candidate;
-                            break;
-                        }
-                    }
-                    // 若链路上所有 IP 均为授信代理，则最左端首个 IP 即为发起源客户端
-                    if (ip == null) {
-                        ip = ipList.get(0);
-                    }
-                }
-            } else {
-                String candidate = normalizeIp(value);
+            String[] parts = value.split(",");
+            List<String> ipList = new ArrayList<>();
+            for (String part : parts) {
+                String candidate = normalizeIp(part);
                 if (isValidIp(candidate)) {
-                    if (!isInRange(candidate, trustedProxies)) {
-                        ip = candidate;
-                    } else if (ip == null) {
-                        ip = candidate;
-                    }
+                    ipList.add(candidate);
                 }
             }
-            if (isValidIp(ip)) {
+            if (ipList.isEmpty()) {
+                continue;
+            }
+
+            // 从右向左（距当前代理最近的上一跳开始）查找首个非授信代理的真实客户端 IP
+            for (int i = ipList.size() - 1; i >= 0; i--) {
+                String candidate = ipList.get(i);
+                if (!isInRange(candidate, trustedProxies)) {
+                    clientIp = candidate;
+                    break;
+                }
+            }
+
+            // 若找到非授信真实客户端 IP，立即结束候选头遍历
+            if (clientIp != null) {
                 break;
             }
+
+            // 若当前请求头内所有 IP 均为授信代理，记录链路最左端作为全授信链路兜底候选
+            if (fallbackTrustedIp == null) {
+                fallbackTrustedIp = ipList.get(0);
+            }
         }
 
-        if (!isValidIp(ip)) {
-            ip = normalizedRemote;
-        }
-
+        String ip = clientIp != null ? clientIp : (fallbackTrustedIp != null ? fallbackTrustedIp : normalizedRemote);
         return ip != null ? ip : "";
     }
 

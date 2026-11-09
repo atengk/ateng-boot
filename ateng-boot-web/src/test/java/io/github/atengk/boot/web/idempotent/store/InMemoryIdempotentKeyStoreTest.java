@@ -162,4 +162,27 @@ class InMemoryIdempotentKeyStoreTest {
         assertThatThrownBy(() -> store.unlock(" "))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    @DisplayName("测试 IdempotentKeyStore 默认接口方法的空白键防卫与返回值")
+    void shouldFailFastOnDefaultInterfaceMethod() {
+        IdempotentKeyStore defaultStore = new IdempotentKeyStore() {
+            @Override
+            public boolean tryLock(String key, long timeout, TimeUnit unit) {
+                return false;
+            }
+
+            @Override
+            public void unlock(String key) {
+            }
+        };
+
+        assertThat(defaultStore.isLocked("validKey")).isFalse();
+        assertThatThrownBy(() -> defaultStore.isLocked(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Idempotent key must not be blank");
+        assertThatThrownBy(() -> defaultStore.isLocked("   "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Idempotent key must not be blank");
+    }
 }

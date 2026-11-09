@@ -26,7 +26,7 @@ public class InMemoryRateLimiterStore implements RateLimiterStore, DisposableBea
 
     private static final Logger log = LoggerFactory.getLogger(InMemoryRateLimiterStore.class);
 
-    private static final int DEFAULT_MAX_CAPACITY = 10000;
+    private static final int DEFAULT_MAX_CAPACITY = 100_000;
     private static final Duration DEFAULT_CLEAN_INTERVAL = Duration.ofSeconds(60);
 
     private final ConcurrentMap<String, TokenBucket> cache = new ConcurrentHashMap<>();

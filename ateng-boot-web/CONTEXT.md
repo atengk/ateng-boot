@@ -316,5 +316,15 @@ _Avoid_: SignAspect, SignatureAspect, DataSignAspect
 OpenAPI/Swagger 接口文档暴露探测辅助工具，用于应用启动就绪卡片与生产高危配置防呆探测。
 _Avoid_: SwaggerHelper, DocUtil, OpenApiDetector
 
+---
+
+## Disambiguation & Errata
+
+- **WebLogEvent**: 历史拟定审计事件载体；当前模块坚持零多余内存开销，直接由 `WebLogAspect` 结构化输出 SLF4J JSON 审计日志，无需额外中间事件模型。
+- **EnumItemVO**: 历史拟定枚举字典视图模型；当前模块统一复用 Core 底座提供的强类型 `OptionItem<T>` 标准选项模型（参见 ADR-0060）。
+- **MultipartConfig**: 历史拟定文件上传配置类；100% 依托 Spring Boot 原生 `spring.servlet.multipart.*` 机制，不额外引入无谓配置包装类。
+- **UserAgentUtil / ClientInfo**: 历史拟定客户端解析原语；为遵守“零臃肿依赖与底座优先”铁律（ADR-0011），模块严禁引入重型外部 UA 规则库，推荐业务侧按需轻量处理。
+
+
 
 

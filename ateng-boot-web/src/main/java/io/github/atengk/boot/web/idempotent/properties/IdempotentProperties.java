@@ -44,9 +44,9 @@ public class IdempotentProperties {
     public static class InMemory {
 
         /**
-         * 内存最大元素容量软上限（超过后触发主动过期淘汰与溢出剔除，防止 OOM）
+         * 内存最大元素容量软上限（超过后触发主动过期淘汰与溢出剔除，防止 OOM，默认 100,000）
          */
-        private int maxCapacity = 10000;
+        private int maxCapacity = 100_000;
 
         /**
          * 后台定期过期淘汰扫描周期

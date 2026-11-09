@@ -39,6 +39,7 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 接口防重幂等 AOP 切面
@@ -60,7 +61,7 @@ public class IdempotentAspect implements Ordered {
     private final IdempotentKeyStore keyStore;
     private final IdempotentProperties properties;
     private final ObjectMapper objectMapper;
-    private final IdempotentKeyStore fallbackStore = new InMemoryIdempotentKeyStore();
+    private final AtomicReference<IdempotentKeyStore> fallbackStoreRef = new AtomicReference<>();
 
     private final ExpressionParser expressionParser = new SpelExpressionParser();
     private final ParameterNameDiscoverer parameterNameDiscoverer = new DefaultParameterNameDiscoverer();
@@ -76,6 +77,18 @@ public class IdempotentAspect implements Ordered {
         this.keyStore = Objects.requireNonNull(keyStore, "IdempotentKeyStore must not be null");
         this.properties = Objects.requireNonNull(properties, "IdempotentProperties must not be null");
         this.objectMapper = objectMapperProvider != null ? objectMapperProvider.getIfAvailable() : null;
+    }
+
+    private IdempotentKeyStore getFallbackStore() {
+        IdempotentKeyStore existing = fallbackStoreRef.get();
+        if (existing != null) {
+            return existing;
+        }
+        IdempotentKeyStore created = new InMemoryIdempotentKeyStore();
+        if (fallbackStoreRef.compareAndSet(null, created)) {
+            return created;
+        }
+        return fallbackStoreRef.get();
     }
 
     @Override
@@ -96,7 +109,7 @@ public class IdempotentAspect implements Ordered {
             if (properties.isFailOpen()) {
                 log.warn("Idempotent keyStore execution failed, falling back to in-memory store due to failOpen=true, key: {}", fullKey, ex);
                 usedFallback = true;
-                acquired = fallbackStore.tryLock(fullKey, idempotent.timeout(), idempotent.timeUnit());
+                acquired = getFallbackStore().tryLock(fullKey, idempotent.timeout(), idempotent.timeUnit());
             } else {
                 throw ex;
             }
@@ -118,14 +131,14 @@ public class IdempotentAspect implements Ordered {
             if (idempotent.delKeyOnException()) {
                 try {
                     if (usedFallback) {
-                        fallbackStore.unlock(fullKey);
+                        getFallbackStore().unlock(fullKey);
                     } else {
                         keyStore.unlock(fullKey);
                     }
                 } catch (Exception unlockEx) {
                     if (properties.isFailOpen()) {
                         log.warn("Idempotent keyStore unlock failed, attempting fallback unlock due to failOpen=true, key: {}", fullKey, unlockEx);
-                        fallbackStore.unlock(fullKey);
+                        getFallbackStore().unlock(fullKey);
                     } else {
                         log.error("Failed to release idempotent lock on exception, key: {}", fullKey, unlockEx);
                     }

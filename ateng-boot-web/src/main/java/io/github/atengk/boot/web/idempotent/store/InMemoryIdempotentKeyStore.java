@@ -26,7 +26,7 @@ public class InMemoryIdempotentKeyStore implements IdempotentKeyStore, Disposabl
 
     private static final Logger log = LoggerFactory.getLogger(InMemoryIdempotentKeyStore.class);
 
-    private static final int DEFAULT_MAX_CAPACITY = 10000;
+    private static final int DEFAULT_MAX_CAPACITY = 100_000;
     private static final Duration DEFAULT_CLEAN_INTERVAL = Duration.ofSeconds(60);
 
     private final ConcurrentMap<String, Long> cache = new ConcurrentHashMap<>();
@@ -36,7 +36,7 @@ public class InMemoryIdempotentKeyStore implements IdempotentKeyStore, Disposabl
     private final AtomicLong lastCleanTime = new AtomicLong(0);
 
     /**
-     * 默认构造器，使用默认最大容量 10,000 与默认扫描周期 60 秒
+     * 默认构造器，使用默认最大容量 100,000 与默认扫描周期 60 秒
      */
     public InMemoryIdempotentKeyStore() {
         this(DEFAULT_MAX_CAPACITY, DEFAULT_CLEAN_INTERVAL, null);

@@ -32,6 +32,7 @@ import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 接口限流防刷 AOP 切面
@@ -52,7 +53,7 @@ public class RateLimiterAspect implements Ordered {
 
     private final RateLimiterStore rateLimiterStore;
     private final RateLimiterProperties properties;
-    private final RateLimiterStore fallbackStore = new InMemoryRateLimiterStore();
+    private final AtomicReference<RateLimiterStore> fallbackStoreRef = new AtomicReference<>();
     private final ExpressionParser expressionParser = new SpelExpressionParser();
     private final ParameterNameDiscoverer parameterNameDiscoverer = new DefaultParameterNameDiscoverer();
     private final Map<String, Expression> expressionCache = new ConcurrentHashMap<>();
@@ -64,6 +65,18 @@ public class RateLimiterAspect implements Ordered {
     public RateLimiterAspect(RateLimiterStore rateLimiterStore, RateLimiterProperties properties) {
         this.rateLimiterStore = Objects.requireNonNull(rateLimiterStore, "RateLimiterStore must not be null");
         this.properties = properties != null ? properties : new RateLimiterProperties();
+    }
+
+    private RateLimiterStore getFallbackStore() {
+        RateLimiterStore existing = fallbackStoreRef.get();
+        if (existing != null) {
+            return existing;
+        }
+        RateLimiterStore created = new InMemoryRateLimiterStore();
+        if (fallbackStoreRef.compareAndSet(null, created)) {
+            return created;
+        }
+        return fallbackStoreRef.get();
     }
 
     @Override
@@ -87,7 +100,7 @@ public class RateLimiterAspect implements Ordered {
         } catch (Exception ex) {
             if (properties.isFailOpen()) {
                 log.warn("RateLimiter store execution failed, falling back to in-memory store due to failOpen=true, key: {}", fullKey, ex);
-                acquired = fallbackStore.tryAcquire(
+                acquired = getFallbackStore().tryAcquire(
                         fullKey,
                         rateLimiter.count(),
                         rateLimiter.time(),

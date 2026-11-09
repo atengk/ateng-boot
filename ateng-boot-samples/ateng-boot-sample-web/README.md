@@ -79,7 +79,7 @@
 | **营销优惠券领取精准防重** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/coupon` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/coupon?couponCode=CPN_8888"` |
 | **业务异常幂等锁自动释放** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/fail-retry` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/fail-retry?bizId=BIZ_001&fail=false"` |
 | **幂等锁定状态主动探针** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/idempotent/is-locked` | `curl "http://localhost:8080/sample/web/traffic/idempotent/is-locked?key=order:pay:ORD_1001"` |
-| **限流状态重置管理** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/ratelimit/reset` | `curl -X POST "http://localhost:8080/sample/web/traffic/ratelimit/reset?key=test-key"` |
+| **限流状态重置管理** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/ratelimit/reset` | `curl -X POST "http://localhost:8080/sample/web/traffic/ratelimit/reset?key=rate:order:pay:ORD_1001"` |
 
 ### 3.4 传输安全防护网、双向加签与边界防火墙 (`WebSecurityAndSignController`)
 

@@ -115,4 +115,23 @@ class InMemoryRateLimiterStoreTest {
             store.destroy();
         }
     }
+
+    @Test
+    @DisplayName("测试 RateLimiterStore 默认接口方法的空白键防卫")
+    void shouldFailFastOnDefaultInterfaceMethod() {
+        RateLimiterStore defaultStore = new RateLimiterStore() {
+            @Override
+            public boolean tryAcquire(String key, long count, long time, TimeUnit unit) {
+                return true;
+            }
+        };
+
+        defaultStore.reset("validKey");
+        assertThatThrownBy(() -> defaultStore.reset(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("RateLimiter key must not be blank");
+        assertThatThrownBy(() -> defaultStore.reset("   "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("RateLimiter key must not be blank");
+    }
 }

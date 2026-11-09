@@ -25,7 +25,11 @@ public interface RateLimiterStore {
      * 重置指定限流业务键的状态与配额
      *
      * @param key 限流业务唯一标识键
+     * @throws IllegalArgumentException 当 key 为 null 或空白字符串时抛出
      */
     default void reset(String key) {
+        if (key == null || key.isBlank()) {
+            throw new IllegalArgumentException("RateLimiter key must not be blank");
+        }
     }
 }

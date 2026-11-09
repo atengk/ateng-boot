@@ -308,4 +308,19 @@ class IpUtilTest {
 
         assertThat(IpUtil.getClientIp(request, trustedProxies)).isEqualTo("10.0.0.5");
     }
+
+    @Test
+    @DisplayName("授信反向代理防伪造：当首个请求头全为授信代理时，继续检索后续候选头提取真实客户端 IP")
+    void shouldContinueToNextHeaderWhenSingleIpInHeaderIsTrustedProxy() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRemoteAddr("10.0.0.1");
+        // X-Forwarded-For 仅含内部授信代理跳点，真实客户端由 X-Real-IP 携带
+        request.addHeader("X-Forwarded-For", "10.0.0.2");
+        request.addHeader("X-Real-IP", "203.0.113.195");
+
+        java.util.List<String> trustedProxies = java.util.List.of("10.0.0.0/8");
+
+        String clientIp = IpUtil.getClientIp(request, trustedProxies);
+        assertThat(clientIp).isEqualTo("203.0.113.195");
+    }
 }
