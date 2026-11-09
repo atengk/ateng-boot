@@ -484,8 +484,12 @@ class SampleRabbitmqE2eTest {
 
         @Bean
         @Primary
-        public com.rabbitmq.client.Channel testChannel() {
-            return mock(com.rabbitmq.client.Channel.class);
+        public com.rabbitmq.client.Channel testChannel() throws Exception {
+            com.rabbitmq.client.Channel channel = mock(com.rabbitmq.client.Channel.class);
+            com.rabbitmq.client.AMQP.Queue.PurgeOk defaultPurge = mock(com.rabbitmq.client.AMQP.Queue.PurgeOk.class);
+            when(defaultPurge.getMessageCount()).thenReturn(0);
+            when(channel.queuePurge(any())).thenReturn(defaultPurge);
+            return channel;
         }
 
         @Bean

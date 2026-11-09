@@ -221,7 +221,8 @@ public class RabbitDeadLetterReplayTemplate {
     public int purge(String dlq) {
         Assert.hasText(dlq, "dlq 死信队列名称不能为空");
         return rabbitTemplate.execute(channel -> {
-            int purged = channel.queuePurge(dlq).getMessageCount();
+            com.rabbitmq.client.AMQP.Queue.PurgeOk purgeOk = channel.queuePurge(dlq);
+            int purged = purgeOk != null ? purgeOk.getMessageCount() : 0;
             log.info("[MQ-DLQ-PURGE] 成功清空死信队列: dlq={}, purgedCount={}", dlq, purged);
             return purged;
         });
