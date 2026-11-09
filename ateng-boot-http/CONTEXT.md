@@ -71,3 +71,16 @@ _Avoid_: HttpProxyFactoryBean, FeignClientFactoryBean, DynamicHttpProxy
 **RestClientRegistry**:
 多命名客户端 RestClient 实例集中纳管注册表，提供按 clientName 的配置融合（BaseUrl/超时/默认请求头/隔离性）与单例实例缓存。
 _Avoid_: ClientManager, HttpClientContainer, RestClientPool
+
+**MockServerProvider**:
+样例工程内置的离线 HTTP 回环仿真端点提供者，挂载于 `/mock/provider/*`，为 `HttpTemplate` 与声明式客户端提供真实的物理网络端点，保证请求穿越真实网络 Socket 与全链路拦截器，实现 100% 离线自洽自验。
+_Avoid_: WireMockServer, TestHttpServer, MockApiServer
+
+**ClientScopedHttpRequestFactory**:
+客户端级作用域请求工厂包装器，将全局连接池物理工厂与特定命名客户端的超时、代理、TLS 等个性化配置进行安全绑定，确保各客户端共享底层物理连接池的同时保持逻辑配置独立。
+_Avoid_: ScopedFactory, ClientFactoryWrapper, CustomRequestFactory
+
+**HttpSslUtil**:
+基于 JDK 17 标准安全包与 Apache HttpClient 5 构建的 TLS/mTLS 专用证书与安全上下文加载工具，提供 X.509 凭据解析、双向认证 KeyStore/TrustStore 初始化与安全校验能力。
+_Avoid_: SslUtil, CertUtil, TlsHelper
+
