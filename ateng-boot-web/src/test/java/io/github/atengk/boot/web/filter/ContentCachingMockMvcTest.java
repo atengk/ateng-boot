@@ -97,19 +97,18 @@ class ContentCachingMockMvcTest {
     }
 
     @Test
-    @DisplayName("MockMvc 请求体超过配置上限时在 Filter 层快速失败拦截防 OOM")
-    void shouldReturn400WhenBodyExceedsLimit() {
+    @DisplayName("MockMvc 请求体超过配置上限时在 Filter 层快速失败拦截防 OOM，优雅写出 200 + Result 413 JSON")
+    void shouldReturn413WhenBodyExceedsLimit() throws Exception {
         // 构建 2048 字节超大请求体，超过 1024 字节限制
         byte[] largeBody = new byte[2048];
         java.util.Arrays.fill(largeBody, (byte) 'A');
 
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> mockMvc.perform(post("/api/echo")
+        mockMvc.perform(post("/api/echo")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(largeBody)))
-                .isInstanceOf(io.github.atengk.boot.core.exception.BusinessException.class)
-                .hasMessageContaining("请求体大小超过允许的最大限制: 1024 字节")
-                .extracting("code")
-                .isEqualTo(io.github.atengk.boot.core.code.CommonResultCode.BAD_REQUEST.getCode());
+                        .content(largeBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(413))
+                .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("请求体大小超过允许的最大限制: 1024 字节")));
     }
 
     @Test

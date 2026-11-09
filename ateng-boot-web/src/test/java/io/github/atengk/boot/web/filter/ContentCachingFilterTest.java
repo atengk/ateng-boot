@@ -2,11 +2,14 @@ package io.github.atengk.boot.web.filter;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.web.trace.TraceFilter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.ServletRequest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.core.Ordered;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -27,6 +30,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 @DisplayName("通用请求体可重读过滤器与包装类单元测试")
 class ContentCachingFilterTest {
+
+    @AfterEach
+    void tearDown() {
+        MDC.clear();
+    }
 
     @Test
     @DisplayName("CachedBodyHttpServletRequest 支持重复多次读取输入流、Reader 与缓存字节")
@@ -56,7 +64,7 @@ class ContentCachingFilterTest {
     }
 
     @Test
-    @DisplayName("CachedBodyHttpServletRequest 当 Content-Length 预先超限时快速失败拦截防 OOM")
+    @DisplayName("CachedBodyHttpServletRequest 当 Content-Length 预先超限时快速失败拦截防 OOM (413)")
     void shouldThrowWhenContentLengthExceedsLimit() {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/data");
         byte[] body = new byte[1024];
@@ -67,11 +75,11 @@ class ContentCachingFilterTest {
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("请求体大小超过允许的最大限制: 512 字节")
                 .extracting("code")
-                .isEqualTo(CommonResultCode.BAD_REQUEST.getCode());
+                .isEqualTo(CommonResultCode.PAYLOAD_TOO_LARGE.getCode());
     }
 
     @Test
-    @DisplayName("CachedBodyHttpServletRequest 当流式读取实际数据超限时快速失败拦截防 OOM")
+    @DisplayName("CachedBodyHttpServletRequest 当流式读取实际数据超限时快速失败拦截防 OOM (413)")
     void shouldThrowWhenActualStreamExceedsLimit() {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/data");
         byte[] body = new byte[2048];
@@ -82,7 +90,7 @@ class ContentCachingFilterTest {
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("请求体大小超过允许的最大限制: 1024 字节")
                 .extracting("code")
-                .isEqualTo(CommonResultCode.BAD_REQUEST.getCode());
+                .isEqualTo(CommonResultCode.PAYLOAD_TOO_LARGE.getCode());
     }
 
     @Test
@@ -186,5 +194,38 @@ class ContentCachingFilterTest {
                     .isNotInstanceOf(CachedBodyHttpServletRequest.class);
             assertThat(captured.get()).isSameAs(request);
         }
+    }
+
+    @Test
+    @DisplayName("ContentCachingFilter 请求体超限异常兜底屏障：写出 200 + Result 413 JSON 与 X-Trace-Id 响应头，阻断容器 500")
+    void shouldCatchPayloadTooLargeAndWriteJsonFallback() throws ServletException, IOException {
+        ContentCachingFilter filter = new ContentCachingFilter(512);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/data");
+        request.setContentType("application/json;charset=UTF-8");
+        request.addHeader("Content-Length", 1024);
+        request.setContent(new byte[1024]);
+
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        String testTraceId = "test-trace-caching-413";
+        MDC.put(TraceFilter.MDC_TRACE_ID_KEY, testTraceId);
+
+        AtomicReference<ServletRequest> captured = new AtomicReference<>();
+        FilterChain chain = (req, res) -> captured.set(req);
+
+        filter.doFilter(request, response, chain);
+
+        // 验证后续 Filter 链被阻断
+        assertThat(captured.get()).isNull();
+
+        // 验证写出 HTTP 200 与 Result.fail(413)
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(response.getHeader(TraceFilter.DEFAULT_HEADER)).isEqualTo(testTraceId);
+        assertThat(response.getContentType()).contains("application/json");
+
+        String content = response.getContentAsString(StandardCharsets.UTF_8);
+        assertThat(content).contains("\"code\":413");
+        assertThat(content).contains("请求体大小超过允许的最大限制: 512 字节");
+        assertThat(content).contains("\"traceId\":\"" + testTraceId + "\"");
     }
 }

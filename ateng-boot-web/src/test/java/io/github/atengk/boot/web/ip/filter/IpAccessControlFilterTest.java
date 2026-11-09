@@ -175,4 +175,32 @@ class IpAccessControlFilterTest {
         filter.doFilter(request, response, filterChain);
         verify(filterChain, times(1)).doFilter(request, response);
     }
+
+    @Test
+    @DisplayName("授信反向代理防伪造：未授信直连 IP 伪造白名单 X-Forwarded-For 时强行拦截")
+    void shouldBlockSpoofedForwardedHeaderWhenProxyNotTrusted() throws ServletException, IOException {
+        properties.getFilter().setMode(IpAccessMode.WHITE_LIST);
+        properties.getFilter().setRules(List.of("192.168.1.0/24"));
+        properties.setTrustedProxies(List.of("10.0.0.0/8"));
+
+        // 攻击者直连 IP 为 203.0.113.50，伪造合法白名单 IP
+        request.setRequestURI("/admin/operation");
+        request.setRemoteAddr("203.0.113.50");
+        request.addHeader("X-Forwarded-For", "192.168.1.100");
+
+        filter.doFilter(request, response, filterChain);
+        verify(filterChain, never()).doFilter(request, response);
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(response.getContentAsString()).contains("\"code\":403");
+
+        // 经由授信网关代理 10.0.0.1 转发的合法请求正常放行
+        MockHttpServletRequest trustedRequest = new MockHttpServletRequest("GET", "/admin/operation");
+        trustedRequest.setRemoteAddr("10.0.0.1");
+        trustedRequest.addHeader("X-Forwarded-For", "192.168.1.100, 10.0.0.1");
+        MockHttpServletResponse trustedResponse = new MockHttpServletResponse();
+
+        filter.doFilter(trustedRequest, trustedResponse, filterChain);
+        verify(filterChain, times(1)).doFilter(trustedRequest, trustedResponse);
+    }
 }

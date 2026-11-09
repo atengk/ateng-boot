@@ -46,6 +46,12 @@ public class IpAccessControlProperties {
     private List<String> rules = new ArrayList<>();
 
     /**
+     * 授信反向代理 IP / CIDR 网段列表（如 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.1）
+     * 配置非空时将强校验 remoteAddr 是否为授信代理，防范客户端伪造 X-Forwarded-For 转发头
+     */
+    private List<String> trustedProxies = new ArrayList<>();
+
+    /**
      * URL 路径级全局过滤器配置
      */
     @NestedConfigurationProperty

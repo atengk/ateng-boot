@@ -350,4 +350,20 @@ class WebSecurityAndSignControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("CORS 动态跨域凭证校验成功"));
     }
+
+    @Test
+    @DisplayName("11. ContentCachingFilter 请求体超限防爆屏障：写出 200 + Result 413 JSON 与 X-Trace-Id 响应头")
+    void shouldReturn413WhenContentLengthExceedsLimit() throws Exception {
+        // 请求体大小 3MB，超出默认 2MB 上限
+        byte[] largeBody = new byte[3 * 1024 * 1024];
+        java.util.Arrays.fill(largeBody, (byte) ' ');
+
+        mockMvc.perform(post("/sample/web/security/xss/article")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(largeBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(413))
+                .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("请求体大小超过允许的最大限制")))
+                .andExpect(header().exists("X-Trace-Id"));
+    }
 }

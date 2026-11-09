@@ -16,6 +16,7 @@ import io.github.atengk.boot.web.sign.signer.RsaSigner;
 import io.github.atengk.boot.web.sign.signer.Sm2Signer;
 import io.github.atengk.boot.web.sign.spi.ApiSigner;
 import io.github.atengk.boot.web.sign.util.SignCanonicalUtil;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.ObjectProvider;
@@ -274,6 +275,20 @@ public class WebSecurityAndSignController {
         Map<String, String> map = new LinkedHashMap<>();
         map.put("title", title);
         map.put("summary", summary);
+        return Result.success(map);
+    }
+
+    /**
+     * 演示 Header XSS 清洗（基于 XssHttpServletRequestWrapper）
+     *
+     * @param request HTTP 请求
+     * @return 请求头映射
+     */
+    @GetMapping("/xss/header")
+    public Result<Map<String, String>> readHeaders(HttpServletRequest request) {
+        Map<String, String> map = new LinkedHashMap<>();
+        map.put("X-Custom-Title", request.getHeader("X-Custom-Title"));
+        map.put("Authorization", request.getHeader("Authorization"));
         return Result.success(map);
     }
 

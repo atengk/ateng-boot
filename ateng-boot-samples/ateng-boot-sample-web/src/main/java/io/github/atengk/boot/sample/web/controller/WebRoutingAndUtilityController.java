@@ -40,6 +40,21 @@ public class WebRoutingAndUtilityController {
     }
 
     /**
+     * 授信反向代理防伪造客户端真实 IP 提取演示端点
+     * 当配置授信代理时，强校验 remoteAddr 并从转发链路中逆向剔除代理跳点
+     *
+     * @param request        HTTP 请求上下文
+     * @param trustedProxies 授信反向代理列表（如 10.0.0.0/8）
+     * @return 客户端真实 IP
+     */
+    @GetMapping("/client-ip/trusted")
+    public Result<String> getClientIpTrusted(HttpServletRequest request,
+                                            @RequestParam(required = false) java.util.List<String> trustedProxies) {
+        String clientIp = IpUtil.getClientIp(request, trustedProxies);
+        return Result.success(clientIp);
+    }
+
+    /**
      * 财务对账单 RFC 6266 双重文件名编码防乱码安全流式下载演示端点
      * 自动组装 filename="xxx.txt" 与 filename*=UTF-8''xxx.txt，杜绝 Chrome, Edge, Safari 各端乱码
      *

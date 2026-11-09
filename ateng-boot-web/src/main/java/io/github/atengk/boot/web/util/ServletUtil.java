@@ -1,5 +1,6 @@
 package io.github.atengk.boot.web.util;
 
+import io.github.atengk.boot.core.util.JsonUtil;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -181,6 +182,33 @@ public final class ServletUtil {
         }
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.getWriter().write(json);
+        response.getWriter().flush();
+    }
+
+    /**
+     * 向响应直接写入状态码与序列化为 JSON 的对象
+     *
+     * @param response HTTP 响应对象
+     * @param status   HTTP 状态码（如 HttpServletResponse.SC_OK）
+     * @param object   待序列化输出的对象（若为 String 则直接输出，否则通过 JsonUtil 序列化）
+     * @throws IOException 写入异常
+     */
+    public static void writeJson(HttpServletResponse response, int status, Object object) throws IOException {
+        if (response == null) {
+            return;
+        }
+        response.setStatus(status);
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        String json;
+        if (object == null) {
+            json = "{}";
+        } else if (object instanceof String str) {
+            json = str;
+        } else {
+            json = JsonUtil.toJsonString(object);
+        }
         response.getWriter().write(json);
         response.getWriter().flush();
     }

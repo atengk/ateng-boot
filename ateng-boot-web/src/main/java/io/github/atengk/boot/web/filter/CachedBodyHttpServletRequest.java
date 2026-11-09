@@ -42,7 +42,7 @@ public class CachedBodyHttpServletRequest extends HttpServletRequestWrapper {
         int limit = maxBodySize > 0 ? maxBodySize : DEFAULT_MAX_BODY_SIZE;
         int contentLength = request.getContentLength();
         if (contentLength > limit) {
-            throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+            throw new BusinessException(CommonResultCode.PAYLOAD_TOO_LARGE.getCode(),
                     "请求体大小超过允许的最大限制: " + limit + " 字节");
         }
 
@@ -54,7 +54,7 @@ public class CachedBodyHttpServletRequest extends HttpServletRequestWrapper {
         while ((bytesRead = is.read(buffer)) != -1) {
             totalBytes += bytesRead;
             if (totalBytes > limit) {
-                throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+                throw new BusinessException(CommonResultCode.PAYLOAD_TOO_LARGE.getCode(),
                         "请求体大小超过允许的最大限制: " + limit + " 字节");
             }
             baos.write(buffer, 0, bytesRead);

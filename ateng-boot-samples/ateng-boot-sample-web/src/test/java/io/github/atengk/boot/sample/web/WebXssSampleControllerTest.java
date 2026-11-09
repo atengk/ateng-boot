@@ -98,4 +98,16 @@ class WebXssSampleControllerTest {
                 .andExpect(jsonPath("$.data.content").value("<p>raw</p>"))
                 .andExpect(jsonPath("$.data.author").value("<b>raw</b>"));
     }
+
+    @Test
+    @DisplayName("6. Header 读取：默认 cleanHeaders=false 时请求头保持原样")
+    void shouldKeepHeadersRawByDefault() throws Exception {
+        mockMvc.perform(get("/sample/web/security/xss/header")
+                        .header("X-Custom-Title", "<script>alert('header')</script>")
+                        .header("Authorization", "Bearer test-token"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.X-Custom-Title").value("<script>alert('header')</script>"))
+                .andExpect(jsonPath("$.data.Authorization").value("Bearer test-token"));
+    }
 }

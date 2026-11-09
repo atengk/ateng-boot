@@ -33,6 +33,16 @@ public class XssCleaner {
             Pattern.DOTALL
     );
 
+    private static final Pattern JAVASCRIPT_PSEUDO_PROTOCOL_PATTERN = Pattern.compile(
+            "javascript\\s*:",
+            Pattern.CASE_INSENSITIVE
+    );
+
+    private static final Pattern VBSCRIPT_PSEUDO_PROTOCOL_PATTERN = Pattern.compile(
+            "vbscript\\s*:",
+            Pattern.CASE_INSENSITIVE
+    );
+
     private final XssMode mode;
 
     public XssCleaner() {
@@ -84,13 +94,15 @@ public class XssCleaner {
         }
         String result = value;
         String prev;
-        // 循环清除嵌套/畸形构造标签，直到收敛
+        // 循环清除嵌套/畸形构造标签与伪协议，直到收敛
         do {
             prev = result;
             result = SCRIPT_BLOCK_PATTERN.matcher(result).replaceAll("");
             result = STYLE_BLOCK_PATTERN.matcher(result).replaceAll("");
             result = HTML_COMMENT_PATTERN.matcher(result).replaceAll("");
             result = HTML_TAG_PATTERN.matcher(result).replaceAll("");
+            result = JAVASCRIPT_PSEUDO_PROTOCOL_PATTERN.matcher(result).replaceAll("");
+            result = VBSCRIPT_PSEUDO_PROTOCOL_PATTERN.matcher(result).replaceAll("");
         } while (!result.equals(prev));
         return result;
     }

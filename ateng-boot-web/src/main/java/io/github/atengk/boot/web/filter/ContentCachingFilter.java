@@ -1,9 +1,14 @@
 package io.github.atengk.boot.web.filter;
 
+import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.web.trace.TraceFilter;
+import io.github.atengk.boot.web.util.ServletUtil;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.MDC;
 import org.springframework.core.Ordered;
 import org.springframework.util.unit.DataSize;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -75,7 +80,19 @@ public class ContentCachingFilter extends OncePerRequestFilter implements Ordere
         boolean isModifyingMethod = "POST".equalsIgnoreCase(method) || "PUT".equalsIgnoreCase(method) || "PATCH".equalsIgnoreCase(method);
 
         if (!isMultipart && !isForm && isModifyingMethod && !(request instanceof CachedBodyHttpServletRequest)) {
-            HttpServletRequest wrappedRequest = wrapRequest(request);
+            HttpServletRequest wrappedRequest;
+            try {
+                wrappedRequest = wrapRequest(request);
+            } catch (BusinessException e) {
+                if (!response.isCommitted()) {
+                    String traceId = MDC.get(TraceFilter.MDC_TRACE_ID_KEY);
+                    if (traceId != null && !traceId.isBlank() && !response.containsHeader(TraceFilter.DEFAULT_HEADER)) {
+                        response.setHeader(TraceFilter.DEFAULT_HEADER, traceId);
+                    }
+                    ServletUtil.writeJson(response, HttpServletResponse.SC_OK, Result.fail(e.getCode(), e.getMsg()));
+                }
+                return;
+            }
             filterChain.doFilter(wrappedRequest, response);
         } else {
             filterChain.doFilter(request, response);

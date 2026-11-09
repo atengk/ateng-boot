@@ -66,4 +66,28 @@ class WebRoutingAndUtilityControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.inRange").value(true));
     }
+
+    @Test
+    @DisplayName("4. IpUtil 授信反向代理防伪造：授信代理跳点被剔除，精准提取客户端 IP")
+    void shouldExtractClientIpWithTrustedProxies() throws Exception {
+        // MockMvc 默认 remoteAddr 为 127.0.0.1；将 127.0.0.1 与 10.0.0.0/8 设为授信代理
+        mockMvc.perform(get("/sample/web/routing/client-ip/trusted")
+                        .param("trustedProxies", "127.0.0.1", "10.0.0.0/8")
+                        .header("X-Forwarded-For", "203.0.113.195, 10.0.0.1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("203.0.113.195"));
+    }
+
+    @Test
+    @DisplayName("5. IpUtil 授信反向代理防伪造：未授信直连客户端伪造转发头被忽略")
+    void shouldIgnoreForwardedHeadersWhenUntrusted() throws Exception {
+        // 直连客户端为 127.0.0.1，未在 trustedProxies 清单中
+        mockMvc.perform(get("/sample/web/routing/client-ip/trusted")
+                        .param("trustedProxies", "192.168.100.0/24")
+                        .header("X-Forwarded-For", "8.8.8.8, 1.1.1.1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("127.0.0.1"));
+    }
 }

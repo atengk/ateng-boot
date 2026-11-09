@@ -90,4 +90,15 @@ class XssCleanerTest {
         assertThat(stripCleaner.clean(null)).isNull();
         assertThat(stripCleaner.clean("")).isEmpty();
     }
+
+    @Test
+    @DisplayName("10. STRIP 模式：彻底剥离 javascript: 与 vbscript: 伪协议及混淆变体")
+    void shouldStripPseudoProtocols() {
+        assertThat(stripCleaner.clean("javascript:alert(1)")).isEqualTo("alert(1)");
+        assertThat(stripCleaner.clean("JAVASCRIPT :alert(1)")).isEqualTo("alert(1)");
+        assertThat(stripCleaner.clean("vbscript:msgbox(1)")).isEqualTo("msgbox(1)");
+        assertThat(stripCleaner.clean("VbScript :msgbox(1)")).isEqualTo("msgbox(1)");
+        assertThat(stripCleaner.clean("<a href='javascript:alert(1)'>click</a>")).isEqualTo("click");
+        assertThat(stripCleaner.clean("javajavascript:script:alert(1)")).isEqualTo("alert(1)");
+    }
 }

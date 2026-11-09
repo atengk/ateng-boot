@@ -578,6 +578,18 @@ public class WebProperties {
          * XSS 清洗排除路径白名单列表（Ant 风格匹配，如 /api/admin/announcement/**）
          */
         private List<String> excludeUrls = new ArrayList<>();
+
+        /**
+         * 是否对 HTTP 请求头执行 XSS 清洗（默认 false，按需开启）
+         */
+        private boolean cleanHeaders = false;
+
+        /**
+         * 请求头 XSS 清洗排除白名单列表（大小写不敏感匹配，默认排除常见鉴权与媒体类型标头）
+         */
+        private List<String> excludeHeaders = new ArrayList<>(List.of(
+                "Authorization", "Cookie", "X-Signature", "Content-Type", "Accept"
+        ));
     }
 
     /**
