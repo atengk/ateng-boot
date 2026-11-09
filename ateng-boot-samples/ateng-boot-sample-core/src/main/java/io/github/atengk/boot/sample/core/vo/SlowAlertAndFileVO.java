@@ -75,4 +75,19 @@ public class SlowAlertAndFileVO implements Serializable {
      * StopWatch 秒表多分段可视化报告
      */
     private String stopWatchReport;
+
+    /**
+     * FileUtil.resolveSafePath 解析得到的绝对安全路径
+     */
+    private String safeResolvedPath;
+
+    /**
+     * 原始输入文件名是否命中宿主隐性垃圾文件特征 (isSystemJunkFile)
+     */
+    private Boolean junkFileDetected;
+
+    /**
+     * 批量过滤路径集合中剔除的宿主隐性垃圾与无效路径数量 (filterValidPaths)
+     */
+    private Integer junkFilteredCount;
 }

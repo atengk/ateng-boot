@@ -160,4 +160,40 @@ class CoreContractControllerTest {
                 .andExpect(jsonPath("$.data[4].disabled", is(true)))
                 .andExpect(jsonPath("$.data[4].extra.badge", is("danger")));
     }
+
+    @Test
+    @DisplayName("测试编程式分页纠偏与防溢出偏移量计算 (非法入参纠偏)")
+    void testNormalizePage_WithIllegalInputs() throws Exception {
+        mockMvc.perform(get("/sample/core/contract/page-normalize")
+                        .param("current", "0")
+                        .param("size", "-5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.rawCurrent", is("0")))
+                .andExpect(jsonPath("$.data.rawSize", is("-5")))
+                .andExpect(jsonPath("$.data.safeCurrent", is("1")))
+                .andExpect(jsonPath("$.data.safeSize", is("10")))
+                .andExpect(jsonPath("$.data.offset", is("0")))
+                .andExpect(jsonPath("$.data.normalizedCurrent", is("1")))
+                .andExpect(jsonPath("$.data.normalizedSize", is("10")));
+    }
+
+    @Test
+    @DisplayName("测试编程式分页纠偏与防溢出偏移量计算 (合法入参偏移量计算)")
+    void testNormalizePage_WithValidInputs() throws Exception {
+        mockMvc.perform(get("/sample/core/contract/page-normalize")
+                        .param("current", "3")
+                        .param("size", "20"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.rawCurrent", is("3")))
+                .andExpect(jsonPath("$.data.rawSize", is("20")))
+                .andExpect(jsonPath("$.data.safeCurrent", is("3")))
+                .andExpect(jsonPath("$.data.safeSize", is("20")))
+                .andExpect(jsonPath("$.data.offset", is("40")))
+                .andExpect(jsonPath("$.data.normalizedCurrent", is("3")))
+                .andExpect(jsonPath("$.data.normalizedSize", is("20")));
+    }
 }

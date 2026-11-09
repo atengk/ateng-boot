@@ -194,6 +194,8 @@ class CoreDataAndTreeControllerTest {
                 // RandomUtil 安全随机码
                 .andExpect(jsonPath("$.data.randomSmsCode", hasLength(6)))
                 // 元组展示
-                .andExpect(jsonPath("$.data.tupleDemo", notNullValue()));
+                .andExpect(jsonPath("$.data.tupleDemo", notNullValue()))
+                .andExpect(jsonPath("$.data.spelCacheSize", notNullValue()))
+                .andExpect(jsonPath("$.data.lambdaCacheSize", notNullValue()));
     }
 }

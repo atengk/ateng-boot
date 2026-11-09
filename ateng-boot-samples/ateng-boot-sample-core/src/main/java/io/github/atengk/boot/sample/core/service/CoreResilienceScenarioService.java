@@ -453,8 +453,10 @@ public class CoreResilienceScenarioService {
      * @return 强类型订单分页结果
      */
     public PageResult<OrderSummaryVO> queryOrderPage(PageQuery query) {
-        long current = query.getCurrent();
-        long size = query.getSize();
+        long current = (query != null) ? query.safeCurrent() : 1L;
+        long size = (query != null) ? query.safeSize() : 10L;
+        long offset = (query != null) ? query.offset() : 0L;
+        log.info("执行订单分页查询: offset={}, safeCurrent={}, safeSize={}", offset, current, size);
 
         List<OrderSummaryVO> orders = List.of(
                 OrderSummaryVO.builder()

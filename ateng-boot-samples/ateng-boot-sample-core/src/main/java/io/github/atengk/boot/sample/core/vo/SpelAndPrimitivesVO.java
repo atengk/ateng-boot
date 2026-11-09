@@ -71,4 +71,14 @@ public class SpelAndPrimitivesVO implements Serializable {
      * 不可变元组 Pair 与 Triple 实战描述文本
      */
     private String tupleDemo;
+
+    /**
+     * SpelUtil 表达式 AST 缓存条目数
+     */
+    private Integer spelCacheSize;
+
+    /**
+     * LambdaUtil 实体属性方法引用缓存条目数
+     */
+    private Integer lambdaCacheSize;
 }

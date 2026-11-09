@@ -2,6 +2,8 @@ package io.github.atengk.boot.core.util;
 
 import lombok.Getter;
 import lombok.Setter;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -26,6 +28,13 @@ class LambdaUtilTest {
         private Integer age;
         private boolean deleted;
         private String URL;
+    }
+
+    @BeforeEach
+    @AfterEach
+    void resetCache() {
+        LambdaUtil.configureCache(1024, null);
+        LambdaUtil.clearCache();
     }
 
     @Test
@@ -69,5 +78,25 @@ class LambdaUtilTest {
 
         LambdaUtil.clearCache();
         assertEquals(0, LambdaUtil.getCacheSize());
+    }
+
+    @Test
+    @DisplayName("configureCache: 动态配置 LRU 缓存规格、容量淘汰与合法性拦截")
+    void shouldConfigureCacheWithCapacityAndTtl() {
+        // 1. 配置小容量缓存规格
+        LambdaUtil.configureCache(2, java.time.Duration.ofMinutes(5));
+        assertEquals(0, LambdaUtil.getCacheSize());
+
+        // 2. 依次读取 3 个不同字段名，验证触发 LRU 淘汰且容量稳定在 2
+        assertEquals("id", LambdaUtil.getFieldName(SampleUser::getId));
+        assertEquals("name", LambdaUtil.getFieldName(SampleUser::getName));
+        assertEquals(2, LambdaUtil.getCacheSize());
+        assertEquals("age", LambdaUtil.getFieldName(SampleUser::getAge));
+        assertEquals(2, LambdaUtil.getCacheSize());
+
+        // 3. 非法参数快速失败
+        assertThrows(IllegalArgumentException.class, () -> LambdaUtil.configureCache(0, null));
+        assertThrows(IllegalArgumentException.class, () -> LambdaUtil.configureCache(-10, null));
+        assertThrows(IllegalArgumentException.class, () -> LambdaUtil.configureCache(10, java.time.Duration.ofMinutes(-1)));
     }
 }

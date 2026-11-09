@@ -14,8 +14,10 @@ import org.springframework.expression.spel.support.SimpleEvaluationContext;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
 
 import java.lang.reflect.Method;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 安全受限 Spring 表达式语言（SpEL）静态求值门面
@@ -31,9 +33,35 @@ public final class SpelUtil {
     private static final int DEFAULT_CACHE_CAPACITY = 1024;
     private static final SpelExpressionParser PARSER = new SpelExpressionParser();
     private static final ParameterNameDiscoverer PARAMETER_NAME_DISCOVERER = new DefaultParameterNameDiscoverer();
-    private static final ConcurrentLruCache<String, Expression> EXPRESSION_CACHE = new ConcurrentLruCache<>(DEFAULT_CACHE_CAPACITY);
+    private static final ReentrantLock CACHE_CONFIG_LOCK = new ReentrantLock();
+    private static volatile ConcurrentLruCache<String, Expression> expressionCache = new ConcurrentLruCache<>(DEFAULT_CACHE_CAPACITY);
 
     private SpelUtil() {
+    }
+
+    /**
+     * 重新配置 SpEL 编译表达式的 LRU 缓存规格（支持容量上限与 TTL 存活时间）
+     * 前置校验容量与 TTL 合法性，并线程安全重建底层缓存
+     *
+     * @param maxCapacity 最大缓存条目容量（必须大于 0）
+     * @param ttl         缓存条目存活时间（可为 null 或 Duration.ZERO 表示永不过期，不能为负数）
+     * @throws IllegalArgumentException 当 maxCapacity <= 0 或 ttl 为负数时抛出
+     */
+    public static void configureCache(int maxCapacity, Duration ttl) {
+        if (maxCapacity <= 0) {
+            throw new IllegalArgumentException("maxCapacity 必须大于 0: " + maxCapacity);
+        }
+        if (ttl != null && ttl.isNegative()) {
+            throw new IllegalArgumentException("ttl 不能为负数: " + ttl);
+        }
+        CACHE_CONFIG_LOCK.lock();
+        try {
+            expressionCache = new ConcurrentLruCache<>(maxCapacity, ttl);
+        } finally {
+            if (CACHE_CONFIG_LOCK.isHeldByCurrentThread()) {
+                CACHE_CONFIG_LOCK.unlock();
+            }
+        }
     }
 
     /**
@@ -47,7 +75,7 @@ public final class SpelUtil {
         if (expression == null || expression.isBlank()) {
             throw new BusinessException(CommonResultCode.BAD_REQUEST, "SpEL 表达式不能为空或空白串");
         }
-        return EXPRESSION_CACHE.computeIfAbsent(expression, expr -> {
+        return expressionCache.computeIfAbsent(expression, expr -> {
             try {
                 return PARSER.parseExpression(expr);
             } catch (ParseException e) {
@@ -254,14 +282,14 @@ public final class SpelUtil {
      * @return 缓存大小
      */
     public static int getCacheSize() {
-        return EXPRESSION_CACHE.size();
+        return expressionCache.size();
     }
 
     /**
      * 清空当前所有 AST 编译表达式缓存
      */
     public static void clearCache() {
-        EXPRESSION_CACHE.clear();
+        expressionCache.clear();
     }
 
     /**

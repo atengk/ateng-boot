@@ -2,7 +2,10 @@ package io.github.atengk.boot.core.autoconfigure;
 
 import io.github.atengk.boot.core.id.Snowflake;
 import io.github.atengk.boot.core.properties.CoreProperties;
+import io.github.atengk.boot.core.util.LambdaUtil;
+import io.github.atengk.boot.core.util.SpelUtil;
 import io.github.atengk.boot.core.util.SpringUtil;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -23,6 +26,14 @@ class AtengCoreAutoConfigurationTest {
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AtengCoreAutoConfiguration.class));
+
+    @AfterEach
+    void tearDown() {
+        SpelUtil.configureCache(1024, null);
+        LambdaUtil.configureCache(1024, null);
+        SpelUtil.clearCache();
+        LambdaUtil.clearCache();
+    }
 
     @Test
     @DisplayName("默认场景：自动装配 SpringUtil、CoreProperties 与 Snowflake")
@@ -113,6 +124,41 @@ class AtengCoreAutoConfigurationTest {
         @Bean
         public Snowflake customSnowflake() {
             return new Snowflake(9L, 9L);
+        }
+    }
+
+    @Test
+    @DisplayName("缓存配置绑定：启动时自动读取 CoreProperties.cache 并绑定至 SpelUtil 与 LambdaUtil")
+    void shouldBindCachePropertiesToSpelAndLambdaUtils() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.core.cache.default-max-capacity=256",
+                        "ateng.boot.core.cache.default-ttl=15m"
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(CoreProperties.class);
+                    CoreProperties properties = context.getBean(CoreProperties.class);
+                    assertThat(properties.getCache().getDefaultMaxCapacity()).isEqualTo(256);
+                    assertThat(properties.getEffectiveCacheTtl().toMinutes()).isEqualTo(15L);
+
+                    // 验证 SpelUtil 与 LambdaUtil 在绑定配置后正常工作
+                    SpelUtil.parseExpression("100 + 200");
+                    assertThat(SpelUtil.getCacheSize()).isEqualTo(1);
+
+                    assertThat(LambdaUtil.getFieldName(SampleTestBean::getName)).isEqualTo("name");
+                    assertThat(LambdaUtil.getCacheSize()).isEqualTo(1);
+                });
+    }
+
+    static class SampleTestBean {
+        private String name;
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
         }
     }
 }

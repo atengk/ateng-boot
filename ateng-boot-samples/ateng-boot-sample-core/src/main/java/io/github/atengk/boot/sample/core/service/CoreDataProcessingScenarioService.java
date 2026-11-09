@@ -725,6 +725,8 @@ public class CoreDataProcessingScenarioService {
                 .convertedLong(convertedLong)
                 .randomSmsCode(randomSmsCode)
                 .tupleDemo(tupleDemo)
+                .spelCacheSize(SpelUtil.getCacheSize())
+                .lambdaCacheSize(LambdaUtil.getCacheSize())
                 .build();
     }
 }

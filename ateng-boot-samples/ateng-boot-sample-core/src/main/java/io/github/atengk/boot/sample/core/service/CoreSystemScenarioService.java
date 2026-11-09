@@ -38,6 +38,7 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -181,7 +182,19 @@ public class CoreSystemScenarioService {
             cleanedFilename = "default-temp.log";
         }
         Path appTempDir = FileUtil.getAppTempDirectory("sample-core");
-        Path targetFile = appTempDir.resolve(cleanedFilename);
+        // 使用 FileUtil.resolveSafePath 安全解析子路径，严格防御路径穿越逃逸
+        Path targetFile = FileUtil.resolveSafePath(appTempDir, cleanedFilename);
+        boolean junkDetected = FileUtil.isSystemJunkFile(originalFilename);
+
+        // 模拟扫描识别并批量过滤宿主隐性垃圾文件与无效路径 (filterValidPaths)
+        List<Path> scannedPaths = List.of(
+                targetFile,
+                appTempDir.resolve(".DS_Store"),
+                appTempDir.resolve("desktop.ini"),
+                appTempDir.resolve("__MACOSX/resource-fork.png")
+        );
+        List<Path> validPaths = FileUtil.filterValidPaths(scannedPaths);
+        int junkFilteredCount = scannedPaths.size() - validPaths.size();
         sw.stop();
 
         // 3. 受管临时文件写入与有界流式读取
@@ -220,6 +233,9 @@ public class CoreSystemScenarioService {
                 .cleanedFileCount(cleanedFileCount)
                 .fileExistedBeforeClean(fileExistedBeforeClean)
                 .fileDestroyedAfterClean(fileDestroyedAfterClean)
+                .safeResolvedPath(targetFile.toString())
+                .junkFileDetected(junkDetected)
+                .junkFilteredCount(junkFilteredCount)
                 .totalCostMillis(sw.getTotalTimeMillis())
                 .stopWatchReport(sw.prettyPrint())
                 .build();

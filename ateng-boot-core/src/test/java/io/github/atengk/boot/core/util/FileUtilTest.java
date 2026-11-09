@@ -182,4 +182,91 @@ class FileUtilTest {
         assertEquals(0, FileUtil.cleanDirectorySafely(null));
         assertEquals(0, FileUtil.cleanDirectorySafely(tempDir.resolve("non-existent")));
     }
+
+    @Test
+    @DisplayName("isSystemJunkFile: 宿主系统垃圾与元数据隐性文件精准识别")
+    void shouldIdentifySystemJunkFiles() {
+        // 1. macOS 垃圾文件与目录
+        assertTrue(FileUtil.isSystemJunkFile(".DS_Store"));
+        assertTrue(FileUtil.isSystemJunkFile(".ds_store"));
+        assertTrue(FileUtil.isSystemJunkFile("path/to/.DS_Store"));
+        assertTrue(FileUtil.isSystemJunkFile("._invoice.pdf"));
+        assertTrue(FileUtil.isSystemJunkFile("folder/._secret.key"));
+        assertTrue(FileUtil.isSystemJunkFile("__MACOSX"));
+        assertTrue(FileUtil.isSystemJunkFile("__macosx"));
+        assertTrue(FileUtil.isSystemJunkFile("archive/__MACOSX/file.png"));
+        assertTrue(FileUtil.isSystemJunkFile(java.nio.file.Path.of("__MACOSX/icon.png")));
+        assertTrue(FileUtil.isSystemJunkFile(java.nio.file.Path.of("sub", ".DS_Store")));
+        assertTrue(FileUtil.isSystemJunkFile(java.nio.file.Path.of("sub", "._file.txt")));
+
+        // 2. Windows 桌面配置与缩略图数据库
+        assertTrue(FileUtil.isSystemJunkFile("desktop.ini"));
+        assertTrue(FileUtil.isSystemJunkFile("DESKTOP.INI"));
+        assertTrue(FileUtil.isSystemJunkFile("C:\\Users\\admin\\desktop.ini"));
+        assertTrue(FileUtil.isSystemJunkFile("thumbs.db"));
+        assertTrue(FileUtil.isSystemJunkFile("Thumbs.db"));
+        assertTrue(FileUtil.isSystemJunkFile(java.nio.file.Path.of("desktop.ini")));
+        assertTrue(FileUtil.isSystemJunkFile(java.nio.file.Path.of("thumbs.db")));
+
+        // 3. 正常业务文件
+        assertFalse(FileUtil.isSystemJunkFile("financial_report.xlsx"));
+        assertFalse(FileUtil.isSystemJunkFile("app.log"));
+        assertFalse(FileUtil.isSystemJunkFile(".gitignore"));
+        assertFalse(FileUtil.isSystemJunkFile("desktop_setup.exe"));
+        assertFalse(FileUtil.isSystemJunkFile(java.nio.file.Path.of("order-2026.pdf")));
+
+        // 4. 空安全边界
+        assertFalse(FileUtil.isSystemJunkFile((String) null));
+        assertFalse(FileUtil.isSystemJunkFile("   "));
+        assertFalse(FileUtil.isSystemJunkFile((java.nio.file.Path) null));
+    }
+
+    @Test
+    @DisplayName("filterValidPaths: 批量过滤无效与宿主垃圾路径并返回不可变列表")
+    void shouldFilterValidPaths() {
+        java.nio.file.Path valid1 = java.nio.file.Path.of("docs/guide.md");
+        java.nio.file.Path valid2 = java.nio.file.Path.of("src/App.java");
+        java.nio.file.Path junk1 = java.nio.file.Path.of(".DS_Store");
+        java.nio.file.Path junk2 = java.nio.file.Path.of("desktop.ini");
+        java.nio.file.Path junk3 = java.nio.file.Path.of("__MACOSX/preview.png");
+
+        java.util.List<java.nio.file.Path> input = java.util.Arrays.asList(valid1, junk1, null, valid2, junk2, junk3);
+        java.util.List<java.nio.file.Path> filtered = FileUtil.filterValidPaths(input);
+
+        assertEquals(2, filtered.size());
+        assertEquals(valid1, filtered.get(0));
+        assertEquals(valid2, filtered.get(1));
+        assertThrows(UnsupportedOperationException.class, () -> filtered.add(java.nio.file.Path.of("new.txt")));
+
+        // 空安全
+        assertTrue(FileUtil.filterValidPaths(null).isEmpty());
+        assertTrue(FileUtil.filterValidPaths(java.util.Collections.emptyList()).isEmpty());
+    }
+
+    @Test
+    @DisplayName("resolveSafePath: 安全子路径解析与路径穿越逃逸防御")
+    void shouldResolveSafePathAndBlockTraversal(@org.junit.jupiter.api.io.TempDir java.nio.file.Path tempDir) {
+        // 1. 正常子路径解析
+        java.nio.file.Path safe = FileUtil.resolveSafePath(tempDir, "sub/data.txt");
+        assertEquals(tempDir.resolve("sub/data.txt").toAbsolutePath().normalize(), safe);
+
+        // 2. 剥离前置斜杠后安全位于基准目录
+        java.nio.file.Path slashSub = FileUtil.resolveSafePath(tempDir, "/export/order.xlsx");
+        assertEquals(tempDir.resolve("export/order.xlsx").toAbsolutePath().normalize(), slashSub);
+
+        // 3. 包含合法内联相对路径消除
+        java.nio.file.Path inlineSub = FileUtil.resolveSafePath(tempDir, "sub/dir/../data.txt");
+        assertEquals(tempDir.resolve("sub/data.txt").toAbsolutePath().normalize(), inlineSub);
+
+        // 4. 路径穿越逃逸阻断
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(tempDir, "../../etc/passwd"));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(tempDir, "../escape.key"));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(tempDir, "sub/../../escape.txt"));
+
+        // 5. 空入参与非法字符快速失败
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(null, "sub.txt"));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(tempDir, null));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(tempDir, "   "));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(tempDir, "bad\0path.txt"));
+    }
 }

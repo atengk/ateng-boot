@@ -7,6 +7,8 @@ import io.github.atengk.boot.core.lifecycle.AppShutdownListener;
 import io.github.atengk.boot.core.lifecycle.AppTempDirCleanupListener;
 import io.github.atengk.boot.core.properties.CoreProperties;
 import io.github.atengk.boot.core.properties.SnowflakeProperties;
+import io.github.atengk.boot.core.util.LambdaUtil;
+import io.github.atengk.boot.core.util.SpelUtil;
 import io.github.atengk.boot.core.util.SpringUtil;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -29,6 +31,35 @@ import java.time.Duration;
 @ConditionalOnClass({SpringUtil.class, Snowflake.class})
 @EnableConfigurationProperties(CoreProperties.class)
 public class AtengCoreAutoConfiguration {
+
+    public AtengCoreAutoConfiguration() {
+    }
+
+    /**
+     * 自动绑定 CoreProperties 缓存配置至 SpelUtil 与 LambdaUtil 门面
+     *
+     * @param properties Core 核心配置属性
+     * @return 缓存配置初始化句柄
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "coreCacheInitializer")
+    public CoreCacheInitializer coreCacheInitializer(CoreProperties properties) {
+        return new CoreCacheInitializer(properties);
+    }
+
+    /**
+     * 核心内存缓存初始化组件
+     */
+    public static class CoreCacheInitializer {
+        public CoreCacheInitializer(CoreProperties properties) {
+            if (properties != null) {
+                int maxCapacity = properties.getCache() != null ? properties.getCache().getDefaultMaxCapacity() : 1024;
+                Duration ttl = properties.getEffectiveCacheTtl();
+                SpelUtil.configureCache(maxCapacity, ttl);
+                LambdaUtil.configureCache(maxCapacity, ttl);
+            }
+        }
+    }
 
     /**
      * 自动装配 SpringUtil 静态门面 Bean

@@ -13,6 +13,7 @@ import io.github.atengk.boot.sample.core.service.CoreDataProcessingScenarioServi
 import io.github.atengk.boot.sample.core.service.CoreResilienceScenarioService;
 import io.github.atengk.boot.sample.core.vo.OrderCheckVO;
 import io.github.atengk.boot.sample.core.vo.OrderSummaryVO;
+import io.github.atengk.boot.sample.core.vo.PageNormalizeVO;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,9 +21,12 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 传输契约、因果异常与分层校验领域控制器
@@ -97,5 +101,38 @@ public class CoreContractController {
         log.info("请求获取订单状态通用枚举选项列表");
         List<OptionItem<Integer>> options = EnumUtil.toOptions(OrderStatusEnum.class);
         return Result.success(options);
+    }
+
+    /**
+     * 5. 编程式安全分页纠偏与防溢出偏移量计算
+     * 演示 PageQuery.normalize、safeCurrent、safeSize 与 offset 编程式非 Web 容器消费防御
+     *
+     * @param current 原始页码（支持 0、负数、大数）
+     * @param size    原始单页大小（支持 0、负数、超出 1000 上限）
+     * @return 分页纠偏后安全指标
+     */
+    @GetMapping("/page-normalize")
+    public Result<PageNormalizeVO> normalizePage(
+            @RequestParam(required = false, defaultValue = "0") long current,
+            @RequestParam(required = false, defaultValue = "-5") long size) {
+        PageQuery query = new PageQuery(current, size);
+        long rawCurrent = query.getCurrent();
+        long rawSize = query.getSize();
+        long safeCurrent = query.safeCurrent();
+        long safeSize = query.safeSize();
+        long offset = query.offset();
+        query.normalize();
+
+        PageNormalizeVO vo = PageNormalizeVO.builder()
+                .rawCurrent(rawCurrent)
+                .rawSize(rawSize)
+                .safeCurrent(safeCurrent)
+                .safeSize(safeSize)
+                .offset(offset)
+                .normalizedCurrent(query.getCurrent())
+                .normalizedSize(query.getSize())
+                .build();
+
+        return Result.success(vo);
     }
 }

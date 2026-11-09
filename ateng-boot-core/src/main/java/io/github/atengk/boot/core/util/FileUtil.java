@@ -3,6 +3,20 @@ package io.github.atengk.boot.core.util;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Locale;
+import java.util.stream.Stream;
+
 /**
  * 文件名与文件属性安全通用工具
  * 提供针对路径遍历攻击（Path Traversal）的纯净文件名清洗、扩展名提取与人类可读文件容量格式化
@@ -302,5 +316,138 @@ public final class FileUtil {
             log.warn("遍历清理目录失败: {}", directory, ex);
         }
         return cleanedCount;
+    }
+
+    /**
+     * 判断给定文件名是否为操作系统宿主生成的隐性垃圾/元数据文件
+     * 大小写不敏感识别：
+     * - macOS 元数据文件：.DS_Store
+     * - macOS AppleDouble 资源分叉隐藏文件：._ 开头的文件名（如 ._photo.jpg）
+     * - macOS 归档解压垃圾目录：__MACOSX
+     * - Windows 桌面配置与缩略图数据库：desktop.ini, thumbs.db
+     *
+     * @param filename 待检测的文件名（可为裸文件名或相对路径）
+     * @return 若命中隐性垃圾文件特征返回 true，入参为空时安全返回 false
+     */
+    public static boolean isSystemJunkFile(String filename) {
+        if (filename == null || filename.isBlank()) {
+            return false;
+        }
+        // 统一标准化斜杠并清洗首尾空白
+        String name = filename.replace('\\', '/').trim();
+        int slashIndex = name.lastIndexOf('/');
+        String leafName = (slashIndex >= 0) ? name.substring(slashIndex + 1) : name;
+
+        if (leafName.isBlank()) {
+            // 若以斜杠结尾，检查中间路径段是否包含 __MACOSX
+            String[] segments = name.split("/+");
+            for (String segment : segments) {
+                if ("__MACOSX".equalsIgnoreCase(segment)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // 大小写不敏感全名比对
+        if (".DS_Store".equalsIgnoreCase(leafName)
+                || "desktop.ini".equalsIgnoreCase(leafName)
+                || "thumbs.db".equalsIgnoreCase(leafName)
+                || "__MACOSX".equalsIgnoreCase(leafName)) {
+            return true;
+        }
+
+        // macOS AppleDouble 资源分叉文件（._*）
+        if (leafName.startsWith("._")) {
+            return true;
+        }
+
+        // 检查路径各个目录段是否包含 __MACOSX 目录
+        String[] segments = name.split("/+");
+        for (String segment : segments) {
+            if ("__MACOSX".equalsIgnoreCase(segment)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * 判断给定 Path 路径是否为操作系统宿主生成的隐性垃圾/元数据文件
+     *
+     * @param path 待检测的文件 Path 实例
+     * @return 若命中隐性垃圾文件特征返回 true，path 为 null 时安全返回 false
+     */
+    public static boolean isSystemJunkFile(Path path) {
+        if (path == null) {
+            return false;
+        }
+        Path fileName = path.getFileName();
+        if (fileName != null && isSystemJunkFile(fileName.toString())) {
+            return true;
+        }
+        for (Path segment : path) {
+            if ("__MACOSX".equalsIgnoreCase(segment.toString())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 批量过滤路径列表中的无效项与系统宿主隐性垃圾文件
+     * 剔除 null 元素及命中 isSystemJunkFile 的路径，返回不可变列表
+     *
+     * @param paths 路径集合
+     * @return 过滤后的纯净 Path 不可变列表（空入参保底返回 Collections.emptyList()）
+     */
+    public static List<Path> filterValidPaths(Collection<Path> paths) {
+        if (paths == null || paths.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<Path> validPaths = new ArrayList<>(paths.size());
+        for (Path p : paths) {
+            if (p != null && !isSystemJunkFile(p)) {
+                validPaths.add(p);
+            }
+        }
+        return Collections.unmodifiableList(validPaths);
+    }
+
+    /**
+     * 安全解析基准目录下的子路径，杜绝路径穿越（Path Traversal）逃逸
+     * 自动归一化基准目录与子路径，确保解析结果严格位于 baseDir 及其子目录下
+     *
+     * @param baseDir 基准根目录 Path
+     * @param subPath 相对子路径字符串
+     * @return 归一化后的绝对安全路径
+     * @throws IllegalArgumentException 当 baseDir 为 null，subPath 为空/空白，或解析结果逃逸出 baseDir 时抛出
+     */
+    public static Path resolveSafePath(Path baseDir, String subPath) {
+        if (baseDir == null) {
+            throw new IllegalArgumentException("baseDir 不能为 null");
+        }
+        if (subPath == null || subPath.isBlank()) {
+            throw new IllegalArgumentException("subPath 不能为空或空白");
+        }
+        if (subPath.contains("\0")) {
+            throw new IllegalArgumentException("subPath 包含非法空字符");
+        }
+
+        Path normalizedBase = baseDir.toAbsolutePath().normalize();
+        String relativeSubPath = subPath.trim();
+        while (relativeSubPath.startsWith("/") || relativeSubPath.startsWith("\\")) {
+            relativeSubPath = relativeSubPath.substring(1).trim();
+        }
+        if (relativeSubPath.isEmpty()) {
+            return normalizedBase;
+        }
+
+        Path resolved = normalizedBase.resolve(relativeSubPath).normalize();
+        if (!resolved.startsWith(normalizedBase)) {
+            throw new IllegalArgumentException("检测到路径穿越逃逸风险，解析路径超出基准目录: " + subPath);
+        }
+        return resolved;
     }
 }

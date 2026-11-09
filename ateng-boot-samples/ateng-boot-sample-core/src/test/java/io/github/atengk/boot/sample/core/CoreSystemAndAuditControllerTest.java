@@ -109,6 +109,9 @@ class CoreSystemAndAuditControllerTest {
                 .andExpect(jsonPath("$.data.cleanedFileCount", greaterThanOrEqualTo(1)))
                 .andExpect(jsonPath("$.data.fileExistedBeforeClean", is(true)))
                 .andExpect(jsonPath("$.data.fileDestroyedAfterClean", is(true)))
+                .andExpect(jsonPath("$.data.safeResolvedPath", notNullValue()))
+                .andExpect(jsonPath("$.data.junkFileDetected", is(false)))
+                .andExpect(jsonPath("$.data.junkFilteredCount", is(3)))
                 .andExpect(jsonPath("$.data.stopWatchReport", containsString("1.慢调用方法执行与脱敏告警")))
                 .andExpect(jsonPath("$.data.stopWatchReport", containsString("4.受管临时目录确定性清理")));
 
@@ -116,6 +119,27 @@ class CoreSystemAndAuditControllerTest {
         Path appTempDir = FileUtil.getAppTempDirectory("sample-core");
         Path cleanedFilePath = appTempDir.resolve("export-audit.txt");
         assertThat(Files.exists(cleanedFilePath)).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试宿主系统垃圾与隐性文件治理 (.DS_Store精准拦截与过滤)")
+    void testExecuteSlowAlertAndFile_WithJunkFile() throws Exception {
+        SlowAlertAndFileRequest request = SlowAlertAndFileRequest.builder()
+                .taskId("junk-check-001")
+                .secretToken("secret-xyz")
+                .filename(".DS_Store")
+                .content("Mock DS Store Content")
+                .maxReadBytes(128)
+                .build();
+
+        mockMvc.perform(post("/sample/core/system/slow-alert-and-file")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.junkFileDetected", is(true)))
+                .andExpect(jsonPath("$.data.junkFilteredCount", is(3)));
     }
 
     @Test
