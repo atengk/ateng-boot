@@ -103,6 +103,26 @@ public class KafkaOpsScenarioService {
     }
 
     /**
+     * 启动指定 Topic 或 Listener ID 的消费容器
+     */
+    public void startConsumer(String idOrTopic) {
+        KafkaContainerManager containerManager = containerManagerProvider.getIfAvailable();
+        if (containerManager != null) {
+            containerManager.start(idOrTopic);
+        }
+    }
+
+    /**
+     * 停止指定 Topic 或 Listener ID 的消费容器
+     */
+    public void stopConsumer(String idOrTopic) {
+        KafkaContainerManager containerManager = containerManagerProvider.getIfAvailable();
+        if (containerManager != null) {
+            containerManager.stop(idOrTopic);
+        }
+    }
+
+    /**
      * 查询指定消费者容器是否处于暂停状态
      */
     public boolean isConsumerPaused(String idOrTopic) {

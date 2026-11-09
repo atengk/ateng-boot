@@ -23,9 +23,14 @@ import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.sample.kafka.config.KafkaScenarioTopologyConfig;
 import io.github.atengk.boot.sample.kafka.consumer.*;
 import io.github.atengk.boot.sample.kafka.dto.BatchOrderProduceRequest;
+import io.github.atengk.boot.sample.kafka.dto.ContainerActionRequest;
+import io.github.atengk.boot.sample.kafka.dto.ContainerActionRequest.ContainerAction;
 import io.github.atengk.boot.sample.kafka.dto.DeadLetterReplayRequest;
 import io.github.atengk.boot.sample.kafka.dto.NativeTxProduceRequest;
+import io.github.atengk.boot.sample.kafka.dto.OffsetResetRequest;
+import io.github.atengk.boot.sample.kafka.dto.OffsetResetRequest.ResetType;
 import io.github.atengk.boot.sample.kafka.dto.OrderProduceRequest;
+import io.github.atengk.boot.sample.kafka.dto.RetryTriggerRequest;
 import io.github.atengk.boot.sample.kafka.dto.UserEventProduceRequest;
 import io.github.atengk.boot.sample.kafka.model.OrderMessage;
 import io.github.atengk.boot.sample.kafka.model.UserEventMessage;
@@ -34,6 +39,7 @@ import io.github.atengk.boot.sample.kafka.service.*;
 import jakarta.validation.ValidationException;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -732,16 +738,36 @@ class SampleKafkaE2eTest {
     }
 
     // =========================================================================
-    // 场景 13: 非阻塞阶梯延迟重试 (@RetryableTopic 阶梯主题流转与 4D 上下文透传)
+    // 场景 13: 非阻塞阶梯延迟重试 (@RetryableTopic 阶梯主题流转与 4D 上下文透传, KafkaRetryController Web 闭环)
     // =========================================================================
     @Test
-    @DisplayName("场景 13: 非阻塞阶梯延迟重试 (@RetryableTopic 阶梯主题流转与 4D 上下文透传)")
-    void testScenario13_NonBlockingTieredRetry() {
+    @DisplayName("场景 13: 非阻塞阶梯延迟重试 (@RetryableTopic 阶梯主题流转与 4D 上下文透传, KafkaRetryController Web 闭环)")
+    void testScenario13_NonBlockingTieredRetry() throws Exception {
         MDC.put("traceId", "trace-retry-999");
         TenantContextHolder.setTenantId("tenant-retry-888");
         UserContextHolder.setUserId("user-retry-777");
 
-        // 1. 发送正常消息 -> 一次尝试即成功
+        // 1. HTTP 触发重试消息发送
+        RetryTriggerRequest retryReq = RetryTriggerRequest.builder()
+                .orderId("ORD-RETRY-001")
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/retry/trigger")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(retryReq))
+                        .param("fail", "false")
+                        .header("X-Trace-Id", "trace-retry-999")
+                        .header("X-Tenant-Id", "tenant-retry-888")
+                        .header("X-User-Id", "user-retry-777"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true));
+
+        // 2. 发送正常消息 -> 一次尝试即成功并验证四维上下文透传
+        MDC.put("traceId", "trace-retry-999");
+        TenantContextHolder.setTenantId("tenant-retry-888");
+        UserContextHolder.setUserId("user-retry-777");
+
         ConsumerRecord<String, String> normalRecord = new ConsumerRecord<>(
                 NonBlockingRetryScenarioService.TOPIC_RETRY_MAIN, 0, 1L, "key-ok", "PAYLOAD_SUCCESS"
         );
@@ -754,34 +780,88 @@ class SampleKafkaE2eTest {
         assertThat(logEntry.tenantId()).isEqualTo("tenant-retry-888");
         assertThat(logEntry.userId()).isEqualTo("user-retry-777");
 
-        // 2. 模拟失败 -> 触发异常与 DLT 终点拦截
+        // 3. 模拟失败 -> 触发异常与 DLT 终点拦截
         ConsumerRecord<String, String> failRecord = new ConsumerRecord<>(
                 NonBlockingRetryScenarioService.TOPIC_RETRY_MAIN, 0, 2L, "key-fail", "PAYLOAD_FAIL"
         );
         assertThatThrownBy(() -> retryService.onMessage(failRecord, NonBlockingRetryScenarioService.TOPIC_RETRY_MAIN))
                 .isInstanceOf(RuntimeException.class);
 
-        // 3. 达到重试上限进入 DLT
+        // 4. 达到重试上限进入 DLT
         retryService.onDlt(failRecord);
         assertThat(retryService.getDltRecords()).contains("key-fail:PAYLOAD_FAIL");
+
+        // 5. HTTP 探查重试流转执行日志
+        mockMvc.perform(get("/sample/kafka/retry/logs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data.length()").value(2));
     }
 
     // =========================================================================
-    // 场景 14: 运行期位移治理与实时 Lag 积压探测 (KafkaOffsetManager)
+    // 场景 14: 运行期位移治理与实时 Lag 积压探测 (KafkaOffsetManager & KafkaOpsController Web 闭环)
     // =========================================================================
     @Test
-    @DisplayName("场景 14: 运行期位移治理与实时 Lag 积压探测 (KafkaOffsetManager)")
-    void testScenario14_OffsetGovernanceAndRealtimeLagMonitoring() {
-        // 1. 回溯至时间戳
-        opsService.rewindOffsetsToTimestamp("sample-group", "sample.order.topic", Instant.now());
+    @DisplayName("场景 14: 运行期位移治理与实时 Lag 积压探测 (KafkaOffsetManager & KafkaOpsController Web 闭环)")
+    void testScenario14_OffsetGovernanceAndRealtimeLagMonitoring() throws Exception {
+        // 1. HTTP 查询消费组当前提交位移
+        mockMvc.perform(get("/sample/kafka/ops/committed-offsets")
+                        .param("groupId", "sample-group"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
 
-        // 2. 回拨至 earliest
-        opsService.rewindOffsetsToEarliest("sample-group", "sample.order.topic");
+        // 2. HTTP 回拨消费位移至 EARLIEST
+        OffsetResetRequest earliestReq = OffsetResetRequest.builder()
+                .groupId("sample-group")
+                .topic("sample.order.topic")
+                .resetType(ResetType.EARLIEST)
+                .build();
 
-        // 3. 推进至 latest
-        opsService.rewindOffsetsToLatest("sample-group", "sample.order.topic");
+        mockMvc.perform(post("/sample/kafka/ops/reset-offsets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(earliestReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
 
-        // 4. 实时查询 Lag 积压
+        // 3. HTTP 推进消费位移至 LATEST
+        OffsetResetRequest latestReq = OffsetResetRequest.builder()
+                .groupId("sample-group")
+                .topic("sample.order.topic")
+                .resetType(ResetType.LATEST)
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/ops/reset-offsets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(latestReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 4. HTTP 按时间戳回拨消费位移
+        OffsetResetRequest timestampReq = OffsetResetRequest.builder()
+                .groupId("sample-group")
+                .topic("sample.order.topic")
+                .resetType(ResetType.TIMESTAMP)
+                .timestampMs(System.currentTimeMillis())
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/ops/reset-offsets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(timestampReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 5. HTTP 实时查询全分区与总积压 Lag (防负数保护)
+        mockMvc.perform(get("/sample/kafka/ops/lag")
+                        .param("groupId", "sample-group")
+                        .param("topic", "sample.order.topic"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.topic").value("sample.order.topic"))
+                .andExpect(jsonPath("$.data.totalLag").value(15));
+
+        // 6. 底层 Service 直接调用对齐断言
         ConsumerGroupLag lag = opsService.getConsumerGroupLag("sample-group", "sample.order.topic");
         assertThat(lag).isNotNull();
         assertThat(lag.groupId()).isIn("test-group", "sample-group", "sample-kafka-local-group");
@@ -790,18 +870,65 @@ class SampleKafkaE2eTest {
     }
 
     // =========================================================================
-    // 场景 15: 运行期消费容器动态流控 (KafkaContainerManager)
+    // 场景 15: 运行期消费容器动态流控 (KafkaContainerManager & KafkaOpsController Web 闭环)
     // =========================================================================
     @Test
-    @DisplayName("场景 15: 运行期消费容器动态流控 (KafkaContainerManager)")
-    void testScenario15_ConsumerContainerDynamicFlowControl() {
-        // 1. 暂停指定 Topic 消费容器
-        opsService.pauseConsumer(KafkaScenarioTopologyConfig.TOPIC_ORDER);
-        assertThat(opsService.isConsumerPaused(KafkaScenarioTopologyConfig.TOPIC_ORDER)).isTrue();
+    @DisplayName("场景 15: 运行期消费容器动态流控 (KafkaContainerManager & KafkaOpsController Web 闭环)")
+    void testScenario15_ConsumerContainerDynamicFlowControl() throws Exception {
+        // 1. HTTP 暂停指定 Topic 消费容器
+        ContainerActionRequest pauseReq = ContainerActionRequest.builder()
+                .containerIdOrTopic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
+                .action(ContainerAction.PAUSE)
+                .build();
 
-        // 2. 恢复指定 Topic 消费容器
-        opsService.resumeConsumer(KafkaScenarioTopologyConfig.TOPIC_ORDER);
-        assertThat(opsService.isConsumerRunning(KafkaScenarioTopologyConfig.TOPIC_ORDER)).isTrue();
+        mockMvc.perform(post("/sample/kafka/ops/container-action")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(pauseReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 2. HTTP 查询容器运行与暂停状态
+        mockMvc.perform(get("/sample/kafka/ops/container-status")
+                        .param("idOrTopic", KafkaScenarioTopologyConfig.TOPIC_ORDER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.paused").value(true))
+                .andExpect(jsonPath("$.data.running").value(true));
+
+        // 3. HTTP 恢复指定 Topic 消费容器
+        ContainerActionRequest resumeReq = ContainerActionRequest.builder()
+                .containerIdOrTopic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
+                .action(ContainerAction.RESUME)
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/ops/container-action")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(resumeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 4. HTTP 启动与停止容器生命周期管控
+        ContainerActionRequest startReq = ContainerActionRequest.builder()
+                .containerIdOrTopic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
+                .action(ContainerAction.START)
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/ops/container-action")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(startReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        ContainerActionRequest stopReq = ContainerActionRequest.builder()
+                .containerIdOrTopic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
+                .action(ContainerAction.STOP)
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/ops/container-action")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(stopReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
     }
 
     @TestConfiguration
@@ -838,6 +965,9 @@ class SampleKafkaE2eTest {
                             new PartitionLag(0, 100L, 85L, 15L)
                     ))
             );
+            when(mock.getConsumerGroupOffsets(anyString())).thenReturn(Map.of(
+                    new TopicPartition("sample.order.topic", 0), new OffsetAndMetadata(85L, "committed")
+            ));
             return mock;
         }
 
@@ -845,6 +975,10 @@ class SampleKafkaE2eTest {
         @Primary
         public KafkaContainerManager mockKafkaContainerManager() {
             KafkaContainerManager mock = mock(KafkaContainerManager.class);
+            when(mock.pause(anyString())).thenReturn(true);
+            when(mock.resume(anyString())).thenReturn(true);
+            when(mock.start(anyString())).thenReturn(true);
+            when(mock.stop(anyString())).thenReturn(true);
             when(mock.isPaused(anyString())).thenReturn(true);
             when(mock.isRunning(anyString())).thenReturn(true);
             return mock;
