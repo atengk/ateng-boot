@@ -1,4 +1,4 @@
-# 0084. 企业级专有多渠道短信底座与高韧性治理架构决策 (Enterprise Multi-Channel SMS Architecture)
+# 0094. 企业级专有多渠道短信底座与高韧性治理架构决策 (Enterprise Multi-Channel SMS Architecture)
 
 - **状态 (Status)**: `Accepted`
 - **日期 (Date)**: 2026-11-02

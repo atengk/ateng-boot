@@ -1,39 +1,30 @@
 # 领域文档与架构决策 (Domain Docs)
 
-工程技能在探索和修改本多模块代码库时读取和消费领域文档的准则。
+工程技能在探索和修改本多模块代码库时读取和维护领域文档的准则。
 
 ## 探索代码库前必须读取
 
-- 根目录下的 **`CONTEXT-MAP.md`** —— 各模块上下文的总映射入口，指向各个子模块独立的 `CONTEXT.md`。本项目遵循多上下文架构，**根目录严格且唯一维护 `CONTEXT-MAP.md`，坚决严禁在根目录新建单体 `CONTEXT.md`**。请根据正在处理的模块阅读并维护对应的上下文文档；
-- 根目录下的 **`docs/adr/`** 目录 —— 记录跨模块的系统级架构决策（全局 ADR）；
-- 涉及具体子模块时，亦须查看该模块目录下的 `docs/adr/`（若存在）—— 记录特定模块的局部决策。
+1. **全局上下文映射入口 [`CONTEXT-MAP.md`](../../CONTEXT-MAP.md)**：定义全仓库所有子模块的限界上下文职责、核心门面与上下游依赖拓扑。本项目遵循多上下文（Multi-Context）架构，**根目录严格且唯一维护 `CONTEXT-MAP.md`，严禁在根目录创建单体 `CONTEXT.md`**。
+2. **目标子模块词汇表 `ateng-boot-<module>/CONTEXT.md`**：处理具体模块时必须优先读取并维护该模块目录下的 `CONTEXT.md`。严格恪守**“纯领域词汇表（Glossary）”**定位——仅定义标准领域术语与 `_Avoid_` 禁用反模式词汇，严禁堆砌实现代码或设计方案。
+3. **系统级架构决策记录 [`docs/adr/`](../adr/README.md)**：查阅跨模块架构规范与各模块的歷史技术选型。若上述文件在孵化新模块时尚未创建，请静默继续并在决策收敛时按需创建。
 
-若上述文件尚未创建，**请静默继续，无需主动报错或阻断**。这些文件将由 `/domain-modeling` 技能在模块边界定义或重大决策收敛时自动增量创建。
-
-## 目录布局（多上下文结构 Multi-context）
+## 目录布局（多上下文结构 Multi-Context）
 
 ```text
 ateng-boot/
-├── CONTEXT-MAP.md                      # 全局上下文映射总览
-├── docs/adr/                           # 跨模块系统级架构决策
-├── ateng-boot-bom/
-├── ateng-boot-core/
-│   ├── CONTEXT.md                      # Core 核心底座领域上下文与术语
-│   └── docs/adr/                       # Core 模块专用决策记录
-├── ateng-boot-web/
-│   ├── CONTEXT.md                      # Web 增强领域上下文与术语
-│   └── docs/adr/                       # Web 模块专用决策记录
-├── ateng-boot-mybatis-plus/
-│   ├── CONTEXT.md                      # MyBatis-Plus 增强领域上下文与术语
-│   └── docs/adr/                       # MP 模块专用决策记录
-├── ateng-boot-all/
-└── ateng-boot-samples/
+├── CONTEXT-MAP.md                              # 全局限界上下文拓扑与关系唯一入口
+├── docs/adr/                                   # 系统级架构决策记录 (ADR-0001 ~ 0094+)
+├── ateng-boot-bom/                             # 依赖版本统管中心 (CONTEXT.md)
+├── ateng-boot-core/                            # 核心底座与通用原语 (CONTEXT.md)
+├── ateng-boot-<module>/                        # 各业务与基础设施 Starter (100% 标配独立 CONTEXT.md)
+├── ateng-boot-all/                             # 核心 Starter 聚合包 (CONTEXT.md)
+└── ateng-boot-samples/                         # 二级聚合验证矩阵 (CONTEXT.md)
+    ├── ateng-boot-sample-<module>/             # 与各 Starter 1:1 严格对应的独立体验沙箱
+    └── ateng-boot-sample-smoke-test/           # 全家桶装配冒烟门禁
 ```
 
-## 术语与词汇表一致性
+## 术语一致性与 ADR 治理准则
 
-在命名领域概念（类名、接口名、Issue 标题、重构提议、测试用例）时，严格遵循对应模块 `CONTEXT.md` 中定义的术语，杜绝随意自造同义词。
-
-## 标明 ADR 冲突
-
-若设计或输出与既有的 ADR 存在冲突，必须显式在方案中声明并说明理由，严禁静默覆盖。
+- **术语强对齐**：在命名类名、门面方法、配置属性、Issue 标题与测试用例时，严格复用目标模块 `CONTEXT.md` 已定义的标准术语，禁止引入 `_Avoid_` 列表中的同义异名。
+- **实时内联更新**：当新增或变更领域概念时，必须在同次变更中同步更新对应模块的 `CONTEXT.md` 与根目录 [`CONTEXT-MAP.md`](../../CONTEXT-MAP.md)。
+- **ADR 膨胀防线与冲突显式声明**：仅在孵化全新中间件模块、重大协议重构或存在真实技术权衡（Hard to reverse + Surprising without context + Real trade-off）时新建独立 ADR；存量模块演进优先在既有归属 ADR 中增量修订。若新方案与既有 ADR 冲突，必须显式声明并同步添加演进注记（Superseding Note），严禁静默覆盖。
