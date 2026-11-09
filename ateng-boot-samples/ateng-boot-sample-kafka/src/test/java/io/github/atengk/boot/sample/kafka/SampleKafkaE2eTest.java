@@ -19,8 +19,10 @@ import io.github.atengk.boot.kafka.model.ConsumerGroupLag;
 import io.github.atengk.boot.kafka.model.ConsumerGroupLag.PartitionLag;
 import io.github.atengk.boot.kafka.template.KafkaDeadLetterReplayTemplate;
 import io.github.atengk.boot.kafka.template.KafkaReliableTemplate;
+import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.sample.kafka.config.KafkaScenarioTopologyConfig;
 import io.github.atengk.boot.sample.kafka.consumer.*;
+import io.github.atengk.boot.sample.kafka.dto.BatchOrderProduceRequest;
 import io.github.atengk.boot.sample.kafka.dto.NativeTxProduceRequest;
 import io.github.atengk.boot.sample.kafka.dto.OrderProduceRequest;
 import io.github.atengk.boot.sample.kafka.dto.UserEventProduceRequest;
@@ -567,11 +569,43 @@ class SampleKafkaE2eTest {
     }
 
     // =========================================================================
-    // 场景 10: 批处理容器与 KafkaRecordExecutor 多租户安全隔离与逐条错误补偿
+    // 场景 10: 批处理容器与 KafkaRecordExecutor 多租户安全隔离与逐条错误补偿 (KafkaBatchController Web 闭环)
     // =========================================================================
     @Test
-    @DisplayName("场景 10: 批处理容器与 KafkaRecordExecutor 多租户安全隔离与逐条错误补偿")
-    void testScenario10_BatchMultiTenantContextIsolationAndFaultTolerance() {
+    @DisplayName("场景 10: 批处理容器与 KafkaRecordExecutor 多租户安全隔离与逐条错误补偿 (KafkaBatchController Web 闭环)")
+    void testScenario10_BatchMultiTenantContextIsolationAndFaultTolerance() throws Exception {
+        // 1. HTTP 聚合发送微批多租户订单
+        List<OrderProduceRequest> orders = List.of(
+                OrderProduceRequest.builder().orderId("ORD-BATCH-1").amount(new BigDecimal("10.00")).userId("uA").tenantId("tenant-A").build(),
+                OrderProduceRequest.builder().orderId("ORD-BATCH-2").amount(new BigDecimal("20.00")).userId("uB").tenantId("tenant-B").build(),
+                OrderProduceRequest.builder().orderId("ORD-BATCH-3").amount(new BigDecimal("30.00")).userId("uC").tenantId("tenant-C").build()
+        );
+        BatchOrderProduceRequest batchReq = BatchOrderProduceRequest.builder()
+                .orders(new ValidList<>(orders))
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/batch/orders")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(batchReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data.length()").value(3));
+
+        // 2. HTTP 探查批量隔离执行器安全处理的多租户日志明细
+        awaitCondition(() -> {
+            mockMvc.perform(get("/sample/kafka/batch/received-logs"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-BATCH-1')].tenantId").value("tenant-A"))
+                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-BATCH-2')].tenantId").value("tenant-B"))
+                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-BATCH-3')].tenantId").value("tenant-C"));
+        });
+
+        // 验证当前线程无租户泄漏污染
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+
+        // 3. 验证 KafkaRecordExecutor 逐条错误补偿不阻断剩余记录
         List<ConsumerRecord<String, OrderMessage>> batchRecords = new ArrayList<>();
 
         OrderMessage orderA = new OrderMessage("ORD-A", new BigDecimal("10"), "uA", "tenant-A");
@@ -605,11 +639,27 @@ class SampleKafkaE2eTest {
     }
 
     // =========================================================================
-    // 场景 11: 1MB 报文超限 Fail-Fast 拦截
+    // 场景 11: 1MB 报文超限 Fail-Fast 拦截 (KafkaBatchController Web 闭环)
     // =========================================================================
     @Test
-    @DisplayName("场景 11: 1MB 报文超限 Fail-Fast 拦截")
-    void testScenario11_PayloadTooLargeFailFast() {
+    @DisplayName("场景 11: 1MB 报文超限 Fail-Fast 拦截 (KafkaBatchController Web 闭环)")
+    void testScenario11_PayloadTooLargeFailFast() throws Exception {
+        // 1. HTTP 投递正常体积报文 (512B) -> 成功
+        mockMvc.perform(post("/sample/kafka/batch/large-payload")
+                        .param("sizeBytes", "512"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true));
+
+        // 2. HTTP 投递超限大报文 (1MB + 64B) -> 前置 Fail-Fast 阻断，返回 400 业务错误响应
+        mockMvc.perform(post("/sample/kafka/batch/large-payload")
+                        .param("sizeBytes", String.valueOf(1048576 + 64)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("超出最大限制")));
+
+        // 3. 底层 Service 直接调用对齐断言
         byte[] largePayload = new byte[1048576 + 64];
 
         assertThatThrownBy(() -> tradeScenarioService.sendLargePayload(largePayload))
@@ -768,7 +818,8 @@ class SampleKafkaE2eTest {
         public KafkaTemplate<Object, Object> mockKafkaTemplate(
                 org.springframework.beans.factory.ObjectProvider<OrderSingleRecordConsumer> orderConsumerProvider,
                 org.springframework.beans.factory.ObjectProvider<PoisonPillKafkaConsumer> poisonConsumerProvider,
-                org.springframework.beans.factory.ObjectProvider<DeadLetterAuditConsumer> deadLetterAuditConsumerProvider) {
+                org.springframework.beans.factory.ObjectProvider<DeadLetterAuditConsumer> deadLetterAuditConsumerProvider,
+                org.springframework.beans.factory.ObjectProvider<BatchRecordConsumer> batchRecordConsumerProvider) {
             KafkaTemplate<Object, Object> mockTemplate = mock(KafkaTemplate.class);
 
             when(mockTemplate.send(any(ProducerRecord.class))).thenAnswer(invocation -> {
@@ -789,6 +840,24 @@ class SampleKafkaE2eTest {
                         OrderSingleRecordConsumer consumer = orderConsumerProvider.getIfAvailable();
                         if (consumer != null) {
                             consumer.onOrderMessage(orderMsg, key, partition, offset);
+                        }
+                    }
+                } else if (KafkaScenarioTopologyConfig.TOPIC_BATCH.equals(record.topic())) {
+                    if (record.value() instanceof OrderMessage orderMsg) {
+                        String key = record.key() != null ? record.key().toString() : orderMsg.getOrderId();
+                        BatchRecordConsumer consumer = batchRecordConsumerProvider.getIfAvailable();
+                        if (consumer != null) {
+                            ConsumerRecord<String, OrderMessage> cr = new ConsumerRecord<>(
+                                    record.topic(), partition, offset, key, orderMsg
+                            );
+                            record.headers().forEach(header -> cr.headers().add(header));
+                            if (cr.headers().lastHeader(MessageHeaderConstants.TENANT_ID) == null && orderMsg.getTenantId() != null) {
+                                cr.headers().add(new RecordHeader(
+                                        MessageHeaderConstants.TENANT_ID,
+                                        orderMsg.getTenantId().getBytes(StandardCharsets.UTF_8)
+                                ));
+                            }
+                            consumer.onBatchRecords(List.of(cr));
                         }
                     }
                 } else if (KafkaScenarioTopologyConfig.TOPIC_POISON.equals(record.topic())) {
