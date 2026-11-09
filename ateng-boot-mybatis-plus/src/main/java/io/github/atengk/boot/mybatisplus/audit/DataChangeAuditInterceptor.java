@@ -1,14 +1,18 @@
 package io.github.atengk.boot.mybatisplus.audit;
 
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.enums.SqlMethod;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.baomidou.mybatisplus.core.metadata.TableFieldInfo;
 import com.baomidou.mybatisplus.core.metadata.TableInfo;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
 import io.github.atengk.boot.mybatisplus.annotation.AuditChange;
+import io.github.atengk.boot.mybatisplus.context.LogicDeleteContextHolder;
 import io.github.atengk.boot.mybatisplus.properties.AuditChangeProperties;
 import io.github.atengk.boot.mybatisplus.util.MybatisInterceptorUtil;
 import org.apache.ibatis.executor.Executor;
@@ -41,6 +45,8 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 数据变更 Diff 审计拦截器
@@ -150,9 +156,84 @@ public class DataChangeAuditInterceptor implements Interceptor {
                                         AuditMeta meta) throws Throwable {
         int maxDiffRows = properties.getMaxDiffRows() > 0 ? properties.getMaxDiffRows() : 100;
 
-        // ---------- 分支 A: UPDATE 变更审计 ----------
+        // 判定是否为逻辑删除语义（针对配置了 @TableLogic 的实体，deleteById/deleteBatchIds/delete 等映射为 UPDATE）
+        boolean logicDelete = (commandType == SqlCommandType.UPDATE) && isLogicDelete(ms, tableInfo, parameter);
+
+        // ---------- 分支 A: DELETE（物理删除 或 识别出的逻辑删除）变更审计 ----------
+        if (commandType == SqlCommandType.DELETE || logicDelete) {
+            // A1: 批量主键删除场景（deleteBatchIds / deletePhysicallyBatchByIds 或 Collection/Map 入参）
+            Collection<?> batchIds = extractBatchIds(parameter);
+            if (batchIds != null && !batchIds.isEmpty()) {
+                if (batchIds.size() > maxDiffRows) {
+                    Object result = invocation.proceed();
+                    int affectedRows = result instanceof Integer ? (Integer) result : 0;
+                    if (affectedRows > 0) {
+                        scheduleRecord(buildDegradedRecord(tableInfo.getTableName(), meta.getEntityClass(), ChangeType.DELETE, affectedRows, meta.getDescription(), maxDiffRows));
+                    }
+                    return result;
+                }
+
+                Map<Object, Object> beforeSnapshots = new LinkedHashMap<>();
+                for (Object id : batchIds) {
+                    if (id != null) {
+                        Object before = fetchRecordById(executor, ms, tableInfo, id);
+                        if (before != null) {
+                            beforeSnapshots.put(id, before);
+                        }
+                    }
+                }
+
+                Object result = invocation.proceed();
+                int affectedRows = result instanceof Integer ? (Integer) result : 0;
+                if (affectedRows > 0) {
+                    List<DataChangeRecord> records = new ArrayList<>();
+                    for (Object id : batchIds) {
+                        Object before = beforeSnapshots.get(id);
+                        if (before != null) {
+                            records.add(buildRecord(tableInfo.getTableName(), meta.getEntityClass(), id, ChangeType.DELETE, 1, false,
+                                    meta.getDescription(), Collections.emptyList(), snapshot(before, tableInfo, meta), null));
+                        }
+                    }
+                    if (records.isEmpty()) {
+                        records.add(buildRecord(tableInfo.getTableName(), meta.getEntityClass(), null, ChangeType.DELETE, affectedRows, true,
+                                meta.getDescription(), Collections.emptyList(), null, null));
+                    }
+                    scheduleRecords(records);
+                }
+                return result;
+            }
+
+            // A2: 单主键删除场景（deleteById / deletePhysicallyById 或单个 ID / 单实体）
+            Object id = extractSingleId(parameter, tableInfo);
+            if (id != null) {
+                Object beforeEntity = fetchRecordById(executor, ms, tableInfo, id);
+
+                Object result = invocation.proceed();
+                int affectedRows = result instanceof Integer ? (Integer) result : 0;
+
+                if (affectedRows > 0) {
+                    boolean degraded = (beforeEntity == null);
+                    Map<String, Object> beforeSnap = beforeEntity != null ? snapshot(beforeEntity, tableInfo, meta) : null;
+                    scheduleRecord(buildRecord(tableInfo.getTableName(), meta.getEntityClass(), id, ChangeType.DELETE, affectedRows, degraded,
+                            meta.getDescription(), Collections.emptyList(), beforeSnap, null));
+                }
+                return result;
+            }
+
+            // A3: 条件删除（delete with wrapper / deleteByMap）
+            Object result = invocation.proceed();
+            int affectedRows = result instanceof Integer ? (Integer) result : 0;
+            if (affectedRows > 0) {
+                boolean degraded = affectedRows > maxDiffRows;
+                scheduleRecord(buildRecord(tableInfo.getTableName(), meta.getEntityClass(), null, ChangeType.DELETE, affectedRows, degraded,
+                        meta.getDescription(), Collections.emptyList(), null, null));
+            }
+            return result;
+        }
+
+        // ---------- 分支 B: UPDATE 变更审计 ----------
         if (commandType == SqlCommandType.UPDATE) {
-            // A1: 批量更新场景检测（如 updateBatchSomeColumn 或包含 list 入参）
+            // B1: 批量实体更新场景检测（如 updateBatchSomeColumn 或包含 list 入参）
             Collection<?> batchEntities = extractBatchEntities(parameter);
             if (batchEntities != null) {
                 if (batchEntities.size() > maxDiffRows) {
@@ -197,7 +278,7 @@ public class DataChangeAuditInterceptor implements Interceptor {
                 return result;
             }
 
-            // A2: 单实体更新场景检测（如 updateById）
+            // B2: 单实体更新场景检测（如 updateById）
             Object entity = extractSingleEntity(parameter, meta.getEntityClass());
             if (entity != null) {
                 Object id = tableInfo.getPropertyValue(entity, tableInfo.getKeyProperty());
@@ -222,30 +303,25 @@ public class DataChangeAuditInterceptor implements Interceptor {
                 return result;
             }
 
-            // A3: 条件更新（update with wrapper）等其它场景：执行后按影响行数判定是否超限熔断
-            Object result = invocation.proceed();
-            int affectedRows = result instanceof Integer ? (Integer) result : 0;
-            if (affectedRows > 0) {
-                boolean degraded = affectedRows > maxDiffRows;
-                scheduleRecord(buildRecord(tableInfo.getTableName(), meta.getEntityClass(), null, ChangeType.UPDATE, affectedRows, degraded,
-                        meta.getDescription(), Collections.emptyList(), null, null));
-            }
-            return result;
-        }
-
-        // ---------- 分支 B: DELETE 变更审计 ----------
-        if (commandType == SqlCommandType.DELETE) {
-            Object id = extractSingleId(parameter, tableInfo);
-            Object beforeEntity = id != null ? fetchRecordById(executor, ms, tableInfo, id) : null;
+            // B3: 条件更新（update with wrapper，如 restoreById 等按主键或条件更新场景）
+            Object wrapperId = extractSingleId(parameter, tableInfo);
+            Object beforeEntity = wrapperId != null ? fetchRecordById(executor, ms, tableInfo, wrapperId) : null;
 
             Object result = invocation.proceed();
             int affectedRows = result instanceof Integer ? (Integer) result : 0;
-
             if (affectedRows > 0) {
-                boolean degraded = affectedRows > maxDiffRows;
-                Map<String, Object> beforeSnap = (!degraded && beforeEntity != null) ? snapshot(beforeEntity, tableInfo, meta) : null;
-                scheduleRecord(buildRecord(tableInfo.getTableName(), meta.getEntityClass(), id, ChangeType.DELETE, affectedRows, degraded,
-                        meta.getDescription(), Collections.emptyList(), beforeSnap, null));
+                if (beforeEntity != null && wrapperId != null) {
+                    Object afterEntity = fetchRecordById(executor, ms, tableInfo, wrapperId);
+                    Map<String, Object> beforeSnap = snapshot(beforeEntity, tableInfo, meta);
+                    Map<String, Object> afterSnap = afterEntity != null ? snapshot(afterEntity, tableInfo, meta) : null;
+                    List<FieldDiff> diffs = afterEntity != null ? computeDiffs(beforeEntity, afterEntity, tableInfo, meta) : Collections.emptyList();
+                    scheduleRecord(buildRecord(tableInfo.getTableName(), meta.getEntityClass(), wrapperId, ChangeType.UPDATE, affectedRows, false,
+                            meta.getDescription(), diffs, beforeSnap, afterSnap));
+                } else {
+                    boolean degraded = affectedRows > maxDiffRows;
+                    scheduleRecord(buildRecord(tableInfo.getTableName(), meta.getEntityClass(), null, ChangeType.UPDATE, affectedRows, degraded,
+                            meta.getDescription(), Collections.emptyList(), null, null));
+                }
             }
             return result;
         }
@@ -254,26 +330,28 @@ public class DataChangeAuditInterceptor implements Interceptor {
     }
 
     /**
-     * 根据主键 ID 在当前事务中抓取前置实体快照
+     * 根据主键 ID 在当前事务中抓取前置实体快照（包裹于 LogicDeleteContextHolder 穿透闭包中，支持回收站恢复与物理销毁快照捕获）
      */
     private Object fetchRecordById(Executor executor, MappedStatement ms, TableInfo tableInfo, Object id) {
         if (id == null || tableInfo == null) {
             return null;
         }
-        try {
-            String selectByIdId = tableInfo.getSqlStatement(SqlMethod.SELECT_BY_ID.getMethod());
-            Configuration configuration = ms.getConfiguration();
-            if (!configuration.hasStatement(selectByIdId, false)) {
+        return LogicDeleteContextHolder.callWithDeleted(() -> {
+            try {
+                String selectByIdId = tableInfo.getSqlStatement(SqlMethod.SELECT_BY_ID.getMethod());
+                Configuration configuration = ms.getConfiguration();
+                if (!configuration.hasStatement(selectByIdId, false)) {
+                    return null;
+                }
+                MappedStatement selectMs = configuration.getMappedStatement(selectByIdId);
+                executor.clearLocalCache();
+                List<?> list = executor.query(selectMs, id, RowBounds.DEFAULT, Executor.NO_RESULT_HANDLER);
+                return (list != null && !list.isEmpty()) ? list.get(0) : null;
+            } catch (Throwable t) {
+                log.debug("抓取前置实体快照跳过 (table: {}, id: {}): {}", tableInfo.getTableName(), id, t.getMessage());
                 return null;
             }
-            MappedStatement selectMs = configuration.getMappedStatement(selectByIdId);
-            executor.clearLocalCache();
-            List<?> list = executor.query(selectMs, id, RowBounds.DEFAULT, Executor.NO_RESULT_HANDLER);
-            return (list != null && !list.isEmpty()) ? list.get(0) : null;
-        } catch (Throwable t) {
-            log.debug("抓取前置实体快照跳过 (table: {}, id: {}): {}", tableInfo.getTableName(), id, t.getMessage());
-            return null;
-        }
+        });
     }
 
     /**
@@ -429,7 +507,7 @@ public class DataChangeAuditInterceptor implements Interceptor {
 
         if (properties.isAsync()) {
             if (taskExecutor != null) {
-                taskExecutor.execute(task);
+                taskExecutor.execute(AsyncContext.wrap(task));
             } else {
                 log.warn("未检测到受管 TaskExecutor 异步线程池，降级为同步分发数据变更审计事件");
                 task.run();
@@ -577,14 +655,173 @@ public class DataChangeAuditInterceptor implements Interceptor {
             return tableInfo.getPropertyValue(parameter, tableInfo.getKeyProperty());
         }
         if (parameter instanceof Map<?, ?> map) {
-            if (map.containsKey("id")) {
+            if (map.containsKey("id") && map.get("id") != null) {
                 return map.get("id");
             }
-            if (map.containsKey("param1") && !(map.get("param1") instanceof Collection)) {
-                return map.get("param1");
+            if (map.containsKey("et") && map.get("et") != null) {
+                return tableInfo.getPropertyValue(map.get("et"), tableInfo.getKeyProperty());
+            }
+            if (map.containsKey("entity") && map.get("entity") != null) {
+                return tableInfo.getPropertyValue(map.get("entity"), tableInfo.getKeyProperty());
+            }
+            if (map.containsKey("ew") && map.get("ew") instanceof AbstractWrapper<?, ?, ?> wrapper) {
+                if (wrapper.getEntity() != null) {
+                    Object id = tableInfo.getPropertyValue(wrapper.getEntity(), tableInfo.getKeyProperty());
+                    if (id != null) {
+                        return id;
+                    }
+                }
+                Object wrapperId = extractIdFromWrapper(wrapper, tableInfo);
+                if (wrapperId != null) {
+                    return wrapperId;
+                }
+            }
+            if (map.containsKey("param1") && map.get("param1") != null && !(map.get("param1") instanceof Collection) && !(map.get("param1") instanceof Wrapper)) {
+                Object p1 = map.get("param1");
+                if (tableInfo.getEntityType() != null && tableInfo.getEntityType().isInstance(p1)) {
+                    return tableInfo.getPropertyValue(p1, tableInfo.getKeyProperty());
+                }
+                return p1;
             }
         }
         return null;
+    }
+
+    private Collection<?> extractBatchIds(Object parameter) {
+        if (parameter == null) {
+            return null;
+        }
+        if (parameter instanceof Collection<?> col) {
+            return col;
+        }
+        if (parameter instanceof Map<?, ?> map) {
+            if (map.containsKey("coll") && map.get("coll") instanceof Collection<?> col) {
+                return col;
+            }
+            if (map.containsKey("collection") && map.get("collection") instanceof Collection<?> col) {
+                return col;
+            }
+            if (map.containsKey("list") && map.get("list") instanceof Collection<?> col) {
+                return col;
+            }
+            if (map.containsKey("ids") && map.get("ids") instanceof Collection<?> col) {
+                return col;
+            }
+            if (map.containsKey("param1") && map.get("param1") instanceof Collection<?> col) {
+                return col;
+            }
+        }
+        return null;
+    }
+
+    private Object extractIdFromWrapper(AbstractWrapper<?, ?, ?> wrapper, TableInfo tableInfo) {
+        if (wrapper == null || tableInfo == null || tableInfo.getKeyColumn() == null) {
+            return null;
+        }
+        try {
+            String sql = wrapper.getSqlSegment();
+            Map<String, Object> paramMap = wrapper.getParamNameValuePairs();
+            if (sql != null && paramMap != null && !paramMap.isEmpty()) {
+                String keyCol = Pattern.quote(tableInfo.getKeyColumn());
+                Pattern pattern = Pattern.compile("(?:^|[^a-zA-Z0-9_`])`?" + keyCol + "`?\\s*=\\s*#\\{[^}]*paramNameValuePairs\\.([a-zA-Z0-9_]+)\\}", Pattern.CASE_INSENSITIVE);
+                Matcher matcher = pattern.matcher(sql);
+                if (matcher.find()) {
+                    String paramKey = matcher.group(1);
+                    return paramMap.get(paramKey);
+                }
+                if (tableInfo.getKeyProperty() != null && !tableInfo.getKeyProperty().equalsIgnoreCase(tableInfo.getKeyColumn())) {
+                    String keyProp = Pattern.quote(tableInfo.getKeyProperty());
+                    Pattern propPattern = Pattern.compile("(?:^|[^a-zA-Z0-9_`])`?" + keyProp + "`?\\s*=\\s*#\\{[^}]*paramNameValuePairs\\.([a-zA-Z0-9_]+)\\}", Pattern.CASE_INSENSITIVE);
+                    Matcher propMatcher = propPattern.matcher(sql);
+                    if (propMatcher.find()) {
+                        String paramKey = propMatcher.group(1);
+                        return paramMap.get(paramKey);
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private boolean isLogicDelete(MappedStatement ms, TableInfo tableInfo, Object parameter) {
+        if (tableInfo == null || !tableInfo.isWithLogicDelete()) {
+            return false;
+        }
+        String msId = ms.getId();
+        int lastDot = msId.lastIndexOf('.');
+        String methodName = lastDot >= 0 ? msId.substring(lastDot + 1) : msId;
+        if (methodName.contains("$")) {
+            methodName = methodName.substring(0, methodName.indexOf('$'));
+        }
+        if (methodName.contains("_mpCount")) {
+            methodName = methodName.replace("_mpCount", "");
+        }
+        if (methodName.startsWith("delete")) {
+            return true;
+        }
+
+        Object entity = extractSingleEntity(parameter, tableInfo.getEntityType());
+        if (entity != null && isUpdatingToDeletedStatus(entity, tableInfo)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private boolean isUpdatingToDeletedStatus(Object entity, TableInfo tableInfo) {
+        if (entity == null || tableInfo == null || !tableInfo.isWithLogicDelete()) {
+            return false;
+        }
+        TableFieldInfo logicField = tableInfo.getLogicDeleteFieldInfo();
+        if (logicField == null) {
+            return false;
+        }
+        Object val = tableInfo.getPropertyValue(entity, logicField.getProperty());
+        if (val == null) {
+            return false;
+        }
+        String delVal = logicField.getLogicDeleteValue();
+        String notDelVal = logicField.getLogicNotDeleteValue();
+        Class<?> propType = logicField.getPropertyType();
+        if (matchesLogicValue(val, delVal, propType)) {
+            return true;
+        }
+        if (notDelVal != null && !notDelVal.isBlank() && !matchesLogicValue(val, notDelVal, propType)) {
+            return true;
+        }
+        return false;
+    }
+
+    private boolean matchesLogicValue(Object val, String expectedStr, Class<?> propertyType) {
+        if (val == null || expectedStr == null || expectedStr.isBlank()) {
+            return false;
+        }
+        String clean = expectedStr.trim().replace("'", "").replace("\"", "");
+        if ("null".equalsIgnoreCase(clean)) {
+            return false;
+        }
+        if (Integer.class.equals(propertyType) || int.class.equals(propertyType)) {
+            try {
+                int exp = Integer.parseInt(clean);
+                return val instanceof Number num && num.intValue() == exp;
+            } catch (NumberFormatException e) {
+                return false;
+            }
+        }
+        if (Long.class.equals(propertyType) || long.class.equals(propertyType)) {
+            try {
+                long exp = Long.parseLong(clean);
+                return val instanceof Number num && num.longValue() == exp;
+            } catch (NumberFormatException e) {
+                return false;
+            }
+        }
+        if (Boolean.class.equals(propertyType) || boolean.class.equals(propertyType)) {
+            boolean exp = Boolean.parseBoolean(clean) || "1".equals(clean);
+            return Objects.equals(val, exp);
+        }
+        return Objects.equals(val.toString(), clean);
     }
 
     /**

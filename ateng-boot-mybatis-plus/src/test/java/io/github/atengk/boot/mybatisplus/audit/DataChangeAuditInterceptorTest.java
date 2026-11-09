@@ -2,18 +2,23 @@ package io.github.atengk.boot.mybatisplus.audit;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.config.GlobalConfig;
 import com.baomidou.mybatisplus.core.incrementer.DefaultIdentifierGenerator;
 import com.baomidou.mybatisplus.core.metadata.TableInfo;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils;
+import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.mybatisplus.annotation.AuditChange;
+import io.github.atengk.boot.mybatisplus.context.LogicDeleteContextHolder;
 import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
+import io.github.atengk.boot.mybatisplus.logicdelete.AtengLogicDeleteInnerInterceptor;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.mybatisplus.properties.AuditChangeProperties;
 import lombok.Getter;
@@ -30,6 +35,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -40,6 +46,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -114,6 +122,23 @@ class DataChangeAuditInterceptorTest {
         int updateCustom(NoAuditUserEntity entity);
     }
 
+    @Getter
+    @Setter
+    @ToString
+    @TableName("t_audit_logic_user")
+    @AuditChange(description = "逻辑删除与回收站审计")
+    static class AuditLogicUserEntity {
+        @TableId(type = IdType.INPUT)
+        private Long id;
+        private String username;
+        private String email;
+        @TableLogic
+        private Integer deleted;
+    }
+
+    interface AuditLogicUserMapper extends AtengBaseMapper<AuditLogicUserEntity> {
+    }
+
     private JdbcDataSource dataSource;
 
     @BeforeEach
@@ -121,6 +146,8 @@ class DataChangeAuditInterceptorTest {
         UserContextHolder.clear();
         TenantContextHolder.clear();
         DataChangeAuditContextHolder.clear();
+        LogicDeleteContextHolder.clear();
+        org.slf4j.MDC.clear();
 
         dataSource = new JdbcDataSource();
         dataSource.setURL("jdbc:h2:mem:test_audit_db;DB_CLOSE_DELAY=-1;MODE=MySQL");
@@ -161,6 +188,19 @@ class DataChangeAuditInterceptorTest {
                 """);
             stmt.execute("DELETE FROM t_no_audit_user");
             stmt.execute("INSERT INTO t_no_audit_user VALUES (100, 'NoAudit')");
+
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS t_audit_logic_user (
+                    id BIGINT PRIMARY KEY,
+                    username VARCHAR(64),
+                    email VARCHAR(128),
+                    deleted INT DEFAULT 0
+                )
+                """);
+            stmt.execute("DELETE FROM t_audit_logic_user");
+            stmt.execute("INSERT INTO t_audit_logic_user VALUES (1, 'LogicUser1', 'lu1@test.com', 0)");
+            stmt.execute("INSERT INTO t_audit_logic_user VALUES (2, 'LogicUser2', 'lu2@test.com', 0)");
+            stmt.execute("INSERT INTO t_audit_logic_user VALUES (3, 'LogicUser3', 'lu3@test.com', 0)");
         }
     }
 
@@ -169,6 +209,8 @@ class DataChangeAuditInterceptorTest {
         UserContextHolder.clear();
         TenantContextHolder.clear();
         DataChangeAuditContextHolder.clear();
+        LogicDeleteContextHolder.clear();
+        org.slf4j.MDC.clear();
     }
 
     // ==================== 第一部分：updateById 精准字段 Diff 测试 ====================
@@ -573,11 +615,204 @@ class DataChangeAuditInterceptorTest {
         assertThat(io.github.atengk.boot.mybatisplus.util.MybatisInterceptorUtil.resolveMapperAnnotation(baseId + "$dynamicAdaptive_mpCount", AuditChange.class)).isPresent();
     }
 
+    // ==================== 第八部分：逻辑删除识别、回收站穿透快照与异步四维上下文传播 ====================
+
+    @Test
+    @DisplayName("8. 逻辑删除识别：配置 @TableLogic 时 deleteById 自动识别为 ChangeType.DELETE 并抓取前置快照")
+    void shouldIdentifyLogicDeleteByIdAsDeleteChangeTypeAndCaptureSnapshot() {
+        List<DataChangeRecord> receivedRecords = new CopyOnWriteArrayList<>();
+        DataChangeAuditProvider provider = receivedRecords::addAll;
+
+        AuditChangeProperties properties = new AuditChangeProperties();
+        properties.setEnabled(true);
+        properties.setAsync(false);
+
+        SqlSessionFactory sessionFactory = buildSessionFactory(dataSource, properties, provider, null, AuditLogicUserMapper.class, AuditLogicUserEntity.class);
+
+        UserContextHolder.set("operator_logic_del");
+
+        try (SqlSession session = sessionFactory.openSession(true)) {
+            AuditLogicUserMapper mapper = session.getMapper(AuditLogicUserMapper.class);
+            int rows = mapper.deleteById(1L);
+            assertThat(rows).isEqualTo(1);
+        }
+
+        assertThat(receivedRecords).hasSize(1);
+        DataChangeRecord record = receivedRecords.get(0);
+        assertThat(record.getTableName()).isEqualTo("t_audit_logic_user");
+        assertThat(record.getEntityClass()).isEqualTo(AuditLogicUserEntity.class.getName());
+        assertThat(record.getEntityId()).isEqualTo(1L);
+        assertThat(record.getChangeType()).isEqualTo(ChangeType.DELETE);
+        assertThat(record.getOperator()).isEqualTo("operator_logic_del");
+        assertThat(record.isDegraded()).isFalse();
+        assertThat(record.getBeforeSnapshot())
+                .containsEntry("username", "LogicUser1")
+                .containsEntry("email", "lu1@test.com")
+                .containsEntry("deleted", 0);
+    }
+
+    @Test
+    @DisplayName("9. 批量逻辑删除识别：deleteBatchIds 自动识别为 ChangeType.DELETE 并为每个 ID 抓取前置快照")
+    void shouldIdentifyLogicDeleteBatchIdsAsDeleteChangeTypeAndCaptureSnapshots() {
+        List<DataChangeRecord> receivedRecords = new CopyOnWriteArrayList<>();
+        DataChangeAuditProvider provider = receivedRecords::addAll;
+
+        AuditChangeProperties properties = new AuditChangeProperties();
+        properties.setEnabled(true);
+        properties.setAsync(false);
+
+        SqlSessionFactory sessionFactory = buildSessionFactory(dataSource, properties, provider, null, AuditLogicUserMapper.class, AuditLogicUserEntity.class);
+
+        UserContextHolder.set("operator_batch_del");
+
+        try (SqlSession session = sessionFactory.openSession(true)) {
+            AuditLogicUserMapper mapper = session.getMapper(AuditLogicUserMapper.class);
+            int rows = mapper.deleteBatchIds(List.of(2L, 3L));
+            assertThat(rows).isEqualTo(2);
+        }
+
+        assertThat(receivedRecords).hasSize(2);
+        DataChangeRecord record2 = receivedRecords.stream().filter(r -> Long.valueOf(2L).equals(r.getEntityId())).findFirst().orElseThrow();
+        assertThat(record2.getChangeType()).isEqualTo(ChangeType.DELETE);
+        assertThat(record2.getBeforeSnapshot())
+                .containsEntry("username", "LogicUser2")
+                .containsEntry("deleted", 0);
+
+        DataChangeRecord record3 = receivedRecords.stream().filter(r -> Long.valueOf(3L).equals(r.getEntityId())).findFirst().orElseThrow();
+        assertThat(record3.getChangeType()).isEqualTo(ChangeType.DELETE);
+        assertThat(record3.getBeforeSnapshot())
+                .containsEntry("username", "LogicUser3")
+                .containsEntry("deleted", 0);
+    }
+
+    @Test
+    @DisplayName("10. 回收站穿透快照：restoreById 与 deletePhysicallyById 穿透抓取软删除前置快照与 Diff")
+    void shouldPenetrateLogicDeleteToCaptureBeforeSnapshotOnRestoreAndPhysicalDelete() {
+        List<DataChangeRecord> receivedRecords = new CopyOnWriteArrayList<>();
+        DataChangeAuditProvider provider = receivedRecords::addAll;
+
+        AuditChangeProperties properties = new AuditChangeProperties();
+        properties.setEnabled(true);
+        properties.setAsync(false);
+
+        SqlSessionFactory sessionFactory = buildSessionFactory(dataSource, properties, provider, null, AuditLogicUserMapper.class, AuditLogicUserEntity.class);
+
+        try (SqlSession session = sessionFactory.openSession(true)) {
+            AuditLogicUserMapper mapper = session.getMapper(AuditLogicUserMapper.class);
+
+            // 1. 先将 ID=1 软删除
+            int delRows = mapper.deleteById(1L);
+            assertThat(delRows).isEqualTo(1);
+            receivedRecords.clear();
+
+            // 2. 模拟恢复（restore）：在 LogicDeleteContextHolder.callWithDeleted 闭包中以 UpdateWrapper 更新 deleted=0
+            UpdateWrapper<AuditLogicUserEntity> restoreWrapper = new UpdateWrapper<>();
+            restoreWrapper.eq("id", 1L).set("deleted", 0);
+            int restoreRows = LogicDeleteContextHolder.callWithDeleted(() -> mapper.update(null, restoreWrapper));
+            assertThat(restoreRows).isEqualTo(1);
+
+            assertThat(receivedRecords).hasSize(1);
+            DataChangeRecord restoreRecord = receivedRecords.get(0);
+            assertThat(restoreRecord.getChangeType()).isEqualTo(ChangeType.UPDATE);
+            assertThat(restoreRecord.getEntityId()).isEqualTo(1L);
+            assertThat(restoreRecord.getBeforeSnapshot()).containsEntry("deleted", 1);
+            assertThat(restoreRecord.getAfterSnapshot()).containsEntry("deleted", 0);
+            assertThat(restoreRecord.getDiffs()).anyMatch(d -> "deleted".equals(d.getPropertyName())
+                    && Integer.valueOf(1).equals(d.getOldValue())
+                    && Integer.valueOf(0).equals(d.getNewValue()));
+
+            // 3. 再次软删除 ID=1，准备执行物理硬删除
+            mapper.deleteById(1L);
+            receivedRecords.clear();
+
+            // 4. 执行物理硬删除 deletePhysicallyById(1L)
+            int physicalDelRows = mapper.deletePhysicallyById(1L);
+            assertThat(physicalDelRows).isEqualTo(1);
+
+            assertThat(receivedRecords).hasSize(1);
+            DataChangeRecord physicalRecord = receivedRecords.get(0);
+            assertThat(physicalRecord.getChangeType()).isEqualTo(ChangeType.DELETE);
+            assertThat(physicalRecord.getEntityId()).isEqualTo(1L);
+            // 验证即便已是软删除状态，物理删除前置快照仍被成功穿透抓取
+            assertThat(physicalRecord.getBeforeSnapshot())
+                    .containsEntry("username", "LogicUser1")
+                    .containsEntry("deleted", 1);
+        }
+    }
+
+    @Test
+    @DisplayName("11. 异步分发上下文透传：开启 async 时通过 AsyncContext.wrap 透传 MDC、User 与 Tenant 四维快照")
+    void shouldPropagateContextViaAsyncContextInAsyncDispatch() throws Exception {
+        List<DataChangeRecord> receivedRecords = new CopyOnWriteArrayList<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicBoolean contextVerified = new AtomicBoolean(false);
+
+        DataChangeAuditProvider provider = records -> {
+            try {
+                // 验证异步受管线程池内透传的四维上下文
+                String traceId = org.slf4j.MDC.get("traceId");
+                String user = UserContextHolder.get();
+                String tenantId = TenantContextHolder.getTenantId();
+                if ("trace-audit-001".equals(traceId) && "user-async-tom".equals(user) && "tenant-async-008".equals(tenantId)) {
+                    contextVerified.set(true);
+                }
+                receivedRecords.addAll(records);
+            } finally {
+                latch.countDown();
+            }
+        };
+
+        AuditChangeProperties properties = new AuditChangeProperties();
+        properties.setEnabled(true);
+        properties.setAsync(true);
+
+        ThreadPoolTaskExecutor asyncPool = new ThreadPoolTaskExecutor();
+        asyncPool.setCorePoolSize(1);
+        asyncPool.setMaxPoolSize(1);
+        asyncPool.setThreadNamePrefix("audit-test-async-");
+        asyncPool.initialize();
+        try {
+            SqlSessionFactory sessionFactory = buildSessionFactory(dataSource, properties, provider, asyncPool, null, AuditUserMapper.class, AuditUserEntity.class);
+
+            org.slf4j.MDC.put("traceId", "trace-audit-001");
+            UserContextHolder.set("user-async-tom");
+            TenantContextHolder.setTenantId("tenant-async-008");
+
+            try (SqlSession session = sessionFactory.openSession(true)) {
+                AuditUserMapper mapper = session.getMapper(AuditUserMapper.class);
+                AuditUserEntity updateParam = new AuditUserEntity();
+                updateParam.setId(1L);
+                updateParam.setUsername("Alice_Async");
+                mapper.updateById(updateParam);
+            }
+
+            boolean completed = latch.await(5, TimeUnit.SECONDS);
+            assertThat(completed).isTrue();
+            assertThat(contextVerified.get()).isTrue();
+            assertThat(receivedRecords).hasSize(1);
+            assertThat(receivedRecords.get(0).getOperator()).isEqualTo("user-async-tom");
+            assertThat(receivedRecords.get(0).getTenantId()).isEqualTo("tenant-async-008");
+        } finally {
+            asyncPool.destroy();
+            org.slf4j.MDC.clear();
+        }
+    }
+
     // ==================== 辅助测试脚手架 ====================
 
     private SqlSessionFactory buildSessionFactory(DataSource ds,
                                                   AuditChangeProperties auditProps,
                                                   DataChangeAuditProvider provider,
+                                                  ApplicationEventPublisher eventPublisher,
+                                                  Class<?> mapperClass,
+                                                  Class<?> modelClass) {
+        return buildSessionFactory(ds, auditProps, provider, null, eventPublisher, mapperClass, modelClass);
+    }
+
+    private SqlSessionFactory buildSessionFactory(DataSource ds,
+                                                  AuditChangeProperties auditProps,
+                                                  DataChangeAuditProvider provider,
+                                                  java.util.concurrent.Executor taskExecutor,
                                                   ApplicationEventPublisher eventPublisher,
                                                   Class<?> mapperClass,
                                                   Class<?> modelClass) {
@@ -598,11 +833,16 @@ class DataChangeAuditInterceptorTest {
 
         configuration.addMapper(mapperClass);
 
+        // 挂载逻辑删除穿透 AST 拦截器
+        MybatisPlusInterceptor mpInterceptor = new MybatisPlusInterceptor();
+        mpInterceptor.addInnerInterceptor(new AtengLogicDeleteInnerInterceptor());
+        configuration.addInterceptor(mpInterceptor);
+
         // 注册 DataChangeAuditInterceptor
         DataChangeAuditInterceptor interceptor = new DataChangeAuditInterceptor(
                 auditProps,
                 provider,
-                null,
+                taskExecutor,
                 eventPublisher,
                 "SYSTEM"
         );

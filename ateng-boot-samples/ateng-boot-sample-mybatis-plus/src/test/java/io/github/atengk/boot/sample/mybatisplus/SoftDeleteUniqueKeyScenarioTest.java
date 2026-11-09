@@ -3,6 +3,9 @@ package io.github.atengk.boot.sample.mybatisplus;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.mybatisplus.audit.ChangeType;
+import io.github.atengk.boot.mybatisplus.audit.DataChangeRecord;
+import io.github.atengk.boot.sample.mybatisplus.audit.MemoryDataChangeAuditProvider;
 import io.github.atengk.boot.sample.mybatisplus.entity.ProductSkuEntity;
 import io.github.atengk.boot.sample.mybatisplus.service.SoftDeleteUniqueKeyScenarioService;
 import org.junit.jupiter.api.AfterEach;
@@ -39,10 +42,16 @@ class SoftDeleteUniqueKeyScenarioTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private MemoryDataChangeAuditProvider auditProvider;
+
     @BeforeEach
     @AfterEach
     void cleanState() {
         UserContextHolder.clear();
+        if (auditProvider != null) {
+            auditProvider.clear();
+        }
         jdbcTemplate.execute("DELETE FROM product_sku");
     }
 
@@ -239,5 +248,66 @@ class SoftDeleteUniqueKeyScenarioTest {
         assertThatThrownBy(() -> softDeleteService.removePhysicallyById(null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("id 不能为 null");
+    }
+
+    @Test
+    @DisplayName("5. 验证商品 SKU 逻辑删除、回收站恢复与物理销毁全生命周期审计快照捕获与类型识别")
+    void shouldCaptureAuditRecordsAcrossSoftDeleteRestoreAndPurgeLifecycle() {
+        UserContextHolder.set("sku-audit-operator");
+        auditProvider.clear();
+
+        // 1. 创建商品 SKU
+        ProductSkuEntity sku = new ProductSkuEntity("SKU-AUDIT-001", "全生命周期审计商品");
+        softDeleteService.save(sku);
+        Long id = sku.getId();
+        assertThat(id).isNotNull();
+
+        // 2. 执行逻辑删除
+        boolean removed = softDeleteService.removeById(id);
+        assertThat(removed).isTrue();
+
+        // 断言逻辑删除产生 ChangeType.DELETE 审计记录，且包含删除前快照
+        List<DataChangeRecord> deleteRecords = auditProvider.getRecords().stream()
+                .filter(r -> "product_sku".equals(r.getTableName()) && Long.valueOf(id).equals(r.getEntityId()) && r.getChangeType() == ChangeType.DELETE)
+                .toList();
+        assertThat(deleteRecords).hasSize(1);
+        DataChangeRecord delRecord = deleteRecords.get(0);
+        assertThat(delRecord.getBeforeSnapshot()).isNotNull();
+        assertThat(delRecord.getBeforeSnapshot().get("skuCode")).isEqualTo("SKU-AUDIT-001");
+        assertThat(delRecord.getBeforeSnapshot().get("deleted")).isEqualTo(0L);
+
+        // 3. 执行误删恢复 (restoreById)
+        auditProvider.clear();
+        boolean restored = softDeleteService.restoreById(id);
+        assertThat(restored).isTrue();
+
+        // 断言恢复操作穿透拉取到软删除前的快照，并产出 ChangeType.UPDATE 记录，diffs 记录 deleted 恢复变更
+        List<DataChangeRecord> restoreRecords = auditProvider.getRecords().stream()
+                .filter(r -> "product_sku".equals(r.getTableName()) && Long.valueOf(id).equals(r.getEntityId()) && r.getChangeType() == ChangeType.UPDATE)
+                .toList();
+        assertThat(restoreRecords).hasSize(1);
+        DataChangeRecord resRecord = restoreRecords.get(0);
+        assertThat(resRecord.getBeforeSnapshot()).isNotNull();
+        assertThat(resRecord.getBeforeSnapshot().get("deleted")).isEqualTo(id);
+        assertThat(resRecord.getAfterSnapshot()).isNotNull();
+        assertThat(resRecord.getAfterSnapshot().get("deleted")).isEqualTo(0L);
+
+        // 4. 执行物理硬删除 (purgeSkuPhysically)
+        // 先软删除
+        softDeleteService.removeById(id);
+        auditProvider.clear();
+
+        boolean purged = softDeleteService.purgeSkuPhysically(id);
+        assertThat(purged).isTrue();
+
+        // 断言物理销毁生成 ChangeType.DELETE 记录，且即便在软删除状态下仍穿透捕获前置快照
+        List<DataChangeRecord> purgeRecords = auditProvider.getRecords().stream()
+                .filter(r -> "product_sku".equals(r.getTableName()) && Long.valueOf(id).equals(r.getEntityId()) && r.getChangeType() == ChangeType.DELETE)
+                .toList();
+        assertThat(purgeRecords).hasSize(1);
+        DataChangeRecord purgeRecord = purgeRecords.get(0);
+        assertThat(purgeRecord.getBeforeSnapshot()).isNotNull();
+        assertThat(purgeRecord.getBeforeSnapshot().get("skuCode")).isEqualTo("SKU-AUDIT-001");
+        assertThat(purgeRecord.getBeforeSnapshot().get("deleted")).isEqualTo(id);
     }
 }

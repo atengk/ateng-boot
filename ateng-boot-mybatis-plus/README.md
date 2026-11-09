@@ -65,7 +65,7 @@
 | **动态查询** | 字段映射与敏感防卫注解 | `@QueryField`, `@DynamicQueryIgnore` | - | `@QueryField(property, operator, ignoreNull)` 声明式 DTO 驱动转译；`@DynamicQueryIgnore` 实体敏感列防越权探测 | `DynamicQueryHelperTest` / `MpGovernanceAndQueryControllerTest` |
 | **动态查询** | 动态查询模板自动装配组件 | `AtengMybatisPlusDynamicQueryAutoConfiguration` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | 声明 `@AutoConfigureAfter(MybatisPlusAutoConfiguration.class)` 与 `@ConditionalOnBean(SqlSessionFactory.class)`，保障晚期动态查询模板在 SqlSessionFactory 初始化完成后平滑装配 | `AtengMybatisPlusAutoConfigurationTest` / `MultiTableDynamicQueryScenarioTest` |
 | **变更审计** | 声明式数据变更审计注解 | `@AuditChange` | - | 声明于实体类或 Mapper 接口/方法上，声明开启字段级 Diff 变更追踪与前后快照捕获，支持属性包含与排除 | `DataChangeAuditInterceptorTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
-| **变更审计** | 数据变更 Diff 审计拦截器 | `DataChangeAuditInterceptor` | `ateng.boot.mybatis-plus.audit-change.enabled`<br>`ateng.boot.mybatis-plus.audit-change.max-diff-rows`<br>`ateng.boot.mybatis-plus.audit-change.async`<br>`ateng.boot.mybatis-plus.audit-change.publish-event` | 拦截 MyBatis `Executor.update`，事务提交后（`afterCommit`）异步分发，集成超限熔断降级与缺 Provider 自动休眠 | `DataChangeAuditInterceptorTest` / `AtengMybatisPlusAutoConfigurationTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
+| **变更审计** | 数据变更 Diff 审计拦截器 | `DataChangeAuditInterceptor` | `ateng.boot.mybatis-plus.audit-change.enabled`<br>`ateng.boot.mybatis-plus.audit-change.max-diff-rows`<br>`ateng.boot.mybatis-plus.audit-change.async`<br>`ateng.boot.mybatis-plus.audit-change.publish-event` | 拦截 MyBatis `Executor.update`，事务提交后（`afterCommit`）异步分发，自动识别 `@TableLogic` 逻辑删除（归类为 `ChangeType.DELETE`），依托 `LogicDeleteContextHolder` 穿透回收站捕获恢复与物理销毁前置快照，经由 `AsyncContext` 透传四维上下文，集成超限熔断降级与缺 Provider 自动休眠 | `DataChangeAuditInterceptorTest` / `AtengMybatisPlusAutoConfigurationTest` / `SoftDeleteUniqueKeyScenarioTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
 | **变更审计** | 数据变更审计消费 SPI | `DataChangeAuditProvider` | - | 函数式消费 SPI，供业务自由对接审计日志落盘、Elasticsearch 或消息队列 | `DataChangeAuditInterceptorTest` / `TenantOrderDomainIntegrationTest` |
 | **变更审计** | 数据变更审计 Spring 事件 | `DataChangeEvent` | `ateng.boot.mybatis-plus.audit-change.publish-event` | 变更提交后发布 Spring 原生应用事件，供下游声明式 `@EventListener` 解耦监听 | `DataChangeAuditInterceptorTest` |
 | **变更审计** | 数据变更审计上下文持有者 | `DataChangeAuditContextHolder` | - | 提供 `runWithoutAudit` 与 `callWithoutAudit` 编程式闭包，安全短路跳过当前线程的变更审计 | `DataChangeAuditInterceptorTest` / `MpBatchLockAndObservabilityControllerTest` |
@@ -139,7 +139,7 @@ flowchart TD
 1. **传输契约与持久层绝对解耦 (Zero-Entity-Leakage, ADR-0010)**：
    Controller 传输边界 **100% 严禁接收或直接返回 ORM 实体（Entity）**。入参统一使用专用 DTO / `PageQuery` / `DynamicQueryRequest`，出参依托 `AtengBaseService` 投影门面或 `PageUtil.toPageResult(page, VO::fromEntity)` 统一返回 `Result<VO>` 或 `Result<PageResult<VO>>`。
 2. **数据安全三态分离与“内存真明文”不变量 (In-Memory Plaintext Invariant, ADR-0012)**：
-   - **持久层密文落盘**：由 `@FieldEncrypt` + `EncryptTypeHandler` 在 JDBC 边界透明完成 `v1:` 版本化 AES-GCM 加解密；
+   - **持久层密文落盘**：由 `@FieldEncrypt` + `EncryptTypeHandler` 在 JDBC 边界透明完成 `v1:` 版本化 AES-CBC 加解密；
    - **Service 内存 100% 原始真明文**：业务计算、长度校验、外部 RPC 调用读取实体属性时始终为未打码的真实明文，彻底根除“星号掩码脏数据写回数据库”的生产事故；
    - **视图序列化动态脱敏**：仅在 VO 序列化为 HTTP JSON 响应的最后一公里，由 `@FieldSensitive` 动态打码。
 3. **对称语义完备性不变量 (Symmetric Facades Invariant)**：
@@ -1640,7 +1640,10 @@ SELECT id, sku_code, sku_name, price, stock, status
 
 `ateng-boot-mybatis-plus` 原生交付 `DataChangeAuditInterceptor` 与声明式 `@AuditChange`：
 - **前置快照与字段级 Diff 比较**：在 `UPDATE` 执行前捕获实体快照，执行后与变更值比对，生成结构化 `FieldDiff`（包含属性名、旧值与新值）；
+- **逻辑删除语义精准识别 (ChangeType.DELETE Identification)**：针对配置 `@TableLogic` 的实体，MyBatis-Plus 底层将 `deleteById` / `deleteBatchIds`（`deleteByIds`）/ `delete` 等方法映射为 `SqlCommandType.UPDATE`。拦截器通过方法语义与状态机将其自动精准归类为 `ChangeType.DELETE`（而非 `UPDATE`），精确提取单条或批量主键 ID 并捕获删除前物理快照；
+- **回收站穿透快照与误删恢复闭环 (Recycle Bin Penetration)**：针对回收站内已逻辑删除的记录，执行 `restoreById` 恢复或 `deletePhysicallyById`（`removePhysicallyById`）彻底物理销毁时，拦截器内部自动通过 `LogicDeleteContextHolder.callWithDeleted(...)` 穿透剥离 `WHERE deleted = 0` 约束，精准捕获软删除前置状态；恢复时产出 `ChangeType.UPDATE` 记录并计算 `deleted: <delval> -> 0` 的字段级 Diff；物理销毁时产出 `ChangeType.DELETE` 记录并捕获软删除行的完整物理前置快照；
 - **事务提交后投递不变量 (Commit-Only Dispatch)**：通过 Spring 原生 `TransactionSynchronizationManager.afterCommit` 注册回调，确保变更记录仅在当前数据库事务**真正提交成功后**才投递至 SPI 或发布事件；若业务事务发生异常回滚，审计记录自动作废丢弃，绝不向消费端投递“幻影变更数据”；
+- **异步受管线程池四维上下文透传 (4D Context Propagation via AsyncContext)**：当配置 `audit-change.async: true` 异步分发时，调度任务自动通过 `AsyncContext.wrap(task)` 透传当前线程的 $\langle\text{MDC traceId}, \text{UserContextHolder}, \text{TenantContextHolder}, \text{IgnoreTenant}\rangle$ 四维快照并在异步线程执行完毕的 `finally` 中确定性清理现场，彻底消除异步线程池上下文丢失与脏数据污染隐患；
 - **三级立体开关治理**：全局配置 -> 类/方法注解 -> `DataChangeAuditContextHolder.runWithoutAudit` 编程式闭包；
 - **防爆熔断守卫**：单次受影响行数超过 `max-diff-rows`（默认 100 行）时自动熔断降级为摘要记录，彻底杜绝大批量更新引发内存爆表 OOM。
 
