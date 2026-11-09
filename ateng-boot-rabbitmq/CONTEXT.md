@@ -55,3 +55,19 @@ _Avoid_: AmqpConfig, MqSettings, RabbitProperties
 **AtengRabbitmqAutoConfiguration**:
 RabbitMQ 增强底座自动装配核心类，统一注册于 Spring Boot 3 标准 `AutoConfiguration.imports`，装配开启 INFERRED 泛型推断的 Jackson 消息转换器、RabbitTemplateCustomizer、优雅停机排空及生命周期后置增强。
 _Avoid_: RabbitConfiguration, AmqpConfigRegistry
+
+**Silent ACK**:
+RabbitMQ 消费端幂等静默确认机制，当消费逻辑检测到业务唯一键已处理（抛出 `IdempotentException`）时，由 `RabbitListenerGlobalAdvice` 自动拦截并向 Broker 发送 Basic.Ack 确认消息消费完成，阻断重复重试风暴与死信堆积。
+_Avoid_: QuietAck, SilentConsume, DropDuplicateAck
+
+**Terminal DLQ Invariant**:
+RabbitMQ 死信拓扑终点不变量强校验规则，死信队列（DLQ）自身严禁再次配置 `x-dead-letter-exchange`，防止毒丸消息在死信流转中形成死循环乒乓风暴导致 Broker 内存撑爆。
+_Avoid_: EndDlqRule, DlqNoLoopCheck, TerminalQueueConstraint
+
+**Replay Avalanche Defense**:
+RabbitMQ 死信受控重放防二次雪崩治理机制，在重放死信消息时剥离原消息中嵌套堆积的 `x-death` 异构头、注入 `X-Dead-Letter-Replayed` 重放计数标记，当重放尝试次数达到上限（默认 3 次）时主动熔断并执行 basicNack(requeue=true)，杜绝无限制重放导致集群雪崩。
+_Avoid_: DlqAntiAvalanche, ReplayCircuitBreaker, ReplayThrottle
+
+**Inferred Deserialization**:
+RabbitMQ 泛型推断反序列化解耦机制，利用 Spring AMQP `Jackson2JsonMessageConverter` 的 `TypePrecedence.INFERRED` 特性，使消费端基于 `@RabbitListener` 目标方法签名强类型推断消息对象类型，彻底摆脱发送端 `__TypeId__` 全限定类名硬编码耦合，支持跨微服务异构包结构安全通信。
+_Avoid_: TypeInferenceConverter, HeaderTypeIdDeserializer, GenericMessageDecoder
