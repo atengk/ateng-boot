@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Pattern;
 
 /**
@@ -54,6 +55,8 @@ public final class NetUtil {
     private static volatile List<String> preferredNetworksConfig;
     private static volatile List<String> ignoredInterfacesConfig;
 
+    private static final ReentrantLock LOCK = new ReentrantLock();
+
     private NetUtil() {
     }
 
@@ -65,11 +68,16 @@ public final class NetUtil {
      * @param ignoredInterfaces 自定义排除网卡列表（可为 null）
      */
     public static void configure(String preferredIp, List<String> preferredNetworks, List<String> ignoredInterfaces) {
-        synchronized (NetUtil.class) {
+        LOCK.lock();
+        try {
             preferredIpConfig = (preferredIp != null && !preferredIp.isBlank()) ? preferredIp.trim() : null;
             preferredNetworksConfig = (preferredNetworks != null && !preferredNetworks.isEmpty()) ? new ArrayList<>(preferredNetworks) : null;
             ignoredInterfacesConfig = (ignoredInterfaces != null && !ignoredInterfaces.isEmpty()) ? new ArrayList<>(ignoredInterfaces) : null;
             clearLocalIpv4Cache();
+        } finally {
+            if (LOCK.isHeldByCurrentThread()) {
+                LOCK.unlock();
+            }
         }
     }
 
@@ -77,11 +85,16 @@ public final class NetUtil {
      * 重置显式配置与缓存（恢复为基于系统属性、环境变量与自动嗅探决策）
      */
     public static void resetConfiguration() {
-        synchronized (NetUtil.class) {
+        LOCK.lock();
+        try {
             preferredIpConfig = null;
             preferredNetworksConfig = null;
             ignoredInterfacesConfig = null;
             clearLocalIpv4Cache();
+        } finally {
+            if (LOCK.isHeldByCurrentThread()) {
+                LOCK.unlock();
+            }
         }
     }
 
@@ -89,8 +102,13 @@ public final class NetUtil {
      * 清理本机 IPv4 地址缓存（主要用于测试隔离或网络拓扑动态刷新）
      */
     public static void clearLocalIpv4Cache() {
-        synchronized (NetUtil.class) {
+        LOCK.lock();
+        try {
             cachedLocalIpv4 = null;
+        } finally {
+            if (LOCK.isHeldByCurrentThread()) {
+                LOCK.unlock();
+            }
         }
     }
 
@@ -228,7 +246,8 @@ public final class NetUtil {
             return cachedLocalIpv4;
         }
 
-        synchronized (NetUtil.class) {
+        LOCK.lock();
+        try {
             if (cachedLocalIpv4 != null) {
                 return cachedLocalIpv4;
             }
@@ -324,6 +343,10 @@ public final class NetUtil {
 
             cachedLocalIpv4 = LOCALHOST_IPV4;
             return cachedLocalIpv4;
+        } finally {
+            if (LOCK.isHeldByCurrentThread()) {
+                LOCK.unlock();
+            }
         }
     }
 

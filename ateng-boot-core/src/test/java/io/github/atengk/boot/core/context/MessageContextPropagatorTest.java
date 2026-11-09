@@ -184,4 +184,43 @@ class MessageContextPropagatorTest {
         assertEquals("old-tenant", TenantContextHolder.getTenantId());
         assertTrue(TenantContextHolder.isIgnoreTenant());
     }
+
+    @Test
+    @DisplayName("activate 提取上下文并在 close 时对称还原自定义 AsyncContextSnapshotProvider 扩展快照")
+    void testActivateRestoresCustomSnapshotProvider() {
+        ThreadLocal<String> customTl = new ThreadLocal<>();
+        AsyncContextSnapshotProvider provider = new AsyncContextSnapshotProvider() {
+            @Override
+            public Object capture() {
+                return customTl.get();
+            }
+
+            @Override
+            public void apply(Object snapshot) {
+                if (snapshot instanceof String str) {
+                    customTl.set(str);
+                } else {
+                    customTl.remove();
+                }
+            }
+
+            @Override
+            public void restore(Object previousSnapshot) {
+                apply(previousSnapshot);
+            }
+        };
+
+        AsyncContext.registerSnapshotProvider(provider);
+        try {
+            customTl.set("original-custom-ext");
+            Map<String, Object> headers = Map.of(MessageHeaderConstants.TRACE_ID, "ext-trace");
+            try (MessageContextPropagator.ContextScope scope = MessageContextPropagator.activate(headers)) {
+                assertEquals("ext-trace", MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY));
+            }
+            assertEquals("original-custom-ext", customTl.get());
+        } finally {
+            AsyncContext.unregisterSnapshotProvider(provider);
+            customTl.remove();
+        }
+    }
 }

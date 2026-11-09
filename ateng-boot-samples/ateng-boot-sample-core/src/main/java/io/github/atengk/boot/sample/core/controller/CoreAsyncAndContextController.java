@@ -14,11 +14,15 @@ import io.github.atengk.boot.core.util.HexUtil;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.TransactionUtil;
 import io.github.atengk.boot.sample.core.context.SampleCustomContextHolder;
+import io.github.atengk.boot.sample.core.dto.AsyncBatchSupplyRequest;
 import io.github.atengk.boot.sample.core.dto.AsyncPropagateRequest;
+import io.github.atengk.boot.sample.core.dto.AsyncRiskCheckRequest;
 import io.github.atengk.boot.sample.core.dto.PoolGovernanceRequest;
 import io.github.atengk.boot.sample.core.dto.ReportExportRequest;
 import io.github.atengk.boot.sample.core.dto.TxMqCooperateRequest;
+import io.github.atengk.boot.sample.core.vo.AsyncBatchSupplyVO;
 import io.github.atengk.boot.sample.core.vo.AsyncPropagateVO;
+import io.github.atengk.boot.sample.core.vo.AsyncRiskCheckVO;
 import io.github.atengk.boot.sample.core.vo.PoolGovernanceVO;
 import io.github.atengk.boot.sample.core.vo.ReportExportVO;
 import io.github.atengk.boot.sample.core.vo.TxMqCooperateVO;
@@ -32,11 +36,14 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Duration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 /**
  * Core 异步上下文、多业务线程池与事务消息协同控制器
@@ -134,7 +141,7 @@ public class CoreAsyncAndContextController {
             return name;
         });
 
-        AsyncUtil.allOf(exportFuture, reportFuture).join();
+        AsyncUtil.allOf(List.of(exportFuture, reportFuture), Duration.ofSeconds(10));
 
         String exportThread = exportFuture.join();
         String reportThread = reportFuture.join();
@@ -200,9 +207,34 @@ public class CoreAsyncAndContextController {
         TransactionUtil.executeAfterCommit(() -> afterCommit.set(true));
         TransactionUtil.executeAfterCompletion(statusRef::set);
 
+        // 模拟当前业务线程在消费前持有的原始上下文
+        String originTraceId = MDC.get("traceId");
+        if (originTraceId == null || originTraceId.isBlank()) {
+            originTraceId = "TRACE-ORIGIN-" + IdUtil.fastSimpleUUID();
+            MDC.put("traceId", originTraceId);
+        }
+        String originTenantId = TenantContextHolder.getTenantId();
+        if (originTenantId == null) {
+            originTenantId = "TENANT-ORIGIN";
+            TenantContextHolder.setTenantId(originTenantId);
+        }
+
         Map<String, Object> headers = new HashMap<>();
         MessageContextPropagator.inject(headers, request.getBizKey());
         String msgTraceId = MessageContextPropagator.extractString(headers, MessageHeaderConstants.TRACE_ID);
+
+        // 模拟消息消费端接收并激活上下文，并在消费退出后对称还原
+        String consumedTraceId = null;
+        boolean messageContextActivated = false;
+        try (MessageContextPropagator.ContextScope ignored = MessageContextPropagator.activate(headers)) {
+            consumedTraceId = MDC.get("traceId");
+            messageContextActivated = msgTraceId != null && msgTraceId.equals(consumedTraceId);
+            log.info("消息消费作用域内上下文激活状态: traceId={}, activated={}", consumedTraceId, messageContextActivated);
+        }
+
+        String restoredTraceId = MDC.get("traceId");
+        String restoredTenantId = TenantContextHolder.getTenantId();
+        boolean messageContextRestored = originTraceId.equals(restoredTraceId) && originTenantId.equals(restoredTenantId);
 
         MessagePayloadSerializer serializer = MessagePayloadSerializer.defaultSerializer();
         byte[] payloadBytes = serializer.serialize(request.getPayload());
@@ -227,8 +259,66 @@ public class CoreAsyncAndContextController {
                 .completionStatus(statusRef.get())
                 .fatalPoisonPill(isFatal)
                 .fatalReason(fatalReason)
+                .messageContextActivated(messageContextActivated)
+                .messageContextRestored(messageContextRestored)
+                .consumedTraceId(consumedTraceId)
+                .restoredTraceId(restoredTraceId)
                 .build();
 
         return Result.success(vo);
+    }
+
+    /**
+     * 5. 异步批量任务强类型超时汇聚与受管线程池协同
+     *
+     * @param request 批量汇聚请求
+     * @return 强类型结果汇聚视图
+     */
+    @PostMapping("/batch-supply")
+    public Result<AsyncBatchSupplyVO> batchSupply(@RequestBody @Valid AsyncBatchSupplyRequest request) {
+        long start = System.currentTimeMillis();
+        List<Supplier<String>> tasks = request.getMetrics().stream()
+                .<Supplier<String>>map(metric -> () -> {
+                    String threadName = Thread.currentThread().getName();
+                    log.info("专属 report 线程池并发计算指标 [thread={}]: {}", threadName, metric);
+                    return "METRIC_VALUE_" + metric.toUpperCase();
+                })
+                .toList();
+
+        List<String> results = AsyncUtil.supplyAll("report", tasks, Duration.ofSeconds(5));
+        long cost = System.currentTimeMillis() - start;
+
+        return Result.success(AsyncBatchSupplyVO.builder()
+                .results(results)
+                .executionTimeMs(cost)
+                .totalTasks(results.size())
+                .build());
+    }
+
+    /**
+     * 6. 异步并行规则校验与快速失败早期短路拦截
+     *
+     * @param request 风控预检请求
+     * @return 短路预检结果
+     */
+    @PostMapping("/risk-check")
+    public Result<AsyncRiskCheckVO> riskCheck(@RequestBody @Valid AsyncRiskCheckRequest request) {
+        long start = System.currentTimeMillis();
+        List<Supplier<Integer>> tasks = request.getScores().stream()
+                .<Supplier<Integer>>map(score -> () -> {
+                    String threadName = Thread.currentThread().getName();
+                    log.info("专属 export 线程池并发评估风控规则 [thread={}]: score={}", threadName, score);
+                    return score;
+                })
+                .toList();
+
+        boolean allPassed = AsyncUtil.allMatches("export", tasks, score -> score >= request.getSafetyThreshold(), Duration.ofSeconds(5));
+        long cost = System.currentTimeMillis() - start;
+
+        return Result.success(AsyncRiskCheckVO.builder()
+                .allPassed(allPassed)
+                .totalRules(request.getScores().size())
+                .executionTimeMs(cost)
+                .build());
     }
 }

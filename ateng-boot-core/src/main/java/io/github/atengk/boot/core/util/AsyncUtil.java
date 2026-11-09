@@ -1,17 +1,29 @@
 package io.github.atengk.boot.core.util;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.ThreadPoolStatus;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /**
@@ -28,6 +40,9 @@ public final class AsyncUtil {
     private static final String DEFAULT_TASK_EXECUTOR_BEAN = "taskExecutor";
     private static final String APPLICATION_TASK_EXECUTOR_BEAN = "applicationTaskExecutor";
     private static final String TASK_EXECUTOR_SUFFIX = "TaskExecutor";
+
+    private static final Duration DEFAULT_COORDINATION_TIMEOUT = Duration.ofSeconds(30);
+    private static final ReentrantLock LOCK = new ReentrantLock();
 
     private static volatile ThreadPoolTaskExecutor fallbackExecutor;
     private static volatile Thread fallbackShutdownHook;
@@ -115,6 +130,245 @@ public final class AsyncUtil {
             return CompletableFuture.completedFuture(null);
         }
         return CompletableFuture.allOf(cfs.toArray(new CompletableFuture<?>[0]));
+    }
+
+    /**
+     * 等待一组有返回值的异步任务全部完成并提取结果列表（带超时保护与早期取消）
+     * 只要发生超时、中断或任务执行异常，立即取消其余未完成任务并抛出因果异常，严防任务悬挂
+     *
+     * @param futures 待等待的 CompletableFuture 集合
+     * @param timeout 超时上限（强类型 Duration，必须大于 0）
+     * @param <T>     结果泛型
+     * @return 按输入顺序排列的任务结果不可变列表；futures 为空时安全返回空列表
+     * @throws IllegalArgumentException 当 timeout 非法或集合内包含 null 元素时抛出
+     * @throws BusinessException        当任务执行失败、超时或被中断时抛出
+     */
+    public static <T> List<T> allOf(Collection<? extends CompletableFuture<T>> futures, Duration timeout) {
+        validateTimeout(timeout);
+        if (futures == null || futures.isEmpty()) {
+            return Collections.emptyList();
+        }
+        for (CompletableFuture<?> f : futures) {
+            Objects.requireNonNull(f, "futures 中的任务元素不能为 null");
+        }
+
+        CompletableFuture<Void> coordinator = new CompletableFuture<>();
+        AtomicInteger remaining = new AtomicInteger(futures.size());
+
+        for (CompletableFuture<T> f : futures) {
+            f.whenComplete((res, ex) -> {
+                if (ex != null) {
+                    if (coordinator.completeExceptionally(ex)) {
+                        cancelPendingFutures(futures);
+                    }
+                    return;
+                }
+                if (remaining.decrementAndGet() == 0) {
+                    coordinator.complete(null);
+                }
+            });
+        }
+
+        try {
+            coordinator.get(timeout.toNanos(), TimeUnit.NANOSECONDS);
+        } catch (TimeoutException ex) {
+            cancelPendingFutures(futures);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "异步任务批量并行汇聚超时 [timeout=" + timeout + "]", ex);
+        } catch (ExecutionException ex) {
+            cancelPendingFutures(futures);
+            Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+            if (cause instanceof BusinessException be) {
+                throw be;
+            }
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "异步任务批量执行失败: " + cause.getMessage(), cause);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            cancelPendingFutures(futures);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "异步任务批量执行被中断", ex);
+        } catch (Throwable ex) {
+            cancelPendingFutures(futures);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "异步任务批量执行发生未预料异常: " + ex.getMessage(), ex);
+        }
+
+        List<T> results = new ArrayList<>(futures.size());
+        for (CompletableFuture<T> f : futures) {
+            results.add(f.join());
+        }
+        return Collections.unmodifiableList(results);
+    }
+
+    /**
+     * 在默认受管异步线程池中批量并行执行任务并汇总结果（默认 30 秒安全超时）
+     *
+     * @param tasks 待执行的 Supplier 任务集合
+     * @param <T>   结果泛型
+     * @return 按输入顺序排列的结果列表
+     */
+    public static <T> List<T> supplyAll(Collection<? extends Supplier<T>> tasks) {
+        return supplyAll(null, tasks, DEFAULT_COORDINATION_TIMEOUT);
+    }
+
+    /**
+     * 在默认受管异步线程池中批量并行执行任务并汇总结果（指定超时上限）
+     *
+     * @param tasks   待执行的 Supplier 任务集合
+     * @param timeout 超时上限（强类型 Duration，必须大于 0）
+     * @param <T>     结果泛型
+     * @return 按输入顺序排列的结果列表
+     */
+    public static <T> List<T> supplyAll(Collection<? extends Supplier<T>> tasks, Duration timeout) {
+        return supplyAll(null, tasks, timeout);
+    }
+
+    /**
+     * 在指定受管异步线程池中批量并行执行任务并汇总结果（指定超时上限）
+     *
+     * @param poolName 目标线程池 Bean 名称或业务别名（为 null 或空白时使用默认主线程池）
+     * @param tasks    待执行的 Supplier 任务集合
+     * @param timeout  超时上限（强类型 Duration，必须大于 0）
+     * @param <T>      结果泛型
+     * @return 按输入顺序排列的结果列表
+     */
+    public static <T> List<T> supplyAll(String poolName, Collection<? extends Supplier<T>> tasks, Duration timeout) {
+        validateTimeout(timeout);
+        if (tasks == null || tasks.isEmpty()) {
+            return Collections.emptyList();
+        }
+        for (Supplier<?> task : tasks) {
+            Objects.requireNonNull(task, "tasks 中的任务元素不能为 null");
+        }
+
+        List<CompletableFuture<T>> futures = new ArrayList<>(tasks.size());
+        for (Supplier<T> task : tasks) {
+            futures.add(supply(poolName, task));
+        }
+        return allOf(futures, timeout);
+    }
+
+    /**
+     * 在默认受管异步线程池中并行执行任务并执行早期短路条件匹配（默认 30 秒安全超时）
+     *
+     * @param tasks     待执行的 Supplier 任务集合
+     * @param predicate 判定条件（非空）
+     * @param <T>       结果泛型
+     * @return 若所有任务均满足条件返回 true；若任一任务不满足返回 false 并立即短路取消剩余任务
+     */
+    public static <T> boolean allMatches(Collection<? extends Supplier<T>> tasks, Predicate<? super T> predicate) {
+        return allMatches(null, tasks, predicate, DEFAULT_COORDINATION_TIMEOUT);
+    }
+
+    /**
+     * 在默认受管异步线程池中并行执行任务并执行早期短路条件匹配（指定超时上限）
+     *
+     * @param tasks     待执行的 Supplier 任务集合
+     * @param predicate 判定条件（非空）
+     * @param timeout   超时上限（强类型 Duration，必须大于 0）
+     * @param <T>       结果泛型
+     * @return 若所有任务均满足条件返回 true；若任一任务不满足返回 false 并立即短路取消剩余任务
+     */
+    public static <T> boolean allMatches(Collection<? extends Supplier<T>> tasks, Predicate<? super T> predicate, Duration timeout) {
+        return allMatches(null, tasks, predicate, timeout);
+    }
+
+    /**
+     * 在指定受管异步线程池中并行执行任务并执行早期短路条件匹配（指定超时上限）
+     *
+     * @param poolName  目标线程池 Bean 名称或业务别名（为 null 或空白时使用默认主线程池）
+     * @param tasks     待执行的 Supplier 任务集合
+     * @param predicate 判定条件（非空）
+     * @param timeout   超时上限（强类型 Duration，必须大于 0）
+     * @param <T>       结果泛型
+     * @return 若所有任务均满足条件返回 true；若任一任务不满足返回 false 并立即短路取消剩余任务
+     */
+    public static <T> boolean allMatches(String poolName, Collection<? extends Supplier<T>> tasks,
+                                         Predicate<? super T> predicate, Duration timeout) {
+        validateTimeout(timeout);
+        Objects.requireNonNull(predicate, "predicate 不能为 null");
+        if (tasks == null || tasks.isEmpty()) {
+            return true;
+        }
+        for (Supplier<?> task : tasks) {
+            Objects.requireNonNull(task, "tasks 中的任务元素不能为 null");
+        }
+
+        CompletableFuture<Boolean> coordinator = new CompletableFuture<>();
+        AtomicInteger remainingCount = new AtomicInteger(tasks.size());
+        List<CompletableFuture<T>> futures = new ArrayList<>(tasks.size());
+
+        for (Supplier<T> task : tasks) {
+            CompletableFuture<T> future = supply(poolName, task);
+            futures.add(future);
+
+            future.whenComplete((result, ex) -> {
+                if (coordinator.isDone()) {
+                    return;
+                }
+                if (ex != null) {
+                    coordinator.completeExceptionally(ex);
+                    return;
+                }
+                try {
+                    boolean matched = predicate.test(result);
+                    if (!matched) {
+                        if (coordinator.complete(false)) {
+                            cancelPendingFutures(futures);
+                        }
+                        return;
+                    }
+                } catch (Throwable pex) {
+                    coordinator.completeExceptionally(pex);
+                    return;
+                }
+                if (remainingCount.decrementAndGet() == 0) {
+                    coordinator.complete(true);
+                }
+            });
+        }
+
+        try {
+            return coordinator.get(timeout.toNanos(), TimeUnit.NANOSECONDS);
+        } catch (TimeoutException ex) {
+            cancelPendingFutures(futures);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "异步条件短路判定超时 [timeout=" + timeout + "]", ex);
+        } catch (ExecutionException ex) {
+            cancelPendingFutures(futures);
+            Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+            if (cause instanceof BusinessException be) {
+                throw be;
+            }
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "异步条件短路判定任务执行失败: " + cause.getMessage(), cause);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            cancelPendingFutures(futures);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "异步条件短路判定被中断", ex);
+        } catch (Throwable ex) {
+            cancelPendingFutures(futures);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "异步条件短路判定发生未预料异常: " + ex.getMessage(), ex);
+        }
+    }
+
+    private static void validateTimeout(Duration timeout) {
+        if (timeout == null || timeout.isNegative() || timeout.isZero()) {
+            throw new IllegalArgumentException("timeout 必须非空且大于 0");
+        }
+    }
+
+    private static void cancelPendingFutures(Collection<? extends CompletableFuture<?>> futures) {
+        if (futures != null) {
+            for (CompletableFuture<?> f : futures) {
+                if (f != null && !f.isDone()) {
+                    f.cancel(true);
+                }
+            }
+        }
     }
 
     /**
@@ -338,7 +592,8 @@ public final class AsyncUtil {
 
     private static ThreadPoolTaskExecutor getOrCreateFallbackExecutor() {
         if (fallbackExecutor == null) {
-            synchronized (AsyncUtil.class) {
+            LOCK.lock();
+            try {
                 if (fallbackExecutor == null) {
                     ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
                     int cores = Math.max(1, Runtime.getRuntime().availableProcessors());
@@ -358,6 +613,10 @@ public final class AsyncUtil {
                     }
                     fallbackExecutor = executor;
                 }
+            } finally {
+                if (LOCK.isHeldByCurrentThread()) {
+                    LOCK.unlock();
+                }
             }
         }
         return fallbackExecutor;
@@ -366,18 +625,25 @@ public final class AsyncUtil {
     /**
      * 重置脱离 Spring 容器时的保底线程池（仅供单元测试清理现场使用）
      */
-    static synchronized void resetFallbackExecutor() {
-        if (fallbackShutdownHook != null) {
-            try {
-                Runtime.getRuntime().removeShutdownHook(fallbackShutdownHook);
-            } catch (IllegalStateException ignored) {
-                // JVM 正在关闭时忽略
+    static void resetFallbackExecutor() {
+        LOCK.lock();
+        try {
+            if (fallbackShutdownHook != null) {
+                try {
+                    Runtime.getRuntime().removeShutdownHook(fallbackShutdownHook);
+                } catch (IllegalStateException ignored) {
+                    // JVM 正在关闭时忽略
+                }
+                fallbackShutdownHook = null;
             }
-            fallbackShutdownHook = null;
-        }
-        if (fallbackExecutor != null) {
-            fallbackExecutor.shutdown();
-            fallbackExecutor = null;
+            if (fallbackExecutor != null) {
+                fallbackExecutor.shutdown();
+                fallbackExecutor = null;
+            }
+        } finally {
+            if (LOCK.isHeldByCurrentThread()) {
+                LOCK.unlock();
+            }
         }
     }
 }

@@ -60,6 +60,24 @@ public final class AsyncContext {
     }
 
     /**
+     * 捕获调用方线程全维度上下文完整快照
+     *
+     * @return 完整的上下文快照
+     */
+    public static ContextSnapshot capture() {
+        return ContextSnapshot.capture();
+    }
+
+    /**
+     * 纯净克隆工作线程执行前的上下文现场
+     *
+     * @return 工作线程执行前的原始现场
+     */
+    public static ContextSnapshot capturePrevious() {
+        return ContextSnapshot.capturePrevious();
+    }
+
+    /**
      * 已包装上下文快照的 Runnable 标记接口（防御重复包装与双重上下文开销）
      */
     @FunctionalInterface

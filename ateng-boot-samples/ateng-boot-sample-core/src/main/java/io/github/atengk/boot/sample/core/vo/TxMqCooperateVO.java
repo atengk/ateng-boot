@@ -66,4 +66,24 @@ public class TxMqCooperateVO implements Serializable {
      * 毒丸致命原因说明
      */
     private String fatalReason;
+
+    /**
+     * 消息上下文是否成功激活
+     */
+    private boolean messageContextActivated;
+
+    /**
+     * 退出消息作用域后是否成功对称还原线程上下文
+     */
+    private boolean messageContextRestored;
+
+    /**
+     * 消息消费执行作用域内的 TraceId
+     */
+    private String consumedTraceId;
+
+    /**
+     * 作用域退出并对称还原后的 TraceId
+     */
+    private String restoredTraceId;
 }

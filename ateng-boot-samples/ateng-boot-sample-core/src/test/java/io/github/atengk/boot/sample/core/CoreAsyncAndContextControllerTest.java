@@ -5,7 +5,9 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.AsyncUtil;
 import io.github.atengk.boot.sample.core.context.SampleCustomContextHolder;
+import io.github.atengk.boot.sample.core.dto.AsyncBatchSupplyRequest;
 import io.github.atengk.boot.sample.core.dto.AsyncPropagateRequest;
+import io.github.atengk.boot.sample.core.dto.AsyncRiskCheckRequest;
 import io.github.atengk.boot.sample.core.dto.PoolGovernanceRequest;
 import io.github.atengk.boot.sample.core.dto.ReportExportRequest;
 import io.github.atengk.boot.sample.core.dto.TxMqCooperateRequest;
@@ -152,7 +154,11 @@ class CoreAsyncAndContextControllerTest {
                 .andExpect(jsonPath("$.data.fatalPoisonPill", is(false)))
                 .andExpect(jsonPath("$.data.deserializedPayload", is("{\"amount\":199.00,\"sku\":\"SKU-BOOK-001\"}")))
                 .andExpect(jsonPath("$.data.messageTraceId", notNullValue()))
-                .andExpect(jsonPath("$.data.serializedHex", notNullValue()));
+                .andExpect(jsonPath("$.data.serializedHex", notNullValue()))
+                .andExpect(jsonPath("$.data.messageContextActivated", is(true)))
+                .andExpect(jsonPath("$.data.messageContextRestored", is(true)))
+                .andExpect(jsonPath("$.data.consumedTraceId", notNullValue()))
+                .andExpect(jsonPath("$.data.restoredTraceId", notNullValue()));
     }
 
     @Test
@@ -173,5 +179,60 @@ class CoreAsyncAndContextControllerTest {
                 .andExpect(jsonPath("$.data.bizKey", is("ORDER-20261107-POISON")))
                 .andExpect(jsonPath("$.data.fatalPoisonPill", is(true)))
                 .andExpect(jsonPath("$.data.fatalReason", containsString("不可自愈毒丸异常")));
+    }
+
+    @Test
+    @DisplayName("测试异步批量任务强类型超时汇聚与受管线程池协同")
+    void testBatchSupply_Success() throws Exception {
+        AsyncBatchSupplyRequest request = AsyncBatchSupplyRequest.builder()
+                .metrics(java.util.List.of("revenue", "gmv", "cost"))
+                .build();
+
+        mockMvc.perform(post("/sample/core/async/batch-supply")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.totalTasks", is(3)))
+                .andExpect(jsonPath("$.data.results[0]", is("METRIC_VALUE_REVENUE")))
+                .andExpect(jsonPath("$.data.results[1]", is("METRIC_VALUE_GMV")))
+                .andExpect(jsonPath("$.data.results[2]", is("METRIC_VALUE_COST")));
+    }
+
+    @Test
+    @DisplayName("测试异步风控多维度并行评估且全部满足通过")
+    void testRiskCheck_AllPassed() throws Exception {
+        AsyncRiskCheckRequest request = AsyncRiskCheckRequest.builder()
+                .scores(java.util.List.of(85, 90, 78))
+                .safetyThreshold(60)
+                .build();
+
+        mockMvc.perform(post("/sample/core/async/risk-check")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.allPassed", is(true)))
+                .andExpect(jsonPath("$.data.totalRules", is(3)));
+    }
+
+    @Test
+    @DisplayName("测试异步风控并行评估遭遇低分触发早期短路取消拦截")
+    void testRiskCheck_ShortCircuit() throws Exception {
+        AsyncRiskCheckRequest request = AsyncRiskCheckRequest.builder()
+                .scores(java.util.List.of(90, 45, 95))
+                .safetyThreshold(60)
+                .build();
+
+        mockMvc.perform(post("/sample/core/async/risk-check")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.allPassed", is(false)))
+                .andExpect(jsonPath("$.data.totalRules", is(3)));
     }
 }

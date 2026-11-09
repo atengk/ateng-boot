@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 高性能单机内存滑动窗口计数器
@@ -18,7 +19,7 @@ public class SlidingWindowCounter {
     private final int sliceCount;
     private final long sliceMillis;
     private final Slice[] slices;
-    private final Object mutex = new Object();
+    private final ReentrantLock lock = new ReentrantLock();
 
     /**
      * 构造默认滑动窗口计数器（默认窗口 1 秒，切分为 10 个切片，每个切片 100 毫秒）
@@ -103,7 +104,8 @@ public class SlidingWindowCounter {
         if (delta <= 0) {
             throw new IllegalArgumentException("delta 必须大于 0");
         }
-        synchronized (mutex) {
+        lock.lock();
+        try {
             long now = System.currentTimeMillis();
             long currentCount = getCount(now);
             if (currentCount + delta <= threshold) {
@@ -113,6 +115,10 @@ public class SlidingWindowCounter {
                 return true;
             }
             return false;
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
@@ -129,9 +135,14 @@ public class SlidingWindowCounter {
      * 重置清空所有切片计数
      */
     public void reset() {
-        synchronized (mutex) {
+        lock.lock();
+        try {
             for (Slice slice : slices) {
                 slice.reset(0);
+            }
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
             }
         }
     }
@@ -147,25 +158,36 @@ public class SlidingWindowCounter {
     private static class Slice {
         private final AtomicLong timestamp = new AtomicLong(0);
         private final LongAdder counter = new LongAdder();
+        private final ReentrantLock sliceLock = new ReentrantLock();
 
         void add(long bucketTime, long delta) {
             if (this.timestamp.get() == bucketTime) {
                 this.counter.add(delta);
                 return;
             }
-            synchronized (this) {
+            sliceLock.lock();
+            try {
                 if (this.timestamp.get() != bucketTime) {
                     this.counter.reset();
                     this.timestamp.set(bucketTime);
                 }
                 this.counter.add(delta);
+            } finally {
+                if (sliceLock.isHeldByCurrentThread()) {
+                    sliceLock.unlock();
+                }
             }
         }
 
         void reset(long newTimestamp) {
-            synchronized (this) {
+            sliceLock.lock();
+            try {
                 this.counter.reset();
                 this.timestamp.set(newTimestamp);
+            } finally {
+                if (sliceLock.isHeldByCurrentThread()) {
+                    sliceLock.unlock();
+                }
             }
         }
 
