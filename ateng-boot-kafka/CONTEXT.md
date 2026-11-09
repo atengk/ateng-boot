@@ -52,4 +52,12 @@ _Avoid_: ContainerHelper, KafkaListenerManager, EndpointManager
 Kafka 消费端再均衡生命周期 SPI 扩展点，由监听器容器工厂自动扫描并注入，在分区被撤销（partitionsRevoked）与分区被重新分配（partitionsAssigned）时触发业务自定义钩子，支持有状态消费安全清理本地分区缓存或手动位移 Flush。
 _Avoid_: ConsumerRebalanceHandler, RebalanceCallback, KafkaPartitionListener
 
+**DeadLetterRecord**:
+Kafka 结构化死信元数据强类型记录模型，由 `KafkaDeadLetterHelper` 解析产出，包含原主题（originalTopic）、原分区（originalPartition）、原位移（originalOffset）、原时间戳（originalTimestamp）、异常类名（exceptionClassName）、异常信息（exceptionMessage）、异常堆栈（exceptionStackTrace）、重放计数（replayCount）以及是否重放标记（isReplayed）。
+_Avoid_: DltMessageRecord, DeadLetterPayload, DltErrorInfo
+
+**ConsumerGroupLag**:
+Kafka 消费组实时积压诊断模型，由 `KafkaOffsetManager.getConsumerGroupLag` 产出，包含消费组 ID（groupId）、业务主题（topic）、各分区最新位移与提交位移明细映射（partitionLags）以及防负数保护的全主题总积压（totalLag）。
+_Avoid_: GroupLagInfo, OffsetLagResult, KafkaLagMetric
+
 

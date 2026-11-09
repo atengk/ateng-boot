@@ -17,10 +17,10 @@
     <description>ateng-boot Kafka 生产级高吞吐流批处理与可靠投递自验集成样例（Key分区保序、sendAfterCommit事务感知发信、微服务推断反序列化、@Idempotent静默提交、毒丸0次重试进DLT、双容器工厂、KafkaRecordExecutor批量多租户隔离与100%离线自洽测试）</description>
 
     <dependencies>
-        <!-- Web 依赖 (提供场景 Controller 接口与 HTTP 体验) -->
+        <!-- Web 增强底座 (提供场景 Controller 接口、Result<T> 响应模型与 JSR-303 参数校验) -->
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
         </dependency>
 
         <!-- Kafka 生产级增强 Starter -->
