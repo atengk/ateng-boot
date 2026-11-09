@@ -335,34 +335,8 @@ public final class FileUtil {
         }
         // 统一标准化斜杠并清洗首尾空白
         String name = filename.replace('\\', '/').trim();
-        int slashIndex = name.lastIndexOf('/');
-        String leafName = (slashIndex >= 0) ? name.substring(slashIndex + 1) : name;
 
-        if (leafName.isBlank()) {
-            // 若以斜杠结尾，检查中间路径段是否包含 __MACOSX
-            String[] segments = name.split("/+");
-            for (String segment : segments) {
-                if ("__MACOSX".equalsIgnoreCase(segment)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        // 大小写不敏感全名比对
-        if (".DS_Store".equalsIgnoreCase(leafName)
-                || "desktop.ini".equalsIgnoreCase(leafName)
-                || "thumbs.db".equalsIgnoreCase(leafName)
-                || "__MACOSX".equalsIgnoreCase(leafName)) {
-            return true;
-        }
-
-        // macOS AppleDouble 资源分叉文件（._*）
-        if (leafName.startsWith("._")) {
-            return true;
-        }
-
-        // 检查路径各个目录段是否包含 __MACOSX 目录
+        // 优先检查各路径段是否包含 __MACOSX 元数据目录
         String[] segments = name.split("/+");
         for (String segment : segments) {
             if ("__MACOSX".equalsIgnoreCase(segment)) {
@@ -370,7 +344,21 @@ public final class FileUtil {
             }
         }
 
-        return false;
+        int slashIndex = name.lastIndexOf('/');
+        String leafName = (slashIndex >= 0) ? name.substring(slashIndex + 1) : name;
+        if (leafName.isBlank()) {
+            return false;
+        }
+
+        // 大小写不敏感全名比对
+        if (".DS_Store".equalsIgnoreCase(leafName)
+                || "desktop.ini".equalsIgnoreCase(leafName)
+                || "thumbs.db".equalsIgnoreCase(leafName)) {
+            return true;
+        }
+
+        // macOS AppleDouble 资源分叉文件（._*）
+        return leafName.startsWith("._");
     }
 
     /**
@@ -436,8 +424,9 @@ public final class FileUtil {
         }
 
         Path normalizedBase = baseDir.toAbsolutePath().normalize();
-        String relativeSubPath = subPath.trim();
-        while (relativeSubPath.startsWith("/") || relativeSubPath.startsWith("\\")) {
+        // 跨宿主中立：统一清洗 Windows 反斜杠，杜绝在 POSIX 宿主下因 '\' 被视为普通文件名而绕过目录逃逸拦截
+        String relativeSubPath = subPath.replace('\\', '/').trim();
+        while (relativeSubPath.startsWith("/")) {
             relativeSubPath = relativeSubPath.substring(1).trim();
         }
         if (relativeSubPath.isEmpty()) {

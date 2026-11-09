@@ -284,4 +284,37 @@ class AsyncContextTest {
         java.util.function.Supplier<String> wrappedSupplier2 = AsyncContext.wrapSupplier(wrappedSupplier1);
         assertSame(wrappedSupplier1, wrappedSupplier2);
     }
+
+    @Test
+    @DisplayName("直接调用 AsyncContext.capture 与 capturePrevious 静态门面进行快照捕获、应用与现场还原")
+    void shouldDirectlyCaptureAndApplyAndRestoreContext() {
+        MDC.put("traceId", "trace-parent-direct");
+        UserContextHolder.set("user-parent-direct");
+        TenantContextHolder.setTenantId("tenant-parent-direct");
+        TenantContextHolder.setIgnoreTenant(false);
+
+        // 1. 父线程抓取调用方快照
+        AsyncContext.ContextSnapshot parentSnapshot = AsyncContext.capture();
+        assertNotNull(parentSnapshot);
+
+        // 2. 模拟进入另一个线程环境，持有工作线程原有的现场
+        MDC.put("traceId", "trace-worker-old");
+        UserContextHolder.set("user-worker-old");
+        TenantContextHolder.setTenantId("tenant-worker-old");
+
+        AsyncContext.ContextSnapshot workerOldSnapshot = AsyncContext.capturePrevious();
+        assertNotNull(workerOldSnapshot);
+
+        // 3. 将 parent 快照应用到当前环境
+        parentSnapshot.apply();
+        assertEquals("trace-parent-direct", MDC.get("traceId"));
+        assertEquals("user-parent-direct", UserContextHolder.get());
+        assertEquals("tenant-parent-direct", TenantContextHolder.getTenantId());
+
+        // 4. 执行工作现场还原
+        workerOldSnapshot.restore();
+        assertEquals("trace-worker-old", MDC.get("traceId"));
+        assertEquals("user-worker-old", UserContextHolder.get());
+        assertEquals("tenant-worker-old", TenantContextHolder.getTenantId());
+    }
 }

@@ -1198,7 +1198,29 @@ public Result<AsyncRiskCheckVO> riskCheck(@RequestBody @Valid AsyncRiskCheckRequ
 }
 ```
 
-#### 预期响应 JSON 契约 (`/batch-supply` & `/risk-check`)
+#### 预期响应 JSON 契约 (`/pool-governance` 动态弹性调优)
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "poolName": "export",
+    "beforeCorePoolSize": 2,
+    "beforeMaxPoolSize": 4,
+    "afterCorePoolSize": 6,
+    "afterMaxPoolSize": 12,
+    "virtual": false,
+    "queueCapacity": 50,
+    "queueRemainingCapacity": 50,
+    "completedTaskCount": 1
+  },
+  "timestamp": 1794052800000,
+  "success": true,
+  "traceId": "39e558ac695a9b8a75f99a10be703296"
+}
+```
+
+#### 预期响应 JSON 契约 (`/batch-supply` & `/risk-check` 批量汇聚与短路)
 ```json
 {
   "code": 200,
@@ -1220,29 +1242,8 @@ public Result<AsyncRiskCheckVO> riskCheck(@RequestBody @Valid AsyncRiskCheckRequ
 
 #### 核心机制与性能边界
 - **强类型有序汇聚 (`supplyAll`)**：结果列表严格保持入参任务的初始提交顺序，内部自动装配调用方父线程上下文快照，超时抛出受管 `BusinessException(INTERNAL_SERVER_ERROR)`，杜绝无界挂死；
-- **首个不匹配即短路 (`allMatches`)**：内部采用早期完成控制（Early Completion），只要任一任务产出的结果使谓词返回 `false`，即刻标记聚合结果并短路，消除高负载场景无效计算。
-
-#### 预期响应 JSON 契约
-```json
-{
-  "code": 200,
-  "msg": "操作成功",
-  "data": {
-    "poolName": "export",
-    "beforeCorePoolSize": 2,
-    "beforeMaxPoolSize": 4,
-    "afterCorePoolSize": 6,
-    "afterMaxPoolSize": 12,
-    "virtual": false,
-    "queueCapacity": 50,
-    "queueRemainingCapacity": 50,
-    "completedTaskCount": 1
-  },
-  "timestamp": 1794052800000,
-  "success": true,
-  "traceId": "39e558ac695a9b8a75f99a10be703296"
-}
-```
+- **首个不匹配即短路 (`allMatches`)**：内部采用早期完成控制（Early Completion），只要任一任务产出的结果使谓词返回 `false`，即刻标记聚合结果并短路，消除高负载场景无效计算；
+- **在线弹性调优 (`resize`)**：支持无感实时微调受管线程池核心与最大并发容量，配合 `getStatus` 实时透视各业务舱壁运行水线与任务完成水线。
 
 ---
 

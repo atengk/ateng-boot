@@ -16,6 +16,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -169,30 +170,7 @@ public final class AsyncUtil {
             });
         }
 
-        try {
-            coordinator.get(timeout.toNanos(), TimeUnit.NANOSECONDS);
-        } catch (TimeoutException ex) {
-            cancelPendingFutures(futures);
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
-                    "异步任务批量并行汇聚超时 [timeout=" + timeout + "]", ex);
-        } catch (ExecutionException ex) {
-            cancelPendingFutures(futures);
-            Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-            if (cause instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
-                    "异步任务批量执行失败: " + cause.getMessage(), cause);
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            cancelPendingFutures(futures);
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
-                    "异步任务批量执行被中断", ex);
-        } catch (Throwable ex) {
-            cancelPendingFutures(futures);
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
-                    "异步任务批量执行发生未预料异常: " + ex.getMessage(), ex);
-        }
+        awaitCoordinator(coordinator, futures, timeout, "异步任务批量并行汇聚");
 
         List<T> results = new ArrayList<>(futures.size());
         for (CompletableFuture<T> f : futures) {
@@ -297,18 +275,27 @@ public final class AsyncUtil {
 
         CompletableFuture<Boolean> coordinator = new CompletableFuture<>();
         AtomicInteger remainingCount = new AtomicInteger(tasks.size());
-        List<CompletableFuture<T>> futures = new ArrayList<>(tasks.size());
+        List<CompletableFuture<T>> futures = new CopyOnWriteArrayList<>();
 
         for (Supplier<T> task : tasks) {
+            if (coordinator.isDone()) {
+                break;
+            }
             CompletableFuture<T> future = supply(poolName, task);
             futures.add(future);
+            if (coordinator.isDone()) {
+                future.cancel(true);
+                break;
+            }
 
             future.whenComplete((result, ex) -> {
                 if (coordinator.isDone()) {
                     return;
                 }
                 if (ex != null) {
-                    coordinator.completeExceptionally(ex);
+                    if (coordinator.completeExceptionally(ex)) {
+                        cancelPendingFutures(futures);
+                    }
                     return;
                 }
                 try {
@@ -320,7 +307,9 @@ public final class AsyncUtil {
                         return;
                     }
                 } catch (Throwable pex) {
-                    coordinator.completeExceptionally(pex);
+                    if (coordinator.completeExceptionally(pex)) {
+                        cancelPendingFutures(futures);
+                    }
                     return;
                 }
                 if (remainingCount.decrementAndGet() == 0) {
@@ -329,12 +318,19 @@ public final class AsyncUtil {
             });
         }
 
+        return awaitCoordinator(coordinator, futures, timeout, "异步条件短路判定");
+    }
+
+    private static <R> R awaitCoordinator(CompletableFuture<R> coordinator,
+                                          Collection<? extends CompletableFuture<?>> futures,
+                                          Duration timeout,
+                                          String actionDescription) {
         try {
             return coordinator.get(timeout.toNanos(), TimeUnit.NANOSECONDS);
         } catch (TimeoutException ex) {
             cancelPendingFutures(futures);
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
-                    "异步条件短路判定超时 [timeout=" + timeout + "]", ex);
+                    actionDescription + "超时 [timeout=" + timeout + "]", ex);
         } catch (ExecutionException ex) {
             cancelPendingFutures(futures);
             Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
@@ -342,16 +338,16 @@ public final class AsyncUtil {
                 throw be;
             }
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
-                    "异步条件短路判定任务执行失败: " + cause.getMessage(), cause);
+                    actionDescription + "任务执行失败: " + cause.getMessage(), cause);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             cancelPendingFutures(futures);
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
-                    "异步条件短路判定被中断", ex);
+                    actionDescription + "被中断", ex);
         } catch (Throwable ex) {
             cancelPendingFutures(futures);
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
-                    "异步条件短路判定发生未预料异常: " + ex.getMessage(), ex);
+                    actionDescription + "发生未预料异常: " + ex.getMessage(), ex);
         }
     }
 

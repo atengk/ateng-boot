@@ -250,18 +250,23 @@ class FileUtilTest {
         java.nio.file.Path safe = FileUtil.resolveSafePath(tempDir, "sub/data.txt");
         assertEquals(tempDir.resolve("sub/data.txt").toAbsolutePath().normalize(), safe);
 
-        // 2. 剥离前置斜杠后安全位于基准目录
+        // 2. 剥离前置斜杠（含 Windows 反斜杠）后安全位于基准目录
         java.nio.file.Path slashSub = FileUtil.resolveSafePath(tempDir, "/export/order.xlsx");
         assertEquals(tempDir.resolve("export/order.xlsx").toAbsolutePath().normalize(), slashSub);
+        java.nio.file.Path backslashSub = FileUtil.resolveSafePath(tempDir, "\\export\\order.xlsx");
+        assertEquals(tempDir.resolve("export/order.xlsx").toAbsolutePath().normalize(), backslashSub);
 
         // 3. 包含合法内联相对路径消除
         java.nio.file.Path inlineSub = FileUtil.resolveSafePath(tempDir, "sub/dir/../data.txt");
         assertEquals(tempDir.resolve("sub/data.txt").toAbsolutePath().normalize(), inlineSub);
 
-        // 4. 路径穿越逃逸阻断
+        // 4. 路径穿越逃逸阻断（含跨宿主反斜杠逃逸串）
         assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(tempDir, "../../etc/passwd"));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(tempDir, "..\\..\\etc\\passwd"));
         assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(tempDir, "../escape.key"));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(tempDir, "..\\escape.key"));
         assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(tempDir, "sub/../../escape.txt"));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(tempDir, "sub\\..\\..\\escape.txt"));
 
         // 5. 空入参与非法字符快速失败
         assertThrows(IllegalArgumentException.class, () -> FileUtil.resolveSafePath(null, "sub.txt"));

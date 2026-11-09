@@ -38,7 +38,7 @@
 | **订单分页查询与排序解耦** | `GET /sample/core/contract/orders/page` | `PageQuery`<br>`SortItem`<br>`PageResult<T>` | `curl "http://localhost:8080/sample/core/contract/orders/page?current=1&size=10&sorts[0].property=orderTime&sorts[0].direction=DESC"` |
 | **批量客户入驻级联校验与枚举拦截** | `POST /sample/core/contract/users/batch-validate` | `ValidList<E>`<br>`ValidationGroups`<br>`ValidatorUtil`<br>`@InEnum` | `curl -X POST "http://localhost:8080/sample/core/contract/users/batch-validate" -H "Content-Type: application/json" -d '[{"name":"张三","phone":"13812345678","statusCode":1},{"name":"李四","phone":"13987654321","statusCode":2}]'` |
 | **通用字典枚举下拉选项渲染** | `GET /sample/core/contract/enums/options` | `IBaseEnum`<br>`@EnumAlias`<br>`EnumUtil`<br>`OptionItem` | `curl "http://localhost:8080/sample/core/contract/enums/options?alias=orderStatus"` |
-| **编程式安全分页纠偏与防溢出偏移量计算** | `GET /sample/core/contract/page-normalize` | `PageQuery.normalize`<br>`safeCurrent`<br>`safeSize`<br>`offset` | `curl "http://localhost:8080/sample/core/contract/page-normalize?current=0&size=-5"` |
+| **编程式安全分页纠偏与防溢出偏移量计算** | `GET /sample/core/contract/page-normalize` | `PageQuery.normalize`<br>`PageQuery.safeCurrent`<br>`PageQuery.safeSize`<br>`PageQuery.offset` | `curl "http://localhost:8080/sample/core/contract/page-normalize?current=0&size=-5"` |
 
 ### 3.2 标识发号、数据脱敏与密码学套件领域 (`CoreSecurityController` -> `/sample/core/security`)
 

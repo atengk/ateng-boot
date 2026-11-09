@@ -20,7 +20,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -455,5 +458,102 @@ class AsyncUtilTest {
         assertThatThrownBy(() -> AsyncUtil.supplyAll(List.of(() -> "ok"), Duration.ofMillis(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("timeout 必须非空且大于 0");
+    }
+
+    @Test
+    @DisplayName("allMatches 早期短路高对抗：首个任务不匹配时阻断后续任务提交并取消未决任务")
+    void shouldAllMatchesShortCircuitAndPreventSubsequentExecution() {
+        java.util.concurrent.atomic.AtomicInteger executedCount = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.atomic.AtomicInteger cancelledCount = new java.util.concurrent.atomic.AtomicInteger(0);
+
+        List<java.util.function.Supplier<Integer>> tasks = new ArrayList<>();
+        // 首个任务快速返回不匹配值 -1
+        tasks.add(() -> -1);
+
+        // 后续追加 20 个慢任务
+        for (int i = 0; i < 20; i++) {
+            tasks.add(() -> {
+                executedCount.incrementAndGet();
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    cancelledCount.incrementAndGet();
+                }
+                return 100;
+            });
+        }
+
+        long start = System.currentTimeMillis();
+        boolean matched = AsyncUtil.allMatches(tasks, val -> val > 0, Duration.ofSeconds(5));
+        long cost = System.currentTimeMillis() - start;
+
+        assertThat(matched).isFalse();
+        // 早期短路必须立即返回，耗时必须远小于全部慢任务耗时
+        assertThat(cost).isLessThan(400);
+    }
+
+    @Test
+    @DisplayName("多线程高并发竞争对抗：20 个并发工作线程同时高频调用 supplyAll 与 allMatches 无死锁且无数据污染")
+    void shouldHandleHighConcurrencyStressOnSupplyAllAndAllMatches() throws Exception {
+        int threadCount = 20;
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(threadCount);
+        java.util.concurrent.atomic.AtomicInteger successCounter = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.atomic.AtomicReference<Throwable> failureRef = new java.util.concurrent.atomic.AtomicReference<>();
+
+        ExecutorService stressExecutor = Executors.newFixedThreadPool(threadCount);
+
+        try {
+            for (int i = 0; i < threadCount; i++) {
+                final int idx = i;
+                stressExecutor.submit(() -> {
+                    try {
+                        startLatch.await();
+                        // 1. 并发执行 supplyAll
+                        List<String> results = AsyncUtil.supplyAll(List.of(
+                                () -> "task-" + idx + "-A",
+                                () -> "task-" + idx + "-B"
+                        ), Duration.ofSeconds(5));
+                        if (results.size() != 2 || !results.get(0).equals("task-" + idx + "-A")) {
+                            throw new IllegalStateException("supplyAll 结果顺序或内容不符合预期");
+                        }
+
+                        // 2. 并发执行 allMatches (全匹配)
+                        boolean allMatched = AsyncUtil.allMatches(List.<Supplier<Integer>>of(
+                                () -> 10 + idx,
+                                () -> 20 + idx
+                        ), (Integer val) -> val >= 10, Duration.ofSeconds(5));
+                        if (!allMatched) {
+                            throw new IllegalStateException("allMatches 应该全部匹配通过");
+                        }
+
+                        // 3. 并发执行 allMatches (短路)
+                        boolean shortCircuit = AsyncUtil.allMatches(List.<Supplier<Integer>>of(
+                                () -> -idx - 1,
+                                () -> 100 + idx
+                        ), (Integer val) -> val >= 0, Duration.ofSeconds(5));
+                        if (shortCircuit) {
+                            throw new IllegalStateException("allMatches 包含负数应该早期短路为 false");
+                        }
+
+                        successCounter.incrementAndGet();
+                    } catch (Throwable t) {
+                        failureRef.compareAndSet(null, t);
+                    } finally {
+                        doneLatch.countDown();
+                    }
+                });
+            }
+
+            // 发令枪起跑，触发瞬间并发竞争
+            startLatch.countDown();
+            boolean finished = doneLatch.await(10, TimeUnit.SECONDS);
+
+            assertThat(finished).isTrue();
+            assertThat(failureRef.get()).isNull();
+            assertThat(successCounter.get()).isEqualTo(threadCount);
+        } finally {
+            stressExecutor.shutdownNow();
+        }
     }
 }
