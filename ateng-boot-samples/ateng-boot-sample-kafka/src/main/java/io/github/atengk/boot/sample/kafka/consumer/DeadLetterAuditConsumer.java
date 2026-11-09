@@ -1,6 +1,8 @@
 package io.github.atengk.boot.sample.kafka.consumer;
 
 import io.github.atengk.boot.kafka.constant.KafkaConstants;
+import io.github.atengk.boot.kafka.helper.KafkaDeadLetterHelper;
+import io.github.atengk.boot.kafka.helper.KafkaDeadLetterHelper.DeadLetterRecord;
 import io.github.atengk.boot.sample.kafka.config.KafkaScenarioTopologyConfig;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -28,6 +30,9 @@ public class DeadLetterAuditConsumer {
     @Getter
     private final List<DeadLetterEntry> deadLetters = Collections.synchronizedList(new ArrayList<>());
 
+    @Getter
+    private final List<DeadLetterRecord> diagnosedRecords = Collections.synchronizedList(new ArrayList<>());
+
     @KafkaListener(
             topics = {
                     KafkaScenarioTopologyConfig.TOPIC_ORDER + ".DLT",
@@ -43,10 +48,15 @@ public class DeadLetterAuditConsumer {
                 topic, record.key(), record.value(), exceptionMessage);
 
         deadLetters.add(new DeadLetterEntry(topic, record.key(), record.value(), exceptionMessage));
+        DeadLetterRecord diagnosed = KafkaDeadLetterHelper.parse(record);
+        if (diagnosed != null) {
+            diagnosedRecords.add(diagnosed);
+        }
     }
 
     public void clear() {
         deadLetters.clear();
+        diagnosedRecords.clear();
     }
 
     public record DeadLetterEntry(

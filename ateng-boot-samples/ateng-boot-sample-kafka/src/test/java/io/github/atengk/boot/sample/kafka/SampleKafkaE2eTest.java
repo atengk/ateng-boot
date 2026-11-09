@@ -23,6 +23,7 @@ import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.sample.kafka.config.KafkaScenarioTopologyConfig;
 import io.github.atengk.boot.sample.kafka.consumer.*;
 import io.github.atengk.boot.sample.kafka.dto.BatchOrderProduceRequest;
+import io.github.atengk.boot.sample.kafka.dto.DeadLetterReplayRequest;
 import io.github.atengk.boot.sample.kafka.dto.NativeTxProduceRequest;
 import io.github.atengk.boot.sample.kafka.dto.OrderProduceRequest;
 import io.github.atengk.boot.sample.kafka.dto.UserEventProduceRequest;
@@ -424,24 +425,41 @@ class SampleKafkaE2eTest {
     }
 
     // =========================================================================
-    // 场景 5: @Idempotent 消费端幂等拦截与静默提交 Offset
+    // 场景 5: @Idempotent 消费端幂等拦截与静默提交 Offset (KafkaDeadLetterController Web 闭环)
     // =========================================================================
     @Test
-    @DisplayName("场景 5: @Idempotent 消费端幂等拦截与静默提交 Offset")
-    void testScenario5_IdempotentDuplicateSilentCommit() {
-        OrderMessage order = new OrderMessage("ORD-IDEMP-001", new BigDecimal("88.00"), "u-1", "t-1");
+    @DisplayName("场景 5: @Idempotent 消费端幂等拦截与静默提交 Offset (KafkaDeadLetterController Web 闭环)")
+    void testScenario5_IdempotentDuplicateSilentCommit() throws Exception {
+        OrderProduceRequest orderReq = OrderProduceRequest.builder()
+                .orderId("ORD-IDEMP-001")
+                .amount(new BigDecimal("88.00"))
+                .userId("u-1")
+                .tenantId("t-1")
+                .build();
 
-        // 1. 首次消费：正常调用监听方法，消费成功
-        idempotentConsumer.onOrderMessage(order);
+        // 1. HTTP 首次投递：正常调用监听方法，消费成功
+        mockMvc.perform(post("/sample/kafka/dead-letter/trigger-idempotent")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(orderReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("首次消费成功")));
+
         assertThat(idempotentConsumer.getProcessedOrderIds()).contains("ORD-IDEMP-001");
         assertThat(idempotentConsumer.getIdempotentHitCount().get()).isEqualTo(0);
 
-        // 2. 第二次消费：触发 IdempotentException 幂等拦截
-        assertThatThrownBy(() -> idempotentConsumer.onOrderMessage(order))
-                .isInstanceOf(IdempotentException.class);
+        // 2. HTTP 第二次投递相同订单：触发幂等防重拦截并静默提交位移
+        mockMvc.perform(post("/sample/kafka/dead-letter/trigger-idempotent")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(orderReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("幂等防重拦截成功")));
+
         assertThat(idempotentConsumer.getIdempotentHitCount().get()).isEqualTo(1);
 
-        // 3. 验证 Recoverer 对 IdempotentException 静默提交且不进入 DLT
+        // 3. 验证底层 Recoverer 对 IdempotentException 返回 null 执行静默提交且不进入 DLT
+        OrderMessage order = orderReq.toOrderMessage();
         ConsumerRecord<Object, Object> record = new ConsumerRecord<>(
                 KafkaScenarioTopologyConfig.TOPIC_ORDER, 0, 50L, "ORD-IDEMP-001", order
         );
@@ -450,18 +468,23 @@ class SampleKafkaE2eTest {
     }
 
     // =========================================================================
-    // 场景 6: 毒丸非法报文 0 次重试快速进 *.DLT 与死信终点不变量
+    // 场景 6: 毒丸非法报文 0 次重试快速进 *.DLT 与死信终点不变量 (KafkaDeadLetterController Web 闭环)
     // =========================================================================
     @Test
-    @DisplayName("场景 6: 毒丸非法报文 0 次重试快速进 *.DLT 与死信终点不变量")
-    void testScenario6_PoisonPillZeroRetryToDltAndTerminalInvariant() {
-        // 1. 验证毒丸异常属于 FatalExceptionClassifier 判定范围
+    @DisplayName("场景 6: 毒丸非法报文 0 次重试快速进 *.DLT 与死信终点不变量 (KafkaDeadLetterController Web 闭环)")
+    void testScenario6_PoisonPillZeroRetryToDltAndTerminalInvariant() throws Exception {
+        // 1. HTTP 投递畸形毒丸报文
+        mockMvc.perform(post("/sample/kafka/dead-letter/trigger-poison")
+                        .param("poisonData", "CORRUPTED_POISON"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true));
+
+        // 2. 验证错误处理器配置 0 次重试 (FatalExceptionClassifier 判定)
         ValidationException poisonException = new ValidationException("报文格式非法");
         ConsumerRecord<Object, Object> poisonRecord = new ConsumerRecord<>(
                 KafkaScenarioTopologyConfig.TOPIC_POISON, 0, 99L, "poison-k", "CORRUPTED_POISON"
         );
-
-        // 2. 错误处理器配置 0 次重试
         BackOff backOff = errorHandler.getCustomBackOffFunction().apply(poisonRecord, poisonException);
         assertThat(backOff).isInstanceOf(FixedBackOff.class);
         FixedBackOff fixedBackOff = (FixedBackOff) backOff;
@@ -479,26 +502,23 @@ class SampleKafkaE2eTest {
         TopicPartition terminalDlt = recoverer.resolveDestination(dltRecord, new RuntimeException("DLT 消费异常"));
         assertThat(terminalDlt).isNull(); // 阻断死信循环反弹
 
-        // 5. 验证死信归档审计监听器 (DeadLetterAuditConsumer) 消费与字段提取
-        deadLetterAuditConsumer.onDeadLetter(
-                poisonRecord,
-                normalDlt.topic(),
-                "报文格式非法，触发 JSR-303 致命校验异常".getBytes(StandardCharsets.UTF_8)
-        );
-        assertThat(deadLetterAuditConsumer.getDeadLetters()).hasSize(1);
-        DeadLetterAuditConsumer.DeadLetterEntry entry = deadLetterAuditConsumer.getDeadLetters().get(0);
-        assertThat(entry.topic()).isEqualTo(KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT");
-        assertThat(entry.key()).isEqualTo("poison-k");
-        assertThat(entry.payload()).isEqualTo("CORRUPTED_POISON");
-        assertThat(entry.exceptionMessage()).contains("报文格式非法");
+        // 5. HTTP 探查死信诊断记录 (7 类元数据结构化诊断)
+        awaitCondition(() -> {
+            mockMvc.perform(get("/sample/kafka/dead-letter/audit-records"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data[0].originalTopic").value(KafkaScenarioTopologyConfig.TOPIC_POISON))
+                    .andExpect(jsonPath("$.data[0].exceptionClassName").value(ValidationException.class.getName()))
+                    .andExpect(jsonPath("$.data[0].exceptionMessage").value(org.hamcrest.Matchers.containsString("报文格式非法")));
+        });
     }
 
     // =========================================================================
-    // 场景 7: 死信结构化诊断 (DeadLetterReplayScenarioService)
+    // 场景 7: 死信结构化诊断 (KafkaDeadLetterHelper 双模解析 7 类 DLT 标头)
     // =========================================================================
     @Test
     @DisplayName("场景 7: 死信结构化诊断 (KafkaDeadLetterHelper 双模解析 7 类 DLT 标头)")
-    void testScenario7_DeadLetterStructuredDiagnosis() {
+    void testScenario7_DeadLetterStructuredDiagnosis() throws Exception {
         RecordHeaders headers = new RecordHeaders();
         headers.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_TOPIC, "biz.trade.topic".getBytes(StandardCharsets.UTF_8)));
         headers.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_PARTITION, ByteBuffer.allocate(4).putInt(3).array()));
@@ -526,46 +546,64 @@ class SampleKafkaE2eTest {
         assertThat(record.exceptionMessage()).isEqualTo("非法交易金额");
         assertThat(record.exceptionStackTrace()).contains("TradeService.java:42");
         assertThat(record.isReplayed()).isFalse();
+
+        // 验证 Web 端点查询审计记录可用
+        mockMvc.perform(get("/sample/kafka/dead-letter/audit-records"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
     }
 
     // =========================================================================
-    // 场景 8: 死信安全重放与防二次雪崩熔断 (DeadLetterReplayScenarioService)
+    // 场景 8: 死信安全重放 (KafkaDeadLetterController Web 闭环)
     // =========================================================================
     @Test
-    @DisplayName("场景 8: 死信安全重放 (KafkaDeadLetterReplayTemplate 消息头清洗、重放计数与防二次雪崩熔断)")
-    void testScenario8_DeadLetterReplayAndAntiAvalanche() {
-        int replayedCount = deadLetterService.replayDeadLetters(
-                KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT",
-                KafkaScenarioTopologyConfig.TOPIC_ORDER,
-                10
-        );
+    @DisplayName("场景 8: 死信安全重放 (KafkaDeadLetterController Web 闭环)")
+    void testScenario8_DeadLetterReplayAndAntiAvalanche() throws Exception {
+        DeadLetterReplayRequest replayReq = DeadLetterReplayRequest.builder()
+                .dlqTopic(KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT")
+                .targetTopic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
+                .limit(10)
+                .build();
 
-        assertThat(replayedCount).isGreaterThanOrEqualTo(0);
+        // 1. HTTP 发起死信受控清洗重放
+        mockMvc.perform(post("/sample/kafka/dead-letter/replay")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(replayReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(3));
 
+        // 2. 带谓词过滤的安全重放校验
         int filteredReplayed = deadLetterService.replayDeadLetters(
                 KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT",
                 KafkaScenarioTopologyConfig.TOPIC_ORDER,
                 10,
                 record -> record.key() != null
         );
-
         assertThat(filteredReplayed).isGreaterThanOrEqualTo(0);
     }
 
     // =========================================================================
-    // 场景 9: 死信主题探查与物理清空 (DeadLetterReplayScenarioService)
+    // 场景 9: 死信主题探查与物理清空 (KafkaDeadLetterController Web 闭环)
     // =========================================================================
     @Test
-    @DisplayName("场景 9: 死信主题探查与物理清空 (peek + purge)")
-    void testScenario9_DeadLetterPeekAndPurge() {
-        List<ConsumerRecord<byte[], byte[]>> peeked = deadLetterService.peekDeadLetters(
-                KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT",
-                5
-        );
-        assertThat(peeked).isNotNull();
+    @DisplayName("场景 9: 死信主题探查与物理清空 (KafkaDeadLetterController Web 闭环)")
+    void testScenario9_DeadLetterPeekAndPurge() throws Exception {
+        // 1. HTTP 只读探查死信队列 (不推进位移)
+        mockMvc.perform(get("/sample/kafka/dead-letter/peek")
+                        .param("dltTopic", KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT")
+                        .param("limit", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data.length()").value(1));
 
-        // 物理清空死信主题
-        deadLetterService.purgeDeadLetters(KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT");
+        // 2. HTTP 物理清空死信主题
+        mockMvc.perform(post("/sample/kafka/dead-letter/purge")
+                        .param("dltTopic", KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true));
     }
 
     // =========================================================================
@@ -866,7 +904,24 @@ class SampleKafkaE2eTest {
                         if (consumer != null) {
                             try {
                                 consumer.onPoisonMessage(str);
-                            } catch (Exception ignored) {
+                            } catch (Exception ex) {
+                                DeadLetterAuditConsumer auditConsumer = deadLetterAuditConsumerProvider.getIfAvailable();
+                                if (auditConsumer != null) {
+                                    RecordHeaders dltHeaders = new RecordHeaders();
+                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_TOPIC, record.topic().getBytes(StandardCharsets.UTF_8)));
+                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_PARTITION, ByteBuffer.allocate(4).putInt(partition).array()));
+                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_OFFSET, ByteBuffer.allocate(8).putLong(offset).array()));
+                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_TIMESTAMP, ByteBuffer.allocate(8).putLong(System.currentTimeMillis()).array()));
+                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_EXCEPTION_FQCN, ex.getClass().getName().getBytes(StandardCharsets.UTF_8)));
+                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_EXCEPTION_MESSAGE, ex.getMessage().getBytes(StandardCharsets.UTF_8)));
+                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_EXCEPTION_STACKTRACE, "SampleStackTrace".getBytes(StandardCharsets.UTF_8)));
+
+                                    ConsumerRecord<Object, Object> cr = new ConsumerRecord<>(
+                                            record.topic() + ".DLT", partition, offset, 0L, null, 0, 0,
+                                            record.key(), record.value(), dltHeaders, Optional.empty()
+                                    );
+                                    auditConsumer.onDeadLetter(cr, record.topic() + ".DLT", ex.getMessage().getBytes(StandardCharsets.UTF_8));
+                                }
                             }
                         }
                     }
