@@ -2,7 +2,9 @@ package io.github.atengk.boot.sample.rocketmq;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.validation.ValidList;
+import io.github.atengk.boot.sample.rocketmq.dto.OrderDelayRequest;
 import io.github.atengk.boot.sample.rocketmq.dto.OrderProduceRequest;
+import io.github.atengk.boot.sample.rocketmq.dto.OrderRecallRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -180,6 +182,96 @@ class SampleRocketmqWebControllerTest {
 
         // 11. 清空审计记录端点
         mockMvc.perform(delete("/sample/rocketmq/produce/clear"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+    }
+
+    @Test
+    @DisplayName("测试 RocketmqDelayController: 相对延时/绝对定时/精准撤回与消费审计")
+    void testDelayController() throws Exception {
+        // 1. 相对时长延时投递订单
+        OrderDelayRequest delayReq = OrderDelayRequest.builder()
+                .orderId("ORD-WEB-DELAY-001")
+                .amount(88.0)
+                .delaySeconds(60L)
+                .build();
+
+        String delayResponseStr = mockMvc.perform(post("/sample/rocketmq/delay/duration")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(delayReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.orderId").value("ORD-WEB-DELAY-001"))
+                .andExpect(jsonPath("$.data.recallHandle").isNotEmpty())
+                .andExpect(jsonPath("$.data.status").value("DELAY_SCHEDULED"))
+                .andReturn().getResponse().getContentAsString();
+
+        // 提取返回的 recallHandle
+        String recallHandle = objectMapper.readTree(delayResponseStr).path("data").path("recallHandle").asText();
+
+        // 2. 校验 JSR-303 参数缺失拦截 (orderId 为空)
+        OrderDelayRequest invalidDelayReq = OrderDelayRequest.builder()
+                .amount(50.0)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/delay/duration")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidDelayReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 3. 绝对未来时间戳定时投递
+        long futureTimestamp = System.currentTimeMillis() + 3600_000L;
+        OrderDelayRequest deliverAtReq = OrderDelayRequest.builder()
+                .orderId("ORD-WEB-DELIVER-001")
+                .amount(168.0)
+                .deliverAtTimestamp(futureTimestamp)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/delay/deliver-at")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(deliverAtReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderId").value("ORD-WEB-DELIVER-001"))
+                .andExpect(jsonPath("$.data.deliverAtTimestamp").value(futureTimestamp))
+                .andExpect(jsonPath("$.data.status").value("SCHEDULED_SUCCESS"));
+
+        // 4. 精准撤回延时消息
+        OrderRecallRequest recallReq = OrderRecallRequest.builder()
+                .topic("sample_delay_topic")
+                .recallHandle(recallHandle)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/delay/recall")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(recallReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 5. 校验 recallHandle 为空时 JSR-303 拦截
+        OrderRecallRequest invalidRecallReq = OrderRecallRequest.builder()
+                .recallHandle("")
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/delay/recall")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRecallReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 6. 查询延时消费审计记录
+        mockMvc.perform(get("/sample/rocketmq/delay/received"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 7. 清空延时消费审计记录
+        mockMvc.perform(delete("/sample/rocketmq/delay/clear"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
     }
