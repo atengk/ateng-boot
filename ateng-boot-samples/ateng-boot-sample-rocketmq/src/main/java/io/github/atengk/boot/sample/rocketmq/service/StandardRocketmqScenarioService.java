@@ -54,4 +54,9 @@ public class StandardRocketmqScenarioService {
         log.info("[STANDARD-SCENARIO] 发送携带 SQL92 自定义属性消息: orderId={}, amount={}", order.getOrderId(), amount);
         return rocketmqTemplate.send(TradeRocketmqProducer.TOPIC_SQL, "sql", order.getOrderId(), order, Map.of("amount", String.valueOf((long) amount)));
     }
+
+    public java.util.List<SendReceipt> sendBatch(java.util.List<OrderMessage> orders, String tag) {
+        log.info("[STANDARD-SCENARIO] 批量发送订单消息: size={}, tag={}", orders.size(), tag);
+        return rocketmqTemplate.sendBatch(TradeRocketmqProducer.TOPIC_ORDER, tag, orders);
+    }
 }

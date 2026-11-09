@@ -23,6 +23,12 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!-- Web 模块底座 (提供统一 Result<T> 与 REST 交互环境) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+        </dependency>
+
         <!-- RocketMQ 生产级增强 Starter -->
         <dependency>
             <groupId>io.github.atengk</groupId>

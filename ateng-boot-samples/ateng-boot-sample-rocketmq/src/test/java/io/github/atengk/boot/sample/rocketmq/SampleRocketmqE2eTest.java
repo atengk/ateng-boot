@@ -772,7 +772,7 @@ class SampleRocketmqE2eTest {
     // =========================================================================
 
     @TestConfiguration(proxyBeanMethods = false)
-    static class TestRocketmqConfig {
+    public static class TestRocketmqConfig {
 
         @Bean
         @Primary
