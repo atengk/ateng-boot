@@ -28,8 +28,9 @@
 | **原生批量操作** | 双方言批量 Upsert 注入器 | `UpsertBatchSomeColumn` / `@ConflictKeys` | - | 原生单条多值 Upsert SQL 注入器（MySQL `ON DUPLICATE KEY UPDATE` / PostgreSQL `ON CONFLICT DO UPDATE`），支持 `@ConflictKeys` 复合唯一键 | `BatchUpsertTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
 | **原生批量操作** | 原生单条批量更新注入器 | `UpdateBatchSomeColumn` | - | 原生 ANSI CASE WHEN 多值更新 SQL 注入器，内置 `AntiDeadlockSqlSource` 强制按主键 ID 升序防死锁，动态回退保护未提供字段 | `BatchUpdateTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
 | **原生批量操作** | 全局增强 SQL 注入器 | `AtengSqlInjector` | - | 自动向 MyBatis-Plus 注入 `InsertBatchSomeColumn`、`UpsertBatchSomeColumn` 与 `UpdateBatchSomeColumn` 原生批量操作方法 | `AtengSqlInjectorTest` / `TenantOrderDomainIntegrationTest` |
-| **存储加解密** | 字段级透明存储加密注解 | `@FieldEncrypt` | `ateng.boot.mybatis-plus.crypto.secret-key` | 标注于实体属性上，声明该字段由 `EncryptTypeHandler` 执行持久化透明加解密并自动免疫未授权动态排序探测 | `EncryptTypeHandlerTest` / `UserDomainIntegrationTest` / `MpLifecycleAndSecurityControllerTest` |
-| **存储加解密** | 存储透明加解密类型转换器 | `EncryptTypeHandler` | `ateng.boot.mybatis-plus.crypto.secret-key` | 持久化时入库 `v1:` 版本化 AES-GCM 密文，查询出库解密为真实明文，严格坚守“内存真明文”铁律 | `EncryptTypeHandlerTest` / `UserDomainIntegrationTest` / `MpLifecycleAndSecurityControllerTest` |
+| **存储加解密** | 字段级透明存储加密注解 | `@FieldEncrypt` | `ateng.boot.mybatis-plus.crypto.secret-key` | 标注于实体属性上，声明该字段由 `EncryptTypeHandler` 或 `DeterministicEncryptTypeHandler` 执行持久化透明加解密；支持声明 `deterministic = true` 开启确定性等值加密检索 | `EncryptTypeHandlerTest` / `UserDomainIntegrationTest` / `MpLifecycleAndSecurityControllerTest` / `DynamicQueryHelperDeterministicEncryptTest` |
+| **存储加解密** | 存储透明加解密类型转换器 (随机 IV) | `EncryptTypeHandler` | `ateng.boot.mybatis-plus.crypto.secret-key` | 持久化时入库 `v1:` 版本化 AES-CBC 随机 IV 密文，查询出库解密为真实明文，具备语义安全性，严格坚守“内存真明文”铁律 | `EncryptTypeHandlerTest` / `UserDomainIntegrationTest` / `MpLifecycleAndSecurityControllerTest` |
+| **存储加解密** | 确定性透明加密类型转换器 (固定 IV) | `DeterministicEncryptTypeHandler` | `ateng.boot.mybatis-plus.crypto.secret-key` | 继承 `EncryptTypeHandler`，采用 HMAC-SHA256 SIV 合成固定 IV + AES-CBC，同明文生成同一密文，支持数据库精确等值（`=` / `IN`）密文检索，解密完全双向兼容 | `DeterministicEncryptTypeHandlerTest` / `DynamicQueryHelperDeterministicEncryptTest` / `MpGovernanceAndQueryControllerTest` |
 | **乐观锁重试** | 乐观锁防冲突重试模板 | `OptimisticLockTemplate` | `ateng.boot.mybatis-plus.optimistic-locker.enabled` | `executeWithRetry(Supplier<Boolean>)` / `executeWithRetry(Supplier<Boolean>, int, Duration)`，高并发更新冲突自动退避重试 | `OptimisticLockTemplateTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
 | **分页契约** | 分页对象流式解耦与安全转译 | `PageUtil` | `ateng.boot.mybatis-plus.pagination.max-limit` | `toPage(PageQuery)` / `toPage(PageQuery, Class<T>)`（安全转译 sorts 并依托实体白名单过滤） / `toPageResult(IPage<T>)` / `toPageResult(IPage<S>, Function<S, T>)`，彻底解耦传输契约与持久实体（Zero-Entity-Leakage） | `PageUtilTest` / `MpGovernanceAndQueryControllerTest` |
 | **分页拦截** | 原生分页拦截与防刷守护 | `PaginationInnerInterceptor` | `ateng.boot.mybatis-plus.pagination.enabled`<br>`ateng.boot.mybatis-plus.pagination.max-limit`<br>`ateng.boot.mybatis-plus.pagination.overflow`<br>`ateng.boot.mybatis-plus.pagination.db-type` | 原生分页拦截，注入单页最大条数限制（默认 500）与防刷超限防御，自动识别数据库方言 | `AtengMybatisPlusAutoConfigurationTest` / `MpGovernanceAndQueryControllerTest` |
@@ -356,10 +357,11 @@ public Result<Boolean> purgeSkuPhysically(@PathVariable Long id) {
 > **对应样例控制器**：`MpSecurityAndJsonController`（路由前缀 `/sample/mybatis-plus/security-json`）  
 > **锚定集成测试**：`MpLifecycleAndSecurityControllerTest`、`JsonFieldScenarioTest`、`UserDomainIntegrationTest`
 
-### 4.1 存储透明加解密与“内存真明文”生命周期分离 (`@FieldEncrypt` & `EncryptTypeHandler`)
+### 4.1 存储透明加解密与“内存真明文”生命周期分离 (`@FieldEncrypt` & `EncryptTypeHandler` & `DeterministicEncryptTypeHandler`)
 
 #### 场景痛点
-许多项目在 Service 层查出用户实体后直接执行 `user.setPhone("138****5678")` 再返回前端；一旦后续业务在同一事务或对象上调用 `updateById(user)`，星号掩码就会直接覆盖数据库真实手机号，造成不可逆的生产数据损毁。
+1. **脱敏覆盖数据库真实数据**：许多项目在 Service 层查出用户实体后直接执行 `user.setPhone("138****5678")` 再返回前端；一旦后续业务在同一事务或对象上调用 `updateById(user)`，星号掩码就会直接覆盖数据库真实手机号，造成不可逆的生产数据损毁。
+2. **随机 IV 密文无法精确检索**：高安全性对称加密（如携带随机 IV 的 AES-CBC/GCM）每次加密相同明文会生成截然不同的密文，无法在数据库物理列上建立索引或执行 `WHERE email = ?` 等值匹配与集合匹配（`IN`）。
 
 #### 本特性配置片段 (`application.yml`)
 ```yaml
@@ -367,29 +369,47 @@ ateng:
   boot:
     mybatis-plus:
       crypto:
-        # AES-GCM 存储透明加密主密钥（生产环境强烈建议通过环境变量 ${MP_CRYPTO_SECRET_KEY} 注入）
+        # AES 存储透明加密主密钥（生产环境强烈建议通过环境变量 ${MP_CRYPTO_SECRET_KEY} 注入）
         secret-key: "${MP_CRYPTO_SECRET_KEY:AtengBootDefaultSecretKey2026!}"
 ```
 
-#### 三态数据安全流转架构與实战代码（提取自 Sample `MpSecurityAndJsonController`）
+#### 双模加密架构对比：随机 IV vs 确定性加密 (SIV)
+| 维度 | 默认随机 IV 加密 (`EncryptTypeHandler`) | 确定性加密 (`DeterministicEncryptTypeHandler`) |
+| :--- | :--- | :--- |
+| **实体注解声明** | `@FieldEncrypt` (默认 `deterministic = false`) | `@FieldEncrypt(deterministic = true)` |
+| **TypeHandler** | `@TableField(typeHandler = EncryptTypeHandler.class)` | `@TableField(typeHandler = DeterministicEncryptTypeHandler.class)` |
+| **算法机制** | AES-CBC + 16 字节安全随机 IV，版本头 `v1:` | AES-CBC + HMAC-SHA256(key, plain) 前 16 字节合成 IV (SIV)，版本头 `v1:` |
+| **密文特性** | 相同明文每次生成完全不同的密文（语义安全，防侧信道） | 相同明文永远生成恒定唯一密文（支持数据库等值索引） |
+| **等值检索支持** | 不支持数据库检索（动态查询引擎强制安全过滤屏蔽） | **支持 `EQ`, `NE`, `IN`, `NOT_IN`, `IS_NULL`, `IS_NOT_NULL` 密文精确检索** |
+| **解密兼容性** | 100% 互相双向兼容解密，且均防御性兼容未加密历史明文 | 100% 互相双向兼容解密，且均防御性兼容未加密历史明文 |
+| **模糊与排序** | 严禁 `LIKE` 模糊匹配与 `ORDER BY` 排序（白名单安全忽略） | **严禁 `LIKE` 模糊匹配与 `ORDER BY` 排序（立即抛出快速失败异常）** |
+
+#### 三态数据安全流转架构與实战代码（提取自 Sample `MpSecurityAndJsonController` & `MpDynamicQueryAndSqlController`）
 ```mermaid
 flowchart LR
-    DB[("1. 数据库物理列 (sys_user)\n密文: v1:Yd33MOmv...")]
-    MEM["2. Service 内存实体 (UserEntity)\n100% 原始真明文: 13812345678"]
-    JSON["3. HTTP 响应视图 (UserVO)\n@FieldSensitive 动态掩码: 138****5678"]
+    DB[("1. 数据库物理列 (sys_user)\n随机密文: phone=v1:Yd33MOmv...\n确定性密文: email=v1:n1p0mQfQ...")]
+    MEM["2. Service 内存实体 (UserEntity)\n100% 原始真明文:\nphone=13812345678\nemail=zhangsan@example.com"]
+    JSON["3. HTTP 响应视图 (UserVO)\n@FieldSensitive 动态掩码:\nphone=138****5678\nemail=z***n@example.com"]
 
-    DB -- "EncryptTypeHandler\n出库自动解密" --> MEM
-    MEM -- "EncryptTypeHandler\n入库透明加密" --> DB
+    DB -- "出库自动解密" --> MEM
+    MEM -- "入库透明加密" --> DB
     MEM -- "UserVO.fromEntity\nJackson 序列化脱敏" --> JSON
 ```
 
 ```java
-// 1. 持久层实体：声明 @FieldEncrypt 与 EncryptTypeHandler（必须开启 autoResultMap = true）
+// 1. 持久层实体：手机号使用随机 IV 加密，邮箱使用确定性加密（必须开启 autoResultMap = true）
 @TableName(value = "sys_user", autoResultMap = true)
 public class UserEntity extends BaseFullEntity {
+
+    /** 手机号：使用随机 IV 高安全加密，防频率分析与侧信道推演，不支持数据库等值检索 */
     @FieldEncrypt
     @TableField(typeHandler = EncryptTypeHandler.class)
     private String phone;
+
+    /** 电子邮箱：使用确定性加密，相同邮箱生成恒定密文，支持数据库唯一索引与等值检索 */
+    @FieldEncrypt(deterministic = true)
+    @TableField(typeHandler = DeterministicEncryptTypeHandler.class)
+    private String email;
 }
 
 // 2. 传输层视图 VO：声明 @FieldSensitive，仅在 JSON 序列化出站时动态打星号
@@ -402,18 +422,17 @@ public class UserVO implements Serializable {
     private String email;
 }
 
-// 3. 三态对比验证：JDBC 底层密文 vs Service 内存真明文 vs UserVO 序列化动态脱敏
-Map<String, Object> rawRow = jdbcTemplate.queryForMap("SELECT phone FROM sys_user WHERE id = ?", userId);
-String dbCipherPhone = (String) rawRow.get("phone");              // "v1:..." (AES 密文)
-
-UserEntity loaded = userService.getById(userId);
-boolean isPlain = "13812345678".equals(loaded.getPhone());        // true (内存 100% 原始真明文)
-UserVO responseVo = UserVO.fromEntity(loaded);                    // JSON 序列化输出 "138****5678"
+// 3. 动态查询密文自动转译与等值匹配（URL 语法与 DTO 检索全支持）
+// GET /sample/mybatis-plus/query/dynamic/url?email:eq=zhangsan@example.com
+// 底层 DynamicQueryHelper 自动调用 EncryptTypeHandler.encryptDeterministic 转为确定性密文精确匹配
+PageResult<UserVO> page = userService.pageDynamic(queryRequest, UserVO.class);
 ```
 
 #### 核心生产边界与非功能语义
 - **必须显式开启 `autoResultMap = true`**：MyBatis-Plus 仅在 `@TableName(value = "...", autoResultMap = true)` 开启时才会在查询结果集映射阶段自动触发字段上的 `typeHandler`；若漏配会导致写入加密但查询原样返回密文；
-- **密文列查询与排序约束**：由于 AES-GCM 每次加密携带随机 IV（保障语义安全，相同明文每次生成不同 `v1:` 密文），加密字段不支持数据库层面的 `LIKE '%...%'` 模糊匹配与 `ORDER BY` 排序；`PageUtil` 与 `DynamicQueryHelper` 已内置白名单防卫，自动拦截并忽略针对 `@FieldEncrypt` 字段的排序探测。
+- **密文列排序与模糊查询硬阻断**：
+  - 默认随机 IV 字段（`EncryptTypeHandler`）：动态查询与 `PageUtil` 会在白名单过滤阶段静默忽略针对该字段的排序与过滤探测；
+  - 确定性加密字段（`DeterministicEncryptTypeHandler`）：`DynamicQueryHelper` 仅放行 `EQ`, `NE`, `IN`, `NOT_IN`, `IS_NULL`, `IS_NOT_NULL` 等值条件；一旦尝试使用 `LIKE`, `LIKE_LEFT`, `LIKE_RIGHT`, `BETWEEN`, `GT`, `GE`, `LT`, `LE` 或 `ORDER BY` 排序，**立即抛出 `IllegalArgumentException` 快速失败阻断**，杜绝密文被作为字典序排序或无效模糊匹配引发逻辑错误。
 
 ---
 
@@ -856,7 +875,7 @@ public Result<PageResult<UserVO>> queryUsersBySearchDto(@RequestBody UserSearchD
 #### 核心机制与生产边界
 - **六重安全防卫 (The 6-Layer Security Guard)**：
   1. **实体元数据白名单**：仅允许目标实体声明的持久化字段，未知属性直接安全忽略并记录告警；
-  2. **敏感黑名单硬阻断**：强制拦截 `@DynamicQueryIgnore` 字段、`@FieldEncrypt` 加密列、内置敏感词（`password`、`secret`、`salt`）及逻辑删除列；
+  2. **敏感黑名单与确定性加解密分流**：强制拦截 `@DynamicQueryIgnore` 字段、内置敏感词（`password`、`secret`、`salt`）及逻辑删除列；对于 `@FieldEncrypt` 字段，默认随机 IV 加密列严禁参与任何动态过滤与排序（静默过滤）；若标注 `deterministic = true` 或挂载 `DeterministicEncryptTypeHandler`，则精准放行 `EQ`, `NE`, `IN`, `NOT_IN`, `IS_NULL`, `IS_NOT_NULL` 并在条件组装前自动确定性加密明文入参，若使用 `LIKE` 模糊匹配或 `sort` 排序则立即抛出快速失败异常；
   3. **受控操作符枚举**：仅开放 `EQ`、`NE`、`GT`、`GE`、`LT`、`LE`、`LIKE`、`LIKE_LEFT`、`LIKE_RIGHT`、`IN`、`NOT_IN`、`BETWEEN`、`IS_NULL`、`IS_NOT_NULL`；
   4. **标识符正则校验**：属性名必须匹配 `^[a-zA-Z0-9_]+$`，彻底阻断 SQL 注入字符；
   5. **波浪线 `~` 范围防错切分**：`BETWEEN` 优先按 `~` 切分双边界（如 `2026-01-01 00:00:00~2026-12-31 23:59:59`），消除日期时间内部的空格与冒号歧义；

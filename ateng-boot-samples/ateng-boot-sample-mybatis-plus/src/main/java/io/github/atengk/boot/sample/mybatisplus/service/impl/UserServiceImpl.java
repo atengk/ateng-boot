@@ -2,7 +2,9 @@ package io.github.atengk.boot.sample.mybatisplus.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder;
@@ -96,14 +98,22 @@ public class UserServiceImpl extends AtengServiceImpl<UserMapper, UserEntity> im
     @Override
     public PageResult<UserVO> pageUsersByDynamicUrl(String queryString) {
         ensureSeedUsersIfEmpty();
-        DynamicQueryRequest request = DynamicQueryParser.parse(queryString);
-        return pageDynamic(request, UserVO.class);
+        try {
+            DynamicQueryRequest request = DynamicQueryParser.parse(queryString);
+            return pageDynamic(request, UserVO.class);
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, e.getMessage(), e);
+        }
     }
 
     @Override
     public PageResult<UserVO> pageUsersBySearchDto(UserSearchDTO searchDTO) {
         ensureSeedUsersIfEmpty();
-        return pageDynamic(searchDTO, UserVO.class);
+        try {
+            return pageDynamic(searchDTO, UserVO.class);
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, e.getMessage(), e);
+        }
     }
 
     private void ensureSeedUsersIfEmpty() {

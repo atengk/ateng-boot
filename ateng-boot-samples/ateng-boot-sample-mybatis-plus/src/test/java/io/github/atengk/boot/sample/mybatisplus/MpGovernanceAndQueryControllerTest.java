@@ -23,6 +23,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.util.List;
 import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasSize;
@@ -218,6 +219,65 @@ class MpGovernanceAndQueryControllerTest {
                 .andExpect(jsonPath("$.data.records", hasSize(2)))
                 .andExpect(jsonPath("$.data.records[0].name", equalTo("王五")))
                 .andExpect(jsonPath("$.data.records[1].name", equalTo("李四")));
+
+        // 4.4 确定性透明加密字段（email）URL 动态精确等值与 IN 检索实证（及落库密文一致性验证）
+        String dbEmailZhangsan = jdbcTemplate.queryForObject("SELECT email FROM sys_user WHERE name = '张三'", String.class);
+        assertThat(dbEmailZhangsan).startsWith("v1:");
+        assertThat(dbEmailZhangsan).isEqualTo(io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler.encryptDeterministic("zhangsan@example.com"));
+
+        // 4.4.1 email:eq 精确检索：前端传入明文，底层自动转译为确定性密文匹配
+        mockMvc.perform(get("/sample/mybatis-plus/query/dynamic/url")
+                        .with(req -> {
+                            req.setQueryString("email:eq=zhangsan@example.com");
+                            return req;
+                        }))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.records", hasSize(1)))
+                .andExpect(jsonPath("$.data.records[0].name", equalTo("张三")))
+                .andExpect(jsonPath("$.data.records[0].email", containsString("*"))); // 出参 @Sensitive 脱敏输出
+
+        // 4.4.2 email:in 批量集合检索：前端传入多个明文，底层逐一转密文匹配
+        mockMvc.perform(get("/sample/mybatis-plus/query/dynamic/url")
+                        .with(req -> {
+                            req.setQueryString("email:in=zhangsan@example.com,lisi@example.com&sort=age:asc");
+                            return req;
+                        }))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.records", hasSize(2)))
+                .andExpect(jsonPath("$.data.records[0].name", equalTo("张三")))
+                .andExpect(jsonPath("$.data.records[1].name", equalTo("李四")));
+
+        // 4.4.3 email DTO 声明式等值精确检索
+        UserSearchDTO emailSearchDTO = new UserSearchDTO();
+        emailSearchDTO.setEmail("zhangsan@example.com");
+        mockMvc.perform(post("/sample/mybatis-plus/query/dynamic/dto")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(emailSearchDTO)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.records", hasSize(1)))
+                .andExpect(jsonPath("$.data.records[0].name", equalTo("张三")));
+
+        // 4.5 对抗性阻断：确定性加密字段使用模糊查询或排序时触发快速失败拦截 (400)
+        mockMvc.perform(get("/sample/mybatis-plus/query/dynamic/url")
+                        .with(req -> {
+                            req.setQueryString("email:like=zhangsan");
+                            return req;
+                        }))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(400)))
+                .andExpect(jsonPath("$.msg", containsString("确定性加密字段")));
+
+        mockMvc.perform(get("/sample/mybatis-plus/query/dynamic/url")
+                        .with(req -> {
+                            req.setQueryString("sort=email:asc");
+                            return req;
+                        }))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(400)))
+                .andExpect(jsonPath("$.msg", containsString("不支持 ORDER BY 排序")));
     }
 
     @Test

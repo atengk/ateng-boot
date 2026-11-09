@@ -9,6 +9,8 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.SortItem;
 import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
+import io.github.atengk.boot.mybatisplus.handler.DeterministicEncryptTypeHandler;
+import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
 import io.github.atengk.boot.mybatisplus.dynamicquery.annotation.DynamicQueryIgnore;
 import io.github.atengk.boot.mybatisplus.dynamicquery.annotation.QueryField;
 import lombok.extern.slf4j.Slf4j;
@@ -162,7 +164,16 @@ public final class DynamicQueryHelper {
                 }
                 Class<?> targetType = resolveFieldType(field.trim(), column, projectionMapping, metaInfo);
 
-                ValidConditionItem item = new ValidConditionItem(column, condition, targetType);
+                FieldMetaInfo fieldMeta = (metaInfo != null) ? metaInfo.getField(field.trim().toLowerCase(Locale.ROOT)) : null;
+                if (fieldMeta == null && metaInfo != null) {
+                    fieldMeta = metaInfo.getField(column.toLowerCase(Locale.ROOT));
+                }
+                boolean deterministic = (fieldMeta != null && fieldMeta.isDeterministicEncrypt());
+                if (deterministic) {
+                    validateDeterministicOperator(field.trim(), condition.getOperator());
+                }
+
+                ValidConditionItem item = new ValidConditionItem(column, condition, targetType, deterministic);
                 if (condition.getOrGroup() != null && !condition.getOrGroup().trim().isEmpty()) {
                     orGroupMap.computeIfAbsent(condition.getOrGroup().trim(), k -> new ArrayList<>()).add(item);
                 } else {
@@ -173,7 +184,7 @@ public final class DynamicQueryHelper {
             // 应用常规 AND 顶层条件
             for (ValidConditionItem item : andItems) {
                 applyCondition(wrapper, item.column(), item.condition().getOperator(),
-                        item.condition().getValue(), item.condition().getValues(), item.targetType());
+                        item.condition().getValue(), item.condition().getValues(), item.targetType(), item.deterministicEncrypt());
             }
 
             // 应用 or_组号 作用域嵌套 OR 逻辑块
@@ -189,7 +200,7 @@ public final class DynamicQueryHelper {
                             orWrapper.or();
                         }
                         applyCondition(orWrapper, groupItem.column(), groupItem.condition().getOperator(),
-                                groupItem.condition().getValue(), groupItem.condition().getValues(), groupItem.targetType());
+                                groupItem.condition().getValue(), groupItem.condition().getValues(), groupItem.targetType(), groupItem.deterministicEncrypt());
                         first = false;
                     }
                 });
@@ -384,12 +395,22 @@ public final class DynamicQueryHelper {
                 continue;
             }
 
+            FieldMetaInfo fieldMeta = (metaInfo != null) ? metaInfo.getField(property.toLowerCase(Locale.ROOT)) : null;
+            if (fieldMeta == null && metaInfo != null) {
+                fieldMeta = metaInfo.getField(targetColumn.toLowerCase(Locale.ROOT));
+            }
+            boolean deterministic = (fieldMeta != null && fieldMeta.isDeterministicEncrypt());
+
             QueryOperator operator = (queryField != null) ? queryField.operator() : QueryOperator.EQ;
+            if (deterministic) {
+                validateDeterministicOperator(property, operator);
+            }
+
             List<Object> values = null;
             if (value instanceof Collection<?> col) {
                 values = new ArrayList<>(col);
             }
-            applyCondition(wrapper, targetColumn, operator, value, values, field.getType());
+            applyCondition(wrapper, targetColumn, operator, value, values, field.getType(), deterministic);
         }
 
         // 若 DTO 继承了 PageQuery，自动处理其排序规则
@@ -468,16 +489,36 @@ public final class DynamicQueryHelper {
      * 将受控操作符条件安全追加至 QueryWrapper（具备强类型方言自适应转换能力）
      */
     private static <T> void applyCondition(QueryWrapper<T> wrapper, String column, QueryOperator operator,
-                                           Object value, List<Object> values, Class<?> targetType) {
+                                           Object value, List<Object> values, Class<?> targetType, boolean deterministicEncrypt) {
         if (operator == null) {
             operator = QueryOperator.EQ;
         }
-        Object convertedValue = convertSingleValue(value, targetType, operator);
+
+        Object convertedValue;
         List<Object> convertedValues = null;
-        if (values != null) {
-            convertedValues = new ArrayList<>(values.size());
-            for (Object v : values) {
-                convertedValues.add(convertSingleValue(v, targetType, operator));
+
+        if (deterministicEncrypt) {
+            convertedValue = (value != null && !value.toString().isEmpty())
+                    ? EncryptTypeHandler.encryptDeterministic(value.toString())
+                    : value;
+            if (values != null) {
+                convertedValues = new ArrayList<>(values.size());
+                for (Object v : values) {
+                    convertedValues.add(v != null ? EncryptTypeHandler.encryptDeterministic(v.toString()) : null);
+                }
+            } else if (value instanceof Collection<?> col) {
+                convertedValues = new ArrayList<>(col.size());
+                for (Object v : col) {
+                    convertedValues.add(v != null ? EncryptTypeHandler.encryptDeterministic(v.toString()) : null);
+                }
+            }
+        } else {
+            convertedValue = convertSingleValue(value, targetType, operator);
+            if (values != null) {
+                convertedValues = new ArrayList<>(values.size());
+                for (Object v : values) {
+                    convertedValues.add(convertSingleValue(v, targetType, operator));
+                }
             }
         }
 
@@ -698,11 +739,40 @@ public final class DynamicQueryHelper {
                 log.warn("排序属性检测到非法语法或特殊字符，已安全忽略: {}", prop);
                 continue;
             }
+            // 校验确定性加密字段禁止排序
+            if (metaInfo != null) {
+                FieldMetaInfo fieldMeta = metaInfo.getField(prop.toLowerCase(Locale.ROOT));
+                if (fieldMeta != null && fieldMeta.isDeterministicEncrypt()) {
+                    throw new IllegalArgumentException("确定性加密字段 [" + prop + "] 为密文存储，不支持 ORDER BY 排序");
+                }
+            }
             String sortColumn = resolveColumn(prop, projectionMapping, metaInfo);
             if (sortColumn == null) {
                 continue;
             }
+            if (metaInfo != null) {
+                FieldMetaInfo colMeta = metaInfo.getField(sortColumn.toLowerCase(Locale.ROOT));
+                if (colMeta != null && colMeta.isDeterministicEncrypt()) {
+                    throw new IllegalArgumentException("确定性加密字段 [" + prop + "] 为密文存储，不支持 ORDER BY 排序");
+                }
+            }
             wrapper.orderBy(true, sort.isAsc(), sortColumn);
+        }
+    }
+
+    /**
+     * 校验确定性加密字段的操作符合法性（仅允许等值与 IN/IS_NULL 类检索，禁止模糊与范围运算）
+     */
+    private static void validateDeterministicOperator(String fieldName, QueryOperator operator) {
+        if (operator == null) {
+            return;
+        }
+        switch (operator) {
+            case EQ, NE, IN, NOT_IN, IS_NULL, IS_NOT_NULL -> {
+                // 允许的操作符
+            }
+            default -> throw new IllegalArgumentException(
+                    "确定性加密字段 [" + fieldName + "] 仅支持精确等值检索 (EQ/NE/IN/NOT_IN/IS_NULL/IS_NOT_NULL)，不支持 " + operator + " 操作符");
         }
     }
 
@@ -765,8 +835,8 @@ public final class DynamicQueryHelper {
             if (field.isAnnotationPresent(DynamicQueryIgnore.class)) {
                 ignored = true;
             }
-            // 标注 @FieldEncrypt 存储加密字段
-            if (field.isAnnotationPresent(FieldEncrypt.class)) {
+            // 标注非确定性存储加密字段（无法检索）
+            if (isNonDeterministicEncryptField(field)) {
                 ignored = true;
             }
             // 标注 @TableField(exist = false)
@@ -817,7 +887,7 @@ public final class DynamicQueryHelper {
                 String keyCol = tableInfo.getKeyColumn();
                 if (!ignoredProperties.contains(keyProp.toLowerCase(Locale.ROOT))
                         && !ignoredProperties.contains(keyCol.toLowerCase(Locale.ROOT))) {
-                    FieldMetaInfo meta = new FieldMetaInfo(keyProp, keyCol, tableInfo.getKeyType());
+                    FieldMetaInfo meta = new FieldMetaInfo(keyProp, keyCol, tableInfo.getKeyType(), false);
                     registerFieldMeta(propertyMap, keyProp, keyCol, meta);
                 }
             }
@@ -828,7 +898,8 @@ public final class DynamicQueryHelper {
                     String col = fieldInfo.getColumn();
                     if (!ignoredProperties.contains(prop.toLowerCase(Locale.ROOT))
                             && !ignoredProperties.contains(col.toLowerCase(Locale.ROOT))) {
-                        FieldMetaInfo meta = new FieldMetaInfo(prop, col, fieldInfo.getPropertyType());
+                        boolean deterministic = isDeterministicEncryptField(fieldInfo.getField());
+                        FieldMetaInfo meta = new FieldMetaInfo(prop, col, fieldInfo.getPropertyType(), deterministic);
                         registerFieldMeta(propertyMap, prop, col, meta);
                     }
                 }
@@ -859,13 +930,46 @@ public final class DynamicQueryHelper {
 
                 if (!ignoredProperties.contains(prop.toLowerCase(Locale.ROOT))
                         && !ignoredProperties.contains(col.toLowerCase(Locale.ROOT))) {
-                    FieldMetaInfo meta = new FieldMetaInfo(prop, col, field.getType());
+                    boolean deterministic = isDeterministicEncryptField(field);
+                    FieldMetaInfo meta = new FieldMetaInfo(prop, col, field.getType(), deterministic);
                     registerFieldMeta(propertyMap, prop, col, meta);
                 }
             }
         }
 
         return new EntityMetaInfo(propertyMap, ignoredProperties);
+    }
+
+    private static boolean isDeterministicEncryptField(Field field) {
+        if (field == null) {
+            return false;
+        }
+        FieldEncrypt fe = field.getAnnotation(FieldEncrypt.class);
+        if (fe != null && fe.deterministic()) {
+            return true;
+        }
+        TableField tf = field.getAnnotation(TableField.class);
+        if (tf != null && DeterministicEncryptTypeHandler.class.isAssignableFrom(tf.typeHandler())) {
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean isNonDeterministicEncryptField(Field field) {
+        if (field == null) {
+            return false;
+        }
+        if (isDeterministicEncryptField(field)) {
+            return false;
+        }
+        if (field.isAnnotationPresent(FieldEncrypt.class)) {
+            return true;
+        }
+        TableField tf = field.getAnnotation(TableField.class);
+        if (tf != null && EncryptTypeHandler.class.isAssignableFrom(tf.typeHandler())) {
+            return true;
+        }
+        return false;
     }
 
     private static void registerFieldMeta(Map<String, FieldMetaInfo> map, String prop, String col, FieldMetaInfo meta) {
@@ -884,11 +988,17 @@ public final class DynamicQueryHelper {
         private final String property;
         private final String column;
         private final Class<?> fieldType;
+        private final boolean deterministicEncrypt;
 
         public FieldMetaInfo(String property, String column, Class<?> fieldType) {
+            this(property, column, fieldType, false);
+        }
+
+        public FieldMetaInfo(String property, String column, Class<?> fieldType, boolean deterministicEncrypt) {
             this.property = property;
             this.column = column;
             this.fieldType = fieldType;
+            this.deterministicEncrypt = deterministicEncrypt;
         }
 
         public String getProperty() {
@@ -901,6 +1011,10 @@ public final class DynamicQueryHelper {
 
         public Class<?> getFieldType() {
             return fieldType;
+        }
+
+        public boolean isDeterministicEncrypt() {
+            return deterministicEncrypt;
         }
     }
 
@@ -936,6 +1050,6 @@ public final class DynamicQueryHelper {
     /**
      * 校验合法的单项条件元数据绑定（携带目标字段强类型元数据）
      */
-    private record ValidConditionItem(String column, QueryCondition condition, Class<?> targetType) {
+    private record ValidConditionItem(String column, QueryCondition condition, Class<?> targetType, boolean deterministicEncrypt) {
     }
 }

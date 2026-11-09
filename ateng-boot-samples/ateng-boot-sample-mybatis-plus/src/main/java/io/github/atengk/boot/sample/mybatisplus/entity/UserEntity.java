@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
 import io.github.atengk.boot.mybatisplus.dynamicquery.annotation.DynamicQueryIgnore;
 import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
+import io.github.atengk.boot.mybatisplus.handler.DeterministicEncryptTypeHandler;
 import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -38,10 +39,10 @@ public class UserEntity extends BaseFullEntity {
     private Integer age;
 
     /**
-     * 电子邮箱（数据库透明加密存储）
+     * 电子邮箱（数据库确定性透明加密存储，支持精确等值检索）
      */
-    @FieldEncrypt
-    @TableField(typeHandler = EncryptTypeHandler.class)
+    @FieldEncrypt(deterministic = true)
+    @TableField(typeHandler = DeterministicEncryptTypeHandler.class)
     private String email;
 
     /**

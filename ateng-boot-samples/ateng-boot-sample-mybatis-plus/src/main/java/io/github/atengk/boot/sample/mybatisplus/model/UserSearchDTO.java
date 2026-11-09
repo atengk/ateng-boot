@@ -52,6 +52,12 @@ public class UserSearchDTO extends PageQuery {
     private String deptName;
 
     /**
+     * 电子邮箱（确定性加密字段精确等值检索）
+     */
+    @QueryField(property = "email", operator = QueryOperator.EQ)
+    private String email;
+
+    /**
      * 内部风控备注（用于验证目标实体标注 @DynamicQueryIgnore 时的越权过滤拦截）
      */
     @QueryField(property = "internalRemark", operator = QueryOperator.EQ)
