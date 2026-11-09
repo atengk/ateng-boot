@@ -12,6 +12,14 @@ _Avoid_: Response, ApiResponse, R, AjaxResult, ApiResult
 表征业务处理状态的规范协议，包含整数业务码与状态描述文本。
 _Avoid_: ErrorCode, StatusCode, StatusEnum
 
+**IResultCode**:
+统一业务响应状态码契约接口，统管业务状态码整数值与提示消息，为框架各 Starter 提供标准协议抽象。
+_Avoid_: IErrorCode, StatusCodeInterface, ResultCodeApi
+
+**CommonResultCode**:
+核心通用标准状态码枚举，集中收敛 HTTP 映射基线状态码（如 SUCCESS 200, BAD_REQUEST 400, UNAUTHORIZED 401, FORBIDDEN 403, NOT_FOUND 404, INTERNAL_SERVER_ERROR 500 等）。
+_Avoid_: StandardErrorCode, BaseResultCode, DefaultStatusCode
+
 **BusinessException**:
 表征业务逻辑中断的受控运行时异常，携带对应的 ResultCode 供全局拦截转译为标准响应。
 _Avoid_: ServiceException, AppException, BizException
@@ -41,7 +49,7 @@ _Avoid_: AsyncTaskDecorator, ThreadPoolDecorator, MDCDecorator
 _Avoid_: PageVO, PageDTO, PageData, TableDataInfo, PageResponse
 
 **PageQuery**:
-标准化分页查询参数基类，封装当前页码、单页容量与基础查询排序要素。
+标准化分页查询参数基类，封装当前页码、单页容量与基础查询排序要素，并提供编程式安全清洗（normalize）、安全只读读取（safeCurrent / safeSize）与防溢出偏移量计算（offset）。
 _Avoid_: PageParam, PageReq, PageRequest
 
 **DesensitizeUtil**:
@@ -59,6 +67,10 @@ _Avoid_: IdHelper, UuidUtil, IdentifierUtil, KeyUtil
 **CryptoUtil**:
 纯 JDK 原生对称加解密工具类，默认支持 AES/CBC/PKCS5Padding 与 AES/GCM/NoPadding，无 Bouncy Castle 重型依赖。
 _Avoid_: AesUtil, EncryptionUtil, EncryptUtil
+
+**DigestUtil**:
+纯 JDK 17 原生摘要算法工具类，提供 MD5、SHA-1、SHA-256、SHA-512 的十六进制哈希计算与流式计算门面。
+_Avoid_: HashUtil, Md5Util, ShaUtil
 
 **TreeUtil**:
 通用泛型树形结构构建工具，依托纯函数式接口与哈希表两遍扫描算法，以 O(N) 线性时间复杂度实现扁平列表到嵌套树的高性能组装。
@@ -84,6 +96,10 @@ _Avoid_: MaskType, DesensitizeType
 视图层字段动态脱敏注解，基于 Jackson 序列化机制在出界序列化时动态执行掩码，恪守内存真明文原则。
 _Avoid_: Sensitive, MaskField, JsonMask
 
+**SensitiveJsonSerializer**:
+基于 Jackson JsonSerializer 实现的视图层敏感数据动态掩码序列化器，基于上下文注解动态拦截并执行脱敏，恪守“内存真明文”不变量。
+_Avoid_: MaskSerializer, DesensitizeSerializer, SensitiveSerializer
+
 **DatePattern**:
 标准化日期时间格式与预编译 DateTimeFormatter 常量统管类，终结各模块散落硬编码字符串。
 _Avoid_: DateFormatConstants, TimePattern, DateConsts
@@ -104,6 +120,10 @@ _Avoid_: SpringContextUtil, SpringContextHolder, BeanFactoryUtil
 基于纯 JDK 17 SerializedLambda 反射机制实现的强类型方法引用解析工具，将 Getter 方法引用安全推导为实体属性名。
 _Avoid_: MethodRefUtil, PropertyUtil, FieldReflectUtil
 
+**PropertyFunc**:
+基于 SerializedLambda 的强类型单参数函数式接口，用于通过方法引用（如 User::getName）推导实体属性名，支持序列化穿透。
+_Avoid_: SFunction, GetterFunction, PropertyGetter
+
 **CollectionUtil**:
 纯原生集合防御与切片增强工具类，提供空安全判断与大容量列表等额切片（partition）。
 _Avoid_: CollUtil, ListUtil, CollectionsHelper
@@ -121,12 +141,16 @@ _Avoid_: ObjectCopier, BeanMapper, ModelMapper
 _Avoid_: RetryHelper, RetryTemplate, BackoffUtil
 
 **FileUtil**:
-纯 JDK 原生轻量文件与路径安全工具类，提供路径遍历穿透（Path Traversal）安全清洗、扩展名截取与人类可读文件容量格式化。
+纯 JDK 原生轻量文件与路径安全工具类，提供路径遍历穿透（Path Traversal）安全清洗、安全子路径解析（resolveSafePath）防逃逸、操作系统隐性垃圾文件智能检测与过滤（isSystemJunkFile / filterValidPaths）、扩展名截取与人类可读文件容量格式化。
 _Avoid_: FileHelper, IoHelper, PathUtil
 
 **AtengAsyncAutoConfiguration**:
 位于 core 核心底座的自适应双模受管异步线程执行器自动装配类，根据运行环境线程模型（`@ConditionalOnThreading`）自适应装配主虚拟线程执行器（`SimpleAsyncTaskExecutor`）或平台线程池（`ThreadPoolTaskExecutor`），并统一挂载四维上下文快照装饰器与未捕获异常处理器。
 _Avoid_: AsyncConfig, ThreadPoolAutoConfiguration, VirtualThreadAutoConfiguration
+
+**AsyncExecutorFactory**:
+受管异步执行器装配工厂，根据执行模式（AUTO/PLATFORM/VIRTUAL）与配置属性创建并增强平台线程池（ThreadPoolTaskExecutor）或虚拟线程执行器（SimpleAsyncTaskExecutor）。
+_Avoid_: ThreadPoolFactory, ExecutorBuilder, TaskExecutorFactory
 
 **AsyncProperties**:
 受管异步执行器根级配置属性类，继承自 AsyncPoolProperties 并作为默认主线程池参数，同时通过 `pools` 字典统管下游多业务独立线程池配置。
@@ -203,7 +227,7 @@ _Avoid_: RandomHelper, SecureRandomUtil, MathRandom
 _Avoid_: MqHeaders, MqConstants, HeaderConsts, MessageHeaders
 
 **MessageContextPropagator**:
-跨进程与异步消息边界的四维上下文传播纯原生工具类，提供出站四维上下文快照抓取与统一注入（Headers/UserProperties）、入站消息上下文自动提取还原以及消费完成后保证确定性安全清理的生命周期防卫。
+跨进程与异步消息边界的五维上下文传播纯原生工具类，提供出站上下文快照抓取与统一注入、入站消息上下文自动提取还原、激活（activate）并返回 ContextScope 配合 try-with-resources 保证对称还原现场与彻底消除 ThreadLocal 泄漏。
 _Avoid_: MqContextHelper, MessageTraceUtil, MqTraceFilter, ContextExtractor
 
 **FatalExceptionClassifier**:
@@ -219,7 +243,7 @@ _Avoid_: MqSendException, MqException, ProducerException, DeliveryException
 _Avoid_: PoolMetrics, ThreadPoolInfo, PoolStat
 
 **AsyncUtil**:
-受管异步执行器全景治理与函数式异步任务执行门面，提供多业务线程池动态参数调优（热调整）、运行监控指标提取、全链路上下文安全传播异步执行及任务批量并行协调（allMatches / allOf）。
+受管异步执行器全景治理与函数式异步任务执行门面，提供多业务线程池动态参数调优（热调整）、运行监控指标提取、全链路上下文安全传播异步执行、强类型有序批量超时汇聚（supplyAll）、带超时等待（allOf）及早期短路并行评估（allMatches）。
 _Avoid_: AsyncHelper, ThreadPoolHelper, TaskExecutorUtil
 
 **SnowflakeIdInfo**:
@@ -291,7 +315,7 @@ _Avoid_: CrcUtil, HashCheckUtil, ChecksumHelper
 _Avoid_: RateLimiter, TokenLimiter, LeakyBucket
 
 **CoreProperties**:
-核心通用底座统一外置化配置属性类，统管雪花发号器、缓存等强类型配置与生产默认值。
+核心通用底座统一外置化配置属性类，统管雪花发号器、LRU 缓存默认容量与存活时间（CacheProperties）等强类型配置与生产默认值。
 _Avoid_: AtengProperties, BaseProperties, FrameworkProperties
 
 **IBaseEnum**:
@@ -313,6 +337,10 @@ _Avoid_: EnumHelper, Enums, EnumTool
 **InEnum**:
 基于 JSR-303 规范的强类型枚举入参合法性校验注解，依托 EnumUtil 在传输层第一道防线实现非法状态快速失败。
 _Avoid_: EnumPattern, EnumValue, CheckEnum, ValidEnum
+
+**InEnumValidator**:
+基于 JSR-303 / Jakarta Validation 的强类型枚举校验约束验证器，配合 `@InEnum` 注解实现入参状态码在 Web 传输边界第一道防线的快速失败。
+_Avoid_: EnumChecker, EnumValidatorImpl, InEnumConstraintValidator
 
 **SortItem**:
 传输层分页查询的强类型单字段排序契约载体，封装排序字段名与正逆序标记，与底层持久层排序对象严格解耦。
@@ -337,6 +365,10 @@ _Avoid_: RepeatSubmitException, DuplicateException, IdempotencyError
 **MessagePayloadSerializer**:
 跨中间件异步消息载荷序列化与反序列化 SPI 契约，默认提供基于 JsonUtil 的零 `@class` 注入风险实现。
 _Avoid_: MqSerializer, PayloadConverter, MessageCodec
+
+**DefaultJsonMessagePayloadSerializer**:
+基于 JsonUtil 实现的轻量原生消息载荷序列化与反序列化 SPI 默认实现，杜绝 `@class` 漏洞并保障跨中间件载荷安全编解码。
+_Avoid_: JsonMqSerializer, JacksonMessageSerializer, DefaultPayloadCodec
 
 **BatchSliceUtil**:
 基于原生 subList 视图实现的零额外内存分配大批量列表分批切片与流式消费工具。

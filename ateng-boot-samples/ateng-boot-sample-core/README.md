@@ -38,6 +38,7 @@
 | **订单分页查询与排序解耦** | `GET /sample/core/contract/orders/page` | `PageQuery`<br>`SortItem`<br>`PageResult<T>` | `curl "http://localhost:8080/sample/core/contract/orders/page?current=1&size=10&sorts[0].property=orderTime&sorts[0].direction=DESC"` |
 | **批量客户入驻级联校验与枚举拦截** | `POST /sample/core/contract/users/batch-validate` | `ValidList<E>`<br>`ValidationGroups`<br>`ValidatorUtil`<br>`@InEnum` | `curl -X POST "http://localhost:8080/sample/core/contract/users/batch-validate" -H "Content-Type: application/json" -d '[{"name":"张三","phone":"13812345678","statusCode":1},{"name":"李四","phone":"13987654321","statusCode":2}]'` |
 | **通用字典枚举下拉选项渲染** | `GET /sample/core/contract/enums/options` | `IBaseEnum`<br>`@EnumAlias`<br>`EnumUtil`<br>`OptionItem` | `curl "http://localhost:8080/sample/core/contract/enums/options?alias=orderStatus"` |
+| **编程式安全分页纠偏与防溢出偏移量计算** | `GET /sample/core/contract/page-normalize` | `PageQuery.normalize`<br>`safeCurrent`<br>`safeSize`<br>`offset` | `curl "http://localhost:8080/sample/core/contract/page-normalize?current=0&size=-5"` |
 
 ### 3.2 标识发号、数据脱敏与密码学套件领域 (`CoreSecurityController` -> `/sample/core/security`)
 
@@ -54,6 +55,8 @@
 | **多维上下文与扩展快照跨线程透传** | `POST /sample/core/async/propagate` | `AsyncContext`<br>`UserContextHolder`<br>`TenantContextHolder`<br>`AsyncContextSnapshotProvider` | `curl -X POST "http://localhost:8080/sample/core/async/propagate" -H "Content-Type: application/json" -d '{"userId":"user-prod-8888","tenantId":"tenant-finance-001","customContextData":"CUSTOM-METRIC-TRACE-PAYLOAD"}'` |
 | **多业务受管线程池舱壁隔离协同** | `POST /sample/core/async/export-report` | `AsyncUtil.supply`<br>`AsyncUtil.allOf`<br>`DynamicAsyncPoolRegistrar` | `curl -X POST "http://localhost:8080/sample/core/async/export-report" -H "Content-Type: application/json" -d '{"reportName":"Q4-Financial-Analysis.xlsx","format":"EXCEL"}'` |
 | **线程池监控探测与在线动态调优** | `POST /sample/core/async/pool-governance` | `AsyncUtil.getStatus`<br>`AsyncUtil.resize`<br>`ThreadPoolStatus` | `curl -X POST "http://localhost:8080/sample/core/async/pool-governance" -H "Content-Type: application/json" -d '{"poolName":"export","newCorePoolSize":6,"newMaxPoolSize":12}'` |
+| **异步批量任务强类型超时汇聚** | `POST /sample/core/async/batch-supply` | `AsyncUtil.supplyAll`<br>`Duration` 超时聚合 | `curl -X POST "http://localhost:8080/sample/core/async/batch-supply" -H "Content-Type: application/json" -d '{"metrics":["cpu","memory","disk"]}'` |
+| **异步并行规则校验与快速失败短路** | `POST /sample/core/async/risk-check` | `AsyncUtil.allMatches`<br>早期短路<br>`Duration` | `curl -X POST "http://localhost:8080/sample/core/async/risk-check" -H "Content-Type: application/json" -d '{"scores":[85,92,78],"safetyThreshold":60}'` |
 | **事务生命周期钩子与消息传播协同** | `POST /sample/core/async/tx-and-mq` | `TransactionUtil`<br>`MessageContextPropagator`<br>`FatalExceptionClassifier`<br>`MessagePayloadSerializer` | `curl -X POST "http://localhost:8080/sample/core/async/tx-and-mq" -H "Content-Type: application/json" -d '{"bizKey":"ORDER-20261107-001","payload":"{\"amount\":199.00,\"sku\":\"SKU-BOOK-001\"}","simulateFatalError":false}'` |
 
 ### 3.4 高可用弹性重试、流控整形与业务管道编排领域 (`CoreResilienceAndPipelineController` -> `/sample/core/resilience`)

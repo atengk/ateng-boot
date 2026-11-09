@@ -191,6 +191,23 @@ flowchart TD
 - **Spring 容器自动装配与自适应优雅降级**：`AtengCoreAutoConfiguration` 自动装配 `@Bean @ConditionalOnMissingBean Snowflake`，未显式配置时平滑降级至网卡 MAC / IP 自适应推导；
 - **时钟回拨严格熔断与规范转译**：当系统 NTP 时钟发生大幅回拨超过 `clock-backoff-tolerance`（默认 5ms）时，严格快速失败并转译抛出框架受管业务异常 `BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR)`，杜绝无序死循环或发号碰撞。
 
+### 25. 受管异步协同增强与超时短路门面 (`AsyncUtil.supplyAll / allOf / allMatches`)
+- **强类型有序批量超时汇聚 (`supplyAll`)**：针对微服务多源扇出或批量指标并行计算，提供带强类型 `Duration` 超时的集合并行调度与顺序保真汇聚，超时主动转译为受管业务异常，彻底杜绝无界挂起；
+- **早期短路快速失败 (`allMatches`)**：在并行规则匹配或前置风控评估中，首个不符合谓词的结果立即触发 `complete(false)` 短路中断，不再等待其余任务计算，极大节省高并发 CPU 与 I/O 资源；
+- **防悬挂批汇聚 (`allOf(futures, timeout)`)**：带硬超时的 `CompletableFuture` 数组汇聚，防御线程池队列悬挂。
+
+### 26. 跨中间件消息传播五维上下文对称激活与自动还原 (`MessageContextPropagator.activate`)
+- **对称现场恢复保障**：消息消费端在接收消息后，调用 `MessageContextPropagator.activate(headers)` 激活消息携带的 traceId、tenantId 与 userId；
+- **`ContextScope` 资源防卫**：返回实现 `AutoCloseable` 的 `ContextScope`，配合 Java 原生 `try-with-resources` 在退出消费作用域时，无条件将工作线程还原为消费前原始快照，彻底消灭线程池复用时的跨租户越权与 traceId 污染。
+
+### 27. 安全文件操作与宿主环境隐性垃圾过滤 (`FileUtil.resolveSafePath / isSystemJunkFile / filterValidPaths`)
+- **宿主隐性垃圾文件过滤**：纯原生识别 Windows（`desktop.ini`、`Thumbs.db`）、macOS（`.DS_Store`、`__MACOSX`）及临时文件，并在批量目录扫描与上传流转中提供 `filterValidPaths` 统一清洗；
+- **目录逃逸刚性防卫 (`resolveSafePath`)**：解析子路径并规范化，严格断言解析路径必须以基准目录开头，若发生逃逸立即快速失败抛出 `IllegalArgumentException`，彻底防御跨目录遍历攻击。
+
+### 28. 传输分页安全清洗与防溢出偏移量计算 (`PageQuery.normalize / safeCurrent / safeSize / offset`)
+- **编程式数据纠偏与只读防呆**：提供 `safeCurrent()` 与 `safeSize()` 只读保底清洗，`normalize()` 原位清洗，防御非 Web 场景恶意非法参数（如 0、负数或超千大数值）；
+- **防溢出偏移量计算 (`offset`)**：采用 `Math.multiplyExact((safeCurrent() - 1), safeSize())` 计算物理偏移量，溢出时安全截断为 `Long.MAX_VALUE`，彻底防止大数溢出为负数穿透持久层引发崩溃。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)
