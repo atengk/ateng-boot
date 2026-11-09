@@ -25,7 +25,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Component
 public class SampleOrderTransactionChecker implements RocketmqLocalTransactionChecker {
 
+    @Getter
     private final Set<String> committedOrders = ConcurrentHashMap.newKeySet();
+    @Getter
     private final Set<String> rolledBackOrders = ConcurrentHashMap.newKeySet();
 
     @Getter

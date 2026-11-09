@@ -5,6 +5,7 @@ import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.sample.rocketmq.dto.OrderDelayRequest;
 import io.github.atengk.boot.sample.rocketmq.dto.OrderProduceRequest;
 import io.github.atengk.boot.sample.rocketmq.dto.OrderRecallRequest;
+import io.github.atengk.boot.sample.rocketmq.dto.OrderTransactionRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -272,6 +273,100 @@ class SampleRocketmqWebControllerTest {
 
         // 7. 清空延时消费审计记录
         mockMvc.perform(delete("/sample/rocketmq/delay/clear"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+    }
+
+    @Test
+    @DisplayName("测试 RocketmqTransactionController: 2PC半消息/sendAfterCommit/回查审计")
+    void testTransactionController() throws Exception {
+        // 1. 发送 2PC 事务半消息 (本地决断 COMMIT)
+        OrderTransactionRequest commitReq = OrderTransactionRequest.builder()
+                .orderId("ORD-WEB-TX-COMMIT-001")
+                .amount(666.0)
+                .localSuccess(true)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/transaction/half-message")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(commitReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.orderId").value("ORD-WEB-TX-COMMIT-001"))
+                .andExpect(jsonPath("$.data.status").value("2PC_COMMITTED"));
+
+        // 2. 发送 2PC 事务半消息 (本地决断 ROLLBACK)
+        OrderTransactionRequest rollbackReq = OrderTransactionRequest.builder()
+                .orderId("ORD-WEB-TX-ROLLBACK-001")
+                .amount(111.0)
+                .localSuccess(false)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/transaction/half-message")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(rollbackReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderId").value("ORD-WEB-TX-ROLLBACK-001"))
+                .andExpect(jsonPath("$.data.status").value("2PC_ROLLED_BACK"));
+
+        // 3. JSR-303 参数缺失拦截 (orderId 为空)
+        OrderTransactionRequest invalidTxReq = OrderTransactionRequest.builder()
+                .amount(100.0)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/transaction/half-message")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidTxReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 4. sendAfterCommit 本地事务成功提交后发信
+        OrderTransactionRequest postCommitReq = OrderTransactionRequest.builder()
+                .orderId("ORD-WEB-POST-COMMIT-001")
+                .amount(333.0)
+                .localSuccess(true)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/transaction/send-after-commit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(postCommitReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("TX_COMMITTED_AND_SENT"));
+
+        // 5. sendAfterCommit 本地事务回滚零发信
+        OrderTransactionRequest postRollbackReq = OrderTransactionRequest.builder()
+                .orderId("ORD-WEB-POST-ROLLBACK-001")
+                .amount(444.0)
+                .localSuccess(false)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/transaction/send-after-commit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(postRollbackReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("TX_ROLLED_BACK_ZERO_SEND"));
+
+        // 6. 查询回查器状态
+        mockMvc.perform(get("/sample/rocketmq/transaction/checker/status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.committedOrders").isArray())
+                .andExpect(jsonPath("$.data.rolledBackOrders").isArray())
+                .andExpect(jsonPath("$.data.localDbOrders").isArray());
+
+        // 7. 查询事务消费者已接收消费的订单列表
+        mockMvc.perform(get("/sample/rocketmq/transaction/received"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 8. 清空事务审计记录
+        mockMvc.perform(delete("/sample/rocketmq/transaction/clear"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
     }
