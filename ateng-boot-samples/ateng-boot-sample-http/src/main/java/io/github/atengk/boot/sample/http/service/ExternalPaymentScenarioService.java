@@ -48,10 +48,12 @@ public class ExternalPaymentScenarioService {
      * 1. 外部微信统一下单并验证非信任域内网敏感身份头物理剥离
      */
     public WechatPaymentVO createWechatOrder(WechatNativeOrderRequest request) {
+        boolean mdcInjected = false;
         String currentTraceId = MDC.get("traceId");
         if (currentTraceId == null || currentTraceId.isBlank()) {
             currentTraceId = IdUtil.fastSimpleUUID();
             MDC.put("traceId", currentTraceId);
+            mdcInjected = true;
         }
 
         TenantContextHolder.setTenantId("TENANT_SAMPLE_888");
@@ -82,6 +84,9 @@ public class ExternalPaymentScenarioService {
         } finally {
             TenantContextHolder.clear();
             UserContextHolder.clear();
+            if (mdcInjected) {
+                MDC.remove("traceId");
+            }
         }
     }
 

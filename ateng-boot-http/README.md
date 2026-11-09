@@ -116,13 +116,12 @@ public interface UserServiceClient {
 }
 ```
 
-#### 步骤 3：注入并执行双模通信
-业务 Service 中可直接注入声明式客户端或 `HttpTemplate` 命令式门面：
+#### 步骤 3：注入并执行声明式强类型调用 (1:1 提取自 UserClientScenarioService.java)
+业务 Service 中直接注入声明式契约客户端，实现类型安全调用：
 
 ```java
 package io.github.atengk.boot.sample.http.service;
 
-import io.github.atengk.boot.http.template.HttpTemplate;
 import io.github.atengk.boot.sample.http.client.UserServiceClient;
 import io.github.atengk.boot.sample.http.dto.UserResponse;
 import lombok.RequiredArgsConstructor;
@@ -132,19 +131,14 @@ import org.springframework.stereotype.Service;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class QuickStartService {
+public class UserClientScenarioService {
 
     private final UserServiceClient userServiceClient;
-    private final HttpTemplate httpTemplate;
 
-    public void runDemo() {
-        // 1. 声明式强类型 RPC 调用（底层全自动完成序列化、连接池借还与上下文注入）
-        UserResponse declarativeUser = userServiceClient.getUserById(1001L);
-        log.info("Declarative RPC success: {}", declarativeUser);
-
-        // 2. 命令式灵活流畅调用
-        UserResponse imperativeUser = httpTemplate.get("http://localhost:8080/mock/provider/users/1001", UserResponse.class);
-        log.info("Imperative call success: {}", imperativeUser);
+    public UserResponse getUserById(Long id) {
+        // 声明式强类型 RPC 调用（底层全自动完成序列化、连接池借还与上下文注入）
+        log.info("[UserClientService] Calling declarative getUserById for id: {}", id);
+        return userServiceClient.getUserById(id);
     }
 }
 ```
@@ -740,7 +734,7 @@ public class ExternalPaymentScenarioService {
         httpTemplate.get(url, Map.class);
 
         return LoggingDemoVO.builder()
-                .targetUrl(url)
+                .requestUrl(url)
                 .status("SUCCESS")
                 .maskedNotice("出站 cURL 日志已自动执行敏感凭据掩码脱敏")
                 .build();
@@ -763,53 +757,43 @@ HTTP GET http://localhost:8080/mock/provider/headers/echo?token=sk**************
 
 ### 6.1 SPI 扩展定制
 
-当框架默认装配行为无法满足特殊定制诉求时，可通过以下三种 SPI 无缝平滑接管：
+当框架默认装配行为无法满足特殊定制诉求时，可通过以下三种方式无缝平滑接管：
 
-#### 1. Apache HttpClient 5 底层定制器 (`HttpClient5Customizer`)
+#### 1. Apache HttpClient 5 底层定制器 (`HttpClient5Customizer`，1:1 提取自 SampleHttpApplication.java)
 ```java
-@Configuration
-public class HttpCustomConfiguration {
-
-    @Bean
-    public HttpClient5Customizer sampleHttpClient5Customizer() {
-        return (clientBuilder, connectionManagerBuilder) -> {
-            // 定制默认 User-Agent、DNS 域名解析器或 Socket 参数
-            clientBuilder.setUserAgent("ateng-sample-agent/1.0.0");
-        };
-    }
+// 在配置类或启动类中注入 HttpClient5Customizer Bean
+@Bean
+public HttpClient5Customizer sampleHttpClient5Customizer() {
+    return (clientBuilder, connectionManagerBuilder) -> {
+        // 定制默认 User-Agent、DNS 域名解析器或 Socket 策略
+        clientBuilder.setUserAgent("ateng-sample-agent/1.0.0");
+    };
 }
 ```
 
-#### 2. Spring 官方 RestClient 定制器 (`RestClientCustomizer`)
+#### 2. Spring 官方 RestClient 定制器 (`RestClientCustomizer`，1:1 提取自 SampleHttpApplication.java)
 ```java
-@Configuration
-public class RestClientConfiguration {
-
-    @Bean
-    public RestClientCustomizer sampleRestClientCustomizer() {
-        return restClientBuilder -> {
-            // 全局附加业务通用出站请求头或注册消息转换器
-            restClientBuilder.defaultHeader("X-Custom-Client", "ateng-http-sample");
-        };
-    }
+// 在配置类或启动类中注入 RestClientCustomizer Bean
+@Bean
+public RestClientCustomizer sampleRestClientCustomizer() {
+    return restClientBuilder -> {
+        // 全局附加业务通用出站请求头或注册消息转换器
+        restClientBuilder.defaultHeader("X-Custom-Client", "ateng-http-sample");
+    };
 }
 ```
 
-#### 3. 编程式纳管命名客户端 (`RestClientRegistry`)
+#### 3. 编程式纳管命名客户端 (`RestClientRegistry`，对齐 RestClientRegistryTest.java)
 ```java
-@Component
-@RequiredArgsConstructor
-public class CustomClientRegistrar implements InitializingBean {
+// 运行期动态向注册表注入自定义构建的 RestClient 实例
+@Autowired
+private RestClientRegistry restClientRegistry;
 
-    private final RestClientRegistry restClientRegistry;
-
-    @Override
-    public void afterPropertiesSet() {
-        RestClient customClient = RestClient.builder()
-                .baseUrl("https://special-gateway.internal")
-                .build();
-        restClientRegistry.register("special-gateway", customClient);
-    }
+public void registerCustomClient() {
+    RestClient customClient = RestClient.builder()
+            .baseUrl("https://special-gateway.internal")
+            .build();
+    restClientRegistry.register("special-gateway", customClient);
 }
 ```
 

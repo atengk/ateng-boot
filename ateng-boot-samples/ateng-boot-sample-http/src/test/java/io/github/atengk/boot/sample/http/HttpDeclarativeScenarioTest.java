@@ -36,8 +36,8 @@ public class HttpDeclarativeScenarioTest {
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
         registry.add("server.port", () -> port);
-        registry.add("sample.user-service.url", () -> "http://localhost:" + port);
-        registry.add("sample.order-service.url", () -> "http://localhost:" + port);
+        registry.add("sample.user-service.url", () -> "http://localhost:" + port + "/mock/provider");
+        registry.add("sample.order-service.url", () -> "http://localhost:" + port + "/mock/provider");
     }
 
     @Autowired

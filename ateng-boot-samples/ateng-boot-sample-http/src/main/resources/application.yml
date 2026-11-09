@@ -46,17 +46,17 @@ ateng:
             retry-status-codes: [429, 502, 503, 504]
             retry-methods: [GET, HEAD]
         user-service:
-          base-url: ${sample.user-service.url:http://localhost:8080}
+          base-url: ${sample.user-service.url:http://localhost:8080/mock/provider}
           connect-timeout: 2s
           read-timeout: 5s
           propagate-context: true
         wechat-pay:
-          base-url: ${sample.wechat-pay.url:https://api.mch.weixin.qq.com}
+          base-url: ${sample.wechat-pay.url:http://localhost:8080/mock/provider/wechat}
           connect-timeout: 2s
           read-timeout: 5s
           propagate-context: false
         order-service:
-          base-url: ${sample.order-service.url:http://localhost:8080}
+          base-url: ${sample.order-service.url:http://localhost:8080/mock/provider}
           connect-timeout: 2s
           read-timeout: 5s
           propagate-context: true

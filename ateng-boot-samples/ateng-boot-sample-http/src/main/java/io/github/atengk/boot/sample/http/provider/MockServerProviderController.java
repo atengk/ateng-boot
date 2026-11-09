@@ -38,7 +38,7 @@ public class MockServerProviderController {
     /**
      * 1. 查询指定用户详情
      */
-    @GetMapping({"/mock/provider/users/{id}", "/users/{id}"})
+    @GetMapping("/mock/provider/users/{id}")
     public UserResponse getUser(@PathVariable("id") Long id) {
         log.info("[MockProvider] Received getUser request for id: {}", id);
         return UserResponse.builder()
@@ -52,7 +52,7 @@ public class MockServerProviderController {
     /**
      * 2. 创建用户资源
      */
-    @PostMapping({"/mock/provider/users", "/users"})
+    @PostMapping("/mock/provider/users")
     public UserResponse createUser(@RequestBody UserRequest request) {
         log.info("[MockProvider] Received createUser request: {}", request);
         return UserResponse.builder()
@@ -185,7 +185,7 @@ public class MockServerProviderController {
     /**
      * 10. 订单详情（支持注入时延以测试客户端方法级超时与降级）
      */
-    @GetMapping({"/mock/provider/orders/{orderId}", "/orders/{orderId}"})
+    @GetMapping("/mock/provider/orders/{orderId}")
     public ResponseEntity<OrderResponse> getOrder(@PathVariable("orderId") String orderId,
                                                   @RequestParam(value = "delayMillis", defaultValue = "0") long delayMillis) {
         log.info("[MockProvider] Received getOrder: orderId={}, delayMillis={}", orderId, delayMillis);
@@ -215,7 +215,7 @@ public class MockServerProviderController {
     /**
      * 11. 订单状态查询
      */
-    @GetMapping({"/mock/provider/orders/{orderId}/status", "/orders/{orderId}/status"})
+    @GetMapping("/mock/provider/orders/{orderId}/status")
     public OrderResponse getOrderStatus(@PathVariable("orderId") String orderId) {
         log.info("[MockProvider] Received getOrderStatus: orderId={}", orderId);
         return OrderResponse.builder()
@@ -230,7 +230,7 @@ public class MockServerProviderController {
     /**
      * 12. 外部微信支付统一下单模拟
      */
-    @PostMapping({"/mock/provider/wechat/v3/pay/transactions/native", "/v3/pay/transactions/native"})
+    @PostMapping("/mock/provider/wechat/v3/pay/transactions/native")
     public WechatNativeOrderResponse wechatNativeOrder(@RequestBody WechatNativeOrderRequest request, HttpServletRequest servletRequest) {
         lastReceivedHeaders.clear();
         Enumeration<String> names = servletRequest.getHeaderNames();
