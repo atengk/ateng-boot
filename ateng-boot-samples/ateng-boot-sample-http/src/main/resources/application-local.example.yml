@@ -1,0 +1,20 @@
+# ===================================================================
+# ateng-boot-sample-http 本地真实联调配置模板
+#
+# 复制当前文件为 application-local.yml 并填入真实目标服务地址即可激活 local 直连调试
+# 注意：application-local.yml 已被 .gitignore 忽略，不会提交至仓库
+# ===================================================================
+
+server:
+  port: 8080
+
+sample:
+  # 用户微服务真实地址
+  user-service:
+    url: "http://YOUR_LOCAL_USER_SERVICE_HOST:8080"
+  # 订单微服务真实地址
+  order-service:
+    url: "http://YOUR_LOCAL_ORDER_SERVICE_HOST:8080"
+  # 外部支付服务真实网关地址
+  wechat-pay:
+    url: "https://api.mch.weixin.qq.com"
