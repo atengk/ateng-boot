@@ -389,6 +389,11 @@ public class Sm2Signer implements ApiSigner {
             }
             int sLen = bytes[pos++] & 0xFF;
             byte[] sb = Arrays.copyOfRange(bytes, pos, pos + sLen);
+            pos += sLen;
+
+            if (pos != bytes.length) {
+                throw new IllegalArgumentException("非法的 ASN.1 DER 签名: 包含非法尾部冗余字节");
+            }
 
             return new Sm2Signature(new BigInteger(1, rb), new BigInteger(1, sb));
         }
