@@ -180,21 +180,30 @@ public class MockServerProviderController {
      * 10. 订单详情（支持注入时延以测试客户端方法级超时与降级）
      */
     @GetMapping({"/mock/provider/orders/{orderId}", "/orders/{orderId}"})
-    public OrderResponse getOrder(@PathVariable("orderId") String orderId,
-                                  @RequestParam(value = "delayMillis", defaultValue = "0") long delayMillis) {
+    public ResponseEntity<OrderResponse> getOrder(@PathVariable("orderId") String orderId,
+                                                  @RequestParam(value = "delayMillis", defaultValue = "0") long delayMillis) {
         log.info("[MockProvider] Received getOrder: orderId={}, delayMillis={}", orderId, delayMillis);
-        if (delayMillis > 0) {
+        if (delayMillis > 0 || orderId.contains("slow") || orderId.contains("timeout")) {
+            long sleepTime = delayMillis > 0 ? delayMillis : 1000L;
             try {
-                Thread.sleep(delayMillis);
+                Thread.sleep(sleepTime);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
         }
-        return OrderResponse.builder()
+        if (orderId.contains("error") || orderId.contains("fail")) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(OrderResponse.builder()
+                            .orderId(orderId)
+                            .status("FAILED")
+                            .message("Simulated downstream error for order: " + orderId)
+                            .build());
+        }
+        return ResponseEntity.ok(OrderResponse.builder()
                 .orderId(orderId)
                 .status("SUCCESS")
                 .message("Mock order details fetched successfully")
-                .build();
+                .build());
     }
 
     /**
