@@ -115,3 +115,11 @@ _Avoid_: WsStatus, CloseCode, DisconnectReason
 **RealtimeGracefulShutdownHandler**:
 实时底座优雅停机受管处理器，接入 Spring SmartLifecycle 体系，执行拒绝新连接握手、广播 1012 状态码与存量发送缓冲队列安全排空。
 _Avoid_: ShutdownManager, RealtimeCloser, WsShutdown
+
+**RealtimeBinaryMessageListener**:
+原生二进制帧上行消费扩展 SPI，支持直接接收 WebSocket 原始字节数组（如音视频分片流 ASR/TTS、Protobuf、文件块），绕过 JSON 反序列化开销并贯通四维追踪上下文。
+_Avoid_: BinaryListener, WsBinaryHandler, StreamByteReceiver
+
+**RateLimitDecision**:
+会话级滑动窗口限流器判定结果枚举或契约，明确区分放行（ALLOWED）、超出阈值丢弃警告（DROPPED_WARNING）与持续违规强制熔断断开（BREACH_DISCONNECT）状态。
+_Avoid_: LimitResult, RateStatus, QuotaDecision

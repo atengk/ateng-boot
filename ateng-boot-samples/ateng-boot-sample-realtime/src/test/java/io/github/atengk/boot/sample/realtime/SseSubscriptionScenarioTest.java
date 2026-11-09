@@ -94,7 +94,7 @@ class SseSubscriptionScenarioTest {
     @DisplayName("端到端验证: 消费 SseStreamHelper 打字机流式推流并成功接收 Chunk")
     void testStreamLlmChunks() throws Exception {
         HttpClient client = HttpClient.newHttpClient();
-        String streamUrl = "http://127.0.0.1:" + port + "/api/realtime/stream-llm";
+        String streamUrl = "http://127.0.0.1:" + port + "/sample/realtime/sse/stream-llm";
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(streamUrl))

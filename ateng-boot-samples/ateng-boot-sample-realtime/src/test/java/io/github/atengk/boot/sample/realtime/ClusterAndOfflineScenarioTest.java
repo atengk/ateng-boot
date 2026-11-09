@@ -22,6 +22,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -70,7 +71,7 @@ class ClusterAndOfflineScenarioTest {
 
     private String doLogin(String userId) throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:" + port + "/api/realtime/login?userId=" + userId))
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/auth/login?userId=" + userId))
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -84,16 +85,22 @@ class ClusterAndOfflineScenarioTest {
         String testUserId = "user-offline-sample";
 
         // 1. 发送持久化离线消息
+        String payload = objectMapper.writeValueAsString(Map.of(
+                "userId", testUserId,
+                "event", "notice:offline",
+                "content", "TaskCompleted"
+        ));
         HttpRequest sendReq = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:" + port + "/api/realtime/send-offline-persistent?userId=" + testUserId + "&message=TaskCompleted"))
-                .POST(HttpRequest.BodyPublishers.noBody())
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/offline/send-persistent"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(payload))
                 .build();
         HttpResponse<String> sendResp = httpClient.send(sendReq, HttpResponse.BodyHandlers.ofString());
         assertThat(sendResp.statusCode()).isEqualTo(200);
 
         // 2. 检查离线消息总数
         HttpRequest countReq = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:" + port + "/api/realtime/offline-count?userId=" + testUserId))
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/offline/count?userId=" + testUserId))
                 .GET()
                 .build();
         HttpResponse<String> countResp = httpClient.send(countReq, HttpResponse.BodyHandlers.ofString());
@@ -102,7 +109,7 @@ class ClusterAndOfflineScenarioTest {
 
         // 3. 一次性拉取清空离线消息
         HttpRequest pullReq = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:" + port + "/api/realtime/offline-messages?userId=" + testUserId))
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/offline/messages?userId=" + testUserId))
                 .GET()
                 .build();
         HttpResponse<String> pullResp = httpClient.send(pullReq, HttpResponse.BodyHandlers.ofString());
@@ -122,7 +129,7 @@ class ClusterAndOfflineScenarioTest {
     @DisplayName("端到端验证: 集群度量统计 API 正常聚合与单机保底响应")
     void testClusterMetricsApi() throws Exception {
         HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:" + port + "/api/realtime/cluster-metrics"))
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/session/cluster-metrics"))
                 .GET()
                 .build();
         HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
@@ -162,7 +169,7 @@ class ClusterAndOfflineScenarioTest {
 
         // 触发 Sa-Token 强退
         HttpRequest kickoutReq = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:" + port + "/api/realtime/sa-kickout?userId=" + testUserId))
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/auth/kickout?userId=" + testUserId))
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
         HttpResponse<String> kickoutResp = httpClient.send(kickoutReq, HttpResponse.BodyHandlers.ofString());
