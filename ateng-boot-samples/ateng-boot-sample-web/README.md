@@ -78,6 +78,8 @@
 | **表单特征指纹自动哈希防抖** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/button` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/button?formToken=TOKEN_A1B2"` |
 | **营销优惠券领取精准防重** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/coupon` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/coupon?couponCode=CPN_8888"` |
 | **业务异常幂等锁自动释放** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/fail-retry` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/fail-retry?bizId=BIZ_001&fail=false"` |
+| **幂等锁定状态主动探针** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/idempotent/is-locked` | `curl "http://localhost:8080/sample/web/traffic/idempotent/is-locked?key=order:pay:ORD_1001"` |
+| **限流状态重置管理** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/ratelimit/reset` | `curl -X POST "http://localhost:8080/sample/web/traffic/ratelimit/reset?key=test-key"` |
 
 ### 3.4 传输安全防护网、双向加签与边界防火墙 (`WebSecurityAndSignController`)
 
@@ -88,6 +90,7 @@
 | **资讯发布与富文本豁免 (XSS)** | `WebSecurityAndSignController` | `POST /sample/web/security/xss/article` | `curl -X POST "http://localhost:8080/sample/web/security/xss/article" -H "Content-Type: application/json" -d "{\"title\":\"<script>alert(1)</script>安全资讯\",\"content\":\"<p>富文本HTML内容</p>\",\"author\":\"admin\"}"` |
 | **类级 XSS 豁免公告发布** | `WebSecurityAndSignController` | `POST /sample/web/security/xss/announcement` | `curl -X POST "http://localhost:8080/sample/web/security/xss/announcement" -H "Content-Type: application/json" -d "{\"title\":\"<h1>全站系统公告</h1>\",\"content\":\"<div>全站公告富文本</div>\"}"` |
 | **Query 搜索参数 XSS 清洗** | `WebSecurityAndSignController` | `GET /sample/web/security/xss/query` | `curl "http://localhost:8080/sample/web/security/xss/query?keyword=%3Cscript%3Ealert(1)%3C/script%3E关键词"` |
+| **请求头 XSS 安全清洗验证** | `WebSecurityAndSignController` | `GET /sample/web/security/xss/header` | `curl "http://localhost:8080/sample/web/security/xss/header" -H "X-Custom-Tag: <script>alert(1)</script>"` |
 | **方法级 IP 白名单放行** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/whitelist` | `curl "http://localhost:8080/sample/web/security/ip/whitelist"` |
 | **方法级 IP 黑名单校验** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/blacklist` | `curl "http://localhost:8080/sample/web/security/ip/blacklist"` |
 | **CIDR 子网掩码与 IPv6 网段** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/cidr-ipv6` | `curl "http://localhost:8080/sample/web/security/ip/cidr-ipv6"` |
@@ -107,7 +110,9 @@
 | **缺省无头路由回退默认版本** | `WebVersionV1Controller` | `GET /sample/web/routing/member/info` | `curl "http://localhost:8080/sample/web/routing/member/info"` |
 | **方法级细粒度版本覆盖 (V2.1)** | `WebVersionV2Controller` | `GET /v2.1/sample/web/routing/member/feature` | `curl "http://localhost:8080/v2.1/sample/web/routing/member/feature"` |
 | **客户端真实 IP 提取** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/client-ip` | `curl "http://localhost:8080/sample/web/routing/client-ip" -H "X-Forwarded-For: 203.0.113.195"` |
+| **可信反向代理真实 IP 逆向提取** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/client-ip/trusted` | `curl "http://localhost:8080/sample/web/routing/client-ip/trusted" -H "X-Forwarded-For: 203.0.113.195, 10.0.0.1"` |
 | **RFC 6266 安全防乱码下载** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/download` | `curl -i "http://localhost:8080/sample/web/routing/download"` |
+| **统一 JSON 响应直接写出** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/write-json` | `curl -i "http://localhost:8080/sample/web/routing/write-json"` |
 | **CIDR 子网掩码范围匹配** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/ip-check` | `curl "http://localhost:8080/sample/web/routing/ip-check?ip=192.168.1.50&cidr=192.168.1.0/24"` |
 
 ### 3.6 云原生生命周期治理与安全防呆自检 (`WebCloudLifecycleController` & 内置端点)

@@ -124,19 +124,101 @@ flowchart TD
 - **响应确定性释放不变量 (Deterministic Cleanup)**：使用 `ContentCachingResponseWrapper` 拦截响应体并在 `finally` 嵌套块中 **100% 确保调用 `responseWrapper.copyBodyToResponse()`**，从底层架构上消除因异常中断导致客户端挂起的恶性 Bug。
 - **状态码自适应提升**：HTTP 响应状态码 $\ge 400$ 时，单行聚合日志级别自动由 `INFO` 提升为 `WARN`，提升运维感知灵敏度。
 
+### 6. 全景 Web 过滤器与 AOP 确定性时序天梯 (Deterministic Filter & AOP Ordering Ladder)
+为了彻底根除多中间件叠加时的执行时序混乱、Filter 相互遮蔽与 AOP 切面抢占问题，`ateng-boot-web` 确立全景时序天梯基线：
+
+#### 9 大过滤器时序阶梯 (Filter Chain Ladder, 步长 10)
+所有 Filter 均基于 Spring `Ordered.HIGHEST_PRECEDENCE`（最高优先级）按步长 10 显式递增注册，确保安全上下文最前置、响应修改紧随其后：
+
+```mermaid
+flowchart LR
+    F1["1. TraceFilter<br>(ORDER: +10)"] --> F2["2. IpAccessControlFilter<br>(ORDER: +20)"]
+    F2 --> F3["3. ContentCachingFilter<br>(ORDER: +30)"]
+    F3 --> F4["4. PayloadLoggingFilter<br>(ORDER: +40)"]
+    F4 --> F5["5. SlowRequestFilter<br>(ORDER: +50)"]
+    F5 --> F6["6. SecurityHeadersFilter<br>(ORDER: +60)"]
+    F6 --> F7["7. ShallowEtagHeaderFilter<br>(ORDER: +70)"]
+    F7 --> F8["8. XssFilter<br>(ORDER: +80)"]
+    F8 --> F9["9. CorsFilter<br>(ORDER: +90)"]
+    F9 --> Dispatcher["DispatcherServlet / Controller"]
+```
+
+1. **`TraceFilter` (`ORDER = HIGHEST_PRECEDENCE + 10`)**：全链路根基，提取或生成无锁 MDC `traceId`，向出站响应头写入 `X-Trace-Id`，并在 `finally` 确定性清理；
+2. **`IpAccessControlFilter` (`ORDER = HIGHEST_PRECEDENCE + 20`)**：URL 路径级 IP 防火墙，优先在未读取请求体前实施快速无状态阻断；
+3. **`ContentCachingFilter` (`ORDER = HIGHEST_PRECEDENCE + 30`)**：请求体可重复读包装，拦截超限载荷并实施 HTTP 200 + 413 优雅降级；
+4. **`PayloadLoggingFilter` (`ORDER = HIGHEST_PRECEDENCE + 40`)**：双向安全采样日志，复用可重读请求体，敏感信息脱敏与单行聚合；
+5. **`SlowRequestFilter` (`ORDER = HIGHEST_PRECEDENCE + 50`)**：出口耗时统计与长连接/流式/异步免打扰告警；
+6. **`SecurityHeadersFilter` (`ORDER = HIGHEST_PRECEDENCE + 60`)**：注入 OWASP/等保三级推荐安全响应头并抹除容器指纹；
+7. **`ShallowEtagHeaderFilter` (`ORDER = HIGHEST_PRECEDENCE + 70`)**：协商缓存计算 ETag，客户端命中直接返回 304 节省网络带宽；
+8. **`XssFilter` (`ORDER = HIGHEST_PRECEDENCE + 80`)**：包装 `XssHttpServletRequestWrapper`，清洗 Query/Form 参数与非排除 Header；
+9. **`CorsFilter` (`ORDER = HIGHEST_PRECEDENCE + 90`)**：基于 `DynamicCorsConfigurationSource` 与 `CorsOriginProvider` 实施安全跨域校验与凭据反射。
+
+#### 6 大 AOP 切面时序阶梯 (Aspect Chain Ladder, 步长 100)
+切面优先级通过 `@Order` 显式按步长 100 编排，保障安全防御在先、业务审计紧贴真实逻辑：
+
+```mermaid
+flowchart TD
+    A1["1. IpAccessControlAspect (@Order 100)<br>方法/类级精细化 IP 防火墙拦截"] --> A2["2. RateLimiterAspect (@Order 200)<br>接口频控令牌桶防刷与超限阻断"]
+    A2 --> A3["3. IdempotentAspect (@Order 300)<br>接口防重幂等原子抢占与锁定"]
+    A3 --> A4["4. ApiSignAspect (@Order 400)<br>接口双向加签验签与防篡改/防重放"]
+    A4 --> A5["5. WebLogAspect (@Order 500)<br>基础 Web 访问审计与入参出参打印"]
+    A5 --> A6["6. OperateLogAspect (@Order 600)<br>结构化业务操作审计，紧贴业务执行与出参脱敏"]
+    A6 --> Biz["业务 Controller 方法体"]
+```
+
+### 7. 虚拟线程友好防 Carrier Pinning 与受管并发 (Virtual Thread Carrier Pinning Defense)
+- **零野线程与受管收敛**：全面取缔内部任何私自使用 `Executors` 或 `new Thread()` 创建未受管线程池的行为，全部异步投递与事件广播统一接入 `ateng-boot-core` 的受管线程池（`AtengAsyncAutoConfiguration`）；
+- **全面替换 `synchronized` 为 `ReentrantLock`**：在单机内存组件（`InMemoryIdempotentKeyStore`、`InMemoryRateLimiterStore` 等）的并发临界区中，100% 消除 Java 原生 `synchronized` 关键字，统一重构为 JUC `ReentrantLock`。彻底消除 JDK 21+ 虚拟线程在 `synchronized` 临界区内可能引发的 Carrier Thread Pinning（宿主平台线程锁死），保障虚拟线程在高并发场景下的无损调度与高吞吐；
+- **锁释放状态安全防御**：临界区锁释放严格遵循前置持有判定（`if (lock.isHeldByCurrentThread()) { lock.unlock(); }`）范式并在 `finally` 块中执行，杜绝非法状态异常（`IllegalMonitorStateException`）。
+
+### 8. 对称存储契约与高可用灾备架构 (Symmetric Store SPIs & Fail-Open Resilient Governance)
+- **对称语义完备性**：
+  - `IdempotentKeyStore` SPI 完备提供原子抢占（`tryLock`）、主动释放（`unlock`）与状态探针（`isLocked(key)`）；
+  - `RateLimiterStore` SPI 完备提供原子尝试获取（`tryAcquire`）、动态重置与状态清理（`reset(key)`）；
+- **`fail-open` 存储容灾与平滑降级**：
+  - 当分布式存储后端（如 Redis / Redisson）出现网络断连、连接池耗尽或超时中断时，若开启 `fail-open: true`，切面平滑放行保证核心业务主流程不中断，同时输出格式化 WARN 告警；
+  - 若开启 `fail-open: false`，则由切面统一拦截底层 SDK 异常并转译为标准 `BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, ...)`，**100% 完整保留原始底层 `cause` 异常链**，杜绝吞咽异常与 Log-and-Throw。
+
+### 9. 载荷超限 413 优雅降级与快速失败屏障 (ContentCachingFilter 413 Fallback Barrier)
+- `CachedBodyHttpServletRequest` 在构造或流读取过程中探测到请求体超出阈值（`max-body-size: 2MB`）时，抛出 `PAYLOAD_TOO_LARGE` (413) 业务异常；
+- `ContentCachingFilter` 就近捕获该异常，在过滤器出口实施快速失败屏障：
+  - 自动从 MDC 提取并回写 `X-Trace-Id` 响应头；
+  - 严守显式响应契约（ADR-0002 与 ADR-0004），使用 `ServletUtil.writeJson` 向响应流直接回写 HTTP 200 + `Result.fail(CommonResultCode.PAYLOAD_TOO_LARGE.getCode(), ...)` 的 JSON 报文并刷新关闭；
+  - 阻断超限报文继续流入后续过滤器或打爆 Spring MVC 分发层，兼顾安全性与客户端体验。
+
+### 10. 反向代理受信链与防伪造清洗 (Trusted Proxies Anti-Spoofing & Reverse Hop Cleaning)
+- `IpUtil` 引入 `trustedProxies` 可信反向代理列表入参；
+- 在多级反向代理（如 CDN -> SLB -> Ingress -> Pod）场景下，客户端极易通过伪造请求头（如 `X-Forwarded-For: 127.0.0.1, 10.0.0.1`）实施 IP 伪造攻击；
+- `IpUtil.getClientIp(request, trustedProxies)` 采用逆向清洗算法：从代理链最右侧（直接上游）开始向左倒序遍历，跳过所有命中的可信反向代理 IP，取第一个不受信任的 IP 作为真实客户端 IP；若全链均为可信代理，则保底使用最左侧原始 IP，彻底免疫 IP 伪造逃逸；
+- 兼顾 IPv4 与 IPv6 规整化（如规整 `0:0:0:0:0:0:0:1` 为 `127.0.0.1`）。
+
+### 11. 全景双轨 XSS 防御与请求头清洗 (XSS Header Cleaning & Pseudo-Protocol Stripping)
+- `WebProperties.XssProperties` 新增 `clean-headers`（默认开启）与 `exclude-headers`（支持排除特定合规头）；
+- `XssHttpServletRequestWrapper` 拦截 `getHeader` 与 `getHeaders`，对非排除标头实施安全清洗；
+- `XssCleaner` 原生引擎增强伪协议防御，自动剔除 `javascript:` 与 `vbscript:` 等危险脚本协议；
+- 配合 Jackson `XssStringDeserializer` 与 `@XssIgnore`，实现请求参数、请求头与 JSON 请求体的三维全景防护。
+
 ---
 
 ## 核心配置与类拓扑速查 (Configuration & Architecture Map)
 
 | 组件 / SPI | 核心配置项 (`ateng.boot.web.*`) | 默认值 | 作用与职责 |
 | :--- | :--- | :--- | :--- |
-| `ContentCachingFilter` | `body-cache.max-body-size` | `2MB` | 通用请求体可重读管道，超限快速失败截断防 OOM |
-| `OperateLogAspect` | `operate-log.enabled` | `true` | 声明式结构化操作审计切面，自动关联四维上下文，守卫内存真明文 |
+| `TraceFilter` | `trace.enabled` | `true` | 全链路追踪无锁 MDC 写入与 `X-Trace-Id` 响应头流转 (ORDER: +10) |
+| `IpAccessControlFilter` | `ip-access-control.enabled`<br>`ip-access-control.trusted-proxies` | `true`<br>`[]` | URL 路径级 IP 防火墙，支持可信代理逆向清洗 (ORDER: +20) |
+| `ContentCachingFilter` | `body-cache.max-body-size` | `2MB` | 通用请求体可重读管道，超限 413 优雅降级与快速失败截断防 OOM (ORDER: +30) |
+| `PayloadLoggingFilter` | `payload-log.enabled`<br>`payload-log.max-payload-size`<br>`payload-log.exclude-urls` | `false`<br>`4KB`<br>`[]` | HTTP 请求与响应双向安全采样，内建 MIME 过滤、正则掩码与防挂起 (ORDER: +40) |
+| `SlowRequestFilter` | `slow-request.enabled`<br>`slow-request.threshold`<br>`slow-request.exclude-urls` | `true`<br>`3s`<br>`[]` | 长耗时慢请求性能告警，智能放行 WebSocket/SSE/下载/异步任务 (ORDER: +50) |
+| `SecurityHeadersFilter` | `security-headers.enabled` | `true` | OWASP / 等保三级推荐安全标头注入并抹除容器版本指纹 (ORDER: +60) |
+| `ShallowEtagHeaderFilter` | `etag.enabled`<br>`etag.write-weak-etag` | `false`<br>`false` | 基于响应内容哈希的条件协商缓存与 304 节省带宽 (ORDER: +70) |
+| `XssFilter` | `xss.enabled`<br>`xss.clean-headers`<br>`xss.exclude-headers` | `true`<br>`true`<br>`["Authorization", "Content-Type", ...]` | XSS 安全清洗过滤器，清洗 Query/Form 与请求头 (ORDER: +80) |
+| `DynamicCorsConfigurationSource` | `cors.enabled`<br>`cors.allowed-origins`<br>`cors.allowed-origin-patterns` | `true`<br>`[]`<br>`[]` | 动态跨域校验源，联动 `CorsOriginProvider` SPI 实施安全凭据反射 (ORDER: +90) |
+| `IdempotentKeyStore` | `idempotent.enabled`<br>`idempotent.fail-open` | `true`<br>`true` | 对称幂等存储 SPI，完备提供 `tryLock`、`unlock` 与 `isLocked` 探针 |
+| `RateLimiterStore` | `rate-limiter.enabled`<br>`rate-limiter.fail-open` | `true`<br>`true` | 对称限流存储 SPI，完备提供 `tryAcquire` 与状态重置 `reset` |
+| `OperateLogAspect` | `operate-log.enabled` | `true` | 声明式结构化操作审计切面，自动关联四维上下文，守卫内存真明文 (Order: 600) |
 | `OperateLogStorageProvider` | - | `DefaultOperateLogStorageProvider` | 操作审计存储解耦 SPI 扩展点，开箱提供 SLF4J JSON 保底 |
 | `AtengGracefulShutdownHandler` | `shutdown.enabled`<br>`shutdown.drain-timeout`<br>`shutdown.smart-lifecycle-enabled` | `true`<br>`10s`<br>`true` | K8s 云原生就绪探针主动反转与静默排空，SmartLifecycle 兜底 |
 | `PreStopEndpoint` / `PreStopController` | `shutdown.actuator-endpoint-enabled`<br>`shutdown.mvc-endpoint-enabled` | `true`<br>`true` | `/actuator/pre-stop` 与 `/pre-stop` 双模停机排空端点 |
-| `SlowRequestFilter` | `slow-request.enabled`<br>`slow-request.threshold`<br>`slow-request.exclude-urls` | `true`<br>`3s`<br>`[]` | 长耗时慢请求性能告警，智能放行 WebSocket/SSE/下载/异步任务 |
-| `PayloadLoggingFilter` | `payload-log.enabled`<br>`payload-log.max-payload-size`<br>`payload-log.exclude-urls` | `false`<br>`4KB`<br>`[]` | HTTP 请求与响应双向安全采样，内建 MIME 过滤、正则掩码与防挂起 |
 
 ---
 

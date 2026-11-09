@@ -25,7 +25,7 @@ _Avoid_: CrossFilter, WebCorsConfig
 _Avoid_: TraceHelper, MdcUtil, LogTraceUtil
 
 **IpUtil**:
-多级反向代理客户端真实 IP 提取工具，按序解析 X-Forwarded-For 首个有效 IP，并安全兼容本地环回与 IPv6 规整。
+多级反向代理客户端真实 IP 提取工具，支持可信反向代理列表（trustedProxies）逆向清洗与伪造过滤，按序解析 X-Forwarded-For 等标头首个有效 IP，并安全兼容本地环回与 IPv6 规整。
 _Avoid_: AddressUtil, NetworkUtil, ClientIpUtil
 
 **ServletUtil**:
@@ -287,5 +287,34 @@ _Avoid_: StartupCardListener, BannerPrinter, ReadyListener
 **ProductionSanityChecker**:
 生产环境（prod/production）高危配置防呆自检器，启动期探测 Swagger 公网暴露、Payload 全量日志与 H2 控制台并输出安全警示。
 _Avoid_: SecuritySanityChecker, ProductionGuard, StartupChecker
+
+**DynamicCorsConfigurationSource**:
+基于属性配置与 CorsOriginProvider 的动态安全跨域配置源，实施请求时动态来源判定与凭据安全反射。
+_Avoid_: DynamicCorsSource, CustomCorsConfigurationSource, WebCorsSource
+
+**DefaultCorsOriginProvider**:
+基于属性配置白名单与正则表达式模式的开箱即用默认跨域来源校验提供者。
+_Avoid_: SimpleCorsOriginProvider, ConfigCorsOriginProvider
+
+**CachedBodyHttpServletRequest**:
+可重复读取请求体的 HttpServletRequest 包装器，支持载荷上限拦截防 OOM 与 HTTP 200 + 413 业务错误码快速失败。
+_Avoid_: BodyCacheRequest, ReReadRequest, CachedRequest
+
+**XssHttpServletRequestWrapper**:
+XSS 安全清洗 HTTP 请求包装器，拦截 Query/Form 参数与非排除 Header 并实施无害化清洗与伪协议剥离。
+_Avoid_: CleanRequestWrapper, AntiXssRequestWrapper, SafeRequest
+
+**XssStringDeserializer**:
+Jackson 字符串反序列化器，在 JSON 请求体反序列化为对象属性阶段根据 XssCleaner 执行无害化清洗，支持 @XssIgnore 字段级豁免。
+_Avoid_: JsonXssCleaner, XssDeserializer, StringCleanDeserializer
+
+**ApiSignAspect**:
+基于 AOP 环绕拦截的 API 数据签名防篡改切面，解析 @ApiSign 契约，调用 ApiSigner 实施双向或单向验签与加签控制。
+_Avoid_: SignAspect, SignatureAspect, DataSignAspect
+
+**DocDetectionHelper**:
+OpenAPI/Swagger 接口文档暴露探测辅助工具，用于应用启动就绪卡片与生产高危配置防呆探测。
+_Avoid_: SwaggerHelper, DocUtil, OpenApiDetector
+
 
 

@@ -13,20 +13,20 @@
 | **精度与时间规范** | 53 位雪花精度防截断与时间序列化 | `JacksonCustomizer` | `ateng.boot.web.long-to-string` | Long/BigInteger 序列化为 String，标准 `yyyy-MM-dd HH:mm:ss` 格式化，不覆盖原生 `ObjectMapper` | `JacksonCustomizerTest.java`, `WebContractAndExceptionControllerTest.java`, `WebContractSampleControllerTest.java` |
 | **接口审计日志** | 声明式接口耗时审计与安全防 OOM | `@WebLog`, `WebLogAspect` | `ateng.boot.web.log.enabled` | `@WebLog(value, printParams, printResult, excludeParams)`，大文件 Multipart 自动占位防 OOM | `WebLogAspectTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **动态 CORS 跨域** | 动态跨域来源校验与凭证安全反射 | `CorsOriginProvider`, `DefaultCorsOriginProvider`, `DynamicCorsConfigurationSource` | `ateng.boot.web.cors.enabled`, `allowed-origins`, `allow-credentials`, `allow-localhost`, `max-age` | 基于配置属性通配或 SPI 动态扩展校验 Origin，安全反射并支持凭据传输（Cookie），放行本地 localhost 调试 | `DynamicCorsTest.java`, `WebSecurityAndSignControllerTest.java` |
-| **自适应限流防刷** | 三级自适应令牌桶与多维限流 | `@RateLimiter`, `LimitType`, `RateLimiterStore`, `InMemoryRateLimiterStore`, `RedisRateLimiterStore`, `RedissonRateLimiterStore` | `ateng.boot.web.ratelimit.enabled`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@RateLimiter(key, time, count, limitType)`，支持默认/IP/用户/租户（LimitType.TENANT）多维限流防刷与租户流量隔离 | `RateLimiterAspectTest.java`, `AtengRateLimiterAutoConfigurationTest.java`, `InMemoryRateLimiterStoreTest.java`, `WebTrafficGovernanceControllerTest.java`, `WebTenantRateLimiterSampleTest.java` |
-| **自适应防重幂等** | 三级自适应防重幂等引擎 | `@Idempotent`, `IdempotentKeyStore`, `InMemoryIdempotentKeyStore`, `RedisIdempotentKeyStore`, `RedissonIdempotentKeyStore` | `ateng.boot.web.idempotent.enabled`, `key-prefix`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@Idempotent(key, timeout, message, delKeyOnException)`，支持 SpEL 动态提取业务键、自动防抖、业务异常释放 | `IdempotentAspectTest.java`, `AtengIdempotentAutoConfigurationTest.java`, `InMemoryIdempotentKeyStoreTest.java`, `WebTrafficGovernanceControllerTest.java` |
+| **自适应限流防刷** | 三级自适应令牌桶与多维限流 | `@RateLimiter`, `LimitType`, `RateLimiterStore`, `InMemoryRateLimiterStore`, `RedisRateLimiterStore`, `RedissonRateLimiterStore` | `ateng.boot.web.ratelimit.enabled`, `fail-open`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@RateLimiter(key, time, count, limitType)`，`RateLimiterStore.tryAcquire(key, permits, timeout)` 与 `reset(key)` 对称状态重置；支持默认/IP/用户/租户（LimitType.TENANT）多维限流；`fail-open: true` 存储故障平滑放行；`ReentrantLock` 杜绝虚拟线程 Carrier Pinning | `RateLimiterAspectTest.java`, `AtengRateLimiterAutoConfigurationTest.java`, `InMemoryRateLimiterStoreTest.java`, `WebTrafficGovernanceControllerTest.java`, `WebTenantRateLimiterSampleTest.java` |
+| **自适应防重幂等** | 三级自适应防重幂等引擎 | `@Idempotent`, `IdempotentKeyStore`, `InMemoryIdempotentKeyStore`, `RedisIdempotentKeyStore`, `RedissonIdempotentKeyStore` | `ateng.boot.web.idempotent.enabled`, `key-prefix`, `fail-open`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@Idempotent(key, timeout, message, delKeyOnException)`，`IdempotentKeyStore.tryLock(key, ttl)`、`unlock(key)` 与 `isLocked(key)` 对称状态探针；支持 SpEL 动态提取业务键、自动防抖、业务异常释放；`fail-open: true` 存储故障平滑放行；`ReentrantLock` 杜绝虚拟线程 Carrier Pinning | `IdempotentAspectTest.java`, `AtengIdempotentAutoConfigurationTest.java`, `InMemoryIdempotentKeyStoreTest.java`, `WebTrafficGovernanceControllerTest.java` |
 | **云原生优雅停机** | K8s 就绪探针排空与容器生命周期治理 | `AtengGracefulShutdownHandler`, `PreStopEndpoint`, `PreStopController` | `ateng.boot.web.shutdown.enabled`, `drain-timeout`, `smart-lifecycle-enabled`, `actuator-endpoint-enabled`, `mvc-endpoint-enabled`, `mvc-endpoint-path` | 翻转 `ReadinessState.REFUSING_TRAFFIC`，受管静默排空等待（`drain-timeout: 10s`），`AtomicBoolean` 状态机排空幂等，支持 Actuator `/actuator/pre-stop` 与 MVC `/pre-stop` 双模端点，`SmartLifecycle` 兜底 | `AtengGracefulShutdownHandlerTest.java`, `PreStopEndpointTest.java`, `PreStopControllerTest.java`, `AtengGracefulShutdownAutoConfigurationTest.java`, `WebCloudLifecycleControllerTest.java` |
 | **慢请求主动告警** | 长耗时慢请求性能主动告警与长连接放行 | `SlowRequestFilter` | `ateng.boot.web.slow-request.enabled`, `threshold`, `exclude-urls` | 请求出口处计算总耗时，超过阈值（强类型 Duration）输出包含 TraceId、URI、Method、耗时与 ClientIp 的 `[SLOW_REQUEST]` 格式化 WARN 日志，自动放行 WebSocket、SSE、文件下载与异步挂起请求，支持 Ant 路径白名单 | `SlowRequestFilterTest.java`, `SlowRequestMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogModel` | `ateng.boot.web.operate-log.enabled` | `@OperateLog(module, type, description, saveParams, saveResult, excludeParams)`，自动关联线程上下文（操作人/租户），出参自动联动 `@FieldSensitive` 视图脱敏，保留原始异常因果链，支持异步存储 SPI 与开箱即用 JSON 保底 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java`, `WebObservabilityAndAuditControllerTest.java` |
-| **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流，单次超限（DataSize）快速失败截断防 OOM，自动跳过表单与文件上传，旧版 `RequestBodyCachingFilter` 保持向后兼容委托 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
+| **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流；单次超限（DataSize）快速失败并优雅降级输出 HTTP 200 + Result 413 JSON 报文并回写 `X-Trace-Id`；自动跳过表单与文件上传，旧版 `RequestBodyCachingFilter` 保持向后兼容委托 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **载荷采样日志** | HTTP 请求/响应双向安全采样与截断防 OOM | `PayloadLoggingFilter` | `ateng.boot.web.payload-log.enabled`, `max-payload-size`, `exclude-urls` | 请求出口处单行聚合输出包含 TraceId、Method、URI、Status、Cost、ReqBody 与 RespBody 的 `[HTTP_PAYLOAD]` 日志，内建 MIME 过滤、凭据正则掩码（`***`）、强类型截断（默认 4KB）、状态自适应提升（$\ge 400$ 提升为 WARN）并在 `finally` 确定性执行 `copyBodyToResponse()` | `PayloadLoggingFilterTest.java`, `PayloadLoggingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `SignAlgorithm`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `RequestBodyCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature` | `@ApiSign(expireSeconds, signResponse)`，支持 HMAC-SHA256 对称、RSA 非对称与国密 SM2/SM3 非对称算法，请求体可重读包装，Nonce 防重放与响应加签 | `ApiSignerTest.java`, `Sm2SignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `RequestBodyCachingFilterTest.java`, `WebSecurityAndSignControllerTest.java`, `WebSecuritySignRsaSampleTest.java`, `WebSecuritySignSm2SampleTest.java` |
 | **安全响应头防御** | 等保三级基线安全响应头注入与容器指纹剥离 | `SecurityHeadersFilter`, `SecurityHeadersProperties` | `ateng.boot.web.security-headers.enabled`, `content-type-options`, `frame-options`, `xss-protection`, `referrer-policy`, `content-security-policy`, `permissions-policy`, `remove-server-header` | 注入 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`X-XSS-Protection: 1; mode=block`、`Referrer-Policy: strict-origin-when-cross-origin` 等基准头，剥离容器 `Server` 头，`containsHeader` 守卫防覆盖 | `SecurityHeadersFilterTest.java`, `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **ETag 协商缓存** | 基于浅层哈希的内容协商缓存与 304 节省带宽 | `ShallowEtagHeaderFilter`, `EtagProperties` | `ateng.boot.web.etag.enabled`, `write-weak-etag` | 条件自动装配 Spring 原生 `ShallowEtagHeaderFilter`，自动计算内容摘要并生成 `ETag` 响应头，配合 `If-None-Match` 返回 `304 Not Modified` 节省网络带宽 | `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
-| **XSS 安全清洗与放行** | 双轨无害化清洗与字段级富文本放行 | `XssFilter`, `XssHttpServletRequestWrapper`, `XssCleaner`, `XssMode`, `XssStringDeserializer`, `@XssIgnore` | `ateng.boot.web.xss.enabled`, `mode`, `exclude-urls` | 支持 `XssMode.ESCAPE`（默认 HTML 转义）与 `STRIP`（标签剔除），拦截 Query/Form 表单参数与 JSON 请求体，通过 `@XssIgnore` 声明式在字段或类级别豁免富文本，支持 Ant 白名单路径排除 | `XssCleanerTest.java`, `XssFilterTest.java`, `XssHttpServletRequestWrapperTest.java`, `XssStringDeserializerTest.java`, `WebXssSampleControllerTest.java`, `WebXssStripModeSampleTest.java` |
-| **IP 访问控制防火墙** | 声明式 IP 防火墙与 CIDR 子网判定 | `@IpAccessControl`, `IpAccessMode`, `IpAccessControlFilter`, `IpAccessControlAspect`, `IpAccessControlProperties` | `ateng.boot.web.ip-access-control.enabled`, `http-status-403`, `mode`, `rules`, `filter.enabled`, `filter.mode`, `filter.rules`, `filter.url-patterns`, `filter.exclude-urls` | `@IpAccessControl(mode, rules, message, httpStatus403)`，单 IP 与 IPv4/IPv6 CIDR 子网位运算判定，白名单/黑名单双模，方法级切面与 URL 路径级过滤器双重防线，默认遵循 ADR-0004 返回 HTTP 200 + Result 403 并注入 `X-Denied-Reason: IP_BLOCKED`，支持物理 403 切断 | `IpUtilTest.java`, `IpAccessControlFilterTest.java`, `IpAccessControlAspectTest.java`, `WebIpAccessSampleControllerTest.java`, `WebIpAccessFilterSampleTest.java` |
-| **客户端 IP 提取** | 多级反向代理穿透与 CIDR 判定 | `IpUtil` | - | `IpUtil.getClientIp()`, `getClientIp(request)`, `isInRange(ip, cidrOrIp)`, `isInRange(ip, rules)`，穿透 X-Forwarded-For 等多级代理，纯 JDK 原生无 DNS 依赖 CIDR/单 IP 子网判定 | `IpUtilTest.java`, `WebRoutingAndUtilityControllerTest.java` |
-| **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader()`, `writeDownload(response, filename, bytes/stream)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java`, `WebRoutingAndUtilityControllerTest.java` |
+| **XSS 安全清洗与放行** | 双轨无害化清洗与字段级富文本放行 | `XssFilter`, `XssHttpServletRequestWrapper`, `XssCleaner`, `XssMode`, `XssStringDeserializer`, `@XssIgnore` | `ateng.boot.web.xss.enabled`, `mode`, `clean-headers`, `exclude-headers`, `exclude-urls` | 支持 `XssMode.ESCAPE`（默认 HTML 转义）与 `STRIP`（标签剔除与 `javascript:`/`vbscript:` 伪协议剥离）；拦截 Query/Form 表单参数与请求头（`getHeader`/`getHeaders`）；`XssStringDeserializer` 拦截 JSON 请求体；通过 `@XssIgnore` 声明式在字段或类级别豁免富文本，支持 Ant 白名单路径排除 | `XssCleanerTest.java`, `XssFilterTest.java`, `XssHttpServletRequestWrapperTest.java`, `XssStringDeserializerTest.java`, `WebXssSampleControllerTest.java`, `WebXssStripModeSampleTest.java`, `WebXssHeaderCleanSampleTest.java` |
+| **IP 访问控制防火墙** | 声明式 IP 防火墙与 CIDR 子网判定 | `@IpAccessControl`, `IpAccessMode`, `IpAccessControlFilter`, `IpAccessControlAspect`, `IpAccessControlProperties` | `ateng.boot.web.ip-access-control.enabled`, `trusted-proxies`, `http-status-403`, `mode`, `rules`, `filter.enabled`, `filter.mode`, `filter.rules`, `filter.url-patterns`, `filter.exclude-urls` | `@IpAccessControl(mode, rules, message, httpStatus403)`，单 IP 与 IPv4/IPv6 CIDR 子网位运算判定，白名单/黑名单双模，可信代理多跳逆向清洗防伪造，方法级切面与 URL 路径级过滤器双重防线，默认遵循 ADR-0004 返回 HTTP 200 + Result 403 并注入 `X-Denied-Reason: IP_BLOCKED`，支持物理 403 切断 | `IpUtilTest.java`, `IpAccessControlFilterTest.java`, `IpAccessControlAspectTest.java`, `WebIpAccessSampleControllerTest.java`, `WebIpAccessFilterSampleTest.java` |
+| **客户端 IP 提取** | 多级反向代理穿透与 CIDR 判定 | `IpUtil` | `ateng.boot.web.ip-access-control.trusted-proxies` | `IpUtil.getClientIp()`, `getClientIp(request)`, `getClientIp(trustedProxies)`, `getClientIp(request, trustedProxies)`, `normalizeIp(ip)`, `isInRange(ip, cidrOrIp)`, `isInRange(ip, rules)`，多级反向代理逆向清洗穿透与伪造防护，纯 JDK 原生无 DNS 依赖 CIDR/单 IP 子网判定 | `IpUtilTest.java`, `WebRoutingAndUtilityControllerTest.java` |
+| **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader()`, `writeJson(response, status, object)`, `writeDownload(response, filename, bytes/stream)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java`, `WebRoutingAndUtilityControllerTest.java` |
 | **声明式 API 多版本分流** | 路径前缀与请求头双模版本控制 | `@ApiVersion`, `ApiVersionCondition`, `ApiVersionRequestMappingHandlerMapping`, `ApiVersionProperties` | `ateng.boot.web.api-version.enabled`, `default-version`, `header`, `path-prefix-enabled` | 支持 Controller 类或方法标注，URL 路径前缀（`/v{version}/`）与请求头（`X-API-Version`）双向自动分流，缺省默认版本回退与方法级覆盖类级 | `ApiVersionConditionTest.java`, `ApiVersionRequestMappingHandlerMappingTest.java`, `WebVersionSampleControllerTest.java` |
 | **枚举字典与反序列化** | 启动期枚举扫描注册表、三阶只读 HTTP 字典端点与 Jackson 强类型双向反序列化器 | `EnumDictionaryRegistry`, `EnumDictionaryController`, `EnumDictionaryProperties`, `EnumNamingStrategy`, `BaseEnumDeserializer`, `AtengEnumDictionaryAutoConfiguration` | `ateng.boot.web.enum.enabled`, `path-prefix`, `naming-strategy`, `scan-packages` | `GET {prefix}` 全量目录索引; `GET {prefix}/{name}` 单枚举查询; `POST/GET {prefix}/batch` 批量聚合; 别名冲突启动期 Fail-Fast; i18n 多语言透明适配 (`enum.{SimpleName}.{NAME}`) 与平滑回退; `BaseEnumDeserializer` 自动拦截数字 code、字符串 code 与常量名精准反序列化为 `IBaseEnum` 实例 | `EnumDictionaryTest.java`, `EnumDictionaryI18nTest.java`, `BaseEnumDeserializerTest.java`, `WebEnumSampleControllerTest.java` |
 | **启动一体化就绪卡片** | 启动完成规整 ASCII 欢迎卡片与在线文档直达 | `ApplicationReadyCardListener`, `ApplicationReadyEvent` | `ateng.boot.web.ready-card.enabled` | 容器启动就绪输出一体化 ASCII 卡片，自适应探测 Local/Network 访问地址、Swagger/SpringDoc 接口文档、运行环境、进程 PID、JVM 堆内存与秒级启动耗时 | `ApplicationReadyCardListenerTest.java`, `WebReadyCardSampleTest.java` |
@@ -55,15 +55,16 @@
 
 ```mermaid
 flowchart TD
-    Client(["HTTP Client"]) --> TraceFilter["1. TraceFilter<br>(HIGHEST_PRECEDENCE)<br>MDC traceId 注入与回写"]
-    TraceFilter --> IpFilter["2. IpAccessControlFilter<br>(HIGHEST_PRECEDENCE + 1)<br>路径级 IP/CIDR 白黑名单防火墙"]
-    IpFilter --> CacheFilter["3. ContentCachingFilter<br>(HIGHEST_PRECEDENCE + 1)<br>请求体可重复读包装与超限防爆"]
-    CacheFilter --> PayloadFilter["4. PayloadLoggingFilter<br>(HIGHEST_PRECEDENCE + 2)<br>双向报文安全采样与凭据打码"]
-    PayloadFilter --> SlowFilter["5. SlowRequestFilter<br>(HIGHEST_PRECEDENCE + 3)<br>长耗时慢请求耗时主动告警"]
-    SlowFilter --> SecurityFilter["6. SecurityHeadersFilter<br>(HIGHEST_PRECEDENCE + 4)<br>等保三级安全头注入与指纹剥离"]
-    SecurityFilter --> EtagFilter["7. ShallowEtagHeaderFilter<br>(HIGHEST_PRECEDENCE + 5)<br>ETag 协商缓存与 304 节省带宽"]
-    EtagFilter --> XssFilter["8. XssFilter<br>(HIGHEST_PRECEDENCE + 6)<br>XSS 跨站脚本双轨无害化清洗"]
-    XssFilter --> Dispatcher["Spring MVC DispatcherServlet"]
+    Client(["HTTP Client"]) --> TraceFilter["1. TraceFilter<br>(HIGHEST_PRECEDENCE + 10)<br>MDC traceId 注入与回写"]
+    TraceFilter --> IpFilter["2. IpAccessControlFilter<br>(HIGHEST_PRECEDENCE + 20)<br>路径级 IP/CIDR 白黑名单防火墙与受信代理清洗"]
+    IpFilter --> CacheFilter["3. ContentCachingFilter<br>(HIGHEST_PRECEDENCE + 30)<br>请求体可重复读包装与 413 超限优雅降级"]
+    CacheFilter --> PayloadFilter["4. PayloadLoggingFilter<br>(HIGHEST_PRECEDENCE + 40)<br>双向报文安全采样与凭据打码"]
+    PayloadFilter --> SlowFilter["5. SlowRequestFilter<br>(HIGHEST_PRECEDENCE + 50)<br>长耗时慢请求耗时主动告警与长连接放行"]
+    SlowFilter --> SecurityFilter["6. SecurityHeadersFilter<br>(HIGHEST_PRECEDENCE + 60)<br>等保三级安全头注入与指纹剥离"]
+    SecurityFilter --> EtagFilter["7. ShallowEtagHeaderFilter<br>(HIGHEST_PRECEDENCE + 70)<br>ETag 协商缓存与 304 节省带宽"]
+    EtagFilter --> XssFilter["8. XssFilter<br>(HIGHEST_PRECEDENCE + 80)<br>XSS 跨站脚本双轨无害化清洗与请求头清洗"]
+    XssFilter --> CorsFilter["9. CorsFilter<br>(HIGHEST_PRECEDENCE + 90)<br>DynamicCorsConfigurationSource 动态跨域"]
+    CorsFilter --> Dispatcher["Spring MVC DispatcherServlet"]
 ```
 
 ### 2.2 AOP 切面防护链优先级拓扑
@@ -72,13 +73,13 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Dispatcher["Spring MVC HandlerMapping"] --> IpAspect["1. @IpAccessControl<br>方法级 IP/CIDR 精准拦截"]
-    IpAspect --> RateAspect["2. @RateLimiter<br>三级自适应令牌桶防刷限流"]
-    RateAspect --> IdempAspect["3. @Idempotent<br>三级自适应防重幂等与 SpEL 防抖"]
-    IdempAspect --> SignAspect["4. @ApiSign<br>防篡改防重放验签与双向加签"]
-    SignAspect --> AuditAspect["5. @OperateLog<br>结构化操作审计与出参动态脱敏"]
-    AuditAspect --> LogAspect["6. @WebLog<br>轻量接口调用耗时与出入参日志"]
-    LogAspect --> TargetAction["Controller 业务方法执行"]
+    Dispatcher["Spring MVC HandlerMapping"] --> IpAspect["1. @IpAccessControl (@Order 100)<br>方法级 IP/CIDR 精准拦截"]
+    IpAspect --> RateAspect["2. @RateLimiter (@Order 200)<br>三级自适应令牌桶防刷限流与 reset 重置"]
+    RateAspect --> IdempAspect["3. @Idempotent (@Order 300)<br>三级自适应防重幂等与 isLocked 状态探针"]
+    IdempAspect --> SignAspect["4. @ApiSign (@Order 400)<br>防篡改防重放验签与双向加签"]
+    SignAspect --> LogAspect["5. @WebLog (@Order 500)<br>轻量接口调用耗时与出入参日志"]
+    LogAspect --> AuditAspect["6. @OperateLog (@Order 600)<br>结构化操作审计与出参动态脱敏"]
+    AuditAspect --> TargetAction["Controller 业务方法执行"]
     TargetAction --> ExceptionHandler["全局异常处理器 GlobalExceptionHandler<br>(因果链追踪、生产脱敏与 SPI 扩展)"]
 ```
 
@@ -808,7 +809,8 @@ ateng:
 #### 核心机制
 - **按需条件装配**：仅在开启 API 加签验签或 Payload 采样日志时激活，关闭时零包装开销；
 - **安全可重读包装**：自动将 POST/PUT/PATCH 请求升级为 `CachedBodyHttpServletRequest`，支持多次重复调用 `getInputStream()`；
-- **智能跳过与载荷截断**：自动跳过 `multipart/form-data` 文件上传与普通表单；单次请求体超出 `max-body-size`（强类型 DataSize）时安全截断防 OOM。
+- **智能跳过与载荷截断**：自动跳过 `multipart/form-data` 文件上传与普通表单；
+- **413 优雅降级与快速失败屏障**：单次请求体超出 `max-body-size`（强类型 DataSize）时抛出 `PAYLOAD_TOO_LARGE` (413) 业务异常；`ContentCachingFilter` 就近拦截，回写 `X-Trace-Id` 标头并通过 `ServletUtil.writeJson` 直接输出 HTTP 200 + Result 413 JSON 报文并关闭流，杜绝大载荷击穿应用层与打爆堆内存。
 
 #### 1:1 实测业务代码范式
 ```java
@@ -1109,6 +1111,8 @@ ateng:
       ratelimit:
         # 是否启用三级自适应令牌桶限流引擎（默认 true）
         enabled: true
+        # 存储后端不可达时是否平滑放行（默认 true 容灾放行并 WARN 告警；false 抛出保留原始 cause 的 BusinessException）
+        fail-open: true
         in-memory:
           # 单机内存限流存储最大令牌桶容量（防 OOM 软上限，默认 10000）
           max-capacity: 10000
@@ -1119,7 +1123,8 @@ ateng:
 #### Tier 1 $\rightarrow$ Tier 2 $\rightarrow$ Tier 3 三级自适应架构
 - **Tier 1 (Redisson 分布式令牌桶)**：检测到类路径存在 `RedissonClient` 时自动装配 `RedissonRateLimiterStore`，依托 Redis 原生 `RRateLimiter` 实施微秒级集群全局分布式精准限流；
 - **Tier 2 (Redis Lua 脚本原子限流)**：仅检测到 `StringRedisTemplate` 时自动装配 `RedisRateLimiterStore`，基于原子 Lua 脚本与 Sliding Window 算法实现分布式限流；
-- **Tier 3 (纯原生单机内存令牌桶保底)**：无任何中间件连接时，平滑降级为 `InMemoryRateLimiterStore`，基于并发无锁哈希表与定时清理守护线程提供极速单机防护，零外部网络依赖与内存泄漏风险；
+- **Tier 3 (纯原生单机内存令牌桶保底与虚拟线程防 Pinning)**：无任何中间件连接时，平滑降级为 `InMemoryRateLimiterStore`；全面使用 JUC `ReentrantLock` 替代 `synchronized`，彻底规避 JDK 21+ 虚拟线程在同步块内产生的 Carrier Thread Pinning（宿主平台线程挂起），零外部网络依赖与内存泄漏风险；
+- **对称运维管理 (`RateLimiterStore.reset`)**：SPI 完备提供原子获取许可（`tryAcquire`）与状态清理/重置（`reset`），支持通过 HTTP 端点或运维控制台动态清理超限黑名单；
 - **SPI 扩展接管**：支持通过实现 `RateLimiterStore` 并在 Spring 容器注册自定义 Bean，全权接管限流底层存储（如自建 Guava RateLimiter 或 Sentinel 集成）。
 
 #### 多维限流防御模型
@@ -1168,6 +1173,13 @@ public Result<String> testTenantRateLimit() {
     String tenantId = TenantContextHolder.getTenantId();
     return Result.success("tenant=" + (tenantId != null ? tenantId : "default"));
 }
+
+// 6. 对称运维重置端点（调用 RateLimiterStore.reset 清零指定限流键）
+@PostMapping("/ratelimit/reset")
+public Result<Boolean> resetRateLimit(@RequestParam String key) {
+    rateLimiterStore.reset(key);
+    return Result.success(true);
+}
 ```
 
 #### 真实 HTTP 响应报文验证
@@ -1215,6 +1227,8 @@ ateng:
         enabled: true
         # 幂等锁全局缓存键前缀（默认 idempotent:）
         key-prefix: "idempotent:"
+        # 存储后端不可达时是否平滑放行（默认 true 容灾放行并 WARN 告警；false 抛出保留原始 cause 的 BusinessException）
+        fail-open: true
         in-memory:
           # 单机内存幂等存储最大键容量（防 OOM 软上限，默认 10000）
           max-capacity: 10000
@@ -1225,7 +1239,8 @@ ateng:
 #### Tier 1 $\rightarrow$ Tier 2 $\rightarrow$ Tier 3 自适应抢占架构
 - **Tier 1 (Redisson 分布式原子锁)**：类路径存在 `RedissonClient` 时装配 `RedissonIdempotentKeyStore`，通过分布式锁实现精准并发互斥与自动看门狗续期；
 - **Tier 2 (Redis SETNX 原子抢占)**：仅存在 `StringRedisTemplate` 时装配 `RedisIdempotentKeyStore`，通过 `setIfAbsent` 带过期时间实现毫秒级轻量分布式防重；
-- **Tier 3 (纯原生单机内存防抖)**：零中间件环境下平滑装配 `InMemoryIdempotentKeyStore`，基于原子 `ConcurrentHashMap` 与带容量阈值的清理引擎保障单机安全运行；
+- **Tier 3 (纯原生单机内存防抖与虚拟线程防 Pinning)**：零中间件环境下平滑装配 `InMemoryIdempotentKeyStore`；全面使用 JUC `ReentrantLock` 替代 `synchronized`，彻底规避 JDK 21+ 虚拟线程在同步块内产生的 Carrier Thread Pinning（宿主平台线程挂起），带容量阈值的清理引擎保障单机安全运行；
+- **对称状态探针 (`IdempotentKeyStore.isLocked`)**：SPI 完备提供原子锁定（`tryLock`）、主动解锁（`unlock`）与状态探针（`isLocked`），支持运维探针与业务前置状态感知；
 - **SPI 扩展接管**：提供 `IdempotentKeyStore` SPI，支持自定义第三方存储（如分布式缓存或数据库唯一流水表）。
 
 #### 核心防重机制与参数配置
@@ -1264,6 +1279,12 @@ public Result<String> failAndRetry(@RequestParam String bizId, @RequestParam boo
         throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), "可恢复业务校验失败");
     }
     return Result.success("success: " + bizId);
+}
+
+// 5. 幂等锁定状态主动探针（调用 IdempotentKeyStore.isLocked 探测当前键是否处于锁定中）
+@GetMapping("/idempotent/is-locked")
+public Result<Boolean> isLocked(@RequestParam String key) {
+    return Result.success(idempotentKeyStore.isLocked(key));
 }
 ```
 
@@ -1468,6 +1489,13 @@ ateng:
         enabled: true
         # 清洗模式（ESCAPE 实体转义 | STRIP 标签剔除，默认 ESCAPE）
         mode: ESCAPE
+        # 是否对 HTTP 请求头实施 XSS 安全清洗（默认 true）
+        clean-headers: true
+        # 豁免 XSS 清洗的请求头白名单（大小写无关）
+        exclude-headers:
+          - "Authorization"
+          - "Content-Type"
+          - "Accept"
         # 排除白名单路径列表（Ant 匹配规则，整条路径整体跳过 XSS 清洗）
         exclude-urls:
           - "/sample/web/security/xss/excluded/**"
@@ -1475,9 +1503,9 @@ ateng:
 
 #### 双轨清洗模式与字段级精准豁免
 - **`XssMode.ESCAPE`（默认推荐）**：将 `<`、`>`、`"`、`'` 等特殊字符转换为 `&lt;`、`&gt;`、`&quot;`、`&#39;`，既消除执行风险又保留原始文本可视内容；
-- **`XssMode.STRIP`**：彻底剔除 HTML 标签与 `<script>` 代码块，保留纯净文本内容；
-- **全链路双防线覆盖**：
-  - `XssHttpServletRequestWrapper`：负责对 GET Query 参数与 POST Form 表单入参做无害化清洗；
+- **`XssMode.STRIP`**：彻底剔除 HTML 标签与 `<script>` 代码块，保留纯净文本内容；且原生清洗引擎自动识别并剥离 `javascript:` 与 `vbscript:` 等恶意伪协议前缀；
+- **全链路三维防线覆盖**：
+  - `XssHttpServletRequestWrapper`：负责对 GET Query 参数、POST Form 表单入参及非排除请求头（`clean-headers: true`）做无害化清洗；
   - `XssStringDeserializer`：注入 Jackson 反序列化管道，深度递归清洗 JSON 请求体中所有字符串属性；
 - **声明式富文本豁免 (`@XssIgnore`)**：
   - **字段级豁免**：在 DTO 的特定字段上标注 `@XssIgnore`（如 `private String content;`），仅该富文本属性保留原样 HTML，同对象其他字段（如 `title`、`author`）依然强制安全清洗；
@@ -1517,6 +1545,15 @@ public Result<Map<String, String>> submitForm(@RequestParam String title, @Reque
 public Result<ArticlePublishDTO> publishExcludedArticle(@Valid @RequestBody ArticlePublishDTO dto) {
     return Result.success(dto);
 }
+
+// 6. 请求头 XSS 清洗验证（拦截自定义请求头并实施安全转义，Authorization 白名单豁免）
+@GetMapping("/xss/header")
+public Result<Map<String, String>> testXssHeader(HttpServletRequest request) {
+    Map<String, String> map = new LinkedHashMap<>();
+    map.put("x-custom-tag", request.getHeader("X-Custom-Tag"));
+    map.put("authorization", request.getHeader("Authorization"));
+    return Result.success(map);
+}
 ```
 
 ---
@@ -1536,6 +1573,11 @@ ateng:
         enabled: true
         # 默认模式（WHITE_LIST 白名单 | BLACK_LIST 黑名单，默认 WHITE_LIST）
         mode: WHITE_LIST
+        # 可信反向代理列表（用于逆向清洗 X-Forwarded-For 标头防伪造穿透）
+        trusted-proxies:
+          - "127.0.0.1"
+          - "10.0.0.0/8"
+          - "192.168.0.0/16"
         # 全局默认规则列表（支持单 IP、CIDR 子网掩码与 IPv6）
         rules:
           - "127.0.0.1"
@@ -1557,6 +1599,7 @@ ateng:
 #### 双重防火墙与核心机制
 - **第一道防线：URL 路径级过滤器 (`IpAccessControlFilter`)**：在 Servlet 容器最外层实施路径阻断，不经过 Spring MVC HandlerMapping 调度，高效拦截恶意流量，保护管理员控制台；
 - **第二道防线：方法级声明式切面 (`@IpAccessControl`)**：精准贴附于 Controller 方法，为特定高危操作配置专属独立黑白名单与自定义拦截文案；
+- **可信反向代理多跳清洗防伪造**：支持配置 `trusted-proxies`，过滤器与切面自动透传可信代理清单，通过逆向倒序清洗算法剥离攻击者伪造的 XFF 标头，精准获取真实公网 IP；
 - **纯原生 CIDR 位运算无 DNS 依赖**：依托 `IpUtil.isInRange()` 支持 IPv4 CIDR、IPv6 CIDR 与本地环回（`::1`），杜绝因 DNS 解析引发的性能卡顿与超时；
 - **双模响应治理**：
   - **默认业务优雅拦截**：遵循 ADR-0004 统一返回 HTTP 200 + `Result.fail(403)`，并注入 `X-Denied-Reason: IP_BLOCKED` 响应标头供前端与网关快速识别；
@@ -1841,8 +1884,9 @@ public class WebVersionV2Controller {
 
 #### 核心机制与不变量
 - **穿透多级反向代理标准头**：依次按安全优先级探测 `X-Forwarded-For`、`X-Real-IP`、`Proxy-Client-IP`、`WL-Proxy-Client-IP`、`HTTP_CLIENT_IP`、`HTTP_X_FORWARDED_FOR`；
+- **可信反向代理逆向清洗防伪造**：支持传入 `Collection<String> trustedProxies`，算法自右向左逆向跳过所有受信任的反向代理 IP，取第一个不受信任的外部跳点作为真实客户端 IP，彻底免疫伪造 `X-Forwarded-For` 绕过安全控制；
 - **首个外网真实 IP 提取**：在多级代理以逗号分隔的 IP 链路中（如 `203.0.113.195, 10.0.0.1, 192.168.1.1`），自动提取首个有效客户端真实 IP 并剔除内网跳数；
-- **本地环回安全标准化**：自动将 IPv6 本地环回地址 `0:0:0:0:0:0:0:1` 与 `::1` 规整化为标准的 `127.0.0.1`；
+- **本地环回安全标准化**：`IpUtil.normalizeIp(ip)` 自动将 IPv6 本地环回地址 `0:0:0:0:0:0:0:1` 与 `::1` 规整化为标准的 `127.0.0.1`；
 - **纯 JDK 原生无 DNS 依赖 CIDR 子网判定**：提供 `IpUtil.isInRange(ip, cidr)` 工具方法，基于位运算高效支持 IPv4 与 IPv6 网段判定，杜绝域名递归解析。
 
 #### 1:1 实测业务代码范式
@@ -1860,27 +1904,49 @@ public Result<Map<String, Object>> checkIpCidr(@RequestParam String ip, @Request
     boolean inRange = IpUtil.isInRange(ip, cidr);
     return Result.success(Map.of("ip", ip, "cidr", cidr, "inRange", inRange));
 }
+
+// 3. 基于受信代理列表（trustedProxies）逆向多跳清洗提取客户端真实 IP（防 XFF 伪造）
+@GetMapping("/client-ip/trusted")
+public Result<Map<String, String>> getClientIpWithTrustedProxies(HttpServletRequest request) {
+    List<String> trustedProxies = List.of("127.0.0.1", "10.0.0.0/8", "192.168.0.0/16");
+    String trustedIp = IpUtil.getClientIp(request, trustedProxies);
+    String rawIp = IpUtil.getClientIp(request);
+    Map<String, String> map = new LinkedHashMap<>();
+    map.put("trustedClientIp", trustedIp);
+    map.put("rawClientIp", rawIp);
+    return Result.success(map);
+}
 ```
 
 ---
 
-### 7.3 RFC 6266 双重文件名编码防乱码流式下载 (`ServletUtil`)
+### 7.3 RFC 6266 双重文件名编码防乱码流式下载与响应输出 (`ServletUtil`)
 
 #### 场景痛点
-传统文件流式下载在设置 `Content-Disposition` 响应头时，若直接使用中文字符，Chrome、Edge、Firefox 与 Safari 各主流浏览器因编码实现标准不一（URL 编码、ISO-8859-1、UTF-8 原生），极易出现文件扩展名丢失或文件名变成乱码（如 `%E8%B4%A2%E5%8A%A1` 或下划线）；且缺乏便捷的静态上下文门面。
+传统文件流式下载在设置 `Content-Disposition` 响应头时，若直接使用中文字符，Chrome、Edge、Firefox 与 Safari 各主流浏览器因编码实现标准不一（URL 编码、ISO-8859-1、UTF-8 原生），极易出现文件扩展名丢失或文件名变成乱码（如 `%E8%B4%A2%E5%8A%A1` 或下划线）；在 Filter 或拦截器中需要向客户端直接写出统一 JSON 响应时，往往因缺乏安全可靠的静态辅助而不得不重复手写模板代码。
 
 #### 核心机制与不变量
 - **RFC 6266 & RFC 5987 双重文件名编码标准**：自动组装 `filename="fallback.txt"` 与 `filename*=UTF-8''%E4%B8%AD%E6%96%87.txt`，兼顾老旧浏览器回退与现代浏览器无损解析；
 - **零拷贝高性能写出**：支持直接接收字节数组 `byte[]` 或 `InputStream`，在 `try-with-resources` 中确保流句柄安全关闭，防止连接悬挂；
-- **全能 Servlet 静态门面**：提供无状态的 `ServletUtil.getRequest()`、`getResponse()`、`getHeader()`、`getCookieValue()` 及 `isJsonRequest()`，方便非 Controller 边界安全访问当前上下文。
+- **全能 Servlet 静态门面**：提供无状态的 `ServletUtil.getRequest()`、`getResponse()`、`getHeader()`、`getCookieValue()` 及 `isJsonRequest()`，方便非 Controller 边界安全访问当前上下文；
+- **统一 JSON 响应写出 (`writeJson`)**：提供 `ServletUtil.writeJson(response, status, object)`，自动设置 `Content-Type: application/json;charset=UTF-8`、设置 HTTP 状态码并使用 Core `JsonUtil` 序列化输出，为 Filter 快速失败降级提供核心支撑。
 
 #### 1:1 实测业务代码范式
 ```java
-// 财务对账单 RFC 6266 防乱码双重编码安全流式下载
+// 1. 财务对账单 RFC 6266 防乱码双重编码安全流式下载
 @GetMapping("/download")
 public void downloadSampleFile(HttpServletResponse response) throws IOException {
     byte[] data = "ateng-boot 企业级运行时对账单文件下载内容 (RFC 6266 标准编码)".getBytes(StandardCharsets.UTF_8);
     // 自动设置 Content-Disposition 响应头与 MIME 类型并刷出流
+    ServletUtil.writeDownload(response, "企业财务月度对账明细单_202610.xlsx", data);
+}
+
+// 2. Filter/拦截器优雅降级直接回写统一 JSON 结构
+@GetMapping("/write-json")
+public void testWriteJson(HttpServletResponse response) throws IOException {
+    ServletUtil.writeJson(response, HttpServletResponse.SC_OK, Result.success("JSON 直接写出成功"));
+}
+```
     ServletUtil.writeDownload(response, "财务对账月度报表-202611.txt", data);
 }
 ```
@@ -2073,6 +2139,13 @@ ateng:
         enabled: false
         # XSS 清洗模式（默认 ESCAPE 实体转义；可选 STRIP 标签剔除）
         mode: ESCAPE
+        # 是否对 HTTP 请求头实施 XSS 安全清洗（默认 true）
+        clean-headers: true
+        # 豁免 XSS 清洗的请求头白名单（大小写无关）
+        exclude-headers:
+          - "Authorization"
+          - "Content-Type"
+          - "Accept"
         # XSS 排除路径白名单（Ant 风格匹配）
         exclude-urls:
           - "/api/sample/xss/excluded/**"
@@ -2131,6 +2204,8 @@ ateng:
         enabled: true
         # 存储全局 Key 前缀（默认 idempotent:）
         key-prefix: "idempotent:"
+        # 存储后端不可达时是否平滑放行（默认 true 容灾放行并 WARN 告警；false 抛出保留原始 cause 的 BusinessException）
+        fail-open: true
         in-memory:
           # 单机内存存储软上限（防爆防 OOM，默认 10000）
           max-capacity: 10000
@@ -2139,6 +2214,8 @@ ateng:
       ratelimit:
         # 是否启用接口限流防刷切面与存储引擎（默认 true）
         enabled: true
+        # 存储后端不可达时是否平滑放行（默认 true 容灾放行并 WARN 告警；false 抛出保留原始 cause 的 BusinessException）
+        fail-open: true
         in-memory:
           # 单机内存令牌桶最大容量软上限（默认 10000）
           max-capacity: 10000
@@ -2170,6 +2247,11 @@ ateng:
       ip-access-control:
         # 是否启用 IP 访问控制模块（默认 true）
         enabled: true
+        # 可信反向代理列表（用于逆向清洗 X-Forwarded-For 标头防伪造穿透）
+        trusted-proxies:
+          - "127.0.0.1"
+          - "10.0.0.0/8"
+          - "192.168.0.0/16"
         # 是否启用 HTTP 403 物理切断模式（默认 false，遵循 ADR-0004 返回 HTTP 200 + Result.fail(403)）
         http-status-403: false
         # 全局默认拒绝提示文案
