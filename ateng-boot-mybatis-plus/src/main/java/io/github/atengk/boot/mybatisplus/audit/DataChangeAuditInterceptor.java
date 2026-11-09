@@ -714,6 +714,30 @@ public class DataChangeAuditInterceptor implements Interceptor {
         return null;
     }
 
+    /**
+     * Wrapper 主键匹配正则表达式缓存（避免拦截高频链路反复编译 Pattern）
+     */
+    private static final ConcurrentHashMap<String, Pattern> WRAPPER_ID_PATTERN_CACHE = new ConcurrentHashMap<>();
+
+    private static Pattern getWrapperIdPattern(String columnOrProperty) {
+        return WRAPPER_ID_PATTERN_CACHE.computeIfAbsent(columnOrProperty, key -> {
+            String quoted = Pattern.quote(key);
+            return Pattern.compile("(?:^|[^a-zA-Z0-9_`])`?" + quoted + "`?\\s*=\\s*#\\{[^}]*paramNameValuePairs\\.([a-zA-Z0-9_]+)\\}", Pattern.CASE_INSENSITIVE);
+        });
+    }
+
+    private Object extractParamValue(String sql, Map<String, Object> paramMap, String columnOrProperty) {
+        if (columnOrProperty == null || columnOrProperty.isBlank()) {
+            return null;
+        }
+        Pattern pattern = getWrapperIdPattern(columnOrProperty);
+        Matcher matcher = pattern.matcher(sql);
+        if (matcher.find()) {
+            return paramMap.get(matcher.group(1));
+        }
+        return null;
+    }
+
     private Object extractIdFromWrapper(AbstractWrapper<?, ?, ?> wrapper, TableInfo tableInfo) {
         if (wrapper == null || tableInfo == null || tableInfo.getKeyColumn() == null) {
             return null;
@@ -722,24 +746,16 @@ public class DataChangeAuditInterceptor implements Interceptor {
             String sql = wrapper.getSqlSegment();
             Map<String, Object> paramMap = wrapper.getParamNameValuePairs();
             if (sql != null && paramMap != null && !paramMap.isEmpty()) {
-                String keyCol = Pattern.quote(tableInfo.getKeyColumn());
-                Pattern pattern = Pattern.compile("(?:^|[^a-zA-Z0-9_`])`?" + keyCol + "`?\\s*=\\s*#\\{[^}]*paramNameValuePairs\\.([a-zA-Z0-9_]+)\\}", Pattern.CASE_INSENSITIVE);
-                Matcher matcher = pattern.matcher(sql);
-                if (matcher.find()) {
-                    String paramKey = matcher.group(1);
-                    return paramMap.get(paramKey);
+                Object id = extractParamValue(sql, paramMap, tableInfo.getKeyColumn());
+                if (id != null) {
+                    return id;
                 }
                 if (tableInfo.getKeyProperty() != null && !tableInfo.getKeyProperty().equalsIgnoreCase(tableInfo.getKeyColumn())) {
-                    String keyProp = Pattern.quote(tableInfo.getKeyProperty());
-                    Pattern propPattern = Pattern.compile("(?:^|[^a-zA-Z0-9_`])`?" + keyProp + "`?\\s*=\\s*#\\{[^}]*paramNameValuePairs\\.([a-zA-Z0-9_]+)\\}", Pattern.CASE_INSENSITIVE);
-                    Matcher propMatcher = propPattern.matcher(sql);
-                    if (propMatcher.find()) {
-                        String paramKey = propMatcher.group(1);
-                        return paramMap.get(paramKey);
-                    }
+                    return extractParamValue(sql, paramMap, tableInfo.getKeyProperty());
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            log.debug("从 Wrapper 提取主键异常 (table: {}): {}", tableInfo.getTableName(), t.getMessage(), t);
         }
         return null;
     }

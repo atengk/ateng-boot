@@ -30,6 +30,9 @@ public class DeletePhysicallyById extends AbstractMethod {
 
     @Override
     public MappedStatement injectMappedStatement(Class<?> mapperClass, Class<?> modelClass, TableInfo tableInfo) {
+        if (!tableInfo.havePK()) {
+            return null;
+        }
         SqlMethod sqlMethod = SqlMethod.DELETE_BY_ID;
         String sql = sqlMethod.format(tableInfo.getTableName(), tableInfo.getKeyColumn(), tableInfo.getKeyProperty());
         SqlSource sqlSource = super.createSqlSource(configuration, sql, Object.class);

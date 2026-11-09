@@ -207,6 +207,14 @@ class AtengBaseServiceLogicDeleteAndPhysicalPurgeTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("idList 不能为空");
 
+        assertThatThrownBy(() -> purgeService.removePhysicallyBatchByIds(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("idList 不能为空");
+
+        assertThatThrownBy(() -> purgeService.removePhysicallyBatchByIds(Collections.emptyList()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("idList 不能为空");
+
         assertThatThrownBy(() -> purgeService.removePhysically(null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("queryWrapper 不能为 null");
@@ -330,9 +338,11 @@ class AtengBaseServiceLogicDeleteAndPhysicalPurgeTest {
         assertThat(countRowsInTableDirectly(301L)).isEqualTo(0);
         assertThat(countRowsInTableDirectly(null)).isEqualTo(3);
 
-        // 4.2 批量物理硬删除
-        boolean deletedBatch = purgeService.removePhysicallyByIds(List.of(302L, 303L));
+        // 4.2 批量物理硬删除（验证 removePhysicallyByIds 与 removePhysicallyBatchByIds 规范别名）
+        boolean deletedBatch = purgeService.removePhysicallyByIds(List.of(302L));
         assertThat(deletedBatch).isTrue();
+        boolean deletedBatchAlias = purgeService.removePhysicallyBatchByIds(List.of(303L));
+        assertThat(deletedBatchAlias).isTrue();
         assertThat(countRowsInTableDirectly(302L)).isEqualTo(0);
         assertThat(countRowsInTableDirectly(303L)).isEqualTo(0);
         assertThat(countRowsInTableDirectly(null)).isEqualTo(1);

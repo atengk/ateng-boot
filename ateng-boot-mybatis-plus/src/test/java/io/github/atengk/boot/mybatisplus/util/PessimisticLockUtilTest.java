@@ -197,4 +197,24 @@ class PessimisticLockUtilTest {
 
         assertThat(PessimisticLockUtil.getDbType()).isEqualTo(DbType.MYSQL);
     }
+
+    @Test
+    @DisplayName("测试 runWithDbType 与 callWithDbType 对 null 参数前置 Fail-Fast 拦截")
+    void testRunWithDbTypeAndCallWithDbTypeNullDefense() {
+        assertThatThrownBy(() -> PessimisticLockUtil.runWithDbType(null, () -> {}))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("dbType 不能为 null");
+
+        assertThatThrownBy(() -> PessimisticLockUtil.runWithDbType(DbType.MYSQL, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("runnable 不能为 null");
+
+        assertThatThrownBy(() -> PessimisticLockUtil.callWithDbType(null, () -> "VAL"))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("dbType 不能为 null");
+
+        assertThatThrownBy(() -> PessimisticLockUtil.callWithDbType(DbType.MYSQL, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("supplier 不能为 null");
+    }
 }

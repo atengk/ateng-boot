@@ -496,27 +496,23 @@ public final class DynamicQueryHelper {
 
         Object convertedValue;
         List<Object> convertedValues = null;
+        Collection<?> rawCollection = (values != null) ? values : (value instanceof Collection<?> col ? col : null);
 
         if (deterministicEncrypt) {
             convertedValue = (value != null && !value.toString().isEmpty())
                     ? EncryptTypeHandler.encryptDeterministic(value.toString())
                     : value;
-            if (values != null) {
-                convertedValues = new ArrayList<>(values.size());
-                for (Object v : values) {
-                    convertedValues.add(v != null ? EncryptTypeHandler.encryptDeterministic(v.toString()) : null);
-                }
-            } else if (value instanceof Collection<?> col) {
-                convertedValues = new ArrayList<>(col.size());
-                for (Object v : col) {
+            if (rawCollection != null) {
+                convertedValues = new ArrayList<>(rawCollection.size());
+                for (Object v : rawCollection) {
                     convertedValues.add(v != null ? EncryptTypeHandler.encryptDeterministic(v.toString()) : null);
                 }
             }
         } else {
             convertedValue = convertSingleValue(value, targetType, operator);
-            if (values != null) {
-                convertedValues = new ArrayList<>(values.size());
-                for (Object v : values) {
+            if (rawCollection != null) {
+                convertedValues = new ArrayList<>(rawCollection.size());
+                for (Object v : rawCollection) {
                     convertedValues.add(convertSingleValue(v, targetType, operator));
                 }
             }

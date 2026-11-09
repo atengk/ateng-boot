@@ -135,6 +135,10 @@ public final class MybatisInterceptorUtil {
     /**
      * 解析 MappedStatement 对应的 Mapper 接口类或具体方法上的指定注解
      * 自动处理衍生方法名归一化，优先匹配具体方法上的注解，其次匹配 Mapper 接口类级别的注解
+     * <p>
+     * 说明：MyBatis 映射体系中每个 StatementId 在同一 Mapper 命名空间下唯一。
+     * 若 Mapper 接口存在继承或重载方法，本方法遍历并优先获取任一显式标注了目标注解的方法。
+     * </p>
      *
      * @param mappedStatementId MyBatis 映射语句唯一标识（如 io.github.atengk.sample.mapper.UserMapper.selectList）
      * @param annotationClass   目标注解类型

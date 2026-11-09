@@ -248,17 +248,7 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
     @Override
     public List<T> listForUpdate(Wrapper<T> queryWrapper, LockMode lockMode) {
         Objects.requireNonNull(lockMode, "lockMode 不能为 null");
-        final Wrapper<T> effectiveWrapper;
-        if (queryWrapper instanceof AbstractWrapper<?, ?, ?> abstractWrapper) {
-            PessimisticLockUtil.apply(abstractWrapper, lockMode);
-            effectiveWrapper = queryWrapper;
-        } else if (queryWrapper == null) {
-            QueryWrapper<T> wrapper = new QueryWrapper<>();
-            PessimisticLockUtil.apply(wrapper, lockMode);
-            effectiveWrapper = wrapper;
-        } else {
-            throw new IllegalArgumentException("queryWrapper 必须为 AbstractWrapper 的子类以支持悲观锁追加");
-        }
+        Wrapper<T> effectiveWrapper = applyLockMode(queryWrapper, lockMode);
         List<T> list = list(effectiveWrapper);
         return list != null ? list : java.util.Collections.emptyList();
     }
@@ -266,18 +256,28 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
     @Override
     public T getOneForUpdate(Wrapper<T> queryWrapper, LockMode lockMode) {
         Objects.requireNonNull(lockMode, "lockMode 不能为 null");
-        final Wrapper<T> effectiveWrapper;
+        Wrapper<T> effectiveWrapper = applyLockMode(queryWrapper, lockMode);
+        return getOne(effectiveWrapper, false);
+    }
+
+    /**
+     * 针对条件构造器安全适配并应用悲观锁语法
+     *
+     * @param queryWrapper 原始条件构造器（可为 null）
+     * @param lockMode     悲观锁模式
+     * @return 注入悲观锁语法后的有效 Wrapper
+     */
+    private Wrapper<T> applyLockMode(Wrapper<T> queryWrapper, LockMode lockMode) {
         if (queryWrapper instanceof AbstractWrapper<?, ?, ?> abstractWrapper) {
             PessimisticLockUtil.apply(abstractWrapper, lockMode);
-            effectiveWrapper = queryWrapper;
+            return queryWrapper;
         } else if (queryWrapper == null) {
             QueryWrapper<T> wrapper = new QueryWrapper<>();
             PessimisticLockUtil.apply(wrapper, lockMode);
-            effectiveWrapper = wrapper;
+            return wrapper;
         } else {
             throw new IllegalArgumentException("queryWrapper 必须为 AbstractWrapper 的子类以支持悲观锁追加");
         }
-        return getOne(effectiveWrapper, false);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -407,6 +407,12 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
             throw new IllegalArgumentException("物理删除主键集合 idList 不能为空");
         }
         return baseMapper.deletePhysicallyBatchByIds(idList) > 0;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public boolean removePhysicallyBatchByIds(Collection<?> idList) {
+        return removePhysicallyByIds(idList);
     }
 
     @Transactional(rollbackFor = Exception.class)

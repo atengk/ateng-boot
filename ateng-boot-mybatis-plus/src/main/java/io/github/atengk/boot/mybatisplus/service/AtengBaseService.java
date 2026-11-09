@@ -1533,6 +1533,18 @@ public interface AtengBaseService<T> extends IService<T> {
     boolean removePhysicallyByIds(Collection<?> idList);
 
     /**
+     * 根据主键集合批量物理硬删除记录（彻底物理擦除，无视 @TableLogic）
+     * 语义等同于 {@link #removePhysicallyByIds(Collection)}，提供严格对齐规格命名的别名方法
+     *
+     * @param idList 实体主键 ID 集合（不能为空）
+     * @return true 若物理删除成功且影响行数大于 0；否则 false
+     * @throws IllegalArgumentException 若 idList 为 null 或空
+     */
+    default boolean removePhysicallyBatchByIds(Collection<?> idList) {
+        return removePhysicallyByIds(idList);
+    }
+
+    /**
      * 根据条件构造器物理硬删除记录（彻底物理擦除，无视 @TableLogic）
      * 强制要求具备有效 WHERE 条件，与 BlockAttack 共同构建全表防卫双重防灾机制
      *

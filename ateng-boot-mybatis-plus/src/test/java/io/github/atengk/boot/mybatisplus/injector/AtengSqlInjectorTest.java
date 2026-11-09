@@ -161,4 +161,26 @@ class AtengSqlInjectorTest {
         // 关键断言：物理删除语句中不得带有 AND deleted = 0 逻辑过滤，确保彻底物理擦除已软删记录
         assertThat(sqlByWrapper).doesNotContain("deleted = 0");
     }
+
+    @TableName("sample_no_pk_entity")
+    static class SampleNoPkEntity {
+        private String title;
+        public String getTitle() { return title; }
+        public void setTitle(String title) { this.title = title; }
+    }
+
+    @Test
+    @DisplayName("6. 防御验证：无主键实体跳过注入 DeletePhysicallyById 与 DeletePhysicallyBatchByIds")
+    void shouldSkipInjectingIdBasedPhysicalDeleteWhenNoPk() {
+        Configuration configuration = new Configuration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration, "resource");
+        assistant.setCurrentNamespace(SampleMapper.class.getName());
+        TableInfo tableInfo = TableInfoHelper.initTableInfo(assistant, SampleNoPkEntity.class);
+
+        MappedStatement msById = new DeletePhysicallyById().injectMappedStatement(SampleMapper.class, SampleNoPkEntity.class, tableInfo);
+        MappedStatement msByIds = new DeletePhysicallyBatchByIds().injectMappedStatement(SampleMapper.class, SampleNoPkEntity.class, tableInfo);
+
+        assertThat(msById).isNull();
+        assertThat(msByIds).isNull();
+    }
 }

@@ -163,6 +163,7 @@ public final class PessimisticLockUtil {
      * @param runnable 执行任务
      */
     public static void runWithDbType(DbType dbType, Runnable runnable) {
+        Objects.requireNonNull(dbType, "dbType 不能为 null");
         Objects.requireNonNull(runnable, "runnable 不能为 null");
         DbType previous = LOCAL_DB_TYPE.get();
         try {
@@ -186,6 +187,7 @@ public final class PessimisticLockUtil {
      * @return 任务执行结果
      */
     public static <R> R callWithDbType(DbType dbType, Supplier<R> supplier) {
+        Objects.requireNonNull(dbType, "dbType 不能为 null");
         Objects.requireNonNull(supplier, "supplier 不能为 null");
         DbType previous = LOCAL_DB_TYPE.get();
         try {
