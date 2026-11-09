@@ -1,8 +1,12 @@
 package io.github.atengk.boot.sample.kafka.service;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.kafka.manager.KafkaContainerManager;
 import io.github.atengk.boot.kafka.manager.KafkaOffsetManager;
 import io.github.atengk.boot.kafka.model.ConsumerGroupLag;
+import io.github.atengk.boot.sample.kafka.dto.ContainerActionRequest;
+import io.github.atengk.boot.sample.kafka.dto.OffsetResetRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
@@ -142,5 +146,42 @@ public class KafkaOpsScenarioService {
             return false;
         }
         return containerManager.isRunning(idOrTopic);
+    }
+
+    /**
+     * 执行位移重设统一业务调度与参数前置防御
+     *
+     * @param request 位移回拨请求
+     */
+    public void resetOffsets(OffsetResetRequest request) {
+        BusinessAssert.notNull(request, "位移回拨请求对象不能为空");
+        BusinessAssert.notNull(request.getResetType(), "重设策略类型不能为空");
+
+        switch (request.getResetType()) {
+            case EARLIEST -> rewindOffsetsToEarliest(request.getGroupId(), request.getTopic());
+            case LATEST -> rewindOffsetsToLatest(request.getGroupId(), request.getTopic());
+            case TIMESTAMP -> {
+                BusinessAssert.isTrue(request.getTimestampMs() != null && request.getTimestampMs() > 0,
+                        "重设策略为 TIMESTAMP 时，timestampMs 必须为有效正数时间戳");
+                rewindOffsetsToTimestamp(request.getGroupId(), request.getTopic(), Instant.ofEpochMilli(request.getTimestampMs()));
+            }
+        }
+    }
+
+    /**
+     * 执行容器动作统一调度
+     *
+     * @param request 容器管控请求
+     */
+    public void executeContainerAction(ContainerActionRequest request) {
+        BusinessAssert.notNull(request, "容器管控请求对象不能为空");
+        BusinessAssert.notNull(request.getAction(), "容器动作类型不能为空");
+
+        switch (request.getAction()) {
+            case PAUSE -> pauseConsumer(request.getContainerIdOrTopic());
+            case RESUME -> resumeConsumer(request.getContainerIdOrTopic());
+            case START -> startConsumer(request.getContainerIdOrTopic());
+            case STOP -> stopConsumer(request.getContainerIdOrTopic());
+        }
     }
 }

@@ -1,9 +1,10 @@
 package io.github.atengk.boot.sample.kafka.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.kafka.dto.RetryLogResponse;
 import io.github.atengk.boot.sample.kafka.dto.RetryTriggerRequest;
 import io.github.atengk.boot.sample.kafka.service.NonBlockingRetryScenarioService;
-import io.github.atengk.boot.sample.kafka.service.NonBlockingRetryScenarioService.RetryRecordLog;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -41,13 +42,14 @@ public class KafkaRetryController {
      */
     @PostMapping("/trigger")
     public Result<String> triggerRetry(
-            @RequestBody(required = false) RetryTriggerRequest request,
+            @Valid @RequestBody(required = false) RetryTriggerRequest request,
             @RequestParam(value = "orderId", required = false, defaultValue = "ORD-RETRY-001") String orderId,
             @RequestParam(value = "fail", required = false, defaultValue = "false") boolean fail) {
         String targetOrderId = (request != null && request.getOrderId() != null && !request.getOrderId().isBlank())
                 ? request.getOrderId()
                 : orderId;
-        String payload = fail ? "PAYLOAD_FAIL" : "PAYLOAD_SUCCESS";
+        boolean targetFail = (request != null && request.getFail() != null) ? request.getFail() : fail;
+        String payload = targetFail ? "PAYLOAD_FAIL" : "PAYLOAD_SUCCESS";
         log.info("[HTTP-RETRY-TRIGGER] 投递重试消息: orderId={}, payload={}", targetOrderId, payload);
         retryService.sendRetryableMessage(targetOrderId, payload);
         return Result.success("重试消息发送成功: orderId=" + targetOrderId + ", payload=" + payload);
@@ -56,11 +58,22 @@ public class KafkaRetryController {
     /**
      * 探查阶梯重试流转执行日志
      *
-     * @return 重试日志列表
+     * @return 规范的重试日志响应列表
      */
     @GetMapping("/logs")
-    public Result<List<RetryRecordLog>> getRetryLogs() {
-        return Result.success(retryService.getRetryLogs());
+    public Result<List<RetryLogResponse>> getRetryLogs() {
+        List<RetryLogResponse> responses = retryService.getRetryLogs().stream()
+                .map(log -> RetryLogResponse.builder()
+                        .topic(log.topic())
+                        .key(log.key())
+                        .payload(log.payload())
+                        .attempt(log.attempt())
+                        .traceId(log.traceId())
+                        .tenantId(log.tenantId())
+                        .userId(log.userId())
+                        .build())
+                .toList();
+        return Result.success(responses);
     }
 
     /**

@@ -275,7 +275,8 @@ class SampleKafkaE2eTest {
                         .content(objectMapper.writeValueAsString(partitionReq)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("PARTITION=2")));
+                .andExpect(jsonPath("$.data.partition").value(2))
+                .andExpect(jsonPath("$.data.summary").value(org.hamcrest.Matchers.containsString("PARTITION=2")));
 
         // 4. HTTP 探查单条监听器成功消费并校验四维上下文
         awaitCondition(() -> {
@@ -763,6 +764,17 @@ class SampleKafkaE2eTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.success").value(true));
 
+        // 1.1 对抗性校验：orderId 为空触发 JSR-303 Fail-Fast 阻断，返回 400
+        RetryTriggerRequest invalidRetryReq = RetryTriggerRequest.builder()
+                .orderId("")
+                .build();
+        mockMvc.perform(post("/sample/kafka/retry/trigger")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRetryReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false));
+
         // 2. 发送正常消息 -> 一次尝试即成功并验证四维上下文透传
         MDC.put("traceId", "trace-retry-999");
         TenantContextHolder.setTenantId("tenant-retry-888");
@@ -851,6 +863,22 @@ class SampleKafkaE2eTest {
                         .content(objectMapper.writeValueAsString(timestampReq)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
+
+        // 4.1 对抗性校验：重设策略为 TIMESTAMP 时 timestampMs 缺失触发 Fail-Fast 阻断，返回 400
+        OffsetResetRequest invalidTimestampReq = OffsetResetRequest.builder()
+                .groupId("sample-group")
+                .topic("sample.order.topic")
+                .resetType(ResetType.TIMESTAMP)
+                .timestampMs(null)
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/ops/reset-offsets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidTimestampReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("timestampMs 必须为有效正数时间戳")));
 
         // 5. HTTP 实时查询全分区与总积压 Lag (防负数保护)
         mockMvc.perform(get("/sample/kafka/ops/lag")

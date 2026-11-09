@@ -44,7 +44,7 @@ public class OffsetResetRequest implements Serializable {
     private ResetType resetType;
 
     /**
-     * 回拨指定时间戳毫秒数（仅在 resetType 为 TIMESTAMP 时生效）
+     * 回拨指定时间戳毫秒数（当 resetType 为 TIMESTAMP 时必填，正数毫秒值）
      */
     private Long timestampMs;
 

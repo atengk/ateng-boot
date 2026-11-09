@@ -40,6 +40,17 @@ public class TradeKafkaScenarioService {
     }
 
     /**
+     * 异步按 Key 发送订单消息，返回 CompletableFuture 结果
+     *
+     * @param key   业务 Key
+     * @param order 订单消息
+     * @return 异步发送 Future
+     */
+    public CompletableFuture<SendResult<Object, Object>> sendAsyncOrder(String key, OrderMessage order) {
+        return kafkaReliableTemplate.sendReliableAsync(KafkaScenarioTopologyConfig.TOPIC_ORDER, key, order);
+    }
+
+    /**
      * 异步发送用户事件，返回 CompletableFuture 结果
      */
     public CompletableFuture<SendResult<Object, Object>> sendAsyncUserEvent(UserEventMessage event) {

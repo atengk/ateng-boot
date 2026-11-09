@@ -8,7 +8,7 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.kafka.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **可靠投递门面** | 生产端可靠投递与事务感知门面 | `KafkaReliableTemplate` | `send-timeout`<br>`max-payload-size`<br>`producer.batch-size`<br>`producer.linger-ms`<br>`producer.compression-type` | `sendReliable(topic, [partition], [key], payload, [bizKey], [timeout])`<br>`sendReliableAsync(topic, [partition], [key], payload, [bizKey])`<br>`sendAfterCommit(topic, [partition], [key], payload, [bizKey], [timeout])`<br>`executeInTransaction(callback)`<br>`sendBatch(topic, keyPayloadMap, [timeout])`<br>`sendBatch(topic, [key], payloads, [timeout])`<br>`getKafkaTemplate()`：同步阻塞确认、异步非阻塞 Future、Murmur2 Key 分区保序、物理 Partition 定向投递、本地 DB 事务感知防幽灵发信、Kafka 原生分布式事务原子多写、三级 bizKey 兜底、1MB 报文超限 Fail-Fast、四维上下文透明注入 | `KafkaReliableTemplateTest`<br>`KafkaTransactionReliableTemplateTest`<br>`KafkaProduceController` (`/sample/kafka/produce/*`)<br>`SampleKafkaE2eTest` |
+| **可靠投递门面** | 生产端可靠投递与事务感知门面 | `KafkaReliableTemplate` | `enabled`<br>`auto-create-topics`<br>`producer.send-timeout`<br>`producer.max-payload-size`<br>`producer.default-tuning-enabled` | `sendReliable(topic, [partition], [key], payload, [bizKey], [timeout])`<br>`sendReliableAsync(topic, [partition], [key], payload, [bizKey])`<br>`sendAfterCommit(topic, [partition], [key], payload, [bizKey], [timeout])`<br>`executeInTransaction(callback)`<br>`sendBatch(topic, keyPayloadMap, [timeout])`<br>`sendBatch(topic, [key], payloads, [timeout])`<br>`getKafkaTemplate()`：同步阻塞确认、异步非阻塞 Future、Murmur2 Key 分区保序、物理 Partition 定向投递、本地 DB 事务感知防幽灵发信、Kafka 原生分布式事务原子多写、三级 bizKey 兜底、1MB 报文超限 Fail-Fast、四维上下文透明注入 | `KafkaReliableTemplateTest`<br>`KafkaTransactionReliableTemplateTest`<br>`KafkaProduceController` (`/sample/kafka/produce/*`)<br>`SampleKafkaE2eTest` |
 | **死信治理门面** | 死信探查、受控重放与物理清空门面 | `KafkaDeadLetterReplayTemplate` | `dead-letter.default-replay-limit`<br>`dead-letter.max-replay-count`<br>`dead-letter.replay-group-id` | `peek(dlqTopic, limit)`：非破坏性只读探查 DLT 消息，不提交消费位移<br>`replay(dlqTopic, targetTopic, limit, [filter])`：受控重放死信回业务主题，自动清洗 `kafka_dlt-*` 底层异常头，注入 `X-Dead-Letter-Replayed`、时间戳与递增 `X-Replay-Count`；超出最大重放次数（默认 1 次）自动熔断阻断防二次死信雪崩<br>`purge(dlqTopic)`：推进起始位移物理清空死信积压 | `KafkaDeadLetterReplayTemplateTest`<br>`KafkaDeadLetterController` (`/sample/kafka/dead-letter/*`)<br>`SampleKafkaE2eTest` |
 | **死信诊断工具** | 死信结构化诊断与元数据解析工具 | `KafkaDeadLetterHelper`<br>`DeadLetterRecord` | - | `extractDeadLetterRecord(record/headers)` / `parse(record/headers)`：提取并解析 Spring Kafka 写入 DLT 的 7 类元数据（原主题、原分区、原位移、原时间戳、异常全限定类名、异常消息、堆栈轨迹），宽容兼容 4/8 字节二进制与 UTF-8 String 异构格式，返回强类型不可变记录 `DeadLetterRecord` | `KafkaDeadLetterHelperTest`<br>`KafkaDeadLetterController` (`/sample/kafka/dead-letter/audit-records`)<br>`SampleKafkaE2eTest` |
 | **位移与积压治理** | 运行期消费位移回拨与实时 Lag 积压探测 | `KafkaOffsetManager`<br>`ConsumerGroupLag` | `offset.timeout` | `getConsumerGroupOffsets(groupId, [topic])`：查询消费组已提交位移与元数据<br>`resetOffsetsToTimestamp(groupId, topic, timestamp)`：按时间戳精准回溯重置位移（自动超出 LEO 边界降级防护）<br>`resetOffsetsToEarliest(groupId, topic)` / `resetOffsetsToLatest(groupId, topic)`：位移重置至首末端<br>`getConsumerGroupLag(groupId, topic)`：并行拉取最新 LEO 与提交位移，精确计算每个分区的 Lag 及全主题总积压 `totalLag`（防负数安全防护） | `KafkaOffsetManagerTest`<br>`KafkaOpsController` (`/sample/kafka/ops/*`)<br>`SampleKafkaE2eTest` |
@@ -60,21 +60,22 @@ ateng:
   boot:
     kafka:
       enabled: true
-      send-timeout: 5s
-      max-payload-size: 1MB
       auto-create-topics: true
       producer:
+        send-timeout: 5s
+        max-payload-size: 1MB
         default-tuning-enabled: true
-        batch-size: 32KB
-        linger-ms: 10ms
       consumer:
         concurrency: 3
+        batch-concurrency: 3
         max-retries: 3
         retry-interval: 1s
         retry-multiplier: 2.0
+        shutdown-timeout: 10s
       dead-letter:
         default-replay-limit: 100
         max-replay-count: 1
+        replay-group-id: ateng-kafka-dlt-replay-group
       offset:
         timeout: 10s
 ```
@@ -326,12 +327,10 @@ public class TradeKafkaScenarioService {
 ateng:
   boot:
     kafka:
-      max-payload-size: 1MB
       producer:
+        send-timeout: 5s
+        max-payload-size: 1MB
         default-tuning-enabled: true
-        batch-size: 32KB
-        linger-ms: 10ms
-        compression-type: snappy
 ```
 
 #### 实战业务 Java 代码
@@ -350,7 +349,7 @@ public class TradeKafkaScenarioService {
 
 #### 机制边界说明
 - `KafkaReliableTemplate` 在将消息交由底层序列化前，前置校验报文体积；超出 `max-payload-size`（默认 1MB）立即抛出 `BusinessException(BAD_REQUEST)` 进行 Fail-Fast 拦截，保护 Broker 不被巨型报文打崩；
-- 默认开启微批调优：`32KB` 批次缓冲区配合 `10ms` 延迟合并与 `snappy` 压缩，大幅降低网络系统调用频次。
+- 当 `default-tuning-enabled: true`（默认开启）时，Starter 自动应用高吞吐微批调优底座（`32KB` 批次缓冲区配合 `10ms` 延迟合并、`snappy` 压缩、`acks=all` 与 `enable.idempotence=true`），大幅降低网络系统调用频次；若需覆盖特定原生参数，可配置 `spring.kafka.producer.*`。
 
 ---
 
@@ -998,10 +997,21 @@ public class KafkaOpsScenarioService {
 
 ## 11. 生产扩展接管与核心非功能边界 (Customization & Boundary)
 
-### 11.1 SPI 扩展点接管
+### 11.1 生产级 SPI 扩展点接管 (`KafkaTransactionFailureCallback` & `KafkaRebalanceListener`)
 
-#### 1. 事务发信失败补偿 SPI (`KafkaTransactionFailureCallback`)
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    kafka:
+      enabled: true
+      producer:
+        send-timeout: 5s
+```
+
+#### 实战业务 Java 代码
 ```java
+// 1. 本地 DB 事务提交后发信异常补偿 SPI
 @Component
 @Slf4j
 public class CustomKafkaTxFailureCallback implements KafkaTransactionFailureCallback {
@@ -1011,57 +1021,89 @@ public class CustomKafkaTxFailureCallback implements KafkaTransactionFailureCall
                           String bizKey, String traceId, Throwable cause) {
         log.error("[TX-SEND-FAILED] 事务已提交但发信失败，落库本地重发表: topic={}, bizKey={}, traceId={}",
                 topic, bizKey, traceId, cause);
-        // 业务持久化到本地消息重发表，由调度任务补偿重试
+        // 业务写入本地消息补偿表，由受管定时任务异步重试发信
     }
 }
-```
 
-#### 2. 再均衡生命周期钩子 SPI (`KafkaRebalanceListener`)
-```java
+// 2. 消费者分区再均衡生命周期钩子 SPI
 @Component
 @Slf4j
 public class CustomKafkaRebalanceListener implements KafkaRebalanceListener {
 
     @Override
     public void onPartitionsRevoked(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        log.warn("分区即将被撤销，立即持久化在途内存缓存: partitions={}", partitions);
+        log.warn("[REBALANCE-REVOKED] 分区即将被撤销，立即持久化在途内存缓存: partitions={}", partitions);
     }
 
     @Override
     public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        log.info("分区已分配就绪，重新对齐位移与加载本地缓存: partitions={}", partitions);
+        log.info("[REBALANCE-ASSIGNED] 分区已分配就绪，重新对齐位移与加载本地缓存: partitions={}", partitions);
     }
 }
 ```
+
+#### 机制边界说明
+- **事务补偿闭环**：`KafkaReliableTemplate.sendAfterCommit` 在本地数据库事务成功提交后触发网络发信；若此时 Kafka Broker 宕机或网络分区导致物理发信失败，框架自动调用全部注册的 `KafkaTransactionFailureCallback` 实现，杜绝消息丢失；
+- **再均衡安全挂起**：单条与批量双容器工厂自动扫描并注入全部 `KafkaRebalanceListener` 实现；在分区撤销（Revoked）时提供 Flush 临界区机会，分配完成（Assigned）时对齐位移与本地缓存。
 
 ---
 
 ### 11.2 核心 Bean 注入定制接管 (`@ConditionalOnMissingBean`)
 
-框架所有门面与关键组件均标注 `@ConditionalOnMissingBean`，支持企业级全面覆盖与扩展：
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    kafka:
+      dead-letter:
+        default-replay-limit: 100
+        max-replay-count: 2
+        replay-group-id: custom-dlt-replay-group
+```
 
+#### 实战业务 Java 代码
 ```java
 @Configuration(proxyBeanMethods = false)
-public class CustomKafkaConfig {
+public class CustomKafkaConfiguration {
 
     @Bean
     public KafkaDeadLetterReplayTemplate customReplayTemplate(
             ConsumerFactory<Object, Object> consumerFactory,
             KafkaTemplate<Object, Object> kafkaTemplate,
             AtengKafkaProperties properties) {
+        // 企业级安全接管：覆盖默认死信重放门面 Bean
         return new KafkaDeadLetterReplayTemplate(consumerFactory, kafkaTemplate, properties);
     }
 }
 ```
 
+#### 机制边界说明
+- 框架所有门面组件（`KafkaReliableTemplate`、`KafkaDeadLetterReplayTemplate`、`KafkaOffsetManager`、`KafkaContainerManager` 等）均标注 `@ConditionalOnMissingBean`；
+- 企业级扩展可通过声明同名或同类型 `@Bean` 实现零侵入平滑覆盖，业务级 Bean 具备最高优先级。
+
 ---
 
-### 11.3 核心生产边界与非功能机制
+### 11.3 核心生产边界与非功能机制 (Production Boundary & Failure Modes)
 
-1. **超时与网络防悬挂**：`send-timeout` 与 `offset.timeout` 显式纳管所有网络调用，严禁底层无界挂起；
-2. **虚拟线程兼容与 Carrier Pinning 防御**：避免在 I/O 临界区使用重量级锁，全面兼容 JDK 21+ 虚拟线程；
-3. **优雅停机排空**：消费容器统配 `shutdown-timeout`（默认 10 秒），在收到 SIGTERM 信号后停止拉取并等待在途任务执行完成；
-4. **只读账号防崩溃**：`auto-create-topics: false` 时，自动拦截 `KafkaAdmin` 创建意图，防御生产只读账号遭遇 403 崩溃。
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    kafka:
+      auto-create-topics: false # 生产受限环境关闭 Topic 自动创建
+      producer:
+        send-timeout: 5s
+      consumer:
+        shutdown-timeout: 10s
+      offset:
+        timeout: 10s
+```
+
+#### 机制边界说明
+1. **超时与网络防悬挂**：`producer.send-timeout`（默认 5s）与 `offset.timeout`（默认 10s）显式统管所有网络请求与位移探查，杜绝客户端无界挂起；
+2. **虚拟线程防 Pinning**：内部状态与临界区使用 `ReentrantLock` 与并发安全原语，严禁在 I/O 临界区使用 `synchronized`，全面兼容 JDK 21+ 虚拟线程；
+3. **10 秒优雅停机排空**：消费容器统配 `consumer.shutdown-timeout`（默认 10s），在收到停机信号后停止拉取新批次，并等待当前正在处理的消息或批次执行完毕；
+4. **生产只读账号 403 防崩溃**：配置 `auto-create-topics: false` 时，自动拦截 `KafkaAdmin` 向 Broker 发起的 Topic 声明探测，彻底杜绝生产只读账号遭遇 403 权限拒绝崩溃。
 
 ---
 

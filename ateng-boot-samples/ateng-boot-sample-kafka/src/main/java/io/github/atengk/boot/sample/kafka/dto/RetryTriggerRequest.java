@@ -29,4 +29,9 @@ public class RetryTriggerRequest implements Serializable {
      */
     @NotBlank(message = "订单业务ID不能为空")
     private String orderId;
+
+    /**
+     * 是否模拟慢故障触发阶梯重试（选填，默认 false）
+     */
+    private Boolean fail;
 }

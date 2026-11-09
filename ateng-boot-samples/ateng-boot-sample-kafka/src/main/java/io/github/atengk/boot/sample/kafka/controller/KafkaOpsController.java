@@ -19,7 +19,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -72,16 +71,7 @@ public class KafkaOpsController {
     public Result<String> resetOffsets(@Valid @RequestBody OffsetResetRequest request) {
         log.info("[HTTP-OPS-RESET-OFFSETS] 重设消费位移: groupId={}, topic={}, type={}",
                 request.getGroupId(), request.getTopic(), request.getResetType());
-        switch (request.getResetType()) {
-            case EARLIEST -> opsService.rewindOffsetsToEarliest(request.getGroupId(), request.getTopic());
-            case LATEST -> opsService.rewindOffsetsToLatest(request.getGroupId(), request.getTopic());
-            case TIMESTAMP -> {
-                Instant targetTime = (request.getTimestampMs() != null && request.getTimestampMs() > 0)
-                        ? Instant.ofEpochMilli(request.getTimestampMs())
-                        : Instant.now();
-                opsService.rewindOffsetsToTimestamp(request.getGroupId(), request.getTopic(), targetTime);
-            }
-        }
+        opsService.resetOffsets(request);
         return Result.success("位移重设成功: " + request.getResetType());
     }
 
@@ -111,12 +101,7 @@ public class KafkaOpsController {
     public Result<String> containerAction(@Valid @RequestBody ContainerActionRequest request) {
         log.info("[HTTP-OPS-CONTAINER-ACTION] 执行容器管控: idOrTopic={}, action={}",
                 request.getContainerIdOrTopic(), request.getAction());
-        switch (request.getAction()) {
-            case PAUSE -> opsService.pauseConsumer(request.getContainerIdOrTopic());
-            case RESUME -> opsService.resumeConsumer(request.getContainerIdOrTopic());
-            case START -> opsService.startConsumer(request.getContainerIdOrTopic());
-            case STOP -> opsService.stopConsumer(request.getContainerIdOrTopic());
-        }
+        opsService.executeContainerAction(request);
         return Result.success("容器动作执行成功: " + request.getAction());
     }
 

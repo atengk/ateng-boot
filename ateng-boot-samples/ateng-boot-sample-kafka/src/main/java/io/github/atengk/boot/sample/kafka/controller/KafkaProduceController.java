@@ -1,11 +1,11 @@
 package io.github.atengk.boot.sample.kafka.controller;
 
 import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.kafka.template.KafkaReliableTemplate;
-import io.github.atengk.boot.sample.kafka.config.KafkaScenarioTopologyConfig;
 import io.github.atengk.boot.sample.kafka.consumer.OrderSingleRecordConsumer;
 import io.github.atengk.boot.sample.kafka.dto.NativeTxProduceRequest;
 import io.github.atengk.boot.sample.kafka.dto.OrderProduceRequest;
+import io.github.atengk.boot.sample.kafka.dto.OrderProduceResponse;
+import io.github.atengk.boot.sample.kafka.dto.OrderReceivedResponse;
 import io.github.atengk.boot.sample.kafka.dto.UserEventProduceRequest;
 import io.github.atengk.boot.sample.kafka.model.OrderMessage;
 import io.github.atengk.boot.sample.kafka.service.TradeKafkaScenarioService;
@@ -35,16 +35,15 @@ public class KafkaProduceController {
 
     private final TradeKafkaScenarioService tradeKafkaScenarioService;
     private final OrderSingleRecordConsumer orderSingleRecordConsumer;
-    private final KafkaReliableTemplate kafkaReliableTemplate;
 
     /**
      * 同步可靠投递订单（支持 Murmur2 Key 分区哈希保序与定向物理分区投递）
      *
      * @param request 订单投递请求
-     * @return 投递结果摘要
+     * @return 强类型投递结果响应
      */
     @PostMapping("/order-sync")
-    public Result<String> sendOrderSync(@Valid @RequestBody OrderProduceRequest request) {
+    public Result<OrderProduceResponse> sendOrderSync(@Valid @RequestBody OrderProduceRequest request) {
         OrderMessage message = request.toOrderMessage();
         SendResult<Object, Object> sendResult;
         if (request.getPartition() != null) {
@@ -53,11 +52,17 @@ public class KafkaProduceController {
         } else {
             sendResult = tradeKafkaScenarioService.sendSyncOrder(message);
         }
-        String summary = String.format("TOPIC=%s, PARTITION=%d, OFFSET=%d",
-                sendResult.getRecordMetadata().topic(),
-                sendResult.getRecordMetadata().partition(),
-                sendResult.getRecordMetadata().offset());
-        return Result.success(summary, "同步投递订单成功");
+        OrderProduceResponse response = OrderProduceResponse.builder()
+                .topic(sendResult.getRecordMetadata().topic())
+                .partition(sendResult.getRecordMetadata().partition())
+                .offset(sendResult.getRecordMetadata().offset())
+                .orderId(request.getOrderId())
+                .summary(String.format("TOPIC=%s, PARTITION=%d, OFFSET=%d",
+                        sendResult.getRecordMetadata().topic(),
+                        sendResult.getRecordMetadata().partition(),
+                        sendResult.getRecordMetadata().offset()))
+                .build();
+        return Result.success(response, "同步投递订单成功");
     }
 
     /**
@@ -71,7 +76,7 @@ public class KafkaProduceController {
         OrderMessage message = request.toOrderMessage();
         String key = request.getKey() != null ? request.getKey() : request.getOrderId();
         CompletableFuture<SendResult<Object, Object>> future =
-                kafkaReliableTemplate.sendReliableAsync(KafkaScenarioTopologyConfig.TOPIC_ORDER, key, message);
+                tradeKafkaScenarioService.sendAsyncOrder(key, message);
         future.whenComplete((result, ex) -> {
             if (ex != null) {
                 log.error("[ASYNC-ORDER-FAILED] 订单异步投递失败: orderId={}", request.getOrderId(), ex);
@@ -152,8 +157,19 @@ public class KafkaProduceController {
      * @return 订单消费记录列表
      */
     @GetMapping("/received-orders")
-    public Result<List<OrderSingleRecordConsumer.ConsumedRecord>> getReceivedOrders() {
-        return Result.success(orderSingleRecordConsumer.getConsumedRecords());
+    public Result<List<OrderReceivedResponse>> getReceivedOrders() {
+        List<OrderReceivedResponse> responses = orderSingleRecordConsumer.getConsumedRecords().stream()
+                .map(r -> OrderReceivedResponse.builder()
+                        .key(r.key())
+                        .partition(r.partition())
+                        .offset(r.offset())
+                        .order(r.order())
+                        .traceId(r.traceId())
+                        .tenantId(r.tenantId())
+                        .userId(r.userId())
+                        .build())
+                .toList();
+        return Result.success(responses);
     }
 
     /**
