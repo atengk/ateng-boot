@@ -1,5 +1,7 @@
 package io.github.atengk.boot.web.idempotent.store;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -68,5 +70,20 @@ class RedisIdempotentKeyStoreTest {
         keyStore.unlock("idempotent:test:1");
 
         verify(redisTemplate, times(1)).delete("idempotent:test:1");
+    }
+
+    @Test
+    @DisplayName("测试 isLocked 与异常因果链转译")
+    void shouldCheckIsLockedAndWrapException() {
+        when(redisTemplate.hasKey("idempotent:test:1")).thenReturn(Boolean.TRUE);
+        assertThat(keyStore.isLocked("idempotent:test:1")).isTrue();
+
+        when(redisTemplate.hasKey("idempotent:test:err")).thenThrow(new RuntimeException("Redis connection timed out"));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> keyStore.isLocked("idempotent:test:err"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Redis idempotent isLocked failed")
+                .hasCauseInstanceOf(RuntimeException.class)
+                .extracting("code")
+                .isEqualTo(CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
     }
 }

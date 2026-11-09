@@ -1,6 +1,5 @@
 package io.github.atengk.boot.web.ratelimit.store;
 
-import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
@@ -9,11 +8,16 @@ import java.time.Duration;
 import java.util.Comparator;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 纯 JDK 17 原生单机内存令牌桶限流存储引擎
- * 基于 ConcurrentHashMap 与无锁细粒度分段并发令牌桶算法，具备软容量上限淘汰与后台低频定时清理保护，杜绝 OOM
+ * 基于 ConcurrentHashMap 与 ReentrantLock 细粒度并发令牌桶算法，具备 CAS 节流清理、软容量上限淘汰保护，消除野线程与 Pinning 隐患
  *
  * @author Ateng
  * @since 2026-10-16
@@ -27,33 +31,39 @@ public class InMemoryRateLimiterStore implements RateLimiterStore, DisposableBea
 
     private final ConcurrentMap<String, TokenBucket> cache = new ConcurrentHashMap<>();
     private final int maxCapacity;
-    private final ScheduledExecutorService cleanupExecutor;
+    private final long cleanIntervalMillis;
+    private final Executor executor;
+    private final AtomicLong lastCleanTime = new AtomicLong(0);
 
     public InMemoryRateLimiterStore() {
-        this(DEFAULT_MAX_CAPACITY, DEFAULT_CLEAN_INTERVAL);
+        this(DEFAULT_MAX_CAPACITY, DEFAULT_CLEAN_INTERVAL, null);
     }
 
     public InMemoryRateLimiterStore(int maxCapacity, Duration cleanInterval) {
+        this(maxCapacity, cleanInterval, null);
+    }
+
+    public InMemoryRateLimiterStore(int maxCapacity, Duration cleanInterval, Executor executor) {
         this.maxCapacity = maxCapacity > 0 ? maxCapacity : DEFAULT_MAX_CAPACITY;
         Duration interval = cleanInterval != null && !cleanInterval.isZero() && !cleanInterval.isNegative()
                 ? cleanInterval : DEFAULT_CLEAN_INTERVAL;
-
-        this.cleanupExecutor = Executors.newSingleThreadScheduledExecutor(
-                new NamedThreadFactory("ateng-ratelimit-cleaner", true));
-
-        long intervalMillis = interval.toMillis();
-        this.cleanupExecutor.scheduleWithFixedDelay(this::cleanExpiredEntries, intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);
+        this.cleanIntervalMillis = interval.toMillis();
+        this.executor = executor;
     }
 
     @Override
     public boolean tryAcquire(String key, long count, long time, TimeUnit unit) {
-        Objects.requireNonNull(key, "RateLimiter key must not be null");
+        if (key == null || key.isBlank()) {
+            throw new IllegalArgumentException("RateLimiter key must not be blank");
+        }
         Objects.requireNonNull(unit, "TimeUnit must not be null");
         if (count <= 0 || time <= 0) {
             return true;
         }
 
         long now = System.currentTimeMillis();
+        triggerLazyCleanup(now);
+
         long windowMillis = unit.toMillis(time);
 
         TokenBucket bucket = cache.computeIfAbsent(key, k -> new TokenBucket(count, windowMillis, now));
@@ -62,6 +72,37 @@ public class InMemoryRateLimiterStore implements RateLimiterStore, DisposableBea
             ensureCapacityLimit(now);
         }
         return acquired;
+    }
+
+    @Override
+    public void reset(String key) {
+        if (key == null || key.isBlank()) {
+            throw new IllegalArgumentException("RateLimiter key must not be blank");
+        }
+        cache.remove(key);
+    }
+
+    /**
+     * 清空内存中所有限流令牌桶（主要用于测试复位或运维管理）
+     */
+    public void clear() {
+        cache.clear();
+    }
+
+    private void triggerLazyCleanup(long now) {
+        long last = lastCleanTime.get();
+        if (now - last > cleanIntervalMillis && lastCleanTime.compareAndSet(last, now)) {
+            if (executor != null) {
+                try {
+                    executor.execute(this::cleanExpiredEntries);
+                } catch (Exception e) {
+                    log.warn("Failed to dispatch async cleanup task, executing synchronously", e);
+                    cleanExpiredEntries();
+                }
+            } else {
+                cleanExpiredEntries();
+            }
+        }
     }
 
     private void ensureCapacityLimit(long now) {
@@ -95,16 +136,14 @@ public class InMemoryRateLimiterStore implements RateLimiterStore, DisposableBea
 
     @Override
     public void destroy() {
-        if (cleanupExecutor != null) {
-            cleanupExecutor.shutdownNow();
-        }
         cache.clear();
     }
 
     /**
-     * 单个 Key 粒度的令牌桶
+     * 单个 Key 粒度的令牌桶，基于 ReentrantLock 杜绝虚拟线程 Carrier Pinning
      */
     private static class TokenBucket {
+        private final ReentrantLock lock = new ReentrantLock();
         private double tokens;
         private long lastRefillTime;
         private long windowMillis;
@@ -115,28 +154,49 @@ public class InMemoryRateLimiterStore implements RateLimiterStore, DisposableBea
             this.lastRefillTime = now;
         }
 
-        synchronized boolean tryAcquire(long capacity, long windowMillis, long now) {
-            this.windowMillis = windowMillis;
-            long elapsed = Math.max(0, now - lastRefillTime);
-            if (elapsed > 0) {
-                double generated = (double) elapsed * capacity / windowMillis;
-                this.tokens = Math.min(capacity, this.tokens + generated);
-                this.lastRefillTime = now;
+        boolean tryAcquire(long capacity, long windowMillis, long now) {
+            lock.lock();
+            try {
+                this.windowMillis = windowMillis;
+                long elapsed = Math.max(0, now - lastRefillTime);
+                if (elapsed > 0) {
+                    double generated = (double) elapsed * capacity / windowMillis;
+                    this.tokens = Math.min(capacity, this.tokens + generated);
+                    this.lastRefillTime = now;
+                }
+                if (this.tokens >= 1.0) {
+                    this.tokens -= 1.0;
+                    return true;
+                }
+                return false;
+            } finally {
+                if (lock.isHeldByCurrentThread()) {
+                    lock.unlock();
+                }
             }
-            if (this.tokens >= 1.0) {
-                this.tokens -= 1.0;
-                return true;
-            }
-            return false;
         }
 
-        synchronized boolean isExpired(long now) {
-            // 超过 2 个时间窗口无请求，视为完全过期空闲
-            return now - lastRefillTime > windowMillis * 2;
+        boolean isExpired(long now) {
+            lock.lock();
+            try {
+                // 超过 2 个时间窗口无请求，视为完全过期空闲
+                return now - lastRefillTime > windowMillis * 2;
+            } finally {
+                if (lock.isHeldByCurrentThread()) {
+                    lock.unlock();
+                }
+            }
         }
 
-        synchronized long getLastRefillTime() {
-            return lastRefillTime;
+        long getLastRefillTime() {
+            lock.lock();
+            try {
+                return lastRefillTime;
+            } finally {
+                if (lock.isHeldByCurrentThread()) {
+                    lock.unlock();
+                }
+            }
         }
     }
 }

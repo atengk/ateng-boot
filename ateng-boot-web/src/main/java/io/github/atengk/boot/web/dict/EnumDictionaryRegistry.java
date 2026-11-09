@@ -31,6 +31,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 枚举字典启动期扫描注册中心
@@ -45,6 +46,7 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
     private static final int MAX_LOCALIZED_CACHE_SIZE = 64;
 
     private final EnumDictionaryProperties properties;
+    private final ReentrantLock lock = new ReentrantLock();
     private ClassLoader classLoader;
     private ResourceLoader resourceLoader;
     private MessageSource messageSource;
@@ -88,46 +90,53 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
     /**
      * 执行包路径扫描与注册
      */
-    public synchronized void scanAndRegister() {
-        List<String> scanPackages = properties.getScanPackages();
-        if (scanPackages == null || scanPackages.isEmpty()) {
-            log.info("ateng-boot: 未配置枚举扫描包路径 [ateng.boot.web.enum.scan-packages]，枚举字典注册表保持为空");
-            this.dictMap = Collections.emptyMap();
-            this.aliasToClassMap = Collections.emptyMap();
-            return;
-        }
-
-        ClassLoader targetClassLoader = this.classLoader != null ? this.classLoader : ClassUtils.getDefaultClassLoader();
-        ClassPathScanningCandidateComponentProvider scanner = createScanner();
-
-        Map<String, Class<?>> tempAliasMap = new LinkedHashMap<>();
-        Map<String, List<OptionItem<Object>>> tempDictMap = new LinkedHashMap<>();
-        EnumNamingStrategy strategy = properties.getNamingStrategy() != null
-                ? properties.getNamingStrategy()
-                : EnumNamingStrategy.LOWER_CAMEL_CASE;
-
-        for (String scanPackage : scanPackages) {
-            if (!StringUtil.hasText(scanPackage)) {
-                continue;
+    public void scanAndRegister() {
+        lock.lock();
+        try {
+            List<String> scanPackages = properties.getScanPackages();
+            if (scanPackages == null || scanPackages.isEmpty()) {
+                log.info("ateng-boot: 未配置枚举扫描包路径 [ateng.boot.web.enum.scan-packages]，枚举字典注册表保持为空");
+                this.dictMap = Collections.emptyMap();
+                this.aliasToClassMap = Collections.emptyMap();
+                return;
             }
-            String trimmedPackage = scanPackage.trim();
-            for (var candidate : scanner.findCandidateComponents(trimmedPackage)) {
-                if (candidate instanceof AnnotatedBeanDefinition annotatedBeanDefinition) {
-                    AnnotationMetadata metadata = annotatedBeanDefinition.getMetadata();
-                    try {
-                        Class<?> clazz = ClassUtils.forName(metadata.getClassName(), targetClassLoader);
-                        registerEnum(clazz, strategy, tempAliasMap, tempDictMap);
-                    } catch (ClassNotFoundException | LinkageError e) {
-                        log.error("ateng-boot: 加载待注册枚举类失败: {}", metadata.getClassName(), e);
+
+            ClassLoader targetClassLoader = this.classLoader != null ? this.classLoader : ClassUtils.getDefaultClassLoader();
+            ClassPathScanningCandidateComponentProvider scanner = createScanner();
+
+            Map<String, Class<?>> tempAliasMap = new LinkedHashMap<>();
+            Map<String, List<OptionItem<Object>>> tempDictMap = new LinkedHashMap<>();
+            EnumNamingStrategy strategy = properties.getNamingStrategy() != null
+                    ? properties.getNamingStrategy()
+                    : EnumNamingStrategy.LOWER_CAMEL_CASE;
+
+            for (String scanPackage : scanPackages) {
+                if (!StringUtil.hasText(scanPackage)) {
+                    continue;
+                }
+                String trimmedPackage = scanPackage.trim();
+                for (var candidate : scanner.findCandidateComponents(trimmedPackage)) {
+                    if (candidate instanceof AnnotatedBeanDefinition annotatedBeanDefinition) {
+                        AnnotationMetadata metadata = annotatedBeanDefinition.getMetadata();
+                        try {
+                            Class<?> clazz = ClassUtils.forName(metadata.getClassName(), targetClassLoader);
+                            registerEnum(clazz, strategy, tempAliasMap, tempDictMap);
+                        } catch (ClassNotFoundException | LinkageError e) {
+                            log.error("ateng-boot: 加载待注册枚举类失败: {}", metadata.getClassName(), e);
+                        }
                     }
                 }
             }
-        }
 
-        this.aliasToClassMap = Collections.unmodifiableMap(tempAliasMap);
-        this.dictMap = Collections.unmodifiableMap(tempDictMap);
-        this.localizedDictCache.clear();
-        log.info("ateng-boot: 成功完成枚举字典扫描与预编译，共注册 {} 个枚举字典: {}", dictMap.size(), dictMap.keySet());
+            this.aliasToClassMap = Collections.unmodifiableMap(tempAliasMap);
+            this.dictMap = Collections.unmodifiableMap(tempDictMap);
+            this.localizedDictCache.clear();
+            log.info("ateng-boot: 成功完成枚举字典扫描与预编译，共注册 {} 个枚举字典: {}", dictMap.size(), dictMap.keySet());
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
     }
 
     /**
@@ -135,16 +144,23 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
      *
      * @param clazz 待注册的枚举类
      */
-    public synchronized void register(Class<?> clazz) {
-        EnumNamingStrategy strategy = properties.getNamingStrategy() != null
-                ? properties.getNamingStrategy()
-                : EnumNamingStrategy.LOWER_CAMEL_CASE;
-        Map<String, Class<?>> tempAliasMap = new LinkedHashMap<>(this.aliasToClassMap);
-        Map<String, List<OptionItem<Object>>> tempDictMap = new LinkedHashMap<>(this.dictMap);
-        registerEnum(clazz, strategy, tempAliasMap, tempDictMap);
-        this.aliasToClassMap = Collections.unmodifiableMap(tempAliasMap);
-        this.dictMap = Collections.unmodifiableMap(tempDictMap);
-        this.localizedDictCache.clear();
+    public void register(Class<?> clazz) {
+        lock.lock();
+        try {
+            EnumNamingStrategy strategy = properties.getNamingStrategy() != null
+                    ? properties.getNamingStrategy()
+                    : EnumNamingStrategy.LOWER_CAMEL_CASE;
+            Map<String, Class<?>> tempAliasMap = new LinkedHashMap<>(this.aliasToClassMap);
+            Map<String, List<OptionItem<Object>>> tempDictMap = new LinkedHashMap<>(this.dictMap);
+            registerEnum(clazz, strategy, tempAliasMap, tempDictMap);
+            this.aliasToClassMap = Collections.unmodifiableMap(tempAliasMap);
+            this.dictMap = Collections.unmodifiableMap(tempDictMap);
+            this.localizedDictCache.clear();
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
     }
 
     private void registerEnum(Class<?> clazz, EnumNamingStrategy strategy,

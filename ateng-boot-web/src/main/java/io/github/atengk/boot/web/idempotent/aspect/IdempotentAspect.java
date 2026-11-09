@@ -6,6 +6,7 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.web.idempotent.annotation.Idempotent;
 import io.github.atengk.boot.web.idempotent.properties.IdempotentProperties;
 import io.github.atengk.boot.web.idempotent.store.IdempotentKeyStore;
+import io.github.atengk.boot.web.idempotent.store.InMemoryIdempotentKeyStore;
 import io.github.atengk.boot.web.util.ServletUtil;
 import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
@@ -16,6 +17,7 @@ import org.aspectj.lang.reflect.MethodSignature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.DefaultParameterNameDiscoverer;
+import org.springframework.core.Ordered;
 import org.springframework.core.ParameterNameDiscoverer;
 import org.springframework.expression.EvaluationContext;
 import org.springframework.expression.Expression;
@@ -46,13 +48,19 @@ import java.util.concurrent.ConcurrentHashMap;
  * @since 2026-10-16
  */
 @Aspect
-public class IdempotentAspect {
+public class IdempotentAspect implements Ordered {
+
+    /**
+     * 切面优先级：置于限流之后，加签验签与审计之前
+     */
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 300;
 
     private static final Logger log = LoggerFactory.getLogger(IdempotentAspect.class);
 
     private final IdempotentKeyStore keyStore;
     private final IdempotentProperties properties;
     private final ObjectMapper objectMapper;
+    private final IdempotentKeyStore fallbackStore = new InMemoryIdempotentKeyStore();
 
     private final ExpressionParser expressionParser = new SpelExpressionParser();
     private final ParameterNameDiscoverer parameterNameDiscoverer = new DefaultParameterNameDiscoverer();
@@ -70,12 +78,30 @@ public class IdempotentAspect {
         this.objectMapper = objectMapperProvider != null ? objectMapperProvider.getIfAvailable() : null;
     }
 
+    @Override
+    public int getOrder() {
+        return ORDER;
+    }
+
     @Around("@annotation(idempotent)")
     public Object around(ProceedingJoinPoint joinPoint, Idempotent idempotent) throws Throwable {
         String fullKey = resolveFullKey(joinPoint, idempotent);
 
-        // 1. 尝试原子加锁抢占
-        boolean acquired = keyStore.tryLock(fullKey, idempotent.timeout(), idempotent.timeUnit());
+        // 1. 尝试原子加锁抢占（支持底层驱动故障时的 failOpen 降级）
+        boolean acquired;
+        boolean usedFallback = false;
+        try {
+            acquired = keyStore.tryLock(fullKey, idempotent.timeout(), idempotent.timeUnit());
+        } catch (Exception ex) {
+            if (properties.isFailOpen()) {
+                log.warn("Idempotent keyStore execution failed, falling back to in-memory store due to failOpen=true, key: {}", fullKey, ex);
+                usedFallback = true;
+                acquired = fallbackStore.tryLock(fullKey, idempotent.timeout(), idempotent.timeUnit());
+            } else {
+                throw ex;
+            }
+        }
+
         if (!acquired) {
             String message = StringUtils.hasText(idempotent.message())
                     ? idempotent.message()
@@ -90,7 +116,20 @@ public class IdempotentAspect {
         } catch (Throwable ex) {
             // 若执行发生异常且配置了异常自动释放，主动释放锁以允许用户立即重试
             if (idempotent.delKeyOnException()) {
-                keyStore.unlock(fullKey);
+                try {
+                    if (usedFallback) {
+                        fallbackStore.unlock(fullKey);
+                    } else {
+                        keyStore.unlock(fullKey);
+                    }
+                } catch (Exception unlockEx) {
+                    if (properties.isFailOpen()) {
+                        log.warn("Idempotent keyStore unlock failed, attempting fallback unlock due to failOpen=true, key: {}", fullKey, unlockEx);
+                        fallbackStore.unlock(fullKey);
+                    } else {
+                        log.error("Failed to release idempotent lock on exception, key: {}", fullKey, unlockEx);
+                    }
+                }
                 log.debug("Idempotent lock released due to exception on key [{}]", fullKey);
             }
             throw ex;

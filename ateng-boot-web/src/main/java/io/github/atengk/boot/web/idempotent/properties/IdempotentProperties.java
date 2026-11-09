@@ -27,6 +27,11 @@ public class IdempotentProperties {
     private String keyPrefix = "idempotent:";
 
     /**
+     * 底层存储（Redis/Redisson）发生网络或驱动故障时是否降级放行（默认 false 阻断请求；true 记录告警并降级至内存存储）
+     */
+    private boolean failOpen = false;
+
+    /**
      * 单机内存存储配置
      */
     @NestedConfigurationProperty

@@ -16,6 +16,7 @@ import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.annotation.Pointcut;
 import org.aspectj.lang.reflect.MethodSignature;
+import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.util.StringUtils;
 
@@ -31,12 +32,22 @@ import java.util.Arrays;
  */
 @Slf4j
 @Aspect
-public class IpAccessControlAspect {
+public class IpAccessControlAspect implements Ordered {
+
+    /**
+     * 切面优先级：最高优先级，最先进行 IP 校验以快速失败
+     */
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 100;
 
     private final IpAccessControlProperties properties;
 
     public IpAccessControlAspect(IpAccessControlProperties properties) {
         this.properties = properties != null ? properties : new IpAccessControlProperties();
+    }
+
+    @Override
+    public int getOrder() {
+        return ORDER;
     }
 
     @Pointcut("@annotation(io.github.atengk.boot.web.ip.annotation.IpAccessControl) || @within(io.github.atengk.boot.web.ip.annotation.IpAccessControl)")

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.sample.web.dto.TrafficOrderDTO;
+import io.github.atengk.boot.web.ratelimit.store.RateLimiterStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -42,12 +43,20 @@ class WebTrafficGovernanceControllerTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private RateLimiterStore rateLimiterStore;
+
     @BeforeEach
     @AfterEach
     void cleanContext() {
         UserContextHolder.clear();
         TenantContextHolder.clear();
         MDC.clear();
+        if (rateLimiterStore instanceof io.github.atengk.boot.web.ratelimit.store.InMemoryRateLimiterStore memStore) {
+            memStore.clear();
+        } else if (rateLimiterStore != null) {
+            rateLimiterStore.reset("rate_limit:default:/sample/web/traffic/ratelimit/default");
+        }
     }
 
     @Test
@@ -268,5 +277,58 @@ class WebTrafficGovernanceControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("success: " + bizId));
+    }
+
+    @Test
+    @DisplayName("10. @Idempotent 锁状态查询：isLocked 正确反映加锁中与未锁定状态")
+    void shouldCheckIdempotentLockStatus() throws Exception {
+        String couponCode = "STATUS_COUPON_" + System.currentTimeMillis();
+        String fullKey = "idempotent:coupon:claim:" + couponCode;
+
+        // 加锁前状态应为 false
+        mockMvc.perform(get("/sample/web/traffic/idempotent/is-locked")
+                        .param("key", fullKey))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(false));
+
+        // 触发领券加锁
+        mockMvc.perform(post("/sample/web/traffic/idempotent/coupon")
+                        .param("couponCode", couponCode))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 加锁后应为 true
+        mockMvc.perform(get("/sample/web/traffic/idempotent/is-locked")
+                        .param("key", fullKey))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+    }
+
+    @Test
+    @DisplayName("11. @RateLimiter 运维重置配额：超限后调用 reset 立即恢复放行")
+    void shouldResetRateLimitQuota() throws Exception {
+        // 请求两次触发限流
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/default"))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/default"))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/default"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(429));
+
+        // 重置默认限流 key
+        String defaultKey = "rate_limit:default:/sample/web/traffic/ratelimit/default";
+        mockMvc.perform(post("/sample/web/traffic/ratelimit/reset")
+                        .param("key", defaultKey))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 重置后应恢复放行
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/default"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("全局接口访问成功"));
     }
 }

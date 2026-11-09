@@ -172,7 +172,7 @@ public class AtengWebAutoConfiguration {
         ShallowEtagHeaderFilter filter = new ShallowEtagHeaderFilter();
         filter.setWriteWeakETag(webProperties.getEtag().isWriteWeakETag());
         FilterRegistrationBean<ShallowEtagHeaderFilter> registration = new FilterRegistrationBean<>(filter);
-        registration.setOrder(SecurityHeadersFilter.ORDER + 1);
+        registration.setOrder(TraceFilter.ORDER + 70);
         return registration;
     }
 
@@ -304,7 +304,7 @@ public class AtengWebAutoConfiguration {
     @ConditionalOnMissingBean(name = "corsFilterRegistration")
     public FilterRegistrationBean<CorsFilter> corsFilterRegistration(CorsFilter corsFilter) {
         FilterRegistrationBean<CorsFilter> registration = new FilterRegistrationBean<>(corsFilter);
-        registration.setOrder(TraceFilter.ORDER + 10);
+        registration.setOrder(TraceFilter.ORDER + 20);
         return registration;
     }
 

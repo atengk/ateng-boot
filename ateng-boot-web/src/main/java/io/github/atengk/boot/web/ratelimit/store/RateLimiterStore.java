@@ -20,4 +20,12 @@ public interface RateLimiterStore {
      * @return true 获取许可成功（未超限）；false 超过阈值（触发限流）
      */
     boolean tryAcquire(String key, long count, long time, TimeUnit unit);
+
+    /**
+     * 重置指定限流业务键的状态与配额
+     *
+     * @param key 限流业务唯一标识键
+     */
+    default void reset(String key) {
+    }
 }

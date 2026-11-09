@@ -21,6 +21,7 @@ import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotationUtils;
 import io.github.atengk.boot.core.util.IdUtil;
 import org.springframework.util.StringUtils;
@@ -38,7 +39,12 @@ import java.util.concurrent.TimeUnit;
  */
 @Slf4j
 @Aspect
-public class ApiSignAspect {
+public class ApiSignAspect implements Ordered {
+
+    /**
+     * 切面优先级：置于防重幂等之后，业务审计切面之前
+     */
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 400;
 
     public static final String HEADER_APP_ID = "X-App-Id";
     public static final String HEADER_TIMESTAMP = "X-Timestamp";
@@ -61,6 +67,11 @@ public class ApiSignAspect {
         this.idempotentKeyStoreProvider = Objects.requireNonNull(idempotentKeyStoreProvider, "IdempotentKeyStoreProvider must not be null");
         this.objectMapper = Objects.requireNonNull(objectMapper, "ObjectMapper must not be null");
         this.webProperties = Objects.requireNonNull(webProperties, "WebProperties must not be null");
+    }
+
+    @Override
+    public int getOrder() {
+        return ORDER;
     }
 
     @Around("@annotation(apiSign) || @within(apiSign)")

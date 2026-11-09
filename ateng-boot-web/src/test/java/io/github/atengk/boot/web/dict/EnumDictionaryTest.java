@@ -213,4 +213,30 @@ class EnumDictionaryTest {
                     assertThat(context).hasSingleBean(EnumDictionaryController.class);
                 });
     }
+
+    @Test
+    @DisplayName("测试多线程并发 register 安全（验证 ReentrantLock 同步控制）")
+    void shouldRegisterConcurrentlyWithReentrantLock() throws InterruptedException {
+        EnumDictionaryRegistry registry = new EnumDictionaryRegistry(new EnumDictionaryProperties());
+        int threadCount = 10;
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(threadCount);
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(threadCount);
+
+        for (int i = 0; i < threadCount; i++) {
+            executor.submit(() -> {
+                try {
+                    registry.register(SampleStatusEnum.class);
+                    registry.register(SampleRoleEnum.class);
+                } finally {
+                    latch.countDown();
+                }
+            });
+        }
+
+        latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
+        executor.shutdown();
+
+        assertThat(registry.contains("sampleStatus")).isTrue();
+        assertThat(registry.contains("userRole")).isTrue();
+    }
 }

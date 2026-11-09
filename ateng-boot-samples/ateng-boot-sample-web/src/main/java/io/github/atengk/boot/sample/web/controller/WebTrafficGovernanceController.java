@@ -7,8 +7,10 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.web.dto.TrafficOrderDTO;
 import io.github.atengk.boot.web.idempotent.annotation.Idempotent;
+import io.github.atengk.boot.web.idempotent.store.IdempotentKeyStore;
 import io.github.atengk.boot.web.ratelimit.annotation.LimitType;
 import io.github.atengk.boot.web.ratelimit.annotation.RateLimiter;
+import io.github.atengk.boot.web.ratelimit.store.RateLimiterStore;
 import io.github.atengk.boot.web.util.IpUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -32,6 +34,14 @@ import java.util.concurrent.TimeUnit;
 @RestController
 @RequestMapping("/sample/web/traffic")
 public class WebTrafficGovernanceController {
+
+    private final IdempotentKeyStore idempotentKeyStore;
+    private final RateLimiterStore rateLimiterStore;
+
+    public WebTrafficGovernanceController(IdempotentKeyStore idempotentKeyStore, RateLimiterStore rateLimiterStore) {
+        this.idempotentKeyStore = idempotentKeyStore;
+        this.rateLimiterStore = rateLimiterStore;
+    }
 
     /**
      * 全局默认接口限流演示端点（10秒内最多允许2次请求）
@@ -143,5 +153,28 @@ public class WebTrafficGovernanceController {
             throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), "可恢复业务校验失败");
         }
         return Result.success("success: " + bizId);
+    }
+
+    /**
+     * 实时查询幂等锁占用状态
+     *
+     * @param key 全局幂等键
+     * @return 锁定状态（true 处于锁定中；false 未锁定或已过期）
+     */
+    @GetMapping("/idempotent/is-locked")
+    public Result<Boolean> isLocked(@RequestParam String key) {
+        return Result.success(idempotentKeyStore.isLocked(key));
+    }
+
+    /**
+     * 运维重置指定接口限流配额
+     *
+     * @param key 限流业务键
+     * @return 业务响应契约
+     */
+    @PostMapping("/ratelimit/reset")
+    public Result<Void> resetRateLimit(@RequestParam String key) {
+        rateLimiterStore.reset(key);
+        return Result.success();
     }
 }

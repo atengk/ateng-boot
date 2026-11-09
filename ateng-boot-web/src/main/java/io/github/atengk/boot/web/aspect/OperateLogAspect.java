@@ -25,6 +25,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.validation.BindingResult;
@@ -55,7 +56,12 @@ import java.util.concurrent.Executor;
  * @since 2026-10-18
  */
 @Aspect
-public class OperateLogAspect {
+public class OperateLogAspect implements Ordered {
+
+    /**
+     * 切面优先级：置于验签之后，Web 访问日志之前
+     */
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 500;
 
     private static final Logger log = LoggerFactory.getLogger(OperateLogAspect.class);
     private static final String EXCLUDED_MASK = "[EXCLUDED]";
@@ -84,6 +90,11 @@ public class OperateLogAspect {
 
     public OperateLogAspect() {
         this(new DefaultOperateLogStorageProvider(), null, JsonUtil.getObjectMapper(), null, new WebProperties());
+    }
+
+    @Override
+    public int getOrder() {
+        return ORDER;
     }
 
     /**

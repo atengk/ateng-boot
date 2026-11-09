@@ -26,4 +26,14 @@ public interface IdempotentKeyStore {
      * @param key 全局唯一幂等键
      */
     void unlock(String key);
+
+    /**
+     * 查询指定幂等键当前是否处于锁定有效状态
+     *
+     * @param key 全局唯一幂等键
+     * @return true 代表处于锁定状态；false 代表未锁定或已过期
+     */
+    default boolean isLocked(String key) {
+        return false;
+    }
 }

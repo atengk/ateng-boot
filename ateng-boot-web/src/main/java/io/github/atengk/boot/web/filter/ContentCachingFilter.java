@@ -21,9 +21,9 @@ import java.io.IOException;
 public class ContentCachingFilter extends OncePerRequestFilter implements Ordered {
 
     /**
-     * 默认过滤器执行优先级：紧跟 TraceFilter 之后，早于业务切面与下游日志过滤器
+     * 默认过滤器执行优先级：置于 TraceFilter(+0)、IpAccessControlFilter(+10)、CorsFilter(+20) 之后，早于下游日志审计过滤器
      */
-    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 1;
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 30;
 
     private final int maxBodySize;
 

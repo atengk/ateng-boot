@@ -6,6 +6,7 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.web.ratelimit.annotation.LimitType;
 import io.github.atengk.boot.web.ratelimit.annotation.RateLimiter;
 import io.github.atengk.boot.web.ratelimit.store.InMemoryRateLimiterStore;
+import io.github.atengk.boot.web.ratelimit.store.RateLimiterStore;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.junit.jupiter.api.AfterEach;
@@ -22,6 +23,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -170,6 +172,45 @@ class RateLimiterAspectTest {
         // 第 2 次超限
         assertThatThrownBy(() -> aspect.around(joinPoint, rateLimiter))
                 .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    @DisplayName("验证切面优先级与 failOpen 容灾降级行为")
+    void shouldVerifyOrderAndFailOpen() throws Throwable {
+        assertThat(aspect.getOrder()).isEqualTo(RateLimiterAspect.ORDER);
+        assertThat(RateLimiterAspect.ORDER).isEqualTo(org.springframework.core.Ordered.HIGHEST_PRECEDENCE + 200);
+
+        RateLimiterStore brokenStore = mock(RateLimiterStore.class);
+        when(brokenStore.tryAcquire(anyString(), anyLong(), anyLong(), any()))
+                .thenThrow(new BusinessException(500, "Redis down"));
+
+        ProceedingJoinPoint joinPoint = mock(ProceedingJoinPoint.class);
+        MethodSignature signature = mock(MethodSignature.class);
+        Method method = SampleService.class.getMethod("limitedMethod", String.class);
+        when(joinPoint.getSignature()).thenReturn(signature);
+        when(joinPoint.getArgs()).thenReturn(new Object[]{"order123"});
+        when(joinPoint.proceed()).thenReturn("success");
+        when(signature.getMethod()).thenReturn(method);
+        when(signature.getDeclaringTypeName()).thenReturn(SampleService.class.getName());
+        when(signature.getName()).thenReturn("limitedMethod");
+        RateLimiter rateLimiter = method.getAnnotation(RateLimiter.class);
+
+        // 1. failOpen = false (默认) -> 抛出异常
+        io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties propsClosed =
+                new io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties();
+        propsClosed.setFailOpen(false);
+        RateLimiterAspect aspectClosed = new RateLimiterAspect(brokenStore, propsClosed);
+        assertThatThrownBy(() -> aspectClosed.around(joinPoint, rateLimiter))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Redis down");
+
+        // 2. failOpen = true -> 降级至内存存储放行
+        io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties propsOpen =
+                new io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties();
+        propsOpen.setFailOpen(true);
+        RateLimiterAspect aspectOpen = new RateLimiterAspect(brokenStore, propsOpen);
+        Object result = aspectOpen.around(joinPoint, rateLimiter);
+        assertThat(result).isEqualTo("success");
     }
 
     static class SampleService {

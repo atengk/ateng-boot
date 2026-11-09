@@ -1,5 +1,7 @@
 package io.github.atengk.boot.web.ratelimit.store;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.script.RedisScript;
@@ -71,14 +73,30 @@ public class RedisRateLimiterStore implements RateLimiterStore {
         long windowMillis = unit.toMillis(time);
         long now = System.currentTimeMillis();
 
-        Long result = redisTemplate.execute(
-                script,
-                Collections.singletonList(key),
-                String.valueOf(count),
-                String.valueOf(windowMillis),
-                String.valueOf(now),
-                "1"
-        );
-        return result != null && result == 1L;
+        try {
+            Long result = redisTemplate.execute(
+                    script,
+                    Collections.singletonList(key),
+                    String.valueOf(count),
+                    String.valueOf(windowMillis),
+                    String.valueOf(now),
+                    "1"
+            );
+            return result != null && result == 1L;
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redis rate limiter tryAcquire failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public void reset(String key) {
+        Assert.hasText(key, "rate limiter key must not be blank");
+        try {
+            redisTemplate.delete(key);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redis rate limiter reset failed: " + e.getMessage(), e);
+        }
     }
 }

@@ -28,9 +28,9 @@ public class XssFilter extends OncePerRequestFilter implements Ordered {
     public static final String XSS_SKIP_ATTRIBUTE = XssFilter.class.getName() + ".SKIP";
 
     /**
-     * 过滤器执行优先级：置于安全响应头与 ETag 之后，保证进入业务逻辑前完成请求包装
+     * 过滤器执行优先级：置于安全响应头(+60)与 ETag(+70) 之后，保证进入业务逻辑前完成请求包装
      */
-    public static final int ORDER = SecurityHeadersFilter.ORDER + 2;
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 80;
 
     private final WebProperties.XssProperties properties;
     private final XssCleaner cleaner;

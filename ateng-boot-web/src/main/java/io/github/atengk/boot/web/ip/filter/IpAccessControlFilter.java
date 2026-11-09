@@ -36,7 +36,7 @@ public class IpAccessControlFilter extends OncePerRequestFilter implements Order
     /**
      * 过滤器执行优先级：置于 TraceFilter 之后，保证 MDC traceId 已初始化
      */
-    public static final int ORDER = TraceFilter.ORDER + 1;
+    public static final int ORDER = TraceFilter.ORDER + 10;
 
     private final IpAccessControlProperties properties;
 

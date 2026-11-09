@@ -1,5 +1,7 @@
 package io.github.atengk.boot.web.ratelimit.store;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import org.redisson.api.RRateLimiter;
 import org.redisson.api.RateType;
 import org.redisson.api.RedissonClient;
@@ -32,8 +34,25 @@ public class RedissonRateLimiterStore implements RateLimiterStore {
             return true;
         }
 
-        RRateLimiter rateLimiter = redissonClient.getRateLimiter(key);
-        rateLimiter.trySetRate(RateType.OVERALL, count, Duration.ofMillis(unit.toMillis(time)));
-        return rateLimiter.tryAcquire(1);
+        try {
+            RRateLimiter rateLimiter = redissonClient.getRateLimiter(key);
+            rateLimiter.trySetRate(RateType.OVERALL, count, Duration.ofMillis(unit.toMillis(time)));
+            return rateLimiter.tryAcquire(1);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redisson rate limiter tryAcquire failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public void reset(String key) {
+        Assert.hasText(key, "rate limiter key must not be blank");
+        try {
+            RRateLimiter rateLimiter = redissonClient.getRateLimiter(key);
+            rateLimiter.delete();
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redisson rate limiter reset failed: " + e.getMessage(), e);
+        }
     }
 }

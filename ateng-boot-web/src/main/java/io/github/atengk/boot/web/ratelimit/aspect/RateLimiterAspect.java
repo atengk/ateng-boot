@@ -6,6 +6,8 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.web.ratelimit.annotation.LimitType;
 import io.github.atengk.boot.web.ratelimit.annotation.RateLimiter;
+import io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties;
+import io.github.atengk.boot.web.ratelimit.store.InMemoryRateLimiterStore;
 import io.github.atengk.boot.web.ratelimit.store.RateLimiterStore;
 import io.github.atengk.boot.web.util.IpUtil;
 import io.github.atengk.boot.web.util.ServletUtil;
@@ -17,6 +19,7 @@ import org.aspectj.lang.reflect.MethodSignature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.DefaultParameterNameDiscoverer;
+import org.springframework.core.Ordered;
 import org.springframework.core.ParameterNameDiscoverer;
 import org.springframework.expression.EvaluationContext;
 import org.springframework.expression.Expression;
@@ -38,30 +41,62 @@ import java.util.concurrent.ConcurrentHashMap;
  * @since 2026-10-16
  */
 @Aspect
-public class RateLimiterAspect {
+public class RateLimiterAspect implements Ordered {
+
+    /**
+     * 切面优先级：置于 IP 访问控制之后，防重幂等与签名之前
+     */
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 200;
 
     private static final Logger log = LoggerFactory.getLogger(RateLimiterAspect.class);
 
     private final RateLimiterStore rateLimiterStore;
+    private final RateLimiterProperties properties;
+    private final RateLimiterStore fallbackStore = new InMemoryRateLimiterStore();
     private final ExpressionParser expressionParser = new SpelExpressionParser();
     private final ParameterNameDiscoverer parameterNameDiscoverer = new DefaultParameterNameDiscoverer();
     private final Map<String, Expression> expressionCache = new ConcurrentHashMap<>();
 
     public RateLimiterAspect(RateLimiterStore rateLimiterStore) {
+        this(rateLimiterStore, new RateLimiterProperties());
+    }
+
+    public RateLimiterAspect(RateLimiterStore rateLimiterStore, RateLimiterProperties properties) {
         this.rateLimiterStore = Objects.requireNonNull(rateLimiterStore, "RateLimiterStore must not be null");
+        this.properties = properties != null ? properties : new RateLimiterProperties();
+    }
+
+    @Override
+    public int getOrder() {
+        return ORDER;
     }
 
     @Around("@annotation(rateLimiter)")
     public Object around(ProceedingJoinPoint joinPoint, RateLimiter rateLimiter) throws Throwable {
         String fullKey = resolveFullKey(joinPoint, rateLimiter);
 
-        // 1. 尝试原子获取令牌许可
-        boolean acquired = rateLimiterStore.tryAcquire(
-                fullKey,
-                rateLimiter.count(),
-                rateLimiter.time(),
-                rateLimiter.timeUnit()
-        );
+        // 1. 尝试原子获取令牌许可（支持底层驱动故障时的 failOpen 降级）
+        boolean acquired;
+        try {
+            acquired = rateLimiterStore.tryAcquire(
+                    fullKey,
+                    rateLimiter.count(),
+                    rateLimiter.time(),
+                    rateLimiter.timeUnit()
+            );
+        } catch (Exception ex) {
+            if (properties.isFailOpen()) {
+                log.warn("RateLimiter store execution failed, falling back to in-memory store due to failOpen=true, key: {}", fullKey, ex);
+                acquired = fallbackStore.tryAcquire(
+                        fullKey,
+                        rateLimiter.count(),
+                        rateLimiter.time(),
+                        rateLimiter.timeUnit()
+                );
+            } else {
+                throw ex;
+            }
+        }
 
         if (!acquired) {
             // 2. 计算 Retry-After 窗口建议秒数并写入响应头

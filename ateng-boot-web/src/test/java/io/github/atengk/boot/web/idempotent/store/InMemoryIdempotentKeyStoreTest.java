@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 单机内存幂等存储引擎单元测试
@@ -137,5 +138,28 @@ class InMemoryIdempotentKeyStoreTest {
         // 验证剩余较长 TTL 的 guard:key:2 和 guard:key:3 依然保持占用（无法加锁）
         assertThat(store.tryLock("guard:key:2", 20, TimeUnit.SECONDS)).isFalse();
         assertThat(store.tryLock("guard:key:3", 30, TimeUnit.SECONDS)).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 isLocked 状态查询与空白键快速失败")
+    void shouldCheckIsLockedAndFailFastOnBlankKey() throws InterruptedException {
+        InMemoryIdempotentKeyStore store = new InMemoryIdempotentKeyStore();
+        String key = "test:is-locked:5001";
+
+        assertThat(store.isLocked(key)).isFalse();
+        assertThat(store.tryLock(key, 200, TimeUnit.MILLISECONDS)).isTrue();
+        assertThat(store.isLocked(key)).isTrue();
+
+        Thread.sleep(250);
+        assertThat(store.isLocked(key)).isFalse();
+
+        assertThatThrownBy(() -> store.isLocked(null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.isLocked("  "))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.tryLock(" ", 1, TimeUnit.SECONDS))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.unlock(" "))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

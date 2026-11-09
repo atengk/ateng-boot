@@ -16,6 +16,7 @@ import org.aspectj.lang.annotation.Pointcut;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.validation.BindingResult;
 import org.springframework.web.multipart.MultipartFile;
@@ -43,7 +44,12 @@ import java.util.Set;
  * @since 2026-10-16
  */
 @Aspect
-public class WebLogAspect {
+public class WebLogAspect implements Ordered {
+
+    /**
+     * 切面优先级：最内层切面，业务处理完成后记录日志
+     */
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 600;
 
     private static final Logger log = LoggerFactory.getLogger(WebLogAspect.class);
     private static final String EXCLUDED_MASK = "[EXCLUDED]";
@@ -56,6 +62,11 @@ public class WebLogAspect {
 
     public WebLogAspect() {
         this(JsonUtil.getObjectMapper());
+    }
+
+    @Override
+    public int getOrder() {
+        return ORDER;
     }
 
     /**

@@ -89,7 +89,8 @@ class ContentCachingFilterTest {
     @DisplayName("ContentCachingFilter 优先级紧随 TraceFilter 之后")
     void shouldHaveCorrectOrder() {
         ContentCachingFilter filter = new ContentCachingFilter();
-        assertThat(filter.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 1);
+        assertThat(filter.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 30);
+        assertThat(filter.getOrder()).isEqualTo(ContentCachingFilter.ORDER);
     }
 
     @Test
