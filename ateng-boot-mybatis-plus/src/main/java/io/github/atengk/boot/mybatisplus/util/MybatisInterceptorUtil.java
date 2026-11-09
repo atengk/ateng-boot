@@ -4,8 +4,12 @@ import org.apache.ibatis.plugin.Plugin;
 import org.apache.ibatis.reflection.MetaObject;
 import org.apache.ibatis.reflection.SystemMetaObject;
 
+import java.lang.annotation.Annotation;
 import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * MyBatis / MyBatis-Plus 拦截器与插件底层公共基础设施工具类
@@ -96,5 +100,100 @@ public final class MybatisInterceptorUtil {
                 className.startsWith("javassist.") ||
                 className.startsWith("net.bytebuddy.") ||
                 className.contains("$$");
+    }
+
+    /**
+     * 归一化 MappedStatement 衍生方法名，自动剥离 MyBatis-Plus 分页 count 语句（_mpCount）
+     * 与动态方言自适应语句（$dynamicAdaptive）后缀，还原 Mapper 接口原始方法名
+     *
+     * @param methodName Mapper 方法名或衍生方法名
+     * @return 剥离衍生后缀后的真实 Mapper 方法名
+     */
+    public static String normalizeStatementMethodName(String methodName) {
+        if (methodName == null || methodName.isBlank()) {
+            return methodName;
+        }
+        String normalized = methodName;
+        boolean changed;
+        do {
+            changed = false;
+            if (normalized.endsWith("_mpCount")) {
+                normalized = normalized.substring(0, normalized.length() - "_mpCount".length());
+                changed = true;
+            }
+            if (normalized.endsWith("$dynamicAdaptive")) {
+                normalized = normalized.substring(0, normalized.length() - "$dynamicAdaptive".length());
+                changed = true;
+            } else if (normalized.contains("$dynamicAdaptive")) {
+                normalized = normalized.replace("$dynamicAdaptive", "");
+                changed = true;
+            }
+        } while (changed);
+        return normalized;
+    }
+
+    /**
+     * 解析 MappedStatement 对应的 Mapper 接口类或具体方法上的指定注解
+     * 自动处理衍生方法名归一化，优先匹配具体方法上的注解，其次匹配 Mapper 接口类级别的注解
+     *
+     * @param mappedStatementId MyBatis 映射语句唯一标识（如 io.github.atengk.sample.mapper.UserMapper.selectList）
+     * @param annotationClass   目标注解类型
+     * @param <A>               注解泛型
+     * @return 包含注解实例的 Optional，未找到时返回 Optional.empty()
+     */
+    public static <A extends Annotation> Optional<A> resolveMapperAnnotation(String mappedStatementId, Class<A> annotationClass) {
+        if (mappedStatementId == null || mappedStatementId.isBlank() || annotationClass == null) {
+            return Optional.empty();
+        }
+        int lastDotIndex = mappedStatementId.lastIndexOf('.');
+        if (lastDotIndex <= 0) {
+            return Optional.empty();
+        }
+
+        String className = mappedStatementId.substring(0, lastDotIndex);
+        String rawMethodName = mappedStatementId.substring(lastDotIndex + 1);
+        String methodName = normalizeStatementMethodName(rawMethodName);
+
+        try {
+            Class<?> mapperClass = Class.forName(className);
+
+            // 1. 优先匹配具体方法上的注解
+            for (Method method : mapperClass.getMethods()) {
+                if (method.getName().equals(methodName) && method.isAnnotationPresent(annotationClass)) {
+                    return Optional.of(method.getAnnotation(annotationClass));
+                }
+            }
+
+            // 2. 其次匹配 Mapper 接口类级别的注解
+            if (mapperClass.isAnnotationPresent(annotationClass)) {
+                return Optional.of(mapperClass.getAnnotation(annotationClass));
+            }
+        } catch (ClassNotFoundException ignored) {
+            // 兼容动态代理或运行时 Synthetic 语句，未找到物理类时返回 empty
+        }
+
+        return Optional.empty();
+    }
+
+    /**
+     * 判断 MappedStatement 对应的 Mapper 接口类或具体方法是否标注了指定注解
+     * 自动处理衍生方法名归一化，优先检查方法级注解，其次检查接口类级注解，并支持传入并发缓存
+     *
+     * @param mappedStatementId MyBatis 映射语句唯一标识
+     * @param annotationClass   目标注解类型
+     * @param cache             并发缓存 Map（可为 null，若传入则自动读写缓存）
+     * @param <A>               注解泛型
+     * @return true 表示存在该注解
+     */
+    public static <A extends Annotation> boolean hasMapperAnnotation(String mappedStatementId,
+                                                                    Class<A> annotationClass,
+                                                                    Map<String, Boolean> cache) {
+        if (mappedStatementId == null || mappedStatementId.isBlank() || annotationClass == null) {
+            return false;
+        }
+        if (cache != null) {
+            return cache.computeIfAbsent(mappedStatementId, id -> resolveMapperAnnotation(id, annotationClass).isPresent());
+        }
+        return resolveMapperAnnotation(mappedStatementId, annotationClass).isPresent();
     }
 }

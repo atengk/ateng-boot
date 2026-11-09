@@ -25,6 +25,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.apache.ibatis.cursor.Cursor;
 import org.apache.ibatis.mapping.Environment;
+import org.apache.ibatis.mapping.MappedStatement;
 import org.apache.ibatis.session.SqlSession;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
@@ -575,6 +576,54 @@ class SqlLogInterceptorTest {
         }
 
         // 控制台与存储双管道均应完全跳过
+        assertThat(capturedLogs).isEmpty();
+        assertThat(storedModels).isEmpty();
+    }
+
+    @Test
+    @DisplayName("细粒度防卫：带 _mpCount 与 $dynamicAdaptive 衍生后缀的 MappedStatement 仍能命中 @IgnoreSqlLog 排除")
+    void testIgnoreSqlLogAnnotationWithDerivedSuffixes() {
+        List<String> capturedLogs = new ArrayList<>();
+        List<SqlLogModel> storedModels = new ArrayList<>();
+
+        SqlLogProperties properties = new SqlLogProperties();
+        properties.setEnabled(true);
+        properties.getStorage().setEnabled(true);
+        properties.getStorage().setAsync(false);
+        properties.getStorage().setIncludeSelect(true);
+
+        SqlLogInterceptor interceptor = new SqlLogInterceptor(
+                properties,
+                capturedLogs::add,
+                storedModels::add,
+                null,
+                null,
+                null
+        );
+        SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
+        org.apache.ibatis.session.Configuration configuration = sessionFactory.getConfiguration();
+
+        String baseId = TestUserMapper.class.getName() + ".selectIgnoredUser";
+        MappedStatement baseMs = configuration.getMappedStatement(baseId);
+
+        String derivedId1 = baseId + "_mpCount";
+        MappedStatement derivedMs1 = new MappedStatement.Builder(configuration, derivedId1, baseMs.getSqlSource(), baseMs.getSqlCommandType())
+                .resultMaps(baseMs.getResultMaps())
+                .build();
+        configuration.addMappedStatement(derivedMs1);
+
+        String derivedId2 = baseId + "$dynamicAdaptive";
+        MappedStatement derivedMs2 = new MappedStatement.Builder(configuration, derivedId2, baseMs.getSqlSource(), baseMs.getSqlCommandType())
+                .resultMaps(baseMs.getResultMaps())
+                .build();
+        configuration.addMappedStatement(derivedMs2);
+
+        try (SqlSession sqlSession = sessionFactory.openSession()) {
+            sqlSession.selectOne(derivedId1, 1L);
+            sqlSession.selectOne(derivedId2, 1L);
+        }
+
+        // 衍生语句命中 @IgnoreSqlLog，日志与存储应均为空
         assertThat(capturedLogs).isEmpty();
         assertThat(storedModels).isEmpty();
     }

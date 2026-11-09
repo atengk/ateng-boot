@@ -67,10 +67,26 @@ flowchart TD
   采用 ThreadLocal 结合嵌套调用计数器（`AtomicInteger` 或局部变量防重入）实现，提供 `runWithDeleted(Runnable)` 与 `callWithDeleted(Supplier<T>)` 编程式闭包，在 `finally` 块中执行严格现场清理，杜绝跨请求线程污染；
 - **JSqlParser AST 动态穿透拦截器 (`AtengLogicDeleteInnerInterceptor`)**：
   当检测到 `LogicDeleteContextHolder.isIncludeDeleted()` 激活时，拦截器在 SQL AST 语法树层级递归遍历 `WHERE` 表达式，精准剥离框架默认追加的 `deleted = 0` 条件，同时严格保留业务显式指定的其他过滤条件；
-- **对称恢复门面扩展 (`AtengBaseService`)**：
-  在通用服务层扩展 `restoreById(Serializable id)` 与 `restore(Wrapper<T> wrapper)` 门面，在穿透闭包中执行 `UPDATE table SET deleted = 0, update_time = ?, update_by = ? WHERE id = ?`，全自动触发审计元数据回填；并提供 `getByIdWithDeleted`、`listWithDeleted` 与 `pageWithDeleted` 查询语法糖；
+- **对称查询、恢复与物理硬删除门面 (`AtengSqlInjector` / `AtengBaseMapper` / `AtengBaseService`)**：
+  - **穿透查询与 VO 投影**：提供 `getByIdWithDeleted`、`listWithDeleted`、`countWithDeleted`、`existsWithDeleted` 以及严守 ADR-0010 零实体泄露的 `pageWithDeleted(..., Class<V> voClass)` 重载；
+  - **数据恢复与操作人 SPI 对齐**：扩展 `restoreById(Serializable id)` 与 `restore(Wrapper<T> wrapper)` 门面，在穿透闭包中执行 `UPDATE table SET deleted = 0, update_time = ?, update_by = ? WHERE id = ?`，且操作人解析优先委托 `CurrentUserProvider` SPI 再回退 `UserContextHolder`；
+  - **物理硬删除注入节点（Recycle Bin Purge & GDPR Erase）**：通过 `AtengSqlInjector` 注入 `DeletePhysicallyById`（`deletePhysicallyById`）、`DeletePhysicallyBatchByIds`（`deletePhysicallyBatchByIds`）与 `DeletePhysically`（`deletePhysically`），无视 `@TableLogic` 直接生成物理 `DELETE FROM` 语句；在 `AtengBaseService` 暴露 `removePhysicallyById`、`removePhysicallyByIds` 与 `removePhysically(Wrapper<T>)`（空集合或空 `WHERE` 条件立即触发 `IllegalArgumentException` Fail-Fast 阻断，与 `BlockAttackInnerInterceptor` 双重防灾）；
 - **联合唯一索引防冲突占位基类 (`BaseDeleteIdEntity`)**：
   将逻辑删除字段声明为 `Long deleted`，未删除状态保持 `0L`，删除时自动填充分布式雪花 ID 占位，天然兼容数据库 `UNIQUE KEY (code, deleted)` 复合约束。
+
+### 5. 双轨透明加密与确定性密文等值检索架构 (`EncryptTypeHandler` & `DeterministicEncryptTypeHandler`)
+- **概率性加密默认防线 (`EncryptTypeHandler`)**：
+  针对无需检索的高敏字段（如家庭住址、备注详情），采用 `AES-CBC` + 16 字节随机 `SecureRandom` IV + `"v1:"` 版本前缀编码，相同明文每次落库生成不同密文，彻底免疫密文词频字典重放攻击；`DynamicQueryHelper` 对其拦截一切查询与排序；
+- **确定性合成向量加密 (`DeterministicEncryptTypeHandler`)**：
+  针对既需落盘加密又需精确等值检索的字段（如手机号、身份证号、邮箱），采用基于 `HMAC-SHA256(secretKey, plaintext)` 截取前 16 字节作为合成初始化向量（SIV, Synthetic IV）的 `AES-CBC` 算法并复用 `"v1:"` 前缀。由于 `AES-CBC` 解密仅需提取密文流前 16 字节作为 IV，故 `EncryptTypeHandler` 与 `DeterministicEncryptTypeHandler` 具备 **100% 双向解密兼容性**；
+- **动态查询智能密文转译 (`@FieldEncrypt(deterministic = true)`)**：
+  当实体属性标注 `@FieldEncrypt(deterministic = true)` 或绑定 `DeterministicEncryptTypeHandler` 时，`DynamicQueryHelper` 放行 `EQ`、`NE`、`IN`、`NOT_IN` 精确匹配操作符并将明文检索词自动转换为确定性密文匹配数据库索引，同时继续严格阻断 `LIKE`、`BETWEEN`、`GT`、`LT` 等无效范围查询与 `ORDER BY` 密文排序。
+
+### 6. 数据变更审计全链路闭环与拦截器衍生 StatementId 统一治理
+- **逻辑删除语义识别与前置快照穿透 (`DataChangeAuditInterceptor`)**：
+  针对启用 `@TableLogic` 的实体，MyBatis-Plus 的 `deleteById` / `deleteBatchIds` / `delete` 在底层映射为 `SqlCommandType.UPDATE`。`DataChangeAuditInterceptor` 通过识别标准逻辑删除方法名或更新逻辑删除列语义，自动将其归类为 `ChangeType.DELETE`，提取单条或批量主键值并通过 `LogicDeleteContextHolder.callWithDeleted(...)` 穿透拉取 `beforeSnapshot`（含回收站物理销毁与恢复场景）；异步审计分发统一经由 `AsyncContext.wrap(task)` 透传四维上下文；
+- **衍生 `MappedStatement` 注解解析统一收口 (`MybatisInterceptorUtil`)**：
+  在 `MybatisInterceptorUtil` 中集中提供 `normalizeStatementMethodName` 与带 `ConcurrentHashMap` 缓存的 Mapper 方法/接口注解查找原语，统一剥离 `_mpCount` 与 `$dynamicAdaptive` 后缀，确保 `@IgnoreTenant`、`@DataScope`、`@IgnoreSqlLog` 与 `@AuditChange` 在分页 count 查询及动态方言自适应语句中 100% 生效。
 
 ### 2. Spring 受管 JSON 字段类型转换与空安全保底体系
 - **全局统一生命周期注入 (`SmartInitializingSingleton`)**：

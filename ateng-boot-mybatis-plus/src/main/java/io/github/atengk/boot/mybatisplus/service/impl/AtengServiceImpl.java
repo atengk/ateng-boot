@@ -250,6 +250,23 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         return list != null ? list : java.util.Collections.emptyList();
     }
 
+    @Override
+    public T getOneForUpdate(Wrapper<T> queryWrapper, LockMode lockMode) {
+        Objects.requireNonNull(lockMode, "lockMode 不能为 null");
+        final Wrapper<T> effectiveWrapper;
+        if (queryWrapper instanceof AbstractWrapper<?, ?, ?> abstractWrapper) {
+            PessimisticLockUtil.apply(abstractWrapper, lockMode);
+            effectiveWrapper = queryWrapper;
+        } else if (queryWrapper == null) {
+            QueryWrapper<T> wrapper = new QueryWrapper<>();
+            PessimisticLockUtil.apply(wrapper, lockMode);
+            effectiveWrapper = wrapper;
+        } else {
+            throw new IllegalArgumentException("queryWrapper 必须为 AbstractWrapper 的子类以支持悲观锁追加");
+        }
+        return getOne(effectiveWrapper, false);
+    }
+
     @Transactional(rollbackFor = Exception.class)
     @Override
     public boolean restoreById(Serializable id) {

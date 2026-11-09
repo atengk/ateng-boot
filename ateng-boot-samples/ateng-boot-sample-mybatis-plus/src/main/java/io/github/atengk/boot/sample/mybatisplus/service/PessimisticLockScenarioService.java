@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.mybatisplus.service;
 
 import io.github.atengk.boot.mybatisplus.service.AtengBaseService;
 import io.github.atengk.boot.sample.mybatisplus.entity.TaskQueueEntity;
+import io.github.atengk.boot.sample.mybatisplus.model.TaskQueueVO;
 
 import java.util.List;
 
@@ -29,4 +30,12 @@ public interface PessimisticLockScenarioService extends AtengBaseService<TaskQue
      * @return 锁定并更新后的实体对象
      */
     TaskQueueEntity processTaskWithLock(Long taskId);
+
+    /**
+     * 单任务条件悲观排他锁定并投影为强类型 VO
+     *
+     * @param taskName 任务名称
+     * @return 锁定获取到的任务视图对象
+     */
+    TaskQueueVO getOneTaskForUpdate(String taskName);
 }

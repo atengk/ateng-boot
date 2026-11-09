@@ -155,4 +155,46 @@ class PessimisticLockUtilTest {
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("lockMode 不能为 null");
     }
+
+    @Test
+    @DisplayName("测试 clearLocal 仅清理线程变量而不污染全局方言")
+    void testClearLocal() {
+        PessimisticLockUtil.setDbType(DbType.MYSQL);
+        PessimisticLockUtil.setLocalDbType(DbType.ORACLE);
+        assertThat(PessimisticLockUtil.getDbType()).isEqualTo(DbType.ORACLE);
+
+        PessimisticLockUtil.clearLocal();
+        assertThat(PessimisticLockUtil.getDbType()).isEqualTo(DbType.MYSQL);
+    }
+
+    @Test
+    @DisplayName("测试 runWithDbType 与 callWithDbType 受控闭包生命周期与嵌套隔离")
+    void testRunWithDbTypeAndCallWithDbType() {
+        PessimisticLockUtil.setDbType(DbType.MYSQL);
+
+        // 1. runWithDbType
+        PessimisticLockUtil.runWithDbType(DbType.POSTGRE_SQL, () -> {
+            assertThat(PessimisticLockUtil.getDbType()).isEqualTo(DbType.POSTGRE_SQL);
+
+            // 嵌套闭包
+            String nestedResult = PessimisticLockUtil.callWithDbType(DbType.ORACLE, () -> {
+                assertThat(PessimisticLockUtil.getDbType()).isEqualTo(DbType.ORACLE);
+                return "SUCCESS";
+            });
+            assertThat(nestedResult).isEqualTo("SUCCESS");
+
+            // 内层退出后恢复为外层
+            assertThat(PessimisticLockUtil.getDbType()).isEqualTo(DbType.POSTGRE_SQL);
+        });
+
+        // 外层退出后恢复为全局默认
+        assertThat(PessimisticLockUtil.getDbType()).isEqualTo(DbType.MYSQL);
+
+        // 2. 闭包异常退出时确定性还原现场
+        assertThatThrownBy(() -> PessimisticLockUtil.runWithDbType(DbType.SQLITE, () -> {
+            throw new IllegalStateException("simulated failure");
+        })).isInstanceOf(IllegalStateException.class);
+
+        assertThat(PessimisticLockUtil.getDbType()).isEqualTo(DbType.MYSQL);
+    }
 }

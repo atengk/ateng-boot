@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.handler.MultiDataPermissionHan
 import com.baomidou.mybatisplus.extension.plugins.inner.DataPermissionInterceptor;
 import io.github.atengk.boot.mybatisplus.annotation.DataScope;
 import io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder;
+import io.github.atengk.boot.mybatisplus.util.MybatisInterceptorUtil;
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.schema.Table;
 import org.apache.ibatis.executor.Executor;
@@ -145,47 +146,12 @@ public class AtengDataPermissionInnerInterceptor extends DataPermissionIntercept
 
     /**
      * 反射解析 MappedStatement 对应的 Mapper 接口类与方法上的 @DataScope 注解
+     * 统一委托 MybatisInterceptorUtil 处理方法级优先与衍生后缀（_mpCount, $dynamicAdaptive）剥离
      *
      * @param mappedStatementId MyBatis 映射语句唯一标识（如 io.github.atengk.boot.sample.mapper.UserMapper.selectList）
      * @return 包含 @DataScope 的 Optional，未标注时返回 Optional.empty()
      */
     private Optional<DataScope> resolveDataScope(String mappedStatementId) {
-        int lastDotIndex = mappedStatementId.lastIndexOf('.');
-        if (lastDotIndex <= 0) {
-            return Optional.empty();
-        }
-
-        String className = mappedStatementId.substring(0, lastDotIndex);
-        String methodName = mappedStatementId.substring(lastDotIndex + 1);
-
-        // 如果是 MyBatis-Plus 分页自动生成的 count 语句（如 selectPage_mpCount），剥离后缀还原原方法名
-        if (methodName.endsWith("_mpCount")) {
-            methodName = methodName.substring(0, methodName.length() - "_mpCount".length());
-        }
-
-        // 如果是动态查询自适应生成的改写语句（如 selectPage$dynamicAdaptive），剥离后缀还原原方法名
-        if (methodName.contains("$dynamicAdaptive")) {
-            methodName = methodName.replace("$dynamicAdaptive", "");
-        }
-
-        try {
-            Class<?> mapperClass = Class.forName(className);
-
-            // 1. 优先匹配具体方法上的 @DataScope 注解
-            for (Method method : mapperClass.getMethods()) {
-                if (method.getName().equals(methodName) && method.isAnnotationPresent(DataScope.class)) {
-                    return Optional.of(method.getAnnotation(DataScope.class));
-                }
-            }
-
-            // 2. 其次匹配 Mapper 接口类级别的 @DataScope 注解
-            if (mapperClass.isAnnotationPresent(DataScope.class)) {
-                return Optional.of(mapperClass.getAnnotation(DataScope.class));
-            }
-        } catch (ClassNotFoundException ignored) {
-            // 兼容动态代理或运行时 Synthetic 语句，未找到物理类时默认不拦截
-        }
-
-        return Optional.empty();
+        return MybatisInterceptorUtil.resolveMapperAnnotation(mappedStatementId, DataScope.class);
     }
 }

@@ -145,6 +145,18 @@ public class MpBatchStreamAndLockController {
     }
 
     /**
+     * 基于 getOneForUpdate 条件悲观排他锁查询单个任务（支持 VO 强类型投影）
+     *
+     * @param taskName 任务名称
+     * @return 锁定获取到的任务视图
+     */
+    @GetMapping("/lock/pessimistic/one")
+    public Result<TaskQueueVO> getOneTaskForUpdate(@RequestParam String taskName) {
+        TaskQueueVO task = pessimisticLockService.getOneTaskForUpdate(taskName);
+        return Result.success(task);
+    }
+
+    /**
      * 触发全表无条件更新以演示 BlockAttackInnerInterceptor 防全表更新拦截
      *
      * @return 防御拦截元数据结果

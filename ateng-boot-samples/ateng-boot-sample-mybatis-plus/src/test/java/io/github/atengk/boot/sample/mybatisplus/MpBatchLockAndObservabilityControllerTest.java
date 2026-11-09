@@ -244,6 +244,15 @@ class MpBatchLockAndObservabilityControllerTest {
                 .andExpect(jsonPath("$.code", equalTo(200)))
                 .andExpect(jsonPath("$.data.blocked", equalTo(true)))
                 .andExpect(jsonPath("$.data.protectionEngine", equalTo("BlockAttackInnerInterceptor")));
+
+        // 6.3 getOneForUpdate 单对象条件悲观锁查询
+        jdbcTemplate.execute("INSERT INTO task_queue (id, task_name, status, version) VALUES (999999, '独立锁定任务', 'PENDING', 0)");
+        mockMvc.perform(get("/sample/mybatis-plus/high-perf/lock/pessimistic/one")
+                        .param("taskName", "独立锁定任务"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.taskName", equalTo("独立锁定任务")))
+                .andExpect(jsonPath("$.data.status", equalTo("PENDING")));
     }
 
     // =========================================================================

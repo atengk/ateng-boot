@@ -109,6 +109,11 @@ class DataChangeAuditInterceptorTest {
     interface NoAuditUserMapper extends AtengBaseMapper<NoAuditUserEntity> {
     }
 
+    interface MethodLevelAuditMapper extends AtengBaseMapper<NoAuditUserEntity> {
+        @AuditChange
+        int updateCustom(NoAuditUserEntity entity);
+    }
+
     private JdbcDataSource dataSource;
 
     @BeforeEach
@@ -541,6 +546,31 @@ class DataChangeAuditInterceptorTest {
         } finally {
             TransactionSynchronizationManager.clearSynchronization();
         }
+    }
+
+    @Test
+    @DisplayName("验证带 _mpCount 与 $dynamicAdaptive 衍生后缀时正确解析方法级 @AuditChange")
+    void testAuditMetaResolutionWithDerivedSuffixes() {
+        AuditChangeProperties properties = new AuditChangeProperties();
+        properties.setEnabled(true);
+        List<DataChangeRecord> records = new CopyOnWriteArrayList<>();
+
+        SqlSessionFactory sessionFactory = buildSessionFactory(
+                dataSource,
+                properties,
+                records::addAll,
+                null,
+                MethodLevelAuditMapper.class,
+                NoAuditUserEntity.class
+        );
+        org.apache.ibatis.session.Configuration configuration = sessionFactory.getConfiguration();
+
+        // 验证 MybatisInterceptorUtil 能解析带衍生后缀的方法级 @AuditChange 注解
+        String baseId = MethodLevelAuditMapper.class.getName() + ".updateCustom";
+        assertThat(io.github.atengk.boot.mybatisplus.util.MybatisInterceptorUtil.resolveMapperAnnotation(baseId + "_mpCount", AuditChange.class)).isPresent();
+        assertThat(io.github.atengk.boot.mybatisplus.util.MybatisInterceptorUtil.resolveMapperAnnotation(baseId + "$dynamicAdaptive", AuditChange.class)).isPresent();
+        assertThat(io.github.atengk.boot.mybatisplus.util.MybatisInterceptorUtil.resolveMapperAnnotation(baseId + "_mpCount$dynamicAdaptive", AuditChange.class)).isPresent();
+        assertThat(io.github.atengk.boot.mybatisplus.util.MybatisInterceptorUtil.resolveMapperAnnotation(baseId + "$dynamicAdaptive_mpCount", AuditChange.class)).isPresent();
     }
 
     // ==================== 辅助测试脚手架 ====================

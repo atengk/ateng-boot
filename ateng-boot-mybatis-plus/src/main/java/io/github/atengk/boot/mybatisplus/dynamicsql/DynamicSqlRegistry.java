@@ -15,6 +15,7 @@ import java.lang.reflect.Field;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -34,6 +35,7 @@ public class DynamicSqlRegistry {
     private final Field mappedStatementsField;
     private final boolean defaultAutoScriptWrap;
     private final List<Consumer<String>> statementChangeListeners = new CopyOnWriteArrayList<>();
+    private final ReentrantLock lock = new ReentrantLock();
 
     public DynamicSqlRegistry(Configuration configuration) {
         this(configuration, null, true);
@@ -77,11 +79,12 @@ public class DynamicSqlRegistry {
      * @param definition 动态 SQL 契约实体
      * @return 注册/热更新成功返回 true；语法校验失败时返回 false 并自动保留旧版本
      */
-    public synchronized boolean register(DynamicSqlDefinition definition) {
+    public boolean register(DynamicSqlDefinition definition) {
         if (definition == null) {
             return false;
         }
         String id = definition.getId();
+        lock.lock();
         try {
             // 1. 在内存沙箱中尝试预编译构建 MappedStatement（语法损坏时在此处 Fail-Fast 抛出异常）
             MappedStatement ms = buildMappedStatement(definition);
@@ -103,6 +106,10 @@ public class DynamicSqlRegistry {
         } catch (Exception e) {
             log.error("外部动态 SQL [{}] 预编译/注册失败，系统已安全拦截并保留上一版本状态: {}", id, e.getMessage(), e);
             return false;
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
@@ -112,20 +119,27 @@ public class DynamicSqlRegistry {
      * @param id 语句唯一标识
      * @return 移除成功返回 true；不存在返回 false
      */
-    public synchronized boolean remove(String id) {
+    public boolean remove(String id) {
         if (id == null || id.isBlank()) {
             return false;
         }
-        boolean exists = hasStatement(id) || definitions.containsKey(id);
-        if (!exists) {
-            return false;
+        lock.lock();
+        try {
+            boolean exists = hasStatement(id) || definitions.containsKey(id);
+            if (!exists) {
+                return false;
+            }
+            removeStatementFromConfiguration(id);
+            definitions.remove(id);
+            DynamicSqlProjectionResolver.invalidate(id);
+            notifyStatementChanged(id);
+            log.info("外部动态 SQL [{}] 已成功从持久层容器中注销", id);
+            return true;
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
-        removeStatementFromConfiguration(id);
-        definitions.remove(id);
-        DynamicSqlProjectionResolver.invalidate(id);
-        notifyStatementChanged(id);
-        log.info("外部动态 SQL [{}] 已成功从持久层容器中注销", id);
-        return true;
     }
 
     /**

@@ -10,6 +10,7 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
 import io.github.atengk.boot.mybatisplus.annotation.AuditChange;
 import io.github.atengk.boot.mybatisplus.properties.AuditChangeProperties;
+import io.github.atengk.boot.mybatisplus.util.MybatisInterceptorUtil;
 import org.apache.ibatis.executor.Executor;
 import org.apache.ibatis.mapping.MappedStatement;
 import org.apache.ibatis.mapping.SqlCommandType;
@@ -464,30 +465,16 @@ public class DataChangeAuditInterceptor implements Interceptor {
     private AuditMeta resolveAuditMeta(MappedStatement ms, Object parameter) {
         String msId = ms.getId();
         return auditMetaCache.computeIfAbsent(msId, id -> {
+            AuditChange auditChange = MybatisInterceptorUtil.resolveMapperAnnotation(id, AuditChange.class).orElse(null);
+
             Class<?> mapperClass = null;
-            Method mapperMethod = null;
             int lastDot = id.lastIndexOf('.');
             if (lastDot > 0) {
                 String className = id.substring(0, lastDot);
-                String methodName = id.substring(lastDot + 1);
                 try {
                     mapperClass = Class.forName(className);
-                    for (Method m : mapperClass.getMethods()) {
-                        if (m.getName().equals(methodName)) {
-                            mapperMethod = m;
-                            break;
-                        }
-                    }
                 } catch (ClassNotFoundException ignored) {
                 }
-            }
-
-            AuditChange auditChange = null;
-            if (mapperMethod != null) {
-                auditChange = mapperMethod.getAnnotation(AuditChange.class);
-            }
-            if (auditChange == null && mapperClass != null) {
-                auditChange = mapperClass.getAnnotation(AuditChange.class);
             }
 
             Class<?> entityClass = resolveEntityClass(mapperClass);

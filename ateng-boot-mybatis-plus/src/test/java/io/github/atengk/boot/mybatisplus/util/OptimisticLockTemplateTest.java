@@ -97,9 +97,39 @@ class OptimisticLockTemplateTest {
                 3,
                 Duration.ofMillis(5)
         )).isInstanceOf(OptimisticLockTemplate.OptimisticLockConflictException.class)
-          .hasMessageContaining("Optimistic lock conflict detected");
+          .isInstanceOf(io.github.atengk.boot.core.exception.BusinessException.class)
+          .hasMessageContaining("Optimistic lock conflict detected")
+          .satisfies(ex -> {
+              io.github.atengk.boot.core.exception.BusinessException be = (io.github.atengk.boot.core.exception.BusinessException) ex;
+              assertThat(be.getCode()).isEqualTo(409);
+              assertThat(be.getResultCode()).isEqualTo(io.github.atengk.boot.core.code.CommonResultCode.CONFLICT);
+          });
 
         assertThat(attempts.get()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("测试 OptimisticLockConflictException 各重载构造器契约")
+    void testOptimisticLockConflictExceptionConstructors() {
+        OptimisticLockTemplate.OptimisticLockConflictException ex1 =
+                new OptimisticLockTemplate.OptimisticLockConflictException("conflict occurred");
+        assertThat(ex1.getCode()).isEqualTo(409);
+        assertThat(ex1.getMessage()).isEqualTo("conflict occurred");
+
+        RuntimeException cause = new RuntimeException("root cause");
+        OptimisticLockTemplate.OptimisticLockConflictException ex2 =
+                new OptimisticLockTemplate.OptimisticLockConflictException("with cause", cause);
+        assertThat(ex2.getCode()).isEqualTo(409);
+        assertThat(ex2.getCause()).isSameAs(cause);
+
+        OptimisticLockTemplate.OptimisticLockConflictException ex3 =
+                new OptimisticLockTemplate.OptimisticLockConflictException(io.github.atengk.boot.core.code.CommonResultCode.BAD_REQUEST, "custom bad request");
+        assertThat(ex3.getCode()).isEqualTo(400);
+
+        OptimisticLockTemplate.OptimisticLockConflictException ex4 =
+                new OptimisticLockTemplate.OptimisticLockConflictException(io.github.atengk.boot.core.code.CommonResultCode.BAD_REQUEST, "custom with cause", cause);
+        assertThat(ex4.getCode()).isEqualTo(400);
+        assertThat(ex4.getCause()).isSameAs(cause);
     }
 
     @Test

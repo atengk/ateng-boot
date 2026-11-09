@@ -1324,6 +1324,40 @@ public interface AtengBaseService<T> extends IService<T> {
      */
     List<T> listForUpdate(Wrapper<T> queryWrapper, LockMode lockMode);
 
+    /**
+     * 根据条件封装器加悲观排他锁（FOR UPDATE）查询单条实体记录
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @return 实体对象，无匹配记录时返回 null
+     */
+    default T getOneForUpdate(Wrapper<T> queryWrapper) {
+        return getOneForUpdate(queryWrapper, LockMode.FOR_UPDATE);
+    }
+
+    /**
+     * 根据条件封装器与指定悲观锁模式加锁查询单条实体记录
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param lockMode     悲观锁模式（FOR_UPDATE, NOWAIT, SKIP_LOCKED, FOR_SHARE）
+     * @return 实体对象，无匹配记录时返回 null
+     */
+    T getOneForUpdate(Wrapper<T> queryWrapper, LockMode lockMode);
+
+    /**
+     * 根据条件封装器与指定悲观锁模式加锁查询单条实体记录并投影为强类型 VO（零实体泄露）
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param lockMode     悲观锁模式（FOR_UPDATE, NOWAIT, SKIP_LOCKED, FOR_SHARE）
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return 视图对象，无匹配记录时返回 null
+     */
+    default <V> V getOneForUpdate(Wrapper<T> queryWrapper, LockMode lockMode, Class<V> voClass) {
+        Objects.requireNonNull(voClass, "voClass 不能为 null");
+        T entity = getOneForUpdate(queryWrapper, lockMode);
+        return entity != null ? JsonUtil.convertValue(entity, voClass) : null;
+    }
+
     // ==========================================
     // 8. 逻辑删除穿透检索与误删恢复闭环 (Logic Delete Restore & Penetration Facade)
     // ==========================================

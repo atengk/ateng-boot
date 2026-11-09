@@ -11,6 +11,7 @@ import java.lang.reflect.Field;
 import java.util.EnumSet;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * 悲观并发锁控制工具类
@@ -27,8 +28,8 @@ public final class PessimisticLockUtil {
     private static volatile String currentDatabaseVersion;
     private static volatile boolean mysqlSkipLockedSupported = true;
 
-    private static final ThreadLocal<DbType> LOCAL_DB_TYPE = new InheritableThreadLocal<>();
-    private static final ThreadLocal<Boolean> LOCAL_MYSQL_SKIP_LOCKED_SUPPORTED = new InheritableThreadLocal<>();
+    private static final ThreadLocal<DbType> LOCAL_DB_TYPE = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> LOCAL_MYSQL_SKIP_LOCKED_SUPPORTED = new ThreadLocal<>();
 
     private static final Field LAST_SQL_FIELD;
 
@@ -145,6 +146,58 @@ public final class PessimisticLockUtil {
         mysqlSkipLockedSupported = true;
         LOCAL_DB_TYPE.remove();
         LOCAL_MYSQL_SKIP_LOCKED_SUPPORTED.remove();
+    }
+
+    /**
+     * 仅清理当前线程独立的数据库方言与版本上下文（不影响全局默认配置）
+     */
+    public static void clearLocal() {
+        LOCAL_DB_TYPE.remove();
+        LOCAL_MYSQL_SKIP_LOCKED_SUPPORTED.remove();
+    }
+
+    /**
+     * 在指定数据库方言的受控闭包中执行逻辑，并在退出时自动恢复先前的线程独立上下文
+     *
+     * @param dbType   目标数据库方言
+     * @param runnable 执行任务
+     */
+    public static void runWithDbType(DbType dbType, Runnable runnable) {
+        Objects.requireNonNull(runnable, "runnable 不能为 null");
+        DbType previous = LOCAL_DB_TYPE.get();
+        try {
+            setLocalDbType(dbType);
+            runnable.run();
+        } finally {
+            if (previous != null) {
+                LOCAL_DB_TYPE.set(previous);
+            } else {
+                LOCAL_DB_TYPE.remove();
+            }
+        }
+    }
+
+    /**
+     * 在指定数据库方言的受控闭包中执行逻辑并获取返回值，并在退出时自动恢复先前的线程独立上下文
+     *
+     * @param dbType   目标数据库方言
+     * @param supplier 具有返回值的计算任务
+     * @param <R>      返回值泛型
+     * @return 任务执行结果
+     */
+    public static <R> R callWithDbType(DbType dbType, Supplier<R> supplier) {
+        Objects.requireNonNull(supplier, "supplier 不能为 null");
+        DbType previous = LOCAL_DB_TYPE.get();
+        try {
+            setLocalDbType(dbType);
+            return supplier.get();
+        } finally {
+            if (previous != null) {
+                LOCAL_DB_TYPE.set(previous);
+            } else {
+                LOCAL_DB_TYPE.remove();
+            }
+        }
     }
 
     /**

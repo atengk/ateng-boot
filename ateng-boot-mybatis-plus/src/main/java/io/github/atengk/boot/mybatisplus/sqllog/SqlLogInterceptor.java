@@ -196,35 +196,8 @@ public class SqlLogInterceptor implements Interceptor {
                 return true;
             }
         }
-        // 2. @IgnoreSqlLog 声明式注解排除（带本地缓存）
-        return ignoreAnnotationCache.computeIfAbsent(statementId, this::resolveIgnoreAnnotation);
-    }
-
-    private boolean resolveIgnoreAnnotation(String mappedStatementId) {
-        if (mappedStatementId == null) {
-            return false;
-        }
-        int lastDotIndex = mappedStatementId.lastIndexOf('.');
-        if (lastDotIndex <= 0) {
-            return false;
-        }
-        String className = mappedStatementId.substring(0, lastDotIndex);
-        String methodName = mappedStatementId.substring(lastDotIndex + 1);
-        try {
-            Class<?> mapperClass = Class.forName(className);
-            // 接口类级别判定
-            if (mapperClass.isAnnotationPresent(IgnoreSqlLog.class)) {
-                return true;
-            }
-            // 方法级别判定
-            for (Method method : mapperClass.getMethods()) {
-                if (method.getName().equals(methodName) && method.isAnnotationPresent(IgnoreSqlLog.class)) {
-                    return true;
-                }
-            }
-        } catch (ClassNotFoundException ignored) {
-        }
-        return false;
+        // 2. @IgnoreSqlLog 声明式注解排除（统一由 MybatisInterceptorUtil 支持衍生后缀剥离与缓存）
+        return MybatisInterceptorUtil.hasMapperAnnotation(statementId, IgnoreSqlLog.class, ignoreAnnotationCache);
     }
 
     private void processSuccess(StatementHandler statementHandler,

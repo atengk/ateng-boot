@@ -299,4 +299,49 @@ class DynamicSqlRegistryTest {
         assertFalse(retrieved.isAutoScriptWrap());
         assertEquals(rawSql, retrieved.getSqlScript());
     }
+
+    @Test
+    @DisplayName("验证多线程高并发 register 与 remove 下 ReentrantLock 线程安全")
+    void testConcurrentRegisterAndRemoveWithReentrantLock() throws InterruptedException {
+        int threads = 8;
+        int iterations = 50;
+        ExecutorService executor = Executors.newFixedThreadPool(threads);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(threads);
+        AtomicInteger errorCount = new AtomicInteger(0);
+
+        for (int i = 0; i < threads; i++) {
+            final int threadId = i;
+            executor.submit(() -> {
+                try {
+                    startLatch.await();
+                    for (int j = 0; j < iterations; j++) {
+                        String id = "concurrent.stmt." + threadId + "." + j;
+                        DynamicSqlDefinition def = DynamicSqlDefinition.builder()
+                                .id(id)
+                                .sqlScript("SELECT " + j)
+                                .build();
+                        boolean reg = registry.register(def);
+                        if (!reg) {
+                            errorCount.incrementAndGet();
+                        }
+                        boolean rem = registry.remove(id);
+                        if (!rem) {
+                            errorCount.incrementAndGet();
+                        }
+                    }
+                } catch (Exception e) {
+                    errorCount.incrementAndGet();
+                } finally {
+                    doneLatch.countDown();
+                }
+            });
+        }
+
+        startLatch.countDown();
+        doneLatch.await();
+        executor.shutdown();
+
+        assertEquals(0, errorCount.get(), "多线程并发 register 与 remove 不应发生任何锁或数据竞争异常");
+    }
 }
