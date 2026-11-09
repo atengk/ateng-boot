@@ -153,6 +153,12 @@ public class MockServerProviderController {
     /**
      * 9. 瞬态 503 与重试演练模拟端点
      */
+    @GetMapping("/mock/provider/flaky/reset")
+    public ResponseEntity<Map<String, Object>> resetFlaky() {
+        flakyCounter.set(0);
+        return ResponseEntity.ok(Map.of("reset", true));
+    }
+
     @GetMapping("/mock/provider/flaky")
     public ResponseEntity<Map<String, Object>> flaky(
             @RequestParam(value = "failTimes", defaultValue = "2") int failTimes,
@@ -219,15 +225,33 @@ public class MockServerProviderController {
                 .build();
     }
 
+    private final Map<String, String> lastReceivedHeaders = new java.util.concurrent.ConcurrentHashMap<>();
+
     /**
      * 12. 外部微信支付统一下单模拟
      */
-    @PostMapping("/mock/provider/wechat/v3/pay/transactions/native")
-    public WechatNativeOrderResponse wechatNativeOrder(@RequestBody WechatNativeOrderRequest request) {
-        log.info("[MockProvider] Received wechatNativeOrder: {}", request);
+    @PostMapping({"/mock/provider/wechat/v3/pay/transactions/native", "/v3/pay/transactions/native"})
+    public WechatNativeOrderResponse wechatNativeOrder(@RequestBody WechatNativeOrderRequest request, HttpServletRequest servletRequest) {
+        lastReceivedHeaders.clear();
+        Enumeration<String> names = servletRequest.getHeaderNames();
+        if (names != null) {
+            while (names.hasMoreElements()) {
+                String name = names.nextElement();
+                lastReceivedHeaders.put(name.toLowerCase(), servletRequest.getHeader(name));
+            }
+        }
+        log.info("[MockProvider] Received wechatNativeOrder: {}, headers: {}", request, lastReceivedHeaders);
         return WechatNativeOrderResponse.builder()
                 .codeUrl("weixin://wxpay/bizpayurl?pr=mock_code_url_" + request.getOutTradeNo())
                 .build();
+    }
+
+    /**
+     * 获取最近一次微信下单接收到的物理请求头（用于验证敏感头物理剥离）
+     */
+    @GetMapping("/mock/provider/wechat/last-headers")
+    public Map<String, String> getWechatLastHeaders() {
+        return lastReceivedHeaders;
     }
 
     /**

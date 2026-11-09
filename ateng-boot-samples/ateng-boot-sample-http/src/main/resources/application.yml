@@ -22,7 +22,27 @@ ateng:
         enabled: true
       logging:
         enabled: true
+      retry:
+        enabled: false
+        max-attempts: 3
+        delay: 50ms
+        multiplier: 2.0
+        max-delay: 2s
+        jitter: true
+        retry-status-codes: [429, 502, 503, 504]
+        retry-methods: [GET, HEAD]
       clients:
+        flaky-service:
+          base-url: ${sample.flaky-service.url:http://localhost:8080}/mock/provider/flaky
+          retry:
+            enabled: true
+            max-attempts: 3
+            delay: 50ms
+            multiplier: 2.0
+            max-delay: 2s
+            jitter: true
+            retry-status-codes: [429, 502, 503, 504]
+            retry-methods: [GET, HEAD]
         user-service:
           base-url: ${sample.user-service.url:http://localhost:8080}
           connect-timeout: 2s
