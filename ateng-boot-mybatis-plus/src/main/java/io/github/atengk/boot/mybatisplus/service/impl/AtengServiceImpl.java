@@ -9,6 +9,7 @@ import com.baomidou.mybatisplus.core.metadata.TableInfo;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.spi.CurrentUserProvider;
 import io.github.atengk.boot.mybatisplus.context.LogicDeleteContextHolder;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
 import io.github.atengk.boot.mybatisplus.enums.LockMode;
@@ -21,6 +22,7 @@ import io.github.atengk.boot.mybatisplus.util.PessimisticLockUtil;
 import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,6 +53,17 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
     private MybatisPlusProperties properties;
     private DynamicQueryTemplate dynamicQueryTemplate;
     private StreamingQueryTemplate streamingQueryTemplate;
+    private ObjectProvider<CurrentUserProvider> currentUserProviderProvider;
+
+    /**
+     * 注入当前用户提供者 SPI 对象提供器
+     *
+     * @param currentUserProviderProvider 当前用户 SPI
+     */
+    @Autowired(required = false)
+    public void setCurrentUserProviderProvider(ObjectProvider<CurrentUserProvider> currentUserProviderProvider) {
+        this.currentUserProviderProvider = currentUserProviderProvider;
+    }
 
     /**
      * 注入持久层配置属性（Setter 注入规避字段反射注入）
@@ -378,8 +391,51 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         return clean;
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public boolean removePhysicallyById(Serializable id) {
+        if (id == null) {
+            throw new IllegalArgumentException("物理删除主键 id 不能为 null");
+        }
+        return baseMapper.deletePhysicallyById(id) > 0;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public boolean removePhysicallyByIds(Collection<?> idList) {
+        if (idList == null || idList.isEmpty()) {
+            throw new IllegalArgumentException("物理删除主键集合 idList 不能为空");
+        }
+        return baseMapper.deletePhysicallyBatchByIds(idList) > 0;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public boolean removePhysically(Wrapper<T> queryWrapper) {
+        if (queryWrapper == null) {
+            throw new IllegalArgumentException("物理删除条件 queryWrapper 不能为 null，防御全表误删物理擦除");
+        }
+        if (queryWrapper.isEmptyOfWhere()) {
+            throw new IllegalArgumentException("物理删除条件 queryWrapper 必须包含有效 WHERE 条件，防御全表误删物理擦除");
+        }
+        return baseMapper.deletePhysically(queryWrapper) > 0;
+    }
+
     private String resolveCurrentOperator() {
-        String user = UserContextHolder.get();
+        String user = null;
+        if (currentUserProviderProvider != null) {
+            CurrentUserProvider provider = currentUserProviderProvider.getIfAvailable();
+            if (provider != null) {
+                try {
+                    user = provider.getCurrentUser();
+                } catch (Throwable ignored) {
+                    // 防御 SPI 接入实现抛出异常导致业务事务中断
+                }
+            }
+        }
+        if (user == null || user.isBlank()) {
+            user = UserContextHolder.get();
+        }
         if (user != null && !user.isBlank()) {
             return user;
         }

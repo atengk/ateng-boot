@@ -138,12 +138,25 @@ class MpLifecycleAndSecurityControllerTest {
         assertThat(firstDeletedVal).isEqualTo(deletedSkuId);
         assertThat(secondDeletedVal).isEqualTo(0L);
 
-        // 2.2 回收站穿透分页查询（包含已删除与正常记录）
+        // 2.2 回收站穿透分页与 count 统计查询（包含已删除与正常记录）
         mockMvc.perform(get("/sample/mybatis-plus/lifecycle/sku/recycle-bin")
                         .param("current", "1")
                         .param("size", "10"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.records", hasSize(2)));
+
+        mockMvc.perform(get("/sample/mybatis-plus/lifecycle/sku/recycle-bin/count"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo("2")));
+
+        mockMvc.perform(get("/sample/mybatis-plus/lifecycle/sku/recycle-bin/vo-page")
+                        .param("current", "1")
+                        .param("size", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.total", equalTo("2")))
                 .andExpect(jsonPath("$.data.records", hasSize(2)));
 
         // 2.3 先将第二代活跃记录也软删除，然后按 ID 恢复第一代记录
@@ -168,6 +181,22 @@ class MpLifecycleAndSecurityControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(400)))
                 .andExpect(jsonPath("$.msg", containsString("必须包含有效 WHERE 条件")));
+
+        // 2.5 验证物理硬删除：对 activeSkuId 执行物理 purge，彻底从数据库移除
+        mockMvc.perform(post("/sample/mybatis-plus/lifecycle/sku/{id}/purge", activeSkuId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(true)));
+
+        Integer countInDb = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM product_sku WHERE id = ?", Integer.class, activeSkuId);
+        assertThat(countInDb).isEqualTo(0);
+
+        // 再次查看回收站总数，已减少为 1
+        mockMvc.perform(get("/sample/mybatis-plus/lifecycle/sku/recycle-bin/count"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo("1")));
     }
 
     @Test

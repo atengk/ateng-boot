@@ -48,4 +48,27 @@ public interface SoftDeleteUniqueKeyScenarioService extends AtengBaseService<Pro
      * @return 成功恢复的记录行数
      */
     int restoreSkuByCode(String skuCode);
+
+    /**
+     * 穿透逻辑删除统计商品 SKU 回收站全量记录数（包含已删除与未删除数据）
+     *
+     * @return 回收站全量记录总数
+     */
+    long countRecycleBin();
+
+    /**
+     * 穿透逻辑删除，基于 PageQuery 与 VO 投影执行商品 SKU 分页查询（零实体泄露）
+     *
+     * @param pageQuery 标准分页查询契约
+     * @return 商品 SKU 强类型 VO 分页视图结果
+     */
+    PageResult<ProductSkuVO> pageRecycleBinVO(PageQuery pageQuery);
+
+    /**
+     * 根据主键 ID 从数据库物理硬删除商品 SKU 记录（彻底擦除，无视 @TableLogic）
+     *
+     * @param id 商品 SKU 主键 ID
+     * @return true 若物理删除成功；否则 false
+     */
+    boolean purgeSkuPhysically(Long id);
 }

@@ -38,6 +38,9 @@
 | **商品 SKU 回收站穿透分页查询** | `MpEntityLifecycleController` | `GET /sample/mybatis-plus/lifecycle/sku/recycle-bin` | `curl "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/recycle-bin?current=1&size=10"` |
 | **按主键 ID 恢复误删商品 SKU** | `MpEntityLifecycleController` | `POST /sample/mybatis-plus/lifecycle/sku/{id}/restore` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/1/restore?operator=ops-director"` |
 | **按 SKU 编码批量恢复（空条件防呆拦截）** | `MpEntityLifecycleController` | `POST /sample/mybatis-plus/lifecycle/sku/restore-by-code` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/restore-by-code?skuCode=SKU-999"` |
+| **商品 SKU 回收站穿透总数统计** | `MpEntityLifecycleController` | `GET /sample/mybatis-plus/lifecycle/sku/recycle-bin/count` | `curl "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/recycle-bin/count"` |
+| **商品 SKU 回收站强类型 VO 分页投影** | `MpEntityLifecycleController` | `GET /sample/mybatis-plus/lifecycle/sku/recycle-bin/vo-page` | `curl "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/recycle-bin/vo-page?current=1&size=10"` |
+| **商品 SKU 彻底物理硬删除粉碎** | `MpEntityLifecycleController` | `POST /sample/mybatis-plus/lifecycle/sku/{id}/purge` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/1/purge"` |
 
 ### 3.2 字段级透明加解密、视图动态脱敏与受管 JSON 映射 (`MpSecurityAndJsonController`)
 

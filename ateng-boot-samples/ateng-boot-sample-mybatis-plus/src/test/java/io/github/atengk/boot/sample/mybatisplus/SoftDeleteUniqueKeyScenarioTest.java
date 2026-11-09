@@ -185,4 +185,59 @@ class SoftDeleteUniqueKeyScenarioTest {
         assertThat(activeList.get(0).getSkuCode()).isEqualTo("RESTORE-001");
         assertThat(activeList.get(0).getUpdateBy()).isEqualTo("operator-restore");
     }
+
+    @Test
+    @DisplayName("4. 验证回收站穿透 count/VO 分页统计与物理硬删除 purge 彻底擦除数据")
+    void shouldSupportRecycleBinCountVoPageAndPhysicalPurge() {
+        // 预置 3 条数据
+        ProductSkuEntity sku1 = new ProductSkuEntity("PURGE-001", "待物理清除A");
+        ProductSkuEntity sku2 = new ProductSkuEntity("PURGE-002", "待物理清除B");
+        ProductSkuEntity sku3 = new ProductSkuEntity("PURGE-003", "保留商品C");
+        softDeleteService.save(sku1);
+        softDeleteService.save(sku2);
+        softDeleteService.save(sku3);
+
+        // 逻辑删除前 2 条
+        softDeleteService.removeById(sku1.getId());
+        softDeleteService.removeById(sku2.getId());
+
+        // 验证正常业务查询只剩 1 条
+        assertThat(softDeleteService.list()).hasSize(1);
+
+        // 1. 验证穿透 countWithDeleted 统计回收站全量数据为 3
+        long totalWithDeleted = softDeleteService.countRecycleBin();
+        assertThat(totalWithDeleted).isEqualTo(3L);
+
+        // 2. 验证穿透 pageWithDeleted VO 强类型投影分页
+        io.github.atengk.boot.core.model.PageQuery pageQuery = new io.github.atengk.boot.core.model.PageQuery(1L, 10L);
+        io.github.atengk.boot.core.model.PageResult<io.github.atengk.boot.sample.mybatisplus.model.ProductSkuVO> voPage =
+                softDeleteService.pageRecycleBinVO(pageQuery);
+        assertThat(voPage.getTotal()).isEqualTo(3L);
+        assertThat(voPage.getRecords()).hasSize(3);
+        assertThat(voPage.getRecords().get(0)).isInstanceOf(io.github.atengk.boot.sample.mybatisplus.model.ProductSkuVO.class);
+
+        // 3. 执行物理硬删除已软删除的 sku1
+        boolean purged1 = softDeleteService.purgeSkuPhysically(sku1.getId());
+        assertThat(purged1).isTrue();
+
+        // 验证数据库物理表中 sku1 记录彻底消失（COUNT 为 0）
+        Integer dbCount1 = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM product_sku WHERE id = ?", Integer.class, sku1.getId());
+        assertThat(dbCount1).isEqualTo(0);
+
+        // 4. 执行物理硬删除处于未删除状态的 sku3
+        boolean purged3 = softDeleteService.removePhysicallyById(sku3.getId());
+        assertThat(purged3).isTrue();
+        Integer dbCount3 = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM product_sku WHERE id = ?", Integer.class, sku3.getId());
+        assertThat(dbCount3).isEqualTo(0);
+
+        // 5. 验证此时数据库仅剩 sku2
+        assertThat(softDeleteService.countRecycleBin()).isEqualTo(1L);
+
+        // 6. 验证物理删除入参防御快速失败
+        assertThatThrownBy(() -> softDeleteService.removePhysicallyById(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("id 不能为 null");
+    }
 }

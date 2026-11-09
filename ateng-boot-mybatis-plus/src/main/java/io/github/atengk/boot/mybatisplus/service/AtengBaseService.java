@@ -1455,4 +1455,90 @@ public interface AtengBaseService<T> extends IService<T> {
     default <V> V getOneWithDeleted(Wrapper<T> queryWrapper, Class<V> voClass) {
         return LogicDeleteContextHolder.callWithDeleted(() -> getOne(queryWrapper, voClass, false));
     }
+
+    /**
+     * 穿透逻辑删除，统计满足条件的记录总数（包含已删除与未删除数据）
+     *
+     * @param queryWrapper 查询条件构造器（可为 null）
+     * @return 记录总数
+     */
+    default long countWithDeleted(Wrapper<T> queryWrapper) {
+        return LogicDeleteContextHolder.callWithDeleted(() -> count(queryWrapper));
+    }
+
+    /**
+     * 穿透逻辑删除，判断是否存在满足条件的记录（包含已删除与未删除数据）
+     *
+     * @param queryWrapper 查询条件构造器
+     * @return true 若存在匹配记录；否则 false
+     */
+    default boolean existsWithDeleted(Wrapper<T> queryWrapper) {
+        return LogicDeleteContextHolder.callWithDeleted(() -> exists(queryWrapper));
+    }
+
+    /**
+     * 穿透逻辑删除，基于 PageQuery 与条件构造器执行分页查询并投影转换为强类型 PageResult<V>（零实体泄露）
+     *
+     * @param pageQuery   通用分页查询参数
+     * @param queryWrapper 查询条件构造器
+     * @param voClass     目标 VO 类型
+     * @param <V>         目标 VO 泛型
+     * @return 映射后的强类型分页结果
+     */
+    default <V> PageResult<V> pageWithDeleted(PageQuery pageQuery, Wrapper<T> queryWrapper, Class<V> voClass) {
+        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
+        return LogicDeleteContextHolder.callWithDeleted(() -> {
+            Page<T> page = PageUtil.toPage(pageQuery, getEntityClass());
+            IPage<T> resultPage = page(page, queryWrapper);
+            PageResult<T> entityPageResult = PageUtil.toPageResult(resultPage);
+            return entityPageResult.map(item -> JsonUtil.convertValue(item, voClass));
+        });
+    }
+
+    /**
+     * 穿透逻辑删除，基于 IPage 与条件构造器执行分页查询并投影转换为强类型 PageResult<V>（零实体泄露）
+     *
+     * @param page        MyBatis-Plus IPage 分页参数
+     * @param queryWrapper 查询条件构造器
+     * @param voClass     目标 VO 类型
+     * @param <V>         目标 VO 泛型
+     * @return 映射后的强类型分页结果
+     */
+    default <V> PageResult<V> pageWithDeleted(IPage<T> page, Wrapper<T> queryWrapper, Class<V> voClass) {
+        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
+        Objects.requireNonNull(page, "page 不能为 null");
+        return LogicDeleteContextHolder.callWithDeleted(() -> {
+            IPage<T> resultPage = page(page, queryWrapper);
+            PageResult<T> entityPageResult = PageUtil.toPageResult(resultPage);
+            return entityPageResult.map(item -> JsonUtil.convertValue(item, voClass));
+        });
+    }
+
+    /**
+     * 根据主键物理硬删除单条记录（彻底物理擦除，无视 @TableLogic）
+     *
+     * @param id 实体主键 ID（不能为 null）
+     * @return true 若物理删除成功且影响行数大于 0；否则 false
+     * @throws IllegalArgumentException 若 id 为 null
+     */
+    boolean removePhysicallyById(Serializable id);
+
+    /**
+     * 根据主键集合批量物理硬删除记录（彻底物理擦除，无视 @TableLogic）
+     *
+     * @param idList 实体主键 ID 集合（不能为空）
+     * @return true 若物理删除成功且影响行数大于 0；否则 false
+     * @throws IllegalArgumentException 若 idList 为 null 或空
+     */
+    boolean removePhysicallyByIds(Collection<?> idList);
+
+    /**
+     * 根据条件构造器物理硬删除记录（彻底物理擦除，无视 @TableLogic）
+     * 强制要求具备有效 WHERE 条件，与 BlockAttack 共同构建全表防卫双重防灾机制
+     *
+     * @param queryWrapper 物理删除条件构造器（不能为 null 且必须包含有效 WHERE 条件）
+     * @return true 若物理删除成功且影响行数大于 0；否则 false
+     * @throws IllegalArgumentException 若 queryWrapper 为 null 或无有效 WHERE 条件
+     */
+    boolean removePhysically(Wrapper<T> queryWrapper);
 }

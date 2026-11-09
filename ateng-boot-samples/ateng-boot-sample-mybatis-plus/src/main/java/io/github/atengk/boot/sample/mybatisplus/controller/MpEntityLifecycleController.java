@@ -139,4 +139,36 @@ public class MpEntityLifecycleController {
     public Result<Integer> restoreSkuByCode(@RequestParam(required = false) String skuCode) {
         return Result.success(softDeleteService.restoreSkuByCode(skuCode));
     }
+
+    /**
+     * 统计商品 SKU 回收站全量记录数（依托 countWithDeleted 穿透逻辑删除，包含正常与已删除记录）
+     *
+     * @return 回收站记录总数
+     */
+    @GetMapping("/sku/recycle-bin/count")
+    public Result<Long> countSkuRecycleBin() {
+        return Result.success(softDeleteService.countRecycleBin());
+    }
+
+    /**
+     * 基于强类型 VO 投影分页查询商品 SKU 回收站视图（依托 pageWithDeleted 零实体泄露）
+     *
+     * @param pageQuery 标准分页查询契约
+     * @return 商品 SKU 分页视图结果
+     */
+    @GetMapping("/sku/recycle-bin/vo-page")
+    public Result<PageResult<ProductSkuVO>> pageSkuRecycleBinVO(PageQuery pageQuery) {
+        return Result.success(softDeleteService.pageRecycleBinVO(pageQuery));
+    }
+
+    /**
+     * 按主键 ID 物理彻底硬删除商品 SKU 记录（无视 @TableLogic，直接执行物理 DELETE FROM 语句）
+     *
+     * @param id 商品 SKU 主键 ID
+     * @return 是否彻底物理清除成功
+     */
+    @PostMapping("/sku/{id}/purge")
+    public Result<Boolean> purgeSkuPhysically(@PathVariable Long id) {
+        return Result.success(softDeleteService.purgeSkuPhysically(id));
+    }
 }

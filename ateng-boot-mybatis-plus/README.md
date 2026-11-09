@@ -75,7 +75,8 @@
 | **悲观并发控制** | 悲观排队锁与跳锁 Service 门面 | `AtengBaseService` / `AtengServiceImpl` | - | `getByIdForUpdate(id)` / `getByIdForUpdate(id, lockMode)` / `listForUpdate(wrapper, lockMode)`，开箱即用的悲观行锁与并发任务抢单拉取门面 | `AtengBaseServicePessimisticLockTest` / `PessimisticLockScenarioTest` / `MpBatchLockAndObservabilityControllerTest` |
 | **逻辑删除闭环** | 逻辑删除穿透审计上下文持有者 | `LogicDeleteContextHolder` | `ateng.boot.mybatis-plus.logic-delete.enabled` | 提供 `runWithDeleted` 与 `callWithDeleted` 编程式闭包（带重入深度计数器），在审计与回收站场景下安全穿透逻辑删除 | `LogicDeleteContextHolderTest` / `SoftDeleteUniqueKeyScenarioTest` |
 | **逻辑删除闭环** | JSqlParser AST 逻辑删除动态穿透拦截器 | `AtengLogicDeleteInnerInterceptor` | `ateng.boot.mybatis-plus.logic-delete.enabled`<br>`ateng.boot.mybatis-plus.logic-delete.columns` | 拦截器层动态递归剥离 WHERE 子句中的 `deleted = 0` 等值表达式，保留业务显式条件 | `AtengLogicDeleteInnerInterceptorTest` / `SoftDeleteUniqueKeyScenarioTest` |
-| **逻辑删除闭环** | 逻辑删除数据恢复与回收站 Service 门面 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.logic-delete.enabled` | `restoreById(id)` / `restore(wrapper)`（重置 `deleted = 0` 并自动刷新 `updateTime`/`updateBy`）及 `getByIdWithDeleted` / `listWithDeleted` / `pageWithDeleted` / `getOneWithDeleted` | `AtengBaseServiceRestoreTest` / `SoftDeleteUniqueKeyScenarioTest` / `MpLifecycleAndSecurityControllerTest` |
+| **逻辑删除闭环** | 逻辑删除数据恢复与回收站 Service 门面 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.logic-delete.enabled` | `restoreById(id)` / `restore(wrapper)`（重置 `deleted = 0`，优先接入 `CurrentUserProvider` SPI 刷新 `updateBy`/`updateTime`），`countWithDeleted` / `existsWithDeleted`，以及强类型 VO 投影 `pageWithDeleted(PageQuery/IPage, wrapper, voClass)` / `listWithDeleted` / `getByIdWithDeleted` | `AtengBaseServiceRestoreTest` / `SoftDeleteUniqueKeyScenarioTest` / `MpLifecycleAndSecurityControllerTest` |
+| **逻辑删除闭环** | 物理硬删除与回收站粉碎注入节点与门面 | `AtengSqlInjector` / `AtengBaseMapper` / `AtengBaseService` | - | 注入 `deletePhysicallyById` / `deletePhysicallyBatchByIds` / `deletePhysically` 真实 `DELETE FROM` 节点，配齐 `removePhysicallyById` / `removePhysicallyBatchByIds` / `removePhysically` 门面与 Fail-Fast 前置防卫 | `AtengSqlInjectorTest` / `AtengBaseServiceLogicDeleteAndPhysicalPurgeTest` / `SoftDeleteUniqueKeyScenarioTest` |
 
 ---
 
@@ -326,12 +327,27 @@ public Result<ProductSkuVO> restoreSkuById(@PathVariable Long id) {
     BusinessAssert.isTrue(restored, "未找到可恢复的商品 SKU 记录: id=" + id);
     return Result.success(ProductSkuVO.fromEntity(softDeleteService.getById(id)));
 }
+
+// 4. 回收站穿透统计与强类型 VO 分页投影（零实体泄露）
+@GetMapping("/sku/recycle-bin/vo-page")
+public Result<PageResult<ProductSkuVO>> pageSkuRecycleBinVO(PageQuery pageQuery) {
+    return Result.success(softDeleteService.pageWithDeleted(pageQuery, null, ProductSkuVO.class));
+}
+
+// 5. 彻底物理硬删除粉碎（无视 @TableLogic，真实执行 DELETE FROM product_sku WHERE id = ?）
+@PostMapping("/sku/{id}/purge")
+public Result<Boolean> purgeSkuPhysically(@PathVariable Long id) {
+    return Result.success(softDeleteService.removePhysicallyById(id));
+}
 ```
 
 #### 核心生产边界与非功能语义
 - **嵌套重入安全的穿透上下文 (`LogicDeleteContextHolder`)**：底层采用 `ThreadLocal<Integer>` 引用计数深度管理，支持 `LogicDeleteContextHolder.callWithDeleted(() -> ...)` 任意层级嵌套调用，最外层退出时在 `finally` 中确定性归零清理；
 - **AST 精准剥离不伤业务条件**：`AtengLogicDeleteInnerInterceptor` 仅在当前线程激活穿透标记时介入，通过 JSqlParser 递归剥离 `WHERE` 与 `JOIN ON` 中的 `deleted = 0` 条件，100% 保留业务自身的查询与排序条件；
-- **防全表误恢复强卫语句**：调用 `softDeleteService.restore(wrapper)` 时，若传入 `null` 或不包含任何有效 `WHERE` 条件的空 `Wrapper`，底层立即抛出 `IllegalArgumentException` 快速失败，严防将全表历史软删数据一次性全部复活。
+- **防全表误恢复强卫语句**：调用 `softDeleteService.restore(wrapper)` 时，若传入 `null` 或不包含任何有效 `WHERE` 条件的空 `Wrapper`，底层立即抛出 `IllegalArgumentException` 快速失败，严防将全表历史软删数据一次性全部复活；
+- **物理硬删除注入节点与全生命周期对称闭环 (`AtengSqlInjector`)**：自动为实体注册 `DeletePhysicallyById`、`DeletePhysicallyBatchByIds` 与 `DeletePhysically` 真实 SQL `DELETE FROM` 节点，并在 `AtengBaseService` 提供对等门面；所有物理删除前置校验入参与非空 `WHERE` 条件，违背立即抛出 `IllegalArgumentException` 快速失败；
+- **操作人审计多级 SPI 回退**：`restoreById` / `restore` 自动识别 Spring 容器中注册的 `CurrentUserProvider` SPI 提取当前操作人，未配置时无缝降级回退至 `UserContextHolder.get()`；
+- **全生命周期对称穿透与零实体泄露**：对称提供 `countWithDeleted`、`existsWithDeleted`、`pageWithDeleted`（支持强类型 VO 类字节码入参自动投影为 `PageResult<V>`）与 `listWithDeleted`。
 
 ---
 

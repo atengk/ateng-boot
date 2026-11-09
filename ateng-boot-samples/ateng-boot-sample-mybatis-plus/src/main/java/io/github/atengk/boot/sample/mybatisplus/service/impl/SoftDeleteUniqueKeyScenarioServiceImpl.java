@@ -108,6 +108,27 @@ public class SoftDeleteUniqueKeyScenarioServiceImpl
         }
     }
 
+    @Override
+    public long countRecycleBin() {
+        return countWithDeleted(null);
+    }
+
+    @Override
+    public PageResult<ProductSkuVO> pageRecycleBinVO(PageQuery pageQuery) {
+        ensureSeedSkusIfEmpty();
+        return pageWithDeleted(
+                pageQuery,
+                new LambdaQueryWrapper<ProductSkuEntity>().orderByAsc(ProductSkuEntity::getId),
+                ProductSkuVO.class
+        );
+    }
+
+    @Override
+    public boolean purgeSkuPhysically(Long id) {
+        BusinessAssert.notNull(id, "待物理硬删除的商品 SKU 主键 ID 不能为空");
+        return removePhysicallyById(id);
+    }
+
     private void ensureSeedSkusIfEmpty() {
         List<ProductSkuEntity> all = listWithDeleted(null);
         if (all == null || all.isEmpty()) {

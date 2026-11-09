@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.core.toolkit.Constants;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.cursor.Cursor;
 
+import java.io.Serializable;
 import java.util.Collection;
 
 /**
@@ -84,4 +85,37 @@ public interface AtengBaseMapper<T> extends BaseMapper<T> {
      * @return 实体游标
      */
     Cursor<T> selectCursor(@Param(Constants.WRAPPER) Wrapper<T> queryWrapper);
+
+    /**
+     * 根据主键物理硬删除单条记录
+     * <p>
+     * 无论实体是否标注 @TableLogic，始终生成物理 DELETE FROM 语句从表中彻底抹除对应行。
+     * </p>
+     *
+     * @param id 主键 ID
+     * @return 成功删除影响的行数
+     */
+    int deletePhysicallyById(Serializable id);
+
+    /**
+     * 根据主键集合批量物理硬删除记录
+     * <p>
+     * 无论实体是否标注 @TableLogic，始终生成物理 DELETE FROM ... WHERE ... IN (...) 语句从表中彻底抹除对应行。
+     * </p>
+     *
+     * @param idList 主键集合
+     * @return 成功删除影响的行数
+     */
+    int deletePhysicallyBatchByIds(@Param(Constants.COLL) Collection<?> idList);
+
+    /**
+     * 根据条件构造器物理硬删除记录
+     * <p>
+     * 无论实体是否标注 @TableLogic，始终生成物理 DELETE FROM ... 语句从表中彻底抹除匹配条件的行。
+     * </p>
+     *
+     * @param queryWrapper 实体对象封装操作类（可以为 null）
+     * @return 成功删除影响的行数
+     */
+    int deletePhysically(@Param(Constants.WRAPPER) Wrapper<T> queryWrapper);
 }

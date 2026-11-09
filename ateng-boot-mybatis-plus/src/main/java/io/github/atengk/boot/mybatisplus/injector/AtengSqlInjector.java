@@ -5,6 +5,9 @@ import com.baomidou.mybatisplus.core.injector.AbstractMethod;
 import com.baomidou.mybatisplus.core.injector.DefaultSqlInjector;
 import com.baomidou.mybatisplus.core.metadata.TableInfo;
 import com.baomidou.mybatisplus.extension.injector.methods.InsertBatchSomeColumn;
+import io.github.atengk.boot.mybatisplus.injector.methods.DeletePhysically;
+import io.github.atengk.boot.mybatisplus.injector.methods.DeletePhysicallyBatchByIds;
+import io.github.atengk.boot.mybatisplus.injector.methods.DeletePhysicallyById;
 import io.github.atengk.boot.mybatisplus.injector.methods.SelectCursor;
 import io.github.atengk.boot.mybatisplus.injector.methods.UpdateBatchSomeColumn;
 import io.github.atengk.boot.mybatisplus.injector.methods.UpsertBatchSomeColumn;
@@ -44,6 +47,12 @@ public class AtengSqlInjector extends DefaultSqlInjector {
         methodList.add(new UpdateBatchSomeColumn(field -> !field.isLogicDelete()));
         // 4. 挂载原生受管游标查询方法：SELECT ... FROM table <where> ... (fetchSize = 1000)
         methodList.add(new SelectCursor());
+        // 5. 挂载原生物理硬删除方法（按主键）：DELETE FROM table WHERE id = #{id}
+        methodList.add(new DeletePhysicallyById());
+        // 6. 挂载原生物理硬删除方法（按主键集合）：DELETE FROM table WHERE id IN (...)
+        methodList.add(new DeletePhysicallyBatchByIds());
+        // 7. 挂载原生物理硬删除方法（按 Wrapper 条件）：DELETE FROM table <where> ...
+        methodList.add(new DeletePhysically());
         return methodList;
     }
 
