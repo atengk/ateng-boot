@@ -1,42 +1,60 @@
-# ateng-boot-sample-rabbitmq 生产级路由与可靠投递端到端自验工程
+# ateng-boot-sample-rabbitmq 生产级路由与可靠投递体验工程
 
-> 本样例工程基于 Spring AMQP 与 `ateng-boot-rabbitmq` 生产级增强 Starter 构建，提供 100% 离线自洽的端到端自动化测试验证沙箱。
-
----
-
-## 1. 场景定位与功能基线
-
-`ateng-boot-sample-rabbitmq` 作为 `ateng-boot-rabbitmq` 的 1:1 独立场景沙箱，聚焦以下核心通信场景：
-- **纯内存与零网络依赖（Zero External Broker）**：基于 Spring AMQP 原生对象与 Mock 设施，在本地与 CI 断网环境下实现秒级全绿离线端到端验证；
-- **声明式流畅拓扑构建器**：使用 `RabbitTopologyBuilder` 链式声明 Direct、Topic、Quorum 队列、单活独占消费者、死信拓扑（DLX/DLQ）与插件延迟队列；
-- **双重投递可靠性与生产门面**：使用 `RabbitReliableTemplate` 执行同步阻塞等待 Confirm ACK 与异步投递；
-- **消费端幂等静默确认**：拦截 `IdempotentException` 触发 Silent ACK，阻断重复重试风暴；
-- **延迟业务信令**：订单超时未支付自动取消；
-- **毒丸隔离与死信诊断**：毒丸异常 0 次重试快速送 DLQ，配合 `RabbitDeadLetterHelper` 提取 `x-death` 异构元数据；
-- **事务提交感知发信**：`sendAfterCommit` 验证事务回滚零发信与事务提交正常发信，杜绝幽灵消息（Ghost Message）。
+> 专注于演示与自验 `ateng-boot-rabbitmq` 生产级增强 Starter 在真实业务场景下的开箱使用。
 
 ---
 
-## 2. 核心集成验证清单
+## 1. 快速启动与服务端口
 
-| 序号 | 验证场景 | 覆盖核心机制 / API | 测试方式 / 动作 | 预期校验点 |
-| :---: | :--- | :--- | :--- | :--- |
-| **01** | Direct 与 Topic 精准与层级路由 | `RabbitReliableTemplate.sendReliable` / `sendReliableAsync` | 投递订单与系统日志 | Direct 精准到达、Topic 通配匹配、异步 Future 成功完成 Confirm |
-| **02** | 消费端幂等静默确认 | `IdempotentException` + `RabbitListenerGlobalAdvice` | 投递相同业务主键消息 | 首次消费正常，重复消息命中幂等拦截触发 Silent ACK |
-| **03** | 订单延时超时取消 | `RabbitReliableTemplate.sendDelayed` | 投递带有 delay 时长的超时取消消息 | 延迟消费者成功接收超时订单履约信令 |
-| **04** | 毒丸隔离与死信元数据诊断 | `RabbitFatalExceptionStrategy` + `RabbitDeadLetterHelper` | 投递毒丸消息触发死信流转 | 消息被快速路由至 DLQ，死信助手准确提取原队列、死因与流转计数 |
-| **05** | 本地事务感知发信 | `RabbitReliableTemplate.sendAfterCommit` | 分别执行事务提交与事务回滚 | 事务提交后发信成功，事务回滚时零发信杜绝幽灵消息 |
-| **06** | 生产端微批投递与消费端批量削峰 | `sendBatchReliable` + `batchRabbitListenerContainerFactory` | 同步/异步批量投递与微批拉取 | 批量投递原子确认，批量监听器通过 `List<T>` 接收削峰消息 |
-| **07** | Quorum 队列现代治理策略与优先级 | `RabbitTopologyBuilder.quorum()` / `deliveryLimit` / `overflow` | 投递高优先级订单消息与拓扑断言 | 强断言 `x-overflow`、`x-delivery-limit`、`x-dead-letter-strategy` 治理参数并验证消息接收 |
-| **08** | Fanout 广播与动态匿名临时排他队列 | `@QueueBinding` + `@Queue` 动态声明 | 投递系统广播通知 | 消费者基于通道自洽创建匿名临时队列接收广播，Broker 断开自动销毁 |
-| **09** | 死信受控重放、元数据清洗与防雪崩熔断 | `RabbitDeadLetterReplayTemplate.replay` / `purge` | 出队重放死信消息与模拟超限死信 | 强断言出队重放剥离 `x-death`、注入重放标记与计数，超限消息熔断 Nack(requeue=true) |
+- **默认 HTTP 端口**：`8080` (可在 `application.yml` 中修改)
+- **启动方式**：
+  ```bash
+  # 方式一：IDE 中运行 SampleRabbitmqApplication.java 的 main 方法
+  # 方式二：命令行启动
+  mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-rabbitmq
+  ```
 
 ---
 
-## 3. 本地自验执行指南
+## 2. 运行环境与双模切换
+
+- **默认/CI 模式**：内置 `@Profile("!local")` 离线模拟桩（`TestAmqpConfig`）与内存自洽配置，无需外部 RabbitMQ 依赖即可快速启动与自动化端到端测试；
+- **Local 真实模式**：若需连接真实 RabbitMQ Broker，复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并填入真实 Broker 连接信息（该文件已被 `.gitignore` 强制忽略，CI 零泄露风险），激活 `local` Profile 启动即可直连真实集群联调。
+
+---
+
+## 3. 核心 Controller 接口与一键体验
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **同步可靠投递订单** | `RabbitProduceController` | `POST /sample/rabbitmq/produce/order` | `curl -X POST "http://localhost:8080/sample/rabbitmq/produce/order" -H "Content-Type: application/json" -d '{"orderId":"ORD-1001","amount":188.00,"userId":"user-01"}'` |
+| **异步非阻塞可靠投递** | `RabbitProduceController` | `POST /sample/rabbitmq/produce/order-async` | `curl -X POST "http://localhost:8080/sample/rabbitmq/produce/order-async" -H "Content-Type: application/json" -d '{"orderId":"ORD-ASYNC-1002","amount":299.90,"userId":"user-02"}'` |
+| **Topic 层次通配投递日志** | `RabbitProduceController` | `POST /sample/rabbitmq/produce/log` | `curl -X POST "http://localhost:8080/sample/rabbitmq/produce/log" -H "Content-Type: application/json" -d '{"routingKey":"log.order.error","level":"ERROR","serviceName":"order-service","content":"库存扣减失败"}'` |
+| **不可路由消息 Returns 告警** | `RabbitProduceController` | `POST /sample/rabbitmq/produce/unroutable` | `curl -X POST "http://localhost:8080/sample/rabbitmq/produce/unroutable?payload=test-unroutable-data"` |
+| **探查订单消费记录** | `RabbitProduceController` | `GET /sample/rabbitmq/produce/received-orders` | `curl -X GET "http://localhost:8080/sample/rabbitmq/produce/received-orders"` |
+| **本地事务提交物理发信** | `RabbitTransactionController` | `POST /sample/rabbitmq/transaction/commit` | `curl -X POST "http://localhost:8080/sample/rabbitmq/transaction/commit" -H "Content-Type: application/json" -d '{"orderId":"ORD-TX-COMMIT-01","amount":99.00,"userId":"user-tx"}'` |
+| **本地事务异常回滚零发信** | `RabbitTransactionController` | `POST /sample/rabbitmq/transaction/rollback` | `curl -X POST "http://localhost:8080/sample/rabbitmq/transaction/rollback" -H "Content-Type: application/json" -d '{"orderId":"ORD-TX-ROLLBACK-01","amount":99.00,"userId":"user-tx"}'` |
+| **微批订单同步聚合投递** | `RabbitBatchAndPriorityController` | `POST /sample/rabbitmq/batch/orders` | `curl -X POST "http://localhost:8080/sample/rabbitmq/batch/orders" -H "Content-Type: application/json" -d '{"orders":[{"orderId":"BATCH-01","amount":10.00,"userId":"u1"},{"orderId":"BATCH-02","amount":20.00,"userId":"u2"}]}'` |
+| **微批订单异步聚合投递** | `RabbitBatchAndPriorityController` | `POST /sample/rabbitmq/batch/orders-async` | `curl -X POST "http://localhost:8080/sample/rabbitmq/batch/orders-async" -H "Content-Type: application/json" -d '{"orders":[{"orderId":"BATCH-ASYNC-01","amount":15.00,"userId":"u1"}]}'` |
+| **Quorum 队列高优先级订单** | `RabbitBatchAndPriorityController` | `POST /sample/rabbitmq/priority/order` | `curl -X POST "http://localhost:8080/sample/rabbitmq/priority/order" -H "Content-Type: application/json" -d '{"order":{"orderId":"ORD-VIP-01","amount":888.88,"userId":"vip-user"},"priority":9}'` |
+| **订单超时延迟关单** | `RabbitDelayController` | `POST /sample/rabbitmq/delay/timeout-order` | `curl -X POST "http://localhost:8080/sample/rabbitmq/delay/timeout-order" -H "Content-Type: application/json" -d '{"orderId":"ORD-DELAY-01","timeoutSeconds":1800,"reason":"30分钟未支付超时取消"}'` |
+| **触发致命毒丸快速进 DLQ** | `RabbitDeadLetterController` | `POST /sample/rabbitmq/dead-letter/trigger-poison` | `curl -X POST "http://localhost:8080/sample/rabbitmq/dead-letter/trigger-poison?bizKey=poison-test-01"` |
+| **触发幂等静默确认 (Silent ACK)** | `RabbitDeadLetterController` | `POST /sample/rabbitmq/dead-letter/trigger-idempotent` | `curl -X POST "http://localhost:8080/sample/rabbitmq/dead-letter/trigger-idempotent?bizKey=idemp-key-1001"` |
+| **死信受控重放与清洗** | `RabbitDeadLetterController` | `POST /sample/rabbitmq/dead-letter/replay` | `curl -X POST "http://localhost:8080/sample/rabbitmq/dead-letter/replay" -H "Content-Type: application/json" -d '{"dlq":"sample.biz.dlq","targetExchange":"sample.biz.direct","targetRoutingKey":"biz.work","limit":10}'` |
+| **只读探查死信队列头部积压** | `RabbitDeadLetterController` | `GET /sample/rabbitmq/dead-letter/peek` | `curl -X GET "http://localhost:8080/sample/rabbitmq/dead-letter/peek?limit=5"` |
+| **清空死信队列** | `RabbitDeadLetterController` | `POST /sample/rabbitmq/dead-letter/purge` | `curl -X POST "http://localhost:8080/sample/rabbitmq/dead-letter/purge"` |
+| **探查死信诊断元数据** | `RabbitDeadLetterController` | `GET /sample/rabbitmq/dead-letter/audit-records` | `curl -X GET "http://localhost:8080/sample/rabbitmq/dead-letter/audit-records"` |
+| **Fanout 全局广播发布** | `RabbitBroadcastController` | `POST /sample/rabbitmq/broadcast/publish` | `curl -X POST "http://localhost:8080/sample/rabbitmq/broadcast/publish" -H "Content-Type: application/json" -d '{"message":"SYSTEM_CONFIG_REFRESH"}'` |
+| **探查动态匿名队列接收广播** | `RabbitBroadcastController` | `GET /sample/rabbitmq/broadcast/received` | `curl -X GET "http://localhost:8080/sample/rabbitmq/broadcast/received"` |
+
+---
+
+## 4. 全真自动化回归命令
 
 执行以下 Maven 命令即可在纯内存环境中以并行加速模式完成端到端离线自验：
 
 ```bash
 mvn test -pl ateng-boot-rabbitmq,ateng-boot-samples/ateng-boot-sample-rabbitmq -am -T 1C -nsu -B
 ```
+
+> 详细原理机制、配置清单与扩展定制，请参阅核心 Starter 文档：[ateng-boot-rabbitmq README](../../ateng-boot-rabbitmq/README.md)。
