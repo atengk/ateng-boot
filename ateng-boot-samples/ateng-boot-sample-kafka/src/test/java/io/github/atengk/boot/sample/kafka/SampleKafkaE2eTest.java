@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.kafka;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.TenantContextHolder;
@@ -20,6 +21,9 @@ import io.github.atengk.boot.kafka.template.KafkaDeadLetterReplayTemplate;
 import io.github.atengk.boot.kafka.template.KafkaReliableTemplate;
 import io.github.atengk.boot.sample.kafka.config.KafkaScenarioTopologyConfig;
 import io.github.atengk.boot.sample.kafka.consumer.*;
+import io.github.atengk.boot.sample.kafka.dto.NativeTxProduceRequest;
+import io.github.atengk.boot.sample.kafka.dto.OrderProduceRequest;
+import io.github.atengk.boot.sample.kafka.dto.UserEventProduceRequest;
 import io.github.atengk.boot.sample.kafka.model.OrderMessage;
 import io.github.atengk.boot.sample.kafka.model.UserEventMessage;
 import io.github.atengk.boot.sample.kafka.repository.MockOrderRepository;
@@ -41,6 +45,7 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -48,6 +53,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.ResolvableType;
+import org.springframework.http.MediaType;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -55,6 +61,7 @@ import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.kafka.support.converter.ByteArrayJsonMessageConverter;
 import org.springframework.messaging.Message;
+import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.AbstractPlatformTransactionManager;
@@ -79,15 +86,19 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * Kafka 场景沙箱 1:1 全场景端到端离线集成测试套件
  *
  * <p>全面覆盖 15 大企业级生产场景（100% 离线自洽，零外部物理 Broker 依赖）：
  * <ul>
- *   <li>场景 1：Key 分区保序与同步、异步、物理分区可靠收发 (TradeKafkaScenarioService)</li>
- *   <li>场景 2：本地事务提交感知发信与回滚防幽灵消息 (sendAfterCommit + 补偿 SPI) (TradeKafkaScenarioService)</li>
- *   <li>场景 3：Kafka 原生分布式事务执行 (executeInTransaction 原子多写与 4D 上下文透传) (TradeKafkaScenarioService)</li>
+ *   <li>场景 1：Key 分区保序与同步、异步、物理分区可靠收发 (KafkaProduceController Web 闭环)</li>
+ *   <li>场景 2：本地事务提交感知发信与回滚防幽灵消息 (sendAfterCommit + 补偿 SPI) (KafkaProduceController Web 闭环)</li>
+ *   <li>场景 3：Kafka 原生分布式事务执行 (executeInTransaction 原子多写与 4D 上下文透传) (KafkaProduceController Web 闭环)</li>
  *   <li>场景 4：微服务推断反序列化解耦与泛型集合接收 (无需 __TypeId__ 强耦合)</li>
  *   <li>场景 5：@Idempotent 消费端幂等拦截与静默提交 Offset</li>
  *   <li>场景 6：毒丸非法报文 0 次重试快速进 *.DLT 与死信终点不变量</li>
@@ -106,9 +117,16 @@ import static org.mockito.Mockito.*;
  * @since 2026-10-22
  */
 @SpringBootTest(classes = SampleKafkaApplication.class)
+@AutoConfigureMockMvc
 @Import({SampleKafkaE2eTest.MockKafkaTestConfig.class, SampleKafkaE2eTest.CommonTestConfig.class})
 @DisplayName("Kafka 场景沙箱 1:1 全场景端到端双模集成测试")
 class SampleKafkaE2eTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
 
     @Autowired
     private TradeKafkaScenarioService tradeScenarioService;
@@ -193,84 +211,167 @@ class SampleKafkaE2eTest {
     }
 
     // =========================================================================
-    // 场景 1: Key 分区保序与同步、异步、物理分区可靠收发 (TradeKafkaScenarioService)
+    // 场景 1: Key 分区保序与同步、异步、物理分区可靠收发 (KafkaProduceController Web 闭环)
     // =========================================================================
     @Test
-    @DisplayName("场景 1: Key 分区保序与同步、异步、物理分区可靠收发")
-    void testScenario1_KeyPartitionAndReliableSend() {
+    @DisplayName("场景 1: Key 分区保序与同步、异步、物理分区可靠收发 (KafkaProduceController Web 闭环)")
+    void testScenario1_KeyPartitionAndReliableSend() throws Exception {
         UserContextHolder.setUserId("user-001");
         TenantContextHolder.setTenantId("tenant-001");
         MDC.put("traceId", "trace-sc1");
 
-        // 1. 同步按 Key 发送订单
-        OrderMessage order = new OrderMessage("ORD-1001", new BigDecimal("299.00"), "user-001", "tenant-001");
-        SendResult<Object, Object> syncResult = tradeScenarioService.sendSyncOrder(order);
-        assertThat(syncResult).isNotNull();
-        assertThat(syncResult.getRecordMetadata().topic()).isEqualTo(KafkaScenarioTopologyConfig.TOPIC_ORDER);
+        // 1. HTTP 同步按 Key 发送订单
+        OrderProduceRequest syncReq = OrderProduceRequest.builder()
+                .orderId("ORD-1001")
+                .amount(new BigDecimal("299.00"))
+                .userId("user-001")
+                .tenantId("tenant-001")
+                .build();
 
-        // 2. 异步发送用户事件
-        UserEventMessage event = new UserEventMessage("user-001", "LOGIN", System.currentTimeMillis());
-        CompletableFuture<SendResult<Object, Object>> asyncFuture = tradeScenarioService.sendAsyncUserEvent(event);
-        SendResult<Object, Object> asyncResult = asyncFuture.join();
-        assertThat(asyncResult.getRecordMetadata().topic()).isEqualTo(KafkaScenarioTopologyConfig.TOPIC_USER);
+        mockMvc.perform(post("/sample/kafka/produce/order-sync")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(syncReq))
+                        .header("X-Trace-Id", "trace-sc1")
+                        .header("X-Tenant-Id", "tenant-001")
+                        .header("X-User-Id", "user-001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true));
 
-        // 3. 显式指定物理分区 2 投递
-        SendResult<Object, Object> partitionResult = tradeScenarioService.sendPartitionDirected(2, "p-key", order);
-        assertThat(partitionResult.getRecordMetadata().partition()).isEqualTo(2);
+        // 2. HTTP 异步发送用户事件
+        UserEventProduceRequest eventReq = UserEventProduceRequest.builder()
+                .userId("user-001")
+                .eventType("LOGIN")
+                .build();
 
-        // 4. 验证单条监听器成功消费
+        mockMvc.perform(post("/sample/kafka/produce/user-event-async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(eventReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true));
+
+        // 3. HTTP 显式指定物理分区 2 投递
+        OrderProduceRequest partitionReq = OrderProduceRequest.builder()
+                .orderId("ORD-PARTITION")
+                .amount(new BigDecimal("199.00"))
+                .userId("user-001")
+                .tenantId("tenant-001")
+                .partition(2)
+                .key("p-key")
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/produce/order-sync")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(partitionReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("PARTITION=2")));
+
+        // 4. HTTP 探查单条监听器成功消费并校验四维上下文
         awaitCondition(() -> {
-            assertThat(orderSingleRecordConsumer.getConsumedRecords()).isNotEmpty();
-            OrderSingleRecordConsumer.ConsumedRecord consumed = orderSingleRecordConsumer.getConsumedRecords().get(0);
-            assertThat(consumed.order().getOrderId()).isEqualTo("ORD-1001");
-            assertThat(consumed.key()).isEqualTo("ORD-1001");
-            assertThat(consumed.traceId()).isEqualTo("trace-sc1");
-            assertThat(consumed.tenantId()).isEqualTo("tenant-001");
-            assertThat(consumed.userId()).isEqualTo("user-001");
+            mockMvc.perform(get("/sample/kafka/produce/received-orders"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data").isArray())
+                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-1001')]").exists())
+                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-PARTITION' && @.partition == 2)]").exists());
         });
     }
 
     // =========================================================================
-    // 场景 2: 本地事务提交感知发信与回滚防幽灵消息 (TradeKafkaScenarioService)
+    // 场景 2: 本地事务提交感知发信与回滚防幽灵消息 (KafkaProduceController Web 闭环)
     // =========================================================================
     @Test
-    @DisplayName("场景 2: 本地事务提交感知发信与回滚防幽灵消息 (sendAfterCommit + 补偿 SPI)")
-    void testScenario2_TransactionalSendAfterCommitAndRollback() {
-        OrderMessage successOrder = new OrderMessage("ORD-TX-OK", new BigDecimal("500.00"), "user-tx", "tenant-tx");
+    @DisplayName("场景 2: 本地事务提交感知发信与回滚防幽灵消息 (KafkaProduceController Web 闭环)")
+    void testScenario2_TransactionalSendAfterCommitAndRollback() throws Exception {
+        // 1. HTTP 本地事务成功提交 -> 触发 afterCommit 物理发信
+        OrderProduceRequest successOrder = OrderProduceRequest.builder()
+                .orderId("ORD-TX-OK")
+                .amount(new BigDecimal("500.00"))
+                .userId("user-tx")
+                .tenantId("tenant-tx")
+                .build();
 
-        // 1. 事务成功提交 -> 触发 afterCommit 物理发信
-        tradeScenarioService.createOrderWithSendAfterCommit(successOrder);
-        assertThat(tradeScenarioService.getLocalDbOrders()).contains("ORD-TX-OK");
-        awaitCondition(() -> assertThat(orderSingleRecordConsumer.getConsumedRecords())
-                .anyMatch(r -> "ORD-TX-OK".equals(r.order().getOrderId())));
+        mockMvc.perform(post("/sample/kafka/produce/order-tx-commit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(successOrder)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("ORD-TX-OK"));
 
-        orderSingleRecordConsumer.clear();
+        // HTTP 探查本地 DB 订单落库
+        mockMvc.perform(get("/sample/kafka/produce/db-orders"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data[0]").value("ORD-TX-OK"));
 
-        // 2. 事务异常回滚 -> 物理发信被阻断，严禁产生幽灵消息
-        OrderMessage rollbackOrder = new OrderMessage("ORD-TX-FAIL", new BigDecimal("999.00"), "user-tx", "tenant-tx");
-        assertThatThrownBy(() -> tradeScenarioService.createOrderWithRollback(rollbackOrder))
-                .isInstanceOf(IllegalStateException.class);
+        awaitCondition(() -> {
+            mockMvc.perform(get("/sample/kafka/produce/received-orders"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-TX-OK')]").exists());
+        });
+
+        // 清理现场
+        mockMvc.perform(post("/sample/kafka/produce/clear")).andExpect(status().isOk());
+
+        // 2. HTTP 本地事务异常回滚 -> 物理发信被阻断，严禁产生幽灵消息
+        OrderProduceRequest rollbackOrder = OrderProduceRequest.builder()
+                .orderId("ORD-TX-FAIL")
+                .amount(new BigDecimal("999.00"))
+                .userId("user-tx")
+                .tenantId("tenant-tx")
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/produce/order-tx-rollback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(rollbackOrder)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
 
         // 确认没有消费记录产生
-        assertThat(orderSingleRecordConsumer.getConsumedRecords()).noneMatch(r -> "ORD-TX-FAIL".equals(r.order().getOrderId()));
+        mockMvc.perform(get("/sample/kafka/produce/received-orders"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-TX-FAIL')]").doesNotExist());
     }
 
     // =========================================================================
-    // 场景 3: Kafka 原生分布式事务执行 (TradeKafkaScenarioService)
+    // 场景 3: Kafka 原生分布式事务执行 (KafkaProduceController Web 闭环)
     // =========================================================================
     @Test
-    @DisplayName("场景 3: Kafka 原生分布式事务执行 (executeInTransaction 原子多写与 4D 上下文透传)")
-    void testScenario3_NativeKafkaTransactionExecution() {
+    @DisplayName("场景 3: Kafka 原生分布式事务执行 (KafkaProduceController Web 闭环)")
+    void testScenario3_NativeKafkaTransactionExecution() throws Exception {
         MDC.put("traceId", "trace-tx-native");
         TenantContextHolder.setTenantId("tenant-tx-native");
         UserContextHolder.setUserId("user-tx-native");
 
-        OrderMessage order = new OrderMessage("ORD-TX-NATIVE", new BigDecimal("777.00"), "user-tx-native", "tenant-tx-native");
-        String txResult = tradeScenarioService.executeTradeAtomicMultiSend(order, "AUDIT-EVENT-LOG");
+        OrderProduceRequest orderReq = OrderProduceRequest.builder()
+                .orderId("ORD-TX-NATIVE")
+                .amount(new BigDecimal("777.00"))
+                .userId("user-tx-native")
+                .tenantId("tenant-tx-native")
+                .build();
 
-        assertThat(txResult).isEqualTo("SUCCESS");
-        awaitCondition(() -> assertThat(orderSingleRecordConsumer.getConsumedRecords())
-                .anyMatch(r -> "ORD-TX-NATIVE".equals(r.order().getOrderId())));
+        NativeTxProduceRequest nativeTxReq = NativeTxProduceRequest.builder()
+                .order(orderReq)
+                .auditContent("AUDIT-EVENT-LOG")
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/produce/order-native-tx")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(nativeTxReq))
+                        .header("X-Trace-Id", "trace-tx-native")
+                        .header("X-Tenant-Id", "tenant-tx-native")
+                        .header("X-User-Id", "user-tx-native"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("SUCCESS"));
+
+        awaitCondition(() -> {
+            mockMvc.perform(get("/sample/kafka/produce/received-orders"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-TX-NATIVE')]").exists());
+        });
     }
 
     // =========================================================================
