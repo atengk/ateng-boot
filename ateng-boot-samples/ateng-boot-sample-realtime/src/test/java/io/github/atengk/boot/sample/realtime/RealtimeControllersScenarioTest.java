@@ -209,14 +209,21 @@ class RealtimeControllersScenarioTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(greaterThanOrEqualTo(0)));
 
-        // 3. 一次性拉取并排空
+        // 3. 只读窥探离线消息列表 (保持 GET 幂等)
         mockMvc.perform(get("/sample/realtime/offline/messages")
                         .param("userId", userId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").isArray());
 
-        // 4. 清空离线消息箱
+        // 4. 一次性拉取并排空 (POST 语义)
+        mockMvc.perform(post("/sample/realtime/offline/pull")
+                        .param("userId", userId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 5. 清空离线消息箱
         mockMvc.perform(delete("/sample/realtime/offline/messages")
                         .param("userId", userId))
                 .andExpect(status().isOk())

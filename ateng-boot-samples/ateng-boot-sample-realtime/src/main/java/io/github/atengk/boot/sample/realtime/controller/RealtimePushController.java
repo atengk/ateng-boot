@@ -50,8 +50,7 @@ public class RealtimePushController {
                                             @RequestParam(defaultValue = "default") String clientId,
                                             @RequestParam String message) {
         log.info("[Sample] 触发 WebSocket 专线单播: userId={}, clientId={}", userId, clientId);
-        SessionKey key = SessionKey.of(userId, clientId);
-        boolean success = realtimeTemplate.sendViaWebSocket(key, RealtimeMessage.of("notice:ws", message));
+        boolean success = sendViaDedicatedChannel(userId, clientId, "notice:ws", true, message);
         return Result.success(success);
     }
 
@@ -63,8 +62,7 @@ public class RealtimePushController {
                                       @RequestParam(defaultValue = "default") String clientId,
                                       @RequestParam String message) {
         log.info("[Sample] 触发 SSE 专线单播: userId={}, clientId={}", userId, clientId);
-        SessionKey key = SessionKey.of(userId, clientId);
-        boolean success = realtimeTemplate.sendViaSse(key, RealtimeMessage.of("notice:sse", message));
+        boolean success = sendViaDedicatedChannel(userId, clientId, "notice:sse", false, message);
         return Result.success(success);
     }
 
@@ -92,5 +90,11 @@ public class RealtimePushController {
             count = realtimeTemplate.sendToAll(message);
         }
         return Result.success(count);
+    }
+
+    private boolean sendViaDedicatedChannel(String userId, String clientId, String event, boolean isWebSocket, String content) {
+        SessionKey key = SessionKey.of(userId, clientId);
+        RealtimeMessage<String> realtimeMessage = RealtimeMessage.of(event, content);
+        return isWebSocket ? realtimeTemplate.sendViaWebSocket(key, realtimeMessage) : realtimeTemplate.sendViaSse(key, realtimeMessage);
     }
 }

@@ -3,11 +3,10 @@ package io.github.atengk.boot.sample.realtime.controller;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.realtime.enums.ChannelType;
 import io.github.atengk.boot.realtime.template.RealtimeTemplate;
+import io.github.atengk.boot.sample.realtime.vo.LocalMetricsVo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.Map;
 
 /**
  * 实时通信会话治理与在线度量统计控制器
@@ -27,19 +26,19 @@ public class RealtimeSessionController {
      * 获取当前服务节点在线连接指标（总连接数、独立用户数、通道分布）
      */
     @GetMapping("/metrics")
-    public Result<Map<String, Object>> getLocalMetrics() {
+    public Result<LocalMetricsVo> getLocalMetrics() {
         int totalOnline = realtimeTemplate.getOnlineCount();
         int userCount = realtimeTemplate.getOnlineUserCount();
         int wsCount = realtimeTemplate.getOnlineCountByChannel(ChannelType.WEBSOCKET);
         int sseCount = realtimeTemplate.getOnlineCountByChannel(ChannelType.SSE);
 
-        Map<String, Object> metrics = Map.of(
-                "onlineCount", totalOnline,
-                "onlineUserCount", userCount,
-                "websocketCount", wsCount,
-                "sseCount", sseCount
-        );
-        return Result.success(metrics);
+        LocalMetricsVo vo = LocalMetricsVo.builder()
+                .onlineCount(totalOnline)
+                .onlineUserCount(userCount)
+                .websocketCount(wsCount)
+                .sseCount(sseCount)
+                .build();
+        return Result.success(vo);
     }
 
     /**

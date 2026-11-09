@@ -4,6 +4,7 @@ import io.github.atengk.boot.realtime.sse.SseStreamHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -11,7 +12,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
 /**
@@ -57,7 +57,9 @@ public class RealtimeSseStreamController {
         if (executor != null) {
             executor.execute(task);
         } else {
-            CompletableFuture.runAsync(task);
+            // 受管单线程降级执行，防范无界野线程与 Carrier Pinning
+            log.warn("[Sample] 未发现注入的受管异步线程池，降级使用 SimpleAsyncTaskExecutor 受管执行");
+            new SimpleAsyncTaskExecutor("sse-stream-").execute(task);
         }
         return emitter;
     }

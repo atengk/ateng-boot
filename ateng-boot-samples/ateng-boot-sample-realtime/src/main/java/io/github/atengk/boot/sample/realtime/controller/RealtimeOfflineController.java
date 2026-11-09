@@ -37,9 +37,19 @@ public class RealtimeOfflineController {
     }
 
     /**
-     * 一次性拉取并排空指定用户的离线暂存消息
+     * 查询指定用户的离线暂存消息（只读窥探，严格保持 HTTP GET 幂等与无副作用）
      */
     @GetMapping("/messages")
+    public Result<List<RealtimeMessage<?>>> getOfflineMessages(@RequestParam String userId) {
+        log.info("[Sample] 只读查询离线暂存消息: userId={}", userId);
+        List<RealtimeMessage<?>> messages = realtimeTemplate.getOfflineMessages(userId);
+        return Result.success(messages);
+    }
+
+    /**
+     * 一次性拉取并排空指定用户的离线暂存消息（带排空副作用，严格遵循 POST 语义）
+     */
+    @PostMapping("/pull")
     public Result<List<RealtimeMessage<?>>> pullOfflineMessages(@RequestParam String userId) {
         log.info("[Sample] 一次性拉取并排空离线消息: userId={}", userId);
         List<RealtimeMessage<?>> messages = realtimeTemplate.pullAndClearOfflineMessages(userId);

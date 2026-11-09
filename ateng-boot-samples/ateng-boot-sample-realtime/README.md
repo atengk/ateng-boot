@@ -52,7 +52,8 @@
 | **按租户批量切断** | `RealtimeSessionController` | `POST /sample/realtime/session/kickout-tenant` | `curl -X POST "http://localhost:8080/sample/realtime/session/kickout-tenant?tenantId=1001"` |
 | **发送持久化离线消息** | `RealtimeOfflineController` | `POST /sample/realtime/offline/send-persistent` | `curl -X POST "http://localhost:8080/sample/realtime/offline/send-persistent" -H "Content-Type: application/json" -d '{"userId":"user1001","event":"alert:urgent","content":"系统告警：CPU使用率超限"}'` |
 | **查询未读离线消息数** | `RealtimeOfflineController` | `GET /sample/realtime/offline/count` | `curl -X GET "http://localhost:8080/sample/realtime/offline/count?userId=user1001"` |
-| **拉取并排空离线消息** | `RealtimeOfflineController` | `GET /sample/realtime/offline/messages` | `curl -X GET "http://localhost:8080/sample/realtime/offline/messages?userId=user1001"` |
+| **只读窥探离线消息** | `RealtimeOfflineController` | `GET /sample/realtime/offline/messages` | `curl -X GET "http://localhost:8080/sample/realtime/offline/messages?userId=user1001"` |
+| **拉取并排空离线消息** | `RealtimeOfflineController` | `POST /sample/realtime/offline/pull` | `curl -X POST "http://localhost:8080/sample/realtime/offline/pull?userId=user1001"` |
 | **清空离线暂存箱** | `RealtimeOfflineController` | `DELETE /sample/realtime/offline/messages` | `curl -X DELETE "http://localhost:8080/sample/realtime/offline/messages?userId=user1001"` |
 | **LLM 打字机流式推流** | `RealtimeSseStreamController` | `GET /sample/realtime/sse/stream-llm` | `curl -N "http://localhost:8080/sample/realtime/sse/stream-llm?prompt=解释实时通信架构"` |
 | **Sa-Token 踢人下线** | `RealtimeAuthController` | `POST /sample/realtime/auth/kickout` | `curl -X POST "http://localhost:8080/sample/realtime/auth/kickout?userId=user1001"` |

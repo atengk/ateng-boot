@@ -147,7 +147,7 @@ flowchart TD
 
 ## 3. 全双工 WebSocket 与声明式双向交互 (Full-Duplex WebSocket)
 
-### 3.1 声明式双向 Request-Response 与异常转译 (`@RealtimeAction`)
+### 3.1 并发写安全与 512KB 发送缓冲治理 (Concurrent Writing Safety & Buffer Governance)
 
 #### 专属 YAML 配置
 ```yaml
@@ -159,6 +159,37 @@ ateng:
         path: /ws/realtime              # 端点路径
         send-buffer-limit: 512KB        # 并发安全装饰器发送缓冲队列上限（默认：512KB）
         send-timeout: 10s               # 并发安全装饰器单次写超时阈值（默认：10s）
+        max-text-message-buffer-size: 64KB # 单个文本帧消息缓冲区上限（默认：64KB）
+```
+
+#### 实战业务代码 (逆向提取自 ConcurrentWebSocketHandlerDecorator.java 与 ConcurrentWebSocketSessionDecorator.java)
+```java
+// 框架底层自动为原生 WebSocketSession 挂载并发写安全装饰器与受控缓冲队列
+ConcurrentWebSocketSessionDecorator concurrentSession = 
+    new ConcurrentWebSocketSessionDecorator(session, sendTimeout, sendBufferSizeLimit);
+
+// 业务端点或受管线程池高并发异步发送时，框架通过无锁/有界环形缓冲与 ReentrantLock 协调
+// 彻底根除 Tomcat 10 底层 "TEXT_PARTIAL_WRITING" 并发写崩溃与虚拟线程 Carrier Pinning
+realtimeTemplate.sendToSession(sessionKey, message);
+```
+
+#### 核心机制与生产边界
+- **无锁/有界队列排空**：Tomcat 与 JSR-356 原生 WebSocket 规范严禁对同一 `Session` 进行跨线程并发 `sendMessage`，否则必报 `java.lang.IllegalStateException: The remote endpoint was in state [TEXT_PARTIAL_WRITING] which is an invalid state for called method`；
+- **防内存溢出与写超时熔断**：装饰器内置 `512KB` 队列容量保护，当客户端网络阻塞积压超过阈值或写阻塞达到 `10s`（`send-timeout`）时，主动切断问题连接，防止高并发下大量慢客户端拖垮服务器内存；
+- **虚拟线程防 Pinning**：临界区全面采用 `java.util.concurrent.locks.ReentrantLock` 替代原生 `synchronized` 关键字，杜绝 JDK 21+ 虚拟线程运行时 Carrier Thread Pinning 阻塞。
+
+---
+
+### 3.2 声明式双向 Request-Response 与异常转译 (`@RealtimeAction`)
+
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    realtime:
+      websocket:
+        enabled: true                   # 启用 WebSocket 传输引擎
+        path: /ws/realtime              # 端点路径
 ```
 
 #### 实战业务代码 (逆向提取自 ChatActionHandler.java)
@@ -224,7 +255,7 @@ public class ChatActionHandler {
 
 ---
 
-### 3.2 会话级自适应滑动窗口限流防刷与 4005 阶梯断开
+### 3.3 会话级自适应滑动窗口限流防刷与 4005 阶梯断开
 
 #### 专属 YAML 配置
 ```yaml
@@ -246,7 +277,7 @@ ateng:
 
 ---
 
-### 3.3 原生二进制音视频流上行监听 SPI (`RealtimeBinaryMessageListener`)
+### 3.4 原生二进制音视频流上行监听 SPI (`RealtimeBinaryMessageListener`)
 
 #### 专属 YAML 配置
 ```yaml
@@ -576,6 +607,11 @@ public class RealtimeOfflineController {
     }
 
     @GetMapping("/messages")
+    public Result<List<RealtimeMessage<?>>> getOfflineMessages(@RequestParam String userId) {
+        return Result.success(realtimeTemplate.getOfflineMessages(userId));
+    }
+
+    @PostMapping("/pull")
     public Result<List<RealtimeMessage<?>>> pullOfflineMessages(@RequestParam String userId) {
         return Result.success(realtimeTemplate.pullAndClearOfflineMessages(userId));
     }

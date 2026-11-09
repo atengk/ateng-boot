@@ -107,10 +107,20 @@ class ClusterAndOfflineScenarioTest {
         JsonNode countNode = objectMapper.readTree(countResp.body());
         assertThat(countNode.get("data").asInt()).isEqualTo(1);
 
-        // 3. 一次性拉取清空离线消息
-        HttpRequest pullReq = HttpRequest.newBuilder()
+        // 3. 只读窥探离线消息 (GET 保持幂等)
+        HttpRequest peekReq = HttpRequest.newBuilder()
                 .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/offline/messages?userId=" + testUserId))
                 .GET()
+                .build();
+        HttpResponse<String> peekResp = httpClient.send(peekReq, HttpResponse.BodyHandlers.ofString());
+        JsonNode peekNode = objectMapper.readTree(peekResp.body());
+        assertThat(peekNode.get("data").isArray()).isTrue();
+        assertThat(peekNode.get("data").size()).isEqualTo(1);
+
+        // 4. 一次性拉取清空离线消息 (POST 语义)
+        HttpRequest pullReq = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/offline/pull?userId=" + testUserId))
+                .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
         HttpResponse<String> pullResp = httpClient.send(pullReq, HttpResponse.BodyHandlers.ofString());
         JsonNode pullNode = objectMapper.readTree(pullResp.body());
@@ -119,7 +129,7 @@ class ClusterAndOfflineScenarioTest {
         assertThat(dataArray.size()).isEqualTo(1);
         assertThat(dataArray.get(0).get("data").asText()).isEqualTo("TaskCompleted");
 
-        // 4. 再次查询计数已归零
+        // 5. 再次查询计数已归零
         HttpResponse<String> countAgainResp = httpClient.send(countReq, HttpResponse.BodyHandlers.ofString());
         JsonNode countAgainNode = objectMapper.readTree(countAgainResp.body());
         assertThat(countAgainNode.get("data").asInt()).isZero();

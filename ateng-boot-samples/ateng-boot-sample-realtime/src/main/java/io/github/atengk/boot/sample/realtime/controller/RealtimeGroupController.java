@@ -2,14 +2,15 @@ package io.github.atengk.boot.sample.realtime.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
+import io.github.atengk.boot.realtime.model.SessionKey;
 import io.github.atengk.boot.realtime.template.RealtimeTemplate;
 import io.github.atengk.boot.sample.realtime.dto.PushGroupMessageRequest;
+import io.github.atengk.boot.sample.realtime.vo.GroupMembersVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -71,19 +72,19 @@ public class RealtimeGroupController {
      * 查询群组成员列表与统计（包含集群全域与本节点局部数据）
      */
     @GetMapping("/members")
-    public Result<Map<String, Object>> getGroupMembers(@RequestParam String groupId) {
+    public Result<GroupMembersVo> getGroupMembers(@RequestParam String groupId) {
         int clusterCount = realtimeTemplate.getClusterGroupMemberCount(groupId);
-        Set<io.github.atengk.boot.realtime.model.SessionKey> clusterMembers = realtimeTemplate.getClusterGroupMembers(groupId);
+        Set<SessionKey> clusterMembers = realtimeTemplate.getClusterGroupMembers(groupId);
         int localCount = realtimeTemplate.getGroupMemberCount(groupId);
-        Set<io.github.atengk.boot.realtime.model.SessionKey> localMembers = realtimeTemplate.getGroupSessions(groupId);
+        Set<SessionKey> localMembers = realtimeTemplate.getGroupSessions(groupId);
 
-        Map<String, Object> data = Map.of(
-                "groupId", groupId,
-                "clusterCount", clusterCount,
-                "clusterMembers", clusterMembers != null ? clusterMembers : Set.of(),
-                "localCount", localCount,
-                "localMembers", localMembers != null ? localMembers : Set.of()
-        );
-        return Result.success(data);
+        GroupMembersVo vo = GroupMembersVo.builder()
+                .groupId(groupId)
+                .clusterCount(clusterCount)
+                .clusterMembers(clusterMembers != null ? clusterMembers : Set.of())
+                .localCount(localCount)
+                .localMembers(localMembers != null ? localMembers : Set.of())
+                .build();
+        return Result.success(vo);
     }
 }
