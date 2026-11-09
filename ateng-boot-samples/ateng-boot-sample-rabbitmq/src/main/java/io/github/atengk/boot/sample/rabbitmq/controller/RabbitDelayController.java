@@ -39,12 +39,7 @@ public class RabbitDelayController {
      */
     @PostMapping("/timeout-order")
     public Result<String> sendDelayOrder(@Valid @RequestBody OrderDelayRequest request) {
-        OrderTimeoutMessage message = new OrderTimeoutMessage(
-                request.getOrderId(),
-                request.getTimeoutSeconds(),
-                request.getReason()
-        );
-        producer.sendOrderDelay(message, Duration.ofSeconds(request.getTimeoutSeconds()));
+        producer.sendOrderDelay(request.toMessage(), Duration.ofSeconds(request.getTimeoutSeconds()));
         return Result.success(request.getOrderId(), "延迟超时订单已投递，延迟时长: " + request.getTimeoutSeconds() + "秒");
     }
 

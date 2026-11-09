@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.rabbitmq.consumer.BatchOrderConsumer;
 import io.github.atengk.boot.sample.rabbitmq.consumer.PriorityOrderConsumer;
 import io.github.atengk.boot.sample.rabbitmq.dto.BatchOrderRequest;
+import io.github.atengk.boot.sample.rabbitmq.dto.OrderCreateRequest;
 import io.github.atengk.boot.sample.rabbitmq.dto.PriorityOrderRequest;
 import io.github.atengk.boot.sample.rabbitmq.model.OrderCreateMessage;
 import io.github.atengk.boot.sample.rabbitmq.producer.TradeMessageProducer;
@@ -12,7 +13,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -42,7 +42,7 @@ public class RabbitBatchAndPriorityController {
     @PostMapping("/batch/orders")
     public Result<Integer> sendBatchOrdersSync(@Valid @RequestBody BatchOrderRequest request) {
         List<OrderCreateMessage> orders = request.getOrders().stream()
-                .map(req -> new OrderCreateMessage(req.getOrderId(), req.getAmount(), req.getUserId(), LocalDateTime.now()))
+                .map(OrderCreateRequest::toMessage)
                 .toList();
         producer.sendBatchOrders(orders);
         return Result.success(orders.size(), "批量订单同步投递完成并全部收到 Broker ACK");
@@ -57,7 +57,7 @@ public class RabbitBatchAndPriorityController {
     @PostMapping("/batch/orders-async")
     public Result<Integer> sendBatchOrdersAsync(@Valid @RequestBody BatchOrderRequest request) {
         List<OrderCreateMessage> orders = request.getOrders().stream()
-                .map(req -> new OrderCreateMessage(req.getOrderId(), req.getAmount(), req.getUserId(), LocalDateTime.now()))
+                .map(OrderCreateRequest::toMessage)
                 .toList();
         CompletableFuture<Void> future = producer.sendBatchOrdersAsync(orders);
         future.thenRun(() -> log.info("[ASYNC-BATCH-ACK] 批量订单异步投递全部确认成功: count={}", orders.size()));
@@ -82,13 +82,7 @@ public class RabbitBatchAndPriorityController {
      */
     @PostMapping("/priority/order")
     public Result<String> sendPriorityOrder(@Valid @RequestBody PriorityOrderRequest request) {
-        OrderCreateMessage message = new OrderCreateMessage(
-                request.getOrder().getOrderId(),
-                request.getOrder().getAmount(),
-                request.getOrder().getUserId(),
-                LocalDateTime.now()
-        );
-        producer.sendPriorityOrder(message, request.getPriority());
+        producer.sendPriorityOrder(request.getOrder().toMessage(), request.getPriority());
         return Result.success(request.getOrder().getOrderId(), "优先级订单投递成功: priority=" + request.getPriority());
     }
 

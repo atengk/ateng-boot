@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.rabbitmq.dto;
 
+import io.github.atengk.boot.sample.rabbitmq.model.OrderTimeoutMessage;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
@@ -44,4 +45,13 @@ public class OrderDelayRequest implements Serializable {
      */
     @NotBlank(message = "超时取消原因不能为空")
     private String reason;
+
+    /**
+     * 转换为超时订单领域消息实体
+     *
+     * @return 超时订单消息
+     */
+    public OrderTimeoutMessage toMessage() {
+        return new OrderTimeoutMessage(orderId, timeoutSeconds, reason);
+    }
 }

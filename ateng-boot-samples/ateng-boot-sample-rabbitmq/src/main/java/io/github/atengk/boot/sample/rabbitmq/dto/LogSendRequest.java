@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.rabbitmq.dto;
 
+import io.github.atengk.boot.sample.rabbitmq.model.LogMessage;
 import jakarta.validation.constraints.NotBlank;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -47,4 +48,13 @@ public class LogSendRequest implements Serializable {
      */
     @NotBlank(message = "日志内容不能为空")
     private String content;
+
+    /**
+     * 转换为日志领域消息实体
+     *
+     * @return 日志消息
+     */
+    public LogMessage toMessage() {
+        return new LogMessage(level, serviceName, content);
+    }
 }

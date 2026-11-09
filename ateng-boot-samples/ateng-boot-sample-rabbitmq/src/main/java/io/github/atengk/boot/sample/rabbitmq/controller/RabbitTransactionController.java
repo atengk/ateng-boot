@@ -10,7 +10,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -37,13 +36,7 @@ public class RabbitTransactionController {
      */
     @PostMapping("/commit")
     public Result<String> createOrderWithCommit(@Valid @RequestBody OrderCreateRequest request) {
-        OrderCreateMessage message = new OrderCreateMessage(
-                request.getOrderId(),
-                request.getAmount(),
-                request.getUserId(),
-                LocalDateTime.now()
-        );
-        transactionService.createOrderWithCommit(message);
+        transactionService.createOrderWithCommit(request.toMessage());
         return Result.success(request.getOrderId(), "本地事务提交成功，触发物理网络发信");
     }
 
@@ -55,14 +48,8 @@ public class RabbitTransactionController {
      */
     @PostMapping("/rollback")
     public Result<String> createOrderWithRollback(@Valid @RequestBody OrderCreateRequest request) {
-        OrderCreateMessage message = new OrderCreateMessage(
-                request.getOrderId(),
-                request.getAmount(),
-                request.getUserId(),
-                LocalDateTime.now()
-        );
         try {
-            transactionService.createOrderWithRollback(message);
+            transactionService.createOrderWithRollback(request.toMessage());
         } catch (IllegalStateException ex) {
             log.warn("[TX-ROLLBACK] 捕获预期本地事务异常: {}", ex.getMessage());
         }

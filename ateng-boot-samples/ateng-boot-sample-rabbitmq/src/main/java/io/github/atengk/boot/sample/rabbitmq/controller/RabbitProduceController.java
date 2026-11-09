@@ -14,7 +14,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -43,13 +42,7 @@ public class RabbitProduceController {
      */
     @PostMapping("/order")
     public Result<String> sendOrderSync(@Valid @RequestBody OrderCreateRequest request) {
-        OrderCreateMessage message = new OrderCreateMessage(
-                request.getOrderId(),
-                request.getAmount(),
-                request.getUserId(),
-                LocalDateTime.now()
-        );
-        producer.sendOrderCreate(message);
+        producer.sendOrderCreate(request.toMessage());
         return Result.success(request.getOrderId(), "订单同步可靠投递成功并收到 Broker Confirm ACK");
     }
 
@@ -61,13 +54,7 @@ public class RabbitProduceController {
      */
     @PostMapping("/order-async")
     public Result<String> sendOrderAsync(@Valid @RequestBody OrderCreateRequest request) {
-        OrderCreateMessage message = new OrderCreateMessage(
-                request.getOrderId(),
-                request.getAmount(),
-                request.getUserId(),
-                LocalDateTime.now()
-        );
-        CompletableFuture<CorrelationData.Confirm> future = producer.sendOrderCreateAsync(message);
+        CompletableFuture<CorrelationData.Confirm> future = producer.sendOrderCreateAsync(request.toMessage());
         future.thenAccept(confirm -> log.info("[ASYNC-ACK] 收到异步确认: orderId={}, ack={}",
                 request.getOrderId(), confirm.isAck()));
         return Result.success(request.getOrderId(), "订单异步非阻塞投递成功，后台等待 Confirm");
@@ -81,8 +68,7 @@ public class RabbitProduceController {
      */
     @PostMapping("/log")
     public Result<String> sendTopicLog(@Valid @RequestBody LogSendRequest request) {
-        LogMessage message = new LogMessage(request.getLevel(), request.getServiceName(), request.getContent());
-        producer.sendLogError(request.getRoutingKey(), message);
+        producer.sendLogError(request.getRoutingKey(), request.toMessage());
         return Result.success(request.getRoutingKey(), "Topic 层次通配日志投递成功");
     }
 
