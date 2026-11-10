@@ -13,11 +13,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * 企业协同通知通信过渡控制器（待后续工单迁移渠道与事务端点后废除）
+ * 企业协同通知通信过渡控制器（待工单 #867 迁移事务与异步端点后废除）
  *
  * @author Ateng
  * @since 2026-10-23
@@ -48,28 +47,5 @@ public class NotificationController {
             @RequestParam(defaultValue = "false") boolean triggerRollback) {
         String msg = notificationService.sendTransactional(request, triggerRollback);
         return Result.success(msg);
-    }
-
-    /**
-     * 演示 NotificationContextHolder 动态切源发信
-     */
-    @PostMapping("/switch-channel")
-    public Result<NotificationSendResult> switchChannel(
-            @RequestParam String targetChannel,
-            @Valid @RequestBody TextMessageRequest request) {
-        NotificationSendResult result = notificationService.sendWithSwitchedChannel(targetChannel, request);
-        return Result.success(result);
-    }
-
-    /**
-     * 动态模板渲染发信演示
-     */
-    @PostMapping("/template")
-    public Result<NotificationSendResult> sendTemplate(
-            @RequestParam(required = false) String channel,
-            @RequestParam String templateContent,
-            @RequestBody Map<String, Object> variables) {
-        NotificationSendResult result = notificationService.sendTemplate(channel, templateContent, variables);
-        return Result.success(result);
     }
 }

@@ -13,10 +13,13 @@ import io.github.atengk.boot.notification.model.RawMessage;
 import io.github.atengk.boot.notification.model.TextMessage;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import io.github.atengk.boot.sample.notification.dto.CardMessageRequest;
+import io.github.atengk.boot.sample.notification.dto.ChannelSwitchRequest;
+import io.github.atengk.boot.sample.notification.dto.FailoverDemoRequest;
 import io.github.atengk.boot.sample.notification.dto.ImageMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.LinkMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.MarkdownMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.RawMessageRequest;
+import io.github.atengk.boot.sample.notification.dto.TemplateMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.TextMessageRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -142,6 +145,27 @@ public class NotificationScenarioService {
     }
 
     /**
+     * 动态模板渲染发信
+     *
+     * @param request 动态模板发信请求
+     * @return 发信结果
+     */
+    public NotificationSendResult sendTemplate(TemplateMessageRequest request) {
+        return notificationTemplate.sendTemplate(request.getChannel(), request.getTemplateContent(), request.getVariables());
+    }
+
+    /**
+     * 演示主备渠道顺延故障转移发信（Cascade Failover）
+     *
+     * @param request 故障转移演示请求
+     * @return 实际执行发信的结果（包含最终成功的渠道与平台）
+     */
+    public NotificationSendResult sendWithFailover(FailoverDemoRequest request) {
+        TextMessage message = new TextMessage(request.getContent());
+        return notificationTemplate.send(request.getPrimaryChannel(), message);
+    }
+
+    /**
      * 原生特化 JSON 逃生舱发信
      */
     public NotificationSendResult sendRaw(String channel, Map<String, Object> rawPayload) {
@@ -191,6 +215,28 @@ public class NotificationScenarioService {
         TextMessage message = new TextMessage(request.getContent());
         try {
             return NotificationContextHolder.callWithChannel(targetChannel, () -> notificationTemplate.send(message));
+        } catch (Exception e) {
+            if (e instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new IllegalStateException("切换通知渠道发信失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 演示 NotificationContextHolder 线程级动态切源发信
+     *
+     * @param request 动态切源请求
+     * @return 发信结果
+     */
+    public NotificationSendResult sendWithSwitchedChannel(ChannelSwitchRequest request) {
+        TextMessage message = new TextMessage(request.getContent());
+        MentionTarget mentionTarget = buildMentionTarget(request.getAtAll(), request.getAtMobiles(), request.getAtUserIds());
+        if (mentionTarget != null) {
+            message.setMention(mentionTarget);
+        }
+        try {
+            return NotificationContextHolder.callWithChannel(request.getTargetChannel(), () -> notificationTemplate.send(message));
         } catch (Exception e) {
             if (e instanceof RuntimeException re) {
                 throw re;

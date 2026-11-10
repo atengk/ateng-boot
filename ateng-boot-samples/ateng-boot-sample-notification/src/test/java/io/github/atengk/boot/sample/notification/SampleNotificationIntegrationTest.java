@@ -286,16 +286,17 @@ class SampleNotificationIntegrationTest {
 
         String payload = """
                 {
+                  "targetChannel": "dingtalk-dev",
                   "content": "通过 ContextHolder 动态切源发信"
                 }
                 """;
 
-        mockMvc.perform(post("/api/v1/notification/switch-channel")
-                        .param("targetChannel", "dingtalk-dev")
+        mockMvc.perform(post("/sample/notification/channel/switch")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
                 .andExpect(jsonPath("$.data.channel").value("dingtalk-dev"));
 
         RecordedRequest recorded = mockServer.takeRequest(3, TimeUnit.SECONDS);
@@ -336,20 +337,23 @@ class SampleNotificationIntegrationTest {
     void testSendTemplateEndpoint() throws Exception {
         enqueueSuccessResponse();
 
-        String varsJson = """
+        String templatePayload = """
                 {
-                  "appName": "ateng-pay",
-                  "qps": 12500
+                  "channel": "dingtalk-dev",
+                  "templateContent": "服务 ${appName} 瞬时 QPS 达到 ${qps}",
+                  "variables": {
+                    "appName": "ateng-pay",
+                    "qps": 12500
+                  }
                 }
                 """;
 
-        mockMvc.perform(post("/api/v1/notification/template")
-                        .param("channel", "dingtalk-dev")
-                        .param("templateContent", "服务 ${appName} 瞬时 QPS 达到 ${qps}")
+        mockMvc.perform(post("/sample/notification/channel/template")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(varsJson))
+                        .content(templatePayload))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
 
         RecordedRequest recorded = mockServer.takeRequest(3, TimeUnit.SECONDS);
         assertNotNull(recorded);
@@ -628,12 +632,12 @@ class SampleNotificationIntegrationTest {
 
             String payload = """
                     {
-                      "channel": "sample-failover-primary",
+                      "primaryChannel": "sample-failover-primary",
                       "content": "验证主备顺延故障转移端到端流程"
                     }
                     """;
 
-            mockMvc.perform(post("/sample/notification/message/text")
+            mockMvc.perform(post("/sample/notification/channel/failover")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(payload))
                     .andExpect(status().isOk())
