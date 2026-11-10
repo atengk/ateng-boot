@@ -394,4 +394,218 @@ class DocumentSampleIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(false));
     }
+
+    // =========================================================================
+    // PDF 水印印章控制器 PdfWatermarkSealController (/sample/document/pdf/stamp/*) 端到端全真回归
+    // =========================================================================
+
+    @Test
+    @DisplayName("PDF 水印回归 1：暗水印在线预览 GET /sample/document/pdf/stamp/watermark/preview 验证 inline 标头与暗水印")
+    void testSamplePdfWatermarkPreviewEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/pdf/stamp/watermark/preview")
+                        .param("name", "周审计")
+                        .param("code", "AUD-888")
+                        .param("phone", "13800138000"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        assertThat(mvcResult.getResponse().getContentType()).contains(PdfWebUtil.PDF_CONTENT_TYPE);
+        String disposition = mvcResult.getResponse().getHeader(HttpHeaders.CONTENT_DISPOSITION);
+        assertThat(disposition).isNotNull();
+        assertThat(disposition).startsWith("inline");
+        assertThat(disposition).contains("filename*=");
+    }
+
+    @Test
+    @DisplayName("PDF 水印回归 2：暗水印附件下载 GET /sample/document/pdf/stamp/watermark/download 验证 attachment 标头")
+    void testSamplePdfWatermarkDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/pdf/stamp/watermark/download")
+                        .param("name", "李小四")
+                        .param("code", "FIN-001")
+                        .param("phone", "13912345678"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        String disposition = mvcResult.getResponse().getHeader(HttpHeaders.CONTENT_DISPOSITION);
+        assertThat(disposition).isNotNull();
+        assertThat(disposition).startsWith("attachment");
+        assertThat(disposition).contains("filename*=");
+    }
+
+    @Test
+    @DisplayName("PDF 印章回归 3：跨页骑缝章下载 GET /sample/document/pdf/stamp/cross-page-seal/download 验证切片压印")
+    void testSamplePdfCrossPageSealDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/pdf/stamp/cross-page-seal/download"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        try (PDDocument doc = Loader.loadPDF(contentBytes)) {
+            assertThat(doc.getNumberOfPages()).isGreaterThanOrEqualTo(2);
+        }
+    }
+
+    @Test
+    @DisplayName("PDF 印章回归 4：尾页绝对坐标盖章 GET /sample/document/pdf/stamp/absolute-seal/download 验证坐标压印")
+    void testSamplePdfAbsoluteSealDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/pdf/stamp/absolute-seal/download")
+                        .param("pageIndex", "-1"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        try (PDDocument doc = Loader.loadPDF(contentBytes)) {
+            assertThat(doc.getNumberOfPages()).isGreaterThanOrEqualTo(1);
+        }
+    }
+
+    @Test
+    @DisplayName("PDF 页码回归 5：重算页码下载 GET /sample/document/pdf/stamp/page-number/download 验证跳过封面页码")
+    void testSamplePdfPageNumberDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/pdf/stamp/page-number/download")
+                        .param("skipPages", "1"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        try (PDDocument doc = Loader.loadPDF(contentBytes)) {
+            assertThat(doc.getNumberOfPages()).isGreaterThanOrEqualTo(2);
+        }
+    }
+
+    // =========================================================================
+    // PDF 表单安全控制器 PdfFormSecurityController (/sample/document/pdf/*) 端到端全真回归
+    // =========================================================================
+
+    @Test
+    @DisplayName("PDF 表单回归 1：表单域元数据自省 GET /sample/document/pdf/form/fields 验证 Result<List<PdfFormFieldDescriptor>>")
+    void testSamplePdfFormFieldsEndpoint() throws Exception {
+        mockMvc.perform(get("/sample/document/pdf/form/fields"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data[*].name", Matchers.hasItem("supplierName")))
+                .andExpect(jsonPath("$.data[*].name", Matchers.hasItem("contactPhone")))
+                .andExpect(jsonPath("$.data[*].name", Matchers.hasItem("qualificationPassed")));
+    }
+
+    @Test
+    @DisplayName("PDF 表单回归 2：交互式表单下载 GET /sample/document/pdf/form/interactive/download 验证交互控件保留")
+    void testSamplePdfFormInteractiveDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/pdf/form/interactive/download")
+                        .param("supplierName", "未来智能网络科技(深圳)有限公司")
+                        .param("contactPhone", "0755-88889999"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        try (PDDocument doc = Loader.loadPDF(contentBytes)) {
+            PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
+            assertThat(acroForm).isNotNull();
+            assertThat(acroForm.getField("supplierName").getValueAsString()).isEqualTo("未来智能网络科技(深圳)有限公司");
+            assertThat(acroForm.getField("contactPhone").getValueAsString()).isEqualTo("0755-88889999");
+            assertThat(((PDCheckBox) acroForm.getField("qualificationPassed")).isChecked()).isTrue();
+        }
+    }
+
+    @Test
+    @DisplayName("PDF 表单回归 3：矢量扁平化固化下载 GET /sample/document/pdf/form/flattened/download 验证控件销毁")
+    void testSamplePdfFormFlattenedDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/pdf/form/flattened/download")
+                        .param("supplierName", "腾讯云计算(深圳)有限责任公司")
+                        .param("contactPhone", "0755-88889999"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        try (PDDocument doc = Loader.loadPDF(contentBytes)) {
+            PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
+            boolean isFieldsEmptyOrNull = (acroForm == null || acroForm.getFields().isEmpty());
+            assertThat(isFieldsEmptyOrNull).isTrue();
+        }
+    }
+
+    @Test
+    @DisplayName("PDF 表单回归 4：结构化 DTO 扁平化 POST /sample/document/pdf/form/fill 验证 JSR-303 与格式流")
+    void testSamplePdfFormFillPostEndpoint() throws Exception {
+        SupplierFormRequest request = SupplierFormRequest.builder()
+                .supplierName("腾讯云计算(北京)有限责任公司")
+                .contactPhone("010-88886666")
+                .qualificationPassed(true)
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/document/pdf/form/fill")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        String disposition = mvcResult.getResponse().getHeader(HttpHeaders.CONTENT_DISPOSITION);
+        assertThat(disposition).isNotNull();
+        assertThat(disposition).startsWith("attachment");
+        assertThat(java.net.URLDecoder.decode(disposition, java.nio.charset.StandardCharsets.UTF_8)).contains("腾讯云计算");
+
+        try (PDDocument doc = Loader.loadPDF(contentBytes)) {
+            PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
+            boolean isFieldsEmptyOrNull = (acroForm == null || acroForm.getFields().isEmpty());
+            assertThat(isFieldsEmptyOrNull).isTrue();
+        }
+    }
+
+    @Test
+    @DisplayName("PDF 安全回归 5：256 位 AES 权限锁加密下载 GET /sample/document/pdf/security/protect/download 验证权限锁")
+    void testSamplePdfSecurityProtectDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/pdf/security/protect/download")
+                        .param("userPassword", "TestPass#123")
+                        .param("ownerPassword", "OwnerPass#888"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+
+        // 验证无口令无法直接打开
+        org.junit.jupiter.api.Assertions.assertThrows(Exception.class, () -> {
+            try (PDDocument doc = Loader.loadPDF(contentBytes)) {
+                doc.getNumberOfPages();
+            }
+        });
+
+        // 验证使用正确用户密码可打开
+        try (PDDocument doc = Loader.loadPDF(contentBytes, "TestPass#123")) {
+            assertThat(doc.getNumberOfPages()).isGreaterThanOrEqualTo(2);
+            assertThat(doc.getCurrentAccessPermission().canExtractContent()).isFalse();
+        }
+    }
+
+    @Test
+    @DisplayName("PDF 安全回归 6：权限锁密码校验 GET /sample/document/pdf/security/verify 验证 Result<Boolean>")
+    void testSamplePdfSecurityVerifyEndpoint() throws Exception {
+        // 验证密码正确场景
+        mockMvc.perform(get("/sample/document/pdf/security/verify")
+                        .param("password", "Pass123456")
+                        .param("verifyPassword", "Pass123456"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 验证密码错误场景
+        mockMvc.perform(get("/sample/document/pdf/security/verify")
+                        .param("password", "Pass123456")
+                        .param("verifyPassword", "WrongPass"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(false));
+    }
 }

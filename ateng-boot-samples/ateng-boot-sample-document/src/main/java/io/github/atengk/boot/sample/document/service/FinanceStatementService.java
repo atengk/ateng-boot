@@ -4,6 +4,8 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.document.enums.PageNumberPosition;
 import io.github.atengk.boot.document.enums.WatermarkLayer;
 import io.github.atengk.boot.document.pdf.PdfTemplate;
+import io.github.atengk.boot.document.pdf.model.CrossPageSealOptions;
+import io.github.atengk.boot.document.pdf.model.ImageStampOptions;
 import io.github.atengk.boot.document.pdf.model.PageNumberOptions;
 import io.github.atengk.boot.document.pdf.model.SecurityOptions;
 import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
@@ -130,6 +132,87 @@ public class FinanceStatementService {
         byte[] watermarkedPdf = generateWatermarkedStatement(operatorName, "FIN-009", "13912345678");
         byte[] protectedPdf = protectStatement(watermarkedPdf, userPassword, ownerPassword);
         PdfWebUtil.download(response, "财务对账单_受控归档", protectedPdf);
+    }
+
+    /**
+     * Web 环境下附件下载带操作人防泄密暗水印的对账单
+     *
+     * @param response      HTTP 响应
+     * @param operatorName  操作人姓名
+     * @param operatorCode  工号
+     * @param operatorPhone 手机号
+     */
+    public void downloadStatementWeb(HttpServletResponse response, String operatorName, String operatorCode, String operatorPhone) {
+        byte[] pdfBytes = generateWatermarkedStatement(operatorName, operatorCode, operatorPhone);
+        PdfWebUtil.download(response, "财务对账单_水印附件", pdfBytes);
+    }
+
+    /**
+     * Web 环境下附件下载施加跨页骑缝章的对账单
+     *
+     * @param response HTTP 响应
+     */
+    public void downloadCrossPageSealStatementWeb(HttpServletResponse response) {
+        byte[] watermarkedPdf = generateWatermarkedStatement("审计组长", "AUD-001", "13800138000");
+        byte[] sealedPdf = stampCrossPageSeal(watermarkedPdf, "classpath:images/company-seal.png");
+        PdfWebUtil.download(response, "财务对账单_跨页骑缝章", sealedPdf);
+    }
+
+    /**
+     * Web 环境下附件下载在指定页面绝对物理坐标加盖电子公章的对账单
+     *
+     * @param response  HTTP 响应
+     * @param pageIndex 目标页码索引（-1 为倒数第一页即尾页）
+     */
+    public void downloadAbsoluteSealStatementWeb(HttpServletResponse response, int pageIndex) {
+        byte[] watermarkedPdf = generateWatermarkedStatement("财务总监", "FIN-000", "13800000000");
+        ImageStampOptions stampOptions = ImageStampOptions.of(
+                "classpath:images/company-seal.png",
+                pageIndex,
+                420.0f,
+                120.0f,
+                100.0f,
+                100.0f
+        );
+        byte[] stampedPdf = pdfTemplate.addImageStampToBytes(watermarkedPdf, stampOptions);
+        PdfWebUtil.download(response, "财务对账单_尾页盖章", stampedPdf);
+    }
+
+    /**
+     * Web 环境下附件下载施加重算页码（跳过封面）的对账单
+     *
+     * @param response  HTTP 响应
+     * @param skipPages 跳过的封面页数
+     */
+    public void downloadPageNumberStatementWeb(HttpServletResponse response, int skipPages) {
+        PageNumberOptions pageOptions = PageNumberOptions.builder()
+                .format("第 {page} 页 / 共 {total} 页")
+                .skipPages(Math.max(0, skipPages))
+                .recalculateTotal(true)
+                .position(PageNumberPosition.BOTTOM_CENTER)
+                .fontSize(10.0f)
+                .color("#666666")
+                .build();
+        byte[] pagedPdf = pdfTemplate.addPageNumbersToBytes(STATEMENT_TEMPLATE_PATH, pageOptions);
+        PdfWebUtil.download(response, "财务对账单_重算页码", pagedPdf);
+    }
+
+    /**
+     * 校验财务对账单 256 位 AES 权限锁口令与解密有效性
+     *
+     * @param password       设置的密码
+     * @param verifyPassword 待验证的密码
+     * @return 密码匹配解密成功返回 true，否则返回 false
+     */
+    public boolean verifyStatementPassword(String password, String verifyPassword) {
+        try {
+            byte[] watermarkedPdf = generateWatermarkedStatement("安全专员", "SEC-001", "13800138000");
+            byte[] protectedPdf = protectStatement(watermarkedPdf, password, "AdminOwnerPass#2026");
+            byte[] unprotected = pdfTemplate.unprotectToBytes(protectedPdf, verifyPassword);
+            return !pdfTemplate.isEncrypted(unprotected);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /**

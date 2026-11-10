@@ -67,4 +67,42 @@ public class SupplierFormService {
         String fileName = String.format("供应商准入登记表_%s", request.getSupplierName());
         PdfWebUtil.download(response, fileName, pdfBytes);
     }
+
+    /**
+     * Web 环境下流式导出保留交互式控件的供应商准入表
+     *
+     * @param response      HTTP 响应
+     * @param supplierName  供应商名称
+     * @param contactPhone 联系电话
+     */
+    public void downloadInteractiveSupplierFormWeb(HttpServletResponse response, String supplierName, String contactPhone) {
+        String name = (supplierName != null && !supplierName.trim().isEmpty()) ? supplierName.trim() : "未来智能网络科技(深圳)有限公司";
+        String phone = (contactPhone != null && !contactPhone.trim().isEmpty()) ? contactPhone.trim() : "0755-88889999";
+        SupplierFormRequest req = SupplierFormRequest.builder()
+                .supplierName(name)
+                .contactPhone(phone)
+                .qualificationPassed(true)
+                .build();
+        byte[] pdfBytes = fillSupplierForm(req, false);
+        String fileName = String.format("供应商准入登记表_交互式_%s", req.getSupplierName());
+        PdfWebUtil.download(response, fileName, pdfBytes);
+    }
+
+    /**
+     * Web 环境下流式导出已矢量扁平化固化防篡改的供应商准入表
+     *
+     * @param response      HTTP 响应
+     * @param supplierName  供应商名称
+     * @param contactPhone 联系电话
+     */
+    public void downloadFlattenedSupplierFormWeb(HttpServletResponse response, String supplierName, String contactPhone) {
+        String name = (supplierName != null && !supplierName.trim().isEmpty()) ? supplierName.trim() : "未来智能网络科技(深圳)有限公司";
+        String phone = (contactPhone != null && !contactPhone.trim().isEmpty()) ? contactPhone.trim() : "0755-88889999";
+        SupplierFormRequest req = SupplierFormRequest.builder()
+                .supplierName(name)
+                .contactPhone(phone)
+                .qualificationPassed(true)
+                .build();
+        downloadSupplierFormWeb(response, req);
+    }
 }
