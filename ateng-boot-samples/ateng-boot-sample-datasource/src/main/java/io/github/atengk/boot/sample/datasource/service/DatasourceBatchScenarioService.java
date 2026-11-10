@@ -1,10 +1,12 @@
 package io.github.atengk.boot.sample.datasource.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import io.github.atengk.boot.datasource.enums.BatchExecutionPolicy;
 import io.github.atengk.boot.datasource.template.BatchExecutionResult;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.sample.datasource.entity.OrderEntity;
 import io.github.atengk.boot.sample.datasource.mapper.OrderMapper;
+import io.github.atengk.boot.sample.datasource.vo.BatchInspectionResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -29,9 +31,72 @@ public class DatasourceBatchScenarioService {
     private final OrderMapper orderMapper;
 
     /**
+     * 全物理数据源容错批量巡检与订单统计
+     *
+     * @param policy 批处理容错策略
+     * @return 巡检结构化响应对象
+     */
+    public BatchInspectionResponse inspectAllDataSources(BatchExecutionPolicy policy) {
+        log.info("[BatchScenario] 开始全库巡检订单总数 (策略: {})", policy);
+        ConcurrentMap<String, Long> countMap = new ConcurrentHashMap<>();
+
+        BatchExecutionResult result = dynamicDatasourceTemplate.forEachDataSource(policy, dsKey -> {
+            Long count = orderMapper.selectCount(new LambdaQueryWrapper<OrderEntity>());
+            countMap.put(dsKey, count != null ? count : 0L);
+        });
+
+        return BatchInspectionResponse.builder()
+                .allSuccess(result.isAllSuccess())
+                .totalCount(result.getTotalCount())
+                .successCount(result.getSuccessCount())
+                .failureCount(result.getFailureCount())
+                .counts(countMap)
+                .failures(result.getFailures())
+                .build();
+    }
+
+    /**
+     * 全租户数据遍历巡检与订单统计
+     *
+     * @return 租户巡检结构化响应对象
+     */
+    public BatchInspectionResponse inspectAllTenants() {
+        log.info("[BatchScenario] 开始遍历所有租户库巡检订单总数");
+        ConcurrentMap<String, Long> countMap = new ConcurrentHashMap<>();
+
+        BatchExecutionResult result = dynamicDatasourceTemplate.forEachTenant((tenantId, dsKey) -> {
+            Long count = orderMapper.selectCount(new LambdaQueryWrapper<OrderEntity>());
+            countMap.put(tenantId, count != null ? count : 0L);
+        });
+
+        return BatchInspectionResponse.builder()
+                .allSuccess(result.isAllSuccess())
+                .totalCount(result.getTotalCount())
+                .successCount(result.getSuccessCount())
+                .failureCount(result.getFailureCount())
+                .counts(countMap)
+                .failures(result.getFailures())
+                .build();
+    }
+
+    /**
+     * 编程式连接池并发预热
+     *
+     * @param dsKey       目标物理数据源标识
+     * @param connections 预热物理连接数
+     * @return 实际建立并验证放回连接池的连接数
+     */
+    public int preWarmDataSource(String dsKey, int connections) {
+        int actual = dynamicDatasourceTemplate.preWarmDataSource(dsKey, connections);
+        log.info("[BatchScenario] 数据源 [{}] 成功预热 {} 个物理连接", dsKey, actual);
+        return actual;
+    }
+
+    /**
      * 批量遍历所有已注册数据源并统计订单总数
      *
-     * @return 批处理执行结果与统计映射
+     * @param countMap 统计映射
+     * @return 批处理执行结果
      */
     public BatchExecutionResult countOrdersPerDataSource(ConcurrentMap<String, Long> countMap) {
         log.info("[BatchScenario] 开始全库巡检订单总数");
@@ -45,7 +110,8 @@ public class DatasourceBatchScenarioService {
     /**
      * 批量遍历所有租户数据源并统计订单总数
      *
-     * @return 租户批处理执行结果与统计映射
+     * @param countMap 统计映射
+     * @return 租户批处理执行结果
      */
     public BatchExecutionResult countOrdersPerTenant(ConcurrentMap<String, Long> countMap) {
         log.info("[BatchScenario] 开始遍历所有租户库巡检订单总数");

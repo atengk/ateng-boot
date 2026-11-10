@@ -627,50 +627,27 @@ Long totalOrders = dynamicDatasourceTemplate.callInTenantDataSource("1001", () -
 ```java
 package io.github.atengk.boot.sample.datasource.controller;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.datasource.enums.BatchExecutionPolicy;
-import io.github.atengk.boot.datasource.template.BatchExecutionResult;
-import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
-import io.github.atengk.boot.sample.datasource.entity.OrderEntity;
-import io.github.atengk.boot.sample.datasource.mapper.OrderMapper;
+import io.github.atengk.boot.sample.datasource.service.DatasourceBatchScenarioService;
+import io.github.atengk.boot.sample.datasource.vo.BatchInspectionResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
 @RestController
 @RequestMapping("/sample/datasource/batch")
 @RequiredArgsConstructor
 public class DatasourceBatchController {
 
-    private final DynamicDatasourceTemplate dynamicDatasourceTemplate;
-    private final OrderMapper orderMapper;
+    private final DatasourceBatchScenarioService batchScenarioService;
 
     /**
      * 全物理数据源容错批量巡检与订单统计
      */
     @PostMapping("/inspect-all")
-    public Result<Map<String, Object>> inspectAllDataSources(@RequestParam(defaultValue = "FAIL_SAFE") String policy) {
-        BatchExecutionPolicy execPolicy = BatchExecutionPolicy.valueOf(policy.trim().toUpperCase());
-        ConcurrentMap<String, Long> countMap = new ConcurrentHashMap<>();
-
-        BatchExecutionResult result = dynamicDatasourceTemplate.forEachDataSource(execPolicy, dsKey -> {
-            Long count = orderMapper.selectCount(new LambdaQueryWrapper<OrderEntity>());
-            countMap.put(dsKey, count != null ? count : 0L);
-        });
-
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("allSuccess", result.isAllSuccess());
-        response.put("totalCount", result.getTotalCount());
-        response.put("successCount", result.getSuccessCount());
-        response.put("failureCount", result.getFailureCount());
-        response.put("counts", countMap);
-        response.put("failures", result.getFailures());
-
+    public Result<BatchInspectionResponse> inspectAllDataSources(
+            @RequestParam(defaultValue = "FAIL_SAFE") BatchExecutionPolicy policy) {
+        BatchInspectionResponse response = batchScenarioService.inspectAllDataSources(policy);
         return Result.success(response);
     }
 }
@@ -690,22 +667,8 @@ public class DatasourceBatchController {
  * 全租户数据遍历巡检与订单统计
  */
 @PostMapping("/inspect-tenants")
-public Result<Map<String, Object>> inspectAllTenants() {
-    ConcurrentMap<String, Long> countMap = new ConcurrentHashMap<>();
-
-    BatchExecutionResult result = dynamicDatasourceTemplate.forEachTenant((tenantId, dsKey) -> {
-        Long count = orderMapper.selectCount(new LambdaQueryWrapper<OrderEntity>());
-        countMap.put(tenantId, count != null ? count : 0L);
-    });
-
-    Map<String, Object> response = new LinkedHashMap<>();
-    response.put("allSuccess", result.isAllSuccess());
-    response.put("totalCount", result.getTotalCount());
-    response.put("successCount", result.getSuccessCount());
-    response.put("failureCount", result.getFailureCount());
-    response.put("tenantCounts", countMap);
-    response.put("failures", result.getFailures());
-
+public Result<BatchInspectionResponse> inspectAllTenants() {
+    BatchInspectionResponse response = batchScenarioService.inspectAllTenants();
     return Result.success(response);
 }
 ```
