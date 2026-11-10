@@ -29,13 +29,13 @@
 
 | 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- | :--- |
-| **主合同模板渲染下载** | `WordContractController` | `GET /sample/document/word/contract/download` | `curl -o contract.docx "http://localhost:8080/sample/document/word/contract/download?employeeName=李云龙"` |
+| **主合同模板渲染与附件拼装下载** | `WordContractController` | `GET /sample/document/word/contract/download` | `curl -o contract.docx "http://localhost:8080/sample/document/word/contract/download?employeeName=李云龙"` |
 | **空数据表格优雅折叠下载** | `WordContractController` | `GET /sample/document/word/contract/empty-table/download` | `curl -o empty_table.docx "http://localhost:8080/sample/document/word/contract/empty-table/download?employeeName=赵刚"` |
-| **保密协议附件无缝拼装下载** | `WordContractController` | `GET /sample/document/word/contract/attachment/download` | `curl -o contract_with_attachment.docx "http://localhost:8080/sample/document/word/contract/attachment/download?employeeName=魏大勇"` |
+| **结构化 DTO 填报渲染下载** | `WordContractController` | `POST /sample/document/word/contract/render` | `curl -X POST "http://localhost:8080/sample/document/word/contract/render" -H "Content-Type: application/json" -d "{\"employeeName\":\"楚云飞\",\"idCard\":\"110101199001011234\",\"department\":\"技术研发中心\",\"postName\":\"资深架构师\",\"salary\":\"35000\",\"withConfidentialityAgreement\":true,\"withSeal\":true}" -o custom_contract.docx` |
 | **模板 AST 变量占位符反查** | `WordContractController` | `GET /sample/document/word/contract/variables` | `curl -s "http://localhost:8080/sample/document/word/contract/variables"` |
-| **主合同正文纯文本抽取** | `WordContractController` | `GET /sample/document/word/contract/text` | `curl -s "http://localhost:8080/sample/document/word/contract/text"` |
-| **文档只读保护锁加密下载** | `WordContractController` | `GET /sample/document/word/contract/protect/download` | `curl -o protected_contract.docx "http://localhost:8080/sample/document/word/contract/protect/download?password=Pass123456"` |
-| **文档只读保护密码验证** | `WordContractController` | `GET /sample/document/word/contract/verify` | `curl -s "http://localhost:8080/sample/document/word/contract/verify?password=Pass123456&verifyPassword=Pass123456"` |
+| **主合同正文纯文本抽取** | `WordContractController` | `GET /sample/document/word/contract/extract-text` | `curl -s "http://localhost:8080/sample/document/word/contract/extract-text?employeeName=李云龙"` |
+| **文档只读保护锁加密下载** | `WordContractController` | `GET /sample/document/word/contract/protect/download` | `curl -o protected_contract.docx "http://localhost:8080/sample/document/word/contract/protect/download?employeeName=李云龙&password=Pass123456"` |
+| **文档只读保护密码验证** | `WordContractController` | `GET /sample/document/word/contract/protect/verify` | `curl -s "http://localhost:8080/sample/document/word/contract/protect/verify?password=Pass123456&verifyPassword=Pass123456"` |
 
 ### 3.2 PDF 安全暗水印与印章控制器 (`PdfWatermarkSealController`)
 

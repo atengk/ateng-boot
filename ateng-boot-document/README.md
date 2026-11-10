@@ -260,8 +260,8 @@ public Result<List<String>> listVariables() {
     return Result.success(contractService.listContractVariables());
 }
 
-@GetMapping("/contract/text")
-public Result<String> extractText(@RequestParam(defaultValue = "张三") String employeeName) {
+@GetMapping("/contract/extract-text")
+public Result<String> extractText(@RequestParam(defaultValue = "李云龙") String employeeName) {
     return Result.success(contractService.extractContractText(employeeName));
 }
 ```

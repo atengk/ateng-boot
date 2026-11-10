@@ -76,13 +76,7 @@ public class SupplierFormService {
      * @param contactPhone 联系电话
      */
     public void downloadInteractiveSupplierFormWeb(HttpServletResponse response, String supplierName, String contactPhone) {
-        String name = (supplierName != null && !supplierName.trim().isEmpty()) ? supplierName.trim() : "未来智能网络科技(深圳)有限公司";
-        String phone = (contactPhone != null && !contactPhone.trim().isEmpty()) ? contactPhone.trim() : "0755-88889999";
-        SupplierFormRequest req = SupplierFormRequest.builder()
-                .supplierName(name)
-                .contactPhone(phone)
-                .qualificationPassed(true)
-                .build();
+        SupplierFormRequest req = buildDefaultSupplierFormRequest(supplierName, contactPhone);
         byte[] pdfBytes = fillSupplierForm(req, false);
         String fileName = String.format("供应商准入登记表_交互式_%s", req.getSupplierName());
         PdfWebUtil.download(response, fileName, pdfBytes);
@@ -96,13 +90,24 @@ public class SupplierFormService {
      * @param contactPhone 联系电话
      */
     public void downloadFlattenedSupplierFormWeb(HttpServletResponse response, String supplierName, String contactPhone) {
+        SupplierFormRequest req = buildDefaultSupplierFormRequest(supplierName, contactPhone);
+        downloadSupplierFormWeb(response, req);
+    }
+
+    /**
+     * 构建具备默认备选值的供应商准入表单请求对象
+     *
+     * @param supplierName  供应商名称（空值兜底）
+     * @param contactPhone 联系电话（空值兜底）
+     * @return 供应商填报请求传输对象
+     */
+    private SupplierFormRequest buildDefaultSupplierFormRequest(String supplierName, String contactPhone) {
         String name = (supplierName != null && !supplierName.trim().isEmpty()) ? supplierName.trim() : "未来智能网络科技(深圳)有限公司";
         String phone = (contactPhone != null && !contactPhone.trim().isEmpty()) ? contactPhone.trim() : "0755-88889999";
-        SupplierFormRequest req = SupplierFormRequest.builder()
+        return SupplierFormRequest.builder()
                 .supplierName(name)
                 .contactPhone(phone)
                 .qualificationPassed(true)
                 .build();
-        downloadSupplierFormWeb(response, req);
     }
 }
