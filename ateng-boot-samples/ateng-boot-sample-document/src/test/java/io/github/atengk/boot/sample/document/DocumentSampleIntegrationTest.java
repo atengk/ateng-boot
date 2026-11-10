@@ -1,7 +1,9 @@
 package io.github.atengk.boot.sample.document;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.document.pdf.util.PdfWebUtil;
+import io.github.atengk.boot.document.word.WordTemplate;
 import io.github.atengk.boot.document.word.util.WordWebUtil;
 import io.github.atengk.boot.sample.document.model.ContractRenderRequest;
 import io.github.atengk.boot.sample.document.model.ProjectExperience;
@@ -17,6 +19,7 @@ import org.apache.pdfbox.pdmodel.interactive.form.PDCheckBox;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -26,6 +29,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -34,6 +38,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -48,6 +54,12 @@ class DocumentSampleIntegrationTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Autowired
+    private WordTemplate wordTemplate;
 
     @Autowired
     private ContractService contractService;
@@ -240,5 +252,146 @@ class DocumentSampleIntegrationTest {
         try (PDDocument doc = Loader.loadPDF(rotatedPdf)) {
             assertThat(doc.getPage(0).getRotation()).isEqualTo(90);
         }
+    }
+
+    // =========================================================================
+    // Word 领域控制器 WordContractController (/sample/document/word/*) 端到端全真回归
+    // =========================================================================
+
+    @Test
+    @DisplayName("Word 领域回归 1：主合同与附件拼装下载 GET /sample/document/word/contract/download 验证 RFC 6266 与格式")
+    void testSampleWordContractDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/word/contract/download")
+                        .param("employeeName", "楚云飞"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        assertThat(mvcResult.getResponse().getContentType()).contains(WordWebUtil.DOCX_CONTENT_TYPE);
+        String disposition = mvcResult.getResponse().getHeader(HttpHeaders.CONTENT_DISPOSITION);
+        assertThat(disposition).isNotNull();
+        assertThat(disposition).startsWith("attachment");
+        assertThat(disposition).contains("filename*=");
+        assertThat(disposition).contains(".docx");
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(contentBytes))) {
+            String fullText = doc.getParagraphs().stream()
+                    .map(XWPFParagraph::getText)
+                    .reduce("", (a, b) -> a + "\n" + b);
+            assertThat(fullText).contains("楚云飞");
+            assertThat(fullText).contains("商业秘密保护与竞业限制协议");
+        }
+    }
+
+    @Test
+    @DisplayName("Word 领域回归 2：动态表格空数据安全折叠 GET /sample/document/word/contract/empty-table/download 验证零残留")
+    void testSampleWordContractEmptyTableDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/word/contract/empty-table/download")
+                        .param("employeeName", "赵刚"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(contentBytes))) {
+            String fullText = doc.getParagraphs().stream()
+                    .map(XWPFParagraph::getText)
+                    .reduce("", (a, b) -> a + "\n" + b);
+            assertThat(fullText).contains("赵刚");
+        }
+    }
+
+    @Test
+    @DisplayName("Word 领域回归 3：结构化 DTO 渲染 POST /sample/document/word/contract/render 验证 JSR-303 与格式流")
+    void testSampleWordContractRenderPostEndpoint() throws Exception {
+        ContractRenderRequest request = ContractRenderRequest.builder()
+                .employeeName("魏大勇")
+                .idCard("110101198808081234")
+                .department("特勤突击大队")
+                .postName("特勤前线专家")
+                .salary("52,000")
+                .signDate("2026-11-10")
+                .items(List.of(
+                        new ProjectExperience("核心前线防务", "前沿突击组长", "6 个月")
+                ))
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/document/word/contract/render")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(contentBytes))) {
+            String fullText = doc.getParagraphs().stream()
+                    .map(XWPFParagraph::getText)
+                    .reduce("", (a, b) -> a + "\n" + b);
+            assertThat(fullText).contains("魏大勇");
+            assertThat(fullText).contains("特勤突击大队");
+        }
+    }
+
+    @Test
+    @DisplayName("Word 领域回归 4：模板 AST 变量反查 GET /sample/document/word/contract/variables 验证 Result<List<String>>")
+    void testSampleWordContractVariablesEndpoint() throws Exception {
+        mockMvc.perform(get("/sample/document/word/contract/variables"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data", Matchers.hasItem("employeeName")))
+                .andExpect(jsonPath("$.data", Matchers.hasItem("salary")))
+                .andExpect(jsonPath("$.data", Matchers.hasItem("seal")));
+    }
+
+    @Test
+    @DisplayName("Word 领域回归 5：正文纯文本抽取 GET /sample/document/word/contract/extract-text 验证 Result<String>")
+    void testSampleWordContractExtractTextEndpoint() throws Exception {
+        mockMvc.perform(get("/sample/document/word/contract/extract-text")
+                        .param("employeeName", "李云龙"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", Matchers.containsString("李云龙")))
+                .andExpect(jsonPath("$.data", Matchers.containsString("企业全日制劳动聘用合同书")));
+    }
+
+    @Test
+    @DisplayName("Word 领域回归 6：只读密码保护下载 GET /sample/document/word/contract/protect/download 验证密码锁生效")
+    void testSampleWordContractProtectDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/word/contract/protect/download")
+                        .param("employeeName", "李云龙")
+                        .param("password", "SecretPass#2026"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        // 验证只读锁定已生效
+        assertThat(wordTemplate.isEnforcedReadonlyProtection(contentBytes)).isTrue();
+        // 验证口令匹配
+        assertThat(wordTemplate.validateProtectionPassword(contentBytes, "SecretPass#2026")).isTrue();
+        assertThat(wordTemplate.validateProtectionPassword(contentBytes, "WrongPass")).isFalse();
+    }
+
+    @Test
+    @DisplayName("Word 领域回归 7：只读密码校验 GET /sample/document/word/contract/protect/verify 验证 Result<Boolean>")
+    void testSampleWordContractProtectVerifyEndpoint() throws Exception {
+        // 验证密码正确场景
+        mockMvc.perform(get("/sample/document/word/contract/protect/verify")
+                        .param("password", "MyPassword#2026")
+                        .param("verifyPassword", "MyPassword#2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 验证密码错误场景
+        mockMvc.perform(get("/sample/document/word/contract/protect/verify")
+                        .param("password", "MyPassword#2026")
+                        .param("verifyPassword", "BadPassword"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(false));
     }
 }

@@ -8,16 +8,18 @@ spring:
 ateng:
   boot:
     document:
+      enabled: true
+      in-memory-threshold: 10MB
+      temp-dir: ""
       word:
-        auto-detect-fields: true
+        template-base-dir: "classpath:/templates/"
       pdf:
         font-path: classpath:fonts/sample-cjk.ttf
-        in-memory-threshold: 10MB
-        watermark:
-          default-text: "内部绝密 严禁外传"
-          opacity: 0.25
-          rotation: -35.0
-          font-size: 22.0
-          color: "#CC0000"
-          row-spacing: 120.0
-          col-spacing: 180.0
+      watermark:
+        default-text: "内部绝密 严禁外传"
+        opacity: 0.25
+        rotation: -35.0
+        font-size: 22.0
+        color: "#CC0000"
+        row-spacing: 120.0
+        col-spacing: 180.0
