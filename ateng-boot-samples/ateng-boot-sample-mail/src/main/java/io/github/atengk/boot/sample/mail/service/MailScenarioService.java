@@ -4,11 +4,15 @@ import io.github.atengk.boot.mail.event.MailAccountEvictEvent;
 import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
+import io.github.atengk.boot.mail.model.MailInlineResource;
 import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailPriority;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.template.MailTemplate;
-import io.github.atengk.boot.sample.mail.dto.SendMailRequest;
+import io.github.atengk.boot.sample.mail.dto.DynamicAccountMailRequest;
+import io.github.atengk.boot.sample.mail.dto.SalarySlipBatchRequest;
+import io.github.atengk.boot.sample.mail.dto.SalarySlipItemRequest;
+import io.github.atengk.boot.sample.mail.dto.SystemAlertMailRequest;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,6 +20,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -153,20 +158,6 @@ public class MailScenarioService {
     }
 
     /**
-     * 指定发信请求模型发送邮件（结构化入参收敛，杜绝长参数数据泥团）
-     *
-     * @param request 发信请求参数
-     * @return 发信结果
-     */
-    public MailSendResult sendByAccount(SendMailRequest request) {
-        if (request == null) {
-            throw new IllegalArgumentException("SendMailRequest must not be null");
-        }
-        return sendByAccount(request.getAccount(), request.getTo(), request.getSubject(),
-                request.getContent(), request.getFrom(), request.getFromName());
-    }
-
-    /**
      * 指定发信账号并支持动态覆盖发件人别名发送邮件（演示外部介质懒加载与双轨防张冠李戴）
      *
      * @param accountName 账号逻辑名称
@@ -289,5 +280,96 @@ public class MailScenarioService {
             message.bcc(archiveBcc);
         }
         return mailTemplate.send(message);
+    }
+
+    /**
+     * 发送富文本 HTML 邮件
+     *
+     * @param to      收件人
+     * @param subject 主题
+     * @param html    HTML 内容
+     * @return 发信结果
+     */
+    public MailSendResult sendHtmlContent(String to, String subject, String html) {
+        log.info("Sending html content email to [{}]", to);
+        return mailTemplate.sendHtml(to, subject, html);
+    }
+
+    /**
+     * 发送包含正交内联资源 (Inline CID) 的图文混排邮件
+     *
+     * @param to      收件人
+     * @param subject 主题
+     * @param title   展示标题
+     * @return 发信结果
+     */
+    public MailSendResult sendWithInline(String to, String subject, String title) {
+        log.info("Sending inline media email to [{}]", to);
+        String safeTitle = title != null && !title.isBlank() ? title : "企业通知";
+        String html = "<html><body><h2>" + safeTitle + "</h2><p>品牌标识混排：</p><img src='cid:companyLogo'/></body></html>";
+        // 构造标准 1x1 透明 PNG 字节流
+        byte[] logoBytes = new byte[]{
+                (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+                0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+                0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, (byte) 0xC4, (byte) 0x89
+        };
+        MailMessage message = new MailMessage()
+                .to(to)
+                .subject(subject)
+                .html(html)
+                .inline(MailInlineResource.of("companyLogo", logoBytes, "image/png"));
+        return mailTemplate.send(message);
+    }
+
+    /**
+     * 批量个性化发送员工工资条通知
+     *
+     * @param request 批量工资条请求
+     * @return 批量聚合发信回执
+     */
+    public BatchMailSendResult sendSalaryBatch(SalarySlipBatchRequest request) {
+        List<MailMessage> messages = new ArrayList<>();
+        if (request != null && request.getItems() != null) {
+            for (SalarySlipItemRequest item : request.getItems()) {
+                messages.add(new MailMessage()
+                        .to(item.getEmail())
+                        .subject(item.getSalaryPeriod() + " 工资明细 - " + item.getEmployeeName())
+                        .text("尊敬的 " + item.getEmployeeName() + "，您在 " + item.getSalaryPeriod()
+                                + " 的实发工资为：" + item.getNetSalary() + " 元。请查收并妥善保管。"));
+            }
+        }
+        return sendBatchPersonalized(messages);
+    }
+
+    /**
+     * 指定外部介质动态发信账号发信
+     *
+     * @param request 动态发信请求
+     * @return 发信结果
+     */
+    public MailSendResult sendByDynamicAccount(DynamicAccountMailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("DynamicAccountMailRequest must not be null");
+        }
+        return sendByAccount(request.getAccount(), request.getTo(), request.getSubject(),
+                request.getContent(), request.getFrom(), request.getFromName());
+    }
+
+    /**
+     * 发送紧急线上高优先级告警邮件
+     *
+     * @param request 告警请求
+     * @return 发信结果
+     */
+    public MailSendResult sendUrgentAlert(SystemAlertMailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("SystemAlertMailRequest must not be null");
+        }
+        String subject = "[" + request.getAlertLevel() + "] " + request.getServiceName() + " 服务异常告警";
+        String content = "服务: " + request.getServiceName() + "\n级别: " + request.getAlertLevel()
+                + "\n异常描述: " + request.getErrorMessage() + "\n请立即处置！";
+        return sendUrgentAlert(request.getTo(), subject, content,
+                MailPriority.HIGH, request.isRequestReadReceipt(), request.getArchiveBcc());
     }
 }

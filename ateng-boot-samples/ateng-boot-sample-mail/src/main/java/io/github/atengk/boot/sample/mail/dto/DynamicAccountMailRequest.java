@@ -10,16 +10,16 @@ import lombok.NoArgsConstructor;
 import java.io.Serializable;
 
 /**
- * 场景邮件发送请求传输对象
+ * 外部介质动态账号供给发信请求数据传输对象
  *
  * @author Ateng
- * @since 2026-10-22
+ * @since 2026-11-10
  */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class SendMailRequest implements Serializable {
+public class DynamicAccountMailRequest implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
@@ -37,25 +37,16 @@ public class SendMailRequest implements Serializable {
     private String subject;
 
     /**
-     * 邮件文本内容
+     * 邮件正文
      */
-    @NotBlank(message = "邮件内容不能为空")
+    @NotBlank(message = "邮件正文不能为空")
     private String content;
 
     /**
-     * 路由账号名称 (为空时默认采用 default 通道)
+     * 路由账号名称（外部数据库/配置中心存储的逻辑账号标识）
      */
+    @NotBlank(message = "发信账号标识不能为空")
     private String account;
-
-    /**
-     * 业务操作用户 (用于模板渲染与上下文演示)
-     */
-    private String username;
-
-    /**
-     * 业务验证码 (用于模板邮件渲染)
-     */
-    private String verifyCode;
 
     /**
      * 动态覆盖发件人电子邮箱（可选，为空时采用账号默认发件人）

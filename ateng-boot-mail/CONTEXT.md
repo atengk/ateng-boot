@@ -68,6 +68,14 @@ _Avoid_: MailFilter, SendInterceptor, EmailInterceptor
 批量个性化发信执行聚合回执领域模型，结构化记录批次总数、成功数、失败数、总执行耗时及单封邮件投递明细（`MailSendResultItem`）。
 _Avoid_: BatchSendResult, MultiMailResponse, SendBatchResult
 
+**MailSendResultItem**:
+批量邮件合并投递单项回执模型，封装单个收件人投递的 Message-ID、收件地址、发送耗时、成功状态与失败因果异常，支撑 Fail-Safe 容错聚合。
+_Avoid_: BatchItem, MailItemResult, SendResultItem
+
+**DynamicMailSession**:
+动态临时账号发信会话门面，由 `MailTemplate.forDynamicAccount` 派生，为指定运行时发件账号提供流畅的发信 DSL、受管异步与批量合并支持。
+_Avoid_: MailSession, AccountSession, MailClientSession
+
 **MailPriority**:
 强类型邮件重要性与优先级枚举，统一抽象标准 RFC 3798 / RFC 2156 邮件标头规范（映射 `X-Priority` 与 `Importance`）。
 _Avoid_: EmailPriority, PriorityLevel, MessagePriority

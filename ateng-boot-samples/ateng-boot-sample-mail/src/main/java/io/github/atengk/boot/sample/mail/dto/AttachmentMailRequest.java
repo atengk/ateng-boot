@@ -10,16 +10,16 @@ import lombok.NoArgsConstructor;
 import java.io.Serializable;
 
 /**
- * 批量邮件合并单项请求数据传输对象
+ * 流式大附件邮件发送请求数据传输对象
  *
  * @author Ateng
- * @since 2026-10-30
+ * @since 2026-11-10
  */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class BatchMailItemRequest implements Serializable {
+public class AttachmentMailRequest implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
@@ -37,8 +37,13 @@ public class BatchMailItemRequest implements Serializable {
     private String subject;
 
     /**
-     * 邮件正文
+     * 邮件文本内容
      */
-    @NotBlank(message = "邮件正文不能为空")
+    @NotBlank(message = "邮件内容不能为空")
     private String content;
+
+    /**
+     * 附件文件名（如：月度电子账单.pdf）
+     */
+    private String fileName;
 }
