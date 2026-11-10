@@ -18,7 +18,7 @@
 | **安全防御** | 静态资源白名单放行 | `OpenApiGuardFilter` | `guard.mode` | `isStaticResource(path)`: 对 CSS, JS, WebJars, 图标等静态资源免密放行，防御样式死锁 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
 | **契约模型保真** | IBaseEnum 强类型枚举映射 | `OpenApiModelConverter` | 无需配置，自动探测 | `resolve(...)`: 映射真实 Integer/String 强类型 Schema，注入 `enum` 取值、Markdown 字典与示例 | [OpenApiModelConverterTest](./src/test/java/io/github/atengk/boot/openapi/converter/OpenApiModelConverterTest.java) |
 | **契约模型保真** | ValidList 批量数组保真 | `OpenApiModelConverter` | 无需配置，自动探测 | `resolve(...)`: 拦截泛型 `ValidList<E>` 并精确转换为原生 `ArraySchema` `[ { item } ]` | [OpenApiModelConverterTest](./src/test/java/io/github/atengk/boot/openapi/converter/OpenApiModelConverterTest.java) |
-| **契约模型保真** | @Sensitive 脱敏警示 | `OpenApiModelConverter` | 无需配置，自动探测 | `resolve(...)`: 为脱敏字段注入 `[脱敏字段: xxx掩码]` 警示前缀与标准示例掩码值 | [OpenApiModelConverterTest](./src/test/java/io/github/atengk/boot/openapi/converter/OpenApiModelConverterTest.java) |
+| **契约模型保真** | @FieldSensitive 脱敏警示 | `OpenApiModelConverter` | 无需配置，自动探测 | `resolve(...)`: 为脱敏字段注入 `[脱敏字段: xxx掩码]` 警示前缀与标准示例掩码值 | [OpenApiModelConverterTest](./src/test/java/io/github/atengk/boot/openapi/converter/OpenApiModelConverterTest.java) |
 | **标头透传** | 全链路追踪头自动注入 | `GlobalHeaderCustomizer` | `headers.trace-id` (默认 `true`) | `customize(Operation, HandlerMethod)`: 自动向每个接口 Operation 注入请求头 `X-Trace-Id` | [GlobalHeaderCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/GlobalHeaderCustomizerTest.java) |
 | **标头透传** | 多租户标识头自动注入 | `GlobalHeaderCustomizer` | `headers.tenant-id` (默认 `true`) | `customize(Operation, HandlerMethod)`: 自动向每个接口 Operation 注入请求头 `X-Tenant-Id` | [GlobalHeaderCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/GlobalHeaderCustomizerTest.java) |
 | **标头透传** | 自定义全局请求头配置注入 | `GlobalHeaderCustomizer` | `headers.custom` (列表) | `customize(Operation, HandlerMethod)`: 声明式注入自定义 Header（名称、描述、必填项与示例） | [GlobalHeaderCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/GlobalHeaderCustomizerTest.java) |
@@ -68,22 +68,28 @@ ateng:
 ### 1.3 Controller 极简实战编码（显式强契约 Result<T>）
 
 ```java
-@Tag(name = "用户管理", description = "面向后台系统的用户治理接口")
+@Tag(name = "运营管理端 - 用户治理", description = "面向后台管理系统管理员的用户创建、明细查询与列表治理接口")
 @RestController
 @RequestMapping("/sample/openapi/admin/users")
 public class AdminUserController {
 
-    @Operation(summary = "创建系统用户")
+    /**
+     * 创建系统用户
+     *
+     * @param request 创建参数
+     * @return 统一响应包装的新建用户视图
+     */
+    @Operation(summary = "创建系统用户", description = "校验账号格式与邮箱唯一性，成功后初始化并返回用户明细")
     @PostMapping
     public Result<AdminUserVO> createUser(@Valid @RequestBody AdminUserCreateRequest request) {
-        AdminUserVO vo = AdminUserVO.of(
+        AdminUserVO user = AdminUserVO.of(
                 10001L,
                 request.getUsername(),
                 request.getRealName(),
                 request.getEmail(),
                 "13800138000"
         );
-        return Result.success(vo);
+        return Result.success(user);
     }
 }
 ```
@@ -127,7 +133,7 @@ flowchart TD
 
     subgraph AstPipeline["第二道防线：SpringDoc AST 契约构建与增强管线"]
         direction TB
-        CONV_MODEL["OpenApiModelConverter (ModelConverter)<br/>1. IBaseEnum 强类型 Schema & Markdown 字典映射<br/>2. ValidList 原生 Array 数组契约保真<br/>3. @Sensitive 数据脱敏掩码安全标签注入"]
+        CONV_MODEL["OpenApiModelConverter (ModelConverter)<br/>1. IBaseEnum 强类型 Schema & Markdown 字典映射<br/>2. ValidList 原生 Array 数组契约保真<br/>3. @FieldSensitive 数据脱敏掩码安全标签注入"]
         
         CUSTOM_HEADER["GlobalHeaderCustomizer (OperationCustomizer)<br/>1. Trace-Id & Tenant-Id 自动透传<br/>2. headers.custom 动态配置注入<br/>3. @IgnoreGlobalHeaders 声明式精细化豁免"]
         
@@ -249,13 +255,16 @@ ateng:
 
 #### 2. 实战 Java 示例代码
 ```java
-@Operation(summary = "批量创建系统用户", description = "演示 ValidList<E> 原生 JSON 数组契约保真")
+/**
+ * 批量创建系统用户（演示 ValidList 原生 Array 契约）
+ *
+ * @param requestList 批量创建参数列表
+ * @return 创建条数
+ */
+@Operation(summary = "批量创建系统用户", description = "批量校验入参并初始化多个系统用户，支持 ValidList 原生 JSON 数组契约")
 @PostMapping("/batch")
-public Result<List<AdminUserVO>> batchCreateUsers(@Valid @RequestBody ValidList<AdminUserCreateRequest> requestList) {
-    List<AdminUserVO> users = requestList.stream()
-            .map(req -> AdminUserVO.of(10001L, req.getUsername(), req.getRealName(), req.getEmail(), "13800138000"))
-            .toList();
-    return Result.success(users);
+public Result<Integer> batchCreateUsers(@Valid @RequestBody ValidList<AdminUserCreateRequest> requestList) {
+    return Result.success(requestList != null ? requestList.size() : 0);
 }
 ```
 
@@ -338,7 +347,31 @@ ateng:
             example: "1.2.0"
 ```
 
-#### 2. 核心机制与预期契约输出
+#### 2. 实战 Java 示例代码
+业务 Controller 无需任何 `@Parameter(in = ParameterIn.HEADER, ...)` 样板代码，普通端点即可自动挂载配置的全部全局请求头：
+
+```java
+@Tag(name = "运营管理端 - 用户治理", description = "面向后台管理系统管理员的用户创建、明细查询与列表治理接口")
+@RestController
+@RequestMapping("/sample/openapi/admin/users")
+public class AdminUserController {
+
+    /**
+     * 查询用户列表（自动透传 X-Trace-Id, X-Tenant-Id 与自定义 X-App-Version）
+     */
+    @Operation(summary = "查询系统用户全量列表", description = "检索全量受管用户简要信息")
+    @GetMapping
+    public Result<List<AdminUserVO>> listUsers() {
+        List<AdminUserVO> list = List.of(
+                AdminUserVO.of(10001L, "admin_dev", "系统管理员"),
+                AdminUserVO.of(10002L, "operator", "普通运营人员", "operator@example.com", "13900139000")
+        );
+        return Result.success(list);
+    }
+}
+```
+
+#### 3. 核心机制与预期契约输出
 - **底层机制**：实现 SpringDoc `OperationCustomizer`，在 AST 节点遍历所有接口的 Operation 参数列表，若不存在指定 Header 则动态追加 `Parameter.in("header")`。
 - **生成的 OpenAPI JSON 契约片段**：
   ```json
@@ -413,9 +446,40 @@ public class AdminAuthController {
 }
 ```
 
-#### 3. 核心机制说明
-- **精准豁免**：声明 `@IgnoreGlobalHeaders({"X-Tenant-Id"})` 时，`GlobalHeaderCustomizer` 在注入请求头前比对白名单，精准跳过指定名称的请求头，其余全局头（如 `X-Trace-Id`）正常保留；
+#### 3. 核心机制与预期契约输出
+- **精准豁免**：声明 `@IgnoreGlobalHeaders({"X-Tenant-Id"})` 时，`GlobalHeaderCustomizer` 在注入请求头前比对白名单，精准跳过指定名称的请求头，其余全局头（如 `X-Trace-Id` 与自定义头）正常保留；
 - **全量豁免**：声明无参 `@IgnoreGlobalHeaders` 时，当前类或方法下所有接口直接跳过所有全局请求头注入逻辑。
+- **生成的 OpenAPI JSON 契约片段对比**：
+  ```json
+  // 1. /sample/openapi/admin/auth/login (精准豁免 X-Tenant-Id，保留 X-Trace-Id 与自定义头)
+  "paths": {
+    "/sample/openapi/admin/auth/login": {
+      "post": {
+        "summary": "管理员登录认证",
+        "parameters": [
+          {
+            "name": "X-Trace-Id",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "X-App-Version",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" }
+          }
+        ]
+      }
+    },
+    // 2. /sample/openapi/admin/auth/ping (全量豁免所有全局请求头，无 parameters 字段)
+    "/sample/openapi/admin/auth/ping": {
+      "get": {
+        "summary": "公开系统心跳探针"
+      }
+    }
+  }
+  ```
 
 ---
 
@@ -445,13 +509,52 @@ ateng:
             - "io.github.atengk.boot.sample.openapi.controller.app"
 ```
 
-#### 2. 核心机制说明
+#### 2. 实战 Java 示例代码
+业务按架构层次归属不同的包路径与路由前缀，无需手动编写繁琐的 `GroupedOpenApi` `@Bean` 声明：
+
+```java
+// 1. 运营管理端控制器（包路径：io.github.atengk.boot.sample.openapi.controller.admin，路由前缀：/sample/openapi/admin/**）
+@Tag(name = "运营管理端 - 用户治理", description = "面向后台管理系统管理员的用户创建、明细查询与列表治理接口")
+@RestController
+@RequestMapping("/sample/openapi/admin/users")
+public class AdminUserController {
+    // 管理端接口实现...
+}
+
+// 2. 移动端文章控制器（包路径：io.github.atengk.boot.sample.openapi.controller.app，路由前缀：/sample/openapi/app/**）
+@Tag(name = "移动端 - 文章资讯", description = "面向移动终端与小程序端的信息流推荐、分类阅读与文章详情接口")
+@RestController
+@RequestMapping("/sample/openapi/app/articles")
+public class AppArticleController {
+    // 移动端接口实现...
+}
+```
+
+#### 3. 核心机制与预期契约输出
 - **动态 Bean 注册**：在 Spring 容器启动早期，依据 `ateng.boot.openapi.groups` 列表逐项构造 `GroupedOpenApi` 的 `BeanDefinition` 并动态注入，支持设置展示名称、匹配路径通配符与包扫描路径；
 - **兜底全量分组**：若 YAML 中未配置任何 `groups` 列表，自动注册名为 `default` 的全量分组，扫描全路径 `/**`。
-- **分组元数据入口**：
-  - 全量接口元数据：`GET /v3/api-docs`
-  - 管理端业务分组元数据：`GET /v3/api-docs/admin`
-  - 移动端业务分组元数据：`GET /v3/api-docs/app`
+- **分组元数据路由与契约隔离输出**：
+  - 管理端专属元数据：`GET /v3/api-docs/admin`（仅包含 admin 路由，排斥 app 路由）：
+    ```json
+    {
+      "openapi": "3.0.1",
+      "info": { "title": "ateng-boot OpenAPI 生产级契约沙箱" },
+      "paths": {
+        "/sample/openapi/admin/users": { ... },
+        "/sample/openapi/admin/auth/login": { ... }
+      }
+    }
+    ```
+  - 移动端专属元数据：`GET /v3/api-docs/app`（仅包含 app 路由，排斥 admin 路由）：
+    ```json
+    {
+      "openapi": "3.0.1",
+      "info": { "title": "ateng-boot OpenAPI 生产级契约沙箱" },
+      "paths": {
+        "/sample/openapi/app/articles": { ... }
+      }
+    }
+    ```
 
 ---
 
@@ -469,9 +572,17 @@ ateng:
       enabled: false # 生产环境一键切断
 ```
 
-#### 2. 核心机制说明
+#### 2. 核心机制与预期契约输出
 - **物理卸载**：所有 OpenAPI 契约构建 Bean、Swagger UI 自动配置与重定向路由均被 `@ConditionalOnProperty` 拦截而不会实例化；
 - **最高优先级前沿切断**：`OpenApiGuardFilter` 注册在 Servlet 过滤链前沿，拦截任何匹配 `/swagger-ui/**`、`/docs`、`/doc`、`/v3/api-docs/**` 与 `/docs/export/**` 的请求，直接响应 HTTP 404 Not Found，杜绝渗透扫描与任何契约元数据泄漏。
+- **物理切断 HTTP 响应报文**：
+  ```http
+  GET /v3/api-docs HTTP/1.1
+  Host: api.example.com
+
+  HTTP/1.1 404 Not Found
+  Content-Length: 0
+  ```
 
 ---
 
@@ -593,8 +704,17 @@ public class SampleResultCodeProvider implements ResultCodeProvider {
 }
 ```
 
-#### 3. 核心机制说明
-- `ResultCodeDictionaryCustomizer` 收集容器中所有 `ResultCodeProvider` Bean，按照 `getOrder()` 升序排序，逐个生成 Markdown 格式的状态码表格，自动追加至全局 `OpenAPI.info.description` 尾部，使接口消费方在文档首页即可纵览全系统状态码。
+#### 3. 核心机制与预期契约输出
+- **底层机制**：`ResultCodeDictionaryCustomizer` 收集容器中所有 `ResultCodeProvider` Bean，按照 `getOrder()` 升序排序，逐个生成 Markdown 格式的状态码表格，自动追加至全局 `OpenAPI.info.description` 尾部，使接口消费方在文档首页即可纵览全系统状态码。
+- **注入到 `info.description` 的 Markdown 字典输出片段**：
+  ```markdown
+  ### 样例工程自定义业务状态码字典 (Sample Result Codes)
+
+  | 业务状态码 (Code) | 提示信息 (Message) | 触发场景 / 业务语义说明 |
+  | :--- | :--- | :--- |
+  | `8001` | 文章正在审核中 | 敏感词拦截或新发布内容进入人工审核队列 |
+  | `8002` | 用户账号已被风控锁定 | 密码输错超限或异常地理位置登录触发风控冻结 |
+  ```
 
 ---
 
@@ -610,9 +730,44 @@ ateng:
       standard-responses: true # 默认 true
 ```
 
-#### 2. 核心机制说明
-- 若接口未显式声明 200，自动追加 `HTTP 200: 操作成功`；
-- 自动为所有接口追加 `HTTP 400: 参数校验失败 (Bad Request)`、`HTTP 401: 未认证或认证已过期 (Unauthorized)` 与 `HTTP 500: 服务器内部错误 (Internal Server Error)`，统一全系统契约规范。
+#### 2. 实战 Java 示例代码
+业务控制器方法无需重复罗列通用的 400/401/500 等 `@ApiResponse` 注解，由框架自动统一补全：
+
+```java
+@Operation(summary = "查询用户详情", description = "根据用户主键 ID 检索基础信息与状态")
+@GetMapping("/{id}")
+public Result<AdminUserVO> getUserById(@Parameter(description = "用户唯一 ID", example = "10001") @PathVariable("id") Long id) {
+    AdminUserVO user = AdminUserVO.of(id, "admin_dev", "系统管理员");
+    return Result.success(user);
+}
+```
+
+#### 3. 核心机制与预期契约输出
+- **底层机制**：若接口未显式声明 200，自动追加 `HTTP 200: 操作成功`；自动为所有接口追加 `HTTP 400: 参数校验失败 (Bad Request)`、`HTTP 401: 未认证或认证已过期 (Unauthorized)` 与 `HTTP 500: 服务器内部错误 (Internal Server Error)`，统一全系统契约规范；
+- **生成的 Operation responses JSON 契约片段**：
+  ```json
+  "responses": {
+    "200": {
+      "description": "操作成功",
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ResultAdminUserVO"
+          }
+        }
+      }
+    },
+    "400": {
+      "description": "参数校验失败 (Bad Request)"
+    },
+    "401": {
+      "description": "未认证或认证已过期 (Unauthorized)"
+    },
+    "500": {
+      "description": "服务器内部错误 (Internal Server Error)"
+    }
+  }
+  ```
 
 ---
 
@@ -661,6 +816,30 @@ ateng:
 | `GET /docs/export/yaml` | YAML | 默认全量 | `openapi-default.yaml` |
 | `GET /docs/export/{group}.json` | JSON | 指定业务域 (`admin` / `app`) | `openapi-{group}.json` |
 | `GET /docs/export/{group}.yaml` | YAML | 指定业务域 (`admin` / `app`) | `openapi-{group}.yaml` |
+
+#### 3. 核心机制与预期下载输出
+- **底层机制**：`OpenApiExportController` 拦截下载端点，调用 `OpenApiExportHelper` 实时序列化指定分组的 OpenAPI AST，注入 `Content-Disposition: attachment; filename="..."` 响应头，直接触发浏览器或自动化客户端将内容作为文件下载；
+- **导出会话 HTTP 响应报文与附件标头**：
+  ```http
+  GET /docs/export/admin.json HTTP/1.1
+  Host: localhost:8080
+
+  HTTP/1.1 200 OK
+  Content-Type: application/json
+  Content-Disposition: attachment; filename="openapi-admin.json"
+
+  {
+    "openapi": "3.0.1",
+    "info": {
+      "title": "ateng-boot OpenAPI 生产级契约沙箱",
+      "version": "1.0.0"
+    },
+    "paths": {
+      "/sample/openapi/admin/users": { ... },
+      "/sample/openapi/admin/auth/login": { ... }
+    }
+  }
+  ```
 
 > **安全管辖说明**：所有离线导出端点均受到 `OpenApiGuardFilter` 生产安全防火墙管辖；若开启 Basic / Token 认证，下载接口同样必须通过认证挑战后方可放行。
 
