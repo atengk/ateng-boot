@@ -172,6 +172,38 @@ flowchart TD
     FacadeLayer --> OfficialSdk
 ```
 
+### 2.1 统一下单调起与异步 Webhook 防重时序流转
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as 用户 / 终端设备
+    participant Biz as 业务服务 (Controller / Service)
+    participant Core as ateng-boot-pay (PayTemplate)
+    participant Channel as 微信支付 / 支付宝开放网关
+    participant SPI as 业务回调监听器 (PayCallbackListener)
+
+    Note over User, Channel: 阶段一：统一下单调起与扁平直达凭据流转
+    User->>Biz: 1. 发起支付请求 (POST /sample/pay/checkout/*)
+    Biz->>Core: 2. payTemplate.pay(UnifiedPayRequest)
+    Core->>Channel: 3. RSA/SHA256 签名调用渠道原生收单 API
+    Channel-->>Core: 4. 返回渠道原生响应 (code_url / trade_no / prepay_id)
+    Core-->>Biz: 5. 封装扁平统一凭据 PayResponse
+    Biz-->>User: 6. 返回 Result.success(PayResponse) (前端直取 qrCode 渲染或拉起支付)
+
+    Note over Channel, SPI: 阶段二：异步 Webhook 通知、防重排队与事件驱动
+    Channel->>Core: 7. POST /ateng-pay/callback/{channel}/{merchantId} (异步 Webhook)
+    Core->>Core: 8. 提取请求头验签要素，执行公钥/证书验签与密文解密
+    Core->>Core: 9. PayLockManager 原子加排队锁 (Redis 分布式锁 / 内存锁保底)
+    Core->>SPI: 10. onPaymentSuccess(PayOrderCallbackResult) 派发强类型事件
+    SPI->>SPI: 11. 业务订单状态防重更新、加锁发货与入库
+    SPI-->>Core: 12. 业务处理完毕
+    Core->>Core: 13. finally 块确定性安全释放排队锁
+    Core-->>Channel: 14. 返回确定性应答 ACK (微信 SUCCESS / 支付宝 success)
+```
+
+### 2.2 核心架构设计不变量
+
 - **“内存真明文”架构不变量 (ADR-0012 / ADR-0048)**：商户私钥、APIv3 密钥与支付凭据在 JVM 内存中始终保持 100% 真实明文，以支撑底层官方 SDK 高频加解密与数字签名运算；出参对象（如 `PayTransferResponse`）在 `toString()` 中自动调用 `DesensitizeUtil` 对真实姓名与账号动态脱敏掩码，坚决杜绝敏感凭证在日志中泄漏；
 - **全域 `BigDecimal` 元契约与无损换算**：对外所有接口、DTO、VO 与业务模型，金额统一使用 `BigDecimal`（保留两位小数，舍入模式 `RoundingMode.HALF_UP`），彻底消除浮点数 `Double`/`Float` 精度失真与无量纲整型歧义；底层进出渠道边界时统一由 `CurrencyUtil` 完成元/分安全换算；
 - **双轨防重并发排队锁 (ADR-0048 / ADR-0077)**：Webhook 入站时，`PayLockManager` 依据订单号执行原子加锁，租期默认 10 秒；Redis 环境优先装配分布式锁，无 Redis 自动以内存锁保底；遇到并发锁冲突立即返回失败驱动渠道阶梯重试，释放严格在 `finally` 块中执行。
@@ -379,7 +411,7 @@ public Result<PayResponse> checkoutApp(@Valid @RequestBody PayCheckoutDTO dto) {
 ### 3.6 订单交易状态主动查询与主动关单
 
 ```java
-@PostMapping({"/query", "/order/query"})
+@PostMapping("/query")
 public Result<PayResponse> queryOrder(@Valid @RequestBody PayOrderQueryDTO dto) {
     UnifiedQueryRequest request = UnifiedQueryRequest.builder()
             .channel(dto.getChannel())
@@ -392,7 +424,7 @@ public Result<PayResponse> queryOrder(@Valid @RequestBody PayOrderQueryDTO dto) 
     return Result.success(response);
 }
 
-@PostMapping({"/close", "/order/close"})
+@PostMapping("/close")
 public Result<PayResponse> closeOrder(@Valid @RequestBody PayOrderCloseDTO dto) {
     UnifiedCloseRequest request = UnifiedCloseRequest.builder()
             .channel(dto.getChannel())
@@ -558,7 +590,7 @@ ateng:
 ```
 
 ```java
-@PostMapping({"/receiver/add", "/receivers/add"})
+@PostMapping("/receivers/add")
 public Result<AddReceiverResponse> addReceiver(@Valid @RequestBody ProfitSharingReceiverDTO dto) {
     AddReceiverRequest request = new AddReceiverRequest();
     request.setType(ReceiverType.valueOf(dto.getType().toUpperCase()));
@@ -570,7 +602,7 @@ public Result<AddReceiverResponse> addReceiver(@Valid @RequestBody ProfitSharing
     return Result.success(response);
 }
 
-@PostMapping({"/order/unfreeze", "/unfreeze"})
+@PostMapping("/unfreeze")
 public Result<OrdersEntity> unfreezeOrder(@Valid @RequestBody ProfitSharingUnfreezeDTO dto) {
     UnfreezeOrderRequest request = new UnfreezeOrderRequest();
     request.setOutOrderNo(dto.getOutOrderNo());
@@ -593,7 +625,7 @@ public Result<OrdersEntity> unfreezeOrder(@Valid @RequestBody ProfitSharingUnfre
 ### 8.1 模式一：全量内存解析模式 (中小批量)
 
 ```java
-@PostMapping({"/parse-memory", "/download/parse-memory"})
+@PostMapping("/download/parse-memory")
 public Result<PayBillResult> parseMemory(@Valid @RequestBody PayBillQueryDTO dto) throws Exception {
     PayBillDownloadRequest request = PayBillDownloadRequest.builder()
             .channel(dto.getChannel())
@@ -613,7 +645,7 @@ public Result<PayBillResult> parseMemory(@Valid @RequestBody PayBillQueryDTO dto
 ### 8.2 模式二：常驻 O(1) 零 OOM 流式逐行对账消费模式 (海量数据)
 
 ```java
-@PostMapping({"/stream-reconcile", "/download/stream-consume"})
+@PostMapping("/download/stream-consume")
 public Result<PayBillSummary> streamReconcile(@Valid @RequestBody PayBillQueryDTO dto) throws Exception {
     PayBillDownloadRequest request = PayBillDownloadRequest.builder()
             .channel(dto.getChannel())

@@ -734,7 +734,7 @@ class PaySampleIntegrationTest {
                 .tarType("GZIP")
                 .build();
 
-        mockMvc.perform(post("/sample/pay/bill/parse-memory")
+        mockMvc.perform(post("/sample/pay/bill/download/parse-memory")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -757,7 +757,7 @@ class PaySampleIntegrationTest {
                 .tarType("GZIP")
                 .build();
 
-        mockMvc.perform(post("/sample/pay/bill/stream-reconcile")
+        mockMvc.perform(post("/sample/pay/bill/download/stream-consume")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -777,7 +777,7 @@ class PaySampleIntegrationTest {
                 .relationType("USER")
                 .build();
 
-        mockMvc.perform(post("/sample/pay/profit-sharing/receiver/add")
+        mockMvc.perform(post("/sample/pay/profit-sharing/receivers/add")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(receiverDTO)))
                 .andExpect(status().isOk())
@@ -792,7 +792,7 @@ class PaySampleIntegrationTest {
                 .description("结算分账完毕，解冻剩余资金")
                 .build();
 
-        mockMvc.perform(post("/sample/pay/profit-sharing/order/unfreeze")
+        mockMvc.perform(post("/sample/pay/profit-sharing/unfreeze")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(unfreezeDTO)))
                 .andExpect(status().isOk())

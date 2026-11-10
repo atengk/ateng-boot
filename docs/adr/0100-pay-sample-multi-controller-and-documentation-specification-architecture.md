@@ -72,11 +72,11 @@ flowchart TD
   - **第 3-8 章 6 大能力领域大章**：统一多渠道收单、线下条码付、资金售后退款、单笔资金转账、微信资金分账、财务对账单流式套件，同屏严格闭环“专属最小 YAML 片段 + 真实实战 Java 代码 + 机制与边界说明”三要素；
   - **第 9-13 章 生产扩展接管、核心生产边界、全量 YAML 配置字典速查附录与样例 Controller 快速索引**。
 
-### 4. 重构 Sample 为四段式极简体验卡并补齐 10+ 组核心端点 cURL 命令
+### 4. 重构 Sample 为四段式极简体验卡并补齐 18 组核心端点 cURL 命令
 - 重构 `ateng-boot-samples/ateng-boot-sample-pay/README.md` 为标准四段式体验卡：
   1. 快速启动与服务端口（默认端口 8080）；
   2. 运行环境与双模切换（离线内存桩 MockWebServer 模式 vs `application-local.yml` 真实渠道直连模式）；
-  3. 核心 Controller 接口与一键体验（补齐全部 6 大控制器与回调网关共计 12 组端点开箱即用的完整 cURL 体验命令表）；
+  3. 核心 Controller 接口与一键体验（补齐全部 6 大控制器与回调网关共计 18 组端点开箱即用的完整 cURL 体验命令表）；
   4. 全真自动化回归命令（`mvn test ...`）。
 
 ### 5. 单一最高测试接缝与全真双模测试守护
@@ -90,14 +90,14 @@ flowchart TD
 ## 后果与权衡 (Consequences)
 
 ### 正向收益 (Positive Gains)
-1. **开发者开箱即用体验飞跃**：开发者克隆工程后执行 `mvn spring-boot:run`，即可通过 12 条立即可用的 cURL 命令一键体验收单、条码付、退款、转账、分账、对账与回调网关；
+1. **开发者开箱即用体验飞跃**：开发者克隆工程后执行 `mvn spring-boot:run`，即可通过 18 组立即可用的 cURL 命令一键体验收单、条码付、退款、转账、分账、对账与回调网关；
 2. **REST 路由契约全局统一**：消除了 pay 模块中非标准的裸 `/pay/...` 路径，与全框架 30+ 样例工程保持绝对正交对齐；
 3. **技术文档权威常青**：Starter 文档 100% 覆盖对外暴露的全部公共 API，子特性小节同屏闭环三要素，所有代码 1:1 逆向提取自实测全绿的 Sample 源码；
 4. **领域模型与架构决策收敛**：补全了 4 个关键扩展组件的标准领域术语，沉淀了系统级 ADR-0100 架构基线。
 
 ### 妥协与边界 (Trade-offs & Boundaries)
 1. **路由兼容性**：虽然对 Sample 路由进行了升级，但仅影响样例工程体验端点，生产环境真实核心 Starter 回调端点（`/ateng-pay/callback/{channel}/{merchantId}`）通过配置前缀 `ateng.boot.pay.callback.path-prefix` 完全保持向后兼容；
-2. **多版本映射冗余**：为最大化兼容旧版前端与集成测试习惯，Controller 内部部分方法保留了双路径数组映射（如 `{"/query", "/order/query"}`），保证了极致的调用宽容度。
+2. **规范化单一路径收敛**：对齐规范收敛为标准单一语义路径，杜绝路径数组多重别名冗余与调用歧义。
 
 ---
 
@@ -107,7 +107,7 @@ flowchart TD
 | :--- | :---: | :--- |
 | **1. Sample 100% 场景对齐** | ✅ 通过 | 6 大 Controller 完整承载收单、条码付、退款、转账、分账、对账与 Webhook 全场景 |
 | **2. Sample 多 Controller 暴露** | ✅ 通过 | 按业务领域解耦为 `PayCheckoutController`、`PayBarcodeController`、`PayRefundController`、`PayTransferController`、`PayProfitSharingController`、`PayBillController` 6 大独立控制器，返回 `Result<T>` |
-| **3. Sample README 极简体验卡** | ✅ 通过 | 严格采用四段式结构，包含端口启动、双模环境、12 组 cURL 体验矩阵与自动化回归命令 |
+| **3. Sample README 极简体验卡** | ✅ 通过 | 严格采用四段式结构，包含端口启动、双模环境、18 组 cURL 体验矩阵与自动化回归命令 |
 | **4. 文档三要素就近与大章收敛** | ✅ 通过 | Starter 文档重构为 6 大业务能力领域大章，二级小节同屏闭环专属 YAML、实战 Java 与机制边界 |
 | **5. 真实业务语义场景驱动** | ✅ 通过 | 全面基于电商扫码支付、会员充值、面对面收银、商品部分退款、佣金提现、商家分账与财务明细对账等真实业务语义模型 |
 | **6. Sample-First 逆向提取** | ✅ 通过 | 文档中的 Java 与 YAML 100% 逆向提取自已跑通全绿的 Sample 源码 |

@@ -170,7 +170,7 @@ public class PayCheckoutController {
      * @param dto 查询请求入参
      * @return 交易状态出参
      */
-    @PostMapping({"/query", "/order/query"})
+    @PostMapping("/query")
     public Result<PayResponse> queryOrder(@Valid @RequestBody PayOrderQueryDTO dto) {
         log.info("Querying payment order status: channel={}, outTradeNo={}, transactionId={}",
                 dto.getChannel(), dto.getOutTradeNo(), dto.getTransactionId());
@@ -192,7 +192,7 @@ public class PayCheckoutController {
      * @param dto 关单请求入参
      * @return 关单操作响应
      */
-    @PostMapping({"/close", "/order/close"})
+    @PostMapping("/close")
     public Result<PayResponse> closeOrder(@Valid @RequestBody PayOrderCloseDTO dto) {
         log.info("Closing unpaid payment order: channel={}, outTradeNo={}",
                 dto.getChannel(), dto.getOutTradeNo());

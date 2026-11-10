@@ -25,7 +25,7 @@
 
 ## 3. 核心 Controller 接口与一键体验
 
-应用启动后，可通过以下 cURL 命令或 HTTP 客户端直接发起调用体验：
+应用启动后，可通过以下 18 组端点 cURL 命令（涵盖 6 大控制器 16 组主动业务端点与 2 组 Webhook 回调仿真端点）直接发起调用体验：
 
 | 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- | :--- |
@@ -41,12 +41,12 @@
 | **售后退款状态进度查询** | `PayRefundController` | `POST /sample/pay/refund/query` | `curl -X POST "http://localhost:8080/sample/pay/refund/query" -H "Content-Type: application/json" -d '{"channel":"WECHAT_PAY","outRefundNo":"REF_20261110_001"}'` |
 | **单笔资金转账申请 (姓名账号脱敏)** | `PayTransferController` | `POST /sample/pay/transfer/apply` | `curl -X POST "http://localhost:8080/sample/pay/transfer/apply" -H "Content-Type: application/json" -d '{"channel":"ALIPAY","outBizNo":"TRANS_BIZ_20261110_001","amount":50.00,"title":"佣金提现结算","payeeAccount":"alipay_user@example.com","payeeRealName":"张三"}'` |
 | **单笔资金转账状态查询** | `PayTransferController` | `POST /sample/pay/transfer/query` | `curl -X POST "http://localhost:8080/sample/pay/transfer/query" -H "Content-Type: application/json" -d '{"channel":"ALIPAY","outBizNo":"TRANS_BIZ_20261110_001"}'` |
-| **添加微信资金分账接收方** | `PayProfitSharingController` | `POST /sample/pay/profit-sharing/receiver/add` | `curl -X POST "http://localhost:8080/sample/pay/profit-sharing/receiver/add" -H "Content-Type: application/json" -d '{"type":"PERSONAL_OPENID","account":"oUpF8uMuAJO_M2pxb1Q9zNjWeS6o","relationType":"USER"}'` |
-| **完结分账解冻在途剩余资金** | `PayProfitSharingController` | `POST /sample/pay/profit-sharing/order/unfreeze` | `curl -X POST "http://localhost:8080/sample/pay/profit-sharing/order/unfreeze" -H "Content-Type: application/json" -d '{"outOrderNo":"ORD_UNFREEZE_20261110_001","transactionId":"TRANSACTION_20261110_001","description":"结算分账完毕，解冻在途资金"}'` |
-| **财务对账单流式全量内存解析** | `PayBillController` | `POST /sample/pay/bill/parse-memory` | `curl -X POST "http://localhost:8080/sample/pay/bill/parse-memory" -H "Content-Type: application/json" -d '{"channel":"WECHAT_PAY","billDate":"2026-10-24","billType":"ALL","tarType":"GZIP"}'` |
-| **财务对账单零 OOM 流式对账消费** | `PayBillController` | `POST /sample/pay/bill/stream-reconcile` | `curl -X POST "http://localhost:8080/sample/pay/bill/stream-reconcile" -H "Content-Type: application/json" -d '{"channel":"WECHAT_PAY","billDate":"2026-10-24","billType":"ALL","tarType":"GZIP"}'` |
-| **统一异步 Webhook 回调端点 (微信)** | Starter 网关端点 | `POST /ateng-pay/callback/wechat/{merchantId}` | 第三方渠道自动推送通知，Starter 自动执行公钥验签、AES-GCM 解密、并发防重排队并派发至 `PayCallbackListener` SPI |
-| **统一异步 Webhook 回调端点 (支付宝)** | Starter 网关端点 | `POST /ateng-pay/callback/alipay/{merchantId}` | 支付宝表单异步推送通知，Starter 自动验签并分发监听器，返回 `success` / `fail` 确定性应答 |
+| **添加微信资金分账接收方** | `PayProfitSharingController` | `POST /sample/pay/profit-sharing/receivers/add` | `curl -X POST "http://localhost:8080/sample/pay/profit-sharing/receivers/add" -H "Content-Type: application/json" -d '{"type":"PERSONAL_OPENID","account":"oUpF8uMuAJO_M2pxb1Q9zNjWeS6o","relationType":"USER"}'` |
+| **完结分账解冻在途剩余资金** | `PayProfitSharingController` | `POST /sample/pay/profit-sharing/unfreeze` | `curl -X POST "http://localhost:8080/sample/pay/profit-sharing/unfreeze" -H "Content-Type: application/json" -d '{"outOrderNo":"ORD_UNFREEZE_20261110_001","transactionId":"TRANSACTION_20261110_001","description":"结算分账完毕，解冻在途资金"}'` |
+| **财务对账单流式全量内存解析** | `PayBillController` | `POST /sample/pay/bill/download/parse-memory` | `curl -X POST "http://localhost:8080/sample/pay/bill/download/parse-memory" -H "Content-Type: application/json" -d '{"channel":"WECHAT_PAY","billDate":"2026-10-24","billType":"ALL","tarType":"GZIP"}'` |
+| **财务对账单零 OOM 流式对账消费** | `PayBillController` | `POST /sample/pay/bill/download/stream-consume` | `curl -X POST "http://localhost:8080/sample/pay/bill/download/stream-consume" -H "Content-Type: application/json" -d '{"channel":"WECHAT_PAY","billDate":"2026-10-24","billType":"ALL","tarType":"GZIP"}'` |
+| **统一异步 Webhook 回调仿真 (微信)** | Starter 网关端点 | `POST /ateng-pay/callback/wechat/{merchantId}` | `curl -X POST "http://localhost:8080/ateng-pay/callback/wechat/default" -H "Content-Type: application/json" -H "Wechatpay-Serial: PUB_KEY_ID_TEST_001" -H "Wechatpay-Signature: mock" -H "Wechatpay-Timestamp: 1600000000" -H "Wechatpay-Nonce: mock" -d '{"id":"EVT_TEST","resource":{"algorithm":"AEAD_AES_256_GCM"}}'` |
+| **统一异步 Webhook 回调仿真 (支付宝)** | Starter 网关端点 | `POST /ateng-pay/callback/alipay/{merchantId}` | `curl -X POST "http://localhost:8080/ateng-pay/callback/alipay/default" -H "Content-Type: application/x-www-form-urlencoded" -d "trade_status=TRADE_SUCCESS&out_trade_no=ORD_ALI_001&total_amount=88.00&sign=mock&sign_type=RSA2"` |
 
 ---
 

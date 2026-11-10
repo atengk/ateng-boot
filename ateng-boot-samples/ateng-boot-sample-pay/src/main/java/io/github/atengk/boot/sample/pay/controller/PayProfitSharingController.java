@@ -40,7 +40,7 @@ public class PayProfitSharingController {
     /**
      * 添加分账接收方
      */
-    @PostMapping({"/receiver/add", "/receivers/add"})
+    @PostMapping("/receivers/add")
     public Result<AddReceiverResponse> addReceiver(@Valid @RequestBody ProfitSharingReceiverDTO dto) {
         if (profitSharingService == null) {
             return Result.failure("微信资金分账特性未启用");
@@ -59,7 +59,7 @@ public class PayProfitSharingController {
     /**
      * 解冻分账剩余资金
      */
-    @PostMapping({"/order/unfreeze", "/unfreeze"})
+    @PostMapping("/unfreeze")
     public Result<OrdersEntity> unfreezeOrder(@Valid @RequestBody ProfitSharingUnfreezeDTO dto) {
         if (profitSharingService == null) {
             return Result.failure("微信资金分账特性未启用");
