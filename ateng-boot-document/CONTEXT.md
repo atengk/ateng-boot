@@ -51,3 +51,27 @@ _Avoid_: WordDownloadUtil, DocxResponseUtil, WordExportUtil
 **PdfWebUtil**:
 PDF 浏览器端流式安全输出与预览响应工具，支持直接向 `HttpServletResponse` 写入带水印或填报后的 PDF 二进制流，支持浏览器内联预览（`inline`）与附件下载（`attachment`）双模切换，标配 RFC 6266 防乱码标头。
 _Avoid_: PdfDownloadUtil, PdfResponseUtil, PdfExportUtil
+
+**FloatingPicture**:
+OpenXML `CTAnchor` 浮动图片与电子印章领域渲染模型，配合 `FloatingPictureRenderPolicy` 挂载，支持基于段落（PARAGRAPH）与字符（CHARACTER）双重相对物理定位偏移，彻底解决行内图片挤压文字排版错位问题，并在渲染完成后确定性清理 ThreadLocal 防图层泄漏。
+_Avoid_: InlinePicture, StampImageModel, WordSealVo, FloatingImage
+
+**SecurityOptions**:
+PDF 256 位 AES 权限加密安全锁领域模型，支持设置用户打开密码（User Password）与管理所有者密码（Owner Password），精细化按需控制禁止打印、禁止文本提取复制、禁止内容修改与表单填报权限。
+_Avoid_: EncryptOptions, PdfPasswordConfig, SecuritySettings, PermissionOptions
+
+**PageNumberOptions**:
+PDF 动态页码与页眉页脚排版领域模型，支持指定 6 种对齐方位（`PageNumberPosition`）、自定义格式模板 `{page}` / `{total}`、跳过封面页数与有效总页数重新核算（`recalculateTotal`）。
+_Avoid_: PageNumberConfig, HeaderFooterOptions, PaginationSetting, PageStampOptions
+
+**ImageStampOptions**:
+PDF 绝对物理坐标印章压印领域模型，封装印章图片输入源、目标页码索引（支持负数倒数索引如 `-1` 尾页盖印）、物理 X/Y 坐标与印章宽高像素尺寸。
+_Avoid_: StampPositionConfig, AbsoluteSealOptions, CoordinateStampVo, FixedStampModel
+
+**PageImageConsumer**:
+PDF 页面高清光栅化渲染流式消费函数式接口，在逐页光栅化回调中接收 `BufferedImage` 并执行写出或处理，回调后由框架确定性调用 `image.flush()` 释放显存，杜绝多页大文件光栅化导致的堆内存与显存 OOM 崩溃。
+_Avoid_: ImageCallback, PageConsumer, PdfImageHandler, FrameConsumer
+
+**FontResolutionTier**:
+CJK 中文字体三级弹性探测阶梯枚举，标识当前字体解析生效的层级：`CONFIGURATION`（外部显式配置路径）、`SYSTEM`（宿主机操作系统字体目录扫描）与 `FAILURE`（未探测到可用中文字体快速失败）。
+_Avoid_: FontSourceLevel, FontTierEnum, ResolutionLevel, FontTier
