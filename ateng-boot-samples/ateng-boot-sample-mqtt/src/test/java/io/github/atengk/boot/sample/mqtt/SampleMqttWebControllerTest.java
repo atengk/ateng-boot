@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.mqtt;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.sample.mqtt.dto.DeviceCommandRequest;
 import io.github.atengk.boot.sample.mqtt.dto.TelemetryPublishRequest;
 import io.github.atengk.boot.sample.mqtt.service.DeviceTelemetryScenarioService;
 import io.github.atengk.boot.sample.mqtt.test.EmbeddedMqttBroker;
@@ -15,14 +16,17 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import java.util.Map;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -147,5 +151,64 @@ class SampleMqttWebControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data").value(containsString("集群共享度量已投递")));
+    }
+
+    @Test
+    @DisplayName("5. 测试 MqttRpcController: 同步阻塞 RPC 下发指令并接收设备应答回执")
+    void testRpcControlSyncSuccess() throws Exception {
+        DeviceCommandRequest request = DeviceCommandRequest.builder()
+                .action("START_MOTOR")
+                .speed(1500)
+                .timeoutSeconds(5)
+                .build();
+
+        mockMvc.perform(post("/sample/mqtt/rpc/control-sync")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.message").value("ACTION_EXECUTED_SUCCESS"));
+    }
+
+    @Test
+    @DisplayName("6. 测试 MqttRpcController: 异步非阻塞 RPC 下发指令并通过 CompletableFuture 应答")
+    void testRpcControlAsyncSuccess() throws Exception {
+        DeviceCommandRequest request = DeviceCommandRequest.builder()
+                .action("ADJUST_VALVE")
+                .speed(2200)
+                .timeoutSeconds(5)
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/mqtt/rpc/control-async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(mvcResult))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.message").value("ACTION_EXECUTED_SUCCESS"));
+    }
+
+    @Test
+    @DisplayName("7. 测试 MqttRpcController: JSR-303 参数校验拦截非法 RPC 入参 (Fail-Fast)")
+    void testRpcControlValidationFailed() throws Exception {
+        DeviceCommandRequest invalidRequest = DeviceCommandRequest.builder()
+                .action("")   // 空 action
+                .speed(-10)   // 负数转速
+                .timeoutSeconds(100) // 超过最大限制 60s
+                .build();
+
+        mockMvc.perform(post("/sample/mqtt/rpc/control-sync")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
     }
 }
