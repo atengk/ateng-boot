@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.ftp.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Positive;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -33,6 +34,7 @@ public class LargeFileTransferRequest implements Serializable {
     /**
      * 模拟测试生成文件的体积大小（单位：KB，默认 128KB）
      */
+    @Positive(message = "生成测试文件大小必须大于0KB")
     @Builder.Default
     private Integer sizeKb = 128;
 

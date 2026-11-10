@@ -8,6 +8,7 @@ import io.github.atengk.boot.sample.ftp.service.ConnectivityProbeScenarioService
 import io.github.atengk.boot.sample.ftp.service.DynamicRoutingScenarioService;
 import io.github.atengk.boot.sample.ftp.vo.FtpPoolStatsVO;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.net.ftp.FTPClient;
@@ -95,8 +96,8 @@ public class FtpGovernanceController {
      */
     @GetMapping("/dynamic-routing-read")
     public Result<String> dynamicRoutingRead(
-            @RequestParam("serverName") String serverName,
-            @RequestParam("remotePath") String remotePath) {
+            @RequestParam("serverName") @NotBlank(message = "服务节点标识不能为空") String serverName,
+            @RequestParam("remotePath") @NotBlank(message = "远程文件路径不能为空") String remotePath) {
         String content = dynamicRoutingService.executeOnServer(serverName, () ->
                 ftpTemplate.readString(remotePath));
         return Result.success(content);

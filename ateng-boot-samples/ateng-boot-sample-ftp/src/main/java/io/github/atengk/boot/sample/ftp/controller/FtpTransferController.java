@@ -6,6 +6,7 @@ import io.github.atengk.boot.sample.ftp.dto.LargeFileTransferRequest;
 import io.github.atengk.boot.sample.ftp.service.LargeFileTransferScenarioService;
 import io.github.atengk.boot.sample.ftp.vo.TransferProgressVO;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
@@ -63,23 +64,12 @@ public class FtpTransferController {
                 }
             }
 
-            AtomicReference<TransferProgressVO> progressRef = new AtomicReference<>(TransferProgressVO.builder()
-                    .path(request.getRemotePath())
-                    .bytesTransferred(0L)
-                    .totalBytes((long) sizeKb * 1024)
-                    .percentage(0.0)
-                    .completed(false)
-                    .build());
+            AtomicReference<TransferProgressVO> progressRef = new AtomicReference<>(
+                    createProgressVO(request.getRemotePath(), 0L, (long) sizeKb * 1024, 0.0));
 
-            largeFileTransferService.uploadLargeFile(request.getRemotePath(), tempFile, (bytesTransferred, totalBytes, percentage) -> {
-                progressRef.set(TransferProgressVO.builder()
-                        .path(request.getRemotePath())
-                        .bytesTransferred(bytesTransferred)
-                        .totalBytes(totalBytes)
-                        .percentage(percentage)
-                        .completed(percentage >= 100.0)
-                        .build());
-            });
+            largeFileTransferService.uploadLargeFile(request.getRemotePath(), tempFile,
+                    (bytesTransferred, totalBytes, percentage) -> progressRef.set(
+                            createProgressVO(request.getRemotePath(), bytesTransferred, totalBytes, percentage)));
 
             return Result.success(progressRef.get());
         } finally {
@@ -102,23 +92,12 @@ public class FtpTransferController {
                 : File.createTempFile("sample-large-download-", ".bin");
 
         try {
-            AtomicReference<TransferProgressVO> progressRef = new AtomicReference<>(TransferProgressVO.builder()
-                    .path(request.getRemotePath())
-                    .bytesTransferred(0L)
-                    .totalBytes(-1L)
-                    .percentage(0.0)
-                    .completed(false)
-                    .build());
+            AtomicReference<TransferProgressVO> progressRef = new AtomicReference<>(
+                    createProgressVO(request.getRemotePath(), 0L, -1L, 0.0));
 
-            largeFileTransferService.downloadLargeFile(request.getRemotePath(), targetFile, (bytesTransferred, totalBytes, percentage) -> {
-                progressRef.set(TransferProgressVO.builder()
-                        .path(request.getRemotePath())
-                        .bytesTransferred(bytesTransferred)
-                        .totalBytes(totalBytes)
-                        .percentage(percentage)
-                        .completed(percentage >= 100.0)
-                        .build());
-            });
+            largeFileTransferService.downloadLargeFile(request.getRemotePath(), targetFile,
+                    (bytesTransferred, totalBytes, percentage) -> progressRef.set(
+                            createProgressVO(request.getRemotePath(), bytesTransferred, totalBytes, percentage)));
 
             return Result.success(progressRef.get());
         } finally {
@@ -135,8 +114,18 @@ public class FtpTransferController {
      * @return 下载到的文件字节总长度
      */
     @GetMapping("/download-safe")
-    public Result<Integer> downloadSafe(@RequestParam("remotePath") String remotePath) {
+    public Result<Integer> downloadSafe(@RequestParam("remotePath") @NotBlank(message = "远程文件路径不能为空") String remotePath) {
         byte[] bytes = ftpTemplate.downloadToBytes(remotePath);
         return Result.success(bytes != null ? bytes.length : 0);
+    }
+
+    private TransferProgressVO createProgressVO(String path, long bytesTransferred, long totalBytes, double percentage) {
+        return TransferProgressVO.builder()
+                .path(path)
+                .bytesTransferred(bytesTransferred)
+                .totalBytes(totalBytes)
+                .percentage(percentage)
+                .completed(percentage >= 100.0)
+                .build();
     }
 }

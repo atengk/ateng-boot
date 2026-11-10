@@ -13,6 +13,7 @@ import io.github.atengk.boot.sample.ftp.service.DocumentSyncScenarioService;
 import io.github.atengk.boot.sample.ftp.vo.FtpFileInfoVO;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
@@ -111,7 +112,7 @@ public class FtpDocumentController {
      * @return 文本内容
      */
     @GetMapping("/read-text")
-    public Result<String> readText(@RequestParam("remotePath") String remotePath) {
+    public Result<String> readText(@RequestParam("remotePath") @NotBlank(message = "远程文件路径不能为空") String remotePath) {
         String content = documentSyncService.readText(remotePath);
         return Result.success(content);
     }
@@ -195,7 +196,7 @@ public class FtpDocumentController {
      * @return 文件元数据列表
      */
     @GetMapping("/list-files")
-    public Result<List<FtpFileInfoVO>> listFiles(@RequestParam("remoteDir") String remoteDir) {
+    public Result<List<FtpFileInfoVO>> listFiles(@RequestParam("remoteDir") @NotBlank(message = "远程目录路径不能为空") String remoteDir) {
         List<FtpFileInfo> list = documentSyncService.listDocuments(remoteDir);
         if (list == null || list.isEmpty()) {
             return Result.success(Collections.emptyList());
@@ -210,7 +211,7 @@ public class FtpDocumentController {
      * @return 远程文件元数据
      */
     @GetMapping("/info")
-    public Result<FtpFileInfoVO> getInfo(@RequestParam("remotePath") String remotePath) {
+    public Result<FtpFileInfoVO> getInfo(@RequestParam("remotePath") @NotBlank(message = "远程文件路径不能为空") String remotePath) {
         FtpFileInfo info = documentSyncService.getDocumentInfo(remotePath);
         return Result.success(toVO(info));
     }
@@ -222,7 +223,7 @@ public class FtpDocumentController {
      * @param response   HTTP 响应对象
      */
     @GetMapping("/download")
-    public void downloadFile(@RequestParam("remotePath") String remotePath, HttpServletResponse response) throws IOException {
+    public void downloadFile(@RequestParam("remotePath") @NotBlank(message = "远程文件路径不能为空") String remotePath, HttpServletResponse response) throws IOException {
         String filename = remotePath.contains("/") ? remotePath.substring(remotePath.lastIndexOf('/') + 1) : remotePath;
         String encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
 

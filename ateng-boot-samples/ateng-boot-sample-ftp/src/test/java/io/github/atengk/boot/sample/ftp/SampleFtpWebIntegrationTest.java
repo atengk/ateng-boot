@@ -424,8 +424,9 @@ public class SampleFtpWebIntegrationTest {
     }
 
     @Test
-    @DisplayName("05. 参数校验防御: 拦截空白路径请求")
+    @DisplayName("05. 参数校验防御: 拦截空白路径与非法数值请求")
     void testValidationFailure() throws Exception {
+        // 1. POST 请求体 DTO @NotBlank 校验防御
         WriteTextRequest invalidReq = WriteTextRequest.builder()
                 .remotePath("") // 空白路径违背 @NotBlank
                 .content("Some content")
@@ -434,6 +435,35 @@ public class SampleFtpWebIntegrationTest {
         mockMvc.perform(post("/sample/ftp/document/write-text")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(invalidReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 2. POST 请求体 DTO @Positive 数值校验防御
+        LargeFileTransferRequest invalidSizeReq = LargeFileTransferRequest.builder()
+                .remotePath("/transfer/test.bin")
+                .sizeKb(-1) // 负数违背 @Positive
+                .build();
+
+        mockMvc.perform(post("/sample/ftp/transfer/upload-large")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidSizeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 3. GET 查询参数 @NotBlank 第一道防线 Fail-Fast 校验防御
+        mockMvc.perform(get("/sample/ftp/document/read-text")
+                        .param("remotePath", ""))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        mockMvc.perform(get("/sample/ftp/governance/dynamic-routing-read")
+                        .param("serverName", "")
+                        .param("remotePath", "/some/path.txt"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        mockMvc.perform(get("/sample/ftp/transfer/download-safe")
+                        .param("remotePath", ""))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400));
     }
