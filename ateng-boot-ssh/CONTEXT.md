@@ -95,3 +95,47 @@ _Avoid_: ProgressFilter, SftpRateLimiter
 **Connectivity Probe (连通性探针)**:
 仅完成 TCP 建连与 SSH 凭据身份验证协商而不开启业务通道的无副作用健康探测机制。
 _Avoid_: Ping, SshCheck, HeartbeatChannel
+
+**RFC 4254 Signal Guard (孤儿进程信号防卫)**:
+命令超时熔断时向远端 Session 依次发送 RFC 4254 `TERM` 与 `INT` 信号主动终止子进程并随后物理销毁通道的防卫机制。
+_Avoid_: SIGKILL暴力切断, 进程挂死, 孤儿进程
+
+**In-Memory Server Key Verifier (云原生纯内存主机指纹校验器)**:
+专为 Kubernetes 等只读根文件系统环境设计、100% 内存驻留主机公钥指纹、绝不尝试写盘 `known_hosts` 的主机密钥校验器。
+_Avoid_: 磁盘指纹库, known_hosts写入, 免检穿透
+
+**Three-Step Graceful Shutdown (确定性三步优雅停机)**:
+应用销毁阶段由 `SshLifecycleManager` 驱动的【1. 释放活跃 PTY 终端与端口转发隧道 -> 2. 安全注销 SshSessionPool 全部池化会话 -> 3. 停止底层 MINA SshClient NIO 内核】确定性资源回收时序。
+_Avoid_: 暴力停机, 随机注销, 端口悬挂
+
+**SshCommandController (命令执行领域控制器)**:
+纳管单机短命令同步/异步下发、原生 Sudo 提权口令抹零、多行脚本管道规范化与日志按行流式消费的接入层控制器。
+_Avoid_: 胖控制器, 命令执行端点, SshWebController
+
+**SshClusterController (集群巡检领域控制器)**:
+纳管多主机受控批量并发巡检、CMDB 纯内存资产直连与线程上下文动态切源的接入层控制器。
+_Avoid_: 批量操作端点, 集群管理器, ClusterWebController
+
+**SshTunnelController (网络穿透领域控制器)**:
+纳管本地端口转发受管句柄生命周期建立释放、两级跳板机级联穿透与真实 TCP 流量交互的接入层控制器。
+_Avoid_: 端口映射接口, 跳板机控制器, TunnelWebController
+
+**SftpDocumentController (SFTP 文档领域控制器)**:
+纳管文件表单原子上传、对称流式下载、纯文本快捷读写、尾部增量追加、跨目录移动与文件元数据生命周期的接入层控制器。
+_Avoid_: 文件上传控制器, SftpWebController, 文档网关
+
+**SftpSyncController (SFTP 目录同步控制器)**:
+纳管目录树整包双向镜像上传与下载同步、DFS 递归删除非空目录与大文件进度节流防抖的接入层控制器。
+_Avoid_: 目录批量控制器, SyncWebController, 同步接口
+
+**SshTerminalController (WebSSH 终端诊断控制器)**:
+提供 WebSSH 终端规格、默认行列尺寸与 WebSocket 端点运行状态只读诊断的接入层控制器。
+_Avoid_: WebSshWebController, 终端控制器, 终端网关
+
+**SSH Typed DTO Matrix (SSH 强类型入参 DTO 矩阵)**:
+遵循 ADR-0010 与 ADR-0027，在网络接入层对所有 SSH/SFTP 操作请求进行 JSR-303 Fail-Fast 校验的 17 大专用请求数据对象集合。
+_Avoid_: 裸参数透传, Entity 越界, 泛型 Map 传参
+
+**SSH Typed VO Matrix (SSH 强类型业务 VO 矩阵)**:
+对外提供安全脱敏、消除底层 MINA SSHD SDK 内部引用与连接泄露的 6 大业务响应数据对象集合。
+_Avoid_: Entity 泄漏, 原生 Session 暴露, 模糊响应
