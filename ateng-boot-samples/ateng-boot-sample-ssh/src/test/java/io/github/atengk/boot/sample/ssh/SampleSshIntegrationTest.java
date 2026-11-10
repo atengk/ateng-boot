@@ -9,6 +9,7 @@ import io.github.atengk.boot.ssh.model.SshBatchExecResult;
 import io.github.atengk.boot.ssh.model.SshBatchOptions;
 import io.github.atengk.boot.ssh.model.SshExecResult;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
+import io.github.atengk.boot.ssh.template.SshTemplate;
 import io.github.atengk.boot.ssh.tunnel.SshTunnelHandle;
 import org.apache.sshd.server.Environment;
 import org.apache.sshd.server.ExitCallback;
@@ -107,6 +108,9 @@ class SampleSshIntegrationTest {
 
     @Autowired
     private SftpScenarioService sftpScenarioService;
+
+    @Autowired
+    private SshTemplate sshTemplate;
 
     @TempDir
     static Path testTempDir;
@@ -418,13 +422,7 @@ class SampleSshIntegrationTest {
         assertThat(sshScenarioService.testConnection("bastion")).isTrue();
 
         SshServerInfo validDynamic = isLocalProfile()
-                ? SshServerInfo.builder()
-                        .host("192.168.157.3")
-                        .port(22)
-                        .username("admin")
-                        .password("Admin@123")
-                        .hostKeyPolicy(HostKeyPolicy.IGNORE)
-                        .build()
+                ? sshTemplate.resolveServerInfo("default")
                 : SshServerInfo.builder()
                         .host("127.0.0.1")
                         .port(node1Server.getPort())
@@ -435,12 +433,12 @@ class SampleSshIntegrationTest {
         assertThat(sshScenarioService.testConnection(validDynamic)).isTrue();
 
         SshServerInfo invalidDynamic = isLocalProfile()
-                ? SshServerInfo.builder()
-                        .host("192.168.157.3")
-                        .port(22)
-                        .username("admin")
-                        .password("WRONG_PASS_PROBE")
-                        .hostKeyPolicy(HostKeyPolicy.IGNORE)
+                ? validDynamic.toBuilder()
+                        .password("WRONG_PASS_PROBE_LOCAL")
+                        .privateKey(null)
+                        .privateKeyPath(null)
+                        .passphrase(null)
+                        .keyPair(null)
                         .build()
                 : SshServerInfo.builder()
                         .host("127.0.0.1")
@@ -491,13 +489,7 @@ class SampleSshIntegrationTest {
     @DisplayName("测试瞬态单次任务隔离执行：执行后即刻断开会话，无状态残留")
     void testScenarioTransientTask() {
         SshServerInfo server = isLocalProfile()
-                ? SshServerInfo.builder()
-                        .host("192.168.157.3")
-                        .port(22)
-                        .username("root")
-                        .password("Admin@123")
-                        .hostKeyPolicy(HostKeyPolicy.IGNORE)
-                        .build()
+                ? sshTemplate.resolveServerInfo("default")
                 : SshServerInfo.builder()
                         .host("127.0.0.1")
                         .port(node1Server.getPort())
@@ -515,8 +507,9 @@ class SampleSshIntegrationTest {
     @DisplayName("测试本地端口转发双向 TCP 流量传输：本地客户端向远端真实服务发起通信")
     void testScenarioPortForwardingTcpFlow() throws Exception {
         if (isLocalProfile()) {
-            // 在 local 环境下，测试通过本地端口转发隧道直连远端 127.0.0.1:22 并获取 SSH 协议版本横幅
-            int localPort = sshScenarioService.openManagedTunnel("default", 0, "127.0.0.1", 22);
+            // 在 local 环境下，测试通过本地端口转发隧道直连远端本身的 SSH 服务端口并获取 SSH 协议版本横幅
+            int remotePort = sshTemplate.resolveServerInfo("default").getPort();
+            int localPort = sshScenarioService.openManagedTunnel("default", 0, "127.0.0.1", remotePort);
             try (Socket socket = new Socket("127.0.0.1", localPort);
                  BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
                 socket.setSoTimeout(5000);
@@ -538,7 +531,7 @@ class SampleSshIntegrationTest {
     @Test
     @DisplayName("测试受管端口转发句柄对称开启与关闭释放")
     void testTunnelOpenAndCloseSymmetric() {
-        int remotePort = isLocalProfile() ? 22 : echoTcpServer.getLocalPort();
+        int remotePort = isLocalProfile() ? sshTemplate.resolveServerInfo("default").getPort() : echoTcpServer.getLocalPort();
         int boundPort = sshScenarioService.openManagedTunnel("default", 0, "127.0.0.1", remotePort);
         assertThat(boundPort).isGreaterThan(0);
 

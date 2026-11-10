@@ -84,6 +84,9 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
 
     private volatile ThreadPoolTaskExecutor internalExecutor;
 
+    private record BatchTaskTarget(String name, SshServerInfo server) {}
+    private record BatchTaskItem(int index, BatchTaskTarget target, CompletableFuture<SshExecResult> future) {}
+
     public SshTemplate(SshSessionPool sessionPool,
                        SshClientRegistry clientRegistry,
                        SshProperties properties) {
@@ -825,20 +828,18 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
         if (serverNames == null || serverNames.isEmpty()) {
             return SshBatchExecResult.builder().totalCount(0).successCount(0).failureCount(0).build();
         }
-        Map<String, SshServerInfo> nameToServer = new LinkedHashMap<>(serverNames.size());
+        List<BatchTaskTarget> targets = new ArrayList<>(serverNames.size());
         for (String name : serverNames) {
             if (name != null && !name.isBlank()) {
-                nameToServer.put(name, resolveServerInfo(name));
+                targets.add(new BatchTaskTarget(name, resolveServerInfo(name)));
             }
         }
-        SshBatchExecResult baseResult = execBatchAdvanced(nameToServer.values(), command, options);
-        Map<String, SshExecResult> namedMap = new LinkedHashMap<>(nameToServer.size());
-        for (Map.Entry<String, SshServerInfo> entry : nameToServer.entrySet()) {
-            namedMap.put(entry.getKey(), baseResult.getResult(entry.getValue()));
-        }
-        return baseResult.toBuilder()
-                .namedResults(Collections.unmodifiableMap(namedMap))
-                .build();
+        SshBatchOptions effectiveBatchOptions = options != null ? options : SshBatchOptions.defaults();
+        SshExecOptions effectiveExecOptions = effectiveBatchOptions.getExecOptions() != null
+                ? effectiveBatchOptions.getExecOptions()
+                : SshExecOptions.defaults();
+        return executeBatchTargetsInternal(targets, command, "执行", effectiveBatchOptions,
+                server -> exec(server, command, effectiveExecOptions));
     }
 
     /**
@@ -996,6 +997,31 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                     .errors(Collections.emptyMap())
                     .build();
         }
+        List<BatchTaskTarget> targets = new ArrayList<>(servers.size());
+        for (SshServerInfo server : servers) {
+            if (server != null) {
+                targets.add(new BatchTaskTarget(null, server));
+            }
+        }
+        return executeBatchTargetsInternal(targets, command, operationName, options, taskFunction);
+    }
+
+    private SshBatchExecResult executeBatchTargetsInternal(
+            List<BatchTaskTarget> targets,
+            String command,
+            String operationName,
+            SshBatchOptions options,
+            java.util.function.Function<SshServerInfo, SshExecResult> taskFunction) {
+        if (targets == null || targets.isEmpty()) {
+            return SshBatchExecResult.builder()
+                    .totalCount(0)
+                    .successCount(0)
+                    .failureCount(0)
+                    .duration(Duration.ZERO)
+                    .results(Collections.emptyMap())
+                    .errors(Collections.emptyMap())
+                    .build();
+        }
         Assert.hasText(command, "command must not be blank");
 
         SshBatchOptions effectiveOptions = options != null ? options : SshBatchOptions.defaults();
@@ -1003,13 +1029,13 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
         boolean failFast = effectiveOptions.isFailFast();
         Duration timeout = effectiveOptions.getTimeout();
 
-        List<SshServerInfo> targetServers = new ArrayList<>();
-        for (SshServerInfo server : servers) {
-            if (server != null) {
-                targetServers.add(server);
+        List<BatchTaskTarget> validTargets = new ArrayList<>();
+        for (BatchTaskTarget t : targets) {
+            if (t != null && t.server() != null) {
+                validTargets.add(t);
             }
         }
-        int total = targetServers.size();
+        int total = validTargets.size();
         if (total == 0) {
             return SshBatchExecResult.builder()
                     .totalCount(0)
@@ -1026,10 +1052,14 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
         Semaphore semaphore = new Semaphore(concurrency);
         AtomicBoolean aborted = new AtomicBoolean(false);
         AtomicReference<Throwable> firstError = new AtomicReference<>();
-        Map<SshServerInfo, CompletableFuture<SshExecResult>> futures = new LinkedHashMap<>(total);
-        Map<SshServerInfo, Throwable> errorMap = new ConcurrentHashMap<>();
+        List<BatchTaskItem> taskItems = new ArrayList<>(total);
+        List<CompletableFuture<SshExecResult>> futureList = new ArrayList<>(total);
+        Map<Integer, Throwable> taskErrorMap = new ConcurrentHashMap<>();
 
-        for (SshServerInfo server : targetServers) {
+        for (int i = 0; i < total; i++) {
+            final int taskIndex = i;
+            final BatchTaskTarget target = validTargets.get(i);
+            final SshServerInfo server = target.server();
             Supplier<SshExecResult> task = AsyncContext.wrapSupplier(() -> {
                 if (failFast && aborted.get()) {
                     return null;
@@ -1057,7 +1087,7 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                     }
                     return result;
                 } catch (Throwable e) {
-                    errorMap.put(server, e);
+                    taskErrorMap.put(taskIndex, e);
                     if (failFast) {
                         if (aborted.compareAndSet(false, true)) {
                             firstError.set(e);
@@ -1076,25 +1106,27 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                 }
             });
 
-            futures.put(server, CompletableFuture.supplyAsync(task, targetExecutor));
+            CompletableFuture<SshExecResult> future = CompletableFuture.supplyAsync(task, targetExecutor);
+            futureList.add(future);
+            taskItems.add(new BatchTaskItem(taskIndex, target, future));
         }
 
-        CompletableFuture<Void> allFutures = CompletableFuture.allOf(futures.values().toArray(new CompletableFuture[0]));
+        CompletableFuture<Void> allFutures = CompletableFuture.allOf(futureList.toArray(new CompletableFuture[0]));
 
         if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {
             try {
                 allFutures.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
             } catch (TimeoutException te) {
                 aborted.set(true);
-                cancelUnfinishedFutures(futures.values());
+                cancelUnfinishedFutures(futureList);
                 if (failFast) {
                     throw new SshOperationException(SshResultCode.COMMAND_TIMEOUT,
                             "SSH集群批量命令执行整体超时 [" + timeout + "]", te);
                 } else {
                     log.warn("ateng-boot-ssh: SSH集群批量命令执行整体超时 [{}]", timeout);
-                    for (Map.Entry<SshServerInfo, CompletableFuture<SshExecResult>> entry : futures.entrySet()) {
-                        if (!entry.getValue().isDone()) {
-                            errorMap.put(entry.getKey(), new SshOperationException(SshResultCode.COMMAND_TIMEOUT,
+                    for (BatchTaskItem item : taskItems) {
+                        if (!item.future().isDone()) {
+                            taskErrorMap.put(item.index(), new SshOperationException(SshResultCode.COMMAND_TIMEOUT,
                                     "节点批量执行超时未完成", te));
                         }
                     }
@@ -1102,7 +1134,7 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
                 aborted.set(true);
-                cancelUnfinishedFutures(futures.values());
+                cancelUnfinishedFutures(futureList);
                 log.warn("ateng-boot-ssh: SSH集群批量命令执行等待被中断", ie);
             } catch (Exception e) {
                 log.debug("ateng-boot-ssh: 批量等待任务完成时捕获异常: {}", e.getMessage());
@@ -1115,39 +1147,48 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
             }
         }
 
-        if (failFast && (aborted.get() || !errorMap.isEmpty())) {
-            cancelUnfinishedFutures(futures.values());
+        if (failFast && (aborted.get() || !taskErrorMap.isEmpty())) {
+            cancelUnfinishedFutures(futureList);
             Throwable cause = firstError.get();
-            if (cause == null && !errorMap.isEmpty()) {
-                cause = errorMap.values().iterator().next();
+            if (cause == null && !taskErrorMap.isEmpty()) {
+                cause = taskErrorMap.values().iterator().next();
             }
             String causeMsg = cause != null ? cause.getMessage() : "未知异常";
             throw new SshOperationException(SshResultCode.BATCH_EXEC_FAILED,
                     "SSH集群批量巡检快速熔断: " + causeMsg, cause);
         }
 
-        Map<SshServerInfo, SshExecResult> resultMap = new LinkedHashMap<>(total);
+        Map<SshServerInfo, SshExecResult> resultMap = new LinkedHashMap<>();
+        Map<String, SshExecResult> namedMap = new LinkedHashMap<>();
+        Map<SshServerInfo, Throwable> errorMap = new LinkedHashMap<>();
         int successCount = 0;
         int failureCount = 0;
 
-        for (Map.Entry<SshServerInfo, CompletableFuture<SshExecResult>> entry : futures.entrySet()) {
-            SshServerInfo server = entry.getKey();
-            CompletableFuture<SshExecResult> future = entry.getValue();
+        for (BatchTaskItem item : taskItems) {
+            BatchTaskTarget target = item.target();
+            SshServerInfo server = target.server();
+            CompletableFuture<SshExecResult> future = item.future();
             SshExecResult result = null;
             try {
                 if (future.isDone() && !future.isCancelled() && !future.isCompletedExceptionally()) {
                     result = future.join();
                 }
             } catch (Exception e) {
-                errorMap.put(server, e);
+                taskErrorMap.put(item.index(), e);
             }
+            Throwable err = taskErrorMap.get(item.index());
             if (result == null) {
-                Throwable err = errorMap.get(server);
                 String errMsg = err != null ? err.getMessage() : "Execution cancelled or interrupted";
                 result = SshExecResult.builder().exitCode(-1).stderr(errMsg).build();
             }
+            if (err != null) {
+                errorMap.put(server, err);
+            }
             resultMap.put(server, result);
-            if (result.isSuccess() && !errorMap.containsKey(server)) {
+            if (target.name() != null) {
+                namedMap.put(target.name(), result);
+            }
+            if (result.isSuccess() && err == null) {
                 successCount++;
             } else {
                 failureCount++;
@@ -1162,7 +1203,8 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                 .failureCount(failureCount)
                 .duration(totalDuration)
                 .results(Collections.unmodifiableMap(resultMap))
-                .errors(Collections.unmodifiableMap(new LinkedHashMap<>(errorMap)))
+                .namedResults(namedMap.isEmpty() ? Collections.emptyMap() : Collections.unmodifiableMap(namedMap))
+                .errors(Collections.unmodifiableMap(errorMap))
                 .build();
     }
 
