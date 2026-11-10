@@ -36,6 +36,18 @@ _Avoid_: ModelEnhancer, SchemaModifier, ModelInterceptor
 OpenAPI 3.0 规范契约标准化离线导出门面类，提供将指定业务分组的 OpenAPI 契约高效导出为格式化 JSON / YAML 字符串、byte[] 或输出流的能力，支撑 CI/CD 自动化校验与前端 SDK 生成。
 _Avoid_: SpecExporter, DocDumper, OpenApiWriter
 
+**OpenApiExportController**:
+受管离线契约导出 REST 控制器，受 `OpenApiGuardFilter` 安全防火墙与 `ateng.boot.openapi.export.enabled` 强类型开关管辖，自动为 OpenAPI 规范提供挂载 `Content-Disposition: attachment` 标头的 JSON 与 YAML 规范文件附件下载响应。
+_Avoid_: DocExportEndpoint, SpecDownloadController, OpenApiDownloadController
+
+**OpenApiFormat**:
+OpenAPI 离线契约导出格式强类型枚举，定义 JSON（对应 `application/json`）与 YAML（对应 `application/yaml`）两种标准契约格式与 MIME 类型映射。
+_Avoid_: SpecFormat, DocExportFormat, ExportFormatEnum
+
+**OpenApiCidrMatcher**:
+高性能 IP 白名单与无类域间路由（CIDR）网络掩码匹配计算器，原生支持 IPv4 与 IPv6 子网位运算，结合受信任反向代理标头（`trusted-header`）解析客户端真实 IP 并防御公网客户端伪造标头。
+_Avoid_: IpValidator, SubnetUtil, IpWhitelistChecker
+
 **ResultCodeProvider**:
 业务状态码字典扩展点 SPI 接口，允许各业务子模块（如订单、支付、用户等）向系统文档 `Info.description` 动态追加专属状态码字典，支持多错误码体系协同。
 _Avoid_: ErrorCodeSPI, StatusDictionaryProvider, ResultCodeHook
