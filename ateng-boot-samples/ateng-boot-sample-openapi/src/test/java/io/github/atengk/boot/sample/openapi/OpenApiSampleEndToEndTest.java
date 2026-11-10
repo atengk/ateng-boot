@@ -77,14 +77,14 @@ class OpenApiSampleEndToEndTest {
                 .andExpect(jsonPath("$.security[0].satoken").isArray())
                 .andExpect(jsonPath("$.security[1].bearerAuth").isArray())
                 // 5. 全局请求头自动化注入 (X-Trace-Id, X-Tenant-Id 与自定义 X-App-Version)
-                .andExpect(jsonPath("$.paths['/api/admin/users'].get.parameters[*].name", hasItem("X-Trace-Id")))
-                .andExpect(jsonPath("$.paths['/api/admin/users'].get.parameters[*].name", hasItem("X-Tenant-Id")))
-                .andExpect(jsonPath("$.paths['/api/admin/users'].get.parameters[*].name", hasItem("X-App-Version")))
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users'].get.parameters[*].name", hasItem("X-Trace-Id")))
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users'].get.parameters[*].name", hasItem("X-Tenant-Id")))
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users'].get.parameters[*].name", hasItem("X-App-Version")))
                 // 6. 通用标准响应补全
-                .andExpect(jsonPath("$.paths['/api/admin/users'].get.responses['200']").exists())
-                .andExpect(jsonPath("$.paths['/api/admin/users'].get.responses['400']").exists())
-                .andExpect(jsonPath("$.paths['/api/admin/users'].get.responses['401']").exists())
-                .andExpect(jsonPath("$.paths['/api/admin/users'].get.responses['500']").exists());
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users'].get.responses['200']").exists())
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users'].get.responses['400']").exists())
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users'].get.responses['401']").exists())
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users'].get.responses['500']").exists());
     }
 
     @Test
@@ -99,9 +99,9 @@ class OpenApiSampleEndToEndTest {
                 .andExpect(jsonPath("$.components.schemas.AdminUserVO.properties.status.description", containsString("枚举选项")))
                 .andExpect(jsonPath("$.components.schemas.AdminUserVO.properties.status.description", containsString("`1`: 启用 (ENABLE)")))
                 .andExpect(jsonPath("$.components.schemas.AdminUserVO.properties.status.example").value(1))
-                // 2. ValidList 批量数组包装转换 (paths['/api/admin/users/batch'].post.requestBody 为 array)
-                .andExpect(jsonPath("$.paths['/api/admin/users/batch'].post.requestBody.content['application/json'].schema.type").value("array"))
-                .andExpect(jsonPath("$.paths['/api/admin/users/batch'].post.requestBody.content['application/json'].schema.items").exists())
+                // 2. ValidList 批量数组包装转换 (paths['/sample/openapi/admin/users/batch'].post.requestBody 为 array)
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users/batch'].post.requestBody.content['application/json'].schema.type").value("array"))
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users/batch'].post.requestBody.content['application/json'].schema.items").exists())
                 // 3. @FieldSensitive 敏感字段脱敏安全警示标签
                 .andExpect(jsonPath("$.components.schemas.AdminUserVO.properties.phone.description", containsString("[脱敏字段: 手机号码掩码]")))
                 .andExpect(jsonPath("$.components.schemas.AdminUserVO.properties.phone.example").value("138****5678"));
@@ -113,15 +113,15 @@ class OpenApiSampleEndToEndTest {
         mockMvc.perform(get("/v3/api-docs").accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 // 1. 正常业务端点包含全部全局请求头
-                .andExpect(jsonPath("$.paths['/api/admin/users'].get.parameters[*].name", hasItem("X-Tenant-Id")))
-                .andExpect(jsonPath("$.paths['/api/admin/users'].get.parameters[*].name", hasItem("X-Trace-Id")))
-                .andExpect(jsonPath("$.paths['/api/admin/users'].get.parameters[*].name", hasItem("X-App-Version")))
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users'].get.parameters[*].name", hasItem("X-Tenant-Id")))
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users'].get.parameters[*].name", hasItem("X-Trace-Id")))
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users'].get.parameters[*].name", hasItem("X-App-Version")))
                 // 2. 登录接口声明 @IgnoreGlobalHeaders({"X-Tenant-Id"}) -> 仅排除 X-Tenant-Id，保留 X-Trace-Id 与 X-App-Version
-                .andExpect(jsonPath("$.paths['/api/admin/auth/login'].post.parameters[*].name", not(hasItem("X-Tenant-Id"))))
-                .andExpect(jsonPath("$.paths['/api/admin/auth/login'].post.parameters[*].name", hasItem("X-Trace-Id")))
-                .andExpect(jsonPath("$.paths['/api/admin/auth/login'].post.parameters[*].name", hasItem("X-App-Version")))
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/auth/login'].post.parameters[*].name", not(hasItem("X-Tenant-Id"))))
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/auth/login'].post.parameters[*].name", hasItem("X-Trace-Id")))
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/auth/login'].post.parameters[*].name", hasItem("X-App-Version")))
                 // 3. 探针接口声明无参 @IgnoreGlobalHeaders -> 全量排除所有全局请求头
-                .andExpect(jsonPath("$.paths['/api/admin/auth/ping'].get.parameters").doesNotExist());
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/auth/ping'].get.parameters").doesNotExist());
     }
 
     @Test
@@ -129,11 +129,11 @@ class OpenApiSampleEndToEndTest {
     void testAdminGroupContract() throws Exception {
         mockMvc.perform(get("/v3/api-docs/admin").accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.paths['/api/admin/users']").exists())
-                .andExpect(jsonPath("$.paths['/api/admin/users/{id}']").exists())
-                .andExpect(jsonPath("$.paths['/api/admin/users/batch']").exists())
-                .andExpect(jsonPath("$.paths['/api/admin/auth/login']").exists())
-                .andExpect(jsonPath("$.paths['/api/app/articles']").doesNotExist());
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users']").exists())
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users/{id}']").exists())
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users/batch']").exists())
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/auth/login']").exists())
+                .andExpect(jsonPath("$.paths['/sample/openapi/app/articles']").doesNotExist());
     }
 
     @Test
@@ -141,10 +141,10 @@ class OpenApiSampleEndToEndTest {
     void testAppGroupContract() throws Exception {
         mockMvc.perform(get("/v3/api-docs/app").accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.paths['/api/app/articles']").exists())
-                .andExpect(jsonPath("$.paths['/api/app/articles/{id}']").exists())
-                .andExpect(jsonPath("$.paths['/api/admin/users']").doesNotExist())
-                .andExpect(jsonPath("$.paths['/api/admin/auth/login']").doesNotExist());
+                .andExpect(jsonPath("$.paths['/sample/openapi/app/articles']").exists())
+                .andExpect(jsonPath("$.paths['/sample/openapi/app/articles/{id}']").exists())
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users']").doesNotExist())
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/auth/login']").doesNotExist());
     }
 
     @Test
@@ -168,15 +168,15 @@ class OpenApiSampleEndToEndTest {
         mockMvc.perform(get("/docs/export/admin.json"))
                 .andExpect(status().isOk())
                 .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"openapi-admin.json\""))
-                .andExpect(jsonPath("$.paths['/api/admin/users']").exists())
-                .andExpect(jsonPath("$.paths['/api/app/articles']").doesNotExist());
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users']").exists())
+                .andExpect(jsonPath("$.paths['/sample/openapi/app/articles']").doesNotExist());
 
         // 4. App 分组指定下载
         mockMvc.perform(get("/docs/export/app.json"))
                 .andExpect(status().isOk())
                 .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"openapi-app.json\""))
-                .andExpect(jsonPath("$.paths['/api/app/articles']").exists())
-                .andExpect(jsonPath("$.paths['/api/admin/users']").doesNotExist());
+                .andExpect(jsonPath("$.paths['/sample/openapi/app/articles']").exists())
+                .andExpect(jsonPath("$.paths['/sample/openapi/admin/users']").doesNotExist());
     }
 
     @Test
@@ -191,8 +191,8 @@ class OpenApiSampleEndToEndTest {
 
         // 2. 静态方式导出 Admin 分组 JSON
         String adminJson = OpenApiExportHelper.exportJson("admin");
-        assertThat(adminJson).contains("/api/admin/users");
-        assertThat(adminJson).doesNotContain("/api/app/articles");
+        assertThat(adminJson).contains("/sample/openapi/admin/users");
+        assertThat(adminJson).doesNotContain("/sample/openapi/app/articles");
 
         // 3. 静态方式导出字节数组
         byte[] adminJsonBytes = OpenApiExportHelper.exportBytes("admin", OpenApiFormat.JSON);

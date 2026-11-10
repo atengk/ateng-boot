@@ -27,7 +27,7 @@ import java.util.List;
  */
 @Tag(name = "运营管理端 - 用户治理", description = "面向后台管理系统管理员的用户创建、明细查询与列表治理接口")
 @RestController
-@RequestMapping("/api/admin/users")
+@RequestMapping("/sample/openapi/admin/users")
 public class AdminUserController {
 
     /**

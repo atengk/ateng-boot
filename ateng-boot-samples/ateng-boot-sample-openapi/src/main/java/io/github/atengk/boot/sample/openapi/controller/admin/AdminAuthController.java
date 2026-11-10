@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @Tag(name = "运营管理端 - 开放认证", description = "面向管理员的登录鉴权开放端点，演示 @IgnoreGlobalHeaders 声明式请求头豁免机制")
 @RestController
-@RequestMapping("/api/admin/auth")
+@RequestMapping("/sample/openapi/admin/auth")
 public class AdminAuthController {
 
     /**

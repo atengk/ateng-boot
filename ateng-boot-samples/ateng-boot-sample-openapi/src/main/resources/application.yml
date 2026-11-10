@@ -70,12 +70,12 @@ ateng:
         - group: "admin"
           display-name: "运营管理端 (Admin API)"
           paths-to-match:
-            - "/api/admin/**"
+            - "/sample/openapi/admin/**"
           packages-to-scan:
             - "io.github.atengk.boot.sample.openapi.controller.admin"
         - group: "app"
           display-name: "移动端服务 (App API)"
           paths-to-match:
-            - "/api/app/**"
+            - "/sample/openapi/app/**"
           packages-to-scan:
             - "io.github.atengk.boot.sample.openapi.controller.app"
