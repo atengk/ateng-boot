@@ -1,102 +1,57 @@
-# ateng-boot-sample-notification 企业协同机器人通知自验工程
+# ateng-boot-sample-notification 企业协同机器人通知体验工程
 
-> 专注于工业级多端 Webhook 机器人通知通信（钉钉、企业微信、飞书与通用 Webhook）、卡片自适应跨端转译、客户端主动滑动窗口频控、本地事务感知发信（`sendAfterCommit`）、动态切源与声明式 `@NotifyAlert` 异常告警切面。
-
----
-
-## 1. 场景痛点与功能定位
-
-在现代化企业应用研发与运维中，群机器人是系统发布通报、业务指标播报、离线任务对账、致命故障预警的第一触达通道。然而传统实现往往面临如下严峻痛点：
-- **各厂商 Webhook 协议严重割裂**：企微使用 `msgtype: template_card`，钉钉使用 `actionCard`，飞书使用 `interactive card v2`，开发人员不得不为不同群写大量冗余转译代码；
-- **平台频控封禁风险巨大**：各厂商严格限制发信频率（如钉钉 20 条/分钟，企微 20 条/分钟），无控制的高并发推送极易导致群机器人被官方封禁 10 分钟乃至封号；
-- **发信与业务本地事务割裂**：在本地数据库事务未物理提交甚至发生回滚时，外围通知已提前外呼推送，引发“幽灵通知”事故；
-- **异常告警瞬间风暴刷屏**：下游依赖故障或网络抖动时，数千个并发请求在几十秒内倾泻数千条告警，彻底淹没有效信息并打垮企业通讯群；
-- **敏感凭据与机密泄漏**：告警堆栈与入参打印时未脱敏，导致包含真实用户密码、密钥、身份证号的数据明文推送至公共群聊。
-
-`ateng-boot-sample-notification` 作为 1:1 对齐 `ateng-boot-notification` 的独立场景沙箱，具备以下工业级特性：
-- **100% 离线自洽测试**：内嵌 OkHttp `MockWebServer` 模拟各大平台服务端，毫秒级快速单测，零外部网络依赖；
-- **显式强类型契约**：Controller 统一声明返回强类型 `Result<NotificationSendResult>`，入参 DTO 挂载 JSR-303 格式校验 Fail-Fast；
-- **多端卡片自适应转译**：统一声明 `CardMessage`，由各平台 PayloadBuilder 智能自适应转译为钉钉 ActionCard、企微 TemplateCard、飞书卡片或通用 Webhook；
-- **本地事务感知安全网**：`sendAfterCommit` 严格挂载事务同步器，仅在物理提交后发信，事务回滚自动取消；
-- **三阶防告警风暴抑制**：声明式 `@NotifyAlert` 切面拦截未捕获异常，MD5 确定性指纹归因，首发即时推送红色卡片，窗口期静默原子计数，到期聚合通报；
-- **敏感凭证 100% 审计脱敏**：出站 Webhook Token、Key、Secret 以及告警方法入参中的敏感字段（如 `password`）全自动打星号掩码。
+> 专注于演示与自验 `ateng-boot-notification` 多端 Webhook 机器人通知通信（钉钉、企业微信、飞书与通用 Webhook）、跨端卡片自适应转译、客户端滑动窗口频控与飞书突发令牌弹性治理、主备渠道顺延故障转移（Cascade Failover）、事务感知防幽灵发信（`sendAfterCommit`）、动态切源上下文以及声明式 `@NotifyAlert` 异常告警拦截与三阶防风暴聚合抑制引擎。
 
 ---
 
-## 2. 演示场景清单
+## 1. 快速启动与服务端口
 
-| 演示场景 | 核心门面 / 注解 / SPI | 业务类与端点 | 核心特性与行为 |
+- **默认 HTTP 端口**：`8080`（可在 `application.yml` 中修改）
+- **启动方式**：
+  ```bash
+  # 方式一：IDE 中运行 SampleNotificationApplication.java 的 main 方法
+  # 方式二：命令行启动
+  mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-notification
+  ```
+
+---
+
+## 2. 运行环境与双模切换
+
+- **默认 / CI 离线自洽模式**：样例工程单测内嵌 OkHttp `MockWebServer` 模拟企业微信、钉钉与飞书 Webhook 官方网关，零外部网络与凭据依赖，执行 `mvn test` 即可秒级 100% 离线自洽回归；
+- **Local 真实联调模式**：若需直连真实群机器人验证，复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并填入真实机器人的 Webhook 与加签 Secret（该文件已被 `.gitignore` 彻底忽略，CI 零外泄风险），激活 `local` Profile 启动即可：
+  ```bash
+  mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-notification -Dspring-boot.run.profiles=local
+  ```
+
+---
+
+## 3. 核心 Controller 接口与一键体验
+
+样例工程已按领域完整解耦为 4 大独立 `@RestController`，对外暴露 13 条标准业务端点，所有接口均遵循 `/sample/notification/<domain>/<action>` 契约并返回强类型 `Result<T>`：
+
+| 领域分类 | Controller 类 | 请求方式与路径 | 核心业务场景与快速体验 cURL 命令 |
 | :--- | :--- | :--- | :--- |
-| **纯文本通知发送** | `NotificationTemplate.send` | `POST /api/v1/notification/text` | 默认渠道发信，统一 `Result` 契约，支持 `@所有人` 与手机号/工号精准 `@人` |
-| **富文本 Markdown 发信** | `NotificationTemplate.send` | `POST /api/v1/notification/markdown` | 企微 Markdown 表格自动安全降级为引用块，防语法破坏；钉钉/飞书原生渲染 |
-| **跨端自适应交互卡片** | `NotificationTemplate.send` | `POST /api/v1/notification/card` | 10 色主题卡片顶栏（`CardColor`）与跳转操作按钮（`CardButton`），多平台自适应转译 |
-| **受管异步非阻塞发信** | `NotificationTemplate.sendAsync` | `POST /api/v1/notification/async` | 异步 CompletableFuture 非阻塞响应，Core 受管线程池与四维上下文透传 |
-| **事务感知发信防幽灵** | `NotificationTemplate.sendAfterCommit` | `POST /api/v1/notification/transactional` | 严格绑定 Spring 物理事务提交，事务异常回滚时自动取消防幽灵通知 |
-| **动态切源与上下文隔离** | `NotificationContextHolder.callWithChannel` | `POST /api/v1/notification/switch-channel` | 线程级通知切源，支持多层嵌套并在 `finally` 严格还原现场 |
-| **声明式异常告警切面** | `@NotifyAlert` | `POST /api/v1/alert/trigger` | 捕获未受控异常，自动提取 MDC `traceId`、Top 10 精简堆栈及敏感入参安全脱敏 |
-| **三阶防告警风暴抑制** | `AlertStormSuppressor` | `POST /api/v1/alert/trigger` | 500+ 并发瞬时异常首发即时通报，窗口期静默原子计数，周期末补发聚合卡片 |
-| **外部动态渠道供给 SPI** | `NotificationChannelProvider` | `SampleCustomNotificationChannelProvider` | 模拟从外部配置源动态按需懒加载通知渠道配置 |
-| **发信失败补偿处理 SPI** | `NotificationSendFailureHandler` | `SampleNotificationSendFailureHandler` | 接管发信失败事件，支持死信落库、告警调度与降级补偿 |
+| **多模态消息** | `NotificationMessageController` | `POST /sample/notification/message/text` | **纯文本通知发送**（支持 `@所有人` 与手机号精准 `@人`）：<br>``curl -X POST "http://localhost:8080/sample/notification/message/text" -H "Content-Type: application/json" -d '{"channel":"ops-alert","content":"【发布通报】ateng-boot v1.2.0 发布成功","atAll":false,"atMobiles":["13800138000"]}'`` |
+| **多模态消息** | `NotificationMessageController` | `POST /sample/notification/message/markdown` | **富文本 Markdown 发信**（自动执行企微表格向引用块优雅降级清洗）：<br>``curl -X POST "http://localhost:8080/sample/notification/message/markdown" -H "Content-Type: application/json" -d '{"channel":"ops-alert","title":"系统巡检汇总","content":"### 巡检摘要\n| 服务名 | 状态 | 延迟 |\n| :--- | :--- | :--- |\n| Gateway | 正常 | 12ms |\n| Auth | 正常 | 8ms |"}'`` |
+| **多模态消息** | `NotificationMessageController` | `POST /sample/notification/message/card` | **跨端自适应交互卡片**（支持 10 色主题与横纵多按钮排版）：<br>``curl -X POST "http://localhost:8080/sample/notification/message/card" -H "Content-Type: application/json" -d '{"channel":"ops-alert","title":"集群高负载预警","content":"节点 worker-01 CPU 使用率超过 **92%**","headerColor":"RED","btnOrientation":"HORIZONTAL","buttons":[{"title":"查看监控","url":"https://monitor.example.com","type":"PRIMARY"},{"title":"立即重启","url":"https://ops.example.com/restart","type":"DANGER"}]}'`` |
+| **多模态消息** | `NotificationMessageController` | `POST /sample/notification/message/link` | **图文链接消息**（自适应转译钉钉 Link、企微 News 单图文与飞书图文卡片）：<br>``curl -X POST "http://localhost:8080/sample/notification/message/link" -H "Content-Type: application/json" -d '{"channel":"dingtalk-dev","title":"项目里程碑通报","text":"v1.2.0 已完成端到端测试与五维文档闭环","messageUrl":"https://github.com/atengk/ateng-boot","picUrl":"https://img.example.com/banner.png"}'`` |
+| **多模态消息** | `NotificationMessageController` | `POST /sample/notification/message/image` | **图片消息**（支持 Base64 内容或本地文件安全防卫发信）：<br>``curl -X POST "http://localhost:8080/sample/notification/message/image" -H "Content-Type: application/json" -d '{"channel":"ops-alert","base64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}'`` |
+| **多模态消息** | `NotificationMessageController` | `POST /sample/notification/message/raw` | **原生特化报文透传**（直接传入官方原生 JSON 逃生舱）：<br>``curl -X POST "http://localhost:8080/sample/notification/message/raw" -H "Content-Type: application/json" -d '{"channel":"dingtalk-dev","rawJson":"{\"msgtype\":\"text\",\"text\":{\"content\":\"原生报文透传测试\"}}"}'`` |
+| **渠道治理** | `NotificationChannelController` | `POST /sample/notification/channel/switch` | **线程级临时切源**（`callWithChannel` 动态切源并在 `finally` 严格还原现场）：<br>``curl -X POST "http://localhost:8080/sample/notification/channel/switch" -H "Content-Type: application/json" -d '{"temporaryChannel":"dingtalk-dev","content":"动态切源发信测试"}'`` |
+| **渠道治理** | `NotificationChannelController` | `POST /sample/notification/channel/template-render` | **动态占位符模板渲染发信**（变量插值解耦业务消息组装）：<br>``curl -X POST "http://localhost:8080/sample/notification/channel/template-render" -H "Content-Type: application/json" -d '{"channel":"dingtalk-dev","templateName":"服务 ${appName} 瞬时 QPS 达到 ${qps}，当前健康状态: ${status}","variables":{"appName":"order-service","qps":"12500","status":"WARNING"}}'`` |
+| **渠道治理** | `NotificationChannelController` | `POST /sample/notification/channel/failover` | **顺延故障转移 Failover**（主渠道异常自动无缝切换备用渠道重试）：<br>``curl -X POST "http://localhost:8080/sample/notification/channel/failover" -H "Content-Type: application/json" -d '{"primaryChannel":"sample-failover-primary","title":"故障转移演练","content":"主渠道模拟故障触发级联重试"}'`` |
+| **可靠事务** | `NotificationTransactionController` | `POST /sample/notification/transaction/send-after-commit` | **本地事务感知发信**（严格在数据库事务物理提交后外呼，防止幽灵通知）：<br>``curl -X POST "http://localhost:8080/sample/notification/transaction/send-after-commit" -H "Content-Type: application/json" -d '{"channel":"ops-alert","content":"【事务通知】订单 ORD-9988 结算完成，已成功入库"}'`` |
+| **可靠事务** | `NotificationTransactionController` | `POST /sample/notification/transaction/send-async` | **受管异步非阻塞发信**（托管于受管线程池并无损透传 MDC TraceId 快照）：<br>``curl -X POST "http://localhost:8080/sample/notification/transaction/send-async" -H "Content-Type: application/json" -d '{"channel":"ops-alert","content":"【异步通知】批量对账任务已后台派发"}'`` |
+| **异常告警** | `NotificationAlertController` | `POST /sample/notification/alert/trigger` | **声明式 `@NotifyAlert` 切面拦截**（自动提取 Top 10 堆栈并将敏感密码脱敏为 `******`）：<br>``curl -X POST "http://localhost:8080/sample/notification/alert/trigger" -H "Content-Type: application/json" -d '{"orderId":"ORD-ALERT-9999","password":"SUPER_SECRET_PASSWORD_123","errorType":"npe"}'`` |
+| **异常告警** | `NotificationAlertController` | `POST /sample/notification/alert/storm-suppress` | **告警风暴三阶抑制抗洪**（并发 10 次：首发推送 1 次红色卡片、静默拦截 9 次、2 秒后补发 1 次橙色聚合卡片）：<br>``curl -X POST "http://localhost:8080/sample/notification/alert/storm-suppress" -H "Content-Type: application/json" -d '{"orderId":"ORD-STORM-1001","password":"STORM_SECRET_PWD","count":10}'`` |
 
 ---
 
-## 3. 本地自验与自动化测试
+## 4. 全真自动化回归命令
 
-### 3.1 执行场景端到端自动化测试（推荐）
 ```bash
-mvn test -pl ateng-boot-samples/ateng-boot-sample-notification -am -T 1C -nsu -B
+mvn test -pl ateng-boot-notification,ateng-boot-samples/ateng-boot-sample-notification -am -T 1C -nsu -B
 ```
 
-### 3.2 启动本地服务自验
-```bash
-mvn -pl ateng-boot-samples/ateng-boot-sample-notification spring-boot:run
-```
-
-#### 发送纯文本通知示例
-```bash
-curl -X POST "http://localhost:8080/api/v1/notification/text" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "channel": "ops-alert",
-    "content": "【生产发布】ateng-boot v1.0.0 发布成功！",
-    "atAll": false,
-    "atMobiles": ["13800138000"],
-    "atUserIds": ["ops-admin"]
-  }'
-```
-
-#### 发送富文本 Markdown 示例（企微自动表格清洗）
-```bash
-curl -X POST "http://localhost:8080/api/v1/notification/markdown" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "channel": "ops-alert",
-    "title": "系统巡检汇总",
-    "content": "### 巡检摘要\n| 服务名 | 状态 | 延迟 |\n| :--- | :--- | :--- |\n| Gateway | 正常 | 12ms |\n| Auth | 正常 | 8ms |"
-  }'
-```
-
-#### 发送交互卡片通知示例
-```bash
-curl -X POST "http://localhost:8080/api/v1/notification/card" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "channel": "ops-alert",
-    "title": "集群高负载预警",
-    "content": "节点 worker-01 CPU 使用率超过 **92%**",
-    "headerColor": "RED",
-    "buttonTitle": "立即排查",
-    "buttonUrl": "https://monitor.example.com/nodes/worker-01"
-  }'
-```
-
-#### 触发声明式异常告警切面与参数脱敏自验
-```bash
-curl -X POST "http://localhost:8080/api/v1/alert/trigger" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "orderId": "ORD-ALERT-9999",
-    "password": "SUPER_SECRET_PASSWORD_123",
-    "errorType": "npe"
-  }'
-```
+> 详细原理机制、配置清单与扩展定制，请参阅核心 Starter 文档：[ateng-boot-notification README](../../ateng-boot-notification/README.md)。

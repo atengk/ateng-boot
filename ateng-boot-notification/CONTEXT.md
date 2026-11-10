@@ -72,6 +72,22 @@ _Avoid_: RobotSender, NotificationDriver, WebhookClient
 企业微信群机器人驱动实现，内置特化报文构建、Markdown 标签防崩清洗与图片 MD5 组装。
 _Avoid_: QywxDriver, WechatRobot, WeComClient
 
+**WeComMarkdownSanitizer**:
+企业微信群机器人 Markdown 标题与表格语法降级清洗器，自动将 GFM 管道表格安全转译为引用块并净化不兼容语法，保障多端排版不崩溃。
+_Avoid_: MarkdownCleaner, WeComTableParser, MarkdownSanitizerUtil
+
+**Cascade Failover**:
+主备渠道顺延故障转移容灾机制，主渠道发生瞬态异常时按有序备用渠道链表（`backup-channels`）顺延降级重试。
+_Avoid_: Failback, MasterSlaveFallback, RouteFailover
+
+**isTransientException**:
+瞬态网络与服务端异常判断契约，精确识别网络超时、连接拒绝、DNS 解析失败与 HTTP 5xx 状态码并驱动顺延重试，致命 4xx 与参数校验异常则立即阻断熔断。
+_Avoid_: isNetworkException, checkRetryable, isRetryableError
+
+**defaultFeishuBurstPermits**:
+飞书平台滑动窗口突发令牌桶弹性配额参数，用于应对业务瞬时告警突发流量，防御被单机限流器硬熔断。
+_Avoid_: feishuBurstSize, feishuBurstLimit, burstTokenCapacity
+
 **DingTalkNotificationProvider**:
 钉钉群机器人驱动实现，内置 HMAC-SHA256 URL 签名计算、ActionCard 单双按钮自适应与频控防卫。
 _Avoid_: DingDriver, DingTalkRobot, DingClient
