@@ -301,4 +301,101 @@ class SampleMqttWebControllerTest {
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data").value(containsString("成功对称清空设备保留状态消息")));
     }
+
+    @Test
+    @DisplayName("12. 测试 MqttDeadLetterController: 毒丸触发、死信只读窥探、受控重放与清空闭环")
+    void testDeadLetterLifecycle() throws Exception {
+        // 1. 触发毒丸消息
+        mockMvc.perform(post("/sample/mqtt/dead-letter/trigger-poison")
+                        .param("payload", "POISON_PAYLOAD"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true));
+
+        // 2. 离线只读窥探死信
+        mockMvc.perform(get("/sample/mqtt/dead-letter/peek")
+                        .param("topic", "iot/devices/poison-test/DLT")
+                        .param("count", "5")
+                        .param("timeoutSeconds", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true));
+
+        // 3. 受控重放死信至恢复主题
+        DeadLetterReplayRequest replayRequest = DeadLetterReplayRequest.builder()
+                .sourceTopic("iot/devices/poison-test/DLT")
+                .targetTopic("iot/devices/poison-recovered")
+                .count(5)
+                .timeoutSeconds(2)
+                .build();
+
+        mockMvc.perform(post("/sample/mqtt/dead-letter/replay")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(replayRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").value(containsString("成功受控重放")));
+
+        // 4. 清空死信队列
+        mockMvc.perform(delete("/sample/mqtt/dead-letter/purge")
+                        .param("topic", "iot/devices/poison-test/DLT"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").value(containsString("已成功彻底清空死信主题")));
+    }
+
+    @Test
+    @DisplayName("13. 测试 MqttDeadLetterController: JSR-303 参数校验拦截非法重放入参")
+    void testDeadLetterValidationFailed() throws Exception {
+        DeadLetterReplayRequest invalidRequest = DeadLetterReplayRequest.builder()
+                .sourceTopic("") // 空源主题
+                .targetTopic("") // 空目标主题
+                .count(-1)       // 非法数量
+                .build();
+
+        mockMvc.perform(post("/sample/mqtt/dead-letter/replay")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+    }
+
+    @Test
+    @DisplayName("14. 测试 MqttContainerController: 端点状态探查、动态暂停与恢复运维闭环")
+    void testContainerEndpointsLifecycle() throws Exception {
+        // 1. 查询全部端点状态
+        mockMvc.perform(get("/sample/mqtt/container/endpoints"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").isArray());
+
+        String targetEndpoint = "mqttContainerGovernanceScenarioService#onGovernanceMessage";
+
+        // 2. 暂停指定端点
+        mockMvc.perform(post("/sample/mqtt/container/pause")
+                        .param("endpointId", targetEndpoint))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").value(containsString("已成功暂停")));
+
+        // 3. 投递测试消息
+        mockMvc.perform(post("/sample/mqtt/container/publish-test")
+                        .param("message", "MESSAGE_DURING_PAUSE"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true));
+
+        // 4. 恢复指定端点
+        mockMvc.perform(post("/sample/mqtt/container/resume")
+                        .param("endpointId", targetEndpoint))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").value(containsString("已成功恢复")));
+    }
 }
