@@ -1,11 +1,11 @@
 package io.github.atengk.boot.sample.rocketmq;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.validation.ValidList;
-import io.github.atengk.boot.sample.rocketmq.dto.OrderDelayRequest;
-import io.github.atengk.boot.sample.rocketmq.dto.OrderProduceRequest;
-import io.github.atengk.boot.sample.rocketmq.dto.OrderRecallRequest;
-import io.github.atengk.boot.sample.rocketmq.dto.OrderTransactionRequest;
+import io.github.atengk.boot.sample.rocketmq.dto.*;
+import io.github.atengk.boot.sample.rocketmq.model.OrderMessage;
+import io.github.atengk.boot.sample.rocketmq.producer.TradeRocketmqProducer;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -16,8 +16,10 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -43,6 +45,9 @@ class SampleRocketmqWebControllerTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private TradeRocketmqProducer tradeRocketmqProducer;
 
     @Test
     @DisplayName("测试 RocketmqProduceController: 同步/异步/单向/FIFO/SQL92/批量与审计端点")
@@ -369,5 +374,125 @@ class SampleRocketmqWebControllerTest {
         mockMvc.perform(delete("/sample/rocketmq/transaction/clear"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
+    }
+
+    @Test
+    @DisplayName("测试 RocketmqSimpleConsumerController: 流式微批拉取/租约续期/显式ACK/闭包消费与句柄审计")
+    void testSimpleConsumerController() throws Exception {
+        // 0. 清理历史缓存
+        mockMvc.perform(delete("/sample/rocketmq/simple-consumer/clear"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 1. 发送 2 条待拉取订单消息
+        OrderMessage order1 = OrderMessage.builder().orderId("ORD-WEB-SIMPLE-001").amount(100.0).customerName("拉取买家1").status("CREATED").build();
+        OrderMessage order2 = OrderMessage.builder().orderId("ORD-WEB-SIMPLE-002").amount(200.0).customerName("拉取买家2").status("CREATED").build();
+        tradeRocketmqProducer.sendOrderWithTag(order1, "simple_pull");
+        tradeRocketmqProducer.sendOrderWithTag(order2, "simple_pull");
+
+        // 2. 微批长轮询流式拉取消息
+        SimplePullRequest pullReq = SimplePullRequest.builder()
+                .tag("simple_pull")
+                .maxNum(10)
+                .invisibleSeconds(30L)
+                .build();
+
+        String pullResultStr = mockMvc.perform(post("/sample/rocketmq/simple-consumer/pull")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(pullReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", hasSize(greaterThanOrEqualTo(1))))
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        JsonNode rootNode = objectMapper.readTree(pullResultStr);
+        String messageId = rootNode.path("data").get(0).path("messageId").asText();
+        assertThat(messageId).isNotBlank();
+
+        // 3. 审计待决租约句柄
+        mockMvc.perform(get("/sample/rocketmq/simple-consumer/cached-views"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.cachedCount", greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.data.messages", hasSize(greaterThanOrEqualTo(1))));
+
+        // 4. 动态续期不可见租约
+        SimpleRenewRequest renewReq = SimpleRenewRequest.builder()
+                .messageId(messageId)
+                .invisibleSeconds(60L)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/simple-consumer/renew")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(renewReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", containsString("租约续期成功")));
+
+        // 5. 租约续期 JSR-303 参数缺失拦截 (messageId 为空)
+        SimpleRenewRequest invalidRenewReq = SimpleRenewRequest.builder()
+                .invisibleSeconds(60L)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/simple-consumer/renew")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRenewReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 6. 显式确认出队 (ACK)
+        SimpleAckRequest ackReq = SimpleAckRequest.builder()
+                .messageId(messageId)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/simple-consumer/ack")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ackReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", containsString("消息确认出队成功")));
+
+        // 7. 对已确认出队的消息再次确认，触发防御拦截
+        mockMvc.perform(post("/sample/rocketmq/simple-consumer/ack")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ackReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 8. 高阶函数式闭包一步消费 (receiveAndExecute)
+        OrderMessage closureOrder = OrderMessage.builder().orderId("ORD-WEB-CLOSURE-001").amount(99.0).customerName("闭包买家").status("CREATED").build();
+        tradeRocketmqProducer.sendOrderWithTag(closureOrder, "simple_pull");
+
+        SimplePullRequest closureReq = SimplePullRequest.builder()
+                .tag("simple_pull")
+                .maxNum(5)
+                .invisibleSeconds(30L)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/simple-consumer/consume")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(closureReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", greaterThanOrEqualTo(1)));
+
+        // 9. 查询闭包消费接收记录
+        mockMvc.perform(get("/sample/rocketmq/simple-consumer/consumed"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", hasSize(greaterThanOrEqualTo(1))))
+                .andExpect(jsonPath("$.data[?(@.orderId == 'ORD-WEB-CLOSURE-001')]").exists());
+
+        // 10. 清空句柄缓存与消费记录
+        mockMvc.perform(delete("/sample/rocketmq/simple-consumer/clear"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        mockMvc.perform(get("/sample/rocketmq/simple-consumer/cached-views"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.cachedCount").value(0))
+                .andExpect(jsonPath("$.data.messages", empty()));
     }
 }
