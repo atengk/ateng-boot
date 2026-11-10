@@ -25,9 +25,12 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -127,7 +130,7 @@ class SampleNotificationIntegrationTest {
                 }
                 """;
 
-        mockMvc.perform(post("/api/v1/notification/text")
+        mockMvc.perform(post("/sample/notification/message/text")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isOk())
@@ -158,7 +161,7 @@ class SampleNotificationIntegrationTest {
                 }
                 """;
 
-        mockMvc.perform(post("/api/v1/notification/markdown")
+        mockMvc.perform(post("/sample/notification/message/markdown")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isOk())
@@ -190,7 +193,7 @@ class SampleNotificationIntegrationTest {
                 }
                 """;
 
-        mockMvc.perform(post("/api/v1/notification/card")
+        mockMvc.perform(post("/sample/notification/message/card")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isOk())
@@ -316,7 +319,7 @@ class SampleNotificationIntegrationTest {
                   "content": "向动态懒加载渠道发送安全通报"
                 }
                 """;
-        mockMvc.perform(post("/api/v1/notification/text")
+        mockMvc.perform(post("/sample/notification/message/text")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isOk())
@@ -361,20 +364,23 @@ class SampleNotificationIntegrationTest {
 
         String rawJson = """
                 {
-                  "msgtype": "raw_special",
-                  "custom_node": {
-                    "token": "tok_123",
-                    "status": "APPROVED"
+                  "channel": "generic-monitor",
+                  "payload": {
+                    "msgtype": "raw_special",
+                    "custom_node": {
+                      "token": "tok_123",
+                      "status": "APPROVED"
+                    }
                   }
                 }
                 """;
 
-        mockMvc.perform(post("/api/v1/notification/raw")
-                        .param("channel", "generic-monitor")
+        mockMvc.perform(post("/sample/notification/message/raw")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(rawJson))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
 
         RecordedRequest recorded = mockServer.takeRequest(3, TimeUnit.SECONDS);
         assertNotNull(recorded);
@@ -383,21 +389,71 @@ class SampleNotificationIntegrationTest {
     }
 
     @Test
-    @DisplayName("端到端验证图片通知发信接口")
+    @DisplayName("端到端验证图片通知发信接口：校验 Base64 与 MD5 载荷")
     void testSendImageMessageEndpoint() throws Exception {
         enqueueSuccessResponse();
 
-        mockMvc.perform(post("/api/v1/notification/image")
-                        .param("channel", "ops-alert")
-                        .param("base64", "aGVsbG8=")
-                        .param("md5", "5d41402abc4b2a76b9719d911017c592"))
+        String imagePayload = """
+                {
+                  "channel": "ops-alert",
+                  "base64": "aGVsbG8=",
+                  "md5": "5d41402abc4b2a76b9719d911017c592"
+                }
+                """;
+
+        mockMvc.perform(post("/sample/notification/message/image")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(imagePayload))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
 
         RecordedRequest recorded = mockServer.takeRequest(3, TimeUnit.SECONDS);
         assertNotNull(recorded);
         String body = recorded.getBody().readUtf8();
         assertThat(body).contains("image").contains("aGVsbG8=");
+    }
+
+    @Test
+    @DisplayName("端到端验证本地图片文件通知发信接口：校验由路径自动计算 Base64/MD5 并验证非法空入参防卫")
+    void testSendImageMessageFromPathEndpoint(@TempDir Path tempDir) throws Exception {
+        Path validImg = tempDir.resolve("test-image.png");
+        byte[] imgContent = "PNG_FAKE_IMAGE_BYTES_FOR_TEST".getBytes();
+        Files.write(validImg, imgContent);
+
+        enqueueSuccessResponse();
+
+        String escapedPath = validImg.toAbsolutePath().toString().replace("\\", "\\\\");
+        String imagePayload = String.format("""
+                {
+                  "channel": "ops-alert",
+                  "imagePath": "%s"
+                }
+                """, escapedPath);
+
+        mockMvc.perform(post("/sample/notification/message/image")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(imagePayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        RecordedRequest recorded = mockServer.takeRequest(3, TimeUnit.SECONDS);
+        assertNotNull(recorded);
+        String body = recorded.getBody().readUtf8();
+        assertThat(body).contains("image");
+
+        // 验证空文件与非法入参校验 Fail-Fast
+        String invalidPayload = """
+                {
+                  "channel": "ops-alert"
+                }
+                """;
+        mockMvc.perform(post("/sample/notification/message/image")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
     }
 
     @Test
@@ -487,7 +543,7 @@ class SampleNotificationIntegrationTest {
                 }
                 """;
 
-        mockMvc.perform(post("/api/v1/notification/link")
+        mockMvc.perform(post("/sample/notification/message/link")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isOk())
@@ -533,7 +589,7 @@ class SampleNotificationIntegrationTest {
                 }
                 """;
 
-        mockMvc.perform(post("/api/v1/notification/card")
+        mockMvc.perform(post("/sample/notification/message/card")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isOk())
@@ -577,7 +633,7 @@ class SampleNotificationIntegrationTest {
                     }
                     """;
 
-            mockMvc.perform(post("/api/v1/notification/text")
+            mockMvc.perform(post("/sample/notification/message/text")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(payload))
                     .andExpect(status().isOk())

@@ -13,8 +13,10 @@ import io.github.atengk.boot.notification.model.RawMessage;
 import io.github.atengk.boot.notification.model.TextMessage;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import io.github.atengk.boot.sample.notification.dto.CardMessageRequest;
+import io.github.atengk.boot.sample.notification.dto.ImageMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.LinkMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.MarkdownMessageRequest;
+import io.github.atengk.boot.sample.notification.dto.RawMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.TextMessageRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -147,10 +149,39 @@ public class NotificationScenarioService {
     }
 
     /**
+     * 平台原生特化 JSON 逃生舱发信
+     *
+     * @param request 原生报文请求
+     * @return 发信结果
+     */
+    public NotificationSendResult sendRaw(RawMessageRequest request) {
+        return notificationTemplate.send(request.getChannel(), RawMessage.of(request.getPayload()));
+    }
+
+    /**
      * 图片通知发信
      */
     public NotificationSendResult sendImage(String channel, String base64, String md5) {
         return notificationTemplate.send(channel, ImageMessage.ofBase64(base64, md5));
+    }
+
+    /**
+     * 图片通知发信（支持 Base64 与本地路径零字节防卫）
+     *
+     * @param request 图片发信请求
+     * @return 发信结果
+     */
+    public NotificationSendResult sendImage(ImageMessageRequest request) {
+        ImageMessage message;
+        if (StringUtils.hasText(request.getImagePath())) {
+            message = ImageMessage.fromPath(java.nio.file.Path.of(request.getImagePath()));
+        } else if (StringUtils.hasText(request.getMd5())) {
+            message = ImageMessage.ofBase64(request.getBase64(), request.getMd5());
+        } else {
+            byte[] bytes = java.util.Base64.getDecoder().decode(request.getBase64());
+            message = ImageMessage.fromBytes(bytes);
+        }
+        return notificationTemplate.send(request.getChannel(), message);
     }
 
     /**
