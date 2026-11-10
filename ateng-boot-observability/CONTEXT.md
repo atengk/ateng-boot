@@ -79,3 +79,11 @@ _Avoid_: EndpointBlockEvent, SecurityRejectEvent
 **ObservabilityEnvironmentPostProcessor**:
 生产安全基线环境后处理器，在容器启动早期自动注入安全的默认暴露端点配置与 Kubernetes 探针自动开启配置，并强制将外部物理依赖从 Liveness 存活检查剥离至 Readiness 就绪检查。
 _Avoid_: ObservabilityPostProcessor, ActuatorConfigProcessor
+
+**PaymentGatewayHealthIndicator**:
+面向第三方支付通道的业务级防假死安全健康探针示例，基于受管异步线程探测支付网关连通性，超时硬切断避免外部网络阻塞。
+_Avoid_: PayHealthIndicator, PaymentProbe, PaySafeHealth
+
+**ObservabilityAlertEventListener**:
+运维全生命周期领域事件监听器，专职捕获线程池拒绝、探针降级与安全拦截三大事件，维持有界内存缓冲区供运维巡检与告警外发。
+_Avoid_: AlertListener, ObsEventListener, SecurityEventListener
