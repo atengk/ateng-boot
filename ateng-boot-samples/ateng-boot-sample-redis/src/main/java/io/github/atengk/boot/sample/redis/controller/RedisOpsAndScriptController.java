@@ -81,18 +81,16 @@ public class RedisOpsAndScriptController {
     @PostMapping("/rank/score")
     public Result<Double> addProductScore(@RequestBody @Valid ProductScoreRequest request) {
         String member = request.getProductId() + ":" + request.getProductName();
-        Double current = RedisUtil.zScore(RANK_KEY, member);
-        double newScore = (current != null ? current : 0.0) + request.getDeltaScore();
-        RedisUtil.zAdd(RANK_KEY, member, newScore);
+        Double newScore = RedisUtil.zIncrBy(RANK_KEY, member, request.getDeltaScore());
         return Result.success(newScore);
     }
 
     /**
-     * 5. 热销榜：查询 Top N 热销榜单 (ZSet 结构)
+     * 5. 热销榜：查询 Top N 热销榜单 (ZSet 结构，按热度倒序)
      */
     @GetMapping("/rank/top")
     public Result<List<ProductRankVO>> getTopProducts(@RequestParam(defaultValue = "10") int limit) {
-        Set<ZSetOperations.TypedTuple<Object>> tupleSet = RedisUtil.zRangeWithScores(RANK_KEY, 0, limit - 1);
+        Set<ZSetOperations.TypedTuple<Object>> tupleSet = RedisUtil.zRevRangeWithScores(RANK_KEY, 0, limit - 1);
         List<ProductRankVO> ranks = new ArrayList<>();
         if (tupleSet != null) {
             int rankIndex = 1;

@@ -1,10 +1,12 @@
 package io.github.atengk.boot.redis.atomic;
 
+import io.github.atengk.boot.redis.properties.RedisProperties;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.util.Assert;
+import org.springframework.util.StringUtils;
 
 import java.time.Duration;
 import java.time.LocalDate;
@@ -14,55 +16,67 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * 分布式原子计数、发号与滑动窗口工具
- * 提供分布式原子自增自减、基于日历的唯一序列号发号（支持按日重置与自动归档）以及基于 ZSet 的滑动窗口频控计数
+ * 分布式原子计数、发号与滑动窗口工具类
+ * 支持 Spring Bean 依赖注入与全局静态门面双重调用范式，
+ * 封装带过期时间原子自增、CAS、跨天带防孤儿 TTL 业务流水号及精准毫秒滑动窗口流控等高阶原子原语。
  *
  * @author Ateng
  * @since 2026-10-16
  */
 public class RedisAtomicUtil {
 
-    public static final String DEFAULT_DATE_PATTERN = "yyyyMMdd";
-    private static final Duration DAILY_SEQ_RETENTION = Duration.ofDays(2);
     private static final StringRedisSerializer STRING_SERIALIZER = new StringRedisSerializer();
 
+    private static final String DEFAULT_DATE_PATTERN = "yyyyMMdd";
+
+    /**
+     * 流水号 Key 默认保留兜底 TTL（2 天），防止历史废弃 Key 持续常驻内存空间泄露
+     */
+    private static final Duration DAILY_SEQ_RETENTION = Duration.ofDays(2);
+
+    /**
+     * 原子递增并支持首次初始化设置 TTL 的 Lua 脚本
+     */
     private static final RedisScript<Long> INCR_EXPIRE_SCRIPT = new DefaultRedisScript<>(
             """
-            local val = redis.call('INCRBY', KEYS[1], ARGV[1])
-            if tonumber(ARGV[2]) > 0 then
-                redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+            local current = redis.call('INCRBY', KEYS[1], ARGV[1])
+            if current == tonumber(ARGV[1]) and tonumber(ARGV[2]) > 0 then
+                redis.call('EXPIRE', KEYS[1], ARGV[2])
             end
-            return val
+            return current
             """,
             Long.class
     );
 
+    /**
+     * 生成跨天自重置流水号并原子附加兜底 TTL 的 Lua 脚本
+     */
     private static final RedisScript<Long> DAILY_SEQ_SCRIPT = new DefaultRedisScript<>(
             """
-            local val = redis.call('INCRBY', KEYS[1], 1)
-            if redis.call('TTL', KEYS[1]) < 0 then
-                redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
+            local seq = redis.call('INCR', KEYS[1])
+            if seq == 1 then
+                redis.call('EXPIRE', KEYS[1], ARGV[1])
             end
-            return val
+            return seq
             """,
             Long.class
     );
 
+    /**
+     * 基于 ZSet 毫秒时间戳的滑动时间窗口限流 Lua 脚本
+     * ARGV[1] = 当前时间戳 (now)
+     * ARGV[2] = 窗口起始时间戳 (now - window)
+     * ARGV[3] = 窗口允许的最大请求数 (maxRequests)
+     * ARGV[4] = 频控 Key 的过期时间秒数 (expireSeconds)
+     * ARGV[5] = 当前请求唯一成员标识 (member)
+     */
     private static final RedisScript<Long> SLIDING_WINDOW_SCRIPT = new DefaultRedisScript<>(
             """
-            local key = KEYS[1]
-            local now = tonumber(ARGV[1])
-            local windowStart = tonumber(ARGV[2])
-            local maxRequests = tonumber(ARGV[3])
-            local expireSeconds = tonumber(ARGV[4])
-            local member = ARGV[5]
-
-            redis.call('ZREMRANGEBYSCORE', key, 0, windowStart)
-            local currentCount = redis.call('ZCARD', key)
-
-            if currentCount < maxRequests then
-                redis.call('ZADD', key, now, member)
-                redis.call('EXPIRE', key, expireSeconds)
+            redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[2])
+            local currentCount = redis.call('ZCARD', KEYS[1])
+            if currentCount < tonumber(ARGV[3]) then
+                redis.call('ZADD', KEYS[1], ARGV[1], ARGV[5])
+                redis.call('EXPIRE', KEYS[1], ARGV[4])
                 return 1
             else
                 return 0
@@ -71,16 +85,24 @@ public class RedisAtomicUtil {
             Long.class
     );
 
+    /**
+     * 严格对称比较并交换 (CAS) 原子脚本
+     * ARGV[1] = 是否校验期望值 (0: 不校验仅要求 key 不存在或无条件, 1: 校验期望值)
+     * ARGV[2] = 期望值 (expect)
+     * ARGV[3] = 目标值 (update)
+     * ARGV[4] = 过期时长秒数 (expireSeconds, -1 表示保持不变)
+     */
     private static final RedisScript<Long> CAS_SCRIPT = new DefaultRedisScript<>(
             """
-            local current = redis.call('GET', KEYS[1])
             local hasExpect = tonumber(ARGV[1])
             local expectVal = ARGV[2]
             local update = ARGV[3]
-            local expireSec = tonumber(ARGV[4] or -1)
+            local expireSec = tonumber(ARGV[4])
 
+            local current = redis.call('GET', KEYS[1])
             local matched = false
-            if not current then
+
+            if current == false then
                 if hasExpect == 0 then
                     matched = true
                 end
@@ -103,10 +125,65 @@ public class RedisAtomicUtil {
             Long.class
     );
 
-    private final RedisTemplate<String, Object> redisTemplate;
+    private static volatile RedisTemplate<String, Object> staticTemplate;
+    private static volatile RedisProperties staticProperties;
+    private static volatile RedisAtomicUtil staticInstance;
 
     public RedisAtomicUtil(RedisTemplate<String, Object> redisTemplate) {
-        this.redisTemplate = Objects.requireNonNull(redisTemplate, "redisTemplate must not be null");
+        this(redisTemplate, null);
+    }
+
+    public RedisAtomicUtil(RedisTemplate<String, Object> redisTemplate, RedisProperties redisProperties) {
+        RedisAtomicUtil.staticTemplate = Objects.requireNonNull(redisTemplate, "redisTemplate must not be null");
+        RedisAtomicUtil.staticProperties = redisProperties;
+        RedisAtomicUtil.staticInstance = this;
+    }
+
+    /**
+     * 绑定静态门面实例（由自动装配或显式构建时调用）
+     *
+     * @param instance 实例
+     */
+    public static void init(RedisAtomicUtil instance) {
+        RedisAtomicUtil.staticInstance = instance;
+    }
+
+    /**
+     * 获取静态受管门面单例
+     *
+     * @return RedisAtomicUtil 实例
+     */
+    public static RedisAtomicUtil getInstance() {
+        RedisAtomicUtil instance = staticInstance;
+        Assert.state(instance != null, "RedisAtomicUtil尚未初始化，请确保已启用自动装配");
+        return instance;
+    }
+
+    private static RedisTemplate<String, Object> getTemplate() {
+        RedisTemplate<String, Object> template = staticTemplate;
+        Assert.state(template != null, "RedisAtomicUtil尚未初始化，请确保已启用自动装配或通过构造器注入 RedisTemplate");
+        return template;
+    }
+
+    /**
+     * 格式化并附加全局 key-prefix 前缀
+     */
+    public static String formatKey(String key) {
+        if (staticProperties == null || key == null) {
+            return key;
+        }
+        String prefix = staticProperties.getKeyPrefix();
+        if (!StringUtils.hasText(prefix)) {
+            return key;
+        }
+        String trimmed = prefix.trim();
+        if (!trimmed.endsWith(":")) {
+            trimmed += ":";
+        }
+        if (key.startsWith(trimmed)) {
+            return key;
+        }
+        return trimmed + key;
     }
 
     /**
@@ -115,7 +192,17 @@ public class RedisAtomicUtil {
      * @param key 键
      * @return 递增后的值
      */
-    public Long increment(String key) {
+    public static Long increment(String key) {
+        return increment(key, 1L);
+    }
+
+    /**
+     * 原子递增 1（静态简写别名）
+     *
+     * @param key 键
+     * @return 递增后的值
+     */
+    public static Long incr(String key) {
         return increment(key, 1L);
     }
 
@@ -126,9 +213,20 @@ public class RedisAtomicUtil {
      * @param delta 增量步长
      * @return 递增后的值
      */
-    public Long increment(String key, long delta) {
+    public static Long increment(String key, long delta) {
         Assert.hasText(key, "key must not be blank");
-        return redisTemplate.opsForValue().increment(key, delta);
+        return getTemplate().opsForValue().increment(formatKey(key), delta);
+    }
+
+    /**
+     * 原子递增 delta（静态简写别名）
+     *
+     * @param key 键
+     * @param delta 增量步长
+     * @return 递增后的值
+     */
+    public static Long incr(String key, long delta) {
+        return increment(key, delta);
     }
 
     /**
@@ -139,20 +237,44 @@ public class RedisAtomicUtil {
      * @param timeout 过期时长
      * @return 递增后的值
      */
-    public Long increment(String key, long delta, Duration timeout) {
+    public static Long increment(String key, long delta, Duration timeout) {
         Assert.hasText(key, "key must not be blank");
         if (timeout == null || timeout.isZero() || timeout.isNegative()) {
             return increment(key, delta);
         }
         long seconds = Math.max(1, timeout.toSeconds());
-        return redisTemplate.execute(
+        return getTemplate().execute(
                 INCR_EXPIRE_SCRIPT,
                 STRING_SERIALIZER,
                 null,
-                Collections.singletonList(key),
+                Collections.singletonList(formatKey(key)),
                 String.valueOf(delta),
                 String.valueOf(seconds)
         );
+    }
+
+    /**
+     * 原子递增 delta 并设置/续期过期时间（静态简写别名）
+     *
+     * @param key 键
+     * @param delta 增量步长
+     * @param timeout 过期时长
+     * @return 递增后的值
+     */
+    public static Long incr(String key, long delta, Duration timeout) {
+        return increment(key, delta, timeout);
+    }
+
+    /**
+     * 原子递增 delta 并设置/续期过期时间（别名方法）
+     *
+     * @param key 键
+     * @param delta 增量步长
+     * @param timeout 过期时长
+     * @return 递增后的值
+     */
+    public static Long incrWithExpire(String key, long delta, Duration timeout) {
+        return increment(key, delta, timeout);
     }
 
     /**
@@ -161,7 +283,17 @@ public class RedisAtomicUtil {
      * @param key 键
      * @return 递减后的值
      */
-    public Long decrement(String key) {
+    public static Long decrement(String key) {
+        return decrement(key, 1L);
+    }
+
+    /**
+     * 原子递减 1（静态简写别名）
+     *
+     * @param key 键
+     * @return 递减后的值
+     */
+    public static Long decr(String key) {
         return decrement(key, 1L);
     }
 
@@ -172,9 +304,20 @@ public class RedisAtomicUtil {
      * @param delta 减量步长
      * @return 递减后的值
      */
-    public Long decrement(String key, long delta) {
+    public static Long decrement(String key, long delta) {
         Assert.hasText(key, "key must not be blank");
-        return redisTemplate.opsForValue().decrement(key, delta);
+        return getTemplate().opsForValue().decrement(formatKey(key), delta);
+    }
+
+    /**
+     * 原子递减 delta（静态简写别名）
+     *
+     * @param key 键
+     * @param delta 减量步长
+     * @return 递减后的值
+     */
+    public static Long decr(String key, long delta) {
+        return decrement(key, delta);
     }
 
     /**
@@ -183,9 +326,9 @@ public class RedisAtomicUtil {
      * @param key 键
      * @return 当前值，不存在返回 null
      */
-    public Long get(String key) {
+    public static Long get(String key) {
         Assert.hasText(key, "key must not be blank");
-        Object val = redisTemplate.opsForValue().get(key);
+        Object val = getTemplate().opsForValue().get(formatKey(key));
         if (val == null) {
             return null;
         }
@@ -199,37 +342,38 @@ public class RedisAtomicUtil {
      * 设置计数值
      *
      * @param key 键
-     * @param value 计数值
+     * @param value 目标数值
      */
-    public void set(String key, long value) {
+    public static void set(String key, long value) {
         Assert.hasText(key, "key must not be blank");
-        redisTemplate.opsForValue().set(key, value);
+        getTemplate().opsForValue().set(formatKey(key), value);
     }
 
     /**
      * 设置计数值并指定过期时间
      *
      * @param key 键
-     * @param value 计数值
-     * @param timeout 过期时间
+     * @param value 目标数值
+     * @param timeout 过期时长
      */
-    public void set(String key, long value, Duration timeout) {
+    public static void set(String key, long value, Duration timeout) {
         Assert.hasText(key, "key must not be blank");
-        Assert.notNull(timeout, "timeout must not be null");
-        redisTemplate.opsForValue().set(key, value, timeout);
+        if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {
+            getTemplate().opsForValue().set(formatKey(key), value, timeout);
+        } else {
+            getTemplate().opsForValue().set(formatKey(key), value);
+        }
     }
 
     /**
-     * 原子比较置换操作 (CAS - Compare-And-Set)
-     * 当且仅当 Redis 中的当前值等于 expect 时，原子更新为 update
-     * 支持 expect 为 null（即当 key 不存在时初始化设置）
+     * 原子比较置换操作 (CAS)
      *
      * @param key 键
-     * @param expect 期望值（允许为 null，表示期望 key 不存在）
+     * @param expect 期望值（允许为 null，表示要求键不存在时才初始化）
      * @param update 新值
      * @return 是否置换成功
      */
-    public boolean compareAndSet(String key, Long expect, Long update) {
+    public static boolean compareAndSet(String key, Long expect, Long update) {
         return compareAndSet(key, expect, update, null);
     }
 
@@ -242,17 +386,17 @@ public class RedisAtomicUtil {
      * @param timeout 过期时长
      * @return 是否置换成功
      */
-    public boolean compareAndSet(String key, Long expect, Long update, Duration timeout) {
+    public static boolean compareAndSet(String key, Long expect, Long update, Duration timeout) {
         Assert.hasText(key, "key must not be blank");
         Assert.notNull(update, "update must not be null");
         long expireSeconds = (timeout != null && !timeout.isZero() && !timeout.isNegative()) ? Math.max(1, timeout.toSeconds()) : -1L;
         String hasExpect = expect != null ? "1" : "0";
         String expectVal = expect != null ? String.valueOf(expect) : "0";
-        Long result = redisTemplate.execute(
+        Long result = getTemplate().execute(
                 CAS_SCRIPT,
                 STRING_SERIALIZER,
                 null,
-                Collections.singletonList(key),
+                Collections.singletonList(formatKey(key)),
                 hasExpect,
                 expectVal,
                 String.valueOf(update),
@@ -269,7 +413,7 @@ public class RedisAtomicUtil {
      * @param update 新值
      * @return 是否置换成功
      */
-    public boolean compareAndSet(String key, long expect, long update) {
+    public static boolean compareAndSet(String key, long expect, long update) {
         return compareAndSet(key, Long.valueOf(expect), Long.valueOf(update), null);
     }
 
@@ -280,7 +424,7 @@ public class RedisAtomicUtil {
      * @param update 新值
      * @return 更新前的旧值，若不存在返回 null
      */
-    public Long getAndSet(String key, long update) {
+    public static Long getAndSet(String key, long update) {
         return getAndSet(key, Long.valueOf(update));
     }
 
@@ -291,10 +435,10 @@ public class RedisAtomicUtil {
      * @param update 新值
      * @return 更新前的旧值，若不存在返回 null
      */
-    public Long getAndSet(String key, Long update) {
+    public static Long getAndSet(String key, Long update) {
         Assert.hasText(key, "key must not be blank");
         Assert.notNull(update, "update must not be null");
-        Object oldVal = redisTemplate.opsForValue().getAndSet(key, update);
+        Object oldVal = getTemplate().opsForValue().getAndSet(formatKey(key), update);
         if (oldVal == null) {
             return null;
         }
@@ -313,8 +457,19 @@ public class RedisAtomicUtil {
      * @param length 尾部序列号数字位宽（不足左补零）
      * @return 格式化后的完整流水号
      */
-    public String generateDailySeq(String prefix, int length) {
+    public static String generateDailySeq(String prefix, int length) {
         return generateDailySeq(prefix, DEFAULT_DATE_PATTERN, length);
+    }
+
+    /**
+     * 生成按日重置的业务递增流水号（静态简写别名）
+     *
+     * @param prefix 业务前缀
+     * @param length 尾部序列号数字位宽（不足左补零）
+     * @return 格式化后的完整流水号
+     */
+    public static String dailySeq(String prefix, int length) {
+        return generateDailySeq(prefix, length);
     }
 
     /**
@@ -325,15 +480,16 @@ public class RedisAtomicUtil {
      * @param length 尾部数字位宽（不足左补零）
      * @return 格式化后的完整流水号
      */
-    public String generateDailySeq(String prefix, String datePattern, int length) {
+    public static String generateDailySeq(String prefix, String datePattern, int length) {
         Assert.hasText(prefix, "prefix must not be blank");
         Assert.hasText(datePattern, "datePattern must not be blank");
         Assert.isTrue(length > 0, "length must be greater than 0");
 
         String dateStr = LocalDate.now().format(DateTimeFormatter.ofPattern(datePattern));
-        String key = "seq:" + prefix + ":" + dateStr;
+        String rawKey = "seq:" + prefix + ":" + dateStr;
+        String key = formatKey(rawKey);
 
-        Long seq = redisTemplate.execute(
+        Long seq = getTemplate().execute(
                 DAILY_SEQ_SCRIPT,
                 STRING_SERIALIZER,
                 null,
@@ -346,6 +502,18 @@ public class RedisAtomicUtil {
     }
 
     /**
+     * 生成自定义日期的业务递增流水号（静态简写别名）
+     *
+     * @param prefix 业务前缀
+     * @param datePattern 日期格式（如 yyyyMMdd、yyyyMM）
+     * @param length 尾部数字位宽（不足左补零）
+     * @return 格式化后的完整流水号
+     */
+    public static String dailySeq(String prefix, String datePattern, int length) {
+        return generateDailySeq(prefix, datePattern, length);
+    }
+
+    /**
      * 滑动窗口流控校验（判断当前请求在滑动时间窗口内是否超限，未超限则自动计入本次访问）
      * 基于 Redis Lua 脚本原子执行 ZSet 历史淘汰、当前计数判定与本次记录入库，彻底杜绝并发竞态穿透
      *
@@ -354,7 +522,7 @@ public class RedisAtomicUtil {
      * @param window 滑动时间窗口时长
      * @return true 表示在阈值内放行；false 表示超限拦截
      */
-     public boolean slidingWindowCheck(String key, int maxRequests, Duration window) {
+    public static boolean slidingWindowCheck(String key, int maxRequests, Duration window) {
         Assert.hasText(key, "key must not be blank");
         Assert.isTrue(maxRequests > 0, "maxRequests must be greater than 0");
         Assert.notNull(window, "window must not be null");
@@ -364,11 +532,11 @@ public class RedisAtomicUtil {
         long expireSeconds = Math.max(window.toSeconds() + 10, 10);
         String member = now + ":" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
 
-        Long result = redisTemplate.execute(
+        Long result = getTemplate().execute(
                 SLIDING_WINDOW_SCRIPT,
                 STRING_SERIALIZER,
                 null,
-                Collections.singletonList(key),
+                Collections.singletonList(formatKey(key)),
                 String.valueOf(now),
                 String.valueOf(windowStart),
                 String.valueOf(maxRequests),
@@ -386,7 +554,7 @@ public class RedisAtomicUtil {
      * @param window 滑动时间窗口时长
      * @return true 表示在阈值内放行；false 表示超限拦截
      */
-    public boolean isAllowedBySlidingWindow(String key, int maxRequests, Duration window) {
+    public static boolean isAllowedBySlidingWindow(String key, int maxRequests, Duration window) {
         return slidingWindowCheck(key, maxRequests, window);
     }
 
@@ -397,15 +565,96 @@ public class RedisAtomicUtil {
      * @param window 时间窗口
      * @return 窗口内请求数量
      */
-    public long getSlidingWindowCount(String key, Duration window) {
+    public static long getSlidingWindowCount(String key, Duration window) {
         Assert.hasText(key, "key must not be blank");
         Assert.notNull(window, "window must not be null");
 
         long now = System.currentTimeMillis();
         long windowStart = now - window.toMillis();
+        String formattedKey = formatKey(key);
 
-        redisTemplate.opsForZSet().removeRangeByScore(key, 0, windowStart);
-        Long count = redisTemplate.opsForZSet().zCard(key);
+        getTemplate().opsForZSet().removeRangeByScore(formattedKey, 0, windowStart);
+        Long count = getTemplate().opsForZSet().zCard(formattedKey);
         return count != null ? count : 0L;
+    }
+
+    // ==========================================
+    // 全局静态委托兼容别名方法 (Static Facade Aliases)
+    // ==========================================
+
+    public static Long incrementStatic(String key) {
+        return increment(key);
+    }
+
+    public static Long incrementStatic(String key, long delta) {
+        return increment(key, delta);
+    }
+
+    public static Long incrementStatic(String key, long delta, Duration timeout) {
+        return increment(key, delta, timeout);
+    }
+
+    public static Long incrWithExpireStatic(String key, long delta, Duration timeout) {
+        return incrWithExpire(key, delta, timeout);
+    }
+
+    public static Long decrementStatic(String key) {
+        return decrement(key);
+    }
+
+    public static Long decrementStatic(String key, long delta) {
+        return decrement(key, delta);
+    }
+
+    public static Long getStatic(String key) {
+        return get(key);
+    }
+
+    public static void setStatic(String key, long value) {
+        set(key, value);
+    }
+
+    public static void setStatic(String key, long value, Duration timeout) {
+        set(key, value, timeout);
+    }
+
+    public static boolean compareAndSetStatic(String key, Long expect, Long update) {
+        return compareAndSet(key, expect, update);
+    }
+
+    public static boolean compareAndSetStatic(String key, Long expect, Long update, Duration timeout) {
+        return compareAndSet(key, expect, update, timeout);
+    }
+
+    public static boolean compareAndSetStatic(String key, long expect, long update) {
+        return compareAndSet(key, expect, update);
+    }
+
+    public static Long getAndSetStatic(String key, long update) {
+        return getAndSet(key, update);
+    }
+
+    public static Long getAndSetStatic(String key, Long update) {
+        return getAndSet(key, update);
+    }
+
+    public static String generateDailySeqStatic(String prefix, int length) {
+        return generateDailySeq(prefix, length);
+    }
+
+    public static String generateDailySeqStatic(String prefix, String datePattern, int length) {
+        return generateDailySeq(prefix, datePattern, length);
+    }
+
+    public static boolean slidingWindowCheckStatic(String key, int maxRequests, Duration window) {
+        return slidingWindowCheck(key, maxRequests, window);
+    }
+
+    public static boolean isAllowedBySlidingWindowStatic(String key, int maxRequests, Duration window) {
+        return isAllowedBySlidingWindow(key, maxRequests, window);
+    }
+
+    public static long getSlidingWindowCountStatic(String key, Duration window) {
+        return getSlidingWindowCount(key, window);
     }
 }

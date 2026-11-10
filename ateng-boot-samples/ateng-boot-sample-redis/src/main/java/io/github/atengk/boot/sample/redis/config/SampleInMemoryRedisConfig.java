@@ -941,8 +941,27 @@ public class SampleInMemoryRedisConfig {
                             Object v = args[1];
                             double score = ((Number) args[2]).doubleValue();
                             ConcurrentSkipListMap<Double, Set<Object>> map = ZSET_STORE.computeIfAbsent(k, key -> new ConcurrentSkipListMap<>());
+                            for (Map.Entry<Double, Set<Object>> entry : map.entrySet()) {
+                                entry.getValue().remove(v);
+                            }
                             map.computeIfAbsent(score, s -> ConcurrentHashMap.newKeySet()).add(v);
                             return true;
+                        }
+                        if ("incrementScore".equals(mName)) {
+                            String k = (String) args[0];
+                            Object v = args[1];
+                            double delta = ((Number) args[2]).doubleValue();
+                            ConcurrentSkipListMap<Double, Set<Object>> map = ZSET_STORE.computeIfAbsent(k, key -> new ConcurrentSkipListMap<>());
+                            double oldScore = 0.0;
+                            for (Map.Entry<Double, Set<Object>> entry : map.entrySet()) {
+                                if (entry.getValue().remove(v)) {
+                                    oldScore = entry.getKey();
+                                    break;
+                                }
+                            }
+                            double newScore = oldScore + delta;
+                            map.computeIfAbsent(newScore, s -> ConcurrentHashMap.newKeySet()).add(v);
+                            return newScore;
                         }
                         if ("score".equals(mName)) {
                             String k = (String) args[0];

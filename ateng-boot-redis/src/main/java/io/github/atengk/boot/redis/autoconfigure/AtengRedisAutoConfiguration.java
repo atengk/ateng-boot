@@ -402,12 +402,13 @@ public class AtengRedisAutoConfiguration {
      * 装配分布式原子自增、发号与滑动窗口工具 RedisAtomicUtil
      *
      * @param redisTemplate RedisTemplate 实例
+     * @param redisProperties 属性配置
      * @return RedisAtomicUtil 门面
      */
     @Bean
     @ConditionalOnMissingBean(RedisAtomicUtil.class)
-    public RedisAtomicUtil redisAtomicUtil(RedisTemplate<String, Object> redisTemplate) {
-        return new RedisAtomicUtil(redisTemplate);
+    public RedisAtomicUtil redisAtomicUtil(RedisTemplate<String, Object> redisTemplate, RedisProperties redisProperties) {
+        return new RedisAtomicUtil(redisTemplate, redisProperties);
     }
 
     /**

@@ -996,6 +996,18 @@ public class RedisUtil {
     }
 
     /**
+     * 为有序集合成员原子累加分值
+     *
+     * @param key 键名
+     * @param value 成员
+     * @param delta 分值增量
+     * @return 累加后的新分值
+     */
+    public static Double zIncrBy(String key, Object value, double delta) {
+        return getTemplate().opsForZSet().incrementScore(key, value, delta);
+    }
+
+    /**
      * 获取指定排名区间的成员（从小到大升序）
      *
      * @param key 键名
@@ -1031,6 +1043,19 @@ public class RedisUtil {
      */
     public static Set<Object> zRangeByScore(String key, double min, double max) {
         Set<Object> range = getTemplate().opsForZSet().rangeByScore(key, min, max);
+        return range != null ? range : Collections.emptySet();
+    }
+
+    /**
+     * 按分值区间逆序查询成员（从大到小）
+     *
+     * @param key 键名
+     * @param min 最小分
+     * @param max 最大分
+     * @return 成员集合
+     */
+    public static Set<Object> zRevRangeByScore(String key, double min, double max) {
+        Set<Object> range = getTemplate().opsForZSet().reverseRangeByScore(key, min, max);
         return range != null ? range : Collections.emptySet();
     }
 
@@ -1114,6 +1139,31 @@ public class RedisUtil {
     public static Set<ZSetOperations.TypedTuple<Object>> zRangeWithScores(String key, long start, long end) {
         Set<ZSetOperations.TypedTuple<Object>> range = getTemplate().opsForZSet().rangeWithScores(key, start, end);
         return range != null ? range : Collections.emptySet();
+    }
+
+    /**
+     * 获取指定排名区间的成员及分值（降序，常用于排行榜）
+     *
+     * @param key 键名
+     * @param start 起始名次
+     * @param end 终止名次
+     * @return 带分值的成员集合
+     */
+    public static Set<ZSetOperations.TypedTuple<Object>> zRevRangeWithScores(String key, long start, long end) {
+        Set<ZSetOperations.TypedTuple<Object>> range = getTemplate().opsForZSet().reverseRangeWithScores(key, start, end);
+        return range != null ? range : Collections.emptySet();
+    }
+
+    /**
+     * 获取指定排名区间的成员及分值（降序排行榜别名方法，等同于 {@link #zRevRangeWithScores}）
+     *
+     * @param key 键名
+     * @param start 起始名次
+     * @param end 终止名次
+     * @return 带分值的成员集合
+     */
+    public static Set<ZSetOperations.TypedTuple<Object>> reverseRangeWithScores(String key, long start, long end) {
+        return zRevRangeWithScores(key, start, end);
     }
 
     /**

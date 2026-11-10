@@ -34,6 +34,15 @@ public final class RedisSerializerFactory {
     }
 
     /**
+     * 获取标准 UTF-8 字符串序列化器
+     *
+     * @return 字符串 Redis 序列化器
+     */
+    public static RedisSerializer<String> stringSerializer() {
+        return RedisSerializer.string();
+    }
+
+    /**
      * 创建安全、纯净无 @class 污染的 ObjectMapper
      *
      * @return 预配置的 ObjectMapper

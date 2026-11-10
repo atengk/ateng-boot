@@ -293,6 +293,17 @@ class RedisUtilTest {
 
         when(zSetOperations.zCard("zset:1")).thenReturn(50L);
         assertThat(RedisUtil.zCard("zset:1")).isEqualTo(50L);
+
+        when(zSetOperations.incrementScore("zset:1", "player1", 5.5)).thenReturn(105.5);
+        assertThat(RedisUtil.zIncrBy("zset:1", "player1", 5.5)).isEqualTo(105.5);
+
+        Set<ZSetOperations.TypedTuple<Object>> mockTuples = Set.of();
+        when(zSetOperations.reverseRangeWithScores("zset:1", 0, 9)).thenReturn(mockTuples);
+        assertThat(RedisUtil.zRevRangeWithScores("zset:1", 0, 9)).isEqualTo(mockTuples);
+        assertThat(RedisUtil.reverseRangeWithScores("zset:1", 0, 9)).isEqualTo(mockTuples);
+
+        when(zSetOperations.reverseRangeByScore("zset:1", 0.0, 100.0)).thenReturn(Set.of("player1"));
+        assertThat(RedisUtil.zRevRangeByScore("zset:1", 0.0, 100.0)).containsExactly("player1");
     }
 
     @Test

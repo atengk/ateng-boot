@@ -809,7 +809,11 @@ class SampleRedisIntegrationTest {
         mockMvc.perform(get("/sample/redis/ops/rank/top").param("limit", "5"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").isArray());
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data[0].productId").value("PROD_102"))
+                .andExpect(jsonPath("$.data[0].score").value(95.0))
+                .andExpect(jsonPath("$.data[1].productId").value("PROD_101"))
+                .andExpect(jsonPath("$.data[1].score").value(88.5));
     }
 
     @Test
