@@ -745,4 +745,23 @@ class SampleMailIntegrationTest {
         assertThat(messages[0].getSubject()).isEqualTo("动态账号专属优惠券");
         assertThat(messages[0].getFrom()[0].toString()).contains("dynamic-sender@example.com");
     }
+
+    @Test
+    @DisplayName("21. ReliableController 紧急告警接口触发 @InEnum 格式校验第一道防线快速失败")
+    void shouldFailWhenAlertLevelIsInvalidInUrgentAlert() throws Exception {
+        SystemAlertMailRequest req = SystemAlertMailRequest.builder()
+                .to("oncall@example.com")
+                .serviceName("order-service")
+                .alertLevel("INVALID_LEVEL")
+                .errorMessage("测试错误")
+                .build();
+
+        mockMvc.perform(post("/sample/mail/reliable/urgent-alert")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.msg").value(containsString("告警级别不合法")));
+    }
 }

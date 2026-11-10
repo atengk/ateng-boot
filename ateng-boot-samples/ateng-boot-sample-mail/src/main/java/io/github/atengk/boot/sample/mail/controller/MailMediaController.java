@@ -13,8 +13,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.nio.charset.StandardCharsets;
-
 /**
  * 邮件富媒体、附件与内联资源控制器
  * <p>
@@ -40,20 +38,7 @@ public class MailMediaController {
      */
     @PostMapping("/attachment")
     public Result<MailSendResult> sendWithAttachment(@Valid @RequestBody AttachmentMailRequest request) {
-        String fileName = request.getFileName() != null && !request.getFileName().isBlank()
-                ? request.getFileName() : "月度电子账单.pdf";
-        // 模拟电子账单二进制流数据
-        byte[] demoContent = ("%PDF-1.4\n1 0 obj\n<< /Title (Monthly Statement) /Content ("
-                + request.getContent() + ") >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF")
-                .getBytes(StandardCharsets.UTF_8);
-
-        MailSendResult result = mailScenarioService.sendWithAttachment(
-                request.getTo(),
-                request.getSubject(),
-                request.getContent(),
-                fileName,
-                demoContent
-        );
+        MailSendResult result = mailScenarioService.sendAttachmentStatement(request);
         return Result.success(result);
     }
 

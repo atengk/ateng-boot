@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sample.mail.dto;
 
+import io.github.atengk.boot.core.annotation.InEnum;
+import io.github.atengk.boot.sample.mail.enums.AlertLevelEnum;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import lombok.AllArgsConstructor;
@@ -37,9 +39,10 @@ public class SystemAlertMailRequest implements Serializable {
     private String serviceName;
 
     /**
-     * 告警级别（如：P0-CRITICAL, P1-WARNING）
+     * 告警级别（第一道防线：@InEnum 强类型枚举值拦截，支持范围: P0, P1, P2, P3）
      */
     @NotBlank(message = "告警级别不能为空")
+    @InEnum(value = AlertLevelEnum.class, message = "告警级别不合法，支持范围: P0, P1, P2, P3")
     private String alertLevel;
 
     /**

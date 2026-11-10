@@ -271,19 +271,7 @@ public class MailMediaController {
      */
     @PostMapping("/attachment")
     public Result<MailSendResult> sendWithAttachment(@Valid @RequestBody AttachmentMailRequest request) {
-        String fileName = request.getFileName() != null && !request.getFileName().isBlank()
-                ? request.getFileName() : "月度电子账单.pdf";
-        byte[] demoContent = ("%PDF-1.4\n1 0 obj\n<< /Title (Monthly Statement) /Content ("
-                + request.getContent() + ") >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF")
-                .getBytes(StandardCharsets.UTF_8);
-
-        MailSendResult result = mailScenarioService.sendWithAttachment(
-                request.getTo(),
-                request.getSubject(),
-                request.getContent(),
-                fileName,
-                demoContent
-        );
+        MailSendResult result = mailScenarioService.sendAttachmentStatement(request);
         return Result.success(result);
     }
 

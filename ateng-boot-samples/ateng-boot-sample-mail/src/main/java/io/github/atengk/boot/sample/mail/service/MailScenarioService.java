@@ -9,6 +9,7 @@ import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailPriority;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.template.MailTemplate;
+import io.github.atengk.boot.sample.mail.dto.AttachmentMailRequest;
 import io.github.atengk.boot.sample.mail.dto.DynamicAccountMailRequest;
 import io.github.atengk.boot.sample.mail.dto.SalarySlipBatchRequest;
 import io.github.atengk.boot.sample.mail.dto.SalarySlipItemRequest;
@@ -20,6 +21,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -87,6 +89,29 @@ public class MailScenarioService {
         model.put("username", username);
         model.put("code", verifyCode);
         return mailTemplate.sendTemplate(to, subject, "mail/verify-code", model);
+    }
+
+    /**
+     * 发送挂载流式电子账单附件的邮件（收敛二进制数据构造，防 Controller 职责泄漏）
+     *
+     * @param request 附件发信请求
+     * @return 发信结果
+     */
+    public MailSendResult sendAttachmentStatement(AttachmentMailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("AttachmentMailRequest must not be null");
+        }
+        String fileName = request.getFileName() != null && !request.getFileName().isBlank()
+                ? request.getFileName() : "月度电子账单.pdf";
+        byte[] demoContent = generateSimulatedPdfStatement(request.getContent());
+        return sendWithAttachment(request.getTo(), request.getSubject(), request.getContent(), fileName, demoContent);
+    }
+
+    private byte[] generateSimulatedPdfStatement(String content) {
+        String safeContent = content != null ? content : "";
+        return ("%PDF-1.4\n1 0 obj\n<< /Title (Monthly Statement) /Content ("
+                + safeContent + ") >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF")
+                .getBytes(StandardCharsets.UTF_8);
     }
 
     /**
