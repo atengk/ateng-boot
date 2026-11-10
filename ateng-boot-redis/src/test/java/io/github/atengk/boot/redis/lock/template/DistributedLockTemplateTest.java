@@ -372,6 +372,18 @@ class DistributedLockTemplateTest {
         verify(rLock).tryLock(eq(2000L), eq(10000L), eq(TimeUnit.MILLISECONDS));
         verify(rLock).unlock();
 
+        // null waitTime 快速失败校验
+        assertThatThrownBy(() -> lockTemplate.execute(List.of("dur:1"), LockMode.REENTRANT,
+                (Duration) null, Duration.ofSeconds(10), () -> "FAIL"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("waitTime must not be null");
+
+        // null leaseTime 快速失败校验
+        assertThatThrownBy(() -> lockTemplate.execute(List.of("dur:1"), LockMode.REENTRANT,
+                Duration.ofSeconds(1), (Duration) null, () -> "FAIL"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("leaseTime must not be null");
+
         // 负数 waitTime 快速失败校验
         assertThatThrownBy(() -> lockTemplate.execute(List.of("dur:1"), LockMode.REENTRANT,
                 Duration.ofSeconds(-1), Duration.ofSeconds(10), () -> "FAIL"))
@@ -399,5 +411,17 @@ class DistributedLockTemplateTest {
         assertThat(executed.get()).isTrue();
         verify(rLock).tryLock(eq(1500L), eq(TimeUnit.MILLISECONDS));
         verify(rLock).unlock();
+
+        assertThatThrownBy(() -> lockTemplate.tryExecute("try:dur", (Duration) null, () -> {}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("waitTime must not be null");
+
+        assertThatThrownBy(() -> lockTemplate.tryExecute(List.of("try:dur"), LockMode.REENTRANT, (Duration) null, Duration.ofSeconds(1), () -> {}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("waitTime must not be null");
+
+        assertThatThrownBy(() -> lockTemplate.tryExecute(List.of("try:dur"), LockMode.REENTRANT, Duration.ofSeconds(1), (Duration) null, () -> {}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("leaseTime must not be null");
     }
 }

@@ -46,7 +46,6 @@ public class RedisDelayedQueue implements DisposableBean {
         this.redissonClient = Objects.requireNonNull(redissonClient, "redissonClient must not be null");
         this.objectMapper = objectMapper != null ? objectMapper : RedisSerializerFactory.createSafeObjectMapper();
         this.redisProperties = redisProperties;
-        RedisDelayedQueueUtil.init(this);
     }
 
 
@@ -479,8 +478,9 @@ public class RedisDelayedQueue implements DisposableBean {
                 ? redisProperties.getDelayQueue().getMaxReplayAttempts()
                 : 3;
         if (deadLetter.replayCount() >= maxAttempts) {
-            log.warn("[RedisDelayedQueue] 死信消息重放次数已达上限 [replayCount={}, maxReplayAttempts={}]，拒绝重放并阻断二次雪崩: queueName={}",
+            log.warn("[RedisDelayedQueue] 死信消息重放次数已达上限 [replayCount={}, maxReplayAttempts={}]，拒绝重放并补偿归队: queueName={}",
                     deadLetter.replayCount(), maxAttempts, queueName);
+            sendToDeadLetterQueue(queueName, deadLetter);
             return false;
         }
 
@@ -514,14 +514,20 @@ public class RedisDelayedQueue implements DisposableBean {
     public int replayDeadLetters(String queueName, int maxCount, Duration delay) {
         Assert.hasText(queueName, "queueName must not be blank");
         Assert.isTrue(maxCount > 0, "maxCount must be greater than 0");
-        int count = 0;
-        for (int i = 0; i < maxCount; i++) {
-            if (!replayDeadLetter(queueName, delay)) {
+        int initialSize = deadLetterSize(queueName);
+        if (initialSize <= 0) {
+            return 0;
+        }
+        int attempts = Math.min(maxCount, initialSize);
+        int successCount = 0;
+        for (int i = 0; i < attempts; i++) {
+            if (replayDeadLetter(queueName, delay)) {
+                successCount++;
+            } else if (deadLetterSize(queueName) == 0) {
                 break;
             }
-            count++;
         }
-        return count;
+        return successCount;
     }
 
     /**

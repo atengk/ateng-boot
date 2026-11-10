@@ -68,6 +68,7 @@ public class StreamBootstrap implements SmartLifecycle, SmartInitializingSinglet
         EmbeddedValueResolverAware, ApplicationContextAware {
 
     public static final String MDC_TRACE_ID_KEY = "traceId";
+    private static final long DEFAULT_CLAIM_CHECK_INTERVAL_MILLIS = 5000L;
 
     private final RedisStreamTemplate redisStreamTemplate;
     private final ObjectMapper objectMapper;
@@ -241,7 +242,7 @@ public class StreamBootstrap implements SmartLifecycle, SmartInitializingSinglet
                 // 自动认领自愈 PEL 超时孤儿消息 (XPENDING + XCLAIM)
                 long now = System.currentTimeMillis();
                 if (claimIdleTime != null && !claimIdleTime.isNegative() && !claimIdleTime.isZero()
-                        && (now - lastClaimTime > 5000L)) {
+                        && (now - lastClaimTime > DEFAULT_CLAIM_CHECK_INTERVAL_MILLIS)) {
                     lastClaimTime = now;
                     try {
                         List<MapRecord<String, Object, Object>> claimed = redisStreamTemplate.claimPendingMessages(

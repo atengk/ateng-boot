@@ -143,20 +143,20 @@ public class DistributedLockTemplate {
      * 多键联锁自定义超时（Duration 强类型）与锁模式加锁执行（带返回值）
      */
     public <T, E extends Throwable> T execute(List<String> keys, LockMode mode, Duration waitTime, Duration leaseTime, LockSupplier<T, E> supplier) throws E {
-        long waitMillis = -1L;
-        if (waitTime != null) {
-            if (waitTime.isNegative()) {
-                throw new IllegalArgumentException("waitTime must not be negative");
-            }
-            waitMillis = waitTime.toMillis();
+        if (waitTime == null) {
+            throw new IllegalArgumentException("waitTime must not be null");
         }
-        long leaseMillis = -1L;
-        if (leaseTime != null) {
-            if (leaseTime.isNegative()) {
-                throw new IllegalArgumentException("leaseTime must not be negative");
-            }
-            leaseMillis = leaseTime.isZero() ? -1L : leaseTime.toMillis();
+        if (waitTime.isNegative()) {
+            throw new IllegalArgumentException("waitTime must not be negative");
         }
+        if (leaseTime == null) {
+            throw new IllegalArgumentException("leaseTime must not be null");
+        }
+        if (leaseTime.isNegative()) {
+            throw new IllegalArgumentException("leaseTime must not be negative");
+        }
+        long waitMillis = waitTime.toMillis();
+        long leaseMillis = leaseTime.isZero() ? -1L : leaseTime.toMillis();
         return execute(keys, mode, waitMillis, leaseMillis, TimeUnit.MILLISECONDS, supplier);
     }
 
@@ -219,13 +219,13 @@ public class DistributedLockTemplate {
      * @throws E 业务抛出的异常
      */
     public <E extends Throwable> boolean tryExecute(String key, Duration waitTime, LockAction<E> action) throws E {
-        long waitMillis = 0L;
-        if (waitTime != null) {
-            if (waitTime.isNegative()) {
-                throw new IllegalArgumentException("waitTime must not be negative");
-            }
-            waitMillis = waitTime.toMillis();
+        if (waitTime == null) {
+            throw new IllegalArgumentException("waitTime must not be null");
         }
+        if (waitTime.isNegative()) {
+            throw new IllegalArgumentException("waitTime must not be negative");
+        }
+        long waitMillis = waitTime.toMillis();
         return tryExecute(key, waitMillis, TimeUnit.MILLISECONDS, action);
     }
 
@@ -246,20 +246,20 @@ public class DistributedLockTemplate {
      * 多键联锁争锁试探执行（Duration 强类型）
      */
     public <E extends Throwable> boolean tryExecute(List<String> keys, LockMode mode, Duration waitTime, Duration leaseTime, LockAction<E> action) throws E {
-        long waitMillis = 0L;
-        if (waitTime != null) {
-            if (waitTime.isNegative()) {
-                throw new IllegalArgumentException("waitTime must not be negative");
-            }
-            waitMillis = waitTime.toMillis();
+        if (waitTime == null) {
+            throw new IllegalArgumentException("waitTime must not be null");
         }
-        long leaseMillis = -1L;
-        if (leaseTime != null) {
-            if (leaseTime.isNegative()) {
-                throw new IllegalArgumentException("leaseTime must not be negative");
-            }
-            leaseMillis = leaseTime.isZero() ? -1L : leaseTime.toMillis();
+        if (waitTime.isNegative()) {
+            throw new IllegalArgumentException("waitTime must not be negative");
         }
+        if (leaseTime == null) {
+            throw new IllegalArgumentException("leaseTime must not be null");
+        }
+        if (leaseTime.isNegative()) {
+            throw new IllegalArgumentException("leaseTime must not be negative");
+        }
+        long waitMillis = waitTime.toMillis();
+        long leaseMillis = leaseTime.isZero() ? -1L : leaseTime.toMillis();
         return tryExecute(keys, mode, waitMillis, leaseMillis, TimeUnit.MILLISECONDS, action);
     }
 

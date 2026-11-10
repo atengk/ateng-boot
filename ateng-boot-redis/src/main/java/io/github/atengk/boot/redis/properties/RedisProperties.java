@@ -608,14 +608,6 @@ public class RedisProperties {
             this.claimIdleTime = claimIdleTime;
         }
 
-        public void setClaimIdleTimeSeconds(long seconds) {
-            this.claimIdleTime = Duration.ofSeconds(seconds);
-        }
-
-        public long getClaimIdleTimeSeconds() {
-            return claimIdleTime != null ? claimIdleTime.toSeconds() : 60L;
-        }
-
         public Duration getPollTimeout() {
             return pollTimeout;
         }

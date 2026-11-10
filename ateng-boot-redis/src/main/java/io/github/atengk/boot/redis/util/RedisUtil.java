@@ -1161,6 +1161,7 @@ public class RedisUtil {
      * @param start 起始名次
      * @param end 终止名次
      * @return 带分值的成员集合
+     * @see #zRevRangeWithScores(String, long, long)
      */
     public static Set<ZSetOperations.TypedTuple<Object>> reverseRangeWithScores(String key, long start, long end) {
         return zRevRangeWithScores(key, start, end);

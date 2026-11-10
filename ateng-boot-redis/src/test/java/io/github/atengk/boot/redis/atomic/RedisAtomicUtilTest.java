@@ -59,6 +59,13 @@ class RedisAtomicUtilTest {
     }
 
     @Test
+    @DisplayName("测试无参构造器向后兼容实例化")
+    void testNoArgConstructorCompatibility() {
+        RedisAtomicUtil util = new RedisAtomicUtil();
+        assertThat(util).isNotNull();
+    }
+
+    @Test
     @DisplayName("测试原子自增与自减操作")
     void testIncrementAndDecrement() {
         when(valueOperations.increment("counter:hits", 1L)).thenReturn(101L);

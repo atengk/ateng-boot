@@ -85,6 +85,7 @@ class RedisDelayedQueueTest {
     void setUp() {
         objectMapper = RedisSerializerFactory.createSafeObjectMapper();
         redisDelayedQueue = new RedisDelayedQueue(redissonClient, objectMapper);
+        RedisDelayedQueueUtil.init(redisDelayedQueue);
     }
 
     @Test
@@ -324,6 +325,37 @@ class RedisDelayedQueueTest {
 
         boolean blocked = queueWithProps.replayDeadLetter("replay-queue", Duration.ZERO);
         assertThat(blocked).isFalse();
+        // 验证超限死信被补偿塞回死信队列队尾，未静默丢失
+        verify(dlqBlockingQueue).offer(exhaustedDead);
+    }
+
+    @Test
+    @DisplayName("测试批量重放死信时跳过超限死信且持续重放后续有效死信")
+    @SuppressWarnings("unchecked")
+    void testBatchReplayDeadLettersWithExhaustedSkipping() {
+        RedisProperties props = new RedisProperties();
+        props.getDelayQueue().setMaxReplayAttempts(2);
+        RedisDelayedQueue queueWithProps = new RedisDelayedQueue(redissonClient, objectMapper, props);
+
+        RBlockingQueue<Object> dlqBlockingQueue = org.mockito.Mockito.mock(RBlockingQueue.class);
+        when(redissonClient.getBlockingQueue("batch-queue:dlq")).thenReturn(dlqBlockingQueue);
+        when(redissonClient.getBlockingQueue("batch-queue")).thenReturn(blockingQueue);
+        when(redissonClient.getDelayedQueue(blockingQueue)).thenReturn(delayedQueue);
+
+        DeadLetterMessage<String> dead1 = new DeadLetterMessage<>(
+                "batch-queue", "poison-pill", 3, "err", "Ex", LocalDateTime.now(), 2
+        );
+        DeadLetterMessage<String> dead2 = new DeadLetterMessage<>(
+                "batch-queue", "good-payload", 3, "err", "Ex", LocalDateTime.now(), 0
+        );
+
+        when(dlqBlockingQueue.size()).thenReturn(2);
+        when(dlqBlockingQueue.poll()).thenReturn(dead1, dead2);
+
+        int replayedCount = queueWithProps.replayDeadLetters("batch-queue", 2, Duration.ZERO);
+        assertThat(replayedCount).isEqualTo(1);
+        verify(dlqBlockingQueue).offer(dead1);
+        verify(delayedQueue).offer(org.mockito.ArgumentMatchers.argThat((DeadLetterMessage<?> d) -> "good-payload".equals(d.payload())), eq(0L), eq(TimeUnit.MILLISECONDS));
     }
 
     @Test

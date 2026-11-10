@@ -129,6 +129,12 @@ public class RedisAtomicUtil {
     private static volatile RedisProperties staticProperties;
     private static volatile RedisAtomicUtil staticInstance;
 
+    /**
+     * 默认构造函数（保留无参构造器以保障反射与外部框架实例化向后兼容）
+     */
+    public RedisAtomicUtil() {
+    }
+
     public RedisAtomicUtil(RedisTemplate<String, Object> redisTemplate) {
         this(redisTemplate, null);
     }
@@ -576,85 +582,5 @@ public class RedisAtomicUtil {
         getTemplate().opsForZSet().removeRangeByScore(formattedKey, 0, windowStart);
         Long count = getTemplate().opsForZSet().zCard(formattedKey);
         return count != null ? count : 0L;
-    }
-
-    // ==========================================
-    // 全局静态委托兼容别名方法 (Static Facade Aliases)
-    // ==========================================
-
-    public static Long incrementStatic(String key) {
-        return increment(key);
-    }
-
-    public static Long incrementStatic(String key, long delta) {
-        return increment(key, delta);
-    }
-
-    public static Long incrementStatic(String key, long delta, Duration timeout) {
-        return increment(key, delta, timeout);
-    }
-
-    public static Long incrWithExpireStatic(String key, long delta, Duration timeout) {
-        return incrWithExpire(key, delta, timeout);
-    }
-
-    public static Long decrementStatic(String key) {
-        return decrement(key);
-    }
-
-    public static Long decrementStatic(String key, long delta) {
-        return decrement(key, delta);
-    }
-
-    public static Long getStatic(String key) {
-        return get(key);
-    }
-
-    public static void setStatic(String key, long value) {
-        set(key, value);
-    }
-
-    public static void setStatic(String key, long value, Duration timeout) {
-        set(key, value, timeout);
-    }
-
-    public static boolean compareAndSetStatic(String key, Long expect, Long update) {
-        return compareAndSet(key, expect, update);
-    }
-
-    public static boolean compareAndSetStatic(String key, Long expect, Long update, Duration timeout) {
-        return compareAndSet(key, expect, update, timeout);
-    }
-
-    public static boolean compareAndSetStatic(String key, long expect, long update) {
-        return compareAndSet(key, expect, update);
-    }
-
-    public static Long getAndSetStatic(String key, long update) {
-        return getAndSet(key, update);
-    }
-
-    public static Long getAndSetStatic(String key, Long update) {
-        return getAndSet(key, update);
-    }
-
-    public static String generateDailySeqStatic(String prefix, int length) {
-        return generateDailySeq(prefix, length);
-    }
-
-    public static String generateDailySeqStatic(String prefix, String datePattern, int length) {
-        return generateDailySeq(prefix, datePattern, length);
-    }
-
-    public static boolean slidingWindowCheckStatic(String key, int maxRequests, Duration window) {
-        return slidingWindowCheck(key, maxRequests, window);
-    }
-
-    public static boolean isAllowedBySlidingWindowStatic(String key, int maxRequests, Duration window) {
-        return isAllowedBySlidingWindow(key, maxRequests, window);
-    }
-
-    public static long getSlidingWindowCountStatic(String key, Duration window) {
-        return getSlidingWindowCount(key, window);
     }
 }

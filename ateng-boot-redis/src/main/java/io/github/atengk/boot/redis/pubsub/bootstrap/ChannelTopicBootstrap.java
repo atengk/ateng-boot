@@ -218,10 +218,8 @@ public class ChannelTopicBootstrap implements SmartInitializingSingleton, SmartL
         MessageListener messageListener = (message, pattern) -> {
             executor.submit(() -> {
                 String existingTraceId = MDC.get(MDC_TRACE_ID_KEY);
-                boolean traceGenerated = false;
                 if (!StringUtils.hasText(existingTraceId)) {
                     MDC.put(MDC_TRACE_ID_KEY, IdUtil.fastSimpleUUID());
-                    traceGenerated = true;
                 }
                 try {
                     invokeListenerMethod(bean, method, parameters, parameterCount, finalParam0Type, finalJavaType, message, pattern);
@@ -232,9 +230,7 @@ public class ChannelTopicBootstrap implements SmartInitializingSingleton, SmartL
                     log.error("Redis Pub/Sub 广播消息消费异常: channel={}, method={}#{}, error={}",
                             ch, bean.getClass().getSimpleName(), method.getName(), cause.getMessage(), cause);
                 } finally {
-                    if (traceGenerated) {
-                        MDC.remove(MDC_TRACE_ID_KEY);
-                    }
+                    MDC.remove(MDC_TRACE_ID_KEY);
                     TenantContextHolder.clear();
                     UserContextHolder.clear();
                 }

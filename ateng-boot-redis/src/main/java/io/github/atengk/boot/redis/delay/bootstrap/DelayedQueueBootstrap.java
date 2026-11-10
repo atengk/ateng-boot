@@ -273,19 +273,9 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, SmartL
      * 重试耗尽处理死信流转与 SPI 回调
      */
     private void handleDeadLetter(Object rawMessage, String queueName, int retryCount, Throwable cause) {
-        int replayCount = 0;
-        Object payload = rawMessage;
-        if (rawMessage instanceof DeadLetterMessage<?> dlm) {
-            replayCount = dlm.replayCount();
-            payload = dlm.payload();
-        } else if (rawMessage instanceof Map<?, ?> map && map.containsKey("originalQueue") && map.containsKey("payload") && map.containsKey("replayCount")) {
-            try {
-                DeadLetterMessage<?> dlm = objectMapper.convertValue(rawMessage, DeadLetterMessage.class);
-                replayCount = dlm.replayCount();
-                payload = dlm.payload();
-            } catch (Exception ignored) {
-            }
-        }
+        DeadLetterMessage<?> dlm = unwrapDeadLetter(rawMessage);
+        int replayCount = dlm != null ? dlm.replayCount() : 0;
+        Object payload = dlm != null ? dlm.payload() : rawMessage;
 
         DeadLetterMessage<Object> deadLetter = new DeadLetterMessage<>(
                 queueName,
@@ -353,19 +343,11 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, SmartL
         if (rawMessage == null) {
             return null;
         }
-        if (rawMessage instanceof DeadLetterMessage<?> dlm) {
+        DeadLetterMessage<?> dlm = unwrapDeadLetter(rawMessage);
+        if (dlm != null) {
             rawMessage = dlm.payload();
             if (rawMessage == null) {
                 return null;
-            }
-        } else if (rawMessage instanceof Map<?, ?> map && map.containsKey("originalQueue") && map.containsKey("payload") && map.containsKey("replayCount")) {
-            try {
-                DeadLetterMessage<?> dlm = objectMapper.convertValue(rawMessage, DeadLetterMessage.class);
-                rawMessage = dlm.payload();
-                if (rawMessage == null) {
-                    return null;
-                }
-            } catch (Exception ignored) {
             }
         }
 
@@ -383,6 +365,23 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, SmartL
         }
 
         return objectMapper.convertValue(rawMessage, objectMapper.constructType(parameter.getParameterizedType()));
+    }
+
+    /**
+     * 探测并解构死信包装消息（支持强类型实例与反序列化 Map 兼容探测）
+     */
+    private DeadLetterMessage<?> unwrapDeadLetter(Object rawMessage) {
+        if (rawMessage instanceof DeadLetterMessage<?> dlm) {
+            return dlm;
+        }
+        if (rawMessage instanceof Map<?, ?> map && map.containsKey("originalQueue") && map.containsKey("payload") && map.containsKey("replayCount")) {
+            try {
+                return objectMapper.convertValue(rawMessage, DeadLetterMessage.class);
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     @Override
