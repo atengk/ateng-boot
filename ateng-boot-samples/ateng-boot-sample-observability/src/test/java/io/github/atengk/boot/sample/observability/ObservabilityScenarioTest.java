@@ -18,6 +18,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.nio.charset.StandardCharsets;
@@ -29,6 +30,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -78,10 +80,13 @@ class ObservabilityScenarioTest {
     @Test
     @DisplayName("场景一：/actuator/prometheus 端点抓取验证受管线程池动态打标指标")
     void scenario1_prometheusThreadPoolMetricsScrape() throws Exception {
-        // 先触发业务接口调度，产生线程池负载
-        mockMvc.perform(get("/api/demo/execute-task"))
+        // 先触发物流履约异步推单，产生受管线程池负载
+        mockMvc.perform(post("/sample/observability/thread-pool/dispatch-logistics")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"trackId\":\"TRK-10001\"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("运单 TRK-10001 已提交至受管线程池 sampleTaskExecutor"));
 
         // 抓取 Prometheus 文本指标报文
         mockMvc.perform(get("/actuator/prometheus"))
@@ -96,17 +101,29 @@ class ObservabilityScenarioTest {
     @Test
     @DisplayName("场景二：编程式与声明式 (@ObservedMetric) 业务指标打点并在 /actuator/prometheus 抓取断言")
     void scenario2_businessMetricsProgrammaticAndDeclarativeScrape() throws Exception {
-        // 1. 触发编程式指标打点
-        mockMvc.perform(get("/api/demo/metrics/programmatic"))
+        // 1. 触发编程式指标打点（订单创建）
+        mockMvc.perform(post("/sample/observability/metrics/order-create")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"orderId\":\"ORD-20261110-001\",\"amount\":99.5,\"channel\":\"app\"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("订单 ORD-20261110-001 业务指标打点成功"));
 
-        // 2. 触发声明式 @ObservedMetric 切面打点
-        mockMvc.perform(get("/api/demo/metrics/declarative"))
+        // 2. 触发声明式 @ObservedMetric 切面打点（库存扣减）
+        mockMvc.perform(post("/sample/observability/metrics/stock-deduct")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"PROD-8888\",\"count\":2}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("商品 PROD-8888 成功扣减库存 2 件"));
 
-        // 3. 抓取 Prometheus 端点，断言业务指标已被发布
+        // 3. 触发商户在线 Gauge 采集
+        mockMvc.perform(get("/sample/observability/metrics/merchant-active-count"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(128.0));
+
+        // 4. 抓取 Prometheus 端点，断言业务指标已被发布
         mockMvc.perform(get("/actuator/prometheus"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString("sample_orders_total{channel=\"app\"} 1.0")))
@@ -131,33 +148,43 @@ class ObservabilityScenarioTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("UP"))
                 .andExpect(jsonPath("$.components.dynamicDatasource.status").value("UP"))
-                .andExpect(jsonPath("$.components.storage.status").value("UP"));
+                .andExpect(jsonPath("$.components.storage.status").value("UP"))
+                .andExpect(jsonPath("$.components.paymentGateway.status").value("UP"));
 
-        // 2. K8s 存活探针（Liveness）—— 黄金隔离铁律：仅允许 internal 状态（livenessState, ping），坚决不能包含外部依赖
+        // 2. 自定义安全健康探针 Controller 体验接口返回 200 UP
+        mockMvc.perform(get("/sample/observability/probe/payment-gateway"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.status").value("UP"))
+                .andExpect(jsonPath("$.data.details.channel").value("MockPayGateway"));
+
+        // 3. K8s 存活探针（Liveness）—— 黄金隔离铁律：仅允许 internal 状态（livenessState, ping），坚决不能包含外部依赖
         mockMvc.perform(get("/actuator/health/liveness"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("UP"))
                 .andExpect(jsonPath("$.components.livenessState.status").value("UP"))
                 .andExpect(jsonPath("$.components.ping.status").value("UP"))
                 .andExpect(jsonPath("$.components.dynamicDatasource").doesNotExist())
-                .andExpect(jsonPath("$.components.storage").doesNotExist());
+                .andExpect(jsonPath("$.components.storage").doesNotExist())
+                .andExpect(jsonPath("$.components.paymentGateway").doesNotExist());
 
-        // 3. K8s 就绪探针（Readiness）—— 必须聚合全部外部关键业务组件
+        // 4. K8s 就绪探针（Readiness）—— 必须聚合全部外部关键业务组件
         mockMvc.perform(get("/actuator/health/readiness"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("UP"))
                 .andExpect(jsonPath("$.components.readinessState.status").value("UP"))
                 .andExpect(jsonPath("$.components.dynamicDatasource.status").value("UP"))
-                .andExpect(jsonPath("$.components.storage.status").value("UP"));
+                .andExpect(jsonPath("$.components.storage.status").value("UP"))
+                .andExpect(jsonPath("$.components.paymentGateway.status").value("UP"));
     }
 
     @Test
     @DisplayName("场景四：业务正常 API 访问不被 Actuator 安全过滤器干扰")
     void scenario4_businessApiPassThrough() throws Exception {
-        mockMvc.perform(get("/api/demo/execute-task"))
+        mockMvc.perform(get("/sample/observability/security/public-ping"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("任务已提交至受管线程池 sampleTaskExecutor"));
+                .andExpect(jsonPath("$.data").value("可观测性服务正常在线，白名单业务端点畅通"));
     }
 
     @Test
@@ -278,9 +305,12 @@ class ObservabilityScenarioTest {
     @DisplayName("场景九：线程池饱和拒绝发布 ThreadPoolRejectedEvent 领域事件断言")
     void scenario9_threadPoolRejectedEventBroadcast() throws Exception {
         // 触发线程池任务过载并打满拒绝
-        mockMvc.perform(get("/api/demo/trigger-rejection"))
+        mockMvc.perform(post("/sample/observability/thread-pool/trigger-burst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"taskCount\":70}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("已触发线程池并发高压与任务拒绝追踪"));
 
         // 断言事件总线捕获到 ThreadPoolRejectedEvent
         assertThat(eventCapture.rejectedEvents).isNotEmpty();
@@ -291,12 +321,25 @@ class ObservabilityScenarioTest {
         assertThat(rejectedEvent.getQueueSize()).isGreaterThanOrEqualTo(0);
         assertThat(rejectedEvent.getCorePoolSize()).isEqualTo(4);
         assertThat(rejectedEvent.getMaxPoolSize()).isEqualTo(8);
+
+        // 断言最近领域事件查询端点返回事件记录
+        mockMvc.perform(get("/sample/observability/security/recent-events"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
     }
 
     @Test
     @DisplayName("场景十：安全探针防假死超时降级与发布 HealthProbeDegradedEvent 领域事件断言")
-    void scenario10_healthProbeDegradedEventBroadcast() {
-        // 创建一个探测超时阈值为 80ms 的 Mock 探针
+    void scenario10_healthProbeDegradedEventBroadcast() throws Exception {
+        // 1. 调用模拟超时慢探针 Controller 体验接口
+        mockMvc.perform(get("/sample/observability/probe/simulate-timeout"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.status").value("UNKNOWN"))
+                .andExpect(jsonPath("$.data.details.status").value("TIMEOUT"));
+
+        // 2. 创建一个探测超时阈值为 80ms 的 Mock 探针
         TimeoutMockSafeHealthIndicator indicator = new TimeoutMockSafeHealthIndicator();
         indicator.setApplicationEventPublisher(eventPublisher);
 
@@ -309,7 +352,7 @@ class ObservabilityScenarioTest {
         // 断言事件总线捕获到 HealthProbeDegradedEvent
         assertThat(eventCapture.degradedEvents).isNotEmpty();
         HealthProbeDegradedEvent degradedEvent = eventCapture.degradedEvents.get(0);
-        assertThat(degradedEvent.getComponentName()).isEqualTo("mockTimeout");
+        assertThat(degradedEvent.getComponentName()).isEqualTo("simulatedSlowProbe");
         assertThat(degradedEvent.getStatus()).isEqualTo("TIMEOUT");
         assertThat(degradedEvent.getCostMs()).isGreaterThanOrEqualTo(80);
     }

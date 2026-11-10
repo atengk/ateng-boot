@@ -1,0 +1,42 @@
+# ==============================================================================
+# ateng-boot-sample-observability 本地真实中间件联调配置模板
+#
+# 使用指南：
+# 1. 复制本文件为 application-local.yml（已被 .gitignore 自动忽略，避免敏感凭据入库）；
+# 2. 将下方大写占位符（如 YOUR_MYSQL_HOST、YOUR_REDIS_PASSWORD）替换为您本地真实的中间件连接信息；
+# 3. 启动应用时指定 profile 为 local（或在 IDE 的 Active profiles 中填入 local）即可直连测试。
+# ==============================================================================
+
+spring:
+  # 真实持久化数据源（可选）
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://YOUR_MYSQL_HOST:3306/sample_obs?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai
+    username: YOUR_MYSQL_USER
+    password: YOUR_MYSQL_PASSWORD
+
+  # 真实 Redis 缓存与连通性探针（可选）
+  data:
+    redis:
+      host: YOUR_REDIS_HOST
+      port: 6379
+      password: YOUR_REDIS_PASSWORD
+      database: 0
+
+ateng:
+  boot:
+    observability:
+      health:
+        timeout: 3s
+        redis:
+          enabled: true
+      security:
+        lockdown-enabled: true
+        token: "YOUR_ACTUATOR_PROD_TOKEN"
+        allowed-ip-ranges:
+          - "10.0.0.0/8"
+          - "192.168.0.0/16"
+        basic-auth:
+          enabled: true
+          username: "YOUR_BASIC_AUTH_USER"
+          password: "YOUR_BASIC_AUTH_PASSWORD"
