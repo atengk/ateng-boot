@@ -16,11 +16,11 @@
 | **分布式锁** | 编程式锁受管模板 | `DistributedLockTemplate` | `ateng.boot.redis.lock.wait-time`<br>`ateng.boot.redis.lock.lease-time`<br>`ateng.boot.redis.lock.slow-threshold` | `execute(key, supplier)` / `execute(key, supplier, fallback)` / `execute(keys, mode, wait, lease, unit, supplier, fallback)` / `tryExecute(key, action)`：闭包内业务异常无损透传 | `DistributedLockTemplateTest`<br>`SampleRedisIntegrationTest` |
 | **分布式锁** | 静态锁操作门面 | `RedisLockUtil` | `ateng.boot.redis.lock.*` | `RedisLockUtil.execute(key, supplier)` / `RedisLockUtil.execute(key, supplier, fallback)` / `RedisLockUtil.tryExecute(key, action)`：静态上下文无需注入 Spring Bean 一键安全加锁 | `RedisLockUtilTest`<br>`SampleRedisIntegrationTest` |
 | **分布式锁** | 锁模式枚举与闭包 | `LockMode` / `LockSupplier<T, E>` / `LockAction<E>` | - | `REENTRANT`, `FAIR`, `READ`, `WRITE`；支持受检与非受检异常穿透声明 | `DistributedLockTemplateTest`<br>`SampleRedisIntegrationTest` |
-| **延时队列** | 编程式延时任务 | `RedisDelayedQueue` | `ateng.boot.redis.delay-queue.enabled`<br>`ateng.boot.redis.delay-queue.dead-letter-enabled`<br>`ateng.boot.redis.delay-queue.dead-letter-suffix` | `offer(queue, msg, delay)` / `poll(queue, clazz)` / `take(queue, clazz)` / `remove(queue, msg)` / `destroy()`<br>DLQ 运维：`peekDeadLetter` / `pollDeadLetter` / `getDeadLetterSize` / `clearDeadLetter` / `sendToDeadLetter` | `RedisDelayedQueueTest`<br>`SampleRedisIntegrationTest` |
+| **延时队列** | 编程式延时任务与静态门面 | `RedisDelayedQueue` / `RedisDelayedQueueUtil` | `ateng.boot.redis.delay-queue.enabled`<br>`ateng.boot.redis.delay-queue.dead-letter-enabled`<br>`ateng.boot.redis.delay-queue.dead-letter-suffix`<br>`ateng.boot.redis.delay-queue.max-replay-attempts` | `offer(queue, msg, delay)` / `poll(queue, clazz)` / `take(queue, clazz)` / `remove(queue, msg)` / `destroy()`<br>DLQ 运维：`peekDeadLetter` / `peekDeadLetters` / `pollDeadLetter` / `replayDeadLetter` / `replayDeadLetters` / `getDeadLetterSize` / `clearDeadLetterQueue` / `sendToDeadLetterQueue`，支持重放计数与超限熔断 | `RedisDelayedQueueTest`<br>`RedisDelayedQueueUtilTest`<br>`SampleRedisIntegrationTest` |
 | **延时队列** | 声明式消费监听 | `@DelayedQueueListener` / `DelayedQueueBootstrap` | `ateng.boot.redis.delay-queue.retry-times`<br>`ateng.boot.redis.delay-queue.retry-delay` | `@DelayedQueueListener(queue, concurrency)`：受管 `ThreadPoolTaskExecutor` 并发驱动、`ContextCopyingTaskDecorator` 上下文透传、重试退避与平滑优雅停机 | `DelayedQueueBootstrapTest`<br>`SampleRedisIntegrationTest` |
 | **延时队列** | 死信流转与失败 SPI | `DeadLetterMessage<T>` / `DelayedQueueFailureHandler` | `ateng.boot.redis.delay-queue.dead-letter-enabled`<br>`ateng.boot.redis.delay-queue.dead-letter-suffix` | `onFailed(deadLetterMessage, cause)`：重试耗尽后封装完整因果堆栈转入死信队列，默认 `LoggingDelayedQueueFailureHandler` 告警，支持自定义 SPI 无缝接管 | `DelayedQueueBootstrapTest`<br>`AtengRedisAutoConfigurationTest` |
-| **流式消息** | Redis 5.0+ Stream 消息流引擎 | `RedisStreamTemplate` | `ateng.boot.redis.stream.enabled`<br>`ateng.boot.redis.stream.poll-timeout`<br>`ateng.boot.redis.stream.batch-size`<br>`ateng.boot.redis.stream.retry-times`<br>`ateng.boot.redis.stream.dlq-suffix`<br>`ateng.boot.redis.stream.instance-id` | `send(stream, payload)` / `createGroup(stream, group)` / `readGroup(stream, group, consumer, count, timeout)` / `ack(stream, group, recordIds)` / `getPendingMessages(stream, group, count)` / `claim(stream, group, newConsumer, minIdle, recordIds)` / `size(stream)` / `trim(stream, count)` / `trim(stream, count, approximate)`：支持可靠流生产、消费组运维、PEL 待决积压排查与孤儿消息认领 | `RedisStreamTemplateTest`<br>`SampleRedisIntegrationTest` |
-| **流式消息** | 声明式 Stream 消费组监听 | `@RedisStreamListener` / `StreamBootstrap` | `ateng.boot.redis.stream.*` | `@RedisStreamListener(stream, group, concurrency, autoAck, autoCreateGroup)`：受管 `ThreadPoolTaskExecutor` 异步消费、自动创建消费组、自动/手动 ACK、MDC `traceId` 透传与优雅停机 | `StreamBootstrapTest`<br>`SampleRedisIntegrationTest` |
+| **流式消息** | Redis 5.0+ Stream 消息流引擎 | `RedisStreamTemplate` / `RedisStreamUtil` | `ateng.boot.redis.stream.enabled`<br>`ateng.boot.redis.stream.poll-timeout`<br>`ateng.boot.redis.stream.batch-size`<br>`ateng.boot.redis.stream.retry-times`<br>`ateng.boot.redis.stream.dlq-suffix`<br>`ateng.boot.redis.stream.instance-id`<br>`ateng.boot.redis.stream.max-replay-attempts`<br>`ateng.boot.redis.stream.claim-idle-time`<br>`ateng.boot.redis.stream.claim-batch-size` | `send(stream, payload)`（自动透传四维上下文）/ `createGroup(stream, group)` / `readGroup(stream, group, consumer, count, timeout)` / `ack(stream, group, recordIds)` / `getPendingMessages(stream, group, count)` / `claimPendingMessages(stream, group, consumer, minIdle, count)` / `claim(stream, group, newConsumer, minIdle, recordIds)` / `peekDeadLetters(stream, count)` / `replayDeadLetter(stream, recordId)` / `replayDeadLetters(stream, count)` / `deadLetterSize(stream)` / `clearDeadLetters(stream)` / `size(stream)` / `trim(stream, count)` | `RedisStreamTemplateTest`<br>`RedisStreamUtilTest`<br>`SampleRedisIntegrationTest` |
+| **流式消息** | 声明式 Stream 消费组监听 | `@RedisStreamListener` / `StreamBootstrap` | `ateng.boot.redis.stream.*` | `@RedisStreamListener(stream, group, concurrency, autoAck, autoCreateGroup)`：`SmartLifecycle` 受管异步消费、自动创建消费组、自动/手动 ACK、四维上下文透传与清理、PEL 孤儿消息周期自动认领自愈与死信隔离 | `StreamBootstrapTest`<br>`SampleRedisIntegrationTest` |
 | **流式消息** | Stream 失败补偿与死信流 SPI | `StreamDeadLetterMessage<T>` / `StreamFailureHandler` | `ateng.boot.redis.stream.retry-times`<br>`ateng.boot.redis.stream.dlq-suffix` | `onFailed(deadLetterMessage, cause)`：重试耗尽后封装完整因果链转入死信流 `${stream}:dlq`，默认 `LoggingStreamFailureHandler` 告警，支持自定义 SPI 业务告警与持久化 | `StreamBootstrapTest`<br>`AtengRedisAutoConfigurationTest` |
 | **业务防重** | 声明式业务防重幂等 | `@RedisIdempotent` / `RedisIdempotentAspect` | `ateng.boot.redis.idempotent.enabled`<br>`ateng.boot.redis.idempotent.prefix`<br>`ateng.boot.redis.idempotent.default-expire`<br>`ateng.boot.redis.idempotent.delete-on-failure` | `@RedisIdempotent(key, expire, message, deleteOnFailure)`：支持 SpEL 动态解析业务唯一键、防重复提交/重复消费、业务异常时由 `deleteOnFailure=true` 自动释放凭据以支持上游重试 | `RedisIdempotentAspectTest`<br>`SampleRedisIntegrationTest` |
 | **业务防重** | 编程式防重受管模板 | `RedisIdempotentTemplate` | `ateng.boot.redis.idempotent.*` | `execute(key, supplier)` / `execute(key, timeout, supplier)` / `execute(key, timeout, deleteOnFailure, message, supplier)`：函数式闭包受管防重，防重失败阻断并抛出 `BusinessException` | `RedisIdempotentTemplateTest`<br>`SampleRedisIntegrationTest` |
@@ -567,9 +567,11 @@ public class OrderSettlementService {
 | 特性能力 | 核心类 / 注解 / SPI | 关键行为与配置 |
 | :--- | :--- | :--- |
 | **编程式延时投递** | `RedisDelayedQueue.offer(queue, payload, delay)` | 精确延时投递，底层基于 Redis ZSet 时间戳分值调度 |
+| **静态门面操作** | `RedisDelayedQueueUtil.*` | 静态上下文快速调用 `offer`、`poll`、`size`、`peekDeadLetters` 与 `replayDeadLetter` |
 | **声明式监听消费** | `@DelayedQueueListener(queue, concurrency)` | 自动扫描注册守护线程，多并发受管线程池驱动 |
 | **死信自动封送** | `redisDelayedQueue.sendToDeadLetterQueue` | 重试耗尽自动封送 `{queue}:dlq`，包含重试次数与异常堆栈 |
-| **死信队列运维** | `pollDeadLetter` / `clearDeadLetterQueue` / `deadLetterSize` | 运维端点拉取、统计、探针诊断与清空 |
+| **死信受控重放** | `replayDeadLetter` / `replayDeadLetters` | 弹出死信校验 `replayCount < maxReplayAttempts`，未超限递增并重新投递，超限阻断熔断 |
+| **死信非破坏检视** | `peekDeadLetters` / `pollDeadLetter` / `deadLetterSize` | 运维端点批量检视、拉取、统计与清空 |
 | **失败处理 SPI** | `DelayedQueueFailureHandler` | 重试耗尽终态告警回调，支持外部通知（钉钉/飞书）与审计落库 |
 
 ### 专属 YAML 配置片段
@@ -583,6 +585,7 @@ ateng:
         retry-delay: 200ms            # 重试退避间隔时长 (默认 3s)
         dead-letter-enabled: true     # 重试耗尽是否流转至死信队列 (默认 true)
         dead-letter-suffix: ":dlq"    # 死信队列名称后缀 (默认 :dlq)
+        max-replay-attempts: 3        # 死信最大受控重放次数，超限熔断防二次死信雪崩 (默认 3)
 ```
 
 ### 真实业务实战代码（1:1 提取自 `ateng-boot-sample-redis`）
@@ -617,9 +620,17 @@ public class OrderDelayScenarioService {
         consumedOrders.add(payload);
     }
 
-    // 运维探针：死信拉取与清空
+    // 运维探针：死信拉取、批量检视、受控重放与清空
     public DeadLetterMessage<OrderDelayPayload> pollCancelOrderDeadLetter() {
         return redisDelayedQueue.pollDeadLetter(QUEUE_ORDER_CANCEL, OrderDelayPayload.class);
+    }
+
+    public List<DeadLetterMessage<OrderDelayPayload>> peekCancelOrderDeadLetters(int limit) {
+        return redisDelayedQueue.peekDeadLetters(QUEUE_ORDER_CANCEL, limit, OrderDelayPayload.class);
+    }
+
+    public int replayCancelOrderDeadLetters(int count, Duration delay) {
+        return redisDelayedQueue.replayDeadLetters(QUEUE_ORDER_CANCEL, count, delay);
     }
 
     public void clearCancelOrderDeadLetter() {
@@ -650,7 +661,7 @@ public class SampleDelayedQueueFailureHandler implements DelayedQueueFailureHand
     }
 }
 
-// 3. Web 接入层控制器：7 大 RESTful 端点
+// 3. Web 接入层控制器：9 大 RESTful 端点
 @Validated
 @RestController
 @RequestMapping("/sample/redis/delay-queue")
@@ -689,6 +700,17 @@ public class RedisDelayQueueController {
         return Result.success(orderDelayScenarioService.pollCancelOrderDeadLetter());
     }
 
+    @GetMapping({"/dlq/peek", "/dead-letter/peek"})
+    public Result<List<DeadLetterMessage<OrderDelayPayload>>> peekDeadLetters(@RequestParam(defaultValue = "10") int limit) {
+        return Result.success(orderDelayScenarioService.peekCancelOrderDeadLetters(limit));
+    }
+
+    @PostMapping({"/dlq/replay", "/dead-letter/replay"})
+    public Result<Integer> replayDeadLetters(@RequestParam(defaultValue = "1") int count,
+                                             @RequestParam(defaultValue = "0") long delaySeconds) {
+        return Result.success(orderDelayScenarioService.replayCancelOrderDeadLetters(count, Duration.ofSeconds(delaySeconds)));
+    }
+
     @DeleteMapping("/dead-letter/clear")
     public Result<Boolean> clearDeadLetter() {
         orderDelayScenarioService.clearCancelOrderDeadLetter();
@@ -705,7 +727,8 @@ public class RedisDelayQueueController {
 ### 核心生产机制与异常边界
 1. **受管线程池与四维上下文透传**：`DelayedQueueBootstrap` 消费轮询彻底淘汰裸 `Executors`，接入 Spring 容器受管的 `ThreadPoolTaskExecutor` 并挂载 `ContextCopyingTaskDecorator`，确保 `traceId` 等上下文在延时队列消费线程中合规生效；
 2. **死信流转与错误隔离**：内置异常受控重试；重试耗尽后若 `deadLetterEnabled=true` 则将包装完整的 `DeadLetterMessage<T>` 投递至 `${queueName}:dlq` 并触发 `DelayedQueueFailureHandler` SPI，杜绝毒丸消息阻塞队列并保障可追溯审计；
-3. **平滑优雅停机**：监听容器实现了 `DisposableBean`，在 JVM 或 Spring 容器销毁时首先停止拉取新消息，等待在途任务执行完成并注销内部阻塞循环与受管线程池，保障零消息悬挂。
+3. **死信受控重放与防雪崩守卫**：死信消息具备 `replayCount` 累计重放计数与不可变属性；执行 `replayDeadLetter` 重放时自动校验当前重放次数是否达到 `ateng.boot.redis.delay-queue.max-replay-attempts`（默认 3 次），达到或超过上限时拒绝重放并记录告警，阻断因毒丸消息引发的无限重试与二次死信风暴；
+4. **平滑优雅停机**：监听容器实现了 `DisposableBean`，在 JVM 或 Spring 容器销毁时首先停止拉取新消息，等待在途任务执行完成并注销内部阻塞循环与受管线程池，保障零消息悬挂。
 
 ---
 
@@ -723,10 +746,12 @@ public class RedisDelayQueueController {
 ### 特性矩阵
 | 特性能力 | 核心类 / 注解 / SPI | 关键行为与配置 |
 | :--- | :--- | :--- |
-| **流消息投递** | `RedisStreamTemplate.send` / `RedisStreamUtil.send` | 模板与静态门面双路径投递，自动注入 `traceId` 与时间戳 |
-| **声明式组消费** | `@RedisStreamListener(stream, group, concurrency, autoAck)` | 受管线程池并发驱动，自动反序列化为强类型 POJO |
-| **PEL 待决探查** | `pendingSummary` / `pending` | XPENDING 概要统计与明细拉取，实时掌握未确认积压情况 |
-| **孤儿消息认领** | `claim(stream, group, newConsumer, minIdleTime, ids)` | XCLAIM 孤儿消息转移至健康消费者，防止消息永久悬挂 |
+| **流消息投递** | `RedisStreamTemplate.send` / `RedisStreamUtil.send` | 模板与静态门面双路径投递，自动注入 MDC `traceId`、租户与用户四维上下文 |
+| **声明式组消费** | `@RedisStreamListener(stream, group, concurrency, autoAck)` | `SmartLifecycle` 受管线程池并发驱动，四维上下文安全恢复与清理，业务入参自动过滤内部元数据 |
+| **PEL 待决探查** | `pendingSummary` / `getPendingMessages` | XPENDING 概要统计与明细拉取，实时掌握未确认积压情况 |
+| **孤儿消息自愈认领** | `claimPendingMessages` / `claim` | 后台主循环周期自愈巡检或手动 XCLAIM 孤儿消息转移至健康消费者，防止消息永久悬挂 |
+| **死信受控重放** | `replayDeadLetter` / `replayDeadLetters` | 校验累计重放次数未超 `max-replay-attempts`，重新入流投递，防死信死循环雪崩 |
+| **死信非破坏检视** | `peekDeadLetters` / `deadLetterSize` / `clearDeadLetters` | 运维探针批量查看死信流历史，支持统计大小与清理 |
 | **定长修剪** | `trim(stream, maxLen)` | XTRIM 精确/近似定长裁剪，控制流内存物理占用 |
 | **死信与失败 SPI** | `transferToDeadLetter` / `StreamFailureHandler` | 重试耗尽转移至 `${stream}:dlq`，触发 SPI 告警，成功后安全 ACK 原消息 |
 
@@ -741,11 +766,14 @@ ateng:
         batch-size: 10                # 单次批量拉取消息最大条数 (默认 10)
         retry-times: 3                # 消费重试次数上限 (默认 3)
         dlq-suffix: ":dlq"            # 死信流名称后缀 (默认 :dlq)
+        max-replay-attempts: 3        # 死信最大受控重放次数，超限熔断防二次雪崩 (默认 3)
+        claim-idle-time: 1m           # PEL 孤儿待决消息自动认领最小闲置超时时长 (默认 1m)
+        claim-batch-size: 20          # PEL 孤儿待决消息自动认领单批最大拉取条数 (默认 20)
 ```
 
 ### 真实业务实战代码（1:1 提取自 `ateng-boot-sample-redis`）
 ```java
-// 1. 业务场景服务：模板与静态门面投递、声明式消费、PEL 探查与 XCLAIM 认领
+// 1. 业务场景服务：模板与静态门面投递、声明式消费、PEL 探查、XCLAIM 认领与死信受控重放
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -758,7 +786,7 @@ public class StreamEventScenarioService {
     private final SampleStreamFailureHandler failureHandler;
     private final List<OrderStreamEvent> receivedEvents = new CopyOnWriteArrayList<>();
 
-    // 模板门面投递
+    // 模板门面投递（自动透明注入四维上下文）
     public RecordId sendOrderEvent(OrderStreamEvent event) {
         return redisStreamTemplate.send(STREAM_ORDER_EVENTS, event);
     }
@@ -768,7 +796,7 @@ public class StreamEventScenarioService {
         return RedisStreamUtil.send(STREAM_ORDER_EVENTS, event);
     }
 
-    // 声明式监听 Stream 消费组消费（自动 XACK 与 MDC traceId 透传）
+    // 声明式监听 Stream 消费组消费（自动 XACK 与四维上下文透传，自动剥离 __ateng_* 系统元数据）
     @RedisStreamListener(stream = STREAM_ORDER_EVENTS, group = GROUP_ORDER_PROCESSOR, concurrency = 1, autoAck = true)
     public void onOrderEvent(OrderStreamEvent event) {
         if (event != null && event.getOrderId() != null && event.getOrderId().contains("POISON")) {
@@ -785,10 +813,28 @@ public class StreamEventScenarioService {
         return redisStreamTemplate.pendingSummary(STREAM_ORDER_EVENTS, GROUP_ORDER_PROCESSOR);
     }
 
-    // XCLAIM 孤儿消息认领
+    // 自动认领 PEL 孤儿待决消息
+    public List<MapRecord<String, Object, Object>> claimPendingMessages(String newConsumer, Duration minIdleTime, int count) {
+        return redisStreamTemplate.claimPendingMessages(STREAM_ORDER_EVENTS, GROUP_ORDER_PROCESSOR, newConsumer, minIdleTime, count);
+    }
+
+    // 显式 XCLAIM 孤儿消息认领
     public List<MapRecord<String, Object, Object>> claimOrphan(String newConsumer, Duration minIdleTime, String... recordIds) {
         RecordId[] ids = Arrays.stream(recordIds).map(RecordId::of).toArray(RecordId[]::new);
         return redisStreamTemplate.claim(STREAM_ORDER_EVENTS, GROUP_ORDER_PROCESSOR, newConsumer, minIdleTime, ids);
+    }
+
+    // 运维探针：死信检视与受控重放
+    public List<Map<String, Object>> getDeadLetterRecords(long count) {
+        return redisStreamTemplate.peekDeadLetters(STREAM_ORDER_EVENTS, count);
+    }
+
+    public boolean replayDeadLetter(String recordId) {
+        return redisStreamTemplate.replayDeadLetter(STREAM_ORDER_EVENTS, recordId);
+    }
+
+    public int replayDeadLetters(int count) {
+        return redisStreamTemplate.replayDeadLetters(STREAM_ORDER_EVENTS, count);
     }
 
     // XTRIM 定长修剪
@@ -821,7 +867,7 @@ public class SampleStreamFailureHandler implements StreamFailureHandler {
     }
 }
 
-// 3. Web 接入层控制器：10 大 RESTful 端点
+// 3. Web 接入层控制器：11 大 RESTful 端点
 @Validated
 @RestController
 @RequestMapping("/sample/redis/stream")
@@ -845,8 +891,11 @@ public class RedisStreamController {
     @GetMapping("/pending/messages")
     public Result<List<PendingMessageVO>> getPendingMessages(@RequestParam(value = "count", defaultValue = "10") long count) { ... }
 
-    @PostMapping("/claim")
-    public Result<List<String>> claimOrphans(@Valid @RequestBody StreamClaimRequest request) { ... }
+    @PostMapping({"/pending/claim", "/claim"})
+    public Result<List<String>> claimOrphans(@RequestBody(required = false) StreamClaimRequest request,
+                                             @RequestParam(required = false) String newConsumer,
+                                             @RequestParam(defaultValue = "0") long minIdleSeconds,
+                                             @RequestParam(defaultValue = "10") int count) { ... }
 
     @PostMapping("/trim")
     public Result<Long> trimStream(@Valid @RequestBody StreamTrimRequest request) { ... }
@@ -854,8 +903,12 @@ public class RedisStreamController {
     @PostMapping("/events/poison")
     public Result<String> sendPoisonEvent(@RequestParam(value = "orderId", required = false) String orderId) { ... }
 
-    @GetMapping("/dead-letter")
-    public Result<List<Map<String, Object>>> getDeadLetterRecords(@RequestParam(value = "count", defaultValue = "10") long count) { ... }
+    @GetMapping({"/dead-letter", "/dlq/peek", "/dead-letter/peek"})
+    public Result<List<Map<String, Object>>> getDeadLetterRecords(@RequestParam(defaultValue = "10") long count) { ... }
+
+    @PostMapping({"/dlq/replay", "/dead-letter/replay"})
+    public Result<Integer> replayDeadLetters(@RequestParam(defaultValue = "1") int count,
+                                             @RequestParam(required = false) String recordId) { ... }
 
     @GetMapping("/alerts")
     public Result<List<StreamDeadLetterMessage>> getAlerts() { ... }
@@ -863,9 +916,9 @@ public class RedisStreamController {
 ```
 
 ### 核心生产机制与异常边界
-1. **At-Least-Once 可靠交付保证**：消费者从消费组拉取消息后，消息自动进入该消费者的挂起列表（Pending Entries List, PEL）。仅当业务消费方法成功返回且通过 `redisStreamTemplate.acknowledge(stream, group, recordId)` 确认后，消息才从 PEL 中移除；
-2. **孤儿挂起消息自动/手动抢占 (Claim)**：若某个消费者节点在消费中途崩溃宕机，未 ACK 的消息将长期滞留在 PEL 中。通过 `RedisStreamTemplate.claim`，健康的存活节点可指定最小空闲时间（`minIdleTime`）将孤儿消息转移至自身名下重新处理，防止消息永久悬挂；
-3. **死信流转与安全确认**：毒丸消息重试耗尽后，`StreamBootstrap` 先将消息转移至 `${stream}:dlq` 死信流，并触发 `StreamFailureHandler` SPI 回调，确认死信入队成功后再对原消息执行 XACK 释放，保障原消费组不阻塞且消息不丢失。
+1. **At-Least-Once 可靠交付与四维上下文透传**：发送消息时自动采集 MDC `traceId`、租户与用户上下文快照，消费侧由 `StreamBootstrap` 恢复并执行消费，在 `finally` 块中严格清理上下文杜绝污染；将消息转换为方法参数前自动剔除内部 `__ateng_*` 系统键，业务契约纯净解耦；仅当方法成功消费后才确认 XACK；
+2. **孤儿挂起消息自动巡检与故障自愈 (PEL Claim)**：`StreamBootstrap` 升级实现 `SmartLifecycle` 规范生命周期契约；消费主循环内置周期性（每 5 秒）PEL 巡检机制，自动调用 `claimPendingMessages` 抢占超过最小闲置时长（`claim-idle-time`，默认 1m）未 ACK 的孤儿消息，实现消费者崩溃后的无感故障转移；同时提供编程式接口支持显式认领；
+3. **死信流转、受控重放与防雪崩守卫**：毒丸消息重试耗尽后，`StreamBootstrap` 先将消息转移至 `${stream}:dlq` 死信流，并触发 `StreamFailureHandler` SPI 回调，确认死信入队成功后对原消息执行 XACK 释放（杜绝双重冗余 ACK）；重放死信时严格检查累计重放次数未超 `max-replay-attempts`（默认 3 次），超过上限立即抛出 `BusinessException` 熔断，坚决阻断二次死信雪崩。
 
 ---
 
@@ -1621,6 +1674,7 @@ ateng:
         retry-delay: 3s                 # 延时消费失败重试间隔 (默认 3s)
         dead-letter-enabled: true       # 是否启用消费重试耗尽转入死信队列 (默认 true)
         dead-letter-suffix: ":dlq"      # 死信队列统配名称后缀 (默认 ":dlq")
+        max-replay-attempts: 3          # 死信最大受控重放次数，超限熔断防二次死信雪崩 (默认 3)
       stream:
         enabled: true                   # 是否启用 Redis Stream 流式消息支持 (默认 true)
         retry-times: 3                  # 消费失败最大重试次数 (默认 3)
@@ -1628,6 +1682,9 @@ ateng:
         batch-size: 10                  # 单次拉取最大消息条数 (默认 10)
         dlq-suffix: ":dlq"              # 死信流统一后缀 (默认 ":dlq")
         instance-id: ""                 # 消费者实例标识 (留空则自动生成)
+        max-replay-attempts: 3          # 死信最大受控重放次数，超限熔断防二次雪崩 (默认 3)
+        claim-idle-time: 1m             # PEL 孤儿待决消息自动认领最小闲置超时时长 (默认 1m)
+        claim-batch-size: 20            # PEL 孤儿待决消息自动认领单批最大拉取条数 (默认 20)
       idempotent:
         enabled: true                   # 是否启用分布式防重幂等切面与模板 (默认 true)
         prefix: "idempotent:"           # 防重幂等键统一前缀 (默认 "idempotent:")

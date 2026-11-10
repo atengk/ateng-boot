@@ -150,6 +150,27 @@ flowchart TD
 4. **权威文档 0~7 章领域大章收敛与三要素同屏闭环**：
    - 彻底重构 `ateng-boot-redis/README.md`，将原 17 个散落章节收敛为 0~7 八大领域章节，原第 16 章（SPI 扩展定制）与第 17 章（生产边界与故障模式）全量拆解并就近内聚至各特性子节内部；Sample 自身 `README.md` 收敛为四段式极简体验卡。
 
+### 10. Phase 5 工业级防线加固、死信受控重放/PEL自愈与全场景对称门面演进 (#838)
+立足于九道成熟度防线与更极端的高并发、分布式故障自愈场景，经由 `/grill-with-docs` 推演，确立以下增量架构决策：
+1. **Redisson 看门狗配置自洽、全局前缀分层契约与两级缓存 L2-TTL 对齐 (#839)**：
+   - 彻底修复 Redisson 看门狗时间配置覆盖失效问题，显式通过 `config.setLockWatchdogTimeout` 注入；
+   - 确立全局 `key-prefix` 刚性分层契约：高级受管组件（锁、防重、延时队列、Stream、缓存、信号量、布隆）100% 自动拼接，最底层 `RedisUtil` 保持原生透传；
+   - 两级缓存修复 L2 序列化时未纳管特定 CacheName TTL 映射的缺陷，实现与 L1 TTL 深度对齐。
+2. **延时队列死信受控重放、静态门面补齐与高并发全场景对称操作 (#840)**：
+   - `DeadLetterMessage` 增强支持累计重放计数（`replayCount`）；
+   - 新增 `ateng.boot.redis.delay-queue.max-replay-attempts`（默认 3 次），超过阈值阻断重放，防止毒丸死循环引发二次死信雪崩；
+   - 补齐 `RedisDelayedQueueUtil` 静态门面与 `peekDeadLetters` 非破坏检视接口，保障对称操作完备性。
+3. **分布式锁多模式静态门面补齐、降级 fallback 扩展与原子 CAS 对称演进 (#841)**：
+   - `RedisLockUtil` 静态门面全量对齐 `DistributedLockTemplate`，全面支持 `FAIR`、`READ`、`WRITE` 锁模式与超时 `fallback` 降级闭包；
+   - `RedisAtomicUtil` 补齐通用 `compareAndSet(key, expect, update, duration)` 等对称操作，增强过期时间保护。
+4. **Stream 四维上下文透传、死信受控重放与 PEL 孤儿消息自动认领自愈 (#842)**：
+   - Stream 投递与消费链路深度集成 Core 四维上下文（MDC `traceId`、`TenantContextHolder`、`UserContextHolder`），消费端在 `finally` 中严格清理上下文，业务监听入参前置过滤 `__ateng_*` 内部系统键；
+   - 扩展 `StreamDeadLetterMessage` 记录 `replayCount`，新增 `ateng.boot.redis.stream.max-replay-attempts`（默认 3 次）防雪崩守卫，修复进入死信后的双重 ACK 冗余缺陷；
+   - `StreamBootstrap` 升级实现 `SmartLifecycle` 规范契约，消费主循环内置周期性 PEL 巡检与 `claimPendingMessages` 自动抢占孤儿待决消息（`claim-idle-time` 默认 1m，`claim-batch-size` 默认 20 条），消费者宕机故障无感自愈。
+5. **Sample 与 Starter 五维文档 1:1 逆向对齐、领域词汇表及 ADR-0022 闭环 (#843)**：
+   - Sample 与 Starter 双端文档 100% 逆向对齐，消除参数与路由幻觉；
+   - 沉淀 **DeadLetterReplay** 与 **PELOrphanClaiming** 核心标准术语至 `CONTEXT.md`，阶梯二测试与 12 项自检清单全绿准出。
+
 ---
 
 ## 权衡与收益考量 (Consequences)
@@ -185,7 +206,13 @@ flowchart TD
     - **#402**：Redis 5.0+ Stream 可靠消息流引擎与声明式消费组切面 (`RedisStreamTemplate` & `@RedisStreamListener`)；
     - **#403**：样例工程去 Web 污染重构与 1:1 全场景驱动实测（8 大场景 Service 与 21 项端到端测试）；
     - **#404**：五维生产就绪文档体系、100% 全景速查矩阵与 ADR-0022 落地闭环。
-- **质量门禁基准**：依赖树联动编译与端到端集成测试通过，覆盖率与工业级健壮性红线全达标（218 个模块单测 + 21 个场景测试 100% 通过）。
+  - **Phase 5 工业级防线加固、死信受控重放/PEL自愈与全场景对称门面演进工单 (#838)**：
+    - **#839**：Redisson 看门狗配置自洽、全局前缀分层契约与两级缓存 L2-TTL 对齐加固；
+    - **#840**：延时队列死信受控重放、静态门面补齐与高并发全场景对称操作演进；
+    - **#841**：分布式锁多模式静态门面补齐、降级 fallback 扩展与原子 CAS 对称演进；
+    - **#842**：Stream 四维上下文透传、死信受控重放与 PEL 孤儿消息自动认领自愈闭环；
+    - **#843**：Sample 与 Starter 五维文档 1:1 逆向对齐、领域词汇表及 ADR-0022 闭环。
+- **质量门禁基准**：依赖树联动编译与端到端集成测试通过，覆盖率与工业级健壮性红线全达标（256 个模块单测 + 44 个场景端到端测试 100% 通过）。
 
 
 

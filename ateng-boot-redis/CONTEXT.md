@@ -120,6 +120,18 @@ _Avoid_: BadMessage, PoisonMessage, FailedPayload
 延时队列终态消费失败处理扩展点（SPI），在重试耗尽转入死信队列后触发，供业务接管外部告警或持久化补偿。
 _Avoid_: DelayErrorHandler, DeadLetterCallback, QueueFailureListener
 
+**RedisDelayedQueueUtil**:
+延时队列全局静态操作门面，底层委托受管单例 `RedisDelayedQueue`，供静态上下文免注入快速执行延时投递、拉取、死信检视与受控重放。
+_Avoid_: DelayQueueUtil, StaticDelayQueue, DelayedQueueHelper
+
+**DeadLetterReplay**:
+死信受控重放标准机制，针对延时队列（`{queue}:dlq`）与 Stream 死信流（`${stream}:dlq`）中的死信记录，在严格校验 `replayCount < maxReplayAttempts` 防雪崩阈值的前提下，自增重试计数并重新投递回原始业务队列/流执行消费重试；超过最大重放上限时强行熔断以阻断二次死信风暴。
+_Avoid_: DeadLetterResend, RetryDeadLetter, ForceReplay
+
+**PELOrphanClaiming**:
+PEL 孤儿消息认领自愈机制，针对 Redis Stream 消费者突发崩溃或宕机后滞留在待决列表（Pending Entries List, PEL）中超时未确认的孤儿消息，由 `SmartLifecycle` 容器后台巡检或通过 `claimPendingMessages` 自动将超过最小闲置时长（`minIdleTime`）的待决消息重新指派抢占至健康消费者的容灾自愈流程。
+_Avoid_: OrphanRescue, PendingSteal, StreamRebalance
+
 **RedisStreamTemplate**:
 基于 Redis 5.0+ Stream 封装的可靠流式消息与消费组运维门面，提供流追加、幂等建组、消费组读取、显式 `acknowledge`、PEL 待决消息探查、`claim` 孤儿认领、定长 `trim` 裁剪与死信流转。
 _Avoid_: StreamManager, RedisStreamProducer, StreamClient

@@ -32,13 +32,13 @@
 | **添加/更新购物车商品 (Hash)** | `RedisOpsAndScriptController` | `POST /sample/redis/ops/cart/items` | `curl -X POST "http://localhost:8080/sample/redis/ops/cart/items" -H "Content-Type: application/json" -d '{"userId":"user_1001","skuId":"SKU_IPHONE_16","skuName":"iPhone 16 Pro","quantity":2,"price":7999.00}'` |
 | **查询购物车明细 (Hash)** | `RedisOpsAndScriptController` | `GET /sample/redis/ops/cart/{userId}` | `curl "http://localhost:8080/sample/redis/ops/cart/user_1001"` |
 | **删除购物车商品 (Hash)** | `RedisOpsAndScriptController` | `DELETE /sample/redis/ops/cart/{userId}/items/{skuId}` | `curl -X DELETE "http://localhost:8080/sample/redis/ops/cart/user_1001/items/SKU_IPHONE_16"` |
-| **更新商品热度积分 (ZSet)** | `RedisOpsAndScriptController` | `POST /sample/redis/ops/rank/score` | `curl -X POST "http://localhost:8080/sample/redis/ops/rank/score" -H "Content-Type: application/json" -d '{"productId":"PROD_1001","productName":"华为 Mate 70 Pro","scoreDelta":15.5}'` |
-| **查询热销榜 Top N (ZSet)** | `RedisOpsAndScriptController` | `GET /sample/redis/ops/rank/top/{limit}` | `curl "http://localhost:8080/sample/redis/ops/rank/top/10"` |
+| **更新商品热度积分 (ZSet)** | `RedisOpsAndScriptController` | `POST /sample/redis/ops/rank/score` | `curl -X POST "http://localhost:8080/sample/redis/ops/rank/score" -H "Content-Type: application/json" -d '{"productId":"PROD_1001","productName":"华为 Mate 70 Pro","deltaScore":15.5}'` |
+| **查询热销榜 Top N (ZSet)** | `RedisOpsAndScriptController` | `GET /sample/redis/ops/rank/top` | `curl "http://localhost:8080/sample/redis/ops/rank/top?limit=10"` |
 | **安全游标扫描 (SCAN)** | `RedisOpsAndScriptController` | `GET /sample/redis/ops/keys/scan` | `curl "http://localhost:8080/sample/redis/ops/keys/scan?pattern=sample:cart:*&count=50"` |
-| **Pipeline 批量预热** | `RedisOpsAndScriptController` | `POST /sample/redis/ops/pipeline/warmup` | `curl -X POST "http://localhost:8080/sample/redis/ops/pipeline/warmup" -H "Content-Type: application/json" -d '{"entries":{"sample:cfg:site_name":"AtengMall","sample:cfg:status":"UP"}}'` |
-| **原子核销优惠券 (Lua)** | `RedisOpsAndScriptController` | `POST /sample/redis/ops/coupon/deduct` | `curl -X POST "http://localhost:8080/sample/redis/ops/coupon/deduct" -H "Content-Type: application/json" -d '{"couponId":"CPN_20261108","userId":"USER_9999"}'` |
-| **跨天自重置流水号** | `RedisOpsAndScriptController` | `POST /sample/redis/ops/sequence/daily` | `curl -X POST "http://localhost:8080/sample/redis/ops/sequence/daily?bizPrefix=order&length=6"` |
-| **CAS 原子水位更新** | `RedisOpsAndScriptController` | `POST /sample/redis/ops/watermark/cas` | `curl -X POST "http://localhost:8080/sample/redis/ops/watermark/cas" -H "Content-Type: application/json" -d '{"resourceId":"stock_watermark","expectedValue":100,"newValue":90}'` |
+| **Pipeline 批量预热** | `RedisOpsAndScriptController` | `POST /sample/redis/ops/pipeline/warmup` | `curl -X POST "http://localhost:8080/sample/redis/ops/pipeline/warmup" -H "Content-Type: application/json" -d '{"stockMap":{"SKU_1001":100,"SKU_1002":200}}'` |
+| **原子核销优惠券 (Lua)** | `RedisOpsAndScriptController` | `POST /sample/redis/ops/coupon/deduct` | `curl -X POST "http://localhost:8080/sample/redis/ops/coupon/deduct" -H "Content-Type: application/json" -d '{"couponId":"CPN_20261108","deductCount":1}'` |
+| **跨天自重置流水号** | `RedisOpsAndScriptController` | `POST /sample/redis/ops/seq/daily` | `curl -X POST "http://localhost:8080/sample/redis/ops/seq/daily?prefix=ORD&width=6"` |
+| **CAS 原子水位更新** | `RedisOpsAndScriptController` | `POST /sample/redis/ops/watermark/cas` | `curl -X POST "http://localhost:8080/sample/redis/ops/watermark/cas" -H "Content-Type: application/json" -d '{"key":"stock_watermark","expect":100,"update":90}'` |
 
 | **秒杀库存扣减 (分布式锁)** | `RedisLockController` | `POST /sample/redis/lock/deduct-stock` | `curl -X POST "http://localhost:8080/sample/redis/lock/deduct-stock" -H "Content-Type: application/json" -d '{"productId":1001,"count":5}'` |
 | **跨服务订单重入结算 (分布式锁)** | `RedisLockController` | `POST /sample/redis/lock/order-settle-reentrant` | `curl -X POST "http://localhost:8080/sample/redis/lock/order-settle-reentrant" -H "Content-Type: application/json" -d '{"orderId":"ORD_SETTLE_1001","productId":1001,"quantity":2}'` |
@@ -75,6 +75,8 @@
 | **投递毒丸订单触发重试死信演练** | `RedisDelayQueueController` | `POST /sample/redis/delay-queue/order/cancel/send-poison` | `curl -X POST "http://localhost:8080/sample/redis/delay-queue/order/cancel/send-poison?orderId=POISON_ORD_999"` |
 | **查询延时死信积压统计** | `RedisDelayQueueController` | `GET /sample/redis/delay-queue/dead-letter/count` | `curl "http://localhost:8080/sample/redis/delay-queue/dead-letter/count"` |
 | **拉取延时死信消息 (运维探针)** | `RedisDelayQueueController` | `GET /sample/redis/delay-queue/dead-letter/poll` | `curl "http://localhost:8080/sample/redis/delay-queue/dead-letter/poll"` |
+| **批量非破坏检视延时死信 (DLQ)** | `RedisDelayQueueController` | `GET /sample/redis/delay-queue/dlq/peek` | `curl "http://localhost:8080/sample/redis/delay-queue/dlq/peek?limit=10"` |
+| **受控重放延时队列死信** | `RedisDelayQueueController` | `POST /sample/redis/delay-queue/dlq/replay` | `curl -X POST "http://localhost:8080/sample/redis/delay-queue/dlq/replay?count=1&delaySeconds=0"` |
 | **清空延时队列死信消息** | `RedisDelayQueueController` | `DELETE /sample/redis/delay-queue/dead-letter/clear` | `curl -X DELETE "http://localhost:8080/sample/redis/delay-queue/dead-letter/clear"` |
 | **查询延时队列 SPI 告警快照** | `RedisDelayQueueController` | `GET /sample/redis/delay-queue/alerts` | `curl "http://localhost:8080/sample/redis/delay-queue/alerts"` |
 
@@ -83,10 +85,12 @@
 | **查询消费组已消费事件记录** | `RedisStreamController` | `GET /sample/redis/stream/consumed` | `curl "http://localhost:8080/sample/redis/stream/consumed"` |
 | **查询待决消息概要统计 (XPENDING)** | `RedisStreamController` | `GET /sample/redis/stream/pending/summary` | `curl "http://localhost:8080/sample/redis/stream/pending/summary"` |
 | **查询待决消息明细列表 (XPENDING)** | `RedisStreamController` | `GET /sample/redis/stream/pending/messages` | `curl "http://localhost:8080/sample/redis/stream/pending/messages?count=10"` |
-| **认领孤儿待决消息 (XCLAIM)** | `RedisStreamController` | `POST /sample/redis/stream/claim` | `curl -X POST "http://localhost:8080/sample/redis/stream/claim" -H "Content-Type: application/json" -d '{"stream":"stream:order:events","group":"group:order:processor","newConsumer":"consumer-standby-01","minIdleSeconds":60,"recordIds":["1700000000000-0"]}'` |
+| **自动认领 PEL 孤儿待决消息** | `RedisStreamController` | `POST /sample/redis/stream/pending/claim` | `curl -X POST "http://localhost:8080/sample/redis/stream/pending/claim?newConsumer=consumer-standby-01&minIdleSeconds=60&count=10"` |
+| **显式指派认领待决消息 (XCLAIM)** | `RedisStreamController` | `POST /sample/redis/stream/claim` | `curl -X POST "http://localhost:8080/sample/redis/stream/claim" -H "Content-Type: application/json" -d '{"stream":"stream:order:events","group":"group:order:processor","newConsumer":"consumer-standby-01","minIdleSeconds":60,"recordIds":["1700000000000-0"]}'` |
 | **定长修剪裁剪 Stream 长度 (XTRIM)** | `RedisStreamController` | `POST /sample/redis/stream/trim` | `curl -X POST "http://localhost:8080/sample/redis/stream/trim" -H "Content-Type: application/json" -d '{"stream":"stream:order:events","maxLen":100}'` |
 | **投递毒丸 Stream 事件演练** | `RedisStreamController` | `POST /sample/redis/stream/events/poison` | `curl -X POST "http://localhost:8080/sample/redis/stream/events/poison?orderId=POISON_STREAM_999"` |
-| **查询死信流清单 ({stream}:dlq)** | `RedisStreamController` | `GET /sample/redis/stream/dead-letter` | `curl "http://localhost:8080/sample/redis/stream/dead-letter?count=10"` |
+| **非破坏检视死信流清单 (DLQ)** | `RedisStreamController` | `GET /sample/redis/stream/dlq/peek` | `curl "http://localhost:8080/sample/redis/stream/dlq/peek?count=10"` |
+| **受控重放 Stream 死信消息** | `RedisStreamController` | `POST /sample/redis/stream/dlq/replay` | `curl -X POST "http://localhost:8080/sample/redis/stream/dlq/replay?count=1"` |
 | **查询 Stream SPI 告警快照** | `RedisStreamController` | `GET /sample/redis/stream/alerts` | `curl "http://localhost:8080/sample/redis/stream/alerts"` |
 
 | **广播全站系统维护公告** | `RedisPubSubController` | `POST /sample/redis/pubsub/broadcast/notice` | `curl -X POST "http://localhost:8080/sample/redis/pubsub/broadcast/notice" -H "Content-Type: application/json" -d '{"noticeId":"NOT_20261108","title":"系统维护通知","content":"系统将于今晚 02:00 进行停机升级","level":"WARN"}'` |
