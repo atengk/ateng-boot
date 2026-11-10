@@ -1,13 +1,21 @@
 package io.github.atengk.boot.sample.rocketmq.service;
 
+import io.github.atengk.boot.rocketmq.model.DeadLetterReplayDetail;
 import io.github.atengk.boot.rocketmq.model.DeadLetterReplayResult;
 import io.github.atengk.boot.rocketmq.template.RocketmqDeadLetterReplayTemplate;
+import io.github.atengk.boot.sample.rocketmq.dto.DeadLetterMessageVO;
+import io.github.atengk.boot.sample.rocketmq.dto.DeadLetterReplayVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.apis.message.MessageView;
 import org.springframework.stereotype.Service;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 死信队列运维治理与受控重放场景业务服务
@@ -43,5 +51,78 @@ public class DeadLetterReplayScenarioService {
     public int discardDeadLetters(String consumerGroup, int limit) {
         log.warn("[DLQ-SCENARIO] 批量清理丢弃死信消息: consumerGroup={}, limit={}", consumerGroup, limit);
         return deadLetterReplayTemplate.discardDeadLetters(consumerGroup, limit);
+    }
+
+    public static DeadLetterMessageVO convertToMessageVO(MessageView mv) {
+        if (mv == null) {
+            return null;
+        }
+        String body = null;
+        try {
+            ByteBuffer buffer = mv.getBody();
+            if (buffer != null) {
+                ByteBuffer duplicate = buffer.duplicate();
+                byte[] bytes = new byte[duplicate.remaining()];
+                duplicate.get(bytes);
+                body = new String(bytes, StandardCharsets.UTF_8);
+            }
+        } catch (Exception ex) {
+            log.warn("[DLQ-SCENARIO] 消息体解析为 UTF-8 失败: {}", ex.getMessage());
+        }
+
+        Map<String, String> props = mv.getProperties() != null ? mv.getProperties() : Collections.emptyMap();
+        String originalTopic = props.getOrDefault("X-Original-Topic", props.get("x-original-topic"));
+        String bizKey = props.getOrDefault("X-Biz-Key", props.get("x-biz-key"));
+        int replayCount = 0;
+        String replayCountStr = props.getOrDefault("X-Dead-Letter-Replay-Count", props.get("x-dead-letter-replay-count"));
+        if (replayCountStr != null) {
+            try {
+                replayCount = Integer.parseInt(replayCountStr.trim());
+            } catch (NumberFormatException ignored) {
+                // ignore
+            }
+        }
+
+        return DeadLetterMessageVO.builder()
+                .messageId(mv.getMessageId() != null ? mv.getMessageId().toString() : null)
+                .dlqTopic(mv.getTopic())
+                .originalTopic(originalTopic)
+                .bizKey(bizKey)
+                .tag(mv.getTag().orElse(null))
+                .keys(mv.getKeys() != null ? new ArrayList<>(mv.getKeys()) : Collections.emptyList())
+                .body(body)
+                .userProperties(props)
+                .deliveryAttempt(mv.getDeliveryAttempt())
+                .replayCount(replayCount)
+                .build();
+    }
+
+    public static DeadLetterReplayVO convertToReplayVO(DeadLetterReplayResult result) {
+        if (result == null) {
+            return null;
+        }
+        List<DeadLetterReplayVO.ReplayDetailVO> detailVOs = new ArrayList<>();
+        if (result.getDetails() != null) {
+            for (DeadLetterReplayDetail d : result.getDetails()) {
+                detailVOs.add(DeadLetterReplayVO.ReplayDetailVO.builder()
+                        .originalMessageId(d.messageId())
+                        .newReceiptId(d.newReceiptId())
+                        .bizKey(d.bizKey())
+                        .targetTopic(d.targetTopic())
+                        .status(d.status() != null ? d.status().name() : null)
+                        .replayCount(d.replayCount())
+                        .reason(d.errorMessage())
+                        .build());
+            }
+        }
+        return DeadLetterReplayVO.builder()
+                .dlqTopic(result.getDlqTopic())
+                .consumerGroup(result.getConsumerGroup())
+                .totalPulled(result.getTotalPolled())
+                .successCount(result.getSuccessCount())
+                .blockedCount(result.getBlockedCount())
+                .failedCount(result.getFailedCount())
+                .details(detailVOs)
+                .build();
     }
 }

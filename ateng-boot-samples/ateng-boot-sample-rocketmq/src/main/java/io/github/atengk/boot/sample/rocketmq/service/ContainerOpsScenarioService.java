@@ -1,10 +1,12 @@
 package io.github.atengk.boot.sample.rocketmq.service;
 
 import io.github.atengk.boot.rocketmq.container.RocketmqContainerManager;
+import io.github.atengk.boot.rocketmq.listener.RocketmqListenerEndpoint;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -24,6 +26,10 @@ public class ContainerOpsScenarioService {
 
     public Set<String> getEndpointIds() {
         return containerManager.getEndpointIds();
+    }
+
+    public List<RocketmqListenerEndpoint> getEndpoints() {
+        return containerManager.getEndpoints();
     }
 
     public boolean pauseEndpoint(String endpointId) {

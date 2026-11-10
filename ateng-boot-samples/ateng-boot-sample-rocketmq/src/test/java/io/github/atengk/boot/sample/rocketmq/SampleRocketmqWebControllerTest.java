@@ -6,7 +6,9 @@ import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.sample.rocketmq.dto.*;
 import io.github.atengk.boot.sample.rocketmq.model.OrderMessage;
 import io.github.atengk.boot.sample.rocketmq.producer.TradeRocketmqProducer;
+import io.github.atengk.boot.sample.rocketmq.testdouble.InMemoryRocketmqBroker;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.rocketmq.client.apis.message.MessageView;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,6 +20,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.*;
@@ -48,6 +51,9 @@ class SampleRocketmqWebControllerTest {
 
     @Autowired
     private TradeRocketmqProducer tradeRocketmqProducer;
+
+    @Autowired(required = false)
+    private InMemoryRocketmqBroker testBroker;
 
     @Test
     @DisplayName("测试 RocketmqProduceController: 同步/异步/单向/FIFO/SQL92/批量与审计端点")
@@ -494,5 +500,228 @@ class SampleRocketmqWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.cachedCount").value(0))
                 .andExpect(jsonPath("$.data.messages", empty()));
+    }
+
+    @Test
+    @DisplayName("测试 RocketmqContainerController: 端点审计/动态削峰暂停/恢复/物理启停与全局调度")
+    void testContainerController() throws Exception {
+        // 1. 端点元数据列表审计
+        mockMvc.perform(get("/sample/rocketmq/container/endpoints"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", hasSize(greaterThanOrEqualTo(1))))
+                .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')]").exists());
+
+        // 2. 针对指定端点动态暂停削峰
+        ContainerControlRequest pauseReq = ContainerControlRequest.builder()
+                .endpointId("sample_order_group#sample_order_topic")
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/container/pause")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(pauseReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 验证端点状态为 paused=true
+        mockMvc.perform(get("/sample/rocketmq/container/endpoints"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')].paused").value(true));
+
+        // 3. 恢复端点正常消费
+        ContainerControlRequest resumeReq = ContainerControlRequest.builder()
+                .endpointId("sample_order_group#sample_order_topic")
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/container/resume")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(resumeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 验证端点状态为 paused=false
+        mockMvc.perform(get("/sample/rocketmq/container/endpoints"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')].paused").value(false));
+
+        // 4. 物理关闭底层连接 (stop)
+        ContainerControlRequest stopReq = ContainerControlRequest.builder()
+                .endpointId("sample_order_group#sample_order_topic")
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/container/stop")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(stopReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 5. 重新组装启动底层连接 (start)
+        ContainerControlRequest startReq = ContainerControlRequest.builder()
+                .endpointId("sample_order_group#sample_order_topic")
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/container/start")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(startReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 6. JSR-303 参数校验拦截 (endpointId 为空)
+        ContainerControlRequest invalidReq = ContainerControlRequest.builder().build();
+
+        mockMvc.perform(post("/sample/rocketmq/container/pause")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 7. 全局暂停与全局恢复
+        mockMvc.perform(post("/sample/rocketmq/container/pause-all"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", greaterThanOrEqualTo(1)));
+
+        mockMvc.perform(post("/sample/rocketmq/container/resume-all"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", greaterThanOrEqualTo(1)));
+    }
+
+    @Test
+    @DisplayName("测试 RocketmqDeadLetterController: 死信只读探查/受控重放至业务主题/目标分流/批量丢弃")
+    void testDeadLetterController() throws Exception {
+        String dlqGroup = "sample_order_group";
+        String dlqTopic = "%DLQ%" + dlqGroup;
+
+        // 1. 模拟死信报文入队
+        Map<String, String> peekProps = Map.of(
+                "X-Original-Topic", TradeRocketmqProducer.TOPIC_ORDER,
+                "X-Biz-Key", "ORD-DLQ-WEB-PEEK"
+        );
+        if (testBroker != null) {
+            MessageView peekMsg = InMemoryRocketmqBroker.createMockMessageView(
+                    dlqTopic, "DLQ-WEB-PEEK-001", "{\"orderId\":\"ORD-DLQ-WEB-PEEK\"}".getBytes(StandardCharsets.UTF_8),
+                    peekProps, "create", null
+            );
+            testBroker.enqueueDlqMessage(dlqGroup, peekMsg);
+        }
+
+        // 2. 只读探查死信 (零 ACK 保留现场)
+        DeadLetterPeekRequest peekReq = DeadLetterPeekRequest.builder()
+                .consumerGroup(dlqGroup)
+                .limit(10)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/dead-letter/peek")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(peekReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", hasSize(greaterThanOrEqualTo(1))))
+                .andExpect(jsonPath("$.data[?(@.messageId == 'DLQ-WEB-PEEK-001')]").exists());
+
+        if (testBroker != null) {
+            assertThat(testBroker.getAckedMessageIds()).doesNotContain("DLQ-WEB-PEEK-001");
+        }
+
+        // 3. JSR-303 参数缺失拦截 (consumerGroup 为空)
+        DeadLetterPeekRequest invalidPeekReq = DeadLetterPeekRequest.builder().build();
+
+        mockMvc.perform(post("/sample/rocketmq/dead-letter/peek")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidPeekReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 4. 受控重放死信至原始主题并确认 ACK
+        Map<String, String> replayProps = Map.of(
+                "X-Original-Topic", TradeRocketmqProducer.TOPIC_ORDER,
+                "X-Biz-Key", "ORD-DLQ-WEB-REPLAY"
+        );
+        if (testBroker != null) {
+            MessageView replayMsg = InMemoryRocketmqBroker.createMockMessageView(
+                    dlqTopic, "DLQ-WEB-REPLAY-001", "{\"orderId\":\"ORD-DLQ-WEB-REPLAY\"}".getBytes(StandardCharsets.UTF_8),
+                    replayProps, "create", null
+            );
+            testBroker.enqueueDlqMessage(dlqGroup, replayMsg);
+        }
+
+        DeadLetterReplayRequest replayReq = DeadLetterReplayRequest.builder()
+                .consumerGroup(dlqGroup)
+                .limit(10)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/dead-letter/replay")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(replayReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.successCount", greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.data.details", hasSize(greaterThanOrEqualTo(1))));
+
+        if (testBroker != null) {
+            assertThat(testBroker.getAckedMessageIds()).contains("DLQ-WEB-REPLAY-001");
+        }
+
+        // 5. 受控重放死信至指定分流主题
+        Map<String, String> topicDlqProps = Map.of(
+                "X-Original-Topic", TradeRocketmqProducer.TOPIC_ORDER,
+                "X-Biz-Key", "ORD-DLQ-WEB-TOPIC"
+        );
+        if (testBroker != null) {
+            MessageView topicMsg = InMemoryRocketmqBroker.createMockMessageView(
+                    dlqTopic, "DLQ-WEB-TOPIC-001", "{\"orderId\":\"ORD-DLQ-WEB-TOPIC\"}".getBytes(StandardCharsets.UTF_8),
+                    topicDlqProps, "create", null
+            );
+            testBroker.enqueueDlqMessage(dlqGroup, topicMsg);
+        }
+
+        DeadLetterReplayRequest targetTopicReq = DeadLetterReplayRequest.builder()
+                .consumerGroup(dlqGroup)
+                .limit(10)
+                .targetTopic(TradeRocketmqProducer.TOPIC_ORDER)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/dead-letter/replay")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(targetTopicReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.successCount", greaterThanOrEqualTo(1)));
+
+        // 6. 批量物理丢弃清理死信
+        Map<String, String> discardProps = Map.of(
+                "X-Original-Topic", TradeRocketmqProducer.TOPIC_ORDER,
+                "X-Biz-Key", "ORD-DLQ-WEB-DISCARD"
+        );
+        if (testBroker != null) {
+            MessageView discardMsg = InMemoryRocketmqBroker.createMockMessageView(
+                    dlqTopic, "DLQ-WEB-DISCARD-001", "{\"orderId\":\"ORD-DLQ-WEB-DISCARD\"}".getBytes(StandardCharsets.UTF_8),
+                    discardProps, "create", null
+            );
+            testBroker.enqueueDlqMessage(dlqGroup, discardMsg);
+        }
+
+        DeadLetterDiscardRequest discardReq = DeadLetterDiscardRequest.builder()
+                .consumerGroup(dlqGroup)
+                .limit(10)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/dead-letter/discard")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(discardReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", greaterThanOrEqualTo(1)));
+
+        if (testBroker != null) {
+            assertThat(testBroker.getAckedMessageIds()).contains("DLQ-WEB-DISCARD-001");
+        }
     }
 }
