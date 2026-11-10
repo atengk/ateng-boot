@@ -502,7 +502,7 @@ class SampleNotificationIntegrationTest {
                 }
                 """;
 
-        mockMvc.perform(post("/api/v1/alert/trigger")
+        mockMvc.perform(post("/sample/notification/alert/trigger")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(alertPayload))
                 .andExpect(status().isOk())
@@ -521,13 +521,58 @@ class SampleNotificationIntegrationTest {
                 .doesNotContain("SUPER_SECRET_PASSWORD_123");
 
         // 验证防风暴聚合：窗口期内（10s）再次触发相同异常，被静默拦截，不再产生新的即时网络请求
-        mockMvc.perform(post("/api/v1/alert/trigger")
+        mockMvc.perform(post("/sample/notification/alert/trigger")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(alertPayload))
                 .andExpect(status().isOk());
 
         RecordedRequest duplicate = mockServer.takeRequest(500, TimeUnit.MILLISECONDS);
         assertNull(duplicate, "窗口期内相同异常指纹应被静默拦截，杜绝刷屏！");
+    }
+
+    @Test
+    @DisplayName("端到端验证告警风暴三阶抑制接口：首发即时推送红色卡片、窗口期静默拦截、周期末异步补发橙色聚合卡片")
+    void testAlertStormSuppressEndpointAndThreeStageSuppression() throws Exception {
+        // 首发紧急告警与周期末汇总告警各需 1 次成功响应
+        enqueueSuccessResponse();
+        enqueueSuccessResponse();
+
+        String stormPayload = """
+                {
+                  "orderId": "ORD-STORM-TEST",
+                  "password": "SUPER_SECRET_STORM_PWD",
+                  "count": 10
+                }
+                """;
+
+        mockMvc.perform(post("/sample/notification/alert/storm-suppress")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(stormPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.totalAttempts").value(10))
+                .andExpect(jsonPath("$.data.initialDispatched").value(1))
+                .andExpect(jsonPath("$.data.suppressedCount").value(9))
+                .andExpect(jsonPath("$.data.suppressWindowSeconds").value(2));
+
+        // 1. 验证首发即时告警卡片（红色 Header）已送达 MockWebServer
+        RecordedRequest emergencyReq = mockServer.takeRequest(3, TimeUnit.SECONDS);
+        assertNotNull(emergencyReq, "首发瞬时故障应立即推送紧急告警卡片");
+        String emergencyBody = emergencyReq.getBody().readUtf8();
+        assertThat(emergencyBody)
+                .contains("故障风暴瞬时熔断异常")
+                .contains("[紧急告警]")
+                .contains("******")
+                .doesNotContain("SUPER_SECRET_STORM_PWD");
+
+        // 2. 验证周期末汇总通报卡片（橙色 Header）：等待 2 秒抑制窗口到期并由调度器异步补发
+        RecordedRequest summaryReq = mockServer.takeRequest(4, TimeUnit.SECONDS);
+        assertNotNull(summaryReq, "2 秒抑制窗口到期后应自动补发周期末汇总卡片");
+        String summaryBody = summaryReq.getBody().readUtf8();
+        assertThat(summaryBody)
+                .contains("【告警汇总】故障风暴瞬时熔断异常")
+                .contains("累计重复触发了")
+                .contains("9");
     }
 
     @Test
