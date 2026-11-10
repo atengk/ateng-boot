@@ -34,7 +34,7 @@ import static org.awaitility.Awaitility.await;
 
 /**
  * ateng-boot-sample-mqtt 端到端自动化集成自验用例
- * 严格遵从 Zero-Controller Invariant，纯净基于 @SpringBootTest 验证 7 大场景业务服务
+ * 纯净基于 @SpringBootTest 验证 7 大场景业务服务
  * 依托纯内存 Netty MQTT Broker 测试桩，100% 离线秒级全绿验证全特性
  *
  * @author Ateng
