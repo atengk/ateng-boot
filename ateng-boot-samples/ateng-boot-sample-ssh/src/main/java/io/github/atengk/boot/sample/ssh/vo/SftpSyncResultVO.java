@@ -34,6 +34,11 @@ public class SftpSyncResultVO implements Serializable {
     private String remoteDir;
 
     /**
+     * 成功同步的文件总数
+     */
+    private Integer syncCount;
+
+    /**
      * 同步耗时毫秒数
      */
     private Long durationMs;

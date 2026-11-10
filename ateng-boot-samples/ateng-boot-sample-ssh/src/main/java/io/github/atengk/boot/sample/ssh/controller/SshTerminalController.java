@@ -2,7 +2,6 @@ package io.github.atengk.boot.sample.ssh.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.ssh.vo.SshTerminalInfoVO;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -23,7 +22,6 @@ import org.springframework.web.bind.annotation.RestController;
 @Validated
 @RestController
 @RequestMapping("/sample/ssh/terminal")
-@RequiredArgsConstructor
 public class SshTerminalController {
 
     /**
@@ -40,6 +38,7 @@ public class SshTerminalController {
                 .defaultCols(80)
                 .defaultRows(24)
                 .websocketEndpoint("/ws/ssh")
+                .activeSessions(0)
                 .status("UP")
                 .build();
 

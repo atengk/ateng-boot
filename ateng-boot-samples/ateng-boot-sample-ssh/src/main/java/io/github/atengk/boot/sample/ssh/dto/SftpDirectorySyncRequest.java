@@ -35,4 +35,9 @@ public class SftpDirectorySyncRequest implements Serializable {
      */
     @NotBlank(message = "远程目录路径不能为空")
     private String remoteDir;
+
+    /**
+     * 传输发生错误时是否立即熔断中止其余任务（默认 false）
+     */
+    private Boolean failFast;
 }

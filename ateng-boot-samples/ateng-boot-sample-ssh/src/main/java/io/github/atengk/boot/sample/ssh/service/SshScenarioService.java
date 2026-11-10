@@ -73,6 +73,9 @@ public class SshScenarioService {
      * @return 执行结果
      */
     public SshExecResult exec(String serverName, String command) {
+        if (!org.springframework.util.StringUtils.hasText(serverName)) {
+            return exec(command);
+        }
         log.info("ateng-boot-ssh-sample: 正在目标节点 [{}] 执行同步命令 [{}]", serverName, command);
         return sshTemplate.exec(serverName, command);
     }
@@ -109,6 +112,9 @@ public class SshScenarioService {
      * @return 异步执行 Future
      */
     public CompletableFuture<SshExecResult> execAsync(String serverName, String command) {
+        if (!org.springframework.util.StringUtils.hasText(serverName)) {
+            return execAsync(command);
+        }
         log.info("ateng-boot-ssh-sample: 正在指定节点 [{}] 下发非阻塞异步任务 [{}]", serverName, command);
         return sshTemplate.execAsync(serverName, command);
     }
@@ -134,6 +140,9 @@ public class SshScenarioService {
      * @return 执行结果
      */
     public SshExecResult execSudo(String serverName, String command, String sudoPassword) {
+        if (!org.springframework.util.StringUtils.hasText(serverName)) {
+            return execSudo(command, sudoPassword);
+        }
         log.info("ateng-boot-ssh-sample: 正在目标节点 [{}] 通过 Sudo 提权执行 [{}]", serverName, command);
         return sshTemplate.execSudo(serverName, command, sudoPassword);
     }

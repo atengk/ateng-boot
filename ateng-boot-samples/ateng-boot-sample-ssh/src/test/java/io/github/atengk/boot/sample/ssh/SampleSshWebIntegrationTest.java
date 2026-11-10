@@ -775,6 +775,7 @@ public class SampleSshWebIntegrationTest {
         SftpDirectorySyncRequest uploadReq = SftpDirectorySyncRequest.builder()
                 .localDir(localSourceDir.toAbsolutePath().toString())
                 .remoteDir(remoteSyncDir)
+                .failFast(false)
                 .build();
 
         mockMvc.perform(post("/sample/ssh/sftp-sync/upload-dir")
@@ -782,12 +783,14 @@ public class SampleSshWebIntegrationTest {
                         .content(objectMapper.writeValueAsString(uploadReq)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.success", is(true)));
+                .andExpect(jsonPath("$.data.success", is(true)))
+                .andExpect(jsonPath("$.data.syncCount").value(1));
 
         // 2. 目录树整包下载
         SftpDirectorySyncRequest downloadReq = SftpDirectorySyncRequest.builder()
                 .localDir(localDownloadDir.toAbsolutePath().toString())
                 .remoteDir(remoteSyncDir)
+                .failFast(false)
                 .build();
 
         mockMvc.perform(post("/sample/ssh/sftp-sync/download-dir")
@@ -795,11 +798,12 @@ public class SampleSshWebIntegrationTest {
                         .content(objectMapper.writeValueAsString(downloadReq)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.success", is(true)));
+                .andExpect(jsonPath("$.data.success", is(true)))
+                .andExpect(jsonPath("$.data.syncCount").value(1));
 
         assertThat(Files.exists(localDownloadDir.resolve("sub-folder/file1.txt"))).isTrue();
 
-        // 3. DFS 深度优先递归清空删除非空目录
+        // 3. DFS 深度优先递归清空删除非空目录 (recursive = true)
         SftpDeleteDirectoryRequest deleteReq = SftpDeleteDirectoryRequest.builder()
                 .remotePath(remoteSyncDir)
                 .recursive(true)
@@ -811,6 +815,12 @@ public class SampleSshWebIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data", is(true)));
+
+        // 4. 验证已删除
+        mockMvc.perform(get("/sample/ssh/sftp-doc/exists")
+                        .param("remotePath", remoteSyncDir))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", is(false)));
     }
 
     @Test
@@ -843,6 +853,7 @@ public class SampleSshWebIntegrationTest {
                 .andExpect(jsonPath("$.data.defaultCols", is(80)))
                 .andExpect(jsonPath("$.data.defaultRows", is(24)))
                 .andExpect(jsonPath("$.data.websocketEndpoint", is("/ws/ssh")))
+                .andExpect(jsonPath("$.data.activeSessions").value(0))
                 .andExpect(jsonPath("$.data.status", is("UP")));
     }
 }

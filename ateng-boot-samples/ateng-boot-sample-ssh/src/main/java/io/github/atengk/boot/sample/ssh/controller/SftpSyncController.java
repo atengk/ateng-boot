@@ -47,16 +47,19 @@ public class SftpSyncController {
      */
     @PostMapping("/upload-dir")
     public Result<SftpSyncResultVO> uploadDirectory(@Valid @RequestBody SftpDirectorySyncRequest request) {
-        log.info("SftpSyncController: 收到目录树整包上传请求 [localDir={} -> remoteDir={}]",
-                request.getLocalDir(), request.getRemoteDir());
+        log.info("SftpSyncController: 收到目录树整包上传请求 [localDir={} -> remoteDir={}, failFast={}]",
+                request.getLocalDir(), request.getRemoteDir(), request.getFailFast());
 
         long start = System.currentTimeMillis();
-        sftpScenarioService.syncUploadDirectory(new File(request.getLocalDir()), request.getRemoteDir());
+        File localFolder = new File(request.getLocalDir());
+        sftpScenarioService.syncUploadDirectory(localFolder, request.getRemoteDir());
         long cost = System.currentTimeMillis() - start;
 
+        int fileCount = localFolder.exists() && localFolder.listFiles() != null ? localFolder.listFiles().length : 0;
         SftpSyncResultVO vo = SftpSyncResultVO.builder()
                 .localDir(request.getLocalDir())
                 .remoteDir(request.getRemoteDir())
+                .syncCount(fileCount)
                 .durationMs(cost)
                 .success(true)
                 .message("整包目录树镜像上传同步成功")
@@ -73,16 +76,19 @@ public class SftpSyncController {
      */
     @PostMapping("/download-dir")
     public Result<SftpSyncResultVO> downloadDirectory(@Valid @RequestBody SftpDirectorySyncRequest request) {
-        log.info("SftpSyncController: 收到目录树整包下载请求 [remoteDir={} -> localDir={}]",
-                request.getRemoteDir(), request.getLocalDir());
+        log.info("SftpSyncController: 收到目录树整包下载请求 [remoteDir={} -> localDir={}, failFast={}]",
+                request.getRemoteDir(), request.getLocalDir(), request.getFailFast());
 
         long start = System.currentTimeMillis();
-        sftpScenarioService.syncDownloadDirectory(request.getRemoteDir(), new File(request.getLocalDir()));
+        File localFolder = new File(request.getLocalDir());
+        sftpScenarioService.syncDownloadDirectory(request.getRemoteDir(), localFolder);
         long cost = System.currentTimeMillis() - start;
 
+        int fileCount = localFolder.exists() && localFolder.listFiles() != null ? localFolder.listFiles().length : 0;
         SftpSyncResultVO vo = SftpSyncResultVO.builder()
                 .localDir(request.getLocalDir())
                 .remoteDir(request.getRemoteDir())
+                .syncCount(fileCount)
                 .durationMs(cost)
                 .success(true)
                 .message("整包目录树镜像下载同步成功")
@@ -99,8 +105,14 @@ public class SftpSyncController {
      */
     @PostMapping("/delete-dir")
     public Result<Boolean> deleteDirectory(@Valid @RequestBody SftpDeleteDirectoryRequest request) {
-        log.info("SftpSyncController: 收到递归删除非空目录请求 [remotePath={}]", request.getRemotePath());
-        boolean deleted = sftpScenarioService.deleteRecursively(request.getRemotePath());
+        log.info("SftpSyncController: 收到删除目录请求 [remotePath={}, recursive={}]",
+                request.getRemotePath(), request.getRecursive());
+        boolean deleted;
+        if (Boolean.FALSE.equals(request.getRecursive())) {
+            deleted = sftpScenarioService.delete(request.getRemotePath());
+        } else {
+            deleted = sftpScenarioService.deleteRecursively(request.getRemotePath());
+        }
         return Result.success(deleted);
     }
 

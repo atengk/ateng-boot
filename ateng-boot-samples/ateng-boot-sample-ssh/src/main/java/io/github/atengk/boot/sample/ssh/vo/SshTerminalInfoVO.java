@@ -44,6 +44,11 @@ public class SshTerminalInfoVO implements Serializable {
     private String websocketEndpoint;
 
     /**
+     * 当前活跃终端会话数
+     */
+    private Integer activeSessions;
+
+    /**
      * 当前运行环境状态描述
      */
     private String status;

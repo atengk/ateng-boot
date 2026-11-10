@@ -11,7 +11,6 @@ import io.github.atengk.boot.ssh.model.SshExecResult;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.util.StringUtils;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -54,12 +53,7 @@ public class SshCommandController {
     public Result<SshExecResultVO> exec(@Valid @RequestBody SshCommandRequest request) {
         log.info("SshCommandController: 收到同步命令执行请求 [serverName={}, command={}]",
                 request.getServerName(), request.getCommand());
-        SshExecResult result;
-        if (StringUtils.hasText(request.getServerName())) {
-            result = sshScenarioService.exec(request.getServerName(), request.getCommand());
-        } else {
-            result = sshScenarioService.exec(request.getCommand());
-        }
+        SshExecResult result = sshScenarioService.exec(request.getServerName(), request.getCommand());
         return Result.success(SshExecResultVO.from(result));
     }
 
@@ -73,12 +67,7 @@ public class SshCommandController {
     public CompletableFuture<Result<SshExecResultVO>> execAsync(@Valid @RequestBody SshCommandRequest request) {
         log.info("SshCommandController: 收到异步命令下发请求 [serverName={}, command={}]",
                 request.getServerName(), request.getCommand());
-        CompletableFuture<SshExecResult> future;
-        if (StringUtils.hasText(request.getServerName())) {
-            future = sshScenarioService.execAsync(request.getServerName(), request.getCommand());
-        } else {
-            future = sshScenarioService.execAsync(request.getCommand());
-        }
+        CompletableFuture<SshExecResult> future = sshScenarioService.execAsync(request.getServerName(), request.getCommand());
         return future.thenApply(res -> Result.success(SshExecResultVO.from(res)));
     }
 
@@ -92,12 +81,7 @@ public class SshCommandController {
     public Result<SshExecResultVO> execSudo(@Valid @RequestBody SshSudoRequest request) {
         log.info("SshCommandController: 收到 Sudo 安全提权执行请求 [serverName={}, command={}]",
                 request.getServerName(), request.getCommand());
-        SshExecResult result;
-        if (StringUtils.hasText(request.getServerName())) {
-            result = sshScenarioService.execSudo(request.getServerName(), request.getCommand(), request.getSudoPassword());
-        } else {
-            result = sshScenarioService.execSudo(request.getCommand(), request.getSudoPassword());
-        }
+        SshExecResult result = sshScenarioService.execSudo(request.getServerName(), request.getCommand(), request.getSudoPassword());
         return Result.success(SshExecResultVO.from(result));
     }
 
