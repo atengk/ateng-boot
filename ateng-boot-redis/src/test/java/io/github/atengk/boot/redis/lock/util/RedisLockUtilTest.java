@@ -12,6 +12,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -106,5 +107,22 @@ class RedisLockUtilTest {
 
         assertThat(res).isEqualTo("MULTI_OK");
         verify(lockTemplate).execute(eq(List.of("k1", "k2")), eq(LockMode.FAIR), eq(1000L), eq(5000L), eq(TimeUnit.MILLISECONDS), any(LockSupplier.class));
+    }
+
+    @Test
+    @DisplayName("execute & tryExecute: 静态门面正确委托 Duration 强类型重载调用")
+    void execute_durationOverloads_delegates() throws Throwable {
+        when(lockTemplate.execute(eq("order:dur"), eq(LockMode.REENTRANT), eq(Duration.ofSeconds(1)), eq(Duration.ofSeconds(5)), any(LockSupplier.class)))
+                .thenReturn("DUR_VAL");
+        when(lockTemplate.tryExecute(eq("order:dur"), eq(Duration.ofSeconds(1)), any(LockAction.class)))
+                .thenReturn(true);
+
+        String res = RedisLockUtil.execute("order:dur", LockMode.REENTRANT, Duration.ofSeconds(1), Duration.ofSeconds(5), () -> "DUR_VAL");
+        assertThat(res).isEqualTo("DUR_VAL");
+        verify(lockTemplate).execute(eq("order:dur"), eq(LockMode.REENTRANT), eq(Duration.ofSeconds(1)), eq(Duration.ofSeconds(5)), any(LockSupplier.class));
+
+        boolean tried = RedisLockUtil.tryExecute("order:dur", Duration.ofSeconds(1), () -> {});
+        assertThat(tried).isTrue();
+        verify(lockTemplate).tryExecute(eq("order:dur"), eq(Duration.ofSeconds(1)), any(LockAction.class));
     }
 }

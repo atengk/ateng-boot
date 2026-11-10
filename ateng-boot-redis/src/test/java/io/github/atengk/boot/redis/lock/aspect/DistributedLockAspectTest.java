@@ -291,4 +291,26 @@ class DistributedLockAspectTest {
         assertThat(result).isEqualTo("slow:SLOW_01");
         verify(rLock).unlock();
     }
+
+    @Test
+    @DisplayName("测试 @DistributedLock 默认继承全局 ateng.boot.redis.lock.prefix 配置")
+    void shouldInheritGlobalLockPrefixWhenDefault() throws Throwable {
+        redisProperties.getLock().setPrefix("custom-lock:");
+        aspect = new DistributedLockAspect(redissonClient, redisProperties);
+
+        mockJoinPoint("processOrder", new Class<?>[]{String.class}, new Object[]{"ORD_999"});
+        when(joinPoint.proceed()).thenReturn("ok:ORD_999");
+        when(redissonClient.getLock("custom-lock:ORD_999")).thenReturn(rLock);
+        when(rLock.tryLock(anyLong(), any(TimeUnit.class))).thenReturn(true);
+        when(rLock.isHeldByCurrentThread()).thenReturn(true);
+
+        Method method = SampleService.class.getMethod("processOrder", String.class);
+        DistributedLock annotation = method.getAnnotation(DistributedLock.class);
+
+        Object result = aspect.around(joinPoint, annotation);
+
+        assertThat(result).isEqualTo("ok:ORD_999");
+        verify(redissonClient).getLock("custom-lock:ORD_999");
+        verify(rLock).unlock();
+    }
 }

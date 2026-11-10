@@ -109,6 +109,13 @@ public class DistributedLockTemplate {
     }
 
     /**
+     * 单键自定义超时（Duration 强类型）与锁模式加锁执行（带返回值）
+     */
+    public <T, E extends Throwable> T execute(String key, LockMode mode, Duration waitTime, Duration leaseTime, LockSupplier<T, E> supplier) throws E {
+        return execute(Collections.singletonList(key), mode, waitTime, leaseTime, supplier);
+    }
+
+    /**
      * 单键自定义超时与锁模式加锁执行（无返回值）
      */
     public <E extends Throwable> void execute(String key, LockMode mode, long waitTime, long leaseTime, TimeUnit timeUnit, LockAction<E> action) throws E {
@@ -119,10 +126,38 @@ public class DistributedLockTemplate {
     }
 
     /**
+     * 单键自定义超时（Duration 强类型）与锁模式加锁执行（无返回值）
+     */
+    public <E extends Throwable> void execute(String key, LockMode mode, Duration waitTime, Duration leaseTime, LockAction<E> action) throws E {
+        execute(Collections.singletonList(key), mode, waitTime, leaseTime, action);
+    }
+
+    /**
      * 多键联锁加锁执行（带返回值）
      */
     public <T, E extends Throwable> T execute(List<String> keys, LockMode mode, long waitTime, long leaseTime, TimeUnit timeUnit, LockSupplier<T, E> supplier) throws E {
         return execute(keys, mode, waitTime, leaseTime, timeUnit, null, supplier, null);
+    }
+
+    /**
+     * 多键联锁自定义超时（Duration 强类型）与锁模式加锁执行（带返回值）
+     */
+    public <T, E extends Throwable> T execute(List<String> keys, LockMode mode, Duration waitTime, Duration leaseTime, LockSupplier<T, E> supplier) throws E {
+        long waitMillis = -1L;
+        if (waitTime != null) {
+            if (waitTime.isNegative()) {
+                throw new IllegalArgumentException("waitTime must not be negative");
+            }
+            waitMillis = waitTime.toMillis();
+        }
+        long leaseMillis = -1L;
+        if (leaseTime != null) {
+            if (leaseTime.isNegative()) {
+                throw new IllegalArgumentException("leaseTime must not be negative");
+            }
+            leaseMillis = leaseTime.isZero() ? -1L : leaseTime.toMillis();
+        }
+        return execute(keys, mode, waitMillis, leaseMillis, TimeUnit.MILLISECONDS, supplier);
     }
 
     /**
@@ -133,6 +168,16 @@ public class DistributedLockTemplate {
             action.run();
             return null;
         }, null);
+    }
+
+    /**
+     * 多键联锁自定义超时（Duration 强类型）与锁模式加锁执行（无返回值）
+     */
+    public <E extends Throwable> void execute(List<String> keys, LockMode mode, Duration waitTime, Duration leaseTime, LockAction<E> action) throws E {
+        execute(keys, mode, waitTime, leaseTime, () -> {
+            action.run();
+            return null;
+        });
     }
 
     /**
@@ -164,6 +209,27 @@ public class DistributedLockTemplate {
     }
 
     /**
+     * 争锁试探执行（Duration 强类型等待时间）：争锁成功执行闭包并返回 true；争锁超时不抛异常直接返回 false
+     *
+     * @param key 业务锁键
+     * @param waitTime 等待时长
+     * @param action 受保护业务闭包
+     * @param <E> 异常类型
+     * @return 是否成功获取锁并执行
+     * @throws E 业务抛出的异常
+     */
+    public <E extends Throwable> boolean tryExecute(String key, Duration waitTime, LockAction<E> action) throws E {
+        long waitMillis = 0L;
+        if (waitTime != null) {
+            if (waitTime.isNegative()) {
+                throw new IllegalArgumentException("waitTime must not be negative");
+            }
+            waitMillis = waitTime.toMillis();
+        }
+        return tryExecute(key, waitMillis, TimeUnit.MILLISECONDS, action);
+    }
+
+    /**
      * 多键联锁争锁试探执行
      */
     public <E extends Throwable> boolean tryExecute(List<String> keys, LockMode mode, long waitTime, long leaseTime, TimeUnit timeUnit, LockAction<E> action) throws E {
@@ -174,6 +240,27 @@ public class DistributedLockTemplate {
             return null;
         }, () -> null);
         return executed.get();
+    }
+
+    /**
+     * 多键联锁争锁试探执行（Duration 强类型）
+     */
+    public <E extends Throwable> boolean tryExecute(List<String> keys, LockMode mode, Duration waitTime, Duration leaseTime, LockAction<E> action) throws E {
+        long waitMillis = 0L;
+        if (waitTime != null) {
+            if (waitTime.isNegative()) {
+                throw new IllegalArgumentException("waitTime must not be negative");
+            }
+            waitMillis = waitTime.toMillis();
+        }
+        long leaseMillis = -1L;
+        if (leaseTime != null) {
+            if (leaseTime.isNegative()) {
+                throw new IllegalArgumentException("leaseTime must not be negative");
+            }
+            leaseMillis = leaseTime.isZero() ? -1L : leaseTime.toMillis();
+        }
+        return tryExecute(keys, mode, waitMillis, leaseMillis, TimeUnit.MILLISECONDS, action);
     }
 
     /**
@@ -382,7 +469,9 @@ public class DistributedLockTemplate {
         String globalPrefix = redisProperties.getKeyPrefix();
         String lockPrefix = StringUtils.hasText(customPrefix)
                 ? customPrefix
-                : redisProperties.getLock().getPrefix();
+                : (redisProperties.getLock() != null && redisProperties.getLock().getPrefix() != null
+                        ? redisProperties.getLock().getPrefix()
+                        : "lock:");
         if (lockPrefix == null) {
             lockPrefix = "lock:";
         }
@@ -407,6 +496,7 @@ public class DistributedLockTemplate {
                 resolved.add(resolvedKey);
             }
         }
+        Collections.sort(resolved);
         return resolved;
     }
 }

@@ -260,6 +260,91 @@ public class RedisSemaphoreTemplate {
     // ==================== 配额运维与状态调配方法 ====================
 
     /**
+     * 尝试获取指定数量的信号量许可证（支持超时等待）
+     *
+     * @param name 信号量名称
+     * @param permits 申请许可证数量
+     * @param waitTimeout 最大等待时长（null 或 isZero/isNegative 时为非阻塞快速失败）
+     * @return 是否成功获取许可证
+     */
+    public boolean tryAcquire(String name, int permits, Duration waitTimeout) {
+        Assert.hasText(name, "semaphore name must not be blank");
+        Assert.isTrue(permits > 0, "permits must be greater than 0");
+        try {
+            RSemaphore semaphore = getSemaphore(name);
+            if (waitTimeout == null || waitTimeout.isZero() || waitTimeout.isNegative()) {
+                return semaphore.tryAcquire(permits);
+            }
+            return semaphore.tryAcquire(permits, waitTimeout);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "获取分布式信号量线程被中断: name=" + name, e);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "获取分布式信号量底层异常: name=" + name + ", error=" + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 非阻塞尝试获取指定数量的信号量许可证
+     *
+     * @param name 信号量名称
+     * @param permits 申请许可证数量
+     * @return 是否成功获取许可证
+     */
+    public boolean tryAcquire(String name, int permits) {
+        return tryAcquire(name, permits, Duration.ZERO);
+    }
+
+    /**
+     * 尝试获取单枚信号量许可证（支持超时等待）
+     *
+     * @param name 信号量名称
+     * @param waitTimeout 最大等待时长
+     * @return 是否成功获取许可证
+     */
+    public boolean tryAcquire(String name, Duration waitTimeout) {
+        return tryAcquire(name, 1, waitTimeout);
+    }
+
+    /**
+     * 非阻塞尝试获取单枚信号量许可证
+     *
+     * @param name 信号量名称
+     * @return 是否成功获取许可证
+     */
+    public boolean tryAcquire(String name) {
+        return tryAcquire(name, 1, Duration.ZERO);
+    }
+
+    /**
+     * 释放指定数量的信号量许可证
+     *
+     * @param name 信号量名称
+     * @param permits 归还许可证数量
+     */
+    public void release(String name, int permits) {
+        Assert.hasText(name, "semaphore name must not be blank");
+        Assert.isTrue(permits > 0, "permits must be greater than 0");
+        try {
+            getSemaphore(name).release(permits);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "释放分布式信号量底层异常: name=" + name + ", error=" + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 释放单枚信号量许可证
+     *
+     * @param name 信号量名称
+     */
+    public void release(String name) {
+        release(name, 1);
+    }
+
+    /**
      * 原子尝试初始化信号量许可证配额（仅在未设置时生效）
      *
      * @param name 信号量名称

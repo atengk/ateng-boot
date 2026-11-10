@@ -127,6 +127,22 @@ class RedisIdempotentTemplateTest {
     }
 
     @Test
+    @DisplayName("测试全局配置 deleteOnFailure=false 时默认重载继承该配置：业务异常保留 Key 并更新状态为 FAILED")
+    void testExecuteExceptionInheritsGlobalDeleteOnFailureFalse() {
+        properties.getIdempotent().setDeleteOnFailure(false);
+        when(bucket.setIfAbsent(eq(IdempotentStatus.TRYING.name()), any())).thenReturn(true);
+
+        assertThatThrownBy(() -> template.execute("order:1001", Duration.ofMinutes(2), () -> {
+            throw new IllegalStateException("全局防重异常");
+        })).isInstanceOf(IllegalStateException.class)
+                .hasMessage("全局防重异常");
+
+        verify(bucket).set(eq(IdempotentStatus.FAILED.name()), eq(Duration.ofMinutes(2)));
+        verify(bucket, never()).delete();
+        verify(bucket, never()).set(eq(IdempotentStatus.SUCCESS.name()), any());
+    }
+
+    @Test
     @DisplayName("测试无返回值 Action 执行与失败自动释放")
     void testExecuteVoidAction() throws Exception {
         when(bucket.setIfAbsent(eq(IdempotentStatus.TRYING.name()), any())).thenReturn(true);

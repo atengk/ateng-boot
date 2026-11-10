@@ -334,4 +334,70 @@ class DistributedLockTemplateTest {
         lock.setLeaseTime(25L);
         assertThat(lock.getLeaseTime()).isEqualTo(Duration.ofSeconds(25));
     }
+
+    @Test
+    @DisplayName("execute: 多键联锁对乱序键进行字典序升序排序防止 AB-BA 死锁")
+    void execute_multiKeys_sortedDictionaryOrder() throws Throwable {
+        RLock lockA = mock(RLock.class);
+        RLock lockB = mock(RLock.class);
+        RLock lockC = mock(RLock.class);
+        RLock multiLock = mock(RLock.class);
+        when(redissonClient.getLock("lock:A")).thenReturn(lockA);
+        when(redissonClient.getLock("lock:B")).thenReturn(lockB);
+        when(redissonClient.getLock("lock:C")).thenReturn(lockC);
+        when(redissonClient.getMultiLock(lockA, lockB, lockC)).thenReturn(multiLock);
+        when(multiLock.tryLock(eq(2000L), eq(5000L), eq(TimeUnit.MILLISECONDS))).thenReturn(true);
+        when(multiLock.isHeldByCurrentThread()).thenReturn(true);
+
+        // 故意乱序传入 C, A, B
+        String res = lockTemplate.execute(List.of("C", "A", "B"), LockMode.REENTRANT,
+                Duration.ofSeconds(2), Duration.ofSeconds(5), () -> "SORTED_OK");
+
+        assertThat(res).isEqualTo("SORTED_OK");
+        // 校验底层 MultiLock 获得的锁数组严格按 A, B, C 字典序排列
+        verify(redissonClient).getMultiLock(lockA, lockB, lockC);
+        verify(multiLock).unlock();
+    }
+
+    @Test
+    @DisplayName("execute: Duration 强类型重载加锁执行与负数防御校验")
+    void execute_durationOverloadsAndValidation() throws Throwable {
+        when(redissonClient.getLock("lock:dur:1")).thenReturn(rLock);
+        when(rLock.tryLock(eq(2000L), eq(10000L), eq(TimeUnit.MILLISECONDS))).thenReturn(true);
+        when(rLock.isHeldByCurrentThread()).thenReturn(true);
+
+        String result = lockTemplate.execute("dur:1", LockMode.REENTRANT,
+                Duration.ofSeconds(2), Duration.ofSeconds(10), () -> "DUR_OK");
+        assertThat(result).isEqualTo("DUR_OK");
+        verify(rLock).tryLock(eq(2000L), eq(10000L), eq(TimeUnit.MILLISECONDS));
+        verify(rLock).unlock();
+
+        // 负数 waitTime 快速失败校验
+        assertThatThrownBy(() -> lockTemplate.execute(List.of("dur:1"), LockMode.REENTRANT,
+                Duration.ofSeconds(-1), Duration.ofSeconds(10), () -> "FAIL"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("waitTime must not be negative");
+
+        // 负数 leaseTime 快速失败校验
+        assertThatThrownBy(() -> lockTemplate.execute(List.of("dur:1"), LockMode.REENTRANT,
+                Duration.ofSeconds(1), Duration.ofSeconds(-5), () -> "FAIL"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("leaseTime must not be negative");
+    }
+
+    @Test
+    @DisplayName("tryExecute: Duration 强类型重载试探加锁")
+    void tryExecute_durationOverloads() throws Throwable {
+        when(redissonClient.getLock("lock:try:dur")).thenReturn(rLock);
+        when(rLock.tryLock(eq(1500L), eq(TimeUnit.MILLISECONDS))).thenReturn(true);
+        when(rLock.isHeldByCurrentThread()).thenReturn(true);
+
+        AtomicBoolean executed = new AtomicBoolean(false);
+        boolean success = lockTemplate.tryExecute("try:dur", Duration.ofMillis(1500), () -> executed.set(true));
+
+        assertThat(success).isTrue();
+        assertThat(executed.get()).isTrue();
+        verify(rLock).tryLock(eq(1500L), eq(TimeUnit.MILLISECONDS));
+        verify(rLock).unlock();
+    }
 }

@@ -186,4 +186,40 @@ class RedisSemaphoreTemplateTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("acquirePermits must not exceed totalPermits");
     }
+
+    @Test
+    @DisplayName("测试对称门面 tryAcquire 与 release 多许可获取与归还")
+    void testTryAcquireAndReleaseSymmetric() throws Exception {
+        when(semaphore.tryAcquire(3, Duration.ofSeconds(2))).thenReturn(true);
+        when(semaphore.tryAcquire(2)).thenReturn(true);
+        when(semaphore.tryAcquire(1, Duration.ofSeconds(1))).thenReturn(true);
+        when(semaphore.tryAcquire(1)).thenReturn(true);
+
+        assertThat(template.tryAcquire("task:sem", 3, Duration.ofSeconds(2))).isTrue();
+        verify(semaphore).tryAcquire(3, Duration.ofSeconds(2));
+
+        template.release("task:sem", 3);
+        verify(semaphore).release(3);
+
+        assertThat(template.tryAcquire("task:sem", 2)).isTrue();
+        verify(semaphore).tryAcquire(2);
+
+        assertThat(template.tryAcquire("task:sem", Duration.ofSeconds(1))).isTrue();
+        verify(semaphore).tryAcquire(1, Duration.ofSeconds(1));
+
+        assertThat(template.tryAcquire("task:sem")).isTrue();
+        verify(semaphore).tryAcquire(1);
+
+        template.release("task:sem");
+        verify(semaphore).release(1);
+
+        // 静态门面委托验证
+        assertThat(RedisSemaphoreUtil.tryAcquire("task:sem", 3, Duration.ofSeconds(2))).isTrue();
+        RedisSemaphoreUtil.release("task:sem", 3);
+
+        assertThat(RedisSemaphoreUtil.tryAcquire("task:sem", 2)).isTrue();
+        assertThat(RedisSemaphoreUtil.tryAcquire("task:sem", Duration.ofSeconds(1))).isTrue();
+        assertThat(RedisSemaphoreUtil.tryAcquire("task:sem")).isTrue();
+        RedisSemaphoreUtil.release("task:sem");
+    }
 }
