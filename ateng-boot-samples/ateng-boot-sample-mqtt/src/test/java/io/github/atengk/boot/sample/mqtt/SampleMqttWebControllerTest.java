@@ -32,7 +32,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * MQTT Sample Web 控制器全场景 MockMvc 集成自验
- * 覆盖 MqttTelemetryController 路由、JSR-303 参数校验拦截与 4D 上下文回显契约
+ * 覆盖 7 大领域 Controller 路由、JSR-303 参数校验拦截、异常映射与 Result<T> 规范契约
+ * 包含遥测端到端、同步/异步 RPC、十六进制编解码、批量与保留消息、死信 DLT 治理、容器运维与事务协同发信
  *
  * @author Ateng
  * @since 2026-11-10
@@ -397,5 +398,61 @@ class SampleMqttWebControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data").value(containsString("已成功恢复")));
+    }
+
+    @Test
+    @DisplayName("15. 测试 MqttTransactionController: 本地事务提交后触发 sendAfterCommit 发信")
+    void testTxTelemetryCommitSuccess() throws Exception {
+        TxTelemetryRequest request = TxTelemetryRequest.builder()
+                .deviceId("DEV-TX-1001")
+                .temp(26.8)
+                .humidity(55.2)
+                .shouldRollback(false)
+                .build();
+
+        mockMvc.perform(post("/sample/mqtt/transaction/record-telemetry")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").value(containsString("事务已成功提交并触发 sendAfterCommit 投递")));
+    }
+
+    @Test
+    @DisplayName("16. 测试 MqttTransactionController: 本地事务回滚安全取消发信钩子防脏读")
+    void testTxTelemetryRollbackCancelled() throws Exception {
+        TxTelemetryRequest request = TxTelemetryRequest.builder()
+                .deviceId("DEV-TX-1002")
+                .temp(31.5)
+                .humidity(68.0)
+                .shouldRollback(true)
+                .build();
+
+        mockMvc.perform(post("/sample/mqtt/transaction/record-telemetry")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").value(containsString("模拟事务回滚，发信钩子已安全取消，下游零脏读")));
+    }
+
+    @Test
+    @DisplayName("17. 测试 MqttTransactionController: JSR-303 参数校验拦截非法入参")
+    void testTxTelemetryValidationFailed() throws Exception {
+        TxTelemetryRequest invalidRequest = TxTelemetryRequest.builder()
+                .deviceId("")
+                .temp(null)
+                .humidity(50.0)
+                .shouldRollback(false)
+                .build();
+
+        mockMvc.perform(post("/sample/mqtt/transaction/record-telemetry")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
     }
 }
