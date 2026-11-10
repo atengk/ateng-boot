@@ -1,9 +1,11 @@
 package io.github.atengk.boot.sample.rocketmq.dto;
 
+import io.github.atengk.boot.rocketmq.listener.RocketmqListenerEndpoint;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.springframework.util.StringUtils;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -62,4 +64,29 @@ public class ConsumerEndpointVO implements Serializable {
      * 底层 PushConsumer 物理连接是否在运行
      */
     private boolean running;
+
+    /**
+     * 从 RocketmqListenerEndpoint 构造视图对象
+     *
+     * @param ep 监听端点模型
+     * @return 视图对象
+     */
+    public static ConsumerEndpointVO from(RocketmqListenerEndpoint ep) {
+        if (ep == null) {
+            return null;
+        }
+        String filterType = StringUtils.hasText(ep.getSql92()) ? "SQL92" : "TAG";
+        String filterExpr = StringUtils.hasText(ep.getSql92()) ? ep.getSql92()
+                : (StringUtils.hasText(ep.getTag()) ? ep.getTag() : "*");
+        return ConsumerEndpointVO.builder()
+                .endpointId(ep.getId())
+                .topic(ep.getTopic())
+                .consumerGroup(ep.getConsumerGroup())
+                .filterType(filterType)
+                .filterExpression(filterExpr)
+                .consumptionThreadCount(ep.getConsumptionThreadCount())
+                .paused(ep.isPaused())
+                .running(ep.isRunning())
+                .build();
+    }
 }

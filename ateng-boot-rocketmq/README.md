@@ -188,17 +188,17 @@ public class OrderConsumer {
 - **业务 Java 示例**（逆向提取自 `RocketmqProduceController.java`）：
   ```java
   @PostMapping("/fifo")
-  public Result<OrderProduceResponse> sendFifo(
-          @Valid @RequestBody OrderProduceRequest request,
-          @RequestParam(value = "messageGroup", required = false, defaultValue = "GRP_DEFAULT") String messageGroup) {
+  public Result<OrderProduceResponse> sendFifo(@Valid @RequestBody OrderProduceRequest request) {
       OrderMessage order = request.toOrderMessage();
+      String messageGroup = StringUtils.hasText(request.getMessageGroup()) ? request.getMessageGroup() : order.getOrderId();
       SendReceipt receipt = standardScenarioService.sendFifo(order, messageGroup);
-      return Result.success(OrderProduceResponse.builder()
+      OrderProduceResponse response = OrderProduceResponse.builder()
               .orderId(order.getOrderId())
               .messageId(receipt.getMessageId().toString())
               .tag("fifo")
               .status("FIFO_SUCCESS")
-              .build());
+              .build();
+      return Result.success(response);
   }
   ```
 - **核心机制与边界防御**：
@@ -252,28 +252,37 @@ public class OrderConsumer {
   @PostMapping("/duration")
   public Result<OrderDelayResponse> sendDelayed(@Valid @RequestBody OrderDelayRequest request) {
       OrderMessage order = request.toOrderMessage();
-      Duration delay = Duration.ofSeconds(request.resolveDelaySeconds());
+      long seconds = request.resolveDelaySeconds();
+      Duration delay = Duration.ofSeconds(seconds);
       SendReceipt receipt = batchDelayScenarioService.sendDelayed(order, delay);
-      return Result.success(OrderDelayResponse.builder()
+
+      OrderDelayResponse response = OrderDelayResponse.builder()
               .orderId(order.getOrderId())
               .messageId(receipt.getMessageId().toString())
-              .delaySeconds(request.resolveDelaySeconds())
-              .recallHandle(extractRecallHandle(receipt))
-              .build());
+              .delaySeconds(seconds)
+              .deliverAtTimestamp(System.currentTimeMillis() + delay.toMillis())
+              .recallHandle(receipt.getRecallHandle())
+              .status("DELAY_SCHEDULED")
+              .build();
+      return Result.success(response);
   }
 
   // 绝对时间定时调度
   @PostMapping("/deliver-at")
   public Result<OrderDelayResponse> sendDeliverAt(@Valid @RequestBody OrderDelayRequest request) {
       OrderMessage order = request.toOrderMessage();
-      Instant deliverAt = Instant.now().plusSeconds(request.resolveFutureSeconds());
+      long targetTimestamp = request.resolveDeliverAtTimestamp();
+      Instant deliverAt = Instant.ofEpochMilli(targetTimestamp);
       SendReceipt receipt = batchDelayScenarioService.sendDeliverAt(order, deliverAt);
-      return Result.success(OrderDelayResponse.builder()
+
+      OrderDelayResponse response = OrderDelayResponse.builder()
               .orderId(order.getOrderId())
               .messageId(receipt.getMessageId().toString())
-              .futureSeconds(request.resolveFutureSeconds())
-              .recallHandle(extractRecallHandle(receipt))
-              .build());
+              .deliverAtTimestamp(targetTimestamp)
+              .recallHandle(receipt.getRecallHandle())
+              .status("SCHEDULED_SUCCESS")
+              .build();
+      return Result.success(response);
   }
   ```
 - **核心机制与边界防御**：
@@ -291,9 +300,10 @@ public class OrderConsumer {
 - **业务 Java 示例**（逆向提取自 `RocketmqDelayController.java`）：
   ```java
   @PostMapping("/recall")
-  public Result<String> recallMessage(@Valid @RequestBody OrderRecallRequest request) {
-      batchDelayScenarioService.recallMessage(request.resolveTopic(), request.getRecallHandle());
-      return Result.success("定时延时消息已成功在 Broker 端撤回: recallHandle=" + request.getRecallHandle());
+  public Result<Boolean> recallDelayedMessage(@Valid @RequestBody OrderRecallRequest request) {
+      String topic = StringUtils.hasText(request.getTopic()) ? request.getTopic() : TradeRocketmqProducer.TOPIC_DELAY;
+      batchDelayScenarioService.recallDelayedMessage(topic, request.getRecallHandle());
+      return Result.success(true);
   }
   ```
 - **核心机制与边界防御**：
@@ -318,14 +328,15 @@ public class OrderConsumer {
   @PostMapping("/half-message")
   public Result<OrderProduceResponse> sendHalfMessage(@Valid @RequestBody OrderTransactionRequest request) {
       OrderMessage order = request.toOrderMessage();
-      boolean localSuccess = request.getLocalSuccess() == null || request.getLocalSuccess();
-      SendReceipt receipt = transactionScenarioService.sendTransactionOrder(order, localSuccess);
-      return Result.success(OrderProduceResponse.builder()
+      boolean success = request.getLocalSuccess() == null || request.getLocalSuccess();
+      SendReceipt receipt = transactionScenarioService.createOrderWith2PcTransaction(order, success);
+      OrderProduceResponse response = OrderProduceResponse.builder()
               .orderId(order.getOrderId())
               .messageId(receipt.getMessageId().toString())
               .tag("tx")
-              .status(localSuccess ? "2PC_COMMITTED" : "2PC_ROLLED_BACK")
-              .build());
+              .status(success ? "2PC_COMMITTED" : "2PC_ROLLED_BACK")
+              .build();
+      return Result.success(response);
   }
   ```
 - **核心机制与边界防御**：
@@ -381,15 +392,15 @@ public class OrderConsumer {
   @PostMapping("/send-after-commit")
   public Result<String> sendAfterCommit(@Valid @RequestBody OrderTransactionRequest request) {
       OrderMessage order = request.toOrderMessage();
-      boolean localSuccess = request.getLocalSuccess() == null || request.getLocalSuccess();
-      if (localSuccess) {
-          transactionOrderScenarioService.createOrderWithCommit(order);
+      boolean success = request.getLocalSuccess() == null || request.getLocalSuccess();
+      if (success) {
+          transactionScenarioService.createOrderWithSendAfterCommit(order);
           return Result.success("TX_COMMITTED_AND_SENT");
       } else {
           try {
-              transactionOrderScenarioService.createOrderWithRollback(order);
-          } catch (Exception ex) {
-              log.warn("[TX-SAMPLE] 捕获预期的本地事务回滚异常: orderId={}", order.getOrderId());
+              transactionScenarioService.createOrderWithRollback(order);
+          } catch (IllegalStateException ex) {
+              log.warn("[TX-SAMPLE] 捕获预期的本地事务回滚异常: orderId={}, error={}", order.getOrderId(), ex.getMessage());
           }
           return Result.success("TX_ROLLED_BACK_ZERO_SEND");
       }
@@ -537,13 +548,8 @@ public class OrderConsumer {
   @GetMapping("/endpoints")
   public Result<List<ConsumerEndpointVO>> getEndpoints() {
       return Result.success(containerOpsService.getEndpoints().stream()
-              .map(ep -> ConsumerEndpointVO.builder()
-                      .endpointId(ep.getId())
-                      .topic(ep.getTopic())
-                      .consumerGroup(ep.getConsumerGroup())
-                      .paused(ep.isPaused())
-                      .running(ep.isRunning())
-                      .build()).toList());
+              .map(ConsumerEndpointVO::from)
+              .toList());
   }
 
   // 动态暂停削峰
@@ -589,7 +595,7 @@ public class OrderConsumer {
       DeadLetterReplayResult result = StringUtils.hasText(request.getTargetTopic())
               ? deadLetterService.replayDeadLettersToTopic(request.getConsumerGroup(), request.resolveLimit(), request.getTargetTopic().trim())
               : deadLetterService.replayDeadLetters(request.getConsumerGroup(), request.resolveLimit());
-      return Result.success(DeadLetterReplayScenarioService::convertToReplayVO(result));
+      return Result.success(DeadLetterReplayScenarioService.convertToReplayVO(result));
   }
 
   // 3. 批量物理确认丢弃

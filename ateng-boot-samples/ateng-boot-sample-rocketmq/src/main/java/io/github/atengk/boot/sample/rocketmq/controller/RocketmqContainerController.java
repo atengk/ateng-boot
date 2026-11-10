@@ -40,19 +40,7 @@ public class RocketmqContainerController {
         List<RocketmqListenerEndpoint> endpoints = containerOpsService.getEndpoints();
         List<ConsumerEndpointVO> vos = new ArrayList<>(endpoints.size());
         for (RocketmqListenerEndpoint ep : endpoints) {
-            String filterType = StringUtils.hasText(ep.getSql92()) ? "SQL92" : "TAG";
-            String filterExpr = StringUtils.hasText(ep.getSql92()) ? ep.getSql92()
-                    : (StringUtils.hasText(ep.getTag()) ? ep.getTag() : "*");
-            vos.add(ConsumerEndpointVO.builder()
-                    .endpointId(ep.getId())
-                    .topic(ep.getTopic())
-                    .consumerGroup(ep.getConsumerGroup())
-                    .filterType(filterType)
-                    .filterExpression(filterExpr)
-                    .consumptionThreadCount(ep.getConsumptionThreadCount())
-                    .paused(ep.isPaused())
-                    .running(ep.isRunning())
-                    .build());
+            vos.add(ConsumerEndpointVO.from(ep));
         }
         return Result.success(vos);
     }

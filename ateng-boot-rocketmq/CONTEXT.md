@@ -43,3 +43,27 @@ _Avoid_: RocketmqConfig, RocketmqSettings, AtengRocketmqConfig
 **AtengRocketmqAutoConfiguration**:
 RocketMQ 增强底座自动装配核心类，统一注册于 Spring Boot 3 标准 `AutoConfiguration.imports`，配置缺失 `endpoints` 时平滑静默跳过，装配 `RocketmqTemplate`、原生 `Producer`、全局事务回查分发器、`RocketmqSimpleConsumerTemplate`、`RocketmqContainerManager`、`RocketmqDeadLetterReplayTemplate` 与 `@RocketmqListener` 容器注册器。
 _Avoid_: RocketmqConfiguration, RocketmqConfigRegistry, RocketmqStarterAutoConfiguration
+
+**RocketmqProduceController**:
+RocketMQ 5.x 生产端场景体验控制器，提供标准同步发信 `sync`、异步非阻塞发信 `async`、单向极速埋点 `oneway`、FIFO 局部保序 `fifo`、SQL92 属性过滤 `sql` 及批量自动切片 `batch` 接口，结合内存消费者提供全链路消费审计观测。
+_Avoid_: ProducerController, MqSendController, RocketProduceApi
+
+**RocketmqDelayController**:
+RocketMQ 5.x 延时调度与定时撤回体验控制器，提供相对时长延时发送 `duration`、绝对时间戳定时调度 `deliver-at`、凭 `recallHandle` Broker 端原生精准撤回 `recall` 及延时消费记录查询与清空接口。
+_Avoid_: DelayMessageController, ScheduleController, MqDelayApi
+
+**RocketmqTransactionController**:
+RocketMQ 5.x 2PC 分布式事务与本地事务感知体验控制器，提供 2PC 事务半消息提交/回滚 `half-message`、本地事务感知发信 `send-after-commit` 及多 Topic 业务回查分发状态审计 `checker/status` 接口。
+_Avoid_: TxController, TransactionProduceController, MqTxApi
+
+**RocketmqSimpleConsumerController**:
+RocketMQ 5.x SimpleConsumer 流式拉取与租约控制体验控制器，提供按需微批拉取 `pull`、不可见租约动态续期 `renew`、显式确认出队 `ack`、函数式闭包受控消费 `consume` 及待决租约句柄审计 `cached-views` 接口。
+_Avoid_: SimplePullController, PopConsumerController, MqPullApi
+
+**RocketmqContainerController**:
+RocketMQ 5.x 消费监听容器动态运维体验控制器，提供全量端点元数据视图查询 `endpoints`、动态削峰暂停 `pause`、恢复消费 `resume`、底层物理连接销毁 `stop` 与启动 `start` 接口。
+_Avoid_: ContainerOpsController, ConsumerManageController, MqContainerApi
+
+**RocketmqDeadLetterController**:
+RocketMQ 5.x 死信队列治理与受控重放体验控制器，提供零 ACK 死信只读探查 `peek`、受控清洗重放至业务主题 `replay`（含最大重放次数防二次雪崩熔断）及死信批量物理确认丢弃 `discard` 接口。
+_Avoid_: DlqController, DeadLetterManageController, MqDeadLetterApi

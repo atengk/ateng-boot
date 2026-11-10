@@ -57,18 +57,7 @@ public class DeadLetterReplayScenarioService {
         if (mv == null) {
             return null;
         }
-        String body = null;
-        try {
-            ByteBuffer buffer = mv.getBody();
-            if (buffer != null) {
-                ByteBuffer duplicate = buffer.duplicate();
-                byte[] bytes = new byte[duplicate.remaining()];
-                duplicate.get(bytes);
-                body = new String(bytes, StandardCharsets.UTF_8);
-            }
-        } catch (Exception ex) {
-            log.warn("[DLQ-SCENARIO] 消息体解析为 UTF-8 失败: {}", ex.getMessage());
-        }
+        String body = SimpleConsumerPullScenarioService.extractBodyString(mv.getBody());
 
         Map<String, String> props = mv.getProperties() != null ? mv.getProperties() : Collections.emptyMap();
         String originalTopic = props.getOrDefault("X-Original-Topic", props.get("x-original-topic"));

@@ -45,8 +45,7 @@ public class RocketmqDelayController {
     @PostMapping("/duration")
     public Result<OrderDelayResponse> sendDelayed(@Valid @RequestBody OrderDelayRequest request) {
         OrderMessage order = request.toOrderMessage();
-        long seconds = (request.getDelaySeconds() != null && request.getDelaySeconds() > 0)
-                ? request.getDelaySeconds() : 10L;
+        long seconds = request.resolveDelaySeconds();
         Duration delay = Duration.ofSeconds(seconds);
         SendReceipt receipt = batchDelayScenarioService.sendDelayed(order, delay);
 
@@ -70,8 +69,7 @@ public class RocketmqDelayController {
     @PostMapping("/deliver-at")
     public Result<OrderDelayResponse> sendDeliverAt(@Valid @RequestBody OrderDelayRequest request) {
         OrderMessage order = request.toOrderMessage();
-        long targetTimestamp = (request.getDeliverAtTimestamp() != null && request.getDeliverAtTimestamp() > System.currentTimeMillis())
-                ? request.getDeliverAtTimestamp() : System.currentTimeMillis() + 10_000L;
+        long targetTimestamp = request.resolveDeliverAtTimestamp();
         Instant deliverAt = Instant.ofEpochMilli(targetTimestamp);
         SendReceipt receipt = batchDelayScenarioService.sendDeliverAt(order, deliverAt);
 

@@ -170,22 +170,26 @@ public class SimpleConsumerPullScenarioService {
         log.info("[SIMPLE-PULL-SCENARIO] 已重置清理 SimpleConsumer 句柄缓存与闭包消费记录");
     }
 
+    public static String extractBodyString(ByteBuffer buffer) {
+        if (buffer == null) {
+            return null;
+        }
+        try {
+            ByteBuffer duplicate = buffer.duplicate();
+            byte[] bytes = new byte[duplicate.remaining()];
+            duplicate.get(bytes);
+            return new String(bytes, StandardCharsets.UTF_8);
+        } catch (Exception ex) {
+            log.warn("[MQ-SAMPLE-PAYLOAD] 消息体解析为 UTF-8 字符串失败: {}", ex.getMessage());
+            return null;
+        }
+    }
+
     public static SimpleMessageVO convertToVO(MessageView mv) {
         if (mv == null) {
             return null;
         }
-        String body = null;
-        try {
-            ByteBuffer buffer = mv.getBody();
-            if (buffer != null) {
-                ByteBuffer duplicate = buffer.duplicate();
-                byte[] bytes = new byte[duplicate.remaining()];
-                duplicate.get(bytes);
-                body = new String(bytes, StandardCharsets.UTF_8);
-            }
-        } catch (Exception ex) {
-            log.warn("[SIMPLE-PULL-SCENARIO] 消息体解析为 UTF-8 字符串失败: {}", ex.getMessage());
-        }
+        String body = extractBodyString(mv.getBody());
 
         return SimpleMessageVO.builder()
                 .messageId(mv.getMessageId() != null ? mv.getMessageId().toString() : null)

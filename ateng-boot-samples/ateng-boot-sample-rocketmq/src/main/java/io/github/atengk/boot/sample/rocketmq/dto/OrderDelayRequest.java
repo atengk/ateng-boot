@@ -9,6 +9,9 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Serial;
+import java.io.Serializable;
+
 /**
  * 延时与定时消息发送请求 DTO
  *
@@ -19,7 +22,10 @@ import lombok.NoArgsConstructor;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class OrderDelayRequest {
+public class OrderDelayRequest implements Serializable {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
 
     /**
      * 业务订单号
@@ -53,6 +59,25 @@ public class OrderDelayRequest {
      * 绝对投递时间戳（毫秒，用于 sendDeliverAt）
      */
     private Long deliverAtTimestamp;
+
+    /**
+     * 未来延时调度秒数（用于灵活计算绝对投递时间戳）
+     */
+    private Long futureSeconds;
+
+    public long resolveDelaySeconds() {
+        return delaySeconds != null && delaySeconds > 0 ? delaySeconds : 10L;
+    }
+
+    public long resolveDeliverAtTimestamp() {
+        if (futureSeconds != null && futureSeconds > 0) {
+            return System.currentTimeMillis() + futureSeconds * 1000L;
+        }
+        if (deliverAtTimestamp != null && deliverAtTimestamp > System.currentTimeMillis()) {
+            return deliverAtTimestamp;
+        }
+        return System.currentTimeMillis() + 10_000L;
+    }
 
     public OrderMessage toOrderMessage() {
         return OrderMessage.builder()
