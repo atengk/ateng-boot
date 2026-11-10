@@ -5,6 +5,7 @@ import io.github.atengk.boot.mqtt.annotation.MqttTopic;
 import io.github.atengk.boot.mqtt.annotation.MqttVariable;
 import io.github.atengk.boot.mqtt.codec.HexPayload;
 import io.github.atengk.boot.mqtt.template.MqttTemplate;
+import io.github.atengk.boot.sample.mqtt.dto.HexPublishResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -42,12 +43,33 @@ public class IndustrialHexScenarioService {
     }
 
     /**
-     * 发布国标十六进制报文
+     * 发布国标十六进制报文（强类型载荷）
+     */
+    public void publishHex(String deviceId, HexPayload payload) {
+        mqttTemplate.publish("iot/devices/" + deviceId + "/hex", payload, 1);
+        log.info("[SCENARIO-HEX] Published Hex payload for device [{}]: hex={}", deviceId, payload.getHexString());
+    }
+
+    /**
+     * 发布国标十六进制报文（字符串重载）
      */
     public void publishHex(String deviceId, String hexString) {
+        publishHex(deviceId, HexPayload.of(hexString));
+    }
+
+    /**
+     * 发布十六进制报文并封装返回领域结果
+     */
+    public HexPublishResponse publishHexAndResolve(String deviceId, String hexString) {
         HexPayload payload = HexPayload.of(hexString);
-        mqttTemplate.publish("iot/devices/" + deviceId + "/hex", payload, 1);
-        log.info("[SCENARIO-HEX] Published Hex payload for device [{}]: hex={}", deviceId, hexString);
+        publishHex(deviceId, payload);
+        return new HexPublishResponse(
+                deviceId,
+                "iot/devices/" + deviceId + "/hex",
+                hexString,
+                payload.getHexString(),
+                payload.getBytes().length
+        );
     }
 
     /**

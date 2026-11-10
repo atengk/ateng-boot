@@ -84,6 +84,14 @@ public class DeviceControlRpcScenarioService {
         byte[] correlationData = message.getProperties().getCorrelationData();
 
         if (responseTopic != null && correlationData != null) {
+            String payloadStr = message.getPayload() != null
+                    ? new String(message.getPayload(), java.nio.charset.StandardCharsets.UTF_8)
+                    : "";
+            if (payloadStr.contains("TIMEOUT")) {
+                log.info("[SCENARIO-RPC] Simulating device timeout, suppressing response for topic [{}]", responseTopic);
+                return;
+            }
+
             log.info("[SCENARIO-RPC] Edge device received RPC command, responding to [{}]", responseTopic);
             CommandResponse response = new CommandResponse(
                     "cmd-ack-" + System.currentTimeMillis(),

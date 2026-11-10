@@ -3,8 +3,10 @@ package io.github.atengk.boot.sample.mqtt.controller;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.mqtt.listener.MqttEndpointStatus;
 import io.github.atengk.boot.sample.mqtt.service.MqttContainerGovernanceScenarioService;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -17,6 +19,7 @@ import java.util.List;
  * @since 2026-11-10
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/sample/mqtt/container")
 @RequiredArgsConstructor
@@ -31,7 +34,9 @@ public class MqttContainerController {
      * @return 操作结果提示
      */
     @PostMapping("/pause")
-    public Result<String> pauseEndpoint(@RequestParam("endpointId") String endpointId) {
+    public Result<String> pauseEndpoint(
+            @NotBlank(message = "端点标识 endpointId 不能为空")
+            @RequestParam("endpointId") String endpointId) {
         log.info("[HTTP-CONTAINER] 暂停监听端点 [{}]", endpointId);
         governanceScenarioService.pauseEndpoint(endpointId);
         return Result.success("监听端点 [" + endpointId + "] 已成功暂停");
@@ -44,7 +49,9 @@ public class MqttContainerController {
      * @return 操作结果提示
      */
     @PostMapping("/resume")
-    public Result<String> resumeEndpoint(@RequestParam("endpointId") String endpointId) {
+    public Result<String> resumeEndpoint(
+            @NotBlank(message = "端点标识 endpointId 不能为空")
+            @RequestParam("endpointId") String endpointId) {
         log.info("[HTTP-CONTAINER] 恢复监听端点 [{}]", endpointId);
         governanceScenarioService.resumeEndpoint(endpointId);
         return Result.success("监听端点 [" + endpointId + "] 已成功恢复");

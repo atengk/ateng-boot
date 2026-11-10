@@ -3,17 +3,13 @@ package io.github.atengk.boot.sample.mqtt.controller;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.mqtt.dto.TelemetryInspectionRecord;
 import io.github.atengk.boot.sample.mqtt.dto.TelemetryPublishRequest;
-import io.github.atengk.boot.sample.mqtt.model.DeviceTelemetry;
 import io.github.atengk.boot.sample.mqtt.service.DeviceTelemetryScenarioService;
-import io.github.atengk.boot.sample.mqtt.service.TelemetryInspectionHolder;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.time.Duration;
 
 /**
  * 设备遥测与声明式消费体验端控制器
@@ -28,8 +24,9 @@ import java.util.concurrent.TimeoutException;
 @RequiredArgsConstructor
 public class MqttTelemetryController {
 
+    private static final Duration DEFAULT_TELEMETRY_AWAIT_TIMEOUT = Duration.ofSeconds(3);
+
     private final DeviceTelemetryScenarioService scenarioService;
-    private final TelemetryInspectionHolder inspectionHolder;
 
     /**
      * 上报设备遥测数据并同步等待监听消费回显
@@ -40,45 +37,8 @@ public class MqttTelemetryController {
     @PostMapping("/publish")
     public Result<TelemetryInspectionRecord> publishTelemetry(@Valid @RequestBody TelemetryPublishRequest request) {
         log.info("[HTTP-TELEMETRY] 接收设备遥测上报请求: {}", request);
-
-        // 注册对该设备消费事件的短时等待
-        CompletableFuture<TelemetryInspectionRecord> waitFuture = inspectionHolder.registerWait(request.getDeviceId());
-
-        if (request.getHeaders() != null && !request.getHeaders().isEmpty()) {
-            scenarioService.publishTelemetryWithHeaders(
-                    request.getDeviceId(),
-                    request.getTemp(),
-                    request.getHumidity(),
-                    request.getHeaders()
-            );
-        } else {
-            scenarioService.publishTelemetry(
-                    request.getDeviceId(),
-                    request.getTemp(),
-                    request.getHumidity()
-            );
-        }
-
-        try {
-            // 短时等待被动监听器消费（测试与本地体验默认在 3 秒内完成）
-            TelemetryInspectionRecord record = waitFuture.get(3, TimeUnit.SECONDS);
-            return Result.success(record);
-        } catch (TimeoutException e) {
-            log.warn("[HTTP-TELEMETRY] 等待设备 [{}] 监听消费回显超时，返回已投递快照", request.getDeviceId());
-            return Result.success(new TelemetryInspectionRecord(
-                    request.getDeviceId(),
-                    "iot/devices/" + request.getDeviceId() + "/telemetry",
-                    new DeviceTelemetry(request.getDeviceId(), request.getTemp(), request.getHumidity(), System.currentTimeMillis()),
-                    null,
-                    null,
-                    null,
-                    null,
-                    System.currentTimeMillis()
-            ));
-        } catch (Exception e) {
-            log.error("[HTTP-TELEMETRY] 设备 [{}] 遥测投递等待异常", request.getDeviceId(), e);
-            return Result.failure("遥测投递或回显异常: " + e.getMessage());
-        }
+        TelemetryInspectionRecord record = scenarioService.publishAndAwait(request, DEFAULT_TELEMETRY_AWAIT_TIMEOUT);
+        return Result.success(record);
     }
 
     /**
@@ -89,7 +49,7 @@ public class MqttTelemetryController {
      */
     @GetMapping("/latest")
     public Result<TelemetryInspectionRecord> getLatestTelemetry(@RequestParam(value = "deviceId", required = false) String deviceId) {
-        TelemetryInspectionRecord record = inspectionHolder.getLatest(deviceId);
+        TelemetryInspectionRecord record = scenarioService.getLatestTelemetry(deviceId);
         return Result.success(record);
     }
 

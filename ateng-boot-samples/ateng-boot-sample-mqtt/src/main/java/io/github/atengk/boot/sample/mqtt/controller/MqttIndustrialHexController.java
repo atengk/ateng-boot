@@ -1,7 +1,6 @@
 package io.github.atengk.boot.sample.mqtt.controller;
 
 import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.mqtt.codec.HexPayload;
 import io.github.atengk.boot.sample.mqtt.dto.HexPublishRequest;
 import io.github.atengk.boot.sample.mqtt.dto.HexPublishResponse;
 import io.github.atengk.boot.sample.mqtt.service.IndustrialHexScenarioService;
@@ -37,15 +36,7 @@ public class MqttIndustrialHexController {
     @PostMapping("/publish")
     public Result<HexPublishResponse> publishHex(@Valid @RequestBody HexPublishRequest request) {
         log.info("[HTTP-HEX] 接收十六进制报文下发请求: deviceId={}, hexData={}", request.getDeviceId(), request.getHexData());
-        HexPayload payload = HexPayload.of(request.getHexData());
-        hexScenarioService.publishHex(request.getDeviceId(), request.getHexData());
-        HexPublishResponse response = new HexPublishResponse(
-                request.getDeviceId(),
-                "iot/devices/" + request.getDeviceId() + "/hex",
-                request.getHexData(),
-                payload.getHexString(),
-                payload.getBytes().length
-        );
+        HexPublishResponse response = hexScenarioService.publishHexAndResolve(request.getDeviceId(), request.getHexData());
         return Result.success(response);
     }
 }

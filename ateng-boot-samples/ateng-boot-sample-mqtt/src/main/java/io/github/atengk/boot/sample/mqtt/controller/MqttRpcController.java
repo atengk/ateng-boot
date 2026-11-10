@@ -30,6 +30,8 @@ import java.util.concurrent.CompletableFuture;
 @RequiredArgsConstructor
 public class MqttRpcController {
 
+    private static final int DEFAULT_TIMEOUT_SECONDS = 5;
+
     private final DeviceControlRpcScenarioService rpcScenarioService;
 
     /**
@@ -41,16 +43,12 @@ public class MqttRpcController {
     @PostMapping("/control-sync")
     public Result<CommandResponse> sendControlSync(@Valid @RequestBody DeviceCommandRequest request) {
         log.info("[HTTP-RPC] 接收同步阻塞 RPC 控制指令: {}", request);
-        Duration timeout = Duration.ofSeconds(request.getTimeoutSeconds() != null ? request.getTimeoutSeconds() : 5);
+        Duration timeout = resolveTimeout(request);
         try {
             CommandResponse response = rpcScenarioService.sendControlSync(request.getAction(), request.getSpeed(), timeout);
             return Result.success(response);
-        } catch (MqttTimeoutException e) {
-            log.warn("[HTTP-RPC] 同步 RPC 设备响应超时: {}", e.getMessage());
-            return Result.failure(CommonResultCode.SERVICE_UNAVAILABLE, "设备指令响应超时: " + e.getMessage());
         } catch (Exception e) {
-            log.error("[HTTP-RPC] 同步 RPC 执行失败: {}", e.getMessage(), e);
-            return Result.failure("设备指令执行失败: " + e.getMessage());
+            return handleRpcException("[HTTP-RPC] 同步 RPC 执行失败", e);
         }
     }
 
@@ -63,17 +61,32 @@ public class MqttRpcController {
     @PostMapping("/control-async")
     public CompletableFuture<Result<CommandResponse>> sendControlAsync(@Valid @RequestBody DeviceCommandRequest request) {
         log.info("[HTTP-RPC] 接收异步非阻塞 RPC 控制指令: {}", request);
-        Duration timeout = Duration.ofSeconds(request.getTimeoutSeconds() != null ? request.getTimeoutSeconds() : 5);
+        Duration timeout = resolveTimeout(request);
         return rpcScenarioService.sendControlAsync(request.getAction(), request.getSpeed(), timeout)
                 .thenApply(Result::success)
-                .exceptionally(ex -> {
-                    Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-                    if (cause instanceof MqttTimeoutException) {
-                        log.warn("[HTTP-RPC] 异步 RPC 设备响应超时: {}", cause.getMessage());
-                        return Result.failure(CommonResultCode.SERVICE_UNAVAILABLE, "设备指令响应超时: " + cause.getMessage());
-                    }
-                    log.error("[HTTP-RPC] 异步 RPC 执行异常: {}", cause.getMessage(), cause);
-                    return Result.failure("设备指令异步执行失败: " + cause.getMessage());
-                });
+                .exceptionally(ex -> handleRpcException("[HTTP-RPC] 异步 RPC 执行失败", ex));
+    }
+
+    private Duration resolveTimeout(DeviceCommandRequest request) {
+        int seconds = (request != null && request.getTimeoutSeconds() != null)
+                ? request.getTimeoutSeconds()
+                : DEFAULT_TIMEOUT_SECONDS;
+        return Duration.ofSeconds(seconds);
+    }
+
+    private Result<CommandResponse> handleRpcException(String logPrefix, Throwable ex) {
+        Throwable target = ex;
+        while (target != null && !(target instanceof MqttTimeoutException) && !(target instanceof java.util.concurrent.TimeoutException)) {
+            target = target.getCause();
+        }
+        if (target instanceof MqttTimeoutException || target instanceof java.util.concurrent.TimeoutException) {
+            String msg = (target.getMessage() != null && !target.getMessage().isBlank())
+                    ? target.getMessage()
+                    : (ex != null && ex.getMessage() != null ? ex.getMessage() : "请求超时");
+            log.warn("{}: 设备响应超时 - {}", logPrefix, msg);
+            return Result.failure(CommonResultCode.SERVICE_UNAVAILABLE, "设备指令响应超时: " + msg);
+        }
+        log.error("{}: {}", logPrefix, ex != null ? ex.getMessage() : "未知异常", ex);
+        return Result.failure("设备指令执行失败: " + (ex != null ? ex.getMessage() : "未知异常"));
     }
 }

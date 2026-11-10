@@ -65,8 +65,16 @@ public class DeadLetterReplayScenarioService {
      * 受控重放死信报文至目标恢复主题
      */
     public int replayDeadLetters(String dltTopic, String targetTopic) {
-        log.info("[SCENARIO-DLT] Replaying DLT topic [{}] to target [{}]", dltTopic, targetTopic);
-        return deadLetterReplayTemplate.replay(dltTopic, targetTopic, 10);
+        return replayDeadLetters(dltTopic, targetTopic, 10, Duration.ofSeconds(5));
+    }
+
+    /**
+     * 受控重放死信报文至目标恢复主题并指定重放上限与超时
+     */
+    public int replayDeadLetters(String dltTopic, String targetTopic, int maxRecords, Duration timeout) {
+        log.info("[SCENARIO-DLT] Replaying DLT topic [{}] to target [{}] (maxRecords={}, timeout={})",
+                dltTopic, targetTopic, maxRecords, timeout);
+        return deadLetterReplayTemplate.replay(dltTopic, targetTopic, maxRecords, null, timeout);
     }
 
     /**

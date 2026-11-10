@@ -7,8 +7,10 @@ import io.github.atengk.boot.sample.mqtt.dto.BatchPublishRequest;
 import io.github.atengk.boot.sample.mqtt.dto.RetainedStatusRequest;
 import io.github.atengk.boot.sample.mqtt.service.BatchPublishScenarioService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
@@ -22,6 +24,7 @@ import java.util.List;
  * @since 2026-11-10
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/sample/mqtt/batch")
 @RequiredArgsConstructor
@@ -71,7 +74,9 @@ public class MqttBatchAndRetainedController {
      * @return 清除结果
      */
     @DeleteMapping("/clear-retained")
-    public Result<String> clearRetainedStatus(@RequestParam("deviceId") String deviceId) {
+    public Result<String> clearRetainedStatus(
+            @NotBlank(message = "设备标识 deviceId 不能为空")
+            @RequestParam("deviceId") String deviceId) {
         log.info("[HTTP-BATCH] 清除设备 [{}] 的保留消息", deviceId);
         batchScenarioService.clearRetainedStatus(deviceId);
         return Result.success("成功对称清空设备保留状态消息");

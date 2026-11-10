@@ -2,7 +2,6 @@ package io.github.atengk.boot.sample.mqtt.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.mqtt.model.MqttDeadLetterRecord;
-import io.github.atengk.boot.mqtt.template.MqttDeadLetterReplayTemplate;
 import io.github.atengk.boot.sample.mqtt.dto.DeadLetterReplayRequest;
 import io.github.atengk.boot.sample.mqtt.service.DeadLetterReplayScenarioService;
 import jakarta.validation.Valid;
@@ -27,7 +26,6 @@ import java.util.List;
 public class MqttDeadLetterController {
 
     private final DeadLetterReplayScenarioService dltScenarioService;
-    private final MqttDeadLetterReplayTemplate deadLetterReplayTemplate;
 
     /**
      * 投送毒丸报文触发不可逆异常并自动转移至 DLT 主题
@@ -71,11 +69,10 @@ public class MqttDeadLetterController {
         log.info("[HTTP-DLT] 接收死信重放请求: source={}, target={}, count={}",
                 request.getSourceTopic(), request.getTargetTopic(), request.getCount());
         Duration timeout = Duration.ofSeconds(request.getTimeoutSeconds() != null ? request.getTimeoutSeconds() : 5);
-        int replayed = deadLetterReplayTemplate.replay(
+        int replayed = dltScenarioService.replayDeadLetters(
                 request.getSourceTopic(),
                 request.getTargetTopic(),
                 request.getCount(),
-                null,
                 timeout
         );
         return Result.success("成功受控重放 " + replayed + " 条死信报文至目标主题 [" + request.getTargetTopic() + "]");

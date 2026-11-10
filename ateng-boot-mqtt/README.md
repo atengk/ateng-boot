@@ -11,7 +11,7 @@
 | **基础发信** | 同步可靠消息发布 | `MqttTemplate` | `enabled`<br>`clients.<name>.publish-timeout` | `publish(String, Object)` / `publish(String, Object, int)` / `publish(String, Object, int, boolean)` / `publish(String, Object, int, boolean, Duration)` / `publish(String, Object, int, boolean, Map<String, String>, Duration)`，自动适配 POJO / String / byte[] / HexPayload，透明透传 MDC TraceId 与租户标头 | `MqttTemplateTest`<br>`MqttTelemetryController` |
 | **定向发信** | 指定客户端同步发布 | `MqttTemplate` | `clients.<name>.publish-timeout` | `publishToClient(String, String, Object)` / `publishToClient(String, String, Object, int, boolean, Map<String, String>, Duration)`，精确投递至指定命名客户端底层连接 | `MqttTemplateTest`<br>`SampleMqttE2eTest` |
 | **异步发信** | 异步非阻塞消息发布 | `MqttTemplate` | `clients.<name>.publish-timeout` | `publishAsync(String, Object, int, boolean)` / `publishAsync(String, Object, int, boolean, Duration)` / `publishAsyncToClient(...)`，返回 `CompletableFuture<Void>`，微秒级返还调用线程 | `MqttTemplateTest`<br>`SampleMqttE2eTest` |
-| **保留消息** | 保留消息发布与对称清空 | `MqttTemplate` | `clients.<name>.publish-timeout` | `publishRetained(String, Object, int)` / `clearRetained(String)` / `clearRetainedToClient(String, String)`，发送空载荷且 retained=true 报文，彻底抹除 Broker 保留状态 | `MqttTemplateTest`<br>`MqttBatchAndRetainedController` |
+| **保留消息** | 保留消息发布与对称清空 | `MqttTemplate` | `clients.<name>.publish-timeout` | `publishRetained(String, Object)` / `publishRetained(String, Object, int)` / `publishRetainedToClient(...)` / `clearRetained(String)` / `clearRetained(String, int)` / `clearRetainedToClient(...)` / `clearRetainedAsync(String)` / `clearRetainedAsync(String, int)` / `clearRetainedAsyncToClient(...)`，对称下发空载荷且 retained=true 报文，彻底抹除 Broker 保留状态 | `MqttTemplateTest`<br>`MqttBatchAndRetainedController` |
 | **批量发布** | 批量并发消息原子下发 | `MqttTemplate`<br>`MqttPublishRecord` | `clients.<name>.publish-timeout`<br>`clients.<name>.max-inflight` | `publishBatch(List<MqttPublishRecord>)` / `publishBatchAsync(...)` / `publishBatchToClient(...)`，聚合并发下发多设备指令，支持混合 QoS 与 Retained 配置 | `MqttTemplateTest`<br>`MqttBatchAndRetainedController` |
 | **事务发信** | 本地事务提交后发信 | `MqttTemplate` | `clients.<name>.publish-timeout` | `sendAfterCommit(String, Object)` / `sendAfterCommit(String, Object, int, boolean)` / `sendAfterCommitToClient(...)`，严格绑定 Spring 本地事务提交阶段触发投递，事务回滚自动取消发信防脏读 | `MqttTemplateTest`<br>`MqttTransactionController` |
 | **同步 RPC** | 请求-响应阻塞交互 | `MqttTemplate`<br>`MqttRequestReplyManager` | `clients.<name>.response-topic-prefix` | `sendAndReceive(String, Object, Class<T>, Duration)` / `sendAndReceive(String, Object, Duration)`，基于 MQTT 5.0 `ResponseTopic` 与 `CorrelationData` 实现响应路由与超时扫描 | `MqttRequestReplyTest`<br>`MqttRpcController` |
@@ -184,35 +184,14 @@ ateng:
 @RequiredArgsConstructor
 public class MqttTelemetryController {
 
+    private static final Duration DEFAULT_TELEMETRY_AWAIT_TIMEOUT = Duration.ofSeconds(3);
+
     private final DeviceTelemetryScenarioService scenarioService;
-    private final TelemetryInspectionHolder inspectionHolder;
 
     @PostMapping("/publish")
     public Result<TelemetryInspectionRecord> publishTelemetry(@Valid @RequestBody TelemetryPublishRequest request) {
-        // 注册对该设备消费事件的短时等待
-        CompletableFuture<TelemetryInspectionRecord> waitFuture = inspectionHolder.registerWait(request.getDeviceId());
-
-        if (request.getHeaders() != null && !request.getHeaders().isEmpty()) {
-            scenarioService.publishTelemetryWithHeaders(
-                    request.getDeviceId(),
-                    request.getTemp(),
-                    request.getHumidity(),
-                    request.getHeaders()
-            );
-        } else {
-            scenarioService.publishTelemetry(
-                    request.getDeviceId(),
-                    request.getTemp(),
-                    request.getHumidity()
-            );
-        }
-
-        try {
-            TelemetryInspectionRecord record = waitFuture.get(5, TimeUnit.SECONDS);
-            return Result.success(record);
-        } catch (TimeoutException e) {
-            return Result.failure(CommonResultCode.INTERNAL_SERVER_ERROR, "等待监听消费回显超时");
-        }
+        TelemetryInspectionRecord record = scenarioService.publishAndAwait(request, DEFAULT_TELEMETRY_AWAIT_TIMEOUT);
+        return Result.success(record);
     }
 }
 ```
@@ -426,19 +405,11 @@ ateng:
 @RequiredArgsConstructor
 public class MqttIndustrialHexController {
 
-    private final IndustrialHexScenarioService scenarioService;
+    private final IndustrialHexScenarioService hexScenarioService;
 
     @PostMapping("/publish")
     public Result<HexPublishResponse> publishHex(@Valid @RequestBody HexPublishRequest request) {
-        scenarioService.publishHex(request.getDeviceId(), request.getHexString());
-
-        HexPayload latest = scenarioService.getLatestReceivedHex(request.getDeviceId());
-        HexPublishResponse response = HexPublishResponse.builder()
-                .deviceId(request.getDeviceId())
-                .hexString(request.getHexString())
-                .receivedHexString(latest != null ? latest.getHexString() : null)
-                .byteLength(latest != null ? latest.getBytes().length : 0)
-                .build();
+        HexPublishResponse response = hexScenarioService.publishHexAndResolve(request.getDeviceId(), request.getHexData());
         return Result.success(response);
     }
 }
@@ -555,6 +526,7 @@ ateng:
 
 #### 真实实战 Java 代码 (逆向提取自 Sample)
 ```java
+@Validated
 @RestController
 @RequestMapping("/sample/mqtt/batch")
 @RequiredArgsConstructor
@@ -569,7 +541,7 @@ public class MqttBatchAndRetainedController {
     }
 
     @DeleteMapping("/clear-retained")
-    public Result<String> clearRetainedStatus(@RequestParam String deviceId) {
+    public Result<String> clearRetainedStatus(@NotBlank @RequestParam String deviceId) {
         scenarioService.clearRetainedStatus(deviceId);
         return Result.success("成功对称清空设备保留状态消息: deviceId=" + deviceId);
     }
@@ -691,6 +663,7 @@ ateng:
 
 #### 真实实战 Java 代码 (逆向提取自 Sample)
 ```java
+@Validated
 @RestController
 @RequestMapping("/sample/mqtt/container")
 @RequiredArgsConstructor
@@ -704,14 +677,14 @@ public class MqttContainerController {
     }
 
     @PostMapping("/pause")
-    public Result<String> pauseEndpoint(@RequestParam String endpointId) {
+    public Result<String> pauseEndpoint(@NotBlank @RequestParam String endpointId) {
         boolean paused = scenarioService.pauseEndpoint(endpointId);
         return paused ? Result.success("端点已成功暂停: " + endpointId)
                       : Result.failure(CommonResultCode.NOT_FOUND, "未找到目标监听端点: " + endpointId);
     }
 
     @PostMapping("/resume")
-    public Result<String> resumeEndpoint(@RequestParam String endpointId) {
+    public Result<String> resumeEndpoint(@NotBlank @RequestParam String endpointId) {
         boolean resumed = scenarioService.resumeEndpoint(endpointId);
         return resumed ? Result.success("端点已成功恢复: " + endpointId)
                        : Result.failure(CommonResultCode.NOT_FOUND, "未找到目标监听端点: " + endpointId);
@@ -771,7 +744,7 @@ public class MultiBrokerDispatchService {
 
 ---
 
-## 9. 生产扩展接管与核心非功能边界
+## 9. 生产扩展接管、非功能边界与样例工程导览
 
 ### 9.1 本地事务发信严格对齐 (`sendAfterCommit`)
 
@@ -798,23 +771,11 @@ public class MqttTransactionController {
 
     @PostMapping("/record-telemetry")
     public Result<String> recordTelemetry(@Valid @RequestBody TxTelemetryRequest request) {
-        if (request.isShouldRollback()) {
-            // 模拟事务回滚：已挂载的发信钩子被安全取消，Broker 零收到
-            transactionalScenarioService.recordTelemetryWithRollback(
-                    request.getDeviceId(),
-                    request.getTemp(),
-                    request.getHumidity()
-            );
-            return Result.success("模拟事务回滚，发信钩子已安全取消，下游零脏读");
-        } else {
-            // 事务提交：在 TransactionSynchronization.afterCommit 阶段安全投递
-            transactionalScenarioService.recordTelemetryWithCommit(
-                    request.getDeviceId(),
-                    request.getTemp(),
-                    request.getHumidity()
-            );
-            return Result.success("事务已成功提交并触发 sendAfterCommit 投递");
-        }
+        transactionalScenarioService.recordTelemetry(request);
+        String message = request.isShouldRollback()
+                ? "模拟事务回滚，发信钩子已安全取消，下游零脏读"
+                : "事务已成功提交并触发 sendAfterCommit 投递";
+        return Result.success(message);
     }
 }
 ```
@@ -999,6 +960,24 @@ public class OutboxFallbackMqttSendFailureHandler implements MqttSendFailureHand
 
 ---
 
+### 9.9 场景样例工程导览与本地自验验证 (ateng-boot-sample-mqtt)
+
+完整、自洽、具备 Web HTTP 一键交互体验的演示工程收录于 [ateng-boot-sample-mqtt](../ateng-boot-samples/ateng-boot-sample-mqtt)：
+
+- **设备遥测体验端**：[`MqttTelemetryController.java`](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttTelemetryController.java)（`/sample/mqtt/telemetry/*`）
+- **同步/异步 RPC 控制端**：[`MqttRpcController.java`](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttRpcController.java)（`/sample/mqtt/rpc/*`）
+- **工业十六进制报文体验端**：[`MqttIndustrialHexController.java`](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttIndustrialHexController.java)（`/sample/mqtt/hex/*`）
+- **批量下发与保留消息控制端**：[`MqttBatchAndRetainedController.java`](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttBatchAndRetainedController.java)（`/sample/mqtt/batch/*`）
+- **毒丸死信治理运维端**：[`MqttDeadLetterController.java`](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttDeadLetterController.java)（`/sample/mqtt/dead-letter/*`）
+- **监听容器动态启停运维端**：[`MqttContainerController.java`](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttContainerController.java)（`/sample/mqtt/container/*`）
+- **事务协同发信体验端**：[`MqttTransactionController.java`](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttTransactionController.java)（`/sample/mqtt/transaction/*`）
+- **Web Controller MockMvc 全场景测试**：[`SampleMqttWebControllerTest.java`](../ateng-boot-samples/ateng-boot-sample-mqtt/src/test/java/io/github/atengk/boot/sample/mqtt/SampleMqttWebControllerTest.java)
+- **双模离线自洽端到端测试**：[`SampleMqttE2eTest.java`](../ateng-boot-samples/ateng-boot-sample-mqtt/src/test/java/io/github/atengk/boot/sample/mqtt/SampleMqttE2eTest.java)
+
+> 快速上手与 cURL 体验卡请直接参阅：[ateng-boot-sample-mqtt README](../ateng-boot-samples/ateng-boot-sample-mqtt/README.md)。
+
+---
+
 ## 10. 完整 YAML 配置属性清单 (Configuration Properties Catalog)
 
 以下为 `ateng-boot-mqtt` 全量配置属性清单（配置前缀：`ateng.boot.mqtt`）：
@@ -1043,21 +1022,3 @@ public class OutboxFallbackMqttSendFailureHandler implements MqttSendFailureHand
 | `clients.<name>.ssl.trust-store-password` | `String` | `null` | 信任库密码 |
 | `clients.<name>.ssl.key-store` | `String` | `null` | 密钥库文件路径（JKS / PKCS12） |
 | `clients.<name>.ssl.key-store-password` | `String` | `null` | 密钥库密码 |
-
----
-
-## 11. 真实场景样例工程 (ateng-boot-sample-mqtt)
-
-完整、自洽、具备 Web HTTP 一键交互体验的演示工程收录于 [ateng-boot-sample-mqtt](../ateng-boot-samples/ateng-boot-sample-mqtt)：
-
-- **设备遥测体验端**：[MqttTelemetryController.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttTelemetryController.java)（`/sample/mqtt/telemetry/*`）
-- **同步/异步 RPC 控制端**：[MqttRpcController.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttRpcController.java)（`/sample/mqtt/rpc/*`）
-- **工业十六进制报文体验端**：[MqttIndustrialHexController.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttIndustrialHexController.java)（`/sample/mqtt/hex/*`）
-- **批量下发与保留消息控制端**：[MqttBatchAndRetainedController.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttBatchAndRetainedController.java)（`/sample/mqtt/batch/*`）
-- **毒丸死信治理运维端**：[MqttDeadLetterController.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttDeadLetterController.java)（`/sample/mqtt/dead-letter/*`）
-- **监听容器动态启停运维端**：[MqttContainerController.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttContainerController.java)（`/sample/mqtt/container/*`）
-- **事务协同发信体验端**：[MqttTransactionController.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttTransactionController.java)（`/sample/mqtt/transaction/*`）
-- **Web Controller MockMvc 全场景测试**：[SampleMqttWebControllerTest.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/test/java/io/github/atengk/boot/sample/mqtt/SampleMqttWebControllerTest.java)
-- **双模离线自洽端到端测试**：[SampleMqttE2eTest.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/test/java/io/github/atengk/boot/sample/mqtt/SampleMqttE2eTest.java)
-
-> 快速上手与 cURL 体验卡请直接参阅：[ateng-boot-sample-mqtt README](../ateng-boot-samples/ateng-boot-sample-mqtt/README.md)。

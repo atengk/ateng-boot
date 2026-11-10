@@ -4,7 +4,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.sample.mqtt.dto.*;
+import io.github.atengk.boot.sample.mqtt.service.DeadLetterReplayScenarioService;
 import io.github.atengk.boot.sample.mqtt.service.DeviceTelemetryScenarioService;
+import io.github.atengk.boot.sample.mqtt.service.MqttContainerGovernanceScenarioService;
 import io.github.atengk.boot.sample.mqtt.test.EmbeddedMqttBroker;
 import org.junit.jupiter.api.*;
 import org.slf4j.MDC;
@@ -19,7 +21,10 @@ import org.springframework.test.web.servlet.MvcResult;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
@@ -85,6 +90,12 @@ class SampleMqttWebControllerTest {
     @Autowired
     private DeviceTelemetryScenarioService telemetryScenarioService;
 
+    @Autowired
+    private DeadLetterReplayScenarioService deadLetterScenarioService;
+
+    @Autowired
+    private MqttContainerGovernanceScenarioService governanceScenarioService;
+
     @BeforeEach
     @AfterEach
     void cleanContext() {
@@ -114,6 +125,27 @@ class SampleMqttWebControllerTest {
                 .andExpect(jsonPath("$.data.topic").value("iot/devices/DEV-WEB-1001/telemetry"))
                 .andExpect(jsonPath("$.data.telemetry.temperature").value(28.4))
                 .andExpect(jsonPath("$.data.telemetry.humidity").value(62.5));
+    }
+
+    @Test
+    @DisplayName("1-1. 测试 MqttTelemetryController: 显式指定 QoS=2 上报遥测报文并验证透传")
+    void testPublishTelemetryWithExplicitQos() throws Exception {
+        TelemetryPublishRequest request = TelemetryPublishRequest.builder()
+                .deviceId("DEV-WEB-QOS2")
+                .temp(22.3)
+                .humidity(45.6)
+                .qos(2)
+                .build();
+
+        mockMvc.perform(post("/sample/mqtt/telemetry/publish")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.deviceId").value("DEV-WEB-QOS2"))
+                .andExpect(jsonPath("$.data.telemetry.temperature").value(22.3))
+                .andExpect(jsonPath("$.data.telemetry.humidity").value(45.6));
     }
 
     @Test
@@ -215,6 +247,46 @@ class SampleMqttWebControllerTest {
     }
 
     @Test
+    @DisplayName("7-1. 测试 MqttRpcController: 同步阻塞 RPC 下发超时降级返回 503")
+    void testRpcControlSyncTimeout() throws Exception {
+        DeviceCommandRequest timeoutRequest = DeviceCommandRequest.builder()
+                .action("SIMULATE_TIMEOUT_SYNC")
+                .speed(1200)
+                .timeoutSeconds(1)
+                .build();
+
+        mockMvc.perform(post("/sample/mqtt/rpc/control-sync")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(timeoutRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(503))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.msg").value(containsString("设备指令响应超时")));
+    }
+
+    @Test
+    @DisplayName("7-2. 测试 MqttRpcController: 异步非阻塞 RPC 下发超时降级返回 503")
+    void testRpcControlAsyncTimeout() throws Exception {
+        DeviceCommandRequest timeoutRequest = DeviceCommandRequest.builder()
+                .action("SIMULATE_TIMEOUT_ASYNC")
+                .speed(1800)
+                .timeoutSeconds(1)
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/mqtt/rpc/control-async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(timeoutRequest)))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(mvcResult))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(503))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.msg").value(containsString("设备指令响应超时")));
+    }
+
+    @Test
     @DisplayName("8. 测试 MqttIndustrialHexController: 正常下发国标 Hex 报文并验证 HexPayload 转译")
     void testIndustrialHexPublishSuccess() throws Exception {
         HexPublishRequest request = HexPublishRequest.builder()
@@ -304,6 +376,34 @@ class SampleMqttWebControllerTest {
     }
 
     @Test
+    @DisplayName("11-1. 测试 MqttBatchAndRetainedController: 参数校验拦截空记录与空白 deviceId (Fail-Fast)")
+    void testBatchAndRetainedValidationFailed() throws Exception {
+        // 1. 空批量记录
+        mockMvc.perform(post("/sample/mqtt/batch/publish")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"records\":[]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 2. 空白 deviceId 清空保留消息
+        mockMvc.perform(delete("/sample/mqtt/batch/clear-retained")
+                        .param("deviceId", "   "))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 3. 非法 RetainedStatusRequest
+        RetainedStatusRequest invalid = RetainedStatusRequest.builder().deviceId("").status("").build();
+        mockMvc.perform(post("/sample/mqtt/batch/retained-status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalid)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+    }
+
+    @Test
     @DisplayName("12. 测试 MqttDeadLetterController: 毒丸触发、死信只读窥探、受控重放与清空闭环")
     void testDeadLetterLifecycle() throws Exception {
         // 1. 触发毒丸消息
@@ -320,7 +420,10 @@ class SampleMqttWebControllerTest {
                         .param("timeoutSeconds", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.success").value(true));
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data[0].dltTopic").value("iot/devices/poison-test/DLT"))
+                .andExpect(jsonPath("$.data[0].payloadAsString").value("POISON_PAYLOAD"))
+                .andExpect(jsonPath("$.data[0].exceptionMessage").value("FATAL_POISON_PILL"));
 
         // 3. 受控重放死信至恢复主题
         DeadLetterReplayRequest replayRequest = DeadLetterReplayRequest.builder()
@@ -337,6 +440,10 @@ class SampleMqttWebControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data").value(containsString("成功受控重放")));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                assertThat(deadLetterScenarioService.getRecoveredMessages()).contains("POISON_PAYLOAD")
+        );
 
         // 4. 清空死信队列
         mockMvc.perform(delete("/sample/mqtt/dead-letter/purge")
@@ -383,21 +490,52 @@ class SampleMqttWebControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data").value(containsString("已成功暂停")));
+        assertThat(governanceScenarioService.isPaused(targetEndpoint)).isTrue();
 
-        // 3. 投递测试消息
+        // 3. 投递测试消息并验证暂停期间未被消费分发
+        governanceScenarioService.clear();
         mockMvc.perform(post("/sample/mqtt/container/publish-test")
                         .param("message", "MESSAGE_DURING_PAUSE"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.success").value(true));
+        TimeUnit.MILLISECONDS.sleep(300);
+        assertThat(governanceScenarioService.getReceivedMessages()).doesNotContain("MESSAGE_DURING_PAUSE");
 
-        // 4. 恢复指定端点
+        // 4. 恢复指定端点并验证消息分发恢复
         mockMvc.perform(post("/sample/mqtt/container/resume")
                         .param("endpointId", targetEndpoint))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data").value(containsString("已成功恢复")));
+        assertThat(governanceScenarioService.isPaused(targetEndpoint)).isFalse();
+
+        mockMvc.perform(post("/sample/mqtt/container/publish-test")
+                        .param("message", "MESSAGE_AFTER_RESUME"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                assertThat(governanceScenarioService.getReceivedMessages()).contains("MESSAGE_AFTER_RESUME")
+        );
+    }
+
+    @Test
+    @DisplayName("14-1. 测试 MqttContainerController: 参数校验拦截空白 endpointId (Fail-Fast)")
+    void testContainerValidationFailed() throws Exception {
+        // 1. 空白 endpointId 暂停
+        mockMvc.perform(post("/sample/mqtt/container/pause")
+                        .param("endpointId", "   "))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 2. 空白 endpointId 恢复
+        mockMvc.perform(post("/sample/mqtt/container/resume")
+                        .param("endpointId", ""))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
     }
 
     @Test

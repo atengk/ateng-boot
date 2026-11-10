@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.mqtt.service;
 import io.github.atengk.boot.mqtt.annotation.MqttListener;
 import io.github.atengk.boot.mqtt.annotation.MqttVariable;
 import io.github.atengk.boot.mqtt.template.MqttTemplate;
+import io.github.atengk.boot.sample.mqtt.dto.TxTelemetryRequest;
 import io.github.atengk.boot.sample.mqtt.model.DeviceTelemetry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -111,6 +112,28 @@ public class TransactionalTelemetryScenarioService {
         log.info("[SCENARIO-TX] Recording telemetry outside transaction for device [{}]", deviceId);
         DeviceTelemetry telemetry = new DeviceTelemetry(deviceId, temp, humidity, System.currentTimeMillis());
         mqttTemplate.sendAfterCommit("iot/devices/" + deviceId + "/tx", telemetry, 1);
+    }
+
+    /**
+     * 事务感知遥测统一编排（DTO 参数模型）
+     *
+     * @param request 事务发信请求
+     */
+    public void recordTelemetry(TxTelemetryRequest request) {
+        if (request == null) {
+            return;
+        }
+        DeviceTelemetry telemetry = new DeviceTelemetry(
+                request.getDeviceId(),
+                request.getTemp(),
+                request.getHumidity(),
+                System.currentTimeMillis()
+        );
+        if (request.isShouldRollback()) {
+            recordTelemetryWithRollback(telemetry);
+        } else {
+            recordTelemetryWithCommit(telemetry);
+        }
     }
 
     @MqttListener(topics = "iot/devices/{deviceId}/tx", qos = 1)

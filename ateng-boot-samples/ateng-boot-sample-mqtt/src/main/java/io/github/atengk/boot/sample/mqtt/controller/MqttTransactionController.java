@@ -35,20 +35,10 @@ public class MqttTransactionController {
     @PostMapping("/record-telemetry")
     public Result<String> recordTelemetry(@Valid @RequestBody TxTelemetryRequest request) {
         log.info("[HTTP-TRANSACTION] 接收事务遥测发信请求: {}", request);
-        if (request.isShouldRollback()) {
-            transactionalScenarioService.recordTelemetryWithRollback(
-                    request.getDeviceId(),
-                    request.getTemp(),
-                    request.getHumidity()
-            );
-            return Result.success("模拟事务回滚，发信钩子已安全取消，下游零脏读");
-        } else {
-            transactionalScenarioService.recordTelemetryWithCommit(
-                    request.getDeviceId(),
-                    request.getTemp(),
-                    request.getHumidity()
-            );
-            return Result.success("事务已成功提交并触发 sendAfterCommit 投递");
-        }
+        transactionalScenarioService.recordTelemetry(request);
+        String message = request.isShouldRollback()
+                ? "模拟事务回滚，发信钩子已安全取消，下游零脏读"
+                : "事务已成功提交并触发 sendAfterCommit 投递";
+        return Result.success(message);
     }
 }

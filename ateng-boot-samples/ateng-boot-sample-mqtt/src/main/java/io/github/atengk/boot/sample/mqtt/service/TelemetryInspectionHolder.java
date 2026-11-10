@@ -53,6 +53,21 @@ public class TelemetryInspectionHolder {
     }
 
     /**
+     * 取消对指定设备的等待并清理映射，防止超时未完成的 Future 常驻内存
+     *
+     * @param deviceId 设备标识
+     * @param future 等待句柄
+     */
+    public void cancelWait(String deviceId, CompletableFuture<TelemetryInspectionRecord> future) {
+        if (deviceId != null && future != null) {
+            waiters.remove(deviceId, future);
+            if (!future.isDone()) {
+                future.cancel(true);
+            }
+        }
+    }
+
+    /**
      * 获取指定设备的最新消费记录
      *
      * @param deviceId 设备标识
