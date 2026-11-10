@@ -3,8 +3,7 @@ package io.github.atengk.boot.sample.mqtt;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
-import io.github.atengk.boot.sample.mqtt.dto.DeviceCommandRequest;
-import io.github.atengk.boot.sample.mqtt.dto.TelemetryPublishRequest;
+import io.github.atengk.boot.sample.mqtt.dto.*;
 import io.github.atengk.boot.sample.mqtt.service.DeviceTelemetryScenarioService;
 import io.github.atengk.boot.sample.mqtt.test.EmbeddedMqttBroker;
 import org.junit.jupiter.api.*;
@@ -18,11 +17,13 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -210,5 +211,94 @@ class SampleMqttWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(not(200)))
                 .andExpect(jsonPath("$.success").value(false));
+    }
+
+    @Test
+    @DisplayName("8. 测试 MqttIndustrialHexController: 正常下发国标 Hex 报文并验证 HexPayload 转译")
+    void testIndustrialHexPublishSuccess() throws Exception {
+        HexPublishRequest request = HexPublishRequest.builder()
+                .deviceId("meter-hex-01")
+                .hexData("68AAAAAAAAAAAA6811043333333316")
+                .build();
+
+        mockMvc.perform(post("/sample/mqtt/hex/publish")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.deviceId").value("meter-hex-01"))
+                .andExpect(jsonPath("$.data.originalHex").value("68AAAAAAAAAAAA6811043333333316"))
+                .andExpect(jsonPath("$.data.formattedHex").value("68AAAAAAAAAAAA6811043333333316"))
+                .andExpect(jsonPath("$.data.byteLength").value(15));
+    }
+
+    @Test
+    @DisplayName("9. 测试 MqttIndustrialHexController: 非法 Hex 字符正则校验拦截")
+    void testIndustrialHexValidationFailed() throws Exception {
+        HexPublishRequest invalidRequest = HexPublishRequest.builder()
+                .deviceId("meter-hex-01")
+                .hexData("INVALID_HEX_GHIJK") // 非法十六进制字符
+                .build();
+
+        mockMvc.perform(post("/sample/mqtt/hex/publish")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+    }
+
+    @Test
+    @DisplayName("10. 测试 MqttBatchAndRetainedController: 批量原子并发下发报文")
+    void testBatchPublishSuccess() throws Exception {
+        BatchPublishRequest request = BatchPublishRequest.builder()
+                .records(List.of(
+                        BatchPublishItemRequest.builder()
+                                .topic("iot/devices/batch-01/batch")
+                                .payload("BATCH_ITEM_1")
+                                .qos(1)
+                                .build(),
+                        BatchPublishItemRequest.builder()
+                                .topic("iot/devices/batch-02/batch")
+                                .payload("BATCH_ITEM_2")
+                                .qos(1)
+                                .build()
+                ))
+                .build();
+
+        mockMvc.perform(post("/sample/mqtt/batch/publish")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").value(containsString("成功原子批量投递 2 条报文")));
+    }
+
+    @Test
+    @DisplayName("11. 测试 MqttBatchAndRetainedController: 发布设备影子保留消息与对称清理闭环")
+    void testRetainedStatusLifecycle() throws Exception {
+        RetainedStatusRequest request = RetainedStatusRequest.builder()
+                .deviceId("dev-shadow-01")
+                .status("ONLINE")
+                .build();
+
+        // 1. 发布保留消息
+        mockMvc.perform(post("/sample/mqtt/batch/retained-status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").value(containsString("ONLINE")));
+
+        // 2. 对称清除保留消息
+        mockMvc.perform(delete("/sample/mqtt/batch/clear-retained")
+                        .param("deviceId", "dev-shadow-01"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").value(containsString("成功对称清空设备保留状态消息")));
     }
 }
