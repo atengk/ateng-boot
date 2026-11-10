@@ -1,76 +1,57 @@
-# ateng-boot-sample-mail 邮件通信自验工程
+# ateng-boot-sample-mail 邮件通信与场景治理体验工程
 
-> 专注于工业级异步邮件通信、多账号动态路由、HTML 模板引擎解耦渲染、流式附件挂载、本地事务感知发信（`sendAfterCommit`）、发信拦截器 SPI 与全生命周期审计事件广播。
-
----
-
-## 1. 场景痛点与功能定位
-
-在企业级应用开发中，邮件发送是账户注册验证、异地登录预警、系统告警通告、账单对账回执等核心链路的标准能力。然而传统实现通常面临多重严峻挑战：
-- **多租户/多场景隔离困难**：缺乏动态发信账号路由体系，多个业务系统共用单一 SMTP 账号，容易触发频率配额超限或通道阻塞；
-- **发信与业务事务割裂**：在本地数据库事务未提交甚至发生异常回滚时，外围邮件已提前发出，引发令人困扰的“幽灵邮件”事故；
-- **异步发信上下文丢失**：使用未经治理的裸线程池异步发信，丢失 MDC `traceId`、操作用户与多租户上下文，导致排查困难；
-- **模板与引擎硬编码绑定**：邮件正文拼接繁琐且难以热更新，换用模板引擎需要大面积重构；
-- **单测依赖真实物理服务器**：缺乏离线嵌入式测试方案，CI/CD 流水线因真实 SMTP 网络波动频繁偶发失败。
-
-`ateng-boot-sample-mail` 作为 1:1 对齐 `ateng-boot-mail` 的独立场景沙箱，具备以下工业级特性：
-- **100% 离线自洽测试**：内置嵌入式 GreenMail 邮件服务器，完全无需公网 SMTP，毫秒级快速单测；
-- **显式契约与第一道防线**：Controller 统一声明强类型 `Result<MailSendResult>` 返回契约，入参专用 DTO 挂载 JSR-303 格式校验 Fail-Fast；
-- **全生命周期事件与拦截器**：提供 `MailSendingEvent`、`MailSentEvent`、`MailSendFailedEvent` 原生事件监听与 `MailSendInterceptor` 链路防卫；
-- **本地事务感知安全网**：`sendAfterCommit` 严格挂载事务同步器，仅在物理提交后发信，事务回滚自动取消；
-- **多账号与动态路由**：支持 YAML 声明式多账号配置及基于多租户上下文或业务场景的自适应路由。
+> 专注于演示与自验 `ateng-boot-mail` 核心特性在真实业务场景下的开箱使用。
 
 ---
 
-## 2. 演示场景清单
+## 1. 快速启动与服务端口
 
-| 演示场景 | 核心门面 / 注解 / SPI | 业务类与端点 | 核心特性与行为 |
+- **默认 HTTP 端口**：`8080` (可在 `application.yml` 中修改)
+- **启动方式**：
+  ```bash
+  # 方式一：IDE 中运行 SampleMailApplication.java 的 main 方法
+  # 方式二：命令行启动
+  mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-mail
+  ```
+
+---
+
+## 2. 运行环境与双模切换
+
+- **默认/CI 模式**：内置基于嵌入式 GreenMail SMTP 服务器与内存桩自洽配置，无需任何外部真实邮件服务器即可秒级启动与 100% 跑通测试；
+- **Local 真实模式**：若需直连真实 SMTP 服务商（如 QQ 邮箱、163 邮箱或企业内部邮件网关），复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并填入真实认证凭据（已被 Git 忽略，CI 零风险），激活 `local` Profile 启动即可直连测试。
+
+---
+
+## 3. 核心 Controller 接口与一键体验
+
+应用启动后，可通过以下 cURL 命令或 HTTP 客户端直接发起调用体验：
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- | :--- |
-| **纯文本邮件发送** | `MailTemplate.sendText` | `POST /api/mail/simple` | 默认账号通道发信，统一 `Result` 契约，自动追加主题前缀 |
-| **Thymeleaf 模板邮件** | `MailTemplate.sendTemplate` | `POST /api/mail/template` | 动态加载 HTML 模板并安全填充变量（验证码、用户名等） |
-| **运维通道多账号路由** | `MailTemplate.sendText("ops", ...)` | `POST /api/mail/ops` | 隔离路由至运维告警账号，独立发信人与告警前缀 |
-| **受管异步发信** | `MailTemplate.sendTextAsync` | `POST /api/mail/async` | 异步 CompletableFuture 非阻塞响应，Core 受管线程池与四维上下文透传 |
-| **流式附件装配** | `MailTemplate.send` + `MailAttachment` | `MailScenarioService.sendWithAttachment` | 挂载内存或流式文件附件，RFC 6266 标准编码防中文乱码 |
-| **安全合规拦截器** | `MailSendInterceptor` | `SampleAuditMailInterceptor` | 黑名单前置阻断防卫，放行邮件自动注入全链路审计标头 `X-Audit-Trace` |
-| **全生命周期事件广播** | `@EventListener` | `SampleMailEventListener` | 监听发信前、成功、失败领域事件，对接监控告警与发信大盘 |
-| **事务感知发信防幽灵** | `MailTemplate.sendAfterCommit` | `MailScenarioService.sendTransactional` | 严格绑定 Spring 物理事务提交，事务异常回滚时自动取消防幽灵邮件 |
-| **外部介质动态账号供给** | `MailAccountProvider` | `SampleDatabaseMailAccountProvider` / `POST /api/mail/account` | 模拟从数据库按需懒加载发信账号真明文配置，受管 LRU 缓存池化底层 Sender，支持别名覆盖与防张冠李戴 |
-| **缓存热驱逐与领域事件** | `MailAccountEvictEvent` / `evictDynamicAccount` | `POST /api/mail/evict` / `POST /api/mail/broadcast-evict` | 暴露门面 API 与 Spring 原生领域事件，支持单机调用与分布式集群消息广播联动热注销动态账号 |
+| **发送简单纯文本邮件** | `MailBasicController` | `POST /sample/mail/basic/simple-text` | `curl -X POST "http://localhost:8080/sample/mail/basic/simple-text" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"欢迎加入","content":"欢迎体验 ateng-boot-mail 基础设施！"}'` |
+| **发送富文本 HTML 邮件** | `MailBasicController` | `POST /sample/mail/basic/html-content` | `curl -X POST "http://localhost:8080/sample/mail/basic/html-content" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"安全登录提醒","htmlContent":"<h2>安全登录通告</h2><p>您的账号于新设备完成登录，若非本人操作请立即核验。</p>"}'` |
+| **发送动态 Thymeleaf 模板邮件** | `MailBasicController` | `POST /sample/mail/basic/template` | `curl -X POST "http://localhost:8080/sample/mail/basic/template" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"邮箱验证码","username":"Ateng","verifyCode":"689102"}'` |
+| **多语言国际化验证码模板发信** | `MailBasicController` | `POST /sample/mail/basic/i18n-template` | `curl -X POST "http://localhost:8080/sample/mail/basic/i18n-template?language=en_US" -H "Content-Type: application/json" -d '{"to":"user@example.com","username":"Alex","verifyCode":"952701"}'` |
+| **发送流式电子账单附件邮件** | `MailMediaController` | `POST /sample/mail/media/attachment` | `curl -X POST "http://localhost:8080/sample/mail/media/attachment" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"月度电子账单","content":"请查收附件中的电子账单明细。","fileName":"statement-202610.pdf"}'` |
+| **正交内联资源 (Inline CID) 图文混排** | `MailMediaController` | `POST /sample/mail/media/inline` | `curl -X POST "http://localhost:8080/sample/mail/media/inline" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"企业品牌公告","title":"2026 季度企业通报"}'` |
+| **指定运维通道隔离发信** | `MailAccountController` | `POST /sample/mail/account/ops-channel` | `curl -X POST "http://localhost:8080/sample/mail/account/ops-channel" -H "Content-Type: application/json" -d '{"to":"ops-team@example.com","subject":"基础设施告警","content":"只读数据库节点 CPU 利用率超 85% 预警。"}'` |
+| **外部介质动态账号发信 (懒加载)** | `MailAccountController` | `POST /sample/mail/account/dynamic-send` | `curl -X POST "http://localhost:8080/sample/mail/account/dynamic-send" -H "Content-Type: application/json" -d '{"account":"dynamic-db-provider","to":"client@example.com","subject":"动态租户通知","content":"基于外部提供商懒加载账号投递专属通知。","from":"vip@atengk.org","fromName":"VIP客服组"}'` |
+| **精准驱逐动态账号缓存 (单机刷新)** | `MailAccountController` | `POST /sample/mail/account/evict-cache` | `curl -X POST "http://localhost:8080/sample/mail/account/evict-cache?accountName=dynamic-db-provider"` |
+| **广播动态账号驱逐领域事件 (集群刷新)** | `MailAccountController` | `POST /sample/mail/account/broadcast-evict` | `curl -X POST "http://localhost:8080/sample/mail/account/broadcast-evict?accountName=dynamic-db-provider"` |
+| **管理端 SMTP 物理连通性一键测试** | `MailAccountController` | `POST /sample/mail/account/test-connection` | `curl -X POST "http://localhost:8080/sample/mail/account/test-connection?accountName=default"` |
+| **批量个性化合并发送员工工资条** | `MailReliableController` | `POST /sample/mail/reliable/batch-salary` | `curl -X POST "http://localhost:8080/sample/mail/reliable/batch-salary" -H "Content-Type: application/json" -d '{"items":[{"employeeName":"张三","email":"zhangsan@example.com","salaryPeriod":"2026年10月","netSalary":18500.00},{"employeeName":"李四","email":"lisi@example.com","salaryPeriod":"2026年10月","netSalary":21000.00}]}'` |
+| **受管异步发信 (Core 线程池+四维上下文)** | `MailReliableController` | `POST /sample/mail/reliable/async-send` | `curl -X POST "http://localhost:8080/sample/mail/reliable/async-send" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"异步非阻塞投递","content":"邮件由 Core 受管线程池异步外发，MDC TraceId 自动透传。"}'` |
+| **本地事务感知发信 (事务提交触发外发)** | `MailReliableController` | `POST /sample/mail/reliable/transaction-commit` | `curl -X POST "http://localhost:8080/sample/mail/reliable/transaction-commit" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"订单付款成功","content":"本地事务提交成功后由 sendAfterCommit 触发邮件投递。"}'` |
+| **本地事务感知发信 (事务回滚防幽灵撤销)** | `MailReliableController` | `POST /sample/mail/reliable/transaction-rollback` | `curl -X POST "http://localhost:8080/sample/mail/reliable/transaction-rollback" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"订单异常回滚","content":"事务抛出异常回滚，邮件自动防幽灵取消投递。"}'` |
+| **紧急告警发信 (优先级标头+回执+密送)** | `MailReliableController` | `POST /sample/mail/reliable/urgent-alert` | `curl -X POST "http://localhost:8080/sample/mail/reliable/urgent-alert" -H "Content-Type: application/json" -d '{"serviceName":"payment-gateway","alertLevel":"P0","errorMessage":"支付通道超时熔断","to":"oncall@example.com","requestReadReceipt":true,"archiveBcc":"audit-archive@example.com"}'` |
 
 ---
 
-## 3. 本地自验与自动化测试
+## 4. 全真自动化回归命令
 
-### 3.1 执行场景端到端自动化测试（推荐）
 ```bash
-mvn test -pl ateng-boot-samples/ateng-boot-sample-mail -am -T 1C -nsu -B
+mvn test -pl ateng-boot-mail,ateng-boot-samples/ateng-boot-sample-mail -am -T 1C -nsu -B
 ```
 
-### 3.2 启动本地服务自验
-```bash
-mvn -pl ateng-boot-samples/ateng-boot-sample-mail spring-boot:run
-```
-
-#### 发送纯文本邮件示例
-```bash
-curl -X POST "http://localhost:8080/api/mail/simple" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to": "dev@example.com",
-    "subject": "开箱自验测试",
-    "content": "恭喜！ateng-boot-mail 服务已成功就绪并完成接入。"
-  }'
-```
-
-#### 发送 HTML 动态模板邮件示例
-```bash
-curl -X POST "http://localhost:8080/api/mail/template" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to": "dev@example.com",
-    "subject": "验证码通知",
-    "content": "占位",
-    "username": "Ateng",
-    "verifyCode": "668899"
-  }'
-```
+> 详细原理机制、配置清单与扩展定制，请参阅核心 Starter 文档：[ateng-boot-mail README](../../ateng-boot-mail/README.md)。
