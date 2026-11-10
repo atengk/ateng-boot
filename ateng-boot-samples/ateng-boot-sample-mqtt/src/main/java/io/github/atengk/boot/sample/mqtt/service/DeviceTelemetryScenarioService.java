@@ -7,6 +7,7 @@ import io.github.atengk.boot.mqtt.annotation.MqttListener;
 import io.github.atengk.boot.mqtt.annotation.MqttTopic;
 import io.github.atengk.boot.mqtt.annotation.MqttVariable;
 import io.github.atengk.boot.mqtt.template.MqttTemplate;
+import io.github.atengk.boot.sample.mqtt.dto.TelemetryInspectionRecord;
 import io.github.atengk.boot.sample.mqtt.model.DeviceTelemetry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,6 +41,7 @@ public class DeviceTelemetryScenarioService {
     private static final Logger log = LoggerFactory.getLogger(DeviceTelemetryScenarioService.class);
 
     private final MqttTemplate mqttTemplate;
+    private final TelemetryInspectionHolder inspectionHolder;
 
     private final List<DeviceTelemetry> receivedTelemetries = new CopyOnWriteArrayList<>();
     private final Map<String, String> receivedTopics = new ConcurrentHashMap<>();
@@ -51,8 +53,9 @@ public class DeviceTelemetryScenarioService {
 
     private final List<String> receivedClusterMetrics = new CopyOnWriteArrayList<>();
 
-    public DeviceTelemetryScenarioService(MqttTemplate mqttTemplate) {
+    public DeviceTelemetryScenarioService(MqttTemplate mqttTemplate, TelemetryInspectionHolder inspectionHolder) {
         this.mqttTemplate = mqttTemplate;
+        this.inspectionHolder = inspectionHolder;
     }
 
     /**
@@ -114,6 +117,18 @@ public class DeviceTelemetryScenarioService {
         if (userId != null) {
             lastUserId.set(userId);
         }
+
+        TelemetryInspectionRecord record = new TelemetryInspectionRecord(
+                deviceId,
+                topic,
+                telemetry,
+                traceId,
+                tenantId,
+                userId,
+                allHeaders,
+                System.currentTimeMillis()
+        );
+        inspectionHolder.record(record);
     }
 
     /**
@@ -166,5 +181,6 @@ public class DeviceTelemetryScenarioService {
         lastTenantId.set(null);
         lastUserId.set(null);
         receivedClusterMetrics.clear();
+        inspectionHolder.clear();
     }
 }

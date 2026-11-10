@@ -23,6 +23,12 @@
             <artifactId>ateng-boot-mqtt</artifactId>
         </dependency>
 
+        <!-- Web 运行时底座 -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+        </dependency>
+
         <!-- Spring Boot Actuator 健康端点与运维探针 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
