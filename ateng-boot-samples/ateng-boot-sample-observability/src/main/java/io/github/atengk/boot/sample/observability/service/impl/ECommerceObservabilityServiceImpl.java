@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.observability.service.impl;
 
+import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.observability.annotation.ObservedMetric;
 import io.github.atengk.boot.observability.metrics.MetricsTemplate;
 import io.github.atengk.boot.sample.observability.dto.BurstPressureRequest;
@@ -48,6 +49,7 @@ public class ECommerceObservabilityServiceImpl implements ECommerceObservability
 
     @Override
     public String recordOrderMetrics(OrderCreateRequest request) {
+        BusinessAssert.notNull(request, "订单创建请求参数不能为空");
         // 编程式指标打点：Counter 计数、DistributionSummary 金额分布与 Timer 耗时记录
         metricsTemplate.increment("sample.orders", 1.0, "channel", request.getChannel());
         metricsTemplate.summary("sample.orders.amount", request.getAmount(), "channel", request.getChannel());
@@ -58,6 +60,7 @@ public class ECommerceObservabilityServiceImpl implements ECommerceObservability
     @Override
     @ObservedMetric(value = "sample.demo.observed", tags = {"tier", "api"}, percentiles = {0.95, 0.99})
     public String deductInventoryStock(StockDeductRequest request) {
+        BusinessAssert.notNull(request, "库存扣减请求参数不能为空");
         // 声明式 AOP 切面自动统计执行耗时、分位数 (P95/P99) 及成功/失败计数
         return "商品 " + request.getProductId() + " 成功扣减库存 " + request.getCount() + " 件";
     }
@@ -69,6 +72,7 @@ public class ECommerceObservabilityServiceImpl implements ECommerceObservability
 
     @Override
     public String dispatchLogisticsAsync(LogisticsDispatchRequest request) {
+        BusinessAssert.notNull(request, "物流调度请求参数不能为空");
         // 异步调度运单履约任务，产生线程池负载
         CompletableFuture.runAsync(() -> {
             try {

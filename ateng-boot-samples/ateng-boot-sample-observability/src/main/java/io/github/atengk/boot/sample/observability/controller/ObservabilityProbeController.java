@@ -42,10 +42,7 @@ public class ObservabilityProbeController {
     @GetMapping("/payment-gateway")
     public Result<Map<String, Object>> getPaymentGatewayHealth() {
         Health health = paymentGatewayHealthIndicator.health();
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("status", health.getStatus().getCode());
-        data.put("details", health.getDetails());
-        return Result.success(data);
+        return Result.success(toHealthData(health));
     }
 
     /**
@@ -56,9 +53,18 @@ public class ObservabilityProbeController {
         SimulatedSlowSafeHealthIndicator indicator =
                 new SimulatedSlowSafeHealthIndicator(Duration.ofMillis(100), eventPublisher);
         Health health = indicator.health();
+        return Result.success(toHealthData(health));
+    }
+
+    /**
+     * 将 Actuator Health 实体安全转译为键值对数据（消除代码异味并防 NPE）
+     */
+    private Map<String, Object> toHealthData(Health health) {
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("status", health.getStatus().getCode());
-        data.put("details", health.getDetails());
-        return Result.success(data);
+        if (health != null) {
+            data.put("status", health.getStatus() != null ? health.getStatus().getCode() : "UNKNOWN");
+            data.put("details", health.getDetails());
+        }
+        return data;
     }
 }
