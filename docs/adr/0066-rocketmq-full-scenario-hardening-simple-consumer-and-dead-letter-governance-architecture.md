@@ -90,8 +90,20 @@ flowchart TD
 - **对称丢弃清理**：`discardDeadLetters` / `discardDeadLetter` 提供物理丢弃清理能力，拉取死信后直接确认出队，确保死信生命周期完整闭环（巡检、重放、丢弃三位一体）。
 
 ### 5. 样例工程纯净化与双模自适应 (`ateng-boot-sample-rocketmq`)
-- **零 Controller 铁律**：彻底移除 `spring-boot-starter-web` 与 Controller，重构为场景组件驱动（`ScenarioService`）；
+- **场景服务专职化**：业务逻辑下沉至专职业务组件驱动（`ScenarioService`）；
 - **双模自适应测试**：`InMemoryRocketmqBroker` 标注 `@Profile("!local")`，新增 `application-local.example.yml`，兼顾 CI 断网秒级全绿与真实联调。
+
+### 6. Sample 全面 Web 体验化与五维文档规范治理 (Sample Multi-Controller Webification & 5D Docs Alignment)
+依据仓库统一《工业级文档与样例工程标准规范》（`docs/agents/documentation-specification.md`），对样例工程架构与模块文档进行标准化演进：
+1. **统一引入 Web 底座与多 Controller 拆分**：Sample 工程在 `pom.xml` 中统一引入 `ateng-boot-web`，彻底打破控制台或单测黑盒限制。杜绝单一臃肿胖 Controller，按功能领域拆分为 6 大高内聚 `@RestController`：
+   - `RocketmqProduceController` (`/sample/rocketmq/produce/**`)：同步/异步/单向/FIFO/SQL92/批量发信与消费审计；
+   - `RocketmqDelayController` (`/sample/rocketmq/delay/**`)：相对延时/绝对定时调度与原生延时精准撤回；
+   - `RocketmqTransactionController` (`/sample/rocketmq/transaction/**`)：2PC 事务半消息、本地事务提交感知发信与回查审计；
+   - `RocketmqSimpleConsumerController` (`/sample/rocketmq/simple-consumer/**`)：微批流式拉取、动态租约续期、显式 ACK 与函数式闭包；
+   - `RocketmqContainerController` (`/sample/rocketmq/container/**`)：消费端点元数据审计、动态暂停削峰/恢复与物理优雅启停；
+   - `RocketmqDeadLetterController` (`/sample/rocketmq/dead-letter/**`)：死信只读探查（零 ACK）、受控重放（防二次雪崩熔断）与批量物理丢弃。
+2. **传输契约与模型绝对解耦 (Zero-Entity-Leakage)**：Controller 边界 100% 严禁暴露底层 ORM 实体或 RocketMQ 原生 `MessageView`，出入参统一采用强类型 Request/DTO 与 VO 模型，统一显式返回强类型 `Result<T>`。
+3. **Starter 五维文档 10 大章重构**：第 0 节建立 100% 全景速查矩阵，正文按 10 大能力领域大章收敛，小节内部单屏闭环“专属 YAML + 真实业务 Java + 机制边界防御”三要素；Sample 升级为四段式极简体验卡。
 
 ---
 
@@ -101,7 +113,8 @@ flowchart TD
 - **行业主流场景覆盖率 95%+**：全面覆盖 20 大生产典型场景，与 RabbitMQ/Kafka 达到一致的工业级成熟度；
 - **死信治理形成闭环**：彻底解决“只死不救”痛点，具备防二次雪崩防御；
 - **批处理与长耗时任务解绑**：SimpleConsumer 租约机制赋予了微批削峰与流式消费核心原语；
-- **架构纯净合规**：消除样例工程 Controller 污染，具备双模自适应测试自洽。
+- **全面 Web 体验化与五维文档对齐**：提供 6 大领域 Controller 与一键 cURL 体验表，开发者可直观发起 HTTP 请求体验与验证全部 RocketMQ 生产特性；
+- **架构纯净与传输模型解耦**：Zero-Entity-Leakage 契约确保业务层与网络边界清晰分层，具备双模自适应测试自洽。
 
 ### 权衡与取舍 (Trade-offs & Mitigations)
 - **SimpleConsumer 长连接资源**：按组缓存实例会占用少量 gRPC 连接资源。通过配置接入点与超时参数、并在应用关闭时统一排空释放，确保资源受控。
