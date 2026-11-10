@@ -9,12 +9,14 @@ import io.github.atengk.boot.sample.notification.vo.AlertStormSummaryVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -32,6 +34,8 @@ public class OrderAlertScenarioService {
 
     private final AlertStormSuppressor alertStormSuppressor;
     private final ObjectProvider<OrderAlertScenarioService> selfProvider;
+    @Qualifier("taskExecutor")
+    private final ObjectProvider<Executor> taskExecutorProvider;
 
     /**
      * 业务订单履约处理方法，挂载声明式告警切面
@@ -95,11 +99,12 @@ public class OrderAlertScenarioService {
         AtomicInteger totalAttempts = new AtomicInteger(0);
         AtomicReference<Throwable> capturedThrowable = new AtomicReference<>();
 
-        // 并发多线程模拟瞬时故障风暴
+        // 接入 Core 受管线程池并发模拟瞬时故障风暴
+        Executor executor = taskExecutorProvider.getIfAvailable();
         List<CompletableFuture<Void>> futures = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
             final int index = i;
-            futures.add(CompletableFuture.runAsync(() -> {
+            Runnable stormTask = () -> {
                 totalAttempts.incrementAndGet();
                 try {
                     AlertStormSuppressRequest itemReq = new AlertStormSuppressRequest();
@@ -110,7 +115,10 @@ public class OrderAlertScenarioService {
                 } catch (Throwable ex) {
                     capturedThrowable.compareAndSet(null, ex);
                 }
-            }));
+            };
+            futures.add(executor != null
+                    ? CompletableFuture.runAsync(stormTask, executor)
+                    : CompletableFuture.runAsync(stormTask));
         }
 
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();

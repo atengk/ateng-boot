@@ -139,13 +139,6 @@ public class NotificationScenarioService {
 
     /**
      * 动态模板渲染发信
-     */
-    public NotificationSendResult sendTemplate(String channel, String templateContent, Map<String, Object> variables) {
-        return notificationTemplate.sendTemplate(channel, templateContent, variables);
-    }
-
-    /**
-     * 动态模板渲染发信
      *
      * @param request 动态模板发信请求
      * @return 发信结果
@@ -166,13 +159,6 @@ public class NotificationScenarioService {
     }
 
     /**
-     * 原生特化 JSON 逃生舱发信
-     */
-    public NotificationSendResult sendRaw(String channel, Map<String, Object> rawPayload) {
-        return notificationTemplate.send(channel, RawMessage.of(rawPayload));
-    }
-
-    /**
      * 平台原生特化 JSON 逃生舱发信
      *
      * @param request 原生报文请求
@@ -180,13 +166,6 @@ public class NotificationScenarioService {
      */
     public NotificationSendResult sendRaw(RawMessageRequest request) {
         return notificationTemplate.send(request.getChannel(), RawMessage.of(request.getPayload()));
-    }
-
-    /**
-     * 图片通知发信
-     */
-    public NotificationSendResult sendImage(String channel, String base64, String md5) {
-        return notificationTemplate.send(channel, ImageMessage.ofBase64(base64, md5));
     }
 
     /**
@@ -206,21 +185,6 @@ public class NotificationScenarioService {
             message = ImageMessage.fromBytes(bytes);
         }
         return notificationTemplate.send(request.getChannel(), message);
-    }
-
-    /**
-     * 演示 NotificationContextHolder 线程级动态切源发信
-     */
-    public NotificationSendResult sendWithSwitchedChannel(String targetChannel, TextMessageRequest request) {
-        TextMessage message = new TextMessage(request.getContent());
-        try {
-            return NotificationContextHolder.callWithChannel(targetChannel, () -> notificationTemplate.send(message));
-        } catch (Exception e) {
-            if (e instanceof RuntimeException re) {
-                throw re;
-            }
-            throw new IllegalStateException("切换通知渠道发信失败: " + e.getMessage(), e);
-        }
     }
 
     /**
