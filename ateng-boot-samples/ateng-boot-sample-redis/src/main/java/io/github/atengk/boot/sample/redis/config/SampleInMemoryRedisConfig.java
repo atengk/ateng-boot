@@ -678,6 +678,8 @@ public class SampleInMemoryRedisConfig {
             boolean removed = VALUE_STORE.remove(key) != null;
             removed |= HASH_STORE.remove(key) != null;
             removed |= ZSET_STORE.remove(key) != null;
+            removed |= STREAM_LOG.remove(key) != null;
+            removed |= STREAM_STORE.remove(key) != null;
             return removed;
         }
 
@@ -1022,7 +1024,22 @@ public class SampleInMemoryRedisConfig {
                         String mName = method.getName();
                         if ("createGroup".equals(mName)) return "OK";
                         if ("acknowledge".equals(mName)) return 1L;
-                        if ("delete".equals(mName)) return 1L;
+                        if ("delete".equals(mName)) {
+                            if (args != null && args.length >= 2) {
+                                String streamKey = (String) args[0];
+                                List<MapRecord<String, Object, Object>> list = STREAM_LOG.get(streamKey);
+                                if (list != null) {
+                                    if (args[1] instanceof RecordId[] ids) {
+                                        java.util.Set<String> idSet = java.util.Arrays.stream(ids)
+                                                .map(RecordId::getValue).collect(java.util.stream.Collectors.toSet());
+                                        list.removeIf(r -> idSet.contains(r.getId().getValue()));
+                                    } else if (args[1] instanceof RecordId id) {
+                                        list.removeIf(r -> r.getId().getValue().equals(id.getValue()));
+                                    }
+                                }
+                            }
+                            return 1L;
+                        }
                         if ("trim".equals(mName)) {
                             String streamKey = (String) args[0];
                             long count = ((Number) args[1]).longValue();
@@ -1053,12 +1070,30 @@ public class SampleInMemoryRedisConfig {
                             }
                         }
                         if ("claim".equals(mName)) {
+                            if (args != null && args.length >= 5 && args[4] instanceof RecordId[] ids) {
+                                List<MapRecord<String, Object, Object>> claimedList = new ArrayList<>();
+                                for (RecordId id : ids) {
+                                    Map<Object, Object> map = new HashMap<>();
+                                    map.put("claimedId", id.getValue());
+                                    claimedList.add(MapRecord.create(String.valueOf(args[0]), map).withId(id));
+                                }
+                                return claimedList;
+                            }
                             return Collections.emptyList();
                         }
                         if ("range".equals(mName)) {
                             String streamKey = (String) args[0];
                             List<MapRecord<String, Object, Object>> list = STREAM_LOG.get(streamKey);
                             if (list != null) {
+                                if (args.length >= 2 && args[1] instanceof Range<?> r) {
+                                    String lower = r.getLowerBound().getValue().map(Object::toString).orElse("-");
+                                    String upper = r.getUpperBound().getValue().map(Object::toString).orElse("+");
+                                    if (!"-".equals(lower) && lower.equals(upper)) {
+                                        return list.stream()
+                                                .filter(item -> item.getId().getValue().equals(lower))
+                                                .collect(java.util.stream.Collectors.toList());
+                                    }
+                                }
                                 return new ArrayList<>(list);
                             }
                             return Collections.emptyList();

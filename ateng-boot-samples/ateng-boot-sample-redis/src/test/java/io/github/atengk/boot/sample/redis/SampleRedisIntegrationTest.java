@@ -1434,15 +1434,37 @@ class SampleRedisIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("POISON_STREAM_CTRL_001")));
 
-        // 9. 查询死信流清单
+        // 9. 查询死信流清单与非破坏性检视
         mockMvc.perform(get("/sample/redis/stream/dead-letter")
                         .param("count", "10"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").isArray());
 
+        mockMvc.perform(get("/sample/redis/stream/dlq/peek")
+                        .param("count", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
         // 10. 查询 Stream SPI 告警快照
         mockMvc.perform(get("/sample/redis/stream/alerts"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 11. 受控重放 Stream 死信队列
+        mockMvc.perform(post("/sample/redis/stream/dlq/replay")
+                        .param("count", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isNumber());
+
+        // 12. 自动巡检认领 PEL 孤儿待决消息
+        mockMvc.perform(post("/sample/redis/stream/pending/claim")
+                        .param("newConsumer", "orphan-recover-worker")
+                        .param("minIdleSeconds", "0")
+                        .param("count", "10"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").isArray());

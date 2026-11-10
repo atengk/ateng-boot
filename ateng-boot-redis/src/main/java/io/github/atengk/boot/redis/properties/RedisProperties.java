@@ -581,9 +581,40 @@ public class RedisProperties {
         private String dlqSuffix = ":dlq";
 
         /**
+         * 死信消息最大允许受控重放次数（默认 3 次，防止毒丸死信反复重放形成雪崩）
+         */
+        private int maxReplayAttempts = 3;
+
+        /**
+         * PEL 孤儿消息最小闲置超时时长（默认 1 分钟，超时未确认将被自动认领自愈）
+         */
+        private Duration claimIdleTime = Duration.ofMinutes(1);
+
+        /**
+         * 单次认领 PEL 孤儿消息最大条数（默认 20 条）
+         */
+        private int claimBatchSize = 20;
+
+        /**
          * 实例标识（用于隔离不同节点消费者命名，默认自动生成）
          */
         private String instanceId;
+
+        public Duration getClaimIdleTime() {
+            return claimIdleTime;
+        }
+
+        public void setClaimIdleTime(Duration claimIdleTime) {
+            this.claimIdleTime = claimIdleTime;
+        }
+
+        public void setClaimIdleTimeSeconds(long seconds) {
+            this.claimIdleTime = Duration.ofSeconds(seconds);
+        }
+
+        public long getClaimIdleTimeSeconds() {
+            return claimIdleTime != null ? claimIdleTime.toSeconds() : 60L;
+        }
 
         public Duration getPollTimeout() {
             return pollTimeout;

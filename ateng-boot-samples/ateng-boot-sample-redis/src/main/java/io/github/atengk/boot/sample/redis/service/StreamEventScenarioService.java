@@ -163,14 +163,13 @@ public class StreamEventScenarioService {
     }
 
     /**
-     * 查询死信流消息列表
+     * 查询死信流消息列表（通过标准门面 peekDeadLetters，自动纳管全局 key-prefix）
      */
-    @SuppressWarnings("unchecked")
     public List<Map<String, Object>> getDeadLetterRecords(long count) {
-        String dlqStream = STREAM_ORDER_EVENTS + ":dlq";
         try {
-            List<MapRecord<String, Object, Object>> records = redisStreamTemplate.getRedisTemplate().opsForStream()
-                    .range(dlqStream, Range.unbounded());
+            int effectiveCount = (int) Math.min(Math.max(1, count), Integer.MAX_VALUE);
+            List<MapRecord<String, Object, Object>> records = redisStreamTemplate.peekDeadLetters(
+                    STREAM_ORDER_EVENTS, effectiveCount);
             if (records == null || records.isEmpty()) {
                 return Collections.emptyList();
             }
@@ -179,17 +178,38 @@ public class StreamEventScenarioService {
                 Map<Object, Object> valueMap = record.getValue();
                 Map<String, Object> item = new java.util.HashMap<>();
                 item.put("recordId", record.getId().getValue());
-                valueMap.forEach((k, v) -> item.put(String.valueOf(k), v));
-                result.add(item);
-                if (result.size() >= count) {
-                    break;
+                if (valueMap != null) {
+                    valueMap.forEach((k, v) -> item.put(String.valueOf(k), v));
                 }
+                result.add(item);
             }
             return result;
         } catch (Exception ex) {
             log.warn("[StreamEvent] 读取死信流异常: {}", ex.getMessage());
             return Collections.emptyList();
         }
+    }
+
+    /**
+     * 单条受控重放死信消息
+     */
+    public boolean replayDeadLetter(String recordId) {
+        return redisStreamTemplate.replayDeadLetter(STREAM_ORDER_EVENTS, recordId);
+    }
+
+    /**
+     * 批量受控重放死信消息
+     */
+    public int replayDeadLetters(int count) {
+        return redisStreamTemplate.replayDeadLetters(STREAM_ORDER_EVENTS, count);
+    }
+
+    /**
+     * 自动巡检并认领超时 PEL 孤儿待决消息
+     */
+    public List<MapRecord<String, Object, Object>> claimPendingMessages(String newConsumer, Duration minIdleTime, int count) {
+        return redisStreamTemplate.claimPendingMessages(
+                STREAM_ORDER_EVENTS, GROUP_ORDER_PROCESSOR, newConsumer, minIdleTime, count);
     }
 
     /**

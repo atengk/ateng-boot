@@ -19,6 +19,7 @@ import org.springframework.data.redis.connection.stream.PendingMessage;
 import org.springframework.data.redis.connection.stream.PendingMessages;
 import org.springframework.data.redis.connection.stream.PendingMessagesSummary;
 import org.springframework.data.redis.connection.stream.RecordId;
+import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -181,20 +182,49 @@ public class RedisStreamController {
     }
 
     /**
-     * 认领孤儿待决消息 (XCLAIM)
+     * 认领孤儿待决消息 (XCLAIM / XPENDING + XCLAIM)
+     * 支持传入 StreamClaimRequest 显式指定 recordIds，或通过查询参数自动认领闲置超时的孤儿消息
      *
-     * @param request 认领请求参数
+     * @param request 认领请求参数（可选）
+     * @param newConsumer 新接管消费者名称（request 为空时使用）
+     * @param minIdleSeconds 最小闲置超时秒数（request 为空时使用）
+     * @param count 自动认领最大条数（request 为空时使用）
      * @return 成功认领的消息 ID 列表
      */
-    @PostMapping("/claim")
-    public Result<List<String>> claimOrphans(@Valid @RequestBody StreamClaimRequest request) {
-        log.info("[RedisStreamController] 认领孤儿待决消息: stream={}, group={}, newConsumer={}",
-                request.getStream(), request.getGroup(), request.getNewConsumer());
-        List<MapRecord<String, Object, Object>> claimed = streamEventScenarioService.claimOrphan(
-                request.getNewConsumer(),
-                Duration.ofSeconds(request.getMinIdleSeconds()),
-                request.getRecordIds().toArray(String[]::new)
-        );
+    @PostMapping({"/pending/claim", "/claim"})
+    public Result<List<String>> claimOrphans(
+            @RequestBody(required = false) StreamClaimRequest request,
+            @RequestParam(value = "newConsumer", required = false) String newConsumer,
+            @RequestParam(value = "minIdleSeconds", defaultValue = "0") long minIdleSeconds,
+            @RequestParam(value = "count", defaultValue = "10") int count) {
+        if (request != null && !CollectionUtils.isEmpty(request.getRecordIds())) {
+            log.info("[RedisStreamController] 显式认领孤儿待决消息: stream={}, group={}, newConsumer={}, ids={}",
+                    request.getStream(), request.getGroup(), request.getNewConsumer(), request.getRecordIds());
+            List<MapRecord<String, Object, Object>> claimed = streamEventScenarioService.claimOrphan(
+                    request.getNewConsumer(),
+                    Duration.ofSeconds(request.getMinIdleSeconds() != null ? request.getMinIdleSeconds() : 0L),
+                    request.getRecordIds().toArray(String[]::new)
+            );
+            List<String> claimedIds = new ArrayList<>();
+            if (claimed != null) {
+                for (MapRecord<String, Object, Object> record : claimed) {
+                    claimedIds.add(record.getId().getValue());
+                }
+            }
+            return Result.success(claimedIds);
+        }
+
+        String effectiveConsumer = (request != null && StringUtils.hasText(request.getNewConsumer()))
+                ? request.getNewConsumer()
+                : (StringUtils.hasText(newConsumer) ? newConsumer : "claimed-consumer-worker");
+        long effectiveIdle = (request != null && request.getMinIdleSeconds() != null)
+                ? request.getMinIdleSeconds()
+                : minIdleSeconds;
+
+        log.info("[RedisStreamController] 自动认领 PEL 孤儿待决消息: consumer={}, minIdleSeconds={}, count={}",
+                effectiveConsumer, effectiveIdle, count);
+        List<MapRecord<String, Object, Object>> claimed = streamEventScenarioService.claimPendingMessages(
+                effectiveConsumer, Duration.ofSeconds(effectiveIdle), count);
         List<String> claimedIds = new ArrayList<>();
         if (claimed != null) {
             for (MapRecord<String, Object, Object> record : claimed) {
@@ -240,10 +270,30 @@ public class RedisStreamController {
      * @param count 拉取上限条数
      * @return 死信消息记录列表
      */
-    @GetMapping("/dead-letter")
+    @GetMapping({"/dead-letter", "/dlq/peek", "/dead-letter/peek"})
     public Result<List<Map<String, Object>>> getDeadLetterRecords(@RequestParam(value = "count", defaultValue = "10") long count) {
         List<Map<String, Object>> records = streamEventScenarioService.getDeadLetterRecords(count);
         return Result.success(records);
+    }
+
+    /**
+     * 受控重放死信消息至业务流
+     * 支持单条重放（指定 recordId）与批量重放（指定 count）
+     *
+     * @param count 批量重放条数上限（默认 1）
+     * @param recordId 指定待重放死信 RecordId（可选）
+     * @return 实际成功重放的消息条数
+     */
+    @PostMapping({"/dlq/replay", "/dead-letter/replay"})
+    public Result<Integer> replayDeadLetters(@RequestParam(value = "count", defaultValue = "1") int count,
+                                             @RequestParam(value = "recordId", required = false) String recordId) {
+        log.info("[RedisStreamController] 受控重放 Stream 死信: count={}, recordId={}", count, recordId);
+        if (StringUtils.hasText(recordId)) {
+            boolean success = streamEventScenarioService.replayDeadLetter(recordId.trim());
+            return Result.success(success ? 1 : 0);
+        }
+        int replayed = streamEventScenarioService.replayDeadLetters(count);
+        return Result.success(replayed);
     }
 
     /**

@@ -2,6 +2,8 @@ package io.github.atengk.boot.redis.stream;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
@@ -11,6 +13,7 @@ import org.slf4j.MDC;
 import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.PendingMessage;
 import org.springframework.data.redis.connection.stream.PendingMessages;
 import org.springframework.data.redis.connection.stream.PendingMessagesSummary;
 import org.springframework.data.redis.connection.stream.ReadOffset;
@@ -29,6 +32,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,6 +47,11 @@ import java.util.Map;
 public class RedisStreamTemplate {
 
     private static final Logger log = LoggerFactory.getLogger(RedisStreamTemplate.class);
+
+    public static final String META_TENANT_ID = "__ateng_tenant_id";
+    public static final String META_IGNORE_TENANT = "__ateng_ignore_tenant";
+    public static final String META_USER_CTX = "__ateng_user_ctx";
+    public static final String META_REPLAY_COUNT = "__ateng_replay_count";
 
     private final RedisTemplate<String, Object> redisTemplate;
     private final ObjectMapper objectMapper;
@@ -88,6 +97,17 @@ public class RedisStreamTemplate {
         String traceId = MDC.get("traceId");
         if (StringUtils.hasText(traceId)) {
             content.put("traceId", traceId);
+        }
+        String tenantId = TenantContextHolder.getTenantId();
+        if (StringUtils.hasText(tenantId)) {
+            content.put(META_TENANT_ID, tenantId);
+        }
+        if (TenantContextHolder.isIgnoreTenant()) {
+            content.put(META_IGNORE_TENANT, "true");
+        }
+        String user = UserContextHolder.get();
+        if (StringUtils.hasText(user)) {
+            content.put(META_USER_CTX, user);
         }
         content.put("timestamp", System.currentTimeMillis());
 
@@ -457,6 +477,22 @@ public class RedisStreamTemplate {
             dlqContent.put("exceptionMessage", lastException.getMessage());
         }
 
+        int replayCount = 0;
+        Map<?, ?> valMap = record.getValue();
+        if (valMap != null) {
+            Object rc = valMap.get(META_REPLAY_COUNT);
+            if (rc == null) {
+                rc = valMap.get("replayCount");
+            }
+            if (rc != null) {
+                try {
+                    replayCount = Integer.parseInt(String.valueOf(rc));
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        dlqContent.put("replayCount", replayCount);
+
         // 1. 写入死信队列
         RecordId dlqId = send(dlqStream, dlqContent);
 
@@ -471,6 +507,305 @@ public class RedisStreamTemplate {
         }
 
         return dlqId;
+    }
+
+    /**
+     * 消费组便捷拉取消息 (XREADGROUP)
+     *
+     * @param stream Stream 键名
+     * @param group 消费组名称
+     * @param consumer 消费者名称
+     * @param count 拉取数量上限
+     * @param blockTimeout 阻塞拉取超时时长（可为 null 或 Duration.ZERO 表示非阻塞）
+     * @return 拉取到的消息列表
+     */
+    public List<MapRecord<String, Object, Object>> readGroup(String stream, String group, String consumer,
+                                                            int count, Duration blockTimeout) {
+        Assert.hasText(stream, "stream must not be blank");
+        Assert.hasText(group, "group must not be blank");
+        Assert.hasText(consumer, "consumer must not be blank");
+        Assert.isTrue(count > 0, "count must be greater than 0");
+
+        StreamReadOptions readOptions = StreamReadOptions.empty().count(count);
+        if (blockTimeout != null && !blockTimeout.isNegative() && !blockTimeout.isZero()) {
+            readOptions = readOptions.block(blockTimeout);
+        }
+        String fullStreamKey = formatStreamKey(stream);
+        return read(Consumer.from(group, consumer), readOptions,
+                StreamOffset.create(fullStreamKey, ReadOffset.lastConsumed()));
+    }
+
+    /**
+     * 便捷确认应答消息 (XACK 别名)
+     *
+     * @param stream Stream 键名
+     * @param group 消费组名称
+     * @param recordIds 待确认的消息 ID 列表
+     * @return 成功确认的消息条数
+     */
+    public Long ack(String stream, String group, String... recordIds) {
+        return acknowledge(stream, group, recordIds);
+    }
+
+    /**
+     * 便捷确认应答消息 (XACK 别名)
+     *
+     * @param stream Stream 键名
+     * @param group 消费组名称
+     * @param recordIds 待确认的消息 RecordId 列表
+     * @return 成功确认的消息条数
+     */
+    public Long ack(String stream, String group, RecordId... recordIds) {
+        return acknowledge(stream, group, recordIds);
+    }
+
+    /**
+     * 便捷获取指定消费组的 Pending 待决消息详细清单 (XPENDING key group - + count)
+     *
+     * @param stream Stream 键名
+     * @param group 消费组名称
+     * @param count 期望拉取数量上限
+     * @return 待决消息清单
+     */
+    public PendingMessages getPendingMessages(String stream, String group, int count) {
+        return pending(stream, group, Range.unbounded(), count);
+    }
+
+    /**
+     * 自动巡检并认领闲置超时的 PEL 孤儿待决消息 (XPENDING + XCLAIM)
+     *
+     * @param stream Stream 键名
+     * @param group 消费组名称
+     * @param consumer 接管消费者名称
+     * @param minIdleTime 最小闲置超时时长
+     * @param count 最大认领条数
+     * @return 成功认领并接管的消息列表
+     */
+    public List<MapRecord<String, Object, Object>> claimPendingMessages(String stream,
+                                                                        String group,
+                                                                        String consumer,
+                                                                        Duration minIdleTime,
+                                                                        int count) {
+        Assert.hasText(stream, "stream must not be blank");
+        Assert.hasText(group, "group must not be blank");
+        Assert.hasText(consumer, "consumer must not be blank");
+        Assert.notNull(minIdleTime, "minIdleTime must not be null");
+        Assert.isTrue(count > 0, "count must be greater than 0");
+
+        PendingMessages pending = pending(stream, group, Range.unbounded(), count);
+        if (pending == null || pending.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<RecordId> eligibleIds = new ArrayList<>();
+        long minIdleMs = minIdleTime.toMillis();
+        for (PendingMessage pm : pending) {
+            Duration idle = pm.getElapsedTimeSinceLastDelivery();
+            if (idle != null && idle.toMillis() >= minIdleMs) {
+                eligibleIds.add(pm.getId());
+            }
+        }
+
+        if (eligibleIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        return claim(stream, group, consumer, minIdleTime, eligibleIds.toArray(RecordId[]::new));
+    }
+
+    /**
+     * 解析死信流名称（未附加全局 keyPrefix）
+     *
+     * @param stream 业务流键名
+     * @return 业务死信流键名
+     */
+    public String resolveDeadLetterStream(String stream) {
+        Assert.hasText(stream, "stream must not be blank");
+        String dlqSuffix = (redisProperties != null && redisProperties.getStream() != null)
+                ? redisProperties.getStream().getDlqSuffix()
+                : ":dlq";
+        return stream.endsWith(dlqSuffix) ? stream : stream + dlqSuffix;
+    }
+
+    /**
+     * 格式化生成包含全局 KeyPrefix 的死信流完整 Key
+     *
+     * @param stream 业务 Stream 键名
+     * @return 完整 Redis 死信流 Key
+     */
+    public String formatDeadLetterStreamKey(String stream) {
+        return formatStreamKey(resolveDeadLetterStream(stream));
+    }
+
+    /**
+     * 获取死信流当前消息总条数 (XLEN)
+     *
+     * @param stream 业务 Stream 键名
+     * @return 死信消息总条数
+     */
+    public Long deadLetterSize(String stream) {
+        return size(resolveDeadLetterStream(stream));
+    }
+
+    /**
+     * 非破坏性检视死信流中的消息记录 (XRANGE)
+     *
+     * @param stream 业务 Stream 键名
+     * @param count 期望拉取数量上限
+     * @return 死信 MapRecord 消息列表
+     */
+    public List<MapRecord<String, Object, Object>> peekDeadLetters(String stream, int count) {
+        Assert.hasText(stream, "stream must not be blank");
+        Assert.isTrue(count > 0, "count must be greater than 0");
+        String fullDlqKey = formatDeadLetterStreamKey(stream);
+        try {
+            List<MapRecord<String, Object, Object>> records = redisTemplate.opsForStream()
+                    .range(fullDlqKey, Range.unbounded());
+            if (records == null || records.isEmpty()) {
+                return Collections.emptyList();
+            }
+            if (records.size() <= count) {
+                return records;
+            }
+            return new ArrayList<>(records.subList(0, count));
+        } catch (Exception ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "检视 Redis Stream 死信消息失败: stream=" + fullDlqKey, ex);
+        }
+    }
+
+    /**
+     * 单条受控重放死信消息至原始业务流
+     * 若重放次数已达到或超过 maxReplayAttempts，则拒绝重放并抛出 BusinessException 防雪崩
+     *
+     * @param stream 原始业务 Stream 键名
+     * @param deadLetterRecordId 死信流中的 RecordId 字符串
+     * @return 是否成功重放并移出死信流
+     */
+    public boolean replayDeadLetter(String stream, String deadLetterRecordId) {
+        Assert.hasText(stream, "stream must not be blank");
+        Assert.hasText(deadLetterRecordId, "deadLetterRecordId must not be blank");
+
+        String fullDlqKey = formatDeadLetterStreamKey(stream);
+        RecordId dlqId = RecordId.of(deadLetterRecordId);
+
+        List<MapRecord<String, Object, Object>> records;
+        try {
+            records = redisTemplate.opsForStream().range(fullDlqKey, Range.closed(deadLetterRecordId, deadLetterRecordId));
+        } catch (Exception ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "查询待重放死信消息异常: stream=" + fullDlqKey + ", id=" + deadLetterRecordId, ex);
+        }
+
+        if (records == null || records.isEmpty()) {
+            log.warn("[RedisStream] 待重放死信消息不存在: stream={}, id={}", fullDlqKey, deadLetterRecordId);
+            return false;
+        }
+
+        MapRecord<String, Object, Object> dlqRecord = records.get(0);
+        Map<Object, Object> valMap = dlqRecord.getValue();
+
+        int replayCount = 0;
+        if (valMap != null && valMap.containsKey("replayCount")) {
+            try {
+                replayCount = Integer.parseInt(String.valueOf(valMap.get("replayCount")));
+            } catch (Exception ignored) {
+            }
+        }
+
+        int maxAttempts = (redisProperties != null && redisProperties.getStream() != null)
+                ? redisProperties.getStream().getMaxReplayAttempts()
+                : 3;
+
+        if (replayCount >= maxAttempts) {
+            log.warn("[RedisStream] 死信消息重放次数已达上限，触发防雪崩熔断: stream={}, id={}, replayCount={}, maxAttempts={}",
+                    stream, deadLetterRecordId, replayCount, maxAttempts);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "死信消息重放次数已达上限 (" + replayCount + " >= " + maxAttempts + ")，拒绝重放以防雪崩");
+        }
+
+        // 提取原始业务载荷或原始 Map
+        Object rawPayload = valMap != null ? valMap.get("payload") : null;
+        Map<String, Object> replayContent = new HashMap<>();
+        if (rawPayload instanceof Map<?, ?> pMap) {
+            pMap.forEach((k, v) -> {
+                if (k != null && v != null) {
+                    replayContent.put(String.valueOf(k), v);
+                }
+            });
+        } else if (rawPayload != null) {
+            replayContent.put("payload", rawPayload);
+        } else if (valMap != null) {
+            valMap.forEach((k, v) -> {
+                if (k != null && v != null) {
+                    replayContent.put(String.valueOf(k), v);
+                }
+            });
+        }
+
+        replayContent.put(META_REPLAY_COUNT, replayCount + 1);
+
+        // 投递回原 Stream
+        RecordId newId = send(stream, replayContent);
+        log.info("[RedisStream] 成功受控重放死信消息: stream={}, dlqId={}, newRecordId={}, nextReplayCount={}",
+                stream, deadLetterRecordId, newId, replayCount + 1);
+
+        // 从死信流中移出该消息
+        try {
+            redisTemplate.opsForStream().delete(fullDlqKey, dlqId);
+        } catch (Exception ex) {
+            log.warn("[RedisStream] 重放后删除死信记录失败: dlqKey={}, id={}", fullDlqKey, deadLetterRecordId, ex);
+        }
+
+        return true;
+    }
+
+    /**
+     * 批量受控重放死信流中的消息
+     *
+     * @param stream 原始业务 Stream 键名
+     * @param maxCount 最大重放条数
+     * @return 实际成功重放的消息数量
+     */
+    public int replayDeadLetters(String stream, int maxCount) {
+        Assert.hasText(stream, "stream must not be blank");
+        Assert.isTrue(maxCount > 0, "maxCount must be greater than 0");
+
+        List<MapRecord<String, Object, Object>> dlqRecords = peekDeadLetters(stream, maxCount);
+        if (dlqRecords.isEmpty()) {
+            return 0;
+        }
+
+        int successCount = 0;
+        for (MapRecord<String, Object, Object> record : dlqRecords) {
+            try {
+                if (replayDeadLetter(stream, record.getId().getValue())) {
+                    successCount++;
+                }
+            } catch (BusinessException ex) {
+                log.warn("[RedisStream] 批量重放跳过超限死信: id={}, msg={}", record.getId().getValue(), ex.getMessage());
+            } catch (Exception ex) {
+                log.error("[RedisStream] 批量重放死信异常: id={}, error={}", record.getId().getValue(), ex.getMessage());
+            }
+        }
+        return successCount;
+    }
+
+    /**
+     * 清空死信流中的全部消息
+     *
+     * @param stream 原始业务 Stream 键名
+     * @return 是否成功清空
+     */
+    public Boolean clearDeadLetters(String stream) {
+        Assert.hasText(stream, "stream must not be blank");
+        String fullDlqKey = formatDeadLetterStreamKey(stream);
+        try {
+            return redisTemplate.delete(fullDlqKey);
+        } catch (Exception ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "清空 Redis Stream 死信队列失败: stream=" + fullDlqKey, ex);
+        }
     }
 
     /**

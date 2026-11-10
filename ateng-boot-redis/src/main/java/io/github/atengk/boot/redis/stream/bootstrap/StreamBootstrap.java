@@ -3,6 +3,8 @@ package io.github.atengk.boot.redis.stream.bootstrap;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
@@ -23,6 +25,7 @@ import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.EmbeddedValueResolverAware;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.core.MethodIntrospector;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.data.redis.connection.stream.Consumer;
@@ -44,6 +47,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -60,7 +64,7 @@ import java.util.concurrent.TimeUnit;
  * @since 2026-10-27
  */
 @Slf4j
-public class StreamBootstrap implements SmartInitializingSingleton, DisposableBean,
+public class StreamBootstrap implements SmartLifecycle, SmartInitializingSingleton, DisposableBean,
         EmbeddedValueResolverAware, ApplicationContextAware {
 
     public static final String MDC_TRACE_ID_KEY = "traceId";
@@ -224,8 +228,36 @@ public class StreamBootstrap implements SmartInitializingSingleton, DisposableBe
 
         String fullStreamKey = redisStreamTemplate.formatStreamKey(stream);
 
+        Duration claimIdleTime = (redisProperties != null && redisProperties.getStream() != null)
+                ? redisProperties.getStream().getClaimIdleTime()
+                : Duration.ofMinutes(1);
+        int claimBatchSize = (redisProperties != null && redisProperties.getStream() != null)
+                ? redisProperties.getStream().getClaimBatchSize()
+                : 20;
+        long lastClaimTime = 0L;
+
         while (running && !Thread.currentThread().isInterrupted()) {
             try {
+                // 自动认领自愈 PEL 超时孤儿消息 (XPENDING + XCLAIM)
+                long now = System.currentTimeMillis();
+                if (claimIdleTime != null && !claimIdleTime.isNegative() && !claimIdleTime.isZero()
+                        && (now - lastClaimTime > 5000L)) {
+                    lastClaimTime = now;
+                    try {
+                        List<MapRecord<String, Object, Object>> claimed = redisStreamTemplate.claimPendingMessages(
+                                stream, group, consumerName, claimIdleTime, claimBatchSize);
+                        if (!CollectionUtils.isEmpty(claimed)) {
+                            log.info("[RedisStream] 成功自动认领 PEL 孤儿消息: stream={}, group={}, consumer={}, count={}",
+                                    stream, group, consumerName, claimed.size());
+                            for (MapRecord<String, Object, Object> claimedRecord : claimed) {
+                                processRecord(bean, method, stream, group, consumerName, claimedRecord, autoAck, effectiveMaxRetries);
+                            }
+                        }
+                    } catch (Exception ex) {
+                        log.debug("[RedisStream] 自动认领 PEL 孤儿消息跳过: stream={}, group={}, msg={}", stream, group, ex.getMessage());
+                    }
+                }
+
                 StreamReadOptions readOptions = StreamReadOptions.empty()
                         .count(effectiveBatchSize)
                         .block(pollTimeout);
@@ -267,6 +299,20 @@ public class StreamBootstrap implements SmartInitializingSingleton, DisposableBe
             MDC.put(MDC_TRACE_ID_KEY, recordTraceId);
         } else if (previousTraceId == null) {
             MDC.put(MDC_TRACE_ID_KEY, IdUtil.fastSimpleUUID());
+        }
+
+        // 提取并恢复四维上下文：多租户与操作人身份
+        Object rawTenantId = getRecordField(record, RedisStreamTemplate.META_TENANT_ID);
+        if (rawTenantId != null && StringUtils.hasText(String.valueOf(rawTenantId))) {
+            TenantContextHolder.setTenantId(String.valueOf(rawTenantId));
+        }
+        Object rawIgnoreTenant = getRecordField(record, RedisStreamTemplate.META_IGNORE_TENANT);
+        if (rawIgnoreTenant != null && "true".equalsIgnoreCase(String.valueOf(rawIgnoreTenant))) {
+            TenantContextHolder.setIgnoreTenant(true);
+        }
+        Object rawUser = getRecordField(record, RedisStreamTemplate.META_USER_CTX);
+        if (rawUser != null && StringUtils.hasText(String.valueOf(rawUser))) {
+            UserContextHolder.set(String.valueOf(rawUser));
         }
 
         int attempt = 0;
@@ -321,10 +367,6 @@ public class StreamBootstrap implements SmartInitializingSingleton, DisposableBe
                                 .build();
                         failureHandler.onFailure(dlm);
                     }
-
-                    if (autoAck) {
-                        redisStreamTemplate.acknowledge(stream, group, record.getId());
-                    }
                 } catch (Exception ex) {
                     log.error("[RedisStream] 转移死信队列异常，保留原消息在 PEL 中不执行 ACK: stream={}, id={}", stream, record.getId(), ex);
                 }
@@ -335,6 +377,8 @@ public class StreamBootstrap implements SmartInitializingSingleton, DisposableBe
             } else {
                 MDC.remove(MDC_TRACE_ID_KEY);
             }
+            TenantContextHolder.clear();
+            UserContextHolder.clear();
         }
     }
 
@@ -352,22 +396,41 @@ public class StreamBootstrap implements SmartInitializingSingleton, DisposableBe
         Object[] args = new Object[parameters.length];
         Class<?> param0Type = parameters[0].getType();
 
+        // 过滤内部元数据键（__ateng_*），保留 traceId 及业务载荷键
+        Map<Object, Object> rawMap = record.getValue();
+        Map<Object, Object> cleanMap = new HashMap<>();
+        if (rawMap != null) {
+            rawMap.forEach((k, v) -> {
+                if (k != null) {
+                    String keyStr = String.valueOf(k);
+                    if (!keyStr.startsWith("__ateng_")) {
+                        cleanMap.put(k, v);
+                    }
+                }
+            });
+        }
+
         // 1. 解析参数 0（消息体 / 原生 Record）
         if (Record.class.isAssignableFrom(param0Type)) {
-            args[0] = record;
+            args[0] = MapRecord.create(record.getStream(), cleanMap).withId(record.getId());
         } else {
-            Map<Object, Object> rawMap = record.getValue();
-            Object rawPayload = (rawMap != null && rawMap.containsKey("payload")) ? rawMap.get("payload") : rawMap;
+            Object rawPayload = cleanMap.containsKey("payload") ? cleanMap.get("payload") : cleanMap;
             if (rawPayload == null) {
                 args[0] = null;
-            } else if (param0Type.isInstance(rawPayload)) {
-                args[0] = rawPayload;
             } else if (String.class.equals(param0Type)) {
                 args[0] = (rawPayload instanceof String s) ? s : objectMapper.writeValueAsString(rawPayload);
             } else {
-                JavaType javaType = objectMapper.getTypeFactory().constructType(parameters[0].getParameterizedType());
-                String json = (rawPayload instanceof String s) ? s : objectMapper.writeValueAsString(rawPayload);
-                args[0] = objectMapper.readValue(json, javaType);
+                try {
+                    JavaType javaType = objectMapper.getTypeFactory().constructType(parameters[0].getParameterizedType());
+                    args[0] = objectMapper.convertValue(rawPayload, javaType);
+                } catch (Exception ex) {
+                    if (param0Type.isInstance(rawPayload)) {
+                        args[0] = rawPayload;
+                    } else {
+                        String json = (rawPayload instanceof String s) ? s : objectMapper.writeValueAsString(rawPayload);
+                        args[0] = objectMapper.readValue(json, objectMapper.constructType(parameters[0].getParameterizedType()));
+                    }
+                }
             }
         }
 
@@ -379,11 +442,18 @@ public class StreamBootstrap implements SmartInitializingSingleton, DisposableBe
             } else if (String.class.equals(param1Type)) {
                 args[1] = record.getId().getValue();
             } else {
-                args[1] = record.getValue();
+                args[1] = cleanMap;
             }
         }
 
         method.invoke(bean, args);
+    }
+
+    private Object getRecordField(MapRecord<String, Object, Object> record, String fieldName) {
+        if (record != null && record.getValue() != null) {
+            return record.getValue().get(fieldName);
+        }
+        return null;
     }
 
     private String extractTraceId(MapRecord<String, Object, Object> record) {
@@ -411,6 +481,35 @@ public class StreamBootstrap implements SmartInitializingSingleton, DisposableBe
     }
 
     @Override
+    public boolean isAutoStartup() {
+        return true;
+    }
+
+    @Override
+    public void start() {
+        this.running = true;
+    }
+
+    @Override
+    public void stop() {
+        this.running = false;
+        destroy();
+    }
+
+    @Override
+    public void stop(Runnable callback) {
+        stop();
+        if (callback != null) {
+            callback.run();
+        }
+    }
+
+    @Override
+    public int getPhase() {
+        return Integer.MAX_VALUE - 1000;
+    }
+
+    @Override
     public void destroy() {
         this.running = false;
         for (ThreadPoolTaskExecutor executor : executors) {
@@ -428,6 +527,7 @@ public class StreamBootstrap implements SmartInitializingSingleton, DisposableBe
         return executors;
     }
 
+    @Override
     public boolean isRunning() {
         return running;
     }
