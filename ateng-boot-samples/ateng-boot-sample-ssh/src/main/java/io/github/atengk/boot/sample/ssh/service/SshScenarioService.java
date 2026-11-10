@@ -335,6 +335,22 @@ public class SshScenarioService {
     }
 
     /**
+     * 演示指定节点长命令流式按行消费
+     *
+     * @param serverName   目标节点名称
+     * @param command      待执行长命令
+     * @param lineConsumer 行日志消费者
+     * @return 进程退出状态码
+     */
+    public int streamLogs(String serverName, String command, Consumer<String> lineConsumer) {
+        if (serverName != null && !serverName.isBlank()) {
+            log.info("ateng-boot-ssh-sample: 正在目标节点 [{}] 以零内存缓冲流式消费命令日志 [{}]", serverName, command);
+            return sshTemplate.execStream(serverName, command, lineConsumer, null, io.github.atengk.boot.ssh.model.SshExecOptions.defaults());
+        }
+        return streamLogs(command, lineConsumer);
+    }
+
+    /**
      * 演示下发多行运维脚本序列
      *
      * @param scriptBody 脚本内容
@@ -343,6 +359,21 @@ public class SshScenarioService {
     public SshExecResult runMaintenanceScript(String scriptBody) {
         log.info("ateng-boot-ssh-sample: 正在下发多行运维脚本管道...");
         return sshTemplate.execScript(scriptBody);
+    }
+
+    /**
+     * 演示在指定节点下发多行运维脚本序列
+     *
+     * @param serverName 目标节点名称
+     * @param scriptBody 脚本内容
+     * @return 执行结果
+     */
+    public SshExecResult runMaintenanceScript(String serverName, String scriptBody) {
+        if (serverName != null && !serverName.isBlank()) {
+            log.info("ateng-boot-ssh-sample: 正在目标节点 [{}] 下发多行运维脚本管道...", serverName);
+            return sshTemplate.execScript(serverName, scriptBody);
+        }
+        return runMaintenanceScript(scriptBody);
     }
 
     @PreDestroy

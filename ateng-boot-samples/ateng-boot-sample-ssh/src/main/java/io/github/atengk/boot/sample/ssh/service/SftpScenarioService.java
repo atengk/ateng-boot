@@ -197,6 +197,28 @@ public class SftpScenarioService {
         return sftpTemplate.exists(remotePath);
     }
 
+    /**
+     * 获取指定远端文件或目录的元数据信息
+     *
+     * @param remotePath 远端路径
+     * @return 文件元数据载荷
+     */
+    public SftpFileInfo stat(String remotePath) {
+        log.info("ateng-boot-ssh-sample: 正在获取远端文件元数据 [remotePath={}]", remotePath);
+        return sftpTemplate.stat(remotePath);
+    }
+
+    /**
+     * 单文件确定性物理删除
+     *
+     * @param remotePath 远端文件路径
+     * @return true 若删除成功
+     */
+    public boolean delete(String remotePath) {
+        log.info("ateng-boot-ssh-sample: 正在删除远端文件 [remotePath={}]", remotePath);
+        return sftpTemplate.delete(remotePath);
+    }
+
     private InputStream toInputStream(byte[] data) {
         return new ByteArrayInputStream(data != null ? data : new byte[0]);
     }
