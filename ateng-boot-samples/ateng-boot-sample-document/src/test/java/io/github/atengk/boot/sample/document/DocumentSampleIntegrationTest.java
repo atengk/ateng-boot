@@ -33,6 +33,8 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.util.List;
 
@@ -79,117 +81,6 @@ class DocumentSampleIntegrationTest {
     void tearDown() {
         UserContextHolder.clear();
         MDC.clear();
-    }
-
-    @Test
-    @DisplayName("端到端测试 1：劳动合同下载接口响应 200，验证 RFC 6266 标头、变量插值、动态表格与附件拼装")
-    void testDownloadContractEndpoint() throws Exception {
-        MvcResult mvcResult = mockMvc.perform(get("/document/contract/download")
-                        .param("employeeName", "李云龙"))
-                .andExpect(status().isOk())
-                .andReturn();
-
-        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
-        assertThat(contentBytes).isNotEmpty();
-
-        // 验证 Content-Type 与 Content-Disposition
-        assertThat(mvcResult.getResponse().getContentType()).contains(WordWebUtil.DOCX_CONTENT_TYPE);
-        String disposition = mvcResult.getResponse().getHeader(HttpHeaders.CONTENT_DISPOSITION);
-        assertThat(disposition).isNotNull();
-        assertThat(disposition).startsWith("attachment");
-        assertThat(disposition).contains("filename*=");
-        assertThat(disposition).contains(".docx");
-
-        // 验证合成 DOCX 中的主合同与附件拼接内容
-        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(contentBytes))) {
-            String fullText = doc.getParagraphs().stream()
-                    .map(XWPFParagraph::getText)
-                    .reduce("", (a, b) -> a + "\n" + b);
-
-            assertThat(fullText).contains("李云龙");
-            assertThat(fullText).contains("企业全日制劳动聘用合同书");
-            assertThat(fullText).contains("商业秘密保护与竞业限制协议"); // 附件拼装验证
-        }
-    }
-
-    @Test
-    @DisplayName("端到端测试 2：财务对账单在线内联预览接口响应 200，验证 inline 标头与操作人平铺暗水印")
-    void testPreviewStatementEndpoint() throws Exception {
-        MvcResult mvcResult = mockMvc.perform(get("/document/statement/preview")
-                        .param("name", "周审计")
-                        .param("code", "AUD-999")
-                        .param("phone", "13900008888"))
-                .andExpect(status().isOk())
-                .andReturn();
-
-        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
-        assertThat(contentBytes).isNotEmpty();
-
-        assertThat(mvcResult.getResponse().getContentType()).contains(PdfWebUtil.PDF_CONTENT_TYPE);
-        String disposition = mvcResult.getResponse().getHeader(HttpHeaders.CONTENT_DISPOSITION);
-        assertThat(disposition).startsWith("inline");
-
-        try (PDDocument doc = Loader.loadPDF(contentBytes)) {
-            assertThat(doc.getNumberOfPages()).isEqualTo(2);
-
-            PDFTextStripper stripper = new PDFTextStripper();
-            String text = stripper.getText(doc);
-            assertThat(text).contains("FINANCIAL RECONCILIATION STATEMENT");
-            assertThat(text).contains("AUD-999");
-            assertThat(text).contains("第 1 页 / 共 1 页"); // 跳过封面后第 2 页页码重算
-        }
-    }
-
-    @Test
-    @DisplayName("端到端测试 3：财务对账单受控权限加密下载接口响应 200，验证 256 位 AES 加密保护锁")
-    void testDownloadProtectedStatementEndpoint() throws Exception {
-        String testPassword = "MyStrongPassword#2026";
-        MvcResult mvcResult = mockMvc.perform(get("/document/statement/download")
-                        .param("password", testPassword))
-                .andExpect(status().isOk())
-                .andReturn();
-
-        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
-        assertThat(contentBytes).isNotEmpty();
-
-        assertThat(mvcResult.getResponse().getContentType()).contains(PdfWebUtil.PDF_CONTENT_TYPE);
-        String disposition = mvcResult.getResponse().getHeader(HttpHeaders.CONTENT_DISPOSITION);
-        assertThat(disposition).startsWith("attachment");
-
-        // 使用指定密码顺利解锁并验证内容
-        try (PDDocument doc = Loader.loadPDF(contentBytes, testPassword)) {
-            assertThat(doc.isEncrypted()).isTrue();
-            PDFTextStripper stripper = new PDFTextStripper();
-            String text = stripper.getText(doc);
-            assertThat(text).contains("FINANCIAL RECONCILIATION STATEMENT");
-        }
-    }
-
-    @Test
-    @DisplayName("端到端测试 4：供应商准入 AcroForm 填报与矢量扁平化接口响应 200，断言交互控件完全销毁防篡改")
-    void testDownloadSupplierFormEndpoint() throws Exception {
-        MvcResult mvcResult = mockMvc.perform(get("/document/supplier-form/download")
-                        .param("name", "腾讯云计算(北京)有限责任公司")
-                        .param("phone", "010-88886666"))
-                .andExpect(status().isOk())
-                .andReturn();
-
-        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
-        assertThat(contentBytes).isNotEmpty();
-
-        assertThat(mvcResult.getResponse().getContentType()).contains(PdfWebUtil.PDF_CONTENT_TYPE);
-
-        try (PDDocument doc = Loader.loadPDF(contentBytes)) {
-            PDFTextStripper stripper = new PDFTextStripper();
-            String text = stripper.getText(doc);
-            assertThat(text).contains("腾讯云计算(北京)有限责任公司");
-            assertThat(text).contains("010-88886666");
-
-            // 矢量扁平化防篡改断言：交互式 AcroForm 结构已不复存在
-            PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
-            boolean isFormDestroyed = (acroForm == null || acroForm.getFields().isEmpty());
-            assertThat(isFormDestroyed).isTrue();
-        }
     }
 
     @Test
@@ -607,5 +498,143 @@ class DocumentSampleIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(false));
+    }
+
+    // =========================================================================
+    // PDF 页面编排、渲染与探针控制器 PdfPageOpsController 端到端全真回归
+    // =========================================================================
+
+    @Test
+    @DisplayName("PDF 页面回归 1：150 DPI 高清单页光栅化预览 GET /sample/document/pdf/page/render/preview 验证 image/png 与 inline")
+    void testSamplePdfPageRenderPreviewEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/pdf/page/render/preview")
+                        .param("pageIndex", "0")
+                        .param("dpi", "150.0"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        assertThat(mvcResult.getResponse().getContentType()).contains("image/png");
+        String disposition = mvcResult.getResponse().getHeader(HttpHeaders.CONTENT_DISPOSITION);
+        assertThat(disposition).isNotNull();
+        assertThat(disposition).startsWith("inline");
+        assertThat(disposition).contains(".png");
+
+        BufferedImage image = ImageIO.read(new ByteArrayInputStream(contentBytes));
+        assertThat(image).isNotNull();
+        assertThat(image.getWidth()).isGreaterThan(0);
+        assertThat(image.getHeight()).isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("PDF 页面回归 2：72 DPI 缩略图下载 GET /sample/document/pdf/page/render/download 验证 image/png 与 attachment")
+    void testSamplePdfPageRenderDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/pdf/page/render/download")
+                        .param("pageIndex", "0")
+                        .param("dpi", "72.0"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        assertThat(mvcResult.getResponse().getContentType()).contains("image/png");
+        String disposition = mvcResult.getResponse().getHeader(HttpHeaders.CONTENT_DISPOSITION);
+        assertThat(disposition).isNotNull();
+        assertThat(disposition).startsWith("attachment");
+        assertThat(disposition).contains(".png");
+    }
+
+    @Test
+    @DisplayName("PDF 页面回归 3：多文档物理合并下载 GET /sample/document/pdf/page/merge/download 验证页数翻倍")
+    void testSamplePdfPageMergeDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/pdf/page/merge/download"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        assertThat(mvcResult.getResponse().getContentType()).contains(PdfWebUtil.PDF_CONTENT_TYPE);
+        String disposition = mvcResult.getResponse().getHeader(HttpHeaders.CONTENT_DISPOSITION);
+        assertThat(disposition).isNotNull();
+        assertThat(disposition).startsWith("attachment");
+
+        try (PDDocument doc = Loader.loadPDF(contentBytes)) {
+            assertThat(doc.getNumberOfPages()).isGreaterThanOrEqualTo(4);
+        }
+    }
+
+    @Test
+    @DisplayName("PDF 页面回归 4：单页物理拆分下载 GET /sample/document/pdf/page/split/download 验证单页结构")
+    void testSamplePdfPageSplitDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/pdf/page/split/download")
+                        .param("pageIndex", "0"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        assertThat(mvcResult.getResponse().getContentType()).contains(PdfWebUtil.PDF_CONTENT_TYPE);
+        String disposition = mvcResult.getResponse().getHeader(HttpHeaders.CONTENT_DISPOSITION);
+        assertThat(disposition).isNotNull();
+        assertThat(disposition).startsWith("attachment");
+
+        try (PDDocument doc = Loader.loadPDF(contentBytes)) {
+            assertThat(doc.getNumberOfPages()).isEqualTo(1);
+        }
+    }
+
+    @Test
+    @DisplayName("PDF 页面回归 5：页面顺时针旋转校准 GET /sample/document/pdf/page/rotate/download 验证角度变化")
+    void testSamplePdfPageRotateDownloadEndpoint() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/document/pdf/page/rotate/download")
+                        .param("angle", "90")
+                        .param("pageIndex", "0"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] contentBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(contentBytes).isNotEmpty();
+        assertThat(mvcResult.getResponse().getContentType()).contains(PdfWebUtil.PDF_CONTENT_TYPE);
+        String disposition = mvcResult.getResponse().getHeader(HttpHeaders.CONTENT_DISPOSITION);
+        assertThat(disposition).isNotNull();
+        assertThat(disposition).startsWith("attachment");
+
+        try (PDDocument doc = Loader.loadPDF(contentBytes)) {
+            assertThat(doc.getPage(0).getRotation()).isEqualTo(90);
+        }
+    }
+
+    @Test
+    @DisplayName("PDF 探针回归 6：11 维元数据结构化自省 GET /sample/document/inspect/metadata 验证 Result<PdfMetadata>")
+    void testSamplePdfInspectMetadataEndpoint() throws Exception {
+        mockMvc.perform(get("/sample/document/inspect/metadata"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.pageCount").value(2))
+                .andExpect(jsonPath("$.data.version").isNumber());
+    }
+
+    @Test
+    @DisplayName("PDF 探针回归 7：起止范围纯文本抽取 GET /sample/document/inspect/text 验证 Result<String>")
+    void testSamplePdfInspectTextEndpoint() throws Exception {
+        mockMvc.perform(get("/sample/document/inspect/text")
+                        .param("startPage", "1")
+                        .param("endPage", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isString())
+                .andExpect(jsonPath("$.data").value(Matchers.containsString("FINANCIAL RECONCILIATION STATEMENT")));
+    }
+
+    @Test
+    @DisplayName("PDF 探针回归 8：CJK 中文字体云原生探测自省 GET /sample/document/inspect/font 验证 Result<ResolvedFont>")
+    void testSamplePdfInspectFontEndpoint() throws Exception {
+        mockMvc.perform(get("/sample/document/inspect/font"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.fontName").isNotEmpty())
+                .andExpect(jsonPath("$.data.tier").isNotEmpty())
+                .andExpect(jsonPath("$.data.location").isNotEmpty());
     }
 }

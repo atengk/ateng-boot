@@ -3,16 +3,22 @@ package io.github.atengk.boot.sample.document.service;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.document.enums.PageNumberPosition;
 import io.github.atengk.boot.document.enums.WatermarkLayer;
+import io.github.atengk.boot.document.font.ResolvedFont;
 import io.github.atengk.boot.document.pdf.PdfTemplate;
 import io.github.atengk.boot.document.pdf.model.CrossPageSealOptions;
 import io.github.atengk.boot.document.pdf.model.ImageStampOptions;
 import io.github.atengk.boot.document.pdf.model.PageNumberOptions;
+import io.github.atengk.boot.document.pdf.model.PdfMetadata;
 import io.github.atengk.boot.document.pdf.model.SecurityOptions;
 import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
 import io.github.atengk.boot.document.pdf.util.PdfWebUtil;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -269,5 +275,104 @@ public class FinanceStatementService {
      */
     public byte[] rotateStatement(Object statementPdf, int angle, int... pages) {
         return pdfTemplate.rotatePagesToBytes(statementPdf, angle, pages);
+    }
+
+    /**
+     * Web 环境下流式输出对账单指定页面的 PNG 图像（支持 inline 预览或 attachment 下载）
+     *
+     * @param response  HTTP 响应对象
+     * @param pageIndex 页面索引（从 0 开始）
+     * @param dpi       图像分辨率 DPI
+     * @param inline    是否内联预览模式
+     */
+    public void renderPageWeb(HttpServletResponse response, int pageIndex, float dpi, boolean inline) {
+        byte[] pngBytes = renderStatementPageToPng(STATEMENT_TEMPLATE_PATH, pageIndex, dpi);
+        String filename = String.format("财务对账单_第%d页_%s.png", pageIndex + 1, inline ? "高清预览" : "缩略图");
+
+        response.setContentType("image/png");
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-cache, no-store, must-revalidate");
+        response.setHeader(HttpHeaders.PRAGMA, "no-cache");
+        response.setDateHeader(HttpHeaders.EXPIRES, 0);
+
+        ContentDisposition.Builder builder = inline ? ContentDisposition.inline() : ContentDisposition.attachment();
+        ContentDisposition disposition = builder
+                .filename(filename, StandardCharsets.UTF_8)
+                .build();
+        response.setHeader(HttpHeaders.CONTENT_DISPOSITION, disposition.toString());
+
+        try {
+            OutputStream os = response.getOutputStream();
+            os.write(pngBytes);
+            os.flush();
+        } catch (Exception e) {
+            throw new RuntimeException("流式写入 PNG 响应失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Web 环境下多文档物理合并下载
+     *
+     * @param response HTTP 响应对象
+     */
+    public void downloadMergedStatementsWeb(HttpServletResponse response) {
+        byte[] pdf1 = generateWatermarkedStatement("张三", "FIN-001", "13800000000");
+        byte[] pdf2 = generateWatermarkedStatement("李四", "FIN-002", "13900000000");
+        byte[] mergedPdf = mergeStatements(java.util.List.of(pdf1, pdf2));
+        PdfWebUtil.download(response, "财务对账单_多文档合并", mergedPdf);
+    }
+
+    /**
+     * Web 环境下对账单物理切分单页下载
+     *
+     * @param response  HTTP 响应对象
+     * @param pageIndex 目标切片页面索引（从 0 开始）
+     */
+    public void downloadSplitStatementWeb(HttpServletResponse response, int pageIndex) {
+        java.util.List<byte[]> splits = splitStatement(STATEMENT_TEMPLATE_PATH, 1);
+        int actualIndex = (pageIndex >= 0 && pageIndex < splits.size()) ? pageIndex : 0;
+        byte[] splitPdf = splits.get(actualIndex);
+        PdfWebUtil.download(response, String.format("财务对账单_拆分页_%d", actualIndex + 1), splitPdf);
+    }
+
+    /**
+     * Web 环境下对账单物理旋转下载
+     *
+     * @param response  HTTP 响应对象
+     * @param angle     顺时针旋转角度（必须为 90 的倍数）
+     * @param pageIndex 目标旋转页面索引（从 0 开始）
+     */
+    public void downloadRotatedStatementWeb(HttpServletResponse response, int angle, int pageIndex) {
+        byte[] rotatedPdf = rotateStatement(STATEMENT_TEMPLATE_PATH, angle, pageIndex);
+        PdfWebUtil.download(response, String.format("财务对账单_第%d页旋转%d度", pageIndex + 1, angle), rotatedPdf);
+    }
+
+    /**
+     * 巡检对账单 11 维核心元数据
+     *
+     * @return PDF 元数据对象
+     */
+    public PdfMetadata inspectStatementMetadata() {
+        return pdfTemplate.inspectMetadata(STATEMENT_TEMPLATE_PATH);
+    }
+
+    /**
+     * 抽取对账单指定页码范围纯文本
+     *
+     * @param startPage 起始页码（1-based）
+     * @param endPage   结束页码（1-based）
+     * @return 范围内的纯文本
+     */
+    public String extractStatementText(int startPage, int endPage) {
+        return pdfTemplate.extractText(STATEMENT_TEMPLATE_PATH, startPage, endPage);
+    }
+
+    /**
+     * 探测解析 CJK 中文字体状态
+     *
+     * @return 已解析的中文字体持有对象
+     */
+    public ResolvedFont resolveFont() {
+        return pdfTemplate.getFontResolver().resolveFont();
     }
 }
