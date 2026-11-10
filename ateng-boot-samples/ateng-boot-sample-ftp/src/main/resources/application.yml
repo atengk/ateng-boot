@@ -1,3 +1,6 @@
+server:
+  port: 8080
+
 spring:
   application:
     name: ateng-boot-sample-ftp
@@ -15,8 +18,9 @@ ateng:
       port: 2121
       username: admin
       password: password123
-      encoding: UTF-8
-      passive-mode: true
+      mode: PASSIVE
+      file-type: BINARY
+      control-encoding: UTF-8
       connect-timeout: 5s
       data-timeout: 10s
       control-keep-alive-timeout: 30s
@@ -37,8 +41,7 @@ ateng:
           port: 2122
           username: backup_user
           password: backup_password
-          encoding: UTF-8
-          passive-mode: true
+          mode: PASSIVE
           pool:
             max-total: 5
             max-idle: 4

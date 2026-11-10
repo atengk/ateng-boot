@@ -17,11 +17,13 @@ ateng:
       port: 21
       username: YOUR_FTP_USERNAME
       password: YOUR_FTP_PASSWORD
-      passive-mode: true
+      mode: PASSIVE
+      file-type: BINARY
+      control-encoding: UTF-8
       servers:
         backup:
           host: YOUR_BACKUP_FTP_HOST
           port: 21
           username: YOUR_BACKUP_FTP_USERNAME
           password: YOUR_BACKUP_FTP_PASSWORD
-          passive-mode: true
+          mode: PASSIVE
