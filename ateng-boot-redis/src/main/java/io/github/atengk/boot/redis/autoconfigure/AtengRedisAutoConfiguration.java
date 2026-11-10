@@ -7,6 +7,7 @@ import io.github.atengk.boot.redis.cache.JitterTtlFunction;
 import io.github.atengk.boot.redis.cache.template.RedisCacheTemplate;
 import io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
+import io.github.atengk.boot.redis.delay.RedisDelayedQueueUtil;
 import io.github.atengk.boot.redis.delay.bootstrap.DelayedQueueBootstrap;
 import io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler;
 import io.github.atengk.boot.redis.delay.spi.LoggingDelayedQueueFailureHandler;
@@ -238,12 +239,14 @@ public class AtengRedisAutoConfiguration {
             ObjectProvider<RedisSemaphoreTemplate> semaphoreTemplateProvider,
             ObjectProvider<DistributedLockTemplate> lockTemplateProvider,
             ObjectProvider<RedisIdempotentTemplate> idempotentTemplateProvider,
-            ObjectProvider<RedisStreamTemplate> streamTemplateProvider) {
+            ObjectProvider<RedisStreamTemplate> streamTemplateProvider,
+            ObjectProvider<RedisDelayedQueue> delayedQueueProvider) {
         return () -> {
             semaphoreTemplateProvider.ifAvailable(RedisSemaphoreUtil::init);
             lockTemplateProvider.ifAvailable(RedisLockUtil::init);
             idempotentTemplateProvider.ifAvailable(RedisIdempotentUtil::init);
             streamTemplateProvider.ifAvailable(RedisStreamUtil::init);
+            delayedQueueProvider.ifAvailable(RedisDelayedQueueUtil::init);
         };
     }
 

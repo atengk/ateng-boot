@@ -7,11 +7,16 @@ import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import org.redisson.api.RBlockingQueue;
 import org.redisson.api.RDelayedQueue;
 import org.redisson.api.RedissonClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -26,6 +31,8 @@ import java.util.concurrent.TimeUnit;
  */
 public class RedisDelayedQueue implements DisposableBean {
 
+    private static final Logger log = LoggerFactory.getLogger(RedisDelayedQueue.class);
+
     private final RedissonClient redissonClient;
     private final ObjectMapper objectMapper;
     private final RedisProperties redisProperties;
@@ -39,6 +46,7 @@ public class RedisDelayedQueue implements DisposableBean {
         this.redissonClient = Objects.requireNonNull(redissonClient, "redissonClient must not be null");
         this.objectMapper = objectMapper != null ? objectMapper : RedisSerializerFactory.createSafeObjectMapper();
         this.redisProperties = redisProperties;
+        RedisDelayedQueueUtil.init(this);
     }
 
 
@@ -222,6 +230,16 @@ public class RedisDelayedQueue implements DisposableBean {
     }
 
     /**
+     * 获取就绪待消费队列元素个数（size 兼容别名）
+     *
+     * @param queueName 队列名称
+     * @return 已到期未消费数量
+     */
+    public int getSize(String queueName) {
+        return size(queueName);
+    }
+
+    /**
      * 获取延时中未到期触发的元素个数
      *
      * @param queueName 队列名称
@@ -230,6 +248,16 @@ public class RedisDelayedQueue implements DisposableBean {
     public int delayedSize(String queueName) {
         Assert.hasText(queueName, "queueName must not be blank");
         return getDelayedQueue(queueName).size();
+    }
+
+    /**
+     * 获取延时中未到期触发的元素个数（delayedSize 兼容别名）
+     *
+     * @param queueName 队列名称
+     * @return 延时中的消息数量
+     */
+    public int getDelayedSize(String queueName) {
+        return delayedSize(queueName);
     }
 
     /**
@@ -358,6 +386,53 @@ public class RedisDelayedQueue implements DisposableBean {
     }
 
     /**
+     * 批量非破坏性检视死信队列消息（不移出队列）
+     *
+     * @param queueName 原始队列名称
+     * @param limit 检视数量上限
+     * @param <T> 消息泛型
+     * @return 死信消息列表
+     */
+    @SuppressWarnings("unchecked")
+    public <T> List<DeadLetterMessage<T>> peekDeadLetters(String queueName, int limit) {
+        Assert.hasText(queueName, "queueName must not be blank");
+        Assert.isTrue(limit > 0, "limit must be greater than 0");
+        String dlqName = resolveDeadLetterQueueName(queueName);
+        RBlockingQueue<Object> dlq = redissonClient.getBlockingQueue(dlqName);
+        List<DeadLetterMessage<T>> result = new ArrayList<>();
+        Iterator<Object> iterator = dlq.iterator();
+        while (iterator.hasNext() && result.size() < limit) {
+            Object raw = iterator.next();
+            DeadLetterMessage<T> msg = convertValue(raw, DeadLetterMessage.class);
+            if (msg != null) {
+                result.add(msg);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 批量非破坏性检视死信队列消息并转换载荷为目标类型（不移出队列）
+     *
+     * @param queueName 原始队列名称
+     * @param limit 检视数量上限
+     * @param payloadClass 目标载荷类型 Class
+     * @param <T> 目标载荷泛型
+     * @return 类型安全的死信消息列表
+     */
+    public <T> List<DeadLetterMessage<T>> peekDeadLetters(String queueName, int limit, Class<T> payloadClass) {
+        List<DeadLetterMessage<T>> rawList = peekDeadLetters(queueName, limit);
+        if (payloadClass == null || rawList.isEmpty()) {
+            return rawList;
+        }
+        List<DeadLetterMessage<T>> typedList = new ArrayList<>(rawList.size());
+        for (DeadLetterMessage<T> msg : rawList) {
+            typedList.add(convertDeadLetterPayload(msg, payloadClass));
+        }
+        return typedList;
+    }
+
+    /**
      * 从死信队列拉取一条死信消息
      *
      * @param queueName 原始队列名称
@@ -385,6 +460,81 @@ public class RedisDelayedQueue implements DisposableBean {
         return convertDeadLetterPayload(pollDeadLetter(queueName), payloadClass);
     }
 
+    /**
+     * 受控重放单条死信消息回原延时队列
+     * 弹出死信消息并校验 replayCount < maxReplayAttempts，未超限时递增 replayCount 并重新投递至延时队列；
+     * 达到或超过上限时拒绝重放以阻断二次死信雪崩。
+     *
+     * @param queueName 原始队列名称
+     * @param delay 重新投递的延时时长
+     * @return true 表示成功重放入队；false 表示队列为空或已达重放上限被拒绝
+     */
+    public boolean replayDeadLetter(String queueName, Duration delay) {
+        Assert.hasText(queueName, "queueName must not be blank");
+        DeadLetterMessage<Object> deadLetter = pollDeadLetter(queueName);
+        if (deadLetter == null) {
+            return false;
+        }
+        int maxAttempts = (redisProperties != null && redisProperties.getDelayQueue() != null)
+                ? redisProperties.getDelayQueue().getMaxReplayAttempts()
+                : 3;
+        if (deadLetter.replayCount() >= maxAttempts) {
+            log.warn("[RedisDelayedQueue] 死信消息重放次数已达上限 [replayCount={}, maxReplayAttempts={}]，拒绝重放并阻断二次雪崩: queueName={}",
+                    deadLetter.replayCount(), maxAttempts, queueName);
+            return false;
+        }
+
+        DeadLetterMessage<Object> replayed = deadLetter.incrementReplay();
+        String originalQueue = deadLetter.originalQueue();
+        String targetQueue = StringUtils.hasText(originalQueue) ? originalQueue : queueName;
+        offer(targetQueue, replayed, delay != null ? delay : Duration.ZERO);
+        log.info("[RedisDelayedQueue] 死信受控重放成功: queueName={}, targetQueue={}, replayCount={}, delay={}",
+                queueName, targetQueue, replayed.replayCount(), delay);
+        return true;
+    }
+
+    /**
+     * 受控重放单条死信消息回原延时队列（立即到期投递）
+     *
+     * @param queueName 原始队列名称
+     * @return true 表示成功重放入队；false 表示队列为空或已达重放上限被拒绝
+     */
+    public boolean replayDeadLetter(String queueName) {
+        return replayDeadLetter(queueName, Duration.ZERO);
+    }
+
+    /**
+     * 批量受控重放死信消息回原延时队列
+     *
+     * @param queueName 原始队列名称
+     * @param maxCount 最大重放条数
+     * @param delay 重新投递的延时时长
+     * @return 实际成功重放入队的消息数量
+     */
+    public int replayDeadLetters(String queueName, int maxCount, Duration delay) {
+        Assert.hasText(queueName, "queueName must not be blank");
+        Assert.isTrue(maxCount > 0, "maxCount must be greater than 0");
+        int count = 0;
+        for (int i = 0; i < maxCount; i++) {
+            if (!replayDeadLetter(queueName, delay)) {
+                break;
+            }
+            count++;
+        }
+        return count;
+    }
+
+    /**
+     * 批量受控重放死信消息回原延时队列（立即到期投递）
+     *
+     * @param queueName 原始队列名称
+     * @param maxCount 最大重放条数
+     * @return 实际成功重放入队的消息数量
+     */
+    public int replayDeadLetters(String queueName, int maxCount) {
+        return replayDeadLetters(queueName, maxCount, Duration.ZERO);
+    }
+
     private <T> DeadLetterMessage<T> convertDeadLetterPayload(DeadLetterMessage<?> rawMessage, Class<T> payloadClass) {
         if (rawMessage == null) {
             return null;
@@ -396,7 +546,8 @@ public class RedisDelayedQueue implements DisposableBean {
                 rawMessage.retryTimes(),
                 rawMessage.errorMessage(),
                 rawMessage.exceptionClass(),
-                rawMessage.failedTime()
+                rawMessage.failedTime(),
+                rawMessage.replayCount()
         );
     }
 

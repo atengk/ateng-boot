@@ -22,6 +22,7 @@ import org.springframework.context.support.GenericApplicationContext;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -468,6 +469,20 @@ class DelayedQueueBootstrapTest {
         } finally {
             noDlqBootstrap.destroy();
         }
+    }
+
+    @Test
+    @DisplayName("测试 SmartLifecycle 契约：高优先级 Phase 与启停状态")
+    void testSmartLifecycleContract() {
+        assertThat(bootstrap.isAutoStartup()).isTrue();
+        assertThat(bootstrap.getPhase()).isEqualTo(Integer.MAX_VALUE - 1000);
+        assertThat(bootstrap.isRunning()).isTrue();
+
+        AtomicBoolean stoppedCallbackRun = new AtomicBoolean(false);
+        bootstrap.stop(() -> stoppedCallbackRun.set(true));
+
+        assertThat(bootstrap.isRunning()).isFalse();
+        assertThat(stoppedCallbackRun.get()).isTrue();
     }
 }
 

@@ -123,6 +123,37 @@ public class OrderDelayScenarioService {
     }
 
     /**
+     * 批量非破坏性检视取消订单队列死信
+     *
+     * @param limit 检视上限
+     * @return 死信消息列表
+     */
+    public List<DeadLetterMessage<OrderDelayPayload>> peekCancelOrderDeadLetters(int limit) {
+        return redisDelayedQueue.peekDeadLetters(QUEUE_ORDER_CANCEL, limit, OrderDelayPayload.class);
+    }
+
+    /**
+     * 受控重放单条取消订单死信消息
+     *
+     * @param delay 重放延时时长
+     * @return 是否成功重放
+     */
+    public boolean replayCancelOrderDeadLetter(Duration delay) {
+        return redisDelayedQueue.replayDeadLetter(QUEUE_ORDER_CANCEL, delay);
+    }
+
+    /**
+     * 批量受控重放取消订单死信消息
+     *
+     * @param maxCount 最大重放条数
+     * @param delay 重放延时时长
+     * @return 实际成功重放数量
+     */
+    public int replayCancelOrderDeadLetters(int maxCount, Duration delay) {
+        return redisDelayedQueue.replayDeadLetters(QUEUE_ORDER_CANCEL, maxCount, delay);
+    }
+
+    /**
      * 清空取消订单队列的死信消息
      */
     public void clearCancelOrderDeadLetter() {

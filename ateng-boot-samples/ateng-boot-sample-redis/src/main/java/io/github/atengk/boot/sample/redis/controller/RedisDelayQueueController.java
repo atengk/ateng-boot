@@ -35,7 +35,7 @@ import java.util.List;
 @Slf4j
 @Validated
 @RestController
-@RequestMapping("/sample/redis/delay-queue")
+@RequestMapping({"/sample/redis/delay-queue", "/sample/redis/delay"})
 @RequiredArgsConstructor
 public class RedisDelayQueueController {
 
@@ -112,10 +112,38 @@ public class RedisDelayQueueController {
      *
      * @return 死信消息结构体
      */
-    @GetMapping("/dead-letter/poll")
+    @GetMapping({"/dead-letter/poll", "/dlq/poll"})
     public Result<DeadLetterMessage<OrderDelayPayload>> pollDeadLetter() {
         DeadLetterMessage<OrderDelayPayload> deadLetter = orderDelayScenarioService.pollCancelOrderDeadLetter();
         return Result.success(deadLetter);
+    }
+
+    /**
+     * 批量非破坏性检视死信队列消息（不移出队列）
+     *
+     * @param limit 检视数量上限（默认 10）
+     * @return 死信消息列表
+     */
+    @GetMapping({"/dlq/peek", "/dead-letter/peek"})
+    public Result<List<DeadLetterMessage<OrderDelayPayload>>> peekDeadLetters(@RequestParam(defaultValue = "10") int limit) {
+        log.info("[RedisDelayQueueController] 批量非破坏性检视死信: limit={}", limit);
+        List<DeadLetterMessage<OrderDelayPayload>> list = orderDelayScenarioService.peekCancelOrderDeadLetters(limit);
+        return Result.success(list);
+    }
+
+    /**
+     * 受控重放死信队列消息回原延时队列
+     *
+     * @param count 重放消息条数（默认 1）
+     * @param delaySeconds 延时秒数（默认 0 立即投递）
+     * @return 实际成功重放的消息数量
+     */
+    @PostMapping({"/dlq/replay", "/dead-letter/replay"})
+    public Result<Integer> replayDeadLetters(@RequestParam(defaultValue = "1") int count,
+                                             @RequestParam(defaultValue = "0") long delaySeconds) {
+        log.info("[RedisDelayQueueController] 受控重放延时队列死信: count={}, delaySeconds={}", count, delaySeconds);
+        int replayed = orderDelayScenarioService.replayCancelOrderDeadLetters(count, Duration.ofSeconds(delaySeconds));
+        return Result.success(replayed);
     }
 
     /**

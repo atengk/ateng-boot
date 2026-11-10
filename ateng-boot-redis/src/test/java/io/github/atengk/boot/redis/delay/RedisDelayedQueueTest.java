@@ -1,6 +1,8 @@
 package io.github.atengk.boot.redis.delay;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.redis.delay.model.DeadLetterMessage;
+import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -16,7 +18,9 @@ import org.redisson.api.RDelayedQueue;
 import org.redisson.api.RedissonClient;
 
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -262,6 +266,75 @@ class RedisDelayedQueueTest {
         assertThat(prefixedQueue.resolveQueueName("myapp:pay_task")).isEqualTo("myapp:pay_task");
 
         assertThat(prefixedQueue.resolveDeadLetterQueueName("pay_task")).isEqualTo("myapp:pay_task.dead");
+    }
+
+    @Test
+    @DisplayName("测试批量非破坏性检视死信 (peekDeadLetters)")
+    @SuppressWarnings("unchecked")
+    void testPeekDeadLettersBatch() {
+        RBlockingQueue<Object> dlqBlockingQueue = org.mockito.Mockito.mock(RBlockingQueue.class);
+        when(redissonClient.getBlockingQueue("peek-queue:dlq")).thenReturn(dlqBlockingQueue);
+
+        DeadLetterMessage<OrderMessage> msg1 = new DeadLetterMessage<>(
+                "peek-queue", new OrderMessage("ORD-1", 10.0), 3, "fail1", "Ex", LocalDateTime.now(), 0
+        );
+        DeadLetterMessage<OrderMessage> msg2 = new DeadLetterMessage<>(
+                "peek-queue", new OrderMessage("ORD-2", 20.0), 3, "fail2", "Ex", LocalDateTime.now(), 1
+        );
+
+        when(dlqBlockingQueue.iterator()).thenReturn(List.<Object>of(msg1, msg2).iterator());
+
+        List<DeadLetterMessage<OrderMessage>> result = redisDelayedQueue.peekDeadLetters("peek-queue", 5, OrderMessage.class);
+        assertThat(result).hasSize(2);
+        assertThat(result.get(0).payload().getOrderNo()).isEqualTo("ORD-1");
+        assertThat(result.get(0).replayCount()).isEqualTo(0);
+        assertThat(result.get(1).payload().getOrderNo()).isEqualTo("ORD-2");
+        assertThat(result.get(1).replayCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("测试受控重放死信及 maxReplayAttempts 防雪崩上限阻断")
+    @SuppressWarnings("unchecked")
+    void testReplayDeadLetterAndAvalancheGuard() {
+        RedisProperties props = new RedisProperties();
+        props.getDelayQueue().setMaxReplayAttempts(2);
+        RedisDelayedQueue queueWithProps = new RedisDelayedQueue(redissonClient, objectMapper, props);
+
+        RBlockingQueue<Object> dlqBlockingQueue = org.mockito.Mockito.mock(RBlockingQueue.class);
+        when(redissonClient.getBlockingQueue("replay-queue:dlq")).thenReturn(dlqBlockingQueue);
+
+        when(redissonClient.getBlockingQueue("replay-queue")).thenReturn(blockingQueue);
+        when(redissonClient.getDelayedQueue(blockingQueue)).thenReturn(delayedQueue);
+
+        // 场景 1：首次重放 (replayCount = 0 < 2) -> 允许重放，入队新死信 (replayCount = 1)
+        DeadLetterMessage<String> firstDead = new DeadLetterMessage<>(
+                "replay-queue", "task-payload", 3, "err", "Ex", LocalDateTime.now(), 0
+        );
+        when(dlqBlockingQueue.poll()).thenReturn(firstDead);
+
+        boolean replayed = queueWithProps.replayDeadLetter("replay-queue", Duration.ofSeconds(5));
+        assertThat(replayed).isTrue();
+        verify(delayedQueue).offer(org.mockito.ArgumentMatchers.argThat((DeadLetterMessage<?> d) -> d.replayCount() == 1), eq(5000L), eq(TimeUnit.MILLISECONDS));
+
+        // 场景 2：达到重放上限 (replayCount = 2 >= 2) -> 拒绝重放
+        DeadLetterMessage<String> exhaustedDead = new DeadLetterMessage<>(
+                "replay-queue", "task-payload", 3, "err", "Ex", LocalDateTime.now(), 2
+        );
+        when(dlqBlockingQueue.poll()).thenReturn(exhaustedDead);
+
+        boolean blocked = queueWithProps.replayDeadLetter("replay-queue", Duration.ZERO);
+        assertThat(blocked).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 RedisDelayedQueueUtil 静态门面委托")
+    @SuppressWarnings("unchecked")
+    void testRedisDelayedQueueUtilStaticDelegation() {
+        when(redissonClient.getBlockingQueue("static-queue:dlq")).thenReturn(blockingQueue);
+        when(blockingQueue.size()).thenReturn(5);
+
+        assertThat(RedisDelayedQueueUtil.deadLetterSize("static-queue")).isEqualTo(5);
+        assertThat(RedisDelayedQueueUtil.getDeadLetterSize("static-queue")).isEqualTo(5);
     }
 }
 

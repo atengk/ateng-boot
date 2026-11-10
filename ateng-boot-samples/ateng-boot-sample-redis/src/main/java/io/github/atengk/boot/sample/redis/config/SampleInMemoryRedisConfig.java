@@ -558,6 +558,9 @@ public class SampleInMemoryRedisConfig {
                     if ("peek".equals(mName)) return queue.peek();
                     if ("size".equals(mName)) return queue.size();
                     if ("offer".equals(mName)) return queue.offer(args[0]);
+                    if ("iterator".equals(mName)) return queue.iterator();
+                    if ("toArray".equals(mName)) return queue.toArray();
+                    if ("readAll".equals(mName)) return new ArrayList<>(queue);
                     return defaultValue(method.getReturnType());
                 }
         );

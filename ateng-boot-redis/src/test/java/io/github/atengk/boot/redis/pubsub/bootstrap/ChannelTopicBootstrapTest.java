@@ -488,4 +488,18 @@ class ChannelTopicBootstrapTest {
         assertThat(service.receivedMessage.get()).isNotNull();
         assertThat(service.receivedMessage.get()).isSameAs(emptyMsg);
     }
+
+    @Test
+    @DisplayName("测试 SmartLifecycle 契约：高优先级 Phase 与启停状态")
+    void testSmartLifecycleContract() {
+        assertThat(bootstrap.isAutoStartup()).isTrue();
+        assertThat(bootstrap.getPhase()).isEqualTo(Integer.MAX_VALUE - 1000);
+        assertThat(bootstrap.isRunning()).isTrue();
+
+        AtomicBoolean stoppedCallbackRun = new AtomicBoolean(false);
+        bootstrap.stop(() -> stoppedCallbackRun.set(true));
+
+        assertThat(bootstrap.isRunning()).isFalse();
+        assertThat(stoppedCallbackRun.get()).isTrue();
+    }
 }

@@ -1293,6 +1293,35 @@ class SampleRedisIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.deadLetterCount").value(org.hamcrest.Matchers.greaterThanOrEqualTo(1)));
 
+        // 4.1 批量非破坏性检视死信（验证 /sample/redis/delay/dlq/peek 端点）
+        mockMvc.perform(get("/sample/redis/delay/dlq/peek").param("limit", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data[0].payload.orderId").value("POISON_ORD_CTRL_002"))
+                .andExpect(jsonPath("$.data[0].replayCount").value(0));
+
+        // 4.2 受控重放死信回原延时队列（验证 /sample/redis/delay/dlq/replay 端点）
+        mockMvc.perform(post("/sample/redis/delay/dlq/replay")
+                        .param("count", "1")
+                        .param("delaySeconds", "0"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(1));
+
+        // 等待重放后的毒丸再次消费重试耗尽回到死信队列（replayCount = 1）
+        long replayDeadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < replayDeadline && orderDelayScenarioService.getCancelOrderDeadLetterSize() == 0) {
+            Thread.sleep(100);
+        }
+
+        // 4.3 再次检视确认死信重放次数已自增为 1
+        mockMvc.perform(get("/sample/redis/delay/dlq/peek").param("limit", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data[0].payload.orderId").value("POISON_ORD_CTRL_002"))
+                .andExpect(jsonPath("$.data[0].replayCount").value(1));
+
         // 5. 拉取死信消息
         mockMvc.perform(get("/sample/redis/delay-queue/dead-letter/poll"))
                 .andExpect(status().isOk())

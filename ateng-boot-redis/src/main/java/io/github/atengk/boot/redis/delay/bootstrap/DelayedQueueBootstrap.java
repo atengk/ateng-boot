@@ -2,6 +2,8 @@ package io.github.atengk.boot.redis.delay.bootstrap;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.annotation.DelayedQueueListener;
@@ -22,6 +24,7 @@ import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.EmbeddedValueResolverAware;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.core.MethodIntrospector;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -52,7 +55,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @since 2026-10-16
  */
 @Slf4j
-public class DelayedQueueBootstrap implements SmartInitializingSingleton, DisposableBean,
+public class DelayedQueueBootstrap implements SmartInitializingSingleton, SmartLifecycle, DisposableBean,
         EmbeddedValueResolverAware, ApplicationContextAware {
 
     public static final String MDC_TRACE_ID_KEY = "traceId";
@@ -211,6 +214,8 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
                         processMessageWithRetry(bean, method, rawMessage, queueName);
                     } finally {
                         MDC.remove(MDC_TRACE_ID_KEY);
+                        TenantContextHolder.clear();
+                        UserContextHolder.clear();
                     }
                 }
             } catch (InterruptedException e) {
@@ -268,13 +273,28 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
      * 重试耗尽处理死信流转与 SPI 回调
      */
     private void handleDeadLetter(Object rawMessage, String queueName, int retryCount, Throwable cause) {
+        int replayCount = 0;
+        Object payload = rawMessage;
+        if (rawMessage instanceof DeadLetterMessage<?> dlm) {
+            replayCount = dlm.replayCount();
+            payload = dlm.payload();
+        } else if (rawMessage instanceof Map<?, ?> map && map.containsKey("originalQueue") && map.containsKey("payload") && map.containsKey("replayCount")) {
+            try {
+                DeadLetterMessage<?> dlm = objectMapper.convertValue(rawMessage, DeadLetterMessage.class);
+                replayCount = dlm.replayCount();
+                payload = dlm.payload();
+            } catch (Exception ignored) {
+            }
+        }
+
         DeadLetterMessage<Object> deadLetter = new DeadLetterMessage<>(
                 queueName,
-                rawMessage,
+                payload,
                 retryCount,
                 cause != null ? cause.getMessage() : "Unknown error",
                 cause != null ? cause.getClass().getName() : "UnknownException",
-                LocalDateTime.now()
+                LocalDateTime.now(),
+                replayCount
         );
 
         boolean dlqEnabled = (redisProperties == null || redisProperties.getDelayQueue() == null)
@@ -333,6 +353,22 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
         if (rawMessage == null) {
             return null;
         }
+        if (rawMessage instanceof DeadLetterMessage<?> dlm) {
+            rawMessage = dlm.payload();
+            if (rawMessage == null) {
+                return null;
+            }
+        } else if (rawMessage instanceof Map<?, ?> map && map.containsKey("originalQueue") && map.containsKey("payload") && map.containsKey("replayCount")) {
+            try {
+                DeadLetterMessage<?> dlm = objectMapper.convertValue(rawMessage, DeadLetterMessage.class);
+                rawMessage = dlm.payload();
+                if (rawMessage == null) {
+                    return null;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
         Class<?> targetType = parameter.getType();
         if (targetType.isInstance(rawMessage)) {
             return rawMessage;
@@ -347,6 +383,40 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
         }
 
         return objectMapper.convertValue(rawMessage, objectMapper.constructType(parameter.getParameterizedType()));
+    }
+
+    @Override
+    public boolean isAutoStartup() {
+        return true;
+    }
+
+    @Override
+    public void start() {
+        this.running = true;
+    }
+
+    @Override
+    public void stop() {
+        this.running = false;
+        destroy();
+    }
+
+    @Override
+    public void stop(Runnable callback) {
+        stop();
+        if (callback != null) {
+            callback.run();
+        }
+    }
+
+    @Override
+    public boolean isRunning() {
+        return this.running;
+    }
+
+    @Override
+    public int getPhase() {
+        return Integer.MAX_VALUE - 1000;
     }
 
     @Override

@@ -3,6 +3,8 @@ package io.github.atengk.boot.redis.pubsub.bootstrap;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.pubsub.annotation.ChannelTopicListener;
@@ -18,6 +20,7 @@ import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.EmbeddedValueResolverAware;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.core.MethodIntrospector;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.data.redis.connection.Message;
@@ -57,7 +60,7 @@ import java.util.concurrent.ThreadPoolExecutor;
  * @since 2026-10-19
  */
 @Slf4j
-public class ChannelTopicBootstrap implements SmartInitializingSingleton, DisposableBean,
+public class ChannelTopicBootstrap implements SmartInitializingSingleton, SmartLifecycle, DisposableBean,
         EmbeddedValueResolverAware, ApplicationContextAware {
 
     public static final String MDC_TRACE_ID_KEY = "traceId";
@@ -232,6 +235,8 @@ public class ChannelTopicBootstrap implements SmartInitializingSingleton, Dispos
                     if (traceGenerated) {
                         MDC.remove(MDC_TRACE_ID_KEY);
                     }
+                    TenantContextHolder.clear();
+                    UserContextHolder.clear();
                 }
             });
         };
@@ -368,6 +373,42 @@ public class ChannelTopicBootstrap implements SmartInitializingSingleton, Dispos
             }
         }
         return resolvedContainer;
+    }
+
+    private volatile boolean running = true;
+
+    @Override
+    public boolean isAutoStartup() {
+        return true;
+    }
+
+    @Override
+    public void start() {
+        this.running = true;
+    }
+
+    @Override
+    public void stop() {
+        this.running = false;
+        destroy();
+    }
+
+    @Override
+    public void stop(Runnable callback) {
+        stop();
+        if (callback != null) {
+            callback.run();
+        }
+    }
+
+    @Override
+    public boolean isRunning() {
+        return this.running;
+    }
+
+    @Override
+    public int getPhase() {
+        return Integer.MAX_VALUE - 1000;
     }
 
     @Override

@@ -223,6 +223,11 @@ public class RedisProperties {
          * 死信队列名称后缀（默认 ":dlq"）
          */
         private String deadLetterSuffix = ":dlq";
+
+        /**
+         * 死信消息最大允许受控重放次数（默认 3 次，防止毒丸死信反复重放形成雪崩）
+         */
+        private int maxReplayAttempts = 3;
     }
 
     /**
