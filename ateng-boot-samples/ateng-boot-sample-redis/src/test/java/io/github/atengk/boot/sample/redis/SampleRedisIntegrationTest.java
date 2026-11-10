@@ -225,22 +225,41 @@ class SampleRedisIntegrationTest {
     @BeforeEach
     void setUp() {
         SampleInMemoryRedisConfig.clearAll();
+        cleanupRealRedisKeys();
+        if (twoLevelCacheManager != null) {
+            for (String cacheName : twoLevelCacheManager.getCacheNames()) {
+                org.springframework.cache.Cache c = twoLevelCacheManager.getCache(cacheName);
+                if (c != null) {
+                    c.clear();
+                }
+            }
+        }
         stockDeductScenarioService.resetStock(1001L, 100);
         cacheScenarioService.resetDbQueryCount();
         idempotentScenarioService.resetCounts();
+        if (redisStreamTemplate != null) {
+            try {
+                redisStreamTemplate.createGroup("stream:order:events", "group:order:processor", ReadOffset.from("0"), true);
+            } catch (Exception ignore) {
+            }
+        }
     }
 
     @AfterEach
     void tearDown() {
         SampleInMemoryRedisConfig.clearAll();
+        cleanupRealRedisKeys();
+    }
+
+    private void cleanupRealRedisKeys() {
         // 在本地真实 Redis 模式下，确定性清理测试残留数据，保证测试间零污染与幂等自洽
         if (redisTemplate != null && redisTemplate.getConnectionFactory() != null) {
             try {
                 String[] patterns = {
-                        "lock:*", "reentrant:*", "resource:*", "watchdog:*",
-                        "sample:*", "stream:*", "idemp:*", "sem:*",
-                        "atomic:*", "rate:*", "product:*", "user-profile:*",
-                        "user-blacklist*"
+                        "lock*", "reentrant*", "resource*", "watchdog*",
+                        "sample*", "stream*", "idemp*", "idempotent*", "sem*", "semaphore*",
+                        "atomic*", "rate*", "product*", "user-profile*",
+                        "user-blacklist*", "bloom*", "redisson*"
                 };
                 for (String p : patterns) {
                     Set<String> keys = redisTemplate.keys(p);

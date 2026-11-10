@@ -277,6 +277,15 @@ public class StreamBootstrap implements SmartLifecycle, SmartInitializingSinglet
                 }
                 log.warn("[RedisStream] 消费拉取轮询异常: stream={}, group={}, consumer={}, error={}",
                         stream, group, consumerName, ex.getMessage());
+                // 若由于运维清理或 Stream 键被删除导致消费组不存在 (NOGROUP)，执行幂等自愈重新建组
+                if (ex.getMessage() != null && ex.getMessage().contains("NOGROUP")) {
+                    try {
+                        redisStreamTemplate.createGroup(stream, group, ReadOffset.from("0"), true);
+                        log.info("[RedisStream] 检测到 NOGROUP，已触发消费组幂等自愈重建: stream={}, group={}", stream, group);
+                    } catch (Exception healEx) {
+                        log.debug("[RedisStream] 消费组自愈建组跳过: {}", healEx.getMessage());
+                    }
+                }
                 try {
                     TimeUnit.MILLISECONDS.sleep(500);
                 } catch (InterruptedException ie) {
