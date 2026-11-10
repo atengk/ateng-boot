@@ -222,7 +222,7 @@ class SampleNotificationIntegrationTest {
                 }
                 """;
 
-        mockMvc.perform(post("/api/v1/notification/async")
+        mockMvc.perform(post("/sample/notification/transaction/send-async")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isOk())
@@ -247,7 +247,7 @@ class SampleNotificationIntegrationTest {
                 }
                 """;
 
-        mockMvc.perform(post("/api/v1/notification/transactional")
+        mockMvc.perform(post("/sample/notification/transaction/send-after-commit")
                         .param("triggerRollback", "false")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(successPayload))
@@ -267,7 +267,7 @@ class SampleNotificationIntegrationTest {
                 """;
 
         // triggerRollback=true 时触发异常
-        mockMvc.perform(post("/api/v1/notification/transactional")
+        mockMvc.perform(post("/sample/notification/transaction/send-after-commit")
                         .param("triggerRollback", "true")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(rollbackPayload))
@@ -476,7 +476,7 @@ class SampleNotificationIntegrationTest {
                 """;
 
         // 异步发信在受管线程池中抛出异常后会触发 NotificationSendFailureHandler
-        mockMvc.perform(post("/api/v1/notification/async")
+        mockMvc.perform(post("/sample/notification/transaction/send-async")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isOk());
