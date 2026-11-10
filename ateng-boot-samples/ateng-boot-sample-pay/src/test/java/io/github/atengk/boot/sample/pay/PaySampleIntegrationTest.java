@@ -394,7 +394,7 @@ class PaySampleIntegrationTest {
                 .subject("云端会员年度订阅")
                 .build();
 
-        mockMvc.perform(post("/pay/checkout/native")
+        mockMvc.perform(post("/sample/pay/checkout/native")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -417,7 +417,7 @@ class PaySampleIntegrationTest {
                 .openid("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
                 .build();
 
-        mockMvc.perform(post("/pay/checkout/jsapi")
+        mockMvc.perform(post("/sample/pay/checkout/jsapi")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -442,7 +442,7 @@ class PaySampleIntegrationTest {
                 .subject("H5网页充值")
                 .build();
 
-        mockMvc.perform(post("/pay/checkout/h5")
+        mockMvc.perform(post("/sample/pay/checkout/h5")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -462,7 +462,7 @@ class PaySampleIntegrationTest {
                 .subject("App应用内消费")
                 .build();
 
-        mockMvc.perform(post("/pay/checkout/app")
+        mockMvc.perform(post("/sample/pay/checkout/app")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -481,7 +481,7 @@ class PaySampleIntegrationTest {
                 .outTradeNo("ORD_QUERY_20261023_005")
                 .build();
 
-        mockMvc.perform(post("/pay/order/query")
+        mockMvc.perform(post("/sample/pay/checkout/query")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -500,7 +500,7 @@ class PaySampleIntegrationTest {
                 .outTradeNo("ORD_CLOSE_20261023_006")
                 .build();
 
-        mockMvc.perform(post("/pay/order/close")
+        mockMvc.perform(post("/sample/pay/checkout/close")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -520,7 +520,7 @@ class PaySampleIntegrationTest {
                 .subject("非法金额测试")
                 .build();
 
-        mockMvc.perform(post("/pay/checkout/native")
+        mockMvc.perform(post("/sample/pay/checkout/native")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -538,7 +538,7 @@ class PaySampleIntegrationTest {
                 .subject("缺少单号测试")
                 .build();
 
-        mockMvc.perform(post("/pay/checkout/native")
+        mockMvc.perform(post("/sample/pay/checkout/native")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -602,7 +602,7 @@ class PaySampleIntegrationTest {
                 .reason("用户申请部分退款")
                 .build();
 
-        mockMvc.perform(post("/pay/refund/apply")
+        mockMvc.perform(post("/sample/pay/refund/apply")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -621,7 +621,7 @@ class PaySampleIntegrationTest {
                 .outRefundNo("REF_20261024_012")
                 .build();
 
-        mockMvc.perform(post("/pay/refund/query")
+        mockMvc.perform(post("/sample/pay/refund/query")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -673,7 +673,7 @@ class PaySampleIntegrationTest {
                 .payeeRealName("张三")
                 .build();
 
-        mockMvc.perform(post("/pay/transfer/apply")
+        mockMvc.perform(post("/sample/pay/transfer/apply")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -692,7 +692,7 @@ class PaySampleIntegrationTest {
                 .outBizNo("TRANS_BIZ_20261024_015")
                 .build();
 
-        mockMvc.perform(post("/pay/transfer/query")
+        mockMvc.perform(post("/sample/pay/transfer/query")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -713,7 +713,7 @@ class PaySampleIntegrationTest {
                 .subject("收银台面对面扫码收单")
                 .build();
 
-        mockMvc.perform(post("/pay/barcode/cashier")
+        mockMvc.perform(post("/sample/pay/barcode/cashier")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -734,7 +734,7 @@ class PaySampleIntegrationTest {
                 .tarType("GZIP")
                 .build();
 
-        mockMvc.perform(post("/pay/bill/parse-memory")
+        mockMvc.perform(post("/sample/pay/bill/parse-memory")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -757,7 +757,7 @@ class PaySampleIntegrationTest {
                 .tarType("GZIP")
                 .build();
 
-        mockMvc.perform(post("/pay/bill/stream-reconcile")
+        mockMvc.perform(post("/sample/pay/bill/stream-reconcile")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -777,7 +777,7 @@ class PaySampleIntegrationTest {
                 .relationType("USER")
                 .build();
 
-        mockMvc.perform(post("/pay/profit-sharing/receiver/add")
+        mockMvc.perform(post("/sample/pay/profit-sharing/receiver/add")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(receiverDTO)))
                 .andExpect(status().isOk())
@@ -792,7 +792,7 @@ class PaySampleIntegrationTest {
                 .description("结算分账完毕，解冻剩余资金")
                 .build();
 
-        mockMvc.perform(post("/pay/profit-sharing/order/unfreeze")
+        mockMvc.perform(post("/sample/pay/profit-sharing/order/unfreeze")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(unfreezeDTO)))
                 .andExpect(status().isOk())
@@ -812,7 +812,7 @@ class PaySampleIntegrationTest {
                 .buyerId("2088102123456789")
                 .build();
 
-        mockMvc.perform(post("/pay/checkout/alipay-miniapp")
+        mockMvc.perform(post("/sample/pay/checkout/alipay-miniapp")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())
@@ -839,7 +839,7 @@ class PaySampleIntegrationTest {
                 .autoCancelOnTimeout(true)
                 .build();
 
-        mockMvc.perform(post("/pay/barcode/cashier")
+        mockMvc.perform(post("/sample/pay/barcode/cashier")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(dto)))
                 .andExpect(status().isOk())

@@ -25,7 +25,7 @@ import java.util.Objects;
 @Slf4j
 @Validated
 @RestController
-@RequestMapping("/pay/barcode")
+@RequestMapping("/sample/pay/barcode")
 public class PayBarcodeController {
 
     private final BarcodePayExecutor barcodePayExecutor;

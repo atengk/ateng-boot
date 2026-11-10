@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicLong;
 @Slf4j
 @Validated
 @RestController
-@RequestMapping("/pay/bill")
+@RequestMapping("/sample/pay/bill")
 public class PayBillController {
 
     private final PayTemplate payTemplate;
@@ -42,7 +42,7 @@ public class PayBillController {
     /**
      * 内存全量模式：下载并解析为完整对账结果列表
      */
-    @PostMapping("/parse-memory")
+    @PostMapping({"/parse-memory", "/download/parse-memory"})
     public Result<PayBillResult> parseMemory(@Valid @RequestBody PayBillQueryDTO dto) throws Exception {
         log.info("Processing bill parse (memory mode): channel={}, date={}, type={}",
                 dto.getChannel(), dto.getBillDate(), dto.getBillType());
@@ -64,7 +64,7 @@ public class PayBillController {
     /**
      * 零 OOM 模式：边流式解压边逐行回调处理，常驻 O(1) 内存
      */
-    @PostMapping("/stream-reconcile")
+    @PostMapping({"/stream-reconcile", "/download/stream-consume"})
     public Result<PayBillSummary> streamReconcile(@Valid @RequestBody PayBillQueryDTO dto) throws Exception {
         log.info("Processing bill parse (zero-OOM streaming mode): channel={}, date={}",
                 dto.getChannel(), dto.getBillDate());

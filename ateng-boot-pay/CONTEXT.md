@@ -137,5 +137,21 @@ _Avoid_: 订单关闭, 取消订单, 撤回交易
 _Avoid_: 网页支付, 预下单, 支付宝JSAPI
 
 **Buyer Identifier (买家身份标识)**:
-支付宝小程序收单场景下的付款人身份凭证，包含旧版 16 位数字 UID（`buyer_id`，以 2088 开头）与新版 16 位开放标识（`buyer_open_id`，以 0 开头）。
+第三方支付渠道（如支付宝小程序）收单场景下的付款人身份凭证，包含旧版 16 位数字 UID（`buyer_id`，以 2088 开头）与新版 16 位开放标识（`buyer_open_id`，以 0 开头）。
 _Avoid_: 买家账号, openid, 支付宝账号
+
+**Named Merchant Registry (多商户多应用命名注册表)**:
+在运行时管理和提供动态注册、热更新及多级降级查找（显式键 -> 默认键 -> 首个已注册）多商户/多应用配置的命名注册中心。
+_Avoid_: 商户工厂, 商户缓存, 多账号管理器, MerchantService
+
+**Pay Context Holder (支付上下文持有者)**:
+基于 ThreadLocal 维护当前线程级商户切源别名（MerchantKey），为多租户与微服务环境提供透明请求级商户切源与隔离支持的上下文持有者。
+_Avoid_: 租户切源器, 商户上下文, PayThreadLocal, MerchantHolder
+
+**Pay Certificate Provider (支付证书扩展提供器)**:
+用于对接外部 KMS、HashiCorp Vault、加密数据库或云存储以动态解密和加载商户私钥与证书的 SPI 扩展契约。
+_Avoid_: 证书加载器, 私钥解密器, 证书SPI, KeyStoreHelper
+
+**Pay Lock Manager (双轨并发防重排队锁管理器)**:
+在 Webhook 回调入站时基于交易流水号与退款单号提供并发排队锁的门面组件，优先装配 Redis 分布式锁并在无 Redis 时无感以本地内存并发锁保底，并在回调完成后于 `finally` 块防御性安全释放。
+_Avoid_: 回调锁, 防并发组件, 支付互斥锁, LockHelper

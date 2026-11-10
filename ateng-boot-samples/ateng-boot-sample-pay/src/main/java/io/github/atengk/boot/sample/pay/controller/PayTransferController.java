@@ -26,7 +26,7 @@ import java.util.Objects;
 @Slf4j
 @Validated
 @RestController
-@RequestMapping("/pay/transfer")
+@RequestMapping("/sample/pay/transfer")
 public class PayTransferController {
 
     private final PayTemplate payTemplate;
