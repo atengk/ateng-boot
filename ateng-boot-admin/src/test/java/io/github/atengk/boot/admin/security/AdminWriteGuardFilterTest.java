@@ -145,5 +145,10 @@ class AdminWriteGuardFilterTest {
         MockHttpServletResponse regResp = new MockHttpServletResponse();
         filter.doFilter(regReq, regResp, filterChain);
         verify(filterChain).doFilter(regReq, regResp);
+
+        // 3. shouldBlock 直接判定契约校验
+        assertThat(filter.shouldBlock("post", "/admin/instances/inst-001/actuator/loggers/root")).isTrue();
+        assertThat(filter.shouldBlock("GET", "/admin/instances/inst-001/actuator/health")).isFalse();
+        assertThat(filter.shouldBlock("POST", "/admin/instances")).isFalse();
     }
 }

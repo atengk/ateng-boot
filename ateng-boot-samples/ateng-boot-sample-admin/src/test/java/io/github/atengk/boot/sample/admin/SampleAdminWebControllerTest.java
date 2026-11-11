@@ -1,27 +1,23 @@
 package io.github.atengk.boot.sample.admin;
 
-import ch.qos.logback.classic.Level;
-import ch.qos.logback.classic.LoggerContext;
-import de.codecentric.boot.admin.server.domain.entities.Instance;
 import de.codecentric.boot.admin.server.domain.entities.InstanceRepository;
-import de.codecentric.boot.admin.server.domain.events.InstanceDeregisteredEvent;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.sample.admin.config.RecordingNotificationTemplate;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
-import reactor.core.publisher.Mono;
 
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import com.sun.net.httpserver.HttpServer;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
@@ -61,39 +57,12 @@ class SampleAdminWebControllerTest {
 
     @AfterEach
     void tearDown() {
-        LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
-        ch.qos.logback.classic.Logger logger = context.getLogger("io.github.atengk.boot.sample.admin");
-        if (logger != null) {
-            logger.setLevel(Level.INFO);
-        }
-        if (recordingNotificationTemplate != null) {
-            recordingNotificationTemplate.clear();
-        }
-        List<Instance> instances = instanceRepository.findAll().collectList().block();
-        if (instances != null) {
-            for (Instance instance : instances) {
-                if (instance.isRegistered()) {
-                    instanceRepository.computeIfPresent(
-                            instance.getId(),
-                            (id, curr) -> Mono.just(curr.deregister())
-                    ).block();
-                }
-                notificationNotifier.onInstanceDeregistered(new InstanceDeregisteredEvent(instance.getId(), instance.getVersion() + 1));
-            }
-        }
-        if (properties != null) {
-            properties.setEnableWriteOperations(true);
-            properties.setAllowLocalInstances(true);
-            properties.setDebounceDuration(Duration.ofSeconds(30));
-            if (properties.getCleanup() != null) {
-                properties.getCleanup().setZombieThreshold(Duration.ofHours(24));
-            }
-            if (properties.getAlert() != null) {
-                properties.getAlert().getIncludedServices().clear();
-                properties.getAlert().setExcludedServices(new ArrayList<>(List.of("silent-*")));
-                properties.getAlert().setNotifyStatuses(new ArrayList<>(List.of("DOWN", "OFFLINE")));
-            }
-        }
+        SampleAdminTestSupport.resetSandboxState(
+                instanceRepository,
+                notificationNotifier,
+                properties,
+                recordingNotificationTemplate
+        );
     }
 
     @Test
@@ -169,6 +138,21 @@ class SampleAdminWebControllerTest {
                 .andExpect(jsonPath("$.data.authenticated").value(false))
                 .andExpect(jsonPath("$.data.providerClass").value("SampleAdminAuthProvider"));
 
+        // 单字符与带首尾空白用户名必须先 trim 并彻底脱敏，禁止原样回显
+        mockMvc.perform(post("/sample/admin/admission/auth-verify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"a\",\"password\":\"wrong\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.authenticated").value(false))
+                .andExpect(jsonPath("$.data.maskedUsername").value("*"));
+
+        mockMvc.perform(post("/sample/admin/admission/auth-verify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\" admin \",\"password\":\"admin\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.authenticated").value(true))
+                .andExpect(jsonPath("$.data.maskedUsername").value("ad**n"));
+
         mockMvc.perform(get("/sample/admin/admission/normalize-path").param("path", "admin///"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.normalizedPath").value("/admin"));
@@ -233,6 +217,22 @@ class SampleAdminWebControllerTest {
                 .andExpect(jsonPath("$.data.authMode").value("GLOBAL_FALLBACK"))
                 .andExpect(jsonPath("$.data.headerName").value("X-Actuator-Token"));
 
+        String actuatorTokenPreviewReq = """
+                {
+                    "serviceName": "billing-invoice-service",
+                    "metadata": {
+                        "actuator-token": "BILLING_ACTUATOR_SECRET_777"
+                    }
+                }
+                """;
+        mockMvc.perform(post("/sample/admin/governance/headers/preview")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(actuatorTokenPreviewReq))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.authMode").value("ACTUATOR_TOKEN"))
+                .andExpect(jsonPath("$.data.headerName").value("X-Actuator-Token"))
+                .andExpect(jsonPath("$.data.maskedHeaderValue", not(containsString("BILLING_ACTUATOR_SECRET_777"))));
+
         mockMvc.perform(post("/sample/admin/governance/loggers")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"loggerName\":\"io.github.atengk.boot.sample.admin\",\"level\":\"DEBUG\"}"))
@@ -249,49 +249,100 @@ class SampleAdminWebControllerTest {
                         .content("{\"loggerName\":\"io.github.atengk.boot.sample.admin\",\"level\":\"INVALID\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400));
+
+        mockMvc.perform(get("/sample/admin/governance/loggers")
+                        .param("loggerName", "   "))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(false));
     }
 
     @Test
-    @DisplayName("生命周期领域控制器：演练实例 VO 登记查询、僵尸实例触发驱逐及负阈值 JSR-303 拦截")
+    @DisplayName("生命周期领域控制器：演练实例 VO 登记查询、僵尸驱逐同时校验 UP 实例零误杀及非法入参拦截")
     void shouldVerifyLifecycleControllerContracts() throws Exception {
-        String zombieMockReq = """
-                {
-                    "instanceId": "sample-zombie-pod-01",
-                    "serviceName": "settlement-batch-service",
-                    "serviceUrl": "http://127.0.0.1:8080/",
-                    "version": "v2.4.0",
-                    "zone": "cn-hangzhou-a",
-                    "status": "OFFLINE"
-                }
-                """;
+        // 1. 非法 URL 入参触发 JSR-303 400 Fail-Fast
         mockMvc.perform(post("/sample/admin/lifecycle/instances/mock")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(zombieMockReq))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.instanceId").value("sample-zombie-pod-01"))
-                .andExpect(jsonPath("$.data.serviceName").value("settlement-batch-service"))
-                .andExpect(jsonPath("$.data.status").value("OFFLINE"))
-                .andExpect(jsonPath("$.data.registered").value(true));
-
-        mockMvc.perform(get("/sample/admin/lifecycle/instances"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[*].instanceId", hasItem("sample-zombie-pod-01")));
-
-        // 负阈值覆盖入参触发 JSR-303 400 Fail-Fast
-        mockMvc.perform(post("/sample/admin/lifecycle/zombies/clean")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"zombieThresholdOverride\":\"-5S\"}"))
+                        .content("{\"instanceId\":\"bad-url-01\",\"serviceName\":\"bad-svc\",\"serviceUrl\":\"not-a-valid-url\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.success").value(false));
 
-        Thread.sleep(25);
-        mockMvc.perform(post("/sample/admin/lifecycle/zombies/clean")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"zombieThresholdOverride\":\"PT0.01S\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.schedulerRunning").value(true))
-                .andExpect(jsonPath("$.data.evictedCount", greaterThanOrEqualTo(1)));
+        // 2. 启动本地轻量健康探针桩以维持 SBA 后台 StatusUpdater 轮询为 UP，并置登记 UP 与 OFFLINE 僵尸实例
+        HttpServer healthyProbeStub = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        healthyProbeStub.createContext("/actuator/health", exchange -> {
+            byte[] respBytes = "{\"status\":\"UP\"}".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, respBytes.length);
+            exchange.getResponseBody().write(respBytes);
+            exchange.close();
+        });
+        healthyProbeStub.start();
+        try {
+            int healthyPort = healthyProbeStub.getAddress().getPort();
+            String healthyUpReq = """
+                    {
+                        "instanceId": "sample-healthy-up-01",
+                        "serviceName": "order-core-service",
+                        "serviceUrl": "http://127.0.0.1:%d/",
+                        "version": "v3.0.0",
+                        "zone": "cn-hangzhou-a",
+                        "status": "UP"
+                    }
+                    """.formatted(healthyPort);
+            mockMvc.perform(post("/sample/admin/lifecycle/instances/mock")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(healthyUpReq))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.status").value("UP"));
+
+            String zombieMockReq = """
+                    {
+                        "instanceId": "sample-zombie-pod-01",
+                        "serviceName": "settlement-batch-service",
+                        "serviceUrl": "http://127.0.0.1:8080/",
+                        "version": "v2.4.0",
+                        "zone": "cn-hangzhou-a",
+                        "status": "OFFLINE"
+                    }
+                    """;
+            mockMvc.perform(post("/sample/admin/lifecycle/instances/mock")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(zombieMockReq))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.instanceId").value("sample-zombie-pod-01"))
+                    .andExpect(jsonPath("$.data.serviceName").value("settlement-batch-service"))
+                    .andExpect(jsonPath("$.data.status").value("OFFLINE"))
+                    .andExpect(jsonPath("$.data.registered").value(true));
+
+            mockMvc.perform(get("/sample/admin/lifecycle/instances"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[*].instanceId", hasItem("sample-zombie-pod-01")))
+                    .andExpect(jsonPath("$.data[*].instanceId", hasItem("sample-healthy-up-01")));
+
+            // 负阈值覆盖入参触发 JSR-303 400 Fail-Fast
+            mockMvc.perform(post("/sample/admin/lifecycle/zombies/clean")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"zombieThresholdOverride\":\"-5S\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(400))
+                    .andExpect(jsonPath("$.success").value(false));
+
+            Thread.sleep(25);
+            mockMvc.perform(post("/sample/admin/lifecycle/zombies/clean")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"zombieThresholdOverride\":\"PT0.01S\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.schedulerRunning").value(true))
+                    .andExpect(jsonPath("$.data.evictedCount", greaterThanOrEqualTo(1)))
+                    .andExpect(jsonPath("$.data.remainingRegisteredCount").value(not("0")));
+
+            mockMvc.perform(get("/sample/admin/lifecycle/instances"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[?(@.instanceId=='sample-healthy-up-01')].registered", hasItem(true)))
+                    .andExpect(jsonPath("$.data[?(@.instanceId=='sample-zombie-pod-01')].registered", hasItem(false)));
+        } finally {
+            healthyProbeStub.stop(0);
+        }
     }
 
     @Test
@@ -369,5 +420,113 @@ class SampleAdminWebControllerTest {
                         .content("{\"instanceId\":\"\",\"status\":\"INVALID\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400));
+
+        // 经 HTTP 触发防抖窗口内 DOWN -> UP 自愈取消告警验证（不得生成新告警卡片）
+        String debounceSelfHealId = "sample-self-heal-01";
+        mockMvc.perform(post("/sample/admin/lifecycle/instances/mock")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"instanceId\":\"" + debounceSelfHealId + "\",\"serviceName\":\"inventory-core-service\",\"serviceUrl\":\"http://127.0.0.1:8080/\",\"status\":\"UP\"}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/sample/admin/alert/status-transition")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"instanceId\":\"" + debounceSelfHealId + "\",\"status\":\"DOWN\",\"immediate\":false}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.pendingInstanceIds", hasItem(debounceSelfHealId)));
+
+        mockMvc.perform(post("/sample/admin/alert/status-transition")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"instanceId\":\"" + debounceSelfHealId + "\",\"status\":\"UP\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.pendingInstanceIds", not(hasItem(debounceSelfHealId))))
+                .andExpect(jsonPath("$.data.alertedInstanceIds", not(hasItem(debounceSelfHealId))));
+
+        if (recordingNotificationTemplate != null) {
+            mockMvc.perform(get("/sample/admin/alert/cards"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[*].content", not(hasItem(containsString("inventory-core-service")))));
+        }
+    }
+
+    @Test
+    @DisplayName("测试清理方法不得将清理实例写入 60s 发版静默窗以防跨用例污染")
+    void shouldResetNotifierWithoutSilencingSubsequentSameInstanceTests() throws Exception {
+        String reusedId = "sample-reused-id-01";
+        mockMvc.perform(post("/sample/admin/lifecycle/instances/mock")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"instanceId\":\"" + reusedId + "\",\"serviceName\":\"payment-core-service\",\"serviceUrl\":\"http://127.0.0.1:8080/\",\"status\":\"UP\"}"))
+                .andExpect(status().isOk());
+
+        tearDown();
+
+        org.assertj.core.api.Assertions.assertThat(notificationNotifier.getDeregisteredInstances()).isEmpty();
+
+        mockMvc.perform(post("/sample/admin/lifecycle/instances/mock")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"instanceId\":\"" + reusedId + "\",\"serviceName\":\"payment-core-service\",\"serviceUrl\":\"http://127.0.0.1:8080/\",\"status\":\"UP\"}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/sample/admin/alert/status-transition")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"instanceId\":\"" + reusedId + "\",\"status\":\"DOWN\",\"immediate\":false}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.pendingInstanceIds", hasItem(reusedId)));
+    }
+
+    @Test
+    @DisplayName("并发触发 immediate=true 与 immediate=false 时防抖时长互不串用且即时卡片必达可查")
+    void shouldIsolateImmediateDebounceOverrideAndAwaitRecordedCardDeterministically() throws Exception {
+        String immId = "sample-concurrent-imm-01";
+        String debId = "sample-concurrent-deb-01";
+        mockMvc.perform(post("/sample/admin/lifecycle/instances/mock")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"instanceId\":\"" + immId + "\",\"serviceName\":\"payment-imm-service\",\"serviceUrl\":\"http://127.0.0.1:8080/\",\"status\":\"UP\"}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/sample/admin/lifecycle/instances/mock")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"instanceId\":\"" + debId + "\",\"serviceName\":\"payment-deb-service\",\"serviceUrl\":\"http://127.0.0.1:8080/\",\"status\":\"UP\"}"))
+                .andExpect(status().isOk());
+
+        CountDownLatch startGate = new CountDownLatch(1);
+        CompletableFuture<Void> immediateFuture = CompletableFuture.runAsync(() -> {
+            try {
+                startGate.await();
+                mockMvc.perform(post("/sample/admin/alert/status-transition")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"instanceId\":\"" + immId + "\",\"status\":\"DOWN\",\"immediate\":true}"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.alertedInstanceIds", hasItem(immId)));
+            } catch (Exception ex) {
+                throw new IllegalStateException(ex);
+            }
+        });
+        CompletableFuture<Void> debouncedFuture = CompletableFuture.runAsync(() -> {
+            try {
+                startGate.await();
+                mockMvc.perform(post("/sample/admin/alert/status-transition")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"instanceId\":\"" + debId + "\",\"status\":\"DOWN\",\"immediate\":false}"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.pendingInstanceIds", hasItem(debId)));
+            } catch (Exception ex) {
+                throw new IllegalStateException(ex);
+            }
+        });
+
+        startGate.countDown();
+        CompletableFuture.allOf(immediateFuture, debouncedFuture).join();
+
+        mockMvc.perform(get("/sample/admin/alert/state"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.debounceDuration").value("PT30S"))
+                .andExpect(jsonPath("$.data.pendingInstanceIds", hasItem(debId)))
+                .andExpect(jsonPath("$.data.alertedInstanceIds", hasItem(immId)));
+
+        if (recordingNotificationTemplate != null) {
+            mockMvc.perform(get("/sample/admin/alert/cards"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[*].content", hasItem(containsString("payment-imm-service"))))
+                    .andExpect(jsonPath("$.data[*].content", not(hasItem(containsString("payment-deb-service")))));
+        }
     }
 }

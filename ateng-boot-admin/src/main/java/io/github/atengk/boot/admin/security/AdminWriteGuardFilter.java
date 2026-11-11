@@ -14,6 +14,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -59,19 +60,29 @@ public class AdminWriteGuardFilter extends OncePerRequestFilter implements Order
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
         String method = request.getMethod();
+        String uri = request.getRequestURI();
 
         // 仅当配置显式关闭写操作（只读模式）且当前请求为写操作方法时执行拦截判定
-        if (properties != null && !properties.isEnableWriteOperations()
-                && method != null && MUTATING_METHODS.contains(method.toUpperCase())) {
-            String uri = request.getRequestURI();
-            if (isActuatorProxyEndpoint(uri)) {
-                log.warn("[Write Guard] 控制台只读拦截：当前处于只读管控模式，阻断针对微服务 Actuator 端点的变更请求：method=[{}], uri=[{}]", method, uri);
-                reject(response, HttpStatus.FORBIDDEN, "Console write operations are disabled by policy");
-                return;
-            }
+        if (shouldBlock(method, uri)) {
+            log.warn("[Write Guard] 控制台只读拦截：当前处于只读管控模式，阻断针对微服务 Actuator 端点的变更请求：method=[{}], uri=[{}]", method, uri);
+            reject(response, HttpStatus.FORBIDDEN, "Console write operations are disabled by policy");
+            return;
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    /**
+     * 判断指定 HTTP 方法与请求路径在当前策略下是否应当被只读守卫阻断
+     *
+     * @param method HTTP 请求方法
+     * @param uri    目标请求路径
+     * @return true 若会被只读守卫拦截返回 403
+     */
+    public boolean shouldBlock(String method, String uri) {
+        return properties != null && !properties.isEnableWriteOperations()
+                && method != null && MUTATING_METHODS.contains(method.toUpperCase(Locale.ROOT))
+                && isActuatorProxyEndpoint(uri);
     }
 
     /**

@@ -107,8 +107,8 @@ flowchart TD
   ```
 - **Sa-Token 路由过滤守卫**：
   在 `AtengAdminServerAutoConfiguration` 中配置拦截器，针对看板入口路径（如 `/admin/**`）实施鉴权守卫。未认证请求统一 302 重定向至内置的原生登录端点 `/admin/login`。
-- **纯原生内嵌响应式拟物化登录页 (`AdminLoginController`)**：
-  彻底摆脱 Spring Security 默认丑陋的弹窗与繁复的模板引擎依赖（零 Thymeleaf/Freemarker）。基于现代化 CSS3 毛玻璃拟物化设计与原生 HTML 动态流式渲染，提供自洽的开箱即用高颜值登录界面；支持通过 `AdminAuthProvider` SPI 自由接管生产级账密校验逻辑。
+- **纯原生内嵌响应式登录页 (`AdminLoginController`)**：
+  彻底摆脱 Spring Security 默认丑陋的弹窗与繁复的模板引擎依赖（零 Thymeleaf/Freemarker）。基于纯白圆角卡片 CSS 设计与原生 HTML 动态流式渲染，提供自洽的开箱即用简洁登录界面；支持通过 `AdminAuthProvider` SPI 自由接管生产级账密校验逻辑。
 
 ### 决策二：注册防火墙 `AdminSsrfGuardFilter` 与有界可复位流包装 `ResettableContentCachingRequestWrapper`
 
@@ -133,8 +133,8 @@ flowchart TD
   1. **集群防伪凭据核验**：强制校验请求头 `X-Admin-Client-Secret`，防范外部未经授权的服务随意注册到看板；
   2. **URL 合法性探测**：严格校验 `serviceUrl`、`managementUrl` 与 `healthUrl` 的 Scheme 必须为 `http` 或 `https`；
   3. **敏感网络与云元数据黑名单阻断**：
-     - 硬阻断云厂商实例元数据地址 `169.254.169.254` 与 RFC 3927 链路本地地址（`169.254.0.0/16`）；
-     - 生产默认拦截 IPv4/IPv6 本地环回地址（`127.0.0.1`、`localhost`、`::1` 及带方括号的 `[::1]`、`[0:0:0:0:0:0:0:1]`，通过 `allow-local-instances: false` 守卫），杜绝内网渗透跳板。
+     - 依托纯 JDK 无 DNS 查表地址分类器，硬阻断云厂商实例元数据地址 `169.254.169.254`、RFC 3927 链路本地网段（`169.254.0.0/16`）、IPv6 链路本地 `fe80::/10` 及其十/八/十六进制或 IPv4-mapped 编码变体；
+     - 生产默认拦截 IPv4/IPv6 本地环回及通配地址（`localhost` / `*.localhost`、`127.0.0.0/8`、`0.0.0.0`、`[::1]`、`[0:0::1]`、`[::1%25lo0]`、`[::ffff:127.0.0.1]`、`[::]` 等，通过 `allow-local-instances: false` 守卫），杜绝内网渗透跳板。
 
 ### 决策三：双向安全凭据握手穿透与客户端透明增强
 
@@ -180,7 +180,7 @@ stateDiagram-v2
 - **生产合规只读约束**：
   在生产环境中，监控看板默认应当处于只读观测模式，防止运维人员误触操作对线上微服务造成生产事故。
 - **物理拦截策略**：
-  在 `AdminWriteGuardFilter` 中，当 `ateng.boot.admin.server.enable-write-operations = false` 时，前置拦截针对微服务 Actuator 反向代理端点（`/instances/{id}/actuator/**`）的所有非幂等写操作（`POST`/`PUT`/`DELETE`/`PATCH`），直接响应 `403 Forbidden`。
+  在 `AdminWriteGuardFilter` 中，当 `ateng.boot.admin.server.enable-write-operations = false` 时，前置拦截针对微服务 Actuator 反向代理端点（`/instances/{id}/actuator/**`）的所有非幂等写操作（`POST`/`PUT`/`DELETE`/`PATCH`），直接响应 `403 Forbidden`，并暴露 `shouldBlock(method, uri)` 供体验控管端统一复用判定。
 - **通信豁免保护**：
   严格豁免微服务生命周期请求（`POST /instances` 注册、`DELETE /instances/{id}` 注销）与控制台登录/登出请求，保证集群通信绝不受限。
 
@@ -189,7 +189,7 @@ stateDiagram-v2
 - **拔插式准入契约**：
   抽象 `AdminInstanceAdmissionPolicy` 接口，定义 `AdminAdmissionResult evaluate(InstanceRegistration registration, HttpServletRequest request)` 契约（以框架强类型不可变快照 `InstanceRegistration` 承载实例与元数据，隔离底层 SBA DTO）。
 - **开箱自洽与企业级接管**：
-  默认由 `DefaultAdminInstanceAdmissionPolicy` 实现集群 Secret、`http`/`https` Scheme 白名单、RFC 3927 链路本地 / 云元数据网段阻断及 IPv4/IPv6（含方括号 `[::1]`）环回检查；企业开发者可通过声明 Bean 轻松扩展自定义准入规则（如强制服务名规范、VPC CIDR 子网白名单审查等）。
+  默认由 `DefaultAdminInstanceAdmissionPolicy` 实现集群 Secret、`http`/`https` Scheme 白名单、纯 JDK 无 DNS 查表的链路本地/云元数据阻断及 IPv4/IPv6 环回多编码变体检查，并在 `trim()` 后统一校验正则白名单；企业开发者可通过声明 Bean 轻松扩展自定义准入规则（如强制服务名规范、VPC CIDR 子网白名单审查等）。
 
 ### 决策七：异构微服务 Actuator 出站抓取多模态认证自适应推导
 
@@ -234,25 +234,22 @@ stateDiagram-v2
 | 方案维度 | 备选方案 A (官方 Spring Security 默认) | 备选方案 B (纯 Web Filter 弱拦截) | 本决策方案 (ateng-boot-admin) | 决策结论与优势 |
 | :--- | :--- | :--- | :--- | :--- |
 | **安全框架底座** | 引入 `spring-boot-starter-security` | 无安全框架，裸手写 Servlet Filter | **全面整合 Sa-Token，排除 Spring Security** | 消除双安全框架冲突，统一权限会话标准 |
-| **登录界面交互** | 官方丑陋弹窗或手写 Thymeleaf 页面 | 前后端分离额外搭建前端工程 | **内置现代拟物化高颜值原生响应式登录页** | 零前端依赖，开箱即用高颜值自洽体验 |
+| **登录界面交互** | 官方丑陋弹窗或手写 Thymeleaf 页面 | 前后端分离额外搭建前端工程 | **内置纯白圆角卡片原生响应式登录页** | 零前端依赖，开箱即用简洁自洽体验 |
 | **SSRF 防御与流读取** | SBA 官方无 SSRF 防护（全信任） | 使用普通 ContentCachingRequestWrapper 或无界全量缓冲读取 | **AdminSsrfGuardFilter + ResettableContentCachingRequestWrapper（有界 1MB）** | 杜绝云元数据渗透、单向流 EOF 崩溃与超大畸形报文 OOM |
 | **微服务凭据抓取** | 明文配置单一固定 Token 或开放未授权端点 | 各服务自行配置允许白名单 IP 穿透 | **AtengActuatorHttpHeadersProvider + 实例 Metadata 动态提取** | 端到端双向凭据握手，多租户多服务细粒度隔离 |
 | **告警风暴抑制** | 原生即时推送，网络抖动瞬间轰炸 | 引入复杂外部流式告警平台（Prometheus AlertManager） | **内置 30 秒防抖队列 + K8s 发版静默状态机** | 轻量化开箱即用，消除 90% 运维虚警噪音 |
 
 ---
 
-## 演进记录（2026-11：SSRF 与调度器边界加固、Sample 多控制器体验化与五维规范对齐）
+## 演进记录（2026-11：SSRF 与生命周期并发加固、Sample 多控制器体验化与五维规范对齐）
 
-基于现有架构契约演进，依据“ADR 防膨胀”原则不另起新编号，在本文档增量记录 `#915 ~ #917` 迭代落地的三项生产化加固：
+基于现有架构契约演进，依据“ADR 防膨胀”原则不另起新编号，本轮迭代（`#915 ~ #917` 及后续评审加固）核心增量如下：
 
-1. **Starter 边界与资源治理加固（`#915`）**：
-   - **有界可复位流防 OOM**：`AtengAdminServerProperties` 新增 `DataSize maxRegistrationPayloadSize`（默认 `1MB`）；`ResettableContentCachingRequestWrapper` 先校验 `Content-Length` 再执行 `4096` 字节分块累加读取，超限立即中断并由 `AdminSsrfGuardFilter` 返回 `413 Payload Too Large`；
-   - **IPv6 方括号环回与严格 Scheme 收口**：`DefaultAdminInstanceAdmissionPolicy` 强制 `serviceUrl` / `managementUrl` / `healthUrl` 仅允许 `http` 与 `https` 协议，并精确解析与拦截标准及带方括号的 IPv6 环回地址（`::1`、`[::1]`、`[0:0:0:0:0:0:0:1]`）；
-   - **调度器所有权与关闭时序安全**：`AtengAdminNotificationNotifier` 区分自动装配传入的共享调度器与无参降级自建的 `internalScheduler` 所有权，`stop()` 时仅销毁内部自建调度器，并引入 `stopped` 状态守卫杜绝销毁后异步误投递；
-   - **统一语言收口**：重写 `ateng-boot-admin/CONTEXT.md` 为 4 域 12 概念纯领域词表。
-2. **Sample 多领域控制器体验闭环与离线桩收敛（`#916`）**：
-   - **四领域 Controller 与 Zero-Entity-Leakage**：`ateng-boot-sample-admin` 引入 `ateng-boot-web` 并拆分为准入与鉴权（`AdminAdmissionController`）、安全守卫与治理（`AdminGovernanceController`）、生命周期与清理（`AdminLifecycleController`）、告警与防抖录制（`AdminAlertController`），全链路采用 9 个 JSR-303 Request DTO 与 10 个 Response VO 隔离底层 SBA 领域模型；
-   - **零硬编码凭据与双模离线桩**：外置演示用认证与准入 SPI Bean（`SampleAdminAuthProvider` 与 `SampleInstanceAdmissionPolicy`），新增 `@Profile("!local")` 生效的 `RecordingNotificationTemplate` 内存告警录制桩替代集成测试中的 `@MockBean`，并提供宿主中立的 `application-local.example.yml`。
-3. **1:1 逆向五维文档与跨模块清晰划界（`#917`）**：
-   - 先运行通过全部 Starter 单测与 Sample 集成/Web 切片测试，再将四领域体验卡与五维 `ateng-boot-admin/README.md` 1:1 逆向沉淀回仓；
-   - 明确 Starter `README.md` 第 0 章全景矩阵仅收口 `ateng-boot-admin` 自有导出 API/SPI/配置，客户端自动挂载 `X-Admin-Client-Secret` 请求头的 `AdminClientSecretHttpRequestInterceptor` 显式归位于第 2 章与 `ateng-boot-observability` 的跨模块协同体系，并同步更新仓库根 `CONTEXT-MAP.md`。
+1. **Starter 边界与并发生命周期加固（`#915`）**：
+   - **有界可复位流与严格 SSRF 分类**：`AtengAdminServerProperties` 新增 `DataSize maxRegistrationPayloadSize`（默认 `1MB`），`AdminSsrfGuardFilter` 超限返回 `413 Payload Too Large`；`DefaultAdminInstanceAdmissionPolicy` 引入无 DNS 查表多编码 IPv4/IPv6 解析阻断环回与 `fe80::/10` 变体并在 `trim()` 后统一校验白名单；`AdminWriteGuardFilter` 提取公共 `shouldBlock(method, uri)` 消除上层策略复制；
+   - **三态生命周期与并发安全**：`AtengAdminNotificationNotifier` 收敛为 `LifecycleState`（`CREATED`/`RUNNING`/`STOPPED`）与 `ReentrantLock` 守卫（释放锁后执行 I/O 通知），支持未 `start()` 直接 `stop()` 清理内部线程、`stop()` 后重启重建内部调度器及并发防泄漏；重写 `ateng-boot-admin/CONTEXT.md` 为 4 域 12 概念纯领域词表。
+2. **Sample 四领域控制器体验化与无竞态录制桩（`#916`）**：
+   - 落地 `AdminAdmissionController`、`AdminGovernanceController`、`AdminLifecycleController` 与 `AdminAlertController` 4 大领域控制器及 9 个 JSR-303 Request DTO / 10 个 Response VO（严守 Zero-Entity-Leakage 与单字符脱敏）；外置无状态 `SampleAdminAuthProvider` 与 `SampleInstanceAdmissionPolicy`，通过 `SamplePropertyOverrideSupport` 统一持锁临时覆盖；
+   - `RecordingNotificationTemplate`（`@Profile("!local")`）采用 `ReentrantLock` + `Condition` 实现原子有界录制与无竞态同步等待，彻底撤除 `@MockBean` 并提供宿主中立 `application-local.example.yml`。
+3. **1:1 逆向五维文档与跨模块划界（`#917`）**：
+   - 按 Sample-First 流程沉淀五维 `ateng-boot-admin/README.md` 与四段式 `ateng-boot-sample-admin/README.md`；明确 `AdminClientSecretHttpRequestInterceptor` 归属 `ateng-boot-observability`（第 2 章跨模块协同，不混入第 0 章），并同步校准仓库根 `CONTEXT-MAP.md`。

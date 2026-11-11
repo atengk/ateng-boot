@@ -363,4 +363,54 @@ class AdminSsrfGuardFilterTest {
 
         assertThat(response.getStatus()).isEqualTo(HttpStatus.PAYLOAD_TOO_LARGE.value());
     }
+
+    @Test
+    @DisplayName("注册请求体恰好等于容量上限时正常放行且下游可完整消费载荷")
+    void shouldAllowRegistrationPayloadExactlyAtMaxSize() throws ServletException, IOException {
+        AtengAdminServerProperties properties = createProperties();
+        properties.setMaxRegistrationPayloadSize(DataSize.ofKilobytes(1));
+        AdminSsrfGuardFilter filter = new AdminSsrfGuardFilter(properties);
+
+        String prefix = "{\"name\":\"exact-limit-svc\",\"serviceUrl\":\"http://order-svc:8080/\",\"metadata\":{\"k\":\"";
+        String suffix = "\"}}";
+        int paddingLen = 1024 - prefix.getBytes(StandardCharsets.UTF_8).length - suffix.getBytes(StandardCharsets.UTF_8).length;
+        byte[] exactBytes = (prefix + "a".repeat(paddingLen) + suffix).getBytes(StandardCharsets.UTF_8);
+        assertThat(exactBytes).hasSize(1024);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/instances");
+        request.addHeader(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, VALID_SECRET);
+        request.setContent(exactBytes);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        AtomicBoolean chainExecuted = new AtomicBoolean(false);
+        filter.doFilter(request, response, (req, res) -> {
+            chainExecuted.set(true);
+            byte[] downstreamBytes = req.getInputStream().readAllBytes();
+            assertThat(downstreamBytes).isEqualTo(exactBytes);
+        });
+
+        assertThat(chainExecuted.get()).isTrue();
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("maxRegistrationPayloadSize 配置为 0 或负值时自动回退至默认 1MB 上限")
+    void shouldFallbackToDefaultLimitWhenConfiguredNonPositive() throws ServletException, IOException {
+        for (DataSize invalidLimit : List.of(DataSize.ofBytes(0), DataSize.ofBytes(-128))) {
+            AtengAdminServerProperties properties = createProperties();
+            properties.setMaxRegistrationPayloadSize(invalidLimit);
+            AdminSsrfGuardFilter filter = new AdminSsrfGuardFilter(properties);
+
+            String normalPayload = "{\"name\":\"fallback-svc\",\"serviceUrl\":\"http://order-svc:8080/\"}";
+            MockHttpServletRequest normalReq = new MockHttpServletRequest("POST", "/instances");
+            normalReq.addHeader(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, VALID_SECRET);
+            normalReq.setContent(normalPayload.getBytes(StandardCharsets.UTF_8));
+            MockHttpServletResponse normalRes = new MockHttpServletResponse();
+
+            AtomicBoolean chainExecuted = new AtomicBoolean(false);
+            filter.doFilter(normalReq, normalRes, (req, res) -> chainExecuted.set(true));
+            assertThat(chainExecuted.get()).isTrue();
+            assertThat(normalRes.getStatus()).isEqualTo(200);
+        }
+    }
 }

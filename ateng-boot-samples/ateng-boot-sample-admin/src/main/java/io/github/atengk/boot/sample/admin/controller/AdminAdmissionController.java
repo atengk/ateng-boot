@@ -86,10 +86,15 @@ public class AdminAdmissionController {
     @PostMapping("/auth-verify")
     public Result<AuthVerifyVO> verifyAdminAuth(@Valid @RequestBody AuthVerifyRequest request) {
         boolean authenticated = authProvider.authenticate(request.getUsername(), request.getPassword());
-        String username = request.getUsername();
-        String maskedUser = username.length() <= 3
-                ? DesensitizeUtil.mask(username, 1, username.length())
-                : DesensitizeUtil.maskKeepHeadTail(username, 2, 1);
+        String username = request.getUsername().trim();
+        String maskedUser;
+        if (username.length() <= 1) {
+            maskedUser = "*";
+        } else if (username.length() <= 3) {
+            maskedUser = DesensitizeUtil.mask(username, 1, username.length());
+        } else {
+            maskedUser = DesensitizeUtil.maskKeepHeadTail(username, 2, 1);
+        }
         AuthVerifyVO vo = AuthVerifyVO.builder()
                 .authenticated(authenticated)
                 .maskedUsername(maskedUser)

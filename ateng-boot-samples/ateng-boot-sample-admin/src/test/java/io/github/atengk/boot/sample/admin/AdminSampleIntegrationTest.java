@@ -59,7 +59,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * Spring Boot Admin 生产级场景沙箱端到端集成测试
  * 覆盖原生表单登录重定向、Sa-Token 鉴权、注册防火墙防 SSRF 与 413 载荷上限、双向凭据握手穿透、
- * 控制台只读守卫、自定义准入 SPI、僵尸实例清理、告警防抖静默状态机与宿主中立 Local 模式探测
+ * 控制台只读守卫、自定义准入 SPI、僵尸实例清理、告警防抖与发版静默状态机及宿主中立 Local 模式探测
  *
  * @author Ateng
  * @since 2026-10-26
@@ -101,39 +101,12 @@ class AdminSampleIntegrationTest {
 
     @AfterEach
     void tearDown() {
-        LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
-        ch.qos.logback.classic.Logger logger = context.getLogger("io.github.atengk.boot.sample.admin");
-        if (logger != null) {
-            logger.setLevel(Level.INFO);
-        }
-        if (recordingNotificationTemplate != null) {
-            recordingNotificationTemplate.clear();
-        }
-        List<Instance> instances = instanceRepository.findAll().collectList().block();
-        if (instances != null) {
-            for (Instance instance : instances) {
-                if (instance.isRegistered()) {
-                    instanceRepository.computeIfPresent(
-                            instance.getId(),
-                            (id, curr) -> Mono.just(curr.deregister())
-                    ).block();
-                }
-                notificationNotifier.onInstanceDeregistered(new InstanceDeregisteredEvent(instance.getId(), instance.getVersion() + 1));
-            }
-        }
-        if (properties != null) {
-            properties.setEnableWriteOperations(true);
-            properties.setAllowLocalInstances(true);
-            properties.setDebounceDuration(Duration.ofSeconds(30));
-            if (properties.getCleanup() != null) {
-                properties.getCleanup().setZombieThreshold(Duration.ofHours(24));
-            }
-            if (properties.getAlert() != null) {
-                properties.getAlert().getIncludedServices().clear();
-                properties.getAlert().setExcludedServices(new ArrayList<>(List.of("silent-*")));
-                properties.getAlert().setNotifyStatuses(new ArrayList<>(List.of("DOWN", "OFFLINE")));
-            }
-        }
+        SampleAdminTestSupport.resetSandboxState(
+                instanceRepository,
+                notificationNotifier,
+                properties,
+                recordingNotificationTemplate
+        );
     }
 
     @Test
@@ -610,7 +583,9 @@ class AdminSampleIntegrationTest {
         if (clientHealthUrl == null || clientHealthUrl.isBlank() || clientHealthUrl.contains("YOUR_LOCAL_CLIENT")) {
             log.info("[豁免：无可用环境] 未配置 sample.admin.local.client-health-url，跳过外部客户端真实网络探测。");
         } else {
-            HttpClient httpClient = HttpClient.newHttpClient();
+            HttpClient httpClient = HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(3))
+                    .build();
             HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(clientHealthUrl.trim()))
                     .timeout(Duration.ofSeconds(3))

@@ -11,6 +11,7 @@ import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.security.AdminWriteGuardFilter;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sample.admin.dto.HeaderDerivePreviewRequest;
 import io.github.atengk.boot.sample.admin.dto.HeaderDerivePreviewVO;
@@ -18,6 +19,7 @@ import io.github.atengk.boot.sample.admin.dto.LogLevelUpdateRequest;
 import io.github.atengk.boot.sample.admin.dto.LoggerLevelVO;
 import io.github.atengk.boot.sample.admin.dto.WriteGuardStatusVO;
 import io.github.atengk.boot.sample.admin.dto.WriteGuardToggleRequest;
+import io.github.atengk.boot.sample.admin.support.SamplePropertyOverrideSupport;
 import jakarta.validation.Valid;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -32,7 +34,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 控制台只读治理、出站凭据级联推导与在线日志管控领域控制器
@@ -46,12 +48,12 @@ public class AdminGovernanceController {
 
     private static final String DEFAULT_PROBE_METHOD = "POST";
     private static final String DEFAULT_PROBE_URI = "/admin/instances/order-core-01/actuator/loggers/root";
-    private static final Set<String> MUTATING_METHODS = Set.of("POST", "PUT", "DELETE", "PATCH");
 
     private final AtengAdminServerProperties properties;
     private final AdminWriteGuardFilter writeGuardFilter;
     private final AtengActuatorHttpHeadersProvider headersProvider;
     private final String contextPath;
+    private final ReentrantLock writeGuardLock = new ReentrantLock();
 
     public AdminGovernanceController(AtengAdminServerProperties properties,
                                      AdminWriteGuardFilter writeGuardFilter,
@@ -77,7 +79,8 @@ public class AdminGovernanceController {
     public Result<WriteGuardStatusVO> getWriteGuardStatus(
             @RequestParam(value = "method", defaultValue = DEFAULT_PROBE_METHOD) String probeMethod,
             @RequestParam(value = "uri", defaultValue = DEFAULT_PROBE_URI) String probeUri) {
-        return Result.success(buildWriteGuardStatus(probeMethod, probeUri));
+        return SamplePropertyOverrideSupport.withLock(writeGuardLock,
+                () -> Result.success(buildWriteGuardStatus(probeMethod, probeUri)));
     }
 
     /**
@@ -88,11 +91,13 @@ public class AdminGovernanceController {
      */
     @PostMapping("/write-guard")
     public Result<WriteGuardStatusVO> toggleWriteGuard(@Valid @RequestBody WriteGuardToggleRequest request) {
-        // 仅用于单节点 Sample 沙箱实时体验 AdminWriteGuardFilter 403 拦截与放行切换
-        properties.setEnableWriteOperations(request.getEnableWriteOperations());
         String method = StringUtils.hasText(request.getProbeMethod()) ? request.getProbeMethod().trim() : DEFAULT_PROBE_METHOD;
         String uri = StringUtils.hasText(request.getProbeUri()) ? request.getProbeUri().trim() : DEFAULT_PROBE_URI;
-        return Result.success(buildWriteGuardStatus(method, uri));
+        return SamplePropertyOverrideSupport.withLock(writeGuardLock, () -> {
+            // 仅用于单节点 Sample 沙箱实时体验 AdminWriteGuardFilter 403 拦截与放行切换
+            properties.setEnableWriteOperations(request.getEnableWriteOperations());
+            return Result.success(buildWriteGuardStatus(method, uri));
+        });
     }
 
     /**
@@ -126,8 +131,9 @@ public class AdminGovernanceController {
     @GetMapping("/loggers")
     public Result<LoggerLevelVO> getLoggerLevel(
             @RequestParam(value = "loggerName", defaultValue = "io.github.atengk.boot.sample.admin") String loggerName) {
+        BusinessAssert.isTrue(StringUtils.hasText(loggerName), "Logger 名称不能为空");
         LoggerContext loggerContext = (LoggerContext) LoggerFactory.getILoggerFactory();
-        ch.qos.logback.classic.Logger logger = loggerContext.getLogger(loggerName);
+        ch.qos.logback.classic.Logger logger = loggerContext.getLogger(loggerName.trim());
         return Result.success(toLoggerLevelVO(logger));
     }
 
@@ -148,9 +154,7 @@ public class AdminGovernanceController {
     private WriteGuardStatusVO buildWriteGuardStatus(String probeMethod, String probeUri) {
         String normalizedMethod = probeMethod.toUpperCase(Locale.ROOT);
         boolean proxyEndpoint = writeGuardFilter.isActuatorProxyEndpoint(probeUri);
-        boolean wouldBlock = !properties.isEnableWriteOperations()
-                && MUTATING_METHODS.contains(normalizedMethod)
-                && proxyEndpoint;
+        boolean wouldBlock = writeGuardFilter.shouldBlock(normalizedMethod, probeUri);
         return WriteGuardStatusVO.builder()
                 .enableWriteOperations(properties.isEnableWriteOperations())
                 .contextPath(contextPath)

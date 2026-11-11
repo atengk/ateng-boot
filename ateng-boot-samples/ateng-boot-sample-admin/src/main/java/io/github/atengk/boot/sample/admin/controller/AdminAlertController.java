@@ -8,6 +8,8 @@ import de.codecentric.boot.admin.server.domain.values.InstanceId;
 import de.codecentric.boot.admin.server.domain.values.StatusInfo;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.sample.admin.config.RecordingNotificationTemplate;
@@ -15,6 +17,7 @@ import io.github.atengk.boot.sample.admin.dto.AlertStateSnapshotVO;
 import io.github.atengk.boot.sample.admin.dto.GracefulDeregisterRequest;
 import io.github.atengk.boot.sample.admin.dto.RecordedAlertCardVO;
 import io.github.atengk.boot.sample.admin.dto.StatusTransitionTriggerRequest;
+import io.github.atengk.boot.sample.admin.support.SamplePropertyOverrideSupport;
 import io.github.atengk.boot.sample.admin.support.SampleStatusConverter;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
@@ -32,8 +35,10 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -90,23 +95,35 @@ public class AdminAlertController {
         );
 
         boolean immediate = Boolean.TRUE.equals(request.getImmediate());
+        AlertStateSnapshotVO snapshot;
         if (immediate) {
-            // 仅在单机沙箱即时演示模式下受锁串行切换 0s 防抖窗口并等待派发完成
-            debounceOverrideLock.lock();
-            Duration originalDebounce = properties.getDebounceDuration();
-            try {
-                properties.setDebounceDuration(Duration.ZERO);
-                notifier.notify(event).block();
-                awaitPendingTaskIfPresent(instanceId);
-            } finally {
-                properties.setDebounceDuration(originalDebounce);
-                debounceOverrideLock.unlock();
-            }
+            // 在单机沙箱即时演示模式下受锁串行切换 0s 防抖窗口并等待调度与卡片录制闭环完成
+            snapshot = SamplePropertyOverrideSupport.withTemporaryOverride(
+                    debounceOverrideLock,
+                    properties::getDebounceDuration,
+                    properties::setDebounceDuration,
+                    Duration.ZERO,
+                    () -> {
+                        RecordingNotificationTemplate recorder = recordingTemplateProvider.getIfAvailable();
+                        long beforeCount = recorder != null ? recorder.getTotalRecordedCount() : 0L;
+                        notifier.notify(event).block();
+                        awaitPendingTaskIfPresent(instanceId);
+                        if (recorder != null
+                                && notifier.getAlertedInstances().contains(instanceId)
+                                && recorder.getTotalRecordedCount() == beforeCount) {
+                            recorder.awaitRecordedCountAfter(beforeCount, Duration.ofSeconds(2));
+                        }
+                        return buildStateSnapshot();
+                    }
+            );
         } else {
-            notifier.notify(event).block();
+            snapshot = SamplePropertyOverrideSupport.withLock(debounceOverrideLock, () -> {
+                notifier.notify(event).block();
+                return buildStateSnapshot();
+            });
         }
 
-        return Result.success(buildStateSnapshot());
+        return Result.success(snapshot);
     }
 
     /**
@@ -122,14 +139,18 @@ public class AdminAlertController {
         BusinessAssert.notNull(existing, "未找到目标实例，请先登记演练实例: " + instanceId.getValue());
 
         long baseVersion = existing.getVersion();
-        notifier.notify(new InstanceDeregisteredEvent(instanceId, baseVersion + 1)).block();
+        AlertStateSnapshotVO snapshot = SamplePropertyOverrideSupport.withLock(debounceOverrideLock, () -> {
+            notifier.notify(new InstanceDeregisteredEvent(instanceId, baseVersion + 1)).block();
 
-        if (StringUtils.hasText(request.getFollowUpFaultStatus())) {
-            StatusInfo followUp = SampleStatusConverter.toStatusInfo(request.getFollowUpFaultStatus());
-            notifier.notify(new InstanceStatusChangedEvent(instanceId, baseVersion + 2, followUp)).block();
-        }
+            if (StringUtils.hasText(request.getFollowUpFaultStatus())) {
+                StatusInfo followUp = SampleStatusConverter.toStatusInfo(request.getFollowUpFaultStatus());
+                notifier.notify(new InstanceStatusChangedEvent(instanceId, baseVersion + 2, followUp)).block();
+            }
 
-        return Result.success(buildStateSnapshot());
+            return buildStateSnapshot();
+        });
+
+        return Result.success(snapshot);
     }
 
     /**
@@ -139,7 +160,7 @@ public class AdminAlertController {
      */
     @GetMapping("/state")
     public Result<AlertStateSnapshotVO> getAlertState() {
-        return Result.success(buildStateSnapshot());
+        return Result.success(SamplePropertyOverrideSupport.withLock(debounceOverrideLock, this::buildStateSnapshot));
     }
 
     /**
@@ -165,9 +186,15 @@ public class AdminAlertController {
             future.get(2, TimeUnit.SECONDS);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            log.warn("等待即时告警调度任务被中断: instanceId={}", instanceId.getValue(), ex);
-        } catch (Exception ex) {
-            log.warn("等待即时告警调度任务未正常完成: instanceId={}, reason={}", instanceId.getValue(), ex.getMessage());
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "等待即时告警调度任务被中断: " + instanceId.getValue(), ex);
+        } catch (TimeoutException ex) {
+            throw new BusinessException(CommonResultCode.SERVICE_UNAVAILABLE,
+                    "等待即时告警调度任务超时: " + instanceId.getValue(), ex);
+        } catch (ExecutionException ex) {
+            Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "即时告警调度任务执行异常: " + instanceId.getValue(), cause);
         }
     }
 

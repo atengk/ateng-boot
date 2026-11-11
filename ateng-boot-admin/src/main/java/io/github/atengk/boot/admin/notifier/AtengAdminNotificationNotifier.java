@@ -29,7 +29,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 状态变更防抖与多端机器人卡片告警通知器
@@ -46,12 +47,18 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
      */
     public static final Duration DEFAULT_DEREGISTRATION_SILENCE_WINDOW = Duration.ofSeconds(60);
 
+    private enum LifecycleState {
+        CREATED,
+        RUNNING,
+        STOPPED
+    }
+
     private final ObjectProvider<NotificationTemplate> notificationTemplateProvider;
     private final AtengAdminServerProperties properties;
-    private final ScheduledExecutorService scheduler;
+    private volatile ScheduledExecutorService scheduler;
     private final boolean internalScheduler;
-    private final AtomicBoolean running = new AtomicBoolean(false);
-    private final AtomicBoolean stopped = new AtomicBoolean(false);
+    private final AtomicReference<LifecycleState> lifecycleState = new AtomicReference<>(LifecycleState.CREATED);
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
 
     /**
      * 正在处于防抖等待中的任务映射表：InstanceId -> ScheduledFuture
@@ -100,14 +107,18 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             this.scheduler = scheduler;
             this.internalScheduler = false;
         } else {
-            ThreadPoolTaskScheduler defaultScheduler = new ThreadPoolTaskScheduler();
-            defaultScheduler.setPoolSize(1);
-            defaultScheduler.setThreadNamePrefix("sba-notify-debounce-");
-            defaultScheduler.setDaemon(true);
-            defaultScheduler.initialize();
-            this.scheduler = defaultScheduler.getScheduledExecutor();
+            this.scheduler = createInternalScheduler();
             this.internalScheduler = true;
         }
+    }
+
+    private static ScheduledExecutorService createInternalScheduler() {
+        ThreadPoolTaskScheduler defaultScheduler = new ThreadPoolTaskScheduler();
+        defaultScheduler.setPoolSize(1);
+        defaultScheduler.setThreadNamePrefix("sba-notify-debounce-");
+        defaultScheduler.setDaemon(true);
+        defaultScheduler.initialize();
+        return defaultScheduler.getScheduledExecutor();
     }
 
     /**
@@ -135,23 +146,34 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
         if (event == null || event.getInstance() == null) {
             return;
         }
-        evictExpiredDeregistrations();
-        InstanceId id = event.getInstance();
-        deregisteredInstances.put(id, System.currentTimeMillis());
-        log.info("[SBA Notifier] 实例 [{}] 收到受控注销信号，标记进入发版静默状态", id);
+        lifecycleLock.lock();
+        try {
+            if (lifecycleState.get() == LifecycleState.STOPPED) {
+                return;
+            }
+            evictExpiredDeregistrations();
+            InstanceId id = event.getInstance();
+            deregisteredInstances.put(id, System.currentTimeMillis());
+            log.info("[SBA Notifier] 实例 [{}] 收到受控注销信号，标记进入发版静默状态", id);
 
-        // 取消该实例现存的防抖定时任务
-        ScheduledFuture<?> future = pendingTasks.remove(id);
-        if (future != null) {
-            future.cancel(true);
+            // 取消该实例现存的防抖定时任务
+            ScheduledFuture<?> future = pendingTasks.remove(id);
+            if (future != null) {
+                future.cancel(true);
+            }
+            alertedInstances.remove(id);
+        } finally {
+            lifecycleLock.unlock();
         }
-        alertedInstances.remove(id);
     }
 
     @Override
     protected Mono<Void> doNotify(InstanceEvent event, Instance instance) {
         return Mono.fromRunnable(() -> {
             if (instance == null || !(event instanceof InstanceStatusChangedEvent statusEvent)) {
+                return;
+            }
+            if (lifecycleState.get() == LifecycleState.STOPPED) {
                 return;
             }
 
@@ -189,25 +211,64 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             log.info("[SBA Notifier] 实例 [{}] 命中告警名单过滤规则，静默跳过防抖告警", appName);
             return;
         }
-        if (this.stopped.get() || this.scheduler.isShutdown()) {
-            log.debug("[SBA Notifier] 通知器已停止，忽略实例 [{}] 的防抖告警排期", appName);
-            return;
+
+        lifecycleLock.lock();
+        try {
+            ScheduledExecutorService activeScheduler = this.scheduler;
+            if (lifecycleState.get() == LifecycleState.STOPPED
+                    || activeScheduler == null
+                    || activeScheduler.isShutdown()) {
+                log.debug("[SBA Notifier] 通知器已停止，忽略实例 [{}] 的防抖告警排期", appName);
+                return;
+            }
+
+            long delaySeconds = properties != null && properties.getDebounceDuration() != null
+                    ? properties.getDebounceDuration().toSeconds()
+                    : 30L;
+
+            // 取消先前可能存在的未决任务
+            ScheduledFuture<?> existing = pendingTasks.remove(id);
+            if (existing != null) {
+                existing.cancel(true);
+            }
+
+            log.warn("[SBA Notifier] 实例 [{}] 状态异常 [{}]，开启 {} 秒防抖倒计时...", appName, status, delaySeconds);
+
+            ScheduledFuture<?>[] selfRef = new ScheduledFuture<?>[1];
+            try {
+                ScheduledFuture<?> scheduledTask = activeScheduler.schedule(
+                        () -> executeDebouncedAlert(instance, statusEvent, id, status, selfRef),
+                        delaySeconds,
+                        TimeUnit.SECONDS
+                );
+                selfRef[0] = scheduledTask;
+                if (scheduledTask != null && !scheduledTask.isDone()) {
+                    pendingTasks.put(id, scheduledTask);
+                }
+            } catch (RejectedExecutionException ex) {
+                log.debug("[SBA Notifier] 调度器拒绝排期，忽略实例 [{}] 的防抖告警: {}", appName, ex.getMessage());
+            }
+        } finally {
+            lifecycleLock.unlock();
         }
+    }
 
-        long delaySeconds = properties != null && properties.getDebounceDuration() != null
-                ? properties.getDebounceDuration().toSeconds()
-                : 30L;
-
-        // 取消先前可能存在的未决任务
-        ScheduledFuture<?> existing = pendingTasks.remove(id);
-        if (existing != null) {
-            existing.cancel(true);
-        }
-
-        log.warn("[SBA Notifier] 实例 [{}] 状态异常 [{}]，开启 {} 秒防抖倒计时...", appName, status, delaySeconds);
-
-        ScheduledFuture<?> scheduledTask = scheduler.schedule(() -> {
-            pendingTasks.remove(id);
+    private void executeDebouncedAlert(Instance instance,
+                                       InstanceStatusChangedEvent statusEvent,
+                                       InstanceId id,
+                                       String status,
+                                       ScheduledFuture<?>[] selfRef) {
+        lifecycleLock.lock();
+        try {
+            ScheduledFuture<?> self = selfRef[0];
+            if (lifecycleState.get() == LifecycleState.STOPPED || (self != null && self.isCancelled())) {
+                return;
+            }
+            if (self != null) {
+                pendingTasks.remove(id, self);
+            } else {
+                pendingTasks.remove(id);
+            }
             String currentAppName = resolveInstanceName(instance, id);
             // 2. 防抖超时触发前二次名单校验，防止等待期间配置动态变更
             if (!isServiceAlertAllowed(currentAppName)) {
@@ -215,28 +276,39 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
                 return;
             }
             alertedInstances.add(id);
+        } finally {
+            lifecycleLock.unlock();
+        }
+        if (lifecycleState.get() != LifecycleState.STOPPED) {
             sendNotification(instance, "🚨 微服务实例异常宕机告警", status, statusEvent.getStatusInfo());
-        }, delaySeconds, TimeUnit.SECONDS);
-
-        pendingTasks.put(id, scheduledTask);
+        }
     }
 
     private void handleRecoveryStatus(Instance instance, InstanceStatusChangedEvent statusEvent) {
         InstanceId id = instance.getId();
         String appName = resolveInstanceName(instance, id);
+        boolean shouldSendRecovery;
 
-        // 1. 取消挂起的防抖告警任务（成功自愈，不发宕机告警）
-        ScheduledFuture<?> scheduled = pendingTasks.remove(id);
-        if (scheduled != null) {
-            scheduled.cancel(true);
-            log.info("[SBA Notifier] 实例 [{}] 在防抖期内成功恢复 UP，已撤销报警任务", appName);
+        lifecycleLock.lock();
+        try {
+            if (lifecycleState.get() == LifecycleState.STOPPED) {
+                return;
+            }
+            // 1. 取消挂起的防抖告警任务（成功自愈，不发宕机告警）
+            ScheduledFuture<?> scheduled = pendingTasks.remove(id);
+            if (scheduled != null) {
+                scheduled.cancel(true);
+                log.info("[SBA Notifier] 实例 [{}] 在防抖期内成功恢复 UP，已撤销报警任务", appName);
+            }
+
+            // 2. 仅当该实例先前确实发送过宕机告警时，才发送恢复卡片
+            shouldSendRecovery = alertedInstances.remove(id) && isServiceAlertAllowed(appName);
+        } finally {
+            lifecycleLock.unlock();
         }
 
-        // 2. 仅当该实例先前确实发送过宕机告警时，才发送恢复卡片
-        if (alertedInstances.remove(id)) {
-            if (isServiceAlertAllowed(appName)) {
-                sendNotification(instance, "🟢 微服务实例恢复正常通知", "UP", statusEvent.getStatusInfo());
-            }
+        if (shouldSendRecovery && lifecycleState.get() != LifecycleState.STOPPED) {
+            sendNotification(instance, "🟢 微服务实例恢复正常通知", "UP", statusEvent.getStatusInfo());
         }
     }
 
@@ -446,14 +518,22 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
 
     @Override
     public void start() {
-        this.stopped.set(false);
-        this.running.set(true);
+        lifecycleLock.lock();
+        try {
+            if (this.internalScheduler && (this.scheduler == null || this.scheduler.isShutdown())) {
+                this.scheduler = createInternalScheduler();
+            }
+            this.lifecycleState.set(LifecycleState.RUNNING);
+        } finally {
+            lifecycleLock.unlock();
+        }
     }
 
     @Override
     public void stop() {
-        if (this.running.compareAndSet(true, false)) {
-            this.stopped.set(true);
+        lifecycleLock.lock();
+        try {
+            this.lifecycleState.set(LifecycleState.STOPPED);
             for (ScheduledFuture<?> future : this.pendingTasks.values()) {
                 if (future != null) {
                     future.cancel(true);
@@ -462,15 +542,22 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             this.pendingTasks.clear();
             this.alertedInstances.clear();
             this.deregisteredInstances.clear();
-            if (this.internalScheduler) {
+            if (this.internalScheduler && this.scheduler != null && !this.scheduler.isShutdown()) {
                 this.scheduler.shutdownNow();
             }
+        } finally {
+            lifecycleLock.unlock();
         }
     }
 
     @Override
     public boolean isRunning() {
-        return this.running.get();
+        return this.lifecycleState.get() == LifecycleState.RUNNING;
+    }
+
+    boolean isSchedulerShutdown() {
+        ScheduledExecutorService current = this.scheduler;
+        return current == null || current.isShutdown();
     }
 
     public Map<InstanceId, ScheduledFuture<?>> getPendingTasks() {

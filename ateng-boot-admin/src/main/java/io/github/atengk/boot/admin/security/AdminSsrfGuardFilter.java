@@ -66,7 +66,7 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter {
 
     private AdminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy, long maxPayloadBytes) {
         this.admissionPolicy = Objects.requireNonNull(admissionPolicy, "admissionPolicy must not be null");
-        this.maxPayloadBytes = maxPayloadBytes > 0 ? maxPayloadBytes : DEFAULT_MAX_PAYLOAD_BYTES;
+        this.maxPayloadBytes = maxPayloadBytes;
     }
 
     private static long resolveMaxPayloadBytes(DataSize maxPayloadSize) {
@@ -80,6 +80,10 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter {
             return DEFAULT_MAX_PAYLOAD_BYTES;
         }
         return bytes;
+    }
+
+    private static long normalizeMaxPayloadBytes(long maxPayloadBytes) {
+        return maxPayloadBytes > 0 ? maxPayloadBytes : DEFAULT_MAX_PAYLOAD_BYTES;
     }
 
     @Override
@@ -167,8 +171,7 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter {
 
         public ResettableContentCachingRequestWrapper(HttpServletRequest request, long maxPayloadBytes) throws IOException {
             super(request);
-            long effectiveMaxBytes = maxPayloadBytes > 0 ? maxPayloadBytes : DEFAULT_MAX_PAYLOAD_BYTES;
-            this.cachedBody = readBoundedBody(request, effectiveMaxBytes);
+            this.cachedBody = readBoundedBody(request, normalizeMaxPayloadBytes(maxPayloadBytes));
         }
 
         private static byte[] readBoundedBody(HttpServletRequest request, long maxPayloadBytes) throws IOException {

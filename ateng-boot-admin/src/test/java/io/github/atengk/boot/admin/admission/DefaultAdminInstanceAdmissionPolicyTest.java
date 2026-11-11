@@ -289,4 +289,79 @@ class DefaultAdminInstanceAdmissionPolicyTest {
         );
         assertThat(policy.evaluate(allowedIpv6Reg, request).isAllowed()).isTrue();
     }
+
+    @Test
+    @DisplayName("当 allowLocalInstances=false 时拦截 IPv4/IPv6 环回及等效编码变体；allowLocalInstances=true 时仍硬阻断链路本地变体")
+    void shouldBlockLoopbackAndLinkLocalEncodedVariants() {
+        AtengAdminServerProperties properties = createProperties();
+        properties.setAllowLocalInstances(false);
+        DefaultAdminInstanceAdmissionPolicy policy = new DefaultAdminInstanceAdmissionPolicy(properties);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/instances");
+        request.addHeader(DefaultAdminInstanceAdmissionPolicy.CLIENT_SECRET_HEADER, VALID_SECRET);
+
+        for (String loopbackVariant : List.of(
+                "http://127.0.0.2:8080/",
+                "http://127.1:8080/",
+                "http://2130706433:8080/",
+                "http://0177.0.0.1:8080/",
+                "http://0x7f.0.0.1:8080/",
+                "http://localhost.:8080/",
+                "http://svc.localhost:8080/",
+                "http://[0:0::1]:8080/",
+                "http://[0000:0000:0000:0000:0000:0000:0000:0001]:8080/",
+                "http://[::1%25lo0]:8080/",
+                "http://[::ffff:127.0.0.1]:8080/",
+                "http://[::127.0.0.1]:8080/"
+        )) {
+            InstanceRegistration reg = InstanceRegistration.of(
+                    "variant-app",
+                    loopbackVariant,
+                    "http://order-service:8081/actuator",
+                    "http://order-service:8081/actuator/health"
+            );
+            AdminAdmissionResult result = policy.evaluate(reg, request);
+            assertThat(result.isRejected()).as("Expected loopback block for URL: %s", loopbackVariant).isTrue();
+            assertThat(result.getStatus()).isEqualTo(HttpStatus.FORBIDDEN);
+        }
+
+        properties.setAllowLocalInstances(true);
+        for (String linkLocalVariant : List.of(
+                "http://169.254.169.254./latest/meta-data/",
+                "http://2852039166/latest/meta-data/",
+                "http://0xa9fea9fe/latest/meta-data/",
+                "http://[::ffff:169.254.169.254]/latest/meta-data/",
+                "http://[fe80::1]:8080/",
+                "http://[fe80::1%25eth0]:8080/"
+        )) {
+            InstanceRegistration reg = InstanceRegistration.of(
+                    "link-local-app",
+                    linkLocalVariant,
+                    "http://order-service:8081/actuator",
+                    "http://order-service:8081/actuator/health"
+            );
+            AdminAdmissionResult result = policy.evaluate(reg, request);
+            assertThat(result.isRejected()).as("Expected hard link-local block for URL: %s", linkLocalVariant).isTrue();
+            assertThat(result.getStatus()).isEqualTo(HttpStatus.FORBIDDEN);
+        }
+    }
+
+    @Test
+    @DisplayName("allowed-url-patterns 正则白名单对前后空白修剪后的 URL 保持一致校验")
+    void shouldTrimUrlBeforeMatchingAllowedUrlPatterns() {
+        AtengAdminServerProperties properties = createProperties();
+        properties.setAllowedUrlPatterns(List.of("^https?://.*\\.corp\\.internal(:\\d+)?/.*$"));
+        DefaultAdminInstanceAdmissionPolicy policy = new DefaultAdminInstanceAdmissionPolicy(properties);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/instances");
+        request.addHeader(DefaultAdminInstanceAdmissionPolicy.CLIENT_SECRET_HEADER, VALID_SECRET);
+
+        InstanceRegistration paddedUrlReg = InstanceRegistration.of(
+                "corp-service",
+                "  http://order.corp.internal:8080/  ",
+                "http://order.corp.internal:8080/actuator",
+                "http://order.corp.internal:8080/actuator/health"
+        );
+        assertThat(policy.evaluate(paddedUrlReg, request).isAllowed()).isTrue();
+    }
 }

@@ -15,10 +15,13 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -200,11 +203,13 @@ class AtengAdminNotificationNotifierTest {
         AtengAdminNotificationNotifier internalNotifier =
                 new AtengAdminNotificationNotifier(repository, notificationTemplateProvider, properties);
         internalNotifier.start();
+        assertThat(internalNotifier.isSchedulerShutdown()).isFalse();
         internalNotifier.stop();
 
         InstanceStatusChangedEvent downEvent = new InstanceStatusChangedEvent(instanceId, 1L, StatusInfo.ofDown());
         internalNotifier.doNotify(downEvent, registeredInstance).block();
         assertThat(internalNotifier.isRunning()).isFalse();
+        assertThat(internalNotifier.isSchedulerShutdown()).isTrue();
         assertThat(internalNotifier.getPendingTasks()).isEmpty();
     }
 
@@ -219,11 +224,102 @@ class AtengAdminNotificationNotifierTest {
     }
 
     @Test
-    @DisplayName("场景 7：三参数默认构造器使用 Spring 调度设施回退平滑初始化")
+    @DisplayName("场景 7：三参数默认构造器使用 Spring 调度设施回退平滑初始化；未 start 直接 stop 亦须停机拦截")
     void shouldSupportDefaultConstructorWithFallbackScheduler() {
         AtengAdminNotificationNotifier defaultNotifier = new AtengAdminNotificationNotifier(repository, notificationTemplateProvider, properties);
         assertThat(defaultNotifier).isNotNull();
+        assertThat(defaultNotifier.isSchedulerShutdown()).isFalse();
         defaultNotifier.stop();
+        assertThat(defaultNotifier.isSchedulerShutdown()).isTrue();
+
+        InstanceStatusChangedEvent downEvent = new InstanceStatusChangedEvent(instanceId, 1L, StatusInfo.ofDown());
+        defaultNotifier.doNotify(downEvent, registeredInstance).block();
+        assertThat(defaultNotifier.getPendingTasks()).isEmpty();
+        verify(notificationTemplate, never()).sendAsync(any());
+    }
+
+    @Test
+    @DisplayName("场景 7b：内部调度器 stop 后再次 start 时能够平滑重建并恢复告警调度")
+    void shouldRecreateInternalSchedulerWhenRestartedAfterStop() {
+        properties.setDebounceDuration(Duration.ZERO);
+        AtengAdminNotificationNotifier internalNotifier =
+                new AtengAdminNotificationNotifier(repository, notificationTemplateProvider, properties);
+        try {
+            internalNotifier.start();
+            internalNotifier.stop();
+            assertThat(internalNotifier.isSchedulerShutdown()).isTrue();
+
+            internalNotifier.start();
+            assertThat(internalNotifier.isRunning()).isTrue();
+            assertThat(internalNotifier.isSchedulerShutdown()).isFalse();
+
+            InstanceStatusChangedEvent downEvent = new InstanceStatusChangedEvent(instanceId, 1L, StatusInfo.ofDown());
+            internalNotifier.doNotify(downEvent, registeredInstance).block();
+
+            verify(notificationTemplate, timeout(2000).times(1)).sendAsync(any());
+        } finally {
+            internalNotifier.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("场景 7c：已排期防抖任务在 stop 后即使被外部调度线程执行，也不得再修改状态或发信")
+    void shouldIgnoreLateScheduledCallbackExecutionAfterStop() {
+        InstanceStatusChangedEvent downEvent = new InstanceStatusChangedEvent(instanceId, 1L, StatusInfo.ofDown());
+        notifier.doNotify(downEvent, registeredInstance).block();
+        Runnable scheduledCallback = capturedScheduledTask.get();
+        assertThat(scheduledCallback).isNotNull();
+
+        notifier.stop();
+        scheduledCallback.run();
+
+        assertThat(notifier.getPendingTasks()).isEmpty();
+        assertThat(notifier.getAlertedInstances()).isEmpty();
+        verify(notificationTemplate, never()).sendAsync(any());
+    }
+
+    @Test
+    @DisplayName("场景 7d：并发执行 doNotify 与 stop 时不得向外部调度器泄漏待执行任务")
+    void shouldPreventTaskLeakUnderConcurrentStopAndNotify() {
+        ThreadPoolTaskScheduler externalTaskScheduler = new ThreadPoolTaskScheduler();
+        externalTaskScheduler.setPoolSize(2);
+        externalTaskScheduler.setThreadNamePrefix("test-ext-sba-");
+        externalTaskScheduler.setDaemon(true);
+        externalTaskScheduler.initialize();
+        try {
+            for (int i = 0; i < 40; i++) {
+                AtengAdminNotificationNotifier concurrentNotifier =
+                        new AtengAdminNotificationNotifier(repository, notificationTemplateProvider, properties, externalTaskScheduler);
+                concurrentNotifier.start();
+                CountDownLatch startGate = new CountDownLatch(1);
+                InstanceStatusChangedEvent downEvent = new InstanceStatusChangedEvent(instanceId, i + 1L, StatusInfo.ofDown());
+
+                CompletableFuture<Void> notifyFuture = CompletableFuture.runAsync(() -> {
+                    awaitQuietly(startGate);
+                    concurrentNotifier.doNotify(downEvent, registeredInstance).block();
+                });
+                CompletableFuture<Void> stopFuture = CompletableFuture.runAsync(() -> {
+                    awaitQuietly(startGate);
+                    concurrentNotifier.stop();
+                });
+
+                startGate.countDown();
+                CompletableFuture.allOf(notifyFuture, stopFuture).join();
+
+                assertThat(concurrentNotifier.isRunning()).isFalse();
+                assertThat(concurrentNotifier.getPendingTasks()).isEmpty();
+            }
+        } finally {
+            externalTaskScheduler.destroy();
+        }
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Test

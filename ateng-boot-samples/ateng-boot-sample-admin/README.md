@@ -47,7 +47,8 @@
 ## 4. 全真自动化回归命令
 
 ```bash
-mvn test -pl ateng-boot-admin,ateng-boot-samples/ateng-boot-sample-admin -am -T 1C -nsu -B
+# 显式使用 -T 1 串行调度消除多核并行下上游时间窗测试 CPU 争抢抖动
+mvn test -pl ateng-boot-admin,ateng-boot-samples/ateng-boot-sample-admin -am -T 1 -nsu -B
 ```
 
 > 详细原理机制、配置清单与扩展定制，请参阅核心 Starter 文档：[ateng-boot-admin README](../../ateng-boot-admin/README.md)。

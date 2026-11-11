@@ -19,13 +19,15 @@ import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 离线自洽模式内存通知录制桩（仅在非 local Profile 下激活）
@@ -41,7 +43,10 @@ public class RecordingNotificationTemplate extends NotificationTemplate {
     private static final int MAX_RECORDED_CARDS = 100;
     private static final String OFFLINE_CHANNEL = "offline-recorder";
 
-    private final Deque<RecordedAlertCardVO> recordedCards = new ConcurrentLinkedDeque<>();
+    private final Deque<RecordedAlertCardVO> recordedCards = new ArrayDeque<>();
+    private final ReentrantLock recordLock = new ReentrantLock();
+    private final Condition cardRecordedCondition = recordLock.newCondition();
+    private long totalRecordedCount = 0L;
 
     public RecordingNotificationTemplate() {
         super(
@@ -115,14 +120,72 @@ public class RecordingNotificationTemplate extends NotificationTemplate {
      * @return 只读卡片快照列表
      */
     public List<RecordedAlertCardVO> getRecordedCards() {
-        return Collections.unmodifiableList(new ArrayList<>(recordedCards));
+        recordLock.lock();
+        try {
+            return Collections.unmodifiableList(new ArrayList<>(recordedCards));
+        } finally {
+            if (recordLock.isHeldByCurrentThread()) {
+                recordLock.unlock();
+            }
+        }
+    }
+
+    /**
+     * 获取累计录制的卡片总次数（用于无竞态并发同步等待基准）
+     *
+     * @return 累计录制计数
+     */
+    public long getTotalRecordedCount() {
+        recordLock.lock();
+        try {
+            return totalRecordedCount;
+        } finally {
+            if (recordLock.isHeldByCurrentThread()) {
+                recordLock.unlock();
+            }
+        }
+    }
+
+    /**
+     * 阻塞等待直到累计录制次数超过给定基准值或超时
+     *
+     * @param baselineCount 基准计数
+     * @param timeout       最大等待时长
+     * @return true 若在超时前观测到新录制卡片
+     */
+    public boolean awaitRecordedCountAfter(long baselineCount, Duration timeout) {
+        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+            return getTotalRecordedCount() > baselineCount;
+        }
+        long remainingNanos = timeout.toNanos();
+        recordLock.lock();
+        try {
+            while (totalRecordedCount <= baselineCount && remainingNanos > 0L) {
+                remainingNanos = cardRecordedCondition.awaitNanos(remainingNanos);
+            }
+            return totalRecordedCount > baselineCount;
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return totalRecordedCount > baselineCount;
+        } finally {
+            if (recordLock.isHeldByCurrentThread()) {
+                recordLock.unlock();
+            }
+        }
     }
 
     /**
      * 清空已录制的离线告警卡片缓存
      */
     public void clear() {
-        recordedCards.clear();
+        recordLock.lock();
+        try {
+            recordedCards.clear();
+        } finally {
+            if (recordLock.isHeldByCurrentThread()) {
+                recordLock.unlock();
+            }
+        }
     }
 
     private void recordMessage(NotificationMessage message) {
@@ -142,14 +205,24 @@ public class RecordingNotificationTemplate extends NotificationTemplate {
             content = message.toString();
         }
 
-        recordedCards.addFirst(RecordedAlertCardVO.builder()
+        RecordedAlertCardVO card = RecordedAlertCardVO.builder()
                 .title(title)
                 .content(content)
                 .recordedAt(Instant.now())
-                .build());
+                .build();
 
-        while (recordedCards.size() > MAX_RECORDED_CARDS) {
-            recordedCards.pollLast();
+        recordLock.lock();
+        try {
+            recordedCards.addFirst(card);
+            while (recordedCards.size() > MAX_RECORDED_CARDS) {
+                recordedCards.removeLast();
+            }
+            totalRecordedCount++;
+            cardRecordedCondition.signalAll();
+        } finally {
+            if (recordLock.isHeldByCurrentThread()) {
+                recordLock.unlock();
+            }
         }
     }
 }

@@ -14,13 +14,13 @@
 | **路由安全守卫** | Sa-Token 控制台过滤守卫 | `adminSaServletFilter` (`SaServletFilter`) | `enabled` | 拦截 `{contextPath}/**`，放行登录/登出/静态资源与生命周期请求（`POST /instances`、`DELETE /instances/{id}`）；未授权 HTML 302 重定向、Ajax 返回 `401` | `AdminLoginControllerTest`<br>`AdminSampleIntegrationTest` |
 | **原生登录控制** | 纯原生拟物化表单登录控制器 | `AdminLoginController` | `username`（默认 `admin`）<br>`password`（默认 `admin`） | `String renderLoginPage(String error, String logout)` (`GET /login`)<br>`void doLogin(String username, String password, HttpServletResponse)` (`POST /login`)<br>`void doLogout(HttpServletResponse)` (`GET/POST /logout`) | `AdminLoginControllerTest`<br>`AdminSampleIntegrationTest` |
 | **认证扩展 SPI** | 控制台登录认证扩展接口与默认实现 | `AdminAuthProvider` (SPI)<br>`DefaultPropertiesAdminAuthProvider` | `username`<br>`password` | `boolean authenticate(String username, String password)`：默认实现使用 `MessageDigest.isEqual` 恒定时间比对，支持自定义 Bean 平滑接管 | `AdminAuthProviderTest`<br>`SampleAdminAuthProvider`<br>`AdminAdmissionController` |
-| **注册快照模型** | 实例注册不可变快照领域模型 | `InstanceRegistration` | - | `static InstanceRegistration of(String name, String serviceUrl, String managementUrl, String healthUrl)`<br>`static InstanceRegistration from(Registration)`<br>`static InstanceRegistration parse(JsonNode)` | `DefaultAdminInstanceAdmissionPolicyTest` |
+| **注册快照模型** | 实例注册不可变快照领域模型 | `InstanceRegistration` | - | `static InstanceRegistration of(String name, String serviceUrl, String managementUrl, String healthUrl)`、`static InstanceRegistration from(Registration)`、`static InstanceRegistration parse(JsonNode)`、`builder()` / `toBuilder()`；`getName()` / `getServiceUrl()` / `getManagementUrl()` / `getHealthUrl()` / `getSource()` / `getMetadata()` | `DefaultAdminInstanceAdmissionPolicyTest` |
 | **准入决策模型** | 实例注册准入评估结果模型 | `AdminAdmissionResult` | - | `static AdminAdmissionResult admit()`<br>`static AdminAdmissionResult reject(String reason)`<br>`static AdminAdmissionResult reject(HttpStatus status, String reason)`<br>`boolean isAllowed()`、`boolean isRejected()`、`HttpStatus getStatus()`、`String getReason()` | `DefaultAdminInstanceAdmissionPolicyTest` |
-| **准入扩展 SPI** | 动态实例注册准入策略 SPI 与默认实现 | `AdminInstanceAdmissionPolicy` (SPI)<br>`DefaultAdminInstanceAdmissionPolicy` | `client-secret`<br>`allow-local-instances`<br>`allowed-url-patterns` | `AdminAdmissionResult evaluate(InstanceRegistration registration, HttpServletRequest request)`：默认核验 `X-Admin-Client-Secret`、`http`/`https` Scheme、`169.254.0.0/16` 云元数据、IPv4/IPv6（含 `[::1]`）环回控制与正则白名单 | `DefaultAdminInstanceAdmissionPolicyTest`<br>`SampleInstanceAdmissionPolicy`<br>`AdminAdmissionController` |
+| **准入扩展 SPI** | 动态实例注册准入策略 SPI 与默认实现 | `AdminInstanceAdmissionPolicy` (SPI)<br>`DefaultAdminInstanceAdmissionPolicy` | `client-secret`<br>`allow-local-instances`<br>`allowed-url-patterns` | 常量 `CLIENT_SECRET_HEADER` (`"X-Admin-Client-Secret"`)；`AdminAdmissionResult evaluate(InstanceRegistration registration, HttpServletRequest request)`：默认核验集群密钥、`http`/`https` Scheme、链路本地（`169.254.0.0/16`、`fe80::/10`）、IPv4/IPv6 多编码环回与 `trim()` 后正则白名单 | `DefaultAdminInstanceAdmissionPolicyTest`<br>`SampleInstanceAdmissionPolicy`<br>`AdminAdmissionController` |
 | **SSRF 防火墙** | 实例注册防 SSRF 与载荷上限过滤器 | `AdminSsrfGuardFilter`<br>`AdminSsrfGuardFilter.PayloadTooLargeException` | `client-secret`<br>`allow-local-instances`<br>`allowed-url-patterns`<br>`max-registration-payload-size` | Bean `@Order(HIGHEST_PRECEDENCE + 50)`；常量 `CLIENT_SECRET_HEADER`、`DEFAULT_MAX_PAYLOAD_BYTES` (`1MB`)；拦截 `POST .../instances` 委托准入 SPI，超限抛 `PayloadTooLargeException` 返回 `413` | `AdminSsrfGuardFilterTest`<br>`AdminSampleIntegrationTest` |
 | **可复位请求流** | 有界可重读 HTTP 请求包装器 | `AdminSsrfGuardFilter.ResettableContentCachingRequestWrapper` | `max-registration-payload-size`（默认 `1MB`） | 继承 `HttpServletRequestWrapper`：`getContentAsByteArray()`、`getInputStream()`、`getReader()`；分块有界读取防大报文 OOM 与下游 `EOFException` | `AdminSsrfGuardFilterTest` |
-| **只读安全守卫** | 控制台高危写操作物理拦截过滤器 | `AdminWriteGuardFilter` | `enable-write-operations`（默认 `true`） | `@Order(HIGHEST_PRECEDENCE + 60)` / `int getOrder()`；`boolean isActuatorProxyEndpoint(String uri)`；只读模式拦截 `/instances/{id}/actuator/**` 写方法（`POST`/`PUT`/`DELETE`/`PATCH`）返回 `403` | `AdminWriteGuardFilterTest`<br>`AdminGovernanceController` |
-| **出站抓取穿透** | 异构微服务 Actuator 凭据级联提供者 | `AtengActuatorHttpHeadersProvider` | `default-actuator-token` | 实现 SBA `HttpHeadersProvider`：`HttpHeaders getHeaders(Instance instance)`；暴露常量 `ACTUATOR_TOKEN_HEADER` 与 `METADATA_*` 键名；按 `Basic -> Bearer/JWT -> X-Actuator-Token -> 全局兜底` 四阶优先级挂载标头 | `AtengActuatorHttpHeadersProviderTest`<br>`AdminGovernanceController` |
+| **只读安全守卫** | 控制台高危写操作物理拦截过滤器 | `AdminWriteGuardFilter` | `enable-write-operations`（默认 `true`） | `@Order(HIGHEST_PRECEDENCE + 60)` / `int getOrder()`；`boolean isActuatorProxyEndpoint(String uri)`、`boolean shouldBlock(String method, String uri)`；只读模式拦截 `/instances/{id}/actuator/**` 写方法（`POST`/`PUT`/`DELETE`/`PATCH`）返回 `403` | `AdminWriteGuardFilterTest`<br>`AdminGovernanceController` |
+| **出站抓取穿透** | 异构微服务 Actuator 凭据级联提供者 | `AtengActuatorHttpHeadersProvider` | `default-actuator-token` | 实现 SBA `HttpHeadersProvider`：`HttpHeaders getHeaders(Instance instance)`；暴露常量 `ACTUATOR_TOKEN_HEADER`、`METADATA_ACTUATOR_TOKEN`、`METADATA_USER_NAME`、`METADATA_USER_PASSWORD`、`METADATA_SPRING_SECURITY_USER_NAME`、`METADATA_SPRING_SECURITY_USER_PASSWORD`、`METADATA_BEARER_TOKEN`、`METADATA_JWT_TOKEN`；按 `Basic -> Bearer/JWT -> X-Actuator-Token -> 全局兜底` 四阶优先级挂载标头 | `AtengActuatorHttpHeadersProviderTest`<br>`AdminGovernanceController` |
 | **僵尸清理调度** | 离线僵尸实例受管周期清理器 | `ZombieInstanceCleanupScheduler` | `cleanup.enabled`（默认 `false`）<br>`cleanup.interval`（默认 `1h`）<br>`cleanup.zombie-threshold`（默认 `24h`） | 实现 `SmartLifecycle`：`int cleanZombies()`、`start()`、`stop()`、`stop(Runnable)`、`isRunning()`、`getPhase()`、`isAutoStartup()`；安全注销超期 `OFFLINE`/`UNKNOWN` 实例 | `ZombieInstanceCleanupSchedulerTest`<br>`AdminLifecycleController` |
 | **防抖告警状态机** | 状态跃迁防抖、发版静默与多端卡片通知器 | `AtengAdminNotificationNotifier` | `debounce-duration`（默认 `30s`）<br>`alert.included-services`<br>`alert.excluded-services`<br>`alert.notify-statuses` | 继承 `AbstractStatusChangeNotifier` 实现 `SmartLifecycle`：常量 `DEFAULT_DEREGISTRATION_SILENCE_WINDOW` (`60s`)；`notify(InstanceEvent)`、`onInstanceDeregistered(InstanceDeregisteredEvent)`、`doNotify(...)`、`start()`、`stop()`、`isRunning()`、`getPendingTasks()`、`getAlertedInstances()`、`getDeregisteredInstances()` | `AtengAdminNotificationNotifierTest`<br>`AdminAlertController` |
 | **强类型配置属性** | 服务端全量强类型配置属性与嵌套模型 | `AtengAdminServerProperties` | `ateng.boot.admin.server.*` | 包含顶层安全/防抖/`DataSize` 上限字段，以及 `@NestedConfigurationProperty` 嵌套 `CleanupProperties` 与 `AlertProperties` | `AtengAdminServerAutoConfigurationTest` |
@@ -194,10 +194,15 @@ ateng:
 @PostMapping("/auth-verify")
 public Result<AuthVerifyVO> verifyAdminAuth(@Valid @RequestBody AuthVerifyRequest request) {
     boolean authenticated = authProvider.authenticate(request.getUsername(), request.getPassword());
-    String username = request.getUsername();
-    String maskedUser = username.length() <= 3
-            ? DesensitizeUtil.mask(username, 1, username.length())
-            : DesensitizeUtil.maskKeepHeadTail(username, 2, 1);
+    String username = request.getUsername().trim();
+    String maskedUser;
+    if (username.length() <= 1) {
+        maskedUser = "*";
+    } else if (username.length() <= 3) {
+        maskedUser = DesensitizeUtil.mask(username, 1, username.length());
+    } else {
+        maskedUser = DesensitizeUtil.maskKeepHeadTail(username, 2, 1);
+    }
     AuthVerifyVO vo = AuthVerifyVO.builder()
             .authenticated(authenticated)
             .maskedUsername(maskedUser)
@@ -219,7 +224,7 @@ public Result<ContextPathNormalizeVO> normalizeContextPath(
 ```
 
 #### 核心机制与边界防御
-- `AdminLoginController` 直接通过原生内嵌玻璃风格 HTML 渲染 `/login`（并按 `context-path` 同步映射 `{contextPath}/login` 与 `{contextPath}/logout`），无任何 Thymeleaf/Freemarker 模板引擎依赖；
+- `AdminLoginController` 直接通过原生内嵌纯白圆角卡片 HTML 渲染 `/login`（并按 `context-path` 同步映射 `{contextPath}/login` 与 `{contextPath}/logout`），无任何 Thymeleaf/Freemarker 模板引擎依赖；
 - `adminSaServletFilter` 自动放行登录页、注销、静态资源、健康/信息端点以及微服务客户端生命周期接口（`POST .../instances` 与 `DELETE .../instances/{id}`）；HTML 浏览请求未认证统一 `302` 重定向登录页，Ajax/JSON 请求返回 HTTP `401` 与 `{"code":401,"message":"Unauthorized"}`；
 - 账号密码比对采用 `MessageDigest.isEqual` 恒定时间对比，防范时序侧信道攻击。
 
@@ -239,41 +244,41 @@ ateng:
         max-registration-payload-size: 1MB       # DataSize 强类型注册载荷上限，超限直接拒绝 413
 ```
 
-#### 业务实战 Java 代码 (100% 逆向自 Sample 集成测试 `AdminSampleIntegrationTest`)
+#### 业务实战 Java 代码 (100% 逆向自 Sample)
 ```java
-private static final String CLIENT_SECRET = "CLUSTER_SECRET_DEMO_2026";
+// 抽取自 AdminAdmissionController (@RequestMapping("/sample/admin/admission"))
+@PostMapping("/evaluate")
+public Result<AdmissionEvaluateVO> evaluateAdmission(@Valid @RequestBody AdmissionEvaluateRequest request,
+                                                     HttpServletRequest servletRequest) {
+    InstanceRegistration registration = InstanceRegistration.builder()
+            .name(request.getServiceName().trim())
+            .serviceUrl(request.getServiceUrl().trim())
+            .managementUrl(StringUtils.hasText(request.getManagementUrl()) ? request.getManagementUrl().trim() : null)
+            .healthUrl(StringUtils.hasText(request.getHealthUrl()) ? request.getHealthUrl().trim() : null)
+            .source("sample-http-preview")
+            .build();
 
-// 3. allowLocalInstances=false 时阻断 IPv6 [::1] 环回
-properties.setAllowLocalInstances(false);
-String ipv6LoopbackPayload = """
-        {
-            "name": "ipv6-loopback-svc",
-            "serviceUrl": "http://[::1]:8080/",
-            "managementUrl": "http://[::1]:8080/actuator",
-            "healthUrl": "http://[::1]:8080/actuator/health"
-        }
-        """;
-mockMvc.perform(post("/admin/instances")
-                .contentType(MediaType.APPLICATION_JSON)
-                .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET)
-                .content(ipv6LoopbackPayload))
-        .andExpect(status().isForbidden());
-properties.setAllowLocalInstances(true);
+    HttpServletRequest evaluatedRequest = StringUtils.hasText(request.getClientSecret())
+            ? new ClientSecretOverrideRequestWrapper(servletRequest, request.getClientSecret())
+            : servletRequest;
 
-// 4. 超过默认 1MB 上限的畸形注册请求响应 413 Payload Too Large
-String largePad = "x".repeat(1024 * 1024 + 128);
-String oversizedPayload = "{\"name\":\"oversized-svc\",\"serviceUrl\":\"http://127.0.0.1:8080/\",\"metadata\":{\"pad\":\""
-        + largePad + "\"}}";
-mockMvc.perform(post("/admin/instances")
-                .contentType(MediaType.APPLICATION_JSON)
-                .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET)
-                .content(oversizedPayload))
-        .andExpect(status().is(HttpStatus.PAYLOAD_TOO_LARGE.value()));
+    AdminAdmissionResult result = admissionPolicy.evaluate(registration, evaluatedRequest);
+    AdmissionEvaluateVO vo = AdmissionEvaluateVO.builder()
+            .allowed(result.isAllowed())
+            .httpStatus(result.getStatus().value())
+            .reason(result.getReason())
+            .serviceName(registration.getName())
+            .policyClass(admissionPolicy.getClass().getSimpleName())
+            .build();
+    return Result.success(vo);
+}
 ```
+
+- 端到端注册端点（`POST /admin/instances`）的 `413 Payload Too Large` 与 IPv6 环回拦截验证见 [AdminSampleIntegrationTest.java](../ateng-boot-samples/ateng-boot-sample-admin/src/test/java/io/github/atengk/boot/sample/admin/AdminSampleIntegrationTest.java)。
 
 #### 核心机制与边界防御
 - `AdminSsrfGuardFilter` 仅精确匹配 `POST` 且末尾为 `/instances` 的注册请求（不误伤 `/api/user-instances` 等业务路径）；
-- `ResettableContentCachingRequestWrapper` 先校验 `Content-Length`，再以 `4096` 字节分块读取并累加计数（同时防御 `Content-Length: -1` 分块传输欺骗），一旦超出 `maxRegistrationPayloadSize` 立即中止读取并响应 `413 Payload Too Large`；
+- `ResettableContentCachingRequestWrapper` 先校验 `Content-Length`，再以 `4096` 字节分块读取并累加计数（同时防御 `Content-Length: -1` 分块传输欺骗），一旦超出 `maxRegistrationPayloadSize` 立即中止读取并响应 `413 Payload Too Large`（`maxRegistrationPayloadSize <= 0` 时自动回退 `1MB` 默认上限）；
 - JSON 解析失败时返回 `400 Bad Request`（`Malformed JSON registration payload`）；通过准入后将包装请求继续透传给下游 SBA `InstancesController`，保证 `getInputStream()` 与 `getReader()` 可被无损重复消费。
 
 ---
@@ -327,9 +332,9 @@ public class SampleInstanceAdmissionPolicy implements AdminInstanceAdmissionPoli
 
 #### 核心机制与边界防御
 - `DefaultAdminInstanceAdmissionPolicy.isUrlSafe` 对 `serviceUrl`、`managementUrl` 与 `healthUrl` 执行三重强制审查：
-  1. **协议白名单**：仅允许 `http` 与 `https` Scheme，拦截 `ftp://`、`file://`、`gopher://` 及无协议 URL；
-  2. **云元数据与本地环回拦截**：硬阻断 `169.254.169.254` 及 `169.254.0.0/16` 链路本地网段；剥离 IPv6 方括号后在 `allow-local-instances=false` 时统一拦截 `localhost`、`127.0.0.1`、`::1`、`0:0:0:0:0:0:0:1`、`0.0.0.0`、`::` 与 `0:0:0:0:0:0:0:0`；
-  3. **正则白名单**：若配置了 `allowed-url-patterns`，非空 URL 必须至少匹配其中一条正则表达式；
+  1. **协议白名单**：先对原始 URL 执行 `trim()`，仅允许 `http` 与 `https` Scheme，拦截 `ftp://`、`file://`、`gopher://` 及无协议 URL；
+  2. **纯 JDK 无 DNS 查表分类防御**：借助原生 IPv4（含缩写与八/十六/十进制整数形式）及 IPv6（含非标准零压缩、Zone ID `%25...` 及 IPv4-mapped/compatible 内嵌地址）离线解析，**绝对硬阻断** `169.254.0.0/16` 与 `fe80::/10` 链路本地网段；并在 `allow-local-instances=false` 时统一拦截 `localhost` / `*.localhost`、`127.0.0.0/8`、`0.0.0.0`、`[::1]`、`[::]` 及各类等价环回编码；
+  3. **正则白名单**：若配置了 `allowed-url-patterns`，非空 URL 在 `trim()` 后必须至少匹配其中一条正则表达式；
 - SPI 入参使用框架不可变快照模型 `InstanceRegistration`（与 SBA 内部持久化 `Registration` 解耦），决策通过 `AdminAdmissionResult.admit()` / `reject(HttpStatus, String)` 显式返回状态码与拒绝原因。
 
 ---
@@ -352,23 +357,22 @@ ateng:
 // 抽取自 AdminGovernanceController (@RequestMapping("/sample/admin/governance"))
 private static final String DEFAULT_PROBE_METHOD = "POST";
 private static final String DEFAULT_PROBE_URI = "/admin/instances/order-core-01/actuator/loggers/root";
-private static final Set<String> MUTATING_METHODS = Set.of("POST", "PUT", "DELETE", "PATCH");
 
 @PostMapping("/write-guard")
 public Result<WriteGuardStatusVO> toggleWriteGuard(@Valid @RequestBody WriteGuardToggleRequest request) {
-    // 仅用于单节点 Sample 沙箱实时体验 AdminWriteGuardFilter 403 拦截与放行切换
-    properties.setEnableWriteOperations(request.getEnableWriteOperations());
     String method = StringUtils.hasText(request.getProbeMethod()) ? request.getProbeMethod().trim() : DEFAULT_PROBE_METHOD;
     String uri = StringUtils.hasText(request.getProbeUri()) ? request.getProbeUri().trim() : DEFAULT_PROBE_URI;
-    return Result.success(buildWriteGuardStatus(method, uri));
+    return SamplePropertyOverrideSupport.withLock(writeGuardLock, () -> {
+        // 仅用于单节点 Sample 沙箱实时体验 AdminWriteGuardFilter 403 拦截与放行切换
+        properties.setEnableWriteOperations(request.getEnableWriteOperations());
+        return Result.success(buildWriteGuardStatus(method, uri));
+    });
 }
 
 private WriteGuardStatusVO buildWriteGuardStatus(String probeMethod, String probeUri) {
     String normalizedMethod = probeMethod.toUpperCase(Locale.ROOT);
     boolean proxyEndpoint = writeGuardFilter.isActuatorProxyEndpoint(probeUri);
-    boolean wouldBlock = !properties.isEnableWriteOperations()
-            && MUTATING_METHODS.contains(normalizedMethod)
-            && proxyEndpoint;
+    boolean wouldBlock = writeGuardFilter.shouldBlock(normalizedMethod, probeUri);
     return WriteGuardStatusVO.builder()
             .enableWriteOperations(properties.isEnableWriteOperations())
             .contextPath(contextPath)
@@ -381,7 +385,7 @@ private WriteGuardStatusVO buildWriteGuardStatus(String probeMethod, String prob
 ```
 
 #### 核心机制与边界防御
-- `AdminWriteGuardFilter` 优先级为 `HIGHEST_PRECEDENCE + 60`，基于配置规范化后的 `context-path` 精确编译正则 `^{prefix}/instances/[^/]+/actuator(?:/.*)?$`；
+- `AdminWriteGuardFilter` 优先级为 `HIGHEST_PRECEDENCE + 60`，基于配置规范化后的 `context-path` 精确编译正则 `^{prefix}/instances/[^/]+/actuator(?:/.*)?$`，并通过公共方法 `shouldBlock(method, uri)` 统一承载阻断判定；
 - 当 `enable-write-operations=false` 时，拦截上述代理端点的 `POST`、`PUT`、`DELETE`、`PATCH` 请求，直接返回 `403 Forbidden`（`Console write operations are disabled by policy`），阻断在线篡改日志级别、修改配置或关机；
 - 严格放行客户端生命周期通信（`POST .../instances` 与 `DELETE .../instances/{id}`）及所有 `GET` 只读端点查询。
 
@@ -482,23 +486,35 @@ public Result<AlertStateSnapshotVO> triggerStatusTransition(@Valid @RequestBody 
     );
 
     boolean immediate = Boolean.TRUE.equals(request.getImmediate());
+    AlertStateSnapshotVO snapshot;
     if (immediate) {
-        // 仅在单机沙箱即时演示模式下受锁串行切换 0s 防抖窗口并等待派发完成
-        debounceOverrideLock.lock();
-        Duration originalDebounce = properties.getDebounceDuration();
-        try {
-            properties.setDebounceDuration(Duration.ZERO);
-            notifier.notify(event).block();
-            awaitPendingTaskIfPresent(instanceId);
-        } finally {
-            properties.setDebounceDuration(originalDebounce);
-            debounceOverrideLock.unlock();
-        }
+        // 在单机沙箱即时演示模式下受锁串行切换 0s 防抖窗口并等待调度与卡片录制闭环完成
+        snapshot = SamplePropertyOverrideSupport.withTemporaryOverride(
+                debounceOverrideLock,
+                properties::getDebounceDuration,
+                properties::setDebounceDuration,
+                Duration.ZERO,
+                () -> {
+                    RecordingNotificationTemplate recorder = recordingTemplateProvider.getIfAvailable();
+                    long beforeCount = recorder != null ? recorder.getTotalRecordedCount() : 0L;
+                    notifier.notify(event).block();
+                    awaitPendingTaskIfPresent(instanceId);
+                    if (recorder != null
+                            && notifier.getAlertedInstances().contains(instanceId)
+                            && recorder.getTotalRecordedCount() == beforeCount) {
+                        recorder.awaitRecordedCountAfter(beforeCount, Duration.ofSeconds(2));
+                    }
+                    return buildStateSnapshot();
+                }
+        );
     } else {
-        notifier.notify(event).block();
+        snapshot = SamplePropertyOverrideSupport.withLock(debounceOverrideLock, () -> {
+            notifier.notify(event).block();
+            return buildStateSnapshot();
+        });
     }
 
-    return Result.success(buildStateSnapshot());
+    return Result.success(snapshot);
 }
 
 @PostMapping("/graceful-deregister")
@@ -508,14 +524,18 @@ public Result<AlertStateSnapshotVO> triggerGracefulDeregister(@Valid @RequestBod
     BusinessAssert.notNull(existing, "未找到目标实例，请先登记演练实例: " + instanceId.getValue());
 
     long baseVersion = existing.getVersion();
-    notifier.notify(new InstanceDeregisteredEvent(instanceId, baseVersion + 1)).block();
+    AlertStateSnapshotVO snapshot = SamplePropertyOverrideSupport.withLock(debounceOverrideLock, () -> {
+        notifier.notify(new InstanceDeregisteredEvent(instanceId, baseVersion + 1)).block();
 
-    if (StringUtils.hasText(request.getFollowUpFaultStatus())) {
-        StatusInfo followUp = SampleStatusConverter.toStatusInfo(request.getFollowUpFaultStatus());
-        notifier.notify(new InstanceStatusChangedEvent(instanceId, baseVersion + 2, followUp)).block();
-    }
+        if (StringUtils.hasText(request.getFollowUpFaultStatus())) {
+            StatusInfo followUp = SampleStatusConverter.toStatusInfo(request.getFollowUpFaultStatus());
+            notifier.notify(new InstanceStatusChangedEvent(instanceId, baseVersion + 2, followUp)).block();
+        }
 
-    return Result.success(buildStateSnapshot());
+        return buildStateSnapshot();
+    });
+
+    return Result.success(snapshot);
 }
 ```
 
@@ -523,7 +543,7 @@ public Result<AlertStateSnapshotVO> triggerGracefulDeregister(@Valid @RequestBod
 - `AtengAdminNotificationNotifier` 继承 SBA `AbstractStatusChangeNotifier` 并重写顶层 `notify(InstanceEvent)` 与 `@EventListener onInstanceDeregistered`，无论注销事件经由 SBA 反应式事件管道还是 Spring 事件总线广播均可 100% 捕获；
 - **防发版误报**：`DEFAULT_DEREGISTRATION_SILENCE_WINDOW`（`60s`）内该实例后续 `OFFLINE`/`DOWN` 变迁直接忽略，并伴随周期性过期缓存清理（`evictExpiredDeregistrations`）；
 - **仅对真实故障发恢复通知**：`alertedInstances` 确保仅在防抖超时后真实发过宕机卡片的实例恢复 `UP` 时，才对称发送恢复卡片；在防抖期内自愈的闪断零噪音；
-- **调度器生命周期边界**：严格区分 `internalScheduler` 归属并设 `stopped` 原子标记，外部注入 Spring 托管 `sbaNotificationTaskScheduler` 时不由 `stop()` 提前强杀，且停机后拒收迟到任务入队。
+- **三态生命周期与并发守卫**：采用 `LifecycleState`（`CREATED`/`RUNNING`/`STOPPED`）与 `ReentrantLock` 保护排期、回调与启停流转（释放锁后执行出站通知 I/O）；严格区分 `internalScheduler` 归属，未 `start()` 直接 `stop()` 亦确定性清理并关闭内部调度器（外部注入 Spring 托管 `sbaNotificationTaskScheduler` 时不误杀），且 `stop()` 后重新 `start()` 可自动重建内部调度器。
 
 ---
 
@@ -544,33 +564,20 @@ ateng:
             - "OFFLINE"              # 关注的目标异常状态集合
 ```
 
-#### 业务实战 Java 代码 (100% 逆向自 Sample 集成测试 `AdminSampleIntegrationTest`)
+#### 业务实战 Java 代码 (100% 逆向自 Sample 控制器与录制桩)
 ```java
-// 离线录制桩 RecordingNotificationTemplate (@Profile("!local")) 接管出站卡片并执行诊断脱敏断言
-Map<String, Object> probeDetails = Map.of(
-        "diskSpace", Map.of("status", "DOWN", "error", "Free disk space is below threshold"),
-        "redis", Map.of("status", "DOWN", "error", "Redis connection refused")
-);
-notificationNotifier.notify(new InstanceStatusChangedEvent(coreAlertId, 1L, StatusInfo.valueOf("DOWN", probeDetails))).block();
-
-List<RecordedAlertCardVO> cards = waitForRecordedCards(recordingNotificationTemplate);
-assertThat(cards).hasSize(1);
-
-RecordedAlertCardVO sentCard = cards.get(0);
-assertThat(sentCard.getTitle()).contains("微服务实例异常宕机告警");
-String content = sentCard.getContent();
-assertThat(content).contains("core-order-svc");
-assertThat(content).contains("**应用版本**：v2.5.0");
-assertThat(content).contains("diskSpace");
-assertThat(content).contains("Free disk space is below threshold");
-assertThat(content).contains("redis");
-assertThat(content).contains("Redis connection refused");
-assertThat(content).contains("zone-east-1");
-assertThat(content).doesNotContain("TOP_SECRET_PASSWORD");
-assertThat(content).doesNotContain("RAW_ACCESS_TOKEN");
-assertThat(content).doesNotContain("user.password");
-assertThat(content).doesNotContain("bearer-token");
+// 抽取自 AdminAlertController (@RequestMapping("/sample/admin/alert")) 与 RecordingNotificationTemplate
+@GetMapping("/cards")
+public Result<List<RecordedAlertCardVO>> listRecordedCards() {
+    RecordingNotificationTemplate recorder = recordingTemplateProvider.getIfAvailable();
+    if (recorder == null) {
+        return Result.success(Collections.emptyList());
+    }
+    return Result.success(recorder.getRecordedCards());
+}
 ```
+
+- 离线录制卡片诊断字段抽取与敏感元数据脱敏（过滤 `user.password`、`bearer-token` 等）端到端断言详见 [AdminSampleIntegrationTest.java](../ateng-boot-samples/ateng-boot-sample-admin/src/test/java/io/github/atengk/boot/sample/admin/AdminSampleIntegrationTest.java)。
 
 #### 核心机制与边界防御
 - **双阶名单防线**：在防抖入队前与定时任务触发前均执行 `isServiceAlertAllowed`，避免在防抖等待期内配置动态变化后继续误推告警；
@@ -594,6 +601,7 @@ ateng:
 
 #### 业务实战 Java 代码 (100% 逆向自 Sample)
 ```java
+// 抽取自 AdminLifecycleController (@RequestMapping("/sample/admin/lifecycle"))
 @PostMapping("/zombies/clean")
 public Result<ZombieCleanupResultVO> cleanZombies(@Valid @RequestBody(required = false) ZombieCleanRequest request) {
     ZombieInstanceCleanupScheduler scheduler = cleanupSchedulerProvider.getIfAvailable();
@@ -606,26 +614,24 @@ public Result<ZombieCleanupResultVO> cleanZombies(@Valid @RequestBody(required =
                 .build());
     }
 
-    Duration appliedThreshold = properties.getCleanup().getZombieThreshold();
-    int evicted;
-    cleanupThresholdLock.lock();
-    Duration originalThreshold = properties.getCleanup().getZombieThreshold();
-    try {
-        if (request != null && request.getZombieThresholdOverride() != null) {
-            appliedThreshold = request.getZombieThresholdOverride();
-            properties.getCleanup().setZombieThreshold(appliedThreshold);
-        }
-        evicted = scheduler.cleanZombies();
-    } finally {
-        properties.getCleanup().setZombieThreshold(originalThreshold);
-        cleanupThresholdLock.unlock();
+    Duration requestedOverride = request != null ? request.getZombieThresholdOverride() : null;
+    if (requestedOverride != null) {
+        // 使用统一临时配置覆盖辅助器隔离单机沙箱临时阈值演示，并在 finally 确定性还原与安全释放锁
+        int evicted = SamplePropertyOverrideSupport.withTemporaryOverride(
+                cleanupThresholdLock,
+                () -> properties.getCleanup().getZombieThreshold(),
+                value -> properties.getCleanup().setZombieThreshold(value),
+                requestedOverride,
+                scheduler::cleanZombies
+        );
+        return Result.success(buildZombieCleanupResult(evicted, scheduler.isRunning(), requestedOverride));
     }
-    return Result.success(ZombieCleanupResultVO.builder()
-            .evictedCount(evicted)
-            .schedulerRunning(scheduler.isRunning())
-            .zombieThreshold(appliedThreshold)
-            .remainingRegisteredCount(countRegisteredInstances())
-            .build());
+
+    return SamplePropertyOverrideSupport.withLock(cleanupThresholdLock, () -> {
+        int evicted = scheduler.cleanZombies();
+        return Result.success(buildZombieCleanupResult(
+                evicted, scheduler.isRunning(), properties.getCleanup().getZombieThreshold()));
+    });
 }
 ```
 
@@ -684,7 +690,7 @@ public Result<ZombieCleanupResultVO> cleanZombies(@Valid @RequestBody(required =
 - **体验工程指南**：参见 [ateng-boot-sample-admin README](../ateng-boot-samples/ateng-boot-sample-admin/README.md)（四段式极简体验卡与 4 大领域控制器 cURL 速查表）。
 - **双轨自动化测试**：
   - 核心 SBA 全链路集成测试：[AdminSampleIntegrationTest.java](../ateng-boot-samples/ateng-boot-sample-admin/src/test/java/io/github/atengk/boot/sample/admin/AdminSampleIntegrationTest.java)（12 项端到端场景）
-  - 4 领域 Controller 黑盒测试：[SampleAdminWebControllerTest.java](../ateng-boot-samples/ateng-boot-sample-admin/src/test/java/io/github/atengk/boot/sample/admin/SampleAdminWebControllerTest.java)（4 大控制器路由、JSR-303 Fail-Fast 与脱敏验证）
+  - 4 领域 Controller 黑盒测试：[SampleAdminWebControllerTest.java](../ateng-boot-samples/ateng-boot-sample-admin/src/test/java/io/github/atengk/boot/sample/admin/SampleAdminWebControllerTest.java)（6 项黑盒契约与并发/脱敏/Fail-Fast 回归）
 
 执行阶梯二全量回归命令实测输出截取（17 个上游及目标模块全量回归）：
 
@@ -693,24 +699,24 @@ mvn test -pl ateng-boot-admin,ateng-boot-samples/ateng-boot-sample-admin -am -T 
 ```
 
 ```text
-[INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.459 s -- in io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicyTest
-[INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 4.475 s -- in io.github.atengk.boot.admin.autoconfigure.AtengAdminServerAutoConfigurationTest
-[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.991 s -- in io.github.atengk.boot.admin.controller.AdminLoginControllerTest
-[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.868 s -- in io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifierTest
-[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.010 s -- in io.github.atengk.boot.admin.provider.AdminAuthProviderTest
-[INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.037 s -- in io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProviderTest
-[INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.376 s -- in io.github.atengk.boot.admin.scheduler.ZombieInstanceCleanupSchedulerTest
-[INFO] Tests run: 11, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.179 s -- in io.github.atengk.boot.admin.security.AdminSsrfGuardFilterTest
-[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.084 s -- in io.github.atengk.boot.admin.security.AdminWriteGuardFilterTest
+[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.691 s -- in io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicyTest
+[INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 4.574 s -- in io.github.atengk.boot.admin.autoconfigure.AtengAdminServerAutoConfigurationTest
+[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.953 s -- in io.github.atengk.boot.admin.controller.AdminLoginControllerTest
+[INFO] Tests run: 15, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.738 s -- in io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifierTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.006 s -- in io.github.atengk.boot.admin.provider.AdminAuthProviderTest
+[INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.030 s -- in io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProviderTest
+[INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.431 s -- in io.github.atengk.boot.admin.scheduler.ZombieInstanceCleanupSchedulerTest
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.193 s -- in io.github.atengk.boot.admin.security.AdminSsrfGuardFilterTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.080 s -- in io.github.atengk.boot.admin.security.AdminWriteGuardFilterTest
 [INFO] Results:
-[INFO] Tests run: 77, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 84, Failures: 0, Errors: 0, Skipped: 0
 
-[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 17.15 s -- in io.github.atengk.boot.sample.admin.AdminSampleIntegrationTest
-[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.876 s -- in io.github.atengk.boot.sample.admin.SampleAdminWebControllerTest
+[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 25.71 s -- in io.github.atengk.boot.sample.admin.AdminSampleIntegrationTest
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.369 s -- in io.github.atengk.boot.sample.admin.SampleAdminWebControllerTest
 [INFO] Results:
-[INFO] Tests run: 16, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 18, Failures: 0, Errors: 0, Skipped: 0
 
-[INFO] io.github.atengk:ateng-boot-admin .................. SUCCESS [ 10.265 s]
-[INFO] io.github.atengk:ateng-boot-sample-admin ........... SUCCESS [ 32.538 s]
+[INFO] io.github.atengk:ateng-boot-admin .................. SUCCESS [ 10.782 s]
+[INFO] io.github.atengk:ateng-boot-sample-admin ........... SUCCESS [ 42.722 s]
 [INFO] BUILD SUCCESS
 ```

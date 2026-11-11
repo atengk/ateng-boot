@@ -31,11 +31,13 @@ public class InstanceMockRegisterRequest {
      * 微服务访问根路径
      */
     @NotBlank(message = "serviceUrl 不能为空")
+    @Pattern(regexp = "^(?i)https?://\\S+$", message = "serviceUrl 必须为合法的 http 或 https URL")
     private String serviceUrl;
 
     /**
      * 健康检查地址（可选，默认拼接 /actuator/health）
      */
+    @Pattern(regexp = "^(?i)(|https?://\\S+)$", message = "healthUrl 必须为合法的 http 或 https URL")
     private String healthUrl;
 
     /**

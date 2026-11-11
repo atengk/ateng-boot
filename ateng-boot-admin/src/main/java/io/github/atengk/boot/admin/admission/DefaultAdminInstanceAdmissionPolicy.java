@@ -6,12 +6,16 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.util.StringUtils;
 
+import java.net.InetAddress;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Spring Boot Admin 默认客户端实例注册准入策略实现
@@ -40,9 +44,16 @@ public class DefaultAdminInstanceAdmissionPolicy implements AdminInstanceAdmissi
 
     private static final Set<String> ALLOWED_SCHEMES = Set.of("http", "https");
 
-    private static final Set<String> LOOPBACK_HOSTS = Set.of(
-            "localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1", "0.0.0.0", "::", "0:0:0:0:0:0:0:0"
-    );
+    private static final Pattern IPV4_DECIMAL_SEGMENT = Pattern.compile("^[0-9]+$");
+    private static final Pattern IPV4_OCTAL_SEGMENT = Pattern.compile("^0[0-7]+$");
+    private static final Pattern IPV4_HEX_SEGMENT = Pattern.compile("^0[xX][0-9a-fA-F]+$");
+    private static final Pattern IPV6_HEXTET_PATTERN = Pattern.compile("^[0-9a-fA-F]{1,4}$");
+
+    private enum HostSafetyCategory {
+        LINK_LOCAL_OR_INVALID,
+        LOOPBACK_OR_ANY_LOCAL,
+        SAFE
+    }
 
     private final AtengAdminServerProperties properties;
 
@@ -88,33 +99,33 @@ public class DefaultAdminInstanceAdmissionPolicy implements AdminInstanceAdmissi
             return true;
         }
         try {
-            URI uri = URI.create(urlStr.trim());
+            String trimmedUrl = urlStr.trim();
+            URI uri = URI.create(trimmedUrl);
             String scheme = uri.getScheme();
             if (scheme == null || !ALLOWED_SCHEMES.contains(scheme.toLowerCase(Locale.ROOT))) {
                 return false;
             }
             String host = uri.getHost();
-            if (host == null) {
-                return false;
-            }
-            String normalizedHost = normalizeHost(host);
-
-            // 1. 绝对硬阻断云厂商元数据地址 (169.254.0.0/16 网段)
-            if (CLOUD_METADATA_HOST.equals(normalizedHost) || normalizedHost.startsWith(LINK_LOCAL_PREFIX)) {
+            if (!StringUtils.hasText(host)) {
                 return false;
             }
 
-            // 2. 本地环回地址弹性检查 (localhost / 127.0.0.1 / [::1] / 0.0.0.0)
-            boolean isLoopback = LOOPBACK_HOSTS.contains(normalizedHost);
-            if (isLoopback && (properties == null || !properties.isAllowLocalInstances())) {
+            HostSafetyCategory category = classifyHost(host);
+            // 1. 绝对硬阻断云厂商元数据 / 链路本地地址 (169.254.0.0/16、fe80::/10 及等价编码变体)
+            if (category == HostSafetyCategory.LINK_LOCAL_OR_INVALID) {
+                return false;
+            }
+            // 2. 本地环回与通配绑定地址弹性检查 (localhost / 127.0.0.0/8 / [::1] / 0.0.0.0 / [::] 等)
+            if (category == HostSafetyCategory.LOOPBACK_OR_ANY_LOCAL
+                    && (properties == null || !properties.isAllowLocalInstances())) {
                 return false;
             }
 
-            // 3. 正则白名单过滤 (若配置了 allowed-url-patterns 列表)
+            // 3. 正则白名单过滤 (若配置了 allowed-url-patterns 列表，与 URI 解析保持一致使用 trim 后 URL)
             if (properties != null) {
                 List<String> allowedPatterns = properties.getAllowedUrlPatterns();
                 if (allowedPatterns != null && !allowedPatterns.isEmpty()) {
-                    boolean matched = allowedPatterns.stream().anyMatch(urlStr::matches);
+                    boolean matched = allowedPatterns.stream().anyMatch(trimmedUrl::matches);
                     if (!matched) {
                         return false;
                     }
@@ -127,12 +138,249 @@ public class DefaultAdminInstanceAdmissionPolicy implements AdminInstanceAdmissi
         }
     }
 
-    private String normalizeHost(String host) {
-        String lower = host.toLowerCase(Locale.ROOT);
-        if (lower.startsWith("[") && lower.endsWith("]") && lower.length() > 2) {
-            return lower.substring(1, lower.length() - 1);
+    private HostSafetyCategory classifyHost(String host) throws UnknownHostException {
+        String rawHost = stripBrackets(host.trim());
+        if (rawHost.contains(":")) {
+            int zoneIndex = rawHost.indexOf('%');
+            String ipv6Literal = zoneIndex >= 0 ? rawHost.substring(0, zoneIndex) : rawHost;
+            byte[] ipv6Bytes = parseIpv6Bytes(ipv6Literal);
+            if (ipv6Bytes == null) {
+                return HostSafetyCategory.LINK_LOCAL_OR_INVALID;
+            }
+            return classifyIpv6Bytes(ipv6Bytes);
         }
-        return lower;
+
+        String cleanHost = stripTrailingDots(rawHost).toLowerCase(Locale.ROOT);
+        if (!StringUtils.hasText(cleanHost)) {
+            return HostSafetyCategory.LINK_LOCAL_OR_INVALID;
+        }
+        if ("localhost".equals(cleanHost) || cleanHost.endsWith(".localhost")) {
+            return HostSafetyCategory.LOOPBACK_OR_ANY_LOCAL;
+        }
+        byte[] ipv4Bytes = parseIpv4LiteralBytes(cleanHost);
+        if (ipv4Bytes != null) {
+            return classifyIpv4Bytes(ipv4Bytes);
+        }
+        return HostSafetyCategory.SAFE;
+    }
+
+    private HostSafetyCategory classifyIpv6Bytes(byte[] ipv6Bytes) throws UnknownHostException {
+        InetAddress address = InetAddress.getByAddress(ipv6Bytes);
+        if (address.isLinkLocalAddress()) {
+            return HostSafetyCategory.LINK_LOCAL_OR_INVALID;
+        }
+        if (address.isLoopbackAddress() || address.isAnyLocalAddress()) {
+            return HostSafetyCategory.LOOPBACK_OR_ANY_LOCAL;
+        }
+        // 处理 IPv4-mapped (::ffff:a.b.c.d) 与 IPv4-compatible (::a.b.c.d) 内嵌 IPv4 地址
+        if (hasEmbeddedIpv4Bytes(ipv6Bytes)) {
+            byte[] embeddedIpv4 = Arrays.copyOfRange(ipv6Bytes, 12, 16);
+            return classifyIpv4Bytes(embeddedIpv4);
+        }
+        return HostSafetyCategory.SAFE;
+    }
+
+    private HostSafetyCategory classifyIpv4Bytes(byte[] ipv4Bytes) throws UnknownHostException {
+        InetAddress address = InetAddress.getByAddress(ipv4Bytes);
+        if (address.isLinkLocalAddress()) {
+            return HostSafetyCategory.LINK_LOCAL_OR_INVALID;
+        }
+        if (address.isLoopbackAddress() || address.isAnyLocalAddress()) {
+            return HostSafetyCategory.LOOPBACK_OR_ANY_LOCAL;
+        }
+        String hostAddress = address.getHostAddress();
+        if (CLOUD_METADATA_HOST.equals(hostAddress) || hostAddress.startsWith(LINK_LOCAL_PREFIX)) {
+            return HostSafetyCategory.LINK_LOCAL_OR_INVALID;
+        }
+        return HostSafetyCategory.SAFE;
+    }
+
+    private boolean hasEmbeddedIpv4Bytes(byte[] bytes) {
+        for (int i = 0; i < 10; i++) {
+            if (bytes[i] != 0) {
+                return false;
+            }
+        }
+        boolean ipv4Compatible = bytes[10] == 0 && bytes[11] == 0;
+        boolean ipv4Mapped = bytes[10] == (byte) 0xFF && bytes[11] == (byte) 0xFF;
+        return ipv4Compatible || ipv4Mapped;
+    }
+
+    private String stripBrackets(String host) {
+        if (host.startsWith("[") && host.endsWith("]") && host.length() > 2) {
+            return host.substring(1, host.length() - 1);
+        }
+        return host;
+    }
+
+    private String stripTrailingDots(String host) {
+        int end = host.length();
+        while (end > 0 && host.charAt(end - 1) == '.') {
+            end--;
+        }
+        return host.substring(0, end);
+    }
+
+    private byte[] parseIpv4LiteralBytes(String host) {
+        String[] parts = host.split("\\.", -1);
+        if (parts.length < 1 || parts.length > 4) {
+            return null;
+        }
+        long[] values = new long[parts.length];
+        for (int i = 0; i < parts.length; i++) {
+            long parsed = parseIpv4Segment(parts[i]);
+            if (parsed < 0) {
+                return null;
+            }
+            values[i] = parsed;
+        }
+        byte[] result = new byte[4];
+        if (parts.length == 1) {
+            long v = values[0];
+            if (v > 0xFFFFFFFFL) {
+                return null;
+            }
+            result[0] = (byte) ((v >>> 24) & 0xFF);
+            result[1] = (byte) ((v >>> 16) & 0xFF);
+            result[2] = (byte) ((v >>> 8) & 0xFF);
+            result[3] = (byte) (v & 0xFF);
+            return result;
+        }
+        for (int i = 0; i < parts.length - 1; i++) {
+            if (values[i] > 0xFFL) {
+                return null;
+            }
+            result[i] = (byte) values[i];
+        }
+        long tail = values[parts.length - 1];
+        long maxTail = (1L << (8 * (5 - parts.length))) - 1;
+        if (tail > maxTail) {
+            return null;
+        }
+        for (int i = parts.length - 1; i < 4; i++) {
+            int shift = 8 * (3 - i);
+            result[i] = (byte) ((tail >>> shift) & 0xFF);
+        }
+        return result;
+    }
+
+    private long parseIpv4Segment(String segment) {
+        if (!StringUtils.hasText(segment)) {
+            return -1L;
+        }
+        try {
+            if (IPV4_HEX_SEGMENT.matcher(segment).matches()) {
+                return Long.parseLong(segment.substring(2), 16);
+            }
+            if (IPV4_OCTAL_SEGMENT.matcher(segment).matches()) {
+                return Long.parseLong(segment.substring(1), 8);
+            }
+            if (IPV4_DECIMAL_SEGMENT.matcher(segment).matches()) {
+                return Long.parseLong(segment, 10);
+            }
+            return -1L;
+        } catch (NumberFormatException e) {
+            return -1L;
+        }
+    }
+
+    private byte[] parseIpv6Bytes(String ip) {
+        if (!StringUtils.hasText(ip)) {
+            return null;
+        }
+        String normalized = ip;
+        if (ip.contains(".")) {
+            int lastColon = ip.lastIndexOf(':');
+            if (lastColon < 0) {
+                return null;
+            }
+            byte[] ipv4Suffix = parseStrictDottedIpv4(ip.substring(lastColon + 1));
+            if (ipv4Suffix == null) {
+                return null;
+            }
+            String syntheticHex = String.format(Locale.ROOT, "%x:%x",
+                    ((ipv4Suffix[0] & 0xFF) << 8) | (ipv4Suffix[1] & 0xFF),
+                    ((ipv4Suffix[2] & 0xFF) << 8) | (ipv4Suffix[3] & 0xFF));
+            normalized = ip.substring(0, lastColon + 1) + syntheticHex;
+        }
+        return parsePureIpv6Bytes(normalized);
+    }
+
+    private byte[] parseStrictDottedIpv4(String ipv4) {
+        String[] parts = ipv4.split("\\.", -1);
+        if (parts.length != 4) {
+            return null;
+        }
+        byte[] bytes = new byte[4];
+        for (int i = 0; i < 4; i++) {
+            if (!IPV4_DECIMAL_SEGMENT.matcher(parts[i]).matches()) {
+                return null;
+            }
+            try {
+                int val = Integer.parseInt(parts[i], 10);
+                if (val < 0 || val > 255) {
+                    return null;
+                }
+                bytes[i] = (byte) val;
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return bytes;
+    }
+
+    private byte[] parsePureIpv6Bytes(String ip) {
+        int doubleColonIdx = ip.indexOf("::");
+        if (doubleColonIdx >= 0 && ip.indexOf("::", doubleColonIdx + 2) >= 0) {
+            return null;
+        }
+        String[] leftParts;
+        String[] rightParts;
+        if (doubleColonIdx >= 0) {
+            String left = ip.substring(0, doubleColonIdx);
+            String right = ip.substring(doubleColonIdx + 2);
+            leftParts = left.isEmpty() ? new String[0] : left.split(":", -1);
+            rightParts = right.isEmpty() ? new String[0] : right.split(":", -1);
+            if (leftParts.length + rightParts.length >= 8) {
+                return null;
+            }
+        } else {
+            leftParts = ip.split(":", -1);
+            rightParts = new String[0];
+            if (leftParts.length != 8) {
+                return null;
+            }
+        }
+
+        byte[] result = new byte[16];
+        int offset = 0;
+        for (String group : leftParts) {
+            if (!writeHextet(group, result, offset)) {
+                return null;
+            }
+            offset += 2;
+        }
+        if (doubleColonIdx >= 0) {
+            int missingGroups = 8 - leftParts.length - rightParts.length;
+            offset += missingGroups * 2;
+        }
+        for (String group : rightParts) {
+            if (!writeHextet(group, result, offset)) {
+                return null;
+            }
+            offset += 2;
+        }
+        return result;
+    }
+
+    private boolean writeHextet(String group, byte[] target, int offset) {
+        if (!IPV6_HEXTET_PATTERN.matcher(group).matches()) {
+            return false;
+        }
+        int value = Integer.parseInt(group, 16);
+        target[offset] = (byte) ((value >>> 8) & 0xFF);
+        target[offset + 1] = (byte) (value & 0xFF);
+        return true;
     }
 
     /**

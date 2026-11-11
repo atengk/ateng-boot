@@ -8,10 +8,12 @@ import de.codecentric.boot.admin.server.domain.values.StatusInfo;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.scheduler.ZombieInstanceCleanupScheduler;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.sample.admin.dto.AdminInstanceSummaryVO;
 import io.github.atengk.boot.sample.admin.dto.InstanceMockRegisterRequest;
 import io.github.atengk.boot.sample.admin.dto.ZombieCleanRequest;
 import io.github.atengk.boot.sample.admin.dto.ZombieCleanupResultVO;
+import io.github.atengk.boot.sample.admin.support.SamplePropertyOverrideSupport;
 import io.github.atengk.boot.sample.admin.support.SampleStatusConverter;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.ObjectProvider;
@@ -86,20 +88,12 @@ public class AdminLifecycleController {
         InstanceId instanceId = InstanceId.of(request.getInstanceId().trim());
         Registration registration = regBuilder.build();
 
-        Instance existing = instanceRepository.find(instanceId).block();
-        Instance persisted;
-        if (existing == null) {
-            Instance created = Instance.create(instanceId)
-                    .register(registration)
-                    .withStatusInfo(statusInfo);
-            persisted = instanceRepository.save(created).block();
-        } else {
-            persisted = instanceRepository.compute(instanceId, (id, current) -> {
-                Instance target = current != null ? current : Instance.create(id);
-                return Mono.just(target.register(registration).withStatusInfo(statusInfo));
-            }).block();
-        }
-        return Result.success(toSummaryVO(persisted != null ? persisted : existing));
+        Instance persisted = instanceRepository.compute(instanceId, (id, current) -> {
+            Instance target = current != null ? current : Instance.create(id);
+            return Mono.just(target.register(registration).withStatusInfo(statusInfo));
+        }).block();
+        BusinessAssert.notNull(persisted, "模拟实例登记失败: " + instanceId.getValue());
+        return Result.success(toSummaryVO(persisted));
     }
 
     /**
@@ -137,29 +131,33 @@ public class AdminLifecycleController {
                     .build());
         }
 
-        Duration appliedThreshold = properties.getCleanup().getZombieThreshold();
-        int evicted;
-
-        // 使用重入锁隔离单机沙箱临时阈值演示与清理扫描周期，防止并发修改污染
-        cleanupThresholdLock.lock();
-        Duration originalThreshold = properties.getCleanup().getZombieThreshold();
-        try {
-            if (request != null && request.getZombieThresholdOverride() != null) {
-                appliedThreshold = request.getZombieThresholdOverride();
-                properties.getCleanup().setZombieThreshold(appliedThreshold);
-            }
-            evicted = scheduler.cleanZombies();
-        } finally {
-            properties.getCleanup().setZombieThreshold(originalThreshold);
-            cleanupThresholdLock.unlock();
+        Duration requestedOverride = request != null ? request.getZombieThresholdOverride() : null;
+        if (requestedOverride != null) {
+            // 使用统一临时配置覆盖辅助器隔离单机沙箱临时阈值演示，并在 finally 确定性还原与安全释放锁
+            int evicted = SamplePropertyOverrideSupport.withTemporaryOverride(
+                    cleanupThresholdLock,
+                    () -> properties.getCleanup().getZombieThreshold(),
+                    value -> properties.getCleanup().setZombieThreshold(value),
+                    requestedOverride,
+                    scheduler::cleanZombies
+            );
+            return Result.success(buildZombieCleanupResult(evicted, scheduler.isRunning(), requestedOverride));
         }
 
-        return Result.success(ZombieCleanupResultVO.builder()
+        return SamplePropertyOverrideSupport.withLock(cleanupThresholdLock, () -> {
+            int evicted = scheduler.cleanZombies();
+            return Result.success(buildZombieCleanupResult(
+                    evicted, scheduler.isRunning(), properties.getCleanup().getZombieThreshold()));
+        });
+    }
+
+    private ZombieCleanupResultVO buildZombieCleanupResult(int evicted, boolean schedulerRunning, Duration threshold) {
+        return ZombieCleanupResultVO.builder()
                 .evictedCount(evicted)
-                .schedulerRunning(scheduler.isRunning())
-                .zombieThreshold(appliedThreshold)
+                .schedulerRunning(schedulerRunning)
+                .zombieThreshold(threshold)
                 .remainingRegisteredCount(countRegisteredInstances())
-                .build());
+                .build();
     }
 
     private long countRegisteredInstances() {
