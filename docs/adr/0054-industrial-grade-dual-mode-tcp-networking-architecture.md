@@ -122,6 +122,8 @@ flowchart TD
   - 提供 `ChecksumUtil` 辅助原语，内置 XOR 异或校验、CRC16-Modbus、CRC16-CCITT、CRC32 极速计算比对；非法报文快速丢弃并告警，杜绝脏数据侵入业务层；
 - **统一载荷转译**：`TcpPayload` 提供原始 `byte[]`、十六进制 `Hex`、`String` 及 `JsonUtil` 强类型反序列化；开放 `TcpCodec<T>` SPI 与 `TcpChannelCustomizer` 逃生舱。
 
+> **演进注记 (Superseding Note)**：上述早期预留的 `TcpCodec<T>` 接口经审校未接入任何自动装配与运行时调用链路，已按 [ADR-0105](./0105-tcp-sample-multi-controller-and-documentation-specification-architecture.md) 规划正式退场清理；结构化载荷转译、协议清洗与通道编解码定制统一收口于 `TcpPayload` / `TcpPayloadCodecHandler`、`TcpPacketFilter`（配合 `ChecksumUtil`）及 `TcpChannelCustomizer` SPI。
+
 ### 4. 会话多维绑定与重连“踢旧留新”置换 (Session Governance & Kick-Out)
 - 抽象统一领域契约 `TcpSession`，封装 `sessionId`（全局唯一 Snowflake 标识）、Netty `Channel`、远端地址、活跃时间戳与安全属性上下文（`AttributeMap`）；
 - `TcpSessionManager` 提供双向双索引管理：

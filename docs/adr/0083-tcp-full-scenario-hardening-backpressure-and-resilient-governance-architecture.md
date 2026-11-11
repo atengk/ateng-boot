@@ -82,6 +82,8 @@ flowchart TD
 - **彻底净化 Web 依赖**：从 `ateng-boot-sample-tcp` 中彻底移除 `VehicleScenarioController`；
 - **纯净全场景业务闭环**：以车联网主线场景收敛为 `VehicleTelemetryScenarioService`，在 `SampleTcpE2eTest` 中通过标准 `@SpringBootTest` 跑通车机认证、JT/T 808 风格复合报文切片与校验、全双工 RPC 下行控制、背压高水位拦截、心跳保活与集群分组组播的端到端场景。
 
+> **演进注记 (Superseding Note)**：本节关于“移除 Sample Web Controller、保持零 Controller 纯后台形态”的局部约定，已由全局 [工业级文档与样例工程标准规范](../agents/documentation-specification.md) 与 [ADR-0105](./0105-tcp-sample-multi-controller-and-documentation-specification-architecture.md) 正式取代（`Superseded by ADR-0105`）——`ateng-boot-sample-tcp` 按 `ADR-0105` 演进引入 `ateng-boot-web` 并按领域职责拆分为 5 大专职 `@RestController`，同时保留 `WebEnvironment.NONE` 纯后台回归测试形成双轨守护。
+
 ---
 
 ## 影响与收益

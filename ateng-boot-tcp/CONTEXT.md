@@ -32,9 +32,13 @@ _Avoid_: PacketProcessor, ChannelHandler, InboundInterceptor
 TCP Server 与 TCP Client 拥有独立装配开关、配置命名空间与生命周期管理的协同运行架构。
 _Avoid_: 混部网络, 通用Socket, 客户端服务端融合
 
-**TCP Packet (TCP 数据包 / 帧报文模型)**:
-承载业务命令字（`command`）、关联追踪流水号（`requestId`）与业务数据载荷（`payload`）的统一通信实体。
-_Avoid_: NettyFrame, RawBuffer, ByteBufMessage
+**TCP Packet (TCP 帧报文模型)**:
+封装业务命令字（`command`）、关联追踪流水号（`requestId`）、扩展路由头与底层 `TcpPayload` 的完整结构化通信帧模型，专职用于协议路由分发（`TcpDispatcher`）与请求-响应 RPC 相关性匹配（`TcpPacket`）。
+_Avoid_: NettyFrame, RawBuffer, ByteBufMessage, PayloadWrapper
+
+**TCP Payload (TCP 载荷载体)**:
+聚焦单帧原始字节数据的安全堆内存封装，在底层完成堆外 `ByteBuf` 确定性释放后向上提供 `byte[]`、十六进制 `Hex`、`String` 及基于 `JsonUtil` 的强类型对象解码读写原语（`TcpPayload`），严禁将底层直接内存缓冲区透传至业务层。
+_Avoid_: RawByteBuf, PacketHeaderEnvelope, TcpCodec, FrameEnvelope
 
 **TCP Framing Strategy (数据帧切片策略)**:
 解决流式 TCP 粘包拆包的数据边界切片机制，支持分隔符（Delimiter）、固定长度（FixedLength）与长度字段偏移（LengthField）。
@@ -53,8 +57,8 @@ _Avoid_: 强制下线, 顶号处理, 连接覆盖
 _Avoid_: 伪同步, 同步等待锁, 轮询回执
 
 **Named TCP Client (命名 TCP 客户端)**:
-在多目标外部服务拓扑中，通过唯一名称隔离配置、网络通道与生命周期的受管客户端实例（`TcpClientRegistry`）。
-_Avoid_: 动态数据源, 多连接通道, 客户端池
+在多目标外部服务拓扑中，通过唯一逻辑名称隔离配置、网络通道与生命周期，并由 `TcpClientRegistry` 统一检索调用（`getRequiredClient` / `getRequiredTemplate`）的受管客户端实例（`clients.<name>`）。
+_Avoid_: 动态数据源, 多连接通道, 客户端池, TcpClientTemplate.use(), getClientRegistry()
 
 **Graceful Draining (平滑停机排空)**:
 在 Spring 容器生命周期停止（`SmartLifecycle`）阶段，按序执行拒绝新接入、等待在途请求处理完成、平滑注销存量连接并释放 EventLoop 线程资源的停机机制。
@@ -72,9 +76,17 @@ _Avoid_: 连接限流, 握手拦截, 端口防御
 基于 Netty SslContext 构建的服务端与客户端双向非对称证书校验机制，用于严苛金融与国标硬件接入的安全加密通道。
 _Avoid_: 双向SSL, 客户端密钥认证, 强加密握手
 
-**Multi-Port Server (多端口多协议服务拓扑)**:
-在同一服务实例内同时监听多个不同网络端口、独立装配不同分帧规则与编解码流水线的受管多服务拓扑（`servers.<name>`）。
+**TCP Server Registry (TCP 多端口服务端注册表)**:
+在同一服务实例内同时纳管主端口（`default`）与命名多端口（`servers.<name>`），支持各自独立装配分帧规则、空闲超时与 SSL/TLS 证书并由 `TcpServerRegistry`（`getRequiredServer` / `getDefaultServer`）统一调度生命周期的多端口多协议服务端拓扑。
 _Avoid_: 多网卡监听, 端口多路复用, 混部服务
+
+**Heartbeat Keep-Alive (心跳保活与空闲检测)**:
+服务端基于 Netty `IdleStateHandler` 与 `TcpIdleProperties`（`reader-idle-time` / `writer-idle-time` / `all-idle-time`）监测读写空闲并触发 `TcpSessionIdleEvent`，客户端则依据 `TcpHeartbeatProperties` 定时发送主动保活 Ping 帧以协同维持长连接活性并剔除假死会话。
+_Avoid_: reader-idle, writer-idle, all-idle, 盲发心跳, 死循环保活
+
+**Exponential Backoff Reconnect (指数退避自愈重连)**:
+客户端在链路意外断开后依据 `TcpReconnectProperties`（`initialInterval`、`multiplier`、`maxInterval`、`maxAttempts`）按指数退避调度后台自愈重连，并在手动同步重连入口依托 `RetryUtil` 执行有界退避重试，杜绝网络闪断期间的并发重连风暴。
+_Avoid_: 无限死循环重连, 固定死等待重连, 野线程重连
 
 **Cluster Push Bridge (集群跨节点推送桥接 SPI)**:
 在微服务集群多 Pod 拓扑下，通过 Redis Pub/Sub 实现跨节点设备寻址与下行指令去中心化广播透传的自适应桥接规范（`TcpClusterBridge`）。
@@ -93,7 +105,7 @@ _Avoid_: 报文拦截器, 协议切面, 通道处理器
 _Avoid_: 校验计算器, 哈希验证器, 数据验签器
 
 **Backpressure Guard (背压流控守卫)**:
-当底层 Netty 通道写缓冲区积压触达高水位时，主动拦截上行或下行非阻塞推流以防御 JVM 直接内存与堆内存 OOM 的自愈流控机制。
+当底层 Netty 通道写缓冲区积压触达高水位时，主动检测通道可写状态并按 `BackpressurePolicy`（支持经 `TcpSession.setBackpressurePolicy` 动态调优）拦截或限流非阻塞推流以防御 JVM 直接内存与堆内存 OOM 的自愈流控机制。
 _Avoid_: 内存阻断器, 发送限速, 强制等待
 
 **Write Buffer Water Mark (写缓冲水位守卫)**:
@@ -112,7 +124,7 @@ _Avoid_: 带宽限流器, 字节限速, 传输节流阀
 在分布式多节点拓扑下，通过跨节点消息总线向指定业务设备分组内所有在线终端执行去中心化精准分发的消息投递契约。
 _Avoid_: 集群分发, 分组广播, 跨节点批量推送
 
-**Industrial Protocol Codec (工业协议复合编解码器)**:
-针对国标与工业私有长连接协议（如 JT/T 808、GB/T 32960、Modbus TCP），一站式规范“分帧切片、转义清洗、校验和验真、消息头拆解、业务载荷映射”的复合流水线契约。
-_Avoid_: 私有协议解析器, 工业解码切面, 自定义组包器
+**Industrial Protocol Codec (工业协议复合编解码模式)**:
+基于 `ateng-boot-tcp` 内置原语（配置分帧 + `TcpPacketFilter` + `ChecksumUtil` + `TcpPayload` + `BinaryOffsetRouteKeyExtractor`）按业务协议拼装而成的组合应用模式，并非框架内置黑盒实现；具体国标协议实现（如 `ateng-boot-sample-tcp` 中的 JT/T 808 示例组件）归属业务或样例工程演进。
+_Avoid_: TcpCodec, 内置国标协议黑盒, 私有协议解析器, 工业解码切面
 
