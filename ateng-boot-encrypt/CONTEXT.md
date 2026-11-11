@@ -84,4 +84,21 @@ _Avoid_: 兼容模式, 老系统适配器, LegacyPrefix
 在纯 JDK 原生 SM2 密码引擎中，提供标准 C1C3C2 原始拼接字节流与 ASN.1 DER 结构化序列之间的双向无损转译原语，并支持解密时首字节 `0x30` 自动探测解包。
 _Avoid_: DER编解码器, 格式转换器, Asn1Util
 
+**Encrypt Domain Controller (配置加解密领域控制器)**:
+按业务能力领域将配置透明解密、受管编程式加解密、多 Key 路由与轮换、安全门禁及沙箱就地回写能力暴露为 HTTP 交互体验端的高内聚接入层控制器。
+_Avoid_: 加密接口, EncryptApi, CryptoHandler, EncryptManagerController
+
+**Sandbox In-Place Rewrite (沙箱就地回写探查)**:
+在操作系统受控临时沙箱目录（`java.io.tmpdir`）中安全创建瞬态配置文件，模拟 YAML 与 Properties 物理文件就地加密、还原、Diff 对比与 `.bak` 备份生成，并在操作后确定性清理的交互探查机制。
+_Avoid_: 内存回写, 伪回写, 文件替换测试, DirectDiskRewrite
+
+**Dynamic Ingress Simulation (动态明文倒灌模拟)**:
+通过模拟配置中心（Nacos/Apollo）动态推送裸明文敏感配置，验证生产强制加密门禁与防明文倒灌守卫刚性拦截阻断的合规自验机制。
+_Avoid_: 热推测试, 倒灌探针, IngressTester
+
+**Multi-Key Routing Inspection (多Key路由探查)**:
+动态探查命名密钥映射表状态、多 Key 别名列表，并自验携带 `ENC[keyId](...)` 标签的密文精准路由解密与密钥轮换缓存原子置换的运维机制。
+_Avoid_: 密钥查看器, KeyInfo, KeyLister
+
+
 
