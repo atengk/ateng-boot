@@ -2,20 +2,32 @@ package io.github.atengk.boot.sample.statemachine.service;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.AsyncUtil;
 import io.github.atengk.boot.sample.statemachine.constant.OrderEvent;
 import io.github.atengk.boot.sample.statemachine.constant.OrderState;
 import io.github.atengk.boot.sample.statemachine.context.OrderContext;
 import io.github.atengk.boot.sample.statemachine.entity.OrderDO;
 import io.github.atengk.boot.sample.statemachine.mapper.OrderMapper;
+import io.github.atengk.boot.sample.statemachine.vo.OrderConcurrentSimulationVO;
 import io.github.atengk.boot.statemachine.cas.CasUpdater;
 import io.github.atengk.boot.statemachine.core.StateMachine;
+import io.github.atengk.boot.statemachine.enums.StateMachineResultCode;
+import io.github.atengk.boot.statemachine.exception.StateMachineException;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 第三方支付异步回调场景服务
@@ -32,13 +44,24 @@ public class PaymentCallbackScenarioService {
     private final OrderMapper orderMapper;
     private final StateMachine<OrderState, OrderEvent, OrderContext> orderStateMachine;
     private final CasUpdater<OrderDO, OrderState> orderCasUpdater;
+    private final Executor executor;
 
     public PaymentCallbackScenarioService(OrderMapper orderMapper,
                                           StateMachine<OrderState, OrderEvent, OrderContext> orderStateMachine) {
+        this(orderMapper, orderStateMachine, null);
+    }
+
+    @Autowired
+    public PaymentCallbackScenarioService(OrderMapper orderMapper,
+                                          StateMachine<OrderState, OrderEvent, OrderContext> orderStateMachine,
+                                          @Qualifier("applicationTaskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
         this.orderMapper = orderMapper;
         this.orderStateMachine = orderStateMachine;
         this.orderCasUpdater = (ent, from, to) ->
                 orderMapper.updateStatusWithCas(ent.getId(), from.name(), to.name(), ent.getVersion());
+        this.executor = (taskExecutorProvider != null)
+                ? taskExecutorProvider.getIfAvailable(AsyncUtil::getExecutor)
+                : AsyncUtil.getExecutor();
     }
 
     /**
@@ -78,7 +101,7 @@ public class PaymentCallbackScenarioService {
         if (sourceState != targetState) {
             order.setVersion(order.getVersion() + 1);
             log.info("[PaymentCallback] 支付状态更新成功: orderId={}, status={} -> {}, version={}",
-                    orderId, sourceState, targetState, order.getVersion());
+                orderId, sourceState, targetState, order.getVersion());
             return TransitionResult.success(sourceState, targetState, OrderEvent.PAY);
         } else {
             log.info("[PaymentCallback] 支付回调幂等放行: orderId={}, 维持状态={}", orderId, targetState);
@@ -111,6 +134,97 @@ public class PaymentCallbackScenarioService {
                 context,
                 this.orderCasUpdater
         );
+    }
+
+    /**
+     * 模拟多线程高并发重复支付回调冲击（验证 CAS-First 原子冲突阻断机制与受管并发调度）
+     *
+     * @param orderId 待测试订单 ID
+     * @param threads 并发线程数
+     * @return 强类型并发模拟执行结果视图对象
+     */
+    public OrderConcurrentSimulationVO simulateConcurrentCallbacks(Long orderId, int threads) {
+        int concurrency = Math.max(2, Math.min(threads, 20));
+        log.info("[PaymentCallback] 模拟高并发回调冲击: orderId={}, 并发数={}", orderId, concurrency);
+
+        OrderDO initialOrder = getOrderOrThrow(orderId);
+        CountDownLatch readyLatch = new CountDownLatch(concurrency);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(concurrency);
+
+        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger idempotentCount = new AtomicInteger(0);
+        AtomicInteger casConflictCount = new AtomicInteger(0);
+        AtomicInteger otherFailures = new AtomicInteger(0);
+
+        for (int i = 0; i < concurrency; i++) {
+            final int idx = i;
+            executor.execute(() -> {
+                readyLatch.countDown();
+                try {
+                    boolean started = startLatch.await(5, TimeUnit.SECONDS);
+                    if (!started) {
+                        otherFailures.incrementAndGet();
+                        return;
+                    }
+                    TransitionResult<OrderState> res = handlePaymentCallback(
+                            orderId,
+                            initialOrder.getAmount(),
+                            "SIM_TX_" + idx + "_" + UUID.randomUUID().toString().substring(0, 8)
+                    );
+                    if (res != null && res.isAccepted()) {
+                        if (res.isIdempotent()) {
+                            idempotentCount.incrementAndGet();
+                        } else {
+                            successCount.incrementAndGet();
+                        }
+                    }
+                } catch (StateMachineException ex) {
+                    if (ex.getResultCode() == StateMachineResultCode.CONCURRENT_CAS_CONFLICT) {
+                        casConflictCount.incrementAndGet();
+                    } else {
+                        otherFailures.incrementAndGet();
+                    }
+                } catch (Exception ex) {
+                    otherFailures.incrementAndGet();
+                } finally {
+                    doneLatch.countDown();
+                }
+            });
+        }
+
+        try {
+            boolean allReady = readyLatch.await(5, TimeUnit.SECONDS);
+            if (!allReady) {
+                log.warn("[PaymentCallback] 并发模拟未在指定时间内全部就绪: orderId={}", orderId);
+            }
+            startLatch.countDown();
+            boolean finished = doneLatch.await(10, TimeUnit.SECONDS);
+            if (!finished) {
+                log.warn("[PaymentCallback] 并发模拟未在指定时间内全部完成: orderId={}", orderId);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "并发模拟执行被中断", e);
+        }
+
+        OrderDO finalOrder = getOrderOrThrow(orderId);
+
+        String verdict = (successCount.get() == 1 || idempotentCount.get() > 0)
+                ? "CAS并发防护生效：严格防止重复支付与虚假副作用"
+                : "并发流转完成";
+
+        return OrderConcurrentSimulationVO.builder()
+                .orderId(orderId)
+                .concurrency(concurrency)
+                .firstSuccessCount(successCount.get())
+                .idempotentAcceptedCount(idempotentCount.get())
+                .casConflictBlockedCount(casConflictCount.get())
+                .otherFailures(otherFailures.get())
+                .finalStatus(finalOrder.getStatus())
+                .finalVersion(finalOrder.getVersion())
+                .verdict(verdict)
+                .build();
     }
 
     private OrderDO getOrderOrThrow(Long orderId) {

@@ -1,12 +1,9 @@
 package io.github.atengk.boot.sample.statemachine.controller;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.statemachine.constant.OrderState;
 import io.github.atengk.boot.sample.statemachine.dto.OrderBatchCancelRequest;
 import io.github.atengk.boot.sample.statemachine.entity.OrderDO;
-import io.github.atengk.boot.sample.statemachine.mapper.OrderMapper;
-import io.github.atengk.boot.sample.statemachine.service.OrderLifecycleScenarioService;
 import io.github.atengk.boot.sample.statemachine.service.OrderTimeoutBatchScenarioService;
 import io.github.atengk.boot.sample.statemachine.vo.OrderBatchResultVO;
 import io.github.atengk.boot.statemachine.model.BatchTransitionResult;
@@ -18,11 +15,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
-import java.util.stream.Collectors;
 
 /**
  * 大批量切片流转与超时处理控制器
@@ -40,8 +33,6 @@ import java.util.stream.Collectors;
 public class StateMachineBatchController {
 
     private final OrderTimeoutBatchScenarioService batchService;
-    private final OrderLifecycleScenarioService lifecycleService;
-    private final OrderMapper orderMapper;
 
     /**
      * 1. 批量切片取消超时订单（支持指定 ID 列表或自动扫描待支付订单）
@@ -55,11 +46,7 @@ public class StateMachineBatchController {
         List<Long> targetIds = req.getOrderIds();
 
         if (targetIds == null || targetIds.isEmpty()) {
-            // 自动扫描待支付订单
-            List<OrderDO> pendingOrders = orderMapper.selectList(new LambdaQueryWrapper<OrderDO>()
-                    .in(OrderDO::getStatus, OrderState.WAIT_PAY, OrderState.PAID, OrderState.WAIT_DELIVER)
-                    .last("LIMIT 100"));
-            targetIds = pendingOrders.stream().map(OrderDO::getId).collect(Collectors.toList());
+            targetIds = batchService.scanPendingOrderIds(100);
         }
 
         log.info("[BatchController] 触发大批量切片关单: 订单数={}, 批次={}", targetIds.size(), req.getBatchSize());
@@ -80,28 +67,7 @@ public class StateMachineBatchController {
     @PostMapping("/simulate-partial-failure")
     public Result<OrderBatchResultVO> simulatePartialFailure() {
         log.info("[BatchController] 模拟批处理部分失败容错场景");
-
-        // 1. 创建一笔合法 WAIT_PAY 订单
-        String validSn = "ORD-BATCH-OK-" + UUID.randomUUID().toString().substring(0, 8);
-        OrderDO validOrder = lifecycleService.createOrder(validSn, new BigDecimal("88.00"));
-
-        // 2. 创建一笔不符合 CANCEL 条件的 DELIVERING 订单
-        String invalidSn = "ORD-BATCH-FAIL-" + UUID.randomUUID().toString().substring(0, 8);
-        OrderDO deliveredOrder = lifecycleService.createOrder(invalidSn, new BigDecimal("168.00"));
-        lifecycleService.pay(deliveredOrder.getId());
-        lifecycleService.auditRisk(deliveredOrder.getId(), 20, false); // 转为 WAIT_DELIVER
-        lifecycleService.ship(deliveredOrder.getId(), "SF_BATCH_TEST"); // 转为 DELIVERING (不可直接 CANCEL)
-
-        List<Long> mixIds = new ArrayList<>();
-        mixIds.add(validOrder.getId());
-        mixIds.add(deliveredOrder.getId());
-
-        BatchTransitionResult<OrderState, OrderDO> result = batchService.batchCancelExpiredOrders(
-                mixIds,
-                "容错自验：部分合法取消，部分非法拦截",
-                10
-        );
-
+        BatchTransitionResult<OrderState, OrderDO> result = batchService.simulatePartialFailure();
         return Result.success(OrderBatchResultVO.fromResult(result));
     }
 }

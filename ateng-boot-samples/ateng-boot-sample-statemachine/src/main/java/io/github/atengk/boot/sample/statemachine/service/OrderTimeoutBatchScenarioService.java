@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.statemachine.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import io.github.atengk.boot.sample.statemachine.constant.OrderEvent;
 import io.github.atengk.boot.sample.statemachine.constant.OrderState;
 import io.github.atengk.boot.sample.statemachine.context.OrderContext;
@@ -12,9 +13,16 @@ import io.github.atengk.boot.statemachine.model.BatchOptions;
 import io.github.atengk.boot.statemachine.model.BatchTransitionResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * 超时订单大批量切片关单场景服务
@@ -30,11 +38,37 @@ public class OrderTimeoutBatchScenarioService {
 
     private final OrderMapper orderMapper;
     private final StateMachine<OrderState, OrderEvent, OrderContext> orderStateMachine;
+    private final OrderLifecycleScenarioService lifecycleService;
 
     public OrderTimeoutBatchScenarioService(OrderMapper orderMapper,
                                             StateMachine<OrderState, OrderEvent, OrderContext> orderStateMachine) {
+        this(orderMapper, orderStateMachine, null);
+    }
+
+    @Autowired
+    public OrderTimeoutBatchScenarioService(OrderMapper orderMapper,
+                                            StateMachine<OrderState, OrderEvent, OrderContext> orderStateMachine,
+                                            @Lazy OrderLifecycleScenarioService lifecycleService) {
         this.orderMapper = orderMapper;
         this.orderStateMachine = orderStateMachine;
+        this.lifecycleService = lifecycleService;
+    }
+
+    /**
+     * 自动扫描待处理（待支付、已支付、待发货）的订单 ID 列表
+     *
+     * @param limit 扫描上限
+     * @return 订单 ID 列表
+     */
+    public List<Long> scanPendingOrderIds(int limit) {
+        int max = limit > 0 ? limit : 100;
+        List<OrderDO> pendingOrders = orderMapper.selectList(new LambdaQueryWrapper<OrderDO>()
+                .in(OrderDO::getStatus, OrderState.WAIT_PAY, OrderState.PAID, OrderState.WAIT_DELIVER)
+                .last("LIMIT " + max));
+        if (pendingOrders == null || pendingOrders.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return pendingOrders.stream().map(OrderDO::getId).collect(Collectors.toList());
     }
 
     /**
@@ -99,5 +133,40 @@ public class OrderTimeoutBatchScenarioService {
                 result.getTotalCount(), result.getSuccessCount(), result.getFailureCount());
 
         return result;
+    }
+
+    /**
+     * 模拟切片批处理局部失败容错（部分订单符合条件成功，部分订单状态不匹配失败）
+     *
+     * @return 批量执行结果视图对象（包含成功列表与失败原因明细）
+     */
+    public BatchTransitionResult<OrderState, OrderDO> simulatePartialFailure() {
+        log.info("[BatchCancel] 模拟批处理部分失败容错场景");
+
+        if (lifecycleService == null) {
+            log.warn("[BatchCancel] lifecycleService 未注入，跳过模拟");
+            return BatchTransitionResult.empty();
+        }
+
+        // 1. 创建一笔合法 WAIT_PAY 订单
+        String validSn = "ORD-BATCH-OK-" + UUID.randomUUID().toString().substring(0, 8);
+        OrderDO validOrder = lifecycleService.createOrder(validSn, new BigDecimal("88.00"));
+
+        // 2. 创建一笔不符合 CANCEL 条件的 DELIVERING 订单
+        String invalidSn = "ORD-BATCH-FAIL-" + UUID.randomUUID().toString().substring(0, 8);
+        OrderDO deliveredOrder = lifecycleService.createOrder(invalidSn, new BigDecimal("168.00"));
+        lifecycleService.pay(deliveredOrder.getId());
+        lifecycleService.auditRisk(deliveredOrder.getId(), 20, false); // 转为 WAIT_DELIVER
+        lifecycleService.ship(deliveredOrder.getId(), "SF_BATCH_TEST"); // 转为 DELIVERING (不可直接 CANCEL)
+
+        List<Long> mixIds = new ArrayList<>();
+        mixIds.add(validOrder.getId());
+        mixIds.add(deliveredOrder.getId());
+
+        return batchCancelExpiredOrders(
+                mixIds,
+                "容错自验：部分合法取消，部分非法拦截",
+                10
+        );
     }
 }

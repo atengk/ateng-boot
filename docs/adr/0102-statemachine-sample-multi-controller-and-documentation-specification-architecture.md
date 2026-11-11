@@ -53,7 +53,7 @@ flowchart TD
   3. `StateMachineCallbackController`（`/sample/statemachine/callback/*`）：覆盖第三方支付异步回调处理、CAS-First 乐观锁并发防重与高并发多线程冲突模拟；
   4. `StateMachineBatchController`（`/sample/statemachine/batch/*`）：覆盖超时订单大批量切片关单（`fireEventBatch`）与 Fail-Safe 局部异常容错隔离；
   5. `StateMachineTopologyController`（`/sample/statemachine/topology/*`）：覆盖 Mermaid / PlantUML 状态机拓扑图动态导出及全局注册表（`StateMachineFactory`）单例内省。
-- 遵循 Zero-Entity-Leakage 契约，Controller 传输边界 100% 严禁暴露 ORM 实体（`OrderDO`），入参统一采用强类型 Request DTO（7 个 DTO 均标配 JSR-303 校验），出参统一显式返回强类型 `Result<T>` 配合 4 个领域 VO（`OrderVO`、`OrderTransitionVO`、`OrderButtonActionVO`、`OrderBatchResultVO`）。
+- 遵循 Zero-Entity-Leakage 契约，Controller 传输边界 100% 严禁暴露 ORM 实体（`OrderDO`），入参统一采用强类型 Request DTO（7 个 DTO 均标配 JSR-303 校验），出参统一显式返回强类型 `Result<T>` 配合 5 个领域 VO（`OrderVO`、`OrderTransitionVO`、`OrderButtonActionVO`、`OrderBatchResultVO`、`OrderConcurrentSimulationVO`）。
 
 ### 2. 1:1 逆向交付五维生产文档与四段式极简体验卡
 - **Sample 极简体验卡**：重构 `ateng-boot-sample-statemachine/README.md`，聚焦端口启动（8080）、双模切换、21 组全场景 cURL 体验命令表与回归命令，彻底移除长篇架构原理抄录；
