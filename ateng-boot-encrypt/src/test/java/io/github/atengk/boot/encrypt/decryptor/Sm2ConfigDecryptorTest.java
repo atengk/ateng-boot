@@ -160,6 +160,15 @@ class Sm2ConfigDecryptorTest {
 
         byte[] decrypted = Sm2Engine.decrypt(rawWithout04, keyPair.getPrivateKey());
         assertThat(new String(decrypted, java.nio.charset.StandardCharsets.UTF_8)).isEqualTo(plaintext);
+
+        // 多次随机循环测试，验证无论首字节随机值为何（包括恰为 0x30 时）均可稳定解密
+        for (int i = 0; i < 50; i++) {
+            byte[] enc = Sm2Engine.encrypt(plaintext.getBytes(java.nio.charset.StandardCharsets.UTF_8), keyPair.getPublicKey());
+            byte[] raw = new byte[enc.length - 1];
+            System.arraycopy(enc, 1, raw, 0, raw.length);
+            byte[] dec = Sm2Engine.decrypt(raw, keyPair.getPrivateKey());
+            assertThat(new String(dec, java.nio.charset.StandardCharsets.UTF_8)).isEqualTo(plaintext);
+        }
     }
 
     @Test

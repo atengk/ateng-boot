@@ -252,9 +252,13 @@ public final class Sm2Engine {
             throw new IllegalArgumentException("SM2 解密入参密文或私钥非法");
         }
 
-        // 兼容 ASN.1 DER 编码密文 (以 0x30 开头)
+        // 兼容 ASN.1 DER 编码密文 (以 0x30 开头)；若解析失败则回退至原始 C1C3C2 (防御首字节恰为 0x30 的裸 C1 密文)
         if (ciphertext.length > 0 && ciphertext[0] == 0x30) {
-            return decryptAsn1Der(ciphertext, privKey);
+            try {
+                return decryptAsn1Der(ciphertext, privKey);
+            } catch (Exception e) {
+                return decryptC1C3C2(ciphertext, privKey);
+            }
         }
 
         return decryptC1C3C2(ciphertext, privKey);
@@ -278,7 +282,23 @@ public final class Sm2Engine {
         Point c1 = new Point(new BigInteger(1, x1), new BigInteger(1, y1));
 
         if (!isOnCurve(c1)) {
-            throw new IllegalArgumentException("SM2 密文 C1 曲线点不合法 (NotInCurve)");
+            // 防御性兼容：若首字节恰巧为 0x04 的 64 字节裸 C1 密文 (概率 1/256)，offset=1 时将错位；
+            // 此时尝试按 offset=0 校验原始 64 字节点是否在曲线上
+            if (offset == 1 && ciphertext.length >= 64 + 32) {
+                byte[] altX1 = new byte[32];
+                byte[] altY1 = new byte[32];
+                System.arraycopy(ciphertext, 0, altX1, 0, 32);
+                System.arraycopy(ciphertext, 32, altY1, 0, 32);
+                Point altC1 = new Point(new BigInteger(1, altX1), new BigInteger(1, altY1));
+                if (isOnCurve(altC1)) {
+                    c1 = altC1;
+                    c1Len = 64;
+                } else {
+                    throw new IllegalArgumentException("SM2 密文 C1 曲线点不合法 (NotInCurve)");
+                }
+            } else {
+                throw new IllegalArgumentException("SM2 密文 C1 曲线点不合法 (NotInCurve)");
+            }
         }
 
         Point s = multiply(privKey, c1);
