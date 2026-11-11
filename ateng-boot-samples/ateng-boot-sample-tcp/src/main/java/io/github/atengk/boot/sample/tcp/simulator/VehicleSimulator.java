@@ -75,8 +75,7 @@ public class VehicleSimulator {
             properties.getReconnect().setMaxInterval(Duration.ofSeconds(1));
             properties.getReconnect().setMaxAttempts(5);
         }
-        properties.getFraming().setMode(io.github.atengk.boot.tcp.enums.FramingMode.DELIMITER);
-        properties.getFraming().setDelimiter("\n");
+        properties.getFraming().setMode(io.github.atengk.boot.tcp.enums.FramingMode.LENGTH_FIELD);
 
         this.tcpClient = new TcpClient(
                 "sim-" + deviceId,

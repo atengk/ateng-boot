@@ -233,6 +233,10 @@ public class TcpServer implements SmartLifecycle {
                             if (frameDecoder != null) {
                                 pipeline.addLast("frameDecoder", frameDecoder);
                             }
+                            ChannelHandler frameEncoder = TcpFramingDecoderFactory.createFrameEncoder(properties.getFraming());
+                            if (frameEncoder != null) {
+                                pipeline.addLast("frameEncoder", frameEncoder);
+                            }
 
                             // 5. 安全堆内存转译与直接内存释放闭环
                             pipeline.addLast("payloadCodec", TcpPayloadCodecHandler.INSTANCE);

@@ -1,27 +1,82 @@
-spring:
-  application:
-    name: ateng-boot-sample-tcp-test
-
 ateng:
   boot:
+    redis:
+      enabled: false
     tcp:
       enabled: true
+      cluster:
+        redis:
+          enabled: false
       server:
         enabled: true
         host: 127.0.0.1
+        # 随机可用端口，防止 CI 并发构建发生端口冲突
         port: 0
+        boss-threads: 1
+        worker-threads: 2
         framing:
-          mode: DELIMITER
-          delimiter: "\n"
+          mode: LENGTH_FIELD
+          length-field:
+            offset: 0
+            length: 4
+            adjustment: 0
+            initial-bytes-to-strip: 4
+          max-frame-length: 64KB
         idle:
-          reader-idle: 30s
-        drain-timeout: 1s
+          reader-idle-time: 30s
+          writer-idle-time: 0s
+          all-idle-time: 0s
+          auto-close: true
+        ip-filter:
+          enabled: true
+          whitelist:
+            - "127.0.0.1"
+            - "::1"
+          blacklist:
+            - "10.99.99.99"
+        traffic-shaping:
+          enabled: true
+          global-read-limit: 10MB
+          global-write-limit: 10MB
+          channel-read-limit: 2MB
+          channel-write-limit: 2MB
+          check-interval: 1s
+          max-time: 5s
+      servers:
+        binary-jt808:
+          enabled: true
+          host: 127.0.0.1
+          port: 0
+          idle:
+            reader-idle-time: 30s
+            writer-idle-time: 0s
+            all-idle-time: 0s
+            auto-close: true
+        tls-gateway:
+          enabled: true
+          host: 127.0.0.1
+          port: 0
+          idle:
+            reader-idle-time: 30s
+            writer-idle-time: 0s
+            all-idle-time: 0s
+            auto-close: true
+      # E2E 测试由 SampleTcpE2eTest 手工编排多台 VehicleSimulator 连入随机端口，关闭默认回环客户端自动拨号
+      client:
+        enabled: false
+      clients:
+        binary-client:
+          enabled: false
+        tls-client:
+          enabled: false
+
+sample:
+  tcp:
+    simulator:
+      # E2E 测试自行编排设备接入与顶号断线时序，关闭启动期自动模拟器
+      enabled: false
 
 management:
-  endpoints:
-    web:
-      exposure:
-        include: health, info, prometheus, tcp
-  endpoint:
-    tcp:
-      enabled: true
+  health:
+    redis:
+      enabled: false

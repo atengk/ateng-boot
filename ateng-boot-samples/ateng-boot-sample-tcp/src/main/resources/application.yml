@@ -1,31 +1,199 @@
+server:
+  port: 8080
+
 spring:
   application:
     name: ateng-boot-sample-tcp
+  config:
+    import: "optional:classpath:application-local.yml"
 
 ateng:
   boot:
+    redis:
+      # 默认离线自洽运行，不依赖外部物理 Redis；启用 local profile 后自动开启
+      enabled: false
     tcp:
       enabled: true
+      cluster:
+        redis:
+          # 默认装载 LocalTcpClusterBridge；local profile 下置为 true 切换为 RedisPubSubTcpClusterBridge
+          enabled: false
+          topic: "ateng:tcp:cluster:sample"
       server:
         enabled: true
         host: 0.0.0.0
         port: 9099
-        framing:
-          mode: DELIMITER
-          delimiter: "\n"
-        idle:
-          reader-idle: 60s
-          writer-idle: 0s
-          all-idle: 0s
+        boss-threads: 1
+        worker-threads: 4
+        max-connections: 5000
         drain-timeout: 5s
+        so-backlog: 1024
+        tcp-nodelay: true
+        so-keepalive: true
+        write-buffer-low-water-mark: 32KB
+        write-buffer-high-water-mark: 64KB
+        backpressure-policy: FAIL_FAST
+        backpressure-timeout: 3s
+        framing:
+          mode: LENGTH_FIELD
+          length-field:
+            offset: 0
+            length: 4
+            adjustment: 0
+            initial-bytes-to-strip: 4
+          max-frame-length: 64KB
+        idle:
+          reader-idle-time: 60s
+          writer-idle-time: 0s
+          all-idle-time: 0s
+          auto-close: true
+        ip-filter:
+          enabled: true
+          whitelist:
+            - "127.0.0.1"
+            - "::1"
+            - "192.168.0.0/16"
+          blacklist:
+            - "10.99.99.99"
+        traffic-shaping:
+          enabled: true
+          global-read-limit: 10MB
+          global-write-limit: 10MB
+          channel-read-limit: 1MB
+          channel-write-limit: 1MB
+          check-interval: 1s
+          max-time: 5s
+      servers:
+        binary-jt808:
+          enabled: true
+          host: 127.0.0.1
+          port: 9100
+          framing:
+            mode: LENGTH_FIELD
+            length-field:
+              offset: 0
+              length: 4
+              adjustment: 0
+              initial-bytes-to-strip: 4
+            max-frame-length: 64KB
+          idle:
+            reader-idle-time: 45s
+            writer-idle-time: 0s
+            all-idle-time: 0s
+            auto-close: true
+        tls-gateway:
+          enabled: true
+          host: 127.0.0.1
+          port: 9101
+          framing:
+            mode: LENGTH_FIELD
+            length-field:
+              offset: 0
+              length: 4
+              adjustment: 0
+              initial-bytes-to-strip: 4
+            max-frame-length: 64KB
+          idle:
+            reader-idle-time: 60s
+            writer-idle-time: 0s
+            all-idle-time: 0s
+            auto-close: true
+          ssl:
+            enabled: true
+            client-auth: NEED
+            key-store: ${SAMPLE_TCP_SERVER_KEY_STORE:classpath:certs/server.p12}
+            # 本地离线演练自签名开发测试证书口令（生产联调请通过 application-local.yml 或环境变量覆盖）
+            key-store-password: ${SAMPLE_TCP_SERVER_KEY_PASSWORD:123456}
+            key-store-type: PKCS12
+            trust-store: ${SAMPLE_TCP_SERVER_TRUST_STORE:classpath:certs/server-truststore.p12}
+            trust-store-password: ${SAMPLE_TCP_SERVER_TRUST_PASSWORD:123456}
+            trust-store-type: PKCS12
+      client:
+        enabled: true
+        host: 127.0.0.1
+        port: 9099
+        connect-timeout: 3s
+        request-timeout: 5s
+        framing:
+          mode: LENGTH_FIELD
+          length-field:
+            offset: 0
+            length: 4
+            adjustment: 0
+            initial-bytes-to-strip: 4
+          max-frame-length: 64KB
+        heartbeat:
+          enabled: true
+          interval: 20s
+          payload: "{\"command\":\"HEARTBEAT\"}"
+        reconnect:
+          enabled: true
+          initial-interval: 500ms
+          max-interval: 10s
+          multiplier: 2.0
+          max-attempts: 5
+      clients:
+        binary-client:
+          enabled: true
+          host: 127.0.0.1
+          port: 9100
+          connect-timeout: 3s
+          request-timeout: 5s
+          framing:
+            mode: LENGTH_FIELD
+            length-field:
+              offset: 0
+              length: 4
+              adjustment: 0
+              initial-bytes-to-strip: 4
+            max-frame-length: 64KB
+          reconnect:
+            enabled: true
+            initial-interval: 500ms
+            max-interval: 10s
+            max-attempts: 5
+        tls-client:
+          enabled: true
+          host: 127.0.0.1
+          port: 9101
+          connect-timeout: 3s
+          request-timeout: 5s
+          framing:
+            mode: LENGTH_FIELD
+            length-field:
+              offset: 0
+              length: 4
+              adjustment: 0
+              initial-bytes-to-strip: 4
+            max-frame-length: 64KB
+          reconnect:
+            enabled: true
+            initial-interval: 500ms
+            max-interval: 10s
+            max-attempts: 5
+          ssl:
+            enabled: true
+            key-store: ${SAMPLE_TCP_CLIENT_KEY_STORE:classpath:certs/client.p12}
+            # 本地离线演练自签名开发测试证书口令（生产联调请通过 application-local.yml 或环境变量覆盖）
+            key-store-password: ${SAMPLE_TCP_CLIENT_KEY_PASSWORD:123456}
+            key-store-type: PKCS12
+            trust-store: ${SAMPLE_TCP_CLIENT_TRUST_STORE:classpath:certs/client-truststore.p12}
+            trust-store-password: ${SAMPLE_TCP_CLIENT_TRUST_PASSWORD:123456}
+            trust-store-type: PKCS12
+
+sample:
+  tcp:
+    simulator:
+      enabled: true
 
 management:
   endpoints:
     web:
       exposure:
-        include: health, info, prometheus, tcp
+        include: health,info,tcp,metrics,prometheus
   endpoint:
     health:
       show-details: always
-    tcp:
-      enabled: true
+  health:
+    redis:
+      enabled: false

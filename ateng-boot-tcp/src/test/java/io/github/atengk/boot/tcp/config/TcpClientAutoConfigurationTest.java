@@ -50,6 +50,11 @@ class TcpClientAutoConfigurationTest {
             assertThat(context).hasSingleBean(TcpRequestCorrelationManager.class);
             assertThat(context).hasSingleBean(TcpClient.class);
             assertThat(context).hasSingleBean(TcpClientTemplate.class);
+            TcpClient client = context.getBean(TcpClient.class);
+            TcpClientTemplate template = context.getBean(TcpClientTemplate.class);
+            TcpRequestCorrelationManager globalManager = context.getBean(TcpRequestCorrelationManager.class);
+            assertThat(client.getCorrelationManager()).isNotNull().isNotSameAs(globalManager);
+            assertThat(template.getCorrelationManager()).isSameAs(client.getCorrelationManager());
         });
     }
 

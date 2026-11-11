@@ -23,6 +23,18 @@
             <artifactId>ateng-boot-tcp</artifactId>
         </dependency>
 
+        <!-- Web 运行时底座（承载 5 大领域 Controller 体验接口与统一全局异常转译） -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+        </dependency>
+
+        <!-- Redis 分布式基础设施（默认离线关闭，开启 local profile 后激活 RedisPubSubTcpClusterBridge 跨节点广播） -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-redis</artifactId>
+        </dependency>
+
         <!-- Spring Boot Actuator 健康探针与运维端点 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

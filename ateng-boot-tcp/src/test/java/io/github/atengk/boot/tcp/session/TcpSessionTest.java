@@ -146,4 +146,33 @@ class TcpSessionTest {
         session.send("Allowed");
         assertThat(session.isWritable()).isFalse();
     }
+
+    @Test
+    @DisplayName("验证背压策略两参重载: 同时设置流控策略与阻塞等待超时，并拦截负数超时")
+    void testBackpressurePolicyWithTimeoutOverload() {
+        Channel mockChannel = mock(Channel.class);
+        when(mockChannel.isActive()).thenReturn(true);
+        when(mockChannel.isWritable()).thenReturn(false);
+
+        TcpSession session = new TcpSession("SES-OVERLOAD", mockChannel);
+        session.setBackpressurePolicy(BackpressurePolicy.BLOCK_TIMEOUT, java.time.Duration.ofMillis(250));
+
+        assertThat(session.getBackpressurePolicy()).isEqualTo(BackpressurePolicy.BLOCK_TIMEOUT);
+        assertThat(session.getBackpressureTimeout()).isEqualTo(java.time.Duration.ofMillis(250));
+
+        // 传入 null 参数时保留已配置值
+        session.setBackpressurePolicy(BackpressurePolicy.FAIL_FAST, null);
+        assertThat(session.getBackpressurePolicy()).isEqualTo(BackpressurePolicy.FAIL_FAST);
+        assertThat(session.getBackpressureTimeout()).isEqualTo(java.time.Duration.ofMillis(250));
+
+        session.setBackpressurePolicy(null, java.time.Duration.ofMillis(120));
+        assertThat(session.getBackpressurePolicy()).isEqualTo(BackpressurePolicy.FAIL_FAST);
+        assertThat(session.getBackpressureTimeout()).isEqualTo(java.time.Duration.ofMillis(120));
+
+        // 负数超时快速失败
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> session.setBackpressurePolicy(BackpressurePolicy.BLOCK_TIMEOUT, java.time.Duration.ofMillis(-5))
+        );
+    }
 }

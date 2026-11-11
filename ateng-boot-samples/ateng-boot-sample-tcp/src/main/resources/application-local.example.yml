@@ -1,0 +1,66 @@
+# ===================================================================
+# ateng-boot-sample-tcp 本地/联调真实服务配置模板
+#
+# 使用说明：
+# 1. 复制本文件为 application-local.yml（已被 .gitignore 忽略，严禁提交真实机密或内网地址到 Git）
+# 2. 将大写语义占位符（YOUR_*）替换为本地或测试环境真实服务端地址、Redis 与 mTLS 证书路径口令
+# 3. 启用 local profile（-Dspring.profiles.active=local）运行应用或双模集成测试：
+#    - 关闭内置虚拟车机模拟器，切换为真实终端连接接入
+#    - 开启 RedisPubSubTcpClusterBridge 分布式集群广播与 Actuator Redis 健康探针
+# ===================================================================
+spring:
+  config:
+    activate:
+      on-profile: local
+  data:
+    redis:
+      host: YOUR_REDIS_HOST
+      port: 6379
+      password: YOUR_REDIS_PASSWORD
+      database: 0
+      timeout: 3000ms
+
+sample:
+  tcp:
+    simulator:
+      enabled: false
+
+ateng:
+  boot:
+    redis:
+      enabled: true
+    tcp:
+      cluster:
+        redis:
+          enabled: true
+          topic: "ateng:tcp:cluster:YOUR_ENV_NAMESPACE"
+      servers:
+        tls-gateway:
+          ssl:
+            enabled: true
+            client-auth: NEED
+            key-store: file:/YOUR_CERT_DIR/server.p12
+            key-store-password: YOUR_TLS_SERVER_KEY_STORE_PASSWORD
+            trust-store: file:/YOUR_CERT_DIR/server-truststore.p12
+            trust-store-password: YOUR_TLS_SERVER_TRUST_STORE_PASSWORD
+      client:
+        host: YOUR_TCP_SERVER_HOST
+        port: 9099
+      clients:
+        binary-client:
+          host: YOUR_TCP_BINARY_SERVER_HOST
+          port: 9100
+        tls-client:
+          host: YOUR_TCP_TLS_SERVER_HOST
+          port: 9101
+          ssl:
+            enabled: true
+            key-store: file:/YOUR_CERT_DIR/client.p12
+            key-store-password: YOUR_TLS_CLIENT_KEY_STORE_PASSWORD
+            trust-store: file:/YOUR_CERT_DIR/client-truststore.p12
+            trust-store-password: YOUR_TLS_CLIENT_TRUST_STORE_PASSWORD
+
+management:
+  health:
+    redis:
+      enabled: true

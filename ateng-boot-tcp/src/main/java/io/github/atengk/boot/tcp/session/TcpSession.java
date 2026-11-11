@@ -265,6 +265,25 @@ public class TcpSession {
         this.backpressurePolicy = backpressurePolicy;
     }
 
+    /**
+     * 同时配置当前会话背压流控策略与最大阻塞等待超时
+     *
+     * @param backpressurePolicy  背压流控策略（为 {@code null} 时保留当前策略，发送兜底仍按 {@link BackpressurePolicy#FAIL_FAST} 执行）
+     * @param backpressureTimeout 阻塞等待超时（仅当非 {@code null} 时覆盖更新，不能为负数）
+     * @throws IllegalArgumentException 当 {@code backpressureTimeout} 为负数时抛出
+     */
+    public void setBackpressurePolicy(BackpressurePolicy backpressurePolicy, Duration backpressureTimeout) {
+        if (backpressureTimeout != null && backpressureTimeout.isNegative()) {
+            throw new IllegalArgumentException("背压等待超时时间不能为负数: " + backpressureTimeout);
+        }
+        if (backpressurePolicy != null) {
+            this.backpressurePolicy = backpressurePolicy;
+        }
+        if (backpressureTimeout != null) {
+            this.backpressureTimeout = backpressureTimeout;
+        }
+    }
+
     public Duration getBackpressureTimeout() {
         return backpressureTimeout;
     }

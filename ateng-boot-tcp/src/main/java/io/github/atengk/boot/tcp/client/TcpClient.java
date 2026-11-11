@@ -174,6 +174,10 @@ public class TcpClient implements SmartLifecycle {
                         if (frameDecoder != null) {
                             pipeline.addLast("frameDecoder", frameDecoder);
                         }
+                        ChannelHandler frameEncoder = TcpFramingDecoderFactory.createFrameEncoder(properties.getFraming());
+                        if (frameEncoder != null) {
+                            pipeline.addLast("frameEncoder", frameEncoder);
+                        }
 
                         // 3. 载荷转译与内存回收
                         pipeline.addLast("payloadCodec", TcpPayloadCodecHandler.INSTANCE);
@@ -403,8 +407,13 @@ public class TcpClient implements SmartLifecycle {
      * 主动断开当前长连接通道
      */
     public void disconnect() {
-        if (channel != null && channel.isOpen()) {
-            channel.close();
+        Channel ch = this.channel;
+        if (ch != null && ch.isOpen()) {
+            if (ch.eventLoop().inEventLoop()) {
+                ch.close();
+            } else {
+                ch.close().syncUninterruptibly();
+            }
         }
     }
 

@@ -21,17 +21,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 /**
- * TCP 车载长连接全场景端到端集成测试沙箱
+ * TCP 车载长连接全场景端到端集成测试沙箱（Non-Web 协议沙箱轨道）
  * <p>
- * 遵循框架非 Web Starter 零 Controller 刚性铁律，100% 离线自洽，基于动态随机端口、
- * 内存仿真车机终端与 {@link VehicleTelemetryScenarioService} 业务场景服务完成业务全闭环验证。
+ * 遵循 ADR-0105 双轨并存验收机制，以 {@code WebEnvironment.NONE} 无 Web 容器形态 100% 离线自洽运行，
+ * 基于动态随机端口、内存仿真车机终端与 {@link VehicleTelemetryScenarioService} 完成底层纯协议与多端口拓扑闭环验证。
  * 覆盖车机认证、JT/T 808 国标复合报文（0x7E/0x7D/BCC）、全双工 RPC、车队分组组播、出站背压与高可用自愈。
  * </p>
  *
  * @author Ateng
  * @since 2026-10-26
  */
-@SpringBootTest(classes = SampleTcpApplication.class)
+@SpringBootTest(classes = SampleTcpApplication.class, webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @ActiveProfiles("test")
 class SampleTcpE2eTest {
 

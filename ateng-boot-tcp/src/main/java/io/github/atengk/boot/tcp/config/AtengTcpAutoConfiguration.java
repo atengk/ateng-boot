@@ -1,5 +1,6 @@
 package io.github.atengk.boot.tcp.config;
 
+import io.github.atengk.boot.tcp.correlation.TcpCorrelationIdExtractor;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.metric.TcpMetricsCollector;
 import io.github.atengk.boot.tcp.properties.AtengTcpProperties;
@@ -34,8 +35,14 @@ public class AtengTcpAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public TcpRequestCorrelationManager tcpRequestCorrelationManager() {
-        return new TcpRequestCorrelationManager();
+    public TcpRequestCorrelationManager tcpRequestCorrelationManager(
+            ObjectProvider<TcpCorrelationIdExtractor> correlationIdExtractorProvider) {
+        TcpRequestCorrelationManager manager = new TcpRequestCorrelationManager();
+        TcpCorrelationIdExtractor extractor = correlationIdExtractorProvider.orderedStream().findFirst().orElse(null);
+        if (extractor != null) {
+            manager.setCorrelationIdExtractor(extractor);
+        }
+        return manager;
     }
 
     @Bean
