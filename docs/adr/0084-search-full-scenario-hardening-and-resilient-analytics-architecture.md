@@ -1,7 +1,7 @@
 # 84. 全文检索与时序分析全场景工业级加固架构决策 (Search Full-Scenario Hardening and Resilient Analytics Architecture)
 
 ## 状态
-已采纳 (Accepted)
+已采纳 (Accepted)；其中第 4 节“样例工程架构场景化正交解耦（零 Controller 污染）”已被 [ADR-0106](./0106-search-sample-multi-controller-and-documentation-specification-architecture.md) 演进替代（全面升级为 4 大领域 Controller Web 体验化与 Zero-Entity-Leakage 传输解耦架构）。
 
 ## 背景与痛点
 在 [ADR-0053](./0053-enterprise-dual-engine-search-and-analytics-architecture.md) 中，`ateng-boot-search` 确立了以 Elasticsearch 8.x 为主核、解耦 OpenSearch 客户端 SPI 的统一检索底座，并实现了 `SearchTemplate` 基础 CRUD、OCC 乐观并发控制、双模 Bulk 写入、受管 `SearchBulkProcessor` 与 Search-After 深度分页熔断。然而，随着海量电商商品检索、时序日志审计、大数据中台与大模型 RAG 知识库检索等企业级复杂业务的深入推进，底座暴露了以下六大高频场景短板：
@@ -50,6 +50,9 @@
 - **模板对称删除**：提供 `deleteIndexTemplate(String templateName)`，补齐模板维护生命周期的对称完备性。
 
 ### 4. 样例工程架构场景化正交解耦 (1:1 Modular Scenarios)
+
+> **演进注记 (Superseded by ADR-0106)**：本节设定的“零 Controller 污染”局部约定已由全框架现行的 [《工业级文档与样例工程标准规范》](../agents/documentation-specification.md) 与 [ADR-0106](./0106-search-sample-multi-controller-and-documentation-specification-architecture.md) 正式替代——`ateng-boot-sample-search` 已全面引入 `ateng-boot-web` 并演进为 4 大领域 `@RestController` Web 体验化与 Zero-Entity-Leakage 传输隔离架构。以下内容仅保留作为历史演进记录。
+
 废除单一单体服务类，将 `ateng-boot-sample-search` 重构为以业务场景命名的独立组件矩阵（零 Controller 污染）：
 1. `ProductCatalogSearchScenario`：电商商品多维检索、多字段高亮、Nested 嵌套 SKU 检索、搜索联想补全、Collapse 折叠去重与 Search-After 游标分页；
 2. `LogAnalyticsAggScenario`：SpEL 动态时序分表、DateHistogram 直方图聚合走势与 `deleteByQuery` 过期清理；
