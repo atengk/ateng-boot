@@ -4,6 +4,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.sample.statemachine.config.OrderStateMachineConfig;
 import io.github.atengk.boot.sample.statemachine.constant.OrderEvent;
 import io.github.atengk.boot.sample.statemachine.constant.OrderState;
+import io.github.atengk.boot.sample.statemachine.context.OrderContext;
+import io.github.atengk.boot.statemachine.core.StateMachine;
+import io.github.atengk.boot.statemachine.core.StateMachineFactory;
 import io.github.atengk.boot.sample.statemachine.dto.OrderAddTrackingRequest;
 import io.github.atengk.boot.sample.statemachine.dto.OrderBatchCancelRequest;
 import io.github.atengk.boot.sample.statemachine.dto.OrderCreateRequest;
@@ -66,10 +69,14 @@ class SampleStateMachineWebControllerTest {
     @Autowired
     private OrderTransitionAuditLogger auditLogger;
 
+    @Autowired
+    private StateMachine<OrderState, OrderEvent, OrderContext> orderStateMachine;
+
     @BeforeEach
     void setUp() {
         machineConfig.clearRecords();
         auditLogger.clear();
+        StateMachineFactory.registerOrUpdate(orderStateMachine);
     }
 
     @AfterEach

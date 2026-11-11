@@ -75,6 +75,7 @@ class OrderLifecycleIntegrationTest {
     void setUp() {
         machineConfig.clearRecords();
         auditLogger.clear();
+        StateMachineFactory.registerOrUpdate(orderStateMachine);
     }
 
     @AfterEach
