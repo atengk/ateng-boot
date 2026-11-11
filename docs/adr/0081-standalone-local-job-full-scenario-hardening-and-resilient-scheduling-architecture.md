@@ -125,4 +125,21 @@ flowchart TD
 
 1. **生产成熟度跃迁**：彻底补齐多租户、强类型 DTO、告警防风暴、Redis 集群锁与 Micrometer 指标 5 大高频场景，使 `ateng-boot-job-local` 成为真正可替代轻量 XXL-Job/ShedLock 的单机与轻量集群全能底座；
 2. **零破坏性升级**：所有新增特性（`tenantMode`、强类型入参、防风暴聚合、Redis 锁）均为纯向后兼容设计，未破坏现有 API 与注解定义；
-3. **红线 100% 合规**：彻底消除样例工程的 Controller 异味，对齐框架代码成熟度规范。
+3. **红线 100% 合规**：全面满足框架代码成熟度九道防线与防御性设计规范。
+
+---
+
+## 增量演进附录：对齐通用 Sample-First 规范与多 Controller 演进 (2026-11-11)
+
+### 1. 废止旧“样例零 Controller”陈旧条款
+在仓库最新确立的权威标准 [documentation-specification.md](../agents/documentation-specification.md)（第 3.1 节与第 12 项自检红线）中，规范要求全仓库所有样例工程必须统一引入 `ateng-boot-web` 底座，并将被动监听类组件（MQ/Stream 消费者、定时任务等）通过多个高内聚领域 `@RestController` 暴露“生产投递/手动触发端”与“状态查询/运维端”，以保障开箱即用的 Web/cURL 体验。本决议正式废止本文第 7 节中“非 Web 模块 Sample 零 Controller”的陈旧陈述。
+
+### 2. 三大高内聚领域 Controller 架构
+在 `ateng-boot-sample-job-local` 中落地三大高内聚领域控制器（路由统一遵循 `/sample/job-local/<feature>/<action>`，出参显式包装强类型 `Result<T>`）：
+- **LocalJobScheduleController (`/sample/job-local/schedule`)**：聚焦任务调度的主动触发、强类型 DTO 入参绑定与 JSR-303 Fail-Fast 校验、SaaS 多租户 ITERATE 轮询与 Fail-Safe 容错、以及集群防重互斥锁抢占验证；
+- **LocalJobManageController (`/sample/job-local/manage`)**：聚焦任务运行时的生命周期动态管控（暂停、恢复、Cron/频率/延迟周期动态重置、运行时编程式注册与注销移除）；
+- **LocalJobAuditController (`/sample/job-local/audit`)**：聚焦任务全量清单巡检、单任务详情查询、最近执行历史审计日志回查、Cron 表达式语法校验与时钟预演、以及有界日志滚动清理防 OOM。
+
+### 3. 双模联调与离线自洽不变量
+- 样例工程引入 `spring-boot-starter-data-redis`，`application.yml` 默认配置 `ateng.boot.job.local.cluster-lock.type: LOCAL`，确保 CI 与无外部中间件环境下 100% 离线自洽；
+- 提供 `application-local.example.yml` 大写占位符模板，激活 `local` profile 即可无缝切换直连真实 Redis，验证原生原子 Lua 锁与租约生命周期。

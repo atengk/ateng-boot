@@ -83,3 +83,15 @@ _Avoid_: Redisson锁, Redis加锁器, RedisLocker, LockService
 **LocalJobMetricsBinder (Micrometer 云原生指标采集器)**:
 将受管定时任务的执行次数、成功失败状态、耗时直方图（P95/P99）、并发丢弃与活跃执行等指标桥接导出至 Micrometer 与 Prometheus 的监控采集设施。
 _Avoid_: 监控打点器, 指标统计, MetricsCollector, JobTracker
+
+**LocalJobScheduleController (任务调度触发控制器)**:
+暴露于 `/sample/job-local/schedule` 的领域控制器，负责受管定时任务的手动即时触发、带参归档校验触发、SaaS 多租户轮询触发与集群互斥抢锁触发。
+_Avoid_: 调度接口, 触发器, TriggerController, FireAPI
+
+**LocalJobManageController (任务生命周期管控控制器)**:
+暴露于 `/sample/job-local/manage` 的领域控制器，负责受管定时任务的暂停、恢复、Cron/频率/延迟周期动态重置、运行时编程式注册与注销移除。
+_Avoid_: 管理接口, 控制器API, AdminController, TaskManagerAPI
+
+**LocalJobAuditController (任务状态巡检与审计控制器)**:
+暴露于 `/sample/job-local/audit` 的领域控制器，负责全量受管任务清单巡检、单任务运行详情查询、执行历史审计日志检索、Cron 未来时序预演与过期日志滚动清理。
+_Avoid_: 审计接口, 日志控制器, LogController, QueryAPI
