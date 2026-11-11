@@ -19,6 +19,6 @@ ateng:
     job:
       local:
         cluster-lock:
-          type: AUTO # 自动装配 Redis 轻量集群互斥锁 (RedisJobClusterLockProvider)
+          type: REDIS # 显式声明使用 Redis 轻量集群互斥锁 (RedisJobClusterLockProvider)
           key-prefix: "ateng:job:lock:"
           default-lease-time: 5m

@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.job.local.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -30,5 +31,7 @@ public class JobRateUpdateRequest implements Serializable {
      * 新的固定频率调度间隔（如 5s, 1m, 1h）
      */
     @NotBlank(message = "固定频率调度间隔不能为空")
+    @Pattern(regexp = "^(PT.*|[0-9]+(?:\\.[0-9]+)?(?:ms|s|m|h|d)?)$",
+            message = "固定频率格式不合法（支持如 500ms, 10s, 5m, 1h 或 ISO-8601 格式 PT10S）")
     private String fixedRate;
 }

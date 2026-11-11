@@ -1,6 +1,9 @@
 package io.github.atengk.boot.sample.job.local.controller;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.job.local.template.LocalJobTemplate;
 import io.github.atengk.boot.job.local.util.DurationParser;
 import io.github.atengk.boot.sample.job.local.dto.JobCronUpdateRequest;
@@ -87,7 +90,15 @@ public class LocalJobManageController {
      */
     @PostMapping("/update/rate")
     public Result<Boolean> updateRate(@Valid @RequestBody JobRateUpdateRequest request) {
-        Duration duration = DurationParser.parse(request.getFixedRate());
+        Duration duration;
+        try {
+            duration = DurationParser.parse(request.getFixedRate());
+            BusinessAssert.isTrue(duration != null && !duration.isNegative() && !duration.isZero(),
+                    "固定频率调度间隔必须为正时间间隔（如 5s, 1m, 1h）");
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST,
+                    "固定频率调度间隔格式非法: " + request.getFixedRate(), e);
+        }
         log.info("[LocalJobManageController] 动态修改固定频率: jobName={}, rate={}",
                 request.getJobName(), duration);
         boolean success = localJobTemplate.updateFixedRate(request.getJobName(), duration);
@@ -102,7 +113,15 @@ public class LocalJobManageController {
      */
     @PostMapping("/update/delay")
     public Result<Boolean> updateDelay(@Valid @RequestBody JobDelayUpdateRequest request) {
-        Duration duration = DurationParser.parse(request.getFixedDelay());
+        Duration duration;
+        try {
+            duration = DurationParser.parse(request.getFixedDelay());
+            BusinessAssert.isTrue(duration != null && !duration.isNegative() && !duration.isZero(),
+                    "固定延迟调度间隔必须为正时间间隔（如 5s, 1m, 1h）");
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST,
+                    "固定延迟调度间隔格式非法: " + request.getFixedDelay(), e);
+        }
         log.info("[LocalJobManageController] 动态修改固定延迟: jobName={}, delay={}",
                 request.getJobName(), duration);
         boolean success = localJobTemplate.updateFixedDelay(request.getJobName(), duration);

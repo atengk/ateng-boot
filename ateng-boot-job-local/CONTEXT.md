@@ -95,3 +95,47 @@ _Avoid_: 管理接口, 控制器API, AdminController, TaskManagerAPI
 **LocalJobAuditController (任务状态巡检与审计控制器)**:
 暴露于 `/sample/job-local/audit` 的领域控制器，负责全量受管任务清单巡检、单任务运行详情查询、执行历史审计日志检索、Cron 未来时序预演与过期日志滚动清理。
 _Avoid_: 审计接口, 日志控制器, LogController, QueryAPI
+
+**JobDynamicRegisterRequest (动态任务注册请求契约)**:
+承载运行时编程式动态注入新定时任务的入参模型，内聚任务名、描述、Cron 表达式、固定频率或固定延迟等参数并提供 JSR-303 Fail-Fast 校验。
+_Avoid_: 注册参数, 新建任务DTO, RegisterParam, NewJobDTO
+
+**JobCronUpdateRequest (Cron 表达式动态更新请求契约)**:
+承载运行时动态修改指定受管任务 Cron 调度周期的入参模型，支持标准 6 位 Cron 校验与 Fail-Fast 防卫。
+_Avoid_: 修改Cron参数, 更新表达式DTO, CronParam, UpdateCronDTO
+
+**JobRateUpdateRequest (固定频率周期更新请求契约)**:
+承载运行时动态调整固定频率 (FixedRate) 任务调度周期的入参模型，支持 Spring 格式时间间隔文本校验。
+_Avoid_: 频率参数, 间隔DTO, RateParam, UpdateRateDTO
+
+**JobDelayUpdateRequest (固定延迟周期更新请求契约)**:
+承载运行时动态调整固定延迟 (FixedDelay) 任务调度周期的入参模型，支持 Spring 格式时间间隔文本校验。
+_Avoid_: 延迟参数, 延后DTO, DelayParam, UpdateDelayDTO
+
+**ArchivingJobParam (带参归档任务入参契约)**:
+承载业务归档任务强类型参数的传输对象，支持业务表名与保留天数校验，与底层领域实体绝对解耦。
+_Avoid_: 归档参数, 业务入参, ArchivingDTO, TableParam
+
+**CronPreviewRequest (Cron 表达式预演请求契约)**:
+承载 Cron 表达式合法性校验与未来时钟触发点计算的入参模型，包含待预演 Cron 文本与预演次数。
+_Avoid_: 预演参数, 校验入参, PreviewParam, CheckCronDTO
+
+**JobResultVO (任务执行结果展示模型)**:
+向 Web 边界交付的强类型任务单次执行结果视图对象，内聚成功状态、业务摘要文案与执行耗时，彻底杜绝内部实体泄漏。
+_Avoid_: 结果VO, 执行结果对象, ResultView, JobResponse
+
+**JobInfoVO (受管任务元数据与状态展示模型)**:
+向 Web 边界交付的受管定时任务全生命周期大盘概览视图对象，包含任务名、状态、触发类型、累计执行指标与最近结果摘要。
+_Avoid_: 任务VO, 详情模型, TaskView, JobSummaryVO
+
+**JobExecutionRecordVO (任务执行审计明细展示模型)**:
+向 Web 边界交付的单次调度审计日志视图对象，包含记录 ID、MDC traceId、触发源、耗时、重试次数及有界审计日志列表。
+_Avoid_: 审计VO, 日志视图, RecordView, AuditDetailVO
+
+**CronPreviewVO (Cron 预演时钟点展示模型)**:
+向 Web 边界交付的 Cron 校验结果与未来时钟触发序列视图对象，包含表达式有效性标识与未来 Instant 时间列表。
+_Avoid_: 预演VO, 计算结果模型, PreviewResult, CronTimesVO
+
+**DualModeScheduleEnvironment (双模联调环境体系)**:
+兼顾 CI 离线自洽与真实外部中间件直连的测试运行模态：默认使用 LOCAL 本地防重锁或内存环境免外部依赖，本地联调通过 application-local.yml 激活真实 Redis 轻量集群锁。
+_Avoid_: 双环境, 本地远程模式, TwoModes, DualProfile

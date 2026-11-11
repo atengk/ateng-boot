@@ -1,6 +1,9 @@
 package io.github.atengk.boot.sample.job.local.controller;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.job.local.model.JobExecutionRecord;
 import io.github.atengk.boot.job.local.model.JobInfo;
 import io.github.atengk.boot.job.local.template.LocalJobTemplate;
@@ -132,7 +135,14 @@ public class LocalJobAuditController {
      */
     @DeleteMapping("/logs/expired")
     public Result<Integer> cleanExpiredLogs(@RequestParam(defaultValue = "7d") String retention) {
-        Duration duration = DurationParser.parse(retention, Duration.ofDays(7));
+        Duration duration;
+        try {
+            duration = DurationParser.parse(retention, Duration.ofDays(7));
+            BusinessAssert.isTrue(duration != null && !duration.isNegative(), "保留时长必须大于等于 0");
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST,
+                    "保留时长格式非法: " + retention, e);
+        }
         log.info("[LocalJobAuditController] 滚动清理过期审计日志: retention={}", duration);
         int cleaned = localJobTemplate.cleanExpiredLogs(duration);
         return Result.success(cleaned);

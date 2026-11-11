@@ -440,6 +440,14 @@ class SampleJobLocalIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));
         assertThat(localJobTemplate.exists(dynamicJob)).isFalse();
+
+        // 8. 验证参数校验防御：传入非法时间格式触发 JSR-303 Fail-Fast 阻断
+        mockMvc.perform(post("/sample/job-local/manage/update/rate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"jobName\":\"systemMetricsSamplingJob\",\"fixedRate\":\"invalid-time\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false));
     }
 
     @Test
