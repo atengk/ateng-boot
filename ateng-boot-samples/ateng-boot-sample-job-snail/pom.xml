@@ -17,6 +17,12 @@
     <description>ateng-boot 分布式任务调度与协同重试双擎组件 SnailJob 场景自验样例</description>
 
     <dependencies>
+        <!-- Web 运行时增强 (提供标准 REST 体验端与统一 Result<T> 契约) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+        </dependency>
+
         <!-- 分布式任务调度与协同重试双擎 Starter -->
         <dependency>
             <groupId>io.github.atengk</groupId>

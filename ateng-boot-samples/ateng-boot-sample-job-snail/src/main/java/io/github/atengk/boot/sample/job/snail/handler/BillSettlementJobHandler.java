@@ -21,29 +21,29 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * MapReduce 动态切片与规约聚合任务执行器示例
+ * 跨商户月度账单结算 MapReduce 动态切片与规约聚合任务执行器
  *
- * <p>演示 SnailJob 大数据分布式任务拆分与聚合流程：
+ * <p>演示 SnailJob 大规模跨商户结算数据分布式任务拆分与三阶计算流程：
  * <ul>
- *     <li>{@code @MapExecutor}：将大数据集切片分发为细粒度子任务 (doMap)；</li>
- *     <li>{@code @ReduceExecutor}：归集各子切片节点的计算结果并执行聚合规约；</li>
- *     <li>{@code @MergeReduceExecutor}：多节点规约结果的全局最终合并规约。</li>
+ *     <li>{@code @MapExecutor(taskName = "splitTask")}：依据数据范围动态拆分账单切片子任务并分发 (doMap)；</li>
+ *     <li>{@code @ReduceExecutor}：归集各子切片节点的商户账单计算结果并执行阶段规约；</li>
+ *     <li>{@code @MergeReduceExecutor}：多计算节点规约结果的全局最终合并对齐。</li>
  * </ul></p>
  *
  * @author Ateng
- * @since 2026-11-02
+ * @since 2026-11-11
  */
 @Slf4j
 @Component
-@JobExecutor(name = "mapReduceDemoJob")
-public class MapReduceDemoJobHandler {
+@JobExecutor(name = "billSettlementJob")
+public class BillSettlementJobHandler {
 
     private final AtomicInteger mapExecutionCount = new AtomicInteger(0);
     private final AtomicInteger reduceExecutionCount = new AtomicInteger(0);
     private final AtomicInteger mergeReduceExecutionCount = new AtomicInteger(0);
 
     /**
-     * Map 切片拆分任务：将大批量数据切片分发为子任务
+     * Map 切片拆分任务：将大批量待结算商户账单切片分发为子任务
      *
      * @param args    Map 切片入参
      * @param handler Map 任务分发句柄
@@ -55,69 +55,70 @@ public class MapReduceDemoJobHandler {
         String traceId = SnailJobContextHolder.getTraceId();
         String taskName = args != null ? args.getTaskName() : "splitTask";
         String rawParams = args != null ? String.valueOf(args.getJobParams()) : null;
-        log.info("[MapReduceDemoJobHandler] 执行 Map 拆分切片任务, taskName: {}, rawParams: {}, traceId: {}", taskName, rawParams, traceId);
+        log.info("[BillSettlementJobHandler] 执行商户账单 Map 拆分切片任务, taskName: {}, rawParams: {}, traceId: {}", taskName, rawParams, traceId);
 
-        // 真实依据入参 dataRange (如 "1-1000") 进行动态步长拆分切片计算
+        // 真实依据入参 dataRange (如 "1-1000") 进行商户账单动态步长拆分切片计算
         List<String> subTasks = calculateDynamicSlices(rawParams);
         if (handler != null) {
             ExecuteResult mapRes = handler.doMap(subTasks, "processTask");
-            log.info("[MapReduceDemoJobHandler] doMap 分发子任务完成 (共 {} 个切片): {}", subTasks.size(), mapRes);
+            log.info("[BillSettlementJobHandler] doMap 分发账单切片完成 (共 {} 个切片): {}", subTasks.size(), mapRes);
         }
         return ExecuteResult.success("Map slice splitTask executed with " + subTasks.size() + " subtasks");
     }
 
     private List<String> calculateDynamicSlices(String rawParams) {
         if (StringUtils.hasText(rawParams)) {
-            Matcher matcher = Pattern.compile("\"?dataRange\"?\\s*[:=]\\s*\"?(\\d+)-(\\d+)\"?").matcher(rawParams);
+            Pattern pattern = Pattern.compile("(\\d+)\\s*-\\s*(\\d+)");
+            Matcher matcher = pattern.matcher(rawParams.trim());
             if (matcher.find()) {
                 long start = Long.parseLong(matcher.group(1));
                 long end = Long.parseLong(matcher.group(2));
-                long total = Math.max(0, end - start + 1);
-                // 动态计算切片：数据量 > 500 时拆分为 3 个等长批次，否则按 2 个批次切分
-                int slices = (total > 500) ? 3 : 2;
-                long step = (total + slices - 1) / slices;
-                List<String> result = new ArrayList<>(slices);
-                for (int i = 0; i < slices; i++) {
-                    long chunkStart = start + i * step;
-                    long chunkEnd = Math.min(end, chunkStart + step - 1);
-                    if (chunkStart <= end) {
-                        result.add("CHUNK:" + chunkStart + "-" + chunkEnd);
+                if (end >= start) {
+                    List<String> list = new ArrayList<>();
+                    long step = Math.max(1, (end - start + 1) / 4);
+                    long cur = start;
+                    while (cur <= end) {
+                        long next = Math.min(cur + step - 1, end);
+                        list.add("merchant-bill-range:" + cur + "-" + next);
+                        cur = next + 1;
                     }
+                    return list;
                 }
-                return result;
             }
         }
-        return List.of("CHUNK:1-333", "CHUNK:334-666", "CHUNK:667-1000");
+        return List.of("merchant-bill-slice-1001", "merchant-bill-slice-1002", "merchant-bill-slice-1003", "merchant-bill-slice-1004");
     }
 
     /**
-     * Reduce 规约汇总任务：将各切片任务执行结果进行聚合归集
-     *
-     * @param args Reduce 规约入参
-     * @return 规约聚合结果
+     * Map 切片消费处理子任务
+     */
+    @MapExecutor(taskName = "processTask")
+    public ExecuteResult processTask(MapArgs args) {
+        String subTask = args != null ? String.valueOf(args.getJobParams()) : "default";
+        log.info("[BillSettlementJobHandler] 节点消费商户账单子切片: {}", subTask);
+        return ExecuteResult.success("Processed: " + subTask);
+    }
+
+    /**
+     * Reduce 规约汇总任务：规约汇总各子节点结算结果
      */
     @ReduceExecutor
     public ExecuteResult reduceTask(ReduceArgs args) {
         reduceExecutionCount.incrementAndGet();
         String traceId = SnailJobContextHolder.getTraceId();
-        Object params = args != null ? args.getJobParams() : null;
-        log.info("[MapReduceDemoJobHandler] 执行 Reduce 规约汇总任务, param: {}, traceId: {}", params, traceId);
-        return ExecuteResult.success("Reduce summary completed for params: " + params);
+        log.info("[BillSettlementJobHandler] 正在执行账单阶段 Reduce 规约汇总, traceId: {}", traceId);
+        return ExecuteResult.success("Reduce aggregated " + reduceExecutionCount.get() + " batches");
     }
 
     /**
-     * MergeReduce 合并规约任务：执行全局最终规约
-     *
-     * @param args MergeReduce 合并规约入参
-     * @return 最终合并结果
+     * MergeReduce 全局合并规约任务：汇总所有 Reduce 节点的全局最终账单
      */
     @MergeReduceExecutor
     public ExecuteResult mergeReduceTask(MergeReduceArgs args) {
         mergeReduceExecutionCount.incrementAndGet();
         String traceId = SnailJobContextHolder.getTraceId();
-        Object params = args != null ? args.getJobParams() : null;
-        log.info("[MapReduceDemoJobHandler] 执行 MergeReduce 最终合并任务, param: {}, traceId: {}", params, traceId);
-        return ExecuteResult.success("MergeReduce final aggregation completed for params: " + params);
+        log.info("[BillSettlementJobHandler] 正在执行全局 MergeReduce 最终合并规约, traceId: {}", traceId);
+        return ExecuteResult.success("MergeReduce completed globally");
     }
 
     public int getMapExecutionCount() {

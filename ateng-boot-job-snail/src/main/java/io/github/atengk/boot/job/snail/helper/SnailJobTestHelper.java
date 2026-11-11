@@ -77,6 +77,7 @@ public class SnailJobTestHelper implements ApplicationContextAware {
     @Override
     public void setApplicationContext(ApplicationContext context) throws BeansException {
         applicationContext = context;
+        clear();
         scanAndRegisterSpringBeans(context);
     }
 
@@ -447,25 +448,29 @@ public class SnailJobTestHelper implements ApplicationContextAware {
     }
 
     private static JobExecutorInfo loadJobExecutor(String jobName) {
-        // 1. 优先从运行期缓存获取
+        // 1. 若当前持有活跃的 Spring 容器，优先内省获取当前容器的活跃 Bean
+        if (applicationContext != null) {
+            JobExecutorInfo localInfo = FALLBACK_JOB_REPOSITORY.get(jobName);
+            if (localInfo != null) {
+                return localInfo;
+            }
+            scanAndRegisterSpringBeans(applicationContext);
+            localInfo = FALLBACK_JOB_REPOSITORY.get(jobName);
+            if (localInfo != null) {
+                return localInfo;
+            }
+        }
+
+        // 2. 从官方运行期缓存获取
         JobExecutorInfo info = JobExecutorInfoCache.get(jobName);
         if (info != null) {
             return info;
         }
 
-        // 2. 从本地扫描缓存获取
+        // 3. 从本地扫描缓存获取
         JobExecutorInfo fallback = FALLBACK_JOB_REPOSITORY.get(jobName);
         if (fallback != null) {
             return fallback;
-        }
-
-        // 3. 从 Spring 容器动态内省扫描
-        if (applicationContext != null) {
-            scanAndRegisterSpringBeans(applicationContext);
-            fallback = FALLBACK_JOB_REPOSITORY.get(jobName);
-            if (fallback != null) {
-                return fallback;
-            }
         }
 
         // 4. 若为复合命名 <rootJobName>:<taskName>，尝试通过 taskName 匹配
@@ -531,7 +536,7 @@ public class SnailJobTestHelper implements ApplicationContextAware {
                 String name = entry.getValue().name();
                 if (StringUtils.hasText(name)) {
                     JobExecutorInfo info = new JobExecutorInfo(name, m, Collections.emptyMap(), null, null, bean);
-                    FALLBACK_JOB_REPOSITORY.putIfAbsent(name, info);
+                    FALLBACK_JOB_REPOSITORY.put(name, info);
                 }
             }
 
@@ -544,7 +549,7 @@ public class SnailJobTestHelper implements ApplicationContextAware {
                 String name = StringUtils.hasText(entry.getValue().value()) ? entry.getValue().value() : m.getName();
                 if (StringUtils.hasText(name)) {
                     JobExecutorInfo info = new JobExecutorInfo(name, m, Collections.emptyMap(), null, null, bean);
-                    FALLBACK_JOB_REPOSITORY.putIfAbsent(name, info);
+                    FALLBACK_JOB_REPOSITORY.put(name, info);
                 }
             }
 
@@ -560,8 +565,8 @@ public class SnailJobTestHelper implements ApplicationContextAware {
                 Method m = entry.getKey();
                 String taskName = StringUtils.hasText(entry.getValue().taskName()) ? entry.getValue().taskName().trim() : m.getName();
                 JobExecutorInfo info = new JobExecutorInfo(taskName, m, Collections.emptyMap(), null, null, bean);
-                FALLBACK_JOB_REPOSITORY.putIfAbsent(rootJobName + ":" + taskName, info);
-                FALLBACK_JOB_REPOSITORY.putIfAbsent(taskName, info);
+                FALLBACK_JOB_REPOSITORY.put(rootJobName + ":" + taskName, info);
+                FALLBACK_JOB_REPOSITORY.put(taskName, info);
             }
 
             Map<Method, ReduceExecutor> reduceMethods = MethodIntrospector.selectMethods(
@@ -571,9 +576,9 @@ public class SnailJobTestHelper implements ApplicationContextAware {
             for (Map.Entry<Method, ReduceExecutor> entry : reduceMethods.entrySet()) {
                 Method m = entry.getKey();
                 JobExecutorInfo info = new JobExecutorInfo("reduce", m, Collections.emptyMap(), null, null, bean);
-                FALLBACK_JOB_REPOSITORY.putIfAbsent(rootJobName + ":reduce", info);
-                FALLBACK_JOB_REPOSITORY.putIfAbsent("reduce", info);
-                FALLBACK_JOB_REPOSITORY.putIfAbsent(m.getName(), info);
+                FALLBACK_JOB_REPOSITORY.put(rootJobName + ":reduce", info);
+                FALLBACK_JOB_REPOSITORY.put("reduce", info);
+                FALLBACK_JOB_REPOSITORY.put(m.getName(), info);
             }
 
             Map<Method, MergeReduceExecutor> mergeReduceMethods = MethodIntrospector.selectMethods(
@@ -583,9 +588,9 @@ public class SnailJobTestHelper implements ApplicationContextAware {
             for (Map.Entry<Method, MergeReduceExecutor> entry : mergeReduceMethods.entrySet()) {
                 Method m = entry.getKey();
                 JobExecutorInfo info = new JobExecutorInfo("mergeReduce", m, Collections.emptyMap(), null, null, bean);
-                FALLBACK_JOB_REPOSITORY.putIfAbsent(rootJobName + ":mergeReduce", info);
-                FALLBACK_JOB_REPOSITORY.putIfAbsent("mergeReduce", info);
-                FALLBACK_JOB_REPOSITORY.putIfAbsent(m.getName(), info);
+                FALLBACK_JOB_REPOSITORY.put(rootJobName + ":mergeReduce", info);
+                FALLBACK_JOB_REPOSITORY.put("mergeReduce", info);
+                FALLBACK_JOB_REPOSITORY.put(m.getName(), info);
             }
 
             // 3. 扫描 @Retryable 与 @AtengSnailRetry
@@ -619,7 +624,7 @@ public class SnailJobTestHelper implements ApplicationContextAware {
                         r.unit(),
                         r.retryIfResult()
                 );
-                FALLBACK_RETRY_REPOSITORY.putIfAbsent(key, retryerInfo);
+                FALLBACK_RETRY_REPOSITORY.put(key, retryerInfo);
             }
 
             Map<Method, AtengSnailRetry> atengRetryMethods = MethodIntrospector.selectMethods(
@@ -652,7 +657,7 @@ public class SnailJobTestHelper implements ApplicationContextAware {
                         null,
                         null
                 );
-                FALLBACK_RETRY_REPOSITORY.putIfAbsent(key, retryerInfo);
+                FALLBACK_RETRY_REPOSITORY.put(key, retryerInfo);
             }
         }
     }
@@ -741,6 +746,10 @@ public class SnailJobTestHelper implements ApplicationContextAware {
     public static void clear() {
         FALLBACK_JOB_REPOSITORY.clear();
         FALLBACK_RETRY_REPOSITORY.clear();
+        try {
+            getLoadedJobExecutors().clear();
+        } catch (Throwable ignored) {
+        }
     }
 
     /**

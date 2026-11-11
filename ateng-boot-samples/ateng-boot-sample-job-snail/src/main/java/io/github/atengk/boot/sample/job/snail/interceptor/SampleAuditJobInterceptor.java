@@ -40,8 +40,8 @@ public class SampleAuditJobInterceptor implements SnailJobInterceptor {
         String jobName = context.getMetadata() != null ? context.getMetadata().getJobName() : "";
         Object[] args = context.getArgs();
 
-        // 1. 金丝雀灰度特征检查：若任务名称或参数携带 canary-bypass，触发优雅跳过
-        boolean isCanaryBypass = "canaryBypassJob".equals(jobName);
+        // 1. 金丝雀灰度特征检查：若任务名称为 vipChannelProbeJob 或参数携带 canary-bypass，触发优雅跳过
+        boolean isCanaryBypass = "vipChannelProbeJob".equals(jobName) || "canaryBypassJob".equals(jobName);
         if (!isCanaryBypass && args != null) {
             for (Object arg : args) {
                 if (arg instanceof String s && s.contains("canary-bypass")) {

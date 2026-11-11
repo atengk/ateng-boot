@@ -13,9 +13,8 @@ import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper.SnailJobTestResult;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper.SnailRetryTestResult;
 import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
-import io.github.atengk.boot.sample.job.snail.handler.AlertDemoJobHandler;
-import io.github.atengk.boot.sample.job.snail.handler.MapReduceDemoJobHandler;
-import io.github.atengk.boot.sample.job.snail.handler.TimeoutFallbackDemoJobHandler;
+import io.github.atengk.boot.sample.job.snail.config.SampleJobSnailTestConfig;
+import io.github.atengk.boot.sample.job.snail.handler.*;
 import io.github.atengk.boot.sample.job.snail.interceptor.SampleAuditJobInterceptor;
 import io.github.atengk.boot.sample.job.snail.service.RetryDemoService;
 import io.github.atengk.boot.sample.job.snail.service.SnailJobScenarioService;
@@ -27,18 +26,20 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * SnailJob 调度与重试双擎场景工程端到端自验集成测试 (100% 离线脱网沙箱与零 Controller 不变量)
+ * SnailJob 调度与重试双擎场景工程端到端自验集成测试 (离线自洽沙箱)
  *
  * @author Ateng
- * @since 2026-10-31
+ * @since 2026-11-11
  */
 @SpringBootTest(classes = SampleJobSnailApplication.class)
+@Import(SampleJobSnailTestConfig.class)
 class SampleJobSnailIntegrationTest {
 
     @Autowired
@@ -51,13 +52,16 @@ class SampleJobSnailIntegrationTest {
     private RetryDemoService retryDemoService;
 
     @Autowired
-    private AlertDemoJobHandler alertDemoJobHandler;
+    private OrderReconciliationJobHandler reconciliationJobHandler;
 
     @Autowired
-    private MapReduceDemoJobHandler mapReduceDemoJobHandler;
+    private BillSettlementJobHandler billSettlementJobHandler;
 
     @Autowired
-    private TimeoutFallbackDemoJobHandler timeoutFallbackDemoJobHandler;
+    private HistoryDataArchiveJobHandler archiveJobHandler;
+
+    @Autowired
+    private LogisticsBatchJobHandler logisticsBatchJobHandler;
 
     @Autowired
     private SampleAuditJobInterceptor auditJobInterceptor;
@@ -86,25 +90,28 @@ class SampleJobSnailIntegrationTest {
         TenantContextHolder.clear();
         UserContextHolder.clear();
         MDC.clear();
-        alertDemoJobHandler.setFaultInjected(false);
+        reconciliationJobHandler.setFaultInjected(false);
         retryDemoService.resetAttemptCount();
-        mapReduceDemoJobHandler.reset();
-        timeoutFallbackDemoJobHandler.reset();
+        billSettlementJobHandler.reset();
+        archiveJobHandler.reset();
+        logisticsBatchJobHandler.setFaultInjected(false);
+        logisticsBatchJobHandler.clearDeadLetterBatches();
         auditJobInterceptor.reset();
         runtimeGovernor.resumeAll();
+        SnailJobTestHelper.clear();
     }
 
     @Test
-    @DisplayName("1. 基础极简问候任务脱网触发实测 (带 MDC traceId 现场自洽)")
-    void testSimpleGreetingJob() {
-        SnailJobTestResult testResult = testHelper.triggerJob("simpleGreetingJob", null);
+    @DisplayName("1. 系统冷启动热点预热与健康巡检任务脱网触发实测 (带 MDC traceId 现场自洽)")
+    void testSystemWarmupJob() {
+        SnailJobTestResult testResult = testHelper.triggerJob("systemWarmupJob", null);
 
         assertThat(testResult).isNotNull();
         assertThat(testResult.isSuccess()).isTrue();
         assertThat(testResult.result()).isInstanceOf(ExecuteResult.class);
         ExecuteResult result = (ExecuteResult) testResult.result();
         assertThat(result.getStatus()).isEqualTo(StatusEnum.YES.getStatus());
-        assertThat(result.getResult().toString()).contains("Greeting executed with traceId:");
+        assertThat(result.getResult().toString()).contains("System warmup and health check completed with traceId:");
         assertThat(SnailJobContextHolder.getContext()).isNull();
         assertThat(MDC.get("traceId")).isNull();
     }
@@ -124,20 +131,19 @@ class SampleJobSnailIntegrationTest {
     @Test
     @DisplayName("3. 强类型入参校验任务实测 - 正常参数通过")
     void testUserSyncParamValidationSuccess() {
-        String jsonParam = "{\"batchNo\":\"BATCH-20261031\",\"batchSize\":100,\"departmentId\":\"DEPT-01\"}";
+        String jsonParam = "{\"batchNo\":\"BATCH-20261111\",\"batchSize\":100,\"departmentId\":\"DEPT-01\"}";
         SnailJobTestResult testResult = testHelper.triggerJob("userSyncJob", jsonParam);
 
         assertThat(testResult).isNotNull();
         assertThat(testResult.isSuccess()).isTrue();
         ExecuteResult result = (ExecuteResult) testResult.result();
         assertThat(result.getStatus()).isEqualTo(StatusEnum.YES.getStatus());
-        assertThat(result.getResult().toString()).isEqualTo("Sync completed for batch BATCH-20261031");
+        assertThat(result.getResult().toString()).isEqualTo("Sync completed for batch BATCH-20261111");
     }
 
     @Test
     @DisplayName("4. 强类型入参校验任务实测 - 校验失败 Fail-Fast")
     void testUserSyncParamValidationFailFast() {
-        // 批次为空，batchSize 小于 1
         String invalidJson = "{\"batchNo\":\"\",\"batchSize\":0}";
         SnailJobTestResult testResult = testHelper.triggerJob("userSyncJob", invalidJson);
 
@@ -148,21 +154,21 @@ class SampleJobSnailIntegrationTest {
     }
 
     @Test
-    @DisplayName("5. 分布式广播分片流式批处理模板实测 (ShardingContext 过滤与统计)")
-    void testShardingBatchJob() {
+    @DisplayName("5. 物流在途单据分布式广播分片流式批处理模板实测 (ShardingContext 过滤与统计)")
+    void testLogisticsStatusSyncJob() {
         // 模拟第 0 个分片 (共 2 个分片)
-        SnailJobTestResult r0 = testHelper.triggerJob("shardingBatchJob", null, 0, 2);
+        SnailJobTestResult r0 = testHelper.triggerJob("logisticsStatusSyncJob", null, 0, 2);
         assertThat(r0.isSuccess()).isTrue();
         ExecuteResult result0 = (ExecuteResult) r0.result();
         assertThat(result0.getStatus()).isEqualTo(StatusEnum.YES.getStatus());
-        assertThat(result0.getResult().toString()).contains("Sharding batch completed");
+        assertThat(result0.getResult().toString()).contains("Logistics batch completed");
 
         // 模拟第 1 个分片 (共 2 个分片)
-        SnailJobTestResult r1 = testHelper.triggerJob("shardingBatchJob", null, 1, 2);
+        SnailJobTestResult r1 = testHelper.triggerJob("logisticsStatusSyncJob", null, 1, 2);
         assertThat(r1.isSuccess()).isTrue();
         ExecuteResult result1 = (ExecuteResult) r1.result();
         assertThat(result1.getStatus()).isEqualTo(StatusEnum.YES.getStatus());
-        assertThat(result1.getResult().toString()).contains("Sharding batch completed");
+        assertThat(result1.getResult().toString()).contains("Logistics batch completed");
     }
 
     @Test
@@ -214,71 +220,71 @@ class SampleJobSnailIntegrationTest {
     }
 
     @Test
-    @DisplayName("8. 告警防风暴聚合与自愈状态机端到端实测")
-    void testAlertDemoJobStateMachine() {
+    @DisplayName("8. 订单对账告警防风暴聚合与自愈状态机端到端实测")
+    void testOrderReconciliationJobStateMachine() {
         // 第一次失败：触发首发告警
-        alertDemoJobHandler.setFaultInjected(true);
-        SnailJobTestResult fail1 = testHelper.triggerJob("alertDemoJob", "FAIL");
+        reconciliationJobHandler.setFaultInjected(true);
+        SnailJobTestResult fail1 = testHelper.triggerJob("orderReconciliationJob", "FAIL");
         assertThat(fail1.isSuccess()).isTrue();
         ExecuteResult er1 = (ExecuteResult) fail1.result();
         assertThat(er1.getStatus()).isEqualTo(StatusEnum.NO.getStatus());
 
         // 第二次失败：进入静默窗口抑制
-        ExecuteResult er2 = (ExecuteResult) testHelper.triggerJob("alertDemoJob", "FAIL").result();
+        ExecuteResult er2 = (ExecuteResult) testHelper.triggerJob("orderReconciliationJob", "FAIL").result();
         assertThat(er2.getStatus()).isEqualTo(StatusEnum.NO.getStatus());
 
         // 故障恢复：记录自愈现场并上报恢复
-        alertDemoJobHandler.setFaultInjected(false);
-        ExecuteResult recovery = (ExecuteResult) testHelper.triggerJob("alertDemoJob", "OK").result();
+        reconciliationJobHandler.setFaultInjected(false);
+        ExecuteResult recovery = (ExecuteResult) testHelper.triggerJob("orderReconciliationJob", "OK").result();
         assertThat(recovery.getStatus()).isEqualTo(StatusEnum.YES.getStatus());
     }
 
     @Test
-    @DisplayName("9. MapReduce 切片拆分与规约汇总任务端到端实测")
-    void testMapReduceJob() {
+    @DisplayName("9. 跨商户账单 MapReduce 切片拆分与规约汇总任务端到端实测")
+    void testBillSettlementMapReduceJob() {
         // 9.1 触发 Map 切片拆分任务
-        SnailJobTestResult mapResult = SnailJobTestHelper.triggerMap("mapReduceDemoJob", "splitTask", "{\"dataRange\":\"1-1000\"}");
+        SnailJobTestResult mapResult = SnailJobTestHelper.triggerMap("billSettlementJob", "splitTask", "1-1000");
         assertThat(mapResult).isNotNull();
         assertThat(mapResult.isSuccess()).isTrue();
         ExecuteResult erMap = (ExecuteResult) mapResult.result();
         assertThat(erMap.getStatus()).isEqualTo(StatusEnum.YES.getStatus());
-        assertThat(erMap.getResult().toString()).contains("3 subtasks");
-        assertThat(mapReduceDemoJobHandler.getMapExecutionCount()).isEqualTo(1);
+        assertThat(erMap.getResult().toString()).contains("4 subtasks");
+        assertThat(billSettlementJobHandler.getMapExecutionCount()).isEqualTo(1);
 
         // 9.2 触发 Reduce 规约汇总任务
-        SnailJobTestResult reduceResult = SnailJobTestHelper.triggerReduce("mapReduceDemoJob", "{\"summaryId\":\"SUM-001\"}");
+        SnailJobTestResult reduceResult = SnailJobTestHelper.triggerReduce("billSettlementJob", "{\"summaryId\":\"SUM-001\"}");
         assertThat(reduceResult).isNotNull();
         assertThat(reduceResult.isSuccess()).isTrue();
         ExecuteResult erReduce = (ExecuteResult) reduceResult.result();
         assertThat(erReduce.getStatus()).isEqualTo(StatusEnum.YES.getStatus());
-        assertThat(erReduce.getResult().toString()).contains("Reduce summary completed");
-        assertThat(mapReduceDemoJobHandler.getReduceExecutionCount()).isEqualTo(1);
+        assertThat(erReduce.getResult().toString()).contains("Reduce aggregated 1 batches");
+        assertThat(billSettlementJobHandler.getReduceExecutionCount()).isEqualTo(1);
 
         // 9.3 触发 MergeReduce 最终合并规约任务
-        SnailJobTestResult mergeResult = SnailJobTestHelper.triggerMergeReduce("mapReduceDemoJob", "{\"mergeBatch\":\"MB-999\"}");
+        SnailJobTestResult mergeResult = SnailJobTestHelper.triggerMergeReduce("billSettlementJob", "{\"mergeBatch\":\"MB-999\"}");
         assertThat(mergeResult).isNotNull();
         assertThat(mergeResult.isSuccess()).isTrue();
         ExecuteResult erMerge = (ExecuteResult) mergeResult.result();
         assertThat(erMerge.getStatus()).isEqualTo(StatusEnum.YES.getStatus());
-        assertThat(erMerge.getResult().toString()).contains("MergeReduce final aggregation completed");
-        assertThat(mapReduceDemoJobHandler.getMergeReduceExecutionCount()).isEqualTo(1);
+        assertThat(erMerge.getResult().toString()).contains("MergeReduce completed globally");
+        assertThat(billSettlementJobHandler.getMergeReduceExecutionCount()).isEqualTo(1);
     }
 
     @Test
-    @DisplayName("10. 调度生命周期责任链与金丝雀灰度拦截器实测")
+    @DisplayName("10. 调度生命周期责任链与 VIP 专线金丝雀灰度拦截器实测")
     void testLifecycleInterceptorAndCanaryBypass() {
         // 10.1 正常任务放行并触发三阶拦截生命周期
         auditJobInterceptor.reset();
-        SnailJobTestResult normalResult = testHelper.triggerJob("simpleGreetingJob", null);
+        SnailJobTestResult normalResult = testHelper.triggerJob("systemWarmupJob", null);
         assertThat(normalResult.isSuccess()).isTrue();
         assertThat(auditJobInterceptor.getPreHandleCount()).isGreaterThanOrEqualTo(1);
         assertThat(auditJobInterceptor.getPostHandleCount()).isGreaterThanOrEqualTo(1);
         assertThat(auditJobInterceptor.getAfterCompletionCount()).isGreaterThanOrEqualTo(1);
         assertThat(auditJobInterceptor.getCanaryBypassCount()).isEqualTo(0);
-        assertThat(auditJobInterceptor.getExecutionDuration("simpleGreetingJob")).isNotNull();
+        assertThat(auditJobInterceptor.getExecutionDuration("systemWarmupJob")).isNotNull();
 
         // 10.2 金丝雀灰度任务命中绕过规则，优雅跳过调度
-        SnailJobTestResult canaryResult = testHelper.triggerJob("canaryBypassJob", null);
+        SnailJobTestResult canaryResult = testHelper.triggerJob("vipChannelProbeJob", null);
         assertThat(canaryResult.isSuccess()).isTrue();
         ExecuteResult canaryEr = (ExecuteResult) canaryResult.result();
         assertThat(canaryEr.getStatus()).isEqualTo(StatusEnum.YES.getStatus());
@@ -289,53 +295,53 @@ class SampleJobSnailIntegrationTest {
     @Test
     @DisplayName("11. 本地硬看门狗超时中断与就地降级补偿实测")
     void testTimeoutFallbackCompensation() {
-        timeoutFallbackDemoJobHandler.reset();
-        SnailJobTestResult testResult = testHelper.triggerJob("timeoutFallbackJob", "PARAM-TIMEOUT-01");
+        archiveJobHandler.reset();
+        SnailJobTestResult testResult = testHelper.triggerJob("historyDataArchiveJob", "PARAM-TIMEOUT-01");
 
         assertThat(testResult).isNotNull();
         assertThat(testResult.isSuccess()).isTrue();
         ExecuteResult er = (ExecuteResult) testResult.result();
         assertThat(er.getStatus()).isEqualTo(StatusEnum.YES.getStatus());
-        assertThat(er.getResult().toString()).contains("Fallback compensation executed successfully: PARAM-TIMEOUT-01");
-        assertThat(timeoutFallbackDemoJobHandler.isFallbackExecuted()).isTrue();
-        assertThat(timeoutFallbackDemoJobHandler.getExecutionCount()).isEqualTo(1);
+        assertThat(er.getResult().toString()).contains("Fallback archive compensation executed successfully: PARAM-TIMEOUT-01");
+        assertThat(archiveJobHandler.isFallbackExecuted()).isTrue();
+        assertThat(archiveJobHandler.getExecutionCount()).isEqualTo(1);
     }
 
     @Test
     @DisplayName("12. 节点级运行时动态治理总线 (暂停/冒号分级继承/恢复/全量恢复) 实测")
     void testRuntimeGovernorPauseAndResume() {
         // 12.1 暂停普通任务
-        runtimeGovernor.pause("simpleGreetingJob");
-        assertThat(runtimeGovernor.isPaused("simpleGreetingJob")).isTrue();
+        runtimeGovernor.pause("systemWarmupJob");
+        assertThat(runtimeGovernor.isPaused("systemWarmupJob")).isTrue();
         assertThat(runtimeGovernor.getPausedCount()).isEqualTo(1);
 
-        SnailJobTestResult pausedResult = testHelper.triggerJob("simpleGreetingJob", null);
+        SnailJobTestResult pausedResult = testHelper.triggerJob("systemWarmupJob", null);
         assertThat(pausedResult.isSuccess()).isTrue();
         ExecuteResult er1 = (ExecuteResult) pausedResult.result();
-        assertThat(er1.getMessage()).contains("[SKIPPED] 任务调度已被节点级运行时治理总线暂停: simpleGreetingJob");
+        assertThat(er1.getMessage()).contains("[SKIPPED] 任务调度已被节点级运行时治理总线暂停: systemWarmupJob");
 
         // 12.2 切片任务自动继承根任务暂停状态 (冒号分级感知)
-        runtimeGovernor.pause("mapReduceDemoJob");
-        assertThat(runtimeGovernor.isPaused("mapReduceDemoJob:splitTask")).isTrue();
+        runtimeGovernor.pause("billSettlementJob");
+        assertThat(runtimeGovernor.isPaused("billSettlementJob:splitTask")).isTrue();
 
-        SnailJobTestResult slicePausedResult = SnailJobTestHelper.triggerMap("mapReduceDemoJob", "splitTask", "test");
+        SnailJobTestResult slicePausedResult = SnailJobTestHelper.triggerMap("billSettlementJob", "splitTask", "test");
         assertThat(slicePausedResult.isSuccess()).isTrue();
         ExecuteResult erSlice = (ExecuteResult) slicePausedResult.result();
-        assertThat(erSlice.getMessage()).contains("[SKIPPED] 任务调度已被节点级运行时治理总线暂停: mapReduceDemoJob:splitTask");
+        assertThat(erSlice.getMessage()).contains("[SKIPPED] 任务调度已被节点级运行时治理总线暂停: billSettlementJob:splitTask");
 
         // 12.3 恢复指定任务
-        runtimeGovernor.resume("simpleGreetingJob");
-        assertThat(runtimeGovernor.isPaused("simpleGreetingJob")).isFalse();
+        runtimeGovernor.resume("systemWarmupJob");
+        assertThat(runtimeGovernor.isPaused("systemWarmupJob")).isFalse();
 
-        SnailJobTestResult resumedResult = testHelper.triggerJob("simpleGreetingJob", null);
+        SnailJobTestResult resumedResult = testHelper.triggerJob("systemWarmupJob", null);
         assertThat(resumedResult.isSuccess()).isTrue();
         ExecuteResult erResumed = (ExecuteResult) resumedResult.result();
-        assertThat(erResumed.getResult().toString()).contains("Greeting executed with traceId:");
+        assertThat(erResumed.getResult().toString()).contains("System warmup and health check completed with traceId:");
 
         // 12.4 全量恢复 (resumeAll)
         runtimeGovernor.resumeAll();
         assertThat(runtimeGovernor.getPausedCount()).isEqualTo(0);
-        assertThat(runtimeGovernor.isPaused("mapReduceDemoJob")).isFalse();
+        assertThat(runtimeGovernor.isPaused("billSettlementJob")).isFalse();
     }
 
     @Test
@@ -346,20 +352,20 @@ class SampleJobSnailIntegrationTest {
         assertThat(summary).containsKeys("registeredJobs", "registeredRetries", "pausedJobs", "retryAttempts");
         assertThat((Integer) summary.get("registeredJobs")).isGreaterThan(0);
 
-        // 13.2 极简问候
-        SnailJobTestResult r1 = scenarioService.executeSimpleGreeting();
+        // 13.2 系统预热
+        SnailJobTestResult r1 = scenarioService.executeSystemWarmup();
         assertThat(r1.isSuccess()).isTrue();
 
         // 13.3 强类型用户同步
-        SnailJobTestResult r2 = scenarioService.executeUserSync("BATCH-20261102", 50, "DEPT-DEV");
+        SnailJobTestResult r2 = scenarioService.executeUserSync("BATCH-20261111", 50, "DEPT-DEV");
         assertThat(r2.isSuccess()).isTrue();
 
-        // 13.4 分片批处理
-        SnailJobTestResult r3 = scenarioService.executeShardingBatch(0, 1);
+        // 13.4 物流广播分片批处理
+        SnailJobTestResult r3 = scenarioService.executeLogisticsBatch(0, 1, false);
         assertThat(r3.isSuccess()).isTrue();
 
         // 13.5 Map 切片与规约聚合场景编排驱动
-        SnailJobTestResult rMap = scenarioService.executeMapTask("splitTask", "{\"dataRange\":\"1-1000\"}");
+        SnailJobTestResult rMap = scenarioService.executeMapTask("splitTask", "1-1000");
         assertThat(rMap.isSuccess()).isTrue();
         SnailJobTestResult rReduce = scenarioService.executeReduceTask("{\"summaryId\":\"SUM-002\"}");
         assertThat(rReduce.isSuccess()).isTrue();
@@ -367,7 +373,7 @@ class SampleJobSnailIntegrationTest {
         assertThat(rMerge.isSuccess()).isTrue();
 
         // 13.6 超时看门狗与就地降级补偿场景编排驱动
-        SnailJobTestResult rTimeout = scenarioService.executeTimeoutFallback("PARAM-SCENARIO-01");
+        SnailJobTestResult rTimeout = scenarioService.executeHistoryDataArchive("PARAM-SCENARIO-01");
         assertThat(rTimeout.isSuccess()).isTrue();
 
         // 13.7 多租户批量遍历执行场景编排
@@ -375,13 +381,13 @@ class SampleJobSnailIntegrationTest {
         assertThat(rTenant.isSuccess()).isTrue();
 
         // 13.8 金丝雀灰度绕过场景编排
-        SnailJobTestResult rCanary = scenarioService.executeCanaryBypass();
+        SnailJobTestResult rCanary = scenarioService.executeCanaryProbe();
         assertThat(rCanary.isSuccess()).isTrue();
 
         // 13.9 运行时治理联动
-        assertThat(scenarioService.pauseJob("simpleGreetingJob")).isTrue();
+        assertThat(scenarioService.pauseJob("systemWarmupJob")).isTrue();
         assertThat(scenarioService.getStatusSummary().get("pausedJobs")).isEqualTo(1);
-        assertThat(scenarioService.resumeJob("simpleGreetingJob")).isTrue();
+        assertThat(scenarioService.resumeJob("systemWarmupJob")).isTrue();
         assertThat(scenarioService.getStatusSummary().get("pausedJobs")).isEqualTo(0);
     }
 
@@ -402,14 +408,14 @@ class SampleJobSnailIntegrationTest {
         assertThat(drainStateMachine.isDraining()).isFalse();
 
         // 14.4 Actuator 运行时治理写入操作 (pause / resume)
-        Map<String, Object> pauseRes = snailJobEndpoint.manageGovernor("pause", "simpleGreetingJob");
+        Map<String, Object> pauseRes = snailJobEndpoint.manageGovernor("pause", "systemWarmupJob");
         assertThat(pauseRes.get("success")).isEqualTo(true);
         assertThat(pauseRes.get("paused")).isEqualTo(true);
-        assertThat(runtimeGovernor.isPaused("simpleGreetingJob")).isTrue();
+        assertThat(runtimeGovernor.isPaused("systemWarmupJob")).isTrue();
 
-        Map<String, Object> resumeRes = snailJobEndpoint.manageGovernor("resume", "simpleGreetingJob");
+        Map<String, Object> resumeRes = snailJobEndpoint.manageGovernor("resume", "systemWarmupJob");
         assertThat(resumeRes.get("success")).isEqualTo(true);
         assertThat(resumeRes.get("paused")).isEqualTo(false);
-        assertThat(runtimeGovernor.isPaused("simpleGreetingJob")).isFalse();
+        assertThat(runtimeGovernor.isPaused("systemWarmupJob")).isFalse();
     }
 }

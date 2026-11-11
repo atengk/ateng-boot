@@ -11,39 +11,39 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 任务超时看门狗硬中断与就地降级补偿演练执行器
+ * 历史交易冷数据归档超时中断与就地降级补偿执行器
  *
- * <p>演示 {@code @AtengSnailJob} 的超时监控与降级补偿闭环：
+ * <p>演示 {@code @AtengSnailJob} 的看门狗超时监控与就地降级补偿闭环：
  * <ul>
- *     <li>主方法声明超时阈值 {@code timeout = "80ms"}，模拟执行耗时阻塞；</li>
+ *     <li>主方法声明超时阈值 {@code timeout = "80ms"}，模拟批量冷数据扫描耗时阻塞；</li>
  *     <li>本地硬看门狗触发线程中断，自动路由至同 Bean 的降级补偿方法 {@code fallbackMethod}；</li>
  *     <li>降级方法安全接收原执行参数并完成应急业务补偿，向服务端返回成功，防止任务重试雪崩。</li>
  * </ul></p>
  *
  * @author Ateng
- * @since 2026-11-02
+ * @since 2026-11-11
  */
 @Slf4j
 @Component
-public class TimeoutFallbackDemoJobHandler {
+public class HistoryDataArchiveJobHandler {
 
     private final AtomicInteger executionCount = new AtomicInteger(0);
     private final AtomicBoolean fallbackExecuted = new AtomicBoolean(false);
 
     /**
-     * 超时中断演练任务：模拟耗时操作超过看门狗阈值
+     * 历史数据归档任务：模拟耗时查询超过看门狗超时阈值
      *
      * @param args 任务入参
      * @return 正常执行结果
      * @throws InterruptedException 线程被看门狗中断时抛出
      */
-    @JobExecutor(name = "timeoutFallbackJob")
+    @JobExecutor(name = "historyDataArchiveJob")
     @AtengSnailJob(timeout = "80ms", fallbackMethod = "executeFallbackCompensation")
     public ExecuteResult executeWithTimeout(JobArgs args) throws InterruptedException {
         executionCount.incrementAndGet();
-        log.info("[TimeoutFallbackDemoJobHandler] 开始执行耗时任务 (模拟执行 500ms)...");
+        log.info("[HistoryDataArchiveJobHandler] 开始执行历史冷数据归档耗时任务 (模拟执行 500ms)...");
         Thread.sleep(500);
-        return ExecuteResult.success("Normal execution completed unexpectedly");
+        return ExecuteResult.success("Normal data archive completed unexpectedly");
     }
 
     /**
@@ -55,8 +55,8 @@ public class TimeoutFallbackDemoJobHandler {
     public ExecuteResult executeFallbackCompensation(JobArgs args) {
         fallbackExecuted.set(true);
         String params = args != null && args.getJobParams() != null ? String.valueOf(args.getJobParams()) : "default";
-        log.warn("[TimeoutFallbackDemoJobHandler] 触发超时就地降级补偿逻辑, params: {}", params);
-        return ExecuteResult.success("Fallback compensation executed successfully: " + params);
+        log.warn("[HistoryDataArchiveJobHandler] 触发归档超时就地降级补偿逻辑, params: {}", params);
+        return ExecuteResult.success("Fallback archive compensation executed successfully: " + params);
     }
 
     public boolean isFallbackExecuted() {
