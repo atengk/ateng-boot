@@ -28,6 +28,7 @@ import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 
+import java.math.BigDecimal;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -200,12 +201,12 @@ class SampleJobSnailIntegrationTest {
     @DisplayName("7. 分布式协同重试实测 (声明式注解 / 编程式闭包 / 手动上报)")
     void testRetryDemoService() {
         // 7.1 离线反射驱动声明式重试成功
-        SnailRetryTestResult res1 = testHelper.triggerRetry("orderPayRetry", "ORD-1001", 88.0);
+        SnailRetryTestResult res1 = testHelper.triggerRetry("orderPayRetry", "ORD-1001", new BigDecimal("88.00"));
         assertThat(res1.isSuccess()).isTrue();
         assertThat(res1.result().toString()).contains("PAY_SUCCESS:ORD-1001");
 
         // 7.2 模拟重试抛出异常
-        SnailRetryTestResult failRes = testHelper.triggerRetry("orderPayRetry", "FAIL_ORDER", 88.0);
+        SnailRetryTestResult failRes = testHelper.triggerRetry("orderPayRetry", "FAIL_ORDER", new BigDecimal("88.00"));
         assertThat(failRes.isSuccess()).isFalse();
         assertThat(failRes.throwable()).isNotNull();
         assertThat(failRes.throwable().getMessage()).contains("模拟支付网关网络超时");
@@ -389,6 +390,15 @@ class SampleJobSnailIntegrationTest {
         assertThat(scenarioService.getStatusSummary().get("pausedJobs")).isEqualTo(1);
         assertThat(scenarioService.resumeJob("systemWarmupJob")).isTrue();
         assertThat(scenarioService.getStatusSummary().get("pausedJobs")).isEqualTo(0);
+
+        assertThat(scenarioService.pauseJob("billSettlementJob")).isTrue();
+        scenarioService.resumeAll();
+        assertThat(scenarioService.getStatusSummary().get("pausedJobs")).isEqualTo(0);
+
+        // 13.10 失败执行结果转译断言
+        var failVo = scenarioService.toTriggerVO("orderReconciliationJob", scenarioService.executeReconciliationSimulation(true));
+        assertThat(failVo.getStatus()).isEqualTo("FAILURE");
+        assertThat(failVo.getStatusCode()).isEqualTo(StatusEnum.NO.getStatus());
     }
 
     @Test

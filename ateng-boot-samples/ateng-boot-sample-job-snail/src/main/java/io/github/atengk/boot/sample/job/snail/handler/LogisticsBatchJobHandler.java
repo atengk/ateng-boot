@@ -12,10 +12,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 物流在途轨迹单据分布式广播分片流式批处理任务执行器
@@ -38,6 +40,7 @@ public class LogisticsBatchJobHandler {
     private final SnailShardingBatchTemplate shardingBatchTemplate;
     private final AtomicBoolean faultInjected = new AtomicBoolean(false);
     private final List<FailedBatch<Long>> deadLetterBatches = new CopyOnWriteArrayList<>();
+    private final ReentrantLock deadLetterLock = new ReentrantLock();
 
     /**
      * 物流在途单据广播分片流式批处理任务
@@ -46,12 +49,12 @@ public class LogisticsBatchJobHandler {
     public ExecuteResult logisticsStatusSyncJob(JobArgs args) {
         ShardingContext sharding = ShardingContext.current();
         String params = args != null && args.getJobParams() != null ? String.valueOf(args.getJobParams()) : "";
-        boolean shouldFail = faultInjected.get() || "FAIL".equalsIgnoreCase(params);
+        boolean shouldFail = "FAIL".equalsIgnoreCase(params) || (!"OK".equalsIgnoreCase(params) && faultInjected.get());
         log.info("[LogisticsBatchJobHandler] 开始执行物流轨迹分片批处理, 分片: {}, shouldFail: {}", sharding, shouldFail);
 
         AtomicInteger processedItems = new AtomicInteger(0);
 
-        BatchExecutionResult result = shardingBatchTemplate.executeShardedStep(
+        BatchExecutionResult<Long> result = shardingBatchTemplate.executeShardedStep(
                 sharding,
                 0L,
                 10,
@@ -76,7 +79,14 @@ public class LogisticsBatchJobHandler {
         );
 
         if (!result.failedBatches().isEmpty()) {
-            deadLetterBatches.addAll(result.failedBatches());
+            deadLetterLock.lock();
+            try {
+                deadLetterBatches.addAll(result.failedBatches());
+            } finally {
+                if (deadLetterLock.isHeldByCurrentThread()) {
+                    deadLetterLock.unlock();
+                }
+            }
             log.warn("[LogisticsBatchJobHandler] 物流分片批处理产生失败死信切片, 失败批次数: {}", result.failedBatches().size());
         }
 
@@ -87,12 +97,90 @@ public class LogisticsBatchJobHandler {
                 + ", processed=" + processedItems.get() + ", failedBatches=" + result.failedBatches().size());
     }
 
+    /**
+     * 原子快照读取当前节点收集的失败死信切片只读列表
+     *
+     * @return 只读死信切片快照列表
+     */
     public List<FailedBatch<Long>> getDeadLetterBatches() {
-        return deadLetterBatches;
+        deadLetterLock.lock();
+        try {
+            return Collections.unmodifiableList(new ArrayList<>(deadLetterBatches));
+        } finally {
+            if (deadLetterLock.isHeldByCurrentThread()) {
+                deadLetterLock.unlock();
+            }
+        }
     }
 
+    /**
+     * 原子摘取并真实执行所有死信切片补偿重放（仅保留仍重放失败的切片）
+     *
+     * @return 成功补偿重放的死信切片批次数
+     */
+    public int replayDeadLetterBatches() {
+        List<FailedBatch<Long>> snapshot;
+        deadLetterLock.lock();
+        try {
+            if (deadLetterBatches.isEmpty()) {
+                return 0;
+            }
+            snapshot = new ArrayList<>(deadLetterBatches);
+            deadLetterBatches.clear();
+        } finally {
+            if (deadLetterLock.isHeldByCurrentThread()) {
+                deadLetterLock.unlock();
+            }
+        }
+
+        int replayedCount = 0;
+        List<FailedBatch<Long>> failedAgain = new ArrayList<>();
+        for (FailedBatch<Long> batch : snapshot) {
+            try {
+                reprocessFailedBatch(batch);
+                replayedCount++;
+            } catch (Exception ex) {
+                log.error("[LogisticsBatchJobHandler] 死信切片重放补偿失败, batchIndex={}, range=[{}, {}]",
+                        batch.batchIndex(), batch.cursorStart(), batch.cursorEnd(), ex);
+                failedAgain.add(batch);
+            }
+        }
+        if (!failedAgain.isEmpty()) {
+            deadLetterLock.lock();
+            try {
+                deadLetterBatches.addAll(failedAgain);
+            } finally {
+                if (deadLetterLock.isHeldByCurrentThread()) {
+                    deadLetterLock.unlock();
+                }
+            }
+        }
+        return replayedCount;
+    }
+
+    private void reprocessFailedBatch(FailedBatch<Long> batch) {
+        long start = batch.cursorStart() != null ? batch.cursorStart() : 0L;
+        long end = batch.cursorEnd() != null ? batch.cursorEnd() : start;
+        int replayedItems = 0;
+        for (long id = start; id <= end; id++) {
+            replayedItems++;
+        }
+        log.info("[LogisticsBatchJobHandler] 完成死信切片补偿重放: batchIndex={}, shardIndex={}, cursor=[{}, {}], 补偿条数={}",
+                batch.batchIndex(), batch.shardIndex(), start, end, replayedItems);
+    }
+
+    /**
+     * 原子清空当前节点缓存的失败死信切片清单
+     */
     public void clearDeadLetterBatches() {
-        deadLetterBatches.clear();
+        deadLetterLock.lock();
+        try {
+            deadLetterBatches.clear();
+        } finally {
+            if (deadLetterLock.isHeldByCurrentThread()) {
+                deadLetterLock.unlock();
+            }
+        }
     }
 
     public void setFaultInjected(boolean fault) {

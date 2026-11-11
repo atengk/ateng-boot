@@ -38,8 +38,9 @@ public class OrderReconciliationJobHandler {
     public ExecuteResult orderReconciliationJob(JobArgs args) {
         String jobName = "orderReconciliationJob";
         String param = args != null && args.getJobParams() != null ? String.valueOf(args.getJobParams()) : "";
+        boolean shouldFail = "FAIL".equalsIgnoreCase(param) || (!"OK".equalsIgnoreCase(param) && faultInjected.get());
 
-        if (faultInjected.get() || "FAIL".equalsIgnoreCase(param)) {
+        if (shouldFail) {
             log.warn("[OrderReconciliationJobHandler] 订单对账演练任务注入差错故障触发失败");
             alertAggregator.onJobFailure(jobName, param, null, 150L, new IllegalStateException("Simulated bank reconciliation timeout error"));
             return ExecuteResult.failure("Simulated reconciliation mismatch occurred");

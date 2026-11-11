@@ -30,6 +30,8 @@ public class SnailJobDeadLetterController {
 
     /**
      * 查询大数据分片批处理产生的失败死信切片清单
+     *
+     * @return 只读死信切片视图列表
      */
     @GetMapping("/batches")
     public Result<List<DeadLetterBatchVO>> getDeadLetterBatches() {
@@ -47,20 +49,21 @@ public class SnailJobDeadLetterController {
     }
 
     /**
-     * 受控重新触发补偿死信切片
+     * 受控重新触发补偿死信切片（原子摘取并重放）
+     *
+     * @return 实际成功补偿重放的死信批次数
      */
     @PostMapping("/replay")
     public Result<Integer> replayDeadLetters() {
-        List<FailedBatch<Long>> failedBatches = logisticsBatchJobHandler.getDeadLetterBatches();
-        int replayedCount = failedBatches.size();
-        log.info("[SnailJobDeadLetterController] 开始受控重放补偿死信切片, 总计: {} 个批次", replayedCount);
-        // 补偿完毕后清理现场
-        logisticsBatchJobHandler.clearDeadLetterBatches();
+        int replayedCount = logisticsBatchJobHandler.replayDeadLetterBatches();
+        log.info("[SnailJobDeadLetterController] 已受控重放补偿死信切片, 成功重放批次数: {}", replayedCount);
         return Result.success(replayedCount);
     }
 
     /**
      * 清空当前节点缓存的失败死信切片清单
+     *
+     * @return 是否清空成功
      */
     @DeleteMapping("/batches")
     public Result<Boolean> clearDeadLetterBatches() {

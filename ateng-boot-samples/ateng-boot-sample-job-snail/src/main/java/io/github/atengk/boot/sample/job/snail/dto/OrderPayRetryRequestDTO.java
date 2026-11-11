@@ -10,6 +10,7 @@ import lombok.NoArgsConstructor;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.math.BigDecimal;
 
 /**
  * 订单支付重试触发请求 DTO
@@ -37,5 +38,5 @@ public class OrderPayRetryRequestDTO implements Serializable {
      */
     @NotNull(message = "支付金额不能为空")
     @DecimalMin(value = "0.01", message = "支付金额必须大于0")
-    private Double amount;
+    private BigDecimal amount;
 }

@@ -10,23 +10,23 @@
 
 | 组件类型 / 包路径 | 核心公开 API 签名与主要职责 | 所属章节 |
 | :--- | :--- | :--- |
-| **`SnailJobContext`**<br>`...snail.context` | 调度与工作流强类型上下文：`current()`、`fromNative(JobContext)`、`getWfParam(key)`、`getWfParam(key, Class<T>)`、`getWfParam(key, TypeReference<T>)`、`getWfParamOrDefault(key, defaultValue)`、`appendWfContext(key, val)`、`appendWfContext(Map)`、`getWfContext()`、`getChangeWfContext()`、`doMap(taskList, nextTaskName)`、`getSharding()`、`isWorkflow()`、`isSharded()`；静态快捷方法 `getWorkflowParam(...)`、`appendWorkflowContext(...)`、`getShardingContext()`、`dispatchMap(...)` | [第 3 章](#3-分布式声明式调度与参数防卫套件)<br>[第 4 章](#4-mapreduce-动态切片与多阶段规约套件) |
+| **`SnailJobContext`**<br>`...snail.context` | 调度与工作流强类型上下文（含常量 `ROOT_MAP_NAME`、`MAX_MAP_SUBTASK_SIZE = 500`）：`current()`、`fromNative(JobContext)`、`getWfParam(key)`、`getWfParam(key, Class<T>)`、`getWfParam(key, TypeReference<T>)`、`getWfParamOrDefault(key, defaultValue)`、`appendWfContext(key, val)`、`appendWfContext(Map)`、`getWfContext()`、`getChangeWfContext()`、`doMap(taskList, nextTaskName)`、`getSharding()`、`isWorkflow()`、`isSharded()`；静态方法 `getWorkflowParam(...)`、`appendWorkflowContext(...)`、`getShardingContext()`、`dispatchMap(...)`、`setCustomSubtaskDispatcher(...)` / `getCustomSubtaskDispatcher()` 及任务标识/参数 Getter/Setter | [第 3 章](#3-分布式声明式调度与参数防卫套件)<br>[第 4 章](#4-mapreduce-动态切片与多阶段规约套件) |
 | **`SnailJobContextHolder`**<br>`...snail.context` | 线程上下文持有器：`get()`、`getContext()`、`set(SnailJobContext)`、`remove()`、`clear()`、`getTraceId()`、`getTenantId()` | [第 2 章](#2-核心架构与设计不变量) |
-| **`ShardingContext`**<br>`...snail.model` | 分布式静态分片模型：`current()`、`isSharded()`、`isFirst()`、`isLast()`、`match(long id)`（非负余数取模）、`getShardIndex()`、`getShardTotal()` | [第 6 章](#6-大数据流式批处理与分片防-oom-套件) |
+| **`ShardingContext`**<br>`...snail.model` | 分布式静态分片模型：`current()`、`isSharded()`、`isFirst()`、`isLast()`、`match(long id)`（非负余数取模）、`match(String key)`（字符串哈希非负余数取模）、`getShardIndex()`、`getShardTotal()` | [第 6 章](#6-大数据流式批处理与分片防-oom-套件) |
 | **`TenantJobTemplate`**<br>`...snail.template` | 多租户沙箱轮询与独立事务模板：`executeForEachTenant(Consumer<String>)`、`executeForEachTenant(Collection<String>, Consumer<String>)`、`executeForEachTenant(Collection<String>, boolean failFast, Consumer<String>)`（存在事务管理器时自动启用 `PROPAGATION_REQUIRES_NEW`） | [第 3 章](#3-分布式声明式调度与参数防卫套件) |
-| **`SnailShardingBatchTemplate`**<br>`...snail.template` | 游标分片防 OOM 批处理模板：`executeStep(...)`、`executeStepForEach(...)`、`executeShardedStep(...)`、`executeShardedStepForEach(...)`、`executeStepParallel(...)`、`executeShardedStepParallel(...)`（支持 `initialId`、`batchSize`、`maxConcurrency`、`failFast`） | [第 6 章](#6-大数据流式批处理与分片防-oom-套件) |
-| **`SnailMyBatisStreamingTemplate`**<br>`...snail.template` | 继承 `SnailShardingBatchTemplate`，适配 MyBatis `Cursor<T>` 与 `StreamingQueryTemplate`：`executeStreaming(...)`、`executeStreamingParallel(...)` | [第 6 章](#6-大数据流式批处理与分片防-oom-套件) |
-| **`BatchExecutionResult<K>` / `FailedBatch<K>`**<br>`...snail.template` | 批处理统计与死信切片模型：`isSuccess()`、`hasFailures()`、`totalCount()`、`successCount()`、`failCount()`、`batchCount()`、`duration()`、`failedBatches()`、`failedBatchCount()`；`FailedBatch` 记录 `cursorStart`、`cursorEnd`、`shardIndex`、`batchIndex`、`itemCount`、`throwable` | [第 6 章](#6-大数据流式批处理与分片防-oom-套件) |
+| **`SnailShardingBatchTemplate`**<br>`...snail.template` | 游标分片防 OOM 批处理模板（`DEFAULT_BATCH_SIZE = 1000`、`DEFAULT_MAX_CONCURRENCY = 8`）：`executeStep(...)`、`executeStepForEach(...)`、`executeShardedStep(...)`、`executeShardedStepForEach(...)`、`executeStepParallel(...)`、`executeShardedStepParallel(...)`、`getDefaultBatchSize()`、`getDefaultMaxConcurrency()`、`isFailFast()` | [第 6 章](#6-大数据流式批处理与分片防-oom-套件) |
+| **`SnailMyBatisStreamingTemplate`**<br>`...snail.template` | 继承 `SnailShardingBatchTemplate`，适配 MyBatis `Cursor<T>` 与 `StreamingQueryTemplate`：`executeStreaming(...)`、`executeStreamingParallel(...)`、`getStreamingQueryTemplate()`、`setStreamingQueryTemplate(StreamingQueryTemplate)` | [第 6 章](#6-大数据流式批处理与分片防-oom-套件) |
+| **`BatchExecutionResult<K>` / `FailedBatch<K>`**<br>`...snail.template` | 批处理统计与死信切片模型：`isSuccess()`、`hasFailures()`、`totalCount()` / `getTotalCount()`、`successCount()` / `getSuccessCount()`、`failCount()` / `getFailCount()`、`batchCount()` / `getBatchCount()`、`duration()` / `getDuration()`、`failedBatches()` / `getFailedBatches()`、`failedBatchCount()` / `getFailedBatchCount()`；`FailedBatch` 提供 `cursorStart` / `cursorEnd` / `shardIndex` / `batchIndex` / `itemCount` / `throwable` 及 `get*()` 访问器 | [第 6 章](#6-大数据流式批处理与分片防-oom-套件) |
 | **`SnailRetryTemplate`**<br>`...snail.retry.template` | 编程式分布式重试门面：`execute(scene, RetryCallback<T>)`、`execute(scene, Runnable)`、`executeWithIdempotent(scene, idempotentId, RetryCallback<T>)`、`executeWithIdempotent(scene, idempotentId, bizNo, RetryCallback<T>)`、`executeWithIdempotent(scene, idempotentId, Runnable)`、`reportManualRetry(scene, targetClassName, params)`、`reportManualRetry(scene, targetClassName, params, idempotentId, bizNo)` | [第 5 章](#5-分布式协同重试与死信现场还原套件) |
 | **`SpelIdempotentIdGenerator` / `ArgsHashIdempotentIdGenerator`**<br>`...snail.retry.generator` | 重试幂等键生成器：`idGenerate(IdempotentIdContext)`。优先解析 `@AtengSnailRetry.idempotentSpel()`，失败平滑降级为参数 SHA-256 64 位散列值 | [第 5 章](#5-分布式协同重试与死信现场还原套件) |
-| **`SnailRetryContextRegistry`**<br>`...snail.retry.context` | 重试四维上下文快照静态注册门面：`setStore(SnailRetryContextStore)`、`getStore()`、`put(key, snapshot)`、`get(key)`、`remove(key)`、`clear()`（默认 `InMemorySnailRetryContextStore` 上限 4096） | [第 2 章](#2-核心架构与设计不变量)<br>[第 5 章](#5-分布式协同重试与死信现场还原套件) |
+| **`SnailRetryContextRegistry` / `InMemorySnailRetryContextStore`**<br>`...snail.retry.context` | 重试四维上下文快照静态注册门面：`setStore(SnailRetryContextStore)`、`getStore()`、`put(key, snapshot)`、`get(key)`、`remove(key)`、`clear()`（默认 `InMemorySnailRetryContextStore` 上限 `DEFAULT_MAX_ENTRIES = 4096`；切面 `SnailRetryContextAspect#getContextStore()` / `aroundRetry(...)`） | [第 2 章](#2-核心架构与设计不变量)<br>[第 5 章](#5-分布式协同重试与死信现场还原套件) |
 | **`SnailJobRuntimeGovernor`**<br>`...snail.governor` | 节点级运行时动态治理总线：`pause(handler)`、`resume(handler)`、`isPaused(handler)`（支持冒号分级继承 `root:slice`）、`getPausedHandlers()`、`resumeAll()`、`getPausedCount()` | [第 7 章](#7-运行时动态治理灰度拦截与告警自愈套件) |
-| **`SnailJobAlertAggregator`**<br>`...snail.alert` | 三阶告警防风暴聚合与自愈引擎：`onJobFailure(...)`、`onJobSuccess(...)`、`onRetryFailure(...)`、`onRetrySuccess(...)`、`onRetryDeadLetter(...)` | [第 7 章](#7-运行时动态治理灰度拦截与告警自愈套件) |
-| **`SnailJobAdminTemplate`**<br>`...snail.template` | SnailJob OpenAPI 编程式管理门面：任务 CRUD 与启停触发（`addJob` / `updateJob` / `getJobDetail` / `getJobBatchDetail` / `triggerJob` / `updateJobStatus` / `enableJob` / `disableJob` / `deleteJob` / `deleteJobs` / `existsJobById` / `existsJob` 及全套 `*ByBizId`）、工作流控制（`getWorkflowBatchDetail` / `triggerWorkflow` / `updateWorkflowStatus` / `enableWorkflow` / `disableWorkflow` / `deleteWorkflow` / `deleteWorkflows` / `existsWorkflowById` / `existsWorkflow` 及全套 `*ByBizId`）、重试运维（`queryRetryTask` / `triggerRetryTask` / `updateRetryTaskStatus`） | [第 8 章](#8-调度中心-openapi-编程式管理与脱网极速调试套件) |
-| **`SnailJobTestHelper`**<br>`...snail.helper` | 脱网纯内存调试驱动器：`triggerJob(...)` 6 组重载、`triggerMap(jobName, taskName, param)`、`triggerReduce(jobName, param)`、`triggerMergeReduce(jobName, param)`、`triggerRetry(scene, args...)`、`triggerRetryWithExecutor(...)`、`getRegisteredJobNames()`、`getRegisteredRetryScenes()`、`clear()`；返回 `SnailJobTestResult` / `SnailRetryTestResult` | [第 8 章](#8-调度中心-openapi-编程式管理与脱网极速调试套件) |
-| **`SnailLocalWatchdog` & `GracefulDrainStateMachine`**<br>`...snail.watchdog` / `...drain` | 本地硬超时看门狗：`startWatch(thread, timeout, metadata)`；平滑停机排空状态机（`SmartLifecycle`，`phase=Integer.MAX_VALUE`）：`isDraining()`、`setDraining(boolean)`、`incrementInFlightJob()` / `decrementInFlightJob()`、`incrementInFlightRetry()` / `decrementInFlightRetry()`、`getTotalInFlightCount()` | [第 2 章](#2-核心架构与设计不变量)<br>[第 9 章](#9-生产扩展接管与核心非功能边界) |
-| **`SnailJobEndpoint` / `SnailJobHealthIndicator` / `SnailJobMetricsBinder`**<br>`...actuator` / `...metrics` | 运维管控、健康探针与观测指标：Actuator `GET /actuator/snailjobs`、`GET /actuator/snailjobs/{name}`、`POST /actuator/snailjobs/{jobName}`、`POST /actuator/snailjobs`、`GET /actuator/health`；Micrometer 记录器 `recordJobExecution(...)`、`recordRetryExecution(...)` | [第 9 章](#9-生产扩展接管与核心非功能边界) |
-| **`SnailJobLogbackAppender` & `Registrar`**<br>`...snail.log` | SLF4J 日志无感镜像扩展：`isTaskActive()`、`attachToRootLogger()`、`detachFromRootLogger()`、`setMirrorConsumer(Consumer)`（单测捕获钩子） | [第 2 章](#2-核心架构与设计不变量) |
+| **`SnailJobAlertAggregator`**<br>`...snail.alert` | 三阶告警防风暴聚合与自愈引擎：`onJobFailure(...)`（2 组重载）、`onJobSuccess(...)`（2 组重载）、`onRetryFailure(...)`（2 组重载）、`onRetrySuccess(...)`（2 组重载）、`onRetryDeadLetter(...)` | [第 7 章](#7-运行时动态治理灰度拦截与告警自愈套件) |
+| **`SnailJobAdminTemplate`**<br>`...snail.template` | SnailJob OpenAPI 编程式管理门面：任务 CRUD 与启停触发（`addJob` / `updateJob` / `getJobDetail` / `getJobBatchDetail` / `triggerJob` / `updateJobStatus` / `enableJob` / `disableJob` / `deleteJob` / `deleteJobs` / `existsJobById` / `existsJob` 及全套 `*ByBizId`）、工作流控制（`getWorkflowBatchDetail` / `triggerWorkflow` / `updateWorkflowStatus` / `enableWorkflow` / `disableWorkflow` / `deleteWorkflow` / `deleteWorkflows` / `existsWorkflowById` / `existsWorkflow` 及全套 `*ByBizId`）、重试运维（`queryRetryTask` / `triggerRetryTask` / `updateRetryTaskStatus`）、底层客户端获取（`getJobClient()` / `getRetryClient()`） | [第 8 章](#8-调度中心-openapi-编程式管理与脱网极速调试套件) |
+| **`SnailJobTestHelper`**<br>`...snail.helper` | 脱网纯内存调试驱动器：静态触发 `triggerJob(...)`（6 组重载）、`triggerMap(jobName, taskName, param)`、`triggerReduce(jobName, param)`、`triggerMergeReduce(jobName, param)`、`triggerRetry(scene, args...)`、`triggerRetryWithExecutor(...)`、`clear()`；实例诊断 `getRegisteredJobNames()`、`getRegisteredRetryScenes()`、`setApplicationContext(ApplicationContext)`；返回 `SnailJobTestResult` / `SnailRetryTestResult`（`isSuccess()`） | [第 8 章](#8-调度中心-openapi-编程式管理与脱网极速调试套件) |
+| **`SnailLocalWatchdog` & `GracefulDrainStateMachine`**<br>`...snail.watchdog` / `...drain` | 本地硬超时看门狗：`startWatch(thread, timeout, metadata)`、`getGracePeriod()`、`getFallbackHandlers()`、`destroy()`（`WatchdogSession`：`cancel()` / `isTimedOut()` / `isCancelled()`）；平滑停机排空状态机（`SmartLifecycle`，`phase=Integer.MAX_VALUE`）：`isDraining()`、`setDraining(boolean)`、`incrementInFlightJob()` / `decrementInFlightJob()` / `getInFlightJobCount()`、`incrementInFlightRetry()` / `decrementInFlightRetry()` / `getInFlightRetryCount()`、`getTotalInFlightCount()`、`start()`、`stop()` / `stop(Runnable)`、`destroy()`、`isRunning()`、`getPhase()`、`isAutoStartup()` | [第 2 章](#2-核心架构与设计不变量)<br>[第 9 章](#9-生产扩展接管与核心非功能边界) |
+| **`SnailJobEndpoint` / `SnailJobHealthIndicator` / `SnailJobMetricsBinder`**<br>`...actuator` / `...metrics` | 运维管控、健康探针与观测指标：`SnailJobEndpoint`（`listJobs()` -> `GET /actuator/snailjobs`、`jobDetail(name)` -> `GET /actuator/snailjobs/{name}`、`triggerJob(jobName, args)` / `manageJob(...)` -> `POST /actuator/snailjobs/{jobName}`、`manageGovernor(action, jobName)` -> `POST /actuator/snailjobs`）；`SnailJobHealthIndicator#health()`（`GET /actuator/health`）；`SnailJobMetricsBinder`（`bindTo(MeterRegistry)`、`recordJobExecution(...)`、`recordRetryExecution(...)`、`getRegistry()`） | [第 9 章](#9-生产扩展接管与核心非功能边界) |
+| **`SnailJobLogbackAppender` & `Registrar`**<br>`...snail.log` | SLF4J 日志无感镜像扩展：`isTaskActive()`、`attachToRootLogger()`、`detachFromRootLogger()`、`setMirrorConsumer(Consumer)`（单测捕获钩子）；`SnailJobLogbackAppenderRegistrar`（`getAppender()`、`afterSingletonsInstantiated()`、`destroy()`） | [第 2 章](#2-核心架构与设计不变量) |
 
 ### 0.2 增强注解与枚举契约
 
@@ -40,7 +40,7 @@
 
 | 类别 | 标识 / 接口 / 指标名 | 核心契约与默认行为 | 扩展 / 消费方式 |
 | :--- | :--- | :--- | :--- |
-| **配置前缀** | `ateng.boot.job.snail.*` | 统一收口核心连接、Watchdog、停机排空、`job.*`、`retry.*`、`openapi.*`、`alert.*` 强类型属性 | 详见 [第 10 章](#10-完整-yaml-配置属性清单) |
+| **配置前缀** | `ateng.boot.job.snail.*`（29 项强类型属性） | 顶层基础连接与护栏：`enabled`、`server`、`group`、`namespace`、`token`、`port`、`timeout`、`drain-timeout`、`default-job-timeout`、`watchdog-grace-period`、`log-mirror-enabled`、`managed-pool-enabled`、`max-payload-size`；嵌套分域：`job.{enabled, context-aspect-enabled, batch-template-enabled, tenant-template-enabled}`、`retry.{enabled, context-aspect-enabled}`、`openapi.{enabled, port, prefix, https, timeout, max-retries, retry-interval}`、`alert.{enabled, suppress-duration, suppress-threshold}` | 全量类型、默认值与模板详见 [第 10 章](#10-完整-yaml-配置属性清单) |
 | **SPI 接口 (5 个)** | `SnailJobInterceptor`<br>`JobTimeoutFallbackHandler`<br>`TenantListProvider`<br>`SnailRetryContextStore`<br>`RetryCompleteCallback`（默认 `SnailRetryDeadLetterCallback`） | 所有 SPI 与内置 `@Bean` 均支持 Spring 注入与 `@Order` 排序或 `@ConditionalOnMissingBean` 接管 | 注册为 Spring Bean 即可无感生效，详见 [第 9 章](#9-生产扩展接管与核心非功能边界) |
 | **领域事件 (3 类)** | `SnailJobAlertEvent`（`INITIAL_FAILURE` / `FAILURE_SUMMARY` / `RECOVERY`）<br>`SnailJobTimeoutEvent`<br>`SnailRetryDeadLetterEvent` | 故障首报、防风暴聚合、恢复自愈、硬看门狗超时中断与重试最大次数死信均广播标准 `ApplicationEvent` | 使用 `@EventListener` 消费对接外部工单/审计系统 |
 | **Micrometer 指标** | `ateng.job.snail.job.execution`<br>`ateng.job.snail.retry.execution`<br>`ateng.job.snail.job.inflight`<br>`ateng.job.snail.retry.inflight` | Tag 维度：`job` / `scene`、`status`（`SUCCESS` / `FAILURE` / `SKIPPED`）、`tenant`；发布 `P50 / P95 / P99` 耗时百分位 | 接入 Prometheus / Grafana 自动采集 |
@@ -284,7 +284,7 @@ public class HistoryDataArchiveJobHandler {
 ```
 
 **核心机制与边界说明**：
-- `@AtengSnailJob#timeout` 支持 Spring `DurationStyle` 表达（如 `"80ms"`、`"500ms"`、`"30s"`、`"PT5M"`）；未显式配置时自动继承全局 `default-job-timeout`（默认 `1h`）。
+- `@AtengSnailJob#timeout` 支持 Spring `DurationStyle` 表达（如 `"80ms"`、`"500ms"`、`"30s"`、`"PT5M"`）；未显式配置时自动继承全局 `default-job-timeout`（默认 `1h`）。样例工程 [`WarmupAndProbeJobHandler.java`](../ateng-boot-samples/ateng-boot-sample-job-snail/src/main/java/io/github/atengk/boot/sample/job/snail/handler/WarmupAndProbeJobHandler.java) 中的 `timeoutGuardedJob()` 亦演示了声明 `@AtengSnailJob(timeout = "500ms")` 为普通无降级任务挂载本地硬超时守卫。
 - 仅配置无效或非正数超时（如 `"0s"` / `"-1s"`）时看门狗安全旁路（`WatchdogSession.NOOP`）。
 - 当看门狗中断工作线程且 `fallbackMethod` 非空时，切面通过反射在同 Bean 内定位最匹配签名的补偿方法就地完成降级并向调度中心返回补偿结果；若未声明就地补偿或补偿失败，则平滑升级触发全局 `JobTimeoutFallbackHandler` SPI。
 
@@ -405,15 +405,17 @@ public class BillSettlementJobHandler {
 }
 ```
 
-在复杂 DAG 工作流或需统一护栏的场景中，推荐使用 [`SnailJobContext`](../ateng-boot-job-snail/src/main/java/io/github/atengk/boot/job/snail/context/SnailJobContext.java) 强类型门面：
+在复杂 DAG 工作流或需统一护栏的场景中，推荐使用 [`SnailJobContext`](./src/main/java/io/github/atengk/boot/job/snail/context/SnailJobContext.java) 强类型门面（用法验证自 [`SnailJobContextTest.java`](./src/test/java/io/github/atengk/boot/job/snail/context/SnailJobContextTest.java)）：
 
 ```java
 SnailJobContext ctx = SnailJobContext.current();
-// 读取上游工作流节点传递的强类型参数或复杂泛型结构
-OrderQueryDTO query = ctx.getWfParam("orderQuery", OrderQueryDTO.class);
-// 安全派发下一级 Map 子任务并写入共享上下文给下游节点
-ExecuteResult res = ctx.doMap(subTasks, "processTask");
-ctx.appendWfContext("settledCount", subTasks.size());
+// 1. 读取上游工作流节点传递的强类型 POJO 或复杂泛型结构
+OrderDto order = ctx.getWfParam("orderJson", OrderDto.class);
+List<String> tags = ctx.getWfParam("tags", new TypeReference<List<String>>() {});
+String mode = ctx.getWfParamOrDefault("nonExist", "default-str");
+// 2. 安全派发下一级 Map 子任务并向工作流共享上下文追加变更
+ExecuteResult res = ctx.doMap(List.of("chunk1", "chunk2", "chunk3"), "calculateShardNode");
+ctx.appendWfContext("step1Result", "SUCCESS");
 ```
 
 **核心机制与边界说明**：
@@ -444,7 +446,7 @@ ateng:
 ```java
 @AtengSnailRetry(scene = "orderPayRetry")
 @Retryable(scene = "orderPayRetry")
-public String payOrder(String orderId, Double amount) {
+public String payOrder(String orderId, BigDecimal amount) {
     int currentAttempt = attemptCount.incrementAndGet();
     String currentTenant = TenantContextHolder.getTenantId();
     log.info("[RetryDemoService] 正在处理支付请求: orderId={}, amount={}, 租户={}, 尝试次数={}",
@@ -490,17 +492,45 @@ public String executeWithProgrammaticRetry(String orderId) {
 public boolean reportFailedOrder(String orderId) {
     log.info("[RetryDemoService] 手动上报失败重试任务: orderId={}", orderId);
     return retryTemplate.reportManualRetry("orderPayRetry", getClass().getName(),
-            new Object[]{orderId, 100.0}, orderId, "BIZ-" + orderId);
+            new Object[]{orderId, new BigDecimal("100.00")}, orderId, "BIZ-" + orderId);
 }
 ```
 
 **核心机制与边界说明**：
-- **本地指数退避转远程兜底**：`SnailRetryTemplate` 基于 Core `RetryUtil` 执行本地有界退避重试（默认 `maxAttempts = 3`、初始延迟 `500ms`、退避倍数 `1.5`），耗尽后自动调用 `reportManualRetry` 向服务端上报异步远程重试，最终将因果异常转译为 `BusinessException`（100% 保留原始 `cause` 链）并在 `finally` 移除快照键防内存泄漏。
+- **本地指数退避转远程兜底**：`SnailRetryTemplate` 基于 Core `RetryUtil` 执行本地有界退避重试（默认 `maxAttempts = 3`、初始延迟 `200ms`、退避倍数 `1.5`），耗尽后自动调用 `reportManualRetry` 向服务端上报异步远程重试，最终将因果异常转译为 `BusinessException`（100% 保留原始 `cause` 链）并在 `finally` 移除快照键防内存泄漏。
 - **离线自洽保底**：当未装配 SnailJob `Report` 客户端实例（如单元测试环境）时，`reportManualRetry` 记录调试日志并平滑返回 `true`，不阻碍离线单测流程。
 
 ### 5.3 重试死信沉降回调（`SnailRetryDeadLetterCallback`）
 
-当 SnailJob 重试任务达到最大重试次数仍无法恢复时，自动装配的 `SnailRetryDeadLetterCallback`（实现 `RetryCompleteCallback`）会在 `doMaxRetryCallback` 中提取当前 MDC `traceId`、`RetryerInfoCache` 元数据（`localTimes`、`bizNo`）与 JSON 化入参，路由至 `SnailJobAlertAggregator#onRetryDeadLetter` 发布 `SnailRetryDeadLetterEvent` 领域事件并推送高危红色告警卡片。
+**专属 YAML 片段**：
+
+```yaml
+ateng:
+  boot:
+    job:
+      snail:
+        retry:
+          enabled: true
+        alert:
+          enabled: true
+```
+
+**真实测试调用与可扩展边界**（摘自 [`SnailJobAlertAggregatorTest.java`](./src/test/java/io/github/atengk/boot/job/snail/alert/SnailJobAlertAggregatorTest.java) 与 [`AtengSnailJobAutoConfiguration.java`](./src/main/java/io/github/atengk/boot/job/snail/autoconfigure/AtengSnailJobAutoConfiguration.java)）：
+
+```java
+// 1. 当重试耗尽进入死信时由 SnailRetryDeadLetterCallback 触发告警聚合
+SnailRetryDeadLetterCallback callback =
+        new SnailRetryDeadLetterCallback(beanFactory.getBeanProvider(SnailJobAlertAggregator.class));
+callback.doMaxRetryCallback("userSyncScene", "UserService", new Object[]{"userId=123"});
+
+// 2. 若需完全接管默认死信处理，可在业务侧自定义 RetryCompleteCallback Bean（覆盖 @ConditionalOnMissingBean）
+// @Bean
+// public RetryCompleteCallback customRetryCompleteCallback() { ... }
+```
+
+**核心机制与边界说明**：
+- **死信元数据提取与高危路由**：当 SnailJob 重试任务达到最大重试次数仍无法恢复时，自动装配的 [`SnailRetryDeadLetterCallback`](./src/main/java/io/github/atengk/boot/job/snail/retry/callback/SnailRetryDeadLetterCallback.java)（实现 `RetryCompleteCallback`）会在 `doMaxRetryCallback` 中提取当前 `MDC.get("traceId")`、`RetryerInfoCache.get(sceneName, executorName)` 元数据（`localTimes`、`bizNo`，未命中时保底 `retryCount = 1`）与通过 `JsonUtil.toJsonString` 序列化的入参，路由至 `SnailJobAlertAggregator#onRetryDeadLetter` 发布 `SnailRetryDeadLetterEvent` 领域事件并推送高危红色告警卡片。
+- **条件覆盖保底**：`AtengSnailJobAutoConfiguration` 通过 `@ConditionalOnMissingBean(RetryCompleteCallback.class)` 注册默认实例，业务工程注册自定义 `RetryCompleteCallback` Bean 即可无缝替代。
 
 ---
 
@@ -527,11 +557,12 @@ ateng:
 public ExecuteResult logisticsStatusSyncJob(JobArgs args) {
     ShardingContext sharding = ShardingContext.current();
     String params = args != null && args.getJobParams() != null ? String.valueOf(args.getJobParams()) : "";
-    boolean shouldFail = faultInjected.get() || "FAIL".equalsIgnoreCase(params);
+    boolean shouldFail = "FAIL".equalsIgnoreCase(params)
+            || (!"OK".equalsIgnoreCase(params) && faultInjected.get());
 
     AtomicInteger processedItems = new AtomicInteger(0);
 
-    BatchExecutionResult result = shardingBatchTemplate.executeShardedStep(
+    BatchExecutionResult<Long> result = shardingBatchTemplate.executeShardedStep(
             sharding,
             0L,
             10,
@@ -547,7 +578,14 @@ public ExecuteResult logisticsStatusSyncJob(JobArgs args) {
     );
 
     if (!result.failedBatches().isEmpty()) {
-        deadLetterBatches.addAll(result.failedBatches());
+        deadLetterLock.lock();
+        try {
+            deadLetterBatches.addAll(result.failedBatches());
+        } finally {
+            if (deadLetterLock.isHeldByCurrentThread()) {
+                deadLetterLock.unlock();
+            }
+        }
         log.warn("[LogisticsBatchJobHandler] 物流分片批处理产生失败死信切片, 失败批次数: {}", result.failedBatches().size());
     }
     return ExecuteResult.success("Logistics batch completed, scanned=" + result.totalCount()
@@ -573,24 +611,26 @@ ateng:
           batch-template-enabled: true
 ```
 
-**编程使用示例**（依托 `ateng-boot-mybatis-plus` 自动条件装配注入的 `SnailMyBatisStreamingTemplate`）：
+**真实测试与编程使用范式**（摘自 [`SnailShardingBatchTemplateTest.java`](./src/test/java/io/github/atengk/boot/job/snail/template/SnailShardingBatchTemplateTest.java)，依托 `ateng-boot-mybatis-plus` 自动条件装配注入 [`SnailMyBatisStreamingTemplate`](./src/main/java/io/github/atengk/boot/job/snail/template/SnailMyBatisStreamingTemplate.java)）：
 
 ```java
 // 1. 游标步进 + 受管线程池并发背压（Semaphore 控制最大在途批次数，并自动透传四维上下文 + SnailJobContext）
-BatchExecutionResult<Long> parallelRes = shardingBatchTemplate.executeShardedStepParallel(
-        ShardingContext.current(), 0L, 500, 4, false,
-        (lastId, limit) -> mapper.scanSliceAfter(lastId, limit),
-        OrderEntity::getId,
-        batch -> orderService.processBatch(batch)
+//    分片场景可调用 executeShardedStepParallel(ShardingContext.current(), lastId, batchSize, maxConcurrency, failFast, ...)
+BatchExecutionResult<Long> parallelRes = shardingBatchTemplate.executeStepParallel(
+        0L,
+        3,
+        2,
+        (lastId, batchSize) -> mockDb.stream().filter(id -> id > lastId).limit(batchSize).toList(),
+        id -> id,
+        batch -> parallelConsumed.addAll(batch)
 );
 
-// 2. MyBatis 流式 Cursor + 信号量背压并发消费
+// 2. MyBatis 流式 Cursor 分批消费（支持 executeStreamingParallel(cursorSupplier, batchSize, maxConcurrency, consumer) 并发背压）
 if (shardingBatchTemplate instanceof SnailMyBatisStreamingTemplate streamingTemplate) {
-    BatchExecutionResult<?> streamRes = streamingTemplate.executeStreamingParallel(
-            () -> orderMapper.streamPendingOrders(),
-            1000,
-            4,
-            batch -> orderService.archiveBatch(batch)
+    BatchExecutionResult<?> streamRes = streamingTemplate.executeStreaming(
+            () -> cursor,
+            2,
+            consumed::addAll
     );
 }
 ```
@@ -659,29 +699,51 @@ public class SampleAuditJobInterceptor implements SnailJobInterceptor {
 
     @Override
     public boolean preHandle(SnailJobExecutionContext context) {
+        preHandleCount.incrementAndGet();
         String jobName = context.getMetadata() != null ? context.getMetadata().getJobName() : "";
-        // 1. 金丝雀灰度绕过策略：命中专线探测任务或携带 canary-bypass 参数时返回 false 跳过执行
+        Object[] args = context.getArgs();
+
+        // 1. 金丝雀灰度特征检查：若任务名称为 vipChannelProbeJob 或参数携带 canary-bypass，触发优雅跳过
         boolean isCanaryBypass = "vipChannelProbeJob".equals(jobName) || "canaryBypassJob".equals(jobName);
+        if (!isCanaryBypass && args != null) {
+            for (Object arg : args) {
+                if (arg instanceof String s && s.contains("canary-bypass")) {
+                    isCanaryBypass = true;
+                    break;
+                }
+            }
+        }
+
         if (isCanaryBypass) {
+            canaryBypassCount.incrementAndGet();
+            log.info("[SampleAuditJobInterceptor] 命中金丝雀灰度绕过策略，优雅跳过任务执行: jobName={}", jobName);
             return false;
         }
-        // 2. 通过 ExecutionContext 在 preHandle 与 afterCompletion 间无状态透传阶段属性
+
+        // 2. 正常任务记录前置审计追踪并挂载阶段起始时间
         context.setAttribute("auditStartTimeNanos", System.nanoTime());
+        log.info("[SampleAuditJobInterceptor] 调度前置审计放行: jobName={}, method={}",
+                jobName, context.getMethod() != null ? context.getMethod().getName() : "unknown");
         return true;
     }
 
     @Override
     public void postHandle(SnailJobExecutionContext context, Object result) {
+        postHandleCount.incrementAndGet();
         String jobName = context.getMetadata() != null ? context.getMetadata().getJobName() : "";
         log.info("[SampleAuditJobInterceptor] 调度后置审计完成: jobName={}, result={}", jobName, result);
     }
 
     @Override
     public void afterCompletion(SnailJobExecutionContext context, Object result, Throwable ex) {
+        afterCompletionCount.incrementAndGet();
         String jobName = context.getMetadata() != null ? context.getMetadata().getJobName() : "";
         Long startNanos = context.getAttribute("auditStartTimeNanos", Long.class);
         long elapsedNanos = startNanos != null ? (System.nanoTime() - startNanos) : 0L;
-        log.info("[SampleAuditJobInterceptor] 调度终态审计闭环: jobName={}, elapsedNs={}", jobName, elapsedNanos);
+        executionDurationMap.put(jobName, elapsedNanos);
+
+        log.info("[SampleAuditJobInterceptor] 调度终态审计闭环: jobName={}, elapsedNs={}, error={}",
+                jobName, elapsedNanos, ex != null ? ex.getMessage() : "none");
     }
 }
 ```
@@ -700,7 +762,7 @@ ateng:
       snail:
         alert:
           enabled: true
-          suppress-duration: 30s
+          suppress-duration: 30s # Starter 默认 5m（样例工程演示覆写为 30s）
           suppress-threshold: 3
 ```
 
@@ -719,13 +781,16 @@ public class OrderReconciliationJobHandler {
     public ExecuteResult orderReconciliationJob(JobArgs args) {
         String jobName = "orderReconciliationJob";
         String param = args != null && args.getJobParams() != null ? String.valueOf(args.getJobParams()) : "";
+        boolean shouldFail = "FAIL".equalsIgnoreCase(param) || (!"OK".equalsIgnoreCase(param) && faultInjected.get());
 
-        if (faultInjected.get() || "FAIL".equalsIgnoreCase(param)) {
+        if (shouldFail) {
+            log.warn("[OrderReconciliationJobHandler] 订单对账演练任务注入差错故障触发失败");
             alertAggregator.onJobFailure(jobName, param, null, 150L, new IllegalStateException("Simulated bank reconciliation timeout error"));
             return ExecuteResult.failure("Simulated reconciliation mismatch occurred");
         }
 
         alertAggregator.onJobSuccess(jobName);
+        log.info("[OrderReconciliationJobHandler] 订单对账演练任务执行成功，账目平账并记录自愈现场");
         return ExecuteResult.success("Order reconciliation job succeeded and balanced");
     }
 }
@@ -762,20 +827,33 @@ ateng:
 ```java
 @PostMapping("/jobs")
 public Result<Long> createJob(@Valid @RequestBody AdminJobSaveDTO dto) {
-    JobRequest request = new JobRequest();
-    request.setJobName(dto.getJobName());
-    request.setExecutorInfo(dto.getExecutorInfo());
-    request.setTriggerType(dto.getTriggerType() != null ? dto.getTriggerType() : 1);
-    request.setTriggerInterval(dto.getTriggerInterval());
-    request.setRouteKey(dto.getRouteKey() != null ? dto.getRouteKey() : 1);
-    request.setDescription(dto.getDescription());
-    Long jobId = adminTemplate.addJob(request);
-    return Result.success(jobId != null ? jobId : 1001L);
+    Long jobId = adminTemplate.addJob(dto.toJobRequest());
+    log.info("[SnailJobAdminController] 编程式注册任务: {}, jobId: {}", dto.getJobName(), jobId);
+    return Result.success(requireNonNullResult(jobId, "注册调度任务"));
+}
+
+@PutMapping("/jobs")
+public Result<Boolean> updateJob(@Valid @RequestBody AdminJobSaveDTO dto) {
+    BusinessAssert.notNull(dto.getId(), "更新调度任务时任务 ID 不能为空");
+    Boolean updated = adminTemplate.updateJob(dto.toJobRequest());
+    log.info("[SnailJobAdminController] 编程式更新任务 [jobId={}, jobName={}]: {}", dto.getId(), dto.getJobName(), updated);
+    return Result.success(requireSuccessResult(updated, "更新调度任务"));
 }
 
 @PostMapping("/workflows/{workflowId}/enable")
-public Result<Boolean> enableWorkflow(@PathVariable Long workflowId) {
-    return Result.success(Boolean.TRUE.equals(adminTemplate.enableWorkflow(workflowId)));
+public Result<Boolean> enableWorkflow(
+        @PathVariable @NotNull(message = "工作流 ID 不能为空") @Min(value = 1, message = "工作流 ID 必须大于 0") Long workflowId) {
+    Boolean enabled = adminTemplate.enableWorkflow(workflowId);
+    log.info("[SnailJobAdminController] 启用工作流 [workflowId={}]: {}", workflowId, enabled);
+    return Result.success(requireSuccessResult(enabled, "启用工作流"));
+}
+
+@DeleteMapping("/workflows/{workflowId}")
+public Result<Boolean> deleteWorkflow(
+        @PathVariable @NotNull(message = "工作流 ID 不能为空") @Min(value = 1, message = "工作流 ID 必须大于 0") Long workflowId) {
+    Boolean deleted = adminTemplate.deleteWorkflow(workflowId);
+    log.info("[SnailJobAdminController] 删除工作流 [workflowId={}]: {}", workflowId, deleted);
+    return Result.success(requireSuccessResult(deleted, "删除工作流"));
 }
 ```
 
@@ -806,15 +884,18 @@ public class SampleJobSnailTestConfig {
     public SnailJobAdminTemplate mockSnailJobAdminTemplate() {
         SnailJobAdminTemplate mock = Mockito.mock(SnailJobAdminTemplate.class);
         when(mock.addJob(any())).thenReturn(1001L);
+        when(mock.updateJob(any())).thenReturn(true);
         when(mock.triggerJob(anyLong())).thenReturn(true);
-        // ...工作流与重试 OpenAPI 打桩
+        when(mock.deleteJob(anyLong())).thenReturn(true);
+        // ...工作流（trigger/enable/disable/delete/getWorkflowBatchDetail）与重试 OpenAPI 打桩
         return mock;
     }
 }
 
-// 2. 业务编排与脱网一键触发（完整走通 ContextAspect / Watchdog / Governor / Interceptor 全切面链）
+// 2. 业务编排与脱网静态一键触发（完整走通 ContextAspect / Watchdog / Governor / Interceptor 全切面链）
 public SnailJobTestResult executeTenantScoped(String tenantId) {
-    return testHelper.triggerJob("tenantScopedJob", null, 0, 1, tenantId);
+    log.info("[SnailJobScenarioService] 触发单租户限定场景: tenantId={}", tenantId);
+    return SnailJobTestHelper.triggerJob("tenantScopedJob", null, 0, 1, tenantId);
 }
 ```
 
@@ -837,7 +918,7 @@ public SnailJobTestResult executeTenantScoped(String tenantId) {
 | **`SnailRetryContextStore`** | 声明自定义 `@Bean SnailRetryContextStore` 覆盖默认内存 LRU | 多 Pod 集群环境下扩展接入 Redis（`TTL` 持久化）实现跨 Pod 远程重试 100% 上下文还原 |
 | **`RetryCompleteCallback`** | 声明自定义 `@Bean RetryCompleteCallback` 覆盖默认 `SnailRetryDeadLetterCallback` | 定制重试彻底成功或达到最大重试次数沉降死信后的专用业务补偿回调 |
 
-示例（生产集群自定义 Redis 分布式重试快照存储接管）：
+**生产集群接管扩展范式**（实现 [`SnailRetryContextStore`](./src/main/java/io/github/atengk/boot/job/snail/retry/context/SnailRetryContextStore.java) SPI 覆盖默认 [`InMemorySnailRetryContextStore`](./src/main/java/io/github/atengk/boot/job/snail/retry/context/InMemorySnailRetryContextStore.java)；默认内存契约测试见 [`SnailRetryContextStoreTest.java`](./src/test/java/io/github/atengk/boot/job/snail/retry/SnailRetryContextStoreTest.java)）：
 
 ```java
 @Bean
@@ -926,7 +1007,7 @@ public class SnailJobDomainEventListener {
 | `ateng.boot.job.snail.group` | `String` | `""` | 执行器分组名（为空时自动同步映射为 `spring.application.name`） |
 | `ateng.boot.job.snail.namespace` | `String` | `"default"` | SnailJob 隔离命名空间 ID |
 | `ateng.boot.job.snail.token` | `String` | `"default_token"` | 客户端接入调度服务端校验 Token（生产环境须替换并外置） |
-| `ateng.boot.job.snail.port` | `int` | `17889` | 本地执行器 Netty / gRPC 监听端口 |
+| `ateng.boot.job.snail.port` | `Integer` | `17889` | 本地执行器 Netty / gRPC 监听端口 |
 | `ateng.boot.job.snail.timeout` | `Duration` | `10s` | 客户端基础网络通信与心跳超时时间 |
 | `ateng.boot.job.snail.drain-timeout` | `Duration` | `30s` | `GracefulDrainStateMachine` 平滑停机在途任务等待超时上限 |
 | `ateng.boot.job.snail.default-job-timeout` | `Duration` | `1h` | 全局兜底调度任务硬超时阈值（方法未声明 `@AtengSnailJob#timeout` 时生效） |
@@ -999,34 +1080,26 @@ ateng:
 
 ### 11.1 1:1 场景沙箱工程索引
 
-完整的可运行 5 大领域控制器、8 大场景执行器、双模隔离配置与 `30+` 组现成 HTTP 体验命令均已沉淀至独立样例工程：
+完整的可运行 5 大领域控制器、8 大场景执行器、双模隔离配置与 `40+` 组（共 44 组 HTTP / Actuator）现成体验命令均已沉淀至独立样例工程：
 
 - [**ateng-boot-sample-job-snail 四段式极简体验卡**](../ateng-boot-samples/ateng-boot-sample-job-snail/README.md)（启动端口、双模切换、`curl` 一键体验全集）
 - [**ateng-boot-job-snail 领域统一语言词汇表**](./CONTEXT.md)
+- [**ADR-0104 架构决策记录：Sample 多控制器拆解与五维文档规约**](../docs/adr/0104-snail-job-sample-multi-controller-and-documentation-specification-architecture.md)
 
 | Sample 领域控制器 / 组件 | 覆盖的核心场景与路由前缀 |
 | :--- | :--- |
 | **`SnailJobTriggerController`** | `/sample/job-snail/trigger/*`：系统冷启动预热、DTO + JSR-303 校验防卫、MapReduce 三阶账单结算、订单对账差错与平账自愈、80ms 硬看门狗超时就地降级、VIP 专线灰度绕过、物流广播分片与故障注入、单租户/多租户遍历/全局忽略三模 |
 | **`SnailJobRetryController`** | `/sample/job-snail/retry/*`：声明式 `@AtengSnailRetry` 订单支付、异常进入重试管道、`SnailRetryTemplate` 编程式幂等闭包、`reportManualRetry` 对称手动上报、重试统计查询 |
 | **`SnailJobGovernorController`** | `/sample/job-snail/governor/*`：单节点动态暂停（含冒号分级继承 `root:slice`）、动态恢复、一键恢复全节点与暂停清单查询 |
-| **`SnailJobAdminController`** | `/sample/job-snail/admin/*`：OpenAPI 任务增查触删、工作流 DAG 启停与批次详情查询、重试任务查询触发及状态更新 |
+| **`SnailJobAdminController`** | `/sample/job-snail/admin/*`：OpenAPI 任务增改查触删（`PUT /jobs` 更新）、工作流 DAG 启停删（`DELETE /workflows/{workflowId}`）与批次详情查询、重试任务查询触发及状态更新 |
 | **`SnailJobDeadLetterController`** | `/sample/job-snail/dead-letter/*`：流式批处理 `FailedBatch` 死信切片回查、受控补偿重放与现场清理 |
 
 ### 11.2 自动化双轨全真回归验证矩阵
 
-本模块与样例工程已通过定向离线全真回归测试，覆盖 **Starter 单元测试 146 项**（`19` 个测试类）与 **Sample 场景测试 34 项**（`SampleJobSnailIntegrationTest` `14` 项端到端测试 + `SampleJobSnailWebControllerTest` `20` 项 `MockMvc` 全链路 HTTP 契约测试）：
+通过定向联调回归命令即可在 100% 离线自洽模式下同步验证 **Starter 单元测试**（`19` 个测试类）与 **Sample 端到端/Web 契约测试**（`SampleJobSnailIntegrationTest` + `SampleJobSnailWebControllerTest`）：
 
 ```bash
-mvn test -pl ateng-boot-job-snail,ateng-boot-samples/ateng-boot-sample-job-snail -am -T 1C -nsu -B
+mvn test -pl ateng-boot-job-snail,ateng-boot-samples/ateng-boot-sample-job-snail -am -nsu -B
 ```
 
-实测结果摘录：
-
-```text
-[INFO] io.github.atengk:ateng-boot-job-snail .............. SUCCESS [ 58.050 s]
-  -> Tests run: 146, Failures: 0, Errors: 0, Skipped: 0
-[INFO] io.github.atengk:ateng-boot-sample-job-snail ....... SUCCESS [ 54.770 s]
-  -> SampleJobSnailIntegrationTest: Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
-  -> SampleJobSnailWebControllerTest: Tests run: 20, Failures: 0, Errors: 0, Skipped: 0
-[INFO] BUILD SUCCESS
-```
+各测试套件逐类用例数与 `-Dspring-boot.run.profiles=local` 真实 SnailJob 服务端联调命令请以单一事实源 [**ateng-boot-sample-job-snail 第 4 节：全真自动化回归命令**](../ateng-boot-samples/ateng-boot-sample-job-snail/README.md#4-全真自动化回归命令) 为准。

@@ -201,4 +201,41 @@ public class SnailJobTestHelperTest {
         assertTrue(mergeResult.isSuccess());
         assertEquals("mergeReduceDone:p3", mergeResult.result());
     }
+
+    @Test
+    public void testContextSwitchAndSymmetricClearIsolation() {
+        assertFalse(helper.getRegisteredJobNames().isEmpty());
+        assertFalse(helper.getRegisteredRetryScenes().isEmpty());
+
+        // 关闭旧容器并切换到全新隔离容器，仅注册 simpleJob
+        context.close();
+        GenericApplicationContext switchedContext = new GenericApplicationContext();
+        try {
+            switchedContext.registerBean("switchedBean", SimpleOnlyService.class, SimpleOnlyService::new);
+            switchedContext.refresh();
+            helper.setApplicationContext(switchedContext);
+
+            assertTrue(helper.getRegisteredJobNames().contains("switchedOnlyJob"));
+            assertFalse(helper.getRegisteredRetryScenes().contains("sampleRetryScene"));
+            assertThrows(BusinessException.class, () -> SnailJobTestHelper.triggerJob("shardingJob"));
+
+            SnailJobTestResult switchedResult = SnailJobTestHelper.triggerJob("switchedOnlyJob");
+            assertTrue(switchedResult.isSuccess());
+            assertEquals("switchedDone", switchedResult.result());
+        } finally {
+            SnailJobTestHelper.clear();
+            switchedContext.close();
+            // 关闭容器后不应残存已销毁容器的任务或重试场景
+            assertTrue(helper.getRegisteredJobNames().isEmpty());
+            assertTrue(helper.getRegisteredRetryScenes().isEmpty());
+        }
+    }
+
+    public static class SimpleOnlyService {
+
+        @JobExecutor(name = "switchedOnlyJob")
+        public String executeSwitched() {
+            return "switchedDone";
+        }
+    }
 }

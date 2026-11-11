@@ -4,13 +4,13 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.job.snail.dto.OrderPayRetryRequestDTO;
 import io.github.atengk.boot.sample.job.snail.service.RetryDemoService;
 import io.github.atengk.boot.sample.job.snail.vo.RetryExecutionVO;
+import io.github.atengk.boot.sample.job.snail.vo.RetryStatsVO;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.Map;
 
 /**
  * SnailJob 分布式协同重试演练领域控制器
@@ -31,6 +31,9 @@ public class SnailJobRetryController {
 
     /**
      * 触发声明式 @AtengSnailRetry 订单支付重试方法
+     *
+     * @param request 订单支付重试请求 DTO
+     * @return 重试执行结果视图
      */
     @PostMapping("/pay")
     public Result<RetryExecutionVO> triggerDeclarativePayRetry(@Valid @RequestBody OrderPayRetryRequestDTO request) {
@@ -58,9 +61,13 @@ public class SnailJobRetryController {
 
     /**
      * 触发 SnailRetryTemplate 编程式闭包幂等重试
+     *
+     * @param orderId 业务订单编号
+     * @return 重试执行结果视图
      */
     @PostMapping("/pay/programmatic")
-    public Result<RetryExecutionVO> triggerProgrammaticRetry(@RequestParam(defaultValue = "ORDER-PROG-1001") String orderId) {
+    public Result<RetryExecutionVO> triggerProgrammaticRetry(
+            @RequestParam(defaultValue = "ORDER-PROG-1001") @NotBlank(message = "订单编号 orderId 不能为空") String orderId) {
         String outcome = retryDemoService.executeWithProgrammaticRetry(orderId);
         RetryExecutionVO vo = RetryExecutionVO.builder()
                 .orderId(orderId)
@@ -76,9 +83,13 @@ public class SnailJobRetryController {
 
     /**
      * 触发 SnailRetryTemplate 对称手动上报门面
+     *
+     * @param orderId 业务订单编号
+     * @return 重试上报结果视图
      */
     @PostMapping("/pay/manual-report")
-    public Result<RetryExecutionVO> triggerManualReport(@RequestParam(defaultValue = "ORDER-MANUAL-2001") String orderId) {
+    public Result<RetryExecutionVO> triggerManualReport(
+            @RequestParam(defaultValue = "ORDER-MANUAL-2001") @NotBlank(message = "订单编号 orderId 不能为空") String orderId) {
         boolean reported = retryDemoService.reportFailedOrder(orderId);
         RetryExecutionVO vo = RetryExecutionVO.builder()
                 .orderId(orderId)
@@ -94,12 +105,14 @@ public class SnailJobRetryController {
 
     /**
      * 查询当前重试尝试计数与统计
+     *
+     * @return 强类型重试统计视图
      */
     @GetMapping("/stats")
-    public Result<Map<String, Object>> getRetryStats() {
-        return Result.success(Map.of(
-                "scene", "orderPayRetry",
-                "attemptCount", retryDemoService.getAttemptCount()
-        ));
+    public Result<RetryStatsVO> getRetryStats() {
+        return Result.success(RetryStatsVO.builder()
+                .scene("orderPayRetry")
+                .attemptCount(retryDemoService.getAttemptCount())
+                .build());
     }
 }

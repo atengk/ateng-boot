@@ -153,6 +153,8 @@ flowchart TD
 ### 13. 样例工程架构纯净化与零 Controller 污染治理
 - **坚守非 Web 模块准出铁律**：彻底清理 `ateng-boot-sample-job-snail` 中违规设立的 `SampleSnailJobController`，重构为标准 `ScenarioService` 并由 `@SpringBootTest` 驱动端到端验证，彻底消除架构破窗。
 
+> **演进注记 (Superseding Note)**：本节关于“移除 Sample Web Controller、仅保留非 Web `ScenarioService`”的局部样例形态约定，已由全局 [工业级文档与样例工程标准规范](../agents/documentation-specification.md) 与 [ADR-0104](./0104-snail-job-sample-multi-controller-and-documentation-specification-architecture.md) 正式取代（`Superseded by ADR-0104`）——现行 `ateng-boot-sample-job-snail` 已统一引入 `ateng-boot-web` 并按业务能力领域拆分为 5 大高内聚 `@RestController` 暴露体验端点。
+
 ---
 
 ## 结论与后续演进

@@ -1,5 +1,8 @@
 package io.github.atengk.boot.sample.job.snail.vo;
 
+import com.aizuda.snailjob.common.core.enums.StatusEnum;
+import com.aizuda.snailjob.model.dto.ExecuteResult;
+import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper.SnailJobTestResult;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -52,4 +55,48 @@ public class JobTriggerVO implements Serializable {
      * 执行响应报文或诊断摘要
      */
     private String message;
+
+    /**
+     * 根据脱网测试执行诊断结果构造标准化触发视图模型
+     *
+     * @param jobName 任务名称标识
+     * @param result  脱网执行诊断结果
+     * @return 标准 {@link JobTriggerVO}
+     */
+    public static JobTriggerVO from(String jobName, SnailJobTestResult result) {
+        if (result == null) {
+            return JobTriggerVO.builder()
+                    .jobName(jobName)
+                    .status("FAILURE")
+                    .statusCode(StatusEnum.NO.getStatus())
+                    .message("No execution result returned")
+                    .build();
+        }
+        boolean success = result.isSuccess();
+        Integer statusCode = success ? StatusEnum.YES.getStatus() : StatusEnum.NO.getStatus();
+        String message = success ? "Executed" : "Failed";
+
+        if (result.result() instanceof ExecuteResult er) {
+            statusCode = er.getStatus();
+            success = result.isSuccess() && StatusEnum.YES.getStatus() == er.getStatus();
+            if (er.getMessage() != null && !er.getMessage().isBlank()) {
+                message = er.getMessage();
+            } else if (er.getResult() != null) {
+                message = String.valueOf(er.getResult());
+            } else {
+                message = success ? "Success" : "Failed";
+            }
+        } else if (result.throwable() != null) {
+            message = result.throwable().getMessage();
+        }
+
+        return JobTriggerVO.builder()
+                .jobName(jobName)
+                .status(success ? "SUCCESS" : "FAILURE")
+                .statusCode(statusCode)
+                .traceId(result.traceId())
+                .elapsedMs(result.durationMs())
+                .message(message)
+                .build();
+    }
 }

@@ -5,6 +5,7 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import io.github.atengk.boot.job.snail.governor.SnailJobRuntimeGovernor;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper;
+import io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate;
 import io.github.atengk.boot.sample.job.snail.config.SampleJobSnailTestConfig;
 import io.github.atengk.boot.sample.job.snail.handler.HistoryDataArchiveJobHandler;
 import io.github.atengk.boot.sample.job.snail.handler.LogisticsBatchJobHandler;
@@ -13,6 +14,7 @@ import io.github.atengk.boot.sample.job.snail.service.RetryDemoService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -56,6 +58,9 @@ class SampleJobSnailWebControllerTest {
 
     @Autowired
     private HistoryDataArchiveJobHandler archiveJobHandler;
+
+    @Autowired
+    private SnailJobAdminTemplate adminTemplate;
 
     @AfterEach
     void tearDown() {
@@ -112,7 +117,7 @@ class SampleJobSnailWebControllerTest {
     }
 
     @Test
-    @DisplayName("1.4 触发跨商户账单 MapReduce 切片拆分任务")
+    @DisplayName("1.4 触发跨商户账单 MapReduce 切片拆分任务 (含 JSR-303 快速失败)")
     void testTriggerBillSettlementMap() throws Exception {
         String json = "{\"dataRange\":\"1-500\",\"billingCycle\":\"2026-11\"}";
         mockMvc.perform(post("/sample/job-snail/trigger/bill-settlement/map")
@@ -122,6 +127,13 @@ class SampleJobSnailWebControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.jobName").value("billSettlementJob:splitTask"))
                 .andExpect(jsonPath("$.data.status").value("SUCCESS"));
+
+        // 越界参数 JSR-303 拦截
+        mockMvc.perform(post("/sample/job-snail/trigger/bill-settlement/map")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"dataRange\":\"\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", not(200)));
     }
 
     @Test
@@ -154,14 +166,24 @@ class SampleJobSnailWebControllerTest {
                         .param("faultInjected", "false"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.status").value("SUCCESS"));
+                .andExpect(jsonPath("$.data.status").value("SUCCESS"))
+                .andExpect(jsonPath("$.data.statusCode").value(1));
 
-        // 第二次：注入故障差错分支
+        // 第二次：注入故障差错分支 (真实返回 FAILURE / 0)
         mockMvc.perform(post("/sample/job-snail/trigger/reconciliation")
                         .param("faultInjected", "true"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.jobName").value("orderReconciliationJob"));
+                .andExpect(jsonPath("$.data.jobName").value("orderReconciliationJob"))
+                .andExpect(jsonPath("$.data.status").value("FAILURE"))
+                .andExpect(jsonPath("$.data.statusCode").value(0));
+
+        // 第三次：无故障恢复（验证无残留脏状态影响）
+        mockMvc.perform(post("/sample/job-snail/trigger/reconciliation")
+                        .param("faultInjected", "false"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.status").value("SUCCESS"));
     }
 
     @Test
@@ -186,7 +208,7 @@ class SampleJobSnailWebControllerTest {
     }
 
     @Test
-    @DisplayName("1.10 触发物流广播分片流式批处理任务")
+    @DisplayName("1.10 触发物流广播分片流式批处理任务 (含参数越界快速失败)")
     void testTriggerLogisticsBatch() throws Exception {
         mockMvc.perform(post("/sample/job-snail/trigger/logistics-batch")
                         .param("shardIndex", "0")
@@ -196,6 +218,13 @@ class SampleJobSnailWebControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.jobName").value("logisticsStatusSyncJob"))
                 .andExpect(jsonPath("$.data.status").value("SUCCESS"));
+
+        // 分片总数非法 (< 1) 快速失败
+        mockMvc.perform(post("/sample/job-snail/trigger/logistics-batch")
+                        .param("shardIndex", "0")
+                        .param("shardTotal", "0"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", not(200)));
     }
 
     @Test
@@ -226,7 +255,7 @@ class SampleJobSnailWebControllerTest {
     // =========================================================================
 
     @Test
-    @DisplayName("2.1 触发声明式 @AtengSnailRetry 订单支付重试")
+    @DisplayName("2.1 触发声明式 @AtengSnailRetry 订单支付重试 (正常/超时转重试/JSR-303 拦截)")
     void testRetryPayDeclarative() throws Exception {
         String json = "{\"orderId\":\"ORD-PAY-1001\",\"amount\":99.9}";
         mockMvc.perform(post("/sample/job-snail/retry/pay")
@@ -237,6 +266,22 @@ class SampleJobSnailWebControllerTest {
                 .andExpect(jsonPath("$.data.orderId").value("ORD-PAY-1001"))
                 .andExpect(jsonPath("$.data.mode").value("DECLARATIVE"))
                 .andExpect(jsonPath("$.data.status").value("SUCCESS"));
+
+        // 模拟支付网关超时，触发异常捕获并进入重试管道
+        mockMvc.perform(post("/sample/job-snail/retry/pay")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"orderId\":\"FAIL_ORDER\",\"amount\":88.00}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderId").value("FAIL_ORDER"))
+                .andExpect(jsonPath("$.data.status").value("RETRY_TRIGGERED"));
+
+        // 金额越界与订单号缺失 JSR-303 快速失败
+        mockMvc.perform(post("/sample/job-snail/retry/pay")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"orderId\":\"\",\"amount\":0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", not(200)));
     }
 
     @Test
@@ -314,7 +359,7 @@ class SampleJobSnailWebControllerTest {
     // =========================================================================
 
     @Test
-    @DisplayName("4.1 调度中心任务管理 OpenAPI (新增/查询/即时触发/删除)")
+    @DisplayName("4.1 调度中心任务管理 OpenAPI (新增/更新/查询/即时触发/删除/JSR-303 防卫)")
     void testAdminJobOperations() throws Exception {
         // 新增任务
         String json = "{\"jobName\":\"orderSyncJob\",\"executorInfo\":\"syncHandler\",\"triggerType\":1,\"triggerInterval\":\"0/30 * * * * ?\",\"description\":\"test job\"}";
@@ -323,7 +368,34 @@ class SampleJobSnailWebControllerTest {
                         .content(json))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").isNotEmpty());
+                .andExpect(jsonPath("$.data").value(1001));
+
+        // 更新任务 (必须携带 id)
+        String updateJson = "{\"id\":1001,\"jobName\":\"orderSyncJob\",\"executorInfo\":\"syncHandler\",\"triggerType\":1,\"triggerInterval\":\"0/45 * * * * ?\",\"routeKey\":1,\"description\":\"updated job\"}";
+        mockMvc.perform(put("/sample/job-snail/admin/jobs")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(updateJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 新增任务 JSR-303 校验失败 & 更新缺 id 快速失败
+        mockMvc.perform(post("/sample/job-snail/admin/jobs")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"jobName\":\"\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", not(200)));
+
+        mockMvc.perform(put("/sample/job-snail/admin/jobs")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", not(200)));
+
+        // 非法路径参数 jobId=0 快速失败
+        mockMvc.perform(get("/sample/job-snail/admin/jobs/0"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", not(200)));
 
         // 查询任务详情
         mockMvc.perform(get("/sample/job-snail/admin/jobs/1001"))
@@ -345,7 +417,7 @@ class SampleJobSnailWebControllerTest {
     }
 
     @Test
-    @DisplayName("4.2 调度中心工作流 DAG OpenAPI (触发/启停/查询批次)")
+    @DisplayName("4.2 调度中心工作流 DAG OpenAPI (触发/启停/查询批次/删除)")
     void testAdminWorkflowOperations() throws Exception {
         // 即时触发工作流
         mockMvc.perform(post("/sample/job-snail/admin/workflows/2001/trigger"))
@@ -370,6 +442,34 @@ class SampleJobSnailWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.id").value(2001));
+
+        // 删除工作流
+        mockMvc.perform(delete("/sample/job-snail/admin/workflows/2001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+    }
+
+    @Test
+    @DisplayName("4.4 调度中心 OpenAPI 上游返回 null/false 时拒绝兜底伪造并 Fail-Fast")
+    void testAdminUpstreamFailureDoesNotForgeSuccess() throws Exception {
+        if (!Mockito.mockingDetails(adminTemplate).isMock()) {
+            return;
+        }
+        try {
+            Mockito.doReturn(false).when(adminTemplate).triggerJob(9999L);
+            Mockito.doReturn(null).when(adminTemplate).getJobDetail(9999L);
+
+            mockMvc.perform(post("/sample/job-snail/admin/jobs/9999/trigger"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code", not(200)));
+
+            mockMvc.perform(get("/sample/job-snail/admin/jobs/9999"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code", not(200)));
+        } finally {
+            Mockito.doReturn(true).when(adminTemplate).triggerJob(9999L);
+        }
     }
 
     @Test

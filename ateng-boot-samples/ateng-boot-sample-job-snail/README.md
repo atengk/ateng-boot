@@ -50,7 +50,7 @@ mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-job-snail -Dspring-
 
 ## 3. 核心 Controller 接口与一键体验
 
-> 所有业务体验接口均遵循 `Result<T>` 显式强类型响应契约（`code = 200` 表示受理/校验通过），绝不向外部暴露底层实体模型。
+> 3.1 ~ 3.5 中 `SnailJob*Controller` 业务体验接口均遵循 `Result<T>` 显式强类型响应契约（`code = 200` 表示受理/校验通过），绝不向外部暴露底层实体模型；3.5 节末 `/actuator/*` 运维探针遵循 Spring Boot Actuator 原生 JSON 响应契约。
 
 ### 3.1 调度触发与切片规约（`SnailJobTriggerController`：`/sample/job-snail/trigger`）
 
@@ -96,25 +96,30 @@ mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-job-snail -Dspring-
 | 序号 | 场景说明 | HTTP 方法与路径 | 一键体验 `curl` 命令 |
 | :--- | :--- | :--- | :--- |
 | 25 | 编程式向调度中心新增调度任务（`@Valid AdminJobSaveDTO`） | `POST /sample/job-snail/admin/jobs` | `curl -X POST http://localhost:8080/sample/job-snail/admin/jobs -H "Content-Type: application/json" -d '{"jobName":"dailySettlementJob","executorInfo":"billSettlementJob","triggerType":1,"triggerInterval":"0 0 2 * * ?","routeKey":1,"description":"每日跨商户账单结算"}'` |
-| 26 | 查询指定任务 ID 元数据详情 | `GET /sample/job-snail/admin/jobs/{jobId}` | `curl -X GET http://localhost:8080/sample/job-snail/admin/jobs/1001` |
-| 27 | 即时手动触发指定调度任务 | `POST /sample/job-snail/admin/jobs/{jobId}/trigger` | `curl -X POST http://localhost:8080/sample/job-snail/admin/jobs/1001/trigger` |
-| 28 | 删除指定调度任务 | `DELETE /sample/job-snail/admin/jobs/{jobId}` | `curl -X DELETE http://localhost:8080/sample/job-snail/admin/jobs/1001` |
-| 29 | 查询工作流 DAG 批次执行详情 | `GET /sample/job-snail/admin/workflows/batch/{batchId}` | `curl -X GET http://localhost:8080/sample/job-snail/admin/workflows/batch/2001` |
-| 30 | 即时触发指定工作流 DAG（同理支持 `/enable` 与 `/disable` 启停工作流） | `POST /sample/job-snail/admin/workflows/{workflowId}/trigger` | `curl -X POST http://localhost:8080/sample/job-snail/admin/workflows/2001/trigger` |
-| 31 | 查询指定重试任务元数据详情 | `GET /sample/job-snail/admin/retry/{retryId}` | `curl -X GET http://localhost:8080/sample/job-snail/admin/retry/888` |
-| 32 | 运维手动触发重试任务（同理支持 `POST /retry/{retryId}/status?status=1` 变更状态） | `POST /sample/job-snail/admin/retry/{retryId}/trigger` | `curl -X POST http://localhost:8080/sample/job-snail/admin/retry/888/trigger` |
+| 26 | 编程式更新调度中心任务配置（需携带 `id`） | `PUT /sample/job-snail/admin/jobs` | `curl -X PUT http://localhost:8080/sample/job-snail/admin/jobs -H "Content-Type: application/json" -d '{"id":1001,"jobName":"dailySettlementJob","executorInfo":"billSettlementJob","triggerType":1,"triggerInterval":"0 0 3 * * ?","routeKey":1,"description":"每日跨商户账单结算更新"}'` |
+| 27 | 查询指定任务 ID 元数据详情 | `GET /sample/job-snail/admin/jobs/{jobId}` | `curl -X GET http://localhost:8080/sample/job-snail/admin/jobs/1001` |
+| 28 | 即时手动触发指定调度任务 | `POST /sample/job-snail/admin/jobs/{jobId}/trigger` | `curl -X POST http://localhost:8080/sample/job-snail/admin/jobs/1001/trigger` |
+| 29 | 删除指定调度任务 | `DELETE /sample/job-snail/admin/jobs/{jobId}` | `curl -X DELETE http://localhost:8080/sample/job-snail/admin/jobs/1001` |
+| 30 | 查询工作流 DAG 批次执行详情 | `GET /sample/job-snail/admin/workflows/batch/{batchId}` | `curl -X GET http://localhost:8080/sample/job-snail/admin/workflows/batch/2001` |
+| 31 | 即时触发指定工作流 DAG | `POST /sample/job-snail/admin/workflows/{workflowId}/trigger` | `curl -X POST http://localhost:8080/sample/job-snail/admin/workflows/2001/trigger` |
+| 32 | 启用指定工作流 DAG | `POST /sample/job-snail/admin/workflows/{workflowId}/enable` | `curl -X POST http://localhost:8080/sample/job-snail/admin/workflows/2001/enable` |
+| 33 | 停用指定工作流 DAG | `POST /sample/job-snail/admin/workflows/{workflowId}/disable` | `curl -X POST http://localhost:8080/sample/job-snail/admin/workflows/2001/disable` |
+| 34 | 删除指定工作流 DAG | `DELETE /sample/job-snail/admin/workflows/{workflowId}` | `curl -X DELETE http://localhost:8080/sample/job-snail/admin/workflows/2001` |
+| 35 | 查询指定重试任务元数据详情 | `GET /sample/job-snail/admin/retry/{retryId}` | `curl -X GET http://localhost:8080/sample/job-snail/admin/retry/888` |
+| 36 | 运维手动触发重试任务 | `POST /sample/job-snail/admin/retry/{retryId}/trigger` | `curl -X POST http://localhost:8080/sample/job-snail/admin/retry/888/trigger` |
+| 37 | 运维变更重试任务状态码（如启用/暂停） | `POST /sample/job-snail/admin/retry/{retryId}/status` | `curl -X POST "http://localhost:8080/sample/job-snail/admin/retry/888/status?status=1"` |
 
 ### 3.5 死信切片运维与 Actuator 探针（`SnailJobDeadLetterController` & `/actuator`）
 
 | 序号 | 场景说明 | HTTP 方法与路径 | 一键体验 `curl` 命令 |
 | :--- | :--- | :--- | :--- |
-| 33 | 回查流式批处理收集的 `FailedBatch` 死信切片清单 | `GET /sample/job-snail/dead-letter/batches` | `curl -X GET http://localhost:8080/sample/job-snail/dead-letter/batches` |
-| 34 | 受控补偿重放全部死信切片并清理现场 | `POST /sample/job-snail/dead-letter/replay` | `curl -X POST http://localhost:8080/sample/job-snail/dead-letter/replay` |
-| 35 | 手动清空当前节点缓存的死信切片队列 | `DELETE /sample/job-snail/dead-letter/batches` | `curl -X DELETE http://localhost:8080/sample/job-snail/dead-letter/batches` |
-| 36 | Actuator 查询已装配任务、重试场景、在途计数与暂停清单 | `GET /actuator/snailjobs` | `curl -X GET http://localhost:8080/actuator/snailjobs` |
-| 37 | Actuator 脱机手动触发指定任务并回显 `traceId` 与耗时 | `POST /actuator/snailjobs/{jobName}` | `curl -X POST http://localhost:8080/actuator/snailjobs/systemWarmupJob -H "Content-Type: application/json" -d '{"action":"trigger","args":"manual-check"}'` |
-| 38 | Actuator 执行节点级治理（暂停指定任务或全量恢复） | `POST /actuator/snailjobs` | `curl -X POST http://localhost:8080/actuator/snailjobs -H "Content-Type: application/json" -d '{"action":"resumeAll"}'` |
-| 39 | Actuator 双擎健康探针（检测服务端可达性、gRPC 通道与停机排空状态） | `GET /actuator/health` | `curl -X GET http://localhost:8080/actuator/health` |
+| 38 | 回查流式批处理收集的 `FailedBatch` 死信切片清单 | `GET /sample/job-snail/dead-letter/batches` | `curl -X GET http://localhost:8080/sample/job-snail/dead-letter/batches` |
+| 39 | 受控原子摘取并重放全部死信切片（保留仍失败切片） | `POST /sample/job-snail/dead-letter/replay` | `curl -X POST http://localhost:8080/sample/job-snail/dead-letter/replay` |
+| 40 | 手动清空当前节点缓存的死信切片队列 | `DELETE /sample/job-snail/dead-letter/batches` | `curl -X DELETE http://localhost:8080/sample/job-snail/dead-letter/batches` |
+| 41 | Actuator 查询已装配任务、重试场景、在途计数与暂停清单（原生 JSON） | `GET /actuator/snailjobs` | `curl -X GET http://localhost:8080/actuator/snailjobs` |
+| 42 | Actuator 脱机手动触发指定任务并回显 `traceId` 与耗时（原生 JSON） | `POST /actuator/snailjobs/{jobName}` | `curl -X POST http://localhost:8080/actuator/snailjobs/systemWarmupJob -H "Content-Type: application/json" -d '{"action":"trigger","args":"manual-check"}'` |
+| 43 | Actuator 执行节点级治理（暂停指定任务或全量恢复，原生 JSON） | `POST /actuator/snailjobs` | `curl -X POST http://localhost:8080/actuator/snailjobs -H "Content-Type: application/json" -d '{"action":"resumeAll"}'` |
+| 44 | Actuator 双擎健康探针（检测服务端可达性、gRPC 通道与停机排空状态，原生 JSON） | `GET /actuator/health` | `curl -X GET http://localhost:8080/actuator/health` |
 
 ---
 
@@ -122,16 +127,14 @@ mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-job-snail -Dspring-
 
 ### 4.1 定向构建与离线全真测试（CI 默认模式）
 
-在仓库根目录执行阶梯二协同准出命令，联动构建并运行 Starter 单元测试（**146** 项用例）与 Sample 全场景 Web/集成测试（**34** 项用例）：
+在仓库根目录执行阶梯二协同准出命令，联动验证 Starter 单元测试（**147** 项，`19` 个测试类）与 Sample 场景测试（**35** 项）：
 
 ```bash
-mvn test -pl ateng-boot-job-snail,ateng-boot-samples/ateng-boot-sample-job-snail -am -T 1C -nsu -B
+mvn test -pl ateng-boot-job-snail,ateng-boot-samples/ateng-boot-sample-job-snail -am -nsu -B
 ```
 
-测试构成清单：
-
-- [`SampleJobSnailIntegrationTest.java`](./src/test/java/io/github/atengk/boot/sample/job/snail/SampleJobSnailIntegrationTest.java)：14 项端到端全真场景实测（预热巡检、看门狗降级、JSR-303 参数防卫、物流流式分片、多租户三模、声明式/编程式/手动上报重试、防风暴自愈、MapReduce、责任链灰度拦截、运行时治理、`SnailJobScenarioService`、Actuator 端点）。
-- [`SampleJobSnailWebControllerTest.java`](./src/test/java/io/github/atengk/boot/sample/job/snail/SampleJobSnailWebControllerTest.java)：20 项 `MockMvc` 全链 HTTP 契约实测，覆盖 5 大领域控制器全部端点的 `Result<T>` 契约校验、异常状态拦截与 JSR-303 快速失败校验。
+- [`SampleJobSnailIntegrationTest.java`](./src/test/java/io/github/atengk/boot/sample/job/snail/SampleJobSnailIntegrationTest.java)（**14** 项）：覆盖 `systemWarmupJob`、`timeoutGuardedJob`、JSR-303 防卫、物流流式分片、多租户三模、协同重试、告警自愈、MapReduce、灰度拦截、节点治理、`SnailJobScenarioService` 与 Actuator 端点。
+- [`SampleJobSnailWebControllerTest.java`](./src/test/java/io/github/atengk/boot/sample/job/snail/SampleJobSnailWebControllerTest.java)（**21** 项）：基于 `MockMvc` 覆盖 5 大控制器全部端点、JSR-303 快速失败与 OpenAPI 异常透明抛出契约。
 
 ### 4.2 真实服务端（`local` Profile）联调回归
 
@@ -141,4 +144,4 @@ mvn test -pl ateng-boot-job-snail,ateng-boot-samples/ateng-boot-sample-job-snail
 mvn test -pl ateng-boot-samples/ateng-boot-sample-job-snail -Dtest=SampleJobSnailWebControllerTest -Dspring.profiles.active=local -nsu -B
 ```
 
-> 延伸阅读：[**ateng-boot-job-snail Starter 五维契约文档**](../../ateng-boot-job-snail/README.md) ｜ [**ateng-boot-job-snail 领域词汇表**](../../ateng-boot-job-snail/CONTEXT.md)
+> 延伸阅读：[**ateng-boot-job-snail Starter 五维契约文档**](../../ateng-boot-job-snail/README.md) ｜ [**ateng-boot-job-snail 领域词汇表**](../../ateng-boot-job-snail/CONTEXT.md) ｜ [**ADR-0104 架构决策记录**](../../docs/adr/0104-snail-job-sample-multi-controller-and-documentation-specification-architecture.md)

@@ -73,12 +73,28 @@ _Avoid_: RetrySampleController, 重试接口, RetryApi
 _Avoid_: GovernorApi, 任务开关控制器, PauseController
 
 **SnailJobAdminController (调度中心管理领域控制器)**:
-样例工程中通过 OpenAPI 编程式门面调用 SnailJob 服务端的专职 Web 控制器，路由收敛于 `/sample/job-snail/admin/*`，覆盖任务增删改查、DAG 工作流启停与死信重放。
+样例工程中通过 `SnailJobAdminTemplate` OpenAPI 编程式门面调用 SnailJob 服务端的专职 Web 控制器，路由收敛于 `/sample/job-snail/admin/*`，覆盖任务注册/更新/查询/触发/删除、DAG 工作流批次查询与启停触发删、以及重试任务查询/触发与状态更新运维。
 _Avoid_: AdminApi, 调度中心接口, OpenApiController
 
 **SnailJobDeadLetterController (死信切片运维领域控制器)**:
 样例工程中负责流式批处理失败切片与重试死信运维的专职 Web 控制器，路由收敛于 `/sample/job-snail/dead-letter/*`，覆盖死信切片明细回查、受控补偿重放与现场清理。
 _Avoid_: DeadLetterApi, 死信控制器, FailureController
+
+**UserSyncParam (用户同步调度请求参数 DTO)**:
+用户同步调度任务触发端点（`/sample/job-snail/trigger/user-sync`）与 `@AtengSnailJob` 处理器共享绑定的强类型请求入参模型，封装同步批次号、单批数量与部门过滤标识，通过 JSR-303 注解在传输边界执行 Fail-Fast 校验。
+_Avoid_: UserMap, SyncMap, UserParamEntity
+
+**BillSettlementRequestDTO (账单结算切片请求 DTO)**:
+跨商户月度账单 MapReduce 动态切片触发端点（`/sample/job-snail/trigger/bill-settlement/map`）的强类型请求入参模型，封装待结算账单区间与结算周期标识，约束结算切片边界。
+_Avoid_: BillParam, SettlementMap, BillEntity
+
+**OrderPayRetryRequestDTO (订单支付重试请求 DTO)**:
+声明式协同重试触发端点（`/sample/job-snail/retry/pay`）的强类型请求入参模型，封装业务订单编号与支付金额校验约束，隔离外部输入与分布式重试执行现场。
+_Avoid_: RetryParam, PayMap, OrderEntity
+
+**AdminJobSaveDTO (调度中心任务保存请求 DTO)**:
+调度中心编程式任务注册与更新端点（`POST/PUT /sample/job-snail/admin/jobs`）的强类型请求入参模型，封装任务 ID、名称、执行器标识、触发类型、调度表达式、路由策略与描述。
+_Avoid_: JobEntity, JobMap, AdminJobParam
 
 **JobTriggerVO (任务触发结果视图对象)**:
 调度任务手动触发执行结果的标准对外视图模型，封装任务标识、执行状态、耗时、MDC 链路追踪标识与诊断摘要，遵循 Zero-Entity-Leakage 传输契约。
@@ -87,6 +103,10 @@ _Avoid_: TriggerResult, JobResponse, TriggerEntity
 **RetryExecutionVO (协同重试执行视图对象)**:
 分布式协同重试演练执行结果的标准对外视图模型，封装业务订单号、重试场景、幂等键、尝试次数与执行诊断消息。
 _Avoid_: RetryResult, RetryResponse, RetryDTO
+
+**RetryStatsVO (协同重试统计视图对象)**:
+分布式协同重试统计端点（`GET /sample/job-snail/retry/stats`）的标准对外视图模型，封装重试场景标识与累计尝试执行次数，消除控制器边界裸 `Map` 返回。
+_Avoid_: StatsMap, RetryStatsEntity, RetryMap
 
 **GovernorStatusVO (节点运行时治理状态视图对象)**:
 单节点任务治理状态的标准对外视图模型，封装目标任务标识、操作类型、执行状态与节点当前暂停任务总数。

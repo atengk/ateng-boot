@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -26,10 +27,14 @@ public class RetryDemoService {
 
     /**
      * 声明式重试方法：订单支付
+     *
+     * @param orderId 业务订单编号
+     * @param amount  支付金额
+     * @return 支付执行结果摘要
      */
     @AtengSnailRetry(scene = "orderPayRetry")
     @Retryable(scene = "orderPayRetry")
-    public String payOrder(String orderId, Double amount) {
+    public String payOrder(String orderId, BigDecimal amount) {
         int currentAttempt = attemptCount.incrementAndGet();
         String currentTenant = TenantContextHolder.getTenantId();
         log.info("[RetryDemoService] 正在处理支付请求: orderId={}, amount={}, 租户={}, 尝试次数={}",
@@ -44,6 +49,9 @@ public class RetryDemoService {
 
     /**
      * 编程式重试方法：通过 SnailRetryTemplate 执行业务闭包
+     *
+     * @param orderId 业务订单编号
+     * @return 闭包执行结果
      */
     public String executeWithProgrammaticRetry(String orderId) {
         return retryTemplate.executeWithIdempotent("orderPayRetry", orderId, "BIZ-" + orderId, () -> {
@@ -54,11 +62,14 @@ public class RetryDemoService {
 
     /**
      * 手动失败上报方法：在脱机或异步失败时向 SnailJob 上报
+     *
+     * @param orderId 业务订单编号
+     * @return 上报是否成功
      */
     public boolean reportFailedOrder(String orderId) {
         log.info("[RetryDemoService] 手动上报失败重试任务: orderId={}", orderId);
         return retryTemplate.reportManualRetry("orderPayRetry", getClass().getName(),
-                new Object[]{orderId, 100.0}, orderId, "BIZ-" + orderId);
+                new Object[]{orderId, new BigDecimal("100.00")}, orderId, "BIZ-" + orderId);
     }
 
     public int getAttemptCount() {

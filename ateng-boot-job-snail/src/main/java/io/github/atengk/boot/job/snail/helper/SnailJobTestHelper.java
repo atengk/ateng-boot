@@ -34,6 +34,7 @@ import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.BeansException;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.MethodIntrospector;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.util.Assert;
@@ -43,11 +44,13 @@ import org.springframework.util.StringUtils;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * SnailJob 脱网离线单元测试与端到端调试辅助门面
@@ -71,14 +74,22 @@ public class SnailJobTestHelper implements ApplicationContextAware {
 
     private static final Map<String, JobExecutorInfo> FALLBACK_JOB_REPOSITORY = new ConcurrentHashMap<>();
     private static final Map<String, RetryerInfo> FALLBACK_RETRY_REPOSITORY = new ConcurrentHashMap<>();
+    private static final ReentrantLock REPOSITORY_LOCK = new ReentrantLock();
 
-    private static ApplicationContext applicationContext;
+    private static volatile ApplicationContext applicationContext;
 
     @Override
     public void setApplicationContext(ApplicationContext context) throws BeansException {
-        applicationContext = context;
-        clear();
-        scanAndRegisterSpringBeans(context);
+        REPOSITORY_LOCK.lock();
+        try {
+            applicationContext = context;
+            clearRepositoriesLocked();
+            scanAndRegisterSpringBeansLocked(context);
+        } finally {
+            if (REPOSITORY_LOCK.isHeldByCurrentThread()) {
+                REPOSITORY_LOCK.unlock();
+            }
+        }
     }
 
     /**
@@ -449,12 +460,13 @@ public class SnailJobTestHelper implements ApplicationContextAware {
 
     private static JobExecutorInfo loadJobExecutor(String jobName) {
         // 1. 若当前持有活跃的 Spring 容器，优先内省获取当前容器的活跃 Bean
-        if (applicationContext != null) {
+        ApplicationContext ctx = applicationContext;
+        if (isContextActive(ctx)) {
             JobExecutorInfo localInfo = FALLBACK_JOB_REPOSITORY.get(jobName);
             if (localInfo != null) {
                 return localInfo;
             }
-            scanAndRegisterSpringBeans(applicationContext);
+            scanAndRegisterSpringBeans(ctx);
             localInfo = FALLBACK_JOB_REPOSITORY.get(jobName);
             if (localInfo != null) {
                 return localInfo;
@@ -485,27 +497,31 @@ public class SnailJobTestHelper implements ApplicationContextAware {
     }
 
     private static RetryerInfo loadRetryer(String scene, String executorClassName) {
-        // 1. 优先从运行期缓存获取
+        // 1. 若当前持有活跃的 Spring 容器，优先检查并内省当前容器的重试 Bean
+        ApplicationContext ctx = applicationContext;
+        if (isContextActive(ctx)) {
+            RetryerInfo fallbackMatched = findRetryerInFallback(scene, executorClassName);
+            if (fallbackMatched != null) {
+                return fallbackMatched;
+            }
+            scanAndRegisterSpringBeans(ctx);
+            fallbackMatched = findRetryerInFallback(scene, executorClassName);
+            if (fallbackMatched != null) {
+                return fallbackMatched;
+            }
+        }
+
+        // 2. 从官方运行期缓存获取
         if (StringUtils.hasText(executorClassName)) {
             RetryerInfo info = RetryerInfoCache.get(scene, executorClassName);
             if (info != null) {
                 return info;
             }
         }
-        Map<String, RetryerInfo> loaded = getLoadedRetryers();
-        for (RetryerInfo r : loaded.values()) {
+        Collection<RetryerInfo> loaded = getLoadedRetryers();
+        for (RetryerInfo r : loaded) {
             if (scene.equalsIgnoreCase(r.getScene())) {
                 if (!StringUtils.hasText(executorClassName) || executorClassName.equalsIgnoreCase(r.getExecutorClassName())) {
-                    return r;
-                }
-            }
-        }
-
-        // 2. 从 Spring 容器动态内省扫描
-        if (applicationContext != null) {
-            scanAndRegisterSpringBeans(applicationContext);
-            for (RetryerInfo r : FALLBACK_RETRY_REPOSITORY.values()) {
-                if (scene.equalsIgnoreCase(r.getScene())) {
                     return r;
                 }
             }
@@ -513,8 +529,46 @@ public class SnailJobTestHelper implements ApplicationContextAware {
         return null;
     }
 
-    private static synchronized void scanAndRegisterSpringBeans(ApplicationContext context) {
+    private static RetryerInfo findRetryerInFallback(String scene, String executorClassName) {
+        for (RetryerInfo r : FALLBACK_RETRY_REPOSITORY.values()) {
+            if (scene.equalsIgnoreCase(r.getScene())) {
+                if (!StringUtils.hasText(executorClassName) || executorClassName.equalsIgnoreCase(r.getExecutorClassName())) {
+                    return r;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean isContextActive(ApplicationContext context) {
         if (context == null) {
+            return false;
+        }
+        if (context instanceof ConfigurableApplicationContext configurableContext) {
+            return configurableContext.isActive();
+        }
+        return true;
+    }
+
+    private static void scanAndRegisterSpringBeans(ApplicationContext context) {
+        if (!isContextActive(context)) {
+            return;
+        }
+        REPOSITORY_LOCK.lock();
+        try {
+            if (applicationContext != null && applicationContext != context) {
+                return;
+            }
+            scanAndRegisterSpringBeansLocked(context);
+        } finally {
+            if (REPOSITORY_LOCK.isHeldByCurrentThread()) {
+                REPOSITORY_LOCK.unlock();
+            }
+        }
+    }
+
+    private static void scanAndRegisterSpringBeansLocked(ApplicationContext context) {
+        if (!isContextActive(context)) {
             return;
         }
         String[] beanNames = context.getBeanNamesForType(Object.class);
@@ -522,7 +576,8 @@ public class SnailJobTestHelper implements ApplicationContextAware {
             Object bean;
             try {
                 bean = context.getBean(beanName);
-            } catch (Exception ignored) {
+            } catch (BeansException ex) {
+                log.trace("跳过无法实例化的 Spring Bean [{}]: {}", beanName, ex.getMessage());
                 continue;
             }
 
@@ -684,15 +739,35 @@ public class SnailJobTestHelper implements ApplicationContextAware {
         return targetClass.getSimpleName();
     }
 
-    @SuppressWarnings("unchecked")
-    private static Map<String, RetryerInfo> getLoadedRetryers() {
+    private static Object getRetryerRepository() {
         try {
-            Field field = RetryerInfoCache.class.getDeclaredField("CACHE");
+            Field field = RetryerInfoCache.class.getDeclaredField("RETRY_HANDLER_REPOSITORY");
             field.setAccessible(true);
-            return (Map<String, RetryerInfo>) field.get(null);
-        } catch (Throwable ignored) {
-            return Collections.emptyMap();
+            return field.get(null);
+        } catch (ReflectiveOperationException | SecurityException | LinkageError ex) {
+            log.debug("读取 RetryerInfoCache.RETRY_HANDLER_REPOSITORY 失败: {}", ex.getMessage());
+            return null;
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Collection<RetryerInfo> getLoadedRetryers() {
+        Object repository = getRetryerRepository();
+        if (repository == null) {
+            return Collections.emptyList();
+        }
+        try {
+            if (repository instanceof Map<?, ?> map) {
+                return (Collection<RetryerInfo>) map.values();
+            }
+            Class<?> tableInterface = Class.forName("com.google.common.collect.Table");
+            if (tableInterface.isInstance(repository)) {
+                return (Collection<RetryerInfo>) tableInterface.getMethod("values").invoke(repository);
+            }
+        } catch (ReflectiveOperationException | SecurityException | LinkageError ex) {
+            log.debug("读取 RetryerInfoCache 重试器列表失败，退化为空集合: {}", ex.getMessage());
+        }
+        return Collections.emptyList();
     }
 
     @SuppressWarnings("unchecked")
@@ -701,7 +776,8 @@ public class SnailJobTestHelper implements ApplicationContextAware {
             Field field = JobExecutorInfoCache.class.getDeclaredField("JOB_EXECUTOR_REPOSITORY");
             field.setAccessible(true);
             return (Map<String, JobExecutorInfo>) field.get(null);
-        } catch (Throwable ignored) {
+        } catch (ReflectiveOperationException | SecurityException | LinkageError ex) {
+            log.debug("读取 JobExecutorInfoCache.JOB_EXECUTOR_REPOSITORY 失败，退化为空映射: {}", ex.getMessage());
             return Collections.emptyMap();
         }
     }
@@ -712,8 +788,9 @@ public class SnailJobTestHelper implements ApplicationContextAware {
      * @return 任务名称只读集合
      */
     public Set<String> getRegisteredJobNames() {
-        if (applicationContext != null) {
-            scanAndRegisterSpringBeans(applicationContext);
+        ApplicationContext ctx = applicationContext;
+        if (isContextActive(ctx)) {
+            scanAndRegisterSpringBeans(ctx);
         }
         java.util.TreeSet<String> names = new java.util.TreeSet<>();
         names.addAll(getLoadedJobExecutors().keySet());
@@ -727,11 +804,12 @@ public class SnailJobTestHelper implements ApplicationContextAware {
      * @return 重试场景标识只读集合
      */
     public Set<String> getRegisteredRetryScenes() {
-        if (applicationContext != null) {
-            scanAndRegisterSpringBeans(applicationContext);
+        ApplicationContext ctx = applicationContext;
+        if (isContextActive(ctx)) {
+            scanAndRegisterSpringBeans(ctx);
         }
         java.util.TreeSet<String> scenes = new java.util.TreeSet<>();
-        for (RetryerInfo r : getLoadedRetryers().values()) {
+        for (RetryerInfo r : getLoadedRetryers()) {
             scenes.add(r.getScene());
         }
         for (RetryerInfo r : FALLBACK_RETRY_REPOSITORY.values()) {
@@ -741,14 +819,53 @@ public class SnailJobTestHelper implements ApplicationContextAware {
     }
 
     /**
-     * 清理脱网沙箱本地回退注册表
+     * 清理脱网沙箱本地回退注册表与 SnailJob 静态缓存
      */
     public static void clear() {
+        REPOSITORY_LOCK.lock();
+        try {
+            clearRepositoriesLocked();
+        } finally {
+            if (REPOSITORY_LOCK.isHeldByCurrentThread()) {
+                REPOSITORY_LOCK.unlock();
+            }
+        }
+    }
+
+    private static void clearRepositoriesLocked() {
         FALLBACK_JOB_REPOSITORY.clear();
         FALLBACK_RETRY_REPOSITORY.clear();
+        clearCacheMap(getLoadedJobExecutors(), "JobExecutorInfoCache");
+        clearRetryerInfoCache();
+    }
+
+    private static void clearRetryerInfoCache() {
+        Object repository = getRetryerRepository();
+        if (repository == null) {
+            return;
+        }
         try {
-            getLoadedJobExecutors().clear();
-        } catch (Throwable ignored) {
+            if (repository instanceof Map<?, ?> map) {
+                map.clear();
+                return;
+            }
+            Class<?> tableInterface = Class.forName("com.google.common.collect.Table");
+            if (tableInterface.isInstance(repository)) {
+                tableInterface.getMethod("clear").invoke(repository);
+            }
+        } catch (ReflectiveOperationException | SecurityException | LinkageError | UnsupportedOperationException ex) {
+            log.debug("清理 RetryerInfoCache 静态缓存失败，已忽略: {}", ex.getMessage());
+        }
+    }
+
+    private static void clearCacheMap(Map<?, ?> cache, String cacheName) {
+        if (cache == null || cache.isEmpty()) {
+            return;
+        }
+        try {
+            cache.clear();
+        } catch (UnsupportedOperationException ex) {
+            log.debug("静态缓存 [{}] 不支持清理操作，已忽略: {}", cacheName, ex.getMessage());
         }
     }
 

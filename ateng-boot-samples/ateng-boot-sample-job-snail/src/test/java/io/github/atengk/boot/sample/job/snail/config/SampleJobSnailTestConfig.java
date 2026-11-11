@@ -50,6 +50,7 @@ public class SampleJobSnailTestConfig {
         when(mock.triggerWorkflow(anyLong())).thenReturn(true);
         when(mock.enableWorkflow(anyLong())).thenReturn(true);
         when(mock.disableWorkflow(anyLong())).thenReturn(true);
+        when(mock.deleteWorkflow(anyLong())).thenReturn(true);
 
         WorkflowDetailApiResponse mockWorkflow = new WorkflowDetailApiResponse();
         mockWorkflow.setId(2001L);
