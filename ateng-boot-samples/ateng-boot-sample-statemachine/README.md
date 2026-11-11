@@ -1,70 +1,61 @@
-# ateng-boot-sample-statemachine 轻量无状态状态机场景自验工程
+# ateng-boot-sample-statemachine 业务状态机体验工程
 
-> 专一 `ateng-boot-statemachine` 电商订单 8 大状态全生命周期场景自验：外部主干流转、Choice 动态风控条件路由、内部自跃迁物流追踪、多源取消汇聚收敛、节点 Entry/Exit 生命周期、零副作用只读预检探测、CAS 乐观锁并发防重、声明式幂等放行、事务提交后不可逆通知、大批量切片关单与轨迹审计监听。
-
----
-
-## 1. 场景痛点与功能定位
-
-在复杂的电商履约业务中，订单状态流转极易演化为充斥着散落 `if-else` 的“面条代码”，并常伴随并发重复点击导致状态乱跳、部分操作失败导致状态半成功、第三方异步回调重复投递及大批量超时处理线程卡死等生产级痛点。
-
-`ateng-boot-sample-statemachine` 遵循 [ADR-0028](../../docs/adr/0028-samples-modularization-and-incremental-integration-testing.md) 1:1 独立沙箱原则与非 Web 组件级底座规范，基于纯净 Headless 架构与 H2 内存数据库建立完全离线自洽的 4 大专职场景服务体系：
-- **纯内存离线自洽（100% In-Memory Offline Hermetic）**：依赖 H2 内存库与 `@SpringBootTest`，纯净非 Web 环境，秒级极速自验，无任何外部物理中间件依赖；
-- **场景一：电商订单生命周期全流转 (`OrderLifecycleScenarioService`)**：覆盖 `WAIT_PAY` $\to$ `PAID` $\to$ `WAIT_DELIVER` $\to$ `DELIVERING` $\to$ `DELIVERED` $\to$ `FINISHED` 主干链路、Choice 动态风控分支（`score >= 80` 拦截至 `REFUNDING`）、内部自跃迁物流追加、多源汇聚取消（至 `CLOSED`）、多源退款申请及状态节点 Entry/Exit 生命周期动作；
-- **场景二：零副作用只读预检探测 (`OrderProbeScenarioService`)**：提供 `canFire`、`verifyTransition` 与 `getAvailableEvents`，纯读试算流转可行性与推演目标状态，为前端动态渲染按钮权限，强保证 0 次 Action 执行与 0 次数据库写操作；
-- **场景三：支付异步回调并发与幂等治理 (`PaymentCallbackScenarioService`)**：高并发重复回调通过 `fireEventWithCas` CAS-First 安全时序阻断原子冲突；声明式幂等策略（`idempotent(true)`）优雅放行重复回调；并通过 `performAfterCommit` 在本地事务确定性提交后触发短信/履约等不可逆外部通知；
-- **场景四：超时订单大批量切片关单 (`OrderTimeoutBatchScenarioService`)**：依托 `fireEventBatch` 切片流转引擎，分批执行超时自动关单，输出结构化聚合回执（`BatchTransitionResult`），兼顾高吞吐与局部异常容错。
+> 专注于演示与自验 `ateng-boot-statemachine` 核心特性在电商订单全生命周期场景下的开箱使用：外部主干跃迁、内部自跃迁追加物流、Choice 动态风控条件分流、多源取消/退款汇聚、状态节点 Entry/Exit 生命周期、零副作用只读预检与动态按钮权限、CAS-First 乐观锁并发防重、声明式幂等放行、事务提交后不可逆通知、大批量切片关单与 Mermaid/PlantUML 动态拓扑导出。
 
 ---
 
-## 2. 电商订单生命周期状态拓扑图
+## 1. 快速启动与服务端口
 
-```mermaid
-stateDiagram-v2
-    [*] --> WAIT_PAY : 创建订单
-    WAIT_PAY --> PAID : PAY [买家付款]
-    PAID --> Choice1 : RISK_AUDIT [风控评估]
-    Choice1 --> WAIT_DELIVER : 风控正常 (score < 80)
-    Choice1 --> REFUNDING : 高风险拦截 (score >= 80)
-    WAIT_DELIVER --> DELIVERING : SHIP [商家发货]
-    DELIVERING --> DELIVERING : ADD_TRACKING [内部自跃迁·追加物流轨迹]
-    DELIVERING --> DELIVERED : CONFIRM_DELIVERY [买家妥投签收]
-    DELIVERED --> FINISHED : FINISH [交易完成归档]
-    WAIT_PAY --> CLOSED : CANCEL [多源取消]
-    PAID --> CLOSED : CANCEL [多源取消]
-    WAIT_DELIVER --> CLOSED : CANCEL [多源取消]
-    PAID --> REFUNDING : APPLY_REFUND [多源退款]
-    WAIT_DELIVER --> REFUNDING : APPLY_REFUND [多源退款]
-    REFUNDING --> CLOSED : FINISH [退款完成]
-```
+- **默认 HTTP 端口**：`8080` (可在 `application.yml` 中修改)
+- **启动方式**：
+  ```bash
+  # 方式一：IDE 中运行 SampleStateMachineApplication.java 的 main 方法
+  # 方式二：命令行启动
+  mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-statemachine
+  ```
 
 ---
 
-## 3. 场景组件与端到端测试对齐
+## 2. 运行环境与双模切换
 
-| 场景组件 | 覆盖核心门面与特性 | 对应端到端测试 |
-| :--- | :--- | :--- |
-| `OrderLifecycleScenarioService` | `StateMachineBuilder`, `externalTransition`, `choiceTransition`, `internalTransition`, `multiFromTransition`, `state(S).onEntry/onExit`, 导出 Mermaid / PlantUML | `OrderLifecycleIntegrationTest#testHappyPathFullLifecycle`<br>`testInternalTransitionKeepsState`<br>`testChoiceTransitionBranchingAndRollback`<br>`testMultiFromTransitionCancel`<br>`testStateNodeLifecycleEntryAndExitActions`<br>`testTopologyExportMermaidAndPlantUml` |
-| `OrderProbeScenarioService` | 零副作用只读探测：`canFire`, `verifyTransition`, `getAvailableEvents`, 动态按钮权限评估 | `OrderLifecycleIntegrationTest#testOrderProbeScenarioService` |
-| `PaymentCallbackScenarioService` | `fireEventWithCas` 并发 CAS-First 冲突阻断、`idempotent(true)` 声明式幂等放行、`performAfterCommit` 事务提交后不可逆通知 | `OrderLifecycleIntegrationTest#testPaymentCallbackCasAndIdempotency`<br>`testPaymentCallbackPostCommitNotification` |
-| `OrderTimeoutBatchScenarioService` | `fireEventBatch` 切片流转引擎、`BatchOptions`、`BatchTransitionResult` 聚合回执与部分失败容错 | `OrderLifecycleIntegrationTest#testBatchCancelExpiredOrders`<br>`testBatchPartialFailureResilience` |
-| `OrderTransitionAuditLogger` | 专职状态流转轨迹审计监听器 SPI (`StateTransitionAuditListener`)，捕获结构化审计事件 (`TransitionAuditEvent`) | `OrderLifecycleIntegrationTest#testAuditListenerCapture` |
+- **默认/CI 模式**：基于 H2 纯内存数据库与离线自洽配置，启动即自动加载 `schema.sql` 完成表结构初始化，无需任何外部数据库或物理中间件依赖即可秒级启动与执行测试；
+- **Local 真实模式**：若需切换至本地真实 MySQL / PostgreSQL 环境，可在 `application.yml` 中配置真实数据源连接串（或通过系统环境变量/启动参数覆盖），启动后即可通过标准 HTTP/cURL 接口进行全场景端点交互体验。
 
 ---
 
-## 4. 本地运行与集成测试自验
+## 3. 核心 Controller 接口与一键体验
 
-本工程提供 100% 离线自洽的自动化集成测试套件，执行如下 Maven 命令验证 4 大专职场景服务流程：
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **创建初始待支付订单** | `StateMachineOrderController` | `POST /sample/statemachine/order/create` | `curl -s -X POST "http://localhost:8080/sample/statemachine/order/create" -H "Content-Type: application/json" -d '{"orderSn": "SO202610100001", "amount": 199.00}'` |
+| **查询订单当前详情与状态** | `StateMachineOrderController` | `GET /sample/statemachine/order/{orderId}` | `curl -s "http://localhost:8080/sample/statemachine/order/1"` |
+| **买家付款外部主干跃迁** | `StateMachineOrderController` | `POST /sample/statemachine/order/{orderId}/pay` | `curl -s -X POST "http://localhost:8080/sample/statemachine/order/1/pay"` |
+| **风控评估 Choice 分支路由 (正常放行)** | `StateMachineOrderController` | `POST /sample/statemachine/order/risk-audit` | `curl -s -X POST "http://localhost:8080/sample/statemachine/order/risk-audit" -H "Content-Type: application/json" -d '{"orderId": 1, "riskScore": 20}'` |
+| **风控评估 Choice 分支路由 (高危拦截)** | `StateMachineOrderController` | `POST /sample/statemachine/order/risk-audit` | `curl -s -X POST "http://localhost:8080/sample/statemachine/order/risk-audit" -H "Content-Type: application/json" -d '{"orderId": 1, "riskScore": 95}'` |
+| **商家发货外部主干跃迁** | `StateMachineOrderController` | `POST /sample/statemachine/order/ship` | `curl -s -X POST "http://localhost:8080/sample/statemachine/order/ship" -H "Content-Type: application/json" -d '{"orderId": 1, "trackingNo": "SF100200300"}'` |
+| **内部自跃迁追加物流信息** | `StateMachineOrderController` | `POST /sample/statemachine/order/add-tracking` | `curl -s -X POST "http://localhost:8080/sample/statemachine/order/add-tracking" -H "Content-Type: application/json" -d '{"orderId": 1, "trackingNo": "SF100200300", "trackingRemark": "快件已到达北京转运中心"}'` |
+| **买家妥投签收外部跃迁** | `StateMachineOrderController` | `POST /sample/statemachine/order/{orderId}/confirm-delivery` | `curl -s -X POST "http://localhost:8080/sample/statemachine/order/1/confirm-delivery"` |
+| **交易完成归档外部跃迁** | `StateMachineOrderController` | `POST /sample/statemachine/order/{orderId}/finish` | `curl -s -X POST "http://localhost:8080/sample/statemachine/order/1/finish"` |
+| **多源汇聚取消订单** | `StateMachineOrderController` | `POST /sample/statemachine/order/{orderId}/cancel` | `curl -s -X POST "http://localhost:8080/sample/statemachine/order/1/cancel"` |
+| **多源汇聚申请退款** | `StateMachineOrderController` | `POST /sample/statemachine/order/{orderId}/apply-refund` | `curl -s -X POST "http://localhost:8080/sample/statemachine/order/1/apply-refund"` |
+| **零副作用事件可行性探测** | `StateMachineProbeController` | `POST /sample/statemachine/probe/can-fire` | `curl -s -X POST "http://localhost:8080/sample/statemachine/probe/can-fire" -H "Content-Type: application/json" -d '{"orderId": 1, "event": "PAY"}'` |
+| **只读推演目标状态与卫语句** | `StateMachineProbeController` | `POST /sample/statemachine/probe/verify` | `curl -s -X POST "http://localhost:8080/sample/statemachine/probe/verify" -H "Content-Type: application/json" -d '{"orderId": 1, "event": "PAY"}'` |
+| **反查订单当前可用事件列表** | `StateMachineProbeController` | `GET /sample/statemachine/probe/{orderId}/available-events` | `curl -s "http://localhost:8080/sample/statemachine/probe/1/available-events"` |
+| **评估前端动态按钮操作权限** | `StateMachineProbeController` | `GET /sample/statemachine/probe/{orderId}/button-actions` | `curl -s "http://localhost:8080/sample/statemachine/probe/1/button-actions"` |
+| **第三方支付回调 (带CAS与幂等)** | `StateMachineCallbackController` | `POST /sample/statemachine/callback/payment` | `curl -s -X POST "http://localhost:8080/sample/statemachine/callback/payment" -H "Content-Type: application/json" -d '{"orderId": 1, "paidAmount": 199.00, "channelTxNo": "WX_TX_20261010001"}'` |
+| **模拟高并发重复支付回调冲击** | `StateMachineCallbackController` | `POST /sample/statemachine/callback/simulate-concurrent` | `curl -s -X POST "http://localhost:8080/sample/statemachine/callback/simulate-concurrent?orderId=1&threads=5"` |
+| **大批量超时订单切片批量关单** | `StateMachineBatchController` | `POST /sample/statemachine/batch/cancel-expired` | `curl -s -X POST "http://localhost:8080/sample/statemachine/batch/cancel-expired" -H "Content-Type: application/json" -d '{"orderIds": [1, 2, 3], "cancelReason": "超时未支付自动关单", "batchSize": 50}'` |
+| **模拟大批量切片部分失败容错** | `StateMachineBatchController` | `POST /sample/statemachine/batch/simulate-partial-failure` | `curl -s -X POST "http://localhost:8080/sample/statemachine/batch/simulate-partial-failure"` |
+| **导出动态 Mermaid 拓扑图源码** | `StateMachineTopologyController` | `GET /sample/statemachine/topology/mermaid` | `curl -s "http://localhost:8080/sample/statemachine/topology/mermaid"` |
+| **导出动态 PlantUML 拓扑图源码** | `StateMachineTopologyController` | `GET /sample/statemachine/topology/plantuml` | `curl -s "http://localhost:8080/sample/statemachine/topology/plantuml"` |
+| **探查全局已注册机台标识集合** | `StateMachineTopologyController` | `GET /sample/statemachine/topology/machines` | `curl -s "http://localhost:8080/sample/statemachine/topology/machines"` |
+
+---
+
+## 4. 全真自动化回归命令
 
 ```bash
-mvn test -pl ateng-boot-samples/ateng-boot-sample-statemachine -am -T 1C -nsu -B
+mvn test -pl ateng-boot-statemachine,ateng-boot-samples/ateng-boot-sample-statemachine -am -T 1C -nsu -B
 ```
 
-控制台预期输出：
-```text
-[INFO] Running io.github.atengk.boot.sample.statemachine.OrderLifecycleIntegrationTest
-[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0
-[INFO] Running io.github.atengk.boot.sample.statemachine.SampleStateMachineApplicationTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
-[INFO] BUILD SUCCESS
-```
+> 详细原理机制、配置清单与扩展定制，请参阅核心 Starter 文档：[ateng-boot-statemachine README](../../ateng-boot-statemachine/README.md)。

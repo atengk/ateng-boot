@@ -87,3 +87,11 @@ _Avoid_: 流水记录器, 审计切面, AuditRecorder
 **StateMachine Factory (状态机单例工厂)**:
 为全局应用提供基于状态机全局标识（`machineId`）快速检索单例实例的内存注册表。
 _Avoid_: 状态机容器, 引擎管理器, MachineManager, StateContext
+
+**StateMachineCasTemplate (CAS 状态流转执行模板)**:
+协调只读预检试算、持久层原子条件更新与 Action 动作链有序调度的执行模板，确保 CAS-First 严格并发时序。
+_Avoid_: 事务模板, 锁模板, CasManager
+
+**Button Action Permissions (动态按钮操作权限)**:
+基于 `getAvailableEvents` 纯只读推演计算得到的当前实体可用业务事件与前端按钮高亮/置灰视图，强保证 0 次副作用。
+_Avoid_: 静态按钮配置, 按钮硬编码, ButtonConfig
