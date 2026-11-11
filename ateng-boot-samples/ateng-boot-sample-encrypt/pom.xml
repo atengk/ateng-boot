@@ -23,6 +23,12 @@
             <artifactId>ateng-boot-encrypt</artifactId>
         </dependency>
 
+        <!-- Web 交互底座 (提供多领域 REST Controller 与 HTTP 交互体验) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+        </dependency>
+
         <!-- Spring Boot Actuator (端点运行时物理脱敏自验) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
