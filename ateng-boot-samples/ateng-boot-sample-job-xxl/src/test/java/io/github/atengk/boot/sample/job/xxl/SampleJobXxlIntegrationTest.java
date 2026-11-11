@@ -336,21 +336,4 @@ class SampleJobXxlIntegrationTest {
             capturedEvents.clear();
         }
     }
-
-    /**
-     * Mock Admin 路由分发器
-     */
-    private static class MockAdminDispatcher implements HttpHandler {
-        private static final String SUCCESS_RESPONSE = "{\"code\":200,\"msg\":\"Success\",\"data\":\"101\"}";
-
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            byte[] responseBytes = SUCCESS_RESPONSE.getBytes(StandardCharsets.UTF_8);
-            exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
-            exchange.sendResponseHeaders(200, responseBytes.length);
-            try (OutputStream os = exchange.getResponseBody()) {
-                os.write(responseBytes);
-            }
-        }
-    }
 }

@@ -4,10 +4,8 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper.XxlJobTestResult;
 import io.github.atengk.boot.sample.job.xxl.dto.UserSyncParam;
-import io.github.atengk.boot.sample.job.xxl.handler.OrderReconciliationJobHandler;
 import io.github.atengk.boot.sample.job.xxl.vo.JobTriggerVO;
 import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -30,10 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
 @Validated
 @RestController
 @RequestMapping("/sample/job-xxl/trigger")
-@RequiredArgsConstructor
 public class XxlJobTriggerController {
-
-    private final OrderReconciliationJobHandler reconciliationJobHandler;
 
     /**
      * 手动触发系统热点缓存预热与健康巡检任务
@@ -86,13 +81,8 @@ public class XxlJobTriggerController {
     @PostMapping("/reconciliation")
     public Result<JobTriggerVO> triggerReconciliation(@RequestParam(defaultValue = "false") boolean hasDiff) {
         log.info("[XxlJobTriggerController] 手动触发订单对账任务: orderReconciliationJob, hasDiff={}", hasDiff);
-        reconciliationJobHandler.setFaultInjected(hasDiff);
-        try {
-            XxlJobTestResult result = XxlJobTestHelper.trigger("orderReconciliationJob", "hasDiff=" + hasDiff);
-            return Result.success(JobTriggerVO.from(result));
-        } finally {
-            reconciliationJobHandler.setFaultInjected(false);
-        }
+        XxlJobTestResult result = XxlJobTestHelper.trigger("orderReconciliationJob", "hasDiff=" + hasDiff);
+        return Result.success(JobTriggerVO.from(result));
     }
 
     /**
