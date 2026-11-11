@@ -38,6 +38,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -46,7 +47,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * 工业级单机定时任务样例工程端到端自洽集成测试套件
  * <p>
- * 全真覆盖 6 大专职业务场景任务调度与 Actuator 运维管控端点交互，贯彻非 Web 组件样例零 Controller 契约。
+ * 全真覆盖 6 大专职业务场景任务调度、三大高内聚领域 Controller (Schedule/Manage/Audit) 与 Actuator 运维管控端点交互。
  * </p>
  *
  * @author Ateng
@@ -333,5 +334,154 @@ class SampleJobLocalIntegrationTest {
         boolean removed = localJobTemplate.remove(dynamicJobName);
         assertThat(removed).isTrue();
         assertThat(localJobTemplate.getJob(dynamicJobName)).isNull();
+    }
+
+    @Test
+    @DisplayName("领域控制器 1：LocalJobScheduleController 端到端 HTTP 触发与 JSR-303 防卫")
+    void testLocalJobScheduleControllerEndpoints() throws Exception {
+        // 1. POST /sample/job-local/schedule/trigger/{jobName} 手动立即触发
+        mockMvc.perform(post("/sample/job-local/schedule/trigger/dailyReconciliationJob"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.message").value(org.hamcrest.Matchers.containsString("对账完成")));
+
+        // 2. POST /sample/job-local/schedule/trigger/archiving 合规参数触发
+        String validJson = "{\"tableName\":\"t_order_history\",\"retentionDays\":90,\"batchSize\":500,\"dryRun\":true}";
+        mockMvc.perform(post("/sample/job-local/schedule/trigger/archiving")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.message").value(org.hamcrest.Matchers.containsString("历史记录归档完成")));
+
+        // 3. POST /sample/job-local/schedule/trigger/archiving 非法参数触发 JSR-303 Fail-Fast 校验拦截
+        String invalidJson = "{\"tableName\":\"\",\"retentionDays\":-5}";
+        mockMvc.perform(post("/sample/job-local/schedule/trigger/archiving")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 4. POST /sample/job-local/schedule/trigger/billing 多租户账单轮询触发
+        mockMvc.perform(post("/sample/job-local/schedule/trigger/billing"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        // 5. POST /sample/job-local/schedule/trigger/cluster-lock 轻量集群防重互斥锁触发
+        mockMvc.perform(post("/sample/job-local/schedule/trigger/cluster-lock"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.message").value(org.hamcrest.Matchers.containsString("集群防重互斥锁获取成功")));
+    }
+
+    @Test
+    @DisplayName("领域控制器 2：LocalJobManageController 任务动态生命周期运维管控交互")
+    void testLocalJobManageControllerEndpoints() throws Exception {
+        String targetJob = "dailyReconciliationJob";
+
+        // 1. POST /sample/job-local/manage/pause/{jobName} 暂停任务
+        mockMvc.perform(post("/sample/job-local/manage/pause/" + targetJob))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+        assertThat(localJobTemplate.getJob(targetJob).getStatus()).isEqualTo(JobStatus.PAUSED);
+
+        // 2. POST /sample/job-local/manage/resume/{jobName} 恢复任务
+        mockMvc.perform(post("/sample/job-local/manage/resume/" + targetJob))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+        assertThat(localJobTemplate.getJob(targetJob).getStatus()).isEqualTo(JobStatus.RUNNING);
+
+        // 3. POST /sample/job-local/manage/update/cron 动态修改 Cron
+        mockMvc.perform(post("/sample/job-local/manage/update/cron")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"jobName\":\"" + targetJob + "\",\"cronExpression\":\"0 0 5 * * ?\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+        assertThat(localJobTemplate.getJob(targetJob).getCron()).isEqualTo("0 0 5 * * ?");
+
+        // 4. POST /sample/job-local/manage/update/rate 动态修改 FixedRate
+        mockMvc.perform(post("/sample/job-local/manage/update/rate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"jobName\":\"systemMetricsSamplingJob\",\"fixedRate\":\"10s\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 5. POST /sample/job-local/manage/update/delay 动态修改 FixedDelay
+        mockMvc.perform(post("/sample/job-local/manage/update/delay")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"jobName\":\"orderTimeoutCancelJob\",\"fixedDelay\":\"15s\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 6. POST /sample/job-local/manage/dynamic/register 动态注册新任务
+        String dynamicJob = "dynamicControllerJob";
+        mockMvc.perform(post("/sample/job-local/manage/dynamic/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"jobName\":\"" + dynamicJob + "\",\"cron\":\"0 0 4 * * ?\",\"description\":\"控制器动态注册任务\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+        assertThat(localJobTemplate.exists(dynamicJob)).isTrue();
+
+        // 7. DELETE /sample/job-local/manage/{jobName} 注销并移除任务
+        mockMvc.perform(delete("/sample/job-local/manage/" + dynamicJob))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+        assertThat(localJobTemplate.exists(dynamicJob)).isFalse();
+    }
+
+    @Test
+    @DisplayName("领域控制器 3：LocalJobAuditController 任务清单巡检、审计日志与 Cron 预演")
+    void testLocalJobAuditControllerEndpoints() throws Exception {
+        // 1. GET /sample/job-local/audit/jobs 巡检所有任务
+        mockMvc.perform(get("/sample/job-local/audit/jobs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data[?(@.jobName == 'dailyReconciliationJob')]").exists());
+
+        // 2. GET /sample/job-local/audit/jobs/{jobName} 查询单任务详情
+        mockMvc.perform(get("/sample/job-local/audit/jobs/dailyReconciliationJob"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.jobName").value("dailyReconciliationJob"))
+                .andExpect(jsonPath("$.data.status").exists());
+
+        // 3. GET /sample/job-local/audit/jobs/{jobName}/logs 查询最近审计历史日志
+        localJobTemplate.trigger("dailyReconciliationJob");
+        mockMvc.perform(get("/sample/job-local/audit/jobs/dailyReconciliationJob/logs")
+                        .param("limit", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 4. POST /sample/job-local/audit/cron/preview 校验与预演未来触发时钟点
+        mockMvc.perform(post("/sample/job-local/audit/cron/preview")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"cron\":\"0 0 2 * * ?\",\"count\":3}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.valid").value(true))
+                .andExpect(jsonPath("$.data.nextExecutionTimes").isArray())
+                .andExpect(jsonPath("$.data.nextExecutionTimes.length()").value(3));
+
+        // 5. DELETE /sample/job-local/audit/logs/expired 滚动清理过期历史记录
+        mockMvc.perform(delete("/sample/job-local/audit/logs/expired")
+                        .param("retention", "7d"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isNumber());
     }
 }

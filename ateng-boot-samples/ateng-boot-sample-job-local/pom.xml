@@ -29,6 +29,12 @@
             <artifactId>ateng-boot-web</artifactId>
         </dependency>
 
+        <!-- Spring Data Redis (用于轻量集群互斥锁 RedisJobClusterLockProvider 双模联调) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
         <!-- Spring Boot Actuator 运维端点监控 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
