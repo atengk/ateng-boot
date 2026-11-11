@@ -7,23 +7,35 @@ ateng:
     admin:
       server:
         enabled: true
-        username: admin
-        password: admin
-        client-secret: CLUSTER_SECRET_DEMO_2026
-        default-actuator-token: DEFAULT_ACTUATOR_TOKEN_DEMO
+        username: YOUR_ADMIN_USERNAME
+        password: YOUR_ADMIN_PASSWORD
+        client-secret: YOUR_CLUSTER_CLIENT_SECRET
+        default-actuator-token: YOUR_DEFAULT_ACTUATOR_TOKEN
         allow-local-instances: true
         enable-write-operations: true
+        max-registration-payload-size: 1MB
         cleanup:
           enabled: true
           interval: 10s
           zombie-threshold: 30s
     notification:
+      default-channel: ops-alert
       channels:
         ops-alert:
+          platform: WECOM
           webhook: YOUR_WECOM_WEBHOOK_URL
         dingtalk-dev:
+          platform: DINGTALK
           webhook: YOUR_DINGTALK_WEBHOOK_URL
           secret: YOUR_DINGTALK_SECRET
         feishu-ops:
+          platform: FEISHU
           webhook: YOUR_FEISHU_WEBHOOK_URL
           secret: YOUR_FEISHU_SECRET
+
+# 可选：在激活 local Profile 时，指定外部已启动客户端微服务的真实健康探测地址（宿主中立）
+sample:
+  admin:
+    local:
+      client-health-url: YOUR_LOCAL_CLIENT_HEALTH_URL
+      client-actuator-token: YOUR_LOCAL_CLIENT_ACTUATOR_TOKEN

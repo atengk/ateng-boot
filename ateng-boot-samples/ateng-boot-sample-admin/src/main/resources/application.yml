@@ -21,10 +21,18 @@ ateng:
         default-actuator-token: DEFAULT_ACTUATOR_TOKEN_DEMO
         debounce-duration: 30s
         allow-local-instances: true
+        enable-write-operations: true
+        max-registration-payload-size: 1MB
         cleanup:
           enabled: true
           interval: 1h
           zombie-threshold: 24h
+        alert:
+          excluded-services:
+            - "silent-*"
+          notify-statuses:
+            - "DOWN"
+            - "OFFLINE"
     observability:
       security:
         token: CLIENT_ACTUATOR_TOKEN_DEMO
