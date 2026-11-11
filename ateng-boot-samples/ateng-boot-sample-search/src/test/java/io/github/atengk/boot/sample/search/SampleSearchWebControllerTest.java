@@ -364,7 +364,8 @@ class SampleSearchWebControllerTest {
                         .param("interval", "1d"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
-                .andExpect(jsonPath("$.data.daily_traffic", notNullValue()));
+                .andExpect(jsonPath("$.data", notNullValue()))
+                .andExpect(jsonPath("$.data[0].bucket", notNullValue()));
     }
 
     @Test

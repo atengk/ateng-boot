@@ -45,7 +45,7 @@
 | **严格模式批量写入** | `BulkIngestionController` | `POST /sample/search/bulk/strict` | `curl -s -X POST "http://localhost:8080/sample/search/bulk/strict" -H "Content-Type: application/json" -d '{"items":[{"id":"P101","title":"商品A","brand":"Apple","price":100},{"id":"P102","title":"商品B","brand":"Apple","price":200}]}'` |
 | **异步流式批量缓冲投递** | `BulkIngestionController` | `POST /sample/search/bulk/stream-add` | `curl -s -X POST "http://localhost:8080/sample/search/bulk/stream-add" -H "Content-Type: application/json" -d '{"id":"P103","title":"流式商品","brand":"Apple","price":300}'` |
 | **索引结构 DDL 创建** | `IndexLifecycleController` | `POST /sample/search/index/create` | `curl -s -X POST "http://localhost:8080/sample/search/index/create" -H "Content-Type: application/json" -d '{"indexName":"order_idx","mappingJson":"{\"mappings\":{\"properties\":{\"orderNo\":{\"type\":\"keyword\"}}}}"}'` |
-| **生产原子别名热切换** | `IndexLifecycleController` | `POST /sample/search/index/alias/swap` | `curl -s -X POST "http://localhost:8080/sample/search/index/alias/swap" -H "Content-Type: application/json" -d '{"aliasName":"product_alias","oldIndex":"product_v1","newIndex":"product_v2"}'` |
+| **生产原子别名热切换** | `IndexLifecycleController` | `POST /sample/search/index/swap-alias` | `curl -s -X POST "http://localhost:8080/sample/search/index/swap-alias" -H "Content-Type: application/json" -d '{"aliasName":"product_alias","oldIndex":"product_v1","newIndex":"product_v2"}'` |
 
 ---
 

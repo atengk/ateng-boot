@@ -1,6 +1,5 @@
 package io.github.atengk.boot.sample.search.controller;
 
-import co.elastic.clients.elasticsearch._types.aggregations.Aggregate;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.search.dto.ProductBatchGetRequest;
@@ -183,9 +182,9 @@ public class ProductSearchController {
      * 商品价格极值与平均度量聚合统计
      */
     @GetMapping("/metrics")
-    public Result<Map<String, Aggregate>> aggregatePriceMetrics(@RequestParam(required = false) String category) {
+    public Result<Map<String, Double>> aggregatePriceMetrics(@RequestParam(required = false) String category) {
         SearchPage<ProductDoc> page = productScenario.aggregatePriceMetrics(category);
-        return Result.success(page.getAggregations());
+        return Result.success(SearchSampleConvertHelper.toMetricValues(page.getAggregations()));
     }
 
     /**

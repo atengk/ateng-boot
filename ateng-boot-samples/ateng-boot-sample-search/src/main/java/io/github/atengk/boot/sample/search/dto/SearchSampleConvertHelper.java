@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.search.dto;
 
+import co.elastic.clients.elasticsearch._types.aggregations.Aggregate;
 import io.github.atengk.boot.sample.search.model.AccessLogDoc;
 import io.github.atengk.boot.sample.search.model.ProductDoc;
 import io.github.atengk.boot.search.model.SearchHit;
@@ -7,7 +8,9 @@ import io.github.atengk.boot.search.model.SearchHit;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -140,5 +143,41 @@ public final class SearchSampleConvertHelper {
                 .clientIp(request.getClientIp())
                 .timestamp(time)
                 .build();
+    }
+
+    public static List<TrafficTrendResponse> toTrafficTrends(Map<String, Aggregate> aggregations) {
+        if (aggregations == null || !aggregations.containsKey("daily_traffic")) {
+            return Collections.emptyList();
+        }
+        Aggregate agg = aggregations.get("daily_traffic");
+        if (agg == null || !agg.isDateHistogram()) {
+            return Collections.emptyList();
+        }
+        return agg.dateHistogram().buckets().array().stream()
+                .map(bucket -> TrafficTrendResponse.builder()
+                        .bucket(bucket.keyAsString() != null ? bucket.keyAsString() : String.valueOf(bucket.key()))
+                        .docCount(bucket.docCount())
+                        .build())
+                .collect(Collectors.toList());
+    }
+
+    public static Map<String, Double> toMetricValues(Map<String, Aggregate> aggregations) {
+        if (aggregations == null || aggregations.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, Double> result = new LinkedHashMap<>();
+        aggregations.forEach((name, agg) -> {
+            if (agg == null) {
+                return;
+            }
+            if (agg.isMin()) {
+                result.put(name, agg.min().value());
+            } else if (agg.isMax()) {
+                result.put(name, agg.max().value());
+            } else if (agg.isAvg()) {
+                result.put(name, agg.avg().value());
+            }
+        });
+        return result;
     }
 }

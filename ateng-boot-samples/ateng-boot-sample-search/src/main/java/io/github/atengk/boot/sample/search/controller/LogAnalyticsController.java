@@ -1,10 +1,10 @@
 package io.github.atengk.boot.sample.search.controller;
 
-import co.elastic.clients.elasticsearch._types.aggregations.Aggregate;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.search.dto.AccessLogPurgeRequest;
 import io.github.atengk.boot.sample.search.dto.AccessLogRecordRequest;
 import io.github.atengk.boot.sample.search.dto.SearchSampleConvertHelper;
+import io.github.atengk.boot.sample.search.dto.TrafficTrendResponse;
 import io.github.atengk.boot.sample.search.model.AccessLogDoc;
 import io.github.atengk.boot.sample.search.scenario.LogAnalyticsAggScenario;
 import io.github.atengk.boot.search.model.SearchPage;
@@ -19,7 +19,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Map;
+import java.util.List;
 
 /**
  * 日志审计与时序聚合分析控制器
@@ -59,11 +59,11 @@ public class LogAnalyticsController {
      * 按时序日历间隔（如 "1d", "1h"）分桶统计流量走势 (DateHistogram 直方图聚合)
      */
     @GetMapping("/trend")
-    public Result<Map<String, Aggregate>> aggregateTrafficTrend(
+    public Result<List<TrafficTrendResponse>> aggregateTrafficTrend(
             @RequestParam(defaultValue = "access_log_*") String index,
             @RequestParam(defaultValue = "1d") String interval) {
         SearchPage<AccessLogDoc> page = logScenario.aggregateTrafficTrend(index, interval);
-        return Result.success(page.getAggregations());
+        return Result.success(SearchSampleConvertHelper.toTrafficTrends(page.getAggregations()));
     }
 
     /**
