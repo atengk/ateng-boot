@@ -59,3 +59,39 @@ _Avoid_: 日志拦截器, 日志打印器, SnailLogFilter
 **SnailJobTestHelper (脱网调试门面)**:
 面向本地开发与自动化单测的脱网调度驱动器，允许在不连接真实 SnailJob 独立服务端的脱网环境下，纯内存反射模拟触发任意 JobExecutor 或 Retry 场景并强断言执行结果。
 _Avoid_: 测试工具, 调试器, TestRunner
+
+**SnailJobTriggerController (调度触发领域控制器)**:
+样例工程中负责任务手动模拟触发与调度演练的专职 Web 控制器，路由收敛于 `/sample/job-snail/trigger/*`，覆盖系统冷启动预热、参数校验防卫、MapReduce 切片规约、订单对账平账自愈、超时降级与多租户隔离。
+_Avoid_: JobSampleController, 调度接口, TriggerApi
+
+**SnailJobRetryController (协同重试领域控制器)**:
+样例工程中负责分布式协同重试演练的专职 Web 控制器，路由收敛于 `/sample/job-snail/retry/*`，覆盖声明式支付重试、编程式幂等重试、手动失败上报与重试指标巡检。
+_Avoid_: RetrySampleController, 重试接口, RetryApi
+
+**SnailJobGovernorController (节点治理领域控制器)**:
+样例工程中负责单节点维度任务动态暂停与恢复治理的专职 Web 控制器，路由收敛于 `/sample/job-snail/governor/*`，支持冒号分级感知与已暂停任务清单巡检。
+_Avoid_: GovernorApi, 任务开关控制器, PauseController
+
+**SnailJobAdminController (调度中心管理领域控制器)**:
+样例工程中通过 OpenAPI 编程式门面调用 SnailJob 服务端的专职 Web 控制器，路由收敛于 `/sample/job-snail/admin/*`，覆盖任务增删改查、DAG 工作流启停与死信重放。
+_Avoid_: AdminApi, 调度中心接口, OpenApiController
+
+**SnailJobDeadLetterController (死信切片运维领域控制器)**:
+样例工程中负责流式批处理失败切片与重试死信运维的专职 Web 控制器，路由收敛于 `/sample/job-snail/dead-letter/*`，覆盖死信切片明细回查、受控补偿重放与现场清理。
+_Avoid_: DeadLetterApi, 死信控制器, FailureController
+
+**JobTriggerVO (任务触发结果视图对象)**:
+调度任务手动触发执行结果的标准对外视图模型，封装任务标识、执行状态、耗时、MDC 链路追踪标识与诊断摘要，遵循 Zero-Entity-Leakage 传输契约。
+_Avoid_: TriggerResult, JobResponse, TriggerEntity
+
+**RetryExecutionVO (协同重试执行视图对象)**:
+分布式协同重试演练执行结果的标准对外视图模型，封装业务订单号、重试场景、幂等键、尝试次数与执行诊断消息。
+_Avoid_: RetryResult, RetryResponse, RetryDTO
+
+**GovernorStatusVO (节点运行时治理状态视图对象)**:
+单节点任务治理状态的标准对外视图模型，封装目标任务标识、操作类型、执行状态与节点当前暂停任务总数。
+_Avoid_: GovernorResult, PauseResponse, GovernorDTO
+
+**DeadLetterBatchVO (死信批次切片视图对象)**:
+流式批处理失败切片记录的标准对外视图模型，封装批次起止游标、分片索引、失败条数与因果异常说明。
+_Avoid_: DeadLetterItem, FailedBatchVO, ErrorBatch
