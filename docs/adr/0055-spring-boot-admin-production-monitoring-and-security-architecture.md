@@ -9,7 +9,7 @@
 1. **官方捆绑 Spring Security 造成的依赖臃肿与过滤器地狱 (Security Bloat & Filter Hell)**：
    Spring Boot Admin 官方 Starter 默认强绑定 `spring-boot-starter-security`。对于全面依托轻量级 Sa-Token 作为统一鉴权底座（[ADR-0024](./0024-enterprise-satoken-authentication-and-security-architecture.md)）的架构体系，强行引入 Spring Security 会导致类路径产生两套平行的安全框架，引发严重的 Filter 拦截时序错乱、CSRF 校验误拦截、以及巨大的构建膨胀与认知心智负担。
 2. **微服务 Actuator 端点加固与 SBA 数据抓取凭据矛盾 (Actuator Hardening vs. Scraper Access)**：
-   生产合规要求微服务对高危 Actuator 端点（如 `/actuator/env`、`/actuator/beans`、`/actuator/loggers`）实施强制 Token 访问控制（[ADR-0040](./0040-observability-metrics-health-and-cloud-native-architecture.md)）。然而，SBA Server 在向微服务拉取度量或调用日志变更时，需要透明携带安全凭据；若缺乏统一的端到端凭据握手机制，开发者被迫在微服务暴露不设防的 Actuator 端点，留下巨大安全漏洞。
+   生产合规要求微服务对高危 Actuator 端点（如 `/actuator/env`、`/actuator/beans`、`/actuator/loggers`）实施强制 Token 访问控制（[ADR-0040](./0040-cloud-native-observability-probes-and-actuator-hardening-architecture.md)）。然而，SBA Server 在向微服务拉取度量或调用日志变更时，需要透明携带安全凭据；若缺乏统一的端到端凭据握手机制，开发者被迫在微服务暴露不设防的 Actuator 端点，留下巨大安全漏洞。
 3. **恶意实例注册引发的 SSRF 穿透与云元数据窃取 (Malicious Registration & SSRF Vulnerability)**：
    SBA 默认开放 `/instances` 注册接口供客户端上报 `serviceUrl`、`managementUrl` 与 `healthUrl`，并在后台主动轮询这些地址。如果缺乏严格的注册防火墙拦截，攻击者可向 SBA 注册伪造地址（例如公有云实例元数据服务 `http://169.254.169.254/latest/meta-data/`、或企业内网核心网段），将 SBA Server 作为代理跳板发起服务器端请求伪造（SSRF）渗透攻击。
 4. **Servlet InputStream 读后即毁引发下游反序列化 EOF 崩溃 (Stream Consumption Conflict)**：
@@ -51,7 +51,7 @@ flowchart TD
     end
 
     subgraph StateMachineNotifier["告警防抖与生命周期状态机 (Notifier & Debounce)"]
-        DEBOUNCE_MGR["AtengAdminNotificationNotifier (继承 AbstractEventNotifier)"]
+        DEBOUNCE_MGR["AtengAdminNotificationNotifier (继承 AbstractStatusChangeNotifier)"]
         EVENT_BUS["Spring Event: InstanceDeregisteredEvent (捕获优雅下线)"]
         SILENT_MAP["deregisteredInstances (ConcurrentHashMap, 60s 发版静默期)"]
         PENDING_TASKS["pendingTasks (ConcurrentHashMap, 30s 防抖定时调度)"]
@@ -61,7 +61,7 @@ flowchart TD
 
     subgraph OutboundScraper["出站端点抓取安全穿透 (Outbound Actuator Scraper)"]
         HEADER_PROVIDER["AtengActuatorHttpHeadersProvider (实现 HttpHeadersProvider)"]
-        TOKEN_EXTRACT["从 Instance.getRegistration().getMetadata() 提取 actuator-token"]
+        TOKEN_EXTRACT["从 Instance.getRegistration().getMetadata() 四阶提取认证凭据"]
     end
 
     CLIENT_BOOT -->|1. POST /admin/instances 上报注册信息| SSRF_FILTER
@@ -75,7 +75,7 @@ flowchart TD
     LOGIN_CTRL -->|调用校验| AUTH_SPI
 
     DISPATCHER -->|2. 抓取健康与度量| HEADER_PROVIDER
-    HEADER_PROVIDER -->|提取 Token 挂载 X-Actuator-Token 标头| CLIENT_ACTUATOR
+    HEADER_PROVIDER -->|挂载 Basic / Bearer / X-Actuator-Token 标头| CLIENT_ACTUATOR
 
     INST_REPO -.->|3. 广播实例事件| DEBOUNCE_MGR
     EVENT_BUS -->|K8s 发版注销信号| DEBOUNCE_MGR
@@ -110,20 +110,22 @@ flowchart TD
 - **纯原生内嵌响应式拟物化登录页 (`AdminLoginController`)**：
   彻底摆脱 Spring Security 默认丑陋的弹窗与繁复的模板引擎依赖（零 Thymeleaf/Freemarker）。基于现代化 CSS3 毛玻璃拟物化设计与原生 HTML 动态流式渲染，提供自洽的开箱即用高颜值登录界面；支持通过 `AdminAuthProvider` SPI 自由接管生产级账密校验逻辑。
 
-### 决策二：注册防火墙 `AdminSsrfGuardFilter` 与可复位流包装 `ResettableContentCachingRequestWrapper`
+### 决策二：注册防火墙 `AdminSsrfGuardFilter` 与有界可复位流包装 `ResettableContentCachingRequestWrapper`
 
-- **无损流包装防 EOF 铁律**：
-  SBA 官方 `InstancesController` 是通过 Spring MVC 反序列化请求体为 `Registration` 对象的。若使用常规 `ContentCachingRequestWrapper`，在过滤器中调用 `getInputStream().readAllBytes()` 后其内部流已被消费完毕，下游 Controller 读取时将触发 EOF 错误。
-  为此，框架自研 `ResettableContentCachingRequestWrapper`，继承 `ContentCachingRequestWrapper` 并重写 `getInputStream()` 与 `getReader()`：
+- **无损流包装防 EOF 与有界防 OOM 铁律**：
+  SBA 官方 `InstancesController` 是通过 Spring MVC 反序列化请求体为 `Registration` 对象的。若在过滤器中直接读取原始流，下游 Controller 再次读取时将触发 `EOFException`；若不限制请求体大小直接全量读入内存，则面临超大畸形报文 OOM 风险。
+  为此，框架在 `AdminSsrfGuardFilter` 内自研静态内部类 `ResettableContentCachingRequestWrapper`，直接继承 `HttpServletRequestWrapper`，在构造阶段通过 `readBoundedBody` 执行 `Content-Length` 前置校验 + `4096` 字节分块有界读取（上限由 `ateng.boot.admin.server.max-registration-payload-size` 控制，默认 `1MB`，超限抛出 `PayloadTooLargeException` 并返回 `413 Payload Too Large`），并重写 `getInputStream()` 与 `getReader()` 每次返回基于 `cachedBody` 的全新流视图：
   ```java
   @Override
-  public ServletInputStream getInputStream() throws IOException {
-      byte[] content = getContentAsByteArray();
-      if (content.length > 0) {
-          ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(content);
-          return new DelegatingServletInputStream(byteArrayInputStream);
-      }
-      return super.getInputStream();
+  public ServletInputStream getInputStream() {
+      ByteArrayInputStream bais = new ByteArrayInputStream(this.cachedBody);
+      return new ServletInputStream() {
+          @Override
+          public boolean isFinished() {
+              return bais.available() == 0;
+          }
+          // ... isReady() / read() 每次基于 cachedBody 重置读取指针
+      };
   }
   ```
 - **SSRF 深度防御与云元数据阻断**：
@@ -132,35 +134,20 @@ flowchart TD
   2. **URL 合法性探测**：严格校验 `serviceUrl`、`managementUrl` 与 `healthUrl` 的 Scheme 必须为 `http` 或 `https`；
   3. **敏感网络与云元数据黑名单阻断**：
      - 硬阻断云厂商实例元数据地址 `169.254.169.254` 与 RFC 3927 链路本地地址（`169.254.0.0/16`）；
-     - 生产默认拦截本地环回地址（`127.0.0.1`、`localhost` 等，通过 `allow-local-instances: false` 守卫），杜绝内网渗透跳板。
+     - 生产默认拦截 IPv4/IPv6 本地环回地址（`127.0.0.1`、`localhost`、`::1` 及带方括号的 `[::1]`、`[0:0:0:0:0:0:0:1]`，通过 `allow-local-instances: false` 守卫），杜绝内网渗透跳板。
 
 ### 决策三：双向安全凭据握手穿透与客户端透明增强
 
 - **服务端出站安全穿透 (`AtengActuatorHttpHeadersProvider`)**：
-  实现 SBA 核心 SPI `HttpHeadersProvider`。当服务端通过反向代理拉取微服务度量或下发指令时，自动从实例的 `instance.getRegistration().getMetadata()` 提取键为 `actuator-token` 的值，并将其封装为出站标头 `X-Actuator-Token`：
-  ```java
-  @Override
-  public HttpHeaders getHeaders(Instance instance) {
-      HttpHeaders headers = new HttpHeaders();
-      if (instance == null || !instance.isRegistered()) {
-          return headers;
-      }
-      Map<String, String> metadata = instance.getRegistration().getMetadata();
-      String token = metadata != null ? metadata.get("actuator-token") : null;
-      if (StringUtils.hasText(token)) {
-          headers.set(ACTUATOR_TOKEN_HEADER, token);
-      } else if (StringUtils.hasText(properties.getDefaultActuatorToken())) {
-          headers.set(ACTUATOR_TOKEN_HEADER, properties.getDefaultActuatorToken());
-      }
-      return headers;
-  }
-  ```
+  实现 SBA 核心 SPI `HttpHeadersProvider`。当服务端通过反向代理拉取微服务度量或下发指令时，按四阶优先级（Basic → Bearer/JWT → `X-Actuator-Token` → 全局 `default-actuator-token` 兜底，详见下文“决策七”）从 `instance.getRegistration().getMetadata()` 自适应推导并合成认证标头：
+  - 若实例登记时未显式携带专有凭据，自动降级使用 `ateng.boot.admin.server.default-actuator-token` 兜底；
+  - 若实例元数据携带多模态认证键（如 `user.name`/`user.password`、`bearer-token`/`jwt-token`、`actuator-token`），则优先满足实例级租户凭据隔离。
 - **客户端透明增强与免配置注入**：
   在 `ateng-boot-observability` 中提供 `AtengAdminClientAutoConfiguration`。当引入官方 `spring-boot-admin-starter-client` 时，自动装配 `AdminClientSecretHttpRequestInterceptor`，拦截 SBA 客户端向 Server 注册的 RestTemplate，自动挂载 `X-Admin-Client-Secret` 凭据，实现客户端零代码修改平滑接入。
 
 ### 决策四：30 秒防抖告警状态机与 K8s 优雅下线发版静默
 
-继承 SBA 原生 `AbstractEventNotifier`，实现工业级健壮的 `AtengAdminNotificationNotifier`：
+继承 SBA 原生 `AbstractStatusChangeNotifier`，实现工业级健壮的 `AtengAdminNotificationNotifier`：
 
 ```mermaid
 stateDiagram-v2
@@ -200,16 +187,16 @@ stateDiagram-v2
 ### 决策六：动态实例准入与租户安全审查扩展点 (`AdminInstanceAdmissionPolicy` SPI)
 
 - **拔插式准入契约**：
-  抽象 `AdminInstanceAdmissionPolicy` 接口，定义 `AdminAdmissionResult evaluate(Registration registration, HttpServletRequest request)` 契约。
+  抽象 `AdminInstanceAdmissionPolicy` 接口，定义 `AdminAdmissionResult evaluate(InstanceRegistration registration, HttpServletRequest request)` 契约（以框架强类型不可变快照 `InstanceRegistration` 承载实例与元数据，隔离底层 SBA DTO）。
 - **开箱自洽与企业级接管**：
-  默认由 `DefaultAdminInstanceAdmissionPolicy` 实现集群 Secret、云元数据网段阻断与正则 URL 检查；企业开发者可通过声明 Bean 轻松扩展自定义准入规则（如强制服务名规范、VPC CIDR 子网白名单审查等）。
+  默认由 `DefaultAdminInstanceAdmissionPolicy` 实现集群 Secret、`http`/`https` Scheme 白名单、RFC 3927 链路本地 / 云元数据网段阻断及 IPv4/IPv6（含方括号 `[::1]`）环回检查；企业开发者可通过声明 Bean 轻松扩展自定义准入规则（如强制服务名规范、VPC CIDR 子网白名单审查等）。
 
 ### 决策七：异构微服务 Actuator 出站抓取多模态认证自适应推导
 
 - **异构多模态自适应**：
   在 `AtengActuatorHttpHeadersProvider` 中，支持优先级自适应推导：
-  1. HTTP Basic Auth：从元数据提取 `user.name` 与 `user.password` 合成 `Basic` 凭据；
-  2. Bearer Token：从元数据提取 `bearer-token` 合成 `Bearer` 凭据；
+  1. HTTP Basic Auth：从元数据提取 `user.name` / `user.password`（兼容别名 `spring.security.user.name` / `spring.security.user.password`）合成 `Basic` 凭据；
+  2. Bearer / JWT Token：从元数据提取 `bearer-token`（兼容别名 `jwt-token`）合成 `Bearer` 凭据；
   3. 自定义 Token：从元数据提取 `actuator-token` 挂载 `X-Actuator-Token`；
   4. 全局兜底：未配置时降级采用 `default-actuator-token` 作为保底。
 
@@ -235,7 +222,7 @@ stateDiagram-v2
 2. **端到端安全闭环**：
    - 入站：`AdminSsrfGuardFilter` + `AdminInstanceAdmissionPolicy` SPI 强力阻断云元数据和非法内网探测，`ResettableContentCachingRequestWrapper` 守卫单向流复用；
    - 生产防护：`AdminWriteGuardFilter` 物理拦截控制台高危写操作，生产环境严格只读防御；
-   - 出站：`AtengActuatorHttpHeadersProvider` 三模态自适应穿透异构微服务已加固的 Actuator 生产端点。
+   - 出站：`AtengActuatorHttpHeadersProvider` 四阶多模态自适应穿透异构微服务已加固的 Actuator 生产端点。
 3. **云原生弹性伸缩排空**：`ZombieInstanceCleanupScheduler` 周期性排空失联离线 Pod，彻底根除 Kubernetes 频繁伸缩引起的内存膨胀。
 4. **运维噪音暴跌 90%**：30 秒防抖消除偶发网络抖动虚警，60 秒发版静默消除 K8s 滚动更新误报，黑白名单精确过滤，告警卡片直观呈现探针报错根因且深度脱敏凭据。
 5. **强类型与生产开箱即用**：配置项基于 `Duration` 消除单位歧义，内置高颜值拟物化登录页面，开箱即用。
@@ -248,6 +235,24 @@ stateDiagram-v2
 | :--- | :--- | :--- | :--- | :--- |
 | **安全框架底座** | 引入 `spring-boot-starter-security` | 无安全框架，裸手写 Servlet Filter | **全面整合 Sa-Token，排除 Spring Security** | 消除双安全框架冲突，统一权限会话标准 |
 | **登录界面交互** | 官方丑陋弹窗或手写 Thymeleaf 页面 | 前后端分离额外搭建前端工程 | **内置现代拟物化高颜值原生响应式登录页** | 零前端依赖，开箱即用高颜值自洽体验 |
-| **SSRF 防御与流读取** | SBA 官方无 SSRF 防护（全信任） | 使用普通 ContentCachingRequestWrapper 读取 | **AdminSsrfGuardFilter + ResettableContentCachingRequestWrapper** | 杜绝云元数据渗透与单向流 EOF 崩溃 |
+| **SSRF 防御与流读取** | SBA 官方无 SSRF 防护（全信任） | 使用普通 ContentCachingRequestWrapper 或无界全量缓冲读取 | **AdminSsrfGuardFilter + ResettableContentCachingRequestWrapper（有界 1MB）** | 杜绝云元数据渗透、单向流 EOF 崩溃与超大畸形报文 OOM |
 | **微服务凭据抓取** | 明文配置单一固定 Token 或开放未授权端点 | 各服务自行配置允许白名单 IP 穿透 | **AtengActuatorHttpHeadersProvider + 实例 Metadata 动态提取** | 端到端双向凭据握手，多租户多服务细粒度隔离 |
 | **告警风暴抑制** | 原生即时推送，网络抖动瞬间轰炸 | 引入复杂外部流式告警平台（Prometheus AlertManager） | **内置 30 秒防抖队列 + K8s 发版静默状态机** | 轻量化开箱即用，消除 90% 运维虚警噪音 |
+
+---
+
+## 演进记录（2026-11：SSRF 与调度器边界加固、Sample 多控制器体验化与五维规范对齐）
+
+基于现有架构契约演进，依据“ADR 防膨胀”原则不另起新编号，在本文档增量记录 `#915 ~ #917` 迭代落地的三项生产化加固：
+
+1. **Starter 边界与资源治理加固（`#915`）**：
+   - **有界可复位流防 OOM**：`AtengAdminServerProperties` 新增 `DataSize maxRegistrationPayloadSize`（默认 `1MB`）；`ResettableContentCachingRequestWrapper` 先校验 `Content-Length` 再执行 `4096` 字节分块累加读取，超限立即中断并由 `AdminSsrfGuardFilter` 返回 `413 Payload Too Large`；
+   - **IPv6 方括号环回与严格 Scheme 收口**：`DefaultAdminInstanceAdmissionPolicy` 强制 `serviceUrl` / `managementUrl` / `healthUrl` 仅允许 `http` 与 `https` 协议，并精确解析与拦截标准及带方括号的 IPv6 环回地址（`::1`、`[::1]`、`[0:0:0:0:0:0:0:1]`）；
+   - **调度器所有权与关闭时序安全**：`AtengAdminNotificationNotifier` 区分自动装配传入的共享调度器与无参降级自建的 `internalScheduler` 所有权，`stop()` 时仅销毁内部自建调度器，并引入 `stopped` 状态守卫杜绝销毁后异步误投递；
+   - **统一语言收口**：重写 `ateng-boot-admin/CONTEXT.md` 为 4 域 12 概念纯领域词表。
+2. **Sample 多领域控制器体验闭环与离线桩收敛（`#916`）**：
+   - **四领域 Controller 与 Zero-Entity-Leakage**：`ateng-boot-sample-admin` 引入 `ateng-boot-web` 并拆分为准入与鉴权（`AdminAdmissionController`）、安全守卫与治理（`AdminGovernanceController`）、生命周期与清理（`AdminLifecycleController`）、告警与防抖录制（`AdminAlertController`），全链路采用 9 个 JSR-303 Request DTO 与 10 个 Response VO 隔离底层 SBA 领域模型；
+   - **零硬编码凭据与双模离线桩**：外置演示用认证与准入 SPI Bean（`SampleAdminAuthProvider` 与 `SampleInstanceAdmissionPolicy`），新增 `@Profile("!local")` 生效的 `RecordingNotificationTemplate` 内存告警录制桩替代集成测试中的 `@MockBean`，并提供宿主中立的 `application-local.example.yml`。
+3. **1:1 逆向五维文档与跨模块清晰划界（`#917`）**：
+   - 先运行通过全部 Starter 单测与 Sample 集成/Web 切片测试，再将四领域体验卡与五维 `ateng-boot-admin/README.md` 1:1 逆向沉淀回仓；
+   - 明确 Starter `README.md` 第 0 章全景矩阵仅收口 `ateng-boot-admin` 自有导出 API/SPI/配置，客户端自动挂载 `X-Admin-Client-Secret` 请求头的 `AdminClientSecretHttpRequestInterceptor` 显式归位于第 2 章与 `ateng-boot-observability` 的跨模块协同体系，并同步更新仓库根 `CONTEXT-MAP.md`。
