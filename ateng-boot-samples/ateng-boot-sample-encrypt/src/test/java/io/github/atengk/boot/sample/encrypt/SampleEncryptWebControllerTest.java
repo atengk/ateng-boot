@@ -2,7 +2,9 @@ package io.github.atengk.boot.sample.encrypt;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
+import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
 import io.github.atengk.boot.sample.encrypt.dto.*;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,6 +41,16 @@ class SampleEncryptWebControllerTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private MultiKeyRegistry multiKeyRegistry;
+
+    @AfterEach
+    void tearDown() {
+        if (multiKeyRegistry != null) {
+            multiKeyRegistry.unregisterKey("payment-shard");
+        }
+    }
 
     // =========================================================================
     // 1. EncryptDecryptionController 实测 (透明解密呈现与属性探查)

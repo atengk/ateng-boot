@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sample.encrypt.controller;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
 import io.github.atengk.boot.encrypt.tool.InPlaceRewriter;
@@ -143,8 +145,7 @@ public class EncryptInPlaceRewriteController {
                     .diffLines(diffLines)
                     .build();
         } catch (IOException e) {
-            log.error("[EncryptInPlaceRewriteController] 沙箱就地重写失败: {}", e.getMessage(), e);
-            throw new IllegalStateException("Sandbox in-place rewrite failed: " + e.getMessage(), e);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "沙箱就地重写失败: " + e.getMessage(), e);
         } finally {
             if (tempDir != null && Files.exists(tempDir)) {
                 try (Stream<Path> stream = Files.walk(tempDir)) {

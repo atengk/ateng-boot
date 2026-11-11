@@ -26,12 +26,6 @@ public class InPlaceRewriteRequest {
     private String content;
 
     /**
-     * 文件类型标识：yml 或 properties（默认 yml）
-     */
-    @Builder.Default
-    private String fileType = "yml";
-
-    /**
      * 加解密主密钥
      */
     @NotBlank(message = "加密主密钥 password 不能为空")
