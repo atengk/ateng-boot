@@ -23,6 +23,7 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.util.unit.DataSize;
 
 import java.time.Duration;
 
@@ -103,6 +104,7 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(properties.isAllowLocalInstances()).isTrue();
                     assertThat(properties.getAllowedUrlPatterns()).isEmpty();
                     assertThat(properties.isEnableWriteOperations()).isTrue();
+                    assertThat(properties.getMaxRegistrationPayloadSize()).isEqualTo(DataSize.ofMegabytes(1));
                     assertThat(properties.getCleanup().isEnabled()).isFalse();
                     assertThat(properties.getCleanup().getInterval()).isEqualTo(Duration.ofHours(1));
                     assertThat(properties.getCleanup().getZombieThreshold()).isEqualTo(Duration.ofHours(24));
@@ -175,6 +177,7 @@ class AtengAdminServerAutoConfigurationTest {
                         "ateng.boot.admin.server.allow-local-instances=false",
                         "ateng.boot.admin.server.allowed-url-patterns[0]=^https://.*",
                         "ateng.boot.admin.server.enable-write-operations=false",
+                        "ateng.boot.admin.server.max-registration-payload-size=512KB",
                         "ateng.boot.admin.server.cleanup.enabled=true",
                         "ateng.boot.admin.server.cleanup.interval=30m",
                         "ateng.boot.admin.server.cleanup.zombie-threshold=12h",
@@ -193,6 +196,7 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(properties.isAllowLocalInstances()).isFalse();
                     assertThat(properties.getAllowedUrlPatterns()).containsExactly("^https://.*");
                     assertThat(properties.isEnableWriteOperations()).isFalse();
+                    assertThat(properties.getMaxRegistrationPayloadSize()).isEqualTo(DataSize.ofKilobytes(512));
                     assertThat(properties.getCleanup().isEnabled()).isTrue();
                     assertThat(properties.getCleanup().getInterval()).isEqualTo(Duration.ofMinutes(30));
                     assertThat(properties.getCleanup().getZombieThreshold()).isEqualTo(Duration.ofHours(12));

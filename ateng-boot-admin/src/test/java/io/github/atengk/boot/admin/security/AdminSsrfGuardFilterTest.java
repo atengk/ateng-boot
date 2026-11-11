@@ -13,6 +13,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.util.unit.DataSize;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -289,5 +290,77 @@ class AdminSsrfGuardFilterTest {
         AtomicBoolean chainExecuted = new AtomicBoolean(false);
         filter.doFilter(req2, res2, (req, res) -> chainExecuted.set(true));
         assertThat(chainExecuted.get()).isTrue();
+    }
+
+    @Test
+    @DisplayName("注册请求体超过默认 1MB 容量上限时直接拦截并返回 413 Payload Too Large")
+    void shouldRejectOversizedRegistrationPayloadWith413() throws ServletException, IOException {
+        AtengAdminServerProperties properties = createProperties();
+        AdminSsrfGuardFilter filter = new AdminSsrfGuardFilter(properties);
+
+        int oversizedLength = 1024 * 1024 + 256;
+        String largePadding = "a".repeat(oversizedLength);
+        String oversizedPayload = "{\"name\":\"huge-svc\",\"serviceUrl\":\"http://order-svc:8080/\",\"metadata\":{\"pad\":\""
+                + largePadding + "\"}}";
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/instances");
+        request.addHeader(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, VALID_SECRET);
+        request.setContent(oversizedPayload.getBytes(StandardCharsets.UTF_8));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        AtomicBoolean chainExecuted = new AtomicBoolean(false);
+        filter.doFilter(request, response, (req, res) -> chainExecuted.set(true));
+
+        assertThat(chainExecuted.get()).isFalse();
+        assertThat(response.getStatus()).isEqualTo(HttpStatus.PAYLOAD_TOO_LARGE.value());
+        assertThat(response.getContentAsString()).contains("exceeds maximum allowed size");
+    }
+
+    @Test
+    @DisplayName("支持通过 DataSize 自定义较小注册载荷上限并在超限时阻断返回 413")
+    void shouldEnforceCustomMaxPayloadSize() throws ServletException, IOException {
+        AtengAdminServerProperties properties = createProperties();
+        properties.setMaxRegistrationPayloadSize(DataSize.ofKilobytes(1));
+        AdminSsrfGuardFilter filter = new AdminSsrfGuardFilter(properties);
+
+        String padding = "x".repeat(1500);
+        String payload = "{\"name\":\"custom-limit-svc\",\"serviceUrl\":\"http://order-svc:8080/\",\"metadata\":{\"k\":\""
+                + padding + "\"}}";
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/instances");
+        request.addHeader(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, VALID_SECRET);
+        request.setContent(payload.getBytes(StandardCharsets.UTF_8));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertThat(response.getStatus()).isEqualTo(HttpStatus.PAYLOAD_TOO_LARGE.value());
+        assertThat(response.getContentAsString()).contains("1024 bytes");
+    }
+
+    @Test
+    @DisplayName("未声明 Content-Length 的分块流在读取字节超过上限时仍触发 413 熔断")
+    void shouldRejectChunkedOversizedStreamWithoutContentLengthHeader() throws ServletException, IOException {
+        AtengAdminServerProperties properties = createProperties();
+        properties.setMaxRegistrationPayloadSize(DataSize.ofKilobytes(1));
+        AdminSsrfGuardFilter filter = new AdminSsrfGuardFilter(properties);
+
+        String padding = "z".repeat(2048);
+        String payload = "{\"name\":\"chunked-svc\",\"serviceUrl\":\"http://order-svc:8080/\",\"metadata\":{\"k\":\""
+                + padding + "\"}}";
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/instances") {
+            @Override
+            public long getContentLengthLong() {
+                return -1L;
+            }
+        };
+        request.addHeader(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, VALID_SECRET);
+        request.setContent(payload.getBytes(StandardCharsets.UTF_8));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertThat(response.getStatus()).isEqualTo(HttpStatus.PAYLOAD_TOO_LARGE.value());
     }
 }

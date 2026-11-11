@@ -10,6 +10,8 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * Spring Boot Admin 默认客户端实例注册准入策略实现
@@ -35,6 +37,12 @@ public class DefaultAdminInstanceAdmissionPolicy implements AdminInstanceAdmissi
      * 链路本地地址前缀
      */
     private static final String LINK_LOCAL_PREFIX = "169.254.";
+
+    private static final Set<String> ALLOWED_SCHEMES = Set.of("http", "https");
+
+    private static final Set<String> LOOPBACK_HOSTS = Set.of(
+            "localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1", "0.0.0.0", "::", "0:0:0:0:0:0:0:0"
+    );
 
     private final AtengAdminServerProperties properties;
 
@@ -81,21 +89,23 @@ public class DefaultAdminInstanceAdmissionPolicy implements AdminInstanceAdmissi
         }
         try {
             URI uri = URI.create(urlStr.trim());
+            String scheme = uri.getScheme();
+            if (scheme == null || !ALLOWED_SCHEMES.contains(scheme.toLowerCase(Locale.ROOT))) {
+                return false;
+            }
             String host = uri.getHost();
             if (host == null) {
                 return false;
             }
+            String normalizedHost = normalizeHost(host);
 
             // 1. 绝对硬阻断云厂商元数据地址 (169.254.0.0/16 网段)
-            if (CLOUD_METADATA_HOST.equalsIgnoreCase(host) || host.startsWith(LINK_LOCAL_PREFIX)) {
+            if (CLOUD_METADATA_HOST.equals(normalizedHost) || normalizedHost.startsWith(LINK_LOCAL_PREFIX)) {
                 return false;
             }
 
-            // 2. 本地环回地址弹性检查 (localhost / 127.0.0.1 / ::1 / 0.0.0.0)
-            boolean isLoopback = "localhost".equalsIgnoreCase(host)
-                    || "127.0.0.1".equals(host)
-                    || "::1".equals(host)
-                    || "0.0.0.0".equals(host);
+            // 2. 本地环回地址弹性检查 (localhost / 127.0.0.1 / [::1] / 0.0.0.0)
+            boolean isLoopback = LOOPBACK_HOSTS.contains(normalizedHost);
             if (isLoopback && (properties == null || !properties.isAllowLocalInstances())) {
                 return false;
             }
@@ -115,6 +125,14 @@ public class DefaultAdminInstanceAdmissionPolicy implements AdminInstanceAdmissi
             log.debug("[Admission Policy] URL 校验解析异常，判定为不安全: [{}]", urlStr, e);
             return false;
         }
+    }
+
+    private String normalizeHost(String host) {
+        String lower = host.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("[") && lower.endsWith("]") && lower.length() > 2) {
+            return lower.substring(1, lower.length() - 1);
+        }
+        return lower;
     }
 
     /**

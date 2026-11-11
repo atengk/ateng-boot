@@ -79,8 +79,12 @@ public class AtengAdminServerAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     @Order(Ordered.HIGHEST_PRECEDENCE + 50)
-    public AdminSsrfGuardFilter adminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy) {
-        return new AdminSsrfGuardFilter(admissionPolicy);
+    public AdminSsrfGuardFilter adminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy,
+                                                     AtengAdminServerProperties properties) {
+        return new AdminSsrfGuardFilter(
+                admissionPolicy,
+                properties != null ? properties.getMaxRegistrationPayloadSize() : null
+        );
     }
 
     @Bean

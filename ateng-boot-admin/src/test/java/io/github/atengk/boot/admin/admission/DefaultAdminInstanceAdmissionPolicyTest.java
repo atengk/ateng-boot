@@ -217,4 +217,76 @@ class DefaultAdminInstanceAdmissionPolicyTest {
         assertThat(adapted.getSource()).isEqualTo("http-api");
         assertThat(adapted.getMetadata()).containsEntry("region", "cn-hangzhou");
     }
+
+    @Test
+    @DisplayName("强制拦截非 http/https Scheme 与无 Scheme 注册 URL")
+    void shouldRejectNonHttpAndHttpsSchemes() {
+        AtengAdminServerProperties properties = createProperties();
+        DefaultAdminInstanceAdmissionPolicy policy = new DefaultAdminInstanceAdmissionPolicy(properties);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/instances");
+        request.addHeader(DefaultAdminInstanceAdmissionPolicy.CLIENT_SECRET_HEADER, VALID_SECRET);
+
+        for (String invalidUrl : List.of(
+                "ftp://order-service:8080/health",
+                "file://order-service/etc/passwd",
+                "gopher://order-service:6379/_INFO",
+                "//order-service:8080/health"
+        )) {
+            InstanceRegistration reg = InstanceRegistration.of(
+                    "order-service",
+                    invalidUrl,
+                    "http://order-service:8081/actuator",
+                    "http://order-service:8081/actuator/health"
+            );
+            AdminAdmissionResult result = policy.evaluate(reg, request);
+            assertThat(result.isRejected()).as("Expected rejection for URL: %s", invalidUrl).isTrue();
+            assertThat(result.getStatus()).isEqualTo(HttpStatus.FORBIDDEN);
+        }
+
+        InstanceRegistration upperCaseHttpsReg = InstanceRegistration.of(
+                "order-service",
+                "HTTPS://order-service:8443/",
+                "HTTP://order-service:8443/actuator",
+                "https://order-service:8443/actuator/health"
+        );
+        assertThat(policy.evaluate(upperCaseHttpsReg, request).isAllowed()).isTrue();
+    }
+
+    @Test
+    @DisplayName("当 allowLocalInstances=false 时拦截标准与带方括号的 IPv6 环回地址；为 true 时放行")
+    void shouldEnforceIpv6LoopbackPolicy() {
+        AtengAdminServerProperties properties = createProperties();
+        properties.setAllowLocalInstances(false);
+        DefaultAdminInstanceAdmissionPolicy policy = new DefaultAdminInstanceAdmissionPolicy(properties);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/instances");
+        request.addHeader(DefaultAdminInstanceAdmissionPolicy.CLIENT_SECRET_HEADER, VALID_SECRET);
+
+        for (String loopbackUrl : List.of(
+                "http://[::1]:8080/",
+                "http://[0:0:0:0:0:0:0:1]:8080/",
+                "http://[::]:8080/",
+                "http://[0:0:0:0:0:0:0:0]:8080/"
+        )) {
+            InstanceRegistration reg = InstanceRegistration.of(
+                    "ipv6-local-app",
+                    loopbackUrl,
+                    "http://order-service:8081/actuator",
+                    "http://order-service:8081/actuator/health"
+            );
+            AdminAdmissionResult blocked = policy.evaluate(reg, request);
+            assertThat(blocked.isRejected()).as("Expected loopback block for URL: %s", loopbackUrl).isTrue();
+            assertThat(blocked.getStatus()).isEqualTo(HttpStatus.FORBIDDEN);
+        }
+
+        properties.setAllowLocalInstances(true);
+        InstanceRegistration allowedIpv6Reg = InstanceRegistration.of(
+                "ipv6-local-app",
+                "http://[::1]:8080/",
+                "http://[0:0:0:0:0:0:0:1]:8080/actuator",
+                "http://[::1]:8080/actuator/health"
+        );
+        assertThat(policy.evaluate(allowedIpv6Reg, request).isAllowed()).isTrue();
+    }
 }

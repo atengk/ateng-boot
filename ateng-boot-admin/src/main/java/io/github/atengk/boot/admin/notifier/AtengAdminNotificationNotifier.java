@@ -49,7 +49,9 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
     private final ObjectProvider<NotificationTemplate> notificationTemplateProvider;
     private final AtengAdminServerProperties properties;
     private final ScheduledExecutorService scheduler;
+    private final boolean internalScheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean stopped = new AtomicBoolean(false);
 
     /**
      * 正在处于防抖等待中的任务映射表：InstanceId -> ScheduledFuture
@@ -96,6 +98,7 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
         this.properties = properties;
         if (scheduler != null) {
             this.scheduler = scheduler;
+            this.internalScheduler = false;
         } else {
             ThreadPoolTaskScheduler defaultScheduler = new ThreadPoolTaskScheduler();
             defaultScheduler.setPoolSize(1);
@@ -103,6 +106,7 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             defaultScheduler.setDaemon(true);
             defaultScheduler.initialize();
             this.scheduler = defaultScheduler.getScheduledExecutor();
+            this.internalScheduler = true;
         }
     }
 
@@ -183,6 +187,10 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
         // 1. 前置名单规则校验：未在白名单或命中黑名单直接跳过防抖告警
         if (!isServiceAlertAllowed(appName)) {
             log.info("[SBA Notifier] 实例 [{}] 命中告警名单过滤规则，静默跳过防抖告警", appName);
+            return;
+        }
+        if (this.stopped.get() || this.scheduler.isShutdown()) {
+            log.debug("[SBA Notifier] 通知器已停止，忽略实例 [{}] 的防抖告警排期", appName);
             return;
         }
 
@@ -438,13 +446,14 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
 
     @Override
     public void start() {
+        this.stopped.set(false);
         this.running.set(true);
     }
 
     @Override
     public void stop() {
         if (this.running.compareAndSet(true, false)) {
-            this.scheduler.shutdownNow();
+            this.stopped.set(true);
             for (ScheduledFuture<?> future : this.pendingTasks.values()) {
                 if (future != null) {
                     future.cancel(true);
@@ -453,6 +462,9 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             this.pendingTasks.clear();
             this.alertedInstances.clear();
             this.deregisteredInstances.clear();
+            if (this.internalScheduler) {
+                this.scheduler.shutdownNow();
+            }
         }
     }
 

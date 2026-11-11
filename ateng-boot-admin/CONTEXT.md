@@ -1,53 +1,61 @@
 # Admin Context
 
-`ateng-boot-admin` 负责面向生产就绪的 Spring Boot Admin 企业级运维管控中心与看板基础设施，提供基于 Sa-Token 的原生控制台安全守卫、防 SSRF 实例注册防火墙、动态实例准入审查 SPI、控制台只读安全守卫（物理拦截高危写操作）、端到端异构微服务多模态凭据抓取穿透、容器云离线僵尸实例自动清理调度器、在线动态修改日志级别、30 秒防抖队列、黑白名单规则过滤、探针富文本报错根因呈现与 K8s 优雅下线发版静默告警状态机。
+`ateng-boot-admin` 是面向生产就绪的 Spring Boot Admin 企业级运维管控中心与看板基础设施，独立于 Spring Security 运行，提供控制台安全鉴权、防 SSRF 注册防线、只读操作管控、出站多模态抓取穿透、僵尸实例清理与防抖静默告警能力。
 
 ## Language
 
-**AdminSsrfGuardFilter**:
-部署于 SBA 服务端最前沿的实例注册安全防火墙过滤器，优先级 `HIGHEST_PRECEDENCE + 50`。对 `POST /instances` 注册请求强制核验 `X-Admin-Client-Secret` 集群防伪标头，并深度解析请求体中的服务地址，严密阻断公有云实例元数据网段（`169.254.169.254` 等）与非法内网渗透探测。
-_Avoid_: SsrfFilter, AdminFirewall, RegistrationSecurityFilter
+### 入站安全与准入
 
-**ResettableContentCachingRequestWrapper**:
-继承自 Spring `ContentCachingRequestWrapper` 的可复位流包装器，重写 `getInputStream()` 与 `getReader()`。支持在前置过滤器中无损读取请求体字节并进行重置，彻底杜绝下游 Controller 反序列化时产生 `EOFException` 单向流耗尽崩溃。
-_Avoid_: ReusableRequestWrapper, CachedBodyRequest, RequestWrapper
+**Cluster Admission Secret (集群准入防伪密钥)**:
+客户端微服务在实例注册请求中携带的共享握手凭据（`X-Admin-Client-Secret`），用于在准入评估阶段核验集群接入合法性。
+_Avoid_: Actuator Token, Console Password, Auth Token
 
-**AtengActuatorHttpHeadersProvider**:
-基于 SBA 官方 `HttpHeadersProvider` 扩展的服务端出站端点抓取凭据提供者。在反向代理抓取微服务度量或下发指令时，自动从目标实例元数据中提取 `actuator-token` 挂载出站标头 `X-Actuator-Token`，透明穿透客户端加固的 Actuator 端点。
-_Avoid_: AdminHeaderProvider, ActuatorTokenProvider, OutboundHeaderCustomizer
+**Instance Registration Snapshot (实例注册快照)**:
+在 HTTP 注册边界预先解析生成的不可变领域注册描述模型（`InstanceRegistration`），供准入策略评估后再交由 SBA 注册表持久化。
+_Avoid_: SBA Registration, RegistrationDTO, InstanceEntity
 
-**AtengAdminNotificationNotifier**:
-继承自 SBA `AbstractEventNotifier` 的高可用告警状态机通知器。内置 30 秒防抖队列合并抖动虚警、监听 `InstanceDeregisteredEvent` 触发 60 秒发版静默期消除 K8s 滚动更新误报，并联动 `NotificationTemplate` 推送企业微信/钉钉/飞书结构化卡片告警。
-_Avoid_: DebounceNotifier, AdminAlertNotifier, SbaAlarmManager
-
-**AdminAuthProvider**:
-SBA 控制台看板管理用户可拔插认证 SPI 接口，定义 `authenticate(username, password)` 契约。默认提供基于配置属性的比对实现，支持业务方平滑覆写接管为数据库、LDAP 或统一认证中心对接。
-_Avoid_: AdminAuthenticationManager, SbaLoginService, AuthValidator
-
-**AdminLoginController**:
-纯原生内嵌的高颜值拟物化响应式登录控制器，直接映射 `/admin/login` 与 `/admin/logout` 端点。提供自洽的开箱即用玻璃拟物化前端页面，零 Spring Security、零 Thymeleaf/Freemarker 依赖。
-_Avoid_: SbaLoginController, AdminAuthController, ConsolePageController
-
-**AtengAdminServerProperties**:
-SBA 服务端强类型配置属性类，配置前缀 `ateng.boot.admin.server`。纳管看板用户账密、集群防伪密钥、默认抓取凭据、`Duration` 强类型防抖时间与本地实例放行开关。
-_Avoid_: AdminProperties, SbaConfig, AdminSettings
-
-**AtengAdminServerAutoConfiguration**:
-Spring Boot Admin 服务端防御性自动装配类，统一注册于 `AutoConfiguration.imports`。在保障缺省平滑覆盖的前提下装配路由守卫、登录控制器、注册防火墙、凭据提供者与告警通知器。
-_Avoid_: AdminAutoConfiguration, SbaServerConfiguration, AdminConfiguration
-
-**AdminInstanceAdmissionPolicy**:
-SBA 客户端实例注册准入策略扩展点 SPI，定义 `evaluate(registration, request)` 契约。默认由内置准入实现执行集群密钥、敏感云元数据与正则白名单核验，支持企业级平滑扩展自定义服务名白名单、VPC 内网网段与多租户配额审查。
+**Registration Admission Policy (实例注册准入策略)**:
+面向实例注册请求的可拔插评估契约（`AdminInstanceAdmissionPolicy`），依据注册快照与入站请求返回放行或携带状态码与拒绝原因的准入决策结果（`AdminAdmissionResult`）。
 _Avoid_: RegistrationPolicy, InstanceValidator, AdmissionGuard
 
-**AdminAdmissionResult**:
-实例注册准入评估结果强类型领域模型，提供 `admit()` 静态通过工厂与 `reject(reason)` 静态拒绝工厂，携带明确的拒绝原因与 HTTP 状态码。
-_Avoid_: AdmissionResponse, ValidationResult, PolicyCheckResult
+**SSRF Registration Firewall (防 SSRF 注册防火墙)**:
+部署于实例注册入口前哨的安全过滤防线（`AdminSsrfGuardFilter`），负责阻断云厂商元数据网段、非法协议及未授权环回地址渗透，并防御超大或畸形注册载荷。
+_Avoid_: SsrfFilter, AdminFirewall, RegistrationSecurityFilter
 
-**AdminWriteGuardFilter**:
-SBA 控制台只读模式与高危写操作安全守卫过滤器。激活 `enableWriteOperations = false` 只读策略时，前置拦截针对微服务 Actuator 代理端点（`/instances/{id}/actuator/**`）的所有非幂等写请求（`POST`/`PUT`/`DELETE`/`PATCH`），严格防御越权篡改日志级别、重载配置或触发容器下线。
+**Resettable Request Stream (可复位请求流)**:
+支持前置安全过滤防线在有界容量保护下无损读取注册请求载荷、同时保持下游控制器可重复消费流数据的请求包装契约（`ResettableContentCachingRequestWrapper`）。
+_Avoid_: ReusableRequestWrapper, CachedBodyRequest, ContentCachingRequestWrapper
+
+### 控制台鉴权与只读管控
+
+**Console Authentication (控制台登录认证)**:
+面向运维监控看板操作人员的身份校验扩展契约（`AdminAuthProvider`）与纯原生表单登录及 Sa-Token 会话治理机制（`AdminLoginController`），与集群准入密钥及出站抓取凭据相互独立。
+_Avoid_: AdminAuthenticationManager, SbaLoginService, AuthValidator, Cluster Admission Secret
+
+**Console Write Guard (控制台只读写守卫)**:
+在只读策略激活时前置拦截针对微服务 Actuator 反向代理端点的非幂等写请求、同时严格豁免实例注册与注销生命周期通信的安全防线（`AdminWriteGuardFilter`）。
 _Avoid_: ReadOnlyFilter, OperationGuardFilter, ConsoleWriteFilter
 
-**ZombieInstanceCleanupScheduler**:
-容器云与弹性伸缩环境下离线僵尸实例自动清理受管调度器。周期性扫描 `InstanceRepository`，针对失联或已处于 `OFFLINE`/`UNKNOWN` 状态且持续超过 `zombie-threshold` 阈值的历史死亡实例执行确定性注销与内存排空，杜绝长时间运行下的内存膨胀与控制台虚警。
-_Avoid_: ZombieCleaner, InstanceGarbageCollector, SbaEvictTask
+### 出站探测与实例生命周期
+
+**Outbound Actuator Credential Cascade (出站 Actuator 凭据级联推导)**:
+监控中心向受管微服务抓取 Actuator 端点时，按 `Basic -> Bearer/JWT -> X-Actuator-Token -> 全局兜底` 优先级自适应推导并注入认证请求头的机制（`AtengActuatorHttpHeadersProvider`）。
+_Avoid_: AdminHeaderProvider, ActuatorTokenProvider, Cluster Admission Secret
+
+**Zombie Instance Eviction (僵尸实例驱逐清理)**:
+受管调度器周期扫描并确定性注销持续处于 `OFFLINE` 或 `UNKNOWN` 状态且超出滞留阈值的失联实例的生命周期治理机制（`ZombieInstanceCleanupScheduler`）。
+_Avoid_: ZombieCleaner, InstanceGarbageCollector, Graceful Deregistration Silence
+
+### 防抖告警与降噪状态机
+
+**Fault Debounce Window (故障防抖窗口)**:
+实例跃迁至目标故障状态后暂缓发信的可配置延时窗口（`debounce-duration`），若实例在窗口期内自愈恢复则撤销挂起告警且不产生恢复噪音（`AtengAdminNotificationNotifier`）。
+_Avoid_: 发版静默期, 名单过滤静默, DebounceNotifier
+
+**Graceful Deregistration Silence (优雅下线发版静默期)**:
+由受控注销事件（`InstanceDeregisteredEvent`）触发的固定静默窗口，用于在滚动发布优雅停机期间屏蔽后续下线震荡误报。
+_Avoid_: 防抖窗口, 僵尸清理, Alert Rule Filtering
+
+**Alert Rule Filtering (告警规则名单过滤)**:
+在告警防抖入队前与超时发送前依据服务名通配符黑白名单及目标状态白名单对状态跃迁事件执行的静默过滤机制。
+_Avoid_: 防抖静默, 发版静默, 准入白名单

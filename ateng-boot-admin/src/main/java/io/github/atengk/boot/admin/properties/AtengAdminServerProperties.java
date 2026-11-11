@@ -4,6 +4,7 @@ import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
+import org.springframework.util.unit.DataSize;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -64,6 +65,11 @@ public class AtengAdminServerProperties {
      * 是否允许在 Web 控制台执行修改日志级别等高危写操作（默认开启）
      */
     private boolean enableWriteOperations = true;
+
+    /**
+     * 客户端实例注册请求体最大允许载荷容量（默认 1MB，防止超大畸形注册报文引发堆内存溢出）
+     */
+    private DataSize maxRegistrationPayloadSize = DataSize.ofMegabytes(1);
 
     /**
      * 容器云离线僵尸实例自动清理调度配置

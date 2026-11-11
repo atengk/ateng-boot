@@ -19,6 +19,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -158,7 +159,7 @@ class AtengAdminNotificationNotifierTest {
     }
 
     @Test
-    @DisplayName("场景 5：SmartLifecycle 确定性生命周期治理，stop 时优雅清理线程池与内存队列")
+    @DisplayName("场景 5：SmartLifecycle 确定性生命周期治理，stop 时清理队列且不误杀外部注入调度器")
     void shouldCleanUpResourcesDeterministicallyOnStop() {
         assertThat(notifier.isRunning()).isTrue();
 
@@ -171,11 +172,40 @@ class AtengAdminNotificationNotifierTest {
         notifier.stop();
 
         assertThat(notifier.isRunning()).isFalse();
-        verify(scheduler, times(1)).shutdownNow();
+        verify(scheduler, never()).shutdownNow();
         verify(mockFuture, times(1)).cancel(true);
         assertThat(notifier.getPendingTasks()).isEmpty();
         assertThat(notifier.getAlertedInstances()).isEmpty();
         assertThat(notifier.getDeregisteredInstances()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("场景 5b：真实外部线程池不被 stop 误杀，内部自建调度器在 stop 时确定性关闭且拒绝后继排期")
+    void shouldShutdownOnlyInternalSchedulerOnStop() {
+        ScheduledExecutorService externalExecutor = Executors.newSingleThreadScheduledExecutor();
+        try {
+            AtengAdminNotificationNotifier externalNotifier =
+                    new AtengAdminNotificationNotifier(repository, notificationTemplateProvider, properties, externalExecutor);
+            externalNotifier.start();
+            externalNotifier.stop();
+            assertThat(externalExecutor.isShutdown()).isFalse();
+
+            InstanceStatusChangedEvent lateEvent = new InstanceStatusChangedEvent(instanceId, 1L, StatusInfo.ofDown());
+            externalNotifier.doNotify(lateEvent, registeredInstance).block();
+            assertThat(externalNotifier.getPendingTasks()).isEmpty();
+        } finally {
+            externalExecutor.shutdownNow();
+        }
+
+        AtengAdminNotificationNotifier internalNotifier =
+                new AtengAdminNotificationNotifier(repository, notificationTemplateProvider, properties);
+        internalNotifier.start();
+        internalNotifier.stop();
+
+        InstanceStatusChangedEvent downEvent = new InstanceStatusChangedEvent(instanceId, 1L, StatusInfo.ofDown());
+        internalNotifier.doNotify(downEvent, registeredInstance).block();
+        assertThat(internalNotifier.isRunning()).isFalse();
+        assertThat(internalNotifier.getPendingTasks()).isEmpty();
     }
 
     @Test
