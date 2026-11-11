@@ -50,7 +50,8 @@ public class OrderProbeScenarioService {
      */
     public boolean canFire(Long orderId, OrderEvent event, OrderContext context) {
         OrderDO order = getOrderOrThrow(orderId);
-        boolean allowed = orderStateMachine.canFire(order.getStatus(), event, context);
+        OrderContext ctx = resolveContext(order, context);
+        boolean allowed = orderStateMachine.canFire(order.getStatus(), event, ctx);
         log.info("[Probe] 探测流转可行性: orderSn={}, status={}, event={}, allowed={}",
                 order.getOrderSn(), order.getStatus(), event, allowed);
         return allowed;
@@ -110,7 +111,8 @@ public class OrderProbeScenarioService {
      */
     public TransitionResult<OrderState> previewNextState(Long orderId, OrderEvent event, OrderContext context) {
         OrderDO order = getOrderOrThrow(orderId);
-        return orderStateMachine.verifyTransition(order.getStatus(), event, context);
+        OrderContext ctx = resolveContext(order, context);
+        return orderStateMachine.verifyTransition(order.getStatus(), event, ctx);
     }
 
     /**
@@ -145,7 +147,8 @@ public class OrderProbeScenarioService {
      */
     public List<OrderEvent> getAvailableEvents(Long orderId, OrderContext context) {
         OrderDO order = getOrderOrThrow(orderId);
-        Set<OrderEvent> events = orderStateMachine.getAvailableEvents(order.getStatus(), context);
+        OrderContext ctx = resolveContext(order, context);
+        Set<OrderEvent> events = orderStateMachine.getAvailableEvents(order.getStatus(), ctx);
         return new ArrayList<>(events);
     }
 
@@ -167,6 +170,20 @@ public class OrderProbeScenarioService {
         permissions.put("btnRefund", orderStateMachine.canFire(order.getStatus(), OrderEvent.APPLY_REFUND, null));
         permissions.put("btnConfirmDelivery", orderStateMachine.canFire(order.getStatus(), OrderEvent.CONFIRM_DELIVERY, null));
         return permissions;
+    }
+
+    private OrderContext resolveContext(OrderDO order, OrderContext context) {
+        if (context != null) {
+            return context;
+        }
+        return OrderContext.builder()
+                .orderId(order.getId())
+                .orderSn(order.getOrderSn())
+                .amount(order.getAmount())
+                .trackingNo(order.getTrackingNo() != null ? order.getTrackingNo() : "PROBE_DEFAULT_TRACKING")
+                .trackingRemark(order.getTrackingRemark())
+                .riskScore(order.getRiskScore() != null ? order.getRiskScore() : 0)
+                .build();
     }
 
     private OrderDO getOrderOrThrow(Long orderId) {

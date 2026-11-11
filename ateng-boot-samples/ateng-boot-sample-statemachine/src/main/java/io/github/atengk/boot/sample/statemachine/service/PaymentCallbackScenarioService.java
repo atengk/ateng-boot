@@ -79,11 +79,11 @@ public class PaymentCallbackScenarioService {
             order.setVersion(order.getVersion() + 1);
             log.info("[PaymentCallback] 支付状态更新成功: orderId={}, status={} -> {}, version={}",
                     orderId, sourceState, targetState, order.getVersion());
+            return TransitionResult.success(sourceState, targetState, OrderEvent.PAY);
         } else {
             log.info("[PaymentCallback] 支付回调幂等放行: orderId={}, 维持状态={}", orderId, targetState);
+            return TransitionResult.idempotent(targetState, OrderEvent.PAY);
         }
-
-        return TransitionResult.success(sourceState, targetState, OrderEvent.PAY);
     }
 
     /**
