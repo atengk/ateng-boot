@@ -6,12 +6,12 @@ import io.github.atengk.boot.sample.tcp.dto.Jt808FrameEncodeRequest;
 import io.github.atengk.boot.sample.tcp.dto.TelemetryReportRequest;
 import io.github.atengk.boot.sample.tcp.dto.VehicleControlRequest;
 import io.github.atengk.boot.sample.tcp.dto.VehicleParamQueryRequest;
-import io.github.atengk.boot.sample.tcp.model.LocationReportPacket;
-import io.github.atengk.boot.sample.tcp.model.VehicleControlAck;
-import io.github.atengk.boot.sample.tcp.model.VehicleParamQueryAck;
 import io.github.atengk.boot.sample.tcp.model.VehicleStatusVO;
 import io.github.atengk.boot.sample.tcp.service.TcpProtocolConsoleService;
 import io.github.atengk.boot.sample.tcp.vo.Jt808FrameVO;
+import io.github.atengk.boot.sample.tcp.vo.LocationReportVO;
+import io.github.atengk.boot.sample.tcp.vo.VehicleControlAckVO;
+import io.github.atengk.boot.sample.tcp.vo.VehicleParamQueryAckVO;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -41,10 +41,10 @@ public class TcpProtocolController {
      * 下发同步远程车辆控制指令并等待车机返回回执（基于 TcpServerTemplate.requestToDevice）
      *
      * @param request 车控指令请求
-     * @return 车机控制回执
+     * @return 车机控制回执视图
      */
     @PostMapping("/control")
-    public Result<VehicleControlAck> sendControl(@Valid @RequestBody VehicleControlRequest request) {
+    public Result<VehicleControlAckVO> sendControl(@Valid @RequestBody VehicleControlRequest request) {
         log.info("[HTTP-PROTOCOL] 下发同步车控指令: deviceId={}, command={}", request.getDeviceId(), request.getCommand());
         return Result.success(protocolConsoleService.sendControlCommand(request));
     }
@@ -53,10 +53,10 @@ public class TcpProtocolController {
      * 下发同步车载终端参数查询指令并获取固件、电量与运行状态应答
      *
      * @param request 参数查询请求
-     * @return 参数应答模型
+     * @return 参数应答视图
      */
     @PostMapping("/param-query")
-    public Result<VehicleParamQueryAck> queryParams(@Valid @RequestBody VehicleParamQueryRequest request) {
+    public Result<VehicleParamQueryAckVO> queryParams(@Valid @RequestBody VehicleParamQueryRequest request) {
         log.info("[HTTP-PROTOCOL] 下发参数查询: deviceId={}, paramType={}", request.getDeviceId(), request.getParamType());
         return Result.success(protocolConsoleService.queryDeviceParams(request));
     }
@@ -76,10 +76,10 @@ public class TcpProtocolController {
      * 解析并校验十六进制 JT/T 808 复合二进制帧（非法长度或校验和篡改将拦截报错）
      *
      * @param request 解码参数
-     * @return 解码得到的定位实体
+     * @return 解码得到的定位视图对象
      */
     @PostMapping("/jt808/decode")
-    public Result<LocationReportPacket> decodeJt808(@Valid @RequestBody Jt808FrameDecodeRequest request) {
+    public Result<LocationReportVO> decodeJt808(@Valid @RequestBody Jt808FrameDecodeRequest request) {
         return Result.success(protocolConsoleService.decodeJt808Frame(request));
     }
 

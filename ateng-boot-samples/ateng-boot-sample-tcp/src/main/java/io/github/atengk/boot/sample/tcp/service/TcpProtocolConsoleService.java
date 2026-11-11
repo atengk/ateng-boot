@@ -16,6 +16,9 @@ import io.github.atengk.boot.sample.tcp.model.VehicleParamQueryAck;
 import io.github.atengk.boot.sample.tcp.model.VehicleStatusVO;
 import io.github.atengk.boot.sample.tcp.simulator.FleetSimulationRunner;
 import io.github.atengk.boot.sample.tcp.vo.Jt808FrameVO;
+import io.github.atengk.boot.sample.tcp.vo.LocationReportVO;
+import io.github.atengk.boot.sample.tcp.vo.VehicleControlAckVO;
+import io.github.atengk.boot.sample.tcp.vo.VehicleParamQueryAckVO;
 import io.github.atengk.boot.tcp.client.TcpClient;
 import io.github.atengk.boot.tcp.client.TcpClientRegistry;
 import io.github.atengk.boot.tcp.exception.TcpBackpressureException;
@@ -52,11 +55,12 @@ public class TcpProtocolConsoleService {
      * 下发同步远程车辆控制指令并等待车机回执
      *
      * @param request 控制请求
-     * @return 车辆执行回执
+     * @return 车辆执行回执视图
      */
-    public VehicleControlAck sendControlCommand(VehicleControlRequest request) {
+    public VehicleControlAckVO sendControlCommand(VehicleControlRequest request) {
         try {
-            return scenarioService.sendControlCommand(request.getDeviceId(), request.getCommand(), request.getParams());
+            VehicleControlAck ack = scenarioService.sendControlCommand(request.getDeviceId(), request.getCommand(), request.getParams());
+            return VehicleControlAckVO.from(ack);
         } catch (TcpTimeoutException ex) {
             throw new BusinessException(CommonResultCode.SERVICE_UNAVAILABLE,
                     "等待车机控制回执超时: deviceId=" + request.getDeviceId(), ex);
@@ -73,11 +77,12 @@ public class TcpProtocolConsoleService {
      * 下发同步设备运行参数查询并等待响应
      *
      * @param request 参数查询请求
-     * @return 终端参数回执
+     * @return 终端参数应答视图
      */
-    public VehicleParamQueryAck queryDeviceParams(VehicleParamQueryRequest request) {
+    public VehicleParamQueryAckVO queryDeviceParams(VehicleParamQueryRequest request) {
         try {
-            return scenarioService.queryDeviceParams(request.getDeviceId(), request.getParamType());
+            VehicleParamQueryAck ack = scenarioService.queryDeviceParams(request.getDeviceId(), request.getParamType());
+            return VehicleParamQueryAckVO.from(ack);
         } catch (TcpTimeoutException ex) {
             throw new BusinessException(CommonResultCode.SERVICE_UNAVAILABLE,
                     "等待终端参数查询回执超时: deviceId=" + request.getDeviceId(), ex);
@@ -124,12 +129,13 @@ public class TcpProtocolConsoleService {
      * 解码并验证 JT/T 808 十六进制帧（不合法报文或校验和被篡改将快速失败转译为 BAD_REQUEST）
      *
      * @param request 解码请求
-     * @return 解析后的定位实体
+     * @return 解析后的定位视图对象
      */
-    public LocationReportPacket decodeJt808Frame(Jt808FrameDecodeRequest request) {
+    public LocationReportVO decodeJt808Frame(Jt808FrameDecodeRequest request) {
         try {
             byte[] raw = ChecksumUtil.fromHexString(request.getHexFrame());
-            return Jt808CompositeFrameCodec.decodeLocationReport(raw);
+            LocationReportPacket packet = Jt808CompositeFrameCodec.decodeLocationReport(raw);
+            return LocationReportVO.from(packet);
         } catch (IllegalArgumentException ex) {
             throw new BusinessException(CommonResultCode.BAD_REQUEST,
                     "JT/T 808 报文解码或校验失败: " + ex.getMessage(), ex);

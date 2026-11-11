@@ -3,7 +3,6 @@ package io.github.atengk.boot.sample.tcp.controller;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.tcp.exception.TcpTimeoutException;
 import io.github.atengk.boot.sample.tcp.dto.ClientRpcRequest;
 import io.github.atengk.boot.sample.tcp.dto.ClientSendRequest;
 import io.github.atengk.boot.sample.tcp.service.TcpEndpointConsoleService;
@@ -25,7 +24,6 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.TimeoutException;
 
 /**
  * TCP 多实例托管客户端体验控制器
@@ -88,18 +86,17 @@ public class TcpClientController {
         log.info("[HTTP-CLIENT] 客户端异步 RPC: clientName={}, command={}", request.getClientName(), request.getCommand());
         return endpointConsoleService.requestAsync(request)
                 .thenApply(Result::success)
-                .exceptionally(ex -> {
-                    Throwable cause = ex instanceof CompletionException && ex.getCause() != null ? ex.getCause() : ex;
-                    log.warn("[HTTP-CLIENT] 客户端异步 RPC 执行异常: clientName={}, command={}, error={}",
-                            request.getClientName(), request.getCommand(), cause.getMessage());
-                    if (cause instanceof BusinessException be) {
-                        return Result.fail(be.getCode(), be.getMessage());
-                    }
-                    if (cause instanceof TimeoutException || cause instanceof TcpTimeoutException) {
-                        return Result.fail(CommonResultCode.SERVICE_UNAVAILABLE, "异步 TCP RPC 等待对端应答超时");
-                    }
-                    return Result.fail(CommonResultCode.INTERNAL_SERVER_ERROR, "异步 TCP RPC 执行失败");
-                });
+                .exceptionally(ex -> handleAsyncRpcFailure(ex, request.getClientName(), request.getCommand()));
+    }
+
+    private Result<TcpClientRpcVO> handleAsyncRpcFailure(Throwable ex, String clientName, String command) {
+        Throwable cause = ex instanceof CompletionException && ex.getCause() != null ? ex.getCause() : ex;
+        log.warn("[HTTP-CLIENT] 客户端异步 RPC 执行异常: clientName={}, command={}, error={}",
+                clientName, command, cause.getMessage());
+        if (cause instanceof BusinessException be) {
+            return Result.fail(be.getCode(), be.getMessage());
+        }
+        return Result.fail(CommonResultCode.INTERNAL_SERVER_ERROR, "异步 TCP RPC 执行失败");
     }
 
     /**

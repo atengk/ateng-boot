@@ -43,6 +43,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -489,7 +490,10 @@ public class TcpEndpointConsoleService {
         if (wireMessage instanceof TcpPacket p && p.getPayload() != null) {
             return p.getPayload().length();
         }
-        return request.getContent().length();
+        if (request != null && request.getContent() != null) {
+            return request.getContent().getBytes(StandardCharsets.UTF_8).length;
+        }
+        return 0;
     }
 
     private TcpPacket buildClientRpcPacket(ClientRpcRequest request, String requestId) {
