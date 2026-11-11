@@ -13,35 +13,35 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 本地看门狗超时中断与就地降级补偿任务样例
+ * 历史冷数据归档与本地看门狗超时就地降级补偿任务处理器
  *
  * <p>通过 {@link AtengXxlJob} 配置毫秒级硬看门狗超时时限与同 Bean 本地降级补偿方法。
- * 当任务执行超时时，看门狗向执行线程发送中断信号，框架捕获后自动路由至指定的 fallback 方法，
- * 执行对账补偿并返回 200 SUCCESS 优雅自愈。</p>
+ * 当历史数据归档扫描超时时，看门狗向执行线程发送中断信号，框架切面捕获后自动路由至指定的 fallback 方法，
+ * 执行释放分布式锁并标记批次待重试，返回 200 SUCCESS 优雅自愈。</p>
  *
  * @author Ateng
- * @since 2026-11-02
+ * @since 2026-11-11
  */
 @Component
-public class TimeoutFallbackJobHandler {
+public class HistoryDataArchiveJobHandler {
 
-    private static final Logger log = LoggerFactory.getLogger(TimeoutFallbackJobHandler.class);
+    private static final Logger log = LoggerFactory.getLogger(HistoryDataArchiveJobHandler.class);
 
     private final AtomicBoolean fallbackInvoked = new AtomicBoolean(false);
     private volatile CountDownLatch fallbackLatch = new CountDownLatch(1);
 
     /**
-     * 超时降级任务：设置 200ms 硬看门狗超时时限，超时后自动回调 onTimeoutFallback
+     * 历史冷数据归档任务：设置 200ms 硬看门狗超时时限，超时后自动回调 onArchiveTimeoutFallback
      */
-    @XxlJob("timeoutFallbackDemoJob")
-    @AtengXxlJob(value = "timeoutFallbackDemoJob", timeout = "200ms", fallback = "onTimeoutFallback")
-    public void executeSlowJob() {
-        log.info(">>>>>> [TimeoutFallbackJobHandler] 开始执行慢任务，预期被看门狗中断...");
+    @XxlJob("historyDataArchiveJob")
+    @AtengXxlJob(value = "historyDataArchiveJob", timeout = "200ms", fallback = "onArchiveTimeoutFallback")
+    public void executeHistoryDataArchive() {
+        log.info(">>>>>> [HistoryDataArchiveJobHandler] 开始执行历史冷数据大批量归档扫描...");
         try {
             Thread.sleep(1500);
         } catch (InterruptedException e) {
-            log.warn(">>>>>> [TimeoutFallbackJobHandler] 捕获到硬看门狗线程中断信号并优雅退出！");
-            XxlJobHelper.handleSuccess("任务超时被看门狗中断，触发就地降级补偿: timeoutFallbackDemoJob");
+            log.warn(">>>>>> [HistoryDataArchiveJobHandler] 捕获到硬看门狗线程中断信号并优雅退出！");
+            XxlJobHelper.handleSuccess("归档任务超时被看门狗中断，触发就地降级补偿: historyDataArchiveJob");
             return;
         }
         XxlJobHelper.handleSuccess("未超时正常执行完成");
@@ -53,11 +53,20 @@ public class TimeoutFallbackJobHandler {
      * @param metadata 任务执行元数据
      * @param elapsed  超时经历时长
      */
-    public void onTimeoutFallback(JobExecutionMetadata metadata, Duration elapsed) {
-        log.warn(">>>>>> [TimeoutFallbackJobHandler] 触发就地降级补偿回调! 任务: {}, 耗时: {}ms",
+    public void onArchiveTimeoutFallback(JobExecutionMetadata metadata, Duration elapsed) {
+        log.warn(">>>>>> [HistoryDataArchiveJobHandler] 触发就地降级补偿回调! 任务: {}, 耗时: {}ms",
                 metadata.getJobName(), elapsed.toMillis());
         fallbackInvoked.set(true);
         fallbackLatch.countDown();
+    }
+
+    /**
+     * 兼容别名任务：超时降级任务
+     */
+    @XxlJob("timeoutFallbackDemoJob")
+    @AtengXxlJob(value = "timeoutFallbackDemoJob", timeout = "200ms", fallback = "onArchiveTimeoutFallback")
+    public void executeSlowJob() {
+        executeHistoryDataArchive();
     }
 
     public boolean isFallbackInvoked() {

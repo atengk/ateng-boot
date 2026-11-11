@@ -11,11 +11,12 @@ import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper.XxlJobTestResult;
 import io.github.atengk.boot.job.xxl.template.FailedBatch;
 import io.github.atengk.boot.job.xxl.template.XxlJobAdminTemplate;
 import io.github.atengk.boot.sample.job.xxl.dto.UserSyncParam;
-import io.github.atengk.boot.sample.job.xxl.handler.AlertDemoJobHandler;
+import io.github.atengk.boot.sample.job.xxl.handler.HistoryDataArchiveJobHandler;
+import io.github.atengk.boot.sample.job.xxl.handler.OrderReconciliationJobHandler;
 import io.github.atengk.boot.sample.job.xxl.handler.ShardingBatchJobHandler;
 import io.github.atengk.boot.sample.job.xxl.handler.ShardingBatchJobHandler.MockOrder;
+import io.github.atengk.boot.sample.job.xxl.handler.SystemWarmupJobHandler;
 import io.github.atengk.boot.sample.job.xxl.handler.TenantJobHandler;
-import io.github.atengk.boot.sample.job.xxl.handler.TimeoutFallbackJobHandler;
 import io.github.atengk.boot.sample.job.xxl.interceptor.CanaryAuditJobInterceptor;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -26,7 +27,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
-import org.springframework.test.context.ActiveProfiles;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -37,7 +37,11 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * XXL-Job 场景样例工程端到端集成实测套件 (双模自适应：离线自洽 Mock Admin / 真实 Local Admin 联调)
@@ -59,13 +63,16 @@ class SampleJobXxlIntegrationTest {
     private XxlJobAdminTemplate adminTemplate;
 
     @Autowired
-    private AlertDemoJobHandler alertDemoJobHandler;
+    private SystemWarmupJobHandler warmupJobHandler;
+
+    @Autowired
+    private OrderReconciliationJobHandler reconciliationJobHandler;
 
     @Autowired
     private CanaryAuditJobInterceptor canaryInterceptor;
 
     @Autowired
-    private TimeoutFallbackJobHandler timeoutFallbackHandler;
+    private HistoryDataArchiveJobHandler archiveJobHandler;
 
     @Autowired
     private ShardingBatchJobHandler shardingBatchJobHandler;
@@ -101,11 +108,16 @@ class SampleJobXxlIntegrationTest {
     }
 
     @Test
-    @DisplayName("测试简单问候任务：MDC traceId 透传与正常调度")
-    void testSimpleGreetingJob() {
-        XxlJobTestResult result = XxlJobTestHelper.trigger("simpleGreetingJob", "ateng-greeting");
+    @DisplayName("测试系统预热与问候任务：MDC traceId 透传与正常调度")
+    void testSystemWarmupJob() {
+        XxlJobTestResult result = XxlJobTestHelper.trigger("systemWarmupJob", "warmup-cache");
         assertTrue(result.isSuccess());
         assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, result.handleCode());
+
+        // 兼容验证别名任务
+        XxlJobTestResult greetingResult = XxlJobTestHelper.trigger("simpleGreetingJob", "ateng-greeting");
+        assertTrue(greetingResult.isSuccess());
+        assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, greetingResult.handleCode());
     }
 
     @Test
@@ -154,21 +166,21 @@ class SampleJobXxlIntegrationTest {
     void testAlertStormSuppressionAndSelfHealing() {
         eventListener.clearEvents();
 
-        // 1. 注入故障，触发首次执行 -> 应发布首发告警卡片 (INITIAL_FAILURE)
-        alertDemoJobHandler.setFaultInjected(true);
-        XxlJobTestHelper.trigger("alertDemoJob");
+        // 1. 注入对账差错故障，触发首次执行 -> 应发布首发告警卡片 (INITIAL_FAILURE)
+        reconciliationJobHandler.setFaultInjected(true);
+        XxlJobTestHelper.trigger("orderReconciliationJob");
         assertEquals(1, eventListener.getCapturedEvents().size());
         assertEquals(XxlJobAlertEvent.AlertType.INITIAL_FAILURE, eventListener.getCapturedEvents().get(0).getAlertType());
 
         // 2. 连续失败第 2、3 次 -> 达到阈值 3，应发布周期聚合摘要卡片 (FAILURE_SUMMARY)
-        XxlJobTestHelper.trigger("alertDemoJob");
-        XxlJobTestHelper.trigger("alertDemoJob");
+        XxlJobTestHelper.trigger("orderReconciliationJob");
+        XxlJobTestHelper.trigger("orderReconciliationJob");
         assertEquals(2, eventListener.getCapturedEvents().size());
         assertEquals(XxlJobAlertEvent.AlertType.FAILURE_SUMMARY, eventListener.getCapturedEvents().get(1).getAlertType());
 
         // 3. 解除故障并成功执行 -> 应发布自愈恢复卡片 (RECOVERY)
-        alertDemoJobHandler.setFaultInjected(false);
-        XxlJobTestHelper.trigger("alertDemoJob");
+        reconciliationJobHandler.setFaultInjected(false);
+        XxlJobTestHelper.trigger("orderReconciliationJob");
         assertEquals(3, eventListener.getCapturedEvents().size());
         assertEquals(XxlJobAlertEvent.AlertType.RECOVERY, eventListener.getCapturedEvents().get(2).getAlertType());
     }
@@ -180,7 +192,7 @@ class SampleJobXxlIntegrationTest {
         assertNotNull(listJobs);
         assertTrue((Integer) listJobs.get("jobCount") >= 4);
 
-        Map<String, Object> triggerResponse = xxlJobEndpoint.triggerJob("simpleGreetingJob", "manual-test", 0, 1, null);
+        Map<String, Object> triggerResponse = xxlJobEndpoint.triggerJob("systemWarmupJob", "manual-test", 0, 1, null);
         assertEquals(true, triggerResponse.get("success"));
         assertEquals(200, triggerResponse.get("handleCode"));
     }
@@ -291,17 +303,17 @@ class SampleJobXxlIntegrationTest {
     @Test
     @DisplayName("测试本地硬看门狗超时中断与同 Bean 就地降级补偿")
     void testWatchdogTimeoutFallback() throws InterruptedException {
-        timeoutFallbackHandler.reset();
+        archiveJobHandler.reset();
 
-        XxlJobTestResult result = XxlJobTestHelper.trigger("timeoutFallbackDemoJob");
+        XxlJobTestResult result = XxlJobTestHelper.trigger("historyDataArchiveJob");
         assertTrue(result.isSuccess());
         assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, result.handleCode());
 
         // 等待异步受管线程池中的降级补偿方法完成
-        boolean reached = timeoutFallbackHandler.getFallbackLatch().await(3, TimeUnit.SECONDS);
+        boolean reached = archiveJobHandler.getFallbackLatch().await(3, TimeUnit.SECONDS);
         assertTrue(reached);
-        assertTrue(timeoutFallbackHandler.isFallbackInvoked());
-        assertTrue(result.handleMsg().contains("timeoutFallbackDemoJob"));
+        assertTrue(archiveJobHandler.isFallbackInvoked());
+        assertTrue(result.handleMsg().contains("historyDataArchiveJob"));
     }
 
     /**
