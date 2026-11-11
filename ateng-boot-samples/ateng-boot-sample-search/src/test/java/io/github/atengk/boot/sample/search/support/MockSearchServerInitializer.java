@@ -97,8 +97,20 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
             }
 
             // 2. 别名与索引结构管理
-            if (path.contains("/_aliases") || path.contains("/_index_template") || (!path.contains("/_doc") && (path.contains("product_") || path.contains("access_log_") || path.contains("/order_")) && (method.equals("PUT") || method.equals("DELETE")))) {
+            if (path.contains("/_aliases") || path.contains("/_index_template") || path.contains("/_mapping") || (method.equals("DELETE") && !path.contains("/_doc"))) {
                 return jsonResponse(200, "{\"acknowledged\":true}");
+            }
+
+            // 2.0 索引结构 DDL 创建 PUT
+            if (method.equals("PUT") && !path.contains("/_doc") && (path.contains("product_") || path.contains("access_log_") || path.contains("order_"))) {
+                String indexName = path.replaceAll("^/|\\?.*$", "");
+                return jsonResponse(200, """
+                        {
+                          "acknowledged": true,
+                          "shards_acknowledged": true,
+                          "index": "%s"
+                        }
+                        """.formatted(indexName));
             }
 
             // 2.1 物理段刷新
