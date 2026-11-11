@@ -51,3 +51,15 @@ _Avoid_: 错误回调, ErrorHandler, 失败监听器, BatchErrorListener
 **JobTimeoutFallbackHandler (任务超时降级处理器 SPI)**:
 当分布式受管任务被本地硬看门狗判定为超时并强行中断时，由框架自动触发的就地补偿降级回调组件，负责资源释放、外部锁解除或状态回滚。
 _Avoid_: 超时处理器, TimeoutHandler, 降级工具, FallbackHelper
+
+**FailedBatch (失败切片死信模型)**:
+在大数据量分片流式批处理中发生单批消费异常时封装的不可变错误切片模型，携带失败实体明细、批次序号、游标 ID 与底层引发异常，供死信收集与补偿重放。
+_Avoid_: 失败对象, 异常批次, ErrorBatch, DeadBatch
+
+**XxlJobAlertAggregator (三阶告警风暴抑制聚合器)**:
+执行器内部负责任务调度失败异常聚合收敛的状态机组件，实现首发立即告警、抑制窗口期内收敛为摘要卡片、平账成功后自动发送绿色自愈通知的闭环状态流转。
+_Avoid_: 告警过滤器, 报警器, AlertFilter, ErrorAlerter
+
+**XxlJobTestResult (脱网调试执行诊断模型)**:
+由 `XxlJobTestHelper` 触发脱网调度后返回的不可变诊断结果记录，封装执行成功标志、调度中心 handleCode、handleMsg、耗时与底层异常对象。
+_Avoid_: 运行结果, 测试返回值, TestResponse, ExecutionData
