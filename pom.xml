@@ -108,6 +108,7 @@
         <langchain4j.version>0.36.2</langchain4j.version>
         <langgraph4j.version>1.3.1</langgraph4j.version>
         <milvus-sdk.version>2.4.4</milvus-sdk.version>
+        <commons-io.version>2.20.0</commons-io.version>
         <!-- 仅作为 ateng-boot-social 运行时支撑 dromara-anduin，严禁暴露至 ateng-boot-bom -->
         <tools-jackson.version>3.2.4</tools-jackson.version>
         <commons-lang3.version>3.18.0</commons-lang3.version>
@@ -210,6 +211,13 @@
                 <groupId>commons-net</groupId>
                 <artifactId>commons-net</artifactId>
                 <version>${commons-net.version}</version>
+            </dependency>
+
+            <!-- Apache Commons IO (底层流式与办公文档操作支持) -->
+            <dependency>
+                <groupId>commons-io</groupId>
+                <artifactId>commons-io</artifactId>
+                <version>${commons-io.version}</version>
             </dependency>
 
 

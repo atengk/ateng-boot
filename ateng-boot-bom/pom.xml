@@ -337,6 +337,13 @@
                 <version>${commons-net.version}</version>
             </dependency>
 
+            <!-- Apache Commons IO (底层流式与办公文档操作支持) -->
+            <dependency>
+                <groupId>commons-io</groupId>
+                <artifactId>commons-io</artifactId>
+                <version>${commons-io.version}</version>
+            </dependency>
+
             <!-- Apache MINA SSHD (SSH / SFTP 协议原生驱动) -->
             <dependency>
                 <groupId>org.apache.sshd</groupId>

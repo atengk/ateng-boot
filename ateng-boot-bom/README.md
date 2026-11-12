@@ -56,7 +56,7 @@
 | **搜索智能** | `io.github.atengk:ateng-boot-ai` | `1.2.0` | LangChain4j & LangGraph4j 智能体编排、RAG 溯源、HITL 审批与配额风控 | [README](../ateng-boot-ai/README.md) |
 | **搜索智能** | `io.github.atengk:ateng-boot-milvus` | `1.2.0` | Milvus 向量库运维、多向量混合检索、多租户 PartitionKey 隔离 | [README](../ateng-boot-milvus/README.md) |
 
-### 0.3 纳管核心第三方中间件坐标清单 (32 项)
+### 0.3 纳管核心第三方中间件坐标清单 (33 项)
 
 | 归属 Starter | 第三方坐标 (`groupId:artifactId`) | 锁定版本 | 特殊处理 / `<exclusions>` 策略 |
 | :--- | :--- | :---: | :--- |
@@ -73,6 +73,7 @@
 | `ssh` | `org.apache.sshd:sshd-sftp` | `2.14.0` | Apache MINA SSHD SFTP 子系统 |
 | `document` | `com.deepoove:poi-tl` | `1.12.2` | Word 模板 AST 渲染引擎 |
 | `document` | `org.apache.pdfbox:pdfbox` | `3.0.4` | PDF 水印、切片与表单治理内核 |
+| `document / excel / ai` | `commons-io:commons-io` | `2.20.0` | 底层流式与办公文档操作支持，统一版本彻底消除 POI 5.5+ 与旧依赖传递冲突 |
 | `mqtt` | `org.eclipse.paho:org.eclipse.paho.mqttv5.client` | `1.2.5` | Eclipse Paho MQTT 5.0 官方客户端 |
 | `rocketmq` | `org.apache.rocketmq:rocketmq-client-java` | `5.2.2` | RocketMQ 5.x gRPC 瘦客户端 |
 | `datasource` | `com.baomidou:dynamic-datasource-spring-boot3-starter` | `4.6.0` | 动态数据源多库路由核心 |

@@ -77,7 +77,7 @@ jobs:
         with:
           filters: |
             code:
-              - '!(*.md|docs/**|.gitignore|.editorconfig|LICENSE)'
+              - '!(*.md|llms.txt|docs/**|.gitignore|.editorconfig|LICENSE)'
 
       - name: 综合决策是否需要执行耗时测试 (发版提交智能短路直通)
         id: decide
