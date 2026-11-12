@@ -302,26 +302,34 @@ public class CoreSecurityScenarioService {
         String cbcDecrypted = CryptoUtil.decryptCbc(cbcCiphertext, cbcKey, cbcIv);
         BusinessAssert.isTrue(raw.equals(cbcDecrypted), "AES/CBC 解密明文与原始明文不匹配");
 
-        // 3. HMAC-SHA256 密钥散列加签与恒定时间防侧信道比对验签
+        // 3. 国密 SM4/CBC 对称加解密（纯 JDK 原生实现，16 字节密钥与随机 16 字节 IV）
+        byte[] sm4Key = CryptoUtil.generateKey(128);
+        byte[] sm4Iv = CryptoUtil.generateIv(CryptoUtil.SM4_IV_SIZE);
+        String sm4CbcCiphertext = CryptoUtil.encryptSm4Cbc(raw, sm4Key, sm4Iv);
+        String sm4CbcDecrypted = CryptoUtil.decryptSm4Cbc(sm4CbcCiphertext, sm4Key, sm4Iv);
+        BusinessAssert.isTrue(raw.equals(sm4CbcDecrypted), "国密 SM4/CBC 解密明文与原始明文不匹配");
+
+        // 4. HMAC-SHA256 密钥散列加签与恒定时间防侧信道比对验签
         String hmacHex = HmacUtil.hmacSha256Hex(raw, secretKey);
         String hmacBase64 = HmacUtil.hmacSha256Base64(raw, secretKey);
         String recomputedHex = HmacUtil.hmacSha256Hex(raw, secretKey);
         boolean signatureVerified = HmacUtil.verifyHex(recomputedHex, hmacHex);
 
-        // 4. DigestUtil 消息摘要
+        // 5. DigestUtil 消息摘要（SHA-256 / 国密 SM3 / MD5）
         String sha256Hex = DigestUtil.sha256Hex(raw);
+        String sm3Hex = DigestUtil.sm3Hex(raw);
         String md5Hex = DigestUtil.md5Hex(raw);
 
-        // 5. HexUtil 编解码
+        // 6. HexUtil 编解码
         String encodedHex = HexUtil.encodeHex(raw.getBytes(StandardCharsets.UTF_8));
 
-        // 6. ChecksumUtil 校验和计算
+        // 7. ChecksumUtil 校验和计算
         String crc32Hex = ChecksumUtil.crc32Hex(raw);
         String crc32cHex = ChecksumUtil.crc32cHex(raw);
         String adler32Hex = ChecksumUtil.adler32Hex(raw);
 
-        log.info("支付报文加解密与验签完成 [tradeNo={}]: verified={}, gcmCipher={}, hmacHex={}",
-                request.getTradeNo(), signatureVerified, gcmCiphertext, hmacHex);
+        log.info("支付报文加解密与验签完成 [tradeNo={}]: verified={}, gcmCipher={}, hmacHex={}, sm3Hex={}",
+                request.getTradeNo(), signatureVerified, gcmCiphertext, hmacHex, sm3Hex);
 
         return PaymentCryptoVO.builder()
                 .tradeNo(request.getTradeNo())
@@ -329,10 +337,13 @@ public class CoreSecurityScenarioService {
                 .gcmDecrypted(gcmDecrypted)
                 .cbcCiphertext(cbcCiphertext)
                 .cbcDecrypted(cbcDecrypted)
+                .sm4CbcCiphertext(sm4CbcCiphertext)
+                .sm4CbcDecrypted(sm4CbcDecrypted)
                 .hmacSha256Hex(hmacHex)
                 .hmacSha256Base64(hmacBase64)
                 .signatureVerified(signatureVerified)
                 .sha256Hex(sha256Hex)
+                .sm3Hex(sm3Hex)
                 .md5Hex(md5Hex)
                 .encodedHex(encodedHex)
                 .crc32Hex(crc32Hex)

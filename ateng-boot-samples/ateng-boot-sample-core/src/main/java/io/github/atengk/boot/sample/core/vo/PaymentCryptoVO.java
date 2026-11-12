@@ -47,6 +47,16 @@ public class PaymentCryptoVO implements Serializable {
     private String cbcDecrypted;
 
     /**
+     * 国密 SM4/CBC 对称密文 (Base64)
+     */
+    private String sm4CbcCiphertext;
+
+    /**
+     * 国密 SM4/CBC 对称解密还原明文回执
+     */
+    private String sm4CbcDecrypted;
+
+    /**
      * HMAC-SHA256 签名 (Hex)
      */
     private String hmacSha256Hex;
@@ -65,6 +75,11 @@ public class PaymentCryptoVO implements Serializable {
      * SHA-256 报文摘要
      */
     private String sha256Hex;
+
+    /**
+     * 国密 SM3 256-bit 报文摘要 (64 位十六进制)
+     */
+    private String sm3Hex;
 
     /**
      * MD5 报文摘要

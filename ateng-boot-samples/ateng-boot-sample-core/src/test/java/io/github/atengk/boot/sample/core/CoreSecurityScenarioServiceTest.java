@@ -2,12 +2,16 @@ package io.github.atengk.boot.sample.core;
 
 import io.github.atengk.boot.core.model.Pair;
 import io.github.atengk.boot.core.model.Triple;
+import io.github.atengk.boot.sample.core.dto.PaymentCryptoRequest;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
 import io.github.atengk.boot.sample.core.service.CoreSecurityScenarioService;
+import io.github.atengk.boot.sample.core.vo.PaymentCryptoVO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+
+import java.math.BigDecimal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -133,5 +137,38 @@ class CoreSecurityScenarioServiceTest {
         assertThat(result.left()).isEqualTo("cbf43926");
         assertThat(result.middle()).isEqualTo("e3069283");
         assertThat(result.right()).isEqualTo("091e01de");
+    }
+
+    @Test
+    @DisplayName("测试支付安全服务国密 SM4/CBC 往返加解密与 SM3 杂凑摘要闭环")
+    void testProcessPaymentCryptoWithSm4AndSm3() {
+        String rawPayload = "orderId=20261112001&currency=CNY&amount=199.00";
+        PaymentCryptoRequest request = PaymentCryptoRequest.builder()
+                .tradeNo("TX-SM4-SM3-001")
+                .amount(new BigDecimal("199.00"))
+                .channel("ALIPAY")
+                .secretKey("merchantSecretKey2026")
+                .rawPayload(rawPayload)
+                .build();
+
+        PaymentCryptoVO first = securityScenarioService.processPaymentCryptoAndVerify(request);
+        assertThat(first.getSm4CbcCiphertext()).isNotBlank().isNotEqualTo(rawPayload);
+        assertThat(first.getSm4CbcDecrypted()).isEqualTo(rawPayload);
+        assertThat(first.getSm3Hex()).matches("^[0-9a-f]{64}$");
+
+        // 同明文二次加密因随机密钥与随机 IV 产生不同密文，但 SM3 摘要严格一致；不同明文摘要不同
+        PaymentCryptoVO second = securityScenarioService.processPaymentCryptoAndVerify(request);
+        assertThat(second.getSm4CbcCiphertext()).isNotBlank().isNotEqualTo(first.getSm4CbcCiphertext());
+        assertThat(second.getSm3Hex()).isEqualTo(first.getSm3Hex());
+
+        PaymentCryptoRequest changed = PaymentCryptoRequest.builder()
+                .tradeNo("TX-SM4-SM3-002")
+                .amount(new BigDecimal("200.00"))
+                .channel("ALIPAY")
+                .secretKey("merchantSecretKey2026")
+                .rawPayload(rawPayload + "&tampered=1")
+                .build();
+        PaymentCryptoVO third = securityScenarioService.processPaymentCryptoAndVerify(changed);
+        assertThat(third.getSm3Hex()).matches("^[0-9a-f]{64}$").isNotEqualTo(first.getSm3Hex());
     }
 }

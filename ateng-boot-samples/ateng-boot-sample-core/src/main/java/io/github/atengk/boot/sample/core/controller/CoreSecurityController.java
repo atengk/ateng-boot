@@ -54,10 +54,10 @@ public class CoreSecurityController {
     }
 
     /**
-     * 3. 支付敏感报文原生加解密、HMAC 恒定时间防侧信道验签与数据校验和
+     * 3. 支付敏感报文原生加解密、HMAC 恒定时间防侧信道验签与国密/摘要校验和
      *
      * @param request 支付加密与签名请求
-     * @return 包含 GCM/CBC 密文、解密验证、验签结果与校验和的响应
+     * @return 包含 AES-GCM/CBC 与国密 SM4/CBC 密文、解密验证、验签结果、SM3/SHA-256 摘要与校验和的响应
      */
     @PostMapping("/crypto/verify")
     public Result<PaymentCryptoVO> verifyPaymentCrypto(

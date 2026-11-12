@@ -13,6 +13,8 @@ import java.math.BigDecimal;
 
 import static org.hamcrest.Matchers.hasLength;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.matchesPattern;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -100,9 +102,13 @@ class CoreSecurityControllerTest {
                 .andExpect(jsonPath("$.data.gcmDecrypted", is("orderId=10086&currency=CNY&amount=299.90")))
                 .andExpect(jsonPath("$.data.cbcCiphertext", notNullValue()))
                 .andExpect(jsonPath("$.data.cbcDecrypted", is("orderId=10086&currency=CNY&amount=299.90")))
+                .andExpect(jsonPath("$.data.sm4CbcCiphertext", notNullValue()))
+                .andExpect(jsonPath("$.data.sm4CbcCiphertext", not("orderId=10086&currency=CNY&amount=299.90")))
+                .andExpect(jsonPath("$.data.sm4CbcDecrypted", is("orderId=10086&currency=CNY&amount=299.90")))
                 .andExpect(jsonPath("$.data.hmacSha256Hex", hasLength(64)))
                 .andExpect(jsonPath("$.data.signatureVerified", is(true)))
                 .andExpect(jsonPath("$.data.sha256Hex", hasLength(64)))
+                .andExpect(jsonPath("$.data.sm3Hex", matchesPattern("^[0-9a-f]{64}$")))
                 .andExpect(jsonPath("$.data.md5Hex", hasLength(32)))
                 .andExpect(jsonPath("$.data.encodedHex", notNullValue()))
                 .andExpect(jsonPath("$.data.crc32Hex", notNullValue()))
