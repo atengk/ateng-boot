@@ -48,7 +48,6 @@ ateng:
         exclude-urls:
           - "/actuator/**"
           - "/sample/web/observability/slow-excluded"
-          - "/api/sample/runtime/slow-excluded"
       operate-log:
         enabled: true
       body-cache:

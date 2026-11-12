@@ -25,6 +25,7 @@ import io.github.atengk.boot.web.util.IpUtil;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Aspect;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -365,24 +366,38 @@ public class AtengWebAutoConfiguration {
     }
 
     /**
+     * 构建同步全局与 IP 访问控制授信反向代理清单至 {@link IpUtil} 基线的容器初始化器
+     *
+     * @param webPropertiesProvider             可选的 Web 配置属性提供者
+     * @param ipAccessControlPropertiesProvider 可选的 IP 访问控制配置属性提供者
+     * @return SmartInitializingSingleton 实例
+     */
+    public static SmartInitializingSingleton createTrustedProxiesInitializer(
+            ObjectProvider<WebProperties> webPropertiesProvider,
+            ObjectProvider<IpAccessControlProperties> ipAccessControlPropertiesProvider) {
+        return () -> {
+            WebProperties webProps = webPropertiesProvider.getIfAvailable();
+            IpAccessControlProperties ipProps = ipAccessControlPropertiesProvider.getIfAvailable();
+            IpUtil.configureDefaultTrustedProxies(
+                    webProps != null ? webProps.getTrustedProxies() : null,
+                    ipProps != null ? ipProps.getTrustedProxies() : null
+            );
+        };
+    }
+
+    /**
      * 容器初始化完成后将全局与 IP 访问控制配置中的授信反向代理清单去重合并注入 IpUtil 默认防伪造基线
      *
-     * @param webProperties                   Web 配置属性
+     * @param webPropertiesProvider             Web 配置属性提供者
      * @param ipAccessControlPropertiesProvider 可选的 IP 访问控制配置属性提供者
      * @return SmartInitializingSingleton 实例
      */
     @Bean
     @ConditionalOnMissingBean(name = {"webTrustedProxiesInitializer", "ipAccessControlTrustedProxiesInitializer"})
-    public org.springframework.beans.factory.SmartInitializingSingleton webTrustedProxiesInitializer(
-            WebProperties webProperties,
+    public SmartInitializingSingleton webTrustedProxiesInitializer(
+            ObjectProvider<WebProperties> webPropertiesProvider,
             ObjectProvider<IpAccessControlProperties> ipAccessControlPropertiesProvider) {
-        return () -> {
-            IpAccessControlProperties ipProps = ipAccessControlPropertiesProvider.getIfAvailable();
-            IpUtil.configureDefaultTrustedProxies(
-                    webProperties.getTrustedProxies(),
-                    ipProps != null ? ipProps.getTrustedProxies() : null
-            );
-        };
+        return createTrustedProxiesInitializer(webPropertiesProvider, ipAccessControlPropertiesProvider);
     }
 
     /**

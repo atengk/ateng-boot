@@ -66,21 +66,18 @@ public class AtengIpAccessControlAutoConfiguration {
     /**
      * 容器初始化完成后将 IP 访问控制配置的授信反向代理清单与全局基线去重合并并同步至 IpUtil
      *
-     * @param properties            IP 访问控制配置属性
-     * @param webPropertiesProvider 可选的 Web 配置属性提供者
+     * @param webPropertiesProvider             可选的 Web 配置属性提供者
+     * @param ipAccessControlPropertiesProvider IP 访问控制配置属性提供者
      * @return SmartInitializingSingleton 实例
      */
     @Bean
     @ConditionalOnMissingBean(name = {"webTrustedProxiesInitializer", "ipAccessControlTrustedProxiesInitializer"})
     public SmartInitializingSingleton ipAccessControlTrustedProxiesInitializer(
-            IpAccessControlProperties properties,
-            ObjectProvider<WebProperties> webPropertiesProvider) {
-        return () -> {
-            WebProperties webProps = webPropertiesProvider.getIfAvailable();
-            IpUtil.configureDefaultTrustedProxies(
-                    webProps != null ? webProps.getTrustedProxies() : null,
-                    properties.getTrustedProxies()
-            );
-        };
+            ObjectProvider<WebProperties> webPropertiesProvider,
+            ObjectProvider<IpAccessControlProperties> ipAccessControlPropertiesProvider) {
+        return AtengWebAutoConfiguration.createTrustedProxiesInitializer(
+                webPropertiesProvider,
+                ipAccessControlPropertiesProvider
+        );
     }
 }
