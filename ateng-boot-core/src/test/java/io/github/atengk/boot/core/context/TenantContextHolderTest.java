@@ -200,4 +200,57 @@ class TenantContextHolderTest {
         });
         assertNull(TenantContextHolder.getTenantId(), "当 SPI 发生 JVM Error 时应平滑降级返回 null 而非中断主线程");
     }
+
+    @Test
+    @DisplayName("11. 镜像对称与惰性清理：getExplicit() 不触发 SPI 回退，只读查询与栈空退栈后无 ThreadLocal 残留")
+    void shouldSupportGetExplicitAndLazyThreadLocalCleanup() {
+        AtomicReference<String> spiTenant = new AtomicReference<>("spi_tenant_live_1");
+        TenantContextHolder.setTenantProvider(spiTenant::get);
+
+        // 1. 只读查询（含 getTenantId / get / getAsLong / getTenantIdAsLong / getExplicit / isIgnoreTenant / capture / capturePrevious）不分配 ThreadLocal
+        assertEquals("spi_tenant_live_1", TenantContextHolder.getTenantId());
+        assertEquals("spi_tenant_live_1", TenantContextHolder.get());
+        assertNull(TenantContextHolder.getTenantIdAsLong());
+        assertNull(TenantContextHolder.getAsLong());
+        assertNull(TenantContextHolder.getExplicit());
+        assertFalse(TenantContextHolder.isIgnoreTenant());
+
+        spiTenant.set("2026");
+        assertEquals("2026", TenantContextHolder.get());
+        assertEquals(2026L, TenantContextHolder.getAsLong());
+        spiTenant.set("spi_tenant_live_1");
+
+        TenantContextHolder.TenantSnapshot spiSnap = TenantContextHolder.capture();
+        assertEquals("spi_tenant_live_1", spiSnap.getTenantId());
+        TenantContextHolder.TenantSnapshot prevSnap = TenantContextHolder.capturePrevious();
+        assertNull(prevSnap.getTenantId());
+        assertFalse(prevSnap.isIgnoreTenant());
+
+        assertFalse(TenantContextHolder.hasActiveThreadLocal(), "只读查询后不得残留 ThreadLocal 空槽或状态对象");
+
+        // 2. 显式设置与嵌套闭包内的 getExplicit() / get() / getAsLong() 对称行为
+        TenantContextHolder.setTenantId(3001L);
+        assertEquals("3001", TenantContextHolder.get());
+        assertEquals(3001L, TenantContextHolder.getAsLong());
+        TenantContextHolder.setTenantId("explicit_root");
+        assertEquals("explicit_root", TenantContextHolder.getExplicit());
+        assertTrue(TenantContextHolder.hasActiveThreadLocal());
+
+        TenantContextHolder.runWithTenant("explicit_inner", () -> {
+            assertEquals("explicit_inner", TenantContextHolder.getExplicit());
+            TenantContextHolder.setTenantId((String) null);
+            assertNull(TenantContextHolder.getExplicit());
+        });
+        assertEquals("explicit_root", TenantContextHolder.getExplicit());
+
+        // 3. 根层级 setTenantId((String) null) 自动清理 ThreadLocal
+        TenantContextHolder.setTenantId((String) null);
+        assertNull(TenantContextHolder.getExplicit());
+        assertFalse(TenantContextHolder.hasActiveThreadLocal());
+
+        // 4. runWithoutTenant 退栈后清理 IGNORE_DEPTH ThreadLocal
+        TenantContextHolder.runWithoutTenant(() -> assertTrue(TenantContextHolder.hasActiveThreadLocal()));
+        assertFalse(TenantContextHolder.isIgnoreTenant());
+        assertFalse(TenantContextHolder.hasActiveThreadLocal());
+    }
 }

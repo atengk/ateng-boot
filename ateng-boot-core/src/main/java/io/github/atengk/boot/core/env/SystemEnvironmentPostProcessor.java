@@ -17,12 +17,10 @@ import java.util.TimeZone;
 /**
  * 核心系统基线与运行环境后处理器
  * <p>
- * 在 Spring Boot 容器启动极早阶段执行全局系统防卫：
- * 1. 默认校准全局时区为 {@code Asia/Shanghai}（支持通过配置覆盖），消灭跨系统/容器时区漂移；
- * 2. 统一强制 JVM 文件编码为 {@code UTF-8}；
- * 3. 强制配置 {@code java.awt.headless=true}，确保无桌面 Linux/Docker 容器图形工具安全运行；
- * 4. 为 JVM 原生网络通信注入默认 10 秒连接与读取超时，防御老旧第三方客户端无限挂起；
- * 5. 支持 {@code ateng.boot.core.system.enabled} 顶层大开关一键熔断退出。
+ * 在 Spring Boot 容器启动极早阶段按正交职责执行全局系统防卫：
+ * 1. 优先独立绑定 {@code ateng.boot.core.net.*} 网络通信与网卡探测配置至 {@link NetUtil}（不受 {@code system.enabled} 开关影响）；
+ * 2. 若 {@code ateng.boot.core.system.enabled=true}（默认）：强制开启 {@code java.awt.headless=true} 并注入 10 秒 JVM 默认连接与读取超时保底；
+ * 3. 若 {@code ateng.boot.core.system.timezone-guard-enabled=true}（默认）：校准全局时区（默认 {@code Asia/Shanghai}）与系统字符集 {@code UTF-8}。
  * </p>
  *
  * @author Ateng
@@ -61,35 +59,35 @@ public class SystemEnvironmentPostProcessor implements EnvironmentPostProcessor,
             return;
         }
 
-        // 1. 系统增强总开关校验（默认 true，为 false 时彻底熔断所有系统级干预）
+        // 1. 优先独立绑定网络通信与网卡探测配置并同步至 NetUtil，不受 system.enabled 或 timezone-guard-enabled 开关制约
+        applyNetworkConfiguration(environment);
+
+        // 2. 系统增强总开关校验（默认 true，为 false 时跳过全部 JVM 系统属性防卫）
         Boolean systemEnabled = environment.getProperty("ateng.boot.core.system.enabled", Boolean.class, true);
         if (Boolean.FALSE.equals(systemEnabled)) {
             return;
         }
 
-        // 2. 规范系统编码与 Headless 模式及底层网络超时基线
-        applyEncodingAndNetworkBaseline();
+        // 3. 激活 Headless 模式与底层网络默认超时保底（10s）
+        applyHeadlessAndNetworkTimeoutBaseline();
 
-        // 3. 时区校准防卫子开关校验（默认 true）
+        // 4. 时区与编码校准防卫子开关校验（默认 true，为 false 时仅跳过默认时区与 file.encoding 校准）
         Boolean timezoneGuardEnabled = environment.getProperty("ateng.boot.core.system.timezone-guard-enabled", Boolean.class, true);
         if (Boolean.FALSE.equals(timezoneGuardEnabled)) {
             return;
         }
 
-        // 4. 读取目标时区标识并应用
+        // 5. 规范系统编码、校准目标时区并注入低优先级默认属性源
+        System.setProperty("file.encoding", "UTF-8");
         String timezone = environment.getProperty("ateng.boot.core.system.timezone", String.class, DEFAULT_TIMEZONE);
         applyTimezoneBaseline(timezone);
 
-        // 5. 以最低优先级注入属性源，确保业务配置中心/application.yml 无缝覆写
         if (!environment.getPropertySources().contains(PROPERTY_SOURCE_NAME)) {
             Map<String, Object> defaults = new LinkedHashMap<>();
             defaults.put("ateng.boot.core.system.timezone", timezone);
             defaults.put("user.timezone", timezone);
             environment.getPropertySources().addLast(new MapPropertySource(PROPERTY_SOURCE_NAME, defaults));
         }
-
-        // 6. 绑定网络通信与网卡探测配置并同步至 NetUtil，同时强制刷新 IP 静态缓存
-        applyNetworkConfiguration(environment);
     }
 
     /**
@@ -113,11 +111,9 @@ public class SystemEnvironmentPostProcessor implements EnvironmentPostProcessor,
     }
 
     /**
-     * 应用系统编码、Headless 与底层网络超时保底基线
+     * 应用 Headless 与底层网络超时保底基线
      */
-    private void applyEncodingAndNetworkBaseline() {
-        // 规范系统编码与 Headless 模式
-        System.setProperty("file.encoding", "UTF-8");
+    private void applyHeadlessAndNetworkTimeoutBaseline() {
         System.setProperty("java.awt.headless", "true");
 
         // 注入 JVM 底层网络连接与读取保底超时（防第三方无超时客户端无限挂起）

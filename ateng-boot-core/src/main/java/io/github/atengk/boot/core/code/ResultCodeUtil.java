@@ -68,6 +68,20 @@ public final class ResultCodeUtil {
     }
 
     /**
+     * 校验指定整数状态码必须处于期望的领域号段内，否则抛出业务异常
+     *
+     * @param code            整数状态码
+     * @param expectedSegment 期望号段（非空）
+     * @throws BusinessException 当状态码不处于期望号段时抛出
+     */
+    public static void assertInSegment(int code, ResultCodeSegment expectedSegment) {
+        Objects.requireNonNull(expectedSegment, "expectedSegment 不能为空");
+        if (!expectedSegment.contains(code)) {
+            throw outOfSegmentException(code, null, expectedSegment);
+        }
+    }
+
+    /**
      * 校验指定状态码契约对象必须处于期望的领域号段内，否则抛出业务异常
      *
      * @param resultCode      状态码契约对象（非空）
@@ -79,10 +93,15 @@ public final class ResultCodeUtil {
         Objects.requireNonNull(expectedSegment, "expectedSegment 不能为空");
         Integer code = resultCode.getCode();
         if (code == null || !expectedSegment.contains(code)) {
-            throw new BusinessException(CommonResultCode.BAD_REQUEST,
-                    "状态码 [" + code + "] (" + resultCode.getMsg() + ") 不在期望的领域号段 ["
-                            + expectedSegment.name() + "] (" + expectedSegment.getMinCode() + "~" + expectedSegment.getMaxCode() + ") 内");
+            throw outOfSegmentException(code, resultCode.getMsg(), expectedSegment);
         }
+    }
+
+    private static BusinessException outOfSegmentException(Integer code, String msg, ResultCodeSegment expectedSegment) {
+        String msgPart = msg == null ? "" : " (" + msg + ")";
+        return new BusinessException(CommonResultCode.BAD_REQUEST,
+                "状态码 [" + code + "]" + msgPart + " 不在期望的领域号段 ["
+                        + expectedSegment.name() + "] (" + expectedSegment.getMinCode() + "~" + expectedSegment.getMaxCode() + ") 内");
     }
 
     /**

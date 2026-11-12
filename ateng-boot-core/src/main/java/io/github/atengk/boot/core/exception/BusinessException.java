@@ -168,7 +168,7 @@ public class BusinessException extends RuntimeException {
      * @return 当前异常实例
      */
     @Override
-    public synchronized Throwable fillInStackTrace() {
+    public Throwable fillInStackTrace() {
         return this.writableStackTrace ? super.fillInStackTrace() : this;
     }
 }

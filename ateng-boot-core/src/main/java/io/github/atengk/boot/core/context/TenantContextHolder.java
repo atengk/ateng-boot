@@ -17,14 +17,14 @@ import java.util.function.Supplier;
 public final class TenantContextHolder {
 
     /**
-     * 当前线程租户 ID 栈（采用 LinkedList 支持 null 元素并支持嵌套 runWithTenant 安全回滚还原）
+     * 当前线程租户 ID 栈（惰性初始化，采用 LinkedList 支持 null 元素并支持嵌套 runWithTenant 安全回滚还原）
      */
-    private static final ThreadLocal<Deque<String>> TENANT_ID_STACK = ThreadLocal.withInitial(LinkedList::new);
+    private static final ThreadLocal<Deque<String>> TENANT_ID_STACK = new ThreadLocal<>();
 
     /**
-     * 当前线程忽略租户深度计数器（> 0 表示处于忽略状态，支持嵌套 runWithoutTenant 安全还原）
+     * 当前线程忽略租户深度计数器（惰性初始化，> 0 表示处于忽略状态，支持嵌套 runWithoutTenant 安全还原）
      */
-    private static final ThreadLocal<Integer> IGNORE_DEPTH = ThreadLocal.withInitial(() -> 0);
+    private static final ThreadLocal<Integer> IGNORE_DEPTH = new ThreadLocal<>();
 
     /**
      * 外部租户信息提取 SPI
@@ -59,12 +59,9 @@ public final class TenantContextHolder {
      * @return 当前租户标识，若无则返回 null
      */
     public static String getTenantId() {
-        Deque<String> stack = TENANT_ID_STACK.get();
-        if (!stack.isEmpty()) {
-            String tenantId = stack.peek();
-            if (tenantId != null && !tenantId.isBlank()) {
-                return tenantId;
-            }
+        String tenantId = ContextStackSupport.peekExplicit(TENANT_ID_STACK);
+        if (tenantId != null && !tenantId.isBlank()) {
+            return tenantId;
         }
         CurrentTenantProvider provider = tenantProvider;
         if (provider != null) {
@@ -75,6 +72,35 @@ public final class TenantContextHolder {
             }
         }
         return null;
+    }
+
+    /**
+     * 获取当前线程绑定的租户标识（{@link #getTenantId()} 镜像别名）
+     *
+     * @return 当前租户标识，若无则返回 null
+     */
+    public static String get() {
+        return getTenantId();
+    }
+
+    /**
+     * 获取当前线程显式绑定的租户标识（纯净提取，不触发外部 SPI 回退）
+     * 专供上下文现场暂存、恢复与防污染快照，与 {@link UserContextHolder#getExplicit()} 保持镜像对称
+     *
+     * @return 当前线程显式绑定的租户标识，未显式绑定则返回 null
+     */
+    public static String getExplicit() {
+        return ContextStackSupport.peekExplicit(TENANT_ID_STACK);
+    }
+
+    /**
+     * 获取当前线程绑定的租户标识（Long 长整型形式，{@link #getTenantIdAsLong()} 镜像别名）
+     * 若当前租户标识为非纯数字格式或未设置，则返回 null
+     *
+     * @return 租户标识 Long 值，无法解析时返回 null
+     */
+    public static Long getAsLong() {
+        return getTenantIdAsLong();
     }
 
     /**
@@ -101,15 +127,7 @@ public final class TenantContextHolder {
      * @param tenantId 租户标识
      */
     public static void setTenantId(String tenantId) {
-        Deque<String> stack = TENANT_ID_STACK.get();
-        if (stack.isEmpty()) {
-            if (tenantId != null) {
-                stack.push(tenantId);
-            }
-        } else {
-            stack.pop();
-            stack.push(tenantId);
-        }
+        ContextStackSupport.setTop(TENANT_ID_STACK, tenantId);
     }
 
     /**
@@ -127,7 +145,7 @@ public final class TenantContextHolder {
      * @return true 表示跳过租户过滤；false 表示执行正常租户拦截
      */
     public static boolean isIgnoreTenant() {
-        return IGNORE_DEPTH.get() > 0;
+        return currentIgnoreDepth() > 0;
     }
 
     /**
@@ -137,7 +155,7 @@ public final class TenantContextHolder {
      */
     public static void setIgnoreTenant(boolean ignore) {
         if (ignore) {
-            IGNORE_DEPTH.set(Math.max(1, IGNORE_DEPTH.get() + 1));
+            IGNORE_DEPTH.set(Math.max(1, currentIgnoreDepth() + 1));
         } else {
             IGNORE_DEPTH.remove();
         }
@@ -153,17 +171,7 @@ public final class TenantContextHolder {
      * @return 执行结果
      */
     public static <T> T runWithTenant(String tenantId, Supplier<T> supplier) {
-        Objects.requireNonNull(supplier, "supplier 不能为空");
-        Deque<String> stack = TENANT_ID_STACK.get();
-        stack.push(tenantId);
-        try {
-            return supplier.get();
-        } finally {
-            stack.pop();
-            if (stack.isEmpty()) {
-                TENANT_ID_STACK.remove();
-            }
-        }
+        return ContextStackSupport.pushAndRun(TENANT_ID_STACK, tenantId, supplier);
     }
 
     /**
@@ -199,6 +207,7 @@ public final class TenantContextHolder {
      * @param runnable 业务执行块
      */
     public static void runWithTenant(Long tenantId, Runnable runnable) {
+        Objects.requireNonNull(runnable, "runnable 不能为空");
         runWithTenant(tenantId, () -> {
             runnable.run();
             return null;
@@ -215,7 +224,7 @@ public final class TenantContextHolder {
      */
     public static <T> T runWithoutTenant(Supplier<T> supplier) {
         Objects.requireNonNull(supplier, "supplier 不能为空");
-        int depth = IGNORE_DEPTH.get();
+        int depth = currentIgnoreDepth();
         IGNORE_DEPTH.set(depth + 1);
         try {
             return supplier.get();
@@ -263,15 +272,14 @@ public final class TenantContextHolder {
      * @return 多租户状态快照
      */
     public static TenantSnapshot capture() {
-        Deque<String> currentStack = TENANT_ID_STACK.get();
-        Deque<String> stackCopy = new LinkedList<>(currentStack);
+        Deque<String> stackCopy = ContextStackSupport.copyStack(TENANT_ID_STACK);
         if (stackCopy.isEmpty()) {
             String effectiveTenant = getTenantId();
             if (effectiveTenant != null && !effectiveTenant.isBlank()) {
                 stackCopy.push(effectiveTenant);
             }
         }
-        return new TenantSnapshot(stackCopy, IGNORE_DEPTH.get());
+        return new TenantSnapshot(stackCopy, currentIgnoreDepth());
     }
 
     /**
@@ -281,8 +289,7 @@ public final class TenantContextHolder {
      * @return 当前线程的原始租户现场快照
      */
     public static TenantSnapshot capturePrevious() {
-        Deque<String> currentStack = TENANT_ID_STACK.get();
-        return new TenantSnapshot(new LinkedList<>(currentStack), IGNORE_DEPTH.get());
+        return new TenantSnapshot(ContextStackSupport.copyStack(TENANT_ID_STACK), currentIgnoreDepth());
     }
 
     /**
@@ -294,17 +301,32 @@ public final class TenantContextHolder {
         if (snapshot == null || (snapshot.tenantStack.isEmpty() && snapshot.ignoreDepth == 0)) {
             clear();
         } else {
-            if (snapshot.tenantStack.isEmpty()) {
-                TENANT_ID_STACK.remove();
-            } else {
-                TENANT_ID_STACK.set(new LinkedList<>(snapshot.tenantStack));
-            }
+            ContextStackSupport.restoreStack(TENANT_ID_STACK, snapshot.tenantStack);
             if (snapshot.ignoreDepth == 0) {
                 IGNORE_DEPTH.remove();
             } else {
                 IGNORE_DEPTH.set(snapshot.ignoreDepth);
             }
         }
+    }
+
+    /**
+     * 检测当前线程是否仍绑定了非空的 ThreadLocal 栈或忽略深度对象（仅供同包单测核验惰性清理使用）
+     *
+     * @return true 表示存在已绑定的 ThreadLocal 状态对象
+     */
+    static boolean hasActiveThreadLocal() {
+        return ContextStackSupport.hasNonNullValue(TENANT_ID_STACK)
+                || ContextStackSupport.hasNonNullValue(IGNORE_DEPTH);
+    }
+
+    private static int currentIgnoreDepth() {
+        Integer depth = IGNORE_DEPTH.get();
+        if (depth == null) {
+            IGNORE_DEPTH.remove();
+            return 0;
+        }
+        return depth;
     }
 
     /**

@@ -121,9 +121,18 @@ class ResultCodeUtilTest {
                 .hasMessageContaining("不在期望的领域号段");
 
         // 空保护
-        assertThatThrownBy(() -> ResultCodeUtil.assertInSegment(null, ResultCodeSegment.SYSTEM_CORE))
+        assertThatThrownBy(() -> ResultCodeUtil.assertInSegment((IResultCode) null, ResultCodeSegment.SYSTEM_CORE))
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> ResultCodeUtil.assertInSegment(MockCoreCode.PARAM_ERROR, null))
+                .isInstanceOf(NullPointerException.class);
+
+        // int 状态码重载校验
+        ResultCodeUtil.assertInSegment(1000, ResultCodeSegment.SYSTEM_CORE);
+        ResultCodeUtil.assertInSegment(2001, ResultCodeSegment.AUTH_SECURITY);
+        assertThatThrownBy(() -> ResultCodeUtil.assertInSegment(1000, ResultCodeSegment.AUTH_SECURITY))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("不在期望的领域号段");
+        assertThatThrownBy(() -> ResultCodeUtil.assertInSegment(1000, null))
                 .isInstanceOf(NullPointerException.class);
     }
 

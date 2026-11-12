@@ -144,4 +144,93 @@ class UserContextHolderTest {
             UserContextHolder.clear();
         }
     }
+
+    @Test
+    @DisplayName("验证 Long 重载与 getUserIdAsLong() 强类型解析及非数字异常防卫")
+    void shouldSupportLongOverloadsAndValidateNumericUserId() {
+        assertNull(UserContextHolder.getUserIdAsLong());
+
+        UserContextHolder.set(10086L);
+        assertEquals("10086", UserContextHolder.get());
+        assertEquals(10086L, UserContextHolder.getUserIdAsLong());
+
+        UserContextHolder.setUserId(20088L);
+        assertEquals("20088", UserContextHolder.getUserId());
+        assertEquals(20088L, UserContextHolder.getUserIdAsLong());
+
+        UserContextHolder.set((Long) null);
+        assertNull(UserContextHolder.get());
+        assertNull(UserContextHolder.getUserIdAsLong());
+
+        UserContextHolder.set("   ");
+        assertNull(UserContextHolder.getUserIdAsLong());
+
+        UserContextHolder.set("ateng-admin");
+        IllegalStateException ex = assertThrows(IllegalStateException.class, UserContextHolder::getUserIdAsLong);
+        assertTrue(ex.getMessage().contains("ateng-admin"));
+
+        // Long 重载 runWithUser 嵌套栈恢复
+        UserContextHolder.set(100L);
+        Long innerResult = UserContextHolder.runWithUser(200L, () -> {
+            assertEquals(200L, UserContextHolder.getUserIdAsLong());
+            UserContextHolder.runWithUser(300L, (Runnable) () -> assertEquals(300L, UserContextHolder.getUserIdAsLong()));
+            assertEquals(200L, UserContextHolder.getUserIdAsLong());
+            return UserContextHolder.getUserIdAsLong();
+        });
+        assertEquals(200L, innerResult);
+        assertEquals(100L, UserContextHolder.getUserIdAsLong());
+    }
+
+    @Test
+    @DisplayName("验证栈深防护与 capture / capturePrevious / restore 快照镜像对称与惰性清理")
+    void shouldPreserveStackDepthAndSupportSnapshotsWithoutThreadLocalLeak() {
+        // 1. 只读查询绝不分配或驻留 ThreadLocal 栈
+        AtomicReference<String> spiUser = new AtomicReference<>("spi-live-1");
+        try {
+            UserContextHolder.setUserProvider(spiUser::get);
+            assertEquals("spi-live-1", UserContextHolder.get());
+            assertNull(UserContextHolder.getExplicit());
+
+            // 触发 capture / capturePrevious 只读探测，不应固化 SPI 到当前线程
+            UserContextHolder.UserSnapshot spiSnap = UserContextHolder.capture();
+            assertEquals("spi-live-1", spiSnap.getUserId());
+            UserContextHolder.UserSnapshot emptyPrev = UserContextHolder.capturePrevious();
+            assertNull(emptyPrev.getUserId());
+            assertNull(UserContextHolder.getExplicit());
+            assertFalse(UserContextHolder.hasActiveThreadLocal());
+
+            // SPI 动态变更可即时感知
+            spiUser.set("spi-live-2");
+            assertEquals("spi-live-2", UserContextHolder.get());
+
+            // 恢复 SPI 快照后，显式持有 "spi-live-1"
+            UserContextHolder.restore(spiSnap);
+            assertEquals("spi-live-1", UserContextHolder.getExplicit());
+            assertTrue(UserContextHolder.hasActiveThreadLocal());
+
+            // 恢复空快照或 null 触发清理，释放 ThreadLocal
+            UserContextHolder.restore(emptyPrev);
+            assertNull(UserContextHolder.getExplicit());
+            assertFalse(UserContextHolder.hasActiveThreadLocal());
+
+            // 2. 嵌套闭包内 set(null) 不破坏外层栈深
+            UserContextHolder.runWithUser("outer-user", () -> {
+                UserContextHolder.runWithUser("inner-user", () -> {
+                    UserContextHolder.set((String) null);
+                    assertNull(UserContextHolder.getExplicit());
+                });
+                assertEquals("outer-user", UserContextHolder.getExplicit());
+            });
+            assertFalse(UserContextHolder.hasActiveThreadLocal());
+
+            // 3. 根层级 set(null) 自动清理 ThreadLocal
+            UserContextHolder.set("root-user");
+            assertTrue(UserContextHolder.hasActiveThreadLocal());
+            UserContextHolder.set((String) null);
+            assertFalse(UserContextHolder.hasActiveThreadLocal());
+        } finally {
+            UserContextHolder.setUserProvider(null);
+            UserContextHolder.clear();
+        }
+    }
 }

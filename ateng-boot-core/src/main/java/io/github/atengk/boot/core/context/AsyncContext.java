@@ -180,12 +180,12 @@ public final class AsyncContext {
      */
     public static final class ContextSnapshot {
         private final Map<String, String> mdc;
-        private final String user;
+        private final UserContextHolder.UserSnapshot user;
         private final TenantContextHolder.TenantSnapshot tenant;
         private final Map<AsyncContextSnapshotProvider, Object> extensions;
 
         private ContextSnapshot(Map<String, String> mdc,
-                                String user,
+                                UserContextHolder.UserSnapshot user,
                                 TenantContextHolder.TenantSnapshot tenant,
                                 Map<AsyncContextSnapshotProvider, Object> extensions) {
             this.mdc = mdc;
@@ -203,7 +203,7 @@ public final class AsyncContext {
             Map<AsyncContextSnapshotProvider, Object> exts = captureExtensions(false);
             return new ContextSnapshot(
                     MDC.getCopyOfContextMap(),
-                    UserContextHolder.get(),
+                    UserContextHolder.capture(),
                     TenantContextHolder.capture(),
                     exts
             );
@@ -218,7 +218,7 @@ public final class AsyncContext {
             Map<AsyncContextSnapshotProvider, Object> exts = captureExtensions(true);
             return new ContextSnapshot(
                     MDC.getCopyOfContextMap(),
-                    UserContextHolder.getExplicit(),
+                    UserContextHolder.capturePrevious(),
                     TenantContextHolder.capturePrevious(),
                     exts
             );
@@ -244,27 +244,7 @@ public final class AsyncContext {
          * 将快照中的上下文状态注入至当前线程（嵌套 try-finally 确保任何单点异常均不阻断后续清理）
          */
         public void apply() {
-            try {
-                if (this.mdc != null && !this.mdc.isEmpty()) {
-                    MDC.setContextMap(this.mdc);
-                } else {
-                    MDC.clear();
-                }
-            } finally {
-                try {
-                    if (this.user != null) {
-                        UserContextHolder.set(this.user);
-                    } else {
-                        UserContextHolder.clear();
-                    }
-                } finally {
-                    try {
-                        TenantContextHolder.restore(this.tenant);
-                    } finally {
-                        applyExtensions();
-                    }
-                }
-            }
+            installSnapshot(this::applyExtensions);
         }
 
         private void applyExtensions() {
@@ -280,6 +260,10 @@ public final class AsyncContext {
          * 还原工作线程执行前的原始现场（对称清理扩展上下文与核心维度）
          */
         public void restore() {
+            installSnapshot(this::restoreExtensions);
+        }
+
+        private void installSnapshot(Runnable extensionAction) {
             try {
                 if (this.mdc != null && !this.mdc.isEmpty()) {
                     MDC.setContextMap(this.mdc);
@@ -288,16 +272,12 @@ public final class AsyncContext {
                 }
             } finally {
                 try {
-                    if (this.user != null) {
-                        UserContextHolder.set(this.user);
-                    } else {
-                        UserContextHolder.clear();
-                    }
+                    UserContextHolder.restore(this.user);
                 } finally {
                     try {
                         TenantContextHolder.restore(this.tenant);
                     } finally {
-                        restoreExtensions();
+                        extensionAction.run();
                     }
                 }
             }

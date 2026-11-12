@@ -33,7 +33,7 @@ _Avoid_: Assert, ValidateUtil, CheckUtil
 _Avoid_: PrincipalProvider, SecurityContext, UserSupplier
 
 **UserContextHolder**:
-基于 ThreadLocal 维护当前操作人身份的内存上下文持有者，并支持 CurrentUserProvider 动态回退兜底，与 TenantContextHolder 保持双维镜像对称。
+基于惰性初始化 ThreadLocal 嵌套栈维护当前操作人身份的内存上下文持有者，支持 CurrentUserProvider 动态回退兜底、栈空自动清理、Long 与 String 重载以及多层嵌套恢复，与 TenantContextHolder 保持双维镜像对称。
 _Avoid_: SessionContext, LocalUser, UserThreadLocal
 
 **AsyncContext**:
@@ -65,12 +65,12 @@ _Avoid_: SnowflakeIdWorker, SequenceGenerator, SnowflakeGenerator
 _Avoid_: IdHelper, UuidUtil, IdentifierUtil, KeyUtil
 
 **CryptoUtil**:
-纯 JDK 原生对称加解密工具类，默认支持 AES/CBC/PKCS5Padding 与 AES/GCM/NoPadding，无 Bouncy Castle 重型依赖。
-_Avoid_: AesUtil, EncryptionUtil, EncryptUtil
+纯 JDK 原生对称加解密与国密工具类，默认支持 AES/CBC/PKCS5Padding、AES/GCM/NoPadding 及纯原生国密 SM4/CBC、SM4/ECB (GB/T 32907-2016) 加解密，无 Bouncy Castle 重型依赖。
+_Avoid_: AesUtil, EncryptionUtil, EncryptUtil, Sm4Util
 
 **DigestUtil**:
-纯 JDK 17 原生摘要算法工具类，提供 MD5、SHA-1、SHA-256、SHA-512 的十六进制哈希计算与流式计算门面。
-_Avoid_: HashUtil, Md5Util, ShaUtil
+纯 JDK 17 原生摘要算法与国密杂凑工具类，提供 SHA-256、MD5 及纯原生国密 SM3 (GB/T 32905-2016) 字节数组与十六进制摘要计算门面。
+_Avoid_: HashUtil, Md5Util, ShaUtil, Sm3Util
 
 **TreeUtil**:
 通用泛型树形结构构建工具，依托纯函数式接口与哈希表两遍扫描算法，以 O(N) 线性时间复杂度实现扁平列表到嵌套树的高性能组装。
@@ -81,7 +81,7 @@ _Avoid_: TreeBuilder, NodeUtil, MenuTreeUtil
 _Avoid_: JacksonUtil, JSON, FastJsonUtil, JsonHelper
 
 **TenantContextHolder**:
-基于 ThreadLocal 与栈结构维护当前线程租户标识及忽略过滤深度的持有者，提供编程式闭包与跨线程隔离能力。
+基于惰性初始化 ThreadLocal 与双栈结构维护当前线程显式租户标识及忽略过滤深度的持有者，支持未设置时的 CurrentTenantProvider 回退兜底、只读无残留、编程式闭包与跨线程隔离，与 UserContextHolder 保持双维镜像对称。
 _Avoid_: TenantHelper, CurrentTenant, TenantManager
 
 **CurrentTenantProvider**:
@@ -401,6 +401,50 @@ _Avoid_: TempFileCleaner, DiskCleanupHook
 **AppShutdownListener**:
 监听 Spring 容器关闭事件并计算打印应用总存活时长（Uptime）摘要的优雅停机监听器。
 _Avoid_: ShutdownLogger, UptimeListener, ExitHook
+
+**CacheProperties**:
+进程内内存 LRU 缓存嵌套配置属性类，定义默认最大容量上限与默认存活时间 TTL。
+_Avoid_: MemoryCacheProperties, LruProperties
+
+**LoggingProperties**:
+核心日志引擎与文件持久化嵌套配置属性类，统管总开关、`ConsoleProperties` 高亮控制台输出及 `FileProperties` 双文件滚动归档策略。
+_Avoid_: LogProperties, LogbackProperties
+
+**NetProperties**:
+网络通信与网卡探测嵌套配置属性类，提供首选固定 IP、首选网段（CIDR/通配符）及自定义排除网卡规则配置。
+_Avoid_: NetworkProperties, IpSelectProperties
+
+**SlowAlertProperties**:
+方法级慢调用告警嵌套配置属性类，统管切面开关、默认耗时阈值、入参快照开关及防 OOM 最大截断长度。
+_Avoid_: SlowMethodProperties, AlertProperties
+
+**SnowflakeProperties**:
+Twitter Snowflake 雪花发号器嵌套配置属性类，统管开关、工作节点与数据中心 ID、自定义基准纪元及最大允许时钟回拨自旋时长。
+_Avoid_: IdGeneratorProperties, SnowflakeConfigProperties
+
+**SystemProperties**:
+系统基线与环境防卫嵌套配置属性类，定义总开关、时区校准开关及目标时区、慢 Bean 初始化诊断阈值与优雅停机耗时摘要开关。
+_Avoid_: EnvGuardProperties, RuntimeProperties
+
+**SlowAlertAspect**:
+基于 AOP 拦截 `@SlowAlert` 注解的方法级慢调用告警切面，计算纳秒级精确耗时并在超阈值时输出带敏感字段掩码与长度截断的入参告警日志。
+_Avoid_: SlowLogAspect, PerformanceAspect, MethodAlertInterceptor
+
+**PipelineStage**:
+强类型管道处理阶段函数式契约接口，定义单个阶段的上下文处理逻辑、可读阶段名称与谓词/消费快速构造工厂。
+_Avoid_: ChainStage, PipelineStep, PipeNode
+
+**PipelineInterruptible**:
+可中断业务管道上下文标记接口，允许阶段上下文主动标记中断状态与原因以便引擎前后自动探测并安全短路。
+_Avoid_: InterruptibleContext, BreakableContext, PipelineAbortable
+
+**PipelineResult**:
+管道执行终态结果不可变契约模型，承载成功、短路终止或异常失败状态、触发阶段名、中断原因及快速失败 `orThrow` 转译能力。
+_Avoid_: ChainResult, ExecutionResult, PipeOutcome
+
+**PipelineErrorHandler**:
+管道阶段未捕获异常拦截与自定义错误处理函数式回调契约，支持在阶段失败时感知阶段对象、上下文与原始异常因果。
+_Avoid_: StageExceptionHandler, PipelineExceptionCallback
 
 
 

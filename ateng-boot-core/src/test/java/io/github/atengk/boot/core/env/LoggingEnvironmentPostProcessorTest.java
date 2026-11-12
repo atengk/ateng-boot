@@ -171,4 +171,60 @@ class LoggingEnvironmentPostProcessorTest {
         assertThat(errorContent).contains("Demo simulated error");
         assertThat(errorContent).doesNotContain("Demo info message for test");
     }
+
+    @Test
+    @DisplayName("默认与显式开启 clean-history-on-start 时，正确映射 LOG_FILE_CLEAN_HISTORY_ON_START 并驱动 Logback 滚动策略")
+    void shouldPropagateCleanHistoryOnStartToEnvironmentAndLogback(@TempDir Path tempDir) {
+        // 1. 默认情况下 LOG_FILE_CLEAN_HISTORY_ON_START 为 false
+        MockEnvironment defaultEnv = new MockEnvironment();
+        processor.postProcessEnvironment(defaultEnv, application);
+        assertThat(defaultEnv.getProperty("LOG_FILE_CLEAN_HISTORY_ON_START", Boolean.class)).isFalse();
+
+        // 2. 开启 clean-history-on-start=true 且 split-error=true（双文件模板 INFO_FILE & ERROR_FILE）
+        MockEnvironment splitEnv = new MockEnvironment();
+        splitEnv.setProperty("spring.application.name", "clean-history-split");
+        splitEnv.setProperty("ateng.boot.core.logging.file.enabled", "true");
+        splitEnv.setProperty("ateng.boot.core.logging.file.clean-history-on-start", "true");
+        splitEnv.setProperty("ateng.boot.core.logging.file.path", tempDir.resolve("split").toAbsolutePath().toString().replace('\\', '/'));
+
+        processor.postProcessEnvironment(splitEnv, application);
+        assertThat(splitEnv.getProperty("LOG_FILE_CLEAN_HISTORY_ON_START", Boolean.class)).isTrue();
+
+        LoggingSystem loggingSystem = LoggingSystem.get(getClass().getClassLoader());
+        loggingSystem.initialize(new org.springframework.boot.logging.LoggingInitializationContext(splitEnv),
+                splitEnv.getProperty("logging.config"), null);
+        ch.qos.logback.classic.LoggerContext loggerContext =
+                (ch.qos.logback.classic.LoggerContext) LoggerFactory.getILoggerFactory();
+        try {
+            ch.qos.logback.classic.Logger rootLogger = loggerContext.getLogger(Logger.ROOT_LOGGER_NAME);
+            ch.qos.logback.core.rolling.RollingFileAppender<?> infoAppender =
+                    (ch.qos.logback.core.rolling.RollingFileAppender<?>) rootLogger.getAppender("INFO_FILE");
+            ch.qos.logback.core.rolling.RollingFileAppender<?> errorAppender =
+                    (ch.qos.logback.core.rolling.RollingFileAppender<?>) rootLogger.getAppender("ERROR_FILE");
+            assertThat(((ch.qos.logback.core.rolling.TimeBasedRollingPolicy<?>) infoAppender.getRollingPolicy()).isCleanHistoryOnStart()).isTrue();
+            assertThat(((ch.qos.logback.core.rolling.TimeBasedRollingPolicy<?>) errorAppender.getRollingPolicy()).isCleanHistoryOnStart()).isTrue();
+        } finally {
+            loggerContext.stop();
+        }
+
+        // 3. 开启 clean-history-on-start=true 且 split-error=false（单文件模板 FILE）
+        MockEnvironment singleEnv = new MockEnvironment();
+        singleEnv.setProperty("spring.application.name", "clean-history-single");
+        singleEnv.setProperty("ateng.boot.core.logging.file.enabled", "true");
+        singleEnv.setProperty("ateng.boot.core.logging.file.split-error", "false");
+        singleEnv.setProperty("ateng.boot.core.logging.file.clean-history-on-start", "true");
+        singleEnv.setProperty("ateng.boot.core.logging.file.path", tempDir.resolve("single").toAbsolutePath().toString().replace('\\', '/'));
+
+        processor.postProcessEnvironment(singleEnv, application);
+        loggingSystem.initialize(new org.springframework.boot.logging.LoggingInitializationContext(singleEnv),
+                singleEnv.getProperty("logging.config"), null);
+        try {
+            ch.qos.logback.classic.Logger rootLogger = loggerContext.getLogger(Logger.ROOT_LOGGER_NAME);
+            ch.qos.logback.core.rolling.RollingFileAppender<?> fileAppender =
+                    (ch.qos.logback.core.rolling.RollingFileAppender<?>) rootLogger.getAppender("FILE");
+            assertThat(((ch.qos.logback.core.rolling.TimeBasedRollingPolicy<?>) fileAppender.getRollingPolicy()).isCleanHistoryOnStart()).isTrue();
+        } finally {
+            loggerContext.stop();
+        }
+    }
 }

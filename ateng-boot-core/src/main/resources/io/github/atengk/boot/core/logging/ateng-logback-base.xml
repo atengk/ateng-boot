@@ -7,6 +7,7 @@
     <springProperty scope="context" name="MAX_FILE_SIZE" source="ateng.boot.core.logging.file.max-file-size" defaultValue="100MB"/>
     <springProperty scope="context" name="MAX_HISTORY" source="ateng.boot.core.logging.file.max-history" defaultValue="30"/>
     <springProperty scope="context" name="TOTAL_SIZE_CAP" source="ateng.boot.core.logging.file.total-size-cap" defaultValue="10GB"/>
+    <springProperty scope="context" name="CLEAN_HISTORY_ON_START" source="LOG_FILE_CLEAN_HISTORY_ON_START" defaultValue="false"/>
     <springProperty scope="context" name="LOG_LEVEL" source="logging.level.root" defaultValue="INFO"/>
 
     <!-- 彩色控制台格式（含 MDC traceId） -->

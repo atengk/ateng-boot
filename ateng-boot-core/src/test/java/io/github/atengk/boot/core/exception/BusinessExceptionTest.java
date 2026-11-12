@@ -5,6 +5,8 @@ import io.github.atengk.boot.core.code.IResultCode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Modifier;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -97,5 +99,12 @@ class BusinessExceptionTest {
         // 验证调用 fillInStackTrace 返回当前对象本身且不产生额外损耗
         assertSame(exception, exception.fillInStackTrace());
         assertEquals(0, exception.getStackTrace().length);
+    }
+
+    @Test
+    @DisplayName("验证 fillInStackTrace 不声明 synchronized 以避免虚拟线程 Carrier Pinning")
+    void shouldNotSynchronizeFillInStackTrace() throws NoSuchMethodException {
+        int modifiers = BusinessException.class.getDeclaredMethod("fillInStackTrace").getModifiers();
+        assertFalse(Modifier.isSynchronized(modifiers), "fillInStackTrace 不应保留 synchronized 修饰符");
     }
 }

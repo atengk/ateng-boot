@@ -109,6 +109,8 @@ public class LoggingEnvironmentPostProcessor implements EnvironmentPostProcessor
             String configLocation = Boolean.TRUE.equals(splitError) ? CLASSPATH_LOGBACK_FILE : CLASSPATH_LOGBACK_FILE_SINGLE;
             defaults.put("logging.config", configLocation);
         }
+        Boolean cleanHistoryOnStart = environment.getProperty("ateng.boot.core.logging.file.clean-history-on-start", Boolean.class, false);
+        defaults.put("LOG_FILE_CLEAN_HISTORY_ON_START", String.valueOf(Boolean.TRUE.equals(cleanHistoryOnStart)));
 
         // 3.2 注入控制台与文件格式默认基线
         Boolean consoleEnabled = environment.getProperty("ateng.boot.core.logging.console.enabled", Boolean.class, true);

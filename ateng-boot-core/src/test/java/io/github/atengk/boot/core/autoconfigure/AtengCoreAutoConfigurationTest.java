@@ -150,6 +150,46 @@ class AtengCoreAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("日志配置绑定与引导注册验证：绑定 clean-history-on-start，EnvironmentPostProcessor 唯独注册于 spring.factories 且禁用 EnableAutoConfiguration")
+    void shouldBindLoggingCleanHistoryOnStartAndRegisterEnvironmentPostProcessorsInSpringFactories() throws Exception {
+        contextRunner
+                .withPropertyValues("ateng.boot.core.logging.file.clean-history-on-start=true")
+                .run(context -> {
+                    CoreProperties properties = context.getBean(CoreProperties.class);
+                    assertThat(properties.getLogging().getFile().isCleanHistoryOnStart()).isTrue();
+                });
+
+        boolean foundCoreEnvironmentPostProcessors = false;
+        java.util.Enumeration<java.net.URL> urls = getClass().getClassLoader().getResources("META-INF/spring.factories");
+        while (urls.hasMoreElements()) {
+            java.net.URL url = urls.nextElement();
+            try (java.io.InputStream is = url.openStream()) {
+                String content = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                if (content.contains("io.github.atengk.boot.core.env.SystemEnvironmentPostProcessor")) {
+                    foundCoreEnvironmentPostProcessors = true;
+                    assertThat(content).contains("org.springframework.boot.env.EnvironmentPostProcessor");
+                    assertThat(content).contains("io.github.atengk.boot.core.env.LoggingEnvironmentPostProcessor");
+                    assertThat(content).doesNotContain("EnableAutoConfiguration");
+                }
+            }
+        }
+        assertThat(foundCoreEnvironmentPostProcessors)
+                .as("Spring Boot 3.3 EnvironmentPostProcessor 必须在 META-INF/spring.factories 注册")
+                .isTrue();
+
+        java.util.Enumeration<java.net.URL> legacyImports = getClass().getClassLoader()
+                .getResources("META-INF/spring/org.springframework.boot.env.EnvironmentPostProcessor.imports");
+        while (legacyImports.hasMoreElements()) {
+            java.net.URL url = legacyImports.nextElement();
+            try (java.io.InputStream is = url.openStream()) {
+                String content = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                assertThat(content).doesNotContain("io.github.atengk.boot.core.env.SystemEnvironmentPostProcessor");
+                assertThat(content).doesNotContain("io.github.atengk.boot.core.env.LoggingEnvironmentPostProcessor");
+            }
+        }
+    }
+
     static class SampleTestBean {
         private String name;
 

@@ -4,14 +4,12 @@ import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.enums.TransactionCompletionStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.ApplicationContext;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.ClassUtils;
 
 import java.util.Objects;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ForkJoinPool;
 import java.util.function.Consumer;
 
 /**
@@ -149,14 +147,14 @@ public final class TransactionUtil {
      * 任务执行异常会被受控隔离并记录 WARN 日志，绝对不会逆向阻断或破坏主流程
      *
      * @param task     待执行任务，不可为 null
-     * @param executor 自定义任务执行器，若为 null 则自动选用 Spring 受管 taskExecutor 或保底 ForkJoinPool
+     * @param executor 自定义任务执行器，若为 null 则统一委托 {@link AsyncUtil#getExecutor()} 获取受管执行器或受管保底线程池
      */
     public static void executeAfterCommitAsync(Runnable task, Executor executor) {
         Objects.requireNonNull(task, "task 不能为空");
         // 1. 在当前调用线程立刻抓取四维上下文快照并包装任务
         Runnable decoratedTask = AsyncContext.wrap(task);
         Runnable asyncAction = () -> {
-            Executor targetExecutor = (executor != null) ? executor : obtainDefaultExecutor();
+            Executor targetExecutor = (executor != null) ? executor : AsyncUtil.getExecutor();
             try {
                 targetExecutor.execute(() -> safeRun(decoratedTask, "afterCommitAsync"));
             } catch (Throwable ex) {
@@ -197,27 +195,6 @@ public final class TransactionUtil {
         } catch (Throwable ex) {
             log.warn("事务生命周期回调 [{}] 执行失败，已受控隔离杜绝影响主流程: {}", actionName, ex.getMessage(), ex);
         }
-    }
-
-    /**
-     * 获取系统默认受管异步线程池
-     * 优先从 Spring 容器获取 taskExecutor 或通用 Executor，未命中或异常时安全回退至 ForkJoinPool.commonPool()
-     *
-     * @return 可用的 Executor 实例
-     */
-    private static Executor obtainDefaultExecutor() {
-        try {
-            if (SpringUtil.isInitialized()) {
-                ApplicationContext context = SpringUtil.getApplicationContext();
-                if (context.containsBean("taskExecutor")) {
-                    return context.getBean("taskExecutor", Executor.class);
-                }
-                return context.getBean(Executor.class);
-            }
-        } catch (Throwable t) {
-            log.debug("未从 Spring 容器获取到受管 Executor，回退至 ForkJoinPool: {}", t.getMessage());
-        }
-        return ForkJoinPool.commonPool();
     }
 
     /**

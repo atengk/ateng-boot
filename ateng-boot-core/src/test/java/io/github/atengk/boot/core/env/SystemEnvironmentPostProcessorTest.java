@@ -96,32 +96,52 @@ class SystemEnvironmentPostProcessorTest {
     }
 
     @Test
-    @DisplayName("当系统总开关 enabled 为 false 时，彻底熔断短路退出")
+    @DisplayName("当系统总开关 enabled 为 false 时，跳过全部 JVM 系统属性防卫，但网卡规则 ateng.boot.core.net 依然生效")
     void shouldBypassWhenSystemDisabled() {
         MockEnvironment environment = new MockEnvironment();
         environment.setProperty("ateng.boot.core.system.enabled", "false");
+        environment.setProperty("ateng.boot.core.net.preferred-ip", "10.88.77.66");
 
-        // 设置一个非默认时区用于校验未被篡改
+        // 设置非默认状态用于校验系统级干预被跳过
         TimeZone.setDefault(TimeZone.getTimeZone("GMT"));
+        System.setProperty("file.encoding", "ISO-8859-1");
+        System.clearProperty("java.awt.headless");
+        System.clearProperty("sun.net.client.defaultConnectTimeout");
+        System.clearProperty("sun.net.client.defaultReadTimeout");
 
         processor.postProcessEnvironment(environment, application);
 
         assertThat(TimeZone.getDefault().getID()).isEqualTo("GMT");
+        assertThat(System.getProperty("file.encoding")).isEqualTo("ISO-8859-1");
+        assertThat(System.getProperty("java.awt.headless")).isNull();
+        assertThat(System.getProperty("sun.net.client.defaultConnectTimeout")).isNull();
+        assertThat(System.getProperty("sun.net.client.defaultReadTimeout")).isNull();
         assertThat(environment.getPropertySources().contains(SystemEnvironmentPostProcessor.PROPERTY_SOURCE_NAME)).isFalse();
+        assertThat(NetUtil.getEffectivePreferredIp()).isEqualTo("10.88.77.66");
     }
 
     @Test
-    @DisplayName("当时区防卫子开关 timezone-guard-enabled 为 false 时，跳过时区校准与属性注入")
+    @DisplayName("当时区防卫子开关 timezone-guard-enabled 为 false 时，仅跳过时区与字符集校准，Headless、10s 超时兜底与网卡规则照常生效")
     void shouldBypassTimezoneGuardWhenTimezoneGuardDisabled() {
         MockEnvironment environment = new MockEnvironment();
         environment.setProperty("ateng.boot.core.system.timezone-guard-enabled", "false");
+        environment.setProperty("ateng.boot.core.net.preferred-ip", "10.77.66.55");
 
         TimeZone.setDefault(TimeZone.getTimeZone("GMT"));
+        System.setProperty("file.encoding", "ISO-8859-1");
+        System.clearProperty("java.awt.headless");
+        System.clearProperty("sun.net.client.defaultConnectTimeout");
+        System.clearProperty("sun.net.client.defaultReadTimeout");
 
         processor.postProcessEnvironment(environment, application);
 
         assertThat(TimeZone.getDefault().getID()).isEqualTo("GMT");
+        assertThat(System.getProperty("file.encoding")).isEqualTo("ISO-8859-1");
         assertThat(environment.getPropertySources().contains(SystemEnvironmentPostProcessor.PROPERTY_SOURCE_NAME)).isFalse();
+        assertThat(System.getProperty("java.awt.headless")).isEqualTo("true");
+        assertThat(System.getProperty("sun.net.client.defaultConnectTimeout")).isEqualTo("10000");
+        assertThat(System.getProperty("sun.net.client.defaultReadTimeout")).isEqualTo("10000");
+        assertThat(NetUtil.getEffectivePreferredIp()).isEqualTo("10.77.66.55");
     }
 
     @Test
