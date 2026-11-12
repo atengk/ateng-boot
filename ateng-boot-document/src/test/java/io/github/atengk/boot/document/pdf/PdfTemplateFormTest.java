@@ -62,7 +62,7 @@ class PdfTemplateFormTest {
 
     @AfterEach
     void tearDown() {
-        UserContextHolder.set(null);
+        UserContextHolder.clear();
         MDC.clear();
     }
 
