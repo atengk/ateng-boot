@@ -1,12 +1,16 @@
 package io.github.atengk.boot.sample.web;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -26,6 +30,9 @@ class WebCloudLifecycleControllerTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
 
     @Test
     @DisplayName("1. 复合报告接口：GET /sample/web/lifecycle/ready-and-sanity 获取就绪卡片与防呆报告")
@@ -57,20 +64,32 @@ class WebCloudLifecycleControllerTest {
     }
 
     @Test
-    @DisplayName("4. PreStopController 降级端点：GET /pre-stop 翻转就绪状态并幂等排空")
+    @DisplayName("4. PreStopController 降级端点：GET /pre-stop 翻转就绪状态并幂等排空，返回在途请求水位")
     void shouldSupportPreStopGet() throws Exception {
-        mockMvc.perform(get("/pre-stop"))
+        MvcResult result = mockMvc.perform(get("/pre-stop"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.status").isNotEmpty());
+                .andExpect(jsonPath("$.data.status").isNotEmpty())
+                .andReturn();
+        assertNonNegativeInFlightMetrics(result);
     }
 
     @Test
-    @DisplayName("5. PreStopController 降级端点：POST /pre-stop 幂等排空成功")
+    @DisplayName("5. PreStopController 降级端点：POST /pre-stop 幂等排空成功，返回在途请求水位")
     void shouldSupportPreStopPost() throws Exception {
-        mockMvc.perform(post("/pre-stop"))
+        MvcResult result = mockMvc.perform(post("/pre-stop"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.status").isNotEmpty());
+                .andExpect(jsonPath("$.data.status").isNotEmpty())
+                .andReturn();
+        assertNonNegativeInFlightMetrics(result);
+    }
+
+    private void assertNonNegativeInFlightMetrics(MvcResult result) throws Exception {
+        JsonNode data = objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
+        assertThat(data.hasNonNull("inFlightRequestsAtStart")).isTrue();
+        assertThat(data.hasNonNull("inFlightRequestsRemaining")).isTrue();
+        assertThat(Long.parseLong(data.get("inFlightRequestsAtStart").asText())).isGreaterThanOrEqualTo(0L);
+        assertThat(Long.parseLong(data.get("inFlightRequestsRemaining").asText())).isGreaterThanOrEqualTo(0L);
     }
 }

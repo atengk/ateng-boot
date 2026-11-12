@@ -15,6 +15,10 @@ ateng:
     web:
       enabled: true
       long-to-string: true
+      trusted-proxies:
+        - "127.0.0.1"
+        - "::1"
+        - "192.168.1.0/24"
       trace:
         enabled: true
         header-name: "X-Trace-Id"

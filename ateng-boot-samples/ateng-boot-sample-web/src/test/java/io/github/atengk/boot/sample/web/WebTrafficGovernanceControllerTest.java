@@ -56,6 +56,7 @@ class WebTrafficGovernanceControllerTest {
             memStore.clear();
         } else if (rateLimiterStore != null) {
             rateLimiterStore.reset("rate_limit:default:/sample/web/traffic/ratelimit/default");
+            rateLimiterStore.reset("rate_limit:ip:203.0.113.50");
         }
     }
 
@@ -330,5 +331,44 @@ class WebTrafficGovernanceControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("全局接口访问成功"));
+    }
+
+    @Test
+    @DisplayName("12. @RateLimiter IP 防伪造对抗：非授信源 IP 每次轮换伪造 X-Forwarded-For 依然按真实 RemoteAddr 精准限流")
+    void shouldEnforceIpRateLimitAgainstSpoofedForwardedFor() throws Exception {
+        String untrustedClientIp = "203.0.113.50";
+        String[] spoofedHeaders = {"1.1.1.1, 10.0.0.1", "8.8.8.8", "198.51.100.250"};
+
+        // 第 1 次：非授信源 203.0.113.50 伪造 X-Forwarded-For，忽略伪造头后放行并识别真实 RemoteAddr
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/ip")
+                        .with(req -> {
+                            req.setRemoteAddr(untrustedClientIp);
+                            return req;
+                        })
+                        .header("X-Forwarded-For", spoofedHeaders[0]))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("验证码已发送至客户端 IP: " + untrustedClientIp));
+
+        // 第 2 次：更换伪造头后依然命中同一真实源 IP 限流桶放行
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/ip")
+                        .with(req -> {
+                            req.setRemoteAddr(untrustedClientIp);
+                            return req;
+                        })
+                        .header("X-Forwarded-For", spoofedHeaders[1]))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 第 3 次：再度更换伪造 X-Forwarded-For，仍精准触发 429 IP 限流拦截
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/ip")
+                        .with(req -> {
+                            req.setRemoteAddr(untrustedClientIp);
+                            return req;
+                        })
+                        .header("X-Forwarded-For", spoofedHeaders[2]))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(429))
+                .andExpect(jsonPath("$.msg").value("短信验证码请求过于频繁，请稍后再试"));
     }
 }

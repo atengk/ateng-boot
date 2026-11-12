@@ -209,7 +209,7 @@ class WebContractSampleControllerTest {
     }
 
     @Test
-    @DisplayName("6. 精度与时间规范：超大 Long 转为 String 防失真，标准日期时间 yyyy-MM-dd HH:mm:ss 格式化")
+    @DisplayName("6. 精度与时间规范：超大 Long 转为 String、BigDecimal 防科学计数法平铺输出、标准日期时间格式化")
     void shouldSerializeLargeLongAsStringAndFormatDateTime() throws Exception {
         MvcResult result = mockMvc.perform(get("/sample/web/contract/datetime"))
                 .andExpect(status().isOk())
@@ -222,6 +222,9 @@ class WebContractSampleControllerTest {
         String content = result.getResponse().getContentAsString();
         // 验证 64 位雪花 ID 为严格 JSON 字符串形式，避免 JS IEEE 754 截断
         assertThat(content).contains("\"id\":\"1846182948192841920\"");
+        // 验证 BigDecimal("1E+7") 以平原十进制 10000000 输出，杜绝科学计数法
+        assertThat(content).contains("\"amount\":10000000");
+        assertThat(content).doesNotContain("1E+7");
     }
 
     @Test

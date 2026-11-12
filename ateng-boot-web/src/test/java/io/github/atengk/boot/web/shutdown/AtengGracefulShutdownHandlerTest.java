@@ -197,7 +197,7 @@ class AtengGracefulShutdownHandlerTest {
     @DisplayName("测试在途请求排空感知：精确捕获启动时与排空后活跃请求计数并输出至 DrainResult")
     void testDrainWithInFlightRequestTracking() throws Exception {
         WebProperties webProps = new WebProperties();
-        webProps.getShutdown().setDrainTimeout(Duration.ofMillis(80));
+        webProps.getShutdown().setDrainTimeout(Duration.ofMillis(10));
 
         io.github.atengk.boot.web.trace.TraceFilter traceFilter = new io.github.atengk.boot.web.trace.TraceFilter(webProps);
         AtengGracefulShutdownHandler handler = new AtengGracefulShutdownHandler(webProps, traceFilter);
@@ -206,7 +206,6 @@ class AtengGracefulShutdownHandlerTest {
         CountDownLatch releaseRequestLatch = new CountDownLatch(1);
 
         ExecutorService worker = Executors.newSingleThreadExecutor();
-        ExecutorService releaser = Executors.newSingleThreadExecutor();
         try {
             Future<?> requestFuture = worker.submit(() -> {
                 try {
@@ -230,19 +229,17 @@ class AtengGracefulShutdownHandlerTest {
             inFilterLatch.await();
             assertThat(handler.getInFlightRequestCount()).isEqualTo(1L);
 
-            // 在另起延迟释放请求后启动 drain，预期起点为 1，结束后归零
-            releaser.submit(() -> {
+            // 通过探针状态事件钩子确定性触发在途请求放行并等待其完全退出 TraceFilter，避免并发调度竞态
+            handler.setApplicationEventPublisher(event -> {
+                releaseRequestLatch.countDown();
                 try {
-                    Thread.sleep(25);
-                } catch (InterruptedException ignored) {
-                    Thread.currentThread().interrupt();
-                } finally {
-                    releaseRequestLatch.countDown();
+                    requestFuture.get();
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
                 }
             });
 
             AtengGracefulShutdownHandler.DrainResult result = handler.drain();
-            requestFuture.get();
 
             assertThat(result.executed()).isTrue();
             assertThat(result.inFlightRequestsAtStart()).isEqualTo(1L);
@@ -252,7 +249,6 @@ class AtengGracefulShutdownHandlerTest {
                     .containsEntry("inFlightRequestsRemaining", 0L);
         } finally {
             worker.shutdownNow();
-            releaser.shutdownNow();
         }
     }
 

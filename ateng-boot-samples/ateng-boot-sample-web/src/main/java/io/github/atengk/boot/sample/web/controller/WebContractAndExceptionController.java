@@ -27,6 +27,7 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -100,6 +101,7 @@ public class WebContractAndExceptionController {
     public Result<DateTimeDemoVO> getDateTimeDemo() {
         DateTimeDemoVO vo = DateTimeDemoVO.builder()
                 .id(1846182948192841920L)
+                .amount(new BigDecimal("1E+7"))
                 .dateTime(LocalDateTime.of(2026, 10, 19, 14, 30, 0))
                 .date(LocalDate.of(2026, 10, 19))
                 .time(LocalTime.of(14, 30, 0))
