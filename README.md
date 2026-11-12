@@ -1,159 +1,81 @@
 # ateng-boot
 
-> 面向生产就绪的 Spring Boot 3 工业级基础设施与全能中间件 Starter 套件。
+> 面向生产就绪的 Spring Boot 3（3.3.13）全栈基础设施与企业中间件 Starter 套件——零臃肿纯原生、显式强类型契约、35 领域开箱协同、原生 AI-Ready。
 
 [![CI](https://github.com/atengk/ateng-boot/actions/workflows/ci.yml/badge.svg)](https://github.com/atengk/ateng-boot/actions/workflows/ci.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.atengk/ateng-boot.svg?style=flat-square&color=blue)](https://central.sonatype.com/artifact/io.github.atengk/ateng-boot)
 [![JDK](https://img.shields.io/badge/JDK-17%20~%2021+-orange.svg)](https://www.oracle.com/java/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.13-brightgreen.svg)](https://spring.io/projects/spring-boot)
-[![MyBatis-Plus](https://img.shields.io/badge/MyBatis--Plus-3.5.17-blue.svg)](https://baomidou.com/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/atengk/ateng-boot/pulls)
+[![Starters](https://img.shields.io/badge/Starters-35-blueviolet.svg)](#2-全栈能力版图与模块目录)
+[![AI-Ready](https://img.shields.io/badge/AI--Ready-llms.txt-00b4d8.svg)](./llms.txt)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
 
 ---
 
-## 1. 架构全景与设计哲学
+## 为什么选择 `ateng-boot`
 
-`ateng-boot` 专注于为生产级 Spring Boot 3 应用提供高内聚、纯原生、开箱即用的工业级基础设施和全能中间件赋能。坚持**零重型臃肿依赖**与**显式强类型契约**，各模块边界清晰、高度解耦，既可作为单体业务极速起步的“全家桶”，也可作为大型分布式系统各服务节点的核心依赖底座。
+- **纯原生、零臃肿依赖**：基于 JDK 17 LTS（兼容 JDK 21+ 虚拟线程运行时）与 Spring 6 原生能力构建，坚决屏蔽 `hutool-all`、`guava` 等重型工具包，避免依赖冲突与安全面扩大。
+- **显式强类型工程契约**：Controller 显式返回 `Result<T>` 与 `PageResult<VO>`，`ValidList` + `BusinessAssert` 分层防卫，拒绝 `@ResponseBodyAdvice` 隐式篡改返回体，杜绝 ORM Entity 穿透到接口层。
+- **单体全家桶与微服务按需拼装兼得**：单体与快速原型通过 [`ateng-boot-all`](./ateng-boot-all/README.md) 一行依赖集齐 6 大核心底座；微服务与复杂系统导入 [`ateng-boot-bom`](./ateng-boot-bom/README.md) 按需精细选配 35 项企业能力，未配置外部中间件时平滑降级待命。
+- **内置企业级 AI 与向量检索底座**：集成 [`ateng-boot-ai`](./ateng-boot-ai/README.md)（`@AiAgent` 声明式智能体、DeepSeek/OpenAI 兼容多模型路由、RAG 混合检索溯源、MCP/OpenAPI 工具、HITL 人机审批与配额护栏）与 [`ateng-boot-milvus`](./ateng-boot-milvus/README.md)。
+- **为 AI 编码时代而设计（AI-Ready）**：仓库原生维护 [`llms.txt`](./llms.txt)、[`CONTEXT-MAP.md`](./CONTEXT-MAP.md)、每个 Starter 自包含的全景 API 速查表与离线可运行 Sample，让 Cursor、Claude Code、Copilot 等助手直接生成零幻觉业务代码。
 
 ```mermaid
 flowchart TB
-    subgraph Client["接入层与消费端"]
-        APP["企业级单体业务应用 / 微服务业务节点"]
-        SAMPLES["ateng-boot-samples<br/>(端到端自验工程与工程化最佳实践 Demo)"]
+    APP["企业级单体应用 / 分布式微服务节点"]
+
+    subgraph GOV["依赖治理与接入入口"]
+        direction LR
+        ALL["ateng-boot-all<br/>一键六核全家桶"]
+        BOM["ateng-boot-bom<br/>纯 POM 版本清单"]
     end
 
-    subgraph Suite["ateng-boot 工业级基础设施套件 (io.github.atengk)"]
-        direction TB
-
-        subgraph Management["依赖统管与一键聚合"]
-            BOM["ateng-boot-bom<br/>(依赖物料清单 / 纯 dependencyManagement 集中纳管)"]
-            ALL["ateng-boot-all<br/>(一键聚合全家桶 / 零配置快速装配)"]
-        end
-
-        subgraph RuntimeWeb["运行时增强 (Web & Transport)"]
-            WEB["ateng-boot-web<br/>• 链路追踪 TraceFilter (MDC)<br/>• 全局异常生产脱敏与优雅降级<br/>• 三级自适应防重幂等 @Idempotent<br/>• 三级自适应限流防刷 @RateLimiter<br/>• 双向数据加签验签 @ApiSign<br/>• 动态安全 CORS 反射 / RFC 6266 流式安全下载"]
-        end
-
-        subgraph CoreBase["核心通用底座 (Core & Contract)"]
-            CORE["ateng-boot-core<br/>• 强类型统一响应契约 Result&lt;T&gt; (函数式算子/优雅兜底)<br/>• 原生安全 JsonUtil 门面 (内置 JavaTimeModule)<br/>• 受管异步线程池 AtengAsyncAutoConfiguration (四维上下文透传)<br/>• 语义化断言 BusinessAssert &amp; 纯原生 Snowflake 发号引擎<br/>• 10+ 维度全场景脱敏 @FieldSensitive 与双维上下文镜像对称<br/>• 原生不可变元组 Pair/Triple &amp; 线性树形 TreeUtil<br/>• 命名线程工厂 NamedThreadFactory &amp; 编程式校验 ValidatorUtil<br/>• 校验分组标准契约 ValidationGroups &amp; 批量级联 ValidList<br/>• 通用孵化原语 (Spring/Lambda/Collection/Bean/Retry/File)"]
-        end
-
-        subgraph Middlewares["高并发与持久层增强 (Persistence & Middlewares)"]
-            direction LR
-            MP["ateng-boot-mybatis-plus<br/>• 实体五级继承阶梯<br/>• JSqlParser AST 行级多租户隔离<br/>• 声明式细粒度数据权限 @DataScope<br/>• 单条多值批量插入 BatchUtil<br/>• 乐观锁并发自旋重试 OptimisticLockTemplate<br/>• 存储透明加密与出库脱敏 (内存真明文)"]
-            REDIS["ateng-boot-redis<br/>• Spring Data Redis + Redisson 双核<br/>• 纯净无 @class 污染序列化 (防 CVE)<br/>• 四阶声明式分布式锁 @DistributedLock<br/>• 双模轻量延时队列 / 发布订阅广播<br/>• 防雪崩防穿透增强缓存"]
-            EXCEL["ateng-boot-excel<br/>• Apache Fesod 流式防 OOM 读写<br/>• 导出单元格动态脱敏 @ExcelSensitive<br/>• JSR-303 行级校验与红字批注回写<br/>• 智能防呆模板 @ExcelDropdown / Prompt<br/>• 双向转义 @ExcelEnum / @ExcelDict SPI<br/>• 纵向合并 / 多 Sheet 链式构建 / 5 套商务主题"]
-            SATOKEN["ateng-boot-satoken<br/>• Sa-Token 企业级安全基础设施<br/>• 强类型 LoginHelper / LoginUser 载荷<br/>• 双轨拦截体系与 Core/MP 审计贯通<br/>• 两级权限缓存与动态热刷新<br/>• 零信任 Same-Token / Knife4j 鉴权自动化"]
-        end
+    subgraph BASE["核心通用与 Web 运行时"]
+        direction LR
+        CORE["ateng-boot-core<br/>Result契约 · 四维上下文 · 虚拟线程 · 发号/脱敏"]
+        WEB["ateng-boot-web<br/>链路追踪 · 异常脱敏 · 幂等/限流/加签"]
     end
 
-    APP --> BOM
+    subgraph DOMAINS["按需拼装全栈领域能力（35 Starters）"]
+        direction LR
+        D1["数据与检索<br/>MP · 多源 · Redis · ES · Milvus"]
+        D2["安全与治理<br/>Sa-Token · Social · Encrypt · Observability · OpenAPI · Admin"]
+        D3["通信与消息<br/>HTTP · Realtime · TCP · MQTT · Rabbit · Kafka · RocketMQ"]
+        D4["文件与远程<br/>Storage · Excel · Word/PDF · FTP · SSH"]
+        D5["调度与流控<br/>LocalJob · XXL · Snail · StateMachine · LiteFlow"]
+        D6["商业与 AI<br/>Pay · SMS · Mail · Webhook · AI Agent/RAG"]
+    end
+
+    SAMPLES["ateng-boot-samples<br/>36 个离线自验示例工程（1:1 映射）"]
+
     APP --> ALL
-    ALL --> WEB
-    ALL --> MP
-    ALL --> REDIS
-    ALL --> EXCEL
-    ALL --> SATOKEN
-    WEB --> CORE
-    MP --> CORE
-    REDIS --> CORE
-    EXCEL --> CORE
-    SATOKEN --> CORE
-    SATOKEN -.->|可选依赖分布式会话| REDIS
-    EXCEL -.->|可选依赖 Servlet 导出| WEB
-    SAMPLES --> ALL
+    APP --> BOM
+    ALL --> BASE
+    BOM -.-> DOMAINS
+    DOMAINS --> BASE
+    SAMPLES -.-> DOMAINS
 ```
 
-- **工业级生产就绪**：经过高并发、多租户安全隔离、海量数据分批流式消费等企业级生产场景淬炼，具备完整的防死锁、防雪崩、防 OOM 及全链路追踪防御能力；
-- **非侵入与高内聚**：不绑定具体业务模型，模块间高度正交解耦，业务工程可自由引入、按需组合；
-- **纯原生零臃肿**：彻底杜绝 `hutool-all`、`guava` 等重型第三方全量工具包，100% 依托 JDK 17 原生能力与 Spring 6 官方基准；
-- **显式强类型契约**：Controller 统一显式声明返回 `Result<T>`，依托强类型契约自洽，坚决杜绝全局 `@ResponseBodyAdvice` 自动拦截包装；
-- **环境兼容矩阵**：以 Java 17 LTS 作为编译目标，运行时 100% 兼容 Java 17、21 LTS 及更高版本，通过 GitHub Actions CI 全量矩阵验证。
-
 ---
 
-## 2. 模块拓扑与专属文档
+## 1. 60 秒极速上手
 
-`ateng-boot` 遵循“**子模块内聚**”文档拓扑，每个模块均具备自包含的独立使用文档与代码范式：
+### 1.1 引入 Maven 依赖（二选一）
 
-| 模块名称 | 坐标 (ArtifactId) | 职责定位 | 详细使用文档 |
-| :--- | :--- | :--- | :---: |
-| **核心通用底座** | `ateng-boot-core` | 统一 API 响应契约（函数式算子）、异常体系、业务断言、雪花发号器、全场景脱敏、用户/多租户上下文透传、命名线程工厂、业务格式校验、校验分组标准契约（ValidationGroups）、批量级联校验包装器（ValidList）、元组、树形算法及中间件孵化通用原语 | [查看文档](./ateng-boot-core/README.md) |
-| **Web 运行时增强** | `ateng-boot-web` | 链路追踪 `TraceFilter`、全局异常防御、自适应防重幂等、自适应限流、动态 CORS、双向加签验签、流式下载 | [查看文档](./ateng-boot-web/README.md) |
-| **持久层增强底座** | `ateng-boot-mybatis-plus` | 实体五级继承链、审计填充、行级多租户、AST 数据权限、分批批量插入、乐观锁自旋重试模板、存储透明加密与出库脱敏 | [查看文档](./ateng-boot-mybatis-plus/README.md) |
-| **Redis 分布式协同** | `ateng-boot-redis` | Spring Data Redis + Redisson 双核融合、安全无污染 JSON 序列化、四阶分布式锁、双模延时队列、发布订阅、并发流控与增强缓存 | [查看文档](./ateng-boot-redis/README.md) |
-| **轻量流式电子表格** | `ateng-boot-excel` | 基于新一代 Apache Fesod 流式防 OOM 读写、导出单元格动态脱敏、JSR-303 悬浮批注标红回写、动态防呆模板、双向转义、多 Sheet 链式构建与 5 套商务主题 | [查看文档](./ateng-boot-excel/README.md) |
-| **Sa-Token 安全鉴权** | `ateng-boot-satoken` | Sa-Token 企业级安全基础设施、LoginHelper 强类型载荷模型、双轨拦截防御、Core/MP 审计全链路贯通、两级权限缓存、零信任 Same-Token 与 Knife4j 鉴权自动化 | [查看文档](./ateng-boot-satoken/README.md) |
-| **一键全家桶聚合** | `ateng-boot-all` | 零编译源码的空 JAR 依赖聚合包，一键传递引入 `core`、`web`、`mybatis-plus`、`redis`、`excel` 与 `satoken` 六大核心 Starter | [查看文档](./ateng-boot-all/README.md) |
-| **BOM 管控中心** | `ateng-boot-bom` | 纯 `<dependencyManagement>` 依赖物料清单，严守 `ManagedDependencyBoundary` 防泄漏隔离，下游按需引入免配版本号 | [查看文档](./ateng-boot-bom/README.md) |
-| **自验演示套件** | `ateng-boot-samples` | 基于 `@Profile("!local")` 离线内存桩 / H2 与 `local` 双模机制的多领域 Controller Web 体验沙箱矩阵 | [查看文档](./ateng-boot-samples/README.md) |
+#### 方式一：一键全家桶（推荐单体 / 快速原型）
 
----
-
-## 3. 核心特性矩阵
-
-| 特性维度 | 常见痛点 | `ateng-boot` 解决方案 | 归属模块 | 架构决策 |
-| :--- | :--- | :--- | :---: | :---: |
-| **响应契约** | `@ResponseBodyAdvice` 导致 String 强转报错、污染 Swagger 与文件下载 | 坚持显式契约：Controller 声明 `Result<T>`，提供链式工厂、`getOrThrow()` 及 `map/peek/ifSuccess/orElse` 函数式流转算子 | `core` | [ADR-0002](./docs/adr/0002-explicit-result-contract-no-response-body-advice.md) |
-| **分布式发号** | 依赖第三方组件或中心化服务，且多套发号器时间戳规则割裂 | 纯原生 `Snowflake` 引擎（2026 纪元、$\le 5\text{ms}$ 回拨自旋、$> 5\text{ms}$ 熔断）与 `IdUtil` 门面 | `core` | [ADR-0020](./docs/adr/0020-zero-bloat-distributed-id-and-mask-strategy.md) |
-| **全场景脱敏** | 仅覆盖基础字段；业务层手写星号导致脏数据写回数据库 | `DesensitizeUtil` 覆盖地址/车牌/IP/税号等 10+ 维度；`@FieldSensitive` 视图层动态打码 | `core` | [ADR-0020](./docs/adr/0020-zero-bloat-distributed-id-and-mask-strategy.md) |
-| **孵化通用原语** | 模块各自定义工具类、重复依赖第三方库、容易产生内存溢出与路径穿越 | `SpringUtil`、`LambdaUtil`、`CollectionUtil`、`BeanUtil`、`RetryUtil` 与 `FileUtil` 统一收敛于 core | `core` | [ADR-0025](./docs/adr/0025-core-module-expansion-and-future-proof-middleware-foundations.md) |
-| **基线极致加固** | UUID 加锁争抢导致高频链路损耗，各模块散落私有 ObjectMapper 且缺少时间模块 | 100% 收敛 `JsonUtil` 门面；`TraceFilter` 采用无锁 `fastSimpleUUID()`；双维上下文镜像对称并自动桥接 Sa-Token；受管异步线程池下沉 core | `core` / `web` / `satoken` | [ADR-0026](./docs/adr/0026-production-hardening-and-foundations-unification.md) |
-| **分层双防校验** | Controller 参数漏检引发脏数据渗透，批量 List 默认不触发 JSR-303 校验 | 践行分层双防架构；`ValidationGroups` 标准分组；`ValidList` 治理 Spring 批量漏检；`ValidatorUtil` 整对象编程式快速失败 | `core` / `web` | [ADR-0027](./docs/adr/0027-defense-in-depth-validation-and-standardized-primitives.md) |
-| **规范命名线程** | 匿名线程池线程命名混乱，生产环境 Dump 排查与 Arthas 诊断困难 | `NamedThreadFactory` 支持业务前缀/自增编号/守护标记/优先级；延时队列调度消费全面复用 | `core` / `redis` | [ADR-0026](./docs/adr/0026-production-hardening-and-foundations-unification.md) |
-| **高频业务校验** | 手机号/18位带校验码身份证/车牌/税号等正则散落重复编写易漏易错 | `ValidatorUtil` 预编译正则 + ISO 7064:1983.MOD 11-2 算法，高性能编程式校验 | `core` | [ADR-0026](./docs/adr/0026-production-hardening-and-foundations-unification.md) |
-| **乐观锁自旋重试** | 并发更新 `@Version` 冲突频繁失败，手写 while 重试易死循环 | `OptimisticLockTemplate` 依托 `RetryUtil` 统一自旋重试闭包模板，支持最大次数与退避 | `mybatis-plus` | [ADR-0026](./docs/adr/0026-production-hardening-and-foundations-unification.md) |
-| **数字精度** | 64 位雪花 Long 传到前端超出 $2^{53}-1$ 导致末尾截断失真 | 注册 `Jackson2ObjectMapperBuilderCustomizer` 将 Long/BigInteger 序列化为 String | `web` | [ADR-0005](./docs/adr/0005-jackson-customizer-over-objectmapper-override.md) |
-| **全链路追踪** | 单体无 APM 时日志串联困难，跨线程上下文丢失 | `TraceFilter` 自动注入/回写 `X-Trace-Id`；受管线程池透传 MDC 与操作人 | `web` | [ADR-0004](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md) |
-| **异常脱敏** | 生产报错直接向前端暴露 SQL 语法与数据表结构 | 全局异常处理器未知异常生产脱敏，内部堆栈与 traceId 仅记录于后台日志 | `web` | [ADR-0004](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md) |
-| **接口幂等防重** | 并发连击、网络重发导致重复创建订单 | `@Idempotent` 切面提供 Redisson -> Redis -> 内存 三级自适应锁 | `web` | [ADR-0013](./docs/adr/0013-spi-based-hybrid-idempotent-engine.md) |
-| **流量限流防刷** | 恶意刷接口盗刷短信、突发洪峰打爆数据库 | `@RateLimiter` 切面提供 Redisson -> Redis (Lua) -> 内存 令牌桶防刷 | `web` | [ADR-0014](./docs/adr/0014-three-tier-adaptive-rate-limiter-engine.md) |
-| **双向加签验签** | OpenAPI 与移动端通信被抓包篡改或重放 | `@ApiSign` 切面提供 HMAC-SHA256 / RSA 双向加签验签与防重放窗口 | `web` | [ADR-0016](./docs/adr/0016-dual-direction-api-signature-and-anti-replay-engine.md) |
-| **流式文件下载** | 每次手写 Header 繁琐且浏览器常中文乱码 | `ServletUtil` 遵循 RFC 6266 双重文件名编码，一键输出字节/输入流 | `web` | [ADR-0021](./docs/adr/0021-core-baseline-convergence-and-zero-bloat-freeze-strategy.md) |
-| **数据安全分离** | 业务层直接修改实体属性破坏内存真明文 | 存储加密（`EncryptTypeHandler`）与视图脱敏（`SensitiveJsonSerializer`）分离 | `mybatis-plus` | [ADR-0012](./docs/adr/0012-lifecycle-separated-data-security.md) |
-| **行级多租户** | 每条 SQL 手工拼接 `tenant_id` 容易疏漏越权 | JSqlParser AST 语法树动态注入；`@IgnoreTenant` 与闭包短路放行 | `mybatis-plus` | [ADR-0017](./docs/adr/0017-multi-tenant-row-level-isolation-architecture.md) |
-| **细粒度数据权限** | 动态拼接 SQL 容易引发 SQL 注入漏洞 | 声明式 `@DataScope` 自动重写 AST 条件；多表别名防御与超管秒级放行 | `mybatis-plus` | [ADR-0018](./docs/adr/0018-declarative-data-permission-engine-architecture.md) |
-| **高效批量插入** | 原生 `saveBatch` 循环单条 Insert 网络 RTT 极高 | `insertBatchSomeColumn` 单条多值批量插入；`BatchUtil` 自动切片防溢出 | `mybatis-plus` | [ADR-0019](./docs/adr/0019-native-high-performance-batch-insert-engine.md) |
-| **契约解耦** | ORM 的 `Page<T>` 泄露给 Controller 造成属性噪音 | 统一入参 `PageQuery`，出参 `PageResult<VO>`，`PageUtil` 流式纯净转换 | `mybatis-plus` | [ADR-0010](./docs/adr/0010-transport-pagination-contract-decoupling.md) |
-| **双核分布式协同** | 依赖不统一、序列化 `@class` 污染引发反序列化漏洞与跨语言障碍 | Spring Data Redis + Redisson 双核融合、纯净安全 JSON 序列化 | `redis` | [ADR-0022](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md) |
-| **四阶分布式锁** | 手写 Redis 锁易发看门狗失效、非可重入与死锁问题 | 四阶 `@DistributedLock`（可重入/公平/读/写）、SpEL 动态解析与慢锁告警 | `redis` | [ADR-0022](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md) |
-| **双模延时队列** | 为简单延时任务引入 RocketMQ/RabbitMQ 等重型组件带来维护负担 | Redisson 原生双模轻量延时队列与 `@DelayedQueueListener` 声明式监听 | `redis` | [ADR-0022](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md) |
-| **缓存雪崩穿透** | 缓存集中过期雪崩、空值穿透打爆数据库 | 增强 `RedisCacheManager` 支持分 Cache 独立 TTL、空值缓存与随机抖动防雪崩 | `redis` | [ADR-0022](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md) |
-| **流式防 OOM 读写** | 大文件全量加载进 JVM 堆内存导致频繁 FullGC 与 OOM 宕机 | 基于 Apache Fesod 流式电子表格引擎，行级/批次流式消费并即时清空内存引用 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
-| **导出单元格动态脱敏** | 导出报表时在业务层打星号破坏内存真明文并污染数据库 | 标注 `@ExcelSensitive` 在单元格写出阶段自动掩码，源实体在 JVM 始终保持真实明文 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
-| **行级校验与批注回写** | 批量导入失败返回干瘪 JSON 报错，业务人员无法直观定位 | 原生整合 JSR-303，一键生成出错单元格标红底色并内嵌悬浮批注的反馈 Excel | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
-| **动态防呆模板** | 维护静态模板文件繁琐且录入枚举易敲错导致校验反复失败 | `@ExcelDropdown` 与 `@ExcelPrompt` 一键生成带单元格下拉限制与浮动批注的防呆模板 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
-| **双向业务转义** | 数据库编码与报表中文描述手工转换繁琐、导入反向还原困难 | `@ExcelEnum` 零配置双向互转；`@ExcelDict` 与 `DictProvider` SPI 桥接业务字典 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
-| **单元格合并与主题** | 复杂报表排版繁琐、原生导出视觉陈旧且自适应列宽中英文失真 | `@ExcelMerge` 纵向合并、`ExcelBuilder` 链式多 Sheet、5 套商务主题与加权列宽 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
-| **海量数据异步导出** | 百万级长耗时报表同步导出引发网关 504 超时与浏览器假死 | `AsyncExportTaskService` 异步任务中心、受管并发调度、进度感知与过期清理 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
-| **导入差错隔离纠错** | 批量导入失败全量回滚、返工排查定位繁琐 | `FailSplitFeedback` 合规数据即刻入库、差错数据隔离提取并追加【失败原因】纠错清单 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
-| **智能多媒体图片** | 商品图片导出扁平挤压、网络/Base64/本地路径手动转换繁琐 | `@ExcelImage` 智能识别多源图片、数据行行高智能自适应联动撑高 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
-| **防拍照全屏暗水印** | 敏感 Excel 文件容易被拍照截屏泄露、浮层水印遮挡点击 | `ExcelWatermarkUtil` 动态生成 -30° 半透明切片、POI 背景平铺不遮挡、协同密码只读锁定 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
-| **强类型用户载荷** | 原生 StpUtil 仅支持单一标量，多次强制转换且缺少租户/部门属性 | `LoginHelper` 强类型会话门面与 `LoginUser` 载荷模型，一键存取上下文 | `satoken` | [ADR-0024](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md) |
-| **审计全链路贯通** | 持久层操作人与权限框架割裂，需要反复手动取值注入 | 自动装配 `SaTokenCurrentUserProvider` 接入 Core 模块 SPI，全自动打通 MyBatis-Plus `createBy`/`updateBy` | `satoken` | [ADR-0024](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md) |
-| **两级权限缓存** | 高频接口频繁拉取数据库权限列表或 Redis 网络 RTT 叠加性能损耗 | `CachedStpInterface` 提供 L1 微缓存 + L2 Redis，内置防穿透防雪崩及动态热刷新 | `satoken` | [ADR-0024](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md) |
-| **微服务内部零信任** | 内部 RPC/Feign 调用易被伪造绕过网关造成横向越权 | `@CheckSameToken` AOP 切面与 `SaSameUtil` 密钥校验，未授权秒级阻断 | `satoken` | [ADR-0024](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md) |
-| **鉴权文档无侵入** | 接口文档测试无法便捷携带 Token，手动粘贴 Header 体验繁琐 | 自动装配 `SaTokenOpenApiCustomizer` 注入 Knife4j / Swagger 全局 SecurityScheme 弹窗 | `satoken` | [ADR-0024](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md) |
-
----
-
-## 4. 快速接入指南
-
-### 方式一：一键全家桶模式（最省心，极速起步）
-
-适用于标准单体业务应用：
+一行依赖一次性引入 `core`、`web`、`mybatis-plus`、`redis`、`excel`、`satoken` 六大核心能力，仍可叠加任意按需扩展 Starter（如 `ateng-boot-ai`、`ateng-boot-openapi`）：
 
 ```xml
 <dependencies>
-    <!-- 一键引入全部核心底座、中间件与 Excel 增强 -->
+    <!-- 一键引入六大核心基础设施与中间件 -->
     <dependency>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot-all</artifactId>
         <version>1.2.0</version>
     </dependency>
 
-    <!-- 按需引入实际业务使用的数据库驱动，例如 MySQL -->
+    <!-- 按需引入数据库驱动（以 MySQL 为例） -->
     <dependency>
         <groupId>com.mysql</groupId>
         <artifactId>mysql-connector-j</artifactId>
@@ -162,14 +84,13 @@ flowchart TB
 </dependencies>
 ```
 
-### 方式二：BOM 按需精细化引入（推荐企业级最佳实践）
+#### 方式二：BOM 按需精准引入（推荐微服务 / 精细化依赖控制）
 
-适用于微服务节点或需要严格控制依赖传递的工程：
+导入纯清单 [`ateng-boot-bom`](./ateng-boot-bom/README.md) 后，所有 Starter 与核心中间件免配版本号且严格隔离测试/内部传递依赖：
 
 ```xml
 <dependencyManagement>
     <dependencies>
-        <!-- 引入 ateng-boot 统一依赖物料清单 -->
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-bom</artifactId>
@@ -181,7 +102,6 @@ flowchart TB
 </dependencyManagement>
 
 <dependencies>
-    <!-- 仅按需引入 Web、持久层、Redis 与 Excel 模块（免配版本号） -->
     <dependency>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot-web</artifactId>
@@ -196,35 +116,38 @@ flowchart TB
     </dependency>
     <dependency>
         <groupId>io.github.atengk</groupId>
-        <artifactId>ateng-boot-excel</artifactId>
+        <artifactId>ateng-boot-ai</artifactId>
     </dependency>
 </dependencies>
 ```
 
----
+### 1.2 十行代码接入核心契约与声明式智能体
 
-## 5. 一分钟极速起步 (Quick Start)
+#### ① 显式 Web 契约与全局异常/链路追踪
 
-### 核心 Controller 范式
 ```java
 @RestController
 @RequestMapping("/users")
 public class UserController {
 
-    @Autowired
-    private UserService userService;
+    private final UserService userService;
+
+    public UserController(UserService userService) {
+        this.userService = userService;
+    }
 
     @GetMapping("/{id}")
     public Result<UserVO> getUser(@PathVariable Long id) {
-        User user = userService.getById(id);
-        // 语义化业务断言：空时自动抛出 BusinessException 转译为 HTTP 200 业务错误
+        UserVO user = userService.findById(id);
+        // 语义化业务断言：为空时抛出 BusinessException，统一转为规范响应并记录 traceId
         BusinessAssert.notNull(user, CommonResultCode.NOT_FOUND);
-        return Result.success(UserVO.from(user));
+        return Result.success(user);
     }
 }
 ```
 
-### 前端收到的 JSON 载荷
+前端收到的响应（HTTP 200 显式契约、自动注入 `traceId` 与响应头 `X-Trace-Id`、64 位 `Long` 自动转 String 防前端截断）：
+
 ```json
 {
   "code": 200,
@@ -239,57 +162,150 @@ public class UserController {
   "traceId": "c8a14b0365734fb4864f7bdf753b890a"
 }
 ```
-> **自动生效的特性**：HTTP 保持标准 200、全局注入链路 `traceId` 与响应头 `X-Trace-Id`、64 位雪花 Long 自动转 String 防前端截断、时间自动标准化格式化。
 
-### 本地样例一键运行 (Demo Samples)
+#### ② 声明式企业智能体（[`ateng-boot-ai`](./ateng-boot-ai/README.md)）
+
+零厂商私有 SDK 绑定，原生收敛 OpenAI-Compatible 协议，支持受管工具沙箱与 JSR-303 结构化防幻觉校验：
+
+```java
+@AiAgent(tools = {OrderTools.class})
+@SystemMessage("你是一名资深财务合规审计专家，请调用工具查询订单并给出严谨的合规审计决策报告。")
+public interface FinancialAuditAgent {
+
+    FinancialAuditResult auditOrder(@UserMessage FinancialAuditRequest request);
+}
+```
+
+### 1.3 本地零依赖离线跑通示例
+
+所有示例工程内置 `@Profile("!local")` 内存桩或 H2 内存库，无需提前安装 MySQL、Redis 或大模型 API Key 即可启动体验：
+
 ```bash
-# 启动 Web 契约层与全链路追踪场景样例
-mvn -pl ateng-boot-samples/ateng-boot-sample-web spring-boot:run
+# 体验全家桶多 Starter 协同（H2 内存库 + Swagger /v3/api-docs + 离线降级）
+mvn -pl ateng-boot-samples/ateng-boot-sample-smoke-test spring-boot:run
 
-# 启动持久层增强双领域模型场景样例（内置 H2 内存库）
-mvn -pl ateng-boot-samples/ateng-boot-sample-mybatis-plus spring-boot:run
+# 体验 AI 智能体、流式推流与 RAG（内置 MockWebServer 离线桩）
+mvn -pl ateng-boot-samples/ateng-boot-sample-ai spring-boot:run
 ```
 
 ---
 
-## 6. 全局架构决策记录 (ADR)
+## 2. 全栈能力版图与模块目录
 
-全生命周期架构演进与设计权衡详见 [架构决策记录看板 (ADR)](./docs/adr/README.md)：
+仓库共包含 **37 个 Maven 模块**（1 个 BOM + 1 个聚合全家桶 + 35 个功能 Starter）与 **36 个 1:1 自验示例工程**。每个 Starter 模块均配有一份自包含的权威使用文档（含全量 API 速查矩阵、YAML/Java 示例与边界说明）：
 
-- [ADR-0001: 多仓解耦架构与 ateng 顶层品牌矩阵](./docs/adr/0001-multi-repo-brand-matrix.md)
-- [ADR-0002: 坚持显式 API 响应契约，拒绝 ResponseBodyAdvice 自动包装](./docs/adr/0002-explicit-result-contract-no-response-body-advice.md)
-- [ADR-0003: 依赖管理采用 BOM Import 模式而非继承 parent](./docs/adr/0003-dependency-management-via-bom-import.md)
-- [ADR-0004: 全局统一 HTTP 200 响应与生产级未知异常脱敏](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md)
-- [ADR-0005: 采用 Jackson2ObjectMapperBuilderCustomizer 挂载定制而非覆盖 ObjectMapper](./docs/adr/0005-jackson-customizer-over-objectmapper-override.md)
-- [ADR-0006: 依赖版本基线锁定与升级治理策略](./docs/adr/0006-dependency-baseline-and-upgrade-strategy.md)
-- [ADR-0007: Maven 中央仓库发布解耦与 CI 纯净化治理决策](./docs/adr/0007-maven-publishing-and-clean-ci-pipeline.md)
-- [ADR-0008: 自动化发布流、变更日志生成与长青文档同步](./docs/adr/0008-automated-release-changelog-and-evergreen-docs.md)
-- [ADR-0009: 双分支演进模型：main 只读发布与 dev 活跃开发](./docs/adr/0009-dual-branch-workflow-main-release-and-dev-active.md)
-- [ADR-0010: 传输层分页契约解耦与 ORM 内部属性彻底隔离](./docs/adr/0010-transport-pagination-contract-decoupling.md)
-- [ADR-0011: 零重型外部依赖与上下文就近内聚工具集](./docs/adr/0011-zero-bloat-and-co-located-utilities.md)
-- [ADR-0012: 数据安全生命周期分离：存储加密与视图脱敏](./docs/adr/0012-lifecycle-separated-data-security.md)
-- [ADR-0013: 基于 SPI 抽象与两级存储自适应的接口防重幂等引擎架构](./docs/adr/0013-spi-based-hybrid-idempotent-engine.md)
-- [ADR-0014: 基于 SPI 抽象与三级自适应令牌桶的接口限流防刷引擎架构](./docs/adr/0014-three-tier-adaptive-rate-limiter-engine.md)
-- [ADR-0015: 动态跨域安全策略与凭证安全反射架构](./docs/adr/0015-dynamic-cors-and-credentials-safe-origin-reflection.md)
-- [ADR-0016: 双向 API 数据加签验签与防重放引擎架构](./docs/adr/0016-dual-direction-api-signature-and-anti-replay-engine.md)
-- [ADR-0017: 基于 JSqlParser AST 的行级多租户安全隔离架构](./docs/adr/0017-multi-tenant-row-level-isolation-architecture.md)
-- [ADR-0018: 基于 JSqlParser AST 的声明式细粒度数据权限引擎架构](./docs/adr/0018-declarative-data-permission-engine-architecture.md)
-- [ADR-0019: 原生高性能分批批量插入引擎架构决策](./docs/adr/0019-native-high-performance-batch-insert-engine.md)
-- [ADR-0020: 零膨胀分布式 ID 引擎与全场景敏感数据脱敏架构决策](./docs/adr/0020-zero-bloat-distributed-id-and-mask-strategy.md)
-- [ADR-0021: 存量核心基线收敛与零冗余封版战略决策](./docs/adr/0021-core-baseline-convergence-and-zero-bloat-freeze-strategy.md)
-- [ADR-0022: 双核驱动 Redis 基础设施与企业级分布式协同架构决策](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md)
-- [ADR-0023: 企业级轻量流式 Excel 引擎与数据安全/校验/防呆一体化架构决策](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md)
-- [ADR-0024: 企业级 Sa-Token 鉴权生态与安全防御/分布式会话一体化架构决策](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md)
-- [ADR-0025: Core 核心底座全方位扩建与未来中间件孵化地基架构决策](./docs/adr/0025-core-module-expansion-and-future-proof-middleware-foundations.md)
-- [ADR-0026: 生产级基线加固与底层设施大一统架构决策](./docs/adr/0026-production-hardening-and-foundations-unification.md)
-- [ADR-0027: 分层双防数据校验体系与标准化原语架构决策](./docs/adr/0027-defense-in-depth-validation-and-standardized-primitives.md)
-- [ADR-0028: 示例工程多模块解耦与精准增量集成测试架构决策](./docs/adr/0028-samples-modularization-and-incremental-integration-testing.md)
+### 依赖治理与全局聚合
+
+| 模块坐标 (`ArtifactId`) | 核心能力定位 | 文档与示例 |
+| :--- | :--- | :--- |
+| `ateng-boot-bom` | 纯 `<dependencyManagement>` 依赖物料清单，统一锁定全量坐标版本并隔离测试传递依赖 | [模块文档](./ateng-boot-bom/README.md) · [示例总览](./ateng-boot-samples/README.md) |
+| `ateng-boot-all` | 零源码空 JAR 聚合包，一键装配 `core`/`web`/`mybatis-plus`/`redis`/`excel`/`satoken` 六大核心底座 | [模块文档](./ateng-boot-all/README.md) · [冒烟示例](./ateng-boot-samples/ateng-boot-sample-smoke-test/README.md) |
+| `ateng-boot-samples` | 36 个零共享代码的可运行 Web 体验沙箱，默认离线可跑并支持 `-Dspring-boot.run.profiles=local` 联调真实中间件 | [示例矩阵](./ateng-boot-samples/README.md) |
+
+### 核心基座与 Web 运行时
+
+| 模块坐标 (`ArtifactId`) | 核心能力定位 | 文档与示例 |
+| :--- | :--- | :--- |
+| `ateng-boot-core` | 统一响应 `Result<T>`/`PageResult<T>`、业务断言、四维上下文异步透传与虚拟线程、Snowflake `IdUtil`、脱敏 `@Sensitive` 与通用枚举 `IBaseEnum<T>` | [模块文档](./ateng-boot-core/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-core/README.md) |
+| `ateng-boot-web` | 无锁 MDC `TraceFilter`、全局异常生产脱敏、Long 转 String 防失真、`@Idempotent`、`@RateLimiter`、`@ApiSign`、`@OperateLog` 与动态 CORS | [模块文档](./ateng-boot-web/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-web/README.md) |
+
+### 数据持久、缓存与检索
+
+| 模块坐标 (`ArtifactId`) | 核心能力定位 | 文档与示例 |
+| :--- | :--- | :--- |
+| `ateng-boot-mybatis-plus` | 五级实体继承、审计填充、JSqlParser 行级多租户、`@DataScope` 数据权限、`@FieldEncrypt` 加密、批量插入/Upsert、流式游标与乐观锁重试 | [模块文档](./ateng-boot-mybatis-plus/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-mybatis-plus/README.md) |
+| `ateng-boot-datasource` | SaaS 物理多租户分库、主从读写分离、从库故障熔断主动探活自愈、三向差量同步与事务假切源守卫 | [模块文档](./ateng-boot-datasource/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-datasource/README.md) |
+| `ateng-boot-redis` | Spring Data Redis + Redisson 双核融合、无 `@class` JSON 序列化、`@DistributedLock`、防穿透缓存、L1+L2 缓存、延时队列与 Stream | [模块文档](./ateng-boot-redis/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-redis/README.md) |
+| `ateng-boot-search` | Elasticsearch 8.x & OpenSearch 双引擎检索门面、安全 DSL 构造、流式批量处理器、零停机别名切换与 Search-After 深度分页 | [模块文档](./ateng-boot-search/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-search/README.md) |
+| `ateng-boot-milvus` | Milvus `MilvusClientV2` 集合运维、多向量混合检索（RRF/Weighted）、多租户 `PartitionKey` 隔离与 LangChain4j 桥接 | [模块文档](./ateng-boot-milvus/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-milvus/README.md) |
+
+### 安全鉴权与配置加密
+
+| 模块坐标 (`ArtifactId`) | 核心能力定位 | 文档与示例 |
+| :--- | :--- | :--- |
+| `ateng-boot-satoken` | Sa-Token 企业级鉴权、`LoginHelper` 强类型会话、Core/MP 操作人审计贯通、L1+L2 权限缓存、多账号路由与微服务 Same-Token 零信任 | [模块文档](./ateng-boot-satoken/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-satoken/README.md) |
+| `ateng-boot-social` | OAuth2 第三方社会化登录、两阶段阅后即焚 `bindTicket` 绑定、开放重定向白名单防御与 Sa-Token 多端会话联动 | [模块文档](./ateng-boot-social/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-social/README.md) |
+| `ateng-boot-encrypt` | 全属性源配置加解密（AES-GCM/RSA/SM2/SM4）、Nacos 启动期穿透、多密钥轮换、Actuator `/env` 掩码与脱机就地回写 CLI | [模块文档](./ateng-boot-encrypt/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-encrypt/README.md) |
+
+### 网络通信、实时推送与消息队列
+
+| 模块坐标 (`ArtifactId`) | 核心能力定位 | 文档与示例 |
+| :--- | :--- | :--- |
+| `ateng-boot-http` | Spring 6 声明式 `@HttpClient`（支持 `fallback`）、`HttpTemplate`、多命名 `RestClient` 池化、SSE 流消费、mTLS 与上下文域隔离透传 | [模块文档](./ateng-boot-http/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-http/README.md) |
+| `ateng-boot-realtime` | WebSocket & SSE 双规融合、`@RealtimeAction` RPC、分布式群组、离线消息重放、Redis 集群广播与四阶优雅停机 | [模块文档](./ateng-boot-realtime/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-realtime/README.md) |
+| `ateng-boot-tcp` | Netty 4.1 双模长连接 Server/Client、粘包拆包、mTLS、高低水位背压流控、全双工 RPC 与跨节点广播桥接 | [模块文档](./ateng-boot-tcp/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-tcp/README.md) |
+| `ateng-boot-mqtt` | Eclipse Paho MQTT v5 物联网通信、`@MqttListener`、`$share` 共享订阅、同步 RPC 应答与死信受控重放 | [模块文档](./ateng-boot-mqtt/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-mqtt/README.md) |
+| `ateng-boot-rabbitmq` | Publisher Confirms/Returns、`sendAfterCommit` 事务协同、死信受控重放、消费端幂等静默确认与 Quorum 声明式拓扑 | [模块文档](./ateng-boot-rabbitmq/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-rabbitmq/README.md) |
+| `ateng-boot-kafka` | 微批可靠投递、`@RetryableTopic` 非阻塞重试、死信重放、Lag/Offset 观测与批量消费多租户上下文隔离 | [模块文档](./ateng-boot-kafka/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-kafka/README.md) |
+| `ateng-boot-rocketmq` | RocketMQ 5.x gRPC 客户端、2PC 原生分布式事务、延时精准撤回、`SimpleConsumer` 流式拉取与死信重放 | [模块文档](./ateng-boot-rocketmq/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-rocketmq/README.md) |
+
+### 文件存储、办公文档与远程传输
+
+| 模块坐标 (`ArtifactId`) | 核心能力定位 | 文档与示例 |
+| :--- | :--- | :--- |
+| `ateng-boot-storage` | Local 本地磁盘与 S3 兼容协议统一对象存储、文件魔数嗅探、流式分片上传防 OOM、断点续传与预签名直链 | [模块文档](./ateng-boot-storage/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-storage/README.md) |
+| `ateng-boot-excel` | Apache Fesod 流式读写、`@ExcelSensitive` 动态脱敏、JSR-303 校验红字批注回写、下拉模板、多 Sheet 与 AES 工作簿加密 | [模块文档](./ateng-boot-excel/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-excel/README.md) |
+| `ateng-boot-document` | Word 模板渲染（`poi-tl`）与 PDF 防截屏暗水印、跨页骑缝章、AcroForm 扁平化与高清渲染预览（PDFBox 3.x） | [模块文档](./ateng-boot-document/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-document/README.md) |
+| `ateng-boot-ftp` | FTP/FTPS 连接池化、线程级动态切源、RFC 2640 防乱码、`.tmp` 原子上传与目录递归同步 | [模块文档](./ateng-boot-ftp/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-ftp/README.md) |
+| `ateng-boot-ssh` | Apache MINA SSHD/SFTP 会话池、多主机并发巡检、超时防孤儿进程、SFTP 原子同步、端口转发与 WebSSH 终端 | [模块文档](./ateng-boot-ssh/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-ssh/README.md) |
+
+### 任务调度与流程编排
+
+| 模块坐标 (`ArtifactId`) | 核心能力定位 | 文档与示例 |
+| :--- | :--- | :--- |
+| `ateng-boot-job-local` | 受管线程池隔离的单机定时任务、四阶重叠并发策略、硬超时中断、SaaS 多租户遍历与轻量集群互斥锁 | [模块文档](./ateng-boot-job-local/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-job-local/README.md) |
+| `ateng-boot-job-xxl` | XXL-Job 生产加固、四维上下文透传、SLF4J 日志镜像、分片流式批处理、硬看门狗熔断与 K8s 三阶优雅排空 | [模块文档](./ateng-boot-job-xxl/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-job-xxl/README.md) |
+| `ateng-boot-job-snail` | SnailJob 调度与分布式重试双引擎加固、MapReduce 切片、看门狗降级与 100% 脱网测试助手 | [模块文档](./ateng-boot-job-snail/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-job-snail/README.md) |
+| `ateng-boot-statemachine` | 无状态单例业务状态机 Fluent DSL、只读预检、CAS 前置并发跃迁、`performAfterCommit` 与拓扑图导出 | [模块文档](./ateng-boot-statemachine/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-statemachine/README.md) |
+| `ateng-boot-liteflow` | LiteFlow 规则与 DAG 流程编排、受管 `WHEN` 并行线程池透传、静态 EL 预检、历史回滚与 Saga 反向补偿 | [模块文档](./ateng-boot-liteflow/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-liteflow/README.md) |
+
+### 商业交易、多端通知、AI 与运维观测
+
+| 模块坐标 (`ArtifactId`) | 核心能力定位 | 文档与示例 |
+| :--- | :--- | :--- |
+| `ateng-boot-pay` | 微信支付 v3 与支付宝官方 SDK 统一收单门面、多商户动态切源、Webhook 验签防重、分账开关与全域 `BigDecimal` 元契约 | [模块文档](./ateng-boot-pay/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-pay/README.md) |
+| `ateng-boot-sms` | 零 SDK 多渠道短信（阿里/腾讯/华为/天翼/云片）、加权熔断、单日预算硬切断与验证码防暴破 | [模块文档](./ateng-boot-sms/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-sms/README.md) |
+| `ateng-boot-mail` | SMTP 多账号路由、国际化模板 SPI、并发批量合并、测试沙箱拦截、合规归档与事务后补偿发送 | [模块文档](./ateng-boot-mail/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-mail/README.md) |
+| `ateng-boot-notification` | 企微/钉钉/飞书 Webhook 群机器人推送、`@NotifyAlert` 三阶防风暴聚合与备用通道容灾切换 | [模块文档](./ateng-boot-notification/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-notification/README.md) |
+| `ateng-boot-ai` | LangChain4j & LangGraph4j 智能体编排、RAG 混合检索与证据溯源、MCP/OpenAPI 工具、HITL 审批、长效记忆与配额护栏 | [模块文档](./ateng-boot-ai/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-ai/README.md) |
+| `ateng-boot-openapi` | SpringDoc OpenAPI 3.0 契约治理、生产 404/CIDR/Sa-Token 五模守卫、枚举字典增强与离线契约导出 | [模块文档](./ateng-boot-openapi/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-openapi/README.md) |
+| `ateng-boot-observability` | K8s Liveness/Readiness 硬隔离、异步超时防假死健康探针、`MetricsTemplate`/`@ObservedMetric` 与端点防御 | [模块文档](./ateng-boot-observability/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-observability/README.md) |
+| `ateng-boot-admin` | Spring Boot Admin 运维监控看板、Sa-Token 登录守卫、防 SSRF 实例注册防火墙、僵尸实例清理与防抖告警 | [模块文档](./ateng-boot-admin/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-admin/README.md) |
 
 ---
 
-## 7. 质量门禁与工程规范
+## 3. 面向 AI 时代：让 AI 编程助手精准驾驭 `ateng-boot` (`AI-Ready`)
 
-- **反应堆单测准出门禁**：全工程各模块执行 `mvn clean test` 100% 绿色通过方可交付；
-- **双分支开发铁律**：`main` 仅作为只读发布主干，日常研发一律收口于 `dev` 分支；
-- **受控提交**：遵循 Conventional Commits 规约，统一调用 `bash scripts/commit.sh` 门面脚本；
-- **持续集成流水线守护**：推送至远端后由 GitHub Actions 矩阵执行 JDK 17 & 21 双版本全自动验证。
+### 3.1 为 AI 准备好的结构化知识入口
+
+为了让外部 AI 编程助手（Cursor、Claude Code、Antigravity、Copilot、Windsurf 等）在接入 `ateng-boot` 时做到**零凭空捏造、一次生成即通过编译**，仓库原生提供逐层递进的机读与人读文档索引：
+
+| 入口文件 | 面向对象 | 核心用途 |
+| :--- | :--- | :--- |
+| [`llms.txt`](./llms.txt) | AI Agent / MCP 文档抓取 | 遵循 llms.txt 标准的极简全局索引，汇总 37 模块路径与核心编码约束 |
+| [`CONTEXT-MAP.md`](./CONTEXT-MAP.md) | AI 架构寻址 | 查阅 38 个限界上下文职责边界与跨模块依赖拓扑 |
+| `./ateng-boot-<module>/README.md` | 业务集成生成 | 第 0 节全景矩阵 + 同屏闭环“YAML 配置 + 真实 Java 代码 + 生产边界” |
+| `./ateng-boot-samples/ateng-boot-sample-*` | 端到端参考范式 | 每个能力域对应一份可直接编译运行的真实多 Controller / DTO / 测试工程 |
+
+### 3.2 给开发者：复制即用的 AI 规则提示词
+
+将以下片段粘贴到你业务项目的 `.cursorrules`、`CLAUDE.md`、`AGENTS.md` 或对话开场提示中，即可显著减少 AI 助手写错包名、乱引工具库或绕开统一契约的概率：
+
+```text
+本项目基于 ateng-boot（Spring Boot 3.3.13 + JDK 17/21+）构建。编写相关业务代码时请遵守：
+1. 优先检索 ateng-boot 的 llms.txt、CONTEXT-MAP.md 与对应模块的 README.md（第 0 节全景矩阵与配置示例）。
+2. Controller 必须显式返回 Result<T>（分页用 PageQuery/PageResult<VO>），严禁引入 @ResponseBodyAdvice 或向接口暴露 ORM Entity。
+3. 参数校验使用 JSR-303 + ValidList<E> + ValidationGroups，业务防卫使用 BusinessAssert 与 ValidatorUtil。
+4. 禁止引入 hutool-all、guava 或新建裸 Thread/Executors；异步与工具能力优先复用 ateng-boot-core。
+5. 业务层与内存实体保持明文，存储加密交由 @FieldEncrypt，接口脱敏交由 @Sensitive / @ExcelSensitive。
+```
+
+---
+
+## 4. 延伸阅读与参与贡献
+
+- **架构决策看板（全量 ADR 索引）**：[`docs/adr/README.md`](./docs/adr/README.md)
+- **模块边界与限界上下文地图**：[`CONTEXT-MAP.md`](./CONTEXT-MAP.md)
+- **36 个可运行示例工程指南**：[`ateng-boot-samples/README.md`](./ateng-boot-samples/README.md)
+- **分支模型、提交规约与代码贡献**：[`CONTRIBUTING.md`](./CONTRIBUTING.md)
+- **开源许可协议**：[Apache License 2.0](./LICENSE)

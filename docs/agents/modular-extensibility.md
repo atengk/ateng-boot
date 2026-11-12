@@ -23,7 +23,8 @@
    - 在 `ateng-boot-samples/` 下创建 `ateng-boot-sample-<module>` 并注册至 `ateng-boot-samples/pom.xml`（标配 `<maven.deploy.skip>true</maven.deploy.skip>`，严禁跨 Sample 共享代码）；
    - 全面遵循 [`documentation-specification.md`](./documentation-specification.md) 第 3 节：引入 `ateng-boot-web`、按业务领域拆分暴露多 `@RestController` 接口、实现 `@Profile("!local")` 离线内存桩与 `application-local.example.yml` 双模自适应测试套件，100% 覆盖新模块所有公开 API、注解、配置项与 SPI。
 5. **Sample-First 五维生产文档 (5D Documentation Gate)**：
-   - 待 Sample 与对抗性单测 100% 跑通后，严格按照 [`documentation-specification.md`](./documentation-specification.md) 第 2、3 节，从已跑通的 Sample 中 1:1 逆向提取代码与配置，编写 Starter 五维 `README.md`（含 100% 全景速查矩阵与三要素就近闭环）及 Sample 四段式极简体验卡 `README.md`。
+   - 待 Sample 与对抗性单测 100% 跑通后，严格按照 [`documentation-specification.md`](./documentation-specification.md) 第 2、3 节，从已跑通的 Sample 中 1:1 逆向提取代码与配置，编写 Starter 五维 `README.md`（含 100% 全景速查矩阵与三要素就近闭环）及 Sample 四段式极简体验卡 `README.md`；
+   - 同步在根目录 [`README.md`](../../README.md) 的对应能力域表格与根目录 AI 索引 [`llms.txt`](../../llms.txt) 中补齐新模块的一行简洁入口。
 6. **领域边界映射与 ADR 沉淀 (Domain & ADR Gate)**：
    - 在新模块根目录创建纯领域词汇表 `ateng-boot-<module>/CONTEXT.md`，并在全局 [`CONTEXT-MAP.md`](../../CONTEXT-MAP.md) 的 `## Contexts` 与 `## Relationships` 中注册上下文拓扑（遵循 [`domain.md`](./domain.md)）；
    - 在 `docs/adr/` 下新建架构决策记录 `NNNN-<module>-architecture.md` 并登记至 [`docs/adr/README.md`](../adr/README.md)。

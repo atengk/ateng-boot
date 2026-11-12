@@ -2,7 +2,7 @@
 
 ## 1. 核心定位与唯一真理源职责 (Mission & Scope)
 
-在 `ateng-boot` 框架中，**文档与样例工程（Sample）是连接框架能力与终端开发者的第一生命线**。本规范作为全仓库子模块文档（`ateng-boot-*/README.md`）与场景样例工程（`ateng-boot-samples/ateng-boot-sample-*`）的**唯一权威标准（Single Source of Truth）**，同时定义了交付准出的《12 项成熟度与文档双向对齐自检清单》与 `/code-review` 红牌阻断门禁。
+在 `ateng-boot` 框架中，**文档与样例工程（Sample）是连接框架能力与终端开发者（及 AI 编程助手）的第一生命线**。本规范作为全仓库子模块文档（`ateng-boot-*/README.md`）、根目录门面与 AI 索引（`README.md`、`llms.txt`）及场景样例工程（`ateng-boot-samples/ateng-boot-sample-*`）的**唯一权威标准（Single Source of Truth）**，同时定义了交付准出的《12 项成熟度与文档双向对齐自检清单》与 `/code-review` 红牌阻断门禁。
 
 ---
 
@@ -111,6 +111,23 @@
    - **第 3 节（维度三：全真跨模块端到端闭环场景）**：基于 `ateng-boot-sample-smoke-test` 跑通的真实闭环（统一响应/校验 -> Sa-Token 登录上下文自动透传 -> MyBatis-Plus 审计与 `PageResult` 分页 -> Apache Fesod 脱敏流式导出），展示多模块无胶水联动。
    - **第 4 节（维度四：适用边界、局部排除与拆分演进指南）**：明确适用单体/快速原型边界，提供 `<exclusions>` 精确剔除不需要默认底座（如剔除 `redis` 或 `excel`）的配方及向微服务拆分迁移路径。
    - *Sample 映射*：严格 1:1 锚定 [`ateng-boot-samples/ateng-boot-sample-smoke-test`](../../ateng-boot-samples/ateng-boot-sample-smoke-test/README.md)（多领域 Controller `/sample/smoke/...` + 按需 Starter 共存门禁 + Redis 双模降级）。
+
+---
+
+### 2.8 根目录门面文档 (`Root Storefront README.md`) 与 AI 索引 (`llms.txt`) 边界规范
+
+根目录 [`README.md`](../../README.md) 与 [`llms.txt`](../../llms.txt) 是面向终端开发者选型与外部 AI 编程助手检索的**“项目第一门面与全景索引枢纽”**，**严禁复用 Starter 5D 长篇契约或演变为内部工程治理看板**：
+
+1. **门面去噪与禁区红线**：根目录 `README.md` **严禁堆砌全量 ADR 决策清单、40 行级特性痛点-ADR 矩阵、以及内部开发流程/提交流水线细则**；全量 ADR 收口至 [`docs/adr/README.md`](../adr/README.md)，模块上下文边界收口至 [`CONTEXT-MAP.md`](../../CONTEXT-MAP.md)，贡献与研发规范收口至 [`CONTRIBUTING.md`](../../CONTRIBUTING.md)，首页底部仅保留 1 组极简相对路径导航链接。
+2. **标准门面五段结构**：
+   - **第一屏价值宣言与能力全景**：高信噪比全局徽章（含 `Starters` 与 `llms.txt` 入口）、核心选型亮点与高层次领域架构图；
+   - **60 秒极速上手**：提供 `ateng-boot-all` 与 `ateng-boot-bom` 双模 Maven 引入坐标（**`<artifactId>ateng-boot-(all|bom)</artifactId>` 必须紧邻下一行 `<version>...</version>`**，确保 [`scripts/release.sh`](../../scripts/release.sh) 自动原地更新版本号）、10 行级真实可用示例与离线 Sample 一键启动命令；
+   - **分领域模块目录**：按业务能力域拆分为简洁 3 列表格（`ArtifactId` / 核心能力一句话定位 / 文档与 Sample 链接），100% 覆盖全部已分发模块与 `ateng-boot-samples`；
+   - **AI-Ready 引导专章**：标注 `llms.txt`、`CONTEXT-MAP.md` 与子模块 `README.md` 寻址路径，并附开箱可用的短规则提示卡片；
+   - **延伸阅读与参与贡献**：极简导航尾注。
+3. **机读 AI 索引 (`llms.txt`) 双原则**：
+   - **纯相对路径**：严格遵循 [llmstxt.org](https://llmstxt.org/) 分组格式，全量使用仓库相对路径（`./...`）索引全局文档与每个模块的 `README.md` / `CONTEXT.md` / Sample `README.md`，保障本地 AI IDE 与在线平台通用可读；
+   - **免硬编码版本号**：`llms.txt` 不写死具体版本号，统一引导 AI 从根 `pom.xml` 或 `ateng-boot-bom/README.md` 获取版本真源，避免跨发版维护漂移。
 
 ---
 

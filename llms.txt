@@ -1,0 +1,85 @@
+# ateng-boot
+
+> 面向生产就绪的 Spring Boot 3（3.3.13）工业级基础设施与全能中间件 Starter 套件，坚持纯原生、零臃肿依赖（无 `hutool-all` / `guava`）与显式强类型契约设计；涵盖 1 个 BOM、1 个核心聚合全家桶、35 个正交解耦的业务 Starter 及 36 个离线可运行的自验示例工程。
+
+## AI 编程助手必读约定 (Instructions for AI Agents)
+
+- **版本基线真源**：JDK 17 LTS 编译（兼容 JDK 21+ 虚拟线程运行时），Spring Boot `3.3.13`，MyBatis-Plus `3.5.17`。最新发版版本号与全部托管坐标以 [根 POM](./pom.xml) 与 [BOM 物料清单](./ateng-boot-bom/README.md) 为准。
+- **依赖引入方式**：单体与快速原型可引入 `ateng-boot-all`（仅捆绑 `core`/`web`/`mybatis-plus`/`redis`/`excel`/`satoken` 6 大核心 Starter）；微服务或精细控制依赖时，导入 `ateng-boot-bom`（`<type>pom</type><scope>import</scope>`）后按需独立引入具体 Starter（免配 `<version>`）。
+- **核心架构约束（严禁幻觉偏离）**：
+  - Controller 必须显式返回 `Result<T>`（分页入参用 `PageQuery`、出参用 `PageResult<VO>`），严禁使用 `@ResponseBodyAdvice` 全局自动包装，严禁 Controller 接收或返回持久层 Entity。
+  - 参数校验优先使用 JSR-303 注解、`ValidList<E>`（批量列表校验）与 `ValidationGroups`，业务层防卫使用 `BusinessAssert` 与 `ValidatorUtil.validate(...)`。
+  - 严格保持业务层与实体“内存真明文”：存储加密收敛于持久层 `@FieldEncrypt`，接口展示与导出脱敏收敛于 Jackson `@Sensitive` 与 `@ExcelSensitive`。
+  - 并发原语与受管线程池统一复用 `ateng-boot-core` 的 `AsyncContext` / 受管执行器；涉及 I/O 或耗时临界区统一使用 `ReentrantLock`，避免 JDK 21+ 虚拟线程 Carrier Pinning；禁止引入 `hutool-all`、`guava` 或新建裸 `Thread` / `Executors`。
+- **代码生成检索顺序**：对接任何模块前，先读取目标模块 `README.md`（第 0 节全景速查矩阵汇总了全部公开门面/注解/配置，正文各节就近给出真实 YAML 与 Java 代码），复杂示例可直接参考对应的 `ateng-boot-samples/ateng-boot-sample-*` 源码。
+
+## 全局索引与工程治理
+
+- [项目门面 README](./README.md): 框架定位、60 秒快速起步与全量能力版图导航
+- [领域限界上下文地图](./CONTEXT-MAP.md): 全仓库 38 个模块的职责边界与跨模块协作关系
+- [架构决策记录看板 (ADR)](./docs/adr/README.md): 架构演进取舍与核心设计权衡总索引
+- [Agent 开发行为契约](./AGENTS.md): 全局架构铁律、九道成熟度防线与测试准出规范
+- [文档与样例规范](./docs/agents/documentation-specification.md): Starter 5D 文档标准、Sample 规范与交付自检清单
+- [示例工程矩阵总览](./ateng-boot-samples/README.md): 36 个自包含、支持离线 `!local` 与 `local` 双模运行的体验工程说明
+- [贡献与提交规范](./CONTRIBUTING.md): 分支模型、Conventional Commits 与编码红线
+
+## 依赖管理与全局聚合
+
+- [ateng-boot-bom 文档](./ateng-boot-bom/README.md) | [上下文词汇表](./ateng-boot-bom/CONTEXT.md): 纯 `<dependencyManagement>` 物料清单，统一锁定发行构件与第三方驱动版本并隔离测试/内部传递依赖
+- [ateng-boot-all 文档](./ateng-boot-all/README.md) | [上下文词汇表](./ateng-boot-all/CONTEXT.md) | [全家桶冒烟示例](./ateng-boot-samples/ateng-boot-sample-smoke-test/README.md): 零编译源码聚合 JAR，一键装配 Core/Web/MyBatis-Plus/Redis/Excel/Sa-Token 六大基础 Starter
+
+## 核心与 Web 运行时底座
+
+- [ateng-boot-core 文档](./ateng-boot-core/README.md) | [上下文词汇表](./ateng-boot-core/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-core/README.md): 统一响应 `Result<T>`、`PageQuery`/`PageResult<T>`、`BusinessAssert`、`JsonUtil`、自适应虚拟线程与四维上下文透传、Snowflake `IdUtil`、脱敏 `@Sensitive` 与通用枚举 `IBaseEnum<T>`
+- [ateng-boot-web 文档](./ateng-boot-web/README.md) | [上下文词汇表](./ateng-boot-web/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-web/README.md): MDC `TraceFilter`、全局异常脱敏、`Jackson2ObjectMapperBuilderCustomizer`（Long 防失真）、`@Idempotent`、`@RateLimiter`、`@ApiSign`、`@OperateLog`、XSS/IP 防卫与动态 CORS
+
+## 数据持久、缓存与检索
+
+- [ateng-boot-mybatis-plus 文档](./ateng-boot-mybatis-plus/README.md) | [上下文词汇表](./ateng-boot-mybatis-plus/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-mybatis-plus/README.md): 实体继承阶梯、审计填充、JSqlParser 行级多租户与 `@DataScope`、`@FieldEncrypt`、原生批量插入/Upsert、游标流式查询与乐观锁重试
+- [ateng-boot-datasource 文档](./ateng-boot-datasource/README.md) | [上下文词汇表](./ateng-boot-datasource/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-datasource/README.md): SaaS 动态多数据源、主从读写分离、从库故障熔断自愈、三向差量同步与事务假切源守卫
+- [ateng-boot-redis 文档](./ateng-boot-redis/README.md) | [上下文词汇表](./ateng-boot-redis/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-redis/README.md): Spring Data Redis + Redisson 双核融合、无 `@class` JSON 序列化、`@DistributedLock`、防击穿缓存、L1+L2 两级缓存、延时队列与 Stream
+- [ateng-boot-search 文档](./ateng-boot-search/README.md) | [上下文词汇表](./ateng-boot-search/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-search/README.md): Elasticsearch 8.x 与 OpenSearch 双引擎统一门面、流式批量写入、原子别名切换与 Search-After 深度分页
+- [ateng-boot-milvus 文档](./ateng-boot-milvus/README.md) | [上下文词汇表](./ateng-boot-milvus/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-milvus/README.md): Milvus `MilvusClientV2` 集合运维、多向量混合检索（RRF/Weighted）、多租户 `PartitionKey` 隔离与 LangChain4j 桥接
+
+## 安全鉴权与配置加密
+
+- [ateng-boot-satoken 文档](./ateng-boot-satoken/README.md) | [上下文词汇表](./ateng-boot-satoken/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-satoken/README.md): Sa-Token 企业级鉴权、`LoginHelper` 强类型载荷、Core/MP 审计贯通、L1+L2 权限缓存、多账号路由与微服务 Same-Token 零信任
+- [ateng-boot-social 文档](./ateng-boot-social/README.md) | [上下文词汇表](./ateng-boot-social/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-social/README.md): OAuth2 第三方社会化登录、两阶段阅后即焚 `bindTicket` 绑定、开放重定向防御与 Sa-Token 多端会话联动
+- [ateng-boot-encrypt 文档](./ateng-boot-encrypt/README.md) | [上下文词汇表](./ateng-boot-encrypt/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-encrypt/README.md): 全属性源透明配置加解密（AES-GCM/RSA/SM2/SM4）、Nacos 启动期穿透、多密钥轮换、Actuator `/env` 掩码与就地回写
+
+## 网络通信、实时推送与消息队列
+
+- [ateng-boot-http 文档](./ateng-boot-http/README.md) | [上下文词汇表](./ateng-boot-http/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-http/README.md): Spring 6 声明式 `@HttpClient`、`HttpTemplate`、多命名 `RestClient` 池化、SSE 流消费、mTLS 与四维上下文域隔离透传
+- [ateng-boot-realtime 文档](./ateng-boot-realtime/README.md) | [上下文词汇表](./ateng-boot-realtime/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-realtime/README.md): WebSocket 与 SSE 双规实时通信、`@RealtimeAction`、分布式群组、离线消息重放、Redis 集群广播与优雅停机
+- [ateng-boot-tcp 文档](./ateng-boot-tcp/README.md) | [上下文词汇表](./ateng-boot-tcp/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-tcp/README.md): Netty 4.1 双模长连接 Server/Client、粘包拆包、mTLS、高低水位背压、全双工 RPC 与跨节点广播桥接
+- [ateng-boot-mqtt 文档](./ateng-boot-mqtt/README.md) | [上下文词汇表](./ateng-boot-mqtt/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-mqtt/README.md): Eclipse Paho MQTT v5 物联网通信、`@MqttListener`、`$share` 共享订阅、RPC 应答与死信受控重放
+- [ateng-boot-rabbitmq 文档](./ateng-boot-rabbitmq/README.md) | [上下文词汇表](./ateng-boot-rabbitmq/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-rabbitmq/README.md): Publisher Confirms/Returns、`sendAfterCommit`、死信受控重放、幂等静默确认与 Quorum 声明式拓扑
+- [ateng-boot-kafka 文档](./ateng-boot-kafka/README.md) | [上下文词汇表](./ateng-boot-kafka/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-kafka/README.md): 微批可靠投递、`@RetryableTopic` 非阻塞重试、死信重放、Lag/Offset 治理与批量消费多租户隔离
+- [ateng-boot-rocketmq 文档](./ateng-boot-rocketmq/README.md) | [上下文词汇表](./ateng-boot-rocketmq/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-rocketmq/README.md): RocketMQ 5.x gRPC 瘦客户端、2PC 原生分布式事务、延时撤回、`SimpleConsumer` 拉取与死信重放
+
+## 文件存储、办公文档与远程传输
+
+- [ateng-boot-storage 文档](./ateng-boot-storage/README.md) | [上下文词汇表](./ateng-boot-storage/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-storage/README.md): Local 与 S3 兼容协议统一对象存储、魔数嗅探、1-based 流式分片上传、断点续传与预签名直链
+- [ateng-boot-excel 文档](./ateng-boot-excel/README.md) | [上下文词汇表](./ateng-boot-excel/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-excel/README.md): Apache Fesod 流式读写防 OOM、`@ExcelSensitive`、`BatchValidationListener` 红字批注回写、下拉模板、多 Sheet 与 AES 工作簿加密
+- [ateng-boot-document 文档](./ateng-boot-document/README.md) | [上下文词汇表](./ateng-boot-document/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-document/README.md): Word 模板渲染（`poi-tl`）与 PDF 平铺暗水印、跨页骑缝章、AcroForm 扁平化与高清预览（PDFBox 3.x）
+- [ateng-boot-ftp 文档](./ateng-boot-ftp/README.md) | [上下文词汇表](./ateng-boot-ftp/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-ftp/README.md): FTP/FTPS 连接池治理、动态切源、RFC 2640 中文防乱码、`.tmp` 原子上传与目录递归同步
+- [ateng-boot-ssh 文档](./ateng-boot-ssh/README.md) | [上下文词汇表](./ateng-boot-ssh/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-ssh/README.md): Apache MINA SSHD/SFTP 会话池、批量巡检、超时防孤儿进程、端口转发、ProxyJump 与 WebSSH
+
+## 任务调度与流程编排
+
+- [ateng-boot-job-local 文档](./ateng-boot-job-local/README.md) | [上下文词汇表](./ateng-boot-job-local/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-job-local/README.md): 受管线程池隔离的单机定时任务、四阶重叠并发控制、硬超时中断、租户遍历与轻量集群互斥锁
+- [ateng-boot-job-xxl 文档](./ateng-boot-job-xxl/README.md) | [上下文词汇表](./ateng-boot-job-xxl/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-job-xxl/README.md): XXL-Job 生产加固、四维上下文透传、日志无感镜像、分片流式批处理与 K8s 三阶优雅排空
+- [ateng-boot-job-snail 文档](./ateng-boot-job-snail/README.md) | [上下文词汇表](./ateng-boot-job-snail/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-job-snail/README.md): SnailJob 调度与分布式重试双引擎加固、MapReduce 切片、看门狗熔断与脱网单元测试助手
+- [ateng-boot-statemachine 文档](./ateng-boot-statemachine/README.md) | [上下文词汇表](./ateng-boot-statemachine/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-statemachine/README.md): 无状态单例业务状态机 Fluent DSL、只读预检、CAS 前置并发跃迁、`performAfterCommit` 与拓扑图导出
+- [ateng-boot-liteflow 文档](./ateng-boot-liteflow/README.md) | [上下文词汇表](./ateng-boot-liteflow/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-liteflow/README.md): LiteFlow 规则与 DAG 流程编排、受管 `WHEN` 并行线程池透传、静态 EL 预检、历史回滚与 Saga 补偿
+
+## 商业交易、多端通知、AI 与运维观测
+
+- [ateng-boot-pay 文档](./ateng-boot-pay/README.md) | [上下文词汇表](./ateng-boot-pay/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-pay/README.md): 微信支付 v3 与支付宝官方 SDK 统一收单、多商户切源、Webhook 验签防重、分账开关与全域 `BigDecimal` 契约
+- [ateng-boot-sms 文档](./ateng-boot-sms/README.md) | [上下文词汇表](./ateng-boot-sms/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-sms/README.md): 零 SDK 多渠道短信（阿里/腾讯/华为/天翼/云片）、加权熔断、单日预算硬切断与验证码防暴破
+- [ateng-boot-mail 文档](./ateng-boot-mail/README.md) | [上下文词汇表](./ateng-boot-mail/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-mail/README.md): SMTP 多账号路由、国际化模板 SPI、并发批量合并、测试沙箱拦截、合规归档与事务后发送
+- [ateng-boot-notification 文档](./ateng-boot-notification/README.md) | [上下文词汇表](./ateng-boot-notification/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-notification/README.md): 企微/钉钉/飞书 Webhook 群机器人推送、`@NotifyAlert` 三阶防风暴聚合与备用通道容灾切换
+- [ateng-boot-ai 文档](./ateng-boot-ai/README.md) | [上下文词汇表](./ateng-boot-ai/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-ai/README.md): LangChain4j & LangGraph4j 智能体编排、`@AiAgent`、RAG 混合检索与引用溯源、MCP/OpenAPI 工具、HITL 审批与配额护栏
+- [ateng-boot-openapi 文档](./ateng-boot-openapi/README.md) | [上下文词汇表](./ateng-boot-openapi/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-openapi/README.md): SpringDoc OpenAPI 3.0 契约治理、生产 404/CIDR/Sa-Token 五模守卫、枚举字典增强与离线导出
+- [ateng-boot-observability 文档](./ateng-boot-observability/README.md) | [上下文词汇表](./ateng-boot-observability/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-observability/README.md): K8s Liveness/Readiness 硬隔离、防假死安全探针、`MetricsTemplate` / `@ObservedMetric` 与 Actuator 端点防御
+- [ateng-boot-admin 文档](./ateng-boot-admin/README.md) | [上下文词汇表](./ateng-boot-admin/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-admin/README.md): Spring Boot Admin 运维监控看板、Sa-Token 登录守卫、SSRF 注册防火墙、离线清理与防抖告警
