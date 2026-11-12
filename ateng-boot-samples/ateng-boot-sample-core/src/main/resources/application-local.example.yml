@@ -15,7 +15,7 @@ spring:
 ateng:
   boot:
     core:
-      # 1. 开启磁盘双文件异步滚动落盘日志 (logs/app.log 与 logs/app-error.log)
+      # 1. 开启磁盘双文件异步滚动落盘日志 (logs/<appName>-info.log 与 logs/<appName>-error.log)
       logging:
         file:
           enabled: false

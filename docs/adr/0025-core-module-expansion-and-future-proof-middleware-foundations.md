@@ -4,7 +4,7 @@
 
 随着 `ateng-boot` 基础框架的演进，框架已成功落地 `core`、`web`、`mybatis-plus`、`redis`、`excel`、`satoken` 等六大核心 Starter，未来还将持续孵化 `storage`（对象存储）、`mq`（消息队列）、`job`（分布式调度）、`mail/sms`、`ai` 等多维企业级中间件。
 
-然而，对当前基础底座 [ateng-boot-core](../ateng-boot-core) 的深度审查揭示出多项深层次的**架构倒置、能力真空与上下文割裂**：
+然而，对当前基础底座 [ateng-boot-core](../../ateng-boot-core/README.md) 的深度审查揭示出多项深层次的**架构倒置、能力真空与上下文割裂**：
 
 1. **核心序列化工具缺位与碎片化**：
    - 全工程无开箱即用的统一 `JsonUtil` 静态门面；
@@ -127,10 +127,10 @@ flowchart TD
 - **纯原生零依赖无锁 Base62 双向短码**：提供 `IdUtil.toBase62(long)` 与 `IdUtil.fromBase62(str)`，将 18~19 位十进制雪花 ID 紧凑无损压缩为 10~11 位 URL 安全短串，内置负数安全与 64 位长整型上下限算术溢出防卫。
 
 ### 12. 受管线程池全景治理、运行时动态调优与监控门面 (`AsyncUtil` & `ThreadPoolStatus`)
-- **运行时度量快照**：通过 `AsyncUtil.getStatus(executor)` 实时提取不可变 `ThreadPoolStatus` 快照，包含核心/最大线程数、当前存活数、活跃执行数、队列积压数、剩余容量与是否饱和状态；
-- **动态平滑热调优**：提供 `AsyncUtil.updatePoolSize(executor, corePoolSize, maxPoolSize)`，在运行时无需重启平滑调整线程池容量，严格遵循 `core <= max` 阶梯步调防御异常；
+- **运行时度量快照**：通过 `AsyncUtil.getStatus(poolName)` / `AsyncUtil.getStatus(executor)` 实时提取不可变 `ThreadPoolStatus` 快照，包含核心/最大线程数、当前存活数、活跃执行数、队列积压数、剩余容量与是否饱和状态；
+- **动态平滑热调优**：提供 `AsyncUtil.resize(poolName, corePoolSize, maxPoolSize)`（及默认主池重载 `AsyncUtil.resize(corePoolSize, maxPoolSize)`），在运行时无需重启平滑调整受管线程池容量，严格遵循 `core <= max` 阶梯步调防御异常；
 - **告警拒绝策略拓展**：在现有标准策略基础上扩充 `WARN_CALLER_RUNS` 与 `WARN_ABORT`，在触发饱和拒绝时自动输出 WARN 级结构化报警日志与堆栈上下文；
-- **四维上下文感知的编程式异步协调**：`AsyncUtil.runAsync`、`supplyAsync`、`allMatches`（提前短路）与 `allOf`（结果汇聚），100% 自动装配上下文装饰器。
+- **四维上下文感知的编程式异步协调**：`AsyncUtil.run`、`supply`、`supplyAll`、`allMatches`（提前短路）与 `allOf`（结果汇聚），100% 自动装配上下文装饰器。
 
 ### 13. 进程内高性能单机内存滑动窗口流控标准件 (`SlidingWindowCounter`)
 - **环形时间切片算法**：基于 `System.currentTimeMillis()` 动态推进与 `LongAdder` 累加器，实现零外部中间件的单机平滑流量削峰与防刷；
@@ -207,6 +207,12 @@ flowchart TD
 ### 28. 传输分页安全清洗与防溢出偏移量计算 (`PageQuery.normalize / safeCurrent / safeSize / offset`)
 - **编程式数据纠偏与只读防呆**：提供 `safeCurrent()` 与 `safeSize()` 只读保底清洗，`normalize()` 原位清洗，防御非 Web 场景恶意非法参数（如 0、负数或超千大数值）；
 - **防溢出偏移量计算 (`offset`)**：采用 `Math.multiplyExact((safeCurrent() - 1), safeSize())` 计算物理偏移量，溢出时安全截断为 `Long.MAX_VALUE`，彻底防止大数溢出为负数穿透持久层引发崩溃。
+
+### 29. 双维上下文栈式对称、惰性防驻留与环境防卫正交解耦增量演进
+- **双维上下文镜像对称与惰性防驻留**：`UserContextHolder` 与 `TenantContextHolder` 统一收敛为基于 `ThreadLocal.withInitial(ArrayDeque::new)` 思想的惰性初始化双栈结构，并在出栈后于栈空时主动执行 `ThreadLocal.remove()` 防驻留；`UserContextHolder` 补齐与 `TenantContextHolder` 对称的 `UserSnapshot`（`capture()` / `capturePrevious()` / `restore(UserSnapshot)`）及 `Long` 类型重载（`set(Long)`、`setUserId(Long)`、`getUserIdAsLong()`、`runWithUser(Long, ...)`）；`TenantContextHolder` 补充 `getExplicit()`（严格区分线程显式绑定值与 `CurrentTenantProvider` 动态兜底值），防止并发审计误判定；
+- **环境后处理正交解耦与日志自清理闭环**：`SystemEnvironmentPostProcessor` 将网络通信探测配置（`ateng.boot.core.net.*` -> `NetUtil`）从 `system.enabled` 中正交剥离，确保关闭 JVM 防卫总开关时仍可正确注入首选网段与过滤虚拟网卡；同时分离 `system.timezone-guard-enabled`（仅跳过时区与 `file.encoding` 校准，不影响 Headless 与 Socket 10s 超时防卫）；`LoggingEnvironmentPostProcessor` 修复 `ateng.boot.core.logging.file.clean-history-on-start` 向 Logback 属性 `LOG_FILE_CLEAN_HISTORY_ON_START` 的显式桥接；
+- **Spring Boot 3.3 `EnvironmentPostProcessor` 注册事实核实**：实测确认 Spring Boot 3.3.13 通过 `SpringFactoriesEnvironmentPostProcessorsFactory` 独占读取 `META-INF/spring.factories` 加载 `EnvironmentPostProcessor`，而 `@AutoConfiguration` 仍唯一收口于 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`（零 `EnableAutoConfiguration` 混用）；
+- **国密套件与工具门面对称收口**：`ResultCodeUtil` 补充 `assertInSegment(int, ResultCodeSegment)` 基础数值校验重载；`ConvertUtil` 补齐 `toSet(...)` 并在集合解包路径全面兼容 `Iterable` 与 `Iterator`；`CryptoUtil`（`SM4/CBC`）与 `DigestUtil`（`SM3`）在体验工程中完成端到端实测闭环。
 
 ---
 
