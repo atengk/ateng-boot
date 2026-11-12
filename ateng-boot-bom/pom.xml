@@ -344,6 +344,20 @@
                 <version>${commons-io.version}</version>
             </dependency>
 
+            <!-- Apache Commons Lang3 (覆写 Spring Boot 默认基线 3.14.0，支撑 ateng-boot-social 与下游开箱即用) -->
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-lang3</artifactId>
+                <version>${commons-lang3.version}</version>
+            </dependency>
+
+            <!-- Jackson Annotations (覆写 Spring Boot 默认基线 2.17.3，兼容 Jackson 3.x / ateng-boot-social 注解解析) -->
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-annotations</artifactId>
+                <version>${jackson-annotations.version}</version>
+            </dependency>
+
             <!-- Apache MINA SSHD (SSH / SFTP 协议原生驱动) -->
             <dependency>
                 <groupId>org.apache.sshd</groupId>

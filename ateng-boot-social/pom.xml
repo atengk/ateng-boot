@@ -28,12 +28,17 @@
             <groupId>org.dromara.anduin</groupId>
             <artifactId>dromara-anduin</artifactId>
         </dependency>
-        <!-- Dromara Anduin 运行时所需基础支持组件 (原库声明为 provided，在此提供生产就绪运行时依赖；版本收敛于此，严禁暴露至 ateng-boot-bom) -->
+        <!-- Dromara Anduin 运行时所需基础支持组件 (原库声明为 provided，在此提供生产就绪运行时依赖) -->
+        <!-- commons-lang3 与 jackson-annotations 须覆写 Spring Boot 默认基线，已统一收敛于根 POM 与 ateng-boot-bom 纳管，子模块免配版本 -->
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
-            <version>${commons-lang3.version}</version>
         </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+        </dependency>
+        <!-- 以下三项未纳入 Spring Boot 基线，由直属模块收敛管理版本，严禁暴露至 ateng-boot-bom -->
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-collections4</artifactId>
@@ -48,11 +53,6 @@
             <groupId>tools.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
             <version>${tools-jackson.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-annotations</artifactId>
-            <version>${jackson-annotations.version}</version>
         </dependency>
         <dependency>
             <groupId>com.github.ben-manes.caffeine</groupId>

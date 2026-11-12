@@ -56,7 +56,7 @@
 | **搜索智能** | `io.github.atengk:ateng-boot-ai` | `1.2.0` | LangChain4j & LangGraph4j 智能体编排、RAG 溯源、HITL 审批与配额风控 | [README](../ateng-boot-ai/README.md) |
 | **搜索智能** | `io.github.atengk:ateng-boot-milvus` | `1.2.0` | Milvus 向量库运维、多向量混合检索、多租户 PartitionKey 隔离 | [README](../ateng-boot-milvus/README.md) |
 
-### 0.3 纳管核心第三方中间件坐标清单 (33 项)
+### 0.3 纳管核心第三方中间件坐标清单 (35 项)
 
 | 归属 Starter | 第三方坐标 (`groupId:artifactId`) | 锁定版本 | 特殊处理 / `<exclusions>` 策略 |
 | :--- | :--- | :---: | :--- |
@@ -82,6 +82,8 @@
 | `admin` | `de.codecentric:spring-boot-admin-starter-server` | `3.3.4` | Spring Boot Admin 管控端 |
 | `admin` | `de.codecentric:spring-boot-admin-starter-client` | `3.3.4` | Spring Boot Admin 被监控客户端 |
 | `social` | `org.dromara.anduin:dromara-anduin` | `2.2.0` | OAuth2 多平台授权统一底层 |
+| `social / bom` | `org.apache.commons:commons-lang3` | `3.18.0` | 覆写 Spring Boot 默认基线 3.14.0，满足 `dromara-anduin` 运行期 `Strings` 类要求（向下全兼容） |
+| `social / bom` | `com.fasterxml.jackson.core:jackson-annotations` | `2.22` | 覆写 Spring Boot 默认基线 2.17.3，适配 `tools.jackson` 3.x 兼容注解（向下全兼容） |
 | `liteflow` | `com.yomahub:liteflow-spring-boot-starter` | `2.16.3.1` | 规则编排引擎核心 |
 | `job-xxl` | `com.xuxueli:xxl-job-core` | `3.5.0` | XXL-Job 执行器官方核心 |
 | `job-snail` | `com.aizuda:snail-job-client-starter` | `1.10.0` | SnailJob 客户端 Starter |
@@ -96,13 +98,12 @@
 
 ### 0.4 `ManagedDependencyBoundary` 内部防泄漏隔离清单
 
-经 `mvn help:effective-pom -f ateng-boot-bom/pom.xml` 验证，以下仅供单模块兼容、单元测试或 Sample 验证的依赖**已从 BOM 物理隔离**，严禁向下游业务应用暴露或覆盖 Spring Boot 基线版本：
+经 `mvn help:effective-pom -f ateng-boot-bom/pom.xml` 验证，以下仅供单模块兼容、单元测试或 Sample 验证且未被 Spring Boot 基线压制的依赖**已从 BOM 物理隔离**，避免向下游暴露非必要坐标：
 
 | 被隔离坐标 | 实际收敛位置 | 隔离原因说明 |
 | :--- | :--- | :--- |
-| `com.fasterxml.jackson.core:jackson-annotations` (`2.22`) | `ateng-boot-social/pom.xml` | 防止全局覆盖 `spring-boot-dependencies` 锁定的 `2.17.3` |
-| `tools.jackson.core:jackson-databind` (`3.2.4`) | `ateng-boot-social/pom.xml` | 仅供 `ateng-boot-social` 运行期兼容 `dromara-anduin` |
-| `org.apache.commons:commons-lang3` (`3.18.0` 覆盖) / `commons-collections4` / `com.google.guava:guava` | `ateng-boot-social/pom.xml` | 保持 BOM 对外保留 Spring Boot `commons-lang3:3.14.0`，零臃肿泄露 |
+| `tools.jackson.core:jackson-databind` (`3.2.4`) | `ateng-boot-social/pom.xml` | 仅供 `ateng-boot-social` 运行期兼容 `dromara-anduin`（Spring Boot 基线未纳管，无需进 BOM） |
+| `org.apache.commons:commons-collections4` / `com.google.guava:guava` | `ateng-boot-social/pom.xml` | 仅供 `ateng-boot-social` 运行期支撑 `dromara-anduin`，零臃肿泄露 |
 | `org.mockftpserver:MockFtpServer` / `com.icegreen:greenmail-junit5` | `ateng-boot-ftp`、`ateng-boot-mail` 与 `ateng-boot-samples` | 仅限仓内离线单测替身（Test Double）复用 |
 | `dev.langchain4j:langchain4j-redis` / `langchain4j-pgvector` | `ateng-boot-samples/pom.xml` | 仅供样例可选扩展向量存储演示使用 |
 

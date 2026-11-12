@@ -109,13 +109,13 @@
         <langgraph4j.version>1.3.1</langgraph4j.version>
         <milvus-sdk.version>2.4.4</milvus-sdk.version>
         <commons-io.version>2.20.0</commons-io.version>
-        <!-- 仅作为 ateng-boot-social 运行时支撑 dromara-anduin，严禁暴露至 ateng-boot-bom -->
-        <tools-jackson.version>3.2.4</tools-jackson.version>
+        <!-- 跨模块及 Social 核心兼容基线 (覆写 Spring Boot 3.3.13 默认的 3.14.0 / 2.17.3，确保开箱即用) -->
         <commons-lang3.version>3.18.0</commons-lang3.version>
+        <jackson-annotations.version>2.22</jackson-annotations.version>
+        <!-- 仅作为 ateng-boot-social 直属运行时支撑 dromara-anduin，严禁暴露至 ateng-boot-bom -->
+        <tools-jackson.version>3.2.4</tools-jackson.version>
         <commons-collections4.version>4.4</commons-collections4.version>
         <guava.version>33.4.0-jre</guava.version>
-        <!-- 仅作为 ateng-boot-social 运行时支撑 tools.jackson 3.x 所需的 FasterXML 专用兼容注解，严禁暴露至 ateng-boot-bom -->
-        <jackson-annotations.version>2.22</jackson-annotations.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -218,6 +218,20 @@
                 <groupId>commons-io</groupId>
                 <artifactId>commons-io</artifactId>
                 <version>${commons-io.version}</version>
+            </dependency>
+
+            <!-- Apache Commons Lang3 (覆写 Spring Boot 默认基线 3.14.0，支撑 ateng-boot-social 与下游开箱即用) -->
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-lang3</artifactId>
+                <version>${commons-lang3.version}</version>
+            </dependency>
+
+            <!-- Jackson Annotations (覆写 Spring Boot 默认基线 2.17.3，兼容 Jackson 3.x / ateng-boot-social 注解解析) -->
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-annotations</artifactId>
+                <version>${jackson-annotations.version}</version>
             </dependency>
 
 
