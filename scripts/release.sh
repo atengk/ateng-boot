@@ -78,6 +78,30 @@ log_error() {
   printf "%b[ERROR]%b %s\n" "${COLOR_RED}" "${COLOR_RESET}" "$1"
 }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/git-remote-guard.sh
+source "${SCRIPT_DIR}/lib/git-remote-guard.sh"
+
+# 统一处理发版远端探测超时或异常：真实发版严格 Fail-Fast，演练模式离线降级
+handle_release_remote_probe_failure() {
+  local rc="$1"
+  local action_label="$2"
+  local detail_msg=""
+  if [ "$rc" -eq "$GIT_EXIT_TIMEOUT" ]; then
+    detail_msg="${action_label}超时 (>${REMOTE_PROBE_TIMEOUT_SECONDS}s)"
+  else
+    detail_msg="无法连接远程仓库执行${action_label}（可能处于离线环境或网络异常）"
+  fi
+
+  if [ "$DRY_RUN" = true ]; then
+    log_warn "${detail_msg}，演练模式已跳过该远端检查。"
+  else
+    log_error "${detail_msg}，真实发版严禁在未完成远端校验前继续！"
+    print_remote_stderr_tail
+    exit 1
+  fi
+}
+
 # 参数解析
 DRY_RUN=false
 TARGET_VERSION=""
@@ -169,24 +193,42 @@ if [ -n "$DIRTY_FILES" ]; then
 fi
 log_success "工作区状态检查通过: 干净无未提交代码"
 
-# 1.5 校验与远端仓库同步状态 (防漏拉远端代码与超前提交检测)
-log_info "正在拉取远端最新状态 (git fetch origin)..."
+# 1.5 校验与远端仓库同步状态 (5 秒超时守卫、防漏拉远端代码与只读严格熔断，严禁自动变基)
 AHEAD_COUNT=0
-if git fetch origin >/dev/null 2>&1; then
-  BEHIND_COUNT=$(git rev-list "HEAD..origin/$CURRENT_BRANCH" --count 2>/dev/null || echo "0")
-  if [ "$BEHIND_COUNT" -gt 0 ]; then
-    log_error "本地分支落后于远端 origin/$CURRENT_BRANCH ($BEHIND_COUNT 个提交未合并)！"
-    log_error "发版前必须合并远端最新代码，请先执行: git pull origin $CURRENT_BRANCH"
+REMOTE_REACHABLE=false
+if ! git remote get-url origin >/dev/null 2>&1; then
+  if [ "$DRY_RUN" = true ]; then
+    log_warn "未检测到远程仓库 origin 配置，演练模式跳过远端同步校验。"
+  else
+    log_error "未检测到远程仓库 origin 配置，真实发版必须关联有效远程仓库！"
     exit 1
   fi
-  AHEAD_COUNT=$(git rev-list "origin/$CURRENT_BRANCH..HEAD" --count 2>/dev/null || echo "0")
-  if [ "$AHEAD_COUNT" -gt 0 ]; then
-    log_warn "检测到本地主干分支超前于远端 ($AHEAD_COUNT 个提交未推送)。发版流程将在打标签前自动推送主干分支。"
-  else
-    log_success "与远程分支状态同步: 本地主干与远端完全一致"
-  fi
 else
-  log_warn "无法连接远程仓库进行同步校验（可能处于离线环境），跳过远端拉取校验。"
+  log_info "正在拉取远端分支最新状态 (origin/${CURRENT_BRANCH}，超时上限 ${REMOTE_PROBE_TIMEOUT_SECONDS}s)..."
+  FETCH_RC=0
+  if run_git_with_timeout "$REMOTE_PROBE_TIMEOUT_SECONDS" fetch origin "+refs/heads/${CURRENT_BRANCH}:refs/remotes/origin/${CURRENT_BRANCH}"; then
+    FETCH_RC=0
+  else
+    FETCH_RC=$?
+  fi
+
+  if [ "$FETCH_RC" -eq 0 ]; then
+    REMOTE_REACHABLE=true
+    BEHIND_COUNT=$(git rev-list "HEAD..origin/$CURRENT_BRANCH" --count 2>/dev/null | tr -d '\r' || echo "0")
+    if [ "${BEHIND_COUNT:-0}" -gt 0 ]; then
+      log_error "本地分支落后于远端 origin/$CURRENT_BRANCH ($BEHIND_COUNT 个提交未合并)！"
+      log_error "发版脚本保持只读熔断且严禁自动变基，请先手动合并远端最新代码: git pull origin $CURRENT_BRANCH"
+      exit 1
+    fi
+    AHEAD_COUNT=$(git rev-list "origin/$CURRENT_BRANCH..HEAD" --count 2>/dev/null | tr -d '\r' || echo "0")
+    if [ "${AHEAD_COUNT:-0}" -gt 0 ]; then
+      log_warn "检测到本地主干分支超前于远端 ($AHEAD_COUNT 个提交未推送)。发版流程将在打标签前自动推送主干分支。"
+    else
+      log_success "与远程分支状态同步: 本地主干与远端完全一致"
+    fi
+  else
+    handle_release_remote_probe_failure "$FETCH_RC" "远端分支同步校验"
+  fi
 fi
 
 # 1.6 多模块代码可编译性预检 (防带编译错误代码发版打脏标签)
@@ -302,11 +344,25 @@ if git rev-parse -q --verify "refs/tags/$TARGET_VERSION" >/dev/null 2>&1; then
   exit 1
 fi
 
-if git ls-remote --tags origin "refs/tags/$TARGET_VERSION" 2>/dev/null | grep -q "$TARGET_VERSION"; then
-  log_error "远程仓库已存在相同标签 [$TARGET_VERSION]，禁止重复发版！"
-  exit 1
+if [ "$REMOTE_REACHABLE" = true ]; then
+  TAG_CHECK_RC=0
+  if run_git_with_timeout "$REMOTE_PROBE_TIMEOUT_SECONDS" ls-remote --exit-code --tags origin "refs/tags/$TARGET_VERSION"; then
+    TAG_CHECK_RC=0
+  else
+    TAG_CHECK_RC=$?
+  fi
+
+  if [ "$TAG_CHECK_RC" -eq 0 ]; then
+    log_error "远程仓库已存在相同标签 [$TARGET_VERSION]，禁止重复发版！"
+    exit 1
+  elif [ "$TAG_CHECK_RC" -eq "$GIT_EXIT_REMOTE_MISSING" ]; then
+    log_success "标签唯一性检查通过: $TARGET_VERSION 未曾被使用"
+  else
+    handle_release_remote_probe_failure "$TAG_CHECK_RC" "远程标签唯一性检查"
+  fi
+else
+  log_warn "远端未连接，已跳过远程同名 Tag 检查（本地标签唯一性检查通过: $TARGET_VERSION）。"
 fi
-log_success "标签唯一性检查通过: $TARGET_VERSION 未曾被使用"
 
 # 提取不带 v 的纯版本号供插槽使用
 RAW_VERSION="${TARGET_VERSION#v}"
@@ -381,25 +437,25 @@ fi
 log_info "正在创建附注 Git Tag: $TARGET_VERSION..."
 git tag -a "$TARGET_VERSION" -m "Release $TARGET_VERSION"
 
+PUSH_TARGETS=("$TARGET_VERSION")
 if [ "$NEED_PUSH_BRANCH" = true ]; then
+  PUSH_TARGETS=("$CURRENT_BRANCH" "$TARGET_VERSION")
   log_info "正在原子推送主干变更与版本标签 (git push origin $CURRENT_BRANCH $TARGET_VERSION)..."
-  if ! git push origin "$CURRENT_BRANCH" "$TARGET_VERSION"; then
-    log_error "原子推送分支与标签到远程仓库失败！"
-    log_warn "正在自动回滚本地标签，以防本地脏 Tag 阻塞后续发版..."
-    git tag -d "$TARGET_VERSION" >/dev/null 2>&1 || true
-    log_error "发版中断：推送失败，本地标签已安全清理。"
-    exit 1
-  fi
-  log_success "主干变更与版本标签已原子同步至远端。"
 else
   log_info "正在推送标签到远程仓库 (git push origin $TARGET_VERSION)..."
-  if ! git push origin "$TARGET_VERSION"; then
-    log_error "推送标签 $TARGET_VERSION 到远程仓库失败！"
-    log_warn "正在自动回滚本地标签，以防本地脏 Tag 阻塞后续发版..."
-    git tag -d "$TARGET_VERSION" >/dev/null 2>&1 || true
-    log_error "发版中断：标签推送失败，本地标签已安全清理。"
-    exit 1
-  fi
+fi
+
+if ! run_git_push_guarded "$AUTO_CONFIRM" origin "${PUSH_TARGETS[@]}"; then
+  log_error "推送至远程仓库失败！"
+  log_warn "正在自动回滚本地标签，以防本地脏 Tag 阻塞后续发版..."
+  git tag -d "$TARGET_VERSION" >/dev/null 2>&1 || true
+  log_error "发版中断：推送失败，本地标签已安全清理。"
+  exit 1
+fi
+
+if [ "$NEED_PUSH_BRANCH" = true ]; then
+  log_success "主干变更与版本标签已原子同步至远端。"
+else
   log_success "版本标签推送成功！"
 fi
 
