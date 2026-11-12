@@ -8,6 +8,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -155,5 +156,36 @@ class JacksonCustomizerTest {
 
         EnumContainerModel model3 = mapper.readValue("{\"status\": \"INACTIVE\"}", EnumContainerModel.class);
         assertEquals(SampleStatus.INACTIVE, model3.getStatus());
+    }
+
+    static class BigDecimalModel {
+        private BigDecimal amount;
+        public BigDecimal getAmount() { return amount; }
+        public void setAmount(BigDecimal amount) { this.amount = amount; }
+    }
+
+    @Test
+    @DisplayName("BigDecimal 默认按平铺数字输出（禁止科学计数法），关闭配置后按原始科学计数法输出")
+    void shouldRespectWriteBigDecimalAsPlainToggle() throws Exception {
+        BigDecimal scientificValue = new BigDecimal("1E+7");
+        BigDecimalModel model = new BigDecimalModel();
+        model.setAmount(scientificValue);
+
+        // 1. 默认开启 writeBigDecimalAsPlain=true
+        ObjectMapper plainMapper = createConfiguredMapper(true);
+        String plainJson = plainMapper.writeValueAsString(model);
+        assertTrue(plainJson.contains("10000000"));
+        assertFalse(plainJson.contains("1E+7"));
+
+        // 2. 显式关闭 writeBigDecimalAsPlain=false
+        WebProperties disabledProps = new WebProperties();
+        disabledProps.getJackson().setWriteBigDecimalAsPlain(false);
+        JacksonCustomizer customizer = new JacksonCustomizer(disabledProps);
+        Jackson2ObjectMapperBuilder builder = new Jackson2ObjectMapperBuilder();
+        customizer.customize(builder);
+        ObjectMapper sciMapper = builder.build();
+
+        String sciJson = sciMapper.writeValueAsString(model);
+        assertTrue(sciJson.contains("1E+7"));
     }
 }

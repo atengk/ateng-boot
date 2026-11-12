@@ -1,5 +1,6 @@
 package io.github.atengk.boot.web.jackson;
 
+import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.BeanDescription;
 import com.fasterxml.jackson.databind.DeserializationConfig;
 import com.fasterxml.jackson.databind.JavaType;
@@ -59,7 +60,14 @@ public class JacksonCustomizer implements Jackson2ObjectMapperBuilderCustomizer 
             builder.serializerByType(BigInteger.class, ToStringSerializer.instance);
         }
 
-        // 3. Java 8 核心时间类型标准化格式化与解析
+        // 3. BigDecimal 防科学计数法平铺输出（默认启用）
+        if (webProperties.getJackson().isWriteBigDecimalAsPlain()) {
+            builder.featuresToEnable(JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN);
+        } else {
+            builder.featuresToDisable(JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN);
+        }
+
+        // 4. Java 8 核心时间类型标准化格式化与解析
         DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern(DEFAULT_DATE_TIME_FORMAT);
         DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern(DEFAULT_DATE_FORMAT);
         DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern(DEFAULT_TIME_FORMAT);

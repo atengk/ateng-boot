@@ -34,4 +34,22 @@ public class ApiVersionProperties {
      * 是否启用 URL 路径前缀版本匹配（如 /v1/user 或 /v2/user）
      */
     private boolean pathPrefixEnabled = true;
+
+    /**
+     * 获取版本请求头名称（向后兼容 header-name 配置键）
+     *
+     * @return 请求头名称
+     */
+    public String getHeaderName() {
+        return header;
+    }
+
+    /**
+     * 设置版本请求头名称（向后兼容 header-name 配置键）
+     *
+     * @param headerName 请求头名称
+     */
+    public void setHeaderName(String headerName) {
+        this.header = headerName;
+    }
 }

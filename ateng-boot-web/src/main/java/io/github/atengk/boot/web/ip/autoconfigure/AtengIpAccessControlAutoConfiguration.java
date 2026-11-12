@@ -1,11 +1,17 @@
 package io.github.atengk.boot.web.ip.autoconfigure;
 
+import io.github.atengk.boot.web.autoconfigure.AtengWebAutoConfiguration;
 import io.github.atengk.boot.web.ip.aspect.IpAccessControlAspect;
 import io.github.atengk.boot.web.ip.filter.IpAccessControlFilter;
 import io.github.atengk.boot.web.ip.properties.IpAccessControlProperties;
+import io.github.atengk.boot.web.properties.WebProperties;
+import io.github.atengk.boot.web.util.IpUtil;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Aspect;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -22,6 +28,7 @@ import org.springframework.context.annotation.Bean;
  * @since 2026-10-27
  */
 @AutoConfiguration
+@AutoConfigureAfter(AtengWebAutoConfiguration.class)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @ConditionalOnProperty(prefix = "ateng.boot.web.ip-access-control", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(IpAccessControlProperties.class)
@@ -54,5 +61,26 @@ public class AtengIpAccessControlAutoConfiguration {
     @ConditionalOnMissingBean(IpAccessControlAspect.class)
     public IpAccessControlAspect ipAccessControlAspect(IpAccessControlProperties properties) {
         return new IpAccessControlAspect(properties);
+    }
+
+    /**
+     * 容器初始化完成后将 IP 访问控制配置的授信反向代理清单与全局基线去重合并并同步至 IpUtil
+     *
+     * @param properties            IP 访问控制配置属性
+     * @param webPropertiesProvider 可选的 Web 配置属性提供者
+     * @return SmartInitializingSingleton 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = {"webTrustedProxiesInitializer", "ipAccessControlTrustedProxiesInitializer"})
+    public SmartInitializingSingleton ipAccessControlTrustedProxiesInitializer(
+            IpAccessControlProperties properties,
+            ObjectProvider<WebProperties> webPropertiesProvider) {
+        return () -> {
+            WebProperties webProps = webPropertiesProvider.getIfAvailable();
+            IpUtil.configureDefaultTrustedProxies(
+                    webProps != null ? webProps.getTrustedProxies() : null,
+                    properties.getTrustedProxies()
+            );
+        };
     }
 }

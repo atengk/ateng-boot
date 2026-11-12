@@ -22,6 +22,11 @@ public class RateLimiterProperties {
     private boolean enabled = true;
 
     /**
+     * 存储全局 Key 前缀（当 @RateLimiter 未显式覆写自定义 prefix 时生效）
+     */
+    private String keyPrefix = "rate_limit:";
+
+    /**
      * 底层存储（Redis/Redisson）发生网络或驱动故障时是否降级放行（默认 false 阻断请求；true 记录告警并降级至内存存储）
      */
     private boolean failOpen = false;

@@ -15,11 +15,13 @@ import io.github.atengk.boot.web.xss.XssStringDeserializer;
 import org.springframework.web.filter.ShallowEtagHeaderFilter;
 import io.github.atengk.boot.web.handler.GlobalExceptionCustomizer;
 import io.github.atengk.boot.web.handler.GlobalExceptionHandler;
+import io.github.atengk.boot.web.ip.properties.IpAccessControlProperties;
 import io.github.atengk.boot.web.jackson.JacksonCustomizer;
 import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.ready.ApplicationReadyCardListener;
 import io.github.atengk.boot.web.ready.ProductionSanityChecker;
 import io.github.atengk.boot.web.trace.TraceFilter;
+import io.github.atengk.boot.web.util.IpUtil;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Aspect;
 import org.springframework.beans.factory.ObjectProvider;
@@ -360,6 +362,27 @@ public class AtengWebAutoConfiguration {
                 eventPublisherProvider.getIfAvailable(),
                 webProperties
         );
+    }
+
+    /**
+     * 容器初始化完成后将全局与 IP 访问控制配置中的授信反向代理清单去重合并注入 IpUtil 默认防伪造基线
+     *
+     * @param webProperties                   Web 配置属性
+     * @param ipAccessControlPropertiesProvider 可选的 IP 访问控制配置属性提供者
+     * @return SmartInitializingSingleton 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = {"webTrustedProxiesInitializer", "ipAccessControlTrustedProxiesInitializer"})
+    public org.springframework.beans.factory.SmartInitializingSingleton webTrustedProxiesInitializer(
+            WebProperties webProperties,
+            ObjectProvider<IpAccessControlProperties> ipAccessControlPropertiesProvider) {
+        return () -> {
+            IpAccessControlProperties ipProps = ipAccessControlPropertiesProvider.getIfAvailable();
+            IpUtil.configureDefaultTrustedProxies(
+                    webProperties.getTrustedProxies(),
+                    ipProps != null ? ipProps.getTrustedProxies() : null
+            );
+        };
     }
 
     /**

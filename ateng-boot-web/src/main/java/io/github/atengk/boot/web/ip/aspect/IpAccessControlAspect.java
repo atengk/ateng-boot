@@ -66,7 +66,7 @@ public class IpAccessControlAspect implements Ordered {
         }
 
         HttpServletRequest request = ServletUtil.getRequest();
-        String clientIp = IpUtil.getClientIp(request, properties.getTrustedProxies());
+        String clientIp = IpUtil.getClientIpWithDefaultFallback(request, properties.getTrustedProxies());
 
         IpAccessMode mode = effectiveAnnotation.mode();
         String[] rules = effectiveAnnotation.rules();

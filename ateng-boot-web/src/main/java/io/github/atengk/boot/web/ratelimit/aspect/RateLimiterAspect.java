@@ -50,6 +50,7 @@ public class RateLimiterAspect implements Ordered {
     public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 200;
 
     private static final Logger log = LoggerFactory.getLogger(RateLimiterAspect.class);
+    private static final String DEFAULT_ANNOTATION_PREFIX = "rate_limit:";
 
     private final RateLimiterStore rateLimiterStore;
     private final RateLimiterProperties properties;
@@ -137,8 +138,9 @@ public class RateLimiterAspect implements Ordered {
      */
     private String resolveFullKey(ProceedingJoinPoint joinPoint, RateLimiter rateLimiter) {
         StringBuilder sb = new StringBuilder();
-        if (StringUtils.hasText(rateLimiter.prefix())) {
-            sb.append(rateLimiter.prefix());
+        String prefix = resolvePrefix(rateLimiter);
+        if (StringUtils.hasText(prefix)) {
+            sb.append(prefix);
         }
 
         // 1. 维度键解析
@@ -176,6 +178,20 @@ public class RateLimiterAspect implements Ordered {
         }
 
         return sb.toString();
+    }
+
+    /**
+     * 解析限流键前缀：注解显式覆盖（非默认值）优先，否则采用全局配置前缀
+     */
+    private String resolvePrefix(RateLimiter rateLimiter) {
+        String annotationPrefix = rateLimiter.prefix();
+        if (!DEFAULT_ANNOTATION_PREFIX.equals(annotationPrefix)) {
+            return annotationPrefix;
+        }
+        if (properties != null && StringUtils.hasText(properties.getKeyPrefix())) {
+            return properties.getKeyPrefix();
+        }
+        return DEFAULT_ANNOTATION_PREFIX;
     }
 
     /**

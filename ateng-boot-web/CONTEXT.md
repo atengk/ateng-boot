@@ -13,7 +13,7 @@ _Avoid_: LogFilter, TraceInterceptor, MDCFilter
 _Avoid_: ExceptionAdvice, ErrorHandler, WebExceptionHandler
 
 **JacksonCustomizer**:
-基于 Spring 标准构建器定制器挂载的长整型转字符串（防雪花失真）与 Java 8 全量日期东八区标准化配置。
+基于 Spring 标准构建器定制器挂载的长整型转字符串（防雪花失真）、高精度 `BigDecimal` 防科学计数法平原输出（`WRITE_BIGDECIMAL_AS_PLAIN`）、Java 8 全量日期东八区标准化配置与 `IBaseEnum` 通用枚举自动发现。
 _Avoid_: ObjectMapperConfig, JsonConfig, JacksonConfig
 
 **CorsConfiguration**:
@@ -25,7 +25,7 @@ _Avoid_: CrossFilter, WebCorsConfig
 _Avoid_: TraceHelper, MdcUtil, LogTraceUtil
 
 **IpUtil**:
-多级反向代理客户端真实 IP 提取工具，支持可信反向代理列表（trustedProxies）逆向清洗与伪造过滤，按序解析 X-Forwarded-For 等标头首个有效 IP，并安全兼容本地环回与 IPv6 规整。
+多级反向代理客户端真实 IP 提取工具，内置全局默认授信反向代理列表（`defaultTrustedProxies`，初始含 `127.0.0.1`、`::1` 并自动合并配置基线）与可信反向代理逆向清洗防伪造机制，支持按需传入自定义 `trustedProxies`、本地环回与 IPv6 规整及纯原生无 DNS 依赖 CIDR 判定。
 _Avoid_: AddressUtil, NetworkUtil, ClientIpUtil
 
 **ServletUtil**:
@@ -45,7 +45,7 @@ Web 接口防重幂等注解，声明于 Controller 方法上，定义幂等键 
 _Avoid_: RepeatSubmit, PreventDuplicate, Idempotence, NoRepeat
 
 **IdempotentAspect**:
-基于 AOP 环绕拦截的接口防重幂等切面，解析 `@Idempotent` 契约，调用 `IdempotentKeyStore` 实施原子加锁与全生命周期治理。
+基于 AOP 环绕拦截的接口防重幂等切面，解析 `@Idempotent` 契约，调用 `IdempotentKeyStore` 实施原子加锁与全生命周期治理；默认 `fail-open=false`（Fail-Closed 严格阻断），开启 `fail-open=true` 且分布式存储异常时自动降级回退至进程内 `InMemoryIdempotentKeyStore` 后备存储维持单机防重。
 _Avoid_: IdempotentInterceptor, RepeatSubmitAspect, DuplicateAspect
 
 **IdempotentKeyStore**:
@@ -64,16 +64,8 @@ _Avoid_: DistributedRedisStore, RedisLockStore
 基于 RedissonClient RBucket 原生原子抢占与存活周期的分布式幂等存储实现，作为 Tier 1 最高优先级分布式存储提供者。
 _Avoid_: RedissonLockStore, RedissonStore
 
-**RedissonIdempotentAutoConfiguration**:
-Tier 1 幂等存储自动装配类，当容器中存在 RedissonClient Bean 时自动装配 RedissonIdempotentKeyStore。
-_Avoid_: RedissonAutoConfig, RedissonStoreConfiguration
-
-**RedisIdempotentAutoConfiguration**:
-Tier 2 幂等存储自动装配类，当容器中存在 StringRedisTemplate Bean 且未命中 Redisson 时自动装配 RedisIdempotentKeyStore。
-_Avoid_: RedisAutoConfig, RedisStoreConfiguration
-
 **AtengIdempotentAutoConfiguration**:
-Tier 3 核心自动装配类，在分布式中间件之后执行，负责单机内存存储兜底（InMemoryIdempotentKeyStore）与 AOP 切面（IdempotentAspect）装配。
+防重幂等三级自适应统一自动装配类，按序探测并装配 Tier 1（`RedissonIdempotentConfiguration` -> `RedissonIdempotentKeyStore`）、Tier 2（`RedisIdempotentConfiguration` -> `RedisIdempotentKeyStore`）或 Tier 3 单机内存存储兜底（`InMemoryIdempotentConfiguration` -> `InMemoryIdempotentKeyStore`），并装配 AOP 切面（`IdempotentAspect`）。
 _Avoid_: IdempotentConfig, IdempotentAspectAutoConfiguration
 
 **RateLimiter**:
@@ -81,7 +73,7 @@ Web 接口防刷限流注解，声明于 Controller 方法上，定义时间窗�
 _Avoid_: Limit, RateLimit, TrafficControl, FlowControl
 
 **RateLimiterAspect**:
-基于 AOP 环绕拦截的接口限流切面，解析 `@RateLimiter` 契约，调用 `RateLimiterStore` 执行原子令牌判定并管理超限熔断。
+基于 AOP 环绕拦截的接口限流切面，解析 `@RateLimiter` 契约与全局配置前缀（`RateLimiterProperties.keyPrefix`），调用 `RateLimiterStore` 执行原子令牌判定并管理超限熔断；默认 `fail-open=false`（Fail-Closed），开启 `fail-open=true` 且分布式存储异常时自动降级回退至进程内 `InMemoryRateLimiterStore` 维持单机限流。
 _Avoid_: LimitAspect, RateLimitInterceptor, FlowAspect
 
 **RateLimiterStore**:
@@ -315,6 +307,18 @@ _Avoid_: SignAspect, SignatureAspect, DataSignAspect
 **DocDetectionHelper**:
 OpenAPI/Swagger 接口文档暴露探测辅助工具，用于应用启动就绪卡片与生产高危配置防呆探测。
 _Avoid_: SwaggerHelper, DocUtil, OpenApiDetector
+
+**ContentCachingCondition**:
+通用请求体可重读过滤器装配条件评估器，当开启 API 加签验签（`ateng.boot.web.sign.enabled=true`）或开启 Payload 采样日志（`ateng.boot.web.payload-log.enabled=true`）时按需激活 `ContentCachingFilter`，关闭时保持零包装开销。
+_Avoid_: BodyCacheCondition, CachingSwitchCondition
+
+**DrainResult**:
+云原生优雅停机流量排空结果契约模型（记录模型），承载探针目标状态、实际执行标志、排水等待时长、排水开始与结束时的活跃在途请求水位（`inFlightRequestsAtStart` / `inFlightRequestsRemaining`）及诊断摘要。
+_Avoid_: ShutdownResult, DrainReport, PreStopResult
+
+**OptionItem**:
+跨模块复用自 `ateng-boot-core` 的强类型标准枚举字典选项模型，作为 `EnumDictionaryRegistry` 预编译缓存与 `EnumDictionaryController` HTTP 查询接口的对外标准视图模型。
+_Avoid_: EnumItemVO, DictOptionVO, SelectOption
 
 ---
 

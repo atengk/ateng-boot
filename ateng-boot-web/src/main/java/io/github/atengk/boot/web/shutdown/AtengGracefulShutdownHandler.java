@@ -1,6 +1,7 @@
 package io.github.atengk.boot.web.shutdown;
 
 import io.github.atengk.boot.web.properties.WebProperties;
+import io.github.atengk.boot.web.trace.TraceFilter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.availability.AvailabilityChangeEvent;
 import org.springframework.boot.availability.ReadinessState;
@@ -34,6 +35,11 @@ public class AtengGracefulShutdownHandler implements SmartLifecycle, Application
     private final WebProperties.GracefulShutdownProperties properties;
 
     /**
+     * 可选链路过滤器，用于感知当前在途 HTTP 请求数
+     */
+    private final TraceFilter traceFilter;
+
+    /**
      * Spring 事件发布器（用于向容器广播探针状态变更事件）
      */
     private ApplicationEventPublisher eventPublisher;
@@ -49,13 +55,23 @@ public class AtengGracefulShutdownHandler implements SmartLifecycle, Application
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     public AtengGracefulShutdownHandler(WebProperties webProperties) {
+        this(webProperties, null);
+    }
+
+    public AtengGracefulShutdownHandler(WebProperties webProperties, TraceFilter traceFilter) {
         this.properties = (webProperties != null && webProperties.getShutdown() != null)
                 ? webProperties.getShutdown()
                 : new WebProperties.GracefulShutdownProperties();
+        this.traceFilter = traceFilter;
     }
 
     public AtengGracefulShutdownHandler(WebProperties.GracefulShutdownProperties properties) {
+        this(properties, null);
+    }
+
+    public AtengGracefulShutdownHandler(WebProperties.GracefulShutdownProperties properties, TraceFilter traceFilter) {
         this.properties = properties != null ? properties : new WebProperties.GracefulShutdownProperties();
+        this.traceFilter = traceFilter;
     }
 
     @Override
@@ -64,14 +80,25 @@ public class AtengGracefulShutdownHandler implements SmartLifecycle, Application
     }
 
     /**
+     * 获取当前在途 HTTP 请求数（未装配 TraceFilter 时返回 0）
+     *
+     * @return 当前活跃在途请求数
+     */
+    public long getInFlightRequestCount() {
+        return traceFilter != null ? traceFilter.getActiveRequestCount() : 0L;
+    }
+
+    /**
      * 执行流量排空与探针状态变更
      *
      * @return 排空结果摘要
      */
     public DrainResult drain() {
+        long inFlightAtStart = getInFlightRequestCount();
         if (!properties.isEnabled()) {
             log.info("[Graceful Shutdown] Traffic drain handler is disabled via configuration.");
-            return new DrainResult("DISABLED", false, "0s", "Traffic drain is disabled.");
+            return new DrainResult("DISABLED", false, "0s", "Traffic drain is disabled.",
+                    inFlightAtStart, getInFlightRequestCount());
         }
 
         // 原子抢占排空执行权，保障幂等防重入
@@ -81,7 +108,9 @@ public class AtengGracefulShutdownHandler implements SmartLifecycle, Application
                     ReadinessState.REFUSING_TRAFFIC.name(),
                     false,
                     formatDuration(properties.getDrainTimeout()),
-                    "Traffic drain already executed or in progress."
+                    "Traffic drain already executed or in progress.",
+                    inFlightAtStart,
+                    getInFlightRequestCount()
             );
         }
 
@@ -92,8 +121,8 @@ public class AtengGracefulShutdownHandler implements SmartLifecycle, Application
         Duration timeout = properties.getDrainTimeout();
         long millis = (timeout != null && !timeout.isNegative()) ? timeout.toMillis() : 0L;
         if (millis > 0) {
-            log.warn("[Graceful Shutdown] ReadinessState changed to REFUSING_TRAFFIC. Starting traffic drain sleep for {} ms (timeout: {})...",
-                    millis, timeout);
+            log.warn("[Graceful Shutdown] ReadinessState changed to REFUSING_TRAFFIC (inFlightAtStart={}). Starting traffic drain sleep for {} ms (timeout: {})...",
+                    inFlightAtStart, millis, timeout);
             try {
                 Thread.sleep(millis);
             } catch (InterruptedException e) {
@@ -102,12 +131,16 @@ public class AtengGracefulShutdownHandler implements SmartLifecycle, Application
             }
         }
 
-        log.info("[Graceful Shutdown] Traffic drain finished successfully.");
+        long inFlightRemaining = getInFlightRequestCount();
+        log.info("[Graceful Shutdown] Traffic drain finished successfully (inFlightAtStart={}, inFlightRemaining={}).",
+                inFlightAtStart, inFlightRemaining);
         return new DrainResult(
                 ReadinessState.REFUSING_TRAFFIC.name(),
                 true,
                 formatDuration(timeout),
-                "Traffic drain completed successfully."
+                "Traffic drain completed successfully.",
+                inFlightAtStart,
+                inFlightRemaining
         );
     }
 
@@ -195,14 +228,25 @@ public class AtengGracefulShutdownHandler implements SmartLifecycle, Application
             String status,
             boolean executed,
             String drainTimeout,
-            String message
+            String message,
+            long inFlightRequestsAtStart,
+            long inFlightRequestsRemaining
     ) {
+        /**
+         * 向后兼容四参数构造器（在途请求数默认记为 0）
+         */
+        public DrainResult(String status, boolean executed, String drainTimeout, String message) {
+            this(status, executed, drainTimeout, message, 0L, 0L);
+        }
+
         public Map<String, Object> toMap() {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("status", status);
             map.put("executed", executed);
             map.put("drainTimeout", drainTimeout);
             map.put("message", message);
+            map.put("inFlightRequestsAtStart", inFlightRequestsAtStart);
+            map.put("inFlightRequestsRemaining", inFlightRequestsRemaining);
             return map;
         }
     }

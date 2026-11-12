@@ -105,4 +105,30 @@ class TraceFilterTest {
         assertEquals("custom-trace-888", response.getHeader("X-Custom-Trace-Id"));
         assertNull(MDC.get(TraceFilter.MDC_TRACE_ID_KEY));
     }
+
+    @Test
+    @DisplayName("精确统计在途请求数并在请求正常结束或异常抛出时确定性归零")
+    void shouldTrackInFlightRequestsAndCleanupOnException() throws ServletException, IOException {
+        assertEquals(0L, traceFilter.getActiveRequestCount());
+
+        AtomicReference<Long> countDuringRequest = new AtomicReference<>(-1L);
+        traceFilter.doFilter(new MockHttpServletRequest(), new MockHttpServletResponse(), (req, res) -> {
+            countDuringRequest.set(traceFilter.getActiveRequestCount());
+        });
+
+        assertEquals(1L, countDuringRequest.get());
+        assertEquals(0L, traceFilter.getActiveRequestCount());
+
+        // 业务过滤器链抛出异常时，finally 块仍需严格归零并清理 MDC
+        MockHttpServletRequest failReq = new MockHttpServletRequest();
+        failReq.addHeader("X-Trace-Id", "err-trace-001");
+        assertThrows(RuntimeException.class, () ->
+                traceFilter.doFilter(failReq, new MockHttpServletResponse(), (req, res) -> {
+                    assertEquals(1L, traceFilter.getActiveRequestCount());
+                    throw new RuntimeException("boom");
+                }));
+
+        assertEquals(0L, traceFilter.getActiveRequestCount());
+        assertNull(MDC.get(TraceFilter.MDC_TRACE_ID_KEY));
+    }
 }

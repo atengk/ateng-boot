@@ -3,6 +3,8 @@ package io.github.atengk.boot.web.autoconfigure;
 import io.github.atengk.boot.web.handler.GlobalExceptionHandler;
 import io.github.atengk.boot.web.jackson.JacksonCustomizer;
 import io.github.atengk.boot.web.trace.TraceFilter;
+import io.github.atengk.boot.web.util.IpUtil;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -22,6 +24,11 @@ class AtengWebAutoConfigurationTest {
 
     private final WebApplicationContextRunner contextRunner = new WebApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AtengWebAutoConfiguration.class));
+
+    @AfterEach
+    void tearDown() {
+        IpUtil.resetDefaultTrustedProxies();
+    }
 
     @Test
     @DisplayName("默认配置下成功装配 TraceFilter 注册器、GlobalExceptionHandler 与 JacksonCustomizer，不装配 CorsFilter")
@@ -224,6 +231,79 @@ class AtengWebAutoConfigurationTest {
             assertThat(context).doesNotHaveBean(io.github.atengk.boot.web.ready.ProductionSanityChecker.class);
             assertThat(context).doesNotHaveBean(io.github.atengk.boot.web.ready.ApplicationReadyCardListener.class);
         });
+    }
+
+    @Test
+    @DisplayName("容器启动后合并注入全局 trusted-proxies 与 ip-access-control.trusted-proxies 到 IpUtil 防伪造基线")
+    void shouldMergeGlobalAndIpAccessControlTrustedProxies() {
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengWebAutoConfiguration.class,
+                        io.github.atengk.boot.web.ip.autoconfigure.AtengIpAccessControlAutoConfiguration.class
+                ))
+                .withPropertyValues(
+                        "ateng.boot.web.trusted-proxies=10.10.0.0/16",
+                        "ateng.boot.web.ip-access-control.trusted-proxies=192.168.10.0/24",
+                        "ateng.boot.web.ready-card.enabled=false",
+                        "ateng.boot.web.sanity-check.enabled=false"
+                )
+                .run(context -> {
+                    assertThat(IpUtil.getDefaultTrustedProxies())
+                            .containsExactly("10.10.0.0/16", "192.168.10.0/24");
+
+                    org.springframework.mock.web.MockHttpServletRequest trustedReq =
+                            new org.springframework.mock.web.MockHttpServletRequest();
+                    trustedReq.setRemoteAddr("192.168.10.25");
+                    trustedReq.addHeader("X-Forwarded-For", "198.51.100.88");
+                    assertThat(IpUtil.getClientIp(trustedReq)).isEqualTo("198.51.100.88");
+
+                    org.springframework.mock.web.MockHttpServletRequest untrustedReq =
+                            new org.springframework.mock.web.MockHttpServletRequest();
+                    untrustedReq.setRemoteAddr("203.0.113.50");
+                    untrustedReq.addHeader("X-Forwarded-For", "1.2.3.4");
+                    assertThat(IpUtil.getClientIp(untrustedReq)).isEqualTo("203.0.113.50");
+                });
+    }
+
+    @Test
+    @DisplayName("验证 etag.write-weak-etag 与 jackson.write-big-decimal-as-plain 属性契约绑定")
+    void shouldBindWriteWeakEtagAliasAndBigDecimalProperty() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.web.etag.enabled=true",
+                "ateng.boot.web.etag.write-weak-etag=true",
+                "ateng.boot.web.jackson.write-big-decimal-as-plain=false",
+                "ateng.boot.web.ready-card.enabled=false",
+                "ateng.boot.web.sanity-check.enabled=false"
+        ).run(context -> {
+            io.github.atengk.boot.web.properties.WebProperties props =
+                    context.getBean(io.github.atengk.boot.web.properties.WebProperties.class);
+            assertThat(props.getEtag().isWriteWeakEtag()).isTrue();
+            assertThat(props.getEtag().isWriteWeakETag()).isTrue();
+            assertThat(props.getJackson().isWriteBigDecimalAsPlain()).isFalse();
+
+            org.springframework.boot.web.servlet.FilterRegistrationBean<?> reg =
+                    context.getBean("shallowEtagHeaderFilterRegistration", org.springframework.boot.web.servlet.FilterRegistrationBean.class);
+            org.springframework.web.filter.ShallowEtagHeaderFilter etagFilter =
+                    (org.springframework.web.filter.ShallowEtagHeaderFilter) reg.getFilter();
+            assertThat(etagFilter).isNotNull();
+            assertThat(etagFilter.isWriteWeakETag()).isTrue();
+        });
+    }
+
+    @Test
+    @DisplayName("验证 ateng.boot.web.api-version.header-name 别名经由 Spring Boot 属性绑定生效")
+    void shouldBindApiVersionHeaderNameAliasViaContextRunner() {
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        io.github.atengk.boot.web.version.autoconfigure.AtengApiVersionAutoConfiguration.class
+                ))
+                .withPropertyValues("ateng.boot.web.api-version.header-name=X-Spec-Ver")
+                .run(context -> {
+                    io.github.atengk.boot.web.version.properties.ApiVersionProperties props =
+                            context.getBean(io.github.atengk.boot.web.version.properties.ApiVersionProperties.class);
+                    assertThat(props.getHeaderName()).isEqualTo("X-Spec-Ver");
+                    assertThat(props.getHeader()).isEqualTo("X-Spec-Ver");
+                });
     }
 }
 

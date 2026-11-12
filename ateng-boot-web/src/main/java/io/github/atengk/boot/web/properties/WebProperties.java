@@ -41,10 +41,35 @@ public class WebProperties {
     private boolean longToString = true;
 
     /**
+     * Jackson 序列化增强配置
+     */
+    @NestedConfigurationProperty
+    private JacksonProperties jackson = new JacksonProperties();
+
+    /**
+     * 全局授信反向代理 IP / CIDR 网段列表（默认包含本地环回 127.0.0.1 与 ::1）
+     * 启动期自动与 ateng.boot.web.ip-access-control.trusted-proxies 合并并同步至 IpUtil 默认防伪造基线
+     */
+    private List<String> trustedProxies = new ArrayList<>(List.of("127.0.0.1", "::1"));
+
+    /**
      * CORS 跨域自动化配置
      */
     @NestedConfigurationProperty
     private CorsProperties cors = new CorsProperties();
+
+    /**
+     * Jackson 序列化属性配置
+     */
+    @Getter
+    @Setter
+    public static class JacksonProperties {
+
+        /**
+         * 是否将 BigDecimal 按平原十进制输出，禁用科学计数法（默认 true）
+         */
+        private boolean writeBigDecimalAsPlain = true;
+    }
 
     /**
      * 链路追踪属性配置
@@ -555,6 +580,42 @@ public class WebProperties {
          * 是否生成弱 ETag (W/"...")，默认 false 生成强 ETag
          */
         private boolean writeWeakETag = false;
+
+        /**
+         * 获取是否生成弱 ETag
+         *
+         * @return true 生成弱 ETag
+         */
+        public boolean isWriteWeakETag() {
+            return writeWeakETag;
+        }
+
+        /**
+         * 设置是否生成弱 ETag
+         *
+         * @param writeWeakETag true 生成弱 ETag
+         */
+        public void setWriteWeakETag(boolean writeWeakETag) {
+            this.writeWeakETag = writeWeakETag;
+        }
+
+        /**
+         * 获取是否生成弱 ETag（兼容标准驼峰 write-weak-etag 属性绑定）
+         *
+         * @return true 生成弱 ETag
+         */
+        public boolean isWriteWeakEtag() {
+            return writeWeakETag;
+        }
+
+        /**
+         * 设置是否生成弱 ETag（兼容标准驼峰 write-weak-etag 属性绑定）
+         *
+         * @param writeWeakEtag true 生成弱 ETag
+         */
+        public void setWriteWeakEtag(boolean writeWeakEtag) {
+            this.writeWeakETag = writeWeakEtag;
+        }
     }
 
     /**

@@ -114,6 +114,17 @@ class ApiVersionRequestMappingHandlerMappingTest {
         assertThat(condition.getVersion()).isEqualTo("3");
     }
 
+    @Test
+    @DisplayName("ApiVersionProperties.headerName 与 header 别名配置同步生效")
+    void shouldSupportHeaderNameAlias() {
+        ApiVersionProperties properties = new ApiVersionProperties();
+        assertThat(properties.getHeaderName()).isEqualTo("X-API-Version");
+
+        properties.setHeaderName("X-Custom-API-Ver");
+        assertThat(properties.getHeader()).isEqualTo("X-Custom-API-Ver");
+        assertThat(properties.getHeaderName()).isEqualTo("X-Custom-API-Ver");
+    }
+
     @RestController
     @RequestMapping("/api/sample")
     @ApiVersion(number = 3)

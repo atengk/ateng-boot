@@ -11,6 +11,7 @@ import org.springframework.core.Ordered;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * HTTP 请求全生命周期链路追踪过滤器
@@ -38,8 +39,22 @@ public class TraceFilter extends OncePerRequestFilter implements Ordered {
 
     private final WebProperties webProperties;
 
+    /**
+     * 当前在途 HTTP 请求计数器
+     */
+    private final AtomicLong activeRequests = new AtomicLong(0L);
+
     public TraceFilter(WebProperties webProperties) {
         this.webProperties = webProperties != null ? webProperties : new WebProperties();
+    }
+
+    /**
+     * 获取当前仍在处理中的在途 HTTP 请求数
+     *
+     * @return 当前活跃请求数量
+     */
+    public long getActiveRequestCount() {
+        return activeRequests.get();
     }
 
     @Override
@@ -61,9 +76,11 @@ public class TraceFilter extends OncePerRequestFilter implements Ordered {
         MDC.put(MDC_TRACE_ID_KEY, traceId);
         response.setHeader(headerName, traceId);
 
+        activeRequests.incrementAndGet();
         try {
             filterChain.doFilter(request, response);
         } finally {
+            activeRequests.decrementAndGet();
             // 3. 严格清理当前线程的 MDC 追踪标识，防止线程池复用污染
             MDC.remove(MDC_TRACE_ID_KEY);
         }

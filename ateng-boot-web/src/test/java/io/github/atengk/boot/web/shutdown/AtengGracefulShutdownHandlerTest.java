@@ -192,4 +192,76 @@ class AtengGracefulShutdownHandlerTest {
 
         assertThat(handler.isDrained()).isFalse();
     }
+
+    @Test
+    @DisplayName("测试在途请求排空感知：精确捕获启动时与排空后活跃请求计数并输出至 DrainResult")
+    void testDrainWithInFlightRequestTracking() throws Exception {
+        WebProperties webProps = new WebProperties();
+        webProps.getShutdown().setDrainTimeout(Duration.ofMillis(80));
+
+        io.github.atengk.boot.web.trace.TraceFilter traceFilter = new io.github.atengk.boot.web.trace.TraceFilter(webProps);
+        AtengGracefulShutdownHandler handler = new AtengGracefulShutdownHandler(webProps, traceFilter);
+
+        CountDownLatch inFilterLatch = new CountDownLatch(1);
+        CountDownLatch releaseRequestLatch = new CountDownLatch(1);
+
+        ExecutorService worker = Executors.newSingleThreadExecutor();
+        ExecutorService releaser = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> requestFuture = worker.submit(() -> {
+                try {
+                    traceFilter.doFilter(
+                            new org.springframework.mock.web.MockHttpServletRequest(),
+                            new org.springframework.mock.web.MockHttpServletResponse(),
+                            (req, res) -> {
+                                inFilterLatch.countDown();
+                                try {
+                                    releaseRequestLatch.await();
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
+                    );
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+
+            inFilterLatch.await();
+            assertThat(handler.getInFlightRequestCount()).isEqualTo(1L);
+
+            // 在另起延迟释放请求后启动 drain，预期起点为 1，结束后归零
+            releaser.submit(() -> {
+                try {
+                    Thread.sleep(25);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    releaseRequestLatch.countDown();
+                }
+            });
+
+            AtengGracefulShutdownHandler.DrainResult result = handler.drain();
+            requestFuture.get();
+
+            assertThat(result.executed()).isTrue();
+            assertThat(result.inFlightRequestsAtStart()).isEqualTo(1L);
+            assertThat(result.inFlightRequestsRemaining()).isZero();
+            assertThat(result.toMap())
+                    .containsEntry("inFlightRequestsAtStart", 1L)
+                    .containsEntry("inFlightRequestsRemaining", 0L);
+        } finally {
+            worker.shutdownNow();
+            releaser.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 DrainResult 四参数向后兼容构造器")
+    void testDrainResultBackwardCompatibleConstructor() {
+        AtengGracefulShutdownHandler.DrainResult legacy =
+                new AtengGracefulShutdownHandler.DrainResult("REFUSING_TRAFFIC", true, "30s", "ok");
+        assertThat(legacy.inFlightRequestsAtStart()).isZero();
+        assertThat(legacy.inFlightRequestsRemaining()).isZero();
+    }
 }

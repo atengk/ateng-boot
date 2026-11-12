@@ -66,8 +66,8 @@ public class IpAccessControlFilter extends OncePerRequestFilter implements Order
             return;
         }
 
-        // 3. 提取客户端 IP 并判定规则（结合授信代理防伪造）
-        String clientIp = IpUtil.getClientIp(request, properties.getTrustedProxies());
+        // 3. 提取客户端 IP 并判定规则（模块显式配置授信代理时优先使用，否则继承全局默认授信代理防伪造）
+        String clientIp = IpUtil.getClientIpWithDefaultFallback(request, properties.getTrustedProxies());
         IpAccessMode mode = filterProps.getEffectiveMode(properties.getMode());
         List<String> rules = filterProps.getEffectiveRules(properties.getRules());
 
