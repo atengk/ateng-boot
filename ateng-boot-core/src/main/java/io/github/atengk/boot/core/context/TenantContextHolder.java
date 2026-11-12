@@ -272,14 +272,9 @@ public final class TenantContextHolder {
      * @return 多租户状态快照
      */
     public static TenantSnapshot capture() {
-        Deque<String> stackCopy = ContextStackSupport.copyStack(TENANT_ID_STACK);
-        if (stackCopy.isEmpty()) {
-            String effectiveTenant = getTenantId();
-            if (effectiveTenant != null && !effectiveTenant.isBlank()) {
-                stackCopy.push(effectiveTenant);
-            }
-        }
-        return new TenantSnapshot(stackCopy, currentIgnoreDepth());
+        return new TenantSnapshot(
+                ContextStackSupport.captureWithFallback(TENANT_ID_STACK, TenantContextHolder::getTenantId),
+                currentIgnoreDepth());
     }
 
     /**

@@ -252,5 +252,30 @@ class TenantContextHolderTest {
         TenantContextHolder.runWithoutTenant(() -> assertTrue(TenantContextHolder.hasActiveThreadLocal()));
         assertFalse(TenantContextHolder.isIgnoreTenant());
         assertFalse(TenantContextHolder.hasActiveThreadLocal());
+
+        // 5. 闭包内调用 clear() 或 restore() 时仍严格还原外层租户或清理根级现场
+        TenantContextHolder.setTenantId("other_tenant");
+        TenantContextHolder.TenantSnapshot otherSnap = TenantContextHolder.capture();
+        TenantContextHolder.clear();
+
+        TenantContextHolder.runWithTenant("temp_root", () -> {
+            TenantContextHolder.restore(otherSnap);
+            assertEquals("other_tenant", TenantContextHolder.getExplicit());
+        });
+        assertNull(TenantContextHolder.getExplicit());
+        assertFalse(TenantContextHolder.hasActiveThreadLocal());
+
+        TenantContextHolder.setTenantId("outer_tenant");
+        TenantContextHolder.runWithTenant("inner_clear", () -> {
+            TenantContextHolder.clear();
+            assertNull(TenantContextHolder.getExplicit());
+        });
+        assertEquals("outer_tenant", TenantContextHolder.getExplicit());
+
+        TenantContextHolder.runWithTenant("inner_restore", () -> {
+            TenantContextHolder.restore(otherSnap);
+            assertEquals("other_tenant", TenantContextHolder.getExplicit());
+        });
+        assertEquals("outer_tenant", TenantContextHolder.getExplicit());
     }
 }

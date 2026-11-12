@@ -255,14 +255,7 @@ public final class UserContextHolder {
      * @return 用户状态快照
      */
     public static UserSnapshot capture() {
-        Deque<String> stackCopy = ContextStackSupport.copyStack(USER_STACK);
-        if (stackCopy.isEmpty()) {
-            String effectiveUser = get();
-            if (effectiveUser != null && !effectiveUser.isBlank()) {
-                stackCopy.push(effectiveUser);
-            }
-        }
-        return new UserSnapshot(stackCopy);
+        return new UserSnapshot(ContextStackSupport.captureWithFallback(USER_STACK, UserContextHolder::get));
     }
 
     /**

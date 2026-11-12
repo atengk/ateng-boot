@@ -49,6 +49,7 @@ final class ContextStackSupport {
     static <T> T pushAndRun(ThreadLocal<Deque<String>> holder, String value, Supplier<T> supplier) {
         Objects.requireNonNull(supplier, "supplier 不能为空");
         Deque<String> stack = holder.get();
+        Deque<String> previous = (stack == null || stack.isEmpty()) ? null : new LinkedList<>(stack);
         if (stack == null) {
             stack = new LinkedList<>();
             holder.set(stack);
@@ -57,13 +58,29 @@ final class ContextStackSupport {
         try {
             return supplier.get();
         } finally {
-            if (!stack.isEmpty()) {
-                stack.pop();
-            }
-            if (stack.isEmpty()) {
-                holder.remove();
+            // 若闭包内通过 clear()/restore()/根级 set(null) 替换或移除了 holder，则严格恢复进入前现场
+            if (holder.get() == stack) {
+                if (!stack.isEmpty()) {
+                    stack.pop();
+                }
+                if (stack.isEmpty()) {
+                    holder.remove();
+                }
+            } else {
+                restoreStack(holder, previous);
             }
         }
+    }
+
+    static Deque<String> captureWithFallback(ThreadLocal<Deque<String>> holder, Supplier<String> fallbackSupplier) {
+        Deque<String> stackCopy = copyStack(holder);
+        if (stackCopy.isEmpty()) {
+            String effective = fallbackSupplier.get();
+            if (effective != null && !effective.isBlank()) {
+                stackCopy.push(effective);
+            }
+        }
+        return stackCopy;
     }
 
     static Deque<String> copyStack(ThreadLocal<Deque<String>> holder) {

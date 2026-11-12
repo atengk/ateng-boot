@@ -81,7 +81,7 @@ _Avoid_: TreeBuilder, NodeUtil, MenuTreeUtil
 _Avoid_: JacksonUtil, JSON, FastJsonUtil, JsonHelper
 
 **TenantContextHolder**:
-基于惰性初始化 ThreadLocal 与双栈结构维护当前线程显式租户标识及忽略过滤深度的持有者，支持未设置时的 CurrentTenantProvider 回退兜底、只读无残留、编程式闭包与跨线程隔离，与 UserContextHolder 保持双维镜像对称。
+基于惰性初始化 ThreadLocal 维护当前线程显式租户标识（嵌套栈）及忽略过滤深度（整型计数器）的持有者，支持未设置时的 CurrentTenantProvider 回退兜底、只读无残留、编程式闭包与跨线程隔离，与 UserContextHolder 保持双维镜像对称。
 _Avoid_: TenantHelper, CurrentTenant, TenantManager
 
 **CurrentTenantProvider**:

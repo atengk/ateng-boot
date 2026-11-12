@@ -228,6 +228,31 @@ class UserContextHolderTest {
             assertTrue(UserContextHolder.hasActiveThreadLocal());
             UserContextHolder.set((String) null);
             assertFalse(UserContextHolder.hasActiveThreadLocal());
+
+            // 4. 闭包内调用 clear() 或 restore() 仍能严格还原外层或清理根级现场
+            UserContextHolder.set("other-user");
+            UserContextHolder.UserSnapshot otherSnap = UserContextHolder.capture();
+            UserContextHolder.clear();
+
+            UserContextHolder.runWithUser("temp-root", () -> {
+                UserContextHolder.restore(otherSnap);
+                assertEquals("other-user", UserContextHolder.getExplicit());
+            });
+            assertNull(UserContextHolder.getExplicit());
+            assertFalse(UserContextHolder.hasActiveThreadLocal());
+
+            UserContextHolder.set("outer-user");
+            UserContextHolder.runWithUser("inner-clear", () -> {
+                UserContextHolder.clear();
+                assertNull(UserContextHolder.getExplicit());
+            });
+            assertEquals("outer-user", UserContextHolder.getExplicit());
+
+            UserContextHolder.runWithUser("inner-restore", () -> {
+                UserContextHolder.restore(otherSnap);
+                assertEquals("other-user", UserContextHolder.getExplicit());
+            });
+            assertEquals("outer-user", UserContextHolder.getExplicit());
         } finally {
             UserContextHolder.setUserProvider(null);
             UserContextHolder.clear();
