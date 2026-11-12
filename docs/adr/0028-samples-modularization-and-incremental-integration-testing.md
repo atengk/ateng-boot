@@ -87,8 +87,8 @@ flowchart TD
    - **依赖基线**：`ateng-boot-storage`、`ateng-boot-web`；
    - **职责覆盖**：本地文件驱动与 S3 兼容协议适配、路径遍历清洗防卫、Spring Resource 极简断点续传、纯流式 ZIP 打包与大文件分片状态机自验。
 8. **`ateng-boot-sample-smoke-test`（全家桶 CI 冒烟准出门禁）**：
-   - **依赖基线**：`ateng-boot-all`、`h2`、`springdoc-openapi`；
-   - **职责覆盖**：专职负责检验全量 Starter 无冲突自动装配与典型跨模块端到端主链路，测试执行耗时严格压制在 8 秒以内。
+   - **依赖基线**：`ateng-boot-all`、`ateng-boot-openapi`、`h2`，并叠加典型按需扩展 Starter（如 `storage`、`http`、`realtime`、`encrypt`、`statemachine`、`tcp`）共同检验无冲突装配；
+   - **职责覆盖**：专职负责检验全家桶与按需 Starter 在同一容器下的无冲突自动装配，按领域拆分 3 个 `@RestController`（统一 `/sample/smoke/...` 路由，严守 Zero-Entity-Leakage DTO/VO 契约与 Redis `!local`/`local` 双模机制），端到端校验 `Result<T>`、Sa-Token 上下文桥接、MP 审计分页、Apache Fesod 脱敏流式导出与 OpenAPI 文档端点，测试执行耗时保持在秒级门禁内。
 
 ### 4. 功能必有样例与 Sample-First 研发闭环铁律 (Sample-Before-Docs Invariant)
 1. **功能 100% 覆盖刚性铁律**：模块实现的每一个对外公开功能（门面 API、注解、配置项、SPI），必须 100% 在归属的 `ateng-boot-sample-<scenario>` 中提供真实、自洽、端到端可运行的演示用例，严禁只在单测中 Mock 而在 Sample 中缺位；

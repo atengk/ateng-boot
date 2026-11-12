@@ -112,7 +112,6 @@
         <tools-jackson.version>3.2.4</tools-jackson.version>
         <commons-lang3.version>3.18.0</commons-lang3.version>
         <commons-collections4.version>4.4</commons-collections4.version>
-        <commons-io.version>2.20.0</commons-io.version>
         <guava.version>33.4.0-jre</guava.version>
         <!-- 仅作为 ateng-boot-social 运行时支撑 tools.jackson 3.x 所需的 FasterXML 专用兼容注解，严禁暴露至 ateng-boot-bom -->
         <jackson-annotations.version>2.22</jackson-annotations.version>
@@ -213,13 +212,6 @@
                 <version>${commons-net.version}</version>
             </dependency>
 
-            <!-- MockFtpServer (100% 离线自洽 FTP 测试服务器) -->
-            <dependency>
-                <groupId>org.mockftpserver</groupId>
-                <artifactId>MockFtpServer</artifactId>
-                <version>${mockftpserver.version}</version>
-                <scope>test</scope>
-            </dependency>
 
             <!-- ateng-boot 模块版本管控 -->
             <dependency>
@@ -301,12 +293,6 @@
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-mail</artifactId>
                 <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.icegreen</groupId>
-                <artifactId>greenmail-junit5</artifactId>
-                <version>${greenmail.version}</version>
-                <scope>test</scope>
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>
@@ -475,16 +461,6 @@
                 <artifactId>langchain4j-open-ai</artifactId>
                 <version>${langchain4j.version}</version>
             </dependency>
-            <dependency>
-                <groupId>dev.langchain4j</groupId>
-                <artifactId>langchain4j-redis</artifactId>
-                <version>${langchain4j.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>dev.langchain4j</groupId>
-                <artifactId>langchain4j-pgvector</artifactId>
-                <version>${langchain4j.version}</version>
-            </dependency>
             <!-- LangGraph4j 认知状态图编排底座 -->
             <dependency>
                 <groupId>org.bsc.langgraph4j</groupId>
@@ -505,37 +481,6 @@
                 <groupId>org.dromara.anduin</groupId>
                 <artifactId>dromara-anduin</artifactId>
                 <version>${dromara-anduin.version}</version>
-            </dependency>
-            <!-- 仅作为 ateng-boot-social 运行时支撑 dromara-anduin 依赖，严禁暴露至 ateng-boot-bom -->
-            <dependency>
-                <groupId>tools.jackson.core</groupId>
-                <artifactId>jackson-databind</artifactId>
-                <version>${tools-jackson.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.commons</groupId>
-                <artifactId>commons-lang3</artifactId>
-                <version>${commons-lang3.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.commons</groupId>
-                <artifactId>commons-collections4</artifactId>
-                <version>${commons-collections4.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>commons-io</groupId>
-                <artifactId>commons-io</artifactId>
-                <version>${commons-io.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.google.guava</groupId>
-                <artifactId>guava</artifactId>
-                <version>${guava.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.fasterxml.jackson.core</groupId>
-                <artifactId>jackson-annotations</artifactId>
-                <version>${jackson-annotations.version}</version>
             </dependency>
             <dependency>
                 <groupId>de.codecentric</groupId>

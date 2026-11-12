@@ -1,6 +1,8 @@
 spring:
   application:
     name: ateng-boot-sample-smoke-test
+  config:
+    import: "optional:classpath:application-local.yml"
   datasource:
     url: jdbc:h2:mem:smokedb;DB_CLOSE_DELAY=-1;MODE=MySQL
     driver-class-name: org.h2.Driver
@@ -27,5 +29,45 @@ ateng:
       audit:
         enabled: true
         default-operator: SYSTEM
+    satoken:
+      enabled: true
+      interceptor:
+        enabled: true
+        check-login: false
+    openapi:
+      enabled: true
+      title: "ateng-boot 全家桶装配冒烟与集成示例"
+      version: "1.2.0"
+      description: "验证 ateng-boot-all 核心全家桶与按需 Starter 在同一容器中的零冲突协同装配"
+
+---
+spring:
+  config:
+    activate:
+      on-profile: "!local"
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration
+
+ateng:
+  boot:
     redis:
       enabled: false
+
+---
+spring:
+  config:
+    activate:
+      on-profile: "local"
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+
+ateng:
+  boot:
+    redis:
+      enabled: true
+      key-prefix: "smoke:"

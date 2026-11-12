@@ -41,7 +41,7 @@
 ```
 
 - **维度零（100% 全景速查矩阵刚性铁律）**：模块对外暴露的所有公共门面类（`*Template` / `*Executor` / `*Util` / `*Manager` 等）及 Public 方法、声明式核心注解（`@*`）及关键属性、配置属性类（`@ConfigurationProperties`）所有配置项、扩展点接口（SPI / Callback / Listener / Provider），**必须 100% 在第 0 节全景矩阵中收录**，彻底杜绝“代码写了但文档未记录”的隐形死代码。
-- **维度一（最小起步体验 Happy Path）**：直击一句话痛点、最小可用配置与开箱即用的极简实战代码。
+- **维度一（最小起步体验 Happy Path）**：直击一句话痛点，必须给出标准 **Maven `<dependency>` 引入坐标**（同时覆盖导入 BOM 免版本号写法与独立显式版本写法），并配套最小可用配置与开箱即用的极简实战代码。
 - **维度二（生产扩展接管 Customization & Extensibility）**：显式展示当默认行为无法满足定制诉求时，如何通过实现 SPI 接口、`@ConditionalOnMissingBean` 覆盖默认 Bean、订阅领域事件或注册自定义拦截器进行生产接管。
 - **维度三（核心生产边界与非功能语义 Production Boundary & Failure Modes）**：显式声明高并发、分布式或极端异常场景下的底层机制（如事务可见性、幂等与死信防雪崩、锁续期与安全释放、网络超时熔断、流式防 OOM 阈值等）。
 - **维度四（物理排版与全真逆向验证 Evergreen & Zero-Glitch）**：见 2.5 与 2.6 节。
@@ -90,6 +90,27 @@
 1. **表格管道符与泛型防护**：Markdown 表格单元格内凡涉及泛型（如 `Map<String, Object>`）、位运算或管道符（`|`），必须使用行内代码反引号包裹（`` `Map<String, Object>` ``）或转义（`\|`），严禁导致表格错位破损；
 2. **代码块反引号阶梯**：外层包含内层代码块时，外层必须使用四反引号（```` ````markdown ````）包裹内层三反引号（```` ```bash ````），且开闭标签 100% 成对闭合；
 3. **纯相对路径互链**：文档内链接 100% 采用相对路径（`./`、`../`），严禁在 Markdown 正文中写入 `file:///` 或带本地盘符（`C:/`、`D:/`）的绝对路径。
+
+---
+
+### 2.7 零源码依赖治理构件定制规范 (`DependencyGovernanceArtifact`)
+
+`ateng-boot-bom`（`<packaging>pom</packaging>`）与 `ateng-boot-all`（`<packaging>jar</packaging>` 零编译源码）作为全局依赖管控与全家桶聚合构件，不暴露传统 Java 业务类与 `@ConfigurationProperties`，其五维 `README.md` 遵循以下专职等价映射，且第 1 节必须提供同步至最新稳定版的标准 Maven 引入坐标：
+
+1. **`ateng-boot-bom`（BOM 管控清单，`packaging=pom`）五维骨架**：
+   - **第 0 节（维度零：100% 全量纳管坐标全景速查矩阵）**：按领域完整列出 BOM 显式声明的全部 `io.github.atengk:*` Starter 坐标、第三方核心中间件坐标与锁定版本号（包含 `spring-boot-dependencies` 基准对齐），并声明**内部依赖与测试替身防泄漏隔离清单**（由 `mvn help:effective-pom -f ateng-boot-bom/pom.xml` 验证）。
+   - **第 1 节（维度一：最小可用引入与快速起步）**：给出非侵入式 `<type>pom</type><scope>import</scope>` 标准 Maven 声明（`<artifactId>ateng-boot-bom</artifactId>` 紧随 `<version>`），说明多模块微服务统一导入范式。
+   - **第 2 节（维度二：依赖边界、隔离与定制覆盖机制）**：阐明 Parent vs BOM Import 解耦契约、本地版本显式覆盖（属性/声明前置优先）与 `<exclusions>` 剔除模式。
+   - **第 3 节（维度三：按业务拓扑组装 Starter 组合配方）**：提供纯后端 API、有状态数据应用、异步/消息微服务等场景化按需组装建议。
+   - **第 4 节（维度四：基线兼容性矩阵与高频冲突排障）**：锁定 JDK、Spring Boot 与核心引擎基线版本（参见 [ADR-0006](../adr/0006-dependency-baseline-and-upgrade-strategy.md)），给出冲突排查命令（`mvn dependency:tree`、`mvn help:effective-pom`）。
+   - *Sample 映射*：纯 POM 清单无运行时行为与 HTTP 端点，豁免独立专职 Sample（由 `ateng-boot-samples` 统一通过 `<scope>import</scope>` 反向验真）。
+2. **`ateng-boot-all`（全景核心聚合全家桶，`packaging=jar` 零编译源码）五维骨架**：
+   - **第 0 节（维度零：核心捆绑成员与按需扩展选型矩阵）**：精确列出默认透传的 **6 大核心 Starter**（`core`、`web`、`mybatis-plus`、`redis`、`excel`、`satoken`），并给出未纳入默认绑定、需按需独立引入的全仓剩余业务 Starter 完整选型对照表。
+   - **第 1 节（维度一：Maven 引入与最小可用体验）**：提供“BOM + `ateng-boot-all` 免版写法”与“独立显式版本号写法”（`<artifactId>ateng-boot-all</artifactId>` 紧随 `<version>`），并逆向提取自 [`ateng-boot-sample-smoke-test`](../../ateng-boot-samples/ateng-boot-sample-smoke-test/README.md) 的最小可用配置与核心契约演示代码。
+   - **第 2 节（维度二：聚合装配拓扑与零冲突协调原理）**：展示 6 大底座通过 Core 四维上下文、SPI 自动桥接与 `@AutoConfiguration` 有序装配构成的协同架构（严禁遗留已退役第三方库引用）。
+   - **第 3 节（维度三：全真跨模块端到端闭环场景）**：基于 `ateng-boot-sample-smoke-test` 跑通的真实闭环（统一响应/校验 -> Sa-Token 登录上下文自动透传 -> MyBatis-Plus 审计与 `PageResult` 分页 -> Apache Fesod 脱敏流式导出），展示多模块无胶水联动。
+   - **第 4 节（维度四：适用边界、局部排除与拆分演进指南）**：明确适用单体/快速原型边界，提供 `<exclusions>` 精确剔除不需要默认底座（如剔除 `redis` 或 `excel`）的配方及向微服务拆分迁移路径。
+   - *Sample 映射*：严格 1:1 锚定 [`ateng-boot-samples/ateng-boot-sample-smoke-test`](../../ateng-boot-samples/ateng-boot-sample-smoke-test/README.md)（多领域 Controller `/sample/smoke/...` + 按需 Starter 共存门禁 + Redis 双模降级）。
 
 ---
 
@@ -172,15 +193,19 @@ flowchart LR
 
 在每次特性交付或调用 `/code-review` 时，必须逐项核验以下 12 项卡点；**任何一项未通过直接触发 Red Card 阻断准出**：
 
-- [ ] **1. Sample 100% 场景对齐**：模块新增/修改的所有公共 API 方法、核心注解、配置项与 SPI，是否已 100% 在归属的 `ateng-boot-sample-<module>` 中提供端到端可运行用例？
+- [ ] **1. Sample 100% 场景对齐**：模块新增/修改的所有公共 API 方法、核心注解、配置项与 SPI，是否已 100% 在归属的 `ateng-boot-sample-<module>` 中提供端到端可运行用例（依赖治理构件按下方口径映射核验）？
 - [ ] **2. Sample 多 Controller 暴露**：能做成 HTTP 接口的功能是否已按业务领域拆分为多个独立 `@RestController`，统一遵循 `/sample/<module>/<feature>/<action>` 路由并返回 `Result<T>`？
 - [ ] **3. Sample README 极简体验卡**：Sample `README.md` 是否严格遵循四段式结构（端口启动、双模切换、cURL 体验表、回归命令），无冗余原理与全景表抄录？
-- [ ] **4. 文档三要素就近与大章收敛**：Starter `README.md` 各特性小节是否在同一屏幕内闭环“专属 YAML + 业务 Java 代码 + 机制边界”？同类功能是否按业务能力大章聚合收敛？
+- [ ] **4. 依赖引入与三要素就近闭环**：Starter `README.md` 第 1 节是否已提供同步当前稳定版本的 Maven `<dependency>` 引入坐标（含 BOM 与独立版本说明）？各特性小节是否在同一屏幕内闭环“专属 YAML + 业务 Java 代码 + 机制边界”？同类功能是否按业务能力大章聚合收敛？
 - [ ] **5. 真实业务语义场景驱动**：文档与 Sample 代码是否已演进为商品、订单、支付、物流等真实业务语义模型，彻底清零 `NORMAL_SUCCESS_`、`key1` 等单测试桩硬搬？
 - [ ] **6. Sample-First 逆向提取**：Starter `README.md` 中的所有 Java 代码、YAML 配置与输出结果，是否 100% 逆向提取自已编译并实测全绿的 Sample 工程？
-- [ ] **7. 维度零 100% 全景速查矩阵**：模块所有对外公共门面及 Public 方法、配置项、核心注解与 SPI 是否 100% 收录进 Starter `README.md` 第 0 节全景矩阵？
+- [ ] **7. 维度零 100% 全景速查矩阵**：模块所有对外公共门面及 Public 方法、配置项、核心注解与 SPI（或 BOM/All 构件全部纳管/聚合坐标与按需选型表）是否 100% 收录进 Starter `README.md` 第 0 节全景矩阵？
 - [ ] **8. 排版防裂与路径纯净**：表格内泛型/管道符是否已反引号包裹或转义？嵌套代码块是否遵循四反引号阶梯？文档内是否 100% 为相对路径且无死链？
 - [ ] **9. 九道成熟度防线对齐**：源码是否全面满足 [`AGENTS.md`](../../AGENTS.md) 第 3 节九道防线（对称门面、前置 Fail-Fast、确定性资源清理、受管线程池与锁状态判断释放、`Duration`/`DataSize` 强类型配置、保留 `cause` 的因果异常转译、Core 原语复用与对抗性单测）？
 - [ ] **10. 单测全自洽三铁律**：单测文件 IO 是否使用 `@TempDir`？ThreadLocal/MDC 上下文是否在 `@AfterEach` 无条件清理？默认模式是否 100% 离线自洽？
 - [ ] **11. 远程服务双模真实验证**：若涉及远程中间件，Sample 是否提供 `@Profile("!local")` 内存桩与 `application-local.example.yml` 大写占位符模板？若本地具备真实服务，是否已在 `local` 模式下测通并清理现场（无环境则显式登记 `[豁免：无可用环境]`）？
 - [ ] **12. 传输契约绝对解耦**：Controller 传输边界是否 100% 杜绝直接接收或返回持久层实体（Entity）？
+
+> **[非代码依赖治理构件口径映射 (`ateng-boot-bom` / `ateng-boot-all`)]**：
+> - **`ateng-boot-bom`**（纯 POM 清单）：第 1/2/3/5/6/9/10/11/12 项豁免运行时 Java/Sample/Controller 要求，第 4/7 项映射为“第 1 节 `<scope>import</scope>` 坐标 + 第 0 节全量纳管坐标与防泄漏隔离清单 + `mvn help:effective-pom -f ateng-boot-bom/pom.xml` 无内部/单测依赖泄露实测”。
+> - **`ateng-boot-all`**（零编译源码聚合 JAR）：第 1/2/3/6/10/11/12 项 1:1 锚定 `ateng-boot-samples/ateng-boot-sample-smoke-test` 的多 Controller 集成校验、Redis `!local` 降级与 DTO/VO 隔离；第 4/7 项映射为“第 1 节 BOM/独立引入坐标 + 第 0 节 6 大 CoreBundle 与全部按需 Starter 选型对比矩阵 + `<exclusions>` 排除配方”。

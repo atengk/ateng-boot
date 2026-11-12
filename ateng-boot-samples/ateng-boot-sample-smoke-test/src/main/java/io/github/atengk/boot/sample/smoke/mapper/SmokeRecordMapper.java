@@ -1,6 +1,6 @@
 package io.github.atengk.boot.sample.smoke.mapper;
 
-import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.sample.smoke.entity.SmokeRecordEntity;
 import org.apache.ibatis.annotations.Mapper;
 
@@ -11,5 +11,5 @@ import org.apache.ibatis.annotations.Mapper;
  * @since 2026-10-17
  */
 @Mapper
-public interface SmokeRecordMapper extends BaseMapper<SmokeRecordEntity> {
+public interface SmokeRecordMapper extends AtengBaseMapper<SmokeRecordEntity> {
 }

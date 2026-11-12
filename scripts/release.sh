@@ -27,7 +27,7 @@ custom_bump_version() {
   mvn versions:set -DnewVersion="$RAW_VERSION" -DgenerateBackupPoms=false
 
   # 2. 自动同步更新门面与 BOM 接入文档中的依赖版本 (基于 sed -i 直接原地修改，零临时文件，零注释污染)
-  local README_FILES=("README.md" "ateng-boot-bom/README.md")
+  local README_FILES=("README.md" "ateng-boot-bom/README.md" "ateng-boot-all/README.md")
   local SED_OPTS=(-i -E)
   sed --version >/dev/null 2>&1 || SED_OPTS=(-i '' -E)
 
@@ -365,6 +365,7 @@ if [ -n "$HOOK_CHANGES" ]; then
   git add pom.xml */pom.xml */*/pom.xml
   [ -f "README.md" ] && git add README.md
   [ -f "ateng-boot-bom/README.md" ] && git add ateng-boot-bom/README.md
+  [ -f "ateng-boot-all/README.md" ] && git add ateng-boot-all/README.md
   git commit -m "chore(release): bump version to $TARGET_VERSION"
   NEED_PUSH_BRANCH=true
 elif [ "$AHEAD_COUNT" -gt 0 ]; then

@@ -49,10 +49,10 @@
             <artifactId>ateng-boot-tcp</artifactId>
         </dependency>
 
-        <!-- SpringDoc OpenAPI (用于端到端验证 Knife4j / Swagger 鉴权组件装配) -->
+        <!-- 接口文档引擎 (替代裸 springdoc，用于端到端验证 OpenAPI 与 Sa-Token 鉴权协同装配) -->
         <dependency>
-            <groupId>org.springdoc</groupId>
-            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-openapi</artifactId>
         </dependency>
 
         <!-- H2 内存数据库 (运行时自验) -->

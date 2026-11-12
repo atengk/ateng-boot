@@ -29,8 +29,8 @@ _Avoid_: DocBeforeSample, HandcraftedCodeInDoc, UntestedDocSnippet
 _Avoid_: DuplicateTestSuites, HardcodedExternalDependency, CommittedLocalSecrets
 
 **SampleSmokeTest**:
-CI 全家桶冒烟准出门禁子模块（`ateng-boot-sample-smoke-test`），聚合依赖 `ateng-boot-all`，秒级完成全 Starter 无冲突自动装配与核心主链路自验。
-_Avoid_: SlowFullIntegration, FlakyTest
+`ateng-boot-all` 的 1:1 配套自验工程兼全域冒烟准出门禁子模块（`ateng-boot-sample-smoke-test`），基于 `ateng-boot-all` 与典型按需 Starter（`ateng-boot-openapi`、`storage`、`http`、`realtime`、`encrypt`、`statemachine`、`tcp`）共存装配，按领域拆分 3 个 `@RestController`（统一 `/sample/smoke/...` 路由与 DTO/VO 契约），在离线 H2 + Redis 双模下秒级验证无冲突启动与跨模块协同主链路。
+_Avoid_: SlowFullIntegration, FlakyTest, SingleFatSmokeController, LegacyKnife4jSmoke
 
 **NonPublishableModule**:
 仅用于本地验证与 CI 质量门禁、严禁向公共中央仓库部署发布的演示与自验模块。通过根 POM `-DskipSamples` Profile 隔离、二级 POM `<maven.deploy.skip>true</maven.deploy.skip>` 声明与根发布插件 `<excludeArtifacts>` 构成三重防发布防线（参见 [ADR-0007](../docs/adr/0007-maven-publishing-and-clean-ci-pipeline.md)、[ADR-0028](../docs/adr/0028-samples-modularization-and-incremental-integration-testing.md)、[ADR-0058](../docs/adr/0058-samples-reactor-isolation-and-publishing-quota-governance.md)）。

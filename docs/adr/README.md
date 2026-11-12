@@ -10,7 +10,7 @@
 | :---: | :--- | :---: | :--- | :--- | :---: |
 | **0001** | 顶级品牌多仓解耦与通用基础设施底座 | `Accepted` | 确立 `ateng` 顶级品牌，`ateng-boot` 作为单体与微服务通用底座 | 全工程 | [查看](./0001-multi-repo-brand-matrix.md) |
 | **0002** | 显式统一返回契约，严禁全局拦截包装 | `Accepted` | Controller 显式声明 `Result<T>`，彻底消除 `@ResponseBodyAdvice` 对 String、下载及 Swagger 的侵入 | `ateng-boot-core` | [查看](./0002-explicit-result-contract-no-response-body-advice.md) |
-| **0003** | 基于 BOM Import 机制的无侵入依赖统管 | `Accepted` | 采用 `<type>pom</type><scope>import</scope>`，彻底摆脱单继承父 POM 锁定枷锁 | `ateng-boot-bom` | [查看](./0003-dependency-management-via-bom-import.md) |
+| **0003** | 基于 BOM Import 机制的无侵入依赖统管 | `Accepted` | 采用 `<type>pom</type><scope>import</scope>`，摆脱单继承父 POM 锁定枷锁；确立 `ManagedDependencyBoundary` 内部依赖防泄漏治理边界 | `ateng-boot-bom` | [查看](./0003-dependency-management-via-bom-import.md) |
 | **0004** | 传输层 HTTP 200 与业务错误脱敏拦截 | `Accepted` | HTTP 协议层保持 200，内部通过业务状态码区分；未知根异常强制生产脱敏并关联 `traceId` | `ateng-boot-web` | [查看](./0004-http-200-with-business-code-and-exception-masking.md) |
 | **0005** | 基于 Jackson Customizer 注入全局序列化 | `Accepted` | 统一通过 `Jackson2ObjectMapperBuilderCustomizer` 注入雪花 Long 转 String 与时间格式化，严禁覆盖 `ObjectMapper` | `ateng-boot-web` | [查看](./0005-jackson-customizer-over-objectmapper-override.md) |
 | **0006** | 技术依赖基线锁定与安全升级策略 | `Accepted` | 字节码锁定 JDK 17，Spring Boot 锁定 3.3.13，MyBatis-Plus 锁定 3.5.17，全局屏蔽破坏性大版本 | 全工程 | [查看](./0006-dependency-baseline-and-upgrade-strategy.md) |
@@ -35,7 +35,7 @@
 | **0025** | Core 核心底座全方位扩建与未来中间件孵化地基架构决策 | `Accepted` | 序列化门面 JsonUtil 下沉、脱敏/租户上下文彻底归位、四维异步透传闭环、函数式 Result 演化与 SpringUtil/LambdaUtil/RetryUtil 等未来孵化原语矩阵 | `ateng-boot-core` / 全工程 | [查看](./0025-core-module-expansion-and-future-proof-middleware-foundations.md) |
 | **0026** | 生产级基线加固与底层设施大一统架构决策 | `Accepted` | 全域 JSON 100% 收敛 JsonUtil、双维上下文镜像对称与 Sa-Token 自动无感桥接、TraceFilter 无锁原语、异步线程池下沉 core、底座原语复用与延时队列 MDC 追踪 | `core` / `web` / `satoken` / `redis` / `excel` | [查看](./0026-production-hardening-and-foundations-unification.md) |
 | **0027** | 分层双防数据校验体系与标准化原语架构决策 | `Accepted` | 确立分层双防铁律，沉淀 ValidationGroups 标准分组契约与 ValidList 批量级联容器，扩展 ValidatorUtil POJO 编程式校验与无 EL 优雅降级 | `core` / `web` | [查看](./0027-defense-in-depth-validation-and-standardized-primitives.md) |
-| **0028** | 示例工程多模块解耦与精准增量集成测试架构决策 | `Accepted` | 二级 Parent POM 聚合解耦，自包含场景子模块矩阵（零共享代码），秒级精准增量测试门禁与发布双层排除隔离 | `ateng-boot-samples` / 全工程 | [查看](./0028-samples-modularization-and-incremental-integration-testing.md) |
+| **0028** | 示例工程多模块解耦与精准增量集成测试架构决策 | `Accepted` | 二级 Parent POM 聚合解耦，自包含场景子模块矩阵（零共享代码），`ateng-boot-sample-smoke-test` 全家桶共存与多领域 Controller 门禁，发布双层排除隔离 | `ateng-boot-samples` / 全工程 | [查看](./0028-samples-modularization-and-incremental-integration-testing.md) |
 | **0029** | 基于 Spring Boot 3.3 与 JDK 21+ 的自适应虚拟线程异步运行时架构决策 | `Accepted` | 官方原生 @ConditionalOnThreading 声明式分流，SimpleAsyncTaskExecutor 虚拟线程自适应，四维上下文全生命周期透传，Snowflake 升级 ReentrantLock 彻底杜绝 Carrier Pinning | `ateng-boot-core` / 全工程 | [查看](./0029-virtual-threads-and-adaptive-async-runtime.md) |
 | **0030** | 企业级轻量多源对象存储与安全预签名一体化架构决策 | `Accepted` | Local + S3 统一驱动，排除 Netty 零膨胀，智能双模配置，内置 HMAC 预签名平替，三位一体动态切源，StorageResource 断点续传与纯内存自验门禁 | `ateng-boot-storage` / 全工程 | [查看](./0030-storage-module-architecture.md) |
 | **0031** | 外部动态 SQL 引擎与运行时热更新架构决策 | `Accepted` | SPI 契约解耦外部载体，智能容错包裹 <script>，无锁受控热替换绕过 StrictMap 冲突与回滚防灾，双模驱动深度融合 ADR-0010 分页契约与拦截器透明继承 | `ateng-boot-mybatis-plus` | [查看](./0031-external-dynamic-sql-engine-and-hot-reload-architecture.md) |

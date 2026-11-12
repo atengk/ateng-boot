@@ -62,10 +62,11 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- MockFtpServer (100% 离线自洽 FTP 测试服务器) -->
+        <!-- MockFtpServer (100% 离线自洽 FTP 测试服务器；测试专用依赖，严禁暴露至 ateng-boot-bom) -->
         <dependency>
             <groupId>org.mockftpserver</groupId>
             <artifactId>MockFtpServer</artifactId>
+            <version>${mockftpserver.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

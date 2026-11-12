@@ -40,7 +40,20 @@
 - **多 Key 轮换与隔离 (Multi-Key Routing & Isolation)**：独创 `ENC[keyId](...)` 语义契约，支持不同组件独立密钥管理、`KeyRotatedEvent` 领域事件通知与无停机平滑轮换；
 - **内存真明文原则 (In-Memory Plaintext Invariant)**：业务层与实体在内存中始终保持 100% 原始真实明文，只在向外暴露端点处执行掩码脱敏，杜绝脏数据写回。
 
-### 1.2 最小可用配置 (`application.yml`)
+### 1.2 引入依赖 (Maven)
+
+推荐先通过 [`ateng-boot-bom`](../ateng-boot-bom/README.md) 统一管理版本（无需重复声明 `<version>`）：
+
+```xml
+<dependency>
+    <groupId>io.github.atengk</groupId>
+    <artifactId>ateng-boot-encrypt</artifactId>
+</dependency>
+```
+
+> 若未导入 `ateng-boot-bom`，请显式指定版本号（如 `<version>1.2.0</version>`）。
+
+### 1.3 最小可用配置 (`application.yml`)
 提取自样例工程 `ateng-boot-samples/ateng-boot-sample-encrypt/src/main/resources/application.yml`：
 ```yaml
 server:
@@ -76,7 +89,7 @@ sample:
     third-party-token: ENC(SM4-CBC@ODPVE+KjssNqGN6yrBqMlXcYvDKQgNYADkGV+HV6vL+/H/Juo4KFpgIuVeRMmIT+)
 ```
 
-### 1.3 业务代码透明无感使用与主密钥注入规范
+### 1.4 业务代码透明无感使用与主密钥注入规范
 业务代码完全无需感知密文，直接通过强类型属性对象获取已解密的真实明文：
 ```java
 @Data

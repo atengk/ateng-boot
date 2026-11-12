@@ -85,9 +85,9 @@ flowchart TB
 | **Redis 分布式协同** | `ateng-boot-redis` | Spring Data Redis + Redisson 双核融合、安全无污染 JSON 序列化、四阶分布式锁、双模延时队列、发布订阅、并发流控与增强缓存 | [查看文档](./ateng-boot-redis/README.md) |
 | **轻量流式电子表格** | `ateng-boot-excel` | 基于新一代 Apache Fesod 流式防 OOM 读写、导出单元格动态脱敏、JSR-303 悬浮批注标红回写、动态防呆模板、双向转义、多 Sheet 链式构建与 5 套商务主题 | [查看文档](./ateng-boot-excel/README.md) |
 | **Sa-Token 安全鉴权** | `ateng-boot-satoken` | Sa-Token 企业级安全基础设施、LoginHelper 强类型载荷模型、双轨拦截防御、Core/MP 审计全链路贯通、两级权限缓存、零信任 Same-Token 与 Knife4j 鉴权自动化 | [查看文档](./ateng-boot-satoken/README.md) |
-| **一键全家桶聚合** | `ateng-boot-all` | 纯依赖聚合 Jar，一键传递引入 core、web、mybatis-plus、redis、excel 与 satoken 全部构件 | [查看文档](./ateng-boot-all/README.md) |
-| **BOM 管控中心** | `ateng-boot-bom` | 依赖版本统管清单（纯 `<dependencyManagement>`），下游按需引入免配版本号 | [查看文档](./ateng-boot-bom/README.md) |
-| **自验演示套件** | `ateng-boot-samples` | 基于 H2 内存库与 MockMvc 的端到端自动化测试金字塔与工程化最佳实践 Demo | [查看文档](./ateng-boot-samples/README.md) |
+| **一键全家桶聚合** | `ateng-boot-all` | 零编译源码的空 JAR 依赖聚合包，一键传递引入 `core`、`web`、`mybatis-plus`、`redis`、`excel` 与 `satoken` 六大核心 Starter | [查看文档](./ateng-boot-all/README.md) |
+| **BOM 管控中心** | `ateng-boot-bom` | 纯 `<dependencyManagement>` 依赖物料清单，严守 `ManagedDependencyBoundary` 防泄漏隔离，下游按需引入免配版本号 | [查看文档](./ateng-boot-bom/README.md) |
+| **自验演示套件** | `ateng-boot-samples` | 基于 `@Profile("!local")` 离线内存桩 / H2 与 `local` 双模机制的多领域 Controller Web 体验沙箱矩阵 | [查看文档](./ateng-boot-samples/README.md) |
 
 ---
 
@@ -150,7 +150,7 @@ flowchart TB
     <dependency>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot-all</artifactId>
-        <version>1.0.0</version>
+        <version>1.2.0</version>
     </dependency>
 
     <!-- 按需引入实际业务使用的数据库驱动，例如 MySQL -->
@@ -173,7 +173,7 @@ flowchart TB
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-bom</artifactId>
-            <version>1.0.0</version>
+            <version>1.2.0</version>
             <type>pom</type>
             <scope>import</scope>
         </dependency>
