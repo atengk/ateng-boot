@@ -4,8 +4,11 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.annotation.SaCheckRole;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.satoken.dto.LoginRequestDTO;
+import io.github.atengk.boot.sample.satoken.dto.UserProfileDTO;
+import io.github.atengk.boot.satoken.annotation.CheckDataOwner;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.util.LoginHelper;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
@@ -50,6 +53,7 @@ public class MultiAccountController {
                 .userId(userId)
                 .userAccount(username)
                 .userName(username)
+                .tenantId(request != null ? request.getTenantId() : null)
                 .roles(request != null && request.getRoles() != null ? request.getRoles() : Set.of("super_admin"))
                 .permissions(request != null && request.getPermissions() != null ? request.getPermissions() : Set.of("system:manage"))
                 .build();
@@ -110,6 +114,7 @@ public class MultiAccountController {
                 .userId(userId)
                 .userAccount(username)
                 .userName(username)
+                .tenantId(request != null ? request.getTenantId() : null)
                 .roles(request != null && request.getRoles() != null ? request.getRoles() : Set.of("vip_member"))
                 .permissions(request != null && request.getPermissions() != null ? request.getPermissions() : Set.of("member:points:view"))
                 .build();
@@ -138,6 +143,18 @@ public class MultiAccountController {
     @SaCheckPermission(type = "member", value = "member:points:view")
     public Result<String> checkMemberPoints() {
         return Result.success("会员积分特权接口校验通过");
+    }
+
+    /**
+     * 会员端个人资料更新（演示多账号体系显式指定 @CheckDataOwner(type = "member") 防水平越权）
+     *
+     * @param dto 会员资料传输对象
+     * @return 更新结果
+     */
+    @PostMapping("/member/profile/update")
+    @CheckDataOwner(type = "member", expr = "#dto.userId")
+    public Result<String> updateMemberProfile(@Valid @RequestBody UserProfileDTO dto) {
+        return Result.success("会员资料更新成功: " + dto.getNickname());
     }
 
     /**

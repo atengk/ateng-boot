@@ -2151,6 +2151,60 @@ public final class LoginHelper {
         return timeout.toSeconds();
     }
 
+    // ==================== 临时业务令牌便捷委托 (TempToken Delegation) ====================
+
+    /**
+     * 签发临时业务令牌（委托 {@link TempTokenHelper#createTempToken(Object, Duration)}）
+     *
+     * @param value   业务载荷（支持字符串与任意 POJO，零 @class 存储）
+     * @param timeout 令牌有效期（必须为正数且不少于 1 秒）
+     * @return 生成的临时令牌凭据
+     */
+    public static String createTempToken(Object value, Duration timeout) {
+        return TempTokenHelper.createTempToken(value, timeout);
+    }
+
+    /**
+     * 解析临时业务令牌为原始字符串载荷（委托 {@link TempTokenHelper#parseTempToken(String)}）
+     *
+     * @param token 临时令牌凭据
+     * @return 原始字符串载荷；过期或不存在返回 null
+     */
+    public static String parseTempToken(String token) {
+        return TempTokenHelper.parseTempToken(token);
+    }
+
+    /**
+     * 解析临时业务令牌并反序列化为目标强类型对象（委托 {@link TempTokenHelper#parseTempToken(String, Class)}）
+     *
+     * @param token 临时令牌凭据
+     * @param clazz 目标类型 Class
+     * @param <T>   目标返回类型泛型
+     * @return 强类型对象；过期或不存在返回 null
+     */
+    public static <T> T parseTempToken(String token, Class<T> clazz) {
+        return TempTokenHelper.parseTempToken(token, clazz);
+    }
+
+    /**
+     * 获取临时业务令牌剩余有效秒数（委托 {@link TempTokenHelper#getTempTokenTimeout(String)}）
+     *
+     * @param token 临时令牌凭据
+     * @return 剩余有效秒数
+     */
+    public static long getTempTokenTimeout(String token) {
+        return TempTokenHelper.getTempTokenTimeout(token);
+    }
+
+    /**
+     * 主动销毁临时业务令牌（委托 {@link TempTokenHelper#deleteTempToken(String)}）
+     *
+     * @param token 临时令牌凭据
+     */
+    public static void deleteTempToken(String token) {
+        TempTokenHelper.deleteTempToken(token);
+    }
+
     /**
      * 构建多租户复合 LoginId
      */

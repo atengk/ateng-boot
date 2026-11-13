@@ -47,18 +47,23 @@ public class OnlineSessionController {
     }
 
     /**
-     * 分页检索在线用户列表（增量游标 SCAN 检索与分页切片）
+     * 分页检索在线用户列表（增量游标 SCAN 检索与分页切片，支持按 loginType 过滤）
      *
-     * @param keyword 模糊匹配关键字（账号、用户名、用户 ID、Token）
-     * @param page    当前页码
-     * @param size    每页记录数
+     * @param loginType 账号体系类型标识（可选，默认主体系）
+     * @param keyword   模糊匹配关键字（账号、用户名、用户 ID、Token）
+     * @param page      当前页码
+     * @param size      每页记录数
      * @return 分页结果
      */
     @GetMapping("/page")
     public Result<PageResult<OnlineUser>> searchOnlineUserPage(
+            @RequestParam(value = "loginType", required = false) String loginType,
             @RequestParam(value = "keyword", required = false) String keyword,
             @RequestParam(value = "page", defaultValue = "1") int page,
             @RequestParam(value = "size", defaultValue = "10") int size) {
+        if (loginType != null && !loginType.isBlank()) {
+            return Result.success(LoginHelper.searchOnlineUserPage(loginType, keyword, page, size));
+        }
         return Result.success(LoginHelper.searchOnlineUserPage(keyword, page, size));
     }
 

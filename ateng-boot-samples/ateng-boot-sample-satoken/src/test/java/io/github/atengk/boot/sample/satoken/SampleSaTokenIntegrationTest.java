@@ -8,6 +8,7 @@ import io.github.atengk.boot.sample.satoken.dto.DefenseLoginRequestDTO;
 import io.github.atengk.boot.sample.satoken.dto.LoginRequestDTO;
 import io.github.atengk.boot.sample.satoken.dto.OrderCreateDTO;
 import io.github.atengk.boot.sample.satoken.dto.SettlementRequestDTO;
+import io.github.atengk.boot.sample.satoken.dto.TempTokenIssueDTO;
 import io.github.atengk.boot.sample.satoken.dto.UserProfileDTO;
 import io.github.atengk.boot.sample.satoken.entity.TenantOrderEntity;
 import io.github.atengk.boot.sample.satoken.mapper.TenantOrderMapper;
@@ -2298,5 +2299,183 @@ class SampleSaTokenIntegrationTest {
         mockMvc.perform(post("/sample/satoken/cluster/clear-all"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
+    }
+
+    @Test
+    @DisplayName("46. 验证会话主动续期 (/auth/renew-timeout) 与临时业务令牌签发/核验/一次性吊销 (/auth/temp-token/*)")
+    void shouldVerifySessionRenewTimeoutAndTempTokenLifecycle() throws Exception {
+        LoginRequestDTO loginReq = LoginRequestDTO.builder()
+                .userId("temp_token_user_01")
+                .username("temp_token_user_01")
+                .tenantId("tenant_hz")
+                .build();
+        MvcResult loginRes = mockMvc.perform(post("/sample/satoken/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(loginReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        String sessionToken = objectMapper.readTree(loginRes.getResponse().getContentAsString()).get("data").asText();
+
+        String issuedTempToken = null;
+        try {
+            // 1. 会话主动续期至 3600 秒
+            MvcResult renewRes = mockMvc.perform(post("/sample/satoken/auth/renew-timeout")
+                            .header("satoken", sessionToken)
+                            .param("timeoutSeconds", "3600"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andReturn();
+            long renewedTtl = objectMapper.readTree(renewRes.getResponse().getContentAsString()).path("data").asLong();
+            assertThat(renewedTtl).isGreaterThan(1800L);
+
+            // 2. 签发强类型文件限时下载临时令牌
+            TempTokenIssueDTO issueDto = TempTokenIssueDTO.builder()
+                    .bizScene("FILE_DOWNLOAD")
+                    .resourceId("DOC-20261113-88")
+                    .resourceName("季度资金清算报表.xlsx")
+                    .timeoutSeconds(180L)
+                    .build();
+            MvcResult issueRes = mockMvc.perform(post("/sample/satoken/auth/temp-token/issue")
+                            .header("satoken", sessionToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(issueDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.token").isString())
+                    .andExpect(jsonPath("$.data.payload.bizScene").value("FILE_DOWNLOAD"))
+                    .andExpect(jsonPath("$.data.payload.resourceId").value("DOC-20261113-88"))
+                    .andExpect(jsonPath("$.data.payload.requesterId").value("temp_token_user_01"))
+                    .andReturn();
+
+            JsonNode issueData = objectMapper.readTree(issueRes.getResponse().getContentAsString()).path("data");
+            issuedTempToken = issueData.path("token").asText();
+            assertThat(issuedTempToken).isNotBlank();
+            assertThat(issueData.path("ttlSeconds").asLong()).isGreaterThan(0L).isLessThanOrEqualTo(180L);
+
+            // 3. 匿名外链核验临时业务令牌：准确还原强类型载荷与剩余 TTL
+            MvcResult verifyRes = mockMvc.perform(get("/sample/satoken/auth/temp-token/verify")
+                            .param("token", issuedTempToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.payload.resourceName").value("季度资金清算报表.xlsx"))
+                    .andExpect(jsonPath("$.data.payload.requesterId").value("temp_token_user_01"))
+                    .andReturn();
+            long verifyTtl = objectMapper.readTree(verifyRes.getResponse().getContentAsString())
+                    .path("data").path("ttlSeconds").asLong();
+            assertThat(verifyTtl).isGreaterThan(0L).isLessThanOrEqualTo(180L);
+
+            // 4. 主动销毁临时令牌（阅后即焚）
+            mockMvc.perform(delete("/sample/satoken/auth/temp-token/revoke")
+                            .header("satoken", sessionToken)
+                            .param("token", issuedTempToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 5. 销毁后再次核验即刻失效 (401)
+            mockMvc.perform(get("/sample/satoken/auth/temp-token/verify")
+                            .param("token", issuedTempToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(401));
+        } finally {
+            if (issuedTempToken != null && !issuedTempToken.isBlank()) {
+                io.github.atengk.boot.satoken.util.TempTokenHelper.deleteTempToken(issuedTempToken);
+            }
+            LoginHelper.kickoutByToken(sessionToken);
+        }
+    }
+
+    @Test
+    @DisplayName("47. 验证多账号权限缓存物理隔离、多账号 @CheckDataOwner 防越权与 OnlineUser 扩展元数据自动采集")
+    void shouldVerifyMultiAccountPermissionIsolationDataOwnerAndOnlineMetadata() throws Exception {
+        // 相同 userId ("9001") 与同名角色 ("shared_auditor") 在 admin 与 member 体系拥有完全隔离的权限集合
+        LoginRequestDTO adminReq = LoginRequestDTO.builder()
+                .userId("9001")
+                .username("admin_9001")
+                .tenantId("tenant-admin-01")
+                .roles(Set.of("shared_auditor"))
+                .permissions(Set.of("admin:audit:export"))
+                .build();
+        MvcResult adminLoginRes = mockMvc.perform(post("/sample/satoken/multi-account/admin/login")
+                        .header("X-Forwarded-For", "198.51.100.66")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(adminReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        String adminToken = objectMapper.readTree(adminLoginRes.getResponse().getContentAsString()).get("data").asText();
+
+        LoginRequestDTO memberReq = LoginRequestDTO.builder()
+                .userId("9001")
+                .username("member_9001")
+                .tenantId("tenant-member-02")
+                .roles(Set.of("shared_auditor"))
+                .permissions(Set.of("member:points:view"))
+                .build();
+        MvcResult memberLoginRes = mockMvc.perform(post("/sample/satoken/multi-account/member/login")
+                        .header("X-Forwarded-For", "198.51.100.77")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(memberReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        String memberToken = objectMapper.readTree(memberLoginRes.getResponse().getContentAsString()).get("data").asText();
+
+        try {
+            // 1. 多账号三级权限缓存物理隔离：同 ID "9001" 分别读取 admin 与 member 权限互不污染
+            mockMvc.perform(get("/sample/satoken/permission-cache/permissions")
+                            .param("loginType", "admin")
+                            .header("satoken-admin", adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data", org.hamcrest.Matchers.contains("admin:audit:export")));
+
+            mockMvc.perform(get("/sample/satoken/permission-cache/permissions")
+                            .param("loginType", "member")
+                            .header("satoken-member", memberToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data", org.hamcrest.Matchers.contains("member:points:view")));
+
+            // 2. 多账号 @CheckDataOwner(type = "member")：仅 memberToken 可更新本人资料，他人 ID 与跨体系误入均阻断
+            UserProfileDTO selfMemberDto = new UserProfileDTO("9001", "黄金会员本人", "vip@example.com");
+            mockMvc.perform(post("/sample/satoken/multi-account/member/profile/update")
+                            .header("satoken-member", memberToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(selfMemberDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            UserProfileDTO otherMemberDto = new UserProfileDTO("9002", "他人会员", "other@example.com");
+            mockMvc.perform(post("/sample/satoken/multi-account/member/profile/update")
+                            .header("satoken-member", memberToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(otherMemberDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            // 跨体系携带 adminToken（未携带 memberToken）访问 member 归属接口亦阻断 403
+            mockMvc.perform(post("/sample/satoken/multi-account/member/profile/update")
+                            .header("satoken-admin", adminToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(selfMemberDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            // 3. OnlineUser 扩展元数据自动采集验证：tenantId、loginType 与真实客户端 loginIp
+            mockMvc.perform(get("/sample/satoken/online/page")
+                            .param("loginType", "admin")
+                            .param("keyword", "admin_9001"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.records[0].userId").value("9001"))
+                    .andExpect(jsonPath("$.data.records[0].tenantId").value("tenant-admin-01"))
+                    .andExpect(jsonPath("$.data.records[0].loginType").value("admin"))
+                    .andExpect(jsonPath("$.data.records[0].loginIp").value("198.51.100.66"));
+        } finally {
+            permissionCacheService.clearAll();
+            LoginHelper.kickoutByToken("admin", adminToken);
+            LoginHelper.kickoutByToken("member", memberToken);
+        }
     }
 }

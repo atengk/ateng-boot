@@ -32,26 +32,30 @@ public class PermissionCacheController {
     private final PermissionCacheService permissionCacheService;
 
     /**
-     * 读取当前登录主体经由两级缓存切片解析的角色列表
+     * 读取当前登录主体经由两级缓存切片解析的角色列表（支持按 loginType 隔离查询）
      *
+     * @param loginType 账号体系标识（可选，默认主体系）
      * @return 角色编码集合
      */
     @GetMapping("/roles")
-    public Result<Set<String>> getCurrentRoles() {
-        LoginHelper.checkLogin();
-        java.util.List<String> roleList = StpUtil.getRoleList();
+    public Result<Set<String>> getCurrentRoles(@RequestParam(value = "loginType", required = false) String loginType) {
+        String targetType = (loginType != null && !loginType.isBlank()) ? loginType.trim() : StpUtil.TYPE;
+        LoginHelper.checkLogin(targetType);
+        java.util.List<String> roleList = LoginHelper.getStpLogic(targetType).getRoleList();
         return Result.success(roleList != null ? Set.copyOf(roleList) : java.util.Collections.emptySet());
     }
 
     /**
-     * 读取当前登录主体经由两级缓存切片解析的细粒度权限码集合
+     * 读取当前登录主体经由两级缓存切片解析的细粒度权限码集合（支持按 loginType 隔离查询）
      *
+     * @param loginType 账号体系标识（可选，默认主体系）
      * @return 权限码集合
      */
     @GetMapping("/permissions")
-    public Result<Set<String>> getCurrentPermissions() {
-        LoginHelper.checkLogin();
-        java.util.List<String> permissionList = StpUtil.getPermissionList();
+    public Result<Set<String>> getCurrentPermissions(@RequestParam(value = "loginType", required = false) String loginType) {
+        String targetType = (loginType != null && !loginType.isBlank()) ? loginType.trim() : StpUtil.TYPE;
+        LoginHelper.checkLogin(targetType);
+        java.util.List<String> permissionList = LoginHelper.getStpLogic(targetType).getPermissionList();
         return Result.success(permissionList != null ? Set.copyOf(permissionList) : java.util.Collections.emptySet());
     }
 

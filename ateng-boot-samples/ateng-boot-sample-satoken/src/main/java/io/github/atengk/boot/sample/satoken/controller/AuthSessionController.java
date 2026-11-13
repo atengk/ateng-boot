@@ -5,15 +5,22 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.satoken.dto.LoginRequestDTO;
 import io.github.atengk.boot.sample.satoken.dto.OrderCreateDTO;
+import io.github.atengk.boot.sample.satoken.dto.TempTokenIssueDTO;
 import io.github.atengk.boot.sample.satoken.service.SaTokenSampleService;
+import io.github.atengk.boot.sample.satoken.vo.TempTokenTicketVO;
+import io.github.atengk.boot.sample.satoken.vo.TempTokenVO;
 import io.github.atengk.boot.sample.satoken.vo.TenantOrderVO;
 import io.github.atengk.boot.satoken.annotation.Anonymous;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.util.LoginHelper;
+import io.github.atengk.boot.satoken.util.TempTokenHelper;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Positive;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -21,6 +28,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.time.Duration;
 
 /**
  * 用户会话与租户上下文控制器
@@ -187,5 +196,90 @@ public class AuthSessionController {
             return Result.fail(CommonResultCode.NOT_FOUND.getCode(), "订单不存在");
         }
         return Result.success(order);
+    }
+
+    /**
+     * 主动续期当前登录会话 Token 剩余有效时间
+     *
+     * @param timeoutSeconds 新的有效时间（秒），默认 1800 秒
+     * @param loginType      可选账号体系标识，默认主体系
+     * @return 续期后的 Token 剩余有效时间（秒）
+     */
+    @PostMapping("/renew-timeout")
+    public Result<Long> renewTimeout(
+            @RequestParam(value = "timeoutSeconds", defaultValue = "1800")
+            @Positive(message = "续期时间必须大于 0 秒") long timeoutSeconds,
+            @RequestParam(value = "loginType", required = false) String loginType) {
+        Duration timeout = Duration.ofSeconds(timeoutSeconds);
+        if (loginType != null && !loginType.isBlank()) {
+            LoginHelper.checkLogin(loginType);
+            LoginHelper.renewTimeout(loginType, timeout);
+            return Result.success(LoginHelper.getTokenTimeout(loginType));
+        }
+        LoginHelper.checkLogin();
+        LoginHelper.renewTimeout(timeout);
+        return Result.success(LoginHelper.getTokenTimeout());
+    }
+
+    /**
+     * 签发强类型短效临时业务令牌（如限时文件下载签名、扫码确认、邮件激活票据）
+     *
+     * @param request 临时令牌签发请求传输对象
+     * @return 签发后的临时令牌与载荷信息
+     */
+    @PostMapping("/temp-token/issue")
+    public Result<TempTokenVO> issueTempToken(@Valid @RequestBody TempTokenIssueDTO request) {
+        LoginHelper.checkLogin();
+        long ttlSeconds = (request.getTimeoutSeconds() != null && request.getTimeoutSeconds() > 0)
+                ? request.getTimeoutSeconds() : 300L;
+        TempTokenTicketVO payload = TempTokenTicketVO.builder()
+                .bizScene(request.getBizScene().trim())
+                .resourceId(request.getResourceId().trim())
+                .resourceName(request.getResourceName())
+                .requesterId(LoginHelper.getUserId())
+                .build();
+        String tempToken = TempTokenHelper.createTempToken(payload, Duration.ofSeconds(ttlSeconds));
+        long remainTtl = TempTokenHelper.getTempTokenTimeout(tempToken);
+        return Result.success(TempTokenVO.builder()
+                .token(tempToken)
+                .ttlSeconds(remainTtl)
+                .payload(payload)
+                .build());
+    }
+
+    /**
+     * 核验临时业务令牌并还原强类型业务载荷（支持匿名校验，如外链下载鉴权与激活链接校验）
+     *
+     * @param token 临时业务令牌凭据
+     * @return 解析还原后的业务载荷与剩余有效期
+     */
+    @GetMapping("/temp-token/verify")
+    @Anonymous
+    public Result<TempTokenVO> verifyTempToken(
+            @NotBlank(message = "临时令牌不能为空") @RequestParam("token") String token) {
+        TempTokenTicketVO payload = TempTokenHelper.parseTempToken(token, TempTokenTicketVO.class);
+        if (payload == null) {
+            return Result.fail(CommonResultCode.UNAUTHORIZED.getCode(), "临时业务令牌无效或已过期");
+        }
+        long remainTtl = TempTokenHelper.getTempTokenTimeout(token);
+        return Result.success(TempTokenVO.builder()
+                .token(token.trim())
+                .ttlSeconds(remainTtl)
+                .payload(payload)
+                .build());
+    }
+
+    /**
+     * 主动销毁临时业务令牌（实现阅后即焚一次性消费闭环）
+     *
+     * @param token 待销毁的临时业务令牌凭据
+     * @return 成功响应
+     */
+    @DeleteMapping("/temp-token/revoke")
+    public Result<Void> revokeTempToken(
+            @NotBlank(message = "临时令牌不能为空") @RequestParam("token") String token) {
+        LoginHelper.checkLogin();
+        TempTokenHelper.deleteTempToken(token);
+        return Result.success();
     }
 }
