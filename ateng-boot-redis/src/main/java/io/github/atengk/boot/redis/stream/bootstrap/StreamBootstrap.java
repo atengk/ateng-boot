@@ -237,62 +237,68 @@ public class StreamBootstrap implements SmartLifecycle, SmartInitializingSinglet
                 : 20;
         long lastClaimTime = 0L;
 
-        while (running && !Thread.currentThread().isInterrupted()) {
-            try {
-                // 自动认领自愈 PEL 超时孤儿消息 (XPENDING + XCLAIM)
-                long now = System.currentTimeMillis();
-                if (claimIdleTime != null && !claimIdleTime.isNegative() && !claimIdleTime.isZero()
-                        && (now - lastClaimTime > DEFAULT_CLAIM_CHECK_INTERVAL_MILLIS)) {
-                    lastClaimTime = now;
-                    try {
-                        List<MapRecord<String, Object, Object>> claimed = redisStreamTemplate.claimPendingMessages(
-                                stream, group, consumerName, claimIdleTime, claimBatchSize);
-                        if (!CollectionUtils.isEmpty(claimed)) {
-                            log.info("[RedisStream] 成功自动认领 PEL 孤儿消息: stream={}, group={}, consumer={}, count={}",
-                                    stream, group, consumerName, claimed.size());
-                            for (MapRecord<String, Object, Object> claimedRecord : claimed) {
-                                processRecord(bean, method, stream, group, consumerName, claimedRecord, autoAck, effectiveMaxRetries);
-                            }
-                        }
-                    } catch (Exception ex) {
-                        log.debug("[RedisStream] 自动认领 PEL 孤儿消息跳过: stream={}, group={}, msg={}", stream, group, ex.getMessage());
-                    }
-                }
-
-                StreamReadOptions readOptions = StreamReadOptions.empty()
-                        .count(effectiveBatchSize)
-                        .block(pollTimeout);
-
-                StreamOffset<String> streamOffset = StreamOffset.create(fullStreamKey, ReadOffset.lastConsumed());
-                List<MapRecord<String, Object, Object>> records = redisStreamTemplate.read(consumer, readOptions, streamOffset);
-
-                if (!CollectionUtils.isEmpty(records)) {
-                    for (MapRecord<String, Object, Object> record : records) {
-                        processRecord(bean, method, stream, group, consumerName, record, autoAck, effectiveMaxRetries);
-                    }
-                }
-            } catch (Exception ex) {
-                if (!running) {
-                    break;
-                }
-                log.warn("[RedisStream] 消费拉取轮询异常: stream={}, group={}, consumer={}, error={}",
-                        stream, group, consumerName, ex.getMessage());
-                // 若由于运维清理或 Stream 键被删除导致消费组不存在 (NOGROUP)，执行幂等自愈重新建组
-                if (ex.getMessage() != null && ex.getMessage().contains("NOGROUP")) {
-                    try {
-                        redisStreamTemplate.createGroup(stream, group, ReadOffset.from("0"), true);
-                        log.info("[RedisStream] 检测到 NOGROUP，已触发消费组幂等自愈重建: stream={}, group={}", stream, group);
-                    } catch (Exception healEx) {
-                        log.debug("[RedisStream] 消费组自愈建组跳过: {}", healEx.getMessage());
-                    }
-                }
+        // 清理启动主线程可能通过 TaskDecorator 复制到长轮询线程的初始上下文
+        clearConsumptionContext();
+        try {
+            while (running && !Thread.currentThread().isInterrupted()) {
                 try {
-                    TimeUnit.MILLISECONDS.sleep(500);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    break;
+                    // 自动认领自愈 PEL 超时孤儿消息 (XPENDING + XCLAIM)
+                    long now = System.currentTimeMillis();
+                    if (claimIdleTime != null && !claimIdleTime.isNegative() && !claimIdleTime.isZero()
+                            && (now - lastClaimTime > DEFAULT_CLAIM_CHECK_INTERVAL_MILLIS)) {
+                        lastClaimTime = now;
+                        try {
+                            List<MapRecord<String, Object, Object>> claimed = redisStreamTemplate.claimPendingMessages(
+                                    stream, group, consumerName, claimIdleTime, claimBatchSize);
+                            if (!CollectionUtils.isEmpty(claimed)) {
+                                log.info("[RedisStream] 成功自动认领 PEL 孤儿消息: stream={}, group={}, consumer={}, count={}",
+                                        stream, group, consumerName, claimed.size());
+                                for (MapRecord<String, Object, Object> claimedRecord : claimed) {
+                                    processRecord(bean, method, stream, group, consumerName, claimedRecord, autoAck, effectiveMaxRetries);
+                                }
+                            }
+                        } catch (Exception ex) {
+                            log.debug("[RedisStream] 自动认领 PEL 孤儿消息跳过: stream={}, group={}, msg={}", stream, group, ex.getMessage());
+                        }
+                    }
+
+                    StreamReadOptions readOptions = StreamReadOptions.empty()
+                            .count(effectiveBatchSize)
+                            .block(pollTimeout);
+
+                    StreamOffset<String> streamOffset = StreamOffset.create(fullStreamKey, ReadOffset.lastConsumed());
+                    List<MapRecord<String, Object, Object>> records = redisStreamTemplate.read(consumer, readOptions, streamOffset);
+
+                    if (!CollectionUtils.isEmpty(records)) {
+                        for (MapRecord<String, Object, Object> record : records) {
+                            processRecord(bean, method, stream, group, consumerName, record, autoAck, effectiveMaxRetries);
+                        }
+                    }
+                } catch (Exception ex) {
+                    if (!running) {
+                        break;
+                    }
+                    log.warn("[RedisStream] 消费拉取轮询异常: stream={}, group={}, consumer={}, error={}",
+                            stream, group, consumerName, ex.getMessage());
+                    // 若由于运维清理或 Stream 键被删除导致消费组不存在 (NOGROUP)，执行幂等自愈重新建组
+                    if (ex.getMessage() != null && ex.getMessage().contains("NOGROUP")) {
+                        try {
+                            redisStreamTemplate.createGroup(stream, group, ReadOffset.from("0"), true);
+                            log.info("[RedisStream] 检测到 NOGROUP，已触发消费组幂等自愈重建: stream={}, group={}", stream, group);
+                        } catch (Exception healEx) {
+                            log.debug("[RedisStream] 消费组自愈建组跳过: {}", healEx.getMessage());
+                        }
+                    }
+                    try {
+                        TimeUnit.MILLISECONDS.sleep(500);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                 }
             }
+        } finally {
+            clearConsumptionContext();
         }
     }
 
@@ -302,14 +308,9 @@ public class StreamBootstrap implements SmartLifecycle, SmartInitializingSinglet
     private void processRecord(Object bean, Method method, String stream, String group,
                               String consumerName, MapRecord<String, Object, Object> record,
                               boolean autoAck, int maxRetries) {
+        clearConsumptionContext();
         String recordTraceId = extractTraceId(record);
-        String previousTraceId = MDC.get(MDC_TRACE_ID_KEY);
-
-        if (StringUtils.hasText(recordTraceId)) {
-            MDC.put(MDC_TRACE_ID_KEY, recordTraceId);
-        } else if (previousTraceId == null) {
-            MDC.put(MDC_TRACE_ID_KEY, IdUtil.fastSimpleUUID());
-        }
+        MDC.put(MDC_TRACE_ID_KEY, StringUtils.hasText(recordTraceId) ? recordTraceId : IdUtil.fastSimpleUUID());
 
         // 提取并恢复四维上下文：多租户与操作人身份
         Object rawTenantId = getRecordField(record, RedisStreamTemplate.META_TENANT_ID);
@@ -375,21 +376,24 @@ public class StreamBootstrap implements SmartLifecycle, SmartInitializingSinglet
                                 .exceptionClass(lastError != null ? lastError.getClass().getName() : "Unknown")
                                 .exceptionMessage(lastError != null ? lastError.getMessage() : "Unknown")
                                 .build();
-                        failureHandler.onFailure(dlm);
+                        failureHandler.onFailed(dlm, lastError);
                     }
                 } catch (Exception ex) {
                     log.error("[RedisStream] 转移死信队列异常，保留原消息在 PEL 中不执行 ACK: stream={}, id={}", stream, record.getId(), ex);
                 }
             }
         } finally {
-            if (previousTraceId != null) {
-                MDC.put(MDC_TRACE_ID_KEY, previousTraceId);
-            } else {
-                MDC.remove(MDC_TRACE_ID_KEY);
-            }
-            TenantContextHolder.clear();
-            UserContextHolder.clear();
+            clearConsumptionContext();
         }
+    }
+
+    /**
+     * 完整清理当前消费线程的四维上下文（全量 MDC、租户上下文与操作人上下文）
+     */
+    private static void clearConsumptionContext() {
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
     }
 
     /**

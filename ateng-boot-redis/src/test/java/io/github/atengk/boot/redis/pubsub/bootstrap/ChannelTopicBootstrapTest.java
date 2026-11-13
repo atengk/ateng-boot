@@ -208,6 +208,8 @@ class ChannelTopicBootstrapTest {
             bootstrap.destroy();
         }
         MDC.clear();
+        io.github.atengk.boot.core.context.TenantContextHolder.clear();
+        io.github.atengk.boot.core.context.UserContextHolder.clear();
     }
 
     @Test
@@ -501,5 +503,79 @@ class ChannelTopicBootstrapTest {
 
         assertThat(bootstrap.isRunning()).isFalse();
         assertThat(stoppedCallbackRun.get()).isTrue();
+    }
+
+    static class ContextIsolationPubSubService {
+        final CountDownLatch firstLatch = new CountDownLatch(1);
+        final CountDownLatch secondLatch = new CountDownLatch(1);
+        final java.util.List<String> capturedTraceIds = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final AtomicReference<String> secondCustomMdc = new AtomicReference<>("UNSET");
+        final AtomicReference<String> secondTenantId = new AtomicReference<>("UNSET");
+        final AtomicBoolean secondIgnoreTenant = new AtomicBoolean(true);
+        final AtomicReference<String> secondUser = new AtomicReference<>("UNSET");
+
+        @ChannelTopicListener(topic = "topic:context:iso", concurrency = 1)
+        public void onMessage(String payload) {
+            capturedTraceIds.add(MDC.get("traceId"));
+            if ("msg-1-fail".equals(payload)) {
+                MDC.put("customKey", "dirty-pubsub-1");
+                io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("dirty-pubsub-tenant");
+                io.github.atengk.boot.core.context.TenantContextHolder.setIgnoreTenant(true);
+                io.github.atengk.boot.core.context.UserContextHolder.set("dirty-pubsub-user");
+                try {
+                    throw new IllegalStateException("模拟消费异常触发 finally 清理");
+                } finally {
+                    firstLatch.countDown();
+                }
+            }
+            secondCustomMdc.set(MDC.get("customKey"));
+            secondTenantId.set(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId());
+            secondIgnoreTenant.set(io.github.atengk.boot.core.context.TenantContextHolder.isIgnoreTenant());
+            secondUser.set(io.github.atengk.boot.core.context.UserContextHolder.get());
+            secondLatch.countDown();
+        }
+    }
+
+    @Test
+    @DisplayName("测试单线程复用下 Pub/Sub 消费异常后 finally 完整清理四维上下文")
+    @SuppressWarnings("unchecked")
+    void testFourDimensionalContextIsolationAcrossBroadcasts() throws Exception {
+        ContextIsolationPubSubService service = new ContextIsolationPubSubService();
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.registerBean("contextIsoService", ContextIsolationPubSubService.class, () -> service);
+        context.refresh();
+
+        bootstrap.setApplicationContext(context);
+        bootstrap.afterSingletonsInstantiated();
+
+        ArgumentCaptor<MessageListener> listenerCaptor = ArgumentCaptor.forClass(MessageListener.class);
+        verify(listenerContainer, atLeastOnce()).addMessageListener(listenerCaptor.capture(), any(Collection.class));
+        MessageListener listener = listenerCaptor.getValue();
+
+        byte[] channel = "topic:context:iso".getBytes(StandardCharsets.UTF_8);
+        // 模拟 Dispatcher 线程携带脏租户/用户/杂散 MDC 上下文投递广播消息
+        MDC.put("customKey", "dirty-dispatcher-mdc");
+        io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("dirty-dispatcher-tenant");
+        io.github.atengk.boot.core.context.TenantContextHolder.setIgnoreTenant(true);
+        io.github.atengk.boot.core.context.UserContextHolder.set("dirty-dispatcher-user");
+        try {
+            listener.onMessage(new DefaultMessage(channel, "msg-1-fail".getBytes(StandardCharsets.UTF_8)), null);
+            assertThat(service.firstLatch.await(3, TimeUnit.SECONDS)).isTrue();
+
+            listener.onMessage(new DefaultMessage(channel, "msg-2-ok".getBytes(StandardCharsets.UTF_8)), null);
+            assertThat(service.secondLatch.await(3, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            MDC.clear();
+            io.github.atengk.boot.core.context.TenantContextHolder.clear();
+            io.github.atengk.boot.core.context.UserContextHolder.clear();
+        }
+
+        assertThat(service.capturedTraceIds).hasSize(2);
+        assertThat(service.capturedTraceIds.get(0)).isNotBlank();
+        assertThat(service.capturedTraceIds.get(1)).isNotBlank().isNotEqualTo(service.capturedTraceIds.get(0));
+        assertThat(service.secondCustomMdc.get()).isNull();
+        assertThat(service.secondTenantId.get()).isNull();
+        assertThat(service.secondIgnoreTenant.get()).isFalse();
+        assertThat(service.secondUser.get()).isNull();
     }
 }

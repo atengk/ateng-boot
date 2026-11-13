@@ -175,10 +175,12 @@ class StreamBootstrapTest {
     void testRetryExhaustionAndDeadLetterTransfer() throws Exception {
         FailingOrderService failingService = new FailingOrderService();
         CountDownLatch deadLetterLatch = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> capturedCause = new java.util.concurrent.atomic.AtomicReference<>();
         doAnswer(inv -> {
+            capturedCause.set(inv.getArgument(1));
             deadLetterLatch.countDown();
             return null;
-        }).when(failureHandler).onFailure(any(StreamDeadLetterMessage.class));
+        }).when(failureHandler).onFailed(any(StreamDeadLetterMessage.class), any(Throwable.class));
 
         ApplicationContext context = mock(ApplicationContext.class);
         ConfigurableListableBeanFactory beanFactory = mock(ConfigurableListableBeanFactory.class);
@@ -218,7 +220,10 @@ class StreamBootstrapTest {
 
         verify(streamTemplate, timeout(3000).atLeastOnce()).transferToDeadLetter(
                 eq("fail-stream"), eq("fail-group"), any(), any(), any(int.class), any());
-        verify(failureHandler, timeout(3000).atLeastOnce()).onFailure(any(StreamDeadLetterMessage.class));
+        verify(failureHandler, timeout(3000).atLeastOnce()).onFailed(any(StreamDeadLetterMessage.class), any(Throwable.class));
+        assertThat(capturedCause.get())
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("模拟业务处理失败");
         // 死信转移由 transferToDeadLetter 内部完成 ACK，StreamBootstrap 严禁重复调用 acknowledge
         verify(streamTemplate, never()).acknowledge(eq("fail-stream"), eq("fail-group"), any(RecordId.class));
     }
@@ -292,5 +297,32 @@ class StreamBootstrapTest {
         assertThat(bootstrap.isRunning()).isTrue();
         bootstrap.stop();
         assertThat(bootstrap.isRunning()).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 StreamFailureHandler 单参 Lambda 向后兼容与 LoggingStreamFailureHandler 双参日志回调")
+    void testFailureHandlerBackwardCompatibilityAndLoggingHandler() {
+        java.util.concurrent.atomic.AtomicReference<StreamDeadLetterMessage> legacyReceived = new java.util.concurrent.atomic.AtomicReference<>();
+        StreamFailureHandler legacyLambda = legacyReceived::set;
+
+        StreamDeadLetterMessage dlm = StreamDeadLetterMessage.builder()
+                .stream("order-stream")
+                .group("order-group")
+                .consumer("c1")
+                .recordId("100-0")
+                .retryCount(3)
+                .exceptionClass(IllegalStateException.class.getName())
+                .exceptionMessage("downstream timeout")
+                .build();
+        Throwable rootCause = new IllegalStateException("downstream timeout");
+
+        legacyLambda.onFailed(dlm, rootCause);
+        assertThat(legacyReceived.get()).isSameAs(dlm);
+
+        io.github.atengk.boot.redis.stream.spi.LoggingStreamFailureHandler loggingHandler =
+                new io.github.atengk.boot.redis.stream.spi.LoggingStreamFailureHandler();
+        loggingHandler.onFailure(dlm);
+        loggingHandler.onFailed(dlm, rootCause);
+        loggingHandler.onFailed(null, rootCause);
     }
 }

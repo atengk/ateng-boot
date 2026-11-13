@@ -203,36 +203,49 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, SmartL
      * 消费者主循环逻辑
      */
     private void consumeLoop(Object bean, Method method, RBlockingQueue<Object> blockingQueue, String queueName) {
-        while (running && !Thread.currentThread().isInterrupted()) {
-            try {
-                // 采用 1 秒超时轮询，保障优雅停机时迅速退出
-                Object rawMessage = blockingQueue.poll(1, TimeUnit.SECONDS);
-                if (rawMessage != null) {
-                    String traceId = IdUtil.fastSimpleUUID();
-                    MDC.put(MDC_TRACE_ID_KEY, traceId);
-                    try {
-                        processMessageWithRetry(bean, method, rawMessage, queueName);
-                    } finally {
-                        MDC.remove(MDC_TRACE_ID_KEY);
-                        TenantContextHolder.clear();
-                        UserContextHolder.clear();
-                    }
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            } catch (Throwable e) {
-                log.error("Redis 延时队列 [{}] 消费发生未捕获异常: {}", queueName, e.getMessage(), e);
+        // 清理线程池启动瞬间从主线程复制的初始上下文，避免长轮询后台线程携带启动期污染
+        clearConsumptionContext();
+        try {
+            while (running && !Thread.currentThread().isInterrupted()) {
                 try {
-                    // 消费异常防抖休眠 500ms，避免持续异常造成 CPU 空转
-                    TimeUnit.MILLISECONDS.sleep(500);
-                } catch (InterruptedException ie) {
+                    // 采用 1 秒超时轮询，保障优雅停机时迅速退出
+                    Object rawMessage = blockingQueue.poll(1, TimeUnit.SECONDS);
+                    if (rawMessage != null) {
+                        String traceId = IdUtil.fastSimpleUUID();
+                        MDC.put(MDC_TRACE_ID_KEY, traceId);
+                        try {
+                            processMessageWithRetry(bean, method, rawMessage, queueName);
+                        } finally {
+                            clearConsumptionContext();
+                        }
+                    }
+                } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
+                } catch (Throwable e) {
+                    log.error("Redis 延时队列 [{}] 消费发生未捕获异常: {}", queueName, e.getMessage(), e);
+                    try {
+                        // 消费异常防抖休眠 500ms，避免持续异常造成 CPU 空转
+                        TimeUnit.MILLISECONDS.sleep(500);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                 }
             }
+        } finally {
+            clearConsumptionContext();
         }
         log.debug("Redis 延时队列消费者正常退出 [queue={}, thread={}]", queueName, Thread.currentThread().getName());
+    }
+
+    /**
+     * 完整清理当前消费线程的四维上下文（全量 MDC、租户上下文与操作人上下文）
+     */
+    private static void clearConsumptionContext() {
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
     }
 
     /**

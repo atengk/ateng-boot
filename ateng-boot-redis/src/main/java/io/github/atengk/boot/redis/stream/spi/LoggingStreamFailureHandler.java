@@ -16,8 +16,17 @@ public class LoggingStreamFailureHandler implements StreamFailureHandler {
 
     @Override
     public void onFailure(StreamDeadLetterMessage deadLetter) {
+        onFailed(deadLetter, null);
+    }
+
+    @Override
+    public void onFailed(StreamDeadLetterMessage deadLetter, Throwable cause) {
+        if (deadLetter == null) {
+            log.error("[RedisStream] 消息消费重试耗尽并转入死信流: deadLetter 为空", cause);
+            return;
+        }
         log.error("[RedisStream] 消息消费重试耗尽并转入死信流: stream={}, group={}, recordId={}, retries={}, error={}",
                 deadLetter.getStream(), deadLetter.getGroup(), deadLetter.getRecordId(),
-                deadLetter.getRetryCount(), deadLetter.getExceptionMessage());
+                deadLetter.getRetryCount(), deadLetter.getExceptionMessage(), cause);
     }
 }

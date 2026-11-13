@@ -145,6 +145,9 @@ class DelayedQueueBootstrapTest {
     @AfterEach
     void tearDown() {
         bootstrap.destroy();
+        org.slf4j.MDC.clear();
+        io.github.atengk.boot.core.context.TenantContextHolder.clear();
+        io.github.atengk.boot.core.context.UserContextHolder.clear();
     }
 
     @Test
@@ -483,6 +486,75 @@ class DelayedQueueBootstrapTest {
 
         assertThat(bootstrap.isRunning()).isFalse();
         assertThat(stoppedCallbackRun.get()).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试延时队列消费线程剥离启动残留上下文且跨消息完全隔离四维上下文")
+    @SuppressWarnings("unchecked")
+    void testFourDimensionalContextIsolationAcrossStartupAndMessages() throws Exception {
+        CountDownLatch twoMessagesLatch = new CountDownLatch(2);
+        java.util.List<String> capturedTraceIds = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.List<String> capturedStartupExtras = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.List<String> capturedCustomKeys = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.List<String> capturedTenants = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.List<Boolean> capturedIgnoreTenants = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.List<String> capturedUsers = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        class IsolationConsumer {
+            @DelayedQueueListener(queue = "iso-queue", concurrency = 1)
+            public void handle(String msg) {
+                capturedTraceIds.add(org.slf4j.MDC.get(DelayedQueueBootstrap.MDC_TRACE_ID_KEY));
+                capturedStartupExtras.add(org.slf4j.MDC.get("startupExtra"));
+                capturedCustomKeys.add(org.slf4j.MDC.get("customKey"));
+                capturedTenants.add(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId());
+                capturedIgnoreTenants.add(io.github.atengk.boot.core.context.TenantContextHolder.isIgnoreTenant());
+                capturedUsers.add(io.github.atengk.boot.core.context.UserContextHolder.get());
+
+                if ("msg-1".equals(msg)) {
+                    org.slf4j.MDC.put("customKey", "dirty-msg-1");
+                    io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("dirty-tenant-1");
+                    io.github.atengk.boot.core.context.TenantContextHolder.setIgnoreTenant(true);
+                    io.github.atengk.boot.core.context.UserContextHolder.set("dirty-user-1");
+                }
+                twoMessagesLatch.countDown();
+            }
+        }
+
+        when(redissonClient.getBlockingQueue("iso-queue")).thenReturn(blockingQueue);
+        when(redissonClient.getDelayedQueue(blockingQueue)).thenReturn(delayedQueue);
+        when(blockingQueue.poll(anyLong(), any(TimeUnit.class)))
+                .thenReturn("msg-1")
+                .thenReturn("msg-2")
+                .thenReturn(null);
+
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.getBeanFactory().registerSingleton("isolationConsumer", new IsolationConsumer());
+        context.refresh();
+
+        org.slf4j.MDC.put(DelayedQueueBootstrap.MDC_TRACE_ID_KEY, "startup-trace");
+        org.slf4j.MDC.put("startupExtra", "startup-leak");
+        io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("startup-tenant");
+        io.github.atengk.boot.core.context.TenantContextHolder.setIgnoreTenant(true);
+        io.github.atengk.boot.core.context.UserContextHolder.set("startup-user");
+
+        try {
+            bootstrap.setApplicationContext(context);
+            bootstrap.afterSingletonsInstantiated();
+        } finally {
+            org.slf4j.MDC.clear();
+            io.github.atengk.boot.core.context.TenantContextHolder.clear();
+            io.github.atengk.boot.core.context.UserContextHolder.clear();
+        }
+
+        assertThat(twoMessagesLatch.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(capturedTraceIds).hasSize(2);
+        assertThat(capturedTraceIds.get(0)).isNotBlank().isNotEqualTo("startup-trace");
+        assertThat(capturedTraceIds.get(1)).isNotBlank().isNotEqualTo(capturedTraceIds.get(0));
+        assertThat(capturedStartupExtras).containsExactly(null, null);
+        assertThat(capturedCustomKeys).containsExactly(null, null);
+        assertThat(capturedTenants).containsExactly(null, null);
+        assertThat(capturedIgnoreTenants).containsExactly(false, false);
+        assertThat(capturedUsers).containsExactly(null, null);
     }
 }
 
