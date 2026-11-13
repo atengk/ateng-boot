@@ -9,8 +9,12 @@
 _Avoid_: SaRouteInterceptor, SecurityFilter, AuthInterceptor
 
 **LoginHelper**:
-基于 Sa-Token 强类型扩展的高级登录与上下文门面工具类，提供开箱即用的登录会话构建、多账号体系解耦（多 `loginType` 重载路由）、多终端会话隔离、强类型会话载荷读写（`LoginUser`）、二级安全认证治理（`openSafe`/`checkSafe`/`closeSafe`）、数据所有权校验断言（`checkSelf`/`checkBelongsToTenant`）、身份模拟（`switchTo`/`runAs`）与上下文清理。内置对多租户复合主键模式（`{tenantId}_{userId}`）的双向对称解析与剥离，确保 `getUserId()` 始终返回纯净的业务主键。彻底杜绝将未类型化的裸 Map 或易失性散落数据写入底层 Session。
+基于 Sa-Token 强类型扩展的高级登录与上下文门面工具类，提供开箱即用的登录会话构建（自动嗅探并固化终端 `loginIp`）、多账号体系解耦（多 `loginType` 重载路由与 `registerStpLogic` 显式注册）、多终端会话隔离、强类型会话载荷读写（`LoginUser`）、Token 与会话有效期续签（`renewTimeout` / `renewTimeoutByToken`）、二级安全认证治理（`openSafe`/`checkSafe`/`closeSafe`）、数据所有权校验断言（`checkSelf`/`checkBelongsToTenant`）、身份模拟（`switchTo`/`runAs`）与上下文清理。内置对多租户复合主键模式（`{tenantId}_{userId}`）的双向对称解析与剥离，确保 `getUserId()` 始终返回纯净的业务主键。彻底杜绝将未类型化的裸 Map 或易失性散落数据写入底层 Session。
 _Avoid_: AuthHelper, SessionManager, SecurityUtils, TokenHelper
+
+**TempTokenHelper**:
+面向短效一次性或限时业务凭据场景（如大文件私有下载短链、跨系统回调 Ticket、敏感操作扫码确认、密码重置凭据）的强类型临时令牌对称门面。底层基于 `SaTempUtil` 与 `JsonUtil` 纯净 JSON 封包构建，提供 `createTempToken`（支持 `Duration` 与任意强类型载荷，零 `@class` 污染）、`parseTempToken`、`getTempTokenTimeout` 与 `deleteTempToken` 完整读写销毁闭环。
+_Avoid_: SaTempUtil, TicketHelper, ShortTokenUtil, OneTimeTokenManager
 
 **LoginUser**:
 企业级强类型会话载荷标准模型，封装 `userId`、`userAccount`、`userName`、`userType`、`deptId`、`tenantId`、`roles`（角色编码集）、`permissions`（细粒度权限码集）及安全扩展字典 `extraData`。在会话持久化与网络传输中始终保持规范自洽。
@@ -21,19 +25,19 @@ _Avoid_: UserSession, PrincipalVO, AuthUser, SessionUser
 _Avoid_: RedisDao, SaRedisTemplate, RedisSessionStore
 
 **CachedStpInterface**:
-高性能两级角色与权限数据源切片适配器，构建 `[用户ID -> 角色编码集]` 与 `[角色编码 -> 权限码集]` 两级缓存切片，大幅降低重复权限计算开销；内置 `__EMPTY__` 短 TTL 哨兵防穿透机制与 10%~20% 动态 Jitter 随机抖动防雪崩机制，杜绝鉴权对底层数据库的周期性风暴冲击。
+高性能两级角色与权限数据源切片适配器，构建 `[loginType : 用户ID -> 角色编码集]` 与 `[loginType : 角色编码 -> 权限码集]` 两级多账号命名空间隔离缓存切片，大幅降低重复权限计算开销；内置 `__EMPTY__` 短 TTL 哨兵防穿透机制与 10%~20% 动态 Jitter 随机抖动防雪崩机制，杜绝鉴权对底层数据库的周期性风暴冲击与跨账号体系权限串染。
 _Avoid_: StpInterfaceImpl, PermissionDataSource, SaPermissionProvider
 
 **PermissionCacheService**:
-高性能两级级联权限与角色即时热刷新治理服务，构建 L1（JVM 进程内微缓存，带防 OOM 边界与极短 TTL）+ L2（Redis 分布式缓存）级联架构。提供面向用户维度（`refreshUserPermissions`）、角色维度（`refreshRolePermissions`）及全域游标增量清空（`clearAll`）的极简门面；本地更新即时淘汰 L1+L2，并通过 `SaTokenClusterBroadcaster` 触发 Redis Pub/Sub 全集群广播以秒级驱逐所有异地节点的 L1 微缓存。
+高性能两级级联权限与角色即时热刷新治理服务，构建 L1（JVM 进程内微缓存，带防 OOM 边界与极短 TTL）+ L2（Redis 分布式缓存）级联架构。提供面向默认体系与多账号体系（`loginType`）的用户维度（`refreshUserPermissions`）、角色维度（`refreshRolePermissions`）及全域游标增量清空（`clearAll`）的极简门面；本地更新即时淘汰 L1+L2，并通过 `SaTokenClusterBroadcaster` 触发 Redis Pub/Sub 全集群广播以秒级驱逐所有异地节点的 L1 微缓存。
 _Avoid_: CacheCleaner, PermissionCacheManager, RefreshService
 
 **@CheckDataOwner**:
-水平越权（BOLA / IDOR）声明式防卫注解，配合 AOP 切面 `SaCheckDataOwnerAspect`。支持通过 SpEL 表达式提取业务入参目标用户/实体归属标识，并支持挂载 `DataOwnerProvider` SPI 进行数据所有权反查校验，内置超级管理员自动豁免机制。未通过时快速失败阻断并返回统一 HTTP 200 + 403 业务响应。
+水平越权（BOLA / IDOR）声明式防卫注解，配合 AOP 切面 `SaCheckDataOwnerAspect`。支持通过 SpEL 表达式提取业务入参目标用户/实体归属标识，支持显式指定 `type`（`loginType`）或自动嗅探当前活跃账号体系，并支持挂载 `DataOwnerProvider` SPI 进行数据所有权反查校验，内置超级管理员自动豁免机制。未通过时快速失败阻断并返回统一 HTTP 200 + 403 业务响应。
 _Avoid_: @DataOwner, @CheckOwner, @VerifyOwner, @ResourceOwner
 
 **DataOwnerProvider**:
-数据所有权校验与反查泛型 SPI 接口（`DataOwnerProvider<T>`），当入参为复杂实体主键（如 `orderId`）或非当前用户直接主键时，允许业务层注入自定义校验逻辑反查数据实际归属人；内置提供 `DefaultDataOwnerProvider` 实施直等断言。
+数据所有权校验与反查泛型 SPI 接口（`DataOwnerProvider<T>`），当入参为复杂实体主键（如 `orderId`）或非当前用户直接主键时，允许业务层注入自定义校验逻辑（支持感知 `loginType`）反查数据实际归属人；内置提供 `DefaultDataOwnerProvider` 实施直等断言。
 _Avoid_: DataOwnerChecker, OwnerService, OwnerResolver, OwnerVerifier
 
 **@Anonymous**:
@@ -45,11 +49,11 @@ _Avoid_: @Public, @PermitAll, @IgnoreAuth, @NoLogin, @Uncheck
 _Avoid_: DynamicWhitelist, WhitelistService, WhitelistProvider, PathFilterSPI
 
 **DynamicPathPermissionProvider**:
-数据库驱动的动态 URL 路径权限匹配 SPI 接口，支持业务层从数据库或配置中心动态加载“HTTP Method + AntPath 路径 -> 权限码”映射规则，并在 `AtengSaTokenInterceptor` 中自动执行动态匹配校验，免去在 Controller 方法硬编码注解。
+数据库驱动的动态 URL 路径权限匹配 SPI 接口，支持业务层从数据库或配置中心动态加载“HTTP Method + AntPath 路径 + 可选 `loginType` -> 权限码”映射规则（`PathPermissionRule`），并在 `AtengSaTokenInterceptor` 中自动执行动态匹配校验，免去在 Controller 方法硬编码注解。
 _Avoid_: PathPermissionChecker, UrlAuthService, DynamicRbacSPI
 
 **OnlineUser**:
-企业级在线会话聚合模型，封装在线用户 `userId`、`userAccount`、`userName`、`tokenValue`、`loginDevice`、`loginIp`、`loginTime` 及当前 Token 剩余有效时间（`tokenTimeout`），专供管理后台在线用户列表监控与强退治理。
+企业级在线会话聚合模型，封装在线用户 `userId`、`userAccount`、`userName`、`tenantId`、`loginType`、`tokenValue`、`loginDevice`、`loginIp`、`loginTime` 及当前 Token 剩余有效时间（`tokenTimeout`），专供管理后台在线用户列表监控与强退治理。
 _Avoid_: OnlineSessionVO, ActiveUser, SessionDetail
 
 **Multi-Account Isolation (loginType)**:
@@ -107,19 +111,3 @@ _Avoid_: TenantAuditorProvider, SecurityTenantAdapter
 **Zero-Trust Same-Token Defense**:
 微服务内网零信任防穿透壁垒。在服务端通过 `@CheckSameToken` 切面强制校验内部受信签名，阻断绕过网关直连内部微服务暴露端口的非法探测；原生客户端通过 `SameTokenClientHttpRequestInterceptor` 自动注入出站标头；微服务跨服务 RPC 治理（Feign / Dubbo）与响应式网关（WebFlux Gateway）统一由 `ateng-cloud` 套件正交承接。
 _Avoid_: 内部令牌, 网关白名单, 服务鉴权头
-
-## Dependencies
-
-- **ateng-boot-core**: 核心基础异常体系、`CommonResultCode`、`Result<T>` 显式契约、`JsonUtil` 序列化门面、`UserContextHolder` 与 `TenantContextHolder` 双维上下文 SPI 及 `DesensitizeUtil` 基础工具
-- **ateng-boot-web** (Optional): 驱动声明式 `@Anonymous` 动态端点提取与转译、`@CheckDataOwner` AOP 切面及 `@OperateLog` 双维操作日志穿透
-- **cn.dev33:sa-token-spring-boot3-starter**: Sa-Token 官方 Spring Boot 3 核心鉴权依赖
-- **cn.dev33:sa-token-spring-aop**: Sa-Token 官方 Spring AOP 穿透切面（覆盖 Controller 与 Service 业务层注解鉴权）
-- **org.springframework.data:spring-data-redis** (Optional): 驱动 `SaTokenRedisDao`、分布式权限缓存、`SaTokenClusterBroadcaster` 集群广播与 `LoginFailureLockService` 分布式防爆破计数
-- **io.github.atengk:ateng-boot-mybatis-plus** (Optional): 驱动自动审计填充与多租户上下文生命周期自动对齐
-- **org.springdoc:springdoc-openapi-starter-webmvc-ui** (Optional): 驱动 Knife4j / OpenAPI 自动鉴权弹窗
-
-## Ecosystem Collaboration (ateng-cloud)
-
-- **ateng-cloud-gateway**: 承载响应式 WebFlux API 网关公网流量准入、Header 清洗、统一鉴权与零信任 Same-Token 签发。
-- **ateng-cloud-feign**: 承载声明式 HTTP RPC 跨服务调用，通过 `FeignContextPropagationInterceptor` 自动透传四维上下文，并通过 `SaTokenSameTokenProvider` 桥接 Sa-Token 自动注入 `SA-SAME-TOKEN`。
-- **ateng-cloud-dubbo**: 承载高性能 RPC 跨服务调用，通过 `DubboContextPropagationFilter` 透传四维上下文，并通过 `DubboSameTokenFilter` 自动探测 Sa-Token 注入与校验 `SA-SAME-TOKEN`。

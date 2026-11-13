@@ -38,7 +38,7 @@ flowchart TD
         PermService["PermissionCacheService"]
         RedisModuleAdapter{"检测到 ateng-boot-redis?"}
         TwoLevelMgr["TwoLevelCacheManager\n(ateng-boot-redis 核心门面)"]
-        StandaloneFallback["本地 ConcurrentHashMap L1\n+ StringRedisTemplate L2 (防脱靶)"]
+        StandaloneFallback["RedisPermissionCacheAdapter (5s LRU + L2)\nInMemoryPermissionCacheAdapter (10,000 有界 LinkedHashMap LRU)"]
         
         StpInt --> PermService
         PermService --> RedisModuleAdapter
@@ -67,7 +67,7 @@ flowchart TD
 - **自适应适配器模式 (Adaptive Delegation)**：
   - `ateng-boot-satoken` 将 `ateng-boot-redis` 声明为可选依赖（`<optional>true</optional>`）；
   - 当 Spring 容器中存在 `TwoLevelCacheManager` 时，`PermissionCacheService` 100% 委派给 `ateng-boot-redis` 的 `TwoLevelCache`，全面复用其 64-条带并发锁（消除队头阻塞）、`ConcurrentLruMemoryCache`（或可选 Caffeine）、防雪崩 Jitter TTL、防穿透哨兵与 Redis Pub/Sub 广播驱逐；
-  - 当未引入 `ateng-boot-redis` 时，自动平滑回退至单机有界 `ConcurrentHashMap` 内存缓存，保障纯单机与 H2 离线单测开箱即跑。
+  - 当未引入 `ateng-boot-redis` 时，若容器存在 `StringRedisTemplate` 且开启 Redis 则回退为 `RedisPermissionCacheAdapter`（L2 Redis + 本地 5 秒 `LinkedHashMap` 有界 LRU 微缓存），完全无 Redis 时则平滑回退至 `InMemoryPermissionCacheAdapter`（基于 `ReentrantLock` 与 `10,000` 上限 `LinkedHashMap` 的有界 LRU 内存缓存），保障纯单机与 H2 离线单测开箱即跑。
 
 ### 2. 多账号体系治理与 StpLogic 动态路由 (Multi-Account & StpLogic Routing)
 - 在 `LoginHelper` 扩展多账号全量重载方法，显式支持 `loginType` 参数（如 `login(loginType, user)`、`logout(loginType)`、`getLoginUser(loginType)`、`isLogin(loginType)`、`getUserId(loginType)` 等）；
@@ -84,14 +84,14 @@ flowchart TD
   - `ip-max-retry-count`（默认 30 次）：单 IP 在统计窗口内累计失败超过阈值立即熔断；
   - `ip-lock-time`（默认 30 分钟）：IP 锁定保护时间；
   - `ip-window-time`（默认 15 分钟）：失败计数滑动时间窗口；
-  - `ip-white-list`（默认包含 `127.0.0.1`、`0:0:0:0:0:0:0:1`）：内网与本地回环白名单豁免；
+  - `ip-white-list`（默认包含 `127.0.0.1`、`0:0:0:0:0:0:0:1`、`::1`）：内网与本地回环白名单豁免；
 - **透明自动嗅探与显式兜底**：在未显式传入 IP 时，自动通过 `SaHolder.getRequest()` 从当前 HTTP 请求中智能提取客户端真实 IP（解析 `X-Forwarded-For`、`X-Real-IP`）；
 - 触发 IP 锁定后直接 Fail-Fast 抛出 `BusinessException(CommonResultCode.FORBIDDEN, "客户端 IP 连续登录失败次数超限，已被临时锁定")`，转译为统一 HTTP 200 + code: 403 显式契约。
 
 ### 5. 在线会话与设备监控运维门面 (Online Session Governance Facade)
 - 在 `LoginHelper` 封装高性能、增量游标检索门面：
-  - `getOnlineUserCount()`：快速统计集群在线会话总数；
-  - `searchOnlineUsers(keyword, page, size)`：游标增量扫描并批量反查组装 `OnlineUser` 模型（含用户标识、账号、Token、登录设备、登录 IP、登录时间与剩余有效时长）；
+  - `getOnlineUserCount()` / `getOnlineUserCount(loginType)`：快速统计指定或默认账号体系在线会话总数；
+  - `searchOnlineUserPage([loginType], keyword, page, size)` / `searchOnlineUsers(...)`：游标增量扫描并批量反查组装 `OnlineUser` 模型与 `PageResult<OnlineUser>` 分页契约（含用户标识、账号、租户、账号体系、Token、登录设备、自动采集的 `loginIp`、登录时间与剩余有效时长）；
   - `kickoutByToken(tokenValue)` / `kickoutDevice(loginId, device)`：对称精准会话踢出门面。
 
 ### 6. 强类型配置双向桥接与活跃空闲超时 (Config Bridging & Active Timeout)
@@ -104,8 +104,21 @@ flowchart TD
 - 启动时自动将这些 `Duration` 桥接写入 Sa-Token 全局配置 `SaManager.getConfig()`，消除配置割裂与单位歧义。
 
 ### 7. 数据库驱动的动态 URL 路径权限匹配 SPI (DynamicPathPermissionProvider)
-- 提供 `DynamicPathPermissionProvider` SPI 扩展点；
+- 提供 `DynamicPathPermissionProvider` SPI 扩展点与 `PathPermissionRule` 规则模型（支持绑定可选 `loginType` 实施多账号路由权限隔离）；
 - 拦截器 `AtengSaTokenInterceptor` 在路径白名单过滤后，自动回调已注入的 SPI 执行动态匹配（`AntPathMatcher` + HTTP Method）；未注册该 SPI 时完全短路跳过，保持零性能损耗。
+
+### 8. 多账号权限缓存命名空间隔离、水平越权多账号感知与短效业务凭据门面 (2026-11 存量加固演进)
+- **多账号两级权限缓存键向后兼容隔离**：
+  - 修复多账号体系下相同 `userId` 或同名 `roleCode` 共享同一缓存键的串染隐患：当 `loginType` 为空或为默认 `"login"` 时保持 `ateng:satoken:cache:user-roles:{userId}` 键格式（100% 向后兼容）；当为非默认 `loginType`（如 `admin`、`member`）时，自动采用 `ateng:satoken:cache:{loginType}:user-roles:{userId}` 命名空间隔离；
+  - `UserRolePermissionLoader` 补齐 `default loadPermissionsByRole(String roleCode, String loginType)`，`PermissionCacheService` 与 `SaTokenClusterBroadcaster` 补齐 `(String loginType, String userId/roleCode)` 精准刷新与跨节点广播驱逐重载；
+- **水平越权防御 (`@CheckDataOwner`) 多账号自洽**：
+  - `@CheckDataOwner` 新增 `type()` 属性（默认 `""`），切面 `SaCheckDataOwnerAspect` 优先按显式 `type` 路由，未指定时自动通过 `LoginHelper.getActiveLoginType()` 嗅探当前请求活跃账号体系，并向 `DataOwnerProvider.getOwnerId(target, loginType)` 透传；
+- **`LoginHelper` 对称续签与 `OnlineUser` 真实 IP 自动采集**：
+  - `LoginHelper` 补齐 `registerStpLogic(loginType, stpLogic)` 与 `renewTimeout` / `renewTimeoutByToken` 强类型 `Duration` 续期门面；在 `login(...)` 签发会话时自动嗅探 HTTP 请求客户端真实 IP 写入 `SaLoginParameter` 扩展字段，并在 `OnlineUser` 补齐 `tenantId` 与 `loginType` 元数据；
+- **短效临时令牌门面 (`TempTokenHelper`)**：
+  - 基于 `SaTempUtil` 与 Core `JsonUtil` 封装零 `@class` 污染的 `TempTokenHelper`（并在 `LoginHelper` 提供委托入口），提供 `createTempToken`、`parseTempToken`、`getTempTokenTimeout`、`deleteTempToken` 对称 API，覆盖大文件私有下载短链、一次性回调 Ticket 与限时业务凭据场景；
+- **JDK 21+ 虚拟线程防 Pinning 清零**：
+  - 将 `LoginHelper`、`PermissionCacheService`、`AtengSaTokenInterceptor`、`AnonymousUrlProcessor` 中的 `synchronized` 全面替换为 `ReentrantLock`（遵循 `isHeldByCurrentThread()` 校验释放范式，对齐 [ADR-0029](./0029-virtual-threads-and-adaptive-async-runtime.md)）。
 
 ---
 

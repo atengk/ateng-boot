@@ -1,56 +1,54 @@
 # ateng-boot-satoken 安全鉴权与分布式会话治理套件
 
-> 面向生产就绪的 Sa-Token 企业级安全基础设施与分布式会话治理底座，提供轻量无侵入鉴权、强类型 `LoginUser` / `LoginHelper` 载荷模型、双轨拦截防御体系、Core / MyBatis-Plus 审计全链路贯通、条带锁两级权限缓存与动态热刷新、多账号独立体系会话物理隔离、客户端 IP 自动嗅探双轨防爆破熔断、微服务内部零信任 Same-Token 出站自动透传、在线会话安全游标监控与精准下线治理、数据库驱动动态 URL 路径权限匹配 SPI、Spring 原生安全事件总线及 OpenAPI / Knife4j 鉴权弹窗无侵入自动化集成。
+> 基于 Sa-Token `1.46.0` 构建的 Spring Boot 3 工业级安全基础设施与分布式会话治理 Starter，提供强类型 `LoginUser` / `LoginHelper`、短效业务令牌 `TempTokenHelper`、双轨拦截与四维上下文全链路穿透、多账号（`loginType`）物理与缓存隔离、多账号感知的 `@CheckDataOwner` 水平越权防御、客户端 IP 自动嗅探双轨防爆破、微服务 Same-Token 零信任全闭环、`ReentrantLock` 虚拟线程安全及集群 Redis Pub/Sub 即时广播同步。
 
 ---
 
 ## 0. 特性与公共 API 全景速查矩阵 (Feature & API Panorama Matrix)
 
-| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
+| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.satoken.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (`*Test` / `Sample`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **会话登录** | 强类型用户登录 | `LoginHelper` | `ateng.boot.satoken.enabled`<br>`ateng.boot.satoken.token.*` | `login(LoginUser)` / `login(LoginUser, String)` / `login(LoginUser, SaLoginParameter)` / `login(LoginUser, String, String)` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **会话注销** | 会话安全注销 | `LoginHelper` | - | `logout()` / `logout(String)` / `logoutByTokenValue(String)` / `logoutByDevice(String)` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **设备治理** | 账号踢人与顶替下线 | `LoginHelper` | - | `kickout(Object loginId)` / `kickout(Object, String)` / `kickoutByToken(String)` / `kickoutDevice(Object, String)` / `kickoutByDevice(Object, String)` / `replaced(Object)` / `replaced(Object, String)` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **账号封禁** | 账号/服务封禁与解封 | `LoginHelper` | - | `disable(Object, Duration)` / `disable(Object, String, Duration)` / `untieDisable(Object)` / `untieDisable(Object, String)` / `isDisable` / `checkDisable` / `getDisableTime` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **二级认证** | 编程式与声明式二级认证 | `LoginHelper`<br>`@SaCheckSafe` | - | `openSafe(Duration)` / `openSafe(int)` / `openSafe(String, Duration)` / `isSafe()` / `checkSafe()` / `closeSafe()` / `@SaCheckSafe` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **状态查询** | 登录状态与令牌查询 | `LoginHelper` | - | `isLogin()` / `isLogin(String)` / `checkLogin()` / `checkLogin(String)` / `getTokenValue()` / `getTokenValue(String)` / `getTokenValueByLoginId(Object)` / `getTokenTimeout()` / `getSessionTimeout()` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **载荷存取** | 强类型实体存取 | `LoginHelper` | - | `setLoginUser(LoginUser)` / `setLoginUser(LoginUser, String)` / `getLoginUser()` / `getLoginUser(String)` / `getLoginUser(Class<T>)` / `getLoginUser(Class<T>, String)` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **身份感知** | 用户/租户身份提取 | `LoginHelper` | - | `getUserId()` / `getUserId(String)` / `getUserIdAsLong()` / `getRealUserId()` / `getUserAccount()` / `getUserName()` / `getTenantId()` / `getDeptId()` / `buildCompositeLoginId` (透明对称剥离租户前缀) | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **多账号体系** | 独立账号体系与物理隔离 | `LoginHelper` | `ateng.boot.satoken.primary-login-type` | `getStpLogic(String loginType)` / `setPrimaryLoginType(String)` / `getPrimaryLoginType()` / `registerStpLogic(String, StpLogic)`，独立体系 Token 请求头与 Session 物理隔离 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **会话切换** | 跨请求会话模拟与还原 | `LoginHelper` | - | `switchTo(String)` / `switchTo(Long)` / `endSwitch()` 会话级模拟，保留原始运维人追踪链路 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **瞬态模拟** | 瞬态代码块安全模拟 | `LoginHelper` | - | `runAs(String, Supplier<T>)` / `runAs(String, Runnable)` / `runAs(Long, ...)` 栈式保护与 `finally` 可靠清理 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **双维审计** | 模拟感知与原始人追踪 | `LoginHelper`<br>`SaTokenCurrentUserProvider` | - | `isRunAs()` / `getOriginalUserId()`，自动贯通 Core/Web `@OperateLog` 切面与操作审计双维追溯 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **越权防御** | 数据所有权防卫断言 | `@CheckDataOwner`<br>`DataOwnerProvider`<br>`LoginHelper` | `ateng.boot.satoken.data-owner.enabled` | `@CheckDataOwner(expr, provider, allowAdmin, message)` / `DataOwnerProvider.getOwnerId` / `checkSelf(String/Long)` / `isSelf(String/Long)` / `isSelfOrAdmin` / `checkBelongsToTenant` / `isBelongsToTenant` | `SaCheckDataOwnerAspectTest` / `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **公开访问** | 声明式公开与动态白名单 | `@Anonymous`<br>`SaTokenWhitelistProvider`<br>`AnonymousUrlProcessor` | `ateng.boot.satoken.white-list`<br>`ateng.boot.satoken.interceptor.excludes` | 类/方法级 `@Anonymous`，`SaTokenWhitelistProvider.getWhitelist()`，动态扫描转译 AntPath，多源白名单聚合放行 | `AnonymousUrlProcessorTest` / `SampleSaTokenIntegrationTest` |
-| **权限断言** | 角色与特权判定 | `LoginHelper` | - | `getRoles()` / `getPermissions()` / `hasRole(String)` / `hasPermission(String)` / `isSuperAdmin()` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **用户载荷** | 工业级强类型载荷 | `LoginUser` | - | 标配 `@SaJsonType`、链式 setter 与 `extraData` 扩展字典 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **路由拦截** | 双轨路由拦截与白名单 | `AtengSaTokenInterceptor`<br>`SaTokenWebMvcConfigurer` | `ateng.boot.satoken.interceptor.*`<br>`ateng.boot.satoken.white-list` | `isAnnotation(false)` 专精路径白名单防漏，`preHandle` 注入四维上下文，`afterCompletion` 强制对称清空 | `AtengSaTokenInterceptorTest` / `SampleSaTokenIntegrationTest` |
-| **注解鉴权** | 细粒度声明式鉴权 | `@SaCheckLogin`<br>`@SaCheckRole`<br>`@SaCheckPermission`<br>`@SaCheckSafe`<br>`@SaCheckDisable` | - | AOP 切面统一承接 Controller 与 Service 边界方法鉴权，彻底消除双重校验损耗 | `SampleSaTokenIntegrationTest` |
-| **内部零信任** | 微服务内部防伪装调用 | `@CheckSameToken`<br>`SaCheckSameTokenAspect` | `ateng.boot.satoken.same-token.enabled`<br>`ateng.boot.satoken.same-token.header-name`<br>`ateng.boot.satoken.same-token.token-value` | 校验内网微服务调用凭据，防网关绕过探测；默认请求头 `SA-SAME-TOKEN`，支持固定密钥与 MessageDigest.isEqual 常数时间安全比对 | `SaCheckSameTokenAspectTest` / `SampleSaTokenIntegrationTest` |
-| **出站自动透传** | 客户端出站拦截器自动装配 | `SameTokenClientHttpRequestInterceptor`<br>`RestClientCustomizer`<br>`RestTemplateCustomizer` | `ateng.boot.satoken.same-token.auto-inject-client` | 自动为 Spring 受管 RestClient/RestTemplate 注入拦截器，跨微服务发起请求时透明打标 `SA-SAME-TOKEN` | `SameTokenClientConfigurationTest` / `SampleSaTokenIntegrationTest` |
-| **两级缓存** | 条带锁防击穿权限缓存 | `CachedStpInterface`<br>`PermissionCacheService` | `ateng.boot.satoken.permission-cache.*` | 基于 `TwoLevelCacheManager` 实现条带锁并发防击穿、Caffeine L1 纳秒微缓存、Redis L2 分布式缓存、空哨兵与 10%~20% 动态 Jitter，多账号 `loginType` 细粒度穿透，无 Redis 时自动纯内存平滑降级 | `CachedStpInterfaceTest` / `PermissionCacheServiceTest` / `SampleSaTokenIntegrationTest` |
-| **业务 SPI** | 角色与权限业务加载器 | `UserRolePermissionLoader` | - | `loadRolesByUserId(String, String)` / `loadPermissionsByRole(String, String)` / `loadDirectPermissionsByUserId(String, String)` 支持多账号体系 | `CachedStpInterfaceTest` / `SampleSaTokenIntegrationTest` |
-| **用户上下文 SPI** | 当前操作人身份适配 | `SaTokenCurrentUserProvider` | - | 实现 Core `CurrentUserProvider` SPI，向底层贯通当前登录用户与模拟人，驱动 MyBatis-Plus 审计自动填充 | `SampleSaTokenIntegrationTest` |
-| **租户上下文 SPI** | 当前租户上下文适配 | `SaTokenCurrentTenantProvider` | - | 实现 Core `CurrentTenantProvider` SPI，向底层贯通当前租户标识，驱动多租户行级数据隔离 | `SampleSaTokenIntegrationTest` |
-| **事件总线** | 原生安全事件广播 | `SaTokenEventPublisher` | - | 桥接广播 `SaLoginEvent`、`SaLogoutEvent`、`SaKickoutEvent`、`SaReplacedEvent`、`SaDisableEvent` 等 Spring 原生事件 | `SaTokenEventPublisherTest` / `SampleSaTokenIntegrationTest` |
-| **OpenAPI 适配** | Knife4j 鉴权弹窗自动化 | `SaTokenOpenApiCustomizer` | `ateng.boot.satoken.openapi.enabled`<br>`ateng.boot.satoken.openapi.token-name` | 自动在 `/v3/api-docs` 与 Knife4j 界面右上角挂载 Authorize 鉴权弹窗 | `SaTokenOpenApiCustomizerTest` / `SampleSaTokenIntegrationTest` |
-| **分布式存储** | 纯净 JSON 会话存储驱动 | `SaTokenRedisDao` | - | 基于 `StringRedisTemplate` 存储，杜绝 `@class` 反序列化白名单漏洞，无 Redis 自动平滑降级 | `SaTokenRedisDaoTest` / `SampleSaTokenIntegrationTest` |
-| **集群同步** | 分布式集群即时同步与广播作废 | `SaTokenClusterBroadcaster`<br>`SaTokenClusterSyncListener` | `ateng.boot.satoken.cluster-sync.enabled`<br>`ateng.boot.satoken.cluster-sync.channel` | `broadcast(eventType, targetKey)` / `getInstanceId()` / `processRemoteMessage(msg)` / 自消费防卫丢弃与异地本地缓存精准失效 | `SaTokenClusterSyncTest` / `SampleSaTokenIntegrationTest` |
-| **防暴力破解** | 双轨防暴力破解与 IP 嗅探 | `LoginFailureLockService` | `ateng.boot.satoken.login-defense.*` | `recordFailure(account, clientIp)` / `recordIpFailure(clientIp)` / `sniffClientIp()` / `resolveClientIp(clientIp)` / `isIpLocked(clientIp)` / `checkIpLocked(clientIp)` / `isIpWhiteListed(clientIp)` / `clearAllFailure(account, clientIp)`，支持 IPv4/IPv6/CIDR 白名单与账号+IP 双轨熔断 | `LoginFailureLockServiceTest` / `SampleSaTokenIntegrationTest` |
-| **在线会话** | 在线会话监控与增量游标治理 | `LoginHelper`<br>`OnlineUser` | - | `searchOnlineUserPage(keyword, page, size)` / `searchOnlineUsers(keyword, page, size)` / `getOnlineUsers(page, size, keyword)` / `getOnlineUserCount(loginType)`，采用增量游标 SCAN 检索与分页切片，防内存 OOM | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **动态权限** | 动态 URL 路径权限匹配 SPI | `DynamicPathPermissionProvider`<br>`PathPermissionRule` | `ateng.boot.satoken.interceptor.enabled` | `DynamicPathPermissionProvider.getPathPermissionRules()`，`AtengSaTokenInterceptor` 自动挂载管道，按 AntPath + HTTP Method 动态执行权限鉴权 | `AtengSaTokenInterceptorTest` / `SampleSaTokenIntegrationTest` |
-| **异常转译** | 统一显式 Result 响应 | `SaTokenExceptionHandler` | - | 将未登录 (401)、权限不足 (403)、服务封禁 (403)、Same-Token 无效 (403) 等转译为 HTTP 200 + `Result<Void>` 显式契约 | `SampleSaTokenIntegrationTest` |
+| **会话登录** | 强类型登录与端隔离 | `LoginHelper` | `enabled`<br>`token.timeout`<br>`token.active-timeout`<br>`token.is-concurrent`<br>`token.is-share`<br>`token.max-login-count`<br>`token.token-style` | `login(LoginUser)` / `login(loginType, LoginUser)` / `login(LoginUser, deviceType)` / `login(loginType, LoginUser, deviceType)` / `login(LoginUser, SaLoginParameter)` / `login(loginType, LoginUser, SaLoginParameter)`（自动嗅探固化 `loginIp`） | `LoginHelperTest` / `AuthSessionController` |
+| **会话注销** | 会话与设备注销 | `LoginHelper` | - | `logout([loginType])` / `logoutByTokenValue([loginType,] tokenValue)` / `logoutByDevice([loginType,] deviceType)` / `logoutByLoginId(loginId[, deviceType])` / `logoutByLoginType(loginType, loginId[, deviceType])` | `LoginHelperTest` / `AuthSessionController` |
+| **状态与续签** | 状态校验与有效期续期 | `LoginHelper` | `token.timeout`<br>`token.active-timeout` | `isLogin([loginType])` / `checkLogin([loginType])` / `getTokenValue([loginType])` / `getTokenValueByLoginId(loginId[, deviceType])` / `getTokenValueByLoginType(loginType, loginId[, deviceType])` / `getTokenTimeout([loginType])` / `getSessionTimeout([loginType])` / `getLoginDeviceType([loginType])` / `renewTimeout([loginType,] Duration)` / `renewTimeoutByToken([loginType,] tokenValue, Duration)` | `LoginHelperTest` / `AuthSessionController` |
+| **短效凭据** | 强类型临时业务令牌 | `TempTokenHelper`<br>`LoginHelper` | - | `createTempToken(Object, Duration)` / `parseTempToken(String)` / `parseTempToken(String, Class<T>)` / `getTempTokenTimeout(String)` / `deleteTempToken(String)`（零 `@class` 纯 JSON） | `TempTokenHelperTest` / `AuthSessionController` |
+| **设备治理** | 踢人下线与同端顶替 | `LoginHelper` | `token.is-concurrent`<br>`token.is-share`<br>`token.max-login-count` | `kickout(loginId[, deviceType])` / `kickoutByLoginType(loginType, loginId[, deviceType])` / `kickoutByToken([loginType,] tokenValue)` / `kickoutDevice([loginType,] loginId, deviceType)` / `kickoutByDevice([loginType,] loginId, deviceType)` / `replaced(loginId[, deviceType])` / `replacedByLoginType(loginType, loginId[, deviceType])` | `LoginHelperOnlineUserTest` / `OnlineSessionController` |
+| **账号封禁** | 阶梯封禁与受限校验 | `LoginHelper`<br>`@SaCheckDisable` | - | `disable(loginId, [service,] Duration / long)` / `disableByLoginType(loginType, loginId, [service,] Duration / long)` / `untieDisable(loginId[, service])` / `untieDisableByLoginType(...)` / `isDisable(...)` / `isDisableByLoginType(...)` / `checkDisable(...)` / `checkDisableByLoginType(...)` / `getDisableTime(...)` / `getDisableTimeByLoginType(...)` | `LoginHelperTest` / `OnlineSessionController` |
+| **二级认证** | 敏感操作二次安全窗 | `LoginHelper`<br>`@SaCheckSafe` | - | `openSafe([service,] Duration / int)` / `openSafeByLoginType(...)` / `isSafe([service])` / `isSafeByLoginType(...)` / `checkSafe([service])` / `checkSafeByLoginType(...)` / `closeSafe([service])` / `closeSafeByLoginType(...)` | `LoginHelperTest` / `AccessControlController` |
+| **载荷与身份** | 强类型主体与租户剥离 | `LoginHelper`<br>`LoginUser` | `primary-login-type` | `setLoginUser([loginType,] LoginUser)` / `getLoginUser([loginType])` / `getLoginUser([loginType,] Class<T>)` / `getUserId([loginType])` / `getUserIdAsLong([loginType])` / `getRealUserIdAsLong([loginType])` / `getUserAccount([loginType])` / `getUserName([loginType])` / `getTenantId([loginType])` / `getDeptId([loginType])` / `buildCompositeLoginId(tenantId, userId)` | `LoginHelperTest` / `AuthSessionController` |
+| **多账号体系** | 独立体系物理隔离 | `LoginHelper` | `primary-login-type` | `getStpLogic(String loginType)` / `registerStpLogic(String, StpLogic)` / `getPrimaryLoginType()` / `setPrimaryLoginType(String)` / `getActiveLoginType([preferredType])`，独立 `satoken-{loginType}` 请求头 | `LoginHelperMultiAccountTest` / `MultiAccountController` |
+| **RBAC 鉴权** | Controller & Service 鉴权 | `@SaCheckRole`<br>`@SaCheckPermission`<br>`LoginHelper` | - | `getRoles([loginType])` / `getPermissions([loginType])` / `hasRole([loginType,] role)` / `hasPermission([loginType,] perm)` / `isSuperAdmin([loginType])` | `SampleSaTokenIntegrationTest` / `AccessControlController` |
+| **越权防御** | 多账号水平越权防御 | `@CheckDataOwner`<br>`DataOwnerProvider<T>`<br>`LoginHelper` | `data-owner.enabled` | `@CheckDataOwner(expr, type, provider, allowAdmin, message)` / `DataOwnerProvider.getOwnerId(id, loginType)` / `checkSelf(...)` / `checkSelfByLoginType(...)` / `isSelf(...)` / `isSelfOrAdmin(...)` / `isBelongsToTenant(...)` / `checkBelongsToTenant(...)` / `checkBelongsToTenantByLoginType(...)` | `SaCheckDataOwnerAspectTest` / `AccessControlController` / `MultiAccountController` |
+| **公开与白名单** | 多源免鉴权自动汇聚 | `@Anonymous`<br>`SaTokenWhitelistProvider`<br>`AnonymousUrlProcessor` | `white-list`<br>`interceptor.excludes` | 类/方法 `@Anonymous(boolean value = true)`（支持 `@Anonymous(true)` / `@Anonymous(false)`，扫描转译 `{id}`->`*`、`{*path}`->`**`）+ `SaTokenWhitelistProvider.getWhitelist()` + YAML 白名单去重聚合 | `AnonymousUrlProcessorTest` / `PublicPortalController` |
+| **动态权限** | 动态 URL 权限规则管道 | `DynamicPathPermissionProvider`<br>`PathPermissionRule` | `interceptor.enabled`<br>`interceptor.check-login`<br>`interceptor.includes`<br>`interceptor.excludes` | `PathPermissionRule.of(...)`（支持 `httpMethod`、`loginType`、`SaMode.AND / SaMode.OR`），由 `AtengSaTokenInterceptor` 自动拦截匹配 | `PathPermissionRuleTest` / `AtengSaTokenInterceptorTest` / `PublicPortalController` |
+| **路由拦截** | 双轨守卫与上下文清理 | `AtengSaTokenInterceptor`<br>`SaTokenWebMvcConfigurer` | `interceptor.enabled`<br>`interceptor.check-login`<br>`interceptor.includes`<br>`interceptor.excludes` | `preHandle` 校验并对称注入 `UserContextHolder` + `TenantContextHolder`，`afterCompletion` 在 `finally` 中双清空 | `AtengSaTokenInterceptorTest` / `SampleSaTokenCheckLoginIntegrationTest` |
+| **两级缓存** | 多账号隔离权限缓存 | `CachedStpInterface`<br>`PermissionCacheService` | `permission-cache.enabled`<br>`permission-cache.timeout`<br>`permission-cache.empty-ttl` | 优先复用 `TwoLevelCacheManager`（`TwoLevelPermissionCacheAdapter.getTwoLevelCache()`，64 条带锁），回退轻量 Redis+5s LRU 或有界内存 LRU（10000 上限）；提供 `get` / `set` / `delete` / `build*Key` / `refreshUserPermissions([loginType,] userId)` / `refreshRolePermissions([loginType,] roleCode)` / `clearUserCache(...)` / `clearRoleCache(...)` / `clearAll()` / `clearAllCache()` / `clearLocalUserCache(...)` / `clearLocalRoleCache(...)` / `clearLocalAllCache()` / `getLocalCacheSize()` / `getAdapter()` | `CachedStpInterfaceTest` / `PermissionCacheServiceTest` / `PermissionCacheController` |
+| **权限 SPI** | 角色权限业务加载扩展 | `UserRolePermissionLoader` | - | `loadRolesByUserId(userId[, loginType])` / `loadPermissionsByRole(roleCode[, loginType])` / `loadDirectPermissionsByUserId(userId[, loginType])`（默认实现 `DefaultUserRolePermissionLoader`） | `CachedStpInterfaceTest` / `PermissionCacheController` |
+| **集群同步** | Pub/Sub 即时广播作废 | `SaTokenClusterBroadcaster`<br>`SaTokenClusterSyncListener` | `cluster-sync.enabled`<br>`cluster-sync.channel` | `broadcast(eventType, [loginType,] targetKey)` / `getInstanceId()` / `processRemoteMessage(msg)`，携带 `instanceId` 自消费防卫丢弃 | `SaTokenClusterSyncTest` / `InternalClusterController` |
+| **防暴力破解** | 账号 + IP 双轨熔断 | `LoginFailureLockService` | `login-defense.enabled`<br>`login-defense.max-retry-count`<br>`login-defense.lock-time`<br>`login-defense.window-time`<br>`login-defense.ip-max-retry-count`<br>`login-defense.ip-lock-time`<br>`login-defense.ip-window-time`<br>`login-defense.ip-white-list` | `checkLocked(account[, clientIp])` / `checkIpLocked([clientIp])` / `isLocked(account[, clientIp])` / `isIpLocked(clientIp)` / `recordFailure(account[, clientIp])` / `recordIpFailure(clientIp)` / `getFailureCount` / `getRemainRetryCount` / `getLockTime` / `getDisableTime` / `getIpFailureCount` / `getIpRemainRetryCount` / `getIpLockTime` / `clearFailure` / `clearIpFailure` / `clearAllFailure` / `unlockIp` / `sniffClientIp()` / `extractClientIp` / `resolveClientIp` / `normalizeIp` / `isValidIp` / `isIpWhiteListed` | `LoginFailureLockServiceTest` / `LoginDefenseController` |
+| **在线会话** | 增量游标在线用户治理 | `LoginHelper`<br>`OnlineUser` | - | `getOnlineUserCount([loginType])` / `searchOnlineUsers(...)` / `searchOnlineUsersByLoginType(...)` / `searchOnlineUserPage([loginType,] keyword, page, size)` / `searchOnlineUserPageByLoginType(...)` / `getOnlineUsers(...)`（SCAN 游标分批，关键字上限 500） | `LoginHelperOnlineUserTest` / `OnlineSessionController` |
+| **身份模拟** | 双维模拟与原始人追踪 | `LoginHelper`<br>`SaTokenCurrentUserProvider` | - | `switchTo([loginType,] String / Long targetUserId)` / `endSwitch([loginType])` / `runAs(String / Long targetUserId, Supplier<T> / Runnable)` / `isRunAs([loginType])` / `getRealUserId([loginType])` / `getOriginalUserId([loginType])` | `LoginHelperTest` / `ImpersonateAuditController` |
+| **上下文 SPI** | Core / 持久层审计贯通 | `SaTokenCurrentUserProvider`<br>`SaTokenCurrentTenantProvider` | - | 实现 Core `CurrentUserProvider` 与 `CurrentTenantProvider` SPI，自动贯通 MyBatis-Plus 审计字段填充与行级租户隔离 | `SampleSaTokenIntegrationTest` / `AuthSessionController` |
+| **内部零信任** | Same-Token 防伪全闭环 | `@CheckSameToken`<br>`SameTokenClientHttpRequestInterceptor` | `same-token.enabled`<br>`same-token.header-name`<br>`same-token.token-value`<br>`same-token.auto-inject-client` | 无参标记注解 `@CheckSameToken`（切面触发 `MessageDigest.isEqual` 常数时间验签）；自动注入 `RestClientCustomizer` / `RestTemplateCustomizer` | `SaCheckSameTokenAspectTest` / `SameTokenClientHttpRequestInterceptorTest` / `InternalClusterController` |
+| **安全事件** | Spring 原生事件总线桥接 | `SaTokenEventPublisher` | - | 桥接发布 8 类事件：`SaLoginEvent`、`SaLogoutEvent`、`SaKickoutEvent`、`SaReplacedEvent`、`SaDisableEvent`、`SaUntieDisableEvent`、`SaOpenSafeEvent`、`SaCloseSafeEvent` | `SaTokenEventPublisherTest` / `ImpersonateAuditController` |
+| **分布式 DAO** | 纯 JSON 会话持久层 | `SaTokenRedisDao` | `ateng.boot.redis.enabled` | `get` / `set` / `update` / `delete` / `getTimeout` / `updateTimeout` / `searchData`（`ScanOptions.count(1000)`，纯 JSON 无 `@class`、`SET KEEPTTL`；并继承 `SaTokenDao` 提供的 `getObject` / `setObject` / `updateObject` / `deleteObject` / `getObjectTimeout` / `updateObjectTimeout`） | `SaTokenRedisDaoTest` / `SampleSaTokenIntegrationTest` |
+| **OpenAPI** | Knife4j 全局鉴权弹窗 | `SaTokenOpenApiCustomizer` | `openapi.enabled`<br>`openapi.token-name` | 自动挂载 APIKey `SecurityScheme` 与全局 `SecurityRequirement` | `SaTokenOpenApiCustomizerTest` |
+| **异常与防火墙** | 显式契约转译与防火墙 | `SaTokenExceptionHandler`<br>`SaFirewallStrategy` | - | 全量异常转译为 HTTP 200 + 401/403/400 `Result<Void>`；防火墙拦截返回 `Result.fail(400, ...)` | `SampleSaTokenIntegrationTest` |
 
 ---
 
 ## 1. 模块定位与极速起步 (Happy Path & Out-of-the-Box)
 
-`ateng-boot-satoken` 深度融合 Sa-Token `1.44.0` 核心能力，为 Spring Boot 3 应用提供工业级安全基础设施与分布式会话治理底座：
-- **显式统一契约**：严格遵循显式强类型契约（[ADR-0002](../docs/adr/0002-explicit-result-contract-no-response-body-advice.md)），将全量鉴权异常统一转译为 HTTP 200 + `Result<T>` 格式，绝不泄露内部调用堆栈；
-- **零臃肿与自适应平滑降级**：恪守零重型依赖（[ADR-0011](../docs/adr/0011-zero-bloat-and-co-located-utilities.md)），有 Redis 时无缝接入纯净 JSON 分布式存储（[ADR-0022](../docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md)），无 Redis 或 `ateng.boot.redis.enabled: false` 时 100% 自动平滑降级为纯内存会话存储（Zero-Mock Invariant）；
-- **全链路生态贯通**：深度融合 Core 模块 `CurrentUserProvider` / `CurrentTenantProvider` SPI（[ADR-0024](../docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md)），全自动贯通持久层审计填充与行级多租户数据隔离。
+`ateng-boot-satoken` 基于 Sa-Token `1.46.0` 与 Spring Boot `3.3.13` 深度自适应构建，定位为轻量、零臃肿的分布式鉴权与会话治理底座：
+- **显式强类型响应契约**：全域鉴权拦截与异常处理统一由 `SaTokenExceptionHandler` 返回 `Result<T>`，杜绝 `@ResponseBodyAdvice` 隐式包装与堆栈泄漏（参见 [ADR-0002](../docs/adr/0002-explicit-result-contract-no-response-body-advice.md)）；
+- **全场景平滑降级**：检测到可用 Redis 时无缝接入纯净 JSON 分布式会话与集群同步；无 Redis 或关闭 `ateng.boot.redis.enabled: false` 时 100% 自动回退至内存/LRU 自洽运行；
+- **全链路上下文透传**：自动注册 `CurrentUserProvider` 与 `CurrentTenantProvider`，实现从认证请求到 MyBatis-Plus 数据权限与自动审计的透明贯通。
 
 ### 1.1 Maven 依赖引入
+
+#### 模式一：依托 BOM 统管引入（推荐，免写版本号）
+
+在工程父 POM 或 `<dependencyManagement>` 已导入 `ateng-boot-bom`（参见 [ADR-0003](../docs/adr/0003-dependency-management-via-bom-import.md)）时，直接声明 Starter 坐标即可：
 
 ```xml
 <dependency>
@@ -59,132 +57,33 @@
 </dependency>
 ```
 
-### 1.2 最小可用配置 (application.yml)
+#### 模式二：独立直接引入（显式指定版本号）
 
-开箱即用，无需配置 Redis 即可在单机内存中极速起步：
+若工程未导入 `ateng-boot-bom`，需显式指定当前基线版本号 `<version>1.2.0</version>`：
+
+```xml
+<dependency>
+    <groupId>io.github.atengk</groupId>
+    <artifactId>ateng-boot-satoken</artifactId>
+    <version>1.2.0</version>
+</dependency>
+```
+
+> 按需可选增强组件：`ateng-boot-web`（驱动 `@Anonymous` 扫描与安全日志协同）、`ateng-boot-redis` / `spring-boot-starter-data-redis`（驱动 `SaTokenRedisDao`、`TwoLevelCacheManager` 64-条带权限缓存与 Redis Pub/Sub 集群同步）、`ateng-boot-mybatis-plus`（驱动审计字段与多租户透明填充）、`springdoc-openapi-starter-webmvc-ui`（驱动 Knife4j 自动鉴权弹窗）。
+
+### 1.2 最小可用配置 (`application.yml`)
 
 ```yaml
 ateng:
   boot:
     satoken:
-      enabled: true
-      token:
-        timeout: 24h        # Token 绝对有效期，强类型 Duration (默认: 24h)
-        active-timeout: 30m # 活跃空闲超时，强类型 Duration (默认: 30m)
-```
-
-### 1.3 极速起步实战代码
-
-直接通过 `LoginHelper` 签发与获取强类型主体，出参显式声明 `Result<T>`：
-
-```java
-@RestController
-@RequestMapping("/sample/satoken/auth")
-public class QuickStartAuthController {
-
-    @PostMapping("/login")
-    public Result<String> login(@RequestBody LoginRequestDTO req) {
-        LoginUser user = LoginUser.builder()
-                .userId(req.getUserId())
-                .userName(req.getUsername())
-                .tenantId(req.getTenantId())
-                .roles(Set.of("admin"))
-                .permissions(Set.of("order:query"))
-                .build();
-        LoginHelper.login(user);
-        return Result.success(LoginHelper.getTokenValue());
-    }
-
-    @GetMapping("/me")
-    public Result<LoginUser> getMe() {
-        LoginHelper.checkLogin();
-        return Result.success(LoginHelper.getLoginUser());
-    }
-}
-```
-
----
-
-## 2. 核心架构与设计不变量 (Core Architecture & Invariants)
-
-```
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                             外部 HTTP 请求 / 微服务内部 RPC                        │
-└────────────────────────────────────────┬─────────────────────────────────────────┘
-                                         │
-        ┌────────────────────────────────┴────────────────────────────────┐
-        ▼                                                                 ▼
-┌─────────────────────────────────┐                     ┌──────────────────────────────────┐
-│  SaServletFilter / Interceptor  │                     │     SaAnnotationAspect (AOP)     │
-│  (路由匹配、白名单、动态路径SPI)  │                     │  (方法鉴权 / SameToken / 数据防越权)│
-└────────────────┬────────────────┘                     └────────────────┬─────────────────┘
-                 │                                                       │
-                 └───────────────────────┬───────────────────────────────┘
-                                         ▼
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                     ateng-boot-satoken 核心引擎与安全门面                          │
-├────────────────────────────────┬─────────────────────────────────────────────────┤
-│ • LoginHelper (强类型多账号门面) │ • CachedStpInterface (L1微缓存 + L2 Redis条带锁) │
-│ • LoginUser (工业级用户载荷模型) │ • DynamicPathPermissionProvider (动态URL权限SPI)│
-│ • LoginFailureLockService 防爆破│ • SameTokenClientHttpRequestInterceptor 出站透传│
-│ • OnlineUser (在线会话安全游标) │ • SaTokenClusterBroadcaster (集群即时同步广播)   │
-│ • SaTokenCurrentUserProvider   │ • SaTokenEventPublisher (桥接 Spring 原生事件)  │
-│ • @CheckSameToken (内部零信任)  │ • SaTokenOpenApiCustomizer (Knife4j 弹窗自动化) │
-└────────────────┬───────────────┴───────────────────────────────┬─────────────────┘
-                 │                                               │
-                 ▼                                               ▼
-┌─────────────────────────────────┐             ┌──────────────────────────────────┐
-│    持久层与审计生态联动           │             │     自适应存储驱动与降级引擎       │
-├─────────────────────────────────┤             ├──────────────────────────────────┤
-│ Core: CurrentUserProvider SPI   │             │ 有 Redis: SaTokenRedisDao (纯净) │
-│ MyBatis-Plus: createBy/updateBy │             │ 无 Redis: SaTokenDaoDefault (内存)│
-└─────────────────────────────────┘             └──────────────────────────────────┘
-```
-
-### 核心设计六道不变量 (The 6 Invariants)
-
-1. **显式响应契约 (Explicit Result Contract)**：全域安全拦截器与切面鉴权异常统一由 `SaTokenExceptionHandler` 转译为 HTTP 200 + 401/403 `Result<Void>` 显式契约，绝不依赖 `@ResponseBodyAdvice` 全局包装（[ADR-0002](../docs/adr/0002-explicit-result-contract-no-response-body-advice.md)）；
-2. **严格无状态与并发安全 (Statelessness & Concurrency Safety)**：公共单例组件（`LoginHelper`、`PermissionCacheService`、`AtengSaTokenInterceptor`）保持严格无状态，无任何实例变量共享可变业务状态；
-3. **内存真明文不变量 (In-Memory Plaintext Invariant)**：会话中持有的 `LoginUser` 载荷与用户信息在内存中始终保持 100% 原始真实明文，脱敏收敛于视图层序列化（[ADR-0012](../docs/adr/0012-lifecycle-separated-data-security.md)）；
-4. **四维上下文全链路透传与对称清理 (4D Context Propagation & Symmetric Lifecycle)**：请求经由 `AtengSaTokenInterceptor.preHandle` 注入 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$，在 `afterCompletion` 中无条件执行双清空，彻底杜绝工作线程复用引发的上下文串染；
-5. **纯内存确定性平滑降级 (Zero-Mock Invariant)**：当未配置 Redis 或 `ateng.boot.redis.enabled: false` 时，自动平滑降级为 `SaTokenDaoDefault` 内存存储与单机降级逻辑，100% 离线自洽，无需启动外部中间件；
-6. **防御性自动装配四道铁律 (Defensive Autoconfiguration)**：所有自动装配类统一使用 `@AutoConfiguration` 标注并注册于 Spring Boot 3 标准 imports 文件，标配条件守卫与 `@ConditionalOnMissingBean`。
-
----
-
-## 3. 会话认证、多租户上下文与多账号体系治理
-
-### 场景痛点
-1. **类型安全性缺失**：原生 `StpUtil.login(id)` 仅存取简单数字/字符串标量，读取用户姓名、租户、角色权限需繁琐反查数据库或进行易出错的 `Map` 强转；
-2. **多租户主键串染**：SaaS 场景同一租户与跨租户用户 ID 容易冲突，复合主键在业务层往往需要手工拆分处理；
-3. **多端多设备顶替踩踏**：管理后台（`admin`）与 C 端会员（`member`）共用 Token Header 导致登录踩踏与凭据污染；
-4. **线程复用串染**：Web 容器线程复用导致未及时清理的 ThreadLocal 残留上一用户的操作凭据与租户上下文。
-
-### 3.1 专属 YAML 配置片段
-
-```yaml
-ateng:
-  boot:
-    satoken:
-      enabled: true               # 是否开启 Sa-Token 增强套件 (默认: true)
-      primary-login-type: login   # 系统默认主账号体系类型标识 (默认: login)
+      enabled: true               # 是否开启 ateng-boot-satoken 自动装配 (默认: true)
       token:
         timeout: 24h              # Token 绝对有效期，强类型 Duration (默认: 24h)
-        active-timeout: 30m       # 活跃空闲超时，强类型 Duration (默认: 30m)
-        is-concurrent: true       # 同一账号是否允许并发登录 (默认: true)
-        is-share: true            # 在多人登录同一账号时，是否共用同一个 Token (默认: true)
-        max-login-count: 12       # 同一账号最大并发登录终端数 (默认: 12)
-        token-style: uuid         # Token 算法生成风格 (默认: uuid)
-      interceptor:
-        enabled: true             # 是否挂载受管双轨拦截器 (默认: true)
-        check-login: false        # 是否开启全局路由强制登录校验 (默认: false)
-        excludes:                 # 业务定制免登录白名单路径
-          - "/sample/satoken/auth/login"
-          - "/doc.html"
-          - "/v3/api-docs/**"
+        active-timeout: 30m       # 空闲活跃超时，强类型 Duration (默认: 30m)
 ```
 
-### 3.2 面向实战的业务 Java 示例（源自 `AuthSessionController.java`）
+### 1.3 极速起步实战代码（源自 `AuthSessionController.java`）
 
 ```java
 @Validated
@@ -193,17 +92,15 @@ ateng:
 @RequiredArgsConstructor
 public class AuthSessionController {
 
-    private final SaTokenSampleService sampleService;
-
-    /**
-     * 用户登录：支持多端设备与多租户复合身份签发
-     */
     @PostMapping("/login")
+    @Anonymous
     public Result<String> login(@RequestBody LoginRequestDTO request) {
         String userId = (request != null && request.getUserId() != null && !request.getUserId().isBlank())
-                ? request.getUserId() : "user-1001";
+                ? request.getUserId()
+                : (request != null && request.getUsername() != null ? "user-" + request.getUsername() : "user-1001");
         String username = (request != null && request.getUsername() != null && !request.getUsername().isBlank())
-                ? request.getUsername() : userId;
+                ? request.getUsername()
+                : userId;
 
         LoginUser loginUser = LoginUser.builder()
                 .userId(userId)
@@ -222,65 +119,200 @@ public class AuthSessionController {
         return Result.success(LoginHelper.getTokenValue());
     }
 
-    /**
-     * 获取当前登录主体详情
-     */
     @GetMapping("/me")
     public Result<LoginUser> getLoginUser() {
         LoginHelper.checkLogin();
         return Result.success(LoginHelper.getLoginUser());
     }
+}
+```
+
+### 1.4 预期响应输出
+
+```json
+// POST /sample/satoken/auth/login 成功响应
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": "5a9f2d8e-7c41-4c72-9b1f-3d841a8c0e11",
+  "success": true
+}
+
+// GET /sample/satoken/auth/me（携带请求头 satoken: <TOKEN>）
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "userId": "10086",
+    "userAccount": "admin",
+    "userName": "admin",
+    "userType": "default",
+    "tenantId": "tenant_sz",
+    "roles": ["audit_manager"],
+    "permissions": ["order:query"]
+  },
+  "success": true
+}
+```
+
+---
+
+## 2. 核心架构与设计不变量 (Core Architecture & Invariants)
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                        HTTP 请求 / Spring RestClient 出站链路                      │
+└────────────────────────────────────────┬─────────────────────────────────────────┘
+                                         │
+        ┌────────────────────────────────┴────────────────────────────────┐
+        ▼                                                                 ▼
+┌─────────────────────────────────┐                     ┌──────────────────────────────────┐
+│     AtengSaTokenInterceptor     │                     │   AOP 切面体系 (Controller/Service)│
+│ • 白名单 O(1)/AntPath 快速放行   │                     │ • @SaCheckRole / @SaCheckPermission│
+│ • DynamicPathPermission SPI 鉴权 │                     │ • @CheckDataOwner (多账号 IDOR 防御)│
+│ • 四维上下文对称注入与 finally 清理│                     │ • @CheckSameToken (零信任常数时间验签)│
+└────────────────┬────────────────┘                     └────────────────┬─────────────────┘
+                 │                                                       │
+                 └───────────────────────┬───────────────────────────────┘
+                                         ▼
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                    ateng-boot-satoken 核心门面与治理引擎 (ReentrantLock)          │
+├────────────────────────────────┬─────────────────────────────────────────────────┤
+│ • LoginHelper (多账号/续签/强退) │ • CachedStpInterface / PermissionCacheService    │
+│ • TempTokenHelper (短效业务令牌) │   (TwoLevelCacheManager / 5s LRU / 有界内存)    │
+│ • LoginFailureLockService      │ • SaTokenClusterBroadcaster (Redis Pub/Sub)     │
+│ • OnlineUser (SCAN 游标采集 IP)  │ • SaTokenEventPublisher (8 类 Spring 安全事件)   │
+└────────────────┬───────────────┴───────────────────────────────┬─────────────────┘
+                 │                                               │
+                 ▼                                               ▼
+┌─────────────────────────────────┐             ┌──────────────────────────────────┐
+│     Core / 持久层生态透传        │             │       自适应存储驱动与平滑降级      │
+├─────────────────────────────────┤             ├──────────────────────────────────┤
+│ CurrentUserProvider (支持 RunAs) │             │ 有 Redis: SaTokenRedisDao (纯JSON)│
+│ CurrentTenantProvider -> MP 隔离│             │ 无 Redis: SaTokenDaoDefault (内存) │
+└─────────────────────────────────┘             └──────────────────────────────────┘
+```
+
+### 核心设计六道不变量 (The 6 Invariants)
+
+1. **显式响应契约 (Explicit Result Contract)**：全量安全异常与防火墙拦截统一转译为 HTTP 200 + `Result<Void>`（401 / 403 / 400），绝不穿透栈痕信息（[ADR-0002](../docs/adr/0002-explicit-result-contract-no-response-body-advice.md)）；
+2. **严格无状态与虚拟线程防 Pinning (Statelessness & ReentrantLock)**：所有公共单例保持无状态；涉及懒加载与并发控制的临界区统一使用 `ReentrantLock` 替代 `synchronized`，杜绝 JDK 21+ 虚拟线程 Carrier Pinning（[ADR-0029](../docs/adr/0029-virtual-threads-and-adaptive-async-runtime.md)）；
+3. **内存真明文不变量 (In-Memory Plaintext Invariant)**：会话载荷 `LoginUser` 在内存中保持 100% 原始明文，展示脱敏收敛于 Jackson 与导出层（[ADR-0012](../docs/adr/0012-lifecycle-separated-data-security.md)）；
+4. **四维上下文对称生命周期 (Symmetric Context Lifecycle)**：`AtengSaTokenInterceptor.preHandle` 对称写入 `UserContextHolder` 与 `TenantContextHolder`，`afterCompletion` 在 `finally` 块中强制执行双清空；
+5. **纯内存确定性平滑降级 (Zero-Mock Invariant)**：无 Redis 或 `ateng.boot.redis.enabled: false` 时，会话持久层、两级权限缓存、集群广播与防爆破计数 100% 自动降级为有界本地实现；
+6. **防御性自动装配四铁律 (Defensive Autoconfiguration)**：全量装配注册于标准 Spring Boot 3 `AutoConfiguration.imports` 文件，标配条件守卫与 `@ConditionalOnMissingBean`，多账号体系共享统一 `ReentrantLock` 懒加载注册机制。
+
+---
+
+## 3. 会话认证、有效期续签与短效临时凭据
+
+### 场景痛点
+1. **原生标量会话类型脆弱**：原生 `StpUtil.login(id)` 仅保存标量标识，读取姓名、租户、部门、角色集往往需手工拆串或强制转换 `Map`；
+2. **固定会话无法动态续期与按端下线**：长流程操作或活跃用户需要精确延长指定 Token/会话有效期，多端在线需支持仅注销当前设备；
+3. **短效业务凭据污染主会话或携带 `@class`**：文件私有下载短链、扫码确认、邮件激活等一次性/短效场景，直接复用主认证 Token 存在越权风险，而传统序列化易残留脆弱的 `@class` 类型标签。
+
+### 3.1 专属 YAML 配置片段
+
+```yaml
+ateng:
+  boot:
+    satoken:
+      enabled: true
+      token:
+        timeout: 24h              # Token 绝对有效期，强类型 Duration (默认: 24h)
+        active-timeout: 30m       # 空闲活跃超时，强类型 Duration (默认: 30m；<=0 表示关闭)
+        is-concurrent: true       # 允许同一账号并发多端登录 (默认: true)
+        is-share: true            # 同端多次登录是否共用同一 Token (默认: true)
+        max-login-count: 12       # is-concurrent=true 且 is-share=false 时的最大并发展开数 (默认: 12)
+        token-style: uuid         # Token 生成算法风格: uuid/simple-uuid/random-32/random-64/tik (默认: uuid)
+```
+
+> 说明：`AtengSaTokenAutoConfiguration` 启动时会把 `ateng.boot.satoken.token.*` 强类型属性双向桥接写入 Sa-Token 全局 `SaManager.getConfig()`，免除秒数换算心智负担；同时登录时自动嗅探客户端 IP 写入 `terminalExtra("loginIp")`，为在线会话监控提供真实终端溯源。
+
+### 3.2 1:1 实战代码（源自 `AuthSessionController.java`）
+
+```java
+@Slf4j
+@Validated
+@RestController
+@RequestMapping("/sample/satoken/auth")
+@RequiredArgsConstructor
+public class AuthSessionController {
 
     /**
-     * 获取当前操作人用户 ID（透明对称剥离多租户前缀）
+     * 主动续期当前登录会话 Token 剩余有效时间（支持主体系与多账号 loginType）
      */
-    @GetMapping("/user-id")
-    public Result<String> getUserId() {
-        LoginHelper.checkLogin();
-        return Result.success(LoginHelper.getUserId());
-    }
-
-    /**
-     * 获取当前租户上下文标识
-     */
-    @GetMapping("/current-tenant")
-    public Result<String> getCurrentTenant() {
-        LoginHelper.checkLogin();
-        return Result.success(TenantContextHolder.getTenantId());
-    }
-
-    /**
-     * 校验登录状态
-     */
-    @GetMapping("/check-login")
-    public Result<String> checkLogin() {
-        LoginHelper.checkLogin();
-        return Result.success("已登录");
-    }
-
-    /**
-     * 创建租户采购订单（验证当前操作人与租户上下文自动审计填充）
-     */
-    @PostMapping("/orders")
-    public Result<Long> createOrder(@Valid @RequestBody OrderCreateDTO orderDto) {
-        Long orderId = sampleService.createOrder(orderDto.getOrderNo(), orderDto.getAmount());
-        return Result.success(orderId);
-    }
-
-    /**
-     * 查询租户订单详情（验证零实体泄露原则，返回强类型 VO）
-     */
-    @GetMapping("/orders/{orderId}")
-    public Result<TenantOrderVO> getOrder(@PathVariable("orderId") Long orderId) {
-        TenantOrderVO order = sampleService.getOrderById(orderId);
-        if (order == null) {
-            return Result.fail(CommonResultCode.NOT_FOUND.getCode(), "订单不存在");
+    @PostMapping("/renew-timeout")
+    public Result<Long> renewTimeout(
+            @RequestParam(value = "timeoutSeconds", defaultValue = "1800")
+            @Positive(message = "续期时间必须大于 0 秒") long timeoutSeconds,
+            @RequestParam(value = "loginType", required = false) String loginType) {
+        Duration timeout = Duration.ofSeconds(timeoutSeconds);
+        if (loginType != null && !loginType.isBlank()) {
+            LoginHelper.checkLogin(loginType);
+            LoginHelper.renewTimeout(loginType, timeout);
+            return Result.success(LoginHelper.getTokenTimeout(loginType));
         }
-        return Result.success(order);
+        LoginHelper.checkLogin();
+        LoginHelper.renewTimeout(timeout);
+        return Result.success(LoginHelper.getTokenTimeout());
     }
 
     /**
-     * 指定设备端注销下线
+     * 签发强类型短效临时业务令牌（零 @class 纯净 JSON 存储）
+     */
+    @PostMapping("/temp-token/issue")
+    public Result<TempTokenVO> issueTempToken(@Valid @RequestBody TempTokenIssueDTO request) {
+        LoginHelper.checkLogin();
+        long ttlSeconds = (request.getTimeoutSeconds() != null && request.getTimeoutSeconds() > 0)
+                ? request.getTimeoutSeconds() : 300L;
+        TempTokenTicketVO payload = TempTokenTicketVO.builder()
+                .bizScene(request.getBizScene().trim())
+                .resourceId(request.getResourceId().trim())
+                .resourceName(request.getResourceName())
+                .requesterId(LoginHelper.getUserId())
+                .build();
+        String tempToken = TempTokenHelper.createTempToken(payload, Duration.ofSeconds(ttlSeconds));
+        long remainTtl = TempTokenHelper.getTempTokenTimeout(tempToken);
+        return Result.success(TempTokenVO.builder()
+                .token(tempToken)
+                .ttlSeconds(remainTtl)
+                .payload(payload)
+                .build());
+    }
+
+    /**
+     * 匿名核验临时业务令牌并还原强类型业务载荷
+     */
+    @GetMapping("/temp-token/verify")
+    @Anonymous
+    public Result<TempTokenVO> verifyTempToken(
+            @NotBlank(message = "临时令牌不能为空") @RequestParam("token") String token) {
+        TempTokenTicketVO payload = TempTokenHelper.parseTempToken(token, TempTokenTicketVO.class);
+        if (payload == null) {
+            return Result.fail(CommonResultCode.UNAUTHORIZED.getCode(), "临时业务令牌无效或已过期");
+        }
+        long remainTtl = TempTokenHelper.getTempTokenTimeout(token);
+        return Result.success(TempTokenVO.builder()
+                .token(token.trim())
+                .ttlSeconds(remainTtl)
+                .payload(payload)
+                .build());
+    }
+
+    /**
+     * 主动销毁临时业务令牌（实现阅后即焚一次性消费闭环）
+     */
+    @DeleteMapping("/temp-token/revoke")
+    public Result<Void> revokeTempToken(
+            @NotBlank(message = "临时令牌不能为空") @RequestParam("token") String token) {
+        LoginHelper.checkLogin();
+        TempTokenHelper.deleteTempToken(token);
+        return Result.success();
+    }
+
+    /**
+     * 指定设备端注销 / 当前会话注销
      */
     @PostMapping("/logout-device")
     public Result<Void> logoutDevice(@RequestParam("device") String device) {
@@ -288,9 +320,6 @@ public class AuthSessionController {
         return Result.success();
     }
 
-    /**
-     * 当前会话注销下线
-     */
     @PostMapping("/logout")
     public Result<Void> logout() {
         LoginHelper.logout();
@@ -299,298 +328,70 @@ public class AuthSessionController {
 }
 ```
 
-### 3.3 核心机制与生产边界说明
+### 3.3 预期输出与状态变化
 
-1. **多租户复合主键透明剥离**：
-   - 当多租户开启时，底层会话将以 `{tenantId}_{userId}` 作为物理复合主键存储，保障跨租户物理隔离；
-   - 业务调用 `LoginHelper.getUserId()` 或 `getUserIdAsLong()` 时，框架通过 `buildCompositeLoginId` 对称逆算法，**全自动透明剥离租户前缀**，始终向业务层返回纯净的原始业务用户 ID，杜绝业务层手工截取字符引发的空指针或数组越界；
-2. **多账号体系物理隔离治理**：
-   - 系统支持管理后台、C 端会员、开放应用等独立账号体系并行运作；
-   - 非主体系自动采用独立 Token 请求头（如 `satoken-admin`、`satoken-member`），会话存储物理隔离；所有 `LoginHelper` API 均支持重载显式传递 `loginType`，确保互不踩踏；
-3. **双轨拦截与四维上下文对称生命周期**：
-   - `AtengSaTokenInterceptor.preHandle`：在路由放行前，自动从当前会话提取用户载荷与租户信息，镜像注入 Core 模块的 `UserContextHolder` 与 `TenantContextHolder`；
-   - `AtengSaTokenInterceptor.afterCompletion`：在 HTTP 响应渲染完成后的 `finally` 阶段，强制执行 `UserContextHolder.clear()` 与 `TenantContextHolder.clear()`，彻底杜绝容器工作线程复用引发的上下文串染与数据泄露；
-4. **MyBatis-Plus 自动审计零侵入贯通**：
-   - 自动装配 `SaTokenCurrentUserProvider` 与 `SaTokenCurrentTenantProvider`，分别实现 Core 模块的 `CurrentUserProvider` 与 `CurrentTenantProvider` SPI；
-   - 实体类继承 `BaseEntity` 时，无需业务手工赋值，底层在 `INSERT` / `UPDATE` 时全自动回填 `create_by`、`update_by`、`create_time` 与 `update_time`。
+```json
+// 1. POST /sample/satoken/auth/renew-timeout?timeoutSeconds=3600
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": 3600,
+  "success": true
+}
+
+// 2. POST /sample/satoken/auth/temp-token/issue
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "token": "7c2f1a904e5d48e1a6b3e1120f9c88a1",
+    "ttlSeconds": 300,
+    "payload": {
+      "bizScene": "FILE_DOWNLOAD",
+      "resourceId": "doc-2026",
+      "resourceName": "季度审计报告.pdf",
+      "requesterId": "10086"
+    }
+  },
+  "success": true
+}
+
+// 3. DELETE /temp-token/revoke 后再次 GET /temp-token/verify（阅后即焚已失效）
+{
+  "code": 401,
+  "msg": "临时业务令牌无效或已过期",
+  "data": null,
+  "success": false
+}
+```
+
+> 补充门面：`LoginHelper` 同时提供按指定 Token 续期方法 `renewTimeoutByToken(tokenValue, Duration)` 及 `renewTimeoutByToken(loginType, tokenValue, Duration)`，以及 `TempTokenHelper` 全量静态委托入口。
 
 ---
 
-## 4. 细粒度访问控制：RBAC、二级认证与水平越权防御 (IDOR)
+## 4. 多账号体系隔离与多租户安全全生命周期
 
 ### 场景痛点
-1. **鉴权层次割裂**：仅在网关层做粗粒度 URL 校验，无法对内部 Service 复杂业务流实施方法级鉴权；
-2. **高危操作缺乏二级防护**：大额资金划拨、敏感密码修改等高危操作未做时效性二次验证，凭据一旦失窃即直接引发灾难；
-3. **水平越权 (IDOR) 泛滥**：修改个人信息或取消订单时，恶意用户只需篡改请求体或 URL 中的 `userId` / `orderId`，即可越权操作他人资源；
-4. **鉴权异常非标**：鉴权失败时底层抛出运行时异常，导致非标 500 或泄露服务器敏感堆栈。
+1. **多端会话踩踏与 Header 冲突**：管理后台（`admin`）与商城会员端（`member`）共享默认 `StpUtil` 与 `satoken` 请求头时，相同数字主键会导致异端互相踢下线或越权混读；
+2. **多租户复合主键繁琐且易泄露**：SaaS 体系需用 `{tenantId}_{userId}` 做底层会话隔离，但业务与 MyBatis-Plus 审计字段期望纯净的业务 `userId`；
+3. **ORM 实体直接暴露**：Controller 若直接收发持久层 Entity，极易泄露敏感审计与逻辑删除字段。
 
 ### 4.1 专属 YAML 配置片段
 
 ```yaml
-ateng:
-  boot:
-    satoken:
-      data-owner:
-        enabled: true   # 是否开启 @CheckDataOwner 数据所有权防水平越权切面 (默认: true)
-```
-
-### 4.2 面向实战的业务 Java 示例（源自 `AccessControlController.java`）
-
-```java
-@Validated
-@RestController
-@RequestMapping("/sample/satoken/access")
-@RequiredArgsConstructor
-public class AccessControlController {
-
-    private final SaTokenSampleService sampleService;
-
-    /**
-     * 多角色 OR 逻辑校验（需具备 audit_manager 或 finance_director 角色）
-     */
-    @GetMapping("/role-audit")
-    @SaCheckRole(value = {"audit_manager", "finance_director"}, mode = SaMode.OR)
-    public Result<String> checkRoleAudit() {
-        return Result.success("审计角色鉴权通过");
-    }
-
-    /**
-     * 细粒度权限码校验（需要 order:query 权限）
-     */
-    @GetMapping("/perm-order-query")
-    @SaCheckPermission("order:query")
-    public Result<String> checkPermOrderQuery() {
-        return Result.success("订单查询权限鉴权通过");
-    }
-
-    /**
-     * 穿透至 Service 层执行声明式权限注解校验
-     */
-    @GetMapping("/service-permission")
-    public Result<String> checkServicePermission() {
-        return Result.success(sampleService.checkServicePermission());
-    }
-
-    /**
-     * 开启二级安全认证（有效期 120 秒）
-     */
-    @PostMapping("/open-safe")
-    public Result<Integer> openSafe(@RequestParam(value = "timeout", defaultValue = "120") int timeout) {
-        LoginHelper.openSafe(timeout);
-        return Result.success(timeout);
-    }
-
-    /**
-     * 关闭二级安全认证时间窗
-     */
-    @PostMapping("/close-safe")
-    public Result<Void> closeSafe() {
-        LoginHelper.closeSafe();
-        return Result.success();
-    }
-
-    /**
-     * 编程式二级认证大额资金结算
-     */
-    @PostMapping("/safe-settle")
-    public Result<String> safeSettleProgrammatic(@Valid @RequestBody SettlementRequestDTO dto) {
-        LoginHelper.checkSafe();
-        return Result.success("大额资金结算已完成: " + dto.getAmount());
-    }
-
-    /**
-     * 声明式 @SaCheckSafe 二级认证大额资金结算
-     */
-    @PostMapping("/safe-settle-anno")
-    @SaCheckSafe
-    public Result<String> safeSettleDeclarative(@Valid @RequestBody SettlementRequestDTO dto) {
-        return Result.success("大额资金结算已完成 (声明式): " + dto.getAmount());
-    }
-
-    /**
-     * 基于 @CheckDataOwner 的用户个人资料防水平越权修改（直接匹配入参）
-     */
-    @PostMapping("/profile/update")
-    @CheckDataOwner(expr = "#dto.userId")
-    public Result<String> updateProfile(@Valid @RequestBody UserProfileDTO dto) {
-        return Result.success("个人资料更新成功: " + dto.getNickname());
-    }
-
-    /**
-     * 基于 @CheckDataOwner 与 DataOwnerProvider 反查 SPI 的订单防水平越权取消
-     */
-    @PostMapping("/orders/{orderId}/cancel")
-    @CheckDataOwner(expr = "#orderId", provider = SampleOrderDataOwnerProvider.class)
-    public Result<String> cancelOrder(@PathVariable("orderId") Long orderId) {
-        return Result.success("订单已成功取消: " + orderId);
-    }
-
-    /**
-     * 编程式断言当前操作人本人归属
-     */
-    @PostMapping("/assert-self")
-    public Result<String> assertSelf(@RequestParam("userId") String userId) {
-        LoginHelper.checkSelf(userId);
-        return Result.success("本人所有权断言校验通过: " + userId);
-    }
-
-    /**
-     * 编程式断言目标租户与当前操作人所在租户一致
-     */
-    @PostMapping("/assert-tenant")
-    public Result<String> assertTenant(@RequestParam("tenantId") String tenantId) {
-        LoginHelper.checkBelongsToTenant(tenantId);
-        return Result.success("当前租户归属断言校验通过: " + tenantId);
-    }
-}
-```
-
-### 4.3 核心机制与生产边界说明
-
-1. **AOP 全域方法鉴权与时序**：
-   - 注册全局切面 `SaAroundAnnotationPointcutAdvisor`，不仅拦截 Controller 入口，更穿透拦截任何 Spring 受管 Service 业务组件上的 `@SaCheckRole`、`@SaCheckPermission`、`@SaCheckSafe` 等注解；
-   - 支持 `mode = SaMode.OR`（任一匹配）与 `mode = SaMode.AND`（全部匹配），彻底消除网关与服务层重复校验开销；
-2. **二级安全认证时间窗机制**：
-   - 涉及敏感资金结算或提权操作时，调用 `LoginHelper.openSafe(timeout)` 为当前 Token 开启临时安全认证态（默认或自定义秒数）；
-   - 在安全窗口期内，调用 `@SaCheckSafe` 或 `LoginHelper.checkSafe()` 均可直接通过，无需用户频繁输入密码；
-   - 高危操作完成后可显式调用 `LoginHelper.closeSafe()` 提前关闭安全窗，超时后也会自动失效，彻底防御会话劫持后发起次生越权操作；
-3. **基于 SpEL 与 SPI 的水平越权防御 (IDOR)**：
-   - **直接匹配模型**：`@CheckDataOwner(expr = "#dto.userId")` 通过 Spring Expression Language 提取方法入参中的用户 ID，自动与当前登录人 `LoginHelper.getUserId()` 进行常数时间等值比对，非本人直接阻断；
-   - **反查 SPI 模型**：若入参为订单 ID 等非用户主键，指定 `provider = SampleOrderDataOwnerProvider.class` 实现 `DataOwnerProvider<ID>` SPI，由底层反查该资源的真实所有者并进行比对；
-   - **超级管理员特权豁免**：注解默认 `allowAdmin = true`，当操作人为超级管理员（`LoginHelper.isSuperAdmin()`）时自动放行，兼顾运营运维支撑；
-4. **统一异常转译契约 (`SaTokenExceptionHandler`)**：
-   - 未登录抛出的 `NotLoginException` 统一转译为 HTTP 200 + `Result.fail(401, "未提供访问凭据 (Token)")`；
-   - 角色/权限不足抛出的 `NotRoleException` / `NotPermissionException` 统一转译为 HTTP 200 + `Result.fail(403, "无权访问：缺少所需角色/权限")`；
-   - 二级认证未通过抛出的 `NotSafeException` 统一转译为 HTTP 200 + `Result.fail(403, "无权访问：当前操作需要二级安全认证")`；
-   - 数据所有权校验未通过抛出的 `SaTokenDataOwnerException` 统一转译为 HTTP 200 + `Result.fail(403, "无权操作该资源：数据所有权归属校验未通过")`。
-
----
-
-## 5. 两级权限缓存、防雪崩击穿与分布式集群同步
-
-### 场景痛点
-1. **频繁鉴权数据库打崩**：每个标注 `@SaCheckPermission` 的接口每次调用都会触发权限查询，若直接查库或高频查询 Redis，吞吐量将受到严重制约；
-2. **并发回源瞬时击穿**：热点用户或全局角色缓存失效时，大量高并发请求同时穿透回源打满数据库连接池；
-3. **集中过期雪崩**：批量登录或批量刷新的权限缓存在同一时间点集中失效，引发后端存储雪崩；
-4. **集群异地本地缓存脏读**：管理员在节点 A 调整了员工权限，节点 B 的本地 Caffeine 缓存无法感知，导致员工在被降权后仍能在节点 B 越权调用接口。
-
-### 5.1 专属 YAML 配置片段
-
-```yaml
-ateng:
-  boot:
-    satoken:
-      permission-cache:
-        enabled: true               # 是否开启两级权限缓存 (默认: true)
-        timeout: 5m                 # 权限与角色缓存有效期，强类型 Duration (默认: 5m)
-        empty-ttl: 60s              # 空权限/空角色防穿透哨兵缓存有效期，强类型 Duration (默认: 60s)
-      cluster-sync:
-        enabled: true               # 是否开启分布式集群即时同步与广播作废 (默认: true)
-        channel: ateng:satoken:cluster-sync # Redis Pub/Sub 广播频道名称
-```
-
-### 5.2 面向实战的业务 Java 示例（源自 `PermissionCacheController.java`）
-
-```java
-@Validated
-@RestController
-@RequestMapping("/sample/satoken/permission-cache")
-@RequiredArgsConstructor
-public class PermissionCacheController {
-
-    private final PermissionCacheService permissionCacheService;
-
-    /**
-     * 读取当前登录主体经由两级缓存切片解析的角色列表
-     */
-    @GetMapping("/roles")
-    public Result<Set<String>> getCurrentRoles() {
-        LoginHelper.checkLogin();
-        return Result.success(LoginHelper.getRoles());
-    }
-
-    /**
-     * 读取当前登录主体经由两级缓存切片解析的细粒度权限码集合
-     */
-    @GetMapping("/permissions")
-    public Result<Set<String>> getCurrentPermissions() {
-        LoginHelper.checkLogin();
-        return Result.success(LoginHelper.getPermissions());
-    }
-
-    /**
-     * 精准刷新指定角色关联的权限缓存（秒级淘汰两级缓存并广播异地节点）
-     */
-    @PostMapping("/refresh-role")
-    public Result<String> refreshRole(@RequestParam("roleCode") String roleCode) {
-        permissionCacheService.refreshRolePermissions(roleCode);
-        return Result.success("角色权限缓存已刷新: " + roleCode);
-    }
-
-    /**
-     * 精准刷新指定用户的角色与直属权限缓存
-     */
-    @PostMapping("/refresh-user")
-    public Result<String> refreshUser(@RequestParam("userId") String userId) {
-        permissionCacheService.refreshUserPermissions(userId);
-        return Result.success("用户权限缓存已刷新: " + userId);
-    }
-
-    /**
-     * 清空全量两级权限缓存
-     */
-    @PostMapping("/clear-all")
-    public Result<Void> clearAll() {
-        permissionCacheService.clearAll();
-        return Result.success();
-    }
-}
-```
-
-### 5.3 核心机制与生产边界说明
-
-1. **L1 Caffeine + L2 Redis 条带锁并发防击穿**：
-   - `CachedStpInterface` 深度集成 `TwoLevelCacheManager`；
-   - 本地进程内 L1 Caffeine 纳秒微缓存承接 99.9% 的瞬时高并发读；
-   - 缓存未命中回源时，底层采用细粒度并发条带锁（64 槽位），限制同一用户/同一角色仅有单一并发线程执行穿透回源，其余线程自旋复用结果，彻底消除瞬时击穿；
-2. **防穿透哨兵缓存与动态 Jitter 防雪崩**：
-   - **空值防穿透**：当用户无任何角色或无任何权限时，写入 `__EMPTY__` 哨兵缓存（默认有效期 60s），阻断恶意请求频繁用空权限穿透数据库；
-   - **动态随机抖动防雪崩**：向 Redis 写入两级缓存时，附加 10%~20% 的动态 Jitter 随机抖动时间，杜绝同一批用户的权限缓存在同一秒内集中失效引发数据库雪崩；
-3. **多账号体系 `loginType` 细粒度穿透**：
-   - 权限加载 SPI `UserRolePermissionLoader` 标配 `(userId, loginType)` 与 `(roleCode, loginType)` 重载；
-   - `CachedStpInterface` 在解析角色与权限时，将当前账号体系的 `loginType` 完整透传至缓存键与数据加载器，保障管理后台与客户端会员的权限缓存物理隔离；
-4. **集群 Pub/Sub 广播与本机自消费防卫**：
-   - 管理员调整权限并调用 `PermissionCacheService` 刷新时，当前节点立即驱逐本地 L1 缓存与 Redis L2 缓存，并通过 Redis Pub/Sub 频道广播即时作废消息；
-   - 广播消息携带发布节点的全局唯一 UUID `instanceId`；发布节点监听到自身发出的消息时**直接静默丢弃**（自消费防卫），异地集群节点监听到后立即驱逐本地 L1 缓存，实现集群毫秒级权限热同步；
-5. **纯内存确定性平滑降级 (Zero-Mock)**：
-   - 当检测到 Redis 基础设施未启用（`ateng.boot.redis.enabled: false`）时，`CachedStpInterface` 自动平滑降级为纯本地 Caffeine 进程内自洽缓存与单机驱逐，不发起任何远程网络连接，单机开发或离线单元测试 100% 稳定运行。
-
----
-
-## 6. 多账号体系独立登录与物理会话隔离（Multi-Account Architecture）
-
-### 6.1 场景痛点与架构方案
-现代化综合业务系统往往同时包含管理后台（`admin`）、C 端商城会员（`member`）、开放平台应用（`app`）等多种完全不同的账号体系。若共用同一个 `StpUtil`，会导致 Token Header 冲突（如 `satoken` 串读）、登录凭据踩踏（C 端用户登录将同数字 ID 的后台管理员踢下线）等灾难性故障。原生 Sa-Token 虽支持自定义 `StpLogic`，但需要繁琐的手动配置和样板代码。
-
-`LoginHelper` 深度支持**多账号体系动态懒加载与物理隔离治理**：
-- **动态懒加载注册**：通过 `LoginHelper.getStpLogic(loginType)` 在首次使用时采用线程安全双重检查锁定 (DCL) 自动实例化并注册对应体系的独立 `StpLogic`；
-- **独立 Token 命名规范**：非主体系自动采用 `satoken-{loginType}` 作为独立 Token 请求头（例如 `satoken-admin`、`satoken-member`），主体系遵循默认 `satoken`；
-- **全生命周期方法镜像**：所有会话操作（`login`, `logout`, `getLoginUser`, `getUserId`, `isLogin`, `checkLogin`, `getTokenValue`, `kickout`）均提供重载直接支持传入 `loginType`，保障多账号间会话完全物理隔离；
-- **声明式类型隔离鉴权**：注解 `@SaCheckRole(type = "admin", value = "super_admin")` 与 `@SaCheckPermission(type = "member", value = "member:points:view")` 严格按账号体系路由，杜绝跨端提权。
-
-### 6.2 专属 YAML 配置片段
-```yaml
-# Sa-Token 原生核心配置与多账号体系请求头映射
 sa-token:
-  token-name: satoken             # 主账号体系 Token 标识（默认 satoken）
-  timeout: 86400                  # 默认会话超时时间 24 小时 (单位: 秒)
-  active-timeout: 1800            # 临时有效期/超时无操作下线 30 分钟 (单位: 秒)
-  is-concurrent: true             # 是否允许同一账号多地同时登录
-  is-share: false                 # 同一账号在同一个设备端是否共用同一个 Token
-  # 多账号体系下：admin 体系自动下发请求头 satoken-admin，member 体系自动下发 satoken-member
+  token-name: satoken             # 主账号体系使用请求头 satoken；独立体系自动映射为 satoken-{loginType}（如 satoken-admin / satoken-member）
+  is-concurrent: true
+  is-share: false
+
+ateng:
+  boot:
+    satoken:
+      primary-login-type: login   # 多账号共存时优先映射至 UserContextHolder 的主账号体系 (默认: login)
 ```
 
-### 6.3 生产级实战示例（源自 `MultiAccountController.java`）
+### 4.2 1:1 实战代码（源自 `MultiAccountController.java` 与 `AuthSessionController.java`）
+
 ```java
 @Slf4j
 @Validated
@@ -599,10 +400,8 @@ sa-token:
 @RequiredArgsConstructor
 public class MultiAccountController {
 
-    // ==================== 管理端 (admin) 体系 ====================
-
     /**
-     * 管理端用户登录（下发独立 Token 头 satoken-admin）
+     * 管理端独立登录（下发独立请求头 satoken-admin）
      */
     @PostMapping("/admin/login")
     public Result<String> adminLogin(@RequestBody LoginRequestDTO request) {
@@ -615,6 +414,7 @@ public class MultiAccountController {
                 .userId(userId)
                 .userAccount(username)
                 .userName(username)
+                .tenantId(request != null ? request.getTenantId() : null)
                 .roles(request != null && request.getRoles() != null ? request.getRoles() : Set.of("super_admin"))
                 .permissions(request != null && request.getPermissions() != null ? request.getPermissions() : Set.of("system:manage"))
                 .build();
@@ -624,16 +424,7 @@ public class MultiAccountController {
     }
 
     /**
-     * 获取当前管理端登录人主体资料
-     */
-    @GetMapping("/admin/me")
-    public Result<LoginUser> getAdminMe() {
-        LoginHelper.checkLogin("admin");
-        return Result.success(LoginHelper.getLoginUser("admin"));
-    }
-
-    /**
-     * 校验管理端专属角色权限（必须具备 admin 体系下的 super_admin 角色）
+     * 管理端专属角色鉴权（必须携带 admin 体系 Token）
      */
     @GetMapping("/admin/manage-roles")
     @SaCheckRole(type = "admin", value = "super_admin")
@@ -642,18 +433,7 @@ public class MultiAccountController {
     }
 
     /**
-     * 管理端用户注销下线
-     */
-    @PostMapping("/admin/logout")
-    public Result<Void> adminLogout() {
-        LoginHelper.logout("admin");
-        return Result.success();
-    }
-
-    // ==================== 移动会员端 (member) 体系 ====================
-
-    /**
-     * 会员端用户登录（下发独立 Token 头 satoken-member）
+     * 会员端独立登录（下发独立请求头 satoken-member，与 admin 物理隔离）
      */
     @PostMapping("/member/login")
     public Result<String> memberLogin(@RequestBody LoginRequestDTO request) {
@@ -666,6 +446,7 @@ public class MultiAccountController {
                 .userId(userId)
                 .userAccount(username)
                 .userName(username)
+                .tenantId(request != null ? request.getTenantId() : null)
                 .roles(request != null && request.getRoles() != null ? request.getRoles() : Set.of("vip_member"))
                 .permissions(request != null && request.getPermissions() != null ? request.getPermissions() : Set.of("member:points:view"))
                 .build();
@@ -674,65 +455,380 @@ public class MultiAccountController {
         return Result.success(LoginHelper.getTokenValue("member"));
     }
 
-    /**
-     * 校验会员端专属特权（必须具备 member 体系下的 member:points:view 权限）
-     */
     @GetMapping("/member/points")
     @SaCheckPermission(type = "member", value = "member:points:view")
     public Result<String> checkMemberPoints() {
         return Result.success("会员积分特权接口校验通过");
     }
+}
+```
+
+多租户透明剥离与 MyBatis-Plus 自动审计（源自 `AuthSessionController.java`）：
+
+```java
+    @GetMapping("/user-id")
+    public Result<String> getUserId() {
+        LoginHelper.checkLogin();
+        // 底层会话以 "{tenantId}_{userId}" 存储时，getUserId() 自动透明剥离前缀仅返回纯净业务 userId
+        return Result.success(LoginHelper.getUserId());
+    }
+
+    @GetMapping("/current-tenant")
+    public Result<String> getCurrentTenant() {
+        LoginHelper.checkLogin();
+        return Result.success(TenantContextHolder.getTenantId());
+    }
+
+    @PostMapping("/orders")
+    public Result<Long> createOrder(@Valid @RequestBody OrderCreateDTO orderDto) {
+        // 触发 SaTokenCurrentUserProvider / SaTokenCurrentTenantProvider 自动填充 createBy 与 tenantId
+        Long orderId = sampleService.createOrder(orderDto.getOrderNo(), orderDto.getAmount());
+        return Result.success(orderId);
+    }
+
+    @GetMapping("/orders/{orderId}")
+    public Result<TenantOrderVO> getOrder(@PathVariable("orderId") Long orderId) {
+        TenantOrderVO order = sampleService.getOrderById(orderId);
+        if (order == null) {
+            return Result.fail(CommonResultCode.NOT_FOUND.getCode(), "订单不存在");
+        }
+        return Result.success(order);
+    }
+```
+
+### 4.3 预期响应输出与机制要点
+
+```json
+// GET /sample/satoken/auth/orders/1（严格遵循 Zero-Entity-Leakage，返回 TenantOrderVO；实际 Result 外层还包含 timestamp 与 traceId 字段）
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "id": 1,
+    "orderNo": "ORD-20261108-01",
+    "amount": 199.90,
+    "tenantId": "tenant_sz",
+    "createBy": "10086",
+    "createTime": "2026-11-13 10:00:00",
+    "updateBy": "10086",
+    "updateTime": "2026-11-13 10:00:00"
+  },
+  "success": true
+}
+
+// 携带 member Token 访问 /sample/satoken/multi-account/admin/manage-roles（跨账号体系隔离阻断）
+{
+  "code": 401,
+  "msg": "未提供访问凭据 (Token)",
+  "data": null,
+  "success": false
+}
+```
+
+> 若系统需要定制特定 `loginType` 的前缀规则或独立配置，可在应用初始化时调用 `LoginHelper.registerStpLogic("open", customStpLogic)` 显式预注册；未预注册的 `loginType` 会在首次调用 `LoginHelper.getStpLogic(loginType)` 时通过 `ReentrantLock` 并发安全懒加载创建并设置独立 Cookie/Header 名 `satoken-{loginType}`。
+
+---
+
+## 5. 细粒度访问控制、二级认证与水平越权防御 (IDOR)
+
+### 场景痛点
+1. **Service 内层缺乏方法级鉴权防线**：仅在网关或 Controller 做拦截，业务 Service 被跨模块调用时仍可能越权；
+2. **高危操作缺少时效性二次验证**：大额结算、敏感改密等场景凭据一旦被盗即引发资金损失；
+3. **BOLA / IDOR 水平越权漏洞与多账号盲区**：用户篡改 `userId` 或 `orderId` 操作他人数据时，手工校验极易遗漏，且传统校验注解只认默认 `login` 体系，在 `member` 多账号体系下失效。
+
+### 5.1 专属 YAML 配置片段
+
+```yaml
+ateng:
+  boot:
+    satoken:
+      data-owner:
+        enabled: true             # 是否启用 @CheckDataOwner 水平越权防御 AOP 切面 (默认: true)
+```
+
+### 5.2 1:1 实战代码（源自 `AccessControlController.java`、`MultiAccountController.java` 与 `SampleOrderDataOwnerProvider.java`）
+
+```java
+@Validated
+@RestController
+@RequestMapping("/sample/satoken/access")
+@RequiredArgsConstructor
+public class AccessControlController {
+
+    private final SaTokenSampleService sampleService;
 
     /**
-     * 会员端用户注销下线
+     * 1. RBAC 注解鉴权（OR 逻辑 / Service 穿透）
      */
-    @PostMapping("/member/logout")
-    public Result<Void> memberLogout() {
-        LoginHelper.logout("member");
+    @GetMapping("/role-audit")
+    @SaCheckRole(value = {"audit_manager", "finance_director"}, mode = SaMode.OR)
+    public Result<String> checkRoleAudit() {
+        return Result.success("审计角色鉴权通过");
+    }
+
+    @GetMapping("/service-permission")
+    public Result<String> checkServicePermission() {
+        // 穿透调用标注 @SaCheckPermission("order:cancel") 的 Service 方法
+        return Result.success(sampleService.checkServicePermission());
+    }
+
+    /**
+     * 2. 二级安全认证时间窗与敏感业务双模式校验
+     */
+    @PostMapping("/open-safe")
+    public Result<Integer> openSafe(@RequestParam(value = "timeout", defaultValue = "120") int timeout) {
+        LoginHelper.openSafe(timeout);
+        return Result.success(timeout);
+    }
+
+    @PostMapping("/safe-settle-anno")
+    @SaCheckSafe
+    public Result<String> safeSettleDeclarative(@Valid @RequestBody SettlementRequestDTO dto) {
+        return Result.success("大额资金结算已完成 (声明式): " + dto.getAmount());
+    }
+
+    /**
+     * 3. @CheckDataOwner 直等 SpEL 与 SPI 资源反查防水平越权
+     */
+    @PostMapping("/profile/update")
+    @CheckDataOwner(expr = "#dto.userId")
+    public Result<String> updateProfile(@Valid @RequestBody UserProfileDTO dto) {
+        return Result.success("个人资料更新成功: " + dto.getNickname());
+    }
+
+    @PostMapping("/orders/{orderId}/cancel")
+    @CheckDataOwner(expr = "#orderId", provider = SampleOrderDataOwnerProvider.class)
+    public Result<String> cancelOrder(@PathVariable("orderId") Long orderId) {
+        return Result.success("订单已成功取消: " + orderId);
+    }
+
+    /**
+     * 4. 编程式本人与租户归属强断言
+     */
+    @PostMapping("/assert-self")
+    public Result<String> assertSelf(@RequestParam("userId") String userId) {
+        LoginHelper.checkSelf(userId);
+        return Result.success("本人所有权断言校验通过: " + userId);
+    }
+}
+```
+
+多账号体系下的显式 `@CheckDataOwner` 与 SPI 反查：
+
+```java
+// 1. MultiAccountController.java：显式指定 type = "member" 对齐会员账号体系
+@PostMapping("/member/profile/update")
+@CheckDataOwner(type = "member", expr = "#dto.userId")
+public Result<String> updateMemberProfile(@Valid @RequestBody UserProfileDTO dto) {
+    return Result.success("会员资料更新成功: " + dto.getNickname());
+}
+
+// 2. SampleOrderDataOwnerProvider.java：实现 DataOwnerProvider<Long> SPI 反查真实归属人
+@Component
+public class SampleOrderDataOwnerProvider implements DataOwnerProvider<Long> {
+
+    private static final Map<Long, String> MOCK_ORDER_OWNER_DB = Map.of(
+            88001L, "10086",
+            88002L, "20001"
+    );
+
+    @Override
+    public String getOwnerId(Long resourceId) {
+        return MOCK_ORDER_OWNER_DB.get(resourceId);
+    }
+}
+```
+
+### 5.3 预期输出与关键机制
+
+```json
+// 本人 (userId="10086") 取消自己的订单 88001
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": "订单已成功取消: 88001",
+  "success": true
+}
+
+// 用户 "10086" 企图取消属于 "20001" 的订单 88002（@CheckDataOwner 水平越权阻断）
+{
+  "code": 403,
+  "msg": "无权访问该资源",
+  "data": null,
+  "success": false
+}
+
+// 未调用 /open-safe 直接请求 @SaCheckSafe 接口
+{
+  "code": 403,
+  "msg": "无权访问：当前操作需要二级安全认证",
+  "data": null,
+  "success": false
+}
+```
+
+> 多账号感知解析顺序：`SaCheckDataOwnerAspect` 优先读取 `@CheckDataOwner(type = "...")`；当 `type` 为空时，自动通过 `LoginHelper.getActiveLoginType()` 嗅探当前请求活跃账号体系，并将 `loginType` 透传给 `DataOwnerProvider.getOwnerId(resource, loginType)` 与 `LoginHelper.isSelf(loginType, ownerId)`；当 `allowAdmin = true` 且 `LoginHelper.isSuperAdmin(loginType)` 为 `true` 时豁免放行。
+
+---
+
+## 6. 多账号两级权限缓存与分布式集群即时同步
+
+### 场景痛点
+1. **鉴权频繁穿透数据库**：高频调用 `@SaCheckPermission` 若每次直接查库或裸查 Redis，将打垮后端存储；
+2. **多账号相同 `userId`/`roleCode` 缓存串染**：若 `admin` 与 `member` 共用同一缓存键 `user-roles:{userId}`，会导致两套账号体系权限互相覆盖；
+3. **节点局部缓存脏读与回环广播**：节点 A 刷新权限后，节点 B 本地微缓存未驱逐造成已降权员工越权；广播时本机重复消费自身消息引发风暴。
+
+### 6.1 专属 YAML 配置片段
+
+```yaml
+ateng:
+  boot:
+    satoken:
+      permission-cache:
+        enabled: true               # 是否开启两级权限与角色缓存 (默认: true)
+        timeout: 5m                 # 权限与角色缓存基础有效期，强类型 Duration (默认: 5m；写缓存附加 +10%~+20% 动态 Jitter)
+        empty-ttl: 60s              # 空角色/空权限防穿透哨兵 (__EMPTY__) 有效期，强类型 Duration (默认: 60s)
+      cluster-sync:
+        enabled: true               # 是否开启基于 Redis Pub/Sub 的集群同步广播 (默认: true)
+        channel: "ateng:satoken:cluster-sync" # Redis Pub/Sub 广播频道名称 (默认: ateng:satoken:cluster-sync)
+```
+
+### 6.2 1:1 实战代码（源自 `PermissionCacheController.java` 与 `InternalClusterController.java`）
+
+```java
+@Slf4j
+@Validated
+@RestController
+@RequestMapping("/sample/satoken/permission-cache")
+@RequiredArgsConstructor
+public class PermissionCacheController {
+
+    private final PermissionCacheService permissionCacheService;
+
+    /**
+     * 读取当前主体经两级缓存解析的角色列表（支持按 loginType 命名空间隔离查询）
+     */
+    @GetMapping("/roles")
+    public Result<Set<String>> getCurrentRoles(@RequestParam(value = "loginType", required = false) String loginType) {
+        String targetType = (loginType != null && !loginType.isBlank()) ? loginType.trim() : StpUtil.TYPE;
+        LoginHelper.checkLogin(targetType);
+        List<String> roleList = LoginHelper.getStpLogic(targetType).getRoleList();
+        return Result.success(roleList != null ? Set.copyOf(roleList) : Collections.emptySet());
+    }
+
+    /**
+     * 读取当前主体经两级缓存解析的权限码集合（支持按 loginType 命名空间隔离查询）
+     */
+    @GetMapping("/permissions")
+    public Result<Set<String>> getCurrentPermissions(@RequestParam(value = "loginType", required = false) String loginType) {
+        String targetType = (loginType != null && !loginType.isBlank()) ? loginType.trim() : StpUtil.TYPE;
+        LoginHelper.checkLogin(targetType);
+        List<String> permissionList = LoginHelper.getStpLogic(targetType).getPermissionList();
+        return Result.success(permissionList != null ? Set.copyOf(permissionList) : Collections.emptySet());
+    }
+
+    /**
+     * 精准刷新单角色权限缓存（本地驱逐 + 通过 SaTokenClusterBroadcaster 广播异地节点）
+     */
+    @PostMapping("/refresh-role")
+    public Result<String> refreshRole(@RequestParam("roleCode") String roleCode) {
+        permissionCacheService.refreshRolePermissions(roleCode);
+        return Result.success("角色权限缓存已刷新: " + roleCode);
+    }
+
+    /**
+     * 精准刷新单用户权限缓存（默认体系；多账号可调用 refreshUserPermissions(loginType, userId)）
+     */
+    @PostMapping("/refresh-user")
+    public Result<String> refreshUser(@RequestParam("userId") String userId) {
+        permissionCacheService.refreshUserPermissions(userId);
+        return Result.success("用户权限缓存已刷新: " + userId);
+    }
+
+    /**
+     * 全网清空两级权限缓存
+     */
+    @PostMapping("/clear-all")
+    public Result<Void> clearAll() {
+        permissionCacheService.clearAll();
         return Result.success();
     }
 }
 ```
 
-### 6.4 核心机制与非功能边界
-1. **多账号物理隔离**：管理员下线或注销仅作用于 `admin` 命名空间，完全不影响同 ID 的普通会员（如 `admin_01` 与 `member_01` 互不干扰）；
-2. **跨体系越权防卫**：若使用 `satoken-member` 凭据访问标记 `@SaCheckRole(type = "admin", ...)` 的管理端接口，Sa-Token 自动按 `admin` 体系嗅探请求头未果，直接返回 401 未登录，杜绝跨端提权；
-3. **两级缓存维度隔离**：`CachedStpInterface` 与 `DefaultUserRolePermissionLoader` 会传入当前操作的 `loginType`，确保不同账号体系的角色/权限在 Account-Session 与 Redis/Caffeine 缓存中严格隔离。
+集群实例标识与广播触发端点（源自 `InternalClusterController.java`）：
+
+```java
+    @GetMapping("/sample/satoken/cluster/instance-id")
+    @Anonymous
+    public Result<String> getInstanceId() {
+        return Result.success(broadcaster.getInstanceId());
+    }
+
+    @PostMapping("/sample/satoken/cluster/refresh-user")
+    @Anonymous
+    public Result<Void> refreshUserPermissions(@RequestParam("userId") String userId) {
+        permissionCacheService.refreshUserPermissions(userId);
+        return Result.success();
+    }
+```
+
+### 6.3 预期输出与核心机制说明
+
+```json
+// GET /sample/satoken/permission-cache/roles?loginType=admin
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": ["super_admin"],
+  "success": true
+}
+
+// POST /sample/satoken/permission-cache/refresh-user?userId=10086
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": "用户权限缓存已刷新: 10086",
+  "success": true
+}
+```
+
+1. **三级自适应缓存适配器（`ReentrantLock` 懒加载）**：
+   - 存在 `ateng-boot-redis` 的 `TwoLevelCacheManager` 且 Redis 开启时：自动委托给 `TwoLevelPermissionCacheAdapter`（空间 `"satoken:permissions"`，复用 64-条带并发锁与 L1/L2 级联缓存）；
+   - 仅存在 `StringRedisTemplate` 且 Redis 开启时：降级为 `RedisPermissionCacheAdapter`（Redis L2 + 本地最长 5 秒的线程安全 LRU 微缓存）；
+   - 无 Redis 或 `ateng.boot.redis.enabled: false` 时：平滑降级为 `InMemoryPermissionCacheAdapter`（有界 10000 条本地 LRU）。
+2. **多账号向后兼容键隔离**：默认 `"login"` 体系保持 `ateng:satoken:cache:user-roles:{userId}`、`role-perms:{roleCode}`、`user-perms:{userId}`；非默认体系自动升级为 `ateng:satoken:cache:{loginType}:{segment}:{id}`，且 `PermissionCacheService` 与 `SaTokenClusterBroadcaster` 均提供 `(loginType, targetKey)` 重载以实现单体系精准失效。
+3. **集群 Pub/Sub 自消费防卫**：每个节点持有一个无锁 `fastSimpleUUID()` 生成的 `instanceId`；`SaTokenClusterSyncListener` 收到 `SaTokenClusterMessage` 后先校验 `senderInstanceId.equals(broadcaster.getInstanceId())`，命中本机则直接静默丢弃，避免回环风暴。
 
 ---
 
-## 7. 客户端 IP 自动嗅探与双轨防爆破熔断（Dual-Track Brute Force Defense）
+## 7. 客户端 IP 自动嗅探与双轨防爆破熔断 (Dual-Track Brute Force Defense)
 
-### 7.1 场景痛点与架构方案
-在开放互联网接入环境下，黑客常用的攻击手段不仅包括针对单个账号的字典爆破，还包括从同一攻击 IP 针对海量不同账号发起的**分布式撞库攻击**。若仅防护账号维度，恶意攻击 IP 可以轮流尝试不同用户名，导致系统整体鉴权接口被刷爆。此外，企业办公内网、跳板机或网关出口 IP 若被一并封禁，将导致大批合法员工被集体误杀。
+### 场景痛点
+恶意攻击者除对单一账号发起密码字典爆破外，还会从单攻击 IP 对海量账号并发“撞库”。若只锁账号易造成合法账号大面积拒绝服务（DoS）；若无差别封禁 IP，又可能误伤使用统一 NAT 出口的企业内网员工。
 
-`LoginFailureLockService` 采用**双轨自适应防暴力破解与 IP 嗅探熔断体系**：
-1. **自动透明 IP 嗅探**：支持从 `X-Forwarded-For`、`X-Real-IP`、反向代理候选头及 Spring Web `RequestContextHolder` / Jakarta Servlet 中弹性嗅探客户端真实 IP；
-2. **账号 + IP 双轨滑动计数**：
-   - **账号轨**：统计同一账号连续密码错误次数，达到上限触发账号封禁；
-   - **IP 轨**：统计同一客户端 IP 连续跨账号密码错误次数，达到上限触发 IP 临时熔断；
-3. **Fail-Fast 快速失败**：第 6 次来自被熔断 IP 的任何登录请求（即便尝试全新账号），直接在认证最前线拦截并返回 403，保护底层数据库与密码 Hash 计算不被穿透；
-4. **CIDR 与 IP 白名单豁免**：配置 `ip-white-list`（支持纯 IP 如 `127.0.0.1`、`0:0:0:0:0:0:0:1` 及 CIDR 网段如 `192.168.0.0/16`、`10.0.0.0/8`），白名单 IP 永远豁免 IP 维度惩罚熔断。
+### 7.1 专属 YAML 配置片段
 
-### 7.2 专属 YAML 配置片段
 ```yaml
 ateng:
   boot:
     satoken:
       login-defense:
-        enabled: true                           # 开启登录防暴力破解双轨熔断
-        max-retry-count: 5                      # 单账号连续错误重试上限（达阈值后锁定账号）
-        lock-duration: PT15M                    # 账号封禁持续时长 (ISO-8601 或 Spring Duration 格式)
-        ip-defense-enabled: true                # 开启客户端真实 IP 维度防撞库熔断
-        max-ip-retry-count: 10                  # 同一 IP 连续跨账号错误上限（达阈值后临时阻断该 IP）
-        ip-lock-duration: PT30M                 # IP 熔断持续时长
-        ip-white-list:                          # IP 豁免白名单（支持单个 IP 与 CIDR 网段）
-          - 127.0.0.1
-          - 0:0:0:0:0:0:0:1
-          - 192.168.0.0/16
+        enabled: true             # 是否开启登录防暴力破解策略器（默认: false，按需显式开启）
+        max-retry-count: 5        # 单账号最大允许连续失败次数 (默认: 5)
+        lock-time: 15m            # 账号触发锁定后的封禁时长，强类型 Duration (默认: 15m)
+        window-time: 15m          # 账号失败计数滑动统计窗口，强类型 Duration (默认: 15m)
+        ip-max-retry-count: 30    # 单客户端 IP 最大允许连续失败次数 (默认: 30)
+        ip-lock-time: 30m         # 客户端 IP 触发熔断后的锁定时长，强类型 Duration (默认: 30m)
+        ip-window-time: 15m       # 客户端 IP 失败计数滑动统计窗口，强类型 Duration (默认: 15m)
+        ip-white-list:            # IP 豁免白名单（支持精确 IPv4/IPv6 与 CIDR 网段如 10.0.0.0/8）
+          - "127.0.0.1"
+          - "0:0:0:0:0:0:0:1"
+          - "::1"
 ```
 
-### 7.3 生产级实战示例（源自 `LoginDefenseController.java`）
+### 7.2 1:1 实战代码（源自 `LoginDefenseController.java`）
+
 ```java
 @Slf4j
 @Validated
@@ -741,46 +837,34 @@ ateng:
 @RequiredArgsConstructor
 public class LoginDefenseController {
 
-    private final ObjectProvider<LoginFailureLockService> loginDefenseServiceProvider;
+    private final LoginFailureLockService lockService;
 
     /**
-     * 具备账号+IP双轨防爆破保护的登录接口
+     * 防爆破安全登录接口：支持账号 + 客户端真实 IP 双轨滑动统计与 Fail-Fast 阻断
      */
     @PostMapping("/login")
-    public Result<String> loginWithDefense(@Validated @RequestBody DefenseLoginRequestDTO request,
-                                           HttpServletRequest servletRequest) {
+    public Result<String> login(@Valid @RequestBody DefenseLoginRequestDTO request) {
         String account = request.getAccount();
-        String password = request.getPassword();
-        String clientIp = (request.getClientIp() != null && !request.getClientIp().isBlank())
-                ? request.getClientIp() : servletRequest.getRemoteAddr();
+        // 支持显式传入或由 lockService.sniffClientIp() 自动嗅探真实客户端 IP（规范化 ::1 为 127.0.0.1）
+        String clientIp = lockService.resolveClientIp(request.getClientIp());
 
-        LoginFailureLockService lockService = loginDefenseServiceProvider.getIfAvailable();
-        if (lockService != null) {
-            // 1. 前置快速失败防卫：若账号已被锁定或客户端 IP 已被熔断直接 Fail-Fast 403 阻断
-            lockService.checkLocked(account, clientIp);
-        }
+        // 1. 前置 Fail-Fast：账号锁定或非白名单 IP 熔断直接拦截
+        lockService.checkLocked(account, clientIp);
 
-        // 2. 模拟真实密码比对逻辑（约定密码为 123456）
-        boolean passwordCorrect = "123456".equals(password);
-        if (!passwordCorrect) {
-            if (lockService != null) {
-                // 原子累计账号与客户端 IP 失败次数
-                int remain = lockService.recordFailure(account, clientIp);
-                if (remain == 0) {
-                    throw new BusinessException(CommonResultCode.FORBIDDEN, "登录失败次数过多，已被锁定，请稍后再试");
-                }
-                throw new BusinessException(CommonResultCode.UNAUTHORIZED, "账号或密码错误，剩余重试机会: " + remain + " 次");
+        // 2. 密码校验示例（约定正确密码为 123456）
+        if (!"123456".equals(request.getPassword())) {
+            int remain = lockService.recordFailure(account, clientIp);
+            if (remain == 0) {
+                throw new BusinessException(CommonResultCode.FORBIDDEN, "登录失败次数过多，已被锁定，请稍后再试");
             }
-            throw new BusinessException(CommonResultCode.UNAUTHORIZED, "账号或密码错误");
+            throw new BusinessException(CommonResultCode.UNAUTHORIZED, "账号或密码错误，剩余重试机会: " + remain + " 次");
         }
 
-        // 3. 登录成功，对称清空账号与客户端 IP 的失败计数器
-        if (lockService != null) {
-            lockService.clearAllFailure(account, clientIp);
-        }
+        // 3. 登录成功，对称清零账号与客户端 IP 失败计数
+        lockService.clearAllFailure(account, clientIp);
 
         LoginUser loginUser = LoginUser.builder()
-                .userId(account)
+                .userId("user-" + account)
                 .userAccount(account)
                 .userName(account)
                 .build();
@@ -788,67 +872,103 @@ public class LoginDefenseController {
         return Result.success(LoginHelper.getTokenValue());
     }
 
-    /**
-     * 查询指定账号的锁定状态与剩余重试次数
-     */
-    @GetMapping("/status/account")
-    public Result<AccountDefenseStatusVO> getAccountDefenseStatus(@RequestParam String account) {
-        LoginFailureLockService lockService = loginDefenseServiceProvider.getIfAvailable();
-        if (lockService == null) {
-            return Result.success(AccountDefenseStatusVO.builder().account(account).locked(false).build());
-        }
+    @GetMapping("/account-status")
+    public Result<AccountDefenseStatusVO> getAccountStatus(@RequestParam("account") String account) {
         return Result.success(AccountDefenseStatusVO.builder()
                 .account(account)
                 .locked(lockService.isLocked(account))
+                .failureCount(lockService.getFailureCount(account))
+                .remainRetryCount(lockService.getRemainRetryCount(account))
                 .lockTime(lockService.getLockTime(account))
-                .remainRetries(lockService.getRemainRetries(account))
                 .build());
     }
 
-    /**
-     * 管理员手动解封被锁定的账号并清零失败计数器
-     */
-    @PostMapping("/unlock/account")
-    public Result<Void> unlockAccount(@RequestParam String account) {
-        LoginFailureLockService lockService = loginDefenseServiceProvider.getIfAvailable();
-        if (lockService != null) {
-            lockService.clearAccountFailure(account);
-        }
+    @GetMapping("/ip-status")
+    public Result<IpDefenseStatusVO> getIpStatus(@RequestParam(value = "clientIp", required = false) String clientIp) {
+        String resolvedIp = lockService.resolveClientIp(clientIp);
+        return Result.success(IpDefenseStatusVO.builder()
+                .clientIp(resolvedIp)
+                .locked(lockService.isIpLocked(resolvedIp))
+                .failureCount(lockService.getIpFailureCount(resolvedIp))
+                .remainRetryCount(lockService.getIpRemainRetryCount(resolvedIp))
+                .lockTime(lockService.getIpLockTime(resolvedIp))
+                .whiteListed(lockService.isIpWhiteListed(resolvedIp))
+                .build());
+    }
+
+    @PostMapping("/unlock-account")
+    public Result<String> unlockAccount(@RequestParam("account") String account) {
+        lockService.clearFailure(account);
         LoginHelper.untieDisable(account);
-        return Result.success();
+        return Result.success("账号已解锁: " + account);
+    }
+
+    @PostMapping("/unlock-ip")
+    public Result<String> unlockIp(@RequestParam("clientIp") String clientIp) {
+        lockService.unlockIp(clientIp);
+        lockService.clearIpFailure(clientIp);
+        return Result.success("客户端 IP 已解除熔断: " + clientIp);
     }
 }
 ```
 
-### 7.4 核心机制与非功能边界
-1. **原子双轨计数**：基于 Redis Lua 脚本或内存 `AtomicInteger` 实现无锁原子递增与 TTL 滑动窗口，并发无竞态；
-2. **前置 Fail-Fast 保护**：未通过 `checkLocked` 时直接抛出 403 业务异常，绝不执行后续高耗时的 BCrypt 密码 Hash 计算或数据库查询，保护应用不受算力耗尽冲击；
-3. **对称清空与白名单安全**：认证通过后立即执行 `clearAllFailure` 清理所有计数；对于企业网关白名单 IP，仅封禁具体受害账号，永不熔断整个网关出口 IP。
+### 7.3 预期输出与双轨防护规则
+
+```json
+// 1. 密码输错第 1 次失败响应（HTTP 200 + 业务码 401）
+{
+  "code": 401,
+  "msg": "账号或密码错误，剩余重试机会: 4 次",
+  "data": null,
+  "success": false
+}
+
+// 2. GET /sample/satoken/defense/account-status?account=audit_operator_01（连续输错被锁后）
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "account": "audit_operator_01",
+    "locked": true,
+    "failureCount": 5,
+    "remainRetryCount": 0,
+    "lockTime": 900
+  },
+  "success": true
+}
+
+// 3. GET /sample/satoken/defense/ip-status?clientIp=198.51.100.66 与非白名单 IP 触发 ip-max-retry-count 熔断后再次登录尝试
+{
+  "code": 403,
+  "msg": "客户端 IP 连续登录失败次数超限，已被临时锁定",
+  "data": null,
+  "success": false
+}
+```
+
+> 自动嗅探与无 Redis 降级机制：`LoginFailureLockService.sniffClientIp()` 依次尝试读取 `SaHolder.getRequest()` 与 Spring Web `RequestContextHolder` 的 `X-Forwarded-For`、`X-Real-IP`、`Proxy-Client-IP`、`WL-Proxy-Client-IP`、`HTTP_CLIENT_IP`、`HTTP_X_FORWARDED_FOR` 与 `remoteAddr`，并将 `0:0:0:0:0:0:0:1`/`::1` 规范化为 `127.0.0.1`；无 Redis 时回退至带 TTL 时间戳与 `10_000` 上限的有界 `ConcurrentHashMap`。
 
 ---
 
-## 8. 在线会话实时监控与精准强退治理（Online User Governance）
+## 8. 在线会话安全游标监控与精准强退治理 (Online User Governance)
 
-### 8.1 场景痛点与架构方案
-生产系统运营与运维审计要求实时查看“当前有哪些用户在线”、“各用户是从 PC 还是 APP 登录的”、“累计在线会话总数是多少”，并在发现异常会话、员工离职或账号失窃时，能够**精准按 Token 凭据、指定设备类型或阶梯封禁踢人下线**。如果采用传统 `keys *` 或全量拉取，会导致 Redis 单线程阻塞或应用内存 OOM。
+### 场景痛点
+运营与安全审计后台需要统计集群在线人数、按账号体系或关键字检索会话设备、IP 与剩余寿命，并按指定 Token、指定设备端或封禁时长进行精确处置，且绝不能因全量拉取会话导致 Redis 阻塞或应用 OOM。
 
-`LoginHelper` 提供了安全受管的在线用户治理能力：
-- **安全增量游标检索**：底层统一基于 Redis `SCAN` 增量游标（纯内存模式基于线程安全快照迭代），支持模糊关键字匹配（匹配账号、用户名、用户 ID、Token），严格分页切片，杜绝大 key 阻塞与内存膨胀；
-- **多端设备精准下线**：支持按指定 Token 强退（`kickoutByToken`）、按指定设备类型强退（`kickoutByDevice`）以及全局注销；
-- **同端顶替下线**：支持同端顶替下线（`replaced`），被顶替后原 Token 访问接口统一返回 401；
-- **阶梯封禁与解封**：支持带有效期的阶梯惩罚封禁（`disable(userId, durationSeconds)`）与即时解封（`untieDisable`），配合 `@SaCheckDisable` 保护敏感受限端点。
+### 8.1 专属 YAML 配置片段
 
-### 8.2 专属 YAML 配置片段
 ```yaml
-# Sa-Token 原生配置
-sa-token:
-  token-name: satoken             # 访问凭据 Token 头
-  timeout: 86400                  # Token 绝对有效期 24h
-  active-timeout: 1800            # 活跃空闲超时 30m
-  is-concurrent: true             # 允许同一账号多设备同时在线
+ateng:
+  boot:
+    satoken:
+      enabled: true
+      token:
+        timeout: 24h              # 会话基础有效期
+        is-concurrent: true       # 允许同一账号多终端并行在线
 ```
 
-### 8.3 生产级实战示例（源自 `OnlineSessionController.java`）
+### 8.2 1:1 实战代码（源自 `OnlineSessionController.java`）
+
 ```java
 @Slf4j
 @Validated
@@ -857,9 +977,6 @@ sa-token:
 @RequiredArgsConstructor
 public class OnlineSessionController {
 
-    /**
-     * 获取当前系统在线会话总数
-     */
     @GetMapping("/count")
     public Result<Long> getOnlineCount(@RequestParam(value = "loginType", required = false) String loginType) {
         if (loginType != null && !loginType.isBlank()) {
@@ -869,129 +986,125 @@ public class OnlineSessionController {
     }
 
     /**
-     * 分页模糊检索在线会话
+     * 增量游标分页检索在线会话（支持 loginType、keyword，返回 OnlineUser 含 tenantId / loginType / loginIp）
      */
     @GetMapping("/page")
     public Result<PageResult<OnlineUser>> searchOnlineUserPage(
+            @RequestParam(value = "loginType", required = false) String loginType,
             @RequestParam(value = "keyword", required = false) String keyword,
             @RequestParam(value = "page", defaultValue = "1") int page,
             @RequestParam(value = "size", defaultValue = "10") int size) {
+        if (loginType != null && !loginType.isBlank()) {
+            return Result.success(LoginHelper.searchOnlineUserPage(loginType, keyword, page, size));
+        }
         return Result.success(LoginHelper.searchOnlineUserPage(keyword, page, size));
     }
 
-    /**
-     * 根据指定 Token 强制会话下线（单会话强退）
-     */
     @PostMapping("/kickout-token")
-    public Result<Void> kickoutByToken(@RequestParam String tokenValue) {
+    public Result<Void> kickoutByToken(@NotBlank @RequestParam("tokenValue") String tokenValue) {
         LoginHelper.kickoutByToken(tokenValue);
         return Result.success();
     }
 
-    /**
-     * 模拟将指定用户在指定终端设备上顶替下线 (replaced)
-     */
+    @PostMapping("/kickout-device")
+    public Result<Void> kickoutDevice(@NotBlank @RequestParam("userId") String userId,
+                                      @NotBlank @RequestParam("device") String device) {
+        LoginHelper.kickoutDevice(userId, device);
+        return Result.success();
+    }
+
     @PostMapping("/replaced")
-    public Result<Void> replaced(@RequestParam String userId,
-                                 @RequestParam(required = false) String device) {
-        if (device != null && !device.isBlank()) {
-            LoginHelper.replaced(userId, device);
-        } else {
-            LoginHelper.replaced(userId);
-        }
+    public Result<Void> replaced(@NotBlank @RequestParam("userId") String userId,
+                                 @RequestParam(value = "device", defaultValue = "PC") String device) {
+        LoginHelper.replaced(userId, device);
         return Result.success();
     }
 
-    /**
-     * 对违规账号施加阶梯封禁（指定时长，单位：秒）
-     */
     @PostMapping("/disable")
-    public Result<Void> disableAccount(@RequestParam String userId,
-                                       @RequestParam(defaultValue = "86400") long durationSeconds) {
-        LoginHelper.disable(userId, durationSeconds);
-        return Result.success();
+    public Result<String> disableUser(@NotBlank @RequestParam("userId") String userId,
+                                      @RequestParam(value = "durationSeconds", defaultValue = "300") long durationSeconds) {
+        LoginHelper.disable(userId, Duration.ofSeconds(durationSeconds));
+        return Result.success("账号已封禁，时长: " + durationSeconds + " 秒");
     }
 
-    /**
-     * 解封账号
-     */
-    @PostMapping("/untie-disable")
-    public Result<Void> untieDisableAccount(@RequestParam String userId) {
-        LoginHelper.untieDisable(userId);
-        return Result.success();
-    }
-
-    /**
-     * 查询账号封禁状态及剩余封禁秒数
-     */
-    @GetMapping("/disable-status")
-    public Result<DisableStatusVO> getDisableStatus(@RequestParam String userId) {
-        return Result.success(DisableStatusVO.builder()
-                .userId(userId)
-                .disabled(LoginHelper.isDisable(userId))
-                .disableTime(LoginHelper.getDisableTime(userId))
-                .build());
-    }
-
-    /**
-     * 封禁敏感受限接口验证（受 @SaCheckDisable 保护）
-     */
     @GetMapping("/restricted-action")
     @SaCheckDisable
-    public Result<String> performRestrictedAction() {
-        return Result.success("受限高危业务操作成功");
+    public Result<String> checkRestrictedAction() {
+        return Result.success("受限操作调用成功");
     }
 }
 ```
 
-### 8.4 核心机制与非功能边界
-1. **增量游标无锁迭代**：`LoginHelper.searchOnlineUserPage` 内部采用 Redis `SCAN`，单次分批拉取限定数量 key，检索完成后再提取 `LoginUser` 组装 `OnlineUser`，绝不阻塞 Redis 主线程；
-2. **多设备顶替与下线语义区分**：
-   - `kickout`（踢人下线）：被踢用户下次请求收到 401 未登录异常；
-   - `replaced`（顶替下线）：同端新登录覆盖旧端，旧 Token 请求收到 401 顶替异常；
-3. **阶梯封禁精准阻断**：账号被 `disable` 后，携带该用户 Token 访问标记 `@SaCheckDisable` 的接口时，框架立即返回 403 禁用响应，并提示剩余解封时长。
+### 8.3 预期输出示例
+
+```json
+// GET /sample/satoken/online/page?loginType=login&keyword=admin&page=1&size=10
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "records": [
+      {
+        "userId": "10086",
+        "userAccount": "admin",
+        "userName": "admin",
+        "tenantId": "tenant_sz",
+        "loginType": "login",
+        "tokenValue": "5a9f2d8e-7c41-4c72-9b1f-3d841a8c0e11",
+        "loginDevice": "PC",
+        "loginIp": "127.0.0.1",
+        "loginTime": 1762992000000,
+        "tokenTimeout": 86385
+      }
+    ],
+    "total": 1,
+    "size": 10,
+    "current": 1,
+    "pages": 1
+  },
+  "success": true
+}
+
+// 被 kickout 强退后原 Token 访问业务接口
+{
+  "code": 401,
+  "msg": "当前账号已被踢下线",
+  "data": null,
+  "success": false
+}
+```
 
 ---
 
-## 9. 数据库驱动的动态 URL 路径权限匹配管道（Dynamic Path Permission SPI）
+## 9. 声明式双轨白名单与动态 URL 路径权限管道
 
 ### 场景痛点
-大型企业系统通常要求将“API 路径与角色/权限的对应关系”交由管理员在前端可视化配置并持久化保存在数据库中。如果仅依赖代码中的 `@SaCheckPermission` 注解，一旦权限发生重构或新增路径规则，必须重新编译打包并发布代码；而自建拦截器又容易与框架的白名单与上下文注入发生时序错乱。
+1. **静态白名单维护割裂与漏保护**：手工在配置文件硬编码放行路径容易在接口改名后遗漏；而整个 Controller 类公开时，偶发的 VIP 或高敏接口缺少快捷“反向收敛”能力；
+2. **动态 URL 权限修改需要发版**：运营配置菜单权限映射后，硬编码的 `@SaCheckPermission` 无法运行时热刷新，且多账号体系下的同路径接口需要独立 `loginType` 路由隔离。
 
-### 架构方案
-`ateng-boot-satoken` 在 `AtengSaTokenInterceptor` 中无缝内嵌**动态路径权限匹配管道**：
-1. **SPI 优雅扩展**：业务只需声明实现 `DynamicPathPermissionProvider` SPI 接口，即可从数据库、字典表或配置中心加载 `List<PathPermissionRule>`；
-2. **AntPath + HTTP Method 双重匹配**：支持精确路径（如 `/sample/satoken/portal/reports/daily`）与通配路径（如 `/sample/satoken/portal/reports/**`），并精确比对 HTTP 请求方法（GET、POST、PUT、DELETE 或 `*` 通配）；
-3. **丰富鉴权模式**：支持 `SaMode.AND`（必须同时具备多个权限）与 `SaMode.OR`（具备任一权限即放行）；
-4. **零侵入与零注解**：Controller 方法无需编写任何 `@SaCheckPermission` 注解，只要命中规则管道，拦截器自动调用底层 `StpUtil.checkPermissionAnd/Or(...)` 实施强力防御。
+### 9.1 专属 YAML 配置片段
 
-### 核心代码示例（源自 `SampleDynamicPathPermissionProvider.java` 与 `PublicPortalController.java`）
-
-#### 1. 实现 SPI 动态路径规则提供者
-```java
-@Component
-public class SampleDynamicPathPermissionProvider implements DynamicPathPermissionProvider {
-
-    private final List<PathPermissionRule> rules = new CopyOnWriteArrayList<>(List.of(
-            PathPermissionRule.of("/sample/satoken/portal/reports/daily", "GET", "portal:report:view"),
-            PathPermissionRule.of("/sample/satoken/portal/reports/daily", "POST", "portal:report:export"),
-            PathPermissionRule.of("/sample/satoken/portal/reports/daily", "DELETE", SaMode.AND, "portal:report:delete", "portal:report:audit")
-    ));
-
-    @Override
-    public List<PathPermissionRule> getPathPermissionRules() {
-        return Collections.unmodifiableList(rules);
-    }
-
-    public void refresh() {
-        // 运行时热刷新重载逻辑
-        log.info("动态路径权限规则已热刷新");
-    }
-}
+```yaml
+ateng:
+  boot:
+    satoken:
+      white-list:                 # 全局基础白名单（自动与 interceptor.excludes 及 @Anonymous/SPI 合并去重）
+        - "/doc.html"
+        - "/v3/api-docs/**"
+      interceptor:
+        enabled: true             # 是否挂载双轨拦截器 AtengSaTokenInterceptor (默认: true)
+        check-login: false        # 严格模式：开启后除汇聚白名单外所有路由均强制 checkLogin() (默认: false)
+        includes:
+          - "/**"
+        excludes:
+          - "/sample/satoken/auth/login"
 ```
 
-#### 2. Controller 接口无需标注注解（受管道自动保护）
+### 9.2 1:1 实战代码（源自 `PublicPortalController.java`、`SampleWhitelistProvider.java` 与 `SampleDynamicPathPermissionProvider.java`）
+
 ```java
+// 1. 类级 @Anonymous 声明公开，局部高敏接口使用 @Anonymous(false) 反向收敛保护
+@Slf4j
 @RestController
 @RequestMapping("/sample/satoken/portal")
 @Anonymous
@@ -1000,52 +1113,185 @@ public class PublicPortalController {
 
     private final SampleDynamicPathPermissionProvider dynamicPathPermissionProvider;
 
-    @GetMapping("/reports/daily")
+    @GetMapping("/announcement")
+    public Result<String> getAnnouncement() {
+        return Result.success("【系统公告】双十一全场云原生基础设施 Starter 限时特惠开启！");
+    }
+
+    @GetMapping("/products/{productId}")
+    public Result<Map<String, Object>> getProductDetail(@PathVariable("productId") String productId) {
+        // AnonymousUrlProcessor 启动时自动将 {productId} 转译为 /sample/satoken/portal/products/* 并入白名单
+        Map<String, Object> product = new LinkedHashMap<>();
+        product.put("productId", productId);
+        product.put("title", "Spring Boot 3 企业级微服务开发实战");
+        product.put("price", new BigDecimal("99.00"));
+        product.put("stock", 500);
+        return Result.success(product);
+    }
+
+    @GetMapping("/products/{productId}/vip-price")
     @Anonymous(false)
+    @SaCheckLogin
+    public Result<Map<String, Object>> getVipPrice(@PathVariable("productId") String productId) {
+        Map<String, Object> vipPrice = new LinkedHashMap<>();
+        vipPrice.put("productId", productId);
+        vipPrice.put("originalPrice", new BigDecimal("99.00"));
+        vipPrice.put("vipPrice", new BigDecimal("69.00"));
+        vipPrice.put("vipDiscount", "70%");
+        return Result.success(vipPrice);
+    }
+
+    @GetMapping("/categories")
+    @Anonymous(false) // 由 SampleWhitelistProvider SPI 动态放行 /sample/satoken/portal/categories/**
+    public Result<List<String>> getCategories() {
+        return Result.success(List.of("云计算", "中间件", "数据库", "开发框架"));
+    }
+
+    @GetMapping("/reports/daily")
+    @Anonymous(false) // 拦截器动态匹配管道强制校验 portal:report:view
     public Result<String> getDailyReport() {
-        // 需 portal:report:view 权限，拦截器管道动态鉴权
         return Result.success("每日运营分析报表数据汇总");
     }
 
     @PostMapping("/reports/daily")
-    @Anonymous(false)
+    @Anonymous(false) // 拦截器动态匹配管道强制校验 portal:report:export
     public Result<String> exportDailyReport() {
-        // 需 portal:report:export 权限
         return Result.success("每日运营分析报表导出任务已提交");
     }
 
     @DeleteMapping("/reports/daily")
-    @Anonymous(false)
+    @Anonymous(false) // 拦截器动态匹配管道强制校验 SaMode.AND: portal:report:delete + portal:report:audit
     public Result<String> deleteDailyReport() {
-        // 需 portal:report:delete AND portal:report:audit 双权限
-        return Result.success("每日运营分析报表已彻底销毁并归档审计");
+        return Result.success("每日运营历史归档报表已彻底销毁");
     }
 
     @GetMapping("/reports/unprotected")
+    @Anonymous(false)
     public Result<String> getUnprotectedReport() {
-        // 类级 @Anonymous 放行，未受动态规则约束
         return Result.success("无约束报表数据公开汇总");
     }
 
+    @GetMapping("/rules")
+    public Result<List<PathPermissionRule>> getRules() {
+        return Result.success(dynamicPathPermissionProvider.getPathPermissionRules());
+    }
+
     @PostMapping("/rules/refresh")
-    public Result<String> refreshRules() {
+    public Result<Void> refreshRules() {
         dynamicPathPermissionProvider.refresh();
-        return Result.success("动态路径权限规则已热刷新重载");
+        return Result.success();
+    }
+}
+
+// 2. 动态白名单扩展 SPI（SampleWhitelistProvider.java）
+@Component
+public class SampleWhitelistProvider implements SaTokenWhitelistProvider {
+    @Override
+    public Set<String> getWhitelist() {
+        return Set.of("/sample/satoken/portal/categories/**");
+    }
+}
+
+// 3. 数据库驱动动态路径权限 SPI（SampleDynamicPathPermissionProvider.java）
+@Component
+public class SampleDynamicPathPermissionProvider implements DynamicPathPermissionProvider {
+
+    private final List<PathPermissionRule> rules = new CopyOnWriteArrayList<>();
+
+    public SampleDynamicPathPermissionProvider() {
+        initDefaultRules();
+    }
+
+    private void initDefaultRules() {
+        rules.clear();
+        rules.add(PathPermissionRule.of("/sample/satoken/portal/reports/daily", "GET", "portal:report:view"));
+        rules.add(PathPermissionRule.of("/sample/satoken/portal/reports/daily", "POST", "portal:report:export"));
+        rules.add(PathPermissionRule.of("/sample/satoken/portal/reports/daily", "DELETE", SaMode.AND, "portal:report:delete", "portal:report:audit"));
+    }
+
+    @Override
+    public List<PathPermissionRule> getPathPermissionRules() {
+        return Collections.unmodifiableList(rules);
+    }
+
+    public synchronized void refresh() {
+        initDefaultRules();
+    }
+
+    public synchronized void addRule(PathPermissionRule rule) {
+        if (rule != null) {
+            rules.add(rule);
+        }
+    }
+
+    public synchronized void clearRules() {
+        rules.clear();
     }
 }
 ```
 
+### 9.3 预期输出示例
+
+```json
+// GET /sample/satoken/portal/rules
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": [
+    {
+      "pathPattern": "/sample/satoken/portal/reports/daily",
+      "httpMethod": "GET",
+      "permissions": ["portal:report:view"],
+      "mode": "OR"
+    },
+    {
+      "pathPattern": "/sample/satoken/portal/reports/daily",
+      "httpMethod": "POST",
+      "permissions": ["portal:report:export"],
+      "mode": "OR"
+    },
+    {
+      "pathPattern": "/sample/satoken/portal/reports/daily",
+      "httpMethod": "DELETE",
+      "permissions": ["portal:report:delete", "portal:report:audit"],
+      "mode": "AND"
+    }
+  ],
+  "success": true
+}
+
+// 无 portal:report:view 权限访问 GET /sample/satoken/portal/reports/daily
+{
+  "code": 403,
+  "msg": "无权访问：缺少所需权限码 [portal:report:view]",
+  "data": null,
+  "success": false
+}
+```
+
+> `PathPermissionRule` 同时提供绑定 `loginType` 的工厂重载 `PathPermissionRule.of(pathPattern, httpMethod, loginType, mode, permissions)`，可在多账号系统下精确路由到 `admin` 或 `member` 体系执行权限断言。
+
 ---
 
-## 10. 微服务内部零信任调用与客户端拦截器自动装配（Same-Token）
+## 10. 微服务内部零信任通信与客户端自动透传 (Same-Token)
 
 ### 场景痛点
-在微服务架构中，内部服务之间往往有专用的 HTTP / RPC 接口。若缺乏调用凭据验证，攻击者或外网恶意请求一旦绕过 API 网关，就可直接向内部微服务发送伪造请求，造成重大越权安全事故。此外，调用方发起内部请求时，若需要在每处业务代码中手工拼接请求头，代码极其臃肿且极易遗漏。
+内部微服务之间直接暴露的清算或管理接口若缺乏调用来源证明，绕过网关直连端口将引发重大内网安全漏洞；而要求每次使用 `RestClient` / `RestTemplate` 时人工从 `SaSameUtil` 读取并拼接请求头极易遗漏。
 
-### 核心代码示例（源自 `InternalClusterController.java` 与 `SampleSaTokenIntegrationTest.java`）
+### 10.1 专属 YAML 配置片段
 
-#### 1. 服务端接口声明零信任保护
-只需在 Controller 类或方法上标注 `@CheckSameToken`：
+```yaml
+ateng:
+  boot:
+    satoken:
+      same-token:
+        enabled: true             # 是否启用内部 Same-Token 校验 (默认: true)
+        header-name: SA-SAME-TOKEN # 请求头名称 (默认: SA-SAME-TOKEN)
+        token-value: "${SAME_TOKEN_SECRET:}" # 可选固定密钥（留空时采用 Sa-Token 动态轮转凭据；开启后使用 MessageDigest.isEqual 常数时间比对）
+        auto-inject-client: true  # 自动为 RestClient.Builder 与 RestTemplate 注入 SameTokenClientHttpRequestInterceptor (默认: true)
+```
+
+### 10.2 1:1 实战代码（源自 `InternalClusterController.java`）
 
 ```java
 @Slf4j
@@ -1056,23 +1302,17 @@ public class InternalClusterController {
     private final RestClient.Builder restClientBuilder;
 
     /**
-     * 微服务内网清算凭证受保护接口（仅限持有有效 SA-SAME-TOKEN 内网凭据的服务调用）
+     * 服务端受 @CheckSameToken 零信任保护的内部清算接口
      */
     @GetMapping("/sample/satoken/internal/clearing/voucher")
     @Anonymous
-    @CheckSameToken // 拦截并校验微服务内部调用凭证
+    @CheckSameToken
     public Result<String> getClearingVoucher() {
         return Result.success("清算凭证数据 [CLR-20261108-9988]");
     }
-```
 
-#### 2. 发起端 RestClient / RestTemplate 拦截器全自动装配
-当配置 `ateng.boot.satoken.same-token.auto-inject-client: true`（默认启用）时，框架自动注册 `sameTokenRestClientCustomizer` 与 `sameTokenRestTemplateCustomizer`。由 Spring 受管的 `RestClient.Builder` 与 `RestTemplate` 会**全自动挂载 `SameTokenClientHttpRequestInterceptor`**，在发出内部请求时自动注入 `SA-SAME-TOKEN` 请求头：
-
-```java
     /**
-     * 演示发起跨微服务内部清算调用
-     * 通过自动注入 SameTokenClientHttpRequestInterceptor 的 RestClient 自动在请求头挂载 SA-SAME-TOKEN
+     * 客户端通过受管 RestClient.Builder 发起跨服务调用（自动透明携带 SA-SAME-TOKEN 请求头）
      */
     @PostMapping("/sample/satoken/internal/call-clearing")
     @Anonymous
@@ -1081,7 +1321,6 @@ public class InternalClusterController {
                 ? targetUrl
                 : "http://localhost:8080/sample/satoken/internal/clearing/voucher";
         try {
-            // 底层拦截器已自动附带 SA-SAME-TOKEN 请求头，无需业务手工干预
             String response = restClientBuilder.build()
                     .get()
                     .uri(url)
@@ -1096,9 +1335,10 @@ public class InternalClusterController {
 }
 ```
 
-### 预期拦截呈现
-若未经网关伪造请求或未携带合法的 Same-Token，AOP 切面立即阻断并返回：
+### 10.3 预期输出与生态正交边界
+
 ```json
+// 未携带有效 SA-SAME-TOKEN 请求头直连 /sample/satoken/internal/clearing/voucher
 {
   "code": 403,
   "msg": "微服务内部鉴权凭据无效或已失效",
@@ -1107,44 +1347,95 @@ public class InternalClusterController {
 }
 ```
 
+> 微服务生态协同边界（参见 [ADR-0059](../docs/adr/0059-satoken-hierarchical-cache-multi-account-and-zero-trust-closed-loop-architecture.md)）：跨服务 OpenFeign RPC 由 `ateng-cloud-feign` 自动透传四维上下文与 Same-Token，Dubbo RPC 由 `ateng-cloud-dubbo` 透传验签，WebFlux 响应式网关准入由 `ateng-cloud-gateway` 承接；`ateng-boot-satoken` 专注单体与微服务服务端零信任防线及 Spring 原生 HTTP 客户端出站透传。
+
 ---
 
-## 11. Spring 原生安全事件总线（Spring Native Security Event Bus）
+## 11. 身份模拟双维审计与 Spring 原生安全事件总线
 
-### 11.1 场景痛点与架构方案
-安全合规与风控要求记录登录日志、异常登出、踢人下线、账号封禁等关键事件。如果把审计日志代码写在登录方法中，会造成强耦合；原生 Sa-Token 的监听器接口非 Spring 标准生态，不便于与其他组件解耦。
+### 场景痛点
+客服代客排障或系统自动补偿订单时，既需要持久/瞬态以目标用户上下文运行（驱动 MyBatis-Plus 自动填入被模拟人 `createBy`），又必须不可篡改地记录最初真实登录操作人以便风控追溯；同时登录、注销、踢人、封禁与二级认证事件需零侵入地接入 Spring 事件总线。
 
-`ateng-boot-satoken` 内置 `SaTokenEventPublisher`，自动将 Sa-Token 生命周期事件桥接并广播为 Spring 原生 `ApplicationEvent`。业务模块只需声明普通 `@EventListener` 即可非侵入式接收 8 类核心安全事件：
-- `SaLoginEvent`（用户登录事件）
-- `SaLogoutEvent`（用户注销事件）
-- `SaKickoutEvent`（用户被踢下线事件）
-- `SaReplacedEvent`（用户被顶替下线事件）
-- `SaDisableEvent`（账号封禁事件）
-- `SaUntieDisableEvent`（账号解封事件）
-- `SaOpenSafeEvent`（开启二级认证事件）
-- `SaCloseSafeEvent`（关闭二级认证事件）
+### 11.1 专属 YAML 配置片段
 
-### 11.2 专属 YAML 配置片段
 ```yaml
 ateng:
   boot:
     satoken:
-      # 框架全自动注册 SaTokenEventPublisher，桥接 Sa-Token 原生 8 类生命周期事件至 Spring 事件总线
-      enabled: true
+      enabled: true               # 自动装配 SaTokenEventPublisher 桥接 8 类 Spring ApplicationEvent
 ```
 
-### 11.3 生产级实战示例（源自 `SampleSecurityEventListener.java` 与 `ImpersonateAuditController.java`）
+### 11.2 1:1 实战代码（源自 `ImpersonateAuditController.java` 与 `SampleSecurityEventListener.java`）
+
 ```java
 @Slf4j
-@Getter
+@Validated
+@RestController
+@RequestMapping("/sample/satoken/impersonate")
+@RequiredArgsConstructor
+public class ImpersonateAuditController {
+
+    private final SaTokenSampleService sampleService;
+    private final SampleSecurityEventListener securityEventListener;
+
+    /**
+     * 1. 会话级持久身份模拟（switchTo / endSwitch）与双维状态查询
+     */
+    @PostMapping("/switch")
+    public Result<String> switchTo(@NotBlank @RequestParam("targetUserId") String targetUserId) {
+        LoginHelper.switchTo(targetUserId);
+        return Result.success("会话已切换至目标用户: " + targetUserId);
+    }
+
+    @GetMapping("/status")
+    public Result<ImpersonateStatusVO> getImpersonateStatus() {
+        return Result.success(ImpersonateStatusVO.builder()
+                .isRunAs(LoginHelper.isRunAs())
+                .currentUserId(LoginHelper.getUserId())         // 当前生效目标用户
+                .realUserId(LoginHelper.getRealUserId())       // 始终锁定真实登录人
+                .originalUserId(LoginHelper.getOriginalUserId())
+                .build());
+    }
+
+    @PostMapping("/end-switch")
+    public Result<String> endSwitch() {
+        LoginHelper.endSwitch();
+        return Result.success("已结束会话模拟，恢复原始身份");
+    }
+
+    /**
+     * 2. 代码块级瞬态身份模拟（runAs，栈式保护并在 finally 中自动还原）
+     */
+    @PostMapping("/compensate-order")
+    public Result<Long> compensateOrder(@NotBlank @RequestParam("targetUserId") String targetUserId,
+                                        @NotBlank @RequestParam("orderNo") String orderNo,
+                                        @NotNull @DecimalMin("0.01") @RequestParam("amount") BigDecimal amount) {
+        Long orderId = LoginHelper.runAs(targetUserId, () -> sampleService.createOrder(orderNo, amount));
+        return Result.success(orderId);
+    }
+
+    @GetMapping("/events")
+    public Result<List<SecurityEventVO>> getSecurityEvents() {
+        return Result.success(securityEventListener.getAllEventsList());
+    }
+}
+```
+
+监听全生命周期事件（源自 `SampleSecurityEventListener.java`）：
+
+```java
+@Slf4j
 @Component
 public class SampleSecurityEventListener {
 
+    private final List<SaLoginEvent> loginEvents = new CopyOnWriteArrayList<>();
+    private final List<SaKickoutEvent> kickoutEvents = new CopyOnWriteArrayList<>();
     private final List<SecurityEventVO> allEvents = new CopyOnWriteArrayList<>();
 
     @EventListener
     public void onLogin(SaLoginEvent event) {
         log.info("【安全事件监听】收到用户登录事件: userId={}, token={}", event.getLoginId(), event.getTokenValue());
+        loginEvents.add(event);
         allEvents.add(SecurityEventVO.builder()
                 .eventType("LOGIN")
                 .loginType(event.getLoginType())
@@ -1171,6 +1462,7 @@ public class SampleSecurityEventListener {
     @EventListener
     public void onKickout(SaKickoutEvent event) {
         log.info("【安全事件监听】收到用户被踢下线事件: userId={}, token={}", event.getLoginId(), event.getTokenValue());
+        kickoutEvents.add(event);
         allEvents.add(SecurityEventVO.builder()
                 .eventType("KICKOUT")
                 .loginType(event.getLoginType())
@@ -1214,522 +1506,303 @@ public class SampleSecurityEventListener {
                 .eventType("UNTIE_DISABLE")
                 .loginType(event.getLoginType())
                 .loginId(String.valueOf(event.getLoginId()))
-                .details("账号解封成功: service=" + event.getService())
+                .details("账号解除封禁: service=" + event.getService())
+                .timestamp(LocalDateTime.now())
+                .build());
+    }
+
+    @EventListener
+    public void onOpenSafe(SaOpenSafeEvent event) {
+        log.info("【安全事件监听】收到开启二级安全认证事件: service={}, time={}s", event.getService(), event.getSafeTime());
+        allEvents.add(SecurityEventVO.builder()
+                .eventType("OPEN_SAFE")
+                .loginType(event.getLoginType())
+                .details("开启二级安全认证: service=" + event.getService() + ", time=" + event.getSafeTime() + "s")
+                .timestamp(LocalDateTime.now())
+                .build());
+    }
+
+    @EventListener
+    public void onCloseSafe(SaCloseSafeEvent event) {
+        log.info("【安全事件监听】收到关闭二级安全认证事件: service={}", event.getService());
+        allEvents.add(SecurityEventVO.builder()
+                .eventType("CLOSE_SAFE")
+                .loginType(event.getLoginType())
+                .details("关闭二级安全认证: service=" + event.getService())
                 .timestamp(LocalDateTime.now())
                 .build());
     }
 }
 ```
 
-配合 `ImpersonateAuditController` 提供安全审计流水查询与清空端点：
-```java
-    /**
-     * 检索全景安全审计事件流水（支持登录、注销、踢人、顶替、封禁与二级认证）
-     */
-    @GetMapping("/events")
-    public Result<List<SecurityEventVO>> getSecurityEvents() {
-        return Result.success(securityEventListener.getAllEventsList());
-    }
+### 11.3 预期输出示例
 
-    /**
-     * 清空审计事件流水
-     */
-    @PostMapping("/events/clear")
-    public Result<Void> clearSecurityEvents() {
-        securityEventListener.clearEvents();
-        return Result.success();
-    }
+```json
+// GET /sample/satoken/impersonate/status（客服 "admin-kefu" 切换至 "10086" 后）
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "isRunAs": true,
+    "currentUserId": "10086",
+    "realUserId": "admin-kefu",
+    "originalUserId": "admin-kefu"
+  },
+  "success": true
+}
 ```
-
-### 11.4 核心机制与非功能边界
-1. **完全解耦与异步扩展**：监听方法支持挂载 `@Async` 异步处理，耗时日志落库或消息投递不阻塞核心鉴权主流程；
-2. **全生命周期无死角感知**：涵盖从登录、注销到封禁、解封全生命周期，事件携带真实账号标识、会话 Token 与服务类型，满足 SOC/合规审计严苛要求。
 
 ---
 
-## 12. 水平越权防御与数据所有权校验体系 (@CheckDataOwner & LoginHelper.checkSelf)
+## 12. OpenAPI / Knife4j 鉴权弹窗无侵入自动化
 
 ### 场景痛点
-传统 RBAC 权限体系通常仅校验接口“操作权限”（例如判断当前用户是否具备 `user:update` 权限），但无法防范恶意用户通过篡改请求路径参数或请求体中的 `userId`、`orderId` 来修改他人数据的**水平越权漏洞（BOLA / IDOR）**。若在每个业务 Service 中重复编写 `if (!userId.equals(currentUserId))`，极易出现漏检。
+前后端联调或通过 Swagger / Knife4j 文档调试受保护接口时，手工在每个请求单独填写真实请求头极其繁琐。当类路径引入 `springdoc-openapi-starter-webmvc-ui` 时，`SaTokenOpenApiCustomizer` 自动在 OpenAPI Schema 中注册全局 Header 鉴权定义。
 
-### 核心代码示例（源自 `AccessControlController.java`）
+### 12.1 专属 YAML 配置片段
 
-#### 1. 声明式 SpEL 数据所有权校验
-通过在 Controller 方法上标注 `@CheckDataOwner`，支持直接通过 SpEL 表达式提取当前请求入参的目标归属人：
-
-```java
-@Validated
-@RestController
-@RequestMapping("/sample/satoken/access")
-@RequiredArgsConstructor
-public class AccessControlController {
-
-    /**
-     * 基于 @CheckDataOwner 的用户个人资料防水平越权修改
-     */
-    @PostMapping("/profile/update")
-    @CheckDataOwner(expr = "#dto.userId")
-    public Result<String> updateProfile(@Valid @RequestBody UserProfileDTO dto) {
-        return Result.success("个人资料更新成功: " + dto.getNickname());
-    }
-
-    /**
-     * 基于 @CheckDataOwner 与 DataOwnerProvider 反查 SPI 的订单防水平越权取消
-     */
-    @PostMapping("/orders/{orderId}/cancel")
-    @CheckDataOwner(expr = "#orderId", provider = SampleOrderDataOwnerProvider.class)
-    public Result<String> cancelOrder(@PathVariable("orderId") Long orderId) {
-        return Result.success("订单已成功取消: " + orderId);
-    }
-}
-```
-
-#### 2. 编程式极简防卫断言
-在后台逻辑或批量操作中，可直接调用 `LoginHelper.checkSelf` 或 `LoginHelper.checkBelongsToTenant` 实施前置卫语句快速失败：
-
-```java
-    /**
-     * 编程式断言当前操作人本人归属与租户归属
-     */
-    @PostMapping("/assert-self")
-    public Result<String> assertSelf(@RequestParam("userId") String userId) {
-        // 1. 断言当前操作人是否为本人（超级管理员自动豁免放行）
-        LoginHelper.checkSelf(userId);
-        return Result.success("本人所有权断言校验通过: " + userId);
-    }
-
-    @PostMapping("/assert-tenant")
-    public Result<String> assertTenant(@RequestParam("tenantId") String tenantId) {
-        // 2. 断言当前操作人是否归属于目标租户
-        LoginHelper.checkBelongsToTenant(tenantId);
-        return Result.success("当前租户归属断言校验通过: " + tenantId);
-    }
-```
-
----
-
-## 13. 声明式公开访问与动态白名单 (@Anonymous & SaTokenWhitelistProvider)
-
-### 场景痛点
-在微服务或单体架构中，很多接口（如登录、验证码、对外静态公文、健康检查）无需鉴权放行。传统做法是在 `application.yml` 的 `white-list` 中硬编码长路径，这不仅繁琐，而且一旦接口重命名或迁移极易引发 401 漏检事故；此外，业务插件或第三方 Starter 无法在运行时动态扩充白名单。
-
-### 核心代码示例（源自 `PublicPortalController.java` 与 `SampleWhitelistProvider.java`）
-
-#### 1. 声明式 `@Anonymous` 注解放行
-支持在 Controller 方法或类级别直接标注 `@Anonymous`，启动时 `AnonymousUrlProcessor` 会自动扫描并将 Spring MVC 路径变量占位符（如 `{productId}`）自适应转译为 AntPath 通配符（如 `*`）：
-
-```java
-@Slf4j
-@RestController
-@RequestMapping("/sample/satoken/portal")
-@RequiredArgsConstructor
-public class PublicPortalController {
-
-    /**
-     * 1. 公开全员公告（方法级声明放行）
-     */
-    @GetMapping("/announcement")
-    @Anonymous
-    public Result<String> getAnnouncement() {
-        return Result.success("系统日常维护通知：本周日凌晨进行数据库索引调优");
-    }
-
-    /**
-     * 2. 带路径参数的公开商品详情
-     * AnonymousUrlProcessor 自动扫描转译 /products/{productId} 为 /sample/satoken/portal/products/* 通配白名单
-     */
-    @GetMapping("/products/{productId}")
-    @Anonymous
-    public Result<String> getProductDetail(@PathVariable("productId") String productId) {
-        return Result.success("商品详情信息: " + productId);
-    }
-}
-```
-
-#### 2. SPI 动态白名单扩展 (`SaTokenWhitelistProvider`)
-业务模块或插件 Starter 可声明实现 `SaTokenWhitelistProvider` SPI 接口，在运行时向鉴权拦截器动态注入自定义白名单路径：
-
-```java
-@Component
-public class SampleWhitelistProvider implements SaTokenWhitelistProvider {
-
-    @Override
-    public Set<String> getWhitelist() {
-        return Set.of(
-                "/sample/satoken/portal/categories/**"
-        );
-    }
-}
-```
-
----
-
-## 14. 身份模拟与双维运维审计体系（RunAs / Impersonate）
-
-### 14.1 场景痛点与架构方案
-在大型企业系统中，客服代客下单、技术运维排障、故障复现等场景下，管理员需要临时以特定用户的身份调用业务接口。如果直接篡改当前会话，会导致真实操作人丢失引发重大审计盲区；若手工在 Service 层层透传 `impersonateUserId`，则持久层审计（`create_by` / `update_by`）与数据权限断言无法透明生效。
-
-`LoginHelper` 提供了**双维身份模拟体系**：
-- **跨请求会话级模拟 (`switchTo` / `endSwitch`)**：适用于客服工作台长期模拟某客户操作，模拟态信息跨 HTTP 请求持久维护于会话 Session 中；
-- **瞬态代码块安全模拟 (`runAs`)**：适用于在特定方法内部临时以目标用户身份运行，基于 ThreadLocal 栈式暂存现场与 `finally` 可靠清理；
-- **真实人与模拟人双维追踪**：`LoginHelper.getUserId()` 自动返回当前生效的用户标识，`LoginHelper.getRealUserId()` / `LoginHelper.getOriginalUserId()` 始终锁定最初的真实登录人，MyBatis-Plus 审计自动填入模拟人，而审计日志同时记录双维操作链路。
-
-### 14.2 专属 YAML 配置片段
-```yaml
-# Sa-Token 原生配置
-sa-token:
-  token-name: satoken             # 访问凭据 Token 头
-  timeout: 86400                  # Token 绝对有效期 24h
-  active-timeout: 1800            # 活跃空闲超时 30m
-```
-
-### 14.3 生产级实战示例（源自 `ImpersonateAuditController.java`）
-```java
-@Slf4j
-@Validated
-@RestController
-@RequestMapping("/sample/satoken/impersonate")
-@RequiredArgsConstructor
-public class ImpersonateAuditController {
-
-    private final TenantOrderMapper orderMapper;
-
-    /**
-     * 查询当前会话模拟状态及双维操作人详情
-     */
-    @GetMapping("/status")
-    public Result<ImpersonateStatusVO> getImpersonateStatus() {
-        LoginHelper.checkLogin();
-        return Result.success(ImpersonateStatusVO.builder()
-                .isRunAs(LoginHelper.isRunAs())
-                .currentUserId(LoginHelper.getUserId())
-                .realUserId(LoginHelper.getRealUserId())
-                .originalUserId(LoginHelper.getOriginalUserId())
-                .build());
-    }
-
-    /**
-     * 开启客服持久会话切换 (switchTo)
-     */
-    @PostMapping("/switch")
-    public Result<Void> switchToUser(@RequestParam String targetUserId) {
-        LoginHelper.checkLogin();
-        LoginHelper.switchTo(targetUserId);
-        return Result.success();
-    }
-
-    /**
-     * 结束会话切换并恢复原始身份 (endSwitch)
-     */
-    @PostMapping("/end-switch")
-    public Result<Void> endSwitch() {
-        LoginHelper.checkLogin();
-        LoginHelper.endSwitch();
-        return Result.success();
-    }
-
-    /**
-     * 瞬态函数式安全模拟补偿客诉订单 (runAs)
-     */
-    @PostMapping("/compensate-order")
-    public Result<Long> compensateOrder(@RequestParam String targetUserId,
-                                        @RequestParam String orderNo,
-                                        @RequestParam BigDecimal amount) {
-        LoginHelper.checkLogin();
-        // 瞬态函数式模拟：在 lambda 代码块内，LoginHelper.getUserId() 变为 targetUserId
-        // 代码块执行完毕后（无论成功还是异常），现场 100% 自动恢复为原始登录人
-        Long orderId = LoginHelper.runAs(targetUserId, () -> {
-            TenantOrderEntity order = new TenantOrderEntity();
-            order.setOrderNo(orderNo);
-            order.setAmount(amount);
-            // 插入数据库：自动审计填充 createBy 会透明捕获 targetUserId
-            orderMapper.insert(order);
-            return order.getId();
-        });
-        return Result.success(orderId);
-    }
-}
-```
-
-### 14.4 核心机制与非功能边界
-1. **源头身份防篡改**：`originalUserId` 在首次执行 `switchTo` 时一次性深层锁定于 Session 属性中，即便后续多次连续切换身份，`getOriginalUserId()` 也绝不被覆盖；
-2. **栈式 ThreadLocal 确定性清理**：`LoginHelper.runAs` 内部维护深度计数器并在 `finally` 块中执行现场还原与清理，杜绝线程池工作线程的 ThreadLocal 内存泄露；
-3. **ORM 审计与数据权限透明穿透**：Core 模块的 `CurrentUserProvider` 与 `MetaObjectHandler` 深度集成 `LoginHelper`，插入与更新实体时 `createBy` / `updateBy` 自动识别模拟身份，同时业务日志记录 `realUserId`，审计合规链路天衣无缝。
-
----
-
-## 15. OpenAPI / Knife4j 鉴权弹窗无侵入自动化
-
-### 场景痛点
-在集成 Knife4j 或 Swagger UI 时，默认情况下接口文档页面无法便捷输入 Token，开发者测试接口需要反复在 Headers 中手动填写 `satoken` 请求头，体验极其繁琐。
-
-### 自动化效果
-当工程中引入 `springdoc-openapi-starter-webmvc-ui` 时，`ateng-boot-satoken` 自动装配 `SaTokenOpenApiCustomizer`：
-1. 自动在 OpenAPI Components 中注册 `SecurityScheme`（名称：`satoken`，类型：`APIKEY`，位置：`HEADER`）；
-2. 自动注入全局 `SecurityRequirement`；
-3. 打开 Knife4j UI 页面右上角直接展示「Authorize / 授权」锁图标，填入 Token 后全局接口全自动携带。
-
----
-
-## 16. 分布式集群即时同步与广播作废 (Cluster Sync via Redis Pub/Sub)
-
-### 16.1 场景痛点与架构方案
-在微服务多副本集群中，各节点会在本地内存或 L1 缓存维护角色与权限数据。当 Node A 修改了权限或踢人下线时，若仅更新 Redis 中心，Node B、Node C 等节点依然持有陈旧本地缓存，造成严重权限脏读与越权风险。
-
-`ateng-boot-satoken` 依托轻量 Redis Pub/Sub 广播构建集群即时同步体系：
-- **节点唯一 ID**：每个节点启动生成 `instanceId`（无锁 `fastSimpleUUID`）；
-- **自消费防卫**：本机接收到自己广播的消息时直接静默丢弃（Self-Consumption Guard），杜绝重入与广播风暴；
-- **精准驱逐**：异地节点接收到广播后，精准驱逐本地两级缓存中对应的用户/角色条目。
-
-### 16.2 专属配置片段 (application.yml)
 ```yaml
 ateng:
   boot:
     satoken:
-      cluster-sync:
-        enabled: true                               # 是否开启分布式集群即时同步与广播作废 (默认: true)
-        channel: "ateng:satoken:cluster-sync"       # Redis Pub/Sub 广播频道名称 (默认: ateng:satoken:cluster-sync)
+      openapi:
+        enabled: true             # 是否自动注入 Knife4j / OpenAPI 全局鉴权弹窗 (默认: true)
+        token-name: satoken       # 鉴权 Header 名称（未配置时自动回退 sa-token.token-name，兜底 satoken）
 ```
 
-### 16.3 生产级实战示例（源自 `InternalClusterController.java`）
+### 12.2 定制扩展与调用效果
+
+若需多体系文档联动或自定义定制器，可在应用配置中直接观察 `/v3/api-docs` 装配结果或在 `SaTokenOpenApiCustomizerTest` 中验证：
 
 ```java
-@Slf4j
-@RestController
-@RequiredArgsConstructor
-public class InternalClusterController {
+// 自动化装配条件（源自 AtengSaTokenAutoConfiguration.java）
+@Configuration(proxyBeanMethods = false)
+@ConditionalOnClass(GlobalOpenApiCustomizer.class)
+public static class OpenApiConfiguration {
 
-    private final SaTokenClusterBroadcaster broadcaster;
-    private final PermissionCacheService permissionCacheService;
-
-    /**
-     * 查询当前集群节点唯一实例 ID
-     */
-    @GetMapping("/sample/satoken/cluster/instance-id")
-    @Anonymous
-    public Result<String> getInstanceId() {
-        return Result.success(broadcaster.getInstanceId());
-    }
-
-    /**
-     * 触发指定用户权限缓存全网失效与本地清理广播
-     */
-    @PostMapping("/sample/satoken/cluster/refresh-user")
-    @Anonymous
-    public Result<Void> refreshUserPermissions(@RequestParam("userId") String userId) {
-        permissionCacheService.refreshUserPermissions(userId);
-        return Result.success();
-    }
-
-    /**
-     * 触发指定角色权限缓存全网失效与本地清理广播
-     */
-    @PostMapping("/sample/satoken/cluster/refresh-role")
-    @Anonymous
-    public Result<Void> refreshRolePermissions(@RequestParam("roleCode") String roleCode) {
-        permissionCacheService.refreshRolePermissions(roleCode);
-        return Result.success();
-    }
-
-    /**
-     * 全网清空所有节点两级权限缓存
-     */
-    @PostMapping("/sample/satoken/cluster/clear-all")
-    @Anonymous
-    public Result<Void> clearAllPermissions() {
-        permissionCacheService.clearAll();
-        return Result.success();
+    @Bean
+    @ConditionalOnMissingBean(SaTokenOpenApiCustomizer.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SaTokenOpenApiCustomizer saTokenOpenApiCustomizer(SaTokenProperties properties) {
+        return new SaTokenOpenApiCustomizer(properties);
     }
 }
 ```
 
-### 16.4 核心机制与非功能边界
-1. **轻量无状态异步广播**：底层依托 Redis 发布订阅频道（`cluster-sync.channel`）异步投递失效事件，不需要各节点之间维持复杂的 Mesh 长连接；
-2. **幂等驱逐与自消费防御**：接收方 `SaTokenClusterSyncListener` 收到消息后，先比对消息头中的 `senderId`，若等于当前节点的 `instanceId` 则直接静默丢弃；若为异地节点广播，则调用 `PermissionCacheService` 精准淘汰本地 Caffeine L1 缓存与 Redis L2 缓存，整个过程纯幂等且线程安全；
-3. **降级自洽保护**：当未配置 Redis 或未启用 `cluster-sync` 时，`SaTokenClusterBroadcaster` 自动装配单机空实现，`PermissionCacheService` 本地清理依然正常生效，保障开发与测试环境 100% 离线自洽。
+### 12.3 预期 OpenAPI SecurityScheme 片段
+
+```json
+{
+  "components": {
+    "securitySchemes": {
+      "satoken": {
+        "type": "apiKey",
+        "name": "satoken",
+        "in": "header"
+      }
+    }
+  },
+  "security": [
+    {
+      "satoken": []
+    }
+  ]
+}
+```
 
 ---
 
-## 17. 配置项全景表（application.yml）
+## 13. 全量配置项与默认值参考 (`SaTokenProperties`)
+
+| YAML 全路径 (`ateng.boot.satoken.*`) | Java 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `enabled` | `boolean` | `true` | 模块增强与自动装配总开关 |
+| `primary-login-type` | `String` | `"login"` | 多账号共存时主上下文映射体系标识 |
+| `white-list` | `List<String>` | `["/doc.html", "/webjars/**", "/swagger-resources/**", "/v3/api-docs/**", "/favicon.ico", "/actuator/**"]` | 全局静态路由白名单（与 `interceptor.excludes` 合并去重） |
+| `token.timeout` | `Duration` | `24h` | Token 绝对有效期（双向桥接至 Sa-Token） |
+| `token.active-timeout` | `Duration` | `30m` | 活跃空闲超时时长（<= 0 关闭） |
+| `token.is-concurrent` | `boolean` | `true` | 是否允许同账号并发多端登录 |
+| `token.is-share` | `boolean` | `true` | 同端多次登录是否共用 Token |
+| `token.max-login-count` | `int` | `12` | 最大并发会话数上限 |
+| `token.token-style` | `String` | `"uuid"` | Token 生成算法风格 |
+| `interceptor.enabled` | `boolean` | `true` | 是否挂载双轨拦截器与 `@Anonymous` 处理器 |
+| `interceptor.check-login` | `boolean` | `false` | 严格全局登录拦截开关 |
+| `interceptor.includes` | `List<String>` | `["/**"]` | 拦截器匹配路径模式 |
+| `interceptor.excludes` | `List<String>` | `["/doc.html", "/webjars/**", "/swagger-resources/**", "/v3/api-docs/**", "/favicon.ico", "/actuator/**", "/error", "/*.html", "/*.css", "/*.js"]` | 拦截器排除路径列表（注意：YAML 中显式覆盖该 `List` 时将替换默认集合，建议完整保留或通过 `@Anonymous`/`SaTokenWhitelistProvider` 增量追加） |
+| `same-token.enabled` | `boolean` | `true` | 微服务内部 Same-Token 校验开关 |
+| `same-token.header-name` | `String` | `"SA-SAME-TOKEN"` | Same-Token 请求头名称 |
+| `same-token.token-value` | `String` | `null` | 可选固定密钥（留空使用动态轮转凭据） |
+| `same-token.auto-inject-client` | `boolean` | `true` | 是否为受管 HTTP 客户端自动注入拦截器 |
+| `permission-cache.enabled` | `boolean` | `true` | 是否开启权限与角色缓存 |
+| `permission-cache.timeout` | `Duration` | `5m` (`300s`) | 权限缓存基础有效期（同时向后兼容 `timeout-seconds` 别名） |
+| `permission-cache.empty-ttl` | `Duration` | `60s` | 空集合 `__EMPTY__` 防穿透哨兵有效期（同时向后兼容 `empty-ttl-seconds` 别名） |
+| `cluster-sync.enabled` | `boolean` | `true` | 是否开启 Redis Pub/Sub 集群同步广播 |
+| `cluster-sync.channel` | `String` | `"ateng:satoken:cluster-sync"` | Redis Pub/Sub 广播频道名称 |
+| `login-defense.enabled` | `boolean` | `false` | 是否开启双轨防暴力破解策略 |
+| `login-defense.max-retry-count` | `int` | `5` | 账号最大连续失败次数 |
+| `login-defense.lock-time` | `Duration` | `15m` | 账号锁定持续时长 |
+| `login-defense.window-time` | `Duration` | `15m` | 账号失败计数统计时间窗口 |
+| `login-defense.ip-max-retry-count` | `int` | `30` | 客户端 IP 最大连续失败次数 |
+| `login-defense.ip-lock-time` | `Duration` | `30m` | 客户端 IP 熔断锁定持续时长 |
+| `login-defense.ip-window-time` | `Duration` | `15m` | 客户端 IP 失败计数统计时间窗口 |
+| `login-defense.ip-white-list` | `List<String>` | `["127.0.0.1", "0:0:0:0:0:0:0:1", "::1"]` | IP 防爆破豁免白名单（支持 CIDR） |
+| `data-owner.enabled` | `boolean` | `true` | `@CheckDataOwner` 水平越权防御切面开关 |
+| `openapi.enabled` | `boolean` | `true` | OpenAPI / Knife4j 鉴权注入开关 |
+| `openapi.token-name` | `String` | `null` | Swagger Header 名称（默认回退 Sa-Token 配置） |
+
+<details>
+<summary>点击展开完整生产参考 application.yml 配置模板</summary>
 
 ```yaml
-# Sa-Token 官方原生核心配置
 sa-token:
-  token-name: satoken             # Token 名称 (同时也是 Cookie 与 Header 名称)
-  timeout: 2592000                # Token 有效期，单位秒 (默认30天，-1表示永久)
-  active-timeout: -1              # Token 活跃有效期 (即指定时间内无操作就视为冻结，-1表示不限制)
-  is-concurrent: true             # 是否允许同一账号并发登录 (为 true 时允许一起登录, 为 false 时新登录挤掉旧登录)
-  is-share: false                 # 在多人登录同一账号时，是否共用一个 Token (为 false 时每次登录新建一个 Token)
-  token-style: uuid               # Token 风格 (uuid、simple-uuid、random-32、random-64、tik 等)
-  is-log: false                   # 是否在控制台打印 Sa-Token 内部操作日志
-  is-read-header: true            # 是否从请求头读取 Token
-  is-read-cookie: false           # 是否从 Cookie 读取 Token (前后端分离架构建议关闭)
-  same-token-timeout: 86400       # 微服务内部 Same-Token 密钥有效时间 (秒)
+  token-name: satoken
+  is-read-header: true
+  is-read-cookie: false
+  is-log: false
+  same-token-timeout: 86400
 
-# ateng-boot 专属安全增强配置
 ateng:
   boot:
     satoken:
-      enabled: true               # 是否开启 ateng-boot-satoken 模块增强功能 (默认: true)
-      primary-login-type: login   # 系统默认主账号体系类型标识 (默认: login)
-      white-list:                 # 全局路由白名单路径列表（内置基础端点，底层自动与 interceptor.excludes 合并去重）
+      enabled: true
+      primary-login-type: login
+      white-list:
         - "/doc.html"
         - "/webjars/**"
         - "/swagger-resources/**"
         - "/v3/api-docs/**"
         - "/favicon.ico"
         - "/actuator/**"
-      token:                      # 强类型 Token 核心属性桥接配置
-        timeout: 24h              # Token 绝对有效期，强类型 Duration (默认: 24h)
-        active-timeout: 30m       # Token 活跃空闲超时，强类型 Duration (默认: 30m)
-        is-concurrent: true       # 同一账号是否允许并发登录 (默认: true)
-        is-share: true            # 在多人登录同一账号时，是否共用同一个 Token (默认: true)
-        max-login-count: 12       # 同一账号最大并发登录终端数 (默认: 12)
-        token-style: uuid         # Token 算法生成风格 (默认: uuid)
-      interceptor:                # 路由拦截器与白名单放行配置
-        enabled: true             # 是否挂载 Sa-Token 路由拦截器 (默认: true)
-        check-login: false        # 是否开启全局路由强制登录校验 (默认: false)
-        includes:                 # 拦截匹配的 URL 路径列表 (默认: /**)
+      token:
+        timeout: 24h
+        active-timeout: 30m
+        is-concurrent: true
+        is-share: true
+        max-login-count: 12
+        token-style: uuid
+      interceptor:
+        enabled: true
+        check-login: false
+        includes:
           - "/**"
-        excludes:                 # 业务定制排除放行的白名单 URL 路径列表（底层自动与 white-list 聚合去重）
-          - "/sample/satoken/auth/login"
+        # 注意：YAML 配置 List 会整体覆盖默认排除列表，生产中建议保留以下 10 项基础放行后再追加业务路径
+        excludes:
           - "/doc.html"
           - "/webjars/**"
+          - "/swagger-resources/**"
           - "/v3/api-docs/**"
           - "/favicon.ico"
-      same-token:                 # 微服务内部 Same-Token 零信任鉴权配置
-        enabled: true             # 是否启用内部 Same-Token 校验 (默认: true)
-        header-name: SA-SAME-TOKEN # Same-Token 传输请求头名称 (默认: SA-SAME-TOKEN)
-        token-value: ""           # 约定的内部调用固定密钥凭据 (留空时采用 Sa-Token 动态时间戳凭据)
-        auto-inject-client: true  # 是否自动为 RestClient/RestTemplate 注入客户端出站拦截器 (默认: true)
-      permission-cache:           # 权限与角色多级缓存治理配置
-        enabled: true             # 是否开启权限码与角色缓存 (默认: true)
-        timeout: 5m               # 权限与角色缓存有效期，强类型 Duration (默认: 5m)
-        empty-ttl: 60s            # 空权限/空角色防穿透哨兵缓存有效期，强类型 Duration (默认: 60s)
-      cluster-sync:               # 分布式集群即时同步与广播作废配置
-        enabled: true             # 是否开启分布式集群即时同步与广播作废 (默认: true)
-        channel: ateng:satoken:cluster-sync # Redis Pub/Sub 广播频道名称 (默认: ateng:satoken:cluster-sync)
-      login-defense:              # 登录防暴力破解策略器配置
-        enabled: true             # 是否开启登录防暴力破解防护 (默认: false)
-        max-retry-count: 5        # 允许账号最大连续登录失败重试次数 (默认: 5)
-        lock-time: 15m            # 达到失败上限后的账号封禁锁定时间，强类型 Duration (默认: 15m)
-        window-time: 15m          # 账号失败计数滑动统计时间窗口，强类型 Duration (默认: 15m)
-        ip-max-retry-count: 30    # 客户端 IP 最大连续登录失败重试次数 (默认: 30)
-        ip-lock-time: 30m         # 客户端 IP 达到失败上限后的临时熔断锁定时间，强类型 Duration (默认: 30m)
-        ip-window-time: 15m       # 客户端 IP 失败计数滑动统计时间窗口，强类型 Duration (默认: 15m)
-        ip-white-list:            # 客户端 IP 防爆破白名单列表（支持单个 IPv4/IPv6 与 CIDR 网段如 10.0.0.0/8）
+          - "/actuator/**"
+          - "/error"
+          - "/*.html"
+          - "/*.css"
+          - "/*.js"
+          - "/sample/satoken/auth/login"
+      same-token:
+        enabled: true
+        header-name: SA-SAME-TOKEN
+        token-value: "${SAME_TOKEN_SECRET:}"
+        auto-inject-client: true
+      permission-cache:
+        enabled: true
+        timeout: 5m
+        empty-ttl: 60s
+      cluster-sync:
+        enabled: true
+        channel: "ateng:satoken:cluster-sync"
+      login-defense:
+        enabled: true
+        max-retry-count: 5
+        lock-time: 15m
+        window-time: 15m
+        ip-max-retry-count: 30
+        ip-lock-time: 30m
+        ip-window-time: 15m
+        ip-white-list:
           - "127.0.0.1"
           - "0:0:0:0:0:0:0:1"
           - "::1"
-      data-owner:                 # 数据所有权 (@CheckDataOwner) 越权防御切面配置
-        enabled: true             # 是否启用数据所有权切面防御 (默认: true)
-      openapi:                    # OpenAPI / Knife4j 鉴权弹窗配置
-        enabled: true             # 是否自动为 Knife4j / Swagger 注入鉴权弹窗 (默认: true)
-        token-name: satoken       # 鉴权组件名称与请求头 Key (默认: satoken)
+      data-owner:
+        enabled: true
+      openapi:
+        enabled: true
+        token-name: satoken
 ```
+
+</details>
 
 ---
 
-## 18. 生产扩展与接管实践 (Customization & Extensibility)
+## 14. 生产扩展与 SPI 接管指南 (Customization & Extensibility)
 
-### 1. 自定义权限与角色业务数据源 (`UserRolePermissionLoader`)
-框架默认提供 `DefaultUserRolePermissionLoader` 从当前会话直接读取角色与权限集合。当需要在鉴权时从数据库持久层动态拉取最新权限并接入两级缓存时，业务只需声明自定义 Bean 即可平滑接管：
+| 扩展点 SPI / Bean | 默认实现 | 典型业务接管场景 |
+| :--- | :--- | :--- |
+| `UserRolePermissionLoader` | `DefaultUserRolePermissionLoader` | 从数据库 RBAC 表实时加载角色、权限码与用户直属权限；重写 `(id, loginType)` 重载实现多账号体系物理隔离查询 |
+| `DataOwnerProvider<T>` | `DefaultDataOwnerProvider` | 根据业务主键（如订单 ID、文件 ID）反查真实归属人 `userId`，支持接收 `loginType` 区分多端用户主键空间 |
+| `DynamicPathPermissionProvider` | 无（未注册自动跳过） | 从数据库菜单/接口表动态加载 `List<PathPermissionRule>`，支持 `AntPath`、`HTTP Method` 与可选 `loginType` |
+| `SaTokenWhitelistProvider` | 无 | 由业务模块或第三方 Starter 动态向 `AtengSaTokenInterceptor` 汇聚公开路由白名单 |
+| `SaTokenDao` | `SaTokenRedisDao`（Redis 可用时） | 替换或定制自定义会话持久化引擎（注入 `@Primary` 同类型 Bean 即可平滑覆盖） |
+| `LoginHelper.registerStpLogic` | `LoginHelper` 懒加载默认构造 | 预先绑定拥有专属前缀或生命周期策略的自定义 `StpLogic` 实例 |
+
+### 接入自定义数据库权限加载器示例（多账号体系隔离版）
 
 ```java
 @Component
 public class DatabaseUserRolePermissionLoader implements UserRolePermissionLoader {
 
-    @Autowired
-    private UserRoleService userRoleService;
-
-    @Autowired
-    private RolePermissionService rolePermissionService;
-
     @Override
     public List<String> loadRolesByUserId(String userId) {
-        return userRoleService.getRoleCodesByUserId(userId);
+        return Collections.emptyList();
+    }
+
+    @Override
+    public List<String> loadRolesByUserId(String userId, String loginType) {
+        // 按账号体系（admin / member）分别查询各自角色表，彻底隔离缓存与鉴权空间
+        return "admin".equals(loginType) ? queryAdminRoles(userId) : queryMemberRoles(userId);
     }
 
     @Override
     public List<String> loadPermissionsByRole(String roleCode) {
-        return rolePermissionService.getPermissionCodesByRole(roleCode);
-    }
-
-    @Override
-    public List<String> loadDirectPermissionsByUserId(String userId) {
         return Collections.emptyList();
     }
-}
-```
-
-### 2. 注册数据库驱动的动态路径权限规则提供者 (`DynamicPathPermissionProvider`)
-业务只需向 Spring 容器注入 `DynamicPathPermissionProvider` 实现，即可平滑扩展 URL 鉴权管道：
-
-```java
-@Component
-public class DatabaseDynamicPathPermissionProvider implements DynamicPathPermissionProvider {
-
-    @Autowired
-    private SysMenuService menuService;
 
     @Override
-    public List<PathPermissionRule> getPathPermissionRules() {
-        // 从数据库查询所有挂载了权限码的 API 接口列表
-        return menuService.listApiPermissionRules();
-    }
-}
-```
-
-### 3. 覆盖默认会话存储实现 (`SaTokenDao`)
-`ateng-boot-satoken` 在检测到 Redis 依赖时自动装配 `SaTokenRedisDao`，未检测到时自动降级为单机内存字典。若企业需要对接专属分布式缓存，只需声明同类型 `@Bean`：
-
-```java
-@Configuration
-public class CustomSecurityStorageConfiguration {
-
-    @Bean
-    @Primary
-    public SaTokenDao customSaTokenDao(StringRedisTemplate stringRedisTemplate) {
-        return new SaTokenRedisDao(stringRedisTemplate);
+    public List<String> loadPermissionsByRole(String roleCode, String loginType) {
+        return "admin".equals(loginType) ? queryAdminRolePerms(roleCode) : queryMemberRolePerms(roleCode);
     }
 }
 ```
 
 ---
 
-## 19. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+## 15. 生产并发边界、虚拟线程安全与异常转译
 
-### 1. 严格无状态会话与零状态泄漏防线
-- **单例无状态**：所有安全组件（`LoginHelper`、`PermissionCacheService`、`AtengSaTokenInterceptor`、`SaTokenRedisDao`、`LoginFailureLockService`）均保持严格无状态，无任何成员变量共享可变业务数据；
-- **全生命周期对称清理**：`AtengSaTokenInterceptor` 在 `afterCompletion` 的 `finally` 块中严格执行 `UserContextHolder.clear()` 与 `TenantContextHolder.clear()`，杜绝 Web 容器工作线程池复用引发的上下文串染与数据越权。
+1. **JDK 21+ 虚拟线程零 Pinning 保证**：`LoginHelper`、`PermissionCacheService`、`AtengSaTokenInterceptor` 与 `AnonymousUrlProcessor` 中全部懒加载与互斥临界区均已切换为 `ReentrantLock`，并遵循 `isHeldByCurrentThread()` 守卫下的 `finally` 释放范式，严防载体线程挂起；
+2. **Redis 游标增量扫描与分页硬封顶**：`SaTokenRedisDao.searchData` 全量使用 `ScanOptions.count(1000)` 游标分批迭代替代 `KEYS *`；`LoginHelper` 在线会话关键字检索设置上限 `MAX_KEYWORD_SCAN_LIMIT = 500`、单页最大容量 `100`；
+3. **内存降级有界防御防 OOM**：无 Redis 时，`InMemoryPermissionCacheAdapter` 严格维持 `10,000` 条 LRU 上限，`LoginFailureLockService` 每个本地计数/封禁容器均限容 `10,000` 并惰性淘汰过期条目；
+4. **防穿透与防雪崩双保险**：`CachedStpInterface` 对空权限/空角色写入 `__EMPTY__` 短效哨兵（`empty-ttl: 60s`），对非空缓存自动附加 `+10% ~ +20%` 动态随机 Jitter；
+5. **Sa-Token 防火墙统管响应**：启动期自动接管 `SaFirewallStrategy.instance.checkFailHandle`，命中非法字符或路径穿越探针时在 HTTP 200 下返回统一 JSON `Result.fail(400, "非法请求拦截: ...")`；
+6. **全局异常映射一览 (`SaTokenExceptionHandler` 与 `BusinessException` 协同转译)**：
 
-### 2. 多账号体系上下文独立与请求头隔离
-- **物理隔离**：主体系使用默认 `satoken` 请求头，独立体系自动采用 `satoken-{loginType}` 请求头，两者生成的 Token 格式与 Session 存储物理隔离；
-- **懒加载与无竞争**：`LoginHelper.getStpLogic` 采用 `computeIfAbsent` 线程安全初始化，未配置的体系零常驻开销。
-
-### 3. 两级权限缓存条带锁并发防击穿与防雪崩
-- **条带锁防击穿**：高并发同一用户或角色缓存失效时，仅持有对应条带锁的单线程执行穿透回源，其余并发线程等待读取最新缓存，消除击穿；
-- **防穿透哨兵**：空值写入 `__EMPTY__` 哨兵，辅以短 TTL，阻断无效权限反复穿透；
-- **防雪崩抖动**：写入分布式缓存时附加 0%~10% 的动态 Jitter 随机抖动，杜绝缓存同一时刻集中过期引发雪崩。
-
-### 4. 双轨防爆破熔断与 CIDR 白名单豁免
-- **双轨计数与滑动窗口**：独立累计账号密码错误与客户端真实 IP 错误，滑动窗口到期自动失效；
-- **白名单精准豁免**：命中 `ip-white-list`（含 CIDR 子网掩码计算）的出口 IP 永不触发 IP 维度熔断，保障企业办公网与网关平稳运行；
-- **锁定状态语义自洽**：被锁定时查询失败次数返回最大重试阈值，锁定期满后自动清零重置。
-
-### 5. 在线用户游标增量检索与防 OOM
-- **游标增量扫描**：在海量在线会话场景下，`LoginHelper.getOnlineUsers` 采用 Redis SCAN 游标分批拉取，严禁使用全量 keys 命令；
-- **内存分页截断**：拉取到满足分页条数后即刻截断返回，保障高并发运维监控端点内存绝对可控。
-
-### 6. 动态路径权限未匹配端点弹性放行
-- **管道未命中透传**：请求未命中任何 `PathPermissionRule` 时，直接放行交由后续拦截器或 Controller 本身鉴权逻辑处理，绝不误杀公开接口；
-- **HTTP Method 严格匹配**：精确校验 HTTP 请求方式（GET/POST/DELETE/PUT），杜绝相同 URL 不同操作方式的权限越权。
+| 触发异常 / 拦截场景 | 处理处理器 | HTTP 状态码 | `Result.code` | 提示语契约示例 |
+| :--- | :--- | :--- | :--- | :--- |
+| `NotLoginException`（未提供/无效/过期/被顶替/被踢/冻结/无前缀） | `SaTokenExceptionHandler` | `200` | `401` | `"未提供访问凭据 (Token)"` / `"当前账号已在其他设备登录，您已被顶下线"` / `"当前账号已被踢下线"` 等 |
+| `NotRoleException` / `NotPermissionException` | `SaTokenExceptionHandler` | `200` | `403` | `"无权访问：缺少所需角色 [admin]"` / `"无权访问：缺少所需权限码 [order:delete]"` |
+| `NotSafeException` | `SaTokenExceptionHandler` | `200` | `403` | `"无权访问：当前操作需要二级安全认证"` |
+| `DisableServiceException` | `SaTokenExceptionHandler` | `200` | `403` | `"当前账号已被封禁至 " + e.getDisableTime()` |
+| `SameTokenInvalidException` | `SaTokenExceptionHandler` | `200` | `403` | `"微服务内部鉴权凭据无效或已失效"` |
+| 其它 `SaTokenException` / 防火墙拦截 | `SaTokenExceptionHandler` / `SaFirewallStrategy` | `200` | `400` | 具体安全或防火墙拦截提示（防火墙返回 `Result.fail(400, ...)`） |
+| `@CheckDataOwner` / `LoginHelper.checkSelf*` / `LoginFailureLockService.checkIpLocked` / 临时令牌反序列化失败 | `ateng-boot-web` `GlobalExceptionHandler`（捕获 `BusinessException`） | `200` | `403` / `400` | `"无权访问该资源"` / `"客户端 IP 连续登录失败次数超限，已被临时锁定"` / 具体临时令牌校验失败提示 |
 
 ---
 
-## 20. 架构决策与设计参考
+## 16. 架构决策与设计参考
 
+- [Sa-Token 领域模型术语表](./CONTEXT.md)
+- [Sample 体验工程与 80 个端点一键体验卡](../ateng-boot-samples/ateng-boot-sample-satoken/README.md)
 - [ADR-0024: 企业级 Sa-Token 安全鉴权与分布式会话治理架构](../docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md)
+- [ADR-0059: 企业级 Sa-Token 级联两级缓存、多账号体系与微服务零信任全闭环架构决策](../docs/adr/0059-satoken-hierarchical-cache-multi-account-and-zero-trust-closed-loop-architecture.md)
 - [ADR-0002: 显式统一响应契约](../docs/adr/0002-explicit-result-contract-no-response-body-advice.md)
 - [ADR-0012: 生命周期分离的数据安全模型与内存真明文原则](../docs/adr/0012-lifecycle-separated-data-security.md)
 - [ADR-0022: 双核驱动 Redis 基础设施与分布式协同架构](../docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md)
+- [ADR-0029: 虚拟线程适配与异步任务四维上下文透明穿透架构](../docs/adr/0029-virtual-threads-and-adaptive-async-runtime.md)
