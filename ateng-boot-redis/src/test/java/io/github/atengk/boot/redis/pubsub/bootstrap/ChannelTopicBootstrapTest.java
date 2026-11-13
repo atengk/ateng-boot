@@ -553,7 +553,8 @@ class ChannelTopicBootstrapTest {
         MessageListener listener = listenerCaptor.getValue();
 
         byte[] channel = "topic:context:iso".getBytes(StandardCharsets.UTF_8);
-        // 模拟 Dispatcher 线程携带脏租户/用户/杂散 MDC 上下文投递广播消息
+        // 模拟 Dispatcher 线程携带脏 traceId、租户/用户与杂散 MDC 上下文投递广播消息
+        MDC.put("traceId", "dirty-dispatcher-trace");
         MDC.put("customKey", "dirty-dispatcher-mdc");
         io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("dirty-dispatcher-tenant");
         io.github.atengk.boot.core.context.TenantContextHolder.setIgnoreTenant(true);
@@ -571,8 +572,10 @@ class ChannelTopicBootstrapTest {
         }
 
         assertThat(service.capturedTraceIds).hasSize(2);
-        assertThat(service.capturedTraceIds.get(0)).isNotBlank();
-        assertThat(service.capturedTraceIds.get(1)).isNotBlank().isNotEqualTo(service.capturedTraceIds.get(0));
+        assertThat(service.capturedTraceIds.get(0)).isNotBlank().isNotEqualTo("dirty-dispatcher-trace");
+        assertThat(service.capturedTraceIds.get(1)).isNotBlank()
+                .isNotEqualTo("dirty-dispatcher-trace")
+                .isNotEqualTo(service.capturedTraceIds.get(0));
         assertThat(service.secondCustomMdc.get()).isNull();
         assertThat(service.secondTenantId.get()).isNull();
         assertThat(service.secondIgnoreTenant.get()).isFalse();

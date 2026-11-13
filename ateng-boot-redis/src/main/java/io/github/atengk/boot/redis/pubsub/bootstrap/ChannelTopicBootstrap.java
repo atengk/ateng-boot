@@ -3,12 +3,11 @@ package io.github.atengk.boot.redis.pubsub.bootstrap;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
-import io.github.atengk.boot.core.context.TenantContextHolder;
-import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.pubsub.annotation.ChannelTopicListener;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
+import io.github.atengk.boot.redis.util.RedisConsumptionContext;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.aop.framework.autoproxy.AutoProxyUtils;
@@ -217,10 +216,9 @@ public class ChannelTopicBootstrap implements SmartInitializingSingleton, SmartL
         // 3. 构建 MessageListener
         MessageListener messageListener = (message, pattern) -> {
             executor.submit(() -> {
-                String existingTraceId = MDC.get(MDC_TRACE_ID_KEY);
-                // 清理 Dispatcher 可能经 TaskDecorator 复制过来的租户/用户与杂散 MDC 上下文，仅可控保留 traceId
-                clearConsumptionContext();
-                MDC.put(MDC_TRACE_ID_KEY, StringUtils.hasText(existingTraceId) ? existingTraceId : IdUtil.fastSimpleUUID());
+                // 清理 Dispatcher 可能经 TaskDecorator 复制过来的全部历史上下文，并为单次广播消费生成独立 traceId
+                RedisConsumptionContext.clearAll();
+                MDC.put(MDC_TRACE_ID_KEY, IdUtil.fastSimpleUUID());
                 try {
                     invokeListenerMethod(bean, method, parameters, parameterCount, finalParam0Type, finalJavaType, message, pattern);
                 } catch (Throwable ex) {
@@ -230,7 +228,7 @@ public class ChannelTopicBootstrap implements SmartInitializingSingleton, SmartL
                     log.error("Redis Pub/Sub 广播消息消费异常: channel={}, method={}#{}, error={}",
                             ch, bean.getClass().getSimpleName(), method.getName(), cause.getMessage(), cause);
                 } finally {
-                    clearConsumptionContext();
+                    RedisConsumptionContext.clearAll();
                 }
             });
         };
@@ -241,15 +239,6 @@ public class ChannelTopicBootstrap implements SmartInitializingSingleton, SmartL
 
         log.info("已成功注册 Redis Pub/Sub 广播监听器 [topics={}, concurrency={}, method={}#{}]",
                 topics, concurrency, bean.getClass().getSimpleName(), method.getName());
-    }
-
-    /**
-     * 完整清理当前广播消费线程的四维上下文（全量 MDC、租户上下文与操作人上下文）
-     */
-    private static void clearConsumptionContext() {
-        MDC.clear();
-        TenantContextHolder.clear();
-        UserContextHolder.clear();
     }
 
     private void invokeListenerMethod(Object bean,

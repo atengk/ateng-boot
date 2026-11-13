@@ -2,8 +2,6 @@ package io.github.atengk.boot.redis.delay.bootstrap;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
-import io.github.atengk.boot.core.context.TenantContextHolder;
-import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.annotation.DelayedQueueListener;
@@ -11,6 +9,7 @@ import io.github.atengk.boot.redis.delay.model.DeadLetterMessage;
 import io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler;
 import io.github.atengk.boot.redis.delay.spi.LoggingDelayedQueueFailureHandler;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
+import io.github.atengk.boot.redis.util.RedisConsumptionContext;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBlockingQueue;
 import org.redisson.api.RedissonClient;
@@ -204,7 +203,7 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, SmartL
      */
     private void consumeLoop(Object bean, Method method, RBlockingQueue<Object> blockingQueue, String queueName) {
         // 清理线程池启动瞬间从主线程复制的初始上下文，避免长轮询后台线程携带启动期污染
-        clearConsumptionContext();
+        RedisConsumptionContext.clearAll();
         try {
             while (running && !Thread.currentThread().isInterrupted()) {
                 try {
@@ -216,7 +215,7 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, SmartL
                         try {
                             processMessageWithRetry(bean, method, rawMessage, queueName);
                         } finally {
-                            clearConsumptionContext();
+                            RedisConsumptionContext.clearAll();
                         }
                     }
                 } catch (InterruptedException e) {
@@ -234,18 +233,9 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, SmartL
                 }
             }
         } finally {
-            clearConsumptionContext();
+            RedisConsumptionContext.clearAll();
         }
         log.debug("Redis 延时队列消费者正常退出 [queue={}, thread={}]", queueName, Thread.currentThread().getName());
-    }
-
-    /**
-     * 完整清理当前消费线程的四维上下文（全量 MDC、租户上下文与操作人上下文）
-     */
-    private static void clearConsumptionContext() {
-        MDC.clear();
-        TenantContextHolder.clear();
-        UserContextHolder.clear();
     }
 
     /**

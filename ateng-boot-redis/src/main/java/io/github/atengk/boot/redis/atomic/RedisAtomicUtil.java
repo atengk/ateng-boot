@@ -153,7 +153,7 @@ public class RedisAtomicUtil {
     }
 
     /**
-     * 绑定静态门面实例（由自动装配或显式构建时调用）
+     * 绑定静态门面实例（由自动装配或显式构建时调用；若入参通过无参构造创建且未持有 RedisTemplate，则不覆盖既有静态引用）
      *
      * @param instance 实例
      */
@@ -164,9 +164,27 @@ public class RedisAtomicUtil {
             RedisAtomicUtil.staticProperties = null;
             return;
         }
+        if (instance.instanceTemplate == null) {
+            if (RedisAtomicUtil.staticInstance == null) {
+                RedisAtomicUtil.staticInstance = instance;
+            }
+            return;
+        }
         RedisAtomicUtil.staticInstance = instance;
         RedisAtomicUtil.staticTemplate = instance.instanceTemplate;
         RedisAtomicUtil.staticProperties = instance.instanceProperties;
+    }
+
+    /**
+     * 绑定静态门面引用（显式传入受管 Template 与配置属性）
+     *
+     * @param redisTemplate   RedisTemplate 实例
+     * @param redisProperties Redis 配置属性
+     */
+    public static void init(RedisTemplate<String, Object> redisTemplate, RedisProperties redisProperties) {
+        Assert.notNull(redisTemplate, "redisTemplate must not be null");
+        RedisAtomicUtil.staticTemplate = redisTemplate;
+        RedisAtomicUtil.staticProperties = redisProperties;
     }
 
     /**

@@ -171,17 +171,21 @@ flowchart TD
    - Sample 与 Starter 双端文档 100% 逆向对齐，消除参数与路由幻觉；
    - 沉淀 **DeadLetterReplay** 与 **PELOrphanClaiming** 核心标准术语至 `CONTEXT.md`，阶梯二测试与 12 项自检清单全绿准出。
 
-### 11. Phase 6 自动装配顺序守卫、看门狗双层级超时覆盖与五维 8 大章文档收敛 (#931 ~ #935)
-围绕模块体检发现的装配边界、SPI 原因链完整度、门面统一初始化及文档结构碎片化问题，确立以下增量加固与文档治理决策：
-1. **看门狗双层级超时配置与自动装配排序守卫 (#932)**：
-   - 在 `RedisProperties.LockProperties` 中新增可选 `watchdogTimeout`（`ateng.boot.redis.lock.watchdog-timeout`），并在 `RedisProperties.RedissonProperties` 规范 `lockWatchdogTimeout`（默认 `30s`）；`AtengRedisAutoConfiguration.applyLockWatchdogTimeout` 按 `lock.watchdog-timeout` 优先于 `redisson.lock-watchdog-timeout` 的优先级注入 `Config.setLockWatchdogTimeout`，且统一经 `Duration` 转毫秒并强制 `> 0ms` 校验；
-   - 在 `AtengRedisAutoConfiguration` 显式补充 `@AutoConfigureAfter(AtengCoreAutoConfiguration.class)` 与 `@AutoConfigureBefore({RedisAutoConfiguration.class, CacheAutoConfiguration.class})`，同时对 `RedisMessageListenerContainer`、`RedisMessagePublisher`、`ChannelTopicBootstrap` 补充 `@ConditionalOnProperty(prefix = "ateng.boot.redis.pub-sub", name = "enabled", ...)` 与 `SemaphoreProperties`（`enabled` / `prefix`）强类型子配置，消除依赖默认装配顺序的隐式竞态。
-2. **8 大静态门面统一绑定与 `StreamFailureHandler.onFailed` 双参原因链扩展 (#933)**：
-   - 新增 `SmartInitializingSingleton` 命名的 `redisStaticFacadesInitializer` Bean，在所有单例装配就绪后统一完成 8 个全局静态门面（`RedisUtil`、`RedisAtomicUtil`、`RedisBloomUtil`、`RedisSemaphoreUtil`、`RedisLockUtil`、`RedisIdempotentUtil`、`RedisStreamUtil`、`RedisDelayedQueueUtil`）的最终委托绑定，保障下游覆盖自定义 Template Bean 时静态门面仍无缝切换；
-   - `StreamFailureHandler` 在保留函数式单参 `onFailure(StreamDeadLetterMessage)` 向后兼容的同时，新增默认双参方法 `onFailed(StreamDeadLetterMessage deadLetterMessage, Throwable cause)`，`StreamBootstrap` 消费重试耗尽后直接传递完整异常原因链 `lastError`；`RedisRateLimiterClient` 与 `RedisAtomicUtil` 同步加固参数卫语句与 `Duration` 重载契约。
-3. **Sample 双模体验收敛与五维 README 8 大能力章闭环 (#934, #935)**：
-   - `ateng-boot-sample-redis` 清理冗余调试日志，增强并发闭环与异常路径集成验证；
-   - `ateng-boot-redis/README.md` 严格与 Sample 8 大 `@RestController` 领域 1:1 对应收敛为 8 个高内聚业务能力大章（将独立脚本/原子、单级缓存、防卫缓存、两级缓存、布隆过滤器分别内聚归并），核准全局 `key-prefix` 幂等合成表、`ContextPropagationTiers` 分级模型与全量 YAML 默认值，同步更新 `CONTEXT.md` 与 `ADR-0022`。
+### 11. Phase 6 全局前缀幂等、异步上下文隔离、装配守卫与五维 8 大章文档收敛 (#931 ~ #935)
+围绕模块体检发现的装配边界、全局前缀分裂、SPI 原因链完整度、静态门面同步与文档结构碎片化问题，确立以下增量加固与文档治理决策：
+1. **全局键前缀幂等合成统一与全量受管组件对齐 (#932)**：
+   - 收敛全局 `key-prefix` 与模块二级前缀（`lock:`、`idempotent:`、`semaphore:`、`bloom:` 等）合成逻辑至 `RedisProperties.normalizePrefix` 与 `RedisProperties.buildKey(modulePrefix, rawKey)`，严格执行“规范化末尾冒号 + 剥离重复全局/模块前缀”幂等规则；
+   - 统一对齐 `RedisCacheTemplate`、`DistributedLockTemplate`、`RedisIdempotentTemplate`、`RedisDelayedQueue`、`RedisStreamTemplate`、`RedisRateLimiterClient`、`RedisSemaphoreTemplate`、`RedisBloomFilter`、`RedisAtomicUtil` 与 `RedisUtil.buildKey`，消除 `sample:sample:` / `sample:lock:lock:` 等冗余前缀及无冒号粘连缺陷。
+2. **Stream 死信双参 SPI 对称扩展与异步消费容器四维上下文隔离 (#933)**：
+   - `StreamFailureHandler` 在保留函数式单参 `onFailure(StreamDeadLetterMessage)` 向后兼容的同时，新增默认双参方法 `onFailed(StreamDeadLetterMessage deadLetterMessage, Throwable cause)`，`StreamBootstrap` 重试耗尽后直接传递完整异常原因链 `lastError` 并接入 `LoggingStreamFailureHandler`；
+   - 提取共享工具 `RedisConsumptionContext.clearAll()`（嵌套 `try-finally` 保护）替代各容器重复实现；`DelayedQueueBootstrap`、`ChannelTopicBootstrap` 与 `StreamBootstrap` 在启动轮询及每次消费前后彻底清空 MDC、租户上下文（`TenantId` / `IgnoreTenant`）与用户身份上下文，且延时队列与 Pub/Sub 广播在每次消费均生成独立 `traceId`，严禁复用启动线程或分发线程残留链路标识。
+3. **自动装配顺序守卫、看门狗双层级超时配置、信号量属性与 8 大静态门面统一桥接 (#934)**：
+   - 在 `AtengRedisAutoConfiguration` 显式补充 `@AutoConfigureAfter(AtengCoreAutoConfiguration.class)` 与 `@AutoConfigureBefore({RedisAutoConfiguration.class, CacheAutoConfiguration.class})` 顺序守卫；
+   - 在 `RedisProperties.RedissonProperties` 中规范 `lockWatchdogTimeout`（默认 `30s`），并在 `LockProperties` 中提供可选覆盖属性 `watchdogTimeout`（优先级 `lock.watchdog-timeout` > `redisson.lock-watchdog-timeout`），构建 `RedissonClient` 时经 `Duration` 转毫秒并校验 `> 0ms` 注入 `Config.setLockWatchdogTimeout`；
+   - 新增 `RedisProperties.SemaphoreProperties`（`enabled = true`、`prefix = "semaphore:"`）及 `redisSemaphoreTemplate` 上的 `@ConditionalOnProperty` 条件守卫；
+   - 补齐 `redisStaticFacadesInitializer`（`SmartInitializingSingleton` + `@ConditionalOnMissingBean`）通过 `ObjectProvider` 对全量 8 大静态门面（含 `RedisUtil`、`RedisAtomicUtil`、`RedisBloomUtil` 等）的统一动态绑定，并在 `RedisAtomicUtil.init` 中守卫无参构造实例不清空既有 `staticTemplate`。
+4. **五维 `README.md` 8 大能力章收敛与领域/ADR 文档同步 (#935)**：
+   - 将 `ateng-boot-redis/README.md` 按 `ateng-boot-sample-redis` 8 个 `@RestController` 领域 1:1 收敛为 8 大高内聚业务能力章节，对齐全景速查矩阵、全局前缀表与全量 YAML 清单，同步更新 `CONTEXT.md` 与 `ADR-0022`。
 
 ---
 
@@ -224,11 +228,11 @@ flowchart TD
     - **#841**：分布式锁多模式静态门面补齐、降级 fallback 扩展与原子 CAS 对称演进；
     - **#842**：Stream 四维上下文透传、死信受控重放与 PEL 孤儿消息自动认领自愈闭环；
     - **#843**：Sample 与 Starter 五维文档 1:1 逆向对齐、领域词汇表及 ADR-0022 闭环。
-  - **Phase 6 全面模块体检加固与五维 8 大章收敛工单 (#931)**：
-    - **#932**：自动装配排序守卫（`@AutoConfigureAfter`/`@AutoConfigureBefore`）、`SemaphoreProperties` 与 `LockProperties.watchdogTimeout` / `RedissonProperties.lockWatchdogTimeout` 优先级覆盖；
-    - **#933**：8 大静态门面统一 `SmartInitializingSingleton` 绑定与 `StreamFailureHandler.onFailed(deadLetterMessage, cause)` 双参原因链扩展；
-    - **#934**：`ateng-boot-sample-redis` 双模并发闭环与日志收敛加固；
-    - **#935**：Starter 五维 `README.md` 8 大能力章收敛与 `CONTEXT.md` / `ADR-0022` 闭环。
+  - **Phase 6 全局前缀幂等、上下文隔离、装配守卫与五维 8 大章文档收敛工单 (#931)**：
+    - **#932**：全局 `key-prefix` 幂等合成规则（`RedisProperties.normalizePrefix` / `buildKey`）统一与 9 大受管组件及 `RedisUtil` 全量对齐；
+    - **#933**：`StreamFailureHandler.onFailed(deadLetterMessage, cause)` 双参原因链 SPI 扩展与异步消费容器（`DelayedQueueBootstrap` / `ChannelTopicBootstrap` / `StreamBootstrap`）四维上下文隔离清理加固；
+    - **#934**：自动装配顺序守卫（`@AutoConfigureAfter` / `@AutoConfigureBefore`）、看门狗双层级超时配置注入（`lock.watchdog-timeout` / `redisson.lock-watchdog-timeout`）、`SemaphoreProperties` 条件装配与 `redisStaticFacadesInitializer` 全量 8 大静态门面统一桥接；
+    - **#935**：Starter 五维 `README.md` 8 大能力章收敛与 `CONTEXT.md` / `ADR-0022` 同步闭环。
 - **质量门禁基准**：依赖树联动编译与端到端集成测试通过，覆盖率与工业级健壮性红线全达标（277 个模块单测 + 44 个场景端到端测试 100% 通过）。
 
 

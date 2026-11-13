@@ -1,4 +1,4 @@
-# ateng-boot-redis
+# ateng-boot-redis 企业级双核 Redis 与分布式协同 Starter
 
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.13-brightgreen.svg)](https://spring.io/projects/spring-boot)
 [![JDK](https://img.shields.io/badge/JDK-17%2B%20(21%20VT%20Ready)-blue.svg)](https://openjdk.org/)
@@ -17,10 +17,10 @@
 | :--- | :--- | :--- | :--- | :--- |
 | **基础数据与序列化** | `RedisTemplate<String, Object>`<br>`RedisUtil`<br>`RedisSerializerFactory` | `buildKey`、`hasKey`、`expire`、`getExpire`、`persist`、`delete`、`scan` / `scanKeys` / `scanCursor`、`set` / `get`、`hSet` / `hGet` / `hGetAll` / `hDel` / `hScan`、`lPush` / `lRange`、`sAdd` / `sMembers`、`zAdd` / `zIncrBy` / `zRevRangeWithScores`、`geoAdd`、`setBit`、`pfAdd`、`executePipelined`、`init` | 购物车 Hash、排行榜 ZSet、安全游标 `SCAN`、Pipeline 预热 | `RedisUtilTest`<br>`RedisSerializerFactoryTest`<br>`RedisOpsAndScriptController` |
 | **受管 Lua 与原子原语** | `RedisScriptExecutor`<br>`RedisAtomicUtil` | `execute(script, type, keys, args)`、`executeClasspath(path, type, keys, args)`；`increment` / `decrement`、`compareAndSet`、`getAndSet`、`generateDailySeq`、`slidingWindowCheck`、`isAllowedBySlidingWindow`、`getSlidingWindowCount`、`init` | 优惠券原子核销、按日重置流水号、CAS 水位更新 | `RedisScriptExecutorTest`<br>`RedisAtomicUtilTest`<br>`RedisOpsAndScriptController` |
-| **双模分布式锁** | `@DistributedLock`<br>`DistributedLockTemplate`<br>`RedisLockUtil` / `LockMode` | `@DistributedLock(key, keys, prefix, mode, waitTime, leaseTime, timeUnit, message)`；`LockMode`: `REENTRANT` / `FAIR` / `READ` / `WRITE`；`execute` (含 `fallback` 与 `List<String>` 联锁)、`tryExecute`；`lock.enabled`、`lock.prefix`、`lock.wait-time`、`lock.lease-time`、`lock.time-unit`、`lock.slow-threshold`、`lock.watchdog-timeout`、`redisson.lock-watchdog-timeout` | 秒杀防超卖、跨服务可重入结算、读写规则保护、多 SKU 联锁、争锁降级 | `DistributedLockTemplateTest`<br>`DistributedLockAspectTest`<br>`RedisLockUtilTest`<br>`RedisLockController` |
+| **双模分布式锁** | `@DistributedLock`<br>`DistributedLockAspect`<br>`DistributedLockTemplate`<br>`RedisLockUtil` / `LockMode` | `@DistributedLock(key, keys, prefix, mode, waitTime, leaseTime, timeUnit, message)`；`LockMode`: `REENTRANT` / `FAIR` / `READ` / `WRITE`；`execute` (含 `fallback` 与 `List<String>` 联锁)、`tryExecute`；`lock.enabled`、`lock.prefix`、`lock.wait-time`、`lock.lease-time`、`lock.time-unit`、`lock.slow-threshold`、`lock.watchdog-timeout`、`redisson.lock-watchdog-timeout` | 秒杀防超卖、跨服务可重入结算、读写规则保护、多 SKU 联锁、争锁降级 | `DistributedLockTemplateTest`<br>`DistributedLockAspectTest`<br>`RedisLockUtilTest`<br>`RedisLockController` |
 | **轻量可靠延时队列** | `RedisDelayedQueue`<br>`RedisDelayedQueueUtil`<br>`@DelayedQueueListener`<br>`DelayedQueueFailureHandler` | `offer`、`poll`、`size` / `delayedSize`、`getDeadLetterSize`、`pollDeadLetter`、`peekDeadLetters`、`replayDeadLetter` / `replayDeadLetters`、`clearDeadLetterQueue`、`init`；`DelayedQueueFailureHandler.onFailed(deadLetterMessage, cause)`；`delay-queue.enabled`、`delay-queue.retry-times`、`delay-queue.retry-delay`、`delay-queue.dead-letter-enabled`、`delay-queue.dead-letter-suffix`、`delay-queue.max-replay-attempts` | 订单超时关单、失败退避重试、DLQ 死信检视重放与 SPI 告警 | `RedisDelayedQueueTest`<br>`DelayedQueueBootstrapTest`<br>`RedisDelayQueueController` |
 | **Stream 流消息引擎** | `RedisStreamTemplate`<br>`RedisStreamUtil`<br>`@RedisStreamListener`<br>`StreamFailureHandler` | `send`、`createGroup` / `destroyGroup`、`acknowledge`、`read`、`pendingSummary` / `pending`、`claim` / `claimPendingMessages`、`size` / `trim`、`peekDeadLetters`、`replayDeadLetter` / `replayDeadLetters`、`clearDeadLetters`、`init`；`StreamFailureHandler.onFailure` / `onFailed(deadLetterMessage, cause)`；`stream.enabled`、`stream.retry-times`、`stream.poll-timeout`、`stream.batch-size`、`stream.dlq-suffix`、`stream.max-replay-attempts`、`stream.claim-idle-time`、`stream.claim-batch-size`、`stream.instance-id` | 订单领域事件异步解耦、PEL 孤儿消息 `XCLAIM` 自愈、跨节点四维上下文透传 | `RedisStreamTemplateTest`<br>`RedisStreamUtilTest`<br>`StreamBootstrapTest`<br>`RedisStreamController` |
-| **分布式防重幂等** | `@RedisIdempotent`<br>`RedisIdempotentTemplate`<br>`RedisIdempotentUtil` | `@RedisIdempotent(key, prefix, expire, deleteOnFailure, message)`；`execute`、`tryAcquire`、`setSuccess`、`setFailed`、`delete`、`getStatus`、`isSuccess` / `isTrying` / `isFailed`、`getBucket`、`formatKey`、`init`；`idempotent.enabled`、`idempotent.prefix`、`idempotent.default-expire`、`idempotent.delete-on-failure` | 支付异步回调防重、异常删除凭据重试、退款核销幂等 | `RedisIdempotentTemplateTest`<br>`RedisIdempotentAspectTest`<br>`RedisIdempotentUtilTest`<br>`RedisIdempotentController` |
+| **分布式防重幂等** | `@RedisIdempotent`<br>`RedisIdempotentAspect`<br>`RedisIdempotentTemplate`<br>`RedisIdempotentUtil` | `@RedisIdempotent(key, prefix, expire, deleteOnFailure, message)`；`execute`、`tryAcquire`、`setSuccess`、`setFailed`、`delete`、`getStatus`、`isSuccess` / `isTrying` / `isFailed`、`getBucket`、`formatKey`、`init`；`idempotent.enabled`、`idempotent.prefix`、`idempotent.default-expire`、`idempotent.delete-on-failure` | 支付异步回调防重、异常删除凭据重试、退款核销幂等 | `RedisIdempotentTemplateTest`<br>`RedisIdempotentAspectTest`<br>`RedisIdempotentUtilTest`<br>`RedisIdempotentController` |
 | **流控与在途信号量** | `RedisSemaphoreTemplate`<br>`RedisSemaphoreUtil`<br>`RedisRateLimiterClient`<br>`RedisAtomicUtil` | `RedisSemaphoreTemplate` / `Util`: `execute`、`tryAcquire`、`release`、`trySetPermits`、`addPermits`、`resetPermits`、`availablePermits`、`delete`、`init`；`RedisRateLimiterClient`: `tryAcquire`、`acquire`、`getAvailablePermits`、`reset`、`delete`、`getRateLimiter`；`semaphore.enabled`、`semaphore.prefix` | 下游通道在途并发隔离、动态扩缩容、令牌桶网关流控、短信滑动窗口防刷 | `RedisSemaphoreTemplateTest`<br>`RedisRateLimiterClientTest`<br>`RedisTrafficController` |
 | **Pub/Sub 主题广播** | `RedisMessagePublisher`<br>`@ChannelTopicListener` | `publish`、`subscribe`、`subscribeChannel`、`unsubscribe`、`getListenerContainer`；`@ChannelTopicListener(value / topics / topic / patterns, concurrency)`；`pub-sub.enabled` | 全站维护公告广播、通配模式配置刷新、动态订阅注销 | `RedisMessagePublisherTest`<br>`ChannelTopicBootstrapTest`<br>`RedisPubSubController` |
 | **单级 / 防卫 / 两级缓存** | `RedisCacheManager`<br>`RedisCacheTemplate`<br>`TwoLevelCacheManager`<br>`TwoLevelCache` | `RedisCacheTemplate`: `getOrLoad`、`batchGetOrLoad`、`put` / `evict` / `batchEvict` / `hasKey`、`buildKey` / `buildLockKey` / `calculateTtl`；`TwoLevelCache`: `put(k, v, ttl)`、`evictLocal`、`clearLocal`、`get(k, type)`；`cache.enabled`、`cache.default-ttl`、`cache.cache-null-values`、`cache.null-ttl`、`cache.jitter-enabled`、`cache.max-jitter`、`cache.expires`、`cache.lock-wait-time`；`two-level.enabled`、`two-level.topic`、`two-level.l1.*`、`two-level.l2.*` | 字典独立 TTL 缓存、DCL + 空哨兵防穿透/击穿/雪崩、L1+L2 纳秒命中与广播失效 | `JitterTtlFunctionTest`<br>`RedisCacheTemplateTest`<br>`TwoLevelCacheManagerTest`<br>`TwoLevelCacheTest`<br>`L1MemoryCacheFactoryTest`<br>`RedisCacheController` |
@@ -99,19 +99,26 @@ ateng:
 ```
 
 ```java
-@Service
-public class QuickStartRedisService {
-
-    public String cacheAndRead(String userId) {
-        String key = RedisUtil.buildKey("user:session:" + userId);
-        RedisUtil.set(key, "ACTIVE", Duration.ofMinutes(30));
-        return RedisUtil.get(key, String.class);
+// 截取自 StockDeductScenarioService：声明式可重入锁防超卖（@DistributedLock）
+@DistributedLock(key = "'product:' + #request.productId", waitTime = 3000, leaseTime = 5000, mode = LockMode.REENTRANT)
+public StockDeductResultVO deductStock(StockDeductRequest request) {
+    Long productId = request.getProductId();
+    int count = request.getCount();
+    Integer currentStock = stockTable.get(productId);
+    if (currentStock == null) {
+        throw new BusinessException("商品不存在: " + productId);
     }
-
-    @DistributedLock(key = "'order:' + #orderId")
-    public void processOrder(String orderId) {
-        // 自动挂载 demo:lock:order:{orderId} 分布式可重入锁与看门狗自动续期
+    if (currentStock < count) {
+        throw new BusinessException("库存不足，当前库存: " + currentStock + ", 拟扣减: " + count);
     }
+    int remaining = currentStock - count;
+    stockTable.put(productId, remaining);
+    return StockDeductResultVO.builder()
+            .productId(productId)
+            .remainingStock(remaining)
+            .success(true)
+            .message("库存扣减成功")
+            .build();
 }
 ```
 
@@ -165,7 +172,7 @@ public class QuickStartRedisService {
 | 上下文维度 | Redis Stream (`RedisStreamTemplate` + `StreamBootstrap`) | 延时队列 (`DelayedQueueBootstrap`) & 广播 (`ChannelTopicBootstrap`) |
 | :--- | :--- | :--- |
 | **跨节点透传维度** | **全四维上下文跨节点透传**：发送端自动注入 `traceId`、`__ateng_tenant_id`、`__ateng_ignore_tenant`、`__ateng_user_ctx`；消费端先恢复四维上下文、剥离 `__ateng_*` 元字段后再反序列化绑定 POJO | **纯净业务载荷**：不将用户登录态或租户身份序列化至 Redis 消息体 |
-| **消费侧线程隔离** | 消费前恢复消息内携带的四维快照（若无 `traceId` 则由消费侧兜底生成），`finally` 中无条件执行 `MDC.clear()`、`TenantContextHolder.clear()`、`UserContextHolder.clear()` | 消费前先清理历史残余上下文并注入独立 `traceId`（`DelayedQueueBootstrap` 生成新 UUID，`ChannelTopicBootstrap` 优先继承分发线程 `traceId` 否则生成新 UUID），`finally` 中全量清理 |
+| **消费侧线程隔离** | 消费前恢复消息内携带的四维快照（若无 `traceId` 则由消费侧兜底生成），`finally` 中通过 `RedisConsumptionContext.clearAll()` 无条件执行 `MDC.clear()`、`TenantContextHolder.clear()`、`UserContextHolder.clear()` | 消费前先清理历史残余上下文并强制生成独立新 UUID `traceId`（严禁复用分发线程或启动线程残留上下文），`finally` 中通过 `RedisConsumptionContext.clearAll()` 全量清理 |
 
 ### 2.4 全局工程不变量与客户端接管
 
@@ -230,7 +237,12 @@ end
 **2）基础 Hash/ZSet/SCAN/Pipeline 与受管 Lua/CAS 场景编排（截取自真实 Sample）**
 
 ```java
-// 1. 购物车 Hash、热销榜 ZSet、安全 SCAN 与 Pipeline 批量预热（RedisOpsAndScriptController）
+// 1. 购物车 Hash、热销榜 ZSet、安全 SCAN 与 Pipeline 批量预热（截取自 RedisOpsAndScriptController）
+private static final String CART_PREFIX = "sample:cart:";
+private static final String RANK_KEY = "sample:rank:hot-products";
+private static final String STOCK_PREFIX = "sample:stock:";
+private static final String COUPON_STOCK_PREFIX = "sample:coupon:stock:";
+
 String cartKey = CART_PREFIX + request.getUserId();
 RedisUtil.hSet(cartKey, request.getSkuId(), item);
 
@@ -525,7 +537,8 @@ WARN  [:order:cancel-1] [4bb5739307363a4536b67227f56c317b] b.s.r.h.SampleDelayed
 ateng:
   boot:
     redis:
-      key-prefix: sample
+      # 可选：开启全局 key-prefix: sample 可统一前置环境隔离前缀（默认 ""，以下示例日志按默认配置运行）
+      # key-prefix: sample
       stream:
         enabled: true
         retry-times: 3
@@ -627,7 +640,8 @@ WARN  [der_processor-1] [47cc5e83d0749e68c4fae880006d54bd] i.g.a.b.s.r.h.SampleS
 ateng:
   boot:
     redis:
-      key-prefix: sample
+      # 可选：开启全局 key-prefix: sample 可统一前置环境隔离前缀（默认 ""，以下示例日志按默认配置运行）
+      # key-prefix: sample
       idempotent:
         enabled: true
         prefix: "idempotent:"
@@ -824,17 +838,17 @@ public void onSystemEvent(String eventData, String channel) {
 
 - **多参数签名智能绑定与动态取消订阅**：`@ChannelTopicListener` 由 `ChannelTopicBootstrap` 自动扫描，支持 `onMessage(T payload)`、`onMessage(T payload, String channel)` 与 `onMessage(T payload, String channel, String pattern)` 三种参数形式，自动按目标参数泛型执行 JSON 反序列化或原生 `String` / `byte[]` 透传；编程式同时提供 `subscribeChannel`、`unsubscribe` 与 `getListenerContainer` 控制原语。
 - **事件循环与业务线程解耦**：可按监听器独立配置 `concurrency` 并发度分发至受管执行器（线程前缀 `redis-pubsub-{cleanTopicName}-`），防止慢消费阻塞 Netty Redis 连接订阅通道。
-- **多实例子节点广播隔离**：广播频道保持 `RedisMessagePublisher` 指定频道名原样路由，各实例节点消费回调进入前清理并隔离工作线程 MDC / Tenant / User 上下文（优先继承分发侧 `traceId` 或兜底生成），完成后立即清理。
+- **多实例子节点广播隔离**：广播频道保持 `RedisMessagePublisher` 指定频道名原样路由，各实例节点消费回调进入前通过 `RedisConsumptionContext.clearAll()` 清理工作线程历史残余 MDC / Tenant / User 上下文，为单次广播消费生成独立 `traceId` 并在 `finally` 立即清理。
 
 ### 9.4 预期控制台呈现
 
-> 注：受管广播工作线程前缀为 `redis-pubsub-{cleanTopicName}-`（以下展示同链路 `traceId` 透传与 `%-15.15thread` 截断格式）。
+> 注：受管广播工作线程前缀为 `redis-pubsub-{cleanTopicName}-`（以下展示独立消费侧 `traceId` 隔离与 `%-15.15thread` 截断格式）。
 
 ```text
 INFO  [           main] [cb61c7121d9b3f5698f0ce04bc95a9fe] a.b.s.r.s.NoticeBroadcastScenarioService : [NoticeBroadcast] 广播发布系统通知: topic=sample:notice:broadcast, noticeId=NOT_CTRL_001, title=全站停机维护公告
-INFO  [ice_broadcast-1] [cb61c7121d9b3f5698f0ce04bc95a9fe] a.b.s.r.s.NoticeBroadcastScenarioService : [NoticeBroadcast] 声明式接收系统公告广播: noticeId=NOT_CTRL_001, title=全站停机维护公告
+INFO  [ice_broadcast-1] [9a3e71b40c8241d9a2b46e10d5f3c812] a.b.s.r.s.NoticeBroadcastScenarioService : [NoticeBroadcast] 声明式接收系统公告广播: noticeId=NOT_CTRL_001, title=全站停机维护公告
 INFO  [           main] [4452c5b5aeeac233e74683d39a48c2e7] a.b.s.r.s.NoticeBroadcastScenarioService : [NoticeBroadcast] 广播发布系统事件: channel=sample:system:config_refresh, data={"refreshKey":"ALL_CACHE"}
-INFO  [mple_system__-1] [4452c5b5aeeac233e74683d39a48c2e7] a.b.s.r.s.NoticeBroadcastScenarioService : [NoticeBroadcast] 声明式通配监听到系统事件: channel=sample:system:config_refresh, data={"refreshKey":"ALL_CACHE"}
+INFO  [mple_system__-1] [7d12c48f31094e5ab8e291c6a430df59] a.b.s.r.s.NoticeBroadcastScenarioService : [NoticeBroadcast] 声明式通配监听到系统事件: channel=sample:system:config_refresh, data={"refreshKey":"ALL_CACHE"}
 ```
 
 ---
@@ -882,10 +896,10 @@ ateng:
           max-jitter: 60s
           ttls:
             user-profile: 1h
-      # 3. 分布式布隆过滤器启动声明式预热
+      # 3. 分布式布隆过滤器启动声明式预热（与 Sample application.yml 对齐）
       bloom-filters:
         user-blacklist:
-          expected-insertions: 100000
+          expected-insertions: 50000
           false-probability: 0.01
 ```
 

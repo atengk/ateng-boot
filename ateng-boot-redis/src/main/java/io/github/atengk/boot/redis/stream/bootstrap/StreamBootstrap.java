@@ -13,6 +13,7 @@ import io.github.atengk.boot.redis.stream.annotation.RedisStreamListener;
 import io.github.atengk.boot.redis.stream.model.StreamDeadLetterMessage;
 import io.github.atengk.boot.redis.stream.spi.LoggingStreamFailureHandler;
 import io.github.atengk.boot.redis.stream.spi.StreamFailureHandler;
+import io.github.atengk.boot.redis.util.RedisConsumptionContext;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.aop.framework.autoproxy.AutoProxyUtils;
@@ -238,7 +239,7 @@ public class StreamBootstrap implements SmartLifecycle, SmartInitializingSinglet
         long lastClaimTime = 0L;
 
         // 清理启动主线程可能通过 TaskDecorator 复制到长轮询线程的初始上下文
-        clearConsumptionContext();
+        RedisConsumptionContext.clearAll();
         try {
             while (running && !Thread.currentThread().isInterrupted()) {
                 try {
@@ -298,7 +299,7 @@ public class StreamBootstrap implements SmartLifecycle, SmartInitializingSinglet
                 }
             }
         } finally {
-            clearConsumptionContext();
+            RedisConsumptionContext.clearAll();
         }
     }
 
@@ -308,7 +309,7 @@ public class StreamBootstrap implements SmartLifecycle, SmartInitializingSinglet
     private void processRecord(Object bean, Method method, String stream, String group,
                               String consumerName, MapRecord<String, Object, Object> record,
                               boolean autoAck, int maxRetries) {
-        clearConsumptionContext();
+        RedisConsumptionContext.clearAll();
         String recordTraceId = extractTraceId(record);
         MDC.put(MDC_TRACE_ID_KEY, StringUtils.hasText(recordTraceId) ? recordTraceId : IdUtil.fastSimpleUUID());
 
@@ -383,17 +384,8 @@ public class StreamBootstrap implements SmartLifecycle, SmartInitializingSinglet
                 }
             }
         } finally {
-            clearConsumptionContext();
+            RedisConsumptionContext.clearAll();
         }
-    }
-
-    /**
-     * 完整清理当前消费线程的四维上下文（全量 MDC、租户上下文与操作人上下文）
-     */
-    private static void clearConsumptionContext() {
-        MDC.clear();
-        TenantContextHolder.clear();
-        UserContextHolder.clear();
     }
 
     /**

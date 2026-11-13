@@ -59,10 +59,14 @@ class RedisAtomicUtilTest {
     }
 
     @Test
-    @DisplayName("测试无参构造器向后兼容实例化")
+    @DisplayName("测试无参构造器向后兼容实例化且传入 init 不清空既有静态门面模板")
     void testNoArgConstructorCompatibility() {
         RedisAtomicUtil util = new RedisAtomicUtil();
         assertThat(util).isNotNull();
+
+        when(valueOperations.increment("counter:safe-init", 1L)).thenReturn(42L);
+        RedisAtomicUtil.init(util);
+        assertThat(RedisAtomicUtil.incr("counter:safe-init")).isEqualTo(42L);
     }
 
     @Test
