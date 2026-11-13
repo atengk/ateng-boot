@@ -132,4 +132,19 @@ class RedisRateLimiterClientTest {
         assertThatThrownBy(() -> rateLimiterClient.tryAcquire("key", 10, null))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    @DisplayName("测试限流键名无冒号前缀规范化与幂等防重")
+    void testKeyPrefixIdempotentNormalization() {
+        io.github.atengk.boot.redis.properties.RedisProperties props = new io.github.atengk.boot.redis.properties.RedisProperties();
+        props.setKeyPrefix("prod");
+        RedisRateLimiterClient clientWithNoColon = new RedisRateLimiterClient(redissonClient, props);
+
+        when(redissonClient.getRateLimiter("prod:api:limit")).thenReturn(rateLimiter);
+        when(rateLimiter.tryAcquire(1L)).thenReturn(true);
+
+        assertThat(clientWithNoColon.tryAcquire("api:limit", 10L, Duration.ofSeconds(1))).isTrue();
+        assertThat(clientWithNoColon.tryAcquire("prod:api:limit", 10L, Duration.ofSeconds(1))).isTrue();
+        verify(redissonClient, org.mockito.Mockito.times(2)).getRateLimiter("prod:api:limit");
+    }
 }

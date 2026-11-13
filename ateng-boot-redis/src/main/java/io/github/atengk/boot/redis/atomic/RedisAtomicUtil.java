@@ -178,18 +178,7 @@ public class RedisAtomicUtil {
         if (staticProperties == null || key == null) {
             return key;
         }
-        String prefix = staticProperties.getKeyPrefix();
-        if (!StringUtils.hasText(prefix)) {
-            return key;
-        }
-        String trimmed = prefix.trim();
-        if (!trimmed.endsWith(":")) {
-            trimmed += ":";
-        }
-        if (key.startsWith(trimmed)) {
-            return key;
-        }
-        return trimmed + key;
+        return staticProperties.buildKey(key);
     }
 
     /**

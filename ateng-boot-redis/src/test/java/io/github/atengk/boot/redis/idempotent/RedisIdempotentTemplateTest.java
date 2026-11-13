@@ -248,4 +248,19 @@ class RedisIdempotentTemplateTest {
                 .hasCause(rootCause)
                 .hasMessageContaining("Redis 获取幂等状态底层异常");
     }
+
+    @Test
+    @DisplayName("测试 formatKey 全局与模块前缀无冒号规范化、空 customPrefix 继承与幂等去重")
+    void testFormatKeyIdempotentNormalization() {
+        io.github.atengk.boot.redis.properties.RedisProperties props = new io.github.atengk.boot.redis.properties.RedisProperties();
+        props.setKeyPrefix("prod");
+        props.getIdempotent().setPrefix("idemp");
+        RedisIdempotentTemplate prefixedTemplate = new RedisIdempotentTemplate(redissonClient, props);
+
+        assertThat(prefixedTemplate.formatKey(null, "pay:1")).isEqualTo("prod:idemp:pay:1");
+        assertThat(prefixedTemplate.formatKey("", "pay:2")).isEqualTo("prod:idemp:pay:2");
+        assertThat(prefixedTemplate.formatKey("custom", "custom:pay:3")).isEqualTo("prod:custom:pay:3");
+        assertThat(prefixedTemplate.formatKey("idemp:", "prod:idemp:pay:4")).isEqualTo("prod:idemp:pay:4");
+        assertThat(prefixedTemplate.formatKey("idemp", "prod:pay:5")).isEqualTo("prod:idemp:pay:5");
+    }
 }

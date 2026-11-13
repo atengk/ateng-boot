@@ -462,4 +462,17 @@ class RedisStreamTemplateTest {
         assertThatThrownBy(() -> template.createGroup("s", ""))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    @DisplayName("测试 formatStreamKey 规范化无冒号前缀并幂等去重已包含全局前缀")
+    void testFormatStreamKeyIdempotentNormalization() {
+        RedisProperties props = new RedisProperties();
+        props.setKeyPrefix("prod");
+        RedisStreamTemplate customTemplate = new RedisStreamTemplate(redisTemplate, null, props);
+
+        assertThat(customTemplate.formatStreamKey("order-stream")).isEqualTo("prod:order-stream");
+        assertThat(customTemplate.formatStreamKey("prod:order-stream")).isEqualTo("prod:order-stream");
+
+        assertThat(template.formatStreamKey("sample:order-stream")).isEqualTo("sample:order-stream");
+    }
 }

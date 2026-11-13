@@ -424,4 +424,27 @@ class DistributedLockTemplateTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("leaseTime must not be null");
     }
+
+    @Test
+    @DisplayName("测试锁键全局与模块前缀无冒号规范化与幂等去重")
+    void resolveKeys_idempotentPrefixNormalization() throws Throwable {
+        io.github.atengk.boot.redis.properties.RedisProperties props = new io.github.atengk.boot.redis.properties.RedisProperties();
+        props.setKeyPrefix("prod");
+        props.getLock().setPrefix("lock");
+        DistributedLockTemplate prefixedLock = new DistributedLockTemplate(redissonClient, props);
+
+        when(redissonClient.getLock(org.mockito.ArgumentMatchers.anyString())).thenReturn(rLock);
+        when(rLock.tryLock(anyLong(), any(TimeUnit.class))).thenReturn(true);
+        when(rLock.isHeldByCurrentThread()).thenReturn(true);
+
+        prefixedLock.execute("order:1", () -> {});
+        prefixedLock.execute("lock:order:2", () -> {});
+        prefixedLock.execute("prod:order:3", () -> {});
+        prefixedLock.execute("prod:lock:order:4", () -> {});
+
+        verify(redissonClient).getLock("prod:lock:order:1");
+        verify(redissonClient).getLock("prod:lock:order:2");
+        verify(redissonClient).getLock("prod:lock:order:3");
+        verify(redissonClient).getLock("prod:lock:order:4");
+    }
 }

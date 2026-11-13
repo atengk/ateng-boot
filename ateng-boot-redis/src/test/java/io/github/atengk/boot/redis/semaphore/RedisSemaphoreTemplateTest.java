@@ -222,4 +222,19 @@ class RedisSemaphoreTemplateTest {
         assertThat(RedisSemaphoreUtil.tryAcquire("task:sem")).isTrue();
         RedisSemaphoreUtil.release("task:sem");
     }
+
+    @Test
+    @DisplayName("测试信号量键名无冒号前缀规范化与幂等防重")
+    void testSemaphoreKeyPrefixIdempotentNormalization() throws Exception {
+        io.github.atengk.boot.redis.properties.RedisProperties props = new io.github.atengk.boot.redis.properties.RedisProperties();
+        props.setKeyPrefix("prod");
+        RedisSemaphoreTemplate prefixedSemaphore = new RedisSemaphoreTemplate(redissonClient, props);
+
+        when(redissonClient.getSemaphore("prod:sem:export")).thenReturn(semaphore);
+        when(semaphore.tryAcquire(1, Duration.ofSeconds(1))).thenReturn(true);
+
+        assertThat(prefixedSemaphore.tryAcquire("sem:export", Duration.ofSeconds(1))).isTrue();
+        assertThat(prefixedSemaphore.tryAcquire("prod:sem:export", Duration.ofSeconds(1))).isTrue();
+        verify(redissonClient, org.mockito.Mockito.times(2)).getSemaphore("prod:sem:export");
+    }
 }

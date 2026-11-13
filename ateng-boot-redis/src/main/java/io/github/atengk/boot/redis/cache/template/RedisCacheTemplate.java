@@ -566,11 +566,7 @@ public class RedisCacheTemplate {
      */
     public String buildKey(String rawKey) {
         Assert.hasText(rawKey, "rawKey 不能为空");
-        String prefix = redisProperties.getKeyPrefix();
-        if (StringUtils.hasText(prefix) && !rawKey.startsWith(prefix)) {
-            return prefix + rawKey;
-        }
-        return rawKey;
+        return redisProperties.buildKey(rawKey);
     }
 
     /**
@@ -578,12 +574,7 @@ public class RedisCacheTemplate {
      */
     public String buildLockKey(String rawKey) {
         Assert.hasText(rawKey, "rawKey 不能为空");
-        String prefix = redisProperties.getKeyPrefix();
-        String lockName = "lock:cache:" + rawKey;
-        if (StringUtils.hasText(prefix) && !lockName.startsWith(prefix)) {
-            return prefix + lockName;
-        }
-        return lockName;
+        return redisProperties.buildKey("lock:cache:", rawKey);
     }
 
     /**

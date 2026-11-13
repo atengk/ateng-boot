@@ -368,5 +368,19 @@ class RedisDelayedQueueTest {
         assertThat(RedisDelayedQueueUtil.deadLetterSize("static-queue")).isEqualTo(5);
         assertThat(RedisDelayedQueueUtil.getDeadLetterSize("static-queue")).isEqualTo(5);
     }
+
+    @Test
+    @DisplayName("测试 resolveQueueName 规范化无冒号前缀并幂等去重")
+    void testResolveQueueNameIdempotentNormalization() {
+        RedisProperties props = new RedisProperties();
+        props.setKeyPrefix("prod");
+        RedisDelayedQueue queueWithNoColon = new RedisDelayedQueue(redissonClient, objectMapper, props);
+
+        assertThat(queueWithNoColon.resolveQueueName("pay_task")).isEqualTo("prod:pay_task");
+        assertThat(queueWithNoColon.resolveQueueName("prod:pay_task")).isEqualTo("prod:pay_task");
+
+        props.setKeyPrefix("sample:");
+        assertThat(queueWithNoColon.resolveQueueName(":pay_task")).isEqualTo("sample:pay_task");
+    }
 }
 

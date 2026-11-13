@@ -816,17 +816,7 @@ public class RedisStreamTemplate {
      */
     public String formatStreamKey(String stream) {
         Assert.hasText(stream, "stream must not be blank");
-        String prefix = redisProperties != null ? redisProperties.getKeyPrefix() : null;
-        if (StringUtils.hasText(prefix)) {
-            String trimmedPrefix = prefix.trim();
-            if (!trimmedPrefix.endsWith(":")) {
-                trimmedPrefix += ":";
-            }
-            if (!stream.startsWith(trimmedPrefix)) {
-                return trimmedPrefix + stream;
-            }
-        }
-        return stream;
+        return redisProperties != null ? redisProperties.buildKey(stream) : stream;
     }
 
     public RedisTemplate<String, Object> getRedisTemplate() {

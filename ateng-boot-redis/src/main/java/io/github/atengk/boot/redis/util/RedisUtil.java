@@ -43,6 +43,7 @@ public class RedisUtil {
 
     private static volatile RedisTemplate<String, Object> staticTemplate;
     private static volatile RedisProperties staticProperties;
+    private static final RedisProperties DEFAULT_PROPERTIES = new RedisProperties();
     private static final ObjectMapper OBJECT_MAPPER = RedisSerializerFactory.createSafeObjectMapper();
 
     /**
@@ -90,20 +91,21 @@ public class RedisUtil {
      */
     public static String buildKey(String modulePrefix, String... keys) {
         StringBuilder sb = new StringBuilder();
-        if (modulePrefix != null && !modulePrefix.isEmpty()) {
-            sb.append(modulePrefix);
-        }
         if (keys != null) {
             for (String k : keys) {
-                if (k != null) {
-                    if (sb.length() > 0 && !sb.toString().endsWith(":")) {
+                if (k != null && !k.isEmpty()) {
+                    if (sb.length() > 0 && sb.charAt(sb.length() - 1) != ':') {
                         sb.append(":");
                     }
                     sb.append(k);
                 }
             }
         }
-        return buildKey(sb.toString());
+        RedisProperties properties = staticProperties != null ? staticProperties : DEFAULT_PROPERTIES;
+        if (sb.length() == 0) {
+            return properties.buildKey(modulePrefix != null ? modulePrefix : "");
+        }
+        return properties.buildKey(modulePrefix, sb.toString());
     }
 
     /**

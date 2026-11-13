@@ -466,32 +466,18 @@ public class DistributedLockTemplate {
      * 补全全局与锁模块统一前缀
      */
     private List<String> resolveKeys(List<String> keys, String customPrefix) {
-        String globalPrefix = redisProperties.getKeyPrefix();
         String lockPrefix = StringUtils.hasText(customPrefix)
                 ? customPrefix
                 : (redisProperties.getLock() != null && redisProperties.getLock().getPrefix() != null
                         ? redisProperties.getLock().getPrefix()
                         : "lock:");
-        if (lockPrefix == null) {
-            lockPrefix = "lock:";
-        }
 
         List<String> resolved = new ArrayList<>(keys.size());
         for (String key : keys) {
             if (!StringUtils.hasText(key)) {
                 continue;
             }
-            String resolvedKey;
-            if (key.startsWith(lockPrefix) || (StringUtils.hasText(globalPrefix) && key.startsWith(globalPrefix))) {
-                resolvedKey = key;
-            } else {
-                StringBuilder sb = new StringBuilder();
-                if (StringUtils.hasText(globalPrefix)) {
-                    sb.append(globalPrefix);
-                }
-                sb.append(lockPrefix).append(key);
-                resolvedKey = sb.toString();
-            }
+            String resolvedKey = redisProperties.buildKey(lockPrefix, key);
             if (!resolved.contains(resolvedKey)) {
                 resolved.add(resolvedKey);
             }

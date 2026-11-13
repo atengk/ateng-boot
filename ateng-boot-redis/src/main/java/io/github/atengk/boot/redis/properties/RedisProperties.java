@@ -354,19 +354,58 @@ public class RedisProperties {
     }
 
     /**
-     * 构建受管全局键名前缀
+     * 规范化键名前缀，去除首尾空白并确保非空前缀以英文冒号结尾
+     *
+     * @param prefix 原始前缀
+     * @return 规范化后的前缀；为空或全空白时返回空字符串
+     */
+    public static String normalizePrefix(String prefix) {
+        if (!org.springframework.util.StringUtils.hasText(prefix)) {
+            return "";
+        }
+        String trimmed = prefix.trim();
+        return trimmed.endsWith(":") ? trimmed : trimmed + ":";
+    }
+
+    /**
+     * 构建受管全局键名，自动规范化 keyPrefix 并幂等避免重复拼接
      *
      * @param rawKey 原始键名
-     * @return 附加 keyPrefix 后的最终键名
+     * @return 附加 keyPrefix 后的最终键名；入参为 null 时返回 null
      */
     public String buildKey(String rawKey) {
+        return buildKey(null, rawKey);
+    }
+
+    /**
+     * 构建受管两级键名（全局 keyPrefix + 模块前缀 + 原始键名），自动规范化冒号并幂等防重
+     *
+     * @param modulePrefix 模块级前缀（可为空或省略尾部冒号）
+     * @param rawKey       原始键名
+     * @return 合成后的完整键名；入参 rawKey 为 null 时返回 null
+     */
+    public String buildKey(String modulePrefix, String rawKey) {
         if (rawKey == null) {
             return null;
         }
-        if (org.springframework.util.StringUtils.hasText(keyPrefix) && !rawKey.startsWith(keyPrefix)) {
-            return keyPrefix + rawKey;
+        String global = normalizePrefix(this.keyPrefix);
+        String module = normalizePrefix(modulePrefix);
+
+        // 先剥离已存在的全局前缀，再判断是否已包含模块前缀，避免锁/布隆等二级前缀与缓存数据键混淆
+        String effectiveKey = rawKey;
+        if (!global.isEmpty() && effectiveKey.startsWith(global)) {
+            effectiveKey = effectiveKey.substring(global.length());
+            if (effectiveKey.isEmpty()) {
+                return rawKey;
+            }
         }
-        return rawKey;
+        if (!module.isEmpty() && effectiveKey.startsWith(module)) {
+            return global + effectiveKey;
+        }
+        if ((!module.isEmpty() || !global.isEmpty()) && effectiveKey.startsWith(":")) {
+            effectiveKey = effectiveKey.substring(1);
+        }
+        return global + module + effectiveKey;
     }
 
     /**

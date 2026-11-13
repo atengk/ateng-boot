@@ -305,11 +305,7 @@ public class RedisDelayedQueue implements DisposableBean {
      */
     public String resolveQueueName(String queueName) {
         Assert.hasText(queueName, "queueName must not be blank");
-        String globalPrefix = redisProperties != null ? redisProperties.getKeyPrefix() : null;
-        if (StringUtils.hasText(globalPrefix) && !queueName.startsWith(globalPrefix)) {
-            return globalPrefix + queueName;
-        }
-        return queueName;
+        return redisProperties != null ? redisProperties.buildKey(queueName) : queueName;
     }
 
     /**

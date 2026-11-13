@@ -464,30 +464,12 @@ public class RedisIdempotentTemplate {
      */
     public String formatKey(String customPrefix, String key) {
         Assert.hasText(key, "idempotent key must not be blank");
-        String prefix = customPrefix != null
+        String prefix = StringUtils.hasText(customPrefix)
                 ? customPrefix
                 : (redisProperties.getIdempotent() != null && redisProperties.getIdempotent().getPrefix() != null
                         ? redisProperties.getIdempotent().getPrefix()
                         : "idempotent:");
-
-        String globalPrefix = redisProperties.getKeyPrefix();
-        StringBuilder sb = new StringBuilder();
-        if (StringUtils.hasText(globalPrefix)) {
-            String trimmedGlobal = globalPrefix.trim();
-            sb.append(trimmedGlobal);
-            if (!trimmedGlobal.endsWith(":")) {
-                sb.append(":");
-            }
-        }
-        if (StringUtils.hasText(prefix)) {
-            String trimmedPrefix = prefix.trim();
-            sb.append(trimmedPrefix);
-            if (!trimmedPrefix.endsWith(":") && !key.startsWith(":")) {
-                sb.append(":");
-            }
-        }
-        sb.append(key.trim());
-        return sb.toString();
+        return redisProperties.buildKey(prefix, key.trim());
     }
 
     private Duration resolveEffectiveTtl(Duration ttl) {

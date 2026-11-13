@@ -247,4 +247,20 @@ class RedisBloomFilterTest {
         verify(bloomFilterMock).tryInit(eq(500_000L), eq(0.001));
         verify(bloomFilterMock).tryInit(eq(100_000L), eq(0.01));
     }
+
+    @Test
+    @DisplayName("10. 布隆过滤器键名无冒号前缀规范化与全局/模块前缀幂等去重")
+    void testBuildKeyIdempotentNormalization() {
+        RedisProperties props = new RedisProperties();
+        props.setKeyPrefix("prod");
+        RedisBloomFilter prefixedFilter = new RedisBloomFilter(redissonClient, props);
+        try {
+            assertThat(prefixedFilter.buildKey("blacklist")).isEqualTo("prod:bloom:blacklist");
+            assertThat(prefixedFilter.buildKey("bloom:blacklist")).isEqualTo("prod:bloom:blacklist");
+            assertThat(prefixedFilter.buildKey("prod:blacklist")).isEqualTo("prod:bloom:blacklist");
+            assertThat(prefixedFilter.buildKey("prod:bloom:blacklist")).isEqualTo("prod:bloom:blacklist");
+        } finally {
+            new RedisBloomFilter(redissonClient, redisProperties);
+        }
+    }
 }

@@ -412,4 +412,22 @@ class RedisUtilTest {
         assertThatThrownBy(() -> RedisUtil.expire("", java.time.Duration.ofSeconds(10)))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    @DisplayName("RedisUtil.buildKey 全局与模块前缀无冒号规范化及幂等去重")
+    void testBuildKeyIdempotentNormalization() {
+        io.github.atengk.boot.redis.properties.RedisProperties props = new io.github.atengk.boot.redis.properties.RedisProperties();
+        props.setKeyPrefix("prod");
+        new RedisUtil(redisTemplate, props);
+        try {
+            assertThat(RedisUtil.buildKey("user:1")).isEqualTo("prod:user:1");
+            assertThat(RedisUtil.buildKey("prod:user:1")).isEqualTo("prod:user:1");
+            assertThat(RedisUtil.buildKey("user", "profile", "1001")).isEqualTo("prod:user:profile:1001");
+            assertThat(RedisUtil.buildKey("user", "user:profile:1001")).isEqualTo("prod:user:profile:1001");
+            assertThat(RedisUtil.buildKey("user", "prod:user:profile:1001")).isEqualTo("prod:user:profile:1001");
+            assertThat(RedisUtil.buildKey((String) null, new String[0])).isEqualTo("prod:");
+        } finally {
+            new RedisUtil(redisTemplate);
+        }
+    }
 }

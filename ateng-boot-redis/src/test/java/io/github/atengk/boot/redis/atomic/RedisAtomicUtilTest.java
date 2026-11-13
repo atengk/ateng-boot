@@ -243,4 +243,19 @@ class RedisAtomicUtilTest {
         when(valueOperations.decrement("counter:static:decr", 5L)).thenReturn(84L);
         assertThat(RedisAtomicUtil.decr("counter:static:decr", 5L)).isEqualTo(84L);
     }
+
+    @Test
+    @DisplayName("测试 formatKey 无冒号前缀规范化与幂等去重")
+    void testFormatKeyIdempotentNormalization() {
+        RedisProperties props = new RedisProperties();
+        props.setKeyPrefix("prod");
+        new RedisAtomicUtil(redisTemplate, props);
+        try {
+            assertThat(RedisAtomicUtil.formatKey("counter:hits")).isEqualTo("prod:counter:hits");
+            assertThat(RedisAtomicUtil.formatKey("prod:counter:hits")).isEqualTo("prod:counter:hits");
+            assertThat(RedisAtomicUtil.formatKey(":counter:hits")).isEqualTo("prod:counter:hits");
+        } finally {
+            new RedisAtomicUtil(redisTemplate, new RedisProperties());
+        }
+    }
 }

@@ -407,4 +407,20 @@ class RedisCacheTemplateTest {
         assertThat(result).containsEntry("t1", "ValT1");
         verify(redisTemplate).executePipelined(any(SessionCallback.class));
     }
+
+    @Test
+    @DisplayName("测试 buildKey 与 buildLockKey 规范化无冒号前缀并幂等去重")
+    void testBuildKeyAndBuildLockKeyIdempotentNormalization() {
+        io.github.atengk.boot.redis.properties.RedisProperties props = new io.github.atengk.boot.redis.properties.RedisProperties();
+        props.setKeyPrefix("prod");
+        RedisCacheTemplate prefixedTemplate = new RedisCacheTemplate(redisTemplate, redissonClient, objectMapper, props);
+
+        assertThat(prefixedTemplate.buildKey("user:1")).isEqualTo("prod:user:1");
+        assertThat(prefixedTemplate.buildKey("prod:user:1")).isEqualTo("prod:user:1");
+
+        assertThat(prefixedTemplate.buildLockKey("user:1")).isEqualTo("prod:lock:cache:user:1");
+        assertThat(prefixedTemplate.buildLockKey("prod:user:1")).isEqualTo("prod:lock:cache:user:1");
+        assertThat(prefixedTemplate.buildLockKey("lock:cache:user:1")).isEqualTo("prod:lock:cache:user:1");
+        assertThat(prefixedTemplate.buildLockKey("prod:lock:cache:user:1")).isEqualTo("prod:lock:cache:user:1");
+    }
 }
