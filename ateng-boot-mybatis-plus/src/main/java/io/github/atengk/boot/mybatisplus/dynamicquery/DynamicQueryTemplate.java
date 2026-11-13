@@ -66,6 +66,18 @@ public class DynamicQueryTemplate {
     private final Field mappedStatementsField;
 
     /**
+     * 匹配 MyBatis 动态 SQL {@code </where>} 闭合标签的预编译正则
+     */
+    private static final java.util.regex.Pattern CLOSE_WHERE_PATTERN =
+            java.util.regex.Pattern.compile("(?i)</where>");
+
+    /**
+     * 匹配 ORDER BY 子句关键字的预编译正则
+     */
+    private static final java.util.regex.Pattern ORDER_BY_CLAUSE_PATTERN =
+            java.util.regex.Pattern.compile("(?i)\\bORDER\\s+BY\\b");
+
+    /**
      * 运行时动态自适应 Statement 注册锁（依托 ReentrantLock 杜绝虚拟线程 Carrier Pinning，遵循 ADR-0029）
      */
     private final ReentrantLock adaptiveStatementLock = new ReentrantLock();
@@ -314,15 +326,7 @@ public class DynamicQueryTemplate {
      * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
      */
     public boolean exists(String statementName, DynamicQueryRequest request, Map<String, Object> extraParams) {
-        Objects.requireNonNull(statementName, "statementName 不能为 null");
-        if (request == null && (extraParams == null || extraParams.isEmpty())) {
-            return false;
-        }
-        String statementId = findStatementId(statementName);
-        QueryWrapper<?> wrapper = (request != null)
-                ? DynamicQueryHelper.buildWrapper(request, resolveProjections(statementId))
-                : new QueryWrapper<>();
-        return executeExistsWithWrapper(statementId, wrapper, extraParams);
+        return executeExists(statementName, request, extraParams);
     }
 
     /**
@@ -345,17 +349,24 @@ public class DynamicQueryTemplate {
      * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
      */
     public boolean exists(String statementName, Object queryDto, Map<String, Object> extraParams) {
-        if (queryDto instanceof DynamicQueryRequest request) {
-            return exists(statementName, request, extraParams);
-        }
+        return executeExists(statementName, queryDto, extraParams);
+    }
+
+    private boolean executeExists(String statementName, Object criteria, Map<String, Object> extraParams) {
         Objects.requireNonNull(statementName, "statementName 不能为 null");
-        if (queryDto == null && (extraParams == null || extraParams.isEmpty())) {
+        if (criteria == null && (extraParams == null || extraParams.isEmpty())) {
             return false;
         }
         String statementId = findStatementId(statementName);
-        QueryWrapper<?> wrapper = (queryDto != null)
-                ? DynamicQueryHelper.buildWrapper(queryDto, resolveProjections(statementId))
-                : new QueryWrapper<>();
+        Map<String, String> projections = resolveProjections(statementId);
+        QueryWrapper<?> wrapper;
+        if (criteria instanceof DynamicQueryRequest request) {
+            wrapper = DynamicQueryHelper.buildWrapper(request, projections);
+        } else if (criteria != null) {
+            wrapper = DynamicQueryHelper.buildWrapper(criteria, projections);
+        } else {
+            wrapper = new QueryWrapper<>();
+        }
         return executeExistsWithWrapper(statementId, wrapper, extraParams);
     }
 
@@ -902,31 +913,95 @@ public class DynamicQueryTemplate {
                 ? stripOuterScriptTags(definition.getSqlScript())
                 : fallbackSql;
 
-        java.util.regex.Matcher closeWhereMatcher = java.util.regex.Pattern.compile("(?i)</where>").matcher(rawScript);
+        java.util.regex.Matcher closeWhereMatcher = CLOSE_WHERE_PATTERN.matcher(rawScript);
         if (closeWhereMatcher.find()) {
             int insertPos = closeWhereMatcher.start();
             String beforeCloseWhere = rawScript.substring(0, insertPos);
             String fromCloseWhere = rawScript.substring(insertPos);
-            boolean hasOrderByAfterWhere = fromCloseWhere.toUpperCase(Locale.ROOT).contains("ORDER BY");
+            boolean hasOrderByAfterWhere = ORDER_BY_CLAUSE_PATTERN.matcher(fromCloseWhere).find();
+            // 仅将过滤条件注入 </where> 内部，避免将 Wrapper 中的 ORDER BY 混入 </where> 导致与后续 ORDER BY 冲突
             String sortFallback = hasOrderByAfterWhere
                     ? ""
-                    : "<if test=\"ew != null and ew.emptyOfWhere and !ew.emptyOfNormal\"> ${ew.sqlSegment}</if>";
+                    : "<if test=\"ew != null and ew.expression != null and ew.expression.orderBy != null and !ew.expression.orderBy.isEmpty()\"> ${ew.expression.orderBy.sqlSegment}</if>";
             return "<script>" + beforeCloseWhere
-                    + "<if test=\"ew != null and !ew.emptyOfWhere\"> AND ${ew.sqlSegment}</if>"
+                    + "<if test=\"ew != null and ew.nonEmptyOfNormal\"> AND ${ew.expression.normal.sqlSegment}</if>"
                     + fromCloseWhere
                     + sortFallback
                     + "</script>";
         }
 
         boolean hasWhere = hasWhereClause(rawScript);
+        int orderByPos = findTopLevelOrderByIndex(rawScript);
+        if (orderByPos >= 0) {
+            String beforeOrderBy = rawScript.substring(0, orderByPos);
+            String fromOrderBy = rawScript.substring(orderByPos);
+            String prefix = hasWhere ? " AND " : " WHERE ";
+            return "<script>" + beforeOrderBy
+                    + "<if test=\"ew != null and ew.nonEmptyOfNormal\">" + prefix + "${ew.expression.normal.sqlSegment}</if> "
+                    + fromOrderBy + "</script>";
+        }
         if (hasWhere) {
             return "<script>" + rawScript +
                     "<choose>" +
                     "<when test=\"ew != null and !ew.emptyOfWhere\"> AND ${ew.sqlSegment}</when>" +
-                    "<when test=\"ew != null and ew.emptyOfWhere and !ew.emptyOfNormal\"> ${ew.sqlSegment}</when>" +
+                    "<when test=\"ew != null and ew.expression != null and ew.expression.orderBy != null and !ew.expression.orderBy.isEmpty()\"> ${ew.expression.orderBy.sqlSegment}</when>" +
                     "</choose></script>";
         }
         return "<script>" + rawScript + " ${ew.customSqlSegment}</script>";
+    }
+
+    /**
+     * 查找 SQL 最外层（括号深度为 0 且非单引号字符串内部）末次出现的 {@code ORDER BY} 起始下标
+     */
+    private static int findTopLevelOrderByIndex(String sql) {
+        if (sql == null || sql.isEmpty()) {
+            return -1;
+        }
+        int len = sql.length();
+        boolean inSingleQuote = false;
+        int parenDepth = 0;
+        int lastOrderByIndex = -1;
+        for (int i = 0; i < len; i++) {
+            char ch = sql.charAt(i);
+            if (ch == '\'') {
+                inSingleQuote = !inSingleQuote;
+                continue;
+            }
+            if (inSingleQuote) {
+                continue;
+            }
+            if (ch == '(') {
+                parenDepth++;
+                continue;
+            }
+            if (ch == ')') {
+                if (parenDepth > 0) {
+                    parenDepth--;
+                }
+                continue;
+            }
+            if (parenDepth == 0 && i + 5 <= len && sql.regionMatches(true, i, "ORDER", 0, 5)) {
+                boolean leftBoundary = i == 0 || !isSqlIdentifierChar(sql.charAt(i - 1));
+                int cursor = i + 5;
+                if (leftBoundary && cursor < len && Character.isWhitespace(sql.charAt(cursor))) {
+                    while (cursor < len && Character.isWhitespace(sql.charAt(cursor))) {
+                        cursor++;
+                    }
+                    if (cursor + 2 <= len && sql.regionMatches(true, cursor, "BY", 0, 2)) {
+                        int afterBy = cursor + 2;
+                        boolean rightBoundary = afterBy == len || !isSqlIdentifierChar(sql.charAt(afterBy));
+                        if (rightBoundary) {
+                            lastOrderByIndex = i;
+                        }
+                    }
+                }
+            }
+        }
+        return lastOrderByIndex;
+    }
+
+    private static boolean isSqlIdentifierChar(char ch) {
+        return Character.isLetterOrDigit(ch) || ch == '_';
     }
 
     private static String stripOuterScriptTags(String sqlScript) {

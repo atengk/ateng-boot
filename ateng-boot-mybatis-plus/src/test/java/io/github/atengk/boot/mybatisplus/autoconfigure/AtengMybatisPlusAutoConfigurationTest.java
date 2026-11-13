@@ -12,6 +12,9 @@ import io.github.atengk.boot.mybatisplus.handler.DefaultMetaObjectHandler;
 import io.github.atengk.boot.mybatisplus.tenant.AtengTenantLineInnerInterceptor;
 import io.github.atengk.boot.mybatisplus.tenant.DefaultTenantLineHandler;
 import io.github.atengk.boot.core.id.Snowflake;
+import io.github.atengk.boot.mybatisplus.util.BatchUtil;
+import io.github.atengk.boot.mybatisplus.util.PageUtil;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -35,6 +38,15 @@ class AtengMybatisPlusAutoConfigurationTest {
             .withConfiguration(AutoConfigurations.of(
                     AtengMybatisPlusAutoConfiguration.class,
                     AtengMybatisPlusDynamicQueryAutoConfiguration.class));
+
+    @AfterEach
+    void resetStaticGlobalState() {
+        BatchUtil.setCurrentUserProvider(null);
+        BatchUtil.setAuditEnabled(true);
+        BatchUtil.setDefaultOperator(null);
+        BatchUtil.setDefaultBatchSize(0);
+        PageUtil.setDefaultMaxLimit(500L);
+    }
 
     @Test
     @DisplayName("默认配置下成功装配审计填充器、MybatisPlusInterceptor 插件链与雪花发号器")

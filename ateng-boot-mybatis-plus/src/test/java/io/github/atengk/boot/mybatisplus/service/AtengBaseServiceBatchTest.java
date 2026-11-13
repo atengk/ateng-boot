@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mybatisplus.service;
 
+import com.baomidou.mybatisplus.annotation.DbType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
@@ -7,11 +8,14 @@ import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import com.baomidou.mybatisplus.core.config.GlobalConfig;
 import com.baomidou.mybatisplus.core.incrementer.DefaultIdentifierGenerator;
 import com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.mybatisplus.entity.BaseDeleteIdEntity;
 import io.github.atengk.boot.mybatisplus.entity.TenantEntity;
 import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.mybatisplus.service.impl.AtengServiceImpl;
+import io.github.atengk.boot.mybatisplus.util.BatchUtil;
+import io.github.atengk.boot.mybatisplus.util.PessimisticLockUtil;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -22,6 +26,7 @@ import org.apache.ibatis.session.SqlSessionFactory;
 import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -31,6 +36,7 @@ import javax.sql.DataSource;
 import java.io.Serializable;
 import java.sql.Connection;
 import java.sql.Statement;
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 
@@ -129,9 +135,24 @@ class AtengBaseServiceBatchTest {
 
     @BeforeEach
     void setUpEach() throws Exception {
+        UserContextHolder.clear();
+        BatchUtil.setCurrentUserProvider(null);
+        BatchUtil.setAuditEnabled(true);
+        BatchUtil.setDefaultOperator(null);
+        BatchUtil.setDefaultBatchSize(0);
         try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
             stmt.execute("TRUNCATE TABLE t_batch_service_item");
         }
+    }
+
+    @AfterEach
+    void tearDownEach() {
+        UserContextHolder.clear();
+        PessimisticLockUtil.resetDbType();
+        BatchUtil.setCurrentUserProvider(null);
+        BatchUtil.setAuditEnabled(true);
+        BatchUtil.setDefaultOperator(null);
+        BatchUtil.setDefaultBatchSize(0);
     }
 
     @Test
@@ -248,5 +269,53 @@ class AtengBaseServiceBatchTest {
         assertThat(itemService.updateBatch(Collections.emptyList())).isZero();
         assertThat(itemService.upsert(null)).isFalse();
         assertThat(itemMapper.upsertSomeColumn(null)).isZero();
+    }
+
+    @Test
+    @DisplayName("5. 运行时方言路由与更新审计强制刷新：PessimisticLockUtil.runWithDbType 联动 upsertBatch 及 updateBatch 覆盖旧审计")
+    void shouldRouteDialectAtRuntimeAndForceRefreshUpdateAudit() {
+        TestBatchItemEntity seed = new TestBatchItemEntity();
+        seed.setId(401L);
+        seed.setName("dialect-init");
+        seed.setStatus("INIT");
+        seed.setCount(1);
+
+        // 1. 显式以 MySQL 方言上下文执行 upsertBatch 插入
+        PessimisticLockUtil.runWithDbType(DbType.MYSQL, () -> {
+            int inserted = itemService.upsertBatch(List.of(seed));
+            assertThat(inserted).isGreaterThan(0);
+        });
+
+        // 2. 无上下文操作人时，空 updateBy 回退至 defaultOperator ("OPS_BATCH")，且旧 updateTime 被强制刷新
+        BatchUtil.setDefaultOperator("OPS_BATCH");
+        LocalDateTime staleTime = LocalDateTime.of(2020, 1, 1, 0, 0);
+        TestBatchItemEntity patch = new TestBatchItemEntity();
+        patch.setId(401L);
+        patch.setName("dialect-updated");
+        patch.setStatus("DONE");
+        patch.setCount(9);
+        patch.setUpdateTime(staleTime);
+
+        int updated = itemService.updateBatch(List.of(patch));
+        assertThat(updated).isEqualTo(1);
+
+        TestBatchItemEntity reloaded = itemService.getById(401L);
+        assertThat(reloaded.getName()).isEqualTo("dialect-updated");
+        assertThat(reloaded.getUpdateBy()).isEqualTo("OPS_BATCH");
+        assertThat(reloaded.getUpdateTime()).isAfter(staleTime);
+
+        // 3. 存在 UserContextHolder 上下文操作人时，即使实体残留旧 updateBy 与旧 updateTime，均被强制刷新
+        UserContextHolder.set("CTX_ADMIN");
+        TestBatchItemEntity ctxPatch = new TestBatchItemEntity();
+        ctxPatch.setId(401L);
+        ctxPatch.setName("dialect-ctx-updated");
+        ctxPatch.setUpdateTime(staleTime);
+        ctxPatch.setUpdateBy("STALE_OPERATOR");
+
+        assertThat(itemService.updateBatch(List.of(ctxPatch))).isEqualTo(1);
+        TestBatchItemEntity reloadedCtx = itemService.getById(401L);
+        assertThat(reloadedCtx.getName()).isEqualTo("dialect-ctx-updated");
+        assertThat(reloadedCtx.getUpdateBy()).isEqualTo("CTX_ADMIN");
+        assertThat(reloadedCtx.getUpdateTime()).isAfter(staleTime);
     }
 }

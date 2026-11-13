@@ -135,6 +135,14 @@ class DynamicQueryTemplateTest {
         String plainSql = "SELECT id, username, age, email FROM t_template_user";
         registerMappedStatement(configuration, mapperName + ".selectPlainUsers", plainSql, TemplateUserVO.class);
 
+        // 注册含 <where> 闭合标签与静态 ORDER BY 的动态 XML Statement
+        String whereWithOrderBySql = "<script>SELECT id, username, age, email FROM t_template_user <where><if test='extraStatus != null'>AND status = #{extraStatus}</if></where> ORDER BY id DESC</script>";
+        registerMappedStatement(configuration, mapperName + ".selectUsersWhereOrderBy", whereWithOrderBySql, TemplateUserVO.class);
+
+        // 注册含 <where> 闭合标签但无静态 ORDER BY 的动态 XML Statement
+        String whereWithoutOrderBySql = "<script>SELECT id, username, age, email FROM t_template_user <where><if test='extraStatus != null'>AND status = #{extraStatus}</if></where></script>";
+        registerMappedStatement(configuration, mapperName + ".selectUsersWhereNoOrderBy", whereWithoutOrderBySql, TemplateUserVO.class);
+
         sqlSessionFactory = new MybatisSqlSessionFactoryBuilder().build(configuration);
         sqlSessionTemplate = new SqlSessionTemplate(sqlSessionFactory);
         dynamicQueryTemplate = new DynamicQueryTemplate(sqlSessionTemplate);
@@ -421,27 +429,85 @@ class DynamicQueryTemplateTest {
         java.util.concurrent.atomic.AtomicInteger successCount = new java.util.concurrent.atomic.AtomicInteger();
         java.util.concurrent.atomic.AtomicReference<Throwable> exceptionRef = new java.util.concurrent.atomic.AtomicReference<>();
 
-        for (int i = 0; i < threadCount; i++) {
-            executor.submit(() -> {
-                try {
-                    DynamicQueryRequest req = new DynamicQueryRequest();
-                    req.addCondition(QueryCondition.eq("username", "alice"));
-                    List<TemplateUserVO> list = dynamicQueryTemplate.selectList("selectPlainUsers", req, TemplateUserVO.class);
-                    if (list != null && list.size() == 1 && "alice".equals(list.get(0).getUsername())) {
-                        successCount.incrementAndGet();
+        try {
+            for (int i = 0; i < threadCount; i++) {
+                executor.submit(() -> {
+                    try {
+                        DynamicQueryRequest req = new DynamicQueryRequest();
+                        req.addCondition(QueryCondition.eq("username", "alice"));
+                        List<TemplateUserVO> list = dynamicQueryTemplate.selectList("selectPlainUsers", req, TemplateUserVO.class);
+                        if (list != null && list.size() == 1 && "alice".equals(list.get(0).getUsername())) {
+                            successCount.incrementAndGet();
+                        }
+                    } catch (Throwable t) {
+                        exceptionRef.compareAndSet(null, t);
+                    } finally {
+                        latch.countDown();
                     }
-                } catch (Throwable t) {
-                    exceptionRef.compareAndSet(null, t);
-                } finally {
-                    latch.countDown();
-                }
-            });
-        }
+                });
+            }
 
-        boolean completed = latch.await(10, java.util.concurrent.TimeUnit.SECONDS);
-        executor.shutdown();
-        assertTrue(completed, "并发自适应语句改写超时");
-        assertNull(exceptionRef.get(), "并发自适应语句改写发生异常");
-        assertEquals(threadCount, successCount.get(), "所有并发查询必须全部成功");
+            boolean completed = latch.await(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(completed, "并发自适应语句改写超时");
+            assertNull(exceptionRef.get(), "并发自适应语句改写发生异常");
+            assertEquals(threadCount, successCount.get(), "所有并发查询必须全部成功");
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("测试自适应 Statement 对 <where>...</where> 与后置 ORDER BY 的边界防护及排序分离注入")
+    void testAdaptiveSqlWithCloseWhereAndOrderBy() {
+        // 1. 原 SQL 尾部已有静态 ORDER BY，且同时携带过滤条件与动态排序：不能把动态 ORDER BY 追加在原 ORDER BY 之后
+        DynamicQueryRequest condAndSort = new DynamicQueryRequest();
+        condAndSort.addCondition(QueryCondition.ge("age", 25));
+        condAndSort.setSorts(List.of(SortItem.asc("age")));
+        List<TemplateUserVO> orderedList = dynamicQueryTemplate.selectList(
+                "selectUsersWhereOrderBy", condAndSort, TemplateUserVO.class);
+        assertEquals(3, orderedList.size());
+        // 验证过滤 age >= 25 且沿用 SQL 自身 ORDER BY id DESC（david=4, charlie=3, bob=2）
+        assertEquals(4L, orderedList.get(0).getId());
+        assertEquals(3L, orderedList.get(1).getId());
+        assertEquals(2L, orderedList.get(2).getId());
+
+        // 2. 无静态 ORDER BY，同时携带过滤条件与动态排序：过滤与排序均正确生效
+        List<TemplateUserVO> dynamicSortedList = dynamicQueryTemplate.selectList(
+                "selectUsersWhereNoOrderBy", condAndSort, TemplateUserVO.class);
+        assertEquals(3, dynamicSortedList.size());
+        assertEquals(2L, dynamicSortedList.get(0).getId());
+        assertEquals(3L, dynamicSortedList.get(1).getId());
+        assertEquals(4L, dynamicSortedList.get(2).getId());
+
+        // 3. 验证挂载 DynamicSqlRegistry 后保留 <where>...</where> 标签时的分支路径（</where> 内外分离注入）
+        io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry registry =
+                new io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry(sqlSessionFactory.getConfiguration());
+        String mapperName = TemplateUserMapper.class.getName();
+        String regWithOrderId = mapperName + ".selectRegistryWhereOrderBy";
+        String regNoOrderId = mapperName + ".selectRegistryWhereNoOrderBy";
+        registry.register(io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlDefinition.builder()
+                .id(regWithOrderId)
+                .sqlScript("<script>SELECT id, username, age, email FROM t_template_user <where><if test='extraStatus != null'>AND status = #{extraStatus}</if></where> ORDER BY id DESC</script>")
+                .commandType(SqlCommandType.SELECT)
+                .build());
+        registry.register(io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlDefinition.builder()
+                .id(regNoOrderId)
+                .sqlScript("<script>SELECT id, username, age, email FROM t_template_user <where><if test='extraStatus != null'>AND status = #{extraStatus}</if></where></script>")
+                .commandType(SqlCommandType.SELECT)
+                .build());
+
+        DynamicQueryTemplate registryTemplate = new DynamicQueryTemplate(sqlSessionTemplate, registry);
+        List<TemplateUserVO> regOrdered = registryTemplate.selectList(
+                regWithOrderId, condAndSort, TemplateUserVO.class);
+        assertEquals(3, regOrdered.size());
+        assertEquals(4L, regOrdered.get(0).getId());
+
+        DynamicQueryRequest sortOnly = new DynamicQueryRequest();
+        sortOnly.setSorts(List.of(SortItem.desc("age")));
+        List<TemplateUserVO> regSortOnly = registryTemplate.selectList(
+                regNoOrderId, sortOnly, TemplateUserVO.class);
+        assertEquals(4, regSortOnly.size());
+        assertEquals(4L, regSortOnly.get(0).getId());
+        assertEquals(1L, regSortOnly.get(3).getId());
     }
 }

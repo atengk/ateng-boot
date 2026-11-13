@@ -24,8 +24,8 @@
 | **数据权限** | 动态数据权限处理器 | `DataPermissionHandler` / `DefaultDataPermissionHandler` | - | 数据权限 SPI 与默认处理器，结合上下文提取注入数据过滤 SQL 片段 | `AtengDataPermissionInnerInterceptorTest` / `UserDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
 | **数据权限** | 声明式数据权限范围注解 | `@DataScope` | - | 细粒度声明式数据权限注解，支持按用户、部门或自定义表达式进行数据范围收敛 | `AtengDataPermissionInnerInterceptorTest` / `UserDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
 | **数据权限** | 数据权限上下文保持器 | `DataPermissionContextHolder` | - | 线程安全透传数据权限上下文与过滤表达式，支持链式构建与自动现场清理 | `DataPermissionContextHolderTest` / `UserDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
-| **原生批量操作** | 原生分批操作通用门面 | `BatchUtil` | `ateng.boot.mybatis-plus.batch.default-size` | `insertBatch` / `upsertBatch` / `updateBatch`（含 `*SomeColumn` 别名），内置切片分批（默认 1000）、内存防死锁升序排序与六要素轻量自愈补偿 | `BatchUtilTest` / `BatchUpsertTest` / `BatchUpdateTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
-| **原生批量操作** | 双方言批量 Upsert 注入器 | `UpsertBatchSomeColumn` / `@ConflictKeys` | - | 原生单条多值 Upsert SQL 注入器（MySQL `ON DUPLICATE KEY UPDATE` / PostgreSQL `ON CONFLICT DO UPDATE`），支持 `@ConflictKeys` 复合唯一键 | `BatchUpsertTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
+| **原生批量操作** | 原生分批操作通用门面 | `BatchUtil` | `ateng.boot.mybatis-plus.batch.default-size` / `audit.enabled` / `audit.default-operator` | `insertBatch` / `upsertBatch` / `updateBatch`（含 `*SomeColumn` 别名），支持启动期同步全局审计/批次配置、内存防死锁升序排序及 `updateBatch` 更新审计强制刷新 | `BatchUtilTest` / `BatchUpsertTest` / `BatchUpdateTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
+| **原生批量操作** | 双方言批量 Upsert 注入器 | `UpsertBatchSomeColumn` / `@ConflictKeys` | - | 预编译 MySQL 与 PostgreSQL 双路 `SqlSource`，运行期通过 `DialectRoutingSqlSource` 读取 `PessimisticLockUtil.getDbType()` 动态路由（默认 MySQL），支持 `@ConflictKeys` 复合唯一键 | `BatchUpsertTest` / `AtengBaseServiceBatchTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
 | **原生批量操作** | 原生单条批量更新注入器 | `UpdateBatchSomeColumn` | - | 原生 ANSI CASE WHEN 多值更新 SQL 注入器，内置 `AntiDeadlockSqlSource` 强制按主键 ID 升序防死锁，动态回退保护未提供字段 | `BatchUpdateTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
 | **原生批量操作** | 全局增强 SQL 注入器 | `AtengSqlInjector` | - | 自动向 MyBatis-Plus 注入 `InsertBatchSomeColumn`、`UpsertBatchSomeColumn` 与 `UpdateBatchSomeColumn` 原生批量操作方法 | `AtengSqlInjectorTest` / `TenantOrderDomainIntegrationTest` |
 | **存储加解密** | 字段级透明存储加密注解 | `@FieldEncrypt` | `ateng.boot.mybatis-plus.crypto.secret-key` | 标注于实体属性上，声明该字段由 `EncryptTypeHandler` 或 `DeterministicEncryptTypeHandler` 执行持久化透明加解密；支持声明 `deterministic = true` 开启确定性等值加密检索 | `EncryptTypeHandlerTest` / `UserDomainIntegrationTest` / `MpLifecycleAndSecurityControllerTest` / `DynamicQueryHelperDeterministicEncryptTest` |
@@ -86,9 +86,17 @@
 `ateng-boot-mybatis-plus` 深度融合 MyBatis-Plus `3.5.17` 官方生态与 `ateng-boot-core` 原生底座，面向企业级 SaaS、高并发分布式系统与金融合规持久层提供零反射侵入、零实体泄露、全链路可观测的工业级 ORM 基础设施。
 
 ```xml
+<!-- 方式一：已引入 ateng-boot-bom 时由 BOM 统一纳管版本 -->
 <dependency>
     <groupId>io.github.atengk</groupId>
     <artifactId>ateng-boot-mybatis-plus</artifactId>
+</dependency>
+
+<!-- 方式二：未引入 BOM 时显式声明版本号（与根 pom.xml 保持一致） -->
+<dependency>
+    <groupId>io.github.atengk</groupId>
+    <artifactId>ateng-boot-mybatis-plus</artifactId>
+    <version>1.2.0</version>
 </dependency>
 ```
 
@@ -1195,7 +1203,7 @@ public int upsertBatchSkus(List<BatchSkuDTO> dtoList) {
 ```
 
 #### 核心机制与生产边界
-- **自适应方言决策**：注入器启动时自动读取数据源配置中的 `DbType`。若检测为 PostgreSQL，校验 `@ConflictKeys` 是否已声明；未声明时回退至主键列，杜绝由于缺少冲突目标导致 PG 抛出 `ON CONFLICT DO UPDATE requires inference specification` 错误；
+- **预编译双路与运行期方言动态路由**：注入器启动时预编译 MySQL（`ON DUPLICATE KEY UPDATE`）与 PostgreSQL（`ON CONFLICT (...) DO UPDATE`）双路 `SqlSource` 并封装为 `DialectRoutingSqlSource`；每次执行期动态读取 `PessimisticLockUtil.getDbType()` 路由至对应方言（未显式设置方言上下文时默认按 `MYSQL` 执行，可通过 `PessimisticLockUtil.runWithDbType(DbType, ...)` 切换），兼容多数据源与运行期方言切换；在 PostgreSQL 分支下，若未声明 `@ConflictKeys` 则自动回退至主键列，杜绝 PG 抛出 `ON CONFLICT DO UPDATE requires inference specification`；
 - **版本号与更新审计联动**：在更新分支中，自动将 `update_time = NOW()`、`update_by = ?` 及 `version = version + 1` 注入 SET 子句，兼具版本控制与更新审计追踪。
 
 ---
@@ -1209,7 +1217,19 @@ public int upsertBatchSkus(List<BatchSkuDTO> dtoList) {
 - **单条 ANSI SQL 批量更新**：生成 `UPDATE table SET col = CASE id WHEN ? THEN ? ELSE col END WHERE id IN (?)`，100% 兼容 MySQL、PostgreSQL 与 H2；
 - **并发防死锁铁律（Anti-Deadlock Invariant）**：执行批量更新前，强制在内存中对实体集合按照主键 ID 升序（Ascending）排序，确保所有并发事务获取行锁的时序完全同向，从源头彻底杜绝死锁；双轨制保障：即使开发者绕过 `BatchUtil` 直接调用底层 Mapper，挂载的 `AntiDeadlockSqlSource` 也会在预编译阶段强制重排；
 - **选择性更新与空值保护**：每列内嵌动态 `<trim prefix="col = CASE id " suffix="ELSE col END,">`，仅针对非 null 属性生成 `WHEN` 判定；若某行未设置该列则命中 `ELSE col` 保护已有值不被覆盖；若整个批次全为 null 则整列从 `SET` 剔除；
-- **更新审计自愈**：自动为缺失的 `updateTime` 填充当前时间、为缺失的 `updateBy` 填充操作人，且绝对不覆盖 `createTime` 与 `createBy`。
+- **更新审计强制刷新 (`autoHealForUpdate`)**：仅在 `audit.enabled: true` 时生效。`updateTime` 无论传入实体是否携带旧值均强制刷新为当前系统时间；`updateBy` 在存在有效上下文操作人（`CurrentUserProvider` SPI 或 `UserContextHolder`）时强制刷新为当前操作人，无上下文操作人时保留调用方显式传入的非空 `updateBy`，为空时兜底填充 `audit.default-operator`（默认 `SYSTEM`），且绝对不覆盖 `createTime` 与 `createBy`。
+
+#### 本特性配置片段 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      audit:
+        enabled: true             # 是否启用批量写与基础审计字段自动填充（同步至 BatchUtil），默认 true
+        default-operator: SYSTEM  # 无用户上下文时的兜底操作人标识（同步至 BatchUtil），默认 SYSTEM
+      batch:
+        default-size: 1000        # 原生批量插入/更新/Upsert 默认切片大小（同步至 BatchUtil），默认 1000
+```
 
 #### 实战代码示例
 ```java
@@ -1663,6 +1683,7 @@ SELECT id, sku_code, sku_name, price, stock, status
 
 #### 核心机制与生产边界
 - **业务调用栈精准穿透**：内置智能框架类过滤逻辑，主动穿透过滤 JDK 内部、MyBatis 驱动、Tomcat 容器、Spring 代理及测试执行器，精准定位到首个业务 Service 或 Controller 代码行号；
+- **受管异步派发与四维上下文透传**：开启 `slow-sql.async-enabled: true` 且注入了 Core 受管线程池（`ObjectProvider<Executor>`）时，告警回调与 `SlowSqlEvent` 自动通过 `AsyncContext.wrap(...)` 投递至后台线程异步执行，避免外部 Webhook 或监控 I/O 拖慢 SQL 返回，同时完整透传 $\langle\text{MDC traceId}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 并在 `finally` 中确定性清理；
 - **异常容错与弹性降级**：告警提供者 SPI 与 Spring 事件发布均处于独立的防卫沙箱中。若第三方 Webhook 超时或网络异常，绝不向上抛出异常或阻断业务事务的正常提交。
 
 ---

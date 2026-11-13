@@ -1,9 +1,12 @@
 package io.github.atengk.boot.sample.mybatisplus;
 
+import com.baomidou.mybatisplus.annotation.DbType;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.mybatisplus.audit.DataChangeAuditContextHolder;
+import io.github.atengk.boot.mybatisplus.util.BatchUtil;
+import io.github.atengk.boot.mybatisplus.util.PessimisticLockUtil;
 import io.github.atengk.boot.sample.mybatisplus.audit.MemoryDataChangeAuditProvider;
 import io.github.atengk.boot.sample.mybatisplus.entity.ProductSkuEntity;
 import io.github.atengk.boot.sample.mybatisplus.entity.TenantOrderEntity;
@@ -12,6 +15,7 @@ import io.github.atengk.boot.sample.mybatisplus.mapper.TenantOrderMapper;
 import io.github.atengk.boot.sample.mybatisplus.model.BatchSkuDTO;
 import io.github.atengk.boot.sample.mybatisplus.model.OrderAuditUpdateDTO;
 import io.github.atengk.boot.sample.mybatisplus.model.SkuDeductDTO;
+import io.github.atengk.boot.sample.mybatisplus.service.HighPerfBatchScenarioService;
 import io.github.atengk.boot.sample.mybatisplus.slowsql.SampleSlowSqlAlertProvider;
 import io.github.atengk.boot.sample.mybatisplus.sqllog.MemorySqlLogStorageProvider;
 import org.junit.jupiter.api.AfterEach;
@@ -351,5 +355,61 @@ class MpBatchLockAndObservabilityControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
                 .andExpect(jsonPath("$.data", hasSize(1)));
+    }
+
+    @Test
+    @DisplayName("10. 验证 BatchUtil 全局配置同步、upsertBatch 运行时方言切换及 updateBatch 强制刷新更新审计")
+    void shouldSyncBatchConfigAndRouteDialectAndRefreshUpdateAudit(
+            @Autowired HighPerfBatchScenarioService batchScenarioService) {
+        // 10.1 验证 AtengMybatisPlusAutoConfiguration 将 YAML 配置同步至 BatchUtil
+        assertThat(BatchUtil.isAuditEnabled()).isTrue();
+        assertThat(BatchUtil.getDefaultOperator()).isEqualTo("SYSTEM");
+        assertThat(BatchUtil.getDefaultBatchSize()).isEqualTo(1000);
+
+        BatchSkuDTO seed = new BatchSkuDTO("SKU_DIALECT_001", "方言路由商品", new BigDecimal("199.00"));
+        try {
+            // 10.2 在显式 MySQL 方言上下文中调用 upsertBatch（先插再更新）
+            PessimisticLockUtil.runWithDbType(DbType.MYSQL, () -> {
+                int inserted = batchScenarioService.upsertBatchSkus(List.of(seed));
+                assertThat(inserted).isGreaterThan(0);
+            });
+
+            ProductSkuEntity persisted = batchScenarioService.lambdaQuery()
+                    .eq(ProductSkuEntity::getSkuCode, "SKU_DIALECT_001")
+                    .one();
+            assertThat(persisted).isNotNull();
+            assertThat(persisted.getUpdateBy()).isEqualTo("SYSTEM");
+
+            // 10.3 无用户上下文且 updateBy 为空时回退为 "SYSTEM"，同时旧 updateTime 被强制刷新
+            java.time.LocalDateTime staleTime = java.time.LocalDateTime.of(2020, 1, 1, 0, 0);
+            ProductSkuEntity patch = new ProductSkuEntity();
+            patch.setId(persisted.getId());
+            patch.setSkuName("方言路由商品-已刷新");
+            patch.setUpdateTime(staleTime);
+
+            int rows = batchScenarioService.updateBatch(List.of(patch));
+            assertThat(rows).isEqualTo(1);
+
+            ProductSkuEntity reloaded = batchScenarioService.getById(persisted.getId());
+            assertThat(reloaded.getSkuName()).isEqualTo("方言路由商品-已刷新");
+            assertThat(reloaded.getUpdateBy()).isEqualTo("SYSTEM");
+            assertThat(reloaded.getUpdateTime()).isAfter(staleTime);
+
+            // 10.4 存在 UserContextHolder 上下文操作人时，即使残留旧 updateBy 也强制刷新为当前操作人
+            UserContextHolder.set("CTX_SAMPLE_ADMIN");
+            ProductSkuEntity ctxPatch = new ProductSkuEntity();
+            ctxPatch.setId(persisted.getId());
+            ctxPatch.setSkuName("方言路由商品-上下文刷新");
+            ctxPatch.setUpdateTime(staleTime);
+            ctxPatch.setUpdateBy("STALE_USER");
+
+            assertThat(batchScenarioService.updateBatch(List.of(ctxPatch))).isEqualTo(1);
+            ProductSkuEntity reloadedCtx = batchScenarioService.getById(persisted.getId());
+            assertThat(reloadedCtx.getSkuName()).isEqualTo("方言路由商品-上下文刷新");
+            assertThat(reloadedCtx.getUpdateBy()).isEqualTo("CTX_SAMPLE_ADMIN");
+            assertThat(reloadedCtx.getUpdateTime()).isAfter(staleTime);
+        } finally {
+            PessimisticLockUtil.resetDbType();
+        }
     }
 }

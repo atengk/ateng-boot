@@ -421,4 +421,24 @@ class MpGovernanceAndQueryControllerTest {
                 .andExpect(jsonPath("$.code", equalTo(200)))
                 .andExpect(jsonPath("$.data", equalTo(false)));
     }
+
+    @Test
+    @DisplayName("7. 验证 pagination.max-limit=500 越界钳制与多表/动态分页单轨排序无重复 ORDER BY")
+    void shouldClampPageSizeByMaxLimitAndSortWithoutDuplicateOrderBy() throws Exception {
+        // 7.1 多表联表动态分页：传入超限 size=900 与排序参数，验证 size 被钳制为 500
+        mockMvc.perform(get("/sample/mybatis-plus/query/multi-table/page?current=1&size=900&sort=age:desc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.size", equalTo("500")));
+
+        // 7.2 外部动态 SQL 分页：传入超限 size=900 与排序参数，验证 size 被钳制为 500 且无 SQL 语法冲突
+        mockMvc.perform(get("/sample/mybatis-plus/query/dynamic-sql/page")
+                        .param("current", "1")
+                        .param("size", "900")
+                        .param("sorts[0].property", "age")
+                        .param("sorts[0].direction", "ASC"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.size", equalTo("500")));
+    }
 }
