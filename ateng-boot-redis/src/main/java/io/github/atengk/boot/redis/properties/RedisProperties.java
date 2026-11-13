@@ -83,6 +83,12 @@ public class RedisProperties {
     private StreamProperties stream = new StreamProperties();
 
     /**
+     * 分布式信号量配置属性
+     */
+    @NestedConfigurationProperty
+    private SemaphoreProperties semaphore = new SemaphoreProperties();
+
+    /**
      * 分布式锁配置详情
      */
     @Data
@@ -117,6 +123,11 @@ public class RedisProperties {
          * 慢锁告警阈值（支持 3s、3000ms 等标准 Duration 格式，默认 3000ms），持锁执行时间超过该阈值时自动记录 WARN 日志
          */
         private Duration slowThreshold = Duration.ofMillis(3000L);
+
+        /**
+         * 分布式锁 Redisson 看门狗超时覆盖时长（可选；未配置时回落至 ateng.boot.redis.redisson.lock-watchdog-timeout，默认为空）
+         */
+        private Duration watchdogTimeout;
 
         public Duration getWaitTime() {
             return waitTime;
@@ -334,6 +345,11 @@ public class RedisProperties {
          * 命令重试间隔时间（默认 1500ms）
          */
         private Duration retryInterval = Duration.ofMillis(1500);
+
+        /**
+         * Redisson 分布式锁看门狗默认续期检查超时时长（默认 30s）
+         */
+        private Duration lockWatchdogTimeout = Duration.ofSeconds(30);
     }
 
     /**
@@ -662,6 +678,28 @@ public class RedisProperties {
         public long getPollTimeoutSeconds() {
             return pollTimeout != null ? pollTimeout.toSeconds() : 2L;
         }
+    }
+
+    /**
+     * 分布式信号量配置详情
+     */
+    @Data
+    public static class SemaphoreProperties {
+
+        /**
+         * 信号量默认键名前缀常量
+         */
+        public static final String DEFAULT_PREFIX = "semaphore:";
+
+        /**
+         * 是否启用分布式信号量模板（默认 true）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 分布式信号量键名前缀（默认 "semaphore:"）
+         */
+        private String prefix = DEFAULT_PREFIX;
     }
 }
 

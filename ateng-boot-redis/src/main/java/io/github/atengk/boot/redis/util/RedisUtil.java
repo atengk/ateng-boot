@@ -46,6 +46,9 @@ public class RedisUtil {
     private static final RedisProperties DEFAULT_PROPERTIES = new RedisProperties();
     private static final ObjectMapper OBJECT_MAPPER = RedisSerializerFactory.createSafeObjectMapper();
 
+    private final RedisTemplate<String, Object> instanceTemplate;
+    private final RedisProperties instanceProperties;
+
     /**
      * 容器实例化构造器，自动同步静态门面引用
      *
@@ -62,6 +65,36 @@ public class RedisUtil {
      * @param properties RedisProperties
      */
     public RedisUtil(RedisTemplate<String, Object> template, RedisProperties properties) {
+        Assert.notNull(template, "template must not be null");
+        this.instanceTemplate = template;
+        this.instanceProperties = properties;
+        RedisUtil.staticTemplate = template;
+        RedisUtil.staticProperties = properties;
+    }
+
+    /**
+     * 绑定静态门面引用（由自动装配在全量单例就绪后显式同步）
+     *
+     * @param util 受管 RedisUtil 实例
+     */
+    public static void init(RedisUtil util) {
+        if (util == null) {
+            RedisUtil.staticTemplate = null;
+            RedisUtil.staticProperties = null;
+            return;
+        }
+        RedisUtil.staticTemplate = util.instanceTemplate;
+        RedisUtil.staticProperties = util.instanceProperties;
+    }
+
+    /**
+     * 绑定静态门面引用（显式传入受管 Template 与配置属性）
+     *
+     * @param template   RedisTemplate
+     * @param properties RedisProperties
+     */
+    public static void init(RedisTemplate<String, Object> template, RedisProperties properties) {
+        Assert.notNull(template, "template must not be null");
         RedisUtil.staticTemplate = template;
         RedisUtil.staticProperties = properties;
     }

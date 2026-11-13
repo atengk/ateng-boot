@@ -1,15 +1,32 @@
 package io.github.atengk.boot.redis.autoconfigure;
 
+import io.github.atengk.boot.core.autoconfigure.AtengCoreAutoConfiguration;
+import io.github.atengk.boot.redis.atomic.RedisAtomicUtil;
+import io.github.atengk.boot.redis.bloom.RedisBloomFilter;
+import io.github.atengk.boot.redis.bloom.RedisBloomUtil;
 import io.github.atengk.boot.redis.idempotent.RedisIdempotentTemplate;
+import io.github.atengk.boot.redis.idempotent.RedisIdempotentUtil;
 import io.github.atengk.boot.redis.lock.template.DistributedLockTemplate;
+import io.github.atengk.boot.redis.lock.util.RedisLockUtil;
+import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
+import io.github.atengk.boot.redis.delay.RedisDelayedQueueUtil;
 import io.github.atengk.boot.redis.semaphore.RedisSemaphoreTemplate;
+import io.github.atengk.boot.redis.semaphore.RedisSemaphoreUtil;
+import io.github.atengk.boot.redis.stream.RedisStreamTemplate;
+import io.github.atengk.boot.redis.stream.RedisStreamUtil;
+import io.github.atengk.boot.redis.util.RedisUtil;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
+import org.springframework.boot.autoconfigure.AutoConfigureBefore;
+import org.springframework.boot.autoconfigure.cache.CacheAutoConfiguration;
+import org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.cache.CacheManager;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
@@ -23,7 +40,9 @@ import java.time.Duration;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -410,21 +429,182 @@ class AtengRedisAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("验证自定义 Template Bean 时，静态门面仍能被 SmartInitializingSingleton 正确初始化接管")
-    void shouldInitializeStaticFacadesWhenCustomTemplatesProvided() {
+    @DisplayName("验证自动装配顺序守卫注解及与 Core/Spring Redis/Cache 协同装配")
+    void shouldDeclareExplicitAutoConfigurationOrderAndCooperateWithSpringBoot() {
+        AutoConfigureAfter after = AtengRedisAutoConfiguration.class.getAnnotation(AutoConfigureAfter.class);
+        AutoConfigureBefore before = AtengRedisAutoConfiguration.class.getAnnotation(AutoConfigureBefore.class);
+
+        assertThat(after).isNotNull();
+        assertThat(after.value()).containsExactly(AtengCoreAutoConfiguration.class);
+        assertThat(before).isNotNull();
+        assertThat(before.value()).containsExactlyInAnyOrder(
+                RedisAutoConfiguration.class,
+                CacheAutoConfiguration.class
+        );
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengCoreAutoConfiguration.class,
+                        AtengRedisAutoConfiguration.class,
+                        RedisAutoConfiguration.class,
+                        CacheAutoConfiguration.class
+                ))
+                .withBean(RedisConnectionFactory.class, () -> mock(RedisConnectionFactory.class))
+                .withBean(RedissonClient.class, () -> mock(RedissonClient.class))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(AtengRedisAutoConfiguration.class);
+                    assertThat(context).hasBean("redisTemplate");
+                    assertThat(context).hasBean("redisCacheManager");
+                    assertThat(context).hasSingleBean(CacheManager.class);
+                });
+    }
+
+    @Test
+    @DisplayName("Redisson 看门狗超时配置绑定、LockProperties 覆盖优先级及 Config 注入验证")
+    void shouldBindAndInjectLockWatchdogTimeoutWithPrecedence() {
+        AtengRedisAutoConfiguration autoConfiguration = new AtengRedisAutoConfiguration();
+        org.springframework.boot.autoconfigure.data.redis.RedisProperties springProps =
+                new org.springframework.boot.autoconfigure.data.redis.RedisProperties();
+
+        // 1. 默认值为 30s -> 30000ms
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .run(context -> {
+                    io.github.atengk.boot.redis.properties.RedisProperties props =
+                            context.getBean(io.github.atengk.boot.redis.properties.RedisProperties.class);
+                    assertThat(props.getRedisson().getLockWatchdogTimeout()).isEqualTo(Duration.ofSeconds(30));
+                    assertThat(props.getLock().getWatchdogTimeout()).isNull();
+
+                    Config config = autoConfiguration.createRedissonConfigFromSpringProperties(springProps, props);
+                    assertThat(config.getLockWatchdogTimeout()).isEqualTo(30_000L);
+                });
+
+        // 2. 配置 redisson.lock-watchdog-timeout=45s 时生效
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues("ateng.boot.redis.redisson.lock-watchdog-timeout=45s")
+                .run(context -> {
+                    io.github.atengk.boot.redis.properties.RedisProperties props =
+                            context.getBean(io.github.atengk.boot.redis.properties.RedisProperties.class);
+                    Config config = autoConfiguration.createRedissonConfigFromSpringProperties(springProps, props);
+                    assertThat(config.getLockWatchdogTimeout()).isEqualTo(45_000L);
+                });
+
+        // 3. lock.watchdog-timeout 优先级高于 redisson.lock-watchdog-timeout
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues(
+                        "ateng.boot.redis.redisson.lock-watchdog-timeout=45s",
+                        "ateng.boot.redis.lock.watchdog-timeout=60s"
+                )
+                .run(context -> {
+                    io.github.atengk.boot.redis.properties.RedisProperties props =
+                            context.getBean(io.github.atengk.boot.redis.properties.RedisProperties.class);
+                    Config config = autoConfiguration.createRedissonConfigFromSpringProperties(springProps, props);
+                    assertThat(config.getLockWatchdogTimeout()).isEqualTo(60_000L);
+                });
+
+        // 4. 非法非正看门狗超时快速失败
+        io.github.atengk.boot.redis.properties.RedisProperties invalidProps =
+                new io.github.atengk.boot.redis.properties.RedisProperties();
+        invalidProps.getLock().setWatchdogTimeout(Duration.ZERO);
+        assertThatThrownBy(() -> autoConfiguration.createRedissonConfigFromSpringProperties(springProps, invalidProps))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("SemaphoreProperties 配置绑定、前缀拼接与条件开关验证")
+    void shouldBindSemaphorePropertiesAndHonorEnabledCondition() {
+        // 默认开启且前缀为 "semaphore:"
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .run(context -> {
+                    io.github.atengk.boot.redis.properties.RedisProperties props =
+                            context.getBean(io.github.atengk.boot.redis.properties.RedisProperties.class);
+                    assertThat(props.getSemaphore().isEnabled()).isTrue();
+                    assertThat(props.getSemaphore().getPrefix()).isEqualTo("semaphore:");
+                    assertThat(context).hasSingleBean(RedisSemaphoreTemplate.class);
+                });
+
+        // 自定义信号量前缀读取验证
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues("ateng.boot.redis.semaphore.prefix=custom:sem")
+                .run(context -> {
+                    RedisSemaphoreTemplate template = context.getBean(RedisSemaphoreTemplate.class);
+                    RedissonClient client = context.getBean(RedissonClient.class);
+                    template.getSemaphore("export-job");
+                    verify(client).getSemaphore("custom:sem:export-job");
+                });
+
+        // 关闭开关时跳过信号量模板装配，其余核心 Bean 正常保留
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues("ateng.boot.redis.semaphore.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(RedisSemaphoreTemplate.class);
+                    assertThat(context).hasSingleBean(DistributedLockTemplate.class);
+                });
+    }
+
+    @Test
+    @DisplayName("验证全量 8 个静态门面在存在自定义 Bean 时均能被 SmartInitializingSingleton 正确桥接")
+    void shouldInitializeAllEightStaticFacadesWhenCustomBeansProvided() {
+        @SuppressWarnings("unchecked")
+        RedisTemplate<String, Object> customRedisTemplate = mock(RedisTemplate.class);
+        io.github.atengk.boot.redis.properties.RedisProperties customProps =
+                new io.github.atengk.boot.redis.properties.RedisProperties();
+        customProps.setKeyPrefix("facade");
+
+        RedisUtil customRedisUtil = new RedisUtil(customRedisTemplate, customProps);
+        RedisAtomicUtil customAtomicUtil = new RedisAtomicUtil(customRedisTemplate, customProps);
+        RedisBloomFilter customBloomFilter = mock(RedisBloomFilter.class);
         RedisSemaphoreTemplate customSemaphore = mock(RedisSemaphoreTemplate.class);
         DistributedLockTemplate customLock = mock(DistributedLockTemplate.class);
         RedisIdempotentTemplate customIdempotent = mock(RedisIdempotentTemplate.class);
+        RedisStreamTemplate customStream = mock(RedisStreamTemplate.class);
+        RedisDelayedQueue customDelayedQueue = mock(RedisDelayedQueue.class);
+
+        when(customBloomFilter.contains("user-bloom", "u100")).thenReturn(true);
+        when(customSemaphore.availablePermits("test:quota")).thenReturn(88);
+        when(customLock.execute(org.mockito.ArgumentMatchers.eq("lock:1"),
+                org.mockito.ArgumentMatchers.any(io.github.atengk.boot.redis.lock.template.LockSupplier.class))).thenReturn("lock-ok");
+        when(customIdempotent.delete("req-1")).thenReturn(true);
+
+        // 先污染静态门面引用，验证 SmartInitializingSingleton 能将 8 个门面全量重新收敛到当前容器 Bean
+        @SuppressWarnings("unchecked")
+        RedisTemplate<String, Object> staleTemplate = mock(RedisTemplate.class);
+        RedisUtil.init(staleTemplate, new io.github.atengk.boot.redis.properties.RedisProperties());
+        RedisAtomicUtil.init(new RedisAtomicUtil(staleTemplate, new io.github.atengk.boot.redis.properties.RedisProperties()));
 
         contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withBean("redisUtil", RedisUtil.class, () -> customRedisUtil)
+                .withBean("redisAtomicUtil", RedisAtomicUtil.class, () -> customAtomicUtil)
+                .withBean("redisBloomFilter", RedisBloomFilter.class, () -> customBloomFilter)
                 .withBean("redisSemaphoreTemplate", RedisSemaphoreTemplate.class, () -> customSemaphore)
                 .withBean("distributedLockTemplate", DistributedLockTemplate.class, () -> customLock)
                 .withBean("redisIdempotentTemplate", RedisIdempotentTemplate.class, () -> customIdempotent)
+                .withBean("redisStreamTemplate", RedisStreamTemplate.class, () -> customStream)
+                .withBean("redisDelayedQueue", RedisDelayedQueue.class, () -> customDelayedQueue)
                 .run(context -> {
                     assertThat(context).hasSingleBean(RedisSemaphoreTemplate.class);
                     assertThat(context.getBean(RedisSemaphoreTemplate.class)).isSameAs(customSemaphore);
-                    when(customSemaphore.availablePermits("test:quota")).thenReturn(88);
-                    assertThat(io.github.atengk.boot.redis.semaphore.RedisSemaphoreUtil.availablePermits("test:quota")).isEqualTo(88);
+
+                    // 1. RedisUtil
+                    assertThat(RedisUtil.getTemplate()).isSameAs(customRedisTemplate);
+                    assertThat(RedisUtil.buildKey("k")).isEqualTo("facade:k");
+                    // 2. RedisAtomicUtil
+                    assertThat(RedisAtomicUtil.getInstance()).isSameAs(customAtomicUtil);
+                    assertThat(RedisAtomicUtil.formatKey("cnt")).isEqualTo("facade:cnt");
+                    // 3. RedisBloomUtil
+                    assertThat(RedisBloomUtil.contains("user-bloom", "u100")).isTrue();
+                    // 4. RedisSemaphoreUtil
+                    assertThat(RedisSemaphoreUtil.availablePermits("test:quota")).isEqualTo(88);
+                    // 5. RedisLockUtil
+                    assertThat(RedisLockUtil.execute("lock:1", () -> "lock-ok")).isEqualTo("lock-ok");
+                    // 6. RedisIdempotentUtil
+                    assertThat(RedisIdempotentUtil.delete("req-1")).isTrue();
+                    // 7. RedisStreamUtil
+                    RedisStreamUtil.ack("orders", "g1", "1-0");
+                    verify(customStream).ack("orders", "g1", "1-0");
+                    // 8. RedisDelayedQueueUtil
+                    RedisDelayedQueueUtil.size("delay:topic");
+                    verify(customDelayedQueue).size("delay:topic");
                 });
     }
 }

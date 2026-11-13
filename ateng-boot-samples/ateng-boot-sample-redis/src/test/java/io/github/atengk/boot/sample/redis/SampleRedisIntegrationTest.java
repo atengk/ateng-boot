@@ -499,7 +499,7 @@ class SampleRedisIntegrationTest {
         RSemaphore sem = null;
         if (isLocalProfileActive() && redissonClient != null) {
             try {
-                sem = redissonClient.getSemaphore("sem:heavy:timeout-gateway");
+                sem = redisSemaphoreTemplate.getSemaphore("sem:heavy:timeout-gateway");
                 sem.trySetPermits(1);
                 sem.tryAcquire(1);
             } catch (Exception ex) {

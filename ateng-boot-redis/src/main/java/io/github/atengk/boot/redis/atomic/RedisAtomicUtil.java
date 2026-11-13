@@ -129,10 +129,15 @@ public class RedisAtomicUtil {
     private static volatile RedisProperties staticProperties;
     private static volatile RedisAtomicUtil staticInstance;
 
+    private final RedisTemplate<String, Object> instanceTemplate;
+    private final RedisProperties instanceProperties;
+
     /**
      * 默认构造函数（保留无参构造器以保障反射与外部框架实例化向后兼容）
      */
     public RedisAtomicUtil() {
+        this.instanceTemplate = null;
+        this.instanceProperties = null;
     }
 
     public RedisAtomicUtil(RedisTemplate<String, Object> redisTemplate) {
@@ -140,7 +145,9 @@ public class RedisAtomicUtil {
     }
 
     public RedisAtomicUtil(RedisTemplate<String, Object> redisTemplate, RedisProperties redisProperties) {
-        RedisAtomicUtil.staticTemplate = Objects.requireNonNull(redisTemplate, "redisTemplate must not be null");
+        this.instanceTemplate = Objects.requireNonNull(redisTemplate, "redisTemplate must not be null");
+        this.instanceProperties = redisProperties;
+        RedisAtomicUtil.staticTemplate = this.instanceTemplate;
         RedisAtomicUtil.staticProperties = redisProperties;
         RedisAtomicUtil.staticInstance = this;
     }
@@ -151,7 +158,15 @@ public class RedisAtomicUtil {
      * @param instance 实例
      */
     public static void init(RedisAtomicUtil instance) {
+        if (instance == null) {
+            RedisAtomicUtil.staticInstance = null;
+            RedisAtomicUtil.staticTemplate = null;
+            RedisAtomicUtil.staticProperties = null;
+            return;
+        }
         RedisAtomicUtil.staticInstance = instance;
+        RedisAtomicUtil.staticTemplate = instance.instanceTemplate;
+        RedisAtomicUtil.staticProperties = instance.instanceProperties;
     }
 
     /**

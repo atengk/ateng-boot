@@ -47,6 +47,15 @@ public class RedisBloomFilter {
     }
 
     /**
+     * 绑定静态门面实例（供自动装配统一收口初始化）
+     *
+     * @param bloomFilter 受管布隆过滤器实例
+     */
+    public static void init(RedisBloomFilter bloomFilter) {
+        instance = bloomFilter;
+    }
+
+    /**
      * 初始化静态门面（供无 Spring 容器测试或提前装配使用）
      *
      * @param client Redisson 客户端

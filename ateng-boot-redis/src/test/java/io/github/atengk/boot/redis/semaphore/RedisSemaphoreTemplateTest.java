@@ -224,17 +224,28 @@ class RedisSemaphoreTemplateTest {
     }
 
     @Test
-    @DisplayName("测试信号量键名无冒号前缀规范化与幂等防重")
+    @DisplayName("测试信号量键名默认 semaphore 前缀与无冒号前缀规范化幂等防重")
     void testSemaphoreKeyPrefixIdempotentNormalization() throws Exception {
-        io.github.atengk.boot.redis.properties.RedisProperties props = new io.github.atengk.boot.redis.properties.RedisProperties();
+        RedisProperties props = new RedisProperties();
         props.setKeyPrefix("prod");
         RedisSemaphoreTemplate prefixedSemaphore = new RedisSemaphoreTemplate(redissonClient, props);
 
-        when(redissonClient.getSemaphore("prod:sem:export")).thenReturn(semaphore);
+        when(redissonClient.getSemaphore("prod:semaphore:export")).thenReturn(semaphore);
         when(semaphore.tryAcquire(1, Duration.ofSeconds(1))).thenReturn(true);
 
-        assertThat(prefixedSemaphore.tryAcquire("sem:export", Duration.ofSeconds(1))).isTrue();
-        assertThat(prefixedSemaphore.tryAcquire("prod:sem:export", Duration.ofSeconds(1))).isTrue();
-        verify(redissonClient, org.mockito.Mockito.times(2)).getSemaphore("prod:sem:export");
+        assertThat(prefixedSemaphore.tryAcquire("export", Duration.ofSeconds(1))).isTrue();
+        assertThat(prefixedSemaphore.tryAcquire("semaphore:export", Duration.ofSeconds(1))).isTrue();
+        assertThat(prefixedSemaphore.tryAcquire("prod:semaphore:export", Duration.ofSeconds(1))).isTrue();
+        verify(redissonClient, org.mockito.Mockito.times(3)).getSemaphore("prod:semaphore:export");
+
+        // 验证自定义 semaphore.prefix 无冒号规范化
+        RedisProperties customProps = new RedisProperties();
+        customProps.setKeyPrefix("prod");
+        customProps.getSemaphore().setPrefix("sem");
+        RedisSemaphoreTemplate customSemaphore = new RedisSemaphoreTemplate(redissonClient, customProps);
+        when(redissonClient.getSemaphore("prod:sem:export")).thenReturn(semaphore);
+
+        assertThat(customSemaphore.tryAcquire("export", Duration.ofSeconds(1))).isTrue();
+        verify(redissonClient).getSemaphore("prod:sem:export");
     }
 }

@@ -444,6 +444,9 @@ public class RedisSemaphoreTemplate {
 
     private String formatSemaphoreKey(String name) {
         Assert.hasText(name, "semaphore name must not be blank");
-        return redisProperties != null ? redisProperties.buildKey(name) : name;
+        String prefix = redisProperties.getSemaphore() != null
+                ? redisProperties.getSemaphore().getPrefix()
+                : RedisProperties.SemaphoreProperties.DEFAULT_PREFIX;
+        return redisProperties.buildKey(prefix, name);
     }
 }
