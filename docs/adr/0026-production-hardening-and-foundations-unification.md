@@ -136,6 +136,11 @@ flowchart TD
   ```
 - 支持自定义最大重试次数、重试退避间隔（毫秒），失败自动抛出语义化 `BusinessException`，终结手写自旋 while 循环。
 
+### 10. 慢调用事件异常隔离、复合敏感参数脱敏与底层对称防卫加固
+- **慢调用领域事件异常隔离 (`SlowAlertAspect`)**：`SlowAlertAspect` 通过独立 `try/catch` 包裹 `ApplicationEventPublisher.publishEvent(SlowAlertEvent)`，任何下游事件监听器抛出的异常仅输出 `WARN` 诊断日志，绝不中断或污染业务方法返回值与原始异常链；
+- **复合敏感参数正则脱敏升级**：扩展 `SlowAlertAspect` 敏感参数掩码正则以覆盖 `secretToken`、`apiKey`、`privateKey`、`accessToken` 等复合命名字段，确保日志告警与 `SlowAlertEvent.argsSummary` 同源脱敏、有界截断且全链路不泄露明文凭据；
+- **底层对称复位与因果链保真**：`JsonUtil.reset()` 保障测试与动态重配置场景的确定性静态门面复位；`HmacUtil` 对 `HmacSM3` 空入参实施前置 Fail-Fast 防卫并抛出 `BusinessException`，`JsonUtil` 二进制解析及 `CryptoUtil` 带 AAD 的 AES-GCM 解密失败均通过 `BusinessException(..., cause)` 100% 保留原始因果链。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)

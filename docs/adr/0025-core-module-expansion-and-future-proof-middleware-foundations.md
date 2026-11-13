@@ -214,6 +214,12 @@ flowchart TD
 - **Spring Boot 3.3 `EnvironmentPostProcessor` 注册事实核实**：实测确认 Spring Boot 3.3.13 通过 `SpringFactoriesEnvironmentPostProcessorsFactory` 独占读取 `META-INF/spring.factories` 加载 `EnvironmentPostProcessor`，而 `@AutoConfiguration` 仍唯一收口于 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`（零 `EnableAutoConfiguration` 混用）；
 - **国密套件与工具门面对称收口**：`ResultCodeUtil` 补充 `assertInSegment(int, ResultCodeSegment)` 基础数值校验重载；`ConvertUtil` 补齐 `toSet(...)` 并在集合解包路径全面兼容 `Iterable` 与 `Iterator`；`CryptoUtil`（`SM4/CBC`）与 `DigestUtil`（`SM3`）在体验工程中完成端到端实测闭环。
 
+### 30. 容器雪花桥接、二进制 JSON 扩展、原生国密 HmacSM3 与慢调用领域事件演进
+- **容器发号器对称桥接 (`IdUtil.setSnowflake` / `resetSnowflake`)**：`AtengCoreAutoConfiguration` 自动装配 `@Bean Snowflake` 时同步绑定至 `IdUtil` 全局静态门面（并在上下文销毁时通过 `DisposableBean` 对称复位），收口独立 `Base62` 幽灵命名至 `IdUtil.toBase62/fromBase62`。
+- **`JsonUtil` 对称复位与二进制泛型/集合解析**：新增 `JsonUtil.reset()` 一键将 `defaultMapper`、`longToStringMapper` 与 `cloneMapper` 恢复默认配置；补齐 `parseList(byte[], Class)`、`parseMap(byte[])` 与 `parseMap(byte[], Class, Class)`，并与 `parseObject(byte[], TypeReference)` 统一空安全与因果异常契约。
+- **纯 JDK 国密 `HmacSM3` 与对称密文 AAD 认证**：`HmacUtil` 基于 RFC 2104 与 `DigestUtil.sm3` 纯原生实现 `HMAC_SM3` 全系列对称方法（自动处理超 64 字节密钥压缩），无缝兼容 `verifyHex` / `verifyBase64` 恒定时间验签；`CryptoUtil` 新增 `generateSm4Key()` 与字符串级带附加认证数据（AAD）的 `encryptGcm` / `decryptGcm` 重载。
+- **慢调用领域事件与慢 Bean 启动诊断闭环**：新增不可变领域事件 `SlowAlertEvent`（承载 `className`、`methodName`、`elapsedMs`、`thresholdMs`、`argsSummary`、`traceId` 与 `occurredAt`），由 `SlowAlertAspect` 在触发阈值告警时通过 `ApplicationEventPublisher` 同步发布；`SlowBeanDiagnosticPostProcessor` 对外暴露 `getRecordedSlowBeans()` / `getSlowBeans()` 供运行期健康审计。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)

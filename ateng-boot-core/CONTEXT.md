@@ -36,8 +36,12 @@ _Avoid_: PrincipalProvider, SecurityContext, UserSupplier
 基于惰性初始化 ThreadLocal 嵌套栈维护当前操作人身份的内存上下文持有者，支持 CurrentUserProvider 动态回退兜底、栈空自动清理、Long 与 String 重载以及多层嵌套恢复，与 TenantContextHolder 保持双维镜像对称。
 _Avoid_: SessionContext, LocalUser, UserThreadLocal
 
+**UserSnapshot**:
+承载当前线程完整操作人嵌套调用栈状态的不可变快照载体 Record，供 AsyncContext 在跨线程与异步调度边界无损捕获、还原与清理用户身份栈。
+_Avoid_: UserContextCopy, UserStackSnapshot
+
 **AsyncContext**:
-抓取当前线程链路追踪标识与用户身份快照并在异步线程中恢复的上下文装饰器。
+抓取当前线程四维上下文快照（MDC 追踪、UserSnapshot、TenantSnapshot）及扩展 SPI 快照并在异步线程中对称恢复与清理的上下文装饰器。
 _Avoid_: ThreadLocalCopier, ContextPropagator
 
 **ContextCopyingTaskDecorator**:
@@ -57,15 +61,15 @@ _Avoid_: PageParam, PageReq, PageRequest
 _Avoid_: MaskUtil, DataMaskUtil, MaskingUtil
 
 **Snowflake**:
-纯 JDK 原生 Twitter 雪花算法发号引擎，集成时钟回拨自旋容错、自适应网卡/IP 节点推导与 41-bit 自定义纪元时间戳。
+纯 JDK 原生 Twitter 雪花算法发号引擎，使用 `ReentrantLock` 彻底杜绝 JDK 21+ 虚拟线程 Carrier Pinning，集成时钟回拨自旋容错、联动 `NetUtil` 受信物理网卡/IP 节点自适应推导与 41-bit 自定义纪元时间戳。
 _Avoid_: SnowflakeIdWorker, SequenceGenerator, SnowflakeGenerator
 
 **IdUtil**:
-全局分布式与高性能唯一 ID 生成门面工具类，提供开箱即用的单例雪花 ID、极速无横线 UUID 与轻量安全 NanoId。
-_Avoid_: IdHelper, UuidUtil, IdentifierUtil, KeyUtil
+全局分布式与高性能唯一 ID 生成及 Base62 短码编解码门面工具类，提供支持 Spring 容器 `@Bean Snowflake` 自动桥接同步（`setSnowflake` / `resetSnowflake`）的雪花 ID 生成与反解、极速无横线 UUID、轻量安全 NanoId 以及无锁 Base62 双向短码互转（`toBase62` / `fromBase62`）。
+_Avoid_: IdHelper, UuidUtil, IdentifierUtil, KeyUtil, Base62, ShortIdUtil, Base62Codec
 
 **CryptoUtil**:
-纯 JDK 原生对称加解密与国密工具类，默认支持 AES/CBC/PKCS5Padding、AES/GCM/NoPadding 及纯原生国密 SM4/CBC、SM4/ECB (GB/T 32907-2016) 加解密，无 Bouncy Castle 重型依赖。
+纯 JDK 原生对称加解密与国密工具类，默认支持 AES/CBC/PKCS5Padding、AES/GCM/NoPadding（含附加认证数据 AAD 重载）及纯原生国密 SM4/CBC、SM4/ECB (GB/T 32907-2016) 与随机密钥生成（`generateSm4Key`），无 Bouncy Castle 重型依赖。
 _Avoid_: AesUtil, EncryptionUtil, EncryptUtil, Sm4Util
 
 **DigestUtil**:
@@ -77,12 +81,16 @@ _Avoid_: HashUtil, Md5Util, ShaUtil, Sm3Util
 _Avoid_: TreeBuilder, NodeUtil, MenuTreeUtil
 
 **JsonUtil**:
-纯 JDK 与 Jackson 原生安全封装的静态门面工具类，内置东八区时区、JSR-310 日期时间模块与未知属性容错，彻底杜绝 @class 漏洞。
+纯 JDK 与 Jackson 原生安全封装的静态门面工具类，内置东八区时区、JSR-310 日期时间模块与未知属性容错，支持 `reset()` 对称复位、二进制字节数组泛型/集合反序列化（`parseObject`/`parseList`/`parseMap`）及安全深克隆（`deepClone`），彻底杜绝 `@class` 漏洞。
 _Avoid_: JacksonUtil, JSON, FastJsonUtil, JsonHelper
 
 **TenantContextHolder**:
 基于惰性初始化 ThreadLocal 维护当前线程显式租户标识（嵌套栈）及忽略过滤深度（整型计数器）的持有者，支持未设置时的 CurrentTenantProvider 回退兜底、只读无残留、编程式闭包与跨线程隔离，与 UserContextHolder 保持双维镜像对称。
 _Avoid_: TenantHelper, CurrentTenant, TenantManager
+
+**TenantSnapshot**:
+承载当前线程完整显式租户调用栈与忽略多租户过滤深度（ignoreDepth）的不可变快照载体 Record，供 AsyncContext 跨线程无损传播与还原。
+_Avoid_: TenantContextCopy, TenantStackSnapshot
 
 **CurrentTenantProvider**:
 供外部多租户接入以提供当前租户上下文标识（租户 ID）的函数式 SPI 接口。
@@ -140,6 +148,14 @@ _Avoid_: ObjectCopier, BeanMapper, ModelMapper
 基于纯函数式接口、指数退避与 Equal Jitter 平滑随机抖动算法的轻量级重试与容错执行引擎，支持 onRetry 度量监听与 Fallback 降级兜底，为网络通信与并发冲突提供无侵入高可用守护。
 _Avoid_: RetryHelper, RetryTemplate, BackoffUtil
 
+**RetryConfig**:
+重试引擎流式构建配置载体，统管最大尝试次数、初始退避耗时、指数乘数、最大退避上限、Equal Jitter 开关、异常过滤谓词、RetryListener 回调与 Fallback 降级函数。
+_Avoid_: RetryOptions, RetrySpec, BackoffConfig
+
+**RetryListener**:
+重试过程状态监听函数式回调契约，在每次执行失败即将触发退避等待前回调当前尝试次数、拟等待毫秒数与触发异常。
+_Avoid_: RetryCallback, OnRetryHook, RetryObserver
+
 **FileUtil**:
 纯 JDK 原生轻量文件与路径安全工具类，提供路径遍历穿透（Path Traversal）安全清洗、安全子路径解析（resolveSafePath）防逃逸、操作系统隐性垃圾文件智能检测与过滤（isSystemJunkFile / filterValidPaths）、扩展名截取与人类可读文件容量格式化。
 _Avoid_: FileHelper, IoHelper, PathUtil
@@ -171,11 +187,6 @@ _Avoid_: ThreadMode, ExecutorMode, ExecutionType
 **AsyncRejectedPolicy**:
 平台线程池任务饱和拒绝策略枚举，映射 JDK 标准拒绝策略（CALLER_RUNS、ABORT、DISCARD、DISCARD_OLDEST）。
 _Avoid_: RejectPolicy, RejectionHandlerType, RejectedStrategy
-
-**CarrierPinning**:
-在 JDK 21+ 虚拟线程运行中，因在同步代码块（`synchronized`）内部执行阻塞调用或休眠导致虚拟线程锁定底层操作系统载体线程引发调度饥饿的现象，框架内通过 `ReentrantLock` 彻底杜绝。
-_Avoid_: ThreadPinning, WorkerPinning, VTPinning
-
 
 **NamedThreadFactory**:
 纯 JDK 17 原生命名线程工厂标准件，为线程池提供语义化前缀、序号自增、守护线程属性与未捕获异常防护，彻底杜绝线上线程转储中无意义命名。
@@ -230,6 +241,10 @@ _Avoid_: MqHeaders, MqConstants, HeaderConsts, MessageHeaders
 跨进程与异步消息边界的五维上下文传播纯原生工具类，提供出站上下文快照抓取与统一注入、入站消息上下文自动提取还原、激活（activate）并返回 ContextScope 配合 try-with-resources 保证对称还原现场与彻底消除 ThreadLocal 泄漏。
 _Avoid_: MqContextHelper, MessageTraceUtil, MqTraceFilter, ContextExtractor
 
+**ContextScope**:
+实现 `AutoCloseable` 的入站消息上下文激活作用域句柄，配合 `try-with-resources` 在消息消费结束时确定性还原 MDC、用户、租户、忽略租户标记及扩展 SPI 上下文现场。
+_Avoid_: ContextHandle, TraceScope, MqContextCloser
+
 **FatalExceptionClassifier**:
 面向全反应堆异步消息消费的不可自愈“毒丸”异常分类与判定器，集中收敛反序列化异常、JSR-303 参数校验异常及显式致命逻辑错误，统一供各消息队列消费端拦截器判定并快速失败转入死信队列或丢弃，杜绝无脑无限重试。
 _Avoid_: MqErrorClassifier, PoisonPillHandler, FatalExceptionChecker, ErrorJudge
@@ -249,10 +264,6 @@ _Avoid_: AsyncHelper, ThreadPoolHelper, TaskExecutorUtil
 **SnowflakeIdInfo**:
 雪花算法 64 位长整型 ID 逆向反解结构化不可变信息载体 Record，提取包含发号毫秒时间戳、Instant、LocalDateTime、数据中心 ID、工作节点 ID、毫秒内自增序列号与所采用的基准纪元。
 _Avoid_: SnowflakeParsed, SnowflakeMeta, IdParsedInfo
-
-**Base62**:
-纯原生零依赖无锁 Base62 双向短码编解码门面，支持 64 位长整型数值与 10~11 位紧凑 URL 安全短字符串的双向无损互转，内置完整负数与边界值溢出防卫。
-_Avoid_: ShortIdUtil, Base62Codec, NumberCompressor
 
 **SlidingWindowCounter**:
 基于环形时间切片（Ring Slices）与原子累加器实现的进程内高性能单机内存滑动窗口计数器，无需外部中间件即可实现精准平滑限流、防刷与频次统计。
@@ -303,8 +314,8 @@ _Avoid_: ErrorCodeRange, CodeSegment, StatusRange
 _Avoid_: ChainExecutor, ResponsibilityChain, HandlerChain
 
 **HmacUtil**:
-纯 JDK 原生安全散列消息认证码（HMAC）工具类，提供 HMAC-SHA256、HMAC-SHA1 密钥加签与恒定时间安全比对防侧信道攻击。
-_Avoid_: HmacHelper, SignUtil, HmacSignature
+纯 JDK 原生安全散列消息认证码（HMAC）工具类，提供 HMAC-SHA256、HMAC-SHA1、HMAC-MD5 及纯原生国密 HMAC-SM3（基于 RFC 2104 与 `DigestUtil.sm3`）密钥加签与恒定时间安全比对防侧信道攻击。
+_Avoid_: HmacHelper, SignUtil, HmacSignature, HmacSm3Util
 
 **ChecksumUtil**:
 纯原生数据传输与硬件报文完整性校验和计算工具类，提供 CRC32、CRC32C 与 Adler32 算法门面。
@@ -391,7 +402,7 @@ _Avoid_: LogbackConfig, LoggingInitializer, XmlFreeLogConfig
 _Avoid_: SlowLog, MonitorTime, PerformanceTrack
 
 **SlowBeanDiagnosticPostProcessor**:
-统计并诊断 Spring 容器启动期单例 Bean 初始化耗时的后置处理器，超阈值时输出告警以定位冷启动性能瓶颈。
+统计并诊断 Spring 容器启动期单例 Bean 初始化耗时的后置处理器，超阈值时输出告警并支持通过 `getRecordedSlowBeans()` / `getSlowBeans()` 提取结构化慢 Bean 诊断记录以定位冷启动性能瓶颈。
 _Avoid_: BeanInitMonitor, StartupProfiler, SlowBeanWatcher
 
 **AppTempDirCleanupListener**:
@@ -427,8 +438,16 @@ _Avoid_: IdGeneratorProperties, SnowflakeConfigProperties
 _Avoid_: EnvGuardProperties, RuntimeProperties
 
 **SlowAlertAspect**:
-基于 AOP 拦截 `@SlowAlert` 注解的方法级慢调用告警切面，计算纳秒级精确耗时并在超阈值时输出带敏感字段掩码与长度截断的入参告警日志。
+基于 AOP 拦截 `@SlowAlert` 注解的方法级慢调用告警切面，计算纳秒级精确耗时并在超阈值时输出带敏感字段掩码与长度截断的入参告警日志，同时自动发布 `SlowAlertEvent` 领域事件。
 _Avoid_: SlowLogAspect, PerformanceAspect, MethodAlertInterceptor
+
+**SlowAlertEvent**:
+承载方法级慢调用告警元数据（目标类名、方法名、实际耗时、告警阈值、脱敏入参摘要、链路 `traceId` 与发生时间戳）的 Spring 领域事件，解耦慢调用切面检测与下游监控通知订阅。
+_Avoid_: SlowMethodEvent, PerformanceAlertEvent, SlowLogEvent
+
+**CoreCacheInitializer**:
+在容器启动期将 `CoreProperties` 外置化缓存参数（最大容量与默认 TTL）自动注入 `SpelUtil` 与 `LambdaUtil` 静态门面的核心内存缓存初始化组件。
+_Avoid_: StaticCacheInitializer, CoreStaticBridge
 
 **PipelineStage**:
 强类型管道处理阶段函数式契约接口，定义单个阶段的上下文处理逻辑、可读阶段名称与谓词/消费快速构造工厂。

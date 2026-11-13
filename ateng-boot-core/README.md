@@ -15,16 +15,16 @@
 | **业务语义断言** | 快速失败业务语义前置防卫门面 | `BusinessAssert` | - | `isTrue(...)`, `isFalse(...)`, `notNull(...)`, `isNull(...)`, `hasText(...)`, `notEmpty(...)`, `equals(...)`, `{}` 占位符惰性格式化, `Supplier<String>`, 数值区间断言 (`gt`, `gte`, `lt`, `lte`, `between`) | `BusinessAssertTest.java`, `CoreContractControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **分层双防校验** | 批量列表防漏检、分组标记与编程式防卫 | `ValidList<E>`, `ValidationGroups`, `ValidatorUtil` | - | `ValidList<E>` 解决 Spring 默认直接注入 `List<T>` 漏检 JSR-303 问题；`ValidationGroups.Create/Update`；`ValidatorUtil.validate(obj)` 非 Web 边界快速失败 | `ValidListTest.java`, `ValidatorUtilTest.java`, `CoreContractControllerTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **强类型通用枚举** | 通用枚举契约、标准选项模型、别名注解、高速解析门面与 JSR-303 格式防卫 | `IBaseEnum<T>`, `OptionItem<T>`, `@EnumAlias`, `EnumUtil`, `@InEnum`, `InEnumValidator` | - | `IBaseEnum.getCode()`, `getLabel()`, `matches(code)`, `toOption()`, `getValue()`; `OptionItem.of(...)`; `EnumUtil.fromCode(...)`, `getByCodeOrThrow(...)`, `getLabelByCode(...)`, `isValidCode(...)`, `toOptions(...)`, `getAllCodes(...)`; `@InEnum(value = OrderStatusEnum.class)` 第一道防线校验拦截 | `EnumUtilTest.java`, `InEnumValidatorTest.java`, `CoreContractControllerTest.java` |
-| **分布式发号器与短码** | 2026 纪元雪花发号器、逆向反解与 Base62 短码 | `IdUtil`, `Snowflake`, `SnowflakeIdInfo` | - | `IdUtil.nextId()`, `IdUtil.nextIdStr()`, `IdUtil.parseSnowflake(id)` / `Snowflake.parse(id)` 逆向反解元数据，`IdUtil.toBase62(long)`, `IdUtil.fromBase62(str)`, `IdUtil.fastSimpleUUID()`, `IdUtil.fastUUID()`, `IdUtil.nanoId()` | `IdUtilTest.java`, `SnowflakeTest.java`, `CoreSecurityControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **分布式发号器与短码** | 2026 纪元雪花发号器、逆向反解与 Base62 短码 | `IdUtil`, `Snowflake`, `SnowflakeIdInfo` | - | `IdUtil.nextId()`, `IdUtil.nextIdStr()`, `IdUtil.setSnowflake(snowflake)` / `IdUtil.resetSnowflake()`, `IdUtil.parseSnowflake(id)` / `Snowflake.parse(id)` 逆向反解元数据，`IdUtil.toBase62(long)`, `IdUtil.fromBase62(str)`, `IdUtil.fastSimpleUUID()`, `IdUtil.fastUUID()`, `IdUtil.nanoId()` | `IdUtilTest.java`, `SnowflakeTest.java`, `AtengCoreAutoConfigurationTest.java`, `CoreSecurityControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **四维异步传播与快照扩展** | 受管线程池上下文捕获、还原与自定义快照 SPI | `AsyncContext`, `ContextCopyingTaskDecorator`, `AsyncContextSnapshotProvider` | `ateng.boot.async.*` | `AsyncContext.wrap(runnable)`, `wrap(callable)`, `wrapSupplier(supplier)`, 传递 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 快照；SPI `AsyncContextSnapshotProvider` 扩展外部上下文透传 | `AsyncContextTest.java`, `ContextCopyingTaskDecoratorTest.java`, `AsyncContextSnapshotProviderTest.java`, `CoreContextScenarioServiceTest.java`, `CoreAsyncAndContextControllerTest.java` |
 | **多业务异步底座与治理** | 多业务受管线程池、动态调参、状态监控、超时汇聚与短路策略 | `AsyncProperties`, `AsyncPoolProperties`, `DynamicAsyncPoolRegistrar`, `AsyncExecutorFactory`, `AtengAsyncAutoConfiguration`, `AsyncExecutionMode`, `AsyncRejectedPolicy`, `AsyncUtil`, `ThreadPoolStatus` | `ateng.boot.async.enabled`, `core-pool-size`, `max-pool-size`, `queue-capacity`, `keep-alive`, `thread-name-prefix`, `virtual-thread-name-prefix`, `concurrency-limit`, `wait-for-tasks-to-complete-on-shutdown`, `await-termination`, `mode`, `rejected-policy` (`WARN_CALLER_RUNS`, `WARN_ABORT`), `pools.*` | 声明式多业务线程池注册；`AsyncUtil.getStatus(poolName)` 提取 `ThreadPoolStatus` 监控指标；`AsyncUtil.resize(corePoolSize, maxPoolSize)` / `AsyncUtil.resize(poolName, corePoolSize, maxPoolSize)` 动态热调参；`AsyncUtil.run(...)`, `AsyncUtil.supply(...)`, `AsyncUtil.allOf(...)`, `AsyncUtil.supplyAll(pool, suppliers, timeout)` (强类型超时聚合), `AsyncUtil.allOf(futures, timeout)`, `AsyncUtil.allMatches(pool, tasks, predicate, timeout)` (早期短路预检) | `AtengAsyncAutoConfigurationTest.java`, `AsyncUtilTest.java`, `CoreReportExportScenarioServiceTest.java`, `CoreContextScenarioServiceTest.java`, `CoreAsyncAndContextControllerTest.java` |
 | **命名线程工厂** | 线程池命名与异常处理标准件 | `NamedThreadFactory` | - | `NamedThreadFactory(prefix)`, `newThread(runnable)`（支持自定义前缀、守护属性与 UncaughtExceptionHandler，消除匿名线程池） | `NamedThreadFactoryTest.java`, `CoreContextScenarioServiceTest.java` |
 | **上下文持有者** | 用户身份与多租户双维栈式隔离与惰性防泄漏 | `UserContextHolder`, `TenantContextHolder`, `UserSnapshot`, `TenantSnapshot` | - | `UserContextHolder`: `set(String/Long)`, `setUserId(String/Long)`, `get()`, `getExplicit()`, `getUserId()`, `getUserIdAsLong()`, `isRunAs()`, `getOriginalUserId()`, `runWithUser(String/Long, ...)`, `capture()`, `capturePrevious()`, `restore(UserSnapshot)`, `clear()`; `TenantContextHolder`: `setTenantId(String/Long)`, `getTenantId()`, `get()`, `getExplicit()`, `getAsLong()`, `getTenantIdAsLong()`, `isIgnoreTenant()`, `setIgnoreTenant(boolean)`, `runWithTenant(String/Long, ...)`, `runWithoutTenant(...)`, `capture()`, `capturePrevious()`, `restore(TenantSnapshot)`, `clear()` | `UserContextHolderTest.java`, `TenantContextHolderTest.java`, `CoreContextScenarioServiceTest.java` |
 | **审计/租户 SPI** | 跨中间件解耦上下文扩展点 | `CurrentUserProvider`, `CurrentTenantProvider` | - | `CurrentUserProvider`: `getCurrentUser()`, `getOriginalUser()`, `isRunAs()`; `CurrentTenantProvider`: `getCurrentTenantId()`（供下游 Sa-Token / MyBatis-Plus 无缝对接） | `UserContextHolderTest.java`, `TenantContextHolderTest.java`, `CoreContextScenarioServiceTest.java` |
-| **安全序列化与内存深克隆** | 零 `@class` 污染高性能 Jackson 门面与脱敏安全深克隆 | `JsonUtil` | - | `toJsonString(obj)`, `toPrettyJsonString(obj)`, `parseObject(...)`, `parseList(...)`, `parseMap(...)`, `isValidJson(json)`, `readTree(String/byte[]/InputStream)`, `deepClone(obj)`（内存真明文深克隆，杜绝掩码星号污染） | `JsonUtilTest.java`, `JsonUtilDeepCloneTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **安全序列化与内存深克隆** | 零 `@class` 污染高性能 Jackson 门面与脱敏安全深克隆 | `JsonUtil` | - | `toJsonString(obj)`, `toJsonBytes(obj)`, `toPrettyJsonString(obj)`, `parseObject(...)`（含 `byte[]` + `TypeReference`）, `parseList(...)`（含 `byte[]`）, `parseMap(...)`（含 `byte[]`）, `reset()`, `isValidJson(json)`, `readTree(...)`, `deepClone(obj)`（内存真明文深克隆，杜绝掩码星号污染） | `JsonUtilTest.java`, `JsonUtilDeepCloneTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` (`POST /sample/core/data/json-and-bean`) |
 | **敏感数据脱敏** | 15 大类敏感信息动态掩码与内存真明文防护 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.mobilePhone(str)`, `idCard(str)`, `unifiedCreditCode(str)`, `secretKey(str)`, `passport(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **退避指数重试** | 纯原生轻量无第三方重试与动态退避配置 | `RetryUtil`, `RetryUtil.RetryConfig`, `RetryUtil.RetryListener` | - | `execute(supplier, config, fallback)`, `executeAction(runnable, config, fallback)`; `RetryConfig.builder().maxAttempts(...).delay(...).multiplier(...).maxDelay(...).jitter(...).retryPredicate(...).onRetry(...).delayFunction(ex -> Duration)` 支持 Equal Jitter 抖动、自定义异常驱动退避函数与 Fallback 降级 | `RetryUtilTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
-| **加解密与十六进制** | 原生 AES、国密 SM4/SM3 与 Hex 编解码 | `CryptoUtil`, `DigestUtil`, `HexUtil` | - | `CryptoUtil`: `generateKey`, `generateIv`, `generateGcmIv`, `encryptGcm/decryptGcm`, `encryptCbc/decryptCbc`, `encryptSm4Cbc/decryptSm4Cbc`, `encryptSm4Ecb/decryptSm4Ecb` (`SM4_KEY_SIZE`, `SM4_IV_SIZE`); `DigestUtil`: `sha256Hex`, `md5Hex`, `sm3(byte[]/byte[].../String)`, `sm3Hex(byte[]/String)`; `HexUtil`: `encodeHex`, `decodeHex` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `HexUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
+| **加解密与十六进制** | 原生 AES、国密 SM4/SM3 与 Hex 编解码 | `CryptoUtil`, `DigestUtil`, `HexUtil` | - | `CryptoUtil`: `generateKey`, `generateSm4Key`, `generateIv`, `generateGcmIv`, `encryptGcm/decryptGcm`（含 `aad` 重载）, `encryptCbc/decryptCbc`, `encryptSm4Cbc/decryptSm4Cbc`, `encryptSm4Ecb/decryptSm4Ecb` (`SM4_KEY_SIZE`, `SM4_IV_SIZE`); `DigestUtil`: `sha256Hex`, `md5Hex`, `sm3(byte[]/byte[].../String)`, `sm3Hex(byte[]/String)`; `HexUtil`: `encodeHex`, `decodeHex` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `HexUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/crypto`), `CoreSecurityScenarioServiceTest.java` |
 | **安全文件与流处理** | 路径穿越防御、隐性垃圾过滤、安全有界读取与临时文件 | `FileUtil` | - | `FileUtil.cleanFilename(name)`（防御 `../` 路径穿越）, `cleanPath(path)`, `resolveSafePath(baseDir, subPath)` (安全子路径解析防逃逸), `isSystemJunkFile(path)` (过滤 .DS_Store / desktop.ini), `filterValidPaths(paths)`, `getExtName(name)`, `formatSize(bytes)`, `readNBytesSafe(stream, maxBytes)` (防 OOM 安全有界读取), `createTempFile(...)` | `FileUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **集合切片与大批量安全流转** | 零内存拷贝分批切片、函数式去重与大批量流转原语 | `CollectionUtil`, `BatchSliceUtil`, `MoreCollectors` | - | `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转）, `BatchSliceUtil.slice(list, sliceSize)`, `BatchSliceUtil.forEachSlice(list, sliceSize, consumer)`, `CollectionUtil.distinctByKey(keyExtractor)`, `MoreCollectors.toSafeMap(...)`, `MoreCollectors.toDistinctList(...)` | `CollectionUtilTest.java`, `BatchSliceUtilTest.java`, `MoreCollectorsTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **树形森林装配与析取** | O(N) 线性组装、递归剪枝、展平与路径探寻 | `TreeUtil` | - | `TreeUtil.build(...)`, `buildForest(...)`, `filter(...)`, `flatten(roots, childrenGetter)` / `flattenTree(...)` (先序深度优先展平), `findPath(...)` (面包屑导航路径), `getLeafNodes(...)` (提取所有叶子终端节点) | `TreeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
@@ -45,14 +45,14 @@
 | **纯原生有界 LRU 缓存** | 纯原生有界 LRU 缓存原语与底层防 OOM 加固 | `ConcurrentLruCache<K, V>` | - | `ConcurrentLruCache(maxCapacity, ttl)`, `get(key)`, `put(key, val)`, `computeIfAbsent(key, mappingFunc)`, `remove(key)`, `clear()`, `size()`, `containsKey(key)`, `cleanUp()` | `ConcurrentLruCacheTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **安全受限 SpEL 求值门面** | 安全受限 SpEL 表达式求值门面与受管 AST 缓存 | `SpelUtil` | `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | `SpelUtil.evaluate(expr, root, vars, type)`, `SpelUtil.evaluateMethod(method, args, expr, type)`, `evaluateTrusted(...)`, `parseExpression(expr)`, `SpelUtil.configureCache(maxCapacity, ttl)` (外置配置自动绑定注入), `getCacheSize()`, `clearCache()` | `SpelUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **函数式业务管道** | 轻量函数式管道编排与中断异常隔离 | `Pipeline<C>`, `PipelineStage<C>`, `PipelineInterruptible`, `PipelineResult`, `PipelineErrorHandler` | - | `Pipeline.builder().addStage(...).build()`, `pipeline.execute(ctx)`, `result.isSuccess()`, `result.isTerminated()`, `result.orThrow()` | `PipelineTest.java`, `CorePipelineScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
-| **原生安全 HMAC 加签** | 纯原生密钥散列加签与恒定时间防侧信道比对 | `HmacUtil` | - | `HmacUtil.hmacSha256Hex(data, key)`, `hmacSha256Base64(data, key)`, `hmacSha1Hex`, `hmacMd5Hex`, `verifyHex(expected, actual)`, `verifyBase64(expected, actual)`（恒定时间安全比对） | `HmacUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
+| **原生安全 HMAC 加签** | 纯原生密钥散列与国密 HmacSM3 加签及恒定时间防侧信道比对 | `HmacUtil` | - | `HmacUtil.hmacSha256Hex(data, key)`, `hmacSha256Base64`, `hmacSm3(byte[]/String)`, `hmacSm3Hex`, `hmacSm3Base64` (`HMAC_SM3`), `hmacSha1Hex`, `hmacMd5Hex`, `verifyHex(expected, actual)`, `verifyBase64(expected, actual)`（恒定时间安全比对） | `HmacUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/sign-and-verify`), `CoreSecurityScenarioServiceTest.java` |
 | **数据传输与硬件校验和** | 纯原生数据传输与硬件报文校验和计算 | `ChecksumUtil` | - | `ChecksumUtil.crc32(data)`, `crc32Hex(data)`, `crc32c(data)`, `crc32cHex(data)`, `adler32(data)`, `adler32Hex(data)`, `verifyCrc32`, `verifyCrc32c`, `verifyAdler32`，支持 `InputStream` 流式计算 | `ChecksumUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **单机流量整形与限流** | 纯无锁 CAS 纳秒级平滑令牌桶限流器 | `TokenBucketLimiter` | - | `new TokenBucketLimiter(capacity, refillRatePerSecond)`, `tryAcquire()`, `tryAcquire(permits)`, `tryAcquire(permits, timeout)`, `acquire()`, `acquire(permits)`, `getAvailableTokens()` | `TokenBucketLimiterTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
 | **核心配置外置化与发号器装配** | Core 配置属性绑定、受管雪花发号器与缓存自动装配 | `CoreProperties`, `SnowflakeProperties`, `CacheProperties`, `AtengCoreAutoConfiguration`, `CoreCacheInitializer`, `Snowflake` | `ateng.boot.core.clock-backoff-tolerance`, `ateng.boot.core.cache-ttl`, `ateng.boot.core.snowflake.enabled`, `worker-id`, `datacenter-id`, `epoch`, `clock-backoff-tolerance`, `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | 自动装配 `@Bean Snowflake`，自适应网卡/IP推导；时钟回拨熔断转译；`CoreCacheInitializer` 自动将 `cache` 配置绑定至 `SpelUtil` 与 `LambdaUtil` | `AtengCoreAutoConfigurationTest.java`, `SnowflakeTest.java`, `CoreSecurityControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **系统环境基线防卫** | 启动前置正交校准网络、Headless/Socket 超时与时区编码 | `SystemEnvironmentPostProcessor`, `SystemProperties` | `ateng.boot.core.system.enabled`, `timezone`, `timezone-guard-enabled`, `slow-bean-threshold`, `shutdown-uptime-enabled` | 通过 `META-INF/spring.factories` (`EnvironmentPostProcessor`) 触发三阶段正交防卫：无条件绑定 `ateng.boot.core.net.*` 至 `NetUtil`（不受 `system.enabled` 影响），激活 Headless 与底层 Socket `10000ms` 默认超时，按 `timezone-guard-enabled` 独立控制 `Asia/Shanghai` 时区与 `UTF-8` 校准 | `SystemEnvironmentPostProcessorTest.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **零 XML 工业级日志引擎** | 零 XML 模式高亮彩色控制台、traceId 注入与双文件异步切片落盘 | `LoggingEnvironmentPostProcessor`, `LoggingProperties` | `ateng.boot.core.logging.enabled`, `console.enabled`, `file.enabled`, `file.path`, `file.max-file-size`, `file.max-history`, `file.total-size-cap`, `file.split-error`, `file.clean-history-on-start` | 零 XML 自动注入控制台彩色高亮与 MDC `traceId` 追踪格式；支持纯配置开启磁盘双文件落盘 (`${spring.application.name}-info.log` / `-error.log`，缺省 `application-info.log` / `-error.log`)、大小时间滚动切片与启动自清理 | `LoggingEnvironmentPostProcessorTest.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
-| **方法级慢调用主动告警** | 声明式慢方法执行耗时毫秒级监控与安全参数快照 | `@SlowAlert`, `SlowAlertAspect`, `SlowAlertProperties` | `ateng.boot.core.slow-alert.enabled`, `default-threshold`, `include-args`, `max-args-length` | `@SlowAlert(threshold = 30, includeArgs = true)` 监控业务方法执行耗时，超阈值输出 `[SLOW-ALERT]` WARN 告警，自动快照入参、1KB 截断防爆并安全脱敏 | `SlowAlertAspectTest.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
-| **慢 Bean 初始化耗时诊断** | Spring 容器启动期慢 Bean 耗时精准诊断定位 | `SlowBeanDiagnosticPostProcessor` | `ateng.boot.core.system.slow-bean-threshold` | 监听 Spring 容器内部所有 Bean 初始化耗时，超出阈值（默认 500ms）主动输出 `[SLOW-BEAN]` 告警并定位目标类与耗时，辅助冷启动性能分析调优 | `SlowBeanDiagnosticPostProcessorTest.java` |
+| **方法级慢调用主动告警** | 声明式慢方法执行耗时毫秒级监控、复合敏感参数脱敏与领域事件发布 | `@SlowAlert`, `SlowAlertAspect`, `SlowAlertEvent`, `SlowAlertProperties` | `ateng.boot.core.slow-alert.enabled`, `default-threshold`, `include-args`, `max-args-length` | `@SlowAlert(threshold = 30, includeArgs = true)` 监控耗时，超阈值输出 `[SLOW-ALERT]` WARN 并发布 `SlowAlertEvent`（含 `traceId`/异常隔离），入参复合键脱敏与 1KB 截断防爆 | `SlowAlertAspectTest.java`, `AtengCoreAutoConfigurationTest.java`, `SampleSlowAlertEventListener.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` (`POST /sample/core/system/slow-alert`) |
+| **慢 Bean 初始化耗时诊断** | Spring 容器启动期慢 Bean 耗时精准诊断定位与运行时快照回溯 | `SlowBeanDiagnosticPostProcessor`, `SlowBeanDiagnosticPostProcessor.SlowBeanInfo` | `ateng.boot.core.system.slow-bean-threshold` | 监听 Spring 容器 Bean 初始化耗时，超阈值（默认 500ms）输出 `[SLOW-BEAN]` 告警，并支持通过 `getRecordedSlowBeans()` / `getSlowBeans()` 获取不可变耗时快照 | `SlowBeanDiagnosticPostProcessorTest.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` (`POST /sample/core/system/slow-alert`) |
 | **受管临时目录与生命周期治理** | 应用专属隔离临时目录、安全递归清理与关机存活时长摘要 | `FileUtil`, `AppTempDirCleanupListener`, `AppShutdownListener` | `ateng.boot.core.system.shutdown-uptime-enabled` | `FileUtil.getAppTempDirectory(appName)` 生成受管隔离临时目录，`cleanDirectorySafely(dir)` 递归安全清理，JVM 关闭钩子自动清理临时目录并输出优雅关机 Uptime 摘要 | `FileUtilTest.java`, `AppTempDirCleanupListenerTest.java`, `AppShutdownListenerTest.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
 
 ---
@@ -124,7 +124,7 @@ flowchart TD
 
     subgraph CoreAlgorithms["原生算法与数据安全防护"]
         direction TB
-        ID["2026雪花发号与短码<br/>Snowflake / IdUtil / Base62"]
+        ID["2026雪花发号与短码<br/>Snowflake / IdUtil"]
         SEC["数据脱敏与安全编解码<br/>DesensitizeUtil / CryptoUtil / DigestUtil / HexUtil / HmacUtil"]
         DATA["高性能数据结构与工具集<br/>JsonUtil / TreeUtil / CollectionUtil / BatchSliceUtil / FileUtil / NetUtil"]
     end
@@ -705,7 +705,7 @@ public class CoreSecurityController {
 #### 核心机制与生产边界
 - **2026 自定义纪元**：起始基准为 `1767225600000L`，生成的 ID 更紧凑低位，提供长达 69 年的超长生命周期；
 - **时钟回拨容错与受管熔断**：时钟回拨 $\le 5\text{ms}$（可配置 `clock-backoff-tolerance`）时，发号器执行无锁自旋等待追平时钟；若时钟回拨超出容忍上限，发号器立即执行**受管快速熔断**，抛出带清晰错误码的 `BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR)`，绝对杜绝发重复号；
-- **四级自适应节点推导**：按序探测 `CoreProperties` 配置属性 -> JVM 系统属性 -> 本地环境变量 -> 网卡 MAC/IP 哈希 -> 安全随机数兜底，零配置开箱即用。
+- **四级自适应节点推导与容器桥接**：按序探测 `CoreProperties` 配置属性 -> JVM 系统属性 -> 本地环境变量 -> 网卡 MAC/IP 哈希 -> 安全随机数兜底，零配置开箱即用；支持通过 `IdUtil.setSnowflake(snowflake)` 将 Spring 容器受管 `Snowflake` Bean 桥接至静态门面，并在测试隔离或容器销毁时通过 `IdUtil.resetSnowflake()` 恢复默认实例。
 
 #### 预期响应 JSON 契约
 ```json
@@ -871,26 +871,29 @@ public class CustomerController {
   - 强制严格搭配 16 字节随机初始向量 IV（`CryptoUtil.generateIv()`），严禁复用固定静态 IV；
 - **纯原生国密 SM4 对称加解密 (GB/T 32907-2016，零 BouncyCastle 依赖)**：
   - 基于纯 JDK 17 原生指令实现 SM4-128 轮密钥扩展与 CBC/ECB 加解密；
-  - 推荐使用 `encryptSm4Cbc` / `decryptSm4Cbc` 配合 16 字节密钥（`CryptoUtil.generateKey(128)`）与 16 字节随机 IV（`CryptoUtil.generateIv(CryptoUtil.SM4_IV_SIZE)`）；保留 `encryptSm4Ecb` / `decryptSm4Ecb` 用于硬件对齐兼容场景；
+  - 推荐使用 `encryptSm4Cbc` / `decryptSm4Cbc` 配合 `CryptoUtil.generateSm4Key()` 专用 16 字节密钥与 16 字节随机 IV（`CryptoUtil.generateIv(CryptoUtil.SM4_IV_SIZE)`）；保留 `encryptSm4Ecb` / `decryptSm4Ecb` 用于硬件对齐兼容场景；
+  - `encryptGcm` / `decryptGcm` 支持传入 AAD 附加认证数据重载（`(plaintext, key, iv, aad)`），确保密文与关联业务上下文（如租户、订单号）强绑定不可拆包重放；
 - **安全摘要与十六进制编解码**：
   - `DigestUtil.sha256Hex(text)` / `DigestUtil.md5Hex(text)`：纯原生高并发无锁哈希计算；
   - `DigestUtil.sm3Hex(text)` / `DigestUtil.sm3(bytes)`：纯 JDK 17 原生国密 SM3 (GB/T 32905-2016) 256-bit 杂凑摘要；
   - `HexUtil.encodeHex(bytes)` / `HexUtil.decodeHex(hexStr)`：高性能字节与 Hex 串双向转换。
 
 #### 核心代码范式
-代码锚定样例：[`PaymentCryptoRequest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/dto/PaymentCryptoRequest.java)、[`CoreSecurityScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreSecurityScenarioService.java)
+代码锚定样例：[`PaymentCryptoRequest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/dto/PaymentCryptoRequest.java)、[`CoreSecurityController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSecurityController.java)（`POST /sample/core/security/crypto`）、[`CoreSecurityScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreSecurityScenarioService.java)
 
 ```java
 import io.github.atengk.boot.core.util.CryptoUtil;
 import io.github.atengk.boot.core.util.DigestUtil;
 import io.github.atengk.boot.core.util.HexUtil;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
-// 1. AES/GCM 认证加密与解密（推荐用于支付交易核心载荷）
+// 1. AES/GCM 认证加密与解密（支持 AAD 附加认证数据防密文上下文替换攻击）
 byte[] gcmKey = CryptoUtil.generateKey(256); // 256 位高强度密钥
 byte[] gcmIv = CryptoUtil.generateGcmIv();    // 12 字节标准 GCM IV
-String gcmCiphertext = CryptoUtil.encryptGcm(rawPayload, gcmKey, gcmIv);
-String gcmDecrypted = CryptoUtil.decryptGcm(gcmCiphertext, gcmKey, gcmIv);
+byte[] aadBytes = "tenant=acme&tradeNo=TX-001".getBytes(StandardCharsets.UTF_8);
+String gcmCiphertext = CryptoUtil.encryptGcm(rawPayload, gcmKey, gcmIv, aadBytes);
+String gcmDecrypted = CryptoUtil.decryptGcm(gcmCiphertext, gcmKey, gcmIv, aadBytes);
 
 // 2. AES/CBC 对称加密与解密（兼容存量三方系统）
 byte[] cbcKey = CryptoUtil.generateKey(128); // 128 位密钥
@@ -898,11 +901,14 @@ byte[] cbcIv = CryptoUtil.generateIv();       // 16 字节 CBC IV
 String cbcCiphertext = CryptoUtil.encryptCbc(rawPayload, cbcKey, cbcIv);
 String cbcDecrypted = CryptoUtil.decryptCbc(cbcCiphertext, cbcKey, cbcIv);
 
-// 3. 纯原生国密 SM4/CBC 对称加密与解密（16 字节密钥与随机 16 字节 IV）
-byte[] sm4Key = CryptoUtil.generateKey(128);
+// 3. 纯原生国密 SM4/CBC 对称加密与解密（专用 16 字节密钥生成器与随机 16 字节 IV）
+byte[] sm4Key = CryptoUtil.generateSm4Key();
 byte[] sm4Iv = CryptoUtil.generateIv(CryptoUtil.SM4_IV_SIZE);
 String sm4CbcCiphertext = CryptoUtil.encryptSm4Cbc(rawPayload, sm4Key, sm4Iv);
 String sm4CbcDecrypted = CryptoUtil.decryptSm4Cbc(sm4CbcCiphertext, sm4Key, sm4Iv);
+// 瞬态敏感密钥材料用毕原地清零
+Arrays.fill(gcmKey, (byte) 0);
+Arrays.fill(sm4Key, (byte) 0);
 
 // 4. 安全哈希与国密 SM3 消息摘要计算
 String sha256Hex = DigestUtil.sha256Hex(rawPayload); // 64 位十六进制散列
@@ -953,7 +959,7 @@ byte[] decodedBytes = HexUtil.decodeHex(hexString);
 2. **数据传输报文完整性检验**：网络报文或文件流流转时需要极速计算校验和防传输位翻转。
 
 #### 核心代码范式
-代码锚定样例：[`PaymentCryptoRequest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/dto/PaymentCryptoRequest.java)、[`CoreSecurityScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreSecurityScenarioService.java)
+代码锚定样例：[`PaymentCryptoRequest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/dto/PaymentCryptoRequest.java)、[`CoreSecurityController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSecurityController.java)（`POST /sample/core/security/sign-and-verify`）、[`CoreSecurityScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreSecurityScenarioService.java)
 
 ```java
 import io.github.atengk.boot.core.util.ChecksumUtil;
@@ -962,16 +968,18 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
-// 1. HMAC-SHA256 密钥散列加签（支持十六进制 Hex 与 Base64 两种输出契约，兼容 HMAC-SHA1 / HMAC-MD5）
+// 1. HMAC-SHA256 与原生国密 HmacSM3 密钥散列加签（支持 Hex 与 Base64 输出，兼容 HMAC-SHA1 / HMAC-MD5）
 String hmacHex = HmacUtil.hmacSha256Hex(rawPayload, merchantSecretKey);
 String hmacBase64 = HmacUtil.hmacSha256Base64(rawPayload, merchantSecretKey);
+String hmacSm3Hex = HmacUtil.hmacSm3Hex(rawPayload, merchantSecretKey);
+String hmacSm3Base64 = HmacUtil.hmacSm3Base64(rawPayload, merchantSecretKey);
 String sha1Sign = HmacUtil.hmacSha1Hex(rawPayload, merchantSecretKey);
 String md5Sign = HmacUtil.hmacMd5Hex(rawPayload, merchantSecretKey);
 
 // 2. 恒定时间防侧信道验签（底层基于 MessageDigest.isEqual 恒定时间比对，杜绝时序攻击）
-String recomputedHex = HmacUtil.hmacSha256Hex(rawPayload, merchantSecretKey);
-boolean verified = HmacUtil.verifyHex(recomputedHex, hmacHex);         // true
-boolean verifiedBase64 = HmacUtil.verifyBase64(hmacBase64, hmacBase64); // true
+boolean verified = HmacUtil.verifyHex(HmacUtil.hmacSha256Hex(rawPayload, merchantSecretKey), hmacHex);     // true
+boolean sm3Verified = HmacUtil.verifyHex(HmacUtil.hmacSm3Hex(rawPayload, merchantSecretKey), hmacSm3Hex); // true
+boolean verifiedBase64 = HmacUtil.verifyBase64(hmacSm3Base64, hmacSm3Base64);                             // true
 
 // 篡改载荷或伪造密钥验签必定失败
 boolean tampered = HmacUtil.verifyHex(HmacUtil.hmacSha256Hex(rawPayload + "&tampered=1", merchantSecretKey), hmacHex); // false
@@ -2420,17 +2428,38 @@ ateng:
 - **可信逃逸舱边界审计**：非受信用户输入严禁调用 `evaluateTrusted`，该方法仅限系统内网白名单环境执行受信任脚本。
 
 ### 7.18 安全序列化门面与脱敏安全深克隆 (`JsonUtil` & `deepClone`)
-基于东八区、JSR-310 日期模块与零 `@class` 漏洞的生产级 Jackson 门面。独家提供严格遵从 [ADR-0012](../docs/adr/0012-lifecycle-separated-data-security.md) “内存真明文”不变量的脱敏安全深克隆（`deepClone`），在内存中克隆对象时无条件抑制 `@FieldSensitive` 打码序列化器，彻底消除掩码星号污染业务层与持久层的隐患：
-```java
-import io.github.atengk.boot.core.util.JsonUtil;
+基于东八区、JSR-310 日期模块与零 `@class` 漏洞的生产级 Jackson 门面。支持 `byte[]` 二进制反序列化、容器与测试场景静态隔离复位（`JsonUtil.reset()`），并独家提供严格遵从 [ADR-0012](../docs/adr/0012-lifecycle-separated-data-security.md) “内存真明文”不变量的脱敏安全深克隆（`deepClone`），在内存中克隆对象时无条件抑制 `@FieldSensitive` 打码序列化器，彻底消除掩码星号污染业务层与持久层的隐患：
 
-// 1. 标准强类型对象与 JSON 互转
+代码锚定样例：[`CoreDataAndTreeController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreDataAndTreeController.java)（`POST /sample/core/data/json-and-bean`）、[`CoreDataProcessingScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreDataProcessingScenarioService.java)
+
+```java
+import com.fasterxml.jackson.core.type.TypeReference;
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.util.JsonUtil;
+import java.util.List;
+import java.util.Map;
+
+// 1. 标准强类型对象与 JSON / 二进制字节数组互转
 String json = JsonUtil.toJsonString(userDto);
 SampleUserDTO parsed = JsonUtil.parseObject(json, SampleUserDTO.class);
 
+byte[] userBytes = JsonUtil.toJsonBytes(List.of(userDto));
+List<SampleUserDTO> parsedList = JsonUtil.parseList(userBytes, SampleUserDTO.class);
+
+byte[] envelopeBytes = JsonUtil.toJsonBytes(Result.success(parsedList));
+Result<List<SampleUserDTO>> parsedEnvelope = JsonUtil.parseObject(
+        envelopeBytes, new TypeReference<Result<List<SampleUserDTO>>>() {});
+
+byte[] metadataBytes = JsonUtil.toJsonBytes(Map.of("channel", "open-api", "version", "v2"));
+Map<String, String> typedMap = JsonUtil.parseMap(metadataBytes, String.class, String.class);
+Map<String, Object> rawMap = JsonUtil.parseMap(metadataBytes);
+
 // 2. 内存脱敏安全深克隆（内存真明文保障）
-SampleUserDTO clonedUser = JsonUtil.deepClone(originalUser);
+SampleUserDTO clonedUser = JsonUtil.deepClone(userDto);
 // clonedUser 获得完全独立的深拷贝对象，且手机号等敏感字段依然保持 100% 原始真实明文，绝不变成 "138****5678"
+
+// 3. 容器定制与测试隔离复位（恢复默认受管 ObjectMapper）
+// JsonUtil.reset();
 ```
 
 ---
@@ -2575,15 +2604,16 @@ ateng:
 
 ---
 
-### 8.3 方法级慢调用主动告警 (`@SlowAlert`)
+### 8.3 方法级慢调用主动告警 (`@SlowAlert` & `SlowAlertEvent`)
 
-代码锚定样例：[`CoreSystemAndAuditController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSystemAndAuditController.java)、[`CoreSystemAndAuditControllerTest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/test/java/io/github/atengk/boot/sample/core/CoreSystemAndAuditControllerTest.java)
+代码锚定样例：[`CoreSystemAndAuditController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSystemAndAuditController.java)（`POST /sample/core/system/slow-alert`）、[`SampleSlowAlertEventListener.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/listener/SampleSlowAlertEventListener.java)、[`CoreSystemAndAuditControllerTest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/test/java/io/github/atengk/boot/sample/core/CoreSystemAndAuditControllerTest.java)
 
 #### 核心机制与特性
 对于可能存在性能波动的核心计算、第三方调用或批处理方法，直接在方法或类上标注 `@SlowAlert` 声明耗时阈值与告警策略：
 - **微秒级高精度拦截**：依托 `System.nanoTime()` 精确度量方法绝对耗时，达到阈值时自动输出结构化 WARN 告警；
-- **参数快照与敏感凭据脱敏**：默认记录入参 JSON 快照，内置敏感词正则（`password`、`token`、`secret`、`key` 等）自动掩码替换为 `******`；
-- **1KB 刚性截断防 OOM**：入参快照严格限制最大字符数（默认 1024 字符），超过时优雅追加 `... [TRUNCATED]`，防止超大报文引发内存溢出。
+- **参数快照与复合敏感键脱敏**：默认记录入参 JSON 快照，内置复合敏感键匹配（如 `secretToken`、`apiKey`、`password` 等 camelCase / 下划线 / 连字符键名）与字符串形态敏感键值自动掩码替换为 `******`；
+- **1KB 刚性截断防 OOM**：入参快照严格限制最大字符数（默认 1024 字符），超过时优雅追加 `... [TRUNCATED]`，防止超大报文引发内存溢出；
+- **领域事件解耦发布与异常隔离 (`SlowAlertEvent`)**：触发慢调用时同步向 Spring `ApplicationEventPublisher` 发布携带 `className`、`methodName`、`elapsedMs`、`thresholdMs`、`argsSummary`、`traceId`、`occurredAt` 的 `SlowAlertEvent` 领域事件，业务侧可订阅对接钉钉/飞书/Prometheus；切面对监听器抛出的异常执行 `try/catch` 兜底隔离，绝不因通知异常反噬主业务返回。
 
 #### 就近专属 YAML 配置 (慢调用告警)
 ```yaml
@@ -2605,12 +2635,15 @@ ateng:
 #### 核心代码范式
 ```java
 import io.github.atengk.boot.core.annotation.SlowAlert;
+import io.github.atengk.boot.core.aspect.SlowAlertEvent;
+import org.springframework.context.event.EventListener;
+import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Service;
 
 @Service
 public class CoreSystemScenarioService {
 
-    // 声明慢调用阈值 30ms，自动记录入参快照（敏感参数自动脱敏掩码）
+    // 声明慢调用阈值 30ms，自动记录入参快照并向容器发布 SlowAlertEvent（复合敏感键自动脱敏）
     @SlowAlert(threshold = 30, includeArgs = true)
     public long processSlowComputation(String taskId, String secretToken) {
         long start = System.currentTimeMillis();
@@ -2620,6 +2653,16 @@ public class CoreSystemScenarioService {
             Thread.currentThread().interrupt();
         }
         return System.currentTimeMillis() - start;
+    }
+}
+
+@Component
+public class SampleSlowAlertEventListener {
+
+    @EventListener
+    public void onSlowAlertEvent(SlowAlertEvent event) {
+        // 读取结构化快照（event.getClassName(), event.getMethodName(), event.getElapsedMs(),
+        // event.getThresholdMs(), event.getArgsSummary(), event.getTraceId(), event.getOccurredAt()）
     }
 }
 ```
@@ -2633,12 +2676,22 @@ public class CoreSystemScenarioService {
 
 ### 8.4 慢 Bean 初始化耗时诊断 (`SlowBeanDiagnosticPostProcessor`)
 
-代码锚定样例：[`SlowBeanDiagnosticPostProcessorTest.java`](./src/test/java/io/github/atengk/boot/core/diagnostic/SlowBeanDiagnosticPostProcessorTest.java)
+代码锚定样例：[`SlowBeanDiagnosticPostProcessorTest.java`](./src/test/java/io/github/atengk/boot/core/diagnostic/SlowBeanDiagnosticPostProcessorTest.java)、[`CoreSystemAndAuditController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSystemAndAuditController.java)（`POST /sample/core/system/slow-alert`）
 
 #### 核心机制与特性
-Spring 启动时，`SlowBeanDiagnosticPostProcessor`（基于 Spring 原生 `BeanPostProcessor`）在底层纳秒级统计每个单例 Bean 的初始化耗时。
-- 凡耗时超过阈值（默认 `500ms`，由 `ateng.boot.core.system.slow-bean-threshold` 配置）的 Bean，自动在控制台输出醒目的 WARN 诊断日志，精确展示 Bean 名称、目标类与耗时毫秒数；
-- 辅助运维与开发人员在应用冷启动缓慢时迅速定位拖慢启动的组件（如某些重量级外部客户端连接池、反射扫描类等）。
+Spring 启动时，`SlowBeanDiagnosticPostProcessor`（基于 Spring 原生 `BeanPostProcessor`）在底层纳秒级统计每个单例 Bean 的初始化耗时：
+- **启动期告警定位**：凡耗时超过阈值（默认 `500ms`，由 `ateng.boot.core.system.slow-bean-threshold` 配置）的 Bean，自动在控制台输出醒目的 WARN 诊断日志，精确展示 Bean 名称、目标类与耗时毫秒数；
+- **运行时快照回溯 API**：提供实例方法 `getRecordedSlowBeans()` 与静态门面方法 `SlowBeanDiagnosticPostProcessor.getSlowBeans()`，返回不可变的 `List<SlowBeanInfo>`（包含 `beanName`、`beanClassName`、`costMillis`），方便巡检端点、Actuator 或诊断看板程序化读取。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.diagnostic.SlowBeanDiagnosticPostProcessor;
+import io.github.atengk.boot.core.diagnostic.SlowBeanDiagnosticPostProcessor.SlowBeanInfo;
+import java.util.List;
+
+// 静态读取当前最近一次受管诊断器记录到的慢 Bean 不可变快照列表
+List<SlowBeanInfo> slowBeans = SlowBeanDiagnosticPostProcessor.getSlowBeans();
+```
 
 #### 诊断日志输出示例
 ```text
