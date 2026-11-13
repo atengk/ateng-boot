@@ -2,10 +2,12 @@ package io.github.atengk.boot.sample.core.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.core.dto.BatchAndCacheRequest;
+import io.github.atengk.boot.sample.core.dto.JsonAndBeanRequest;
 import io.github.atengk.boot.sample.core.dto.SpelAndPrimitivesRequest;
 import io.github.atengk.boot.sample.core.service.CoreDataProcessingScenarioService;
 import io.github.atengk.boot.sample.core.vo.BatchAndCacheVO;
 import io.github.atengk.boot.sample.core.vo.CategoryTreeVO;
+import io.github.atengk.boot.sample.core.vo.JsonAndBeanVO;
 import io.github.atengk.boot.sample.core.vo.SpelAndPrimitivesVO;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -85,5 +87,19 @@ public class CoreDataAndTreeController {
                 request.getUser() != null);
         SpelAndPrimitivesVO vo = dataProcessingService.processSpelAndPrimitivesScenario(request);
         return Result.success(vo);
+    }
+
+    /**
+     * 4. 二进制 JSON 载荷泛型/集合反序列化与 Bean 增量合并闭环
+     * 演示 JsonUtil 基于 byte[] 的 parseObject(TypeReference)/parseList/parseMap 双重载解析及深拷贝隔离
+     *
+     * @param request 二进制 JSON 转换与 Bean 合并请求载荷
+     * @return 解析与合并结果视图
+     */
+    @PostMapping("/json-and-bean")
+    public Result<JsonAndBeanVO> processJsonAndBean(@RequestBody @Valid JsonAndBeanRequest request) {
+        log.info("接收 JsonAndBean 二进制载荷解析请求: userCount={}, metadataKeys={}",
+                request.getUsers().size(), request.getMetadata().keySet());
+        return Result.success(dataProcessingService.processJsonAndBeanScenario(request));
     }
 }

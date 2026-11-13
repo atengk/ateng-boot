@@ -7,9 +7,11 @@ import io.github.atengk.boot.core.model.Triple;
 import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.core.validation.ValidationGroups;
+import io.github.atengk.boot.sample.core.dto.JsonAndBeanRequest;
 import io.github.atengk.boot.sample.core.model.SampleMenuNodeDTO;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
 import io.github.atengk.boot.sample.core.service.CoreDataProcessingScenarioService;
+import io.github.atengk.boot.sample.core.vo.JsonAndBeanVO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -359,5 +361,47 @@ class CoreDataProcessingScenarioServiceTest {
         // 验证内存状态变更绝对隔离
         cloned.setName("李四");
         assertThat(original.getName()).isEqualTo("张三");
+    }
+
+    @Test
+    @DisplayName("测试JsonUtil二进制载荷(byte[])泛型/集合/字典反序列化与Bean增量合并场景")
+    void testProcessJsonAndBeanScenario() {
+        SampleUserDTO u1 = SampleUserDTO.builder()
+                .id(101L)
+                .name("张三丰")
+                .phone("13800138001")
+                .status(1)
+                .build();
+        SampleUserDTO u2 = SampleUserDTO.builder()
+                .id(102L)
+                .name("张无忌")
+                .phone("13800138002")
+                .status(0)
+                .build();
+        SampleUserDTO patch = SampleUserDTO.builder()
+                .name("张真人")
+                .build();
+
+        JsonAndBeanRequest request = JsonAndBeanRequest.builder()
+                .users(List.of(u1, u2))
+                .metadata(Map.of("source", "mq-consumer", "codec", "utf8-bytes"))
+                .patchUser(patch)
+                .build();
+
+        JsonAndBeanVO vo = dataProcessingService.processJsonAndBeanScenario(request);
+
+        assertThat(vo.getUserBytesLength()).isPositive();
+        assertThat(vo.getParsedUsers()).hasSize(2);
+        assertThat(vo.getParsedUsers().get(0).getId()).isEqualTo(101L);
+        assertThat(vo.getParsedUsers().get(0).getName()).isEqualTo("张*丰");
+        assertThat(vo.getParsedUsers().get(1).getName()).isEqualTo("张*忌");
+        assertThat(vo.getGenericEnvelopeUserCount()).isEqualTo(2);
+        assertThat(vo.getParsedTypedMap()).containsEntry("source", "mq-consumer").containsEntry("codec", "utf8-bytes");
+        assertThat(vo.getParsedGenericMap()).containsEntry("source", "mq-consumer").containsEntry("codec", "utf8-bytes");
+        assertThat(vo.getDeepClonedFirstUser().getName()).isEqualTo("张真人");
+        // 深拷贝遵循 ADR-0012 保留内存真明文，并与输入原对象引用隔离
+        assertThat(vo.getDeepClonedFirstUser().getPhone()).isEqualTo("13800138001");
+        assertThat(vo.getDeepClonedFirstUser()).isNotSameAs(u1);
+        assertThat(u1.getName()).isEqualTo("张三丰");
     }
 }

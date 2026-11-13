@@ -1,8 +1,10 @@
 package io.github.atengk.boot.sample.core.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.github.atengk.boot.core.concurrent.ConcurrentLruCache;
 import io.github.atengk.boot.core.model.Pair;
+import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.model.Triple;
 import io.github.atengk.boot.core.util.BatchSliceUtil;
 import io.github.atengk.boot.core.util.BeanUtil;
@@ -26,6 +28,7 @@ import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.sample.core.dto.BatchAndCacheRequest;
 import io.github.atengk.boot.sample.core.dto.CustomerOnboardingRequest;
+import io.github.atengk.boot.sample.core.dto.JsonAndBeanRequest;
 import io.github.atengk.boot.sample.core.dto.SpelAndPrimitivesRequest;
 import io.github.atengk.boot.sample.core.model.SampleMenuNodeDTO;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
@@ -33,6 +36,7 @@ import io.github.atengk.boot.sample.core.vo.BatchAndCacheVO;
 import io.github.atengk.boot.sample.core.vo.CategoryNodeVO;
 import io.github.atengk.boot.sample.core.vo.CategoryTreeVO;
 import io.github.atengk.boot.sample.core.vo.CustomerPrivacyVO;
+import io.github.atengk.boot.sample.core.vo.JsonAndBeanVO;
 import io.github.atengk.boot.sample.core.vo.SpelAndPrimitivesVO;
 import io.github.atengk.boot.sample.core.vo.StringTransformVO;
 import io.github.atengk.boot.sample.core.vo.TenantCacheStatusVO;
@@ -727,6 +731,53 @@ public class CoreDataProcessingScenarioService {
                 .tupleDemo(tupleDemo)
                 .spelCacheSize(SpelUtil.getCacheSize())
                 .lambdaCacheSize(LambdaUtil.getCacheSize())
+                .build();
+    }
+
+    /**
+     * 24. 验证二进制 JSON 载荷反序列化（TypeReference/List/Map）与深拷贝/Bean 增量合并闭环
+     *
+     * @param request 二进制 JSON 转换与 Bean 合并请求对象
+     * @return 解析还原与增量合并结果视图
+     */
+    public JsonAndBeanVO processJsonAndBeanScenario(JsonAndBeanRequest request) {
+        BusinessAssert.notNull(request, "请求载荷不能为空");
+        BusinessAssert.notEmpty(request.getUsers(), "待传输用户列表不能为空");
+        BusinessAssert.notEmpty(request.getMetadata(), "扩展属性字典不能为空");
+
+        // 1. 列表二进制往返解析
+        byte[] userBytes = JsonUtil.toJsonBytes(request.getUsers());
+        List<SampleUserDTO> parsedUsers = JsonUtil.parseList(userBytes, SampleUserDTO.class);
+
+        // 2. 复杂泛型包络二进制往返解析
+        byte[] envelopeBytes = JsonUtil.toJsonBytes(Result.success(request.getUsers()));
+        Result<List<SampleUserDTO>> parsedEnvelope = JsonUtil.parseObject(
+                envelopeBytes, new TypeReference<Result<List<SampleUserDTO>>>() {});
+        int envelopeUserCount = parsedEnvelope != null && parsedEnvelope.getData() != null
+                ? parsedEnvelope.getData().size()
+                : 0;
+
+        // 3. 扩展字典二进制双重载往返解析
+        byte[] metadataBytes = JsonUtil.toJsonBytes(request.getMetadata());
+        Map<String, String> parsedTypedMap = JsonUtil.parseMap(metadataBytes, String.class, String.class);
+        Map<String, Object> parsedGenericMap = JsonUtil.parseMap(metadataBytes);
+
+        // 4. 内存深拷贝隔离（保留内存真明文）与 BeanUtil 局部非空增量合并
+        SampleUserDTO clonedFirst = JsonUtil.deepClone(request.getUsers().get(0));
+        if (request.getPatchUser() != null) {
+            BeanUtil.copyIgnoreNull(request.getPatchUser(), clonedFirst);
+        }
+
+        log.info("JsonAndBean 二进制载荷解析完成: userBytesLength={}, parsedCount={}, envelopeCount={}",
+                userBytes.length, parsedUsers.size(), envelopeUserCount);
+
+        return JsonAndBeanVO.builder()
+                .userBytesLength(userBytes.length)
+                .parsedUsers(parsedUsers)
+                .genericEnvelopeUserCount(envelopeUserCount)
+                .parsedTypedMap(parsedTypedMap)
+                .parsedGenericMap(parsedGenericMap)
+                .deepClonedFirstUser(clonedFirst)
                 .build();
     }
 }

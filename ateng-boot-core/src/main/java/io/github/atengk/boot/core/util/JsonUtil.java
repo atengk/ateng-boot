@@ -16,7 +16,9 @@ import com.fasterxml.jackson.datatype.jsr310.deser.LocalTimeDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalTimeSerializer;
+import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.constant.DatePattern;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.jackson.SensitiveJsonSerializer;
 
 import java.io.IOException;
@@ -59,6 +61,16 @@ public final class JsonUtil {
      */
     public static void init(ObjectMapper customObjectMapper) {
         defaultMapper = customObjectMapper != null ? customObjectMapper : createDefaultObjectMapper();
+    }
+
+    /**
+     * 对称重置所有内部默认 ObjectMapper 委托实例，恢复至出厂安全默认配置
+     * 与 {@link #init(ObjectMapper)} 对称使用，推荐在单元测试 {@code @AfterEach} 钩子中调用还原现场
+     */
+    public static void reset() {
+        defaultMapper = createDefaultObjectMapper();
+        longToStringMapper = createLongToStringObjectMapper();
+        cloneMapper = createCloneObjectMapper();
     }
 
     /**
@@ -292,11 +304,8 @@ public final class JsonUtil {
             return null;
         }
         Objects.requireNonNull(typeReference, "泛型类型引用 TypeReference 不能为 null");
-        try {
-            return defaultMapper.readValue(bytes, typeReference);
-        } catch (IOException e) {
-            throw new IllegalArgumentException("JSON 字节数组泛型反序列化失败: " + e.getMessage(), e);
-        }
+        JavaType javaType = defaultMapper.getTypeFactory().constructType(typeReference);
+        return readBytes(bytes, javaType, "JSON 字节数组泛型反序列化失败: ");
     }
 
     /**
@@ -363,6 +372,24 @@ public final class JsonUtil {
     }
 
     /**
+     * 将 UTF-8 JSON 字节数组反序列化为 List 集合
+     *
+     * @param bytes JSON 字节数组
+     * @param clazz 列表元素类型 Class
+     * @param <T>   元素类型泛型
+     * @return 反序列化列表；入参为空或长度为 0 时安全返回空列表（非 null）
+     */
+    public static <T> List<T> parseList(byte[] bytes, Class<T> clazz) {
+        if (bytes == null || bytes.length == 0) {
+            return Collections.emptyList();
+        }
+        Objects.requireNonNull(clazz, "列表元素类型 Class 不能为 null");
+        JavaType javaType = defaultMapper.getTypeFactory().constructCollectionType(List.class, clazz);
+        List<T> result = readBytes(bytes, javaType, "JSON 字节数组反序列化列表失败: ");
+        return result != null ? result : Collections.emptyList();
+    }
+
+    /**
      * 将 JSON 对象字符串反序列化为指定 Key/Value 类型的 Map
      *
      * @param json       JSON 对象字符串
@@ -394,6 +421,45 @@ public final class JsonUtil {
      */
     public static Map<String, Object> parseMap(String json) {
         return parseMap(json, String.class, Object.class);
+    }
+
+    /**
+     * 将 UTF-8 JSON 字节数组反序列化为指定 Key/Value 类型的 Map
+     *
+     * @param bytes      JSON 字节数组
+     * @param keyClass   键类型 Class
+     * @param valueClass 值类型 Class
+     * @param <K>        键类型泛型
+     * @param <V>        值类型泛型
+     * @return 反序列化 Map；入参为空或长度为 0 时安全返回空 Map（非 null）
+     */
+    public static <K, V> Map<K, V> parseMap(byte[] bytes, Class<K> keyClass, Class<V> valueClass) {
+        if (bytes == null || bytes.length == 0) {
+            return Collections.emptyMap();
+        }
+        Objects.requireNonNull(keyClass, "Map 键类型 Class 不能为 null");
+        Objects.requireNonNull(valueClass, "Map 值类型 Class 不能为 null");
+        JavaType javaType = defaultMapper.getTypeFactory().constructMapType(Map.class, keyClass, valueClass);
+        Map<K, V> result = readBytes(bytes, javaType, "JSON 字节数组反序列化 Map 失败: ");
+        return result != null ? result : Collections.emptyMap();
+    }
+
+    /**
+     * 将 UTF-8 JSON 字节数组反序列化为 Map&lt;String, Object&gt;
+     *
+     * @param bytes JSON 字节数组
+     * @return 反序列化 Map；入参为空或长度为 0 时安全返回空 Map（非 null）
+     */
+    public static Map<String, Object> parseMap(byte[] bytes) {
+        return parseMap(bytes, String.class, Object.class);
+    }
+
+    private static <T> T readBytes(byte[] bytes, JavaType javaType, String errorPrefix) {
+        try {
+            return defaultMapper.readValue(bytes, javaType);
+        } catch (IOException e) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, errorPrefix + e.getMessage(), e);
+        }
     }
 
     /**

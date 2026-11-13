@@ -3,9 +3,12 @@ package io.github.atengk.boot.core.util;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -205,27 +208,108 @@ class JsonUtilTest {
         assertNull(JsonUtil.parseObject((String) null, DemoUser.class));
         assertNull(JsonUtil.parseObject("", DemoUser.class));
         assertNull(JsonUtil.parseObject("   ", DemoUser.class));
-        assertTrue(JsonUtil.parseList(null, DemoUser.class).isEmpty());
+        assertTrue(JsonUtil.parseList((String) null, DemoUser.class).isEmpty());
         assertTrue(JsonUtil.parseList("", DemoUser.class).isEmpty());
-        assertTrue(JsonUtil.parseMap(null).isEmpty());
+        assertTrue(JsonUtil.parseList((byte[]) null, DemoUser.class).isEmpty());
+        assertTrue(JsonUtil.parseList(new byte[0], DemoUser.class).isEmpty());
+        assertTrue(JsonUtil.parseList("null".getBytes(StandardCharsets.UTF_8), DemoUser.class).isEmpty());
+        assertTrue(JsonUtil.parseMap((String) null).isEmpty());
         assertTrue(JsonUtil.parseMap("").isEmpty());
+        assertTrue(JsonUtil.parseMap((byte[]) null).isEmpty());
+        assertTrue(JsonUtil.parseMap(new byte[0]).isEmpty());
+        assertTrue(JsonUtil.parseMap("null".getBytes(StandardCharsets.UTF_8)).isEmpty());
+        assertTrue(JsonUtil.parseMap((byte[]) null, String.class, String.class).isEmpty());
+        assertTrue(JsonUtil.parseMap(new byte[0], String.class, String.class).isEmpty());
+        assertTrue(JsonUtil.parseMap("null".getBytes(StandardCharsets.UTF_8), String.class, String.class).isEmpty());
+        assertNull(JsonUtil.parseObject((byte[]) null, new TypeReference<GenericPayload<DemoUser>>() {}));
+        assertNull(JsonUtil.parseObject(new byte[0], new TypeReference<GenericPayload<DemoUser>>() {}));
         assertNull(JsonUtil.readTree((String) null));
         assertNull(JsonUtil.readTree((byte[]) null));
         assertNull(JsonUtil.readTree((java.io.InputStream) null));
         assertNull(JsonUtil.readTree(""));
     }
 
+    @AfterEach
+    void tearDown() {
+        JsonUtil.reset();
+    }
+
     @Test
-    @DisplayName("测试 init 静态钩子挂载定制 ObjectMapper")
+    @DisplayName("测试 init 静态钩子挂载定制 ObjectMapper 与 reset 对称重置")
     void testInitCustomObjectMapper() {
-        ObjectMapper current = JsonUtil.getObjectMapper();
-        assertNotNull(current);
+        ObjectMapper initial = JsonUtil.getObjectMapper();
+        assertNotNull(initial);
 
         ObjectMapper custom = new ObjectMapper();
         JsonUtil.init(custom);
         assertSame(custom, JsonUtil.getObjectMapper());
 
-        // 还原回默认实例
-        JsonUtil.init(JsonUtil.createDefaultObjectMapper());
+        // 对称重置后恢复为全新默认实例并具备标准东八区时间与未知字段容错能力
+        JsonUtil.reset();
+        ObjectMapper restored = JsonUtil.getObjectMapper();
+        assertNotNull(restored);
+        assertNotSame(custom, restored);
+        DemoUser user = JsonUtil.parseObject(
+                "{\"id\":1001,\"name\":\"ResetOk\",\"createTime\":\"2026-11-13 10:00:00\",\"unknown\":\"ignored\"}",
+                DemoUser.class);
+        assertNotNull(user);
+        assertEquals(LocalDateTime.of(2026, 11, 13, 10, 0, 0), user.getCreateTime());
+    }
+
+    @Test
+    @DisplayName("测试 byte[] 二进制载荷反序列化泛型、List 与 Map 及其因果异常契约")
+    void testByteArrayParseCollectionAndTypeReference() {
+        byte[] genericBytes = "{\"code\":\"200\",\"data\":{\"id\":2001,\"name\":\"BytesGeneric\"}}"
+                .getBytes(StandardCharsets.UTF_8);
+        GenericPayload<DemoUser> payload = JsonUtil.parseObject(
+                genericBytes, new TypeReference<GenericPayload<DemoUser>>() {});
+        assertNotNull(payload);
+        assertEquals("200", payload.getCode());
+        assertNotNull(payload.getData());
+        assertEquals(2001L, payload.getData().getId());
+        assertEquals("BytesGeneric", payload.getData().getName());
+
+        byte[] listBytes = "[{\"id\":11,\"name\":\"A\"},{\"id\":12,\"name\":\"B\"}]"
+                .getBytes(StandardCharsets.UTF_8);
+        List<DemoUser> users = JsonUtil.parseList(listBytes, DemoUser.class);
+        assertEquals(2, users.size());
+        assertEquals("A", users.get(0).getName());
+        assertEquals(12L, users.get(1).getId());
+
+        byte[] mapBytes = "{\"k1\":\"v1\",\"k2\":\"v2\"}".getBytes(StandardCharsets.UTF_8);
+        Map<String, String> typedMap = JsonUtil.parseMap(mapBytes, String.class, String.class);
+        assertEquals(Map.of("k1", "v1", "k2", "v2"), typedMap);
+
+        Map<String, Object> genericMap = JsonUtil.parseMap(mapBytes);
+        assertEquals("v1", genericMap.get("k1"));
+        assertEquals("v2", genericMap.get("k2"));
+
+        // 必传类型参数为空时 Fail-Fast
+        assertThrows(NullPointerException.class, () -> JsonUtil.parseObject(genericBytes, (TypeReference<GenericPayload<DemoUser>>) null));
+        assertThrows(NullPointerException.class, () -> JsonUtil.parseList(listBytes, null));
+        assertThrows(NullPointerException.class, () -> JsonUtil.parseMap(mapBytes, null, String.class));
+        assertThrows(NullPointerException.class, () -> JsonUtil.parseMap(mapBytes, String.class, null));
+
+        // 非法 JSON 字节流抛出保留原始 cause 的 BusinessException
+        byte[] invalidBytes = "{corrupted-json".getBytes(StandardCharsets.UTF_8);
+        BusinessException ex1 = assertThrows(BusinessException.class,
+                () -> JsonUtil.parseObject(invalidBytes, new TypeReference<GenericPayload<DemoUser>>() {}));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex1.getCode());
+        assertNotNull(ex1.getCause());
+
+        BusinessException ex2 = assertThrows(BusinessException.class,
+                () -> JsonUtil.parseList(invalidBytes, DemoUser.class));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex2.getCode());
+        assertNotNull(ex2.getCause());
+
+        BusinessException ex3 = assertThrows(BusinessException.class,
+                () -> JsonUtil.parseMap(invalidBytes));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex3.getCode());
+        assertNotNull(ex3.getCause());
+
+        BusinessException ex4 = assertThrows(BusinessException.class,
+                () -> JsonUtil.parseMap(invalidBytes, String.class, String.class));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex4.getCode());
+        assertNotNull(ex4.getCause());
     }
 }

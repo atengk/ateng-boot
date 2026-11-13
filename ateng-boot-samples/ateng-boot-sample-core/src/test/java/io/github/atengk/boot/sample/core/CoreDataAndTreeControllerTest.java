@@ -28,7 +28,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * Core 数据结构、流式切片与通用算法原语端到端 HTTP 集成测试
- * 覆盖 CoreDataAndTreeController 全部 3 个对外接口契约、树形装配剪枝、大批量切片、LRU 缓存淘汰与 SpEL 沙箱安全防御
+ * 覆盖 CoreDataAndTreeController 全部 4 个对外接口契约、树形装配剪枝、大批量切片、LRU 缓存淘汰与 SpEL 沙箱安全防御
  *
  * @author Ateng
  * @since 2026-11-07
@@ -197,5 +197,70 @@ class CoreDataAndTreeControllerTest {
                 .andExpect(jsonPath("$.data.tupleDemo", notNullValue()))
                 .andExpect(jsonPath("$.data.spelCacheSize", notNullValue()))
                 .andExpect(jsonPath("$.data.lambdaCacheSize", notNullValue()));
+    }
+
+    @Test
+    @DisplayName("POST /sample/core/data/json-and-bean - 验证 byte[] 集合/字典/泛型反序列化与增量合并闭环")
+    void testJsonAndBeanSuccess() throws Exception {
+        String rawJson = """
+                {
+                    "users": [
+                        {
+                            "id": 2001,
+                            "name": "诸葛孔明",
+                            "phone": "13800138000",
+                            "status": 1
+                        },
+                        {
+                            "id": 2002,
+                            "name": "司马仲达",
+                            "phone": "13900139000",
+                            "status": 1
+                        }
+                    ],
+                    "metadata": {
+                        "topic": "order.events",
+                        "format": "json-bytes"
+                    },
+                    "patchUser": {
+                        "name": "诸葛亮"
+                    }
+                }
+                """;
+
+        mockMvc.perform(post("/sample/core/data/json-and-bean")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.userBytesLength", notNullValue()))
+                .andExpect(jsonPath("$.data.genericEnvelopeUserCount", is(2)))
+                .andExpect(jsonPath("$.data.parsedUsers", hasSize(2)))
+                .andExpect(jsonPath("$.data.parsedUsers[0].id", is("2001")))
+                .andExpect(jsonPath("$.data.parsedUsers[0].name", is("诸**明")))
+                .andExpect(jsonPath("$.data.parsedUsers[0].phone", is("138****8000")))
+                .andExpect(jsonPath("$.data.parsedTypedMap.topic", is("order.events")))
+                .andExpect(jsonPath("$.data.parsedGenericMap.format", is("json-bytes")))
+                .andExpect(jsonPath("$.data.deepClonedFirstUser.name", is("诸*亮")))
+                .andExpect(jsonPath("$.data.deepClonedFirstUser.phone", is("138****8000")));
+    }
+
+    @Test
+    @DisplayName("POST /sample/core/data/json-and-bean - 空用户列表或空字典触发 JSR-303 校验拦截")
+    void testJsonAndBeanValidationFail() throws Exception {
+        String invalidJson = """
+                {
+                    "users": [],
+                    "metadata": {}
+                }
+                """;
+
+        mockMvc.perform(post("/sample/core/data/json-and-bean")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(400)))
+                .andExpect(jsonPath("$.success", is(false)));
     }
 }
