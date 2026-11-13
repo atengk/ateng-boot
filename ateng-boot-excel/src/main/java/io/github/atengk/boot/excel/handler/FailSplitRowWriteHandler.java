@@ -1,15 +1,16 @@
 package io.github.atengk.boot.excel.handler;
 
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
+import io.github.atengk.boot.excel.util.ExcelFeedbackUtil;
 import org.apache.fesod.sheet.write.handler.CellWriteHandler;
 import org.apache.fesod.sheet.write.handler.RowWriteHandler;
 import org.apache.fesod.sheet.write.handler.context.CellWriteHandlerContext;
 import org.apache.fesod.sheet.write.handler.context.RowWriteHandlerContext;
 import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.xssf.usermodel.XSSFClientAnchor;
 import org.apache.poi.xssf.usermodel.XSSFRichTextString;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 差错数据隔离导出拦截处理器
@@ -32,7 +33,7 @@ public class FailSplitRowWriteHandler implements RowWriteHandler, CellWriteHandl
 
     private CellStyle errorHeadStyle;
     private CellStyle errorContentStyle;
-    private CellStyle highlightedErrorStyle;
+    private final Map<Workbook, Map<Short, CellStyle>> highlightedStyleCache = new ConcurrentHashMap<>();
 
     public FailSplitRowWriteHandler(List<ExcelErrorRow> errorRows) {
         this.errorSummaryByRowIndex = new HashMap<>();
@@ -64,6 +65,12 @@ public class FailSplitRowWriteHandler implements RowWriteHandler, CellWriteHandl
             }
         }
         this.distinctRowIndices = new ArrayList<>(distinctSet);
+    }
+
+    @Override
+    public int order() {
+        // 确保在 Fesod 默认 FillStyleCellWriteHandler (order = 50000) 之后执行，以便无损克隆已生效的数字/日期与对齐样式
+        return 60000;
     }
 
     @Override
@@ -139,13 +146,11 @@ public class FailSplitRowWriteHandler implements RowWriteHandler, CellWriteHandl
 
         if (errorMsg != null) {
             Workbook workbook = cell.getSheet().getWorkbook();
-            if (highlightedErrorStyle == null) {
-                highlightedErrorStyle = workbook.createCellStyle();
-                highlightedErrorStyle.cloneStyleFrom(cell.getCellStyle());
-                highlightedErrorStyle.setFillForegroundColor(IndexedColors.ROSE.getIndex());
-                highlightedErrorStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
-            }
-            cell.setCellStyle(highlightedErrorStyle);
+            Map<Short, CellStyle> wbStyleCache = highlightedStyleCache.computeIfAbsent(workbook, wb -> new ConcurrentHashMap<>());
+            CellStyle clonedHighlightStyle = ExcelFeedbackUtil.getOrCreateErrorHighlightStyle(
+                    workbook, cell.getCellStyle(), wbStyleCache
+            );
+            cell.setCellStyle(clonedHighlightStyle);
 
             // 挂载悬浮批注
             attachCellComment(cell, errorMsg);

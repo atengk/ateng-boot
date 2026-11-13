@@ -40,9 +40,6 @@ import io.github.atengk.boot.excel.streaming.StreamingPageExportTemplate;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.fesod.sheet.ExcelWriter;
 import org.apache.fesod.sheet.FesodSheet;
-import org.apache.fesod.sheet.annotation.ExcelIgnore;
-import org.apache.fesod.sheet.annotation.ExcelIgnoreUnannotated;
-import org.apache.fesod.sheet.annotation.ExcelProperty;
 import org.apache.fesod.sheet.context.AnalysisContext;
 import org.apache.fesod.sheet.enums.CellDataTypeEnum;
 import org.apache.fesod.sheet.metadata.AbstractParameterBuilder;
@@ -59,8 +56,6 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -2253,68 +2248,14 @@ public final class ExcelUtil {
         registerEnumConverters(sheetBuilder, headClass);
     }
 
-    private static final Map<Class<?>, List<String>> DECLARED_FIELD_NAMES_CACHE = new ConcurrentHashMap<>();
-
     /**
-     * 获取类及其父类中所有参与 Excel 导出的声明字段名称列表（按声明顺序与 @ExcelProperty 索引排序）
+     * 获取类及其父类中所有参与 Excel 导出的声明字段名称列表（按物理列序与 @ExcelProperty 索引排序）
      *
      * @param clazz 目标 VO 类型
      * @return 字段名称列表
      */
     public static List<String> getDeclaredFieldNames(Class<?> clazz) {
-        if (clazz == null || clazz == Object.class) {
-            return Collections.emptyList();
-        }
-        return DECLARED_FIELD_NAMES_CACHE.computeIfAbsent(clazz, ExcelUtil::scanDeclaredFieldNames);
-    }
-
-    private static List<String> scanDeclaredFieldNames(Class<?> clazz) {
-        List<Class<?>> hierarchy = new ArrayList<>();
-        Class<?> current = clazz;
-        while (current != null && current != Object.class) {
-            hierarchy.add(0, current); // 父类在前
-            current = current.getSuperclass();
-        }
-        boolean ignoreUnannotated = false;
-        for (Class<?> clz : hierarchy) {
-            if (clz.isAnnotationPresent(ExcelIgnoreUnannotated.class)) {
-                ignoreUnannotated = true;
-                break;
-            }
-        }
-        List<Field> allFields = new ArrayList<>();
-        for (Class<?> clz : hierarchy) {
-            for (Field field : clz.getDeclaredFields()) {
-                if (Modifier.isStatic(field.getModifiers()) || Modifier.isTransient(field.getModifiers())) {
-                    continue;
-                }
-                if (field.isAnnotationPresent(ExcelIgnore.class)) {
-                    continue;
-                }
-                if (ignoreUnannotated && !field.isAnnotationPresent(ExcelProperty.class)) {
-                    continue;
-                }
-                allFields.add(field);
-            }
-        }
-        // 按照 @ExcelProperty(index) 排序：显式指定 index 的按 index 排序，未指定或负数的排在后面并保持声明顺序
-        List<Field> sortedFields = new ArrayList<>(allFields);
-        sortedFields.sort((f1, f2) -> {
-            ExcelProperty p1 = f1.getAnnotation(ExcelProperty.class);
-            ExcelProperty p2 = f2.getAnnotation(ExcelProperty.class);
-            int idx1 = (p1 != null && p1.index() >= 0) ? p1.index() : Integer.MAX_VALUE;
-            int idx2 = (p2 != null && p2.index() >= 0) ? p2.index() : Integer.MAX_VALUE;
-            if (idx1 != idx2) {
-                return Integer.compare(idx1, idx2);
-            }
-            return Integer.compare(allFields.indexOf(f1), allFields.indexOf(f2));
-        });
-
-        List<String> fieldNames = new ArrayList<>(sortedFields.size());
-        for (Field f : sortedFields) {
-            fieldNames.add(f.getName());
-        }
-        return Collections.unmodifiableList(fieldNames);
+        return ExcelColumnMetadataResolver.getDeclaredFieldNames(clazz);
     }
 
     /**
