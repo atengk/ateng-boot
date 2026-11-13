@@ -37,7 +37,7 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
     private static final Logger log = LoggerFactory.getLogger(BatchValidationListener.class);
 
     private static final int DEFAULT_BATCH_SIZE = 1000;
-    private static final int DEFAULT_MAX_ERROR_ROWS = 500;
+    public static final int DEFAULT_MAX_ERROR_ROWS = 500;
 
     /**
      * 默认校验器懒加载互斥锁（虚拟线程友好，防 Carrier Pinning）

@@ -1,5 +1,7 @@
 package io.github.atengk.boot.excel.builder;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.excel.annotation.ExcelTheme;
 import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.converter.SmartImageConverter;
@@ -15,11 +17,14 @@ import io.github.atengk.boot.excel.handler.SmartAutoColumnWidthWriteHandler;
 import io.github.atengk.boot.excel.handler.WatermarkSheetWriteHandler;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.excel.properties.ExcelStyleProperties;
+import io.github.atengk.boot.excel.util.ExcelSecurityUtil;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import org.apache.fesod.sheet.ExcelWriter;
 import org.apache.fesod.sheet.FesodSheet;
 import org.apache.fesod.sheet.write.builder.ExcelWriterSheetBuilder;
 import org.apache.fesod.sheet.write.metadata.WriteSheet;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.util.Assert;
 
 import java.io.Closeable;
@@ -35,7 +40,7 @@ import java.util.function.Function;
 /**
  * Excel 链式 Fluent 构建器
  * <p>
- * 支持多 Sheet 连续编排、混合无实体动态表头与实体类导出、自动注入企业级拦截器与安全资源释放。
+ * 支持多 Sheet 连续编排、混合无实体动态表头与实体类导出、整工作簿 AES-256 密码加密、自动注入企业级拦截器与安全资源释放。
  * 实现了 {@link AutoCloseable} 与 {@link Closeable}，天然支持 try-with-resources 安全编程。
  * </p>
  *
@@ -44,11 +49,17 @@ import java.util.function.Function;
  */
 public class ExcelBuilder implements AutoCloseable, Closeable {
 
-    private final ExcelWriter excelWriter;
+    private static final Logger log = LoggerFactory.getLogger(ExcelBuilder.class);
+
+    private final OutputStream outputStream;
     private final BiConsumer<ExcelWriterSheetBuilder, Class<?>> sheetConfigurator;
     private final I18nHeadWriteHandler i18nHeadWriteHandler = new I18nHeadWriteHandler();
+    private ExcelWriter excelWriter;
+    private ExcelSecurityUtil.TempPlainBuffer tempPlainBuffer;
+    private String encryptPassword;
     private int currentSheetNo = 0;
     private boolean finished = false;
+    private boolean hasWriteFailure = false;
 
     // 链式自定义样式状态
     private ExcelThemeEnum theme;
@@ -75,21 +86,27 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
     }
 
     /**
-     * 基于输出流与 Sheet 配置回调构造 Fluent 构建器
+     * 基于输出流与 Sheet 配置回调构造 Fluent 构建器（延迟构建底层 ExcelWriter，支持在写入前链式配置 {@link #encrypt(String)} 等工作簿选项）
      *
      * @param outputStream      目标输出流（不可为空）
      * @param sheetConfigurator 实体 Sheet 级配置回调（如枚举转换器与下拉验证注入）
      */
     public ExcelBuilder(OutputStream outputStream, BiConsumer<ExcelWriterSheetBuilder, Class<?>> sheetConfigurator) {
         Assert.notNull(outputStream, "OutputStream 目标输出流不可为空");
+        this.outputStream = outputStream;
         this.sheetConfigurator = sheetConfigurator;
-        this.excelWriter = FesodSheet.write(outputStream)
-                .registerWriteHandler(this.i18nHeadWriteHandler)
-                .registerWriteHandler(new SensitiveCellWriteHandler())
-                .registerWriteHandler(new PromptHeadWriteHandler())
-                .registerWriteHandler(new MergeCellWriteHandler())
-                .registerWriteHandler(new FormulaProtectionCellWriteHandler())
-                .build();
+    }
+
+    /**
+     * 设置整工作簿 AES-256 加密访问密码（必须在首次写入 Sheet 或调用 finish 前设置）
+     *
+     * @param password 访问密码（为空或 null 时不启用整工作簿加密）
+     * @return 当前构建器实例
+     */
+    public ExcelBuilder encrypt(String password) {
+        Assert.state(this.excelWriter == null && !this.finished, "encrypt(password) 必须在写入工作表或 finish 之前调用");
+        this.encryptPassword = password;
+        return this;
     }
 
     /**
@@ -286,34 +303,41 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
      */
     public <T> ExcelBuilder sheet(Integer sheetNo, String sheetName, Class<T> headClass, Collection<T> data,
                                   Collection<String> includeColumns, Collection<String> excludeColumns) {
-        Assert.notNull(headClass, "headClass 实体类型不可为空");
-        ExcelWriterSheetBuilder sheetBuilder = FesodSheet.writerSheet(sheetNo, sheetName).head(headClass);
-        Collection<String> includes = (includeColumns != null) ? includeColumns : this.includeColumnFieldNames;
-        Collection<String> excludes = (excludeColumns != null) ? excludeColumns : this.excludeColumnFieldNames;
-        List<String> projectedColumns = ExcelUtil.resolveProjectedColumns(headClass, includes, excludes);
-        if (projectedColumns != null) {
-            sheetBuilder.includeColumnFieldNames(projectedColumns);
-            sheetBuilder.orderByIncludeColumn(true);
+        try {
+            Assert.state(!finished, "ExcelBuilder 已关闭，无法继续写入工作表");
+            Assert.notNull(headClass, "headClass 实体类型不可为空");
+            ExcelWriter writer = ensureExcelWriter();
+            ExcelWriterSheetBuilder sheetBuilder = FesodSheet.writerSheet(sheetNo, sheetName).head(headClass);
+            Collection<String> includes = (includeColumns != null) ? includeColumns : this.includeColumnFieldNames;
+            Collection<String> excludes = (excludeColumns != null) ? excludeColumns : this.excludeColumnFieldNames;
+            List<String> projectedColumns = ExcelUtil.resolveProjectedColumns(headClass, includes, excludes);
+            if (projectedColumns != null) {
+                sheetBuilder.includeColumnFieldNames(projectedColumns);
+                sheetBuilder.orderByIncludeColumn(true);
+            }
+            if (sheetConfigurator != null) {
+                sheetConfigurator.accept(sheetBuilder, headClass);
+            }
+            if (ImageRowHeightWriteHandler.hasExcelImage(headClass)) {
+                sheetBuilder.registerWriteHandler(new ImageRowHeightWriteHandler(headClass));
+                sheetBuilder.registerConverter(new SmartImageConverter());
+            }
+            if ((this.watermarkText != null && !this.watermarkText.isBlank()) || (this.protectionPassword != null && !this.protectionPassword.isBlank())) {
+                sheetBuilder.registerWriteHandler(new WatermarkSheetWriteHandler(this.watermarkText, this.protectionPassword));
+            }
+            applyStyle(sheetBuilder, headClass);
+            if (ColumnLockSheetWriteHandler.hasColumnLock(headClass)) {
+                sheetBuilder.registerWriteHandler(new ColumnLockSheetWriteHandler(headClass, this.protectionPassword));
+            }
+            WriteSheet writeSheet = sheetBuilder.build();
+            Collection<T> writeData = (data != null) ? data : Collections.emptyList();
+            writer.write(writeData, writeSheet);
+            resetSheetStyle();
+            return this;
+        } catch (Throwable t) {
+            this.hasWriteFailure = true;
+            throw t;
         }
-        if (sheetConfigurator != null) {
-            sheetConfigurator.accept(sheetBuilder, headClass);
-        }
-        if (ImageRowHeightWriteHandler.hasExcelImage(headClass)) {
-            sheetBuilder.registerWriteHandler(new ImageRowHeightWriteHandler(headClass));
-            sheetBuilder.registerConverter(new SmartImageConverter());
-        }
-        if ((this.watermarkText != null && !this.watermarkText.isBlank()) || (this.protectionPassword != null && !this.protectionPassword.isBlank())) {
-            sheetBuilder.registerWriteHandler(new WatermarkSheetWriteHandler(this.watermarkText, this.protectionPassword));
-        }
-        applyStyle(sheetBuilder, headClass);
-        if (ColumnLockSheetWriteHandler.hasColumnLock(headClass)) {
-            sheetBuilder.registerWriteHandler(new ColumnLockSheetWriteHandler(headClass, this.protectionPassword));
-        }
-        WriteSheet writeSheet = sheetBuilder.build();
-        Collection<T> writeData = (data != null) ? data : Collections.emptyList();
-        excelWriter.write(writeData, writeSheet);
-        resetSheetStyle();
-        return this;
     }
 
     /**
@@ -338,18 +362,25 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
      * @return 当前构建器实例
      */
     public ExcelBuilder sheetDynamic(Integer sheetNo, String sheetName, List<?> headList, List<?> dataList) {
-        List<List<String>> fesodHead = ExcelUtil.normalizeHead(headList);
-        List<?> normalizedData = ExcelUtil.normalizeData(dataList, headList);
-        ExcelWriterSheetBuilder sheetBuilder = FesodSheet.writerSheet(sheetNo, sheetName).head(fesodHead);
-        if ((this.watermarkText != null && !this.watermarkText.isBlank()) || (this.protectionPassword != null && !this.protectionPassword.isBlank())) {
-            sheetBuilder.registerWriteHandler(new WatermarkSheetWriteHandler(this.watermarkText, this.protectionPassword));
+        try {
+            Assert.state(!finished, "ExcelBuilder 已关闭，无法继续写入工作表");
+            ExcelWriter writer = ensureExcelWriter();
+            List<List<String>> fesodHead = ExcelUtil.normalizeHead(headList);
+            List<?> normalizedData = ExcelUtil.normalizeData(dataList, headList);
+            ExcelWriterSheetBuilder sheetBuilder = FesodSheet.writerSheet(sheetNo, sheetName).head(fesodHead);
+            if ((this.watermarkText != null && !this.watermarkText.isBlank()) || (this.protectionPassword != null && !this.protectionPassword.isBlank())) {
+                sheetBuilder.registerWriteHandler(new WatermarkSheetWriteHandler(this.watermarkText, this.protectionPassword));
+            }
+            applyStyle(sheetBuilder, null);
+            WriteSheet writeSheet = sheetBuilder.build();
+            Collection<?> writeData = (normalizedData != null) ? (Collection<?>) normalizedData : Collections.emptyList();
+            writer.write(writeData, writeSheet);
+            resetSheetStyle();
+            return this;
+        } catch (Throwable t) {
+            this.hasWriteFailure = true;
+            throw t;
         }
-        applyStyle(sheetBuilder, null);
-        WriteSheet writeSheet = sheetBuilder.build();
-        Collection<?> writeData = (normalizedData != null) ? (Collection<?>) normalizedData : Collections.emptyList();
-        excelWriter.write(writeData, writeSheet);
-        resetSheetStyle();
-        return this;
     }
 
     private void resetSheetStyle() {
@@ -432,13 +463,71 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
         }
     }
 
+    private ExcelWriter ensureExcelWriter() {
+        if (this.excelWriter != null) {
+            return this.excelWriter;
+        }
+        OutputStream targetOut = this.outputStream;
+        boolean encrypted = (this.encryptPassword != null && !this.encryptPassword.isBlank());
+        if (encrypted) {
+            this.tempPlainBuffer = ExcelSecurityUtil.openTempPlainBuffer(
+                    this.outputStream, this.encryptPassword, "ateng-excel-builder-plain-");
+            targetOut = this.tempPlainBuffer.targetOutputStream();
+        }
+        try {
+            this.excelWriter = FesodSheet.write(targetOut)
+                    .registerWriteHandler(this.i18nHeadWriteHandler)
+                    .registerWriteHandler(new SensitiveCellWriteHandler())
+                    .registerWriteHandler(new PromptHeadWriteHandler())
+                    .registerWriteHandler(new MergeCellWriteHandler())
+                    .registerWriteHandler(new FormulaProtectionCellWriteHandler())
+                    .build();
+            return this.excelWriter;
+        } catch (RuntimeException ex) {
+            cleanupTempResources();
+            if (ex instanceof BusinessException be) {
+                throw be;
+            }
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "初始化 ExcelBuilder 写入引擎失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    private void cleanupTempResources() {
+        if (this.tempPlainBuffer != null) {
+            this.tempPlainBuffer.close();
+            this.tempPlainBuffer = null;
+        }
+    }
+
     /**
-     * 刷新缓冲区并释放所有写出资源
+     * 刷新缓冲区并释放所有写出资源（如配置了加密密码则同步执行 AES-256 整工作簿加密并在 finally 中销毁临时文件）
      */
     public void finish() {
         if (!finished) {
-            excelWriter.finish();
-            finished = true;
+            try {
+                if (!hasWriteFailure) {
+                    ExcelWriter writer = ensureExcelWriter();
+                    writer.finish();
+                    if (tempPlainBuffer != null) {
+                        tempPlainBuffer.encryptToTarget();
+                    }
+                } else if (excelWriter != null) {
+                    try {
+                        excelWriter.finish();
+                    } catch (Exception ex) {
+                        log.debug("异常回滚阶段收尾 ExcelWriter 发生非致命异常: {}", ex.getMessage());
+                    }
+                }
+            } catch (BusinessException be) {
+                throw be;
+            } catch (RuntimeException ex) {
+                throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                        "ExcelBuilder 刷盘写出工作簿失败: " + ex.getMessage(), ex);
+            } finally {
+                finished = true;
+                cleanupTempResources();
+            }
         }
     }
 

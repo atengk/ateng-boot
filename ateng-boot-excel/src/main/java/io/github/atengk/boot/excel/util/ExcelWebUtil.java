@@ -395,7 +395,20 @@ public final class ExcelWebUtil {
      * @return Spring 响应实体
      */
     public static ResponseEntity<StreamingResponseBody> toResponseEntityDynamic(String fileName, List<?> headList, List<?> dataList) {
-        return toResponseEntityDynamic(fileName, DEFAULT_SHEET_NAME, headList, dataList);
+        return toResponseEntityDynamic(fileName, DEFAULT_SHEET_NAME, headList, dataList, null);
+    }
+
+    /**
+     * 将无实体动态数据加密流式导出为 Spring 原生 {@link ResponseEntity}
+     *
+     * @param fileName 导出的文件名
+     * @param headList 动态表头列表
+     * @param dataList 动态数据列表
+     * @param password 工作簿访问密码（为空时不加密）
+     * @return Spring 响应实体
+     */
+    public static ResponseEntity<StreamingResponseBody> toResponseEntityDynamic(String fileName, List<?> headList, List<?> dataList, String password) {
+        return toResponseEntityDynamic(fileName, DEFAULT_SHEET_NAME, headList, dataList, password);
     }
 
     /**
@@ -408,8 +421,22 @@ public final class ExcelWebUtil {
      * @return Spring 响应实体
      */
     public static ResponseEntity<StreamingResponseBody> toResponseEntityDynamic(String fileName, String sheetName, List<?> headList, List<?> dataList) {
+        return toResponseEntityDynamic(fileName, sheetName, headList, dataList, null);
+    }
+
+    /**
+     * 将无实体动态数据加密流式导出为 Spring 原生 {@link ResponseEntity}（指定工作表名称）
+     *
+     * @param fileName  导出的文件名
+     * @param sheetName 工作表名称
+     * @param headList  动态表头列表
+     * @param dataList  动态数据列表
+     * @param password  工作簿访问密码（为空时不加密）
+     * @return Spring 响应实体
+     */
+    public static ResponseEntity<StreamingResponseBody> toResponseEntityDynamic(String fileName, String sheetName, List<?> headList, List<?> dataList, String password) {
         return toResponseEntity(fileName, outputStream -> {
-            ExcelUtil.exportDynamic(outputStream, sheetName, headList, dataList);
+            ExcelUtil.exportDynamic(outputStream, sheetName, headList, dataList, password);
         });
     }
 
@@ -424,8 +451,23 @@ public final class ExcelWebUtil {
      * @return Spring 响应实体
      */
     public static ResponseEntity<StreamingResponseBody> toResponseEntityDynamic(String fileName, String sheetName, List<String> headList, List<String> dataKeys, List<Map<String, Object>> dataList) {
+        return toResponseEntityDynamic(fileName, sheetName, headList, dataKeys, dataList, null);
+    }
+
+    /**
+     * 基于 Map 列表与显式列键映射加密动态导出为 Spring 原生 {@link ResponseEntity}
+     *
+     * @param fileName  导出的文件名
+     * @param sheetName 工作表名称
+     * @param headList  动态表头列表
+     * @param dataKeys  Map 对应的键列表
+     * @param dataList  Map 数据集合
+     * @param password  工作簿访问密码（为空时不加密）
+     * @return Spring 响应实体
+     */
+    public static ResponseEntity<StreamingResponseBody> toResponseEntityDynamic(String fileName, String sheetName, List<String> headList, List<String> dataKeys, List<Map<String, Object>> dataList, String password) {
         return toResponseEntity(fileName, outputStream -> {
-            ExcelUtil.exportDynamic(outputStream, sheetName, headList, dataKeys, dataList);
+            ExcelUtil.exportDynamic(outputStream, sheetName, headList, dataKeys, dataList, password);
         });
     }
 
@@ -453,6 +495,241 @@ public final class ExcelWebUtil {
     public static <T> ResponseEntity<StreamingResponseBody> toResponseEntityTemplate(String fileName, String sheetName, Class<T> clazz) {
         return toResponseEntity(fileName, outputStream -> {
             ExcelUtil.exportTemplate(outputStream, sheetName, clazz);
+        });
+    }
+
+    /**
+     * 将差错数据隔离提取导出为 Spring 原生 {@link ResponseEntity}
+     *
+     * @param fileName  导出的文件名（自动补充 .xlsx 后缀）
+     * @param clazz     导出的实体类型 Class（不可为空）
+     * @param errorRows 错误行信息列表
+     * @param <T>       实体数据泛型
+     * @return Spring 响应实体
+     */
+    public static <T> ResponseEntity<StreamingResponseBody> toResponseEntityFailedRows(String fileName, Class<T> clazz, List<ExcelErrorRow> errorRows) {
+        Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
+        return toResponseEntity(fileName, outputStream -> {
+            ExcelUtil.exportFailedRows(outputStream, clazz, errorRows);
+        });
+    }
+
+    /**
+     * 将差错数据隔离提取导出为 Spring 原生 {@link ResponseEntity}（显式指定失败实体列表）
+     *
+     * @param fileName   导出的文件名（自动补充 .xlsx 后缀）
+     * @param clazz      导出的实体类型 Class（不可为空）
+     * @param failedList 失败行对应的原始实体对象列表
+     * @param errorRows  错误行信息列表
+     * @param <T>        实体数据泛型
+     * @return Spring 响应实体
+     */
+    public static <T> ResponseEntity<StreamingResponseBody> toResponseEntityFailedRows(String fileName, Class<T> clazz, List<T> failedList, List<ExcelErrorRow> errorRows) {
+        Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
+        return toResponseEntity(fileName, outputStream -> {
+            ExcelUtil.exportFailedRows(outputStream, clazz, failedList, errorRows);
+        });
+    }
+
+    /**
+     * 基于 Excel 模板填充数据并导出为 Spring 原生 {@link ResponseEntity}
+     *
+     * @param fileName   导出的文件名
+     * @param templateIn 模板输入流
+     * @param data       填充对象（JavaBean 或 Map）
+     * @return Spring 响应实体
+     */
+    public static ResponseEntity<StreamingResponseBody> toResponseEntityFill(String fileName, InputStream templateIn, Object data) {
+        return toResponseEntityFill(fileName, DEFAULT_SHEET_NAME, templateIn, data, (FillConfig) null, (String) null);
+    }
+
+    /**
+     * 基于 Excel 模板加密填充数据并导出为 Spring 原生 {@link ResponseEntity}
+     *
+     * @param fileName   导出的文件名
+     * @param templateIn 模板输入流
+     * @param data       填充对象（JavaBean 或 Map）
+     * @param password   工作簿访问密码（为空时不加密）
+     * @return Spring 响应实体
+     */
+    public static ResponseEntity<StreamingResponseBody> toResponseEntityFill(String fileName, InputStream templateIn, Object data, String password) {
+        return toResponseEntityFill(fileName, DEFAULT_SHEET_NAME, templateIn, data, (FillConfig) null, password);
+    }
+
+    /**
+     * 基于 Excel 模板填充数据并导出为 Spring 原生 {@link ResponseEntity}（支持自定义填充配置）
+     *
+     * @param fileName   导出的文件名
+     * @param templateIn 模板输入流
+     * @param data       填充对象（JavaBean 或 Map）
+     * @param fillConfig 自定义填充配置（为 null 则使用默认配置）
+     * @return Spring 响应实体
+     */
+    public static ResponseEntity<StreamingResponseBody> toResponseEntityFill(String fileName, InputStream templateIn, Object data, FillConfig fillConfig) {
+        return toResponseEntityFill(fileName, DEFAULT_SHEET_NAME, templateIn, data, fillConfig, (String) null);
+    }
+
+    /**
+     * 基于 Excel 模板加密填充数据并导出为 Spring 原生 {@link ResponseEntity}（支持自定义填充配置）
+     *
+     * @param fileName   导出的文件名
+     * @param templateIn 模板输入流
+     * @param data       填充对象（JavaBean 或 Map）
+     * @param fillConfig 自定义填充配置（为 null 则使用默认配置）
+     * @param password   工作簿访问密码（为空时不加密）
+     * @return Spring 响应实体
+     */
+    public static ResponseEntity<StreamingResponseBody> toResponseEntityFill(String fileName, InputStream templateIn, Object data, FillConfig fillConfig, String password) {
+        return toResponseEntityFill(fileName, DEFAULT_SHEET_NAME, templateIn, data, fillConfig, password);
+    }
+
+    /**
+     * 基于 Excel 模板填充数据并导出为 Spring 原生 {@link ResponseEntity}（指定工作表名称）
+     *
+     * @param fileName   导出的文件名
+     * @param sheetName  工作表名称
+     * @param templateIn 模板输入流
+     * @param data       填充对象（JavaBean 或 Map）
+     * @param fillConfig 自定义填充配置（为 null 则使用默认配置）
+     * @return Spring 响应实体
+     */
+    public static ResponseEntity<StreamingResponseBody> toResponseEntityFill(String fileName, String sheetName, InputStream templateIn, Object data, FillConfig fillConfig) {
+        return toResponseEntityFill(fileName, sheetName, templateIn, data, fillConfig, (String) null);
+    }
+
+    /**
+     * 基于 Excel 模板加密填充数据并导出为 Spring 原生 {@link ResponseEntity}（指定工作表名称）
+     *
+     * @param fileName   导出的文件名
+     * @param sheetName  工作表名称
+     * @param templateIn 模板输入流
+     * @param data       填充对象（JavaBean 或 Map）
+     * @param fillConfig 自定义填充配置（为 null 则使用默认配置）
+     * @param password   工作簿访问密码（为空时不加密）
+     * @return Spring 响应实体
+     */
+    public static ResponseEntity<StreamingResponseBody> toResponseEntityFill(String fileName, String sheetName, InputStream templateIn, Object data, FillConfig fillConfig, String password) {
+        Assert.notNull(templateIn, "templateIn 模板输入流不可为空");
+        return toResponseEntity(fileName, outputStream -> {
+            ExcelUtil.fill(outputStream, templateIn, sheetName, data, fillConfig, password);
+        });
+    }
+
+    /**
+     * 基于 Excel 模板复合填充单个对象与集合列表并导出为 Spring 原生 {@link ResponseEntity}
+     *
+     * @param fileName   导出的文件名
+     * @param sheetName  工作表名称
+     * @param templateIn 模板输入流
+     * @param objectData 填充单对象
+     * @param listData   填充集合数据
+     * @param fillConfig 自定义填充配置
+     * @return Spring 响应实体
+     */
+    public static ResponseEntity<StreamingResponseBody> toResponseEntityFill(String fileName, String sheetName, InputStream templateIn, Object objectData, Collection<?> listData, FillConfig fillConfig) {
+        return toResponseEntityFill(fileName, sheetName, templateIn, objectData, listData, fillConfig, null);
+    }
+
+    /**
+     * 基于 Excel 模板加密复合填充单个对象与集合列表并导出为 Spring 原生 {@link ResponseEntity}
+     *
+     * @param fileName   导出的文件名
+     * @param sheetName  工作表名称
+     * @param templateIn 模板输入流
+     * @param objectData 填充单对象
+     * @param listData   填充集合数据
+     * @param fillConfig 自定义填充配置
+     * @param password   工作簿访问密码（为空时不加密）
+     * @return Spring 响应实体
+     */
+    public static ResponseEntity<StreamingResponseBody> toResponseEntityFill(String fileName, String sheetName, InputStream templateIn, Object objectData, Collection<?> listData, FillConfig fillConfig, String password) {
+        Assert.notNull(templateIn, "templateIn 模板输入流不可为空");
+        return toResponseEntity(fileName, outputStream -> {
+            ExcelUtil.fill(outputStream, templateIn, sheetName, objectData, listData, fillConfig, password);
+        });
+    }
+
+    /**
+     * 基于 PageResult 分页驱动流式分页导出为 Spring 原生 {@link ResponseEntity}
+     *
+     * @param fileName   导出的文件名（自动补充 .xlsx 后缀）
+     * @param clazz      导出的实体类型 Class（不可为空）
+     * @param pageLoader 分页数据拉取函数（输入当前页码，返回分页结果 PageResult）
+     * @param <T>        实体泛型
+     * @return Spring 响应实体
+     */
+    public static <T> ResponseEntity<StreamingResponseBody> toResponseEntityStreaming(String fileName, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
+        return toResponseEntityStreaming(fileName, DEFAULT_SHEET_NAME, clazz, pageLoader);
+    }
+
+    /**
+     * 基于 PageResult 分页驱动流式分页导出为 Spring 原生 {@link ResponseEntity}（指定基础 Sheet 名称）
+     *
+     * @param fileName   导出的文件名（自动补充 .xlsx 后缀）
+     * @param sheetName  基础工作表名称
+     * @param clazz      导出的实体类型 Class（不可为空）
+     * @param pageLoader 分页数据拉取函数（输入当前页码，返回分页结果 PageResult）
+     * @param <T>        实体泛型
+     * @return Spring 响应实体
+     */
+    public static <T> ResponseEntity<StreamingResponseBody> toResponseEntityStreaming(String fileName, String sheetName, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
+        Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
+        Assert.notNull(pageLoader, "pageLoader 分页拉取函数不可为空");
+        return toResponseEntity(fileName, outputStream -> {
+            ExcelUtil.exportStreaming(outputStream, sheetName, clazz, pageLoader);
+        });
+    }
+
+    /**
+     * 基于主键或时间戳游标驱动流式分页导出为 Spring 原生 {@link ResponseEntity}
+     *
+     * @param fileName        导出的文件名（自动补充 .xlsx 后缀）
+     * @param clazz           导出的实体类型 Class（不可为空）
+     * @param initialCursor   初始游标
+     * @param pageSize        每次拉取步长
+     * @param cursorLoader    游标数据拉取函数（输入当前游标与批次大小，返回实体列表）
+     * @param cursorExtractor 游标提取器（从实体中提取游标值）
+     * @param <T>             实体泛型
+     * @param <K>             游标泛型
+     * @return Spring 响应实体
+     */
+    public static <T, K> ResponseEntity<StreamingResponseBody> toResponseEntityStreamingByCursor(
+            String fileName,
+            Class<T> clazz,
+            K initialCursor,
+            int pageSize,
+            BiFunction<K, Integer, List<T>> cursorLoader,
+            Function<T, K> cursorExtractor) {
+        return toResponseEntityStreamingByCursor(fileName, DEFAULT_SHEET_NAME, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
+    }
+
+    /**
+     * 基于主键或时间戳游标驱动流式分页导出为 Spring 原生 {@link ResponseEntity}（指定基础 Sheet 名称）
+     *
+     * @param fileName        导出的文件名（自动补充 .xlsx 后缀）
+     * @param sheetName       基础工作表名称
+     * @param clazz           导出的实体类型 Class（不可为空）
+     * @param initialCursor   初始游标
+     * @param pageSize        每次拉取步长
+     * @param cursorLoader    游标数据拉取函数（输入当前游标与批次大小，返回实体列表）
+     * @param cursorExtractor 游标提取器（从实体中提取游标值）
+     * @param <T>             实体泛型
+     * @param <K>             游标泛型
+     * @return Spring 响应实体
+     */
+    public static <T, K> ResponseEntity<StreamingResponseBody> toResponseEntityStreamingByCursor(
+            String fileName,
+            String sheetName,
+            Class<T> clazz,
+            K initialCursor,
+            int pageSize,
+            BiFunction<K, Integer, List<T>> cursorLoader,
+            Function<T, K> cursorExtractor) {
+        Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
+        Assert.notNull(cursorLoader, "cursorLoader 游标拉取函数不可为空");
+        Assert.notNull(cursorExtractor, "cursorExtractor 游标提取器不可为空");
+        return toResponseEntity(fileName, outputStream -> {
+            ExcelUtil.exportStreamingByCursor(outputStream, sheetName, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
         });
     }
 
@@ -621,7 +898,20 @@ public final class ExcelWebUtil {
      * @param dataList 动态数据列表
      */
     public static void exportDynamic(HttpServletResponse response, String fileName, List<?> headList, List<?> dataList) {
-        exportDynamic(response, fileName, DEFAULT_SHEET_NAME, headList, dataList);
+        exportDynamic(response, fileName, DEFAULT_SHEET_NAME, headList, dataList, null);
+    }
+
+    /**
+     * Web 环境下无实体动态流式加密导出并直接写入 HttpServletResponse
+     *
+     * @param response 响应对象
+     * @param fileName 导出的文件名
+     * @param headList 动态表头列表
+     * @param dataList 动态数据列表
+     * @param password 工作簿访问密码（为空时不加密）
+     */
+    public static void exportDynamic(HttpServletResponse response, String fileName, List<?> headList, List<?> dataList, String password) {
+        exportDynamic(response, fileName, DEFAULT_SHEET_NAME, headList, dataList, password);
     }
 
     /**
@@ -634,9 +924,23 @@ public final class ExcelWebUtil {
      * @param dataList  动态数据列表
      */
     public static void exportDynamic(HttpServletResponse response, String fileName, String sheetName, List<?> headList, List<?> dataList) {
+        exportDynamic(response, fileName, sheetName, headList, dataList, null);
+    }
+
+    /**
+     * Web 环境下无实体动态流式加密导出并直接写入 HttpServletResponse（指定工作表名称）
+     *
+     * @param response  响应对象
+     * @param fileName  导出的文件名
+     * @param sheetName 工作表名称
+     * @param headList  动态表头列表
+     * @param dataList  动态数据列表
+     * @param password  工作簿访问密码（为空时不加密）
+     */
+    public static void exportDynamic(HttpServletResponse response, String fileName, String sheetName, List<?> headList, List<?> dataList, String password) {
         prepareWebResponse(response, fileName);
         executeWithClientAbortDefense("Web 动态导出 Excel 失败",
-                () -> ExcelUtil.exportDynamic(response.getOutputStream(), sheetName, headList, dataList));
+                () -> ExcelUtil.exportDynamic(response.getOutputStream(), sheetName, headList, dataList, password));
     }
 
     /**
@@ -650,9 +954,24 @@ public final class ExcelWebUtil {
      * @param dataList  Map 数据集合
      */
     public static void exportDynamic(HttpServletResponse response, String fileName, String sheetName, List<String> headList, List<String> dataKeys, List<Map<String, Object>> dataList) {
+        exportDynamic(response, fileName, sheetName, headList, dataKeys, dataList, null);
+    }
+
+    /**
+     * Web 环境下基于 Map 列表与显式列键映射动态加密导出至 HttpServletResponse
+     *
+     * @param response  响应对象
+     * @param fileName  导出的文件名
+     * @param sheetName 工作表名称
+     * @param headList  动态表头列表
+     * @param dataKeys  Map 对应的键列表
+     * @param dataList  Map 数据集合
+     * @param password  工作簿访问密码（为空时不加密）
+     */
+    public static void exportDynamic(HttpServletResponse response, String fileName, String sheetName, List<String> headList, List<String> dataKeys, List<Map<String, Object>> dataList, String password) {
         prepareWebResponse(response, fileName);
         executeWithClientAbortDefense("Web 动态导出 Excel 失败",
-                () -> ExcelUtil.exportDynamic(response.getOutputStream(), sheetName, headList, dataKeys, dataList));
+                () -> ExcelUtil.exportDynamic(response.getOutputStream(), sheetName, headList, dataKeys, dataList, password));
     }
 
     /**
@@ -813,7 +1132,20 @@ public final class ExcelWebUtil {
      * @param data       填充对象（JavaBean 或 Map）
      */
     public static void fill(HttpServletResponse response, String fileName, InputStream templateIn, Object data) {
-        fill(response, fileName, DEFAULT_SHEET_NAME, templateIn, data, null);
+        fill(response, fileName, DEFAULT_SHEET_NAME, templateIn, data, (FillConfig) null, (String) null);
+    }
+
+    /**
+     * Web 环境下基于 Excel 模板加密填充数据并直接写入 HttpServletResponse
+     *
+     * @param response   响应对象
+     * @param fileName   导出的文件名
+     * @param templateIn 模板输入流
+     * @param data       填充对象（JavaBean 或 Map）
+     * @param password   工作簿访问密码（为空时不加密）
+     */
+    public static void fill(HttpServletResponse response, String fileName, InputStream templateIn, Object data, String password) {
+        fill(response, fileName, DEFAULT_SHEET_NAME, templateIn, data, (FillConfig) null, password);
     }
 
     /**
@@ -826,7 +1158,21 @@ public final class ExcelWebUtil {
      * @param fillConfig 自定义填充配置（为 null 则使用默认配置）
      */
     public static void fill(HttpServletResponse response, String fileName, InputStream templateIn, Object data, FillConfig fillConfig) {
-        fill(response, fileName, DEFAULT_SHEET_NAME, templateIn, data, fillConfig);
+        fill(response, fileName, DEFAULT_SHEET_NAME, templateIn, data, fillConfig, (String) null);
+    }
+
+    /**
+     * Web 环境下基于 Excel 模板加密填充数据并直接写入 HttpServletResponse（支持自定义填充配置）
+     *
+     * @param response   响应对象
+     * @param fileName   导出的文件名
+     * @param templateIn 模板输入流
+     * @param data       填充对象（JavaBean 或 Map）
+     * @param fillConfig 自定义填充配置（为 null 则使用默认配置）
+     * @param password   工作簿访问密码（为空时不加密）
+     */
+    public static void fill(HttpServletResponse response, String fileName, InputStream templateIn, Object data, FillConfig fillConfig, String password) {
+        fill(response, fileName, DEFAULT_SHEET_NAME, templateIn, data, fillConfig, password);
     }
 
     /**
@@ -840,9 +1186,24 @@ public final class ExcelWebUtil {
      * @param fillConfig 自定义填充配置（为 null 则使用默认配置）
      */
     public static void fill(HttpServletResponse response, String fileName, String sheetName, InputStream templateIn, Object data, FillConfig fillConfig) {
+        fill(response, fileName, sheetName, templateIn, data, fillConfig, (String) null);
+    }
+
+    /**
+     * Web 环境下基于 Excel 模板加密填充数据并直接写入 HttpServletResponse（指定工作表名称）
+     *
+     * @param response   响应对象
+     * @param fileName   导出的文件名
+     * @param sheetName  工作表名称
+     * @param templateIn 模板输入流
+     * @param data       填充对象（JavaBean 或 Map）
+     * @param fillConfig 自定义填充配置（为 null 则使用默认配置）
+     * @param password   工作簿访问密码（为空时不加密）
+     */
+    public static void fill(HttpServletResponse response, String fileName, String sheetName, InputStream templateIn, Object data, FillConfig fillConfig, String password) {
         prepareWebResponse(response, fileName);
         executeWithClientAbortDefense("Excel 模板填充写出失败",
-                () -> ExcelUtil.fill(response.getOutputStream(), templateIn, sheetName, data, fillConfig));
+                () -> ExcelUtil.fill(response.getOutputStream(), templateIn, sheetName, data, fillConfig, password));
     }
 
     /**
@@ -857,9 +1218,25 @@ public final class ExcelWebUtil {
      * @param fillConfig 自定义填充配置
      */
     public static void fill(HttpServletResponse response, String fileName, String sheetName, InputStream templateIn, Object objectData, Collection<?> listData, FillConfig fillConfig) {
+        fill(response, fileName, sheetName, templateIn, objectData, listData, fillConfig, (String) null);
+    }
+
+    /**
+     * Web 环境下基于 Excel 模板加密复合填充单个对象与集合列表并直接写入 HttpServletResponse
+     *
+     * @param response   响应对象
+     * @param fileName   导出的文件名
+     * @param sheetName  工作表名称
+     * @param templateIn 模板输入流
+     * @param objectData 填充单对象
+     * @param listData   填充集合数据
+     * @param fillConfig 自定义填充配置
+     * @param password   工作簿访问密码（为空时不加密）
+     */
+    public static void fill(HttpServletResponse response, String fileName, String sheetName, InputStream templateIn, Object objectData, Collection<?> listData, FillConfig fillConfig, String password) {
         prepareWebResponse(response, fileName);
         executeWithClientAbortDefense("Excel 模板填充写出失败",
-                () -> ExcelUtil.fill(response.getOutputStream(), templateIn, sheetName, objectData, listData, fillConfig));
+                () -> ExcelUtil.fill(response.getOutputStream(), templateIn, sheetName, objectData, listData, fillConfig, password));
     }
 
     /**
@@ -867,12 +1244,24 @@ public final class ExcelWebUtil {
      *
      * @param response 响应对象（不可为空）
      * @param fileName 导出的文件名（自动补充 .xlsx 后缀）
-     * @return 链式构建器实例
+     * @return 链式构建器实例（若发生客户端提前断连返回 null，调用方链式调用前需判空）
      */
     public static ExcelBuilder builder(HttpServletResponse response, String fileName) {
+        return builder(response, fileName, null);
+    }
+
+    /**
+     * Web 环境下创建支持整工作簿 AES-256 加密的基于 HttpServletResponse 的多 Sheet 链式 Fluent 构建器
+     *
+     * @param response 响应对象（不可为空）
+     * @param fileName 导出的文件名（自动补充 .xlsx 后缀）
+     * @param password 工作簿访问密码（为空或 null 时不加密）
+     * @return 链式构建器实例（若发生客户端提前断连返回 null，调用方链式调用前需判空）
+     */
+    public static ExcelBuilder builder(HttpServletResponse response, String fileName, String password) {
         prepareWebResponse(response, fileName);
         return executeWithClientAbortDefense("创建 ExcelBuilder 失败", null,
-                () -> ExcelUtil.builder(response.getOutputStream()));
+                () -> ExcelUtil.builder(response.getOutputStream(), password));
     }
 
     /**

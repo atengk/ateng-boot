@@ -33,6 +33,7 @@ public class ExcelHeaderValidator<T> extends AnalysisEventListener<T> {
     private final Class<T> targetClass;
     private final HeaderValidationStrategy strategy;
     private final int expectedHeadRowCount;
+    private final boolean stopAfterHeadValidation;
     private final List<Map<Integer, String>> actualHeadRows = new ArrayList<>();
     private boolean validated = false;
 
@@ -42,20 +43,32 @@ public class ExcelHeaderValidator<T> extends AnalysisEventListener<T> {
      * @param targetClass 数据模型 Class（不可为空）
      */
     public ExcelHeaderValidator(Class<T> targetClass) {
-        this(targetClass, HeaderValidationStrategy.LOOSE);
+        this(targetClass, HeaderValidationStrategy.LOOSE, true);
     }
 
     /**
-     * 构造指定策略的表头拦截器
+     * 构造指定策略的表头拦截器（校验完成即停止扫描后续行）
      *
      * @param targetClass 数据模型 Class（不可为空）
      * @param strategy    表头契约校验策略（不可为空）
      */
     public ExcelHeaderValidator(Class<T> targetClass, HeaderValidationStrategy strategy) {
+        this(targetClass, strategy, true);
+    }
+
+    /**
+     * 构造支持控制表头校验后是否终止扫描的拦截器
+     *
+     * @param targetClass             数据模型 Class（不可为空）
+     * @param strategy                表头契约校验策略（不可为空）
+     * @param stopAfterHeadValidation true 表示独立使用时表头校验通过即终止后续行扫描；false 表示仅作为前置契约门禁继续放行数据行
+     */
+    public ExcelHeaderValidator(Class<T> targetClass, HeaderValidationStrategy strategy, boolean stopAfterHeadValidation) {
         Assert.notNull(targetClass, "targetClass 数据模型类型不可为空");
         Assert.notNull(strategy, "HeaderValidationStrategy 表头校验策略不可为空");
         this.targetClass = targetClass;
         this.strategy = strategy;
+        this.stopAfterHeadValidation = stopAfterHeadValidation;
         ModelHeaderMeta meta = getOrComputeModelHeader(targetClass);
         this.expectedHeadRowCount = meta.headRowCount();
     }
@@ -89,8 +102,8 @@ public class ExcelHeaderValidator<T> extends AnalysisEventListener<T> {
 
     @Override
     public boolean hasNext(AnalysisContext context) {
-        // 独立作为监听器使用时，表头校验通过后立即终止后续数据行流式扫描，秒级退出
-        return !validated;
+        // 独立作为监听器使用时，表头校验通过后立即终止后续数据行流式扫描；作为构建器协同门禁时不阻断后续数据行
+        return !(stopAfterHeadValidation && validated);
     }
 
     @Override

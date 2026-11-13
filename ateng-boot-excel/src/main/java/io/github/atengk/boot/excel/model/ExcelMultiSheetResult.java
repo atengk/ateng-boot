@@ -1,6 +1,7 @@
 package io.github.atengk.boot.excel.model;
 
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,9 +37,29 @@ public class ExcelMultiSheetResult implements Serializable {
     private final Map<String, Integer> rowCountMap = new LinkedHashMap<>();
 
     /**
+     * 按 Sheet 索引（0-based）存储的校验错误行字典
+     */
+    private final Map<Integer, List<ExcelErrorRow>> indexErrorMap = new LinkedHashMap<>();
+
+    /**
+     * 按 Sheet 名称存储的校验错误行字典
+     */
+    private final Map<String, List<ExcelErrorRow>> nameErrorMap = new LinkedHashMap<>();
+
+    /**
+     * 全工作簿聚合校验错误行列表（保持读取顺序）
+     */
+    private final List<ExcelErrorRow> allErrors = new ArrayList<>();
+
+    /**
      * 全表累计解析总数据行数（包含聚合读取与流式分批读取）
      */
     private int totalRowCount = 0;
+
+    /**
+     * 是否因任一工作表错误行数达到熔断上限而触发截断
+     */
+    private boolean circuitBroken = false;
 
     public ExcelMultiSheetResult() {
     }
@@ -257,6 +278,97 @@ public class ExcelMultiSheetResult implements Serializable {
     }
 
     /**
+     * 写入单表校验错误列表并统一绑定多维度键（序号、名称、别名等），同时汇总至全工作簿错误集合
+     *
+     * @param errors     当前工作表捕获的结构化错误行列表
+     * @param sheetNos   需要绑定的所有工作表索引
+     * @param sheetNames 需要绑定的所有工作表名称
+     */
+    public void recordSheetErrors(List<ExcelErrorRow> errors, Iterable<Integer> sheetNos, Iterable<String> sheetNames) {
+        List<ExcelErrorRow> safeErrors = (errors != null && !errors.isEmpty())
+                ? Collections.unmodifiableList(new ArrayList<>(errors))
+                : Collections.emptyList();
+        if (sheetNos != null) {
+            for (Integer sheetNo : sheetNos) {
+                if (sheetNo != null) {
+                    indexErrorMap.put(sheetNo, safeErrors);
+                }
+            }
+        }
+        if (sheetNames != null) {
+            for (String sheetName : sheetNames) {
+                if (sheetName != null && !sheetName.isBlank()) {
+                    nameErrorMap.put(sheetName, safeErrors);
+                }
+            }
+        }
+        if (!safeErrors.isEmpty()) {
+            this.allErrors.addAll(safeErrors);
+        }
+    }
+
+    /**
+     * 根据工作表索引（0-based）获取对应 Sheet 的校验错误行列表（保底返回空列表）
+     *
+     * @param sheetNo 工作表索引（从 0 开始）
+     * @return 结构化校验错误行列表（只读，无错误时返回空列表）
+     */
+    public List<ExcelErrorRow> getSheetErrors(int sheetNo) {
+        return indexErrorMap.getOrDefault(sheetNo, Collections.emptyList());
+    }
+
+    /**
+     * 根据工作表名称获取对应 Sheet 的校验错误行列表（保底返回空列表）
+     *
+     * @param sheetName 工作表名称
+     * @return 结构化校验错误行列表（只读，无错误时返回空列表）
+     */
+    public List<ExcelErrorRow> getSheetErrors(String sheetName) {
+        if (sheetName == null || sheetName.isBlank()) {
+            return Collections.emptyList();
+        }
+        return nameErrorMap.getOrDefault(sheetName, Collections.emptyList());
+    }
+
+    /**
+     * 获取全工作簿所有 Sheet 聚合后的全部校验错误行列表（保底返回空列表）
+     *
+     * @return 全部校验错误行只读列表
+     */
+    public List<ExcelErrorRow> getAllErrors() {
+        return Collections.unmodifiableList(allErrors);
+    }
+
+    /**
+     * 判断当前多工作表读取结果中是否包含任何校验错误
+     *
+     * @return true 表示存在至少一条校验错误
+     */
+    public boolean hasErrors() {
+        return !allErrors.isEmpty();
+    }
+
+    /**
+     * 标记是否存在工作表因错误行数超过熔断阈值而被截断（内部受管调用）
+     *
+     * @param circuitBroken 是否发生错误行数熔断
+     */
+    public void markCircuitBroken(boolean circuitBroken) {
+        if (circuitBroken) {
+            this.circuitBroken = true;
+        }
+    }
+
+    /**
+     * 判断本次多工作表校验读取过程中是否曾触发错误行数熔断截断
+     *
+     * @return true 表示至少有一个工作表达到 maxErrorRows 阈值触发熔断
+     */
+    public boolean isCircuitBroken() {
+        return circuitBroken;
+    }
+
+    /**
      * 写入聚合工作表数据并更新行数统计（内部受管调用）
      *
      * @param sheetNo   工作表索引
@@ -305,6 +417,7 @@ public class ExcelMultiSheetResult implements Serializable {
         return "ExcelMultiSheetResult{" +
                 "sheetCount=" + indexDataMap.size() +
                 ", totalRowCount=" + totalRowCount +
+                ", errorCount=" + allErrors.size() +
                 ", sheets=" + rowCountMap.keySet() +
                 '}';
     }

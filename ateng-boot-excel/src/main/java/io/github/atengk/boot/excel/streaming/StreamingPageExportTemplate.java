@@ -1,13 +1,17 @@
 package io.github.atengk.boot.excel.streaming;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.excel.annotation.ExcelTheme;
+import io.github.atengk.boot.excel.async.AsyncExportTaskService;
 import io.github.atengk.boot.excel.converter.EnumMappingCache;
 import io.github.atengk.boot.excel.converter.ExcelEnumConverter;
 import io.github.atengk.boot.excel.converter.SmartImageConverter;
 import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.handler.*;
 import io.github.atengk.boot.excel.properties.ExcelStyleProperties;
+import io.github.atengk.boot.excel.util.ExcelSecurityUtil;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import org.apache.fesod.sheet.ExcelWriter;
 import org.apache.fesod.sheet.FesodSheet;
@@ -27,9 +31,11 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.function.IntConsumer;
 
 /**
  * 海量数据流式分页导出执行模板
@@ -74,14 +80,27 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
     private Collection<String> includeColumnFieldNames;
     private Collection<String> excludeColumnFieldNames;
 
-    // 运行态状态
+    // 运行态状态与并发保护（ReentrantLock 防 JDK 21+ 虚拟线程 Pinning）
+    private final ReentrantLock writeLock = new ReentrantLock();
     private ExcelWriter excelWriter;
     private WriteSheet currentWriteSheet;
-    private int currentSheetIndex = 0;
-    private long currentSheetRowCount = 0;
-    private long totalExportedCount = 0;
-    private boolean firstSheetInitialized = false;
-    private boolean finished = false;
+    private volatile int currentSheetIndex = 0;
+    private volatile long currentSheetRowCount = 0;
+    private volatile long totalExportedCount = 0;
+    private volatile boolean firstSheetInitialized = false;
+    private volatile boolean finished = false;
+    private volatile boolean hasWriteFailure = false;
+
+    // 进度回调与整工作簿 AES-256 加密状态
+    private IntConsumer progressConsumer;
+    private BiConsumer<Integer, Long> detailedProgressConsumer;
+    private AsyncExportTaskService boundTaskService;
+    private String boundTaskId;
+    private volatile long expectedTotalRows = 0L;
+    private int lastReportedProgress = -1;
+    private long batchCounter = 0L;
+    private String encryptPassword;
+    private ExcelSecurityUtil.TempPlainBuffer tempPlainBuffer;
 
     /**
      * 构造流式分页导出模板实例
@@ -282,6 +301,71 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
         return this;
     }
 
+    /**
+     * 设置整工作簿 AES-256 加密密码（必须在开始写入前配置）
+     *
+     * @param password 工作簿访问密码（为空或 null 时不启用加密）
+     * @return 当前模板实例
+     */
+    public StreamingPageExportTemplate<T> encrypt(String password) {
+        writeLock.lock();
+        try {
+            Assert.state(!firstSheetInitialized && !finished, "encrypt(password) 必须在开始写入前调用");
+            this.encryptPassword = password;
+            return this;
+        } finally {
+            if (writeLock.isHeldByCurrentThread()) {
+                writeLock.unlock();
+            }
+        }
+    }
+
+    /**
+     * 设置预期总导出行数，用于基于游标或固定步长分页时精准换算进度百分比 (0~99)
+     *
+     * @param expectedTotalRows 预期总行数
+     * @return 当前模板实例
+     */
+    public StreamingPageExportTemplate<T> expectedTotalRows(long expectedTotalRows) {
+        this.expectedTotalRows = Math.max(0L, expectedTotalRows);
+        return this;
+    }
+
+    /**
+     * 注册实时进度百分比监听回调（中间批次上报 1~99，finish 完成后上报 100）
+     *
+     * @param progressConsumer 进度百分比消费回调
+     * @return 当前模板实例
+     */
+    public StreamingPageExportTemplate<T> onProgress(IntConsumer progressConsumer) {
+        this.progressConsumer = progressConsumer;
+        return this;
+    }
+
+    /**
+     * 注册带已导出行数的实时进度监听回调
+     *
+     * @param progressListener 进度监听器，参数 1 为进度百分比 (1~100)，参数 2 为已累计导出行数
+     * @return 当前模板实例
+     */
+    public StreamingPageExportTemplate<T> onProgressDetail(BiConsumer<Integer, Long> progressListener) {
+        this.detailedProgressConsumer = progressListener;
+        return this;
+    }
+
+    /**
+     * 绑定异步导出任务服务，自动将流式分页写入进度同步上报至对应任务（0~99）
+     *
+     * @param taskService 异步导出任务服务
+     * @param taskId      异步任务 ID
+     * @return 当前模板实例
+     */
+    public StreamingPageExportTemplate<T> onProgress(AsyncExportTaskService taskService, String taskId) {
+        this.boundTaskService = taskService;
+        this.boundTaskId = taskId;
+        return this;
+    }
+
     // ==================== 核心写入与流式导出契约 ====================
 
     /**
@@ -289,34 +373,48 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
      *
      * @param batch 当前批次数据集合
      */
-    public synchronized void writeBatch(List<T> batch) {
-        if (finished) {
-            throw new IllegalStateException("StreamingPageExportTemplate 已关闭，无法继续写入数据");
-        }
-        ensureFirstSheetCreated();
-        if (batch == null || batch.isEmpty()) {
-            return;
-        }
-
-        int remainingInBatch = batch.size();
-        int batchOffset = 0;
-
-        while (remainingInBatch > 0) {
-            long capacityInCurrentSheet = maxRowsPerSheet - currentSheetRowCount;
-            if (capacityInCurrentSheet <= 0) {
-                // 当前工作表已满，触发自动分割切入下一个 Sheet
-                openNextSheet();
-                capacityInCurrentSheet = maxRowsPerSheet;
+    public void writeBatch(List<T> batch) {
+        writeLock.lock();
+        try {
+            if (finished) {
+                throw new IllegalStateException("StreamingPageExportTemplate 已关闭，无法继续写入数据");
             }
+            try {
+                ensureFirstSheetCreated();
+                if (batch == null || batch.isEmpty()) {
+                    return;
+                }
 
-            int writeSize = (int) Math.min(remainingInBatch, capacityInCurrentSheet);
-            List<T> subList = batch.subList(batchOffset, batchOffset + writeSize);
+                int remainingInBatch = batch.size();
+                int batchOffset = 0;
 
-            excelWriter.write(subList, currentWriteSheet);
-            currentSheetRowCount += writeSize;
-            totalExportedCount += writeSize;
-            batchOffset += writeSize;
-            remainingInBatch -= writeSize;
+                while (remainingInBatch > 0) {
+                    long capacityInCurrentSheet = maxRowsPerSheet - currentSheetRowCount;
+                    if (capacityInCurrentSheet <= 0) {
+                        // 当前工作表已满，触发自动分割切入下一个 Sheet
+                        openNextSheet();
+                        capacityInCurrentSheet = maxRowsPerSheet;
+                    }
+
+                    int writeSize = (int) Math.min(remainingInBatch, capacityInCurrentSheet);
+                    List<T> subList = batch.subList(batchOffset, batchOffset + writeSize);
+
+                    excelWriter.write(subList, currentWriteSheet);
+                    currentSheetRowCount += writeSize;
+                    totalExportedCount += writeSize;
+                    batchOffset += writeSize;
+                    remainingInBatch -= writeSize;
+                }
+
+                notifyBatchProgress();
+            } catch (Throwable t) {
+                hasWriteFailure = true;
+                throw t;
+            }
+        } finally {
+            if (writeLock.isHeldByCurrentThread()) {
+                writeLock.unlock();
+            }
         }
     }
 
@@ -331,6 +429,9 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
         int currentPage = 1;
         while (true) {
             PageResult<T> pageResult = pageLoader.apply(currentPage);
+            if (pageResult != null && pageResult.getTotal() > this.expectedTotalRows) {
+                this.expectedTotalRows = pageResult.getTotal();
+            }
             if (pageResult == null || pageResult.getRecords() == null || pageResult.getRecords().isEmpty()) {
                 ensureFirstSheetCreated();
                 break;
@@ -419,17 +520,42 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
     }
 
     /**
-     * 完成全部写出并刷盘，关闭底层 Fesod 写入引擎
+     * 完成全部写出并刷盘，关闭底层 Fesod 写入引擎（如配置了加密密码则同步执行 AES-256 封包）
      */
-    public synchronized void finish() {
-        if (!finished) {
-            try {
-                ensureFirstSheetCreated();
-                if (excelWriter != null) {
-                    excelWriter.finish();
+    public void finish() {
+        writeLock.lock();
+        try {
+            if (!finished) {
+                try {
+                    if (!hasWriteFailure) {
+                        ensureFirstSheetCreated();
+                        if (excelWriter != null) {
+                            excelWriter.finish();
+                        }
+                        if (tempPlainBuffer != null) {
+                            tempPlainBuffer.encryptToTarget();
+                        }
+                        notifyCompletionProgress();
+                    } else if (excelWriter != null) {
+                        try {
+                            excelWriter.finish();
+                        } catch (Exception ex) {
+                            log.debug("异常回滚阶段收尾流式 ExcelWriter 发生非致命异常: {}", ex.getMessage());
+                        }
+                    }
+                } catch (BusinessException be) {
+                    throw be;
+                } catch (RuntimeException ex) {
+                    throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                            "流式导出刷盘或加密失败: " + ex.getMessage(), ex);
+                } finally {
+                    finished = true;
+                    cleanupTempPlainResources();
                 }
-            } finally {
-                finished = true;
+            }
+        } finally {
+            if (writeLock.isHeldByCurrentThread()) {
+                writeLock.unlock();
             }
         }
     }
@@ -442,44 +568,117 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
     // ==================== 内部状态与工作表流转 ====================
 
     private void ensureFirstSheetCreated() {
-        if (firstSheetInitialized) {
+        writeLock.lock();
+        try {
+            if (firstSheetInitialized) {
+                return;
+            }
+            OutputStream targetStream = this.outputStream;
+            boolean encrypted = (encryptPassword != null && !encryptPassword.isBlank());
+            if (encrypted) {
+                this.tempPlainBuffer = ExcelSecurityUtil.openTempPlainBuffer(
+                        this.outputStream, this.encryptPassword, "ateng-excel-stream-plain-");
+                targetStream = this.tempPlainBuffer.targetOutputStream();
+            }
+
+            try {
+                // 1. 初始化工作簿级 ExcelWriter
+                ExcelWriterBuilder writerBuilder = FesodSheet.write(targetStream, headClass)
+                        .registerWriteHandler(new I18nHeadWriteHandler(this.locale))
+                        .registerWriteHandler(new SensitiveCellWriteHandler())
+                        .registerWriteHandler(new PromptHeadWriteHandler())
+                        .registerWriteHandler(new FormulaProtectionCellWriteHandler());
+
+                if (MergeCellWriteHandler.hasMergeAnnotation(headClass)) {
+                    writerBuilder.registerWriteHandler(new MergeCellWriteHandler());
+                }
+                if (ImageRowHeightWriteHandler.hasExcelImage(headClass)) {
+                    writerBuilder.registerWriteHandler(new ImageRowHeightWriteHandler(headClass));
+                    writerBuilder.registerConverter(new SmartImageConverter());
+                }
+                List<String> projectedColumns = ExcelUtil.resolveProjectedColumns(headClass, this.includeColumnFieldNames, this.excludeColumnFieldNames);
+                if (projectedColumns != null) {
+                    writerBuilder.includeColumnFieldNames(projectedColumns);
+                    writerBuilder.orderByIncludeColumn(true);
+                }
+                registerEnumConverters(writerBuilder, headClass);
+
+                this.excelWriter = writerBuilder.build();
+
+                // 2. 初始化首个 Sheet
+                this.currentSheetIndex = 0;
+                this.currentSheetRowCount = 0;
+                String sheetName = sheetNameFormatter.format(baseSheetName, 0);
+
+                ExcelWriterSheetBuilder sheetBuilder = FesodSheet.writerSheet(0, sheetName).head(headClass);
+                applySheetConfigurations(sheetBuilder);
+                this.currentWriteSheet = sheetBuilder.build();
+
+                // 空跑一次 write(emptyList) 确保当无数据写入时至少正常生成包含表头的单 Sheet
+                this.excelWriter.write(Collections.emptyList(), currentWriteSheet);
+                this.firstSheetInitialized = true;
+            } catch (Throwable t) {
+                hasWriteFailure = true;
+                cleanupTempPlainResources();
+                throw t;
+            }
+        } finally {
+            if (writeLock.isHeldByCurrentThread()) {
+                writeLock.unlock();
+            }
+        }
+    }
+
+    private void notifyBatchProgress() {
+        if (!hasProgressListeners()) {
             return;
         }
-        // 1. 初始化工作簿级 ExcelWriter
-        ExcelWriterBuilder writerBuilder = FesodSheet.write(outputStream, headClass)
-                .registerWriteHandler(new I18nHeadWriteHandler(this.locale))
-                .registerWriteHandler(new SensitiveCellWriteHandler())
-                .registerWriteHandler(new PromptHeadWriteHandler())
-                .registerWriteHandler(new FormulaProtectionCellWriteHandler());
-
-        if (MergeCellWriteHandler.hasMergeAnnotation(headClass)) {
-            writerBuilder.registerWriteHandler(new MergeCellWriteHandler());
+        int progress;
+        if (expectedTotalRows > 0L) {
+            progress = (int) Math.min(99L, Math.max(1L, (totalExportedCount * 100L) / expectedTotalRows));
+        } else {
+            batchCounter++;
+            progress = (int) Math.min(95L, Math.max(1L, 100L - Math.round(99.0 / (1.0 + batchCounter * 0.35))));
         }
-        if (ImageRowHeightWriteHandler.hasExcelImage(headClass)) {
-            writerBuilder.registerWriteHandler(new ImageRowHeightWriteHandler(headClass));
-            writerBuilder.registerConverter(new SmartImageConverter());
+        if (progress > lastReportedProgress) {
+            lastReportedProgress = progress;
+            if (progressConsumer != null) {
+                progressConsumer.accept(progress);
+            }
+            if (detailedProgressConsumer != null) {
+                detailedProgressConsumer.accept(progress, totalExportedCount);
+            }
+            if (boundTaskService != null && boundTaskId != null) {
+                boundTaskService.updateProgress(boundTaskId, progress);
+            }
         }
-        List<String> projectedColumns = ExcelUtil.resolveProjectedColumns(headClass, this.includeColumnFieldNames, this.excludeColumnFieldNames);
-        if (projectedColumns != null) {
-            writerBuilder.includeColumnFieldNames(projectedColumns);
-            writerBuilder.orderByIncludeColumn(true);
+    }
+
+    private void notifyCompletionProgress() {
+        if (!hasProgressListeners()) {
+            return;
         }
-        registerEnumConverters(writerBuilder, headClass);
+        if (lastReportedProgress < 100) {
+            lastReportedProgress = 100;
+            if (progressConsumer != null) {
+                progressConsumer.accept(100);
+            }
+            if (detailedProgressConsumer != null) {
+                detailedProgressConsumer.accept(100, totalExportedCount);
+            }
+        }
+    }
 
-        this.excelWriter = writerBuilder.build();
+    private boolean hasProgressListeners() {
+        return progressConsumer != null || detailedProgressConsumer != null
+                || (boundTaskService != null && boundTaskId != null);
+    }
 
-        // 2. 初始化首个 Sheet
-        this.currentSheetIndex = 0;
-        this.currentSheetRowCount = 0;
-        String sheetName = sheetNameFormatter.format(baseSheetName, 0);
-
-        ExcelWriterSheetBuilder sheetBuilder = FesodSheet.writerSheet(0, sheetName).head(headClass);
-        applySheetConfigurations(sheetBuilder);
-        this.currentWriteSheet = sheetBuilder.build();
-
-        // 空跑一次 write(emptyList) 确保当无数据写入时至少正常生成包含表头的单 Sheet
-        this.excelWriter.write(Collections.emptyList(), currentWriteSheet);
-        this.firstSheetInitialized = true;
+    private void cleanupTempPlainResources() {
+        if (tempPlainBuffer != null) {
+            tempPlainBuffer.close();
+            tempPlainBuffer = null;
+        }
     }
 
     private void openNextSheet() {

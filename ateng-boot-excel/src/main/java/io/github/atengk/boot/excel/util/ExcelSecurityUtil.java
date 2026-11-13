@@ -10,9 +10,12 @@ import org.apache.poi.poifs.crypt.EncryptionMode;
 import org.apache.poi.poifs.crypt.Encryptor;
 import org.apache.poi.poifs.filesystem.FileMagic;
 import org.apache.poi.poifs.filesystem.POIFSFileSystem;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.util.Assert;
 
 import java.io.BufferedInputStream;
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -35,10 +38,134 @@ import java.util.function.Consumer;
  */
 public final class ExcelSecurityUtil {
 
+    private static final Logger log = LoggerFactory.getLogger(ExcelSecurityUtil.class);
+
     private static final char SINGLE_QUOTE = '\'';
 
     private ExcelSecurityUtil() {
         // 工具类禁止实例化
+    }
+
+    /**
+     * 受管明文临时文件缓冲会话（用于长生命周期写入器在完成写出后再统一执行 AES-256 整工作簿加密，并在结束时确定性销毁临时文件）
+     */
+    public static final class TempPlainBuffer implements Closeable {
+
+        private final OutputStream finalTargetOut;
+        private final String password;
+        private final Path tempPlainFile;
+        private final OutputStream plainOut;
+        private boolean streamClosed = false;
+
+        private TempPlainBuffer(OutputStream finalTargetOut, String password, Path tempPlainFile, OutputStream plainOut) {
+            this.finalTargetOut = finalTargetOut;
+            this.password = password;
+            this.tempPlainFile = tempPlainFile;
+            this.plainOut = plainOut;
+        }
+
+        /**
+         * 获取底层写手应实际写入的目标输出流（明文临时文件流）
+         */
+        public OutputStream targetOutputStream() {
+            return plainOut;
+        }
+
+        /**
+         * 闭合明文流并将缓冲文件使用 AES-256 算法加密写出至最终目标输出流
+         */
+        public void encryptToTarget() {
+            closePlainStream();
+            if (tempPlainFile != null && password != null && !password.isBlank()) {
+                encryptWorkbook(tempPlainFile, finalTargetOut, password);
+            }
+        }
+
+        private void closePlainStream() {
+            if (!streamClosed && plainOut != null) {
+                streamClosed = true;
+                try {
+                    plainOut.close();
+                } catch (IOException ex) {
+                    throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                            "关闭 Excel 明文加密缓冲流失败: " + ex.getMessage(), ex);
+                }
+            }
+        }
+
+        @Override
+        public void close() {
+            if (!streamClosed && plainOut != null) {
+                streamClosed = true;
+                try {
+                    plainOut.close();
+                } catch (Exception ex) {
+                    // 清理分支仅记录调试日志，避免覆盖主流程业务异常
+                    log.debug("清理关闭 Excel 明文加密缓冲流时发生非致命异常: {}", ex.getMessage());
+                }
+            }
+            if (tempPlainFile != null) {
+                try {
+                    Files.deleteIfExists(tempPlainFile);
+                } catch (Exception ex) {
+                    log.debug("清理删除 Excel 加密临时文件失败 [{}]: {}", tempPlainFile, ex.getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * 创建受管明文临时文件缓冲会话（仅在需要 AES-256 加密时创建临时文件）
+     *
+     * @param finalTargetOut 加密后的最终输出流（不可为空）
+     * @param password       访问密码（不可为空白）
+     * @param tempPrefix     临时文件名前缀
+     * @return 受管明文临时文件缓冲会话（必须配合 try-finally 调用 {@link TempPlainBuffer#close()}）
+     */
+    public static TempPlainBuffer openTempPlainBuffer(OutputStream finalTargetOut, String password, String tempPrefix) {
+        Assert.notNull(finalTargetOut, "finalTargetOut 目标输出流不可为空");
+        Assert.hasText(password, "工作簿加密密码不可为空");
+        String prefix = (tempPrefix != null && !tempPrefix.isBlank()) ? tempPrefix : "ateng-excel-plain-";
+        Path tempFile = null;
+        try {
+            tempFile = ExcelUtil.createTempFile(prefix, ".tmp");
+            OutputStream fos = Files.newOutputStream(tempFile);
+            return new TempPlainBuffer(finalTargetOut, password, tempFile, fos);
+        } catch (IOException ex) {
+            if (tempFile != null) {
+                try {
+                    Files.deleteIfExists(tempFile);
+                } catch (Exception cleanupEx) {
+                    log.debug("初始化失败后清理临时文件出错 [{}]: {}", tempFile, cleanupEx.getMessage());
+                }
+            }
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "创建 Excel 加密缓冲临时文件失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * 统一执行“无密码直写或受管临时文件缓冲后 AES-256 加密”的一站式包装逻辑
+     *
+     * @param targetOut  最终输出流（不可为空）
+     * @param password   可选加密密码（为空或 null 时直接明文写至 targetOut）
+     * @param tempPrefix 临时文件前缀
+     * @param writer     实际写手逻辑（接收应写入的目标输出流）
+     */
+    public static void writeWithOptionalEncryption(OutputStream targetOut,
+                                                   String password,
+                                                   String tempPrefix,
+                                                   Consumer<OutputStream> writer) {
+        Assert.notNull(targetOut, "targetOut 目标输出流不可为空");
+        Assert.notNull(writer, "writer 写出回调不可为空");
+        if (password == null || password.isBlank()) {
+            writer.accept(targetOut);
+            return;
+        }
+        try (TempPlainBuffer buffer = openTempPlainBuffer(targetOut, password, tempPrefix)) {
+            writer.accept(buffer.targetOutputStream());
+            buffer.encryptToTarget();
+        }
     }
 
     /**

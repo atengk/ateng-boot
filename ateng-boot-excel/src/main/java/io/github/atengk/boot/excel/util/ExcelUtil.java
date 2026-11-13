@@ -537,30 +537,10 @@ public final class ExcelUtil {
         String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
         List<T> exportList = (data != null) ? data : Collections.emptyList();
 
-        if (password != null && !password.isBlank()) {
-            Path tempPlainFile = null;
-            try {
-                tempPlainFile = createTempFile("ateng-excel-plain-", ".tmp");
-                try (OutputStream fos = Files.newOutputStream(tempPlainFile)) {
-                    var writerBuilder = createStandardWriterBuilder(fos, clazz, includeColumns, excludeColumns);
-                    writerBuilder.sheet(targetSheetName).doWrite(exportList);
-                }
-                ExcelSecurityUtil.encryptWorkbook(tempPlainFile, outputStream, password);
-            } catch (IOException ex) {
-                throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
-                        "创建导出临时文件失败: " + ex.getMessage(), ex);
-            } finally {
-                if (tempPlainFile != null) {
-                    try {
-                        Files.deleteIfExists(tempPlainFile);
-                    } catch (Exception ignored) {
-                    }
-                }
-            }
-        } else {
-            var writerBuilder = createStandardWriterBuilder(outputStream, clazz, includeColumns, excludeColumns);
+        writeWithOptionalEncryption(outputStream, password, targetOut -> {
+            var writerBuilder = createStandardWriterBuilder(targetOut, clazz, includeColumns, excludeColumns);
             writerBuilder.sheet(targetSheetName).doWrite(exportList);
-        }
+        });
     }
 
     /**
@@ -1817,7 +1797,19 @@ public final class ExcelUtil {
      * @param data       待填充数据（支持 Collection 列表、Map 混合结构或单对象 JavaBean）
      */
     public static void fill(OutputStream out, InputStream templateIn, Object data) {
-        fill(out, templateIn, DEFAULT_SHEET_NAME, data, null);
+        fill(out, templateIn, DEFAULT_SHEET_NAME, data, (FillConfig) null, (String) null);
+    }
+
+    /**
+     * 填充数据至预设 Excel 模板并输出至 OutputStream，并支持整工作簿 AES-256 加密
+     *
+     * @param out        目标输出流（不可为空）
+     * @param templateIn 模板输入流（不可为空）
+     * @param data       待填充数据
+     * @param password   工作簿访问密码（为空时不加密）
+     */
+    public static void fill(OutputStream out, InputStream templateIn, Object data, String password) {
+        fill(out, templateIn, DEFAULT_SHEET_NAME, data, (FillConfig) null, password);
     }
 
     /**
@@ -1829,7 +1821,20 @@ public final class ExcelUtil {
      * @param fillConfig 填充配置（如 forceNewRow）
      */
     public static void fill(OutputStream out, InputStream templateIn, Object data, FillConfig fillConfig) {
-        fill(out, templateIn, DEFAULT_SHEET_NAME, data, fillConfig);
+        fill(out, templateIn, DEFAULT_SHEET_NAME, data, fillConfig, (String) null);
+    }
+
+    /**
+     * 填充数据至预设 Excel 模板并输出至 OutputStream（支持自定义填充配置与 AES-256 加密）
+     *
+     * @param out        目标输出流（不可为空）
+     * @param templateIn 模板输入流（不可为空）
+     * @param data       待填充数据
+     * @param fillConfig 填充配置（如 forceNewRow）
+     * @param password   工作簿访问密码（为空时不加密）
+     */
+    public static void fill(OutputStream out, InputStream templateIn, Object data, FillConfig fillConfig, String password) {
+        fill(out, templateIn, DEFAULT_SHEET_NAME, data, fillConfig, password);
     }
 
     /**
@@ -1842,8 +1847,22 @@ public final class ExcelUtil {
      * @param fillConfig 填充配置（可为 null）
      */
     public static void fill(OutputStream out, InputStream templateIn, String sheetName, Object data, FillConfig fillConfig) {
+        fill(out, templateIn, sheetName, data, fillConfig, null);
+    }
+
+    /**
+     * 填充数据至预设 Excel 模板并输出至 OutputStream，指定目标工作表名称并支持整工作簿 AES-256 加密
+     *
+     * @param out        目标输出流（不可为空）
+     * @param templateIn 模板输入流（不可为空）
+     * @param sheetName  工作表名称（为空时默认 Sheet1）
+     * @param data       待填充数据
+     * @param fillConfig 填充配置（可为 null）
+     * @param password   工作簿访问密码（为空时不加密）
+     */
+    public static void fill(OutputStream out, InputStream templateIn, String sheetName, Object data, FillConfig fillConfig, String password) {
         if (data instanceof Collection<?> list) {
-            fill(out, templateIn, sheetName, null, list, fillConfig);
+            fill(out, templateIn, sheetName, null, list, fillConfig, password);
         } else if (data instanceof Map<?, ?> map) {
             Collection<?> extractedList = null;
             Map<Object, Object> simpleMap = new HashMap<>();
@@ -1854,9 +1873,9 @@ public final class ExcelUtil {
                     simpleMap.put(entry.getKey(), entry.getValue());
                 }
             }
-            fill(out, templateIn, sheetName, simpleMap.isEmpty() ? null : simpleMap, extractedList, fillConfig);
+            fill(out, templateIn, sheetName, simpleMap.isEmpty() ? null : simpleMap, extractedList, fillConfig, password);
         } else {
-            fill(out, templateIn, sheetName, data, null, fillConfig);
+            fill(out, templateIn, sheetName, data, null, fillConfig, password);
         }
     }
 
@@ -1871,29 +1890,45 @@ public final class ExcelUtil {
      * @param fillConfig 填充配置（如 forceNewRow；为 null 时默认 forceNewRow(true)）
      */
     public static void fill(OutputStream out, InputStream templateIn, String sheetName, Object objectData, Collection<?> listData, FillConfig fillConfig) {
+        fill(out, templateIn, sheetName, objectData, listData, fillConfig, null);
+    }
+
+    /**
+     * 复合填充：同时支持单对象占位符与列表集合循环填充，并支持整工作簿 AES-256 加密
+     *
+     * @param out        目标输出流（不可为空）
+     * @param templateIn 模板输入流（不可为空）
+     * @param sheetName  工作表名称（为空时默认 Sheet1）
+     * @param objectData 单对象/Map 占位符数据（可为 null）
+     * @param listData   循环列表数据（可为 null）
+     * @param fillConfig 填充配置（如 forceNewRow；为 null 时默认 forceNewRow(true)）
+     * @param password   工作簿访问密码（为空时不加密）
+     */
+    public static void fill(OutputStream out, InputStream templateIn, String sheetName, Object objectData, Collection<?> listData, FillConfig fillConfig, String password) {
         Assert.notNull(out, "OutputStream 目标输出流不可为空");
         Assert.notNull(templateIn, "templateIn 模板输入流不可为空");
 
         String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
+        writeWithOptionalEncryption(out, password, targetOut -> {
+            try (ExcelWriter excelWriter = FesodSheet.write(targetOut).withTemplate(templateIn).build()) {
+                WriteSheet writeSheet = FesodSheet.writerSheet(targetSheetName).build();
 
-        try (ExcelWriter excelWriter = FesodSheet.write(out).withTemplate(templateIn).build()) {
-            WriteSheet writeSheet = FesodSheet.writerSheet(targetSheetName).build();
+                // 1. 优先填充列表数据
+                if (listData != null && !listData.isEmpty()) {
+                    FillConfig config = (fillConfig != null) ? fillConfig : FillConfig.builder().forceNewRow(Boolean.TRUE).build();
+                    excelWriter.fill(listData, config, writeSheet);
+                }
 
-            // 1. 优先填充列表数据
-            if (listData != null && !listData.isEmpty()) {
-                FillConfig config = (fillConfig != null) ? fillConfig : FillConfig.builder().forceNewRow(Boolean.TRUE).build();
-                excelWriter.fill(listData, config, writeSheet);
+                // 2. 填充单对象/Map 占位符
+                if (objectData != null) {
+                    excelWriter.fill(objectData, writeSheet);
+                }
+
+                excelWriter.finish();
+            } catch (Exception ex) {
+                throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 模板填充导出失败: " + ex.getMessage(), ex);
             }
-
-            // 2. 填充单对象/Map 占位符
-            if (objectData != null) {
-                excelWriter.fill(objectData, writeSheet);
-            }
-
-            excelWriter.finish();
-        } catch (Exception ex) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 模板填充导出失败: " + ex.getMessage(), ex);
-        }
+        });
     }
 
     /**
@@ -1909,6 +1944,19 @@ public final class ExcelUtil {
     }
 
     /**
+     * Web 环境下基于 Excel 模板加密填充数据并直接写入 HttpServletResponse
+     *
+     * @param response   响应对象（不可为空）
+     * @param fileName   导出的文件名（自动补充 .xlsx 后缀）
+     * @param templateIn 模板输入流（不可为空）
+     * @param data       待填充数据
+     * @param password   工作簿访问密码（为空时不加密）
+     */
+    public static void fill(HttpServletResponse response, String fileName, InputStream templateIn, Object data, String password) {
+        ExcelWebUtil.fill(response, fileName, templateIn, data, password);
+    }
+
+    /**
      * Web 环境下基于 Excel 模板填充数据并直接写入 HttpServletResponse（支持自定义填充配置）
      *
      * @param response   响应对象（不可为空）
@@ -1919,6 +1967,20 @@ public final class ExcelUtil {
      */
     public static void fill(HttpServletResponse response, String fileName, InputStream templateIn, Object data, FillConfig fillConfig) {
         ExcelWebUtil.fill(response, fileName, templateIn, data, fillConfig);
+    }
+
+    /**
+     * Web 环境下基于 Excel 模板加密填充数据并直接写入 HttpServletResponse（支持自定义填充配置与 AES-256 加密）
+     *
+     * @param response   响应对象（不可为空）
+     * @param fileName   导出的文件名
+     * @param templateIn 模板输入流
+     * @param data       待填充数据
+     * @param fillConfig 填充配置
+     * @param password   工作簿访问密码（为空时不加密）
+     */
+    public static void fill(HttpServletResponse response, String fileName, InputStream templateIn, Object data, FillConfig fillConfig, String password) {
+        ExcelWebUtil.fill(response, fileName, templateIn, data, fillConfig, password);
     }
 
     /**
@@ -1936,6 +1998,21 @@ public final class ExcelUtil {
     }
 
     /**
+     * Web 环境下基于 Excel 模板加密填充数据并直接写入 HttpServletResponse（指定工作表名称与 AES-256 加密）
+     *
+     * @param response   响应对象（不可为空）
+     * @param fileName   导出的文件名
+     * @param sheetName  工作表名称
+     * @param templateIn 模板输入流
+     * @param data       待填充数据
+     * @param fillConfig 填充配置
+     * @param password   工作簿访问密码（为空时不加密）
+     */
+    public static void fill(HttpServletResponse response, String fileName, String sheetName, InputStream templateIn, Object data, FillConfig fillConfig, String password) {
+        ExcelWebUtil.fill(response, fileName, sheetName, templateIn, data, fillConfig, password);
+    }
+
+    /**
      * Web 环境下复合填充（同时支持单对象占位符与列表循环填充）
      *
      * @param response   响应对象（不可为空）
@@ -1950,6 +2027,22 @@ public final class ExcelUtil {
         ExcelWebUtil.fill(response, fileName, sheetName, templateIn, objectData, listData, fillConfig);
     }
 
+    /**
+     * Web 环境下加密复合填充（同时支持单对象占位符、列表循环填充与 AES-256 密码加密）
+     *
+     * @param response   响应对象（不可为空）
+     * @param fileName   导出的文件名
+     * @param sheetName  工作表名称
+     * @param templateIn 模板输入流
+     * @param objectData 单对象/Map 占位符数据
+     * @param listData   列表集合数据
+     * @param fillConfig 填充配置
+     * @param password   工作簿访问密码（为空时不加密）
+     */
+    public static void fill(HttpServletResponse response, String fileName, String sheetName, InputStream templateIn, Object objectData, Collection<?> listData, FillConfig fillConfig, String password) {
+        ExcelWebUtil.fill(response, fileName, sheetName, templateIn, objectData, listData, fillConfig, password);
+    }
+
     // ==================== 无实体动态导出 (exportDynamic) ====================
 
     /**
@@ -1960,7 +2053,19 @@ public final class ExcelUtil {
      * @param dataList 动态行数据集合（支持 {@code List<List<?>>} 或 {@code List<Map<String, ?>>}）
      */
     public static void exportDynamic(OutputStream out, List<?> headList, List<?> dataList) {
-        exportDynamic(out, DEFAULT_SHEET_NAME, headList, dataList);
+        exportDynamic(out, DEFAULT_SHEET_NAME, headList, dataList, null);
+    }
+
+    /**
+     * 无实体动态流式导出至 OutputStream，并支持整工作簿 AES-256 加密
+     *
+     * @param out      目标输出流（不可为空）
+     * @param headList 动态表头
+     * @param dataList 动态行数据集合
+     * @param password 工作簿访问密码（为空时不加密）
+     */
+    public static void exportDynamic(OutputStream out, List<?> headList, List<?> dataList, String password) {
+        exportDynamic(out, DEFAULT_SHEET_NAME, headList, dataList, password);
     }
 
     /**
@@ -1972,20 +2077,25 @@ public final class ExcelUtil {
      * @param dataList  动态行数据集合
      */
     public static void exportDynamic(OutputStream out, String sheetName, List<?> headList, List<?> dataList) {
+        exportDynamic(out, sheetName, headList, dataList, null);
+    }
+
+    /**
+     * 无实体动态流式导出至 OutputStream，指定工作表名称并支持整工作簿 AES-256 加密
+     *
+     * @param out       目标输出流（不可为空）
+     * @param sheetName 工作表名称
+     * @param headList  动态表头
+     * @param dataList  动态行数据集合
+     * @param password  工作簿访问密码（为空时不加密）
+     */
+    public static void exportDynamic(OutputStream out, String sheetName, List<?> headList, List<?> dataList, String password) {
         Assert.notNull(out, "OutputStream 目标输出流不可为空");
         Assert.notNull(headList, "headList 动态表头定义不可为空");
 
-        String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
         List<List<String>> fesodHead = normalizeHead(headList);
         List<?> normalizedData = normalizeData(dataList, headList);
-
-        var writerBuilder = FesodSheet.write(out)
-                .head(fesodHead)
-                .registerWriteHandler(DEFAULT_I18N_HEAD_WRITE_HANDLER)
-                .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
-        configureStyle(writerBuilder, null);
-        writerBuilder.sheet(targetSheetName)
-                .doWrite(normalizedData);
+        writeDynamicRows(out, sheetName, fesodHead, normalizedData, password);
     }
 
     /**
@@ -1998,10 +2108,23 @@ public final class ExcelUtil {
      * @param dataList  Map 数据集合
      */
     public static void exportDynamic(OutputStream out, String sheetName, List<String> headList, List<String> dataKeys, List<Map<String, Object>> dataList) {
+        exportDynamic(out, sheetName, headList, dataKeys, dataList, null);
+    }
+
+    /**
+     * 无实体基于 Map 列表与显式列键映射导出至 OutputStream，并支持整工作簿 AES-256 加密
+     *
+     * @param out       目标输出流
+     * @param sheetName 工作表名称
+     * @param headList  动态表头列表
+     * @param dataKeys  Map 中对应的键列表（与表头一一对应）
+     * @param dataList  Map 数据集合
+     * @param password  工作簿访问密码（为空时不加密）
+     */
+    public static void exportDynamic(OutputStream out, String sheetName, List<String> headList, List<String> dataKeys, List<Map<String, Object>> dataList, String password) {
         Assert.notNull(out, "OutputStream 目标输出流不可为空");
         Assert.notNull(headList, "headList 动态表头不可为空");
 
-        String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
         List<List<String>> fesodHead = normalizeHead(headList);
         List<String> keys = (dataKeys != null && !dataKeys.isEmpty()) ? dataKeys : headList;
 
@@ -2015,14 +2138,7 @@ public final class ExcelUtil {
                 rows.add(row);
             }
         }
-
-        var writerBuilder = FesodSheet.write(out)
-                .head(fesodHead)
-                .registerWriteHandler(DEFAULT_I18N_HEAD_WRITE_HANDLER)
-                .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
-        configureStyle(writerBuilder, null);
-        writerBuilder.sheet(targetSheetName)
-                .doWrite(rows);
+        writeDynamicRows(out, sheetName, fesodHead, rows, password);
     }
 
     /**
@@ -2035,6 +2151,19 @@ public final class ExcelUtil {
      */
     public static void exportDynamic(HttpServletResponse response, String fileName, List<?> headList, List<?> dataList) {
         ExcelWebUtil.exportDynamic(response, fileName, headList, dataList);
+    }
+
+    /**
+     * Web 环境下无实体动态流式加密导出并直接写入 HttpServletResponse
+     *
+     * @param response 响应对象（不可为空）
+     * @param fileName 导出的文件名
+     * @param headList 动态表头
+     * @param dataList 动态行数据集合
+     * @param password 工作簿访问密码（为空时不加密）
+     */
+    public static void exportDynamic(HttpServletResponse response, String fileName, List<?> headList, List<?> dataList, String password) {
+        ExcelWebUtil.exportDynamic(response, fileName, headList, dataList, password);
     }
 
     /**
@@ -2051,6 +2180,20 @@ public final class ExcelUtil {
     }
 
     /**
+     * Web 环境下无实体动态流式加密导出并直接写入 HttpServletResponse（指定工作表名称）
+     *
+     * @param response  响应对象（不可为空）
+     * @param fileName  导出的文件名
+     * @param sheetName 工作表名称
+     * @param headList  动态表头
+     * @param dataList  动态行数据集合
+     * @param password  工作簿访问密码（为空时不加密）
+     */
+    public static void exportDynamic(HttpServletResponse response, String fileName, String sheetName, List<?> headList, List<?> dataList, String password) {
+        ExcelWebUtil.exportDynamic(response, fileName, sheetName, headList, dataList, password);
+    }
+
+    /**
      * Web 环境下基于 Map 列表与显式列键映射动态导出至 HttpServletResponse
      *
      * @param response  响应对象
@@ -2062,6 +2205,45 @@ public final class ExcelUtil {
      */
     public static void exportDynamic(HttpServletResponse response, String fileName, String sheetName, List<String> headList, List<String> dataKeys, List<Map<String, Object>> dataList) {
         ExcelWebUtil.exportDynamic(response, fileName, sheetName, headList, dataKeys, dataList);
+    }
+
+    /**
+     * Web 环境下基于 Map 列表与显式列键映射动态加密导出至 HttpServletResponse
+     *
+     * @param response  响应对象
+     * @param fileName  导出的文件名
+     * @param sheetName 工作表名称
+     * @param headList  动态表头列表
+     * @param dataKeys  Map 对应的键列表
+     * @param dataList  Map 数据集合
+     * @param password  工作簿访问密码（为空时不加密）
+     */
+    public static void exportDynamic(HttpServletResponse response, String fileName, String sheetName, List<String> headList, List<String> dataKeys, List<Map<String, Object>> dataList, String password) {
+        ExcelWebUtil.exportDynamic(response, fileName, sheetName, headList, dataKeys, dataList, password);
+    }
+
+    private static void writeDynamicRows(OutputStream out, String sheetName, List<List<String>> fesodHead, List<?> rows, String password) {
+        String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
+        writeWithOptionalEncryption(out, password, targetOut -> {
+            try {
+                var writerBuilder = FesodSheet.write(targetOut)
+                        .head(fesodHead)
+                        .registerWriteHandler(DEFAULT_I18N_HEAD_WRITE_HANDLER)
+                        .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
+                configureStyle(writerBuilder, null);
+                writerBuilder.sheet(targetSheetName)
+                        .doWrite(rows);
+            } catch (BusinessException be) {
+                throw be;
+            } catch (RuntimeException ex) {
+                throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                        "Excel 动态表头导出失败: " + ex.getMessage(), ex);
+            }
+        });
+    }
+
+    private static void writeWithOptionalEncryption(OutputStream outputStream, String password, java.util.function.Consumer<OutputStream> writer) {
+        ExcelSecurityUtil.writeWithOptionalEncryption(outputStream, password, "ateng-excel-plain-", writer);
     }
 
     // ==================== 多 Sheet Fluent 构建器 (builder) ====================
@@ -2077,6 +2259,17 @@ public final class ExcelUtil {
     }
 
     /**
+     * 创建支持整工作簿 AES-256 加密的基于 OutputStream 的多 Sheet 链式 Fluent 构建器
+     *
+     * @param out      目标输出流（不可为空）
+     * @param password 工作簿访问密码（为空或 null 时不加密）
+     * @return 链式构建器实例
+     */
+    public static ExcelBuilder builder(OutputStream out, String password) {
+        return new ExcelBuilder(out, ExcelUtil::configureSheet).encrypt(password);
+    }
+
+    /**
      * Web 环境下创建基于 HttpServletResponse 的多 Sheet 链式 Fluent 构建器
      *
      * @param response 响应对象（不可为空）
@@ -2085,6 +2278,18 @@ public final class ExcelUtil {
      */
     public static ExcelBuilder builder(HttpServletResponse response, String fileName) {
         return ExcelWebUtil.builder(response, fileName);
+    }
+
+    /**
+     * Web 环境下创建支持整工作簿 AES-256 加密的基于 HttpServletResponse 的多 Sheet 链式 Fluent 构建器
+     *
+     * @param response 响应对象（不可为空）
+     * @param fileName 导出的文件名（自动补充 .xlsx 后缀）
+     * @param password 工作簿访问密码（为空或 null 时不加密）
+     * @return 链式构建器实例
+     */
+    public static ExcelBuilder builder(HttpServletResponse response, String fileName, String password) {
+        return ExcelWebUtil.builder(response, fileName, password);
     }
 
     /**
