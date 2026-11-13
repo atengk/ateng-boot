@@ -336,7 +336,7 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
             return this;
         } catch (Throwable t) {
             this.hasWriteFailure = true;
-            throw t;
+            throw ExcelSecurityUtil.translateWriteException(t, "写入 Excel 工作表失败");
         }
     }
 
@@ -379,7 +379,7 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
             return this;
         } catch (Throwable t) {
             this.hasWriteFailure = true;
-            throw t;
+            throw ExcelSecurityUtil.translateWriteException(t, "写入 Excel 工作表失败");
         }
     }
 
@@ -507,23 +507,13 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
         if (!finished) {
             try {
                 if (!hasWriteFailure) {
-                    ExcelWriter writer = ensureExcelWriter();
-                    writer.finish();
-                    if (tempPlainBuffer != null) {
-                        tempPlainBuffer.encryptToTarget();
-                    }
-                } else if (excelWriter != null) {
-                    try {
-                        excelWriter.finish();
-                    } catch (Exception ex) {
-                        log.debug("异常回滚阶段收尾 ExcelWriter 发生非致命异常: {}", ex.getMessage());
-                    }
+                    ensureExcelWriter();
                 }
-            } catch (BusinessException be) {
-                throw be;
-            } catch (RuntimeException ex) {
-                throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
-                        "ExcelBuilder 刷盘写出工作簿失败: " + ex.getMessage(), ex);
+                ExcelSecurityUtil.finishWriterWithOptionalEncryption(
+                        this.excelWriter,
+                        this.tempPlainBuffer,
+                        this.hasWriteFailure,
+                        "ExcelBuilder 刷盘写出工作簿失败");
             } finally {
                 finished = true;
                 cleanupTempResources();

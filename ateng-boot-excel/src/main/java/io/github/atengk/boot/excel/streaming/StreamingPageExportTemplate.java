@@ -409,7 +409,7 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
                 notifyBatchProgress();
             } catch (Throwable t) {
                 hasWriteFailure = true;
-                throw t;
+                throw ExcelSecurityUtil.translateWriteException(t, "流式分批写入 Excel 失败");
             }
         } finally {
             if (writeLock.isHeldByCurrentThread()) {
@@ -529,25 +529,15 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
                 try {
                     if (!hasWriteFailure) {
                         ensureFirstSheetCreated();
-                        if (excelWriter != null) {
-                            excelWriter.finish();
-                        }
-                        if (tempPlainBuffer != null) {
-                            tempPlainBuffer.encryptToTarget();
-                        }
-                        notifyCompletionProgress();
-                    } else if (excelWriter != null) {
-                        try {
-                            excelWriter.finish();
-                        } catch (Exception ex) {
-                            log.debug("异常回滚阶段收尾流式 ExcelWriter 发生非致命异常: {}", ex.getMessage());
-                        }
                     }
-                } catch (BusinessException be) {
-                    throw be;
-                } catch (RuntimeException ex) {
-                    throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
-                            "流式导出刷盘或加密失败: " + ex.getMessage(), ex);
+                    ExcelSecurityUtil.finishWriterWithOptionalEncryption(
+                            this.excelWriter,
+                            this.tempPlainBuffer,
+                            this.hasWriteFailure,
+                            "流式导出刷盘或加密失败");
+                    if (!hasWriteFailure) {
+                        notifyCompletionProgress();
+                    }
                 } finally {
                     finished = true;
                     cleanupTempPlainResources();
@@ -620,7 +610,7 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
             } catch (Throwable t) {
                 hasWriteFailure = true;
                 cleanupTempPlainResources();
-                throw t;
+                throw ExcelSecurityUtil.translateWriteException(t, "初始化流式 Excel 写入引擎失败");
             }
         } finally {
             if (writeLock.isHeldByCurrentThread()) {

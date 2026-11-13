@@ -27,9 +27,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Excel 异步大报表任务中心控制器
@@ -48,11 +47,51 @@ public class ExcelAsyncExportController {
 
     private static final Logger log = LoggerFactory.getLogger(ExcelAsyncExportController.class);
 
+    private static final int TRACE_CACHE_MAX_ENTRIES = 512;
+
     private final AsyncExportTaskService taskService;
     private final ExportFileStorage fileStorage;
 
-    private final ConcurrentMap<String, String> taskCallerTraceMap = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, String> taskWorkerTraceMap = new ConcurrentHashMap<>();
+    private final ReentrantLock traceLock = new ReentrantLock();
+    private final Map<String, String> taskCallerTraceMap = createBoundedTraceMap();
+    private final Map<String, String> taskWorkerTraceMap = createBoundedTraceMap();
+
+    private static Map<String, String> createBoundedTraceMap() {
+        return new LinkedHashMap<>(64, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+                return size() > TRACE_CACHE_MAX_ENTRIES;
+            }
+        };
+    }
+
+    private void recordTrace(Map<String, String> store, String taskId, String traceId) {
+        if (taskId == null || traceId == null) {
+            return;
+        }
+        traceLock.lock();
+        try {
+            store.put(taskId, traceId);
+        } finally {
+            if (traceLock.isHeldByCurrentThread()) {
+                traceLock.unlock();
+            }
+        }
+    }
+
+    private String readTrace(Map<String, String> store, String taskId) {
+        if (taskId == null) {
+            return null;
+        }
+        traceLock.lock();
+        try {
+            return store.get(taskId);
+        } finally {
+            if (traceLock.isHeldByCurrentThread()) {
+                traceLock.unlock();
+            }
+        }
+    }
 
     public ExcelAsyncExportController(AsyncExportTaskService taskService, ExportFileStorage fileStorage) {
         this.taskService = taskService;
@@ -99,9 +138,7 @@ public class ExcelAsyncExportController {
             }
 
             String tid = taskIdHolder.get();
-            if (tid != null && workerTraceId != null) {
-                taskWorkerTraceMap.put(tid, workerTraceId);
-            }
+            recordTrace(taskWorkerTraceMap, tid, workerTraceId);
 
             // 流式游标分页写出并实时同步百分比进度至 AsyncExportTaskService (0~99 -> finish 后 100)
             int batchSize = Math.max(1, Math.min(50, Math.max(1, count / 4)));
@@ -122,9 +159,7 @@ public class ExcelAsyncExportController {
         });
 
         taskIdHolder.set(taskId);
-        if (finalCallerTraceId != null) {
-            taskCallerTraceMap.put(taskId, finalCallerTraceId);
-        }
+        recordTrace(taskCallerTraceMap, taskId, finalCallerTraceId);
 
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("taskId", taskId);
@@ -147,8 +182,8 @@ public class ExcelAsyncExportController {
             throw new BusinessException("异步导出任务不存在: " + taskId);
         }
 
-        String requestTrace = taskCallerTraceMap.get(taskId);
-        String workerTrace = taskWorkerTraceMap.get(taskId);
+        String requestTrace = readTrace(taskCallerTraceMap, taskId);
+        String workerTrace = readTrace(taskWorkerTraceMap, taskId);
 
         AsyncExportStatusVO vo = AsyncExportStatusVO.builder()
                 .taskId(task.getTaskId())
@@ -254,9 +289,6 @@ public class ExcelAsyncExportController {
             return java.util.Collections.emptyList();
         }
         int fetchCount = (int) Math.min(limit, totalRows - startId + 1);
-        List<OrderBillVO> all = OrderStreamingController.generateMockOrders(totalRows);
-        int fromIdx = (int) (startId - 1);
-        int toIdx = Math.min(all.size(), fromIdx + fetchCount);
-        return all.subList(fromIdx, toIdx);
+        return OrderStreamingController.generateOrderBillsRange(startId, fetchCount);
     }
 }

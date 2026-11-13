@@ -931,9 +931,7 @@ public final class ExcelUtil {
         Assert.notNull(inputStream, "InputStream 输入流不可为空");
         Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
 
-        List<AutoCloseable> cleanups = new ArrayList<>(2);
-        try {
-            InputStream effectiveStream = ExcelSecurityUtil.decryptIfEncrypted(inputStream, password, cleanups::add);
+        return withDecryptedStream(inputStream, password, effectiveStream -> {
             var readerBuilder = FesodSheet.read(effectiveStream)
                     .head(clazz);
             registerEnumConverters(readerBuilder, clazz);
@@ -944,14 +942,7 @@ public final class ExcelUtil {
                         "Excel 数据行数超出同步读取安全上限（" + maxSyncRows + " 行），当前共 " + list.size() + " 行，请改用 readBatch 进行分批流式消费以防内存溢出");
             }
             return (list != null) ? list : Collections.emptyList();
-        } finally {
-            for (AutoCloseable res : cleanups) {
-                try {
-                    res.close();
-                } catch (Exception ignored) {
-                }
-            }
-        }
+        });
     }
 
     /**
@@ -980,21 +971,12 @@ public final class ExcelUtil {
         Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
         Assert.notNull(listener, "ReadListener 监听器不可为空");
 
-        List<AutoCloseable> cleanups = new ArrayList<>(2);
-        try {
-            InputStream effectiveStream = ExcelSecurityUtil.decryptIfEncrypted(inputStream, password, cleanups::add);
+        withDecryptedStream(inputStream, password, effectiveStream -> {
             var readerBuilder = FesodSheet.read(effectiveStream, clazz, listener);
             registerEnumConverters(readerBuilder, clazz);
             readerBuilder.sheet()
                     .doRead();
-        } finally {
-            for (AutoCloseable res : cleanups) {
-                try {
-                    res.close();
-                } catch (Exception ignored) {
-                }
-            }
-        }
+        });
     }
 
     /**
@@ -1209,9 +1191,7 @@ public final class ExcelUtil {
         Assert.notNull(inputStream, "InputStream 输入流不可为空");
         Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
 
-        List<AutoCloseable> cleanups = new ArrayList<>(2);
-        try {
-            InputStream effectiveStream = ExcelSecurityUtil.decryptIfEncrypted(inputStream, password, cleanups::add);
+        return withDecryptedStream(inputStream, password, effectiveStream -> {
             HeaderValidationStrategy strategy = headerStrategy != null ? headerStrategy : defaultValidationProperties.getHeaderStrategy();
             BatchValidationListener<T> listener = new BatchValidationListener<>(
                     clazz,
@@ -1243,14 +1223,7 @@ public final class ExcelUtil {
                         "Excel 数据行数超出同步读取安全上限（" + maxSyncRows + " 行），当前共 " + validDataList.size() + " 行，请改用 readBatch 进行分批流式消费以防内存溢出");
             }
             return validDataList;
-        } finally {
-            for (AutoCloseable res : cleanups) {
-                try {
-                    res.close();
-                } catch (Exception ignored) {
-                }
-            }
-        }
+        });
     }
 
     /**
@@ -1360,21 +1333,12 @@ public final class ExcelUtil {
                 null
         );
 
-        List<AutoCloseable> cleanups = new ArrayList<>(2);
-        try {
-            InputStream effectiveStream = ExcelSecurityUtil.decryptIfEncrypted(inputStream, password, cleanups::add);
+        return withDecryptedStream(inputStream, password, effectiveStream -> {
             var readerBuilder = FesodSheet.read(effectiveStream, clazz, listener);
             registerEnumConverters(readerBuilder, clazz);
             readerBuilder.sheet().doRead();
             return listener.toResult();
-        } finally {
-            for (AutoCloseable res : cleanups) {
-                try {
-                    res.close();
-                } catch (Exception ignored) {
-                }
-            }
-        }
+        });
     }
 
     /**
@@ -1407,20 +1371,11 @@ public final class ExcelUtil {
             return;
         }
 
-        List<AutoCloseable> cleanups = new ArrayList<>(2);
-        try {
-            InputStream effectiveStream = ExcelSecurityUtil.decryptIfEncrypted(inputStream, password, cleanups::add);
+        withDecryptedStream(inputStream, password, effectiveStream -> {
             ExcelHeaderValidator<?> validator = new ExcelHeaderValidator<>(clazz, strategy);
             var readerBuilder = FesodSheet.read(effectiveStream, validator);
             readerBuilder.sheet().headRowNumber(validator.getExpectedHeadRowCount()).doRead();
-        } finally {
-            for (AutoCloseable res : cleanups) {
-                try {
-                    res.close();
-                } catch (Exception ignored) {
-                }
-            }
-        }
+        });
     }
 
     /**
@@ -1521,20 +1476,11 @@ public final class ExcelUtil {
                 null
         );
 
-        List<AutoCloseable> cleanups = new ArrayList<>(2);
-        try {
-            InputStream effectiveStream = ExcelSecurityUtil.decryptIfEncrypted(inputStream, password, cleanups::add);
+        withDecryptedStream(inputStream, password, effectiveStream -> {
             var readerBuilder = FesodSheet.read(effectiveStream, clazz, listener);
             registerEnumConverters(readerBuilder, clazz);
             readerBuilder.sheet().doRead();
-        } finally {
-            for (AutoCloseable res : cleanups) {
-                try {
-                    res.close();
-                } catch (Exception ignored) {
-                }
-            }
-        }
+        });
     }
 
     /**
@@ -1550,7 +1496,8 @@ public final class ExcelUtil {
         try {
             ExcelFeedbackUtil.renderErrorFeedback(originalExcelStream, feedbackOutputStream, errorRows);
         } catch (IOException ex) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "生成 Excel 错误反馈文件失败: " + ex.getMessage());
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "生成 Excel 错误反馈文件失败: " + ex.getMessage(), ex);
         }
     }
 
@@ -2525,6 +2472,28 @@ public final class ExcelUtil {
         }
 
         return projected.isEmpty() ? null : projected;
+    }
+
+    private static <R> R withDecryptedStream(InputStream inputStream, String password, Function<InputStream, R> readerAction) {
+        List<AutoCloseable> cleanups = new ArrayList<>(2);
+        try {
+            InputStream effectiveStream = ExcelSecurityUtil.decryptIfEncrypted(inputStream, password, cleanups::add);
+            return readerAction.apply(effectiveStream);
+        } finally {
+            for (AutoCloseable res : cleanups) {
+                try {
+                    res.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    private static void withDecryptedStream(InputStream inputStream, String password, Consumer<InputStream> readerAction) {
+        withDecryptedStream(inputStream, password, effectiveStream -> {
+            readerAction.accept(effectiveStream);
+            return null;
+        });
     }
 }
 

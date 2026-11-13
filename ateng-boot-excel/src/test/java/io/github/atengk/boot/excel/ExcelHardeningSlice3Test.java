@@ -1,5 +1,6 @@
 package io.github.atengk.boot.excel;
 
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.model.PageResult;
@@ -40,8 +41,9 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -123,7 +125,10 @@ class ExcelHardeningSlice3Test {
                 .expectedTotalRows(20)
                 .encrypt("Concurrent#2026")
                 .onProgressDetail((pct, rows) -> detailEvents.add(pct + ":" + rows))) {
-            ExecutorService pool = Executors.newFixedThreadPool(2);
+            ExecutorService pool = new ThreadPoolExecutor(
+                    2, 2, 0L, TimeUnit.MILLISECONDS,
+                    new LinkedBlockingQueue<>(),
+                    new NamedThreadFactory("test-streaming-lock-"));
             try {
                 CountDownLatch ready = new CountDownLatch(2);
                 CountDownLatch startGate = new CountDownLatch(1);

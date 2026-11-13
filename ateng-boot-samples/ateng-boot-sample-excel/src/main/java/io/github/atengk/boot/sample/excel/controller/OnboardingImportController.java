@@ -325,7 +325,7 @@ public class OnboardingImportController {
                         .build(),
                 OnboardingImportVO.builder()
                         .name("李雷")
-                        .phone("123456") // 手机号格式错误
+                        .phone("13800") // 手机号格式错误
                         .email("invalid@") // 邮箱格式错误
                         .gender(null) // 性别为空
                         .department("") // 部门为空

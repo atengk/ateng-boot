@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
+import org.apache.fesod.sheet.ExcelWriter;
 import org.apache.poi.poifs.crypt.Decryptor;
 import org.apache.poi.poifs.crypt.EncryptionInfo;
 import org.apache.poi.poifs.crypt.EncryptionMode;
@@ -166,6 +167,62 @@ public final class ExcelSecurityUtil {
             writer.accept(buffer.targetOutputStream());
             buffer.encryptToTarget();
         }
+    }
+
+    /**
+     * 统一收尾 Fesod {@link ExcelWriter} 并在需要时完成受管临时文件的 AES-256 加密输出
+     *
+     * @param excelWriter     底层写入器（可为 null）
+     * @param tempPlainBuffer 受管明文临时缓冲（可为 null）
+     * @param hasWriteFailure 前置写入过程是否已发生异常
+     * @param failureMessage  刷盘/加密失败时的上下文异常消息前缀
+     */
+    public static void finishWriterWithOptionalEncryption(ExcelWriter excelWriter,
+                                                          TempPlainBuffer tempPlainBuffer,
+                                                          boolean hasWriteFailure,
+                                                          String failureMessage) {
+        try {
+            if (!hasWriteFailure) {
+                if (excelWriter != null) {
+                    excelWriter.finish();
+                }
+                if (tempPlainBuffer != null) {
+                    tempPlainBuffer.encryptToTarget();
+                }
+            } else if (excelWriter != null) {
+                try {
+                    excelWriter.finish();
+                } catch (Exception ex) {
+                    log.debug("异常回滚阶段收尾 ExcelWriter 发生非致命异常: {}", ex.getMessage());
+                }
+            }
+        } catch (BusinessException be) {
+            throw be;
+        } catch (RuntimeException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    failureMessage + ": " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * 在模块边界统一转译写入阶段抛出的底层驱动异常，100% 保留原始 {@code cause} 链与前置断言异常语义
+     *
+     * @param throwable     捕获的异常
+     * @param messagePrefix 转译后的错误消息前缀
+     * @return 待抛出的运行时异常
+     */
+    public static RuntimeException translateWriteException(Throwable throwable, String messagePrefix) {
+        if (throwable instanceof BusinessException be) {
+            return be;
+        }
+        if (throwable instanceof IllegalArgumentException || throwable instanceof IllegalStateException) {
+            return (RuntimeException) throwable;
+        }
+        if (throwable instanceof Error err) {
+            throw err;
+        }
+        return new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                messagePrefix + ": " + throwable.getMessage(), throwable);
     }
 
     /**

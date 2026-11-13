@@ -38,7 +38,6 @@ import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -111,22 +110,6 @@ class SampleExcelIntegrationTest {
 
     @TempDir
     Path tempDir;
-
-    @BeforeAll
-    static void initTemplates() throws Exception {
-        Path templateDir = Path.of("src/main/resources/templates");
-        Files.createDirectories(templateDir);
-        Path templateFile = templateDir.resolve("expense_reimbursement_template.xlsx");
-        byte[] bytes = io.github.atengk.boot.sample.excel.controller.WorkbookReportController.generateReimbursementTemplateBytes();
-        if (!Files.exists(templateFile)) {
-            Files.write(templateFile, bytes);
-        }
-        Path targetDir = Path.of("target/classes/templates");
-        if (Files.exists(Path.of("target/classes"))) {
-            Files.createDirectories(targetDir);
-            Files.write(targetDir.resolve("expense_reimbursement_template.xlsx"), bytes);
-        }
-    }
 
     private void saveTempExcel(String fileName, byte[] bytes) throws Exception {
         Path target = tempDir.resolve(fileName);

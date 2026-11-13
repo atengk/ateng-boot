@@ -191,7 +191,7 @@ public class OrderStreamingController {
             HttpServletResponse response,
             @RequestParam(value = "count", defaultValue = "150") int count,
             @RequestParam(value = "fileName", defaultValue = "订单账单流水_模拟样本.xlsx") String fileName) throws IOException {
-        List<OrderBillVO> data = generateMockOrders(count);
+        List<OrderBillVO> data = generateOrderBills(count);
         ExcelWebUtil.export(response, fileName, data, OrderBillVO.class);
     }
 
@@ -254,39 +254,44 @@ public class OrderStreamingController {
             return Collections.emptyList();
         }
         int fetchCount = (int) Math.min(limit, totalRows - startId + 1);
-        List<OrderBillVO> list = new ArrayList<>(fetchCount);
-        String nowStr = LocalDateTime.now().format(TIME_FORMATTER);
+        return generateOrderBillsRange(startId, fetchCount);
+    }
 
-        for (int i = 0; i < fetchCount; i++) {
+    /**
+     * 按起始主键与条数按需生成企业订单账单样本，避免全量构建后切片导致的冗余内存开销
+     *
+     * @param startId 起始主键（含）
+     * @param count   生成条数
+     * @return 订单账单列表
+     */
+    public static List<OrderBillVO> generateOrderBillsRange(long startId, int count) {
+        if (count <= 0) {
+            return Collections.emptyList();
+        }
+        List<OrderBillVO> list = new ArrayList<>(count);
+        String nowStr = LocalDateTime.now().format(TIME_FORMATTER);
+        for (int i = 0; i < count; i++) {
             long id = startId + i;
             list.add(OrderBillVO.builder()
                     .id(id)
                     .orderNo("ORD-" + String.format("%08d", id))
-                    .customerName("客户_" + id)
-                    .amount(new BigDecimal("100.00").add(BigDecimal.valueOf(id * 2.5)))
-                    .paymentMethod((id % 2 == 0) ? "微信支付" : "支付宝")
-                    .status((id % 5 == 0) ? "已退款" : "支付成功")
+                    .customerName("企业客户_" + id)
+                    .amount(new BigDecimal("299.00").add(BigDecimal.valueOf(id * 10)))
+                    .paymentMethod((id % 3 == 0) ? "对公转账" : "企业网银")
+                    .status((id % 5 == 0) ? "已退款" : "已结算")
                     .createTime(nowStr)
                     .build());
         }
-
         return list;
     }
 
-    public static List<OrderBillVO> generateMockOrders(int count) {
-        List<OrderBillVO> list = new ArrayList<>(count);
-        String nowStr = LocalDateTime.now().format(TIME_FORMATTER);
-        for (int i = 1; i <= count; i++) {
-            list.add(OrderBillVO.builder()
-                    .id((long) i)
-                    .orderNo("ORD-" + String.format("%08d", i))
-                    .customerName("企业客户_" + i)
-                    .amount(new BigDecimal("299.00").add(BigDecimal.valueOf(i * 10)))
-                    .paymentMethod((i % 3 == 0) ? "对公转账" : "企业网银")
-                    .status("已结算")
-                    .createTime(nowStr)
-                    .build());
-        }
-        return list;
+    /**
+     * 生成指定数量的订单账单样本列表
+     *
+     * @param count 生成条数
+     * @return 订单账单列表
+     */
+    public static List<OrderBillVO> generateOrderBills(int count) {
+        return generateOrderBillsRange(1L, count);
     }
 }

@@ -1377,18 +1377,10 @@ public final class ExcelWebUtil {
     }
 
     private static void executeWithClientAbortDefense(String defaultErrorMessage, WebExportAction action) {
-        try {
+        executeWithClientAbortDefense(defaultErrorMessage, null, () -> {
             action.execute();
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 下载网络连接: {}", t.getMessage());
-                return;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), defaultErrorMessage + ": " + t.getMessage(), t);
-        }
+            return null;
+        });
     }
 
     private static <R> R executeWithClientAbortDefense(String defaultErrorMessage, R defaultFallback, WebExportFunction<R> action) {

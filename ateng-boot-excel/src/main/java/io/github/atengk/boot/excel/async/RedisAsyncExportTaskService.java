@@ -308,11 +308,10 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
             return;
         }
         ExportTaskStatus status = task.getStatus();
-        if (status == ExportTaskStatus.SUCCESS || status == ExportTaskStatus.FAILED || status == ExportTaskStatus.CANCELLED) {
+        if (AsyncExportTaskSupport.isTerminalStatus(status)) {
             return;
         }
-        int clamped = Math.max(0, Math.min(99, progress));
-        task.setProgress(clamped);
+        task.setProgress(AsyncExportTaskSupport.clampInProgressPercent(progress));
         task.setLeaseExpireTime(LocalDateTime.now().plus(leaseTimeout));
         String key = keyPrefix + taskId;
         String updatedJson = JsonUtil.toJsonString(task);
@@ -487,22 +486,8 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
 
     @Override
     public void destroy() {
-        shutdownExecutorGracefully(cleanerScheduler, 5);
-        shutdownExecutorGracefully(heartbeatScheduler, 5);
-        shutdownExecutorGracefully(executorService, 5);
-    }
-
-    private static void shutdownExecutorGracefully(ExecutorService executor, long timeoutSeconds) {
-        if (executor != null && !executor.isShutdown()) {
-            executor.shutdown();
-            try {
-                if (!executor.awaitTermination(timeoutSeconds, TimeUnit.SECONDS)) {
-                    executor.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                executor.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-        }
+        AsyncExportTaskSupport.shutdownExecutorGracefully(cleanerScheduler, 5);
+        AsyncExportTaskSupport.shutdownExecutorGracefully(heartbeatScheduler, 5);
+        AsyncExportTaskSupport.shutdownExecutorGracefully(executorService, 5);
     }
 }

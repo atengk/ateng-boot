@@ -198,12 +198,10 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
         if (task == null) {
             return;
         }
-        ExportTaskStatus status = task.getStatus();
-        if (status == ExportTaskStatus.SUCCESS || status == ExportTaskStatus.FAILED || status == ExportTaskStatus.CANCELLED) {
+        if (AsyncExportTaskSupport.isTerminalStatus(task.getStatus())) {
             return;
         }
-        int clamped = Math.max(0, Math.min(99, progress));
-        task.setProgress(clamped);
+        task.setProgress(AsyncExportTaskSupport.clampInProgressPercent(progress));
     }
 
     @Override
@@ -268,27 +266,7 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
 
     @Override
     public void destroy() {
-        if (cleanerExecutor != null && !cleanerExecutor.isShutdown()) {
-            cleanerExecutor.shutdown();
-            try {
-                if (!cleanerExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    cleanerExecutor.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                cleanerExecutor.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-        }
-        if (executorService != null && !executorService.isShutdown()) {
-            executorService.shutdown();
-            try {
-                if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
-                    executorService.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                executorService.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-        }
+        AsyncExportTaskSupport.shutdownExecutorGracefully(cleanerExecutor, 5);
+        AsyncExportTaskSupport.shutdownExecutorGracefully(executorService, 30);
     }
 }
