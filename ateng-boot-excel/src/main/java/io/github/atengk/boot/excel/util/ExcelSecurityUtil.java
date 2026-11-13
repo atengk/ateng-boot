@@ -2,6 +2,7 @@ package io.github.atengk.boot.excel.util;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
 import org.apache.poi.poifs.crypt.Decryptor;
 import org.apache.poi.poifs.crypt.EncryptionInfo;
@@ -17,6 +18,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.security.GeneralSecurityException;
 import java.util.function.Consumer;
 
@@ -290,6 +292,81 @@ public final class ExcelSecurityUtil {
             } catch (Exception ignored) {
             }
             throw new ExcelValidationException("打开解密临时文件失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    // ==================== 受管路径防穿越统一校验 ====================
+
+    /**
+     * 判断原始路径字符串中是否显式包含父级目录穿越片段（{@code ..}）
+     *
+     * @param rawPath 原始路径字符串
+     * @return true 表示存在 {@code ..} 路径片段
+     */
+    public static boolean hasTraversalSegment(String rawPath) {
+        if (rawPath == null || rawPath.isEmpty()) {
+            return false;
+        }
+        String normalizedSep = rawPath.replace('\\', '/');
+        for (String segment : normalizedSep.split("/+")) {
+            if ("..".equals(segment.trim())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 将输入路径清洗归一化并校验其严格限定在受管基准目录之内（防御 Path Traversal）
+     * <p>
+     * 统一拦截空字符 {@code \0}、任何 {@code ..} 路径段、POSIX 前导 {@code /} 越界路径以及跨盘符/目录外绝对路径，
+     * 校验失败时立即抛出 {@link ExcelValidationException}。
+     * </p>
+     *
+     * @param baseDir 基准根目录
+     * @param rawPath 待解析的相对或绝对路径
+     * @return 归一化且确认落在 {@code baseDir} 之内的安全路径
+     * @throws ExcelValidationException 路径为空、包含穿越片段或超出基准目录边界时抛出
+     */
+    public static Path resolveContainedPath(Path baseDir, String rawPath) {
+        if (baseDir == null) {
+            throw new ExcelValidationException("基准存储目录不能为空");
+        }
+        if (rawPath == null || rawPath.isBlank()) {
+            throw new ExcelValidationException("文件路径不能为空");
+        }
+        if (rawPath.contains("\0") || hasTraversalSegment(rawPath)) {
+            throw new ExcelValidationException("检测到高危路径穿越参数: " + rawPath);
+        }
+
+        Path normalizedBase = baseDir.toAbsolutePath().normalize();
+        String cleaned;
+        try {
+            cleaned = FileUtil.cleanPath(rawPath);
+        } catch (IllegalArgumentException ex) {
+            throw new ExcelValidationException("非法路径参数: " + rawPath, ex);
+        }
+        if (cleaned.isEmpty()) {
+            throw new ExcelValidationException("文件路径不能为空");
+        }
+
+        // 统一拦截 POSIX 前导 '/' 与原生绝对路径越界，避免 Windows 下将 '/etc/passwd' 降级为相对子路径
+        if (cleaned.startsWith("/") || Paths.get(cleaned).isAbsolute()) {
+            Path resolved = Paths.get(cleaned).toAbsolutePath().normalize();
+            if (!resolved.startsWith(normalizedBase)) {
+                throw new ExcelValidationException("检测到路径越界访问，超出允许根目录: " + rawPath);
+            }
+            return resolved;
+        }
+
+        try {
+            Path resolved = FileUtil.resolveSafePath(normalizedBase, cleaned);
+            if (!resolved.normalize().startsWith(normalizedBase)) {
+                throw new ExcelValidationException("检测到路径逃逸风险: " + rawPath);
+            }
+            return resolved;
+        } catch (IllegalArgumentException ex) {
+            throw new ExcelValidationException("检测到路径逃逸风险: " + rawPath, ex);
         }
     }
 }

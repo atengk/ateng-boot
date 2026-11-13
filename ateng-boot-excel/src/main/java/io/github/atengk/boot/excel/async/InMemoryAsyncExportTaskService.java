@@ -87,11 +87,20 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
         );
 
         Duration retention = props.getRetentionPeriod() != null ? props.getRetentionPeriod() : Duration.ofHours(Math.max(1, props.getRetentionHours()));
-        this.cleanerExecutor = Executors.newSingleThreadScheduledExecutor(
+        ScheduledThreadPoolExecutor cleaner = new ScheduledThreadPoolExecutor(
+                1,
                 new NamedThreadFactory("ateng-excel-cleaner-")
         );
+        cleaner.setRemoveOnCancelPolicy(true);
+        this.cleanerExecutor = cleaner;
         this.cleanerExecutor.scheduleAtFixedRate(
-                () -> cleanExpiredTasks(retention),
+                () -> {
+                    try {
+                        cleanExpiredTasks(retention);
+                    } catch (Throwable ex) {
+                        log.warn("异步导出过期任务定时清理异常: {}", ex.getMessage());
+                    }
+                },
                 1, 1, TimeUnit.HOURS
         );
     }
@@ -181,6 +190,23 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
     }
 
     @Override
+    public void updateProgress(String taskId, int progress) {
+        if (taskId == null || taskId.isBlank()) {
+            return;
+        }
+        ExportTask task = taskMap.get(taskId);
+        if (task == null) {
+            return;
+        }
+        ExportTaskStatus status = task.getStatus();
+        if (status == ExportTaskStatus.SUCCESS || status == ExportTaskStatus.FAILED || status == ExportTaskStatus.CANCELLED) {
+            return;
+        }
+        int clamped = Math.max(0, Math.min(99, progress));
+        task.setProgress(clamped);
+    }
+
+    @Override
     public boolean cancel(String taskId) {
         if (taskId == null) {
             return false;
@@ -243,7 +269,15 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
     @Override
     public void destroy() {
         if (cleanerExecutor != null && !cleanerExecutor.isShutdown()) {
-            cleanerExecutor.shutdownNow();
+            cleanerExecutor.shutdown();
+            try {
+                if (!cleanerExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    cleanerExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                cleanerExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
         }
         if (executorService != null && !executorService.isShutdown()) {
             executorService.shutdown();

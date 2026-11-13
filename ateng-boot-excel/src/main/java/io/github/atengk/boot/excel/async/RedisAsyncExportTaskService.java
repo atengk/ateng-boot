@@ -14,6 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.util.Assert;
@@ -28,6 +29,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.*;
 
@@ -45,6 +47,8 @@ import java.util.concurrent.*;
 public class RedisAsyncExportTaskService implements AsyncExportTaskService, DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(RedisAsyncExportTaskService.class);
+
+    private static final String EXPIRE_INDEX_SUFFIX = "expire-index";
 
     private static final RedisScript<Long> CAS_TIMEOUT_STATUS_SCRIPT = new DefaultRedisScript<>(
             "local current = redis.call('get', KEYS[1])\n" +
@@ -64,8 +68,10 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
     private final Path tempDirPath;
     private final ThreadPoolExecutor executorService;
     private final ScheduledExecutorService heartbeatScheduler;
+    private final ScheduledExecutorService cleanerScheduler;
     private final String keyPrefix;
     private final Duration ttl;
+    private final Duration retention;
     private final Duration leaseTimeout;
 
     public RedisAsyncExportTaskService(ExcelProperties excelProperties, StringRedisTemplate redisTemplate) {
@@ -87,6 +93,9 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
 
         this.keyPrefix = redisProps.getKeyPrefix();
         this.ttl = (redisProps.getTtl() != null) ? redisProps.getTtl() : Duration.ofHours(24);
+        this.retention = (props.getRetentionPeriod() != null && !props.getRetentionPeriod().isNegative() && !props.getRetentionPeriod().isZero())
+                ? props.getRetentionPeriod()
+                : this.ttl;
         this.leaseTimeout = (props.getLeaseTimeout() != null) ? props.getLeaseTimeout() : Duration.ofMinutes(30);
 
         String dir = props.getTempDir();
@@ -116,8 +125,28 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
                 new ThreadPoolExecutor.AbortPolicy()
         );
 
-        this.heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(
+        ScheduledThreadPoolExecutor scheduler = new ScheduledThreadPoolExecutor(
+                1,
                 new NamedThreadFactory("ateng-excel-redis-heartbeat-")
+        );
+        scheduler.setRemoveOnCancelPolicy(true);
+        this.heartbeatScheduler = scheduler;
+
+        ScheduledThreadPoolExecutor cleaner = new ScheduledThreadPoolExecutor(
+                1,
+                new NamedThreadFactory("ateng-excel-redis-cleaner-")
+        );
+        cleaner.setRemoveOnCancelPolicy(true);
+        this.cleanerScheduler = cleaner;
+        this.cleanerScheduler.scheduleAtFixedRate(
+                () -> {
+                    try {
+                        cleanExpiredTasks(this.retention);
+                    } catch (Throwable ex) {
+                        log.warn("分布式异步导出过期索引定时清理异常: {}", ex.getMessage());
+                    }
+                },
+                1, 1, TimeUnit.HOURS
         );
     }
 
@@ -186,7 +215,7 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
                     task.setStatus(ExportTaskStatus.SUCCESS);
                     task.setProgress(100);
                     task.setFinishTime(LocalDateTime.now());
-                    saveTask(task);
+                    saveCompletedTaskWithExpireIndex(task, storageKey);
                     log.info("分布式异步导出任务完成 [{}]: 文件大小 = {} 字节", taskId, task.getFileSize());
                 } catch (Throwable ex) {
                     if (task.getStatus() == ExportTaskStatus.CANCELLED || Thread.currentThread().isInterrupted() || ex instanceof InterruptedException) {
@@ -250,17 +279,7 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
                 task.setErrorMsg("导出节点异常离线或任务执行超时（租约超期）");
                 task.setFinishTime(LocalDateTime.now());
                 String failedJson = JsonUtil.toJsonString(task);
-                Long updated = null;
-                try {
-                    updated = redisTemplate.execute(
-                            CAS_TIMEOUT_STATUS_SCRIPT,
-                            Collections.singletonList(key),
-                            failedJson,
-                            String.valueOf(ttl.toSeconds())
-                    );
-                } catch (Throwable ex) {
-                    log.debug("Redis CAS 脚本执行异常，将降级执行直接保存: {}", ex.getMessage());
-                }
+                Long updated = executeCasIfProcessing(key, failedJson);
                 if (updated != null && updated == 1L) {
                     log.warn("检测到分布式异步导出任务 [{}] 执行租约超期，已原子流转为 FAILED 状态", taskId);
                 } else if (updated == null) {
@@ -279,16 +298,63 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
         return task;
     }
 
+    @Override
+    public void updateProgress(String taskId, int progress) {
+        if (taskId == null || taskId.isBlank()) {
+            return;
+        }
+        ExportTask task = getTask(taskId);
+        if (task == null) {
+            return;
+        }
+        ExportTaskStatus status = task.getStatus();
+        if (status == ExportTaskStatus.SUCCESS || status == ExportTaskStatus.FAILED || status == ExportTaskStatus.CANCELLED) {
+            return;
+        }
+        int clamped = Math.max(0, Math.min(99, progress));
+        task.setProgress(clamped);
+        task.setLeaseExpireTime(LocalDateTime.now().plus(leaseTimeout));
+        String key = keyPrefix + taskId;
+        String updatedJson = JsonUtil.toJsonString(task);
+        if (status == ExportTaskStatus.PROCESSING) {
+            Long updated = executeCasIfProcessing(key, updatedJson);
+            if (updated == null) {
+                saveTask(task);
+            }
+        } else {
+            saveTask(task);
+        }
+    }
+
     private void refreshLease(String taskId) {
         try {
             ExportTask task = getTask(taskId);
             if (task != null && task.getStatus() == ExportTaskStatus.PROCESSING) {
                 task.setLeaseExpireTime(LocalDateTime.now().plus(leaseTimeout));
-                saveTask(task);
+                Long updated = executeCasIfProcessing(keyPrefix + taskId, JsonUtil.toJsonString(task));
+                if (updated == null) {
+                    saveTask(task);
+                } else if (updated == 0L) {
+                    return;
+                }
                 log.debug("分布式异步导出任务 [{}] 租约心跳续期成功", taskId);
             }
         } catch (Throwable ex) {
             log.warn("分布式异步导出任务 [{}] 租约心跳续期异常: {}", taskId, ex.getMessage());
+        }
+    }
+
+    private Long executeCasIfProcessing(String key, String newJson) {
+        try {
+            return redisTemplate.execute(
+                    CAS_TIMEOUT_STATUS_SCRIPT,
+                    Collections.singletonList(key),
+                    newJson,
+                    String.valueOf(ttl.toSeconds())
+            );
+        } catch (Throwable ex) {
+            log.debug("Redis CAS 脚本执行异常，将降级执行直接保存: {}", ex.getMessage());
+            return null;
         }
     }
 
@@ -315,6 +381,10 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
         }
 
         if (task.getStorageKey() != null) {
+            ZSetOperations<String, String> zSetOps = redisTemplate.opsForZSet();
+            if (zSetOps != null) {
+                zSetOps.remove(keyPrefix + EXPIRE_INDEX_SUFFIX, taskId + "|" + task.getStorageKey());
+            }
             fileStorage.delete(taskId, task.getStorageKey());
         }
         return true;
@@ -322,20 +392,87 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
 
     @Override
     public void cleanExpiredTasks(Duration retention) {
-        // Redis 端任务根据 TTL 自动由 Redis 引擎安全过期清理
-        // 此处防御性清理本地临时遗留的未闭合 tmp 文件
+        Duration effectiveRetention = (retention != null && !retention.isNegative() && !retention.isZero())
+                ? retention
+                : this.retention;
+
+        // 1. 扫描 Redis ZSet 过期索引并通过 ZREM 原子抢占到期条目，对称释放外部存储与元数据 Key
+        ZSetOperations<String, String> zSetOps = redisTemplate.opsForZSet();
+        if (zSetOps != null) {
+            String expireIndexKey = keyPrefix + EXPIRE_INDEX_SUFFIX;
+            long deltaMillis = this.retention.toMillis() - effectiveRetention.toMillis();
+            double cutoffScore = (double) (System.currentTimeMillis() + deltaMillis);
+            Set<String> expiredMembers = zSetOps.rangeByScore(expireIndexKey, 0D, cutoffScore);
+            if (expiredMembers != null && !expiredMembers.isEmpty()) {
+                for (String member : expiredMembers) {
+                    if (member == null || member.isBlank()) {
+                        continue;
+                    }
+                    Long removed = zSetOps.remove(expireIndexKey, member);
+                    if (removed != null && removed > 0L) {
+                        reclaimClaimedEntry(zSetOps, expireIndexKey, member);
+                    }
+                }
+            }
+        }
+
+        // 2. 防御性清理本地临时遗留的未闭合 tmp 文件
         try (var stream = Files.list(tempDirPath)) {
             stream.filter(Files::isRegularFile)
                     .forEach(path -> {
                         try {
                             var lastModified = Files.getLastModifiedTime(path).toInstant();
-                            if (lastModified.plus(retention).isBefore(java.time.Instant.now())) {
+                            if (lastModified.plus(effectiveRetention).isBefore(java.time.Instant.now())) {
                                 Files.deleteIfExists(path);
                             }
                         } catch (IOException ignored) {
                         }
                     });
         } catch (IOException ignored) {
+        }
+    }
+
+    private void reclaimClaimedEntry(ZSetOperations<String, String> zSetOps, String expireIndexKey, String member) {
+        int sepIndex = member.indexOf('|');
+        if (sepIndex <= 0 || sepIndex >= member.length() - 1) {
+            log.warn("忽略格式非法的 Redis 异步导出过期索引成员: {}", member);
+            return;
+        }
+        String expiredTaskId = member.substring(0, sepIndex);
+        String storageKey = member.substring(sepIndex + 1);
+        try {
+            fileStorage.delete(expiredTaskId, storageKey);
+        } catch (Throwable ex) {
+            log.warn("回收过期分布式异步导出存储文件失败 [taskId={}, storageKey={}]，将重新入队等待重试: {}", expiredTaskId, storageKey, ex.getMessage());
+            try {
+                zSetOps.add(expireIndexKey, member, (double) (System.currentTimeMillis() + 60_000L));
+            } catch (Throwable reAddEx) {
+                log.warn("重入队 Redis 异步导出过期索引失败 [member={}]: {}", member, reAddEx.getMessage());
+            }
+            return;
+        }
+        try {
+            redisTemplate.delete(keyPrefix + expiredTaskId);
+        } catch (Throwable ex) {
+            log.warn("删除过期分布式异步导出元数据键失败 [taskId={}]: {}", expiredTaskId, ex.getMessage());
+        }
+    }
+
+    private void saveCompletedTaskWithExpireIndex(ExportTask task, String storageKey) {
+        if (task == null || task.getTaskId() == null) {
+            return;
+        }
+        String key = keyPrefix + task.getTaskId();
+        String json = JsonUtil.toJsonString(task);
+        // 元数据 Key 额外延长 1 小时宽限期，保障轮询或索引清理窗口内可完整审计与对称删除
+        redisTemplate.opsForValue().set(key, json, ttl.plusHours(1));
+
+        if (storageKey != null && !storageKey.isBlank()) {
+            ZSetOperations<String, String> zSetOps = redisTemplate.opsForZSet();
+            if (zSetOps != null) {
+                double expireAtMillis = (double) (System.currentTimeMillis() + retention.toMillis());
+                zSetOps.add(keyPrefix + EXPIRE_INDEX_SUFFIX, task.getTaskId() + "|" + storageKey, expireAtMillis);
+            }
         }
     }
 
@@ -350,15 +487,22 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
 
     @Override
     public void destroy() {
-        heartbeatScheduler.shutdownNow();
-        executorService.shutdown();
-        try {
-            if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
-                executorService.shutdownNow();
+        shutdownExecutorGracefully(cleanerScheduler, 5);
+        shutdownExecutorGracefully(heartbeatScheduler, 5);
+        shutdownExecutorGracefully(executorService, 5);
+    }
+
+    private static void shutdownExecutorGracefully(ExecutorService executor, long timeoutSeconds) {
+        if (executor != null && !executor.isShutdown()) {
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(timeoutSeconds, TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                executor.shutdownNow();
+                Thread.currentThread().interrupt();
             }
-        } catch (InterruptedException e) {
-            executorService.shutdownNow();
-            Thread.currentThread().interrupt();
         }
     }
 }
