@@ -9,12 +9,14 @@ import io.github.atengk.boot.sample.excel.vo.OrderBillVO;
 import io.github.atengk.boot.web.annotation.WebLog;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -104,21 +106,72 @@ public class OrderStreamingController {
     }
 
     /**
-     * 端点 3：显式使用 StreamingPageExportTemplate 模板执行精准流式控制导出
+     * 端点 1B：基于 ExcelWebUtil.toResponseEntityStreaming 返回 ResponseEntity 异步分页流式导出
+     *
+     * @param totalRows 预期导出的总数据量（默认 250 行）
+     * @param pageSize  每页拉取步长（默认 100 行）
+     * @param fileName  导出文件名
+     * @return Spring 标准异步流式响应实体
+     */
+    @GetMapping("/export-page-entity")
+    @WebLog(value = "PageResult ResponseEntity 流式分页导出", printParams = true, printResult = false, printCostTime = true)
+    public ResponseEntity<StreamingResponseBody> exportStreamingByPageEntity(
+            @RequestParam(value = "totalRows", defaultValue = "250") int totalRows,
+            @RequestParam(value = "pageSize", defaultValue = "100") int pageSize,
+            @RequestParam(value = "fileName", defaultValue = "订单流水_分页流式实体.xlsx") String fileName) {
+        return ExcelWebUtil.toResponseEntityStreaming(
+                fileName,
+                "订单流水",
+                OrderBillVO.class,
+                pageNum -> fetchOrdersByPage(pageNum, pageSize, totalRows)
+        );
+    }
+
+    /**
+     * 端点 2B：基于 ExcelWebUtil.toResponseEntityStreamingByCursor 返回 ResponseEntity 主键游标流式导出
+     *
+     * @param totalRows 预期导出的总记录数（默认 250 行）
+     * @param pageSize  每次游标拉取步长（默认 100 行）
+     * @param fileName  导出文件名
+     * @return Spring 标准异步流式响应实体
+     */
+    @GetMapping("/export-cursor-entity")
+    @WebLog(value = "主键游标 ResponseEntity 流式导出", printParams = true, printResult = false, printCostTime = true)
+    public ResponseEntity<StreamingResponseBody> exportStreamingByCursorEntity(
+            @RequestParam(value = "totalRows", defaultValue = "250") int totalRows,
+            @RequestParam(value = "pageSize", defaultValue = "100") int pageSize,
+            @RequestParam(value = "fileName", defaultValue = "订单流水_游标流式实体.xlsx") String fileName) {
+        return ExcelWebUtil.toResponseEntityStreamingByCursor(
+                fileName,
+                "交易账单",
+                OrderBillVO.class,
+                0L,
+                pageSize,
+                (cursorId, limit) -> fetchOrdersByCursor(cursorId, limit, totalRows),
+                OrderBillVO::getId
+        );
+    }
+
+    /**
+     * 端点 3：显式使用 StreamingPageExportTemplate 模板执行精准流式控制导出（可选 AES-256 整表加密）
      *
      * @param response HTTP Servlet 响应对象
+     * @param password 可选 AES-256 加密密码
      * @param fileName 导出文件名
-     * @throws IOException IO 异常
      */
     @GetMapping("/export-template")
     @WebLog(value = "流式分页模板显式写控制", printParams = false, printResult = false, printCostTime = true)
     public void exportByTemplate(
             HttpServletResponse response,
+            @RequestParam(value = "password", required = false) String password,
             @RequestParam(value = "fileName", defaultValue = "订单流水_模板控制导出.xlsx") String fileName) {
 
         try (StreamingPageExportTemplate<OrderBillVO> template = ExcelWebUtil.streaming(response, fileName, OrderBillVO.class)) {
             template.baseSheetName("标准账单")
                     .maxRowsPerSheet(200);
+            if (password != null && !password.isBlank()) {
+                template.encrypt(password);
+            }
 
             template.exportByPage(pageNum -> fetchOrdersByPage(pageNum, 50, 150));
         }

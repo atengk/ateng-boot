@@ -8,15 +8,18 @@ import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.excel.util.ExcelWebUtil;
 import io.github.atengk.boot.sample.excel.enums.SampleGenderEnum;
 import io.github.atengk.boot.sample.excel.vo.OnboardingImportVO;
+import io.github.atengk.boot.sample.excel.vo.OnboardingLongDropdownVO;
 import io.github.atengk.boot.web.annotation.WebLog;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -59,6 +62,19 @@ public class OnboardingImportController {
     }
 
     /**
+     * 端点 1B：下载突破 255 字符限制的隐藏字典工作表防呆模板（_ateng_dropdown_dict + ResponseEntity 流式响应）
+     *
+     * @param fileName 模板文件名
+     * @return 包含超长动态下拉与隐藏字典表的流式响应实体
+     */
+    @GetMapping("/template-long-dropdown")
+    @WebLog(value = "下载超长下拉隐藏字典表模板", printParams = false, printResult = false, printCostTime = true)
+    public ResponseEntity<StreamingResponseBody> downloadLongDropdownTemplate(
+            @RequestParam(value = "fileName", defaultValue = "入职成本中心_超长下拉隐藏字典模板.xlsx") String fileName) {
+        return ExcelWebUtil.toResponseEntityTemplate(fileName, "超长下拉入职模板", OnboardingLongDropdownVO.class);
+    }
+
+    /**
      * 端点 2：下载纯合规模拟数据 Excel 文件（供客户端或 cURL 一键体验校验成功导入）
      *
      * @param response HTTP Servlet 响应对象
@@ -94,7 +110,7 @@ public class OnboardingImportController {
      * 端点 4：快速前置表头契约校验（仅扫描表头行即刻关闭，不解析后续数据行）
      *
      * @param file     上传的 Excel 文件
-     * @param strategy 校验策略（STRICT / LOOSE / IGNORE_ORDER，默认 STRICT）
+     * @param strategy 校验策略（STRICT / LOOSE / DISABLED，默认 STRICT）
      * @return 校验通过提示
      * @throws IOException IO 异常
      */
@@ -172,6 +188,47 @@ public class OnboardingImportController {
         try (InputStream originalIn = new ByteArrayInputStream(bytes)) {
             ExcelWebUtil.exportErrorFeedback(response, fileName, originalIn, result.getErrors());
         }
+    }
+
+    /**
+     * 端点 6B：基于 ResponseEntity&lt;StreamingResponseBody&gt; 剥离导出导入失败行报表
+     *
+     * @param file     上传的 Excel 文件
+     * @param fileName 导出文件名
+     * @return 包含失败行差错明细的流式响应实体
+     * @throws IOException IO 异常
+     */
+    @PostMapping(value = "/export-failed-rows-entity", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @WebLog(value = "差错数据 ResponseEntity 剥离导出", printParams = false, printResult = false, printCostTime = true)
+    public ResponseEntity<StreamingResponseBody> exportFailedRowsEntity(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "fileName", defaultValue = "员工入职导入失败明细_流式.xlsx") String fileName) throws IOException {
+        ExcelReadResult<OnboardingImportVO> result;
+        try (InputStream in = file.getInputStream()) {
+            result = ExcelUtil.readWithResult(in, OnboardingImportVO.class);
+        }
+        return ExcelWebUtil.toResponseEntityFailedRows(fileName, OnboardingImportVO.class, result.getFailedData(), result.getErrors());
+    }
+
+    /**
+     * 端点 7B：基于 ResponseEntity&lt;StreamingResponseBody&gt; 原样标红并回写错误批注
+     *
+     * @param file     上传的 Excel 文件
+     * @param fileName 导出文件名
+     * @return 包含原表标红与批注反馈的流式响应实体
+     * @throws IOException IO 异常
+     */
+    @PostMapping(value = "/export-feedback-entity", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @WebLog(value = "错误反馈 ResponseEntity 标红回写", printParams = false, printResult = false, printCostTime = true)
+    public ResponseEntity<StreamingResponseBody> exportErrorFeedbackEntity(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "fileName", defaultValue = "员工入职导入错误反馈_流式.xlsx") String fileName) throws IOException {
+        byte[] bytes = file.getBytes();
+        ExcelReadResult<OnboardingImportVO> result;
+        try (InputStream in = new ByteArrayInputStream(bytes)) {
+            result = ExcelUtil.readWithResult(in, OnboardingImportVO.class);
+        }
+        return ExcelWebUtil.toResponseEntityErrorFeedback(fileName, new ByteArrayInputStream(bytes), result.getErrors());
     }
 
     /**

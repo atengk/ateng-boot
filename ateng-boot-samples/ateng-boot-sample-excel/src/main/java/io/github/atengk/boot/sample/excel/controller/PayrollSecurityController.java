@@ -9,12 +9,14 @@ import io.github.atengk.boot.sample.excel.vo.PayrollSecurityVO;
 import io.github.atengk.boot.web.annotation.WebLog;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -86,7 +88,7 @@ public class PayrollSecurityController {
      * @throws IOException IO 异常
      */
     @GetMapping("/export-encrypt")
-    @WebLog(value = "整工作簿 AES-256 强加密导出", printParams = true, printResult = false, printCostTime = true)
+    @WebLog(value = "整工作簿 AES-256 强加密导出", printParams = false, printResult = false, printCostTime = true)
     public void exportEncrypt(
             HttpServletResponse response,
             @RequestParam(value = "password", defaultValue = DEFAULT_ENCRYPT_PASSWORD) String password,
@@ -94,6 +96,41 @@ public class PayrollSecurityController {
         List<PayrollSecurityVO> data = createSampleSecurityList();
         ExcelWebUtil.prepareWebResponse(response, fileName);
         ExcelUtil.export(response.getOutputStream(), "薪酬机密", data, PayrollSecurityVO.class, null, null, password);
+    }
+
+    /**
+     * 端点 3B：基于 ResponseEntity&lt;StreamingResponseBody&gt; 导出整工作簿 AES-256 强加密表格
+     *
+     * @param password 加密密码
+     * @param fileName 导出文件名
+     * @return 包含加密工作簿的流式响应实体
+     */
+    @GetMapping("/export-encrypt-entity")
+    @WebLog(value = "整工作簿 ResponseEntity AES-256 强加密导出", printParams = false, printResult = false, printCostTime = true)
+    public ResponseEntity<StreamingResponseBody> exportEncryptEntity(
+            @RequestParam(value = "password", defaultValue = DEFAULT_ENCRYPT_PASSWORD) String password,
+            @RequestParam(value = "fileName", defaultValue = "薪酬机密_AES256流式加密.xlsx") String fileName) {
+        List<PayrollSecurityVO> data = createSampleSecurityList();
+        return ExcelWebUtil.toResponseEntity(fileName, "薪酬机密", data, PayrollSecurityVO.class, password);
+    }
+
+    /**
+     * 端点 2B：基于 ResponseEntity&lt;StreamingResponseBody&gt; 导出 -30° 暗水印与工作表保护表格
+     *
+     * @param watermarkText      水印文字
+     * @param protectionPassword 工作表保护密码
+     * @param fileName           导出文件名
+     * @return 包含暗水印与保护锁定的流式响应实体
+     */
+    @GetMapping("/export-watermark-entity")
+    @WebLog(value = "防伪暗水印 ResponseEntity 流式导出", printParams = false, printResult = false, printCostTime = true)
+    public ResponseEntity<StreamingResponseBody> exportWatermarkEntity(
+            @RequestParam(value = "watermarkText", defaultValue = DEFAULT_WATERMARK_TEXT) String watermarkText,
+            @RequestParam(value = "protectionPassword", defaultValue = DEFAULT_WATERMARK_PASSWORD) String protectionPassword,
+            @RequestParam(value = "fileName", defaultValue = "薪酬机密_防伪暗水印流式.xlsx") String fileName) {
+        List<PayrollSecurityVO> data = createSampleSecurityList();
+        return ExcelWebUtil.toResponseEntityWithWatermark(
+                fileName, "薪酬机密", data, PayrollSecurityVO.class, watermarkText, protectionPassword);
     }
 
     /**
@@ -122,7 +159,7 @@ public class PayrollSecurityController {
      * @throws IOException IO 异常
      */
     @PostMapping(value = "/import-decrypt", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @WebLog(value = "加密工作簿解密解析上传", printParams = true, printResult = true, printCostTime = true)
+    @WebLog(value = "加密工作簿解密解析上传", printParams = false, printResult = true, printCostTime = true)
     public Result<ExcelReadResult<PayrollSecurityVO>> importDecrypt(
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "password", required = false) String password) throws IOException {

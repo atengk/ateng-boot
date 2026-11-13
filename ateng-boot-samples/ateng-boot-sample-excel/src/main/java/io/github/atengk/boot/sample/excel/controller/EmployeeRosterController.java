@@ -11,8 +11,6 @@ import io.github.atengk.boot.sample.excel.vo.EmployeeRosterVO;
 import io.github.atengk.boot.sample.excel.vo.I18nUserExcelVO;
 import io.github.atengk.boot.web.annotation.WebLog;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -54,16 +52,30 @@ public class EmployeeRosterController {
             @RequestParam(value = "excludeColumns", required = false) List<String> excludeColumns,
             @RequestParam(value = "fileName", defaultValue = "员工花名册_异步流式.xlsx") String fileName) {
 
-        HttpHeaders headers = ExcelWebUtil.createDownloadHeaders(fileName);
-        StreamingResponseBody body = outputStream -> {
+        return ExcelWebUtil.toResponseEntity(fileName, outputStream -> {
             List<EmployeeRosterVO> data = createSampleRoster();
             ExcelUtil.export(outputStream, "员工花名册", data, EmployeeRosterVO.class, includeColumns, excludeColumns);
-        };
+        });
+    }
 
-        return ResponseEntity.ok()
-                .headers(headers)
-                .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
-                .body(body);
+    /**
+     * 端点 1B：基于 ExcelWebUtil.toResponseEntity 快捷重载一步导出花名册（内置动态列投影与客户端中断防卫）
+     *
+     * @param includeColumns 动态包含列白名单（可选）
+     * @param excludeColumns 动态排除列黑名单（可选）
+     * @param password       整工作簿加密密码（可选）
+     * @param fileName       自定义导出文件名
+     * @return 包含异步流的响应实体
+     */
+    @GetMapping("/export-entity-shortcut")
+    @WebLog(value = "花名册快捷 ResponseEntity 流式导出", printParams = false, printResult = false, printCostTime = true)
+    public ResponseEntity<StreamingResponseBody> exportEntityShortcut(
+            @RequestParam(value = "includeColumns", required = false) List<String> includeColumns,
+            @RequestParam(value = "excludeColumns", required = false) List<String> excludeColumns,
+            @RequestParam(value = "password", required = false) String password,
+            @RequestParam(value = "fileName", defaultValue = "员工花名册_快捷流式.xlsx") String fileName) {
+        List<EmployeeRosterVO> data = createSampleRoster();
+        return ExcelWebUtil.toResponseEntity(fileName, "员工花名册", data, EmployeeRosterVO.class, includeColumns, excludeColumns, password);
     }
 
     /**

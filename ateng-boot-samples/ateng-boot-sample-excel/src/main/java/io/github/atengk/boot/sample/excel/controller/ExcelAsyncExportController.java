@@ -6,6 +6,7 @@ import io.github.atengk.boot.excel.async.AsyncExportTaskService;
 import io.github.atengk.boot.excel.async.ExportTask;
 import io.github.atengk.boot.excel.async.ExportTaskStatus;
 import io.github.atengk.boot.excel.async.storage.ExportFileStorage;
+import io.github.atengk.boot.excel.streaming.StreamingPageExportTemplate;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.sample.excel.vo.AsyncExportStatusVO;
 import io.github.atengk.boot.sample.excel.vo.OrderBillVO;
@@ -102,10 +103,22 @@ public class ExcelAsyncExportController {
                 taskWorkerTraceMap.put(tid, workerTraceId);
             }
 
-            // 模拟流式生成大账单数据并写出
-            List<OrderBillVO> dataList = OrderStreamingController.generateMockOrders(count);
-            ExcelUtil.export(out, "交易账单", dataList, OrderBillVO.class);
-            log.info("[AsyncExport] 后台工作线程完成报表流式写出: taskId={}, count={}", tid, dataList.size());
+            // 流式游标分页写出并实时同步百分比进度至 AsyncExportTaskService (0~99 -> finish 后 100)
+            int batchSize = Math.max(1, Math.min(50, Math.max(1, count / 4)));
+            try (StreamingPageExportTemplate<OrderBillVO> template = ExcelUtil.streaming(out, OrderBillVO.class)) {
+                template.baseSheetName("交易账单")
+                        .expectedTotalRows(count);
+                if (tid != null) {
+                    template.onProgress(taskService, tid);
+                }
+                long exported = template.exportByCursor(
+                        0L,
+                        batchSize,
+                        (cursorId, limit) -> fetchAsyncOrdersByCursor(cursorId, limit, count),
+                        OrderBillVO::getId
+                );
+                log.info("[AsyncExport] 后台工作线程完成报表流式写出: taskId={}, count={}", tid, exported);
+            }
         });
 
         taskIdHolder.set(taskId);
@@ -152,6 +165,28 @@ public class ExcelAsyncExportController {
                 .build();
 
         return Result.success(vo);
+    }
+
+    /**
+     * 2B. 轻量级轮询异步导出任务实时进度百分比
+     *
+     * @param taskId 任务唯一标识 ID
+     * @return 包含 taskId、status、progress 百分比的实时进度摘要
+     */
+    @GetMapping("/progress")
+    public Result<Map<String, Object>> getTaskProgress(@RequestParam("taskId") String taskId) {
+        ExportTask task = taskService.getTask(taskId);
+        if (task == null) {
+            throw new BusinessException("异步导出任务不存在: " + taskId);
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("taskId", task.getTaskId());
+        resp.put("taskName", task.getTaskName());
+        resp.put("status", task.getStatus() != null ? task.getStatus().name() : null);
+        resp.put("progress", task.getProgress());
+        resp.put("fileSize", task.getFileSize());
+        resp.put("downloadUrl", task.getDownloadUrl());
+        return Result.success(resp);
     }
 
     /**
@@ -211,5 +246,17 @@ public class ExcelAsyncExportController {
             in.transferTo(response.getOutputStream());
             response.flushBuffer();
         }
+    }
+
+    private List<OrderBillVO> fetchAsyncOrdersByCursor(Long cursorId, int limit, int totalRows) {
+        long startId = (cursorId != null ? cursorId : 0L) + 1;
+        if (startId > totalRows) {
+            return java.util.Collections.emptyList();
+        }
+        int fetchCount = (int) Math.min(limit, totalRows - startId + 1);
+        List<OrderBillVO> all = OrderStreamingController.generateMockOrders(totalRows);
+        int fromIdx = (int) (startId - 1);
+        int toIdx = Math.min(all.size(), fromIdx + fetchCount);
+        return all.subList(fromIdx, toIdx);
     }
 }

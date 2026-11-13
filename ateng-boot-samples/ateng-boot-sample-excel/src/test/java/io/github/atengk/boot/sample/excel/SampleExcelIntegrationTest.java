@@ -74,7 +74,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * Excel Starter 全栈端到端自动化验收集成测试
  * <p>
- * 覆盖 6 大专职业务场景组件与 1 个最小 Web 契约控制器（≤ 3 端点），实现 100% 离线自洽全真断言。
+ * 覆盖 6 大专职业务场景组件与 6 个领域 Controller 全端点契约，实现 100% 离线自洽全真断言。
  * </p>
  *
  * @author Ateng
@@ -277,6 +277,39 @@ class SampleExcelIntegrationTest {
         saveTempExcel("roster-merge-attendance.xlsx", content);
     }
 
+    @Test
+    @DisplayName("花名册端点 1B：ExcelWebUtil.toResponseEntity 快捷重载与加密导出")
+    void testRoster_ExportEntityShortcut() throws Exception {
+        MvcResult plainResult = mockMvc.perform(get("/sample/excel/roster/export-entity-shortcut")
+                        .param("includeColumns", "id", "name"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(plainResult))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"));
+
+        byte[] plainBytes = plainResult.getResponse().getContentAsByteArray();
+        assertThat(plainBytes).isNotEmpty();
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(plainBytes))) {
+            Sheet sheet = wb.getSheet("员工花名册");
+            assertThat(sheet).isNotNull();
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(5);
+            assertThat(sheet.getRow(0).getPhysicalNumberOfCells()).isEqualTo(2);
+        }
+
+        MvcResult encResult = mockMvc.perform(get("/sample/excel/roster/export-entity-shortcut")
+                        .param("password", "RosterPass@2026"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(encResult))
+                .andExpect(status().isOk());
+
+        byte[] cipherBytes = encResult.getResponse().getContentAsByteArray();
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(cipherBytes))).isTrue();
+    }
+
     // ==========================================
     // 领域控制器 2：OnboardingImportController 测试 (/sample/excel/onboarding/*)
     // ==========================================
@@ -305,6 +338,43 @@ class SampleExcelIntegrationTest {
         }
 
         saveTempExcel("onboarding-template.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("入职防呆端点 1B：突破 255 字符下拉隐藏字典表模板与 ResponseEntityTemplate 导出")
+    void testOnboarding_DownloadLongDropdownTemplate() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/onboarding/template-long-dropdown"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(mvcResult))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"));
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet mainSheet = wb.getSheet("超长下拉入职模板");
+            assertThat(mainSheet).isNotNull();
+            assertThat(mainSheet.getDataValidations()).hasSize(2);
+
+            String hiddenSheetName = io.github.atengk.boot.excel.handler.DropdownSheetWriteHandler.HIDDEN_DICT_SHEET_NAME;
+            Sheet dictSheet = wb.getSheet(hiddenSheetName);
+            assertThat(dictSheet).isNotNull();
+            int dictIndex = wb.getSheetIndex(dictSheet);
+            assertThat(wb.isSheetHidden(dictIndex)).isTrue();
+            assertThat(dictSheet.getPhysicalNumberOfRows()).isEqualTo(14);
+            assertThat(dictSheet.getRow(0).getCell(0).getStringCellValue()).isEqualTo("CC-1001-总部基础平台研发中心");
+
+            assertThat(wb.getAllNames())
+                    .anySatisfy(name -> {
+                        assertThat(name.getNameName()).startsWith("_ateng_dd_");
+                        assertThat(name.getRefersToFormula()).contains(hiddenSheetName);
+                    });
+        }
+
+        saveTempExcel("onboarding-long-dropdown-template.xlsx", content);
     }
 
     @Test
@@ -491,6 +561,50 @@ class SampleExcelIntegrationTest {
         assertThat(node.get("data").get("totalErrors").asInt()).isEqualTo(0);
     }
 
+    @Test
+    @DisplayName("入职防呆端点 6B & 7B：ResponseEntity 差错剥离导出与标红批注反馈")
+    void testOnboarding_ExportFailedRowsAndFeedbackEntity() throws Exception {
+        MvcResult dirtyResult = mockMvc.perform(get("/sample/excel/onboarding/sample-dirty"))
+                .andExpect(status().isOk())
+                .andReturn();
+        MockMultipartFile dirtyFile = new MockMultipartFile(
+                "file", "dirty.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                dirtyResult.getResponse().getContentAsByteArray()
+        );
+
+        // 1. toResponseEntityFailedRows
+        MvcResult failedEntityResult = mockMvc.perform(multipart("/sample/excel/onboarding/export-failed-rows-entity")
+                        .file(dirtyFile))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(failedEntityResult))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"));
+
+        byte[] failedBytes = failedEntityResult.getResponse().getContentAsByteArray();
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(failedBytes))) {
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(3); // 1 表头 + 2 失败行
+        }
+
+        // 2. toResponseEntityErrorFeedback
+        MvcResult feedbackEntityResult = mockMvc.perform(multipart("/sample/excel/onboarding/export-feedback-entity")
+                        .file(dirtyFile))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(feedbackEntityResult))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"));
+
+        byte[] feedbackBytes = feedbackEntityResult.getResponse().getContentAsByteArray();
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(feedbackBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getRow(2).getCell(0).getCellComment()).isNotNull();
+        }
+    }
+
     // ==========================================
     // 领域控制器 3：WorkbookReportController 测试 (/sample/excel/report/*)
     // ==========================================
@@ -631,6 +745,128 @@ class SampleExcelIntegrationTest {
         saveTempExcel("report-filled-reimbursement.xlsx", filledBytes);
     }
 
+    @Test
+    @DisplayName("报表端点 1B & 2B：多 Sheet AES-256 加密导出与带 JSR-303 校验聚合读取闭环")
+    void testReport_MultiSheetEncrypt_And_Validate() throws Exception {
+        String password = "ReportSecret@2026";
+
+        // 1. 导出纯合规 AES-256 加密多 Sheet 工作簿
+        MvcResult cleanEncryptResult = mockMvc.perform(get("/sample/excel/report/multi-sheet-encrypt")
+                        .param("password", password)
+                        .param("includeInvalid", "false"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] cleanCipherBytes = cleanEncryptResult.getResponse().getContentAsByteArray();
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(cleanCipherBytes))).isTrue();
+
+        MockMultipartFile cleanFile = new MockMultipartFile(
+                "file", "multi-sheet-clean-enc.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                cleanCipherBytes
+        );
+
+        MvcResult cleanValidateResult = mockMvc.perform(multipart("/sample/excel/report/multi-sheet-validate")
+                        .file(cleanFile)
+                        .param("password", password)
+                        .param("headerStrategy", "STRICT"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode cleanNode = objectMapper.readTree(cleanValidateResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(cleanNode.get("code").asInt()).isEqualTo(200);
+        assertThat(cleanNode.get("data").get("hasErrors").asBoolean()).isFalse();
+        assertThat(cleanNode.get("data").get("onboardingValidCount").asInt()).isEqualTo(2);
+        assertThat(cleanNode.get("data").get("attendanceCount").asInt()).isEqualTo(3);
+
+        // 2. 导出含脏数据 AES-256 加密多 Sheet 工作簿并验证跨表错误聚合
+        MvcResult dirtyEncryptResult = mockMvc.perform(get("/sample/excel/report/multi-sheet-encrypt")
+                        .param("password", password)
+                        .param("includeInvalid", "true"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        MockMultipartFile dirtyFile = new MockMultipartFile(
+                "file", "multi-sheet-dirty-enc.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                dirtyEncryptResult.getResponse().getContentAsByteArray()
+        );
+
+        MvcResult dirtyValidateResult = mockMvc.perform(multipart("/sample/excel/report/multi-sheet-validate")
+                        .file(dirtyFile)
+                        .param("password", password)
+                        .param("headerStrategy", "STRICT"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode dirtyNode = objectMapper.readTree(dirtyValidateResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(dirtyNode.get("code").asInt()).isEqualTo(200);
+        assertThat(dirtyNode.get("data").get("hasErrors").asBoolean()).isTrue();
+        assertThat(dirtyNode.get("data").get("onboardingValidCount").asInt()).isEqualTo(1);
+        assertThat(dirtyNode.get("data").get("sheet0ErrorCount").asInt()).isGreaterThanOrEqualTo(4);
+        assertThat(dirtyNode.get("data").get("allErrors").size()).isGreaterThanOrEqualTo(4);
+
+        // 3. 错误密码访问阻断
+        MvcResult wrongPwdResult = mockMvc.perform(multipart("/sample/excel/report/multi-sheet-validate")
+                        .file(cleanFile)
+                        .param("password", "WrongPwd!"))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode wrongNode = objectMapper.readTree(wrongPwdResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(wrongNode.get("code").asInt()).isNotEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("报表端点 3B & 6B：toResponseEntityDynamic 与 toResponseEntityFill 明文/加密闭环")
+    void testReport_DynamicAndFillResponseEntity() throws Exception {
+        // 1. toResponseEntityDynamic (明文 + 加密)
+        MvcResult dynPlain = mockMvc.perform(get("/sample/excel/report/dynamic-response-entity"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(dynPlain)).andExpect(status().isOk());
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(dynPlain.getResponse().getContentAsByteArray()))) {
+            assertThat(wb.getSheet("指标统计").getPhysicalNumberOfRows()).isEqualTo(4);
+        }
+
+        MvcResult dynEnc = mockMvc.perform(get("/sample/excel/report/dynamic-response-entity")
+                        .param("password", "DynPass@2026"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(dynEnc)).andExpect(status().isOk());
+        byte[] dynCipherBytes = dynEnc.getResponse().getContentAsByteArray();
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(dynCipherBytes))).isTrue();
+        ByteArrayOutputStream dynPlainOut = new ByteArrayOutputStream();
+        ExcelSecurityUtil.decryptWorkbook(new ByteArrayInputStream(dynCipherBytes), dynPlainOut, "DynPass@2026");
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(dynPlainOut.toByteArray()))) {
+            assertThat(wb.getSheet("指标统计").getPhysicalNumberOfRows()).isEqualTo(4);
+        }
+
+        // 2. toResponseEntityFill (明文 + 加密)
+        MvcResult fillPlain = mockMvc.perform(get("/sample/excel/report/fill-response-entity"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(fillPlain)).andExpect(status().isOk());
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(fillPlain.getResponse().getContentAsByteArray()))) {
+            Sheet sheet = wb.getSheet("费用报销单");
+            assertThat(sheet.getRow(1).getCell(0).getStringCellValue()).contains("EXP-202611-0099");
+            assertThat(sheet.getRow(4).getCell(0).getStringCellValue()).isEqualTo("差旅交通费");
+        }
+
+        MvcResult fillEnc = mockMvc.perform(get("/sample/excel/report/fill-response-entity")
+                        .param("password", "FillPass@2026"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(fillEnc)).andExpect(status().isOk());
+        byte[] fillCipherBytes = fillEnc.getResponse().getContentAsByteArray();
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(fillCipherBytes))).isTrue();
+        ByteArrayOutputStream fillPlainOut = new ByteArrayOutputStream();
+        ExcelSecurityUtil.decryptWorkbook(new ByteArrayInputStream(fillCipherBytes), fillPlainOut, "FillPass@2026");
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(fillPlainOut.toByteArray()))) {
+            assertThat(wb.getSheet("费用报销单").getRow(1).getCell(0).getStringCellValue()).contains("EXP-202611-0099");
+        }
+    }
+
     // ==========================================
     // 领域控制器 4：PayrollSecurityController 测试 (/sample/excel/security/*)
     // ==========================================
@@ -754,6 +990,26 @@ class SampleExcelIntegrationTest {
         assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(content))).isTrue();
     }
 
+    @Test
+    @DisplayName("薪酬安全端点 2B & 3B：ResponseEntity 暗水印锁定与 AES-256 强加密流式导出")
+    void testSecurity_ResponseEntity_WatermarkAndEncrypt() throws Exception {
+        MvcResult wmResult = mockMvc.perform(get("/sample/excel/security/export-watermark-entity"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(wmResult)).andExpect(status().isOk());
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(wmResult.getResponse().getContentAsByteArray()))) {
+            assertThat(wb.getSheetAt(0).getProtect()).isTrue();
+            assertThat(wb.getAllPictures()).isNotEmpty();
+        }
+
+        MvcResult encResult = mockMvc.perform(get("/sample/excel/security/export-encrypt-entity")
+                        .param("password", "PayrollEntity@2026"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(encResult)).andExpect(status().isOk());
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(encResult.getResponse().getContentAsByteArray()))).isTrue();
+    }
+
     // ==========================================
     // 领域控制器 5：OrderStreamingController 测试 (/sample/excel/streaming/*)
     // ==========================================
@@ -860,6 +1116,45 @@ class SampleExcelIntegrationTest {
         assertThat(node.get("data").get("totalRead").asInt()).isEqualTo(80);
     }
 
+    @Test
+    @DisplayName("海量流式端点 1B & 2B & 3：toResponseEntityStreaming / Cursor 与模板 AES-256 加密导出")
+    void testStreaming_ResponseEntityShortcuts_And_EncryptedTemplate() throws Exception {
+        // 1. toResponseEntityStreaming
+        MvcResult pageEntity = mockMvc.perform(get("/sample/excel/streaming/export-page-entity")
+                        .param("totalRows", "120")
+                        .param("pageSize", "50"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(pageEntity)).andExpect(status().isOk());
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(pageEntity.getResponse().getContentAsByteArray()))) {
+            assertThat(wb.getSheet("订单流水").getPhysicalNumberOfRows()).isEqualTo(121);
+        }
+
+        // 2. toResponseEntityStreamingByCursor
+        MvcResult cursorEntity = mockMvc.perform(get("/sample/excel/streaming/export-cursor-entity")
+                        .param("totalRows", "120")
+                        .param("pageSize", "50"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(cursorEntity)).andExpect(status().isOk());
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(cursorEntity.getResponse().getContentAsByteArray()))) {
+            assertThat(wb.getSheet("交易账单").getPhysicalNumberOfRows()).isEqualTo(121);
+        }
+
+        // 3. StreamingPageExportTemplate + encrypt
+        MvcResult templateEnc = mockMvc.perform(get("/sample/excel/streaming/export-template")
+                        .param("password", "StreamPass@2026"))
+                .andExpect(status().isOk())
+                .andReturn();
+        byte[] cipherBytes = templateEnc.getResponse().getContentAsByteArray();
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(cipherBytes))).isTrue();
+        ByteArrayOutputStream plainOut = new ByteArrayOutputStream();
+        ExcelSecurityUtil.decryptWorkbook(new ByteArrayInputStream(cipherBytes), plainOut, "StreamPass@2026");
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(plainOut.toByteArray()))) {
+            assertThat(wb.getSheet("标准账单").getPhysicalNumberOfRows()).isEqualTo(151);
+        }
+    }
+
     // ==========================================
     // 领域控制器 6：ExcelAsyncExportController 测试 (/sample/excel/async/*)
     // ==========================================
@@ -950,6 +1245,39 @@ class SampleExcelIntegrationTest {
         JsonNode cancelNode = objectMapper.readTree(cancelResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
         assertThat(cancelNode.get("code").asInt()).isEqualTo(200);
         assertThat(cancelNode.get("data").get("taskId").asText()).isEqualTo(taskId);
+    }
+
+    @Test
+    @DisplayName("异步导出端点 2B：轻量进度百分比轮询与 StreamingPageExportTemplate.onProgress 联动")
+    void testAsync_ProgressEndpoint() throws Exception {
+        MvcResult submitResult = mockMvc.perform(post("/sample/excel/async/submit")
+                        .param("taskName", "进度百分比轮询验证")
+                        .param("count", "200"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String taskId = objectMapper.readTree(submitResult.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                .get("data").get("taskId").asText();
+
+        JsonNode progressNode = null;
+        for (int i = 0; i < 50; i++) {
+            MvcResult res = mockMvc.perform(get("/sample/excel/async/progress")
+                            .param("taskId", taskId))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            progressNode = objectMapper.readTree(res.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            if ("SUCCESS".equals(progressNode.get("data").get("status").asText())) {
+                break;
+            }
+            Thread.sleep(50);
+        }
+
+        assertThat(progressNode).isNotNull();
+        JsonNode data = progressNode.get("data");
+        assertThat(data.get("status").asText()).isEqualTo("SUCCESS");
+        assertThat(data.get("progress").asInt()).isEqualTo(100);
+        assertThat(data.get("fileSize").asLong()).isGreaterThan(0L);
+        assertThat(data.get("downloadUrl").asText()).isEqualTo("/sample/excel/async/download?taskId=" + taskId);
     }
 
     @Test
