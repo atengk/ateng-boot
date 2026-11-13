@@ -109,7 +109,7 @@ _Avoid_: BloomHelper, StaticBloomFilter
 _Avoid_: DelayQueue, DelayedQueue, TimeoutQueue
 
 **DelayedQueueListener**:
-声明式延时队列消费监听注解，由受管异步线程池驱动后台消费、四维上下文透传、失败退避重试与优雅停机排空。
+声明式延时队列消费监听注解，由受管异步线程池驱动后台消费、消费侧隔离 `traceId` 与线程上下文防污染、失败退避重试与优雅停机排空。
 _Avoid_: RedisDelayedConsumer, DelayMessageListener, QueueSubscriber
 
 **DeadLetterMessage**:
@@ -149,7 +149,7 @@ Redis Stream 死信结构化载荷契约，封装原始流名、消费组、消�
 _Avoid_: StreamBadRecord, PoisonStreamEntry
 
 **StreamFailureHandler**:
-Redis Stream 消费终态失败处理扩展点（SPI），在消费组重试耗尽并写入死信流（`${stream}:dlq`）后触发告警或审计回调。
+Redis Stream 消费终态失败处理扩展点（SPI），提供函数式 `onFailure(StreamDeadLetterMessage)` 与默认双参 `onFailed(StreamDeadLetterMessage, Throwable cause)` 回调契约，在消费组重试耗尽并写入死信流（`${stream}:dlq`）后触发带原因链的告警或审计处理。
 _Avoid_: StreamErrorHandler, StreamDeadLetterCallback
 
 **RedisMessagePublisher**:
@@ -159,3 +159,13 @@ _Avoid_: TopicPublisher, RedisBroadcaster, EventSender
 **ChannelTopicListener**:
 基于 Redis Pub/Sub 的声明式频道监听注解，支持精确主题、`${...}` 占位符与通配模式订阅，以及多参数强类型安全反序列化分发。
 _Avoid_: RedisListener, TopicSubscriber, PubSubConsumer
+
+### 全局键前缀与上下文治理
+
+**IdempotentKeyPrefixResolution**:
+全局键前缀幂等合成规则（由 `RedisProperties.buildKey(modulePrefix, rawKey)` 统一执行），先规范化全局 `key-prefix` 与二级模块前缀（`lock:`、`idempotent:`、`semaphore:`、`bloom:` 等）末尾英文冒号，再按“先剥离已存在全局前缀、后校验已存在模块前缀”的幂等规则合成物理键，防止拼接出 `sample:sample:` 或 `sample:lock:lock:` 等冗余重复前缀。
+_Avoid_: PrefixDoubleConcat, NaiveKeyPrefix, RawKeyPassthroughAll
+
+**ContextPropagationTiers**:
+跨组件上下文传播分级机制：Redis Stream（`RedisStreamTemplate` + `StreamBootstrap`）通过 `__ateng_*` 元字段实现 MDC `traceId`、租户标识、忽略租户标记与用户登录态的四维跨节点全链路透传，并在 POJO 反序列化前剥离系统元字段且于 `finally` 全量清理；延时队列（`DelayedQueueBootstrap`）与 Pub/Sub（`ChannelTopicBootstrap`）坚持纯净业务载荷传输不序列化用户/租户身份，并在消费侧前置清理工作线程历史残余上下文、注入独立隔离 `traceId` 且于 `finally` 严格兜底清理。
+_Avoid_: GlobalContextSerialization, ThreadLocalLeakPropagation, UnscopedTraceSharing
