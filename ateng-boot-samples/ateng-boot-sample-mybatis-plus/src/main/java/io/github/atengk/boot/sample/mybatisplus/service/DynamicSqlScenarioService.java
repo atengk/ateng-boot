@@ -7,6 +7,7 @@ import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlExecutor;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry;
 import io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader;
 import io.github.atengk.boot.sample.mybatisplus.model.UserDynamicVO;
+import io.github.atengk.boot.sample.mybatisplus.model.UserSearchDTO;
 
 import java.util.List;
 import java.util.Map;
@@ -121,4 +122,23 @@ public interface DynamicSqlScenarioService {
      * @return 热替换后立即执行的查询结果列表
      */
     List<Map<String, Object>> hotSwapAndExecute(io.github.atengk.boot.sample.mybatisplus.model.DynamicSqlHotSwapDTO dto);
+
+    /**
+     * 基于结构化动态查询请求与额外命名参数执行存在性探测（单页 LIMIT 1 短路）
+     *
+     * @param name   用户姓名模糊匹配（可选）
+     * @param minAge 最小年龄（可选）
+     * @param deptId 部门 ID（作为 extraParams 额外绑定参数，可选）
+     * @return 若存在至少一条匹配记录返回 true，否则返回 false
+     */
+    boolean existsUsersDynamicRequest(String name, Integer minAge, Long deptId);
+
+    /**
+     * 基于声明式 DTO 与额外命名参数执行存在性探测（单页 LIMIT 1 短路）
+     *
+     * @param searchDTO 用户动态检索 DTO（可选）
+     * @param deptId    部门 ID（作为 extraParams 额外绑定参数，可选）
+     * @return 若存在至少一条匹配记录返回 true，否则返回 false
+     */
+    boolean existsUsersDynamicDto(UserSearchDTO searchDTO, Long deptId);
 }

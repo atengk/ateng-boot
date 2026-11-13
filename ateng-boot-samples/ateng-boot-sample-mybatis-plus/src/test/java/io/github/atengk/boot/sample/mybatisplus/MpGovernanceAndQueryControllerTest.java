@@ -385,5 +385,40 @@ class MpGovernanceAndQueryControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(400)))
                 .andExpect(jsonPath("$.msg", containsString("内存沙箱已安全拦截并保留上一版本")));
+
+        // 6.5 验证 DynamicSqlExecutor.exists 与 existsDynamic（含 extraParams 混合条件）存在性探测
+        mockMvc.perform(get("/sample/mybatis-plus/query/dynamic-sql/exists")
+                        .param("name", "张")
+                        .param("minAge", "20")
+                        .param("deptId", "101"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(true)));
+
+        mockMvc.perform(get("/sample/mybatis-plus/query/dynamic-sql/exists")
+                        .param("name", "张")
+                        .param("deptId", "999999"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(false)));
+
+        UserSearchDTO existsDto = new UserSearchDTO();
+        existsDto.setName("张");
+        existsDto.setMinAge(20);
+        mockMvc.perform(post("/sample/mybatis-plus/query/dynamic-sql/exists-dynamic")
+                        .param("deptId", "101")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(existsDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(true)));
+
+        mockMvc.perform(post("/sample/mybatis-plus/query/dynamic-sql/exists-dynamic")
+                        .param("deptId", "999999")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(existsDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(false)));
     }
 }

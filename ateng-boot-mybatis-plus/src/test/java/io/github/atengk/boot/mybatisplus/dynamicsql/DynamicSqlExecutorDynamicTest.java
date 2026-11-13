@@ -431,4 +431,62 @@ class DynamicSqlExecutorDynamicTest {
         // 再次调用时应当快速失败抛出 IllegalArgumentException
         assertThrows(IllegalArgumentException.class, () -> executor.count(statementId));
     }
+
+    @Test
+    @DisplayName("测试 exists 与 existsDynamic 存在性探测门面（含 extraParams、null 防御与未注册快速失败）")
+    void testExistsAndExistsDynamicWithExtraParams() {
+        String statementId = "exec.userWithDept";
+
+        // 1. DynamicQueryRequest 命中与未命中
+        DynamicQueryRequest hitReq = new DynamicQueryRequest();
+        hitReq.addCondition(QueryCondition.eq("deptName", "研发部"));
+        hitReq.addCondition(QueryCondition.ge("age", 25));
+        assertTrue(executor.exists(statementId, hitReq));
+
+        DynamicQueryRequest missReq = new DynamicQueryRequest();
+        missReq.addCondition(QueryCondition.eq("deptName", "不存在部门"));
+        assertFalse(executor.exists(statementId, missReq));
+        assertFalse(executor.exists(statementId, (DynamicQueryRequest) null));
+
+        // 2. DTO 驱动 existsDynamic 命中与未命中
+        UserQueryDTO hitDto = new UserQueryDTO();
+        hitDto.setUserName("Alice");
+        hitDto.setDeptName("研发部");
+        assertTrue(executor.existsDynamic(statementId, hitDto));
+
+        UserQueryDTO missDto = new UserQueryDTO();
+        missDto.setUserName("Alice");
+        missDto.setDeptName("市场部");
+        assertFalse(executor.existsDynamic(statementId, missDto));
+        assertFalse(executor.existsDynamic(statementId, null));
+
+        // 3. extraParams 额外绑定参数联合 exists / existsDynamic 探测（含 null request + extraParams）
+        String extraParamStmtId = "exec.userWithExtraStatus";
+        registry.register(DynamicSqlDefinition.builder()
+                .id(extraParamStmtId)
+                .sqlScript("SELECT u.id AS user_id, u.user_name, u.age, u.status, d.dept_name " +
+                        "FROM t_exec_user u " +
+                        "LEFT JOIN t_exec_dept d ON u.dept_id = d.id " +
+                        "<where><if test=\"targetStatus != null\">AND u.status = #{targetStatus}</if></where>")
+                .commandType(SqlCommandType.SELECT)
+                .build());
+
+        DynamicQueryRequest deptReq = new DynamicQueryRequest();
+        deptReq.addCondition(QueryCondition.eq("deptName", "研发部"));
+        assertTrue(executor.exists(extraParamStmtId, deptReq, Map.of("targetStatus", "ACTIVE")));
+        assertFalse(executor.exists(extraParamStmtId, deptReq, Map.of("targetStatus", "LOCKED")));
+        assertTrue(executor.exists(extraParamStmtId, null, Map.of("targetStatus", "ACTIVE")));
+
+        UserQueryDTO deptDto = new UserQueryDTO();
+        deptDto.setDeptName("市场部");
+        assertTrue(executor.existsDynamic(extraParamStmtId, deptDto, Map.of("targetStatus", "ACTIVE")));
+        assertFalse(executor.existsDynamic(extraParamStmtId, deptDto, Map.of("targetStatus", "LOCKED")));
+        assertFalse(executor.existsDynamic(extraParamStmtId, null, Map.of("targetStatus", "LOCKED")));
+
+        // 4. 空或未注册 statementId 快速失败
+        assertThrows(IllegalArgumentException.class, () -> executor.exists("non.existent.id", hitReq));
+        assertThrows(IllegalArgumentException.class, () -> executor.exists("", hitReq, Map.of("k", "v")));
+        assertThrows(IllegalArgumentException.class, () -> executor.existsDynamic("non.existent.id", hitDto));
+        assertThrows(IllegalArgumentException.class, () -> executor.existsDynamic(null, hitDto, Map.of("k", "v")));
+    }
 }

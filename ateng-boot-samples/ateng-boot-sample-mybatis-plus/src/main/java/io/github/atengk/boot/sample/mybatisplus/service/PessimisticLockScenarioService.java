@@ -38,4 +38,21 @@ public interface PessimisticLockScenarioService extends AtengBaseService<TaskQue
      * @return 锁定获取到的任务视图对象
      */
     TaskQueueVO getOneTaskForUpdate(String taskName);
+
+    /**
+     * 根据主键 ID 获取悲观排他锁（FOR UPDATE）并直接投影为强类型 VO
+     *
+     * @param taskId 任务 ID
+     * @return 任务视图对象，未命中时返回 null
+     */
+    TaskQueueVO getTaskByIdForUpdate(Long taskId);
+
+    /**
+     * 按状态执行悲观跳锁（SKIP_LOCKED）列表锁定检索并投影为强类型 VO 列表
+     *
+     * @param status 任务状态（可选）
+     * @param limit  单次拉取上限
+     * @return 任务视图对象列表
+     */
+    List<TaskQueueVO> listTasksForUpdate(String status, int limit);
 }

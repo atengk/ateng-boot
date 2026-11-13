@@ -32,15 +32,15 @@
 | **存储加解密** | 存储透明加解密类型转换器 (随机 IV) | `EncryptTypeHandler` | `ateng.boot.mybatis-plus.crypto.secret-key` | 持久化时入库 `v1:` 版本化 AES-CBC 随机 IV 密文，查询出库解密为真实明文，具备语义安全性，严格坚守“内存真明文”铁律 | `EncryptTypeHandlerTest` / `UserDomainIntegrationTest` / `MpLifecycleAndSecurityControllerTest` |
 | **存储加解密** | 确定性透明加密类型转换器 (固定 IV) | `DeterministicEncryptTypeHandler` | `ateng.boot.mybatis-plus.crypto.secret-key` | 继承 `EncryptTypeHandler`，采用 HMAC-SHA256 SIV 合成固定 IV + AES-CBC，同明文生成同一密文，支持数据库精确等值（`=` / `IN`）密文检索，解密完全双向兼容 | `DeterministicEncryptTypeHandlerTest` / `DynamicQueryHelperDeterministicEncryptTest` / `MpGovernanceAndQueryControllerTest` |
 | **乐观锁重试** | 乐观锁防冲突重试模板 | `OptimisticLockTemplate` | `ateng.boot.mybatis-plus.optimistic-locker.enabled` | `executeWithRetry(Supplier<Boolean>)` / `executeWithRetry(Supplier<Boolean>, int, Duration)`，高并发更新冲突自动退避重试 | `OptimisticLockTemplateTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
-| **分页契约** | 分页对象流式解耦与安全转译 | `PageUtil` | `ateng.boot.mybatis-plus.pagination.max-limit` | `toPage(PageQuery)` / `toPage(PageQuery, Class<T>)`（安全转译 sorts 并依托实体白名单过滤） / `toPageResult(IPage<T>)` / `toPageResult(IPage<S>, Function<S, T>)`，彻底解耦传输契约与持久实体（Zero-Entity-Leakage） | `PageUtilTest` / `MpGovernanceAndQueryControllerTest` |
+| **分页契约** | 分页对象流式解耦与安全转译 | `PageUtil` | `ateng.boot.mybatis-plus.pagination.max-limit`<br>`ateng.boot.mybatis-plus.pagination.overflow` | `toPage(PageQuery)` / `toPage(PageQuery, Class<T>)` / `toUnsortedPage(PageQuery)` / `setDefaultMaxLimit(long)` / `toPageResult(IPage<S>, Function<S, T>)`，实体白名单安全排序过滤与零实体泄露 | `PageUtilTest` / `MpGovernanceAndQueryControllerTest` |
 | **分页拦截** | 原生分页拦截与防刷守护 | `PaginationInnerInterceptor` | `ateng.boot.mybatis-plus.pagination.enabled`<br>`ateng.boot.mybatis-plus.pagination.max-limit`<br>`ateng.boot.mybatis-plus.pagination.overflow`<br>`ateng.boot.mybatis-plus.pagination.db-type` | 原生分页拦截，注入单页最大条数限制（默认 500）与防刷超限防御，自动识别数据库方言 | `AtengMybatisPlusAutoConfigurationTest` / `MpGovernanceAndQueryControllerTest` |
 | **安全阻断** | 防全表更新/删除拦截器 | `BlockAttackInnerInterceptor` | `ateng.boot.mybatis-plus.block-attack.enabled` | 拦截无 `WHERE` 条件的全表更新与删除操作，防止误操作摧毁生产库数据 | `AtengMybatisPlusAutoConfigurationTest` / `MpBatchLockAndObservabilityControllerTest` |
-| **性能审计** | 慢 SQL 性能审计拦截器 | `SlowSqlInterceptor` | `ateng.boot.mybatis-plus.slow-sql.enabled`<br>`ateng.boot.mybatis-plus.slow-sql.threshold`<br>`ateng.boot.mybatis-plus.slow-sql.format-sql`<br>`ateng.boot.mybatis-plus.slow-sql.mask-sensitive` | 拦截 `StatementHandler` 执行，基于 `System.nanoTime()` 高精度快速比对放行；超时输出美化 SQL、真实脱敏参数及调用位置；严禁自动 EXPLAIN | `SlowSqlInterceptorTest` / `AtengMybatisPlusAutoConfigurationTest` / `MpBatchLockAndObservabilityControllerTest` |
+| **性能审计** | 慢 SQL 性能审计拦截器 | `SlowSqlInterceptor` | `ateng.boot.mybatis-plus.slow-sql.enabled`<br>`ateng.boot.mybatis-plus.slow-sql.threshold`<br>`ateng.boot.mybatis-plus.slow-sql.format-sql`<br>`ateng.boot.mybatis-plus.slow-sql.mask-sensitive`<br>`ateng.boot.mybatis-plus.slow-sql.async-enabled` | 拦截 `StatementHandler` 执行，基于 `System.nanoTime()` 高精度快速比对放行；超时输出美化 SQL、真实脱敏参数及调用位置（支持受管异步派发）；严禁自动 EXPLAIN | `SlowSqlInterceptorTest` / `AtengMybatisPlusAutoConfigurationTest` / `MpBatchLockAndObservabilityControllerTest` |
 | **告警通知** | 慢 SQL 告警通知 SPI | `SlowSqlAlertProvider` | - | 函数式 SPI 扩展契约，支持下游无缝对接飞书/钉钉群机器人或外部 APM 平台 | `SlowSqlInterceptorTest` / `SlowSqlAlertScenarioTest` / `MpBatchLockAndObservabilityControllerTest` |
 | **审计事件** | 慢 SQL 审计事件模型 | `SlowSqlEvent` | - | 继承 Spring 原生 `ApplicationEvent`，发布执行耗时、格式化 SQL、脱敏参数、线程名与代码调用栈位置 | `SlowSqlInterceptorTest` / `SlowSqlAlertScenarioTest` |
 | **发号器** | 分布式雪花算法发号器 | `DefaultIdentifierGenerator` | `ateng.boot.mybatis-plus.snowflake.enabled`<br>`ateng.boot.mybatis-plus.snowflake.worker-id`<br>`ateng.boot.mybatis-plus.snowflake.datacenter-id` | 提供趋势递增的 64 位全局唯一分布式 ID 发号支持 | `AtengMybatisPlusAutoConfigurationTest` / `UserDomainIntegrationTest` |
 | **动态 SQL** | 外部动态 SQL 增强注册中心 | `DynamicSqlRegistry` | `ateng.boot.mybatis-plus.dynamic-sql.enabled`<br>`ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 注册、AST 投影字典解析提取与热加载中心，支持运行时动态注册/移除外部 XML 脚本，联动缓存失效通知 | `DynamicSqlRegistryTest` / `DynamicSqlScenarioTest` / `MpGovernanceAndQueryControllerTest` |
-| **动态 SQL** | 外部动态 SQL 统一执行门面 | `DynamicSqlExecutor` | `ateng.boot.mybatis-plus.dynamic-sql.auto-script-wrap` | `selectPage` / `selectList` / `selectOne` / `count` / `insert` / `update` / `delete`，原生支持接收 `DynamicQueryRequest` 及业务 DTO，多表 AST 投影自愈与 ADR-0010 强类型 VO 映射 | `DynamicSqlExecutorTest` / `DynamicSqlScenarioTest` / `MpGovernanceAndQueryControllerTest` |
+| **动态 SQL** | 外部动态 SQL 统一执行门面 | `DynamicSqlExecutor` | `ateng.boot.mybatis-plus.dynamic-sql.auto-script-wrap` | `selectPage` / `selectList` / `selectOne` / `count` / `exists` / `existsDynamic` / `insert` / `update` / `delete`，原生支持接收 `DynamicQueryRequest`、业务 DTO 与 `extraParams` 绑定参数，多表 AST 投影自愈与强类型 VO 映射 | `DynamicSqlExecutorTest` / `DynamicSqlExecutorDynamicTest` / `DynamicSqlScenarioTest` / `MpGovernanceAndQueryControllerTest` |
 | **动态 SQL** | 外部 SQL 资源自动加载器 | `ExternalSqlLoader` / `ResourceExternalSqlLoader` | `ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 资源加载 SPI 与默认实现，启动时自动扫描指定路径并注册至 `DynamicSqlRegistry` | `ResourceExternalSqlLoaderTest` / `DynamicSqlScenarioTest` / `MpGovernanceAndQueryControllerTest` |
 | **流式游标** | 原生游标 SQL 注入器 | `SelectCursor` | - | 自动向 Mapper 注入 `selectCursor` MappedStatement，底层强制设置 `fetchSize = 1000`，杜绝内存溢出 | `AtengSqlInjectorTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
 | **流式游标** | 受管流式游标查询模板 | `StreamingQueryTemplate` | - | `forEach` / `forEachBatch` / `forEachWhile` / `execute`，强制只读事务守护，`try-with-resources` 确定性闭合游标与连接归还，支持 Predicate 提前短路退出与不可变切片防卫 | `StreamingQueryTemplateTest` / `TenantOrderDomainIntegrationTest` / `MpBatchLockAndObservabilityControllerTest` |
@@ -73,10 +73,10 @@
 | **JSON 类型转换** | 复杂深层泛型 JSON 类型转换基类 | `GenericJsonTypeHandler<T>` | - | 基于泛型超类签名自动提取深层嵌套 `JavaType`（如 `List<ShippingAddress>`），兼具集合与 Map 空安全保底 | `GenericJsonTypeHandlerTest` / `JsonFieldScenarioTest` / `MpLifecycleAndSecurityControllerTest` |
 | **悲观并发控制** | 强类型悲观加锁模式枚举 | `LockMode` | - | 包含 `FOR_UPDATE`、`NOWAIT`、`SKIP_LOCKED` 与 `FOR_SHARE` 4 大强类型加锁模式，消除裸魔法字符串 | `PessimisticLockUtilTest` / `PessimisticLockScenarioTest` / `MpBatchLockAndObservabilityControllerTest` |
 | **悲观并发控制** | 悲观锁方言自适应与快速失败工具 | `PessimisticLockUtil` | - | `apply(wrapper, lockMode)` / `forUpdate(wrapper, lockMode)`，前置探测底层数据库方言，在 MySQL 5.7 或 SQLite 等不支持跳锁引擎上调用立即抛出异常快速失败 | `PessimisticLockUtilTest` / `PessimisticLockScenarioTest` / `MpBatchLockAndObservabilityControllerTest` |
-| **悲观并发控制** | 悲观排队锁与跳锁 Service 门面 | `AtengBaseService` / `AtengServiceImpl` | - | `getByIdForUpdate(id)` / `getByIdForUpdate(id, lockMode)` / `listForUpdate(wrapper, lockMode)`，开箱即用的悲观行锁与并发任务抢单拉取门面 | `AtengBaseServicePessimisticLockTest` / `PessimisticLockScenarioTest` / `MpBatchLockAndObservabilityControllerTest` |
+| **悲观并发控制** | 悲观排队锁与跳锁 Service 门面 | `AtengBaseService` / `AtengServiceImpl` | - | `getByIdForUpdate(id[, lockMode][, voClass])` / `listForUpdate(wrapper[, lockMode][, voClass])` / `getOneForUpdate(wrapper[, lockMode][, voClass])`，开箱即用的悲观行锁、跳锁抢单与强类型 VO 投影门面 | `AtengBaseServicePessimisticLockTest` / `PessimisticLockScenarioTest` / `MpBatchLockAndObservabilityControllerTest` |
 | **逻辑删除闭环** | 逻辑删除穿透审计上下文持有者 | `LogicDeleteContextHolder` | `ateng.boot.mybatis-plus.logic-delete.enabled` | 提供 `runWithDeleted` 与 `callWithDeleted` 编程式闭包（带重入深度计数器），在审计与回收站场景下安全穿透逻辑删除 | `LogicDeleteContextHolderTest` / `SoftDeleteUniqueKeyScenarioTest` |
 | **逻辑删除闭环** | JSqlParser AST 逻辑删除动态穿透拦截器 | `AtengLogicDeleteInnerInterceptor` | `ateng.boot.mybatis-plus.logic-delete.enabled`<br>`ateng.boot.mybatis-plus.logic-delete.columns` | 拦截器层动态递归剥离 WHERE 子句中的 `deleted = 0` 等值表达式，保留业务显式条件 | `AtengLogicDeleteInnerInterceptorTest` / `SoftDeleteUniqueKeyScenarioTest` |
-| **逻辑删除闭环** | 逻辑删除数据恢复与回收站 Service 门面 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.logic-delete.enabled` | `restoreById(id)` / `restore(wrapper)`（重置 `deleted = 0`，优先接入 `CurrentUserProvider` SPI 刷新 `updateBy`/`updateTime`），`countWithDeleted` / `existsWithDeleted`，以及强类型 VO 投影 `pageWithDeleted(PageQuery/IPage, wrapper, voClass)` / `listWithDeleted` / `getByIdWithDeleted` | `AtengBaseServiceRestoreTest` / `SoftDeleteUniqueKeyScenarioTest` / `MpLifecycleAndSecurityControllerTest` |
+| **逻辑删除闭环** | 逻辑删除数据恢复与回收站 Service 门面 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.logic-delete.enabled` | `restoreById(id)` / `restoreByIds(idList)` / `restore(wrapper)`（重置 `deleted = 0`、支持分批切片并刷新 `updateBy`/`updateTime`），`countWithDeleted` / `existsWithDeleted`，以及强类型 VO 投影 `pageWithDeleted` / `listWithDeleted` / `getByIdWithDeleted` | `AtengBaseServiceLogicDeleteAndPhysicalPurgeTest` / `SoftDeleteUniqueKeyScenarioTest` / `MpLifecycleAndSecurityControllerTest` |
 | **逻辑删除闭环** | 物理硬删除与回收站粉碎注入节点与门面 | `AtengSqlInjector` / `AtengBaseMapper` / `AtengBaseService` | - | 注入 `deletePhysicallyById` / `deletePhysicallyBatchByIds` / `deletePhysically` 真实 `DELETE FROM` 节点，配齐 `removePhysicallyById` / `removePhysicallyBatchByIds` / `removePhysically` 门面与 Fail-Fast 前置防卫 | `AtengSqlInjectorTest` / `AtengBaseServiceLogicDeleteAndPhysicalPurgeTest` / `SoftDeleteUniqueKeyScenarioTest` |
 
 ---
@@ -321,12 +321,17 @@ public Result<List<ProductSkuVO>> cycleSoftDelete(@RequestParam(defaultValue = "
     return Result.success(all.stream().map(ProductSkuVO::fromEntity).toList());
 }
 
-// 3. 误删一键恢复（自动剥离 WHERE deleted = 0 锁死，将 deleted 重置为 0 并刷新 updateTime / updateBy）
+// 3. 误删一键恢复（单条 restoreById 或主键集合分批 restoreByIds，自动重置 deleted = 0 并刷新 updateTime / updateBy）
 @PostMapping("/sku/{id}/restore")
 public Result<ProductSkuVO> restoreSkuById(@PathVariable Long id) {
     boolean restored = softDeleteService.restoreById(id);
     BusinessAssert.isTrue(restored, "未找到可恢复的商品 SKU 记录: id=" + id);
     return Result.success(ProductSkuVO.fromEntity(softDeleteService.getById(id)));
+}
+
+@PostMapping("/sku/restore-by-ids")
+public Result<Boolean> restoreSkuByIds(@RequestBody(required = false) List<Long> ids) {
+    return Result.success(softDeleteService.restoreByIds(ids));
 }
 
 // 4. 回收站穿透统计与强类型 VO 分页投影（零实体泄露）
@@ -347,7 +352,7 @@ public Result<Boolean> purgeSkuPhysically(@PathVariable Long id) {
 - **AST 精准剥离不伤业务条件**：`AtengLogicDeleteInnerInterceptor` 仅在当前线程激活穿透标记时介入，通过 JSqlParser 递归剥离 `WHERE` 与 `JOIN ON` 中的 `deleted = 0` 条件，100% 保留业务自身的查询与排序条件；
 - **防全表误恢复强卫语句**：调用 `softDeleteService.restore(wrapper)` 时，若传入 `null` 或不包含任何有效 `WHERE` 条件的空 `Wrapper`，底层立即抛出 `IllegalArgumentException` 快速失败，严防将全表历史软删数据一次性全部复活；
 - **物理硬删除注入节点与全生命周期对称闭环 (`AtengSqlInjector`)**：自动为实体注册 `DeletePhysicallyById`、`DeletePhysicallyBatchByIds` 与 `DeletePhysically` 真实 SQL `DELETE FROM` 节点，并在 `AtengBaseService` 提供对等门面；所有物理删除前置校验入参与非空 `WHERE` 条件，违背立即抛出 `IllegalArgumentException` 快速失败；
-- **操作人审计多级 SPI 回退**：`restoreById` / `restore` 自动识别 Spring 容器中注册的 `CurrentUserProvider` SPI 提取当前操作人，未配置时无缝降级回退至 `UserContextHolder.get()`；
+- **操作人审计多级 SPI 回退**：`restoreById` / `restoreByIds` / `restore` 自动识别 Spring 容器中注册的 `CurrentUserProvider` SPI 提取当前操作人，未配置时无缝降级回退至 `UserContextHolder.get()`；其中 `restoreByIds` 对 `null`、空集合或全 `null` 集合安全返回 `false`，并基于 `batch.default-size` 自动分批切片避免超长 `IN` 列表溢出；
 - **全生命周期对称穿透与零实体泄露**：对称提供 `countWithDeleted`、`existsWithDeleted`、`pageWithDeleted`（支持强类型 VO 类字节码入参自动投影为 `PageResult<V>`）与 `listWithDeleted`。
 
 ---
@@ -800,7 +805,7 @@ List<UserVO> deptUsers = userService.list(
 ```
 
 #### 核心机制与生产边界
-- **排序白名单与敏感列免疫**：调用 `PageUtil.toPage(pageQuery, Entity.class)` 时，底层联动 `DynamicQueryHelper` 元数据缓存，仅放行实体真实持久化属性且自动剔除 `@DynamicQueryIgnore`、`@FieldEncrypt` 密文列（密文随机 IV 排序无业务意义且暴露侧信道风险）与逻辑删除列；
+- **排序白名单与敏感列免疫**：调用 `PageUtil.toPage(pageQuery, Entity.class)` 时，底层联动 `DynamicQueryHelper` 元数据缓存，仅放行实体真实持久化属性且自动剔除 `@DynamicQueryIgnore`、`@FieldEncrypt` 密文列（密文随机 IV 排序无业务意义且暴露侧信道风险）与逻辑删除列；可通过 `PageUtil.setDefaultMaxLimit(long)` 或配置 `ateng.boot.mybatis-plus.pagination.max-limit` 与 `overflow` 统一管控防刷上限与溢页回退行为；
 - **空安全保底不变量**：`toPageResult` 与 `AtengBaseService.list*` 在查无数据时始终保底返回 `Collections.emptyList()`，绝不返回 `null`。
 
 ---
@@ -967,7 +972,7 @@ ateng:
   boot:
     mybatis-plus:
       dynamic-sql:
-        enabled: true                                   # 是否启用外部动态 SQL 引擎（默认 true）
+        enabled: false                                  # 是否启用外部动态 SQL 增强引擎（默认 false，按需开启）
         locations: classpath*:dynamic-sql/**/*.xml      # 外部动态 SQL 脚本扫描路径（支持多路径逗号分隔）
         auto-script-wrap: true                          # 是否自动为含动态标签的 SQL 包裹 <script>（默认 true）
 ```
@@ -1013,6 +1018,30 @@ public class DynamicSqlScenarioServiceImpl implements DynamicSqlScenarioService 
     }
 
     @Override
+    public boolean existsUsersDynamicRequest(String name, Integer minAge, Long deptId) {
+        DynamicQueryRequest request = new DynamicQueryRequest();
+        if (name != null && !name.isBlank()) {
+            request.addCondition(QueryCondition.like("name", name.trim()));
+        }
+        if (minAge != null) {
+            request.addCondition(QueryCondition.ge("age", minAge));
+        }
+        Map<String, Object> extraParams = deptId != null ? Map.of("deptId", deptId) : null;
+        // 单页 Page(1, 1, false) 物理短路探测，同时支持额外命名参数（extraParams）绑定 XML <if> 条件
+        return extraParams != null
+                ? dynamicSqlExecutor.exists("user.findUsersDynamic", request, extraParams)
+                : dynamicSqlExecutor.exists("user.findUsersDynamic", request);
+    }
+
+    @Override
+    public boolean existsUsersDynamicDto(UserSearchDTO searchDTO, Long deptId) {
+        Map<String, Object> extraParams = deptId != null ? Map.of("deptId", deptId) : null;
+        return extraParams != null
+                ? dynamicSqlExecutor.existsDynamic("user.findUsersDynamic", searchDTO, extraParams)
+                : dynamicSqlExecutor.existsDynamic("user.findUsersDynamic", searchDTO);
+    }
+
+    @Override
     public List<Map<String, Object>> hotSwapAndExecute(DynamicSqlHotSwapDTO dto) {
         DynamicSqlDefinition definition = DynamicSqlDefinition.builder()
                 .id(dto.getStatementId())
@@ -1054,6 +1083,7 @@ public class DatabaseExternalSqlLoader implements ExternalSqlLoader {
 #### 核心机制与生产边界
 - **零缝隙原子热替换 (Zero-Gap Safe Put)**：`DynamicSqlRegistry` 直接操作底层 `Configuration` 的 `mappedStatements` 容器执行原子覆盖，绝不采用“先 `remove` 后 `add`”导致高并发下瞬间报 `Mapped Statements collection does not contain value`；同时自动触发 `DynamicSqlProjectionResolver` 与 `DynamicQueryTemplate` 投影缓存联动失效；
 - **内存沙箱预检与防灾回滚**：每次注册或热更新前，先在隔离构建器中完成 OGNL 与 XML 语法树预编译；若脚本存在未闭合标签或非法语法，立即拦截并返回 `false`，线上已有旧版语句毫发无损；
+- **单页物理短路与动态 XML 标签全保真 (`exists` / `existsDynamic`)**：存在性探测底层自动注入 `Page(1, 1, false)` 短路触发 `LIMIT 1` 且跳过 `COUNT(*)` 统计，并支持保留外部 XML `<where>/<if>` 标签与 `extraParams` 额外绑定参数联合求值；对未注册或空 `statementId` 立即抛出 `IllegalArgumentException` 快速失败；
 - **事务与拦截器链 100% 贯通**：`DynamicSqlExecutor` 底层复用 Spring 受管 `SqlSessionTemplate`，与 `BaseMapper` / `ServiceImpl` 共享同一物理事务连接，且 100% 穿透多租户、数据权限、分页与 SQL 审计拦截器链。
 
 ---
@@ -1333,32 +1363,35 @@ public SkuDeductDTO deductSkuStockWithOptimisticLock(Long skuId, BigDecimal dedu
   - `SKIP_LOCKED`: `FOR UPDATE SKIP LOCKED`（并发跳锁，跳过已被其他事务锁定的行，轻量队列抢单首选）；
   - `FOR_SHARE`: `FOR SHARE`（共享读锁）；
 - **`PessimisticLockUtil` 方言探测与 Fail-Fast**：前置识别数据库方言，若在已知不支持 `SKIP LOCKED` 的引擎（如 MySQL 5.7、SQLite）上调用立即抛出 `UnsupportedOperationException` 快速失败；
-- **Service 悲观锁门面**：`getByIdForUpdate` 与 `listForUpdate` 开箱即用。
+- **Service 悲观锁全系门面与零实体泄露 VO 投影**：`getByIdForUpdate`、`listForUpdate` 与 `getOneForUpdate` 全系对称支持默认 `LockMode.FOR_UPDATE` / 显式指定 `LockMode` 以及直接传入 `Class<V> voClass` 投影转换为强类型 VO，杜绝持久层实体向外部边界泄露。
 
 #### 实战代码示例
 ```java
-// 任务队列 Worker 并发抢单消费：跳过被其他 Worker 锁定的任务，零阻塞并发处理（锚定 Sample: HighPerfBatchScenarioServiceImpl）
-@Override
+// 任务队列 Worker 并发抢单与悲观锁 VO 投影（提取自 Sample: PessimisticLockScenarioServiceImpl）
 @Transactional(rollbackFor = Exception.class)
-public TaskQueueVO grabPendingTask(String workerId) {
-    // 1. 构建排队任务检索条件
-    LambdaQueryWrapper<ProductSkuEntity> wrapper = Wrappers.<ProductSkuEntity>lambdaQuery()
-            .eq(ProductSkuEntity::getStatus, 1)
-            .orderByAsc(ProductSkuEntity::getId)
-            .last("LIMIT 1");
+public TaskQueueVO getTaskByIdForUpdate(Long taskId) {
+    // 1. 主键悲观排他锁（默认 FOR_UPDATE）并直接投影为强类型 VO
+    return getByIdForUpdate(taskId, TaskQueueVO.class);
+}
 
-    // 2. 强类型 SKIP_LOCKED 加锁拉取：跳过已被其他并发事务锁定的行，立即返回可用任务
-    List<ProductSkuEntity> availableTasks = productSkuService.listForUpdate(wrapper, LockMode.SKIP_LOCKED);
-    if (availableTasks.isEmpty()) {
-        return null;
-    }
+@Transactional(rollbackFor = Exception.class)
+public List<TaskQueueVO> listTasksForUpdate(String status, int limit) {
+    LambdaQueryWrapper<TaskQueueEntity> wrapper = Wrappers.lambdaQuery(TaskQueueEntity.class)
+            .eq(status != null && !status.isBlank(), TaskQueueEntity::getStatus, status)
+            .orderByAsc(TaskQueueEntity::getId)
+            .last(limit > 0 ? "LIMIT " + limit : "");
+    // 2. 强类型 SKIP_LOCKED 加锁拉取并直接投影为 VO 列表：跳过被其他事务锁定的行，保底空集合
+    return listForUpdate(wrapper, LockMode.SKIP_LOCKED, TaskQueueVO.class);
+}
 
-    // 3. 锁定当前行并就地原子认领
-    ProductSkuEntity task = availableTasks.get(0);
-    task.setStatus(2); // 标记为处理中
-    productSkuService.updateById(task);
-
-    return new TaskQueueVO(task.getId(), task.getSkuCode(), "PROCESSING", workerId);
+@Transactional(rollbackFor = Exception.class)
+public TaskQueueVO getOneTaskForUpdate(String taskName) {
+    // 3. 条件悲观锁（支持省略 LockMode 或显式传入）并投影为 VO
+    return getOneForUpdate(
+            Wrappers.lambdaQuery(TaskQueueEntity.class).eq(TaskQueueEntity::getTaskName, taskName),
+            LockMode.FOR_UPDATE,
+            TaskQueueVO.class
+    );
 }
 ```
 
@@ -1563,6 +1596,7 @@ ateng:
         threshold: 500ms          # 慢 SQL 判定执行耗时阈值（支持 500ms、1s 等强类型 Duration），默认 1s
         format-sql: true          # 是否对 SQL 文本进行多行美化缩进，默认 true
         mask-sensitive: true      # 是否对敏感字段与密码凭据进行掩码脱敏，默认 true
+        async-enabled: false      # 是否启用 Core 受管线程池异步派发慢 SQL 告警与事件，默认 false
 ```
 
 #### 实战代码示例
@@ -1817,6 +1851,7 @@ ateng:
         threshold: 1s                   # 慢 SQL 判定执行耗时阈值（支持 500ms、1s 等强类型 Duration，默认 1s）
         format-sql: true                # 是否对 SQL 文本进行多行美化缩进（默认 true）
         mask-sensitive: true            # 是否对敏感字段与密码凭据进行掩码脱敏（默认 true）
+        async-enabled: false            # 是否启用受管线程池异步派发慢 SQL 告警与事件（默认 false，保持同步向后兼容）
         
       # 15. SQL 日志打印与诊断拦截器配置 (SqlLogProperties)
       sql-log:

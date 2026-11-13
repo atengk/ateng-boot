@@ -372,4 +372,54 @@ class AtengBaseServiceLogicDeleteAndPhysicalPurgeTest {
         assertThat(countRowsInTableDirectly(304L)).isEqualTo(0);
         assertThat(countRowsInTableDirectly(null)).isEqualTo(0);
     }
+
+    // ==========================================
+    // 5. 回收站主键集合批量恢复闭环验证 (Ticket #930)
+    // ==========================================
+
+    @Test
+    @DisplayName("5. 回收站主键集合批量恢复：穿透 @TableLogic 批量恢复、刷新审计信息并支持分批切片与空安全防御")
+    void shouldRestoreByIdsSafelyWithAuditRefreshAndNullDefense() throws Exception {
+        // 5.1 null / 空集合 / 全 null 集合防御性返回 false
+        assertThat(purgeService.restoreByIds(null)).isFalse();
+        assertThat(purgeService.restoreByIds(Collections.emptyList())).isFalse();
+        assertThat(purgeService.restoreByIds(java.util.Arrays.asList(null, null))).isFalse();
+
+        // 5.2 预置 3 条已软删除记录（含 1 条不参与恢复的已删除记录，与不存在 ID 混合传入）
+        TestPurgeEntity r1 = new TestPurgeEntity(401L, "B001", "批量恢复1");
+        r1.setDeleted(1);
+        TestPurgeEntity r2 = new TestPurgeEntity(402L, "B002", "批量恢复2");
+        r2.setDeleted(1);
+        TestPurgeEntity r3 = new TestPurgeEntity(403L, "B003", "保留回收站3");
+        r3.setDeleted(1);
+        purgeMapper.insert(r1);
+        purgeMapper.insert(r2);
+        purgeMapper.insert(r3);
+
+        // 确认普通检索不可见，穿透检索共 3 条
+        assertThat(purgeService.count()).isEqualTo(0L);
+        assertThat(purgeService.countWithDeleted(null)).isEqualTo(3L);
+
+        UserContextHolder.set("batch-restore-operator");
+        List<Long> mixedIds = java.util.Arrays.asList(401L, null, 402L, 401L, 999999L);
+        boolean restored = purgeService.restoreByIds(mixedIds);
+        assertThat(restored).isTrue();
+        assertThat(LogicDeleteContextHolder.isWithDeleted()).isFalse();
+
+        // 401 与 402 恢复可见且刷新了 update_by；403 仍处于回收站
+        assertThat(purgeService.count()).isEqualTo(2L);
+        assertThat(purgeService.getById(401L)).isNotNull();
+        assertThat(purgeService.getById(402L)).isNotNull();
+        assertThat(purgeService.getById(403L)).isNull();
+        assertThat(getUpdateByDirectly(401L)).isEqualTo("batch-restore-operator");
+        assertThat(getUpdateByDirectly(402L)).isEqualTo("batch-restore-operator");
+        assertThat(getUpdateByDirectly(403L)).isNull();
+
+        // 5.3 关闭审计开关后恢复剩余 403，应当跳过 update_by 填充
+        io.github.atengk.boot.mybatisplus.util.BatchUtil.setAuditEnabled(false);
+        UserContextHolder.set("ignored-operator");
+        assertThat(purgeService.restoreByIds(List.of(403L))).isTrue();
+        assertThat(purgeService.getById(403L)).isNotNull();
+        assertThat(getUpdateByDirectly(403L)).isNull();
+    }
 }

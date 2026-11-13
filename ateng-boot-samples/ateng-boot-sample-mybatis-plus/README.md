@@ -38,6 +38,7 @@
 | **商品 SKU 回收站穿透分页查询** | `MpEntityLifecycleController` | `GET /sample/mybatis-plus/lifecycle/sku/recycle-bin` | `curl "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/recycle-bin?current=1&size=10"` |
 | **按主键 ID 恢复误删商品 SKU** | `MpEntityLifecycleController` | `POST /sample/mybatis-plus/lifecycle/sku/{id}/restore` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/1/restore?operator=ops-director"` |
 | **按 SKU 编码批量恢复（空条件防呆拦截）** | `MpEntityLifecycleController` | `POST /sample/mybatis-plus/lifecycle/sku/restore-by-code` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/restore-by-code?skuCode=SKU-999"` |
+| **按主键集合批量恢复误删商品 SKU** | `MpEntityLifecycleController` | `POST /sample/mybatis-plus/lifecycle/sku/restore-by-ids?operator=batch-ops` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/restore-by-ids?operator=batch-ops" -H "Content-Type: application/json" -d "[1,2]"` |
 | **商品 SKU 回收站穿透总数统计** | `MpEntityLifecycleController` | `GET /sample/mybatis-plus/lifecycle/sku/recycle-bin/count` | `curl "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/recycle-bin/count"` |
 | **商品 SKU 回收站强类型 VO 分页投影** | `MpEntityLifecycleController` | `GET /sample/mybatis-plus/lifecycle/sku/recycle-bin/vo-page` | `curl "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/recycle-bin/vo-page?current=1&size=10"` |
 | **商品 SKU 彻底物理硬删除粉碎** | `MpEntityLifecycleController` | `POST /sample/mybatis-plus/lifecycle/sku/{id}/purge` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/1/purge"` |
@@ -76,6 +77,8 @@
 | **多表 JOIN 方法引用列表查询** | `MpDynamicQueryAndSqlController` | `GET /sample/mybatis-plus/query/multi-table/list` | `curl "http://localhost:8080/sample/mybatis-plus/query/multi-table/list?deptName:eq=运营中心"` |
 | **多表 existsDynamic 单页物理短路判定** | `MpDynamicQueryAndSqlController` | `GET /sample/mybatis-plus/query/multi-table/exists` | `curl "http://localhost:8080/sample/mybatis-plus/query/multi-table/exists?deptName:eq=研发二部&age:gte=30"` |
 | **外部动态 SQL 免 Mapper 分页查询** | `MpDynamicQueryAndSqlController` | `GET /sample/mybatis-plus/query/dynamic-sql/page` | `curl "http://localhost:8080/sample/mybatis-plus/query/dynamic-sql/page?name=张&minAge=20&current=1&size=10"` |
+| **外部动态 SQL 存在性探测 (`exists`)** | `MpDynamicQueryAndSqlController` | `GET /sample/mybatis-plus/query/dynamic-sql/exists` | `curl "http://localhost:8080/sample/mybatis-plus/query/dynamic-sql/exists?name=张&minAge=20&deptId=101"` |
+| **外部动态 SQL DTO 存在性探测 (`existsDynamic`)** | `MpDynamicQueryAndSqlController` | `POST /sample/mybatis-plus/query/dynamic-sql/exists-dynamic` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/query/dynamic-sql/exists-dynamic?deptId=101" -H "Content-Type: application/json" -d "{\"name\":\"张\",\"minAge\":20}"` |
 | **外部动态 SQL 零停机热替换与执行验证** | `MpDynamicQueryAndSqlController` | `POST /sample/mybatis-plus/query/dynamic-sql/hot-swap` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/query/dynamic-sql/hot-swap" -H "Content-Type: application/json" -d "{\"statementId\":\"custom.webHotSwapDemo\",\"sqlScript\":\"SELECT id, name, age FROM sys_user WHERE id = #{id}\",\"description\":\"运行时热替换示例\",\"sampleParams\":{\"id\":1001}}"` |
 
 ### 3.5 原生高性能批量操作、受管流式游标与并发锁控制 (`MpBatchStreamAndLockController`)
@@ -88,7 +91,9 @@
 | **受管流式游标分批大表导出 (StreamingQueryTemplate)** | `MpBatchStreamAndLockController` | `GET /sample/mybatis-plus/high-perf/stream/export` | `curl "http://localhost:8080/sample/mybatis-plus/high-perf/stream/export?minStock=10"` |
 | **流式游标提前短路退出 (streamWhile)** | `MpBatchStreamAndLockController` | `GET /sample/mybatis-plus/high-perf/stream/while` | `curl "http://localhost:8080/sample/mybatis-plus/high-perf/stream/while?targetSkuCode=SKU-CURL-001"` |
 | **CAS 乐观锁并发退避自旋重试扣减 (updateWithOptimisticRetry)** | `MpBatchStreamAndLockController` | `POST /sample/mybatis-plus/high-perf/lock/optimistic/deduct` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/high-perf/lock/optimistic/deduct?skuId=1001&deductAmount=50.00"` |
-| **强类型悲观排队跳锁抢单 (LockMode.SKIP_LOCKED)** | `MpBatchStreamAndLockController` | `POST /sample/mybatis-plus/high-perf/lock/pessimistic/grab` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/high-perf/lock/pessimistic/grab?workerId=worker-node-1"` |
+| **强类型悲观排队跳锁抢单 (LockMode.SKIP_LOCKED)** | `MpBatchStreamAndLockController` | `POST /sample/mybatis-plus/high-perf/lock/pessimistic/grab` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/high-perf/lock/pessimistic/grab?limit=2"` |
+| **按主键悲观排他锁 VO 投影 (`getByIdForUpdate`)** | `MpBatchStreamAndLockController` | `GET /sample/mybatis-plus/high-perf/lock/pessimistic/{id}` | `curl "http://localhost:8080/sample/mybatis-plus/high-perf/lock/pessimistic/1"` |
+| **悲观跳锁列表 VO 投影 (`listForUpdate`)** | `MpBatchStreamAndLockController` | `GET /sample/mybatis-plus/high-perf/lock/pessimistic/list` | `curl "http://localhost:8080/sample/mybatis-plus/high-perf/lock/pessimistic/list?status=PENDING&limit=5"` |
 | **防全表误更新删除安全拦截 (BlockAttackInnerInterceptor)** | `MpBatchStreamAndLockController` | `POST /sample/mybatis-plus/high-perf/security/block-attack` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/high-perf/security/block-attack"` |
 
 ### 3.6 持久层全链路可观测：SQL 诊断看板、慢 SQL 告警与数据变更 Diff 审计 (`MpObservabilityAndAuditController`)

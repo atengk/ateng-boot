@@ -10,6 +10,7 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
+import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.mybatisplus.context.LogicDeleteContextHolder;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
 import io.github.atengk.boot.mybatisplus.enums.LockMode;
@@ -286,13 +287,7 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         if (id == null) {
             return false;
         }
-        TableInfo tableInfo = TableInfoHelper.getTableInfo(getEntityClass());
-        if (tableInfo == null) {
-            throw new IllegalStateException("未能解析到实体 [" + getEntityClass().getName() + "] 的 TableInfo 元数据");
-        }
-        if (!tableInfo.isWithLogicDelete()) {
-            throw new UnsupportedOperationException("实体 [" + getEntityClass().getName() + "] 未配置 @TableLogic 逻辑删除，无法执行 restoreById 操作");
-        }
+        TableInfo tableInfo = resolveLogicDeleteTableInfo("restoreById");
 
         String keyColumn = tableInfo.getKeyColumn();
         TableFieldInfo logicField = tableInfo.getLogicDeleteFieldInfo();
@@ -308,6 +303,41 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
 
     @Transactional(rollbackFor = Exception.class)
     @Override
+    public boolean restoreByIds(Collection<? extends Serializable> idList) {
+        if (idList == null || idList.isEmpty()) {
+            return false;
+        }
+        List<Serializable> validIds = idList.stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .map(Serializable.class::cast)
+                .toList();
+        if (validIds.isEmpty()) {
+            return false;
+        }
+
+        TableInfo tableInfo = resolveLogicDeleteTableInfo("restoreByIds");
+        String keyColumn = tableInfo.getKeyColumn();
+        TableFieldInfo logicField = tableInfo.getLogicDeleteFieldInfo();
+        Object notDeleteValue = parseLogicValue(logicField.getLogicNotDeleteValue(), logicField.getPropertyType());
+        int batchSize = getDefaultBatchSize();
+
+        int totalRestored = LogicDeleteContextHolder.callWithDeleted(() -> {
+            int updated = 0;
+            for (List<Serializable> batchIds : CollectionUtil.partition(validIds, batchSize)) {
+                UpdateWrapper<T> updateWrapper = new UpdateWrapper<>();
+                updateWrapper.in(keyColumn, batchIds);
+                updateWrapper.set(logicField.getColumn(), notDeleteValue);
+                applyAuditFieldsOnRestore(updateWrapper, tableInfo);
+                updated += baseMapper.update(null, updateWrapper);
+            }
+            return updated;
+        });
+        return totalRestored > 0;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
     public int restore(Wrapper<T> queryWrapper) {
         if (queryWrapper == null) {
             throw new IllegalArgumentException("恢复条件 queryWrapper 不能为 null，防御全表误删恢复");
@@ -315,13 +345,7 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         if (queryWrapper.isEmptyOfWhere()) {
             throw new IllegalArgumentException("恢复条件 queryWrapper 必须包含有效 WHERE 条件，防御全表误删恢复");
         }
-        TableInfo tableInfo = TableInfoHelper.getTableInfo(getEntityClass());
-        if (tableInfo == null) {
-            throw new IllegalStateException("未能解析到实体 [" + getEntityClass().getName() + "] 的 TableInfo 元数据");
-        }
-        if (!tableInfo.isWithLogicDelete()) {
-            throw new UnsupportedOperationException("实体 [" + getEntityClass().getName() + "] 未配置 @TableLogic 逻辑删除，无法执行 restore 操作");
-        }
+        TableInfo tableInfo = resolveLogicDeleteTableInfo("restore");
 
         TableFieldInfo logicField = tableInfo.getLogicDeleteFieldInfo();
         Object notDeleteValue = parseLogicValue(logicField.getLogicNotDeleteValue(), logicField.getPropertyType());
@@ -359,6 +383,25 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         applyAuditFieldsOnRestore(updateWrapper, tableInfo);
 
         return LogicDeleteContextHolder.callWithDeleted(() -> baseMapper.update(null, updateWrapper));
+    }
+
+    /**
+     * 解析并校验实体的 @TableLogic 逻辑删除元数据（共享于 restoreById / restoreByIds / restore）
+     *
+     * @param operation 调用方方法名（用于构造明确错误诊断信息）
+     * @return 已开启 @TableLogic 的实体元数据
+     */
+    private TableInfo resolveLogicDeleteTableInfo(String operation) {
+        TableInfo tableInfo = TableInfoHelper.getTableInfo(getEntityClass());
+        if (tableInfo == null) {
+            throw new IllegalStateException("未能解析到实体 [" + getEntityClass().getName() + "] 的 TableInfo 元数据");
+        }
+        if (!tableInfo.isWithLogicDelete()) {
+            throw new UnsupportedOperationException(
+                    "实体 [" + getEntityClass().getName() + "] 未配置 @TableLogic 逻辑删除，无法执行 " + operation + " 操作"
+            );
+        }
+        return tableInfo;
     }
 
     private void applyAuditFieldsOnRestore(UpdateWrapper<T> updateWrapper, TableInfo tableInfo) {

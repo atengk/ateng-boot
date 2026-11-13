@@ -4,6 +4,8 @@ import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
+import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryRequest;
+import io.github.atengk.boot.mybatisplus.dynamicquery.QueryCondition;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlDefinition;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlExecutor;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry;
@@ -12,6 +14,7 @@ import io.github.atengk.boot.sample.mybatisplus.entity.UserEntity;
 import io.github.atengk.boot.sample.mybatisplus.mapper.UserMapper;
 import io.github.atengk.boot.sample.mybatisplus.model.DynamicSqlHotSwapDTO;
 import io.github.atengk.boot.sample.mybatisplus.model.UserDynamicVO;
+import io.github.atengk.boot.sample.mybatisplus.model.UserSearchDTO;
 import io.github.atengk.boot.sample.mybatisplus.service.DynamicSqlScenarioService;
 import org.apache.ibatis.mapping.SqlCommandType;
 import org.springframework.stereotype.Service;
@@ -135,6 +138,31 @@ public class DynamicSqlScenarioServiceImpl implements DynamicSqlScenarioService 
 
         // 2. 热替换成功后立即执行最新版本的动态 SQL 语句
         return executeCustomQuery(dto.getStatementId(), dto.getSampleParams());
+    }
+
+    @Override
+    public boolean existsUsersDynamicRequest(String name, Integer minAge, Long deptId) {
+        ensureSeedUsersIfEmpty();
+        DynamicQueryRequest request = new DynamicQueryRequest();
+        if (name != null && !name.isBlank()) {
+            request.addCondition(QueryCondition.like("name", name.trim()));
+        }
+        if (minAge != null) {
+            request.addCondition(QueryCondition.ge("age", minAge));
+        }
+        Map<String, Object> extraParams = deptId != null ? Map.of("deptId", deptId) : null;
+        return extraParams != null
+                ? executor.exists("user.findUsersDynamic", request, extraParams)
+                : executor.exists("user.findUsersDynamic", request);
+    }
+
+    @Override
+    public boolean existsUsersDynamicDto(UserSearchDTO searchDTO, Long deptId) {
+        ensureSeedUsersIfEmpty();
+        Map<String, Object> extraParams = deptId != null ? Map.of("deptId", deptId) : null;
+        return extraParams != null
+                ? executor.existsDynamic("user.findUsersDynamic", searchDTO, extraParams)
+                : executor.existsDynamic("user.findUsersDynamic", searchDTO);
     }
 
     private void ensureSeedUsersIfEmpty() {

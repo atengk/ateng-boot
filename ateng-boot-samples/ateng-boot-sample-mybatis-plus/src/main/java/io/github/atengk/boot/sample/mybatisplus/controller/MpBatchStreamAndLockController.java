@@ -13,6 +13,7 @@ import io.github.atengk.boot.sample.mybatisplus.service.PessimisticLockScenarioS
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -154,6 +155,31 @@ public class MpBatchStreamAndLockController {
     public Result<TaskQueueVO> getOneTaskForUpdate(@RequestParam String taskName) {
         TaskQueueVO task = pessimisticLockService.getOneTaskForUpdate(taskName);
         return Result.success(task);
+    }
+
+    /**
+     * 基于 getByIdForUpdate 按主键悲观排他锁（FOR UPDATE）查询并投影为强类型 VO
+     *
+     * @param id 任务主键 ID
+     * @return 锁定获取到的任务视图（不存在返回 null）
+     */
+    @GetMapping("/lock/pessimistic/{id}")
+    public Result<TaskQueueVO> getTaskByIdForUpdate(@PathVariable Long id) {
+        return Result.success(pessimisticLockService.getTaskByIdForUpdate(id));
+    }
+
+    /**
+     * 基于 listForUpdate 按状态悲观跳锁（SKIP_LOCKED）批量锁定查询并投影为强类型 VO 列表
+     *
+     * @param status 任务状态（默认 PENDING）
+     * @param limit  单次拉取上限（默认 5）
+     * @return 锁定获取到的任务视图列表
+     */
+    @GetMapping("/lock/pessimistic/list")
+    public Result<List<TaskQueueVO>> listTasksForUpdate(
+            @RequestParam(defaultValue = "PENDING") String status,
+            @RequestParam(defaultValue = "5") int limit) {
+        return Result.success(pessimisticLockService.listTasksForUpdate(status, limit));
     }
 
     /**

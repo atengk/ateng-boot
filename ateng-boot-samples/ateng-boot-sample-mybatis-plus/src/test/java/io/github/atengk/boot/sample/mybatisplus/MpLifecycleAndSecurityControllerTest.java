@@ -182,6 +182,26 @@ class MpLifecycleAndSecurityControllerTest {
                 .andExpect(jsonPath("$.code", equalTo(400)))
                 .andExpect(jsonPath("$.msg", containsString("必须包含有效 WHERE 条件")));
 
+        // 2.4.1 主键集合批量恢复：空集合返回 false；重新软删除后通过 restore-by-ids 批量恢复成功
+        mockMvc.perform(post("/sample/mybatis-plus/lifecycle/sku/restore-by-ids")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("[]"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(false)));
+
+        jdbcTemplate.update("UPDATE product_sku SET deleted = id WHERE id = ?", deletedSkuId);
+        mockMvc.perform(post("/sample/mybatis-plus/lifecycle/sku/restore-by-ids")
+                        .param("operator", "batch-ops")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(List.of(deletedSkuId))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(true)));
+        Integer restoredDeletedVal = jdbcTemplate.queryForObject(
+                "SELECT deleted FROM product_sku WHERE id = ?", Integer.class, deletedSkuId);
+        assertThat(restoredDeletedVal).isEqualTo(0);
+
         // 2.5 验证物理硬删除：对 activeSkuId 执行物理 purge，彻底从数据库移除
         mockMvc.perform(post("/sample/mybatis-plus/lifecycle/sku/{id}/purge", activeSkuId))
                 .andExpect(status().isOk())

@@ -137,4 +137,34 @@ public class MpDynamicQueryAndSqlController {
     public Result<List<Map<String, Object>>> hotSwapDynamicSql(@Valid @RequestBody DynamicSqlHotSwapDTO dto) {
         return Result.success(dynamicSqlScenarioService.hotSwapAndExecute(dto));
     }
+
+    /**
+     * 基于 DynamicSqlExecutor.exists(statementId, DynamicQueryRequest, extraParams) 执行单页 LIMIT 1 存在性探测
+     *
+     * @param name   用户姓名模糊匹配（可选）
+     * @param minAge 最小年龄（可选）
+     * @param deptId 部门 ID（作为 extraParams 绑定参数传入动态 SQL，可选）
+     * @return 若存在至少一条匹配记录返回 true，否则返回 false
+     */
+    @GetMapping("/dynamic-sql/exists")
+    public Result<Boolean> existsUsersByDynamicSqlRequest(
+            @RequestParam(required = false) String name,
+            @RequestParam(required = false) Integer minAge,
+            @RequestParam(required = false) Long deptId) {
+        return Result.success(dynamicSqlScenarioService.existsUsersDynamicRequest(name, minAge, deptId));
+    }
+
+    /**
+     * 基于 DynamicSqlExecutor.existsDynamic(statementId, Object, extraParams) 按 DTO 执行存在性探测
+     *
+     * @param searchDTO 声明式动态检索 DTO（可选）
+     * @param deptId    部门 ID（作为 extraParams 绑定参数传入，可选）
+     * @return 若存在至少一条匹配记录返回 true，否则返回 false
+     */
+    @PostMapping("/dynamic-sql/exists-dynamic")
+    public Result<Boolean> existsUsersByDynamicSqlDto(
+            @RequestBody(required = false) UserSearchDTO searchDTO,
+            @RequestParam(required = false) Long deptId) {
+        return Result.success(dynamicSqlScenarioService.existsUsersDynamicDto(searchDTO, deptId));
+    }
 }

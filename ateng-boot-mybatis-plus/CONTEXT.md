@@ -306,3 +306,47 @@ _Avoid_: ColumnChange, PropertyDiff
 **SqlLogModel**:
 定义于 `ateng-boot-core` 的结构化物理 SQL 操作审计元数据模型，承载可执行 SQL、耗时、影响行数、四维上下文与状态信息。
 _Avoid_: SqlAuditEntity, SqlLogRecord
+
+**ChangeType**:
+数据变更 Diff 审计记录的操作类型枚举，严格划分为 `UPDATE` 与 `DELETE`（含 `@TableLogic` 逻辑删除归类）。
+_Avoid_: AuditAction, DiffOperation
+
+**QueryCondition**:
+动态查询过滤条件标准契约值对象，封装目标字段名、受控操作符 `QueryOperator` 及单值或区间多值参数。
+_Avoid_: SearchFilter, ConditionItem
+
+**QueryOperator**:
+动态查询受控安全操作符枚举，严格收敛 13 种标准比较、区间与模式匹配操作符，杜绝非法 SQL 运算符注入。
+_Avoid_: FilterOp, CompareType
+
+**DynamicMapperPageMethod**:
+`Serializable` 函数式 Mapper 分页方法引用契约接口，支持基于 `SerializedLambda` 纳秒级推导自定义联表分页 `MappedStatement` 标识。
+_Avoid_: PageMapperFn, DynamicPageFunction
+
+**DynamicMapperListMethod**:
+`Serializable` 函数式 Mapper 列表方法引用契约接口，支持基于方法引用极速直出多表联表列表与 VO 投影。
+_Avoid_: ListMapperFn, DynamicListFunction
+
+**ResourceExternalSqlLoader**:
+基于 Spring `ResourcePatternResolver` 的默认外部动态 SQL 加载器实现，自动扫描并解析 `locations` 路径下的 XML 片段。
+_Avoid_: XmlSqlFileLoader, DefaultScriptScanner
+
+**DefaultDataPermissionHandler**:
+默认数据权限 SPI 兜底处理器实现，在未装配业务自定义数据权限规则时返回 `null` 以平滑透传原 SQL。
+_Avoid_: EmptyDataScopeHandler, NoopPermissionHandler
+
+**AuditChangeProperties**:
+数据变更 Diff 审计强类型配置属性，集中定义开关状态、`maxDiffRows` 熔断上限及事务提交后异步投递策略。
+_Avoid_: DiffAuditConfig, ChangeTrackerProperties
+
+**SqlLogProperties**:
+SQL 执行诊断看板与 SPI 结构化存储强类型配置属性，管控控制台开关、脱敏掩码、SQL 长度上限及忽略规则清单。
+_Avoid_: SqlPrintConfig, SqlAuditProperties
+
+**DynamicSqlProperties**:
+外部动态 SQL 引擎强类型配置属性，纳管 `enabled` 开关、`autoScriptWrap` 容错包裹及外部 XML 扫描路径清单。
+_Avoid_: ExternalSqlConfig, DynamicXmlProperties
+
+**DynamicQueryProperties**:
+动态查询转译引擎强类型配置属性，提供 `ateng.boot.mybatis-plus.dynamic-query.enabled` 全局开关治理。
+_Avoid_: QueryEngineConfig, FilterProperties

@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.toolkit.Constants;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlDefinition;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
@@ -301,14 +302,27 @@ public class DynamicQueryTemplate {
      * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
      */
     public boolean exists(String statementName, DynamicQueryRequest request) {
+        return exists(statementName, request, null);
+    }
+
+    /**
+     * 基于 StatementId、结构化请求与额外命名绑定参数执行存在性探测（单页 LIMIT 1 短路，不触发全表 COUNT）
+     *
+     * @param statementName 语句名称（支持短方法名或全限定 statementId）
+     * @param request       动态查询请求（可为 null，仅依赖 extraParams 时亦可执行）
+     * @param extraParams   额外命名绑定参数（供 #{key} 或动态 SQL 条件标签读取，可为 null）
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    public boolean exists(String statementName, DynamicQueryRequest request, Map<String, Object> extraParams) {
         Objects.requireNonNull(statementName, "statementName 不能为 null");
-        if (request == null) {
+        if (request == null && (extraParams == null || extraParams.isEmpty())) {
             return false;
         }
         String statementId = findStatementId(statementName);
-        Map<String, String> mapping = resolveProjections(statementId);
-        QueryWrapper<?> wrapper = DynamicQueryHelper.buildWrapper(request, mapping);
-        return executeExistsWithWrapper(statementId, wrapper);
+        QueryWrapper<?> wrapper = (request != null)
+                ? DynamicQueryHelper.buildWrapper(request, resolveProjections(statementId))
+                : new QueryWrapper<>();
+        return executeExistsWithWrapper(statementId, wrapper, extraParams);
     }
 
     /**
@@ -319,17 +333,30 @@ public class DynamicQueryTemplate {
      * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
      */
     public boolean exists(String statementName, Object queryDto) {
+        return exists(statementName, queryDto, null);
+    }
+
+    /**
+     * 基于 StatementId、普通查询 DTO 与额外命名绑定参数执行存在性探测（单页 LIMIT 1 短路）
+     *
+     * @param statementName 语句名称
+     * @param queryDto      业务查询 DTO（可为 null，仅依赖 extraParams 时亦可执行）
+     * @param extraParams   额外命名绑定参数（可为 null）
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    public boolean exists(String statementName, Object queryDto, Map<String, Object> extraParams) {
         if (queryDto instanceof DynamicQueryRequest request) {
-            return exists(statementName, request);
+            return exists(statementName, request, extraParams);
         }
         Objects.requireNonNull(statementName, "statementName 不能为 null");
-        if (queryDto == null) {
+        if (queryDto == null && (extraParams == null || extraParams.isEmpty())) {
             return false;
         }
         String statementId = findStatementId(statementName);
-        Map<String, String> mapping = resolveProjections(statementId);
-        QueryWrapper<?> wrapper = DynamicQueryHelper.buildWrapper(queryDto, mapping);
-        return executeExistsWithWrapper(statementId, wrapper);
+        QueryWrapper<?> wrapper = (queryDto != null)
+                ? DynamicQueryHelper.buildWrapper(queryDto, resolveProjections(statementId))
+                : new QueryWrapper<>();
+        return executeExistsWithWrapper(statementId, wrapper, extraParams);
     }
 
     private long executeCountWithWrapper(String statementId, QueryWrapper<?> wrapper) {
@@ -347,9 +374,12 @@ public class DynamicQueryTemplate {
         return list != null ? list.size() : 0L;
     }
 
-    private boolean executeExistsWithWrapper(String statementId, QueryWrapper<?> wrapper) {
+    private boolean executeExistsWithWrapper(String statementId, QueryWrapper<?> wrapper, Map<String, Object> extraParams) {
         Page<?> page = new Page<>(1, 1, false);
         Map<String, Object> paramMap = new HashMap<>();
+        if (extraParams != null && !extraParams.isEmpty()) {
+            paramMap.putAll(extraParams);
+        }
         paramMap.put("page", page);
         paramMap.put(Constants.WRAPPER, wrapper);
         paramMap.put("ew", wrapper);
@@ -837,17 +867,7 @@ public class DynamicQueryTemplate {
                 return adaptiveId;
             }
             MappedStatement rawMs = configuration.getMappedStatement(statementId);
-            boolean hasWhere = hasWhereClause(originalSql);
-            String adaptiveSql;
-            if (hasWhere) {
-                adaptiveSql = "<script>" + originalSql +
-                        "<choose>" +
-                        "<when test=\"ew != null and !ew.emptyOfWhere\"> AND ${ew.sqlSegment}</when>" +
-                        "<when test=\"ew != null and ew.emptyOfWhere and !ew.emptyOfNormal\"> ${ew.sqlSegment}</when>" +
-                        "</choose></script>";
-            } else {
-                adaptiveSql = "<script>" + originalSql + " ${ew.customSqlSegment}</script>";
-            }
+            String adaptiveSql = buildAdaptiveSql(statementId, originalSql);
             SqlSource sqlSource = configuration.getDefaultScriptingLanguageInstance().createSqlSource(configuration, adaptiveSql, Map.class);
             MappedStatement.Builder builder = new MappedStatement.Builder(configuration, adaptiveId, sqlSource, rawMs.getSqlCommandType())
                     .resource(rawMs.getResource())
@@ -870,6 +890,53 @@ public class DynamicQueryTemplate {
         } finally {
             adaptiveStatementLock.unlock();
         }
+    }
+
+    /**
+     * 构造自适应动态查询脚本：优先保留 DynamicSqlRegistry 原始 XML 标签（<where>/<if>/<choose> 等），
+     * 避免通过 getBoundSql(null) 提前求值导致 extraParams 条件片段丢失
+     */
+    private String buildAdaptiveSql(String statementId, String fallbackSql) {
+        DynamicSqlDefinition definition = (dynamicSqlRegistry != null) ? dynamicSqlRegistry.getDefinition(statementId) : null;
+        String rawScript = (definition != null && definition.getSqlScript() != null && !definition.getSqlScript().isBlank())
+                ? stripOuterScriptTags(definition.getSqlScript())
+                : fallbackSql;
+
+        java.util.regex.Matcher closeWhereMatcher = java.util.regex.Pattern.compile("(?i)</where>").matcher(rawScript);
+        if (closeWhereMatcher.find()) {
+            int insertPos = closeWhereMatcher.start();
+            String beforeCloseWhere = rawScript.substring(0, insertPos);
+            String fromCloseWhere = rawScript.substring(insertPos);
+            boolean hasOrderByAfterWhere = fromCloseWhere.toUpperCase(Locale.ROOT).contains("ORDER BY");
+            String sortFallback = hasOrderByAfterWhere
+                    ? ""
+                    : "<if test=\"ew != null and ew.emptyOfWhere and !ew.emptyOfNormal\"> ${ew.sqlSegment}</if>";
+            return "<script>" + beforeCloseWhere
+                    + "<if test=\"ew != null and !ew.emptyOfWhere\"> AND ${ew.sqlSegment}</if>"
+                    + fromCloseWhere
+                    + sortFallback
+                    + "</script>";
+        }
+
+        boolean hasWhere = hasWhereClause(rawScript);
+        if (hasWhere) {
+            return "<script>" + rawScript +
+                    "<choose>" +
+                    "<when test=\"ew != null and !ew.emptyOfWhere\"> AND ${ew.sqlSegment}</when>" +
+                    "<when test=\"ew != null and ew.emptyOfWhere and !ew.emptyOfNormal\"> ${ew.sqlSegment}</when>" +
+                    "</choose></script>";
+        }
+        return "<script>" + rawScript + " ${ew.customSqlSegment}</script>";
+    }
+
+    private static String stripOuterScriptTags(String sqlScript) {
+        String trimmed = sqlScript.trim();
+        if (trimmed.length() >= 17
+                && trimmed.regionMatches(true, 0, "<script>", 0, 8)
+                && trimmed.regionMatches(true, trimmed.length() - 9, "</script>", 0, 9)) {
+            return trimmed.substring(8, trimmed.length() - 9).trim();
+        }
+        return trimmed;
     }
 
     private boolean hasWhereClause(String sql) {

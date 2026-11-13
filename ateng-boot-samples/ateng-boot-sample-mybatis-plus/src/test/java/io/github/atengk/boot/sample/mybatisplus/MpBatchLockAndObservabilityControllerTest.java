@@ -253,6 +253,20 @@ class MpBatchLockAndObservabilityControllerTest {
                 .andExpect(jsonPath("$.code", equalTo(200)))
                 .andExpect(jsonPath("$.data.taskName", equalTo("独立锁定任务")))
                 .andExpect(jsonPath("$.data.status", equalTo("PENDING")));
+
+        // 6.4 getByIdForUpdate 与 listForUpdate 强类型 VO 投影端点验证
+        mockMvc.perform(get("/sample/mybatis-plus/high-perf/lock/pessimistic/{id}", 999999L))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.taskName", equalTo("独立锁定任务")))
+                .andExpect(jsonPath("$.data.status", equalTo("PENDING")));
+
+        mockMvc.perform(get("/sample/mybatis-plus/high-perf/lock/pessimistic/list")
+                        .param("status", "PENDING")
+                        .param("limit", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", hasSize(2)));
     }
 
     // =========================================================================

@@ -94,7 +94,18 @@ public interface AtengBaseService<T> extends IService<T> {
      */
     default <V> List<V> list(Wrapper<T> queryWrapper, Class<V> voClass) {
         Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
-        List<T> entityList = list(queryWrapper);
+        return convertEntitiesToVoList(list(queryWrapper), voClass);
+    }
+
+    /**
+     * 将实体列表安全投影转换为强类型 VO 列表（空集合保底，零持久层实体泄露）
+     *
+     * @param entityList 实体列表
+     * @param voClass    目标 VO 类型
+     * @param <V>        目标 VO 泛型
+     * @return VO 列表，无元素时返回空集合
+     */
+    private <V> List<V> convertEntitiesToVoList(List<T> entityList, Class<V> voClass) {
         if (entityList == null || entityList.isEmpty()) {
             return Collections.emptyList();
         }
@@ -1305,6 +1316,33 @@ public interface AtengBaseService<T> extends IService<T> {
     T getByIdForUpdate(Serializable id, LockMode lockMode);
 
     /**
+     * 根据主键 ID 加悲观排他锁（默认 FOR_UPDATE）并直接投影为强类型 VO（零实体泄露）
+     *
+     * @param id      实体主键 ID
+     * @param voClass 目标 VO 类型
+     * @param <V>     目标 VO 泛型
+     * @return 视图对象，主键为 null 或无匹配记录时返回 null
+     */
+    default <V> V getByIdForUpdate(Serializable id, Class<V> voClass) {
+        return getByIdForUpdate(id, LockMode.FOR_UPDATE, voClass);
+    }
+
+    /**
+     * 根据主键 ID 与指定悲观锁模式加锁查询并投影为强类型 VO（零实体泄露）
+     *
+     * @param id       实体主键 ID
+     * @param lockMode 悲观锁模式（FOR_UPDATE, NOWAIT, SKIP_LOCKED, FOR_SHARE）
+     * @param voClass  目标 VO 类型
+     * @param <V>      目标 VO 泛型
+     * @return 视图对象，主键为 null 或无匹配记录时返回 null
+     */
+    default <V> V getByIdForUpdate(Serializable id, LockMode lockMode, Class<V> voClass) {
+        Objects.requireNonNull(voClass, "voClass 不能为 null");
+        T entity = getByIdForUpdate(id, lockMode);
+        return entity != null ? JsonUtil.convertValue(entity, voClass) : null;
+    }
+
+    /**
      * 根据条件封装器加悲观排他锁（FOR UPDATE）查询实体列表
      *
      * @param queryWrapper 查询条件封装器（可为 null）
@@ -1325,6 +1363,32 @@ public interface AtengBaseService<T> extends IService<T> {
     List<T> listForUpdate(Wrapper<T> queryWrapper, LockMode lockMode);
 
     /**
+     * 根据条件封装器加悲观排他锁（默认 FOR_UPDATE）查询并投影为强类型 VO 列表（零实体泄露）
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return 视图对象列表（无匹配时保底返回空集合，严禁返回 null）
+     */
+    default <V> List<V> listForUpdate(Wrapper<T> queryWrapper, Class<V> voClass) {
+        return listForUpdate(queryWrapper, LockMode.FOR_UPDATE, voClass);
+    }
+
+    /**
+     * 根据条件封装器与指定悲观锁模式加锁查询并投影为强类型 VO 列表（零实体泄露）
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param lockMode     悲观锁模式（FOR_UPDATE, NOWAIT, SKIP_LOCKED, FOR_SHARE）
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return 视图对象列表（无匹配时保底返回空集合，严禁返回 null）
+     */
+    default <V> List<V> listForUpdate(Wrapper<T> queryWrapper, LockMode lockMode, Class<V> voClass) {
+        Objects.requireNonNull(voClass, "voClass 不能为 null");
+        return convertEntitiesToVoList(listForUpdate(queryWrapper, lockMode), voClass);
+    }
+
+    /**
      * 根据条件封装器加悲观排他锁（FOR UPDATE）查询单条实体记录
      *
      * @param queryWrapper 查询条件封装器（可为 null）
@@ -1342,6 +1406,18 @@ public interface AtengBaseService<T> extends IService<T> {
      * @return 实体对象，无匹配记录时返回 null
      */
     T getOneForUpdate(Wrapper<T> queryWrapper, LockMode lockMode);
+
+    /**
+     * 根据条件封装器加悲观排他锁（默认 FOR_UPDATE）查询单条记录并投影为强类型 VO（零实体泄露）
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return 视图对象，无匹配记录时返回 null
+     */
+    default <V> V getOneForUpdate(Wrapper<T> queryWrapper, Class<V> voClass) {
+        return getOneForUpdate(queryWrapper, LockMode.FOR_UPDATE, voClass);
+    }
 
     /**
      * 根据条件封装器与指定悲观锁模式加锁查询单条实体记录并投影为强类型 VO（零实体泄露）
@@ -1369,6 +1445,14 @@ public interface AtengBaseService<T> extends IService<T> {
      * @return true 若恢复成功影响行数大于 0；否则 false
      */
     boolean restoreById(Serializable id);
+
+    /**
+     * 根据主键 ID 集合批量恢复已逻辑删除的记录（穿透逻辑删除并分批切片执行，自动刷新审计更新时间与操作人）
+     *
+     * @param idList 实体主键 ID 集合（为 null、空集合或全为 null 时安全返回 false）
+     * @return true 若累计恢复影响行数大于 0；否则 false
+     */
+    boolean restoreByIds(Collection<? extends Serializable> idList);
 
     /**
      * 根据条件构造器批量恢复已逻辑删除的记录（重置 deleted = 0 并自动刷新审计更新时间与操作人）

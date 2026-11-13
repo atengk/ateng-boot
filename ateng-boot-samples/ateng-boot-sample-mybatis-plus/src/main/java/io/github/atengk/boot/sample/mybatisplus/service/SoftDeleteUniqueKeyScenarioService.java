@@ -50,6 +50,15 @@ public interface SoftDeleteUniqueKeyScenarioService extends AtengBaseService<Pro
     int restoreSkuByCode(String skuCode);
 
     /**
+     * 按主键 ID 集合批量恢复已逻辑删除的商品 SKU 记录
+     *
+     * @param ids      商品 SKU 主键 ID 集合
+     * @param operator 执行恢复的操作人标识
+     * @return 是否至少恢复了一条记录
+     */
+    boolean restoreSkusByIds(List<Long> ids, String operator);
+
+    /**
      * 穿透逻辑删除统计商品 SKU 回收站全量记录数（包含已删除与未删除数据）
      *
      * @return 回收站全量记录总数

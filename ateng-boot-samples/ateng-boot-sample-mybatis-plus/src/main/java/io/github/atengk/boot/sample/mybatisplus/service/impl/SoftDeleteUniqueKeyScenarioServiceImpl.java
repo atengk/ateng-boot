@@ -109,6 +109,16 @@ public class SoftDeleteUniqueKeyScenarioServiceImpl
     }
 
     @Override
+    public boolean restoreSkusByIds(List<Long> ids, String operator) {
+        UserContextHolder.set(StringUtils.hasText(operator) ? operator : "admin-restorer");
+        try {
+            return restoreByIds(ids);
+        } finally {
+            UserContextHolder.clear();
+        }
+    }
+
+    @Override
     public long countRecycleBin() {
         return countWithDeleted(null);
     }

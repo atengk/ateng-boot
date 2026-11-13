@@ -343,6 +343,56 @@ public class DynamicSqlExecutor {
     }
 
     /**
+     * 基于结构化动态查询请求执行存在性探测（底层通过单页 LIMIT 1 短路，不触发全表 COUNT）
+     *
+     * @param statementId 已注册的语句标识
+     * @param request     动态查询请求
+     * @return 若存在至少一条匹配记录返回 true，否则返回 false
+     */
+    public boolean exists(String statementId, DynamicQueryRequest request) {
+        checkStatementExists(statementId);
+        return dynamicQueryTemplate.exists(statementId, request);
+    }
+
+    /**
+     * 基于结构化动态查询请求与额外命名参数执行存在性探测
+     *
+     * @param statementId 已注册的语句标识
+     * @param request     动态查询请求（可为 null）
+     * @param extraParams 额外命名绑定参数（供 SQL 模板中的 #{key} 或条件判断使用，可为 null）
+     * @return 若存在至少一条匹配记录返回 true，否则返回 false
+     */
+    public boolean exists(String statementId, DynamicQueryRequest request, Map<String, Object> extraParams) {
+        checkStatementExists(statementId);
+        return dynamicQueryTemplate.exists(statementId, request, extraParams);
+    }
+
+    /**
+     * 基于普通查询 DTO（支持 @QueryField 注解或同名属性）执行存在性探测
+     *
+     * @param statementId 已注册的语句标识
+     * @param queryDto    业务查询 DTO
+     * @return 若存在至少一条匹配记录返回 true，否则返回 false
+     */
+    public boolean existsDynamic(String statementId, Object queryDto) {
+        checkStatementExists(statementId);
+        return dynamicQueryTemplate.exists(statementId, queryDto);
+    }
+
+    /**
+     * 基于普通查询 DTO 与额外命名参数执行存在性探测
+     *
+     * @param statementId 已注册的语句标识
+     * @param queryDto    业务查询 DTO（可为 null）
+     * @param extraParams 额外命名绑定参数（供 SQL 模板中的 #{key} 或条件判断使用，可为 null）
+     * @return 若存在至少一条匹配记录返回 true，否则返回 false
+     */
+    public boolean existsDynamic(String statementId, Object queryDto, Map<String, Object> extraParams) {
+        checkStatementExists(statementId);
+        return dynamicQueryTemplate.exists(statementId, queryDto, extraParams);
+    }
+
+    /**
      * 深度融合 ADR-0010 分页契约的通用动态流式分页查询
      * 底层自动驱动 MyBatis-Plus 物理方言分页插件完成 count 统计与 limit 分页截取，并流式转换为 PageResult<T>
      *

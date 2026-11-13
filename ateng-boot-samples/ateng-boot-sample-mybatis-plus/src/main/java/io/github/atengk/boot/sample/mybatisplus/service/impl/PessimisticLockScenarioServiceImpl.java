@@ -58,4 +58,20 @@ public class PessimisticLockScenarioServiceImpl extends AtengServiceImpl<TaskQue
                 TaskQueueVO.class
         );
     }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public TaskQueueVO getTaskByIdForUpdate(Long taskId) {
+        return getByIdForUpdate(taskId, TaskQueueVO.class);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public List<TaskQueueVO> listTasksForUpdate(String status, int limit) {
+        LambdaQueryWrapper<TaskQueueEntity> wrapper = Wrappers.lambdaQuery(TaskQueueEntity.class)
+                .eq(status != null && !status.isBlank(), TaskQueueEntity::getStatus, status)
+                .orderByAsc(TaskQueueEntity::getId)
+                .last(limit > 0 ? "LIMIT " + limit : "");
+        return listForUpdate(wrapper, LockMode.SKIP_LOCKED, TaskQueueVO.class);
+    }
 }

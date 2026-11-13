@@ -141,6 +141,20 @@ public class MpEntityLifecycleController {
     }
 
     /**
+     * 按主键 ID 集合批量恢复已逻辑删除的商品 SKU 记录，并刷新审计更新时间与操作人
+     *
+     * @param ids      商品 SKU 主键 ID 集合
+     * @param operator 执行恢复的操作人标识
+     * @return 是否至少恢复了一条记录
+     */
+    @PostMapping("/sku/restore-by-ids")
+    public Result<Boolean> restoreSkuByIds(
+            @RequestBody(required = false) List<Long> ids,
+            @RequestParam(defaultValue = "admin-restorer") String operator) {
+        return Result.success(softDeleteService.restoreSkusByIds(ids, operator));
+    }
+
+    /**
      * 统计商品 SKU 回收站全量记录数（依托 countWithDeleted 穿透逻辑删除，包含正常与已删除记录）
      *
      * @return 回收站记录总数
