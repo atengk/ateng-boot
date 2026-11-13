@@ -9,7 +9,7 @@
 _Avoid_: FesodUtil, EasyExcelUtil, ExcelHelper, OfficeManager
 
 **ExcelBuilder**:
-Fluent 链式多 Sheet 流式构建器，允许通过极简链式 API 在单次写入会话中为同一个工作簿编排多个工作表（Sheet），独立指定不同的数据源、表头模型、表头样式及写入拦截器，并安全收敛底层流生命周期。
+Fluent 链式多 Sheet 流式构建器，允许通过极简链式 API 在单次写入会话中为同一个工作簿编排多个工作表（Sheet），独立指定不同的数据源、表头模型、表头样式及写入拦截器，支持整工作簿 AES-256 密码加密（`.encrypt(password)`）并安全收敛底层流与受管临时文件生命周期。
 _Avoid_: MultiSheetHelper, WorkbookBuilder, ExcelSession
 
 **SensitiveCellWriteHandler**:
@@ -21,11 +21,11 @@ _Avoid_: DesensitizeInterceptor, MaskCellHandler, ExcelMaskProcessor
 _Avoid_: ValidateListener, ExcelImportListener, ValidationProcessor
 
 **ExcelFeedbackUtil**:
-校验失败单元格标红与批注回写工具，利用 POI 样式引擎将校验失败的单元格背景填充为柔和浅红（`IndexedColors.ROSE`），并挂载包含具体失败原因的悬浮批注（`Comment`），输出业务人员可直接修正并重新上传的“错题集”反馈文件。
+校验失败单元格标红与批注回写工具，利用 POI 样式引擎通过工作簿级 `CellStyle` 克隆缓存无损继承原单元格的数字/日期格式与字体边框，将校验失败的单元格背景填充为柔和浅红（`IndexedColors.ROSE`），并挂载包含具体失败原因的悬浮批注（`Comment`），输出业务人员可直接修正并重新上传的“错题集”反馈文件。
 _Avoid_: ErrorCellMarker, AnnotationWriter, ErrorFeedbackWriter
 
 **DropdownSheetWriteHandler**:
-防呆模板下拉约束拦截器，配合属性级注解 `@ExcelDropdown` 在工作表创建完毕后（`afterSheetCreate`）自动为对应列注册 Excel 原生 `DataValidation` 下拉选单，支持固定字符数组或动态 `DropdownProvider` SPI。原生支持单行内 255 字符上限约束。
+防呆模板下拉约束拦截器，配合属性级注解 `@ExcelDropdown` 在工作表创建完毕后（`afterSheetCreate`）自动为对应列注册 Excel 原生 `DataValidation` 下拉选单，支持固定字符数组或优先从 Spring 容器获取的动态 `DropdownProvider` SPI。当下拉选项拼接总长度超出 Excel 单行公式上限（255 字符）时，自动创建隐藏字典工作表（Hidden Dictionary Sheet）并通过跨表名称引用突破超长下拉选单限制。
 _Avoid_: DropdownHandler, SelectValidationHandler, ComboBoxSheetHandler
 
 **PromptHeadWriteHandler**:
@@ -61,7 +61,7 @@ _Avoid_: AutoWidthHandler, ColumnResizeListener, BestFitWidthStrategy
 _Avoid_: ThemeStyleStrategy, ZebraWriteHandler, SheetColorizer
 
 **AsyncExportTaskService**:
-异步海量导出任务中心服务 SPI，定义大报表后台受管异步排队、生成、轮询查询与过期清理契约，默认提供并发内存实现 `InMemoryAsyncExportTaskService`（支持四维上下文 `AsyncContext` 全链路透传、有界队列快速失败防爆与单线程定时文件回收），并允许上层微服务无缝桥接分布式 Redis 或文件中心。
+异步海量导出任务中心服务 SPI，定义大报表后台受管异步排队、生成、实时进度百分比上报（`updateProgress`）、轮询查询与过期清理契约，默认提供并发内存实现 `InMemoryAsyncExportTaskService`（支持四维上下文 `AsyncContext` 全链路透传、有界队列快速失败防爆与受管定时调度文件回收），并允许上层微服务无缝桥接分布式 Redis 或文件中心。
 _Avoid_: ExportTaskManager, AsyncTaskQueue, BackgroundExcelWorker
 
 **FailSplitFeedback**:
@@ -69,11 +69,11 @@ _Avoid_: ExportTaskManager, AsyncTaskQueue, BackgroundExcelWorker
 _Avoid_: ErrorSplitter, FailedRowDumper, ErrorSubsetExporter
 
 **FailSplitRowWriteHandler**:
-差错数据隔离导出行级样式拦截器，配合 `exportFailedRows` 将失败数据行的单元格背景标色为警示浅粉红，提高校验未通过记录的可视化辨识度。
+差错数据隔离导出行级样式拦截器，配合 `exportFailedRows` 通过工作簿级 `CellStyle` 克隆缓存无损保留原单元格数据格式并将失败数据行的单元格背景标色为警示浅粉红，提高校验未通过记录的可视化辨识度。
 _Avoid_: ErrorRowHighlighter, FailedRowStyler
 
 **SmartImageConverter**:
-多媒体图片智能自适应转换器，配合属性级注解 `@ExcelImage`，零配置自动识别并加载网络 HTTP(S) 图片 URL、Base64 编码、本地绝对文件路径及原始字节流，并与 `ImageRowHeightWriteHandler` 联动自动撑高所在行，杜绝 Fesod 图片压扁变形问题。
+多媒体图片智能自适应转换器，配合属性级注解 `@ExcelImage`，零配置自动识别并加载网络 HTTP(S) 图片 URL、Base64 编码、本地绝对文件路径及原始字节流，内置内网/环回地址 SSRF 拦截、网络读取超时（`Duration`）、单图流式体积上限（`DataSize`）与本地路径穿越清洗防护，并与 `ImageRowHeightWriteHandler` 联动自动撑高所在行，杜绝 Fesod 图片压扁变形问题。
 _Avoid_: UrlPictureConverter, UniversalImageLoader, PhotoCellAdapter
 
 **ExcelWatermarkUtil**:
@@ -85,11 +85,11 @@ _Avoid_: WatermarkHelper, SheetStampUtil
 _Avoid_: BackgroundWatermarkHelper, ExcelWatermarkFilter, AntiphotoStamp
 
 **StreamingPageExportTemplate**:
-流式大数据分页导出执行模板，解耦内存爆炸风险，按步长分页拉取数据并实时刷入 Fesod 工作簿流，在行数达到单工作表上限时自动无缝跨 Sheet 轮转。
+流式大数据分页导出执行模板，解耦内存爆炸风险，基于 `ReentrantLock` 保障虚拟线程友好（防 Carrier Pinning）的并发写入安全，按步长分页拉取数据并实时刷入 Fesod 工作簿流，支持在行数达到单工作表上限时自动无缝跨 Sheet 轮转、导出进度实时回调以及整工作簿 AES-256 加密封包。
 _Avoid_: CursorExcelExporter, ChunkExportHelper, BigDataExporter
 
 **RedisAsyncExportTaskService**:
-基于分布式 Redis 的集中式异步导出任务中心实现，支持任务元数据管理、状态机流转与执行进度跨多实例协同轮询，具备 TTL 自动延期、心跳续期与租约超时自愈。
+基于分布式 Redis 的集中式异步导出任务中心实现，支持任务元数据管理、状态机流转与执行进度跨多实例协同轮询，具备 TTL 自动延期、心跳续期、租约超时自愈以及基于过期索引的分布式存储文件（`ExportFileStorage`）对称回收能力。
 _Avoid_: RedisTaskManager, DistributedExportWorker, ClusterTaskCenter
 
 **ExportFileStorage**:
@@ -113,7 +113,7 @@ _Avoid_: ValidateResult, ImportResultModel
 _Avoid_: ValidationError, CellErrorInfo
 
 **ExcelMultiSheetResult**:
-异构多工作表流式解析聚合结果容器载荷，按工作表序号或 Sheet 名称分别存放对应异构实体模型的数据列表，提供强类型泛型安全提取方法。
+异构多工作表流式解析与校验聚合结果容器载荷，按工作表序号或 Sheet 名称分别存放对应异构实体模型的数据列表与行级 JSR-303 校验错误明细（`ExcelErrorRow`），提供强类型泛型安全提取与跨表错误汇总方法。
 _Avoid_: MultiSheetData, MultiSheetResponse
 
 **ExcelValidationException**:
@@ -145,8 +145,12 @@ _Avoid_: CellLockHandler, ColumnProtectWriter, EditableColumnStrategy, ColumnLoc
 _Avoid_: LocaleHeaderWriter, MultiLangHeaderHandler, TranslationInterceptor
 
 **ExcelReaderBuilder**:
-Fluent 链式多 Sheet 流式读取构建器，允许在单次 I/O 流生命周期内为同一个工作簿编排多个不同工作表（Sheet）的读取契约，支持按索引/表名寻址、异构数据模型映射、分批回调与全量聚合双模消费，实现读写对称完备性。默认总行数上限为 200,000 行防 OOM。
+Fluent 链式多 Sheet 流式读取构建器，允许在单次 I/O 流生命周期内为同一个工作簿编排多个不同工作表（Sheet）的读取契约，支持按索引/表名寻址、异构数据模型映射、多 Sheet 表头契约校验与 JSR-303 行级校验、分批回调与全量聚合双模消费，实现读写对称完备性。默认总行数上限为 200,000 行防 OOM。
 _Avoid_: MultiSheetReader, SheetReaderHelper, ExcelStreamReader, ExcelReadSession
+
+**ExcelColumnMetadataResolver**:
+实体列索引与属性元数据统一解析器，收敛跨读写链路（`ExcelUtil`、`BatchValidationListener`、`ExcelHeaderValidator`、`DropdownSheetWriteHandler`、`ColumnLockSheetWriteHandler`）的字段扫描逻辑，严格对齐 `@ExcelIgnore`、`transient`、`static`、类级 `@ExcelIgnoreUnannotated` 以及 `@ExcelProperty(index / value)` 显式列序语义。
+_Avoid_: ColumnScanner, FieldIndexHelper, ExcelPropertyReflector
 
 **ColumnProjection**:
 强类型 VO 动态列投影能力，支持通过 `includeColumns` / `excludeColumns` 动态裁切需要输出的属性列，未选中的列物理剔除且保留列自动紧凑左移排版，100% 继承实体注解（脱敏、主题、枚举转义与列宽补偿）。

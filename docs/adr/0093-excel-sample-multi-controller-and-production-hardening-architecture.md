@@ -52,13 +52,20 @@ flowchart TD
 - 依据《工业级文档与样例工程标准规范》，全面推行全模块 Web 体验化与多 Controller 领域分治架构，将 `ateng-boot-sample-excel` 拆解为 6 大高内聚 `@RestController`（统一路由 `/sample/excel/<feature>/<action>`，出参统配强类型 `Result<T>` 或流式响应）；
 - 上传类接口配套提供样本文件生成端点，实现纯 `curl` 端到端自闭环。
 
-### 2. Starter 零破坏性向后兼容微加固
+### 2. Starter 零破坏性向后兼容微加固与全景能力闭环
 1. **受管临时目录贯通**：`ExcelProperties.tempDir` 接入 `ExcelUtil.initProperties`，供 `ExcelUtil` 与 `ExcelSecurityUtil` 加解密缓冲安全创建临时文件；未配置时回退至系统临时目录，保留无配置静态调用与单测兼容性；
-2. **下载前缀解耦**：`ExcelAsyncExportProperties` 增加 `downloadUrlPrefix`（默认锁定为 `"/api/excel/async-download?taskId="`），`LocalFileSystemStorage` 统一读取该配置项拼装下载链接；
-3. **自动装配防卫**：`AtengExcelAutoConfiguration` 补充 `@AutoConfigureAfter` 显式对齐 Redis 与国际化装配时序，为初始化 Bean 挂载 `@ConditionalOnMissingBean`；
+2. **下载前缀解耦与路径穿越防卫**：`ExcelAsyncExportProperties` 增加 `downloadUrlPrefix`（默认锁定为 `"/api/excel/async-download?taskId="`），`LocalFileSystemStorage` 统一读取该配置项拼装下载链接，并在 `resolvePath` 中通过 `FileUtil` 与 `normalize().startsWith(basePath.normalize())` 严格阻断 `taskId`/`storageKey` 路径穿越；
+3. **自动装配与受管并发防 Pinning 防卫**：`AtengExcelAutoConfiguration` 补充 `@AutoConfigureAfter` 显式对齐 Redis 与国际化装配时序，为初始化 Bean 挂载 `@ConditionalOnMissingBean`；取缔 `InMemoryAsyncExportTaskService` 与 `RedisAsyncExportTaskService` 中的 `Executors.newSingleThreadScheduledExecutor` 野线程，并将 `StreamingPageExportTemplate` 与 `BatchValidationListener` 中涉及 I/O 的 `synchronized` 全面替换为 `ReentrantLock`（防 JDK 21+ 虚拟线程 Carrier Pinning）；
 4. **水印角度与文档对齐**：统一修正 `ExcelWatermarkUtil` 与 `WatermarkSheetWriteHandler` Javadoc 默认旋转角为 `-30°`（并说明可配置重载）；
-5. **对称解密读取重载**：为 `readWithResult`、`readBatchWithValidation` 与 `validateHeader` 增补纯增量 `password` 重载（复用 `ExcelSecurityUtil.decryptIfEncrypted` 与 `finally` 确定性回收）；
-6. **过期存储对称清理**：`InMemoryAsyncExportTaskService#cleanExpiredTasks` 在删除本地记录时，若 `task.getStorageKey() != null` 同步触发 `fileStorage.delete(taskId, task.getStorageKey())`。
+5. **对称加解密与 Web 流式门面完备化**：
+   - 为 `readWithResult`、`readBatchWithValidation` 与 `validateHeader` 增补纯增量 `password` 重载；
+   - 为 `ExcelBuilder`（延迟初始化 `ExcelWriter` 并支持 `.encrypt(password)` 与 `ExcelUtil.builder(out, password)`）、`StreamingPageExportTemplate`（`.encrypt(password)`）、`ExcelUtil.fill(..., password)` 及 `ExcelUtil.exportDynamic(..., password)` 补齐整工作簿 AES-256 加密能力；
+   - 为 `ExcelReaderBuilder` 与 `ExcelMultiSheetResult` 补齐多 Sheet 表头契约校验与 JSR-303 行级校验聚合能力（`.validate()` / `.failFast(boolean)` / `.headerStrategy(...)`）；
+   - 为 `ExcelWebUtil` 补齐缺失的 `ResponseEntity<StreamingResponseBody>` 对称重载（`toResponseEntityFailedRows`、`toResponseEntityFill`、`toResponseEntityStreaming`、`toResponseEntityStreamingByCursor`）；
+6. **异步任务分布式文件回收与实时进度上报**：`InMemoryAsyncExportTaskService` 与 `RedisAsyncExportTaskService`（基于 `keyPrefix + "expire-index"` ZSet 过期索引与 `ZREM` 原子抢占）在清理过期任务时对称触发 `fileStorage.delete(taskId, storageKey)`；并在 `AsyncExportTaskService` 与 `StreamingPageExportTemplate` 中支持实时进度百分比回调（`updateProgress`）；
+7. **超长下拉隐藏字典表与 Spring 容器 `DropdownProvider`**：`DropdownSheetWriteHandler` 优先通过 `SpringUtil.getBean` 解析 `DropdownProvider`（无容器或未注册时平滑回退反射实例化）；当下拉选项总长度突破 Excel 255 字符单行公式限制时，自动创建隐藏字典工作表（Hidden Sheet）并通过跨表名称引用实现超长下拉选单；
+8. **多媒体图片安全护栏（防 SSRF / 体积防爆 / 路径沙箱）**：`ExcelSecurityProperties` 增配 `maxImageSize`（`DataSize`，默认 `10MB`）、`imageConnectTimeout`（`Duration`，默认 `3s`）、`imageReadTimeout`（`Duration`，默认 `10s`）、`blockInternalImageUrls`（默认 `true` 拦截环回/私网/链路本地元数据 SSRF）及 `allowLocalImageFile` / `allowedImageBaseDir`，由 `SmartImageConverter` 执行有界流读取与路径安全校验；
+9. **统一列索引元数据解析与错误回写无损样式克隆**：抽取 `ExcelColumnMetadataResolver` 统一跨读写链路的字段列序解析（严格对齐 `@ExcelIgnore`、`transient`、`static`、`@ExcelIgnoreUnannotated` 与 `@ExcelProperty(index)`）；`ExcelFeedbackUtil` 与 `FailSplitRowWriteHandler` 采用工作簿级 `CellStyle` 克隆缓存无损保留原单元格的数字/日期格式与边框字体。
 
 ### 3. Zero-Mock Redis 双模自适应架构
 - 在 `ateng-boot-sample-excel` 中引入 BOM 纳管的 `spring-boot-starter-data-redis`；
@@ -85,5 +92,5 @@ flowchart TD
 ## 演进落地状态与交付审计 (Delivery & Verification Audit)
 
 - **当前状态**：`Accepted (切片落地中)`
-- **关联工单**：#785（Parent Spec）、#786（Slice 1）、#787（Slice 2）、#788（Slice 3）
+- **关联工单**：#785（Parent Spec）、#786（Slice 1）、#787（Slice 2）、#788（Slice 3）、#941（九道防线加固与全场景门面对称扩容 Spec）、#942（Slice 1：列索引解析/无损样式克隆/超长下拉隐藏表）、#943（Slice 2：受管调度/分布式过期回收/进度上报/图片与存储安全护栏）、#944（Slice 3：全链路 AES-256 加密/多 Sheet 校验/Web 流式门面对称）、#945（Slice 4：Sample 6 大控制器体验演进与五维文档闭环）
 - **前置修订追溯**：本决策全面演进并替代 [ADR-0057](./0057-excel-multi-sheet-streaming-and-native-workbook-encryption-architecture.md) 第 5 节。
