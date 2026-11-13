@@ -12,12 +12,14 @@ import com.baomidou.mybatisplus.core.toolkit.sql.SqlScriptUtils;
 import com.baomidou.mybatisplus.extension.toolkit.JdbcUtils;
 import io.github.atengk.boot.mybatisplus.annotation.ConflictKeys;
 import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
+import io.github.atengk.boot.mybatisplus.util.PessimisticLockUtil;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
 import org.apache.ibatis.executor.keygen.Jdbc3KeyGenerator;
 import org.apache.ibatis.executor.keygen.KeyGenerator;
 import org.apache.ibatis.executor.keygen.NoKeyGenerator;
+import org.apache.ibatis.mapping.BoundSql;
 import org.apache.ibatis.mapping.MappedStatement;
 import org.apache.ibatis.mapping.SqlSource;
 import org.apache.ibatis.session.Configuration;
@@ -121,15 +123,31 @@ public class UpsertBatchSomeColumn extends AbstractMethod {
             }
         }
 
-        // 4. 解析方言并构建 ON DUPLICATE KEY UPDATE / ON CONFLICT 子句
+        // 4. 预编译双方言（MySQL 与 PostgreSQL）SqlSource 委托，并记录启动期探测的默认方言
         DbType resolvedDbType = resolveDbType(configuration);
-        String duplicateKeySql = buildDuplicateKeyClause(resolvedDbType, modelClass, tableInfo, fieldList);
+        String sqlPrefix = "<script>\nINSERT INTO " + tableInfo.getTableName() + " " + columnScript
+                + " VALUES " + valuesScript + "\n";
 
-        // 5. 拼装完整 XML Script 并注册 MappedStatement
-        String sql = "<script>\nINSERT INTO " + tableInfo.getTableName() + " " + columnScript
-                + " VALUES " + valuesScript + "\n" + duplicateKeySql + "\n</script>";
-        SqlSource sqlSource = super.createSqlSource(configuration, sql, modelClass);
-        return this.addInsertMappedStatement(mapperClass, modelClass, methodName, sqlSource, keyGenerator, keyProperty, keyColumn);
+        String mySqlClause = buildDuplicateKeyClause(DbType.MYSQL, modelClass, tableInfo, fieldList);
+        SqlSource mySqlSource = super.createSqlSource(configuration, sqlPrefix + mySqlClause + "\n</script>", modelClass);
+
+        SqlSource postgresSqlSource = null;
+        IllegalStateException postgresBuildException = null;
+        try {
+            String postgresClause = buildDuplicateKeyClause(DbType.POSTGRE_SQL, modelClass, tableInfo, fieldList);
+            postgresSqlSource = super.createSqlSource(configuration, sqlPrefix + postgresClause + "\n</script>", modelClass);
+        } catch (IllegalStateException ex) {
+            // 若启动探测主方言即为 PostgreSQL 系，保持注入期快速失败语义
+            if (isPostgresFamily(resolvedDbType)) {
+                throw ex;
+            }
+            postgresBuildException = ex;
+        }
+
+        // 5. 封装动态方言路由 SqlSource 并注册 MappedStatement
+        SqlSource dynamicSqlSource = new DialectRoutingSqlSource(
+                resolvedDbType, mySqlSource, postgresSqlSource, postgresBuildException);
+        return this.addInsertMappedStatement(mapperClass, modelClass, methodName, dynamicSqlSource, keyGenerator, keyProperty, keyColumn);
     }
 
     /**
@@ -142,10 +160,57 @@ public class UpsertBatchSomeColumn extends AbstractMethod {
      * @return 冲突子句 SQL 字符串
      */
     protected String buildDuplicateKeyClause(DbType targetDbType, Class<?> modelClass, TableInfo tableInfo, List<TableFieldInfo> fieldList) {
-        if (targetDbType == DbType.POSTGRE_SQL) {
+        if (isPostgresFamily(targetDbType)) {
             return buildPostgreSqlClause(modelClass, tableInfo, fieldList);
         } else {
             return buildMySqlClause(tableInfo, fieldList);
+        }
+    }
+
+    private static boolean isPostgresFamily(DbType targetDbType) {
+        return targetDbType == DbType.POSTGRE_SQL
+                || targetDbType == DbType.KINGBASE_ES
+                || targetDbType == DbType.OPENGAUSS
+                || targetDbType == DbType.HIGH_GO
+                || targetDbType == DbType.GAUSS
+                || targetDbType == DbType.GAUSS_DB;
+    }
+
+    /**
+     * 运行时多方言动态路由 SqlSource 包装器
+     * 优先实时读取 {@link PessimisticLockUtil#getDbType()}，缺省回退至启动期探测的默认方言。
+     */
+    private static final class DialectRoutingSqlSource implements SqlSource {
+
+        private final DbType defaultDbType;
+        private final SqlSource mySqlSource;
+        private final SqlSource postgresSqlSource;
+        private final IllegalStateException postgresBuildException;
+
+        private DialectRoutingSqlSource(
+                DbType defaultDbType,
+                SqlSource mySqlSource,
+                SqlSource postgresSqlSource,
+                IllegalStateException postgresBuildException) {
+            this.defaultDbType = defaultDbType != null ? defaultDbType : DbType.MYSQL;
+            this.mySqlSource = mySqlSource;
+            this.postgresSqlSource = postgresSqlSource;
+            this.postgresBuildException = postgresBuildException;
+        }
+
+        @Override
+        public BoundSql getBoundSql(Object parameterObject) {
+            DbType runtimeDbType = PessimisticLockUtil.getDbType();
+            DbType effectiveDbType = runtimeDbType != null ? runtimeDbType : defaultDbType;
+            if (isPostgresFamily(effectiveDbType)) {
+                if (postgresSqlSource == null) {
+                    throw postgresBuildException != null
+                            ? postgresBuildException
+                            : new IllegalStateException("PostgreSQL Upsert SqlSource 未完成初始化");
+                }
+                return postgresSqlSource.getBoundSql(parameterObject);
+            }
+            return mySqlSource.getBoundSql(parameterObject);
         }
     }
 

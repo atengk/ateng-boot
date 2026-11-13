@@ -164,6 +164,9 @@ class BatchUtilTest {
         UserContextHolder.clear();
         TenantContextHolder.clear();
         BatchUtil.setCurrentUserProvider(null);
+        BatchUtil.setAuditEnabled(true);
+        BatchUtil.setDefaultOperator(BatchUtil.DEFAULT_OPERATOR);
+        BatchUtil.setDefaultBatchSize(BatchUtil.DEFAULT_BATCH_SIZE);
     }
 
     @Test
@@ -384,5 +387,59 @@ class BatchUtilTest {
                 assertThat(rs.getLong(1)).isZero();
             }
         }
+    }
+
+    @Test
+    @DisplayName("10. 全局配置同步守卫：auditEnabled=false 跳过审计填充、defaultOperator 与 defaultBatchSize 生效")
+    void shouldRespectGlobalAuditAndBatchConfigInBatchUtil() {
+        // 1. auditEnabled = false 时跳过 createTime / updateTime / createBy / updateBy，但仍填充 id / version / deleted / tenantId
+        BatchUtil.setAuditEnabled(false);
+        UserContextHolder.set("active_user");
+        TenantContextHolder.setTenantId("tenant_1");
+
+        BatchHealOrderEntity entity = new BatchHealOrderEntity();
+        entity.setOrderNo("NO-AUDIT-1");
+        BatchUtil.autoHeal(entity);
+
+        assertThat(entity.getId()).isNotNull();
+        assertThat(entity.getTenantId()).isEqualTo("tenant_1");
+        assertThat(entity.getVersion()).isEqualTo(1);
+        assertThat(entity.getDeleted()).isEqualTo(0L);
+        assertThat(entity.getCreateTime()).isNull();
+        assertThat(entity.getUpdateTime()).isNull();
+        assertThat(entity.getCreateBy()).isNull();
+        assertThat(entity.getUpdateBy()).isNull();
+
+        // 2. 开启审计并设置自定义 defaultOperator（无上下文用户时使用）
+        BatchUtil.setAuditEnabled(true);
+        UserContextHolder.clear();
+        BatchUtil.setDefaultOperator("BOT_OPERATOR");
+
+        BatchHealOrderEntity entity2 = new BatchHealOrderEntity();
+        entity2.setOrderNo("BOT-1");
+        BatchUtil.autoHeal(entity2);
+        assertThat(entity2.getCreateBy()).isEqualTo("BOT_OPERATOR");
+        assertThat(entity2.getUpdateBy()).isEqualTo("BOT_OPERATOR");
+
+        // 3. 全局 defaultBatchSize 控制无参重载与 batchSize <= 0 兜底切片
+        BatchUtil.setDefaultBatchSize(2);
+        @SuppressWarnings("unchecked")
+        AtengBaseMapper<MockEntity> mockMapper = Mockito.mock(AtengBaseMapper.class);
+        List<Integer> chunkSizes = new ArrayList<>();
+        when(mockMapper.insertBatchSomeColumn(any())).thenAnswer(inv -> {
+            Collection<?> chunk = inv.getArgument(0);
+            chunkSizes.add(chunk.size());
+            return chunk.size();
+        });
+
+        List<MockEntity> list = List.of(new MockEntity(1), new MockEntity(2), new MockEntity(3), new MockEntity(4), new MockEntity(5));
+        int affected = BatchUtil.insertBatch(mockMapper, list);
+        assertThat(affected).isEqualTo(5);
+        assertThat(chunkSizes).containsExactly(2, 2, 1);
+
+        chunkSizes.clear();
+        int fallbackAffected = BatchUtil.insertBatch(mockMapper, list, 0);
+        assertThat(fallbackAffected).isEqualTo(5);
+        assertThat(chunkSizes).containsExactly(2, 2, 1);
     }
 }

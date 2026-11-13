@@ -101,6 +101,15 @@ public class AtengMybatisPlusAutoConfiguration {
         if (properties.getPagination() != null && properties.getPagination().getMaxLimit() != null) {
             PageUtil.setDefaultMaxLimit(properties.getPagination().getMaxLimit());
         }
+        if (properties.getAudit() != null) {
+            io.github.atengk.boot.mybatisplus.util.BatchUtil.setAuditEnabled(properties.getAudit().isEnabled());
+            io.github.atengk.boot.mybatisplus.util.BatchUtil.setDefaultOperator(
+                    properties.getAudit().getDefaultOperator());
+        }
+        if (properties.getBatch() != null) {
+            io.github.atengk.boot.mybatisplus.util.BatchUtil.setDefaultBatchSize(
+                    properties.getBatch().getDefaultSize());
+        }
         JacksonTypeHandler.setObjectMapper(JsonUtil.getObjectMapper());
     }
 

@@ -95,6 +95,9 @@ class BatchUpdateTest {
     void cleanContext() {
         UserContextHolder.clear();
         BatchUtil.setCurrentUserProvider(null);
+        BatchUtil.setAuditEnabled(true);
+        BatchUtil.setDefaultOperator(BatchUtil.DEFAULT_OPERATOR);
+        BatchUtil.setDefaultBatchSize(BatchUtil.DEFAULT_BATCH_SIZE);
     }
 
     // ==================== 第一部分：门面与前置卫语句 ====================
@@ -252,6 +255,52 @@ class BatchUpdateTest {
         assertThat(entity.getCreateBy()).isEqualTo("original_author");
         assertThat(entity.getUpdateTime()).isNotNull();
         assertThat(entity.getUpdateBy()).isEqualTo("test_operator");
+    }
+
+    @Test
+    @DisplayName("8.1 批量更新强制刷新策略与审计开关：非空 updateTime 强制刷新，存在上下文时强制刷新 updateBy，关闭审计时不修改审计字段")
+    void shouldForceRefreshAuditFieldsAndRespectAuditSwitchOnUpdate() {
+        // 1. audit.enabled=true 时，即使已有旧 updateTime 与 updateBy，存在上下文操作人也强制刷新
+        UserContextHolder.set("new_operator");
+        UserUpdateEntity entity = new UserUpdateEntity();
+        LocalDateTime staleTime = LocalDateTime.of(2020, 5, 1, 8, 0, 0);
+        entity.setUpdateTime(staleTime);
+        entity.setUpdateBy("stale_operator");
+
+        BatchUtil.autoHealForUpdate(entity);
+
+        assertThat(entity.getUpdateTime()).isAfter(staleTime);
+        assertThat(entity.getUpdateBy()).isEqualTo("new_operator");
+
+        // 2. 无上下文操作人且已有非空 updateBy 时，刷新 updateTime 并保留已有非空 updateBy
+        UserContextHolder.clear();
+        UserUpdateEntity keepOperatorEntity = new UserUpdateEntity();
+        keepOperatorEntity.setUpdateTime(staleTime);
+        keepOperatorEntity.setUpdateBy("explicit_updater");
+
+        BatchUtil.autoHealForUpdate(keepOperatorEntity);
+
+        assertThat(keepOperatorEntity.getUpdateTime()).isAfter(staleTime);
+        assertThat(keepOperatorEntity.getUpdateBy()).isEqualTo("explicit_updater");
+
+        // 3. 无上下文操作人且 updateBy 为空时，兜底填充 defaultOperator
+        BatchUtil.setDefaultOperator("CUSTOM_SYSTEM");
+        UserUpdateEntity blankOperatorEntity = new UserUpdateEntity();
+        blankOperatorEntity.setUpdateBy("   ");
+        BatchUtil.autoHealForUpdate(blankOperatorEntity);
+        assertThat(blankOperatorEntity.getUpdateBy()).isEqualTo("CUSTOM_SYSTEM");
+        assertThat(blankOperatorEntity.getUpdateTime()).isNotNull();
+
+        // 4. audit.enabled=false 时跳过 updateTime / updateBy 刷新与填充
+        BatchUtil.setAuditEnabled(false);
+        UserContextHolder.set("ignored_operator");
+        UserUpdateEntity disabledEntity = new UserUpdateEntity();
+        disabledEntity.setUpdateTime(staleTime);
+        disabledEntity.setUpdateBy("keep_me");
+
+        BatchUtil.autoHealForUpdate(disabledEntity);
+        assertThat(disabledEntity.getUpdateTime()).isEqualTo(staleTime);
+        assertThat(disabledEntity.getUpdateBy()).isEqualTo("keep_me");
     }
 
     // ==================== 第四部分：SQL 结构编译断言 ====================

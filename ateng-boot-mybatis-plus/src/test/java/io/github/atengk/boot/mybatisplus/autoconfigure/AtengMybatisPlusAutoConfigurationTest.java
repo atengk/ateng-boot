@@ -581,5 +581,28 @@ class AtengMybatisPlusAutoConfigurationTest {
             io.github.atengk.boot.mybatisplus.util.PageUtil.setDefaultMaxLimit(originalLimit);
         }
     }
+
+    @Test
+    @DisplayName("当配置 audit 与 batch 全局属性时自动同步至 BatchUtil 静态配置")
+    void shouldSyncAuditAndBatchPropertiesToBatchUtil() {
+        boolean originalAuditEnabled = io.github.atengk.boot.mybatisplus.util.BatchUtil.isAuditEnabled();
+        String originalOperator = io.github.atengk.boot.mybatisplus.util.BatchUtil.getDefaultOperator();
+        int originalBatchSize = io.github.atengk.boot.mybatisplus.util.BatchUtil.getDefaultBatchSize();
+        try {
+            contextRunner.withPropertyValues(
+                    "ateng.boot.mybatis-plus.audit.enabled=false",
+                    "ateng.boot.mybatis-plus.audit.default-operator=AUDIT_BOT",
+                    "ateng.boot.mybatis-plus.batch.default-size=256"
+            ).run(context -> {
+                assertThat(io.github.atengk.boot.mybatisplus.util.BatchUtil.isAuditEnabled()).isFalse();
+                assertThat(io.github.atengk.boot.mybatisplus.util.BatchUtil.getDefaultOperator()).isEqualTo("AUDIT_BOT");
+                assertThat(io.github.atengk.boot.mybatisplus.util.BatchUtil.getDefaultBatchSize()).isEqualTo(256);
+            });
+        } finally {
+            io.github.atengk.boot.mybatisplus.util.BatchUtil.setAuditEnabled(originalAuditEnabled);
+            io.github.atengk.boot.mybatisplus.util.BatchUtil.setDefaultOperator(originalOperator);
+            io.github.atengk.boot.mybatisplus.util.BatchUtil.setDefaultBatchSize(originalBatchSize);
+        }
+    }
 }
 

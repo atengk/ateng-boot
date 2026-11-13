@@ -175,7 +175,7 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         if (properties != null && properties.getBatch() != null && properties.getBatch().getDefaultSize() > 0) {
             return properties.getBatch().getDefaultSize();
         }
-        return BatchUtil.DEFAULT_BATCH_SIZE;
+        return BatchUtil.getDefaultBatchSize();
     }
 
     @Override
@@ -362,6 +362,12 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
     }
 
     private void applyAuditFieldsOnRestore(UpdateWrapper<T> updateWrapper, TableInfo tableInfo) {
+        boolean auditEnabled = (properties != null && properties.getAudit() != null)
+                ? properties.getAudit().isEnabled()
+                : BatchUtil.isAuditEnabled();
+        if (!auditEnabled) {
+            return;
+        }
         LocalDateTime now = LocalDateTime.now();
         for (TableFieldInfo fieldInfo : tableInfo.getFieldList()) {
             String prop = fieldInfo.getProperty();
@@ -448,6 +454,6 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         if (properties != null && properties.getAudit() != null && properties.getAudit().getDefaultOperator() != null) {
             return properties.getAudit().getDefaultOperator();
         }
-        return "SYSTEM";
+        return BatchUtil.getDefaultOperator();
     }
 }

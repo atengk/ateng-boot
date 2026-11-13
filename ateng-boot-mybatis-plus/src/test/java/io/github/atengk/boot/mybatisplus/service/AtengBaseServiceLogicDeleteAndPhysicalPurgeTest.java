@@ -163,6 +163,8 @@ class AtengBaseServiceLogicDeleteAndPhysicalPurgeTest {
     void tearDown() {
         UserContextHolder.clear();
         LogicDeleteContextHolder.clear();
+        io.github.atengk.boot.mybatisplus.util.BatchUtil.setAuditEnabled(true);
+        io.github.atengk.boot.mybatisplus.util.BatchUtil.setDefaultOperator(io.github.atengk.boot.mybatisplus.util.BatchUtil.DEFAULT_OPERATOR);
     }
 
     private int countRowsInTableDirectly(Long id) throws Exception {
@@ -307,6 +309,21 @@ class AtengBaseServiceLogicDeleteAndPhysicalPurgeTest {
 
         // 清理 SPI 引用
         purgeService.setCurrentUserProviderProvider(null);
+    }
+
+    @Test
+    @DisplayName("3.1 audit.enabled=false 时逻辑删除恢复跳过 update_time 与 update_by 审计填充")
+    void shouldSkipAuditFieldsOnRestoreWhenAuditDisabled() throws Exception {
+        TestPurgeEntity entity = new TestPurgeEntity(202L, "R002", "关闭审计待恢复记录");
+        entity.setDeleted(1);
+        purgeMapper.insert(entity);
+
+        io.github.atengk.boot.mybatisplus.util.BatchUtil.setAuditEnabled(false);
+        UserContextHolder.set("should-not-fill");
+
+        boolean restored = purgeService.restoreById(202L);
+        assertThat(restored).isTrue();
+        assertThat(getUpdateByDirectly(202L)).isNull();
     }
 
     // ==========================================

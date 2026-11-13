@@ -120,6 +120,7 @@ class BatchUpsertTest {
         UserContextHolder.clear();
         TenantContextHolder.clear();
         BatchUtil.setCurrentUserProvider(null);
+        PessimisticLockUtil.resetDbType();
     }
 
     // ==================== 第一部分：门面与前置卫语句 ====================
@@ -505,5 +506,61 @@ class BatchUpsertTest {
         assertThat(sql2).doesNotContain("role_code = EXCLUDED.role_code");
         assertThat(sql2).doesNotContain("id = EXCLUDED.id");
         assertThat(sql2).doesNotContain("create_time = EXCLUDED.create_time");
+    }
+
+    @Test
+    @DisplayName("10. 运行时多方言动态路由：同一 MappedStatement 随 PessimisticLockUtil 上下文在 MySQL 与 PostgreSQL 间无缝切换并回退默认方言")
+    void shouldDynamicallyRouteSqlDialectAtRuntimeViaPessimisticLockUtil() {
+        // 场景 A: 默认启动探测方言为 MySQL，运行时动态切至 PostgreSQL 再自动回退
+        MybatisConfiguration mysqlDefaultConfig = new MybatisConfiguration();
+        MapperBuilderAssistant mysqlAssistant = new MapperBuilderAssistant(mysqlDefaultConfig, "resource");
+        mysqlAssistant.setCurrentNamespace(UserRolePgMapper.class.getName());
+        TableInfo mysqlTableInfo = TableInfoHelper.initTableInfo(mysqlAssistant, UserRolePgEntity.class);
+
+        UpsertBatchSomeColumn mysqlDefaultInjector = new UpsertBatchSomeColumn(DbType.MYSQL);
+        mysqlDefaultInjector.inject(mysqlAssistant, UserRolePgMapper.class, UserRolePgEntity.class, mysqlTableInfo);
+
+        MappedStatement mysqlMs = mysqlDefaultConfig.getMappedStatement(UserRolePgMapper.class.getName() + ".upsertBatchSomeColumn");
+        assertThat(mysqlMs).isNotNull();
+        Object param = Collections.singletonMap("list", List.of(new UserRolePgEntity()));
+
+        // 未绑定上下文时回退至默认 MySQL 方言
+        String defaultMysqlSql = mysqlMs.getBoundSql(param).getSql();
+        assertThat(defaultMysqlSql).contains("ON DUPLICATE KEY UPDATE");
+        assertThat(defaultMysqlSql).doesNotContain("ON CONFLICT");
+
+        // 切至 PostgreSQL 上下文后，同一 MappedStatement 实时生成 ON CONFLICT (user_id, role_code)
+        PessimisticLockUtil.runWithDbType(DbType.POSTGRE_SQL, () -> {
+            String switchedPgSql = mysqlMs.getBoundSql(param).getSql();
+            assertThat(switchedPgSql).contains("ON CONFLICT (user_id, role_code) DO UPDATE SET");
+            assertThat(switchedPgSql).doesNotContain("ON DUPLICATE KEY UPDATE");
+        });
+
+        // 退出闭包后自动恢复默认 MySQL 方言
+        String restoredMysqlSql = mysqlMs.getBoundSql(param).getSql();
+        assertThat(restoredMysqlSql).contains("ON DUPLICATE KEY UPDATE");
+
+        // 场景 B: 默认方言为 PostgreSQL，运行时动态切至 MySQL 再自动回退
+        MybatisConfiguration pgDefaultConfig = new MybatisConfiguration();
+        MapperBuilderAssistant pgAssistant = new MapperBuilderAssistant(pgDefaultConfig, "resource");
+        pgAssistant.setCurrentNamespace(UserPgMapper.class.getName());
+        TableInfo pgTableInfo = TableInfoHelper.initTableInfo(pgAssistant, UserPgEntity.class);
+
+        UpsertBatchSomeColumn pgDefaultInjector = new UpsertBatchSomeColumn(DbType.POSTGRE_SQL);
+        pgDefaultInjector.inject(pgAssistant, UserPgMapper.class, UserPgEntity.class, pgTableInfo);
+
+        MappedStatement pgMs = pgDefaultConfig.getMappedStatement(UserPgMapper.class.getName() + ".upsertBatchSomeColumn");
+        assertThat(pgMs).isNotNull();
+        Object pgParam = Collections.singletonMap("list", List.of(new UserPgEntity()));
+
+        assertThat(pgMs.getBoundSql(pgParam).getSql()).contains("ON CONFLICT (id) DO UPDATE SET");
+
+        PessimisticLockUtil.runWithDbType(DbType.MYSQL, () -> {
+            String switchedMysqlSql = pgMs.getBoundSql(pgParam).getSql();
+            assertThat(switchedMysqlSql).contains("ON DUPLICATE KEY UPDATE");
+            assertThat(switchedMysqlSql).doesNotContain("ON CONFLICT");
+        });
+
+        assertThat(pgMs.getBoundSql(pgParam).getSql()).contains("ON CONFLICT (id) DO UPDATE SET");
     }
 }

@@ -51,6 +51,21 @@ public final class BatchUtil {
     private static volatile CurrentUserProvider currentUserProvider;
 
     /**
+     * 是否启用自动审计字段（createTime / updateTime / createBy / updateBy）填充，默认 true
+     */
+    private static volatile boolean auditEnabled = true;
+
+    /**
+     * 全局默认兜底操作人标识（无上下文且需审计填充时使用），默认 SYSTEM
+     */
+    private static volatile String defaultOperator = DEFAULT_OPERATOR;
+
+    /**
+     * 全局默认批量切片批次大小，默认 1000
+     */
+    private static volatile int defaultBatchSize = DEFAULT_BATCH_SIZE;
+
+    /**
      * 非基类实体主键元数据反射引用缓存（类 -> TableIdMetadata）
      */
     private static final Map<Class<?>, TableIdMetadata> TABLE_ID_METADATA_CACHE = new ConcurrentHashMap<>();
@@ -77,7 +92,61 @@ public final class BatchUtil {
     }
 
     /**
-     * 原生分批批量插入（采用默认分批大小 1000）
+     * 设置是否启用批量自愈与审计字段自动填充
+     *
+     * @param enabled 是否启用审计填充
+     */
+    public static void setAuditEnabled(boolean enabled) {
+        auditEnabled = enabled;
+    }
+
+    /**
+     * 获取当前是否启用审计字段自动填充
+     *
+     * @return true 表示启用，false 表示跳过审计时间与操作人填充
+     */
+    public static boolean isAuditEnabled() {
+        return auditEnabled;
+    }
+
+    /**
+     * 设置全局默认兜底操作人标识（传入 null 或空白字符串时回退为 DEFAULT_OPERATOR）
+     *
+     * @param operator 默认操作人标识
+     */
+    public static void setDefaultOperator(String operator) {
+        defaultOperator = (operator == null || operator.isBlank()) ? DEFAULT_OPERATOR : operator;
+    }
+
+    /**
+     * 获取当前全局默认兜底操作人标识
+     *
+     * @return 默认操作人标识
+     */
+    public static String getDefaultOperator() {
+        return defaultOperator;
+    }
+
+    /**
+     * 设置全局默认批量切片批次大小（传入小于等于 0 的值时回退为 DEFAULT_BATCH_SIZE）
+     *
+     * @param batchSize 默认批次大小
+     */
+    public static void setDefaultBatchSize(int batchSize) {
+        defaultBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+    }
+
+    /**
+     * 获取当前全局默认批量切片批次大小
+     *
+     * @return 默认批次大小
+     */
+    public static int getDefaultBatchSize() {
+        return defaultBatchSize;
+    }
+
+    /**
+     * 原生分批批量插入（采用默认分批大小，默认 1000）
      * 插入前自动对实体集合执行自愈补偿处理
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
@@ -86,7 +155,7 @@ public final class BatchUtil {
      * @return 累计成功插入影响的总行数
      */
     public static <T> int insertBatch(AtengBaseMapper<T> mapper, Collection<T> entityList) {
-        return insertBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+        return insertBatch(mapper, entityList, getDefaultBatchSize());
     }
 
     /**
@@ -95,7 +164,7 @@ public final class BatchUtil {
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
      * @param entityList 待批量插入的实体数据集合
-     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用默认值 1000）
+     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用全局默认批次大小）
      * @param <T>        实体类型
      * @return 累计成功插入影响的总行数
      */
@@ -111,7 +180,7 @@ public final class BatchUtil {
         autoHealAll(entityList);
 
         // 2. 切片分批执行
-        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        int effectiveBatchSize = batchSize > 0 ? batchSize : getDefaultBatchSize();
         List<T> list = (entityList instanceof List) ? (List<T>) entityList : new ArrayList<>(entityList);
 
         int affectedRows = 0;
@@ -157,7 +226,7 @@ public final class BatchUtil {
      * @return 累计成功操作影响的总行数
      */
     public static <T> int upsertBatch(AtengBaseMapper<T> mapper, Collection<T> entityList) {
-        return upsertBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+        return upsertBatch(mapper, entityList, getDefaultBatchSize());
     }
 
     /**
@@ -166,7 +235,7 @@ public final class BatchUtil {
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
      * @param entityList 待批量 Upsert 的实体数据集合
-     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用默认值 1000）
+     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用全局默认批次大小）
      * @param <T>        实体类型
      * @return 累计成功操作影响的总行数
      */
@@ -182,7 +251,7 @@ public final class BatchUtil {
         autoHealAll(entityList);
 
         // 2. 切片分批执行
-        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        int effectiveBatchSize = batchSize > 0 ? batchSize : getDefaultBatchSize();
         List<T> list = (entityList instanceof List) ? (List<T>) entityList : new ArrayList<>(entityList);
 
         int affectedRows = 0;
@@ -194,7 +263,7 @@ public final class BatchUtil {
     }
 
     /**
-     * 原生分批批量 Upsert 别名方法（采用默认分批大小 1000）
+     * 原生分批批量 Upsert 别名方法（采用默认分批大小）
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
      * @param entityList 待批量 Upsert 的实体数据集合
@@ -202,7 +271,7 @@ public final class BatchUtil {
      * @return 累计成功操作影响的总行数
      */
     public static <T> int upsertBatchSomeColumn(AtengBaseMapper<T> mapper, Collection<T> entityList) {
-        return upsertBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+        return upsertBatch(mapper, entityList, getDefaultBatchSize());
     }
 
     /**
@@ -210,7 +279,7 @@ public final class BatchUtil {
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
      * @param entityList 待批量 Upsert 的实体数据集合
-     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用默认值 1000）
+     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用全局默认批次大小）
      * @param <T>        实体类型
      * @return 累计成功操作影响的总行数
      */
@@ -219,7 +288,7 @@ public final class BatchUtil {
     }
 
     /**
-     * 原生分批批量更新（采用默认分批大小 1000）
+     * 原生分批批量更新（采用默认分批大小）
      * 执行前自动对实体集合执行更新审计自愈补偿，并在内存中无条件按主键升序排序以落实防死锁铁律
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
@@ -228,7 +297,7 @@ public final class BatchUtil {
      * @return 累计成功更新影响的总行数
      */
     public static <T> int updateBatch(AtengBaseMapper<T> mapper, Collection<T> entityList) {
-        return updateBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+        return updateBatch(mapper, entityList, getDefaultBatchSize());
     }
 
     /**
@@ -237,7 +306,7 @@ public final class BatchUtil {
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
      * @param entityList 待批量更新的实体数据集合
-     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用默认值 1000）
+     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用全局默认批次大小）
      * @param <T>        实体类型
      * @return 累计成功更新影响的总行数
      */
@@ -256,7 +325,7 @@ public final class BatchUtil {
         List<T> sortedList = sortByIdAscending(entityList);
 
         // 3. 切片分批执行
-        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        int effectiveBatchSize = batchSize > 0 ? batchSize : getDefaultBatchSize();
         int affectedRows = 0;
         for (List<T> subList : CollectionUtil.partition(sortedList, effectiveBatchSize)) {
             affectedRows += mapper.updateBatchSomeColumn(subList);
@@ -266,7 +335,7 @@ public final class BatchUtil {
     }
 
     /**
-     * 原生分批批量更新别名方法（采用默认分批大小 1000）
+     * 原生分批批量更新别名方法（采用默认分批大小）
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
      * @param entityList 待批量更新的实体数据集合
@@ -274,7 +343,7 @@ public final class BatchUtil {
      * @return 累计成功更新影响的总行数
      */
     public static <T> int updateBatchSomeColumn(AtengBaseMapper<T> mapper, Collection<T> entityList) {
-        return updateBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+        return updateBatch(mapper, entityList, getDefaultBatchSize());
     }
 
     /**
@@ -332,33 +401,35 @@ public final class BatchUtil {
             healCustomEntityId(item);
         }
 
-        // 2. 审计时间自愈 (BaseTimeEntity)
-        if (item instanceof BaseTimeEntity timeEntity) {
-            LocalDateTime now = null;
-            if (timeEntity.getCreateTime() == null) {
-                now = LocalDateTime.now();
-                timeEntity.setCreateTime(now);
-            }
-            if (timeEntity.getUpdateTime() == null) {
-                if (now == null) {
+        // 2. 审计时间自愈 (BaseTimeEntity，仅在 auditEnabled=true 时执行)
+        if (auditEnabled) {
+            if (item instanceof BaseTimeEntity timeEntity) {
+                LocalDateTime now = null;
+                if (timeEntity.getCreateTime() == null) {
                     now = LocalDateTime.now();
+                    timeEntity.setCreateTime(now);
                 }
-                timeEntity.setUpdateTime(now);
+                if (timeEntity.getUpdateTime() == null) {
+                    if (now == null) {
+                        now = LocalDateTime.now();
+                    }
+                    timeEntity.setUpdateTime(now);
+                }
             }
-        }
 
-        // 3. 审计操作人自愈 (BaseEntity)
-        if (item instanceof BaseEntity baseEntity) {
-            String operator = null;
-            if (baseEntity.getCreateBy() == null || baseEntity.getCreateBy().isBlank()) {
-                operator = resolveCurrentUser();
-                baseEntity.setCreateBy(operator);
-            }
-            if (baseEntity.getUpdateBy() == null || baseEntity.getUpdateBy().isBlank()) {
-                if (operator == null) {
+            // 3. 审计操作人自愈 (BaseEntity)
+            if (item instanceof BaseEntity baseEntity) {
+                String operator = null;
+                if (baseEntity.getCreateBy() == null || baseEntity.getCreateBy().isBlank()) {
                     operator = resolveCurrentUser();
+                    baseEntity.setCreateBy(operator);
                 }
-                baseEntity.setUpdateBy(operator);
+                if (baseEntity.getUpdateBy() == null || baseEntity.getUpdateBy().isBlank()) {
+                    if (operator == null) {
+                        operator = resolveCurrentUser();
+                    }
+                    baseEntity.setUpdateBy(operator);
+                }
             }
         }
 
@@ -509,23 +580,29 @@ public final class BatchUtil {
     }
 
     /**
-     * 对单个实体对象执行更新前轻量自愈补偿处理（仅在 updateTime / updateBy 为空时注入当前系统时钟与操作人）
+     * 对单个实体对象执行更新前轻量自愈补偿处理
+     * <p>
+     * 仅在 {@code auditEnabled == true} 时执行：强制刷新 {@code updateTime} 为当前系统时钟；
+     * 若存在有效上下文操作人（SPI 或 {@link UserContextHolder}），强制刷新 {@code updateBy}，
+     * 否则保留实体已有非空 {@code updateBy} 或兜底填充 {@code defaultOperator}。
+     * </p>
      *
      * @param item 待自愈的实体对象
      * @param <T>  实体类型
      */
     public static <T> void autoHealForUpdate(T item) {
-        if (item == null) {
+        if (item == null || !auditEnabled) {
             return;
         }
         if (item instanceof BaseTimeEntity timeEntity) {
-            if (timeEntity.getUpdateTime() == null) {
-                timeEntity.setUpdateTime(LocalDateTime.now());
-            }
+            timeEntity.setUpdateTime(LocalDateTime.now());
         }
         if (item instanceof BaseEntity baseEntity) {
-            if (baseEntity.getUpdateBy() == null || baseEntity.getUpdateBy().isBlank()) {
-                baseEntity.setUpdateBy(resolveCurrentUser());
+            String contextUser = resolveContextUserOrNull();
+            if (contextUser != null) {
+                baseEntity.setUpdateBy(contextUser);
+            } else if (baseEntity.getUpdateBy() == null || baseEntity.getUpdateBy().isBlank()) {
+                baseEntity.setUpdateBy(defaultOperator);
             }
         }
     }
@@ -536,6 +613,11 @@ public final class BatchUtil {
      * @return 当前操作人标识
      */
     private static String resolveCurrentUser() {
+        String contextUser = resolveContextUserOrNull();
+        return contextUser != null ? contextUser : defaultOperator;
+    }
+
+    private static String resolveContextUserOrNull() {
         String user = null;
         if (currentUserProvider != null) {
             try {
@@ -547,10 +629,7 @@ public final class BatchUtil {
         if (user == null || user.isBlank()) {
             user = UserContextHolder.get();
         }
-        if (user == null || user.isBlank()) {
-            user = DEFAULT_OPERATOR;
-        }
-        return user;
+        return (user != null && !user.isBlank()) ? user : null;
     }
 
     /**
