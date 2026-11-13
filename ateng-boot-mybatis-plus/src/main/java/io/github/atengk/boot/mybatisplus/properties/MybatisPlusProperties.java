@@ -547,6 +547,11 @@ public class MybatisPlusProperties {
          */
         private boolean maskSensitive = true;
 
+        /**
+         * 是否启用受管线程池异步派发慢 SQL 告警与事件，默认 false（保持同步向后兼容）
+         */
+        private boolean asyncEnabled = false;
+
         public boolean isEnabled() {
             return enabled;
         }
@@ -577,6 +582,14 @@ public class MybatisPlusProperties {
 
         public void setMaskSensitive(boolean maskSensitive) {
             this.maskSensitive = maskSensitive;
+        }
+
+        public boolean isAsyncEnabled() {
+            return asyncEnabled;
+        }
+
+        public void setAsyncEnabled(boolean asyncEnabled) {
+            this.asyncEnabled = asyncEnabled;
         }
     }
 

@@ -433,7 +433,8 @@ public class AtengMybatisPlusAutoConfiguration {
      * 注册慢 SQL 性能审计与告警拦截器
      *
      * @param alertProvidersProvider 可选的慢 SQL 告警通知提供者 SPI 实现集合
-     * @param eventPublisher Spring 事件发布器
+     * @param eventPublisher         Spring 事件发布器
+     * @param taskExecutorProvider   可选的受管异步任务执行器提供者
      * @return 慢 SQL 拦截器实例
      */
     @Bean
@@ -441,15 +442,19 @@ public class AtengMybatisPlusAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.slow-sql", name = "enabled", havingValue = "true", matchIfMissing = true)
     public SlowSqlInterceptor slowSqlInterceptor(
             ObjectProvider<List<SlowSqlAlertProvider>> alertProvidersProvider,
-            ApplicationEventPublisher eventPublisher) {
+            ApplicationEventPublisher eventPublisher,
+            ObjectProvider<Executor> taskExecutorProvider) {
         MybatisPlusProperties.SlowSqlProperties slowSql = properties.getSlowSql();
         List<SlowSqlAlertProvider> providers = alertProvidersProvider.getIfAvailable(List::of);
+        Executor taskExecutor = slowSql.isAsyncEnabled() ? taskExecutorProvider.getIfAvailable() : null;
         return new SlowSqlInterceptor(
                 slowSql.getThreshold(),
                 slowSql.isFormatSql(),
                 slowSql.isMaskSensitive(),
+                slowSql.isAsyncEnabled(),
                 providers,
-                eventPublisher
+                eventPublisher,
+                taskExecutor
         );
     }
 

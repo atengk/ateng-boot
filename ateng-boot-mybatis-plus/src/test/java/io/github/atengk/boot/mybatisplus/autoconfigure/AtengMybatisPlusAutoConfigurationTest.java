@@ -321,6 +321,7 @@ class AtengMybatisPlusAutoConfigurationTest {
             assertThat(interceptor.getThreshold()).isEqualTo(java.time.Duration.ofSeconds(1));
             assertThat(interceptor.isFormatSql()).isTrue();
             assertThat(interceptor.isMaskSensitive()).isTrue();
+            assertThat(interceptor.isAsyncEnabled()).isFalse();
             assertThat(interceptor.getAlertProviders()).isEmpty();
         });
     }
@@ -353,6 +354,21 @@ class AtengMybatisPlusAutoConfigurationTest {
             assertThat(interceptor.getAlertProviders()).containsExactly(customAlert);
             assertThat(interceptor.getAlertProvider()).isSameAs(customAlert);
         });
+    }
+
+    @Test
+    @DisplayName("开启 ateng.boot.mybatis-plus.slow-sql.async-enabled=true 时注入受管 Executor 线程池")
+    void shouldBindTaskExecutorWhenSlowSqlAsyncEnabled() {
+        java.util.concurrent.Executor customExecutor = Runnable::run;
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.slow-sql.async-enabled=true")
+                .withBean("applicationTaskExecutor", java.util.concurrent.Executor.class, () -> customExecutor)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor.class);
+                    io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor interceptor =
+                            context.getBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor.class);
+                    assertThat(interceptor.isAsyncEnabled()).isTrue();
+                    assertThat(interceptor.getTaskExecutor()).isSameAs(customExecutor);
+                });
     }
 
     @Test

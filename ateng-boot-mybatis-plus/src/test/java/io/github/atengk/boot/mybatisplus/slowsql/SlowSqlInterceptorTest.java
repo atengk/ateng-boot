@@ -7,6 +7,8 @@ import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import com.baomidou.mybatisplus.core.config.GlobalConfig;
 import com.baomidou.mybatisplus.core.incrementer.DefaultIdentifierGenerator;
 import com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
 import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
 import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
@@ -27,7 +29,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -35,7 +39,12 @@ import java.sql.Statement;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -113,6 +122,16 @@ class SlowSqlInterceptorTest {
         try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
             stmt.execute("DELETE FROM t_slow_test_user");
         }
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+    }
+
+    @AfterEach
+    void cleanThreadContext() {
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
     }
 
     private SqlSessionFactory createSessionFactory(SlowSqlInterceptor interceptor) {
@@ -388,5 +407,193 @@ class SlowSqlInterceptorTest {
             // 参数保持明文未被掩码
             assertThat(event.getParameters()).contains("plain_password_123");
         }
+    }
+
+    @Test
+    @DisplayName("异步派发与四维上下文透传：开启 asyncEnabled 后不阻塞主线程，完整透传 MDC/User/TenantId/IgnoreTenant 并于完成后清理现场")
+    void shouldDispatchSlowSqlAlertsAsynchronouslyWithFourDimContextPropagationAndCleanup() throws Exception {
+        ThreadPoolTaskExecutor asyncPool = new ThreadPoolTaskExecutor();
+        asyncPool.setCorePoolSize(1);
+        asyncPool.setMaxPoolSize(1);
+        asyncPool.setThreadNamePrefix("slow-sql-async-");
+        asyncPool.initialize();
+
+        try {
+            CountDownLatch alertEnteredLatch = new CountDownLatch(1);
+            CountDownLatch mainReturnedLatch = new CountDownLatch(1);
+            CountDownLatch completedLatch = new CountDownLatch(2);
+
+            AtomicReference<String> providerThreadName = new AtomicReference<>();
+            AtomicReference<String> listenerThreadName = new AtomicReference<>();
+            AtomicReference<String> capturedTraceId = new AtomicReference<>();
+            AtomicReference<String> capturedUser = new AtomicReference<>();
+            AtomicReference<String> capturedTenant = new AtomicReference<>();
+            AtomicBoolean capturedIgnoreTenant = new AtomicBoolean(false);
+            AtomicBoolean unblockedMainFirst = new AtomicBoolean(false);
+
+            SlowSqlAlertProvider alertProvider = event -> {
+                try {
+                    providerThreadName.set(Thread.currentThread().getName());
+                    capturedTraceId.set(MDC.get("traceId"));
+                    capturedUser.set(UserContextHolder.get());
+                    capturedTenant.set(TenantContextHolder.getTenantId());
+                    capturedIgnoreTenant.set(TenantContextHolder.isIgnoreTenant());
+                    alertEnteredLatch.countDown();
+                    // 等待主线程确认先返回，验证非阻塞特性
+                    unblockedMainFirst.set(mainReturnedLatch.await(3, TimeUnit.SECONDS));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    completedLatch.countDown();
+                }
+            };
+
+            ApplicationEventPublisher publisher = evt -> {
+                if (evt instanceof SlowSqlEvent) {
+                    listenerThreadName.set(Thread.currentThread().getName());
+                    completedLatch.countDown();
+                }
+            };
+
+            SlowSqlInterceptor interceptor = new SlowSqlInterceptor(
+                    Duration.ofNanos(0),
+                    true,
+                    true,
+                    true,
+                    List.of(alertProvider),
+                    publisher,
+                    asyncPool
+            );
+
+            MDC.put("traceId", "trace-slow-929");
+            UserContextHolder.set("user-slow-ateng");
+            TenantContextHolder.setTenantId("tenant-slow-009");
+            TenantContextHolder.setIgnoreTenant(true);
+
+            SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
+            try (SqlSession sqlSession = sessionFactory.openSession()) {
+                TestUserMapper mapper = sqlSession.getMapper(TestUserMapper.class);
+                mapper.countAll();
+                // 主线程执行到此即释放锁：若回调同步阻塞在此则必定超时死锁，异步则可立即唤醒主线信号
+                mainReturnedLatch.countDown();
+            }
+
+            assertThat(alertEnteredLatch.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(completedLatch.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(unblockedMainFirst.get()).isTrue();
+
+            assertThat(providerThreadName.get()).startsWith("slow-sql-async-");
+            assertThat(listenerThreadName.get()).startsWith("slow-sql-async-");
+            assertThat(capturedTraceId.get()).isEqualTo("trace-slow-929");
+            assertThat(capturedUser.get()).isEqualTo("user-slow-ateng");
+            assertThat(capturedTenant.get()).isEqualTo("tenant-slow-009");
+            assertThat(capturedIgnoreTenant.get()).isTrue();
+
+            // 异步任务完成后向同一单线程提交探针，验证 AsyncContext 确定性清理工作线程残留上下文
+            CountDownLatch probeLatch = new CountDownLatch(1);
+            AtomicReference<String> residualTraceId = new AtomicReference<>();
+            AtomicReference<String> residualUser = new AtomicReference<>();
+            AtomicReference<String> residualTenant = new AtomicReference<>();
+            AtomicBoolean residualIgnoreTenant = new AtomicBoolean(true);
+
+            asyncPool.execute(() -> {
+                try {
+                    residualTraceId.set(MDC.get("traceId"));
+                    residualUser.set(UserContextHolder.get());
+                    residualTenant.set(TenantContextHolder.getTenantId());
+                    residualIgnoreTenant.set(TenantContextHolder.isIgnoreTenant());
+                } finally {
+                    probeLatch.countDown();
+                }
+            });
+
+            assertThat(probeLatch.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(residualTraceId.get()).isNull();
+            assertThat(residualUser.get()).isNull();
+            assertThat(residualTenant.get()).isNull();
+            assertThat(residualIgnoreTenant.get()).isFalse();
+        } finally {
+            asyncPool.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("异步派发异常隔离：SlowSqlAlertProvider 或事件发布在异步线程抛出异常时安全捕获且不泄露上下文")
+    void shouldSafelyCatchExceptionsInAsyncWorkerThread() throws Exception {
+        ThreadPoolTaskExecutor asyncPool = new ThreadPoolTaskExecutor();
+        asyncPool.setCorePoolSize(1);
+        asyncPool.setMaxPoolSize(1);
+        asyncPool.setThreadNamePrefix("slow-sql-err-worker-");
+        asyncPool.initialize();
+
+        try {
+            AtomicReference<Throwable> uncaughtError = new AtomicReference<>();
+            CountDownLatch finishedLatch = new CountDownLatch(2);
+            Executor customPool = runnable -> asyncPool.execute(() -> {
+                try {
+                    runnable.run();
+                } catch (Throwable t) {
+                    uncaughtError.set(t);
+                } finally {
+                    finishedLatch.countDown();
+                }
+            });
+
+            SlowSqlAlertProvider throwingProvider = event -> {
+                throw new RuntimeException("Async webhook timeout");
+            };
+            ApplicationEventPublisher throwingPublisher = event -> {
+                finishedLatch.countDown();
+                throw new IllegalStateException("Async publisher failed");
+            };
+
+            SlowSqlInterceptor interceptor = new SlowSqlInterceptor(
+                    Duration.ofNanos(0),
+                    true,
+                    true,
+                    true,
+                    List.of(throwingProvider),
+                    throwingPublisher,
+                    customPool
+            );
+
+            SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
+            assertThatCode(() -> {
+                try (SqlSession sqlSession = sessionFactory.openSession()) {
+                    TestUserMapper mapper = sqlSession.getMapper(TestUserMapper.class);
+                    mapper.countAll();
+                }
+            }).doesNotThrowAnyException();
+
+            assertThat(finishedLatch.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(uncaughtError.get()).isNull();
+        } finally {
+            asyncPool.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("未注入受管线程池时开启 asyncEnabled=true 安全降级为同步派发")
+    void shouldFallbackToSyncWhenAsyncEnabledWithoutExecutor() {
+        AtomicReference<String> execThreadName = new AtomicReference<>();
+        SlowSqlAlertProvider provider = event -> execThreadName.set(Thread.currentThread().getName());
+
+        SlowSqlInterceptor interceptor = new SlowSqlInterceptor(
+                Duration.ofNanos(0),
+                true,
+                true,
+                true,
+                List.of(provider),
+                null,
+                null
+        );
+
+        SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
+        try (SqlSession sqlSession = sessionFactory.openSession()) {
+            TestUserMapper mapper = sqlSession.getMapper(TestUserMapper.class);
+            mapper.countAll();
+        }
+
+        assertThat(execThreadName.get()).isEqualTo(Thread.currentThread().getName());
     }
 }

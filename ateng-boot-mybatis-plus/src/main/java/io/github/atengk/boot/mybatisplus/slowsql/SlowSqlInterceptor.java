@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mybatisplus.slowsql;
 
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
 import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
 import io.github.atengk.boot.mybatisplus.sqllog.SqlParameterFormatter;
@@ -28,6 +29,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 
 /**
  * 慢 SQL 性能审计与告警拦截器
@@ -55,20 +57,34 @@ public class SlowSqlInterceptor implements Interceptor {
     private final long thresholdNanos;
     private final boolean formatSql;
     private final boolean maskSensitive;
+    private final boolean asyncEnabled;
     private final List<SlowSqlAlertProvider> alertProviders;
     private final ApplicationEventPublisher eventPublisher;
+    private final Executor taskExecutor;
+
+    public SlowSqlInterceptor(Duration threshold,
+                              boolean formatSql,
+                              boolean maskSensitive,
+                              boolean asyncEnabled,
+                              List<SlowSqlAlertProvider> alertProviders,
+                              ApplicationEventPublisher eventPublisher,
+                              Executor taskExecutor) {
+        this.threshold = (threshold != null) ? threshold : Duration.ofSeconds(1);
+        this.thresholdNanos = this.threshold.toNanos();
+        this.formatSql = formatSql;
+        this.maskSensitive = maskSensitive;
+        this.asyncEnabled = asyncEnabled;
+        this.alertProviders = (alertProviders != null) ? List.copyOf(alertProviders) : List.of();
+        this.eventPublisher = eventPublisher;
+        this.taskExecutor = taskExecutor;
+    }
 
     public SlowSqlInterceptor(Duration threshold,
                               boolean formatSql,
                               boolean maskSensitive,
                               List<SlowSqlAlertProvider> alertProviders,
                               ApplicationEventPublisher eventPublisher) {
-        this.threshold = (threshold != null) ? threshold : Duration.ofSeconds(1);
-        this.thresholdNanos = this.threshold.toNanos();
-        this.formatSql = formatSql;
-        this.maskSensitive = maskSensitive;
-        this.alertProviders = (alertProviders != null) ? List.copyOf(alertProviders) : List.of();
-        this.eventPublisher = eventPublisher;
+        this(threshold, formatSql, maskSensitive, false, alertProviders, eventPublisher, null);
     }
 
     public SlowSqlInterceptor(Duration threshold,
@@ -76,11 +92,11 @@ public class SlowSqlInterceptor implements Interceptor {
                               boolean maskSensitive,
                               SlowSqlAlertProvider alertProvider,
                               ApplicationEventPublisher eventPublisher) {
-        this(threshold, formatSql, maskSensitive, alertProvider != null ? List.of(alertProvider) : List.of(), eventPublisher);
+        this(threshold, formatSql, maskSensitive, false, alertProvider != null ? List.of(alertProvider) : List.of(), eventPublisher, null);
     }
 
     public SlowSqlInterceptor(Duration threshold) {
-        this(threshold, true, true, (List<SlowSqlAlertProvider>) null, null);
+        this(threshold, true, true, false, null, null, null);
     }
 
     public SlowSqlInterceptor() {
@@ -97,6 +113,14 @@ public class SlowSqlInterceptor implements Interceptor {
 
     public boolean isMaskSensitive() {
         return maskSensitive;
+    }
+
+    public boolean isAsyncEnabled() {
+        return asyncEnabled;
+    }
+
+    public Executor getTaskExecutor() {
+        return taskExecutor;
     }
 
     public SlowSqlAlertProvider getAlertProvider() {
@@ -181,25 +205,51 @@ public class SlowSqlInterceptor implements Interceptor {
                     parameters
             );
 
-            if (alertProviders != null && !alertProviders.isEmpty()) {
-                for (SlowSqlAlertProvider provider : alertProviders) {
-                    try {
-                        provider.onSlowSql(event);
-                    } catch (Throwable t) {
-                        log.error("调用慢 SQL 告警通知提供者 [{}] 失败", provider.getClass().getName(), t);
-                    }
-                }
-            }
-
-            if (eventPublisher != null) {
-                try {
-                    eventPublisher.publishEvent(event);
-                } catch (Throwable t) {
-                    log.error("发布 SlowSqlEvent 慢 SQL 审计事件失败", t);
-                }
-            }
+            dispatchSlowSqlNotifications(statementId, event);
         } catch (Throwable t) {
             log.error("处理慢 SQL 审计与告警异常", t);
+        }
+    }
+
+    private void dispatchSlowSqlNotifications(String statementId, SlowSqlEvent event) {
+        if ((alertProviders == null || alertProviders.isEmpty()) && eventPublisher == null) {
+            return;
+        }
+        if (asyncEnabled && taskExecutor != null) {
+            try {
+                Runnable task = AsyncContext.wrap(() -> safeDispatchAlertsAndEvents(event));
+                taskExecutor.execute(task);
+            } catch (Throwable t) {
+                log.warn("异步派发慢 SQL 告警失败，降级为同步执行: statementId={}, error={}",
+                        statementId, t.getMessage(), t);
+                safeDispatchAlertsAndEvents(event);
+            }
+            return;
+        }
+        if (asyncEnabled) {
+            log.warn("已开启 slow-sql.async-enabled=true 但未检测到受管 Executor 线程池，降级同步派发慢 SQL 告警: statementId={}",
+                    statementId);
+        }
+        safeDispatchAlertsAndEvents(event);
+    }
+
+    private void safeDispatchAlertsAndEvents(SlowSqlEvent event) {
+        if (alertProviders != null && !alertProviders.isEmpty()) {
+            for (SlowSqlAlertProvider provider : alertProviders) {
+                try {
+                    provider.onSlowSql(event);
+                } catch (Throwable t) {
+                    log.error("调用慢 SQL 告警通知提供者 [{}] 失败", provider.getClass().getName(), t);
+                }
+            }
+        }
+
+        if (eventPublisher != null) {
+            try {
+                eventPublisher.publishEvent(event);
+            } catch (Throwable t) {
+                log.error("发布 SlowSqlEvent 慢 SQL 审计事件失败", t);
+            }
         }
     }
 
