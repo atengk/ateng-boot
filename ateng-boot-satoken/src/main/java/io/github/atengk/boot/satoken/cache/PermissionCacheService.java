@@ -1,5 +1,6 @@
 package io.github.atengk.boot.satoken.cache;
 
+import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.redis.cache.spi.TwoLevelCache;
 import io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager;
 import io.github.atengk.boot.redis.cache.twolevel.l1.L1MemoryCache;
@@ -46,6 +47,7 @@ public class PermissionCacheService {
     private final ObjectProvider<TwoLevelCacheManager> twoLevelCacheManagerProvider;
     private final ObjectProvider<StringRedisTemplate> redisTemplateProvider;
     private final ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider;
+    private final ReentrantLock adapterLock = new ReentrantLock();
 
     private volatile PermissionCacheAdapter adapter;
 
@@ -137,25 +139,84 @@ public class PermissionCacheService {
     }
 
     /**
+     * 判断是否为默认账号体系（null、空白或 "login"）
+     *
+     * @param loginType 账号体系类型标识
+     * @return true 表示默认账号体系
+     */
+    public static boolean isDefaultLoginType(String loginType) {
+        return loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType.trim());
+    }
+
+    /**
+     * 构建用户角色列表缓存键（默认体系保持兼容格式，非默认体系按 loginType 物理隔离）
+     *
+     * @param userId    用户唯一标识
+     * @param loginType 账号体系类型标识
+     * @return 权限缓存键
+     */
+    public static String buildUserRolesKey(String userId, String loginType) {
+        return buildScopedKey(loginType, "user-roles:", userId);
+    }
+
+    /**
+     * 构建角色权限列表缓存键（默认体系保持兼容格式，非默认体系按 loginType 物理隔离）
+     *
+     * @param roleCode  角色编码
+     * @param loginType 账号体系类型标识
+     * @return 权限缓存键
+     */
+    public static String buildRolePermsKey(String roleCode, String loginType) {
+        return buildScopedKey(loginType, "role-perms:", roleCode);
+    }
+
+    /**
+     * 构建用户直属权限列表缓存键（默认体系保持兼容格式，非默认体系按 loginType 物理隔离）
+     *
+     * @param userId    用户唯一标识
+     * @param loginType 账号体系类型标识
+     * @return 权限缓存键
+     */
+    public static String buildUserPermsKey(String userId, String loginType) {
+        return buildScopedKey(loginType, "user-perms:", userId);
+    }
+
+    private static String buildScopedKey(String loginType, String segment, String key) {
+        if (isDefaultLoginType(loginType)) {
+            return CACHE_PREFIX + segment + key;
+        }
+        return CACHE_PREFIX + loginType.trim() + ":" + segment + key;
+    }
+
+    /**
      * 即时刷新指定用户的角色与直属权限缓存
      *
      * @param userId 用户唯一标识
      */
     public void refreshUserPermissions(String userId) {
+        refreshUserPermissions(null, userId);
+    }
+
+    /**
+     * 即时刷新指定账号体系下用户的角色与直属权限缓存
+     *
+     * @param loginType 账号体系类型标识
+     * @param userId    用户唯一标识
+     */
+    public void refreshUserPermissions(String loginType, String userId) {
         if (userId == null || userId.isBlank()) {
             return;
         }
-        String userRolesKey = USER_ROLES_PREFIX + userId;
-        String userPermsKey = USER_PERMS_PREFIX + userId;
+        String userRolesKey = buildUserRolesKey(userId, loginType);
+        String userPermsKey = buildUserPermsKey(userId, loginType);
 
         delete(userRolesKey);
         delete(userPermsKey);
-        clearLocalUserCache(userId);
-        log.info("即时清理用户权限缓存完成: userId={}", userId);
+        clearLocalUserCache(loginType, userId);
+        log.info("即时清理用户权限缓存完成: loginType={}, userId={}",
+                isDefaultLoginType(loginType) ? StpUtil.TYPE : loginType.trim(), userId);
 
-        if (broadcasterProvider != null) {
-            broadcasterProvider.ifAvailable(b -> b.broadcast(SaTokenClusterEventType.USER_PERMISSION_REFRESH, userId));
-        }
+        broadcastRefresh(SaTokenClusterEventType.USER_PERMISSION_REFRESH, loginType, userId);
     }
 
     /**
@@ -164,17 +225,39 @@ public class PermissionCacheService {
      * @param roleCode 角色编码
      */
     public void refreshRolePermissions(String roleCode) {
+        refreshRolePermissions(null, roleCode);
+    }
+
+    /**
+     * 即时刷新指定账号体系下角色关联的权限码集合缓存
+     *
+     * @param loginType 账号体系类型标识
+     * @param roleCode  角色编码
+     */
+    public void refreshRolePermissions(String loginType, String roleCode) {
         if (roleCode == null || roleCode.isBlank()) {
             return;
         }
-        String rolePermsKey = ROLE_PERMS_PREFIX + roleCode;
+        String rolePermsKey = buildRolePermsKey(roleCode, loginType);
         delete(rolePermsKey);
-        clearLocalRoleCache(roleCode);
-        log.info("即时清理角色权限缓存完成: roleCode={}", roleCode);
+        clearLocalRoleCache(loginType, roleCode);
+        log.info("即时清理角色权限缓存完成: loginType={}, roleCode={}",
+                isDefaultLoginType(loginType) ? StpUtil.TYPE : loginType.trim(), roleCode);
 
-        if (broadcasterProvider != null) {
-            broadcasterProvider.ifAvailable(b -> b.broadcast(SaTokenClusterEventType.ROLE_PERMISSION_REFRESH, roleCode));
+        broadcastRefresh(SaTokenClusterEventType.ROLE_PERMISSION_REFRESH, loginType, roleCode);
+    }
+
+    private void broadcastRefresh(SaTokenClusterEventType eventType, String loginType, String targetKey) {
+        if (broadcasterProvider == null) {
+            return;
         }
+        broadcasterProvider.ifAvailable(b -> {
+            if (isDefaultLoginType(loginType)) {
+                b.broadcast(eventType, targetKey);
+            } else {
+                b.broadcast(eventType, loginType.trim(), targetKey);
+            }
+        });
     }
 
     /**
@@ -195,11 +278,21 @@ public class PermissionCacheService {
      * @param userId 用户唯一标识
      */
     public void clearLocalUserCache(String userId) {
+        clearLocalUserCache(null, userId);
+    }
+
+    /**
+     * 精准清理指定账号体系下用户的本地内存权限缓存（异地节点协同）
+     *
+     * @param loginType 账号体系类型标识
+     * @param userId    用户唯一标识
+     */
+    public void clearLocalUserCache(String loginType, String userId) {
         if (userId == null || userId.isBlank()) {
             return;
         }
-        getAdapter().evictLocal(USER_ROLES_PREFIX + userId);
-        getAdapter().evictLocal(USER_PERMS_PREFIX + userId);
+        getAdapter().evictLocal(buildUserRolesKey(userId, loginType));
+        getAdapter().evictLocal(buildUserPermsKey(userId, loginType));
     }
 
     /**
@@ -208,10 +301,20 @@ public class PermissionCacheService {
      * @param roleCode 角色编码
      */
     public void clearLocalRoleCache(String roleCode) {
+        clearLocalRoleCache(null, roleCode);
+    }
+
+    /**
+     * 精准清理指定账号体系下角色的本地内存权限缓存（异地节点协同）
+     *
+     * @param loginType 账号体系类型标识
+     * @param roleCode  角色编码
+     */
+    public void clearLocalRoleCache(String loginType, String roleCode) {
         if (roleCode == null || roleCode.isBlank()) {
             return;
         }
-        getAdapter().evictLocal(ROLE_PERMS_PREFIX + roleCode);
+        getAdapter().evictLocal(buildRolePermsKey(roleCode, loginType));
     }
 
     /**
@@ -231,6 +334,16 @@ public class PermissionCacheService {
     }
 
     /**
+     * 清理指定账号体系下用户的角色与直属权限缓存（别名方法）
+     *
+     * @param loginType 账号体系类型标识
+     * @param userId    用户唯一标识
+     */
+    public void clearUserCache(String loginType, String userId) {
+        refreshUserPermissions(loginType, userId);
+    }
+
+    /**
      * 清理指定用户的角色与直属权限缓存（Long 用户标识重载）
      *
      * @param userId 用户唯一标识
@@ -242,12 +355,34 @@ public class PermissionCacheService {
     }
 
     /**
+     * 清理指定账号体系下用户的角色与直属权限缓存（Long 用户标识重载）
+     *
+     * @param loginType 账号体系类型标识
+     * @param userId    用户唯一标识
+     */
+    public void clearUserCache(String loginType, Long userId) {
+        if (userId != null) {
+            refreshUserPermissions(loginType, String.valueOf(userId));
+        }
+    }
+
+    /**
      * 清理指定角色的权限码集合缓存（别名方法）
      *
      * @param roleCode 角色编码
      */
     public void clearRoleCache(String roleCode) {
         refreshRolePermissions(roleCode);
+    }
+
+    /**
+     * 清理指定账号体系下角色的权限码集合缓存（别名方法）
+     *
+     * @param loginType 账号体系类型标识
+     * @param roleCode  角色编码
+     */
+    public void clearRoleCache(String loginType, String roleCode) {
+        refreshRolePermissions(loginType, roleCode);
     }
 
     /**
@@ -267,15 +402,20 @@ public class PermissionCacheService {
     }
 
     /**
-     * 获取当前生效的权限缓存适配器（双重检查加锁单例懒加载）
+     * 获取当前生效的权限缓存适配器（ReentrantLock 双重检查加锁单例懒加载，防虚拟线程 Pinning）
      */
     public PermissionCacheAdapter getAdapter() {
         PermissionCacheAdapter current = this.adapter;
         if (current == null) {
-            synchronized (this) {
+            adapterLock.lock();
+            try {
                 current = this.adapter;
                 if (current == null) {
                     this.adapter = current = resolveAdapter();
+                }
+            } finally {
+                if (adapterLock.isHeldByCurrentThread()) {
+                    adapterLock.unlock();
                 }
             }
         }

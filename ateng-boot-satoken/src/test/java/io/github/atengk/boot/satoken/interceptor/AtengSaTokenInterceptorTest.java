@@ -355,4 +355,46 @@ class AtengSaTokenInterceptorTest {
             loginHelperMock.verify(() -> LoginHelper.getStpLogic(anyString()), never());
         }
     }
+
+    @Test
+    @DisplayName("测试多线程并发追加白名单：基于 ReentrantLock 写锁保护不丢失规则且视图不可变")
+    void testConcurrentAddWhitelistSafety() throws Exception {
+        int threads = 8;
+        int pathsPerThread = 25;
+        java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch doneLatch = new java.util.concurrent.CountDownLatch(threads);
+        java.util.List<Throwable> errors = new java.util.concurrent.CopyOnWriteArrayList<>();
+        org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor executor =
+                new org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(threads);
+        executor.setMaxPoolSize(threads);
+        executor.setQueueCapacity(threads);
+        executor.setThreadNamePrefix("test-whitelist-");
+        executor.initialize();
+
+        try {
+            for (int t = 0; t < threads; t++) {
+                final int tid = t;
+                executor.execute(() -> {
+                    try {
+                        startLatch.await();
+                        for (int i = 0; i < pathsPerThread; i++) {
+                            interceptor.addWhitelist(List.of("/api/concurrent/" + tid + "/" + i));
+                        }
+                    } catch (Throwable ex) {
+                        errors.add(ex);
+                    } finally {
+                        doneLatch.countDown();
+                    }
+                });
+            }
+            startLatch.countDown();
+            assertThat(doneLatch.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        } finally {
+            executor.shutdown();
+        }
+        assertThat(errors).isEmpty();
+        assertThat(interceptor.getWhitelist()).hasSize(threads * pathsPerThread);
+        assertThat(interceptor.isWhitelisted("/api/concurrent/7/24")).isTrue();
+    }
 }

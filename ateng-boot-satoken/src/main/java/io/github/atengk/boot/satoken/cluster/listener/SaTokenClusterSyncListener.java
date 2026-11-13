@@ -34,32 +34,36 @@ public class SaTokenClusterSyncListener {
 
     @EventListener
     public void onLogout(SaLogoutEvent event) {
-        String loginId = event.getLoginId() != null ? String.valueOf(event.getLoginId()) : null;
-        broadcaster.broadcast(SaTokenClusterEventType.LOGOUT, loginId);
+        broadcastLifecycle(SaTokenClusterEventType.LOGOUT, event.getLoginType(), event.getLoginId());
     }
 
     @EventListener
     public void onKickout(SaKickoutEvent event) {
-        String loginId = event.getLoginId() != null ? String.valueOf(event.getLoginId()) : null;
-        broadcaster.broadcast(SaTokenClusterEventType.KICKOUT, loginId);
+        broadcastLifecycle(SaTokenClusterEventType.KICKOUT, event.getLoginType(), event.getLoginId());
     }
 
     @EventListener
     public void onReplaced(SaReplacedEvent event) {
-        String loginId = event.getLoginId() != null ? String.valueOf(event.getLoginId()) : null;
-        broadcaster.broadcast(SaTokenClusterEventType.REPLACED, loginId);
+        broadcastLifecycle(SaTokenClusterEventType.REPLACED, event.getLoginType(), event.getLoginId());
     }
 
     @EventListener
     public void onDisable(SaDisableEvent event) {
-        String loginId = event.getLoginId() != null ? String.valueOf(event.getLoginId()) : null;
-        broadcaster.broadcast(SaTokenClusterEventType.DISABLE, loginId);
+        broadcastLifecycle(SaTokenClusterEventType.DISABLE, event.getLoginType(), event.getLoginId());
     }
 
     @EventListener
     public void onUntieDisable(SaUntieDisableEvent event) {
-        String loginId = event.getLoginId() != null ? String.valueOf(event.getLoginId()) : null;
-        broadcaster.broadcast(SaTokenClusterEventType.UNTIE_DISABLE, loginId);
+        broadcastLifecycle(SaTokenClusterEventType.UNTIE_DISABLE, event.getLoginType(), event.getLoginId());
+    }
+
+    private void broadcastLifecycle(SaTokenClusterEventType eventType, String loginType, Object loginIdObj) {
+        String loginId = loginIdObj != null ? String.valueOf(loginIdObj) : null;
+        if (PermissionCacheService.isDefaultLoginType(loginType)) {
+            broadcaster.broadcast(eventType, loginId);
+        } else {
+            broadcaster.broadcast(eventType, loginType.trim(), loginId);
+        }
     }
 
     // ==================== 2. 集群广播消息消费与本地精准失效 ====================
@@ -107,15 +111,25 @@ public class SaTokenClusterSyncListener {
             return;
         }
         String targetKey = clusterMessage.getTargetKey();
+        String loginType = clusterMessage.getLoginType();
+        boolean defaultType = PermissionCacheService.isDefaultLoginType(loginType);
         switch (clusterMessage.getEventType()) {
             case USER_PERMISSION_REFRESH, KICKOUT, LOGOUT, REPLACED, DISABLE, UNTIE_DISABLE -> {
                 if (targetKey != null && !targetKey.isBlank()) {
-                    cacheService.clearLocalUserCache(targetKey);
+                    if (defaultType) {
+                        cacheService.clearLocalUserCache(targetKey);
+                    } else {
+                        cacheService.clearLocalUserCache(loginType.trim(), targetKey);
+                    }
                 }
             }
             case ROLE_PERMISSION_REFRESH -> {
                 if (targetKey != null && !targetKey.isBlank()) {
-                    cacheService.clearLocalRoleCache(targetKey);
+                    if (defaultType) {
+                        cacheService.clearLocalRoleCache(targetKey);
+                    } else {
+                        cacheService.clearLocalRoleCache(loginType.trim(), targetKey);
+                    }
                 }
             }
             case ALL_CACHE_CLEAR -> cacheService.clearLocalAllCache();

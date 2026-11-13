@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 /**
@@ -43,6 +44,11 @@ public final class LoginHelper {
     }
 
     private static final ThreadLocal<RunAsContext> RUN_AS_CONTEXT = new ThreadLocal<>();
+
+    /**
+     * StpLogic 动态懒加载互斥锁（使用 ReentrantLock 防 JDK 21+ 虚拟线程 Pinning）
+     */
+    private static final ReentrantLock STP_LOGIC_LOCK = new ReentrantLock();
 
     /**
      * 全局主账号登录类型标识（多账号体系共存时优先探测），默认 "login"
@@ -126,7 +132,8 @@ public final class LoginHelper {
         }
         StpLogic logic = findStpLogicSafely(loginType);
         if (logic == null) {
-            synchronized (LoginHelper.class) {
+            STP_LOGIC_LOCK.lock();
+            try {
                 logic = findStpLogicSafely(loginType);
                 if (logic == null) {
                     logic = new StpLogic(loginType) {
@@ -142,6 +149,10 @@ public final class LoginHelper {
                     };
                     SaManager.putStpLogic(logic);
                     log.info("动态懒加载注册 Sa-Token 独立账号体系 StpLogic [loginType={}]", loginType);
+                }
+            } finally {
+                if (STP_LOGIC_LOCK.isHeldByCurrentThread()) {
+                    STP_LOGIC_LOCK.unlock();
                 }
             }
         }

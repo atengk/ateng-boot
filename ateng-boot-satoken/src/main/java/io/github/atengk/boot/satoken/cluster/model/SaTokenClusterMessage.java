@@ -40,6 +40,11 @@ public class SaTokenClusterMessage implements Serializable {
     private String targetKey;
 
     /**
+     * 可选账号体系类型标识（为空时表示默认 "login" 体系）
+     */
+    private String loginType;
+
+    /**
      * 消息产生的时间戳（毫秒）
      */
     private Long timestamp;
@@ -59,9 +64,23 @@ public class SaTokenClusterMessage implements Serializable {
      * @return 集群消息实例
      */
     public static SaTokenClusterMessage of(String instanceId, SaTokenClusterEventType eventType, String targetKey) {
+        return of(instanceId, eventType, null, targetKey);
+    }
+
+    /**
+     * 快速构建带账号体系隔离维度的集群广播消息
+     *
+     * @param instanceId 节点实例标识
+     * @param eventType  事件类型
+     * @param loginType  账号体系类型标识
+     * @param targetKey  目标业务键
+     * @return 集群消息实例
+     */
+    public static SaTokenClusterMessage of(String instanceId, SaTokenClusterEventType eventType, String loginType, String targetKey) {
         return SaTokenClusterMessage.builder()
                 .instanceId(instanceId)
                 .eventType(eventType)
+                .loginType(loginType)
                 .targetKey(targetKey)
                 .timestamp(System.currentTimeMillis())
                 .extra(new LinkedHashMap<>())

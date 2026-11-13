@@ -12,6 +12,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Supplier;
 
 /**
  * Sa-Token 两级高并发权限与角色缓存数据源适配器
@@ -40,33 +41,8 @@ public class CachedStpInterface implements StpInterface {
             return Collections.emptyList();
         }
         String userId = String.valueOf(loginId);
-        String cacheKey = PermissionCacheService.USER_ROLES_PREFIX + userId;
-
-        // 1. 查询缓存
-        String cachedVal = cacheService.get(cacheKey);
-        if (cachedVal != null) {
-            if (EMPTY_SENTINEL.equals(cachedVal)) {
-                return Collections.emptyList();
-            }
-            return deserializeList(cachedVal);
-        }
-
-        // 2. 缓存未命中，回源业务加载器
-        List<String> roles = loader.loadRolesByUserId(userId, loginType);
-        if (roles == null || roles.isEmpty()) {
-            cacheService.set(cacheKey, EMPTY_SENTINEL, properties.getPermissionCache().getEmptyTtlSeconds());
-            return Collections.emptyList();
-        }
-
-        // 3. 过滤清洗并写入缓存（带 Jitter 随机抖动防雪崩）
-        List<String> cleanRoles = roles.stream()
-                .filter(r -> r != null && !r.isBlank())
-                .distinct()
-                .toList();
-        long ttl = calculateTtlWithJitter(properties.getPermissionCache().getTimeoutSeconds());
-        cacheService.set(cacheKey, serializeList(cleanRoles), ttl);
-
-        return cleanRoles;
+        String cacheKey = PermissionCacheService.buildUserRolesKey(userId, loginType);
+        return getOrLoadCachedList(cacheKey, () -> loader.loadRolesByUserId(userId, loginType));
     }
 
     @Override
@@ -86,7 +62,7 @@ public class CachedStpInterface implements StpInterface {
                 if (roleCode == null || roleCode.isBlank()) {
                     continue;
                 }
-                permissionSet.addAll(getPermissionsByRole(roleCode));
+                permissionSet.addAll(getPermissionsByRole(roleCode, loginType));
             }
         }
 
@@ -103,33 +79,25 @@ public class CachedStpInterface implements StpInterface {
      * @return 权限码集合
      */
     public List<String> getPermissionsByRole(String roleCode) {
-        String cacheKey = PermissionCacheService.ROLE_PERMS_PREFIX + roleCode;
+        return getPermissionsByRole(roleCode, null);
+    }
 
-        // 1. 查询角色权限二级缓存
-        String cachedVal = cacheService.get(cacheKey);
-        if (cachedVal != null) {
-            if (EMPTY_SENTINEL.equals(cachedVal)) {
-                return Collections.emptyList();
-            }
-            return deserializeList(cachedVal);
-        }
-
-        // 2. 缓存未命中，回源业务加载器
-        List<String> permissions = loader.loadPermissionsByRole(roleCode);
-        if (permissions == null || permissions.isEmpty()) {
-            cacheService.set(cacheKey, EMPTY_SENTINEL, properties.getPermissionCache().getEmptyTtlSeconds());
+    /**
+     * 根据角色编码与账号体系标识从二级缓存或业务数据源获取权限码集合
+     *
+     * @param roleCode  角色编码
+     * @param loginType 账号体系类型标识
+     * @return 权限码集合
+     */
+    public List<String> getPermissionsByRole(String roleCode, String loginType) {
+        if (roleCode == null || roleCode.isBlank()) {
             return Collections.emptyList();
         }
-
-        // 3. 过滤清洗并写入缓存（带 Jitter 随机抖动防雪崩）
-        List<String> cleanPermissions = permissions.stream()
-                .filter(p -> p != null && !p.isBlank())
-                .distinct()
-                .toList();
-        long ttl = calculateTtlWithJitter(properties.getPermissionCache().getTimeoutSeconds());
-        cacheService.set(cacheKey, serializeList(cleanPermissions), ttl);
-
-        return cleanPermissions;
+        String cacheKey = PermissionCacheService.buildRolePermsKey(roleCode, loginType);
+        return getOrLoadCachedList(cacheKey, () ->
+                (loginType == null || loginType.isBlank())
+                        ? loader.loadPermissionsByRole(roleCode)
+                        : loader.loadPermissionsByRole(roleCode, loginType));
     }
 
     /**
@@ -150,9 +118,15 @@ public class CachedStpInterface implements StpInterface {
      * @return 直属权限码集合
      */
     public List<String> getDirectPermissions(String userId, String loginType) {
-        String cacheKey = PermissionCacheService.USER_PERMS_PREFIX + userId;
+        if (userId == null || userId.isBlank()) {
+            return Collections.emptyList();
+        }
+        String cacheKey = PermissionCacheService.buildUserPermsKey(userId, loginType);
+        return getOrLoadCachedList(cacheKey, () -> loader.loadDirectPermissionsByUserId(userId, loginType));
+    }
 
-        // 1. 查询用户直属权限缓存
+    private List<String> getOrLoadCachedList(String cacheKey, Supplier<List<String>> sourceSupplier) {
+        // 1. 查询缓存
         String cachedVal = cacheService.get(cacheKey);
         if (cachedVal != null) {
             if (EMPTY_SENTINEL.equals(cachedVal)) {
@@ -162,21 +136,25 @@ public class CachedStpInterface implements StpInterface {
         }
 
         // 2. 缓存未命中，回源业务加载器
-        List<String> directPermissions = loader.loadDirectPermissionsByUserId(userId, loginType);
-        if (directPermissions == null || directPermissions.isEmpty()) {
+        List<String> loaded = sourceSupplier.get();
+        if (loaded == null || loaded.isEmpty()) {
             cacheService.set(cacheKey, EMPTY_SENTINEL, properties.getPermissionCache().getEmptyTtlSeconds());
             return Collections.emptyList();
         }
 
-        // 3. 过滤清洗并写入缓存
-        List<String> cleanPermissions = directPermissions.stream()
-                .filter(p -> p != null && !p.isBlank())
+        // 3. 过滤清洗并写入缓存（带 Jitter 随机抖动防雪崩）
+        List<String> cleanList = loaded.stream()
+                .filter(item -> item != null && !item.isBlank())
                 .distinct()
                 .toList();
+        if (cleanList.isEmpty()) {
+            cacheService.set(cacheKey, EMPTY_SENTINEL, properties.getPermissionCache().getEmptyTtlSeconds());
+            return Collections.emptyList();
+        }
         long ttl = calculateTtlWithJitter(properties.getPermissionCache().getTimeoutSeconds());
-        cacheService.set(cacheKey, serializeList(cleanPermissions), ttl);
+        cacheService.set(cacheKey, serializeList(cleanList), ttl);
 
-        return cleanPermissions;
+        return cleanList;
     }
 
     /**

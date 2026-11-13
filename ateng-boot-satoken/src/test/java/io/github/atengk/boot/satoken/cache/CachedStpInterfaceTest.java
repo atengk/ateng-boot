@@ -89,8 +89,8 @@ class CachedStpInterfaceTest {
     @DisplayName("3. 两级权限汇总与去重：聚合所有角色的权限与直属权限")
     void testTwoLevelPermissionAggregationAndDeduplication() {
         when(loader.loadRolesByUserId("2001", "login")).thenReturn(List.of("role_a", "role_b"));
-        when(loader.loadPermissionsByRole("role_a")).thenReturn(List.of("user:query", "user:export"));
-        when(loader.loadPermissionsByRole("role_b")).thenReturn(List.of("user:export", "order:view"));
+        when(loader.loadPermissionsByRole("role_a", "login")).thenReturn(List.of("user:query", "user:export"));
+        when(loader.loadPermissionsByRole("role_b", "login")).thenReturn(List.of("user:export", "order:view"));
         when(loader.loadDirectPermissionsByUserId("2001", "login")).thenReturn(List.of("report:view"));
 
         List<String> permissions = cachedStpInterface.getPermissionList("2001", "login");
@@ -102,8 +102,8 @@ class CachedStpInterfaceTest {
         assertThat(permissions2).containsExactlyInAnyOrder("user:query", "user:export", "order:view", "report:view");
 
         verify(loader, times(1)).loadRolesByUserId("2001", "login");
-        verify(loader, times(1)).loadPermissionsByRole("role_a");
-        verify(loader, times(1)).loadPermissionsByRole("role_b");
+        verify(loader, times(1)).loadPermissionsByRole("role_a", "login");
+        verify(loader, times(1)).loadPermissionsByRole("role_b", "login");
         verify(loader, times(1)).loadDirectPermissionsByUserId("2001", "login");
     }
 
@@ -111,7 +111,7 @@ class CachedStpInterfaceTest {
     @DisplayName("4. 权限即时热刷新：修改角色权限后调用 refreshRolePermissions，缓存即刻失效并重新加载最新权限")
     void testHotRefreshRolePermissions() {
         when(loader.loadRolesByUserId("3001", "login")).thenReturn(List.of("admin"));
-        when(loader.loadPermissionsByRole("admin")).thenReturn(List.of("user:query"));
+        when(loader.loadPermissionsByRole("admin", "login")).thenReturn(List.of("user:query"));
         when(loader.loadDirectPermissionsByUserId("3001", "login")).thenReturn(List.of());
 
         // 首次加载
@@ -119,13 +119,13 @@ class CachedStpInterfaceTest {
         assertThat(perms1).containsExactly("user:query");
 
         // 管理员在后台给 admin 角色增加了 "user:delete" 权限，并触发即时刷新
-        when(loader.loadPermissionsByRole("admin")).thenReturn(List.of("user:query", "user:delete"));
+        when(loader.loadPermissionsByRole("admin", "login")).thenReturn(List.of("user:query", "user:delete"));
         cacheService.refreshRolePermissions("admin");
 
         // 再次获取，权限秒级更新
         List<String> perms2 = cachedStpInterface.getPermissionList("3001", "login");
         assertThat(perms2).containsExactlyInAnyOrder("user:query", "user:delete");
-        verify(loader, times(2)).loadPermissionsByRole("admin");
+        verify(loader, times(2)).loadPermissionsByRole("admin", "login");
     }
 
     @Test
@@ -183,5 +183,61 @@ class CachedStpInterfaceTest {
 
         List<String> permissions = fallbackStp.getPermissionList("9001", "admin");
         assertThat(permissions).containsExactlyInAnyOrder("legacy:perm", "direct:perm");
+    }
+
+    @Test
+    @DisplayName("8. 多账号体系物理隔离：相同 userId 与同名 roleCode 在 admin / member / login 下互不串号，按体系精准刷新")
+    void testMultiAccountCacheKeyIsolation() {
+        when(loader.loadRolesByUserId("1001", "admin")).thenReturn(List.of("manager"));
+        when(loader.loadRolesByUserId("1001", "member")).thenReturn(List.of("vip"));
+        when(loader.loadRolesByUserId("1001", "login")).thenReturn(List.of("default_role"));
+
+        when(loader.loadPermissionsByRole("manager", "admin")).thenReturn(List.of("sys:user:write"));
+        when(loader.loadPermissionsByRole("manager", "member")).thenReturn(List.of("shop:order:read"));
+        when(loader.loadPermissionsByRole("vip", "member")).thenReturn(List.of("mall:coupon:use"));
+        when(loader.loadPermissionsByRole("default_role", "login")).thenReturn(List.of("base:view"));
+
+        when(loader.loadDirectPermissionsByUserId("1001", "admin")).thenReturn(List.of("admin:audit"));
+        when(loader.loadDirectPermissionsByUserId("1001", "member")).thenReturn(List.of("member:sign"));
+        when(loader.loadDirectPermissionsByUserId("1001", "login")).thenReturn(List.of("login:basic"));
+
+        // 1. 同 userId=1001 在三个账号体系下的角色与权限完全隔离
+        assertThat(cachedStpInterface.getRoleList("1001", "admin")).containsExactly("manager");
+        assertThat(cachedStpInterface.getRoleList("1001", "member")).containsExactly("vip");
+        assertThat(cachedStpInterface.getRoleList("1001", "login")).containsExactly("default_role");
+
+        assertThat(cachedStpInterface.getPermissionList("1001", "admin"))
+                .containsExactlyInAnyOrder("sys:user:write", "admin:audit");
+        assertThat(cachedStpInterface.getPermissionList("1001", "member"))
+                .containsExactlyInAnyOrder("mall:coupon:use", "member:sign");
+        assertThat(cachedStpInterface.getPermissionList("1001", "login"))
+                .containsExactlyInAnyOrder("base:view", "login:basic");
+
+        // 2. 同名角色 "manager" 在 admin 与 member 体系下的缓存 Key 物理隔离
+        assertThat(cachedStpInterface.getPermissionsByRole("manager", "admin")).containsExactly("sys:user:write");
+        assertThat(cachedStpInterface.getPermissionsByRole("manager", "member")).containsExactly("shop:order:read");
+
+        // 3. 验证底层缓存 Key 格式（默认 login 保持原有前缀，非默认体系携带 loginType 命名空间）
+        assertThat(cacheService.get(PermissionCacheService.USER_ROLES_PREFIX + "1001")).isEqualTo("[\"default_role\"]");
+        assertThat(cacheService.get("ateng:satoken:cache:admin:user-roles:1001")).isEqualTo("[\"manager\"]");
+        assertThat(cacheService.get("ateng:satoken:cache:member:user-roles:1001")).isEqualTo("[\"vip\"]");
+        assertThat(cacheService.get("ateng:satoken:cache:admin:role-perms:manager")).isEqualTo("[\"sys:user:write\"]");
+        assertThat(cacheService.get("ateng:satoken:cache:member:role-perms:manager")).isEqualTo("[\"shop:order:read\"]");
+
+        // 4. 按 admin 体系定向刷新用户缓存，不影响 member 与 login 体系缓存
+        when(loader.loadRolesByUserId("1001", "admin")).thenReturn(List.of("super_manager"));
+        cacheService.refreshUserPermissions("admin", "1001");
+        assertThat(cachedStpInterface.getRoleList("1001", "admin")).containsExactly("super_manager");
+        assertThat(cachedStpInterface.getRoleList("1001", "member")).containsExactly("vip");
+        assertThat(cachedStpInterface.getRoleList("1001", "login")).containsExactly("default_role");
+        verify(loader, times(1)).loadRolesByUserId("1001", "member");
+        verify(loader, times(1)).loadRolesByUserId("1001", "login");
+
+        // 5. 按 admin 体系定向刷新角色缓存，不影响 member 体系同名角色缓存
+        when(loader.loadPermissionsByRole("manager", "admin")).thenReturn(List.of("sys:user:all"));
+        cacheService.refreshRolePermissions("admin", "manager");
+        assertThat(cachedStpInterface.getPermissionsByRole("manager", "admin")).containsExactly("sys:user:all");
+        assertThat(cachedStpInterface.getPermissionsByRole("manager", "member")).containsExactly("shop:order:read");
+        verify(loader, times(1)).loadPermissionsByRole("manager", "member");
     }
 }

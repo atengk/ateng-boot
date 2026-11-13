@@ -40,6 +40,17 @@ public interface UserRolePermissionLoader {
     List<String> loadPermissionsByRole(String roleCode);
 
     /**
+     * 根据角色编码与账号体系标识加载该角色关联的权限码列表（多账号隔离扩展）
+     *
+     * @param roleCode  角色编码
+     * @param loginType 账号体系类型标识（如 admin / member）
+     * @return 权限码列表
+     */
+    default List<String> loadPermissionsByRole(String roleCode, String loginType) {
+        return loadPermissionsByRole(roleCode);
+    }
+
+    /**
      * 根据用户 ID 加载用户个人特有的额外直属权限码列表（可选）
      *
      * @param userId 用户唯一标识

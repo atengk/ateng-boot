@@ -23,6 +23,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * ateng-boot Sa-Token 增强路由拦截器
@@ -39,6 +40,7 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
 
     private final PathMatcher pathMatcher = new AntPathMatcher();
     private final UrlPathHelper urlPathHelper = UrlPathHelper.defaultInstance;
+    private final ReentrantLock whitelistLock = new ReentrantLock();
     private volatile Set<String> whitelist = Collections.emptySet();
     private final SaTokenProperties properties;
     private final ObjectProvider<DynamicPathPermissionProvider> dynamicPathPermissionProvider;
@@ -87,11 +89,18 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
      *
      * @param paths 白名单路径集合
      */
-    public synchronized void setWhitelist(Collection<String> paths) {
-        if (paths == null || paths.isEmpty()) {
-            this.whitelist = Collections.emptySet();
-        } else {
-            this.whitelist = Collections.unmodifiableSet(new LinkedHashSet<>(paths));
+    public void setWhitelist(Collection<String> paths) {
+        whitelistLock.lock();
+        try {
+            if (paths == null || paths.isEmpty()) {
+                this.whitelist = Collections.emptySet();
+            } else {
+                this.whitelist = Collections.unmodifiableSet(new LinkedHashSet<>(paths));
+            }
+        } finally {
+            if (whitelistLock.isHeldByCurrentThread()) {
+                whitelistLock.unlock();
+            }
         }
     }
 
@@ -100,13 +109,20 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
      *
      * @param paths 待追加的路径集合
      */
-    public synchronized void addWhitelist(Collection<String> paths) {
+    public void addWhitelist(Collection<String> paths) {
         if (paths == null || paths.isEmpty()) {
             return;
         }
-        Set<String> merged = new LinkedHashSet<>(this.whitelist);
-        merged.addAll(paths);
-        this.whitelist = Collections.unmodifiableSet(merged);
+        whitelistLock.lock();
+        try {
+            Set<String> merged = new LinkedHashSet<>(this.whitelist);
+            merged.addAll(paths);
+            this.whitelist = Collections.unmodifiableSet(merged);
+        } finally {
+            if (whitelistLock.isHeldByCurrentThread()) {
+                whitelistLock.unlock();
+            }
+        }
     }
 
     /**

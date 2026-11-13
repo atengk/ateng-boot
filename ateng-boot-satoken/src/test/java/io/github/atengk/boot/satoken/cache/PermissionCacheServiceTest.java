@@ -304,4 +304,49 @@ class PermissionCacheServiceTest {
                     assertThat(service.getAdapter()).isInstanceOf(PermissionCacheService.InMemoryPermissionCacheAdapter.class);
                 });
     }
+
+    @Test
+    @DisplayName("6. 多账号缓存键路由与跨节点精准广播隔离验证")
+    void testMultiAccountKeyBuildingAndScopedRefresh() {
+        // 默认体系（null / 空白 / "login"）保持既有前缀格式
+        assertThat(PermissionCacheService.buildUserRolesKey("1001", null)).isEqualTo("ateng:satoken:cache:user-roles:1001");
+        assertThat(PermissionCacheService.buildUserRolesKey("1001", "  ")).isEqualTo("ateng:satoken:cache:user-roles:1001");
+        assertThat(PermissionCacheService.buildUserRolesKey("1001", "login")).isEqualTo("ateng:satoken:cache:user-roles:1001");
+        assertThat(PermissionCacheService.buildRolePermsKey("admin", "login")).isEqualTo("ateng:satoken:cache:role-perms:admin");
+        assertThat(PermissionCacheService.buildUserPermsKey("1001", "login")).isEqualTo("ateng:satoken:cache:user-perms:1001");
+
+        // 非默认体系隔离命名空间
+        assertThat(PermissionCacheService.buildUserRolesKey("1001", "admin")).isEqualTo("ateng:satoken:cache:admin:user-roles:1001");
+        assertThat(PermissionCacheService.buildRolePermsKey("editor", "member")).isEqualTo("ateng:satoken:cache:member:role-perms:editor");
+        assertThat(PermissionCacheService.buildUserPermsKey("1001", "app")).isEqualTo("ateng:satoken:cache:app:user-perms:1001");
+
+        doAnswer(invocation -> {
+            java.util.function.Consumer<SaTokenClusterBroadcaster> consumer = invocation.getArgument(0);
+            consumer.accept(clusterBroadcaster);
+            return null;
+        }).when(broadcasterProvider).ifAvailable(any());
+
+        PermissionCacheService service = new PermissionCacheService(null, null, broadcasterProvider);
+        service.set(PermissionCacheService.buildUserRolesKey("1001", "admin"), "[\"r1\"]", 300);
+        service.set(PermissionCacheService.buildUserRolesKey("1001", "member"), "[\"r2\"]", 300);
+        service.set(PermissionCacheService.buildRolePermsKey("editor", "admin"), "[\"p1\"]", 300);
+        service.set(PermissionCacheService.buildRolePermsKey("editor", "member"), "[\"p2\"]", 300);
+
+        service.refreshUserPermissions("admin", "1001");
+        assertThat(service.get(PermissionCacheService.buildUserRolesKey("1001", "admin"))).isNull();
+        assertThat(service.get(PermissionCacheService.buildUserRolesKey("1001", "member"))).isEqualTo("[\"r2\"]");
+        verify(clusterBroadcaster).broadcast(SaTokenClusterEventType.USER_PERMISSION_REFRESH, "admin", "1001");
+
+        service.refreshRolePermissions("admin", "editor");
+        assertThat(service.get(PermissionCacheService.buildRolePermsKey("editor", "admin"))).isNull();
+        assertThat(service.get(PermissionCacheService.buildRolePermsKey("editor", "member"))).isEqualTo("[\"p2\"]");
+        verify(clusterBroadcaster).broadcast(SaTokenClusterEventType.ROLE_PERMISSION_REFRESH, "admin", "editor");
+
+        // 校验本地精准淘汰双参重载
+        service.set(PermissionCacheService.buildUserRolesKey("2002", "admin"), "[\"r3\"]", 300);
+        service.set(PermissionCacheService.buildUserRolesKey("2002", "member"), "[\"r4\"]", 300);
+        service.clearLocalUserCache("admin", "2002");
+        assertThat(service.get(PermissionCacheService.buildUserRolesKey("2002", "admin"))).isNull();
+        assertThat(service.get(PermissionCacheService.buildUserRolesKey("2002", "member"))).isEqualTo("[\"r4\"]");
+    }
 }
