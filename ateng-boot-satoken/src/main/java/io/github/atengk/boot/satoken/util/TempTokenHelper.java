@@ -36,7 +36,7 @@ public final class TempTokenHelper {
         if (value instanceof CharSequence cs && cs.toString().isBlank()) {
             throw new IllegalArgumentException("签发临时令牌失败：字符串载荷不能为空白");
         }
-        long timeoutSeconds = validateTimeoutSeconds(timeout);
+        long timeoutSeconds = validatePositiveDurationSeconds(timeout, "签发临时令牌");
         String rawPayload = (value instanceof CharSequence cs) ? cs.toString() : JsonUtil.toJsonString(value);
         try {
             return SaTempUtil.createToken(rawPayload, timeoutSeconds);
@@ -137,12 +137,12 @@ public final class TempTokenHelper {
         return token.trim();
     }
 
-    private static long validateTimeoutSeconds(Duration timeout) {
+    static long validatePositiveDurationSeconds(Duration timeout, String action) {
         if (timeout == null) {
-            throw new IllegalArgumentException("签发临时令牌失败：有效期 (timeout) 不能为空");
+            throw new IllegalArgumentException(action + "失败：有效期 (timeout) 不能为空");
         }
         if (timeout.isZero() || timeout.isNegative() || timeout.toSeconds() <= 0) {
-            throw new IllegalArgumentException("签发临时令牌失败：有效期 (timeout) 必须为正数且不少于 1 秒: " + timeout);
+            throw new IllegalArgumentException(action + "失败：有效期 (timeout) 必须为正数且不少于 1 秒: " + timeout);
         }
         return timeout.toSeconds();
     }

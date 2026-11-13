@@ -398,7 +398,8 @@ class LoginHelperMultiAccountTest {
             }
         };
         try {
-            LoginHelper.registerStpLogic("vip", customVipLogic);
+            StpLogic registered = LoginHelper.registerStpLogic("vip", customVipLogic);
+            assertThat(registered).isSameAs(customVipLogic);
             assertThat(LoginHelper.getStpLogic("vip")).isSameAs(customVipLogic);
             assertThat(SaManager.getStpLogic("vip", false)).isSameAs(customVipLogic);
 

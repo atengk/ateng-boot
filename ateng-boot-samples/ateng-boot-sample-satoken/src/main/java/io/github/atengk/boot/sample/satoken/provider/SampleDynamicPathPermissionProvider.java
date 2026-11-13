@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 业务动态 URL 路径权限匹配扩展提供者 SPI 示例实现
@@ -20,6 +21,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class SampleDynamicPathPermissionProvider implements DynamicPathPermissionProvider {
 
     private final List<PathPermissionRule> rules = new CopyOnWriteArrayList<>();
+    private final ReentrantLock rulesLock = new ReentrantLock();
 
     public SampleDynamicPathPermissionProvider() {
         initDefaultRules();
@@ -40,8 +42,15 @@ public class SampleDynamicPathPermissionProvider implements DynamicPathPermissio
     /**
      * 运行时热刷新动态路径权限规则
      */
-    public synchronized void refresh() {
-        initDefaultRules();
+    public void refresh() {
+        rulesLock.lock();
+        try {
+            initDefaultRules();
+        } finally {
+            if (rulesLock.isHeldByCurrentThread()) {
+                rulesLock.unlock();
+            }
+        }
     }
 
     /**
@@ -49,16 +58,31 @@ public class SampleDynamicPathPermissionProvider implements DynamicPathPermissio
      *
      * @param rule 权限规则
      */
-    public synchronized void addRule(PathPermissionRule rule) {
-        if (rule != null) {
+    public void addRule(PathPermissionRule rule) {
+        if (rule == null) {
+            return;
+        }
+        rulesLock.lock();
+        try {
             rules.add(rule);
+        } finally {
+            if (rulesLock.isHeldByCurrentThread()) {
+                rulesLock.unlock();
+            }
         }
     }
 
     /**
      * 编程式清空权限规则
      */
-    public synchronized void clearRules() {
-        rules.clear();
+    public void clearRules() {
+        rulesLock.lock();
+        try {
+            rules.clear();
+        } finally {
+            if (rulesLock.isHeldByCurrentThread()) {
+                rulesLock.unlock();
+            }
+        }
     }
 }

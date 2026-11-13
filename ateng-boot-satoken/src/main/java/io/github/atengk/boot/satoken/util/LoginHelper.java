@@ -181,8 +181,9 @@ public final class LoginHelper {
      *
      * @param loginType 账号体系类型标识（如 "vip", "admin"）
      * @param stpLogic  已定制配置的 StpLogic 实例
+     * @return 已注册的 StpLogic 实例
      */
-    public static void registerStpLogic(String loginType, StpLogic stpLogic) {
+    public static StpLogic registerStpLogic(String loginType, StpLogic stpLogic) {
         if (loginType == null || loginType.isBlank()) {
             throw new IllegalArgumentException("注册 StpLogic 失败：账号体系标识 (loginType) 不能为空");
         }
@@ -203,6 +204,7 @@ public final class LoginHelper {
                 StpUtil.setStpLogic(stpLogic);
             }
             log.info("显式注册 Sa-Token 账号体系 StpLogic [loginType={}]", normalizedType);
+            return stpLogic;
         } finally {
             if (STP_LOGIC_LOCK.isHeldByCurrentThread()) {
                 STP_LOGIC_LOCK.unlock();
@@ -2104,7 +2106,7 @@ public final class LoginHelper {
      * @param timeout   新的剩余有效期（必须为正且不少于 1 秒）
      */
     public static void renewTimeout(String loginType, Duration timeout) {
-        long seconds = validateRenewTimeoutSeconds(timeout);
+        long seconds = TempTokenHelper.validatePositiveDurationSeconds(timeout, "续期");
         if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
             StpUtil.renewTimeout(seconds);
             return;
@@ -2133,22 +2135,12 @@ public final class LoginHelper {
         if (tokenValue == null || tokenValue.isBlank()) {
             throw new IllegalArgumentException("按 Token 续期失败：tokenValue 不能为空");
         }
-        long seconds = validateRenewTimeoutSeconds(timeout);
+        long seconds = TempTokenHelper.validatePositiveDurationSeconds(timeout, "续期");
         if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
             StpUtil.renewTimeout(tokenValue.trim(), seconds);
             return;
         }
         getStpLogic(loginType).renewTimeout(tokenValue.trim(), seconds);
-    }
-
-    private static long validateRenewTimeoutSeconds(Duration timeout) {
-        if (timeout == null) {
-            throw new IllegalArgumentException("续期失败：有效期 (timeout) 不能为空");
-        }
-        if (timeout.isZero() || timeout.isNegative() || timeout.toSeconds() <= 0) {
-            throw new IllegalArgumentException("续期失败：有效期 (timeout) 必须大于 0 且不少于 1 秒: " + timeout);
-        }
-        return timeout.toSeconds();
     }
 
     // ==================== 临时业务令牌便捷委托 (TempToken Delegation) ====================

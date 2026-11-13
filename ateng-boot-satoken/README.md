@@ -1197,6 +1197,7 @@ public class SampleWhitelistProvider implements SaTokenWhitelistProvider {
 public class SampleDynamicPathPermissionProvider implements DynamicPathPermissionProvider {
 
     private final List<PathPermissionRule> rules = new CopyOnWriteArrayList<>();
+    private final ReentrantLock rulesLock = new ReentrantLock();
 
     public SampleDynamicPathPermissionProvider() {
         initDefaultRules();
@@ -1214,18 +1215,40 @@ public class SampleDynamicPathPermissionProvider implements DynamicPathPermissio
         return Collections.unmodifiableList(rules);
     }
 
-    public synchronized void refresh() {
-        initDefaultRules();
-    }
-
-    public synchronized void addRule(PathPermissionRule rule) {
-        if (rule != null) {
-            rules.add(rule);
+    public void refresh() {
+        rulesLock.lock();
+        try {
+            initDefaultRules();
+        } finally {
+            if (rulesLock.isHeldByCurrentThread()) {
+                rulesLock.unlock();
+            }
         }
     }
 
-    public synchronized void clearRules() {
-        rules.clear();
+    public void addRule(PathPermissionRule rule) {
+        if (rule == null) {
+            return;
+        }
+        rulesLock.lock();
+        try {
+            rules.add(rule);
+        } finally {
+            if (rulesLock.isHeldByCurrentThread()) {
+                rulesLock.unlock();
+            }
+        }
+    }
+
+    public void clearRules() {
+        rulesLock.lock();
+        try {
+            rules.clear();
+        } finally {
+            if (rulesLock.isHeldByCurrentThread()) {
+                rulesLock.unlock();
+            }
+        }
     }
 }
 ```
@@ -1612,7 +1635,70 @@ public static class OpenApiConfiguration {
 
 ---
 
-## 13. 全量配置项与默认值参考 (`SaTokenProperties`)
+## 13. 生产扩展与 SPI 接管指南 (Customization & Extensibility)
+
+| 扩展点 SPI / Bean | 默认实现 | 典型业务接管场景 |
+| :--- | :--- | :--- |
+| `UserRolePermissionLoader` | `DefaultUserRolePermissionLoader` | 从数据库 RBAC 表实时加载角色、权限码与用户直属权限；重写 `(id, loginType)` 重载实现多账号体系物理隔离查询 |
+| `DataOwnerProvider<T>` | `DefaultDataOwnerProvider` | 根据业务主键（如订单 ID、文件 ID）反查真实归属人 `userId`，支持接收 `loginType` 区分多端用户主键空间 |
+| `DynamicPathPermissionProvider` | 无（未注册自动跳过） | 从数据库菜单/接口表动态加载 `List<PathPermissionRule>`，支持 `AntPath`、`HTTP Method` 与可选 `loginType` |
+| `SaTokenWhitelistProvider` | 无 | 由业务模块或第三方 Starter 动态向 `AtengSaTokenInterceptor` 汇聚公开路由白名单 |
+| `SaTokenDao` | `SaTokenRedisDao`（Redis 可用时） | 替换或定制自定义会话持久化引擎（注入 `@Primary` 同类型 Bean 即可平滑覆盖） |
+| `LoginHelper.registerStpLogic` | `LoginHelper` 懒加载默认构造 | 预先绑定拥有专属前缀或生命周期策略的自定义 `StpLogic` 实例 |
+
+### 接入自定义数据库权限加载器示例（多账号体系隔离版）
+
+```java
+@Component
+public class DatabaseUserRolePermissionLoader implements UserRolePermissionLoader {
+
+    @Override
+    public List<String> loadRolesByUserId(String userId) {
+        return Collections.emptyList();
+    }
+
+    @Override
+    public List<String> loadRolesByUserId(String userId, String loginType) {
+        // 按账号体系（admin / member）分别查询各自角色表，彻底隔离缓存与鉴权空间
+        return "admin".equals(loginType) ? queryAdminRoles(userId) : queryMemberRoles(userId);
+    }
+
+    @Override
+    public List<String> loadPermissionsByRole(String roleCode) {
+        return Collections.emptyList();
+    }
+
+    @Override
+    public List<String> loadPermissionsByRole(String roleCode, String loginType) {
+        return "admin".equals(loginType) ? queryAdminRolePerms(roleCode) : queryMemberRolePerms(roleCode);
+    }
+}
+```
+
+---
+
+## 14. 生产并发边界、虚拟线程安全与异常转译
+
+1. **JDK 21+ 虚拟线程零 Pinning 保证**：`LoginHelper`、`PermissionCacheService`、`AtengSaTokenInterceptor` 与 `AnonymousUrlProcessor` 中全部懒加载与互斥临界区均已切换为 `ReentrantLock`，并遵循 `isHeldByCurrentThread()` 守卫下的 `finally` 释放范式，严防载体线程挂起；
+2. **Redis 游标增量扫描与分页硬封顶**：`SaTokenRedisDao.searchData` 全量使用 `ScanOptions.count(1000)` 游标分批迭代替代 `KEYS *`；`LoginHelper` 在线会话关键字检索设置上限 `MAX_KEYWORD_SCAN_LIMIT = 500`、单页最大容量 `100`；
+3. **内存降级有界防御防 OOM**：无 Redis 时，`InMemoryPermissionCacheAdapter` 严格维持 `10,000` 条 LRU 上限，`LoginFailureLockService` 每个本地计数/封禁容器均限容 `10,000` 并惰性淘汰过期条目；
+4. **防穿透与防雪崩双保险**：`CachedStpInterface` 对空权限/空角色写入 `__EMPTY__` 短效哨兵（`empty-ttl: 60s`），对非空缓存自动附加 `+10% ~ +20%` 动态随机 Jitter；
+5. **Sa-Token 防火墙统管响应**：启动期自动接管 `SaFirewallStrategy.instance.checkFailHandle`，命中非法字符或路径穿越探针时在 HTTP 200 下返回统一 JSON `Result.fail(400, "非法请求拦截: ...")`；
+6. **全局异常映射一览 (`SaTokenExceptionHandler` 与 `BusinessException` 协同转译)**：
+
+| 触发异常 / 拦截场景 | 处理处理器 | HTTP 状态码 | `Result.code` | 提示语契约示例 |
+| :--- | :--- | :--- | :--- | :--- |
+| `NotLoginException`（未提供/无效/过期/被顶替/被踢/冻结/无前缀） | `SaTokenExceptionHandler` | `200` | `401` | `"未提供访问凭据 (Token)"` / `"当前账号已在其他设备登录，您已被顶下线"` / `"当前账号已被踢下线"` 等 |
+| `NotRoleException` / `NotPermissionException` | `SaTokenExceptionHandler` | `200` | `403` | `"无权访问：缺少所需角色 [admin]"` / `"无权访问：缺少所需权限码 [order:delete]"` |
+| `NotSafeException` | `SaTokenExceptionHandler` | `200` | `403` | `"无权访问：当前操作需要二级安全认证"` |
+| `DisableServiceException` | `SaTokenExceptionHandler` | `200` | `403` | `"当前账号已被封禁至 " + e.getDisableTime()` |
+| `SameTokenInvalidException` | `SaTokenExceptionHandler` | `200` | `403` | `"微服务内部鉴权凭据无效或已失效"` |
+| 其它 `SaTokenException` / 防火墙拦截 | `SaTokenExceptionHandler` / `SaFirewallStrategy` | `200` | `400` | 具体安全或防火墙拦截提示（防火墙返回 `Result.fail(400, ...)`） |
+| `@CheckDataOwner` / `LoginHelper.checkSelf*` / `LoginFailureLockService.checkIpLocked` / 临时令牌反序列化失败 | `ateng-boot-web` `GlobalExceptionHandler`（捕获 `BusinessException`） | `200` | `403` / `400` | `"无权访问该资源"` / `"客户端 IP 连续登录失败次数超限，已被临时锁定"` / 具体临时令牌校验失败提示 |
+
+---
+
+## 15. 全量配置项与默认值参考 (`SaTokenProperties`)
 
 | YAML 全路径 (`ateng.boot.satoken.*`) | Java 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
@@ -1730,69 +1816,6 @@ ateng:
 ```
 
 </details>
-
----
-
-## 14. 生产扩展与 SPI 接管指南 (Customization & Extensibility)
-
-| 扩展点 SPI / Bean | 默认实现 | 典型业务接管场景 |
-| :--- | :--- | :--- |
-| `UserRolePermissionLoader` | `DefaultUserRolePermissionLoader` | 从数据库 RBAC 表实时加载角色、权限码与用户直属权限；重写 `(id, loginType)` 重载实现多账号体系物理隔离查询 |
-| `DataOwnerProvider<T>` | `DefaultDataOwnerProvider` | 根据业务主键（如订单 ID、文件 ID）反查真实归属人 `userId`，支持接收 `loginType` 区分多端用户主键空间 |
-| `DynamicPathPermissionProvider` | 无（未注册自动跳过） | 从数据库菜单/接口表动态加载 `List<PathPermissionRule>`，支持 `AntPath`、`HTTP Method` 与可选 `loginType` |
-| `SaTokenWhitelistProvider` | 无 | 由业务模块或第三方 Starter 动态向 `AtengSaTokenInterceptor` 汇聚公开路由白名单 |
-| `SaTokenDao` | `SaTokenRedisDao`（Redis 可用时） | 替换或定制自定义会话持久化引擎（注入 `@Primary` 同类型 Bean 即可平滑覆盖） |
-| `LoginHelper.registerStpLogic` | `LoginHelper` 懒加载默认构造 | 预先绑定拥有专属前缀或生命周期策略的自定义 `StpLogic` 实例 |
-
-### 接入自定义数据库权限加载器示例（多账号体系隔离版）
-
-```java
-@Component
-public class DatabaseUserRolePermissionLoader implements UserRolePermissionLoader {
-
-    @Override
-    public List<String> loadRolesByUserId(String userId) {
-        return Collections.emptyList();
-    }
-
-    @Override
-    public List<String> loadRolesByUserId(String userId, String loginType) {
-        // 按账号体系（admin / member）分别查询各自角色表，彻底隔离缓存与鉴权空间
-        return "admin".equals(loginType) ? queryAdminRoles(userId) : queryMemberRoles(userId);
-    }
-
-    @Override
-    public List<String> loadPermissionsByRole(String roleCode) {
-        return Collections.emptyList();
-    }
-
-    @Override
-    public List<String> loadPermissionsByRole(String roleCode, String loginType) {
-        return "admin".equals(loginType) ? queryAdminRolePerms(roleCode) : queryMemberRolePerms(roleCode);
-    }
-}
-```
-
----
-
-## 15. 生产并发边界、虚拟线程安全与异常转译
-
-1. **JDK 21+ 虚拟线程零 Pinning 保证**：`LoginHelper`、`PermissionCacheService`、`AtengSaTokenInterceptor` 与 `AnonymousUrlProcessor` 中全部懒加载与互斥临界区均已切换为 `ReentrantLock`，并遵循 `isHeldByCurrentThread()` 守卫下的 `finally` 释放范式，严防载体线程挂起；
-2. **Redis 游标增量扫描与分页硬封顶**：`SaTokenRedisDao.searchData` 全量使用 `ScanOptions.count(1000)` 游标分批迭代替代 `KEYS *`；`LoginHelper` 在线会话关键字检索设置上限 `MAX_KEYWORD_SCAN_LIMIT = 500`、单页最大容量 `100`；
-3. **内存降级有界防御防 OOM**：无 Redis 时，`InMemoryPermissionCacheAdapter` 严格维持 `10,000` 条 LRU 上限，`LoginFailureLockService` 每个本地计数/封禁容器均限容 `10,000` 并惰性淘汰过期条目；
-4. **防穿透与防雪崩双保险**：`CachedStpInterface` 对空权限/空角色写入 `__EMPTY__` 短效哨兵（`empty-ttl: 60s`），对非空缓存自动附加 `+10% ~ +20%` 动态随机 Jitter；
-5. **Sa-Token 防火墙统管响应**：启动期自动接管 `SaFirewallStrategy.instance.checkFailHandle`，命中非法字符或路径穿越探针时在 HTTP 200 下返回统一 JSON `Result.fail(400, "非法请求拦截: ...")`；
-6. **全局异常映射一览 (`SaTokenExceptionHandler` 与 `BusinessException` 协同转译)**：
-
-| 触发异常 / 拦截场景 | 处理处理器 | HTTP 状态码 | `Result.code` | 提示语契约示例 |
-| :--- | :--- | :--- | :--- | :--- |
-| `NotLoginException`（未提供/无效/过期/被顶替/被踢/冻结/无前缀） | `SaTokenExceptionHandler` | `200` | `401` | `"未提供访问凭据 (Token)"` / `"当前账号已在其他设备登录，您已被顶下线"` / `"当前账号已被踢下线"` 等 |
-| `NotRoleException` / `NotPermissionException` | `SaTokenExceptionHandler` | `200` | `403` | `"无权访问：缺少所需角色 [admin]"` / `"无权访问：缺少所需权限码 [order:delete]"` |
-| `NotSafeException` | `SaTokenExceptionHandler` | `200` | `403` | `"无权访问：当前操作需要二级安全认证"` |
-| `DisableServiceException` | `SaTokenExceptionHandler` | `200` | `403` | `"当前账号已被封禁至 " + e.getDisableTime()` |
-| `SameTokenInvalidException` | `SaTokenExceptionHandler` | `200` | `403` | `"微服务内部鉴权凭据无效或已失效"` |
-| 其它 `SaTokenException` / 防火墙拦截 | `SaTokenExceptionHandler` / `SaFirewallStrategy` | `200` | `400` | 具体安全或防火墙拦截提示（防火墙返回 `Result.fail(400, ...)`） |
-| `@CheckDataOwner` / `LoginHelper.checkSelf*` / `LoginFailureLockService.checkIpLocked` / 临时令牌反序列化失败 | `ateng-boot-web` `GlobalExceptionHandler`（捕获 `BusinessException`） | `200` | `403` / `400` | `"无权访问该资源"` / `"客户端 IP 连续登录失败次数超限，已被临时锁定"` / 具体临时令牌校验失败提示 |
 
 ---
 
