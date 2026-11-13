@@ -131,6 +131,10 @@ class DynamicQueryTemplateTest {
         String sqlWithEw = "<script>SELECT id, username, age, email FROM t_template_user ${ew.customSqlSegment}</script>";
         registerMappedStatement(configuration, mapperName + ".selectActiveUsers", sqlWithEw, TemplateUserVO.class);
 
+        // 注册未声明占位符的普通原生 SQL（用于验证 AST 自适应追加与并发 ReentrantLock 锁）
+        String plainSql = "SELECT id, username, age, email FROM t_template_user";
+        registerMappedStatement(configuration, mapperName + ".selectPlainUsers", plainSql, TemplateUserVO.class);
+
         sqlSessionFactory = new MybatisSqlSessionFactoryBuilder().build(configuration);
         sqlSessionTemplate = new SqlSessionTemplate(sqlSessionFactory);
         dynamicQueryTemplate = new DynamicQueryTemplate(sqlSessionTemplate);
@@ -406,5 +410,38 @@ class DynamicQueryTemplateTest {
 
         // 6. 空入参保底
         assertFalse(dynamicQueryTemplate.exists((Object) null, TemplateUserEntity.class));
+    }
+
+    @Test
+    @DisplayName("测试多线程并发触发自适应 Statement 改写（ReentrantLock 锁安全与防 Pinning）")
+    void testConcurrentAdaptiveStatementRegistration() throws Exception {
+        int threadCount = 8;
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(threadCount);
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(threadCount);
+        java.util.concurrent.atomic.AtomicInteger successCount = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<Throwable> exceptionRef = new java.util.concurrent.atomic.AtomicReference<>();
+
+        for (int i = 0; i < threadCount; i++) {
+            executor.submit(() -> {
+                try {
+                    DynamicQueryRequest req = new DynamicQueryRequest();
+                    req.addCondition(QueryCondition.eq("username", "alice"));
+                    List<TemplateUserVO> list = dynamicQueryTemplate.selectList("selectPlainUsers", req, TemplateUserVO.class);
+                    if (list != null && list.size() == 1 && "alice".equals(list.get(0).getUsername())) {
+                        successCount.incrementAndGet();
+                    }
+                } catch (Throwable t) {
+                    exceptionRef.compareAndSet(null, t);
+                } finally {
+                    latch.countDown();
+                }
+            });
+        }
+
+        boolean completed = latch.await(10, java.util.concurrent.TimeUnit.SECONDS);
+        executor.shutdown();
+        assertTrue(completed, "并发自适应语句改写超时");
+        assertNull(exceptionRef.get(), "并发自适应语句改写发生异常");
+        assertEquals(threadCount, successCount.get(), "所有并发查询必须全部成功");
     }
 }

@@ -35,6 +35,7 @@ import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlExecutor;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry;
 import io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader;
 import io.github.atengk.boot.mybatisplus.dynamicsql.ResourceExternalSqlLoader;
+import io.github.atengk.boot.mybatisplus.util.PageUtil;
 import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
 import org.apache.ibatis.session.Configuration;
@@ -96,6 +97,9 @@ public class AtengMybatisPlusAutoConfiguration {
         if (properties.getDynamicQuery() != null) {
             io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryHelper.setEnabled(
                     properties.getDynamicQuery().isEnabled());
+        }
+        if (properties.getPagination() != null && properties.getPagination().getMaxLimit() != null) {
+            PageUtil.setDefaultMaxLimit(properties.getPagination().getMaxLimit());
         }
         JacksonTypeHandler.setObjectMapper(JsonUtil.getObjectMapper());
     }

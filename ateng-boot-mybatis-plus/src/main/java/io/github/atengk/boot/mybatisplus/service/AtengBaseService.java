@@ -143,7 +143,7 @@ public interface AtengBaseService<T> extends IService<T> {
     default PageResult<T> pageDynamic(DynamicQueryRequest request) {
         Class<T> entityClass = getEntityClass();
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
-        Page<T> page = PageUtil.toPage(request, entityClass);
+        Page<T> page = PageUtil.toUnsortedPage(request);
         return PageUtil.toPageResult(page(page, wrapper));
     }
 
@@ -175,7 +175,7 @@ public interface AtengBaseService<T> extends IService<T> {
         Class<T> entityClass = getEntityClass();
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
         PageQuery pageQuery = (queryDto instanceof PageQuery pq) ? pq : null;
-        Page<T> page = PageUtil.toPage(pageQuery, entityClass);
+        Page<T> page = PageUtil.toUnsortedPage(pageQuery);
         return PageUtil.toPageResult(page(page, wrapper));
     }
 
@@ -476,7 +476,7 @@ public interface AtengBaseService<T> extends IService<T> {
         }
         Map<String, String> mapping = resolveMethodMapping(mapperMethod);
         QueryWrapper<V> wrapper = DynamicQueryHelper.buildWrapper(request, voClass, mapping);
-        Page<V> page = PageUtil.toPage(request);
+        Page<V> page = PageUtil.toUnsortedPage(request);
         IPage<V> resultPage = mapperMethod.select(page, wrapper);
         return PageUtil.toPageResult(resultPage);
     }
@@ -515,8 +515,8 @@ public interface AtengBaseService<T> extends IService<T> {
                 ? DynamicQueryHelper.buildWrapper(queryDto, voClass, mapping)
                 : DynamicQueryHelper.buildWrapper(queryDto, mapping);
         Page<V> page = (queryDto instanceof PageQuery pq)
-                ? PageUtil.toPage(pq)
-                : new Page<>(1, 10);
+                ? PageUtil.toUnsortedPage(pq)
+                : PageUtil.toUnsortedPage(null);
         IPage<V> resultPage = mapperMethod.select(page, wrapper);
         return PageUtil.toPageResult(resultPage);
     }

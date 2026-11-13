@@ -28,6 +28,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 通用受管动态查询执行模板组件
@@ -62,6 +63,11 @@ public class DynamicQueryTemplate {
      * MappedStatements 反射字段句柄（用于解除 StrictMap 冲突安全注入自适应 Statement）
      */
     private final Field mappedStatementsField;
+
+    /**
+     * 运行时动态自适应 Statement 注册锁（依托 ReentrantLock 杜绝虚拟线程 Carrier Pinning，遵循 ADR-0029）
+     */
+    private final ReentrantLock adaptiveStatementLock = new ReentrantLock();
 
     public DynamicQueryTemplate(SqlSessionTemplate sqlSessionTemplate) {
         this(sqlSessionTemplate, null);
@@ -108,7 +114,7 @@ public class DynamicQueryTemplate {
         Map<String, String> mapping = resolveProjections(statementId);
         QueryWrapper<V> wrapper = DynamicQueryHelper.buildWrapper(request, voClass, mapping);
 
-        Page<V> page = PageUtil.toPage(request);
+        Page<V> page = PageUtil.toUnsortedPage(request);
         Map<String, Object> paramMap = new HashMap<>();
         paramMap.put("page", page);
         paramMap.put(Constants.WRAPPER, wrapper);
@@ -145,8 +151,8 @@ public class DynamicQueryTemplate {
         QueryWrapper<V> wrapper = DynamicQueryHelper.buildWrapper(queryDto, voClass, mapping);
 
         Page<V> page = (queryDto instanceof io.github.atengk.boot.core.model.PageQuery pq)
-                ? PageUtil.toPage(pq)
-                : new Page<>(1, 10);
+                ? PageUtil.toUnsortedPage(pq)
+                : PageUtil.toUnsortedPage(null);
         Map<String, Object> paramMap = new HashMap<>();
         paramMap.put("page", page);
         paramMap.put(Constants.WRAPPER, wrapper);
@@ -375,7 +381,7 @@ public class DynamicQueryTemplate {
         }
         BaseMapper<Object> mapper = getEntityMapper((Class<Object>) entityClass);
         QueryWrapper<Object> wrapper = DynamicQueryHelper.buildWrapper(request, (Class<Object>) entityClass);
-        Page<Object> page = PageUtil.toPage(request);
+        Page<Object> page = PageUtil.toUnsortedPage(request);
         IPage<Object> resultPage = mapper.selectPage(page, wrapper);
         return PageUtil.toPageResult(resultPage, item -> JsonUtil.convertValue(item, voClass));
     }
@@ -395,7 +401,7 @@ public class DynamicQueryTemplate {
         }
         BaseMapper<T> mapper = getEntityMapper(entityClass);
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
-        Page<T> page = PageUtil.toPage(request);
+        Page<T> page = PageUtil.toUnsortedPage(request);
         IPage<T> resultPage = mapper.selectPage(page, wrapper);
         return PageUtil.toPageResult(resultPage);
     }
@@ -422,8 +428,8 @@ public class DynamicQueryTemplate {
         BaseMapper<Object> mapper = getEntityMapper((Class<Object>) entityClass);
         QueryWrapper<Object> wrapper = DynamicQueryHelper.buildWrapper(queryDto, (Class<Object>) entityClass);
         Page<Object> page = (queryDto instanceof io.github.atengk.boot.core.model.PageQuery pq)
-                ? PageUtil.toPage(pq)
-                : new Page<>(1, 10);
+                ? PageUtil.toUnsortedPage(pq)
+                : PageUtil.toUnsortedPage(null);
         IPage<Object> resultPage = mapper.selectPage(page, wrapper);
         return PageUtil.toPageResult(resultPage, item -> JsonUtil.convertValue(item, voClass));
     }
@@ -447,8 +453,8 @@ public class DynamicQueryTemplate {
         BaseMapper<T> mapper = getEntityMapper(entityClass);
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
         Page<T> page = (queryDto instanceof io.github.atengk.boot.core.model.PageQuery pq)
-                ? PageUtil.toPage(pq)
-                : new Page<>(1, 10);
+                ? PageUtil.toUnsortedPage(pq)
+                : PageUtil.toUnsortedPage(null);
         IPage<T> resultPage = mapper.selectPage(page, wrapper);
         return PageUtil.toPageResult(resultPage);
     }
@@ -817,14 +823,19 @@ public class DynamicQueryTemplate {
 
     /**
      * 创建或复用自适应动态 Statement（JSqlParser AST 自动条件追加）
+     * 采用 ReentrantLock 双重检查锁替代 synchronized，杜绝 JDK 21+ 虚拟线程 Carrier Pinning（遵循 ADR-0029）
      */
-    private synchronized String getOrCreateAdaptiveStatement(String statementId, String originalSql) {
+    private String getOrCreateAdaptiveStatement(String statementId, String originalSql) {
         String adaptiveId = statementId + "$dynamicAdaptive";
         Configuration configuration = sqlSessionTemplate.getConfiguration();
         if (configuration.hasStatement(adaptiveId)) {
             return adaptiveId;
         }
+        adaptiveStatementLock.lock();
         try {
+            if (configuration.hasStatement(adaptiveId)) {
+                return adaptiveId;
+            }
             MappedStatement rawMs = configuration.getMappedStatement(statementId);
             boolean hasWhere = hasWhereClause(originalSql);
             String adaptiveSql;
@@ -856,6 +867,8 @@ public class DynamicQueryTemplate {
         } catch (Throwable e) {
             log.warn("自适应改写 Statement [{}] 失败，回退为原始 Statement: {}", statementId, e.getMessage());
             return statementId;
+        } finally {
+            adaptiveStatementLock.unlock();
         }
     }
 

@@ -567,5 +567,19 @@ class AtengMybatisPlusAutoConfigurationTest {
                     assertThat(context.getBean(io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor.class)).isSameAs(customInterceptor);
                 });
     }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.mybatis-plus.pagination.max-limit 时自动同步 PageUtil.defaultMaxLimit")
+    void shouldSyncPaginationMaxLimitToPageUtil() {
+        long originalLimit = io.github.atengk.boot.mybatisplus.util.PageUtil.getDefaultMaxLimit();
+        try {
+            contextRunner.withPropertyValues("ateng.boot.mybatis-plus.pagination.max-limit=2500")
+                    .run(context -> {
+                        assertThat(io.github.atengk.boot.mybatisplus.util.PageUtil.getDefaultMaxLimit()).isEqualTo(2500L);
+                    });
+        } finally {
+            io.github.atengk.boot.mybatisplus.util.PageUtil.setDefaultMaxLimit(originalLimit);
+        }
+    }
 }
 

@@ -197,6 +197,27 @@ class AtengBaseServiceMultiTableDynamicTest {
     }
 
     @Test
+    @DisplayName("测试多表联表同名列排序单轨收敛：仅生成 u.id 排序，无重复 ORDER BY 且无 Ambiguous column 异常")
+    void testPageDynamicWithAmbiguousColumnSorting() {
+        TestUserMapper mapper = sqlSessionTemplate.getMapper(TestUserMapper.class);
+
+        DynamicQueryRequest request = new DynamicQueryRequest();
+        request.setCurrent(1L);
+        request.setSize(10L);
+        // id 字段在 t_multi_user 与 t_dept 中均存在，旧代码在 Page.orders 注入裸列名 id 导致列歧义
+        request.addSort(SortItem.asc("id"));
+
+        PageResult<UserDeptVO> result = userService.pageDynamic(mapper::selectUserDeptPage, request, UserDeptVO.class);
+
+        assertNotNull(result);
+        assertEquals(3L, result.getTotal());
+        assertEquals(3, result.getRecords().size());
+        assertEquals(101L, result.getRecords().get(0).getId());
+        assertEquals(102L, result.getRecords().get(1).getId());
+        assertEquals(103L, result.getRecords().get(2).getId());
+    }
+
+    @Test
     @DisplayName("测试基于短方法名的多表联表分页直出：pageDynamic(\"selectUserDeptPage\", request, UserDeptVO.class)")
     void testPageDynamicWithShortStatementName() {
         DynamicQueryRequest request = new DynamicQueryRequest();

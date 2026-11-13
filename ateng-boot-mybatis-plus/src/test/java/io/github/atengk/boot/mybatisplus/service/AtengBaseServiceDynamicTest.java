@@ -483,4 +483,25 @@ class AtengBaseServiceDynamicTest {
         assertThat(userService.getOneDynamic(notFoundRequest, false)).isNull();
         assertThat(userService.getOneDynamic(notFoundRequest, TestUserVO.class, false)).isNull();
     }
+
+    @Test
+    @DisplayName("7. pageDynamic 排序单轨收敛：验证多字段排序正常且 Page 容器内部无多余 orders")
+    void shouldPageDynamicWithSingleTrackSorting() {
+        DynamicQueryRequest request = new DynamicQueryRequest();
+        request.setCurrent(1L);
+        request.setSize(10L);
+        request.setSorts(List.of(SortItem.desc("status"), SortItem.asc("age")));
+
+        PageResult<TestUserEntity> result = userService.pageDynamic(request);
+
+        assertThat(result).isNotNull();
+        assertThat(result.getTotal()).isEqualTo(5L);
+        assertThat(result.getRecords()).hasSize(5);
+        // status 1 优先: charlie(19), alice(22), admin(30), alex(35), 接着 status 0: bob(28)
+        assertThat(result.getRecords().get(0).getUsername()).isEqualTo("charlie");
+        assertThat(result.getRecords().get(1).getUsername()).isEqualTo("alice");
+        assertThat(result.getRecords().get(2).getUsername()).isEqualTo("admin");
+        assertThat(result.getRecords().get(3).getUsername()).isEqualTo("alex");
+        assertThat(result.getRecords().get(4).getUsername()).isEqualTo("bob");
+    }
 }
