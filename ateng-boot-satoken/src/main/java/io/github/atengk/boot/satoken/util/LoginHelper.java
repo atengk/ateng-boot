@@ -1,6 +1,8 @@
 package io.github.atengk.boot.satoken.util;
 
 import cn.dev33.satoken.SaManager;
+import cn.dev33.satoken.context.SaHolder;
+import cn.dev33.satoken.context.model.SaRequest;
 import cn.dev33.satoken.session.SaSession;
 import cn.dev33.satoken.session.SaTerminalInfo;
 import cn.dev33.satoken.stp.StpLogic;
@@ -13,13 +15,16 @@ import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.model.OnlineUser;
+import io.github.atengk.boot.web.util.IpUtil;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.ClassUtils;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
@@ -54,6 +59,18 @@ public final class LoginHelper {
      * 全局主账号登录类型标识（多账号体系共存时优先探测），默认 "login"
      */
     private static volatile String primaryLoginType = StpUtil.TYPE;
+
+    /**
+     * 可选 Web IP 工具存在性标记，防止无 ateng-boot-web 运行时触发 NoClassDefFoundError
+     */
+    private static final boolean WEB_IP_UTIL_PRESENT =
+            ClassUtils.isPresent("io.github.atengk.boot.web.util.IpUtil", LoginHelper.class.getClassLoader());
+
+    /**
+     * 可选 Servlet HttpServletRequest 存在性标记，防止非 Servlet 运行时触发 NoClassDefFoundError
+     */
+    private static final boolean SERVLET_REQUEST_PRESENT =
+            ClassUtils.isPresent("jakarta.servlet.http.HttpServletRequest", LoginHelper.class.getClassLoader());
 
     private LoginHelper() {
     }
@@ -159,6 +176,40 @@ public final class LoginHelper {
         return logic;
     }
 
+    /**
+     * 显式注册自定义账号体系对应的 StpLogic 实例并与 SaManager 同步
+     *
+     * @param loginType 账号体系类型标识（如 "vip", "admin"）
+     * @param stpLogic  已定制配置的 StpLogic 实例
+     */
+    public static void registerStpLogic(String loginType, StpLogic stpLogic) {
+        if (loginType == null || loginType.isBlank()) {
+            throw new IllegalArgumentException("注册 StpLogic 失败：账号体系标识 (loginType) 不能为空");
+        }
+        if (stpLogic == null) {
+            throw new IllegalArgumentException("注册 StpLogic 失败：stpLogic 实例不能为空");
+        }
+        String normalizedType = loginType.trim();
+        String logicType = stpLogic.getLoginType();
+        if (logicType == null || !normalizedType.equals(logicType)) {
+            throw new IllegalArgumentException(
+                    "注册 StpLogic 失败：loginType 与 stpLogic.getLoginType() 不一致: expected="
+                            + normalizedType + ", actual=" + logicType);
+        }
+        STP_LOGIC_LOCK.lock();
+        try {
+            SaManager.putStpLogic(stpLogic);
+            if (StpUtil.TYPE.equals(normalizedType)) {
+                StpUtil.setStpLogic(stpLogic);
+            }
+            log.info("显式注册 Sa-Token 账号体系 StpLogic [loginType={}]", normalizedType);
+        } finally {
+            if (STP_LOGIC_LOCK.isHeldByCurrentThread()) {
+                STP_LOGIC_LOCK.unlock();
+            }
+        }
+    }
+
     private static StpLogic findStpLogicSafely(String loginType) {
         try {
             return SaManager.getStpLogic(loginType, false);
@@ -219,7 +270,7 @@ public final class LoginHelper {
         if (loginUser == null || loginUser.getUserId() == null || loginUser.getUserId().isBlank()) {
             throw new IllegalArgumentException("登录失败：登录主体或用户唯一标识 (userId) 不能为空");
         }
-        SaLoginParameter actualParam = loginParameter != null ? loginParameter : new SaLoginParameter();
+        SaLoginParameter actualParam = withClientLoginIpIfAbsent(loginParameter, loginUser);
 
         // 1. 智能合成租户安全复合登录主键（防不同租户同数字主键碰撞踩踏）
         String compositeLoginId = buildCompositeLoginId(loginUser.getTenantId(), loginUser.getUserId());
@@ -246,7 +297,7 @@ public final class LoginHelper {
         if (loginUser == null || loginUser.getUserId() == null || loginUser.getUserId().isBlank()) {
             throw new IllegalArgumentException("登录失败：登录主体或用户唯一标识 (userId) 不能为空");
         }
-        SaLoginParameter actualParam = loginParameter != null ? loginParameter : new SaLoginParameter();
+        SaLoginParameter actualParam = withClientLoginIpIfAbsent(loginParameter, loginUser);
 
         // 1. 智能合成租户安全复合登录主键（防不同租户同数字主键碰撞踩踏）
         String compositeLoginId = buildCompositeLoginId(loginUser.getTenantId(), loginUser.getUserId());
@@ -256,6 +307,111 @@ public final class LoginHelper {
 
         // 3. 封包为纯净 JSON 字符串存储至当前 Token-Session，杜绝 @class 污染
         setLoginUser(loginType, loginUser);
+    }
+
+    private static SaLoginParameter withClientLoginIpIfAbsent(SaLoginParameter loginParameter, LoginUser loginUser) {
+        if (loginParameter != null) {
+            Object existingTerminalIp = loginParameter.getTerminalExtra("loginIp");
+            if (existingTerminalIp != null && !String.valueOf(existingTerminalIp).isBlank()) {
+                return loginParameter;
+            }
+        }
+        String resolvedIp = resolveLoginIpCandidate(loginParameter, loginUser);
+        if (resolvedIp == null || resolvedIp.isBlank()) {
+            return loginParameter != null ? loginParameter : new SaLoginParameter();
+        }
+        SaLoginParameter targetParam = loginParameter != null
+                ? cloneLoginParameter(loginParameter)
+                : new SaLoginParameter();
+        targetParam.setTerminalExtra("loginIp", resolvedIp);
+        return targetParam;
+    }
+
+    private static String resolveLoginIpCandidate(SaLoginParameter loginParameter, LoginUser loginUser) {
+        if (loginParameter != null) {
+            Object existingParamIp = loginParameter.getExtra("loginIp");
+            if (existingParamIp != null && !String.valueOf(existingParamIp).isBlank()) {
+                return String.valueOf(existingParamIp).trim();
+            }
+        }
+        if (loginUser != null && loginUser.getExtraData() != null && loginUser.getExtraData().get("loginIp") != null) {
+            String userExtraIp = String.valueOf(loginUser.getExtraData().get("loginIp")).trim();
+            if (!userExtraIp.isBlank()) {
+                return userExtraIp;
+            }
+        }
+        return resolveClientIpSafely();
+    }
+
+    private static SaLoginParameter cloneLoginParameter(SaLoginParameter source) {
+        SaLoginParameter copy = new SaLoginParameter();
+        copy.setDeviceType(source.getDeviceType());
+        copy.setDeviceId(source.getDeviceId());
+        copy.setReplacedRange(source.getReplacedRange());
+        copy.setOverflowLogoutMode(source.getOverflowLogoutMode());
+        copy.setIsLastingCookie(source.getIsLastingCookie());
+        copy.setTimeout(source.getTimeout());
+        if (source.getActiveTimeout() != null) {
+            copy.setActiveTimeout(source.getActiveTimeout());
+        }
+        copy.setIsConcurrent(source.getIsConcurrent());
+        copy.setIsShare(source.getIsShare());
+        copy.setMaxLoginCount(source.getMaxLoginCount());
+        copy.setMaxTryTimes(source.getMaxTryTimes());
+        if (source.getExtraData() != null) {
+            copy.setExtraData(new LinkedHashMap<>(source.getExtraData()));
+        }
+        copy.setToken(source.getToken());
+        copy.setIsWriteHeader(source.getIsWriteHeader());
+        if (source.getTerminalExtraData() != null) {
+            copy.setTerminalExtraData(new LinkedHashMap<>(source.getTerminalExtraData()));
+        }
+        copy.setRightNowCreateTokenSession(source.getRightNowCreateTokenSession());
+        copy.setCookie(source.getCookie());
+        copy.setReplacedLoginExitMode(source.getReplacedLoginExitMode());
+        return copy;
+    }
+
+    private static String resolveClientIpSafely() {
+        if (WEB_IP_UTIL_PRESENT) {
+            try {
+                String ip = WebClientIpResolver.getClientIp();
+                if (ip != null && !ip.isBlank()) {
+                    return ip;
+                }
+            } catch (Exception ex) {
+                // 非 Web 容器或无 RequestContextHolder 时回退 SaRequest 提取
+                log.debug("通过 IpUtil 提取客户端 IP 失败，回退 SaRequest 提取: {}", ex.getMessage());
+            }
+        }
+        if (SERVLET_REQUEST_PRESENT) {
+            try {
+                if (SaManager.getSaTokenContext() != null && SaManager.getSaTokenContext().isValid()) {
+                    return ServletRequestIpResolver.getRemoteAddr(SaHolder.getRequest());
+                }
+            } catch (Exception ex) {
+                log.debug("通过 SaRequest 提取客户端 IP 失败: {}", ex.getMessage());
+            }
+        }
+        return null;
+    }
+
+    private static final class WebClientIpResolver {
+        private static String getClientIp() {
+            return IpUtil.getClientIp();
+        }
+    }
+
+    private static final class ServletRequestIpResolver {
+        private static String getRemoteAddr(SaRequest request) {
+            if (request != null && request.getSource() instanceof jakarta.servlet.http.HttpServletRequest servletReq) {
+                String remoteAddr = servletReq.getRemoteAddr();
+                if (remoteAddr != null && !remoteAddr.isBlank()) {
+                    return remoteAddr.trim();
+                }
+            }
+            return null;
+        }
     }
 
     // ==================== 注销与下线操作 (Logout & Kickout) ====================
@@ -1933,6 +2089,69 @@ public final class LoginHelper {
     }
 
     /**
+     * 主动续期当前登录会话的 Token 剩余有效时间（默认账号体系）
+     *
+     * @param timeout 新的剩余有效期（必须为正且不少于 1 秒）
+     */
+    public static void renewTimeout(Duration timeout) {
+        renewTimeout(StpUtil.TYPE, timeout);
+    }
+
+    /**
+     * 主动续期指定账号体系当前登录会话的 Token 剩余有效时间
+     *
+     * @param loginType 账号体系标识
+     * @param timeout   新的剩余有效期（必须为正且不少于 1 秒）
+     */
+    public static void renewTimeout(String loginType, Duration timeout) {
+        long seconds = validateRenewTimeoutSeconds(timeout);
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            StpUtil.renewTimeout(seconds);
+            return;
+        }
+        getStpLogic(loginType).renewTimeout(seconds);
+    }
+
+    /**
+     * 主动续期指定 Token 凭据的剩余有效时间（默认账号体系）
+     *
+     * @param tokenValue 目标 Token 凭据
+     * @param timeout    新的剩余有效期（必须为正且不少于 1 秒）
+     */
+    public static void renewTimeoutByToken(String tokenValue, Duration timeout) {
+        renewTimeoutByToken(StpUtil.TYPE, tokenValue, timeout);
+    }
+
+    /**
+     * 主动续期指定账号体系下指定 Token 凭据的剩余有效时间
+     *
+     * @param loginType  账号体系标识
+     * @param tokenValue 目标 Token 凭据
+     * @param timeout    新的剩余有效期（必须为正且不少于 1 秒）
+     */
+    public static void renewTimeoutByToken(String loginType, String tokenValue, Duration timeout) {
+        if (tokenValue == null || tokenValue.isBlank()) {
+            throw new IllegalArgumentException("按 Token 续期失败：tokenValue 不能为空");
+        }
+        long seconds = validateRenewTimeoutSeconds(timeout);
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            StpUtil.renewTimeout(tokenValue.trim(), seconds);
+            return;
+        }
+        getStpLogic(loginType).renewTimeout(tokenValue.trim(), seconds);
+    }
+
+    private static long validateRenewTimeoutSeconds(Duration timeout) {
+        if (timeout == null) {
+            throw new IllegalArgumentException("续期失败：有效期 (timeout) 不能为空");
+        }
+        if (timeout.isZero() || timeout.isNegative() || timeout.toSeconds() <= 0) {
+            throw new IllegalArgumentException("续期失败：有效期 (timeout) 必须大于 0 且不少于 1 秒: " + timeout);
+        }
+        return timeout.toSeconds();
+    }
+
+    /**
      * 构建多租户复合 LoginId
      */
     public static String buildCompositeLoginId(String tenantId, String userId) {
@@ -2088,6 +2307,23 @@ public final class LoginHelper {
         }
         Long currentUserId = getUserIdAsLong(loginType);
         return currentUserId != null && currentUserId.equals(targetUserId);
+    }
+
+    /**
+     * 判断目标用户标识对象是否为指定账号体系下的当前登录用户本人（纯身份断言，不掺杂特权豁免）
+     *
+     * @param loginType    账号体系标识
+     * @param targetUserId 目标用户标识对象（支持 String、Long、Integer 等类型）
+     * @return true 表示为本人
+     */
+    public static boolean isSelf(String loginType, Object targetUserId) {
+        if (targetUserId == null) {
+            return false;
+        }
+        if (targetUserId instanceof Long idLong) {
+            return isSelf(loginType, idLong);
+        }
+        return isSelf(loginType, String.valueOf(targetUserId));
     }
 
     /**
@@ -2746,6 +2982,9 @@ public final class LoginHelper {
     }
 
     private static OnlineUser buildOnlineUser(StpLogic logic, Object loginId, String tokenValue) {
+        if (loginId == null || tokenValue == null || tokenValue.isBlank()) {
+            return null;
+        }
         long timeout = logic.getTokenTimeout(tokenValue);
         if (timeout <= 0 && timeout != -1L) {
             return null;
@@ -2754,6 +2993,10 @@ public final class LoginHelper {
         String userId = null;
         String userAccount = null;
         String userName = null;
+        String tenantId = null;
+        String loginType = (logic != null && logic.getLoginType() != null && !logic.getLoginType().isBlank())
+                ? logic.getLoginType()
+                : StpUtil.TYPE;
         String loginDevice = "default";
         String loginIp = "";
         Long loginTime = null;
@@ -2814,13 +3057,18 @@ public final class LoginHelper {
             userId = loginUser.getUserId();
             userAccount = loginUser.getUserAccount();
             userName = loginUser.getUserName();
+            tenantId = loginUser.getTenantId();
             if ((loginIp == null || loginIp.isBlank()) && loginUser.getExtraData() != null && loginUser.getExtraData().get("loginIp") != null) {
                 loginIp = String.valueOf(loginUser.getExtraData().get("loginIp"));
             }
         } else {
             userId = stripTenantPrefix(loginId.toString());
+            tenantId = extractTenantPrefix(loginId.toString());
             userAccount = userId;
             userName = userId;
+        }
+        if ((tenantId == null || tenantId.isBlank()) && loginId != null) {
+            tenantId = extractTenantPrefix(loginId.toString());
         }
 
         if (loginTime == null) {
@@ -2831,6 +3079,8 @@ public final class LoginHelper {
                 .userId(userId)
                 .userAccount(userAccount)
                 .userName(userName)
+                .tenantId(tenantId)
+                .loginType(loginType)
                 .tokenValue(tokenValue)
                 .loginDevice(loginDevice)
                 .loginIp(loginIp)
@@ -2862,5 +3112,13 @@ public final class LoginHelper {
             return loginId.substring(loginId.indexOf(SaTokenConstant.TENANT_DELIMITER) + 1);
         }
         return loginId;
+    }
+
+    private static String extractTenantPrefix(String loginId) {
+        if (loginId != null && loginId.contains(SaTokenConstant.TENANT_DELIMITER)) {
+            String prefix = loginId.substring(0, loginId.indexOf(SaTokenConstant.TENANT_DELIMITER));
+            return !prefix.isBlank() ? prefix : null;
+        }
+        return null;
     }
 }

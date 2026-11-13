@@ -44,6 +44,16 @@ public class OnlineUser implements SaJsonType, Serializable {
     private String userName;
 
     /**
+     * 所属多租户标识
+     */
+    private String tenantId;
+
+    /**
+     * 账号体系类型标识（如 login, admin, member）
+     */
+    private String loginType;
+
+    /**
      * 当前会话绑定的 Token 凭据值
      */
     private String tokenValue;

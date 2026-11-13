@@ -108,4 +108,27 @@ class PathPermissionRuleTest {
         assertThat(rule.getMode()).isEqualTo(SaMode.AND);
         assertThat(rule.toString()).isNotBlank();
     }
+
+    @Test
+    @DisplayName("5. 多账号体系 loginType 绑定与静态工厂重载")
+    void testLoginTypeBindingAndFactoryOverloads() {
+        PathPermissionRule adminRule = PathPermissionRule.of(
+                "/api/admin/**", "POST", "admin", SaMode.AND, "sys:user:add", "sys:user:audit"
+        );
+        assertThat(adminRule.getLoginType()).isEqualTo("admin");
+        assertThat(adminRule.getMode()).isEqualTo(SaMode.AND);
+        assertThat(adminRule.getPermissions()).containsExactlyInAnyOrder("sys:user:add", "sys:user:audit");
+
+        PathPermissionRule memberRule = PathPermissionRule.of(
+                "/api/member/**", "GET", "member", SaMode.OR, List.of("order:read")
+        );
+        assertThat(memberRule.getLoginType()).isEqualTo("member");
+        assertThat(memberRule.getMode()).isEqualTo(SaMode.OR);
+        assertThat(memberRule.getPermissions()).containsExactly("order:read");
+
+        PathPermissionRule normalizedBlank = PathPermissionRule.of(
+                "/api/blank/**", "GET", "  ", SaMode.OR, List.of("p:1")
+        );
+        assertThat(normalizedBlank.getLoginType()).isNull();
+    }
 }

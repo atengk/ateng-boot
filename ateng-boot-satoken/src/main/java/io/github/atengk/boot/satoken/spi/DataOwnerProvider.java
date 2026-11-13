@@ -18,4 +18,15 @@ public interface DataOwnerProvider<T> {
      * @return 数据归属者的用户唯一标识（userId），若资源不存在或非合法归属返回 null
      */
     String getOwnerId(T resourceId);
+
+    /**
+     * 根据业务资源标识与账号体系反查数据所有者的用户唯一标识（多账号体系扩展重载）
+     *
+     * @param resourceId 业务资源标识
+     * @param loginType  账号体系类型标识（如 "admin", "member"）
+     * @return 数据归属者的用户唯一标识（userId），若资源不存在或非合法归属返回 null
+     */
+    default String getOwnerId(T resourceId, String loginType) {
+        return getOwnerId(resourceId);
+    }
 }

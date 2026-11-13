@@ -61,6 +61,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Web 客户端 IP 提取协同 (可选依赖) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- MyBatis-Plus 多租户与持久层审计协同 (可选依赖) -->
         <dependency>
             <groupId>io.github.atengk</groupId>

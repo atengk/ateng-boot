@@ -1,5 +1,6 @@
 package io.github.atengk.boot.satoken.aspect;
 
+import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.satoken.annotation.CheckDataOwner;
@@ -46,24 +47,36 @@ public class SaCheckDataOwnerAspect {
 
     @Before("@annotation(checkDataOwner)")
     public void beforeCheck(JoinPoint joinPoint, CheckDataOwner checkDataOwner) {
-        // 1. 超级管理员特权快速放行
-        if (checkDataOwner.allowAdmin() && LoginHelper.isSuperAdmin()) {
-            log.debug("当前操作人具备超级管理员特权，数据所有权校验豁免通过");
+        // 1. 解析目标账号体系（显式指定优先，否则自动探测当前活跃账号体系）
+        String loginType = resolveLoginType(checkDataOwner);
+
+        // 2. 超级管理员特权快速放行
+        if (checkDataOwner.allowAdmin() && LoginHelper.isSuperAdmin(loginType)) {
+            log.debug("当前操作人具备超级管理员特权，数据所有权校验豁免通过: loginType={}", loginType);
             return;
         }
 
-        // 2. 提取入参目标资源或所有者标识
+        // 3. 提取入参目标资源或所有者标识
         Object targetResourceOrOwner = resolveTargetResource(joinPoint, checkDataOwner.expr());
 
-        // 3. 解析实际归属的所有者用户唯一标识
-        String ownerId = resolveOwnerId(targetResourceOrOwner, checkDataOwner.provider());
+        // 4. 解析实际归属的所有者用户唯一标识
+        String ownerId = resolveOwnerId(targetResourceOrOwner, checkDataOwner.provider(), loginType);
 
-        // 4. 比对当前登录用户唯一标识
-        if (!LoginHelper.isSelf(ownerId)) {
-            log.warn("检测到水平越权访问拦截: currentUserId={}, targetOwnerId={}, expr={}",
-                    LoginHelper.getUserId(), ownerId, checkDataOwner.expr());
+        // 5. 比对当前登录用户唯一标识
+        if (!LoginHelper.isSelf(loginType, ownerId)) {
+            log.warn("检测到水平越权访问拦截: loginType={}, currentUserId={}, targetOwnerId={}, expr={}",
+                    loginType, LoginHelper.getUserId(loginType), ownerId, checkDataOwner.expr());
             throw new BusinessException(CommonResultCode.FORBIDDEN, checkDataOwner.message());
         }
+    }
+
+    private String resolveLoginType(CheckDataOwner checkDataOwner) {
+        String explicitType = checkDataOwner.type();
+        if (explicitType != null && !explicitType.isBlank()) {
+            return explicitType.trim();
+        }
+        String activeType = LoginHelper.getActiveLoginType();
+        return (activeType != null && !activeType.isBlank()) ? activeType : StpUtil.TYPE;
     }
 
     /**
@@ -94,14 +107,14 @@ public class SaCheckDataOwnerAspect {
     /**
      * 解析资源实际所有者的用户标识
      */
-    private String resolveOwnerId(Object rawResourceOrOwner, Class<? extends DataOwnerProvider<?>> providerClass) {
+    private String resolveOwnerId(Object rawResourceOrOwner, Class<? extends DataOwnerProvider<?>> providerClass, String loginType) {
         if (providerClass == null || DefaultDataOwnerProvider.class.equals(providerClass)) {
             return rawResourceOrOwner != null ? String.valueOf(rawResourceOrOwner) : null;
         }
         DataOwnerProvider<?> provider = providerCache.computeIfAbsent(providerClass, this::getOrCreateProvider);
         @SuppressWarnings("unchecked")
         DataOwnerProvider<Object> typedProvider = (DataOwnerProvider<Object>) provider;
-        return typedProvider.getOwnerId(rawResourceOrOwner);
+        return typedProvider.getOwnerId(rawResourceOrOwner, loginType);
     }
 
     /**

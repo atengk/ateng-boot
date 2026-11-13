@@ -468,5 +468,52 @@ class LoginHelperTest {
             assertThat(LoginHelper.getOriginalUserId()).isNull();
         }
     }
+
+    @Test
+    @DisplayName("17. renewTimeout / renewTimeoutByToken: 强类型 Duration 续期与非法参数快速失败")
+    void testRenewTimeoutAndValidation() {
+        // 1. 非法 Duration / tokenValue 快速失败防御
+        assertThatThrownBy(() -> LoginHelper.renewTimeout(null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeout(java.time.Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeout(java.time.Duration.ofSeconds(-10)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeout("admin", java.time.Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeoutByToken((String) null, java.time.Duration.ofMinutes(5)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeoutByToken("  ", java.time.Duration.ofMinutes(5)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeoutByToken("token-1", java.time.Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeoutByToken("admin", " ", java.time.Duration.ofMinutes(5)))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 2. 默认账号体系委托 StpUtil.renewTimeout 刷新有效期
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            LoginHelper.renewTimeout(java.time.Duration.ofMinutes(30));
+            LoginHelper.renewTimeout("login", java.time.Duration.ofMinutes(10));
+            LoginHelper.renewTimeoutByToken("token-abc", java.time.Duration.ofHours(2));
+            LoginHelper.renewTimeoutByToken("login", "token-xyz", java.time.Duration.ofMinutes(15));
+
+            stpUtilMock.verify(() -> StpUtil.renewTimeout(1800L));
+            stpUtilMock.verify(() -> StpUtil.renewTimeout(600L));
+            stpUtilMock.verify(() -> StpUtil.renewTimeout("token-abc", 7200L));
+            stpUtilMock.verify(() -> StpUtil.renewTimeout("token-xyz", 900L));
+        }
+
+        // 3. 非默认账号体系委托对应 StpLogic.renewTimeout 刷新有效期
+        try (MockedStatic<LoginHelper> helperMock = mockStatic(LoginHelper.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
+            cn.dev33.satoken.stp.StpLogic memberLogic = mock(cn.dev33.satoken.stp.StpLogic.class);
+            helperMock.when(() -> LoginHelper.getStpLogic("member")).thenReturn(memberLogic);
+
+            LoginHelper.renewTimeout("member", java.time.Duration.ofMinutes(20));
+            LoginHelper.renewTimeoutByToken("member", "member-tok-1", java.time.Duration.ofMinutes(45));
+
+            verify(memberLogic).renewTimeout(1200L);
+            verify(memberLogic).renewTimeout("member-tok-1", 2700L);
+        }
+    }
 }
 

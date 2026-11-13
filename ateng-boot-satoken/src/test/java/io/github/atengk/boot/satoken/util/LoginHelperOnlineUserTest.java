@@ -377,4 +377,59 @@ class LoginHelperOnlineUserTest {
         List<OnlineUser> hugeList = LoginHelper.searchOnlineUsers("unknown_keyword_xxx", 1, 9999);
         assertThat(hugeList).isNotNull().isEmpty();
     }
+
+    @Test
+    @DisplayName("6. Web 请求上下文自动采集真实 loginIp，并在 OnlineUser 自动填充 tenantId 与 loginType")
+    void testOnlineUserEnrichesClientIpTenantIdAndLoginType() {
+        org.springframework.mock.web.MockHttpServletRequest servletRequest =
+                new org.springframework.mock.web.MockHttpServletRequest();
+        servletRequest.setRemoteAddr("127.0.0.1");
+        servletRequest.addHeader("X-Forwarded-For", "203.0.113.88");
+        org.springframework.web.context.request.RequestContextHolder.setRequestAttributes(
+                new org.springframework.web.context.request.ServletRequestAttributes(servletRequest));
+        try {
+            LoginUser adminUser = LoginUser.builder()
+                    .userId("6001")
+                    .tenantId("tenant-88")
+                    .userAccount("admin_ip")
+                    .userName("审计员")
+                    .build();
+            LoginHelper.login("admin", adminUser);
+
+            List<OnlineUser> adminList = LoginHelper.searchOnlineUsers("admin", null, 1, 10);
+            assertThat(adminList).hasSize(1);
+            OnlineUser onlineAdmin = adminList.get(0);
+            assertThat(onlineAdmin.getTenantId()).isEqualTo("tenant-88");
+            assertThat(onlineAdmin.getLoginType()).isEqualTo("admin");
+            assertThat(onlineAdmin.getLoginIp()).isEqualTo("203.0.113.88");
+
+            // 若调用方显式传入 loginIp，保留显式值不覆盖
+            LoginUser explicitUser = LoginUser.builder()
+                    .userId("6002")
+                    .tenantId("tenant-99")
+                    .userAccount("user_explicit")
+                    .userName("显式IP用户")
+                    .build();
+            LoginHelper.login(explicitUser, new SaLoginParameter().setTerminalExtra("loginIp", "10.0.0.99"));
+            List<OnlineUser> defaultList = LoginHelper.searchOnlineUsers("login", null, 1, 10);
+            assertThat(defaultList).hasSize(1);
+            OnlineUser onlineDefault = defaultList.get(0);
+            assertThat(onlineDefault.getTenantId()).isEqualTo("tenant-99");
+            assertThat(onlineDefault.getLoginType()).isEqualTo("login");
+            assertThat(onlineDefault.getLoginIp()).isEqualTo("10.0.0.99");
+
+            // 复用调用方的 SaLoginParameter 模板时不原地污染其 terminalExtra("loginIp")
+            SaLoginParameter reusableParam = new SaLoginParameter().setDeviceType("PAD");
+            LoginUser reuseUser = LoginUser.builder()
+                    .userId("6003")
+                    .tenantId("tenant-77")
+                    .userAccount("user_reuse")
+                    .userName("复用参数用户")
+                    .build();
+            LoginHelper.login("admin", reuseUser, reusableParam);
+            assertThat(reusableParam.getTerminalExtra("loginIp")).isNull();
+        } finally {
+            org.springframework.web.context.request.RequestContextHolder.resetRequestAttributes();
+        }
+    }
 }

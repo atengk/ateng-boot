@@ -38,6 +38,30 @@ class SaCheckDataOwnerAspectTest {
         String updateProfile(UserProfileDTO dto);
         String cancelOrder(Long orderId);
         String strictUpdate(String userId);
+        String memberScopedCancel(Long orderId);
+        String explicitAdminUpdate(String userId);
+    }
+
+    public static class MultiAccountOrderOwnerProvider implements DataOwnerProvider<Long> {
+        private String lastLoginType;
+
+        @Override
+        public String getOwnerId(Long resourceId) {
+            return "fallback-" + resourceId;
+        }
+
+        @Override
+        public String getOwnerId(Long resourceId, String loginType) {
+            this.lastLoginType = loginType;
+            if ("member".equals(loginType) && Long.valueOf(2001L).equals(resourceId)) {
+                return "member-100";
+            }
+            return "member-999";
+        }
+
+        public String getLastLoginType() {
+            return lastLoginType;
+        }
     }
 
     public static class OrderDataOwnerProvider implements DataOwnerProvider<Long> {
@@ -70,6 +94,18 @@ class SaCheckDataOwnerAspectTest {
         @CheckDataOwner(expr = "#userId", allowAdmin = false)
         public String strictUpdate(String userId) {
             return "SUCCESS_STRICT_" + userId;
+        }
+
+        @Override
+        @CheckDataOwner(expr = "#orderId", provider = MultiAccountOrderOwnerProvider.class, message = "会员无权操作他人订单")
+        public String memberScopedCancel(Long orderId) {
+            return "SUCCESS_MEMBER_CANCEL_" + orderId;
+        }
+
+        @Override
+        @CheckDataOwner(expr = "#userId", type = "admin", allowAdmin = true, message = "仅管理员体系本人可操作")
+        public String explicitAdminUpdate(String userId) {
+            return "SUCCESS_ADMIN_" + userId;
         }
     }
 
@@ -176,6 +212,51 @@ class SaCheckDataOwnerAspectTest {
                         BusinessException be = (BusinessException) ex;
                         assertThat(be.getCode()).isEqualTo(CommonResultCode.FORBIDDEN.getCode());
                     });
+        }
+    }
+
+    @Test
+    @DisplayName("5. 多账号体系感知：未指定 type 自动探测活跃账号体系并透传至 Provider，显式 type 强制切换目标账号体系")
+    void testMultiAccountTypeDetectionAndExplicitOverride() {
+        MultiAccountOrderOwnerProvider multiProvider = new MultiAccountOrderOwnerProvider();
+        ApplicationContext applicationContext = mock(ApplicationContext.class);
+        when(applicationContext.getBean(MultiAccountOrderOwnerProvider.class)).thenReturn(multiProvider);
+
+        TestOrderServiceImpl target = new TestOrderServiceImpl();
+        AspectJProxyFactory factory = new AspectJProxyFactory(target);
+        factory.addAspect(new SaCheckDataOwnerAspect(applicationContext));
+        TestOrderService proxy = factory.getProxy();
+
+        // 验证 DataOwnerProvider 默认两参方法向后兼容委托单参
+        DataOwnerProvider<Long> legacyProvider = id -> "legacy-" + id;
+        assertThat(legacyProvider.getOwnerId(88L, "member")).isEqualTo("legacy-88");
+
+        try (MockedStatic<io.github.atengk.boot.satoken.util.LoginHelper> helperMock =
+                     mockStatic(io.github.atengk.boot.satoken.util.LoginHelper.class)) {
+            helperMock.when(io.github.atengk.boot.satoken.util.LoginHelper::getActiveLoginType).thenReturn("member");
+            helperMock.when(() -> io.github.atengk.boot.satoken.util.LoginHelper.isSuperAdmin("member")).thenReturn(false);
+            helperMock.when(() -> io.github.atengk.boot.satoken.util.LoginHelper.isSelf("member", "member-100")).thenReturn(true);
+            helperMock.when(() -> io.github.atengk.boot.satoken.util.LoginHelper.isSelf("member", "member-999")).thenReturn(false);
+            helperMock.when(() -> io.github.atengk.boot.satoken.util.LoginHelper.getUserId("member")).thenReturn("member-100");
+
+            // 1. 未指定 type：自动探测活跃账号体系 "member" 并透传给 getOwnerId(target, "member")
+            assertThat(proxy.memberScopedCancel(2001L)).isEqualTo("SUCCESS_MEMBER_CANCEL_2001");
+            assertThat(multiProvider.getLastLoginType()).isEqualTo("member");
+
+            assertThatThrownBy(() -> proxy.memberScopedCancel(2002L))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessage("会员无权操作他人订单");
+
+            // 2. 显式指定 type="admin"：即使当前活跃为 "member"，仍强制使用 "admin" 校验
+            helperMock.when(() -> io.github.atengk.boot.satoken.util.LoginHelper.isSuperAdmin("admin")).thenReturn(false);
+            helperMock.when(() -> io.github.atengk.boot.satoken.util.LoginHelper.isSelf("admin", "admin-1")).thenReturn(false);
+            helperMock.when(() -> io.github.atengk.boot.satoken.util.LoginHelper.isSelf("admin", "admin-self")).thenReturn(true);
+            helperMock.when(() -> io.github.atengk.boot.satoken.util.LoginHelper.getUserId("admin")).thenReturn("admin-self");
+
+            assertThat(proxy.explicitAdminUpdate("admin-self")).isEqualTo("SUCCESS_ADMIN_admin-self");
+            assertThatThrownBy(() -> proxy.explicitAdminUpdate("admin-1"))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessage("仅管理员体系本人可操作");
         }
     }
 }

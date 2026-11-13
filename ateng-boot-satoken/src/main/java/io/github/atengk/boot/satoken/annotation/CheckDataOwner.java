@@ -29,6 +29,13 @@ public @interface CheckDataOwner {
     String expr() default "";
 
     /**
+     * 账号体系类型标识（如 "admin", "member"；为空时自动探测当前活跃账号体系）
+     *
+     * @return 账号体系标识
+     */
+    String type() default "";
+
+    /**
      * 间接资源所有者反查 SPI 提供者实现类（可选，默认为 DefaultDataOwnerProvider）
      *
      * @return 反查提供者类型

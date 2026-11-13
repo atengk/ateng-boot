@@ -379,4 +379,46 @@ class LoginHelperMultiAccountTest {
         assertThat(UserContextHolder.get()).isNull();
         assertThat(TenantContextHolder.getTenantId()).isNull();
     }
+
+    @Test
+    @DisplayName("6. registerStpLogic 与 isSelf(loginType, Object)：显式注册自定义引擎并校验多账号本人身份")
+    void testRegisterStpLogicAndIsSelfObjectOverload() {
+        // 入参快速失败校验
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> LoginHelper.registerStpLogic(null, new StpLogic("vip")))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> LoginHelper.registerStpLogic("vip", null))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> LoginHelper.registerStpLogic("vip", new StpLogic("other")))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        StpLogic customVipLogic = new StpLogic("vip") {
+            @Override
+            public String splicingKeyTokenName() {
+                return super.splicingKeyTokenName() + "-vip-custom";
+            }
+        };
+        try {
+            LoginHelper.registerStpLogic("vip", customVipLogic);
+            assertThat(LoginHelper.getStpLogic("vip")).isSameAs(customVipLogic);
+            assertThat(SaManager.getStpLogic("vip", false)).isSameAs(customVipLogic);
+
+            LoginUser vipUser = LoginUser.builder().userId("9001").tenantId("t-vip").build();
+            LoginHelper.login("vip", vipUser);
+
+            assertThat(LoginHelper.isSelf("vip", (Object) "9001")).isTrue();
+            assertThat(LoginHelper.isSelf("vip", (Object) 9001L)).isTrue();
+            assertThat(LoginHelper.isSelf("vip", (Object) 9002)).isFalse();
+            assertThat(LoginHelper.isSelf("vip", (Object) null)).isFalse();
+            // 未登录 admin 时跨体系不应误判为本人
+            assertThat(LoginHelper.isSelf("admin", (Object) "9001")).isFalse();
+        } finally {
+            try {
+                LoginHelper.logout("vip");
+            } catch (Exception ignored) {
+            }
+            if (SaManager.stpLogicMap != null) {
+                SaManager.stpLogicMap.remove("vip");
+            }
+        }
+    }
 }

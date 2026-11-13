@@ -397,4 +397,39 @@ class AtengSaTokenInterceptorTest {
         assertThat(interceptor.getWhitelist()).hasSize(threads * pathsPerThread);
         assertThat(interceptor.isWhitelisted("/api/concurrent/7/24")).isTrue();
     }
+
+    @Test
+    @DisplayName("测试动态路径权限绑定 loginType：按规则指定账号体系路由校验登录态与权限")
+    void testDynamicPathPermissionRoutesToRuleLoginType() throws Exception {
+        DynamicPathPermissionProvider provider = DynamicPathPermissionProvider.of(
+                PathPermissionRule.of("/api/admin/audit/**", "POST", "admin", SaMode.OR, "audit:write"),
+                PathPermissionRule.of("/api/admin/login-only/**", "GET", "admin", SaMode.OR, List.of())
+        );
+        interceptor.setDynamicPathPermissionProvider(provider);
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            StpLogic adminLogic = mock(StpLogic.class);
+            StpLogic memberLogic = mock(StpLogic.class);
+            loginHelperMock.when(() -> LoginHelper.getActiveLoginType(any())).thenReturn("member");
+            loginHelperMock.when(() -> LoginHelper.getStpLogic("admin")).thenReturn(adminLogic);
+            loginHelperMock.when(() -> LoginHelper.getStpLogic("member")).thenReturn(memberLogic);
+            loginHelperMock.when(() -> LoginHelper.isSuperAdmin("admin")).thenReturn(false);
+
+            // 1. 命中绑定 admin 权限的动态规则
+            when(request.getRequestURI()).thenReturn("/api/admin/audit/submit");
+            when(request.getMethod()).thenReturn("POST");
+            assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
+            verify(adminLogic).checkLogin();
+            verify(adminLogic).checkPermissionOr("audit:write");
+            verify(memberLogic, never()).checkPermissionOr(any());
+
+            // 2. 命中仅绑定 admin 登录态（空权限集）的规则时仍强制校验 admin 登录态
+            when(request.getRequestURI()).thenReturn("/api/admin/login-only/status");
+            when(request.getMethod()).thenReturn("GET");
+            doThrow(new cn.dev33.satoken.exception.NotLoginException("未登录", "admin", "-1"))
+                    .when(adminLogic).checkLogin();
+            assertThatThrownBy(() -> interceptor.preHandle(request, response, new Object()))
+                    .isInstanceOf(cn.dev33.satoken.exception.NotLoginException.class);
+        }
+    }
 }

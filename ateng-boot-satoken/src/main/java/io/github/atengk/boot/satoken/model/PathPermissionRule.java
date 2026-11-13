@@ -60,6 +60,11 @@ public class PathPermissionRule implements Serializable {
     private SaMode mode = SaMode.OR;
 
     /**
+     * 绑定的账号体系类型标识（如 admin, member；为空时按当前请求活跃账号体系自动探测）
+     */
+    private String loginType;
+
+    /**
      * 判断指定请求路径与 HTTP 方法是否命中当前规则
      *
      * @param pathMatcher   Spring 路径匹配器
@@ -149,10 +154,7 @@ public class PathPermissionRule implements Serializable {
      * @return 路径权限规则实例
      */
     public static PathPermissionRule of(String pathPattern, String httpMethod, SaMode mode, String... permissions) {
-        Set<String> set = (permissions != null && permissions.length > 0)
-                ? Arrays.stream(permissions).filter(p -> p != null && !p.isBlank()).map(String::trim).collect(Collectors.toCollection(LinkedHashSet::new))
-                : Collections.emptySet();
-        return of(pathPattern, httpMethod, mode, set);
+        return of(pathPattern, httpMethod, null, mode, permissions);
     }
 
     /**
@@ -164,7 +166,21 @@ public class PathPermissionRule implements Serializable {
      * @return 路径权限规则实例
      */
     public static PathPermissionRule of(String pathPattern, String httpMethod, Collection<String> permissions) {
-        return of(pathPattern, httpMethod, SaMode.OR, permissions);
+        return of(pathPattern, httpMethod, null, SaMode.OR, permissions);
+    }
+
+    /**
+     * 便捷构造方法：指定 HTTP 方法、账号体系、校验模式与可变权限码
+     *
+     * @param pathPattern 路径模式
+     * @param httpMethod  HTTP 方法
+     * @param loginType   账号体系类型标识
+     * @param mode        权限校验模式
+     * @param permissions 所需权限码列表
+     * @return 路径权限规则实例
+     */
+    public static PathPermissionRule of(String pathPattern, String httpMethod, String loginType, SaMode mode, String... permissions) {
+        return of(pathPattern, httpMethod, loginType, mode, sanitizePermissions(permissions));
     }
 
     /**
@@ -177,14 +193,45 @@ public class PathPermissionRule implements Serializable {
      * @return 路径权限规则实例
      */
     public static PathPermissionRule of(String pathPattern, String httpMethod, SaMode mode, Collection<String> permissions) {
-        Set<String> set = (permissions != null && !permissions.isEmpty())
-                ? permissions.stream().filter(p -> p != null && !p.isBlank()).map(String::trim).collect(Collectors.toCollection(LinkedHashSet::new))
-                : Collections.emptySet();
+        return of(pathPattern, httpMethod, null, mode, permissions);
+    }
+
+    /**
+     * 便捷构造方法：指定账号体系的全参工厂方法
+     *
+     * @param pathPattern 路径模式
+     * @param httpMethod  HTTP 方法
+     * @param loginType   账号体系类型标识
+     * @param mode        权限校验模式
+     * @param permissions 权限码集合
+     * @return 路径权限规则实例
+     */
+    public static PathPermissionRule of(String pathPattern, String httpMethod, String loginType, SaMode mode, Collection<String> permissions) {
+        Set<String> set = sanitizePermissions(permissions);
+        String normalizedLoginType = (loginType != null && !loginType.isBlank()) ? loginType.trim() : null;
         return PathPermissionRule.builder()
                 .pathPattern(pathPattern)
                 .httpMethod(httpMethod)
+                .loginType(normalizedLoginType)
                 .permissions(Collections.unmodifiableSet(set))
                 .mode(mode != null ? mode : SaMode.OR)
                 .build();
+    }
+
+    private static Set<String> sanitizePermissions(String... permissions) {
+        if (permissions == null || permissions.length == 0) {
+            return Collections.emptySet();
+        }
+        return sanitizePermissions(Arrays.asList(permissions));
+    }
+
+    private static Set<String> sanitizePermissions(Collection<String> permissions) {
+        if (permissions == null || permissions.isEmpty()) {
+            return Collections.emptySet();
+        }
+        return permissions.stream()
+                .filter(p -> p != null && !p.isBlank())
+                .map(String::trim)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 }

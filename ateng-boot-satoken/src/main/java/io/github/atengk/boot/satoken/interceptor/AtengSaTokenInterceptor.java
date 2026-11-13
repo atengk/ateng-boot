@@ -222,18 +222,32 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
             return false;
         }
 
+        String ruleLoginType = (matchedRule.getLoginType() != null && !matchedRule.getLoginType().isBlank())
+                ? matchedRule.getLoginType().trim()
+                : null;
         Set<String> requiredPermissions = matchedRule.getPermissions();
-        if (requiredPermissions == null || requiredPermissions.isEmpty()) {
+        boolean hasPermissions = requiredPermissions != null && !requiredPermissions.isEmpty();
+        if (ruleLoginType == null && !hasPermissions) {
             return true;
         }
 
-        // 探测当前活跃登录主体 StpLogic
-        String preferredType = properties != null ? properties.getPrimaryLoginType() : null;
-        String activeType = LoginHelper.getActiveLoginType(preferredType);
-        StpLogic logic = LoginHelper.getStpLogic(activeType != null ? activeType : StpUtil.TYPE);
+        // 探测目标账号体系 StpLogic（规则显式绑定 loginType 优先，否则自动探测当前活跃账号体系）
+        String targetType = ruleLoginType;
+        if (targetType == null) {
+            String preferredType = properties != null ? properties.getPrimaryLoginType() : null;
+            String activeType = LoginHelper.getActiveLoginType(preferredType);
+            targetType = (activeType != null && !activeType.isBlank()) ? activeType : StpUtil.TYPE;
+        }
+        StpLogic logic = LoginHelper.getStpLogic(targetType);
+
+        // 先校验目标账号体系的登录态（支持仅绑定 loginType 的空权限路由防越权）
+        logic.checkLogin();
+        if (!hasPermissions) {
+            return true;
+        }
 
         // 超级管理员豁免放行
-        if (LoginHelper.isSuperAdmin(activeType)) {
+        if (LoginHelper.isSuperAdmin(targetType)) {
             return true;
         }
 
