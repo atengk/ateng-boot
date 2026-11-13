@@ -351,6 +351,68 @@ public final class NetUtil {
     }
 
     /**
+     * 获取本机受信物理网卡的 MAC 硬件地址字节数组
+     * <p>
+     * 自动过滤回环网卡、未启用网卡、虚拟网卡及自定义忽略网卡。
+     * 若本机已命中非回环首选内网 IPv4（含 {@code preferred-ip} / {@code preferred-networks} / OS 路由探测），
+     * 优先提取该 IP 所绑定物理网卡的 MAC 地址；否则顺序提取首个合规物理网卡的 MAC 地址。
+     * </p>
+     *
+     * @return 受信物理网卡的 MAC 字节数组；无可用物理网卡或探测异常时返回空数组（绝不返回 null）
+     */
+    public static byte[] getLocalMacBytes() {
+        try {
+            List<String> ignoredInterfaces = getEffectiveIgnoredInterfaces();
+            String localIpv4 = getLocalIpv4();
+
+            // 1. 若已命中非回环首选 IPv4，优先提取其绑定物理网卡的硬件 MAC
+            if (localIpv4 != null && !LOCALHOST_IPV4.equals(localIpv4)) {
+                try {
+                    InetAddress addr = InetAddress.getByName(localIpv4);
+                    NetworkInterface matchedNi = NetworkInterface.getByInetAddress(addr);
+                    byte[] mac = extractTrustedMac(matchedNi, ignoredInterfaces);
+                    if (mac.length > 0) {
+                        return mac;
+                    }
+                } catch (Exception ex) {
+                    log.debug("根据首选 IPv4 匹配物理网卡 MAC 异常，回退遍历合规网卡: {}", localIpv4, ex);
+                }
+            }
+
+            // 2. 遍历全量网卡并应用虚拟与排除过滤规则，提取首个合规物理网卡硬件地址
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            if (interfaces != null) {
+                while (interfaces.hasMoreElements()) {
+                    NetworkInterface ni = interfaces.nextElement();
+                    byte[] mac = extractTrustedMac(ni, ignoredInterfaces);
+                    if (mac.length > 0) {
+                        return mac;
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            log.debug("探测本机物理网卡硬件 MAC 地址异常，降级返回空字节数组", ex);
+        }
+        return new byte[0];
+    }
+
+    private static byte[] extractTrustedMac(NetworkInterface ni, List<String> ignoredInterfaces) {
+        if (ni == null) {
+            return new byte[0];
+        }
+        try {
+            if (ni.isLoopback() || !ni.isUp() || isVirtualInterface(ni) || isIgnoredInterface(ni, ignoredInterfaces)) {
+                return new byte[0];
+            }
+            byte[] mac = ni.getHardwareAddress();
+            return (mac != null && mac.length > 0) ? mac : new byte[0];
+        } catch (Exception ex) {
+            log.trace("读取网络接口硬件 MAC 地址异常: {}", ni.getName(), ex);
+            return new byte[0];
+        }
+    }
+
+    /**
      * 探测 OS 内核路由表选定的最佳出口 IPv4 地址（UDP Dummy Connect）
      * 不发送任何网络数据包，0 网络 IO，离线或无网关时静默返回 null
      *

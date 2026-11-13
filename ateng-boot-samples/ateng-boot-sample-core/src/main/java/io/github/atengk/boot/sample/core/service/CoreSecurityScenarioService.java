@@ -208,7 +208,16 @@ public class CoreSecurityScenarioService {
      * @return 分布式发号完整结构体
      */
     public IdGenerateVO generateDistributedId() {
-        long id = snowflake != null ? snowflake.nextId() : IdUtil.nextId();
+        // 容器受管 Snowflake Bean 已与静态门面 IdUtil 自动双向同步
+        if (snowflake != null) {
+            Snowflake active = IdUtil.getSnowflake();
+            BusinessAssert.isTrue(
+                    active.getWorkerId() == snowflake.getWorkerId()
+                            && active.getDatacenterId() == snowflake.getDatacenterId()
+                            && active.getEpoch() == snowflake.getEpoch(),
+                    "IdUtil 静态门面未与容器 Snowflake 配置保持一致");
+        }
+        long id = IdUtil.nextId();
         String idStr = String.valueOf(id);
         String base62 = IdUtil.toBase62(id);
         long restoredId = IdUtil.fromBase62(base62);

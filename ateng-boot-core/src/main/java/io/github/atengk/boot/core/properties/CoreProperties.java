@@ -21,12 +21,18 @@ public class CoreProperties {
 
     /**
      * 时钟回拨容忍阈值（顶层快捷配置，默认 5ms）
+     *
+     * @deprecated 自 1.0.0 起不推荐使用，请迁移至 {@code ateng.boot.core.snowflake.clock-backoff-tolerance}
      */
+    @Deprecated(since = "1.0.0")
     private Duration clockBackoffTolerance = Duration.ofMillis(Snowflake.DEFAULT_MAX_BACKWARD_MS);
 
     /**
      * 进程内内存缓存默认存活时间 TTL（顶层快捷配置，默认 30 分钟）
+     *
+     * @deprecated 自 1.0.0 起不推荐使用，请迁移至 {@code ateng.boot.core.cache.default-ttl}
      */
+    @Deprecated(since = "1.0.0")
     private Duration cacheTtl = Duration.ofMinutes(30);
 
     /**

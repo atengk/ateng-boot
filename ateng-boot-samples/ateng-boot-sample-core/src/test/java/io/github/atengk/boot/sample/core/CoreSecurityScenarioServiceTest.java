@@ -1,10 +1,14 @@
 package io.github.atengk.boot.sample.core;
 
+import io.github.atengk.boot.core.id.Snowflake;
+import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.model.Pair;
 import io.github.atengk.boot.core.model.Triple;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.sample.core.dto.PaymentCryptoRequest;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
 import io.github.atengk.boot.sample.core.service.CoreSecurityScenarioService;
+import io.github.atengk.boot.sample.core.vo.IdGenerateVO;
 import io.github.atengk.boot.sample.core.vo.PaymentCryptoVO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -26,6 +30,27 @@ class CoreSecurityScenarioServiceTest {
 
     @Autowired
     private CoreSecurityScenarioService securityScenarioService;
+
+    @Autowired
+    private Snowflake snowflake;
+
+    @Test
+    @DisplayName("测试容器 Snowflake Bean 与静态门面 IdUtil 同步一致")
+    void testSnowflakeAndIdUtilSynchronized() {
+        Snowflake active = IdUtil.getSnowflake();
+        assertThat(active.getWorkerId()).isEqualTo(snowflake.getWorkerId());
+        assertThat(active.getDatacenterId()).isEqualTo(snowflake.getDatacenterId());
+        assertThat(active.getEpoch()).isEqualTo(snowflake.getEpoch());
+
+        IdGenerateVO vo = securityScenarioService.generateDistributedId();
+        assertThat(vo.getWorkerId()).isEqualTo(1L);
+        assertThat(vo.getDatacenterId()).isEqualTo(1L);
+        assertThat(vo.getRestoredId()).isEqualTo(vo.getId());
+
+        SnowflakeIdInfo parsed = IdUtil.parseSnowflake(vo.getId());
+        assertThat(parsed.workerId()).isEqualTo(1L);
+        assertThat(parsed.datacenterId()).isEqualTo(1L);
+    }
 
     @Test
     @DisplayName("测试DesensitizeUtil敏感数据动态掩码")

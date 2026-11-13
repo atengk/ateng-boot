@@ -7,10 +7,15 @@ import io.github.atengk.boot.core.lifecycle.AppShutdownListener;
 import io.github.atengk.boot.core.lifecycle.AppTempDirCleanupListener;
 import io.github.atengk.boot.core.properties.CoreProperties;
 import io.github.atengk.boot.core.properties.SnowflakeProperties;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.LambdaUtil;
 import io.github.atengk.boot.core.util.SpelUtil;
 import io.github.atengk.boot.core.util.SpringUtil;
+import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -91,7 +96,55 @@ public class AtengCoreAutoConfiguration {
         Duration tolerance = properties.getEffectiveClockBackoffTolerance();
         long maxBackwardMs = tolerance != null ? Math.max(0, tolerance.toMillis()) : Snowflake.DEFAULT_MAX_BACKWARD_MS;
 
-        return new Snowflake(workerId, datacenterId, epoch, maxBackwardMs);
+        Snowflake snowflake = new Snowflake(workerId, datacenterId, epoch, maxBackwardMs);
+        IdUtil.setSnowflake(snowflake);
+        return snowflake;
+    }
+
+    /**
+     * 容器级 Snowflake 与静态门面 IdUtil 双向桥接器
+     * 确保无论使用自动装配实例或用户自定义覆盖的 Snowflake Bean，均可实时同步至 IdUtil 并在上下文关闭时对称解绑
+     *
+     * @param snowflakeProvider 容器中受管 Snowflake 延迟提供者
+     * @return CoreSnowflakeInitializer 桥接器句柄
+     */
+    @Bean
+    @ConditionalOnBean(Snowflake.class)
+    @ConditionalOnMissingBean(CoreSnowflakeInitializer.class)
+    public CoreSnowflakeInitializer coreSnowflakeInitializer(ObjectProvider<Snowflake> snowflakeProvider) {
+        return new CoreSnowflakeInitializer(snowflakeProvider);
+    }
+
+    /**
+     * 容器受管 Snowflake 与静态门面 {@link IdUtil} 生命周期同步桥接组件
+     */
+    public static class CoreSnowflakeInitializer implements SmartInitializingSingleton, DisposableBean {
+
+        private final ObjectProvider<Snowflake> snowflakeProvider;
+        private volatile Snowflake boundSnowflake;
+
+        public CoreSnowflakeInitializer(ObjectProvider<Snowflake> snowflakeProvider) {
+            this.snowflakeProvider = snowflakeProvider;
+        }
+
+        @Override
+        public void afterSingletonsInstantiated() {
+            Snowflake uniqueSnowflake = snowflakeProvider.getIfUnique();
+            if (uniqueSnowflake != null) {
+                if (IdUtil.getSnowflake() != uniqueSnowflake) {
+                    IdUtil.setSnowflake(uniqueSnowflake);
+                }
+                this.boundSnowflake = uniqueSnowflake;
+            }
+        }
+
+        @Override
+        public void destroy() {
+            // 仅清理自身绑定的发号器引用，防止多上下文并行场景误重置其他上下文实例
+            if (this.boundSnowflake != null && IdUtil.getSnowflake() == this.boundSnowflake) {
+                IdUtil.resetSnowflake();
+            }
+        }
     }
 
     /**

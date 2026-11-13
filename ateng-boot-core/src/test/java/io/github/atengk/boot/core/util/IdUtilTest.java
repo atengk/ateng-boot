@@ -1,7 +1,10 @@
 package io.github.atengk.boot.core.util;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.id.Snowflake;
 import io.github.atengk.boot.core.id.SnowflakeIdInfo;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -25,6 +28,11 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @DisplayName("分布式唯一 ID 门面工具类测试")
 class IdUtilTest {
+
+    @AfterEach
+    void tearDown() {
+        IdUtil.resetSnowflake();
+    }
 
     @Test
     @DisplayName("雪花算法门面：单例发号、字符串形式与工厂创建验证")
@@ -205,5 +213,39 @@ class IdUtilTest {
         assertThrows(IllegalArgumentException.class, () -> IdUtil.fromBase62("abc#123"));
         assertThrows(IllegalArgumentException.class, () -> IdUtil.fromBase62("a b"));
         assertThrows(ArithmeticException.class, () -> IdUtil.fromBase62("999999999999999999999999999"));
+    }
+
+    @Test
+    @DisplayName("容器 Snowflake 桥接对称性：setSnowflake 同步自定义节点与纪元，resetSnowflake 确定性还原")
+    void shouldBindAndResetCustomSnowflakeSymmetrically() {
+        Snowflake defaultInstance = IdUtil.getSnowflake();
+        long customEpoch = 1700000000000L;
+        Snowflake custom = IdUtil.createSnowflake(29, 17, customEpoch);
+
+        IdUtil.setSnowflake(custom);
+        assertSame(custom, IdUtil.getSnowflake());
+
+        long id = IdUtil.nextId();
+        SnowflakeIdInfo parsed = IdUtil.parseSnowflake(id);
+        assertEquals(29L, parsed.workerId());
+        assertEquals(17L, parsed.datacenterId());
+        assertEquals(customEpoch, parsed.epoch());
+
+        long nextId = Long.parseLong(IdUtil.nextIdStr());
+        assertEquals(29L, IdUtil.parseSnowflake(nextId).workerId());
+        assertEquals(17L, IdUtil.parseSnowflake(nextId).datacenterId());
+
+        // 对称重置恢复默认实例
+        IdUtil.resetSnowflake();
+        assertSame(defaultInstance, IdUtil.getSnowflake());
+        SnowflakeIdInfo defaultParsed = IdUtil.parseSnowflake(IdUtil.getSnowflakeNextId());
+        assertEquals(Snowflake.DEFAULT_EPOCH, defaultParsed.epoch());
+    }
+
+    @Test
+    @DisplayName("setSnowflake 空参防御：传入 null 时快速失败抛出 BusinessException")
+    void shouldRejectNullSnowflakeWhenSetting() {
+        BusinessException ex = assertThrows(BusinessException.class, () -> IdUtil.setSnowflake(null));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex.getCode());
     }
 }

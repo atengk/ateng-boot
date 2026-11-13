@@ -1,7 +1,9 @@
 package io.github.atengk.boot.core.autoconfigure;
 
 import io.github.atengk.boot.core.id.Snowflake;
+import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.properties.CoreProperties;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.LambdaUtil;
 import io.github.atengk.boot.core.util.SpelUtil;
 import io.github.atengk.boot.core.util.SpringUtil;
@@ -29,6 +31,7 @@ class AtengCoreAutoConfigurationTest {
 
     @AfterEach
     void tearDown() {
+        IdUtil.resetSnowflake();
         SpelUtil.configureCache(1024, null);
         LambdaUtil.configureCache(1024, null);
         SpelUtil.clearCache();
@@ -49,6 +52,7 @@ class AtengCoreAutoConfigurationTest {
             assertThat(snowflake.getEpoch()).isEqualTo(Snowflake.DEFAULT_EPOCH);
             assertThat(snowflake.getMaxBackwardMs()).isEqualTo(Snowflake.DEFAULT_MAX_BACKWARD_MS);
             assertThat(snowflake.nextId()).isPositive();
+            assertThat(IdUtil.getSnowflake()).isSameAs(snowflake);
         });
     }
 
@@ -78,6 +82,14 @@ class AtengCoreAutoConfigurationTest {
                     assertThat(properties.getSnowflake().getClockBackoffTolerance().toMillis()).isEqualTo(15L);
                     assertThat(properties.getEffectiveClockBackoffTolerance().toMillis()).isEqualTo(15L);
                     assertThat(properties.getEffectiveCacheTtl().toMinutes()).isEqualTo(45L);
+
+                    // 验证 IdUtil 静态门面已自动与容器配置同步
+                    assertThat(IdUtil.getSnowflake()).isSameAs(snowflake);
+                    long id = IdUtil.nextId();
+                    SnowflakeIdInfo info = IdUtil.parseSnowflake(id);
+                    assertThat(info.workerId()).isEqualTo(12L);
+                    assertThat(info.datacenterId()).isEqualTo(23L);
+                    assertThat(info.epoch()).isEqualTo(1700000000000L);
                 });
     }
 
@@ -116,7 +128,28 @@ class AtengCoreAutoConfigurationTest {
                     Snowflake snowflake = context.getBean(Snowflake.class);
                     assertThat(snowflake.getWorkerId()).isEqualTo(9L);
                     assertThat(snowflake.getDatacenterId()).isEqualTo(9L);
+                    assertThat(IdUtil.getSnowflake()).isSameAs(snowflake);
+                    SnowflakeIdInfo info = IdUtil.parseSnowflake(IdUtil.nextId());
+                    assertThat(info.workerId()).isEqualTo(9L);
+                    assertThat(info.datacenterId()).isEqualTo(9L);
                 });
+    }
+
+    @Test
+    @DisplayName("上下文关闭解绑：容器关闭时自动恢复 IdUtil 默认发号器引用")
+    void shouldResetIdUtilWhenContextCloses() {
+        Snowflake defaultSnowflake = IdUtil.getSnowflake();
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.core.snowflake.worker-id=18",
+                        "ateng.boot.core.snowflake.datacenter-id=28"
+                )
+                .run(context -> {
+                    Snowflake bean = context.getBean(Snowflake.class);
+                    assertThat(IdUtil.getSnowflake()).isSameAs(bean);
+                });
+        // ApplicationContextRunner.run 执行完毕已关闭上下文，DisposableBean 自动对称解绑
+        assertThat(IdUtil.getSnowflake()).isSameAs(defaultSnowflake);
     }
 
     @Configuration(proxyBeanMethods = false)

@@ -2,15 +2,14 @@ package io.github.atengk.boot.core.id;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.NetUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetAddress;
-import java.net.NetworkInterface;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.Enumeration;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.LongSupplier;
@@ -373,49 +372,41 @@ public class Snowflake {
             return new NodeIds(workerId, datacenterId);
         }
 
-        // 尝试从网卡 MAC 地址推导
-        try {
-            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
-            while (interfaces != null && interfaces.hasMoreElements()) {
-                NetworkInterface ni = interfaces.nextElement();
-                if (!ni.isLoopback() && ni.isUp()) {
-                    byte[] mac = ni.getHardwareAddress();
-                    if (mac != null && mac.length > 0) {
-                        if (workerId == null) {
-                            int sum = 0;
-                            for (byte b : mac) {
-                                sum = (sum << 5) - sum + (b & 0xFF);
-                            }
-                            workerId = (long) ((sum & 0x7FFFFFFF) % (MAX_WORKER_ID + 1));
-                        }
-                        if (datacenterId == null) {
-                            if (mac.length >= 2) {
-                                datacenterId = (long) (((mac[0] & 0xFF) ^ (mac[1] & 0xFF)) % (MAX_DATACENTER_ID + 1));
-                            } else {
-                                datacenterId = (long) ((mac[0] & 0xFF) % (MAX_DATACENTER_ID + 1));
-                            }
-                        }
-                        break;
-                    }
+        // 尝试从 NetUtil 受信物理网卡 MAC 地址推导（自动过滤虚拟网卡与忽略接口）
+        byte[] mac = NetUtil.getLocalMacBytes();
+        if (mac.length > 0) {
+            if (workerId == null) {
+                int sum = 0;
+                for (byte b : mac) {
+                    sum = (sum << 5) - sum + (b & 0xFF);
+                }
+                workerId = (long) ((sum & 0x7FFFFFFF) % (MAX_WORKER_ID + 1));
+            }
+            if (datacenterId == null) {
+                if (mac.length >= 2) {
+                    datacenterId = (long) (((mac[0] & 0xFF) ^ (mac[1] & 0xFF)) % (MAX_DATACENTER_ID + 1));
+                } else {
+                    datacenterId = (long) ((mac[0] & 0xFF) % (MAX_DATACENTER_ID + 1));
                 }
             }
-        } catch (Exception ignored) {
         }
 
-        // 尝试从本机 IP 推导
+        // 尝试从 NetUtil 受信本机内网非回环 IPv4 推导
         if (workerId == null || datacenterId == null) {
             try {
-                InetAddress localHost = InetAddress.getLocalHost();
-                byte[] address = localHost.getAddress();
-                if (address != null && address.length > 0) {
-                    if (workerId == null) {
-                        workerId = (long) ((address[address.length - 1] & 0xFF) % (MAX_WORKER_ID + 1));
-                    }
-                    if (datacenterId == null) {
-                        if (address.length >= 2) {
-                            datacenterId = (long) ((address[address.length - 2] & 0xFF) % (MAX_DATACENTER_ID + 1));
-                        } else {
-                            datacenterId = (long) ((address[0] & 0xFF) % (MAX_DATACENTER_ID + 1));
+                String localIpv4 = NetUtil.getLocalIpv4();
+                if (localIpv4 != null && !NetUtil.LOCALHOST_IPV4.equals(localIpv4)) {
+                    byte[] address = InetAddress.getByName(localIpv4).getAddress();
+                    if (address != null && address.length > 0) {
+                        if (workerId == null) {
+                            workerId = (long) ((address[address.length - 1] & 0xFF) % (MAX_WORKER_ID + 1));
+                        }
+                        if (datacenterId == null) {
+                            if (address.length >= 2) {
+                                datacenterId = (long) ((address[address.length - 2] & 0xFF) % (MAX_DATACENTER_ID + 1));
+                            } else {
+                                datacenterId = (long) ((address[0] & 0xFF) % (MAX_DATACENTER_ID + 1));
+                            }
                         }
                     }
                 }

@@ -213,4 +213,15 @@ class NetUtilTest {
         assertThat(NetUtil.isReachable("127.0.0.1", -1, 1000)).isFalse();
         assertThat(NetUtil.isReachable("127.0.0.1", port, 0)).isFalse();
     }
+
+    @Test
+    @DisplayName("受信物理网卡 MAC 提取：空安全保障与排除全部网卡平滑返回空数组")
+    void shouldGetLocalMacBytesSafely() {
+        byte[] mac = NetUtil.getLocalMacBytes();
+        assertThat(mac).isNotNull();
+
+        NetUtil.configure(null, null, List.of("*"));
+        byte[] ignoredMac = NetUtil.getLocalMacBytes();
+        assertThat(ignoredMac).isNotNull().isEmpty();
+    }
 }

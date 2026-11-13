@@ -47,6 +47,8 @@ class CoreSecurityControllerTest {
                 .andExpect(jsonPath("$.data.idStr", notNullValue()))
                 .andExpect(jsonPath("$.data.base62", notNullValue()))
                 .andExpect(jsonPath("$.data.restoredId", notNullValue()))
+                .andExpect(jsonPath("$.data.workerId", is("1")))
+                .andExpect(jsonPath("$.data.datacenterId", is("1")))
                 .andExpect(jsonPath("$.data.simpleUuid", hasLength(32)))
                 .andExpect(jsonPath("$.data.uuid", hasLength(36)))
                 .andExpect(jsonPath("$.data.nanoId", hasLength(21)))
