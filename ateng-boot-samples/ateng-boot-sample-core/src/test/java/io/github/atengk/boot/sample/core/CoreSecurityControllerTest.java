@@ -138,4 +138,89 @@ class CoreSecurityControllerTest {
                 .andExpect(jsonPath("$.code", is(400)))
                 .andExpect(jsonPath("$.success", is(false)));
     }
+
+    @Test
+    @DisplayName("POST /sample/core/security/sign-and-verify - 国密 HmacSM3 签名与恒定时间验签端到端验证")
+    void testSignAndVerify_Success() throws Exception {
+        String jsonBody = """
+                {
+                  "payload": "orderNo=ORD-20261113-001&currency=CNY",
+                  "secretKey": "AtengSm3SecretKey2026"
+                }
+                """;
+
+        mockMvc.perform(post("/sample/core/security/sign-and-verify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.hmacSm3Hex", matchesPattern("^[0-9a-f]{64}$")))
+                .andExpect(jsonPath("$.data.hmacSm3Base64", notNullValue()))
+                .andExpect(jsonPath("$.data.sm3HexVerified", is(true)))
+                .andExpect(jsonPath("$.data.sm3Base64Verified", is(true)))
+                .andExpect(jsonPath("$.data.sm3TamperBlocked", is(true)))
+                .andExpect(jsonPath("$.data.hmacSha256Hex", matchesPattern("^[0-9a-f]{64}$")))
+                .andExpect(jsonPath("$.data.sm3DigestHex", matchesPattern("^[0-9a-f]{64}$")));
+    }
+
+    @Test
+    @DisplayName("POST /sample/core/security/sign-and-verify - 空载荷或空密钥触发 JSR-303 校验拦截")
+    void testSignAndVerify_ValidationFail() throws Exception {
+        String invalidJson = """
+                {
+                  "payload": "",
+                  "secretKey": ""
+                }
+                """;
+
+        mockMvc.perform(post("/sample/core/security/sign-and-verify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(400)))
+                .andExpect(jsonPath("$.success", is(false)));
+    }
+
+    @Test
+    @DisplayName("POST /sample/core/security/crypto - 国密 SM4 密钥生成与带 AAD 的 AES-GCM 加解密闭环")
+    void testProcessSymmetricCrypto_Success() throws Exception {
+        String jsonBody = """
+                {
+                  "plaintext": "CardToken-99887766",
+                  "aad": "tenant=t001;scene=pay"
+                }
+                """;
+
+        mockMvc.perform(post("/sample/core/security/crypto")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.sm4KeyByteLength", is(16)))
+                .andExpect(jsonPath("$.data.sm4CbcCiphertext", notNullValue()))
+                .andExpect(jsonPath("$.data.sm4CbcDecrypted", is("CardToken-99887766")))
+                .andExpect(jsonPath("$.data.gcmCiphertextWithAad", notNullValue()))
+                .andExpect(jsonPath("$.data.gcmDecryptedWithAad", is("CardToken-99887766")))
+                .andExpect(jsonPath("$.data.aadTamperBlocked", is(true)));
+    }
+
+    @Test
+    @DisplayName("POST /sample/core/security/crypto - 空明文或空 AAD 触发 JSR-303 校验拦截")
+    void testProcessSymmetricCrypto_ValidationFail() throws Exception {
+        String invalidJson = """
+                {
+                  "plaintext": "",
+                  "aad": ""
+                }
+                """;
+
+        mockMvc.perform(post("/sample/core/security/crypto")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(400)))
+                .andExpect(jsonPath("$.success", is(false)));
+    }
 }

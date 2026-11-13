@@ -1,16 +1,20 @@
 package io.github.atengk.boot.core.util;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
+
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Objects;
 
 /**
  * 纯 JDK 17 原生安全散列消息认证码（HMAC）工具类
- * 提供标准 HMAC-SHA256、HMAC-SHA1 与 HMAC-MD5 密钥加签，并内置恒定时间安全比对防侧信道时序攻击
+ * 提供标准 HMAC-SHA256、HMAC-SHA1、HMAC-MD5 与纯 JDK 原生国密 HmacSM3 密钥加签，并内置恒定时间安全比对防侧信道时序攻击
  *
  * @author Ateng
  * @since 2026-10-27
@@ -20,6 +24,11 @@ public final class HmacUtil {
     public static final String HMAC_SHA256 = "HmacSHA256";
     public static final String HMAC_SHA1 = "HmacSHA1";
     public static final String HMAC_MD5 = "HmacMD5";
+    public static final String HMAC_SM3 = "HmacSM3";
+
+    private static final int SM3_BLOCK_SIZE = 64;
+    private static final byte SM3_IPAD = 0x36;
+    private static final byte SM3_OPAD = 0x5c;
 
     private HmacUtil() {
     }
@@ -34,6 +43,9 @@ public final class HmacUtil {
      */
     public static byte[] hmac(String algorithm, byte[] data, byte[] key) {
         Objects.requireNonNull(algorithm, "HMAC 算法 algorithm 不能为 null");
+        if (HMAC_SM3.equalsIgnoreCase(algorithm)) {
+            return hmacSm3(data, key);
+        }
         Objects.requireNonNull(data, "待签名数据 data 不能为 null");
         Objects.requireNonNull(key, "签名密钥 key 不能为 null");
         try {
@@ -221,6 +233,109 @@ public final class HmacUtil {
         Objects.requireNonNull(data, "待签名文本 data 不能为 null");
         Objects.requireNonNull(key, "签名密钥文本 key 不能为 null");
         return hmacMd5Base64(data.getBytes(StandardCharsets.UTF_8), key.getBytes(StandardCharsets.UTF_8));
+    }
+
+    // ==================== 纯 JDK 原生国密 HmacSM3 (RFC 2104) ====================
+
+    /**
+     * 使用纯原生国密 HmacSM3 算法生成签名（基于 RFC 2104，分组长度 64 字节）
+     * 当密钥长度超过 64 字节时，自动通过 {@link DigestUtil#sm3(byte[])} 压缩至 32 字节后再做零填充
+     *
+     * @param data 待签名源数据
+     * @param key  签名密钥字节数组（非空）
+     * @return 32 字节 HmacSM3 签名
+     */
+    public static byte[] hmacSm3(byte[] data, byte[] key) {
+        if (data == null) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "HmacSM3 待签名数据 data 不能为 null");
+        }
+        if (key == null || key.length == 0) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "HmacSM3 签名密钥 key 不能为空");
+        }
+        byte[] compressedKey = null;
+        byte[] normalizedKey = key;
+        if (key.length > SM3_BLOCK_SIZE) {
+            compressedKey = DigestUtil.sm3(key);
+            normalizedKey = compressedKey;
+        }
+        byte[] kIpad = new byte[SM3_BLOCK_SIZE];
+        byte[] kOpad = new byte[SM3_BLOCK_SIZE];
+        try {
+            for (int i = 0; i < SM3_BLOCK_SIZE; i++) {
+                byte keyByte = (i < normalizedKey.length) ? normalizedKey[i] : 0;
+                kIpad[i] = (byte) (keyByte ^ SM3_IPAD);
+                kOpad[i] = (byte) (keyByte ^ SM3_OPAD);
+            }
+            byte[] innerHash = DigestUtil.sm3(kIpad, data);
+            return DigestUtil.sm3(kOpad, innerHash);
+        } finally {
+            Arrays.fill(kIpad, (byte) 0);
+            Arrays.fill(kOpad, (byte) 0);
+            if (compressedKey != null) {
+                Arrays.fill(compressedKey, (byte) 0);
+            }
+        }
+    }
+
+    /**
+     * 使用纯原生国密 HmacSM3 算法生成签名字节数组（UTF-8）
+     *
+     * @param data 待签名文本（UTF-8）
+     * @param key  签名密钥文本（UTF-8，非空）
+     * @return 32 字节 HmacSM3 签名
+     */
+    public static byte[] hmacSm3(String data, String key) {
+        if (data == null) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "HmacSM3 待签名文本 data 不能为 null");
+        }
+        if (key == null || key.isEmpty()) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "HmacSM3 签名密钥文本 key 不能为空");
+        }
+        return hmacSm3(data.getBytes(StandardCharsets.UTF_8), key.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * 使用纯原生国密 HmacSM3 算法生成 64 位小写十六进制签名字符串
+     *
+     * @param data 待签名源数据
+     * @param key  签名密钥字节数组
+     * @return 64 位小写十六进制签名字符串
+     */
+    public static String hmacSm3Hex(byte[] data, byte[] key) {
+        return HexUtil.encodeHex(hmacSm3(data, key));
+    }
+
+    /**
+     * 使用纯原生国密 HmacSM3 算法生成 64 位小写十六进制签名字符串
+     *
+     * @param data 待签名文本（UTF-8）
+     * @param key  签名密钥文本（UTF-8）
+     * @return 64 位小写十六进制签名字符串
+     */
+    public static String hmacSm3Hex(String data, String key) {
+        return HexUtil.encodeHex(hmacSm3(data, key));
+    }
+
+    /**
+     * 使用纯原生国密 HmacSM3 算法生成 Base64 编码签名字符串
+     *
+     * @param data 待签名源数据
+     * @param key  签名密钥字节数组
+     * @return Base64 编码签名字符串
+     */
+    public static String hmacSm3Base64(byte[] data, byte[] key) {
+        return Base64.getEncoder().encodeToString(hmacSm3(data, key));
+    }
+
+    /**
+     * 使用纯原生国密 HmacSM3 算法生成 Base64 编码签名字符串
+     *
+     * @param data 待签名文本（UTF-8）
+     * @param key  签名密钥文本（UTF-8）
+     * @return Base64 编码签名字符串
+     */
+    public static String hmacSm3Base64(String data, String key) {
+        return Base64.getEncoder().encodeToString(hmacSm3(data, key));
     }
 
     /**

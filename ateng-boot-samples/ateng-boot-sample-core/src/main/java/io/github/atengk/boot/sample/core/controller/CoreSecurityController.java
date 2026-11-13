@@ -2,10 +2,14 @@ package io.github.atengk.boot.sample.core.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.core.dto.PaymentCryptoRequest;
+import io.github.atengk.boot.sample.core.dto.SecurityCryptoRequest;
+import io.github.atengk.boot.sample.core.dto.SignAndVerifyRequest;
 import io.github.atengk.boot.sample.core.service.CoreSecurityScenarioService;
 import io.github.atengk.boot.sample.core.vo.CustomerPrivacyVO;
 import io.github.atengk.boot.sample.core.vo.IdGenerateVO;
 import io.github.atengk.boot.sample.core.vo.PaymentCryptoVO;
+import io.github.atengk.boot.sample.core.vo.SecurityCryptoVO;
+import io.github.atengk.boot.sample.core.vo.SignAndVerifyVO;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.validation.annotation.Validated;
@@ -64,5 +68,27 @@ public class CoreSecurityController {
             @RequestBody @Valid PaymentCryptoRequest request) {
         PaymentCryptoVO vo = securityScenarioService.processPaymentCryptoAndVerify(request);
         return Result.success(vo);
+    }
+
+    /**
+     * 4. 纯 JDK 原生国密 HmacSM3 签名与恒定时间防侧信道验签端点
+     *
+     * @param request 签名与验签请求对象
+     * @return 国密 HmacSM3 签名与防篡改验签响应
+     */
+    @PostMapping("/sign-and-verify")
+    public Result<SignAndVerifyVO> signAndVerify(@RequestBody @Valid SignAndVerifyRequest request) {
+        return Result.success(securityScenarioService.signAndVerifyScenario(request));
+    }
+
+    /**
+     * 5. 国密 SM4 随机密钥生成与带 AAD 认证的 AES-GCM 对称加解密端点
+     *
+     * @param request 对称加密与 AAD 请求对象
+     * @return SM4/CBC 往返与 AES-GCM(AAD) 防篡改验证响应
+     */
+    @PostMapping("/crypto")
+    public Result<SecurityCryptoVO> processSymmetricCrypto(@RequestBody @Valid SecurityCryptoRequest request) {
+        return Result.success(securityScenarioService.processSymmetricCryptoScenario(request));
     }
 }

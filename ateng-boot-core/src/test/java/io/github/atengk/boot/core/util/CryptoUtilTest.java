@@ -1,9 +1,13 @@
 package io.github.atengk.boot.core.util;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import javax.crypto.AEADBadTagException;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -187,5 +191,58 @@ class CryptoUtilTest {
         assertThrows(IllegalArgumentException.class, () -> CryptoUtil.encryptSm4Cbc("data", invalidKey, validKey));
         assertThrows(IllegalArgumentException.class, () -> CryptoUtil.encryptSm4Cbc("data", validKey, invalidIv));
         assertThrows(IllegalArgumentException.class, () -> CryptoUtil.encryptSm4Ecb("data", invalidKey));
+    }
+
+    @Test
+    @DisplayName("generateSm4Key 生成 16 字节随机密钥并与 SM4 加解密无缝协同")
+    void shouldGenerateSm4KeyAndEncrypt() {
+        byte[] k1 = CryptoUtil.generateSm4Key();
+        byte[] k2 = CryptoUtil.generateSm4Key();
+        assertEquals(16, k1.length);
+        assertEquals(16, k2.length);
+        assertFalse(Arrays.equals(k1, k2));
+
+        byte[] iv = CryptoUtil.generateIv(CryptoUtil.SM4_IV_SIZE);
+        String plain = "国密SM4动态密钥测试";
+        String cipher = CryptoUtil.encryptSm4Cbc(plain, k1, iv);
+        assertEquals(plain, CryptoUtil.decryptSm4Cbc(cipher, k1, iv));
+    }
+
+    @Test
+    @DisplayName("AES/GCM 字符串级带 AAD 重载：正常加解密、空安全与篡改抛出保留 cause 的 BusinessException")
+    void shouldEncryptAndDecryptGcmStringWithAadAndPreserveCause() {
+        byte[] key = CryptoUtil.generateKey(256);
+        byte[] iv = CryptoUtil.generateGcmIv();
+        byte[] aad = "tenant=t-001;biz=payment".getBytes(StandardCharsets.UTF_8);
+        String plain = "SensitiveStringWithAAD";
+
+        assertNull(CryptoUtil.encryptGcm((String) null, key, iv, aad));
+        assertNull(CryptoUtil.decryptGcm((String) null, key, iv, aad));
+
+        String cipherBase64 = CryptoUtil.encryptGcm(plain, key, iv, aad);
+        assertNotNull(cipherBase64);
+        assertEquals(plain, CryptoUtil.decryptGcm(cipherBase64, key, iv, aad));
+
+        // AAD 篡改校验
+        byte[] tamperedAad = "tenant=t-002;biz=payment".getBytes(StandardCharsets.UTF_8);
+        BusinessException exAad = assertThrows(BusinessException.class,
+                () -> CryptoUtil.decryptGcm(cipherBase64, key, iv, tamperedAad));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), exAad.getCode());
+        assertInstanceOf(AEADBadTagException.class, exAad.getCause());
+
+        // 密文篡改校验
+        byte[] cipherRaw = CryptoUtil.decodeBase64(cipherBase64);
+        cipherRaw[0] ^= 0x01;
+        String tamperedCipher = CryptoUtil.encodeBase64(cipherRaw);
+        BusinessException exCipher = assertThrows(BusinessException.class,
+                () -> CryptoUtil.decryptGcm(tamperedCipher, key, iv, aad));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), exCipher.getCode());
+        assertInstanceOf(AEADBadTagException.class, exCipher.getCause());
+
+        // 加密或解密密钥非法同样保留 cause 抛出 BusinessException
+        BusinessException exBadKey = assertThrows(BusinessException.class,
+                () -> CryptoUtil.encryptGcm(plain, new byte[5], iv, aad));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), exBadKey.getCode());
+        assertNotNull(exBadKey.getCause());
     }
 }

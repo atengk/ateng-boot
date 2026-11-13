@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.core.service;
 
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.id.Snowflake;
 import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.model.Pair;
@@ -14,10 +15,14 @@ import io.github.atengk.boot.core.util.HmacUtil;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sample.core.dto.PaymentCryptoRequest;
+import io.github.atengk.boot.sample.core.dto.SecurityCryptoRequest;
+import io.github.atengk.boot.sample.core.dto.SignAndVerifyRequest;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
 import io.github.atengk.boot.sample.core.vo.CustomerPrivacyVO;
 import io.github.atengk.boot.sample.core.vo.IdGenerateVO;
 import io.github.atengk.boot.sample.core.vo.PaymentCryptoVO;
+import io.github.atengk.boot.sample.core.vo.SecurityCryptoVO;
+import io.github.atengk.boot.sample.core.vo.SignAndVerifyVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,6 +30,7 @@ import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.util.Arrays;
 
 /**
  * Core 场景二：安全加解密与脱敏服务
@@ -311,8 +317,8 @@ public class CoreSecurityScenarioService {
         String cbcDecrypted = CryptoUtil.decryptCbc(cbcCiphertext, cbcKey, cbcIv);
         BusinessAssert.isTrue(raw.equals(cbcDecrypted), "AES/CBC 解密明文与原始明文不匹配");
 
-        // 3. 国密 SM4/CBC 对称加解密（纯 JDK 原生实现，16 字节密钥与随机 16 字节 IV）
-        byte[] sm4Key = CryptoUtil.generateKey(128);
+        // 3. 国密 SM4/CBC 对称加解密（纯 JDK 原生实现，16 字节随机 SM4 密钥与随机 16 字节 IV）
+        byte[] sm4Key = CryptoUtil.generateSm4Key();
         byte[] sm4Iv = CryptoUtil.generateIv(CryptoUtil.SM4_IV_SIZE);
         String sm4CbcCiphertext = CryptoUtil.encryptSm4Cbc(raw, sm4Key, sm4Iv);
         String sm4CbcDecrypted = CryptoUtil.decryptSm4Cbc(sm4CbcCiphertext, sm4Key, sm4Iv);
@@ -359,5 +365,103 @@ public class CoreSecurityScenarioService {
                 .crc32cHex(crc32cHex)
                 .adler32Hex(adler32Hex)
                 .build();
+    }
+
+    /**
+     * 13. 验证纯 JDK 原生国密 HmacSM3 签名与恒定时间防侧信道验签闭环
+     *
+     * @param request 签名与验签请求对象
+     * @return 国密 HmacSM3 签名与验签视图对象
+     */
+    public SignAndVerifyVO signAndVerifyScenario(SignAndVerifyRequest request) {
+        BusinessAssert.notNull(request, "签名与验签请求体不能为空");
+        BusinessAssert.hasText(request.getPayload(), "待签名载荷不能为空");
+        BusinessAssert.hasText(request.getSecretKey(), "签名密钥不能为空");
+
+        String payload = request.getPayload();
+        String secretKey = request.getSecretKey();
+
+        // 1. 计算国密 HmacSM3 十六进制与 Base64 签名
+        String hmacSm3Hex = HmacUtil.hmacSm3Hex(payload, secretKey);
+        String hmacSm3Base64 = HmacUtil.hmacSm3Base64(payload, secretKey);
+
+        // 2. 恒定时间安全验签与防篡改校验
+        boolean sm3HexVerified = HmacUtil.verifyHex(hmacSm3Hex, HmacUtil.hmacSm3Hex(payload, secretKey));
+        boolean sm3Base64Verified = HmacUtil.verifyBase64(hmacSm3Base64, HmacUtil.hmacSm3Base64(payload, secretKey));
+        boolean sm3TamperBlocked = !HmacUtil.verifyHex(
+                hmacSm3Hex,
+                HmacUtil.hmacSm3Hex(payload + "&tampered=1", secretKey)
+        );
+
+        String hmacSha256Hex = HmacUtil.hmacSha256Hex(payload, secretKey);
+        String sm3DigestHex = DigestUtil.sm3Hex(payload);
+
+        log.info("国密 HmacSM3 签名与验签完成: sm3HexVerified={}, sm3Base64Verified={}, tamperBlocked={}",
+                sm3HexVerified, sm3Base64Verified, sm3TamperBlocked);
+
+        return SignAndVerifyVO.builder()
+                .hmacSm3Hex(hmacSm3Hex)
+                .hmacSm3Base64(hmacSm3Base64)
+                .sm3HexVerified(sm3HexVerified)
+                .sm3Base64Verified(sm3Base64Verified)
+                .sm3TamperBlocked(sm3TamperBlocked)
+                .hmacSha256Hex(hmacSha256Hex)
+                .sm3DigestHex(sm3DigestHex)
+                .build();
+    }
+
+    /**
+     * 14. 验证 generateSm4Key() 与字符串级带 AAD 认证的 AES-GCM 加解密闭环
+     *
+     * @param request 对称加解密请求对象
+     * @return 对称加解密与 AAD 防篡改验证响应视图
+     */
+    public SecurityCryptoVO processSymmetricCryptoScenario(SecurityCryptoRequest request) {
+        BusinessAssert.notNull(request, "对称加密请求体不能为空");
+        BusinessAssert.hasText(request.getPlaintext(), "待加密明文不能为空");
+        BusinessAssert.hasText(request.getAad(), "附加认证数据 AAD 不能为空");
+
+        String plaintext = request.getPlaintext();
+        byte[] aadBytes = request.getAad().getBytes(StandardCharsets.UTF_8);
+
+        // 1. 生成 16 字节国密 SM4 随机密钥并完成 SM4/CBC 往返验证
+        byte[] sm4Key = CryptoUtil.generateSm4Key();
+        byte[] sm4Iv = CryptoUtil.generateIv(CryptoUtil.SM4_IV_SIZE);
+        byte[] gcmKey = CryptoUtil.generateKey(256);
+        byte[] gcmIv = CryptoUtil.generateGcmIv();
+        try {
+            String sm4Ciphertext = CryptoUtil.encryptSm4Cbc(plaintext, sm4Key, sm4Iv);
+            String sm4Decrypted = CryptoUtil.decryptSm4Cbc(sm4Ciphertext, sm4Key, sm4Iv);
+            BusinessAssert.isTrue(plaintext.equals(sm4Decrypted), "SM4/CBC 解密还原明文不匹配");
+
+            // 2. 字符串级带 AAD 的 AES/GCM 加解密与篡改防御验证
+            String gcmCiphertext = CryptoUtil.encryptGcm(plaintext, gcmKey, gcmIv, aadBytes);
+            String gcmDecrypted = CryptoUtil.decryptGcm(gcmCiphertext, gcmKey, gcmIv, aadBytes);
+            BusinessAssert.isTrue(plaintext.equals(gcmDecrypted), "AES/GCM(AAD) 解密还原明文不匹配");
+
+            boolean aadTamperBlocked = false;
+            byte[] tamperedAad = (request.getAad() + "-tampered").getBytes(StandardCharsets.UTF_8);
+            try {
+                CryptoUtil.decryptGcm(gcmCiphertext, gcmKey, gcmIv, tamperedAad);
+            } catch (BusinessException ex) {
+                aadTamperBlocked = ex.getCause() != null;
+                log.debug("已按预期拦截 AAD 篡改请求: {}", ex.getMessage());
+            }
+
+            log.info("SM4 密钥生成与带 AAD 的 AES-GCM 闭环完成: sm4KeyLen={}, aadTamperBlocked={}",
+                    sm4Key.length, aadTamperBlocked);
+
+            return SecurityCryptoVO.builder()
+                    .sm4KeyByteLength(sm4Key.length)
+                    .sm4CbcCiphertext(sm4Ciphertext)
+                    .sm4CbcDecrypted(sm4Decrypted)
+                    .gcmCiphertextWithAad(gcmCiphertext)
+                    .gcmDecryptedWithAad(gcmDecrypted)
+                    .aadTamperBlocked(aadTamperBlocked)
+                    .build();
+        } finally {
+            Arrays.fill(sm4Key, (byte) 0);
+            Arrays.fill(gcmKey, (byte) 0);
+        }
     }
 }

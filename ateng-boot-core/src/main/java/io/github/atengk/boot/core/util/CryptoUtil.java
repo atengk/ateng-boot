@@ -1,5 +1,8 @@
 package io.github.atengk.boot.core.util;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
+
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -141,6 +144,17 @@ public final class CryptoUtil {
     }
 
     /**
+     * 生成国密 SM4 算法专用的 128-bit（16 字节）安全随机密钥
+     *
+     * @return 16 字节 SM4 随机密钥
+     */
+    public static byte[] generateSm4Key() {
+        byte[] key = new byte[SM4_KEY_SIZE];
+        SECURE_RANDOM.nextBytes(key);
+        return key;
+    }
+
+    /**
      * 对字节数组进行标准 Base64 编码
      *
      * @param data 原始字节数组
@@ -265,14 +279,7 @@ public final class CryptoUtil {
         }
         validateKeyAndIv(key, iv, -1);
         try {
-            Cipher cipher = Cipher.getInstance(TRANSFORMATION_AES_GCM);
-            SecretKeySpec keySpec = new SecretKeySpec(key, ALGORITHM_AES);
-            GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
-            cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec);
-            if (aad != null && aad.length > 0) {
-                cipher.updateAAD(aad);
-            }
-            return cipher.doFinal(plaintext);
+            return doGcmCipher(Cipher.ENCRYPT_MODE, plaintext, key, iv, aad);
         } catch (Exception e) {
             throw new IllegalStateException("AES/GCM 加密执行失败: " + e.getMessage(), e);
         }
@@ -305,14 +312,7 @@ public final class CryptoUtil {
         }
         validateKeyAndIv(key, iv, -1);
         try {
-            Cipher cipher = Cipher.getInstance(TRANSFORMATION_AES_GCM);
-            SecretKeySpec keySpec = new SecretKeySpec(key, ALGORITHM_AES);
-            GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
-            cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec);
-            if (aad != null && aad.length > 0) {
-                cipher.updateAAD(aad);
-            }
-            return cipher.doFinal(ciphertext);
+            return doGcmCipher(Cipher.DECRYPT_MODE, ciphertext, key, iv, aad);
         } catch (Exception e) {
             throw new IllegalStateException("AES/GCM 解密或认证校验失败: " + e.getMessage(), e);
         }
@@ -360,6 +360,63 @@ public final class CryptoUtil {
         }
         byte[] decrypted = decryptGcm(decodeBase64(base64Ciphertext), key, iv);
         return new String(decrypted, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * AES/GCM/NoPadding 加密字符串（绑定可选 AAD 附加认证数据），返回 Base64 编码密文
+     *
+     * @param plaintext 明文字符串（UTF-8）
+     * @param key       AES 密钥（16/24/32 字节）
+     * @param iv        初始向量（推荐 12 字节）
+     * @param aad       附加认证数据（可为 null）
+     * @return Base64 编码密文；明文为 null 时返回 null
+     */
+    public static String encryptGcm(String plaintext, byte[] key, byte[] iv, byte[] aad) {
+        if (plaintext == null) {
+            return null;
+        }
+        try {
+            validateKeyAndIv(key, iv, -1);
+            byte[] encrypted = doGcmCipher(Cipher.ENCRYPT_MODE, plaintext.getBytes(StandardCharsets.UTF_8), key, iv, aad);
+            return encodeBase64(encrypted);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "AES/GCM 加密执行失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * AES/GCM/NoPadding 解密带 AAD 认证的 Base64 密文，返回明文字符串
+     * 当密文或 AAD 遭篡改时抛出保留底层 AEAD 异常原因链的 {@link BusinessException}
+     *
+     * @param ciphertextBase64 Base64 编码密文
+     * @param key              AES 密钥（16/24/32 字节）
+     * @param iv               初始向量（与加密时一致）
+     * @param aad              附加认证数据（与加密时一致，可为 null）
+     * @return UTF-8 明文字符串；密文为 null 时返回 null
+     */
+    public static String decryptGcm(String ciphertextBase64, byte[] key, byte[] iv, byte[] aad) {
+        if (ciphertextBase64 == null) {
+            return null;
+        }
+        try {
+            validateKeyAndIv(key, iv, -1);
+            byte[] cipherBytes = decodeBase64(ciphertextBase64);
+            byte[] decrypted = doGcmCipher(Cipher.DECRYPT_MODE, cipherBytes, key, iv, aad);
+            return new String(decrypted, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "AES/GCM 解密或认证校验失败: " + e.getMessage(), e);
+        }
+    }
+
+    private static byte[] doGcmCipher(int mode, byte[] input, byte[] key, byte[] iv, byte[] aad) throws Exception {
+        Cipher cipher = Cipher.getInstance(TRANSFORMATION_AES_GCM);
+        SecretKeySpec keySpec = new SecretKeySpec(key, ALGORITHM_AES);
+        GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
+        cipher.init(mode, keySpec, gcmSpec);
+        if (aad != null && aad.length > 0) {
+            cipher.updateAAD(aad);
+        }
+        return cipher.doFinal(input);
     }
 
     // ==================== 国密 SM4 纯原生实现 (GB/T 32907-2016) ====================
