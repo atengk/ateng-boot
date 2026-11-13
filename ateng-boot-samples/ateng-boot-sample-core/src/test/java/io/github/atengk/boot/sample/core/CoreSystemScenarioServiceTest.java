@@ -1,9 +1,15 @@
 package io.github.atengk.boot.sample.core;
 
 import io.github.atengk.boot.core.util.FileUtil;
+import io.github.atengk.boot.sample.core.dto.SlowAlertSampleRequest;
+import io.github.atengk.boot.sample.core.listener.SampleSlowAlertEventListener;
 import io.github.atengk.boot.sample.core.service.CoreSystemScenarioService;
+import io.github.atengk.boot.sample.core.vo.SlowAlertSampleVO;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.env.Environment;
@@ -31,6 +37,15 @@ class CoreSystemScenarioServiceTest {
     @Autowired
     private Environment environment;
 
+    @Autowired
+    private SampleSlowAlertEventListener slowAlertEventListener;
+
+    @BeforeEach
+    void setUp() {
+        slowAlertEventListener.reset();
+        MDC.clear();
+    }
+
     @Test
     @DisplayName("全真验证：启动环境基线校准（时区、编码、Headless、网络超时）100% 生效")
     void shouldVerifySystemBaselineEnvironment() {
@@ -57,10 +72,41 @@ class CoreSystemScenarioServiceTest {
         assertThat(cost).isGreaterThanOrEqualTo(30);
     }
 
-    @org.junit.jupiter.api.AfterEach
+    @AfterEach
     void tearDown() {
+        slowAlertEventListener.reset();
+        MDC.clear();
         Path tempDir = FileUtil.getAppTempDirectory("sample-core");
         FileUtil.cleanDirectorySafely(tempDir);
+    }
+
+    @Test
+    @DisplayName("全真验证：慢调用领域事件 SlowAlertEvent 解耦消费与启动期慢 Bean 诊断状态")
+    void shouldPublishSlowAlertEventAndInspectSlowBeanDiagnostics() {
+        MDC.put("traceId", "trace-service-950");
+        SlowAlertSampleRequest request = SlowAlertSampleRequest.builder()
+                .taskId("slow-diag-001")
+                .secretToken("secret-token-950")
+                .build();
+
+        SlowAlertSampleVO result = systemScenarioService.executeSlowAlertAndDiagnostic(request);
+
+        assertThat(result.getTaskId()).isEqualTo("slow-diag-001");
+        assertThat(result.getMethodCostMillis()).isGreaterThanOrEqualTo(30L);
+        assertThat(result.getEventConsumedCount()).isEqualTo(1);
+        assertThat(result.getClassName()).contains(CoreSystemScenarioService.class.getSimpleName());
+        assertThat(result.getMethodName()).isEqualTo("processSlowComputation");
+        assertThat(result.getElapsedMs()).isGreaterThanOrEqualTo(30L);
+        assertThat(result.getThresholdMs()).isEqualTo(30L);
+        assertThat(result.getArgsSummary())
+                .contains("slow-diag-001")
+                .contains("\"secretToken\":\"******\"")
+                .doesNotContain("secret-token-950");
+        assertThat(result.getTraceId()).isEqualTo("trace-service-950");
+        assertThat(result.getOccurredAt()).isNotNull();
+        assertThat(result.getSlowBeanDiagnosticEnabled()).isTrue();
+        assertThat(result.getRecordedSlowBeans()).isNotNull();
+        assertThat(result.getRecordedSlowBeanCount()).isEqualTo(result.getRecordedSlowBeans().size());
     }
 
     @Test

@@ -1,5 +1,7 @@
 package io.github.atengk.boot.core.autoconfigure;
 
+import io.github.atengk.boot.core.aspect.SlowAlertAspect;
+import io.github.atengk.boot.core.aspect.SlowAlertEvent;
 import io.github.atengk.boot.core.id.Snowflake;
 import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.properties.CoreProperties;
@@ -14,6 +16,9 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -220,6 +225,49 @@ class AtengCoreAutoConfigurationTest {
                 assertThat(content).doesNotContain("io.github.atengk.boot.core.env.SystemEnvironmentPostProcessor");
                 assertThat(content).doesNotContain("io.github.atengk.boot.core.env.LoggingEnvironmentPostProcessor");
             }
+        }
+    }
+
+    @Test
+    @DisplayName("@SlowAlert 切面自动装配时自动注入 ApplicationEventPublisher 并发布 SlowAlertEvent")
+    void shouldAutoConfigureSlowAlertAspectWithEventPublisher() {
+        List<SlowAlertEvent> captured = new ArrayList<>();
+        contextRunner
+                .withBean(SlowAlertSampleTarget.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(SlowAlertAspect.class);
+                    org.springframework.aop.aspectj.annotation.AspectJProxyFactory factory =
+                            new org.springframework.aop.aspectj.annotation.AspectJProxyFactory(context.getBean(SlowAlertSampleTarget.class));
+                    factory.addAspect(context.getBean(SlowAlertAspect.class));
+                    SlowAlertSampleTarget proxy = factory.getProxy();
+
+                    context.addApplicationListener(event -> {
+                        if (event instanceof SlowAlertEvent slowAlertEvent) {
+                            captured.add(slowAlertEvent);
+                        }
+                    });
+
+                    String res = proxy.runSlow("auto-task", "topSecret999");
+                    assertThat(res).isEqualTo("done:auto-task");
+                    assertThat(captured).hasSize(1);
+                    SlowAlertEvent event = captured.get(0);
+                    assertThat(event.getClassName()).isEqualTo(SlowAlertSampleTarget.class.getName());
+                    assertThat(event.getMethodName()).isEqualTo("runSlow");
+                    assertThat(event.getElapsedMs()).isGreaterThanOrEqualTo(20L);
+                    assertThat(event.getThresholdMs()).isEqualTo(20L);
+                    assertThat(event.getArgsSummary()).contains("******").doesNotContain("topSecret999");
+                });
+    }
+
+    static class SlowAlertSampleTarget {
+        @io.github.atengk.boot.core.annotation.SlowAlert(threshold = 20, includeArgs = true)
+        public String runSlow(String taskId, String password) {
+            try {
+                Thread.sleep(30);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            return "done:" + taskId;
         }
     }
 

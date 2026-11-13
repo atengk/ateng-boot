@@ -5,7 +5,9 @@ import io.github.atengk.boot.core.audit.OperateTypeEnum;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.sample.core.dto.AuditAndDiagnoseRequest;
 import io.github.atengk.boot.sample.core.dto.SlowAlertAndFileRequest;
+import io.github.atengk.boot.sample.core.dto.SlowAlertSampleRequest;
 import io.github.atengk.boot.sample.core.listener.SampleAuditEventListener;
+import io.github.atengk.boot.sample.core.listener.SampleSlowAlertEventListener;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -49,14 +51,19 @@ class CoreSystemAndAuditControllerTest {
     @Autowired
     private SampleAuditEventListener auditEventListener;
 
+    @Autowired
+    private SampleSlowAlertEventListener slowAlertEventListener;
+
     @org.junit.jupiter.api.BeforeEach
     void setUp() {
         auditEventListener.reset();
+        slowAlertEventListener.reset();
     }
 
     @AfterEach
     void tearDown() {
         auditEventListener.reset();
+        slowAlertEventListener.reset();
         Path tempDir = FileUtil.getAppTempDirectory("sample-core");
         FileUtil.cleanDirectorySafely(tempDir);
     }
@@ -217,5 +224,58 @@ class CoreSystemAndAuditControllerTest {
                 .andExpect(jsonPath("$.data.sqlLog.sqlType", is("SELECT")))
                 .andExpect(jsonPath("$.data.dml", is(false)))
                 .andExpect(jsonPath("$.data.query", is(true)));
+    }
+
+    @Test
+    @DisplayName("测试慢调用领域事件 SlowAlertEvent 消费与启动期慢 Bean 诊断闭环接口")
+    void testExecuteSlowAlert_Success() throws Exception {
+        SlowAlertSampleRequest request = SlowAlertSampleRequest.builder()
+                .taskId("http-slow-950")
+                .secretToken("raw-secret-950")
+                .build();
+
+        mockMvc.perform(post("/sample/core/system/slow-alert")
+                        .header("X-Trace-Id", "trace-http-950")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.taskId", is("http-slow-950")))
+                .andExpect(jsonPath("$.data.eventConsumedCount", is(1)))
+                .andExpect(jsonPath("$.data.className", containsString("CoreSystemScenarioService")))
+                .andExpect(jsonPath("$.data.methodName", is("processSlowComputation")))
+                .andExpect(jsonPath("$.data.elapsedMs", notNullValue()))
+                .andExpect(jsonPath("$.data.thresholdMs", notNullValue()))
+                .andExpect(jsonPath("$.data.argsSummary", containsString("******")))
+                .andExpect(jsonPath("$.data.traceId", notNullValue()))
+                .andExpect(jsonPath("$.data.occurredAt", notNullValue()))
+                .andExpect(jsonPath("$.data.slowBeanDiagnosticEnabled", is(true)))
+                .andExpect(jsonPath("$.data.recordedSlowBeanCount", greaterThanOrEqualTo(0)))
+                .andExpect(jsonPath("$.data.recordedSlowBeans").isArray());
+
+        assertThat(slowAlertEventListener.getEventCount()).isEqualTo(1);
+        assertThat(slowAlertEventListener.getLastEvent()).isNotNull();
+        assertThat(slowAlertEventListener.getLastEvent().getElapsedMs()).isGreaterThanOrEqualTo(30L);
+        assertThat(slowAlertEventListener.getLastEvent().getThresholdMs()).isEqualTo(30L);
+        assertThat(slowAlertEventListener.getLastEvent().getArgsSummary()).doesNotContain("raw-secret-950");
+    }
+
+    @Test
+    @DisplayName("测试慢调用诊断接口 JSR-303 参数校验快速失败")
+    void testExecuteSlowAlert_ValidationFailure() throws Exception {
+        SlowAlertSampleRequest invalidRequest = SlowAlertSampleRequest.builder()
+                .taskId("")
+                .secretToken("")
+                .build();
+
+        mockMvc.perform(post("/sample/core/system/slow-alert")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(400)))
+                .andExpect(jsonPath("$.success", is(false)));
+
+        assertThat(slowAlertEventListener.getEventCount()).isZero();
     }
 }

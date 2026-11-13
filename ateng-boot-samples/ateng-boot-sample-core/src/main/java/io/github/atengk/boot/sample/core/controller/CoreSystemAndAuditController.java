@@ -3,9 +3,11 @@ package io.github.atengk.boot.sample.core.controller;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.core.dto.AuditAndDiagnoseRequest;
 import io.github.atengk.boot.sample.core.dto.SlowAlertAndFileRequest;
+import io.github.atengk.boot.sample.core.dto.SlowAlertSampleRequest;
 import io.github.atengk.boot.sample.core.service.CoreSystemScenarioService;
 import io.github.atengk.boot.sample.core.vo.AuditAndDiagnoseVO;
 import io.github.atengk.boot.sample.core.vo.SlowAlertAndFileVO;
+import io.github.atengk.boot.sample.core.vo.SlowAlertSampleVO;
 import io.github.atengk.boot.sample.core.vo.SystemBaselineAndNetVO;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -69,5 +71,17 @@ public class CoreSystemAndAuditController {
     @PostMapping("/audit-and-diagnose")
     public Result<AuditAndDiagnoseVO> executeAuditAndDiagnose(@RequestBody @Valid AuditAndDiagnoseRequest request) {
         return Result.success(systemScenarioService.executeAuditAndDiagnose(request));
+    }
+
+    /**
+     * 慢调用领域事件解耦与启动期慢 Bean 诊断闭环
+     * 通过 Spring 代理触发 @SlowAlert 慢方法、验证 SlowAlertEvent 脱敏摘要及 traceId 消费，并输出启动期慢 Bean 诊断报告
+     *
+     * @param request 请求参数
+     * @return 慢调用事件快照与启动期慢 Bean 诊断视图
+     */
+    @PostMapping("/slow-alert")
+    public Result<SlowAlertSampleVO> executeSlowAlertAndDiagnostic(@RequestBody @Valid SlowAlertSampleRequest request) {
+        return Result.success(systemScenarioService.executeSlowAlertAndDiagnostic(request));
     }
 }

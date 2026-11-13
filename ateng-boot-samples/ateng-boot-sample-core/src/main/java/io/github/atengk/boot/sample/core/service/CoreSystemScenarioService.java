@@ -1,12 +1,14 @@
 package io.github.atengk.boot.sample.core.service;
 
 import io.github.atengk.boot.core.annotation.SlowAlert;
+import io.github.atengk.boot.core.aspect.SlowAlertEvent;
 import io.github.atengk.boot.core.audit.OperateLogEvent;
 import io.github.atengk.boot.core.audit.OperateLogModel;
 import io.github.atengk.boot.core.audit.SqlLogModel;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.diagnostic.SlowBeanDiagnosticPostProcessor;
 import io.github.atengk.boot.core.enums.SqlTypeEnum;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.CidrMatcher;
@@ -19,14 +21,18 @@ import io.github.atengk.boot.core.util.SpringUtil;
 import io.github.atengk.boot.core.util.StopWatch;
 import io.github.atengk.boot.sample.core.dto.AuditAndDiagnoseRequest;
 import io.github.atengk.boot.sample.core.dto.SlowAlertAndFileRequest;
+import io.github.atengk.boot.sample.core.dto.SlowAlertSampleRequest;
 import io.github.atengk.boot.sample.core.listener.SampleAuditEventListener;
+import io.github.atengk.boot.sample.core.listener.SampleSlowAlertEventListener;
 import io.github.atengk.boot.sample.core.vo.AuditAndDiagnoseVO;
 import io.github.atengk.boot.sample.core.vo.SlowAlertAndFileVO;
+import io.github.atengk.boot.sample.core.vo.SlowAlertSampleVO;
 import io.github.atengk.boot.sample.core.vo.SystemBaselineAndNetVO;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
@@ -54,7 +60,10 @@ public class CoreSystemScenarioService {
     private static final Logger log = LoggerFactory.getLogger(CoreSystemScenarioService.class);
 
     private final SampleAuditEventListener auditEventListener;
+    private final SampleSlowAlertEventListener slowAlertEventListener;
     private final ApplicationEventPublisher eventPublisher;
+    private final ObjectProvider<SlowBeanDiagnosticPostProcessor> slowBeanDiagnosticPostProcessorProvider;
+    private final ObjectProvider<CoreSystemScenarioService> selfProvider;
 
     /**
      * 演示慢方法执行并触发 @SlowAlert 告警
@@ -330,6 +339,44 @@ public class CoreSystemScenarioService {
                 .rootCauseMessage(rootMsg)
                 .truncatedStackTrace(truncatedStack)
                 .stackTruncated(isTruncated)
+                .build();
+    }
+
+    /**
+     * 执行慢调用领域事件解耦消费与启动期慢 Bean 诊断闭环验证
+     *
+     * @param request 请求参数
+     * @return 慢调用事件载荷与启动期慢 Bean 诊断报告视图
+     */
+    public SlowAlertSampleVO executeSlowAlertAndDiagnostic(SlowAlertSampleRequest request) {
+        // 1. 经由 Spring 代理调用 @SlowAlert 慢方法，确保切面拦截并向事件总线发布 SlowAlertEvent
+        CoreSystemScenarioService proxy = selfProvider.getIfAvailable(() -> this);
+        long methodCostMillis = proxy.processSlowComputation(request.getTaskId(), request.getSecretToken());
+
+        // 2. 读取事件监听器捕获的不可变 SlowAlertEvent 快照
+        SlowAlertEvent lastEvent = slowAlertEventListener.getLastEvent();
+        int consumedCount = slowAlertEventListener.getEventCount();
+
+        // 3. 采集容器启动期 SlowBeanDiagnosticPostProcessor 慢 Bean 诊断记录
+        SlowBeanDiagnosticPostProcessor postProcessor = slowBeanDiagnosticPostProcessorProvider.getIfAvailable();
+        List<SlowBeanDiagnosticPostProcessor.SlowBeanInfo> slowBeans = postProcessor != null
+                ? postProcessor.getRecordedSlowBeans()
+                : SlowBeanDiagnosticPostProcessor.getSlowBeans();
+
+        return SlowAlertSampleVO.builder()
+                .taskId(request.getTaskId())
+                .methodCostMillis(methodCostMillis)
+                .eventConsumedCount(consumedCount)
+                .className(lastEvent != null ? lastEvent.getClassName() : "")
+                .methodName(lastEvent != null ? lastEvent.getMethodName() : "")
+                .elapsedMs(lastEvent != null ? lastEvent.getElapsedMs() : 0L)
+                .thresholdMs(lastEvent != null ? lastEvent.getThresholdMs() : 0L)
+                .argsSummary(lastEvent != null ? lastEvent.getArgsSummary() : "")
+                .traceId(lastEvent != null ? lastEvent.getTraceId() : "")
+                .occurredAt(lastEvent != null ? lastEvent.getOccurredAt() : null)
+                .slowBeanDiagnosticEnabled(postProcessor != null)
+                .recordedSlowBeanCount(slowBeans.size())
+                .recordedSlowBeans(slowBeans)
                 .build();
     }
 }

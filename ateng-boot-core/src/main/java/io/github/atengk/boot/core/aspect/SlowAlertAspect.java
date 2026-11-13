@@ -9,11 +9,14 @@ import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 
 import java.lang.reflect.Method;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.regex.Pattern;
 
 /**
@@ -29,22 +32,34 @@ public class SlowAlertAspect implements Ordered {
     private static final Logger log = LoggerFactory.getLogger(SlowAlertAspect.class);
 
     /**
-     * 敏感字段键名掩码正则表达式（匹配 JSON 键值对中的常见敏感凭据）
+     * 敏感字段键名掩码正则表达式（匹配 JSON 键值对中的常见敏感凭据及复合命名字段）
      */
     private static final Pattern SENSITIVE_PARAM_PATTERN = Pattern.compile(
-            "(?i)\"(password|pwd|token|secret|key|accessToken|refreshToken|clientSecret|credential|idCard|mobile)\"\\s*:\\s*\"[^\"]*\""
+            "(?i)\"([a-z0-9_]*(?:password|passwd|pwd|token|secret|credential)|(?:api|secret|private|access|encrypt|sign)?key|idCard|mobile)\"\\s*:\\s*\"(?:[^\"\\\\]|\\\\.)*\""
     );
 
     private static final String TRUNCATED_SUFFIX = " ... [TRUNCATED]";
 
     private final SlowAlertProperties properties;
+    private final ApplicationEventPublisher eventPublisher;
 
     public SlowAlertAspect() {
-        this(new SlowAlertProperties());
+        this(new SlowAlertProperties(), null);
     }
 
     public SlowAlertAspect(SlowAlertProperties properties) {
+        this(properties, null);
+    }
+
+    /**
+     * 构造支持领域事件解耦发布的慢调用告警切面
+     *
+     * @param properties     慢调用配置属性
+     * @param eventPublisher Spring 应用事件发布器（可空；为空时仅输出结构化 WARN 日志）
+     */
+    public SlowAlertAspect(SlowAlertProperties properties, ApplicationEventPublisher eventPublisher) {
         this.properties = properties != null ? properties : new SlowAlertProperties();
+        this.eventPublisher = eventPublisher;
     }
 
     @Override
@@ -75,7 +90,7 @@ public class SlowAlertAspect implements Ordered {
         } finally {
             long cost = (System.nanoTime() - startNano) / 1_000_000L;
             if (cost >= threshold) {
-                handleSlowCall(joinPoint, method, slowAlert, cost, threshold);
+                handleSlowCall(joinPoint, targetClass, method, slowAlert, cost, threshold);
             }
         }
     }
@@ -92,22 +107,59 @@ public class SlowAlertAspect implements Ordered {
     }
 
     /**
-     * 输出慢调用警告日志并记录脱敏入参快照
+     * 输出慢调用警告日志、记录脱敏入参快照并发布 {@link SlowAlertEvent} 领域事件
      */
-    private void handleSlowCall(ProceedingJoinPoint joinPoint, Method method, SlowAlert slowAlert, long cost, long threshold) {
-        String methodName = method.getDeclaringClass().getSimpleName() + "#" + method.getName();
+    private void handleSlowCall(ProceedingJoinPoint joinPoint,
+                                Class<?> targetClass,
+                                Method method,
+                                SlowAlert slowAlert,
+                                long cost,
+                                long threshold) {
+        String targetClassName = targetClass != null ? targetClass.getName() : method.getDeclaringClass().getName();
+        String logMethodName = method.getDeclaringClass().getSimpleName() + "#" + method.getName();
         String description = (slowAlert != null && !slowAlert.value().isBlank()) ? " (" + slowAlert.value() + ")" : "";
 
         boolean includeArgs = slowAlert != null ? slowAlert.includeArgs() : properties.isIncludeArgs();
         int maxArgsLength = slowAlert != null && slowAlert.maxArgsLength() > 0 ? slowAlert.maxArgsLength() : properties.getMaxArgsLength();
+        String argsSnapshot = includeArgs ? formatArgsSnapshot(joinPoint, maxArgsLength) : "";
 
         if (includeArgs) {
-            String argsSnapshot = formatArgsSnapshot(joinPoint, maxArgsLength);
             log.warn("[SLOW-ALERT] 方法调用超时告警{}：[{}] 执行耗时 {} ms (阈值: {} ms), 入参: {}",
-                    description, methodName, cost, threshold, argsSnapshot);
+                    description, logMethodName, cost, threshold, argsSnapshot);
         } else {
             log.warn("[SLOW-ALERT] 方法调用超时告警{}：[{}] 执行耗时 {} ms (阈值: {} ms)",
-                    description, methodName, cost, threshold);
+                    description, logMethodName, cost, threshold);
+        }
+
+        publishSlowAlertEvent(targetClassName, method.getName(), cost, threshold, argsSnapshot, logMethodName);
+    }
+
+    /**
+     * 安全发布慢调用领域事件；监听器与事件总线异常仅记录 WARN 日志，绝不污染业务主流程返回值或异常链
+     */
+    private void publishSlowAlertEvent(String className,
+                                       String methodName,
+                                       long cost,
+                                       long threshold,
+                                       String argsSummary,
+                                       String logMethodName) {
+        if (eventPublisher == null) {
+            return;
+        }
+        try {
+            SlowAlertEvent event = new SlowAlertEvent(
+                    this,
+                    className,
+                    methodName,
+                    cost,
+                    threshold,
+                    argsSummary,
+                    MDC.get("traceId"),
+                    LocalDateTime.now()
+            );
+            eventPublisher.publishEvent(event);
+        } catch (Throwable ex) {
+            log.warn("[SLOW-ALERT] 慢调用领域事件发布或监听器执行异常，已隔离不影响业务主流程: [{}]", logMethodName, ex);
         }
     }
 
