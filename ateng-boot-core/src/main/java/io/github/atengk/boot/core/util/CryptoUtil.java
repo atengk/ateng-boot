@@ -149,9 +149,7 @@ public final class CryptoUtil {
      * @return 16 字节 SM4 随机密钥
      */
     public static byte[] generateSm4Key() {
-        byte[] key = new byte[SM4_KEY_SIZE];
-        SECURE_RANDOM.nextBytes(key);
-        return key;
+        return generateKey(128);
     }
 
     /**
@@ -376,11 +374,11 @@ public final class CryptoUtil {
             return null;
         }
         try {
-            validateKeyAndIv(key, iv, -1);
-            byte[] encrypted = doGcmCipher(Cipher.ENCRYPT_MODE, plaintext.getBytes(StandardCharsets.UTF_8), key, iv, aad);
+            byte[] encrypted = encryptGcm(plaintext.getBytes(StandardCharsets.UTF_8), key, iv, aad);
             return encodeBase64(encrypted);
         } catch (Exception e) {
-            throw new BusinessException(CommonResultCode.BAD_REQUEST, "AES/GCM 加密执行失败: " + e.getMessage(), e);
+            Throwable rootCause = (e instanceof IllegalStateException && e.getCause() != null) ? e.getCause() : e;
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "AES/GCM 加密执行失败: " + rootCause.getMessage(), rootCause);
         }
     }
 
@@ -399,12 +397,12 @@ public final class CryptoUtil {
             return null;
         }
         try {
-            validateKeyAndIv(key, iv, -1);
             byte[] cipherBytes = decodeBase64(ciphertextBase64);
-            byte[] decrypted = doGcmCipher(Cipher.DECRYPT_MODE, cipherBytes, key, iv, aad);
+            byte[] decrypted = decryptGcm(cipherBytes, key, iv, aad);
             return new String(decrypted, StandardCharsets.UTF_8);
         } catch (Exception e) {
-            throw new BusinessException(CommonResultCode.BAD_REQUEST, "AES/GCM 解密或认证校验失败: " + e.getMessage(), e);
+            Throwable rootCause = (e instanceof IllegalStateException && e.getCause() != null) ? e.getCause() : e;
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "AES/GCM 解密或认证校验失败: " + rootCause.getMessage(), rootCause);
         }
     }
 

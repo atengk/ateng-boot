@@ -449,6 +449,10 @@ _Avoid_: SlowMethodEvent, PerformanceAlertEvent, SlowLogEvent
 在容器启动期将 `CoreProperties` 外置化缓存参数（最大容量与默认 TTL）自动注入 `SpelUtil` 与 `LambdaUtil` 静态门面的核心内存缓存初始化组件。
 _Avoid_: StaticCacheInitializer, CoreStaticBridge
 
+**CoreSnowflakeInitializer**:
+在 Spring 容器全部单例就绪后同步受管 `Snowflake` Bean 至静态门面 `IdUtil`，并在容器销毁时仅对自身绑定实例执行对称 `IdUtil.resetSnowflake()` 解绑的生命周期桥接组件。
+_Avoid_: SnowflakeStaticBridge, IdUtilLifecycleHook
+
 **PipelineStage**:
 强类型管道处理阶段函数式契约接口，定义单个阶段的上下文处理逻辑、可读阶段名称与谓词/消费快速构造工厂。
 _Avoid_: ChainStage, PipelineStep, PipeNode

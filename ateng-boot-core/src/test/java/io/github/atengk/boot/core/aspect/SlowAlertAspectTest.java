@@ -1,6 +1,7 @@
 package io.github.atengk.boot.core.aspect;
 
 import io.github.atengk.boot.core.annotation.SlowAlert;
+import io.github.atengk.boot.core.event.SlowAlertEvent;
 import io.github.atengk.boot.core.properties.SlowAlertProperties;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;

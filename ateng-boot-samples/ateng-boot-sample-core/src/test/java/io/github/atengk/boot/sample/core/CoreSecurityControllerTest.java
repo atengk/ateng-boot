@@ -53,6 +53,15 @@ class CoreSecurityControllerTest {
                 .andExpect(jsonPath("$.data.uuid", hasLength(36)))
                 .andExpect(jsonPath("$.data.nanoId", hasLength(21)))
                 .andExpect(jsonPath("$.data.dateTime", notNullValue()));
+
+        mockMvc.perform(get("/sample/core/security/distributed-id"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.workerId", is("1")))
+                .andExpect(jsonPath("$.data.datacenterId", is("1")))
+                .andExpect(jsonPath("$.data.restoredId", notNullValue()))
+                .andExpect(jsonPath("$.data.base62", notNullValue()));
     }
 
     @Test

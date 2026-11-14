@@ -1,7 +1,6 @@
 package io.github.atengk.boot.sample.core.service;
 
 import io.github.atengk.boot.core.annotation.SlowAlert;
-import io.github.atengk.boot.core.aspect.SlowAlertEvent;
 import io.github.atengk.boot.core.audit.OperateLogEvent;
 import io.github.atengk.boot.core.audit.OperateLogModel;
 import io.github.atengk.boot.core.audit.SqlLogModel;
@@ -10,6 +9,7 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.diagnostic.SlowBeanDiagnosticPostProcessor;
 import io.github.atengk.boot.core.enums.SqlTypeEnum;
+import io.github.atengk.boot.core.event.SlowAlertEvent;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.CidrMatcher;
 import io.github.atengk.boot.core.util.ExceptionUtil;

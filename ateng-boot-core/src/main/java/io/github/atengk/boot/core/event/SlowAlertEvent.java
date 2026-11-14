@@ -1,5 +1,6 @@
-package io.github.atengk.boot.core.aspect;
+package io.github.atengk.boot.core.event;
 
+import io.github.atengk.boot.core.aspect.SlowAlertAspect;
 import org.springframework.context.ApplicationEvent;
 
 import java.time.LocalDateTime;

@@ -1,12 +1,12 @@
 package io.github.atengk.boot.sample.core.listener;
 
-import io.github.atengk.boot.core.aspect.SlowAlertEvent;
+import io.github.atengk.boot.core.event.SlowAlertEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 慢调用告警领域事件消费者组件
@@ -20,8 +20,11 @@ public class SampleSlowAlertEventListener {
 
     private static final Logger log = LoggerFactory.getLogger(SampleSlowAlertEventListener.class);
 
-    private final AtomicInteger eventCount = new AtomicInteger(0);
-    private volatile SlowAlertEvent lastEvent;
+    private record EventSnapshot(int count, SlowAlertEvent lastEvent) {
+        private static final EventSnapshot EMPTY = new EventSnapshot(0, null);
+    }
+
+    private final AtomicReference<EventSnapshot> snapshotRef = new AtomicReference<>(EventSnapshot.EMPTY);
 
     /**
      * 监听并消费方法级慢调用领域事件
@@ -33,10 +36,9 @@ public class SampleSlowAlertEventListener {
         if (event == null) {
             return;
         }
-        this.lastEvent = event;
-        int count = this.eventCount.incrementAndGet();
+        EventSnapshot updated = snapshotRef.updateAndGet(prev -> new EventSnapshot(prev.count() + 1, event));
         log.info("[SLOW_ALERT_EVENT_CONSUMED] 接收到慢调用领域事件 #{} [method={}#{}, elapsed={}ms, threshold={}ms, traceId={}]",
-                count,
+                updated.count(),
                 event.getClassName(),
                 event.getMethodName(),
                 event.getElapsedMs(),
@@ -50,7 +52,7 @@ public class SampleSlowAlertEventListener {
      * @return 事件计数
      */
     public int getEventCount() {
-        return eventCount.get();
+        return snapshotRef.get().count();
     }
 
     /**
@@ -59,14 +61,13 @@ public class SampleSlowAlertEventListener {
      * @return 最近一次慢调用事件（未接收时为 null）
      */
     public SlowAlertEvent getLastEvent() {
-        return lastEvent;
+        return snapshotRef.get().lastEvent();
     }
 
     /**
      * 重置事件计数器与最近事件快照（供测试隔离清理使用）
      */
     public void reset() {
-        this.eventCount.set(0);
-        this.lastEvent = null;
+        snapshotRef.set(EventSnapshot.EMPTY);
     }
 }

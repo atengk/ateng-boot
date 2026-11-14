@@ -304,8 +304,12 @@ public final class JsonUtil {
             return null;
         }
         Objects.requireNonNull(typeReference, "泛型类型引用 TypeReference 不能为 null");
-        JavaType javaType = defaultMapper.getTypeFactory().constructType(typeReference);
-        return readBytes(bytes, javaType, "JSON 字节数组泛型反序列化失败: ");
+        ObjectMapper mapper = defaultMapper;
+        try {
+            return mapper.readValue(bytes, typeReference);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("JSON 字节数组泛型反序列化失败: " + e.getMessage(), e);
+        }
     }
 
     /**
@@ -384,8 +388,9 @@ public final class JsonUtil {
             return Collections.emptyList();
         }
         Objects.requireNonNull(clazz, "列表元素类型 Class 不能为 null");
-        JavaType javaType = defaultMapper.getTypeFactory().constructCollectionType(List.class, clazz);
-        List<T> result = readBytes(bytes, javaType, "JSON 字节数组反序列化列表失败: ");
+        ObjectMapper mapper = defaultMapper;
+        JavaType javaType = mapper.getTypeFactory().constructCollectionType(List.class, clazz);
+        List<T> result = readBytes(mapper, bytes, javaType, "JSON 字节数组反序列化列表失败: ");
         return result != null ? result : Collections.emptyList();
     }
 
@@ -439,8 +444,9 @@ public final class JsonUtil {
         }
         Objects.requireNonNull(keyClass, "Map 键类型 Class 不能为 null");
         Objects.requireNonNull(valueClass, "Map 值类型 Class 不能为 null");
-        JavaType javaType = defaultMapper.getTypeFactory().constructMapType(Map.class, keyClass, valueClass);
-        Map<K, V> result = readBytes(bytes, javaType, "JSON 字节数组反序列化 Map 失败: ");
+        ObjectMapper mapper = defaultMapper;
+        JavaType javaType = mapper.getTypeFactory().constructMapType(Map.class, keyClass, valueClass);
+        Map<K, V> result = readBytes(mapper, bytes, javaType, "JSON 字节数组反序列化 Map 失败: ");
         return result != null ? result : Collections.emptyMap();
     }
 
@@ -454,9 +460,9 @@ public final class JsonUtil {
         return parseMap(bytes, String.class, Object.class);
     }
 
-    private static <T> T readBytes(byte[] bytes, JavaType javaType, String errorPrefix) {
+    private static <T> T readBytes(ObjectMapper mapper, byte[] bytes, JavaType javaType, String errorPrefix) {
         try {
-            return defaultMapper.readValue(bytes, javaType);
+            return mapper.readValue(bytes, javaType);
         } catch (IOException e) {
             throw new BusinessException(CommonResultCode.BAD_REQUEST, errorPrefix + e.getMessage(), e);
         }

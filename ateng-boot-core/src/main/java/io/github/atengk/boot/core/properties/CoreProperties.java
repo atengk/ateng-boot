@@ -72,6 +72,50 @@ public class CoreProperties {
     private NetProperties net = new NetProperties();
 
     /**
+     * 获取时钟回拨容忍阈值（顶层快捷配置）
+     *
+     * @return 时钟回拨容忍阈值
+     * @deprecated 自 1.0.0 起不推荐使用，请迁移至 {@code ateng.boot.core.snowflake.clock-backoff-tolerance}
+     */
+    @Deprecated(since = "1.0.0")
+    public Duration getClockBackoffTolerance() {
+        return clockBackoffTolerance;
+    }
+
+    /**
+     * 设置时钟回拨容忍阈值（顶层快捷配置）
+     *
+     * @param clockBackoffTolerance 时钟回拨容忍阈值
+     * @deprecated 自 1.0.0 起不推荐使用，请迁移至 {@code ateng.boot.core.snowflake.clock-backoff-tolerance}
+     */
+    @Deprecated(since = "1.0.0")
+    public void setClockBackoffTolerance(Duration clockBackoffTolerance) {
+        this.clockBackoffTolerance = clockBackoffTolerance;
+    }
+
+    /**
+     * 获取进程内内存缓存默认存活时间 TTL（顶层快捷配置）
+     *
+     * @return 缓存默认存活时间 TTL
+     * @deprecated 自 1.0.0 起不推荐使用，请迁移至 {@code ateng.boot.core.cache.default-ttl}
+     */
+    @Deprecated(since = "1.0.0")
+    public Duration getCacheTtl() {
+        return cacheTtl;
+    }
+
+    /**
+     * 设置进程内内存缓存默认存活时间 TTL（顶层快捷配置）
+     *
+     * @param cacheTtl 缓存默认存活时间 TTL
+     * @deprecated 自 1.0.0 起不推荐使用，请迁移至 {@code ateng.boot.core.cache.default-ttl}
+     */
+    @Deprecated(since = "1.0.0")
+    public void setCacheTtl(Duration cacheTtl) {
+        this.cacheTtl = cacheTtl;
+    }
+
+    /**
      * 获取有效的时钟回拨容忍时长
      * 优先采用 snowflake.clockBackoffTolerance，若未指定则回退到顶层 clockBackoffTolerance
      *

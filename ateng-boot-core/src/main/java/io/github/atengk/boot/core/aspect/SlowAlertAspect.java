@@ -1,6 +1,7 @@
 package io.github.atengk.boot.core.aspect;
 
 import io.github.atengk.boot.core.annotation.SlowAlert;
+import io.github.atengk.boot.core.event.SlowAlertEvent;
 import io.github.atengk.boot.core.properties.SlowAlertProperties;
 import io.github.atengk.boot.core.util.JsonUtil;
 import org.aspectj.lang.ProceedingJoinPoint;

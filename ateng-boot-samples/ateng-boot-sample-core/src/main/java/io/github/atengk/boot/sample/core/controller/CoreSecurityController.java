@@ -39,7 +39,7 @@ public class CoreSecurityController {
      *
      * @return 包含雪花 ID、Base62 短码、反解元数据与 NanoId 的发号结果
      */
-    @GetMapping("/ids/generate")
+    @GetMapping({"/ids/generate", "/distributed-id"})
     public Result<IdGenerateVO> generateDistributedId() {
         IdGenerateVO vo = securityScenarioService.generateDistributedId();
         return Result.success(vo);

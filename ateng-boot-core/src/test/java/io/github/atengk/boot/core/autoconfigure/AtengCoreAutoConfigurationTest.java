@@ -1,7 +1,7 @@
 package io.github.atengk.boot.core.autoconfigure;
 
 import io.github.atengk.boot.core.aspect.SlowAlertAspect;
-import io.github.atengk.boot.core.aspect.SlowAlertEvent;
+import io.github.atengk.boot.core.event.SlowAlertEvent;
 import io.github.atengk.boot.core.id.Snowflake;
 import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.properties.CoreProperties;

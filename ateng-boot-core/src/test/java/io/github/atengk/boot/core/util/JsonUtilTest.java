@@ -290,11 +290,10 @@ class JsonUtilTest {
         assertThrows(NullPointerException.class, () -> JsonUtil.parseMap(mapBytes, null, String.class));
         assertThrows(NullPointerException.class, () -> JsonUtil.parseMap(mapBytes, String.class, null));
 
-        // 非法 JSON 字节流抛出保留原始 cause 的 BusinessException
+        // 存量 TypeReference 重载保持向后兼容，非法 JSON 字节流抛出保留原始 cause 的 IllegalArgumentException
         byte[] invalidBytes = "{corrupted-json".getBytes(StandardCharsets.UTF_8);
-        BusinessException ex1 = assertThrows(BusinessException.class,
+        IllegalArgumentException ex1 = assertThrows(IllegalArgumentException.class,
                 () -> JsonUtil.parseObject(invalidBytes, new TypeReference<GenericPayload<DemoUser>>() {}));
-        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex1.getCode());
         assertNotNull(ex1.getCause());
 
         BusinessException ex2 = assertThrows(BusinessException.class,

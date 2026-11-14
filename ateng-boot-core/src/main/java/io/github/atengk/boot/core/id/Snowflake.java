@@ -383,11 +383,8 @@ public class Snowflake {
                 workerId = (long) ((sum & 0x7FFFFFFF) % (MAX_WORKER_ID + 1));
             }
             if (datacenterId == null) {
-                if (mac.length >= 2) {
-                    datacenterId = (long) (((mac[0] & 0xFF) ^ (mac[1] & 0xFF)) % (MAX_DATACENTER_ID + 1));
-                } else {
-                    datacenterId = (long) ((mac[0] & 0xFF) % (MAX_DATACENTER_ID + 1));
-                }
+                int combined = mac.length >= 2 ? ((mac[0] & 0xFF) ^ (mac[1] & 0xFF)) : (mac[0] & 0xFF);
+                datacenterId = deriveIdFromUnsignedValue(combined, MAX_DATACENTER_ID);
             }
         }
 
@@ -399,14 +396,11 @@ public class Snowflake {
                     byte[] address = InetAddress.getByName(localIpv4).getAddress();
                     if (address != null && address.length > 0) {
                         if (workerId == null) {
-                            workerId = (long) ((address[address.length - 1] & 0xFF) % (MAX_WORKER_ID + 1));
+                            workerId = deriveIdFromUnsignedValue(address[address.length - 1] & 0xFF, MAX_WORKER_ID);
                         }
                         if (datacenterId == null) {
-                            if (address.length >= 2) {
-                                datacenterId = (long) ((address[address.length - 2] & 0xFF) % (MAX_DATACENTER_ID + 1));
-                            } else {
-                                datacenterId = (long) ((address[0] & 0xFF) % (MAX_DATACENTER_ID + 1));
-                            }
+                            int dcSeed = address.length >= 2 ? (address[address.length - 2] & 0xFF) : (address[0] & 0xFF);
+                            datacenterId = deriveIdFromUnsignedValue(dcSeed, MAX_DATACENTER_ID);
                         }
                     }
                 }
@@ -425,6 +419,10 @@ public class Snowflake {
         }
 
         return new NodeIds(workerId, datacenterId);
+    }
+
+    private static long deriveIdFromUnsignedValue(int unsignedValue, long maxId) {
+        return (unsignedValue & 0xFFL) % (maxId + 1);
     }
 
     private static Long parseIdProperty(String sysProp, String envProp, long maxId) {

@@ -1,8 +1,5 @@
 package io.github.atengk.boot.core.util;
 
-import io.github.atengk.boot.core.code.CommonResultCode;
-import io.github.atengk.boot.core.exception.BusinessException;
-
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
@@ -246,12 +243,8 @@ public final class HmacUtil {
      * @return 32 字节 HmacSM3 签名
      */
     public static byte[] hmacSm3(byte[] data, byte[] key) {
-        if (data == null) {
-            throw new BusinessException(CommonResultCode.BAD_REQUEST, "HmacSM3 待签名数据 data 不能为 null");
-        }
-        if (key == null || key.length == 0) {
-            throw new BusinessException(CommonResultCode.BAD_REQUEST, "HmacSM3 签名密钥 key 不能为空");
-        }
+        BusinessAssert.notNull(data, "HmacSM3 待签名数据 data 不能为 null");
+        BusinessAssert.isTrue(key != null && key.length > 0, "HmacSM3 签名密钥 key 不能为空");
         byte[] compressedKey = null;
         byte[] normalizedKey = key;
         if (key.length > SM3_BLOCK_SIZE) {
@@ -285,12 +278,8 @@ public final class HmacUtil {
      * @return 32 字节 HmacSM3 签名
      */
     public static byte[] hmacSm3(String data, String key) {
-        if (data == null) {
-            throw new BusinessException(CommonResultCode.BAD_REQUEST, "HmacSM3 待签名文本 data 不能为 null");
-        }
-        if (key == null || key.isEmpty()) {
-            throw new BusinessException(CommonResultCode.BAD_REQUEST, "HmacSM3 签名密钥文本 key 不能为空");
-        }
+        BusinessAssert.notNull(data, "HmacSM3 待签名文本 data 不能为 null");
+        BusinessAssert.isTrue(key != null && !key.isEmpty(), "HmacSM3 签名密钥文本 key 不能为空");
         return hmacSm3(data.getBytes(StandardCharsets.UTF_8), key.getBytes(StandardCharsets.UTF_8));
     }
 
