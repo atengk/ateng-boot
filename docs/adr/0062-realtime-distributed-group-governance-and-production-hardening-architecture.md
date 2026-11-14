@@ -100,13 +100,28 @@ flowchart TD
   - **第 1 阶（超限丢弃与警告）**：超出 `ateng.boot.realtime.websocket.rate-limit.max-requests-per-second` 时直接丢弃当前请求帧，原路返回 `event: "error", code: 429` 警告通知；
   - **第 2 阶（恶意熔断与强制排空）**：同一连接连续 3 次触发超限或瞬时超过阈值 3 倍时，服务端判定为恶意泛洪或代码死循环，主动发送 RFC 6455 应用层专用关闭码 `4005 (RATE_LIMIT_EXCEEDED)` 并物理切断长连接。
 
-### 5. `@RealtimeAction` 双向契约与因果异常转译 (`RealtimeActionResponse`)
+### 5. `@RealtimeAction` 双向契约与因果异常转译
 - **透明 Request-Response 回发**：客户端上行携带 `id`（请求序列号）与 `event`；当业务方法返回非 `null`/非 `void` 结果时，分发器自动组装下行 `RealtimeMessage`，保持原 `id`，事件名默认为 `{event}:reply`，原路推回发送方；
 - **受管业务异常保底**：当业务方法抛出 `BusinessException` 时，分发器就地捕获并转译为 `Result.failure(e.getResultCode(), e.getMessage())` 下发给客户端，杜绝未捕获异常引发长连接崩溃。
 
 ### 6. 四维上下文确定性装配与优雅停机清场
 - **分发器全链路透传**：`RealtimeMessageDispatcher` 在调度前，提取消息 `traceId` 注入 MDC，并将 `RealtimeSession` 的 `userId` 与 `tenantId` 填充至 `UserContextHolder` 与 `TenantContextHolder`；执行后在 `finally` 中严格调用 `clear()`，彻底杜绝跨长连接复用线程池时的脏读；
 - **优雅停机反向批量注销**：在 `SmartLifecycle` Phase 1~2 停机阶段，`RedissonRealtimeGroupManager` 批量反注册本节点纳管的全部群组成员，消除停机遗留的幽灵节点成员。
+
+### 7. 生产级增量巩固演进（#969 专题）
+1. **事务提交后感知推送（`*AfterCommit`）与排除发送方组播（`*Except`）**：
+   - `RealtimeTemplate` 新增 `sendToSessionAfterCommit`、`sendToUserAfterCommit`、`sendToGroupAfterCommit`、`sendToTenantAfterCommit`、`sendToAllAfterCommit`：基于 `TransactionSynchronizationManager` 在活跃事务期间冻结消息上下文元数据并捕获 Core 四维上下文快照，待 `COMMIT` 成功后于 `afterCommit` 恢复并下发，末尾 `finally` 确定性清理（事务回滚不触发，无活跃事务自动同步降级立即执行）；
+   - 新增 `sendToUserExcept`、`sendToGroupExcept`、`sendToAllExcept` 重载及 `RealtimeClusterPacket.excludeSessionKeys`，在单机与 Redis Pub/Sub 跨节点下发全链路中精确跳过排除会话集合，配套 `SessionKey.format()` / `SessionKey.parse()` 支持含冒号用户坐标的安全反序列化，彻底避免群聊/多端协同的自身回显。
+2. **上行强类型 DTO 校验与 `RealtimeActionInterceptor` 责任链拦截**：
+   - `RealtimeMessageDispatcher` 在绑定 `@RealtimeAction` 业务 DTO 后，经静态辅助方法封装自动执行 `ValidatorUtil.validate(arg)` Fail-Fast 校验，违规时原地回发 HTTP 400 语义 `{event}:reply` 错误帧并保持连接存活；
+   - 引入支持 Spring `@Order` 编排的 `RealtimeActionInterceptor` SPI（`preHandle` / `afterCompletion`），保障已放行链路的 `afterCompletion` 以逆序执行且早于四维上下文 `finally { clear(); }`。
+3. **集群节点心跳租约与失联死节点惰性淘汰（`RedissonClusterMetricsReporter`）**：
+   - 节点度量 Redis Hash 值格式从纯数字升级为 `"{count}:{timestampMillis}"`（`ClusterNodeHeartbeatSupport`，向下兼容旧版纯数字条目）；
+   - 周期心跳间隔 `metricsInterval`（默认 `5s`）的 `max(3 * metricsInterval, 15s)` 作为租约上限，在 `reportMetrics()` 与 `getClusterOnlineCount()` 巡检期间自动识别并惰性 `remove` 崩溃/强制 `kill -9` 节点残留条目，消除集群在线数长期虚高。
+4. **离线消息 ZSet 单次 Lua 原子裁切、重连自动补发与虚拟线程防 Pinning（ADR-0029）**：
+   - `RedissonRealtimeOfflineMessageProvider#saveOfflineMessage` 合并为单次 `RScript#eval`（`StringCodec.INSTANCE`）Lua 原子脚本，按序完成 `ZADD`、`ZREMRANGEBYRANK key 0 -(maxMessages + 1)` 与 `PEXPIRE key ttlMillis`，彻底消除多 RTT 窗口并发竞态与游离永生 Key；
+   - `InMemoryRealtimeOfflineMessageProvider` 彻底移除全部 `synchronized` 关键字，改为每用户独立 `UserMailbox` + `ReentrantLock` 保护与 `retired` 状态重试闭环，严格在 `finally` 中判定 `isHeldByCurrentThread()` 后解锁，契合 JDK 21+ 虚拟线程防 Carrier Pinning 契约；
+   - 新增配置开关 `ateng.boot.realtime.offline.auto-push-on-connect`（默认 `false`），在 `AtengWebSocketHandler#afterConnectionEstablished` 注册成功后针对实名认证用户自动拉取并按序补发离线消息；若下发中途异常，立即将失败项及后续未投递项按序回存以保障零丢消息。
 
 ---
 

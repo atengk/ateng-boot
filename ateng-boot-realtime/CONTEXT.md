@@ -104,9 +104,9 @@ _Avoid_: RedisOfflineStore, DistributedMessageQueue, RedisOfflineBuffer
 长连接端点会话级内存无锁滑动窗口流量限制器，在会话内部执行纳秒级吞吐频控，支持超限 429 丢弃警告与持续恶意刷量 4005 状态码强制切断两阶惩罚治理。
 _Avoid_: WsRateLimiter, TokenBucketFilter, MessageThrottle
 
-**RealtimeActionResponse**:
-客户端上行路由业务动作方法返回值回执契约机制，依据上行请求唯一标识与事件名自适应构建 `{event}:reply` 响应载荷，并对受管业务异常执行因果转译与保底失败响应。
-_Avoid_: ActionReply, MessageAck, SocketResponse
+**RealtimeActionInterceptor**:
+客户端上行 `@RealtimeAction` 业务动作方法责任链拦截器 SPI 扩展点，支持在反射调用目标动作方法前后执行统一权限校验、租户准入裁决或耗时审计。
+_Avoid_: ActionFilter, WsInterceptor, MessageAspect, ActionHook
 
 **RealtimeCloseStatus**:
 RFC 6455 标准扩展关闭状态码契约常量类，统一定义 4001（鉴权失败）、4002（被踢下线）、4003（连接配额超限）、4004（空闲超时排空）、4005（上行流量超限熔断）与 1012（服务优雅停机排空）语义。
@@ -121,5 +121,9 @@ _Avoid_: ShutdownManager, RealtimeCloser, WsShutdown
 _Avoid_: BinaryListener, WsBinaryHandler, StreamByteReceiver
 
 **RateLimitDecision**:
-会话级滑动窗口限流器判定结果枚举或契约，明确区分放行（ALLOWED）、超出阈值丢弃警告（DROPPED_WARNING）与持续违规强制熔断断开（BREACH_DISCONNECT）状态。
+会话级滑动窗口限流器判定结果枚举，明确区分正常放行（`ALLOWED`）、超出阈值丢弃警告（`WARNING`）与持续违规强制熔断关闭（`CLOSE`）三种状态。
 _Avoid_: LimitResult, RateStatus, QuotaDecision
+
+**RedissonClusterMetricsReporter**:
+基于 Redisson Hash 与节点心跳租约（`count:timestampMillis`）的集群在线连接数上报与聚合统计器，在周期心跳及查询聚合期间自动惰性淘汰超时失联的崩溃节点。
+_Avoid_: ClusterStatsService, NodeCounter, OnlineMetricsStore
