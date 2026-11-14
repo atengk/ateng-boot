@@ -1,66 +1,79 @@
 # ateng-boot-http 基础设施 Starter
 
-> 依托 Spring 6 原生 `RestClient`、`HttpServiceProxyFactory` 与 JDK 17 构建的零臃肿双模 HTTP 客户端底座，统一融合命令式调用（`HttpTemplate`）与强类型声明式代理（`@EnableHttpInterfaces` / `@HttpClient`），提供 Apache HttpClient 5 生产级池化连接与 JDK 17 原生 Client 自适应平滑降级、多命名客户端注册表（`RestClientRegistry`）、四维全链路上下文出站透传与外部公网敏感头安全剥离、RFC 3986 查询参数安全转译与动态单次超时覆盖、cURL 结构化脱敏日志、幂等动词指数退避重试及语义化因果异常转译。
+> 依托 Spring 6 原生 `RestClient`、`HttpServiceProxyFactory` 与 JDK 17 构建的零臃肿双模 HTTP 客户端底座，统一融合命令式调用（`HttpTemplate`）与强类型声明式代理（`@EnableHttpInterfaces` / `@HttpClient`），提供 Apache HttpClient 5 生产级池化连接与 JDK 17 原生 `HttpClient` 自适应平滑降级、多命名客户端注册表（`RestClientRegistry`）、四维全链路上下文出站透传与外部公网敏感头安全剥离、RFC 3986 查询参数安全转译与动态单次超时覆盖、cURL 结构化脱敏日志、幂等动词指数退避重试及语义化因果异常转译。
 
 ---
 
 ## 0. 特性与公共 API 全景速查矩阵 (Feature & API Panorama Matrix)
 
-| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
+| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.http.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (`*Test` / `Sample`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **命令式通信** | 统一命令式操作门面 | `HttpTemplate` | `ateng.boot.http.enabled` | `get` / `getOptional` / `getEntity` / `post` / `put` / `patch` / `delete` / `head` / `options` / `exchange` / `postForm` / `upload` / `download` / `consumeStream` / `executeAsync`，支持 Class 与 `ParameterizedTypeReference<T>` 泛型双模、URL-encoded 表单、SSE 流式消费、大文件零缓冲传输与异常拦截 | `HttpTemplateScenarioTest` / `HttpTemplateController` |
-| **单次动态参数** | 单次超时覆盖与头治理 | `RequestOptions`<br>`RequestOptionsApplier`<br>`HttpRequestContextHolder` | - | `RequestOptions.builder().readTimeout(Duration).header(name, value).queryParam(k, v).uriVariable(k, v).propagateContext(boolean).clientName(name).build()`，RFC 3986 安全编码与底层物理请求超时动态生效 | `HttpTemplateScenarioTest` / `HttpTemplateController` |
-| **方法级超时** | 方法级细粒度超时声明 | `@HttpTimeout` | - | `@HttpTimeout(readTimeout = "300ms", connectTimeout = "1s")`，声明在接口方法上动态下发建联与读取超时，方法退出时对线程上下文严格对称清理 | `HttpDeclarativeScenarioTest` / `OrderServiceClient` |
-| **声明式客户端** | 声明式接口标记驱动 | `@HttpClient`<br>`@HttpExchange` | `ateng.boot.http.clients.<name>.*` | `@HttpClient(name = "user-service", url = "${remote.url}", fallback = Fallback.class, primary = true)`，支持元注解派生、`${...}` 占位符解析、Primary 开关与本地优雅降级 | `HttpDeclarativeScenarioTest` / `UserServiceClient` |
-| **声明式包扫描** | 声明式轻量动态包扫描器 | `@EnableHttpInterfaces`<br>`HttpInterfaceRegistrar`<br>`HttpInterfaceFactoryBean` | - | `@EnableHttpInterfaces(basePackages = "io.github.atengk.boot.sample.http.client")`，自研轻量 Spring 原生扫描器，桥接 Spring 6 `HttpServiceProxyFactory` 与动态代理 | `HttpDeclarativeScenarioTest` / `SampleHttpApplication` |
-| **声明式降级** | 本地容错降级代理 | `@HttpClient.fallback`<br>`HttpInterfaceFactoryBean` | - | 当声明式客户端调用遭遇 4xx/5xx、超时或网络中断时，由动态代理自动拦截并平滑回退执行 Fallback Bean 的同名方法 | `HttpDeclarativeScenarioTest` / `OrderServiceClientFallback` |
-| **多命名客户端** | 多命名客户端注册表与单例缓存 | `RestClientRegistry` | `ateng.boot.http.clients.<name>.*` | `getClient(clientName, annotationUrl)` / `getClient(clientName)` / `contains(clientName)` / `register(clientName, client)` / `unregister(clientName)` / `clear()` / `resolveBaseUrl(clientName, annotationUrl)`，复用全局物理连接池，单例并发安全 | `RestClientRegistryTest` / `HttpDeclarativeScenarioTest` |
-| **双向 mTLS 证书** | 金融级双向认证与证书管理 | `HttpSslUtil`<br>`HttpSslProperties` | `ateng.boot.http.ssl.*`<br>`ateng.boot.http.clients.<name>.ssl.*` | `HttpSslUtil.loadKeyStore(ssl)` / `HttpSslUtil.loadKeyManagers(ssl)`，支持 PKCS12 / JKS 格式客户端私钥证书加载与密钥管理器初始化，支持命名客户端独立挂载专属证书 | `HttpSslUtilTest` / `HttpGovernanceScenarioTest` |
-| **物理连接池** | 双模自适应物理连接池 | `ClientHttpRequestFactoryBuilder`<br>`ApacheHttpClient5Factory`<br>`JdkHttpClientFactory` | `ateng.boot.http.engine`<br>`ateng.boot.http.pool.*`<br>`ateng.boot.http.ssl.*`<br>`ateng.boot.http.proxy.*` | 依据类路径自适应探测 Apache HttpClient 5 生产级池化连接（带后台驱逐守护）或平滑回退 JDK 17 原生 `HttpClient`，严防句柄与端口耗尽 | `ClientHttpRequestFactoryBuilderTest` / `HttpGovernanceScenarioTest` |
-| **专属超时隔离** | 客户端专属超时包装工厂 | `ClientScopedHttpRequestFactory` | `ateng.boot.http.clients.<name>.connect-timeout`<br>`ateng.boot.http.clients.<name>.read-timeout` | 100% 共享全局物理连接池，采用 `previousTimeout` 现场还原模式为特定客户端安全附加独立的建联与读取响应超时 | `RestClientRegistryTest` / `HttpDeclarativeScenarioTest` |
-| **专属代理隔离** | 全局与命名客户端正向代理 | `HttpProxyProperties` | `ateng.boot.http.proxy.*`<br>`ateng.boot.http.clients.<name>.proxy.*` | 支持出站 HTTP 正向代理配置，命名客户端可独立声明专用代理通道或继承全局 | `HttpProxyPropertiesTest` / `HttpGovernanceScenarioTest` |
-| **全链路上下文** | 四维上下文出站透传 | `TraceContextInterceptor` | `ateng.boot.http.tracing.enabled`<br>`ateng.boot.http.tracing.trace-id-header`<br>`ateng.boot.http.tracing.tenant-id-header`<br>`ateng.boot.http.tracing.user-id-header`<br>`ateng.boot.http.tracing.ignore-tenant-header` | 自动提取当前线程 MDC `traceId`、`TenantContextHolder` 与 `UserContextHolder` 注入出站请求头（缺省自动通过 `IdUtil.fastSimpleUUID()` 注入），实现分布式全链路可观测闭环 | `HttpGovernanceIntegrationTest` / `TraceContextInterceptorTest` |
-| **非信任域隔离** | 外部公网敏感头安全剥离 | `TraceContextInterceptor`<br>`HttpInterceptorUtil` | `ateng.boot.http.clients.<name>.propagate-context` | 依据目标 URL 最长前缀匹配或单次请求显式声明，向外部非信任域（微信、支付宝、第三方 SaaS 等）发起调用时强制安全剥离内网租户与用户标识，杜绝敏感身份泄漏 | `HttpGovernanceIntegrationTest` / `ExternalPaymentScenarioService` |
-| **出站审计日志** | 结构化 cURL 脱敏日志 | `HttpLoggingInterceptor` | `ateng.boot.http.logging.enabled`<br>`ateng.boot.http.logging.level`<br>`ateng.boot.http.logging.max-body-length`<br>`ateng.boot.http.logging.sensitive-headers`<br>`ateng.boot.http.logging.mask-params` | 格式化输出出站请求 cURL 片段与响应耗时，对 Authorization/Cookie/Token 等敏感头及 URL 查询参数（token、secret、password、apiKey 等）自动掩码脱敏，大载荷安全截断防爆内存 | `HttpGovernanceIntegrationTest` / `HttpLoggingInterceptorTest` |
-| **弹性指数退避** | 幂等重试与 RFC Retry-After 降频 | `HttpRetryInterceptor` | `ateng.boot.http.retry.enabled`<br>`ateng.boot.http.retry.max-attempts`<br>`ateng.boot.http.retry.delay`<br>`ateng.boot.http.retry.multiplier`<br>`ateng.boot.http.retry.max-delay`<br>`ateng.boot.http.retry.jitter`<br>`ateng.boot.http.retry.retry-status-codes`<br>`ateng.boot.http.retry.retry-methods` | 仅针对幂等动词（GET/HEAD）在遭遇网络抖动或 429/502/503/504 错误码时执行指数退避重试与随机抖动，自适应解析 RFC 7231 / RFC 6585 `Retry-After` 响应头精准覆盖本地退避时延，单次重试前显式释放物理响应流，环绕内聚日志记录 | `HttpGovernanceIntegrationTest` / `HttpRetryInterceptorTest` |
-| **因果异常体系** | 统一异常转译与强类型反序列化 | `HttpErrorHandler`<br>`HttpRemoteException`<br>`HttpResultCode` | - | 统一拦截 4xx 与 5xx 状态码并转译为业务受管的 `HttpRemoteException`（继承 `BusinessException`），提供 `getResponseBodyAs(Class<T>)` / `getResponseBodyAs(ParameterizedTypeReference<T>)` 强类型错误载荷反序列化，100% 保持原始因果链并映射清晰错误码 | `HttpGovernanceScenarioTest` / `HttpRemoteExceptionTest` |
-| **官方基线融合** | Spring Boot 官方基线配置器对齐 | `AtengHttpAutoConfiguration`<br>`RestClientBuilderConfigurer` | - | 自动注入并调度 Spring Boot 官方 `RestClientBuilderConfigurer.configure(builder)`，无缝继承容器消息转换器与 Actuator Micrometer `http.client.requests` 度量指标 | `AtengHttpAutoConfigurationTest` |
-| **Apache 扩展 SPI** | HttpClient 5 定制器扩展 | `HttpClient5Customizer` | - | 提供回调接口自定义扩展 `HttpClientBuilder` 与 `PoolingHttpClientConnectionManagerBuilder`（如定制 User-Agent、DNS 解析器、Socket 参数等） | `ClientHttpRequestFactoryBuilderTest` / `HttpTemplateScenarioTest` |
-| **Spring 定制 SPI** | RestClient 全局定制器 | `RestClientCustomizer` | - | Spring Boot 官方标准定制扩展，支持下游添加全局请求头、消息转换器与全局拦截器 | `RestClientRegistryTest` / `HttpTemplateScenarioTest` |
+| **命令式通信** | 全动词 REST 门面 | `HttpTemplate` | `enabled` | `get` / `post` / `postForm` / `put` / `patch` / `delete` / `exchange`，均支持 `Class<T>`、`ParameterizedTypeReference<T>` 与 `RequestOptions` 完整重载组合 | `HttpTemplateSampleTest` / `HttpTemplateController` |
+| **元数据与空安全** | 探测与响应实体提取 | `HttpTemplate` | - | `head` / `options` / `optionsForAllow` 提取 `HttpHeaders` 与 `Allow` 动词集合；`getOptional` 将 HTTP `404` 自动转换为 `Optional.empty()`；`getEntity` 提取完整 `ResponseEntity<T>` | `HttpTemplateSampleTest` / `HttpTemplateController` |
+| **流式与异步传输** | 零缓冲流式与异步编排 | `HttpTemplate` | `logging.max-buffer-capacity` | `upload`（支持单 `Resource` 与 `MultiValueMap<String, Object>`）、`download`（直通 `OutputStream` / `Path`）、`consumeStream`（SSE 行流消费）、`executeAsync`（透传四维上下文返回 `CompletableFuture<T>`）、`getClient` / `getStreamingClient` | `HttpTemplateScenarioTest` / `HttpTemplateScenarioService` |
+| **单次动态参数** | 单次超时与请求头治理 | `RequestOptions`<br>`RequestOptionsApplier`<br>`HttpRequestContextHolder` | - | `RequestOptions.of(...)` / `empty()` / `builder().readTimeout(Duration).connectTimeout(Duration).header(...).queryParam(...).uriVariable(...).propagateContext(...).clientName(...).build()`，RFC 3986 转译并在退出时严格恢复线程现场 | `HttpTemplateSampleTest` / `HttpTemplateScenarioService` |
+| **方法级超时** | 方法/接口级超时声明 | `@HttpTimeout` | - | `@HttpTimeout(readTimeout = "300ms", connectTimeout = "1s")`，优先级：方法级 `@HttpTimeout` > 接口级 `@HttpTimeout` > `clients.<name>` > 全局默认，异常或退出均对称清理 | `HttpDeclarativeScenarioTest` / `OrderServiceClient` |
+| **声明式客户端** | 契约接口与包扫描降级 | `@EnableHttpInterfaces`<br>`@HttpClient`<br>`HttpInterfaceRegistrar`<br>`HttpInterfaceFactoryBean` | `clients.<name>.*` | `@EnableHttpInterfaces(basePackages / basePackageClasses / clients)` 扫描 `@HttpClient(name, url, fallback, primary)`，结合 `@HttpExchange` 生成动态代理；4xx/5xx/超时自动回落至 `fallback` Bean | `HttpDeclarativeScenarioTest` / `SampleHttpApplication` |
+| **多命名客户端** | 单例注册表与差异隔离 | `RestClientRegistry`<br>`ClientScopedHttpRequestFactory` | `clients.<name>.base-url`<br>`clients.<name>.default-headers`<br>`clients.<name>.connect-timeout`<br>`clients.<name>.read-timeout` | `getClient(name, url)` / `getClient(name)` / `register` / `unregister` / `contains` / `size` / `clear` / `getClientNames` / `resolveBaseUrl`；复用全局连接池并按客户端隔离超时、默认请求头、代理与证书 | `HttpGovernanceScenarioTest` / `HttpGovernanceController` |
+| **物理连接池** | 双模池化连接与虚拟线程安全 | `ClientHttpRequestFactoryBuilder`<br>`ApacheHttpClient5Factory`<br>`JdkHttpClientFactory` | `engine`<br>`pool.*` | 优先装配 Apache HttpClient 5 `PoolingHttpClientConnectionManager`（后台空闲连接驱逐），无驱动时降级 JDK 17 `HttpClient`；基于 `ReentrantLock` 避免 JDK 21+ 虚拟线程 Pinning | `DeclarativeClientScenarioTest` / `HttpGovernanceScenarioTest` |
+| **安全通道与代理** | 双向 mTLS 证书与正向代理 | `HttpSslUtil`<br>`HttpSslProperties`<br>`HttpProxyProperties` | `ssl.*` / `clients.<name>.ssl.*`<br>`clients.<name>.key-store*`<br>`proxy.*` / `clients.<name>.proxy.*` | `HttpSslUtil.loadKeyStore(ssl)` / `loadKeyManagers(ssl)` 加载 PKCS12/JKS 客户端私钥用于金融级 mTLS；支持全局与客户端级独立 HTTP 正向代理、`username`/`password` 认证及 `non-proxy-hosts` 白名单直连放行 | `HttpGovernanceIntegrationTest` / `application.yml` |
+| **全链路上下文** | 四维透传与非信任域隔离 | `TraceContextInterceptor`<br>`HttpInterceptorUtil` | `tracing.*`<br>`clients.<name>.propagate-context` | 出站注入 `traceId`（缺省通过 `IdUtil.fastSimpleUUID()` 生成）、`TenantId`、`UserId`、`IgnoreTenant`；按最长前缀匹配或显式声明，对公网 `propagate-context: false` 客户端物理剥离内网身份头仅保留 `X-Trace-Id` | `HttpGovernanceIntegrationTest` / `ExternalPaymentScenarioService` |
+| **出站审计日志** | cURL 日志与敏感字段脱敏 | `HttpLoggingInterceptor`<br>`HttpLoggingLevel` | `logging.enabled`<br>`logging.level` (`NONE`/`BASIC`/`HEADERS`/`FULL`)<br>`logging.mask-headers`<br>`logging.mask-params`<br>`logging.max-body-length`<br>`logging.max-buffer-capacity` | 按日志级别输出结构化摘要或终端可复现 cURL；对 `mask-headers` 与 `mask-params` 命中的凭据打星号掩码；超限大流或流式上传下载自动旁路响应体缓冲防 OOM | `HttpGovernanceIntegrationTest` / `HttpGovernanceController` |
+| **弹性指数退避** | 幂等重试与 `Retry-After` 自愈 | `HttpRetryInterceptor` | `retry.*`<br>`clients.<name>.retry.*` | 默认仅对幂等动词（`GET`/`HEAD`）在 `429`/`502`/`503`/`504` 或网络瞬断时接入 Core `RetryUtil` 执行指数退避 + Equal Jitter 抖动重试，自适应解析 `Retry-After` 响应头，每次重试前显式关闭旧响应流 | `HttpGovernanceIntegrationTest` / `ExternalPaymentScenarioService` |
+| **因果异常转译** | 状态码映射与错误体提取 | `HttpErrorHandler`<br>`HttpRemoteException`<br>`HttpResultCode` | - | 将 4xx/5xx 响应（提取截断最多 2048 字符且跳过二进制流）封装为受管 `HttpRemoteException`（保留原始 cause），映射 8 个专职 `HttpResultCode`（`40001`~`50004`）并支持 `getResponseBodyAs` 强类型反序列化 | `HttpGovernanceIntegrationTest` / `HttpGovernanceController` |
+| **扩展与兼容 SPI** | 容器配置对齐与扩展钩子 | `AtengHttpAutoConfiguration`<br>`HttpClient5Customizer`<br>`RestClientCustomizer` | - | 自动对接 `RestClientBuilderConfigurer` 继承 Actuator Micrometer 度量与 JSON 转换器；支持注入 `HttpClient5Customizer`、`RestClientCustomizer` 及向 `RestClientRegistry` 注册动态实例 | `HttpTemplateSampleTest` / `SampleHttpApplication` |
 
 ---
 
 ## 1. 模块定位与快速起步 (Quick Start)
 
-### 1.1 核心价值与依赖引入
+### 1.1 引入依赖（BOM 统管与独立版本双模）
 
-`ateng-boot-http` 是面向生产就绪的高性能、低开销 HTTP 客户端基础设施 Starter：
-- **零臃肿与原生优先**：深度依托 JDK 17+ 与 Spring 6 原生 `RestClient`、`HttpServiceProxyFactory` 机制，彻底剔除 Feign、Retrofit、OkHttp、Hutool、Guava 等臃肿第三方包装；
-- **双模通信协同**：声明式强类型面向契约编程（`@HttpClient`）与命令式灵活可控门面（`HttpTemplate`）有机融合，无缝满足微服务内部 RPC 与外部异构集成诉求；
-- **物理连接唯一**：全应用无论存在多少个声明式客户端或命令式调用，统一复用同一个受管物理连接池（Apache HttpClient 5），严防文件描述符（FD）和本地端口耗尽；
-- **全链路内聚防线**：出站四维上下文（TraceId、TenantId、UserId、IgnoreTenant）无感透传、外部非信任域安全剥离、cURL 结构化脱敏日志与瞬态 503 指数退避重试原生内置。
+- **方式一：引入 `ateng-boot-bom`（推荐，免配版本号）**：
 
-在业务服务或共享模块的 `pom.xml` 中引入依赖：
+```xml
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-bom</artifactId>
+            <version>1.2.0</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+
+<dependencies>
+    <dependency>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-http</artifactId>
+    </dependency>
+</dependencies>
+```
+
+- **方式二：独立引入（显式声明版本号）**：
 
 ```xml
 <dependency>
     <groupId>io.github.atengk</groupId>
     <artifactId>ateng-boot-http</artifactId>
+    <version>1.2.0</version>
 </dependency>
 ```
 
+> 说明：`ateng-boot-http` 默认引入 `httpclient5` 启用生产级连接池；若业务需极限精简、完全依托 JDK 17 原生 `java.net.http.HttpClient`，可排除 `httpclient5` 或将 `ateng.boot.http.engine` 设为 `jdk`。
+
 ### 1.2 最小可用配置
 
-在 `application.yml` 中配置连接池与命名客户端，开箱即用：
+在 `application.yml` 中配置全局连接池与目标命名客户端（1:1 提取自 Sample `application.yml`）：
 
 ```yaml
-server:
-  port: 8080
-
 ateng:
   boot:
     http:
       enabled: true
+      engine: auto
       pool:
         max-connections: 200
         max-per-route: 50
@@ -68,7 +81,7 @@ ateng:
         read-timeout: 10s
       clients:
         user-service:
-          base-url: ${sample.user-service.url:http://localhost:8080}
+          base-url: ${sample.user-service.url:http://localhost:8080/mock/provider}
           connect-timeout: 2s
           read-timeout: 5s
           propagate-context: true
@@ -76,16 +89,9 @@ ateng:
 
 ### 1.3 极简双模实战验证
 
-#### 步骤 1：激活声明式接口扫描
-在 Spring Boot 应用主类上标注 `@EnableHttpInterfaces`：
+#### 步骤 1：在启动类激活声明式接口包扫描 (`SampleHttpApplication.java`)
 
 ```java
-package io.github.atengk.boot.sample.http;
-
-import io.github.atengk.boot.http.annotation.EnableHttpInterfaces;
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-
 @EnableHttpInterfaces(basePackages = "io.github.atengk.boot.sample.http.client")
 @SpringBootApplication
 public class SampleHttpApplication {
@@ -95,39 +101,24 @@ public class SampleHttpApplication {
 }
 ```
 
-#### 步骤 2：定义声明式强类型客户端契约
-基于 Spring 6 原生 `@HttpExchange` 注解声明强类型 HTTP 契约：
+#### 步骤 2：声明强类型客户端契约 (`UserServiceClient.java`)
 
 ```java
-package io.github.atengk.boot.sample.http.client;
-
-import io.github.atengk.boot.http.annotation.HttpClient;
-import io.github.atengk.boot.sample.http.dto.UserResponse;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.service.annotation.GetExchange;
-import org.springframework.web.service.annotation.HttpExchange;
-
 @HttpClient(name = "user-service", url = "${sample.user-service.url:http://localhost:8080}")
 @HttpExchange
 public interface UserServiceClient {
 
-    @GetExchange("/mock/provider/users/{id}")
+    @GetExchange("/users/{id}")
     UserResponse getUserById(@PathVariable("id") Long id);
+
+    @PostExchange("/users")
+    UserResponse createUser(@RequestBody UserRequest user);
 }
 ```
 
-#### 步骤 3：注入并执行声明式强类型调用 (1:1 提取自 UserClientScenarioService.java)
-业务 Service 中直接注入声明式契约客户端，实现类型安全调用：
+#### 步骤 3：业务层直接注入调度 (`UserClientScenarioService.java`)
 
 ```java
-package io.github.atengk.boot.sample.http.service;
-
-import io.github.atengk.boot.sample.http.client.UserServiceClient;
-import io.github.atengk.boot.sample.http.dto.UserResponse;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
-
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -136,7 +127,6 @@ public class UserClientScenarioService {
     private final UserServiceClient userServiceClient;
 
     public UserResponse getUserById(Long id) {
-        // 声明式强类型 RPC 调用（底层全自动完成序列化、连接池借还与上下文注入）
         log.info("[UserClientService] Calling declarative getUserById for id: {}", id);
         return userServiceClient.getUserById(id);
     }
@@ -153,106 +143,76 @@ public class UserClientScenarioService {
 flowchart TD
     subgraph CallerLayer["调用层 (Caller Layer)"]
         SC["业务 Service / Controller"]
-        HT["HttpTemplate<br>(命令式门面)"]
-        DC["@HttpClient Proxy<br>(声明式契约代理)"]
+        HT["HttpTemplate (命令式全能门面)"]
+        DC["@HttpClient Proxy (声明式契约代理)"]
         SC --> HT
         SC --> DC
     end
 
-    subgraph FactoryLayer["客户端纳管与工厂层 (Registry & Scoped Factory)"]
-        RCR["RestClientRegistry<br>(多命名客户端单例缓存)"]
-        CSHF["ClientScopedHttpRequestFactory<br>(超时/代理/TLS 客户端作用域包装)"]
+    subgraph RegistryLayer["客户端纳管与作用域隔离层"]
+        RCR["RestClientRegistry (多实例单例注册表)"]
+        CSHF["ClientScopedHttpRequestFactory (超时/代理/mTLS 隔离)"]
         DC --> RCR
         HT --> CSHF
         RCR --> CSHF
     end
 
-    subgraph InterceptorPipeline["出站拦截器流水线 (Interceptor Pipeline)"]
-        TCI["1. TraceContextInterceptor<br>(MDC/四维上下文透传与非信任域头物理剥离)"]
-        HLI["2. HttpLoggingInterceptor<br>(cURL 格式化与敏感凭据自动脱敏)"]
-        HRI["3. HttpRetryInterceptor<br>(幂等指数退避重试与 RFC Retry-After 自愈)"]
-        HEH["4. HttpErrorHandler<br>(4xx/5xx 异常因果转译为 HttpRemoteException)"]
-        CSHF --> TCI
-        TCI --> HLI
-        HLI --> HRI
-        HRI --> HEH
+    subgraph Pipeline["出站拦截与治理流水线"]
+        TCI["1. TraceContextInterceptor (四维上下文透传与敏感头剥离)"]
+        HLI["2. HttpLoggingInterceptor (cURL 结构化脱敏与零缓冲大流旁路)"]
+        HRI["3. HttpRetryInterceptor (幂等指数退避与 Retry-After 退避)"]
+        HEH["4. HttpErrorHandler (4xx/5xx -> HttpRemoteException)"]
+        CSHF --> TCI --> HLI --> HRI --> HEH
     end
 
-    subgraph PoolLayer["物理连接池驱动层 (Physical Connection Pool)"]
-        HC5["Apache HttpClient 5<br>(全局单例池化连接管理器 PoolingHttpClientConnectionManager)"]
-        JDK17["JDK 17 HttpClient<br>(无缝平滑优雅降级底座)"]
+    subgraph Engine["底层物理连接池引擎"]
+        HC5["Apache HttpClient 5 (PoolingHttpClientConnectionManager)"]
+        JDK17["JDK 17 HttpClient (自动平滑降级底座)"]
         HEH --> HC5
-        HEH -.->|类路径降级| JDK17
-    end
-
-    subgraph TargetLayer["出站网络目标 (Outbound Endpoints)"]
-        LP["MockServerProviderController<br>(内置离线回环仿真 /mock/provider/*)"]
-        REMOTE["内部微服务集群 / 外部公网开放平台"]
-        HC5 -->|回环 Socket| LP
-        HC5 -->|物理网络| REMOTE
+        HEH -.->|"缺少 httpclient5 或 engine=jdk"| JDK17
     end
 ```
 
-### 2.2 核心设计不变量
+### 2.2 四项核心设计不变量
 
-1. **单例物理连接池共享不变量**：全应用全局唯一实例化底层物理连接池管理器（`PoolingHttpClientConnectionManager`）。严禁为每个微服务客户端单独创建物理连接池；客户端维度的超时（`connect-timeout`、`read-timeout`）、正向代理与 SSL 证书通过 `ClientScopedHttpRequestFactory` 逻辑隔离，物理 Socket 句柄最大化复用。
-2. **离线自洽回环仿真不变量**：样例工程内部内置 `MockServerProviderController`（`/mock/provider/*`）。客户端默认指向本机端口，请求穿越真实的 Apache HttpClient 5 线程池、连接池借还、追踪/日志/重试拦截器流水线并抵达回环端点，无需外挂任何第三方服务器，实现 100% 离线自洽。
-3. **四维上下文隔离与安全剥离不变量**：出站请求自动捕获 $\langle\text{MDC traceId}, \text{TenantId}, \text{UserId}, \text{IgnoreTenant}\rangle$；对内部微服务（`propagate-context: true`）透明透传，对公网非信任第三方（`propagate-context: false`）强制物理剥离 `X-Tenant-Id` 与 `X-User-Id`，仅保留 `X-Trace-Id` 贯通分布式可观测性。
-4. **模型传输绝对解耦 (Zero-Entity-Leakage)**：Controller 传输边界 100% 严禁接收或返回持久层实体（Entity）；入参统一使用 Request/DTO，出参显式返回强类型 `Result<T>`。
+1. **物理连接池与作用域正交隔离**：全应用共享唯一 `PoolingHttpClientConnectionManager` 物理连接池；客户端维度的超时（`connect-timeout` / `read-timeout`）、出口正向代理与双向 mTLS 证书通过 `ClientScopedHttpRequestFactory` 与 `RestClientRegistry` 作用域隔离，兼顾高并发句柄复用与租户/站点异构需求。
+2. **四维上下文闭环与公网零泄漏**：自动捕捉 `MDC traceId`、`UserContextHolder`、`TenantContextHolder` 与 `IgnoreTenant`；对内部微服务（`propagate-context: true`）透传四维请求头，对外部非信任第三方（`propagate-context: false`）在 Socket 出站前物理剥离 `X-Tenant-Id`、`X-User-Id`、`X-Ignore-Tenant` 及框架内部标记头 `X-Ateng-Internal-*`。
+3. **非阻塞流式防 OOM 与确定性资源回收**：`upload` 通过独立 `streamingRestClient` 走无缓冲 Multipart 直传管道，`download` 与 `consumeStream` 通过 `restClient` 携带 `X-Ateng-Internal-Stream-Transfer` 内部标记走零缓冲回调直读通道；`HttpLoggingInterceptor` 遇到该流式标记或超过 `max-buffer-capacity`（默认 `64KB`）的响应时自动跳过响应体缓冲；单次重试与异常提取前显式关闭响应流，严防连接泄漏。
+4. **Controller 边界 Zero-Entity-Leakage**：所有演示端点均显式返回 `Result<T>` 强类型包装 DTO/VO，彻底隔离持久层实体。
 
 ---
 
 ## 3. 声明式 HTTP 通信套件 (Declarative Client Suite)
 
-### 3.1 强类型契约客户端 (`@HttpClient` / `@HttpExchange`)
+### 3.1 强类型微服务 RPC 与包扫描 (`@HttpClient` / `@HttpExchange`)
 
 #### 专属 YAML 配置片段
+
 ```yaml
 ateng:
   boot:
     http:
       clients:
         user-service:
-          base-url: ${sample.user-service.url:http://localhost:8080}
+          base-url: ${sample.user-service.url:http://localhost:8080/mock/provider}
           connect-timeout: 2s
           read-timeout: 5s
           propagate-context: true
 ```
 
-#### 业务 Java 示例 (1:1 提取自 Sample)
+#### 业务 Java 示例（1:1 提取自 `UserServiceClient.java` & `UserClientScenarioService.java`）
+
 ```java
-// 声明契约接口 (UserServiceClient.java)
-package io.github.atengk.boot.sample.http.client;
-
-import io.github.atengk.boot.http.annotation.HttpClient;
-import io.github.atengk.boot.sample.http.dto.UserRequest;
-import io.github.atengk.boot.sample.http.dto.UserResponse;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.service.annotation.GetExchange;
-import org.springframework.web.service.annotation.HttpExchange;
-import org.springframework.web.service.annotation.PostExchange;
-
 @HttpClient(name = "user-service", url = "${sample.user-service.url:http://localhost:8080}")
 @HttpExchange
 public interface UserServiceClient {
 
-    @GetExchange("/mock/provider/users/{id}")
+    @GetExchange("/users/{id}")
     UserResponse getUserById(@PathVariable("id") Long id);
 
-    @PostExchange("/mock/provider/users")
+    @PostExchange("/users")
     UserResponse createUser(@RequestBody UserRequest user);
 }
-
-// 业务服务调度 (UserClientScenarioService.java)
-package io.github.atengk.boot.sample.http.service;
-
-import io.github.atengk.boot.sample.http.client.UserServiceClient;
-import io.github.atengk.boot.sample.http.dto.UserRequest;
-import io.github.atengk.boot.sample.http.dto.UserResponse;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
 
 @Slf4j
 @Service
@@ -274,39 +234,31 @@ public class UserClientScenarioService {
 ```
 
 #### 核心机制与边界说明
-- **动态代理驱动**：基于 Spring 6 原生 `HttpServiceProxyFactory` 与轻量包扫描器 `HttpInterfaceRegistrar`，运行时自动生成接口代理 Bean，注入容器供业务透明消费；
-- **占位符解析**：`@HttpClient.url` 支持 `${...}` 配置占位符，若配置中存在同名 `ateng.boot.http.clients.<name>.base-url` 则优先采用配置值，实现配置中心动态下发；
-- **上下文透明贯通**：内部微服务通信时，拦截器自动挂载 `X-Trace-Id`、`X-Tenant-Id` 与 `X-User-Id`，下游端点透明还原租户与操作人身份。
+
+- **轻量原生扫描器**：`@EnableHttpInterfaces` 驱动 `HttpInterfaceRegistrar` 扫描候选包（或精准导入 `clients` 类列表），桥接 Spring 6 `HttpServiceProxyFactory` 注册为容器单例 Bean；
+- **地址覆盖优先级**：`ateng.boot.http.clients.<name>.base-url` > `@HttpClient(url = ...)`（均支持 `${...}` 环境变量占位符）。
 
 ---
 
-### 3.2 动态方法级超时与故障降级 (`@HttpTimeout` / `fallback`)
+### 3.2 方法级 `@HttpTimeout` 与本地 `fallback` 优雅降级
 
 #### 专属 YAML 配置片段
+
 ```yaml
 ateng:
   boot:
     http:
       clients:
         order-service:
-          base-url: ${sample.order-service.url:http://localhost:8080}
+          base-url: ${sample.order-service.url:http://localhost:8080/mock/provider}
           connect-timeout: 2s
           read-timeout: 5s
           propagate-context: true
 ```
 
-#### 业务 Java 示例 (1:1 提取自 Sample)
+#### 业务 Java 示例（1:1 提取自 `OrderServiceClient.java` & `OrderServiceClientFallback.java`）
+
 ```java
-// 声明带降级与方法级超时的契约接口 (OrderServiceClient.java)
-package io.github.atengk.boot.sample.http.client;
-
-import io.github.atengk.boot.http.annotation.HttpClient;
-import io.github.atengk.boot.http.annotation.HttpTimeout;
-import io.github.atengk.boot.sample.http.dto.OrderResponse;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.service.annotation.GetExchange;
-import org.springframework.web.service.annotation.HttpExchange;
-
 @HttpClient(
         name = "order-service",
         url = "${sample.order-service.url:http://localhost:8080}",
@@ -315,33 +267,26 @@ import org.springframework.web.service.annotation.HttpExchange;
 @HttpExchange
 public interface OrderServiceClient {
 
-    @GetExchange("/mock/provider/orders/{orderId}")
+    @GetExchange("/orders/{orderId}")
     @HttpTimeout(readTimeout = "300ms", connectTimeout = "1s")
     OrderResponse getOrderById(@PathVariable("orderId") String orderId);
 
-    @GetExchange("/mock/provider/orders/{orderId}/status")
+    @GetExchange("/orders/{orderId}/status")
     OrderResponse getOrderStatus(@PathVariable("orderId") String orderId);
 }
 
-// 本地容错降级组件 (OrderServiceClientFallback.java)
-package io.github.atengk.boot.sample.http.client;
-
-import io.github.atengk.boot.sample.http.dto.OrderResponse;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
-
-@Slf4j
 @Component
 public class OrderServiceClientFallback implements OrderServiceClient {
 
+    public static final String STATUS_DEGRADED = "DEGRADED";
+    public static final String STATUS_UNKNOWN = "UNKNOWN";
+
     @Override
     public OrderResponse getOrderById(String orderId) {
-        log.warn("[OrderClientFallback] Triggered fallback for getOrderById, orderId: {}", orderId);
         return OrderResponse.builder()
                 .orderId(orderId)
-                .amount(null)
-                .status("FALLBACK_DEGRADED")
-                .remark("订单查询服务暂时不可用，已执行本地降级策略")
+                .status(STATUS_DEGRADED)
+                .message("远端服务异常，已触发本地优雅降级兜底")
                 .build();
     }
 
@@ -349,49 +294,39 @@ public class OrderServiceClientFallback implements OrderServiceClient {
     public OrderResponse getOrderStatus(String orderId) {
         return OrderResponse.builder()
                 .orderId(orderId)
-                .status("UNKNOWN")
-                .remark("状态查询降级")
+                .status(STATUS_UNKNOWN)
+                .message("远端订单状态查询降级")
                 .build();
     }
 }
 ```
 
 #### 核心机制与边界说明
-- **现场还原防污染**：`@HttpTimeout` 标注在特定方法上，进入方法时将建联/读取超时暂存至 `HttpRequestContextHolder` 并下发至物理请求；在 `finally` 块中严格执行 `previousTimeout` 现场还原，彻底杜绝线程复用时引发的超时漂移污染；
-- **无感本地降级**：当远程端点发生 4xx/5xx 服务端异常、网络读取超时（`SocketTimeoutException`）或建联拒绝时，动态代理拦截器自动捕捉异常并无缝回退调用 `OrderServiceClientFallback` 对应方法，保障主流程高可用。
+
+- **精确超时下发与现场还原**：`@HttpTimeout` 支持纯数字毫秒（`"500"`）、Duration 格式（`"300ms"` / `"1s"`）与占位符表达式，进入方法前暂存至 `HttpRequestContextHolder` 并在 `finally` 中精确还原旧值，绝不污染线程池复用线程；
+- **异常兜底范围**：当调用抛出 `HttpRemoteException`、连接超时、`ResourceAccessException` 等受管远程故障时自动切入 `fallback` Bean 执行降级逻辑；`primary = true` 确保按接口自动装配无歧义。
 
 ---
 
 ## 4. 命令式 HTTP 通信套件 (Imperative HttpTemplate Suite)
 
-### 4.1 核心 CRUD 动词与强类型反序列化
+### 4.1 核心 REST CRUD 与 `PATCH` 局部更新
 
 #### 专属 YAML 配置片段
+
 ```yaml
 ateng:
   boot:
     http:
       enabled: true
       pool:
-        max-connections: 200
-        max-per-route: 50
         connect-timeout: 3s
         read-timeout: 10s
 ```
 
-#### 业务 Java 示例 (1:1 提取自 Sample)
+#### 业务 Java 示例（1:1 提取自 `HttpTemplateScenarioService.java`）
+
 ```java
-// 命令式 CRUD 业务服务 (HttpTemplateScenarioService.java 节选)
-package io.github.atengk.boot.sample.http.service;
-
-import io.github.atengk.boot.http.template.HttpTemplate;
-import io.github.atengk.boot.sample.http.dto.UserRequest;
-import io.github.atengk.boot.sample.http.dto.UserResponse;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
-import java.util.Map;
-
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -400,41 +335,111 @@ public class HttpTemplateScenarioService {
     private final HttpTemplate httpTemplate;
 
     public UserResponse getUserById(Long id) {
-        String url = "http://localhost:8080/mock/provider/users/" + id;
-        log.info("[HttpTemplateService] Invoking GET {}", url);
+        String url = getBaseUrl() + "/mock/provider/users/" + id;
         return httpTemplate.get(url, UserResponse.class);
     }
 
     public UserResponse createUser(UserRequest request) {
-        String url = "http://localhost:8080/mock/provider/users";
-        log.info("[HttpTemplateService] Invoking POST {} with payload {}", url, request);
+        String url = getBaseUrl() + "/mock/provider/users";
         return httpTemplate.post(url, request, UserResponse.class);
     }
 
     public UserResponse updateUser(Long id, UserRequest request) {
-        String url = "http://localhost:8080/mock/provider/users/" + id;
-        log.info("[HttpTemplateService] Invoking PUT {} with payload {}", url, request);
+        String url = getBaseUrl() + "/mock/provider/users/" + id;
         return httpTemplate.put(url, request, UserResponse.class);
+    }
+
+    public UserResponse patchUser(Long id, UserPatchRequest request) {
+        String url = getBaseUrl() + "/mock/provider/users/" + id;
+        return httpTemplate.patch(url, request, UserResponse.class);
     }
 
     @SuppressWarnings("unchecked")
     public Map<String, Object> deleteUser(Long id) {
-        String url = "http://localhost:8080/mock/provider/users/" + id;
-        log.info("[HttpTemplateService] Invoking DELETE {}", url);
+        String url = getBaseUrl() + "/mock/provider/users/" + id;
         return httpTemplate.delete(url, Map.class);
     }
 }
 ```
 
 #### 核心机制与边界说明
-- **对称动词完备**：`HttpTemplate` 提供完备对称动词方法（`get` / `post` / `put` / `patch` / `delete` / `head` / `options`），彻底告别半残门面；
-- **双模类型反序列化**：重载支持 `Class<T>`（简单 POJO）与 `ParameterizedTypeReference<T>`（复杂泛型嵌套容器 `Result<List<UserVO>>`），避免反序列化类型擦除导致的 `LinkedHashMap` 强转异常。
+
+- **对称动词与双模泛型**：`get` / `post` / `put` / `patch` / `delete` / `exchange` 均支持 `Class<T>` 与 `ParameterizedTypeReference<T>` 重载，解决泛型集合反序列化擦除问题。
 
 ---
 
-### 4.2 动态 RequestOptions 定制与表单提交
+### 4.2 端点元数据探测（`HEAD`/`OPTIONS`）、`getOptional` 与 `getEntity`
 
 #### 专属 YAML 配置片段
+
+```yaml
+ateng:
+  boot:
+    http:
+      enabled: true
+      logging:
+        enabled: true
+        level: BASIC
+```
+
+#### 业务 Java 示例（1:1 提取自 `HttpTemplateScenarioService.java`）
+
+```java
+public EndpointMetadataVO probeUserMetadata(Long id) {
+    String url = getBaseUrl() + "/mock/provider/users/" + id;
+    HttpHeaders headHeaders = httpTemplate.head(url);
+    HttpHeaders optionsHeaders = httpTemplate.options(url);
+    Set<HttpMethod> allowed = httpTemplate.optionsForAllow(url);
+    Set<String> sortedMethods = allowed.stream()
+            .map(HttpMethod::name)
+            .collect(Collectors.toCollection(TreeSet::new));
+    return EndpointMetadataVO.builder()
+            .resourceId(id)
+            .contentType(headHeaders != null && headHeaders.getContentType() != null
+                    ? headHeaders.getContentType().toString() : null)
+            .contentLength(headHeaders != null ? headHeaders.getContentLength() : -1L)
+            .resourceVersion(headHeaders != null ? headHeaders.getFirst("X-Resource-Version") : null)
+            .endpointCapability(optionsHeaders != null ? optionsHeaders.getFirst("X-Endpoint-Capability") : null)
+            .allowedMethods(sortedMethods)
+            .optionsHeaderCount(optionsHeaders != null ? optionsHeaders.size() : 0)
+            .build();
+}
+
+public OptionalLookupVO getUserOptional(Long id) {
+    String url = getBaseUrl() + "/mock/provider/users/" + id;
+    Optional<UserResponse> result = httpTemplate.getOptional(url, UserResponse.class);
+    return OptionalLookupVO.builder()
+            .id(id)
+            .found(result.isPresent())
+            .statusSummary(result.isPresent() ? "FOUND" : "NOT_FOUND_EMPTY")
+            .user(result.orElse(null))
+            .build();
+}
+
+public ResponseEntityVO getUserEntity(Long id) {
+    String url = getBaseUrl() + "/mock/provider/users/" + id;
+    ResponseEntity<UserResponse> entity = httpTemplate.getEntity(url, UserResponse.class);
+    return ResponseEntityVO.builder()
+            .httpStatus(entity.getStatusCode().value())
+            .resourceVersion(entity.getHeaders().getFirst("X-Resource-Version"))
+            .contentType(entity.getHeaders().getContentType() != null
+                    ? entity.getHeaders().getContentType().toString() : null)
+            .body(entity.getBody())
+            .build();
+}
+```
+
+#### 核心机制与边界说明
+
+- **`404` 空安全收敛**：`getOptional` 仅将 HTTP `404` 语义转换为 `Optional.empty()`；遇到 `401`/`403`/`5xx` 等真实错误仍严格抛出 `HttpRemoteException`（快速失败，不吞异常）；
+- **轻量元数据抓取**：`head`、`options`、`optionsForAllow` 通过 `ResponseEntity<Void>` 仅抓取响应头，零开销获取资源大小、版本与可用方法。
+
+---
+
+### 4.3 单次 `RequestOptions` 动态覆盖与标准表单提交
+
+#### 专属 YAML 配置片段
+
 ```yaml
 ateng:
   boot:
@@ -445,128 +450,115 @@ ateng:
         read-timeout: 10s
 ```
 
-#### 业务 Java 示例 (1:1 提取自 Sample)
+#### 业务 Java 示例（1:1 提取自 `HttpTemplateScenarioService.java`）
+
 ```java
-// 单次参数动态微调与标准表单提交 (HttpTemplateScenarioService.java 节选)
-package io.github.atengk.boot.sample.http.service;
-
-import io.github.atengk.boot.http.options.RequestOptions;
-import io.github.atengk.boot.sample.http.dto.UserFormRequest;
-import io.github.atengk.boot.sample.http.dto.UserOptionsRequest;
-import io.github.atengk.boot.sample.http.dto.UserResponse;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.util.MultiValueMap;
-import java.time.Duration;
-
-public class HttpTemplateScenarioService {
-
-    // 1. 单次请求动态超时与自定义 Header / Query 参数
-    public UserResponse getUserWithOptions(UserOptionsRequest request) {
-        String url = "http://localhost:8080/mock/provider/users/" + request.getId();
-        RequestOptions.Builder builder = RequestOptions.builder();
-        if (request.getReadTimeoutMillis() != null && request.getReadTimeoutMillis() > 0) {
-            builder.readTimeout(Duration.ofMillis(request.getReadTimeoutMillis()));
-        }
-        if (request.getCustomHeader() != null) {
-            builder.header("X-Custom-Option-Header", request.getCustomHeader());
-        }
-        if (request.getCustomQueryParam() != null) {
-            builder.queryParam("customParam", request.getCustomQueryParam());
-        }
-        RequestOptions options = builder.build();
-        return httpTemplate.get(url, options, UserResponse.class);
+public UserResponse getUserWithOptions(UserOptionsRequest request) {
+    String url = getBaseUrl() + "/mock/provider/users/" + request.getId();
+    RequestOptions.Builder builder = RequestOptions.builder();
+    if (request.getReadTimeoutMillis() != null && request.getReadTimeoutMillis() > 0) {
+        builder.readTimeout(Duration.ofMillis(request.getReadTimeoutMillis()));
     }
-
-    // 2. application/x-www-form-urlencoded 标准表单提交
-    public UserResponse submitUserForm(UserFormRequest request) {
-        String url = "http://localhost:8080/mock/provider/users/form";
-        MultiValueMap<String, String> formData = new LinkedMultiValueMap<>();
-        formData.add("username", request.getUsername());
-        if (request.getEmail() != null) {
-            formData.add("email", request.getEmail());
-        }
-        if (request.getRole() != null) {
-            formData.add("role", request.getRole());
-        }
-        return httpTemplate.postForm(url, formData, UserResponse.class);
+    if (request.getCustomHeader() != null) {
+        builder.header("X-Custom-Option-Header", request.getCustomHeader());
     }
+    if (request.getCustomQueryParam() != null) {
+        builder.queryParam("customParam", request.getCustomQueryParam());
+    }
+    RequestOptions options = builder.build();
+    return httpTemplate.get(url, options, UserResponse.class);
+}
+
+public UserResponse submitUserForm(UserFormRequest request) {
+    String url = getBaseUrl() + "/mock/provider/users/form";
+    MultiValueMap<String, String> formData = new LinkedMultiValueMap<>();
+    formData.add("username", request.getUsername());
+    if (request.getEmail() != null) {
+        formData.add("email", request.getEmail());
+    }
+    if (request.getRole() != null) {
+        formData.add("role", request.getRole());
+    }
+    return httpTemplate.postForm(url, formData, UserResponse.class);
 }
 ```
 
 #### 核心机制与边界说明
-- **RFC 3986 规范转译**：`RequestOptions.queryParam()` 注入的参数自动经过 RFC 3986 标准安全编码转译，杜绝非法特殊字符拼接引起的 URL 解析崩溃；
-- **强类型表单支持**：`postForm` 自动装配 `application/x-www-form-urlencoded;charset=UTF-8` 媒介类型与请求体编码器，原生适配旧系统表单提交。
+
+- **`RequestOptions` 不可变设计**：同时支持 `readTimeout(Duration)`、`connectTimeout(Duration)`、`header`、`queryParam`、`uriVariable`、`propagateContext(Boolean)`、`clientName(String)`；查询参数自动经 RFC 3986 安全转译防拼接注入。
 
 ---
 
-### 4.3 二进制流式下载与响应式 SSE 流式消费
+### 4.4 零缓冲 Multipart 上传、大文件流式下载与 SSE 事件消费
 
 #### 专属 YAML 配置片段
+
 ```yaml
 ateng:
   boot:
     http:
       enabled: true
       pool:
-        read-timeout: 30s # 大流式传输建议调大读取超时
+        read-timeout: 30s
+      logging:
+        max-buffer-capacity: 64KB
 ```
 
-#### 业务 Java 示例 (1:1 提取自 Sample)
+#### 业务 Java 示例（1:1 提取自 `HttpTemplateScenarioService.java`）
+
 ```java
-// 流式下载与 SSE 消费 (HttpTemplateScenarioService.java 节选)
-package io.github.atengk.boot.sample.http.service;
-
-import io.github.atengk.boot.sample.http.dto.FileDownloadVO;
-import io.github.atengk.boot.sample.http.dto.SseStreamVO;
-import java.io.ByteArrayOutputStream;
-import java.util.ArrayList;
-import java.util.List;
-
-public class HttpTemplateScenarioService {
-
-    // 1. SSE 文本事件行流式消费
-    public SseStreamVO consumeSseStream() {
-        String url = "http://localhost:8080/mock/provider/stream/sse";
-        List<String> events = new ArrayList<>();
-        httpTemplate.consumeStream(url, line -> {
-            if (line != null && !line.isBlank()) {
-                events.add(line);
-            }
-        });
-        return SseStreamVO.builder()
-                .eventCount(events.size())
-                .events(events)
-                .build();
+public FileUploadVO uploadFile(MultipartFile file, String bizType) {
+    if (file == null || file.isEmpty()) {
+        throw new BusinessException(HttpResultCode.REMOTE_HTTP_CLIENT_ERROR, "上传文件不能为空");
     }
+    String resolvedBizType = StringUtils.hasText(bizType) ? bizType.trim() : "sample-attachment";
+    String url = getBaseUrl() + "/mock/provider/files/upload";
+    MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
+    parts.add("file", file.getResource());
+    parts.add("bizType", resolvedBizType);
+    RequestOptions options = RequestOptions.builder()
+            .header("X-Upload-Biz-Type", resolvedBizType)
+            .build();
+    return httpTemplate.upload(url, parts, options, FileUploadVO.class);
+}
 
-    // 2. 二进制大文件零缓冲流式下载
-    public FileDownloadVO downloadFile() {
-        String url = "http://localhost:8080/mock/provider/files/download";
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        httpTemplate.download(url, (inputStream, contentLength, headers) -> {
-            inputStream.transferTo(buffer);
-        });
-        byte[] bytes = buffer.toByteArray();
-        return FileDownloadVO.builder()
-                .filename("sample-file.txt")
-                .size((long) bytes.length)
-                .content(new String(bytes))
-                .build();
-    }
+public FileDownloadVO downloadFile() {
+    String url = getBaseUrl() + "/mock/provider/files/download";
+    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+    httpTemplate.download(url, outputStream);
+    byte[] bytes = outputStream.toByteArray();
+    return FileDownloadVO.builder()
+            .size(bytes.length)
+            .filename("sample-file.txt")
+            .previewContent(new String(bytes, StandardCharsets.UTF_8))
+            .build();
+}
+
+public SseStreamVO consumeSseStream() {
+    String url = getBaseUrl() + "/mock/provider/stream/sse";
+    List<String> events = new ArrayList<>();
+    httpTemplate.consumeStream(url, line -> {
+        if (line != null && !line.isBlank()) {
+            events.add(line);
+        }
+    });
+    return SseStreamVO.builder()
+            .eventCount(events.size())
+            .events(events)
+            .build();
 }
 ```
 
 #### 核心机制与边界说明
-- **零缓冲防 OOM**：`download` 与 `consumeStream` 均采用流式回调协议，底层不预加载完整载荷到内存，以管道方式直达消费端，杜绝百兆甚至吉字节级别大文件引发堆内存溢出（OOM）；
-- **确定性连接释放**：回调执行完毕或异常中断时，底层响应输入流在 `try-with-resources` 中强制闭环释放，连接安全归还池化管理器。
+
+- **流式零缓冲通道**：`upload` 经由 `streamingRestClient` 执行无内存堆积 Multipart 分片上传；`download`（支持 `OutputStream` 与 `Path` 直写）与 `consumeStream` 经由 `restClient` 附加 `X-Ateng-Internal-Stream-Transfer` 标记旁路日志缓冲管道；内部标记头在拦截器出站前严格剥离，绝不泄漏到物理网络报文。
 
 ---
 
-## 5. 出站治理与生产防卫套件 (Outbound Governance & Security Suite)
-
-### 5.1 信任域与敏感头物理剥离
+### 4.5 受管线程池异步调用与四维上下文保真透传
 
 #### 专属 YAML 配置片段
+
 ```yaml
 ateng:
   boot:
@@ -576,73 +568,241 @@ ateng:
         trace-id-header: X-Trace-Id
         tenant-id-header: X-Tenant-Id
         user-id-header: X-User-Id
-      clients:
-        wechat-pay:
-          base-url: ${sample.wechat-pay.url:http://localhost:8080}
-          connect-timeout: 2s
-          read-timeout: 5s
-          propagate-context: false # 外部非信任域：强制物理剥离内网敏感私有头
+        ignore-tenant-header: X-Ignore-Tenant
 ```
 
-#### 业务 Java 示例 (1:1 提取自 Sample)
+#### 业务 Java 示例（1:1 提取自 `HttpTemplateScenarioService.java`）
+
 ```java
-// 外部支付隔离调用 (ExternalPaymentScenarioService.java 节选)
-package io.github.atengk.boot.sample.http.service;
+public AsyncContextVO executeAsyncContext() {
+    UserContextHolder.UserSnapshot previousUser = UserContextHolder.capture();
+    TenantContextHolder.TenantSnapshot previousTenant = TenantContextHolder.capture();
+    String previousTraceId = MDC.get("traceId");
 
-import io.github.atengk.boot.core.context.TenantContextHolder;
-import io.github.atengk.boot.core.context.UserContextHolder;
-import io.github.atengk.boot.sample.http.client.WechatPayClient;
-import io.github.atengk.boot.sample.http.dto.WechatNativeOrderRequest;
-import io.github.atengk.boot.sample.http.dto.WechatNativeOrderResponse;
-import io.github.atengk.boot.sample.http.dto.WechatPaymentVO;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
-
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class ExternalPaymentScenarioService {
-
-    private final WechatPayClient wechatPayClient;
-
-    public WechatPaymentVO createWechatNativeOrder(WechatNativeOrderRequest request) {
-        try {
-            // 模拟业务上下文中包含内部多租户与当前用户
-            TenantContextHolder.setTenantId("TENANT_SAMPLE_888");
-            UserContextHolder.setUserId("USER_SAMPLE_9999");
-
-            // WechatPayClient 绑定 propagate-context: false
-            WechatNativeOrderResponse response = wechatPayClient.createNativeOrder(request);
-
-            return WechatPaymentVO.builder()
-                    .outTradeNo(request.getOutTradeNo())
-                    .codeUrl(response.getCodeUrl())
-                    .contextStripped(true) // 验证 X-Tenant-Id 与 X-User-Id 已被物理剥离
+    String callerTraceId = StringUtils.hasText(previousTraceId) ? previousTraceId : IdUtil.fastSimpleUUID();
+    MDC.put("traceId", callerTraceId);
+    UserContextHolder.setUserId("USER_ASYNC_777");
+    TenantContextHolder.setTenantId("TENANT_ASYNC_999");
+    TenantContextHolder.setIgnoreTenant(true);
+    try {
+        String url = getBaseUrl() + "/mock/provider/users/1001";
+        CompletableFuture<AsyncContextVO> future = httpTemplate.executeAsync(() -> {
+            String asyncTraceId = MDC.get("traceId");
+            String asyncUserId = UserContextHolder.getUserId();
+            String asyncTenantId = TenantContextHolder.getTenantId();
+            boolean asyncIgnoreTenant = TenantContextHolder.isIgnoreTenant();
+            UserResponse remoteUser = httpTemplate.get(url, UserResponse.class);
+            boolean propagatedAllFour = callerTraceId.equals(asyncTraceId)
+                    && "USER_ASYNC_777".equals(asyncUserId)
+                    && "TENANT_ASYNC_999".equals(asyncTenantId)
+                    && asyncIgnoreTenant;
+            return AsyncContextVO.builder()
+                    .callerTraceId(callerTraceId)
+                    .asyncTraceId(asyncTraceId)
+                    .asyncUserId(asyncUserId)
+                    .asyncTenantId(asyncTenantId)
+                    .asyncIgnoreTenant(asyncIgnoreTenant)
+                    .propagatedAllFour(propagatedAllFour)
+                    .remoteUser(remoteUser)
                     .build();
-        } finally {
-            TenantContextHolder.clear();
-            UserContextHolder.clear();
+        });
+        return future.get(5, TimeUnit.SECONDS);
+    } catch (InterruptedException ex) {
+        Thread.currentThread().interrupt();
+        throw new BusinessException(HttpResultCode.REMOTE_HTTP_SERVER_ERROR, "异步执行四维上下文演示任务被中断", ex);
+    } catch (TimeoutException ex) {
+        throw new BusinessException(HttpResultCode.REMOTE_HTTP_TIMEOUT, "异步执行四维上下文演示任务超时", ex);
+    } catch (ExecutionException ex) {
+        throw new BusinessException(HttpResultCode.REMOTE_HTTP_SERVER_ERROR, "异步执行四维上下文演示任务失败", ex);
+    } finally {
+        TenantContextHolder.restore(previousTenant);
+        UserContextHolder.restore(previousUser);
+        if (previousTraceId == null) {
+            MDC.remove("traceId");
+        } else {
+            MDC.put("traceId", previousTraceId);
         }
     }
 }
 ```
 
 #### 核心机制与边界说明
-- **白名单机制**：内部微服务通信默认保持安全信任域；向外部公网调用时，声明 `propagate-context: false`，拦截器在物理 Socket 发送前强制剔除 `X-Tenant-Id`、`X-User-Id` 与 `X-Ignore-Tenant` 等内部私有头；
-- **全链路追踪保留**：敏感身份头虽被物理剥离，但 `X-Trace-Id` 保持向外传递，确保与外部公网平台发生纠纷或交互排查时具备唯一分布式链路追踪线索。
+
+- **接入 Core 受管并发**：`executeAsync` 强制复用容器受管异步 `Executor`（挂载 `ContextCopyingTaskDecorator`），将 $\langle\text{MDC traceId}, \text{UserId}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 完整拷贝进子线程并透传至异步发出的 HTTP 出站请求；杜绝自建野线程。
 
 ---
 
-### 5.2 弹性指数退避重试与 RFC Retry-After 自愈
+## 5. 出站治理与生产防卫套件 (Outbound Governance & Security Suite)
 
-#### 专属 YAML 配置片段
+### 5.1 多命名客户端注册表、实例级正向代理与双向 mTLS 证书
+
+#### 专属 YAML 配置片段（1:1 提取自 Sample `application.yml`）
+
+```yaml
+ateng:
+  boot:
+    http:
+      clients:
+        scoped-proxy-client:
+          base-url: http://proxy-target.internal:8080
+          connect-timeout: 2s
+          read-timeout: 5s
+          proxy:
+            enabled: true
+            host: 127.0.0.1
+            port: 8888
+        mtls-service:
+          base-url: https://mtls.internal:8443
+          connect-timeout: 2s
+          read-timeout: 5s
+          ssl:
+            key-store: ${sample.mtls-service.key-store:classpath:certs/sample-client-cert.p12}
+            key-store-password: ${sample.mtls-service.key-store-password:YOUR_KEYSTORE_PASSWORD}
+            key-store-type: PKCS12
+```
+
+#### 业务 Java 示例（1:1 提取自 `ExternalPaymentScenarioService.java`）
+
+```java
+public RegistryInspectVO inspectRegistryMetadata() {
+    Map<String, HttpClientItemProperties> configuredClients = httpProperties.getClients();
+    if (configuredClients != null) {
+        configuredClients.keySet().forEach(name -> {
+            if (!restClientRegistry.contains(name)) {
+                restClientRegistry.getClient(name);
+            }
+        });
+    }
+
+    List<String> registeredNames = new ArrayList<>(restClientRegistry.getClientNames());
+    Collections.sort(registeredNames);
+
+    List<RegistryClientItemVO> items = new ArrayList<>();
+    if (configuredClients != null) {
+        List<String> sortedKeys = new ArrayList<>(configuredClients.keySet());
+        Collections.sort(sortedKeys);
+        for (String clientName : sortedKeys) {
+            HttpClientItemProperties item = configuredClients.get(clientName);
+            HttpProxyProperties proxy = item != null ? item.getProxy() : null;
+            HttpSslProperties ssl = item != null ? item.getResolvedSsl() : null;
+            boolean proxyEnabled = proxy != null && proxy.isEnabled() && StringUtils.hasText(proxy.getHost());
+            boolean sslEnabled = ssl != null && (ssl.hasKeyStore() || ssl.isInsecure());
+            items.add(RegistryClientItemVO.builder()
+                    .clientName(clientName)
+                    .registered(restClientRegistry.contains(clientName))
+                    .baseUrl(restClientRegistry.resolveBaseUrl(clientName, null))
+                    .propagateContext(item != null && item.isPropagateContext())
+                    .retryEnabled(item != null && item.getRetry() != null && item.getRetry().isEnabled())
+                    .proxyEnabled(proxyEnabled)
+                    .proxyEndpoint(proxyEnabled ? proxy.getHost() + ":" + proxy.getPort() : null)
+                    .sslEnabled(sslEnabled)
+                    .keyStoreType(ssl != null ? ssl.getKeyStoreType() : null)
+                    .build());
+        }
+    }
+
+    return RegistryInspectVO.builder()
+            .registeredCount(restClientRegistry.size())
+            .registeredClientNames(registeredNames)
+            .clients(items)
+            .build();
+}
+```
+
+#### 核心机制与边界说明
+
+- **对称管理与异构隔离**：`RestClientRegistry` 通过 `getClient`、`register`、`unregister`、`contains`、`size`、`clear` 提供完整生命周期；单个客户端可独立挂载专属正向代理（带 `non-proxy-hosts` 白名单）、`default-headers`、超时、重试策略或 PKCS12/JKS mTLS 客户端证书，且绝不泄露密码明文。
+
+---
+
+### 5.2 四维上下文信任域透传与公网敏感头物理剥离
+
+#### 专属 YAML 配置片段（1:1 提取自 Sample `application.yml`）
+
+```yaml
+ateng:
+  boot:
+    http:
+      tracing:
+        enabled: true
+        trace-id-header: X-Trace-Id
+        tenant-id-header: X-Tenant-Id
+        user-id-header: X-User-Id
+        ignore-tenant-header: X-Ignore-Tenant
+      clients:
+        wechat-pay:
+          base-url: ${sample.wechat-pay.url:http://localhost:8080/mock/provider/wechat}
+          connect-timeout: 2s
+          read-timeout: 5s
+          propagate-context: false
+```
+
+#### 业务 Java 示例（1:1 提取自 `ExternalPaymentScenarioService.java`）
+
+```java
+public WechatPaymentVO createWechatOrder(WechatNativeOrderRequest request) {
+    UserContextHolder.UserSnapshot previousUser = UserContextHolder.capture();
+    TenantContextHolder.TenantSnapshot previousTenant = TenantContextHolder.capture();
+    String previousTraceId = MDC.get("traceId");
+    boolean mdcInjected = false;
+    String currentTraceId = previousTraceId;
+    if (currentTraceId == null || currentTraceId.isBlank()) {
+        currentTraceId = IdUtil.fastSimpleUUID();
+        MDC.put("traceId", currentTraceId);
+        mdcInjected = true;
+    }
+
+    TenantContextHolder.setTenantId("TENANT_SAMPLE_888");
+    UserContextHolder.setUserId("USER_SAMPLE_9999");
+    try {
+        WechatNativeOrderResponse response = wechatPayClient.createNativeOrder(request);
+
+        String checkUrl = getBaseUrl() + "/mock/provider/wechat/last-headers";
+        @SuppressWarnings("unchecked")
+        Map<String, String> headers = httpTemplate.get(checkUrl, Map.class);
+
+        boolean tenantStripped = !headers.containsKey("x-tenant-id");
+        boolean userStripped = !headers.containsKey("x-user-id");
+
+        return WechatPaymentVO.builder()
+                .outTradeNo(request.getOutTradeNo())
+                .codeUrl(response.getCodeUrl())
+                .contextStripped(tenantStripped && userStripped)
+                .traceId(headers.get("x-trace-id"))
+                .build();
+    } finally {
+        TenantContextHolder.restore(previousTenant);
+        UserContextHolder.restore(previousUser);
+        if (mdcInjected) {
+            MDC.remove("traceId");
+        }
+    }
+}
+```
+
+#### 核心机制与边界说明
+
+- **非信任域物理剥离**：当客户端配置 `propagate-context: false` 或单次 `RequestOptions` 显式关闭上下文透传时，`TraceContextInterceptor` 在报文发送前物理剔除 `X-Tenant-Id`、`X-User-Id`、`X-Ignore-Tenant`，仅保留 `X-Trace-Id` 用于分布式排障。
+
+---
+
+### 5.3 幂等动词弹性指数退避重试与 `RFC Retry-After` 自愈
+
+#### 专属 YAML 配置片段（1:1 提取自 Sample `application.yml`）
+
 ```yaml
 ateng:
   boot:
     http:
       retry:
-        enabled: false # 全局默认关闭，避免无差别重试非幂等操作
+        enabled: false
+        max-attempts: 3
+        delay: 50ms
+        multiplier: 2.0
+        max-delay: 2s
+        jitter: true
+        retry-status-codes: [429, 502, 503, 504]
+        retry-methods: [GET, HEAD]
       clients:
         flaky-service:
           base-url: ${sample.flaky-service.url:http://localhost:8080}/mock/provider/flaky
@@ -657,226 +817,234 @@ ateng:
             retry-methods: [GET, HEAD]
 ```
 
-#### 业务 Java 示例 (1:1 提取自 Sample)
+#### 业务 Java 示例（1:1 提取自 `ExternalPaymentScenarioService.java`）
+
 ```java
-// 瞬态故障弹性重试服务 (ExternalPaymentScenarioService.java 节选)
-package io.github.atengk.boot.sample.http.service;
+public RetrySimulationVO simulateFlakyRetry(int failTimes) {
+    httpTemplate.get(getBaseUrl() + "/mock/provider/flaky/reset", Map.class);
 
-import io.github.atengk.boot.sample.http.dto.RetrySimulationVO;
-import java.util.Map;
+    String url = getBaseUrl() + "/mock/provider/flaky?failTimes=" + failTimes;
 
-public class ExternalPaymentScenarioService {
+    @SuppressWarnings("unchecked")
+    Map<String, Object> result = httpTemplate.get(url, Map.class);
 
-    public RetrySimulationVO simulateFlakyRetry(int failTimes) {
-        // 先调用重置端点清零计数器
-        httpTemplate.get(getBaseUrl() + "/mock/provider/flaky/reset", Map.class);
-
-        String url = getBaseUrl() + "/mock/provider/flaky?failTimes=" + failTimes;
-
-        @SuppressWarnings("unchecked")
-        Map<String, Object> result = httpTemplate.get(url, Map.class);
-
-        int attempts = ((Number) result.get("successfulAttempt")).intValue();
-        return RetrySimulationVO.builder()
-                .status((String) result.get("status"))
-                .totalAttempts(attempts)
-                .message("成功完成指数退避重试并在第 " + attempts + " 次请求自愈恢复")
-                .build();
-    }
+    int attempts = ((Number) result.get("successfulAttempt")).intValue();
+    return RetrySimulationVO.builder()
+            .status((String) result.get("status"))
+            .totalAttempts(attempts)
+            .message("成功完成指数退避重试并在第 " + attempts + " 次请求自愈恢复")
+            .build();
 }
 ```
 
 #### 核心机制与边界说明
-- **动词安全守卫**：默认严格限定仅对幂等动词（`GET`、`HEAD`）触发自动重试，**绝对严禁自动重试 `POST` / `PUT` / `DELETE`**，从源头扼杀重复划扣或破坏性覆写风险；
-- **自适应解析 Retry-After**：服务端返回 429 或 503 时若携带 RFC 7231 / RFC 6585 标准头（如 `Retry-After: 1`），重试器自适应优先采纳服务端指定等待窗口；
-- **Equal Jitter 随机抖动**：退避算法深度接入 Core 受管 `RetryUtil`，开启 `jitter: true` 随机打散瞬时重试洪峰，杜绝多节点重试共振打垮刚恢复的下游。
+
+- **幂等安全与实例级优先级**：支持全局关闭而按需为指定 `clients.<name>` 开启重试；仅允许 `retry-methods` 白名单内的幂等动词触发重试；自动识别响应头 `Retry-After`（秒数或 HTTP 日期），每次重试前确保关闭上一次响应连接防止池耗尽。
 
 ---
 
-### 5.3 出站 cURL 敏感凭据脱敏日志
+### 5.4 出站 cURL 结构化日志与敏感凭据自动脱敏
 
 #### 专属 YAML 配置片段
+
 ```yaml
 ateng:
   boot:
     http:
       logging:
         enabled: true
-        level: HEADERS
-        max-body-length: 4096
-        sensitive-headers:
+        level: BASIC # 可选：NONE / BASIC / HEADERS / FULL
+        max-body-length: 1024
+        max-buffer-capacity: 64KB
+        mask-headers:
           - Authorization
           - Cookie
           - Set-Cookie
-          - X-Token
-        mask-params:
+          - X-Api-Key
           - token
-          - password
+          - access-token
+        mask-params:
           - secret
+          - password
+          - token
           - apiKey
+          - api_key
+          - key
+          - access_token
 ```
 
-#### 业务 Java 示例 (1:1 提取自 Sample)
+#### 业务 Java 示例（1:1 提取自 `ExternalPaymentScenarioService.java`）
+
 ```java
-// 出站 cURL 脱敏调用 (ExternalPaymentScenarioService.java 节选)
-package io.github.atengk.boot.sample.http.service;
+public LoggingDemoVO triggerMaskedLoggingDemo(String sensitiveToken, String password) {
+    String url = getBaseUrl() + "/mock/provider/headers/echo";
+    RequestOptions options = RequestOptions.builder()
+            .header("Authorization", "Bearer " + sensitiveToken)
+            .header("X-Token", sensitiveToken)
+            .queryParam("token", sensitiveToken)
+            .queryParam("password", password)
+            .build();
 
-import io.github.atengk.boot.sample.http.dto.LoggingDemoVO;
-import java.util.Map;
+    @SuppressWarnings("unchecked")
+    Map<String, Object> result = httpTemplate.get(url, options, Map.class);
 
-public class ExternalPaymentScenarioService {
+    return LoggingDemoVO.builder()
+            .requestUrl(url + "?token=******&password=******")
+            .maskedNotice("出站请求 Authorization/X-Token 请求头及 token/password 参数已在控制台日志中自动掩码脱敏")
+            .status("SUCCESS")
+            .build();
+}
+```
 
-    public LoggingDemoVO triggerMaskedLoggingDemo(String sensitiveToken, String password) {
-        String url = getBaseUrl() + "/mock/provider/headers/echo"
-                + "?token=" + sensitiveToken
-                + "&password=" + password;
+#### 核心机制与边界说明
 
+- **四级日志模型**：`NONE`（静默）、`BASIC`（动词、URL、状态码、耗时）、`HEADERS`（附加脱敏头）、`FULL`（输出终端可直接复现的脱敏 cURL 与安全截断载荷）；
+- **全维度脱敏与容限截断**：响应体超过 `max-buffer-capacity`（`64KB`）或文本超过 `max-body-length`（`1024` 字符）时安全截断/旁路，守护日志收集链路与堆内存稳定。
+
+---
+
+### 5.5 因果异常转译与结构化错误体反序列化 (`HttpRemoteException`)
+
+#### 专属 YAML 配置片段
+
+```yaml
+ateng:
+  boot:
+    http:
+      enabled: true
+```
+
+#### 业务 Java 示例（1:1 提取自 `ExternalPaymentScenarioService.java`）
+
+```java
+public ErrorTranslationVO demonstrateErrorTranslation(int statusCode) {
+    String url = getBaseUrl() + "/mock/provider/errors/" + statusCode;
+    try {
         httpTemplate.get(url, Map.class);
-
-        return LoggingDemoVO.builder()
+        throw new IllegalStateException("Expected HttpRemoteException from " + url);
+    } catch (HttpRemoteException ex) {
+        RemoteErrorPayload payload = ex.getResponseBodyAs(RemoteErrorPayload.class);
+        return ErrorTranslationVO.builder()
+                .mappedResultCode(ex.getResultCode().getCode())
+                .mappedResultMessage(ex.getResultCode().getMsg())
+                .httpStatusCode(ex.getHttpStatusCode())
                 .requestUrl(url)
-                .status("SUCCESS")
-                .maskedNotice("出站 cURL 日志已自动执行敏感凭据掩码脱敏")
+                .remoteErrorCode(payload != null ? payload.getErrorCode() : null)
+                .remoteErrorMessage(payload != null ? payload.getErrorMessage() : null)
+                .remoteRequestId(payload != null ? payload.getRequestId() : null)
+                .responseBodyTranslated(payload != null && StringUtils.hasText(payload.getErrorCode()))
                 .build();
     }
 }
 ```
 
-#### 控制台真实脱敏输出
-```bash
-HTTP GET http://localhost:8080/mock/provider/headers/echo?token=sk*********************en&password=su**********23 -> 200 (8ms)
-```
-
 #### 核心机制与边界说明
-- **终端可复现性**：以标准 cURL 语法格式输出请求，开发与运维人员可直接复制至终端排查复现故障；
-- **动态脱敏防护**：在日志输出流中动态拦截敏感请求头与 URL Query 参数（密码、Token、API Key 等），自动替换为 `sk***en` 掩码字符串，避免敏感机密外泄至日志收集系统（ELK/Loki）。
+
+`HttpErrorHandler` 将远端 4xx/5xx 响应统一封装为 `HttpRemoteException`（100% 保留原始 `cause` 链，截断保留前 `2048` 字符文本体并省略二进制体），按 `HttpResultCode#fromHttpStatus(int)` 精确映射结果码：
+
+| HTTP 状态码 | 映射 `HttpResultCode` 枚举常量 | 结果码 | 默认业务语义 |
+| :---: | :--- | :---: | :--- |
+| `400` / 其余 `4xx` | `REMOTE_HTTP_CLIENT_ERROR` | `40001` | 远程服务客户端请求错误 |
+| `401` | `REMOTE_HTTP_UNAUTHORIZED` | `40002` | 远程服务访问未授权或身份无效 |
+| `403` | `REMOTE_HTTP_FORBIDDEN` | `40003` | 远程服务拒绝当前请求访问 |
+| `404` | `REMOTE_HTTP_NOT_FOUND` | `40004` | 远程服务目标资源不存在 |
+| `500` / 其余 `5xx` | `REMOTE_HTTP_SERVER_ERROR` | `50001` | 远程服务内部发生异常 |
+| `502` | `REMOTE_HTTP_GATEWAY_ERROR` | `50002` | 远程网关或上游服务器响应错误 |
+| `503` | `REMOTE_HTTP_SERVICE_UNAVAILABLE` | `50003` | 远程服务暂时不可用或处于维护过载状态 |
+| `504` | `REMOTE_HTTP_TIMEOUT` | `50004` | 远程服务网关调用响应超时 |
 
 ---
 
 ## 6. 生产扩展接管与核心非功能边界 (Extensibility & Production Boundary)
 
-### 6.1 SPI 扩展定制
+### 6.1 三种标准扩展 SPI
 
-当框架默认装配行为无法满足特殊定制诉求时，可通过以下三种方式无缝平滑接管：
+1. **Apache HttpClient 5 底层定制器 (`HttpClient5Customizer`，1:1 提取自 `SampleHttpApplication.java`)**：
+   ```java
+   @Bean
+   public HttpClient5Customizer sampleHttpClient5Customizer() {
+       return (clientBuilder, connectionManagerBuilder) ->
+               clientBuilder.setUserAgent("ateng-sample-agent/1.0.0");
+   }
+   ```
+2. **Spring 官方 `RestClientCustomizer`（1:1 提取自 `SampleHttpApplication.java`）**：
+   ```java
+   @Bean
+   public RestClientCustomizer sampleRestClientCustomizer() {
+       return restClientBuilder -> restClientBuilder.defaultHeader("X-Custom-Client", "ateng-http-sample");
+   }
+   ```
+3. **运行期动态注册/注销命名客户端（`RestClientRegistry`）**：
+   ```java
+   RestClient customClient = RestClient.builder().baseUrl("https://special-gateway.internal").build();
+   restClientRegistry.register("special-gateway", customClient);
+   // 对称清理注销
+   restClientRegistry.unregister("special-gateway");
+   ```
 
-#### 1. Apache HttpClient 5 底层定制器 (`HttpClient5Customizer`，1:1 提取自 SampleHttpApplication.java)
-```java
-// 在配置类或启动类中注入 HttpClient5Customizer Bean
-@Bean
-public HttpClient5Customizer sampleHttpClient5Customizer() {
-    return (clientBuilder, connectionManagerBuilder) -> {
-        // 定制默认 User-Agent、DNS 域名解析器或 Socket 策略
-        clientBuilder.setUserAgent("ateng-sample-agent/1.0.0");
-    };
-}
-```
+### 6.2 虚拟线程防 Pinning 与平滑降级边界
 
-#### 2. Spring 官方 RestClient 定制器 (`RestClientCustomizer`，1:1 提取自 SampleHttpApplication.java)
-```java
-// 在配置类或启动类中注入 RestClientCustomizer Bean
-@Bean
-public RestClientCustomizer sampleRestClientCustomizer() {
-    return restClientBuilder -> {
-        // 全局附加业务通用出站请求头或注册消息转换器
-        restClientBuilder.defaultHeader("X-Custom-Client", "ateng-http-sample");
-    };
-}
-```
-
-#### 3. 编程式纳管命名客户端 (`RestClientRegistry`，对齐 RestClientRegistryTest.java)
-```java
-// 运行期动态向注册表注入自定义构建的 RestClient 实例
-@Autowired
-private RestClientRegistry restClientRegistry;
-
-public void registerCustomClient() {
-    RestClient customClient = RestClient.builder()
-            .baseUrl("https://special-gateway.internal")
-            .build();
-    restClientRegistry.register("special-gateway", customClient);
-}
-```
-
-### 6.2 虚拟线程零 Pinning 与高并发长连接复用
-
-- **零 Pinning 契约**：连接池管理与 I/O 阻塞临界区内 100% 杜绝使用 `synchronized`，全面采用 `ReentrantLock` 并行调度。在 **JDK 21+ 虚拟线程** 环境下，支持 `Thread.ofVirtual()` 并发拉起 500+ 轻量线程瞬时向目标发起 HTTP 请求，底层物理 Carrier 线程零钉死（Pinning）；
-- **优雅降级底座**：在精简或受限环境下，若类路径中无 Apache HttpClient 5 驱动，工厂自动平滑回退至 JDK 17 原生 `HttpClient`，无需调整任何上层业务代码。
-
-### 6.3 因果异常体系与统一错误码转译
-
-出站 HTTP 4xx 与 5xx 状态码经由 `HttpErrorHandler` 统一转译为受管的 `HttpRemoteException`（继承 `BusinessException`）：
-
-| HTTP 状态码 | 转译语义化结果码 (`HttpResultCode`) | 错误码 | 业务含义 |
-| :---: | :--- | :---: | :--- |
-| `400` | `REMOTE_HTTP_BAD_REQUEST` | `40001` | 远程下游客户端请求参数错误 |
-| `401` | `REMOTE_HTTP_UNAUTHORIZED` | `40002` | 远程下游未经认证授权 |
-| `403` | `REMOTE_HTTP_FORBIDDEN` | `40003` | 远程下游访问权限被拒绝 |
-| `404` | `REMOTE_HTTP_NOT_FOUND` | `40004` | 远程下游目标资源不存在 |
-| `500` | `REMOTE_HTTP_SERVER_ERROR` | `50001` | 远程下游服务端发生内部错误 |
-| `502` | `REMOTE_HTTP_BAD_GATEWAY` | `50002` | 远程网络网关错误 |
-| `503` | `REMOTE_HTTP_SERVICE_UNAVAILABLE` | `50003` | 远程服务临时不可用 |
-| `504` | `REMOTE_HTTP_TIMEOUT` | `50004` | 远程网关响应超时 |
-
-```java
-try {
-    httpTemplate.get("http://localhost:8080/mock/provider/orders/fail-999", OrderResponse.class);
-} catch (HttpRemoteException ex) {
-    // 100% 保留原始 cause 链，支持强类型错误载荷反序列化
-    int httpStatus = ex.getHttpStatusCode(); // 500
-    IResultCode resultCode = ex.getResultCode(); // REMOTE_HTTP_SERVER_ERROR (50001)
-    Map<?, ?> errorBody = ex.getResponseBodyAs(Map.class);
-    log.error("Remote HTTP call failed: status={}, code={}, body={}", httpStatus, resultCode.getCode(), errorBody, ex);
-}
-```
+- **零 Carrier Pinning**：连接作用域包装器及动态代理缓存均避免 `synchronized`，改用 `ReentrantLock` 与并发容器，在 JDK 21+ 虚拟线程（`spring.threads.virtual.enabled: true`）高并发下无 Carrier 线程钉死风险；
+- **Actuator 度量融合**：`AtengHttpAutoConfiguration` 自动委托 Spring Boot `RestClientBuilderConfigurer` 配置所有 `RestClient.Builder`，开箱支持 Micrometer `http.client.requests` 指标。
 
 ---
 
 ## 7. 完整 YAML 配置属性清单 (Configuration Property Appendix)
 
-以下为 `ateng.boot.http` 命名空间下所有可配置项的完整速查清单：
+以下清单 100% 依据 `HttpProperties` 及全部子属性类源码生成，零虚构键：
 
 | 配置属性键名 | 类型 | 默认值 | 说明与生产建议 |
 | :--- | :---: | :---: | :--- |
-| `ateng.boot.http.enabled` | `Boolean` | `true` | 是否启用 HTTP 客户端 Starter 自动装配 |
-| `ateng.boot.http.engine` | `String` | `auto` | 通信底层引擎：`auto` (优先 HttpClient 5，缺省回退 JDK 17)、`httpclient5`、`jdk` |
-| `ateng.boot.http.pool.max-connections` | `Integer` | `200` | 连接池物理最大连接总数 |
-| `ateng.boot.http.pool.max-per-route` | `Integer` | `50` | 单个目标路由最大并发连接数 |
-| `ateng.boot.http.pool.connect-timeout` | `Duration` | `3s` | TCP 物理建联超时时间 |
-| `ateng.boot.http.pool.read-timeout` | `Duration` | `10s` | Socket 数据读取响应超时时间 |
-| `ateng.boot.http.pool.connection-request-timeout` | `Duration` | `2s` | 从连接池中借出空闲连接的等待超时时间 |
-| `ateng.boot.http.pool.idle-timeout` | `Duration` | `60s` | 空闲连接最大存活阈值（超时由后台驱逐线程自动回收） |
-| `ateng.boot.http.pool.validate-after-inactivity` | `Duration` | `2s` | 空闲连接复用前的保活探测验证静默时延 |
-| `ateng.boot.http.ssl.insecure` | `Boolean` | `false` | 是否跳过 SSL 证书完整性与主机名校验（生产环境强制保持 `false`） |
-| `ateng.boot.http.proxy.enabled` | `Boolean` | `false` | 是否开启全局出站正向代理 |
-| `ateng.boot.http.proxy.host` | `String` | `127.0.0.1` | 正向代理服务器主机名或 IP |
-| `ateng.boot.http.proxy.port` | `Integer` | `7890` | 正向代理服务器端口 |
-| `ateng.boot.http.tracing.enabled` | `Boolean` | `true` | 是否开启四维上下文出站自动透传 |
-| `ateng.boot.http.tracing.trace-id-header` | `String` | `X-Trace-Id` | 全链路追踪 TraceId 请求头名称 |
-| `ateng.boot.http.tracing.tenant-id-header` | `String` | `X-Tenant-Id` | 多租户隔离 TenantId 请求头名称 |
-| `ateng.boot.http.tracing.user-id-header` | `String` | `X-User-Id` | 操作人身份 UserId 请求头名称 |
-| `ateng.boot.http.tracing.ignore-tenant-header` | `String` | `X-Ignore-Tenant` | 忽略租户隔离标记请求头名称 |
-| `ateng.boot.http.logging.enabled` | `Boolean` | `true` | 是否启用出站请求 cURL 脱敏日志 |
-| `ateng.boot.http.logging.level` | `Enum` | `HEADERS` | 日志详细级别：`NONE`、`BASIC`、`HEADERS`、`BODY` |
-| `ateng.boot.http.logging.max-body-length` | `DataSize` | `4KB` | 请求与响应载荷打印截断阈值，防止撑爆日志与堆内存 |
-| `ateng.boot.http.logging.sensitive-headers` | `List<String>` | `Authorization...` | 强制自动掩码脱敏的敏感请求头名称列表 |
-| `ateng.boot.http.logging.mask-params` | `List<String>` | `token,secret...` | 强制自动掩码脱敏的 URL Query 参数名列表 |
-| `ateng.boot.http.retry.enabled` | `Boolean` | `false` | 是否全局开启出站弹性指数退避重试（建议按客户端按需开启） |
-| `ateng.boot.http.retry.max-attempts` | `Integer` | `3` | 最大重试尝试总次数（包含首次调用） |
-| `ateng.boot.http.retry.delay` | `Duration` | `500ms` | 初始指数退避基数时延 |
+| `ateng.boot.http.enabled` | `Boolean` | `true` | 是否启用 HTTP 模块自动装配 |
+| `ateng.boot.http.engine` | `HttpEngineType` | `AUTO` | 通信引擎：`AUTO`（优先 HttpClient 5，缺省回退 JDK 17）、`HTTPCLIENT5`、`JDK` |
+| `ateng.boot.http.pool.max-connections` | `Integer` | `200` | 全局连接池物理最大连接总数 |
+| `ateng.boot.http.pool.max-per-route` | `Integer` | `50` | 每个目标路由（域名+端口）最大并发连接数 |
+| `ateng.boot.http.pool.connect-timeout` | `Duration` | `3s` | TCP 握手建联超时时间 |
+| `ateng.boot.http.pool.read-timeout` | `Duration` | `10s` | Socket 读取远端响应超时时间 |
+| `ateng.boot.http.pool.connection-request-timeout` | `Duration` | `2s` | 从连接池租借连接的最大等待超时（超时快速失败防堆积） |
+| `ateng.boot.http.pool.idle-timeout` | `Duration` | `60s` | 空闲连接最大保活驱逐时间（由后台守护线程主动清理） |
+| `ateng.boot.http.pool.validate-after-inactivity` | `Duration` | `2s` | 空闲连接借用前保活探测静默间隔阈值 |
+| `ateng.boot.http.ssl.insecure` | `Boolean` | `false` | 是否跳过 SSL 证书合法性与主机名校验（生产环境务必保持 `false`） |
+| `ateng.boot.http.ssl.key-store` | `String` | - | 全局 mTLS 客户端私钥证书密钥库路径（支持 `classpath:` 或文件绝对路径） |
+| `ateng.boot.http.ssl.key-store-password` | `String` | - | 客户端私钥密钥库访问密码（推荐使用 `${KEYSTORE_PASSWORD}` 注入） |
+| `ateng.boot.http.ssl.key-store-type` | `String` | `PKCS12` | 密钥库格式类型（支持 `PKCS12`、`JKS`） |
+| `ateng.boot.http.proxy.enabled` | `Boolean` | `false` | 是否启用全局出口 HTTP 正向代理 |
+| `ateng.boot.http.proxy.host` | `String` | - | 代理服务器主机名或 IP 地址 |
+| `ateng.boot.http.proxy.port` | `Integer` | `8080` | 代理服务器端口号 |
+| `ateng.boot.http.proxy.username` | `String` | - | 代理认证用户名（可选） |
+| `ateng.boot.http.proxy.password` | `String` | - | 代理认证密码（可选，推荐使用环境变量注入） |
+| `ateng.boot.http.proxy.non-proxy-hosts` | `List<String>` | `[localhost, 127.0.0.1, 10.*, 172.16.*, 192.168.*]` | 不经代理直连放行的主机通配白名单，防止内网流量误走外部代理 |
+| `ateng.boot.http.tracing.enabled` | `Boolean` | `true` | 是否启用四维上下文出站透传拦截器 |
+| `ateng.boot.http.tracing.trace-id-header` | `String` | `X-Trace-Id` | 链路追踪标识请求头键名 |
+| `ateng.boot.http.tracing.tenant-id-header` | `String` | `X-Tenant-Id` | 多租户标识请求头键名 |
+| `ateng.boot.http.tracing.user-id-header` | `String` | `X-User-Id` | 当前登录用户标识请求头键名 |
+| `ateng.boot.http.tracing.ignore-tenant-header` | `String` | `X-Ignore-Tenant` | 忽略租户过滤标识请求头键名 |
+| `ateng.boot.http.logging.enabled` | `Boolean` | `true` | 是否启用出站 HTTP 结构化日志拦截器 |
+| `ateng.boot.http.logging.level` | `HttpLoggingLevel` | `BASIC` | 日志级别：`NONE`、`BASIC`、`HEADERS`、`FULL` |
+| `ateng.boot.http.logging.mask-headers` | `List<String>` | `[Authorization, Cookie, Set-Cookie, X-Api-Key, token, access-token]` | 请求头/响应头敏感脱敏黑名单（不区分大小写） |
+| `ateng.boot.http.logging.mask-params` | `List<String>` | `[secret, password, token, apiKey, api_key, key, access_token]` | URL 查询参数敏感脱敏黑名单（不区分大小写） |
+| `ateng.boot.http.logging.max-body-length` | `Integer` | `1024` | `FULL` 级别下请求/响应体最大打印字符数（超限截断） |
+| `ateng.boot.http.logging.max-buffer-capacity` | `DataSize` | `64KB` | 单次响应体最大安全缓冲容量上限（超限放弃缓冲直接流透传） |
+| `ateng.boot.http.retry.enabled` | `Boolean` | `false` | 全局是否开启弹性指数退避重试（默认关闭，建议按客户端按需开启） |
+| `ateng.boot.http.retry.max-attempts` | `Integer` | `3` | 最大尝试总次数（含首次请求） |
+| `ateng.boot.http.retry.delay` | `Duration` | `500ms` | 初始退避重试等待时长 |
 | `ateng.boot.http.retry.multiplier` | `Double` | `2.0` | 指数退避增长倍数因子 |
-| `ateng.boot.http.retry.max-delay` | `Duration` | `3s` | 单次退避等待时延上限（防止指数无界爆炸） |
-| `ateng.boot.http.retry.jitter` | `Boolean` | `true` | 是否启用 Equal Jitter 随机抖动打散重试洪峰 |
-| `ateng.boot.http.retry.retry-status-codes` | `List<Integer>` | `[429,502,503,504]` | 允许触发重试的服务端瞬态 HTTP 状态码列表 |
-| `ateng.boot.http.retry.retry-methods` | `List<String>` | `[GET,HEAD]` | 允许触发重试的 HTTP 动词白名单（严格限制幂等动词） |
-| `ateng.boot.http.clients.<name>.base-url` | `String` | - | 命名客户端基础通信目标根路径 |
-| `ateng.boot.http.clients.<name>.connect-timeout` | `Duration` | - | 命名客户端专属建联超时时间（覆盖全局默认值） |
-| `ateng.boot.http.clients.<name>.read-timeout` | `Duration` | - | 命名客户端专属读取响应超时时间（覆盖全局默认值） |
-| `ateng.boot.http.clients.<name>.propagate-context` | `Boolean` | `true` | 是否向该客户端透传内网租户与用户私有头（公网第三方设为 `false`） |
-| `ateng.boot.http.clients.<name>.ssl.key-store` | `String` | - | 金融级双向 mTLS 客户端私钥证书路径（如 `classpath:...`） |
-| `ateng.boot.http.clients.<name>.ssl.key-store-password` | `String` | - | 客户端私钥证书库访问密码 |
-| `ateng.boot.http.clients.<name>.ssl.key-store-type` | `String` | `PKCS12` | 客户端私钥证书库类型（默认 `PKCS12`，支持 `JKS`） |
-| `ateng.boot.http.clients.<name>.proxy.enabled` | `Boolean` | `false` | 命名客户端是否挂载独立的正向出站代理通道 |
+| `ateng.boot.http.retry.max-delay` | `Duration` | `3s` | 单次退避等待时长上限 |
+| `ateng.boot.http.retry.jitter` | `Boolean` | `true` | 是否开启 Equal Jitter 随机抖动打散重试洪峰 |
+| `ateng.boot.http.retry.retry-methods` | `List<String>` | `[GET, HEAD]` | 允许自动重试的 HTTP 动词白名单（严格限定幂等方法） |
+| `ateng.boot.http.retry.retry-status-codes` | `List<Integer>` | `[429, 502, 503, 504]` | 允许触发重试的远端 HTTP 状态码列表 |
+| `ateng.boot.http.clients.<name>.base-url` | `String` | - | 命名客户端基础请求根路径（优先级高于 `@HttpClient.url`） |
+| `ateng.boot.http.clients.<name>.connect-timeout` | `Duration` | - | 命名客户端专属建联超时（缺省继承 `pool.connect-timeout`） |
+| `ateng.boot.http.clients.<name>.read-timeout` | `Duration` | - | 命名客户端专属读取响应超时（缺省继承 `pool.read-timeout`） |
+| `ateng.boot.http.clients.<name>.propagate-context` | `Boolean` | `true` | 是否向该客户端透传四维内网上下文（公网第三方须显式设为 `false`） |
+| `ateng.boot.http.clients.<name>.default-headers` | `Map<String, String>` | - | 命名客户端专属默认请求头映射（支持 `${...}` 占位符解析） |
+| `ateng.boot.http.clients.<name>.key-store` | `String` | - | 命名客户端专属私钥证书路径便捷项（与 `ssl.key-store` 二选一） |
+| `ateng.boot.http.clients.<name>.key-store-password` | `String` | - | 命名客户端专属私钥证书密码便捷项 |
+| `ateng.boot.http.clients.<name>.key-store-type` | `String` | `PKCS12` | 命名客户端专属证书库格式类型 |
+| `ateng.boot.http.clients.<name>.ssl.*` | `HttpSslProperties` | - | 命名客户端专属 SSL/mTLS 全量配置（支持 `insecure`、`key-store*`） |
+| `ateng.boot.http.clients.<name>.proxy.*` | `HttpProxyProperties` | - | 命名客户端专属正向代理配置（支持 `enabled`、`host`、`port`、`username`、`password`、`non-proxy-hosts`） |
+| `ateng.boot.http.clients.<name>.retry.*` | `HttpRetryProperties` | - | 命名客户端专属指数退避重试策略（覆盖全局 `retry.*`） |
 
 ---
 
-> 运行与自验样例工程请参阅：[ateng-boot-sample-http 体验工程](../ateng-boot-samples/ateng-boot-sample-http/README.md)。
+> 运行与自验完整 25 端点样例工程请参阅：[ateng-boot-sample-http 体验工程](../ateng-boot-samples/ateng-boot-sample-http/README.md)。

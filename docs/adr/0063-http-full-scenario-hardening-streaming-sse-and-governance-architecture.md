@@ -80,12 +80,13 @@ flowchart TD
     RegistryGovernance --> ObservabilityAndSecurity
 ```
 
-### 1. `HttpTemplate` 命令式门面完备性
+### 1. `HttpTemplate` 命令式门面完备性与单次上下文对称还原
 - **全套动词对称**：新增 `patch(url, body, [options], type)`、`head(url, [options]) -> HttpHeaders`、`options(url, [options]) -> HttpHeaders` 以及 `optionsForAllow(url, [options]) -> Set<HttpMethod>`；
 - **元数据与状态码穿透**：新增 `getEntity(url, [options], type)` 与通用 `exchange(url, method, body, [options], type)`，统一返回 `ResponseEntity<T>`；
 - **标准表单提交**：新增 `postForm(url, MultiValueMap/Map, [options], type)`，底层自动配置 `application/x-www-form-urlencoded`；
 - **AI 大模型流式消费**：新增 `consumeStream(url, [options], Consumer<String> lineConsumer)`，依托 `BufferedReader.readLine()` 零内存堆积实时按行推流，严格遵循 RFC 8895 保留空行作为 SSE 事件切片边界，在 `try-with-resources` 中确定性释放底层网络流；
-- **超大文件直通上传**：上传超大文件时标配流式标记，旁路带内存缓冲的普通拦截器，坚决杜绝 Spring 内部 `byte[]` 堆溢出。
+- **超大文件直通上传与零控制头泄漏**：上传超大文件时使用旁路拦截器缓冲的 `streamingRestClient` 杜绝 Spring 内部 `byte[]` 堆溢出，同时在出站前直接调用 `TraceContextInterceptor` 的无缓冲头治理逻辑，完成四维上下文透传/非信任域剥离并 100% 物理清除 `X-Ateng-*` 内部控制头；
+- **单次动态超时双维对称与确定性还原**：`RequestOptions` 对称支持 `connectTimeout(Duration)` 与 `readTimeout(Duration)`，`HttpTemplate` 所有命令式入口统一通过 `executeWithOptions` 在 `finally` 块中现场还原 `HttpRequestContextHolder`，根除线程池复用下的超时漂移污染。
 
 ### 2. 声明式微服务精细化控制与本地优雅降级
 - **微粒度超时控制 (`@HttpTimeout`)**：新增 `@HttpTimeout(readTimeout, connectTimeout)` 注解，支持修饰接口或方法，代理执行前通过 `HttpRequestContextHolder` 绑定单次超时，并在 `finally` 现场还原；
@@ -96,11 +97,13 @@ flowchart TD
 - **正向代理白名单与客户端隔离**：全局 `HttpProxyProperties` 增加 `nonProxyHosts`（内置私有网段）；支持客户端配置专属 `proxy` 覆盖全局；
 - **金融级双向认证 (mTLS)**：在 `HttpSslProperties` 与 `HttpClientItemProperties` 增加 `keyStore`、`keyStorePassword`、`keyStoreType` 配置，自动加载客户端私钥证书（PKCS12/JKS）。
 
-### 4. 链路治理、脱敏合规与官方基线融合
+### 4. 链路治理、跨拦截器路由、脱敏合规与官方基线融合
+- **跨拦截器 `clientName` 精确路由**：`TraceContextInterceptor`（Order 10）提取并物理移除 `X-Ateng-Internal-Client-Name` 与 `X-Ateng-Internal-Propagate-Context` 控制头（防止泄漏至 cURL 日志或外部网络），同时将 `clientName` 暂存至 `HttpRequestContextHolder` 供 `HttpRetryInterceptor`（Order 20）优先按客户端名称精确匹配专属重试策略（优先级：显式 `clientName` $\succ$ URL 最长前缀匹配 $\succ$ 全局默认配置），并在 `finally` 中严格还原；
 - **URL 查询参数脱敏**：`HttpLoggingInterceptor` 增加 `maskParams`（内置 `secret`、`password`、`token`、`apiKey` 等），打印日志及 cURL 时自动掩码；
 - **RFC `Retry-After` 遵从**：重试拦截器解析响应头 `Retry-After`，动态覆盖本地退避时延，精准降频；
 - **Spring Boot 官方基线融合**：`AtengHttpAutoConfiguration` 自动装配 `RestClient.Builder` 时注入并调用 `RestClientBuilderConfigurer.configure(builder)`，100% 自动继承应用容器的消息转换器与 Actuator 度量指标；
-- **强类型错误反序列化**：`HttpRemoteException` 挂载 `getResponseBodyAs(Class<T>)` 与 `getResponseBodyAs(ParameterizedTypeReference<T>)`，依托 Core 模块 `JsonUtil` 提供开箱即用的错误载荷解析。
+- **强类型错误反序列化**：`HttpRemoteException` 挂载 `getResponseBodyAs(Class<T>)` 与 `getResponseBodyAs(ParameterizedTypeReference<T>)`，依托 Core 模块 `JsonUtil` 提供开箱即用的错误载荷解析；
+- **1:1 Sample 多 Controller 全场景与双模仿真闭环**：`ateng-boot-sample-http` 按命令式（`HttpTemplateController`）、声明式（`HttpDeclarativeClientController`）与出站治理（`HttpGovernanceController`）拆分暴露全量 REST 体验端点，内置离线回环仿真器 `MockServerProviderController` 标配 `@Profile("!local")` 守卫，实现 CI 离线自洽与 `local` 真实服务无缝切换。
 
 ---
 

@@ -1,7 +1,9 @@
 package io.github.atengk.boot.sample.http.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.http.dto.ErrorTranslationVO;
 import io.github.atengk.boot.sample.http.dto.LoggingDemoVO;
+import io.github.atengk.boot.sample.http.dto.RegistryInspectVO;
 import io.github.atengk.boot.sample.http.dto.RetrySimulationVO;
 import io.github.atengk.boot.sample.http.dto.WechatNativeOrderRequest;
 import io.github.atengk.boot.sample.http.dto.WechatPaymentVO;
@@ -13,7 +15,7 @@ import org.springframework.web.bind.annotation.*;
 
 /**
  * HTTP 治理与安全防卫业务控制器
- * 提供外部非信任公网敏感头剥离、瞬态 503 指数退避重试与出站 cURL 脱敏日志体验
+ * 提供外部非信任公网敏感头剥离、瞬态 503 指数退避重试、出站 cURL 脱敏日志、错误体转译与多实例注册自省体验
  *
  * @author Ateng
  * @since 2026-11-09
@@ -53,6 +55,25 @@ public class HttpGovernanceController {
             @RequestParam(value = "token", defaultValue = "sk-sample-secret-token") String token,
             @RequestParam(value = "password", defaultValue = "123456") String password) {
         LoggingDemoVO response = externalPaymentScenarioService.triggerMaskedLoggingDemo(token, password);
+        return Result.success(response);
+    }
+
+    /**
+     * 4. 远端错误体结构化反序列化与 HttpResultCode 因果转译演示
+     */
+    @GetMapping("/error-translate")
+    public Result<ErrorTranslationVO> demonstrateErrorTranslation(
+            @RequestParam(value = "code", defaultValue = "422") int code) {
+        ErrorTranslationVO response = externalPaymentScenarioService.demonstrateErrorTranslation(code);
+        return Result.success(response);
+    }
+
+    /**
+     * 5. RestClientRegistry 多实例、mTLS 与代理治理元数据探针
+     */
+    @GetMapping("/registry-inspect")
+    public Result<RegistryInspectVO> inspectRegistryMetadata() {
+        RegistryInspectVO response = externalPaymentScenarioService.inspectRegistryMetadata();
         return Result.success(response);
     }
 }

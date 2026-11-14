@@ -18,3 +18,6 @@ sample:
   # 外部支付服务真实网关地址
   wechat-pay:
     url: "https://api.mch.weixin.qq.com"
+  # 弹性重试下游服务真实地址
+  flaky-service:
+    url: "http://YOUR_LOCAL_FLAKY_SERVICE_HOST:8080"

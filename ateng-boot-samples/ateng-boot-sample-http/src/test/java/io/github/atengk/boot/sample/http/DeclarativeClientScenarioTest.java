@@ -89,6 +89,7 @@ class DeclarativeClientScenarioTest {
         registry.add("sample.user-service.url", () -> mockWebServer.url("/").toString());
         registry.add("sample.wechat-pay.url", () -> mockWebServer.url("/").toString());
         registry.add("sample.order-service.url", () -> mockWebServer.url("/").toString());
+        registry.add("sample.flaky-service.url", () -> mockWebServer.url("/").toString());
     }
 
     @AfterEach

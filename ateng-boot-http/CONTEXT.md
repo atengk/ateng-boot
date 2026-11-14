@@ -17,8 +17,12 @@ _Avoid_: OkHttpFactory, PoolingClientFactory, HttpClientFactory
 _Avoid_: SimpleClientHttpRequestFactory, FallbackClientFactory
 
 **RequestOptions**:
-单次 HTTP 请求维度的动态参数配置载荷，支持覆盖单次超时、注入自定义 Header、结构化 Query 参数以及 URI 变量。
+单次 HTTP 请求维度的不可变动态参数配置载荷，支持覆盖单次建联超时（`connectTimeout`）与读取超时（`readTimeout`）、注入自定义 Header、结构化 Query 参数、URI 模板变量、显式上下文透传开关及归属命名客户端标识（`clientName`）。
 _Avoid_: HttpOptions, RequestConfig, CallOptions
+
+**HttpRequestContextHolder**:
+HTTP 单次请求与方法级动态上下文持有者，基于受管 `ThreadLocal` 维护单次请求或 `@HttpTimeout` 的 `readTimeout`、`connectTimeout` 及跨拦截器显式 `clientName` 路由标识，严格遵循 `try-finally` 现场还原不变量，杜绝线程池与虚拟线程复用污染。
+_Avoid_: TimeoutContext, HttpThreadLocal, RequestContext
 
 **HttpRemoteException**:
 HTTP 远程通信统一语义化业务异常（继承 Core 模块 BusinessException），封装远端 HTTP 状态码、请求方法、URI、安全截断的响应体及统一错误码，提供 getResponseBodyAs 强类型结构化错误载荷解析能力。
@@ -72,9 +76,9 @@ _Avoid_: HttpProxyFactoryBean, FeignClientFactoryBean, DynamicHttpProxy
 多命名客户端 RestClient 实例集中纳管注册表，提供按 clientName 的配置融合（BaseUrl/超时/默认请求头/隔离性）与单例实例缓存。
 _Avoid_: ClientManager, HttpClientContainer, RestClientPool
 
-**MockServerProvider**:
-样例工程内置的离线 HTTP 回环仿真端点提供者，挂载于 `/mock/provider/*`，为 `HttpTemplate` 与声明式客户端提供真实的物理网络端点，保证请求穿越真实网络 Socket 与全链路拦截器，实现 100% 离线自洽自验。
-_Avoid_: WireMockServer, TestHttpServer, MockApiServer
+**MockServerProviderController**:
+样例工程内置的 `@Profile("!local")` 离线 HTTP 回环仿真控制器，挂载于 `/mock/provider/*`，为 `HttpTemplate` 与声明式客户端提供真实的物理网络端点，保证请求穿越真实网络 Socket 与全链路拦截器，实现 100% 离线自洽自验。
+_Avoid_: MockServerProvider, WireMockServer, TestHttpServer, MockApiServer
 
 **ClientScopedHttpRequestFactory**:
 客户端级作用域请求工厂包装器，将全局连接池物理工厂与特定命名客户端的超时、代理、TLS 等个性化配置进行安全绑定，确保各客户端共享底层物理连接池的同时保持逻辑配置独立。

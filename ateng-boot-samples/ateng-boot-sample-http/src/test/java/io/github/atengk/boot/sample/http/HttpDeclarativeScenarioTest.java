@@ -38,6 +38,8 @@ public class HttpDeclarativeScenarioTest {
         registry.add("server.port", () -> port);
         registry.add("sample.user-service.url", () -> "http://localhost:" + port + "/mock/provider");
         registry.add("sample.order-service.url", () -> "http://localhost:" + port + "/mock/provider");
+        registry.add("sample.wechat-pay.url", () -> "http://localhost:" + port + "/mock/provider/wechat");
+        registry.add("sample.flaky-service.url", () -> "http://localhost:" + port);
     }
 
     @Autowired

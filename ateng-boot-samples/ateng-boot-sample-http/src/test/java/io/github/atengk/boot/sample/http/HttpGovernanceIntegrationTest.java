@@ -90,4 +90,41 @@ public class HttpGovernanceIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("SUCCESS"))
                 .andExpect(jsonPath("$.data.maskedNotice", containsString("自动掩码脱敏")));
     }
+
+    @Test
+    @DisplayName("场景 4: 下游结构化异常响应反序列化与 HttpResultCode 因果映射")
+    void testErrorTranslation() throws Exception {
+        mockMvc.perform(get("/sample/http/governance/error-translate")
+                        .param("code", "422"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.mappedResultCode").value(40001))
+                .andExpect(jsonPath("$.data.httpStatusCode").value(422))
+                .andExpect(jsonPath("$.data.remoteErrorCode").value("DOWNSTREAM_422"))
+                .andExpect(jsonPath("$.data.responseBodyTranslated").value(true));
+
+        mockMvc.perform(get("/sample/http/governance/error-translate")
+                        .param("code", "503"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.mappedResultCode").value(50003))
+                .andExpect(jsonPath("$.data.httpStatusCode").value(503))
+                .andExpect(jsonPath("$.data.remoteErrorCode").value("DOWNSTREAM_503"))
+                .andExpect(jsonPath("$.data.responseBodyTranslated").value(true));
+    }
+
+    @Test
+    @DisplayName("场景 5: RestClientRegistry 多实例、mTLS 与实例级代理治理元数据探针")
+    void testRegistryInspect() throws Exception {
+        mockMvc.perform(get("/sample/http/governance/registry-inspect"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.registeredCount", greaterThanOrEqualTo(5)))
+                .andExpect(jsonPath("$.data.registeredClientNames", hasItems(
+                        "scoped-proxy-client", "mtls-service", "user-service", "order-service", "wechat-pay")))
+                .andExpect(jsonPath("$.data.clients[?(@.clientName=='scoped-proxy-client')].proxyEnabled", hasItem(true)))
+                .andExpect(jsonPath("$.data.clients[?(@.clientName=='scoped-proxy-client')].proxyEndpoint", hasItem("127.0.0.1:8888")))
+                .andExpect(jsonPath("$.data.clients[?(@.clientName=='mtls-service')].sslEnabled", hasItem(true)))
+                .andExpect(jsonPath("$.data.clients[?(@.clientName=='mtls-service')].keyStoreType", hasItem("PKCS12")));
+    }
 }

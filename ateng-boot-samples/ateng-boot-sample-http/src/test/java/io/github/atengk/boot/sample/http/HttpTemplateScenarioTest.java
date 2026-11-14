@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.http;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.sample.http.dto.UserFormRequest;
 import io.github.atengk.boot.sample.http.dto.UserOptionsRequest;
+import io.github.atengk.boot.sample.http.dto.UserPatchRequest;
 import io.github.atengk.boot.sample.http.dto.UserRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -10,7 +11,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.util.TestSocketUtils;
 import org.springframework.test.web.servlet.MockMvc;
+
+import java.nio.charset.StandardCharsets;
 
 import static org.hamcrest.Matchers.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -23,9 +30,20 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * @author Ateng
  * @since 2026-11-09
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT)
 @AutoConfigureMockMvc
 public class HttpTemplateScenarioTest {
+
+    static int port = TestSocketUtils.findAvailableTcpPort();
+
+    @DynamicPropertySource
+    static void configureProperties(DynamicPropertyRegistry registry) {
+        registry.add("server.port", () -> port);
+        registry.add("sample.user-service.url", () -> "http://localhost:" + port + "/mock/provider");
+        registry.add("sample.order-service.url", () -> "http://localhost:" + port + "/mock/provider");
+        registry.add("sample.wechat-pay.url", () -> "http://localhost:" + port + "/mock/provider/wechat");
+        registry.add("sample.flaky-service.url", () -> "http://localhost:" + port);
+    }
 
     @Autowired
     private MockMvc mockMvc;
@@ -149,5 +167,104 @@ public class HttpTemplateScenarioTest {
                 .andExpect(jsonPath("$.data.size").value("57"))
                 .andExpect(jsonPath("$.data.filename").value("sample-file.txt"))
                 .andExpect(jsonPath("$.data.previewContent").value(containsString("ateng-boot-http")));
+    }
+
+    @Test
+    @DisplayName("场景 9: 命令式 PATCH 局部更新用户属性")
+    void testPatchUser() throws Exception {
+        UserPatchRequest request = UserPatchRequest.builder()
+                .username("PatchUser09")
+                .status("LOCKED")
+                .build();
+
+        mockMvc.perform(patch("/sample/http/template/user/{id}", 1009L)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.id").value(1009))
+                .andExpect(jsonPath("$.data.username").value("PatchUser09"))
+                .andExpect(jsonPath("$.data.role").value("ADMIN"))
+                .andExpect(jsonPath("$.data.status").value("LOCKED"));
+    }
+
+    @Test
+    @DisplayName("场景 10: HEAD / OPTIONS 元数据头与 Allow 允许动词探测")
+    void testProbeUserMetadata() throws Exception {
+        mockMvc.perform(get("/sample/http/template/metadata/{id}", 1010L))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.resourceId").value(1010))
+                .andExpect(jsonPath("$.data.resourceVersion").value("v2"))
+                .andExpect(jsonPath("$.data.endpointCapability").value("USER_CRUD_V2"))
+                .andExpect(jsonPath("$.data.allowedMethods", hasItems("GET", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")))
+                .andExpect(jsonPath("$.data.optionsHeaderCount", greaterThanOrEqualTo(1)));
+    }
+
+    @Test
+    @DisplayName("场景 11: 空安全 getOptional 查询（200 命中与 404 自动转 Optional.empty()）")
+    void testGetUserOptional() throws Exception {
+        mockMvc.perform(get("/sample/http/template/get-optional/{id}", 1011L))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.found").value(true))
+                .andExpect(jsonPath("$.data.statusSummary").value("FOUND"))
+                .andExpect(jsonPath("$.data.user.id").value(1011));
+
+        mockMvc.perform(get("/sample/http/template/get-optional/{id}", 404L))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.found").value(false))
+                .andExpect(jsonPath("$.data.statusSummary").value("NOT_FOUND_EMPTY"))
+                .andExpect(jsonPath("$.data.user").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("场景 12: getEntity 提取完整 HTTP 状态码与响应头")
+    void testGetUserEntity() throws Exception {
+        mockMvc.perform(get("/sample/http/template/get-entity/{id}", 1012L))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.httpStatus").value(200))
+                .andExpect(jsonPath("$.data.resourceVersion").value("v2"))
+                .andExpect(jsonPath("$.data.contentType", containsString("application/json")))
+                .andExpect(jsonPath("$.data.body.id").value(1012))
+                .andExpect(jsonPath("$.data.body.username").value("user_1012"));
+    }
+
+    @Test
+    @DisplayName("场景 13: 零缓冲流式 Multipart 分片上传并校验无内部控制头泄漏")
+    void testUploadFile() throws Exception {
+        byte[] content = "ateng-boot-http zero-buffer streaming multipart payload".getBytes(StandardCharsets.UTF_8);
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "demo-chunk.txt",
+                MediaType.TEXT_PLAIN_VALUE,
+                content
+        );
+
+        mockMvc.perform(multipart("/sample/http/template/upload")
+                        .file(file)
+                        .param("bizType", "contract-pdf"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.filename").value("demo-chunk.txt"))
+                .andExpect(jsonPath("$.data.size").value(content.length))
+                .andExpect(jsonPath("$.data.bizType").value("contract-pdf"))
+                .andExpect(jsonPath("$.data.internalHeaderClean").value(true));
+    }
+
+    @Test
+    @DisplayName("场景 14: 异步受管线程池调用与四维上下文全保真透传")
+    void testExecuteAsyncContext() throws Exception {
+        mockMvc.perform(get("/sample/http/template/async-context"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.propagatedAllFour").value(true))
+                .andExpect(jsonPath("$.data.asyncUserId").value("USER_ASYNC_777"))
+                .andExpect(jsonPath("$.data.asyncTenantId").value("TENANT_ASYNC_999"))
+                .andExpect(jsonPath("$.data.asyncIgnoreTenant").value(true))
+                .andExpect(jsonPath("$.data.asyncTraceId", notNullValue()))
+                .andExpect(jsonPath("$.data.remoteUser.id").value(1001));
     }
 }
