@@ -154,4 +154,36 @@ class StorageTemplateEventTest {
         assertEquals("res/event.txt", uploadedEvent.getPath());
         assertEquals((long) data.length, uploadedEvent.getSize());
     }
+
+    @Test
+    @DisplayName("跨存储源 copyTo 与 moveTo 精确按目标与源存储源键发布上传及删除事件")
+    void testCrossSourceCopyToAndMoveToPublishEvents(@TempDir Path archiveDir) {
+        LocalDriver srcDriver = new LocalDriver(tempDir.toString());
+        LocalDriver dstDriver = new LocalDriver(archiveDir.toString());
+        StorageTemplate multiTemplate = new StorageTemplate(srcDriver, java.util.Map.of("primary", srcDriver, "archive", dstDriver));
+        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+        multiTemplate.setApplicationEventPublisher(publisher);
+
+        multiTemplate.uploadString("cross/a.txt", "Cross Payload");
+        org.mockito.Mockito.clearInvocations(publisher);
+
+        multiTemplate.copyTo("cross/a.txt", "archive", "backup/a.txt");
+        ArgumentCaptor<StorageEvent> copyCaptor = ArgumentCaptor.forClass(StorageEvent.class);
+        verify(publisher, times(1)).publishEvent(copyCaptor.capture());
+        assertTrue(copyCaptor.getValue() instanceof StorageUploadedEvent);
+        assertEquals("archive", copyCaptor.getValue().getSourceKey());
+        assertEquals("backup/a.txt", copyCaptor.getValue().getPath());
+
+        org.mockito.Mockito.clearInvocations(publisher);
+        multiTemplate.moveTo("cross/a.txt", "archive", "moved/a.txt");
+        ArgumentCaptor<StorageEvent> moveCaptor = ArgumentCaptor.forClass(StorageEvent.class);
+        verify(publisher, times(2)).publishEvent(moveCaptor.capture());
+        List<StorageEvent> moveEvents = moveCaptor.getAllValues();
+        assertTrue(moveEvents.get(0) instanceof StorageUploadedEvent);
+        assertEquals("archive", moveEvents.get(0).getSourceKey());
+        assertEquals("moved/a.txt", moveEvents.get(0).getPath());
+        assertTrue(moveEvents.get(1) instanceof StorageDeletedEvent);
+        assertEquals("primary", moveEvents.get(1).getSourceKey());
+        assertEquals("cross/a.txt", moveEvents.get(1).getPath());
+    }
 }

@@ -1,5 +1,7 @@
 package io.github.atengk.boot.storage.driver;
 
+import io.github.atengk.boot.storage.exception.StorageException;
+import io.github.atengk.boot.storage.exception.StorageResultCode;
 import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
@@ -66,6 +68,24 @@ public interface StorageDriver extends AutoCloseable {
      */
     default StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead) {
         return upload(path, in, contentType, size, userMetadata);
+    }
+
+    /**
+     * 当目标路径对象不存在时执行非覆盖上传（存在则抛出冲突异常）
+     *
+     * @param path         对象路径
+     * @param in           输入流
+     * @param contentType  MIME 类型
+     * @param size         字节大小（未知可传 {@code -1}）
+     * @param userMetadata 用户自定义元数据
+     * @param publicRead   是否公共读
+     * @return 上传后的对象元数据
+     */
+    default StorageObject uploadIfAbsent(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead) {
+        if (exists(path)) {
+            throw new StorageException(StorageResultCode.STORAGE_OBJECT_ALREADY_EXISTS, "目标存储对象已存在，禁止覆盖写入: " + path);
+        }
+        return upload(path, in, contentType, size, userMetadata, publicRead);
     }
 
     /**

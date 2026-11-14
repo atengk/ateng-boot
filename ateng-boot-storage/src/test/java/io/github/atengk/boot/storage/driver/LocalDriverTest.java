@@ -488,4 +488,23 @@ class LocalDriverTest {
                 "docs/2026/override.pdf", Long.parseLong(expiresStr), null, null, null, "local-main");
         assertTrue(StorageSecurityUtil.verifyHmacSha256(expectedPayload, driver.getSecretKey(), signature));
     }
+
+    @Test
+    @DisplayName("LocalDriver uploadIfAbsent 在已存在或并发写入冲突时原子抛出 40024 且不覆盖")
+    void testUploadIfAbsentAtomicConflict() throws Exception {
+        byte[] first = "Atomic First Content".getBytes(StandardCharsets.UTF_8);
+        byte[] second = "Atomic Second Content".getBytes(StandardCharsets.UTF_8);
+        String targetPath = "atomic/unique.txt";
+
+        StorageObject obj = driver.uploadIfAbsent(targetPath, new ByteArrayInputStream(first), "text/plain", first.length, null, false);
+        assertEquals(targetPath, obj.getPath());
+
+        StorageException ex = assertThrows(StorageException.class, () ->
+                driver.uploadIfAbsent(targetPath, new ByteArrayInputStream(second), "text/plain", second.length, null, false));
+        assertEquals(40024, ex.getCode());
+
+        try (InputStream in = driver.download(targetPath)) {
+            assertArrayEquals(first, in.readAllBytes());
+        }
+    }
 }

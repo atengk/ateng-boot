@@ -102,7 +102,12 @@ public enum StorageResultCode implements IResultCode {
     /**
      * 存储健康检查探测失败
      */
-    STORAGE_HEALTH_CHECK_FAILED(40023, "存储健康检查探测失败");
+    STORAGE_HEALTH_CHECK_FAILED(40023, "存储健康检查探测失败"),
+
+    /**
+     * 目标存储对象已存在，禁止覆盖写入
+     */
+    STORAGE_OBJECT_ALREADY_EXISTS(40024, "目标存储对象已存在，禁止覆盖写入");
 
     /**
      * 状态码数值

@@ -22,6 +22,7 @@ import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -99,6 +100,16 @@ public class LocalDriver implements StorageDriver {
      * 本地存储对象标签并发映射容器
      */
     private final Map<String, Map<String, String>> objectTagsMap = new ConcurrentHashMap<>();
+
+    /**
+     * 本地存储对象自定义元数据并发映射容器（用于跨驱动转移与元数据回查保留）
+     */
+    private final Map<String, Map<String, String>> userMetadataMap = new ConcurrentHashMap<>();
+
+    /**
+     * 本地存储对象声明 MIME 类型并发映射容器
+     */
+    private final Map<String, String> contentTypeMap = new ConcurrentHashMap<>();
 
     /**
      * 构造基础本地磁盘驱动（自动生成随机密钥）
@@ -210,17 +221,39 @@ public class LocalDriver implements StorageDriver {
 
     @Override
     public StorageObject upload(String path, InputStream in, String contentType, long size) {
+        return writeObject(path, in, contentType, size, null, true);
+    }
+
+    @Override
+    public StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata) {
+        return writeObject(path, in, contentType, size, userMetadata, true);
+    }
+
+    @Override
+    public StorageObject uploadIfAbsent(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead) {
+        return writeObject(path, in, contentType, size, userMetadata, false);
+    }
+
+    private StorageObject writeObject(String path, InputStream in, String contentType, long size,
+                                      Map<String, String> userMetadata, boolean overwrite) {
         if (in == null) {
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传对象输入流不能为空");
         }
         String cleanPath = StorageSecurityUtil.normalizePath(path);
         Path targetFile = resolveAndVerify(cleanPath);
+        if (!overwrite && Files.exists(targetFile)) {
+            throw new StorageException(StorageResultCode.STORAGE_OBJECT_ALREADY_EXISTS, "目标存储对象已存在，禁止覆盖写入: " + cleanPath);
+        }
         try {
             Path parent = targetFile.getParent();
             if (parent != null && !Files.exists(parent)) {
                 Files.createDirectories(parent);
             }
-            Files.copy(in, targetFile, StandardCopyOption.REPLACE_EXISTING);
+            if (overwrite) {
+                Files.copy(in, targetFile, StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                Files.copy(in, targetFile);
+            }
 
             long actualSize = size > 0 ? size : Files.size(targetFile);
             String finalContentType = (contentType != null && !contentType.isBlank())
@@ -228,6 +261,16 @@ public class LocalDriver implements StorageDriver {
                     : StorageSecurityUtil.determineContentType(cleanPath);
             Instant lastModified = Files.getLastModifiedTime(targetFile).toInstant();
             String etag = calculateEtag(targetFile);
+            Map<String, String> immutableMetadata = (userMetadata != null && !userMetadata.isEmpty())
+                    ? Map.copyOf(userMetadata)
+                    : Collections.emptyMap();
+
+            contentTypeMap.put(cleanPath, finalContentType);
+            if (!immutableMetadata.isEmpty()) {
+                userMetadataMap.put(cleanPath, immutableMetadata);
+            } else {
+                userMetadataMap.remove(cleanPath);
+            }
 
             return StorageObject.builder()
                     .path(cleanPath)
@@ -235,20 +278,14 @@ public class LocalDriver implements StorageDriver {
                     .size(actualSize)
                     .contentType(finalContentType)
                     .etag(etag)
+                    .userMetadata(immutableMetadata)
                     .lastModified(lastModified)
                     .build();
+        } catch (FileAlreadyExistsException e) {
+            throw new StorageException(StorageResultCode.STORAGE_OBJECT_ALREADY_EXISTS, "目标存储对象已存在，禁止覆盖写入: " + cleanPath, e);
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "文件写入本地磁盘失败: " + cleanPath, e);
         }
-    }
-
-    @Override
-    public StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata) {
-        StorageObject obj = upload(path, in, contentType, size);
-        if (userMetadata != null && !userMetadata.isEmpty()) {
-            obj.setUserMetadata(Map.copyOf(userMetadata));
-        }
-        return obj;
     }
 
     @Override
@@ -341,8 +378,9 @@ public class LocalDriver implements StorageDriver {
         try {
             long size = Files.size(targetFile);
             Instant lastModified = Files.getLastModifiedTime(targetFile).toInstant();
-            String contentType = StorageSecurityUtil.determineContentType(cleanPath);
+            String contentType = contentTypeMap.getOrDefault(cleanPath, StorageSecurityUtil.determineContentType(cleanPath));
             String etag = calculateEtag(targetFile);
+            Map<String, String> userMetadata = userMetadataMap.getOrDefault(cleanPath, Collections.emptyMap());
 
             return StorageObject.builder()
                     .path(cleanPath)
@@ -350,6 +388,7 @@ public class LocalDriver implements StorageDriver {
                     .size(size)
                     .contentType(contentType)
                     .etag(etag)
+                    .userMetadata(userMetadata)
                     .lastModified(lastModified)
                     .build();
         } catch (IOException e) {
@@ -424,6 +463,8 @@ public class LocalDriver implements StorageDriver {
             }
             Files.deleteIfExists(targetFile);
             objectTagsMap.remove(cleanPath);
+            userMetadataMap.remove(cleanPath);
+            contentTypeMap.remove(cleanPath);
             return true;
         } catch (StorageException e) {
             throw e;
@@ -503,6 +544,7 @@ public class LocalDriver implements StorageDriver {
                 Files.createDirectories(dst.getParent());
             }
             Files.copy(src, dst, StandardCopyOption.REPLACE_EXISTING);
+            transferMetadataMaps(cleanSource, cleanTarget, false);
             return true;
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "复制本地文件失败: " + sourcePath + " -> " + targetPath, e);
@@ -533,9 +575,27 @@ public class LocalDriver implements StorageDriver {
             } catch (AtomicMoveNotSupportedException e) {
                 Files.move(src, dst, StandardCopyOption.REPLACE_EXISTING);
             }
+            transferMetadataMaps(cleanSource, cleanTarget, true);
             return true;
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "移动本地文件失败: " + sourcePath + " -> " + targetPath, e);
+        }
+    }
+
+    private void transferMetadataMaps(String cleanSource, String cleanTarget, boolean move) {
+        copyOrMoveMapEntry(contentTypeMap, cleanSource, cleanTarget, move);
+        copyOrMoveMapEntry(userMetadataMap, cleanSource, cleanTarget, move);
+        if (move) {
+            copyOrMoveMapEntry(objectTagsMap, cleanSource, cleanTarget, true);
+        }
+    }
+
+    private <V> void copyOrMoveMapEntry(Map<String, V> map, String sourceKey, String targetKey, boolean move) {
+        V value = move ? map.remove(sourceKey) : map.get(sourceKey);
+        if (value != null) {
+            map.put(targetKey, value);
+        } else {
+            map.remove(targetKey);
         }
     }
 

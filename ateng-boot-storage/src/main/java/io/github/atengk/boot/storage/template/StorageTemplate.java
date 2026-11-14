@@ -3,6 +3,7 @@ package io.github.atengk.boot.storage.template;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.util.FileUtil;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.storage.context.StorageContextHolder;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.exception.StorageException;
@@ -15,6 +16,7 @@ import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
+import io.github.atengk.boot.storage.model.StorageUploadRequest;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.storage.guard.StorageGuard;
 import io.github.atengk.boot.storage.resource.StorageResource;
@@ -34,6 +36,8 @@ import java.net.URLEncoder;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -56,7 +60,11 @@ import java.util.zip.ZipOutputStream;
 @Slf4j
 public class StorageTemplate implements StorageOperations, ApplicationEventPublisherAware {
 
+    private static final DateTimeFormatter ARCHIVE_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy/MM/dd");
+
     private final StorageDriver defaultDriver;
+
+    private final StorageDriver rootPrimaryDriver;
 
     private final StorageDriverFactory factory;
 
@@ -133,10 +141,16 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
      */
     public StorageTemplate(StorageDriver defaultDriver, StorageDriverFactory factory,
                            Map<String, StorageDriver> driverMap, boolean bound, String boundSourceKey) {
+        this(defaultDriver, defaultDriver, factory, driverMap, bound, boundSourceKey);
+    }
+
+    private StorageTemplate(StorageDriver defaultDriver, StorageDriver rootPrimaryDriver, StorageDriverFactory factory,
+                            Map<String, StorageDriver> driverMap, boolean bound, String boundSourceKey) {
         if (defaultDriver == null) {
             throw new IllegalArgumentException("Default StorageDriver must not be null");
         }
         this.defaultDriver = defaultDriver;
+        this.rootPrimaryDriver = rootPrimaryDriver != null ? rootPrimaryDriver : defaultDriver;
         this.factory = factory;
         this.driverMap = (driverMap != null && !driverMap.isEmpty())
                 ? new HashMap<>(driverMap)
@@ -163,11 +177,10 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
                 || "primary".equalsIgnoreCase(sourceKey)
                 || "default".equalsIgnoreCase(sourceKey)) {
             if (this.bound) {
-                StorageDriver primaryDriver = this.factory != null ? this.factory.getPrimaryDriver() : this.defaultDriver;
-                StorageTemplate sub = new StorageTemplate(primaryDriver, this.factory, this.driverMap, true, "primary");
-                sub.setApplicationEventPublisher(this.eventPublisher);
-                sub.setStorageGuard(this.storageGuard);
-                return sub;
+                StorageDriver primaryDriver = this.factory != null
+                        ? this.factory.getPrimaryDriver()
+                        : this.rootPrimaryDriver;
+                return createBoundTemplate(primaryDriver, "primary");
             }
             return this;
         }
@@ -180,7 +193,11 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         if (targetDriver == null) {
             throw new StorageException(StorageResultCode.STORAGE_SOURCE_NOT_FOUND, "未找到指定的存储源: " + sourceKey);
         }
-        StorageTemplate sub = new StorageTemplate(targetDriver, this.factory, this.driverMap, true, sourceKey.trim());
+        return createBoundTemplate(targetDriver, sourceKey.trim());
+    }
+
+    private StorageTemplate createBoundTemplate(StorageDriver targetDriver, String targetSourceKey) {
+        StorageTemplate sub = new StorageTemplate(targetDriver, this.rootPrimaryDriver, this.factory, this.driverMap, true, targetSourceKey);
         sub.setApplicationEventPublisher(this.eventPublisher);
         sub.setStorageGuard(this.storageGuard);
         return sub;
@@ -208,17 +225,67 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
 
     @Override
     public StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead) {
-        InputStream effectiveStream = in;
-        String effectiveContentType = contentType;
+        return executeUpload(StorageUploadRequest.builder()
+                .path(path)
+                .inputStream(in)
+                .contentType(contentType)
+                .size(size)
+                .userMetadata(userMetadata)
+                .publicRead(publicRead)
+                .overwrite(true)
+                .build(), true);
+    }
+
+    @Override
+    public StorageObject upload(StorageUploadRequest request) {
+        return executeUpload(request, request != null && request.isOverwrite());
+    }
+
+    @Override
+    public StorageObject uploadIfAbsent(MultipartFile file, String path) {
+        return uploadMultipartFile(path, file, null, false, false);
+    }
+
+    @Override
+    public StorageObject uploadIfAbsent(InputStream in, String path, String contentType, long size) {
+        return executeUpload(StorageUploadRequest.builder()
+                .path(path)
+                .inputStream(in)
+                .contentType(contentType)
+                .size(size)
+                .overwrite(false)
+                .build(), false);
+    }
+
+    @Override
+    public StorageObject uploadIfAbsent(StorageUploadRequest request) {
+        return executeUpload(request, false);
+    }
+
+    private StorageObject executeUpload(StorageUploadRequest request, boolean overwrite) {
+        if (request == null) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传请求对象不能为空");
+        }
+        if (request.getPath() == null || request.getPath().isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "目标存储路径不能为空");
+        }
+        if (request.getInputStream() == null) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传对象输入流不能为空");
+        }
+        InputStream effectiveStream = request.getInputStream();
+        String effectiveContentType = request.getContentType();
         if (this.storageGuard != null && this.storageGuard.isEnabled()) {
-            StorageGuard.GuardResult guardResult = this.storageGuard.inspect(path, in, contentType);
+            StorageGuard.GuardResult guardResult = this.storageGuard.inspect(request.getPath(), effectiveStream, effectiveContentType);
             effectiveStream = guardResult.getGuardedStream();
             if ((effectiveContentType == null || effectiveContentType.isBlank() || "application/octet-stream".equals(effectiveContentType))
                     && guardResult.getDetectedMimeType() != null) {
                 effectiveContentType = guardResult.getDetectedMimeType();
             }
         }
-        StorageObject metadata = getDriver().upload(path, effectiveStream, effectiveContentType, size, userMetadata, publicRead);
+        StorageDriver driver = getDriver();
+        StorageObject metadata = overwrite
+                ? driver.upload(request.getPath(), effectiveStream, effectiveContentType, request.getSize(), request.getUserMetadata(), request.isPublicRead())
+                : driver.uploadIfAbsent(request.getPath(), effectiveStream, effectiveContentType, request.getSize(), request.getUserMetadata(), request.isPublicRead());
         if (metadata != null) {
             publishEventSafely(new StorageUploadedEvent(this, getCurrentSourceKey(), metadata.getPath(), metadata.getSize(), metadata.getContentType()));
         }
@@ -242,7 +309,16 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
 
     @Override
     public StorageObject uploadPublic(String path, MultipartFile file) {
-        return uploadMultipartFile(path, file, null, true);
+        return uploadMultipartFile(path, file, null, true, true);
+    }
+
+    @Override
+    public StorageObject upload(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传文件不能为空");
+        }
+        String archivePath = buildDateArchivePath(file.getOriginalFilename());
+        return upload(archivePath, file);
     }
 
     @Override
@@ -250,12 +326,20 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         return upload(path, file, null);
     }
 
-    @Override
-    public StorageObject upload(String path, MultipartFile file, Map<String, String> userMetadata) {
-        return uploadMultipartFile(path, file, userMetadata, false);
+    private String buildDateArchivePath(String originalFilename) {
+        String dateDir = ARCHIVE_DATE_FORMATTER.format(LocalDate.now());
+        String uuid = IdUtil.fastSimpleUUID();
+        String ext = FileUtil.getExtName(originalFilename);
+        String filename = ext.isEmpty() ? uuid : uuid + "." + ext;
+        return dateDir + "/" + filename;
     }
 
-    private StorageObject uploadMultipartFile(String path, MultipartFile file, Map<String, String> userMetadata, boolean publicRead) {
+    @Override
+    public StorageObject upload(String path, MultipartFile file, Map<String, String> userMetadata) {
+        return uploadMultipartFile(path, file, userMetadata, false, true);
+    }
+
+    private StorageObject uploadMultipartFile(String path, MultipartFile file, Map<String, String> userMetadata, boolean publicRead, boolean overwrite) {
         if (file == null || file.isEmpty()) {
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传文件不能为空");
         }
@@ -268,7 +352,15 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         }
 
         try (InputStream in = file.getInputStream()) {
-            return upload(targetPath, in, file.getContentType(), file.getSize(), userMetadata, publicRead);
+            return executeUpload(StorageUploadRequest.builder()
+                    .path(targetPath)
+                    .inputStream(in)
+                    .contentType(file.getContentType())
+                    .size(file.getSize())
+                    .userMetadata(userMetadata)
+                    .publicRead(publicRead)
+                    .overwrite(overwrite)
+                    .build(), overwrite);
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "读取 MultipartFile 输入流失败: " + originalFilename, e);
         }
@@ -391,6 +483,68 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
             publishEventSafely(new StorageDeletedEvent(this, getCurrentSourceKey(), StorageSecurityUtil.normalizePath(sourcePath)));
         }
         return result;
+    }
+
+    @Override
+    public StorageObject copyTo(String sourcePath, String targetSourceKey, String targetPath) {
+        return transferTo(sourcePath, targetSourceKey, targetPath, false);
+    }
+
+    @Override
+    public StorageObject moveTo(String sourcePath, String targetSourceKey, String targetPath) {
+        return transferTo(sourcePath, targetSourceKey, targetPath, true);
+    }
+
+    private StorageObject transferTo(String sourcePath, String targetSourceKey, String targetPath, boolean deleteSource) {
+        if (targetSourceKey == null || targetSourceKey.isBlank()) {
+            throw new StorageException(StorageResultCode.STORAGE_SOURCE_NOT_FOUND, "目标存储源标识不能为空");
+        }
+        StorageOperations targetOps = use(targetSourceKey);
+        StorageTemplate targetTemplate = (StorageTemplate) targetOps;
+        String cleanSourcePath = StorageSecurityUtil.normalizePath(sourcePath);
+        String cleanTargetPath = StorageSecurityUtil.normalizePath(targetPath);
+
+        StorageDriver sourceDriver = getDriver();
+        StorageDriver targetDriver = targetTemplate.getDriver();
+        // 1. 同物理驱动引用时直接短路委派给本地 copy/move，避免流回传开销
+        if (sourceDriver == targetDriver) {
+            boolean ok = deleteSource
+                    ? sourceDriver.move(cleanSourcePath, cleanTargetPath)
+                    : sourceDriver.copy(cleanSourcePath, cleanTargetPath);
+            if (!ok) {
+                throw new StorageException(StorageResultCode.OPERATION_FAILED,
+                        (deleteSource ? "同存储源移动对象失败: " : "同存储源复制对象失败: ") + cleanSourcePath + " -> " + cleanTargetPath);
+            }
+            targetTemplate.publishUploadedEventSafely(cleanTargetPath);
+            if (deleteSource) {
+                publishEventSafely(new StorageDeletedEvent(this, getCurrentSourceKey(), cleanSourcePath));
+            }
+            return targetDriver.getMetadata(cleanTargetPath);
+        }
+
+        // 2. 跨物理驱动时先读取源元数据与流并在 try-with-resources 中完成目标写盘与事件触发，确保流释放后才删除源对象
+        StorageObject sourceMeta = sourceDriver.getMetadata(cleanSourcePath);
+        StorageObject uploaded;
+        try (InputStream in = sourceDriver.download(cleanSourcePath)) {
+            long size = sourceMeta.getSize() != null ? sourceMeta.getSize() : -1L;
+            StorageUploadRequest uploadRequest = StorageUploadRequest.builder()
+                    .path(cleanTargetPath)
+                    .inputStream(in)
+                    .contentType(sourceMeta.getContentType())
+                    .size(size)
+                    .userMetadata(sourceMeta.getUserMetadata())
+                    .overwrite(true)
+                    .build();
+            uploaded = targetTemplate.upload(uploadRequest);
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED,
+                    "跨存储源流式传输关闭输入流失败: " + cleanSourcePath + " -> " + cleanTargetPath, e);
+        }
+
+        if (deleteSource && sourceDriver.delete(cleanSourcePath)) {
+            publishEventSafely(new StorageDeletedEvent(this, getCurrentSourceKey(), cleanSourcePath));
+        }
+        return uploaded;
     }
 
     private void publishUploadedEventSafely(String targetPath) {

@@ -7,6 +7,7 @@ import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
+import io.github.atengk.boot.storage.model.StorageUploadRequest;
 import io.github.atengk.boot.storage.resource.StorageResource;
 import io.github.atengk.boot.storage.util.StorageHashUtil;
 import jakarta.servlet.http.HttpServletResponse;
@@ -96,6 +97,15 @@ public interface StorageOperations {
     }
 
     /**
+     * 单参快捷上传 Spring Web MultipartFile 表单文件
+     * 自动提取原始文件扩展名并按日期目录（yyyy/MM/dd/uuid[.ext]）归档生成唯一安全路径
+     *
+     * @param file 表单上传文件
+     * @return 存储元数据对象（包含自动归档路径）
+     */
+    StorageObject upload(MultipartFile file);
+
+    /**
      * 上传 Spring Web MultipartFile 表单文件
      *
      * @param path 目标相对路径
@@ -126,6 +136,42 @@ public interface StorageOperations {
      * @return 存储元数据对象
      */
     StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead);
+
+    /**
+     * 基于结构化请求对象执行统一上传（支持自定义元数据、公共读与覆盖控制）
+     *
+     * @param request 统一上传请求对象
+     * @return 存储元数据对象
+     */
+    StorageObject upload(StorageUploadRequest request);
+
+    /**
+     * 当目标路径不存在时上传 MultipartFile 表单文件（已存在则抛出 40024 冲突异常）
+     *
+     * @param file 表单上传文件
+     * @param path 目标相对路径
+     * @return 存储元数据对象
+     */
+    StorageObject uploadIfAbsent(MultipartFile file, String path);
+
+    /**
+     * 当目标路径不存在时上传输入流（已存在则抛出 40024 冲突异常）
+     *
+     * @param in          输入流
+     * @param path        目标相对路径
+     * @param contentType MIME 内容类型
+     * @param size        数据流字节大小（未知时传 -1）
+     * @return 存储元数据对象
+     */
+    StorageObject uploadIfAbsent(InputStream in, String path, String contentType, long size);
+
+    /**
+     * 当目标路径不存在时按结构化请求对象执行非覆盖上传（已存在则抛出 40024 冲突异常）
+     *
+     * @param request 统一上传请求对象
+     * @return 存储元数据对象
+     */
+    StorageObject uploadIfAbsent(StorageUploadRequest request);
 
     /**
      * 上传公开可读对象（自动推导 MIME 与计算大小，赋予公共读权限）
@@ -291,6 +337,26 @@ public interface StorageOperations {
      * @return true 移动成功
      */
     boolean move(String sourcePath, String targetPath);
+
+    /**
+     * 跨存储源复制对象（同驱动直连短路，跨驱动则流式同步元数据与内容）
+     *
+     * @param sourcePath      当前存储源的源对象路径
+     * @param targetSourceKey 目标存储源标识
+     * @param targetPath      目标存储源下的目标对象路径
+     * @return 目标存储源落盘后的对象元数据
+     */
+    StorageObject copyTo(String sourcePath, String targetSourceKey, String targetPath);
+
+    /**
+     * 跨存储源移动对象（目标写完并校验通过后才删除源对象，确保异常时源文件不受损）
+     *
+     * @param sourcePath      当前存储源的源对象路径
+     * @param targetSourceKey 目标存储源标识
+     * @param targetPath      目标存储源下的目标对象路径
+     * @return 目标存储源落盘后的对象元数据
+     */
+    StorageObject moveTo(String sourcePath, String targetSourceKey, String targetPath);
 
     /**
      * 上传纯文本字符串（默认 UTF-8 编码）

@@ -178,6 +178,28 @@ class StorageTemplateGuardTest {
         assertThat(template.exists("images/valid.png")).isTrue();
     }
 
+    @Test
+    @DisplayName("跨存储源 moveTo 在目标侧触发 StorageGuard 魔数拦截时中止并完好保留源对象")
+    void testCrossSourceMoveToAbortedByTargetGuardLeavesSourceIntact(@TempDir Path archiveDir) {
+        LocalDriver archiveDriver = new LocalDriver(archiveDir.toString());
+        // 源对象以原始驱动态（绕过旧库防卫）提前写入了伪装扩展名内容
+        driver.upload("legacy/disguised.png", new ByteArrayInputStream(EXE_HEADER), "image/png", EXE_HEADER.length);
+
+        StorageGuardProperties props = new StorageGuardProperties();
+        props.setEnabled(true);
+        props.setStrictMagicCheck(true);
+        StorageTemplate guardedMulti = new StorageTemplate(driver, java.util.Map.of("primary", driver, "archive", archiveDriver));
+        guardedMulti.setStorageGuard(new StorageGuard(props));
+
+        assertThatThrownBy(() -> guardedMulti.moveTo("legacy/disguised.png", "archive", "safe/disguised.png"))
+                .isInstanceOf(StorageException.class)
+                .satisfies(e -> assertThat(((StorageException) e).getResultCode()).isEqualTo(StorageResultCode.STORAGE_FILE_TYPE_MISMATCH));
+
+        // 目标源不得落盘，且源对象必须完好无损保留
+        assertThat(archiveDriver.exists("safe/disguised.png")).isFalse();
+        assertThat(driver.exists("legacy/disguised.png")).isTrue();
+    }
+
     private String md5Hex(byte[] data) throws Exception {
         MessageDigest md = MessageDigest.getInstance("MD5");
         return HexFormat.of().formatHex(md.digest(data));

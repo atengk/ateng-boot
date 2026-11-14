@@ -2,12 +2,14 @@ package io.github.atengk.boot.storage.template;
 
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.storage.driver.LocalDriver;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
 import io.github.atengk.boot.storage.model.HashAlgorithm;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
+import io.github.atengk.boot.storage.model.StorageUploadRequest;
 import io.github.atengk.boot.storage.resource.StorageResource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -345,6 +347,153 @@ class StorageTemplateTest {
         assertTrue(fastUploaded);
         assertTrue(template.exists("user1001/files/sample.txt"));
         assertEquals(sha256, template.calculateHash("user1001/files/sample.txt"));
+    }
+
+    @Test
+    @DisplayName("单参快捷 upload(MultipartFile) 自动按日期归档生成唯一安全路径并支持 use(source) 切换")
+    void testQuickUploadMultipartFileSingleArg(@TempDir Path archiveDir) {
+        byte[] content = "Quick Single Arg Multipart Content".getBytes(StandardCharsets.UTF_8);
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "../evil/report-2026.pdf", "application/pdf", content);
+
+        StorageObject primaryObj = template.upload(file);
+        assertNotNull(primaryObj);
+        assertTrue(primaryObj.getPath().matches("^\\d{4}/\\d{2}/\\d{2}/[a-f0-9]{32}\\.pdf$"),
+                "自动归档路径格式不符合预期: " + primaryObj.getPath());
+        assertArrayEquals(content, template.downloadBytes(primaryObj.getPath()));
+
+        // 无扩展名时同样生成日期归档路径
+        MockMultipartFile noExtFile = new MockMultipartFile("file", "README", "text/plain", "raw".getBytes(StandardCharsets.UTF_8));
+        StorageObject noExtObj = template.upload(noExtFile);
+        assertTrue(noExtObj.getPath().matches("^\\d{4}/\\d{2}/\\d{2}/[a-f0-9]{32}$"));
+
+        // 通过 use(sourceKey) 调用单参快捷上传，落盘至命名副源
+        LocalDriver archiveDriver = new LocalDriver(archiveDir.toString());
+        StorageTemplate multiTemplate = new StorageTemplate(driver, Map.of("primary", driver, "archive", archiveDriver));
+        StorageObject archiveObj = multiTemplate.use("archive").upload(
+                new MockMultipartFile("file", "contract.txt", "text/plain", "Archive Data".getBytes(StandardCharsets.UTF_8)));
+        assertTrue(archiveDriver.exists(archiveObj.getPath()));
+        assertFalse(driver.exists(archiveObj.getPath()));
+
+        // 空文件防御
+        StorageException nullEx = assertThrows(StorageException.class, () -> template.upload((MockMultipartFile) null));
+        assertEquals(StorageResultCode.UPLOAD_FAILED, nullEx.getResultCode());
+        MockMultipartFile emptyFile = new MockMultipartFile("file", "empty.txt", "text/plain", new byte[0]);
+        StorageException emptyEx = assertThrows(StorageException.class, () -> template.upload(emptyFile));
+        assertEquals(StorageResultCode.UPLOAD_FAILED, emptyEx.getResultCode());
+    }
+
+    @Test
+    @DisplayName("uploadIfAbsent 三类重载在路径不存在时成功落盘，路径已存在时抛出 40024 且不覆盖原内容")
+    void testUploadIfAbsentPreventsOverwrite() {
+        String path1 = "lock/multipart-doc.txt";
+        MockMultipartFile firstMp = new MockMultipartFile("file", "doc.txt", "text/plain", "Original Multipart".getBytes(StandardCharsets.UTF_8));
+        MockMultipartFile secondMp = new MockMultipartFile("file", "doc.txt", "text/plain", "Overwritten Multipart".getBytes(StandardCharsets.UTF_8));
+
+        StorageObject created1 = template.uploadIfAbsent(firstMp, path1);
+        assertEquals(path1, created1.getPath());
+
+        BusinessException ex1 = assertThrows(BusinessException.class, () -> template.uploadIfAbsent(secondMp, path1));
+        assertEquals(40024, ex1.getCode());
+        assertEquals("Original Multipart", template.downloadString(path1));
+
+        // InputStream 重载
+        String path2 = "lock/stream-doc.txt";
+        byte[] origBytes = "Original Stream".getBytes(StandardCharsets.UTF_8);
+        byte[] newBytes = "Overwritten Stream".getBytes(StandardCharsets.UTF_8);
+        StorageObject created2 = template.uploadIfAbsent(new ByteArrayInputStream(origBytes), path2, "text/plain", origBytes.length);
+        assertEquals(path2, created2.getPath());
+
+        BusinessException ex2 = assertThrows(BusinessException.class, () ->
+                template.uploadIfAbsent(new ByteArrayInputStream(newBytes), path2, "text/plain", newBytes.length));
+        assertEquals(40024, ex2.getCode());
+        assertEquals("Original Stream", template.downloadString(path2));
+
+        // StorageUploadRequest 重载
+        String path3 = "lock/request-doc.json";
+        byte[] jsonBytes = "{\"v\":1}".getBytes(StandardCharsets.UTF_8);
+        StorageUploadRequest req = StorageUploadRequest.builder()
+                .path(path3)
+                .inputStream(new ByteArrayInputStream(jsonBytes))
+                .contentType("application/json")
+                .size(jsonBytes.length)
+                .userMetadata(Map.of("env", "prod"))
+                .build();
+        StorageObject created3 = template.uploadIfAbsent(req);
+        assertEquals("application/json", created3.getContentType());
+        assertEquals("prod", created3.getUserMetadata().get("env"));
+
+        StorageUploadRequest duplicateReq = StorageUploadRequest.builder()
+                .path(path3)
+                .inputStream(new ByteArrayInputStream("{\"v\":2}".getBytes(StandardCharsets.UTF_8)))
+                .contentType("application/json")
+                .size(7L)
+                .build();
+        BusinessException ex3 = assertThrows(BusinessException.class, () -> template.uploadIfAbsent(duplicateReq));
+        assertEquals(40024, ex3.getCode());
+        assertEquals("{\"v\":1}", template.downloadString(path3));
+    }
+
+    @Test
+    @DisplayName("copyTo 与 moveTo 支持跨驱动传输元数据/流并支持同驱动直连短路")
+    void testCrossSourceCopyToAndMoveToWithSameDriverShortCircuit(@TempDir Path archiveDir, @TempDir Path spyDir) {
+        LocalDriver archiveDriver = new LocalDriver(archiveDir.toString());
+        StorageTemplate multiTemplate = new StorageTemplate(driver, Map.of("primary", driver, "archive", archiveDriver));
+
+        byte[] payload = "{\"report\":\"2026\"}".getBytes(StandardCharsets.UTF_8);
+        String srcPath = "src/report.bin";
+        multiTemplate.upload(srcPath, new ByteArrayInputStream(payload), "application/vnd.custom+json", payload.length, Map.of("author", "ateng", "tier", "hot"));
+
+        // 1. 跨存储源 copyTo：目标内容、声明 MIME 与自定义元数据完整保留，源文件仍存在
+        StorageObject copied = multiTemplate.copyTo(srcPath, "archive", "backup/report.bin");
+        assertEquals("backup/report.bin", copied.getPath());
+        assertEquals(payload.length, copied.getSize());
+        assertEquals("application/vnd.custom+json", copied.getContentType());
+        assertEquals("ateng", copied.getUserMetadata().get("author"));
+        assertEquals("hot", copied.getUserMetadata().get("tier"));
+        assertArrayEquals(payload, multiTemplate.use("archive").downloadBytes("backup/report.bin"));
+        assertTrue(multiTemplate.exists(srcPath));
+
+        // 2. 跨存储源 moveTo：目标落盘后才删除源文件
+        StorageObject moved = multiTemplate.moveTo(srcPath, "archive", "moved/report.bin");
+        assertEquals("moved/report.bin", moved.getPath());
+        assertEquals("application/vnd.custom+json", moved.getContentType());
+        assertEquals("ateng", moved.getUserMetadata().get("author"));
+        assertArrayEquals(payload, multiTemplate.use("archive").downloadBytes("moved/report.bin"));
+        assertFalse(multiTemplate.exists(srcPath));
+
+        // 2b. 从已绑定副源句柄反向 copyTo 至 primary（driverMap-only 模式无 factory 下仍能准确寻址根主源）
+        StorageObject restored = multiTemplate.use("archive").copyTo("moved/report.bin", "primary", "restored/report.bin");
+        assertEquals("restored/report.bin", restored.getPath());
+        assertArrayEquals(payload, multiTemplate.downloadBytes("restored/report.bin"));
+
+        // 3. 异常防卫：不存在的 targetSourceKey 或源对象不存在
+        StorageException badSource = assertThrows(StorageException.class, () ->
+                multiTemplate.copyTo("moved/report.bin", "unknown-src", "x/y.bin"));
+        assertEquals(StorageResultCode.STORAGE_SOURCE_NOT_FOUND, badSource.getResultCode());
+
+        StorageException missingObj = assertThrows(StorageException.class, () ->
+                multiTemplate.moveTo("not/exists.bin", "archive", "x/y.bin"));
+        assertEquals(StorageResultCode.OBJECT_NOT_FOUND, missingObj.getResultCode());
+
+        // 4. 同驱动引用直连短路：直接调用 driver.copy / driver.move，不走 download 流回传
+        LocalDriver realSameDriver = new LocalDriver(spyDir.toString());
+        LocalDriver spyDriver = org.mockito.Mockito.spy(realSameDriver);
+        StorageTemplate aliasTemplate = new StorageTemplate(spyDriver, Map.of("primary", spyDriver, "alias", spyDriver));
+        aliasTemplate.uploadString("same/a.txt", "same driver content");
+        org.mockito.Mockito.clearInvocations(spyDriver);
+
+        StorageObject shortCopy = aliasTemplate.copyTo("same/a.txt", "alias", "same/b.txt");
+        assertEquals("same/b.txt", shortCopy.getPath());
+        org.mockito.Mockito.verify(spyDriver).copy("same/a.txt", "same/b.txt");
+        org.mockito.Mockito.verify(spyDriver, org.mockito.Mockito.never()).download(org.mockito.ArgumentMatchers.anyString());
+
+        StorageObject shortMove = aliasTemplate.moveTo("same/b.txt", "alias", "same/c.txt");
+        assertEquals("same/c.txt", shortMove.getPath());
+        org.mockito.Mockito.verify(spyDriver).move("same/b.txt", "same/c.txt");
+        org.mockito.Mockito.verify(spyDriver, org.mockito.Mockito.never()).download(org.mockito.ArgumentMatchers.anyString());
+        assertFalse(aliasTemplate.exists("same/b.txt"));
+        assertEquals("same driver content", aliasTemplate.downloadString("same/c.txt"));
     }
 
     public static class TestUser {

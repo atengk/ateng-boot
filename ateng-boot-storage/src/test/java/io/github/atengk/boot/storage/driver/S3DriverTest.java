@@ -910,4 +910,38 @@ class S3DriverTest {
 
         verify(s3Client, org.mockito.Mockito.never()).uploadPart(any(software.amazon.awssdk.services.s3.model.UploadPartRequest.class), any(RequestBody.class));
     }
+
+    @Test
+    @DisplayName("S3Driver uploadIfAbsent 注入 If-None-Match=* 请求头并将 412 PreconditionFailed 转译为 40024")
+    void testUploadIfAbsentWithIfNoneMatchAnd412Translation() {
+        byte[] content = "Exclusive S3 Content".getBytes(StandardCharsets.UTF_8);
+        String key = "exclusive/doc.txt";
+
+        when(s3Client.headObject(any(HeadObjectRequest.class)))
+                .thenThrow(NoSuchKeyException.builder().message("Not Found").build());
+        when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
+                .thenReturn(PutObjectResponse.builder().eTag("\"etag-exclusive\"").build());
+
+        StorageObject obj = s3Driver.uploadIfAbsent(key, new ByteArrayInputStream(content), "text/plain", content.length, Map.of("k", "v"), false);
+        assertEquals(key, obj.getPath());
+
+        ArgumentCaptor<PutObjectRequest> captor = ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(s3Client).putObject(captor.capture(), any(RequestBody.class));
+        PutObjectRequest captured = captor.getValue();
+        assertTrue(captured.overrideConfiguration().isPresent());
+        assertEquals(List.of("*"), captured.overrideConfiguration().get().headers().get("If-None-Match"));
+
+        // 模拟并发竞争：headObject 尚未见对象，putObject 收到 S3 412 PreconditionFailed
+        S3Exception preconditionFailed = (S3Exception) S3Exception.builder()
+                .statusCode(412)
+                .awsErrorDetails(AwsErrorDetails.builder().errorCode("PreconditionFailed").errorMessage("At least one pre-condition failed").build())
+                .build();
+        when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class))).thenThrow(preconditionFailed);
+
+        StorageException ex = assertThrows(StorageException.class, () ->
+                s3Driver.uploadIfAbsent(key, new ByteArrayInputStream(content), "text/plain", content.length, null, false));
+        assertEquals(40024, ex.getCode());
+        assertEquals(StorageResultCode.STORAGE_OBJECT_ALREADY_EXISTS, ex.getResultCode());
+        assertEquals(preconditionFailed, ex.getCause());
+    }
 }
