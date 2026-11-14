@@ -62,7 +62,7 @@ public class RealtimeSessionManager {
                                   ObjectProvider<RealtimeSessionListener> sessionListeners) {
         this.properties = properties;
         if (sessionListeners != null) {
-            sessionListeners.orderedStream().forEach(this.listeners::add);
+            sessionListeners.orderedStream().forEach(this::addListener);
         }
     }
 
@@ -72,7 +72,7 @@ public class RealtimeSessionManager {
      * @param listener 监听器
      */
     public void addListener(RealtimeSessionListener listener) {
-        if (listener != null) {
+        if (listener != null && !this.listeners.contains(listener)) {
             this.listeners.add(listener);
         }
     }

@@ -32,6 +32,7 @@ import io.github.atengk.boot.realtime.websocket.AtengWebSocketConfigurer;
 import io.github.atengk.boot.realtime.websocket.AtengWebSocketHandler;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -72,6 +73,22 @@ public class AtengRealtimeAutoConfiguration {
     public RealtimeSessionManager realtimeSessionManager(RealtimeProperties properties,
                                                          ObjectProvider<RealtimeSessionListener> sessionListeners) {
         return new RealtimeSessionManager(properties, sessionListeners);
+    }
+
+    /**
+     * 桥接延迟或接口返回类型的集群广播器实现至会话生命周期监听器集合，防漏注
+     */
+    @Bean
+    public SmartInitializingSingleton realtimeClusterSessionListenerConfigurer(
+            ObjectProvider<RealtimeSessionManager> sessionManagerProvider,
+            ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider) {
+        return () -> {
+            RealtimeSessionManager sessionManager = sessionManagerProvider.getIfAvailable();
+            RealtimeClusterBroadcaster broadcaster = clusterBroadcasterProvider.getIfAvailable();
+            if (sessionManager != null && broadcaster instanceof RealtimeSessionListener listener) {
+                sessionManager.addListener(listener);
+            }
+        };
     }
 
     /**

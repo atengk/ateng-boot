@@ -6,6 +6,9 @@ import io.github.atengk.boot.realtime.cluster.RedissonClusterMetricsReporter;
 import io.github.atengk.boot.realtime.cluster.RedissonRealtimeClusterBroadcaster;
 import io.github.atengk.boot.realtime.cluster.StandaloneClusterMetricsProvider;
 import io.github.atengk.boot.realtime.cluster.StandaloneRealtimeClusterBroadcaster;
+import io.github.atengk.boot.realtime.model.SessionKey;
+import io.github.atengk.boot.realtime.session.RealtimeSession;
+import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import io.github.atengk.boot.realtime.shutdown.RealtimeGracefulShutdownHandler;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -20,7 +23,9 @@ import org.springframework.context.annotation.Configuration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -67,6 +72,14 @@ class AtengRealtimeAutoConfigurationTest {
                     assertThat(context).hasSingleBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class);
                     assertThat(context.getBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class))
                             .isInstanceOf(io.github.atengk.boot.realtime.group.RedissonRealtimeGroupManager.class);
+
+                    // 验证 SmartInitializingSingleton 确保接口声明返回类型的广播器依然作为监听器装配进 SessionManager
+                    RealtimeSessionManager sessionManager = context.getBean(RealtimeSessionManager.class);
+                    RedissonClient redisson = context.getBean(RedissonClient.class);
+                    org.springframework.web.socket.WebSocketSession ws = mock(org.springframework.web.socket.WebSocketSession.class);
+                    when(ws.isOpen()).thenReturn(true);
+                    sessionManager.registerSession(RealtimeSession.ofWebSocket(SessionKey.of("auto-user-1", "web", "c1"), ws));
+                    verify(redisson).getMap(eq("ateng:realtime:cluster:nodes:users:auto-user-1"), eq(org.redisson.client.codec.StringCodec.INSTANCE));
                 });
     }
 

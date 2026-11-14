@@ -182,6 +182,32 @@ public class RedissonRealtimeGroupManager extends RealtimeGroupManager {
     }
 
     /**
+     * 清空本地群组索引，并级联清理本节点纳管会话在 Redis 中的正反向群组 Set 记录
+     */
+    @Override
+    public void clear() {
+        Set<SessionKey> localSessions = new LinkedHashSet<>();
+        for (String groupId : getAllGroupIds()) {
+            localSessions.addAll(getGroupSessions(groupId));
+        }
+        try {
+            for (SessionKey sessionKey : localSessions) {
+                try {
+                    leaveAllGroups(sessionKey);
+                } catch (Exception e) {
+                    log.warn("[Realtime-Cluster] 级联清理会话分布式群组索引异常: sessionKey={}, error={}",
+                            sessionKey, e.getMessage());
+                }
+            }
+        } finally {
+            super.clear();
+        }
+        if (!localSessions.isEmpty()) {
+            log.info("[Realtime-Cluster] Redis 分布式群组本地与远端关联索引已清空: sessionCount={}", localSessions.size());
+        }
+    }
+
+    /**
      * 获取指定群组在 Redis 中的正向成员 Set 键名
      *
      * @param groupId 群组标识

@@ -172,6 +172,48 @@ class RedissonRealtimeGroupManagerTest {
     }
 
     @Test
+    @DisplayName("全量清场: clear() 同步清空本地索引并级联清理本节点会话在 Redis 中的正反向 Set 索引")
+    void testClearCascadesToRedisSets() {
+        SessionKey k1 = SessionKey.of("u-clear-1", "pc", "c1");
+        SessionKey k2 = SessionKey.of("u-clear-2", "app", "c2");
+        groupManager.joinGroup("room-clear-A", k1);
+        groupManager.joinGroup("room-clear-B", k1);
+        groupManager.joinGroup("room-clear-A", k2);
+
+        RSet<String> groupASet = mock(RSet.class);
+        RSet<String> groupBSet = mock(RSet.class);
+        RSet<String> session1GroupsSet = mock(RSet.class);
+        RSet<String> session2GroupsSet = mock(RSet.class);
+        when(redissonClient.<String>getSet(eq("ateng:realtime:cluster:group:room-clear-A"), any(StringCodec.class)))
+                .thenReturn(groupASet);
+        when(redissonClient.<String>getSet(eq("ateng:realtime:cluster:group:room-clear-B"), any(StringCodec.class)))
+                .thenReturn(groupBSet);
+        when(redissonClient.<String>getSet(eq("ateng:realtime:cluster:session:" + k1.format() + ":groups"), any(StringCodec.class)))
+                .thenReturn(session1GroupsSet);
+        when(redissonClient.<String>getSet(eq("ateng:realtime:cluster:session:" + k2.format() + ":groups"), any(StringCodec.class)))
+                .thenReturn(session2GroupsSet);
+
+        when(session1GroupsSet.readAll()).thenReturn(Set.of("room-clear-A", "room-clear-B"));
+        when(session2GroupsSet.readAll()).thenReturn(Set.of("room-clear-A"));
+
+        groupManager.clear();
+
+        assertThat(groupManager.getAllGroupIds()).isEmpty();
+        assertThat(groupManager.getGroupMemberCount("room-clear-A")).isZero();
+        assertThat(groupManager.getGroupMemberCount("room-clear-B")).isZero();
+        assertThat(groupManager.getSessionGroups(k1)).isEmpty();
+        assertThat(groupManager.getSessionGroups(k2)).isEmpty();
+
+        verify(groupASet).remove(k1.format());
+        verify(groupASet).remove(k2.format());
+        verify(groupBSet).remove(k1.format());
+        verify(groupASet, never()).delete();
+        verify(groupBSet, never()).delete();
+        verify(session1GroupsSet).delete();
+        verify(session2GroupsSet).delete();
+    }
+
+    @Test
     @DisplayName("健壮性与空入参防卫")
     void testDefensiveHandling() {
         assertThat(groupManager.joinGroup(null, null)).isFalse();
