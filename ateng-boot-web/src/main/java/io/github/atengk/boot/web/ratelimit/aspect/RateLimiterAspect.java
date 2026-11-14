@@ -18,6 +18,7 @@ import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.core.DefaultParameterNameDiscoverer;
 import org.springframework.core.Ordered;
 import org.springframework.core.ParameterNameDiscoverer;
@@ -42,12 +43,16 @@ import java.util.concurrent.atomic.AtomicReference;
  * @since 2026-10-16
  */
 @Aspect
-public class RateLimiterAspect implements Ordered {
+public class RateLimiterAspect implements Ordered, DisposableBean {
 
     /**
      * 切面优先级：置于 IP 访问控制之后，防重幂等与签名之前
      */
     public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 200;
+
+    public static final String HEADER_RATE_LIMIT = "X-RateLimit-Limit";
+    public static final String HEADER_RATE_LIMIT_REMAINING = "X-RateLimit-Remaining";
+    public static final String HEADER_RETRY_AFTER = "Retry-After";
 
     private static final Logger log = LoggerFactory.getLogger(RateLimiterAspect.class);
     private static final String DEFAULT_ANNOTATION_PREFIX = "rate_limit:";
@@ -81,6 +86,14 @@ public class RateLimiterAspect implements Ordered {
     }
 
     @Override
+    public void destroy() throws Exception {
+        RateLimiterStore fallbackStore = fallbackStoreRef.getAndSet(null);
+        if (fallbackStore instanceof DisposableBean disposable) {
+            disposable.destroy();
+        }
+    }
+
+    @Override
     public int getOrder() {
         return ORDER;
     }
@@ -90,9 +103,10 @@ public class RateLimiterAspect implements Ordered {
         String fullKey = resolveFullKey(joinPoint, rateLimiter);
 
         // 1. 尝试原子获取令牌许可（支持底层驱动故障时的 failOpen 降级）
+        RateLimiterStore activeStore = rateLimiterStore;
         boolean acquired;
         try {
-            acquired = rateLimiterStore.tryAcquire(
+            acquired = activeStore.tryAcquire(
                     fullKey,
                     rateLimiter.count(),
                     rateLimiter.time(),
@@ -101,7 +115,8 @@ public class RateLimiterAspect implements Ordered {
         } catch (Exception ex) {
             if (properties.isFailOpen()) {
                 log.warn("RateLimiter store execution failed, falling back to in-memory store due to failOpen=true, key: {}", fullKey, ex);
-                acquired = getFallbackStore().tryAcquire(
+                activeStore = getFallbackStore();
+                acquired = activeStore.tryAcquire(
                         fullKey,
                         rateLimiter.count(),
                         rateLimiter.time(),
@@ -112,14 +127,13 @@ public class RateLimiterAspect implements Ordered {
             }
         }
 
-        if (!acquired) {
-            // 2. 计算 Retry-After 窗口建议秒数并写入响应头
-            long retryAfterSeconds = Math.max(1, rateLimiter.timeUnit().toSeconds(rateLimiter.time()));
-            HttpServletResponse response = ServletUtil.getResponse();
-            if (response != null) {
-                response.setHeader("Retry-After", String.valueOf(retryAfterSeconds));
-            }
+        // 2. 注入标准限流响应头（X-RateLimit-Limit / X-RateLimit-Remaining，超限时同步回写 Retry-After）
+        HttpServletResponse response = ServletUtil.getResponse();
+        if (response != null) {
+            writeRateLimitHeaders(response, activeStore, fullKey, rateLimiter, acquired);
+        }
 
+        if (!acquired) {
             // 3. 记录日志并抛出受控业务异常
             String message = StringUtils.hasText(rateLimiter.message())
                     ? rateLimiter.message()
@@ -131,6 +145,32 @@ public class RateLimiterAspect implements Ordered {
 
         // 4. 放行执行业务方法
         return joinPoint.proceed();
+    }
+
+    private void writeRateLimitHeaders(HttpServletResponse response,
+                                       RateLimiterStore activeStore,
+                                       String fullKey,
+                                       RateLimiter rateLimiter,
+                                       boolean acquired) {
+        if (!acquired) {
+            long retryAfterSeconds = Math.max(1, rateLimiter.timeUnit().toSeconds(rateLimiter.time()));
+            response.setHeader(HEADER_RETRY_AFTER, String.valueOf(retryAfterSeconds));
+        }
+        if (!properties.isIncludeHeaders() || rateLimiter.count() <= 0 || rateLimiter.time() <= 0) {
+            return;
+        }
+        response.setHeader(HEADER_RATE_LIMIT, String.valueOf(rateLimiter.count()));
+        if (!acquired) {
+            response.setHeader(HEADER_RATE_LIMIT_REMAINING, "0");
+            return;
+        }
+        try {
+            long remaining = activeStore.getAvailablePermits(
+                    fullKey, rateLimiter.count(), rateLimiter.time(), rateLimiter.timeUnit());
+            response.setHeader(HEADER_RATE_LIMIT_REMAINING, String.valueOf(remaining));
+        } catch (Exception ex) {
+            log.warn("RateLimiter failed to query remaining permits for response header, key: {}", fullKey, ex);
+        }
     }
 
     /**

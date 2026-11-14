@@ -25,6 +25,14 @@ import java.util.List;
 public class WebProperties {
 
     /**
+     * 审计日志与请求参数默认敏感字段脱敏基线
+     */
+    private static final List<String> DEFAULT_SENSITIVE_EXCLUDE_PARAMS = List.of(
+            "password", "passwd", "pwd", "oldPassword", "newPassword", "confirmPassword",
+            "secret", "token", "accessToken", "refreshToken", "authorization"
+    );
+
+    /**
      * 是否启用 Web 运行时增强模块（默认 true）
      */
     private boolean enabled = true;
@@ -87,6 +95,11 @@ public class WebProperties {
          * 链路追踪请求头键名
          */
         private String header = "X-Trace-Id";
+
+        /**
+         * 入站链路追踪标识最大允许长度（默认 64；超出或含非法字符时丢弃并重生成安全 UUID）
+         */
+        private int maxLength = 64;
 
         public String getHeaderName() {
             return header;
@@ -180,6 +193,11 @@ public class WebProperties {
          * 是否启用 Web 接口审计日志切面
          */
         private boolean enabled = false;
+
+        /**
+         * 全局默认敏感排除参数列表（与 @WebLog#excludeParams 合并并忽略大小写匹配）
+         */
+        private List<String> defaultExcludeParams = new ArrayList<>(DEFAULT_SENSITIVE_EXCLUDE_PARAMS);
     }
 
     /**
@@ -224,6 +242,26 @@ public class WebProperties {
          * 非对称算法私钥（RSA PKCS#8 Base64 或 SM2 Hex/Base64 格式，用于出站加签）
          */
         private String privateKey;
+
+        /**
+         * RSA 算法专属公钥（多算法并存场景优先使用，未配置时回退读取 publicKey）
+         */
+        private String rsaPublicKey;
+
+        /**
+         * RSA 算法专属私钥（多算法并存场景优先使用，未配置时回退读取 privateKey）
+         */
+        private String rsaPrivateKey;
+
+        /**
+         * 国密 SM2 算法专属公钥（多算法并存场景优先使用，未配置时回退读取 publicKey）
+         */
+        private String sm2PublicKey;
+
+        /**
+         * 国密 SM2 算法专属私钥（多算法并存场景优先使用，未配置时回退读取 privateKey）
+         */
+        private String sm2PrivateKey;
 
         /**
          * 请求时效防重放时间窗口（强类型 Duration，默认 60 秒）
@@ -287,9 +325,24 @@ public class WebProperties {
         private String headerNonce = "X-Nonce";
 
         /**
+         * Nonce 防重放缓存 Key 默认前缀
+         */
+        public static final String DEFAULT_NONCE_PREFIX = "ateng:sign:nonce:";
+
+        /**
          * 签名串请求头/响应头名称（默认 X-Signature）
          */
         private String headerSignature = "X-Signature";
+
+        /**
+         * Nonce 防重放缓存 Key 前缀（默认 ateng:sign:nonce:）
+         */
+        private String noncePrefix = DEFAULT_NONCE_PREFIX;
+
+        /**
+         * 分布式 Nonce 防重放存储异常时的降级策略（默认 false 强安全阻断；设为 true 时降级至本地内存锁）
+         */
+        private boolean failOpen = false;
     }
 
     /**
@@ -393,6 +446,11 @@ public class WebProperties {
          * 是否启用结构化操作审计切面（默认 true）
          */
         private boolean enabled = true;
+
+        /**
+         * 全局默认敏感排除参数列表（与 @OperateLog#excludeParams 合并并忽略大小写匹配）
+         */
+        private List<String> defaultExcludeParams = new ArrayList<>(DEFAULT_SENSITIVE_EXCLUDE_PARAMS);
     }
 
     /**
@@ -414,9 +472,19 @@ public class WebProperties {
         private boolean enabled = true;
 
         /**
-         * 就绪探针置为拒绝后静默排空等待时间（强类型 Duration，默认 10 秒）
+         * 就绪探针置为拒绝后静默排空等待总上限（强类型 Duration，默认 10 秒）
          */
         private Duration drainTimeout = Duration.ofSeconds(10);
+
+        /**
+         * K8s 路由摘除传播静默等待期（第一阶段；未配置时默认与 drainTimeout 一致以保持向后兼容）
+         */
+        private Duration quietPeriod;
+
+        /**
+         * 在途请求自适应排空轮询步长（第二阶段，默认 100ms；最小毫秒级粒度，小于 1ms 时自动回退为 100ms 防止忙等）
+         */
+        private Duration pollInterval = Duration.ofMillis(100);
 
         /**
          * 是否启用 SmartLifecycle 兜底保护（未配 preStop 收到 SIGTERM 时自动排空，默认 true）

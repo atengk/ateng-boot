@@ -4,10 +4,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.web.annotation.WebLog;
+import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.util.IpUtil;
 import io.github.atengk.boot.web.util.ServletUtil;
-import jakarta.servlet.ServletRequest;
-import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
@@ -18,23 +17,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotationUtils;
-import org.springframework.validation.BindingResult;
-import org.springframework.web.multipart.MultipartFile;
 
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.Reader;
-import java.io.Writer;
 import java.lang.reflect.Method;
-import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Web 接口审计日志切面
@@ -52,16 +39,21 @@ public class WebLogAspect implements Ordered {
     public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 600;
 
     private static final Logger log = LoggerFactory.getLogger(WebLogAspect.class);
-    private static final String EXCLUDED_MASK = "[EXCLUDED]";
 
     private final ObjectMapper objectMapper;
+    private final WebProperties webProperties;
+
+    public WebLogAspect(ObjectMapper objectMapper, WebProperties webProperties) {
+        this.objectMapper = objectMapper != null ? objectMapper : JsonUtil.getObjectMapper();
+        this.webProperties = webProperties != null ? webProperties : new WebProperties();
+    }
 
     public WebLogAspect(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper != null ? objectMapper : JsonUtil.getObjectMapper();
+        this(objectMapper, new WebProperties());
     }
 
     public WebLogAspect() {
-        this(JsonUtil.getObjectMapper());
+        this(JsonUtil.getObjectMapper(), new WebProperties());
     }
 
     @Override
@@ -170,147 +162,15 @@ public class WebLogAspect implements Ordered {
     }
 
     private Map<String, Object> extractParams(ProceedingJoinPoint joinPoint, WebLog webLog) {
-        MethodSignature signature = (MethodSignature) joinPoint.getSignature();
-        String[] paramNames = signature.getParameterNames();
-        Object[] args = joinPoint.getArgs();
-        if (args == null || args.length == 0) {
-            return Collections.emptyMap();
-        }
-
-        Set<String> excludedSet = new HashSet<>();
-        if (webLog.excludeParams() != null) {
-            for (String p : webLog.excludeParams()) {
-                if (p != null && !p.isBlank()) {
-                    excludedSet.add(p.trim().toLowerCase());
-                }
-            }
-        }
-
-        Map<String, Object> paramMap = new LinkedHashMap<>();
-        for (int i = 0; i < args.length; i++) {
-            String name = (paramNames != null && i < paramNames.length) ? paramNames[i] : "arg" + i;
-            if (excludedSet.contains(name.toLowerCase())) {
-                paramMap.put(name, EXCLUDED_MASK);
-                continue;
-            }
-            Object arg = args[i];
-            paramMap.put(name, sanitizeArg(arg, excludedSet));
-        }
-        return paramMap;
-    }
-
-    private Object sanitizeArg(Object arg, Set<String> excludedSet) {
-        if (arg == null) {
-            return null;
-        }
-        String placeholder = getSkipPlaceholder(arg);
-        if (placeholder != null) {
-            return placeholder;
-        }
-        if (excludedSet.isEmpty()) {
-            return arg;
-        }
-        if (arg instanceof Map<?, ?> map) {
-            return filterMap(map, excludedSet);
-        }
-        if (isPrimitiveOrBasic(arg)) {
-            return arg;
-        }
-        if (arg instanceof Collection<?> col) {
-            List<Object> list = new ArrayList<>();
-            for (Object item : col) {
-                list.add(sanitizeArg(item, excludedSet));
-            }
-            return list;
-        }
-        try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> map = objectMapper.convertValue(arg, Map.class);
-            return filterMap(map, excludedSet);
-        } catch (Exception e) {
-            return arg;
-        }
+        List<String> defaults = webProperties.getLog() != null ? webProperties.getLog().getDefaultExcludeParams() : null;
+        return AuditParamSanitizer.extractParams(joinPoint, defaults, webLog.excludeParams(), objectMapper);
     }
 
     private String sanitizeResult(Object result) {
-        if (result == null) {
-            return "null";
-        }
-        String placeholder = getSkipPlaceholder(result);
-        if (placeholder != null) {
-            return placeholder;
-        }
-        return toJson(result);
-    }
-
-    private Map<Object, Object> filterMap(Map<?, ?> map, Set<String> excludedSet) {
-        Map<Object, Object> filtered = new LinkedHashMap<>();
-        for (Map.Entry<?, ?> entry : map.entrySet()) {
-            Object key = entry.getKey();
-            if (key != null && excludedSet.contains(key.toString().toLowerCase())) {
-                filtered.put(key, EXCLUDED_MASK);
-            } else {
-                String valPlaceholder = getSkipPlaceholder(entry.getValue());
-                if (valPlaceholder != null) {
-                    filtered.put(key, valPlaceholder);
-                } else {
-                    filtered.put(key, sanitizeArg(entry.getValue(), excludedSet));
-                }
-            }
-        }
-        return filtered;
-    }
-
-    private boolean shouldSkipArg(Object arg) {
-        return getSkipPlaceholder(arg) != null;
-    }
-
-    private String getSkipPlaceholder(Object arg) {
-        if (arg == null) {
-            return null;
-        }
-        if (arg instanceof MultipartFile file) {
-            return "[MultipartFile: name=" + file.getOriginalFilename() + ", size=" + file.getSize() + "]";
-        }
-        if (arg instanceof MultipartFile[] files) {
-            return "[MultipartFile[], length=" + files.length + "]";
-        }
-        if (arg instanceof ServletRequest) {
-            return "[HttpServletRequest]";
-        }
-        if (arg instanceof ServletResponse) {
-            return "[HttpServletResponse]";
-        }
-        if (arg instanceof InputStream || arg instanceof OutputStream) {
-            return "[Stream]";
-        }
-        if (arg instanceof Reader || arg instanceof Writer) {
-            return "[Reader/Writer]";
-        }
-        if (arg instanceof BindingResult) {
-            return "[BindingResult]";
-        }
-        return null;
-    }
-
-    private boolean isPrimitiveOrBasic(Object arg) {
-        return arg instanceof String
-                || arg instanceof Number
-                || arg instanceof Boolean
-                || arg instanceof Character
-                || arg instanceof TemporalAccessor
-                || arg.getClass().isPrimitive()
-                || arg.getClass().isEnum();
+        return AuditParamSanitizer.sanitizeResult(result, objectMapper);
     }
 
     private String toJson(Object obj) {
-        if (obj == null) {
-            return "null";
-        }
-        try {
-            return objectMapper.writeValueAsString(obj);
-        } catch (Exception e) {
-            return String.valueOf(obj);
-        }
+        return AuditParamSanitizer.toJson(obj, objectMapper);
     }
 }

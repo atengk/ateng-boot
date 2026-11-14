@@ -18,4 +18,13 @@ public interface OperateLogStorageProvider {
      * @param logModel 结构化操作审计元数据模型
      */
     void store(OperateLogModel logModel);
+
+    /**
+     * 向后兼容别名方法：对称委托至 {@link #store(OperateLogModel)}
+     *
+     * @param logModel 结构化操作审计元数据模型
+     */
+    default void save(OperateLogModel logModel) {
+        store(logModel);
+    }
 }

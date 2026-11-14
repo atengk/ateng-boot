@@ -86,4 +86,44 @@ class RedisRateLimiterStoreTest {
                 .extracting("code")
                 .isEqualTo(CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
     }
+
+    @Test
+    @DisplayName("getAvailablePermits 只读查询未初始化、递减、归零配额，绝不扣减配额且故障保留原因链")
+    void shouldQueryAvailablePermitsSafely() {
+        when(redisTemplate.execute(any(RedisScript.class), eq(Collections.singletonList("rate:probe:1")), eq("5"), eq("10000"), anyString()))
+                .thenReturn(5L)
+                .thenReturn(3L)
+                .thenReturn(0L);
+
+        assertThat(store.getAvailablePermits("rate:probe:1", 5, 10, TimeUnit.SECONDS)).isEqualTo(5L);
+        assertThat(store.getAvailablePermits("rate:probe:1", 5, 10, TimeUnit.SECONDS)).isEqualTo(3L);
+        assertThat(store.getAvailablePermits("rate:probe:1", 5, 10, TimeUnit.SECONDS)).isEqualTo(0L);
+        verify(redisTemplate, times(3)).execute(
+                argThat((RedisScript<?> s) -> s.getScriptAsString() != null
+                        && !s.getScriptAsString().contains("HMSET")
+                        && !s.getScriptAsString().contains("PEXPIRE")),
+                eq(Collections.singletonList("rate:probe:1")),
+                eq("5"), eq("10000"), anyString()
+        );
+
+        assertThatThrownBy(() -> store.getAvailablePermits(null, 5, 10, TimeUnit.SECONDS))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.getAvailablePermits("  ", 5, 10, TimeUnit.SECONDS))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.getAvailablePermits("rate:probe:1", 0, 10, TimeUnit.SECONDS))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.getAvailablePermits("rate:probe:1", 5, 0, TimeUnit.SECONDS))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.getAvailablePermits("rate:probe:1", 5, 10, null))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        when(redisTemplate.execute(any(RedisScript.class), eq(Collections.singletonList("rate:probe:err")), anyString(), anyString(), anyString()))
+                .thenThrow(new RuntimeException("Redis timeout"));
+        assertThatThrownBy(() -> store.getAvailablePermits("rate:probe:err", 5, 10, TimeUnit.SECONDS))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Redis rate limiter getAvailablePermits failed")
+                .hasCauseInstanceOf(RuntimeException.class)
+                .extracting("code")
+                .isEqualTo(CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
+    }
 }

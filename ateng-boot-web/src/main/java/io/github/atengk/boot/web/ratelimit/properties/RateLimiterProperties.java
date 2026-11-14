@@ -32,6 +32,11 @@ public class RateLimiterProperties {
     private boolean failOpen = false;
 
     /**
+     * 是否在 HTTP 响应中注入标准限流配额响应头（X-RateLimit-Limit、X-RateLimit-Remaining，默认 true）
+     */
+    private boolean includeHeaders = true;
+
+    /**
      * 单机内存存储配置
      */
     @NestedConfigurationProperty

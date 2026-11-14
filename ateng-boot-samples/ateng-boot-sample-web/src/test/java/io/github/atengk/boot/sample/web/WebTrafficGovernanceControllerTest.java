@@ -371,4 +371,77 @@ class WebTrafficGovernanceControllerTest {
                 .andExpect(jsonPath("$.code").value(429))
                 .andExpect(jsonPath("$.msg").value("短信验证码请求过于频繁，请稍后再试"));
     }
+
+    @Test
+    @DisplayName("13. @RateLimiter 剩余配额探针与标准配额响应头端到端闭环")
+    void shouldExposeAvailablePermitsAndRateLimitHeaders() throws Exception {
+        String key = "rate_limit:default:/sample/web/traffic/ratelimit/default";
+
+        // 1. 初始查询剩余配额应为 2（多次查询不扣减）
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/permits")
+                        .param("key", key)
+                        .param("count", "2")
+                        .param("time", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(2));
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/permits")
+                        .param("key", key)
+                        .param("count", "2")
+                        .param("time", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(2));
+
+        // 2. 第 1 次消费后：响应头剩余 1，探针查询同步为 1
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/default"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(header().string("X-RateLimit-Limit", "2"))
+                .andExpect(header().string("X-RateLimit-Remaining", "1"));
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/permits")
+                        .param("key", key)
+                        .param("count", "2")
+                        .param("time", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(1));
+
+        // 3. 第 2 次消费后剩余 0；第 3 次触发 429 阻断并返回 Remaining=0 与 Retry-After
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/default"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(header().string("X-RateLimit-Limit", "2"))
+                .andExpect(header().string("X-RateLimit-Remaining", "0"));
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/default"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(429))
+                .andExpect(header().string("X-RateLimit-Limit", "2"))
+                .andExpect(header().string("X-RateLimit-Remaining", "0"))
+                .andExpect(header().exists("Retry-After"));
+
+        // 4. 调用 reset 后，探针立即恢复为完整配额 2
+        mockMvc.perform(post("/sample/web/traffic/ratelimit/reset")
+                        .param("key", key))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/permits")
+                        .param("key", key)
+                        .param("count", "2")
+                        .param("time", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(2));
+
+        // 5. 传输边界第一道防线 JSR-303 参数校验（空白 key / 非正数 count）快速失败返回 400
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/permits")
+                        .param("key", "  ")
+                        .param("count", "2")
+                        .param("time", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/permits")
+                        .param("key", key)
+                        .param("count", "0")
+                        .param("time", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+    }
 }

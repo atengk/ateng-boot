@@ -95,6 +95,23 @@ class AtengRateLimiterAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("默认开启且支持关闭 ateng.boot.web.ratelimit.include-headers 配置")
+    void shouldBindIncludeHeadersProperty() {
+        contextRunner.run(context -> {
+            io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties props =
+                    context.getBean(io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties.class);
+            assertThat(props.isIncludeHeaders()).isTrue();
+        });
+
+        contextRunner.withPropertyValues("ateng.boot.web.ratelimit.include-headers=false")
+                .run(context -> {
+                    io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties props =
+                            context.getBean(io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties.class);
+                    assertThat(props.isIncludeHeaders()).isFalse();
+                });
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class RedisMockConfig {
         @Bean

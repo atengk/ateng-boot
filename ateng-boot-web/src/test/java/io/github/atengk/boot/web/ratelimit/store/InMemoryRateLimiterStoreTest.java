@@ -133,5 +133,63 @@ class InMemoryRateLimiterStoreTest {
         assertThatThrownBy(() -> defaultStore.reset("   "))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("RateLimiter key must not be blank");
+
+        assertThat(defaultStore.getAvailablePermits("validKey", 5, 10, TimeUnit.SECONDS)).isEqualTo(5L);
+        assertThatThrownBy(() -> defaultStore.getAvailablePermits(" ", 5, 10, TimeUnit.SECONDS))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> defaultStore.getAvailablePermits("validKey", 0, 10, TimeUnit.SECONDS))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> defaultStore.getAvailablePermits("validKey", 5, 0, TimeUnit.SECONDS))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> defaultStore.getAvailablePermits("validKey", 5, 10, null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("getAvailablePermits 完整覆盖未初始化、递减、归零、只读不消费、reset 恢复、窗口恢复及参数防卫")
+    void shouldQueryAvailablePermitsAccuratelyWithoutConsuming() throws InterruptedException {
+        InMemoryRateLimiterStore store = new InMemoryRateLimiterStore();
+        try {
+            String key = "permits:order:1";
+            // 1. 未初始化返回完整配额，且多次查询绝不扣减配额
+            assertThat(store.getAvailablePermits(key, 2, 10, TimeUnit.SECONDS)).isEqualTo(2L);
+            assertThat(store.getAvailablePermits(key, 2, 10, TimeUnit.SECONDS)).isEqualTo(2L);
+
+            // 2. 消费 1 次后剩余 1，查询仍保持为 1
+            assertThat(store.tryAcquire(key, 2, 10, TimeUnit.SECONDS)).isTrue();
+            assertThat(store.getAvailablePermits(key, 2, 10, TimeUnit.SECONDS)).isEqualTo(1L);
+            assertThat(store.getAvailablePermits(key, 2, 10, TimeUnit.SECONDS)).isEqualTo(1L);
+
+            // 3. 再次消费至超限，剩余配额归零
+            assertThat(store.tryAcquire(key, 2, 10, TimeUnit.SECONDS)).isTrue();
+            assertThat(store.getAvailablePermits(key, 2, 10, TimeUnit.SECONDS)).isEqualTo(0L);
+            assertThat(store.tryAcquire(key, 2, 10, TimeUnit.SECONDS)).isFalse();
+            assertThat(store.getAvailablePermits(key, 2, 10, TimeUnit.SECONDS)).isEqualTo(0L);
+
+            // 4. 手动 reset 后恢复完整配额
+            store.reset(key);
+            assertThat(store.getAvailablePermits(key, 2, 10, TimeUnit.SECONDS)).isEqualTo(2L);
+
+            // 5. 短窗口过期后自动恢复完整配额
+            String windowKey = "permits:window:1";
+            assertThat(store.tryAcquire(windowKey, 1, 80, TimeUnit.MILLISECONDS)).isTrue();
+            assertThat(store.getAvailablePermits(windowKey, 1, 80, TimeUnit.MILLISECONDS)).isEqualTo(0L);
+            Thread.sleep(110L);
+            assertThat(store.getAvailablePermits(windowKey, 1, 80, TimeUnit.MILLISECONDS)).isEqualTo(1L);
+
+            // 6. 非法参数快速失败抛出 IllegalArgumentException
+            assertThatThrownBy(() -> store.getAvailablePermits(null, 2, 10, TimeUnit.SECONDS))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> store.getAvailablePermits("  ", 2, 10, TimeUnit.SECONDS))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> store.getAvailablePermits(key, 0, 10, TimeUnit.SECONDS))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> store.getAvailablePermits(key, 2, -1, TimeUnit.SECONDS))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> store.getAvailablePermits(key, 2, 10, null))
+                    .isInstanceOf(IllegalArgumentException.class);
+        } finally {
+            store.destroy();
+        }
     }
 }

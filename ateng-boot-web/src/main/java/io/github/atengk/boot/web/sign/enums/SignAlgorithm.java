@@ -9,6 +9,11 @@ package io.github.atengk.boot.web.sign.enums;
 public enum SignAlgorithm {
 
     /**
+     * 跟随全局配置（默认用于 {@link io.github.atengk.boot.web.sign.annotation.ApiSign} 注解，运行时按 ateng.boot.web.sign.algorithm 解析）
+     */
+    DEFAULT,
+
+    /**
      * HMAC-SHA256 对称哈希算法（极速、高效，推荐内网微服务与移动端）
      */
     HMAC_SHA256,

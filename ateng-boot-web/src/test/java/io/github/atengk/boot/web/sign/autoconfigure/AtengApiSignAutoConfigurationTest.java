@@ -1,7 +1,9 @@
 package io.github.atengk.boot.web.sign.autoconfigure;
 
 import io.github.atengk.boot.web.idempotent.autoconfigure.AtengIdempotentAutoConfiguration;
+import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.sign.aspect.ApiSignAspect;
+import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
 import io.github.atengk.boot.web.sign.filter.RequestBodyCachingFilter;
 import io.github.atengk.boot.web.sign.signer.HmacSha256Signer;
 import io.github.atengk.boot.web.sign.signer.RsaSigner;
@@ -101,5 +103,31 @@ class AtengApiSignAutoConfigurationTest {
                     assertThat(context).hasSingleBean(ApiSigner.class);
                     assertThat(context.getBean(ApiSigner.class)).isSameAs(customSigner);
                 });
+    }
+
+    @Test
+    @DisplayName("完整绑定 nonce-prefix、fail-open 与分算法非对称密钥并向 DefaultSignKeyProvider 透传")
+    void shouldBindNoncePolicyAndPerAlgorithmKeys() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.web.sign.enabled=true",
+                "ateng.boot.web.sign.secret-key=hmac-secret",
+                "ateng.boot.web.sign.rsa-public-key=rsa-pub",
+                "ateng.boot.web.sign.rsa-private-key=rsa-priv",
+                "ateng.boot.web.sign.sm2-public-key=sm2-pub",
+                "ateng.boot.web.sign.sm2-private-key=sm2-priv",
+                "ateng.boot.web.sign.nonce-prefix=custom:nonce:",
+                "ateng.boot.web.sign.fail-open=true"
+        ).run(context -> {
+            WebProperties props = context.getBean(WebProperties.class);
+            assertThat(props.getSign().getNoncePrefix()).isEqualTo("custom:nonce:");
+            assertThat(props.getSign().isFailOpen()).isTrue();
+
+            SignKeyProvider provider = context.getBean(SignKeyProvider.class);
+            assertThat(provider.getVerifyKey("app", SignAlgorithm.HMAC_SHA256)).isEqualTo("hmac-secret");
+            assertThat(provider.getVerifyKey("app", SignAlgorithm.RSA)).isEqualTo("rsa-pub");
+            assertThat(provider.getSignKey("app", SignAlgorithm.RSA)).isEqualTo("rsa-priv");
+            assertThat(provider.getVerifyKey("app", SignAlgorithm.SM2)).isEqualTo("sm2-pub");
+            assertThat(provider.getSignKey("app", SignAlgorithm.SM2)).isEqualTo("sm2-priv");
+        });
     }
 }

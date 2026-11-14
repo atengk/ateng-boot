@@ -55,4 +55,20 @@ public class RedissonRateLimiterStore implements RateLimiterStore {
                     "Redisson rate limiter reset failed: " + e.getMessage(), e);
         }
     }
+
+    @Override
+    public long getAvailablePermits(String key, long count, long time, TimeUnit unit) {
+        long fullCount = RateLimiterStore.super.getAvailablePermits(key, count, time, unit);
+        try {
+            RRateLimiter rateLimiter = redissonClient.getRateLimiter(key);
+            if (!rateLimiter.isExists()) {
+                return fullCount;
+            }
+            long available = rateLimiter.availablePermits();
+            return Math.max(0L, Math.min(fullCount, available));
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redisson rate limiter getAvailablePermits failed: " + e.getMessage(), e);
+        }
+    }
 }

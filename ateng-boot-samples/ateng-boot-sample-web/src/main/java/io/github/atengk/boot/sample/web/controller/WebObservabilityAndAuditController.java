@@ -221,6 +221,36 @@ public class WebObservabilityAndAuditController {
     }
 
     /**
+     * 无显式 excludeParams 的 @OperateLog 默认敏感参数基线脱敏演示端点
+     *
+     * @param payload 请求载荷（可包含 password/secret/token/authorization 等默认敏感字段）
+     * @return 非敏感确认摘要
+     */
+    @PostMapping("/audit/default-mask")
+    @OperateLog(module = "权限中心", type = OperateTypeEnum.OTHER, description = "默认基线操作审计")
+    public Result<Map<String, Object>> operateLogDefaultMask(@RequestBody Map<String, Object> payload) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("account", payload.get("account"));
+        data.put("status", "MASKED");
+        return Result.success(data);
+    }
+
+    /**
+     * 无显式 excludeParams 的 @WebLog 默认敏感参数基线脱敏演示端点
+     *
+     * @param payload 请求载荷（可包含 password/secret/token/authorization 等默认敏感字段）
+     * @return 非敏感确认摘要
+     */
+    @PostMapping("/weblog/default-mask")
+    @WebLog(value = "默认基线WebLog审计", printCostTime = true)
+    public Result<Map<String, Object>> webLogDefaultMask(@RequestBody Map<String, Object> payload) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("account", payload.get("account"));
+        data.put("traceId", TraceUtil.getTraceId());
+        return Result.success(data);
+    }
+
+    /**
      * 慢请求监控模拟端点（模拟财务报表耗时查询，超出阈值触发 [SLOW_REQUEST] WARN 日志告警）
      *
      * @param delayMs 模拟耗时毫秒数

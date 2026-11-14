@@ -6,6 +6,9 @@ import io.github.atengk.boot.sample.web.dto.OrderSignDTO;
 import io.github.atengk.boot.sample.web.dto.PrepareSignHeadersDTO;
 import io.github.atengk.boot.web.sign.aspect.ApiSignAspect;
 import io.github.atengk.boot.web.sign.signer.HmacSha256Signer;
+import io.github.atengk.boot.web.sign.signer.RsaSigner;
+import io.github.atengk.boot.web.sign.signer.Sm2Signer;
+import io.github.atengk.boot.web.sign.spi.ApiSigner;
 import io.github.atengk.boot.web.sign.util.SignCanonicalUtil;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -13,11 +16,16 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.util.Base64;
 import java.util.Map;
 import java.util.UUID;
 
@@ -37,10 +45,33 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@DisplayName("API 双向数据加签验签与防重放集成测试 (HMAC-SHA256)")
+@DisplayName("API 双向数据加签验签与防重放集成测试 (HMAC-SHA256 / 多算法注解路由)")
 class WebSecurityAndSignControllerTest {
 
     private static final String SECRET_KEY = "TestSecretKey123";
+    private static final String RSA_PUBLIC_KEY;
+    private static final String RSA_PRIVATE_KEY;
+    private static final Sm2Signer.Sm2KeyPair SM2_KEY_PAIR = Sm2Signer.generateKeyPair();
+
+    static {
+        try {
+            KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("RSA");
+            keyPairGenerator.initialize(2048);
+            KeyPair keyPair = keyPairGenerator.generateKeyPair();
+            RSA_PUBLIC_KEY = Base64.getEncoder().encodeToString(keyPair.getPublic().getEncoded());
+            RSA_PRIVATE_KEY = Base64.getEncoder().encodeToString(keyPair.getPrivate().getEncoded());
+        } catch (Exception e) {
+            throw new IllegalStateException("初始化测试 RSA 密钥对失败", e);
+        }
+    }
+
+    @DynamicPropertySource
+    static void registerMultiAlgorithmKeys(DynamicPropertyRegistry registry) {
+        registry.add("ateng.boot.web.sign.rsa-public-key", () -> RSA_PUBLIC_KEY);
+        registry.add("ateng.boot.web.sign.rsa-private-key", () -> RSA_PRIVATE_KEY);
+        registry.add("ateng.boot.web.sign.sm2-public-key", SM2_KEY_PAIR::publicKeyHex);
+        registry.add("ateng.boot.web.sign.sm2-private-key", SM2_KEY_PAIR::privateKeyHex);
+    }
 
     @Autowired
     private MockMvc mockMvc;
@@ -365,5 +396,111 @@ class WebSecurityAndSignControllerTest {
                 .andExpect(jsonPath("$.code").value(413))
                 .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("请求体大小超过允许的最大限制")))
                 .andExpect(header().exists("X-Trace-Id"));
+    }
+
+    @Test
+    @DisplayName("12. 单应用多算法动态共存：默认 HMAC 下通过 @ApiSign(algorithm) 动态路由 RSA 与 SM2 双向加验签")
+    void shouldSupportMultiAlgorithmCoexistenceViaAnnotationRouting() throws Exception {
+        OrderSignDTO dto = new OrderSignDTO();
+        dto.setOrderNo("ORD-MULTI-20261114");
+        dto.setAmount(new BigDecimal("199.00"));
+        String bodyJson = objectMapper.writeValueAsString(dto);
+        String bodySha256 = DigestUtil.sha256Hex(bodyJson);
+
+        // 1. 验证 RSA 注解动态路由双向加验签
+        assertAsymmetricBidirectionalSign(
+                "/sample/web/security/sign/rsa",
+                bodyJson,
+                bodySha256,
+                "RSA",
+                new RsaSigner(),
+                RSA_PRIVATE_KEY,
+                RSA_PUBLIC_KEY
+        );
+
+        // 2. 验证 SM2 注解动态路由双向加验签
+        assertAsymmetricBidirectionalSign(
+                "/sample/web/security/sign/sm2",
+                bodyJson,
+                bodySha256,
+                "SM2",
+                new Sm2Signer(),
+                SM2_KEY_PAIR.privateKeyHex(),
+                SM2_KEY_PAIR.publicKeyHex()
+        );
+    }
+
+    private void assertAsymmetricBidirectionalSign(String uri,
+                                                   String bodyJson,
+                                                   String bodySha256,
+                                                   String expectedAlgorithm,
+                                                   ApiSigner signer,
+                                                   String privateKey,
+                                                   String publicKey) throws Exception {
+        String timestamp = String.valueOf(System.currentTimeMillis());
+        String nonce = UUID.randomUUID().toString();
+        String canonical = SignCanonicalUtil.buildRequestCanonicalString(
+                "POST", uri, timestamp, nonce, Map.of(), bodySha256);
+        String signature = signer.sign(canonical, privateKey);
+
+        MvcResult result = mockMvc.perform(post(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(bodyJson)
+                        .header(ApiSignAspect.HEADER_TIMESTAMP, timestamp)
+                        .header(ApiSignAspect.HEADER_NONCE, nonce)
+                        .header(ApiSignAspect.HEADER_SIGNATURE, signature)
+                        .header(ApiSignAspect.HEADER_APP_ID, "test-app"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.algorithm").value(expectedAlgorithm))
+                .andExpect(header().exists(ApiSignAspect.HEADER_SIGNATURE))
+                .andReturn();
+
+        String respTimestamp = result.getResponse().getHeader(ApiSignAspect.HEADER_TIMESTAMP);
+        String respNonce = result.getResponse().getHeader(ApiSignAspect.HEADER_NONCE);
+        String respSign = result.getResponse().getHeader(ApiSignAspect.HEADER_SIGNATURE);
+        String respBody = result.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        String respCanonical = SignCanonicalUtil.buildResponseCanonicalString(
+                respTimestamp, respNonce, DigestUtil.sha256Hex(respBody));
+        assertThat(signer.verify(respCanonical, respSign, publicKey)).isTrue();
+    }
+
+    @Test
+    @DisplayName("13. prepare-headers 指定 SM2 算法生成签名头并成功调用 /sign/sm2")
+    void shouldPrepareSm2HeadersAndPassVerification() throws Exception {
+        OrderSignDTO orderDto = new OrderSignDTO();
+        orderDto.setOrderNo("ORD-SM2-PREP-001");
+        orderDto.setAmount(new BigDecimal("88.88"));
+        String orderBodyJson = objectMapper.writeValueAsString(orderDto);
+
+        PrepareSignHeadersDTO prepareDto = new PrepareSignHeadersDTO();
+        prepareDto.setMethod("POST");
+        prepareDto.setUri("/sample/web/security/sign/sm2");
+        prepareDto.setBody(orderBodyJson);
+        prepareDto.setAlgorithm("SM2");
+        prepareDto.setSecretOrPrivateKey(SM2_KEY_PAIR.privateKeyHex());
+        prepareDto.setAppId("test-app");
+
+        MvcResult prepResult = mockMvc.perform(post("/sample/web/security/sign/prepare-headers")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(prepareDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        Map<?, ?> prepMap = objectMapper.readValue(prepResult.getResponse().getContentAsString(StandardCharsets.UTF_8), Map.class);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> prepData = (Map<String, Object>) prepMap.get("data");
+
+        mockMvc.perform(post("/sample/web/security/sign/sm2")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(orderBodyJson)
+                        .header(ApiSignAspect.HEADER_TIMESTAMP, String.valueOf(prepData.get(ApiSignAspect.HEADER_TIMESTAMP)))
+                        .header(ApiSignAspect.HEADER_NONCE, String.valueOf(prepData.get(ApiSignAspect.HEADER_NONCE)))
+                        .header(ApiSignAspect.HEADER_SIGNATURE, String.valueOf(prepData.get(ApiSignAspect.HEADER_SIGNATURE)))
+                        .header(ApiSignAspect.HEADER_APP_ID, String.valueOf(prepData.get(ApiSignAspect.HEADER_APP_ID))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.algorithm").value("SM2"));
     }
 }

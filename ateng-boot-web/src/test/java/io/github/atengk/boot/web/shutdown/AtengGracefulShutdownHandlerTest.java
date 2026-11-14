@@ -1,12 +1,15 @@
 package io.github.atengk.boot.web.shutdown;
 
 import io.github.atengk.boot.web.properties.WebProperties;
+import io.github.atengk.boot.web.trace.TraceFilter;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.availability.AvailabilityChangeEvent;
 import org.springframework.boot.availability.ReadinessState;
 import org.springframework.context.ApplicationEvent;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -259,5 +262,199 @@ class AtengGracefulShutdownHandlerTest {
                 new AtengGracefulShutdownHandler.DrainResult("REFUSING_TRAFFIC", true, "30s", "ok");
         assertThat(legacy.inFlightRequestsAtStart()).isZero();
         assertThat(legacy.inFlightRequestsRemaining()).isZero();
+    }
+
+    @Test
+    @DisplayName("两阶段自适应排空：未配 quietPeriod 保持等待全量 drainTimeout；配置 quietPeriod < drainTimeout 在途归零立即提前结束")
+    void testTwoPhaseAdaptiveDrainBehavior() throws Exception {
+        // 1. 未配置 quietPeriod 时，保持与既有行为一致，等待完整 drainTimeout (120ms)
+        WebProperties.GracefulShutdownProperties legacyProps = new WebProperties.GracefulShutdownProperties();
+        legacyProps.setDrainTimeout(Duration.ofMillis(120));
+        AtengGracefulShutdownHandler legacyHandler = new AtengGracefulShutdownHandler(legacyProps);
+        long legacyStart = System.nanoTime();
+        legacyHandler.drain();
+        long legacyElapsedMs = Duration.ofNanos(System.nanoTime() - legacyStart).toMillis();
+        assertThat(legacyElapsedMs).isGreaterThanOrEqualTo(90L);
+
+        // 2. 配置 quietPeriod < drainTimeout 且零在途请求时，等待 quietPeriod 后无需死等 1500ms 即刻返回
+        WebProperties.GracefulShutdownProperties zeroInFlightProps = new WebProperties.GracefulShutdownProperties();
+        zeroInFlightProps.setQuietPeriod(Duration.ofMillis(20));
+        zeroInFlightProps.setDrainTimeout(Duration.ofMillis(1500));
+        zeroInFlightProps.setPollInterval(Duration.ofMillis(15));
+        AtengGracefulShutdownHandler fastHandler = new AtengGracefulShutdownHandler(zeroInFlightProps);
+        long fastStart = System.nanoTime();
+        AtengGracefulShutdownHandler.DrainResult fastResult = fastHandler.drain();
+        long fastElapsedMs = Duration.ofNanos(System.nanoTime() - fastStart).toMillis();
+        assertThat(fastResult.executed()).isTrue();
+        assertThat(fastElapsedMs).isLessThan(500L);
+
+        // 3. 存在 1 个在途业务请求时，阶段二按 pollInterval 轮询至请求结束即刻提前返回
+        WebProperties activeWebProps = new WebProperties();
+        activeWebProps.getShutdown().setQuietPeriod(Duration.ofMillis(15));
+        activeWebProps.getShutdown().setDrainTimeout(Duration.ofMillis(1500));
+        activeWebProps.getShutdown().setPollInterval(Duration.ofMillis(15));
+
+        TraceFilter traceFilter = new TraceFilter(activeWebProps);
+        AtengGracefulShutdownHandler adaptiveHandler = new AtengGracefulShutdownHandler(activeWebProps, traceFilter);
+
+        CountDownLatch inFlightReady = new CountDownLatch(1);
+        CountDownLatch releaseInFlight = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            executor.submit(() -> {
+                try {
+                    traceFilter.doFilter(
+                            new MockHttpServletRequest("GET", "/api/biz"),
+                            new MockHttpServletResponse(),
+                            (req, res) -> {
+                                inFlightReady.countDown();
+                                try {
+                                    releaseInFlight.await();
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
+                    );
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+
+            inFlightReady.await();
+            // 在另起线程于 60ms 后放行在途业务请求
+            executor.submit(() -> {
+                try {
+                    Thread.sleep(60L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    releaseInFlight.countDown();
+                }
+            });
+
+            long adaptiveStart = System.nanoTime();
+            AtengGracefulShutdownHandler.DrainResult adaptiveResult = adaptiveHandler.drain();
+            long adaptiveElapsedMs = Duration.ofNanos(System.nanoTime() - adaptiveStart).toMillis();
+
+            assertThat(adaptiveResult.executed()).isTrue();
+            assertThat(adaptiveResult.inFlightRequestsAtStart()).isEqualTo(1L);
+            assertThat(adaptiveResult.inFlightRequestsRemaining()).isZero();
+            assertThat(adaptiveElapsedMs).isLessThan(600L);
+        } finally {
+            releaseInFlight.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("两阶段自适应排空边界场景：quietPeriod=0、quietPeriod>drainTimeout 钳位、超时未归零残留及中断恢复")
+    void testTwoPhaseAdaptiveDrainEdgeCases() throws Exception {
+        // 1. quietPeriod = ZERO 且存在延迟放行在途请求：跳过静默直接进入轮询，归零即提前退出
+        WebProperties zeroQuietProps = new WebProperties();
+        zeroQuietProps.getShutdown().setQuietPeriod(Duration.ZERO);
+        zeroQuietProps.getShutdown().setDrainTimeout(Duration.ofMillis(1000));
+        zeroQuietProps.getShutdown().setPollInterval(Duration.ofMillis(10));
+        TraceFilter zeroQuietFilter = new TraceFilter(zeroQuietProps);
+        AtengGracefulShutdownHandler zeroQuietHandler = new AtengGracefulShutdownHandler(zeroQuietProps, zeroQuietFilter);
+
+        CountDownLatch inFlightStarted = new CountDownLatch(1);
+        CountDownLatch releaseRequest = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            executor.submit(() -> {
+                try {
+                    zeroQuietFilter.doFilter(
+                            new MockHttpServletRequest("GET", "/api/slow"),
+                            new MockHttpServletResponse(),
+                            (req, res) -> {
+                                inFlightStarted.countDown();
+                                try {
+                                    releaseRequest.await();
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
+                    );
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            inFlightStarted.await();
+            executor.submit(() -> {
+                try {
+                    Thread.sleep(40L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    releaseRequest.countDown();
+                }
+            });
+
+            long start = System.nanoTime();
+            AtengGracefulShutdownHandler.DrainResult zeroQuietResult = zeroQuietHandler.drain();
+            long elapsedMs = Duration.ofNanos(System.nanoTime() - start).toMillis();
+            assertThat(zeroQuietResult.inFlightRequestsAtStart()).isEqualTo(1L);
+            assertThat(zeroQuietResult.inFlightRequestsRemaining()).isZero();
+            assertThat(elapsedMs).isLessThan(500L);
+        } finally {
+            releaseRequest.countDown();
+            executor.shutdownNow();
+        }
+
+        // 2. quietPeriod > drainTimeout 时钳位至 drainTimeout 上限，且超时后仍有在途请求时如实返回剩余数
+        WebProperties clampedAndTimeoutProps = new WebProperties();
+        clampedAndTimeoutProps.getShutdown().setDrainTimeout(Duration.ofMillis(60));
+        clampedAndTimeoutProps.getShutdown().setQuietPeriod(Duration.ofMillis(500));
+        clampedAndTimeoutProps.getShutdown().setPollInterval(Duration.ZERO);
+        TraceFilter stuckFilter = new TraceFilter(clampedAndTimeoutProps);
+        AtengGracefulShutdownHandler timeoutHandler = new AtengGracefulShutdownHandler(clampedAndTimeoutProps, stuckFilter);
+
+        CountDownLatch stuckStarted = new CountDownLatch(1);
+        CountDownLatch stuckRelease = new CountDownLatch(1);
+        ExecutorService stuckExecutor = Executors.newSingleThreadExecutor();
+        try {
+            stuckExecutor.submit(() -> {
+                try {
+                    stuckFilter.doFilter(
+                            new MockHttpServletRequest("GET", "/api/stuck"),
+                            new MockHttpServletResponse(),
+                            (req, res) -> {
+                                stuckStarted.countDown();
+                                try {
+                                    stuckRelease.await();
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
+                    );
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            stuckStarted.await();
+
+            long timeoutStart = System.nanoTime();
+            AtengGracefulShutdownHandler.DrainResult timeoutResult = timeoutHandler.drain();
+            long timeoutElapsedMs = Duration.ofNanos(System.nanoTime() - timeoutStart).toMillis();
+            assertThat(timeoutElapsedMs).isLessThan(300L);
+            assertThat(timeoutResult.inFlightRequestsAtStart()).isEqualTo(1L);
+            assertThat(timeoutResult.inFlightRequestsRemaining()).isEqualTo(1L);
+        } finally {
+            stuckRelease.countDown();
+            stuckExecutor.shutdownNow();
+        }
+
+        // 3. 轮询等待期间线程被中断时正确恢复中断标志并退出
+        WebProperties interruptProps = new WebProperties();
+        interruptProps.getShutdown().setQuietPeriod(Duration.ofMillis(200));
+        interruptProps.getShutdown().setDrainTimeout(Duration.ofMillis(500));
+        AtengGracefulShutdownHandler interruptHandler = new AtengGracefulShutdownHandler(interruptProps);
+        Thread.currentThread().interrupt();
+        try {
+            interruptHandler.drain();
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+        }
     }
 }

@@ -22,6 +22,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -55,6 +58,24 @@ class OperateLogAspectTest {
         Result<TestUserVO> getUser(Long id);
         Result<Void> deleteUser(Long id);
         Result<String> noSaveMethod(String input);
+        Result<String> loginWithoutExclude(String username, Map<String, Object> payload);
+        Result<String> updateSecurity(Map<String, Object> payload);
+        Result<String> submitDtoAndArray(AuthPayloadDTO dto, List<AuthPayloadDTO> items, Object[] extras);
+        Result<String> circularArg(CircularTokenNode node);
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    static class AuthPayloadDTO {
+        private String account;
+        private String accessToken;
+        private String oldPassword;
+    }
+
+    static class CircularTokenNode {
+        public String token = "secret-cycle-token";
+        public CircularTokenNode self;
     }
 
     static class OperateLogServiceImpl implements OperateLogService {
@@ -81,6 +102,30 @@ class OperateLogAspectTest {
         @OperateLog(module = "性能模块", type = OperateTypeEnum.OTHER, saveParams = false, saveResult = false)
         public Result<String> noSaveMethod(String input) {
             return Result.success("echo:" + input);
+        }
+
+        @Override
+        @OperateLog(module = "认证中心", type = OperateTypeEnum.OTHER, description = "默认基线脱敏")
+        public Result<String> loginWithoutExclude(String username, Map<String, Object> payload) {
+            return Result.success("ok:" + username);
+        }
+
+        @Override
+        @OperateLog(module = "认证中心", type = OperateTypeEnum.UPDATE, description = "叠加排除字段", excludeParams = {"customPin"})
+        public Result<String> updateSecurity(Map<String, Object> payload) {
+            return Result.success("updated");
+        }
+
+        @Override
+        @OperateLog(module = "认证中心", type = OperateTypeEnum.INSERT, description = "DTO与集合数组默认脱敏")
+        public Result<String> submitDtoAndArray(AuthPayloadDTO dto, List<AuthPayloadDTO> items, Object[] extras) {
+            return Result.success("dto-ok");
+        }
+
+        @Override
+        @OperateLog(module = "认证中心", type = OperateTypeEnum.OTHER, description = "环引用安全降级")
+        public Result<String> circularArg(CircularTokenNode node) {
+            return Result.success("circular-ok");
         }
     }
 
@@ -238,5 +283,121 @@ class OperateLogAspectTest {
         assertThat(model.getExtra().get("isRunAs")).isEqualTo(true);
         assertThat(model.getExtra().get("originalUserId")).isEqualTo("admin-90001");
         assertThat(model.getExtra().get("targetUserId")).isEqualTo("target-user-66002");
+    }
+
+    @Test
+    @DisplayName("OperateLogStorageProvider 对称兼容：default save(model) 自动委托 store(model)")
+    void shouldDelegateSaveToStoreOnStorageProvider() {
+        AtomicReference<OperateLogModel> saved = new AtomicReference<>();
+        OperateLogStorageProvider provider = saved::set;
+        OperateLogModel model = new OperateLogModel();
+        model.setTraceId("trace-save-alias");
+
+        provider.save(model);
+
+        assertThat(saved.get()).isSameAs(model);
+    }
+
+    @Test
+    @DisplayName("默认敏感参数脱敏基线：未配注解 excludeParams 时自动掩码全部默认敏感字段（忽略大小写及嵌套字段）")
+    void shouldMaskDefaultSensitiveParamsWhenAnnotationExcludeEmpty() {
+        Map<String, Object> nested = new LinkedHashMap<>();
+        nested.put("accessToken", "nested-access-token");
+        nested.put("remark", "safe-note");
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("password", "p1");
+        payload.put("passwd", "p2");
+        payload.put("pwd", "p3");
+        payload.put("oldPassword", "p4");
+        payload.put("newPassword", "p5");
+        payload.put("confirmPassword", "p6");
+        payload.put("secret", "s1");
+        payload.put("token", "t1");
+        payload.put("accessToken", "t2");
+        payload.put("refreshToken", "t3");
+        payload.put("AUTHORIZATION", "Bearer xyz");
+        payload.put("nested", nested);
+
+        targetService.loginWithoutExclude("alice", payload);
+
+        OperateLogModel model = capturedModel.get();
+        assertThat(model).isNotNull();
+        String params = model.getRequestParams();
+        assertThat(params).contains("\"username\":\"alice\"");
+        assertThat(params).contains("\"remark\":\"safe-note\"");
+        for (String expectedMaskedKey : List.of(
+                "password", "passwd", "pwd", "oldPassword", "newPassword",
+                "confirmPassword", "secret", "token", "accessToken", "refreshToken", "AUTHORIZATION"
+        )) {
+            assertThat(params).contains("\"" + expectedMaskedKey + "\":\"[EXCLUDED]\"");
+        }
+        assertThat(params).doesNotContain("nested-access-token");
+        assertThat(params).doesNotContain("Bearer xyz");
+    }
+
+    @Test
+    @DisplayName("全局 defaultExcludeParams 与注解 excludeParams 叠加生效，且支持自定义覆盖与 null 安全兜底")
+    void shouldMergeAnnotationExcludesAndAllowCustomDefaultOverride() {
+        Map<String, Object> mergedPayload = new LinkedHashMap<>();
+        mergedPayload.put("password", "raw-pass");
+        mergedPayload.put("customPin", "9527");
+        mergedPayload.put("region", "cn-hz");
+
+        targetService.updateSecurity(mergedPayload);
+        String mergedParams = capturedModel.get().getRequestParams();
+        assertThat(mergedParams).contains("\"password\":\"[EXCLUDED]\"");
+        assertThat(mergedParams).contains("\"customPin\":\"[EXCLUDED]\"");
+        assertThat(mergedParams).contains("\"region\":\"cn-hz\"");
+
+        // 自定义覆盖默认列表：仅屏蔽 apiKey（与注解 customPin 叠加），未纳入的 password 不再被默认基线屏蔽
+        WebProperties customProps = new WebProperties();
+        customProps.getOperateLog().setDefaultExcludeParams(List.of("apiKey"));
+        OperateLogAspect customAspect = new OperateLogAspect(
+                capturedModel::set, null, JsonUtil.getObjectMapper(), null, customProps);
+        AspectJProxyFactory customProxy = new AspectJProxyFactory(new OperateLogServiceImpl());
+        customProxy.setProxyTargetClass(true);
+        customProxy.addAspect(customAspect);
+        OperateLogService customService = customProxy.getProxy();
+
+        Map<String, Object> overridePayload = new LinkedHashMap<>();
+        overridePayload.put("apiKey", "ak-secret");
+        overridePayload.put("customPin", "8848");
+        overridePayload.put("password", "kept-for-override-check");
+        customService.updateSecurity(overridePayload);
+
+        String overrideParams = capturedModel.get().getRequestParams();
+        assertThat(overrideParams).contains("\"apiKey\":\"[EXCLUDED]\"");
+        assertThat(overrideParams).contains("\"customPin\":\"[EXCLUDED]\"");
+        assertThat(overrideParams).contains("\"password\":\"kept-for-override-check\"");
+
+        // null 防御不抛空指针
+        customProps.getOperateLog().setDefaultExcludeParams(null);
+        customService.loginWithoutExclude("bob", Map.of("plain", "ok"));
+        assertThat(capturedModel.get().getRequestParams()).contains("\"plain\":\"ok\"");
+    }
+
+    @Test
+    @DisplayName("DTO/集合/Object[] 数组与循环引用安全防御：默认基线穿透脱敏且环引用或异常回退绝不泄漏明文")
+    void shouldMaskDtoCollectionArrayAndGuardCircularReferences() {
+        AuthPayloadDTO dto = new AuthPayloadDTO("u1", "at-dto-secret", "old-pass-dto");
+        AuthPayloadDTO itemDto = new AuthPayloadDTO("u2", "at-list-secret", "old-pass-list");
+        Map<String, Object> extraMap = Map.of("refreshToken", "rt-array-secret", "tag", "ok");
+
+        targetService.submitDtoAndArray(dto, List.of(itemDto), new Object[]{extraMap});
+
+        String params = capturedModel.get().getRequestParams();
+        assertThat(params).contains("\"account\":\"u1\"", "\"account\":\"u2\"", "\"tag\":\"ok\"");
+        assertThat(params).doesNotContain("at-dto-secret", "old-pass-dto", "at-list-secret", "old-pass-list", "rt-array-secret");
+        assertThat(params).contains("\"accessToken\":\"[EXCLUDED]\"", "\"oldPassword\":\"[EXCLUDED]\"", "\"refreshToken\":\"[EXCLUDED]\"");
+
+        // 自引用对象环检测与异常回退：不抛 StackOverflowError，且绝不通过 raw toString() 泄露 token 明文
+        CircularTokenNode cycle = new CircularTokenNode();
+        cycle.self = cycle;
+        targetService.circularArg(cycle);
+
+        String cycleParams = capturedModel.get().getRequestParams();
+        assertThat(cycleParams).isNotBlank();
+        assertThat(cycleParams).doesNotContain("secret-cycle-token");
     }
 }

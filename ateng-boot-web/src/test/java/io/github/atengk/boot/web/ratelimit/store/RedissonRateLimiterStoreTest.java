@@ -41,7 +41,7 @@ class RedissonRateLimiterStoreTest {
 
     @BeforeEach
     void setUp() {
-        when(redissonClient.getRateLimiter(anyString())).thenReturn(rateLimiter);
+        lenient().when(redissonClient.getRateLimiter(anyString())).thenReturn(rateLimiter);
         store = new RedissonRateLimiterStore(redissonClient);
     }
 
@@ -85,6 +85,42 @@ class RedissonRateLimiterStoreTest {
         assertThatThrownBy(() -> store.tryAcquire("rate:redisson:err", 1, 1, TimeUnit.SECONDS))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("Redisson rate limiter tryAcquire failed")
+                .hasCauseInstanceOf(RuntimeException.class)
+                .extracting("code")
+                .isEqualTo(CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
+    }
+
+    @Test
+    @DisplayName("getAvailablePermits 未初始化返回满配额、存在时查询 availablePermits 且绝不触发 trySetRate/tryAcquire")
+    void shouldQueryAvailablePermitsSafely() {
+        when(rateLimiter.isExists()).thenReturn(false).thenReturn(true).thenReturn(true);
+        when(rateLimiter.availablePermits()).thenReturn(3L).thenReturn(0L);
+
+        // 未初始化 / 已过期 / reset 后：直接返回 count，不初始化也不扣减
+        assertThat(store.getAvailablePermits("rate:redisson:probe", 5, 10, TimeUnit.SECONDS)).isEqualTo(5L);
+        verify(rateLimiter, never()).availablePermits();
+
+        // 已初始化：返回剩余配额并绝不写回配额
+        assertThat(store.getAvailablePermits("rate:redisson:probe", 5, 10, TimeUnit.SECONDS)).isEqualTo(3L);
+        assertThat(store.getAvailablePermits("rate:redisson:probe", 5, 10, TimeUnit.SECONDS)).isEqualTo(0L);
+        verify(rateLimiter, never()).trySetRate(any(), anyLong(), any());
+        verify(rateLimiter, never()).tryAcquire(anyLong());
+
+        // 非法参数快速失败
+        assertThatThrownBy(() -> store.getAvailablePermits("  ", 5, 10, TimeUnit.SECONDS))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.getAvailablePermits("rate:redisson:probe", 0, 10, TimeUnit.SECONDS))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.getAvailablePermits("rate:redisson:probe", 5, 0, TimeUnit.SECONDS))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.getAvailablePermits("rate:redisson:probe", 5, 10, null))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 底层故障保留原始因果链
+        when(rateLimiter.isExists()).thenThrow(new RuntimeException("Redisson connection lost"));
+        assertThatThrownBy(() -> store.getAvailablePermits("rate:redisson:probe", 5, 10, TimeUnit.SECONDS))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Redisson rate limiter getAvailablePermits failed")
                 .hasCauseInstanceOf(RuntimeException.class)
                 .extracting("code")
                 .isEqualTo(CommonResultCode.INTERNAL_SERVER_ERROR.getCode());

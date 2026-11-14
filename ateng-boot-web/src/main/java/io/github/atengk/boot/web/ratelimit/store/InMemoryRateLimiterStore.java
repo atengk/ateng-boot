@@ -82,6 +82,20 @@ public class InMemoryRateLimiterStore implements RateLimiterStore, DisposableBea
         cache.remove(key);
     }
 
+    @Override
+    public long getAvailablePermits(String key, long count, long time, TimeUnit unit) {
+        long fullCount = RateLimiterStore.super.getAvailablePermits(key, count, time, unit);
+        TokenBucket bucket = cache.get(key);
+        if (bucket == null) {
+            return fullCount;
+        }
+        long windowMillis = unit.toMillis(time);
+        if (windowMillis <= 0) {
+            return fullCount;
+        }
+        return bucket.getAvailablePermits(fullCount, windowMillis, System.currentTimeMillis());
+    }
+
     /**
      * 清空内存中所有限流令牌桶（主要用于测试复位或运维管理）
      */
@@ -158,10 +172,8 @@ public class InMemoryRateLimiterStore implements RateLimiterStore, DisposableBea
             lock.lock();
             try {
                 this.windowMillis = windowMillis;
-                long elapsed = Math.max(0, now - lastRefillTime);
-                if (elapsed > 0) {
-                    double generated = (double) elapsed * capacity / windowMillis;
-                    this.tokens = Math.min(capacity, this.tokens + generated);
+                if (now > lastRefillTime) {
+                    this.tokens = computeRefilledTokens(capacity, windowMillis, now);
                     this.lastRefillTime = now;
                 }
                 if (this.tokens >= 1.0) {
@@ -174,6 +186,28 @@ public class InMemoryRateLimiterStore implements RateLimiterStore, DisposableBea
                     lock.unlock();
                 }
             }
+        }
+
+        long getAvailablePermits(long capacity, long windowMillis, long now) {
+            lock.lock();
+            try {
+                double effectiveTokens = computeRefilledTokens(capacity, windowMillis, now);
+                return Math.max(0L, Math.min(capacity, (long) Math.floor(effectiveTokens)));
+            } finally {
+                if (lock.isHeldByCurrentThread()) {
+                    lock.unlock();
+                }
+            }
+        }
+
+        private double computeRefilledTokens(long capacity, long windowMillis, long now) {
+            long effectiveWindow = windowMillis > 0 ? windowMillis : 1L;
+            long elapsed = Math.max(0L, now - lastRefillTime);
+            if (elapsed == 0L) {
+                return Math.min(capacity, this.tokens);
+            }
+            double generated = (double) elapsed * capacity / effectiveWindow;
+            return Math.min(capacity, this.tokens + generated);
         }
 
         boolean isExpired(long now) {

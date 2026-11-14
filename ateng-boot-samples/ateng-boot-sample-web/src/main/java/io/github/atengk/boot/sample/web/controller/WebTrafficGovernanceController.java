@@ -14,6 +14,9 @@ import io.github.atengk.boot.web.ratelimit.store.RateLimiterStore;
 import io.github.atengk.boot.web.util.IpUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Positive;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -31,6 +34,7 @@ import java.util.concurrent.TimeUnit;
  * @author Ateng
  * @since 2026-11-07
  */
+@Validated
 @RestController
 @RequestMapping("/sample/web/traffic")
 public class WebTrafficGovernanceController {
@@ -164,6 +168,23 @@ public class WebTrafficGovernanceController {
     @GetMapping("/idempotent/is-locked")
     public Result<Boolean> isLocked(@RequestParam String key) {
         return Result.success(idempotentKeyStore.isLocked(key));
+    }
+
+    /**
+     * 只读查询指定限流键当前时间窗口内的剩余可用配额
+     *
+     * @param key   限流业务键
+     * @param count 时间窗口内最大允许请求数（默认 2）
+     * @param time  时间窗口大小（默认 10）
+     * @param unit  时间单位（默认 SECONDS）
+     * @return 当前剩余可用许可数
+     */
+    @GetMapping("/ratelimit/permits")
+    public Result<Long> getAvailablePermits(@NotBlank(message = "限流业务键不能为空") @RequestParam String key,
+                                            @Positive(message = "限流配额必须大于 0") @RequestParam(defaultValue = "2") long count,
+                                            @Positive(message = "限流时间窗口必须大于 0") @RequestParam(defaultValue = "10") long time,
+                                            @RequestParam(defaultValue = "SECONDS") TimeUnit unit) {
+        return Result.success(rateLimiterStore.getAvailablePermits(key, count, time, unit));
     }
 
     /**

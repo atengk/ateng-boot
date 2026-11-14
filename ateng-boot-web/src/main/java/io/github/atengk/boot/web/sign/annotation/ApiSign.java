@@ -1,5 +1,7 @@
 package io.github.atengk.boot.web.sign.annotation;
 
+import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
+
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -39,4 +41,9 @@ public @interface ApiSign {
      * 验签或防重放失败时的异常提示信息
      */
     String message() default "数据验签失败";
+
+    /**
+     * 指定当前接口使用的签名算法（默认 {@link SignAlgorithm#DEFAULT} 表示继承全局配置 ateng.boot.web.sign.algorithm）
+     */
+    SignAlgorithm algorithm() default SignAlgorithm.DEFAULT;
 }

@@ -64,32 +64,35 @@ class WebCloudLifecycleControllerTest {
     }
 
     @Test
-    @DisplayName("4. PreStopController 降级端点：GET /pre-stop 翻转就绪状态并幂等排空，返回在途请求水位")
+    @DisplayName("4. PreStopController 降级端点：GET /pre-stop 翻转就绪状态并剔除控制面自计数，在途水位精确归零")
     void shouldSupportPreStopGet() throws Exception {
         MvcResult result = mockMvc.perform(get("/pre-stop"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.status").isNotEmpty())
                 .andReturn();
-        assertNonNegativeInFlightMetrics(result);
+        assertZeroInFlightMetrics(result);
     }
 
     @Test
-    @DisplayName("5. PreStopController 降级端点：POST /pre-stop 幂等排空成功，返回在途请求水位")
+    @DisplayName("5. PreStopController 降级端点：POST /pre-stop 幂等排空并剔除控制面自计数，在途水位精确归零")
     void shouldSupportPreStopPost() throws Exception {
         MvcResult result = mockMvc.perform(post("/pre-stop"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.status").isNotEmpty())
                 .andReturn();
-        assertNonNegativeInFlightMetrics(result);
+        assertZeroInFlightMetrics(result);
     }
 
-    private void assertNonNegativeInFlightMetrics(MvcResult result) throws Exception {
-        JsonNode data = objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
+    private void assertZeroInFlightMetrics(MvcResult result) throws Exception {
+        assertThat(result.getResponse().getHeader("X-Trace-Id")).matches("^[a-f0-9]{32}$");
+        JsonNode root = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(root.path("traceId").asText()).isEqualTo(result.getResponse().getHeader("X-Trace-Id"));
+        JsonNode data = root.path("data");
         assertThat(data.hasNonNull("inFlightRequestsAtStart")).isTrue();
         assertThat(data.hasNonNull("inFlightRequestsRemaining")).isTrue();
-        assertThat(Long.parseLong(data.get("inFlightRequestsAtStart").asText())).isGreaterThanOrEqualTo(0L);
-        assertThat(Long.parseLong(data.get("inFlightRequestsRemaining").asText())).isGreaterThanOrEqualTo(0L);
+        assertThat(Long.parseLong(data.get("inFlightRequestsAtStart").asText())).isZero();
+        assertThat(Long.parseLong(data.get("inFlightRequestsRemaining").asText())).isZero();
     }
 }

@@ -5,7 +5,7 @@
 ## Language
 
 **TraceFilter**:
-在 HTTP 请求入口处提取或生成链路追踪标识、写入日志 MDC、回写响应头并在出口安全清理的高优先级 Web 过滤器。
+在 HTTP 请求入口处提取并严格校验入站链路追踪标识（长度 `max-length` 默认 `64` 与安全字符集校验防 CRLF/超长载荷注入，非法或缺失时生成 UUID）、写入日志 MDC、回写响应头并在出口安全清理的高优先级 Web 过滤器；同时自动剔除优雅停机控制面端点（`/pre-stop`、`/actuator/pre-stop` 及自定义 `mvc-endpoint-path`）避免在途请求自计数阻塞。
 _Avoid_: LogFilter, TraceInterceptor, MDCFilter
 
 **GlobalExceptionHandler**:
@@ -33,7 +33,7 @@ Servlet 上下文与请求响应静态操作门面，基于 RequestContextHolder
 _Avoid_: WebUtil, HttpUtil, RequestUtil
 
 **WebLog**:
-Web 接口审计日志注解，支持标注于 Controller 类或方法上，提供操作描述、入参/出参打印控制、耗时观测与敏感参数显式排除配置。
+Web 接口审计日志注解，支持标注于 Controller 类或方法上，提供操作描述、入参/出参打印控制、耗时观测与敏感参数排除配置（自动叠加 `ateng.boot.web.log.default-exclude-params` 全局 11 项默认脱敏基线，支持嵌套对象与集合忽略大小写递归掩码）。
 _Avoid_: ApiLog, AuditLog, RequestLog, LogOperation
 
 **WebLogAspect**:
@@ -73,11 +73,11 @@ Web 接口防刷限流注解，声明于 Controller 方法上，定义时间窗�
 _Avoid_: Limit, RateLimit, TrafficControl, FlowControl
 
 **RateLimiterAspect**:
-基于 AOP 环绕拦截的接口限流切面，解析 `@RateLimiter` 契约与全局配置前缀（`RateLimiterProperties.keyPrefix`），调用 `RateLimiterStore` 执行原子令牌判定并管理超限熔断；默认 `fail-open=false`（Fail-Closed），开启 `fail-open=true` 且分布式存储异常时自动降级回退至进程内 `InMemoryRateLimiterStore` 维持单机限流。
+基于 AOP 环绕拦截的接口限流切面，解析 `@RateLimiter` 契约与全局配置前缀（`RateLimiterProperties.keyPrefix`），调用 `RateLimiterStore` 执行原子令牌判定、管理超限熔断并在 `include-headers=true` 时写入 `X-RateLimit-Limit` / `X-RateLimit-Remaining` 与 `Retry-After` 响应头；默认 `fail-open=false`（Fail-Closed），开启 `fail-open=true` 且分布式存储异常时自动降级回退至进程内 `InMemoryRateLimiterStore` 维持单机限流。
 _Avoid_: LimitAspect, RateLimitInterceptor, FlowAspect
 
 **RateLimiterStore**:
-限流状态统计与许可扣减的通用 SPI 接口，定义原子尝试获取许可（tryAcquire）与状态清理契约。
+限流状态统计与许可扣减的通用 SPI 接口，完备提供原子尝试获取许可（`tryAcquire`）、只读查询剩余可用许可（`getAvailablePermits`）与状态清理重置（`reset`）契约。
 _Avoid_: LimitStore, RateLimiterManager, RateLimitStorage
 
 **CorsOriginProvider**:
@@ -85,7 +85,7 @@ _Avoid_: LimitStore, RateLimiterManager, RateLimitStorage
 _Avoid_: OriginValidator, CorsProvider, AllowedOriginProvider
 
 **ApiSign**:
-Web 接口数据签名与防篡改注解，声明于 Controller 方法或类上，提供双向或单向验签与加签控制及防重放时效配置。
+Web 接口数据签名与防篡改注解，声明于 Controller 方法或类上，提供双向或单向验签与加签控制、防重放时效配置及注解级算法路由属性 `algorithm`（默认 `SignAlgorithm.DEFAULT` 跟随全局配置，可按接口覆盖 `HMAC_SHA256` / `RSA` / `SM2`）；出站响应加签严格遵守 Fail-Closed 语义，失败或缺失私钥时抛出受控异常。
 _Avoid_: Sign, DataSign, Signature, SecureApi
 
 **ApiSigner**:
@@ -93,7 +93,7 @@ _Avoid_: Sign, DataSign, Signature, SecureApi
 _Avoid_: SignManager, SignatureEngine, CryptoSigner
 
 **Traffic Drain**:
-容器下线前将就绪探针置为拒绝流量并执行静默等待的流量排空阶段，防止在途请求与网关路由摘除延迟导致 502/504。
+容器下线前将就绪探针置为拒绝流量并执行两阶段自适应排空（先等待 `quiet-period` 保障网关路由摘除传播，再在剩余 `drain-timeout` 窗口内按 `poll-interval` 轮询探测在途请求归零即提前退出）的流量排空阶段，防止在途请求与网关路由摘除延迟导致 502/504。
 _Avoid_: PreStop Sleep, Force Kill, Fast Shutdown
 
 **Slow Request Alert**:
@@ -105,7 +105,7 @@ _Avoid_: Request Timeout, Slow Query, Latency Monitor
 _Avoid_: BodyCacheFilter, ReReadFilter, RequestWrapperFilter
 
 **OperateLog**:
-声明式企业级操作审计注解，声明于 Controller 方法上，定义模块、操作类型、业务描述与敏感参数排除。
+声明式企业级操作审计注解，声明于 Controller 方法上，定义模块、操作类型、业务描述与敏感参数排除（自动叠加 `ateng.boot.web.operate-log.default-exclude-params` 全局 11 项默认脱敏基线，支持嵌套对象与集合忽略大小写递归掩码）。
 _Avoid_: OperationLog, SysLog, UserLog, ActionLog
 
 **OperateLogAspect**:
@@ -113,11 +113,11 @@ _Avoid_: OperationLog, SysLog, UserLog, ActionLog
 _Avoid_: SysLogAspect, AuditAspect, ActionAspect
 
 **OperateLogStorageProvider**:
-操作审计存储解耦 SPI 接口，定义审计模型持久化与外部投递契约，支持自定义接入 ES/Kafka。
+操作审计存储解耦 `@FunctionalInterface` SPI 接口，以 `store(OperateLogModel)` 作为唯一抽象主契约（并保留 `save(OperateLogModel)` 作为向后兼容 `default` 委托别名），支持自定义接入数据库、ES 或 Kafka。
 _Avoid_: AuditStore, LogStorage, OperateLogDao, AuditStorageProvider
 
 **AtengGracefulShutdownHandler**:
-云原生优雅停机排空生命周期处理器，协调就绪探针反转、静默等待、SmartLifecycle 兜底与原子幂等防重入。
+云原生优雅停机排空生命周期处理器，协调就绪探针反转、两阶段自适应排空等待（`drain-timeout` / `quiet-period` / `poll-interval`）、SmartLifecycle 兜底与原子幂等防重入。
 _Avoid_: GracefulShutdownManager, PreStopHandler, DrainService
 
 **SlowRequestFilter**:
@@ -225,7 +225,7 @@ API 数据签名算法枚举，支持 HMAC_SHA256 对称哈希、RSA 非对称�
 _Avoid_: SignatureType, SignMode, CryptoAlgorithm
 
 **SignKeyProvider**:
-签名密钥对与 SecretKey 动态提供者 SPI 接口，支持根据 appId 动态获取加验签密钥。
+签名密钥对与 SecretKey 动态提供者 SPI 接口，支持根据 `appId` 与目标签名算法（`getVerifyKey(appId, algorithm)` / `getSignKey(appId, algorithm)`，按 RSA / SM2 专属密钥配置优先解析并兼容回退至通用 `public-key` / `private-key`）动态获取加验签密钥。
 _Avoid_: KeyManager, SecretProvider, ApiKeyStore
 
 **DefaultSignKeyProvider**:
@@ -277,7 +277,7 @@ _Avoid_: PreStopMvcController, ShutdownController
 _Avoid_: StartupCardListener, BannerPrinter, ReadyListener
 
 **ProductionSanityChecker**:
-生产环境（prod/production）高危配置防呆自检器，启动期探测 Swagger 公网暴露、Payload 全量日志与 H2 控制台并输出安全警示。
+生产环境（激活 `prod`、`production`、`prod-*` 或 `prod_*` Profile，忽略大小写）高危配置防呆自检器，启动期探测 Swagger 公网暴露、Payload 全量日志与 H2 控制台并输出安全警示。
 _Avoid_: SecuritySanityChecker, ProductionGuard, StartupChecker
 
 **DynamicCorsConfigurationSource**:
@@ -320,11 +320,29 @@ _Avoid_: ShutdownResult, DrainReport, PreStopResult
 跨模块复用自 `ateng-boot-core` 的强类型标准枚举字典选项模型，作为 `EnumDictionaryRegistry` 预编译缓存与 `EnumDictionaryController` HTTP 查询接口的对外标准视图模型。
 _Avoid_: EnumItemVO, DictOptionVO, SelectOption
 
+**SecurityHeadersProperties**:
+定义于 `WebProperties.SecurityHeadersProperties`（前缀 `ateng.boot.web.security-headers`）的 HTTP 安全响应头强类型配置属性组，统一纳管 `X-Content-Type-Options`、`X-Frame-Options`、`X-XSS-Protection`、`Referrer-Policy`、`Content-Security-Policy`、`Permissions-Policy` 与容器 `Server` 标头剥离策略。
+_Avoid_: HeaderSecurityConfig, SecureHeaderOptions, CorsSecurityHeaders
+
+**DefaultOperateLogStorageProvider**:
+`OperateLogStorageProvider` 的开箱即用保底实现，依托受管 SLF4J 日志器以标准 JSON 格式输出 `[OPERATE_LOG]` 结构化审计记录，无外部持久化依赖即可运行；业务侧注册自定义 `OperateLogStorageProvider` Bean 时自动让位。
+_Avoid_: ConsoleAuditStore, Slf4jOperateLogDao, FallbackAuditStorage
+
+**OperateLogEvent**:
+跨模块复用自 `io.github.atengk.boot.core.audit.OperateLogEvent` 的 Spring 应用事件载体，由 `OperateLogAspect` 在同步调用或 `@Async` 受管异步投递阶段协同发布，供进程内多个监听器按事件机制订阅消费 `OperateLogModel`。
+_Avoid_: AuditLogEvent, OperationRecordEvent, WebOperateEvent
+
+**AuditParamSanitizer**:
+`@OperateLog` 与 `@WebLog` 切面共享的包内安全脱敏原语，负责合并全局 `default-exclude-params`（11 项默认敏感词基线）与注解级 `excludeParams`，并对嵌套实体、Map、Collection 与数组执行忽略大小写递归掩码及环引用防护（`[CIRCULAR_REF]` / `[EXCLUDED]`）。
+_Avoid_: LogMasker, ParamFilterUtil, SensitiveArgCleaner
+
 ---
 
 ## Disambiguation & Errata
 
 - **WebLogEvent**: 历史拟定审计事件载体；当前模块坚持零多余内存开销，直接由 `WebLogAspect` 结构化输出 SLF4J JSON 审计日志，无需额外中间事件模型。
+- **RequestBodyCachingFilter**: 历史加签专用请求体缓存过滤器（`io.github.atengk.boot.web.sign.filter.RequestBodyCachingFilter`），现已标注 `@Deprecated(since = "1.0.0", forRemoval = false)` 并收缩继承委托给通用 `ContentCachingFilter`（`ateng.boot.web.body-cache.max-body-size`）；新接入应统一依赖 `ContentCachingFilter` 与 `CachedBodyHttpServletRequest`。
+- **OperateLogStorageProvider#save**: 向后兼容 `default` 别名方法，统一委托至唯一抽象主契约 `store(OperateLogModel)`，保证 `OperateLogStorageProvider` 维持 `@FunctionalInterface` Lambda 单方法语义且不破坏旧版实现。
 - **EnumItemVO**: 历史拟定枚举字典视图模型；当前模块统一复用 Core 底座提供的强类型 `OptionItem<T>` 标准选项模型（参见 ADR-0060）。
 - **MultipartConfig**: 历史拟定文件上传配置类；100% 依托 Spring Boot 原生 `spring.servlet.multipart.*` 机制，不额外引入无谓配置包装类。
 - **UserAgentUtil / ClientInfo**: 历史拟定客户端解析原语；为遵守“零臃肿依赖与底座优先”铁律（ADR-0011），模块严禁引入重型外部 UA 规则库，推荐业务侧按需轻量处理。

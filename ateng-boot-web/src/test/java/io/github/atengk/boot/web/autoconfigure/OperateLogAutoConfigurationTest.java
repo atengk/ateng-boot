@@ -2,8 +2,10 @@ package io.github.atengk.boot.web.autoconfigure;
 
 import io.github.atengk.boot.core.audit.OperateLogModel;
 import io.github.atengk.boot.web.aspect.OperateLogAspect;
+import io.github.atengk.boot.web.aspect.WebLogAspect;
 import io.github.atengk.boot.web.audit.DefaultOperateLogStorageProvider;
 import io.github.atengk.boot.web.audit.OperateLogStorageProvider;
+import io.github.atengk.boot.web.properties.WebProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -54,6 +56,37 @@ class OperateLogAutoConfigurationTest {
         contextRunner.withPropertyValues("ateng.boot.web.operate-log.enabled=false")
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(OperateLogAspect.class);
+                });
+    }
+
+    @Test
+    @DisplayName("默认加载 11 个敏感排除词基线，且支持通过配置文件覆盖 operate-log/log default-exclude-params 并感知 save 别名")
+    void shouldBindDefaultAndCustomExcludeParamsProperties() {
+        contextRunner.withPropertyValues("ateng.boot.web.log.enabled=true")
+                .run(context -> {
+                    WebProperties properties = context.getBean(WebProperties.class);
+                    assertThat(properties.getOperateLog().getDefaultExcludeParams())
+                            .containsExactly("password", "passwd", "pwd", "oldPassword", "newPassword",
+                                    "confirmPassword", "secret", "token", "accessToken", "refreshToken", "authorization");
+                    assertThat(properties.getLog().getDefaultExcludeParams())
+                            .containsExactlyElementsOf(properties.getOperateLog().getDefaultExcludeParams());
+                    assertThat(context).hasSingleBean(WebLogAspect.class);
+
+                    OperateLogStorageProvider provider = context.getBean(OperateLogStorageProvider.class);
+                    OperateLogModel model = new OperateLogModel();
+                    model.setModule("autowire-check");
+                    provider.save(model);
+                });
+
+        contextRunner.withPropertyValues(
+                        "ateng.boot.web.log.enabled=true",
+                        "ateng.boot.web.operate-log.default-exclude-params[0]=customPin",
+                        "ateng.boot.web.log.default-exclude-params[0]=customSecret"
+                )
+                .run(context -> {
+                    WebProperties properties = context.getBean(WebProperties.class);
+                    assertThat(properties.getOperateLog().getDefaultExcludeParams()).containsExactly("customPin");
+                    assertThat(properties.getLog().getDefaultExcludeParams()).containsExactly("customSecret");
                 });
     }
 }

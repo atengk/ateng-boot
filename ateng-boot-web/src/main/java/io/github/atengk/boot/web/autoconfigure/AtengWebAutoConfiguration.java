@@ -1,6 +1,7 @@
 package io.github.atengk.boot.web.autoconfigure;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.web.aspect.OperateLogAspect;
 import io.github.atengk.boot.web.aspect.WebLogAspect;
 import io.github.atengk.boot.web.audit.DefaultOperateLogStorageProvider;
@@ -315,14 +316,16 @@ public class AtengWebAutoConfiguration {
      * 注册 Web 接口审计日志切面
      *
      * @param objectMapperProvider Jackson ObjectMapper 提供者
+     * @param webProperties        Web 配置属性
      * @return WebLogAspect 切面实例
      */
     @Bean
     @ConditionalOnClass({ProceedingJoinPoint.class, Aspect.class})
     @ConditionalOnProperty(prefix = "ateng.boot.web.log", name = "enabled", havingValue = "true")
     @ConditionalOnMissingBean(WebLogAspect.class)
-    public WebLogAspect webLogAspect(ObjectProvider<ObjectMapper> objectMapperProvider) {
-        return new WebLogAspect(objectMapperProvider.getIfAvailable(ObjectMapper::new));
+    public WebLogAspect webLogAspect(ObjectProvider<ObjectMapper> objectMapperProvider,
+                                     WebProperties webProperties) {
+        return new WebLogAspect(objectMapperProvider.getIfAvailable(JsonUtil::getObjectMapper), webProperties);
     }
 
     /**

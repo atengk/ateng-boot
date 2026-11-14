@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sample.web.controller;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.util.DigestUtil;
 import io.github.atengk.boot.sample.web.dto.AnnouncementPublishDTO;
@@ -11,10 +13,13 @@ import io.github.atengk.boot.web.ip.annotation.IpAccessControl;
 import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.sign.annotation.ApiSign;
 import io.github.atengk.boot.web.sign.aspect.ApiSignAspect;
+import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
+import io.github.atengk.boot.web.sign.provider.DefaultSignKeyProvider;
 import io.github.atengk.boot.web.sign.signer.HmacSha256Signer;
 import io.github.atengk.boot.web.sign.signer.RsaSigner;
 import io.github.atengk.boot.web.sign.signer.Sm2Signer;
 import io.github.atengk.boot.web.sign.spi.ApiSigner;
+import io.github.atengk.boot.web.sign.spi.SignKeyProvider;
 import io.github.atengk.boot.web.sign.util.SignCanonicalUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -45,11 +50,14 @@ public class WebSecurityAndSignController {
 
     private final ObjectProvider<ApiSigner> apiSignerProvider;
     private final ObjectProvider<WebProperties> webPropertiesProvider;
+    private final ObjectProvider<SignKeyProvider> signKeyProviderProvider;
 
     public WebSecurityAndSignController(ObjectProvider<ApiSigner> apiSignerProvider,
-                                        ObjectProvider<WebProperties> webPropertiesProvider) {
+                                        ObjectProvider<WebProperties> webPropertiesProvider,
+                                        ObjectProvider<SignKeyProvider> signKeyProviderProvider) {
         this.apiSignerProvider = apiSignerProvider;
         this.webPropertiesProvider = webPropertiesProvider;
+        this.signKeyProviderProvider = signKeyProviderProvider;
     }
 
     // =========================================================================
@@ -80,7 +88,7 @@ public class WebSecurityAndSignController {
      * @return 国密签名确认业务结果
      */
     @PostMapping("/sign/sm2")
-    @ApiSign(verifyRequest = true, signResponse = true, expireSeconds = 10)
+    @ApiSign(verifyRequest = true, signResponse = true, expireSeconds = 10, algorithm = SignAlgorithm.SM2)
     public Result<Map<String, Object>> createOrderSm2(@Valid @RequestBody OrderSignDTO dto) {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("orderNo", dto.getOrderNo());
@@ -88,6 +96,24 @@ public class WebSecurityAndSignController {
         data.put("algorithm", "SM2");
         data.put("status", "CONFIRMED");
         data.put("message", "国密SM2/SM3双向加验签成功");
+        return Result.success(data);
+    }
+
+    /**
+     * RSA 非对称双向加验签：接收 JSON 请求体验签，并对响应结果 RSA 私钥加签
+     *
+     * @param dto 订单载荷
+     * @return RSA 签名确认业务结果
+     */
+    @PostMapping("/sign/rsa")
+    @ApiSign(verifyRequest = true, signResponse = true, expireSeconds = 10, algorithm = SignAlgorithm.RSA)
+    public Result<Map<String, Object>> createOrderRsa(@Valid @RequestBody OrderSignDTO dto) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("orderNo", dto.getOrderNo());
+        data.put("amount", dto.getAmount());
+        data.put("algorithm", "RSA");
+        data.put("status", "CONFIRMED");
+        data.put("message", "RSA双向加验签成功");
         return Result.success(data);
     }
 
@@ -165,39 +191,29 @@ public class WebSecurityAndSignController {
                 method, uri, timestamp, nonce, paramMap, bodySha256
         );
 
-        String secretKey = dto.getSecretOrPrivateKey();
-        String appId = dto.getAppId();
         WebProperties webProps = webPropertiesProvider.getIfAvailable();
-        if (webProps != null && webProps.getSign() != null) {
-            if (secretKey == null || secretKey.isBlank()) {
-                secretKey = webProps.getSign().getSecretKey();
-                if (secretKey == null || secretKey.isBlank()) {
-                    secretKey = webProps.getSign().getPrivateKey();
-                }
-            }
-            if (appId == null || appId.isBlank()) {
-                appId = webProps.getSign().getAppId();
-            }
-        }
-        if (secretKey == null || secretKey.isBlank()) {
-            secretKey = "TestSecretKey123";
-        }
+        WebProperties.SignProperties signProps = (webProps != null) ? webProps.getSign() : null;
+        boolean hasExplicitAlgo = dto.getAlgorithm() != null && !dto.getAlgorithm().isBlank();
+        SignAlgorithm effectiveAlgo = resolvePrepareAlgorithm(dto.getAlgorithm(), signProps);
+        String appId = (dto.getAppId() != null && !dto.getAppId().isBlank())
+                ? dto.getAppId()
+                : (signProps != null ? signProps.getAppId() : null);
+        String secretKey = resolvePrepareKey(effectiveAlgo, appId, dto.getSecretOrPrivateKey(), signProps);
 
-        ApiSigner signer;
-        if (dto.getAlgorithm() != null && !dto.getAlgorithm().isBlank()) {
-            String algo = dto.getAlgorithm().toUpperCase();
-            if ("SM2".equals(algo)) {
-                signer = new Sm2Signer();
-            } else if ("RSA".equals(algo)) {
-                signer = new RsaSigner();
-            } else {
-                signer = new HmacSha256Signer();
-            }
-        } else {
-            signer = apiSignerProvider.getIfAvailable(HmacSha256Signer::new);
-        }
+        ApiSigner signer = switch (effectiveAlgo) {
+            case SM2 -> new Sm2Signer();
+            case RSA -> new RsaSigner();
+            case HMAC_SHA256, DEFAULT -> hasExplicitAlgo
+                    ? new HmacSha256Signer()
+                    : apiSignerProvider.getIfAvailable(HmacSha256Signer::new);
+        };
 
-        String signature = signer.sign(canonical, secretKey);
+        final String signature;
+        try {
+            signature = signer.sign(canonical, secretKey);
+        } catch (RuntimeException e) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "生成签名失败: " + e.getMessage(), e);
+        }
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put(ApiSignAspect.HEADER_TIMESTAMP, timestamp);
@@ -224,6 +240,44 @@ public class WebSecurityAndSignController {
         result.put("curlSample", curl.toString());
 
         return Result.success(result);
+    }
+
+    private static SignAlgorithm resolvePrepareAlgorithm(String rawAlgorithm, WebProperties.SignProperties signProps) {
+        if (rawAlgorithm != null && !rawAlgorithm.isBlank()) {
+            return switch (rawAlgorithm.trim().toUpperCase()) {
+                case "SM2" -> SignAlgorithm.SM2;
+                case "RSA" -> SignAlgorithm.RSA;
+                default -> SignAlgorithm.HMAC_SHA256;
+            };
+        }
+        SignAlgorithm globalAlgo = (signProps != null) ? signProps.getAlgorithm() : null;
+        return (globalAlgo != null && globalAlgo != SignAlgorithm.DEFAULT) ? globalAlgo : SignAlgorithm.HMAC_SHA256;
+    }
+
+    private String resolvePrepareKey(SignAlgorithm algorithm,
+                                     String appId,
+                                     String explicitKey,
+                                     WebProperties.SignProperties signProps) {
+        if (explicitKey != null && !explicitKey.isBlank()) {
+            return explicitKey;
+        }
+        SignKeyProvider keyProvider = signKeyProviderProvider.getIfAvailable();
+        if (keyProvider == null && signProps != null) {
+            keyProvider = new DefaultSignKeyProvider(signProps);
+        }
+        String resolved = (keyProvider != null) ? keyProvider.getSignKey(appId, algorithm) : null;
+        if ((resolved == null || resolved.isBlank())
+                && (algorithm == SignAlgorithm.HMAC_SHA256 || algorithm == SignAlgorithm.DEFAULT)
+                && signProps != null) {
+            resolved = signProps.getPrivateKey();
+        }
+        if (resolved != null && !resolved.isBlank()) {
+            return resolved;
+        }
+        if (algorithm == SignAlgorithm.SM2 || algorithm == SignAlgorithm.RSA) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "请传入 secretOrPrivateKey 或配置对应算法私钥");
+        }
+        return "TestSecretKey123";
     }
 
     // =========================================================================

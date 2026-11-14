@@ -54,12 +54,37 @@ public class RedisRateLimiterStore implements RateLimiterStore {
             end
             """;
 
+    private static final String READ_PERMITS_LUA_SCRIPT = """
+            local key = KEYS[1]
+            local max_tokens = tonumber(ARGV[1])
+            local window_ms = tonumber(ARGV[2])
+            local now = tonumber(ARGV[3])
+
+            local rate_limit_info = redis.call('HMGET', key, 'tokens', 'last_time')
+            local current_tokens = tonumber(rate_limit_info[1])
+            local last_time = tonumber(rate_limit_info[2])
+
+            if not current_tokens or not last_time then
+                return max_tokens
+            end
+
+            local elapsed = math.max(0, now - last_time)
+            if elapsed > 0 and window_ms > 0 then
+                local generated = elapsed * (max_tokens / window_ms)
+                current_tokens = math.min(max_tokens, current_tokens + generated)
+            end
+
+            return math.max(0, math.floor(current_tokens))
+            """;
+
     private final StringRedisTemplate redisTemplate;
     private final RedisScript<Long> script;
+    private final RedisScript<Long> readPermitsScript;
 
     public RedisRateLimiterStore(StringRedisTemplate redisTemplate) {
         this.redisTemplate = Objects.requireNonNull(redisTemplate, "redisTemplate must not be null");
         this.script = new DefaultRedisScript<>(LUA_SCRIPT, Long.class);
+        this.readPermitsScript = new DefaultRedisScript<>(READ_PERMITS_LUA_SCRIPT, Long.class);
     }
 
     @Override
@@ -97,6 +122,30 @@ public class RedisRateLimiterStore implements RateLimiterStore {
         } catch (Exception e) {
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
                     "Redis rate limiter reset failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public long getAvailablePermits(String key, long count, long time, TimeUnit unit) {
+        long fullCount = RateLimiterStore.super.getAvailablePermits(key, count, time, unit);
+        long windowMillis = unit.toMillis(time);
+        long now = System.currentTimeMillis();
+
+        try {
+            Long result = redisTemplate.execute(
+                    readPermitsScript,
+                    Collections.singletonList(key),
+                    String.valueOf(fullCount),
+                    String.valueOf(windowMillis),
+                    String.valueOf(now)
+            );
+            if (result == null) {
+                return fullCount;
+            }
+            return Math.max(0L, Math.min(fullCount, result));
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redis rate limiter getAvailablePermits failed: " + e.getMessage(), e);
         }
     }
 }

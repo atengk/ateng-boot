@@ -279,6 +279,122 @@ class RateLimiterAspectTest {
                 anyLong(), anyLong(), any());
     }
 
+    @Test
+    @DisplayName("includeHeaders=true 放行/阻断均回写 X-RateLimit-Limit 与 X-RateLimit-Remaining；关闭时不输出")
+    void shouldWriteRateLimitHeadersWhenEnabledAndOmitWhenDisabled() throws Throwable {
+        ProceedingJoinPoint joinPoint = mock(ProceedingJoinPoint.class);
+        MethodSignature signature = mock(MethodSignature.class);
+        Method method = SampleService.class.getMethod("limitedMethod", String.class);
+        when(joinPoint.getSignature()).thenReturn(signature);
+        when(joinPoint.getArgs()).thenReturn(new Object[]{"hdr-key"});
+        when(joinPoint.proceed()).thenReturn("ok");
+        when(signature.getMethod()).thenReturn(method);
+        when(signature.getDeclaringTypeName()).thenReturn(SampleService.class.getName());
+        when(signature.getName()).thenReturn("limitedMethod");
+        RateLimiter rateLimiter = method.getAnnotation(RateLimiter.class);
+
+        // 1. 默认 includeHeaders = true：第 1 次放行剩余 1
+        MockHttpServletResponse resp1 = new MockHttpServletResponse();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(new MockHttpServletRequest("GET", "/api/hdr"), resp1));
+        aspect.around(joinPoint, rateLimiter);
+        assertThat(resp1.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT)).isEqualTo("2");
+        assertThat(resp1.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT_REMAINING)).isEqualTo("1");
+
+        // 第 2 次放行剩余 0
+        MockHttpServletResponse resp2 = new MockHttpServletResponse();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(new MockHttpServletRequest("GET", "/api/hdr"), resp2));
+        aspect.around(joinPoint, rateLimiter);
+        assertThat(resp2.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT)).isEqualTo("2");
+        assertThat(resp2.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT_REMAINING)).isEqualTo("0");
+
+        // 第 3 次 429 阻断：Remaining=0 并同时写出 Retry-After
+        MockHttpServletResponse resp3 = new MockHttpServletResponse();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(new MockHttpServletRequest("GET", "/api/hdr"), resp3));
+        assertThatThrownBy(() -> aspect.around(joinPoint, rateLimiter))
+                .isInstanceOf(BusinessException.class);
+        assertThat(resp3.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT)).isEqualTo("2");
+        assertThat(resp3.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT_REMAINING)).isEqualTo("0");
+        assertThat(resp3.getHeader("Retry-After")).isEqualTo("60");
+
+        // 2. includeHeaders = false：放行和阻断均不输出 X-RateLimit-* 响应头（阻断仅输出 Retry-After）
+        io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties disabledProps =
+                new io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties();
+        disabledProps.setIncludeHeaders(false);
+        RateLimiterAspect disabledAspect = new RateLimiterAspect(store, disabledProps);
+
+        MockHttpServletResponse resp4 = new MockHttpServletResponse();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(new MockHttpServletRequest("GET", "/api/hdr-off"), resp4));
+        disabledAspect.around(joinPoint, rateLimiter);
+        assertThat(resp4.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT)).isNull();
+        assertThat(resp4.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT_REMAINING)).isNull();
+
+        disabledAspect.around(joinPoint, rateLimiter);
+        MockHttpServletResponse resp5 = new MockHttpServletResponse();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(new MockHttpServletRequest("GET", "/api/hdr-off"), resp5));
+        assertThatThrownBy(() -> disabledAspect.around(joinPoint, rateLimiter))
+                .isInstanceOf(BusinessException.class);
+        assertThat(resp5.getHeader("Retry-After")).isEqualTo("60");
+        assertThat(resp5.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT)).isNull();
+        assertThat(resp5.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT_REMAINING)).isNull();
+    }
+
+    @Test
+    @DisplayName("failOpen 降级响应头准确查询兜底存储、destroy 确定性清理且剩余探针异常不影响已放行请求")
+    void shouldHandleFailOpenHeadersDestroyAndPermitQueryFailureGracefully() throws Throwable {
+        ProceedingJoinPoint joinPoint = mock(ProceedingJoinPoint.class);
+        MethodSignature signature = mock(MethodSignature.class);
+        Method ipMethod = SampleService.class.getMethod("ipLimitedMethod");
+        when(joinPoint.getSignature()).thenReturn(signature);
+        when(joinPoint.getArgs()).thenReturn(new Object[0]);
+        when(joinPoint.proceed()).thenReturn("ok");
+        when(signature.getMethod()).thenReturn(ipMethod);
+        when(signature.getDeclaringTypeName()).thenReturn(SampleService.class.getName());
+        when(signature.getName()).thenReturn("ipLimitedMethod");
+        RateLimiter singlePermitLimiter = ipMethod.getAnnotation(RateLimiter.class);
+
+        // 1. failOpen=true 时，主存储抛异常 -> 降级至兜底内存存储并正确回写响应头；destroy() 后兜底桶状态清理可再次放行
+        RateLimiterStore failingStore = mock(RateLimiterStore.class);
+        when(failingStore.tryAcquire(anyString(), anyLong(), anyLong(), any()))
+                .thenThrow(new BusinessException(500, "Redis unavailable"));
+        io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties failOpenProps =
+                new io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties();
+        failOpenProps.setFailOpen(true);
+        RateLimiterAspect failOpenAspect = new RateLimiterAspect(failingStore, failOpenProps);
+
+        MockHttpServletResponse respOpen1 = new MockHttpServletResponse();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(new MockHttpServletRequest("GET", "/api/failover"), respOpen1));
+        assertThat(failOpenAspect.around(joinPoint, singlePermitLimiter)).isEqualTo("ok");
+        assertThat(respOpen1.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT)).isEqualTo("1");
+        assertThat(respOpen1.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT_REMAINING)).isEqualTo("0");
+
+        // 第 2 次应被兜底存储限流
+        MockHttpServletResponse respOpenBlocked = new MockHttpServletResponse();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(new MockHttpServletRequest("GET", "/api/failover"), respOpenBlocked));
+        assertThatThrownBy(() -> failOpenAspect.around(joinPoint, singlePermitLimiter))
+                .isInstanceOf(BusinessException.class);
+        assertThat(respOpenBlocked.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT_REMAINING)).isEqualTo("0");
+
+        // 触发 destroy() 后兜底存储清理完毕
+        failOpenAspect.destroy();
+        MockHttpServletResponse respAfterDestroy = new MockHttpServletResponse();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(new MockHttpServletRequest("GET", "/api/failover"), respAfterDestroy));
+        assertThat(failOpenAspect.around(joinPoint, singlePermitLimiter)).isEqualTo("ok");
+        failOpenAspect.destroy();
+
+        // 2. tryAcquire 放行后，getAvailablePermits 异常仅记录告警并保留 Limit 头，绝不中断已获批业务请求
+        RateLimiterStore probeFailingStore = mock(RateLimiterStore.class);
+        when(probeFailingStore.tryAcquire(anyString(), anyLong(), anyLong(), any())).thenReturn(true);
+        when(probeFailingStore.getAvailablePermits(anyString(), anyLong(), anyLong(), any()))
+                .thenThrow(new RuntimeException("Read probe timeout"));
+        RateLimiterAspect probeFailingAspect = new RateLimiterAspect(probeFailingStore);
+        MockHttpServletResponse respProbeErr = new MockHttpServletResponse();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(new MockHttpServletRequest("GET", "/api/probe-err"), respProbeErr));
+
+        assertThat(probeFailingAspect.around(joinPoint, singlePermitLimiter)).isEqualTo("ok");
+        assertThat(respProbeErr.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT)).isEqualTo("1");
+        assertThat(respProbeErr.getHeader(RateLimiterAspect.HEADER_RATE_LIMIT_REMAINING)).isNull();
+    }
+
     static class SampleService {
         @RateLimiter(count = 2, time = 60, timeUnit = TimeUnit.SECONDS, message = "访问过于频繁，请稍后再试")
         public String limitedMethod(String orderId) {

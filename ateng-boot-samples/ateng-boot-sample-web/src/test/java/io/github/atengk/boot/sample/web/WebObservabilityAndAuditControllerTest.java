@@ -11,6 +11,7 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.sample.web.audit.MemoryOperateLogStorageProvider;
 import io.github.atengk.boot.sample.web.dto.AuditUserDTO;
+import io.github.atengk.boot.web.aspect.WebLogAspect;
 import io.github.atengk.boot.web.filter.PayloadLoggingFilter;
 import io.github.atengk.boot.web.filter.SlowRequestFilter;
 import org.junit.jupiter.api.AfterEach;
@@ -28,6 +29,7 @@ import org.springframework.test.web.servlet.MvcResult;
 
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -66,6 +68,9 @@ class WebObservabilityAndAuditControllerTest {
     private Logger slowLogger;
     private ListAppender<ILoggingEvent> slowAppender;
 
+    private Logger webLogLogger;
+    private ListAppender<ILoggingEvent> webLogAppender;
+
     @BeforeEach
     void setUp() {
         storageProvider.clear();
@@ -82,6 +87,11 @@ class WebObservabilityAndAuditControllerTest {
         slowAppender = new ListAppender<>();
         slowAppender.start();
         slowLogger.addAppender(slowAppender);
+
+        webLogLogger = (Logger) LoggerFactory.getLogger(WebLogAspect.class);
+        webLogAppender = new ListAppender<>();
+        webLogAppender.start();
+        webLogLogger.addAppender(webLogAppender);
     }
 
     @AfterEach
@@ -93,6 +103,10 @@ class WebObservabilityAndAuditControllerTest {
         if (slowLogger != null && slowAppender != null) {
             slowLogger.detachAppender(slowAppender);
             slowAppender.stop();
+        }
+        if (webLogLogger != null && webLogAppender != null) {
+            webLogLogger.detachAppender(webLogAppender);
+            webLogAppender.stop();
         }
         storageProvider.clear();
         UserContextHolder.clear();
@@ -129,6 +143,27 @@ class WebObservabilityAndAuditControllerTest {
                 .andExpect(header().string("X-Trace-Id", customTrace))
                 .andExpect(jsonPath("$.traceId").value(customTrace))
                 .andExpect(jsonPath("$.data").value(customTrace));
+
+        assertThat(MDC.get("traceId")).isNull();
+    }
+
+    @Test
+    @DisplayName("2.1 TraceFilter 入站清洗：包含 CRLF 或超长的非法 X-Trace-Id 被丢弃并自动兜底生成合法 32 位 UUID")
+    void shouldSanitizeInvalidInboundTraceId() throws Exception {
+        for (String invalidTrace : new String[]{"evil\r\nFakeLog: 1", "a".repeat(65)}) {
+            var mvcResult = mockMvc.perform(get("/sample/web/observability/trace")
+                            .header("X-Trace-Id", invalidTrace))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            String actualTrace = mvcResult.getResponse().getHeader("X-Trace-Id");
+            String body = mvcResult.getResponse().getContentAsString();
+            assertThat(actualTrace)
+                    .isNotEqualTo(invalidTrace)
+                    .matches("^[a-f0-9]{32}$");
+            assertThat(body)
+                    .contains("\"traceId\":\"" + actualTrace + "\"")
+                    .contains("\"data\":\"" + actualTrace + "\"");
+        }
 
         assertThat(MDC.get("traceId")).isNull();
     }
@@ -301,6 +336,54 @@ class WebObservabilityAndAuditControllerTest {
                 .andExpect(jsonPath("$.data.operator").value("weblog-tester"))
                 .andExpect(jsonPath("$.data.status").value("AUDITED"))
                 .andExpect(jsonPath("$.data.traceId").isNotEmpty());
+    }
+
+    @Test
+    @DisplayName("10.1 @OperateLog 与 @WebLog 默认基线脱敏端到端验证：未配 excludeParams 时自动掩码 password/secret/token/authorization")
+    void shouldMaskDefaultSensitiveParamsEndToEnd() throws Exception {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("account", "e2e-user");
+        body.put("password", "e2e-raw-pass");
+        body.put("secret", "e2e-raw-secret");
+        body.put("token", "e2e-raw-token");
+        body.put("authorization", "Bearer e2e-jwt");
+        String json = objectMapper.writeValueAsString(body);
+
+        // 1. 验证 @OperateLog（无 excludeParams）审计模型脱敏
+        mockMvc.perform(post("/sample/web/observability/audit/default-mask")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.account").value("e2e-user"));
+
+        OperateLogModel auditLog = awaitLastLog();
+        assertThat(auditLog).isNotNull();
+        assertThat(auditLog.getRequestParams()).contains("\"account\":\"e2e-user\"");
+        for (String maskedKey : List.of("password", "secret", "token", "authorization")) {
+            assertThat(auditLog.getRequestParams()).contains("\"" + maskedKey + "\":\"[EXCLUDED]\"");
+        }
+        assertThat(auditLog.getRequestParams())
+                .doesNotContain("e2e-raw-pass", "e2e-raw-secret", "e2e-raw-token", "Bearer e2e-jwt");
+
+        // 2. 验证 @WebLog（无 excludeParams）日志输出脱敏
+        webLogAppender.list.clear();
+        mockMvc.perform(post("/sample/web/observability/weblog/default-mask")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.account").value("e2e-user"));
+
+        String webLogs = webLogAppender.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .reduce("", (a, b) -> a + "\n" + b);
+        assertThat(webLogs).contains("\"account\":\"e2e-user\"");
+        for (String maskedKey : List.of("password", "secret", "token", "authorization")) {
+            assertThat(webLogs).contains("\"" + maskedKey + "\":\"[EXCLUDED]\"");
+        }
+        assertThat(webLogs)
+                .doesNotContain("e2e-raw-pass", "e2e-raw-secret", "e2e-raw-token", "Bearer e2e-jwt");
     }
 
     @Test

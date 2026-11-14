@@ -1,6 +1,7 @@
 package io.github.atengk.boot.web.shutdown;
 
 import io.github.atengk.boot.web.properties.WebProperties;
+import io.github.atengk.boot.web.trace.TraceFilter;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.availability.ReadinessState;
@@ -46,5 +47,26 @@ class PreStopControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.status").value(ReadinessState.REFUSING_TRAFFIC.name()))
                 .andExpect(jsonPath("$.data.executed").value(false));
+    }
+
+    @Test
+    @DisplayName("经 TraceFilter 调用 /pre-stop 时不产生控制面自计数偏差，零业务并发下在途计数精确为 0")
+    void shouldReportZeroInFlightRequestsWhenCalledThroughTraceFilter() throws Exception {
+        WebProperties webProps = new WebProperties();
+        webProps.getShutdown().setDrainTimeout(Duration.ofMillis(10));
+        TraceFilter traceFilter = new TraceFilter(webProps);
+        AtengGracefulShutdownHandler handler = new AtengGracefulShutdownHandler(webProps, traceFilter);
+        PreStopController controller = new PreStopController(handler);
+
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(controller)
+                .addFilters(traceFilter)
+                .build();
+
+        mockMvc.perform(get("/pre-stop"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.executed").value(true))
+                .andExpect(jsonPath("$.data.inFlightRequestsAtStart").value(0))
+                .andExpect(jsonPath("$.data.inFlightRequestsRemaining").value(0));
     }
 }

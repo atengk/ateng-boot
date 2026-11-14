@@ -5,10 +5,14 @@ import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.DigestUtil;
 import io.github.atengk.boot.web.idempotent.store.IdempotentKeyStore;
+import io.github.atengk.boot.web.idempotent.store.InMemoryIdempotentKeyStore;
 import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.sign.annotation.ApiSign;
 import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
 import io.github.atengk.boot.web.filter.CachedBodyHttpServletRequest;
+import io.github.atengk.boot.web.sign.signer.HmacSha256Signer;
+import io.github.atengk.boot.web.sign.signer.RsaSigner;
+import io.github.atengk.boot.web.sign.signer.Sm2Signer;
 import io.github.atengk.boot.web.sign.spi.ApiSigner;
 import io.github.atengk.boot.web.sign.spi.SignKeyProvider;
 import io.github.atengk.boot.web.sign.util.SignCanonicalUtil;
@@ -20,6 +24,7 @@ import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotationUtils;
@@ -27,8 +32,11 @@ import io.github.atengk.boot.core.util.IdUtil;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * API 双向数据加签验签与防重放切面
@@ -39,7 +47,7 @@ import java.util.concurrent.TimeUnit;
  */
 @Slf4j
 @Aspect
-public class ApiSignAspect implements Ordered {
+public class ApiSignAspect implements Ordered, DisposableBean {
 
     /**
      * 切面优先级：置于防重幂等之后，业务审计切面之前
@@ -52,10 +60,12 @@ public class ApiSignAspect implements Ordered {
     public static final String HEADER_SIGNATURE = "X-Signature";
 
     private final ApiSigner apiSigner;
+    private final Map<SignAlgorithm, ApiSigner> builtInSigners;
     private final SignKeyProvider signKeyProvider;
     private final ObjectProvider<IdempotentKeyStore> idempotentKeyStoreProvider;
     private final ObjectMapper objectMapper;
     private final WebProperties webProperties;
+    private final AtomicReference<IdempotentKeyStore> fallbackStoreRef = new AtomicReference<>();
 
     public ApiSignAspect(ApiSigner apiSigner,
                          SignKeyProvider signKeyProvider,
@@ -67,6 +77,35 @@ public class ApiSignAspect implements Ordered {
         this.idempotentKeyStoreProvider = Objects.requireNonNull(idempotentKeyStoreProvider, "IdempotentKeyStoreProvider must not be null");
         this.objectMapper = Objects.requireNonNull(objectMapper, "ObjectMapper must not be null");
         this.webProperties = Objects.requireNonNull(webProperties, "WebProperties must not be null");
+        this.builtInSigners = createBuiltInSigners(apiSigner);
+    }
+
+    private IdempotentKeyStore getFallbackStore() {
+        IdempotentKeyStore existing = fallbackStoreRef.get();
+        if (existing != null) {
+            return existing;
+        }
+        IdempotentKeyStore created = new InMemoryIdempotentKeyStore();
+        if (fallbackStoreRef.compareAndSet(null, created)) {
+            return created;
+        }
+        return fallbackStoreRef.get();
+    }
+
+    @Override
+    public void destroy() throws Exception {
+        IdempotentKeyStore fallbackStore = fallbackStoreRef.getAndSet(null);
+        if (fallbackStore instanceof DisposableBean disposable) {
+            disposable.destroy();
+        }
+    }
+
+    private static Map<SignAlgorithm, ApiSigner> createBuiltInSigners(ApiSigner primarySigner) {
+        Map<SignAlgorithm, ApiSigner> signers = new EnumMap<>(SignAlgorithm.class);
+        signers.put(SignAlgorithm.HMAC_SHA256, primarySigner instanceof HmacSha256Signer ? primarySigner : new HmacSha256Signer());
+        signers.put(SignAlgorithm.RSA, primarySigner instanceof RsaSigner ? primarySigner : new RsaSigner());
+        signers.put(SignAlgorithm.SM2, primarySigner instanceof Sm2Signer ? primarySigner : new Sm2Signer());
+        return signers;
     }
 
     @Override
@@ -81,12 +120,14 @@ public class ApiSignAspect implements Ordered {
             return joinPoint.proceed();
         }
 
+        SignAlgorithm effectiveAlgorithm = resolveEffectiveAlgorithm(effectiveSign);
+        ApiSigner effectiveSigner = resolveEffectiveSigner(effectiveSign, effectiveAlgorithm);
         HttpServletRequest request = ServletUtil.getRequest();
         String appId = resolveAppId(request);
 
         // 1. 入站请求防篡改验签与防重放校验
         if (effectiveSign.verifyRequest() && request != null) {
-            verifyInboundRequest(joinPoint, request, effectiveSign, appId);
+            verifyInboundRequest(joinPoint, request, effectiveSign, effectiveAlgorithm, effectiveSigner, appId);
         }
 
         // 2. 执行目标 Controller 业务逻辑（强类型显式返回）
@@ -94,7 +135,7 @@ public class ApiSignAspect implements Ordered {
 
         // 3. 出站响应数据加签回写
         if (effectiveSign.signResponse()) {
-            signOutboundResponse(request, proceedResult, appId);
+            signOutboundResponse(request, proceedResult, effectiveAlgorithm, effectiveSigner, appId);
         }
 
         return proceedResult;
@@ -103,6 +144,8 @@ public class ApiSignAspect implements Ordered {
     private void verifyInboundRequest(ProceedingJoinPoint joinPoint,
                                       HttpServletRequest request,
                                       ApiSign apiSign,
+                                      SignAlgorithm effectiveAlgorithm,
+                                      ApiSigner effectiveSigner,
                                       String appId) {
         String headerTimestamp = getHeaderTimestamp();
         String headerNonce = getHeaderNonce();
@@ -136,11 +179,23 @@ public class ApiSignAspect implements Ordered {
             throw new BusinessException(CommonResultCode.BAD_REQUEST, "请求签名已过期");
         }
 
-        // (3) Nonce 防重放原子排重校验（深度复用 IdempotentKeyStore）
+        // (3) Nonce 防重放原子排重校验（深度复用 IdempotentKeyStore，支持 fail-open 内存降级）
         IdempotentKeyStore keyStore = idempotentKeyStoreProvider.getIfAvailable();
         if (keyStore != null) {
-            String nonceKey = "sign:nonce:" + appId + ":" + nonce;
-            boolean acquired = keyStore.tryLock(nonceKey, expireSeconds, TimeUnit.SECONDS);
+            String nonceKey = resolveNonceKey(appId, nonce);
+            boolean acquired;
+            try {
+                acquired = keyStore.tryLock(nonceKey, expireSeconds, TimeUnit.SECONDS);
+            } catch (Exception ex) {
+                if (webProperties.getSign().isFailOpen()) {
+                    log.warn("ApiSign nonce keyStore execution failed, falling back to in-memory store due to failOpen=true, key: {}", nonceKey, ex);
+                    acquired = getFallbackStore().tryLock(nonceKey, expireSeconds, TimeUnit.SECONDS);
+                } else if (ex instanceof BusinessException be) {
+                    throw be;
+                } else {
+                    throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "API 防重放存储校验失败: " + ex.getMessage(), ex);
+                }
+            }
             if (!acquired) {
                 log.warn("ApiSign detected repeated nonce [{}] for appId [{}]", nonce, appId);
                 throw new BusinessException(CommonResultCode.REPEAT_SUBMIT, "请求已被处理或存在重放风险");
@@ -163,19 +218,23 @@ public class ApiSignAspect implements Ordered {
         );
 
         // (6) 调用 ApiSigner SPI 执行合法性验证
-        String verifyKey = getVerifyKey(appId);
+        String verifyKey = signKeyProvider.getVerifyKey(appId, effectiveAlgorithm);
         if (!StringUtils.hasText(verifyKey)) {
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "未配置对应应用的验签密钥: " + appId);
         }
 
-        boolean valid = apiSigner.verify(canonicalString, signature, verifyKey);
+        boolean valid = effectiveSigner.verify(canonicalString, signature, verifyKey);
         if (!valid) {
             log.warn("ApiSign verification failed for appId [{}], uri [{}]", appId, request.getRequestURI());
             throw new BusinessException(CommonResultCode.BAD_REQUEST, apiSign.message());
         }
     }
 
-    private void signOutboundResponse(HttpServletRequest request, Object proceedResult, String appId) {
+    private void signOutboundResponse(HttpServletRequest request,
+                                      Object proceedResult,
+                                      SignAlgorithm effectiveAlgorithm,
+                                      ApiSigner effectiveSigner,
+                                      String appId) {
         HttpServletResponse response = ServletUtil.getResponse();
         if (response == null) {
             return;
@@ -196,16 +255,19 @@ public class ApiSignAspect implements Ordered {
             String responseBodySha256 = DigestUtil.sha256Hex(responseJson);
 
             String responseCanonical = SignCanonicalUtil.buildResponseCanonicalString(respTimestamp, respNonce, responseBodySha256);
-            String signKey = getSignKey(appId);
-
-            if (StringUtils.hasText(signKey)) {
-                String responseSignature = apiSigner.sign(responseCanonical, signKey);
-                response.setHeader(headerSignature, responseSignature);
-                response.setHeader(headerTimestamp, respTimestamp);
-                response.setHeader(headerNonce, respNonce);
+            String signKey = signKeyProvider.getSignKey(appId, effectiveAlgorithm);
+            if (!StringUtils.hasText(signKey)) {
+                throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "未配置对应应用的加签密钥: " + appId);
             }
+
+            String responseSignature = effectiveSigner.sign(responseCanonical, signKey);
+            response.setHeader(headerSignature, responseSignature);
+            response.setHeader(headerTimestamp, respTimestamp);
+            response.setHeader(headerNonce, respNonce);
+        } catch (BusinessException e) {
+            throw e;
         } catch (Exception e) {
-            log.error("ApiSign outbound response signing failed: {}", e.getMessage(), e);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "响应报文加签失败: " + e.getMessage(), e);
         }
     }
 
@@ -274,18 +336,34 @@ public class ApiSignAspect implements Ordered {
         return DigestUtil.sha256Hex("");
     }
 
-    private String getVerifyKey(String appId) {
-        SignAlgorithm algorithm = webProperties.getSign().getAlgorithm();
-        return (algorithm == SignAlgorithm.RSA || algorithm == SignAlgorithm.SM2)
-                ? signKeyProvider.getPublicKey(appId)
-                : signKeyProvider.getSecretKey(appId);
+    private String resolveNonceKey(String appId, String nonce) {
+        String prefix = webProperties.getSign().getNoncePrefix();
+        if (!StringUtils.hasText(prefix)) {
+            prefix = WebProperties.SignProperties.DEFAULT_NONCE_PREFIX;
+        }
+        return prefix + appId + ":" + nonce;
     }
 
-    private String getSignKey(String appId) {
-        SignAlgorithm algorithm = webProperties.getSign().getAlgorithm();
-        return (algorithm == SignAlgorithm.RSA || algorithm == SignAlgorithm.SM2)
-                ? signKeyProvider.getPrivateKey(appId)
-                : signKeyProvider.getSecretKey(appId);
+    private SignAlgorithm resolveEffectiveAlgorithm(ApiSign apiSign) {
+        if (hasExplicitAlgorithm(apiSign)) {
+            return apiSign.algorithm();
+        }
+        SignAlgorithm globalAlgorithm = webProperties.getSign().getAlgorithm();
+        return (globalAlgorithm != null && globalAlgorithm != SignAlgorithm.DEFAULT)
+                ? globalAlgorithm
+                : SignAlgorithm.HMAC_SHA256;
+    }
+
+    private ApiSigner resolveEffectiveSigner(ApiSign apiSign, SignAlgorithm effectiveAlgorithm) {
+        // 注解显式覆盖特定内置算法时，按算法路由内置签名器；未覆盖时优先尊重容器注入的 ApiSigner Bean（含自定义 SPI 实现）
+        if (hasExplicitAlgorithm(apiSign)) {
+            return builtInSigners.getOrDefault(effectiveAlgorithm, apiSigner);
+        }
+        return apiSigner;
+    }
+
+    private static boolean hasExplicitAlgorithm(ApiSign apiSign) {
+        return apiSign != null && apiSign.algorithm() != null && apiSign.algorithm() != SignAlgorithm.DEFAULT;
     }
 
     private String resolveAppId(HttpServletRequest request) {
@@ -299,14 +377,15 @@ public class ApiSignAspect implements Ordered {
     }
 
     private ApiSign resolveAnnotation(ProceedingJoinPoint joinPoint, ApiSign apiSign) {
-        if (apiSign != null) {
-            return apiSign;
-        }
         MethodSignature signature = (MethodSignature) joinPoint.getSignature();
         Method method = signature.getMethod();
+        // 方法级 @ApiSign 优先级高于类级 @within(ApiSign)
         ApiSign methodAnnotation = AnnotationUtils.findAnnotation(method, ApiSign.class);
         if (methodAnnotation != null) {
             return methodAnnotation;
+        }
+        if (apiSign != null) {
+            return apiSign;
         }
         return AnnotationUtils.findAnnotation(joinPoint.getTarget().getClass(), ApiSign.class);
     }
