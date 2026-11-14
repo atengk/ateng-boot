@@ -23,23 +23,27 @@ class HttpRequestContextHolderTest {
     }
 
     @Test
-    @DisplayName("测试读取与建联超时的设置、获取与清除")
+    @DisplayName("测试读取、建联超时与客户端名称的设置、获取与清除")
     void testSetGetAndClear() {
         assertNull(HttpRequestContextHolder.getReadTimeout());
         assertNull(HttpRequestContextHolder.getConnectTimeout());
+        assertNull(HttpRequestContextHolder.getClientName());
 
         Duration readTimeout = Duration.ofSeconds(5);
         Duration connectTimeout = Duration.ofSeconds(2);
 
         HttpRequestContextHolder.setReadTimeout(readTimeout);
         HttpRequestContextHolder.setConnectTimeout(connectTimeout);
+        HttpRequestContextHolder.setClientName("order-service");
 
         assertEquals(readTimeout, HttpRequestContextHolder.getReadTimeout());
         assertEquals(connectTimeout, HttpRequestContextHolder.getConnectTimeout());
+        assertEquals("order-service", HttpRequestContextHolder.getClientName());
 
         HttpRequestContextHolder.clear();
         assertNull(HttpRequestContextHolder.getReadTimeout());
         assertNull(HttpRequestContextHolder.getConnectTimeout());
+        assertNull(HttpRequestContextHolder.getClientName());
     }
 
     @Test
@@ -47,13 +51,18 @@ class HttpRequestContextHolderTest {
     void testSetNullRemovesHolder() {
         HttpRequestContextHolder.setReadTimeout(Duration.ofSeconds(3));
         HttpRequestContextHolder.setConnectTimeout(Duration.ofSeconds(1));
+        HttpRequestContextHolder.setClientName("order-service");
 
         HttpRequestContextHolder.setReadTimeout(null);
         assertNull(HttpRequestContextHolder.getReadTimeout());
         assertNotNull(HttpRequestContextHolder.getConnectTimeout());
+        assertNotNull(HttpRequestContextHolder.getClientName());
 
         HttpRequestContextHolder.setConnectTimeout(null);
         assertNull(HttpRequestContextHolder.getConnectTimeout());
+
+        HttpRequestContextHolder.setClientName("   ");
+        assertNull(HttpRequestContextHolder.getClientName());
     }
 
     @Test

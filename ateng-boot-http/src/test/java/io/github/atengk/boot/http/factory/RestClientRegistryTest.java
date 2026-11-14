@@ -6,6 +6,7 @@ import io.github.atengk.boot.http.annotation.EnableHttpInterfaces;
 import io.github.atengk.boot.http.annotation.HttpClient;
 import io.github.atengk.boot.http.autoconfigure.AtengHttpAutoConfiguration;
 import io.github.atengk.boot.http.constant.HttpConstants;
+import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.error.HttpRemoteException;
 import io.github.atengk.boot.http.properties.HttpClientItemProperties;
@@ -73,6 +74,7 @@ class RestClientRegistryTest {
     void tearDown() throws IOException {
         TenantContextHolder.clear();
         UserContextHolder.clear();
+        HttpRequestContextHolder.clear();
         if (context != null) {
             context.close();
             context = null;
@@ -458,6 +460,50 @@ class RestClientRegistryTest {
         RestClient client = registry.getClient("custom-proxy-client");
         assertNotNull(client);
         assertTrue(customizerInvoked.get(), "专属客户端物理工厂创建时应正确触发 HttpClient5Customizer 回调");
+    }
+
+    @Test
+    @DisplayName("测试多命名客户端共享相同基地址时 RestClientRegistry 准确命中专属重试策略且净空内部控制头")
+    void testSharedBaseUrlNamedClientsIsolateRetryAndStripInternalHeaders() throws Exception {
+        String baseUrl = mockWebServer.url("/").toString();
+
+        context = new AnnotationConfigApplicationContext();
+        MockEnvironment env = new MockEnvironment();
+        env.setProperty("ateng.boot.http.clients.shared-alpha.base-url", baseUrl);
+        env.setProperty("ateng.boot.http.clients.shared-alpha.retry.enabled", "true");
+        env.setProperty("ateng.boot.http.clients.shared-alpha.retry.max-attempts", "1");
+        env.setProperty("ateng.boot.http.clients.shared-alpha.retry.delay", "5ms");
+        env.setProperty("ateng.boot.http.clients.shared-beta.base-url", baseUrl);
+        env.setProperty("ateng.boot.http.clients.shared-beta.propagate-context", "false");
+        env.setProperty("ateng.boot.http.clients.shared-beta.retry.enabled", "true");
+        env.setProperty("ateng.boot.http.clients.shared-beta.retry.max-attempts", "3");
+        env.setProperty("ateng.boot.http.clients.shared-beta.retry.delay", "5ms");
+        context.setEnvironment(env);
+        context.register(AtengHttpAutoConfiguration.class);
+        context.refresh();
+
+        RestClientRegistry registry = context.getBean(RestClientRegistry.class);
+        RestClient betaClient = registry.getClient("shared-beta");
+
+        TenantContextHolder.setTenantId("tenant-secret");
+        UserContextHolder.setUserId("user-secret");
+
+        mockWebServer.enqueue(new MockResponse().setResponseCode(503));
+        mockWebServer.enqueue(new MockResponse().setResponseCode(503));
+        mockWebServer.enqueue(new MockResponse().setResponseCode(200).setBody("OK-BETA"));
+
+        String body = betaClient.get().uri("/ping").retrieve().body(String.class);
+        assertEquals("OK-BETA", body);
+        assertNull(HttpRequestContextHolder.getClientName());
+
+        for (int i = 0; i < 3; i++) {
+            RecordedRequest recorded = mockWebServer.takeRequest(2, TimeUnit.SECONDS);
+            assertNotNull(recorded);
+            assertNull(recorded.getHeader(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE));
+            assertNull(recorded.getHeader(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE));
+            assertNull(recorded.getHeader("X-Tenant-Id"));
+            assertNull(recorded.getHeader("X-User-Id"));
+        }
     }
 
     @Configuration

@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.http.constant.HttpConstants;
+import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.properties.HttpClientItemProperties;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.properties.HttpTracingProperties;
@@ -18,7 +19,6 @@ import org.springframework.util.StringUtils;
 
 import java.io.IOException;
 import java.net.URI;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -43,18 +43,69 @@ public class TraceContextInterceptor implements ClientHttpRequestInterceptor {
     @Override
     public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) throws IOException {
         HttpHeaders headers = request.getHeaders();
+        String previousClientName = HttpRequestContextHolder.getClientName();
 
-        // 1. 读取并严格剥离内部控制头（绝对禁止泄露给外部网络物理层，无论是否启用链路追踪）
+        // 1. 提取并立即剥离内部控制头（保留 STREAM_TRANSFER 交由内层 HttpLoggingInterceptor 消费剥离），并执行四维上下文治理
+        String explicitClientName = applyContextHeadersInternal(headers, request.getURI(), false);
+        if (StringUtils.hasText(explicitClientName)) {
+            HttpRequestContextHolder.setClientName(explicitClientName);
+        }
+
+        try {
+            return execution.execute(request, body);
+        } finally {
+            HttpRequestContextHolder.setClientName(previousClientName);
+        }
+    }
+
+    /**
+     * 无流缓冲副作用的纯出站请求头治理方法（供直通流式通道如 HttpTemplate#upload 在发送前显式调用）
+     * 严格剥离全量框架内部控制头（含 STREAM_TRANSFER、PROPAGATE_CONTEXT、CLIENT_NAME），
+     * 并依据目标 URI 与命名客户端配置执行受信域判定及四维上下文注入或非受信敏感头剥离
+     *
+     * @param headers 出站请求头集合
+     * @param uri     目标请求绝对 URI
+     */
+    public void applyContextHeaders(HttpHeaders headers, URI uri) {
+        applyContextHeadersInternal(headers, uri, true);
+    }
+
+    /**
+     * 清理请求头中的全量框架内部私有控制头，严防泄漏至物理网络或终端日志
+     *
+     * @param headers 待净化请求头集合
+     */
+    public static void clearInternalHeaders(HttpHeaders headers) {
+        if (headers == null) {
+            return;
+        }
+        headers.remove(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE);
+        headers.remove(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE);
+        headers.remove(HttpConstants.HEADER_STREAM_TRANSFER);
+    }
+
+    private String applyContextHeadersInternal(HttpHeaders headers, URI uri, boolean stripStreamHeader) {
+        if (headers == null) {
+            return null;
+        }
+
+        // 1. 读取并严格剥离内部控制头（绝对禁止泄露给外部网络物理层或后续日志拦截器，无论是否启用链路追踪）
         Boolean explicitPropagate = HttpInterceptorUtil.extractBooleanHeader(headers, HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE);
         String explicitClientName = HttpInterceptorUtil.extractStringHeader(headers, HttpConstants.HEADER_CLIENT_NAME_OVERRIDE);
+        if (stripStreamHeader) {
+            headers.remove(HttpConstants.HEADER_STREAM_TRANSFER);
+        }
 
         HttpTracingProperties tracing = properties.getTracing();
         if (tracing == null || !tracing.isEnabled()) {
-            return execution.execute(request, body);
+            return explicitClientName;
         }
 
         // 2. 双轨自适应判定当前请求是否允许透传私有业务上下文
-        boolean propagate = resolvePropagateContext(request.getURI(), explicitPropagate, explicitClientName);
+        String effectiveClientName = StringUtils.hasText(explicitClientName)
+                ? explicitClientName
+                : HttpRequestContextHolder.getClientName();
+        boolean propagate = resolvePropagateContext(uri, explicitPropagate, effectiveClientName);
 
         // 3. 链路追踪 traceId 处理（MDC 为空时通过 IdUtil 自动生成短 UUID 兜底，保障全链路可观测性始终闭环）
         String traceIdHeader = tracing.getTraceIdHeader();
@@ -103,7 +154,7 @@ public class TraceContextInterceptor implements ClientHttpRequestInterceptor {
             }
         }
 
-        return execution.execute(request, body);
+        return explicitClientName;
     }
 
     /**

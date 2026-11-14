@@ -1,6 +1,8 @@
 package io.github.atengk.boot.http.interceptor;
 
 import io.github.atengk.boot.core.util.RetryUtil;
+import io.github.atengk.boot.http.constant.HttpConstants;
+import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.properties.HttpClientItemProperties;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.properties.HttpRetryProperties;
@@ -48,7 +50,8 @@ public class HttpRetryInterceptor implements ClientHttpRequestInterceptor {
 
     @Override
     public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) throws IOException {
-        HttpRetryProperties retry = resolveRetryProperties(request.getURI());
+        String headerClientName = HttpInterceptorUtil.extractStringHeader(request.getHeaders(), HttpConstants.HEADER_CLIENT_NAME_OVERRIDE);
+        HttpRetryProperties retry = resolveRetryProperties(request.getURI(), headerClientName);
         if (retry == null || !retry.isEnabled()) {
             return executeSingleAttempt(request, body, execution);
         }
@@ -152,10 +155,33 @@ public class HttpRetryInterceptor implements ClientHttpRequestInterceptor {
      * 依据目标 URL 最长前缀自适应匹配客户端配置专属重试策略，未匹配回退全局重试配置
      */
     protected HttpRetryProperties resolveRetryProperties(URI uri) {
+        return resolveRetryProperties(uri, null);
+    }
+
+    /**
+     * 优先依据线程上下文或内部头中的逻辑客户端名称匹配专属重试策略；未指定或未命中客户端定义时回退至 URL 最长前缀匹配及全局重试配置
+     *
+     * @param uri                目标请求 URI
+     * @param fallbackClientName 请求头兜底提取的逻辑客户端名称（可为 null）
+     * @return 命中的重试配置
+     */
+    protected HttpRetryProperties resolveRetryProperties(URI uri, String fallbackClientName) {
         Map<String, HttpClientItemProperties> clients = properties.getClients();
-        Map.Entry<String, HttpClientItemProperties> matched = HttpInterceptorUtil.matchClientByUrl(uri, clients);
-        if (matched != null && matched.getValue() != null && matched.getValue().getRetry() != null) {
-            return matched.getValue().getRetry();
+        if (clients != null && !clients.isEmpty()) {
+            String effectiveClientName = StringUtils.hasText(fallbackClientName)
+                    ? fallbackClientName.trim()
+                    : HttpRequestContextHolder.getClientName();
+            if (StringUtils.hasText(effectiveClientName)) {
+                HttpClientItemProperties item = clients.get(effectiveClientName);
+                if (item != null) {
+                    return item.getRetry() != null ? item.getRetry() : properties.getRetry();
+                }
+            }
+
+            Map.Entry<String, HttpClientItemProperties> matched = HttpInterceptorUtil.matchClientByUrl(uri, clients);
+            if (matched != null && matched.getValue() != null && matched.getValue().getRetry() != null) {
+                return matched.getValue().getRetry();
+            }
         }
         return properties.getRetry();
     }

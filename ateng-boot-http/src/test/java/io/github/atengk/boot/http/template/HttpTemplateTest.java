@@ -1,13 +1,21 @@
 package io.github.atengk.boot.http.template;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.http.constant.HttpConstants;
 import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.error.HttpRemoteException;
 import io.github.atengk.boot.http.factory.ClientHttpRequestFactoryBuilder;
+import io.github.atengk.boot.http.interceptor.HttpLoggingInterceptor;
+import io.github.atengk.boot.http.interceptor.HttpRetryInterceptor;
+import io.github.atengk.boot.http.interceptor.TraceContextInterceptor;
 import io.github.atengk.boot.http.options.RequestOptions;
+import io.github.atengk.boot.http.properties.HttpClientItemProperties;
 import io.github.atengk.boot.http.properties.HttpEngineType;
+import io.github.atengk.boot.http.properties.HttpLoggingLevel;
 import io.github.atengk.boot.http.properties.HttpProperties;
+import io.github.atengk.boot.http.properties.HttpRetryProperties;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
@@ -15,6 +23,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpHeaders;
@@ -40,6 +49,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -76,6 +86,9 @@ class HttpTemplateTest {
 
     @AfterEach
     void tearDown() throws IOException {
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
         HttpRequestContextHolder.clear();
         if (server != null) {
             server.shutdown();
@@ -550,11 +563,13 @@ class HttpTemplateTest {
         // 核心断言: 拦截器绝未被触发，彻底杜绝 Spring 内部 ByteArrayOutputStream 全量堆内存缓冲！
         assertThat(interceptorCalled.get()).isFalse();
 
-        // 验证服务端收到完整的 Multipart 请求及流式标记头
+        // 验证服务端收到完整的 Multipart 请求且 100% 净空所有内部控制头
         RecordedRequest recorded = server.takeRequest();
         assertThat(recorded.getMethod()).isEqualTo("POST");
         assertThat(recorded.getHeader("Content-Type")).contains(MediaType.MULTIPART_FORM_DATA_VALUE);
-        assertThat(recorded.getHeader(HttpConstants.HEADER_STREAM_TRANSFER)).isEqualTo("true");
+        assertThat(recorded.getHeader(HttpConstants.HEADER_STREAM_TRANSFER)).isNull();
+        assertThat(recorded.getHeader(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE)).isNull();
+        assertThat(recorded.getHeader(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE)).isNull();
         assertThat(recorded.getBody().readUtf8()).contains("LARGE-FILE-CONTENT-RAW-BYTES");
     }
 
@@ -590,7 +605,7 @@ class HttpTemplateTest {
         assertThat(recorded.getMethod()).isEqualTo("POST");
         assertThat(recorded.getHeader("Content-Type")).contains(MediaType.MULTIPART_FORM_DATA_VALUE);
         assertThat(recorded.getHeader("X-Client-Trace-Id")).isEqualTo("trace-abc-123");
-        assertThat(recorded.getHeader(HttpConstants.HEADER_STREAM_TRANSFER)).isEqualTo("true");
+        assertThat(recorded.getHeader(HttpConstants.HEADER_STREAM_TRANSFER)).isNull();
 
         String body = recorded.getBody().readUtf8();
         assertThat(body).contains("Training Report");
@@ -790,5 +805,194 @@ class HttpTemplateTest {
                 .isInstanceOf(HttpRemoteException.class);
         assertThat(HttpRequestContextHolder.getReadTimeout()).isEqualTo(outerRead);
         assertThat(HttpRequestContextHolder.getConnectTimeout()).isEqualTo(outerConnect);
+    }
+
+    @Test
+    @DisplayName("零缓冲 upload 头部治理闭环：旁路拦截器同时执行四维注入/非受信剥离与内部控制头 100% 净空")
+    void testUploadGoverns4DContextAndStripsAllInternalHeadersWithoutBuffering() throws InterruptedException {
+        HttpProperties properties = new HttpProperties();
+        HttpClientItemProperties trustedClient = new HttpClientItemProperties();
+        trustedClient.setBaseUrl(baseUrl);
+        trustedClient.setPropagateContext(true);
+        properties.getClients().put("internal-oss", trustedClient);
+
+        HttpClientItemProperties untrustedClient = new HttpClientItemProperties();
+        untrustedClient.setBaseUrl(baseUrl);
+        untrustedClient.setPropagateContext(false);
+        properties.getClients().put("public-oss", untrustedClient);
+
+        AtomicInteger interceptorCalls = new AtomicInteger(0);
+        TraceContextInterceptor traceInterceptor = new TraceContextInterceptor(properties);
+
+        RestClient.Builder builder = RestClient.builder()
+                .baseUrl(baseUrl)
+                .defaultStatusHandler(new HttpErrorHandler())
+                .requestInterceptor(traceInterceptor)
+                .requestInterceptor((request, body, execution) -> {
+                    interceptorCalls.incrementAndGet();
+                    return execution.execute(request, body);
+                });
+
+        HttpTemplate governedTemplate = new HttpTemplate(builder);
+
+        MDC.put("traceId", "trace-upload-967");
+        TenantContextHolder.setTenantId("tenant-967");
+        UserContextHolder.setUserId("user-967");
+
+        ByteArrayResource resource = new ByteArrayResource("ZERO-BUFFER-STREAM-PAYLOAD".getBytes(StandardCharsets.UTF_8)) {
+            @Override
+            public String getFilename() {
+                return "chunk.bin";
+            }
+        };
+
+        // 1. 信任域客户端上传：四维头自动注入，内部控制头 100% 净空，且拦截器链 0 次触发（零堆内存缓冲）
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"ok\":true}"));
+
+        RequestOptions internalOptions = RequestOptions.builder()
+                .clientName("internal-oss")
+                .build();
+
+        TenantContextHolder.runWithoutTenant(() -> {
+            governedTemplate.upload(baseUrl + "/files/internal", "file", resource, internalOptions, Map.class);
+        });
+
+        assertThat(interceptorCalls.get()).isZero();
+        RecordedRequest internalReq = server.takeRequest();
+        assertThat(internalReq.getHeader("X-Trace-Id")).isEqualTo("trace-upload-967");
+        assertThat(internalReq.getHeader("X-Tenant-Id")).isEqualTo("tenant-967");
+        assertThat(internalReq.getHeader("X-User-Id")).isEqualTo("user-967");
+        assertThat(internalReq.getHeader("X-Ignore-Tenant")).isEqualTo("true");
+        assertThat(internalReq.getHeader(HttpConstants.HEADER_STREAM_TRANSFER)).isNull();
+        assertThat(internalReq.getHeader(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE)).isNull();
+        assertThat(internalReq.getHeader(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE)).isNull();
+        assertThat(HttpRequestContextHolder.getClientName()).isNull();
+
+        // 2. 非信任域客户端上传（clientName=public-oss）：严防泄露租户与用户头，内部控制头 100% 净空
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"ok\":true}"));
+
+        RequestOptions untrustedOptions = RequestOptions.builder()
+                .clientName("public-oss")
+                .header("X-Tenant-Id", "caller-leaked-tenant")
+                .header("X-User-Id", "caller-leaked-user")
+                .header(HttpConstants.HEADER_STREAM_TRANSFER, "true")
+                .build();
+
+        governedTemplate.upload(baseUrl + "/files/public", "file", resource, untrustedOptions, Map.class);
+
+        assertThat(interceptorCalls.get()).isZero();
+        RecordedRequest untrustedReq = server.takeRequest();
+        assertThat(untrustedReq.getHeader("X-Trace-Id")).isEqualTo("trace-upload-967");
+        assertThat(untrustedReq.getHeader("X-Tenant-Id")).isNull();
+        assertThat(untrustedReq.getHeader("X-User-Id")).isNull();
+        assertThat(untrustedReq.getHeader("X-Ignore-Tenant")).isNull();
+        assertThat(untrustedReq.getHeader(HttpConstants.HEADER_STREAM_TRANSFER)).isNull();
+        assertThat(untrustedReq.getHeader(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE)).isNull();
+        assertThat(untrustedReq.getHeader(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE)).isNull();
+
+        // 3. 单次显式覆盖 propagateContext=true：压倒非信任客户端策略并仍净空内部控制头
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"ok\":true}"));
+
+        RequestOptions explicitOverrideOptions = RequestOptions.builder()
+                .clientName("public-oss")
+                .propagateContext(true)
+                .build();
+
+        governedTemplate.upload(baseUrl + "/files/override", "file", resource, explicitOverrideOptions, Map.class);
+
+        RecordedRequest overrideReq = server.takeRequest();
+        assertThat(overrideReq.getHeader("X-Tenant-Id")).isEqualTo("tenant-967");
+        assertThat(overrideReq.getHeader("X-User-Id")).isEqualTo("user-967");
+        assertThat(overrideReq.getHeader(HttpConstants.HEADER_STREAM_TRANSFER)).isNull();
+        assertThat(overrideReq.getHeader(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE)).isNull();
+        assertThat(overrideReq.getHeader(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE)).isNull();
+
+        // 4. RestClient.Builder 预设 defaultHeaders 场景（含敏感头与内部控制头）：
+        //    仍然必须在 httpRequest 层完整消费并剥离 defaultHeaders 中的内部头与非信任域敏感头
+        RestClient.Builder defaultHeaderBuilder = RestClient.builder()
+                .baseUrl(baseUrl)
+                .defaultStatusHandler(new HttpErrorHandler())
+                .defaultHeader(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE, "public-oss")
+                .defaultHeader(HttpConstants.HEADER_STREAM_TRANSFER, "true")
+                .defaultHeader("X-Tenant-Id", "default-leaked-tenant")
+                .defaultHeader("X-User-Id", "default-leaked-user")
+                .requestInterceptor(traceInterceptor);
+        HttpTemplate defaultHeaderTemplate = new HttpTemplate(defaultHeaderBuilder);
+
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"ok\":true}"));
+
+        defaultHeaderTemplate.upload(baseUrl + "/files/default-headers", "file", resource, Map.class);
+
+        RecordedRequest defaultHeaderReq = server.takeRequest();
+        assertThat(defaultHeaderReq.getHeader("X-Trace-Id")).isEqualTo("trace-upload-967");
+        assertThat(defaultHeaderReq.getHeader("X-Tenant-Id")).isNull();
+        assertThat(defaultHeaderReq.getHeader("X-User-Id")).isNull();
+        assertThat(defaultHeaderReq.getHeader(HttpConstants.HEADER_STREAM_TRANSFER)).isNull();
+        assertThat(defaultHeaderReq.getHeader(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE)).isNull();
+        assertThat(defaultHeaderReq.getHeader(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE)).isNull();
+    }
+
+    @Test
+    @DisplayName("端到端 clientName 重试路由闭环：多客户端共享 baseUrl 时准确命中指定 clientName 重试策略且上下文复原")
+    void testEndToEndClientNameRetryRoutingWithSharedBaseUrl() throws InterruptedException {
+        HttpProperties properties = new HttpProperties();
+        properties.getLogging().setEnabled(true);
+        properties.getLogging().setLevel(HttpLoggingLevel.FULL);
+
+        HttpClientItemProperties clientOne = new HttpClientItemProperties();
+        clientOne.setBaseUrl(baseUrl);
+        HttpRetryProperties retryOne = new HttpRetryProperties();
+        retryOne.setEnabled(true);
+        retryOne.setMaxAttempts(1);
+        retryOne.setDelay(Duration.ofMillis(5));
+        clientOne.setRetry(retryOne);
+        properties.getClients().put("shared-fast-fail", clientOne);
+
+        HttpClientItemProperties clientTwo = new HttpClientItemProperties();
+        clientTwo.setBaseUrl(baseUrl);
+        HttpRetryProperties retryTwo = new HttpRetryProperties();
+        retryTwo.setEnabled(true);
+        retryTwo.setMaxAttempts(3);
+        retryTwo.setDelay(Duration.ofMillis(5));
+        clientTwo.setRetry(retryTwo);
+        properties.getClients().put("shared-resilient", clientTwo);
+
+        TraceContextInterceptor traceInterceptor = new TraceContextInterceptor(properties);
+        HttpLoggingInterceptor loggingInterceptor = new HttpLoggingInterceptor(properties);
+        HttpRetryInterceptor retryInterceptor = new HttpRetryInterceptor(properties, loggingInterceptor);
+
+        RestClient.Builder builder = RestClient.builder()
+                .baseUrl(baseUrl)
+                .defaultStatusHandler(new HttpErrorHandler())
+                .requestInterceptor(traceInterceptor)
+                .requestInterceptor(retryInterceptor);
+        HttpTemplate template = new HttpTemplate(builder);
+
+        server.enqueue(new MockResponse().setResponseCode(503));
+        server.enqueue(new MockResponse().setResponseCode(503));
+        server.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("{\"recovered\":true}"));
+
+        HttpRequestContextHolder.setClientName("outer-caller");
+        RequestOptions options = RequestOptions.builder()
+                .clientName("shared-resilient")
+                .build();
+
+        Map<?, ?> result = template.get(baseUrl + "/flaky-shared", options, Map.class);
+        assertThat(result.get("recovered")).isEqualTo(true);
+        assertThat(HttpRequestContextHolder.getClientName()).isEqualTo("outer-caller");
+
+        for (int i = 0; i < 3; i++) {
+            RecordedRequest recorded = server.takeRequest();
+            assertThat(recorded.getHeader(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE)).isNull();
+            assertThat(recorded.getHeader(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE)).isNull();
+        }
     }
 }

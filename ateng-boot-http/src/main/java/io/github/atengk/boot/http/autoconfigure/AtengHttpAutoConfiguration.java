@@ -191,19 +191,26 @@ public class AtengHttpAutoConfiguration {
 
     /**
      * 注册全局统一命令式操作门面 HttpTemplate Bean
-     * 统一绑定受管异步线程池设施以实现四维上下文跨线程传播
+     * 统一绑定受管异步线程池设施与零缓冲直通上传头部治理拦截器，实现四维上下文跨线程传播与出站治理闭环
      *
-     * @param restClientBuilder    RestClient 构建器
-     * @param httpErrorHandler     HTTP 异常响应处理器
-     * @param taskExecutorProvider 受管异步执行器提供者
+     * @param restClientBuilder               RestClient 构建器
+     * @param httpErrorHandler                HTTP 异常响应处理器
+     * @param taskExecutorProvider            受管异步执行器提供者
+     * @param traceContextInterceptorProvider 四维上下文治理拦截器提供者
      * @return HttpTemplate 实例
      */
     @Bean
     @ConditionalOnMissingBean
     public HttpTemplate httpTemplate(RestClient.Builder restClientBuilder,
                                      HttpErrorHandler httpErrorHandler,
-                                     @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
-        return new HttpTemplate(restClientBuilder, httpErrorHandler, taskExecutorProvider.getIfAvailable());
+                                     @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+                                     ObjectProvider<TraceContextInterceptor> traceContextInterceptorProvider) {
+        return new HttpTemplate(
+                restClientBuilder,
+                httpErrorHandler,
+                taskExecutorProvider.getIfAvailable(),
+                traceContextInterceptorProvider.getIfAvailable()
+        );
     }
 
     /**

@@ -6,6 +6,7 @@ import io.github.atengk.boot.http.constant.HttpConstants;
 import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.error.HttpRemoteException;
+import io.github.atengk.boot.http.interceptor.TraceContextInterceptor;
 import io.github.atengk.boot.http.options.RequestOptions;
 import io.github.atengk.boot.http.options.RequestOptionsApplier;
 import org.springframework.core.ParameterizedTypeReference;
@@ -14,9 +15,11 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.util.Assert;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 
 import java.io.BufferedReader;
@@ -37,6 +40,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -56,6 +60,7 @@ public class HttpTemplate {
     private final RestClient streamingRestClient;
     private final HttpErrorHandler httpErrorHandler;
     private final Executor executor;
+    private final TraceContextInterceptor traceContextInterceptor;
 
     /**
      * 基于已有 RestClient 实例构建 HttpTemplate
@@ -74,7 +79,7 @@ public class HttpTemplate {
      * @param executor         受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
      */
     public HttpTemplate(RestClient restClient, HttpErrorHandler httpErrorHandler, Executor executor) {
-        this(restClient, restClient, httpErrorHandler, executor);
+        this(restClient, restClient, httpErrorHandler, executor, null);
     }
 
     /**
@@ -84,7 +89,7 @@ public class HttpTemplate {
      * @param restClientBuilder RestClient 构建器，不可为 null
      */
     public HttpTemplate(RestClient.Builder restClientBuilder) {
-        this(restClientBuilder, new HttpErrorHandler(), null);
+        this(restClientBuilder, new HttpErrorHandler(), null, null);
     }
 
     /**
@@ -95,9 +100,28 @@ public class HttpTemplate {
      * @param executor          受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
      */
     public HttpTemplate(RestClient.Builder restClientBuilder, HttpErrorHandler httpErrorHandler, Executor executor) {
+        this(restClientBuilder, httpErrorHandler, executor, null);
+    }
+
+    /**
+     * 基于 RestClient.Builder、HttpErrorHandler、受管异步执行器与链路治理拦截器构建 HttpTemplate
+     *
+     * @param restClientBuilder       RestClient 构建器，不可为 null
+     * @param httpErrorHandler        HTTP 统一异常响应处理器
+     * @param executor                受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
+     * @param traceContextInterceptor 四维上下文与非信任域头部治理拦截器（为 null 时尝试从 builder 自动探测）
+     */
+    public HttpTemplate(RestClient.Builder restClientBuilder,
+                        HttpErrorHandler httpErrorHandler,
+                        Executor executor,
+                        TraceContextInterceptor traceContextInterceptor) {
         Assert.notNull(restClientBuilder, "restClientBuilder 实例不可为 null");
         this.restClient = restClientBuilder.build();
-        this.streamingRestClient = restClientBuilder.clone()
+        RestClient.Builder streamingBuilder = restClientBuilder.clone();
+        this.traceContextInterceptor = traceContextInterceptor != null
+                ? traceContextInterceptor
+                : extractTraceContextInterceptor(streamingBuilder);
+        this.streamingRestClient = streamingBuilder
                 .requestInterceptors(List::clear)
                 .build();
         this.httpErrorHandler = httpErrorHandler != null ? httpErrorHandler : new HttpErrorHandler();
@@ -113,11 +137,29 @@ public class HttpTemplate {
      * @param executor            受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
      */
     public HttpTemplate(RestClient restClient, RestClient streamingRestClient, HttpErrorHandler httpErrorHandler, Executor executor) {
+        this(restClient, streamingRestClient, httpErrorHandler, executor, null);
+    }
+
+    /**
+     * 基于普通 RestClient、直通流式 RestClient、HttpErrorHandler、受管异步执行器与链路治理拦截器构建 HttpTemplate
+     *
+     * @param restClient              基础 RestClient 实例，不可为 null
+     * @param streamingRestClient     直通流式 RestClient 实例（旁路拦截器内存缓冲），若为 null 则退化使用 restClient
+     * @param httpErrorHandler        HTTP 统一异常响应处理器
+     * @param executor                受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
+     * @param traceContextInterceptor 四维上下文与非信任域头部治理拦截器（可为 null）
+     */
+    public HttpTemplate(RestClient restClient,
+                        RestClient streamingRestClient,
+                        HttpErrorHandler httpErrorHandler,
+                        Executor executor,
+                        TraceContextInterceptor traceContextInterceptor) {
         Assert.notNull(restClient, "restClient 实例不可为 null");
         this.restClient = restClient;
         this.streamingRestClient = streamingRestClient != null ? streamingRestClient : restClient;
         this.httpErrorHandler = httpErrorHandler != null ? httpErrorHandler : new HttpErrorHandler();
         this.executor = executor != null ? executor : ForkJoinPool.commonPool();
+        this.traceContextInterceptor = traceContextInterceptor;
     }
 
     // ==========================================
@@ -1203,12 +1245,31 @@ public class HttpTemplate {
         return executeWithOptions(options, () -> {
             URI uri = RequestOptionsApplier.resolveUri(url, options);
             RestClient.RequestBodySpec spec = this.streamingRestClient.post().uri(uri);
-            spec.header(HttpConstants.HEADER_STREAM_TRANSFER, "true");
             RequestOptionsApplier.apply(spec, options);
+            spec.httpRequest(clientRequest -> {
+                if (this.traceContextInterceptor != null) {
+                    this.traceContextInterceptor.applyContextHeaders(clientRequest.getHeaders(), clientRequest.getURI());
+                } else {
+                    TraceContextInterceptor.clearInternalHeaders(clientRequest.getHeaders());
+                }
+            });
             spec.contentType(MediaType.MULTIPART_FORM_DATA);
             spec.body(parts);
             return extractor.apply(spec);
         });
+    }
+
+    private static TraceContextInterceptor extractTraceContextInterceptor(RestClient.Builder builder) {
+        AtomicReference<TraceContextInterceptor> found = new AtomicReference<>();
+        builder.requestInterceptors(interceptors -> {
+            for (ClientHttpRequestInterceptor interceptor : interceptors) {
+                if (interceptor instanceof TraceContextInterceptor traceInterceptor) {
+                    found.compareAndSet(null, traceInterceptor);
+                    break;
+                }
+            }
+        });
+        return found.get();
     }
 
     /**
@@ -1223,11 +1284,16 @@ public class HttpTemplate {
     private <T> T executeWithOptions(RequestOptions options, Supplier<T> action) {
         Duration previousReadTimeout = HttpRequestContextHolder.getReadTimeout();
         Duration previousConnectTimeout = HttpRequestContextHolder.getConnectTimeout();
+        String previousClientName = HttpRequestContextHolder.getClientName();
         try {
+            if (options != null && StringUtils.hasText(options.getClientName())) {
+                HttpRequestContextHolder.setClientName(options.getClientName());
+            }
             return action.get();
         } finally {
             HttpRequestContextHolder.setReadTimeout(previousReadTimeout);
             HttpRequestContextHolder.setConnectTimeout(previousConnectTimeout);
+            HttpRequestContextHolder.setClientName(previousClientName);
         }
     }
 }
