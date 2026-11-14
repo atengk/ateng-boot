@@ -32,7 +32,6 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -41,6 +40,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -1176,11 +1176,9 @@ public class HttpTemplate {
                                      RequestOptions options,
                                      Object responseType,
                                      Function<RestClient.RequestHeadersSpec<?>, T> extractor) {
-        Assert.hasText(url, "请求 URL 不能为空");
         Assert.notNull(responseType, "responseType 不能为空");
-        return executeWithOptions(options, () -> {
-            URI uri = RequestOptionsApplier.resolveUri(url, options);
-            RestClient.RequestHeadersSpec<?> spec = this.restClient.method(method).uri(uri);
+        return executePrepared(this.restClient, url, options, (client, uri) -> {
+            RestClient.RequestHeadersSpec<?> spec = client.method(method).uri(uri);
             RequestOptionsApplier.apply(spec, options);
             return extractor.apply(spec);
         });
@@ -1192,11 +1190,9 @@ public class HttpTemplate {
                                   RequestOptions options,
                                   Object responseType,
                                   Function<RestClient.RequestBodySpec, T> extractor) {
-        Assert.hasText(url, "请求 URL 不能为空");
         Assert.notNull(responseType, "responseType 不能为空");
-        return executeWithOptions(options, () -> {
-            URI uri = RequestOptionsApplier.resolveUri(url, options);
-            RestClient.RequestBodySpec spec = this.restClient.method(method).uri(uri);
+        return executePrepared(this.restClient, url, options, (client, uri) -> {
+            RestClient.RequestBodySpec spec = client.method(method).uri(uri);
             RequestOptionsApplier.apply(spec, options);
             if (body != null) {
                 spec.body(body);
@@ -1210,11 +1206,9 @@ public class HttpTemplate {
                                   RequestOptions options,
                                   Object responseType,
                                   Function<RestClient.RequestBodySpec, T> extractor) {
-        Assert.hasText(url, "请求 URL 不能为空");
         Assert.notNull(responseType, "responseType 不能为空");
-        return executeWithOptions(options, () -> {
-            URI uri = RequestOptionsApplier.resolveUri(url, options);
-            RestClient.RequestBodySpec spec = this.restClient.post().uri(uri);
+        return executePrepared(this.restClient, url, options, (client, uri) -> {
+            RestClient.RequestBodySpec spec = client.post().uri(uri);
             RequestOptionsApplier.apply(spec, options);
             spec.contentType(MediaType.APPLICATION_FORM_URLENCODED);
             if (formData != null) {
@@ -1225,10 +1219,8 @@ public class HttpTemplate {
     }
 
     private HttpHeaders executeHeadersOnly(HttpMethod method, String url, RequestOptions options) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        return executeWithOptions(options, () -> {
-            URI uri = RequestOptionsApplier.resolveUri(url, options);
-            RestClient.RequestHeadersSpec<?> spec = this.restClient.method(method).uri(uri);
+        return executePrepared(this.restClient, url, options, (client, uri) -> {
+            RestClient.RequestHeadersSpec<?> spec = client.method(method).uri(uri);
             RequestOptionsApplier.apply(spec, options);
             return spec.retrieve().toBodilessEntity().getHeaders();
         });
@@ -1239,12 +1231,10 @@ public class HttpTemplate {
                                 RequestOptions options,
                                 Object responseType,
                                 Function<RestClient.RequestBodySpec, T> extractor) {
-        Assert.hasText(url, "请求 URL 不能为空");
         Assert.notNull(parts, "parts 不能为空");
         Assert.notNull(responseType, "responseType 不能为空");
-        return executeWithOptions(options, () -> {
-            URI uri = RequestOptionsApplier.resolveUri(url, options);
-            RestClient.RequestBodySpec spec = this.streamingRestClient.post().uri(uri);
+        return executePrepared(this.streamingRestClient, url, options, (client, uri) -> {
+            RestClient.RequestBodySpec spec = client.post().uri(uri);
             RequestOptionsApplier.apply(spec, options);
             spec.httpRequest(clientRequest -> {
                 if (this.traceContextInterceptor != null) {
@@ -1256,6 +1246,17 @@ public class HttpTemplate {
             spec.contentType(MediaType.MULTIPART_FORM_DATA);
             spec.body(parts);
             return extractor.apply(spec);
+        });
+    }
+
+    private <T> T executePrepared(RestClient client,
+                                  String url,
+                                  RequestOptions options,
+                                  BiFunction<RestClient, URI, T> action) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        return executeWithOptions(options, () -> {
+            URI uri = RequestOptionsApplier.resolveUri(url, options);
+            return action.apply(client, uri);
         });
     }
 
@@ -1282,18 +1283,14 @@ public class HttpTemplate {
      * @return 请求执行结果
      */
     private <T> T executeWithOptions(RequestOptions options, Supplier<T> action) {
-        Duration previousReadTimeout = HttpRequestContextHolder.getReadTimeout();
-        Duration previousConnectTimeout = HttpRequestContextHolder.getConnectTimeout();
-        String previousClientName = HttpRequestContextHolder.getClientName();
+        HttpRequestContextHolder.ContextSnapshot previous = HttpRequestContextHolder.capture();
         try {
             if (options != null && StringUtils.hasText(options.getClientName())) {
                 HttpRequestContextHolder.setClientName(options.getClientName());
             }
             return action.get();
         } finally {
-            HttpRequestContextHolder.setReadTimeout(previousReadTimeout);
-            HttpRequestContextHolder.setConnectTimeout(previousConnectTimeout);
-            HttpRequestContextHolder.setClientName(previousClientName);
+            HttpRequestContextHolder.restore(previous);
         }
     }
 }

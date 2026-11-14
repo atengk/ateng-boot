@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.http.service;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.http.error.HttpResultCode;
 import io.github.atengk.boot.http.options.RequestOptions;
@@ -272,9 +273,7 @@ public class HttpTemplateScenarioService {
      * @return 上传回执视图
      */
     public FileUploadVO uploadFile(MultipartFile file, String bizType) {
-        if (file == null || file.isEmpty()) {
-            throw new BusinessException(HttpResultCode.REMOTE_HTTP_CLIENT_ERROR, "上传文件不能为空");
-        }
+        BusinessAssert.isTrue(file != null && !file.isEmpty(), "上传文件不能为空");
         String resolvedBizType = StringUtils.hasText(bizType) ? bizType.trim() : "sample-attachment";
         String url = getBaseUrl() + "/mock/provider/files/upload";
         MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();

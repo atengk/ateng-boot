@@ -87,4 +87,28 @@ class HttpRequestContextHolderTest {
         assertEquals(Duration.ofSeconds(10), HttpRequestContextHolder.getReadTimeout());
         assertEquals(Duration.ofSeconds(4), HttpRequestContextHolder.getConnectTimeout());
     }
+
+    @Test
+    @DisplayName("测试 ContextSnapshot 捕获与精确还原（含 null 快照清理语义）")
+    void testCaptureAndRestoreSnapshot() {
+        HttpRequestContextHolder.setReadTimeout(Duration.ofSeconds(8));
+        HttpRequestContextHolder.setConnectTimeout(Duration.ofSeconds(3));
+        HttpRequestContextHolder.setClientName("payment-service");
+
+        HttpRequestContextHolder.ContextSnapshot outerSnapshot = HttpRequestContextHolder.capture();
+
+        HttpRequestContextHolder.setReadTimeout(Duration.ofMillis(200));
+        HttpRequestContextHolder.setConnectTimeout(null);
+        HttpRequestContextHolder.setClientName("order-service");
+
+        HttpRequestContextHolder.restore(outerSnapshot);
+        assertEquals(Duration.ofSeconds(8), HttpRequestContextHolder.getReadTimeout());
+        assertEquals(Duration.ofSeconds(3), HttpRequestContextHolder.getConnectTimeout());
+        assertEquals("payment-service", HttpRequestContextHolder.getClientName());
+
+        HttpRequestContextHolder.restore(null);
+        assertNull(HttpRequestContextHolder.getReadTimeout());
+        assertNull(HttpRequestContextHolder.getConnectTimeout());
+        assertNull(HttpRequestContextHolder.getClientName());
+    }
 }

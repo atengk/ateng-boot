@@ -95,4 +95,38 @@ public final class HttpRequestContextHolder {
         CONNECT_TIMEOUT_HOLDER.remove();
         CLIENT_NAME_HOLDER.remove();
     }
+
+    /**
+     * 捕获当前线程的单次 HTTP 动态上下文快照
+     *
+     * @return 不可变上下文快照
+     */
+    public static ContextSnapshot capture() {
+        return new ContextSnapshot(getReadTimeout(), getConnectTimeout(), getClientName());
+    }
+
+    /**
+     * 恢复当前线程的单次 HTTP 动态上下文至指定快照状态
+     *
+     * @param snapshot 待恢复的上下文快照（为 null 时等价清理全部槽位）
+     */
+    public static void restore(ContextSnapshot snapshot) {
+        if (snapshot == null) {
+            clear();
+            return;
+        }
+        setReadTimeout(snapshot.readTimeout());
+        setConnectTimeout(snapshot.connectTimeout());
+        setClientName(snapshot.clientName());
+    }
+
+    /**
+     * 单次 HTTP 请求动态上下文不可变快照
+     *
+     * @param readTimeout    读取超时快照
+     * @param connectTimeout 建联超时快照
+     * @param clientName     逻辑客户端名称快照
+     */
+    public record ContextSnapshot(Duration readTimeout, Duration connectTimeout, String clientName) {
+    }
 }

@@ -21,8 +21,8 @@
 
 ## 2. 运行环境与双模切换
 
-- **默认/CI 离线回环模式（`@Profile("!local")`）**：内置离线回环仿真服务端 `MockServerProviderController`（挂载于 `/mock/provider/*`，已标注 `@Profile("!local")`）。各声明式客户端与 `HttpTemplate` 通过真实网络 Socket 环回请求本机端口，全链路穿越 Apache HttpClient 5 池化连接池、四维上下文透传拦截器、脱敏日志拦截器、重试拦截器与统一异常处理器，实现 100% 离线自洽；集成测试统一依托动态随机端口（`RANDOM_PORT` 与 `TestSocketUtils.findAvailableTcpPort()`）执行回环自验，彻底消除固定 `8080` 端口冲突；
-- **Local 真实联调模式（`--spring.profiles.active=local`）**：复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml`（已在 `.gitignore` 中忽略）并填入真实目标服务地址后，使用 `local` Profile 启动；此时 `MockServerProviderController` 自动静默退出加载，请求直接路由至配置的真实服务端点。
+- **默认/CI 离线回环模式（`@Profile("!local")`）**：内置离线回环仿真服务端 `MockServerProviderController`（挂载于 `/mock/provider/*`，已标注 `@Profile("!local")`）。各声明式客户端与 `HttpTemplate` 通过真实网络 Socket 环回请求本机端口，全链路穿越 Apache HttpClient 5 池化连接池、四维上下文透传拦截器、脱敏日志拦截器、重试拦截器与统一异常处理器，实现 100% 离线自洽；集成测试统一依托 `TestSocketUtils.findAvailableTcpPort()` 动态分配端口（`DEFINED_PORT`）与 `RANDOM_PORT`（`MockServerLocalProfileTest`）执行回环自验，彻底消除固定 `8080` 端口冲突；
+- **Local 真实联调模式（`--spring.profiles.active=local`）**：复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml`（已在 `.gitignore` 中忽略）并填入真实目标服务地址后，使用 `local` Profile 启动；此时 `MockServerProviderController` 自动静默退出加载，请求直接路由至配置的真实服务端点。当前 CI 与本地离线自验对真实外部服务联调标记为 `[豁免：无可用环境]`（已通过 `@ActiveProfiles("local")` 桩屏蔽单测验证切换机制）。
 
 ---
 
