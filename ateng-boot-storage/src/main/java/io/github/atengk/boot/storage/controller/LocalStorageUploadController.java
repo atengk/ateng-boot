@@ -3,7 +3,6 @@ package io.github.atengk.boot.storage.controller;
 import io.github.atengk.boot.storage.driver.LocalDriver;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.exception.StorageException;
-import io.github.atengk.boot.storage.exception.StorageResultCode;
 import io.github.atengk.boot.storage.factory.StorageDriverFactory;
 import io.github.atengk.boot.storage.guard.StorageGuard;
 import io.github.atengk.boot.storage.properties.StorageProperties;
@@ -116,14 +115,15 @@ public class LocalStorageUploadController {
         }
 
         // 3. 动态定位目标 LocalDriver 驱动实例
-        LocalDriver localDriver = resolveLocalDriver(source);
+        StorageDriverFactory factory = driverFactoryProvider != null ? driverFactoryProvider.getIfAvailable() : null;
+        LocalDriver localDriver = LocalStorageEndpointSupport.resolveLocalDriver(factory, defaultDriver, source);
         if (localDriver == null) {
             log.warn("未找到对应的本地存储驱动: source={}", source);
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
         }
 
         // 4. 签名合法性防篡改校验（签名无效返回 403）
-        String secretKey = localDriver.getSecretKey();
+        String secretKey = LocalStorageEndpointSupport.resolveSecretKey(localDriver, properties);
         boolean isChunked = (uploadId != null && !uploadId.isBlank() && chunkIndex > 0);
         String signPayload;
         if (isChunked) {
@@ -197,33 +197,6 @@ public class LocalStorageUploadController {
             log.error("预签名直传文件流写入异常: path={}", cleanPath, e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
-    }
-
-    /**
-     * 解析当前请求绑定的本地存储驱动
-     */
-    private LocalDriver resolveLocalDriver(String source) {
-        if (source != null && !source.isBlank()) {
-            if (driverFactoryProvider != null) {
-                StorageDriverFactory factory = driverFactoryProvider.getIfAvailable();
-                if (factory != null) {
-                    try {
-                        StorageDriver driver = factory.getDriver(source.trim());
-                        if (driver instanceof LocalDriver ld) {
-                            return ld;
-                        }
-                    } catch (StorageException e) {
-                        log.warn("定位命名存储源失败: source={}, cause={}", source, e.getMessage());
-                        return null;
-                    }
-                }
-            }
-            return null;
-        }
-        if (defaultDriver instanceof LocalDriver ld) {
-            return ld;
-        }
-        return null;
     }
 
     /**

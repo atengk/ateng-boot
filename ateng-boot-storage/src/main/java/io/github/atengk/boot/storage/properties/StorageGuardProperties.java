@@ -30,4 +30,9 @@ public class StorageGuardProperties {
      * 允许上传的文件扩展名白名单集合（空集合表示不限制白名单）
      */
     private Set<String> allowedExtensions = Collections.emptySet();
+
+    /**
+     * 禁止上传的文件扩展名黑名单集合（优先于白名单一票否决，与内置高危可执行后缀并集生效）
+     */
+    private Set<String> disallowedExtensions = Collections.emptySet();
 }

@@ -227,6 +227,29 @@ class StorageGuardTest {
         assertThat(readBack.length).isEqualTo(original.length);
     }
 
+    @Test
+    @DisplayName("测试黑名单拦截：disallowedExtensions 优先于白名单一票否决并支持带点与大小写归一化")
+    void testDisallowedExtensionsBlacklistVetoesWhitelist() {
+        StorageGuardProperties props = new StorageGuardProperties();
+        props.setEnabled(true);
+        // 即使白名单包含了 jsp，黑名单（含带点格式与大写混写）也必须一票否决
+        props.setAllowedExtensions(Set.of("png", "jsp", "txt"));
+        props.setDisallowedExtensions(Set.of(".jsp", "BAT", "php"));
+        StorageGuard guard = new StorageGuard(props);
+
+        assertThatThrownBy(() -> guard.inspect("webshell/cmd.JSP", new ByteArrayInputStream("shell".getBytes(StandardCharsets.UTF_8)), null))
+                .isInstanceOf(StorageException.class)
+                .satisfies(e -> assertThat(((StorageException) e).getResultCode()).isEqualTo(StorageResultCode.STORAGE_FILE_NOT_ALLOWED));
+
+        assertThatThrownBy(() -> guard.validatePathAndExtension("scripts/run.bat"))
+                .isInstanceOf(StorageException.class)
+                .satisfies(e -> assertThat(((StorageException) e).getResultCode()).isEqualTo(StorageResultCode.STORAGE_FILE_NOT_ALLOWED));
+
+        // 正常白名单文件放行
+        StorageGuard.GuardResult result = guard.inspect("avatar.png", new ByteArrayInputStream(PNG_HEADER), null);
+        assertThat(result.getDetectedType()).isEqualTo(StorageFileType.PNG);
+    }
+
     private String md5Hex(byte[] data) throws Exception {
         MessageDigest md = MessageDigest.getInstance("MD5");
         return HexFormat.of().formatHex(md.digest(data));

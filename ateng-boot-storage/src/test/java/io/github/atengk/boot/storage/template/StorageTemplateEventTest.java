@@ -12,6 +12,7 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
 
 import java.io.ByteArrayInputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
@@ -132,5 +133,25 @@ class StorageTemplateEventTest {
             isolatedTemplate.uploadString("isolated/doc.txt", "No publisher");
             isolatedTemplate.delete("isolated/doc.txt");
         });
+    }
+
+    @Test
+    @DisplayName("通过 getResource().getOutputStream() 写入并在多次 close() 时仅发布一次 StorageUploadedEvent")
+    void testGetResourceOutputStreamPublishesSingleEvent() throws Exception {
+        byte[] data = "Resource Event Content".getBytes(StandardCharsets.UTF_8);
+        try (OutputStream out = template.getResource("res/event.txt").getOutputStream()) {
+            out.write(data);
+            out.close();
+            out.close();
+        }
+
+        ArgumentCaptor<StorageEvent> captor = ArgumentCaptor.forClass(StorageEvent.class);
+        verify(eventPublisher, times(1)).publishEvent(captor.capture());
+
+        StorageEvent captured = captor.getValue();
+        assertTrue(captured instanceof StorageUploadedEvent);
+        StorageUploadedEvent uploadedEvent = (StorageUploadedEvent) captured;
+        assertEquals("res/event.txt", uploadedEvent.getPath());
+        assertEquals((long) data.length, uploadedEvent.getSize());
     }
 }

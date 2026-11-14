@@ -1,5 +1,6 @@
 package io.github.atengk.boot.storage.driver;
 
+import io.github.atengk.boot.core.util.BatchSliceUtil;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
@@ -11,6 +12,7 @@ import io.github.atengk.boot.storage.properties.S3StorageProperties;
 import io.github.atengk.boot.storage.util.StorageSecurityUtil;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.unit.DataSize;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.awscore.exception.AwsServiceException;
@@ -70,6 +72,7 @@ import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignReques
 import software.amazon.awssdk.services.s3.presigner.model.UploadPartPresignRequest;
 import io.github.atengk.boot.storage.util.S3ChunkTokenUtil;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -102,6 +105,11 @@ public class S3Driver implements StorageDriver {
      * 除最后一个分片外，S3 协议严格限制每一片至少 5MB
      */
     public static final int MIN_MULTIPART_PART_SIZE = 5 * 1024 * 1024;
+
+    /**
+     * AWS S3 批量删除请求单批允许的最大对象键数量上限 (1000)
+     */
+    public static final int MAX_DELETE_BATCH_SIZE = 1000;
 
     /**
      * S3 客户端操作实例
@@ -152,6 +160,11 @@ public class S3Driver implements StorageDriver {
      * 默认服务端加密算法（如 AES256, aws:kms）
      */
     private final String defaultServerSideEncryption;
+
+    /**
+     * 单分片上传允许的最大字节上限
+     */
+    private final long maxChunkSizeBytes;
 
     /**
      * 基础构造函数（仅 S3Client）
@@ -231,6 +244,28 @@ public class S3Driver implements StorageDriver {
     public S3Driver(S3Client s3Client, S3Presigner s3Presigner, String bucket, String domain, String secretKey,
                     String endpoint, boolean pathStyle, boolean autoCreateBucket,
                     String defaultStorageClass, String defaultServerSideEncryption) {
+        this(s3Client, s3Presigner, bucket, domain, secretKey, endpoint, pathStyle, autoCreateBucket,
+                defaultStorageClass, defaultServerSideEncryption, null);
+    }
+
+    /**
+     * 高级企业级全参构造函数（含分片上传单分片上限控制）
+     *
+     * @param s3Client                    S3 客户端
+     * @param s3Presigner                 S3 预签名器
+     * @param bucket                      存储桶名称
+     * @param domain                      自定义访问域名或 CDN 加速域名
+     * @param secretKey                   HMAC 签名密钥（为空时自动生成安全随机密钥保底）
+     * @param endpoint                    S3 物理服务端点
+     * @param pathStyle                   是否启用 Path-Style 寻址
+     * @param autoCreateBucket            存储桶不存在时是否自愈建桶
+     * @param defaultStorageClass         默认存储类别
+     * @param defaultServerSideEncryption 默认服务端加密算法
+     * @param maxChunkSize                单个分片允许的最大容量上限（为空时回退 100MB）
+     */
+    public S3Driver(S3Client s3Client, S3Presigner s3Presigner, String bucket, String domain, String secretKey,
+                    String endpoint, boolean pathStyle, boolean autoCreateBucket,
+                    String defaultStorageClass, String defaultServerSideEncryption, DataSize maxChunkSize) {
         if (s3Client == null) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "S3Client 不能为空");
         }
@@ -249,6 +284,7 @@ public class S3Driver implements StorageDriver {
         this.autoCreateBucket = autoCreateBucket;
         this.defaultStorageClass = defaultStorageClass;
         this.defaultServerSideEncryption = defaultServerSideEncryption;
+        this.maxChunkSizeBytes = StorageSecurityUtil.resolveMaxChunkSizeBytes(maxChunkSize);
     }
 
     /**
@@ -904,11 +940,7 @@ public class S3Driver implements StorageDriver {
             return true;
         }
         try {
-            DeleteObjectsRequest deleteRequest = DeleteObjectsRequest.builder()
-                    .bucket(this.bucket)
-                    .delete(Delete.builder().objects(toDelete).quiet(true).build())
-                    .build();
-            this.s3Client.deleteObjects(deleteRequest);
+            BatchSliceUtil.forEachSlice(toDelete, MAX_DELETE_BATCH_SIZE, this::flushDeleteBatch);
             return true;
         } catch (Exception e) {
             throw translateException(e, String.join(",", paths), "批量删除 S3 对象失败");
@@ -919,7 +951,7 @@ public class S3Driver implements StorageDriver {
     public boolean deletePrefix(String prefix) {
         String cleanPrefix = StorageSecurityUtil.validatePrefixForDeletion(prefix);
         try {
-            List<ObjectIdentifier> batch = new ArrayList<>(1000);
+            List<ObjectIdentifier> batch = new ArrayList<>(MAX_DELETE_BATCH_SIZE);
             ListObjectsV2Request listReq = ListObjectsV2Request.builder()
                     .bucket(this.bucket)
                     .prefix(cleanPrefix)
@@ -1427,6 +1459,7 @@ public class S3Driver implements StorageDriver {
         if (chunkIndex < 1) {
             throw new StorageException(StorageResultCode.STORAGE_CHUNK_INVALID, "分片索引必须 >= 1 (1-based)，当前为: " + chunkIndex);
         }
+        StorageSecurityUtil.validateChunkSize(size, this.maxChunkSizeBytes);
         S3ChunkTokenUtil.S3ChunkToken token = S3ChunkTokenUtil.decode(uploadId, this.secretKey);
         String key = token.path();
         String rawUploadId = token.rawUploadId();
@@ -1435,8 +1468,9 @@ public class S3Driver implements StorageDriver {
             if (size >= 0) {
                 body = RequestBody.fromInputStream(in, size);
             } else {
-                byte[] bytes = in.readAllBytes();
-                body = RequestBody.fromBytes(bytes);
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                StorageSecurityUtil.copyWithMaxBytes(in, baos, this.maxChunkSizeBytes);
+                body = RequestBody.fromBytes(baos.toByteArray());
             }
             UploadPartRequest partReq = UploadPartRequest.builder()
                     .bucket(this.bucket)
@@ -1445,6 +1479,8 @@ public class S3Driver implements StorageDriver {
                     .partNumber(chunkIndex)
                     .build();
             this.s3Client.uploadPart(partReq, body);
+        } catch (StorageException e) {
+            throw e;
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "读取分片数据输入流异常: " + uploadId, e);
         } catch (Exception e) {

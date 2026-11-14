@@ -292,7 +292,11 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
 
     @Override
     public StorageResource getResource(String path) {
-        return new StorageResource(path, getDriver());
+        StorageDriver driver = getDriver();
+        String sourceKey = getCurrentSourceKey();
+        return new StorageResource(path, driver, this.storageGuard, metadata ->
+                publishEventSafely(new StorageUploadedEvent(
+                        this, sourceKey, metadata.getPath(), metadata.getSize(), metadata.getContentType())));
     }
 
     @Override

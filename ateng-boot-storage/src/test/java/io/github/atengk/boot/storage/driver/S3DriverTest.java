@@ -239,6 +239,27 @@ class S3DriverTest {
     }
 
     @Test
+    @DisplayName("批量删除超过 1000 个对象时按 1000 分片分批提交 S3 DeleteObjectsRequest")
+    void testDeleteBatchSlicesBy1000() {
+        List<String> keys = java.util.stream.IntStream.range(0, 2500)
+                .mapToObj(i -> "batch/item-" + i + ".txt")
+                .toList();
+
+        assertTrue(s3Driver.deleteBatch(keys));
+
+        ArgumentCaptor<DeleteObjectsRequest> captor = ArgumentCaptor.forClass(DeleteObjectsRequest.class);
+        verify(s3Client, org.mockito.Mockito.times(3)).deleteObjects(captor.capture());
+
+        List<DeleteObjectsRequest> requests = captor.getAllValues();
+        assertEquals(3, requests.size());
+        assertEquals(1000, requests.get(0).delete().objects().size());
+        assertEquals(1000, requests.get(1).delete().objects().size());
+        assertEquals(500, requests.get(2).delete().objects().size());
+        assertEquals("batch/item-0.txt", requests.get(0).delete().objects().get(0).key());
+        assertEquals("batch/item-2499.txt", requests.get(2).delete().objects().get(499).key());
+    }
+
+    @Test
     @DisplayName("生成 S3 预签名下载外链并应用 CDN 自定义域名")
     void testGetPresignedUrl() throws Exception {
         String path = "media/video.mp4";
@@ -867,5 +888,26 @@ class S3DriverTest {
 
         s3Driver.ping();
         verify(s3Client).headBucket(any(HeadBucketRequest.class));
+    }
+
+    @Test
+    @DisplayName("S3Driver 未知长度或超限分片流超过 maxChunkSize 时立即中断且不发送 uploadPart")
+    void testUploadChunkExceedsMaxChunkSize() {
+        S3Driver boundedS3 = new S3Driver(
+                s3Client, s3Presigner, "test-bucket", null, "secret-key-123456",
+                null, true, false, null, null,
+                org.springframework.util.unit.DataSize.ofBytes(1024));
+        String token = io.github.atengk.boot.storage.util.S3ChunkTokenUtil.encode("big/overlimit.bin", "upload-id-1", "secret-key-123456");
+        byte[] oversized = new byte[2048];
+
+        StorageException ex1 = assertThrows(StorageException.class, () ->
+                boundedS3.uploadChunk(token, 1, new ByteArrayInputStream(oversized), -1));
+        assertEquals(StorageResultCode.STORAGE_SIZE_EXCEEDED, ex1.getResultCode());
+
+        StorageException ex2 = assertThrows(StorageException.class, () ->
+                boundedS3.uploadChunk(token, 1, new ByteArrayInputStream(oversized), 2048));
+        assertEquals(StorageResultCode.STORAGE_SIZE_EXCEEDED, ex2.getResultCode());
+
+        verify(s3Client, org.mockito.Mockito.never()).uploadPart(any(software.amazon.awssdk.services.s3.model.UploadPartRequest.class), any(RequestBody.class));
     }
 }

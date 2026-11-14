@@ -13,6 +13,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -146,6 +147,35 @@ class StorageTemplateGuardTest {
         StorageObject obj = template.upload("files/script.txt", new ByteArrayInputStream("hello world".getBytes(StandardCharsets.UTF_8)));
         assertThat(obj).isNotNull();
         assertThat(template.exists("files/script.txt")).isTrue();
+    }
+
+    @Test
+    @DisplayName("通过 getResource().getOutputStream() 写入受 StorageGuard 前置扩展名与魔数守卫保护")
+    void testGetResourceOutputStreamEnforcesGuard() throws Exception {
+        StorageGuardProperties props = new StorageGuardProperties();
+        props.setEnabled(true);
+        props.setStrictMagicCheck(true);
+        props.setDisallowedExtensions(Set.of("bat"));
+        template.setStorageGuard(new StorageGuard(props));
+
+        // 1. 黑名单扩展名在 getOutputStream 阶段前置快速失败
+        assertThatThrownBy(() -> template.getResource("scripts/deploy.bat").getOutputStream())
+                .isInstanceOf(StorageException.class)
+                .satisfies(e -> assertThat(((StorageException) e).getResultCode()).isEqualTo(StorageResultCode.STORAGE_FILE_NOT_ALLOWED));
+
+        // 2. 伪装恶意文件在 close 阶段被魔数拦截且不写入存储
+        OutputStream fakeOut = template.getResource("images/disguised.png").getOutputStream();
+        fakeOut.write(EXE_HEADER);
+        assertThatThrownBy(fakeOut::close)
+                .isInstanceOf(StorageException.class)
+                .satisfies(e -> assertThat(((StorageException) e).getResultCode()).isEqualTo(StorageResultCode.STORAGE_FILE_TYPE_MISMATCH));
+        assertThat(template.exists("images/disguised.png")).isFalse();
+
+        // 3. 合法文件写入并关闭成功
+        try (OutputStream validOut = template.getResource("images/valid.png").getOutputStream()) {
+            validOut.write(PNG_HEADER);
+        }
+        assertThat(template.exists("images/valid.png")).isTrue();
     }
 
     private String md5Hex(byte[] data) throws Exception {

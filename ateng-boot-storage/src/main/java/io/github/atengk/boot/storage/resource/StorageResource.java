@@ -3,7 +3,9 @@ package io.github.atengk.boot.storage.resource;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.exception.StorageException;
+import io.github.atengk.boot.storage.guard.StorageGuard;
 import io.github.atengk.boot.storage.model.StorageObject;
+import io.github.atengk.boot.storage.util.StorageSecurityUtil;
 import lombok.Getter;
 import org.springframework.core.io.AbstractResource;
 import org.springframework.core.io.WritableResource;
@@ -15,6 +17,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * Spring 原生资源契约存储适配器
@@ -31,6 +35,10 @@ public class StorageResource extends AbstractResource implements WritableResourc
 
     private final StorageDriver driver;
 
+    private final StorageGuard storageGuard;
+
+    private final Consumer<StorageObject> uploadedCallback;
+
     private StorageObject cachedMetadata;
 
     /**
@@ -40,14 +48,7 @@ public class StorageResource extends AbstractResource implements WritableResourc
      * @param driver 绑定的底层存储驱动
      */
     public StorageResource(String path, StorageDriver driver) {
-        if (path == null || path.isBlank()) {
-            throw new IllegalArgumentException("Resource path must not be null or blank");
-        }
-        if (driver == null) {
-            throw new IllegalArgumentException("StorageDriver must not be null");
-        }
-        this.path = path;
-        this.driver = driver;
+        this(path, driver, null, null, null);
     }
 
     /**
@@ -58,8 +59,40 @@ public class StorageResource extends AbstractResource implements WritableResourc
      * @param metadata 预加载的对象元数据
      */
     public StorageResource(String path, StorageDriver driver, StorageObject metadata) {
-        this(path, driver);
+        this(path, driver, metadata, null, null);
+    }
+
+    /**
+     * 携带安全守卫与上传完成回调构造存储资源适配器
+     *
+     * @param path             对象相对路径
+     * @param driver           绑定的底层存储驱动
+     * @param storageGuard     可选文件安全守卫
+     * @param uploadedCallback 可选上传成功回调（用于发布事件）
+     */
+    public StorageResource(String path,
+                           StorageDriver driver,
+                           StorageGuard storageGuard,
+                           Consumer<StorageObject> uploadedCallback) {
+        this(path, driver, null, storageGuard, uploadedCallback);
+    }
+
+    private StorageResource(String path,
+                            StorageDriver driver,
+                            StorageObject metadata,
+                            StorageGuard storageGuard,
+                            Consumer<StorageObject> uploadedCallback) {
+        if (path == null || path.isBlank()) {
+            throw new IllegalArgumentException("Resource path must not be null or blank");
+        }
+        if (driver == null) {
+            throw new IllegalArgumentException("StorageDriver must not be null");
+        }
+        this.path = path;
+        this.driver = driver;
         this.cachedMetadata = metadata;
+        this.storageGuard = storageGuard;
+        this.uploadedCallback = uploadedCallback;
     }
 
     @Override
@@ -88,15 +121,49 @@ public class StorageResource extends AbstractResource implements WritableResourc
 
     @Override
     public OutputStream getOutputStream() throws IOException {
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        if (storageGuard != null && storageGuard.isEnabled()) {
+            storageGuard.validatePathAndExtension(cleanPath);
+        }
         Path tempFile = Files.createTempFile("ateng-storage-resource-", ".tmp");
-        OutputStream fileOut = Files.newOutputStream(tempFile);
+        OutputStream fileOut;
+        try {
+            fileOut = Files.newOutputStream(tempFile);
+        } catch (Throwable ex) {
+            Files.deleteIfExists(tempFile);
+            throw ex;
+        }
         return new FilterOutputStream(fileOut) {
+            private final AtomicBoolean closed = new AtomicBoolean(false);
+
+            @Override
+            public void write(byte[] b, int off, int len) throws IOException {
+                out.write(b, off, len);
+            }
+
             @Override
             public void close() throws IOException {
-                super.close();
-                try (InputStream in = Files.newInputStream(tempFile)) {
+                if (!closed.compareAndSet(false, true)) {
+                    return;
+                }
+                try {
+                    super.close();
                     long size = Files.size(tempFile);
-                    cachedMetadata = driver.upload(path, in, null, size);
+                    try (InputStream rawIn = Files.newInputStream(tempFile)) {
+                        InputStream effectiveStream = rawIn;
+                        String contentType = null;
+                        if (storageGuard != null && storageGuard.isEnabled()) {
+                            StorageGuard.GuardResult guardResult = storageGuard.inspect(cleanPath, rawIn, null);
+                            effectiveStream = guardResult.getGuardedStream();
+                            contentType = guardResult.getDetectedMimeType();
+                        }
+                        try (InputStream uploadStream = effectiveStream) {
+                            cachedMetadata = driver.upload(cleanPath, uploadStream, contentType, size);
+                        }
+                    }
+                    if (cachedMetadata != null && uploadedCallback != null) {
+                        uploadedCallback.accept(cachedMetadata);
+                    }
                 } finally {
                     Files.deleteIfExists(tempFile);
                 }

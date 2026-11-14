@@ -7,13 +7,18 @@ import io.github.atengk.boot.storage.properties.StorageProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.scheduling.TaskScheduler;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.ScheduledFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -112,5 +117,31 @@ class StorageChunkCleanerTest {
         } finally {
             cleaner.destroy();
         }
+    }
+
+    @Test
+    @DisplayName("优先复用外部注入的 Spring TaskScheduler 并于销毁时取消调度句柄")
+    @SuppressWarnings("unchecked")
+    void testSchedulesWithProvidedTaskSchedulerAndCancelsOnDestroy() {
+        StorageProperties properties = new StorageProperties();
+        ChunkCleanerProperties cleanerProps = new ChunkCleanerProperties();
+        cleanerProps.setInterval(Duration.ofMinutes(30));
+        properties.setChunkCleaner(cleanerProps);
+
+        ObjectProvider<StorageDriverFactory> factoryProvider = mock(ObjectProvider.class);
+        ObjectProvider<StorageDriver> defaultDriverProvider = mock(ObjectProvider.class);
+
+        TaskScheduler taskScheduler = mock(TaskScheduler.class);
+        ScheduledFuture<?> future = mock(ScheduledFuture.class);
+        doReturn(future).when(taskScheduler).scheduleWithFixedDelay(any(Runnable.class), any(Instant.class), eq(Duration.ofMinutes(30)));
+
+        ObjectProvider<TaskScheduler> schedulerProvider = mock(ObjectProvider.class);
+        when(schedulerProvider.getIfAvailable()).thenReturn(taskScheduler);
+
+        StorageChunkCleaner cleaner = new StorageChunkCleaner(properties, factoryProvider, defaultDriverProvider, schedulerProvider);
+        verify(taskScheduler).scheduleWithFixedDelay(any(Runnable.class), any(Instant.class), eq(Duration.ofMinutes(30)));
+
+        cleaner.destroy();
+        verify(future).cancel(false);
     }
 }

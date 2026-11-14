@@ -1,6 +1,9 @@
 package io.github.atengk.boot.storage.autoconfigure;
 
+import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
+import io.github.atengk.boot.core.context.AsyncContextSnapshotProvider;
 import io.github.atengk.boot.storage.aspect.StorageAspect;
+import io.github.atengk.boot.storage.context.StorageContextHolder;
 import io.github.atengk.boot.storage.context.StorageTaskDecorator;
 import io.github.atengk.boot.storage.controller.LocalStorageDownloadController;
 import io.github.atengk.boot.storage.controller.LocalStorageUploadController;
@@ -17,14 +20,17 @@ import org.aspectj.lang.annotation.Aspect;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.TaskDecorator;
+import org.springframework.scheduling.TaskScheduler;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
@@ -38,6 +44,7 @@ import java.util.Map;
  * @since 2026-10-17
  */
 @AutoConfiguration
+@AutoConfigureBefore(AtengAsyncAutoConfiguration.class)
 @ConditionalOnClass(StorageDriver.class)
 @ConditionalOnProperty(prefix = "ateng.boot.storage", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(StorageProperties.class)
@@ -63,7 +70,8 @@ public class AtengStorageAutoConfiguration {
         Map<String, StorageSourceProperties> sources = properties.getSources();
         if (sources != null && !sources.isEmpty()) {
             for (Map.Entry<String, StorageSourceProperties> entry : sources.entrySet()) {
-                factory.registerDriver(entry.getKey(), StorageDriverFactory.createDriver(entry.getKey(), entry.getValue()));
+                factory.registerDriver(entry.getKey(),
+                        StorageDriverFactory.createDriver(entry.getKey(), entry.getValue(), properties.getMaxChunkSize()));
             }
         }
 
@@ -73,7 +81,8 @@ public class AtengStorageAutoConfiguration {
             fallbackSource.setType(properties.getType());
             fallbackSource.setLocal(properties.getLocal());
             fallbackSource.setS3(properties.getS3());
-            factory.registerDriver(primary, StorageDriverFactory.createDriver(fallbackSource));
+            factory.registerDriver(primary,
+                    StorageDriverFactory.createDriver(null, fallbackSource, properties.getMaxChunkSize()));
         }
 
         return factory;
@@ -146,6 +155,19 @@ public class AtengStorageAutoConfiguration {
     }
 
     /**
+     * 存储源异步上下文快照提供者 Bean 装配
+     * 接入 Core 模块 {@link AtengAsyncAutoConfiguration}，实现五维异步上下文自动透传与工作线程现场清理
+     *
+     * @return AsyncContextSnapshotProvider 存储源快照提供者实例
+     */
+    @Bean
+    @ConditionalOnClass(AsyncContextSnapshotProvider.class)
+    @ConditionalOnMissingBean(StorageContextHolder.StorageAsyncContextSnapshotProvider.class)
+    public AsyncContextSnapshotProvider storageAsyncContextSnapshotProvider() {
+        return new StorageContextHolder.StorageAsyncContextSnapshotProvider();
+    }
+
+    /**
      * 孤儿分片碎片生命周期治理与定时清理守护组件 Bean 装配
      * 针对客户端中断上传留存的孤儿碎片，默认开启受管后台定时扫描
      *
@@ -160,8 +182,10 @@ public class AtengStorageAutoConfiguration {
     public io.github.atengk.boot.storage.cleaner.StorageChunkCleaner storageChunkCleaner(
             StorageProperties properties,
             ObjectProvider<StorageDriverFactory> driverFactoryProvider,
-            ObjectProvider<StorageDriver> defaultDriverProvider) {
-        return new io.github.atengk.boot.storage.cleaner.StorageChunkCleaner(properties, driverFactoryProvider, defaultDriverProvider);
+            ObjectProvider<StorageDriver> defaultDriverProvider,
+            ObjectProvider<TaskScheduler> taskSchedulerProvider) {
+        return new io.github.atengk.boot.storage.cleaner.StorageChunkCleaner(
+                properties, driverFactoryProvider, defaultDriverProvider, taskSchedulerProvider);
     }
 
     /**
@@ -188,43 +212,48 @@ public class AtengStorageAutoConfiguration {
     }
 
     /**
-     * 本地存储预签名防盗链下载端点 Bean 装配（仅在 Servlet Web 环境下且类型为 local 时激活）
+     * 本地存储预签名防盗链下载端点 Bean 装配（在 Servlet Web 环境下且存在 local 源、且 endpoint-enabled=true 时激活）
      *
-     * @param properties    存储配置属性
-     * @param storageDriver 活动存储驱动
+     * @param properties            存储配置属性
+     * @param driverFactoryProvider 多存储源工厂提供者
+     * @param defaultDriverProvider 默认存储驱动提供者（可选兜底）
      * @return LocalStorageDownloadController 端点控制器
      */
     @Bean
     @ConditionalOnMissingBean(LocalStorageDownloadController.class)
     @ConditionalOnClass(name = "org.springframework.web.servlet.DispatcherServlet")
     @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
-    @ConditionalOnProperty(prefix = "ateng.boot.storage", name = "type", havingValue = "local", matchIfMissing = true)
+    @ConditionalOnProperty(prefix = "ateng.boot.storage.local", name = "endpoint-enabled", havingValue = "true", matchIfMissing = true)
+    @Conditional(LocalStorageEndpointCondition.class)
     public LocalStorageDownloadController localStorageDownloadController(
             StorageProperties properties,
-            StorageDriver storageDriver) {
-        return new LocalStorageDownloadController(properties, storageDriver);
+            ObjectProvider<StorageDriverFactory> driverFactoryProvider,
+            ObjectProvider<StorageDriver> defaultDriverProvider) {
+        return new LocalStorageDownloadController(properties, driverFactoryProvider, defaultDriverProvider);
     }
 
     /**
-     * 本地存储预签名直传写入端点 Bean 装配（仅在 Servlet Web 环境下且类型为 local 时激活）
+     * 本地存储预签名直传写入端点 Bean 装配（在 Servlet Web 环境下且存在 local 源、且 endpoint-enabled=true 时激活）
      *
-     * @param properties 存储配置属性
-     * @param storageDriver 活动存储驱动
+     * @param properties            存储配置属性
+     * @param defaultDriverProvider 默认活动存储驱动提供者
      * @param driverFactoryProvider 多存储源工厂提供者
-     * @param storageGuardProvider 安全防卫嗅探器提供者
+     * @param storageGuardProvider  安全防卫嗅探器提供者
      * @return LocalStorageUploadController 端点控制器
      */
     @Bean
     @ConditionalOnMissingBean(LocalStorageUploadController.class)
     @ConditionalOnClass(name = "org.springframework.web.servlet.DispatcherServlet")
     @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
-    @ConditionalOnProperty(prefix = "ateng.boot.storage", name = "type", havingValue = "local", matchIfMissing = true)
+    @ConditionalOnProperty(prefix = "ateng.boot.storage.local", name = "endpoint-enabled", havingValue = "true", matchIfMissing = true)
+    @Conditional(LocalStorageEndpointCondition.class)
     public LocalStorageUploadController localStorageUploadController(
             StorageProperties properties,
-            StorageDriver storageDriver,
+            ObjectProvider<StorageDriver> defaultDriverProvider,
             ObjectProvider<StorageDriverFactory> driverFactoryProvider,
             ObjectProvider<StorageGuard> storageGuardProvider) {
-        return new LocalStorageUploadController(properties, storageDriver, driverFactoryProvider, storageGuardProvider);
+        return new LocalStorageUploadController(
+                properties, defaultDriverProvider.getIfAvailable(), driverFactoryProvider, storageGuardProvider);
     }
 
     /**

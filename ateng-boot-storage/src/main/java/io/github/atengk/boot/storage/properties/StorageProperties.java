@@ -3,6 +3,7 @@ package io.github.atengk.boot.storage.properties;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
+import org.springframework.util.unit.DataSize;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -61,4 +62,9 @@ public class StorageProperties {
      */
     @NestedConfigurationProperty
     private ChunkCleanerProperties chunkCleaner = new ChunkCleanerProperties();
+
+    /**
+     * 分片上传单个分片允许的最大容量上限（默认 100MB，防未知长度流导致磁盘爆盘或 OOM）
+     */
+    private DataSize maxChunkSize = DataSize.ofMegabytes(100);
 }

@@ -18,6 +18,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 /**
  * StorageResource Spring 原生资源契约适配测试
@@ -88,5 +94,26 @@ class StorageResourceTest {
         assertThrows(FileNotFoundException.class, resource::getInputStream);
         assertThrows(FileNotFoundException.class, resource::contentLength);
         assertThrows(FileNotFoundException.class, resource::lastModified);
+    }
+
+    @Test
+    @DisplayName("多次调用 getOutputStream().close() 具备严格幂等性，仅执行一次落盘上传")
+    void testWriteResourceCloseIdempotent() throws Exception {
+        LocalDriver spiedDriver = spy(driver);
+        String path = "output/idempotent.txt";
+        StorageResource resource = new StorageResource(path, spiedDriver);
+
+        byte[] writtenBytes = "Idempotent Close Content".getBytes(StandardCharsets.UTF_8);
+        try (OutputStream out = resource.getOutputStream()) {
+            out.write(writtenBytes);
+            out.close();
+            out.close();
+        }
+
+        verify(spiedDriver, times(1)).upload(eq(path), any(InputStream.class), any(), anyLong());
+        assertEquals(writtenBytes.length, resource.contentLength());
+        try (InputStream in = resource.getInputStream()) {
+            assertArrayEquals(writtenBytes, in.readAllBytes());
+        }
     }
 }

@@ -2,6 +2,7 @@ package io.github.atengk.boot.storage.driver;
 
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.util.StorageSecurityUtil;
@@ -77,7 +78,7 @@ class LocalDriverTest {
         byte[] content = "Metadata Test".getBytes(StandardCharsets.UTF_8);
         String path = "meta/test.json";
 
-        driver.upload(path, new ByteArrayInputStream(content), null, -1);
+        StorageObject uploaded = driver.upload(path, new ByteArrayInputStream(content), null, -1);
 
         StorageObject meta = driver.getMetadata(path);
         assertNotNull(meta);
@@ -86,6 +87,8 @@ class LocalDriverTest {
         assertEquals(content.length, meta.getSize());
         assertEquals("application/json", meta.getContentType());
         assertNotNull(meta.getEtag());
+        assertEquals(32, meta.getEtag().length());
+        assertEquals(uploaded.getEtag(), meta.getEtag());
         assertNotNull(meta.getLastModified());
     }
 
@@ -378,5 +381,111 @@ class LocalDriverTest {
         assertEquals(1, cleaned);
         assertFalse(Files.exists(chunkDir1));
         assertTrue(Files.exists(chunkDir2));
+    }
+
+    @Test
+    @DisplayName("LocalDriver 未知长度或超限分片流超过 maxChunkSize 时立即阻断并清理残余碎片")
+    void testUploadChunkExceedsMaxChunkSizeCleansPartialFile() {
+        LocalDriver boundedDriver = new LocalDriver(
+                tempDir.toString(),
+                "http://localhost:8080",
+                "secret",
+                LocalDriver.DEFAULT_DOWNLOAD_ENDPOINT,
+                LocalDriver.DEFAULT_UPLOAD_ENDPOINT,
+                null,
+                org.springframework.util.unit.DataSize.ofBytes(1024));
+        String uploadId = boundedDriver.initiateChunkedUpload("big/overlimit.bin");
+        byte[] oversized = new byte[2048];
+        Path chunk1 = tempDir.resolve(".chunks").resolve(uploadId).resolve("chunk_1");
+
+        // 1. 未知长度流 (size = -1) 超过 1024 字节
+        StorageException ex1 = assertThrows(StorageException.class, () ->
+                boundedDriver.uploadChunk(uploadId, 1, new ByteArrayInputStream(oversized), -1));
+        assertEquals(StorageResultCode.STORAGE_SIZE_EXCEEDED, ex1.getResultCode());
+        assertFalse(Files.exists(chunk1), "超限中断后不得残留部分分片文件");
+
+        // 2. 声明 size = 0 但流超出阈值同样拦截并清理
+        StorageException ex2 = assertThrows(StorageException.class, () ->
+                boundedDriver.uploadChunk(uploadId, 1, new ByteArrayInputStream(oversized), 0));
+        assertEquals(StorageResultCode.STORAGE_SIZE_EXCEEDED, ex2.getResultCode());
+        assertFalse(Files.exists(chunk1));
+
+        // 3. 声明 size 超过阈值在写入前快速失败
+        StorageException ex3 = assertThrows(StorageException.class, () ->
+                boundedDriver.uploadChunk(uploadId, 1, new ByteArrayInputStream(oversized), 2048));
+        assertEquals(StorageResultCode.STORAGE_SIZE_EXCEEDED, ex3.getResultCode());
+        assertFalse(Files.exists(chunk1));
+
+        // 4. 边界内 (1024 字节) 正常落盘
+        boundedDriver.uploadChunk(uploadId, 1, new ByteArrayInputStream(new byte[1024]), -1);
+        assertTrue(Files.exists(chunk1));
+    }
+
+    @Test
+    @DisplayName("命名本地存储源生成预签名下载外链时附带 source 参数并将 source 纳入 HMAC 签名")
+    void testGetPresignedDownloadUrlWithNamedSource() {
+        LocalDriver archiveDriver = new LocalDriver(
+                tempDir.toString(),
+                "http://localhost:8080",
+                "archive-secret-key-2026",
+                LocalDriver.DEFAULT_DOWNLOAD_ENDPOINT,
+                LocalDriver.DEFAULT_UPLOAD_ENDPOINT,
+                "archive");
+
+        PresignedUrl presigned = archiveDriver.getPresignedUrl("docs/2026/manual.pdf", Duration.ofMinutes(10));
+        String url = presigned.getUrl();
+        assertTrue(url.contains("&source=archive"), "命名本地存储源下载外链应包含 source 参数: " + url);
+
+        String query = url.substring(url.indexOf('?') + 1);
+        String expiresStr = null;
+        String signature = null;
+        String sourceVal = null;
+        for (String param : query.split("&")) {
+            if (param.startsWith("expires=")) {
+                expiresStr = param.substring("expires=".length());
+            } else if (param.startsWith("signature=")) {
+                signature = param.substring("signature=".length());
+            } else if (param.startsWith("source=")) {
+                sourceVal = param.substring("source=".length());
+            }
+        }
+        assertEquals("archive", sourceVal);
+        assertNotNull(expiresStr);
+        assertNotNull(signature);
+
+        String expectedPayload = StorageSecurityUtil.buildPresignedDownloadSignaturePayload(
+                "docs/2026/manual.pdf", Long.parseLong(expiresStr), null, null, null, "archive");
+        assertTrue(StorageSecurityUtil.verifyHmacSha256(expectedPayload, archiveDriver.getSecretKey(), signature));
+        // 未包含 source 的旧载荷不应通过校验
+        assertFalse(StorageSecurityUtil.verifyHmacSha256(
+                "docs/2026/manual.pdf:" + expiresStr, archiveDriver.getSecretKey(), signature));
+    }
+
+    @Test
+    @DisplayName("PresignedDownloadRequest 显式指定 source 时覆盖驱动默认标识并纳入 HMAC 签名")
+    void testGetPresignedDownloadUrlWithRequestSourceOverride() {
+        PresignedDownloadRequest request = PresignedDownloadRequest.builder()
+                .path("docs/2026/override.pdf")
+                .duration(Duration.ofMinutes(5))
+                .source("local-main")
+                .build();
+
+        PresignedUrl presigned = driver.getPresignedUrl(request);
+        String url = presigned.getUrl();
+        assertTrue(url.contains("&source=local-main"));
+
+        String query = url.substring(url.indexOf('?') + 1);
+        String expiresStr = null;
+        String signature = null;
+        for (String param : query.split("&")) {
+            if (param.startsWith("expires=")) {
+                expiresStr = param.substring("expires=".length());
+            } else if (param.startsWith("signature=")) {
+                signature = param.substring("signature=".length());
+            }
+        }
+        String expectedPayload = StorageSecurityUtil.buildPresignedDownloadSignaturePayload(
+                "docs/2026/override.pdf", Long.parseLong(expiresStr), null, null, null, "local-main");
+        assertTrue(StorageSecurityUtil.verifyHmacSha256(expectedPayload, driver.getSecretKey(), signature));
     }
 }

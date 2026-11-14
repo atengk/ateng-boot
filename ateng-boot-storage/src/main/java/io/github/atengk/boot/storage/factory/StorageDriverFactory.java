@@ -10,6 +10,7 @@ import io.github.atengk.boot.storage.util.StorageSecurityUtil;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.util.unit.DataSize;
 
 import java.util.Collections;
 import java.util.Map;
@@ -149,12 +150,24 @@ public class StorageDriverFactory implements DisposableBean, AutoCloseable {
      * @return 对应的 StorageDriver 实例
      */
     public static StorageDriver createDriver(String sourceKey, StorageSourceProperties properties) {
+        return createDriver(sourceKey, properties, null);
+    }
+
+    /**
+     * 根据 StorageSourceProperties、存储源标识与分片容量上限快速构建存储驱动
+     *
+     * @param sourceKey    存储源标识（如 "backup"）
+     * @param properties   存储源配置属性
+     * @param maxChunkSize 单分片最大允许容量（为空时回退默认 100MB）
+     * @return 对应的 StorageDriver 实例
+     */
+    public static StorageDriver createDriver(String sourceKey, StorageSourceProperties properties, DataSize maxChunkSize) {
         if (properties == null) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "存储源配置属性不能为空");
         }
         String type = properties.getType();
         if ("s3".equalsIgnoreCase(type)) {
-            return createS3DriverSafely(properties);
+            return createS3DriverSafely(properties, maxChunkSize);
         }
         // 默认 local
         LocalStorageProperties local = properties.getLocal();
@@ -170,16 +183,17 @@ public class StorageDriverFactory implements DisposableBean, AutoCloseable {
         String sourceName = (sourceKey != null && !"primary".equalsIgnoreCase(sourceKey) && !"default".equalsIgnoreCase(sourceKey))
                 ? sourceKey.trim()
                 : null;
-        return new LocalDriver(basePath, local.getDomain(), secretKey, local.getDownloadEndpoint(), local.getUploadEndpoint(), sourceName);
+        return new LocalDriver(basePath, local.getDomain(), secretKey,
+                local.getDownloadEndpoint(), local.getUploadEndpoint(), sourceName, maxChunkSize);
     }
 
     /**
      * 安全反射创建 S3Driver，防御类路径缺失 AWS SDK
      */
-    private static StorageDriver createS3DriverSafely(StorageSourceProperties properties) {
+    private static StorageDriver createS3DriverSafely(StorageSourceProperties properties, DataSize maxChunkSize) {
         try {
             Class.forName("software.amazon.awssdk.services.s3.S3Client");
-            return S3DriverHelper.createS3Driver(properties);
+            return S3DriverHelper.createS3Driver(properties, maxChunkSize);
         } catch (ClassNotFoundException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED,
                     "当前类路径中未引入 software.amazon.awssdk:s3 依赖，无法装配 S3 存储源", e);
@@ -190,7 +204,7 @@ public class StorageDriverFactory implements DisposableBean, AutoCloseable {
      * 内部类加载隔离辅助类，防止在没有 AWS SDK 时直接内省引发 NoClassDefFoundError
      */
     private static class S3DriverHelper {
-        private static StorageDriver createS3Driver(StorageSourceProperties properties) {
+        private static StorageDriver createS3Driver(StorageSourceProperties properties, DataSize maxChunkSize) {
             software.amazon.awssdk.services.s3.S3Client s3Client =
                     io.github.atengk.boot.storage.driver.S3Driver.createS3Client(properties.getS3());
             software.amazon.awssdk.services.s3.presigner.S3Presigner s3Presigner =
@@ -198,7 +212,8 @@ public class StorageDriverFactory implements DisposableBean, AutoCloseable {
             io.github.atengk.boot.storage.driver.S3Driver s3Driver = new io.github.atengk.boot.storage.driver.S3Driver(
                     s3Client, s3Presigner, properties.getS3().getBucket(), properties.getS3().getDomain(), properties.getS3().getSecretKey(),
                     properties.getS3().getEndpoint(), properties.getS3().isPathStyle(),
-                    properties.getS3().isAutoCreateBucket(), properties.getS3().getDefaultStorageClass(), properties.getS3().getDefaultServerSideEncryption());
+                    properties.getS3().isAutoCreateBucket(), properties.getS3().getDefaultStorageClass(),
+                    properties.getS3().getDefaultServerSideEncryption(), maxChunkSize);
             if (properties.getS3().isAutoCreateBucket()) {
                 try {
                     s3Driver.ping();

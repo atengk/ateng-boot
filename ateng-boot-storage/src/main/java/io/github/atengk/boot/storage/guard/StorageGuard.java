@@ -214,6 +214,54 @@ public class StorageGuard {
     }
 
     /**
+     * 前置校验存储路径与文件扩展名黑白名单（仅在开启防卫时生效）
+     * 适用于流写入开启前快速失败拦截路径穿越与禁用扩展名
+     *
+     * @param path 存储相对路径
+     * @return 归一化后的小写扩展名（防卫关闭时返回空字符串）
+     */
+    public String validatePathAndExtension(String path) {
+        if (!properties.isEnabled()) {
+            return "";
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        String ext = FileUtil.getExtName(cleanPath).toLowerCase(Locale.ROOT);
+
+        // 1. 黑名单扩展名一票否决（优先于白名单）与内置高危后缀拦截
+        if (matchesExtension(ext, properties.getDisallowedExtensions())) {
+            throw new StorageException(StorageResultCode.STORAGE_FILE_NOT_ALLOWED,
+                    "文件扩展名 [" + ext + "] 在安全防卫黑名单中，禁止上传");
+        }
+        if (StorageSecurityUtil.isDangerousExtension(cleanPath)) {
+            throw new StorageException(StorageResultCode.STORAGE_FILE_NOT_ALLOWED,
+                    "禁止上传高危可执行文件或脚本: " + ext);
+        }
+
+        // 2. 白名单拦截校验（若配置了 allowedExtensions）
+        Set<String> allowed = properties.getAllowedExtensions();
+        if (allowed != null && !allowed.isEmpty() && !matchesExtension(ext, allowed)) {
+            throw new StorageException(StorageResultCode.STORAGE_FILE_NOT_ALLOWED,
+                    "文件类型 [" + ext + "] 不被允许上传，允许的类型为: " + allowed);
+        }
+        return ext;
+    }
+
+    private static boolean matchesExtension(String ext, Set<String> extensions) {
+        if (extensions == null || extensions.isEmpty()) {
+            return false;
+        }
+        return extensions.stream()
+                .filter(e -> e != null && !e.isBlank())
+                .map(StorageGuard::normalizeExtension)
+                .anyMatch(e -> e.equals(ext));
+    }
+
+    private static String normalizeExtension(String rawExt) {
+        String clean = rawExt.trim().toLowerCase(Locale.ROOT);
+        return clean.startsWith(".") ? clean.substring(1) : clean;
+    }
+
+    /**
      * 对上传文件实施安全防卫与魔数校验（零损耗流包装）
      *
      * @param path                上传目标路径
@@ -226,29 +274,7 @@ public class StorageGuard {
             return new GuardResult(in, null, declaredContentType);
         }
 
-        if (path == null || path.isBlank()) {
-            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
-        }
-
-        String ext = FileUtil.getExtName(path).toLowerCase(Locale.ROOT);
-
-        // 1. 白名单拦截校验（若配置了 allowedExtensions）
-        Set<String> allowed = properties.getAllowedExtensions();
-        if (allowed != null && !allowed.isEmpty()) {
-            boolean matched = allowed.stream()
-                    .map(e -> e.toLowerCase(Locale.ROOT).trim())
-                    .anyMatch(e -> e.equals(ext));
-            if (!matched) {
-                throw new StorageException(StorageResultCode.STORAGE_FILE_NOT_ALLOWED,
-                        "文件类型 [" + ext + "] 不被允许上传，允许的类型为: " + allowed);
-            }
-        }
-
-        // 2. 危险脚本与可执行扩展名拦截
-        if (StorageSecurityUtil.isDangerousExtension(path)) {
-            throw new StorageException(StorageResultCode.STORAGE_FILE_NOT_ALLOWED,
-                    "禁止上传高危可执行文件或脚本: " + ext);
-        }
+        String ext = validatePathAndExtension(path);
 
         // 3. 零损耗流读取特征魔数
         InputStream effectiveStream = in;

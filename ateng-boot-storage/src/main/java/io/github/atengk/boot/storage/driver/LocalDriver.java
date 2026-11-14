@@ -7,13 +7,16 @@ import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
+import io.github.atengk.boot.storage.util.StorageHashUtil;
 import io.github.atengk.boot.storage.util.StorageSecurityUtil;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.unit.DataSize;
 
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URLEncoder;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
@@ -24,7 +27,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
-import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
@@ -87,6 +89,11 @@ public class LocalDriver implements StorageDriver {
      * 绑定的命名存储源标识（多源模式下用于生成带 source 参数的外链）
      */
     private final String sourceName;
+
+    /**
+     * 单分片上传允许的最大字节上限
+     */
+    private final long maxChunkSizeBytes;
 
     /**
      * 本地存储对象标签并发映射容器
@@ -159,6 +166,21 @@ public class LocalDriver implements StorageDriver {
      * @param sourceName       绑定的命名存储源名称（多源模式下使用）
      */
     public LocalDriver(String basePath, String domain, String secretKey, String downloadEndpoint, String uploadEndpoint, String sourceName) {
+        this(basePath, domain, secretKey, downloadEndpoint, uploadEndpoint, sourceName, null);
+    }
+
+    /**
+     * 完整多源与分片限流参数构造本地磁盘驱动
+     *
+     * @param basePath         本地存储物理基准路径
+     * @param domain           访问域名或基础 URL
+     * @param secretKey        签名密钥（留空时自动生成安全随机密钥）
+     * @param downloadEndpoint 预签名安全下载端点
+     * @param uploadEndpoint   预签名安全直传端点
+     * @param sourceName       绑定的命名存储源名称（多源模式下使用）
+     * @param maxChunkSize     单个分片允许的最大容量上限（为空时回退 100MB）
+     */
+    public LocalDriver(String basePath, String domain, String secretKey, String downloadEndpoint, String uploadEndpoint, String sourceName, DataSize maxChunkSize) {
         if (basePath == null || basePath.isBlank()) {
             throw new StorageException(StorageResultCode.INVALID_PATH, "本地存储基础路径 basePath 不能为空");
         }
@@ -183,6 +205,7 @@ public class LocalDriver implements StorageDriver {
         this.sourceName = (sourceName != null && !sourceName.isBlank())
                 ? sourceName.trim()
                 : null;
+        this.maxChunkSizeBytes = StorageSecurityUtil.resolveMaxChunkSizeBytes(maxChunkSize);
     }
 
     @Override
@@ -603,8 +626,13 @@ public class LocalDriver implements StorageDriver {
         Instant expiration = Instant.now().plus(effectiveDuration);
         long expires = expiration.getEpochSecond();
 
+        String effectiveSource = (request.getSource() != null && !request.getSource().isBlank())
+                ? request.getSource().trim()
+                : this.sourceName;
+
         String payload = StorageSecurityUtil.buildPresignedDownloadSignaturePayload(
-                cleanPath, expires, request.getDownloadFilename(), request.getResponseContentType(), request.getResponseContentDisposition());
+                cleanPath, expires, request.getDownloadFilename(), request.getResponseContentType(),
+                request.getResponseContentDisposition(), effectiveSource);
         String signature = StorageSecurityUtil.hmacSha256(payload, this.secretKey);
         StringBuilder urlBuilder = new StringBuilder();
         urlBuilder.append(buildEndpointUrl(downloadEndpoint, DEFAULT_DOWNLOAD_ENDPOINT))
@@ -620,6 +648,9 @@ public class LocalDriver implements StorageDriver {
         }
         if (request.getResponseContentDisposition() != null && !request.getResponseContentDisposition().isBlank()) {
             urlBuilder.append("&disposition=").append(URLEncoder.encode(request.getResponseContentDisposition().trim(), StandardCharsets.UTF_8));
+        }
+        if (effectiveSource != null && !effectiveSource.isBlank()) {
+            urlBuilder.append("&source=").append(URLEncoder.encode(effectiveSource, StandardCharsets.UTF_8));
         }
 
         return PresignedUrl.builder()
@@ -768,20 +799,10 @@ public class LocalDriver implements StorageDriver {
      * @return MD5 十六进制字符串；发生异常时返回空串
      */
     private String calculateEtag(Path file) {
-        try (InputStream is = Files.newInputStream(file)) {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = is.read(buffer)) != -1) {
-                md.update(buffer, 0, read);
-            }
-            byte[] digest = md.digest();
-            StringBuilder sb = new StringBuilder();
-            for (byte b : digest) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
+        try {
+            return StorageHashUtil.md5Hex(file);
         } catch (Exception e) {
+            log.debug("计算本地文件 ETag 失败: path={}, cause={}", file, e.getMessage());
             return "";
         }
     }
@@ -818,11 +839,25 @@ public class LocalDriver implements StorageDriver {
         if (!Files.exists(chunkDir)) {
             throw new StorageException(StorageResultCode.STORAGE_CHUNK_EXPIRED, "未找到分片上传会话或已过期清理: " + uploadId);
         }
+        StorageSecurityUtil.validateChunkSize(size, this.maxChunkSizeBytes);
         Path chunkFile = chunkDir.resolve("chunk_" + chunkIndex);
-        try {
-            Files.copy(in, chunkFile, StandardCopyOption.REPLACE_EXISTING);
+        try (OutputStream out = Files.newOutputStream(chunkFile,
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+            StorageSecurityUtil.copyWithMaxBytes(in, out, this.maxChunkSizeBytes);
+        } catch (StorageException e) {
+            cleanupChunkFileSafely(chunkFile);
+            throw e;
         } catch (IOException e) {
+            cleanupChunkFileSafely(chunkFile);
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "写入第 " + chunkIndex + " 个分片失败: " + uploadId, e);
+        }
+    }
+
+    private void cleanupChunkFileSafely(Path chunkFile) {
+        try {
+            Files.deleteIfExists(chunkFile);
+        } catch (IOException ex) {
+            log.warn("清理超限或异常残余分片文件失败: chunkFile={}, cause={}", chunkFile, ex.getMessage());
         }
     }
 
