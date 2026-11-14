@@ -20,6 +20,7 @@ import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -506,5 +507,41 @@ class LocalDriverTest {
         try (InputStream in = driver.download(targetPath)) {
             assertArrayEquals(first, in.readAllBytes());
         }
+    }
+
+    @Test
+    @DisplayName("deletePrefix、deleteDirectory 与分片合并覆盖时同步清理内存元数据与标签映射")
+    void testDeletePrefixDirectoryAndChunkCompleteEvictsMetadataMaps() {
+        Map<String, String> meta = Map.of("author", "ateng");
+        byte[] payload = "Metadata cleanup test".getBytes(StandardCharsets.UTF_8);
+
+        driver.upload("clean/dir/a.txt", new ByteArrayInputStream(payload), "application/vnd.custom", payload.length, meta, false);
+        driver.setObjectTags("clean/dir/a.txt", Map.of("env", "test"));
+        driver.upload("clean/prefix-item.txt", new ByteArrayInputStream(payload), "application/vnd.custom", payload.length, meta, false);
+        driver.setObjectTags("clean/prefix-item.txt", Map.of("env", "test"));
+
+        // 1. deletePrefix 清理前缀匹配对象及其元数据/标签
+        assertTrue(driver.deletePrefix("clean/prefix-"));
+        assertFalse(driver.exists("clean/prefix-item.txt"));
+        driver.upload("clean/prefix-item.txt", new ByteArrayInputStream("fresh".getBytes(StandardCharsets.UTF_8)), "text/plain", 5);
+        assertTrue(driver.getMetadata("clean/prefix-item.txt").getUserMetadata().isEmpty());
+        assertTrue(driver.getObjectTags("clean/prefix-item.txt").isEmpty());
+
+        // 2. deleteDirectory 级联清理目录内对象及其元数据/标签
+        assertTrue(driver.deleteDirectory("clean/dir"));
+        assertFalse(driver.exists("clean/dir/a.txt"));
+        driver.upload("clean/dir/a.txt", new ByteArrayInputStream("fresh".getBytes(StandardCharsets.UTF_8)), "text/plain", 5);
+        assertTrue(driver.getMetadata("clean/dir/a.txt").getUserMetadata().isEmpty());
+        assertTrue(driver.getObjectTags("clean/dir/a.txt").isEmpty());
+
+        // 3. completeChunkedUpload 覆盖既有带元数据文件时刷新映射不残留旧元数据
+        driver.upload("chunk/override.txt", new ByteArrayInputStream(payload), "application/vnd.custom", payload.length, meta, false);
+        driver.setObjectTags("chunk/override.txt", Map.of("old", "tag"));
+        String uploadId = driver.initiateChunkedUpload("chunk/override.txt");
+        driver.uploadChunk(uploadId, 1, new ByteArrayInputStream("new-chunk-data".getBytes(StandardCharsets.UTF_8)), 14);
+        StorageObject merged = driver.completeChunkedUpload(uploadId, "chunk/override.txt", 1);
+        assertEquals("text/plain", merged.getContentType());
+        assertTrue(driver.getMetadata("chunk/override.txt").getUserMetadata().isEmpty());
+        assertTrue(driver.getObjectTags("chunk/override.txt").isEmpty());
     }
 }

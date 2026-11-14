@@ -937,4 +937,63 @@ class SampleStorageIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.path").value("guard/safe-policy.txt"));
     }
+
+    @Test
+    @DisplayName("端到端测试 26：事务批量提交后延迟删除、显式登记回滚补偿及 runWith 异步上下文透传")
+    void testBatchTxAndRunWithAsyncContextPropagation() throws Exception {
+        // 1. deleteBatchAfterCommit：回滚保留、提交删除
+        String p1 = "tx-batch/a.txt";
+        String p2 = "tx-batch/b.txt";
+        storageTemplate.uploadString(p1, "batch-1");
+        storageTemplate.uploadString(p2, "batch-2");
+
+        mockMvc.perform(post("/sample/storage/object/delete-batch-after-commit")
+                        .param("paths", p1, p2)
+                        .param("simulateFailure", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(50008));
+        assertThat(storageTemplate.exists(p1)).isTrue();
+        assertThat(storageTemplate.exists(p2)).isTrue();
+
+        mockMvc.perform(post("/sample/storage/object/delete-batch-after-commit")
+                        .param("paths", p1, p2)
+                        .param("simulateFailure", "false"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        assertThat(storageTemplate.exists(p1)).isFalse();
+        assertThat(storageTemplate.exists(p2)).isFalse();
+
+        // 2. registerRollbackDelete：回滚清理、提交保留
+        String regRollback = "tx-reg/rollback.txt";
+        MockMultipartFile regFile = new MockMultipartFile("file", "reg.txt", MediaType.TEXT_PLAIN_VALUE, "reg-data".getBytes(StandardCharsets.UTF_8));
+        mockMvc.perform(multipart("/sample/storage/object/register-rollback-delete")
+                        .file(regFile)
+                        .param("path", regRollback)
+                        .param("simulateFailure", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(50008));
+        assertThat(storageTemplate.exists(regRollback)).isFalse();
+
+        String regCommit = "tx-reg/commit.txt";
+        mockMvc.perform(multipart("/sample/storage/object/register-rollback-delete")
+                        .file(regFile)
+                        .param("path", regCommit)
+                        .param("simulateFailure", "false"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        assertThat(storageTemplate.exists(regCommit)).isTrue();
+
+        // 3. runWith + 跨线程异步上下文透传
+        String backupAsyncPath = "scoped/async-audit.txt";
+        storageTemplate.use("backup").uploadString(backupAsyncPath, "Async Scoped Data");
+        mockMvc.perform(get("/sample/storage/governance/run-with-async")
+                        .param("source", "backup")
+                        .param("path", backupAsyncPath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.scopedSource").value("backup"))
+                .andExpect(jsonPath("$.data.asyncSource").value("backup"))
+                .andExpect(jsonPath("$.data.objectPath").value(backupAsyncPath))
+                .andExpect(jsonPath("$.data.outerAfter").isEmpty());
+    }
 }

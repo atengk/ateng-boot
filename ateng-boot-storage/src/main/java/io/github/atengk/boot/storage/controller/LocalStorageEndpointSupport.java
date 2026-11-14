@@ -82,4 +82,14 @@ final class LocalStorageEndpointSupport {
         }
         return null;
     }
+
+    /**
+     * 规范化可选命名存储源参数（空白字符归约为 null）
+     *
+     * @param source 原始 source 参数
+     * @return 去除首尾空白后的存储源标识，或 null
+     */
+    static String normalizeOptionalSource(String source) {
+        return (source != null && !source.isBlank()) ? source.trim() : null;
+    }
 }

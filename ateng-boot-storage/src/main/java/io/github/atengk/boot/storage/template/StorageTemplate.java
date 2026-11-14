@@ -174,16 +174,14 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
      */
     @Override
     public StorageOperations use(String sourceKey) {
-        if (sourceKey == null || sourceKey.isBlank()
-                || "primary".equalsIgnoreCase(sourceKey)
-                || "default".equalsIgnoreCase(sourceKey)) {
+        if (sourceKey == null || sourceKey.isBlank()) {
             if (this.bound) {
-                StorageDriver primaryDriver = this.factory != null
-                        ? this.factory.getPrimaryDriver()
-                        : this.rootPrimaryDriver;
-                return createBoundTemplate(primaryDriver, "primary");
+                return createPrimaryBoundTemplate();
             }
             return this;
+        }
+        if ("primary".equalsIgnoreCase(sourceKey) || "default".equalsIgnoreCase(sourceKey)) {
+            return createPrimaryBoundTemplate();
         }
         StorageDriver targetDriver = null;
         if (this.factory != null) {
@@ -195,6 +193,16 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
             throw new StorageException(StorageResultCode.STORAGE_SOURCE_NOT_FOUND, "未找到指定的存储源: " + sourceKey);
         }
         return createBoundTemplate(targetDriver, sourceKey.trim());
+    }
+
+    private StorageTemplate createPrimaryBoundTemplate() {
+        StorageDriver primaryDriver = this.factory != null
+                ? this.factory.getPrimaryDriver()
+                : this.rootPrimaryDriver;
+        String primaryKey = (this.factory != null && this.factory.getPrimary() != null)
+                ? this.factory.getPrimary()
+                : "primary";
+        return createBoundTemplate(primaryDriver, primaryKey);
     }
 
     private StorageTemplate createBoundTemplate(StorageDriver targetDriver, String targetSourceKey) {
@@ -305,6 +313,9 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         InputStream effectiveStream = request.getInputStream();
         String effectiveContentType = request.getContentType();
         if (this.storageGuard != null && this.storageGuard.isEnabled()) {
+            if (request.getSize() > 0) {
+                this.storageGuard.validateFileSize(request.getSize());
+            }
             StorageGuard.GuardResult guardResult = this.storageGuard.inspect(request.getPath(), effectiveStream, effectiveContentType);
             effectiveStream = guardResult.getGuardedStream();
             if ((effectiveContentType == null || effectiveContentType.isBlank() || "application/octet-stream".equals(effectiveContentType))

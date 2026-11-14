@@ -5,6 +5,7 @@ import io.github.atengk.boot.storage.exception.StorageResultCode;
 import io.github.atengk.boot.storage.properties.StorageGuardProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.util.unit.DataSize;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -248,6 +249,24 @@ class StorageGuardTest {
         // 正常白名单文件放行
         StorageGuard.GuardResult result = guard.inspect("avatar.png", new ByteArrayInputStream(PNG_HEADER), null);
         assertThat(result.getDetectedType()).isEqualTo(StorageFileType.PNG);
+    }
+
+    @Test
+    @DisplayName("测试 maxFileSize 大小防卫：未开启或未配置时不限制，配置正值后超限抛出 STORAGE_SIZE_EXCEEDED (40020)")
+    void testMaxFileSizeValidation() {
+        StorageGuardProperties props = new StorageGuardProperties();
+        props.setEnabled(true);
+        props.setMaxFileSize(DataSize.ofBytes(1024));
+        StorageGuard guard = new StorageGuard(props);
+
+        guard.validateFileSize(1024);
+        assertThatThrownBy(() -> guard.validateFileSize(1025))
+                .isInstanceOf(StorageException.class)
+                .satisfies(e -> assertThat(((StorageException) e).getResultCode()).isEqualTo(StorageResultCode.STORAGE_SIZE_EXCEEDED));
+
+        // 关闭防卫时不拦截
+        props.setEnabled(false);
+        guard.validateFileSize(2048);
     }
 
     private String md5Hex(byte[] data) throws Exception {

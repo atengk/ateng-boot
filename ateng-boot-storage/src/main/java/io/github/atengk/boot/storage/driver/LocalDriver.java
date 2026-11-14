@@ -679,16 +679,11 @@ public class LocalDriver implements StorageDriver {
             throw new StorageException(StorageResultCode.INVALID_PATH, "预签名下载路径不能为空");
         }
         String cleanPath = StorageSecurityUtil.normalizePath(request.getPath());
-        Duration duration = request.getDuration();
-        Duration effectiveDuration = (duration != null && !duration.isNegative() && !duration.isZero())
-                ? duration
-                : Duration.ofMinutes(15);
+        Duration effectiveDuration = resolveEffectiveDuration(request.getDuration());
         Instant expiration = Instant.now().plus(effectiveDuration);
         long expires = expiration.getEpochSecond();
 
-        String effectiveSource = (request.getSource() != null && !request.getSource().isBlank())
-                ? request.getSource().trim()
-                : this.sourceName;
+        String effectiveSource = resolveEffectiveSource(request.getSource());
 
         String payload = StorageSecurityUtil.buildPresignedDownloadSignaturePayload(
                 cleanPath, expires, request.getDownloadFilename(), request.getResponseContentType(),
@@ -709,9 +704,7 @@ public class LocalDriver implements StorageDriver {
         if (request.getResponseContentDisposition() != null && !request.getResponseContentDisposition().isBlank()) {
             urlBuilder.append("&disposition=").append(URLEncoder.encode(request.getResponseContentDisposition().trim(), StandardCharsets.UTF_8));
         }
-        if (effectiveSource != null && !effectiveSource.isBlank()) {
-            urlBuilder.append("&source=").append(URLEncoder.encode(effectiveSource, StandardCharsets.UTF_8));
-        }
+        appendSourceQuery(urlBuilder, effectiveSource);
 
         return PresignedUrl.builder()
                 .url(urlBuilder.toString())
@@ -726,9 +719,7 @@ public class LocalDriver implements StorageDriver {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "预签名直传请求参数不能为空");
         }
         String cleanPath = StorageSecurityUtil.normalizePath(request.getPath());
-        Duration effectiveDuration = (request.getDuration() != null && !request.getDuration().isNegative() && !request.getDuration().isZero())
-                ? request.getDuration()
-                : Duration.ofMinutes(15);
+        Duration effectiveDuration = resolveEffectiveDuration(request.getDuration());
         Instant expiration = Instant.now().plus(effectiveDuration);
         long expires = expiration.getEpochSecond();
         String contentType = (request.getContentType() != null && !request.getContentType().isBlank())
@@ -736,13 +727,11 @@ public class LocalDriver implements StorageDriver {
                 : "";
         long maxBytes = request.getMaxSizeBytes() > 0 ? request.getMaxSizeBytes() : -1;
 
-        String effectiveSource = (request.getSource() != null && !request.getSource().isBlank())
-                ? request.getSource().trim()
-                : this.sourceName;
+        String effectiveSource = resolveEffectiveSource(request.getSource());
 
         // 签名计算规则：cleanPath:expires:contentType:maxBytes[:source] 与 LocalStorageUploadController 保持严格对称
         String signPayload = cleanPath + ":" + expires + ":" + contentType + ":" + maxBytes
-                + (effectiveSource != null && !effectiveSource.isBlank() ? ":" + effectiveSource : "");
+                + (effectiveSource != null ? ":" + effectiveSource : "");
         String signature = StorageSecurityUtil.hmacSha256(signPayload, this.secretKey);
 
         StringBuilder urlBuilder = new StringBuilder();
@@ -756,9 +745,7 @@ public class LocalDriver implements StorageDriver {
         if (maxBytes > 0) {
             urlBuilder.append("&maxBytes=").append(maxBytes);
         }
-        if (effectiveSource != null && !effectiveSource.isBlank()) {
-            urlBuilder.append("&source=").append(URLEncoder.encode(effectiveSource, StandardCharsets.UTF_8));
-        }
+        appendSourceQuery(urlBuilder, effectiveSource);
 
         Map<String, String> signedHeaders = new LinkedHashMap<>();
         if (!contentType.isBlank()) {
@@ -788,17 +775,15 @@ public class LocalDriver implements StorageDriver {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "未找到分片上传会话或已被清理: " + uploadId);
         }
 
-        Duration effectiveDuration = (duration != null && !duration.isNegative() && !duration.isZero())
-                ? duration
-                : Duration.ofMinutes(15);
+        Duration effectiveDuration = resolveEffectiveDuration(duration);
         Instant expiration = Instant.now().plus(effectiveDuration);
         long expires = expiration.getEpochSecond();
 
-        String effectiveSource = this.sourceName;
+        String effectiveSource = resolveEffectiveSource(null);
 
         // 签名计算规则：cleanPath:expires:uploadId:chunkIndex[:source] 与 LocalStorageUploadController 严格对称
         String signPayload = cleanPath + ":" + expires + ":" + uploadId + ":" + chunkIndex
-                + (effectiveSource != null && !effectiveSource.isBlank() ? ":" + effectiveSource : "");
+                + (effectiveSource != null ? ":" + effectiveSource : "");
         String signature = StorageSecurityUtil.hmacSha256(signPayload, this.secretKey);
 
         StringBuilder urlBuilder = new StringBuilder();
@@ -808,15 +793,32 @@ public class LocalDriver implements StorageDriver {
                 .append("&uploadId=").append(uploadId)
                 .append("&chunkIndex=").append(chunkIndex)
                 .append("&signature=").append(signature);
-        if (effectiveSource != null && !effectiveSource.isBlank()) {
-            urlBuilder.append("&source=").append(URLEncoder.encode(effectiveSource, StandardCharsets.UTF_8));
-        }
+        appendSourceQuery(urlBuilder, effectiveSource);
 
         return PresignedUrl.builder()
                 .url(urlBuilder.toString())
                 .expiration(expiration)
                 .httpMethod("PUT")
                 .build();
+    }
+
+    private Duration resolveEffectiveDuration(Duration duration) {
+        return (duration != null && !duration.isNegative() && !duration.isZero())
+                ? duration
+                : Duration.ofMinutes(15);
+    }
+
+    private String resolveEffectiveSource(String requestedSource) {
+        if (requestedSource != null && !requestedSource.isBlank()) {
+            return requestedSource.trim();
+        }
+        return (this.sourceName != null && !this.sourceName.isBlank()) ? this.sourceName : null;
+    }
+
+    private void appendSourceQuery(StringBuilder urlBuilder, String effectiveSource) {
+        if (effectiveSource != null && !effectiveSource.isBlank()) {
+            urlBuilder.append("&source=").append(URLEncoder.encode(effectiveSource, StandardCharsets.UTF_8));
+        }
     }
 
     /**
@@ -972,6 +974,10 @@ public class LocalDriver implements StorageDriver {
             Instant lastModified = Files.getLastModifiedTime(targetFile).toInstant();
             String etag = calculateEtag(targetFile);
 
+            contentTypeMap.put(cleanPath, contentType);
+            userMetadataMap.remove(cleanPath);
+            objectTagsMap.remove(cleanPath);
+
             // 合并成功后即时清理临时碎片
             deleteRecursively(chunkDir);
 
@@ -1013,6 +1019,7 @@ public class LocalDriver implements StorageDriver {
             stream.sorted(Comparator.reverseOrder())
                     .forEach(p -> {
                         try {
+                            evictMetadataForPath(p);
                             Files.deleteIfExists(p);
                         } catch (IOException e) {
                             log.warn("删除本地文件失败: path={}, cause={}", p, e.getMessage());
@@ -1020,6 +1027,18 @@ public class LocalDriver implements StorageDriver {
                     });
         } catch (IOException e) {
             log.warn("递归删除本地路径时遍历失败: dir={}, cause={}", dir, e.getMessage());
+        }
+    }
+
+    private void evictMetadataForPath(Path path) {
+        if (path == null || !path.startsWith(this.basePath) || path.equals(this.basePath)) {
+            return;
+        }
+        String cleanKey = this.basePath.relativize(path).toString().replace('\\', '/');
+        if (!cleanKey.isEmpty() && !CHUNKS_DIR_NAME.equals(cleanKey) && !cleanKey.startsWith(CHUNKS_DIR_NAME + "/")) {
+            contentTypeMap.remove(cleanKey);
+            userMetadataMap.remove(cleanKey);
+            objectTagsMap.remove(cleanKey);
         }
     }
 

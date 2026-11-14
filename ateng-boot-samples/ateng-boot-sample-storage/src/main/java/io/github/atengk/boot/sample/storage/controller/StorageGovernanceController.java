@@ -24,6 +24,7 @@ import java.io.InputStream;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * 存储多源路由、跨源双活备份与云原生 S3 治理控制器
@@ -245,5 +246,32 @@ public class StorageGovernanceController {
             @RequestParam("path") @NotBlank(message = "目标路径不能为空") String path) {
         StorageObject uploaded = storageTemplate.upload(path, file);
         return Result.success(uploaded);
+    }
+
+    /**
+     * 演示 StorageContextHolder.runWith 与跨线程异步上下文透传（wrapSupplier）
+     *
+     * @param source 临时作用域与异步任务继承的目标存储源（默认 backup）
+     * @param path   异步线程待校验的对象相对路径
+     * @return 包含主线程切换前后上下文及异步子线程继承数据源与对象元数据的结果字典
+     */
+    @GetMapping("/run-with-async")
+    public Result<Map<String, Object>> runWithAsyncScope(
+            @RequestParam(value = "source", defaultValue = "backup") @NotBlank(message = "目标存储源不能为空") String source,
+            @RequestParam("path") @NotBlank(message = "对象路径不能为空") String path) {
+        Map<String, Object> audit = new LinkedHashMap<>();
+        StorageContextHolder.runWith(source, () -> {
+            audit.put("scopedSource", StorageContextHolder.getDataSource());
+            CompletableFuture<Map.Entry<String, StorageObject>> future = CompletableFuture.supplyAsync(
+                    StorageContextHolder.wrapSupplier(() ->
+                            Map.entry(String.valueOf(StorageContextHolder.getDataSource()), storageTemplate.getMetadata(path)))
+            );
+            Map.Entry<String, StorageObject> asyncResult = future.join();
+            audit.put("asyncSource", asyncResult.getKey());
+            audit.put("objectPath", asyncResult.getValue().getPath());
+            audit.put("objectSize", asyncResult.getValue().getSize());
+        });
+        audit.put("outerAfter", StorageContextHolder.getDataSource());
+        return Result.success(audit);
     }
 }

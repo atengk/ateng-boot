@@ -3,6 +3,7 @@ package io.github.atengk.boot.storage.resource;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.exception.StorageException;
+import io.github.atengk.boot.storage.exception.StorageResultCode;
 import io.github.atengk.boot.storage.guard.StorageGuard;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.util.StorageSecurityUtil;
@@ -133,12 +134,33 @@ public class StorageResource extends AbstractResource implements WritableResourc
             Files.deleteIfExists(tempFile);
             throw ex;
         }
+        long maxFileSizeBytes = (storageGuard != null) ? storageGuard.resolveMaxFileSizeBytes() : -1L;
         return new FilterOutputStream(fileOut) {
             private final AtomicBoolean closed = new AtomicBoolean(false);
+            private final AtomicBoolean aborted = new AtomicBoolean(false);
+            private long writtenBytes = 0L;
+
+            @Override
+            public void write(int b) throws IOException {
+                checkWriteSizeLimit(1);
+                out.write(b);
+                writtenBytes++;
+            }
 
             @Override
             public void write(byte[] b, int off, int len) throws IOException {
+                checkWriteSizeLimit(len);
                 out.write(b, off, len);
+                writtenBytes += len;
+            }
+
+            private void checkWriteSizeLimit(int incomingBytes) {
+                if (maxFileSizeBytes > 0 && incomingBytes > 0 && (writtenBytes + incomingBytes) > maxFileSizeBytes) {
+                    aborted.set(true);
+                    throw new StorageException(StorageResultCode.STORAGE_SIZE_EXCEEDED,
+                            "WritableResource 写入字节超出安全防卫配额上限: written=" + (writtenBytes + incomingBytes)
+                                    + ", maxBytes=" + maxFileSizeBytes);
+                }
             }
 
             @Override
@@ -148,7 +170,13 @@ public class StorageResource extends AbstractResource implements WritableResourc
                 }
                 try {
                     super.close();
+                    if (aborted.get()) {
+                        return;
+                    }
                     long size = Files.size(tempFile);
+                    if (storageGuard != null) {
+                        storageGuard.validateFileSize(size);
+                    }
                     try (InputStream rawIn = Files.newInputStream(tempFile)) {
                         InputStream effectiveStream = rawIn;
                         String contentType = null;

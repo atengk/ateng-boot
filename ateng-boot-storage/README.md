@@ -19,7 +19,7 @@
 | **天然幂等删除** | 单文件/批量/目录幂等删除 | `StorageTemplate`<br>`StorageOperations` | - | `delete(String)` / `deleteBatch(List<String>)` / `deleteDirectory(String)`，天然幂等语义，文件不存在亦平滑返回 `true` | `StorageTemplateTest` / `StorageObjectController` / `SampleStorageIntegrationTest` |
 | **前缀批量删除** | 前缀级流式批量删除与熔断 | `StorageTemplate`<br>`StorageOperations` | - | `deletePrefix(String)`，流式切片批量清除指定前缀下的所有对象，前置强行熔断空前缀、根路径 `/` 与通配符防误删 | `StorageTemplateTest` / `LocalDriverTest` / `S3DriverTest` / `StorageObjectController` |
 | **文件下载与探测** | 流式下载与存在性/元数据探测 | `StorageTemplate`<br>`StorageOperations`<br>`StorageObject` | - | `download(String)` (返回 `InputStream`) / `exists(String)` / `getMetadata(String)`，严格遵循 `try-with-resources` 资源确定性释放 | `StorageTemplateTest` / `StorageTransferController` / `SampleStorageIntegrationTest` |
-| **Spring 原生集成** | 原生 WritableResource 断点续传 | `StorageResource`<br>`StorageTemplate` | - | 实现 Spring `Resource` 与 `WritableResource`，支持 `storageTemplate.getResource(path)` 获得受管资源与 HTTP Range `206 Partial Content` 响应 | `StorageResourceTest` / `StorageTransferController` / `SampleStorageIntegrationTest` |
+| **Spring 原生集成** | 原生 WritableResource 断点续传 | `StorageResource`<br>`StorageTemplate` | `ateng.boot.storage.guard.max-file-size` | 实现 Spring `Resource` 与 `WritableResource`，支持 `storageTemplate.getResource(path)` 获得受管资源（`getOutputStream()` 具备幂等 `close()`、扩展名/魔数与字节上限 `40020` 守卫）与 HTTP Range `206` 响应 | `StorageResourceTest` / `StorageTransferController` / `SampleStorageIntegrationTest` |
 | **字节范围读取** | 断点续传与音视频流 Seek | `StorageTemplate`<br>`StorageOperations` | - | `download(String, long, long)`，按需拉取指定起始偏移量与字节长度切片，S3 原生映射 HTTP Range 报头，Local 依托 `FileChannel.position` 零拷贝定位 | `StorageRangeAndPresignTest` / `StorageTransferController` / `SampleS3DualModeIntegrationTest` |
 | **打包归档** | 多文件纯流式 ZIP 打包响应 | `StorageTemplate`<br>`StorageOperations` | - | `downloadAsZip(List<String>, OutputStream)` / `downloadAsZip(Map<String, String>, OutputStream)` / `downloadAsZip(List<String>, HttpServletResponse, String)`，零磁盘临时文件、重名自动消解与 RFC 5987 中文编码 | `StorageTemplateZipTest` / `StorageTransferController` / `SampleStorageIntegrationTest` |
 | **流式散列与秒传** | 原生零拷贝流式散列计算 | `StorageHashUtil`<br>`HashAlgorithm`<br>`StorageTemplate` | - | `StorageHashUtil.sha256Hex(InputStream)` / `md5Hex` / `sha1Hex` / `crc32Hex` / `crc32` / `hashHex`；`storageTemplate.calculateHash(String, HashAlgorithm)`，流指针零截断与极速秒传指纹比对 | `StorageHashUtilTest` / `StorageTransferController` / `SampleStorageIntegrationTest` |
@@ -30,10 +30,10 @@
 | **本地受控端点** | 本地文件安全下载与直传端点 | `LocalStorageDownloadController`<br>`LocalStorageUploadController` | `ateng.boot.storage.local.endpoint-enabled`<br>`ateng.boot.storage.local.download-endpoint`<br>`ateng.boot.storage.local.upload-endpoint`<br>`ateng.boot.storage.local.secret-key` | 提供 `/storage/local/download` 与 `/storage/local/upload`（同时承接带 `uploadId` 与 `chunkIndex` 参数的分片直传），支持 `endpoint-enabled` 开关，基于 HMAC-SHA256 常量时间验签 | `LocalStorageDownloadControllerTest` / `LocalStorageUploadControllerTest` / `SampleStorageIntegrationTest` |
 | **分片上传状态机** | 服务端大文件分片合并暂存 | `StorageTemplate`<br>`StorageOperations`<br>`S3ChunkTokenUtil` | `ateng.boot.storage.max-chunk-size` | `initiateChunkedUpload(String)` / `uploadChunk(String, int, InputStream, long)` / `uploadChunk(String, int, byte[])` / `completeChunkedUpload(String, String, int)` / `abortChunkedUpload(String)`，1-based 连续性与 `max-chunk-size` 强校验 | `StorageTemplateChunkedTest` / `SampleStorageIntegrationTest` |
 | **碎片治理守护** | 孤儿分片碎片生命周期治理 | `StorageChunkCleaner`<br>`StorageTemplate`<br>`ChunkCleanerProperties` | `ateng.boot.storage.chunk-cleaner.enabled`<br>`ateng.boot.storage.chunk-cleaner.interval`<br>`ateng.boot.storage.chunk-cleaner.max-age` | 后台守护定时扫描及门面手动方法 `cleanExpiredChunkSessions()` / `cleanExpiredChunkSessions(Duration)`，安全回收超期滞留的 `.chunks` 孤儿碎片目录 | `StorageChunkCleanerTest` |
-| **文件安全防卫** | 文件类型与魔数嗅探防卫器 | `StorageGuard`<br>`StorageFileType`<br>`StorageGuardProperties` | `ateng.boot.storage.guard.enabled`<br>`ateng.boot.storage.guard.strict-magic-check`<br>`ateng.boot.storage.guard.allowed-extensions`<br>`ateng.boot.storage.guard.disallowed-extensions` | 识别 15+ 种标准魔数与高危 PE/ELF/Shell 脚本特征，执行黑名单一票否决（40011）与 `mark/reset` 零流截断魔数检验（40010） | `StorageGuardTest` / `StorageGovernanceController` / `SampleStorageIntegrationTest` |
+| **文件安全防卫** | 文件类型与魔数嗅探防卫器 | `StorageGuard`<br>`StorageFileType`<br>`StorageGuardProperties` | `ateng.boot.storage.guard.enabled`<br>`ateng.boot.storage.guard.strict-magic-check`<br>`ateng.boot.storage.guard.allowed-extensions`<br>`ateng.boot.storage.guard.disallowed-extensions`<br>`ateng.boot.storage.guard.max-file-size` | 识别 15+ 种标准魔数与高危 PE/ELF/Shell 脚本特征，执行黑名单一票否决（40011，`validatePathAndExtension`）、单文件大小配额拦截（40020，`validateFileSize` / `resolveMaxFileSizeBytes`）与 `mark/reset` 零流截断魔数检验（40010） | `StorageGuardTest` / `StorageResourceTest` / `StorageGovernanceController` / `SampleStorageIntegrationTest` |
 | **路径安全清洗** | 路径穿越防御与常量时间验签 | `StorageSecurityUtil`<br>`FileUtil` | - | `StorageSecurityUtil.normalizePath(String)` / `hmacSha256(String, String)` / `verifyHmacSha256(String, String, String)` / `isDangerousExtension(String)` 配合 `FileUtil.cleanFilename(String)`，拦截 `..` 逃逸、空字符与时序攻击 | `StorageSecurityUtilTest` |
 | **多源路由调度** | 编程式与声明式多存储源路由 | `StorageTemplate`<br>`@Storage`<br>`StorageAspect`<br>`StorageSourceProperties` | `ateng.boot.storage.primary`<br>`ateng.boot.storage.sources.*` | `storageTemplate.use(String)` 返回绑定目标源的不可变操作门面；`@Storage("source")` AOP 自动切换并在 `finally` 严密恢复 | `StorageRoutingTest` / `SampleStorageIntegrationTest` |
-| **多源作用域与透传** | 函数式切源与跨线程异步透传 | `StorageContextHolder`<br>`StorageTaskDecorator` | - | `executeWith(String, Supplier<T>)` / `runWith(String, Runnable)` 函数式作用域切源与自恢复；`set` / `get` / `clear` / `wrap` / `wrapSupplier` 联动 Core 五维上下文跨线程透传 | `StorageContextHolderTest` / `StorageRoutingTest` / `StorageGovernanceController` / `SampleStorageIntegrationTest` |
+| **多源作用域与透传** | 函数式切源与跨线程异步透传 | `StorageContextHolder`<br>`StorageAsyncContextSnapshotProvider`<br>`StorageTaskDecorator` | - | `executeWith(String, Supplier<T>)` / `runWith(String, Runnable)` 函数式作用域切源与自恢复；`set` / `get` / `getDataSource` / `clear` / `wrap` / `wrapSupplier` 配合 `StorageAsyncContextSnapshotProvider` 联动 Core 五维上下文跨线程透传 | `StorageContextHolderTest` / `AtengStorageAutoConfigurationTest` / `StorageGovernanceController` / `SampleStorageIntegrationTest` |
 | **对象标签治理** | 对象业务标签完整生命周期 | `StorageTemplate`<br>`StorageOperations` | - | `setObjectTags(String, Map<String, String>)` / `getObjectTags(String)` / `deleteObjectTags(String)`，打通云端生命周期冷热归档与部门财务审计 | `StorageTaggingAndHardeningTest` / `SampleS3DualModeIntegrationTest` |
 | **存储分层与加密** | 冷热分层与服务端加密支持 | `S3StorageProperties`<br>`StorageObject` | `ateng.boot.storage.s3.default-storage-class`<br>`ateng.boot.storage.s3.default-server-side-encryption` | 支持配置默认存储类型与服务端加密，并在 `StorageObject` 元数据反查 `storageClass` (`STANDARD`/`STANDARD_IA`/`GLACIER`) 与 `serverSideEncryption` (`AES256`/`aws:kms`) | `StorageTaggingAndHardeningTest` / `S3StoragePropertiesTest` / `SampleS3DualModeIntegrationTest` |
 | **连接池与自愈建桶** | 生产级连接池、超时与桶自愈 | `S3Driver`<br>`S3StorageProperties` | `ateng.boot.storage.s3.connect-timeout`<br>`ateng.boot.storage.s3.socket-timeout`<br>`ateng.boot.storage.s3.api-call-timeout`<br>`ateng.boot.storage.s3.max-connections`<br>`ateng.boot.storage.s3.connection-acquisition-timeout`<br>`ateng.boot.storage.s3.auto-create-bucket` | 强类型 `Duration` 三级超时控制与 `ApacheHttpClient` 连接池并发治理；开启 `auto-create-bucket` 时遇 `404 NoSuchBucket` 自动完成建桶自愈 | `S3StoragePropertiesTest` / `StorageTaggingAndHardeningTest` |
@@ -120,14 +120,18 @@ ateng:
 ```
 
 ```java
-@Service
+@RestController
+@RequestMapping("/sample/storage/object")
 @RequiredArgsConstructor
-public class ContractArchiveService {
+public class StorageObjectController {
 
     private final StorageTemplate storageTemplate;
 
-    public StorageObject quickArchive(MultipartFile file) {
-        return storageTemplate.upload(file);
+    @PostMapping("/upload-quick")
+    public Result<StorageObject> uploadQuick(
+            @RequestParam("file") @NotNull(message = "上传文件不能为空") MultipartFile file) {
+        StorageObject object = storageTemplate.upload(file);
+        return Result.success(object);
     }
 }
 ```
@@ -1233,20 +1237,25 @@ public Result<Map<String, Object>> executeWithScope(
     return Result.success(result);
 }
 
-// 2. 跨线程异步上下文透传（支持 wrap Runnable / wrap Callable / wrapSupplier，异常安全务必在 finally 清理或直接搭配 executeWith/runWith）
-StorageContextHolder.runWith("s3", () -> {
-    CompletableFuture<StorageObject> future = CompletableFuture.supplyAsync(
-            StorageContextHolder.wrapSupplier(() -> storageTemplate.getMetadata("reports/audit.xlsx"))
-    );
-    future.join();
-});
-
-// 若手动调用 set()，必须配合 try-finally 防止异常路径造成 ThreadLocal 泄漏
-StorageContextHolder.set("s3");
-try {
-    CompletableFuture.runAsync(StorageContextHolder.wrap(() -> log.info("scoped={}", StorageContextHolder.get())));
-} finally {
-    StorageContextHolder.clear();
+// 2. 函数式 runWith 切源配合 wrapSupplier 跨线程异步上下文透传（与 StorageGovernanceController 对齐）
+@GetMapping("/run-with-async")
+public Result<Map<String, Object>> runWithAsyncScope(
+        @RequestParam(value = "source", defaultValue = "backup") @NotBlank(message = "目标存储源不能为空") String source,
+        @RequestParam("path") @NotBlank(message = "对象路径不能为空") String path) {
+    Map<String, Object> audit = new LinkedHashMap<>();
+    StorageContextHolder.runWith(source, () -> {
+        audit.put("scopedSource", StorageContextHolder.getDataSource());
+        CompletableFuture<Map.Entry<String, StorageObject>> future = CompletableFuture.supplyAsync(
+                StorageContextHolder.wrapSupplier(() ->
+                        Map.entry(String.valueOf(StorageContextHolder.getDataSource()), storageTemplate.getMetadata(path)))
+        );
+        Map.Entry<String, StorageObject> asyncResult = future.join();
+        audit.put("asyncSource", asyncResult.getKey());
+        audit.put("objectPath", asyncResult.getValue().getPath());
+        audit.put("objectSize", asyncResult.getValue().getSize());
+    });
+    audit.put("outerAfter", StorageContextHolder.getDataSource());
+    return Result.success(audit);
 }
 ```
 
@@ -1279,6 +1288,7 @@ ateng:
           - bat
           - jsp
           - bak
+        max-file-size: 50MB                 # 单文件允许写入的最大容量上限（强类型 DataSize，默认不限制；配置正值后超限抛出 40020）
 ```
 
 #### 实战业务代码范式
@@ -1294,7 +1304,7 @@ public Result<StorageObject> uploadGuarded(
 ```
 
 #### 核心机制与边界防御
-- **三级防卫裁决优先级**：① 用户配置 `disallowed-extensions` 黑名单一票否决（优先级高于白名单，示例禁用了 `.jsp`、`.bak` 等）与内置高危后缀 `DANGEROUS_EXTENSIONS`（`.exe`、`.sh`、`.bat`、`.cmd`、`.ps1` 等）快速失败拦截并抛出 `40011`（`STORAGE_FILE_NOT_ALLOWED`）；② 若配置了非空 `allowed-extensions` 白名单，不在白名单内的扩展名抛出 `40011`；③ 对二进制字节流头部嗅探真实魔数特征与扩展名不符（如文本伪装成 `.png`）时抛出 `40010`（`STORAGE_FILE_TYPE_MISMATCH`）。
+- **三级防卫裁决优先级**：① 用户配置 `disallowed-extensions` 黑名单一票否决（优先级高于白名单，示例禁用了 `.jsp`、`.bak` 等）与内置高危后缀 `DANGEROUS_EXTENSIONS`（`.exe`、`.sh`、`.bat`、`.cmd`、`.ps1` 等）快速失败拦截并抛出 `40011`（`STORAGE_FILE_NOT_ALLOWED`）；② 若配置了非空 `allowed-extensions` 白名单，不在白名单内的扩展名抛出 `40011`；③ 若配置了正值 `max-file-size`，超过容量配额的 `StorageTemplate` 上传或 `StorageResource.getOutputStream()` 写入立即抛出 `40020`（`STORAGE_SIZE_EXCEEDED`）并清理临时文件；④ 对二进制字节流头部嗅探真实魔数特征与扩展名不符（如文本伪装成 `.png`）时抛出 `40010`（`STORAGE_FILE_TYPE_MISMATCH`）。
 - **零流截断损耗保障 (Zero-Truncation Invariant)**：基于 `BufferedInputStream.mark(512)` 与 `reset()` 机制安全嗅探特征头，嗅探完毕自动精准复位指针，确保下游存储驱动拿到 100% 完整的原始流与 MD5/SHA-256 散列；
 - **恶意二进制精准识别**：内置识别 Windows PE（`MZ`）、Linux ELF（`.ELF`）、Shell 脚本（`#!`）、Java 字节码（`CAFEBABE`），彻底防御伪装上传。
 
@@ -1616,6 +1626,7 @@ ateng:
           - sh
           - bat
           - elf
+        max-file-size: 50MB                 # 单文件允许写入的最大容量上限（强类型 DataSize，默认不限制；配置正值后生效）
 
       # 孤儿分片碎片生命周期治理专有属性 (ChunkCleanerProperties)
       chunk-cleaner:
@@ -1679,7 +1690,7 @@ management:
 | `StorageChunkController` | `/sample/storage/chunk` | 大文件分片上传会话生命周期状态机（初始化、逐片上传、正序合并与缺片 40012 防卫）、端侧分块直传预签名外链、主动中止清理与后台孤儿碎片守护巡检 |
 | `StorageGovernanceController` | `/sample/storage/governance` | 声明式 `@Storage`、编程式 `use(...)` 与 `StorageContextHolder.executeWith` 函数式作用域切源、`StorageGuard` 扩展名黑名单拦截（40011）、对象业务标签生命周期治理、冷热分层与加密探查、连通性探针 (`ping`) 与连接池诊断字典提取 |
 
-### 2. 本地与双源端到端集成测试 (25 项用例，`SampleStorageIntegrationTest`)
+### 2. 本地与双源端到端集成测试 (26 项用例，`SampleStorageIntegrationTest`)
 | 序号 | 测试方法名 | 对应验证特性与业务场景 |
 | :---: | :--- | :--- |
 | 1 | `testUploadFile` | 表单上传电子合同与 `Result<StorageObject>` 契约及物理文件落盘 |
@@ -1707,6 +1718,7 @@ management:
 | 23 | `testTransactionRollbackAndAfterCommitLifecycle` | Spring 事务感知回滚防孤儿清理 (`uploadWithRollbackDelete`) 与提交后延迟删除 (`deleteAfterCommit`) |
 | 24 | `testExecuteWithScopedRouting` | `StorageContextHolder.executeWith` 函数式作用域切源与离开作用域自动恢复 |
 | 25 | `testDisallowedExtensionsBlacklist` | `StorageGuard` `disallowed-extensions` 黑名单扩展名拦截（`40011`） |
+| 26 | `testBatchTxAndRunWithAsyncContextPropagation` | `deleteBatchAfterCommit`、`registerRollbackDelete` 及 `StorageContextHolder.runWith` + `wrapSupplier` 跨线程异步上下文透传 |
 
 ### 3. 云原生 S3 双模自适应集成测试 (8 大生产场景，`SampleS3DualModeIntegrationTest`)
 | 序号 | 测试方法名 | 对应验证特性与业务场景 |
@@ -1726,7 +1738,7 @@ management:
 ```bash
 mvn test -pl ateng-boot-storage,ateng-boot-samples/ateng-boot-sample-storage -am -T 1C -nsu -B
 ```
-- **机制**：自动激活 `@Profile("!local")` 内存桩，样例 33 项集成测试全部通过，保证云端 CI 100% 极速稳定。
+- **机制**：自动激活 `@Profile("!local")` 内存桩，样例 34 项集成测试全部通过，保证云端 CI 100% 极速稳定。
 
 #### 阶梯 B：本地真实中间件联调（直连物理 RustFS / MinIO 服务）
 1. 在 `ateng-boot-sample-storage/src/main/resources/` 将模板 `application-local.example.yml` 复制为 `application-local.yml` 并填入真实服务连接信息；

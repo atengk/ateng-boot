@@ -10,6 +10,7 @@ import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.template.StorageTemplate;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -335,5 +336,49 @@ public class StorageObjectController {
             }
         });
         return Result.success(Boolean.TRUE);
+    }
+
+    /**
+     * 事务感知提交后批量延迟删除对象（仅在事务成功提交后批量清理；若事务回滚则全部保留）
+     *
+     * @param paths           目标存储相对路径列表
+     * @param simulateFailure 是否在注册批量延迟删除后模拟业务异常触发回滚
+     * @return 批量延迟删除注册结果
+     */
+    @PostMapping("/delete-batch-after-commit")
+    public Result<Boolean> deleteBatchAfterCommit(
+            @RequestParam("paths") @NotEmpty(message = "待删除路径列表不能为空") List<@NotBlank(message = "路径不能为空") String> paths,
+            @RequestParam(value = "simulateFailure", defaultValue = "false") boolean simulateFailure) {
+        transactionTemplate.executeWithoutResult(status -> {
+            storageTemplate.deleteBatchAfterCommit(paths);
+            if (simulateFailure) {
+                throw new StorageException(StorageResultCode.OPERATION_FAILED, "模拟业务事务失败，取消提交后批量删除");
+            }
+        });
+        return Result.success(Boolean.TRUE);
+    }
+
+    /**
+     * 为既有或自定义写入路径显式登记事务回滚补偿删除（事务提交保留，回滚时自动清理）
+     *
+     * @param file            上传的表单文件
+     * @param path            目标存储相对路径
+     * @param simulateFailure 是否模拟后续业务异常触发回滚清理
+     * @return 上传后的存储对象元数据契约
+     */
+    @PostMapping("/register-rollback-delete")
+    public Result<StorageObject> registerRollbackDelete(
+            @RequestParam("file") @NotNull(message = "上传文件不能为空") MultipartFile file,
+            @RequestParam("path") @NotBlank(message = "目标路径不能为空") String path,
+            @RequestParam(value = "simulateFailure", defaultValue = "false") boolean simulateFailure) {
+        StorageObject uploaded = transactionTemplate.execute(status -> {
+            StorageObject object = storageTemplate.upload(path, file);
+            storageTemplate.registerRollbackDelete(object.getPath());
+            if (simulateFailure) {
+                throw new StorageException(StorageResultCode.OPERATION_FAILED, "模拟业务事务失败，触发已登记对象回滚补偿删除: " + path);
+            }
+            return object;
+        });
+        return Result.success(uploaded);
     }
 }

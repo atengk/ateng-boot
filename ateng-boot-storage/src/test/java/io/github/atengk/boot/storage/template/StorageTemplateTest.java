@@ -3,6 +3,7 @@ package io.github.atengk.boot.storage.template;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.storage.context.StorageContextHolder;
 import io.github.atengk.boot.storage.driver.LocalDriver;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
@@ -494,6 +495,21 @@ class StorageTemplateTest {
         org.mockito.Mockito.verify(spyDriver, org.mockito.Mockito.never()).download(org.mockito.ArgumentMatchers.anyString());
         assertFalse(aliasTemplate.exists("same/b.txt"));
         assertEquals("same driver content", aliasTemplate.downloadString("same/c.txt"));
+
+        // 5. 在 StorageContextHolder("archive") 上下文内通过未绑定 multiTemplate 调用 use("primary") 与 copyTo/moveTo 回到主源
+        multiTemplate.use("archive").uploadString("scoped/from-archive.txt", "Back To Primary");
+        StorageContextHolder.runWith("archive", () -> {
+            StorageObject backCopied = multiTemplate.copyTo("scoped/from-archive.txt", "primary", "scoped/back-copy.txt");
+            assertEquals("scoped/back-copy.txt", backCopied.getPath());
+            assertTrue(driver.exists("scoped/back-copy.txt"));
+            assertEquals("Back To Primary", multiTemplate.use("primary").downloadString("scoped/back-copy.txt"));
+
+            StorageObject backMoved = multiTemplate.moveTo("scoped/from-archive.txt", "primary", "scoped/back-move.txt");
+            assertEquals("scoped/back-move.txt", backMoved.getPath());
+            assertTrue(driver.exists("scoped/back-move.txt"));
+            assertFalse(archiveDriver.exists("scoped/from-archive.txt"));
+        });
+        assertEquals(null, StorageContextHolder.get());
     }
 
     public static class TestUser {

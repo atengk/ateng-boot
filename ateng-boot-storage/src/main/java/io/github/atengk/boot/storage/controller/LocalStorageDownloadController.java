@@ -151,7 +151,7 @@ public class LocalStorageDownloadController {
 
         // 4. 签名合法性防篡改校验（签名无效返回 403）
         String secretKey = LocalStorageEndpointSupport.resolveSecretKey(localDriver, properties);
-        String signatureSource = (source != null && !source.isBlank()) ? source.trim() : null;
+        String signatureSource = LocalStorageEndpointSupport.normalizeOptionalSource(source);
         String payload = StorageSecurityUtil.buildPresignedDownloadSignaturePayload(
                 cleanPath, expires, filename, contentType, disposition, signatureSource);
         if (secretKey == null || secretKey.isBlank() || !StorageSecurityUtil.verifyHmacSha256(payload, secretKey, signature)) {

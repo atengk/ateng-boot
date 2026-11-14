@@ -1,6 +1,7 @@
 package io.github.atengk.boot.storage.properties;
 
 import lombok.Data;
+import org.springframework.util.unit.DataSize;
 
 import java.util.Collections;
 import java.util.Set;
@@ -35,4 +36,9 @@ public class StorageGuardProperties {
      * 禁止上传的文件扩展名黑名单集合（优先于白名单一票否决，与内置高危可执行后缀并集生效）
      */
     private Set<String> disallowedExtensions = Collections.emptySet();
+
+    /**
+     * 单文件允许写入的最大容量上限（默认不限制，仅在配置正值且开启 guard.enabled 时拦截并抛出 40020）
+     */
+    private DataSize maxFileSize;
 }

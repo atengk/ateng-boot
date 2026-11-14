@@ -246,6 +246,32 @@ public class StorageGuard {
         return ext;
     }
 
+    /**
+     * 解析当前生效的单文件大小上限（字节数；未启用防卫或未配置正值上限时返回 -1）
+     *
+     * @return 最大允许字节数，-1 表示不限制
+     */
+    public long resolveMaxFileSizeBytes() {
+        if (!properties.isEnabled() || properties.getMaxFileSize() == null) {
+            return -1L;
+        }
+        long maxBytes = properties.getMaxFileSize().toBytes();
+        return maxBytes > 0 ? maxBytes : -1L;
+    }
+
+    /**
+     * 校验待上传文件字节大小是否超出安全防卫配额上限
+     *
+     * @param size 文件字节大小
+     */
+    public void validateFileSize(long size) {
+        long maxBytes = resolveMaxFileSizeBytes();
+        if (maxBytes > 0 && size > maxBytes) {
+            throw new StorageException(StorageResultCode.STORAGE_SIZE_EXCEEDED,
+                    "上传文件大小超出安全防卫配额上限: size=" + size + ", maxBytes=" + maxBytes);
+        }
+    }
+
     private static boolean matchesExtension(String ext, Set<String> extensions) {
         if (extensions == null || extensions.isEmpty()) {
             return false;

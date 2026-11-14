@@ -124,17 +124,18 @@ public class LocalStorageUploadController {
 
         // 4. 签名合法性防篡改校验（签名无效返回 403）
         String secretKey = LocalStorageEndpointSupport.resolveSecretKey(localDriver, properties);
+        String normalizedSource = LocalStorageEndpointSupport.normalizeOptionalSource(source);
         boolean isChunked = (uploadId != null && !uploadId.isBlank() && chunkIndex > 0);
         String signPayload;
         if (isChunked) {
             signPayload = cleanPath + ":" + expires + ":" + uploadId + ":" + chunkIndex
-                    + (source != null && !source.isBlank() ? ":" + source.trim() : "");
+                    + (normalizedSource != null ? ":" + normalizedSource : "");
         } else {
             String ct = (expectedContentType != null && !expectedContentType.isBlank())
                     ? expectedContentType.trim()
                     : "";
             signPayload = cleanPath + ":" + expires + ":" + ct + ":" + maxBytes
-                    + (source != null && !source.isBlank() ? ":" + source.trim() : "");
+                    + (normalizedSource != null ? ":" + normalizedSource : "");
         }
 
         if (secretKey == null || secretKey.isBlank() || !StorageSecurityUtil.verifyHmacSha256(signPayload, secretKey, signature)) {

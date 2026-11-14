@@ -1001,7 +1001,7 @@ public class S3Driver implements StorageDriver {
         if (page != null && page.hasContents()) {
             for (S3Object obj : page.contents()) {
                 batch.add(ObjectIdentifier.builder().key(obj.key()).build());
-                if (batch.size() >= 1000) {
+                if (batch.size() >= MAX_DELETE_BATCH_SIZE) {
                     flushDeleteBatch(batch);
                     batch.clear();
                 }
