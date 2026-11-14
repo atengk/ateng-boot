@@ -174,6 +174,41 @@ public interface StorageOperations {
     StorageObject uploadIfAbsent(StorageUploadRequest request);
 
     /**
+     * 上传 MultipartFile 表单文件，并绑定 Spring 事务回滚补偿删除（无活动事务时正常上传）
+     *
+     * @param file 表单上传文件
+     * @param path 目标相对路径
+     * @return 存储元数据对象
+     */
+    StorageObject uploadWithRollbackDelete(MultipartFile file, String path);
+
+    /**
+     * 上传输入流，并绑定 Spring 事务回滚补偿删除（无活动事务时正常上传）
+     *
+     * @param in          输入流
+     * @param path        目标相对路径
+     * @param contentType MIME 内容类型
+     * @param size        数据流字节大小（未知时传 -1）
+     * @return 存储元数据对象
+     */
+    StorageObject uploadWithRollbackDelete(InputStream in, String path, String contentType, long size);
+
+    /**
+     * 按结构化请求对象上传文件，并绑定 Spring 事务回滚补偿删除（无活动事务时正常上传）
+     *
+     * @param request 统一上传请求对象
+     * @return 存储元数据对象
+     */
+    StorageObject uploadWithRollbackDelete(StorageUploadRequest request);
+
+    /**
+     * 注册 Spring 事务回滚补偿删除动作（事务回滚时自动删除指定路径对象，无活动事务时静默跳过）
+     *
+     * @param path 目标相对路径
+     */
+    void registerRollbackDelete(String path);
+
+    /**
      * 上传公开可读对象（自动推导 MIME 与计算大小，赋予公共读权限）
      *
      * @param path 目标相对路径
@@ -299,6 +334,20 @@ public interface StorageOperations {
      * @return true 操作成功
      */
     boolean deleteBatch(List<String> paths);
+
+    /**
+     * 在当前 Spring 事务成功提交后延迟物理删除目标对象（无活动事务时平滑降级为立即物理删除）
+     *
+     * @param path 目标相对路径
+     */
+    void deleteAfterCommit(String path);
+
+    /**
+     * 在当前 Spring 事务成功提交后延迟批量物理删除目标对象（无活动事务时平滑降级为立即批量删除）
+     *
+     * @param paths 目标相对路径列表
+     */
+    void deleteBatchAfterCommit(List<String> paths);
 
     /**
      * 删除指定路径前缀下的所有存储对象（天然幂等，流式分批删除）

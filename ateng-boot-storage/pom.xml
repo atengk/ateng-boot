@@ -98,5 +98,12 @@
             <artifactId>spring-webmvc</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- Spring Transaction (用于在单测中模拟声明式事务同步提交与回滚阶段) -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

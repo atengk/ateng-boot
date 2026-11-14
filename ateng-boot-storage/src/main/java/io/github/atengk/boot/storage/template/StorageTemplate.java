@@ -4,6 +4,8 @@ import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.core.util.TransactionUtil;
 import io.github.atengk.boot.storage.context.StorageContextHolder;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.exception.StorageException;
@@ -17,7 +19,6 @@ import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.model.StorageUploadRequest;
-import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.storage.guard.StorageGuard;
 import io.github.atengk.boot.storage.resource.StorageResource;
 import io.github.atengk.boot.storage.util.StorageSecurityUtil;
@@ -262,6 +263,35 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         return executeUpload(request, false);
     }
 
+    @Override
+    public StorageObject uploadWithRollbackDelete(MultipartFile file, String path) {
+        StorageObject uploaded = upload(path, file);
+        registerRollbackDelete(uploaded.getPath());
+        return uploaded;
+    }
+
+    @Override
+    public StorageObject uploadWithRollbackDelete(InputStream in, String path, String contentType, long size) {
+        StorageObject uploaded = upload(path, in, contentType, size);
+        registerRollbackDelete(uploaded.getPath());
+        return uploaded;
+    }
+
+    @Override
+    public StorageObject uploadWithRollbackDelete(StorageUploadRequest request) {
+        StorageObject uploaded = upload(request);
+        registerRollbackDelete(uploaded.getPath());
+        return uploaded;
+    }
+
+    @Override
+    public void registerRollbackDelete(String path) {
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        StorageTemplate boundHandle = captureBoundHandle();
+        TransactionUtil.executeAfterRollback(() ->
+                executeSafelyInTx(boundHandle, "事务回滚补偿删除孤儿对象", cleanPath, () -> boundHandle.delete(cleanPath)));
+    }
+
     private StorageObject executeUpload(StorageUploadRequest request, boolean overwrite) {
         if (request == null) {
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传请求对象不能为空");
@@ -446,6 +476,42 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
             }
         }
         return result;
+    }
+
+    @Override
+    public void deleteAfterCommit(String path) {
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        StorageTemplate boundHandle = captureBoundHandle();
+        TransactionUtil.executeAfterCommit(() ->
+                executeSafelyInTx(boundHandle, "事务提交后延迟删除对象", cleanPath, () -> boundHandle.delete(cleanPath)));
+    }
+
+    @Override
+    public void deleteBatchAfterCommit(List<String> paths) {
+        if (paths == null || paths.isEmpty()) {
+            return;
+        }
+        List<String> snapshotPaths = new ArrayList<>(paths.size());
+        for (String path : paths) {
+            snapshotPaths.add(StorageSecurityUtil.normalizePath(path));
+        }
+        List<String> immutablePaths = Collections.unmodifiableList(snapshotPaths);
+        StorageTemplate boundHandle = captureBoundHandle();
+        TransactionUtil.executeAfterCommit(() ->
+                executeSafelyInTx(boundHandle, "事务提交后批量延迟删除对象", immutablePaths, () -> boundHandle.deleteBatch(immutablePaths)));
+    }
+
+    private StorageTemplate captureBoundHandle() {
+        return createBoundTemplate(getDriver(), getCurrentSourceKey());
+    }
+
+    private void executeSafelyInTx(StorageTemplate boundHandle, String action, Object target, Runnable task) {
+        try {
+            task.run();
+        } catch (Throwable ex) {
+            log.error("{} 失败（已隔离防止阻断主事务收尾）: sourceKey={}, target={}, error={}",
+                    action, boundHandle.getCurrentSourceKey(), target, ex.getMessage(), ex);
+        }
     }
 
     @Override
