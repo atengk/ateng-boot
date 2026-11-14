@@ -7,6 +7,7 @@ import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.model.SessionKey;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
 import io.github.atengk.boot.realtime.template.RealtimeTemplate;
+import io.github.atengk.boot.sample.realtime.dto.OrderConfirmActionRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -108,5 +109,17 @@ public class ChatActionHandler {
         String orderId = payload != null ? String.valueOf(payload.get("orderId")) : "ORD-001";
         log.info("[Sample] 收到订单取消请求: orderId={}", orderId);
         throw new BusinessException(40001, "订单 [" + orderId + "] 已锁定不可取消");
+    }
+
+    /**
+     * 演示上行强类型 DTO 入参自动执行 JSR-303 校验（未通过时框架自动回发 400 错误应答帧）
+     *
+     * @param payload 订单确认强类型载荷
+     * @return 强类型确认结果
+     */
+    @RealtimeAction("order:confirm")
+    public Result<String> handleOrderConfirm(OrderConfirmActionRequest payload) {
+        log.info("[Sample] 收到订单确认请求: orderId={}, quantity={}", payload.getOrderId(), payload.getQuantity());
+        return Result.success("已确认订单 [" + payload.getOrderId() + "]，数量 " + payload.getQuantity());
     }
 }

@@ -9,6 +9,10 @@ import io.github.atengk.boot.realtime.annotation.RealtimeAction;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.model.SessionKey;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -50,6 +54,17 @@ class RealtimeActionDispatcherTest {
     public static class UserProfile {
         private String userId;
         private String name;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class ValidatedOrderPayload {
+        @NotBlank(message = "订单编号不能为空")
+        private String orderId;
+
+        @Min(value = 1, message = "购买数量至少为 1")
+        private Integer quantity;
     }
 
     public static class SampleActionService {
@@ -119,6 +134,29 @@ class RealtimeActionDispatcherTest {
         public void onSystemError() {
             handledEvents.add("system:error");
             throw new IllegalStateException("Database connection corrupted");
+        }
+
+        @RealtimeAction("order:submit")
+        public Result<String> onValidatedOrderSubmit(ValidatedOrderPayload payload) {
+            handledEvents.add("order:submit");
+            return Result.success("SUBMITTED:" + payload.getOrderId());
+        }
+
+        @RealtimeAction("arg:illegal")
+        public void onIllegalArg() {
+            handledEvents.add("arg:illegal");
+            throw new IllegalArgumentException("参数格式非法");
+        }
+
+        @RealtimeAction("arg:notnull")
+        public void onNotNullArg(@NotNull(message = "载荷不可为空") ValidatedOrderPayload payload) {
+            handledEvents.add("arg:notnull");
+        }
+
+        @RealtimeAction("arg:constraint")
+        public void onConstraintViolation() {
+            handledEvents.add("arg:constraint");
+            throw new ConstraintViolationException("订单状态非法", java.util.Set.of());
         }
     }
 
@@ -449,5 +487,246 @@ class RealtimeActionDispatcherTest {
         boolean handled = dispatcher.dispatch(session, unmapped);
 
         assertThat(handled).isFalse();
+    }
+
+    @Test
+    @DisplayName("上行强类型 DTO 自动 JSR-303 校验失败与 IllegalArgumentException 转译 400 回执")
+    void testDtoJsr303ValidationAndIllegalArgumentTranslation() throws Exception {
+        GenericApplicationContext context = new GenericApplicationContext();
+        SampleActionService service = new SampleActionService();
+        context.registerBean("sampleActionService", SampleActionService.class, () -> service);
+        context.refresh();
+
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        RealtimeMessageDispatcher dispatcher = new RealtimeMessageDispatcher(
+                beanFactory.getBeanProvider(RealtimeMessageListener.class)
+        );
+        dispatcher.setApplicationContext(context);
+        dispatcher.afterSingletonsInstantiated();
+
+        SessionKey key = SessionKey.of("user-valid", "web", "c1");
+        WebSocketSession ws = mock(WebSocketSession.class);
+        when(ws.isOpen()).thenReturn(true);
+        RealtimeSession session = RealtimeSession.ofWebSocket(key, ws);
+
+        // 1. JSR-303 校验不通过：目标业务方法不得执行，客户端收到 {event}:reply 且 code=400
+        RealtimeMessage<?> invalidMsg = RealtimeMessage.of(
+                "req-valid-01",
+                "order:submit",
+                Map.of("orderId", "", "quantity", 0)
+        );
+        assertThat(dispatcher.dispatch(session, invalidMsg)).isTrue();
+        assertThat(service.handledEvents).doesNotContain("order:submit");
+
+        ArgumentCaptor<TextMessage> captor = ArgumentCaptor.forClass(TextMessage.class);
+        verify(ws, times(1)).sendMessage(captor.capture());
+        RealtimeMessage<?> failReply = JsonUtil.parseObject(captor.getValue().getPayload(), RealtimeMessage.class);
+        assertThat(failReply).isNotNull();
+        assertThat(failReply.getId()).isEqualTo("req-valid-01");
+        assertThat(failReply.getEvent()).isEqualTo("order:submit:reply");
+        Result<?> failResult = JsonUtil.parseObject(JsonUtil.toJsonString(failReply.getData()), Result.class);
+        assertThat(failResult).isNotNull();
+        assertThat(failResult.getCode()).isEqualTo(400);
+        assertThat(failResult.getMsg()).isNotBlank();
+        verify(ws, never()).close(any());
+
+        // 2. IllegalArgumentException 转译为 400 回执
+        RealtimeMessage<?> illegalArgMsg = RealtimeMessage.of("req-illegal-02", "arg:illegal", null);
+        assertThat(dispatcher.dispatch(session, illegalArgMsg)).isTrue();
+        verify(ws, times(2)).sendMessage(captor.capture());
+        RealtimeMessage<?> illegalReply = JsonUtil.parseObject(captor.getValue().getPayload(), RealtimeMessage.class);
+        Result<?> illegalResult = JsonUtil.parseObject(JsonUtil.toJsonString(illegalReply.getData()), Result.class);
+        assertThat(illegalReply.getId()).isEqualTo("req-illegal-02");
+        assertThat(illegalReply.getEvent()).isEqualTo("arg:illegal:reply");
+        assertThat(illegalResult.getCode()).isEqualTo(400);
+        assertThat(illegalResult.getMsg()).isEqualTo("参数格式非法");
+    }
+
+    @Test
+    @DisplayName("RealtimeActionInterceptor 责任链: 正常序/逆序执行、前置拦截中止、异常转译与四维上下文清理前触发 afterCompletion")
+    void testActionInterceptorChainLifecycle() throws Exception {
+        GenericApplicationContext context = new GenericApplicationContext();
+        SampleActionService service = new SampleActionService();
+        context.registerBean("sampleActionService", SampleActionService.class, () -> service);
+        context.refresh();
+
+        List<String> traceLog = new ArrayList<>();
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+
+        RealtimeActionInterceptor firstInterceptor = new RealtimeActionInterceptor() {
+            @Override
+            public boolean preHandle(RealtimeSession s, RealtimeMessage<?> msg, Object bean, java.lang.reflect.Method method, Object[] args) {
+                traceLog.add("first:pre:" + MDC.get("traceId"));
+                return true;
+            }
+
+            @Override
+            public void afterCompletion(RealtimeSession s, RealtimeMessage<?> msg, Object bean, java.lang.reflect.Method method, Object result, Throwable ex) {
+                traceLog.add("first:after:" + (MDC.get("traceId") != null) + ":" + UserContextHolder.getUserId() + ":" + TenantContextHolder.getTenantId() + ":" + (ex != null));
+            }
+        };
+
+        RealtimeActionInterceptor secondInterceptor = new RealtimeActionInterceptor() {
+            @Override
+            public boolean preHandle(RealtimeSession s, RealtimeMessage<?> msg, Object bean, java.lang.reflect.Method method, Object[] args) {
+                traceLog.add("second:pre:" + msg.getEvent());
+                if ("abort:by:false".equals(msg.getEvent())) {
+                    return false;
+                }
+                if ("abort:by:biz".equals(msg.getEvent())) {
+                    throw new BusinessException(40301, "无权访问该 Action");
+                }
+                return true;
+            }
+
+            @Override
+            public void afterCompletion(RealtimeSession s, RealtimeMessage<?> msg, Object bean, java.lang.reflect.Method method, Object result, Throwable ex) {
+                traceLog.add("second:after:" + (ex != null));
+            }
+        };
+
+        beanFactory.addBean("i1", firstInterceptor);
+        beanFactory.addBean("i2", secondInterceptor);
+
+        RealtimeMessageDispatcher dispatcher = new RealtimeMessageDispatcher(
+                beanFactory.getBeanProvider(RealtimeMessageListener.class),
+                beanFactory.getBeanProvider(RealtimeActionInterceptor.class)
+        );
+        dispatcher.setApplicationContext(context);
+        dispatcher.afterSingletonsInstantiated();
+
+        SessionKey key = SessionKey.of("user-int", "web", "c1");
+        WebSocketSession ws = mock(WebSocketSession.class);
+        when(ws.isOpen()).thenReturn(true);
+        RealtimeSession session = RealtimeSession.ofWebSocket(key, ws, 777L, null);
+
+        // 1. 正常执行：first:pre -> second:pre -> action -> second:after -> first:after（上下文仍存在）-> 清理
+        RealtimeMessage<?> okMsg = RealtimeMessage.of("req-int-1", "dto:echo", new UserProfile("u1", "ok"));
+        okMsg.setTraceId("trace-int-01");
+        assertThat(dispatcher.dispatch(session, okMsg)).isTrue();
+        assertThat(service.handledEvents).contains("dto:echo");
+        assertThat(traceLog).containsExactly(
+                "first:pre:trace-int-01",
+                "second:pre:dto:echo",
+                "second:after:false",
+                "first:after:true:user-int:777:false"
+        );
+        assertThat(MDC.get("traceId")).isNull();
+        assertThat(UserContextHolder.getUserId()).isNull();
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+
+        // 2. secondInterceptor preHandle 返回 false 中止目标方法，firstInterceptor 的 afterCompletion 仍执行
+        traceLog.clear();
+        service.handledEvents.clear();
+        RealtimeMessage<?> abortMsg = RealtimeMessage.of("req-int-2", "dto:echo", new UserProfile("u1", "x"));
+        abortMsg.setEvent("abort:by:false");
+        // 注册个测试路由指向 onEchoDto
+        dispatcher.registerAction("abort:by:false", service, SampleActionService.class.getMethod("onEchoDto", UserProfile.class));
+        dispatcher.registerAction("abort:by:biz", service, SampleActionService.class.getMethod("onEchoDto", UserProfile.class));
+
+        assertThat(dispatcher.dispatch(session, abortMsg)).isTrue();
+        assertThat(service.handledEvents).isEmpty();
+        assertThat(traceLog).containsExactly(
+                "first:pre:" + abortMsg.getTraceId(),
+                "second:pre:abort:by:false",
+                "first:after:true:user-int:777:false"
+        );
+
+        // 3. secondInterceptor preHandle 抛出 BusinessException，自动转译为 {event}:reply 错误回执，firstInterceptor afterCompletion 捕获异常引用
+        traceLog.clear();
+        RealtimeMessage<?> bizAbortMsg = RealtimeMessage.of("req-int-3", "abort:by:biz", new UserProfile("u1", "x"));
+        assertThat(dispatcher.dispatch(session, bizAbortMsg)).isTrue();
+        assertThat(service.handledEvents).isEmpty();
+        assertThat(traceLog).containsExactly(
+                "first:pre:" + bizAbortMsg.getTraceId(),
+                "second:pre:abort:by:biz",
+                "first:after:true:user-int:777:true"
+        );
+        ArgumentCaptor<TextMessage> captor = ArgumentCaptor.forClass(TextMessage.class);
+        verify(ws, atLeastOnce()).sendMessage(captor.capture());
+        RealtimeMessage<?> errReply = JsonUtil.parseObject(captor.getValue().getPayload(), RealtimeMessage.class);
+        Result<?> errResult = JsonUtil.parseObject(JsonUtil.toJsonString(errReply.getData()), Result.class);
+        assertThat(errReply.getId()).isEqualTo("req-int-3");
+        assertThat(errReply.getEvent()).isEqualTo("abort:by:biz:reply");
+        assertThat(errResult.getCode()).isEqualTo(40301);
+        assertThat(errResult.getMsg()).isEqualTo("无权访问该 Action");
+    }
+
+    @Test
+    @DisplayName("边界对抗: null 载荷 @NotNull 定制提示、反序列化失败 400、ConstraintViolationException 转译与 afterCompletion 异常不阻断清理")
+    void testBoundaryNullPayloadBadJsonConstraintExceptionAndAfterCompletionException() throws Exception {
+        GenericApplicationContext context = new GenericApplicationContext();
+        SampleActionService service = new SampleActionService();
+        context.registerBean("sampleActionService", SampleActionService.class, () -> service);
+        context.refresh();
+
+        List<String> afterLog = new ArrayList<>();
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("i1", new RealtimeActionInterceptor() {
+            @Override
+            public void afterCompletion(RealtimeSession s, RealtimeMessage<?> msg, Object bean, java.lang.reflect.Method method, Object result, Throwable ex) {
+                afterLog.add("i1:after");
+            }
+        });
+        beanFactory.addBean("i2", new RealtimeActionInterceptor() {
+            @Override
+            public void afterCompletion(RealtimeSession s, RealtimeMessage<?> msg, Object bean, java.lang.reflect.Method method, Object result, Throwable ex) {
+                afterLog.add("i2:after-throw");
+                throw new IllegalStateException("afterCompletion failure");
+            }
+        });
+
+        RealtimeMessageDispatcher dispatcher = new RealtimeMessageDispatcher(
+                beanFactory.getBeanProvider(RealtimeMessageListener.class),
+                beanFactory.getBeanProvider(RealtimeActionInterceptor.class)
+        );
+        dispatcher.setApplicationContext(context);
+        dispatcher.afterSingletonsInstantiated();
+
+        SessionKey key = SessionKey.of("user-edge", "web", "c1");
+        WebSocketSession ws = mock(WebSocketSession.class);
+        when(ws.isOpen()).thenReturn(true);
+        RealtimeSession session = RealtimeSession.ofWebSocket(key, ws, 888L, null);
+
+        // 1. null 载荷命中 @NotNull(message = "载荷不可为空") 返回 400 回执（前置参数校验失败时不进入拦截器链，上下文正常清理）
+        RealtimeMessage<?> nullMsg = RealtimeMessage.of("req-edge-1", "arg:notnull", null);
+        assertThat(dispatcher.dispatch(session, nullMsg)).isTrue();
+        assertThat(service.handledEvents).isEmpty();
+        assertThat(afterLog).isEmpty();
+        assertThat(MDC.get("traceId")).isNull();
+        assertThat(UserContextHolder.getUserId()).isNull();
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+
+        ArgumentCaptor<TextMessage> captor = ArgumentCaptor.forClass(TextMessage.class);
+        verify(ws, times(1)).sendMessage(captor.capture());
+        RealtimeMessage<?> nullReply = JsonUtil.parseObject(captor.getValue().getPayload(), RealtimeMessage.class);
+        Result<?> nullResult = JsonUtil.parseObject(JsonUtil.toJsonString(nullReply.getData()), Result.class);
+        assertThat(nullResult.getCode()).isEqualTo(400);
+        assertThat(nullResult.getMsg()).isEqualTo("载荷不可为空");
+
+        // 2. 不兼容载荷类型反序列化失败返回 400 回执
+        RealtimeMessage<?> badPayloadMsg = RealtimeMessage.of("req-edge-2", "order:submit", Map.of("orderId", "O1", "quantity", "not-a-number"));
+        assertThat(dispatcher.dispatch(session, badPayloadMsg)).isTrue();
+        verify(ws, times(2)).sendMessage(captor.capture());
+        RealtimeMessage<?> badPayloadReply = JsonUtil.parseObject(captor.getValue().getPayload(), RealtimeMessage.class);
+        Result<?> badPayloadResult = JsonUtil.parseObject(JsonUtil.toJsonString(badPayloadReply.getData()), Result.class);
+        assertThat(badPayloadReply.getId()).isEqualTo("req-edge-2");
+        assertThat(badPayloadResult.getCode()).isEqualTo(400);
+        assertThat(badPayloadResult.getMsg()).contains("请求载荷格式非法");
+
+        // 3. 动作方法直接抛出 ConstraintViolationException 转译为 400 回执，且 i2.afterCompletion 异常不阻断 i1.afterCompletion 与上下文清理
+        RealtimeMessage<?> cvMsg = RealtimeMessage.of("req-edge-3", "arg:constraint", null);
+        assertThat(dispatcher.dispatch(session, cvMsg)).isTrue();
+        verify(ws, times(3)).sendMessage(captor.capture());
+        RealtimeMessage<?> cvReply = JsonUtil.parseObject(captor.getValue().getPayload(), RealtimeMessage.class);
+        Result<?> cvResult = JsonUtil.parseObject(JsonUtil.toJsonString(cvReply.getData()), Result.class);
+        assertThat(cvReply.getId()).isEqualTo("req-edge-3");
+        assertThat(cvResult.getCode()).isEqualTo(400);
+        assertThat(cvResult.getMsg()).isEqualTo("订单状态非法");
+        assertThat(afterLog).containsExactly("i2:after-throw", "i1:after");
+        assertThat(MDC.get("traceId")).isNull();
+        assertThat(UserContextHolder.getUserId()).isNull();
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+        verify(ws, never()).close(any());
     }
 }

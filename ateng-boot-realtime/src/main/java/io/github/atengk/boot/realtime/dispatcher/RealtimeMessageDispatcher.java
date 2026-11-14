@@ -7,12 +7,18 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.realtime.annotation.RealtimeAction;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.model.SessionKey;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.SmartInitializingSingleton;
@@ -23,7 +29,11 @@ import org.springframework.core.annotation.AnnotationUtils;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -41,6 +51,7 @@ public class RealtimeMessageDispatcher implements SmartInitializingSingleton, Ap
 
     private ApplicationContext applicationContext;
     private final ObjectProvider<RealtimeMessageListener> messageListeners;
+    private final ObjectProvider<RealtimeActionInterceptor> actionInterceptors;
 
     /**
      * 事件动作路由表: event -> ActionMethod
@@ -48,7 +59,13 @@ public class RealtimeMessageDispatcher implements SmartInitializingSingleton, Ap
     private final Map<String, ActionMethod> actionMap = new ConcurrentHashMap<>();
 
     public RealtimeMessageDispatcher(ObjectProvider<RealtimeMessageListener> messageListeners) {
+        this(messageListeners, null);
+    }
+
+    public RealtimeMessageDispatcher(ObjectProvider<RealtimeMessageListener> messageListeners,
+                                     ObjectProvider<RealtimeActionInterceptor> actionInterceptors) {
         this.messageListeners = messageListeners;
+        this.actionInterceptors = actionInterceptors;
     }
 
     @Override
@@ -120,51 +137,41 @@ public class RealtimeMessageDispatcher implements SmartInitializingSingleton, Ap
         // 1. 优先匹配 @RealtimeAction 注解处理方法
         ActionMethod actionMethod = actionMap.get(event);
         if (actionMethod != null) {
+            List<RealtimeActionInterceptor> interceptors = resolveInterceptors();
+            int interceptorIndex = -1;
+            Object actionResult = null;
+            Throwable dispatchedException = null;
             try {
-                // 1.1 提取并绑定 MDC traceId
-                String traceId = (message.getTraceId() != null && !message.getTraceId().isBlank())
-                        ? message.getTraceId()
-                        : null;
-                if (traceId == null && session.getAttributes() != null) {
-                    Object attrTrace = session.getAttributes().get("traceId");
-                    if (attrTrace instanceof String str && !str.isBlank()) {
-                        traceId = str;
-                    }
-                }
-                if (traceId == null) {
-                    traceId = IdUtil.fastSimpleUUID();
-                }
-                MDC.put("traceId", traceId);
+                // 1.1 绑定四维调度上下文（MDC / User / Tenant）
+                bindDispatchContext(session, message);
 
-                // 1.2 填充 User 上下文
-                if (session.getSessionKey() != null && session.getSessionKey().getUserId() != null) {
-                    UserContextHolder.set(session.getSessionKey().getUserId());
-                }
-
-                // 1.3 填充 Tenant 上下文
-                if (session.getTenantId() != null) {
-                    TenantContextHolder.setTenantId(session.getTenantId());
-                } else if (message.getTenantId() != null && !message.getTenantId().isBlank()) {
-                    TenantContextHolder.setTenantId(message.getTenantId());
-                }
-
+                // 1.2 解析强类型参数并执行 JSR-303 前置 Fail-Fast 校验
                 Object[] args = resolveArguments(actionMethod.method, session, message);
-                Object result = actionMethod.method.invoke(actionMethod.bean, args);
-                // 双向 Request-Response: 处理返回值自动应答回发
-                handleActionReply(session, message, event, result);
+
+                // 1.3 按序执行 RealtimeActionInterceptor.preHandle 责任链
+                for (int i = 0; i < interceptors.size(); i++) {
+                    RealtimeActionInterceptor interceptor = interceptors.get(i);
+                    if (!interceptor.preHandle(session, message, actionMethod.bean, actionMethod.method, args)) {
+                        log.debug("[Realtime] @RealtimeAction [{}] 被前置拦截器中止: interceptor={}, sessionKey={}",
+                                event, interceptor.getClass().getSimpleName(), session.getSessionKey());
+                        return true;
+                    }
+                    interceptorIndex = i;
+                }
+
+                // 1.4 反射执行目标动作方法并处理双向 Request-Response 应答
+                actionResult = actionMethod.method.invoke(actionMethod.bean, args);
+                handleActionReply(session, message, event, actionResult);
                 return true;
             } catch (Throwable t) {
                 Throwable cause = (t instanceof InvocationTargetException ite && ite.getCause() != null)
                         ? ite.getCause()
                         : t;
-                if (cause instanceof BusinessException be) {
-                    log.warn("[Realtime] 执行 @RealtimeAction [{}] 触发业务异常: sessionKey={}, code={}, msg={}",
-                            event, session.getSessionKey(), be.getCode(), be.getMsg());
-                    Integer code = be.getCode() != null ? be.getCode()
-                            : (be.getResultCode() != null ? be.getResultCode().getCode() : CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
-                    String msg = be.getMsg() != null ? be.getMsg()
-                            : (be.getMessage() != null ? be.getMessage() : "Business error");
-                    Result<Void> failResult = Result.failure(code, msg);
+                dispatchedException = cause;
+                Result<Void> failResult = translateFailureResult(cause);
+                if (failResult != null) {
+                    log.warn("[Realtime] 执行 @RealtimeAction [{}] 校验或业务拦截: sessionKey={}, code={}, msg={}",
+                            event, session.getSessionKey(), failResult.getCode(), failResult.getMsg());
                     handleActionReply(session, message, event, failResult);
                     return true;
                 }
@@ -172,10 +179,12 @@ public class RealtimeMessageDispatcher implements SmartInitializingSingleton, Ap
                         event, session.getSessionKey(), cause.getMessage(), cause);
                 return false;
             } finally {
-                // 彻底确定性清理上下文，防御线程复用污染
-                MDC.remove("traceId");
-                UserContextHolder.clear();
-                TenantContextHolder.clear();
+                // 先于上下文清理逆序触发 afterCompletion，保障拦截器收尾可读到完整上下文；随后确定性清空防污染
+                try {
+                    triggerAfterCompletion(interceptors, interceptorIndex, session, message, actionMethod, actionResult, dispatchedException);
+                } finally {
+                    clearDispatchContext();
+                }
             }
         }
 
@@ -217,28 +226,77 @@ public class RealtimeMessageDispatcher implements SmartInitializingSingleton, Ap
             } else if (RealtimeMessage.class.isAssignableFrom(type)) {
                 args[i] = message;
             } else {
-                // 尝试将 message.getData() 注入为强类型入参
+                // 尝试将 message.getData() 注入为强类型入参并执行 JSR-303 前置 Fail-Fast 校验
                 Object data = message.getData();
+                Object resolvedArg = null;
                 if (data != null) {
                     if (type.isInstance(data)) {
-                        args[i] = data;
+                        resolvedArg = data;
                     } else if (data instanceof String str && type == String.class) {
-                        args[i] = str;
+                        resolvedArg = str;
                     } else {
                         try {
-                            args[i] = JsonUtil.parseObject(JsonUtil.toJsonString(data), type);
+                            resolvedArg = JsonUtil.parseObject(JsonUtil.toJsonString(data), type);
                         } catch (Exception e) {
-                            log.warn("[Realtime] 业务载荷参数转换失败: method={}, targetType={}, error={}",
-                                    method.getName(), type.getSimpleName(), e.getMessage());
-                            args[i] = null;
+                            throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+                                    "请求载荷格式非法，无法解析为 [" + type.getSimpleName() + "]: " + e.getMessage(), e);
                         }
                     }
-                } else {
-                    args[i] = null;
                 }
+                if (resolvedArg != null && (isCustomDtoType(type) || parameters[i].isAnnotationPresent(Valid.class))) {
+                    ValidatorUtil.validate(resolvedArg);
+                } else if (resolvedArg == null) {
+                    NotNull notNullAnno = parameters[i].getAnnotation(NotNull.class);
+                    if (notNullAnno != null) {
+                        String customMsg = notNullAnno.message();
+                        if (customMsg != null && !customMsg.isBlank() && !customMsg.startsWith("{")) {
+                            throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), customMsg);
+                        }
+                        ValidatorUtil.validate(null);
+                    } else if (parameters[i].isAnnotationPresent(Valid.class)) {
+                        ValidatorUtil.validate(null);
+                    }
+                }
+                args[i] = resolvedArg;
             }
         }
         return args;
+    }
+
+    private boolean isCustomDtoType(Class<?> type) {
+        if (BeanUtils.isSimpleValueType(type) || type.isArray()
+                || Map.class.isAssignableFrom(type)
+                || Collection.class.isAssignableFrom(type)) {
+            return false;
+        }
+        String className = type.getName();
+        return !className.startsWith("java.")
+                && !className.startsWith("jakarta.")
+                && !className.startsWith("org.springframework.");
+    }
+
+    private Result<Void> translateFailureResult(Throwable cause) {
+        if (cause instanceof BusinessException be) {
+            Integer code = be.getCode() != null ? be.getCode()
+                    : (be.getResultCode() != null ? be.getResultCode().getCode() : CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
+            String msg = be.getMsg() != null ? be.getMsg()
+                    : (be.getMessage() != null ? be.getMessage() : "Business error");
+            return Result.failure(code, msg);
+        }
+        if (cause instanceof ConstraintViolationException cve) {
+            Set<ConstraintViolation<?>> violations = cve.getConstraintViolations();
+            String msg = (violations != null && !violations.isEmpty())
+                    ? violations.iterator().next().getMessage()
+                    : cve.getMessage();
+            return Result.failure(CommonResultCode.BAD_REQUEST.getCode(),
+                    msg != null && !msg.isBlank() ? msg : CommonResultCode.BAD_REQUEST.getMsg());
+        }
+        if (cause instanceof IllegalArgumentException iae) {
+            String msg = iae.getMessage();
+            return Result.failure(CommonResultCode.BAD_REQUEST.getCode(),
+                    msg != null && !msg.isBlank() ? msg : CommonResultCode.BAD_REQUEST.getMsg());
+        }
+        return null;
     }
 
     /**
@@ -283,6 +341,64 @@ public class RealtimeMessageDispatcher implements SmartInitializingSingleton, Ap
             log.error("[Realtime] 回发 @RealtimeAction 应答消息失败: event={}, sessionKey={}, error={}",
                     event, session.getSessionKey(), t.getMessage(), t);
         }
+    }
+
+    private List<RealtimeActionInterceptor> resolveInterceptors() {
+        if (actionInterceptors == null) {
+            return Collections.emptyList();
+        }
+        return actionInterceptors.orderedStream().toList();
+    }
+
+    private void bindDispatchContext(RealtimeSession session, RealtimeMessage<?> message) {
+        String traceId = (message.getTraceId() != null && !message.getTraceId().isBlank())
+                ? message.getTraceId()
+                : null;
+        if (traceId == null && session.getAttributes() != null) {
+            Object attrTrace = session.getAttributes().get("traceId");
+            if (attrTrace instanceof String str && !str.isBlank()) {
+                traceId = str;
+            }
+        }
+        if (traceId == null) {
+            traceId = IdUtil.fastSimpleUUID();
+        }
+        MDC.put("traceId", traceId);
+
+        if (session.getSessionKey() != null && session.getSessionKey().getUserId() != null) {
+            UserContextHolder.set(session.getSessionKey().getUserId());
+        }
+
+        if (session.getTenantId() != null) {
+            TenantContextHolder.setTenantId(session.getTenantId());
+        } else if (message.getTenantId() != null && !message.getTenantId().isBlank()) {
+            TenantContextHolder.setTenantId(message.getTenantId());
+        }
+    }
+
+    private void triggerAfterCompletion(List<RealtimeActionInterceptor> interceptors,
+                                        int interceptorIndex,
+                                        RealtimeSession session,
+                                        RealtimeMessage<?> message,
+                                        ActionMethod actionMethod,
+                                        Object actionResult,
+                                        Throwable dispatchedException) {
+        for (int i = interceptorIndex; i >= 0; i--) {
+            RealtimeActionInterceptor interceptor = interceptors.get(i);
+            try {
+                interceptor.afterCompletion(
+                        session, message, actionMethod.bean, actionMethod.method, actionResult, dispatchedException);
+            } catch (Throwable ex) {
+                log.warn("[Realtime] RealtimeActionInterceptor.afterCompletion 执行异常: interceptor={}, error={}",
+                        interceptor.getClass().getSimpleName(), ex.getMessage(), ex);
+            }
+        }
+    }
+
+    private void clearDispatchContext() {
+        MDC.remove("traceId");
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
     }
 
     private static class ActionMethod {

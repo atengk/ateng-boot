@@ -10,6 +10,7 @@ import io.github.atengk.boot.realtime.cluster.RedissonClusterMetricsReporter;
 import io.github.atengk.boot.realtime.cluster.RedissonRealtimeClusterBroadcaster;
 import io.github.atengk.boot.realtime.cluster.StandaloneClusterMetricsProvider;
 import io.github.atengk.boot.realtime.cluster.StandaloneRealtimeClusterBroadcaster;
+import io.github.atengk.boot.realtime.dispatcher.RealtimeActionInterceptor;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeBinaryMessageListener;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageDispatcher;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageListener;
@@ -99,8 +100,10 @@ public class AtengRealtimeAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(RealtimeMessageDispatcher.class)
-    public RealtimeMessageDispatcher realtimeMessageDispatcher(ObjectProvider<RealtimeMessageListener> messageListeners) {
-        return new RealtimeMessageDispatcher(messageListeners);
+    public RealtimeMessageDispatcher realtimeMessageDispatcher(
+            ObjectProvider<RealtimeMessageListener> messageListeners,
+            ObjectProvider<RealtimeActionInterceptor> actionInterceptors) {
+        return new RealtimeMessageDispatcher(messageListeners, actionInterceptors);
     }
 
     /**

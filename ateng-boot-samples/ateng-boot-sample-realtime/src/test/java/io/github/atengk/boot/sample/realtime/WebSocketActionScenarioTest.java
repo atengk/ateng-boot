@@ -10,6 +10,7 @@ import io.github.atengk.boot.realtime.ratelimit.SessionRateLimiter;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import io.github.atengk.boot.sample.realtime.handler.AudioBinaryStreamListener;
+import io.github.atengk.boot.sample.realtime.interceptor.SampleActionAuditInterceptor;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -53,6 +54,9 @@ class WebSocketActionScenarioTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private SampleActionAuditInterceptor actionAuditInterceptor;
 
     @Test
     @DisplayName("端到端验证: 客户端上行发送 chat 动作，服务端 @RealtimeAction 成功拦截并回执")
@@ -211,6 +215,60 @@ class WebSocketActionScenarioTest {
         CloseStatus closeStatus = clientHandler.awaitClose(5, TimeUnit.SECONDS);
         assertThat(closeStatus).isNotNull();
         assertThat(closeStatus.getCode()).isEqualTo(RealtimeCloseStatus.RATE_LIMIT_EXCEEDED.getCode());
+    }
+
+    @Test
+    @DisplayName("端到端验证: @RealtimeAction 强类型 DTO JSR-303 校验 400 回执与 RealtimeActionInterceptor 自动装配拦截")
+    void testActionJsr303ValidationAndInterceptorEndToEnd() throws Exception {
+        StandardWebSocketClient client = new StandardWebSocketClient();
+        TestWebSocketHandler clientHandler = new TestWebSocketHandler();
+
+        String url = "ws://127.0.0.1:" + port + "/ws/realtime?clientId=client-valid-01";
+        client.execute(clientHandler, url);
+
+        WebSocketSession session = clientHandler.awaitConnection(5, TimeUnit.SECONDS);
+        assertThat(session.isOpen()).isTrue();
+
+        long preBefore = actionAuditInterceptor.getPreHandleCount();
+        long afterBefore = actionAuditInterceptor.getAfterCompletionCount();
+
+        // 1. 发送非法 JSR-303 载荷触发 400 回执且不断开连接
+        RealtimeMessage<Map<String, Object>> invalidReq = RealtimeMessage.of(
+                "req-valid-ws-01",
+                "order:confirm",
+                Map.of("orderId", "", "quantity", 0)
+        );
+        session.sendMessage(new TextMessage(JsonUtil.toJsonString(invalidReq)));
+
+        String failReplyText = clientHandler.pollMessage(5, TimeUnit.SECONDS);
+        assertThat(failReplyText).isNotNull();
+        JsonNode failNode = objectMapper.readTree(failReplyText);
+        assertThat(failNode.get("id").asText()).isEqualTo("req-valid-ws-01");
+        assertThat(failNode.get("event").asText()).isEqualTo("order:confirm:reply");
+        assertThat(failNode.get("data").get("code").asInt()).isEqualTo(400);
+        assertThat(failNode.get("data").get("msg").asText()).isNotBlank();
+        assertThat(session.isOpen()).isTrue();
+
+        // 2. 发送合法载荷：动作正常执行且 SampleActionAuditInterceptor 责任链前后回调计数递增
+        RealtimeMessage<Map<String, Object>> validReq = RealtimeMessage.of(
+                "req-valid-ws-02",
+                "order:confirm",
+                Map.of("orderId", "ORD-2026-971", "quantity", 2)
+        );
+        session.sendMessage(new TextMessage(JsonUtil.toJsonString(validReq)));
+
+        String okReplyText = clientHandler.pollMessage(5, TimeUnit.SECONDS);
+        assertThat(okReplyText).isNotNull();
+        JsonNode okNode = objectMapper.readTree(okReplyText);
+        assertThat(okNode.get("id").asText()).isEqualTo("req-valid-ws-02");
+        assertThat(okNode.get("event").asText()).isEqualTo("order:confirm:reply");
+        assertThat(okNode.get("data").get("code").asInt()).isEqualTo(200);
+        assertThat(okNode.get("data").get("data").asText()).contains("ORD-2026-971");
+
+        assertThat(actionAuditInterceptor.getPreHandleCount()).isEqualTo(preBefore + 1);
+        assertThat(actionAuditInterceptor.getAfterCompletionCount()).isEqualTo(afterBefore + 1);
+
+        session.close();
     }
 
     static class TestWebSocketHandler extends TextWebSocketHandler {
