@@ -20,6 +20,7 @@ import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
 import org.apache.hc.client5.http.impl.routing.DefaultProxyRoutePlanner;
+import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.client5.http.ssl.NoopHostnameVerifier;
 import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactory;
 import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactoryBuilder;
@@ -166,6 +167,22 @@ public final class ApacheHttpClient5Factory {
         log.info("Apache HttpClient 5 生产级池化连接工厂初始化成功 [maxTotal={}, maxPerRoute={}, connectTimeout={}, readTimeout={}]",
                 pool.getMaxConnections(), pool.getMaxPerRoute(), pool.getConnectTimeout(), pool.getReadTimeout());
         return new HttpComponentsClientHttpRequestFactory(httpClient) {
+            @Override
+            protected HttpContext createHttpContext(HttpMethod httpMethod, URI uri) {
+                HttpContext context = super.createHttpContext(httpMethod, uri);
+                if (HttpRequestContextHolder.getReadTimeout() != null
+                        || HttpRequestContextHolder.getConnectTimeout() != null) {
+                    HttpClientContext clientContext = context != null
+                            ? HttpClientContext.adapt(context)
+                            : HttpClientContext.create();
+                    if (clientContext.getRequestConfig() == null) {
+                        clientContext.setRequestConfig(requestConfig);
+                    }
+                    return clientContext;
+                }
+                return context;
+            }
+
             @Override
             public ClientHttpRequest createRequest(URI uri, HttpMethod httpMethod) throws IOException {
                 ClientHttpRequest request = super.createRequest(uri, httpMethod);

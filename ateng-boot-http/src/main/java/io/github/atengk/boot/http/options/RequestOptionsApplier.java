@@ -72,10 +72,19 @@ public final class RequestOptionsApplier {
             spec.headers(h -> h.addAll(options.getHeaders()));
         }
 
-        // 2. 覆盖单次读取超时
-        if (options.getReadTimeout() != null) {
-            HttpRequestContextHolder.setReadTimeout(options.getReadTimeout());
-            spec.httpRequest(clientRequest -> applyTimeout(clientRequest, options.getReadTimeout()));
+        // 2. 覆盖单次读取与建联超时
+        if (options.getReadTimeout() != null || options.getConnectTimeout() != null) {
+            if (options.getReadTimeout() != null) {
+                HttpRequestContextHolder.setReadTimeout(options.getReadTimeout());
+            }
+            if (options.getConnectTimeout() != null) {
+                HttpRequestContextHolder.setConnectTimeout(options.getConnectTimeout());
+            }
+            spec.httpRequest(clientRequest -> applyTimeout(
+                    clientRequest,
+                    options.getReadTimeout(),
+                    options.getConnectTimeout()
+            ));
         }
 
         // 3. 注入单次请求上下文透传显式控制与客户端标识（供拦截器链路消费并在出站前严格剥离）
@@ -131,38 +140,33 @@ public final class RequestOptionsApplier {
             return false;
         }
         try {
-            Field httpRequestField = ReflectionUtils.findField(request.getClass(), "httpRequest");
-            if (httpRequestField != null) {
-                ReflectionUtils.makeAccessible(httpRequestField);
-                Object classicRequest = httpRequestField.get(request);
-                if (classicRequest instanceof org.apache.hc.client5.http.classic.methods.HttpUriRequestBase uriRequest) {
-                    org.apache.hc.client5.http.config.RequestConfig currentConfig = uriRequest.getConfig();
-                    org.apache.hc.client5.http.config.RequestConfig.Builder builder = currentConfig != null
-                            ? org.apache.hc.client5.http.config.RequestConfig.copy(currentConfig)
-                            : org.apache.hc.client5.http.config.RequestConfig.custom();
-                    if (readTimeout != null) {
-                        builder.setResponseTimeout(org.apache.hc.core5.util.Timeout.of(readTimeout));
-                    }
-                    if (connectTimeout != null) {
-                        builder.setConnectTimeout(org.apache.hc.core5.util.Timeout.of(connectTimeout));
-                    }
-                    uriRequest.setConfig(builder.build());
-                }
-            }
+            org.apache.hc.client5.http.config.RequestConfig contextBaseConfig = null;
+            org.apache.hc.client5.http.protocol.HttpClientContext adaptedContext = null;
 
             Field httpContextField = ReflectionUtils.findField(request.getClass(), "httpContext");
             if (httpContextField != null) {
                 ReflectionUtils.makeAccessible(httpContextField);
                 Object context = httpContextField.get(request);
                 if (context instanceof org.apache.hc.core5.http.protocol.HttpContext httpContext) {
-                    org.apache.hc.client5.http.config.RequestConfig.Builder ctxBuilder = org.apache.hc.client5.http.config.RequestConfig.custom();
-                    if (readTimeout != null) {
-                        ctxBuilder.setResponseTimeout(org.apache.hc.core5.util.Timeout.of(readTimeout));
-                    }
-                    if (connectTimeout != null) {
-                        ctxBuilder.setConnectTimeout(org.apache.hc.core5.util.Timeout.of(connectTimeout));
-                    }
-                    org.apache.hc.client5.http.protocol.HttpClientContext.adapt(httpContext).setRequestConfig(ctxBuilder.build());
+                    adaptedContext = org.apache.hc.client5.http.protocol.HttpClientContext.adapt(httpContext);
+                    contextBaseConfig = adaptedContext.getRequestConfig();
+                }
+            }
+
+            org.apache.hc.client5.http.config.RequestConfig updatedCtxConfig =
+                    buildTimeoutConfig(contextBaseConfig, readTimeout, connectTimeout);
+            if (adaptedContext != null) {
+                adaptedContext.setRequestConfig(updatedCtxConfig);
+            }
+
+            Field httpRequestField = ReflectionUtils.findField(request.getClass(), "httpRequest");
+            if (httpRequestField != null) {
+                ReflectionUtils.makeAccessible(httpRequestField);
+                Object classicRequest = httpRequestField.get(request);
+                if (classicRequest instanceof org.apache.hc.client5.http.classic.methods.HttpUriRequestBase uriRequest) {
+                    org.apache.hc.client5.http.config.RequestConfig baseConfig =
+                            uriRequest.getConfig() != null ? uriRequest.getConfig() : contextBaseConfig;
+                    uriRequest.setConfig(buildTimeoutConfig(baseConfig, readTimeout, connectTimeout));
                 }
             }
             return true;
@@ -170,6 +174,22 @@ public final class RequestOptionsApplier {
             log.warn("应用 Apache HttpClient 5 单次超时覆盖失败: {}", NestedExceptionUtils.getMostSpecificCause(ex).getMessage());
             return false;
         }
+    }
+
+    private static org.apache.hc.client5.http.config.RequestConfig buildTimeoutConfig(
+            org.apache.hc.client5.http.config.RequestConfig baseConfig,
+            Duration readTimeout,
+            Duration connectTimeout) {
+        org.apache.hc.client5.http.config.RequestConfig.Builder builder = baseConfig != null
+                ? org.apache.hc.client5.http.config.RequestConfig.copy(baseConfig)
+                : org.apache.hc.client5.http.config.RequestConfig.custom();
+        if (readTimeout != null) {
+            builder.setResponseTimeout(org.apache.hc.core5.util.Timeout.of(readTimeout));
+        }
+        if (connectTimeout != null) {
+            builder.setConnectTimeout(org.apache.hc.core5.util.Timeout.of(connectTimeout));
+        }
+        return builder.build();
     }
 
     private static boolean tryApplyJdkClient(ClientHttpRequest request, Duration timeout) {

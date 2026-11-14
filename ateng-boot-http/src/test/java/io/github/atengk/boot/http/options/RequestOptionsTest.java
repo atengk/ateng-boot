@@ -32,6 +32,7 @@ class RequestOptionsTest {
                 .uriVariable("userId", 1001)
                 .uriVariables(Map.of("tenantId", "T_001"))
                 .readTimeout(Duration.ofSeconds(5))
+                .connectTimeout(Duration.ofSeconds(2))
                 .build();
 
         assertThat(options.getHeaders().get("X-Custom-Header")).containsExactly("Value1", "Value2");
@@ -42,6 +43,8 @@ class RequestOptionsTest {
         assertThat(options.getUriVariables()).containsEntry("userId", 1001);
         assertThat(options.getUriVariables()).containsEntry("tenantId", "T_001");
         assertThat(options.getReadTimeout()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(options.getConnectTimeout()).isEqualTo(Duration.ofSeconds(2));
+        assertThat(RequestOptions.empty().getConnectTimeout()).isNull();
     }
 
     @Test
@@ -84,10 +87,22 @@ class RequestOptionsTest {
     }
 
     @Test
-    @DisplayName("测试 readTimeout 负数防御拦截")
-    void testNegativeTimeoutValidation() {
+    @DisplayName("测试 readTimeout 与 connectTimeout 零值及负数防御拦截")
+    void testNegativeAndZeroTimeoutValidation() {
         assertThatThrownBy(() -> RequestOptions.builder().readTimeout(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("readTimeout 不能为负数");
+
+        assertThatThrownBy(() -> RequestOptions.builder().readTimeout(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("readTimeout");
+
+        assertThatThrownBy(() -> RequestOptions.builder().connectTimeout(Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("connectTimeout");
+
+        assertThatThrownBy(() -> RequestOptions.builder().connectTimeout(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("connectTimeout");
     }
 }

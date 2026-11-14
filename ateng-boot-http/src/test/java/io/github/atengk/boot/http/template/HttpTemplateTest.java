@@ -1,9 +1,13 @@
 package io.github.atengk.boot.http.template;
 
 import io.github.atengk.boot.http.constant.HttpConstants;
+import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.error.HttpRemoteException;
+import io.github.atengk.boot.http.factory.ClientHttpRequestFactoryBuilder;
 import io.github.atengk.boot.http.options.RequestOptions;
+import io.github.atengk.boot.http.properties.HttpEngineType;
+import io.github.atengk.boot.http.properties.HttpProperties;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
@@ -17,20 +21,26 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -66,6 +76,7 @@ class HttpTemplateTest {
 
     @AfterEach
     void tearDown() throws IOException {
+        HttpRequestContextHolder.clear();
         if (server != null) {
             server.shutdown();
         }
@@ -585,5 +596,199 @@ class HttpTemplateTest {
         assertThat(body).contains("Training Report");
         assertThat(body).contains("Ateng");
         assertThat(body).contains("REPORT-CONTENT-DATA");
+    }
+
+    // ==========================================
+    // 9. 单请求双超时覆盖与线程复用确定性清理
+    // ==========================================
+
+    @Test
+    @DisplayName("单请求极短超时抛出异常后，同线程后续默认请求沿用客户端默认超时且零污染")
+    void testNoTimeoutPollutionAcrossSameThreadReuseAfterTimeout() {
+        HttpProperties properties = new HttpProperties();
+        properties.setEngine(HttpEngineType.HTTPCLIENT5);
+        properties.getPool().setConnectTimeout(Duration.ofMillis(1200));
+        properties.getPool().setReadTimeout(Duration.ofMillis(1200));
+        ClientHttpRequestFactory factory = ClientHttpRequestFactoryBuilder.build(properties, Collections.emptyList());
+
+        RestClient.Builder builder = RestClient.builder()
+                .baseUrl(baseUrl)
+                .requestFactory(factory)
+                .defaultStatusHandler(new HttpErrorHandler())
+                .requestInterceptor((request, body, execution) -> execution.execute(request, body));
+        HttpTemplate scopedTemplate = new HttpTemplate(builder);
+
+        // 1. 第一次请求携带极短 readTimeout=100ms，远端延迟 600ms，预期立即超时失败
+        server.enqueue(new MockResponse()
+                .setHeadersDelay(600, TimeUnit.MILLISECONDS)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"status\":\"delayed-1\"}"));
+
+        RequestOptions shortOptions = RequestOptions.builder()
+                .connectTimeout(Duration.ofMillis(800))
+                .readTimeout(Duration.ofMillis(100))
+                .build();
+
+        assertThatThrownBy(() -> scopedTemplate.get(baseUrl + "/slow-1", shortOptions, Map.class))
+                .isInstanceOf(ResourceAccessException.class);
+
+        // 核心断言：异常返回后线程局部超时必须已彻底清场
+        assertThat(HttpRequestContextHolder.getReadTimeout()).isNull();
+        assertThat(HttpRequestContextHolder.getConnectTimeout()).isNull();
+
+        // 2. 同线程立即发起不带 RequestOptions 的普通请求，远端延迟 350ms (>100ms 且 <1200ms 默认值)
+        server.enqueue(new MockResponse()
+                .setHeadersDelay(350, TimeUnit.MILLISECONDS)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"status\":\"ok\"}"));
+
+        Map<?, ?> result = scopedTemplate.get(baseUrl + "/normal-2", Map.class);
+        assertThat(result).isNotNull();
+        assertThat(result.get("status")).isEqualTo("ok");
+        assertThat(HttpRequestContextHolder.getReadTimeout()).isNull();
+        assertThat(HttpRequestContextHolder.getConnectTimeout()).isNull();
+    }
+
+    @Test
+    @DisplayName("仅覆盖单次 connectTimeout 时不影响默认 readTimeout 并确保现场恢复")
+    void testConnectTimeoutOnlyPreservesDefaultReadTimeoutAndRestoresContext() {
+        HttpProperties properties = new HttpProperties();
+        properties.setEngine(HttpEngineType.HTTPCLIENT5);
+        properties.getPool().setConnectTimeout(Duration.ofSeconds(2));
+        properties.getPool().setReadTimeout(Duration.ofMillis(1200));
+        ClientHttpRequestFactory factory = ClientHttpRequestFactoryBuilder.build(properties, Collections.emptyList());
+
+        AtomicReference<Duration> seenRead = new AtomicReference<>();
+        AtomicReference<Duration> seenConnect = new AtomicReference<>();
+        RestClient.Builder builder = RestClient.builder()
+                .baseUrl(baseUrl)
+                .requestFactory(factory)
+                .defaultStatusHandler(new HttpErrorHandler())
+                .requestInterceptor((request, body, execution) -> {
+                    seenRead.set(HttpRequestContextHolder.getReadTimeout());
+                    seenConnect.set(HttpRequestContextHolder.getConnectTimeout());
+                    return execution.execute(request, body);
+                });
+        HttpTemplate scopedTemplate = new HttpTemplate(builder);
+
+        server.enqueue(new MockResponse()
+                .setBodyDelay(300, TimeUnit.MILLISECONDS)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"ok\":true}"));
+
+        RequestOptions connectOnly = RequestOptions.builder()
+                .connectTimeout(Duration.ofMillis(100))
+                .build();
+
+        Map<?, ?> result = scopedTemplate.get(baseUrl + "/connect-only", connectOnly, Map.class);
+        assertThat(result).isNotNull();
+        assertThat(result.get("ok")).isEqualTo(true);
+        assertThat(seenRead.get()).isNull();
+        assertThat(seenConnect.get()).isEqualTo(Duration.ofMillis(100));
+        assertThat(HttpRequestContextHolder.getReadTimeout()).isNull();
+        assertThat(HttpRequestContextHolder.getConnectTimeout()).isNull();
+    }
+
+    @Test
+    @DisplayName("仅覆盖单次 connectTimeout 时仍保留全局默认 readTimeout 上限（不因构造 RequestConfig 而抹除池默认读取超时）")
+    void testConnectTimeoutOnlyDoesNotErasePoolReadTimeout() {
+        HttpProperties properties = new HttpProperties();
+        properties.setEngine(HttpEngineType.HTTPCLIENT5);
+        properties.getPool().setConnectTimeout(Duration.ofSeconds(2));
+        properties.getPool().setReadTimeout(Duration.ofMillis(180));
+        ClientHttpRequestFactory factory = ClientHttpRequestFactoryBuilder.build(properties, Collections.emptyList());
+
+        RestClient.Builder builder = RestClient.builder()
+                .baseUrl(baseUrl)
+                .requestFactory(factory)
+                .defaultStatusHandler(new HttpErrorHandler())
+                .requestInterceptor((request, body, execution) -> execution.execute(request, body));
+        HttpTemplate scopedTemplate = new HttpTemplate(builder);
+
+        server.enqueue(new MockResponse()
+                .setHeadersDelay(600, TimeUnit.MILLISECONDS)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"ok\":true}"));
+
+        RequestOptions connectOnly = RequestOptions.builder()
+                .connectTimeout(Duration.ofMillis(500))
+                .build();
+
+        assertThatThrownBy(() -> scopedTemplate.get(baseUrl + "/read-timeout-preserved", connectOnly, Map.class))
+                .isInstanceOf(ResourceAccessException.class);
+        assertThat(HttpRequestContextHolder.getConnectTimeout()).isNull();
+    }
+
+    @Test
+    @DisplayName("外层既有超时上下文在正常与异常请求路径下均被精确还原（含全量动词与流式操作）")
+    void testOuterContextRestoredAcrossAllTemplateOperations() {
+        Duration outerRead = Duration.ofSeconds(15);
+        Duration outerConnect = Duration.ofSeconds(7);
+        AtomicReference<Duration> seenRead = new AtomicReference<>();
+        AtomicReference<Duration> seenConnect = new AtomicReference<>();
+
+        RestClient.Builder builder = RestClient.builder()
+                .baseUrl(baseUrl)
+                .defaultStatusHandler(new HttpErrorHandler())
+                .requestInterceptor((request, body, execution) -> {
+                    seenRead.set(HttpRequestContextHolder.getReadTimeout());
+                    seenConnect.set(HttpRequestContextHolder.getConnectTimeout());
+                    return execution.execute(request, body);
+                });
+        HttpTemplate template = new HttpTemplate(builder);
+
+        RequestOptions override = RequestOptions.builder()
+                .readTimeout(Duration.ofMillis(450))
+                .connectTimeout(Duration.ofMillis(250))
+                .build();
+
+        HttpRequestContextHolder.setReadTimeout(outerRead);
+        HttpRequestContextHolder.setConnectTimeout(outerConnect);
+
+        // 1. 正常 POST / PATCH / HEAD / OPTIONS / exchange / consumeStream / download / upload
+        for (int i = 0; i < 6; i++) {
+            server.enqueue(new MockResponse()
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("{\"ok\":true}"));
+        }
+
+        template.post(baseUrl + "/p", Map.of("k", "v"), override, Map.class);
+        assertThat(seenRead.get()).isEqualTo(Duration.ofMillis(450));
+        assertThat(seenConnect.get()).isEqualTo(Duration.ofMillis(250));
+        assertThat(HttpRequestContextHolder.getReadTimeout()).isEqualTo(outerRead);
+        assertThat(HttpRequestContextHolder.getConnectTimeout()).isEqualTo(outerConnect);
+
+        template.patch(baseUrl + "/p", Map.of("k", "v"), override, Map.class);
+        assertThat(HttpRequestContextHolder.getReadTimeout()).isEqualTo(outerRead);
+        assertThat(HttpRequestContextHolder.getConnectTimeout()).isEqualTo(outerConnect);
+
+        template.getEntity(baseUrl + "/e", override, Map.class);
+        assertThat(HttpRequestContextHolder.getReadTimeout()).isEqualTo(outerRead);
+        assertThat(HttpRequestContextHolder.getConnectTimeout()).isEqualTo(outerConnect);
+
+        template.consumeStream(baseUrl + "/s", HttpMethod.GET, null, override, line -> {});
+        assertThat(HttpRequestContextHolder.getReadTimeout()).isEqualTo(outerRead);
+        assertThat(HttpRequestContextHolder.getConnectTimeout()).isEqualTo(outerConnect);
+
+        template.download(baseUrl + "/d", override, new ByteArrayOutputStream());
+        assertThat(HttpRequestContextHolder.getReadTimeout()).isEqualTo(outerRead);
+        assertThat(HttpRequestContextHolder.getConnectTimeout()).isEqualTo(outerConnect);
+
+        ByteArrayResource resource = new ByteArrayResource("bytes".getBytes(StandardCharsets.UTF_8)) {
+            @Override
+            public String getFilename() {
+                return "a.txt";
+            }
+        };
+        template.upload(baseUrl + "/u", "file", resource, override, Map.class);
+        assertThat(HttpRequestContextHolder.getReadTimeout()).isEqualTo(outerRead);
+        assertThat(HttpRequestContextHolder.getConnectTimeout()).isEqualTo(outerConnect);
+
+        // 2. 远端 500 抛出 HttpRemoteException 后外层上下文依然无损还原
+        server.enqueue(new MockResponse().setResponseCode(500).setBody("{\"err\":1}"));
+        assertThatThrownBy(() -> template.get(baseUrl + "/fail", override, Map.class))
+                .isInstanceOf(HttpRemoteException.class);
+        assertThat(HttpRequestContextHolder.getReadTimeout()).isEqualTo(outerRead);
+        assertThat(HttpRequestContextHolder.getConnectTimeout()).isEqualTo(outerConnect);
     }
 }
