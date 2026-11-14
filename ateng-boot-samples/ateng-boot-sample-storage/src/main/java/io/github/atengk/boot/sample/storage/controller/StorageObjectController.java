@@ -4,6 +4,8 @@ import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.storage.model.ContractAuditSnapshot;
+import io.github.atengk.boot.storage.exception.StorageException;
+import io.github.atengk.boot.storage.exception.StorageResultCode;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.template.StorageTemplate;
 import jakarta.validation.Valid;
@@ -11,6 +13,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
@@ -40,6 +43,7 @@ import java.util.Map;
 public class StorageObjectController {
 
     private final StorageTemplate storageTemplate;
+    private final TransactionTemplate transactionTemplate;
 
     /**
      * 上传电子合同或档案文件到默认存储源（自动执行路径归一化与魔数防伪装嗅探）
@@ -226,5 +230,110 @@ public class StorageObjectController {
     public Result<Boolean> deleteDirectory(@RequestParam("dirPath") @NotBlank(message = "目录路径不能为空") String dirPath) {
         boolean success = storageTemplate.deleteDirectory(dirPath);
         return Result.success(success);
+    }
+
+    /**
+     * 单参快捷上传电子合同（自动生成 yyyy/MM/dd/{uuid}.{ext} 日期归档安全路径）
+     *
+     * @param file 上传的合同表单文件
+     * @return 存储元数据对象契约
+     */
+    @PostMapping("/upload-quick")
+    public Result<StorageObject> uploadQuick(
+            @RequestParam("file") @NotNull(message = "上传文件不能为空") MultipartFile file) {
+        StorageObject object = storageTemplate.upload(file);
+        return Result.success(object);
+    }
+
+    /**
+     * 幂等防覆盖上传电子合同（当目标路径已存在时抛出 STORAGE_OBJECT_ALREADY_EXISTS 40024 阻断）
+     *
+     * @param file 上传的合同表单文件
+     * @param path 目标存储相对路径
+     * @return 存储元数据对象契约
+     */
+    @PostMapping("/upload-if-absent")
+    public Result<StorageObject> uploadIfAbsent(
+            @RequestParam("file") @NotNull(message = "上传文件不能为空") MultipartFile file,
+            @RequestParam("path") @NotBlank(message = "目标路径不能为空") String path) {
+        StorageObject object = storageTemplate.uploadIfAbsent(file, path);
+        return Result.success(object);
+    }
+
+    /**
+     * 跨存储源流式复制对象（支持从当前活动源复制到指定目标存储源）
+     *
+     * @param sourcePath      当前源对象相对路径
+     * @param targetSourceKey 目标存储源标识（如 backup、s3）
+     * @param targetPath      目标存储源内的目标路径
+     * @return 目标存储源中新生成对象的元数据契约
+     */
+    @PostMapping("/copy-to")
+    public Result<StorageObject> copyTo(
+            @RequestParam("sourcePath") @NotBlank(message = "源路径不能为空") String sourcePath,
+            @RequestParam("targetSourceKey") @NotBlank(message = "目标存储源标识不能为空") String targetSourceKey,
+            @RequestParam("targetPath") @NotBlank(message = "目标路径不能为空") String targetPath) {
+        StorageObject copied = storageTemplate.copyTo(sourcePath, targetSourceKey, targetPath);
+        return Result.success(copied);
+    }
+
+    /**
+     * 跨存储源流式迁移对象（先复制到目标存储源并校验落盘，再幂等移除源对象）
+     *
+     * @param sourcePath      当前源对象相对路径
+     * @param targetSourceKey 目标存储源标识（如 backup、s3）
+     * @param targetPath      目标存储源内的目标路径
+     * @return 目标存储源中新生成对象的元数据契约
+     */
+    @PostMapping("/move-to")
+    public Result<StorageObject> moveTo(
+            @RequestParam("sourcePath") @NotBlank(message = "源路径不能为空") String sourcePath,
+            @RequestParam("targetSourceKey") @NotBlank(message = "目标存储源标识不能为空") String targetSourceKey,
+            @RequestParam("targetPath") @NotBlank(message = "目标路径不能为空") String targetPath) {
+        StorageObject moved = storageTemplate.moveTo(sourcePath, targetSourceKey, targetPath);
+        return Result.success(moved);
+    }
+
+    /**
+     * 事务感知上传电子合同（事务提交则保留文件；事务回滚则自动补偿删除孤儿文件）
+     *
+     * @param file            上传的表单文件
+     * @param path            目标存储相对路径
+     * @param simulateFailure 是否在上传后模拟业务异常以触发事务回滚补偿
+     * @return 提交成功后的存储对象元数据契约
+     */
+    @PostMapping("/upload-with-rollback-delete")
+    public Result<StorageObject> uploadWithRollbackDelete(
+            @RequestParam("file") @NotNull(message = "上传文件不能为空") MultipartFile file,
+            @RequestParam("path") @NotBlank(message = "目标路径不能为空") String path,
+            @RequestParam(value = "simulateFailure", defaultValue = "false") boolean simulateFailure) {
+        StorageObject uploaded = transactionTemplate.execute(status -> {
+            StorageObject object = storageTemplate.uploadWithRollbackDelete(file, path);
+            if (simulateFailure) {
+                throw new StorageException(StorageResultCode.OPERATION_FAILED, "模拟业务事务失败，触发回滚删除孤儿文件: " + path);
+            }
+            return object;
+        });
+        return Result.success(uploaded);
+    }
+
+    /**
+     * 事务感知提交后延迟删除对象（事务提交后才真正物理删除；若事务回滚则完整保留原对象）
+     *
+     * @param path            目标存储相对路径
+     * @param simulateFailure 是否在注册延迟删除后模拟业务异常触发回滚
+     * @return 延迟删除注册与提交执行结果
+     */
+    @PostMapping("/delete-after-commit")
+    public Result<Boolean> deleteAfterCommit(
+            @RequestParam("path") @NotBlank(message = "目标路径不能为空") String path,
+            @RequestParam(value = "simulateFailure", defaultValue = "false") boolean simulateFailure) {
+        transactionTemplate.executeWithoutResult(status -> {
+            storageTemplate.deleteAfterCommit(path);
+            if (simulateFailure) {
+                throw new StorageException(StorageResultCode.OPERATION_FAILED, "模拟业务事务失败，取消提交后删除: " + path);
+            }
+        });
+        return Result.success(Boolean.TRUE);
     }
 }

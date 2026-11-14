@@ -42,6 +42,12 @@
 | **单对象天然幂等删除** | `StorageObjectController` | `POST /sample/storage/object/delete` | `curl -X POST "http://localhost:8080/sample/storage/object/delete?path=contracts/archive/2026/procurement-ht001.txt"` |
 | **按前缀流式批删 (含防误删熔断)** | `StorageObjectController` | `POST /sample/storage/object/delete-prefix` | `curl -X POST "http://localhost:8080/sample/storage/object/delete-prefix?prefix=logs/audit/2026/"` |
 | **级联删除整个目录** | `StorageObjectController` | `POST /sample/storage/object/delete-directory` | `curl -X POST "http://localhost:8080/sample/storage/object/delete-directory?dirPath=logs/audit"` |
+| **单参快捷上传（自动日期归档路径）** | `StorageObjectController` | `POST /sample/storage/object/upload-quick` | `curl -X POST "http://localhost:8080/sample/storage/object/upload-quick" -F "file=@README.md"` |
+| **幂等防覆盖上传 (40024 拦截)** | `StorageObjectController` | `POST /sample/storage/object/upload-if-absent` | `curl -X POST "http://localhost:8080/sample/storage/object/upload-if-absent" -F "file=@README.md" -F "path=contracts/idempotent/ht-001.txt"` |
+| **跨存储源流式复制 (`copyTo`)** | `StorageObjectController` | `POST /sample/storage/object/copy-to` | `curl -X POST "http://localhost:8080/sample/storage/object/copy-to?sourcePath=contracts/2026/procurement-ht001.txt&targetSourceKey=backup&targetPath=archive/procurement-ht001.txt"` |
+| **跨存储源流式迁移 (`moveTo`)** | `StorageObjectController` | `POST /sample/storage/object/move-to` | `curl -X POST "http://localhost:8080/sample/storage/object/move-to?sourcePath=contracts/2026/procurement-ht001.txt&targetSourceKey=backup&targetPath=archive/moved-ht001.txt"` |
+| **事务感知防孤儿上传 (`uploadWithRollbackDelete`)** | `StorageObjectController` | `POST /sample/storage/object/upload-with-rollback-delete` | `curl -X POST "http://localhost:8080/sample/storage/object/upload-with-rollback-delete" -F "file=@README.md" -F "path=tx/contract.txt" -F "simulateFailure=false"` |
+| **事务提交后延迟删除 (`deleteAfterCommit`)** | `StorageObjectController` | `POST /sample/storage/object/delete-after-commit` | `curl -X POST "http://localhost:8080/sample/storage/object/delete-after-commit?path=tx/contract.txt&simulateFailure=false"` |
 | **流式下载与 HTTP 206 断点续传** | `StorageTransferController` | `GET /sample/storage/transfer/download` | `curl -i -H "Range: bytes=0-15" "http://localhost:8080/sample/storage/transfer/download?path=contracts/2026/procurement-ht001.txt"` |
 | **分段字节范围读取 (Byte-Range)** | `StorageTransferController` | `GET /sample/storage/transfer/download-range` | `curl "http://localhost:8080/sample/storage/transfer/download-range?path=contracts/2026/procurement-ht001.txt&startOffset=0&length=12&source=default"` |
 | **未知流长双阶自适应上传防 OOM** | `StorageTransferController` | `POST /sample/storage/transfer/upload-adaptive` | `curl -X POST "http://localhost:8080/sample/storage/transfer/upload-adaptive" --data-urlencode "path=reports/2026-dynamic-report.txt" --data-urlencode "content=2026年度经营大报表实时动态生成流数据" --data-urlencode "source=s3"` |
@@ -69,6 +75,8 @@
 | **反查对象元数据** | `StorageGovernanceController` | `GET /sample/storage/governance/metadata` | `curl "http://localhost:8080/sample/storage/governance/metadata?path=standard/doc.txt&source=s3"` |
 | **存储源健康连通探测 (ping)** | `StorageGovernanceController` | `GET /sample/storage/governance/ping` | `curl "http://localhost:8080/sample/storage/governance/ping?source=s3"` |
 | **存储连接池/配置诊断** | `StorageGovernanceController` | `GET /sample/storage/governance/diagnostics` | `curl "http://localhost:8080/sample/storage/governance/diagnostics?source=s3"` |
+| **函数式作用域切源与自恢复 (`executeWith`)** | `StorageGovernanceController` | `GET /sample/storage/governance/execute-with` | `curl "http://localhost:8080/sample/storage/governance/execute-with?source=backup&path=archive/procurement-ht001.txt"` |
+| **扩展名黑名单安全防卫演示 (40011)** | `StorageGovernanceController` | `POST /sample/storage/governance/upload-guarded` | `curl -X POST "http://localhost:8080/sample/storage/governance/upload-guarded" -F "file=@README.md" -F "path=guard/policy.txt"` |
 
 ---
 

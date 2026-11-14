@@ -14,6 +14,12 @@ ateng:
       guard:
         enabled: true
         strict-magic-check: true
+        disallowed-extensions:
+          - exe
+          - sh
+          - bat
+          - jsp
+          - bak
       chunk-cleaner:
         enabled: true
         interval: 1h

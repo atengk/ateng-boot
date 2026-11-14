@@ -5,6 +5,7 @@ import io.github.atengk.boot.sample.storage.config.SampleStorageTestS3Config;
 import io.github.atengk.boot.sample.storage.service.S3StorageScenarioService;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
+import io.github.atengk.boot.storage.template.StorageTemplate;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -59,6 +60,9 @@ class SampleS3DualModeIntegrationTest {
 
     @Autowired
     private S3StorageScenarioService scenarioService;
+
+    @Autowired
+    private StorageTemplate storageTemplate;
 
     @Autowired
     private Environment environment;
@@ -285,5 +289,39 @@ class SampleS3DualModeIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.type").value("s3"));
+    }
+
+    @Test
+    @DisplayName("场景 8：Local -> S3 跨源流式复制与 executeWith 作用域协同探测（双模通用）")
+    void testCrossSourceCopyToS3AndExecuteWithScope_ShouldSucceed() throws Exception {
+        long ts = System.currentTimeMillis();
+        String localSourcePath = "cross-s3/local-origin-" + ts + ".txt";
+        String s3TargetPath = "test-s3/cross-copy-" + ts + ".txt";
+        createdPaths.add(s3TargetPath);
+
+        storageTemplate.uploadString(localSourcePath, "Cross Source Local-to-S3 Dual-Mode Payload");
+        try {
+            mockMvc.perform(post("/sample/storage/object/copy-to")
+                            .param("sourcePath", localSourcePath)
+                            .param("targetSourceKey", "s3")
+                            .param("targetPath", s3TargetPath))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.path").value(s3TargetPath));
+
+            assertThat(storageTemplate.use("s3").downloadString(s3TargetPath))
+                    .isEqualTo("Cross Source Local-to-S3 Dual-Mode Payload");
+
+            mockMvc.perform(get("/sample/storage/governance/execute-with")
+                            .param("source", "s3")
+                            .param("path", s3TargetPath))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.scopedSource").value("s3"))
+                    .andExpect(jsonPath("$.data.exists").value(true))
+                    .andExpect(jsonPath("$.data.outerAfter").isEmpty());
+        } finally {
+            storageTemplate.delete(localSourcePath);
+        }
     }
 }

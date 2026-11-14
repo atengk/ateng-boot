@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.sample.storage.config.SampleStorageTestS3Config;
 import io.github.atengk.boot.sample.storage.listener.SampleStorageEventListener;
+import io.github.atengk.boot.storage.context.StorageContextHolder;
 import io.github.atengk.boot.storage.resource.StorageResource;
 import io.github.atengk.boot.storage.template.StorageTemplate;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -89,6 +91,13 @@ class SampleStorageIntegrationTest {
 
         // 重置领域事件计数器
         sampleStorageEventListener.reset();
+    }
+
+    @AfterEach
+    void tearDown() throws Exception {
+        StorageContextHolder.clear();
+        org.springframework.util.FileSystemUtils.deleteRecursively(DEFAULT_DIR);
+        org.springframework.util.FileSystemUtils.deleteRecursively(BACKUP_DIR);
     }
 
     @Test
@@ -757,5 +766,175 @@ class SampleStorageIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("UP"))
                 .andExpect(jsonPath("$.components.storage.status").value("UP"));
+    }
+
+    @Test
+    @DisplayName("端到端测试 20：单参快捷上传（自动生成 yyyy/MM/dd/{uuid}.{ext} 日期归档安全路径）")
+    void testQuickUploadAutoDatePath() throws Exception {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "quick-report.txt",
+                MediaType.TEXT_PLAIN_VALUE,
+                "Quick Upload Auto Path Content".getBytes(StandardCharsets.UTF_8)
+        );
+
+        MvcResult result = mockMvc.perform(multipart("/sample/storage/object/upload-quick").file(file))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.path").isNotEmpty())
+                .andReturn();
+
+        String autoPath = objectMapper.readTree(result.getResponse().getContentAsString())
+                .path("data").path("path").asText();
+        assertThat(autoPath).matches("^\\d{4}/\\d{2}/\\d{2}/[a-f0-9]+\\.txt$");
+        assertThat(storageTemplate.downloadString(autoPath)).isEqualTo("Quick Upload Auto Path Content");
+    }
+
+    @Test
+    @DisplayName("端到端测试 21：幂等防覆盖上传（uploadIfAbsent 首次成功、重传拦截 40024）")
+    void testUploadIfAbsentIdempotency() throws Exception {
+        String targetPath = "idempotent/seal-contract.txt";
+        MockMultipartFile first = new MockMultipartFile(
+                "file", "seal-contract.txt", MediaType.TEXT_PLAIN_VALUE, "Version 1".getBytes(StandardCharsets.UTF_8));
+        MockMultipartFile duplicate = new MockMultipartFile(
+                "file", "seal-contract.txt", MediaType.TEXT_PLAIN_VALUE, "Version 2 Overwrite Attempt".getBytes(StandardCharsets.UTF_8));
+
+        mockMvc.perform(multipart("/sample/storage/object/upload-if-absent")
+                        .file(first)
+                        .param("path", targetPath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.path").value(targetPath));
+
+        mockMvc.perform(multipart("/sample/storage/object/upload-if-absent")
+                        .file(duplicate)
+                        .param("path", targetPath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40024));
+
+        assertThat(storageTemplate.downloadString(targetPath)).isEqualTo("Version 1");
+    }
+
+    @Test
+    @DisplayName("端到端测试 22：跨存储源流式复制与迁移（copyTo / moveTo）")
+    void testCrossSourceCopyToAndMoveTo() throws Exception {
+        storageTemplate.uploadString("cross/copy-src.txt", "Cross Copy Payload");
+        storageTemplate.uploadString("cross/move-src.txt", "Cross Move Payload");
+
+        mockMvc.perform(post("/sample/storage/object/copy-to")
+                        .param("sourcePath", "cross/copy-src.txt")
+                        .param("targetSourceKey", "backup")
+                        .param("targetPath", "archive/copied.txt"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.path").value("archive/copied.txt"));
+
+        assertThat(storageTemplate.exists("cross/copy-src.txt")).isTrue();
+        assertThat(storageTemplate.use("backup").downloadString("archive/copied.txt")).isEqualTo("Cross Copy Payload");
+
+        mockMvc.perform(post("/sample/storage/object/move-to")
+                        .param("sourcePath", "cross/move-src.txt")
+                        .param("targetSourceKey", "backup")
+                        .param("targetPath", "archive/moved.txt"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.path").value("archive/moved.txt"));
+
+        assertThat(storageTemplate.exists("cross/move-src.txt")).isFalse();
+        assertThat(storageTemplate.use("backup").downloadString("archive/moved.txt")).isEqualTo("Cross Move Payload");
+    }
+
+    @Test
+    @DisplayName("端到端测试 23：事务感知上传回滚防孤儿清理与提交后延迟删除")
+    void testTransactionRollbackAndAfterCommitLifecycle() throws Exception {
+        String rollbackPath = "tx-demo/rollback-orphan.txt";
+        MockMultipartFile rollbackFile = new MockMultipartFile(
+                "file", "rollback-orphan.txt", MediaType.TEXT_PLAIN_VALUE, "Orphan Payload".getBytes(StandardCharsets.UTF_8));
+
+        // 1. 事务回滚 -> 自动删除孤儿文件
+        mockMvc.perform(multipart("/sample/storage/object/upload-with-rollback-delete")
+                        .file(rollbackFile)
+                        .param("path", rollbackPath)
+                        .param("simulateFailure", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(50008));
+        assertThat(storageTemplate.exists(rollbackPath)).isFalse();
+
+        // 2. 事务提交 -> 保留已上传文件
+        String commitPath = "tx-demo/commit-keep.txt";
+        MockMultipartFile commitFile = new MockMultipartFile(
+                "file", "commit-keep.txt", MediaType.TEXT_PLAIN_VALUE, "Committed Payload".getBytes(StandardCharsets.UTF_8));
+        mockMvc.perform(multipart("/sample/storage/object/upload-with-rollback-delete")
+                        .file(commitFile)
+                        .param("path", commitPath)
+                        .param("simulateFailure", "false"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        assertThat(storageTemplate.exists(commitPath)).isTrue();
+
+        // 3. 注册提交后延迟删除，模拟回滚 -> 原对象必须完整保留
+        mockMvc.perform(post("/sample/storage/object/delete-after-commit")
+                        .param("path", commitPath)
+                        .param("simulateFailure", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(50008));
+        assertThat(storageTemplate.exists(commitPath)).isTrue();
+
+        // 4. 注册提交后延迟删除，正常提交 -> 原对象物理删除
+        mockMvc.perform(post("/sample/storage/object/delete-after-commit")
+                        .param("path", commitPath)
+                        .param("simulateFailure", "false"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+        assertThat(storageTemplate.exists(commitPath)).isFalse();
+    }
+
+    @Test
+    @DisplayName("端到端测试 24：StorageContextHolder.executeWith 函数式作用域切源与自动恢复")
+    void testExecuteWithScopedRouting() throws Exception {
+        String backupPath = "scoped/audit-2026.txt";
+        storageTemplate.use("backup").uploadString(backupPath, "Scoped Backup Audit");
+
+        mockMvc.perform(get("/sample/storage/governance/execute-with")
+                        .param("source", "backup")
+                        .param("path", backupPath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.scopedSource").value("backup"))
+                .andExpect(jsonPath("$.data.exists").value(true))
+                .andExpect(jsonPath("$.data.outerBefore").isEmpty())
+                .andExpect(jsonPath("$.data.outerAfter").isEmpty());
+    }
+
+    @Test
+    @DisplayName("端到端测试 25：StorageGuard disallowed-extensions 黑名单扩展名拦截（STORAGE_FILE_NOT_ALLOWED 40011）")
+    void testDisallowedExtensionsBlacklist() throws Exception {
+        MockMultipartFile blacklisted = new MockMultipartFile(
+                "file",
+                "temp-dump.bak",
+                MediaType.TEXT_PLAIN_VALUE,
+                "Plain backup content with blacklisted suffix".getBytes(StandardCharsets.UTF_8)
+        );
+
+        mockMvc.perform(multipart("/sample/storage/governance/upload-guarded")
+                        .file(blacklisted)
+                        .param("path", "guard/temp-dump.bak"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40011));
+        assertThat(storageTemplate.exists("guard/temp-dump.bak")).isFalse();
+
+        MockMultipartFile allowed = new MockMultipartFile(
+                "file",
+                "safe-policy.txt",
+                MediaType.TEXT_PLAIN_VALUE,
+                "Safe policy content".getBytes(StandardCharsets.UTF_8)
+        );
+        mockMvc.perform(multipart("/sample/storage/governance/upload-guarded")
+                        .file(allowed)
+                        .param("path", "guard/safe-policy.txt"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.path").value("guard/safe-policy.txt"));
     }
 }

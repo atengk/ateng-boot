@@ -23,6 +23,12 @@
             <artifactId>ateng-boot-web</artifactId>
         </dependency>
 
+        <!-- Spring 事务支持（用于演示事务提交后延迟删除与回滚补偿清理） -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+        </dependency>
+
         <!-- 对象存储核心 Starter -->
         <dependency>
             <groupId>io.github.atengk</groupId>

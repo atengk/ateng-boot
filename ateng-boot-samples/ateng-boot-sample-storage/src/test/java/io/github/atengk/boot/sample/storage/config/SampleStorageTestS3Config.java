@@ -52,7 +52,8 @@ public class SampleStorageTestS3Config {
         if (sources != null && !sources.isEmpty()) {
             for (Map.Entry<String, StorageSourceProperties> entry : sources.entrySet()) {
                 if (!"s3".equalsIgnoreCase(entry.getKey())) {
-                    factory.registerDriver(entry.getKey(), StorageDriverFactory.createDriver(entry.getKey(), entry.getValue()));
+                    factory.registerDriver(entry.getKey(),
+                            StorageDriverFactory.createDriver(entry.getKey(), entry.getValue(), properties.getMaxChunkSize()));
                 }
             }
         }
@@ -94,7 +95,11 @@ public class SampleStorageTestS3Config {
 
         @Override
         public StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead) {
-            return upload(path, in, contentType, size);
+            StorageObject uploaded = upload(path, in, contentType, size);
+            if (userMetadata != null && !userMetadata.isEmpty()) {
+                uploaded.setUserMetadata(new ConcurrentHashMap<>(userMetadata));
+            }
+            return uploaded;
         }
 
         @Override
@@ -180,7 +185,23 @@ public class SampleStorageTestS3Config {
         public boolean copy(String sourcePath, String targetPath) {
             byte[] data = storage.get(sourcePath);
             if (data != null) {
-                storage.put(targetPath, data);
+                storage.put(targetPath, Arrays.copyOf(data, data.length));
+                StorageObject srcMeta = metadata.get(sourcePath);
+                if (srcMeta != null) {
+                    Map<String, String> copiedUserMeta = srcMeta.getUserMetadata() != null
+                            ? new ConcurrentHashMap<>(srcMeta.getUserMetadata())
+                            : Collections.emptyMap();
+                    metadata.put(targetPath, StorageObject.builder()
+                            .path(targetPath)
+                            .filename(targetPath.contains("/") ? targetPath.substring(targetPath.lastIndexOf('/') + 1) : targetPath)
+                            .size(srcMeta.getSize())
+                            .contentType(srcMeta.getContentType())
+                            .storageClass(srcMeta.getStorageClass())
+                            .serverSideEncryption(srcMeta.getServerSideEncryption())
+                            .userMetadata(copiedUserMeta)
+                            .lastModified(Instant.now())
+                            .build());
+                }
                 return true;
             }
             return false;
