@@ -63,6 +63,10 @@ class RealtimePropertiesTest {
 
             // CORS defaults
             assertThat(properties.getCors().getAllowedOrigins()).containsExactly("*");
+
+            // Offline defaults
+            assertThat(properties.getOffline().isEnabled()).isFalse();
+            assertThat(properties.getOffline().isAutoPushOnConnect()).isFalse();
         });
     }
 
@@ -79,7 +83,9 @@ class RealtimePropertiesTest {
                 "ateng.boot.realtime.heartbeat.interval=15s",
                 "ateng.boot.realtime.heartbeat.idle-timeout=45s",
                 "ateng.boot.realtime.session.max-connections-per-user=20",
-                "ateng.boot.realtime.session.eviction-policy=reject"
+                "ateng.boot.realtime.session.eviction-policy=reject",
+                "ateng.boot.realtime.offline.enabled=true",
+                "ateng.boot.realtime.offline.auto-push-on-connect=true"
         ).run(context -> {
             RealtimeProperties properties = context.getBean(RealtimeProperties.class);
 
@@ -93,6 +99,8 @@ class RealtimePropertiesTest {
             assertThat(properties.getHeartbeat().getIdleTimeout()).isEqualTo(Duration.ofSeconds(45));
             assertThat(properties.getSession().getMaxConnectionsPerUser()).isEqualTo(20);
             assertThat(properties.getSession().getEvictionPolicy()).isEqualTo(EvictionPolicy.REJECT);
+            assertThat(properties.getOffline().isEnabled()).isTrue();
+            assertThat(properties.getOffline().isAutoPushOnConnect()).isTrue();
         });
     }
 

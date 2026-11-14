@@ -312,6 +312,11 @@ public class RealtimeProperties {
          * 离线消息 Redis ZSet 键前缀（默认: ateng:realtime:offline:）
          */
         private String keyPrefix = "ateng:realtime:offline:";
+
+        /**
+         * WebSocket 重连建连时是否自动拉取并顺序下发离线消息（默认: false）
+         */
+        private boolean autoPushOnConnect = false;
     }
 
     /**

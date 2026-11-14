@@ -6,6 +6,7 @@ import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RScoredSortedSet;
+import org.redisson.api.RScript;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.codec.StringCodec;
 
@@ -28,6 +29,24 @@ import java.util.*;
  */
 @Slf4j
 public class RedissonRealtimeOfflineMessageProvider implements RealtimeOfflineMessageProvider {
+
+    /**
+     * 原子写入离线消息、按配额 FIFO 截断并刷新键级 TTL 的 Lua 脚本
+     */
+    private static final String SAVE_OFFLINE_MESSAGE_LUA =
+            "local key = KEYS[1] " +
+            "local score = tonumber(ARGV[1]) " +
+            "local member = ARGV[2] " +
+            "local maxMessages = tonumber(ARGV[3]) " +
+            "local ttlMillis = tonumber(ARGV[4]) " +
+            "redis.call('ZADD', key, score, member) " +
+            "if maxMessages and maxMessages > 0 then " +
+            "    redis.call('ZREMRANGEBYRANK', key, 0, -(maxMessages + 1)) " +
+            "end " +
+            "if ttlMillis and ttlMillis > 0 then " +
+            "    redis.call('PEXPIRE', key, ttlMillis) " +
+            "end " +
+            "return 1";
 
     private final RedissonClient redissonClient;
     private final RealtimeProperties properties;
@@ -56,24 +75,27 @@ public class RedissonRealtimeOfflineMessageProvider implements RealtimeOfflineMe
         String json = JsonUtil.toJsonString(message);
         String key = getOfflineKey(userId);
         try {
-            RScoredSortedSet<String> scoredSet = redissonClient.getScoredSortedSet(key, StringCodec.INSTANCE);
-            scoredSet.add(timestamp, json);
-
-            // 1. 设置键级 TTL 过期时间
             Duration ttl = (properties.getOffline() != null && properties.getOffline().getTtl() != null)
                     ? properties.getOffline().getTtl()
                     : Duration.ofDays(7);
-            if (ttl != null && !ttl.isZero() && !ttl.isNegative()) {
-                scoredSet.expire(ttl);
-            }
+            long ttlMillis = (ttl != null && !ttl.isZero() && !ttl.isNegative()) ? ttl.toMillis() : 0L;
 
-            // 2. 有界防爆仓原子 FIFO 截断：超出 maxMessagesPerUser 时通过负向索引原子截断
             int maxMessages = (properties.getOffline() != null)
                     ? properties.getOffline().getMaxMessagesPerUser()
                     : 100;
-            if (maxMessages > 0) {
-                scoredSet.removeRangeByRank(0, -(maxMessages + 1));
-            }
+
+            // 单次 Lua 脚本原子执行 ZADD + 有界 FIFO 负向截断 + 键级 PEXPIRE，消除多 RTT 竞态窗口
+            RScript script = redissonClient.getScript(StringCodec.INSTANCE);
+            script.eval(
+                    RScript.Mode.READ_WRITE,
+                    SAVE_OFFLINE_MESSAGE_LUA,
+                    RScript.ReturnType.INTEGER,
+                    Collections.singletonList(key),
+                    String.valueOf(timestamp),
+                    json,
+                    String.valueOf(Math.max(0, maxMessages)),
+                    String.valueOf(ttlMillis)
+            );
             log.debug("[Realtime-Offline] 成功暂存用户离线消息: userId={}, messageId={}, timestamp={}",
                     userId, message.getId(), timestamp);
         } catch (Exception e) {

@@ -303,8 +303,15 @@ public class AtengRealtimeAutoConfiguration {
         public AtengWebSocketHandler atengWebSocketHandler(RealtimeProperties properties,
                                                            ObjectProvider<RealtimeSessionManager> sessionManagerProvider,
                                                            ObjectProvider<RealtimeMessageDispatcher> dispatcherProvider,
-                                                           ObjectProvider<RealtimeBinaryMessageListener> binaryListenersProvider) {
-            return new AtengWebSocketHandler(sessionManagerProvider.getIfAvailable(), dispatcherProvider.getIfAvailable(), properties, binaryListenersProvider);
+                                                           ObjectProvider<RealtimeBinaryMessageListener> binaryListenersProvider,
+                                                           ObjectProvider<RealtimeOfflineMessageProvider> offlineMessageProvider) {
+            return new AtengWebSocketHandler(
+                    sessionManagerProvider.getIfAvailable(),
+                    dispatcherProvider.getIfAvailable(),
+                    properties,
+                    binaryListenersProvider,
+                    offlineMessageProvider
+            );
         }
 
         /**

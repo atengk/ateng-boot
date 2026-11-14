@@ -6,7 +6,9 @@ import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.redisson.api.RScoredSortedSet;
+import org.redisson.api.RScript;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.codec.StringCodec;
 
@@ -33,6 +35,7 @@ class RedissonRealtimeOfflineMessageProviderTest {
 
     @SuppressWarnings("unchecked")
     private RScoredSortedSet<String> mockScoredSet = mock(RScoredSortedSet.class);
+    private RScript mockScript = mock(RScript.class);
 
     @BeforeEach
     void setUp() {
@@ -44,27 +47,69 @@ class RedissonRealtimeOfflineMessageProviderTest {
 
         when(redissonClient.<String>getScoredSortedSet(startsWith("ateng:realtime:offline:"), any(StringCodec.class)))
                 .thenReturn(mockScoredSet);
+        when(redissonClient.getScript(any(StringCodec.class))).thenReturn(mockScript);
 
         provider = new RedissonRealtimeOfflineMessageProvider(redissonClient, properties);
     }
 
     @Test
-    @DisplayName("暂存消息: 写入 ZSet、设置 TTL 并触发 FIFO 淘汰截断")
+    @DisplayName("暂存消息: 单次 RScript Lua 原子执行 ZADD + ZREMRANGEBYRANK + PEXPIRE")
     void testSaveOfflineMessageWithFifoTrimming() {
         RealtimeMessage<String> msg = RealtimeMessage.of("notice", "hello offline");
         msg.setTimestamp(1700000000000L);
 
-        // 模拟当前容量超限 (4 > 3)，需要淘汰 1 条
-        when(mockScoredSet.size()).thenReturn(4);
+        when(mockScript.eval(eq(RScript.Mode.READ_WRITE), anyString(), eq(RScript.ReturnType.INTEGER), anyList(), any(Object[].class)))
+                .thenReturn(1L);
 
         provider.saveOfflineMessage("user-100", msg);
 
-        // 验证写入 score 与 json
-        verify(mockScoredSet).add(eq(1700000000000.0), contains("hello offline"));
-        // 验证设置键级 TTL
-        verify(mockScoredSet).expire(Duration.ofDays(7));
-        // 验证原子 FIFO 负向索引截断最早消息: removeRangeByRank(0, -4)
-        verify(mockScoredSet).removeRangeByRank(0, -4);
+        ArgumentCaptor<String> scriptCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<List<Object>> keysCaptor = ArgumentCaptor.forClass(List.class);
+        verify(mockScript, times(1)).eval(
+                eq(RScript.Mode.READ_WRITE),
+                scriptCaptor.capture(),
+                eq(RScript.ReturnType.INTEGER),
+                keysCaptor.capture(),
+                eq(String.valueOf(1700000000000L)),
+                contains("hello offline"),
+                eq("3"),
+                eq(String.valueOf(Duration.ofDays(7).toMillis()))
+        );
+
+        String lua = scriptCaptor.getValue();
+        assertThat(lua).contains("ZADD", "ZREMRANGEBYRANK", "PEXPIRE");
+        assertThat(keysCaptor.getValue()).containsExactly("ateng:realtime:offline:user-100");
+
+        // 严禁再拆分为多 RTT 的分步 add/expire/removeRangeByRank 调用
+        verify(mockScoredSet, never()).add(anyDouble(), anyString());
+        verify(mockScoredSet, never()).expire(any(Duration.class));
+        verify(mockScoredSet, never()).removeRangeByRank(anyInt(), anyInt());
+    }
+
+    @Test
+    @DisplayName("边界配额与零 TTL: maxMessages<=0 与 ttl<=0 时向 Lua 传递 0 以跳过裁切与过期设置")
+    void testSaveOfflineMessageBoundaryMaxAndZeroTtl() {
+        properties.getOffline().setMaxMessagesPerUser(0);
+        properties.getOffline().setTtl(Duration.ZERO);
+        provider = new RedissonRealtimeOfflineMessageProvider(redissonClient, properties);
+
+        RealtimeMessage<String> msg = RealtimeMessage.of("notice", "boundary payload");
+        msg.setTimestamp(1700000000123L);
+        when(mockScript.eval(eq(RScript.Mode.READ_WRITE), anyString(), eq(RScript.ReturnType.INTEGER), anyList(), any(Object[].class)))
+                .thenReturn(1L);
+
+        provider.saveOfflineMessage("user-boundary", msg);
+
+        verify(mockScript, times(1)).eval(
+                eq(RScript.Mode.READ_WRITE),
+                anyString(),
+                eq(RScript.ReturnType.INTEGER),
+                eq(List.of("ateng:realtime:offline:user-boundary")),
+                eq("1700000000123"),
+                contains("boundary payload"),
+                eq("0"),
+                eq("0")
+        );
     }
 
     @Test

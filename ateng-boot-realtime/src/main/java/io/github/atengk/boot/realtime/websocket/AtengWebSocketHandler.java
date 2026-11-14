@@ -14,6 +14,7 @@ import io.github.atengk.boot.realtime.ratelimit.RateLimitDecision;
 import io.github.atengk.boot.realtime.ratelimit.SessionRateLimiter;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
+import io.github.atengk.boot.realtime.spi.RealtimeOfflineMessageProvider;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
@@ -21,6 +22,7 @@ import org.springframework.web.socket.*;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.nio.ByteBuffer;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -53,6 +55,7 @@ public class AtengWebSocketHandler extends TextWebSocketHandler {
     private final RealtimeMessageDispatcher dispatcher;
     private final RealtimeProperties properties;
     private final ObjectProvider<RealtimeBinaryMessageListener> binaryListeners;
+    private final ObjectProvider<RealtimeOfflineMessageProvider> offlineMessageProvider;
 
     public AtengWebSocketHandler() {
         this(null, null, null, null);
@@ -76,10 +79,19 @@ public class AtengWebSocketHandler extends TextWebSocketHandler {
                                  RealtimeMessageDispatcher dispatcher,
                                  RealtimeProperties properties,
                                  ObjectProvider<RealtimeBinaryMessageListener> binaryListeners) {
+        this(sessionManager, dispatcher, properties, binaryListeners, null);
+    }
+
+    public AtengWebSocketHandler(RealtimeSessionManager sessionManager,
+                                 RealtimeMessageDispatcher dispatcher,
+                                 RealtimeProperties properties,
+                                 ObjectProvider<RealtimeBinaryMessageListener> binaryListeners,
+                                 ObjectProvider<RealtimeOfflineMessageProvider> offlineMessageProvider) {
         this.sessionManager = sessionManager;
         this.dispatcher = dispatcher;
         this.properties = properties;
         this.binaryListeners = binaryListeners;
+        this.offlineMessageProvider = offlineMessageProvider;
     }
 
     @Override
@@ -108,7 +120,64 @@ public class AtengWebSocketHandler extends TextWebSocketHandler {
                 }
             }
             RealtimeSession realtimeSession = RealtimeSession.ofWebSocket(sessionKey, session, tenantId, attributes);
-            sessionManager.registerSession(realtimeSession);
+            boolean registered = sessionManager.registerSession(realtimeSession);
+            if (registered) {
+                pushOfflineMessagesOnConnect(realtimeSession);
+            }
+        }
+    }
+
+    private void pushOfflineMessagesOnConnect(RealtimeSession realtimeSession) {
+        if (offlineMessageProvider == null || properties == null || properties.getOffline() == null) {
+            return;
+        }
+        if (!properties.getOffline().isEnabled() || !properties.getOffline().isAutoPushOnConnect()) {
+            return;
+        }
+        SessionKey sessionKey = realtimeSession.getSessionKey();
+        if (sessionKey == null || sessionKey.isAnonymous()
+                || sessionKey.getUserId() == null || sessionKey.getUserId().isBlank()) {
+            return;
+        }
+        RealtimeOfflineMessageProvider provider = offlineMessageProvider.getIfAvailable();
+        if (provider == null) {
+            return;
+        }
+        String userId = sessionKey.getUserId();
+        List<RealtimeMessage<?>> offlineMessages;
+        try {
+            offlineMessages = provider.pullAndClearOfflineMessages(userId);
+        } catch (Exception ex) {
+            log.warn("[Realtime] WebSocket 建连拉取离线消息失败: userId={}, sessionId={}, error={}",
+                    userId, realtimeSession.getClientId(), ex.getMessage());
+            return;
+        }
+        if (offlineMessages == null || offlineMessages.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < offlineMessages.size(); i++) {
+            RealtimeMessage<?> offlineMessage = offlineMessages.get(i);
+            if (offlineMessage == null) {
+                continue;
+            }
+            try {
+                realtimeSession.sendMessage(offlineMessage);
+            } catch (Exception ex) {
+                log.warn("[Realtime] WebSocket 建连自动补发离线消息失败，正在回存剩余未投递消息: userId={}, sessionId={}, remaining={}, error={}",
+                        userId, realtimeSession.getClientId(), offlineMessages.size() - i, ex.getMessage());
+                for (int j = i; j < offlineMessages.size(); j++) {
+                    RealtimeMessage<?> undelivered = offlineMessages.get(j);
+                    if (undelivered != null) {
+                        try {
+                            provider.saveOfflineMessage(userId, undelivered);
+                        } catch (Exception saveEx) {
+                            log.warn("[Realtime] 回存未投递离线消息失败: userId={}, messageId={}, error={}",
+                                    userId, undelivered.getId(), saveEx.getMessage());
+                        }
+                    }
+                }
+                break;
+            }
         }
     }
 
