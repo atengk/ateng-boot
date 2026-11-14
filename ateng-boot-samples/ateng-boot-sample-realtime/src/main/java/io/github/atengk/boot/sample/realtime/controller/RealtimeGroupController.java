@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sample.realtime.controller;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.model.SessionKey;
@@ -9,8 +11,13 @@ import io.github.atengk.boot.sample.realtime.vo.GroupMembersVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.CollectionUtils;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -36,6 +43,38 @@ public class RealtimeGroupController {
         int count = realtimeTemplate.sendToGroup(request.getGroupId(),
                 RealtimeMessage.of(request.getEvent(), request.getContent()));
         return Result.success(count);
+    }
+
+    /**
+     * 向指定房间/群组组播下发消息并排除请求中的指定会话（如聊天室广播不回显发送方自身）
+     */
+    @PostMapping("/send-except")
+    public Result<Integer> sendToGroupExcept(@Valid @RequestBody PushGroupMessageRequest request) {
+        log.info("[Sample] 触发群组排除会话组播: groupId={}, event={}, excludeCount={}",
+                request.getGroupId(), request.getEvent(),
+                request.getExcludeSessionKeys() != null ? request.getExcludeSessionKeys().size() : 0);
+        List<SessionKey> excludeKeys = parseSessionKeys(request.getExcludeSessionKeys());
+        int count = realtimeTemplate.sendToGroupExcept(request.getGroupId(),
+                RealtimeMessage.of(request.getEvent(), request.getContent()), excludeKeys);
+        return Result.success(count);
+    }
+
+    private List<SessionKey> parseSessionKeys(List<String> rawKeys) {
+        if (CollectionUtils.isEmpty(rawKeys)) {
+            return Collections.emptyList();
+        }
+        List<SessionKey> keys = new ArrayList<>(rawKeys.size());
+        for (String raw : rawKeys) {
+            if (StringUtils.hasText(raw)) {
+                try {
+                    keys.add(SessionKey.parse(raw.trim()));
+                } catch (IllegalArgumentException e) {
+                    throw new BusinessException(CommonResultCode.BAD_REQUEST,
+                            "会话坐标格式非法，需符合 userId:deviceType:clientId 规范: " + raw, e);
+                }
+            }
+        }
+        return keys;
     }
 
     /**

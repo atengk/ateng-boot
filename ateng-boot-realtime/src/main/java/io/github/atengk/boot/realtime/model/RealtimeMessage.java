@@ -149,6 +149,28 @@ public class RealtimeMessage<T> implements Serializable {
     }
 
     /**
+     * 冻结并补全消息在调用时刻的上下文元数据（id、timestamp、traceId、tenantId）
+     * 供异步延迟投递或事务提交后推送场景在脱离原始请求线程前固化追踪上下文
+     *
+     * @return 当前消息实例
+     */
+    public RealtimeMessage<T> freezeContextMetadata() {
+        if (this.id == null || this.id.isBlank()) {
+            this.id = IdUtil.nextIdStr();
+        }
+        if (this.timestamp == null) {
+            this.timestamp = System.currentTimeMillis();
+        }
+        if (this.traceId == null || this.traceId.isBlank()) {
+            this.traceId = resolveTraceId();
+        }
+        if (this.tenantId == null || this.tenantId.isBlank()) {
+            this.tenantId = resolveTenantId();
+        }
+        return this;
+    }
+
+    /**
      * 快速构建 Ping 心跳消息
      *
      * @return Ping 实时消息

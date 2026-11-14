@@ -1,5 +1,10 @@
 package io.github.atengk.boot.realtime.template;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster;
+import io.github.atengk.boot.realtime.cluster.RealtimeClusterPacket;
 import io.github.atengk.boot.realtime.constant.RealtimeCloseStatus;
 import io.github.atengk.boot.realtime.enums.ChannelType;
 import io.github.atengk.boot.realtime.group.RealtimeGroupManager;
@@ -8,10 +13,14 @@ import io.github.atengk.boot.realtime.model.SessionKey;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.slf4j.MDC;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -45,6 +54,16 @@ class RealtimeTemplateTest {
         sessionManager = new RealtimeSessionManager(properties);
         sessionManager.addListener(groupManager);
         template = new RealtimeTemplate(sessionManager, groupManager, properties);
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
     }
 
     @Test
@@ -366,5 +385,241 @@ class RealtimeTemplateTest {
 
         assertThat(sessionManager.getOnlineCountByTenant(999L)).isZero();
         verify(wsTenant).close(any(org.springframework.web.socket.CloseStatus.class));
+    }
+
+    @Test
+    @DisplayName("事务提交后推送测试: 活跃事务提交后才投递、冻结上下文并在回调后清理恢复")
+    void testSendAfterCommitInActiveTransaction() throws Exception {
+        WebSocketSession ws1 = mock(WebSocketSession.class);
+        when(ws1.isOpen()).thenReturn(true);
+        SessionKey sessionKey = SessionKey.of("user-tx-1", "tab-1");
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(sessionKey, ws1, 100L, null));
+        template.joinGroup("group-tx", sessionKey);
+
+        MDC.put("traceId", "trace-tx-origin");
+        TenantContextHolder.setTenantId("100");
+        UserContextHolder.set("admin-1");
+
+        TransactionSynchronizationManager.initSynchronization();
+
+        RealtimeMessage<String> deferredMsg = RealtimeMessage.<String>builder()
+                .event("order:paid")
+                .data("order-001")
+                .build();
+
+        // 1. 注册各类 AfterCommit 投递：在事务未提交前严禁提前下发
+        template.sendToSessionAfterCommit(sessionKey, deferredMsg);
+        template.sendToSessionAfterCommit("user-tx-1", "tab-1", RealtimeMessage.of("session:pair", "ok"));
+        template.sendToUserAfterCommit("user-tx-1", RealtimeMessage.of("user:msg", "hello"));
+        template.sendToUserAfterCommit("user-tx-1", 100L, RealtimeMessage.of("user:tenant", "hello-t"));
+        template.sendToGroupAfterCommit("group-tx", RealtimeMessage.of("group:msg", "hello-g"));
+        template.sendToTenantAfterCommit(100L, RealtimeMessage.of("tenant:msg", "hello-100"));
+        template.sendToAllAfterCommit(RealtimeMessage.of("all:msg", "hello-all"));
+
+        verify(ws1, never()).sendMessage(any());
+
+        // 验证注册期已预冻结 traceId 与 tenantId 到消息载荷
+        assertThat(deferredMsg.getId()).isNotBlank();
+        assertThat(deferredMsg.getTimestamp()).isNotNull();
+        assertThat(deferredMsg.getTraceId()).isEqualTo("trace-tx-origin");
+        assertThat(deferredMsg.getTenantId()).isEqualTo("100");
+
+        // 模拟调用线程随后清空上下文（验证 afterCommit 执行时能恢复快照，执行完后再清理还原）
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
+
+        List<TransactionSynchronization> synchronizations = TransactionSynchronizationManager.getSynchronizations();
+        assertThat(synchronizations).hasSize(7);
+        for (TransactionSynchronization sync : synchronizations) {
+            sync.afterCommit();
+        }
+
+        // 所有 7 条消息应在提交后全部投递
+        verify(ws1, times(7)).sendMessage(any(TextMessage.class));
+        // 回调完成后当前线程上下文应被清理恢复，不可泄漏
+        assertThat(MDC.get("traceId")).isNull();
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+        assertThat(UserContextHolder.get()).isNull();
+    }
+
+    @Test
+    @DisplayName("事务回滚测试: 事务回滚时不触发 AfterCommit 推送")
+    void testSendAfterCommitOnRollbackDoesNotSend() throws Exception {
+        WebSocketSession ws1 = mock(WebSocketSession.class);
+        when(ws1.isOpen()).thenReturn(true);
+        SessionKey sessionKey = SessionKey.of("user-tx-rb", "tab-1");
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(sessionKey, ws1));
+
+        TransactionSynchronizationManager.initSynchronization();
+        template.sendToSessionAfterCommit(sessionKey, RealtimeMessage.of("order:cancel", "rb"));
+
+        for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+            sync.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+        }
+
+        verify(ws1, never()).sendMessage(any());
+    }
+
+    @Test
+    @DisplayName("无事务同步上下文降级测试: sendAfterCommit 立即同步下发")
+    void testSendAfterCommitWithoutActiveTransactionSendsImmediately() throws Exception {
+        WebSocketSession ws1 = mock(WebSocketSession.class);
+        when(ws1.isOpen()).thenReturn(true);
+        SessionKey sessionKey = SessionKey.of("user-notx", "tab-1");
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(sessionKey, ws1, 200L, null));
+        template.joinGroup("group-notx", sessionKey);
+
+        assertThat(TransactionSynchronizationManager.isSynchronizationActive()).isFalse();
+
+        template.sendToSessionAfterCommit(sessionKey, RealtimeMessage.of("e1", "1"));
+        template.sendToSessionAfterCommit("user-notx", "tab-1", RealtimeMessage.of("e2", "2"));
+        template.sendToUserAfterCommit("user-notx", RealtimeMessage.of("e3", "3"));
+        template.sendToUserAfterCommit("user-notx", 200L, RealtimeMessage.of("e4", "4"));
+        template.sendToGroupAfterCommit("group-notx", RealtimeMessage.of("e5", "5"));
+        template.sendToTenantAfterCommit(200L, RealtimeMessage.of("e6", "6"));
+        template.sendToAllAfterCommit(RealtimeMessage.of("e7", "7"));
+
+        verify(ws1, times(7)).sendMessage(any(TextMessage.class));
+    }
+
+    @Test
+    @DisplayName("排除会话推送测试: 单机模式下 sendToUserExcept / sendToGroupExcept / sendToAllExcept")
+    void testSendExceptStandalone() throws Exception {
+        WebSocketSession wsUser1TabA = mock(WebSocketSession.class);
+        WebSocketSession wsUser1TabB = mock(WebSocketSession.class);
+        WebSocketSession wsUser2TabA = mock(WebSocketSession.class);
+        when(wsUser1TabA.isOpen()).thenReturn(true);
+        when(wsUser1TabB.isOpen()).thenReturn(true);
+        when(wsUser2TabA.isOpen()).thenReturn(true);
+
+        SessionKey k1A = SessionKey.of("u-ex-1", "tab-a");
+        SessionKey k1B = SessionKey.of("u-ex-1", "tab-b");
+        SessionKey k2A = SessionKey.of("u-ex-2", "tab-a");
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(k1A, wsUser1TabA, 10L, null));
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(k1B, wsUser1TabB, 10L, null));
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(k2A, wsUser2TabA, 10L, null));
+        template.joinGroup("group-ex", k1A);
+        template.joinGroup("group-ex", k1B);
+        template.joinGroup("group-ex", k2A);
+
+        // 1. sendToUserExcept (varargs) 排除 k1A，仅投递 k1B
+        int userSent = template.sendToUserExcept("u-ex-1", RealtimeMessage.of("user:sync", "tab-sync"), k1A);
+        assertThat(userSent).isEqualTo(1);
+        verify(wsUser1TabA, never()).sendMessage(any());
+        verify(wsUser1TabB, times(1)).sendMessage(any(TextMessage.class));
+
+        // 2. sendToUserExcept (tenantId + Collection) 排除 k1B，仅投递 k1A
+        int userTenantSent = template.sendToUserExcept("u-ex-1", 10L, RealtimeMessage.of("user:tenant", "sync2"), List.of(k1B));
+        assertThat(userTenantSent).isEqualTo(1);
+        verify(wsUser1TabA, times(1)).sendMessage(any(TextMessage.class));
+
+        // 3. sendToGroupExcept (varargs & Collection) 排除多个会话
+        int groupSent = template.sendToGroupExcept("group-ex", RealtimeMessage.of("group:chat", "hello"), k1A, k2A);
+        assertThat(groupSent).isEqualTo(1);
+        verify(wsUser1TabB, times(2)).sendMessage(any(TextMessage.class));
+        verify(wsUser2TabA, never()).sendMessage(any());
+
+        // 4. sendToAllExcept (null 排除列表兼容与非空排除)
+        int allWithNull = template.sendToAllExcept(RealtimeMessage.of("all:1", "a1"), (SessionKey[]) null);
+        assertThat(allWithNull).isEqualTo(3);
+        int allExcluded = template.sendToAllExcept(RealtimeMessage.of("all:2", "a2"), Set.of(k1A, k1B));
+        assertThat(allExcluded).isEqualTo(1);
+        verify(wsUser2TabA, times(2)).sendMessage(any(TextMessage.class));
+    }
+
+    @Test
+    @DisplayName("排除会话集群广播测试: Packet JSON 往返携带 excludeSessionKeys 且远端 dispatch 精准过滤")
+    void testSendExceptClusterBroadcastAndRemoteDispatch() throws Exception {
+        RealtimeClusterBroadcaster mockBroadcaster = mock(RealtimeClusterBroadcaster.class);
+        when(mockBroadcaster.isClusterEnabled()).thenReturn(true);
+        when(mockBroadcaster.getNodeId()).thenReturn("node-local");
+
+        RealtimeTemplate clusterTemplate = new RealtimeTemplate(
+                sessionManager, groupManager, properties, mockBroadcaster);
+
+        org.mockito.ArgumentCaptor<java.util.function.Consumer<RealtimeClusterPacket>> consumerCaptor =
+                org.mockito.ArgumentCaptor.forClass(java.util.function.Consumer.class);
+        verify(mockBroadcaster).addConsumer(consumerCaptor.capture());
+        java.util.function.Consumer<RealtimeClusterPacket> consumer = consumerCaptor.getValue();
+
+        WebSocketSession wsExclude = mock(WebSocketSession.class);
+        WebSocketSession wsReceive = mock(WebSocketSession.class);
+        when(wsExclude.isOpen()).thenReturn(true);
+        when(wsReceive.isOpen()).thenReturn(true);
+
+        SessionKey kExclude = SessionKey.of("u-c-1", "tab-sender");
+        SessionKey kReceive = SessionKey.of("u-c-1", "tab-other");
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(kExclude, wsExclude, 20L, null));
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(kReceive, wsReceive, 20L, null));
+        clusterTemplate.joinGroup("group-cluster-ex", kExclude);
+        clusterTemplate.joinGroup("group-cluster-ex", kReceive);
+
+        // 本地发起排除广播，验证发往广播器的 Packet 携带了 excludeSessionKeys
+        clusterTemplate.sendToGroupExcept("group-cluster-ex", RealtimeMessage.of("g:msg", "hi"), kExclude);
+        org.mockito.ArgumentCaptor<RealtimeClusterPacket> packetCaptor =
+                org.mockito.ArgumentCaptor.forClass(RealtimeClusterPacket.class);
+        verify(mockBroadcaster).broadcast(packetCaptor.capture());
+
+        RealtimeClusterPacket sentPacket = packetCaptor.getValue();
+        assertThat(sentPacket.getExcludeSessionKeys()).containsExactly(kExclude.format());
+
+        // 模拟 JSON 序列化/反序列化往返后从远端节点消费 (sourceNodeId 改为另一节点)
+        String json = JsonUtil.toJsonString(sentPacket);
+        RealtimeClusterPacket remoteGroupPacket = JsonUtil.parseObject(json, RealtimeClusterPacket.class);
+        remoteGroupPacket.setSourceNodeId("node-remote");
+        consumer.accept(remoteGroupPacket);
+
+        // 模拟 USER 与 ALL 远端包携带 excludeSessionKeys
+        RealtimeClusterPacket remoteUserPacket = RealtimeClusterPacket.ofUser(
+                "node-remote", "u-c-1", 20L, RealtimeMessage.of("u:msg", "u"), List.of(kExclude));
+        consumer.accept(JsonUtil.parseObject(JsonUtil.toJsonString(remoteUserPacket), RealtimeClusterPacket.class));
+
+        RealtimeClusterPacket remoteAllPacket = RealtimeClusterPacket.ofAll(
+                "node-remote", RealtimeMessage.of("a:msg", "a"), List.of(kExclude));
+        consumer.accept(JsonUtil.parseObject(JsonUtil.toJsonString(remoteAllPacket), RealtimeClusterPacket.class));
+
+        // 被排除会话 0 次收到（本地 1 次广播期间已被排除，远端 3 次也全部排除），未排除会话共 4 次收到
+        verify(wsExclude, never()).sendMessage(any());
+        verify(wsReceive, times(4)).sendMessage(any(TextMessage.class));
+    }
+
+    @Test
+    @DisplayName("排除会话多租户离线与 AfterCommit 空参数卫语句边界测试")
+    void testSendExceptTenantOfflineBoundaryAndAfterCommitNullGuards() {
+        io.github.atengk.boot.realtime.spi.RealtimeOfflineMessageProvider mockOfflineProvider =
+                Mockito.mock(io.github.atengk.boot.realtime.spi.RealtimeOfflineMessageProvider.class);
+        RealtimeTemplate templateWithOffline = new RealtimeTemplate(
+                sessionManager,
+                groupManager,
+                properties,
+                new io.github.atengk.boot.realtime.cluster.StandaloneRealtimeClusterBroadcaster(),
+                mockOfflineProvider
+        );
+
+        WebSocketSession wsTenant10 = mock(WebSocketSession.class);
+        when(wsTenant10.isOpen()).thenReturn(true);
+        SessionKey kTenant10 = SessionKey.of("u-multi-tenant", "tab-10");
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(kTenant10, wsTenant10, 10L, null));
+
+        // 1. 同租户下仅排除发送端自身在线会话时，用户在该租户内仍视为在线，不应触发离线暂存
+        RealtimeMessage<String> sameTenantMsg = RealtimeMessage.ofPersistent("sync:tab", "p1");
+        templateWithOffline.sendToUserExcept("u-multi-tenant", 10L, sameTenantMsg, kTenant10);
+        verify(mockOfflineProvider, never()).saveOfflineMessage(any(), any());
+
+        // 2. 向用户未登录的租户 20 推送且持久化，应视为在租户 20 离线并触发离线暂存
+        RealtimeMessage<String> otherTenantMsg = RealtimeMessage.ofPersistent("notice:tenant20", "p2");
+        templateWithOffline.sendToUserExcept("u-multi-tenant", 20L, otherTenantMsg, kTenant10);
+        verify(mockOfflineProvider, times(1)).saveOfflineMessage("u-multi-tenant", otherTenantMsg);
+
+        // 3. send*AfterCommit 在空参数或空白 groupId 下即使开启事务同步也不应注册回调
+        TransactionSynchronizationManager.initSynchronization();
+        template.sendToSessionAfterCommit((SessionKey) null, RealtimeMessage.of("e", "d"));
+        template.sendToSessionAfterCommit("u1", null, RealtimeMessage.of("e", "d"));
+        template.sendToUserAfterCommit(null, RealtimeMessage.of("e", "d"));
+        template.sendToGroupAfterCommit("   ", RealtimeMessage.of("e", "d"));
+        template.sendToTenantAfterCommit(null, RealtimeMessage.of("e", "d"));
+        template.sendToAllAfterCommit(null);
+        assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
     }
 }

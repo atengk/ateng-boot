@@ -9,8 +9,12 @@ import io.github.atengk.boot.sample.realtime.dto.PushUserMessageRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.Collections;
+import java.util.List;
 
 /**
  * 实时通信消息推送与多通道单播/广播控制器
@@ -39,6 +43,40 @@ public class RealtimePushController {
             return Result.success(success ? 1 : 0);
         }
         int count = realtimeTemplate.sendToUser(request.getUserId(), message);
+        return Result.success(count);
+    }
+
+    /**
+     * 事务提交后向指定用户推送消息（若当前存在活跃 Spring 事务则于提交成功后执行并清理上下文，否则立即同步下发）
+     */
+    @PostMapping("/user-after-commit")
+    public Result<Void> sendToUserAfterCommit(@Valid @RequestBody PushUserMessageRequest request) {
+        log.info("[Sample] 触发事务提交后用户推送: userId={}, event={}", request.getUserId(), request.getEvent());
+        RealtimeMessage<String> message = RealtimeMessage.of(request.getEvent(), request.getContent());
+        if (StringUtils.hasText(request.getDeviceType()) && StringUtils.hasText(request.getClientId())) {
+            SessionKey key = SessionKey.of(request.getUserId(), request.getDeviceType(), request.getClientId());
+            realtimeTemplate.sendToSessionAfterCommit(key, message);
+        } else {
+            realtimeTemplate.sendToUserAfterCommit(request.getUserId(), message);
+        }
+        return Result.success();
+    }
+
+    /**
+     * 向指定用户的其余在线会话推送消息，排除请求中声明的发送端会话标识
+     */
+    @PostMapping("/user-except")
+    public Result<Integer> sendToUserExcept(@Valid @RequestBody PushUserMessageRequest request) {
+        log.info("[Sample] 触发用户排除会话推送: userId={}, event={}, excludeClientIds={}",
+                request.getUserId(), request.getEvent(), request.getExcludeClientIds());
+        RealtimeMessage<String> message = RealtimeMessage.of(request.getEvent(), request.getContent());
+        List<SessionKey> excludeKeys = CollectionUtils.isEmpty(request.getExcludeClientIds())
+                ? Collections.emptyList()
+                : request.getExcludeClientIds().stream()
+                .filter(StringUtils::hasText)
+                .map(clientId -> SessionKey.of(request.getUserId(), request.getDeviceType(), clientId))
+                .toList();
+        int count = realtimeTemplate.sendToUserExcept(request.getUserId(), message, excludeKeys);
         return Result.success(count);
     }
 

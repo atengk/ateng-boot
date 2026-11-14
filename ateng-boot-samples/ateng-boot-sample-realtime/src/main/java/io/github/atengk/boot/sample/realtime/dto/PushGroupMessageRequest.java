@@ -8,6 +8,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
+import java.util.List;
 
 /**
  * 分布式群组/房间组播消息请求传输对象
@@ -43,4 +44,9 @@ public class PushGroupMessageRequest implements Serializable {
     @NotNull(message = "消息正文内容不能为 null")
     @NotBlank(message = "消息正文内容不能为空")
     private String content;
+
+    /**
+     * 需要排除投递的会话坐标列表 (可选，格式: userId:deviceType:clientId)
+     */
+    private List<String> excludeSessionKeys;
 }

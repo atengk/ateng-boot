@@ -1,17 +1,27 @@
 package io.github.atengk.boot.sample.realtime;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.realtime.model.SessionKey;
+import io.github.atengk.boot.realtime.session.RealtimeSession;
+import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
+import io.github.atengk.boot.realtime.template.RealtimeTemplate;
 import io.github.atengk.boot.sample.realtime.dto.PushBroadcastRequest;
 import io.github.atengk.boot.sample.realtime.dto.PushGroupMessageRequest;
 import io.github.atengk.boot.sample.realtime.dto.PushUserMessageRequest;
 import io.github.atengk.boot.sample.realtime.dto.SendOfflineMessageRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.TextMessage;
+import org.springframework.web.socket.WebSocketSession;
+
+import java.util.List;
 
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -33,6 +43,12 @@ class RealtimeControllersScenarioTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private RealtimeSessionManager sessionManager;
+
+    @Autowired
+    private RealtimeTemplate realtimeTemplate;
 
     @Test
     @DisplayName("PushController: 单播/定向/广播与 JSR-303 防御测试")
@@ -271,5 +287,100 @@ class RealtimeControllersScenarioTest {
                         .param("disableTime", "3600"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
+    }
+
+    @Test
+    @DisplayName("PushController & GroupController: 事务提交后推送与排除会话广播端到端契约测试")
+    void testAfterCommitAndExceptEndpoints() throws Exception {
+        String user1 = "user-ctrl-ex-01";
+        String user2 = "user-ctrl-ex-02";
+        SessionKey k1TabA = SessionKey.of(user1, "WEB", "tab-a");
+        SessionKey k1TabB = SessionKey.of(user1, "WEB", "tab-b");
+        SessionKey k2TabA = SessionKey.of(user2, "WEB", "tab-a");
+
+        WebSocketSession ws1A = Mockito.mock(WebSocketSession.class);
+        WebSocketSession ws1B = Mockito.mock(WebSocketSession.class);
+        WebSocketSession ws2A = Mockito.mock(WebSocketSession.class);
+        Mockito.when(ws1A.isOpen()).thenReturn(true);
+        Mockito.when(ws1B.isOpen()).thenReturn(true);
+        Mockito.when(ws2A.isOpen()).thenReturn(true);
+
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(k1TabA, ws1A));
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(k1TabB, ws1B));
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(k2TabA, ws2A));
+        String groupId = "room-ctrl-ex";
+        realtimeTemplate.joinGroup(groupId, k1TabA);
+        realtimeTemplate.joinGroup(groupId, k1TabB);
+        realtimeTemplate.joinGroup(groupId, k2TabA);
+
+        try {
+            // 1. 事务提交后推送 (/push/user-after-commit): 无活跃事务时立即同步下发
+            PushUserMessageRequest afterCommitReq = PushUserMessageRequest.builder()
+                    .userId(user2)
+                    .event("order:paid")
+                    .content("Order #2026 committed")
+                    .build();
+
+            mockMvc.perform(post("/sample/realtime/push/user-after-commit")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(afterCommitReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+            Mockito.verify(ws2A, Mockito.times(1)).sendMessage(Mockito.any(TextMessage.class));
+
+            // 2. 指定用户排除会话推送 (/push/user-except): 排除 tab-a，仅 tab-b 收到
+            PushUserMessageRequest userExceptReq = PushUserMessageRequest.builder()
+                    .userId(user1)
+                    .deviceType("WEB")
+                    .event("tab:sync")
+                    .content("Sync to other tabs")
+                    .excludeClientIds(List.of("tab-a"))
+                    .build();
+
+            mockMvc.perform(post("/sample/realtime/push/user-except")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(userExceptReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(1));
+            Mockito.verify(ws1A, Mockito.never()).sendMessage(Mockito.any());
+            Mockito.verify(ws1B, Mockito.times(1)).sendMessage(Mockito.any(TextMessage.class));
+
+            // 3. 群组排除广播 (/group/send-except): 排除 k1TabA 与 k2TabA，仅 k1TabB 收到
+            PushGroupMessageRequest groupExceptReq = PushGroupMessageRequest.builder()
+                    .groupId(groupId)
+                    .event("chat:msg")
+                    .content("Hello excluding sender")
+                    .excludeSessionKeys(List.of(k1TabA.format(), k2TabA.format()))
+                    .build();
+
+            mockMvc.perform(post("/sample/realtime/group/send-except")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(groupExceptReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(1));
+            Mockito.verify(ws1A, Mockito.never()).sendMessage(Mockito.any());
+            Mockito.verify(ws1B, Mockito.times(2)).sendMessage(Mockito.any(TextMessage.class));
+            Mockito.verify(ws2A, Mockito.times(1)).sendMessage(Mockito.any(TextMessage.class));
+            // 4. 群组排除广播携带非法 SessionKey 格式时应快速失败返回 400
+            PushGroupMessageRequest invalidGroupExceptReq = PushGroupMessageRequest.builder()
+                    .groupId(groupId)
+                    .event("chat:msg")
+                    .content("Bad exclude key")
+                    .excludeSessionKeys(List.of("invalid-format-without-colons"))
+                    .build();
+
+            mockMvc.perform(post("/sample/realtime/group/send-except")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(invalidGroupExceptReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(400))
+                    .andExpect(jsonPath("$.success").value(false));
+        } finally {
+            sessionManager.removeAndClose(k1TabA, CloseStatus.NORMAL);
+            sessionManager.removeAndClose(k1TabB, CloseStatus.NORMAL);
+            sessionManager.removeAndClose(k2TabA, CloseStatus.NORMAL);
+        }
     }
 }

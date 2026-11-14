@@ -8,6 +8,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
+import java.util.List;
 
 /**
  * 用户单播消息请求传输对象
@@ -53,4 +54,9 @@ public class PushUserMessageRequest implements Serializable {
      * 指定客户端端点会话标识 (可选，针对特定 Tab 专线投递)
      */
     private String clientId;
+
+    /**
+     * 需要排除投递的客户端端点会话标识列表 (可选，用于排除发送端自身 Tab 等场景)
+     */
+    private List<String> excludeClientIds;
 }
