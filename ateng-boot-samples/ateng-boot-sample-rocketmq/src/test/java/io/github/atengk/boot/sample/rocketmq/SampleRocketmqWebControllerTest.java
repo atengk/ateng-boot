@@ -783,12 +783,21 @@ class SampleRocketmqWebControllerTest {
     @Test
     @DisplayName("测试 RocketmqContainerController: 端点审计/动态削峰暂停/恢复/物理启停与全局调度")
     void testContainerController() throws Exception {
-        // 1. 端点元数据列表审计
+        // 1. 端点元数据列表审计与只读不可变容器状态快照审计 (/statuses)
         mockMvc.perform(get("/sample/rocketmq/container/endpoints"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data", hasSize(greaterThanOrEqualTo(1))))
                 .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')]").exists());
+
+        mockMvc.perform(get("/sample/rocketmq/container/statuses"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", hasSize(greaterThanOrEqualTo(1))))
+                .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')].running").value(true))
+                .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')].paused").value(false))
+                .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')].listenerMode").value("PUSH_CONSUMER"))
+                .andExpect(jsonPath("$.data[?(@.endpointId == 'sample-sql-order-listener')].filterType").value("SQL92"));
 
         // 2. 针对指定端点动态暂停削峰
         ContainerControlRequest pauseReq = ContainerControlRequest.builder()
@@ -802,9 +811,13 @@ class SampleRocketmqWebControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));
 
-        // 验证端点状态为 paused=true
+        // 验证端点状态为 running=true, paused=true（短时削峰保持客户端与退避）
         mockMvc.perform(get("/sample/rocketmq/container/endpoints"))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')].paused").value(true));
+        mockMvc.perform(get("/sample/rocketmq/container/statuses"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')].running").value(true))
                 .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')].paused").value(true));
 
         // 3. 恢复端点正常消费
@@ -819,12 +832,16 @@ class SampleRocketmqWebControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));
 
-        // 验证端点状态为 paused=false
+        // 验证端点状态为 running=true, paused=false
         mockMvc.perform(get("/sample/rocketmq/container/endpoints"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')].paused").value(false));
+        mockMvc.perform(get("/sample/rocketmq/container/statuses"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')].running").value(true))
+                .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')].paused").value(false));
 
-        // 4. 物理关闭底层连接 (stop)
+        // 4. 物理关闭底层连接 (stop) -> 维护窗口断连，running=false 零重试消耗
         ContainerControlRequest stopReq = ContainerControlRequest.builder()
                 .endpointId("sample_order_group#sample_order_topic")
                 .build();
@@ -836,7 +853,11 @@ class SampleRocketmqWebControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));
 
-        // 5. 重新组装启动底层连接 (start)
+        mockMvc.perform(get("/sample/rocketmq/container/statuses"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')].running").value(false));
+
+        // 5. 重新组装启动底层连接 (start) -> running=true
         ContainerControlRequest startReq = ContainerControlRequest.builder()
                 .endpointId("sample_order_group#sample_order_topic")
                 .build();
@@ -847,6 +868,10 @@ class SampleRocketmqWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));
+
+        mockMvc.perform(get("/sample/rocketmq/container/statuses"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.endpointId == 'sample_order_group#sample_order_topic')].running").value(true));
 
         // 6. JSR-303 参数校验拦截 (endpointId 为空)
         ContainerControlRequest invalidReq = ContainerControlRequest.builder().build();

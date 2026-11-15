@@ -846,17 +846,42 @@ class SampleRocketmqE2eTest {
     @Test
     @DisplayName("场景 20：运行期消费容器运维 (pause/resume) 与死信队列受控重放治理及防二次雪崩")
     void testContainerOpsAndDeadLetterGovernance() {
-        // 1. 运行期容器运维管控
+        // 1. 运行期容器运维管控（不可变快照观测 + 短时削峰 pause/resume + 长时维护 stop/start）
         String endpointId = "sample_order_group#sample_order_topic";
-        assertThat(containerOpsScenarioService.getEndpointIds()).contains(endpointId);
+        assertThat(containerOpsScenarioService.getEndpointIds()).contains(endpointId, "sample-sql-order-listener");
+        assertThat(containerOpsScenarioService.getContainerStatuses())
+                .extracting(io.github.atengk.boot.rocketmq.model.RocketmqContainerStatus::endpointId)
+                .contains(endpointId, "sample-sql-order-listener");
 
+        var sqlStatus = containerOpsScenarioService.getContainerStatus("sample-sql-order-listener");
+        assertThat(sqlStatus).isNotNull();
+        assertThat(sqlStatus.filterType()).isEqualTo("SQL92");
+        assertThat(sqlStatus.filterExpression()).isEqualTo("amount > 100");
+        assertThat(sqlStatus.listenerMode()).isEqualTo("PUSH_CONSUMER");
+        assertThat(sqlStatus.autoStartup()).isTrue();
+        assertThat(sqlStatus.running()).isTrue();
+        assertThat(sqlStatus.paused()).isFalse();
+
+        // 短时限流削峰：pause/resume 保持底层运行连接（running=true, paused=true）
         boolean paused = containerOpsScenarioService.pauseEndpoint(endpointId);
         assertThat(paused).isTrue();
         assertThat(containerOpsScenarioService.isPaused(endpointId)).isTrue();
+        var pausedSnapshot = containerOpsScenarioService.getContainerStatus(endpointId);
+        assertThat(pausedSnapshot).isNotNull();
+        assertThat(pausedSnapshot.running()).isTrue();
+        assertThat(pausedSnapshot.paused()).isTrue();
 
         boolean resumed = containerOpsScenarioService.resumeEndpoint(endpointId);
         assertThat(resumed).isTrue();
         assertThat(containerOpsScenarioService.isPaused(endpointId)).isFalse();
+
+        // 长时维护窗口停机：stop/start 物理断连（running=false -> running=true）
+        assertThat(containerOpsScenarioService.stopEndpoint(endpointId)).isTrue();
+        var stoppedSnapshot = containerOpsScenarioService.getContainerStatus(endpointId);
+        assertThat(stoppedSnapshot).isNotNull();
+        assertThat(stoppedSnapshot.running()).isFalse();
+        assertThat(containerOpsScenarioService.startEndpoint(endpointId)).isTrue();
+        assertThat(containerOpsScenarioService.getContainerStatus(endpointId).running()).isTrue();
 
         // 2. 死信队列治理与受控重放
         String dlqGroup = "sample_order_group";

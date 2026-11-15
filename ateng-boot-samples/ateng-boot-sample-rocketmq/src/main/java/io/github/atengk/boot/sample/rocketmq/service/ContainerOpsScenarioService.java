@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.rocketmq.service;
 
 import io.github.atengk.boot.rocketmq.container.RocketmqContainerManager;
 import io.github.atengk.boot.rocketmq.listener.RocketmqListenerEndpoint;
+import io.github.atengk.boot.rocketmq.model.RocketmqContainerStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -30,6 +31,25 @@ public class ContainerOpsScenarioService {
 
     public List<RocketmqListenerEndpoint> getEndpoints() {
         return containerManager.getEndpoints();
+    }
+
+    /**
+     * 获取所有已注册监听容器的只读不可变运行期状态快照列表
+     *
+     * @return 不可变容器状态快照列表
+     */
+    public List<RocketmqContainerStatus> getContainerStatuses() {
+        return containerManager.getContainerStatuses();
+    }
+
+    /**
+     * 精确查询单个监听容器的只读不可变运行期状态快照
+     *
+     * @param endpointId 监听端点唯一标识
+     * @return 容器状态快照，未命中返回 null
+     */
+    public RocketmqContainerStatus getContainerStatus(String endpointId) {
+        return containerManager.getContainerStatus(endpointId);
     }
 
     public boolean pauseEndpoint(String endpointId) {

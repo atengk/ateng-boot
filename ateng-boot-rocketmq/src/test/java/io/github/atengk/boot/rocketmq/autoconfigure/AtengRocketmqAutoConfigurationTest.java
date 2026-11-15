@@ -7,6 +7,7 @@ import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
 import io.github.atengk.boot.rocketmq.consumer.SimpleConsumerFactory;
 import io.github.atengk.boot.rocketmq.container.RocketmqContainerManager;
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
+import io.github.atengk.boot.rocketmq.model.RocketmqContainerStatus;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
 import io.github.atengk.boot.rocketmq.template.RocketmqDeadLetterReplayTemplate;
@@ -206,6 +207,42 @@ class AtengRocketmqAutoConfigurationTest {
                     RocketmqConsumerContainer container = context.getBean(RocketmqConsumerContainer.class);
                     assertThat(container.getTaskExecutor()).isSameAs(coreExecutor);
                 });
+    }
+
+    @Test
+    @DisplayName("自动装配容器快照与 endpointId 别名：RocketmqContainerManager 暴露不可变状态视图")
+    void testAutoConfiguredContainerManagerStatusesWithEndpointIdAlias() throws Exception {
+        PushConsumerFactory pushFactory = mock(PushConsumerFactory.class);
+        when(pushFactory.createPushConsumer(any(), any(), any(), any(), any(), anyInt(), anyInt()))
+                .thenAnswer(inv -> mock(PushConsumer.class));
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengRocketmqAutoConfiguration.class))
+                .withPropertyValues("ateng.boot.rocketmq.endpoints=127.0.0.1:8081")
+                .withBean(PushConsumerFactory.class, () -> pushFactory)
+                .withUserConfiguration(EndpointIdAliasListenerConfig.class)
+                .run(context -> {
+                    RocketmqContainerManager manager = context.getBean(RocketmqContainerManager.class);
+                    assertThat(manager.getContainerStatuses())
+                            .extracting(RocketmqContainerStatus::endpointId)
+                            .containsExactly("auto_endpoint_alias");
+
+                    RocketmqContainerStatus status = manager.getContainerStatus("auto_endpoint_alias");
+                    assertThat(status).isNotNull();
+                    assertThat(status.topic()).isEqualTo("auto_status_topic");
+                    assertThat(status.consumerGroup()).isEqualTo("auto_status_group");
+                    assertThat(status.running()).isTrue();
+                    assertThat(status.paused()).isFalse();
+                    assertThat(status.autoStartup()).isTrue();
+                    assertThat(status.listenerMode()).isEqualTo("PUSH_CONSUMER");
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class EndpointIdAliasListenerConfig {
+        @RocketmqListener(endpointId = "auto_endpoint_alias", topic = "auto_status_topic", consumerGroup = "auto_status_group")
+        public void onMessage(String body) {
+        }
     }
 
     @Configuration(proxyBeanMethods = false)

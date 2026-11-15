@@ -5,6 +5,7 @@ import io.github.atengk.boot.rocketmq.annotation.RocketmqListener;
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.listener.RocketmqListenerEndpoint;
+import io.github.atengk.boot.rocketmq.model.RocketmqContainerStatus;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import org.apache.rocketmq.client.apis.ClientConfiguration;
 import org.apache.rocketmq.client.apis.consumer.ConsumeResult;
@@ -293,6 +294,114 @@ class RocketmqContainerManagerTest {
         assertThat(nullManager.stop("test")).isFalse();
         assertThat(nullManager.isPaused("test")).isFalse();
         assertThat(nullManager.isRunning("test")).isFalse();
+        assertThat(nullManager.getContainerStatuses()).isEmpty();
+        assertThatThrownBy(() -> nullManager.getContainerStatuses().add(null))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThat(nullManager.getContainerStatus("custom-order-endpoint")).isNull();
+    }
+
+    @Test
+    @DisplayName("不可变容器快照：getContainerStatuses 与 getContainerStatus 精确匹配、状态实时联动与空白 ID 快速失败")
+    void testContainerStatusSnapshotsAndLifecycleTransitions() {
+        List<RocketmqContainerStatus> initialStatuses = manager.getContainerStatuses();
+        assertThat(initialStatuses).hasSize(2);
+        assertThatThrownBy(() -> initialStatuses.add(null))
+                .isInstanceOf(UnsupportedOperationException.class);
+
+        RocketmqContainerStatus initialOrder = manager.getContainerStatus("custom-order-endpoint");
+        assertThat(initialOrder).isNotNull();
+        assertThat(initialOrder.endpointId()).isEqualTo("custom-order-endpoint");
+        assertThat(initialOrder.topic()).isEqualTo("order_topic");
+        assertThat(initialOrder.consumerGroup()).isEqualTo("order_group");
+        assertThat(initialOrder.filterType()).isEqualTo("TAG");
+        assertThat(initialOrder.filterExpression()).isEqualTo("*");
+        assertThat(initialOrder.consumptionThreadCount()).isEqualTo(properties.getConsumer().getConsumptionThreadCount());
+        assertThat(initialOrder.maxCacheMessageCount()).isEqualTo(properties.getConsumer().getMaxCacheMessageCount());
+        assertThat(initialOrder.running()).isFalse();
+        assertThat(initialOrder.paused()).isFalse();
+        assertThat(initialOrder.autoStartup()).isTrue();
+        assertThat(initialOrder.listenerMode()).isEqualTo("PUSH_CONSUMER");
+        assertThat(initialOrder.statusDescription()).contains("STOPPED");
+
+        // 启动容器后快照转为 RUNNING
+        container.start();
+        RocketmqContainerStatus runningOrder = manager.getContainerStatus("custom-order-endpoint");
+        assertThat(runningOrder).isNotNull();
+        assertThat(runningOrder.running()).isTrue();
+        assertThat(runningOrder.paused()).isFalse();
+        assertThat(runningOrder.statusDescription()).contains("RUNNING");
+
+        // 短时限流暂停 -> running 维持 true（保活连接与退避），paused 转为 true
+        manager.pause("custom-order-endpoint");
+        RocketmqContainerStatus pausedOrder = manager.getContainerStatus("custom-order-endpoint");
+        assertThat(pausedOrder).isNotNull();
+        assertThat(pausedOrder.running()).isTrue();
+        assertThat(pausedOrder.paused()).isTrue();
+        assertThat(pausedOrder.statusDescription()).contains("PAUSED");
+
+        // 恢复消费 -> paused 回到 false
+        manager.resume("custom-order-endpoint");
+        RocketmqContainerStatus resumedOrder = manager.getContainerStatus("custom-order-endpoint");
+        assertThat(resumedOrder).isNotNull();
+        assertThat(resumedOrder.running()).isTrue();
+        assertThat(resumedOrder.paused()).isFalse();
+
+        // 长时维护窗口停机 -> running 转为 false（物理断开零重试消耗）
+        manager.stop("custom-order-endpoint");
+        RocketmqContainerStatus stoppedOrder = manager.getContainerStatus("custom-order-endpoint");
+        assertThat(stoppedOrder).isNotNull();
+        assertThat(stoppedOrder.running()).isFalse();
+        assertThat(stoppedOrder.statusDescription()).contains("STOPPED");
+
+        // 精确匹配约束：未命中或传入非 ID（如仅 Topic）返回 null
+        assertThat(manager.getContainerStatus("non_existent")).isNull();
+        assertThat(manager.getContainerStatus("order_topic")).isNull();
+
+        // 空白 ID 快速失败
+        assertThatThrownBy(() -> manager.getContainerStatus(null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> manager.getContainerStatus("")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> manager.getContainerStatus("   ")).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("不可变容器快照：SQL92 过滤类型与 endpointId 别名端点完整映射且空容器返回不可变空列表")
+    void testSql92AndEmptyContainerStatuses() throws Exception {
+        RocketmqConsumerContainer emptyContainer = new RocketmqConsumerContainer(
+                properties, clientConfigProvider, consumerFactory, null);
+        RocketmqContainerManager emptyManager = new RocketmqContainerManager(emptyContainer);
+        List<RocketmqContainerStatus> emptyStatuses = emptyManager.getContainerStatuses();
+        assertThat(emptyStatuses).isEmpty();
+        assertThatThrownBy(() -> emptyStatuses.add(null)).isInstanceOf(UnsupportedOperationException.class);
+
+        GenericApplicationContext sqlCtx = new GenericApplicationContext();
+        sqlCtx.registerBean("sqlAliasBean", SqlAliasListenerBean.class);
+        sqlCtx.refresh();
+        RocketmqConsumerContainer sqlContainer = new RocketmqConsumerContainer(
+                properties, clientConfigProvider, consumerFactory, null);
+        sqlContainer.setApplicationContext(sqlCtx);
+        sqlContainer.afterSingletonsInstantiated();
+        RocketmqContainerManager sqlManager = new RocketmqContainerManager(sqlContainer);
+
+        RocketmqContainerStatus sqlStatus = sqlManager.getContainerStatus("sql-alias-endpoint");
+        assertThat(sqlStatus).isNotNull();
+        assertThat(sqlStatus.endpointId()).isEqualTo("sql-alias-endpoint");
+        assertThat(sqlStatus.filterType()).isEqualTo("SQL92");
+        assertThat(sqlStatus.filterExpression()).isEqualTo("amount > 100");
+        assertThat(sqlStatus.sql92()).isEqualTo("amount > 100");
+        assertThat(sqlStatus.consumptionThreadCount()).isEqualTo(8);
+        assertThat(sqlStatus.maxCacheMessageCount()).isEqualTo(512);
+    }
+
+    public static class SqlAliasListenerBean {
+        @RocketmqListener(
+                endpointId = "sql-alias-endpoint",
+                topic = "sql_alias_topic",
+                consumerGroup = "sql_alias_group",
+                sql92 = "amount > 100",
+                consumptionThreadCount = 8,
+                maxCacheMessageCount = 512
+        )
+        public void onSqlMessage(String message) {}
     }
 
     private MessageView createMockMessageView(String topic, String messageIdStr, byte[] bodyBytes) {

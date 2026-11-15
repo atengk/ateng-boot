@@ -115,7 +115,8 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
         try {
             doAnswer(inv -> {
                 closed.set(true);
-                log.info("[TEST-DOUBLE] 内存消费者已关闭: topic={}, consumerGroup={}", topic, consumerGroup);
+                subscriptions.remove(entry);
+                log.info("[TEST-DOUBLE] 内存消费者已关闭并注销订阅: topic={}, consumerGroup={}", topic, consumerGroup);
                 return null;
             }).when(mockConsumer).close();
         } catch (IOException ignored) {

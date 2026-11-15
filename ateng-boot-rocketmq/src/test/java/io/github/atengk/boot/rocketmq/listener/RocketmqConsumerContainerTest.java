@@ -15,6 +15,8 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.context.support.PropertySourcesPlaceholderConfigurer;
+import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.core.annotation.AnnotationConfigurationException;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.util.StringValueResolver;
 
@@ -406,5 +408,83 @@ class RocketmqConsumerContainerTest {
     public static class InvalidTopicBean {
         @RocketmqListener(topic = "invalid.order.topic", consumerGroup = "group1")
         public void onMessage(String message) {}
+    }
+
+    @Test
+    @DisplayName("双向别名：@RocketmqListener 通过 endpointId 或相同 id/endpointId 均可正常注册并互认")
+    void testEndpointIdAliasForBidirectionalSymmetry() throws Exception {
+        AtengRocketmqProperties properties = new AtengRocketmqProperties();
+        ObjectProvider<ClientConfiguration> clientConfigProvider = mock(ObjectProvider.class);
+        PushConsumerFactory consumerFactory = mock(PushConsumerFactory.class);
+
+        RocketmqConsumerContainer container = new RocketmqConsumerContainer(
+                properties,
+                clientConfigProvider,
+                consumerFactory,
+                null);
+
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.registerBean("aliasListenerBean", AliasListenerBean.class);
+        context.refresh();
+
+        container.setApplicationContext(context);
+        container.setEmbeddedValueResolver(str -> "${app.endpoint.id:alias_endpoint_resolved}".equals(str)
+                ? "alias_endpoint_resolved"
+                : str);
+        container.afterSingletonsInstantiated();
+
+        assertThat(container.getEndpointIds())
+                .containsExactlyInAnyOrder("alias_endpoint_resolved", "id_only_endpoint", "same_alias_endpoint");
+
+        RocketmqListener mergedByEndpointId = AnnotatedElementUtils.findMergedAnnotation(
+                AliasListenerBean.class.getMethod("onByEndpointId", String.class), RocketmqListener.class);
+        assertThat(mergedByEndpointId).isNotNull();
+        assertThat(mergedByEndpointId.id()).isEqualTo("${app.endpoint.id:alias_endpoint_resolved}");
+        assertThat(mergedByEndpointId.endpointId()).isEqualTo("${app.endpoint.id:alias_endpoint_resolved}");
+
+        RocketmqListener mergedById = AnnotatedElementUtils.findMergedAnnotation(
+                AliasListenerBean.class.getMethod("onById", String.class), RocketmqListener.class);
+        assertThat(mergedById).isNotNull();
+        assertThat(mergedById.id()).isEqualTo("id_only_endpoint");
+        assertThat(mergedById.endpointId()).isEqualTo("id_only_endpoint");
+    }
+
+    @Test
+    @DisplayName("双向别名冲突：@RocketmqListener 同时声明互斥不同的 id 与 endpointId 时按 Spring 语义快速失败")
+    void testConflictingIdAndEndpointIdThrowsFastFail() {
+        AtengRocketmqProperties properties = new AtengRocketmqProperties();
+        ObjectProvider<ClientConfiguration> clientConfigProvider = mock(ObjectProvider.class);
+        PushConsumerFactory consumerFactory = mock(PushConsumerFactory.class);
+
+        RocketmqConsumerContainer container = new RocketmqConsumerContainer(
+                properties,
+                clientConfigProvider,
+                consumerFactory,
+                null);
+
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.registerBean("conflictingAliasBean", ConflictingAliasListenerBean.class);
+        context.refresh();
+
+        container.setApplicationContext(context);
+
+        assertThatThrownBy(container::afterSingletonsInstantiated)
+                .isInstanceOf(AnnotationConfigurationException.class);
+    }
+
+    public static class AliasListenerBean {
+        @RocketmqListener(endpointId = "${app.endpoint.id:alias_endpoint_resolved}", topic = "alias_topic_1", consumerGroup = "alias_group_1")
+        public void onByEndpointId(String message) {}
+
+        @RocketmqListener(id = "id_only_endpoint", topic = "alias_topic_2", consumerGroup = "alias_group_2")
+        public void onById(String message) {}
+
+        @RocketmqListener(id = "same_alias_endpoint", endpointId = "same_alias_endpoint", topic = "alias_topic_3", consumerGroup = "alias_group_3")
+        public void onBySameAlias(String message) {}
+    }
+
+    public static class ConflictingAliasListenerBean {
+        @RocketmqListener(id = "left_id", endpointId = "right_id", topic = "conflict_topic", consumerGroup = "conflict_group")
+        public void onConflict(String message) {}
     }
 }

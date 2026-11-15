@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.rocketmq.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.rocketmq.listener.RocketmqListenerEndpoint;
+import io.github.atengk.boot.rocketmq.model.RocketmqContainerStatus;
 import io.github.atengk.boot.sample.rocketmq.dto.ConsumerEndpointVO;
 import io.github.atengk.boot.sample.rocketmq.dto.ContainerControlRequest;
 import io.github.atengk.boot.sample.rocketmq.service.ContainerOpsScenarioService;
@@ -43,6 +44,20 @@ public class RocketmqContainerController {
             vos.add(ConsumerEndpointVO.from(ep));
         }
         return Result.success(vos);
+    }
+
+    /**
+     * 查询所有消费监听容器的只读不可变运行期状态快照列表
+     *
+     * <p>用于实时观测容器生命周期与流控边界：
+     * 短时突发限流削峰使用 {@code pause}/{@code resume}（维持客户端连接并触发 Broker 阶梯退避）；
+     * 长时维护窗口停机使用 {@code stop}/{@code start}（物理注销连接且零重试配额消耗）。</p>
+     *
+     * @return 只读不可变容器状态快照列表
+     */
+    @GetMapping("/statuses")
+    public Result<List<RocketmqContainerStatus>> getContainerStatuses() {
+        return Result.success(containerOpsService.getContainerStatuses());
     }
 
     /**

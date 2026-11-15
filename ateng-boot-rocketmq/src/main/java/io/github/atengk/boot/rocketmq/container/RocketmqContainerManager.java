@@ -2,6 +2,7 @@ package io.github.atengk.boot.rocketmq.container;
 
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.listener.RocketmqListenerEndpoint;
+import io.github.atengk.boot.rocketmq.model.RocketmqContainerStatus;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
@@ -93,6 +94,44 @@ public class RocketmqContainerManager {
             }
         }
         return Collections.unmodifiableList(matched);
+    }
+
+    /**
+     * 获取所有已注册监听容器的只读不可变运行期状态快照列表
+     *
+     * @return 不可变容器状态快照列表（无容器或无端点时保底返回空不可变列表）
+     */
+    public List<RocketmqContainerStatus> getContainerStatuses() {
+        if (container == null) {
+            return List.of();
+        }
+        List<RocketmqListenerEndpoint> registeredEndpoints = container.getEndpoints();
+        if (registeredEndpoints == null || registeredEndpoints.isEmpty()) {
+            return List.of();
+        }
+        List<RocketmqContainerStatus> statuses = new ArrayList<>(registeredEndpoints.size());
+        for (RocketmqListenerEndpoint endpoint : registeredEndpoints) {
+            if (endpoint != null) {
+                statuses.add(toContainerStatus(endpoint));
+            }
+        }
+        return List.copyOf(statuses);
+    }
+
+    /**
+     * 按端点唯一标识 ID 精确查询单个监听容器的只读不可变状态快照
+     *
+     * @param id 监听端点 ID（如 {@code @RocketmqListener} 声明的 {@code id}/{@code endpointId} 或默认的 {@code consumerGroup#topic}）
+     * @return 匹配的不可变状态快照；未命中或无容器时返回 {@code null}
+     * @throws IllegalArgumentException {@code id} 为空白时抛出
+     */
+    public RocketmqContainerStatus getContainerStatus(String id) {
+        Assert.hasText(id, "id 不能为空白");
+        if (container == null) {
+            return null;
+        }
+        RocketmqListenerEndpoint endpoint = container.getEndpoint(id.trim());
+        return endpoint != null ? toContainerStatus(endpoint) : null;
     }
 
     // =========================================================================
@@ -315,5 +354,43 @@ public class RocketmqContainerManager {
             }
         }
         return count;
+    }
+
+    private RocketmqContainerStatus toContainerStatus(RocketmqListenerEndpoint endpoint) {
+        String sql92 = endpoint.getSql92() != null ? endpoint.getSql92().trim() : "";
+        String tag = endpoint.getTag() != null ? endpoint.getTag().trim() : "";
+        boolean running = endpoint.isRunning();
+        boolean paused = endpoint.isPaused();
+        boolean autoStartup = container != null && container.isAutoStartup();
+
+        return new RocketmqContainerStatus(
+                endpoint.getId(),
+                endpoint.getTopic(),
+                endpoint.getConsumerGroup(),
+                null,
+                null,
+                tag,
+                sql92,
+                endpoint.getConsumptionThreadCount(),
+                endpoint.getMaxCacheMessageCount(),
+                running,
+                paused,
+                autoStartup,
+                "PUSH_CONSUMER",
+                buildStatusDescription(running, paused)
+        );
+    }
+
+    private String buildStatusDescription(boolean running, boolean paused) {
+        if (!running && paused) {
+            return "STOPPED_PAUSED - 底层 PushConsumer 已物理断开（且已标记暂停削峰）";
+        }
+        if (!running) {
+            return "STOPPED - 底层 PushConsumer 已物理断开（零重试配额消耗）";
+        }
+        if (paused) {
+            return "PAUSED - 运行中但已暂停削峰（保持连接并返回 FAILURE 触发 Broker 阶梯退避）";
+        }
+        return "RUNNING - 正常运行消费中";
     }
 }
