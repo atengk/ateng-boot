@@ -1,9 +1,14 @@
 package io.github.atengk.boot.sample.rabbitmq.controller;
 
+import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.rabbitmq.consumer.BatchOrderConsumer;
+import io.github.atengk.boot.sample.rabbitmq.consumer.BatchTenantIsolationConsumer;
 import io.github.atengk.boot.sample.rabbitmq.consumer.PriorityOrderConsumer;
 import io.github.atengk.boot.sample.rabbitmq.dto.BatchOrderRequest;
+import io.github.atengk.boot.sample.rabbitmq.dto.BatchTenantRequest;
 import io.github.atengk.boot.sample.rabbitmq.dto.OrderCreateRequest;
 import io.github.atengk.boot.sample.rabbitmq.dto.PriorityOrderRequest;
 import io.github.atengk.boot.sample.rabbitmq.model.OrderCreateMessage;
@@ -31,6 +36,7 @@ public class RabbitBatchAndPriorityController {
 
     private final TradeMessageProducer producer;
     private final BatchOrderConsumer batchOrderConsumer;
+    private final BatchTenantIsolationConsumer batchTenantIsolationConsumer;
     private final PriorityOrderConsumer priorityOrderConsumer;
 
     /**
@@ -107,6 +113,46 @@ public class RabbitBatchAndPriorityController {
     }
 
     /**
+     * 按逐条独立租户与用户上下文混排投递批量消息（演示 {@link io.github.atengk.boot.rabbitmq.executor.RabbitBatchExecutor} 隔离与容错）
+     *
+     * @param request 批量混排订单请求
+     * @return 成功投递条数
+     */
+    @PostMapping("/batch/tenant-isolated")
+    public Result<Integer> sendBatchTenantIsolated(@Valid @RequestBody BatchTenantRequest request) {
+        for (BatchTenantRequest.BatchTenantOrderItem item : request.getItems()) {
+            AsyncContext.ContextSnapshot previous = AsyncContext.capturePrevious();
+            try {
+                if (item.getTenantId() != null) {
+                    TenantContextHolder.setTenantId(item.getTenantId());
+                } else {
+                    TenantContextHolder.clearTenant();
+                }
+                if (item.getUserId() != null) {
+                    UserContextHolder.setUserId(item.getUserId());
+                } else {
+                    UserContextHolder.clearUser();
+                }
+                TenantContextHolder.setIgnoreTenant(item.isIgnoreTenant());
+                producer.sendBatchTenantOrder(item.toMessage());
+            } finally {
+                previous.restore();
+            }
+        }
+        return Result.success(request.getItems().size(), "多租户混排批量订单已投递");
+    }
+
+    /**
+     * 查询批量多租户隔离与异常容错消费审计记录
+     *
+     * @return 成功与失败消费记录视图
+     */
+    @GetMapping("/batch/tenant-records")
+    public Result<BatchTenantIsolationConsumer.BatchTenantRecordsView> getBatchTenantRecords() {
+        return Result.success(batchTenantIsolationConsumer.getAuditView());
+    }
+
+    /**
      * 清空批量与优先级消费记录
      *
      * @return 操作结果
@@ -114,6 +160,7 @@ public class RabbitBatchAndPriorityController {
     @DeleteMapping("/batch/clear")
     public Result<Boolean> clearBatchAndPriority() {
         batchOrderConsumer.clear();
+        batchTenantIsolationConsumer.clear();
         priorityOrderConsumer.clear();
         return Result.success(true, "批量与优先级消费记录已清空");
     }

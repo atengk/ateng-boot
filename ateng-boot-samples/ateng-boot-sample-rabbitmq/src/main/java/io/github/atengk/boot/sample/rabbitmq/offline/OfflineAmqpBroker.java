@@ -7,6 +7,7 @@ import io.github.atengk.boot.rabbitmq.interceptor.RabbitListenerGlobalAdvice;
 import io.github.atengk.boot.sample.rabbitmq.config.RabbitScenarioTopologyConfig;
 import io.github.atengk.boot.sample.rabbitmq.consumer.AnonymousBroadcastConsumer;
 import io.github.atengk.boot.sample.rabbitmq.consumer.BatchOrderConsumer;
+import io.github.atengk.boot.sample.rabbitmq.consumer.BatchTenantIsolationConsumer;
 import io.github.atengk.boot.sample.rabbitmq.consumer.DeadLetterAuditConsumer;
 import io.github.atengk.boot.sample.rabbitmq.consumer.IdempotentOrderConsumer;
 import io.github.atengk.boot.sample.rabbitmq.consumer.LogTopicConsumer;
@@ -358,6 +359,9 @@ public class OfflineAmqpBroker {
                 && RabbitScenarioTopologyConfig.ROUTING_KEY_BATCH_ORDER.equals(routingKey)) {
             OrderCreateMessage payload = (OrderCreateMessage) converter.fromMessage(message);
             withBean(BatchOrderConsumer.class, consumer -> consumer.onBatch(List.of(payload)));
+        } else if (RabbitScenarioTopologyConfig.EXCHANGE_BATCH_DIRECT.equals(exchange)
+                && RabbitScenarioTopologyConfig.ROUTING_KEY_BATCH_TENANT.equals(routingKey)) {
+            withBean(BatchTenantIsolationConsumer.class, consumer -> consumer.onBatchMessages(List.of(message)));
         } else if (RabbitScenarioTopologyConfig.EXCHANGE_PRIORITY_DIRECT.equals(exchange)
                 && RabbitScenarioTopologyConfig.ROUTING_KEY_PRIORITY_ORDER.equals(routingKey)) {
             OrderCreateMessage payload = (OrderCreateMessage) converter.fromMessage(message);

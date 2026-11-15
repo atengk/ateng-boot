@@ -47,6 +47,8 @@ public class RabbitScenarioTopologyConfig {
     public static final String EXCHANGE_BATCH_DIRECT = "sample.batch.direct";
     public static final String QUEUE_BATCH_ORDER = "sample.batch.order.queue";
     public static final String ROUTING_KEY_BATCH_ORDER = "batch.order";
+    public static final String QUEUE_BATCH_TENANT = "sample.batch.tenant.queue";
+    public static final String ROUTING_KEY_BATCH_TENANT = "batch.tenant";
 
     public static final String EXCHANGE_PRIORITY_DIRECT = "sample.priority.direct";
     public static final String QUEUE_PRIORITY_ORDER = "sample.priority.order.queue";
@@ -126,6 +128,14 @@ public class RabbitScenarioTopologyConfig {
         return RabbitTopologyBuilder.direct(EXCHANGE_BATCH_DIRECT)
                 .queue(QUEUE_BATCH_ORDER)
                 .routingKey(ROUTING_KEY_BATCH_ORDER)
+                .build();
+    }
+
+    @Bean
+    public Declarables batchTenantTopology() {
+        return RabbitTopologyBuilder.direct(EXCHANGE_BATCH_DIRECT)
+                .queue(QUEUE_BATCH_TENANT)
+                .routingKey(ROUTING_KEY_BATCH_TENANT)
                 .build();
     }
 

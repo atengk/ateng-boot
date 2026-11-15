@@ -176,4 +176,19 @@ public class TradeMessageProducer {
                 message
         );
     }
+
+    /**
+     * 投递支持逐条四维上下文隔离的批量测试订单消息
+     *
+     * @param message 订单创建消息
+     */
+    public void sendBatchTenantOrder(OrderCreateMessage message) {
+        log.info("[PRODUCER] 发送批量租户隔离订单消息: orderId={}", message.orderId());
+        rabbitReliableTemplate.sendReliable(
+                RabbitScenarioTopologyConfig.EXCHANGE_BATCH_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_BATCH_TENANT,
+                message,
+                message.orderId()
+        );
+    }
 }

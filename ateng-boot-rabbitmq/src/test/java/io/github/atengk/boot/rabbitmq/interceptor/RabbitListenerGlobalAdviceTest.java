@@ -222,7 +222,7 @@ class RabbitListenerGlobalAdviceTest {
     }
 
     @Test
-    @DisplayName("批量消费拦截：List<?> POJO 入参无原生 Message 头时自适应生成链路 TraceId 且现场零污染")
+    @DisplayName("批量消费拦截：List<?> POJO 入参无原生 Message 头且无上游上下文时自动生成 batch-<UUID> 并在结束时清理")
     void testBatchPojoListContextHandling() throws Throwable {
         MethodInvocation invocation = mock(MethodInvocation.class);
         when(invocation.getArguments()).thenReturn(new Object[]{java.util.List.of("pojo-1", "pojo-2")});
@@ -236,10 +236,30 @@ class RabbitListenerGlobalAdviceTest {
         Object result = advice.invoke(invocation);
 
         assertThat(result).isEqualTo("POJO_BATCH_OK");
-        assertThat(generatedTrace.get()).isNotBlank(); // 自适应兜底生成唯一 TraceId
+        assertThat(generatedTrace.get()).startsWith("batch-").hasSizeGreaterThan("batch-".length());
 
         // 执行后外部 MDC 恢复为空
         assertThat(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY)).isNull();
+    }
+
+    @Test
+    @DisplayName("批量消费拦截：List<?> POJO 存在上游追踪上下文时不覆盖且异常退出仍确定性恢复")
+    void testBatchPojoListPreservesUpstreamTraceAndCleansOnException() throws Throwable {
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "upstream-trace-999");
+
+        MethodInvocation invocation = mock(MethodInvocation.class);
+        when(invocation.getArguments()).thenReturn(new Object[]{java.util.List.of("pojo-1")});
+
+        AtomicReference<String> observedTrace = new AtomicReference<>();
+        when(invocation.proceed()).thenAnswer(inv -> {
+            observedTrace.set(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY));
+            throw new IllegalStateException("模拟批量异常");
+        });
+
+        assertThatThrownBy(() -> advice.invoke(invocation))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(observedTrace.get()).isEqualTo("upstream-trace-999");
+        assertThat(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY)).isEqualTo("upstream-trace-999");
     }
 
     @Test

@@ -8,6 +8,7 @@ import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.rabbitmq.callback.RabbitTransactionFailureCallback;
 import io.github.atengk.boot.rabbitmq.callback.RabbitUnroutableMessageCallback;
 import io.github.atengk.boot.rabbitmq.error.RabbitFatalExceptionStrategy;
+import io.github.atengk.boot.rabbitmq.executor.RabbitBatchExecutor;
 import io.github.atengk.boot.rabbitmq.interceptor.RabbitListenerGlobalAdvice;
 import io.github.atengk.boot.rabbitmq.manager.RabbitContainerManager;
 import io.github.atengk.boot.rabbitmq.properties.RabbitmqProperties;
@@ -203,6 +204,15 @@ public class AtengRabbitmqAutoConfiguration {
     }
 
     /**
+     * 批量消息逐条上下文隔离与单条容错执行器
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RabbitBatchExecutor rabbitBatchExecutor(MessageConverter messageConverter) {
+        return new RabbitBatchExecutor(messageConverter);
+    }
+
+    /**
      * 容器级别优雅停机排空定制器
      */
     @Bean
@@ -227,7 +237,6 @@ public class AtengRabbitmqAutoConfiguration {
             RabbitmqProperties properties,
             MessageConverter messageConverter,
             ObjectProvider<ConditionalRejectingErrorHandler> errorHandlerProvider,
-            ObjectProvider<RabbitListenerGlobalAdvice> adviceProvider,
             ObjectProvider<ObservationRegistry> observationRegistryProvider) {
         SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
         configurerProvider.ifAvailable(configurer -> configurer.configure(factory, connectionFactory));
@@ -248,7 +257,7 @@ public class AtengRabbitmqAutoConfiguration {
 
         factory.setMessageConverter(messageConverter);
         errorHandlerProvider.ifAvailable(factory::setErrorHandler);
-        adviceProvider.ifAvailable(factory::setAdviceChain);
+        // adviceChain 由 AtengRabbitLifecycleBeanPostProcessor 统一装配外层重试拦截器 + 内层全局拦截器，避免重复设置
         factory.setAfterReceivePostProcessors(new GUnzipPostProcessor());
         observationRegistryProvider.ifAvailable(registry -> factory.setObservationEnabled(true));
         return factory;
@@ -328,7 +337,7 @@ public class AtengRabbitmqAutoConfiguration {
                                             retryProps.getInitialInterval().toMillis(),
                                             retryProps.getMultiplier(),
                                             retryProps.getMaxInterval().toMillis())
-                                    .recoverer(new RejectAndDontRequeueRecoverer())
+                                    .recoverer(new LoggingRejectAndDontRequeueRecoverer())
                                     .build();
                             factory.setAdviceChain(retryInterceptor, globalAdvice);
                         } else {
@@ -356,6 +365,29 @@ public class AtengRabbitmqAutoConfiguration {
                 }
             }
             return bean;
+        }
+    }
+
+    /**
+     * 增强型拒绝且不重入队恢复器：在本地重试彻底耗尽进入死信队列前输出结构化 [MQ-CONSUME-RETRY-EXHAUSTED] Error 日志
+     */
+    static class LoggingRejectAndDontRequeueRecoverer extends RejectAndDontRequeueRecoverer {
+
+        @Override
+        public void recover(Message message, Throwable cause) {
+            MessageProperties props = message != null ? message.getMessageProperties() : null;
+            Map<String, Object> headers = props != null && props.getHeaders() != null
+                    ? props.getHeaders()
+                    : Collections.emptyMap();
+            String exchange = props != null ? props.getReceivedExchange() : "";
+            String routingKey = props != null ? props.getReceivedRoutingKey() : "";
+            String queue = props != null ? props.getConsumerQueue() : "";
+            String bizKey = MessageContextPropagator.extractString(headers, MessageHeaderConstants.BIZ_KEY);
+            String traceId = MessageContextPropagator.extractString(headers, MessageHeaderConstants.TRACE_ID);
+            String error = cause != null ? cause.getMessage() : "Unknown";
+            log.error("[MQ-CONSUME-RETRY-EXHAUSTED] mq=rabbitmq 本地重试耗尽即将拒绝消息并流转至死信队列: exchange={}, routingKey={}, queue={}, bizKey={}, traceId={}, error={}",
+                    exchange, routingKey, queue, bizKey, traceId, error, cause);
+            super.recover(message, cause);
         }
     }
 

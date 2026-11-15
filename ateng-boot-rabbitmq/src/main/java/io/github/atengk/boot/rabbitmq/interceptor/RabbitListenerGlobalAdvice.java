@@ -1,11 +1,9 @@
 package io.github.atengk.boot.rabbitmq.interceptor;
 
-import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
-import io.github.atengk.boot.core.exception.BusinessException;
-import io.github.atengk.boot.core.exception.IdempotentException;
 import io.github.atengk.boot.core.helper.FatalExceptionClassifier;
+import io.github.atengk.boot.rabbitmq.executor.RabbitBatchExecutor;
 import io.github.atengk.boot.rabbitmq.properties.RabbitmqProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.aopalliance.intercept.MethodInterceptor;
@@ -15,6 +13,7 @@ import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -44,7 +43,9 @@ public class RabbitListenerGlobalAdvice implements MethodInterceptor {
 
         Message message = target.primaryMessage();
         MessageProperties props = message != null ? message.getMessageProperties() : null;
-        Map<String, Object> headers = props != null ? props.getHeaders() : Collections.emptyMap();
+        Map<String, Object> headers = props != null && props.getHeaders() != null
+                ? props.getHeaders()
+                : Collections.emptyMap();
         String exchange = props != null ? props.getReceivedExchange() : "";
         String routingKey = props != null ? props.getReceivedRoutingKey() : "";
         String queue = props != null ? props.getConsumerQueue() : "";
@@ -57,8 +58,11 @@ public class RabbitListenerGlobalAdvice implements MethodInterceptor {
             bizKey = isBatch ? "batch[" + batchSize + "]" : null;
         }
 
+        // 0. 针对纯 POJO 批量监听（无原生 Message 参数）或缺失入站 traceId 的批量消息，优先复用上游上下文，否则兜底生成 batch-<UUID>
+        Map<String, Object> activationHeaders = resolveActivationHeaders(headers, traceId, isBatch);
+
         // 1. 入站安全激活四维上下文 (TraceId, TenantId, UserId, IgnoreTenant)，并在 finally 块中绝对可靠恢复现场
-        try (MessageContextPropagator.ContextScope scope = MessageContextPropagator.activate(headers)) {
+        try (MessageContextPropagator.ContextScope scope = MessageContextPropagator.activate(activationHeaders)) {
             String activeTraceId = traceId != null && !traceId.isBlank()
                     ? traceId
                     : MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
@@ -70,7 +74,7 @@ public class RabbitListenerGlobalAdvice implements MethodInterceptor {
                 return result;
             } catch (Throwable t) {
                 // 2. 拦截幂等防重冲突：记录警告日志并返回 null，触发 AUTO 模式下的静默 ACK，阻断无休止重试风暴
-                if (isIdempotentException(t)) {
+                if (RabbitBatchExecutor.isIdempotentException(t)) {
                     long cost = System.currentTimeMillis() - start;
                     log.warn("[MQ-IDEMPOTENT-DUPLICATE] 消费端检测到幂等防重冲突，触发静默确认 (Silent ACK): exchange={}, routingKey={}, queue={}, bizKey={}, traceId={}, isBatch={}, batchSize={}",
                             exchange, routingKey, queue, bizKey, activeTraceId, isBatch, batchSize);
@@ -117,30 +121,20 @@ public class RabbitListenerGlobalAdvice implements MethodInterceptor {
         return null;
     }
 
-    /**
-     * 判断异常或其因果链是否属于幂等防重异常
-     */
-    private boolean isIdempotentException(Throwable t) {
-        if (t == null) {
-            return false;
+    private Map<String, Object> resolveActivationHeaders(
+            Map<String, Object> headers,
+            String inboundTraceId,
+            boolean isBatch) {
+        if (!isBatch || (inboundTraceId != null && !inboundTraceId.isBlank())) {
+            return headers;
         }
-        Throwable current = t;
-        int depth = 0;
-        while (current != null && depth < 30) {
-            if (current instanceof IdempotentException) {
-                return true;
-            }
-            if (current instanceof BusinessException be && CommonResultCode.REPEAT_SUBMIT.getCode().equals(be.getCode())) {
-                return true;
-            }
-            String className = current.getClass().getSimpleName();
-            if ("IdempotentException".equals(className) || "DuplicateMessageException".equals(className)) {
-                return true;
-            }
-            current = current.getCause();
-            depth++;
-        }
-        return false;
+        String upstreamTraceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
+        String resolvedTraceId = (upstreamTraceId != null && !upstreamTraceId.isBlank())
+                ? upstreamTraceId
+                : RabbitBatchExecutor.generateBatchTraceId();
+        Map<String, Object> enriched = new HashMap<>(headers);
+        enriched.put(MessageHeaderConstants.TRACE_ID, resolvedTraceId);
+        return enriched;
     }
 
     /**
