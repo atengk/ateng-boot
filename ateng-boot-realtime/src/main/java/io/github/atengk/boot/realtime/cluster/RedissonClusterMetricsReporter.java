@@ -4,7 +4,9 @@ import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RKeys;
 import org.redisson.api.RMap;
+import org.redisson.api.RSet;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.codec.StringCodec;
 import org.springframework.context.SmartLifecycle;
@@ -14,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -140,10 +143,56 @@ public class RedissonClusterMetricsReporter implements RealtimeClusterMetricsPro
             }
             try {
                 nodeMap.remove(deadNodeId);
-                log.info("[Realtime-Cluster] 惰性剔除超时失联死节点度量记录: deadNodeId={}", deadNodeId);
+                cleanupDeadNodeUserPresence(deadNodeId);
+                log.info("[Realtime-Cluster] 惰性剔除超时失联死节点度量与用户在线残留: deadNodeId={}", deadNodeId);
             } catch (Throwable t) {
                 log.debug("[Realtime-Cluster] 移除死节点度量记录失败: deadNodeId={}, error={}", deadNodeId, t.getMessage());
             }
+        }
+    }
+
+    private void cleanupDeadNodeUserPresence(String deadNodeId) {
+        boolean cleanedByIndex = false;
+        RSet<String> nodeUsersSet = redissonClient.getSet(
+                ClusterNodeHeartbeatSupport.resolveNodeUsersSetKey(properties, deadNodeId), StringCodec.INSTANCE);
+        if (nodeUsersSet != null) {
+            Set<String> affectedUsers = nodeUsersSet.readAll();
+            if (affectedUsers != null && !affectedUsers.isEmpty()) {
+                cleanedByIndex = true;
+                for (String userId : affectedUsers) {
+                    if (userId != null) {
+                        removeDeadNodeFromUserPresenceMap(
+                                ClusterNodeHeartbeatSupport.resolveUserPresenceHashKey(properties, userId), deadNodeId);
+                    }
+                }
+            }
+            nodeUsersSet.delete();
+        }
+        if (!cleanedByIndex) {
+            RKeys keys = redissonClient.getKeys();
+            if (keys != null) {
+                Iterable<String> userKeys = keys.getKeysByPattern(
+                        ClusterNodeHeartbeatSupport.resolveUserPresenceKeyPattern(properties));
+                if (userKeys != null) {
+                    for (String userPresenceKey : userKeys) {
+                        if (userPresenceKey != null) {
+                            removeDeadNodeFromUserPresenceMap(userPresenceKey, deadNodeId);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void removeDeadNodeFromUserPresenceMap(String userPresenceKey, String deadNodeId) {
+        try {
+            RMap<String, String> userNodeMap = redissonClient.getMap(userPresenceKey, StringCodec.INSTANCE);
+            if (userNodeMap != null) {
+                userNodeMap.remove(deadNodeId);
+            }
+        } catch (Throwable t) {
+            log.debug("[Realtime-Cluster] 清理死节点用户在线残留失败: key={}, deadNodeId={}, error={}",
+                    userPresenceKey, deadNodeId, t.getMessage());
         }
     }
 

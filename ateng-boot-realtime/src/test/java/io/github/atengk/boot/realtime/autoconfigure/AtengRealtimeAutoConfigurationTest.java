@@ -135,6 +135,27 @@ class AtengRealtimeAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("用户自定义覆盖 realtimeClusterSessionListenerConfigurer 满足 @ConditionalOnMissingBean")
+    void testCustomClusterSessionListenerConfigurerOverride() {
+        runner.withUserConfiguration(MockRedissonConfiguration.class, CustomListenerConfigurerConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasBean("realtimeClusterSessionListenerConfigurer");
+                    assertThat(context.getBean("realtimeClusterSessionListenerConfigurer"))
+                            .isSameAs(CustomListenerConfigurerConfiguration.SENTINEL);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomListenerConfigurerConfiguration {
+        static final org.springframework.beans.factory.SmartInitializingSingleton SENTINEL = () -> {};
+
+        @Bean("realtimeClusterSessionListenerConfigurer")
+        public org.springframework.beans.factory.SmartInitializingSingleton realtimeClusterSessionListenerConfigurer() {
+            return SENTINEL;
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class CustomShutdownConfiguration {
         @Bean

@@ -29,6 +29,18 @@ final class ClusterNodeHeartbeatSupport {
         return DEFAULT_NODES_HASH_KEY;
     }
 
+    static String resolveUserPresenceHashKey(RealtimeProperties properties, String userId) {
+        return resolveNodesHashKey(properties) + ":users:" + userId;
+    }
+
+    static String resolveUserPresenceKeyPattern(RealtimeProperties properties) {
+        return resolveNodesHashKey(properties) + ":users:*";
+    }
+
+    static String resolveNodeUsersSetKey(RealtimeProperties properties, String nodeId) {
+        return resolveNodesHashKey(properties) + ":node-users:" + nodeId;
+    }
+
     static long resolveExpirationMillis(RealtimeProperties properties) {
         long intervalMillis = DEFAULT_METRICS_INTERVAL_MILLIS;
         if (properties != null && properties.getCluster() != null) {

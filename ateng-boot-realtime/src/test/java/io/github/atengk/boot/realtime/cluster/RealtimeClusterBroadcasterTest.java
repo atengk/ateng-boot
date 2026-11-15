@@ -13,6 +13,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RFuture;
 import org.redisson.api.RMap;
+import org.redisson.api.RSet;
 import org.redisson.api.RTopic;
 import org.redisson.api.RedissonClient;
 import org.redisson.api.listener.MessageListener;
@@ -22,6 +23,7 @@ import org.springframework.web.socket.WebSocketSession;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -137,6 +139,7 @@ class RealtimeClusterBroadcasterTest {
 
         Map<String, String> nodesHeartbeatBacking = new ConcurrentHashMap<>();
         Map<String, Map<String, String>> userPresenceBacking = new ConcurrentHashMap<>();
+        Map<String, Set<String>> nodeUsersBacking = new ConcurrentHashMap<>();
 
         @SuppressWarnings("unchecked")
         RMap<String, String> mockNodesMap = mockMap(nodesHeartbeatBacking);
@@ -147,9 +150,15 @@ class RealtimeClusterBroadcasterTest {
                     String key = inv.getArgument(0);
                     return mockMap(userPresenceBacking.computeIfAbsent(key, k -> new ConcurrentHashMap<>()));
                 });
+        when(redissonClient.<String>getSet(startsWith("ateng:realtime:cluster:nodes:node-users:"), eq(StringCodec.INSTANCE)))
+                .thenAnswer(inv -> {
+                    String key = inv.getArgument(0);
+                    return mockSet(nodeUsersBacking.computeIfAbsent(key, k -> ConcurrentHashMap.newKeySet()));
+                });
 
         RedissonRealtimeClusterBroadcaster broadcaster = new RedissonRealtimeClusterBroadcaster(redissonClient, properties);
         String selfNodeId = broadcaster.getNodeId();
+        String selfNodeUsersKey = "ateng:realtime:cluster:nodes:node-users:" + selfNodeId;
 
         // 1. 本节点同一用户多会话幂等上下线同步（重复注册同 SessionKey 不会虚增，全部关闭后移除节点条目）
         WebSocketSession ws1 = mock(WebSocketSession.class);
@@ -162,11 +171,13 @@ class RealtimeClusterBroadcasterTest {
         broadcaster.onSessionRegistered(s2);
         Map<String, String> syncMap = userPresenceBacking.get("ateng:realtime:cluster:nodes:users:u-sync");
         assertThat(syncMap).containsEntry(selfNodeId, "2");
+        assertThat(nodeUsersBacking.get(selfNodeUsersKey)).contains("u-sync");
 
         broadcaster.onSessionClosed(s1, CloseStatus.NORMAL);
         assertThat(syncMap).containsEntry(selfNodeId, "1");
         broadcaster.onSessionClosed(s2, CloseStatus.NORMAL);
         assertThat(syncMap).doesNotContainKey(selfNodeId);
+        assertThat(nodeUsersBacking.get(selfNodeUsersKey)).doesNotContain("u-sync");
 
         // 2. 模拟远端节点 dead-node 崩溃：心跳已超时（> 3 * metricsInterval = 15s）且未触发 onSessionClosed
         long now = System.currentTimeMillis();
@@ -203,12 +214,28 @@ class RealtimeClusterBroadcasterTest {
         assertThat(multiNodeMap).doesNotContainKey("dead-node");
         assertThat(multiNodeMap).containsEntry("alive-node", "1");
 
-        // 3. 验证 destroy() 停机注销会清空本节点尚未关闭的在线用户残留
+        // 3. 验证 destroy() 停机注销会清空本节点尚未关闭的在线用户残留与节点反向索引
         RealtimeSession sDestroy = RealtimeSession.ofWebSocket(SessionKey.of("u-destroy", "web", "d1"), ws1);
         broadcaster.onSessionRegistered(sDestroy);
         assertThat(userPresenceBacking.get("ateng:realtime:cluster:nodes:users:u-destroy")).containsEntry(selfNodeId, "1");
+        assertThat(nodeUsersBacking.get(selfNodeUsersKey)).contains("u-destroy");
         broadcaster.destroy();
         assertThat(userPresenceBacking.get("ateng:realtime:cluster:nodes:users:u-destroy")).doesNotContainKey(selfNodeId);
+        assertThat(nodeUsersBacking.get(selfNodeUsersKey)).isEmpty();
+    }
+
+    @SuppressWarnings("unchecked")
+    private RSet<String> mockSet(Set<String> backing) {
+        RSet<String> set = mock(RSet.class);
+        when(set.add(anyString())).thenAnswer(inv -> backing.add(inv.getArgument(0)));
+        when(set.remove(any())).thenAnswer(inv -> backing.remove(inv.getArgument(0)));
+        when(set.readAll()).thenAnswer(inv -> Set.copyOf(backing));
+        when(set.delete()).thenAnswer(inv -> {
+            boolean existed = !backing.isEmpty();
+            backing.clear();
+            return existed;
+        });
+        return set;
     }
 
     @SuppressWarnings("unchecked")

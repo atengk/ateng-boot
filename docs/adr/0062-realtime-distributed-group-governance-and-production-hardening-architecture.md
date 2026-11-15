@@ -115,9 +115,10 @@ flowchart TD
 2. **上行强类型 DTO 校验与 `RealtimeActionInterceptor` 责任链拦截**：
    - `RealtimeMessageDispatcher` 在绑定 `@RealtimeAction` 业务 DTO 后，经静态辅助方法封装自动执行 `ValidatorUtil.validate(arg)` Fail-Fast 校验，违规时原地回发 HTTP 400 语义 `{event}:reply` 错误帧并保持连接存活；
    - 引入支持 Spring `@Order` 编排的 `RealtimeActionInterceptor` SPI（`preHandle` / `afterCompletion`），保障已放行链路的 `afterCompletion` 以逆序执行且早于四维上下文 `finally { clear(); }`。
-3. **集群节点心跳租约与失联死节点惰性淘汰（`RedissonClusterMetricsReporter`）**：
-   - 节点度量 Redis Hash 值格式从纯数字升级为 `"{count}:{timestampMillis}"`（`ClusterNodeHeartbeatSupport`，向下兼容旧版纯数字条目）；
-   - 周期心跳间隔 `metricsInterval`（默认 `5s`）的 `max(3 * metricsInterval, 15s)` 作为租约上限，在 `reportMetrics()` 与 `getClusterOnlineCount()` 巡检期间自动识别并惰性 `remove` 崩溃/强制 `kill -9` 节点残留条目，消除集群在线数长期虚高。
+3. **集群节点心跳租约、防崩溃幽灵在线与分布式群组级联清理（`RedissonClusterMetricsReporter` / `RedissonRealtimeClusterBroadcaster` / `RedissonRealtimeGroupManager`）**：
+   - `RedissonClusterMetricsReporter` 节点度量 Redis Hash 值格式从纯数字升级为 `"{count}:{timestampMillis}"`（`ClusterNodeHeartbeatSupport`，向下兼容旧版纯数字条目），以 `max(3 * metricsInterval, 15s)` 作为失联租约上限，在 `reportMetrics()` 与 `getClusterOnlineCount()` 巡检期间惰性 `remove` 崩溃/强制 `kill -9` 死节点，并同步清理死节点关联的 `ateng:realtime:cluster:nodes:users:{userId}` 残留（基于 `node-users:{nodeId}` 反向索引与 `RKeys` 扫描兜底）；
+   - `RedissonRealtimeClusterBroadcaster` 摒弃跨节点加减计数器，改用 `ReentrantLock` 分段锁与 `localUserSessions` 幂等维护节点维度的用户在线连接数，并在 `isUserOnline(userId)` 关联校验节点心跳存活状态及自动剔除失联死节点记录，彻底根除节点硬崩溃后的幽灵在线（确保无存活连接的用户恢复离线态并触发 `RealtimeOfflineMessageProvider`）；
+   - 重写 `RedissonRealtimeGroupManager#clear()`，在清空本地映射前逐一调用 `leaveAllGroups(sessionKey)` 级联清理本节点会话在 Redis 中的正反向群组 Set 索引（保留其余集群节点成员不受影响）。
 4. **离线消息 ZSet 单次 Lua 原子裁切、重连自动补发与虚拟线程防 Pinning（ADR-0029）**：
    - `RedissonRealtimeOfflineMessageProvider#saveOfflineMessage` 合并为单次 `RScript#eval`（`StringCodec.INSTANCE`）Lua 原子脚本，按序完成 `ZADD`、`ZREMRANGEBYRANK key 0 -(maxMessages + 1)` 与 `PEXPIRE key ttlMillis`，彻底消除多 RTT 窗口并发竞态与游离永生 Key；
    - `InMemoryRealtimeOfflineMessageProvider` 彻底移除全部 `synchronized` 关键字，改为每用户独立 `UserMailbox` + `ReentrantLock` 保护与 `retired` 状态重试闭环，严格在 `finally` 中判定 `isHeldByCurrentThread()` 后解锁，契合 JDK 21+ 虚拟线程防 Carrier Pinning 契约；

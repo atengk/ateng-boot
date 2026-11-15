@@ -79,6 +79,7 @@ public class AtengRealtimeAutoConfiguration {
      * 桥接延迟或接口返回类型的集群广播器实现至会话生命周期监听器集合，防漏注
      */
     @Bean
+    @ConditionalOnMissingBean(name = "realtimeClusterSessionListenerConfigurer")
     public SmartInitializingSingleton realtimeClusterSessionListenerConfigurer(
             ObjectProvider<RealtimeSessionManager> sessionManagerProvider,
             ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider) {

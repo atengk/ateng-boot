@@ -332,24 +332,17 @@ ateng:
           consecutive-violations-before-close: 3 # 连续违规触发 4005 断开的次数阈值（默认：3；设为 0 表示仅警告不强断）
 ```
 
-#### 实战业务代码 (逆向提取自 SessionRateLimiterTest.java)
+#### 实战业务代码 (逆向提取自 RealtimeSessionManager.java 与 AtengWebSocketHandler.java)
 ```java
-// 开启 ateng.boot.realtime.websocket.rate-limit.enabled=true 后，
-// RealtimeSessionManager#registerSession 会为每条 WebSocket 会话自动装配独立的 SessionRateLimiter：
-AtomicLong currentTime = new AtomicLong(1000000L);
-SessionRateLimiter limiter = new SessionRateLimiter(5, 3, currentTime::get);
+// 1. 开启配置后，RealtimeSessionManager#registerSession 自动为每条 WebSocket 会话装配独立限流器：
+//    session.setRateLimiter(new SessionRateLimiter(properties.getWebsocket().getRateLimit()));
 
-// 1. 阈值内请求均正常放行 (ALLOWED)
-for (int i = 0; i < 5; i++) {
-    assertEquals(RateLimitDecision.ALLOWED, limiter.tryAcquire());
-}
-
-// 2. 第 1~2 次超限触发 WARNING，回发 429 警告帧但保留连接
-assertEquals(RateLimitDecision.WARNING, limiter.tryAcquire());
-assertEquals(RateLimitDecision.WARNING, limiter.tryAcquire());
-
-// 3. 连续违规达到 threshold (3) 次升级为 CLOSE，物理切断并返回 4005 (RATE_LIMIT_EXCEEDED)
-assertEquals(RateLimitDecision.CLOSE, limiter.tryAcquire());
+// 2. AtengWebSocketHandler#handleTextMessage 自动执行频控：
+//    - 放行：RateLimitDecision.ALLOWED（正常投递至 RealtimeMessageDispatcher）
+//    - 首次/偶发超限：RateLimitDecision.WARNING -> 回发 429 警告帧，保持长连接存活
+//      {"event":"error","data":{"code":429,"message":"Rate limit exceeded. Please slow down."}}
+//    - 连续超限达阈值：RateLimitDecision.CLOSE -> 推送 429 熔断帧并以 4005 关闭连接
+//      realtimeSession.close(RealtimeCloseStatus.RATE_LIMIT_EXCEEDED);
 ```
 
 #### 核心机制与生产边界
@@ -414,9 +407,15 @@ ateng:
 public Result<Boolean> sendViaSse(@RequestParam String userId,
                                   @RequestParam(defaultValue = "default") String clientId,
                                   @RequestParam String message) {
+    log.info("[Sample] 触发 SSE 专线单播: userId={}, clientId={}", userId, clientId);
+    boolean success = sendViaDedicatedChannel(userId, clientId, "notice:sse", false, message);
+    return Result.success(success);
+}
+
+private boolean sendViaDedicatedChannel(String userId, String clientId, String event, boolean isWebSocket, String content) {
     SessionKey key = SessionKey.of(userId, clientId);
-    RealtimeMessage<String> realtimeMessage = RealtimeMessage.of("notice:sse", message);
-    return Result.success(realtimeTemplate.sendViaSse(key, realtimeMessage));
+    RealtimeMessage<String> realtimeMessage = RealtimeMessage.of(event, content);
+    return isWebSocket ? realtimeTemplate.sendViaWebSocket(key, realtimeMessage) : realtimeTemplate.sendViaSse(key, realtimeMessage);
 }
 ```
 
@@ -795,13 +794,19 @@ ateng:
         enabled: true                   # 开启离线存储以支撑历史事件断点查询（默认：false）
 ```
 
-#### 实战业务代码 (逆向提取自 AtengSseController.java 与 RedissonRealtimeOfflineMessageProviderTest.java)
+#### 实战业务代码 (逆向提取自 AtengSseController.java)
 ```java
 // 1. 客户端断线重连携带 W3C 标准 Last-Event-ID 请求头或 Query 参数：
 //    curl -N -H "Last-Event-ID: 1700000001000" "http://localhost:8080/sse/realtime?token=YOUR_TOKEN"
 
-// 2. 服务端按断点只读窥探重放（不清除 ZSet，保障多端同时重连互不覆盖）：
-List<RealtimeMessage<?>> missed = realtimeTemplate.getOfflineMessagesSince(userId, lastEventId);
+// 2. AtengSseController#replayMissedEventsIfNecessary 按断点只读窥探重放（不清除 ZSet，保障多端同时重连互不覆盖）：
+String lastEventId = request.getHeader("Last-Event-ID");
+List<RealtimeMessage<?>> missed = provider.getOfflineMessagesSince(userId, lastEventId);
+if (!missed.isEmpty()) {
+    for (RealtimeMessage<?> msg : missed) {
+        SseStreamHelper.sendEvent(emitter, msg);
+    }
+}
 ```
 
 #### 核心机制与生产边界
@@ -943,19 +948,32 @@ ateng:
         eviction-policy: fifo           # 超限驱逐策略：FIFO（踢除最早会话，默认） / REJECT（拒绝新连接）
 ```
 
-#### 实战业务代码 (逆向提取自 RealtimeSessionManagerTest.java)
+#### 实战业务代码 (逆向提取自 AtengSseController.java 与 RealtimeSessionController.java)
 ```java
-RealtimeProperties properties = new RealtimeProperties();
-properties.getSession().setMaxConnectionsPerUser(2);
-properties.getSession().setEvictionPolicy(EvictionPolicy.FIFO);
+// 1. 建连时由 AtengSseController / AtengWebSocketHandler 自动调用 RealtimeSessionManager#registerSession 执行配额治理：
+boolean registered = sessionManager.registerSession(session);
+if (!registered) {
+    // 当 eviction-policy=reject 且连接数已达上限时，registerSession 返回 false 并已向新会话下发 4003 关闭帧
+    SseStreamHelper.completeWithError(emitter, new IllegalStateException("Max connections exceeded"));
+    return emitter;
+}
 
-RealtimeSessionManager manager = new RealtimeSessionManager(properties);
-manager.registerSession(s1);
-manager.registerSession(s2);
+// 2. 运行期实时查询当前节点会话连接指标（提取自 RealtimeSessionController.java）：
+@GetMapping("/metrics")
+public Result<LocalMetricsVo> getLocalMetrics() {
+    int totalOnline = realtimeTemplate.getOnlineCount();
+    int userCount = realtimeTemplate.getOnlineUserCount();
+    int wsCount = realtimeTemplate.getOnlineCountByChannel(ChannelType.WEBSOCKET);
+    int sseCount = realtimeTemplate.getOnlineCountByChannel(ChannelType.SSE);
 
-// 接入第 3 个会话：FIFO 自动踢掉最早建立的 s1，并下发 MAX_CONNECTIONS_EXCEEDED (4003)
-boolean registered = manager.registerSession(s3);
-// 若配置为 EvictionPolicy.REJECT：registered == false，直接向新会话 s3 下发 4003 并拒绝接纳
+    LocalMetricsVo vo = LocalMetricsVo.builder()
+            .onlineCount(totalOnline)
+            .onlineUserCount(userCount)
+            .websocketCount(wsCount)
+            .sseCount(sseCount)
+            .build();
+    return Result.success(vo);
+}
 ```
 
 #### 核心机制与生产边界
