@@ -108,6 +108,11 @@ public class AtengKafkaProperties {
         private Duration maxBlock = Duration.ofSeconds(60);
 
         /**
+         * 批量发送单批次允许的最大消息条数，超出将触发 Fail-Fast（默认 1000，必须大于 0）
+         */
+        private int maxBatchSize = 1000;
+
+        /**
          * 设置微批聚合缓冲区大小（非负且不超过 Integer.MAX_VALUE 字节）
          *
          * @param batchSize 微批缓冲区大小
@@ -164,6 +169,16 @@ public class AtengKafkaProperties {
             Assert.isTrue(maxBlock != null && !maxBlock.isNegative(),
                     "ateng.boot.kafka.producer.max-block 不能为负数时长");
             this.maxBlock = maxBlock;
+        }
+
+        /**
+         * 设置批量发送单批次允许的最大消息条数（正数防线）
+         *
+         * @param maxBatchSize 单批次最大消息条数，必须大于 0
+         */
+        public void setMaxBatchSize(int maxBatchSize) {
+            Assert.isTrue(maxBatchSize > 0, "ateng.boot.kafka.producer.max-batch-size 必须为大于 0 的整数");
+            this.maxBatchSize = maxBatchSize;
         }
     }
 

@@ -39,6 +39,7 @@ class AtengKafkaPropertiesTest {
         assertEquals("snappy", properties.getProducer().getCompressionType());
         assertEquals(DataSize.ofMegabytes(32), properties.getProducer().getBufferMemory());
         assertEquals(Duration.ofSeconds(60), properties.getProducer().getMaxBlock());
+        assertEquals(1000, properties.getProducer().getMaxBatchSize());
 
         // Consumer
         assertEquals(3, properties.getConsumer().getConcurrency());
@@ -75,6 +76,7 @@ class AtengKafkaPropertiesTest {
         map.put("ateng.boot.kafka.producer.compression-type", "zstd");
         map.put("ateng.boot.kafka.producer.buffer-memory", "64MB");
         map.put("ateng.boot.kafka.producer.max-block", "45s");
+        map.put("ateng.boot.kafka.producer.max-batch-size", "500");
         map.put("ateng.boot.kafka.consumer.concurrency", "6");
         map.put("ateng.boot.kafka.consumer.batch-concurrency", "8");
         map.put("ateng.boot.kafka.consumer.max-retries", "5");
@@ -106,6 +108,7 @@ class AtengKafkaPropertiesTest {
         assertEquals("zstd", properties.getProducer().getCompressionType());
         assertEquals(DataSize.ofMegabytes(64), properties.getProducer().getBufferMemory());
         assertEquals(Duration.ofSeconds(45), properties.getProducer().getMaxBlock());
+        assertEquals(500, properties.getProducer().getMaxBatchSize());
 
         assertEquals(6, properties.getConsumer().getConcurrency());
         assertEquals(8, properties.getConsumer().getBatchConcurrency());
@@ -178,6 +181,8 @@ class AtengKafkaPropertiesTest {
 
         assertThrows(IllegalArgumentException.class, () -> producer.setMaxBlock(null));
         assertThrows(IllegalArgumentException.class, () -> producer.setMaxBlock(Duration.ofMillis(-1)));
+        assertThrows(IllegalArgumentException.class, () -> producer.setMaxBatchSize(0));
+        assertThrows(IllegalArgumentException.class, () -> producer.setMaxBatchSize(-1));
 
         // 允许合法零值与 Integer.MAX_VALUE 精确上界
         producer.setBatchSize(DataSize.ofBytes(0));
@@ -204,6 +209,7 @@ class AtengKafkaPropertiesTest {
                 "ateng.boot.kafka.producer.linger", "-5ms",
                 "ateng.boot.kafka.producer.buffer-memory", "0B",
                 "ateng.boot.kafka.producer.max-block", "-1s",
+                "ateng.boot.kafka.producer.max-batch-size", "0",
                 "ateng.boot.kafka.consumer.max-retry-interval", "0s"
         ).entrySet()) {
             Binder invalidBinder = new Binder(new MapConfigurationPropertySource(

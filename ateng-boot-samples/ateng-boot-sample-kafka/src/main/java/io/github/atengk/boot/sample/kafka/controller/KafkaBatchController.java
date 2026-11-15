@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.kafka.controller;
 
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.kafka.dto.BatchLogResponse;
 import io.github.atengk.boot.sample.kafka.dto.BatchOrderProduceRequest;
@@ -10,6 +11,7 @@ import io.github.atengk.boot.sample.kafka.service.TradeKafkaScenarioService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.support.SendResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -18,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * 微批聚合与批量拉取多租户安全隔离控制器
@@ -46,12 +49,64 @@ public class KafkaBatchController {
     @PostMapping("/orders")
     public Result<List<String>> produceBatchOrders(@Valid @RequestBody BatchOrderProduceRequest request) {
         log.info("[HTTP-BATCH-PRODUCE] 收到微批聚合订单投递请求: batchSize={}", request.getOrders().size());
-        List<OrderMessage> orderMessages = request.getOrders().stream()
+        List<OrderMessage> orderMessages = toOrderMessages(request);
+        tradeScenarioService.sendBatchOrders(orderMessages);
+        return Result.success(extractOrderIds(orderMessages));
+    }
+
+    /**
+     * 异步批量发送订单列表（基于 sendBatchAsync 两阶段前置校验与聚合 Future）
+     *
+     * @param request 批量订单投递请求
+     * @return 已提交异步队列的订单编号列表
+     */
+    @PostMapping("/orders-async")
+    public Result<List<String>> produceBatchOrdersAsync(@Valid @RequestBody BatchOrderProduceRequest request) {
+        log.info("[HTTP-BATCH-ASYNC-PRODUCE] 收到批量订单异步投递请求: batchSize={}", request.getOrders().size());
+        List<OrderMessage> orderMessages = toOrderMessages(request);
+        List<String> orderIds = extractOrderIds(orderMessages);
+        AsyncContext.ContextSnapshot capturedContext = AsyncContext.capture();
+        CompletableFuture<List<SendResult<Object, Object>>> future =
+                tradeScenarioService.sendBatchOrdersAsync(orderMessages);
+        future.whenComplete((results, ex) -> {
+            AsyncContext.ContextSnapshot previousContext = AsyncContext.capturePrevious();
+            try {
+                capturedContext.apply();
+                if (ex != null) {
+                    log.error("[ASYNC-BATCH-ORDER-FAILED] 批量订单异步投递失败: orderIds={}", orderIds, ex);
+                } else {
+                    log.info("[ASYNC-BATCH-ORDER-SUCCESS] 批量订单异步投递确认: count={}",
+                            results != null ? results.size() : 0);
+                }
+            } finally {
+                previousContext.restore();
+            }
+        });
+        return Result.success(orderIds, "批量订单异步非阻塞投递已提交发送队列");
+    }
+
+    /**
+     * 本地 DB 事务提交后批量发送订单列表（基于 sendBatchAfterCommit）
+     *
+     * @param request 批量订单投递请求
+     * @return 已提交事务后批量发送的订单编号列表
+     */
+    @PostMapping("/orders-tx-commit")
+    public Result<List<String>> produceBatchOrdersTxCommit(@Valid @RequestBody BatchOrderProduceRequest request) {
+        log.info("[HTTP-BATCH-TX-PRODUCE] 收到事务后批量发信请求: batchSize={}", request.getOrders().size());
+        List<OrderMessage> orderMessages = toOrderMessages(request);
+        tradeScenarioService.createBatchOrdersWithSendAfterCommit(orderMessages);
+        return Result.success(extractOrderIds(orderMessages), "本地事务成功提交，触发批量物理网络发信");
+    }
+
+    private List<OrderMessage> toOrderMessages(BatchOrderProduceRequest request) {
+        return request.getOrders().stream()
                 .map(OrderProduceRequest::toOrderMessage)
                 .toList();
-        tradeScenarioService.sendBatchOrders(orderMessages);
-        List<String> orderIds = orderMessages.stream().map(OrderMessage::getOrderId).toList();
-        return Result.success(orderIds);
+    }
+
+    private List<String> extractOrderIds(List<OrderMessage> orderMessages) {
+        return orderMessages.stream().map(OrderMessage::getOrderId).toList();
     }
 
     /**

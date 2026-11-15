@@ -8,12 +8,15 @@ import io.github.atengk.boot.sample.kafka.model.UserEventMessage;
 import io.github.atengk.boot.sample.kafka.repository.MockOrderRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.Assert;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -121,6 +124,47 @@ public class TradeKafkaScenarioService {
             }
         }
         return futures.stream().map(CompletableFuture::join).toList();
+    }
+
+    /**
+     * 异步批量可靠发送订单消息（使用 KafkaReliableTemplate.sendBatchRecordsAsync 两阶段前置防卫，保留重复 orderId 多条消息）
+     *
+     * @param orders 订单消息列表
+     * @return 聚合发送结果 Future
+     */
+    public CompletableFuture<List<SendResult<Object, Object>>> sendBatchOrdersAsync(List<OrderMessage> orders) {
+        return kafkaReliableTemplate.sendBatchRecordsAsync(toBatchRecords(orders));
+    }
+
+    /**
+     * 本地事务提交后批量发射订单消息（事务前完成阶段 1 全量校验与四维上下文捕获，提交后批量下发）
+     *
+     * @param orders 订单消息列表
+     */
+    @Transactional
+    public void createBatchOrdersWithSendAfterCommit(List<OrderMessage> orders) {
+        List<ProducerRecord<Object, Object>> records = toBatchRecords(orders);
+        if (records.isEmpty()) {
+            return;
+        }
+        // 先注册事务感知批量发信，确保阶段 1 Fail-Fast 违规时在写入内存 MockOrderRepository 前中止
+        kafkaReliableTemplate.sendBatchRecordsAfterCommit(records);
+        for (OrderMessage order : orders) {
+            mockOrderRepository.save(order.getOrderId());
+        }
+    }
+
+    private List<ProducerRecord<Object, Object>> toBatchRecords(List<OrderMessage> orders) {
+        if (orders == null || orders.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<ProducerRecord<Object, Object>> records = new ArrayList<>(orders.size());
+        for (int i = 0; i < orders.size(); i++) {
+            OrderMessage order = orders.get(i);
+            Assert.notNull(order, "orders[" + i + "] 订单消息不能为空");
+            records.add(new ProducerRecord<>(KafkaScenarioTopologyConfig.TOPIC_BATCH, order.getOrderId(), order));
+        }
+        return records;
     }
 
     /**

@@ -76,6 +76,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.AbstractPlatformTransactionManager;
 import org.springframework.transaction.support.DefaultTransactionStatus;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.backoff.BackOff;
 import org.springframework.util.backoff.FixedBackOff;
 import org.springframework.util.unit.DataSize;
@@ -229,6 +230,7 @@ class SampleKafkaE2eTest {
     @AfterEach
     void tearDown() {
         restoreAllContainers();
+        TransactionSynchronizationManager.clear();
         UserContextHolder.clear();
         TenantContextHolder.clear();
         MDC.clear();
@@ -807,6 +809,120 @@ class SampleKafkaE2eTest {
         assertThat(batchLogService.getFailedItems().get(0).key()).isEqualTo("ORD-CORRUPTED");
 
         // 验证现场现场绝对干净
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+    }
+
+    @Test
+    @DisplayName("场景 10B: 异步批量投递与事务提交后批量发信端到端闭环 (KafkaBatchController Web 闭环)")
+    void testScenario10b_BatchAsyncAndTxCommitEndToEnd() throws Exception {
+        // 1. HTTP 异步批量发送订单 -> 返回订单编号并完成异步投递消费（穿透四维上下文）
+        TenantContextHolder.setTenantId("tenant-async-1");
+        UserContextHolder.setUserId("user-async-1");
+        MDC.put("traceId", "trace-batch-async-e2e");
+
+        List<OrderProduceRequest> asyncOrders = List.of(
+                OrderProduceRequest.builder().orderId("ORD-BASYNC-1").amount(new BigDecimal("11.00")).userId("u1").tenantId("tenant-async-1").build(),
+                OrderProduceRequest.builder().orderId("ORD-BASYNC-2").amount(new BigDecimal("22.00")).userId("u2").tenantId("tenant-async-1").build()
+        );
+        BatchOrderProduceRequest asyncReq = BatchOrderProduceRequest.builder()
+                .orders(new ValidList<>(asyncOrders))
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/batch/orders-async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(asyncReq))
+                        .header("X-Trace-Id", "trace-batch-async-e2e")
+                        .header("X-Tenant-Id", "tenant-async-1")
+                        .header("X-User-Id", "user-async-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0]").value("ORD-BASYNC-1"))
+                .andExpect(jsonPath("$.data[1]").value("ORD-BASYNC-2"));
+
+        awaitCondition(() -> {
+            mockMvc.perform(get("/sample/kafka/batch/received-logs"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-BASYNC-1' && @.tenantId == 'tenant-async-1')]").exists())
+                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-BASYNC-2' && @.tenantId == 'tenant-async-1')]").exists());
+        });
+
+        mockMvc.perform(post("/sample/kafka/batch/clear")).andExpect(status().isOk());
+
+        // 2. HTTP 事务提交后批量发信 -> 本地落库与 Kafka 批量投递消费原子完成（穿透四维上下文）
+        TenantContextHolder.setTenantId("tenant-tx-batch");
+        UserContextHolder.setUserId("user-tx-batch");
+        MDC.put("traceId", "trace-batch-tx-e2e");
+
+        List<OrderProduceRequest> txOrders = List.of(
+                OrderProduceRequest.builder().orderId("ORD-BTX-1").amount(new BigDecimal("33.00")).userId("u3").tenantId("tenant-tx-batch").build(),
+                OrderProduceRequest.builder().orderId("ORD-BTX-2").amount(new BigDecimal("44.00")).userId("u4").tenantId("tenant-tx-batch").build()
+        );
+        BatchOrderProduceRequest txReq = BatchOrderProduceRequest.builder()
+                .orders(new ValidList<>(txOrders))
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/batch/orders-tx-commit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(txReq))
+                        .header("X-Trace-Id", "trace-batch-tx-e2e")
+                        .header("X-Tenant-Id", "tenant-tx-batch")
+                        .header("X-User-Id", "user-tx-batch"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0]").value("ORD-BTX-1"))
+                .andExpect(jsonPath("$.data[1]").value("ORD-BTX-2"));
+
+        mockMvc.perform(get("/sample/kafka/produce/db-orders"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItems("ORD-BTX-1", "ORD-BTX-2")));
+
+        awaitCondition(() -> {
+            mockMvc.perform(get("/sample/kafka/batch/received-logs"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-BTX-1' && @.tenantId == 'tenant-tx-batch')]").exists())
+                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-BTX-2' && @.tenantId == 'tenant-tx-batch')]").exists());
+        });
+
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
+        MDC.clear();
+
+        // 3. 空集合安全返回空列表且零异常
+        BatchOrderProduceRequest emptyReq = BatchOrderProduceRequest.builder()
+                .orders(new ValidList<>(List.of()))
+                .build();
+        mockMvc.perform(post("/sample/kafka/batch/orders-async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(emptyReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isEmpty());
+
+        mockMvc.perform(post("/sample/kafka/batch/orders-tx-commit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(emptyReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isEmpty());
+
+        // 4. 对抗校验：sendBatchRecordsAsync 离线闭环与阶段 1 超限 Fail-Fast（零落库零发送）
+        List<ProducerRecord<Object, Object>> batchRecords = List.of(
+                new ProducerRecord<>(KafkaScenarioTopologyConfig.TOPIC_BATCH, "ORD-REC-1",
+                        new OrderMessage("ORD-REC-1", new BigDecimal("55.00"), "u5", "tenant-rec"))
+        );
+        assertThat(kafkaReliableTemplate.sendBatchRecordsAsync(batchRecords).join()).hasSize(1);
+
+        String oversizedOrderId = "X".repeat(1024 * 1024 + 128);
+        List<OrderMessage> oversizedTxBatch = List.of(
+                new OrderMessage("ORD-TX-ABORT-1", BigDecimal.TEN, "u6", "tenant-abort"),
+                new OrderMessage(oversizedOrderId, BigDecimal.TEN, "u6", "tenant-abort")
+        );
+        assertThatThrownBy(() -> tradeScenarioService.createBatchOrdersWithSendAfterCommit(oversizedTxBatch))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("超出最大限制");
+        assertThat(tradeScenarioService.getLocalDbOrders()).doesNotContain("ORD-TX-ABORT-1");
         assertThat(TenantContextHolder.getTenantId()).isNull();
     }
 

@@ -2,6 +2,7 @@ package io.github.atengk.boot.kafka.template;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.exception.MessageDeliveryException;
 import io.github.atengk.boot.core.util.IdUtil;
@@ -469,7 +470,7 @@ public class KafkaReliableTemplate {
     }
 
     // =========================================================================
-    // 5. 批量可靠发送 (sendBatch)
+    // 5. 两阶段批量可靠发送 (sendBatch / sendBatchAsync / sendBatchRecords / sendBatchRecordsAsync)
     // =========================================================================
 
     /**
@@ -487,7 +488,7 @@ public class KafkaReliableTemplate {
      * 批量可靠发送消息载荷集合，携带超时时间
      */
     public List<SendResult<Object, Object>> sendBatch(String topic, List<?> payloads, Duration timeout) {
-        return sendBatch(topic, null, payloads, timeout);
+        return sendBatch(topic, null, payloads, timeout, null);
     }
 
     /**
@@ -499,48 +500,68 @@ public class KafkaReliableTemplate {
      * @return 批量发送结果
      */
     public List<SendResult<Object, Object>> sendBatch(String topic, String key, List<?> payloads) {
-        return sendBatch(topic, key, payloads, properties.getProducer().getSendTimeout());
+        return sendBatch(topic, key, payloads, properties.getProducer().getSendTimeout(), null);
     }
 
     /**
      * 批量可靠发送消息载荷集合，指定分区键 key 与超时时间
      */
     public List<SendResult<Object, Object>> sendBatch(String topic, String key, List<?> payloads, Duration timeout) {
-        Assert.hasText(topic, "topic 不能为空");
-        Assert.notNull(payloads, "payloads 不能为空");
+        return sendBatch(topic, key, payloads, timeout, null);
+    }
 
-        List<CompletableFuture<SendResult<Object, Object>>> futures = new ArrayList<>(payloads.size());
-        for (Object payload : payloads) {
-            futures.add(sendReliableAsync(topic, key, payload));
-        }
+    /**
+     * 批量可靠发送消息载荷集合，指定分区键 key 与自定义业务消息头
+     */
+    public List<SendResult<Object, Object>> sendBatch(
+            String topic, String key, List<?> payloads, Map<String, String> customHeaders) {
+        return sendBatch(topic, key, payloads, properties.getProducer().getSendTimeout(), customHeaders);
+    }
 
-        return waitBatchFutures(topic, futures, timeout);
+    /**
+     * 批量可靠发送消息载荷集合，指定分区键 key、超时时间与自定义业务消息头（两阶段原子前置校验）
+     */
+    public List<SendResult<Object, Object>> sendBatch(
+            String topic, String key, List<?> payloads, Duration timeout, Map<String, String> customHeaders) {
+        Duration effectiveTimeout = resolveEffectiveTimeout(timeout);
+        List<PreparedRecord> preparedRecords = prepareBatchPayloads(topic, key, payloads, customHeaders);
+        return sendPreparedSync(topic, preparedRecords, effectiveTimeout);
     }
 
     /**
      * 批量发送消息键值映射集合
      *
-     * @param topic          目标 Topic
-     * @param keyPayloadMap  消息键值集合 (Key: 分区键, Value: 消息体)
+     * @param topic         目标 Topic
+     * @param keyPayloadMap 消息键值集合 (Key: 分区键, Value: 消息体)
      * @return 批量发送结果
      */
     public List<SendResult<Object, Object>> sendBatch(String topic, Map<String, Object> keyPayloadMap) {
-        return sendBatch(topic, keyPayloadMap, properties.getProducer().getSendTimeout());
+        return sendBatch(topic, keyPayloadMap, properties.getProducer().getSendTimeout(), null);
     }
 
     /**
      * 批量发送消息键值映射集合，携带超时时间
      */
     public List<SendResult<Object, Object>> sendBatch(String topic, Map<String, Object> keyPayloadMap, Duration timeout) {
-        Assert.hasText(topic, "topic 不能为空");
-        Assert.notNull(keyPayloadMap, "keyPayloadMap 不能为空");
+        return sendBatch(topic, keyPayloadMap, timeout, null);
+    }
 
-        List<CompletableFuture<SendResult<Object, Object>>> futures = new ArrayList<>(keyPayloadMap.size());
-        for (Map.Entry<String, Object> entry : keyPayloadMap.entrySet()) {
-            futures.add(sendReliableAsync(topic, entry.getKey(), entry.getValue()));
-        }
+    /**
+     * 批量发送消息键值映射集合，携带自定义业务消息头
+     */
+    public List<SendResult<Object, Object>> sendBatch(
+            String topic, Map<String, Object> keyPayloadMap, Map<String, String> customHeaders) {
+        return sendBatch(topic, keyPayloadMap, properties.getProducer().getSendTimeout(), customHeaders);
+    }
 
-        return waitBatchFutures(topic, futures, timeout);
+    /**
+     * 批量发送消息键值映射集合，携带超时时间与自定义业务消息头（两阶段原子前置校验）
+     */
+    public List<SendResult<Object, Object>> sendBatch(
+            String topic, Map<String, Object> keyPayloadMap, Duration timeout, Map<String, String> customHeaders) {
+        Duration effectiveTimeout = resolveEffectiveTimeout(timeout);
+        List<PreparedRecord> preparedRecords = prepareBatchMap(topic, keyPayloadMap, customHeaders);
+        return sendPreparedSync(topic, preparedRecords, effectiveTimeout);
     }
 
     /**
@@ -551,59 +572,492 @@ public class KafkaReliableTemplate {
     }
 
     /**
-     * 批量发送 ProducerRecord 集合，携带超时时间（加固 1MB 报文防御与四维上下文补全）
+     * 批量发送 ProducerRecord 集合，携带超时时间（两阶段前置校验、1MB 报文防御与四维上下文补全）
      */
     public List<SendResult<Object, Object>> sendBatchRecords(List<ProducerRecord<Object, Object>> records, Duration timeout) {
-        Assert.notNull(records, "records 不能为空");
-
-        List<CompletableFuture<SendResult<Object, Object>>> futures = new ArrayList<>(records.size());
-        for (ProducerRecord<Object, Object> record : records) {
-            // 防卫 1: 四维上下文防御性补全 (若外部 Record 未携带，则自动注入)
-            ensureContextHeaders(record);
-
-            // 防卫 2: 报文体积 Fail-Fast 校验
-            String effectiveBizKey = extractHeaderString(record, MessageHeaderConstants.BIZ_KEY);
-            int size = validatePayloadSize(record.topic(), effectiveBizKey, record.value());
-
-            String traceId = extractHeaderString(record, MessageHeaderConstants.TRACE_ID);
-            futures.add(doSendInternal(record, effectiveBizKey, traceId, size));
-        }
-
-        return waitBatchFutures(null, futures, timeout);
+        Duration effectiveTimeout = resolveEffectiveTimeout(timeout);
+        List<PreparedRecord> preparedRecords = prepareBatchRecords(records);
+        return sendPreparedSync(null, preparedRecords, effectiveTimeout);
     }
 
     /**
-     * 统一阻塞等待批量发送 Future 确认，消除重复异常转译模板代码
+     * 异步批量发送消息载荷集合，返回聚合 Future
+     */
+    public CompletableFuture<List<SendResult<Object, Object>>> sendBatchAsync(String topic, List<?> payloads) {
+        return sendBatchAsync(topic, null, payloads, null);
+    }
+
+    /**
+     * 异步批量发送消息载荷集合，指定分区键 key
+     */
+    public CompletableFuture<List<SendResult<Object, Object>>> sendBatchAsync(String topic, String key, List<?> payloads) {
+        return sendBatchAsync(topic, key, payloads, null);
+    }
+
+    /**
+     * 异步批量发送消息载荷集合，指定分区键 key 与自定义业务消息头
+     */
+    public CompletableFuture<List<SendResult<Object, Object>>> sendBatchAsync(
+            String topic, String key, List<?> payloads, Map<String, String> customHeaders) {
+        List<PreparedRecord> preparedRecords = prepareBatchPayloads(topic, key, payloads, customHeaders);
+        return aggregateBatchFuture(preparedRecords);
+    }
+
+    /**
+     * 异步批量发送消息键值映射集合，返回聚合 Future
+     */
+    public CompletableFuture<List<SendResult<Object, Object>>> sendBatchAsync(String topic, Map<String, Object> keyPayloadMap) {
+        return sendBatchAsync(topic, keyPayloadMap, null);
+    }
+
+    /**
+     * 异步批量发送消息键值映射集合，携带自定义业务消息头
+     */
+    public CompletableFuture<List<SendResult<Object, Object>>> sendBatchAsync(
+            String topic, Map<String, Object> keyPayloadMap, Map<String, String> customHeaders) {
+        List<PreparedRecord> preparedRecords = prepareBatchMap(topic, keyPayloadMap, customHeaders);
+        return aggregateBatchFuture(preparedRecords);
+    }
+
+    /**
+     * 异步批量发送 ProducerRecord 集合，返回聚合 Future
+     */
+    public CompletableFuture<List<SendResult<Object, Object>>> sendBatchRecordsAsync(
+            List<ProducerRecord<Object, Object>> records) {
+        List<PreparedRecord> preparedRecords = prepareBatchRecords(records);
+        return aggregateBatchFuture(preparedRecords);
+    }
+
+    // =========================================================================
+    // 6. 本地事务提交后批量发信 (sendBatchAfterCommit)
+    // =========================================================================
+
+    /**
+     * 感知本地数据库事务批量发信（使用默认等待确认超时）：事务提交前完成阶段 1 全量校验与四维上下文捕获
+     */
+    public void sendBatchAfterCommit(String topic, List<?> payloads) {
+        sendBatchAfterCommit(topic, null, payloads, properties.getProducer().getSendTimeout(), null);
+    }
+
+    /**
+     * 感知本地数据库事务批量发信，指定超时时间
+     */
+    public void sendBatchAfterCommit(String topic, List<?> payloads, Duration timeout) {
+        sendBatchAfterCommit(topic, null, payloads, timeout, null);
+    }
+
+    /**
+     * 感知本地数据库事务批量发信，指定分区键 key
+     */
+    public void sendBatchAfterCommit(String topic, String key, List<?> payloads) {
+        sendBatchAfterCommit(topic, key, payloads, properties.getProducer().getSendTimeout(), null);
+    }
+
+    /**
+     * 感知本地数据库事务批量发信，指定分区键 key 与超时时间
+     */
+    public void sendBatchAfterCommit(String topic, String key, List<?> payloads, Duration timeout) {
+        sendBatchAfterCommit(topic, key, payloads, timeout, null);
+    }
+
+    /**
+     * 感知本地数据库事务批量发信，指定分区键 key 与自定义业务消息头
+     */
+    public void sendBatchAfterCommit(
+            String topic, String key, List<?> payloads, Map<String, String> customHeaders) {
+        sendBatchAfterCommit(topic, key, payloads, properties.getProducer().getSendTimeout(), customHeaders);
+    }
+
+    /**
+     * 感知本地数据库事务批量发信全参数重载（List 载荷）
+     */
+    public void sendBatchAfterCommit(
+            String topic, String key, List<?> payloads, Duration timeout, Map<String, String> customHeaders) {
+        Duration effectiveTimeout = resolveEffectiveTimeout(timeout);
+        List<PreparedRecord> preparedRecords = prepareBatchPayloads(topic, key, payloads, customHeaders);
+        registerOrSendBatchAfterCommit(topic, preparedRecords, effectiveTimeout);
+    }
+
+    /**
+     * 感知本地数据库事务批量发信（Key-Payload 映射集合，使用默认等待确认超时）
+     */
+    public void sendBatchAfterCommit(String topic, Map<String, Object> keyPayloadMap) {
+        sendBatchAfterCommit(topic, keyPayloadMap, properties.getProducer().getSendTimeout(), null);
+    }
+
+    /**
+     * 感知本地数据库事务批量发信（Key-Payload 映射集合，指定超时时间）
+     */
+    public void sendBatchAfterCommit(String topic, Map<String, Object> keyPayloadMap, Duration timeout) {
+        sendBatchAfterCommit(topic, keyPayloadMap, timeout, null);
+    }
+
+    /**
+     * 感知本地数据库事务批量发信（Key-Payload 映射集合，携带自定义业务消息头）
+     */
+    public void sendBatchAfterCommit(
+            String topic, Map<String, Object> keyPayloadMap, Map<String, String> customHeaders) {
+        sendBatchAfterCommit(topic, keyPayloadMap, properties.getProducer().getSendTimeout(), customHeaders);
+    }
+
+    /**
+     * 感知本地数据库事务批量发信全参数重载（Key-Payload 映射集合）
+     */
+    public void sendBatchAfterCommit(
+            String topic, Map<String, Object> keyPayloadMap, Duration timeout, Map<String, String> customHeaders) {
+        Duration effectiveTimeout = resolveEffectiveTimeout(timeout);
+        List<PreparedRecord> preparedRecords = prepareBatchMap(topic, keyPayloadMap, customHeaders);
+        registerOrSendBatchAfterCommit(topic, preparedRecords, effectiveTimeout);
+    }
+
+    /**
+     * 感知本地数据库事务批量发信（ProducerRecord 集合，使用默认等待确认超时）
+     */
+    public void sendBatchRecordsAfterCommit(List<ProducerRecord<Object, Object>> records) {
+        sendBatchRecordsAfterCommit(records, properties.getProducer().getSendTimeout());
+    }
+
+    /**
+     * 感知本地数据库事务批量发信（ProducerRecord 集合，指定超时时间）
+     */
+    public void sendBatchRecordsAfterCommit(List<ProducerRecord<Object, Object>> records, Duration timeout) {
+        Duration effectiveTimeout = resolveEffectiveTimeout(timeout);
+        List<PreparedRecord> preparedRecords = prepareBatchRecords(records);
+        registerOrSendBatchAfterCommit(null, preparedRecords, effectiveTimeout);
+    }
+
+    /**
+     * 在活跃事务中捕获四维上下文并注册单次 afterCommit 钩子，无事务时立即同步批量发送
+     */
+    private void registerOrSendBatchAfterCommit(
+            String topic, List<PreparedRecord> preparedRecords, Duration effectiveTimeout) {
+        if (preparedRecords.isEmpty()) {
+            return;
+        }
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && TransactionSynchronizationManager.isSynchronizationActive()) {
+            AsyncContext.ContextSnapshot capturedContext = AsyncContext.capture();
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    AsyncContext.ContextSnapshot previousContext = AsyncContext.capturePrevious();
+                    try {
+                        capturedContext.apply();
+                        sendPreparedAfterCommit(preparedRecords, effectiveTimeout);
+                    } finally {
+                        previousContext.restore();
+                    }
+                }
+            });
+        } else {
+            sendPreparedSync(topic, preparedRecords, effectiveTimeout);
+        }
+    }
+
+    /**
+     * 事务提交后在恢复的四维上下文中发送预构建批次，单条失败独立回调 SPI 且不阻断其余记录
+     */
+    private void sendPreparedAfterCommit(List<PreparedRecord> preparedRecords, Duration effectiveTimeout) {
+        List<CompletableFuture<SendResult<Object, Object>>> futures = dispatchPreparedAsync(preparedRecords);
+        long deadlineNanos = System.nanoTime() + effectiveTimeout.toNanos();
+        boolean interrupted = false;
+        InterruptedException interruptedCause = null;
+
+        for (int i = 0; i < preparedRecords.size(); i++) {
+            PreparedRecord prepared = preparedRecords.get(i);
+            CompletableFuture<SendResult<Object, Object>> future = futures.get(i);
+            if (interrupted) {
+                inspectCompletedOrReportInterrupted(prepared, future, interruptedCause);
+                continue;
+            }
+            long remainingNanos = Math.max(0L, deadlineNanos - System.nanoTime());
+            try {
+                future.get(remainingNanos, TimeUnit.NANOSECONDS);
+            } catch (TimeoutException e) {
+                notifyAfterCommitRecordFailure(prepared,
+                        translateTimeoutException("Kafka 事务后批量发信", prepared.record().topic(), prepared.bizKey(), effectiveTimeout, e));
+            } catch (ExecutionException e) {
+                notifyAfterCommitRecordFailure(prepared,
+                        translateExecutionException("Kafka 事务后批量发信", prepared.record().topic(), prepared.bizKey(), e));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                interrupted = true;
+                interruptedCause = e;
+                notifyAfterCommitRecordFailure(prepared,
+                        translateInterruptedException("Kafka 事务后批量发信", prepared.record().topic(), prepared.bizKey(), e));
+            }
+        }
+    }
+
+    /**
+     * 线程中断发生后，非阻塞收口后续条目状态：已完成读取真实结果，未完成直接上报中断异常
+     */
+    private void inspectCompletedOrReportInterrupted(
+            PreparedRecord prepared,
+            CompletableFuture<SendResult<Object, Object>> future,
+            InterruptedException interruptedCause) {
+        if (!future.isDone()) {
+            notifyAfterCommitRecordFailure(prepared,
+                    translateInterruptedException("Kafka 事务后批量发信", prepared.record().topic(), prepared.bizKey(), interruptedCause));
+            return;
+        }
+        try {
+            future.get();
+        } catch (ExecutionException e) {
+            notifyAfterCommitRecordFailure(prepared,
+                    translateExecutionException("Kafka 事务后批量发信", prepared.record().topic(), prepared.bizKey(), e));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            notifyAfterCommitRecordFailure(prepared,
+                    translateInterruptedException("Kafka 事务后批量发信", prepared.record().topic(), prepared.bizKey(), e));
+        }
+    }
+
+    /**
+     * 记录事务提交后单条发信失败日志并触发补偿回调 SPI
+     */
+    private void notifyAfterCommitRecordFailure(PreparedRecord prepared, Throwable ex) {
+        ProducerRecord<Object, Object> record = prepared.record();
+        String keyStr = record.key() != null ? record.key().toString() : null;
+        log.error("{} 本地事务提交后批量发信单条失败: topic={}, partition={}, key={}, bizKey={}, traceId={}, error={}",
+                KafkaConstants.LOG_TX_POST_COMMIT_FAILED_PREFIX,
+                record.topic(), record.partition(), keyStr, prepared.bizKey(), prepared.traceId(), ex.getMessage(), ex);
+        invokeTransactionFailureCallback(
+                record.topic(), record.partition(), keyStr, record.value(), prepared.bizKey(), prepared.traceId(), ex);
+    }
+
+    /**
+     * 校验并规范化显式传入的等待确认超时时间（Fail-Fast）
+     */
+    private Duration resolveEffectiveTimeout(Duration timeout) {
+        if (timeout == null) {
+            return properties.getProducer().getSendTimeout();
+        }
+        Assert.isTrue(!timeout.isNegative() && !timeout.isZero() && timeout.toMillis() > 0,
+                "timeout 必须为至少 1 毫秒的正数时长");
+        return timeout;
+    }
+
+    /**
+     * 阶段 1：校验并预构建载荷列表
+     */
+    private List<PreparedRecord> prepareBatchPayloads(
+            String topic, String key, List<?> payloads, Map<String, String> customHeaders) {
+        Assert.hasText(topic, "topic 不能为空");
+        Assert.notNull(payloads, "payloads 不能为空");
+        if (payloads.isEmpty()) {
+            return Collections.emptyList();
+        }
+        validateBatchLimit(payloads.size());
+
+        List<PreparedRecord> preparedRecords = new ArrayList<>(payloads.size());
+        int index = 0;
+        for (Object payload : payloads) {
+            Assert.notNull(payload, "payloads[" + index + "] 消息载荷不能为空");
+            preparedRecords.add(prepareRecord(topic, null, key, payload, null, customHeaders));
+            index++;
+        }
+        return preparedRecords;
+    }
+
+    /**
+     * 阶段 1：校验并预构建键值映射批次
+     */
+    private List<PreparedRecord> prepareBatchMap(
+            String topic, Map<String, Object> keyPayloadMap, Map<String, String> customHeaders) {
+        Assert.hasText(topic, "topic 不能为空");
+        Assert.notNull(keyPayloadMap, "keyPayloadMap 不能为空");
+        if (keyPayloadMap.isEmpty()) {
+            return Collections.emptyList();
+        }
+        validateBatchLimit(keyPayloadMap.size());
+
+        List<PreparedRecord> preparedRecords = new ArrayList<>(keyPayloadMap.size());
+        for (Map.Entry<String, Object> entry : keyPayloadMap.entrySet()) {
+            Object payload = entry.getValue();
+            Assert.notNull(payload, "keyPayloadMap[" + entry.getKey() + "] 消息载荷不能为空");
+            preparedRecords.add(prepareRecord(topic, null, entry.getKey(), payload, null, customHeaders));
+        }
+        return preparedRecords;
+    }
+
+    /**
+     * 阶段 1：校验并预构建外部 ProducerRecord 批次（全量校验通过后再注入缺失头，保证失败零副作用）
+     */
+    private List<PreparedRecord> prepareBatchRecords(List<ProducerRecord<Object, Object>> records) {
+        Assert.notNull(records, "records 不能为空");
+        if (records.isEmpty()) {
+            return Collections.emptyList();
+        }
+        validateBatchLimit(records.size());
+
+        List<ProducerRecord<Object, Object>> recordList =
+                records instanceof RandomAccess ? records : new ArrayList<>(records);
+        int count = recordList.size();
+        String[] resolvedBizKeys = new String[count];
+        int[] payloadSizes = new int[count];
+        for (int i = 0; i < count; i++) {
+            ProducerRecord<Object, Object> record = recordList.get(i);
+            Assert.notNull(record, "records[" + i + "] 消息记录不能为空");
+            Assert.hasText(record.topic(), "records[" + i + "].topic 不能为空");
+
+            String keyStr = record.key() != null ? record.key().toString() : null;
+            String existingBizKey = extractHeaderString(record, MessageHeaderConstants.BIZ_KEY);
+            String effectiveBizKey = StringUtils.hasText(existingBizKey)
+                    ? existingBizKey
+                    : resolveBizKey(record.value(), keyStr, null);
+            resolvedBizKeys[i] = effectiveBizKey;
+            payloadSizes[i] = validatePayloadSize(record.topic(), effectiveBizKey, record.value());
+        }
+
+        List<PreparedRecord> preparedRecords = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            ProducerRecord<Object, Object> record = recordList.get(i);
+            ensureContextHeaders(record, resolvedBizKeys[i]);
+            String traceId = extractHeaderString(record, MessageHeaderConstants.TRACE_ID);
+            preparedRecords.add(new PreparedRecord(record, resolvedBizKeys[i], traceId, payloadSizes[i]));
+        }
+        return preparedRecords;
+    }
+
+    /**
+     * 校验批量发送单批数量上限（Fail-Fast）
+     */
+    private void validateBatchLimit(int batchSize) {
+        int maxBatchSize = properties.getProducer().getMaxBatchSize();
+        Assert.isTrue(maxBatchSize > 0, "ateng.boot.kafka.producer.max-batch-size 必须为大于 0 的整数");
+        Assert.isTrue(batchSize <= maxBatchSize,
+                String.format("批量发送消息条数超出最大限制: %d 条 (最大限制: %d 条)", batchSize, maxBatchSize));
+    }
+
+    /**
+     * 阶段 2：同步批量下发并等待确认
+     */
+    private List<SendResult<Object, Object>> sendPreparedSync(
+            String topic, List<PreparedRecord> preparedRecords, Duration effectiveTimeout) {
+        if (preparedRecords.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return waitBatchFutures(topic, dispatchPreparedAsync(preparedRecords), effectiveTimeout);
+    }
+
+    /**
+     * 阶段 2：异步批量下发并返回逐条 Future 列表（底层同步异常统一转译并包装为失败 Future）
+     */
+    private List<CompletableFuture<SendResult<Object, Object>>> dispatchPreparedAsync(
+            List<PreparedRecord> preparedRecords) {
+        List<CompletableFuture<SendResult<Object, Object>>> futures = new ArrayList<>(preparedRecords.size());
+        for (PreparedRecord prepared : preparedRecords) {
+            try {
+                futures.add(doSendInternal(prepared.record(), prepared.bizKey(), prepared.traceId(), prepared.payloadSize()));
+            } catch (RuntimeException ex) {
+                futures.add(CompletableFuture.failedFuture(translateSyncDispatchException(prepared, ex)));
+            }
+        }
+        return futures;
+    }
+
+    /**
+     * 阶段 2：异步批量下发并聚合为单一 CompletableFuture
+     */
+    private CompletableFuture<List<SendResult<Object, Object>>> aggregateBatchFuture(
+            List<PreparedRecord> preparedRecords) {
+        if (preparedRecords.isEmpty()) {
+            return CompletableFuture.completedFuture(Collections.emptyList());
+        }
+        List<CompletableFuture<SendResult<Object, Object>>> futures = dispatchPreparedAsync(preparedRecords);
+        return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
+                .thenApply(ignored -> futures.stream().map(CompletableFuture::join).toList());
+    }
+
+    /**
+     * 统一阻塞等待批量发送 Future 确认（共享批次总截止时间，避免超时线性叠加）
      */
     private List<SendResult<Object, Object>> waitBatchFutures(
             String topic,
             List<CompletableFuture<SendResult<Object, Object>>> futures,
-            Duration timeout) {
-        Duration effectiveTimeout = timeout != null ? timeout : properties.getProducer().getSendTimeout();
+            Duration effectiveTimeout) {
+        long deadlineNanos = System.nanoTime() + effectiveTimeout.toNanos();
         List<SendResult<Object, Object>> results = new ArrayList<>(futures.size());
         for (CompletableFuture<SendResult<Object, Object>> future : futures) {
-            try {
-                results.add(future.get(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS));
-            } catch (TimeoutException e) {
-                throw new MessageDeliveryException(MQ_TYPE_KAFKA, topic, null,
-                        "Kafka 批量发信超时 (等待 " + effectiveTimeout.toMillis() + "ms): " + e.getMessage(), e);
-            } catch (ExecutionException e) {
-                Throwable cause = e.getCause() != null ? e.getCause() : e;
-                throw new MessageDeliveryException(MQ_TYPE_KAFKA, topic, null,
-                        CommonResultCode.INTERNAL_SERVER_ERROR,
-                        "Kafka 批量发送消息底层异常: " + cause.getMessage(), cause);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new MessageDeliveryException(MQ_TYPE_KAFKA, topic, null,
-                        CommonResultCode.INTERNAL_SERVER_ERROR,
-                        "Kafka 批量发送线程被中断: " + e.getMessage(), e);
-            }
+            long remainingNanos = Math.max(0L, deadlineNanos - System.nanoTime());
+            results.add(awaitFutureWithTranslation(
+                    "Kafka 批量发信", topic, null, future, effectiveTimeout, remainingNanos));
         }
         return results;
     }
 
+    /**
+     * 统一等待单条 Future 并将超时、执行与中断异常转译为语义化 MessageDeliveryException
+     */
+    private SendResult<Object, Object> awaitFutureWithTranslation(
+            String operation,
+            String topic,
+            String bizKey,
+            CompletableFuture<SendResult<Object, Object>> future,
+            Duration totalTimeout,
+            long remainingNanos) {
+        try {
+            return future.get(remainingNanos, TimeUnit.NANOSECONDS);
+        } catch (TimeoutException e) {
+            throw translateTimeoutException(operation, topic, bizKey, totalTimeout, e);
+        } catch (ExecutionException e) {
+            throw translateExecutionException(operation, topic, bizKey, e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw translateInterruptedException(operation, topic, bizKey, e);
+        }
+    }
+
+    private MessageDeliveryException translateSyncDispatchException(PreparedRecord prepared, RuntimeException ex) {
+        if (ex instanceof MessageDeliveryException mde) {
+            return mde;
+        }
+        return new MessageDeliveryException(
+                MQ_TYPE_KAFKA,
+                prepared.record().topic(),
+                prepared.bizKey(),
+                CommonResultCode.INTERNAL_SERVER_ERROR,
+                String.format("Kafka 批量发信底层同步异常: topic=%s, bizKey=%s, error=%s",
+                        prepared.record().topic(), prepared.bizKey(), ex.getMessage()),
+                ex);
+    }
+
+    private MessageDeliveryException translateTimeoutException(
+            String operation, String topic, String bizKey, Duration totalTimeout, TimeoutException ex) {
+        String message = bizKey != null
+                ? String.format("%s确认超时 (等待 %dms, topic=%s, bizKey=%s)",
+                operation, totalTimeout.toMillis(), topic, bizKey)
+                : String.format("%s超时 (等待 %dms, topic=%s): %s",
+                operation, totalTimeout.toMillis(), topic, ex.getMessage());
+        return new MessageDeliveryException(MQ_TYPE_KAFKA, topic, bizKey, message, ex);
+    }
+
+    private MessageDeliveryException translateExecutionException(
+            String operation, String topic, String bizKey, ExecutionException ex) {
+        Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+        if (cause instanceof MessageDeliveryException mde) {
+            return mde;
+        }
+        String message = bizKey != null
+                ? String.format("%s失败: topic=%s, bizKey=%s, error=%s",
+                operation, topic, bizKey, cause.getMessage())
+                : String.format("%s底层异常: %s", operation, cause.getMessage());
+        return new MessageDeliveryException(
+                MQ_TYPE_KAFKA, topic, bizKey, CommonResultCode.INTERNAL_SERVER_ERROR, message, cause);
+    }
+
+    private MessageDeliveryException translateInterruptedException(
+            String operation, String topic, String bizKey, InterruptedException ex) {
+        String message = bizKey != null
+                ? String.format("%s被中断: topic=%s, bizKey=%s", operation, topic, bizKey)
+                : String.format("%s线程被中断: %s", operation, ex.getMessage());
+        return new MessageDeliveryException(
+                MQ_TYPE_KAFKA, topic, bizKey, CommonResultCode.INTERNAL_SERVER_ERROR, message, ex);
+    }
+
     // =========================================================================
-    // 5. 内部构造、校验与网络发送
+    // 7. 内部构造、校验与网络发送
     // =========================================================================
 
     /**
@@ -703,6 +1157,16 @@ public class KafkaReliableTemplate {
         }
         String keyStr = record.key() != null ? record.key().toString() : null;
         String resolvedBizKey = resolveBizKey(record.value(), keyStr, null);
+        ensureContextHeaders(record, resolvedBizKey);
+    }
+
+    /**
+     * 防御性补全外部 ProducerRecord 缺失的四维上下文头（复用已解析 bizKey）
+     */
+    private void ensureContextHeaders(ProducerRecord<Object, Object> record, String resolvedBizKey) {
+        if (record == null || record.headers() == null) {
+            return;
+        }
         Map<String, Object> contextHeaders = new HashMap<>();
         MessageContextPropagator.inject(contextHeaders, resolvedBizKey);
         for (Map.Entry<String, Object> entry : contextHeaders.entrySet()) {
@@ -879,36 +1343,8 @@ public class KafkaReliableTemplate {
             int size,
             Duration timeout) {
         CompletableFuture<SendResult<Object, Object>> future = doSendInternal(record, bizKey, traceId, size);
-        try {
-            return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
-        } catch (TimeoutException e) {
-            throw new MessageDeliveryException(
-                    MQ_TYPE_KAFKA,
-                    record.topic(),
-                    bizKey,
-                    String.format("Kafka 同步发送确认超时 (等待 %dms, topic=%s, bizKey=%s)",
-                            timeout.toMillis(), record.topic(), bizKey),
-                    e);
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause() != null ? e.getCause() : e;
-            throw new MessageDeliveryException(
-                    MQ_TYPE_KAFKA,
-                    record.topic(),
-                    bizKey,
-                    CommonResultCode.INTERNAL_SERVER_ERROR,
-                    String.format("Kafka 同步发送失败: topic=%s, bizKey=%s, error=%s",
-                            record.topic(), bizKey, cause.getMessage()),
-                    cause);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new MessageDeliveryException(
-                    MQ_TYPE_KAFKA,
-                    record.topic(),
-                    bizKey,
-                    CommonResultCode.INTERNAL_SERVER_ERROR,
-                    String.format("Kafka 同步发送被中断: topic=%s, bizKey=%s", record.topic(), bizKey),
-                    e);
-        }
+        return awaitFutureWithTranslation(
+                "Kafka 同步发送", record.topic(), bizKey, future, timeout, timeout.toNanos());
     }
 
     /**
