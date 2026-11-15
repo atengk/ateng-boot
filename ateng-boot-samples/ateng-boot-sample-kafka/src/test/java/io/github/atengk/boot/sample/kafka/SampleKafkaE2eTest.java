@@ -280,12 +280,16 @@ class SampleKafkaE2eTest {
         TenantContextHolder.setTenantId("tenant-001");
         MDC.put("traceId", "trace-sc1");
 
-        // 1. HTTP 同步按 Key 发送订单
+        // 1. HTTP 同步按 Key 发送订单（验证自定义业务头透传与系统保留头防篡改）
         OrderProduceRequest syncReq = OrderProduceRequest.builder()
                 .orderId("ORD-1001")
                 .amount(new BigDecimal("299.00"))
                 .userId("user-001")
                 .tenantId("tenant-001")
+                .customHeaders(java.util.Map.of(
+                        "X-Biz-Source", "web-checkout",
+                        "X-Trace-Id", "spoofed-trace-ignored"
+                ))
                 .build();
 
         mockMvc.perform(post("/sample/kafka/produce/order-sync")
@@ -329,12 +333,12 @@ class SampleKafkaE2eTest {
                 .andExpect(jsonPath("$.data.partition").value(2))
                 .andExpect(jsonPath("$.data.summary").value(org.hamcrest.Matchers.containsString("PARTITION=2")));
 
-        // 4. HTTP 探查单条监听器成功消费并校验四维上下文
+        // 4. HTTP 探查单条监听器成功消费并校验四维上下文与自定义头
         awaitCondition(() -> {
             mockMvc.perform(get("/sample/kafka/produce/received-orders"))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.data").isArray())
-                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-1001')]").exists())
+                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-1001' && @.traceId == 'trace-sc1' && @.customHeaders['X-Biz-Source'] == 'web-checkout')]").exists())
                     .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-PARTITION' && @.partition == 2)]").exists());
         });
     }
@@ -345,12 +349,13 @@ class SampleKafkaE2eTest {
     @Test
     @DisplayName("场景 2: 本地事务提交感知发信与回滚防幽灵消息 (KafkaProduceController Web 闭环)")
     void testScenario2_TransactionalSendAfterCommitAndRollback() throws Exception {
-        // 1. HTTP 本地事务成功提交 -> 触发 afterCommit 物理发信
+        // 1. HTTP 本地事务成功提交 -> 触发 afterCommit 物理发信（验证自定义业务头同步透传）
         OrderProduceRequest successOrder = OrderProduceRequest.builder()
                 .orderId("ORD-TX-OK")
                 .amount(new BigDecimal("500.00"))
                 .userId("user-tx")
                 .tenantId("tenant-tx")
+                .customHeaders(java.util.Map.of("X-Tx-Source", "order-commit"))
                 .build();
 
         mockMvc.perform(post("/sample/kafka/produce/order-tx-commit")
@@ -369,7 +374,7 @@ class SampleKafkaE2eTest {
         awaitCondition(() -> {
             mockMvc.perform(get("/sample/kafka/produce/received-orders"))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-TX-OK')]").exists());
+                    .andExpect(jsonPath("$.data[?(@.order.orderId == 'ORD-TX-OK' && @.customHeaders['X-Tx-Source'] == 'order-commit')]").exists());
         });
 
         // 清理现场
@@ -826,10 +831,26 @@ class SampleKafkaE2eTest {
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("超出最大限制")));
 
-        // 3. 底层 Service 直接调用对齐断言
+        // 3. HTTP 原生分布式事务投递超限大报文 (1MB + 64B) -> 事务代理层 Fail-Fast 阻断，返回 400 业务错误响应
+        mockMvc.perform(post("/sample/kafka/produce/order-native-tx-large-payload")
+                        .param("sizeBytes", String.valueOf(1048576 + 64)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("超出最大限制")));
+
+        // 4. 底层 Service 直接调用对齐断言（普通发送 + 原生分布式事务发送均触发 400 Fail-Fast）
         byte[] largePayload = new byte[1048576 + 64];
 
         assertThatThrownBy(() -> tradeScenarioService.sendLargePayload(largePayload))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(ex -> {
+                    BusinessException be = (BusinessException) ex;
+                    assertThat(be.getResultCode()).isEqualTo(CommonResultCode.BAD_REQUEST);
+                    assertThat(be.getMessage()).contains("超出最大限制");
+                });
+
+        assertThatThrownBy(() -> tradeScenarioService.executeNativeTxLargePayload(largePayload))
                 .isInstanceOf(BusinessException.class)
                 .satisfies(ex -> {
                     BusinessException be = (BusinessException) ex;

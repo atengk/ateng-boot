@@ -12,6 +12,7 @@ import lombok.NoArgsConstructor;
 import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
+import java.util.Map;
 
 /**
  * 订单消息投递请求 DTO
@@ -61,6 +62,11 @@ public class OrderProduceRequest implements Serializable {
      * 自定义分区路由 Key (选填，为空时默认使用 orderId)
      */
     private String key;
+
+    /**
+     * 自定义业务扩展消息头 (选填；系统上下文保留头将被自动忽略防伪造)
+     */
+    private Map<String, String> customHeaders;
 
     /**
      * 转换为订单领域实体

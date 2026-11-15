@@ -19,7 +19,10 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.kafka.support.SendResult;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.Assert;
@@ -46,6 +49,18 @@ import java.util.concurrent.*;
 public class KafkaReliableTemplate {
 
     private static final String MQ_TYPE_KAFKA = "kafka";
+
+    /**
+     * 框架保留的系统上下文与幂等消息头集合（小写归一化，禁止自定义头覆盖或伪造）
+     */
+    private static final Set<String> RESERVED_SYSTEM_HEADER_KEYS = Set.of(
+            MessageHeaderConstants.TRACE_ID.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.TENANT_ID.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.USER_ID.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.IGNORE_TENANT.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.SEND_TIMESTAMP.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.BIZ_KEY.toLowerCase(Locale.ROOT)
+    );
 
     private final KafkaTemplate<Object, Object> kafkaTemplate;
     private final AtengKafkaProperties properties;
@@ -146,10 +161,24 @@ public class KafkaReliableTemplate {
     }
 
     /**
+     * 同步可靠发送消息至指定 Topic，携带 key 与自定义消息头
+     */
+    public SendResult<Object, Object> sendReliable(String topic, String key, Object payload, Map<String, String> customHeaders) {
+        return sendReliable(topic, null, key, payload, null, properties.getProducer().getSendTimeout(), customHeaders);
+    }
+
+    /**
+     * 同步可靠发送消息至指定 Topic，携带 key、bizKey 与自定义消息头
+     */
+    public SendResult<Object, Object> sendReliable(String topic, String key, Object payload, String bizKey, Map<String, String> customHeaders) {
+        return sendReliable(topic, null, key, payload, bizKey, properties.getProducer().getSendTimeout(), customHeaders);
+    }
+
+    /**
      * 同步可靠发送消息至指定物理分区 partition
      */
     public SendResult<Object, Object> sendReliable(String topic, Integer partition, String key, Object payload) {
-        return sendReliable(topic, partition, key, payload, null, properties.getProducer().getSendTimeout());
+        return sendReliable(topic, partition, key, payload, null, properties.getProducer().getSendTimeout(), null);
     }
 
     /**
@@ -171,10 +200,34 @@ public class KafkaReliableTemplate {
             Object payload,
             String bizKey,
             Duration timeout) {
+        return sendReliable(topic, partition, key, payload, bizKey, timeout, null);
+    }
+
+    /**
+     * 同步可靠发送消息全参数重载（支持扩展自定义业务头）
+     *
+     * @param topic         目标 Topic
+     * @param partition     指定物理分区号（可选，传 null 由 Kafka 分区器决定）
+     * @param key           分区键（用于 Hash 保序）
+     * @param payload       消息载荷
+     * @param bizKey        业务唯一标识（可选，未传时自适应提取或兜底生成）
+     * @param timeout       等待确认超时时间
+     * @param customHeaders 自定义业务消息头（允许 null 或空映射；不会覆盖框架保留系统头）
+     * @return SendResult 发送结果
+     * @throws MessageDeliveryException 发送超时或异常时抛出
+     */
+    public SendResult<Object, Object> sendReliable(
+            String topic,
+            Integer partition,
+            String key,
+            Object payload,
+            String bizKey,
+            Duration timeout,
+            Map<String, String> customHeaders) {
         Assert.hasText(topic, "topic 不能为空");
         Assert.notNull(payload, "payload 消息载荷不能为空");
 
-        PreparedRecord prepared = prepareRecord(topic, partition, key, payload, bizKey);
+        PreparedRecord prepared = prepareRecord(topic, partition, key, payload, bizKey, customHeaders);
         Duration effectiveTimeout = timeout != null ? timeout : properties.getProducer().getSendTimeout();
 
         return doSendReliableSync(prepared.record(), prepared.bizKey(), prepared.traceId(), prepared.payloadSize(), effectiveTimeout);
@@ -206,10 +259,26 @@ public class KafkaReliableTemplate {
     }
 
     /**
+     * 异步可靠发送消息，携带 key 与自定义消息头
+     */
+    public CompletableFuture<SendResult<Object, Object>> sendReliableAsync(
+            String topic, String key, Object payload, Map<String, String> customHeaders) {
+        return sendReliableAsync(topic, null, key, payload, null, customHeaders);
+    }
+
+    /**
+     * 异步可靠发送消息，携带 key、bizKey 与自定义消息头
+     */
+    public CompletableFuture<SendResult<Object, Object>> sendReliableAsync(
+            String topic, String key, Object payload, String bizKey, Map<String, String> customHeaders) {
+        return sendReliableAsync(topic, null, key, payload, bizKey, customHeaders);
+    }
+
+    /**
      * 异步可靠发送消息至指定物理分区 partition
      */
     public CompletableFuture<SendResult<Object, Object>> sendReliableAsync(String topic, Integer partition, String key, Object payload) {
-        return sendReliableAsync(topic, partition, key, payload, null);
+        return sendReliableAsync(topic, partition, key, payload, null, null);
     }
 
     /**
@@ -221,10 +290,31 @@ public class KafkaReliableTemplate {
             String key,
             Object payload,
             String bizKey) {
+        return sendReliableAsync(topic, partition, key, payload, bizKey, null);
+    }
+
+    /**
+     * 异步可靠发送消息全参数重载（支持扩展自定义业务头）
+     *
+     * @param topic         目标 Topic
+     * @param partition     指定物理分区号（可选）
+     * @param key           分区键
+     * @param payload       消息载荷
+     * @param bizKey        业务唯一标识
+     * @param customHeaders 自定义业务消息头（允许 null 或空映射；不会覆盖框架保留系统头）
+     * @return 异步发送 Future
+     */
+    public CompletableFuture<SendResult<Object, Object>> sendReliableAsync(
+            String topic,
+            Integer partition,
+            String key,
+            Object payload,
+            String bizKey,
+            Map<String, String> customHeaders) {
         Assert.hasText(topic, "topic 不能为空");
         Assert.notNull(payload, "payload 消息载荷不能为空");
 
-        PreparedRecord prepared = prepareRecord(topic, partition, key, payload, bizKey);
+        PreparedRecord prepared = prepareRecord(topic, partition, key, payload, bizKey, customHeaders);
 
         return doSendInternal(prepared.record(), prepared.bizKey(), prepared.traceId(), prepared.payloadSize());
     }
@@ -265,7 +355,21 @@ public class KafkaReliableTemplate {
      * 感知本地数据库事务发信，显式指定物理分区 partition 与 bizKey
      */
     public void sendAfterCommit(String topic, Integer partition, String key, Object payload, String bizKey) {
-        sendAfterCommit(topic, partition, key, payload, bizKey, properties.getProducer().getSendTimeout());
+        sendAfterCommit(topic, partition, key, payload, bizKey, properties.getProducer().getSendTimeout(), null);
+    }
+
+    /**
+     * 感知本地数据库事务发信，携带 key 与自定义消息头
+     */
+    public void sendAfterCommit(String topic, String key, Object payload, Map<String, String> customHeaders) {
+        sendAfterCommit(topic, null, key, payload, null, properties.getProducer().getSendTimeout(), customHeaders);
+    }
+
+    /**
+     * 感知本地数据库事务发信，携带 key、bizKey 与自定义消息头
+     */
+    public void sendAfterCommit(String topic, String key, Object payload, String bizKey, Map<String, String> customHeaders) {
+        sendAfterCommit(topic, null, key, payload, bizKey, properties.getProducer().getSendTimeout(), customHeaders);
     }
 
     /**
@@ -278,11 +382,33 @@ public class KafkaReliableTemplate {
             Object payload,
             String bizKey,
             Duration timeout) {
+        sendAfterCommit(topic, partition, key, payload, bizKey, timeout, null);
+    }
+
+    /**
+     * 感知本地数据库事务发信全参数重载（支持扩展自定义业务头）
+     *
+     * @param topic         目标 Topic
+     * @param partition     指定物理分区号（可选）
+     * @param key           分区键
+     * @param payload       消息载荷
+     * @param bizKey        业务唯一标识
+     * @param timeout       等待确认超时时间
+     * @param customHeaders 自定义业务消息头（允许 null 或空映射；不会覆盖框架保留系统头）
+     */
+    public void sendAfterCommit(
+            String topic,
+            Integer partition,
+            String key,
+            Object payload,
+            String bizKey,
+            Duration timeout,
+            Map<String, String> customHeaders) {
         Assert.hasText(topic, "topic 不能为空");
         Assert.notNull(payload, "payload 消息载荷不能为空");
 
         // 1. 预构建 ProducerRecord 并执行 Fail-Fast 大小校验与四维上下文捕获
-        PreparedRecord prepared = prepareRecord(topic, partition, key, payload, bizKey);
+        PreparedRecord prepared = prepareRecord(topic, partition, key, payload, bizKey, customHeaders);
         Duration effectiveTimeout = timeout != null ? timeout : properties.getProducer().getSendTimeout();
 
         // 2. 检测是否存在活跃本地事务
@@ -432,25 +558,13 @@ public class KafkaReliableTemplate {
 
         List<CompletableFuture<SendResult<Object, Object>>> futures = new ArrayList<>(records.size());
         for (ProducerRecord<Object, Object> record : records) {
-            // 防卫 1: 报文体积 Fail-Fast 校验
-            int size = calculatePayloadSize(record.value());
-            long maxPayloadSize = properties.getProducer().getMaxPayloadSize().toBytes();
-            if (size > maxPayloadSize) {
-                String bizKey = extractHeaderString(record, MessageHeaderConstants.BIZ_KEY);
-                throw new MessageDeliveryException(
-                        MQ_TYPE_KAFKA,
-                        record.topic(),
-                        bizKey,
-                        CommonResultCode.BAD_REQUEST,
-                        String.format("出站消息报文体积超出最大限制: %d 字节 (最大限制: %d 字节, payload=%s)",
-                                size, maxPayloadSize, record.value() != null ? record.value().getClass().getSimpleName() : "null"),
-                        null);
-            }
-
-            // 防卫 2: 四维上下文防御性补全 (若外部 Record 未携带，则自动注入)
+            // 防卫 1: 四维上下文防御性补全 (若外部 Record 未携带，则自动注入)
             ensureContextHeaders(record);
 
+            // 防卫 2: 报文体积 Fail-Fast 校验
             String effectiveBizKey = extractHeaderString(record, MessageHeaderConstants.BIZ_KEY);
+            int size = validatePayloadSize(record.topic(), effectiveBizKey, record.value());
+
             String traceId = extractHeaderString(record, MessageHeaderConstants.TRACE_ID);
             futures.add(doSendInternal(record, effectiveBizKey, traceId, size));
         }
@@ -510,15 +624,21 @@ public class KafkaReliableTemplate {
             Integer partition,
             String key,
             Object payload,
-            String explicitBizKey) {
+            String explicitBizKey,
+            Map<String, String> customHeaders) {
         // 1. 解析业务键 (优先级：显式 bizKey -> 路由 key -> 反射 @Id/bizId/id -> MDC traceId / fastSimpleUUID)
         String resolvedBizKey = resolveBizKey(payload, key, explicitBizKey);
 
-        // 2. 抓取当前调用线程四维上下文并注入消息头 (UTF-8 归一化)
+        // 2. 校验出站报文原始体积 (Fail-Fast 防爆)
+        int rawSize = validatePayloadSize(topic, resolvedBizKey, payload);
+
+        // 3. 先安全注入业务自定义消息头，再写入框架四维上下文与系统保留头（禁止自定义头覆盖或伪造系统头）
+        RecordHeaders headers = new RecordHeaders();
+        appendCustomHeaders(headers, customHeaders);
+
         Map<String, Object> contextHeaders = new HashMap<>();
         MessageContextPropagator.inject(contextHeaders, resolvedBizKey);
 
-        RecordHeaders headers = new RecordHeaders();
         for (Map.Entry<String, Object> entry : contextHeaders.entrySet()) {
             if (entry.getValue() != null) {
                 byte[] valBytes = entry.getValue().toString().getBytes(StandardCharsets.UTF_8);
@@ -526,25 +646,52 @@ public class KafkaReliableTemplate {
             }
         }
 
-        // 3. 校验出站报文原始体积 (Fail-Fast 防爆)
+        Object traceIdObj = contextHeaders.get(MessageHeaderConstants.TRACE_ID);
+        String traceId = traceIdObj != null ? traceIdObj.toString() : null;
+
+        ProducerRecord<Object, Object> record = new ProducerRecord<>(topic, partition, key, payload, headers);
+        return new PreparedRecord(record, resolvedBizKey, traceId, rawSize);
+    }
+
+    /**
+     * 安全追加自定义业务消息头，自动过滤 null/空白键名、null 值与框架系统保留头
+     */
+    private void appendCustomHeaders(RecordHeaders headers, Map<String, String> customHeaders) {
+        if (customHeaders == null || customHeaders.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, String> entry : customHeaders.entrySet()) {
+            String rawKey = entry.getKey();
+            String value = entry.getValue();
+            if (!StringUtils.hasText(rawKey) || value == null) {
+                continue;
+            }
+            String trimmedKey = rawKey.trim();
+            if (RESERVED_SYSTEM_HEADER_KEYS.contains(trimmedKey.toLowerCase(Locale.ROOT))) {
+                log.warn("[ateng-boot-kafka] 忽略覆盖系统保留消息头的自定义请求头: key={}", trimmedKey);
+                continue;
+            }
+            headers.add(new RecordHeader(trimmedKey, value.getBytes(StandardCharsets.UTF_8)));
+        }
+    }
+
+    /**
+     * 统一校验出站消息载荷字节大小不超过配置上限（Fail-Fast 阻断）
+     */
+    private int validatePayloadSize(String topic, String bizKey, Object payload) {
         int rawSize = calculatePayloadSize(payload);
         long maxPayloadSize = properties.getProducer().getMaxPayloadSize().toBytes();
         if (rawSize > maxPayloadSize) {
             throw new MessageDeliveryException(
                     MQ_TYPE_KAFKA,
                     topic,
-                    resolvedBizKey,
+                    bizKey,
                     CommonResultCode.BAD_REQUEST,
                     String.format("出站消息报文体积超出最大限制: %d 字节 (最大限制: %d 字节, payload=%s)",
-                            rawSize, maxPayloadSize, payload.getClass().getSimpleName()),
+                            rawSize, maxPayloadSize, payload != null ? payload.getClass().getSimpleName() : "null"),
                     null);
         }
-
-        Object traceIdObj = contextHeaders.get(MessageHeaderConstants.TRACE_ID);
-        String traceId = traceIdObj != null ? traceIdObj.toString() : null;
-
-        ProducerRecord<Object, Object> record = new ProducerRecord<>(topic, partition, key, payload, headers);
-        return new PreparedRecord(record, resolvedBizKey, traceId, rawSize);
+        return rawSize;
     }
 
     /**
@@ -566,7 +713,7 @@ public class KafkaReliableTemplate {
     }
 
     /**
-     * 包装事务操作句柄以在消息发送时自动透传四维上下文
+     * 包装事务操作句柄以在消息发送时自动透传四维上下文与载荷体积 Fail-Fast 防线
      */
     @SuppressWarnings("unchecked")
     private KafkaOperations<Object, Object> wrapTransactionalOperations(KafkaOperations<Object, Object> operations) {
@@ -580,25 +727,104 @@ public class KafkaReliableTemplate {
                     String methodName = method.getName();
                     if ("send".equals(methodName) && args != null && args.length > 0) {
                         if (args[0] instanceof ProducerRecord<?, ?> rec) {
-                            ensureContextHeaders((ProducerRecord<Object, Object>) rec);
-                            try {
-                                return method.invoke(operations, args);
-                            } catch (InvocationTargetException ite) {
-                                throw ite.getCause() != null ? ite.getCause() : ite;
-                            }
+                            prepareTransactionalRecord((ProducerRecord<Object, Object>) rec);
+                            return invokeWithUnwrappedException(method, operations, args);
                         } else if (args[0] instanceof String) {
                             ProducerRecord<Object, Object> rec = convertToProducerRecord(args);
-                            ensureContextHeaders(rec);
+                            prepareTransactionalRecord(rec);
                             return operations.send(rec);
+                        } else if (args[0] instanceof Message<?> msg) {
+                            Message<?> enrichedMsg = prepareTransactionalMessage(msg);
+                            return operations.send(enrichedMsg);
                         }
+                    } else if ("sendDefault".equals(methodName) && args != null && args.length > 0) {
+                        return handleTransactionalSendDefault(operations, method, args);
                     }
-                    try {
-                        return method.invoke(operations, args);
-                    } catch (InvocationTargetException ite) {
-                        throw ite.getCause() != null ? ite.getCause() : ite;
-                    }
+                    return invokeWithUnwrappedException(method, operations, args);
                 }
         );
+    }
+
+    /**
+     * 事务代理统一补全四维上下文头并执行单条报文大小 Fail-Fast 阻断
+     */
+    private void prepareTransactionalRecord(ProducerRecord<Object, Object> record) {
+        ensureContextHeaders(record);
+        String bizKey = extractHeaderString(record, MessageHeaderConstants.BIZ_KEY);
+        validatePayloadSize(record.topic(), bizKey, record.value());
+    }
+
+    /**
+     * 事务代理拦截 send(Message<?>)：前置校验报文大小并按需补全缺失的四维上下文头
+     */
+    private Message<?> prepareTransactionalMessage(Message<?> message) {
+        Object topicHeader = message.getHeaders().get(KafkaHeaders.TOPIC);
+        String topic = topicHeader != null ? topicHeader.toString() : kafkaTemplate.getDefaultTopic();
+        Object keyHeader = message.getHeaders().get(KafkaHeaders.KEY);
+        String keyStr = keyHeader != null ? keyHeader.toString() : null;
+        Object existingBizKey = message.getHeaders().get(MessageHeaderConstants.BIZ_KEY);
+        String resolvedBizKey = existingBizKey != null && StringUtils.hasText(existingBizKey.toString())
+                ? existingBizKey.toString()
+                : resolveBizKey(message.getPayload(), keyStr, null);
+
+        validatePayloadSize(topic, resolvedBizKey, message.getPayload());
+
+        Map<String, Object> contextHeaders = new HashMap<>();
+        MessageContextPropagator.inject(contextHeaders, resolvedBizKey);
+        return MessageBuilder.fromMessage(message)
+                .copyHeadersIfAbsent(contextHeaders)
+                .build();
+    }
+
+    /**
+     * 事务代理拦截 sendDefault(...)：执行报文体积 Fail-Fast 防线；若配置了默认主题则转为带上下文的 ProducerRecord 投递
+     */
+    private Object handleTransactionalSendDefault(
+            KafkaOperations<Object, Object> operations,
+            Method method,
+            Object[] args) throws Throwable {
+        Integer partition = null;
+        Long timestamp = null;
+        Object key = null;
+        Object payload;
+        if (args.length == 1) {
+            payload = args[0];
+        } else if (args.length == 2) {
+            key = args[0];
+            payload = args[1];
+        } else if (args.length == 3) {
+            partition = (Integer) args[0];
+            key = args[1];
+            payload = args[2];
+        } else {
+            partition = (Integer) args[0];
+            timestamp = (Long) args[1];
+            key = args[2];
+            payload = args[3];
+        }
+
+        String defaultTopic = kafkaTemplate.getDefaultTopic();
+        if (StringUtils.hasText(defaultTopic)) {
+            ProducerRecord<Object, Object> rec = new ProducerRecord<>(defaultTopic, partition, timestamp, key, payload);
+            prepareTransactionalRecord(rec);
+            return operations.send(rec);
+        }
+
+        String keyStr = key != null ? key.toString() : null;
+        String resolvedBizKey = resolveBizKey(payload, keyStr, null);
+        validatePayloadSize(null, resolvedBizKey, payload);
+        return invokeWithUnwrappedException(method, operations, args);
+    }
+
+    /**
+     * 代理反射调用并解包底层真实异常
+     */
+    private Object invokeWithUnwrappedException(Method method, Object target, Object[] args) throws Throwable {
+        try {
+            return method.invoke(target, args);
+        } catch (InvocationTargetException ite) {
+            throw ite.getCause() != null ? ite.getCause() : ite;
+        }
     }
 
     /**

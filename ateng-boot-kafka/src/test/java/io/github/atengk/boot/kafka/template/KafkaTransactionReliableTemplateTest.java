@@ -21,6 +21,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import org.springframework.util.unit.DataSize;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -165,6 +166,141 @@ class KafkaTransactionReliableTemplateTest {
         assertThatThrownBy(() -> template.executeInTransaction(null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("callback 不能为空");
+    }
+
+    @Test
+    @DisplayName("executeInTransaction: 单条消息体积超过 maxPayloadSize 时在代理层 Fail-Fast 阻断，严禁静默透传")
+    @SuppressWarnings("unchecked")
+    void testExecuteInTransaction_OversizedPayloadFailFast() {
+        properties.getProducer().setMaxPayloadSize(DataSize.ofKilobytes(5));
+
+        when(kafkaTemplate.executeInTransaction(any())).thenAnswer(invocation -> {
+            KafkaOperations.OperationsCallback<Object, Object, String> callback = invocation.getArgument(0);
+            return callback.doInOperations(mockOperations);
+        });
+
+        byte[] oversized = new byte[6 * 1024];
+
+        // 1. 通过 send(topic, key, payload) 重载发送超限载荷
+        assertThatThrownBy(() -> template.executeInTransaction(operations -> {
+            operations.send("order.tx.topic", "tx-biz-1", oversized);
+            return "SHOULD_NOT_COMMIT";
+        }))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("出站消息报文体积超出最大限制")
+                .satisfies(ex -> {
+                    MessageDeliveryException mde = (MessageDeliveryException) ex;
+                    assertThat(mde.getMqType()).isEqualTo("kafka");
+                    assertThat(mde.getTopic()).isEqualTo("order.tx.topic");
+                    assertThat(mde.getBizKey()).isEqualTo("tx-biz-1");
+                    assertThat(mde.getResultCode()).isEqualTo(CommonResultCode.BAD_REQUEST);
+                });
+
+        // 2. 通过 send(ProducerRecord) 重载发送超限载荷
+        ProducerRecord<Object, Object> oversizedRecord = new ProducerRecord<>("audit.tx.topic", "tx-biz-2", oversized);
+        assertThatThrownBy(() -> template.executeInTransaction(operations -> {
+            operations.send(oversizedRecord);
+            return "SHOULD_NOT_COMMIT";
+        }))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("出站消息报文体积超出最大限制")
+                .satisfies(ex -> {
+                    MessageDeliveryException mde = (MessageDeliveryException) ex;
+                    assertThat(mde.getTopic()).isEqualTo("audit.tx.topic");
+                    assertThat(mde.getBizKey()).isEqualTo("tx-biz-2");
+                    assertThat(mde.getResultCode()).isEqualTo(CommonResultCode.BAD_REQUEST);
+                });
+
+        // 校验底层 mockOperations 从未被调用，实现前置 Fail-Fast 阻断
+        verify(mockOperations, never()).send(any(ProducerRecord.class));
+        verify(mockOperations, never()).send(anyString(), any(), any());
+    }
+
+    @Test
+    @DisplayName("executeInTransaction: send(Message) 与 sendDefault 防旁路校验（上下文透传、精确边界与超限阻断）")
+    @SuppressWarnings("unchecked")
+    void testExecuteInTransaction_MessageAndSendDefaultProtectionAndExactBoundary() {
+        properties.getProducer().setMaxPayloadSize(DataSize.ofBytes(1024));
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-bypass-guard");
+        TenantContextHolder.setTenantId("tenant-bypass");
+        UserContextHolder.setUserId("user-bypass");
+
+        when(kafkaTemplate.getDefaultTopic()).thenReturn("default.tx.topic");
+        when(kafkaTemplate.executeInTransaction(any())).thenAnswer(invocation -> {
+            KafkaOperations.OperationsCallback<Object, Object, String> callback = invocation.getArgument(0);
+            return callback.doInOperations(mockOperations);
+        });
+        when(mockOperations.send(any(ProducerRecord.class))).thenReturn(CompletableFuture.completedFuture(null));
+        when(mockOperations.send(any(org.springframework.messaging.Message.class)))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        // 1. 精确边界 (payload.length == maxPayloadSize = 1024) 允许通过；send(topic, payload) 与 send(topic, partition, key, payload) 正常透传
+        byte[] exactLimit = new byte[1024];
+        org.springframework.messaging.Message<byte[]> validSpringMsg = org.springframework.messaging.support.MessageBuilder
+                .withPayload(exactLimit)
+                .setHeader(org.springframework.kafka.support.KafkaHeaders.TOPIC, "msg.tx.topic")
+                .setHeader(org.springframework.kafka.support.KafkaHeaders.KEY, "msg-key-1")
+                .build();
+
+        String res = template.executeInTransaction(operations -> {
+            operations.send("simple.tx.topic", exactLimit);
+            operations.send("part.tx.topic", 2, "part-key", exactLimit);
+            operations.send(validSpringMsg);
+            operations.sendDefault("def-key", exactLimit);
+            return "BOUNDARY_OK";
+        });
+        assertThat(res).isEqualTo("BOUNDARY_OK");
+
+        ArgumentCaptor<org.springframework.messaging.Message<?>> msgCaptor =
+                ArgumentCaptor.forClass(org.springframework.messaging.Message.class);
+        verify(mockOperations, times(1)).send(msgCaptor.capture());
+        assertThat(msgCaptor.getValue().getHeaders().get(MessageHeaderConstants.TRACE_ID))
+                .isEqualTo("trace-bypass-guard");
+        assertThat(msgCaptor.getValue().getHeaders().get(MessageHeaderConstants.TENANT_ID))
+                .isEqualTo("tenant-bypass");
+        assertThat(msgCaptor.getValue().getHeaders().get(MessageHeaderConstants.BIZ_KEY))
+                .isEqualTo("msg-key-1");
+
+        // 校验 send(topic, payload), send(topic, partition, key, payload) 以及 sendDefault 都转为带 4D 头的 ProducerRecord
+        ArgumentCaptor<ProducerRecord<Object, Object>> recordCaptor = ArgumentCaptor.forClass(ProducerRecord.class);
+        verify(mockOperations, times(3)).send(recordCaptor.capture());
+        assertThat(recordCaptor.getAllValues().get(2).topic()).isEqualTo("default.tx.topic");
+        assertHeader(recordCaptor.getAllValues().get(2), MessageHeaderConstants.TRACE_ID, "trace-bypass-guard");
+
+        // 2. 紧超界 (maxPayloadSize + 1 = 1025) 通过 send(Message) 与 sendDefault 均必须被 Fail-Fast 阻断
+        byte[] overByOne = new byte[1025];
+        org.springframework.messaging.Message<byte[]> oversizedMsg = org.springframework.messaging.support.MessageBuilder
+                .withPayload(overByOne)
+                .setHeader(org.springframework.kafka.support.KafkaHeaders.TOPIC, "msg.tx.topic")
+                .build();
+
+        assertThatThrownBy(() -> template.executeInTransaction(operations -> {
+            operations.send(oversizedMsg);
+            return "FAIL";
+        }))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("出站消息报文体积超出最大限制");
+
+        assertThatThrownBy(() -> template.executeInTransaction(operations -> {
+            operations.sendDefault("def-over-key", overByOne);
+            return "FAIL";
+        }))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("出站消息报文体积超出最大限制");
+
+        // 未配置 defaultTopic 时，sendDefault 仍必须触发 Fail-Fast 阻断
+        when(kafkaTemplate.getDefaultTopic()).thenReturn(null);
+        assertThatThrownBy(() -> template.executeInTransaction(operations -> {
+            operations.sendDefault(overByOne);
+            return "FAIL";
+        }))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("出站消息报文体积超出最大限制");
+
+        verify(mockOperations, times(1)).send(any(org.springframework.messaging.Message.class));
+        verify(mockOperations, times(3)).send(any(ProducerRecord.class));
+        verify(mockOperations, never()).sendDefault(any());
+        verify(mockOperations, never()).sendDefault(any(), any());
     }
 
     private void assertHeader(ProducerRecord<Object, Object> record, String key, String expectedValue) {

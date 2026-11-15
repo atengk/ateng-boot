@@ -13,6 +13,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.support.SendResult;
+import org.springframework.util.Assert;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -48,9 +49,10 @@ public class KafkaProduceController {
         SendResult<Object, Object> sendResult;
         if (request.getPartition() != null) {
             String key = request.getKey() != null ? request.getKey() : request.getOrderId();
-            sendResult = tradeKafkaScenarioService.sendPartitionDirected(request.getPartition(), key, message);
+            sendResult = tradeKafkaScenarioService.sendPartitionDirected(
+                    request.getPartition(), key, message, request.getCustomHeaders());
         } else {
-            sendResult = tradeKafkaScenarioService.sendSyncOrder(message);
+            sendResult = tradeKafkaScenarioService.sendSyncOrder(message, request.getCustomHeaders());
         }
         OrderProduceResponse response = OrderProduceResponse.builder()
                 .topic(sendResult.getRecordMetadata().topic())
@@ -76,7 +78,7 @@ public class KafkaProduceController {
         OrderMessage message = request.toOrderMessage();
         String key = request.getKey() != null ? request.getKey() : request.getOrderId();
         CompletableFuture<SendResult<Object, Object>> future =
-                tradeKafkaScenarioService.sendAsyncOrder(key, message);
+                tradeKafkaScenarioService.sendAsyncOrder(key, message, request.getCustomHeaders());
         future.whenComplete((result, ex) -> {
             if (ex != null) {
                 log.error("[ASYNC-ORDER-FAILED] 订单异步投递失败: orderId={}", request.getOrderId(), ex);
@@ -117,7 +119,7 @@ public class KafkaProduceController {
      */
     @PostMapping("/order-tx-commit")
     public Result<String> createOrderWithCommit(@Valid @RequestBody OrderProduceRequest request) {
-        tradeKafkaScenarioService.createOrderWithSendAfterCommit(request.toOrderMessage());
+        tradeKafkaScenarioService.createOrderWithSendAfterCommit(request.toOrderMessage(), request.getCustomHeaders());
         return Result.success(request.getOrderId(), "本地事务成功提交，触发物理网络发信");
     }
 
@@ -152,13 +154,29 @@ public class KafkaProduceController {
     }
 
     /**
+     * Kafka 原生分布式事务投递超限载荷验证端点（验证事务代理层 Fail-Fast 拦截）
+     *
+     * @param sizeBytes 拟发送载荷体积（字节，默认 1048640 即 1MB + 64B，合法范围 1 至 16MB）
+     * @return 事务执行结果
+     */
+    @PostMapping("/order-native-tx-large-payload")
+    public Result<String> executeNativeTxLargePayload(
+            @RequestParam(value = "sizeBytes", required = false, defaultValue = "1048640") Integer sizeBytes) {
+        int size = sizeBytes != null ? sizeBytes : (1024 * 1024 + 64);
+        Assert.isTrue(size > 0 && size <= 16 * 1024 * 1024, "sizeBytes 必须在 1 至 16MB 之间");
+        byte[] payload = new byte[size];
+        String txResult = tradeKafkaScenarioService.executeNativeTxLargePayload(payload);
+        return Result.success(txResult, "Kafka 原生分布式事务载荷校验通过");
+    }
+
+    /**
      * 探查单条消费者已成功接收的订单列表
      *
      * @return 订单消费记录列表
      */
     @GetMapping("/received-orders")
     public Result<List<OrderReceivedResponse>> getReceivedOrders() {
-        List<OrderReceivedResponse> responses = orderSingleRecordConsumer.getConsumedRecords().stream()
+        List<OrderReceivedResponse> responses = orderSingleRecordConsumer.getConsumedRecordsSnapshot().stream()
                 .map(r -> OrderReceivedResponse.builder()
                         .key(r.key())
                         .partition(r.partition())
@@ -167,6 +185,7 @@ public class KafkaProduceController {
                         .traceId(r.traceId())
                         .tenantId(r.tenantId())
                         .userId(r.userId())
+                        .customHeaders(r.customHeaders())
                         .build())
                 .toList();
         return Result.success(responses);

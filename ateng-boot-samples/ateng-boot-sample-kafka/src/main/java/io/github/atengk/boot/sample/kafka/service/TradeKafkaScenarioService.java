@@ -15,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -38,7 +39,14 @@ public class TradeKafkaScenarioService {
      * 同步按 Key 发送订单，基于 Murmur2 Hash 路由至固定分区
      */
     public SendResult<Object, Object> sendSyncOrder(OrderMessage order) {
-        return kafkaReliableTemplate.sendReliable(KafkaScenarioTopologyConfig.TOPIC_ORDER, order.getOrderId(), order);
+        return sendSyncOrder(order, null);
+    }
+
+    /**
+     * 同步按 Key 发送订单并携带自定义业务消息头
+     */
+    public SendResult<Object, Object> sendSyncOrder(OrderMessage order, Map<String, String> customHeaders) {
+        return kafkaReliableTemplate.sendReliable(KafkaScenarioTopologyConfig.TOPIC_ORDER, order.getOrderId(), order, customHeaders);
     }
 
     /**
@@ -49,7 +57,14 @@ public class TradeKafkaScenarioService {
      * @return 异步发送 Future
      */
     public CompletableFuture<SendResult<Object, Object>> sendAsyncOrder(String key, OrderMessage order) {
-        return kafkaReliableTemplate.sendReliableAsync(KafkaScenarioTopologyConfig.TOPIC_ORDER, key, order);
+        return sendAsyncOrder(key, order, null);
+    }
+
+    /**
+     * 异步按 Key 发送订单消息并携带自定义业务消息头
+     */
+    public CompletableFuture<SendResult<Object, Object>> sendAsyncOrder(String key, OrderMessage order, Map<String, String> customHeaders) {
+        return kafkaReliableTemplate.sendReliableAsync(KafkaScenarioTopologyConfig.TOPIC_ORDER, key, order, customHeaders);
     }
 
     /**
@@ -63,7 +78,15 @@ public class TradeKafkaScenarioService {
      * 定向发送消息至指定物理分区
      */
     public SendResult<Object, Object> sendPartitionDirected(int partition, String key, Object payload) {
-        return kafkaReliableTemplate.sendReliable(KafkaScenarioTopologyConfig.TOPIC_ORDER, partition, key, payload);
+        return sendPartitionDirected(partition, key, payload, null);
+    }
+
+    /**
+     * 定向发送消息至指定物理分区并携带自定义业务消息头
+     */
+    public SendResult<Object, Object> sendPartitionDirected(int partition, String key, Object payload, Map<String, String> customHeaders) {
+        return kafkaReliableTemplate.sendReliable(
+                KafkaScenarioTopologyConfig.TOPIC_ORDER, partition, key, payload, null, null, customHeaders);
     }
 
     /**
@@ -112,9 +135,17 @@ public class TradeKafkaScenarioService {
      */
     @Transactional
     public void createOrderWithSendAfterCommit(OrderMessage order) {
+        createOrderWithSendAfterCommit(order, null);
+    }
+
+    /**
+     * 本地事务成功提交后发射消息并携带自定义业务消息头 (sendAfterCommit)
+     */
+    @Transactional
+    public void createOrderWithSendAfterCommit(OrderMessage order, Map<String, String> customHeaders) {
         log.info("[DB-SAVE] 订单数据落库成功: orderId={}", order.getOrderId());
         mockOrderRepository.save(order.getOrderId());
-        kafkaReliableTemplate.sendAfterCommit(KafkaScenarioTopologyConfig.TOPIC_ORDER, order.getOrderId(), order);
+        kafkaReliableTemplate.sendAfterCommit(KafkaScenarioTopologyConfig.TOPIC_ORDER, order.getOrderId(), order, customHeaders);
     }
 
     /**
@@ -141,6 +172,16 @@ public class TradeKafkaScenarioService {
         return kafkaReliableTemplate.executeInTransaction(operations -> {
             operations.send(KafkaScenarioTopologyConfig.TOPIC_ORDER, order.getOrderId(), order);
             operations.send(KafkaScenarioTopologyConfig.TOPIC_USER, order.getUserId(), auditPayload);
+            return "SUCCESS";
+        });
+    }
+
+    /**
+     * 原生 Kafka 事务发送大体积载荷（用于验证事务代理层 Fail-Fast 限流防线）
+     */
+    public String executeNativeTxLargePayload(byte[] payload) {
+        return kafkaReliableTemplate.executeInTransaction(operations -> {
+            operations.send(KafkaScenarioTopologyConfig.TOPIC_ORDER, "large-tx-key", payload);
             return "SUCCESS";
         });
     }

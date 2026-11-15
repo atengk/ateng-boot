@@ -41,18 +41,22 @@ public class AtengKafkaProducerFactoryCustomizer implements DefaultKafkaProducer
         applyIfAbsent(existingConfigs, updates, ProducerConfig.RETRIES_CONFIG, Integer.MAX_VALUE);
         applyIfAbsent(existingConfigs, updates, ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5);
 
+        AtengKafkaProperties.Producer producer = properties.getProducer();
+
         // 2. 高吞吐微批聚合与压缩
-        applyIfAbsent(existingConfigs, updates, ProducerConfig.BATCH_SIZE_CONFIG, 32768); // 32KB
-        applyIfAbsent(existingConfigs, updates, ProducerConfig.LINGER_MS_CONFIG, 10); // 10ms
-        applyIfAbsent(existingConfigs, updates, ProducerConfig.COMPRESSION_TYPE_CONFIG, "snappy");
+        applyIfAbsent(existingConfigs, updates, ProducerConfig.BATCH_SIZE_CONFIG, (int) producer.getBatchSize().toBytes());
+        applyIfAbsent(existingConfigs, updates, ProducerConfig.LINGER_MS_CONFIG, (int) producer.getLinger().toMillis());
+        applyIfAbsent(existingConfigs, updates, ProducerConfig.COMPRESSION_TYPE_CONFIG, producer.getCompressionType());
 
         // 3. 缓冲容量与超时保护
-        applyIfAbsent(existingConfigs, updates, ProducerConfig.BUFFER_MEMORY_CONFIG, 33554432L); // 32MB
-        applyIfAbsent(existingConfigs, updates, ProducerConfig.MAX_BLOCK_MS_CONFIG, 60000L); // 60s
+        applyIfAbsent(existingConfigs, updates, ProducerConfig.BUFFER_MEMORY_CONFIG, producer.getBufferMemory().toBytes());
+        applyIfAbsent(existingConfigs, updates, ProducerConfig.MAX_BLOCK_MS_CONFIG, producer.getMaxBlock().toMillis());
 
         if (!updates.isEmpty()) {
             producerFactory.updateConfigs(updates);
-            log.info("[ateng-boot-kafka] 生产端已应用高吞吐微批调优参数: acks=all, idempotence=true, batch.size=32KB, linger.ms=10ms, compression=snappy");
+            log.info("[ateng-boot-kafka] 生产端已应用高吞吐微批调优参数: acks=all, idempotence=true, batch.size={}, linger.ms={}, compression={}, buffer.memory={}, max.block.ms={}",
+                    producer.getBatchSize(), producer.getLinger().toMillis(), producer.getCompressionType(),
+                    producer.getBufferMemory(), producer.getMaxBlock().toMillis());
         }
     }
 

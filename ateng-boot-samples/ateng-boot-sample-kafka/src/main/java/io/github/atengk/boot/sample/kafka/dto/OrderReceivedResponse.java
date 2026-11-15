@@ -8,6 +8,7 @@ import lombok.NoArgsConstructor;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.util.Map;
 
 /**
  * 已接收订单消费明细响应 DTO
@@ -58,4 +59,9 @@ public class OrderReceivedResponse implements Serializable {
      * 用户标识
      */
     private String userId;
+
+    /**
+     * 透传接收到的自定义业务消息头
+     */
+    private Map<String, String> customHeaders;
 }

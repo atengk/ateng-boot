@@ -101,6 +101,27 @@ class AtengKafkaErrorHandlerTest {
         assertThat(execution.nextBackOff()).isEqualTo(BackOffExecution.STOP);
     }
 
+    @Test
+    @DisplayName("消费端 maxRetryInterval 外置配置真实限制指数退避最大间隔")
+    void testMaxRetryIntervalCapsExponentialBackOff() {
+        AtengKafkaProperties customProps = new AtengKafkaProperties();
+        customProps.getConsumer().setMaxRetries(4);
+        customProps.getConsumer().setRetryInterval(java.time.Duration.ofSeconds(1));
+        customProps.getConsumer().setRetryMultiplier(3.0);
+        customProps.getConsumer().setMaxRetryInterval(java.time.Duration.ofMillis(2500));
+
+        AtengKafkaErrorHandler customHandler = new AtengKafkaErrorHandler(recoverer, customProps);
+        BiFunction<ConsumerRecord<?, ?>, Exception, BackOff> backOffFunction = getBackOffFunction(customHandler);
+        ConsumerRecord<String, String> record = new ConsumerRecord<>("test.topic", 0, 2L, "k", "v");
+
+        BackOffExecution execution = backOffFunction.apply(record, new RuntimeException("Transient IO failure")).start();
+        assertThat(execution.nextBackOff()).isEqualTo(1000L);
+        assertThat(execution.nextBackOff()).isEqualTo(2500L);
+        assertThat(execution.nextBackOff()).isEqualTo(2500L);
+        assertThat(execution.nextBackOff()).isEqualTo(2500L);
+        assertThat(execution.nextBackOff()).isEqualTo(BackOffExecution.STOP);
+    }
+
     private BiFunction<ConsumerRecord<?, ?>, Exception, BackOff> getBackOffFunction(AtengKafkaErrorHandler handler) {
         return handler.getCustomBackOffFunction();
     }

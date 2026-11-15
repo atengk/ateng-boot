@@ -69,9 +69,7 @@ class KafkaReliableTemplateTest {
         MDC.clear();
         UserContextHolder.clear();
         TenantContextHolder.clear();
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.clearSynchronization();
-        }
+        TransactionSynchronizationManager.clear();
     }
 
     @Test
@@ -371,5 +369,86 @@ class KafkaReliableTemplateTest {
         assertThat(new String(traceHeader.value(), StandardCharsets.UTF_8)).isEqualTo("trace-auto-ctx");
         assertThat(tenantHeader).isNotNull();
         assertThat(new String(tenantHeader.value(), StandardCharsets.UTF_8)).isEqualTo("tenant-auto");
+    }
+
+    @Test
+    @DisplayName("自定义消息头重载：安全注入业务头，防御 null/空映射/空白键并禁止覆盖系统头")
+    @SuppressWarnings("unchecked")
+    void testSendWithCustomHeadersOverloads() {
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-hdr-001");
+        TenantContextHolder.setTenantId("tenant-hdr-001");
+        UserContextHolder.setUserId("user-hdr-001");
+
+        ArgumentCaptor<ProducerRecord<Object, Object>> recordCaptor = ArgumentCaptor.forClass(ProducerRecord.class);
+        when(kafkaTemplate.send(recordCaptor.capture())).thenAnswer(invocation -> {
+            ProducerRecord<Object, Object> rec = invocation.getArgument(0);
+            RecordMetadata metadata = new RecordMetadata(new TopicPartition(rec.topic(), 0), 1L, 0, System.currentTimeMillis(), 0, 0);
+            return CompletableFuture.completedFuture(new SendResult<>(rec, metadata));
+        });
+
+        Map<String, String> dirtyHeaders = new HashMap<>();
+        dirtyHeaders.put("X-Event-Type", "ORDER_PAID");
+        dirtyHeaders.put("  X-Source-App  ", "checkout-svc");
+        dirtyHeaders.put("", "ignored-empty-key");
+        dirtyHeaders.put("   ", "ignored-blank-key");
+        dirtyHeaders.put(null, "ignored-null-key");
+        dirtyHeaders.put("X-Null-Val", null);
+        // 尝试伪造或覆盖框架系统头（含大小写变体），必须被防御拦截
+        dirtyHeaders.put(MessageHeaderConstants.TRACE_ID, "spoofed-trace");
+        dirtyHeaders.put("x-trace-id", "spoofed-trace-lower");
+        dirtyHeaders.put(MessageHeaderConstants.TENANT_ID, "spoofed-tenant");
+        dirtyHeaders.put(MessageHeaderConstants.USER_ID, "spoofed-user");
+        dirtyHeaders.put(MessageHeaderConstants.IGNORE_TENANT, "true");
+        dirtyHeaders.put(MessageHeaderConstants.BIZ_KEY, "spoofed-biz");
+
+        // 1. 同步发送重载
+        template.sendReliable("hdr.sync.topic", "k1", "payload-1", "biz-sync-1", dirtyHeaders);
+        template.sendReliable("hdr.sync.topic", "k2", "payload-2", (Map<String, String>) null);
+        template.sendReliable("hdr.sync.topic", 1, "k3", "payload-3", "biz-sync-3", Duration.ofSeconds(3), Map.of("X-Tag", "vip"));
+
+        // 2. 异步发送重载
+        template.sendReliableAsync("hdr.async.topic", "ak1", "async-1", dirtyHeaders).join();
+        template.sendReliableAsync("hdr.async.topic", "ak2", "async-2", "biz-async-2", Map.of()).join();
+        template.sendReliableAsync("hdr.async.topic", 2, "ak3", "async-3", "biz-async-3", Map.of("X-Async-Mode", "fast")).join();
+
+        // 3. 事务提交后发信重载
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        template.sendAfterCommit("hdr.tx.topic", "tk1", "tx-1", dirtyHeaders);
+        template.sendAfterCommit("hdr.tx.topic", "tk2", "tx-2", "biz-tx-2", dirtyHeaders);
+        template.sendAfterCommit("hdr.tx.topic", 0, "tk3", "tx-3", "biz-tx-3", Duration.ofSeconds(2), Map.of("X-Tx-Tag", "atomic"));
+        for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+            sync.afterCommit();
+        }
+
+        List<ProducerRecord<Object, Object>> records = recordCaptor.getAllValues();
+        assertThat(records).hasSize(9);
+
+        // 验证第一条（sync + dirtyHeaders）
+        ProducerRecord<Object, Object> r0 = records.get(0);
+        assertThat(new String(r0.headers().lastHeader("X-Event-Type").value(), StandardCharsets.UTF_8)).isEqualTo("ORDER_PAID");
+        assertThat(new String(r0.headers().lastHeader("X-Source-App").value(), StandardCharsets.UTF_8)).isEqualTo("checkout-svc");
+        assertThat(r0.headers().lastHeader("")).isNull();
+        assertThat(r0.headers().lastHeader("   ")).isNull();
+        assertThat(r0.headers().lastHeader("X-Null-Val")).isNull();
+        assertThat(new String(r0.headers().lastHeader(MessageHeaderConstants.TRACE_ID).value(), StandardCharsets.UTF_8))
+                .isEqualTo("trace-hdr-001");
+        assertThat(r0.headers().lastHeader("x-trace-id")).isNull();
+        assertThat(new String(r0.headers().lastHeader(MessageHeaderConstants.TENANT_ID).value(), StandardCharsets.UTF_8))
+                .isEqualTo("tenant-hdr-001");
+        assertThat(new String(r0.headers().lastHeader(MessageHeaderConstants.USER_ID).value(), StandardCharsets.UTF_8))
+                .isEqualTo("user-hdr-001");
+        assertThat(r0.headers().lastHeader(MessageHeaderConstants.IGNORE_TENANT)).isNull();
+        assertThat(new String(r0.headers().lastHeader(MessageHeaderConstants.BIZ_KEY).value(), StandardCharsets.UTF_8))
+                .isEqualTo("biz-sync-1");
+
+        // 验证异步与事务提交后发信携带了自定义头且保留系统头
+        ProducerRecord<Object, Object> rAsync = records.get(5);
+        assertThat(new String(rAsync.headers().lastHeader("X-Async-Mode").value(), StandardCharsets.UTF_8)).isEqualTo("fast");
+        ProducerRecord<Object, Object> rTx = records.get(7);
+        assertThat(new String(rTx.headers().lastHeader("X-Event-Type").value(), StandardCharsets.UTF_8)).isEqualTo("ORDER_PAID");
+        assertThat(new String(rTx.headers().lastHeader(MessageHeaderConstants.BIZ_KEY).value(), StandardCharsets.UTF_8)).isEqualTo("biz-tx-2");
+        ProducerRecord<Object, Object> rTx3 = records.get(8);
+        assertThat(new String(rTx3.headers().lastHeader("X-Tx-Tag").value(), StandardCharsets.UTF_8)).isEqualTo("atomic");
     }
 }

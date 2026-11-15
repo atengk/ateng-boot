@@ -259,6 +259,63 @@ class AtengKafkaAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("外置生产端与消费端调优配置通过自动装配真实生效且不覆盖显式 Spring 配置")
+    void testExternalizedTuningPropertiesAutoConfiguration() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.kafka.producer.batch-size=64KB",
+                        "ateng.boot.kafka.producer.linger=25ms",
+                        "ateng.boot.kafka.producer.compression-type=zstd",
+                        "ateng.boot.kafka.producer.buffer-memory=64MB",
+                        "ateng.boot.kafka.producer.max-block=15s",
+                        "ateng.boot.kafka.consumer.retry-interval=1s",
+                        "ateng.boot.kafka.consumer.retry-multiplier=4.0",
+                        "ateng.boot.kafka.consumer.max-retry-interval=2500ms"
+                )
+                .run(context -> {
+                    AtengKafkaProperties properties = context.getBean(AtengKafkaProperties.class);
+                    assertThat(properties.getProducer().getBatchSize())
+                            .isEqualTo(org.springframework.util.unit.DataSize.ofKilobytes(64));
+                    assertThat(properties.getProducer().getLinger())
+                            .isEqualTo(java.time.Duration.ofMillis(25));
+                    assertThat(properties.getProducer().getCompressionType()).isEqualTo("zstd");
+                    assertThat(properties.getProducer().getBufferMemory())
+                            .isEqualTo(org.springframework.util.unit.DataSize.ofMegabytes(64));
+                    assertThat(properties.getProducer().getMaxBlock())
+                            .isEqualTo(java.time.Duration.ofSeconds(15));
+                    assertThat(properties.getConsumer().getMaxRetryInterval())
+                            .isEqualTo(java.time.Duration.ofMillis(2500));
+
+                    DefaultKafkaProducerFactoryCustomizer customizer =
+                            context.getBean(DefaultKafkaProducerFactoryCustomizer.class);
+                    java.util.Map<String, Object> baseConfigs = new HashMap<>();
+                    baseConfigs.put(org.apache.kafka.clients.producer.ProducerConfig.LINGER_MS_CONFIG, 50);
+                    org.springframework.kafka.core.DefaultKafkaProducerFactory<Object, Object> factory =
+                            new org.springframework.kafka.core.DefaultKafkaProducerFactory<>(baseConfigs);
+                    customizer.customize(factory);
+
+                    java.util.Map<String, Object> applied = factory.getConfigurationProperties();
+                    assertThat(applied.get(org.apache.kafka.clients.producer.ProducerConfig.BATCH_SIZE_CONFIG)).isEqualTo(65536);
+                    assertThat(applied.get(org.apache.kafka.clients.producer.ProducerConfig.LINGER_MS_CONFIG)).isEqualTo(50);
+                    assertThat(applied.get(org.apache.kafka.clients.producer.ProducerConfig.COMPRESSION_TYPE_CONFIG)).isEqualTo("zstd");
+                    assertThat(applied.get(org.apache.kafka.clients.producer.ProducerConfig.BUFFER_MEMORY_CONFIG)).isEqualTo(67108864L);
+                    assertThat(applied.get(org.apache.kafka.clients.producer.ProducerConfig.MAX_BLOCK_MS_CONFIG)).isEqualTo(15000L);
+
+                    CommonErrorHandler errorHandler = context.getBean(CommonErrorHandler.class);
+                    assertThat(errorHandler).isInstanceOf(io.github.atengk.boot.kafka.listener.AtengKafkaErrorHandler.class);
+                    io.github.atengk.boot.kafka.listener.AtengKafkaErrorHandler atengErrorHandler =
+                            (io.github.atengk.boot.kafka.listener.AtengKafkaErrorHandler) errorHandler;
+                    org.springframework.util.backoff.BackOffExecution execution = atengErrorHandler
+                            .getCustomBackOffFunction()
+                            .apply(new org.apache.kafka.clients.consumer.ConsumerRecord<>("t", 0, 0L, "k", "v"),
+                                    new RuntimeException("transient"))
+                            .start();
+                    assertThat(execution.nextBackOff()).isEqualTo(1000L);
+                    assertThat(execution.nextBackOff()).isEqualTo(2500L);
+                });
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class MockObservationConfiguration {
         @Bean
