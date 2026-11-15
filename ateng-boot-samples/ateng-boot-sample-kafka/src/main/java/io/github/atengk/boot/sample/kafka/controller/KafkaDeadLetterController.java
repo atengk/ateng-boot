@@ -11,9 +11,13 @@ import io.github.atengk.boot.sample.kafka.dto.OrderProduceRequest;
 import io.github.atengk.boot.sample.kafka.model.OrderMessage;
 import io.github.atengk.boot.sample.kafka.service.DeadLetterReplayScenarioService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -34,6 +38,7 @@ import java.util.List;
  * @since 2026-11-09
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/sample/kafka/dead-letter")
 @RequiredArgsConstructor
@@ -100,8 +105,8 @@ public class KafkaDeadLetterController {
      */
     @GetMapping("/peek")
     public Result<List<DeadLetterPeekResponse>> peek(
-            @RequestParam(value = "dltTopic", required = false, defaultValue = "sample.poison.topic.DLT") String dltTopic,
-            @RequestParam(value = "limit", required = false, defaultValue = "10") int limit) {
+            @RequestParam(value = "dltTopic", required = false, defaultValue = "sample.poison.topic.DLT") @NotBlank(message = "dltTopic 不能为空") String dltTopic,
+            @RequestParam(value = "limit", required = false, defaultValue = "10") @Min(value = 1, message = "limit 不能小于 1") @Max(value = 1000, message = "limit 不能超过 1000") int limit) {
         log.info("[HTTP-DLT-PEEK] 只读探查死信队列: dltTopic={}, limit={}", dltTopic, limit);
         List<ConsumerRecord<byte[], byte[]>> records = deadLetterService.peekDeadLetters(dltTopic, limit);
         List<DeadLetterPeekResponse> responses = records.stream()
@@ -114,6 +119,21 @@ public class KafkaDeadLetterController {
                         .build())
                 .toList();
         return Result.success(responses);
+    }
+
+    /**
+     * 只读诊断探查死信主题积压消息（解析 7 类 DLT 元数据及 key/payload，不推进消费位移）
+     *
+     * @param dltTopic 死信主题名称 (默认 sample.poison.topic.DLT)
+     * @param limit    探查条数上限 (默认 10，范围 1 ~ 1000)
+     * @return 结构化死信诊断记录列表
+     */
+    @GetMapping("/peek-diagnosed")
+    public Result<List<DeadLetterRecord>> peekDiagnosed(
+            @RequestParam(value = "dltTopic", required = false, defaultValue = "sample.poison.topic.DLT") @NotBlank(message = "dltTopic 不能为空") String dltTopic,
+            @RequestParam(value = "limit", required = false, defaultValue = "10") @Min(value = 1, message = "limit 不能小于 1") @Max(value = 1000, message = "limit 不能超过 1000") int limit) {
+        log.info("[HTTP-DLT-PEEK-DIAGNOSED] 只读诊断探查死信队列: dltTopic={}, limit={}", dltTopic, limit);
+        return Result.success(deadLetterService.peekDiagnosedDeadLetters(dltTopic, limit));
     }
 
     /**
@@ -142,7 +162,7 @@ public class KafkaDeadLetterController {
      */
     @PostMapping("/purge")
     public Result<String> purge(
-            @RequestParam(value = "dltTopic", required = false, defaultValue = "sample.poison.topic.DLT") String dltTopic) {
+            @RequestParam(value = "dltTopic", required = false, defaultValue = "sample.poison.topic.DLT") @NotBlank(message = "dltTopic 不能为空") String dltTopic) {
         log.info("[HTTP-DLT-PURGE] 物理清空死信队列: dltTopic={}", dltTopic);
         deadLetterService.purgeDeadLetters(dltTopic);
         return Result.success("死信主题物理清空成功: " + dltTopic);

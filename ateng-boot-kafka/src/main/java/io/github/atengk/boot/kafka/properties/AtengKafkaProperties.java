@@ -3,6 +3,7 @@ package io.github.atengk.boot.kafka.properties;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
+import org.springframework.util.Assert;
 import org.springframework.util.unit.DataSize;
 
 import java.time.Duration;
@@ -137,6 +138,47 @@ public class AtengKafkaProperties {
          * 死信重放专属消费组 ID（默认 "ateng-kafka-dlt-replay-group"）
          */
         private String replayGroupId = "ateng-kafka-dlt-replay-group";
+
+        /**
+         * 死信只读探查最大等待超时时间（默认 5s，必须为正数）
+         */
+        private Duration peekTimeout = Duration.ofSeconds(5);
+
+        /**
+         * 死信重放与物理清空管理操作超时时间（默认 10s，必须为正数）
+         */
+        private Duration operationTimeout = Duration.ofSeconds(10);
+
+        /**
+         * 设置死信只读探查超时时间（正数校验防线）
+         *
+         * @param peekTimeout 探查超时时间，必须大于 0
+         */
+        public void setPeekTimeout(Duration peekTimeout) {
+            this.peekTimeout = requirePositiveDuration(peekTimeout, "ateng.boot.kafka.dead-letter.peek-timeout");
+        }
+
+        /**
+         * 设置死信操作超时时间（正数校验防线）
+         *
+         * @param operationTimeout 操作超时时间，必须大于 0
+         */
+        public void setOperationTimeout(Duration operationTimeout) {
+            this.operationTimeout = requirePositiveDuration(operationTimeout, "ateng.boot.kafka.dead-letter.operation-timeout");
+        }
+
+        /**
+         * 校验死信超时配置必须为至少 1 毫秒的正数时长（防止亚毫秒在转毫秒时截断为 0）
+         *
+         * @param duration     待校验时长
+         * @param propertyName 配置项名称
+         * @return 校验通过的正数时长
+         */
+        public static Duration requirePositiveDuration(Duration duration, String propertyName) {
+            Assert.isTrue(duration != null && !duration.isNegative() && !duration.isZero() && duration.toMillis() > 0,
+                    propertyName + " 必须为至少 1 毫秒的正数时长");
+            return duration;
+        }
     }
 
     /**

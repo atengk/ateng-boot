@@ -3,6 +3,7 @@ package io.github.atengk.boot.kafka.template;
 import io.github.atengk.boot.core.exception.MessageDeliveryException;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.kafka.helper.KafkaDeadLetterHelper;
+import io.github.atengk.boot.kafka.helper.KafkaDeadLetterHelper.DeadLetterRecord;
 import io.github.atengk.boot.kafka.properties.AtengKafkaProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.AdminClient;
@@ -155,7 +156,7 @@ public class KafkaDeadLetterReplayTemplate {
      * @return 探查到的原始消息记录列表（不可修改）
      */
     public List<ConsumerRecord<byte[], byte[]>> peek(String dlqTopic) {
-        return peek(dlqTopic, properties.getDeadLetter().getDefaultReplayLimit());
+        return peek(dlqTopic, resolveDefaultReplayLimit());
     }
 
     /**
@@ -170,7 +171,7 @@ public class KafkaDeadLetterReplayTemplate {
         Assert.isTrue(limit > 0 && limit <= HARD_MAX_REPLAY_LIMIT,
                 String.format("limit 必须在 1 到 %d 之间 (当前: %d)", HARD_MAX_REPLAY_LIMIT, limit));
 
-        String peekGroupId = properties.getDeadLetter().getReplayGroupId() + "-peek-" + IdUtil.fastSimpleUUID();
+        String peekGroupId = resolveReplayGroupId() + "-peek-" + IdUtil.fastSimpleUUID();
         Properties props = new Properties();
         props.put(ConsumerConfig.GROUP_ID_CONFIG, peekGroupId);
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
@@ -200,10 +201,14 @@ public class KafkaDeadLetterReplayTemplate {
             consumer.seekToBeginning(topicPartitions);
 
             List<ConsumerRecord<byte[], byte[]>> result = new ArrayList<>(limit);
-            long deadline = System.currentTimeMillis() + DEFAULT_PEEK_TIMEOUT.toMillis();
+            long deadline = System.currentTimeMillis() + resolvePeekTimeout().toMillis();
 
-            while (result.size() < limit && System.currentTimeMillis() < deadline) {
-                ConsumerRecords<byte[], byte[]> records = consumer.poll(DEFAULT_POLL_INTERVAL);
+            while (result.size() < limit) {
+                Duration pollTimeout = computePollTimeout(deadline);
+                if (pollTimeout == null) {
+                    break;
+                }
+                ConsumerRecords<byte[], byte[]> records = consumer.poll(pollTimeout);
                 if (records.isEmpty()) {
                     break;
                 }
@@ -221,6 +226,33 @@ public class KafkaDeadLetterReplayTemplate {
         }
     }
 
+    /**
+     * 只读诊断探查死信主题头部消息，解析 7 类 DLT 元数据及消息键/载荷文本（使用默认单批上限）
+     *
+     * @param dlqTopic 死信主题名称
+     * @return 不可变的结构化死信诊断记录列表
+     */
+    public List<DeadLetterRecord> peekDiagnosed(String dlqTopic) {
+        return peekDiagnosed(dlqTopic, resolveDefaultReplayLimit());
+    }
+
+    /**
+     * 只读诊断探查死信主题头部指定数量消息，解析 7 类 DLT 元数据及消息键/载荷文本，不提交位移
+     *
+     * @param dlqTopic 死信主题名称
+     * @param limit    探查最大条数 (1 ~ 1000)
+     * @return 不可变的结构化死信诊断记录列表
+     */
+    public List<DeadLetterRecord> peekDiagnosed(String dlqTopic, int limit) {
+        List<ConsumerRecord<byte[], byte[]>> rawRecords = peek(dlqTopic, limit);
+        if (rawRecords.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return rawRecords.stream()
+                .map(KafkaDeadLetterHelper::extractDeadLetterRecord)
+                .toList();
+    }
+
     // =========================================================================
     // 2. 受控重放死信 (replay)
     // =========================================================================
@@ -233,7 +265,7 @@ public class KafkaDeadLetterReplayTemplate {
      * @return 实际成功重放入队的消息数量
      */
     public int replay(String dlqTopic, String targetTopic) {
-        return replay(dlqTopic, targetTopic, properties.getDeadLetter().getDefaultReplayLimit(), null);
+        return replay(dlqTopic, targetTopic, resolveDefaultReplayLimit(), null);
     }
 
     /**
@@ -257,7 +289,7 @@ public class KafkaDeadLetterReplayTemplate {
      * @return 实际成功重放入队的消息数量
      */
     public int replay(String dlqTopic, String targetTopic, Predicate<ConsumerRecord<?, ?>> filter) {
-        return replay(dlqTopic, targetTopic, properties.getDeadLetter().getDefaultReplayLimit(), filter);
+        return replay(dlqTopic, targetTopic, resolveDefaultReplayLimit(), filter);
     }
 
     /**
@@ -275,7 +307,7 @@ public class KafkaDeadLetterReplayTemplate {
         Assert.isTrue(limit > 0 && limit <= HARD_MAX_REPLAY_LIMIT,
                 String.format("limit 必须在 1 到 %d 之间 (当前: %d)", HARD_MAX_REPLAY_LIMIT, limit));
 
-        String replayGroupId = properties.getDeadLetter().getReplayGroupId();
+        String replayGroupId = resolveReplayGroupId();
         Properties props = new Properties();
         props.put(ConsumerConfig.GROUP_ID_CONFIG, replayGroupId);
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
@@ -305,10 +337,14 @@ public class KafkaDeadLetterReplayTemplate {
             consumer.assign(topicPartitions);
 
             Map<TopicPartition, OffsetAndMetadata> offsetsToCommit = new HashMap<>();
-            long deadline = System.currentTimeMillis() + DEFAULT_OPERATION_TIMEOUT.toMillis();
+            long deadline = System.currentTimeMillis() + resolveOperationTimeout().toMillis();
 
-            while (replayedCount < limit && System.currentTimeMillis() < deadline) {
-                ConsumerRecords<byte[], byte[]> records = consumer.poll(DEFAULT_POLL_INTERVAL);
+            while (replayedCount < limit) {
+                Duration pollTimeout = computePollTimeout(deadline);
+                if (pollTimeout == null) {
+                    break;
+                }
+                ConsumerRecords<byte[], byte[]> records = consumer.poll(pollTimeout);
                 if (records.isEmpty()) {
                     break;
                 }
@@ -327,7 +363,7 @@ public class KafkaDeadLetterReplayTemplate {
 
                     // 2. 防二次死信雪崩熔断检查：防止多次重放失败的消息在业务队列与死信队列之间无限循环震荡
                     int currentReplayCount = KafkaDeadLetterHelper.getReplayCount(record);
-                    if (currentReplayCount >= properties.getDeadLetter().getMaxReplayCount()) {
+                    if (currentReplayCount >= resolveMaxReplayCount()) {
                         log.error("[MQ-DLT-REPLAY-BLOCKED] 死信消息已达最大重放次数上限 ({} 次)，已阻断重放，防范二次死信雪崩死循环: dlqTopic={}, targetTopic={}, partition={}, offset={}",
                                 currentReplayCount, dlqTopic, targetTopic, record.partition(), record.offset());
                         offsetsToCommit.put(tp, new OffsetAndMetadata(nextOffset));
@@ -382,15 +418,16 @@ public class KafkaDeadLetterReplayTemplate {
      */
     public void purge(String dlqTopic) {
         Assert.hasText(dlqTopic, "dlqTopic 死信主题名称不能为空");
-        if (this.adminClientSupplier == null && this.kafkaAdmin == null) {
-            throw new IllegalStateException("KafkaAdmin 未配置或不可用，无法执行物理 purge 操作: dlqTopic=" + dlqTopic);
-        }
+        long operationTimeoutMillis = resolveOperationTimeout().toMillis();
 
         try (AdminClient adminClient = createAdminClient()) {
             // 1. 获取主题全部分区
             DescribeTopicsResult describeTopicsResult = adminClient.describeTopics(Collections.singletonList(dlqTopic));
-            TopicDescription description = describeTopicsResult.values().get(dlqTopic)
-                    .get(DEFAULT_OPERATION_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            org.apache.kafka.common.KafkaFuture<TopicDescription> topicFuture = describeTopicsResult.values().get(dlqTopic);
+            if (topicFuture == null) {
+                throw new IllegalStateException("主题描述 Future 返回为空: dlqTopic=" + dlqTopic);
+            }
+            TopicDescription description = topicFuture.get(operationTimeoutMillis, TimeUnit.MILLISECONDS);
             List<TopicPartition> partitions = description.partitions().stream()
                     .map(p -> new TopicPartition(dlqTopic, p.partition()))
                     .toList();
@@ -406,7 +443,7 @@ public class KafkaDeadLetterReplayTemplate {
             }
             Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> endOffsets =
                     adminClient.listOffsets(offsetSpecMap).all()
-                            .get(DEFAULT_OPERATION_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+                            .get(operationTimeoutMillis, TimeUnit.MILLISECONDS);
 
             // 3. 构造 deleteRecords 映射 (删除 endOffset 之前的所有历史消息)
             Map<TopicPartition, RecordsToDelete> recordsToDeleteMap = new HashMap<>();
@@ -418,15 +455,63 @@ public class KafkaDeadLetterReplayTemplate {
             }
 
             if (!recordsToDeleteMap.isEmpty()) {
-                adminClient.deleteRecords(recordsToDeleteMap).all().get(10, TimeUnit.SECONDS);
+                adminClient.deleteRecords(recordsToDeleteMap).all().get(operationTimeoutMillis, TimeUnit.MILLISECONDS);
                 log.info("[MQ-DLT-PURGE] 成功物理清空死信主题历史消息: dlqTopic={}, partitions={}", dlqTopic, recordsToDeleteMap.keySet());
             } else {
                 log.info("[MQ-DLT-PURGE] 死信主题各分区最新位移均为 0，无需清理: dlqTopic={}", dlqTopic);
             }
+        } catch (MessageDeliveryException ex) {
+            throw ex;
         } catch (Exception ex) {
-            log.error("[MQ-DLT-PURGE-FAILED] 清空死信主题失败: dlqTopic={}, error={}", dlqTopic, ex.getMessage(), ex);
+            if (ex instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
             throw new MessageDeliveryException(MQ_TYPE_KAFKA, dlqTopic, null, "物理清空死信主题失败: " + ex.getMessage(), ex);
         }
+    }
+
+    private int resolveDefaultReplayLimit() {
+        AtengKafkaProperties.DeadLetter deadLetter = properties.getDeadLetter();
+        return deadLetter != null ? deadLetter.getDefaultReplayLimit() : DEFAULT_REPLAY_LIMIT;
+    }
+
+    private String resolveReplayGroupId() {
+        AtengKafkaProperties.DeadLetter deadLetter = properties.getDeadLetter();
+        return (deadLetter != null && deadLetter.getReplayGroupId() != null && !deadLetter.getReplayGroupId().isBlank())
+                ? deadLetter.getReplayGroupId()
+                : "ateng-kafka-dlt-replay-group";
+    }
+
+    private int resolveMaxReplayCount() {
+        AtengKafkaProperties.DeadLetter deadLetter = properties.getDeadLetter();
+        return deadLetter != null ? deadLetter.getMaxReplayCount() : 1;
+    }
+
+    private Duration resolvePeekTimeout() {
+        AtengKafkaProperties.DeadLetter deadLetter = properties.getDeadLetter();
+        Duration configured = deadLetter != null ? deadLetter.getPeekTimeout() : null;
+        return resolvePositiveTimeout(configured, DEFAULT_PEEK_TIMEOUT, "ateng.boot.kafka.dead-letter.peek-timeout");
+    }
+
+    private Duration resolveOperationTimeout() {
+        AtengKafkaProperties.DeadLetter deadLetter = properties.getDeadLetter();
+        Duration configured = deadLetter != null ? deadLetter.getOperationTimeout() : null;
+        return resolvePositiveTimeout(configured, DEFAULT_OPERATION_TIMEOUT, "ateng.boot.kafka.dead-letter.operation-timeout");
+    }
+
+    private static Duration resolvePositiveTimeout(Duration configured, Duration fallback, String propertyName) {
+        if (configured == null) {
+            return fallback;
+        }
+        return AtengKafkaProperties.DeadLetter.requirePositiveDuration(configured, propertyName);
+    }
+
+    private static Duration computePollTimeout(long deadlineMillis) {
+        long remainingMillis = deadlineMillis - System.currentTimeMillis();
+        if (remainingMillis <= 0) {
+            return null;
+        }
+        return Duration.ofMillis(Math.min(DEFAULT_POLL_INTERVAL.toMillis(), remainingMillis));
     }
 
     /**

@@ -66,6 +66,8 @@ class KafkaDeadLetterHelperTest {
         assertThat(result.exceptionStackTrace()).contains("Service.java:42");
         assertThat(result.replayCount()).isEqualTo(1);
         assertThat(result.isReplayed()).isTrue();
+        assertThat(result.key()).isEqualTo("k1");
+        assertThat(result.payload()).isEqualTo("v1");
     }
 
     @Test
@@ -90,6 +92,8 @@ class KafkaDeadLetterHelperTest {
         assertThat(result.exceptionMessage()).isEqualTo("业务执行超时");
         assertThat(result.replayCount()).isEqualTo(2);
         assertThat(result.isReplayed()).isFalse();
+        assertThat(result.key()).isNull();
+        assertThat(result.payload()).isNull();
     }
 
     @Test
@@ -105,5 +109,42 @@ class KafkaDeadLetterHelperTest {
         assertThat(KafkaDeadLetterHelper.getOriginalTopic(headers)).isNull();
         assertThat(KafkaDeadLetterHelper.getReplayCount(headers)).isEqualTo(0);
         assertThat(KafkaDeadLetterHelper.isReplayed(headers)).isFalse();
+    }
+
+    @Test
+    @DisplayName("DeadLetterRecord 9 参向后兼容构造与 byte[] 键值 UTF-8 解码验证")
+    void testBackwardCompatibleConstructorAndByteArrayPayloadDecoding() {
+        KafkaDeadLetterHelper.DeadLetterRecord legacy = new KafkaDeadLetterHelper.DeadLetterRecord(
+                "order.topic",
+                1,
+                42L,
+                1700000000001L,
+                "java.lang.IllegalStateException",
+                "状态异常",
+                "stack",
+                0,
+                false
+        );
+        assertThat(legacy.originalTopic()).isEqualTo("order.topic");
+        assertThat(legacy.key()).isNull();
+        assertThat(legacy.payload()).isNull();
+
+        ConsumerRecord<byte[], byte[]> binaryRecord = new ConsumerRecord<>(
+                "order.topic.DLT",
+                0,
+                1L,
+                "order-中文键-001".getBytes(StandardCharsets.UTF_8),
+                "{\"orderId\":\"ORD-001\"}".getBytes(StandardCharsets.UTF_8)
+        );
+        KafkaDeadLetterHelper.DeadLetterRecord parsedBinary = KafkaDeadLetterHelper.extractDeadLetterRecord(binaryRecord);
+        assertThat(parsedBinary).isNotNull();
+        assertThat(parsedBinary.key()).isEqualTo("order-中文键-001");
+        assertThat(parsedBinary.payload()).isEqualTo("{\"orderId\":\"ORD-001\"}");
+
+        ConsumerRecord<byte[], byte[]> nullKvRecord = new ConsumerRecord<>("order.topic.DLT", 0, 2L, null, null);
+        KafkaDeadLetterHelper.DeadLetterRecord parsedNullKv = KafkaDeadLetterHelper.extractDeadLetterRecord(nullKvRecord);
+        assertThat(parsedNullKv).isNotNull();
+        assertThat(parsedNullKv.key()).isNull();
+        assertThat(parsedNullKv.payload()).isNull();
     }
 }

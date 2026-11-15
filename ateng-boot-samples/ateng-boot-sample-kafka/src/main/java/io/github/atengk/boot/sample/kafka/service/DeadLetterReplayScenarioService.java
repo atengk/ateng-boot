@@ -58,6 +58,21 @@ public class DeadLetterReplayScenarioService {
     }
 
     /**
+     * 只读诊断探查死信主题消息（解析 7 类 DLT 元数据及 key/payload，不移动消费位移）
+     *
+     * @param dltTopic 死信主题名称
+     * @param limit    最大探查条数
+     * @return 结构化死信诊断记录列表
+     */
+    public List<DeadLetterRecord> peekDiagnosedDeadLetters(String dltTopic, int limit) {
+        KafkaDeadLetterReplayTemplate replayTemplate = replayTemplateProvider.getIfAvailable();
+        if (replayTemplate == null) {
+            return List.of();
+        }
+        return replayTemplate.peekDiagnosed(dltTopic, limit);
+    }
+
+    /**
      * 安全重放死信消息回目标业务主题
      */
     public int replayDeadLetters(String dltTopic, String targetTopic, int limit) {

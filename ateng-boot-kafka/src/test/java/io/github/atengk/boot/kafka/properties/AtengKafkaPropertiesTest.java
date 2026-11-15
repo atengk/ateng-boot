@@ -48,6 +48,8 @@ class AtengKafkaPropertiesTest {
         assertEquals(100, properties.getDeadLetter().getDefaultReplayLimit());
         assertEquals(1, properties.getDeadLetter().getMaxReplayCount());
         assertEquals("ateng-kafka-dlt-replay-group", properties.getDeadLetter().getReplayGroupId());
+        assertEquals(Duration.ofSeconds(5), properties.getDeadLetter().getPeekTimeout());
+        assertEquals(Duration.ofSeconds(10), properties.getDeadLetter().getOperationTimeout());
 
         // Offset
         assertEquals(Duration.ofSeconds(10), properties.getOffset().getTimeout());
@@ -72,6 +74,8 @@ class AtengKafkaPropertiesTest {
         map.put("ateng.boot.kafka.dead-letter.default-replay-limit", "200");
         map.put("ateng.boot.kafka.dead-letter.max-replay-count", "3");
         map.put("ateng.boot.kafka.dead-letter.replay-group-id", "custom-replay-group");
+        map.put("ateng.boot.kafka.dead-letter.peek-timeout", "8s");
+        map.put("ateng.boot.kafka.dead-letter.operation-timeout", "25s");
         map.put("ateng.boot.kafka.offset.timeout", "15s");
 
         ConfigurationPropertySource source = new MapConfigurationPropertySource(map);
@@ -97,7 +101,33 @@ class AtengKafkaPropertiesTest {
         assertEquals(200, properties.getDeadLetter().getDefaultReplayLimit());
         assertEquals(3, properties.getDeadLetter().getMaxReplayCount());
         assertEquals("custom-replay-group", properties.getDeadLetter().getReplayGroupId());
+        assertEquals(Duration.ofSeconds(8), properties.getDeadLetter().getPeekTimeout());
+        assertEquals(Duration.ofSeconds(25), properties.getDeadLetter().getOperationTimeout());
 
         assertEquals(Duration.ofSeconds(15), properties.getOffset().getTimeout());
+    }
+
+    @Test
+    @DisplayName("死信超时配置正数防线：拒绝 null、零与负时长")
+    void testDeadLetterTimeoutPositiveGuard() {
+        AtengKafkaProperties.DeadLetter deadLetter = new AtengKafkaProperties.DeadLetter();
+        assertThrows(IllegalArgumentException.class, () -> deadLetter.setPeekTimeout(null));
+        assertThrows(IllegalArgumentException.class, () -> deadLetter.setPeekTimeout(Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () -> deadLetter.setPeekTimeout(Duration.ofMillis(-10)));
+        assertThrows(IllegalArgumentException.class, () -> deadLetter.setPeekTimeout(Duration.ofNanos(1)));
+        assertThrows(IllegalArgumentException.class, () -> deadLetter.setOperationTimeout(null));
+        assertThrows(IllegalArgumentException.class, () -> deadLetter.setOperationTimeout(Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () -> deadLetter.setOperationTimeout(Duration.ofSeconds(-1)));
+        assertThrows(IllegalArgumentException.class, () -> deadLetter.setOperationTimeout(Duration.ofNanos(500)));
+
+        Binder invalidPeekBinder = new Binder(new MapConfigurationPropertySource(
+                Map.of("ateng.boot.kafka.dead-letter.peek-timeout", "0s")
+        ));
+        assertThrows(Exception.class, () -> invalidPeekBinder.bind("ateng.boot.kafka", AtengKafkaProperties.class));
+
+        Binder invalidOpBinder = new Binder(new MapConfigurationPropertySource(
+                Map.of("ateng.boot.kafka.dead-letter.operation-timeout", "-5s")
+        ));
+        assertThrows(Exception.class, () -> invalidOpBinder.bind("ateng.boot.kafka", AtengKafkaProperties.class));
     }
 }

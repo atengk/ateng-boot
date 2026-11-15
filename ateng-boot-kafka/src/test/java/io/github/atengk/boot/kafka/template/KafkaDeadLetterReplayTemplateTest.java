@@ -2,6 +2,7 @@ package io.github.atengk.boot.kafka.template;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.exception.MessageDeliveryException;
 import io.github.atengk.boot.kafka.helper.KafkaDeadLetterHelper;
 import io.github.atengk.boot.kafka.properties.AtengKafkaProperties;
 import org.apache.kafka.clients.admin.AdminClient;
@@ -45,6 +46,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -118,11 +120,20 @@ class KafkaDeadLetterReplayTemplateTest {
 
         assertThatThrownBy(() -> template.purge(null))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.peekDiagnosed(null, 10))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.peekDiagnosed("  ", 10))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.peekDiagnosed("dlt", 0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.peekDiagnosed("dlt", 1001))
+                .isInstanceOf(IllegalArgumentException.class);
 
         KafkaDeadLetterReplayTemplate noAdminTemplate = new KafkaDeadLetterReplayTemplate(consumerFactory, kafkaTemplate, null, properties);
         assertThatThrownBy(() -> noAdminTemplate.purge("dlt"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("KafkaAdmin 未配置或不可用");
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("KafkaAdmin 未配置或不可用")
+                .hasCauseInstanceOf(IllegalStateException.class);
     }
 
     @Test
@@ -279,6 +290,139 @@ class KafkaDeadLetterReplayTemplateTest {
         ArgumentCaptor<Map<TopicPartition, RecordsToDelete>> deleteCaptor = ArgumentCaptor.forClass(Map.class);
         verify(adminClient).deleteRecords(deleteCaptor.capture());
         assertThat(deleteCaptor.getValue().get(tp0).beforeOffset()).isEqualTo(15L);
+        verify(adminClient).close();
+    }
+
+    @Test
+    @DisplayName("结构化诊断探查 peekDiagnosed：解析 DLT 头与消息键值，不提交位移且返回不可变列表")
+    @SuppressWarnings("unchecked")
+    void testPeekDiagnosedSuccess() {
+        String dlqTopic = "order.create.topic.DLT";
+        PartitionInfo pi = new PartitionInfo(dlqTopic, 0, null, null, null);
+        when(consumer.partitionsFor(dlqTopic)).thenReturn(List.of(pi));
+
+        RecordHeaders headers = new RecordHeaders();
+        headers.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_TOPIC, "order.create.topic".getBytes(StandardCharsets.UTF_8)));
+        headers.add(new RecordHeader(KafkaHeaders.DLT_EXCEPTION_FQCN, "java.lang.IllegalArgumentException".getBytes(StandardCharsets.UTF_8)));
+        headers.add(new RecordHeader(KafkaHeaders.DLT_EXCEPTION_MESSAGE, "毒丸参数非法".getBytes(StandardCharsets.UTF_8)));
+        ConsumerRecord<byte[], byte[]> record = new ConsumerRecord<>(
+                dlqTopic, 0, 100L, 1700000000000L, null, 0, 0,
+                "order-key-1".getBytes(StandardCharsets.UTF_8),
+                "{\"orderId\":\"ORD-984\"}".getBytes(StandardCharsets.UTF_8),
+                headers,
+                Optional.empty()
+        );
+
+        TopicPartition tp = new TopicPartition(dlqTopic, 0);
+        when(consumer.poll(any(Duration.class))).thenReturn(
+                new ConsumerRecords<>(Map.of(tp, List.of(record))),
+                new ConsumerRecords<>(Collections.emptyMap())
+        );
+
+        properties.getDeadLetter().setDefaultReplayLimit(5);
+        List<KafkaDeadLetterHelper.DeadLetterRecord> diagnosed = template.peekDiagnosed(dlqTopic);
+
+        assertThat(diagnosed).hasSize(1);
+        KafkaDeadLetterHelper.DeadLetterRecord item = diagnosed.get(0);
+        assertThat(item.originalTopic()).isEqualTo("order.create.topic");
+        assertThat(item.exceptionClassName()).isEqualTo("java.lang.IllegalArgumentException");
+        assertThat(item.exceptionMessage()).isEqualTo("毒丸参数非法");
+        assertThat(item.key()).isEqualTo("order-key-1");
+        assertThat(item.payload()).isEqualTo("{\"orderId\":\"ORD-984\"}");
+        assertThatThrownBy(() -> diagnosed.add(item)).isInstanceOf(UnsupportedOperationException.class);
+
+        verify(consumer, never()).commitSync();
+        verify(consumer, never()).commitSync(any(Map.class));
+        verify(consumer).close();
+    }
+
+    @Test
+    @DisplayName("可配置超时生效验证：peekTimeout 与 operationTimeout 驱动轮询与 AdminClient Future 等待")
+    @SuppressWarnings("unchecked")
+    void testConfigurableTimeoutsApplied() throws Exception {
+        properties.getDeadLetter().setPeekTimeout(Duration.ofMillis(120));
+        properties.getDeadLetter().setOperationTimeout(Duration.ofMillis(150));
+
+        String dlqTopic = "timeout.topic.DLT";
+        PartitionInfo pi = new PartitionInfo(dlqTopic, 0, null, null, null);
+        when(consumer.partitionsFor(dlqTopic)).thenReturn(List.of(pi));
+        when(consumer.poll(any(Duration.class))).thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+
+        template.peek(dlqTopic, 5);
+        ArgumentCaptor<Duration> peekPollCaptor = ArgumentCaptor.forClass(Duration.class);
+        verify(consumer).poll(peekPollCaptor.capture());
+        assertThat(peekPollCaptor.getValue()).isLessThanOrEqualTo(Duration.ofMillis(120));
+
+        reset(consumer);
+        when(consumer.partitionsFor(dlqTopic)).thenReturn(List.of(pi));
+        when(consumer.poll(any(Duration.class))).thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+        template.replay(dlqTopic, "timeout.topic", 5);
+        ArgumentCaptor<Duration> replayPollCaptor = ArgumentCaptor.forClass(Duration.class);
+        verify(consumer).poll(replayPollCaptor.capture());
+        assertThat(replayPollCaptor.getValue()).isLessThanOrEqualTo(Duration.ofMillis(150));
+
+        AdminClient adminClient = mock(AdminClient.class);
+        TopicPartition tp0 = new TopicPartition(dlqTopic, 0);
+        TopicDescription description = new TopicDescription(
+                dlqTopic, false, List.of(new TopicPartitionInfo(0, Node.noNode(), List.of(), List.of()))
+        );
+        KafkaFuture<TopicDescription> describeFuture = mock(KafkaFuture.class);
+        when(describeFuture.get(150L, TimeUnit.MILLISECONDS)).thenReturn(description);
+        DescribeTopicsResult describeResult = mock(DescribeTopicsResult.class);
+        when(describeResult.values()).thenReturn(Map.of(dlqTopic, describeFuture));
+        when(adminClient.describeTopics(Collections.singletonList(dlqTopic))).thenReturn(describeResult);
+
+        KafkaFuture<Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo>> listFuture = mock(KafkaFuture.class);
+        when(listFuture.get(150L, TimeUnit.MILLISECONDS)).thenReturn(
+                Map.of(tp0, new ListOffsetsResult.ListOffsetsResultInfo(8L, 0L, Optional.empty()))
+        );
+        ListOffsetsResult listOffsetsResult = mock(ListOffsetsResult.class);
+        when(listOffsetsResult.all()).thenReturn(listFuture);
+        when(adminClient.listOffsets(anyMap())).thenReturn(listOffsetsResult);
+
+        KafkaFuture<Void> deleteFuture = mock(KafkaFuture.class);
+        when(deleteFuture.get(150L, TimeUnit.MILLISECONDS)).thenReturn(null);
+        DeleteRecordsResult deleteResult = mock(DeleteRecordsResult.class);
+        when(deleteResult.all()).thenReturn(deleteFuture);
+        when(adminClient.deleteRecords(anyMap())).thenReturn(deleteResult);
+
+        KafkaDeadLetterReplayTemplate customTemplate = new KafkaDeadLetterReplayTemplate(
+                consumerFactory, kafkaTemplate, properties, () -> adminClient
+        );
+        customTemplate.purge(dlqTopic);
+
+        verify(describeFuture).get(150L, TimeUnit.MILLISECONDS);
+        verify(listFuture).get(150L, TimeUnit.MILLISECONDS);
+        verify(deleteFuture).get(150L, TimeUnit.MILLISECONDS);
+        verify(adminClient).close();
+    }
+
+    @Test
+    @DisplayName("purge 异常转译闭环：AdminClient 运行期失败与空提供者统一抛出保留 cause 的 MessageDeliveryException")
+    void testPurgeTranslatesRuntimeFailuresPreservingCause() {
+        String dlqTopic = "broken.topic.DLT";
+
+        KafkaDeadLetterReplayTemplate nullSupplierTemplate = new KafkaDeadLetterReplayTemplate(
+                consumerFactory, kafkaTemplate, properties, () -> null
+        );
+        assertThatThrownBy(() -> nullSupplierTemplate.purge(dlqTopic))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasCauseInstanceOf(IllegalStateException.class);
+
+        AdminClient adminClient = mock(AdminClient.class);
+        KafkaFutureImpl<TopicDescription> failedFuture = new KafkaFutureImpl<>();
+        IllegalStateException rootBrokerError = new IllegalStateException("模拟元数据查询异常");
+        failedFuture.completeExceptionally(rootBrokerError);
+        DescribeTopicsResult describeResult = mock(DescribeTopicsResult.class);
+        when(describeResult.values()).thenReturn(Map.of(dlqTopic, failedFuture));
+        when(adminClient.describeTopics(Collections.singletonList(dlqTopic))).thenReturn(describeResult);
+
+        KafkaDeadLetterReplayTemplate brokenTemplate = new KafkaDeadLetterReplayTemplate(
+                consumerFactory, kafkaTemplate, properties, () -> adminClient
+        );
+        assertThatThrownBy(() -> brokenTemplate.purge(dlqTopic))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasRootCause(rootBrokerError);
         verify(adminClient).close();
     }
 }

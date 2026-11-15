@@ -1,5 +1,6 @@
 package io.github.atengk.boot.kafka.helper;
 
+import io.github.atengk.boot.core.util.JsonUtil;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.Headers;
@@ -44,7 +45,7 @@ public final class KafkaDeadLetterHelper {
     }
 
     /**
-     * 从消费记录中解析并组装完整的死信结构化诊断记录
+     * 从消费记录中解析并组装完整的死信结构化诊断记录（包含消息键与载荷文本）
      *
      * @param record Kafka 消费记录
      * @return 结构化死信记录，record 为 null 时返回 null
@@ -53,7 +54,25 @@ public final class KafkaDeadLetterHelper {
         if (record == null) {
             return null;
         }
-        return extractDeadLetterRecord(record.headers());
+        DeadLetterRecord metadata = extractDeadLetterRecord(record.headers());
+        String key = decodeRecordContent(record.key());
+        String payload = decodeRecordContent(record.value());
+        if (metadata == null) {
+            return new DeadLetterRecord(null, null, null, null, null, null, null, 0, false, key, payload);
+        }
+        return new DeadLetterRecord(
+                metadata.originalTopic(),
+                metadata.originalPartition(),
+                metadata.originalOffset(),
+                metadata.originalTimestamp(),
+                metadata.exceptionClassName(),
+                metadata.exceptionMessage(),
+                metadata.exceptionStackTrace(),
+                metadata.replayCount(),
+                metadata.isReplayed(),
+                key,
+                payload
+        );
     }
 
     /**
@@ -279,6 +298,23 @@ public final class KafkaDeadLetterHelper {
         }
     }
 
+    private static String decodeRecordContent(Object raw) {
+        if (raw == null) {
+            return null;
+        }
+        if (raw instanceof byte[] bytes) {
+            return new String(bytes, StandardCharsets.UTF_8);
+        }
+        if (raw instanceof String text) {
+            return text;
+        }
+        try {
+            return JsonUtil.toJsonString(raw);
+        } catch (RuntimeException ex) {
+            return String.valueOf(raw);
+        }
+    }
+
     /**
      * 结构化死信元数据强类型记录模型
      *
@@ -291,6 +327,8 @@ public final class KafkaDeadLetterHelper {
      * @param exceptionStackTrace 导致死信的完整调用堆栈
      * @param replayCount         已重放次数
      * @param isReplayed          是否为重放消息
+     * @param key                 死信消息键文本（未提取时为 null）
+     * @param payload             死信消息载荷文本（未提取时为 null）
      */
     public record DeadLetterRecord(
             String originalTopic,
@@ -301,7 +339,37 @@ public final class KafkaDeadLetterHelper {
             String exceptionMessage,
             String exceptionStackTrace,
             int replayCount,
-            boolean isReplayed
+            boolean isReplayed,
+            String key,
+            String payload
     ) {
+
+        /**
+         * 9 参数向后兼容构造器（不包含消息键与载荷时默认置为 {@code null}）
+         */
+        public DeadLetterRecord(
+                String originalTopic,
+                Integer originalPartition,
+                Long originalOffset,
+                Long originalTimestamp,
+                String exceptionClassName,
+                String exceptionMessage,
+                String exceptionStackTrace,
+                int replayCount,
+                boolean isReplayed) {
+            this(
+                    originalTopic,
+                    originalPartition,
+                    originalOffset,
+                    originalTimestamp,
+                    exceptionClassName,
+                    exceptionMessage,
+                    exceptionStackTrace,
+                    replayCount,
+                    isReplayed,
+                    null,
+                    null
+            );
+        }
     }
 }

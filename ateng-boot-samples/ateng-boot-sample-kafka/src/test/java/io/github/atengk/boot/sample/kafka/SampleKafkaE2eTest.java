@@ -658,11 +658,19 @@ class SampleKafkaE2eTest {
     // 场景 9: 死信主题探查与物理清空 (KafkaDeadLetterController Web 闭环)
     // =========================================================================
     @Test
-    @DisplayName("场景 9: 死信主题探查与物理清空 (KafkaDeadLetterController Web 闭环)")
+    @DisplayName("场景 9: 死信主题探查、结构化诊断窥视与物理清空 (KafkaDeadLetterController Web 闭环)")
     void testScenario9_DeadLetterPeekAndPurge() throws Exception {
         String dltTopic = KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT";
         OrderMessage sampleDlt = new OrderMessage("ORD-PEEK-001", new BigDecimal("19.90"), "u1", "t1");
-        kafkaTemplate.send(dltTopic, "peek-key-1", sampleDlt).get();
+        RecordHeaders dltHeaders = new RecordHeaders();
+        dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_TOPIC, KafkaScenarioTopologyConfig.TOPIC_ORDER.getBytes(StandardCharsets.UTF_8)));
+        dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_PARTITION, ByteBuffer.allocate(4).putInt(1).array()));
+        dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_OFFSET, ByteBuffer.allocate(8).putLong(42L).array()));
+        dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_TIMESTAMP, ByteBuffer.allocate(8).putLong(1700000000000L).array()));
+        dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_EXCEPTION_FQCN, IllegalArgumentException.class.getName().getBytes(StandardCharsets.UTF_8)));
+        dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_EXCEPTION_MESSAGE, "模拟业务非法状态".getBytes(StandardCharsets.UTF_8)));
+        dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_EXCEPTION_STACKTRACE, "at Sample.handle(Sample.java:18)".getBytes(StandardCharsets.UTF_8)));
+        kafkaTemplate.send(new ProducerRecord<>(dltTopic, null, null, "peek-key-1", sampleDlt, dltHeaders)).get();
         awaitCondition(() -> assertThat(deadLetterService.peekDeadLetters(dltTopic, 5)).hasSize(1));
 
         // 1. HTTP 只读探查死信队列 (不推进位移)
@@ -674,7 +682,38 @@ class SampleKafkaE2eTest {
                 .andExpect(jsonPath("$.data").isArray())
                 .andExpect(jsonPath("$.data.length()").value(1));
 
-        // 2. HTTP 物理清空死信主题并验证二次探查为空
+        // 2. HTTP 只读诊断窥视死信队列（穿透真实 KafkaDeadLetterReplayTemplate#peekDiagnosed）
+        mockMvc.perform(get("/sample/kafka/dead-letter/peek-diagnosed")
+                        .param("dltTopic", dltTopic)
+                        .param("limit", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].originalTopic").value(KafkaScenarioTopologyConfig.TOPIC_ORDER))
+                .andExpect(jsonPath("$.data[0].originalPartition").value(1))
+                .andExpect(jsonPath("$.data[0].originalOffset").value(42))
+                .andExpect(jsonPath("$.data[0].exceptionClassName").value(IllegalArgumentException.class.getName()))
+                .andExpect(jsonPath("$.data[0].exceptionMessage").value("模拟业务非法状态"))
+                .andExpect(jsonPath("$.data[0].key").value("peek-key-1"))
+                .andExpect(jsonPath("$.data[0].payload").value(org.hamcrest.Matchers.containsString("ORD-PEEK-001")));
+
+        // 3. 非法参数 JSR-303 快速失败校验
+        mockMvc.perform(get("/sample/kafka/dead-letter/peek-diagnosed")
+                        .param("dltTopic", "  ")
+                        .param("limit", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false));
+
+        mockMvc.perform(get("/sample/kafka/dead-letter/peek-diagnosed")
+                        .param("dltTopic", dltTopic)
+                        .param("limit", "0"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 4. HTTP 物理清空死信主题并验证二次探查与诊断均为空
         mockMvc.perform(post("/sample/kafka/dead-letter/purge")
                         .param("dltTopic", dltTopic))
                 .andExpect(status().isOk())
@@ -682,6 +721,13 @@ class SampleKafkaE2eTest {
                 .andExpect(jsonPath("$.success").value(true));
 
         mockMvc.perform(get("/sample/kafka/dead-letter/peek")
+                        .param("dltTopic", dltTopic)
+                        .param("limit", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(0));
+
+        mockMvc.perform(get("/sample/kafka/dead-letter/peek-diagnosed")
                         .param("dltTopic", dltTopic)
                         .param("limit", "5"))
                 .andExpect(status().isOk())
