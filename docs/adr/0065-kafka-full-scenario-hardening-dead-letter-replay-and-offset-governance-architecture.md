@@ -45,11 +45,11 @@ flowchart TD
     end
 
     subgraph DeadLetterGovernance["死信治理与诊断闭环"]
-        DltHelper["KafkaDeadLetterHelper<br>(解析7类DLT头，输出DeadLetterRecord)"]
-        DltReplay["KafkaDeadLetterReplayTemplate<br>(peek / replay / purge)"]
+        KafkaDltHelper["KafkaDeadLetterHelper<br>(解析7类DLT头，输出DeadLetterRecord)"]
+        DltReplay["KafkaDeadLetterReplayTemplate<br>(peek / peekDiagnosed / replay / purge)"]
         AntiAvalanche["防二次雪崩机制<br>(X-Dead-Letter-Replayed + 重放次数熔断)"]
         DltReplay --> AntiAvalanche
-        DltReplay -.-> DltHelper
+        DltReplay -.-> KafkaDltHelper
     end
 
     subgraph RetryDomain["双轨协同重试体系"]
@@ -60,40 +60,42 @@ flowchart TD
     subgraph OpsAndControl["位移治理与运行时流控"]
         OffsetMgr["KafkaOffsetManager<br>(resetOffsetsToTimestamp / resetOffsetsToEarliest/Latest)"]
         LagDetect["getConsumerGroupLag(groupId, topic)<br>(计算分区LEO与提交位移差值，输出ConsumerGroupLag)"]
-        ContainerMgr["KafkaContainerManager<br>(pause / resume / isPaused / isRunning 动态流量削峰)"]
+        ContainerMgr["KafkaContainerManager<br>(pause / resume / scaleConcurrency / getContainerStatuses)"]
         RebalanceSPI["KafkaRebalanceListener SPI<br>(分区分配与撤销生命周期钩子)"]
         OffsetMgr --> LagDetect
     end
 ```
 
 ### 1. 死信治理专职门面与防二次雪崩机制 (`KafkaDeadLetterReplayTemplate`)
-- **对称闭环**：新增 `KafkaDeadLetterReplayTemplate`，提供 `peek(dltTopic, limit)`、`replay(dltTopic, targetTopic, limit, filter)` 与 `purge(dltTopic)`，与发送端形成读写/处置对称完备门面；
+- **对称闭环**：新增 `KafkaDeadLetterReplayTemplate`，提供 `peek(dltTopic, [limit])`、`peekDiagnosed(dltTopic, [limit])`（一键输出包含 `key`、`payload` 与 7 类 DLT 诊断元数据的强类型 `DeadLetterRecord` 列表）、`replay(dltTopic, targetTopic, [limit], [filter])` 与 `purge(dltTopic)`，与发送端形成读写/处置对称完备门面；
 - **防二次死信雪崩熔断**：重放时自动清洗底层 `kafka_dlt-*` 错误头，注入 `X-Dead-Letter-Replayed: true`、`X-Replay-Time` 与 `X-Replay-Count`；若重放后的消息再次失败进死信且达到最大允许重放次数（默认 1 次），强制熔断阻断，彻底封死业务主题与死信主题之间的无限死循环震荡；
-- **受管消费组与位移提交**：重放基于受管消费组 `ateng-kafka-dlt-replay-group`，每批投递成功后同步提交位移，杜绝重复重放；`purge` 基于 `AdminClient.deleteRecords` 推进起始位移，物理排空积压死信；
-- **分层防卫限制**：强制限制单次最大重放数量（默认 ≤ 100，硬上限 1000）。
+- **受管消费组与位移提交**：重放基于受管消费组 `ateng-kafka-dlt-replay-group`，每批投递成功后同步提交位移，杜绝重复重放；`purge` 基于 `AdminClient.deleteRecords` 推进起始位移，物理排空积压死信，所有超时受控于 `AtengKafkaProperties.DeadLetter`（`peekTimeout` / `operationTimeout`）并统一转译异常为 `MessageDeliveryException`；
+- **分层防卫限制**：统一约束 `peek`、`peekDiagnosed` 与 `replay` 单次最大拉取与重放数量（默认 `100`，硬上限 `1000`）。
 
 ### 2. 死信结构化诊断模型与解析器 (`KafkaDeadLetterHelper`)
-- 对标 `RabbitDeadLetterHelper`，自动提取并解析 Spring Kafka 写入 DLT 消息头的 7 类元数据（原主题、原分区、原位移、原时间戳、异常全限定类名、异常消息与完整调用堆栈），转换为强类型结构体 `DeadLetterRecord`；
-- 与 `peek` 门面联动，实现死信可视、可查、可溯源的诊断闭环。
+- 对标 `RabbitDeadLetterHelper`，自动提取并解析 Spring Kafka 写入 DLT 消息头的 7 类元数据（原主题、原分区、原位移、原时间戳、异常全限定类名、异常消息与完整调用堆栈）及死信记录的 UTF-8 `key` 与 `payload`，转换为强类型结构体 `DeadLetterRecord`（同时保留 9 参数构造器 100% 向后兼容）；
+- 与 `peekDiagnosed` 门面联动，实现死信可视、可查、可溯源的诊断闭环。
 
 ### 3. 双轨协同重试体系 (Local Backoff + `@RetryableTopic`)
-- **本地轻量退避**：保持 `AtengKafkaErrorHandler` 针对毫秒级瞬态网络抖动的本地快速退避重试（默认 3 次，间隔 1s，上限 30s）；
-- **非阻塞阶梯延迟主题**：针对慢业务/依赖故障，深度适配 Spring Kafka 官方 `@RetryableTopic` 机制，自动分流至阶梯延迟重试主题（如 `topic-retry-1000`、`topic-retry-2000`、`topic-dlt`），保持主主题高吞吐不阻塞，全链路穿透四维上下文（TraceId、TenantId、UserId）与推断反序列化。
+- **本地轻量退避**：保持 `AtengKafkaErrorHandler` 针对毫秒级瞬态网络抖动的本地快速退避重试（默认 3 次，间隔 1s，最大退避上限由 `consumer.max-retry-interval: 30s` 强类型 `Duration` 受管）；
+- **非阻塞阶梯延迟主题**：针对慢业务/依赖故障，深度适配 Spring Kafka 官方 `@RetryableTopic` 机制，自动分流至阶梯延迟重试主题（如 `sample.retry.main.topic-retry-100`、`sample.retry.main.topic-retry-200`、`sample.retry.main.topic-dlt`），保持主主题高吞吐不阻塞，全链路穿透四维上下文（TraceId、TenantId、UserId）与推断反序列化。
 
 ### 4. 运行期位移治理与实时 Lag 积压探测 (`KafkaOffsetManager`)
-- **位移安全回拨与重置**：封装 `AdminClient` 池化调用与 `try-with-resources` 释放，提供 `resetOffsetsToTimestamp`（按时间戳回溯对账重放）、`resetOffsetsToEarliest` 与 `resetOffsetsToLatest`；
+- **位移安全回拨与重置**：封装 `AdminClient` 受管调用与 `try-with-resources` 释放，提供 `resetOffsetsToTimestamp`（按时间戳回溯对账重放）、`resetOffsetsToEarliest` 与 `resetOffsetsToLatest`；
 - **实时 Lag 积压探测**：`getConsumerGroupLag(groupId, topic)` 并行拉取最新高水位（LEO）与消费组已提交位移，精确计算每个分区的 Lag 及全主题总积压 `totalLag`，为告警探针与自愈调度提供原生算力支撑。
 
 ### 5. 拓扑压实构建器扩展 (`KafkaTopicBuilder`)
 - 链式扩充 `.compact()`（设置 `cleanup.policy=compact`）、`.deleteAndCompact()`，原生支撑状态快照与广播元数据场景；
 - 扩充 `.maxMessageBytes(DataSize)` 与 `.compressionType(String)`，消除裸字符串单位歧义。
 
-### 6. 运行期消费容器动态流控门面 (`KafkaContainerManager`)
-- 封装 `KafkaListenerEndpointRegistry`，提供 `pause`、`resume`、`stop`、`start`、`isPaused`、`isRunning`；
-- 下游系统维护或突发削峰时，支持精细化按 Topic 或 Listener ID 动态暂停消费拉取并在维护后一键恢复，杜绝粗暴停机重启。
+### 6. 运行期消费容器动态流控、扩缩容与状态快照门面 (`KafkaContainerManager`)
+- 封装 `KafkaListenerEndpointRegistry`，提供 `pause`、`resume`、`stop`、`start`、`isPaused`、`isRunning` 及全局批量管控；
+- 扩充 `scaleConcurrency(idOrTopic, concurrency)` 支持运行期对 `ConcurrentMessageListenerContainer` 动态调整消费并发度，并提供 `getContainerStatuses()` / `getContainerStatus(idOrTopic)` 输出强类型不可变快照模型 `KafkaContainerStatus`（涵盖 `listenerId`、`groupId`、`topics`、`running`、`paused`、`autoStartup`、`batchListener`、`concurrency`、`activeContainerCount` 与 `assignedPartitions`）。
 
-### 7. 原生 Kafka 分布式事务与再均衡扩展点
-- `KafkaReliableTemplate` 扩充 `executeInTransaction(OperationsCallback<T>)`，补齐纯流式原子多写场景；
+### 7. 生产端对称批量、事务后批量与两阶段原子前置防卫 (`KafkaReliableTemplate`)
+- 补齐异步批量 `sendBatchAsync` / `sendBatchRecordsAsync`、本地事务提交后批量发信 `sendBatchAfterCommit` / `sendBatchRecordsAfterCommit`（事务提交前全量预构建校验，事务提交后逐条失败独立回调 `KafkaTransactionFailureCallback`）以及自定义扩展 `headers` 发送重载；
+- 所有批量发信强制采用“第一阶段全量前置校验与 `PreparedRecord` 预构建（含单批 `producer.max-batch-size: 1000` 硬上限与单条 `1MB` 体积校验） -> 第二阶段统一网络发射”的两阶段原子防卫，杜绝边校验边发送引发的部分投递脏数据；
+- `KafkaReliableTemplate` 的 `executeInTransaction(OperationsCallback<T>)` 动态代理同步内置 `maxPayloadSize` 超限 Fail-Fast 防卫与四维上下文注入；
 - 引入 `KafkaRebalanceListener` SPI 扩展点，在分区撤销与重新分配时赋予有状态消费清理本地缓存与 Flush 位移的生命周期钩子。
 
 ---
@@ -108,4 +110,4 @@ flowchart TD
 
 ### 妥协与规约 (Trade-offs & Mitigations)
 1. **重放消息的位移记录**：Kafka 基于日志而非破坏性出队，死信重放依赖专职消费组 `ateng-kafka-dlt-replay-group` 提交位移并注入重放计数标记防二次雪崩。
-2. **Lag 探测的 AdminClient 开销**：获取全分区最新 LEO 与提交位移涉及集群元数据交互，方法显式配属 5 秒硬超时并禁止在极高频循环内无节制高频轮询。
+2. **Lag 探测的 AdminClient 开销**：获取全分区最新 LEO 与提交位移涉及集群元数据交互，方法受控于 `offset.timeout`（默认 `10s`）硬超时保护并禁止在极高频循环内无节制高频轮询。
