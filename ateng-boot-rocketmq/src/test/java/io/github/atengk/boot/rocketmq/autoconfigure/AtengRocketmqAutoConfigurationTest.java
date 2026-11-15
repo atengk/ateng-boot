@@ -10,6 +10,7 @@ import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.model.RocketmqContainerStatus;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
+import io.github.atengk.boot.rocketmq.spi.RocketmqPoisonPillCallback;
 import io.github.atengk.boot.rocketmq.template.RocketmqDeadLetterReplayTemplate;
 import io.github.atengk.boot.rocketmq.template.RocketmqSimpleConsumerTemplate;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
@@ -290,6 +291,60 @@ class AtengRocketmqAutoConfigurationTest {
                     return TransactionResolution.COMMIT;
                 }
             };
+        }
+    }
+
+    @Test
+    @DisplayName("自动装配可选 Producer 与 RocketmqPoisonPillCallback SPI 并正确透传至监听调用器")
+    void testOptionalPoisonPillCallbackAndProducerWiredIntoConsumerContainer() throws Exception {
+        PushConsumerFactory pushFactory = mock(PushConsumerFactory.class);
+        org.apache.rocketmq.client.apis.consumer.MessageListener[] listenerHolder = new org.apache.rocketmq.client.apis.consumer.MessageListener[1];
+        when(pushFactory.createPushConsumer(any(), any(), any(), any(), any(), anyInt(), anyInt()))
+                .thenAnswer(inv -> {
+                    listenerHolder[0] = inv.getArgument(4);
+                    return mock(PushConsumer.class);
+                });
+
+        Producer mockProducer = mock(Producer.class);
+        java.util.concurrent.atomic.AtomicBoolean callbackTriggered = new java.util.concurrent.atomic.AtomicBoolean(false);
+        java.util.concurrent.atomic.AtomicBoolean forwardedFlag = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengRocketmqAutoConfiguration.class))
+                .withPropertyValues("ateng.boot.rocketmq.endpoints=127.0.0.1:8081")
+                .withBean(PushConsumerFactory.class, () -> pushFactory)
+                .withBean(Producer.class, () -> mockProducer)
+                .withBean(RocketmqPoisonPillCallback.class, () -> (mv, topic, group, dlqTopic, forwarded, cause) -> {
+                    callbackTriggered.set(true);
+                    forwardedFlag.set(forwarded);
+                })
+                .withUserConfiguration(PoisonListenerConfig.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RocketmqPoisonPillCallback.class);
+                    assertThat(listenerHolder[0]).isNotNull();
+
+                    MessageView mv = mock(MessageView.class);
+                    when(mv.getBody()).thenReturn(java.nio.ByteBuffer.wrap("{bad-json".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                    when(mv.getProperties()).thenReturn(java.util.Collections.emptyMap());
+                    when(mv.getTag()).thenReturn(java.util.Optional.of("poison"));
+                    when(mv.getKeys()).thenReturn(java.util.Collections.emptyList());
+                    when(mv.getMessageGroup()).thenReturn(java.util.Optional.empty());
+                    when(mv.getDeliveryAttempt()).thenReturn(1);
+                    org.apache.rocketmq.client.apis.message.MessageId msgId = mock(org.apache.rocketmq.client.apis.message.MessageId.class);
+                    when(msgId.toString()).thenReturn("AUTO-POISON-001");
+                    when(mv.getMessageId()).thenReturn(msgId);
+
+                    org.apache.rocketmq.client.apis.consumer.ConsumeResult result = listenerHolder[0].consume(mv);
+                    assertThat(result).isEqualTo(org.apache.rocketmq.client.apis.consumer.ConsumeResult.SUCCESS);
+                    assertThat(callbackTriggered.get()).isTrue();
+                    assertThat(forwardedFlag.get()).isTrue();
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class PoisonListenerConfig {
+        @RocketmqListener(endpointId = "auto_poison_listener", topic = "auto_poison_topic", consumerGroup = "auto_poison_group")
+        public void onOrder(java.util.Map<String, Object> payload) {
         }
     }
 }

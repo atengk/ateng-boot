@@ -8,16 +8,21 @@ import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
 import io.github.atengk.boot.rocketmq.consumer.SimpleConsumerFactory;
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
+import io.github.atengk.boot.rocketmq.listener.RocketmqListenerInvoker;
 import io.github.atengk.boot.rocketmq.model.DeadLetterReplayResult;
+import io.github.atengk.boot.rocketmq.model.RocketmqDeadLetterRecord;
 import io.github.atengk.boot.rocketmq.spi.RocketmqTransactionFailureCallback;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import io.github.atengk.boot.sample.rocketmq.checker.SampleOrderTransactionChecker;
 import io.github.atengk.boot.sample.rocketmq.consumer.*;
+import io.github.atengk.boot.sample.rocketmq.dto.DeadLetterPoisonPillRequest;
+import io.github.atengk.boot.sample.rocketmq.dto.OrderProduceResponse;
 import io.github.atengk.boot.sample.rocketmq.dto.SimpleConsumeReportVO;
 import io.github.atengk.boot.sample.rocketmq.model.OrderMessage;
 import io.github.atengk.boot.sample.rocketmq.producer.TradeRocketmqProducer;
 import io.github.atengk.boot.sample.rocketmq.service.*;
 import io.github.atengk.boot.sample.rocketmq.testdouble.InMemoryRocketmqBroker;
+import org.apache.rocketmq.client.apis.consumer.ConsumeResult;
 import org.apache.rocketmq.client.apis.message.MessageView;
 import org.apache.rocketmq.client.apis.producer.Producer;
 import org.apache.rocketmq.client.apis.producer.SendReceipt;
@@ -148,6 +153,9 @@ class SampleRocketmqE2eTest {
     @Autowired(required = false)
     private RecordingTransactionFailureCallback recordingFailureCallback;
 
+    @Autowired(required = false)
+    private SamplePoisonPillCallbackRecorder poisonPillCallbackRecorder;
+
     @BeforeEach
     void setUp() {
         MDC.clear();
@@ -168,6 +176,9 @@ class SampleRocketmqE2eTest {
         }
         if (recordingFailureCallback != null) {
             recordingFailureCallback.clear();
+        }
+        if (poisonPillCallbackRecorder != null) {
+            poisonPillCallbackRecorder.clear();
         }
     }
 
@@ -198,6 +209,9 @@ class SampleRocketmqE2eTest {
         assertThat(MDC.getCopyOfContextMap()).isNullOrEmpty();
         assertThat(TenantContextHolder.getTenantId()).isNull();
         assertThat(UserContextHolder.getUserId()).isNull();
+        if (poisonPillCallbackRecorder != null) {
+            poisonPillCallbackRecorder.clear();
+        }
     }
 
     // =========================================================================
@@ -973,6 +987,132 @@ class SampleRocketmqE2eTest {
 
         DeadLetterReplayResult avalancheResult = deadLetterReplayScenarioService.replayDeadLetters(dlqGroup, 10);
         assertThat(avalancheResult.getBlockedCount()).isGreaterThanOrEqualTo(1);
+    }
+
+    // =========================================================================
+    // 场景 24：毒丸转储 %DLQ% 回调、结构化诊断窥视、损坏载荷对抗与开关关闭对比
+    // =========================================================================
+
+    @Test
+    @DisplayName("场景 24：毒丸自动转储 %DLQ% + 回调审计 + 结构化诊断窥视 + 重放头清洗 + 开关关闭对比")
+    void testPoisonPillDlqForwardingDiagnosedPeekAndSwitchOffComparison() throws Exception {
+        String poisonGroup = "sample_poison_group";
+        String auditReplayTopic = "sample_dlq_replay_audit_topic";
+
+        // 1. 默认开启 forward-poison-pill-to-dlq=true：投递 FATAL / MALFORMED_JSON / CORRUPTED_GZIP 毒丸
+        DeadLetterPoisonPillRequest fatalReq = new DeadLetterPoisonPillRequest();
+        fatalReq.setMode("FATAL");
+        fatalReq.setOrderId("ORD-E2E-POISON-FATAL");
+        OrderProduceResponse fatalResp = deadLetterReplayScenarioService.triggerPoisonPill(fatalReq);
+        assertThat(fatalResp.getStatus()).isEqualTo("POISON_PILL_DISPATCHED:FATAL");
+
+        DeadLetterPoisonPillRequest jsonReq = new DeadLetterPoisonPillRequest();
+        jsonReq.setMode("MALFORMED_JSON");
+        jsonReq.setOrderId("ORD-E2E-POISON-JSON");
+        jsonReq.setRawPayload("{e2e-corrupted-json");
+        deadLetterReplayScenarioService.triggerPoisonPill(jsonReq);
+
+        DeadLetterPoisonPillRequest gzipReq = new DeadLetterPoisonPillRequest();
+        gzipReq.setMode("CORRUPTED_GZIP");
+        gzipReq.setOrderId("ORD-E2E-POISON-GZIP");
+        deadLetterReplayScenarioService.triggerPoisonPill(gzipReq);
+
+        // 消费方法未正常计数，全部由 invoker 拦截转储
+        assertThat(poisonConsumer.getPoisonProcessCount().get()).isZero();
+
+        // 2. 验证 SPI 回调捕获了 3 条转储事件
+        assertThat(poisonPillCallbackRecorder).isNotNull();
+        assertThat(poisonPillCallbackRecorder.getEvents()).hasSize(3);
+        assertThat(poisonPillCallbackRecorder.getEvents())
+                .allSatisfy(event -> {
+                    assertThat(event.forwardedToDlq()).isTrue();
+                    assertThat(event.dlqTopic()).isEqualTo(RocketmqConstants.DLQ_TOPIC_PREFIX + poisonGroup);
+                    assertThat(event.topic()).isEqualTo(TradeRocketmqProducer.TOPIC_ORDER);
+                });
+
+        // 3. 结构化诊断窥视：验证 FATAL_EXCEPTION / DESERIALIZATION_FAILED / GZIP_DECOMPRESS_FAILED 与 HEX 预览
+        List<RocketmqDeadLetterRecord> diagnosed = deadLetterReplayScenarioService.peekDiagnosedDeadLetters(poisonGroup, 20);
+        assertThat(diagnosed).hasSize(3);
+
+        RocketmqDeadLetterRecord fatalRecord = diagnosed.stream()
+                .filter(r -> "FATAL_EXCEPTION".equals(r.reason()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(fatalRecord.exceptionClassName()).isEqualTo(IllegalArgumentException.class.getName());
+        assertThat(fatalRecord.exceptionMessage()).contains("致命数据格式错误");
+        assertThat(fatalRecord.hexPreview()).isFalse();
+        assertThat(fatalRecord.originalTopic()).isEqualTo(TradeRocketmqProducer.TOPIC_ORDER);
+        assertThat(fatalRecord.consumerGroup()).isEqualTo(poisonGroup);
+
+        RocketmqDeadLetterRecord gzipRecord = diagnosed.stream()
+                .filter(r -> "GZIP_DECOMPRESS_FAILED".equals(r.reason()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(gzipRecord.hexPreview()).isTrue();
+        assertThat(gzipRecord.payloadSizeBytes()).isEqualTo(8);
+        assertThat(gzipRecord.payloadAsString()).startsWith("[HEX-PREVIEW size=8B]");
+
+        RocketmqDeadLetterRecord jsonRecord = diagnosed.stream()
+                .filter(r -> "DESERIALIZATION_FAILED".equals(r.reason()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(jsonRecord.hexPreview()).isFalse();
+        assertThat(jsonRecord.payloadAsString()).isEqualTo("{e2e-corrupted-json");
+
+        // 4. 受控重放至安全审计主题：非损坏载荷成功重放 (2条) 且历史故障诊断头已彻底剥离，损坏 GZIP 被防御拦截 (1条)
+        DeadLetterReplayResult replayResult =
+                deadLetterReplayScenarioService.replayDeadLettersToTopic(poisonGroup, 20, auditReplayTopic);
+        assertThat(replayResult.getSuccessCount()).isEqualTo(2);
+        assertThat(replayResult.getFailedCount()).isEqualTo(1);
+
+        if (testBroker != null) {
+            List<MessageView> replayedMessages = testBroker.getSentMessages(auditReplayTopic);
+            assertThat(replayedMessages).hasSize(2);
+            assertThat(replayedMessages).allSatisfy(msg -> {
+                Map<String, String> props = msg.getProperties();
+                assertThat(props).doesNotContainKeys(
+                        RocketmqConstants.HEADER_DEAD_LETTER_REASON,
+                        RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_CLASS,
+                        RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_MESSAGE,
+                        RocketmqConstants.HEADER_DEAD_LETTER_TIMESTAMP,
+                        RocketmqConstants.HEADER_DEAD_LETTER_DELIVERY_ATTEMPT
+                );
+                assertThat(props).containsEntry(RocketmqConstants.HEADER_DEAD_LETTER_REPLAYED, "true");
+                assertThat(props).containsEntry(RocketmqConstants.HEADER_DEAD_LETTER_REPLAY_COUNT, "1");
+            });
+
+            // 5. 开关关闭对比 (forward-poison-pill-to-dlq=false)：仍返回 SUCCESS 静默确认并回调通知，但不转储至 %DLQ%
+            String switchOffGroup = "sample_poison_switchoff_group";
+            SamplePoisonPillCallbackRecorder switchOffRecorder = new SamplePoisonPillCallbackRecorder();
+            java.lang.reflect.Method consumeMethod = PoisonPillRocketmqConsumer.class.getMethod("onPoisonMessage", OrderMessage.class);
+            RocketmqListenerInvoker switchOffInvoker = new RocketmqListenerInvoker(
+                    poisonConsumer,
+                    consumeMethod,
+                    TradeRocketmqProducer.TOPIC_ORDER,
+                    switchOffGroup,
+                    null,
+                    false,
+                    rocketmqTemplate.getProducer(),
+                    switchOffRecorder
+            );
+
+            MessageView poisonView = InMemoryRocketmqBroker.createMockMessageView(
+                    TradeRocketmqProducer.TOPIC_ORDER,
+                    "MSG-SWITCHOFF-POISON-001",
+                    "{not-valid-json".getBytes(StandardCharsets.UTF_8),
+                    Map.of("X-Biz-Key", "ORD-SWITCHOFF-001"),
+                    "poison",
+                    null
+            );
+
+            ConsumeResult result = switchOffInvoker.consume(poisonView);
+            assertThat(result).isEqualTo(ConsumeResult.SUCCESS);
+            assertThat(testBroker.getSentMessages(RocketmqConstants.DLQ_TOPIC_PREFIX + switchOffGroup)).isEmpty();
+            assertThat(switchOffRecorder.getEvents()).hasSize(1);
+            assertThat(switchOffRecorder.getEvents().get(0).forwardedToDlq()).isFalse();
+            assertThat(switchOffRecorder.getEvents().get(0).dlqTopic())
+                    .isEqualTo(RocketmqConstants.DLQ_TOPIC_PREFIX + switchOffGroup);
+        }
     }
 
     // =========================================================================

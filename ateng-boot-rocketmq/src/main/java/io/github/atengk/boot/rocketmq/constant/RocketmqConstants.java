@@ -75,4 +75,34 @@ public final class RocketmqConstants {
      * 死信原始消息 ID 协议头
      */
     public static final String HEADER_DEAD_LETTER_ORIGINAL_MESSAGE_ID = "X-Dead-Letter-Original-Message-Id";
+
+    /**
+     * 死信诊断协议头统一前缀
+     */
+    public static final String HEADER_DEAD_LETTER_PREFIX = "X-Dead-Letter-";
+
+    /**
+     * 死信归档/毒丸判定原因分类协议头
+     */
+    public static final String HEADER_DEAD_LETTER_REASON = "X-Dead-Letter-Reason";
+
+    /**
+     * 死信异常全限定类名协议头
+     */
+    public static final String HEADER_DEAD_LETTER_EXCEPTION_CLASS = "X-Dead-Letter-Exception-Class";
+
+    /**
+     * 死信异常摘要信息协议头
+     */
+    public static final String HEADER_DEAD_LETTER_EXCEPTION_MESSAGE = "X-Dead-Letter-Exception-Message";
+
+    /**
+     * 死信转储归档毫秒时间戳协议头
+     */
+    public static final String HEADER_DEAD_LETTER_TIMESTAMP = "X-Dead-Letter-Timestamp";
+
+    /**
+     * 死信发生故障时的原始投递尝试次数协议头
+     */
+    public static final String HEADER_DEAD_LETTER_DELIVERY_ATTEMPT = "X-Dead-Letter-Delivery-Attempt";
 }

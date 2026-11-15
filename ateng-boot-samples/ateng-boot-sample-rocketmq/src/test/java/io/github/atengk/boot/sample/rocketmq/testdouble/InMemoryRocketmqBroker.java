@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.rocketmq.testdouble;
 
+import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
 import io.github.atengk.boot.rocketmq.consumer.SimpleConsumerFactory;
 import io.github.atengk.boot.rocketmq.helper.RocketmqMessageHelper;
@@ -428,8 +429,50 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
      * 将消息入队指定消费组的死信队列 (%DLQ%<ConsumerGroup>)
      */
     public void enqueueDlqMessage(String consumerGroup, MessageView messageView) {
-        String dlqTopic = "%DLQ%" + consumerGroup.trim();
-        inMemoryQueues.computeIfAbsent(dlqTopic, k -> new ConcurrentLinkedQueue<>()).offer(messageView);
+        String trimmedGroup = consumerGroup.trim();
+        String dlqTopic = RocketmqConstants.DLQ_TOPIC_PREFIX + trimmedGroup;
+        MessageView dlqView = wrapAsDlqMessageView(dlqTopic, trimmedGroup, messageView);
+        inMemoryQueues.computeIfAbsent(dlqTopic, k -> new ConcurrentLinkedQueue<>()).offer(dlqView);
+    }
+
+    private MessageView wrapAsDlqMessageView(String dlqTopic, String consumerGroup, MessageView source) {
+        if (source.getTopic() != null && source.getTopic().startsWith(RocketmqConstants.DLQ_TOPIC_PREFIX)) {
+            return source;
+        }
+        MessageView mv = mock(MessageView.class);
+        byte[] bytes = extractBodyBytes(source.getBody());
+        Map<String, String> mergedProps = new LinkedHashMap<>();
+        if (source.getProperties() != null) {
+            mergedProps.putAll(source.getProperties());
+        }
+        if (source.getTopic() != null && !source.getTopic().isBlank()) {
+            mergedProps.putIfAbsent(RocketmqConstants.HEADER_DEAD_LETTER_ORIGINAL_TOPIC, source.getTopic());
+        }
+        mergedProps.putIfAbsent(RocketmqConstants.HEADER_DEAD_LETTER_CONSUMER_GROUP, consumerGroup);
+        if (source.getMessageId() != null) {
+            mergedProps.putIfAbsent(RocketmqConstants.HEADER_DEAD_LETTER_ORIGINAL_MESSAGE_ID, source.getMessageId().toString());
+        }
+
+        when(mv.getMessageId()).thenReturn(source.getMessageId());
+        when(mv.getTopic()).thenReturn(dlqTopic);
+        when(mv.getBody()).thenAnswer(inv -> ByteBuffer.wrap(bytes));
+        when(mv.getProperties()).thenReturn(Collections.unmodifiableMap(mergedProps));
+        when(mv.getTag()).thenReturn(source.getTag());
+        when(mv.getKeys()).thenReturn(source.getKeys());
+        when(mv.getMessageGroup()).thenReturn(source.getMessageGroup());
+        when(mv.getDeliveryTimestamp()).thenReturn(source.getDeliveryTimestamp());
+        when(mv.getDeliveryAttempt()).thenReturn(Math.max(1, source.getDeliveryAttempt()));
+        return mv;
+    }
+
+    private static byte[] extractBodyBytes(ByteBuffer body) {
+        if (body == null) {
+            return new byte[0];
+        }
+        ByteBuffer slice = body.asReadOnlyBuffer();
+        byte[] bytes = new byte[slice.remaining()];
+        slice.get(bytes);
+        return bytes;
     }
 
     /**
@@ -487,12 +530,16 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
         originalBuffer.asReadOnlyBuffer().get(bytes);
 
         when(mv.getBody()).thenAnswer(inv -> ByteBuffer.wrap(bytes));
-        when(mv.getProperties()).thenReturn(message.getProperties() != null ? message.getProperties() : Collections.emptyMap());
+        Map<String, String> props = message.getProperties() != null
+                ? Collections.unmodifiableMap(new LinkedHashMap<>(message.getProperties()))
+                : Collections.emptyMap();
+        when(mv.getProperties()).thenReturn(props);
         when(mv.getTag()).thenReturn(message.getTag());
         when(mv.getKeys()).thenReturn(message.getKeys());
         when(mv.getMessageGroup()).thenReturn(message.getMessageGroup());
         when(mv.getDeliveryTimestamp()).thenReturn(message.getDeliveryTimestamp());
         when(mv.getTopic()).thenReturn(message.getTopic());
+        when(mv.getDeliveryAttempt()).thenReturn(1);
 
         MessageId mockId = mock(MessageId.class);
         String idStr = "MSG-MOCK-" + messageIdSeq.incrementAndGet();
@@ -509,10 +556,14 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
         when(mv.getMessageId()).thenReturn(mockId);
         when(mv.getTopic()).thenReturn(topic);
         when(mv.getBody()).thenAnswer(inv -> ByteBuffer.wrap(body));
-        when(mv.getProperties()).thenReturn(properties != null ? properties : Collections.emptyMap());
+        Map<String, String> props = properties != null
+                ? Collections.unmodifiableMap(new LinkedHashMap<>(properties))
+                : Collections.emptyMap();
+        when(mv.getProperties()).thenReturn(props);
         when(mv.getTag()).thenReturn(Optional.ofNullable(tag));
         when(mv.getMessageGroup()).thenReturn(Optional.ofNullable(group));
         when(mv.getKeys()).thenReturn(List.of("KEY-" + msgId));
+        when(mv.getDeliveryAttempt()).thenReturn(1);
         return mv;
     }
 

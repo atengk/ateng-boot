@@ -6,6 +6,7 @@ import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.helper.RocketmqMessageHelper;
 import io.github.atengk.boot.rocketmq.model.DeadLetterReplayDetail;
 import io.github.atengk.boot.rocketmq.model.DeadLetterReplayResult;
+import io.github.atengk.boot.rocketmq.model.RocketmqDeadLetterRecord;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import org.apache.rocketmq.client.apis.message.MessageId;
 import org.apache.rocketmq.client.apis.message.MessageView;
@@ -519,5 +520,189 @@ class RocketmqDeadLetterReplayTemplateTest {
         verify(rocketmqTemplate, never()).send(anyString(), anyString(), anyString(), any(), any());
         // 验证自动执行了 ACK 将毒丸移出死信队列
         verify(simpleConsumerTemplate, times(1)).ack("GID_ORDER", poisonedMsg);
+    }
+
+    // =========================================================================
+    // 8. 结构化诊断窥视与重放诊断头清洗测试 (peekDiagnosed & sanitize)
+    // =========================================================================
+
+    @Test
+    @DisplayName("peekDiagnosed 正确解析诊断元数据、透明解压 GZIP 载荷并返回不可变记录（零 ACK）")
+    void testPeekDiagnosedDecodesPlainTextAndCompressedPayloadWithImmutableRecord() throws Exception {
+        Map<String, String> plainProps = new HashMap<>();
+        plainProps.put(RocketmqConstants.HEADER_DEAD_LETTER_ORIGINAL_TOPIC, "order_topic");
+        plainProps.put(RocketmqConstants.HEADER_DEAD_LETTER_CONSUMER_GROUP, "GID_ORDER");
+        plainProps.put(RocketmqConstants.HEADER_DEAD_LETTER_ORIGINAL_MESSAGE_ID, "ORIG-MSG-100");
+        plainProps.put(RocketmqConstants.HEADER_DEAD_LETTER_REASON, "FATAL_EXCEPTION");
+        plainProps.put(RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_CLASS, IllegalArgumentException.class.getName());
+        plainProps.put(RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_MESSAGE, "订单状态非法");
+        plainProps.put(RocketmqConstants.HEADER_DEAD_LETTER_TIMESTAMP, "1763200000000");
+        plainProps.put(RocketmqConstants.HEADER_DEAD_LETTER_DELIVERY_ATTEMPT, "2");
+        plainProps.put("X-Biz-Key", "BIZ-DIAG-001");
+        plainProps.put("customHeader", "v1");
+
+        MessageView plainMsg = createMockMessageView(
+                "%DLQ%GID_ORDER", "DLQ-DIAG-1", "{\"orderId\":\"BIZ-DIAG-001\"}".getBytes(StandardCharsets.UTF_8),
+                plainProps, "poison", "GROUP-1");
+
+        String rawJson = "{\"orderId\":\"BIZ-DIAG-GZIP\",\"note\":\"compressed payload text\"}";
+        byte[] gzipBytes = RocketmqMessageHelper.compressGzip(rawJson.getBytes(StandardCharsets.UTF_8));
+        Map<String, String> gzipProps = new HashMap<>();
+        gzipProps.put(RocketmqConstants.HEADER_COMPRESSION, RocketmqConstants.COMPRESSION_GZIP);
+        gzipProps.put(RocketmqConstants.HEADER_DEAD_LETTER_ORIGINAL_TOPIC, "order_topic");
+        gzipProps.put(RocketmqConstants.HEADER_DEAD_LETTER_REASON, "VALIDATION_FAILED");
+        gzipProps.put("X-Biz-Key", "BIZ-DIAG-GZIP");
+
+        MessageView gzipMsg = createMockMessageView(
+                "%DLQ%GID_ORDER", "DLQ-DIAG-2", gzipBytes, gzipProps, "poison", null);
+
+        when(simpleConsumerTemplate.receive(eq("%DLQ%GID_ORDER"), eq("GID_ORDER"), eq("*"), eq(10), eq(Duration.ofSeconds(30))))
+                .thenReturn(List.of(plainMsg, gzipMsg));
+
+        List<RocketmqDeadLetterRecord> records = replayTemplate.peekDiagnosed("GID_ORDER", 10);
+
+        assertThat(records).hasSize(2);
+        verify(simpleConsumerTemplate, never()).ack(any(MessageView.class));
+        verify(simpleConsumerTemplate, never()).ack(anyString(), any(MessageView.class));
+
+        RocketmqDeadLetterRecord first = records.get(0);
+        assertThat(first.messageId()).isEqualTo("DLQ-DIAG-1");
+        assertThat(first.originalMessageId()).isEqualTo("ORIG-MSG-100");
+        assertThat(first.dlqTopic()).isEqualTo("%DLQ%GID_ORDER");
+        assertThat(first.originalTopic()).isEqualTo("order_topic");
+        assertThat(first.consumerGroup()).isEqualTo("GID_ORDER");
+        assertThat(first.tag()).isEqualTo("poison");
+        assertThat(first.bizKey()).isEqualTo("BIZ-DIAG-001");
+        assertThat(first.messageGroup()).isEqualTo("GROUP-1");
+        assertThat(first.deliveryAttempt()).isEqualTo(2);
+        assertThat(first.replayCount()).isZero();
+        assertThat(first.replayed()).isFalse();
+        assertThat(first.reason()).isEqualTo("FATAL_EXCEPTION");
+        assertThat(first.deadLetterTimestamp()).isEqualTo(1763200000000L);
+        assertThat(first.exceptionClassName()).isEqualTo(IllegalArgumentException.class.getName());
+        assertThat(first.exceptionMessage()).isEqualTo("订单状态非法");
+        assertThat(first.hexPreview()).isFalse();
+        assertThat(first.payloadAsString()).isEqualTo("{\"orderId\":\"BIZ-DIAG-001\"}");
+        assertThat(first.properties()).containsEntry("customHeader", "v1");
+
+        assertThatThrownBy(() -> first.properties().put("x", "y"))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> first.keys().add("k"))
+                .isInstanceOf(UnsupportedOperationException.class);
+
+        RocketmqDeadLetterRecord second = records.get(1);
+        assertThat(second.hexPreview()).isFalse();
+        assertThat(second.payloadAsString()).isEqualTo(rawJson);
+        assertThat(second.reason()).isEqualTo("VALIDATION_FAILED");
+    }
+
+    @Test
+    @DisplayName("peekDiagnosed 遇到损坏 GZIP 与非 UTF-8 二进制载荷安全回退有界十六进制预览而不中断批次")
+    void testPeekDiagnosedDegradesCorruptedGzipAndNonUtf8ToBoundedHexPreviewWithoutAbortingBatch() {
+        MessageView validMsg = createMockMessageView(
+                "%DLQ%GID_ORDER", "DLQ-VALID", "正常UTF8文本".getBytes(StandardCharsets.UTF_8),
+                Map.of(RocketmqConstants.HEADER_DEAD_LETTER_ORIGINAL_TOPIC, "order_topic"), "tag1", null);
+
+        byte[] corruptedGzip = new byte[]{(byte) 0xFF, (byte) 0xFE, 0x01, 0x02};
+        MessageView badGzipMsg = createMockMessageView(
+                "%DLQ%GID_ORDER", "DLQ-BAD-GZIP", corruptedGzip,
+                Map.of(RocketmqConstants.HEADER_COMPRESSION, RocketmqConstants.COMPRESSION_GZIP,
+                        RocketmqConstants.HEADER_DEAD_LETTER_REASON, "GZIP_DECOMPRESS_FAILED"),
+                "poison", null);
+
+        byte[] largeNonUtf8 = new byte[400];
+        Arrays.fill(largeNonUtf8, (byte) 0xFF);
+        largeNonUtf8[0] = (byte) 0xC3;
+        largeNonUtf8[1] = (byte) 0x28;
+        MessageView badUtf8Msg = createMockMessageView(
+                "%DLQ%GID_ORDER", "DLQ-BAD-UTF8", largeNonUtf8,
+                Map.of(RocketmqConstants.HEADER_DEAD_LETTER_REASON, "DESERIALIZATION_FAILED"),
+                "poison", null);
+
+        when(simpleConsumerTemplate.receive(eq("%DLQ%GID_ORDER"), eq("GID_ORDER"), eq("*"), eq(32), eq(Duration.ofSeconds(30))))
+                .thenReturn(List.of(validMsg, badGzipMsg, badUtf8Msg));
+
+        List<RocketmqDeadLetterRecord> records = replayTemplate.peekDiagnosed("GID_ORDER");
+
+        assertThat(records).hasSize(3);
+        assertThat(records.get(0).hexPreview()).isFalse();
+        assertThat(records.get(0).payloadAsString()).isEqualTo("正常UTF8文本");
+
+        assertThat(records.get(1).hexPreview()).isTrue();
+        assertThat(records.get(1).payloadAsString()).contains("FF FE 01 02");
+
+        assertThat(records.get(2).hexPreview()).isTrue();
+        assertThat(records.get(2).payloadSizeBytes()).isEqualTo(400);
+        assertThat(records.get(2).payloadAsString()).contains("truncated");
+        assertThat(records.get(2).payloadAsString().length()).isLessThan(1000);
+    }
+
+    @Test
+    @DisplayName("peekDiagnosed 入参非空、1..1000 批量边界与超时 Duration Fail-Fast 防卫")
+    void testPeekDiagnosedBoundaryValidation() {
+        assertThatThrownBy(() -> replayTemplate.peekDiagnosed(null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> replayTemplate.peekDiagnosed("  ", 10))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> replayTemplate.peekDiagnosed("GID_ORDER", 0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> replayTemplate.peekDiagnosed("GID_ORDER", -1))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> replayTemplate.peekDiagnosed("GID_ORDER", 10, null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> replayTemplate.peekDiagnosed("GID_ORDER", 10, Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> replayTemplate.peekDiagnosed("GID_ORDER", 10, Duration.ofSeconds(-5)))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        properties.getDeadLetter().setMaxBatchSize(2000);
+        assertThatThrownBy(() -> replayTemplate.peekDiagnosed("GID_ORDER", 1001))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("1000");
+
+        when(simpleConsumerTemplate.receive(eq("%DLQ%GID_ORDER"), eq("GID_ORDER"), eq("*"), eq(5), eq(Duration.ofSeconds(10))))
+                .thenReturn(Collections.emptyList());
+        List<RocketmqDeadLetterRecord> emptyRecords = replayTemplate.peekDiagnosed("GID_ORDER", 5, Duration.ofSeconds(10));
+        assertThat(emptyRecords).isEmpty();
+        assertThatThrownBy(() -> emptyRecords.add(null)).isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    @DisplayName("replayDeadLetters 重放时自动剥离历史 X-Dead-Letter-* 故障诊断头")
+    @SuppressWarnings("unchecked")
+    void testReplayDeadLettersStripsHistoricalDiagnosticHeaders() {
+        Map<String, String> dlqProps = new HashMap<>();
+        dlqProps.put("X-Original-Topic", "order_biz_topic");
+        dlqProps.put("X-Biz-Key", "ORD-CLEAN-HEADER");
+        dlqProps.put("business-header", "keep-me");
+        dlqProps.put(RocketmqConstants.HEADER_DEAD_LETTER_REASON, "FATAL_EXCEPTION");
+        dlqProps.put(RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_CLASS, IllegalStateException.class.getName());
+        dlqProps.put(RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_MESSAGE, "historical crash");
+        dlqProps.put(RocketmqConstants.HEADER_DEAD_LETTER_TIMESTAMP, "1763200000000");
+        dlqProps.put(RocketmqConstants.HEADER_DEAD_LETTER_DELIVERY_ATTEMPT, "4");
+        dlqProps.put("X-Dead-Letter-Custom-Diag", "stale-diag-info");
+
+        MessageView dlqMsg = createMockMessageView(
+                "%DLQ%GID_ORDER", "DLQ_DIAG_CLEAN_01", "{\"orderId\":\"ORD-CLEAN-HEADER\"}".getBytes(StandardCharsets.UTF_8),
+                dlqProps, "create", null);
+        when(simpleConsumerTemplate.receive(eq("%DLQ%GID_ORDER"), eq("GID_ORDER"), eq("*"), eq(10), any(Duration.class)))
+                .thenReturn(List.of(dlqMsg));
+
+        SendReceipt receipt = createMockSendReceipt("NEW-CLEAN-01");
+        ArgumentCaptor<Map<String, String>> propsCaptor = ArgumentCaptor.forClass(Map.class);
+        when(rocketmqTemplate.send(eq("order_biz_topic"), eq("create"), eq("ORD-CLEAN-HEADER"), any(byte[].class), propsCaptor.capture()))
+                .thenReturn(receipt);
+
+        DeadLetterReplayResult result = replayTemplate.replayDeadLetters("GID_ORDER", 10);
+        assertThat(result.getSuccessCount()).isEqualTo(1);
+
+        Map<String, String> sentProps = propsCaptor.getValue();
+        assertThat(sentProps).containsEntry("business-header", "keep-me");
+        assertThat(sentProps).doesNotContainKey(RocketmqConstants.HEADER_DEAD_LETTER_REASON);
+        assertThat(sentProps).doesNotContainKey(RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_CLASS);
+        assertThat(sentProps).doesNotContainKey(RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_MESSAGE);
+        assertThat(sentProps).doesNotContainKey(RocketmqConstants.HEADER_DEAD_LETTER_TIMESTAMP);
+        assertThat(sentProps).doesNotContainKey(RocketmqConstants.HEADER_DEAD_LETTER_DELIVERY_ATTEMPT);
+        assertThat(sentProps).doesNotContainKey("X-Dead-Letter-Custom-Diag");
     }
 }

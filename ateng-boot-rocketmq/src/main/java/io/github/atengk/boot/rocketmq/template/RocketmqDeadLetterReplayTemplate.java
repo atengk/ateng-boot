@@ -6,6 +6,7 @@ import io.github.atengk.boot.core.exception.MessageDeliveryException;
 import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.helper.RocketmqMessageHelper;
 import io.github.atengk.boot.rocketmq.model.DeadLetterReplayResult;
+import io.github.atengk.boot.rocketmq.model.RocketmqDeadLetterRecord;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.apis.message.MessageView;
@@ -15,6 +16,10 @@ import org.springframework.util.StringUtils;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 
@@ -30,6 +35,12 @@ import java.util.*;
  */
 @Slf4j
 public class RocketmqDeadLetterReplayTemplate {
+
+    private static final int MAX_DIAGNOSED_BATCH_SIZE = 1000;
+    private static final int MAX_HEX_PREVIEW_BYTES = 256;
+    private static final HexFormat HEX_FORMAT = HexFormat.ofDelimiter(" ").withUpperCase();
+    private static final String HEADER_DEAD_LETTER_PREFIX_LOWER =
+            RocketmqConstants.HEADER_DEAD_LETTER_PREFIX.toLowerCase(Locale.ROOT);
 
     private final RocketmqSimpleConsumerTemplate simpleConsumerTemplate;
     private final RocketmqTemplate rocketmqTemplate;
@@ -141,6 +152,62 @@ public class RocketmqDeadLetterReplayTemplate {
         log.info("[MQ-DLQ-PEEK] 只读探查死信队列完成 (零 ACK 保留): dlqTopic={}, consumerGroup={}, 探查到 {} 条死信",
                 dlqTopic, consumerGroup, messages != null ? messages.size() : 0);
         return messages != null ? messages : Collections.emptyList();
+    }
+
+    // =========================================================================
+    // 1.1 结构化诊断探查死信队列 (peekDiagnosed - 零 ACK)
+    // =========================================================================
+
+    /**
+     * 只读诊断探查目标消费组的死信队列（默认批量大小与默认租约时长）
+     *
+     * @param consumerGroup 目标消费组
+     * @return 不可变的结构化死信诊断记录列表（空队列返回空列表，绝不返回 null）
+     */
+    public List<RocketmqDeadLetterRecord> peekDiagnosed(String consumerGroup) {
+        return peekDiagnosed(consumerGroup, properties.getDeadLetter().getDefaultBatchSize());
+    }
+
+    /**
+     * 只读诊断探查目标消费组的死信队列（指定最大拉取数量，默认租约时长）
+     *
+     * @param consumerGroup 目标消费组
+     * @param maxMessageNum 最大拉取数量（范围 1 ~ 1000，且受 maxBatchSize 约束）
+     * @return 不可变的结构化死信诊断记录列表
+     */
+    public List<RocketmqDeadLetterRecord> peekDiagnosed(String consumerGroup, int maxMessageNum) {
+        return peekDiagnosed(consumerGroup, maxMessageNum, properties.getDeadLetter().getInvisibleDuration());
+    }
+
+    /**
+     * 只读诊断探查目标消费组的死信队列，安全解码文本/GZIP 载荷；遇到损坏二进制或非 UTF-8 载荷时回退有界十六进制预览
+     *
+     * @param consumerGroup     目标消费组
+     * @param maxMessageNum     最大拉取数量（1 ~ 1000 且不超过 maxBatchSize）
+     * @param invisibleDuration 不可见租约时长
+     * @return 不可变的结构化死信诊断记录列表
+     */
+    public List<RocketmqDeadLetterRecord> peekDiagnosed(
+            String consumerGroup,
+            int maxMessageNum,
+            Duration invisibleDuration) {
+        Assert.hasText(consumerGroup, "consumerGroup 不能为空");
+        Assert.isTrue(maxMessageNum >= 1 && maxMessageNum <= MAX_DIAGNOSED_BATCH_SIZE, () -> String.format(
+                "死信诊断探查批量数量 [%d] 必须在 1 ~ %d 之间", maxMessageNum, MAX_DIAGNOSED_BATCH_SIZE));
+
+        List<MessageView> messages = peekDeadLetters(consumerGroup, maxMessageNum, invisibleDuration);
+        if (messages.isEmpty()) {
+            return List.of();
+        }
+
+        String trimmedGroup = consumerGroup.trim();
+        List<RocketmqDeadLetterRecord> records = new ArrayList<>(messages.size());
+        for (MessageView mv : messages) {
+            if (mv != null) {
+                records.add(toDeadLetterRecord(mv, trimmedGroup));
+            }
+        }
+        return Collections.unmodifiableList(records);
     }
 
     // =========================================================================
@@ -505,14 +572,151 @@ public class RocketmqDeadLetterReplayTemplate {
                 if (RocketmqConstants.HEADER_COMPRESSION.equalsIgnoreCase(key)) {
                     continue;
                 }
+                // 4. 剥离历史 X-Dead-Letter-* 故障诊断头与旧重放时间头，防止污染后续正常消费流转
+                if (lowerKey.startsWith(HEADER_DEAD_LETTER_PREFIX_LOWER)
+                        || RocketmqConstants.HEADER_DEAD_LETTER_REPLAY_TIME.equalsIgnoreCase(key)) {
+                    continue;
+                }
                 sanitized.put(key, entry.getValue());
             }
         }
-        // 清理旧的死信协议头（避免重复或脏数据干扰）
-        sanitized.remove(RocketmqConstants.HEADER_DEAD_LETTER_REPLAYED);
-        sanitized.remove(RocketmqConstants.HEADER_DEAD_LETTER_REPLAY_COUNT);
-        sanitized.remove(RocketmqConstants.HEADER_DEAD_LETTER_REPLAY_TIME);
         return sanitized;
+    }
+
+    private RocketmqDeadLetterRecord toDeadLetterRecord(MessageView mv, String requestedGroup) {
+        Map<String, String> props = mv.getProperties() != null ? mv.getProperties() : Collections.emptyMap();
+        String messageId = mv.getMessageId() != null ? mv.getMessageId().toString() : "";
+        String originalMessageId = getPropertyIgnoreCase(props, RocketmqConstants.HEADER_DEAD_LETTER_ORIGINAL_MESSAGE_ID);
+        String dlqTopic = StringUtils.hasText(mv.getTopic()) ? mv.getTopic().trim() : getDlqTopic(requestedGroup);
+        String originalTopic = resolveOriginalTopic(mv, props);
+        String recordedGroup = getPropertyIgnoreCase(props, RocketmqConstants.HEADER_DEAD_LETTER_CONSUMER_GROUP);
+        String consumerGroup = StringUtils.hasText(recordedGroup) ? recordedGroup : requestedGroup;
+        String tag = mv.getTag().filter(StringUtils::hasText).map(String::trim).orElse(null);
+        String bizKey = RocketmqMessageHelper.extractBizKey(mv);
+        List<String> keys = mv.getKeys() != null
+                ? mv.getKeys().stream().filter(Objects::nonNull).toList()
+                : List.of();
+        String messageGroup = mv.getMessageGroup().filter(StringUtils::hasText).map(String::trim).orElse(null);
+
+        int deliveryAttempt = parsePositiveInt(
+                getPropertyIgnoreCase(props, RocketmqConstants.HEADER_DEAD_LETTER_DELIVERY_ATTEMPT),
+                Math.max(1, mv.getDeliveryAttempt()));
+        int replayCount = parseReplayCount(getPropertyIgnoreCase(props, RocketmqConstants.HEADER_DEAD_LETTER_REPLAY_COUNT));
+        boolean replayed = "true".equalsIgnoreCase(getPropertyIgnoreCase(props, RocketmqConstants.HEADER_DEAD_LETTER_REPLAYED));
+        String reason = getPropertyIgnoreCase(props, RocketmqConstants.HEADER_DEAD_LETTER_REASON);
+        Long deadLetterTimestamp = parseLongOrNull(getPropertyIgnoreCase(props, RocketmqConstants.HEADER_DEAD_LETTER_TIMESTAMP));
+        String exceptionClassName = getPropertyIgnoreCase(props, RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_CLASS);
+        String exceptionMessage = getPropertyIgnoreCase(props, RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_MESSAGE);
+
+        DecodedPayload decoded = decodePayloadSafely(mv, props, messageId);
+        return new RocketmqDeadLetterRecord(
+                messageId,
+                originalMessageId,
+                dlqTopic,
+                originalTopic,
+                consumerGroup,
+                tag,
+                bizKey,
+                keys,
+                messageGroup,
+                deliveryAttempt,
+                replayCount,
+                replayed,
+                reason,
+                deadLetterTimestamp,
+                exceptionClassName,
+                exceptionMessage,
+                decoded.preview(),
+                decoded.hexPreview(),
+                decoded.sizeBytes(),
+                props
+        );
+    }
+
+    private DecodedPayload decodePayloadSafely(MessageView mv, Map<String, String> props, String messageId) {
+        ByteBuffer byteBuffer = mv.getBody();
+        if (byteBuffer == null || byteBuffer.remaining() == 0) {
+            return new DecodedPayload("", false, 0);
+        }
+        byte[] rawBytes = new byte[byteBuffer.remaining()];
+        byteBuffer.asReadOnlyBuffer().get(rawBytes);
+
+        byte[] payloadBytes = rawBytes;
+        String compression = getPropertyIgnoreCase(props, RocketmqConstants.HEADER_COMPRESSION);
+        if (RocketmqConstants.COMPRESSION_GZIP.equalsIgnoreCase(compression)) {
+            try {
+                payloadBytes = RocketmqMessageHelper.decompressGzip(rawBytes);
+            } catch (IOException ex) {
+                log.warn("[MQ-DLQ-PEEK-DIAGNOSED] GZIP 解压失败，安全降级为有界十六进制预览: messageId={}, error={}",
+                        messageId, ex.getMessage());
+                return new DecodedPayload(formatBoundedHexPreview(rawBytes), true, rawBytes.length);
+            }
+        }
+
+        if (payloadBytes == null || payloadBytes.length == 0) {
+            return new DecodedPayload("", false, 0);
+        }
+
+        CharsetDecoder strictUtf8Decoder = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
+        try {
+            String decodedText = strictUtf8Decoder.decode(ByteBuffer.wrap(payloadBytes)).toString();
+            return new DecodedPayload(decodedText, false, payloadBytes.length);
+        } catch (CharacterCodingException ex) {
+            log.warn("[MQ-DLQ-PEEK-DIAGNOSED] 检测到非 UTF-8 损坏载荷，安全降级为有界十六进制预览: messageId={}, size={}B",
+                    messageId, payloadBytes.length);
+            return new DecodedPayload(formatBoundedHexPreview(payloadBytes), true, payloadBytes.length);
+        }
+    }
+
+    private String formatBoundedHexPreview(byte[] bytes) {
+        int previewLength = Math.min(bytes.length, MAX_HEX_PREVIEW_BYTES);
+        String hex = HEX_FORMAT.formatHex(bytes, 0, previewLength);
+        String suffix = bytes.length > MAX_HEX_PREVIEW_BYTES ? "...(truncated)" : "";
+        return "[HEX-PREVIEW size=" + bytes.length + "B] " + hex + suffix;
+    }
+
+    private String getPropertyIgnoreCase(Map<String, String> props, String targetKey) {
+        if (props == null || props.isEmpty() || targetKey == null) {
+            return null;
+        }
+        String direct = props.get(targetKey);
+        if (direct != null) {
+            return direct;
+        }
+        for (Map.Entry<String, String> entry : props.entrySet()) {
+            if (targetKey.equalsIgnoreCase(entry.getKey())) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
+    private int parsePositiveInt(String val, int fallback) {
+        if (!StringUtils.hasText(val)) {
+            return fallback;
+        }
+        try {
+            int parsed = Integer.parseInt(val.trim());
+            return parsed > 0 ? parsed : fallback;
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
+    private Long parseLongOrNull(String val) {
+        if (!StringUtils.hasText(val)) {
+            return null;
+        }
+        try {
+            return Long.parseLong(val.trim());
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private record DecodedPayload(String preview, boolean hexPreview, int sizeBytes) {
     }
 
     /**

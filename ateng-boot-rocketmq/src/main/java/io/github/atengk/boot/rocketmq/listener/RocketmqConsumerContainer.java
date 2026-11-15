@@ -4,6 +4,7 @@ import io.github.atengk.boot.rocketmq.annotation.RocketmqListener;
 import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
+import io.github.atengk.boot.rocketmq.spi.RocketmqPoisonPillCallback;
 import jakarta.validation.Validator;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -11,6 +12,7 @@ import org.apache.rocketmq.client.apis.ClientConfiguration;
 import org.apache.rocketmq.client.apis.consumer.FilterExpression;
 import org.apache.rocketmq.client.apis.consumer.FilterExpressionType;
 import org.apache.rocketmq.client.apis.consumer.PushConsumer;
+import org.apache.rocketmq.client.apis.producer.Producer;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
@@ -58,6 +60,8 @@ public class RocketmqConsumerContainer implements
     private final PushConsumerFactory pushConsumerFactory;
     private final ObjectProvider<Validator> validatorProvider;
     private final Executor taskExecutor;
+    private final ObjectProvider<Producer> producerProvider;
+    private final ObjectProvider<RocketmqPoisonPillCallback> poisonPillCallbackProvider;
 
     private ApplicationContext applicationContext;
     private StringValueResolver stringValueResolver;
@@ -97,11 +101,49 @@ public class RocketmqConsumerContainer implements
             PushConsumerFactory pushConsumerFactory,
             ObjectProvider<Validator> validatorProvider,
             Executor taskExecutor) {
+        this(
+                properties,
+                clientConfigurationProvider,
+                pushConsumerFactory,
+                validatorProvider,
+                taskExecutor,
+                null,
+                null);
+    }
+
+    public RocketmqConsumerContainer(
+            AtengRocketmqProperties properties,
+            ObjectProvider<ClientConfiguration> clientConfigurationProvider,
+            PushConsumerFactory pushConsumerFactory,
+            ObjectProvider<Validator> validatorProvider,
+            ObjectProvider<Executor> taskExecutorProvider,
+            ObjectProvider<Producer> producerProvider,
+            ObjectProvider<RocketmqPoisonPillCallback> poisonPillCallbackProvider) {
+        this(
+                properties,
+                clientConfigurationProvider,
+                pushConsumerFactory,
+                validatorProvider,
+                taskExecutorProvider != null ? taskExecutorProvider.getIfAvailable() : null,
+                producerProvider,
+                poisonPillCallbackProvider);
+    }
+
+    public RocketmqConsumerContainer(
+            AtengRocketmqProperties properties,
+            ObjectProvider<ClientConfiguration> clientConfigurationProvider,
+            PushConsumerFactory pushConsumerFactory,
+            ObjectProvider<Validator> validatorProvider,
+            Executor taskExecutor,
+            ObjectProvider<Producer> producerProvider,
+            ObjectProvider<RocketmqPoisonPillCallback> poisonPillCallbackProvider) {
         this.properties = Objects.requireNonNull(properties, "properties 不能为空");
         this.clientConfigurationProvider = Objects.requireNonNull(clientConfigurationProvider, "clientConfigurationProvider 不能为空");
         this.pushConsumerFactory = Objects.requireNonNull(pushConsumerFactory, "pushConsumerFactory 不能为空");
         this.validatorProvider = validatorProvider;
         this.taskExecutor = taskExecutor;
+        this.producerProvider = producerProvider;
+        this.poisonPillCallbackProvider = poisonPillCallbackProvider;
     }
 
     public Executor getTaskExecutor() {
@@ -225,7 +267,10 @@ public class RocketmqConsumerContainer implements
                 method,
                 topic,
                 consumerGroup,
-                validator);
+                validator,
+                properties.getConsumer().isForwardPoisonPillToDlq(),
+                producerProvider,
+                poisonPillCallbackProvider);
 
         RocketmqListenerEndpoint endpoint = RocketmqListenerEndpoint.builder()
                 .id(id)

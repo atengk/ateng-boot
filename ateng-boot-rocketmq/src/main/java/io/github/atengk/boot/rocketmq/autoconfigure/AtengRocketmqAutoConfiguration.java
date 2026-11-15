@@ -10,6 +10,7 @@ import io.github.atengk.boot.rocketmq.container.RocketmqContainerManager;
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
+import io.github.atengk.boot.rocketmq.spi.RocketmqPoisonPillCallback;
 import io.github.atengk.boot.rocketmq.spi.RocketmqTransactionFailureCallback;
 import io.github.atengk.boot.rocketmq.template.RocketmqDeadLetterReplayTemplate;
 import io.github.atengk.boot.rocketmq.template.RocketmqSimpleConsumerTemplate;
@@ -185,13 +186,17 @@ public class AtengRocketmqAutoConfiguration {
             ObjectProvider<ClientConfiguration> clientConfigurationProvider,
             PushConsumerFactory pushConsumerFactory,
             ObjectProvider<Validator> validatorProvider,
-            ObjectProvider<Executor> taskExecutorProvider) {
+            ObjectProvider<Executor> taskExecutorProvider,
+            ObjectProvider<Producer> producerProvider,
+            ObjectProvider<RocketmqPoisonPillCallback> poisonPillCallbackProvider) {
         return new RocketmqConsumerContainer(
                 properties,
                 clientConfigurationProvider,
                 pushConsumerFactory,
                 validatorProvider,
-                taskExecutorProvider);
+                taskExecutorProvider,
+                producerProvider,
+                poisonPillCallbackProvider);
     }
 
     /**

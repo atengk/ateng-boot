@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.validation.ValidList;
+import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
+import io.github.atengk.boot.sample.rocketmq.consumer.SamplePoisonPillCallbackRecorder;
 import io.github.atengk.boot.sample.rocketmq.dto.*;
 import io.github.atengk.boot.sample.rocketmq.model.OrderMessage;
 import io.github.atengk.boot.sample.rocketmq.producer.TradeRocketmqProducer;
@@ -60,6 +62,9 @@ class SampleRocketmqWebControllerTest {
     @Autowired(required = false)
     private InMemoryRocketmqBroker testBroker;
 
+    @Autowired(required = false)
+    private SamplePoisonPillCallbackRecorder poisonPillCallbackRecorder;
+
     @AfterEach
     void tearDown() {
         MDC.clear();
@@ -71,6 +76,9 @@ class SampleRocketmqWebControllerTest {
         assertThat(TransactionSynchronizationManager.isSynchronizationActive()).isFalse();
         if (testBroker != null) {
             testBroker.clear();
+        }
+        if (poisonPillCallbackRecorder != null) {
+            poisonPillCallbackRecorder.clear();
         }
     }
 
@@ -1025,6 +1033,152 @@ class SampleRocketmqWebControllerTest {
 
         if (testBroker != null) {
             assertThat(testBroker.getAckedMessageIds()).contains("DLQ-WEB-DISCARD-001");
+        }
+    }
+
+    @Test
+    @DisplayName("测试 RocketmqDeadLetterController: 毒丸触发 -> %DLQ% 回调记录 -> 结构化诊断窥视 -> 重放诊断头清洗")
+    void testPoisonPillAndDiagnosedPeekController() throws Exception {
+        String poisonGroup = "sample_poison_group";
+        String auditReplayTopic = "sample_dlq_replay_audit_topic";
+
+        // 1. 依次投递 FATAL / VALIDATION / MALFORMED_JSON / CORRUPTED_GZIP 四种毒丸消息
+        DeadLetterPoisonPillRequest fatalReq = new DeadLetterPoisonPillRequest();
+        fatalReq.setMode("FATAL");
+        fatalReq.setOrderId("ORD-WEB-POISON-FATAL-001");
+        mockMvc.perform(post("/sample/rocketmq/dead-letter/poison-pill")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(fatalReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.tag").value("poison"))
+                .andExpect(jsonPath("$.data.status").value("POISON_PILL_DISPATCHED:FATAL"));
+
+        DeadLetterPoisonPillRequest validationReq = new DeadLetterPoisonPillRequest();
+        validationReq.setMode("VALIDATION");
+        validationReq.setOrderId("ORD-WEB-POISON-VALID-002");
+        mockMvc.perform(post("/sample/rocketmq/dead-letter/poison-pill")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(validationReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.status").value("POISON_PILL_DISPATCHED:VALIDATION"));
+
+        DeadLetterPoisonPillRequest malformedReq = new DeadLetterPoisonPillRequest();
+        malformedReq.setMode("MALFORMED_JSON");
+        malformedReq.setOrderId("ORD-WEB-POISON-JSON-003");
+        malformedReq.setRawPayload("{malformed-web-json");
+        mockMvc.perform(post("/sample/rocketmq/dead-letter/poison-pill")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(malformedReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.status").value("POISON_PILL_DISPATCHED:MALFORMED_JSON"));
+
+        DeadLetterPoisonPillRequest corruptedGzipReq = new DeadLetterPoisonPillRequest();
+        corruptedGzipReq.setMode("CORRUPTED_GZIP");
+        corruptedGzipReq.setOrderId("ORD-WEB-POISON-GZIP-004");
+        mockMvc.perform(post("/sample/rocketmq/dead-letter/poison-pill")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(corruptedGzipReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.status").value("POISON_PILL_DISPATCHED:CORRUPTED_GZIP"));
+
+        // 2. 非法毒丸模式被 JSR-303 @Pattern 拦截
+        DeadLetterPoisonPillRequest invalidModeReq = new DeadLetterPoisonPillRequest();
+        invalidModeReq.setMode("UNKNOWN_MODE");
+        mockMvc.perform(post("/sample/rocketmq/dead-letter/poison-pill")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidModeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 3. 验证 SamplePoisonPillCallbackRecorder 捕获全部 4 起毒丸转储事件
+        if (poisonPillCallbackRecorder != null) {
+            assertThat(poisonPillCallbackRecorder.getEvents()).hasSize(4);
+            assertThat(poisonPillCallbackRecorder.getEvents())
+                    .allSatisfy(event -> {
+                        assertThat(event.consumerGroup()).isEqualTo(poisonGroup);
+                        assertThat(event.dlqTopic()).isEqualTo(RocketmqConstants.DLQ_TOPIC_PREFIX + poisonGroup);
+                        assertThat(event.forwardedToDlq()).isTrue();
+                    });
+        }
+
+        // 4. 结构化诊断窥视 /dead-letter/peek-diagnosed
+        DeadLetterPeekRequest peekReq = DeadLetterPeekRequest.builder()
+                .consumerGroup(poisonGroup)
+                .limit(20)
+                .build();
+
+        String diagnosedResp = mockMvc.perform(post("/sample/rocketmq/dead-letter/peek-diagnosed")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(peekReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", hasSize(4)))
+                .andReturn()
+                .getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+
+        JsonNode diagnosedData = objectMapper.readTree(diagnosedResp).path("data");
+        assertThat(diagnosedData.findValuesAsText("reason"))
+                .containsExactlyInAnyOrder(
+                        "FATAL_EXCEPTION",
+                        "VALIDATION_FAILED",
+                        "DESERIALIZATION_FAILED",
+                        "GZIP_DECOMPRESS_FAILED"
+                );
+
+        JsonNode gzipRecord = null;
+        JsonNode jsonRecord = null;
+        for (JsonNode item : diagnosedData) {
+            if ("GZIP_DECOMPRESS_FAILED".equals(item.path("reason").asText())) {
+                gzipRecord = item;
+            } else if ("DESERIALIZATION_FAILED".equals(item.path("reason").asText())) {
+                jsonRecord = item;
+            }
+        }
+        assertThat(gzipRecord).isNotNull();
+        assertThat(gzipRecord.path("hexPreview").asBoolean()).isTrue();
+        assertThat(gzipRecord.path("payloadSizeBytes").asInt()).isEqualTo(8);
+        assertThat(gzipRecord.path("payloadAsString").asText()).startsWith("[HEX-PREVIEW size=8B]");
+
+        assertThat(jsonRecord).isNotNull();
+        assertThat(jsonRecord.path("hexPreview").asBoolean()).isFalse();
+        assertThat(jsonRecord.path("payloadAsString").asText()).isEqualTo("{malformed-web-json");
+
+        // 5. 受控重放至安全审计主题：非损坏载荷成功重放 (3条) 且历史故障诊断头已彻底剥离，损坏 GZIP 被防御拦截 (1条)
+        DeadLetterReplayRequest replayReq = DeadLetterReplayRequest.builder()
+                .consumerGroup(poisonGroup)
+                .limit(20)
+                .targetTopic(auditReplayTopic)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/dead-letter/replay")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(replayReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.successCount").value(3))
+                .andExpect(jsonPath("$.data.failedCount").value(1));
+
+        if (testBroker != null) {
+            List<MessageView> replayedMessages = testBroker.getSentMessages(auditReplayTopic);
+            assertThat(replayedMessages).hasSize(3);
+            assertThat(replayedMessages).allSatisfy(replayed -> {
+                Map<String, String> props = replayed.getProperties();
+                assertThat(props).doesNotContainKeys(
+                        RocketmqConstants.HEADER_DEAD_LETTER_REASON,
+                        RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_CLASS,
+                        RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_MESSAGE,
+                        RocketmqConstants.HEADER_DEAD_LETTER_TIMESTAMP,
+                        RocketmqConstants.HEADER_DEAD_LETTER_DELIVERY_ATTEMPT
+                );
+                assertThat(props).containsEntry(RocketmqConstants.HEADER_DEAD_LETTER_REPLAYED, "true");
+                assertThat(props).containsEntry(RocketmqConstants.HEADER_DEAD_LETTER_REPLAY_COUNT, "1");
+            });
         }
     }
 }

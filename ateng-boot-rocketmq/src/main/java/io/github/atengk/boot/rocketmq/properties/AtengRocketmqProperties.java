@@ -209,6 +209,11 @@ public class AtengRocketmqProperties {
          * 优雅停机排空在途消费消息的最大等待超时时间（默认 15s）
          */
         private Duration closeTimeout = Duration.ofSeconds(15);
+
+        /**
+         * 消费端捕获不可自愈毒丸异常时是否自动附加诊断头转储至 {@code %DLQ%<ConsumerGroup>}（默认 true）
+         */
+        private boolean forwardPoisonPillToDlq = true;
     }
 
     /**
