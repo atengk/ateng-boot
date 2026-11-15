@@ -19,6 +19,9 @@ import org.apache.kafka.common.internals.KafkaFutureImpl;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.clients.producer.Callback;
+import org.apache.kafka.clients.producer.Producer;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.PartitionInfo;
@@ -26,6 +29,8 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -33,10 +38,13 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.MDC;
 import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.kafka.support.SendResult;
+import org.springframework.kafka.support.serializer.JsonSerializer;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -424,5 +432,133 @@ class KafkaDeadLetterReplayTemplateTest {
                 .isInstanceOf(MessageDeliveryException.class)
                 .hasRootCause(rootBrokerError);
         verify(adminClient).close();
+    }
+
+    @Test
+    @DisplayName("非 ByteArraySerializer 工厂重放：自动派生 ByteArraySerializer 通道避免 String/Json 序列化崩溃并支持生命周期销毁")
+    @SuppressWarnings("unchecked")
+    void testReplayDerivesByteArraySerializerFactoryWhenNonByteArrayConfigured() throws Exception {
+        String dlqTopic = "order.create.topic.DLT";
+        String targetTopic = "order.create.topic";
+
+        PartitionInfo pi = new PartitionInfo(dlqTopic, 0, null, null, null);
+        when(consumer.partitionsFor(dlqTopic)).thenReturn(List.of(pi));
+
+        byte[] rawKey = "dlt-key-1".getBytes(StandardCharsets.UTF_8);
+        byte[] rawValue = "{\"orderId\":\"ORD-1\"}".getBytes(StandardCharsets.UTF_8);
+        ConsumerRecord<byte[], byte[]> dltRecord = new ConsumerRecord<>(dlqTopic, 0, 5L, rawKey, rawValue);
+        TopicPartition tp = new TopicPartition(dlqTopic, 0);
+        when(consumer.poll(any(Duration.class))).thenReturn(
+                new ConsumerRecords<>(Map.of(tp, List.of(dltRecord))),
+                new ConsumerRecords<>(Collections.emptyMap())
+        );
+
+        Producer<Object, Object> rawProducer = mock(Producer.class);
+        RecordMetadata metadata = new RecordMetadata(new TopicPartition(targetTopic, 0), 1L, 0, 0L, 0, 0);
+        when(rawProducer.send(any(ProducerRecord.class), any(Callback.class))).thenAnswer(inv -> {
+            Callback cb = inv.getArgument(1);
+            if (cb != null) {
+                cb.onCompletion(metadata, null);
+            }
+            return CompletableFuture.completedFuture(metadata);
+        });
+
+        Map<String, Object> baseConfigs = Map.of(
+                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "127.0.0.1:9092",
+                ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
+                ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class
+        );
+        final DefaultKafkaProducerFactory<Object, Object>[] capturedCopy = new DefaultKafkaProducerFactory[1];
+        DefaultKafkaProducerFactory<Object, Object> baseFactory = new DefaultKafkaProducerFactory<>(baseConfigs) {
+            @Override
+            public ProducerFactory<Object, Object> copyWithConfigurationOverride(Map<String, Object> overrideConfigs) {
+                Map<String, Object> merged = new java.util.HashMap<>(getConfigurationProperties());
+                merged.putAll(overrideConfigs);
+                DefaultKafkaProducerFactory<Object, Object> copy = spy(new DefaultKafkaProducerFactory<>(merged) {
+                    @Override
+                    protected Producer<Object, Object> createRawProducer(Map<String, Object> rawConfigs) {
+                        return rawProducer;
+                    }
+                });
+                capturedCopy[0] = copy;
+                return copy;
+            }
+        };
+
+        KafkaTemplate<Object, Object> realTemplate = spy(new KafkaTemplate<>(baseFactory));
+        try (KafkaDeadLetterReplayTemplate replayTemplate =
+                     new KafkaDeadLetterReplayTemplate(consumerFactory, realTemplate, kafkaAdmin, properties)) {
+            int replayed = replayTemplate.replay(dlqTopic, targetTopic, 10);
+            assertThat(replayed).isEqualTo(1);
+
+            verify(realTemplate, never()).send(any(ProducerRecord.class));
+            assertThat(capturedCopy[0]).isNotNull();
+            assertThat(capturedCopy[0].getConfigurationProperties())
+                    .containsEntry(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class)
+                    .containsEntry(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
+            assertThat(capturedCopy[0].getKeySerializerSupplier().get()).isInstanceOf(ByteArraySerializer.class);
+            assertThat(capturedCopy[0].getValueSerializerSupplier().get()).isInstanceOf(ByteArraySerializer.class);
+
+            ArgumentCaptor<ProducerRecord<Object, Object>> sentCaptor = ArgumentCaptor.forClass(ProducerRecord.class);
+            verify(rawProducer).send(sentCaptor.capture(), any(Callback.class));
+            assertThat(sentCaptor.getValue().topic()).isEqualTo(targetTopic);
+            assertThat(sentCaptor.getValue().key()).isEqualTo(rawKey);
+            assertThat(sentCaptor.getValue().value()).isEqualTo(rawValue);
+        }
+
+        verify(capturedCopy[0]).destroy();
+    }
+
+    @Test
+    @DisplayName("已配置 ByteArraySerializer 工厂重放：直接复用主 KafkaTemplate 不重复派生工厂")
+    @SuppressWarnings("unchecked")
+    void testReplayReusesMainTemplateWhenByteArraySerializerAlreadyConfigured() {
+        String dlqTopic = "order.create.topic.DLT";
+        String targetTopic = "order.create.topic";
+
+        PartitionInfo pi = new PartitionInfo(dlqTopic, 0, null, null, null);
+        when(consumer.partitionsFor(dlqTopic)).thenReturn(List.of(pi));
+
+        ConsumerRecord<byte[], byte[]> dltRecord = new ConsumerRecord<>(
+                dlqTopic, 0, 5L,
+                "k".getBytes(StandardCharsets.UTF_8),
+                "v".getBytes(StandardCharsets.UTF_8)
+        );
+        TopicPartition tp = new TopicPartition(dlqTopic, 0);
+        when(consumer.poll(any(Duration.class))).thenReturn(
+                new ConsumerRecords<>(Map.of(tp, List.of(dltRecord))),
+                new ConsumerRecords<>(Collections.emptyMap())
+        );
+
+        Producer<Object, Object> rawProducer = mock(Producer.class);
+        RecordMetadata metadata = new RecordMetadata(new TopicPartition(targetTopic, 0), 1L, 0, 0L, 0, 0);
+        when(rawProducer.send(any(ProducerRecord.class), any(Callback.class))).thenAnswer(inv -> {
+            Callback cb = inv.getArgument(1);
+            if (cb != null) {
+                cb.onCompletion(metadata, null);
+            }
+            return CompletableFuture.completedFuture(metadata);
+        });
+
+        Map<String, Object> byteArrayConfigs = Map.of(
+                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "127.0.0.1:9092",
+                ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class,
+                ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class
+        );
+        DefaultKafkaProducerFactory<Object, Object> byteArrayFactory = spy(new DefaultKafkaProducerFactory<>(byteArrayConfigs) {
+            @Override
+            protected Producer<Object, Object> createRawProducer(Map<String, Object> rawConfigs) {
+                return rawProducer;
+            }
+        });
+
+        KafkaTemplate<Object, Object> directTemplate = spy(new KafkaTemplate<>(byteArrayFactory));
+        KafkaDeadLetterReplayTemplate directReplayTemplate =
+                new KafkaDeadLetterReplayTemplate(consumerFactory, directTemplate, kafkaAdmin, properties);
+        int replayed = directReplayTemplate.replay(dlqTopic, targetTopic, 10);
+
+        assertThat(replayed).isEqualTo(1);
+        verify(directTemplate, times(1)).send(any(ProducerRecord.class));
+        verify(byteArrayFactory, never()).copyWithConfigurationOverride(anyMap());
     }
 }

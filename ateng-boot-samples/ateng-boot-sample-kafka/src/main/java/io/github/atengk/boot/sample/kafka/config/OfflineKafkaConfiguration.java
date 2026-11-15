@@ -85,6 +85,20 @@ public class OfflineKafkaConfiguration {
                     protected Producer<Object, Object> createRawProducer(Map<String, Object> rawConfigs) {
                         return OfflineKafkaProxyFactory.createProducer(broker);
                     }
+
+                    @Override
+                    public ProducerFactory<Object, Object> copyWithConfigurationOverride(Map<String, Object> overrideConfigs) {
+                        Map<String, Object> merged = new LinkedHashMap<>(getConfigurationProperties());
+                        if (overrideConfigs != null) {
+                            merged.putAll(overrideConfigs);
+                        }
+                        return new DefaultKafkaProducerFactory<>(merged) {
+                            @Override
+                            protected Producer<Object, Object> createRawProducer(Map<String, Object> rawConfigs) {
+                                return OfflineKafkaProxyFactory.createProducer(broker);
+                            }
+                        };
+                    }
                 };
         customizers.orderedStream().forEach(customizer -> customizer.customize(factory));
         return factory;

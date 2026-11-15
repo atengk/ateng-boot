@@ -24,9 +24,15 @@ import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.apache.kafka.common.serialization.Serializer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.util.Assert;
 
 import java.nio.charset.StandardCharsets;
@@ -39,6 +45,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -53,7 +60,7 @@ import java.util.function.Supplier;
  * @since 2026-10-29
  */
 @Slf4j
-public class KafkaDeadLetterReplayTemplate {
+public class KafkaDeadLetterReplayTemplate implements DisposableBean, AutoCloseable {
 
     public static final String HEADER_X_DEAD_LETTER_REPLAYED = KafkaDeadLetterHelper.HEADER_X_DEAD_LETTER_REPLAYED;
     public static final String HEADER_X_REPLAY_TIME = KafkaDeadLetterHelper.HEADER_X_REPLAY_TIME;
@@ -74,6 +81,9 @@ public class KafkaDeadLetterReplayTemplate {
     private final KafkaAdmin kafkaAdmin;
     private final AtengKafkaProperties properties;
     private final Supplier<AdminClient> adminClientSupplier;
+    private final ReentrantLock replayTemplateLock = new ReentrantLock();
+    private volatile KafkaTemplate<Object, Object> rawReplayKafkaTemplate;
+    private ProducerFactory<Object, Object> rawReplayProducerFactory;
 
     @SuppressWarnings("unchecked")
     public KafkaDeadLetterReplayTemplate(
@@ -373,9 +383,10 @@ public class KafkaDeadLetterReplayTemplate {
                     // 3. 安全清洗原始错误头并注入重放溯源元数据
                     ProducerRecord<Object, Object> preparedRecord = prepareReplayRecord(record, targetTopic, currentReplayCount + 1, dlqTopic);
 
-                    // 4. 发送到目标业务主题
+                    // 4. 使用原始字节序列化通道发送到目标业务主题（防止 StringSerializer 报错或 JsonSerializer 二次编码）
                     try {
-                        kafkaTemplate.send(preparedRecord).get(properties.getProducer().getSendTimeout().toMillis(), TimeUnit.MILLISECONDS);
+                        KafkaTemplate<Object, Object> replaySender = resolveReplayTemplate();
+                        replaySender.send(preparedRecord).get(properties.getProducer().getSendTimeout().toMillis(), TimeUnit.MILLISECONDS);
                     } catch (Exception ex) {
                         log.error("[MQ-DLT-REPLAY-FAILED] 重发消息至目标主题失败: targetTopic={}, partition={}, offset={}, error={}",
                                 targetTopic, record.partition(), record.offset(), ex.getMessage(), ex);
@@ -576,5 +587,121 @@ public class KafkaDeadLetterReplayTemplate {
                 record.value(),
                 newHeaders
         );
+    }
+
+    /**
+     * 解析支持原始 {@code byte[]} 键值发送的重放模板；
+     * 若主 {@link KafkaTemplate} 底层工厂未配置或已兼容 {@link ByteArraySerializer}，则直接复用主模板
+     */
+    @SuppressWarnings("unchecked")
+    private KafkaTemplate<Object, Object> resolveReplayTemplate() {
+        KafkaTemplate<Object, Object> cached = this.rawReplayKafkaTemplate;
+        if (cached != null) {
+            return cached;
+        }
+        ProducerFactory<Object, Object> baseFactory = this.kafkaTemplate.getProducerFactory();
+        if (baseFactory == null || isByteArraySerializerFactory(baseFactory)) {
+            return this.kafkaTemplate;
+        }
+        this.replayTemplateLock.lock();
+        try {
+            if (this.rawReplayKafkaTemplate != null) {
+                return this.rawReplayKafkaTemplate;
+            }
+            Map<String, Object> serializerOverrides = new HashMap<>(4);
+            serializerOverrides.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
+            serializerOverrides.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
+
+            ProducerFactory<Object, Object> replayFactory = createRawReplayProducerFactory(baseFactory, serializerOverrides);
+            if (replayFactory == null) {
+                return this.kafkaTemplate;
+            }
+            if (replayFactory instanceof DefaultKafkaProducerFactory<?, ?> rawDefaultFactory) {
+                DefaultKafkaProducerFactory<Object, Object> defaultFactory =
+                        (DefaultKafkaProducerFactory<Object, Object>) rawDefaultFactory;
+                Supplier<Serializer<Object>> rawSerializerSupplier = createByteArraySerializerSupplier();
+                defaultFactory.setKeySerializerSupplier(rawSerializerSupplier);
+                defaultFactory.setValueSerializerSupplier(rawSerializerSupplier);
+            }
+
+            KafkaTemplate<Object, Object> template = new KafkaTemplate<>(replayFactory);
+            template.setAllowNonTransactional(true);
+            this.rawReplayProducerFactory = replayFactory;
+            this.rawReplayKafkaTemplate = template;
+            log.debug("[MQ-DLT-REPLAY] 已初始化原始字节序列化专用重放 KafkaTemplate (ByteArraySerializer)");
+            return template;
+        } finally {
+            this.replayTemplateLock.unlock();
+        }
+    }
+
+    private static ProducerFactory<Object, Object> createRawReplayProducerFactory(
+            ProducerFactory<Object, Object> baseFactory,
+            Map<String, Object> serializerOverrides) {
+        try {
+            return baseFactory.copyWithConfigurationOverride(serializerOverrides);
+        } catch (UnsupportedOperationException ex) {
+            Map<String, Object> baseConfigs = baseFactory.getConfigurationProperties();
+            if (baseConfigs == null || baseConfigs.isEmpty()) {
+                return null;
+            }
+            Map<String, Object> mergedConfigs = new HashMap<>(baseConfigs);
+            mergedConfigs.putAll(serializerOverrides);
+            Supplier<Serializer<Object>> rawSerializerSupplier = createByteArraySerializerSupplier();
+            return new DefaultKafkaProducerFactory<>(mergedConfigs, rawSerializerSupplier, rawSerializerSupplier);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Supplier<Serializer<Object>> createByteArraySerializerSupplier() {
+        return () -> (Serializer<Object>) (Serializer<?>) new ByteArraySerializer();
+    }
+
+    private static boolean isByteArraySerializerFactory(ProducerFactory<?, ?> factory) {
+        return isByteArraySerializerConfigured(
+                factory.getKeySerializer(),
+                factory.getConfigurationProperties().get(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG))
+                && isByteArraySerializerConfigured(
+                factory.getValueSerializer(),
+                factory.getConfigurationProperties().get(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG));
+    }
+
+    private static boolean isByteArraySerializerConfigured(Serializer<?> serializerInstance, Object configuredClassOrName) {
+        if (serializerInstance != null) {
+            return serializerInstance instanceof ByteArraySerializer;
+        }
+        if (configuredClassOrName instanceof Class<?> clazz) {
+            return ByteArraySerializer.class.equals(clazz);
+        }
+        if (configuredClassOrName instanceof String className) {
+            return ByteArraySerializer.class.getName().equals(className);
+        }
+        return false;
+    }
+
+    /**
+     * 销毁内部按需创建的原始字节重放 {@link ProducerFactory} 资源
+     */
+    @Override
+    public void destroy() throws Exception {
+        this.replayTemplateLock.lock();
+        try {
+            this.rawReplayKafkaTemplate = null;
+            ProducerFactory<Object, Object> factoryToClose = this.rawReplayProducerFactory;
+            this.rawReplayProducerFactory = null;
+            if (factoryToClose instanceof DisposableBean disposable) {
+                disposable.destroy();
+            }
+        } finally {
+            this.replayTemplateLock.unlock();
+        }
+    }
+
+    /**
+     * 关闭并释放内部死信重放生产者资源
+     */
+    @Override
+    public void close() throws Exception {
+        destroy();
     }
 }
