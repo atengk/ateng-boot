@@ -2,6 +2,7 @@ package io.github.atengk.boot.rocketmq.template;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.exception.MessageDeliveryException;
 import io.github.atengk.boot.core.util.BatchSliceUtil;
@@ -529,31 +530,137 @@ public class RocketmqTemplate {
             String bizKey,
             Object payload,
             Map<String, String> userProperties) {
+        String trimmedTopic = validateAndTrimTopic(topic);
+        Assert.notNull(payload, "payload 不能为空");
         String finalBizKey = RocketmqMessageHelper.resolveBizKey(bizKey, payload);
+        Message preparedMessage = buildMessage(trimmedTopic, tag, finalBizKey, payload, null, null, userProperties);
+
         if (TransactionSynchronizationManager.isActualTransactionActive() && TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    try {
-                        send(topic, tag, finalBizKey, payload, userProperties);
-                    } catch (Exception ex) {
-                        log.error("[MQ-TRANSACTION-POST-COMMIT-FAILED] topic={} tag={} bizKey={} 本地数据库事务已成功提交，但发信失败！",
-                                topic, tag, finalBizKey, ex);
-                        if (failureCallbackProvider != null) {
-                            RocketmqTransactionFailureCallback callback = failureCallbackProvider.getIfAvailable();
-                            if (callback != null) {
-                                try {
-                                    callback.onFailure(topic, finalBizKey, payload, ex);
-                                } catch (Exception cbEx) {
-                                    log.error("[MQ-TRANSACTION-FAILURE-CALLBACK-ERROR] 回调 RocketmqTransactionFailureCallback 异常", cbEx);
-                                }
-                            }
-                        }
-                    }
+            registerAfterCommitWithContext(() -> {
+                String traceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
+                sendPreparedAfterCommitItem(preparedMessage, trimmedTopic, tag, finalBizKey, payload, traceId);
+            });
+        } else {
+            doSendSync(preparedMessage, trimmedTopic, tag, finalBizKey);
+        }
+    }
+
+    private void registerAfterCommitWithContext(Runnable action) {
+        AsyncContext.ContextSnapshot capturedSnapshot = AsyncContext.capture();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                AsyncContext.ContextSnapshot previousSnapshot = AsyncContext.capturePrevious();
+                try {
+                    capturedSnapshot.apply();
+                    action.run();
+                } finally {
+                    previousSnapshot.restore();
+                }
+            }
+        });
+    }
+
+    private void sendPreparedAfterCommitItem(
+            Message message,
+            String topic,
+            String tag,
+            String bizKey,
+            Object payload,
+            String traceId) {
+        try {
+            doSendSync(message, topic, tag, bizKey);
+        } catch (Exception ex) {
+            log.error("[MQ-TRANSACTION-POST-COMMIT-FAILED] topic={} tag={} bizKey={} traceId={} 本地数据库事务已成功提交，但发信失败！",
+                    topic, tag, bizKey, traceId, ex);
+            notifyTransactionFailureCallback(topic, tag, bizKey, payload, traceId, ex);
+        }
+    }
+
+    private void notifyTransactionFailureCallback(
+            String topic,
+            String tag,
+            String bizKey,
+            Object payload,
+            String traceId,
+            Exception ex) {
+        if (failureCallbackProvider == null) {
+            return;
+        }
+        RocketmqTransactionFailureCallback callback = failureCallbackProvider.getIfAvailable();
+        if (callback == null) {
+            return;
+        }
+        try {
+            callback.onFailure(topic, tag, bizKey, payload, traceId, ex);
+        } catch (Exception cbEx) {
+            log.error("[MQ-TRANSACTION-FAILURE-CALLBACK-ERROR] 回调 RocketmqTransactionFailureCallback 异常: topic={}, tag={}, bizKey={}, traceId={}",
+                    topic, tag, bizKey, traceId, cbEx);
+        }
+    }
+
+    /**
+     * 事务提交后批量可靠发送消息（默认无 Tag、无扩展属性）
+     *
+     * @param topic    目标主题
+     * @param payloads 消息载荷列表
+     */
+    public void sendBatchAfterCommit(String topic, List<?> payloads) {
+        sendBatchAfterCommit(topic, null, payloads, null);
+    }
+
+    /**
+     * 事务提交后批量可靠发送消息（携带 SQL92 自定义扩展属性，免传 Tag）
+     *
+     * @param topic          目标主题
+     * @param payloads       消息载荷列表
+     * @param userProperties 自定义扩展属性（系统/追踪保留头将被安全过滤）
+     */
+    public void sendBatchAfterCommit(String topic, List<?> payloads, Map<String, String> userProperties) {
+        sendBatchAfterCommit(topic, null, payloads, userProperties);
+    }
+
+    /**
+     * 事务提交后批量可靠发送消息（指定 Tag）
+     *
+     * @param topic    目标主题
+     * @param tag      消息标签
+     * @param payloads 消息载荷列表
+     */
+    public void sendBatchAfterCommit(String topic, String tag, List<?> payloads) {
+        sendBatchAfterCommit(topic, tag, payloads, null);
+    }
+
+    /**
+     * 事务提交后批量可靠发送消息（注册期前置两阶段校验并固化四维上下文快照，提交后逐条发送并独立隔离补偿失败消息）
+     *
+     * @param topic          目标主题
+     * @param tag            消息标签
+     * @param payloads       消息载荷列表（空集或 null 直接返回且不注册同步器；含 null 元素或超限将同步 Fail-Fast 促使本地事务回滚）
+     * @param userProperties 自定义扩展属性（系统/追踪保留头将被安全过滤）
+     */
+    public void sendBatchAfterCommit(
+            String topic,
+            String tag,
+            List<?> payloads,
+            Map<String, String> userProperties) {
+        String trimmedTopic = validateAndTrimTopic(topic);
+        if (payloads == null || payloads.isEmpty()) {
+            return;
+        }
+        List<PreparedBatchItem> preparedItems = prepareBatchItems(trimmedTopic, tag, payloads, userProperties);
+
+        if (TransactionSynchronizationManager.isActualTransactionActive() && TransactionSynchronizationManager.isSynchronizationActive()) {
+            registerAfterCommitWithContext(() -> {
+                String traceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
+                for (PreparedBatchItem item : preparedItems) {
+                    sendPreparedAfterCommitItem(item.message(), trimmedTopic, tag, item.bizKey(), item.payload(), traceId);
                 }
             });
         } else {
-            send(topic, tag, finalBizKey, payload, userProperties);
+            List<Message> preparedMessages = extractPreparedMessages(preparedItems);
+            awaitBatchFuture(trimmedTopic, preparedItems.size(), null,
+                    dispatchPreparedBatchAsync(trimmedTopic, tag, preparedMessages));
         }
     }
 
@@ -813,6 +920,14 @@ public class RocketmqTemplate {
         if (payloads == null || payloads.isEmpty()) {
             return batchFuture.join();
         }
+        return awaitBatchFuture(topic, payloads.size(), timeout, batchFuture);
+    }
+
+    private List<SendReceipt> awaitBatchFuture(
+            String topic,
+            int batchSize,
+            Duration timeout,
+            CompletableFuture<List<SendReceipt>> batchFuture) {
         Duration effectiveTimeout = (timeout != null && !timeout.isZero() && !timeout.isNegative())
                 ? timeout : properties.getProducer().getSendTimeout();
 
@@ -824,7 +939,7 @@ public class RocketmqTemplate {
                     topic,
                     null,
                     CommonResultCode.INTERNAL_SERVER_ERROR,
-                    String.format("RocketMQ 批量发送等待超时 (%s): topic=%s, batchSize=%d", effectiveTimeout, topic, payloads.size()),
+                    String.format("RocketMQ 批量发送等待超时 (%s): topic=%s, batchSize=%d", effectiveTimeout, topic, batchSize),
                     ex);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
@@ -833,7 +948,7 @@ public class RocketmqTemplate {
                     topic,
                     null,
                     CommonResultCode.INTERNAL_SERVER_ERROR,
-                    String.format("RocketMQ 批量发送等待被中断: topic=%s, batchSize=%d", topic, payloads.size()),
+                    String.format("RocketMQ 批量发送等待被中断: topic=%s, batchSize=%d", topic, batchSize),
                     ex);
         } catch (Exception ex) {
             Throwable cause = unwrapExecutionCause(ex);
@@ -906,23 +1021,48 @@ public class RocketmqTemplate {
         if (payloads == null || payloads.isEmpty()) {
             return CompletableFuture.completedFuture(Collections.emptyList());
         }
+        List<PreparedBatchItem> preparedItems = prepareBatchItems(trimmedTopic, tag, payloads, userProperties);
+        List<Message> preparedMessages = extractPreparedMessages(preparedItems);
+        return dispatchPreparedBatchAsync(trimmedTopic, tag, preparedMessages);
+    }
+
+    private List<PreparedBatchItem> prepareBatchItems(
+            String trimmedTopic,
+            String tag,
+            List<?> payloads,
+            Map<String, String> userProperties) {
         int maxBatchSize = properties.getProducer().getMaxBatchSize();
         Assert.isTrue(maxBatchSize > 0, "maxBatchSize 必须大于 0");
         Assert.isTrue(payloads.size() <= maxBatchSize,
                 String.format("批量发送消息数量 [%d] 超出配置上限 [%d]", payloads.size(), maxBatchSize));
-        int batchSliceSize = properties.getProducer().getBatchSliceSize();
-        Assert.isTrue(batchSliceSize > 0, "batchSliceSize 必须大于 0");
 
-        // 1. 第一阶段前置全量校验：检查无空元素、编码压缩后单条载荷上限，任一失败立即 Fail-Fast（零底层发送）
-        List<Message> preparedMessages = new ArrayList<>(payloads.size());
+        List<PreparedBatchItem> preparedItems = new ArrayList<>(payloads.size());
         for (int i = 0; i < payloads.size(); i++) {
             Object payload = payloads.get(i);
             if (payload == null) {
                 throw new IllegalArgumentException("批量发送消息列表中存在 null 元素: index=" + i);
             }
             String finalBizKey = RocketmqMessageHelper.resolveBizKey(null, payload);
-            preparedMessages.add(buildMessage(trimmedTopic, tag, finalBizKey, payload, null, null, userProperties));
+            Message message = buildMessage(trimmedTopic, tag, finalBizKey, payload, null, null, userProperties);
+            preparedItems.add(new PreparedBatchItem(finalBizKey, payload, message));
         }
+        return preparedItems;
+    }
+
+    private List<Message> extractPreparedMessages(List<PreparedBatchItem> preparedItems) {
+        List<Message> messages = new ArrayList<>(preparedItems.size());
+        for (PreparedBatchItem item : preparedItems) {
+            messages.add(item.message());
+        }
+        return messages;
+    }
+
+    private CompletableFuture<List<SendReceipt>> dispatchPreparedBatchAsync(
+            String trimmedTopic,
+            String tag,
+            List<Message> preparedMessages) {
+        int batchSliceSize = properties.getProducer().getBatchSliceSize();
+        Assert.isTrue(batchSliceSize > 0, "batchSliceSize 必须大于 0");
 
         // 2. 第二阶段自动分片并发投递：复用 BatchSliceUtil 按 batchSliceSize 切分并汇聚按序回执（异常统一因果转译）
         long startTime = System.currentTimeMillis();
@@ -958,6 +1098,9 @@ public class RocketmqTemplate {
                             trimmedTopic, tag != null ? tag : "", preparedMessages.size(), slices.size(), batchSliceSize, cost);
                     return Collections.unmodifiableList(receipts);
                 });
+    }
+
+    private record PreparedBatchItem(String bizKey, Object payload, Message message) {
     }
 
     private CompletableFuture<List<SendReceipt>> dispatchBatchSliceAsync(List<Message> slice) {

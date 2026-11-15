@@ -3,6 +3,7 @@ package io.github.atengk.boot.rocketmq.template;
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.MessageDeliveryException;
 import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.helper.RocketmqMessageHelper;
@@ -54,7 +55,7 @@ import static org.mockito.Mockito.*;
  * @since 2026-10-22
  */
 @DisplayName("RocketmqTemplate 生产门面单元测试")
-class RocketmqTemplateTest {
+public class RocketmqTemplateTest {
 
     private Producer producer;
     private AtengRocketmqProperties properties;
@@ -84,6 +85,7 @@ class RocketmqTemplateTest {
     void tearDown() {
         MDC.clear();
         TenantContextHolder.clear();
+        UserContextHolder.clear();
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.clearSynchronization();
         }
@@ -319,6 +321,263 @@ class RocketmqTemplateTest {
             assertThat(callbackInvoked).isTrue();
         } finally {
             TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    @DisplayName("验证事务失败回调 SPI：既有 4 参实现向后兼容，新 6 参实现可获取完整 tag 与 traceId")
+    void testTransactionFailureCallbackSixParamBackwardCompatibility() {
+        RuntimeException rootCause = new RuntimeException("Broker unavailable");
+        List<String> legacyCaptured = new ArrayList<>();
+        RocketmqTransactionFailureCallback legacyCallback = (topic, bizKey, payload, cause) ->
+                legacyCaptured.add(topic + "|" + bizKey + "|" + payload + "|" + cause.getMessage());
+
+        legacyCallback.onFailure("order_topic", "create", "ORD-404", "payload-4", "trace-4", rootCause);
+        assertThat(legacyCaptured).containsExactly("order_topic|ORD-404|payload-4|Broker unavailable");
+
+        List<String> sixParamCaptured = new ArrayList<>();
+        RocketmqTransactionFailureCallback modernCallback = new RocketmqTransactionFailureCallback() {
+            @Override
+            public void onFailure(String topic, String bizKey, Object payload, Throwable cause) {
+                throw new AssertionError("Should invoke 6-param override directly");
+            }
+
+            @Override
+            public void onFailure(String topic, String tag, String bizKey, Object payload, String traceId, Throwable cause) {
+                sixParamCaptured.add(topic + "|" + tag + "|" + bizKey + "|" + payload + "|" + traceId + "|" + cause.getMessage());
+            }
+        };
+
+        modernCallback.onFailure("order_topic", "pay", "ORD-500", "payload-6", "trace-6", rootCause);
+        assertThat(sixParamCaptured).containsExactly("order_topic|pay|ORD-500|payload-6|trace-6|Broker unavailable");
+    }
+
+    @Test
+    @DisplayName("验证 sendAfterCommit 四维上下文固化与还原：注册期快照隔离后置线程变更并透传至 6 参失败回调")
+    void testSendAfterCommitCapturesAndRestores4DContext() throws Exception {
+        AtomicBoolean sixParamCalled = new AtomicBoolean(false);
+        List<String> observedCallbackContext = new ArrayList<>();
+        RocketmqTransactionFailureCallback modernCallback = new RocketmqTransactionFailureCallback() {
+            @Override
+            public void onFailure(String topic, String bizKey, Object payload, Throwable cause) {
+                throw new AssertionError("Should invoke 6-param overload");
+            }
+
+            @Override
+            public void onFailure(String topic, String tag, String bizKey, Object payload, String traceId, Throwable cause) {
+                sixParamCalled.set(true);
+                observedCallbackContext.add(String.join("|",
+                        topic,
+                        String.valueOf(tag),
+                        bizKey,
+                        String.valueOf(traceId),
+                        String.valueOf(TenantContextHolder.getTenantId()),
+                        String.valueOf(UserContextHolder.getUserId()),
+                        String.valueOf(TenantContextHolder.isIgnoreTenant())));
+            }
+        };
+
+        RocketmqTemplate txTemplate = new RocketmqTemplate(producer, properties, modernCallback);
+
+        // 注册时刻设置完整四维上下文
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-reg-001");
+        TenantContextHolder.setTenantId("tenant-reg-01");
+        UserContextHolder.setUserId("user-reg-01");
+        TenantContextHolder.setIgnoreTenant(true);
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            // 1. 合法消息注册后置发送，捕获注册期上下文
+            txTemplate.sendAfterCommit("tx_ctx_topic", "create", "BIZ-CTX-1", "ok-payload", null);
+
+            // 2. 非法载荷前置 Fail-Fast：不得新增同步器
+            int syncCountBeforeInvalid = TransactionSynchronizationManager.getSynchronizations().size();
+            assertThatThrownBy(() -> txTemplate.sendAfterCommit("tx_ctx_topic", "create", "BIZ-NULL", null, null))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThat(TransactionSynchronizationManager.getSynchronizations()).hasSize(syncCountBeforeInvalid);
+
+            // 3. 模拟注册之后、commit 之前线程上下文被污染或篡改
+            MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-other-999");
+            TenantContextHolder.setTenantId("tenant-other-99");
+            UserContextHolder.setUserId("user-other-99");
+            TenantContextHolder.setIgnoreTenant(false);
+
+            // 触发成功发送并校验报文四维头来自注册期
+            when(producer.send(any(Message.class)))
+                    .thenReturn(mockReceipt)
+                    .thenThrow(new RuntimeException("Simulated commit send failure"));
+
+            TransactionSynchronization firstSync = TransactionSynchronizationManager.getSynchronizations().get(0);
+            firstSync.afterCommit();
+
+            ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
+            verify(producer, times(1)).send(captor.capture());
+            Map<String, String> sentProps = captor.getValue().getProperties();
+            assertThat(sentProps).containsEntry(MessageHeaderConstants.TRACE_ID, "trace-reg-001");
+            assertThat(sentProps).containsEntry(MessageHeaderConstants.TENANT_ID, "tenant-reg-01");
+            assertThat(sentProps).containsEntry(MessageHeaderConstants.USER_ID, "user-reg-01");
+            assertThat(sentProps).containsEntry(MessageHeaderConstants.IGNORE_TENANT, "true");
+
+            // 严格验证 finally 还原为 commit 线程原有上下文（未残留注册期快照）
+            assertThat(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY)).isEqualTo("trace-other-999");
+            assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant-other-99");
+            assertThat(UserContextHolder.getUserId()).isEqualTo("user-other-99");
+            assertThat(TenantContextHolder.isIgnoreTenant()).isFalse();
+
+            // 4. 再注册一条失败消息并在清空上下文环境下触发 afterCommit，校验 6 参回调与 finally 清空
+            MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-reg-fail");
+            TenantContextHolder.setTenantId("tenant-reg-fail");
+            UserContextHolder.setUserId("user-reg-fail");
+            TenantContextHolder.setIgnoreTenant(true);
+            txTemplate.sendAfterCommit("tx_ctx_topic", "failTag", "BIZ-CTX-FAIL", "fail-payload", null);
+
+            MDC.clear();
+            TenantContextHolder.clear();
+            UserContextHolder.clear();
+
+            List<TransactionSynchronization> syncs = TransactionSynchronizationManager.getSynchronizations();
+            syncs.get(syncs.size() - 1).afterCommit();
+
+            assertThat(sixParamCalled).isTrue();
+            assertThat(observedCallbackContext)
+                    .containsExactly("tx_ctx_topic|failTag|BIZ-CTX-FAIL|trace-reg-fail|tenant-reg-fail|user-reg-fail|true");
+            assertThat(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY)).isNull();
+            assertThat(TenantContextHolder.getTenantId()).isNull();
+            assertThat(UserContextHolder.getUserId()).isNull();
+            assertThat(TenantContextHolder.isIgnoreTenant()).isFalse();
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    @DisplayName("验证 sendBatchAfterCommit 前置检验与空批处理：空批零同步器、非法元素/超限批同步 Fail-Fast")
+    void testSendBatchAfterCommitPreValidationAndEmptyList() throws Exception {
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            // 空集或 null 不抛异常且不挂载冗余同步器
+            rocketmqTemplate.sendBatchAfterCommit("batch_tx_topic", Collections.emptyList());
+            rocketmqTemplate.sendBatchAfterCommit("batch_tx_topic", "tagA", (List<?>) null, Map.of("k", "v"));
+            assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+
+            // 含 null 元素立即 Fail-Fast，零同步器注册、零底层发送
+            List<Object> containsNull = new ArrayList<>();
+            containsNull.add("ok");
+            containsNull.add(null);
+            assertThatThrownBy(() -> rocketmqTemplate.sendBatchAfterCommit("batch_tx_topic", "tagA", containsNull))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("index=1");
+            assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+
+            // 超出 maxBatchSize 立即 Fail-Fast，零同步器注册
+            AtengRocketmqProperties tightProps = new AtengRocketmqProperties();
+            tightProps.getProducer().setMaxBatchSize(2);
+            RocketmqTemplate tightTemplate = new RocketmqTemplate(producer, tightProps);
+            assertThatThrownBy(() -> tightTemplate.sendBatchAfterCommit("batch_tx_topic", List.of("a", "b", "c")))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("超出配置上限");
+            assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+            verify(producer, never()).send(any(Message.class));
+            verify(producer, never()).sendAsync(any(Message.class));
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    @DisplayName("验证 sendBatchAfterCommit 部分失败隔离与 4D 上下文还原：单条失败与回调异常不阻断同批后续投递")
+    void testSendBatchAfterCommitPartialFailureIsolationAndContextRestore() throws Exception {
+        List<String> failedBizKeys = new ArrayList<>();
+        RocketmqTransactionFailureCallback flakyCallback = new RocketmqTransactionFailureCallback() {
+            @Override
+            public void onFailure(String topic, String bizKey, Object payload, Throwable cause) {
+                throw new AssertionError("Should call 6-param overload");
+            }
+
+            @Override
+            public void onFailure(String topic, String tag, String bizKey, Object payload, String traceId, Throwable cause) {
+                failedBizKeys.add(topic + "|" + tag + "|" + bizKey + "|" + traceId);
+                // 模拟回调自身抛异常，验证隔离不影响后续同批消息投递
+                throw new IllegalStateException("Callback persistence error");
+            }
+        };
+
+        RocketmqTemplate txTemplate = new RocketmqTemplate(producer, properties, flakyCallback);
+
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-batch-reg");
+        TenantContextHolder.setTenantId("tenant-batch-01");
+        UserContextHolder.setUserId("user-batch-01");
+        TenantContextHolder.setIgnoreTenant(true);
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            List<TestBatchItem> payloads = List.of(
+                    new TestBatchItem("BATCH-TX-1"),
+                    new TestBatchItem("BATCH-TX-2"),
+                    new TestBatchItem("BATCH-TX-3")
+            );
+            txTemplate.sendBatchAfterCommit(
+                    "batch_tx_topic",
+                    "batch",
+                    payloads,
+                    Map.of("region", "cn-east", MessageHeaderConstants.TRACE_ID, "hacked"));
+
+            verify(producer, never()).send(any(Message.class));
+
+            // 注册期后修改当前线程上下文
+            MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-caller-after");
+            TenantContextHolder.setTenantId("tenant-caller-after");
+            UserContextHolder.setUserId("user-caller-after");
+            TenantContextHolder.setIgnoreTenant(false);
+
+            // 第 2 条抛异常，第 1 条与第 3 条成功
+            when(producer.send(any(Message.class)))
+                    .thenReturn(mockReceipt)
+                    .thenThrow(new RuntimeException("Item 2 network timeout"))
+                    .thenReturn(mockReceipt);
+
+            for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+                sync.afterCommit();
+            }
+
+            ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
+            verify(producer, times(3)).send(captor.capture());
+
+            List<Message> sentMessages = captor.getAllValues();
+            assertThat(sentMessages).hasSize(3);
+            assertThat(sentMessages.get(0).getProperties())
+                    .containsEntry("region", "cn-east")
+                    .containsEntry(MessageHeaderConstants.TRACE_ID, "trace-batch-reg")
+                    .containsEntry(MessageHeaderConstants.TENANT_ID, "tenant-batch-01")
+                    .containsEntry(MessageHeaderConstants.USER_ID, "user-batch-01")
+                    .containsEntry(MessageHeaderConstants.IGNORE_TENANT, "true");
+
+            // 验证第 2 条触发 6 参回调，第 3 条未被回调异常阻断
+            assertThat(failedBizKeys).containsExactly("batch_tx_topic|batch|BATCH-TX-2|trace-batch-reg");
+
+            // 验证 finally 严格还原 commit 线程原始上下文
+            assertThat(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY)).isEqualTo("trace-caller-after");
+            assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant-caller-after");
+            assertThat(UserContextHolder.getUserId()).isEqualTo("user-caller-after");
+            assertThat(TenantContextHolder.isIgnoreTenant()).isFalse();
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    @DisplayName("验证 sendBatchAfterCommit 无活跃事务时立即批量发送")
+    void testSendBatchAfterCommitWithoutTransaction() {
+        rocketmqTemplate.sendBatchAfterCommit("batch_tx_no_tx", List.of("m1", "m2"), Map.of("scene", "direct"));
+        verify(producer, times(2)).sendAsync(any(Message.class));
+    }
+
+    public record TestBatchItem(String id) {
+        public String getId() {
+            return id;
         }
     }
 

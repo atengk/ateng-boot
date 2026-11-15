@@ -56,6 +56,7 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
 
     // 内存消息队列：Topic -> Queue<MessageView> (包含死信队列 %DLQ%<Group>)
     private final Map<String, Queue<MessageView>> inMemoryQueues = new ConcurrentHashMap<>();
+    private final Set<String> failingPayloadKeywords = ConcurrentHashMap.newKeySet();
 
     @Getter
     private final List<String> ackedMessageIds = new CopyOnWriteArrayList<>();
@@ -346,6 +347,17 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
      * 路由并直接分发消息
      */
     public SendReceipt routeAndDispatch(Message message) {
+        if (!failingPayloadKeywords.isEmpty()) {
+            ByteBuffer buf = message.getBody();
+            byte[] bytes = new byte[buf.remaining()];
+            buf.asReadOnlyBuffer().get(bytes);
+            String payloadText = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+            for (String keyword : failingPayloadKeywords) {
+                if (payloadText.contains(keyword)) {
+                    throw new RuntimeException("Simulated broker send failure for keyword: " + keyword);
+                }
+            }
+        }
         sentMessageCount.incrementAndGet();
         MessageView mv = toMessageView(message);
         // 保存至内存主题队列，供 SimpleConsumer 消费
@@ -505,6 +517,17 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
         return Collections.unmodifiableList(new ArrayList<>(queue));
     }
 
+    /**
+     * 注入按载荷关键字匹配的发送失败规则（用于测试部分投递失败与补偿回调隔离）
+     *
+     * @param keyword 载荷关键字
+     */
+    public void failSendContaining(String keyword) {
+        if (keyword != null && !keyword.isBlank()) {
+            failingPayloadKeywords.add(keyword);
+        }
+    }
+
     public void clear() {
         sentMessageCount.set(0);
         dispatchedMessageCount.set(0);
@@ -512,5 +535,6 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
         ackedMessageIds.clear();
         renewedMessageIds.clear();
         recalledHandles.clear();
+        failingPayloadKeywords.clear();
     }
 }

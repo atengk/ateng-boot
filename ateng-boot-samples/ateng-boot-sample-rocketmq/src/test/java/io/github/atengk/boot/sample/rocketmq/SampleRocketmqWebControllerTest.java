@@ -2,6 +2,8 @@ package io.github.atengk.boot.sample.rocketmq;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.sample.rocketmq.dto.*;
 import io.github.atengk.boot.sample.rocketmq.model.OrderMessage;
@@ -12,12 +14,14 @@ import org.apache.rocketmq.client.apis.message.MessageView;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -58,6 +62,13 @@ class SampleRocketmqWebControllerTest {
 
     @AfterEach
     void tearDown() {
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+        assertThat(TransactionSynchronizationManager.isSynchronizationActive()).isFalse();
         if (testBroker != null) {
             testBroker.clear();
         }
@@ -488,6 +499,62 @@ class SampleRocketmqWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("TX_ROLLED_BACK_ZERO_SEND"));
+
+        // 5b. sendBatchAfterCommit 本地事务批量提交后逐条发信（含 tag 与 SQL92 属性透传）
+        ValidList<OrderTransactionRequest> batchCommitReq = new ValidList<>(List.of(
+                OrderTransactionRequest.builder()
+                        .orderId("ORD-WEB-BATCH-TX-1")
+                        .amount(120.0)
+                        .tag("create")
+                        .properties(Map.of("txChannel", "web-batch"))
+                        .localSuccess(true)
+                        .build(),
+                OrderTransactionRequest.builder()
+                        .orderId("ORD-WEB-BATCH-TX-2")
+                        .amount(240.0)
+                        .tag("create")
+                        .properties(Map.of("txChannel", "web-batch"))
+                        .localSuccess(true)
+                        .build()
+        ));
+        int countBeforeBatchCommit = testBroker != null ? testBroker.getSentMessageCount().get() : 0;
+        mockMvc.perform(post("/sample/rocketmq/transaction/send-batch-after-commit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(batchCommitReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("TX_BATCH_COMMITTED_AND_SENT"));
+        if (testBroker != null) {
+            assertThat(testBroker.getSentMessageCount().get()).isEqualTo(countBeforeBatchCommit + 2);
+            assertThat(testBroker.getSentMessages(TradeRocketmqProducer.TOPIC_ORDER))
+                    .anySatisfy(mv -> assertThat(mv.getProperties()).containsEntry("txChannel", "web-batch"));
+        }
+
+        // 5c. sendBatchAfterCommit 本地事务回滚零发信 & 冲突属性前置 Fail-Fast
+        int countBeforeBatchRollback = testBroker != null ? testBroker.getSentMessageCount().get() : 0;
+        ValidList<OrderTransactionRequest> batchRollbackReq = new ValidList<>(List.of(
+                OrderTransactionRequest.builder().orderId("ORD-WEB-BATCH-RB-1").amount(50.0).localSuccess(false).build(),
+                OrderTransactionRequest.builder().orderId("ORD-WEB-BATCH-RB-2").amount(60.0).localSuccess(false).build()
+        ));
+        mockMvc.perform(post("/sample/rocketmq/transaction/send-batch-after-commit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(batchRollbackReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("TX_BATCH_ROLLED_BACK_ZERO_SEND"));
+        if (testBroker != null) {
+            assertThat(testBroker.getSentMessageCount().get()).isEqualTo(countBeforeBatchRollback);
+        }
+
+        ValidList<OrderTransactionRequest> invalidBatchReq = new ValidList<>(List.of(
+                OrderTransactionRequest.builder().orderId("").amount(10.0).build()
+        ));
+        mockMvc.perform(post("/sample/rocketmq/transaction/send-batch-after-commit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidBatchReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
 
         // 6. 查询回查器状态
         mockMvc.perform(get("/sample/rocketmq/transaction/checker/status"))

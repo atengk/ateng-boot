@@ -9,6 +9,7 @@ import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
 import io.github.atengk.boot.rocketmq.consumer.SimpleConsumerFactory;
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.model.DeadLetterReplayResult;
+import io.github.atengk.boot.rocketmq.spi.RocketmqTransactionFailureCallback;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import io.github.atengk.boot.sample.rocketmq.checker.SampleOrderTransactionChecker;
 import io.github.atengk.boot.sample.rocketmq.consumer.*;
@@ -36,6 +37,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseBuilder;
 import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseType;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
@@ -45,6 +47,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -141,6 +144,9 @@ class SampleRocketmqE2eTest {
     @Autowired(required = false)
     private InMemoryRocketmqBroker testBroker;
 
+    @Autowired(required = false)
+    private RecordingTransactionFailureCallback recordingFailureCallback;
+
     @BeforeEach
     void setUp() {
         MDC.clear();
@@ -158,6 +164,9 @@ class SampleRocketmqE2eTest {
         transactionScenarioService.clear();
         if (testBroker != null) {
             testBroker.clear();
+        }
+        if (recordingFailureCallback != null) {
+            recordingFailureCallback.clear();
         }
     }
 
@@ -181,6 +190,13 @@ class SampleRocketmqE2eTest {
         MDC.clear();
         TenantContextHolder.clear();
         UserContextHolder.clear();
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+        assertThat(TransactionSynchronizationManager.isSynchronizationActive()).isFalse();
+        assertThat(MDC.getCopyOfContextMap()).isNullOrEmpty();
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+        assertThat(UserContextHolder.getUserId()).isNull();
     }
 
     // =========================================================================
@@ -576,6 +592,83 @@ class SampleRocketmqE2eTest {
         assertThat(standardConsumer.getReceivedOrders()).isEmpty();
     }
 
+    @Test
+    @DisplayName("场景 15b：H2 本地事务批量提交与回滚 (sendBatchAfterCommit -> COMMIT / ROLLBACK / 部分失败 6 参补偿隔离)")
+    void testSendBatchAfterCommitCommitRollbackAndPartialFailure() {
+        // 1. H2 本地事务批量提交 + 四维上下文捕获与 SQL92 属性透传
+        MDC.put("traceId", "TRACE-BATCH-TX-001");
+        TenantContextHolder.setTenantId("TENANT-BATCH-TX");
+        UserContextHolder.setUserId("USER-BATCH-TX");
+        TenantContextHolder.setIgnoreTenant(true);
+
+        List<OrderMessage> commitOrders = List.of(
+                OrderMessage.builder().orderId("ORD-BTX-OK-1").amount(110.0).customerName("批tx1").status("CREATED").build(),
+                OrderMessage.builder().orderId("ORD-BTX-OK-2").amount(220.0).customerName("批tx2").status("CREATED").build()
+        );
+        transactionScenarioService.createOrdersWithSendBatchAfterCommit(
+                commitOrders, "create", Map.of("batchChannel", "tx-h2"));
+
+        awaitUntil(() -> standardConsumer.getReceivedOrders().size() >= 2);
+        assertThat(standardConsumer.getReceivedOrders())
+                .extracting(OrderMessage::getOrderId)
+                .containsExactly("ORD-BTX-OK-1", "ORD-BTX-OK-2");
+        assertThat(standardConsumer.getReceivedTraceIds()).contains("TRACE-BATCH-TX-001");
+        assertThat(standardConsumer.getReceivedTenantIds()).contains("TENANT-BATCH-TX");
+        if (testBroker != null) {
+            assertThat(testBroker.getSentMessages(TradeRocketmqProducer.TOPIC_ORDER)).allSatisfy(mv ->
+                    assertThat(mv.getProperties())
+                            .containsEntry("batchChannel", "tx-h2")
+                            .containsEntry("X-User-Id", "USER-BATCH-TX")
+                            .containsEntry("X-Ignore-Tenant", "true"));
+        }
+
+        // 2. H2 本地事务批量回滚 -> 零消息投递
+        standardConsumer.clear();
+        if (testBroker != null) {
+            testBroker.clear();
+        }
+        List<OrderMessage> rollbackOrders = List.of(
+                OrderMessage.builder().orderId("ORD-BTX-RB-1").amount(310.0).customerName("批回滚1").status("CREATED").build(),
+                OrderMessage.builder().orderId("ORD-BTX-RB-2").amount(320.0).customerName("批回滚2").status("CREATED").build()
+        );
+        assertThatThrownBy(() -> transactionScenarioService.createOrdersWithBatchRollback(
+                rollbackOrders, "create", Map.of("batchChannel", "tx-rb")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("触发本地事务回滚");
+        assertThat(standardConsumer.getReceivedOrders()).isEmpty();
+        if (testBroker != null) {
+            assertThat(testBroker.getSentMessages(TradeRocketmqProducer.TOPIC_ORDER)).isEmpty();
+        }
+
+        // 3. H2 本地事务提交后部分单条发信失败 -> 触发 6 参 SPI 补偿且不阻断同批正常消息投递
+        if (testBroker != null && recordingFailureCallback != null) {
+            standardConsumer.clear();
+            testBroker.clear();
+            recordingFailureCallback.clear();
+
+            MDC.put("traceId", "TRACE-BATCH-PARTIAL-002");
+            testBroker.failSendContaining("ORD-BTX-PARTIAL-FAIL-2");
+            List<OrderMessage> partialOrders = List.of(
+                    OrderMessage.builder().orderId("ORD-BTX-PARTIAL-1").amount(10.0).customerName("部分1").status("CREATED").build(),
+                    OrderMessage.builder().orderId("ORD-BTX-PARTIAL-FAIL-2").amount(20.0).customerName("部分失败2").status("CREATED").build(),
+                    OrderMessage.builder().orderId("ORD-BTX-PARTIAL-3").amount(30.0).customerName("部分3").status("CREATED").build()
+            );
+            transactionScenarioService.createOrdersWithSendBatchAfterCommit(partialOrders, "create", null);
+
+            awaitUntil(() -> standardConsumer.getReceivedOrders().size() >= 2);
+            assertThat(standardConsumer.getReceivedOrders())
+                    .extracting(OrderMessage::getOrderId)
+                    .containsExactly("ORD-BTX-PARTIAL-1", "ORD-BTX-PARTIAL-3");
+            assertThat(recordingFailureCallback.getRecords()).hasSize(1);
+            FailureRecord failure = recordingFailureCallback.getRecords().get(0);
+            assertThat(failure.topic()).isEqualTo(TradeRocketmqProducer.TOPIC_ORDER);
+            assertThat(failure.tag()).isEqualTo("create");
+            assertThat(failure.traceId()).isEqualTo("TRACE-BATCH-PARTIAL-002");
+            assertThat(failure.payload()).isInstanceOf(OrderMessage.class);
+            assertThat(((OrderMessage) failure.payload()).getOrderId()).isEqualTo("ORD-BTX-PARTIAL-FAIL-2");
+        }
+    }
+
     // =========================================================================
     // 场景 16：4MB 大报文防御超限 Fail-Fast 拦截
     // =========================================================================
@@ -828,6 +921,49 @@ class SampleRocketmqE2eTest {
         @Primary
         public PlatformTransactionManager testTransactionManager(DataSource dataSource) {
             return new DataSourceTransactionManager(dataSource);
+        }
+
+        @Bean
+        public RecordingTransactionFailureCallback recordingTransactionFailureCallback() {
+            return new RecordingTransactionFailureCallback();
+        }
+    }
+
+    /**
+     * 事务后置发信失败记录（用于验证 6 参 SPI 回调全上下文参数）
+     */
+    public record FailureRecord(
+            String topic,
+            String tag,
+            String bizKey,
+            Object payload,
+            String traceId,
+            Throwable cause
+    ) {}
+
+    /**
+     * 测试用 6 参事务补偿回调记录器
+     */
+    public static class RecordingTransactionFailureCallback implements RocketmqTransactionFailureCallback {
+
+        private final List<FailureRecord> records = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void onFailure(String topic, String bizKey, Object payload, Throwable cause) {
+            records.add(new FailureRecord(topic, null, bizKey, payload, null, cause));
+        }
+
+        @Override
+        public void onFailure(String topic, String tag, String bizKey, Object payload, String traceId, Throwable cause) {
+            records.add(new FailureRecord(topic, tag, bizKey, payload, traceId, cause));
+        }
+
+        public List<FailureRecord> getRecords() {
+            return records;
+        }
+
+        public void clear() {
+            records.clear();
         }
     }
 }

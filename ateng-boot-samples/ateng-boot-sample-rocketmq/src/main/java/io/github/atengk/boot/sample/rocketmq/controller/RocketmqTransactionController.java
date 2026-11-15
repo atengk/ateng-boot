@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.rocketmq.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.sample.rocketmq.checker.SampleOrderTransactionChecker;
 import io.github.atengk.boot.sample.rocketmq.consumer.OrderTransactionConsumer;
 import io.github.atengk.boot.sample.rocketmq.dto.OrderProduceResponse;
@@ -15,6 +16,7 @@ import org.apache.rocketmq.client.apis.producer.SendReceipt;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * RocketMQ 原生 2PC 分布式事务与本地事务感知发信场景控制器
@@ -65,7 +67,7 @@ public class RocketmqTransactionController {
         OrderMessage order = request.toOrderMessage();
         boolean success = request.getLocalSuccess() == null || request.getLocalSuccess();
         if (success) {
-            transactionScenarioService.createOrderWithSendAfterCommit(order);
+            transactionScenarioService.createOrderWithSendAfterCommit(order, request.getTag(), request.getProperties());
             return Result.success("TX_COMMITTED_AND_SENT");
         } else {
             try {
@@ -75,6 +77,31 @@ public class RocketmqTransactionController {
             }
             return Result.success("TX_ROLLED_BACK_ZERO_SEND");
         }
+    }
+
+    /**
+     * 2b. 本地事务感知批量发信（演示批量订单本地事务提交后逐条发信与事务回滚零发信）
+     *
+     * @param requests 批量事务请求列表
+     * @return 批量事务执行结果说明
+     */
+    @PostMapping("/send-batch-after-commit")
+    public Result<String> sendBatchAfterCommit(@Valid @RequestBody ValidList<OrderTransactionRequest> requests) {
+        String batchTag = OrderTransactionRequest.resolveBatchTag(requests);
+        Map<String, String> batchProperties = OrderTransactionRequest.resolveBatchProperties(requests);
+        List<OrderMessage> orders = requests.stream().map(OrderTransactionRequest::toOrderMessage).toList();
+        boolean allSuccess = requests.stream()
+                .allMatch(req -> req.getLocalSuccess() == null || req.getLocalSuccess());
+        if (allSuccess) {
+            transactionScenarioService.createOrdersWithSendBatchAfterCommit(orders, batchTag, batchProperties);
+            return Result.success("TX_BATCH_COMMITTED_AND_SENT");
+        }
+        try {
+            transactionScenarioService.createOrdersWithBatchRollback(orders, batchTag, batchProperties);
+        } catch (IllegalStateException ex) {
+            log.warn("[TX-SAMPLE] 捕获预期的批量本地事务回滚异常: count={}, error={}", orders.size(), ex.getMessage());
+        }
+        return Result.success("TX_BATCH_ROLLED_BACK_ZERO_SEND");
     }
 
     /**
