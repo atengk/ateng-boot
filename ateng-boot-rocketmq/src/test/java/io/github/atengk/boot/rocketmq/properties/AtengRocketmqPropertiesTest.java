@@ -52,6 +52,8 @@ class AtengRocketmqPropertiesTest {
         assertThat(properties.getSimpleConsumer().getInvisibleDuration()).isEqualTo(Duration.ofSeconds(30));
         assertThat(properties.getSimpleConsumer().getMaxMessageNum()).isEqualTo(32);
         assertThat(properties.getSimpleConsumer().getAwaitDuration()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(properties.getSimpleConsumer().isAutoRenewLease()).isTrue();
+        assertThat(properties.getSimpleConsumer().getMaxLeaseRenewAttempts()).isEqualTo(5);
     }
 
     @Test
@@ -76,6 +78,8 @@ class AtengRocketmqPropertiesTest {
         map.put("ateng.boot.rocketmq.simple-consumer.invisible-duration", "45s");
         map.put("ateng.boot.rocketmq.simple-consumer.max-message-num", "64");
         map.put("ateng.boot.rocketmq.simple-consumer.await-duration", "10s");
+        map.put("ateng.boot.rocketmq.simple-consumer.auto-renew-lease", "false");
+        map.put("ateng.boot.rocketmq.simple-consumer.max-lease-renew-attempts", "8");
 
         ConfigurationPropertySource source = new MapConfigurationPropertySource(map);
         Binder binder = new Binder(source);
@@ -99,6 +103,8 @@ class AtengRocketmqPropertiesTest {
         assertThat(properties.getSimpleConsumer().getInvisibleDuration()).isEqualTo(Duration.ofSeconds(45));
         assertThat(properties.getSimpleConsumer().getMaxMessageNum()).isEqualTo(64);
         assertThat(properties.getSimpleConsumer().getAwaitDuration()).isEqualTo(Duration.ofSeconds(10));
+        assertThat(properties.getSimpleConsumer().isAutoRenewLease()).isFalse();
+        assertThat(properties.getSimpleConsumer().getMaxLeaseRenewAttempts()).isEqualTo(8);
     }
 
     @Test
@@ -146,5 +152,17 @@ class AtengRocketmqPropertiesTest {
         // 0 阈值合法，表示始终尝试压缩
         producer.setCompressionThreshold(DataSize.ofBytes(0));
         assertThat(producer.getCompressionThreshold()).isEqualTo(DataSize.ofBytes(0));
+    }
+
+    @Test
+    @DisplayName("验证 SimpleConsumer 租约最大续期次数非法负数触发 Fail-Fast")
+    void testInvalidSimpleConsumerGuardsThrowException() {
+        AtengRocketmqProperties.SimpleConsumer simpleConsumer = new AtengRocketmqProperties.SimpleConsumer();
+
+        assertThatThrownBy(() -> simpleConsumer.setMaxLeaseRenewAttempts(-1))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        simpleConsumer.setMaxLeaseRenewAttempts(0);
+        assertThat(simpleConsumer.getMaxLeaseRenewAttempts()).isZero();
     }
 }

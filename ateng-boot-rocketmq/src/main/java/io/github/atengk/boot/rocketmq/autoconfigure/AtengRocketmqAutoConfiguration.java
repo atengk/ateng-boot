@@ -169,8 +169,10 @@ public class AtengRocketmqAutoConfiguration {
     public RocketmqSimpleConsumerTemplate rocketmqSimpleConsumerTemplate(
             AtengRocketmqProperties properties,
             ObjectProvider<ClientConfiguration> clientConfigurationProvider,
-            SimpleConsumerFactory simpleConsumerFactory) {
-        return new RocketmqSimpleConsumerTemplate(properties, clientConfigurationProvider, simpleConsumerFactory);
+            SimpleConsumerFactory simpleConsumerFactory,
+            ObjectProvider<Executor> taskExecutorProvider) {
+        return new RocketmqSimpleConsumerTemplate(
+                properties, clientConfigurationProvider, simpleConsumerFactory, taskExecutorProvider);
     }
 
     /**

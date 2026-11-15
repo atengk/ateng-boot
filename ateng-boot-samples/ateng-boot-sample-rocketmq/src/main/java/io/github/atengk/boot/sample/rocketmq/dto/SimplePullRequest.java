@@ -56,6 +56,12 @@ public class SimplePullRequest implements Serializable {
     @Min(value = 1, message = "不可见租约时长最小为 1 秒")
     private Long invisibleSeconds;
 
+    /**
+     * 可选：单条业务处理模拟耗时毫秒数（用于验证长耗时租约自动续期看门狗，默认 0）
+     */
+    @Min(value = 0, message = "模拟耗时毫秒数不能为负数")
+    private Long simulateDelayMillis;
+
     public String resolveTopic() {
         return StringUtils.hasText(topic) ? topic : TradeRocketmqProducer.TOPIC_ORDER;
     }
@@ -74,5 +80,11 @@ public class SimplePullRequest implements Serializable {
 
     public Duration resolveInvisibleDuration() {
         return Duration.ofSeconds(invisibleSeconds != null && invisibleSeconds > 0 ? invisibleSeconds : 30);
+    }
+
+    public Duration resolveSimulateDelayDuration() {
+        return simulateDelayMillis != null && simulateDelayMillis > 0
+                ? Duration.ofMillis(simulateDelayMillis)
+                : Duration.ZERO;
     }
 }

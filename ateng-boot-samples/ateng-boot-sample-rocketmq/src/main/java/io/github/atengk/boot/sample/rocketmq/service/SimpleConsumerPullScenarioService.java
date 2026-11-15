@@ -1,6 +1,9 @@
 package io.github.atengk.boot.sample.rocketmq.service;
 
+import io.github.atengk.boot.core.exception.IdempotentException;
+import io.github.atengk.boot.rocketmq.helper.RocketmqMessageHelper;
 import io.github.atengk.boot.rocketmq.template.RocketmqSimpleConsumerTemplate;
+import io.github.atengk.boot.sample.rocketmq.dto.SimpleConsumeReportVO;
 import io.github.atengk.boot.sample.rocketmq.dto.SimpleMessageVO;
 import io.github.atengk.boot.sample.rocketmq.model.OrderMessage;
 import lombok.Getter;
@@ -8,6 +11,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.apis.message.MessageView;
 import org.springframework.stereotype.Service;
+import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 import java.nio.ByteBuffer;
@@ -35,6 +39,8 @@ public class SimpleConsumerPullScenarioService {
     private final RocketmqSimpleConsumerTemplate simpleConsumerTemplate;
 
     private static final int MAX_CACHED_HANDLES = 1000;
+    private static final String STATUS_IDEMPOTENT = "IDEMPOTENT";
+    private static final String STATUS_FAIL = "FAIL";
     private final Map<String, CachedMessageHandle> cachedHandles = new ConcurrentHashMap<>();
 
     @Getter
@@ -126,6 +132,74 @@ public class SimpleConsumerPullScenarioService {
                             order.getOrderId(), order.getAmount());
                     consumedOrders.add(order);
                 });
+    }
+
+    /**
+     * 演示单条故障隔离、IdempotentException 静默 ACK 与长耗时租约自动续期看门狗
+     *
+     * @param topic             目标主题
+     * @param group             消费者组
+     * @param tag               过滤标签
+     * @param maxNum            最大拉取数量
+     * @param invisibleDuration 不可见租约时长
+     * @param simulateDelay     单条处理模拟耗时（null 或非正数表示不延迟）
+     * @return 结构化故障隔离与确认报告
+     */
+    public SimpleConsumeReportVO pullAndExecuteResilient(
+            String topic,
+            String group,
+            String tag,
+            int maxNum,
+            Duration invisibleDuration,
+            Duration simulateDelay) {
+        Duration effectiveDelay = simulateDelay != null ? simulateDelay : Duration.ZERO;
+        Assert.isTrue(!effectiveDelay.isNegative(), "simulateDelay 不能为负数");
+        List<String> consumedIds = new ArrayList<>();
+        List<String> idempotentIds = new ArrayList<>();
+        List<String> failedIds = new ArrayList<>();
+
+        int settled = simpleConsumerTemplate.receiveAndExecute(
+                topic,
+                group,
+                tag,
+                maxNum,
+                invisibleDuration,
+                OrderMessage.class,
+                (order, view) -> {
+                    if (!effectiveDelay.isZero()) {
+                        try {
+                            Thread.sleep(effectiveDelay.toMillis());
+                        } catch (InterruptedException ex) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException("模拟长耗时消费被中断: " + order.getOrderId(), ex);
+                        }
+                    }
+                    if (STATUS_IDEMPOTENT.equalsIgnoreCase(order.getStatus())) {
+                        idempotentIds.add(order.getOrderId());
+                        throw new IdempotentException("模拟幂等重放拦截: " + order.getOrderId());
+                    }
+                    if (STATUS_FAIL.equalsIgnoreCase(order.getStatus())) {
+                        throw new IllegalStateException("模拟单条业务处理失败: " + order.getOrderId());
+                    }
+                    consumedOrders.add(order);
+                    consumedIds.add(order.getOrderId());
+                },
+                (failedMsg, cause) -> {
+                    String bizKey = RocketmqMessageHelper.extractBizKey(failedMsg);
+                    String id = StringUtils.hasText(bizKey)
+                            ? bizKey
+                            : (failedMsg.getMessageId() != null ? failedMsg.getMessageId().toString() : "UNKNOWN");
+                    failedIds.add(id);
+                });
+
+        return SimpleConsumeReportVO.builder()
+                .settledCount(settled)
+                .consumedCount(consumedIds.size())
+                .idempotentCount(idempotentIds.size())
+                .failedCount(failedIds.size())
+                .consumedOrderIds(Collections.unmodifiableList(consumedIds))
+                .failedOrderIds(Collections.unmodifiableList(failedIds))
+                .build();
     }
 
     // =========================================================================

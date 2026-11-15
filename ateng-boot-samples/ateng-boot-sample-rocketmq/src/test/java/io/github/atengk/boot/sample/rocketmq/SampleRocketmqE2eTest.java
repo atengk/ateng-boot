@@ -13,6 +13,7 @@ import io.github.atengk.boot.rocketmq.spi.RocketmqTransactionFailureCallback;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import io.github.atengk.boot.sample.rocketmq.checker.SampleOrderTransactionChecker;
 import io.github.atengk.boot.sample.rocketmq.consumer.*;
+import io.github.atengk.boot.sample.rocketmq.dto.SimpleConsumeReportVO;
 import io.github.atengk.boot.sample.rocketmq.model.OrderMessage;
 import io.github.atengk.boot.sample.rocketmq.producer.TradeRocketmqProducer;
 import io.github.atengk.boot.sample.rocketmq.service.*;
@@ -773,6 +774,69 @@ class SampleRocketmqE2eTest {
             assertThat(order.getOrderId()).isNotNull();
         });
         assertThat(executed).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("场景 19b：SimpleConsumer 租约自动续期看门狗、单条异常隔离（含 IdempotentException 静默 ACK）与动态过滤刷新")
+    void testSimpleConsumerWatchdogFaultIsolationAndDynamicFilterRefresh() {
+        simpleConsumerPullScenarioService.clearCache();
+        String topic = TradeRocketmqProducer.TOPIC_ORDER;
+
+        // 1. 动态过滤表达式订阅刷新验证
+        String dynamicGroup = "sample_dynamic_filter_group";
+        OrderMessage alpha = OrderMessage.builder().orderId("ORD_DYN_ALPHA").customerName("A").amount(10.0).status("CREATED").build();
+        OrderMessage beta = OrderMessage.builder().orderId("ORD_DYN_BETA").customerName("B").amount(20.0).status("CREATED").build();
+        rocketmqTemplate.send(topic, "dyn_alpha", "ORD_DYN_ALPHA", alpha);
+        rocketmqTemplate.send(topic, "dyn_beta", "ORD_DYN_BETA", beta);
+
+        List<MessageView> firstBatch = simpleConsumerPullScenarioService.pullMessages(topic, dynamicGroup, "dyn_alpha", 10, Duration.ofSeconds(30));
+        assertThat(firstBatch).hasSize(1);
+        assertThat(firstBatch.get(0).getTag()).contains("dyn_alpha");
+        simpleConsumerPullScenarioService.acknowledge(dynamicGroup, firstBatch.get(0));
+
+        // 同消费组同 Topic 切换为 dyn_beta，应主动刷新底层 SimpleConsumer.subscribe 并拉取到 dyn_beta
+        List<MessageView> secondBatch = simpleConsumerPullScenarioService.pullMessages(topic, dynamicGroup, "dyn_beta", 10, Duration.ofSeconds(30));
+        assertThat(secondBatch).hasSize(1);
+        assertThat(secondBatch.get(0).getTag()).contains("dyn_beta");
+        simpleConsumerPullScenarioService.acknowledge(dynamicGroup, secondBatch.get(0));
+        if (testBroker != null) {
+            assertThat(testBroker.getSimpleSubscribeRecords())
+                    .contains(dynamicGroup + "#" + topic + "#TAG:dyn_beta");
+        }
+
+        // 2. 单条故障隔离与 IdempotentException 静默 ACK 验证
+        String isoGroup = "sample_resilient_group";
+        OrderMessage ok1 = OrderMessage.builder().orderId("ORD_RES_OK_1").customerName("N1").amount(11.0).status("CREATED").build();
+        OrderMessage idem = OrderMessage.builder().orderId("ORD_RES_IDEM").customerName("ID").amount(22.0).status("IDEMPOTENT").build();
+        OrderMessage fail = OrderMessage.builder().orderId("ORD_RES_FAIL").customerName("FL").amount(33.0).status("FAIL").build();
+        OrderMessage ok2 = OrderMessage.builder().orderId("ORD_RES_OK_2").customerName("N2").amount(44.0).status("CREATED").build();
+        rocketmqTemplate.send(topic, "resilient_tag", "ORD_RES_OK_1", ok1);
+        rocketmqTemplate.send(topic, "resilient_tag", "ORD_RES_IDEM", idem);
+        rocketmqTemplate.send(topic, "resilient_tag", "ORD_RES_FAIL", fail);
+        rocketmqTemplate.send(topic, "resilient_tag", "ORD_RES_OK_2", ok2);
+
+        SimpleConsumeReportVO isoReport = simpleConsumerPullScenarioService.pullAndExecuteResilient(
+                topic, isoGroup, "resilient_tag", 10, Duration.ofSeconds(30), Duration.ZERO);
+
+        assertThat(isoReport.getSettledCount()).isEqualTo(3);
+        assertThat(isoReport.getConsumedCount()).isEqualTo(2);
+        assertThat(isoReport.getIdempotentCount()).isEqualTo(1);
+        assertThat(isoReport.getFailedCount()).isEqualTo(1);
+        assertThat(isoReport.getConsumedOrderIds()).containsExactly("ORD_RES_OK_1", "ORD_RES_OK_2");
+        assertThat(isoReport.getFailedOrderIds()).containsExactly("ORD_RES_FAIL");
+
+        // 3. 长任务期间受控租约自动续期看门狗验证 (invisibleDuration=2s -> 周期 1s)
+        String renewGroup = "sample_watchdog_group";
+        OrderMessage slowOrder = OrderMessage.builder().orderId("ORD_WATCHDOG_1").customerName("SLOW").amount(55.0).status("CREATED").build();
+        rocketmqTemplate.send(topic, "watchdog_tag", "ORD_WATCHDOG_1", slowOrder);
+
+        SimpleConsumeReportVO renewReport = simpleConsumerPullScenarioService.pullAndExecuteResilient(
+                topic, renewGroup, "watchdog_tag", 5, Duration.ofSeconds(2), Duration.ofMillis(1400));
+        assertThat(renewReport.getSettledCount()).isEqualTo(1);
+        assertThat(renewReport.getConsumedOrderIds()).containsExactly("ORD_WATCHDOG_1");
+        if (testBroker != null) {
+            assertThat(testBroker.getRenewedMessageIds()).isNotEmpty();
+        }
     }
 
     // =========================================================================

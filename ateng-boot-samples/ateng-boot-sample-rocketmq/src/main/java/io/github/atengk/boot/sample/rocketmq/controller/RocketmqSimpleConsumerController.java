@@ -101,6 +101,27 @@ public class RocketmqSimpleConsumerController {
     }
 
     /**
+     * 受控容错隔离消费闭包（支持单条异常隔离、IdempotentException 静默 ACK 与长耗时租约自动续期）
+     *
+     * @param request 拉取与容错消费参数（可选）
+     * @return 结构化故障隔离消费报告
+     */
+    @PostMapping("/consume-resilient")
+    public Result<SimpleConsumeReportVO> consumeAndExecuteResilient(
+            @Valid @RequestBody(required = false) SimplePullRequest request) {
+        SimplePullRequest req = request != null ? request : new SimplePullRequest();
+        SimpleConsumeReportVO report = simpleConsumerPullScenarioService.pullAndExecuteResilient(
+                req.resolveTopic(),
+                req.resolveGroup(),
+                req.resolveTag(),
+                req.resolveMaxNum(),
+                req.resolveInvisibleDuration(),
+                req.resolveSimulateDelayDuration()
+        );
+        return Result.success(report);
+    }
+
+    /**
      * 审计当前内存中缓存的待决租约句柄状态
      *
      * @return 租约句柄审计视图

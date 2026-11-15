@@ -1,8 +1,11 @@
 package io.github.atengk.boot.rocketmq.template;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
+import io.github.atengk.boot.core.exception.IdempotentException;
 import io.github.atengk.boot.core.exception.MessageDeliveryException;
+import io.github.atengk.boot.core.util.AsyncUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.consumer.DefaultSimpleConsumerFactory;
@@ -28,6 +31,11 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -51,10 +59,14 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
     private final ObjectProvider<ClientConfiguration> clientConfigurationProvider;
     private final ClientConfiguration clientConfiguration;
     private final SimpleConsumerFactory simpleConsumerFactory;
+    private final Executor taskExecutor;
 
     private static final int MAX_TRACKED_MESSAGES = 10000;
+    private static final Duration MIN_LEASE_RENEW_INTERVAL = Duration.ofSeconds(1);
 
     private final Map<String, SimpleConsumer> consumerCache = new ConcurrentHashMap<>();
+    private final Map<SubscriptionKey, String> subscriptionFilterCache = new ConcurrentHashMap<>();
+    private final Set<LeaseRenewalGuard> activeLeaseWatchdogs = ConcurrentHashMap.newKeySet();
     private final Map<String, String> messageGroupMap = new LinkedHashMap<>(1024, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
@@ -69,25 +81,48 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
             AtengRocketmqProperties properties,
             ClientConfiguration clientConfiguration,
             SimpleConsumerFactory simpleConsumerFactory) {
-        this(properties, null, clientConfiguration, simpleConsumerFactory);
+        this(properties, null, clientConfiguration, simpleConsumerFactory, null);
     }
 
     public RocketmqSimpleConsumerTemplate(
             AtengRocketmqProperties properties,
             ObjectProvider<ClientConfiguration> clientConfigurationProvider,
             SimpleConsumerFactory simpleConsumerFactory) {
-        this(properties, clientConfigurationProvider, null, simpleConsumerFactory);
+        this(properties, clientConfigurationProvider, null, simpleConsumerFactory, null);
+    }
+
+    public RocketmqSimpleConsumerTemplate(
+            AtengRocketmqProperties properties,
+            ObjectProvider<ClientConfiguration> clientConfigurationProvider,
+            SimpleConsumerFactory simpleConsumerFactory,
+            ObjectProvider<Executor> taskExecutorProvider) {
+        this(
+                properties,
+                clientConfigurationProvider,
+                null,
+                simpleConsumerFactory,
+                taskExecutorProvider != null ? taskExecutorProvider.getIfAvailable() : null);
+    }
+
+    public RocketmqSimpleConsumerTemplate(
+            AtengRocketmqProperties properties,
+            ClientConfiguration clientConfiguration,
+            SimpleConsumerFactory simpleConsumerFactory,
+            Executor taskExecutor) {
+        this(properties, null, clientConfiguration, simpleConsumerFactory, taskExecutor);
     }
 
     private RocketmqSimpleConsumerTemplate(
             AtengRocketmqProperties properties,
             ObjectProvider<ClientConfiguration> clientConfigurationProvider,
             ClientConfiguration clientConfiguration,
-            SimpleConsumerFactory simpleConsumerFactory) {
+            SimpleConsumerFactory simpleConsumerFactory,
+            Executor taskExecutor) {
         this.properties = Objects.requireNonNull(properties, "properties 不能为空");
         this.clientConfigurationProvider = clientConfigurationProvider;
         this.clientConfiguration = clientConfiguration;
         this.simpleConsumerFactory = simpleConsumerFactory != null ? simpleConsumerFactory : new DefaultSimpleConsumerFactory();
+        this.taskExecutor = taskExecutor;
     }
 
     // =========================================================================
@@ -306,6 +341,16 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
             String consumerGroup,
             Class<T> targetType,
             Consumer<T> consumer) {
+        return receiveAndExecute(topic, consumerGroup, targetType, consumer, null);
+    }
+
+    public <T> int receiveAndExecute(
+            String topic,
+            String consumerGroup,
+            Class<T> targetType,
+            Consumer<T> consumer,
+            BiConsumer<MessageView, Throwable> failureHandler) {
+        Assert.notNull(consumer, "consumer 不能为空");
         return receiveAndExecute(
                 topic,
                 consumerGroup,
@@ -313,7 +358,8 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
                 properties.getSimpleConsumer().getMaxMessageNum(),
                 properties.getSimpleConsumer().getInvisibleDuration(),
                 targetType,
-                (item, view) -> consumer.accept(item));
+                (item, view) -> consumer.accept(item),
+                failureHandler);
     }
 
     public <T> int receiveAndExecute(
@@ -323,6 +369,7 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
             Duration invisibleDuration,
             Class<T> targetType,
             Consumer<T> consumer) {
+        Assert.notNull(consumer, "consumer 不能为空");
         return receiveAndExecute(
                 topic,
                 consumerGroup,
@@ -330,7 +377,8 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
                 maxMessageNum,
                 invisibleDuration,
                 targetType,
-                (item, view) -> consumer.accept(item));
+                (item, view) -> consumer.accept(item),
+                null);
     }
 
     public <T> int receiveAndExecute(
@@ -341,6 +389,43 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
             Duration invisibleDuration,
             Class<T> targetType,
             BiConsumer<T, MessageView> biConsumer) {
+        return receiveAndExecute(
+                topic,
+                consumerGroup,
+                tag,
+                maxMessageNum,
+                invisibleDuration,
+                targetType,
+                biConsumer,
+                null);
+    }
+
+    /**
+     * 高阶流式拉取与单条故障隔离执行闭包（支持受控租约自动续期与单条失败回调）
+     *
+     * <p>单条消息独立激活与清理四维上下文：捕获 {@link IdempotentException} 时视作幂等重放静默执行 ACK；
+     * 其他异常跳过 ACK 保留重投资格、记录告警并回调可选 {@code failureHandler}，绝不阻塞同批剩余消息。</p>
+     *
+     * @param topic             主题名称
+     * @param consumerGroup     消费者组
+     * @param tag               过滤标签表达式
+     * @param maxMessageNum     最大拉取数量
+     * @param invisibleDuration 不可见租约时长
+     * @param targetType        反序列化目标类型
+     * @param biConsumer        业务消费逻辑
+     * @param failureHandler    可选单条失败处理器（为 null 时仅记录告警跳过 ACK）
+     * @param <T>               载荷类型
+     * @return 成功确认出队的消息数量（含幂等静默确认条目）
+     */
+    public <T> int receiveAndExecute(
+            String topic,
+            String consumerGroup,
+            String tag,
+            int maxMessageNum,
+            Duration invisibleDuration,
+            Class<T> targetType,
+            BiConsumer<T, MessageView> biConsumer,
+            BiConsumer<MessageView, Throwable> failureHandler) {
         Assert.notNull(targetType, "targetType 不能为空");
         Assert.notNull(biConsumer, "consumer 不能为空");
 
@@ -349,17 +434,61 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
             return 0;
         }
 
-        int successCount = 0;
+        int settledCount = 0;
         for (MessageView msg : messages) {
-            Map<String, String> msgProps = msg.getProperties() != null ? msg.getProperties() : Collections.emptyMap();
-            try (MessageContextPropagator.ContextScope ignored = MessageContextPropagator.activate(msgProps)) {
-                T entity = parsePayload(msg, msgProps, targetType);
-                biConsumer.accept(entity, msg);
-                ack(consumerGroup, msg);
-                successCount++;
+            if (processSingleMessage(consumerGroup, msg, invisibleDuration, targetType, biConsumer, failureHandler)) {
+                settledCount++;
             }
         }
-        return successCount;
+        return settledCount;
+    }
+
+    private <T> boolean processSingleMessage(
+            String consumerGroup,
+            MessageView msg,
+            Duration invisibleDuration,
+            Class<T> targetType,
+            BiConsumer<T, MessageView> biConsumer,
+            BiConsumer<MessageView, Throwable> failureHandler) {
+        Map<String, String> msgProps = msg.getProperties() != null ? msg.getProperties() : Collections.emptyMap();
+        try (MessageContextPropagator.ContextScope ignored = MessageContextPropagator.activate(msgProps)) {
+            boolean shouldAck = false;
+            LeaseRenewalGuard leaseGuard = startLeaseRenewalWatchdog(consumerGroup, msg, invisibleDuration);
+            try {
+                T entity = parsePayload(msg, msgProps, targetType);
+                biConsumer.accept(entity, msg);
+                shouldAck = true;
+            } catch (Throwable ex) {
+                if (ex instanceof Error err) {
+                    throw err;
+                }
+                if (isIdempotentException(ex)) {
+                    log.warn("[MQ-SIMPLE-IDEMPOTENT-DUPLICATE] mq=rocketmq topic={} group={} messageId={} 命中防重幂等拦截，静默执行 ACK 确认: {}",
+                            msg.getTopic(), consumerGroup, msg.getMessageId(), ex.getMessage());
+                    shouldAck = true;
+                } else {
+                    log.warn("[MQ-SIMPLE-CONSUME-FAIL] mq=rocketmq topic={} group={} messageId={} 单条消费处理异常，跳过 ACK 保留重投资格: {}",
+                            msg.getTopic(), consumerGroup, msg.getMessageId(), ex.getMessage(), ex);
+                    invokeFailureHandlerSafely(failureHandler, msg, ex);
+                }
+            } finally {
+                stopLeaseRenewalWatchdog(leaseGuard);
+            }
+
+            if (shouldAck) {
+                ack(consumerGroup, msg);
+                return true;
+            }
+            return false;
+        } catch (Throwable ackOrContextEx) {
+            if (ackOrContextEx instanceof Error err) {
+                throw err;
+            }
+            log.warn("[MQ-SIMPLE-ACK-FAIL] mq=rocketmq topic={} group={} messageId={} 单条确认或上下文收口异常，保留隔离继续后续消息: {}",
+                    msg.getTopic(), consumerGroup, msg.getMessageId(), ackOrContextEx.getMessage(), ackOrContextEx);
+            invokeFailureHandlerSafely(failureHandler, msg, ackOrContextEx);
+            return false;
+        }
     }
 
     // =========================================================================
@@ -388,18 +517,22 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
         FilterExpression filter = (StringUtils.hasText(tag) && !"*".equals(tag.trim()))
                 ? new FilterExpression(tag.trim(), FilterExpressionType.TAG)
                 : new FilterExpression("*", FilterExpressionType.TAG);
+        String normalizedTopic = topic.trim();
+        String normalizedGroup = consumerGroup.trim();
+        String targetFingerprint = toFilterFingerprint(filter);
+        SubscriptionKey subscriptionKey = new SubscriptionKey(normalizedGroup, normalizedTopic);
 
         return withLock(consumerLock, () -> {
             if (!running) {
                 throw new IllegalStateException("RocketmqSimpleConsumerTemplate 已关闭，无法创建新客户端连接");
             }
-            SimpleConsumer consumer = consumerCache.get(consumerGroup.trim());
+            SimpleConsumer consumer = consumerCache.get(normalizedGroup);
             if (consumer == null) {
                 Map<String, FilterExpression> subs = new HashMap<>();
-                subs.put(topic.trim(), filter);
+                subs.put(normalizedTopic, filter);
                 Duration awaitDuration = properties.getSimpleConsumer().getAwaitDuration();
                 try {
-                    consumer = simpleConsumerFactory.createSimpleConsumer(config, consumerGroup.trim(), subs, awaitDuration);
+                    consumer = simpleConsumerFactory.createSimpleConsumer(config, normalizedGroup, subs, awaitDuration);
                 } catch (Exception ex) {
                     throw new MessageDeliveryException(
                             RocketmqConstants.MQ_TYPE,
@@ -409,21 +542,37 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
                             "初始化 RocketMQ SimpleConsumer 失败: group=" + consumerGroup + ", error=" + ex.getMessage(),
                             ex);
                 }
-                consumerCache.put(consumerGroup.trim(), consumer);
-                log.info("[ateng-boot-rocketmq] 成功初始化并缓存 SimpleConsumer [group={}, initialTopic={}]", consumerGroup, topic);
+                consumerCache.put(normalizedGroup, consumer);
+                subscriptionFilterCache.put(subscriptionKey, targetFingerprint);
+                log.info("[ateng-boot-rocketmq] 成功初始化并缓存 SimpleConsumer [group={}, initialTopic={}, filter={}]",
+                        normalizedGroup, normalizedTopic, targetFingerprint);
             } else {
-                Map<String, FilterExpression> currentSubs = consumer.getSubscriptionExpressions();
-                if (currentSubs == null || !currentSubs.containsKey(topic.trim())) {
+                String cachedFingerprint = subscriptionFilterCache.get(subscriptionKey);
+                boolean needsSubscribe = false;
+                if (cachedFingerprint != null) {
+                    needsSubscribe = !cachedFingerprint.equals(targetFingerprint);
+                } else {
+                    Map<String, FilterExpression> currentSubs = consumer.getSubscriptionExpressions();
+                    FilterExpression existingFilter = currentSubs != null ? currentSubs.get(normalizedTopic) : null;
+                    if (existingFilter == null || !targetFingerprint.equals(toFilterFingerprint(existingFilter))) {
+                        needsSubscribe = true;
+                    } else {
+                        subscriptionFilterCache.put(subscriptionKey, targetFingerprint);
+                    }
+                }
+                if (needsSubscribe) {
                     try {
-                        consumer.subscribe(topic.trim(), filter);
-                        log.info("[ateng-boot-rocketmq] SimpleConsumer 成功追加订阅 [group={}, topic={}]", consumerGroup, topic);
+                        consumer.subscribe(normalizedTopic, filter);
+                        subscriptionFilterCache.put(subscriptionKey, targetFingerprint);
+                        log.info("[ateng-boot-rocketmq] SimpleConsumer 订阅过滤表达式已刷新 [group={}, topic={}, filter={}]",
+                                normalizedGroup, normalizedTopic, targetFingerprint);
                     } catch (Exception ex) {
                         throw new MessageDeliveryException(
                                 RocketmqConstants.MQ_TYPE,
                                 topic,
                                 null,
                                 CommonResultCode.INTERNAL_SERVER_ERROR,
-                                "RocketMQ SimpleConsumer 追加订阅主题失败: topic=" + topic + ", group=" + consumerGroup,
+                                "RocketMQ SimpleConsumer 订阅或刷新过滤表达式失败: topic=" + topic + ", group=" + consumerGroup,
                                 ex);
                     }
                 }
@@ -548,6 +697,7 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
     public void stop() {
         runWithLock(consumerLock, () -> {
             this.running = false;
+            stopAllLeaseWatchdogs();
             if (!consumerCache.isEmpty()) {
                 for (Map.Entry<String, SimpleConsumer> entry : consumerCache.entrySet()) {
                     try {
@@ -559,8 +709,187 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
                 }
                 consumerCache.clear();
             }
+            subscriptionFilterCache.clear();
         });
         runWithLock(messageGroupLock, messageGroupMap::clear);
+    }
+
+    private LeaseRenewalGuard startLeaseRenewalWatchdog(
+            String consumerGroup,
+            MessageView messageView,
+            Duration invisibleDuration) {
+        AtengRocketmqProperties.SimpleConsumer simpleProps = properties.getSimpleConsumer();
+        if (!running
+                || !simpleProps.isAutoRenewLease()
+                || simpleProps.getMaxLeaseRenewAttempts() <= 0
+                || invisibleDuration == null
+                || invisibleDuration.isZero()
+                || invisibleDuration.isNegative()) {
+            return null;
+        }
+        Duration interval = resolveLeaseRenewInterval(invisibleDuration);
+        Executor dispatchExecutor = this.taskExecutor != null ? this.taskExecutor : AsyncUtil.getExecutor(null);
+        LeaseRenewalGuard guard = new LeaseRenewalGuard(
+                consumerGroup,
+                messageView,
+                invisibleDuration,
+                interval,
+                simpleProps.getMaxLeaseRenewAttempts(),
+                dispatchExecutor,
+                AsyncContext.capture());
+        activeLeaseWatchdogs.add(guard);
+        if (!running) {
+            stopLeaseRenewalWatchdog(guard);
+            return null;
+        }
+        guard.start();
+        return guard;
+    }
+
+    private void stopLeaseRenewalWatchdog(LeaseRenewalGuard guard) {
+        if (guard == null) {
+            return;
+        }
+        guard.stop();
+        activeLeaseWatchdogs.remove(guard);
+    }
+
+    private void stopAllLeaseWatchdogs() {
+        for (LeaseRenewalGuard guard : activeLeaseWatchdogs) {
+            guard.stop();
+        }
+        activeLeaseWatchdogs.clear();
+    }
+
+    private static Duration resolveLeaseRenewInterval(Duration invisibleDuration) {
+        Duration half = invisibleDuration.dividedBy(2);
+        return half.compareTo(MIN_LEASE_RENEW_INTERVAL) < 0 ? MIN_LEASE_RENEW_INTERVAL : half;
+    }
+
+    private static String toFilterFingerprint(FilterExpression filter) {
+        return RocketmqMessageHelper.toFilterFingerprint(filter);
+    }
+
+    private static void invokeFailureHandlerSafely(
+            BiConsumer<MessageView, Throwable> failureHandler,
+            MessageView msg,
+            Throwable cause) {
+        if (failureHandler == null) {
+            return;
+        }
+        try {
+            failureHandler.accept(msg, cause);
+        } catch (Throwable handlerEx) {
+            if (handlerEx instanceof Error err) {
+                throw err;
+            }
+            log.warn("[MQ-SIMPLE-FAILURE-HANDLER-ERROR] 单条消费失败回调执行异常（已隔离避免阻断同批后续消息）: messageId={}, error={}",
+                    msg != null ? msg.getMessageId() : null, handlerEx.getMessage(), handlerEx);
+        }
+    }
+
+    private static boolean isIdempotentException(Throwable throwable) {
+        Throwable current = throwable;
+        int depth = 0;
+        while (current != null && depth < 30) {
+            if (current instanceof IdempotentException
+                    || "io.github.atengk.boot.core.exception.IdempotentException".equals(current.getClass().getName())) {
+                return true;
+            }
+            current = current.getCause();
+            depth++;
+        }
+        return false;
+    }
+
+    private record SubscriptionKey(String consumerGroup, String topic) {
+    }
+
+    /**
+     * 受控不可见租约自动续期看门狗守卫
+     */
+    private final class LeaseRenewalGuard {
+
+        private final String consumerGroup;
+        private final MessageView messageView;
+        private final Duration invisibleDuration;
+        private final Duration renewInterval;
+        private final int maxAttempts;
+        private final Executor dispatchExecutor;
+        private final AsyncContext.ContextSnapshot contextSnapshot;
+
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        private final AtomicInteger attempts = new AtomicInteger(0);
+        private final AtomicReference<CompletableFuture<Void>> pendingTask = new AtomicReference<>();
+
+        private LeaseRenewalGuard(
+                String consumerGroup,
+                MessageView messageView,
+                Duration invisibleDuration,
+                Duration renewInterval,
+                int maxAttempts,
+                Executor dispatchExecutor,
+                AsyncContext.ContextSnapshot contextSnapshot) {
+            this.consumerGroup = consumerGroup;
+            this.messageView = messageView;
+            this.invisibleDuration = invisibleDuration;
+            this.renewInterval = renewInterval;
+            this.maxAttempts = maxAttempts;
+            this.dispatchExecutor = dispatchExecutor;
+            this.contextSnapshot = contextSnapshot;
+        }
+
+        private void start() {
+            scheduleNext();
+        }
+
+        private void scheduleNext() {
+            if (cancelled.get() || !running || attempts.get() >= maxAttempts) {
+                return;
+            }
+            Executor delayedExecutor = CompletableFuture.delayedExecutor(
+                    renewInterval.toMillis(), TimeUnit.MILLISECONDS, dispatchExecutor);
+            CompletableFuture<Void> next = CompletableFuture.runAsync(this::executeRenewalCycle, delayedExecutor);
+            pendingTask.set(next);
+            if (cancelled.get() || !running) {
+                next.cancel(false);
+            }
+        }
+
+        private void executeRenewalCycle() {
+            if (cancelled.get() || !running) {
+                return;
+            }
+            int currentAttempt = attempts.incrementAndGet();
+            if (currentAttempt > maxAttempts) {
+                return;
+            }
+            AsyncContext.ContextSnapshot previousSnapshot = AsyncContext.capturePrevious();
+            contextSnapshot.apply();
+            try {
+                if (cancelled.get() || !running) {
+                    return;
+                }
+                changeInvisibleDuration(consumerGroup, messageView, invisibleDuration);
+            } catch (Exception ex) {
+                log.warn("[MQ-SIMPLE-LEASE-WATCHDOG-FAIL] mq=rocketmq topic={} group={} messageId={} attempt={}/{} 租约自动续期失败: {}",
+                        messageView.getTopic(), consumerGroup, messageView.getMessageId(), currentAttempt, maxAttempts, ex.getMessage());
+            } finally {
+                previousSnapshot.restore();
+                if (!cancelled.get() && running && currentAttempt < maxAttempts) {
+                    scheduleNext();
+                }
+            }
+        }
+
+        private void stop() {
+            if (cancelled.compareAndSet(false, true)) {
+                CompletableFuture<Void> current = pendingTask.getAndSet(null);
+                if (current != null) {
+                    current.cancel(false);
+                }
+            }
+        }
     }
 
     @Override

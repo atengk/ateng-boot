@@ -5,6 +5,8 @@ import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.rocketmq.client.apis.consumer.FilterExpression;
+import org.apache.rocketmq.client.apis.consumer.FilterExpressionType;
 import org.apache.rocketmq.client.apis.message.MessageView;
 import org.slf4j.MDC;
 import org.springframework.util.StringUtils;
@@ -169,5 +171,20 @@ public final class RocketmqMessageHelper {
             }
         }
         return baos.toByteArray();
+    }
+
+    /**
+     * 计算 RocketMQ 过滤表达式的规范化指纹字符串
+     *
+     * @param filter 过滤表达式
+     * @return 指纹文本（例如 {@code TAG:tagA}）
+     */
+    public static String toFilterFingerprint(FilterExpression filter) {
+        if (filter == null) {
+            return "";
+        }
+        FilterExpressionType type = filter.getFilterExpressionType();
+        String expr = filter.getExpression();
+        return (type != null ? type.name() : "") + ":" + (expr != null ? expr : "*");
     }
 }

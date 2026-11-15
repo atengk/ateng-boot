@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.rocketmq.testdouble;
 
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
 import io.github.atengk.boot.rocketmq.consumer.SimpleConsumerFactory;
+import io.github.atengk.boot.rocketmq.helper.RocketmqMessageHelper;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.apis.ClientConfiguration;
@@ -64,6 +65,8 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
     private final List<String> renewedMessageIds = new CopyOnWriteArrayList<>();
     @Getter
     private final List<String> recalledHandles = new CopyOnWriteArrayList<>();
+    @Getter
+    private final List<String> simpleSubscribeRecords = new CopyOnWriteArrayList<>();
 
     @Getter
     private final AtomicInteger sentMessageCount = new AtomicInteger(0);
@@ -142,17 +145,37 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
             Duration awaitDuration) throws ClientException {
 
         SimpleConsumer mockConsumer = mock(SimpleConsumer.class);
+        Map<String, FilterExpression> activeSubscriptions = new ConcurrentHashMap<>();
+        if (subscriptionExpressions != null) {
+            activeSubscriptions.putAll(subscriptionExpressions);
+        }
+
+        when(mockConsumer.getSubscriptionExpressions()).thenAnswer(
+                invocation -> Collections.unmodifiableMap(new HashMap<>(activeSubscriptions)));
+
+        doAnswer(invocation -> {
+            String targetTopic = invocation.getArgument(0);
+            FilterExpression newFilter = invocation.getArgument(1);
+            if (targetTopic != null && newFilter != null) {
+                activeSubscriptions.put(targetTopic, newFilter);
+                String filterFingerprint = RocketmqMessageHelper.toFilterFingerprint(newFilter);
+                simpleSubscribeRecords.add(consumerGroup + "#" + targetTopic + "#" + filterFingerprint);
+                log.info("[TEST-DOUBLE] 内存 SimpleConsumer 动态刷新订阅: group={}, topic={}, filter={}",
+                        consumerGroup, targetTopic, filterFingerprint);
+            }
+            return mockConsumer;
+        }).when(mockConsumer).subscribe(anyString(), any(FilterExpression.class));
 
         // 同步批量拉取
         when(mockConsumer.receive(anyInt(), any(Duration.class))).thenAnswer(invocation -> {
             int maxNum = invocation.getArgument(0);
-            return pollMessagesForGroup(consumerGroup, subscriptionExpressions, maxNum);
+            return pollMessagesForGroup(consumerGroup, activeSubscriptions, maxNum);
         });
 
         // 异步批量拉取
         when(mockConsumer.receiveAsync(anyInt(), any(Duration.class))).thenAnswer(invocation -> {
             int maxNum = invocation.getArgument(0);
-            List<MessageView> list = pollMessagesForGroup(consumerGroup, subscriptionExpressions, maxNum);
+            List<MessageView> list = pollMessagesForGroup(consumerGroup, activeSubscriptions, maxNum);
             return CompletableFuture.completedFuture(list);
         });
 
@@ -535,6 +558,7 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
         ackedMessageIds.clear();
         renewedMessageIds.clear();
         recalledHandles.clear();
+        simpleSubscribeRecords.clear();
         failingPayloadKeywords.clear();
     }
 }

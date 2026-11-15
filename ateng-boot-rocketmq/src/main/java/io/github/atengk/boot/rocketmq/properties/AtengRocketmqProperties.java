@@ -231,6 +231,28 @@ public class AtengRocketmqProperties {
          * 长轮询拉取最大挂起等待时间（默认 5s）
          */
         private Duration awaitDuration = Duration.ofSeconds(5);
+
+        /**
+         * 是否在 receiveAndExecute 长耗时处理期间启用不可见租约自动续期看门狗（默认 true）
+         */
+        private boolean autoRenewLease = true;
+
+        /**
+         * 单条消息允许自动续期租约的最大次数上限（默认 5 次；0 表示不续期，严禁负数）
+         */
+        private int maxLeaseRenewAttempts = 5;
+
+        /**
+         * 设置单条消息自动续期最大次数上限（不能为负数）
+         *
+         * @param maxLeaseRenewAttempts 最大自动续期次数
+         */
+        public void setMaxLeaseRenewAttempts(int maxLeaseRenewAttempts) {
+            if (maxLeaseRenewAttempts < 0) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.simple-consumer.max-lease-renew-attempts 不能为负数");
+            }
+            this.maxLeaseRenewAttempts = maxLeaseRenewAttempts;
+        }
     }
 
     /**

@@ -3,12 +3,15 @@ package io.github.atengk.boot.rocketmq.template;
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.exception.IdempotentException;
 import io.github.atengk.boot.core.exception.MessageDeliveryException;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.rocketmq.consumer.SimpleConsumerFactory;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import org.apache.rocketmq.client.apis.ClientConfiguration;
 import org.apache.rocketmq.client.apis.consumer.FilterExpression;
+import org.apache.rocketmq.client.apis.consumer.FilterExpressionType;
 import org.apache.rocketmq.client.apis.consumer.SimpleConsumer;
 import org.apache.rocketmq.client.apis.message.MessageId;
 import org.apache.rocketmq.client.apis.message.MessageView;
@@ -70,6 +73,7 @@ class RocketmqSimpleConsumerTemplateTest {
         template.destroy();
         MDC.clear();
         TenantContextHolder.clear();
+        UserContextHolder.clear();
     }
 
     private MessageView createMockMessageView(String topic, String msgId, byte[] body, Map<String, String> properties) {
@@ -343,5 +347,210 @@ class RocketmqSimpleConsumerTemplateTest {
         for (int g = 0; g < groupCount; g++) {
             verify(simpleConsumerFactory, times(1)).createSimpleConsumer(any(), eq("group_concurrent_" + g), any(), any());
         }
+    }
+
+    @Test
+    @DisplayName("验证动态过滤表达式刷新：同组同 Topic 变更 Tag 刷新订阅，相同指纹不重复刷新，异常不污染缓存")
+    void testDynamicFilterExpressionRefresh() throws Exception {
+        Map<String, FilterExpression> currentSubs = new HashMap<>();
+        currentSubs.put("filter_topic", new FilterExpression("tag_v1", FilterExpressionType.TAG));
+        when(mockConsumer.getSubscriptionExpressions()).thenAnswer(inv -> Collections.unmodifiableMap(new HashMap<>(currentSubs)));
+        doAnswer(inv -> {
+            String t = inv.getArgument(0);
+            FilterExpression fe = inv.getArgument(1);
+            currentSubs.put(t, fe);
+            return mockConsumer;
+        }).when(mockConsumer).subscribe(anyString(), any(FilterExpression.class));
+
+        // 1. 初次订阅 tag_v1
+        template.receive("filter_topic", "filter_group", "tag_v1", 5, Duration.ofSeconds(10));
+        verify(simpleConsumerFactory, times(1)).createSimpleConsumer(any(), eq("filter_group"), any(), any());
+        verify(mockConsumer, never()).subscribe(anyString(), any());
+
+        // 2. 相同过滤指纹再次拉取，不触发冗余 subscribe
+        template.receive("filter_topic", "filter_group", "tag_v1", 5, Duration.ofSeconds(10));
+        verify(mockConsumer, never()).subscribe(anyString(), any());
+
+        // 3. 切换为 tag_v2，触发底层 subscribe 动态刷新
+        template.receive("filter_topic", "filter_group", "tag_v2", 5, Duration.ofSeconds(10));
+        verify(mockConsumer, times(1)).subscribe(eq("filter_topic"),
+                argThat(fe -> fe != null && "tag_v2".equals(fe.getExpression())
+                        && FilterExpressionType.TAG.equals(fe.getFilterExpressionType())));
+
+        // 4. 若刷新订阅异常，应保留因果链并维持原指纹（不污染缓存）
+        doThrow(new RuntimeException("broker subscribe fail")).when(mockConsumer).subscribe(eq("filter_topic"), any());
+        assertThatThrownBy(() -> template.receive("filter_topic", "filter_group", "tag_v3", 5, Duration.ofSeconds(10)))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasCauseInstanceOf(RuntimeException.class);
+    }
+
+    @Test
+    @DisplayName("验证单条故障隔离与 IdempotentException 静默确认：异常消息不阻塞同批且独立清理上下文")
+    void testReceiveAndExecuteFaultIsolationAndIdempotentSilentAck() throws Exception {
+        Map<String, String> headers1 = Map.of(MessageHeaderConstants.TRACE_ID, "trace-iso-1", MessageHeaderConstants.TENANT_ID, "tenant-1");
+        Map<String, String> headers2 = Map.of(MessageHeaderConstants.TRACE_ID, "trace-iso-2", MessageHeaderConstants.TENANT_ID, "tenant-2");
+        Map<String, String> headers3 = Map.of(MessageHeaderConstants.TRACE_ID, "trace-iso-3", MessageHeaderConstants.TENANT_ID, "tenant-3");
+        Map<String, String> headers4 = Map.of(MessageHeaderConstants.TRACE_ID, "trace-iso-4", MessageHeaderConstants.TENANT_ID, "tenant-4");
+
+        MessageView m1 = createMockMessageView("iso_topic", "MSG-ISO-1", "idempotent".getBytes(StandardCharsets.UTF_8), headers1);
+        MessageView m2 = createMockMessageView("iso_topic", "MSG-ISO-2", "boom".getBytes(StandardCharsets.UTF_8), headers2);
+        MessageView m3 = createMockMessageView("iso_topic", "MSG-ISO-3", "boom_handler_fail".getBytes(StandardCharsets.UTF_8), headers3);
+        MessageView m4 = createMockMessageView("iso_topic", "MSG-ISO-4", "ok".getBytes(StandardCharsets.UTF_8), headers4);
+
+        when(mockConsumer.receive(eq(10), any(Duration.class))).thenReturn(List.of(m1, m2, m3, m4));
+
+        List<String> okPayloads = new ArrayList<>();
+        List<String> observedTraces = new ArrayList<>();
+        List<String> failedIds = new ArrayList<>();
+
+        int handled = template.receiveAndExecute(
+                "iso_topic",
+                "iso_group",
+                "tagA",
+                10,
+                Duration.ofSeconds(20),
+                String.class,
+                (payload, view) -> {
+                    observedTraces.add(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY));
+                    if ("idempotent".equals(payload)) {
+                        throw new IdempotentException("重复投递幂等拦截");
+                    }
+                    if (payload.startsWith("boom")) {
+                        throw new IllegalStateException("业务处理异常: " + payload);
+                    }
+                    okPayloads.add(payload);
+                },
+                (failedMsg, cause) -> {
+                    failedIds.add(failedMsg.getMessageId().toString());
+                    if ("MSG-ISO-3".equals(failedMsg.getMessageId().toString())) {
+                        throw new RuntimeException("回调自身抛错也必须被隔离");
+                    }
+                });
+
+        // m1(幂等静默ACK) + m4(正常ACK) => 2；m2, m3 跳过 ACK
+        assertThat(handled).isEqualTo(2);
+        assertThat(okPayloads).containsExactly("ok");
+        assertThat(observedTraces).containsExactly("trace-iso-1", "trace-iso-2", "trace-iso-3", "trace-iso-4");
+        assertThat(failedIds).containsExactly("MSG-ISO-2", "MSG-ISO-3");
+
+        verify(mockConsumer, times(1)).ack(m1);
+        verify(mockConsumer, never()).ack(m2);
+        verify(mockConsumer, never()).ack(m3);
+        verify(mockConsumer, times(1)).ack(m4);
+
+        // 单条执行结束后外层四维上下文必须无残留
+        assertThat(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY)).isNull();
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+    }
+
+    @Test
+    @DisplayName("验证租约自动续期看门狗：达到 maxLeaseRenewAttempts 止停、finally 即时停卫与禁用开关生效")
+    void testLeaseRenewalWatchdogBehavior() throws Exception {
+        properties.getSimpleConsumer().setAutoRenewLease(true);
+        properties.getSimpleConsumer().setMaxLeaseRenewAttempts(2);
+
+        MessageView slowMsg = createMockMessageView(
+                "lease_topic",
+                "MSG-LEASE-1",
+                "slow-task".getBytes(StandardCharsets.UTF_8),
+                Map.of(MessageHeaderConstants.TRACE_ID, "trace-lease-1"));
+        when(mockConsumer.receive(eq(1), any(Duration.class))).thenReturn(List.of(slowMsg));
+
+        CountDownLatch twoRenewals = new CountDownLatch(2);
+        List<String> renewalTraces = Collections.synchronizedList(new ArrayList<>());
+        doAnswer(inv -> {
+            renewalTraces.add(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY));
+            twoRenewals.countDown();
+            return null;
+        }).when(mockConsumer).changeInvisibleDuration(eq(slowMsg), eq(Duration.ofSeconds(2)));
+
+        int count = template.receiveAndExecute(
+                "lease_topic",
+                "lease_group",
+                "*",
+                1,
+                Duration.ofSeconds(2),
+                String.class,
+                (payload, view) -> {
+                    try {
+                        assertThat(twoRenewals.await(5, TimeUnit.SECONDS)).isTrue();
+                        // 多等待 1.3s，确认达到 maxLeaseRenewAttempts=2 上限后不会触发第 3 次续期
+                        Thread.sleep(1300L);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                },
+                null);
+
+        assertThat(count).isEqualTo(1);
+        verify(mockConsumer, times(2)).changeInvisibleDuration(slowMsg, Duration.ofSeconds(2));
+        verify(mockConsumer, times(1)).ack(slowMsg);
+        assertThat(renewalTraces).containsExactly("trace-lease-1", "trace-lease-1");
+
+        // 再测试快速完成或抛错后，不会发生额外续期；以及 autoRenewLease=false 完全关闭看门狗
+        MessageView failFastMsg = createMockMessageView("lease_topic", "MSG-LEASE-2", "fast-fail".getBytes(StandardCharsets.UTF_8), null);
+        when(mockConsumer.receive(eq(1), any(Duration.class))).thenReturn(List.of(failFastMsg));
+        template.receiveAndExecute(
+                "lease_topic",
+                "lease_group",
+                "*",
+                1,
+                Duration.ofSeconds(2),
+                String.class,
+                (payload, view) -> {
+                    throw new IllegalStateException("快速失败立即触发 finally 停卫");
+                },
+                (mv, ex) -> {});
+        Thread.sleep(1200L);
+        verify(mockConsumer, never()).changeInvisibleDuration(eq(failFastMsg), any());
+
+        properties.getSimpleConsumer().setAutoRenewLease(false);
+        MessageView disabledMsg = createMockMessageView("lease_topic", "MSG-LEASE-3", "disabled".getBytes(StandardCharsets.UTF_8), null);
+        when(mockConsumer.receive(eq(1), any(Duration.class))).thenReturn(List.of(disabledMsg));
+        template.receiveAndExecute(
+                "lease_topic",
+                "lease_group",
+                "*",
+                1,
+                Duration.ofSeconds(2),
+                String.class,
+                (payload, view) -> {
+                    try {
+                        Thread.sleep(1200L);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                },
+                null);
+        verify(mockConsumer, never()).changeInvisibleDuration(eq(disabledMsg), any());
+
+        // SmartLifecycle.stop() 应立即终止仍在运行中的看门狗守卫
+        properties.getSimpleConsumer().setAutoRenewLease(true);
+        properties.getSimpleConsumer().setMaxLeaseRenewAttempts(5);
+        MessageView stopMsg = createMockMessageView("lease_topic", "MSG-LEASE-4", "stop-during-renew".getBytes(StandardCharsets.UTF_8), null);
+        when(mockConsumer.receive(eq(1), any(Duration.class))).thenReturn(List.of(stopMsg));
+        CountDownLatch startedProcessing = new CountDownLatch(1);
+        CountDownLatch allowReturn = new CountDownLatch(1);
+        CompletableFuture<Integer> asyncExec = CompletableFuture.supplyAsync(() -> template.receiveAndExecute(
+                "lease_topic",
+                "lease_group",
+                "*",
+                1,
+                Duration.ofSeconds(2),
+                String.class,
+                (payload, view) -> {
+                    startedProcessing.countDown();
+                    try {
+                        allowReturn.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                },
+                null));
+        assertThat(startedProcessing.await(3, TimeUnit.SECONDS)).isTrue();
+        template.stop();
+        allowReturn.countDown();
+        assertThat(asyncExec.get(5, TimeUnit.SECONDS)).isEqualTo(0);
+        verify(mockConsumer, never()).changeInvisibleDuration(eq(stopMsg), any());
     }
 }

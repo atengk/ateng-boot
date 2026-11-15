@@ -697,6 +697,90 @@ class SampleRocketmqWebControllerTest {
     }
 
     @Test
+    @DisplayName("测试 RocketmqSimpleConsumerController: 动态过滤刷新、受控故障隔离闭环与长耗时租约自动续期")
+    void testSimpleConsumerResilientAndDynamicFilterEndpoints() throws Exception {
+        mockMvc.perform(delete("/sample/rocketmq/simple-consumer/clear"))
+                .andExpect(status().isOk());
+
+        // 1. 动态过滤刷新：同组先后按 tag_web_1 与 tag_web_2 拉取
+        String dynamicGroup = "sample_web_dynamic_group";
+        OrderMessage msgTag1 = OrderMessage.builder().orderId("ORD-WEB-DYN-1").amount(10.0).customerName("T1").status("CREATED").build();
+        OrderMessage msgTag2 = OrderMessage.builder().orderId("ORD-WEB-DYN-2").amount(20.0).customerName("T2").status("CREATED").build();
+        tradeRocketmqProducer.sendOrderWithTag(msgTag1, "tag_web_1");
+        tradeRocketmqProducer.sendOrderWithTag(msgTag2, "tag_web_2");
+
+        SimplePullRequest pullTag1 = SimplePullRequest.builder().group(dynamicGroup).tag("tag_web_1").maxNum(5).invisibleSeconds(30L).build();
+        mockMvc.perform(post("/sample/rocketmq/simple-consumer/consume")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(pullTag1)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(1));
+
+        SimplePullRequest pullTag2 = SimplePullRequest.builder().group(dynamicGroup).tag("tag_web_2").maxNum(5).invisibleSeconds(30L).build();
+        mockMvc.perform(post("/sample/rocketmq/simple-consumer/consume")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(pullTag2)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(1));
+
+        if (testBroker != null) {
+            assertThat(testBroker.getSimpleSubscribeRecords())
+                    .contains(dynamicGroup + "#" + TradeRocketmqProducer.TOPIC_ORDER + "#TAG:tag_web_2");
+        }
+
+        // 2. 单条故障隔离与 IdempotentException 静默确认 (/consume-resilient)
+        OrderMessage okOrder = OrderMessage.builder().orderId("ORD-WEB-RES-OK").amount(50.0).customerName("OK").status("CREATED").build();
+        OrderMessage idemOrder = OrderMessage.builder().orderId("ORD-WEB-RES-IDEM").amount(60.0).customerName("ID").status("IDEMPOTENT").build();
+        OrderMessage failOrder = OrderMessage.builder().orderId("ORD-WEB-RES-FAIL").amount(70.0).customerName("FL").status("FAIL").build();
+        tradeRocketmqProducer.sendOrderWithTag(okOrder, "tag_web_res");
+        tradeRocketmqProducer.sendOrderWithTag(idemOrder, "tag_web_res");
+        tradeRocketmqProducer.sendOrderWithTag(failOrder, "tag_web_res");
+
+        SimplePullRequest resilientReq = SimplePullRequest.builder()
+                .group("sample_web_resilient_group")
+                .tag("tag_web_res")
+                .maxNum(10)
+                .invisibleSeconds(30L)
+                .simulateDelayMillis(0L)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/simple-consumer/consume-resilient")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(resilientReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.settledCount").value(2))
+                .andExpect(jsonPath("$.data.consumedCount").value(1))
+                .andExpect(jsonPath("$.data.idempotentCount").value(1))
+                .andExpect(jsonPath("$.data.failedCount").value(1))
+                .andExpect(jsonPath("$.data.consumedOrderIds", contains("ORD-WEB-RES-OK")))
+                .andExpect(jsonPath("$.data.failedOrderIds", contains("ORD-WEB-RES-FAIL")));
+
+        // 3. 长耗时任务租约自动续期看门狗验证
+        OrderMessage slowOrder = OrderMessage.builder().orderId("ORD-WEB-WATCHDOG-1").amount(88.0).customerName("SLOW").status("CREATED").build();
+        tradeRocketmqProducer.sendOrderWithTag(slowOrder, "tag_web_slow");
+
+        SimplePullRequest slowReq = SimplePullRequest.builder()
+                .group("sample_web_watchdog_group")
+                .tag("tag_web_slow")
+                .maxNum(5)
+                .invisibleSeconds(2L)
+                .simulateDelayMillis(1300L)
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/simple-consumer/consume-resilient")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(slowReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.settledCount").value(1));
+
+        if (testBroker != null) {
+            assertThat(testBroker.getRenewedMessageIds()).isNotEmpty();
+        }
+    }
+
+    @Test
     @DisplayName("测试 RocketmqContainerController: 端点审计/动态削峰暂停/恢复/物理启停与全局调度")
     void testContainerController() throws Exception {
         // 1. 端点元数据列表审计
