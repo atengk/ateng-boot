@@ -23,8 +23,13 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import org.springframework.context.SmartLifecycle;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -262,5 +267,81 @@ class RocketmqSimpleConsumerTemplateTest {
         assertThatThrownBy(() -> template.ack(untrackedMsg))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("检测到存在多个消费者组");
+    }
+
+    @Test
+    @DisplayName("验证 SmartLifecycle 契约：相位正确、幂等停机回调与重启恢复")
+    void testSmartLifecyclePhaseIdempotentStopAndRestart() throws Exception {
+        assertThat(template).isInstanceOf(SmartLifecycle.class);
+        SmartLifecycle lifecycle = (SmartLifecycle) template;
+        assertThat(lifecycle.isAutoStartup()).isTrue();
+        assertThat(lifecycle.getPhase()).isEqualTo(Integer.MAX_VALUE - 200);
+        assertThat(lifecycle.isRunning()).isTrue();
+
+        template.receive("order_topic", "group_lifecycle", 5, Duration.ofSeconds(10));
+
+        AtomicInteger callbackCount = new AtomicInteger(0);
+        lifecycle.stop(callbackCount::incrementAndGet);
+        assertThat(lifecycle.isRunning()).isFalse();
+        assertThat(callbackCount.get()).isEqualTo(1);
+        verify(mockConsumer, times(1)).close();
+
+        // 重复 stop 与 destroy 幂等安全，不重复关闭已关闭的消费端
+        lifecycle.stop(callbackCount::incrementAndGet);
+        template.destroy();
+        assertThat(callbackCount.get()).isEqualTo(2);
+        verify(mockConsumer, times(1)).close();
+
+        // 重新启动后可再次创建消费客户端
+        lifecycle.start();
+        assertThat(lifecycle.isRunning()).isTrue();
+        template.receive("order_topic", "group_lifecycle_restarted", 5, Duration.ofSeconds(10));
+        verify(simpleConsumerFactory, times(1)).createSimpleConsumer(any(), eq("group_lifecycle_restarted"), any(), any());
+    }
+
+    @Test
+    @DisplayName("验证 ReentrantLock 并发初始化与消息追踪映射在多线程下安全无异常")
+    void testConcurrentConsumerInitializationAndAckTracking() throws Exception {
+        int groupCount = 3;
+        int workerCount = 12;
+        for (int g = 0; g < groupCount; g++) {
+            String group = "group_concurrent_" + g;
+            SimpleConsumer consumer = mock(SimpleConsumer.class);
+            ConcurrentLinkedQueue<MessageView> queue = new ConcurrentLinkedQueue<>();
+            for (int m = 0; m < workerCount; m++) {
+                queue.add(createMockMessageView("order_topic", "MSG-C-" + g + "-" + m, "ok".getBytes(StandardCharsets.UTF_8), null));
+            }
+            when(consumer.receive(eq(1), any(Duration.class)))
+                    .thenAnswer(inv -> {
+                        MessageView next = queue.poll();
+                        return next != null ? List.of(next) : Collections.emptyList();
+                    });
+            when(simpleConsumerFactory.createSimpleConsumer(any(), eq(group), any(), any())).thenReturn(consumer);
+        }
+
+        CountDownLatch startGate = new CountDownLatch(1);
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+        for (int i = 0; i < workerCount; i++) {
+            final int idx = i;
+            futures.add(CompletableFuture.runAsync(() -> {
+                try {
+                    startGate.await(5, TimeUnit.SECONDS);
+                    String group = "group_concurrent_" + (idx % groupCount);
+                    List<MessageView> received = template.receive("order_topic", group, 1, Duration.ofSeconds(10));
+                    for (MessageView mv : received) {
+                        template.ack(mv);
+                    }
+                } catch (Exception ex) {
+                    throw new RuntimeException(ex);
+                }
+            }));
+        }
+
+        startGate.countDown();
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(10, TimeUnit.SECONDS);
+
+        for (int g = 0; g < groupCount; g++) {
+            verify(simpleConsumerFactory, times(1)).createSimpleConsumer(any(), eq("group_concurrent_" + g), any(), any());
+        }
     }
 }

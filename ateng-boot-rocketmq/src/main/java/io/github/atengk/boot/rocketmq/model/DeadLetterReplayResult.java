@@ -2,8 +2,9 @@ package io.github.atengk.boot.rocketmq.model;
 
 import java.io.Serializable;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 
 /**
  * 死信队列受控重放治理执行汇总结果模型
@@ -18,6 +19,7 @@ public class DeadLetterReplayResult implements Serializable {
 
     private final String dlqTopic;
     private final String consumerGroup;
+    private final ReentrantLock lock = new ReentrantLock();
     private int totalPolled;
     private int successCount;
     private int blockedCount;
@@ -33,60 +35,60 @@ public class DeadLetterReplayResult implements Serializable {
         return new DeadLetterReplayResult(dlqTopic, consumerGroup);
     }
 
-    public synchronized void recordSuccess(String messageId, String newReceiptId, String bizKey, String targetTopic, int replayCount) {
-        this.totalPolled++;
-        this.successCount++;
-        this.details.add(new DeadLetterReplayDetail(
+    public void recordSuccess(String messageId, String newReceiptId, String bizKey, String targetTopic, int replayCount) {
+        recordEntry(new DeadLetterReplayDetail(
                 messageId,
                 newReceiptId,
                 bizKey,
                 targetTopic,
                 replayCount,
                 DeadLetterReplayDetail.Status.SUCCESS,
-                null
-        ));
+                null));
     }
 
-    public synchronized void recordBlocked(String messageId, String bizKey, int replayCount, String reason) {
-        this.totalPolled++;
-        this.blockedCount++;
-        this.details.add(new DeadLetterReplayDetail(
+    public void recordBlocked(String messageId, String bizKey, int replayCount, String reason) {
+        recordEntry(new DeadLetterReplayDetail(
                 messageId,
                 null,
                 bizKey,
                 null,
                 replayCount,
                 DeadLetterReplayDetail.Status.BLOCKED_BY_MAX_ATTEMPTS,
-                reason
-        ));
+                reason));
     }
 
-    public synchronized void recordUnresolvedTopic(String messageId, String bizKey, int replayCount, String reason) {
-        this.totalPolled++;
-        this.failedCount++;
-        this.details.add(new DeadLetterReplayDetail(
+    public void recordUnresolvedTopic(String messageId, String bizKey, int replayCount, String reason) {
+        recordEntry(new DeadLetterReplayDetail(
                 messageId,
                 null,
                 bizKey,
                 null,
                 replayCount,
                 DeadLetterReplayDetail.Status.UNRESOLVED_TOPIC,
-                reason
-        ));
+                reason));
     }
 
-    public synchronized void recordFailed(String messageId, String bizKey, String targetTopic, int replayCount, String error) {
-        this.totalPolled++;
-        this.failedCount++;
-        this.details.add(new DeadLetterReplayDetail(
+    public void recordFailed(String messageId, String bizKey, String targetTopic, int replayCount, String error) {
+        recordEntry(new DeadLetterReplayDetail(
                 messageId,
                 null,
                 bizKey,
                 targetTopic,
                 replayCount,
                 DeadLetterReplayDetail.Status.FAILED,
-                error
-        ));
+                error));
+    }
+
+    private void recordEntry(DeadLetterReplayDetail detail) {
+        runWithLock(() -> {
+            this.totalPolled++;
+            switch (detail.status()) {
+                case SUCCESS -> this.successCount++;
+                case BLOCKED_BY_MAX_ATTEMPTS -> this.blockedCount++;
+                case UNRESOLVED_TOPIC, FAILED -> this.failedCount++;
+            }
+            this.details.add(detail);
+        });
     }
 
     public String getDlqTopic() {
@@ -98,36 +100,36 @@ public class DeadLetterReplayResult implements Serializable {
     }
 
     public int getTotalPolled() {
-        return totalPolled;
+        return withLock(() -> totalPolled);
     }
 
     public int getSuccessCount() {
-        return successCount;
+        return withLock(() -> successCount);
     }
 
     public int getBlockedCount() {
-        return blockedCount;
+        return withLock(() -> blockedCount);
     }
 
     public int getFailedCount() {
-        return failedCount;
+        return withLock(() -> failedCount);
     }
 
     public List<DeadLetterReplayDetail> getDetails() {
-        return Collections.unmodifiableList(details);
+        return withLock(() -> List.copyOf(details));
     }
 
     public boolean isAllSuccess() {
-        return totalPolled > 0 && successCount == totalPolled;
+        return withLock(() -> totalPolled > 0 && successCount == totalPolled);
     }
 
     public boolean hasFailures() {
-        return blockedCount > 0 || failedCount > 0;
+        return withLock(() -> blockedCount > 0 || failedCount > 0);
     }
 
     @Override
     public String toString() {
-        return "DeadLetterReplayResult{" +
+        return withLock(() -> "DeadLetterReplayResult{" +
                 "dlqTopic='" + dlqTopic + '\'' +
                 ", consumerGroup='" + consumerGroup + '\'' +
                 ", totalPolled=" + totalPolled +
@@ -135,6 +137,28 @@ public class DeadLetterReplayResult implements Serializable {
                 ", blockedCount=" + blockedCount +
                 ", failedCount=" + failedCount +
                 ", detailsCount=" + details.size() +
-                '}';
+                '}');
+    }
+
+    private void runWithLock(Runnable action) {
+        lock.lock();
+        try {
+            action.run();
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+
+    private <T> T withLock(Supplier<T> action) {
+        lock.lock();
+        try {
+            return action.get();
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
     }
 }

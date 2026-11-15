@@ -1,5 +1,6 @@
 package io.github.atengk.boot.rocketmq.autoconfigure;
 
+import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.rocketmq.checker.RocketmqTransactionChecker;
 import io.github.atengk.boot.rocketmq.consumer.DefaultPushConsumerFactory;
 import io.github.atengk.boot.rocketmq.consumer.DefaultSimpleConsumerFactory;
@@ -25,6 +26,7 @@ import org.apache.rocketmq.client.apis.producer.ProducerBuilder;
 import org.apache.rocketmq.client.apis.producer.TransactionChecker;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -47,6 +49,7 @@ import java.util.concurrent.Executor;
  */
 @Slf4j
 @AutoConfiguration
+@AutoConfigureAfter(AtengAsyncAutoConfiguration.class)
 @ConditionalOnClass(Producer.class)
 @ConditionalOnProperty(prefix = "ateng.boot.rocketmq", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(AtengRocketmqProperties.class)
@@ -179,12 +182,14 @@ public class AtengRocketmqAutoConfiguration {
             AtengRocketmqProperties properties,
             ObjectProvider<ClientConfiguration> clientConfigurationProvider,
             PushConsumerFactory pushConsumerFactory,
-            ObjectProvider<Validator> validatorProvider) {
+            ObjectProvider<Validator> validatorProvider,
+            ObjectProvider<Executor> taskExecutorProvider) {
         return new RocketmqConsumerContainer(
                 properties,
                 clientConfigurationProvider,
                 pushConsumerFactory,
-                validatorProvider);
+                validatorProvider,
+                taskExecutorProvider);
     }
 
     /**

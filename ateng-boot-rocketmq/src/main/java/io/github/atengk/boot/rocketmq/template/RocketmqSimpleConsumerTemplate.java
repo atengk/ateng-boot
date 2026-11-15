@@ -17,6 +17,7 @@ import org.apache.rocketmq.client.apis.consumer.SimpleConsumer;
 import org.apache.rocketmq.client.apis.message.MessageView;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
@@ -27,21 +28,24 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * RocketMQ 5.x 消费端流式拉取与租约控制高阶门面
  *
  * <p>基于官方 {@link SimpleConsumer} (Pop 机制) 构建，提供批量拉取、消息显式确认 (ACK)、
  * 隐身不可见租约动态续期 (changeInvisibleDuration) 以及高阶推断反序列化消费闭包 (receiveAndExecute)。
- * 按 ConsumerGroup 延迟懒加载并内部线程安全复用，实现 {@link DisposableBean} 在应用停机时统一安全销毁。</p>
+ * 按 ConsumerGroup 延迟懒加载并内部线程安全复用，实现 {@link SmartLifecycle} 与 {@link DisposableBean}
+ * 在 Push 监听容器之后、Producer 关闭之前确定性有序排空销毁。</p>
  *
  * @author Ateng
  * @since 2026-10-29
  */
 @Slf4j
-public class RocketmqSimpleConsumerTemplate implements DisposableBean {
+public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, DisposableBean {
 
     private final AtengRocketmqProperties properties;
     private final ObjectProvider<ClientConfiguration> clientConfigurationProvider;
@@ -51,15 +55,14 @@ public class RocketmqSimpleConsumerTemplate implements DisposableBean {
     private static final int MAX_TRACKED_MESSAGES = 10000;
 
     private final Map<String, SimpleConsumer> consumerCache = new ConcurrentHashMap<>();
-    private final Map<String, String> messageGroupMap = Collections.synchronizedMap(
-            new LinkedHashMap<>(1024, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
-                    return size() > MAX_TRACKED_MESSAGES;
-                }
-            }
-    );
-    private final Object lock = new Object();
+    private final Map<String, String> messageGroupMap = new LinkedHashMap<>(1024, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+            return size() > MAX_TRACKED_MESSAGES;
+        }
+    };
+    private final ReentrantLock consumerLock = new ReentrantLock();
+    private final ReentrantLock messageGroupLock = new ReentrantLock();
     private volatile boolean running = true;
 
     public RocketmqSimpleConsumerTemplate(
@@ -386,7 +389,10 @@ public class RocketmqSimpleConsumerTemplate implements DisposableBean {
                 ? new FilterExpression(tag.trim(), FilterExpressionType.TAG)
                 : new FilterExpression("*", FilterExpressionType.TAG);
 
-        synchronized (lock) {
+        return withLock(consumerLock, () -> {
+            if (!running) {
+                throw new IllegalStateException("RocketmqSimpleConsumerTemplate 已关闭，无法创建新客户端连接");
+            }
             SimpleConsumer consumer = consumerCache.get(consumerGroup.trim());
             if (consumer == null) {
                 Map<String, FilterExpression> subs = new HashMap<>();
@@ -423,18 +429,18 @@ public class RocketmqSimpleConsumerTemplate implements DisposableBean {
                 }
             }
             return consumer;
-        }
+        });
     }
 
     private void trackMessageGroup(String messageId, String consumerGroup) {
         if (messageId != null && StringUtils.hasText(consumerGroup)) {
-            messageGroupMap.put(messageId, consumerGroup.trim());
+            runWithLock(messageGroupLock, () -> messageGroupMap.put(messageId, consumerGroup.trim()));
         }
     }
 
     private void untrackMessageGroup(MessageView messageView) {
         if (messageView != null && messageView.getMessageId() != null) {
-            messageGroupMap.remove(messageView.getMessageId().toString());
+            runWithLock(messageGroupLock, () -> messageGroupMap.remove(messageView.getMessageId().toString()));
         }
     }
 
@@ -442,7 +448,7 @@ public class RocketmqSimpleConsumerTemplate implements DisposableBean {
         Assert.notNull(messageView, "messageView 不能为空");
         String messageId = messageView.getMessageId() != null ? messageView.getMessageId().toString() : null;
         if (messageId != null) {
-            String mappedGroup = messageGroupMap.get(messageId);
+            String mappedGroup = withLock(messageGroupLock, () -> messageGroupMap.get(messageId));
             if (StringUtils.hasText(mappedGroup)) {
                 return mappedGroup;
             }
@@ -516,19 +522,79 @@ public class RocketmqSimpleConsumerTemplate implements DisposableBean {
     }
 
     @Override
-    public void destroy() {
-        running = false;
-        synchronized (lock) {
-            for (Map.Entry<String, SimpleConsumer> entry : consumerCache.entrySet()) {
-                try {
-                    entry.getValue().close();
-                    log.info("[ateng-boot-rocketmq] 成功优雅关闭 SimpleConsumer [group={}]", entry.getKey());
-                } catch (Exception ex) {
-                    log.warn("[ateng-boot-rocketmq] 优雅关闭 SimpleConsumer [group={}] 异常: {}", entry.getKey(), ex.getMessage());
+    public boolean isAutoStartup() {
+        return true;
+    }
+
+    @Override
+    public boolean isRunning() {
+        return this.running;
+    }
+
+    /**
+     * 相位设在 Push 监听容器 ({@code Integer.MAX_VALUE - 100}) 之后、Producer 关闭之前，确保流式消费者确定性有序停机
+     */
+    @Override
+    public int getPhase() {
+        return Integer.MAX_VALUE - 200;
+    }
+
+    @Override
+    public void start() {
+        runWithLock(consumerLock, () -> this.running = true);
+    }
+
+    @Override
+    public void stop() {
+        runWithLock(consumerLock, () -> {
+            this.running = false;
+            if (!consumerCache.isEmpty()) {
+                for (Map.Entry<String, SimpleConsumer> entry : consumerCache.entrySet()) {
+                    try {
+                        entry.getValue().close();
+                        log.info("[ateng-boot-rocketmq] 成功优雅关闭 SimpleConsumer [group={}]", entry.getKey());
+                    } catch (Exception ex) {
+                        log.warn("[ateng-boot-rocketmq] 优雅关闭 SimpleConsumer [group={}] 异常: {}", entry.getKey(), ex.getMessage());
+                    }
                 }
+                consumerCache.clear();
             }
-            consumerCache.clear();
-            messageGroupMap.clear();
+        });
+        runWithLock(messageGroupLock, messageGroupMap::clear);
+    }
+
+    @Override
+    public void stop(Runnable callback) {
+        stop();
+        if (callback != null) {
+            callback.run();
+        }
+    }
+
+    @Override
+    public void destroy() {
+        stop();
+    }
+
+    private void runWithLock(ReentrantLock lock, Runnable action) {
+        lock.lock();
+        try {
+            action.run();
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+
+    private <T> T withLock(ReentrantLock lock, Supplier<T> action) {
+        lock.lock();
+        try {
+            return action.get();
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 }
