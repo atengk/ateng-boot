@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.sample.rabbitmq.config.RabbitScenarioTopologyConfig;
 import io.github.atengk.boot.sample.rabbitmq.consumer.BatchOrderConsumer;
 import io.github.atengk.boot.sample.rabbitmq.consumer.BatchTenantIsolationConsumer;
 import org.junit.jupiter.api.AfterEach;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
+import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -19,9 +21,11 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -49,8 +53,17 @@ class RabbitBatchTenantIsolationTest {
     @Autowired
     private BatchOrderConsumer batchOrderConsumer;
 
+    @Autowired(required = false)
+    private RabbitAdmin rabbitAdmin;
+
     @AfterEach
     void cleanUp() {
+        if (rabbitAdmin != null) {
+            try {
+                rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_BATCH_TENANT, false);
+            } catch (Exception ignored) {
+            }
+        }
         batchTenantIsolationConsumer.clear();
         batchOrderConsumer.clear();
         UserContextHolder.clear();
@@ -80,20 +93,22 @@ class RabbitBatchTenantIsolationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(5));
 
-        mockMvc.perform(get("/sample/rabbitmq/batch/tenant-records"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.successRecords", hasSize(3)))
-                .andExpect(jsonPath("$.data.successRecords[0].orderId").value("ORD-OK-1"))
-                .andExpect(jsonPath("$.data.successRecords[0].tenantId").value("tenant-alpha"))
-                .andExpect(jsonPath("$.data.successRecords[1].orderId").value("ORD-OK-NONE"))
-                .andExpect(jsonPath("$.data.successRecords[1].tenantId").doesNotExist())
-                .andExpect(jsonPath("$.data.successRecords[2].orderId").value("ORD-OK-2"))
-                .andExpect(jsonPath("$.data.successRecords[2].tenantId").value("tenant-beta"))
-                .andExpect(jsonPath("$.data.successRecords[2].ignoreTenant").value(true))
-                .andExpect(jsonPath("$.data.failedRecords", hasSize(1)))
-                .andExpect(jsonPath("$.data.failedRecords[0].orderId").value("FAIL-ORD-1"))
-                .andExpect(jsonPath("$.data.failedRecords[0].tenantId").value("tenant-fail"));
+        await().atMost(Duration.ofSeconds(10))
+                .pollInterval(Duration.ofMillis(50))
+                .untilAsserted(() -> mockMvc.perform(get("/sample/rabbitmq/batch/tenant-records"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.code").value(200))
+                        .andExpect(jsonPath("$.data.successRecords", hasSize(3)))
+                        .andExpect(jsonPath("$.data.successRecords[0].orderId").value("ORD-OK-1"))
+                        .andExpect(jsonPath("$.data.successRecords[0].tenantId").value("tenant-alpha"))
+                        .andExpect(jsonPath("$.data.successRecords[1].orderId").value("ORD-OK-NONE"))
+                        .andExpect(jsonPath("$.data.successRecords[1].tenantId").doesNotExist())
+                        .andExpect(jsonPath("$.data.successRecords[2].orderId").value("ORD-OK-2"))
+                        .andExpect(jsonPath("$.data.successRecords[2].tenantId").value("tenant-beta"))
+                        .andExpect(jsonPath("$.data.successRecords[2].ignoreTenant").value(true))
+                        .andExpect(jsonPath("$.data.failedRecords", hasSize(1)))
+                        .andExpect(jsonPath("$.data.failedRecords[0].orderId").value("FAIL-ORD-1"))
+                        .andExpect(jsonPath("$.data.failedRecords[0].tenantId").value("tenant-fail")));
 
         mockMvc.perform(post("/sample/rabbitmq/batch/tenant-isolated")
                         .contentType(MediaType.APPLICATION_JSON)

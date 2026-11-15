@@ -25,6 +25,7 @@ import org.springframework.amqp.core.QueueInformation;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 
 import java.math.BigDecimal;
@@ -50,6 +51,7 @@ import static org.awaitility.Awaitility.await;
  */
 @Slf4j
 @SpringBootTest(classes = SampleRabbitmqApplication.class)
+@AutoConfigureMockMvc
 @DisplayName("RabbitMQ 场景沙箱 1:1 端到端端集成测试")
 class SampleRabbitmqE2eTest {
 
