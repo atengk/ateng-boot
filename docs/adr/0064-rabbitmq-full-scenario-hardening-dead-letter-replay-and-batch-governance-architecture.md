@@ -61,22 +61,28 @@ flowchart TD
 - **防二次死信雪崩**：重放时默认安全清洗消息中底层的死信原因头，并在 Header 注入 `X-Dead-Letter-Replayed: true`、`X-Replay-Time` 与重放计数值；若重放后的消息再次失败进死信且达上限（默认 1 次），强制阻断重放，从根本上防止死信在业务队列与死信队列之间形成无限死循环震荡；
 - **分层防卫限制**：强制限制单次最大重放数量（默认 ≤ 100，硬上限 1000），提供 `Predicate<Message>` 过滤器重载，支持精确定向重放。
 
-### 2. 生产端批量可靠投递与独立关联追踪 (`sendBatchReliable`)
-- **独立 CorrelationData 确认模型**：在 `RabbitReliableTemplate` 中提供 `sendBatchReliable`，每条消息独立注入四维上下文（TraceId/BizKey）与独立的 `CorrelationData`，底层并发投递并依托 `CompletableFuture.allOf` 聚合等待 Broker ACK；
-- **微服务通用契约**：摒弃物理合并打包的私有契约，采用标准纯净 AMQP 消息协议，下游消费者无需特殊拆包即可支持单条消费或批量消费；
+### 2. 生产端批量可靠投递、事务感知批量发信与双模延迟投递 (`RabbitReliableTemplate`)
+- **独立 CorrelationData 确认模型**：在 `RabbitReliableTemplate` 中提供 `sendBatchReliable` 与 `sendBatchReliableAsync`，每条消息独立注入四维上下文（TraceId/BizKey）与独立的 `CorrelationData`，底层并发投递并依托 `CompletableFuture.allOf` 聚合等待 Broker ACK；
+- **事务提交后批量并发发信 (`sendBatchAfterCommit`)**：针对批量下单、批量状态流转等事务场景，在活跃事务中仅注册 1 个 `afterCommit` 同步钩子，提交前前置完成全批次体积校验与四维上下文快照捕获，提交后并发聚合等待 Confirm，异常时以 `payloads` 列表与 `"batch[N]"` 回调 `RabbitTransactionFailureCallback.onFailure`；
+- **零插件原生消息级 TTL 延迟投递 (`sendWithExpiration` / `sendAsyncWithExpiration`)**：支持直接传入 `Duration expiration` 设置 AMQP 标准消息过期属性，配合 `RabbitTopologyBuilder.ttlDelayQueue` 构建零插件依赖的延迟队列闭环，与基于插件 `x-delay` 的 `sendDelayed` 形成双模互补；
 - **精准故障定位**：若批次中某条消息发生 Broker NACK 或超时，精准收集失败的 index 与 bizKey，统一抛出 `MessageDeliveryException`，保留完整的失败链条。
 
-### 3. 消费端批量消费支持与多维追踪上下文适配
+### 3. 消费端批量消费支持、多租户上下文隔离 (`RabbitBatchExecutor`) 与重试耗尽可观测性
 - 在 `RabbitmqProperties.Consumer` 中新增 `batch` 配置项（`batch.enabled`、`batch.size`、`batch.max-wait-time`），容器工厂自动装配 `consumerBatchEnabled=true`；
-- **全局拦截链兼容适配**：升级 `RabbitListenerGlobalAdvice`，使其智能适配单条 `Message` 与批量 `List<Message>` / `List<T>` 传参，提取批次主 TraceId 激活 MDC，并在日志中规范输出 `batchSize` 度量指标；
-- **批量异常与幂等契约**：契约明确批量消费由业务在方法内部尽量逐条 try-catch 处理局部失败；全局拦截链兜底拦截 `IdempotentException` 触发静默确认，防止已处理成功的消息因批次内其他元素失败而被重复重试。
+- **全局拦截链兼容与重试耗尽告警**：升级 `RabbitListenerGlobalAdvice`，智能适配单条 `Message` 与批量 `List<Message>` / `List<T>` 传参（当 `List<POJO>` 无原生 `Message` 入参时自动生成 `batch-<UUID>` 批次追踪标识激活 MDC）；保持 `retryInterceptor` 在外、`globalAdvice` 在内以确保每次重试均独立还原/清理四维上下文，同时升级受管 `RejectAndDontRequeueRecoverer`，在本地重试耗尽转入死信前显式输出 `[MQ-CONSUME-RETRY-EXHAUSTED]` 结构化告警；
+- **批量消费多租户安全执行器 (`RabbitBatchExecutor`)**：提供静态原语（`runInContext` / `callInContext` / `processBatchSafely`）与 Spring Bean 强类型反序列化重载（基于容器 `MessageConverter` 逐条反序列化为 `Class<T>`），逐条激活并确定性清理四维上下文，遇到 `IdempotentException` 自动静默跳过，单条异常走 `failureHandler` 隔离回调，彻底根除批量消费下的多租户数据串门与整批回滚死锁。
 
-### 4. 现代 Quorum 拓扑流式参数全量补齐 (`RabbitTopologyBuilder`)
+### 4. 运行期消费监听容器动态运维与队列积压探测 (`RabbitContainerManager`)
+- 新增标准运维门面 `RabbitContainerManager`（封装 `RabbitListenerEndpointRegistry` 与可选 `RabbitAdmin`），提供按监听端点 ID 或队列名称（`idOrQueue`）及全局维度的启停流控（`stop` / `start` / `stopAll` / `startAll` / `isRunning`）；
+- 支持运行期动态并发扩缩容（`scaleConcurrency`）与预取数热调优（`updatePrefetchCount`），并提供不可变状态快照查询 `getContainerStatuses()`（`RabbitContainerStatus`）与队列实时积压探测 `getQueueStatus(queueName)`（`RabbitQueueStatus`）；
+- 在 `ateng-boot-sample-rabbitmq` 中配套暴露 `RabbitContainerController`（`/sample/rabbitmq/container/*`），并将 `@Profile("!local")` 内存 AMQP 路由与队列模拟桩下沉至 Sample `src/main`，实现 `mvn spring-boot:run` 与双模测试 100% 离线自洽。
+
+### 5. 现代 Quorum 拓扑流式参数全量补齐 (`RabbitTopologyBuilder`)
 - 引入强类型枚举 `OverflowStrategy`（`DROP_HEAD`、`REJECT_PUBLISH`、`REJECT_PUBLISH_DLX`）；
-- 构建器暴露 `.maxPriority(int)`、`.overflow(OverflowStrategy)`、`.deliveryLimit(int)` 与 `.deadLetterStrategy("at-least-once")`，全面对标现代 Quorum 高可用队列；
+- 构建器暴露 `.maxPriority(int)`、`.overflow(OverflowStrategy)`、`.deliveryLimit(int)` 与 `.deadLetterStrategy(DeadLetterStrategy)`（支持 `DeadLetterStrategy.AT_LEAST_ONCE` / `"at-least-once"`），全面对标现代 Quorum 高可用队列；
 - 提供 `.alternateExchange(name)` 与 `.anonymousQueue()`，一键声明备用交换机与广播排他临时队列。
 
-### 5. 架构边界决议 (Boundary Invariants)
+### 6. 架构边界决议 (Boundary Invariants)
 - **拒绝 MQ RPC 门面**：微服务间同步调用 100% 归属于 HTTP (OpenFeign/RestClient) 或 gRPC；MQ 坚守异步解耦边界，避免封装同步阻塞 RPC 消耗容器线程；保留 `getRabbitTemplate().sendAndReceive(...)` 极个别场景逃生门；
 - **拒绝强绑定数据库 Outbox**：维持 `sendAfterCommit` + `RabbitTransactionFailureCallback` SPI 机制，不强捆绑特定关系数据库（MySQL/PG）的本地消息表，保持 MQ Starter 底座的纯粹性与数据库中立性。
 

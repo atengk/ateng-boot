@@ -1,53 +1,80 @@
 # ateng-boot-rabbitmq 消息通信与可靠投递底座 Starter
 
-> 依托 Spring 官方 Spring AMQP 生态与 JDK 17 原生能力构建的工业级可靠消息通信底座，提供零丢信双重确认（Publisher Confirms 与 ReturnsCallback）、事务感知延迟发信（`sendAfterCommit` + 补偿 SPI 杜绝幽灵消息）、死信受控治理门面（`RabbitDeadLetterReplayTemplate` 支持元数据剥离溯源、防二次死信雪崩熔断与只读探查）、生产端批量可靠发送与消费端批量削峰、泛型推断反序列化解耦（`TypePrecedence.INFERRED` 杜绝 microservice 类名耦合与 `@class` 注入漏洞）、消费端幂等静默确认（拦截 `IdempotentException` 触发 Silent ACK 阻断重试风暴）、毒丸快速隔离至死信、死信终点不变量强校验（Terminal DLQ Invariant）、流畅拓扑构建器（`RabbitTopologyBuilder` 支持 Quorum 仲裁队列、单活独占消费者、优先级、溢出流控、毒丸上限与动态匿名广播队列）、只读运维账号启动安全防御（`auto-declare: false`）以及 100% 离线自洽测试沙箱。
+> 依托 Spring 官方 Spring AMQP 生态与 JDK 17/21+ 原生能力构建的工业级可靠消息通信底座，集成零丢信双重确认（Publisher Confirms 与 ReturnsCallback）、单条与批量事务感知发信（`sendAfterCommit` / `sendBatchAfterCommit` + 补偿 SPI）、双模延迟投递（插件 `sendDelayed` 与原生消息级 TTL `sendWithExpiration` / `sendAsyncWithExpiration`）、死信受控治理门面（`RabbitDeadLetterReplayTemplate` 与 `X-Replay-Count` 防二次雪崩熔断）、批量消费逐条多租户隔离执行器（`RabbitBatchExecutor`）、运行期消费监听容器动态运维与队列积压探测（`RabbitContainerManager`）、泛型推断反序列化解耦（`TypePrecedence.INFERRED`）、消费端幂等静默确认（Silent ACK）、毒丸 0 次重试隔离、流畅拓扑构建器（`RabbitTopologyBuilder`）、只读运维账号安全防御（`auto-declare: false`）与 100% 离线自洽体验沙箱。
 
 ---
 
 ## 0. 特性与公共 API 全景速查矩阵 (Feature & API Panorama Matrix)
 
-| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
+| 特性分类 | 特性名称 | 核心门面 / 状态视图 / SPI | 关键配置项 (`ateng.boot.rabbitmq.*`) | 关键 API 签名 / 核心行为 / 结构化日志前缀 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **可靠投递门面** | 生产端可靠投递与事务感知门面 | `RabbitReliableTemplate` | `ateng.boot.rabbitmq.reliable.default-timeout`<br>`ateng.boot.rabbitmq.reliable.returns-callback-enabled`<br>`ateng.boot.rabbitmq.producer.max-payload-size`<br>`ateng.boot.rabbitmq.producer.compression-threshold`<br>`ateng.boot.rabbitmq.producer.max-batch-size` | `sendReliable(exchange, routingKey, payload, [bizKey], [timeout], [customizers])`<br>`sendReliableAsync(exchange, routingKey, payload, [bizKey], [customizers])`<br>`sendBatchReliable(exchange, routingKey, payloads, [timeout])`<br>`sendBatchReliableAsync(exchange, routingKey, payloads, [timeout])`<br>`sendReliableWithPriority(exchange, routingKey, payload, priority, [bizKey], [timeout])`<br>`sendReliableAsyncWithPriority(exchange, routingKey, payload, priority, [bizKey])`<br>`sendDelayed(exchange, routingKey, payload, [bizKey], delay)`<br>`sendDelayedAsync(exchange, routingKey, payload, [bizKey], delay)`<br>`sendAfterCommit(exchange, routingKey, payload, [bizKey], [timeout], [customizers])`<br>`sendAfterCommitWithPriority(exchange, routingKey, payload, priority, [bizKey], [timeout])`<br>`getRabbitTemplate()`：同步阻塞等待 Confirm ACK、异步非阻塞返回 Future、批量聚合等待确认、单批上限 1000 条 Fail-Fast、优先级标记、本地事务提交感知发信、大报文超限 Fail-Fast (2MB) 与透明 GZIP 压缩 (>2KB) | `RabbitReliableTemplateTest` / `SampleRabbitmqE2eTest` |
-| **死信治理门面** | 死信受控重放与防雪崩治理门面 | `RabbitDeadLetterReplayTemplate` | `ateng.boot.rabbitmq.dead-letter.default-replay-limit`<br>`ateng.boot.rabbitmq.dead-letter.max-replay-count` | `replay(dlq, targetExchange, targetRoutingKey, [limit], [filter])`<br>`peek(dlq, [limit])`<br>`purge(dlq)`：从死信队列受控拉取消息，剥离底层 `x-death` 头并注入重放溯源标记；单批上限防 OOM；检测消息重放次数上限 (`maxReplayCount`) 熔断阻断防范二次死信雪崩；支持只读探查 (`peek`) 与清空 (`purge`) | `RabbitDeadLetterReplayTemplateTest` / `SampleRabbitmqE2eTest` |
-| **拓扑构建器** | 声明式流畅拓扑构建器 (Fluent API) | `RabbitTopologyBuilder` | `ateng.boot.rabbitmq.topology.auto-declare` | `direct(name)` / `topic(name)` / `fanout(name)` / `delayed(name, [type])`<br>`ttlDelayQueue(name, delay, targetEx, targetRk)`<br>`queue(name).quorum().singleActiveConsumer().maxPriority(priority).overflow(strategy).deliveryLimit(count).deadLetterStrategy(strategy).ttl(duration).maxLength(limit).deadLetter(dlx, dlq, rk).ttlQueue(name, delay).build()`<br>`alternateExchange(exchangeName)`<br>`anonymousQueue()` / `exclusiveAutoDeleteQueue([name])`<br>`build()`：一键链式声明 Raft Quorum 队列、优先级、溢出流控、毒丸上限、死信终点隔离、备用交换机与广播匿名临时队列，返回 Spring 原生 `Declarables` | `RabbitTopologyBuilderTest` / `SampleRabbitmqE2eTest` |
-| **溢出策略枚举** | 队列满载溢出流控策略枚举 | `OverflowStrategy` | - | `DROP_HEAD("drop-head")`：丢弃队头最旧消息<br>`REJECT_PUBLISH("reject-publish")`：直接拒绝新发布消息<br>`REJECT_PUBLISH_DLX("reject-publish-dlx")`：拒绝新消息并直接流转至死信队列 | `RabbitTopologyBuilderTest` |
-| **死信策略枚举** | Quorum 队列死信流转策略枚举 | `DeadLetterStrategy` | - | `AT_LEAST_ONCE("at-least-once")`：至少一次死信流转策略 (Quorum 推荐标准，确保死信安全投递至 DLX) | `RabbitTopologyBuilderTest` |
-| **消费批量削峰** | 消费端批量削峰容器工厂与全局切面 | `batchRabbitListenerContainerFactory`<br>`SimpleRabbitListenerContainerFactory`<br>`RabbitListenerGlobalAdvice` | `ateng.boot.rabbitmq.consumer.batch.enabled`<br>`ateng.boot.rabbitmq.consumer.batch.size`<br>`ateng.boot.rabbitmq.consumer.batch.max-wait-time` | 提供专职 `batchRabbitListenerContainerFactory` Bean，支持 `@RabbitListener(containerFactory = ...)` 独立批量削峰接收 `List<T>`；全局切面自适应提取首条消息四维上下文激活当前线程，并在 `[MQ-CONSUME]` 宏日志记录 `batchSize` 与 `isBatch=true` | `RabbitListenerGlobalAdviceTest` / `SampleRabbitmqE2eTest` |
-| **死信诊断工具** | 死信元数据只读诊断助手 | `RabbitDeadLetterHelper` | - | `getOriginalQueue(message/props)`<br>`getOriginalExchange(message/props)`<br>`getDeathReason(message/props)`<br>`getDeathCount(message/props)`<br>`getOriginalRoutingKeys(message/props)`<br>`getFirstDeath(message/props)`<br>`getAllDeaths(message/props)`：安全解析复杂的嵌套 `x-death` 头，宽容兼容 String、`byte[]`、LongString 等异构驱动类型，提取原队列、原交换机、死因与重试流转计数 | `RabbitDeadLetterHelperTest` / `SampleRabbitmqE2eTest` |
-| **消费环绕拦截** | 消费端全局上下文与幂等切面 | `RabbitListenerGlobalAdvice` | `ateng.boot.rabbitmq.logging.enabled`<br>`ateng.boot.rabbitmq.logging.log-payload-max-length` | 实现 AOP `MethodInterceptor`，在消费方法执行前后自动激活/清理四维上下文（TraceId、TenantId、UserId），记录 `[MQ-CONSUME]` 结构化审计日志；捕获 `IdempotentException` 自动执行静默确认（Silent ACK）阻断重复重试风暴 | `RabbitListenerGlobalAdviceTest` / `SampleRabbitmqE2eTest` |
-| **毒丸致命判定** | 毒丸与致命异常分类策略 | `RabbitFatalExceptionStrategy` | - | 实现 Spring AMQP `FatalExceptionStrategy`，精准识别反序列化失败（`MessageConversionException`）、格式校验违规（`MethodArgumentNotValidException` / `ConstraintViolationException`）以及业务断言失败，执行 0 次重试快速送死信（DLQ） | `RabbitFatalExceptionStrategyTest` / `SampleRabbitmqE2eTest` |
-| **本地受控重试** | 容器内本地指数退避重试 | `RabbitRetryPolicy` | `ateng.boot.rabbitmq.consumer.retry.enabled`<br>`ateng.boot.rabbitmq.consumer.retry.max-attempts`<br>`ateng.boot.rabbitmq.consumer.retry.initial-interval`<br>`ateng.boot.rabbitmq.consumer.retry.multiplier`<br>`ateng.boot.rabbitmq.consumer.retry.max-interval` | 继承 Spring Retry `SimpleRetryPolicy`，配合 `RejectAndDontRequeueRecoverer` 在本地内存执行指数退避重试（默认 3 次），重试耗尽安全转移至 DLQ，彻底取缔 Broker Requeue 死循环自旋 | `RabbitRetryPolicyTest` / `SampleRabbitmqE2eTest` |
-| **不可路由告警** | 不可路由退回消息回调 SPI | `RabbitUnroutableMessageCallback` | `ateng.boot.rabbitmq.reliable.returns-callback-enabled` | `onUnroutableMessage(returned)`：当开启 `mandatory=true` 且消息未命中任何队列被 Broker 退回时，打印格式化告警 `[MQ-RETURNS]` 并回调此 SPI 供企业落库或钉钉告警 | `RabbitReturnsCallbackTest` |
-| **事务发信补偿** | 事务提交后发信失败补偿 SPI | `RabbitTransactionFailureCallback` | - | `onTransactionPostCommitFailed(exchange, routingKey, payload, bizKey, ex)`：当 `sendAfterCommit` 在本地事务 Commit 成功后因网络抖动发信失败时被触发，供业务落库本地重发表兜底 | `RabbitReliableTemplateTest` |
-| **消息类型推断** | 泛型推断反序列化消息转换器 | `Jackson2JsonMessageConverter` | - | 默认注入开启 `TypePrecedence.INFERRED` 与 `alwaysConvertToInferredType(true)` 的 Jackson 转换器，消费端 100% 依监听方法参数推断反序列化，解耦微服务契约，杜绝 `@class` 注入 RCE | `Jackson2JsonMessageConverterTest` |
-| **优雅停机排空** | 消费端容器优雅下线排空定制 | `ContainerCustomizer<SimpleMessageListenerContainer>` | `ateng.boot.rabbitmq.consumer.shutdown-timeout` | 默认设置 `shutdownTimeout`（默认 30s），K8s 滚动停机收到 SIGTERM 时停止拉取新消息，预留窗口排空在途消费 | `AtengRabbitmqAutoConfigurationTest` |
-| **只读拓扑安全** | 拓扑自动声明开关 | `RabbitAdmin` 生命周期后置增强 | `ateng.boot.rabbitmq.topology.auto-declare` | 当置为 `false` 时，后置处理器自动将 `RabbitAdmin.autoStartup` 设为 `false`，生产只读账号不主动向 Broker 发起声明，防御 403 启动崩溃 | `AtengRabbitmqAutoConfigurationTest` |
+| **可靠投递门面** | 生产端同步/异步可靠投递、批量确认与事务感知门面 | `RabbitReliableTemplate` | `enabled`<br>`reliable.default-timeout`<br>`reliable.returns-callback-enabled`<br>`producer.max-payload-size`<br>`producer.compression-threshold`<br>`producer.compression-enabled`<br>`producer.max-batch-size` | `sendReliable(exchange, routingKey, payload, [bizKey], [timeout], [customizers])`<br>`sendReliableWithPriority(exchange, routingKey, payload, priority, [bizKey], [timeout])`<br>`sendReliableAsync(exchange, routingKey, payload, [bizKey], [customizers])`<br>`sendReliableAsyncWithPriority(exchange, routingKey, payload, priority, [bizKey])`<br>`sendBatchReliable(exchange, routingKey, payloads, [timeout])`<br>`sendBatchReliableAsync(exchange, routingKey, payloads, [timeout])`<br>`sendDelayed(exchange, routingKey, payload, [bizKey], delay, [timeout])`<br>`sendDelayedAsync(exchange, routingKey, payload, [bizKey], delay)`<br>`sendWithExpiration(exchange, routingKey, payload, [bizKey], expiration, [timeout])`<br>`sendAsyncWithExpiration(exchange, routingKey, payload, [bizKey], expiration)`<br>`sendAfterCommit(exchange, routingKey, payload, [bizKey], [timeout], [customizers])`<br>`sendAfterCommitWithPriority(exchange, routingKey, payload, priority, [bizKey], [timeout])`<br>`sendBatchAfterCommit(exchange, routingKey, payloads, [timeout])`<br>`getRabbitTemplate()`：单批上限 `HARD_MAX_BATCH_SIZE=1000`；大报文超限（2MB）前置 Fail-Fast、>2KB 自动 GZIP 压缩；输出 `[MQ-SEND]`、`[MQ-TRANSACTION-POST-COMMIT-FAILED]`、`[MQ-TRANSACTION-CALLBACK-ERROR]` | `RabbitReliableTemplateTest`<br>`RabbitBatchReliableTemplateTest`<br>`RabbitProduceController`<br>`RabbitTransactionController`<br>`RabbitDelayController`<br>`SampleRabbitmqE2eTest` |
+| **批量多租户隔离** | 批量消费逐条四维上下文隔离与单条容错执行器 | `RabbitBatchExecutor` | - | 静态原语：`generateBatchTraceId()`（生成 `batch-<UUID>`）、`runInContext(message, consumer)`、`callInContext(message, function)`、`processBatchSafely(messages, processor, [failureHandler])`、`isIdempotentException(throwable)`<br>Bean 实例方法（依托 `MessageConverter` 按 `Class<T>` 推断反序列化）：`runInContext(message, targetType, consumer/biConsumer)`、`callInContext(message, targetType, function/biFunction)`、`processBatchSafely(messages, targetType, processor, [failureHandler])`<br>逐条还原并清理 `TraceId`/`TenantId`/`UserId`/`IgnoreTenant`；幂等冲突输出 `[MQ-IDEMPOTENT-DUPLICATE]` 静默跳过；单条异常输出 `[MQ-CONSUME-BATCH]` 并转交 `failureHandler` | `RabbitBatchExecutorTest`<br>`RabbitBatchAndPriorityController`<br>`RabbitBatchTenantIsolationTest` |
+| **运行期容器运维** | 监听容器动态启停、扩缩容与队列积压观测门面 | `RabbitContainerManager`<br>`RabbitContainerStatus`<br>`RabbitQueueStatus` | `consumer.prefetch`<br>`consumer.concurrency`<br>`consumer.max-concurrency`<br>`consumer.shutdown-timeout` | `getListenerContainer(id)` / `getListenerContainerIds()` / `findContainers(idOrQueue)`<br>`start(idOrQueue)` / `stop(idOrQueue)` / `isRunning(idOrQueue)` / `startAll()` / `stopAll()`<br>`scaleConcurrency(idOrQueue, concurrentConsumers, maxConcurrentConsumers)`<br>`updatePrefetchCount(idOrQueue, prefetchCount)`（范围 `[1, 65535]`）<br>`getContainerStatuses()` / `getContainerStatus(idOrQueue)`：返回不可变视图 `RabbitContainerStatus(listenerId, queueNames, running, autoStartup, activeConsumerCount, prefetchCount, containerType)`<br>`getQueueStatus(queueName)`：返回不可变视图 `RabbitQueueStatus(queueName, messageCount, consumerCount, exists)`（`RabbitAdmin` 不可用时安全降级零值）<br>输出 `[MQ-CONTAINER-STOP]`、`[MQ-CONTAINER-START]`、`[MQ-CONTAINER-STOP-ALL]`、`[MQ-CONTAINER-START-ALL]`、`[MQ-CONTAINER-SCALE]`、`[MQ-CONTAINER-PREFETCH]`、`[MQ-QUEUE-STATUS]` | `RabbitContainerManagerTest`<br>`RabbitContainerController`<br>`RabbitContainerControllerE2eTest` |
+| **死信治理门面** | 死信受控重放、只读探查与队列清空门面 | `RabbitDeadLetterReplayTemplate` | `dead-letter.default-replay-limit`<br>`dead-letter.max-replay-count` | `replay(dlq, targetExchange, targetRoutingKey, [limit], [filter])`<br>`peek(dlq, [limit])`<br>`purge(dlq)` / `getRabbitTemplate()`：单批上限 `HARD_MAX_REPLAY_LIMIT=1000`；清洗底层 `x-death` 头并注入 `X-Dead-Letter-Replayed`、`X-Replay-Time`、`X-Replay-Count`、`X-Original-Dead-Letter-Queue`、`X-Original-Dead-Letter-Reason`；达 `max-replay-count` 熔断回滚防范二次死信雪崩；输出 `[MQ-DLQ-REPLAY]`、`[MQ-DLQ-REPLAY-BLOCKED]`、`[MQ-DLQ-PURGE]`、`[MQ-REPLAY-NACK-WARN]`、`[MQ-PEEK-NACK-WARN]`、`[MQ-DLQ-REPLAY-WARN]` | `RabbitDeadLetterReplayTemplateTest`<br>`RabbitDeadLetterController`<br>`SampleRabbitmqE2eTest` |
+| **死信诊断工具** | 死信元数据只读诊断与强类型解析模型 | `RabbitDeadLetterHelper`<br>`DeadLetterRecord` | - | `getOriginalQueue(message/props)` / `getOriginalExchange(message/props)` / `getDeathReason(message/props)` / `getDeathCount(message/props)` / `getOriginalRoutingKeys(message/props)` / `getFirstDeath(message/props)` / `getAllDeaths(message/props)`<br>返回 6 字段强类型记录 `DeadLetterRecord(queue, exchange, reason, count, routingKeys, time)`；宽容兼容 String、`byte[]` 与 LongString | `RabbitDeadLetterHelperTest`<br>`RabbitDeadLetterController`<br>`SampleRabbitmqE2eTest` |
+| **拓扑构建器** | 声明式流畅拓扑构建器 (Fluent API) 与策略枚举 | `RabbitTopologyBuilder`<br>`OverflowStrategy`<br>`DeadLetterStrategy` | `topology.auto-declare` | 交换机入口：`direct(name)` / `topic(name)` / `fanout(name)` / `delayed(name, [delayedType])` / `ttlDelayQueue(ttlQueueName, delay, targetExchange, targetRoutingKey)`<br>`ExchangeTopologyBuilder`：`.alternateExchange(name)`、`.queue(name/Queue)`、`.anonymousQueue()`、`.exclusiveAutoDeleteQueue([name])`、`.build()`<br>`QueueStep`：`.quorum()`、`.singleActiveConsumer()`、`.ttl(duration)`、`.maxLength(n)`、`.maxPriority(n)`、`.overflow(OverflowStrategy)`（`DROP_HEAD` / `REJECT_PUBLISH` / `REJECT_PUBLISH_DLX`）、`.deliveryLimit(n)`、`.deadLetterStrategy(DeadLetterStrategy / String)`（`AT_LEAST_ONCE`）、`.durable(b)` / `.autoDelete(b)` / `.exclusive(b)` / `.argument(k, v)`、`.routingKey(rk)` / `.routingKeys(rks...)`、`.deadLetter(dlx, dlq, rk)`、`.ttlQueue(name, delay)`、`.andQueue(name)` / `.andAnonymousQueue()` / `.andExclusiveAutoDeleteQueue([name])`、`.build()` | `RabbitTopologyBuilderTest`<br>`RabbitScenarioTopologyConfig`<br>`SampleRabbitmqE2eTest` |
+| **消费环绕拦截** | 消费端全局四维上下文、幂等静默确认与批量切面 | `RabbitListenerGlobalAdvice` | `logging.enabled`<br>`logging.log-payload-max-length` | 激活并确定性恢复 `TraceId`/`TenantId`/`UserId`/`IgnoreTenant`（纯 `List<POJO>` 无 `traceId` 时兜底生成 `batch-<UUID>`）；捕获 `IdempotentException` 执行 Silent ACK 并输出 `[MQ-IDEMPOTENT-DUPLICATE]`；记录 `[MQ-CONSUME]` 宏日志（`status=SUCCESS/RETRY/FATAL_DLQ` 与 `isBatch`/`batchSize`） | `RabbitListenerGlobalAdviceTest`<br>`SampleRabbitmqE2eTest` |
+| **毒丸与本地重试** | 致命毒丸 0 次重试隔离与容器内本地指数退避重试 | `RabbitFatalExceptionStrategy`<br>`RabbitRetryPolicy`<br>`LoggingRejectAndDontRequeueRecoverer` | `consumer.retry.enabled`<br>`consumer.retry.max-attempts`<br>`consumer.retry.initial-interval`<br>`consumer.retry.multiplier`<br>`consumer.retry.max-interval` | 毒丸异常（反序列化、JSR-303 校验、业务断言）触发 `[MQ-FATAL-POISON-PILL]` 立即入死信；死信队列自身异常触发 `[MQ-TERMINAL-DLQ-FAILURE]` 终点防卫；本地重试耗尽转入死信前触发 `[MQ-CONSUME-RETRY-EXHAUSTED]` 告警 | `RabbitFatalExceptionStrategyTest`<br>`RabbitRetryPolicyTest`<br>`AtengRabbitmqAutoConfigurationTest`<br>`SampleRabbitmqE2eTest` |
+| **不可路由回调 SPI** | Exchange 未匹配队列退回告警扩展点 | `RabbitUnroutableMessageCallback` | `reliable.returns-callback-enabled` | `onUnroutableMessage(ReturnedMessage returned)`：触发 `[MQ-RETURNS]` 结构化告警并回调自定义实现；回调自身异常触发 `[MQ-RETURNS-CALLBACK-ERROR]` | `RabbitReturnsCallbackTest`<br>`RabbitProduceController` |
+| **事务失败回调 SPI** | 本地事务提交后发信失败兜底补偿扩展点 | `RabbitTransactionFailureCallback` | - | `onFailure(String exchange, String routingKey, Object payload, String bizKey, Throwable cause)`：在 `sendAfterCommit` / `sendBatchAfterCommit` 提交后发射失败时回调供本地补偿表兜底；记录 `[MQ-TRANSACTION-POST-COMMIT-FAILED]` | `RabbitReliableTemplateTest`<br>`RabbitTransactionController` |
+| **自动装配与基础设施** | 类型推断、批量容器工厂、只读防御与虚拟线程装配 | `AtengRabbitmqAutoConfiguration`<br>`RabbitmqProperties` | `consumer.batch.enabled`<br>`consumer.batch.size`<br>`consumer.batch.max-wait-time`<br>`consumer.shutdown-timeout`<br>`topology.auto-declare` | 装配 `Jackson2JsonMessageConverter`（`TypePrecedence.INFERRED`）、`batchRabbitListenerContainerFactory`、K8s 优雅停机排空、`RabbitAdmin` 只读关闭（`[RABBITMQ-TOPOLOGY]`）及 JDK 21+ `VirtualThreadsConfiguration`（`atengRabbitVirtualTaskExecutor`）；属性严格使用 `Duration` / `DataSize` | `AtengRabbitmqAutoConfigurationTest`<br>`Jackson2JsonMessageConverterTest`<br>`RabbitmqPropertiesTest` |
 
 ---
 
 ## 1. 模块定位与快速起步 (Quick Start)
 
-### 1.1 Maven 坐标引入
-在业务工程的 `pom.xml` 中引入 `ateng-boot-rabbitmq` 模块依赖（版本由根工程或 BOM 统管）：
+### 1.1 Maven 引入坐标
+
+**方式一：通过 `ateng-boot-bom` 统一纳管版本（推荐）**
 
 ```xml
-<dependency>
-    <groupId>io.github.atengk</groupId>
-    <artifactId>ateng-boot-rabbitmq</artifactId>
-</dependency>
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-bom</artifactId>
+            <version>1.2.0</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+
+<dependencies>
+    <dependency>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-rabbitmq</artifactId>
+    </dependency>
+    <!-- 可选：引入 Micrometer Observation 自动激活容器与 Template 链路观测 -->
+    <dependency>
+        <groupId>io.micrometer</groupId>
+        <artifactId>micrometer-observation</artifactId>
+    </dependency>
+</dependencies>
+```
+
+**方式二：独立显式版本号引入**
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-rabbitmq</artifactId>
+        <version>1.2.0</version>
+    </dependency>
+</dependencies>
 ```
 
 ### 1.2 最小起步配置 (`application.yml`)
-在 `application.yml` 中配置连接信息与基本可靠投递参数：
 
 ```yaml
 spring:
   rabbitmq:
     host: localhost
     port: 5672
-    username: guest
-    password: guest
+    username: YOUR_RABBITMQ_USERNAME
+    password: YOUR_RABBITMQ_PASSWORD
     publisher-confirm-type: correlated
     publisher-returns: true
 
@@ -57,6 +84,7 @@ ateng:
       enabled: true
       reliable:
         default-timeout: 3s
+        returns-callback-enabled: true
       consumer:
         prefetch: 20
         retry:
@@ -66,55 +94,45 @@ ateng:
 
 ### 1.3 开箱即用业务代码示例
 
-#### 步骤 1：声明业务 Direct 交换机与 Quorum 队列拓扑
+#### 步骤 1：声明业务 Direct 交换机与 Quorum 队列拓扑 (`RabbitScenarioTopologyConfig.java`)
 ```java
-@Configuration(proxyBeanMethods = false)
-public class RabbitOrderTopologyConfig {
-
-    @Bean
-    public Declarables orderDirectTopology() {
-        return RabbitTopologyBuilder.direct("sample.order.direct")
-                .queue("sample.order.create.queue")
-                .quorum()                  // 声明为现代 Raft Quorum 仲裁队列
-                .singleActiveConsumer()    // 开启单活独占消费者
-                .routingKey("order.create")
-                .build();
-    }
+@Bean
+public Declarables orderDirectTopology() {
+    return RabbitTopologyBuilder.direct(EXCHANGE_ORDER_DIRECT)
+            .queue(QUEUE_ORDER_CREATE)
+            .quorum()
+            .singleActiveConsumer()
+            .routingKey(ROUTING_KEY_ORDER_CREATE)
+            .andQueue(QUEUE_ORDER_IDEMPOTENT)
+            .routingKey(ROUTING_KEY_ORDER_IDEMPOTENT)
+            .build();
 }
 ```
 
-#### 步骤 2：业务发信（同步等待 Broker 落盘确认）
+#### 步骤 2：生产端同步可靠发信 (`TradeMessageProducer.java`)
 ```java
-@Component
-@RequiredArgsConstructor
-public class TradeMessageProducer {
-
-    private final RabbitReliableTemplate rabbitReliableTemplate;
-
-    public void sendOrderCreate(OrderCreateMessage message) {
-        // 同步阻塞等待 Broker Confirm ACK，超时未收到或 NACK 立即抛出 MessageDeliveryException
-        rabbitReliableTemplate.sendReliable(
-                "sample.order.direct",
-                "order.create",
-                message,
-                message.orderId()
-        );
-    }
+public void sendOrderCreate(OrderCreateMessage message) {
+    log.info("[PRODUCER] 开始同步投递订单创建消息: orderId={}", message.orderId());
+    rabbitReliableTemplate.sendReliable(
+            RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+            RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_CREATE,
+            message,
+            message.orderId(),
+            Duration.ofSeconds(3)
+    );
+    log.info("[PRODUCER] 订单创建消息投递成功并收到 Broker Confirm ACK: orderId={}", message.orderId());
 }
 ```
 
-#### 步骤 3：消费端监听消费（强类型推断与四维上下文透传）
+#### 步骤 3：消费端强类型监听与上下文透传 (`OrderConsumer.java`)
 ```java
-@Component
-@Slf4j
-public class OrderConsumer {
-
-    @RabbitListener(queues = "sample.order.create.queue")
-    public void onOrderCreate(OrderCreateMessage message,
-                              @Header(name = "X-Trace-Id", required = false) String traceId) {
-        log.info("[CONSUMER-ORDER] 消费订单创建消息成功: orderId={}, traceId={}",
-                message.orderId(), traceId);
-    }
+@RabbitListener(queues = RabbitScenarioTopologyConfig.QUEUE_ORDER_CREATE)
+public void onOrderCreate(OrderCreateMessage message,
+                          @Header(name = "X-Trace-Id", required = false) String traceId,
+                          @Header(name = "X-Tenant-Id", required = false) String tenantId) {
+    log.info("[CONSUMER-ORDER] 消费订单创建消息成功: orderId={}, amount={}, traceId={}, tenantId={}",
+            message.orderId(), message.amount(), traceId, tenantId);
+    receivedMessages.add(message);
 }
 ```
 
@@ -122,68 +140,66 @@ public class OrderConsumer {
 
 ## 2. 核心架构与设计不变量 (Architecture & Invariants)
 
-### 2.1 双重投递可靠性与弹性抗雪崩消费流
+### 2.1 双重投递可靠性、弹性消费与死信治理流
 
 ```mermaid
 flowchart TD
-    subgraph Producer["1. 生产端与事务感知 (Producer)"]
-        P1["业务调用<br>(sendReliable / sendAfterCommit)"]
-        P2["前置超限检查<br>(maxPayloadSize / maxBatchSize)"]
-        P3["透明 GZIP 压缩<br>(> 2KB 自动打标)"]
-        P4["四维上下文注入<br>(TraceId / Tenant / User)"]
-        P5["Publisher Confirms<br>(同步等待 / 异步 Future)"]
-        P6["ReturnsCallback<br>(mandatory=true 退回 SPI)"]
-        P1 --> P2 --> P3 --> P4 --> P5
-        P5 -.->|未匹配队列| P6
+    subgraph Producer["1. 生产端、事务批与双模延迟 (Producer)"]
+        P1["业务调用<br>(sendReliable / sendBatchReliable / sendWithExpiration)"]
+        P2["事务感知延迟发信<br>(sendAfterCommit / sendBatchAfterCommit)"]
+        P3["前置 Fail-Fast 与压缩<br>(maxBatchSize=1000 / maxPayloadSize=2MB / GZIP>2KB)"]
+        P4["四维上下文注入 & Confirm<br>(TraceId / TenantId / UserId / IgnoreTenant)"]
+        P5["ReturnsCallback<br>(mandatory=true 退回触发 SPI)"]
+        P1 --> P3
+        P2 -.->|DB Commit 后单钩子触发| P3
+        P3 --> P4
+        P4 -.->|未匹配队列| P5
     end
 
-    subgraph Broker["2. RabbitMQ Broker 集群 (Broker)"]
+    subgraph Broker["2. RabbitMQ Broker 集群与容器运维"]
         Ex["Exchange<br>(Direct / Topic / Fanout / Delayed)"]
-        QMain["Quorum 业务队列<br>(Raft 共识 / SAC / 溢出流控)"]
+        QMain["业务 / Quorum 队列<br>(SAC / Overflow / DeliveryLimit)"]
         QDLQ["DLQ 死信队列<br>(Terminal DLQ Invariant)"]
-        Ex -->|精准 / 通配路由| QMain
+        Ops["RabbitContainerManager<br>(启停 / 扩缩容 / Prefetch / QueueStatus)"]
+        Ex -->|路由| QMain
         QMain -.->|毒丸 / 重试耗尽 / TTL 到期| QDLQ
+        Ops -.->|运行期管控观测| QMain
     end
 
     subgraph Consumer["3. 弹性抗雪崩消费端 (Consumer)"]
-        C1["RabbitListenerGlobalAdvice<br>(激活四维上下文 / 结构化日志)"]
-        C2["INFERRED 泛型推断反序列化<br>(Jackson 解耦类名耦合)"]
-        C3["业务执行 / 幂等校验<br>(@Idempotent)"]
-        C4["幂等冲突捕获<br>(IdempotentException)"]
-        C5["Silent ACK 静默确认<br>(阻断重复重试风暴)"]
-        C6["致命异常 / 毒丸判定<br>(RabbitFatalExceptionStrategy)"]
-        C7["本地指数退避重试<br>(RabbitRetryPolicy 3次)"]
+        C1["RabbitListenerGlobalAdvice<br>(单条/批量上下文激活 + Silent ACK)"]
+        C2["INFERRED 泛型推断反序列化<br>(Jackson 解耦微服务类路径)"]
+        C3["RabbitBatchExecutor<br>(批量消息逐条多租户上下文隔离与容错)"]
+        C4["RabbitFatalExceptionStrategy<br>(毒丸 0 次重试隔离)"]
+        C5["RabbitRetryPolicy<br>(本地退避耗尽输出 RETRY-EXHAUSTED)"]
         C1 --> C2 --> C3
-        C3 -->|幂等拦截| C4 --> C5
-        C3 -->|不可自愈毒丸| C6 -->|0次重试快速转入| QDLQ
-        C3 -->|瞬态异常| C7 -->|耗尽转入| QDLQ
+        C2 -->|不可自愈毒丸| C4 -->|快速转入| QDLQ
+        C2 -->|瞬态异常| C5 -->|耗尽转入| QDLQ
     end
 
-    subgraph Governance["4. 死信治理与受控重放 (Governance)"]
+    subgraph Governance["4. 死信治理与防雪崩重放 (Governance)"]
         G1["RabbitDeadLetterReplayTemplate<br>(replay / peek / purge)"]
-        G2["元数据剥离与溯源<br>(剥离 x-death / 注入标记)"]
-        G3["防雪崩熔断守卫<br>(maxReplayCount 达到上限 Nack)"]
-        QDLQ --> G1 --> G2 --> G3 -->|受控重新入队| Ex
+        G2["剥离 x-death & 注入溯源标记<br>(X-Replay-Count / X-Dead-Letter-Replayed)"]
+        G3["max-replay-count 熔断守卫<br>(超限 NACK requeue=true 留存 DLQ)"]
+        QDLQ --> G1 --> G2 --> G3 -->|受控重回| Ex
     end
 
-    P5 --> Ex
+    P4 --> Ex
     QMain --> C1
 ```
 
 ### 2.2 核心设计不变量
 
-1. **泛型推断反序列化解耦 (Inferred Deserialization)**：
-   Spring AMQP 原生 Jackson 转换器默认依赖发送端注入的 `__TypeId__` 全限定类名反序列化。在微服务架构下，各微服务通常拥有各自独立的包名（如 `com.mall.order.dto` 与 `com.mall.pay.dto`），强耦合类名将直接导致 `ClassNotFoundException` 或反序列化 RCE 风险。`ateng-boot-rabbitmq` 强制装配 `TypePrecedence.INFERRED`，使消费端 100% 基于 `@RabbitListener` 目标方法的方法签名推断反序列化类型，实现跨微服务契约彻底解耦。
-2. **死信终点不变量强校验 (Terminal DLQ Invariant)**：
-   死信队列（DLQ）是消息流转的生命周期终点。若死信队列自身再次配置 `x-dead-letter-exchange`，当消息因 TTL 或拒绝再次触发死信时，将形成致命的“死循环乒乓风暴”，迅速吃满 Broker 磁盘与连接。`RabbitTopologyBuilder` 在拓扑声明期严格执行终端断言，死信队列绝对严禁配置死信交换机。
-3. **死信受控重放防二次雪崩 (Replay Avalanche Defense)**：
-   死信重放不是简单的“再次投递”。进入死信队列的消息附带了多层嵌套的 `x-death` 异构头，若原样投递会被消费端直接识别为死信再次拒收。`RabbitDeadLetterReplayTemplate` 自动清洗底层 `x-death` 头并打上溯源标记；同时基于 `maxReplayCount`（默认 1 次）严格把关，重放后再次进入死信的消息坚决拒绝重放，执行 `basicNack(requeue=true)` 留存死信队列，杜绝无休止震荡。
+1. **泛型推断反序列化解耦 (`Inferred Deserialization`)**：强制装配 `TypePrecedence.INFERRED` 与 `alwaysConvertToInferredType(true)`，消费端 100% 依 `@RabbitListener` 方法形参或 `RabbitBatchExecutor` 显式传入的 `Class<T>` 进行反序列化，彻底解除跨微服务 DTO 包名耦合与 `__TypeId__` 反序列化注入风险。
+2. **批量多租户上下文零污染 (`Batch Tenant Context Isolation`)**：Spring 原生批量监听器将多条可能隶属于不同租户与用户的消息聚合在同一批次回调中。`RabbitBatchExecutor` 在逐条处理前通过 `MessageContextPropagator.ContextScope` 切换四维上下文并在 `try-with-resources` 块结束时确定性还原调用线程现场，彻底杜绝跨租户脏读串门。
+3. **死信终点与重放防二次雪崩 (`Terminal DLQ & Replay Avalanche Defense`)**：`RabbitTopologyBuilder` 在拓扑构建期禁止死信队列（`*.dlq` / `*dead-letter*`）再次绑定 DLX；`RabbitDeadLetterReplayTemplate` 在重放时剥离原始 `x-death` 嵌套头并维护 `X-Replay-Count`，一旦超过 `max-replay-count`（默认 1 次）强制熔断留存 DLQ。
+4. **严格异步通信与数据库中立边界**：拒绝封装阻塞式 MQ RPC 门面（同步调用交由 HTTP/gRPC）；拒绝强绑定关系型数据库 Outbox 表，坚持通过 `sendAfterCommit` / `sendBatchAfterCommit` + `RabbitTransactionFailureCallback` SPI 实现业务可控补偿。
 
 ---
 
-## 3. 生产端高可靠投递与事务感知套件
+## 3. 生产端高可靠投递、事务感知与双模延迟套件
 
-### 3.1 同步与异步 Publisher Confirm 可靠投递
+### 3.1 同步、异步与微批 Confirm 可靠投递 (`sendReliable` / `sendBatchReliable`)
 
 #### 专属 YAML 配置
 ```yaml
@@ -191,53 +207,42 @@ ateng:
   boot:
     rabbitmq:
       reliable:
-        # 同步等待 Broker Confirm ACK 确认的默认超时时间
         default-timeout: 3s
-        # 是否启用消息不可路由退回告警与 SPI 回调
         returns-callback-enabled: true
+      producer:
+        max-batch-size: 1000
 ```
 
 #### 逆向实战代码 (`TradeMessageProducer.java`)
 ```java
-@Component
-@RequiredArgsConstructor
-public class TradeMessageProducer {
+public CompletableFuture<CorrelationData.Confirm> sendOrderCreateAsync(OrderCreateMessage message) {
+    log.info("[PRODUCER] 开始异步投递订单创建消息: orderId={}", message.orderId());
+    return rabbitReliableTemplate.sendReliableAsync(
+            RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+            RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_CREATE,
+            message,
+            message.orderId()
+    );
+}
 
-    private final RabbitReliableTemplate rabbitReliableTemplate;
-
-    /**
-     * 同步可靠投递：阻塞等待 Broker 磁盘落盘 ACK 确认
-     */
-    public void sendOrderCreate(OrderCreateMessage message) {
-        rabbitReliableTemplate.sendReliable(
-                "sample.order.direct",
-                "order.create",
-                message,
-                message.orderId()
-        );
-    }
-
-    /**
-     * 异步非阻塞投递：立即返回 CompletableFuture，支持响应式与非阻塞回调
-     */
-    public CompletableFuture<CorrelationData.Confirm> sendOrderCreateAsync(OrderCreateMessage message) {
-        return rabbitReliableTemplate.sendReliableAsync(
-                "sample.order.direct",
-                "order.create",
-                message,
-                message.orderId()
-        );
-    }
+public void sendBatchOrders(List<OrderCreateMessage> orders) {
+    log.info("[PRODUCER] 开始批量投递订单创建消息: count={}", orders.size());
+    rabbitReliableTemplate.sendBatchReliable(
+            RabbitScenarioTopologyConfig.EXCHANGE_BATCH_DIRECT,
+            RabbitScenarioTopologyConfig.ROUTING_KEY_BATCH_ORDER,
+            orders
+    );
+    log.info("[PRODUCER] 批量订单消息全部收到 Broker Confirm ACK: count={}", orders.size());
 }
 ```
 
 #### 机制与边界说明
-- **阻塞等待与超时**：`sendReliable` 底层通过 `CorrelationData.getFuture().get(timeout)` 等待 Broker ACK；超时抛出 `MessageDeliveryException`，状态码明确携带超时时间与业务主键；
-- **异步回调与上下文**：`sendReliableAsync` 内部通过动态 CorrelationData 透传四维上下文快照，异步线程收到 Confirm 后无锁解析确认状态。
+- **逐条独立 CorrelationData 聚合等待**：`sendBatchReliable` / `sendBatchReliableAsync` 在发信前强制校验批次非空、条数不超过 `maxBatchSize`（硬上限 `1000`）且元素无 `null`；逐条注入四维上下文并并发投递，通过 `CompletableFuture.allOf` 聚合等待所有条目 Confirm。任意条目 NACK 或超时会精准定位失败索引与 `bizKey`，抛出携带因果链的 `MessageDeliveryException`。
+- **线程中断前置防卫**：调用 `sendBatchReliable` 或非事务分支的 `sendBatchAfterCommit` 前会先执行 `checkBatchNotInterrupted(...)`，避免已中断线程继续向 Broker 发射网络帧。
 
 ---
 
-### 3.2 事务感知延迟发信 (`sendAfterCommit`)
+### 3.2 单条与批量事务感知延迟发信 (`sendAfterCommit` & `sendBatchAfterCommit`)
 
 #### 专属 YAML 配置
 ```yaml
@@ -250,52 +255,110 @@ ateng:
 
 #### 逆向实战代码 (`OrderTransactionService.java`)
 ```java
-@Service
-@RequiredArgsConstructor
-public class OrderTransactionService {
+@Transactional
+public void createOrderWithCommit(OrderCreateMessage message) {
+    dbRecordCount.incrementAndGet();
+    rabbitReliableTemplate.sendAfterCommit(
+            RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+            RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_CREATE,
+            message,
+            message.orderId()
+    );
+}
 
-    private final RabbitReliableTemplate rabbitReliableTemplate;
-    private final AtomicInteger dbRecordCount = new AtomicInteger(0);
+@Transactional
+public void createOrderBatchWithCommit(List<OrderCreateMessage> messages) {
+    Assert.notEmpty(messages, "批量事务订单消息列表不能为空");
+    dbRecordCount.addAndGet(messages.size());
+    log.info("[TX-SERVICE] 本地批量订单入库成功: count={}", messages.size());
 
-    /**
-     * 事务提交成功场景：物理落库完成后，触发 afterCommit 钩子执行物理网络发信
-     */
-    @Transactional(rollbackFor = Exception.class)
-    public void createOrderWithCommit(OrderCreateMessage message) {
-        dbRecordCount.incrementAndGet();
-        rabbitReliableTemplate.sendAfterCommit(
-                "sample.order.direct",
-                "order.create",
-                message,
-                message.orderId()
-        );
-    }
+    rabbitReliableTemplate.sendBatchAfterCommit(
+            RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+            RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_CREATE,
+            messages
+    );
+}
 
-    /**
-     * 事务回滚场景：模拟事务异常，发信钩子直接作废，发信次数严格为 0
-     */
-    @Transactional(rollbackFor = Exception.class)
-    public void createOrderWithRollback(OrderCreateMessage message) {
-        dbRecordCount.incrementAndGet();
-        rabbitReliableTemplate.sendAfterCommit(
-                "sample.order.direct",
-                "order.create",
-                message,
-                message.orderId()
-        );
-        throw new IllegalStateException("模拟业务异常触发数据库事务回滚");
-    }
+@Transactional
+public void createOrderBatchWithRollback(List<OrderCreateMessage> messages) {
+    Assert.notEmpty(messages, "批量事务订单消息列表不能为空");
+    dbRecordCount.addAndGet(messages.size());
+    rabbitReliableTemplate.sendBatchAfterCommit(
+            RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+            RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_CREATE,
+            messages
+    );
+    throw new IllegalStateException("模拟批量库存扣减异常触发本地事务回滚: count=" + messages.size());
 }
 ```
 
 #### 机制与边界说明
-- **防幽灵消息 (Ghost Message)**：在分布式业务中，先发 MQ 再提交事务会导致消费者先于事务完成消费脏数据；先提交事务再发 MQ 若发信崩溃会导致丢信。`sendAfterCommit` 将发信动作挂载至当前活跃事务的 `TransactionSynchronization.afterCommit` 阶段；
-- **异常零发信**：若事务因任何原因回滚（Rollback），发信任务被底层无条件丢弃，零物理发信；
-- **事务补偿 SPI**：若本地事务提交已成功但物理网络发信因网络闪断失败，框架自动回调 `RabbitTransactionFailureCallback` 扩展点，供业务写入本地重发表。
+- **单同步器注册与提交前全量 Fail-Fast**：在活跃 Spring 事务中调用 `sendBatchAfterCommit` 时，框架在注册 `TransactionSynchronization` 前即同步完成整批消息的载荷序列化、大报文超限（2MB）及批量上限（`maxBatchSize` / `1000`）检验，以及四维上下文快照提取；整个批次仅向当前事务注册 **1 个** 事务同步器钩子。
+- **防幽灵消息与非事务回退语义**：若本地事务回滚，所有已注册同步器无条件作废、物理零发信；若当前不在活跃事务中，`sendAfterCommit` / `sendBatchAfterCommit` 立即同步投递并等待 Broker ACK（并发射前检测线程中断状态）。
+- **提交后发信失败兜底**：事务物理 Commit 成功后若批量投递出现 Broker NACK、超时或网络异常，记录 `[MQ-TRANSACTION-POST-COMMIT-FAILED]` 并回调 `RabbitTransactionFailureCallback.onFailure(exchange, routingKey, payloads, "batch[N]", ex)` 供业务落库重发表。
 
 ---
 
-### 3.3 大报文超限 Fail-Fast 与透明 GZIP 压缩
+### 3.3 双模延迟投递：插件延迟与原生消息级 TTL (`sendDelayed` & `sendWithExpiration`)
+
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    rabbitmq:
+      reliable:
+        default-timeout: 3s
+      sample:
+        # 若服务端未启用 rabbitmq_delayed_message_exchange 插件，可关闭延迟拓扑并选用原生消息级 TTL
+        delayed-plugin-enabled: true
+```
+
+#### 逆向实战代码 (`TradeMessageProducer.java`)
+```java
+// 方式一：基于 x-delayed-message 插件交换机的任意时长延迟投递
+public void sendOrderDelay(OrderTimeoutMessage message, Duration delay) {
+    log.info("[PRODUCER] 投递延迟订单消息: orderId={}, delay={}", message.orderId(), delay);
+    rabbitReliableTemplate.sendDelayed(
+            RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DELAY,
+            RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_TIMEOUT,
+            message,
+            message.orderId(),
+            delay
+    );
+}
+
+// 方式二：零插件依赖的原生 AMQP 消息级 TTL（MessageProperties.expiration）同步/异步投递
+public void sendOrderWithExpiration(OrderTimeoutMessage message, Duration expiration) {
+    log.info("[PRODUCER] 同步投递原生 TTL 过期订单消息: orderId={}, expiration={}", message.orderId(), expiration);
+    rabbitReliableTemplate.sendWithExpiration(
+            RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+            RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_EXPIRATION,
+            message,
+            message.orderId(),
+            expiration
+    );
+}
+
+public CompletableFuture<CorrelationData.Confirm> sendOrderWithExpirationAsync(OrderTimeoutMessage message, Duration expiration) {
+    log.info("[PRODUCER] 异步投递原生 TTL 过期订单消息: orderId={}, expiration={}", message.orderId(), expiration);
+    return rabbitReliableTemplate.sendAsyncWithExpiration(
+            RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+            RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_EXPIRATION,
+            message,
+            message.orderId(),
+            expiration
+    );
+}
+```
+
+#### 机制与边界说明
+- **双模选型对比**：
+  - `sendDelayed` / `sendDelayedAsync` 写入 `x-delay` 延迟头，要求目标交换机为 `RabbitTopologyBuilder.delayed(...)` 声明的延迟插件交换机，无队头阻塞（HOL Blocking）；
+  - `sendWithExpiration` / `sendAsyncWithExpiration` 直接写入标准 AMQP `MessageProperties.expiration`（字符串毫秒值），**无需安装任何 RabbitMQ 第三方插件**，配合 `RabbitTopologyBuilder.ttlDelayQueue(...)` 或死信队列即可实现死信延迟投递，且严格校验 `expiration` 不得为 `null`、零值、负值或不足 `1ms`（亚毫秒如 `500us` 立即 Fail-Fast 拒绝）。
+
+---
+
+### 3.4 大报文超限 Fail-Fast 与透明 GZIP 压缩
 
 #### 专属 YAML 配置
 ```yaml
@@ -305,28 +368,27 @@ ateng:
       producer:
         # 单条出站消息最大上限，超限前置阻断 (默认 2MB)
         max-payload-size: 2MB
-        # 是否开启透明压缩
+        # 是否开启透明 GZIP 压缩
         compression-enabled: true
         # 超过阈值自动启用 GZIP 压缩 (默认 2KB)
         compression-threshold: 2KB
-        # 批量单批次上限保护
+        # 批量单批次条数上限保护 (默认 1000)
         max-batch-size: 1000
 ```
 
-#### 逆向实战代码
+#### 逆向实战代码 (`TradeMessageProducer.java`)
 ```java
-// 生产端直接投递大对象，底层自动计算序列化字节大小
 rabbitReliableTemplate.sendReliable(
-        "sample.order.direct",
-        "order.create",
-        largeReportPayload,
-        "REPORT-20261109"
+        RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+        RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_CREATE,
+        largeOrderPayload,
+        largeOrderPayload.orderId()
 );
 ```
 
 #### 机制与边界说明
-- **前置 Fail-Fast 阻断**：在消息序列化为字节后，框架前置校验体积是否超过 `maxPayloadSize`（默认 2MB）。若超限，直接在出站前抛出 `MessageDeliveryException`，杜绝将超大载荷推入 Broker 造成内存震荡；
-- **透明压缩与解压**：超过 `compressionThreshold`（默认 2KB）的消息自动执行 GZIP 压缩，并打上 `Content-Encoding: gzip` 消息头；消费端容器已默认挂载 `GUnzipPostProcessor`，业务无需改动代码即可自动透明解压。
+- **前置 Fail-Fast 阻断**：序列化为字节后前置校验是否超出 `max-payload-size`（默认 `2MB`），超限直接抛出 `MessageDeliveryException` 防止撑爆 Broker 通道。
+- **自动透明解压**：超过 `compression-threshold`（默认 `2KB`）自动执行 GZIP 压缩并打上 `Content-Encoding: gzip` 消息头；消费端默认与批量容器工厂均挂载 `GUnzipPostProcessor`，上游压缩、下游无感接收。
 
 ---
 
@@ -340,86 +402,32 @@ ateng:
   boot:
     rabbitmq:
       topology:
-        # 是否自动向 Broker 声明拓扑 (默认 true)
-        auto-declare: true
-```
-
-#### 逆向实战代码 (`RabbitScenarioTopologyConfig.java`)
-```java
-@Configuration(proxyBeanMethods = false)
-public class RabbitScenarioTopologyConfig {
-
-    public static final String EXCHANGE_ORDER_DIRECT = "sample.order.direct";
-    public static final String QUEUE_ORDER_CREATE = "sample.order.create.queue";
-    public static final String ROUTING_KEY_ORDER_CREATE = "order.create";
-
-    public static final String EXCHANGE_LOG_TOPIC = "sample.log.topic";
-    public static final String QUEUE_LOG_ERROR = "sample.log.error.queue";
-    public static final String ROUTING_KEY_LOG_ERROR = "log.error.#";
-
-    public static final String EXCHANGE_BROADCAST_FANOUT = "sample.broadcast.fanout";
-
-    @Bean
-    public Declarables orderDirectTopology() {
-        return RabbitTopologyBuilder.direct(EXCHANGE_ORDER_DIRECT)
-                .queue(QUEUE_ORDER_CREATE)
-                .routingKey(ROUTING_KEY_ORDER_CREATE)
-                .build();
-    }
-
-    @Bean
-    public Declarables logTopicTopology() {
-        return RabbitTopologyBuilder.topic(EXCHANGE_LOG_TOPIC)
-                .queue(QUEUE_LOG_ERROR)
-                .routingKey(ROUTING_KEY_LOG_ERROR)
-                .build();
-    }
-
-    @Bean
-    public Declarables broadcastFanoutTopology() {
-        return RabbitTopologyBuilder.fanout(EXCHANGE_BROADCAST_FANOUT)
-                .build();
-    }
-}
-```
-
-#### 机制与边界说明
-- **Fluent 链式语法**：统一通过 `RabbitTopologyBuilder` 静态入口创建，链式调用声明交换机、队列与绑定关系，最终输出 Spring AMQP 原生 `Declarables`；
-- **解耦式广播**：`fanout(exchange).build()` 允许单独声明交换机，便于由不同下游消费者动态挂载各自的匿名队列。
-
----
-
-### 4.2 Raft Quorum 仲裁队列与单活独占消费者 (`singleActiveConsumer`)
-
-#### 专属 YAML 配置
-```yaml
-ateng:
-  boot:
-    rabbitmq:
-      topology:
         auto-declare: true
 ```
 
 #### 逆向实战代码 (`RabbitScenarioTopologyConfig.java`)
 ```java
 @Bean
-public Declarables orderDirectTopology() {
-    return RabbitTopologyBuilder.direct("sample.order.direct")
-            .queue("sample.order.create.queue")
-            .quorum()                  // 声明为现代 Raft 共识 Quorum 队列
-            .singleActiveConsumer()    // 开启单活独占消费者 (严格保障全局消费顺序)
-            .routingKey("order.create")
+public Declarables logTopicTopology() {
+    return RabbitTopologyBuilder.topic(EXCHANGE_LOG_TOPIC)
+            .queue(QUEUE_LOG_ERROR)
+            .routingKey(ROUTING_KEY_LOG_ERROR)
+            .build();
+}
+
+@Bean
+public Declarables broadcastFanoutTopology() {
+    return RabbitTopologyBuilder.fanout(EXCHANGE_BROADCAST_FANOUT)
             .build();
 }
 ```
 
 #### 机制与边界说明
-- **高可用与强一致性**：Quorum 队列基于 Raft 协议在集群节点间进行日志复制，替代已被 RabbitMQ 官方废弃的经典镜像队列（Mirrored Queues）；
-- **单活独占消费者 (SAC)**：设置 `x-single-active-consumer: true` 后，即使部署多个消费实例，Broker 始终保证同一时刻仅有单实例消费，其他实例处于热备状态，故障时秒级自动无缝漂移。
+- **统一返回 Spring 原生 `Declarables`**：自动由 `RabbitAdmin` 扫描注册到 Broker；单交换机下可通过 `.andQueue(...)` / `.andAnonymousQueue()` / `.andExclusiveAutoDeleteQueue(...)` 继续挂载多个队列绑定。
 
 ---
 
-### 4.3 优先级消息与满载溢出策略 (`OverflowStrategy`)
+### 4.2 Raft Quorum 仲裁队列、溢出策略与毒丸投递上限
 
 #### 专属 YAML 配置
 ```yaml
@@ -434,24 +442,51 @@ ateng:
 ```java
 @Bean
 public Declarables priorityQuorumTopology() {
-    return RabbitTopologyBuilder.direct("sample.priority.direct")
-            .queue("sample.priority.order.queue")
+    return RabbitTopologyBuilder.direct(EXCHANGE_PRIORITY_DIRECT)
+            .queue(QUEUE_PRIORITY_ORDER)
             .quorum()
-            .overflow(OverflowStrategy.REJECT_PUBLISH_DLX) // 队列满载时拒绝新消息并流转至死信
-            .deliveryLimit(5)                              // 毒丸重试 5 次强制路由死信
+            .overflow(OverflowStrategy.REJECT_PUBLISH_DLX)
+            .deliveryLimit(5)
             .deadLetterStrategy(DeadLetterStrategy.AT_LEAST_ONCE)
-            .deadLetter("sample.biz.dlx", "sample.biz.dlq", "biz.dead")
-            .routingKey("priority.order")
+            .deadLetter(EXCHANGE_BIZ_DLX, QUEUE_BIZ_DLQ, ROUTING_KEY_BIZ_DEAD)
+            .routingKey(ROUTING_KEY_PRIORITY_ORDER)
             .build();
 }
 ```
 
 #### 机制与边界说明
-- **现代溢出策略 (`OverflowStrategy`)**：
-  - `DROP_HEAD`：丢弃队头最旧消息；
-  - `REJECT_PUBLISH`：向发布者返回 NACK 直接拒绝入队；
-  - `REJECT_PUBLISH_DLX`：拒绝新消息入队并将其直接转送死信交换机，保障零丢信且主队列不超容；
-- **Quorum 优先级规范**：依据 RabbitMQ 规范，Quorum 队列不支持 `x-max-priority` 内存多级子队列划分，需在经典队列上启用 `maxPriority(n)`，或在应用层使用分级 Topic 路由。
+- **现代 Quorum 队列语义**：基于 Raft 协议实现多副本共识，配合 `.singleActiveConsumer()` 可保障集群同组严格串行单活消费，故障秒级漂移；`.deliveryLimit(5)` 与 `.deadLetterStrategy(DeadLetterStrategy.AT_LEAST_ONCE)` 防范毒丸反复重新入队。
+- **溢出策略枚举 (`OverflowStrategy`)**：`DROP_HEAD` 丢弃队头旧消息、`REJECT_PUBLISH` 直接 NACK 拒绝发布、`REJECT_PUBLISH_DLX` 将被拒新消息直接转入死信队列。
+- **Quorum 优先级约束**：遵循 RabbitMQ 官方规范，Quorum 队列不支持经典队列的 `x-max-priority` 参数；如需队列优先级请在经典队列上调用 `.maxPriority(10)`，或通过多条 Quorum 分级队列路由替代。
+
+---
+
+### 4.3 纯原生 TTL + DLX 延迟队列与备用交换机
+
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    rabbitmq:
+      topology:
+        auto-declare: true
+```
+
+#### 逆向实战代码 (`RabbitScenarioTopologyConfig.java`)
+```java
+@Bean
+public Declarables nativeTtlDelayQueue() {
+    return RabbitTopologyBuilder.ttlDelayQueue(
+            "sample.order.native-delay.queue",
+            Duration.ofMinutes(15),
+            EXCHANGE_ORDER_DIRECT,
+            ROUTING_KEY_ORDER_CREATE
+    );
+}
+```
+
+#### 机制与边界说明
+- **零插件延时闭环**：`ttlDelayQueue(...)` 声明一个“无消费者暂存队列”，到期后由 RabbitMQ 通过 `x-dead-letter-exchange` 自动将到期消息路由到目标消费交换机与队列；`.alternateExchange(name)` 可为任意主交换机挂载不可路由兜底备用交换机。
 
 ---
 
@@ -468,35 +503,24 @@ ateng:
 
 #### 逆向实战代码 (`AnonymousBroadcastConsumer.java`)
 ```java
-@Component
-@Slf4j
-public class AnonymousBroadcastConsumer {
-
-    private final List<String> receivedBroadcasts = new CopyOnWriteArrayList<>();
-
-    /**
-     * 基于通道自洽创建匿名临时排他队列，自动绑定到 Fanout 交换机
-     * 实例下线或 Broker 连接断开时队列由 Broker 自动清理销毁
-     */
-    @RabbitListener(bindings = @QueueBinding(
-            value = @Queue(exclusive = "true", autoDelete = "true"),
-            exchange = @Exchange(name = "sample.broadcast.fanout", type = ExchangeTypes.FANOUT)
-    ))
-    public void onBroadcast(String message) {
-        log.info("[CONSUMER-BROADCAST] 动态匿名队列收到广播消息: message={}", message);
-        this.receivedBroadcasts.add(message);
-    }
+@RabbitListener(bindings = @QueueBinding(
+        value = @Queue,
+        exchange = @Exchange(value = RabbitScenarioTopologyConfig.EXCHANGE_BROADCAST_FANOUT, type = ExchangeTypes.FANOUT)
+))
+public void onBroadcast(String message) {
+    log.info("[CONSUMER-BROADCAST] 动态匿名队列收到广播消息: message={}", message);
+    this.receivedBroadcasts.add(message);
 }
 ```
 
 #### 机制与边界说明
-- **自动排他清理**：`exclusive = true` 与 `autoDelete = true` 确保该临时队列仅归属当前消费通道独占，通道断开后 Broker 自动垃圾回收，完美支撑集群多节点配置热刷新、缓存失效通知等无状态广播场景。
+- **无状态广播自动 GC**：结合通道独占临时队列或 `RabbitTopologyBuilder.fanout(...).anonymousQueue().build()`，消费实例下线断开连接后 Broker 自动清理队列，适合多 Pod 配置热刷新与本地缓存失效广播。
 
 ---
 
-## 5. 消费端弹性防卫与批量削峰套件
+## 5. 消费端弹性防卫、批量削峰与多租户隔离套件
 
-### 5.1 全局通知链与四维上下文透传 (`RabbitListenerGlobalAdvice`)
+### 5.1 全局通知链、四维上下文透传与宏日志 (`RabbitListenerGlobalAdvice`)
 
 #### 专属 YAML 配置
 ```yaml
@@ -504,21 +528,20 @@ ateng:
   boot:
     rabbitmq:
       logging:
-        # 是否输出 [MQ-CONSUME] 标准结构化审计日志
+        # 是否输出 [MQ-SEND] 与 [MQ-CONSUME] 标准结构化宏日志
         enabled: true
-        # 日志报文最大打印字符数
-        logPayloadMaxLength: 1024
+        # 日志中打印 Payload 报文的最大截断字符数
+        log-payload-max-length: 1024
 ```
 
-#### 机制与日志截取
-框架通过全局 AOP 通知链 `RabbitListenerGlobalAdvice` 环绕所有 `@RabbitListener` 消费端：
+#### 实战日志输出截取
 ```text
-2026-11-09 19:24:54.595 INFO  [main] [775bb8bdfc650b2a8ca082cb26d84444] i.g.a.b.r.i.RabbitListenerGlobalAdvice : [MQ-CONSUME] mq=rabbitmq topic=null bizKey=idemp-test-01 traceId=775bb8bdfc650b2a8ca082cb26d84444 status=SUCCESS cost=0ms
+INFO  [...] i.g.a.b.r.i.RabbitListenerGlobalAdvice : [MQ-CONSUME] mq=rabbitmq topic=sample.order.direct bizKey=ORD-1001 traceId=2d4365bc6925c12e678a622e884ff51a status=SUCCESS cost=2ms
+WARN  [...] i.g.a.b.r.i.RabbitListenerGlobalAdvice : [MQ-IDEMPOTENT-DUPLICATE] 消费端检测到幂等防重冲突，触发静默确认 (Silent ACK): exchange=sample.order.direct, routingKey=order.idempotent, queue=sample.order.idempotent.queue, bizKey=idemp-test-01, traceId=2d4365bc6925c12e678a622e884ff51a, isBatch=false, batchSize=1
 ```
 
 #### 机制与边界说明
-- **全链路追踪与上下文复制**：消费前自动解析并向 MDC 注入 `traceId`，同时恢复 `UserContextHolder` 与 `TenantContextHolder`；
-- **确定性资源清理**：在 `finally` 块中执行无条件清理，防止线程复用引发上下文污染。
+- **单条与批量自适应追踪**：入站透明恢复 `TraceId`、`TenantId`、`UserId`、`IgnoreTenant` 与 MDC 并在 `finally` 无条件还原；当 `@RabbitListener` 接收纯 `List<POJO>` 且无 `Message` 提取路径时，调用 `RabbitBatchExecutor.generateBatchTraceId()` 兜底生成 `batch-<UUID>` 批次追踪标识并记录 `isBatch=true, batchSize=N`。
 
 ---
 
@@ -537,30 +560,27 @@ ateng:
 
 #### 逆向实战代码 (`IdempotentOrderConsumer.java`)
 ```java
-@Component
-@Slf4j
-public class IdempotentOrderConsumer {
-
-    private final Set<String> processedKeys = ConcurrentHashMap.newKeySet();
-
-    @RabbitListener(queues = "sample.order.idempotent.queue")
-    public void onOrderMessage(String payload, @Header(name = "X-Biz-Key", required = false) String bizKey) {
-        if (bizKey != null && !processedKeys.add(bizKey)) {
-            // 检测到重复业务消息，直接抛出业务断言或 IdempotentException
-            log.warn("[CONSUMER-IDEMPOTENT] 检测到重复消息，触发静默确认: bizKey={}", bizKey);
-            throw new IdempotentException("订单消息已处理，触发静默确认: bizKey=" + bizKey);
-        }
-        log.info("[CONSUMER-IDEMPOTENT] 首次消费处理成功: bizKey={}, payload={}", bizKey, payload);
+@RabbitListener(queues = RabbitScenarioTopologyConfig.QUEUE_ORDER_IDEMPOTENT)
+public void onConsume(String payload,
+                      @Header(name = "X-Biz-Key", required = false) String bizKey) {
+    String key = bizKey != null ? bizKey : payload;
+    if (!processedKeys.add(key)) {
+        idempotentTriggeredCount.incrementAndGet();
+        log.warn("[CONSUMER-IDEMPOTENT] 检测到重复消息，抛出 IdempotentException 触发静默确认: bizKey={}", key);
+        throw new IdempotentException("订单消息已处理，幂等拦截静默确认: " + key);
     }
+
+    normalProcessedCount.incrementAndGet();
+    log.info("[CONSUMER-IDEMPOTENT] 首次消费处理成功: bizKey={}, payload={}", key, payload);
 }
 ```
 
 #### 机制与边界说明
-- **阻断重试风暴**：普通异常会导致消费者抛出错误并触发本地重试或 Requeue，导致已成功的消息反复执行。抛出 `IdempotentException` 时，`RabbitListenerGlobalAdvice` 拦截该异常，记录 `[MQ-IDEMPOTENT-DUPLICATE]` 警告并向 Broker 发送 Basic.Ack 标记成功消费，优雅阻断重试风暴。
+- **阻断重试风暴与死信污染**：捕获到因果链上的 `IdempotentException`（或错误码为 `CommonResultCode.REPEAT_SUBMIT` 的 `BusinessException`）时，外层重试与死信策略不再触发，切面直接返回 `null` 触发 `Basic.Ack` 静默确认并输出 `[MQ-IDEMPOTENT-DUPLICATE]`。
 
 ---
 
-### 5.3 毒丸隔离至死信队列 (`RabbitFatalExceptionStrategy`)
+### 5.3 毒丸隔离与容器内本地指数退避重试 (`RabbitFatalExceptionStrategy` & `RabbitRetryPolicy`)
 
 #### 专属 YAML 配置
 ```yaml
@@ -569,57 +589,41 @@ ateng:
     rabbitmq:
       consumer:
         retry:
+          # 是否开启容器内本地指数退避重试
+          enabled: true
+          # 最大本地重试次数 (包含初次执行)
           max-attempts: 3
+          # 首次重试退避间隔时间
+          initial-interval: 1s
+          # 指数退避倍率
+          multiplier: 2.0
+          # 最大重试退避间隔时间
+          max-interval: 10s
 ```
 
 #### 逆向实战代码 (`PoisonPillConsumer.java`)
 ```java
-@Component
-@Slf4j
-public class PoisonPillConsumer {
-
-    @RabbitListener(queues = "sample.biz.queue")
-    public void onBizMessage(String payload) {
-        if ("poison-pill".equalsIgnoreCase(payload)) {
-            log.error("[CONSUMER-BIZ] 收到致命毒丸消息，抛出非法参数异常: {}", payload);
-            throw new IllegalArgumentException("致命毒丸消息，不可自愈，立即路由至死信队列");
-        }
+@RabbitListener(queues = RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN)
+public void onBizMessage(String payload) {
+    attemptCount.incrementAndGet();
+    if ("poison-pill".equals(payload)) {
+        log.error("[CONSUMER-BIZ] 收到致命毒丸消息，抛出非法参数异常: {}", payload);
+        throw new IllegalArgumentException("毒丸格式严重错误，不可自愈: " + payload);
+    } else if ("biz-error".equals(payload)) {
+        log.error("[CONSUMER-BIZ] 收到业务重试消息，模拟服务故障: attempt={}", attemptCount.get());
+        throw new RuntimeException("下游服务网络抖动");
     }
+    log.info("[CONSUMER-BIZ] 业务消息消费成功: {}", payload);
 }
 ```
 
 #### 机制与边界说明
-- **0 次重试快速进 DLQ**：参数校验失败（JSR-303）、反序列化错误或非法业务入参属于不可自愈的“毒丸（Poison Pill）”。`RabbitFatalExceptionStrategy` 将其判定为 Fatal，跳过本地 3 次重试，立即触发 `RejectAndDontRequeue` 送入死信队列，保障主队列通畅。
+- **毒丸 0 次重试与终点防卫**：`RabbitFatalExceptionStrategy` 依托 `FatalExceptionClassifier` 识别反序列化错误、JSR-303 校验异常与 `IllegalArgumentException` 等毒丸直接拒收送 DLQ（输出 `[MQ-FATAL-POISON-PILL]`）；若消费端本身正在消费 `.dlq` / `dead-letter` 队列仍抛出异常，直接触发 `[MQ-TERMINAL-DLQ-FAILURE]` 终点防卫阻断死循环。
+- **重试耗尽结构化告警**：瞬态故障在本地容器按指数退避重试耗尽后，由 `LoggingRejectAndDontRequeueRecoverer` 打印 `[MQ-CONSUME-RETRY-EXHAUSTED]` Error 日志并拒绝消息入死信（彻底替代 Broker Requeue 死循环自旋）。
 
 ---
 
-### 5.4 容器内本地指数退避重试 (`RabbitRetryPolicy`)
-
-#### 专属 YAML 配置
-```yaml
-ateng:
-  boot:
-    rabbitmq:
-      consumer:
-        retry:
-          # 是否启用本地指数退避重试
-          enabled: true
-          # 最大本地重试次数 (包含首次执行)
-          max-attempts: 3
-          # 首次退避间隔时间
-          initial-interval: 1s
-          # 指数退避倍率
-          multiplier: 2.0
-          # 最大退避间隔时间
-          max-interval: 10s
-```
-
-#### 机制与边界说明
-- **解耦 Broker Requeue**：Spring AMQP 默认使用 Broker 重入队（Requeue），重入队会直接插回队头或在集群中循环震荡。框架装配 `RabbitRetryPolicy`，在消费容器本地内存中执行指数退避重试（1s -> 2s -> 4s），抗击瞬态数据库抖动；达到 `maxAttempts` 后转交 Recoverer 送入死信队列。
-
----
-
-### 5.5 消费端批量聚合削峰 (`batchRabbitListenerContainerFactory`)
+### 5.4 消费端批量聚合削峰 (`batchRabbitListenerContainerFactory`)
 
 #### 专属 YAML 配置
 ```yaml
@@ -628,36 +632,67 @@ ateng:
     rabbitmq:
       consumer:
         batch:
-          # 开启消费端批量监听器削峰
+          # 开启批量聚合监听支持
           enabled: true
           # 单批次最大聚合条数
           size: 50
-          # 聚合等待最大超时时间
+          # 批量聚合最大等待超时时间
           max-wait-time: 500ms
 ```
 
 #### 逆向实战代码 (`BatchOrderConsumer.java`)
 ```java
-@Component
-@Slf4j
-public class BatchOrderConsumer {
-
-    private final List<OrderCreateMessage> receivedOrders = new CopyOnWriteArrayList<>();
-
-    /**
-     * 批量消费削峰：入参为 List<T>，由容器聚合多条消息后批量交付业务处理
-     */
-    @RabbitListener(queues = "sample.batch.order.queue", containerFactory = "batchRabbitListenerContainerFactory")
-    public void onBatchOrders(List<OrderCreateMessage> batch) {
-        log.info("[CONSUMER-BATCH] 收到批量削峰订单消息: count={}", batch.size());
-        this.receivedOrders.addAll(batch);
+@RabbitListener(
+        queues = RabbitScenarioTopologyConfig.QUEUE_BATCH_ORDER,
+        containerFactory = "batchRabbitListenerContainerFactory"
+)
+public void onBatch(List<OrderCreateMessage> orders) {
+    if (orders != null && !orders.isEmpty()) {
+        log.info("[CONSUMER-BATCH] 收到批量订单消费消息: count={}", orders.size());
+        this.allReceivedOrders.addAll(orders);
     }
 }
 ```
 
 #### 机制与边界说明
-- **独立工厂与自动适配**：通过独立的 `batchRabbitListenerContainerFactory` 提供批量能力，不影响其他单条消费监听器；
-- **批量上下文适配**：`RabbitListenerGlobalAdvice` 识别到批量入参时，提取首条消息上下文用于调用链路度量，并在日志中输出 `isBatch=true, batchSize=N`。
+- **正交工厂隔离**：`batchRabbitListenerContainerFactory` 独立托管批量聚合监听器，不干扰其余常规单条 `@RabbitListener` 消费者的确认模式与吞吐配置。
+
+---
+
+### 5.5 批量消费逐条四维上下文隔离与单条容错 (`RabbitBatchExecutor`)
+
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    rabbitmq:
+      consumer:
+        batch:
+          enabled: true
+          size: 50
+          max-wait-time: 500ms
+```
+
+#### 逆向实战代码 (`BatchTenantIsolationConsumer.java`)
+```java
+@RabbitListener(
+        queues = RabbitScenarioTopologyConfig.QUEUE_BATCH_TENANT,
+        containerFactory = "batchRabbitListenerContainerFactory"
+)
+public void onBatchMessages(List<Message> messages) {
+    log.info("[BATCH-TENANT-CONSUMER] 接收批量租户混排消息: count={}", messages != null ? messages.size() : 0);
+    rabbitBatchExecutor.processBatchSafely(
+            messages,
+            OrderCreateMessage.class,
+            this::handleSingleOrder,
+            this::handleFailedOrder
+    );
+}
+```
+
+#### 机制与边界说明
+- **逐条强隔离防串门**：批量接收 `List<Message>` 后委托 `RabbitBatchExecutor` 按每条消息的 Header 逐条激活 `MessageContextPropagator.ContextScope`（还原独立的 `TenantId`、`UserId`、`IgnoreTenant` 与 `TraceId`），通过容器 `MessageConverter` 推断反序列化为 `OrderCreateMessage` 后执行单条逻辑，结束立刻恢复调用线程上下文。
+- **单条故障隔离与幂等跳过**：批次中单条出现 `IdempotentException` 时自动打印 `[MQ-IDEMPOTENT-DUPLICATE]` 并静默跳过；出现常规业务异常时打印 `[MQ-CONSUME-BATCH]` 并调用 `failureHandler` 记录隔离失败（可转投死信或补偿表），其余同批不同租户的消息照常处理完毕，杜绝整批回滚死锁。
 
 ---
 
@@ -671,36 +706,36 @@ ateng:
   boot:
     rabbitmq:
       dead-letter:
-        # 单批次死信受控重放默认拉取上限
+        # 单批次死信受控重放默认数量限制
         default-replay-limit: 100
-        # 单条消息允许的最大重放次数
+        # 单条消息允许的最大死信重放次数
         max-replay-count: 1
 ```
 
 #### 逆向实战代码 (`DeadLetterReplayService.java`)
 ```java
-@Service
-@RequiredArgsConstructor
-public class DeadLetterReplayService {
-
-    private final RabbitDeadLetterReplayTemplate replayTemplate;
-
-    /**
-     * 受控重放死信消息并重新注入业务队列
-     */
-    public int replayBizDeadLetters(int limit) {
-        return replayTemplate.replay(
-                "sample.biz.dlq",
-                "sample.biz.direct",
-                "biz.work",
-                limit
-        );
-    }
+public int replayBizDeadLetters(int limit) {
+    log.info("[SERVICE-REPLAY] 开始重放死信队列消息: dlq={}, limit={}",
+            RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ, limit);
+    int replayed = replayTemplate.replay(
+            RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ,
+            RabbitScenarioTopologyConfig.EXCHANGE_BIZ_DIRECT,
+            RabbitScenarioTopologyConfig.ROUTING_KEY_BIZ,
+            limit
+    );
+    log.info("[SERVICE-REPLAY] 死信队列消息重放完成: dlq={}, replayedCount={}",
+            RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ, replayed);
+    return replayed;
 }
 ```
 
 #### 机制与边界说明
-- **底层元数据清洗**：死信入队后由 RabbitMQ 注入深层嵌套的 `x-death` 头。直接重放会导致业务消费者误判其为历史死信。`RabbitDeadLetterReplayTemplate` 自动剥离底层 `x-death` 头，并注入 `X-Dead-Letter-Replayed: true` 与 `X-Dead-Letter-Replay-Count: N` 溯源标记。
+- **元数据清洗与 5 项标准溯源头**：重放自动剥离 `x-death`、`x-first-death-exchange`、`x-first-death-queue`、`x-first-death-reason` 原始死信头防止下游再次拒收，同时向消息注入：
+  - `X-Dead-Letter-Replayed: true`
+  - `X-Replay-Time`: 重放毫秒时间戳
+  - `X-Replay-Count`: 递增后的当前重放次数（对应常量 `HEADER_X_REPLAY_COUNT`）
+  - `X-Original-Dead-Letter-Queue`: 原始死信来源队列名
+  - `X-Original-Dead-Letter-Reason`: 原始死信触发原因
 
 ---
 
@@ -712,12 +747,23 @@ ateng:
   boot:
     rabbitmq:
       dead-letter:
-        # 超过该阈值坚决拒绝重放，防范业务队列与死信队列之间无限震荡
+        # 超过该阈值阻断重放，防范业务队列与死信队列之间无限震荡
         max-replay-count: 1
 ```
 
+#### 逆向实战代码 (`DeadLetterReplayService.java`)
+```java
+int replayed = replayTemplate.replay(
+        RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ,
+        RabbitScenarioTopologyConfig.EXCHANGE_BIZ_DIRECT,
+        RabbitScenarioTopologyConfig.ROUTING_KEY_BIZ,
+        100,
+        message -> !RabbitDeadLetterHelper.getAllDeaths(message).isEmpty()
+);
+```
+
 #### 机制与边界说明
-- **二次死信熔断**：通过 `maxReplayCount`（默认 1 次）严格防卫。若某条问题消息经重放后仍消费失败回到死信队列，达到该上限后将被阻断重放，并执行 `basicNack(requeue=true)` 安全留存原死信队列，坚决杜绝死信在业务队列与死信队列之间无限循环震荡。
+- **二次死信熔断与 FIFO 保护**：重放前解析 `X-Replay-Count`；一旦达到 `max-replay-count`，框架立即打印 `[MQ-DLQ-REPLAY-BLOCKED]` 错误日志并跳过投递，待本批处理完毕后对所有未重放消息按**逆序**执行 `channel.basicNack(tag, false, true)` 放回死信队列，严格保全队列 FIFO 原序。
 
 ---
 
@@ -734,66 +780,122 @@ ateng:
 
 #### 逆向实战代码 (`DeadLetterReplayService.java`)
 ```java
-@Service
-@RequiredArgsConstructor
-public class DeadLetterReplayService {
+public List<Message> peekBizDeadLetters(int limit) {
+    return replayTemplate.peek(RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ, limit);
+}
 
-    private final RabbitDeadLetterReplayTemplate replayTemplate;
-
-    /**
-     * 只读探查队列头部消息：利用 basicNack(requeue=true) 获取载荷但不消费
-     */
-    public List<Message> peekBizDeadLetters(int limit) {
-        return replayTemplate.peek("sample.biz.dlq", limit);
-    }
-
-    /**
-     * 一键清空死信队列全部积压
-     */
-    public int purgeBizDeadLetters() {
-        return replayTemplate.purge("sample.biz.dlq");
-    }
+public int purgeBizDeadLetters() {
+    return replayTemplate.purge(RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ);
 }
 ```
 
 #### 机制与边界说明
-- **无破坏性探查**：`peek` 内部通过拉取并立即调用 `channel.basicNack(deliveryTag, false, true)` 实现原样放回，供线上运维排查积压消息体；
-- **安全排空**：`purge` 底层调用原生 `channel.queuePurge(dlq)`，返回本次被物理清除的消息条数。
+- **只读不丢信探查**：`peek` 支持默认 100 或自定义 `(1 ~ 1000)` 条上限，拉取后在 `finally` 中逆序执行 `basicNack(deliveryTag, false, true)` 原样放回队列头部；`purge` 调用底层 `channel.queuePurge(dlq)` 物理清空并输出 `[MQ-DLQ-PURGE]`。
 
 ---
 
-### 6.4 死信元数据只读诊断助手 (`RabbitDeadLetterHelper`)
+### 6.4 死信元数据只读诊断助手 (`RabbitDeadLetterHelper` & `DeadLetterRecord`)
+
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    rabbitmq:
+      dead-letter:
+        default-replay-limit: 100
+```
 
 #### 逆向实战代码 (`DeadLetterAuditConsumer.java`)
 ```java
-@Component
-@Slf4j
-public class DeadLetterAuditConsumer {
+@RabbitListener(queues = RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ)
+public void onDeadLetter(Message message) {
+    String body = new String(message.getBody(), StandardCharsets.UTF_8);
+    String originQueue = RabbitDeadLetterHelper.getOriginalQueue(message);
+    String originExchange = RabbitDeadLetterHelper.getOriginalExchange(message);
+    String reason = RabbitDeadLetterHelper.getDeathReason(message);
+    long count = RabbitDeadLetterHelper.getDeathCount(message);
+    RabbitDeadLetterHelper.DeadLetterRecord record = RabbitDeadLetterHelper.getFirstDeath(message);
 
-    private final List<RabbitDeadLetterHelper.DeadLetterRecord> auditRecords = new CopyOnWriteArrayList<>();
+    log.warn("[DLQ-AUDIT] 收到死信消息: body={}, originQueue={}, originExchange={}, reason={}, count={}",
+            body, originQueue, originExchange, reason, count);
 
-    @RabbitListener(queues = "sample.biz.dlq")
-    public void onDeadLetterMessage(Message message) {
-        String originQueue = RabbitDeadLetterHelper.getOriginalQueue(message);
-        String originExchange = RabbitDeadLetterHelper.getOriginalExchange(message);
-        String reason = RabbitDeadLetterHelper.getDeathReason(message);
-        long count = RabbitDeadLetterHelper.getDeathCount(message);
-
-        log.warn("[DLQ-AUDIT] 收到死信消息: originQueue={}, originExchange={}, reason={}, count={}",
-                originQueue, originExchange, reason, count);
-        this.auditRecords.add(new RabbitDeadLetterHelper.DeadLetterRecord(originQueue, originExchange, reason, count));
+    if (record != null) {
+        auditRecords.add(record);
     }
 }
 ```
 
 #### 机制与边界说明
-- **驱动类型宽容兼容**：底层 AMQP 驱动在解析 `x-death` 头时可能返回 `String`、`byte[]` 或 `LongString` 等异构类型。`RabbitDeadLetterHelper` 进行了全类型安全清洗与空安全防御，提供零异常的诊断元数据提取。
+- **完整 6 字段强类型记录 (`DeadLetterRecord`)**：`RabbitDeadLetterHelper.getFirstDeath(...)` / `getAllDeaths(...)` 返回强类型记录 `RabbitDeadLetterHelper.DeadLetterRecord(String queue, String exchange, String reason, long count, List<String> routingKeys, Date time)`，安全兼容 `String`、`byte[]` 与 AMQP `LongString` 异构驱动类型，零 `ClassCastException`。
 
 ---
 
-## 7. 生产扩展接管与核心非功能边界
+## 7. 运行期容器动态运维与队列积压观测套件 (`RabbitContainerManager`)
 
-### 7.1 不可路由退回消息告警与落库 SPI (`RabbitUnroutableMessageCallback`)
+### 7.1 监听容器启停、动态扩缩容、预取调节与队列深度查询
+
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    rabbitmq:
+      consumer:
+        # 初始通道预取数与并发范围，运行期可被 RabbitContainerManager 动态覆盖
+        prefetch: 20
+        concurrency: 1
+        max-concurrency: 8
+```
+
+#### 逆向实战代码 (`RabbitContainerController.java`)
+```java
+@GetMapping("/list")
+public Result<List<RabbitContainerStatus>> listContainers() {
+    return Result.success(rabbitContainerManager.getContainerStatuses());
+}
+
+@PostMapping("/start")
+public Result<RabbitContainerStatus> startContainer(@Valid @RequestBody ContainerTargetRequest request) {
+    rabbitContainerManager.start(request.getTarget());
+    return Result.success(rabbitContainerManager.getContainerStatus(request.getTarget()), "监听容器启动成功");
+}
+
+@PostMapping("/stop")
+public Result<RabbitContainerStatus> stopContainer(@Valid @RequestBody ContainerTargetRequest request) {
+    rabbitContainerManager.stop(request.getTarget());
+    return Result.success(rabbitContainerManager.getContainerStatus(request.getTarget()), "监听容器停止成功");
+}
+
+@PostMapping("/scale")
+public Result<RabbitContainerStatus> scaleConcurrency(@Valid @RequestBody ContainerScaleRequest request) {
+    rabbitContainerManager.scaleConcurrency(
+            request.getTarget(),
+            request.getConcurrentConsumers(),
+            request.getMaxConcurrentConsumers()
+    );
+    return Result.success(rabbitContainerManager.getContainerStatus(request.getTarget()), "容器并发消费者调整成功");
+}
+
+@PostMapping("/prefetch")
+public Result<RabbitContainerStatus> updatePrefetchCount(@Valid @RequestBody ContainerPrefetchRequest request) {
+    rabbitContainerManager.updatePrefetchCount(request.getTarget(), request.getPrefetchCount());
+    return Result.success(rabbitContainerManager.getContainerStatus(request.getTarget()), "容器预取数调整成功");
+}
+
+@GetMapping("/queue-status")
+public Result<RabbitQueueStatus> getQueueStatus(@RequestParam String queueName) {
+    return Result.success(rabbitContainerManager.getQueueStatus(queueName));
+}
+```
+
+#### 机制与边界说明
+- **双维目标寻址 (`idOrQueue`)**：`start`、`stop`、`isRunning`、`scaleConcurrency`、`updatePrefetchCount`、`getContainerStatus` 均同时支持按 `@RabbitListener(id = ...)` 精确容器 ID 或所监听队列名匹配查找（同队列多容器场景下批量生效）；未命中监听容器立即 Fail-Fast 抛出 `IllegalArgumentException`。
+- **强校验与不可变观测视图**：`scaleConcurrency` 要求 `concurrentConsumers > 0` 且 `maxConcurrentConsumers >= concurrentConsumers`（仅支持 `SimpleMessageListenerContainer`）；`updatePrefetchCount` 限制 AMQP 0-9-1 合法区间 `[1, 65535]`。状态查询返回不可变 record `RabbitContainerStatus` 与 `RabbitQueueStatus`（`RabbitAdmin` 不可用或队列尚未创建时安全降级返回 `exists = false` 与零值，并输出 `[MQ-QUEUE-STATUS]`）。
+
+---
+
+## 8. 生产扩展接管与核心非功能边界
+
+### 8.1 不可路由退回消息告警与落库 SPI (`RabbitUnroutableMessageCallback`)
 
 #### 专属 YAML 配置
 ```yaml
@@ -801,31 +903,34 @@ ateng:
   boot:
     rabbitmq:
       reliable:
-        # 激活 ReturnsCallback 告警与 SPI 回调
+        # 激活 mandatory=true 与 ReturnsCallback 退回告警
         returns-callback-enabled: true
 ```
 
-#### 逆向实战代码
+#### 生产接管示例
 ```java
 @Component
 @Slf4j
 public class CustomUnroutableCallback implements RabbitUnroutableMessageCallback {
 
     @Override
-    public void onUnroutableMessage(RabbitTemplate.ReturnsCallback.Returned returned) {
-        log.error("[ALERT] 消息不可路由，推送企业告警: exchange={}, routingKey={}, replyText={}",
-                returned.getExchange(), returned.getRoutingKey(), returned.getReplyText());
-        // 扩展：在此将不可路由退回消息持久化至补偿表或推送到钉钉/飞书告警机器人
+    public void onUnroutableMessage(ReturnedMessage returned) {
+        log.error("[ALERT] 消息不可路由，推送企业告警: exchange={}, routingKey={}, replyCode={}, replyText={}",
+                returned.getExchange(),
+                returned.getRoutingKey(),
+                returned.getReplyCode(),
+                returned.getReplyText());
+        // 扩展：在此将不可路由退回消息写入补偿表或推送告警机器人
     }
 }
 ```
 
 #### 机制与边界说明
-- **Mandatory 路由防卫**：当开启 `returnsCallbackEnabled: true` 时，`RabbitReliableTemplate` 强制将投递消息标记为 `mandatory=true`。若投递至 Exchange 后因路由键未匹配任何队列，Broker 触发 `Basic.Return`，框架触发此 SPI，阻断无声丢信。
+- **Mandatory 退回防线**：开启 `returns-callback-enabled: true` 后自动向 `CachingConnectionFactory` 开启 `publisherReturns=true` 且强制发送消息置为 `mandatory=true`；当路由键未匹配任何队列时 Broker 触发 `Basic.Return`，框架打印 `[MQ-RETURNS]` 告警后回调此 SPI（接管方法形参为 `org.springframework.amqp.core.ReturnedMessage`）。
 
 ---
 
-### 7.2 事务提交后发信失败兜底补偿 SPI (`RabbitTransactionFailureCallback`)
+### 8.2 事务提交后发信失败兜底补偿 SPI (`RabbitTransactionFailureCallback`)
 
 #### 专属 YAML 配置
 ```yaml
@@ -836,27 +941,29 @@ ateng:
         default-timeout: 3s
 ```
 
-#### 逆向实战代码
+#### 生产接管示例
 ```java
 @Component
 @Slf4j
 public class CustomTxFailureCallback implements RabbitTransactionFailureCallback {
 
     @Override
-    public void onTransactionPostCommitFailed(String exchange, String routingKey,
-                                              Object payload, String bizKey, Throwable ex) {
-        log.error("[TX-COMPENSATE] 事务已提交但发信失败，落库本地重发表: bizKey={}", bizKey, ex);
-        // 扩展：写入本地事务待重发表，由调度任务轮询重发兜底
+    public void onFailure(String exchange, String routingKey,
+                          Object payload, String bizKey, Throwable cause) {
+        log.error("[TX-COMPENSATE] 事务已提交但发信失败，落库本地重发表: exchange={}, routingKey={}, bizKey={}",
+                exchange, routingKey, bizKey, cause);
+        // 扩展：单条场景 payload 为原始对象、bizKey 为业务主键；
+        // 批量 sendBatchAfterCommit 失败场景 payload 为整批 payloads 列表快照、bizKey 为 "batch[N]"
     }
 }
 ```
 
 #### 机制与边界说明
-- **极端故障防御**：当使用 `sendAfterCommit` 时，若本地数据库事务已成功 Commit，但在紧随其后的物理网络发信阶段遭遇网络闪断或 Broker 拒绝，框架自动触发此 SPI，保障数据最终一致性。
+- **单批通吃事务兜底**：`onFailure` 方法在 `sendAfterCommit`（单条）及 `sendBatchAfterCommit`（整批，传入完整 `payloads` 与 `"batch[N]"`）Commit 后发信异常时统一回调，并完整保留底层 `cause` 异常链。
 
 ---
 
-### 7.3 只读运维账号启动安全治理 (`auto-declare: false`)
+### 8.3 只读运维账号启动安全治理 (`auto-declare: false`)
 
 #### 专属 YAML 配置
 ```yaml
@@ -864,51 +971,79 @@ ateng:
   boot:
     rabbitmq:
       topology:
-        # 生产只读受限账号环境下关闭启动自动声明，防御 403 启动崩溃
+        # 生产受限只读账号环境下关闭 RabbitAdmin 启动自动建队与声明拓扑，防御 403 启动崩溃
         auto-declare: false
 ```
 
 #### 机制与边界说明
-- **启动防御机制**：当生产环境采用严格收敛权限的只读账号连接 RabbitMQ 时，账号无权创建交换机与队列。开启 `auto-declare: false` 后，后置处理器自动将 `RabbitAdmin.autoStartup` 设为 `false`，应用启动时不执行任何声明操作，彻底规避 403 权限异常导致的启动崩溃。
+- **生命周期后置抑制**：`AtengRabbitLifecycleBeanPostProcessor` 监测到 `topology.auto-declare=false` 时，打印 `[RABBITMQ-TOPOLOGY]` 日志并将 `RabbitAdmin.setAutoStartup(false)`，由 DBA 或运维平台提前预建拓扑。
 
 ---
 
-### 7.4 Kubernetes 滚动发布优雅停机排空 (`shutdown-timeout`)
+### 8.4 Kubernetes 优雅停机排空与 JDK 21+ 虚拟线程自适应调度
 
 #### 专属 YAML 配置
 ```yaml
+spring:
+  threads:
+    virtual:
+      # 在 JDK 21+ 运行时开启后，监听容器自动切换为 VirtualThreads 调度执行器
+      enabled: true
+
 ateng:
   boot:
     rabbitmq:
       consumer:
-        # K8s 停机优雅缓冲窗口 (默认 30s)
+        # K8s 滚动停机排空缓冲窗口 (默认 30s)
         shutdown-timeout: 30s
 ```
 
 #### 机制与边界说明
-- **无损下线**：Kubernetes 滚动发布推送 `SIGTERM` 信号时，Spring 容器通知监听器容器停止从 Broker 拉取新消息，并预留 `shutdownTimeout` 缓冲窗口等待在途正在消费中的消息完成 ACK，排空在途流量后再关闭网络连接，防止停机丢信或重复消费。
+- **停机无损排空**：收到 `SIGTERM` 信号时容器先停止拉取新消息，并等待最高 `shutdown-timeout` 时长排空在途消费再释放 Broker 信道。
+- **虚拟线程无缝适配**：在 JDK 21+ 且开启 `spring.threads.virtual.enabled=true` 时，`AtengRabbitmqAutoConfiguration.VirtualThreadsConfiguration` 自动注册名称为 `atengRabbitVirtualTaskExecutor`（线程前缀 `ateng-vt-rabbit-`）的虚拟线程执行器并注入容器定制器，吞吐与调度无需修改业务代码。
 
 ---
 
-## 8. 完整 YAML 配置属性清单 (Appendix: Configuration Properties)
+### 8.5 结构化日志前缀与排障观测速查
 
-全量纳管于配置前缀 `ateng.boot.rabbitmq.*`，严格采用强类型 `Duration` 与 `DataSize` 消除单位歧义：
+| 日志前缀 | 级别 | 触发位置 | 语义说明 |
+| :--- | :--- | :--- | :--- |
+| `[MQ-SEND]` | `INFO` / `ERROR` | `RabbitReliableTemplate` | 生产端投递状态、字节体积、Confirm 结果与耗时统计 |
+| `[MQ-RETURNS]` | `WARN` | `AtengRabbitmqAutoConfiguration` | `mandatory=true` 未匹配队列退回告警（含 `replyCode`/`replyText`） |
+| `[MQ-RETURNS-CALLBACK-ERROR]` | `ERROR` | `AtengRabbitmqAutoConfiguration` | 自定义 `RabbitUnroutableMessageCallback` 回调次生异常 |
+| `[MQ-TRANSACTION-POST-COMMIT-FAILED]` | `ERROR` | `RabbitReliableTemplate` | 本地事务 Commit 后单条或批量发信失败 |
+| `[MQ-TRANSACTION-CALLBACK-ERROR]` | `ERROR` | `RabbitReliableTemplate` | 自定义 `RabbitTransactionFailureCallback.onFailure` 回调次生异常 |
+| `[MQ-CONSUME]` | `INFO` / `WARN` / `ERROR` | `RabbitListenerGlobalAdvice` | 消费端执行状态（`SUCCESS`/`RETRY`/`FATAL_DLQ`）、`isBatch`/`batchSize` 与耗时 |
+| `[MQ-IDEMPOTENT-DUPLICATE]` | `WARN` | `RabbitListenerGlobalAdvice` / `RabbitBatchExecutor` | 命中 `IdempotentException` 静默确认或批量单条静默跳过 |
+| `[MQ-CONSUME-BATCH]` | `ERROR` | `RabbitBatchExecutor` | 批量消费逐条异常隔离日志及 `failureHandler` 次生异常告警 |
+| `[MQ-CONSUME-RETRY-EXHAUSTED]` | `ERROR` | `LoggingRejectAndDontRequeueRecoverer` | 本地指数退避重试耗尽即将拒绝消息进入死信队列 |
+| `[MQ-FATAL-POISON-PILL]` | `WARN` | `RabbitFatalExceptionStrategy` | 识别不可自愈毒丸异常，0 次重试直接路由死信队列 |
+| `[MQ-TERMINAL-DLQ-FAILURE]` | `ERROR` | `RabbitFatalExceptionStrategy` | 死信队列消费仍报错触发 Terminal DLQ Invariant 阻断自旋 |
+| `[MQ-DLQ-REPLAY]` / `[MQ-DLQ-REPLAY-BLOCKED]` / `[MQ-DLQ-PURGE]` | `INFO` / `ERROR` | `RabbitDeadLetterReplayTemplate` | 死信重放完成统计、达 `max-replay-count` 熔断阻断、队列清空统计 |
+| `[MQ-CONTAINER-*]` / `[MQ-QUEUE-STATUS]` | `INFO` / `DEBUG` / `WARN` | `RabbitContainerManager` | 容器启停/扩缩容/预取调优日志与队列深度查询降级提示 |
+| `[RABBITMQ-TOPOLOGY]` | `INFO` | `AtengRabbitLifecycleBeanPostProcessor` | `auto-declare=false` 关闭 `RabbitAdmin` 启动自动建队提示 |
+
+---
+
+## 9. 完整 YAML 配置属性清单 (Appendix: Configuration Properties)
+
+全量纳管于配置前缀 `ateng.boot.rabbitmq.*`，严格采用 `java.time.Duration` 与 `org.springframework.util.unit.DataSize` 消除单位歧义：
 
 | 配置键名 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `ateng.boot.rabbitmq.enabled` | `boolean` | `true` | 是否启用 RabbitMQ 增强底座特性 |
-| `ateng.boot.rabbitmq.producer.max-payload-size` | `DataSize` | `2MB` | 单条出站消息最大报文限制，超过该阈值出站前 Fail-Fast 阻断 |
+| `ateng.boot.rabbitmq.producer.max-payload-size` | `DataSize` | `2MB` | 单条出站消息最大报文限制，超过该阈值在出站前 Fail-Fast 阻断 |
 | `ateng.boot.rabbitmq.producer.compression-threshold` | `DataSize` | `2KB` | 透明 GZIP 压缩阈值，超过该大小自动启用压缩并在 Header 注入 `Content-Encoding: gzip` |
 | `ateng.boot.rabbitmq.producer.compression-enabled` | `boolean` | `true` | 是否启用大报文透明 GZIP 压缩特性 |
 | `ateng.boot.rabbitmq.producer.max-batch-size` | `int` | `1000` | 批量投递单批次消息上限保护阈值，防止一次性发射过量消息导致 OOM |
 | `ateng.boot.rabbitmq.reliable.default-timeout` | `Duration` | `3s` | Publisher Confirm 同步等待 Broker ACK 的默认超时时间 |
-| `ateng.boot.rabbitmq.reliable.returns-callback-enabled` | `boolean` | `true` | 是否激活不可路由消息 (ReturnsCallback) 的告警与 SPI 回调 |
+| `ateng.boot.rabbitmq.reliable.returns-callback-enabled` | `boolean` | `true` | 是否激活不可路由消息 (`ReturnsCallback`) 的告警与 SPI 回调 |
 | `ateng.boot.rabbitmq.consumer.prefetch` | `int` | `20` | 单消费者默认预取数 (Prefetch Count)，调优吞吐并杜绝饥饿 |
 | `ateng.boot.rabbitmq.consumer.concurrency` | `int` | `1` | 默认初始并发消费者数 |
 | `ateng.boot.rabbitmq.consumer.max-concurrency` | `int` | `8` | 默认最大并发消费者数 |
 | `ateng.boot.rabbitmq.consumer.shutdown-timeout` | `Duration` | `30s` | Kubernetes 滚动停机优雅下线超时时间，预留缓冲窗口排空在途消费 |
 | `ateng.boot.rabbitmq.consumer.retry.enabled` | `boolean` | `true` | 是否开启容器内本地指数退避重试 |
-| `ateng.boot.rabbitmq.consumer.retry.max-attempts` | `int` | `3` | 最大本地重试次数 (包含首次执行) |
+| `ateng.boot.rabbitmq.consumer.retry.max-attempts` | `int` | `3` | 最大本地重试次数 (包含初次执行) |
 | `ateng.boot.rabbitmq.consumer.retry.initial-interval` | `Duration` | `1s` | 首次重试退避间隔时间 |
 | `ateng.boot.rabbitmq.consumer.retry.multiplier` | `double` | `2.0` | 指数退避倍率 |
 | `ateng.boot.rabbitmq.consumer.retry.max-interval` | `Duration` | `10s` | 最大重试退避间隔时间 |
@@ -921,4 +1056,4 @@ ateng:
 | `ateng.boot.rabbitmq.logging.enabled` | `boolean` | `true` | 是否输出 `[MQ-SEND]` 与 `[MQ-CONSUME]` 标准结构化宏日志 |
 | `ateng.boot.rabbitmq.logging.log-payload-max-length` | `int` | `1024` | 日志中打印 Payload 报文的最大截断字符数，防止大报文冲垮日志管道 |
 
-> 本工程端到端测试与真实场景自验，请参阅场景样例工程：[ateng-boot-sample-rabbitmq](../ateng-boot-samples/ateng-boot-sample-rabbitmq/README.md)。
+> 本工程端到端测试、7 大 REST 控制器全场景交互体验与双模启动指引，请参阅场景样例工程：[ateng-boot-sample-rabbitmq](../ateng-boot-samples/ateng-boot-sample-rabbitmq/README.md)。
