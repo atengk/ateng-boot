@@ -1,5 +1,6 @@
 package io.github.atengk.boot.kafka.constant;
 
+import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -28,5 +29,17 @@ class KafkaConstantsTest {
         assertEquals("[MQ-DLT-FORWARD]", KafkaConstants.LOG_DLT_FORWARD_PREFIX);
         assertEquals("[MQ-IDEMPOTENT-DUPLICATE]", KafkaConstants.LOG_IDEMPOTENT_DUPLICATE_PREFIX);
         assertEquals("[MQ-TRANSACTION-POST-COMMIT-FAILED]", KafkaConstants.LOG_TX_POST_COMMIT_FAILED_PREFIX);
+    }
+
+    @Test
+    @DisplayName("验证框架系统保留消息头集合与大小写忽略判别")
+    void testReservedSystemHeaderCheck() {
+        assertEquals(6, KafkaConstants.RESERVED_SYSTEM_HEADER_KEYS.size());
+        assertTrue(KafkaConstants.isReservedSystemHeader(MessageHeaderConstants.TRACE_ID));
+        assertTrue(KafkaConstants.isReservedSystemHeader(" " + MessageHeaderConstants.TENANT_ID.toUpperCase() + " "));
+        assertTrue(KafkaConstants.isReservedSystemHeader(MessageHeaderConstants.BIZ_KEY));
+        assertFalse(KafkaConstants.isReservedSystemHeader(null));
+        assertFalse(KafkaConstants.isReservedSystemHeader("   "));
+        assertFalse(KafkaConstants.isReservedSystemHeader("X-Biz-Source"));
     }
 }

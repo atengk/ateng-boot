@@ -1,6 +1,5 @@
 package io.github.atengk.boot.sample.kafka.consumer;
 
-import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.kafka.constant.KafkaConstants;
@@ -17,11 +16,11 @@ import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 订单单条记录消费监听器（演示单条推断反序列化、四维上下文透明还原与 bizKey 自动提取）
@@ -34,7 +33,7 @@ import java.util.Map;
 public class OrderSingleRecordConsumer {
 
     @Getter
-    private final List<ConsumedRecord> consumedRecords = Collections.synchronizedList(new ArrayList<>());
+    private final List<ConsumedRecord> consumedRecords = new CopyOnWriteArrayList<>();
 
     @KafkaListener(
             topics = KafkaScenarioTopologyConfig.TOPIC_ORDER,
@@ -64,12 +63,7 @@ public class OrderSingleRecordConsumer {
         for (Map.Entry<String, Object> entry : rawHeaders.entrySet()) {
             String headerKey = entry.getKey();
             if (headerKey == null || headerKey.startsWith("kafka_")
-                    || headerKey.equalsIgnoreCase(MessageHeaderConstants.TRACE_ID)
-                    || headerKey.equalsIgnoreCase(MessageHeaderConstants.TENANT_ID)
-                    || headerKey.equalsIgnoreCase(MessageHeaderConstants.USER_ID)
-                    || headerKey.equalsIgnoreCase(MessageHeaderConstants.IGNORE_TENANT)
-                    || headerKey.equalsIgnoreCase(MessageHeaderConstants.SEND_TIMESTAMP)
-                    || headerKey.equalsIgnoreCase(MessageHeaderConstants.BIZ_KEY)) {
+                    || KafkaConstants.isReservedSystemHeader(headerKey)) {
                 continue;
             }
             Object value = entry.getValue();
@@ -86,9 +80,7 @@ public class OrderSingleRecordConsumer {
      * 获取当前已消费订单记录的线程安全只读快照
      */
     public List<ConsumedRecord> getConsumedRecordsSnapshot() {
-        synchronized (consumedRecords) {
-            return List.copyOf(consumedRecords);
-        }
+        return List.copyOf(consumedRecords);
     }
 
     public void clear() {

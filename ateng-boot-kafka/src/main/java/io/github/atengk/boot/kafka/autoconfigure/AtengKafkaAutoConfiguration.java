@@ -270,26 +270,10 @@ public class AtengKafkaAutoConfiguration {
             ObjectProvider<KafkaRebalanceListener> rebalanceListenerProvider,
             AtengKafkaProperties properties) {
         ConcurrentKafkaListenerContainerFactory<Object, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
-        ConcurrentKafkaListenerContainerFactoryConfigurer configurer = configurerProvider.getIfAvailable();
-        if (configurer != null) {
-            configurer.configure(factory, kafkaConsumerFactory);
-        } else {
-            factory.setConsumerFactory(kafkaConsumerFactory);
-        }
-        factory.setBatchListener(false);
-        factory.setConcurrency(properties.getConsumer().getConcurrency());
-        factory.setRecordInterceptor(kafkaRecordInterceptor);
-        factory.setBatchInterceptor(null);
-        factory.setRecordMessageConverter(kafkaMessageConverter);
-        CommonErrorHandler errorHandler = errorHandlerProvider.getIfAvailable();
-        if (errorHandler != null) {
-            factory.setCommonErrorHandler(errorHandler);
-        }
-        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
-        factory.getContainerProperties().setShutdownTimeout(properties.getConsumer().getShutdownTimeout().toMillis());
-        applyVirtualThreadIfEnabled(factory, environment);
-        applyObservationIfPresent(factory, observationRegistryProvider);
-        applyRebalanceListenerIfPresent(factory, rebalanceListenerProvider);
+        applyConfigurerOrConsumerFactory(factory, configurerProvider.getIfAvailable(), kafkaConsumerFactory);
+        ContainerFactoryCollaborators collaborators = new ContainerFactoryCollaborators(
+                properties, errorHandlerProvider, observationRegistryProvider, rebalanceListenerProvider, environment);
+        configureDefaultContainerFactory(factory, kafkaRecordInterceptor, kafkaMessageConverter, collaborators);
         return factory;
     }
 
@@ -309,26 +293,10 @@ public class AtengKafkaAutoConfiguration {
             ObjectProvider<KafkaRebalanceListener> rebalanceListenerProvider,
             AtengKafkaProperties properties) {
         ConcurrentKafkaListenerContainerFactory<Object, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
-        ConcurrentKafkaListenerContainerFactoryConfigurer configurer = configurerProvider.getIfAvailable();
-        if (configurer != null) {
-            configurer.configure(factory, kafkaConsumerFactory);
-        } else {
-            factory.setConsumerFactory(kafkaConsumerFactory);
-        }
-        factory.setBatchListener(true);
-        factory.setConcurrency(properties.getConsumer().getBatchConcurrency());
-        factory.setBatchInterceptor(kafkaBatchInterceptor);
-        factory.setRecordInterceptor(null);
-        factory.setBatchMessageConverter(kafkaBatchMessageConverter);
-        CommonErrorHandler errorHandler = errorHandlerProvider.getIfAvailable();
-        if (errorHandler != null) {
-            factory.setCommonErrorHandler(errorHandler);
-        }
-        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.BATCH);
-        factory.getContainerProperties().setShutdownTimeout(properties.getConsumer().getShutdownTimeout().toMillis());
-        applyVirtualThreadIfEnabled(factory, environment);
-        applyObservationIfPresent(factory, observationRegistryProvider);
-        applyRebalanceListenerIfPresent(factory, rebalanceListenerProvider);
+        applyConfigurerOrConsumerFactory(factory, configurerProvider.getIfAvailable(), kafkaConsumerFactory);
+        ContainerFactoryCollaborators collaborators = new ContainerFactoryCollaborators(
+                properties, errorHandlerProvider, observationRegistryProvider, rebalanceListenerProvider, environment);
+        configureBatchContainerFactory(factory, kafkaBatchInterceptor, kafkaBatchMessageConverter, collaborators);
         return factory;
     }
 
@@ -353,88 +321,106 @@ public class AtengKafkaAutoConfiguration {
                 if (!(bean instanceof ConcurrentKafkaListenerContainerFactory<?, ?> factory)) {
                     return bean;
                 }
+                ContainerFactoryCollaborators collaborators = new ContainerFactoryCollaborators(
+                        propertiesProvider.getIfAvailable(),
+                        errorHandlerProvider,
+                        observationRegistryProvider,
+                        rebalanceListenerProvider,
+                        environment);
                 if (KafkaConstants.DEFAULT_CONTAINER_FACTORY.equals(beanName)) {
-                    configureDefaultContainerFactory(factory, propertiesProvider.getIfAvailable(),
-                            interceptorProvider, converterProvider, errorHandlerProvider,
-                            observationRegistryProvider, rebalanceListenerProvider, environment);
+                    configureDefaultContainerFactory(
+                            factory, interceptorProvider.getIfAvailable(), converterProvider.getIfAvailable(), collaborators);
                 } else if (KafkaConstants.BATCH_CONTAINER_FACTORY.equals(beanName)) {
-                    configureBatchContainerFactory(factory, propertiesProvider.getIfAvailable(),
-                            batchInterceptorProvider, batchConverterProvider, errorHandlerProvider,
-                            observationRegistryProvider, rebalanceListenerProvider, environment);
+                    configureBatchContainerFactory(
+                            factory, batchInterceptorProvider.getIfAvailable(), batchConverterProvider.getIfAvailable(), collaborators);
                 }
                 return bean;
             }
         };
     }
 
+    private static void applyConfigurerOrConsumerFactory(
+            ConcurrentKafkaListenerContainerFactory<Object, Object> factory,
+            ConcurrentKafkaListenerContainerFactoryConfigurer configurer,
+            ConsumerFactory<Object, Object> kafkaConsumerFactory) {
+        if (configurer != null) {
+            configurer.configure(factory, kafkaConsumerFactory);
+        } else {
+            factory.setConsumerFactory(kafkaConsumerFactory);
+        }
+    }
+
     @SuppressWarnings({"rawtypes", "unchecked"})
     private static void configureDefaultContainerFactory(
             ConcurrentKafkaListenerContainerFactory<?, ?> factory,
-            AtengKafkaProperties props,
-            ObjectProvider<KafkaRecordInterceptor> interceptorProvider,
-            ObjectProvider<RecordMessageConverter> converterProvider,
-            ObjectProvider<CommonErrorHandler> errorHandlerProvider,
-            ObjectProvider<ObservationRegistry> observationRegistryProvider,
-            ObjectProvider<KafkaRebalanceListener> rebalanceListenerProvider,
-            Environment environment) {
+            KafkaRecordInterceptor interceptor,
+            RecordMessageConverter converter,
+            ContainerFactoryCollaborators collaborators) {
         ConcurrentKafkaListenerContainerFactory rawFactory = factory;
-        rawFactory.setBatchListener(false);
-        if (props != null) {
-            rawFactory.setConcurrency(props.getConsumer().getConcurrency());
-            rawFactory.getContainerProperties().setShutdownTimeout(props.getConsumer().getShutdownTimeout().toMillis());
-        }
-        KafkaRecordInterceptor interceptor = interceptorProvider.getIfAvailable();
         if (interceptor != null) {
             rawFactory.setRecordInterceptor(interceptor);
         }
         rawFactory.setBatchInterceptor(null);
-        RecordMessageConverter converter = converterProvider.getIfAvailable();
         if (converter != null) {
             rawFactory.setRecordMessageConverter(converter);
         }
-        CommonErrorHandler errorHandler = errorHandlerProvider.getIfAvailable();
-        if (errorHandler != null) {
-            rawFactory.setCommonErrorHandler(errorHandler);
-        }
-        rawFactory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
-        applyVirtualThreadIfEnabled(rawFactory, environment);
-        applyObservationIfPresent(rawFactory, observationRegistryProvider);
-        applyRebalanceListenerIfPresent(rawFactory, rebalanceListenerProvider);
+        Integer concurrency = collaborators.properties() != null
+                ? collaborators.properties().getConsumer().getConcurrency() : null;
+        configureContainerFactoryCommon(
+                rawFactory, false, ContainerProperties.AckMode.RECORD, concurrency, collaborators);
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private static void configureBatchContainerFactory(
             ConcurrentKafkaListenerContainerFactory<?, ?> factory,
-            AtengKafkaProperties props,
-            ObjectProvider<KafkaBatchInterceptor> batchInterceptorProvider,
-            ObjectProvider<BatchMessageConverter> batchConverterProvider,
-            ObjectProvider<CommonErrorHandler> errorHandlerProvider,
-            ObjectProvider<ObservationRegistry> observationRegistryProvider,
-            ObjectProvider<KafkaRebalanceListener> rebalanceListenerProvider,
-            Environment environment) {
+            KafkaBatchInterceptor batchInterceptor,
+            BatchMessageConverter batchConverter,
+            ContainerFactoryCollaborators collaborators) {
         ConcurrentKafkaListenerContainerFactory rawFactory = factory;
-        rawFactory.setBatchListener(true);
-        if (props != null) {
-            rawFactory.setConcurrency(props.getConsumer().getBatchConcurrency());
-            rawFactory.getContainerProperties().setShutdownTimeout(props.getConsumer().getShutdownTimeout().toMillis());
-        }
-        KafkaBatchInterceptor batchInterceptor = batchInterceptorProvider.getIfAvailable();
         if (batchInterceptor != null) {
             rawFactory.setBatchInterceptor(batchInterceptor);
         }
         rawFactory.setRecordInterceptor(null);
-        BatchMessageConverter batchConverter = batchConverterProvider.getIfAvailable();
         if (batchConverter != null) {
             rawFactory.setBatchMessageConverter(batchConverter);
         }
-        CommonErrorHandler errorHandler = errorHandlerProvider.getIfAvailable();
+        Integer concurrency = collaborators.properties() != null
+                ? collaborators.properties().getConsumer().getBatchConcurrency() : null;
+        configureContainerFactoryCommon(
+                rawFactory, true, ContainerProperties.AckMode.BATCH, concurrency, collaborators);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static void configureContainerFactoryCommon(
+            ConcurrentKafkaListenerContainerFactory rawFactory,
+            boolean batchListener,
+            ContainerProperties.AckMode ackMode,
+            Integer concurrency,
+            ContainerFactoryCollaborators collaborators) {
+        rawFactory.setBatchListener(batchListener);
+        if (concurrency != null) {
+            rawFactory.setConcurrency(concurrency);
+        }
+        if (collaborators.properties() != null) {
+            rawFactory.getContainerProperties().setShutdownTimeout(
+                    collaborators.properties().getConsumer().getShutdownTimeout().toMillis());
+        }
+        CommonErrorHandler errorHandler = collaborators.errorHandlerProvider().getIfAvailable();
         if (errorHandler != null) {
             rawFactory.setCommonErrorHandler(errorHandler);
         }
-        rawFactory.getContainerProperties().setAckMode(ContainerProperties.AckMode.BATCH);
-        applyVirtualThreadIfEnabled(rawFactory, environment);
-        applyObservationIfPresent(rawFactory, observationRegistryProvider);
-        applyRebalanceListenerIfPresent(rawFactory, rebalanceListenerProvider);
+        rawFactory.getContainerProperties().setAckMode(ackMode);
+        applyVirtualThreadIfEnabled(rawFactory, collaborators.environment());
+        applyObservationIfPresent(rawFactory, collaborators.observationRegistryProvider());
+        applyRebalanceListenerIfPresent(rawFactory, collaborators.rebalanceListenerProvider());
+    }
+
+    private record ContainerFactoryCollaborators(
+            AtengKafkaProperties properties,
+            ObjectProvider<CommonErrorHandler> errorHandlerProvider,
+            ObjectProvider<ObservationRegistry> observationRegistryProvider,
+            ObjectProvider<KafkaRebalanceListener> rebalanceListenerProvider,
+            Environment environment) {
     }
 
     /**

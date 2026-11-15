@@ -503,7 +503,7 @@ public class KafkaDeadLetterReplayTemplate {
         if (configured == null) {
             return fallback;
         }
-        return AtengKafkaProperties.DeadLetter.requirePositiveDuration(configured, propertyName);
+        return AtengKafkaProperties.requirePositiveDuration(configured, propertyName);
     }
 
     private static Duration computePollTimeout(long deadlineMillis) {

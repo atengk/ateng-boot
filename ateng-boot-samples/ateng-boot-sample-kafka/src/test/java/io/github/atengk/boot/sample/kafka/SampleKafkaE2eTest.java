@@ -955,6 +955,14 @@ class SampleKafkaE2eTest {
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("超出最大限制")));
 
+        // 3B. HTTP 入参边界校验 (sizeBytes <= 0) -> JSR-303 @Validated + @Min 前置 Fail-Fast 拦截
+        mockMvc.perform(post("/sample/kafka/produce/order-native-tx-large-payload")
+                        .param("sizeBytes", "0"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("sizeBytes")));
+
         // 4. 底层 Service 直接调用对齐断言（普通发送 + 原生分布式事务发送均触发 400 Fail-Fast）
         byte[] largePayload = new byte[1048576 + 64];
 

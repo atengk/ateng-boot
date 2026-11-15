@@ -51,18 +51,6 @@ public class KafkaReliableTemplate {
 
     private static final String MQ_TYPE_KAFKA = "kafka";
 
-    /**
-     * 框架保留的系统上下文与幂等消息头集合（小写归一化，禁止自定义头覆盖或伪造）
-     */
-    private static final Set<String> RESERVED_SYSTEM_HEADER_KEYS = Set.of(
-            MessageHeaderConstants.TRACE_ID.toLowerCase(Locale.ROOT),
-            MessageHeaderConstants.TENANT_ID.toLowerCase(Locale.ROOT),
-            MessageHeaderConstants.USER_ID.toLowerCase(Locale.ROOT),
-            MessageHeaderConstants.IGNORE_TENANT.toLowerCase(Locale.ROOT),
-            MessageHeaderConstants.SEND_TIMESTAMP.toLowerCase(Locale.ROOT),
-            MessageHeaderConstants.BIZ_KEY.toLowerCase(Locale.ROOT)
-    );
-
     private final KafkaTemplate<Object, Object> kafkaTemplate;
     private final AtengKafkaProperties properties;
     private final ObjectProvider<KafkaTransactionFailureCallback> failureCallbackProvider;
@@ -1121,7 +1109,7 @@ public class KafkaReliableTemplate {
                 continue;
             }
             String trimmedKey = rawKey.trim();
-            if (RESERVED_SYSTEM_HEADER_KEYS.contains(trimmedKey.toLowerCase(Locale.ROOT))) {
+            if (KafkaConstants.isReservedSystemHeader(trimmedKey)) {
                 log.warn("[ateng-boot-kafka] 忽略覆盖系统保留消息头的自定义请求头: key={}", trimmedKey);
                 continue;
             }

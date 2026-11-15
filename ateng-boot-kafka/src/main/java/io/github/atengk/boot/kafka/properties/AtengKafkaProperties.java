@@ -301,17 +301,6 @@ public class AtengKafkaProperties {
         public void setOperationTimeout(Duration operationTimeout) {
             this.operationTimeout = requirePositiveDuration(operationTimeout, "ateng.boot.kafka.dead-letter.operation-timeout");
         }
-
-        /**
-         * 校验死信超时配置必须为至少 1 毫秒的正数时长（兼容既有的外部调用）
-         *
-         * @param duration     待校验时长
-         * @param propertyName 配置项名称
-         * @return 校验通过的正数时长
-         */
-        public static Duration requirePositiveDuration(Duration duration, String propertyName) {
-            return AtengKafkaProperties.requirePositiveDuration(duration, propertyName);
-        }
     }
 
     /**

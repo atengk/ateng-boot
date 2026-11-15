@@ -10,10 +10,12 @@ import io.github.atengk.boot.sample.kafka.dto.UserEventProduceRequest;
 import io.github.atengk.boot.sample.kafka.model.OrderMessage;
 import io.github.atengk.boot.sample.kafka.service.TradeKafkaScenarioService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.support.SendResult;
-import org.springframework.util.Assert;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -29,6 +31,7 @@ import java.util.concurrent.CompletableFuture;
  * @since 2026-11-09
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/sample/kafka/produce")
 @RequiredArgsConstructor
@@ -161,9 +164,11 @@ public class KafkaProduceController {
      */
     @PostMapping("/order-native-tx-large-payload")
     public Result<String> executeNativeTxLargePayload(
-            @RequestParam(value = "sizeBytes", required = false, defaultValue = "1048640") Integer sizeBytes) {
+            @RequestParam(value = "sizeBytes", required = false, defaultValue = "1048640")
+            @Min(value = 1, message = "sizeBytes 必须在 1 至 16MB 之间")
+            @Max(value = 16 * 1024 * 1024, message = "sizeBytes 必须在 1 至 16MB 之间")
+            Integer sizeBytes) {
         int size = sizeBytes != null ? sizeBytes : (1024 * 1024 + 64);
-        Assert.isTrue(size > 0 && size <= 16 * 1024 * 1024, "sizeBytes 必须在 1 至 16MB 之间");
         byte[] payload = new byte[size];
         String txResult = tradeKafkaScenarioService.executeNativeTxLargePayload(payload);
         return Result.success(txResult, "Kafka 原生分布式事务载荷校验通过");
