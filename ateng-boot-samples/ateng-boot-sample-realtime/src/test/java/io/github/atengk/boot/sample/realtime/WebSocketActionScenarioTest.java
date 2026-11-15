@@ -30,6 +30,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -266,9 +267,18 @@ class WebSocketActionScenarioTest {
         assertThat(okNode.get("data").get("data").asText()).contains("ORD-2026-971");
 
         assertThat(actionAuditInterceptor.getPreHandleCount()).isEqualTo(preBefore + 1);
+        // 服务端在 try 内先回发 WebSocket 应答帧，随后在 finally 块触发 afterCompletion，此处做有界轮询等待收尾回调落盘
+        awaitCountAtLeast(actionAuditInterceptor::getAfterCompletionCount, afterBefore + 1);
         assertThat(actionAuditInterceptor.getAfterCompletionCount()).isEqualTo(afterBefore + 1);
 
         session.close();
+    }
+
+    private static void awaitCountAtLeast(LongSupplier counter, long expected) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (counter.getAsLong() < expected && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
     }
 
     static class TestWebSocketHandler extends TextWebSocketHandler {
