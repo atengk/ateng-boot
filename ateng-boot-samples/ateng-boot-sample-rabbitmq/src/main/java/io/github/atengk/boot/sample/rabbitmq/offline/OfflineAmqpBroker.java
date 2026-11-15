@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.rabbitmq.offline;
 import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.Envelope;
 import com.rabbitmq.client.GetResponse;
+import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.rabbitmq.interceptor.RabbitListenerGlobalAdvice;
 import io.github.atengk.boot.sample.rabbitmq.config.RabbitScenarioTopologyConfig;
 import io.github.atengk.boot.sample.rabbitmq.consumer.AnonymousBroadcastConsumer;
@@ -381,8 +382,8 @@ public class OfflineAmqpBroker {
     private void routeOrderDirect(String exchange, String routingKey, Message message, MessageConverter converter) {
         if (RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_CREATE.equals(routingKey)) {
             OrderCreateMessage payload = (OrderCreateMessage) converter.fromMessage(message);
-            String traceId = extractHeader(message, "X-Trace-Id");
-            String tenantId = extractHeader(message, "X-Tenant-Id");
+            String traceId = extractHeader(message, MessageHeaderConstants.TRACE_ID);
+            String tenantId = extractHeader(message, MessageHeaderConstants.TENANT_ID);
             withBean(OrderConsumer.class, consumer -> consumer.onOrderCreate(payload, traceId, tenantId));
             return;
         }
@@ -397,7 +398,7 @@ public class OfflineAmqpBroker {
                 return;
             }
             String payload = String.valueOf(converter.fromMessage(message));
-            String bizKey = extractHeader(message, "X-Biz-Key");
+            String bizKey = extractHeader(message, MessageHeaderConstants.BIZ_KEY);
             RabbitListenerGlobalAdvice advice = getBeanOrNull(RabbitListenerGlobalAdvice.class);
             if (advice == null) {
                 consumer.onConsume(payload, bizKey);

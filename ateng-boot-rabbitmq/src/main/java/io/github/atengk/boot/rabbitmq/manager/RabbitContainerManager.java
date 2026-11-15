@@ -16,6 +16,7 @@ import org.springframework.util.StringUtils;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -93,8 +94,8 @@ public class RabbitContainerManager {
         if (registry == null) {
             return Collections.emptySet();
         }
-        Set<String> ids = registry.getListenerContainerIds();
-        return ids == null ? Collections.emptySet() : Collections.unmodifiableSet(new LinkedHashSet<>(ids));
+        Set<String> ids = getSafeListenerContainerIds(registry);
+        return ids.isEmpty() ? Collections.emptySet() : Collections.unmodifiableSet(new LinkedHashSet<>(ids));
     }
 
     /**
@@ -115,7 +116,7 @@ public class RabbitContainerManager {
             return List.of(exact);
         }
         List<MessageListenerContainer> matched = new ArrayList<>();
-        for (MessageListenerContainer container : registry.getListenerContainers()) {
+        for (MessageListenerContainer container : getSafeListenerContainers(registry)) {
             if (matchesQueue(container, target)) {
                 matched.add(container);
             }
@@ -175,7 +176,7 @@ public class RabbitContainerManager {
             return;
         }
         int stopped = 0;
-        for (MessageListenerContainer container : registry.getListenerContainers()) {
+        for (MessageListenerContainer container : getSafeListenerContainers(registry)) {
             if (container.isRunning()) {
                 container.stop();
                 stopped++;
@@ -193,7 +194,7 @@ public class RabbitContainerManager {
             return;
         }
         int started = 0;
-        for (MessageListenerContainer container : registry.getListenerContainers()) {
+        for (MessageListenerContainer container : getSafeListenerContainers(registry)) {
             if (!container.isRunning()) {
                 container.start();
                 started++;
@@ -270,7 +271,7 @@ public class RabbitContainerManager {
             return Collections.emptyList();
         }
         List<RabbitContainerStatus> statuses = new ArrayList<>();
-        for (String id : registry.getListenerContainerIds()) {
+        for (String id : getSafeListenerContainerIds(registry)) {
             MessageListenerContainer container = registry.getListenerContainer(id);
             if (container != null) {
                 statuses.add(toContainerStatus(id, container));
@@ -294,7 +295,7 @@ public class RabbitContainerManager {
             if (exact != null) {
                 return toContainerStatus(target, exact);
             }
-            for (String id : registry.getListenerContainerIds()) {
+            for (String id : getSafeListenerContainerIds(registry)) {
                 MessageListenerContainer container = registry.getListenerContainer(id);
                 if (container != null && matchesQueue(container, target)) {
                     return toContainerStatus(id, container);
@@ -333,6 +334,16 @@ public class RabbitContainerManager {
 
     private RabbitListenerEndpointRegistry getRegistry() {
         return registrySupplier.get();
+    }
+
+    private Set<String> getSafeListenerContainerIds(RabbitListenerEndpointRegistry registry) {
+        Set<String> ids = registry.getListenerContainerIds();
+        return ids == null ? Collections.emptySet() : ids;
+    }
+
+    private Collection<MessageListenerContainer> getSafeListenerContainers(RabbitListenerEndpointRegistry registry) {
+        Collection<MessageListenerContainer> containers = registry.getListenerContainers();
+        return containers == null ? Collections.emptyList() : containers;
     }
 
     private List<MessageListenerContainer> resolveRequiredContainers(String idOrQueue) {

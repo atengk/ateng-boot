@@ -563,15 +563,7 @@ public class RabbitReliableTemplate {
             String effectiveRoutingKey,
             int batchSize,
             CompletableFuture<Void> batchFuture) {
-        if (Thread.currentThread().isInterrupted()) {
-            throw new MessageDeliveryException(
-                    MQ_TYPE_RABBITMQ,
-                    exchange,
-                    "batch[" + batchSize + "]",
-                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 被中断: exchange=%s, routingKey=%s",
-                            exchange, effectiveRoutingKey),
-                    new InterruptedException("Current thread was interrupted before waiting for batch confirms"));
-        }
+        checkBatchNotInterrupted(exchange, effectiveRoutingKey, batchSize);
         try {
             batchFuture.get();
         } catch (InterruptedException e) {
