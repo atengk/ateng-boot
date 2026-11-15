@@ -2,7 +2,7 @@ package io.github.atengk.boot.sample.rabbitmq.dto;
 
 import io.github.atengk.boot.core.validation.ValidList;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.NotEmpty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -30,6 +30,6 @@ public class BatchOrderRequest implements Serializable {
      * 订单请求列表
      */
     @Valid
-    @NotNull(message = "批量订单列表不能为空")
+    @NotEmpty(message = "批量订单列表不能为空")
     private ValidList<OrderCreateRequest> orders;
 }

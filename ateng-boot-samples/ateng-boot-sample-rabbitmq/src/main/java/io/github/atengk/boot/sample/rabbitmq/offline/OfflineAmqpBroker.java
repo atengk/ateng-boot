@@ -386,6 +386,11 @@ public class OfflineAmqpBroker {
             withBean(OrderConsumer.class, consumer -> consumer.onOrderCreate(payload, traceId, tenantId));
             return;
         }
+        if (RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_EXPIRATION.equals(routingKey)) {
+            OrderTimeoutMessage payload = (OrderTimeoutMessage) converter.fromMessage(message);
+            withBean(OrderDelayConsumer.class, consumer -> consumer.onTimeout(payload));
+            return;
+        }
         if (RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_IDEMPOTENT.equals(routingKey)) {
             IdempotentOrderConsumer consumer = getBeanOrNull(IdempotentOrderConsumer.class);
             if (consumer == null) {

@@ -28,6 +28,8 @@ public class RabbitScenarioTopologyConfig {
 
     public static final String QUEUE_ORDER_IDEMPOTENT = "sample.order.idempotent.queue";
     public static final String ROUTING_KEY_ORDER_IDEMPOTENT = "order.idempotent";
+    public static final String QUEUE_ORDER_EXPIRATION = "sample.order.expiration.queue";
+    public static final String ROUTING_KEY_ORDER_EXPIRATION = "order.expiration";
 
     public static final String EXCHANGE_LOG_TOPIC = "sample.log.topic";
     public static final String QUEUE_LOG_ERROR = "sample.log.error.queue";
@@ -118,6 +120,17 @@ public class RabbitScenarioTopologyConfig {
                 EXCHANGE_ORDER_DIRECT,
                 ROUTING_KEY_ORDER_CREATE
         );
+    }
+
+    /**
+     * 原生消息级 TTL（expiration）演示直连队列拓扑，无需延迟交换机插件即可验证 per-message TTL 投递
+     */
+    @Bean
+    public Declarables orderExpirationTopology() {
+        return RabbitTopologyBuilder.direct(EXCHANGE_ORDER_DIRECT)
+                .queue(QUEUE_ORDER_EXPIRATION)
+                .routingKey(ROUTING_KEY_ORDER_EXPIRATION)
+                .build();
     }
 
     /**

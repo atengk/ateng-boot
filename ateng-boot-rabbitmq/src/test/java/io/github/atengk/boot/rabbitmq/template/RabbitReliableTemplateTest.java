@@ -26,6 +26,9 @@ import org.springframework.util.unit.DataSize;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -447,5 +450,190 @@ class RabbitReliableTemplateTest {
         Message captured = messageCaptor.getValue();
         assertThat(captured.getMessageProperties().getPriority()).isEqualTo(5);
         assertThat((String) captured.getMessageProperties().getHeader(MessageHeaderConstants.BIZ_KEY)).isEqualTo("biz-async-vip");
+    }
+
+    @Test
+    @DisplayName("sendBatchAfterCommit 参数校验与批量上限违规应前置 Fail-Fast 且不注册事务同步器")
+    void testSendBatchAfterCommitFailFastBeforeSynchronization() {
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        properties.getProducer().setMaxBatchSize(2);
+
+        assertThatThrownBy(() -> template.sendBatchAfterCommit("", "tx.key", List.of("m1")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendBatchAfterCommit("tx.exchange", "tx.key", null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendBatchAfterCommit("tx.exchange", "tx.key", Collections.emptyList()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendBatchAfterCommit("tx.exchange", "tx.key", Arrays.asList("m1", null)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendBatchAfterCommit("tx.exchange", "tx.key", List.of("m1", "m2", "m3")))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+        verify(rabbitTemplate, never()).send(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("sendBatchAfterCommit 在活跃事务中仅注册单一同步器，Commit 时投递整批且 Rollback 时零发信")
+    void testSendBatchAfterCommitSingleSynchronizationCommitAndRollback() {
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        doAnswer(invocation -> {
+            CorrelationData cd = invocation.getArgument(3);
+            cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+            return null;
+        }).when(rabbitTemplate).send(eq("tx.exchange"), eq("tx.batch.key"), any(Message.class), any(CorrelationData.class));
+
+        template.sendBatchAfterCommit("tx.exchange", "tx.batch.key", List.of("batch-1", "batch-2", "batch-3"));
+
+        assertThat(TransactionSynchronizationManager.getSynchronizations()).hasSize(1);
+        verify(rabbitTemplate, never()).send(any(), any(), any(), any());
+
+        for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+            sync.afterCommit();
+        }
+        verify(rabbitTemplate, times(3)).send(eq("tx.exchange"), eq("tx.batch.key"), any(Message.class), any(CorrelationData.class));
+
+        TransactionSynchronizationManager.clearSynchronization();
+        TransactionSynchronizationManager.initSynchronization();
+        template.sendBatchAfterCommit("tx.exchange", "tx.rollback.key", List.of("rb-1", "rb-2"));
+        assertThat(TransactionSynchronizationManager.getSynchronizations()).hasSize(1);
+        TransactionSynchronizationManager.clearSynchronization();
+        verify(rabbitTemplate, never()).send(eq("tx.exchange"), eq("tx.rollback.key"), any(Message.class), any(CorrelationData.class));
+    }
+
+    @Test
+    @DisplayName("sendBatchAfterCommit 提交后发信失败回调 RabbitTransactionFailureCallback 携带整批载荷与 batch[N]；无事务环境立即同步发信")
+    void testSendBatchAfterCommitFailureCallbackAndNonTxDispatch() {
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        doAnswer(invocation -> {
+            CorrelationData cd = invocation.getArgument(3);
+            cd.getFuture().complete(new CorrelationData.Confirm(false, "Broker NACK"));
+            return null;
+        }).when(rabbitTemplate).send(eq("tx.fail.ex"), eq("tx.fail.key"), any(Message.class), any(CorrelationData.class));
+
+        AtomicReference<String> cbExchange = new AtomicReference<>();
+        AtomicReference<String> cbRoutingKey = new AtomicReference<>();
+        AtomicReference<Object> cbPayload = new AtomicReference<>();
+        AtomicReference<String> cbBizKey = new AtomicReference<>();
+        AtomicReference<Throwable> cbCause = new AtomicReference<>();
+
+        RabbitTransactionFailureCallback callback = (ex, rk, payload, bizKey, cause) -> {
+            cbExchange.set(ex);
+            cbRoutingKey.set(rk);
+            cbPayload.set(payload);
+            cbBizKey.set(bizKey);
+            cbCause.set(cause);
+        };
+        RabbitReliableTemplate txTemplate = new RabbitReliableTemplate(rabbitTemplate, properties, callback);
+
+        txTemplate.sendBatchAfterCommit("tx.fail.ex", "tx.fail.key", List.of("f1", "f2"), Duration.ofMillis(200));
+        for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+            sync.afterCommit();
+        }
+
+        assertThat(cbExchange.get()).isEqualTo("tx.fail.ex");
+        assertThat(cbRoutingKey.get()).isEqualTo("tx.fail.key");
+        assertThat(cbPayload.get()).isEqualTo(List.of("f1", "f2"));
+        assertThat(cbBizKey.get()).isEqualTo("batch[2]");
+        assertThat(cbCause.get()).isInstanceOf(MessageDeliveryException.class);
+
+        TransactionSynchronizationManager.clearSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(false);
+
+        doAnswer(invocation -> {
+            CorrelationData cd = invocation.getArgument(3);
+            cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+            return null;
+        }).when(rabbitTemplate).send(eq("notx.batch.ex"), eq("notx.batch.key"), any(Message.class), any(CorrelationData.class));
+
+        txTemplate.sendBatchAfterCommit("notx.batch.ex", "notx.batch.key", List.of("d1", "d2"), Duration.ofMillis(200));
+        verify(rabbitTemplate, times(2)).send(eq("notx.batch.ex"), eq("notx.batch.key"), any(Message.class), any(CorrelationData.class));
+    }
+
+    @Test
+    @DisplayName("sendWithExpiration 各重载正确注入毫秒级 AMQP expiration 属性并支持原生 Message 载荷")
+    void testSendWithExpirationSetsMillisecondExpirationProperty() {
+        ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+        doAnswer(invocation -> {
+            CorrelationData cd = invocation.getArgument(3);
+            cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+            return null;
+        }).when(rabbitTemplate).send(eq("ttl.ex"), eq("ttl.key"), messageCaptor.capture(), any(CorrelationData.class));
+
+        template.sendWithExpiration("ttl.ex", "ttl.key", "ttl-payload-1", Duration.ofSeconds(15));
+        template.sendWithExpiration("ttl.ex", "ttl.key", "ttl-payload-2", "biz-ttl-2", Duration.ofSeconds(5));
+        template.sendWithExpiration("ttl.ex", "ttl.key", "ttl-payload-3", Duration.ofMillis(3500), Duration.ofMillis(300));
+        Message rawMsg = new Message("raw-ttl".getBytes(StandardCharsets.UTF_8), new MessageProperties());
+        template.sendWithExpiration("ttl.ex", "ttl.key", rawMsg, "biz-ttl-raw", Duration.ofMillis(7500), Duration.ofMillis(300));
+
+        List<Message> captured = messageCaptor.getAllValues();
+        assertThat(captured).hasSize(4);
+        assertThat(captured.get(0).getMessageProperties().getExpiration()).isEqualTo("15000");
+        assertThat((Object) captured.get(0).getMessageProperties().getHeader("x-delay")).isNull();
+        assertThat(captured.get(1).getMessageProperties().getExpiration()).isEqualTo("5000");
+        assertThat((String) captured.get(1).getMessageProperties().getHeader(MessageHeaderConstants.BIZ_KEY)).isEqualTo("biz-ttl-2");
+        assertThat(captured.get(2).getMessageProperties().getExpiration()).isEqualTo("3500");
+        assertThat(captured.get(3).getMessageProperties().getExpiration()).isEqualTo("7500");
+        assertThat((String) captured.get(3).getMessageProperties().getHeader(MessageHeaderConstants.BIZ_KEY)).isEqualTo("biz-ttl-raw");
+    }
+
+    @Test
+    @DisplayName("sendAsyncWithExpiration 异步正确设置 expiration 并保留底层发送失败因果异常链")
+    void testSendAsyncWithExpirationSetsPropertyAndWrapsFailure() {
+        ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+        doAnswer(invocation -> {
+            CorrelationData cd = invocation.getArgument(3);
+            cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+            return null;
+        }).when(rabbitTemplate).send(eq("ttl.async.ok"), eq("ttl.key"), messageCaptor.capture(), any(CorrelationData.class));
+
+        CorrelationData.Confirm c1 = template.sendAsyncWithExpiration("ttl.async.ok", "ttl.key", "a1", Duration.ofSeconds(20)).join();
+        CorrelationData.Confirm c2 = template.sendAsyncWithExpiration("ttl.async.ok", "ttl.key", "a2", "biz-async-ttl", Duration.ofSeconds(30)).join();
+        assertThat(c1.isAck()).isTrue();
+        assertThat(c2.isAck()).isTrue();
+        assertThat(messageCaptor.getAllValues().get(0).getMessageProperties().getExpiration()).isEqualTo("20000");
+        assertThat(messageCaptor.getAllValues().get(1).getMessageProperties().getExpiration()).isEqualTo("30000");
+        assertThat((String) messageCaptor.getAllValues().get(1).getMessageProperties().getHeader(MessageHeaderConstants.BIZ_KEY))
+                .isEqualTo("biz-async-ttl");
+
+        doThrow(new AmqpException("TTL channel broken"))
+                .when(rabbitTemplate).send(eq("ttl.async.fail"), eq("ttl.key"), any(Message.class), any(CorrelationData.class));
+
+        CompletableFuture<CorrelationData.Confirm> failedFuture =
+                template.sendAsyncWithExpiration("ttl.async.fail", "ttl.key", "a3", "biz-ttl-fail", Duration.ofSeconds(10));
+        assertThat(failedFuture).isCompletedExceptionally();
+        assertThatThrownBy(failedFuture::join)
+                .hasCauseInstanceOf(MessageDeliveryException.class)
+                .hasRootCauseInstanceOf(AmqpException.class)
+                .hasRootCauseMessage("TTL channel broken");
+    }
+
+    @Test
+    @DisplayName("sendWithExpiration 与 sendAsyncWithExpiration 对 null、零值、负值与亚毫秒 Duration 快速失败且不发网络请求")
+    void testSendWithExpirationRejectsInvalidDuration() {
+        assertThatThrownBy(() -> template.sendWithExpiration("ttl.ex", "ttl.key", "p", null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendWithExpiration("ttl.ex", "ttl.key", "p", Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendWithExpiration("ttl.ex", "ttl.key", "p", Duration.ofSeconds(-5)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendWithExpiration("ttl.ex", "ttl.key", "p", "biz", Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> template.sendAsyncWithExpiration("ttl.ex", "ttl.key", "p", null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendAsyncWithExpiration("ttl.ex", "ttl.key", "p", Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendAsyncWithExpiration("ttl.ex", "ttl.key", "p", "biz", Duration.ofMillis(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendAsyncWithExpiration("ttl.ex", "ttl.key", "p", Duration.ofNanos(100)))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        verify(rabbitTemplate, never()).send(any(), any(), any(), any());
     }
 }

@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.rabbitmq.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.rabbitmq.consumer.OrderConsumer;
+import io.github.atengk.boot.sample.rabbitmq.dto.BatchOrderRequest;
 import io.github.atengk.boot.sample.rabbitmq.dto.OrderCreateRequest;
 import io.github.atengk.boot.sample.rabbitmq.model.OrderCreateMessage;
 import io.github.atengk.boot.sample.rabbitmq.service.OrderTransactionService;
@@ -54,6 +55,40 @@ public class RabbitTransactionController {
             log.warn("[TX-ROLLBACK] 捕获预期本地事务异常: {}", ex.getMessage());
         }
         return Result.success(request.getOrderId(), "本地事务已回滚，发信钩子已自动作废（幽灵消息防御生效）");
+    }
+
+    /**
+     * 批量事务提交成功发信 (单一同步器在 Commit 后物理投递整批订单)
+     *
+     * @param request 批量订单请求
+     * @return 成功发信订单数量
+     */
+    @PostMapping("/batch/commit")
+    public Result<Integer> createOrderBatchWithCommit(@Valid @RequestBody BatchOrderRequest request) {
+        List<OrderCreateMessage> messages = request.getOrders().stream()
+                .map(OrderCreateRequest::toMessage)
+                .toList();
+        transactionService.createOrderBatchWithCommit(messages);
+        return Result.success(messages.size(), "本地事务提交成功，批量订单已按单一同步器触发物理投递");
+    }
+
+    /**
+     * 批量事务异常回滚发信 (Rollback 触发整批零发信，杜绝幽灵消息)
+     *
+     * @param request 批量订单请求
+     * @return 响应说明
+     */
+    @PostMapping("/batch/rollback")
+    public Result<Integer> createOrderBatchWithRollback(@Valid @RequestBody BatchOrderRequest request) {
+        List<OrderCreateMessage> messages = request.getOrders().stream()
+                .map(OrderCreateRequest::toMessage)
+                .toList();
+        try {
+            transactionService.createOrderBatchWithRollback(messages);
+        } catch (IllegalStateException ex) {
+            log.warn("[TX-BATCH-ROLLBACK] 捕获预期本地批量事务异常: {}", ex.getMessage());
+        }
+        return Result.success(messages.size(), "本地事务已回滚，批量发信同步器已自动作废（幽灵消息防御生效）");
     }
 
     /**

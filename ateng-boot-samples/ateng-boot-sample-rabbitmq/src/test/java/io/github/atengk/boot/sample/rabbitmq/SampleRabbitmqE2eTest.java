@@ -129,6 +129,7 @@ class SampleRabbitmqE2eTest {
         if (rabbitAdmin != null) {
             try {
                 rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_ORDER_CREATE, false);
+                rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_ORDER_EXPIRATION, false);
                 rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_ORDER_IDEMPOTENT, false);
                 rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_LOG_ERROR, false);
                 if (delayConsumer != null) {
@@ -500,5 +501,47 @@ class SampleRabbitmqE2eTest {
             assertThat(offlineBroker.queueExists("sample.temp.check.queue")).isFalse();
             return null;
         });
+    }
+
+    @Test
+    @DisplayName("场景 K: 事务提交后批量发信 sendBatchAfterCommit 与原生消息级 TTL sendWithExpiration 双模通路验证")
+    void testScenarioK_BatchAfterCommitAndNativeExpirationDelivery() {
+        List<OrderCreateMessage> commitBatch = List.of(
+                new OrderCreateMessage("TX-BATCH-1", new BigDecimal("11.00"), "u1", LocalDateTime.now()),
+                new OrderCreateMessage("TX-BATCH-2", new BigDecimal("22.00"), "u2", LocalDateTime.now())
+        );
+        transactionService.createOrderBatchWithCommit(commitBatch);
+
+        List<OrderCreateMessage> rollbackBatch = List.of(
+                new OrderCreateMessage("TX-BATCH-RB-1", new BigDecimal("33.00"), "u3", LocalDateTime.now()),
+                new OrderCreateMessage("TX-BATCH-RB-2", new BigDecimal("44.00"), "u4", LocalDateTime.now())
+        );
+        assertThatThrownBy(() -> transactionService.createOrderBatchWithRollback(rollbackBatch))
+                .isInstanceOf(IllegalStateException.class);
+
+        awaitCondition(() -> assertThat(orderConsumer.getReceivedMessages())
+                .extracting(OrderCreateMessage::orderId)
+                .contains("TX-BATCH-1", "TX-BATCH-2")
+                .doesNotContain("TX-BATCH-RB-1", "TX-BATCH-RB-2"));
+
+        producer.sendOrderWithExpiration(
+                new OrderTimeoutMessage("EXP-SYNC-1", 5L, "native-sync-ttl"),
+                Duration.ofSeconds(5)
+        );
+        CorrelationData.Confirm asyncConfirm = producer.sendOrderWithExpirationAsync(
+                new OrderTimeoutMessage("EXP-ASYNC-1", 10L, "native-async-ttl"),
+                Duration.ofSeconds(10)
+        ).join();
+        assertThat(asyncConfirm.isAck()).isTrue();
+
+        if (offlineBroker != null) {
+            List<OfflineAmqpBroker.DispatchedMessage> expMessages = offlineBroker.getSentMessages().stream()
+                    .filter(msg -> RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_EXPIRATION.equals(msg.routingKey()))
+                    .toList();
+            assertThat(expMessages).hasSize(2);
+            assertThat(expMessages.get(0).message().getMessageProperties().getExpiration()).isEqualTo("5000");
+            assertThat(expMessages.get(1).message().getMessageProperties().getExpiration()).isEqualTo("10000");
+            assertThat((Object) expMessages.get(0).message().getMessageProperties().getHeader("x-delay")).isNull();
+        }
     }
 }

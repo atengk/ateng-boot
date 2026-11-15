@@ -405,40 +405,10 @@ public class RabbitReliableTemplate {
         Assert.hasText(exchange, "exchange 交换机名称不能为空");
         String effectiveRoutingKey = routingKey != null ? routingKey : "";
         Duration effectiveTimeout = timeout != null ? timeout : properties.getReliable().getDefaultTimeout();
-
-        if (Thread.currentThread().isInterrupted()) {
-            throw new MessageDeliveryException(
-                    MQ_TYPE_RABBITMQ,
-                    exchange,
-                    "batch[" + (payloads != null ? payloads.size() : 0) + "]",
-                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 被中断: exchange=%s, routingKey=%s",
-                            exchange, effectiveRoutingKey),
-                    new InterruptedException("Current thread was interrupted before waiting for batch confirms"));
-        }
-
-        try {
-            sendBatchReliableAsync(exchange, routingKey, payloads, effectiveTimeout).get();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new MessageDeliveryException(
-                    MQ_TYPE_RABBITMQ,
-                    exchange,
-                    "batch[" + (payloads != null ? payloads.size() : 0) + "]",
-                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 被中断: exchange=%s, routingKey=%s",
-                            exchange, effectiveRoutingKey),
-                    e);
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause() != null ? e.getCause() : e;
-            if (cause instanceof MessageDeliveryException mde) {
-                throw mde;
-            }
-            throw new MessageDeliveryException(
-                    MQ_TYPE_RABBITMQ,
-                    exchange,
-                    "batch[" + (payloads != null ? payloads.size() : 0) + "]",
-                    cause.getMessage(),
-                    cause);
-        }
+        int batchSize = payloads != null ? payloads.size() : 0;
+        checkBatchNotInterrupted(exchange, effectiveRoutingKey, batchSize);
+        awaitBatchFuture(exchange, effectiveRoutingKey, batchSize,
+                sendBatchReliableAsync(exchange, routingKey, payloads, effectiveTimeout));
     }
 
     /**
@@ -463,8 +433,14 @@ public class RabbitReliableTemplate {
      * @return CompletableFuture 聚合确认 Future
      */
     public CompletableFuture<Void> sendBatchReliableAsync(String exchange, String routingKey, List<?> payloads, Duration timeout) {
-        Assert.hasText(exchange, "exchange 交换机名称不能为空");
         String effectiveRoutingKey = routingKey != null ? routingKey : "";
+        Duration effectiveTimeout = timeout != null ? timeout : properties.getReliable().getDefaultTimeout();
+        List<PreparedBatchItem> preparedItems = validateAndPrepareBatchItems(exchange, payloads);
+        return dispatchPreparedBatch(exchange, effectiveRoutingKey, preparedItems, effectiveTimeout);
+    }
+
+    private List<PreparedBatchItem> validateAndPrepareBatchItems(String exchange, List<?> payloads) {
+        Assert.hasText(exchange, "exchange 交换机名称不能为空");
         Assert.notNull(payloads, "payloads 消息载荷列表不能为空");
         Assert.notEmpty(payloads, "payloads 消息载荷列表不能为空列表");
         int maxBatchSize = properties.getProducer() != null && properties.getProducer().getMaxBatchSize() > 0
@@ -473,26 +449,33 @@ public class RabbitReliableTemplate {
         Assert.isTrue(payloads.size() <= maxBatchSize,
                 String.format("payloads 批量投递数量不能超过 %d 条 (当前: %d)", maxBatchSize, payloads.size()));
 
-        Duration effectiveTimeout = timeout != null ? timeout : properties.getReliable().getDefaultTimeout();
         int size = payloads.size();
-
-        // 1. 前置分层防卫与 Fail-Fast：在发起任何网络请求前逐条序列化与体积校验，保证批次原子防御
+        // 前置分层防卫与 Fail-Fast：在注册同步器或发起网络调用前完成逐条非空校验、上下文注入与体积校验
         List<PreparedBatchItem> preparedItems = new ArrayList<>(size);
         for (int i = 0; i < size; i++) {
             Object payload = payloads.get(i);
             Assert.notNull(payload, "payloads[" + i + "] 消息载荷不能为 null");
             MessageProperties messageProperties = new MessageProperties();
             Message message = prepareMessage(exchange, payload, messageProperties, null);
-            String bizKey = MessageContextPropagator.extractString(message.getMessageProperties().getHeaders(), MessageHeaderConstants.BIZ_KEY);
+            String bizKey = MessageContextPropagator.extractString(
+                    message.getMessageProperties().getHeaders(), MessageHeaderConstants.BIZ_KEY);
             preparedItems.add(new PreparedBatchItem(i, message, bizKey));
         }
+        return preparedItems;
+    }
 
-        // 2. 并发异步发射所有消息并收集 Future
+    private CompletableFuture<Void> dispatchPreparedBatch(
+            String exchange,
+            String effectiveRoutingKey,
+            List<PreparedBatchItem> preparedItems,
+            Duration effectiveTimeout) {
+        int size = preparedItems.size();
         List<BatchFutureItem> futureItems = new ArrayList<>(size);
         List<CompletableFuture<?>> allFutures = new ArrayList<>(size);
 
         for (PreparedBatchItem item : preparedItems) {
-            CompletableFuture<CorrelationData.Confirm> future = doSendInternal(exchange, effectiveRoutingKey, item.message(), item.bizKey());
+            CompletableFuture<CorrelationData.Confirm> future =
+                    doSendInternal(exchange, effectiveRoutingKey, item.message(), item.bizKey());
             futureItems.add(new BatchFutureItem(item.index(), item.bizKey(), future));
             allFutures.add(future);
         }
@@ -573,6 +556,45 @@ public class RabbitReliableTemplate {
                 });
 
         return resultFuture;
+    }
+
+    private void awaitBatchFuture(
+            String exchange,
+            String effectiveRoutingKey,
+            int batchSize,
+            CompletableFuture<Void> batchFuture) {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new MessageDeliveryException(
+                    MQ_TYPE_RABBITMQ,
+                    exchange,
+                    "batch[" + batchSize + "]",
+                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 被中断: exchange=%s, routingKey=%s",
+                            exchange, effectiveRoutingKey),
+                    new InterruptedException("Current thread was interrupted before waiting for batch confirms"));
+        }
+        try {
+            batchFuture.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new MessageDeliveryException(
+                    MQ_TYPE_RABBITMQ,
+                    exchange,
+                    "batch[" + batchSize + "]",
+                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 被中断: exchange=%s, routingKey=%s",
+                            exchange, effectiveRoutingKey),
+                    e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            if (cause instanceof MessageDeliveryException mde) {
+                throw mde;
+            }
+            throw new MessageDeliveryException(
+                    MQ_TYPE_RABBITMQ,
+                    exchange,
+                    "batch[" + batchSize + "]",
+                    cause.getMessage(),
+                    cause);
+        }
     }
 
     // =========================================================================
@@ -666,6 +688,99 @@ public class RabbitReliableTemplate {
         String effectiveBizKey = MessageContextPropagator.extractString(message.getMessageProperties().getHeaders(), MessageHeaderConstants.BIZ_KEY);
 
         return doSendInternal(exchange, effectiveRoutingKey, message, effectiveBizKey);
+    }
+
+    /**
+     * 同步可靠发送带原生 AMQP 消息级 TTL（MessageProperties.expiration）的延迟过期消息（使用默认确认超时）
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param expiration 消息级过期时长（必须为正数且至少 1 毫秒）
+     */
+    public void sendWithExpiration(String exchange, String routingKey, Object payload, Duration expiration) {
+        sendWithExpiration(exchange, routingKey, payload, null, expiration, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 同步可靠发送带原生 AMQP 消息级 TTL（MessageProperties.expiration）的延迟过期消息，携带业务唯一标识
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param bizKey     业务唯一标识
+     * @param expiration 消息级过期时长（必须为正数且至少 1 毫秒）
+     */
+    public void sendWithExpiration(String exchange, String routingKey, Object payload, String bizKey, Duration expiration) {
+        sendWithExpiration(exchange, routingKey, payload, bizKey, expiration, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 同步可靠发送带原生 AMQP 消息级 TTL（MessageProperties.expiration）的延迟过期消息，显式指定确认超时时间
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param expiration 消息级过期时长（必须为正数且至少 1 毫秒）
+     * @param timeout    等待 Broker ACK 的超时时间
+     */
+    public void sendWithExpiration(String exchange, String routingKey, Object payload, Duration expiration, Duration timeout) {
+        sendWithExpiration(exchange, routingKey, payload, null, expiration, timeout);
+    }
+
+    /**
+     * 同步可靠发送带原生 AMQP 消息级 TTL（MessageProperties.expiration）的延迟过期消息，携带业务标识、过期时长与显式确认超时
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param bizKey     业务唯一标识
+     * @param expiration 消息级过期时长（必须为正数且至少 1 毫秒）
+     * @param timeout    等待 Broker ACK 的超时时间
+     */
+    public void sendWithExpiration(String exchange, String routingKey, Object payload, String bizKey, Duration expiration, Duration timeout) {
+        sendReliable(exchange, routingKey, payload, bizKey, timeout, expirationCustomizer(expiration));
+    }
+
+    /**
+     * 异步可靠发送带原生 AMQP 消息级 TTL（MessageProperties.expiration）的延迟过期消息
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param expiration 消息级过期时长（必须为正数且至少 1 毫秒）
+     * @return CompletableFuture 确认结果
+     */
+    public CompletableFuture<CorrelationData.Confirm> sendAsyncWithExpiration(
+            String exchange, String routingKey, Object payload, Duration expiration) {
+        return sendAsyncWithExpiration(exchange, routingKey, payload, null, expiration);
+    }
+
+    /**
+     * 异步可靠发送带原生 AMQP 消息级 TTL（MessageProperties.expiration）的延迟过期消息，携带业务唯一标识
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param bizKey     业务唯一标识
+     * @param expiration 消息级过期时长（必须为正数且至少 1 毫秒）
+     * @return CompletableFuture 确认结果
+     */
+    public CompletableFuture<CorrelationData.Confirm> sendAsyncWithExpiration(
+            String exchange, String routingKey, Object payload, String bizKey, Duration expiration) {
+        return sendReliableAsync(exchange, routingKey, payload, bizKey, expirationCustomizer(expiration));
+    }
+
+    private static MessagePostProcessor expirationCustomizer(Duration expiration) {
+        Assert.notNull(expiration, "expiration 消息过期时间不能为空");
+        Assert.isTrue(!expiration.isNegative() && !expiration.isZero(), "expiration 消息过期时间必须为正数");
+        long expirationMillis = expiration.toMillis();
+        Assert.isTrue(expirationMillis > 0, "expiration 消息过期时间至少为 1 毫秒");
+        String expirationValue = String.valueOf(expirationMillis);
+        return msg -> {
+            msg.getMessageProperties().setExpiration(expirationValue);
+            return msg;
+        };
     }
 
     // =========================================================================
@@ -841,6 +956,78 @@ public class RabbitReliableTemplate {
             msg.getMessageProperties().setPriority(priority);
             return msg;
         });
+    }
+
+    /**
+     * 感知本地数据库事务批量发信（使用默认确认超时时间）：在活跃事务内仅注册单一 afterCommit 钩子发送整批消息
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payloads   消息载荷列表（不允许为空且元素不能为 null）
+     */
+    public void sendBatchAfterCommit(String exchange, String routingKey, List<?> payloads) {
+        sendBatchAfterCommit(exchange, routingKey, payloads, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 感知本地数据库事务批量发信（显式指定确认超时时间）：注册前完成整批 Fail-Fast 校验与四维上下文注入；
+     * 活跃事务内仅注册单一 TransactionSynchronization，事务提交后并发发送并聚合确认，失败触发 RabbitTransactionFailureCallback
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payloads   消息载荷列表（不允许为空且元素不能为 null）
+     * @param timeout    等待全部消息 Broker ACK 的超时时间
+     */
+    public void sendBatchAfterCommit(String exchange, String routingKey, List<?> payloads, Duration timeout) {
+        String effectiveRoutingKey = routingKey != null ? routingKey : "";
+        Duration effectiveTimeout = timeout != null ? timeout : properties.getReliable().getDefaultTimeout();
+        List<PreparedBatchItem> preparedItems = validateAndPrepareBatchItems(exchange, payloads);
+        List<Object> payloadSnapshot = List.copyOf(payloads);
+        String batchBizKey = "batch[" + preparedItems.size() + "]";
+
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        awaitBatchFuture(
+                                exchange,
+                                effectiveRoutingKey,
+                                preparedItems.size(),
+                                dispatchPreparedBatch(exchange, effectiveRoutingKey, preparedItems, effectiveTimeout)
+                        );
+                    } catch (Throwable ex) {
+                        log.error("[MQ-TRANSACTION-POST-COMMIT-FAILED] 本地事务提交后批量发信失败: exchange={}, routingKey={}, bizKey={}, error={}",
+                                exchange, effectiveRoutingKey, batchBizKey, ex.getMessage(), ex);
+                        invokeTransactionFailureCallback(exchange, effectiveRoutingKey, payloadSnapshot, batchBizKey, ex);
+                    }
+                }
+            });
+        } else {
+            checkBatchNotInterrupted(exchange, effectiveRoutingKey, preparedItems.size());
+            awaitBatchFuture(
+                    exchange,
+                    effectiveRoutingKey,
+                    preparedItems.size(),
+                    dispatchPreparedBatch(exchange, effectiveRoutingKey, preparedItems, effectiveTimeout)
+            );
+        }
+    }
+
+    /**
+     * 在非事务或事务前校验阶段检查当前线程中断状态，避免已中断线程仍向 Broker 发射网络帧
+     */
+    private void checkBatchNotInterrupted(String exchange, String effectiveRoutingKey, int batchSize) {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new MessageDeliveryException(
+                    MQ_TYPE_RABBITMQ,
+                    exchange,
+                    "batch[" + batchSize + "]",
+                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 被中断: exchange=%s, routingKey=%s",
+                            exchange, effectiveRoutingKey),
+                    new InterruptedException("Current thread was interrupted before waiting for batch confirms"));
+        }
     }
 
     // =========================================================================

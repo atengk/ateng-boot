@@ -1,16 +1,34 @@
 package io.github.atengk.boot.sample.rabbitmq;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.validation.ValidList;
+import io.github.atengk.boot.sample.rabbitmq.config.RabbitScenarioTopologyConfig;
+import io.github.atengk.boot.sample.rabbitmq.consumer.AnonymousBroadcastConsumer;
+import io.github.atengk.boot.sample.rabbitmq.consumer.BatchOrderConsumer;
+import io.github.atengk.boot.sample.rabbitmq.consumer.BatchTenantIsolationConsumer;
+import io.github.atengk.boot.sample.rabbitmq.consumer.DeadLetterAuditConsumer;
+import io.github.atengk.boot.sample.rabbitmq.consumer.IdempotentOrderConsumer;
+import io.github.atengk.boot.sample.rabbitmq.consumer.LogTopicConsumer;
+import io.github.atengk.boot.sample.rabbitmq.consumer.OrderConsumer;
+import io.github.atengk.boot.sample.rabbitmq.consumer.OrderDelayConsumer;
+import io.github.atengk.boot.sample.rabbitmq.consumer.PoisonPillConsumer;
+import io.github.atengk.boot.sample.rabbitmq.consumer.PriorityOrderConsumer;
 import io.github.atengk.boot.sample.rabbitmq.dto.*;
+import io.github.atengk.boot.sample.rabbitmq.offline.OfflineAmqpBroker;
 import lombok.extern.slf4j.Slf4j;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
+import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -38,6 +56,94 @@ class SampleRabbitmqWebControllerTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired(required = false)
+    private OfflineAmqpBroker offlineBroker;
+
+    @Autowired(required = false)
+    private RabbitAdmin rabbitAdmin;
+
+    @Autowired
+    private OrderConsumer orderConsumer;
+
+    @Autowired
+    private LogTopicConsumer logTopicConsumer;
+
+    @Autowired
+    private IdempotentOrderConsumer idempotentOrderConsumer;
+
+    @Autowired(required = false)
+    private OrderDelayConsumer delayConsumer;
+
+    @Autowired
+    private PoisonPillConsumer poisonPillConsumer;
+
+    @Autowired
+    private DeadLetterAuditConsumer dlqConsumer;
+
+    @Autowired
+    private BatchOrderConsumer batchOrderConsumer;
+
+    @Autowired
+    private BatchTenantIsolationConsumer batchTenantIsolationConsumer;
+
+    @Autowired
+    private PriorityOrderConsumer priorityOrderConsumer;
+
+    @Autowired
+    private AnonymousBroadcastConsumer broadcastConsumer;
+
+    @AfterEach
+    void tearDown() {
+        try {
+            if (offlineBroker != null) {
+                offlineBroker.clear();
+            }
+            if (rabbitAdmin != null) {
+                purgeQueueQuietly(RabbitScenarioTopologyConfig.QUEUE_ORDER_CREATE);
+                purgeQueueQuietly(RabbitScenarioTopologyConfig.QUEUE_ORDER_EXPIRATION);
+                purgeQueueQuietly(RabbitScenarioTopologyConfig.QUEUE_ORDER_IDEMPOTENT);
+                purgeQueueQuietly(RabbitScenarioTopologyConfig.QUEUE_LOG_ERROR);
+                if (delayConsumer != null) {
+                    purgeQueueQuietly(RabbitScenarioTopologyConfig.QUEUE_ORDER_DELAY);
+                }
+                purgeQueueQuietly(RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN);
+                purgeQueueQuietly(RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ);
+                purgeQueueQuietly(RabbitScenarioTopologyConfig.QUEUE_BATCH_ORDER);
+                purgeQueueQuietly(RabbitScenarioTopologyConfig.QUEUE_BATCH_TENANT);
+                purgeQueueQuietly(RabbitScenarioTopologyConfig.QUEUE_PRIORITY_ORDER);
+                purgeQueueQuietly("sample.broadcast.fanout.queue");
+            }
+            orderConsumer.clear();
+            logTopicConsumer.clear();
+            idempotentOrderConsumer.clear();
+            if (delayConsumer != null) {
+                delayConsumer.clear();
+            }
+            poisonPillConsumer.clear();
+            dlqConsumer.clear();
+            batchOrderConsumer.clear();
+            batchTenantIsolationConsumer.clear();
+            priorityOrderConsumer.clear();
+            broadcastConsumer.clear();
+        } finally {
+            UserContextHolder.clear();
+            TenantContextHolder.clear();
+            MDC.clear();
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.clearSynchronization();
+            }
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    private void purgeQueueQuietly(String queueName) {
+        try {
+            rabbitAdmin.purgeQueue(queueName, false);
+        } catch (Exception ignored) {
+            // 忽略未声明或待延迟初始化的队列
+        }
+    }
 
     @Test
     @DisplayName("测试 RabbitProduceController: 同步/异步发信、Topic、不可路由与查询")
@@ -158,6 +264,32 @@ class SampleRabbitmqWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").isNumber());
+
+        // 4. 批量事务提交后发信与批量回滚防幽灵消息
+        BatchOrderRequest batchTxReq = new BatchOrderRequest(new ValidList<>(List.of(
+                OrderCreateRequest.builder().orderId("ORD-TXB-1").amount(new BigDecimal("10.00")).userId("u-txb-1").build(),
+                OrderCreateRequest.builder().orderId("ORD-TXB-2").amount(new BigDecimal("20.00")).userId("u-txb-2").build()
+        )));
+        mockMvc.perform(post("/sample/rabbitmq/transaction/batch/commit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(batchTxReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(2));
+
+        mockMvc.perform(post("/sample/rabbitmq/transaction/batch/rollback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(batchTxReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(2));
+
+        // 5. 空列表触发 JSR-303 Fail-Fast 拦截
+        mockMvc.perform(post("/sample/rabbitmq/transaction/batch/commit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"orders\":[]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
     }
 
     @Test
@@ -230,6 +362,41 @@ class SampleRabbitmqWebControllerTest {
                         .content(objectMapper.writeValueAsString(delayReq)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
+
+        OrderDelayRequest expSyncReq = OrderDelayRequest.builder()
+                .orderId("ORD-EXP-001")
+                .timeoutSeconds(5L)
+                .reason("原生 TTL 同步过期")
+                .build();
+        mockMvc.perform(post("/sample/rabbitmq/delay/expiration-order")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(expSyncReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("ORD-EXP-001"));
+
+        OrderDelayRequest expAsyncReq = OrderDelayRequest.builder()
+                .orderId("ORD-EXP-ASYNC-002")
+                .timeoutSeconds(10L)
+                .reason("原生 TTL 异步过期")
+                .build();
+        mockMvc.perform(post("/sample/rabbitmq/delay/expiration-order-async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(expAsyncReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("ORD-EXP-ASYNC-002"));
+
+        OrderDelayRequest invalidExpReq = OrderDelayRequest.builder()
+                .orderId("ORD-EXP-INVALID")
+                .timeoutSeconds(0L)
+                .reason("非法过期时长")
+                .build();
+        mockMvc.perform(post("/sample/rabbitmq/delay/expiration-order")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidExpReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
 
         mockMvc.perform(get("/sample/rabbitmq/delay/received-orders"))
                 .andExpect(status().isOk())

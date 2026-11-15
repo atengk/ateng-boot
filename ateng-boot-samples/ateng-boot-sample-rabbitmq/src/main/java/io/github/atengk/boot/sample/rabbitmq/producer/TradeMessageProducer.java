@@ -93,6 +93,41 @@ public class TradeMessageProducer {
     }
 
     /**
+     * 原生消息级 TTL 同步投递：设置 AMQP expiration 属性（不依赖延迟插件）
+     *
+     * @param message    超时取消消息
+     * @param expiration 消息级过期时长
+     */
+    public void sendOrderWithExpiration(OrderTimeoutMessage message, Duration expiration) {
+        log.info("[PRODUCER] 同步投递原生 TTL 过期订单消息: orderId={}, expiration={}", message.orderId(), expiration);
+        rabbitReliableTemplate.sendWithExpiration(
+                RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_EXPIRATION,
+                message,
+                message.orderId(),
+                expiration
+        );
+    }
+
+    /**
+     * 原生消息级 TTL 异步投递：设置 AMQP expiration 属性并返回 Confirm Future
+     *
+     * @param message    超时取消消息
+     * @param expiration 消息级过期时长
+     * @return Confirm 异步 Future
+     */
+    public CompletableFuture<CorrelationData.Confirm> sendOrderWithExpirationAsync(OrderTimeoutMessage message, Duration expiration) {
+        log.info("[PRODUCER] 异步投递原生 TTL 过期订单消息: orderId={}, expiration={}", message.orderId(), expiration);
+        return rabbitReliableTemplate.sendAsyncWithExpiration(
+                RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_EXPIRATION,
+                message,
+                message.orderId(),
+                expiration
+        );
+    }
+
+    /**
      * 业务队列投递：用于测试毒丸与死信流转
      */
     public void sendBizMessage(String bizKey, Object payload) {

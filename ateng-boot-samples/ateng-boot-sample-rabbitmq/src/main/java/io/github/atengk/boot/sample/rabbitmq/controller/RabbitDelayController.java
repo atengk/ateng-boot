@@ -8,12 +8,14 @@ import io.github.atengk.boot.sample.rabbitmq.producer.TradeMessageProducer;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * 延迟消息与订单超时履约体验控制器
@@ -41,6 +43,40 @@ public class RabbitDelayController {
     public Result<String> sendDelayOrder(@Valid @RequestBody OrderDelayRequest request) {
         producer.sendOrderDelay(request.toMessage(), Duration.ofSeconds(request.getTimeoutSeconds()));
         return Result.success(request.getOrderId(), "延迟超时订单已投递，延迟时长: " + request.getTimeoutSeconds() + "秒");
+    }
+
+    /**
+     * 同步投递原生 AMQP 消息级 TTL 过期订单消息（设置 MessageProperties.expiration）
+     *
+     * @param request 延迟订单请求
+     * @return 订单编号
+     */
+    @PostMapping("/expiration-order")
+    public Result<String> sendOrderWithExpiration(@Valid @RequestBody OrderDelayRequest request) {
+        Duration expiration = Duration.ofSeconds(request.getTimeoutSeconds());
+        producer.sendOrderWithExpiration(request.toMessage(), expiration);
+        return Result.success(request.getOrderId(), "原生 TTL 延迟消息已同步投递，过期时长: " + expiration.toMillis() + "ms");
+    }
+
+    /**
+     * 异步投递原生 AMQP 消息级 TTL 过期订单消息
+     *
+     * @param request 延迟订单请求
+     * @return 订单编号
+     */
+    @PostMapping("/expiration-order-async")
+    public Result<String> sendOrderWithExpirationAsync(@Valid @RequestBody OrderDelayRequest request) {
+        Duration expiration = Duration.ofSeconds(request.getTimeoutSeconds());
+        CompletableFuture<CorrelationData.Confirm> future = producer.sendOrderWithExpirationAsync(request.toMessage(), expiration);
+        future.whenComplete((confirm, ex) -> {
+            if (ex != null || confirm == null || !confirm.isAck()) {
+                log.error("[ASYNC-EXPIRATION-ACK] 原生 TTL 异步确认失败: orderId={}, error={}",
+                        request.getOrderId(), ex != null ? ex.getMessage() : "NACK");
+            } else {
+                log.info("[ASYNC-EXPIRATION-ACK] 原生 TTL 异步确认成功: orderId={}", request.getOrderId());
+            }
+        });
+        return Result.success(request.getOrderId(), "原生 TTL 延迟消息已异步投递，过期时长: " + expiration.toMillis() + "ms");
     }
 
     /**
