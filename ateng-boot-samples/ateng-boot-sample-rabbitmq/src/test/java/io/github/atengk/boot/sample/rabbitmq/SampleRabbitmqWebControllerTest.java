@@ -9,7 +9,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -31,7 +30,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Slf4j
 @SpringBootTest(classes = SampleRabbitmqApplication.class)
 @AutoConfigureMockMvc
-@Import(SampleRabbitmqE2eTest.TestAmqpConfig.class)
 @DisplayName("RabbitMQ Sample Web 控制器全场景 MockMvc 测试")
 class SampleRabbitmqWebControllerTest {
 
