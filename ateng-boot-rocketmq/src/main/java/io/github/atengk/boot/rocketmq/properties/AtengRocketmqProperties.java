@@ -97,6 +97,35 @@ public class AtengRocketmqProperties {
         private int maxBatchSize = 500;
 
         /**
+         * 批量发信底层自动分片并发投递步长，遵循工业级双层分片契约（默认 64 条/片）
+         */
+        private int batchSliceSize = 64;
+
+        /**
+         * 设置批量发信单批次最大容量上限（必须大于 0）
+         *
+         * @param maxBatchSize 单批次最大容量上限
+         */
+        public void setMaxBatchSize(int maxBatchSize) {
+            if (maxBatchSize <= 0) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.producer.max-batch-size 必须大于 0");
+            }
+            this.maxBatchSize = maxBatchSize;
+        }
+
+        /**
+         * 设置批量发信自动分片步长（必须大于 0）
+         *
+         * @param batchSliceSize 分片步长
+         */
+        public void setBatchSliceSize(int batchSliceSize) {
+            if (batchSliceSize <= 0) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.producer.batch-slice-size 必须大于 0");
+            }
+            this.batchSliceSize = batchSliceSize;
+        }
+
+        /**
          * 单条消息最大载荷容量限制，超出将触发 Fail-Fast（默认 4MB）
          */
         private DataSize maxPayloadSize = DataSize.ofMegabytes(4);
@@ -110,6 +139,54 @@ public class AtengRocketmqProperties {
          * 预热主题列表（可选，在 Producer 初始化时提前拉取路由元数据）
          */
         private List<String> topics = new ArrayList<>();
+
+        /**
+         * 设置发送超时时长（必须为正数）
+         *
+         * @param sendTimeout 发送超时时长
+         */
+        public void setSendTimeout(Duration sendTimeout) {
+            if (sendTimeout == null || sendTimeout.isZero() || sendTimeout.isNegative()) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.producer.send-timeout 必须为正数");
+            }
+            this.sendTimeout = sendTimeout;
+        }
+
+        /**
+         * 设置发送失败最大重试次数（必须大于 0）
+         *
+         * @param maxAttempts 最大尝试次数
+         */
+        public void setMaxAttempts(int maxAttempts) {
+            if (maxAttempts <= 0) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.producer.max-attempts 必须大于 0");
+            }
+            this.maxAttempts = maxAttempts;
+        }
+
+        /**
+         * 设置单条消息最大载荷容量限制（必须为正数）
+         *
+         * @param maxPayloadSize 单条消息最大载荷容量
+         */
+        public void setMaxPayloadSize(DataSize maxPayloadSize) {
+            if (maxPayloadSize == null || maxPayloadSize.toBytes() <= 0) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.producer.max-payload-size 必须大于 0");
+            }
+            this.maxPayloadSize = maxPayloadSize;
+        }
+
+        /**
+         * 设置消息透明 GZIP 压缩阈值（必须非负）
+         *
+         * @param compressionThreshold 压缩阈值
+         */
+        public void setCompressionThreshold(DataSize compressionThreshold) {
+            if (compressionThreshold == null || compressionThreshold.toBytes() < 0) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.producer.compression-threshold 不能为负数或空");
+            }
+            this.compressionThreshold = compressionThreshold;
+        }
     }
 
     /**

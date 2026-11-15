@@ -37,7 +37,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -144,6 +147,50 @@ class RocketmqTemplateTest {
 
         Message captured = captor.getValue();
         assertThat(captured.getDeliveryTimestamp()).contains(1800000000000L);
+    }
+
+    @Test
+    @DisplayName("验证延时/定时全对称重载：携带 userProperties、异步简化重载与系统追踪头防污染")
+    void testDelayedAndDeliverAtUserPropertiesAndSimplifiedOverloads() throws Exception {
+        Map<String, String> props = new HashMap<>();
+        props.put("region", "cn-hangzhou");
+        props.put("amount", "288");
+        props.put(MessageHeaderConstants.TRACE_ID, "spoofed-trace");
+        props.put(MessageHeaderConstants.TENANT_ID, "spoofed-tenant");
+        props.put(MessageHeaderConstants.BIZ_KEY, "spoofed-biz");
+        props.put(RocketmqConstants.HEADER_COMPRESSION, "fake-zip");
+        props.put("__RETRY_FLAG", "spoofed-internal");
+
+        Instant deliverAt = Instant.ofEpochMilli(1800000001000L);
+
+        rocketmqTemplate.sendDelayed("delay_topic", "tagD", "BIZ-D1", "d1", Duration.ofSeconds(30), props);
+        rocketmqTemplate.sendDelayedAsync("delay_topic", "d2", Duration.ofSeconds(30)).get();
+        rocketmqTemplate.sendDelayedAsync("delay_topic", "tagD", "d3", Duration.ofSeconds(30)).get();
+        rocketmqTemplate.sendDelayedAsync("delay_topic", "tagD", "BIZ-D4", "d4", Duration.ofSeconds(30), props).get();
+
+        rocketmqTemplate.sendDeliverAt("schedule_topic", "tagS", "BIZ-S1", "s1", deliverAt, props);
+        rocketmqTemplate.sendDeliverAtAsync("schedule_topic", "s2", deliverAt).get();
+        rocketmqTemplate.sendDeliverAtAsync("schedule_topic", "tagS", "s3", deliverAt).get();
+        rocketmqTemplate.sendDeliverAtAsync("schedule_topic", "tagS", "BIZ-S4", "s4", deliverAt, props).get();
+
+        ArgumentCaptor<Message> syncCaptor = ArgumentCaptor.forClass(Message.class);
+        verify(producer, times(2)).send(syncCaptor.capture());
+        ArgumentCaptor<Message> asyncCaptor = ArgumentCaptor.forClass(Message.class);
+        verify(producer, times(6)).sendAsync(asyncCaptor.capture());
+
+        for (Message msg : List.of(
+                syncCaptor.getAllValues().get(0),
+                syncCaptor.getAllValues().get(1),
+                asyncCaptor.getAllValues().get(2),
+                asyncCaptor.getAllValues().get(5))) {
+            assertThat(msg.getProperties()).containsEntry("region", "cn-hangzhou");
+            assertThat(msg.getProperties()).containsEntry("amount", "288");
+            assertThat(msg.getProperties()).containsEntry(MessageHeaderConstants.TRACE_ID, "trace-test-888");
+            assertThat(msg.getProperties()).containsEntry(MessageHeaderConstants.TENANT_ID, "tenant-999");
+            assertThat(msg.getProperties().get(MessageHeaderConstants.BIZ_KEY)).doesNotContain("spoofed-biz");
+            assertThat(msg.getProperties()).doesNotContainKey("__RETRY_FLAG");
+            assertThat(msg.getProperties().get(RocketmqConstants.HEADER_COMPRESSION)).isNull();
+        }
     }
 
     @Test
@@ -461,15 +508,23 @@ class RocketmqTemplateTest {
     }
 
     @Test
-    @DisplayName("验证批量发送：空列表抛出 IllegalArgumentException")
-    void testSendBatchEmptyPayloadsThrowsException() {
-        assertThatThrownBy(() -> rocketmqTemplate.sendBatch("batch_order_topic", Collections.emptyList()))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("payloads 不能为空且不可为空集合");
+    @DisplayName("验证批量发送：空集与 null 列表保底返回空不可变集合且零底层发送")
+    void testSendBatchAndAsyncEmptyPayloadsReturnImmutableEmptyList() throws Exception {
+        List<SendReceipt> syncEmpty = rocketmqTemplate.sendBatch("batch_order_topic", Collections.emptyList());
+        List<SendReceipt> syncNull = rocketmqTemplate.sendBatch("batch_order_topic", "batch", null);
+        List<SendReceipt> asyncEmpty = rocketmqTemplate.sendBatchAsync("batch_order_topic", Collections.emptyList()).get();
+        List<SendReceipt> asyncNull = rocketmqTemplate.sendBatchAsync("batch_order_topic", "batch", null, Map.of("k", "v")).get();
+
+        assertThat(syncEmpty).isEmpty();
+        assertThat(syncNull).isEmpty();
+        assertThat(asyncEmpty).isEmpty();
+        assertThat(asyncNull).isEmpty();
+        assertThatThrownBy(() -> syncEmpty.add(mockReceipt)).isInstanceOf(UnsupportedOperationException.class);
+        verifyNoInteractions(producer);
     }
 
     @Test
-    @DisplayName("验证批量发送：超出 maxBatchSize 上限触发 Fail-Fast")
+    @DisplayName("验证批量发送：超出 maxBatchSize 上限触发 Fail-Fast 且零底层发送")
     void testSendBatchExceedsMaxBatchSizeThrowsException() {
         List<String> largeBatch = new ArrayList<>(501);
         for (int i = 0; i < 501; i++) {
@@ -479,16 +534,103 @@ class RocketmqTemplateTest {
         assertThatThrownBy(() -> rocketmqTemplate.sendBatch("batch_order_topic", largeBatch))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("超出配置上限 [500]");
+        verify(producer, never()).sendAsync(any(Message.class));
     }
 
     @Test
-    @DisplayName("验证批量发送：异步批量返回 CompletableFuture")
+    @DisplayName("验证批量发送前置全量校验：含 null 元素或压缩后超限报文在触发任何发送前 Fail-Fast")
+    void testSendBatchFailFastOnNullElementOrOversizedPayloadWithoutAnySend() {
+        List<Object> containsNull = new ArrayList<>();
+        containsNull.add("valid-1");
+        containsNull.add("valid-2");
+        containsNull.add(null);
+
+        assertThatThrownBy(() -> rocketmqTemplate.sendBatch("batch_order_topic", containsNull))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("null");
+        assertThatThrownBy(() -> rocketmqTemplate.sendBatchAsync("batch_order_topic", "batch", containsNull, Map.of("k", "v")))
+                .isInstanceOf(IllegalArgumentException.class);
+        verify(producer, never()).sendAsync(any(Message.class));
+
+        properties.getProducer().setCompressionThreshold(DataSize.ofBytes(64));
+        properties.getProducer().setMaxPayloadSize(DataSize.ofBytes(120));
+
+        // 超过 maxPayloadSize（120B）且末尾条目超限，验证整批在零发送下 Fail-Fast
+        byte[] oversizedPayload = new byte[512];
+        new java.util.Random(42L).nextBytes(oversizedPayload);
+        List<Object> oversizedBatch = List.of("ok-1", "ok-2", oversizedPayload);
+
+        assertThatThrownBy(() -> rocketmqTemplate.sendBatch("batch_order_topic", "batch", oversizedBatch))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("超过配置上限");
+        verify(producer, never()).sendAsync(any(Message.class));
+
+        // 超过 GZIP 压缩阈值 (64B) 且 <= maxPayloadSize (120B) 的合法批次正常压缩并完成投递
+        String validCompressedBatchItem = "OK-COMP-".repeat(12);
+        List<SendReceipt> compressedReceipts = rocketmqTemplate.sendBatch("batch_order_topic", List.of(validCompressedBatchItem));
+        assertThat(compressedReceipts).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("验证批量双层分片并发发送：超 batchSliceSize(64) 按分片调度并保序返回全部回执")
+    void testSendBatchSlicesAbove64AndPreservesReceiptOrder() throws Exception {
+        int total = 130;
+        List<String> payloads = new ArrayList<>(total);
+        for (int i = 0; i < total; i++) {
+            payloads.add("order-payload-" + i);
+        }
+
+        AtomicInteger sliceDispatches = new AtomicInteger(0);
+        java.util.concurrent.Executor countingExecutor = cmd -> {
+            sliceDispatches.incrementAndGet();
+            CompletableFuture.runAsync(cmd);
+        };
+        RocketmqTemplate slicedTemplate = new RocketmqTemplate(
+                producer, properties, (RocketmqTransactionFailureCallback) null, countingExecutor);
+
+        when(producer.sendAsync(any(Message.class))).thenAnswer(inv -> {
+            Message msg = inv.getArgument(0);
+            byte[] bytes = new byte[msg.getBody().remaining()];
+            msg.getBody().duplicate().get(bytes);
+            String payloadText = new String(bytes, StandardCharsets.UTF_8);
+
+            SendReceipt receipt = mock(SendReceipt.class);
+            MessageId id = mock(MessageId.class);
+            when(id.toString()).thenReturn("ID-" + payloadText);
+            when(receipt.getMessageId()).thenReturn(id);
+            return CompletableFuture.completedFuture(receipt);
+        });
+
+        Map<String, String> userProperties = Map.of("region", "cn-east", MessageHeaderConstants.TRACE_ID, "hacked");
+        List<SendReceipt> receipts = slicedTemplate.sendBatch(
+                "batch_order_topic", "batch", payloads, Duration.ofSeconds(5), userProperties);
+
+        // 130 条按默认 batchSliceSize=64 切分为 64 + 64 + 2 = 3 个分片并发调度
+        assertThat(sliceDispatches.get()).isEqualTo(3);
+        assertThat(receipts).hasSize(total);
+        for (int i = 0; i < total; i++) {
+            assertThat(receipts.get(i).getMessageId().toString()).isEqualTo("ID-order-payload-" + i);
+        }
+
+        ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
+        verify(producer, times(total)).sendAsync(captor.capture());
+        assertThat(captor.getValue().getProperties()).containsEntry("region", "cn-east");
+        assertThat(captor.getValue().getProperties()).containsEntry(MessageHeaderConstants.TRACE_ID, "trace-test-888");
+    }
+
+    @Test
+    @DisplayName("验证批量发送：异步批量返回 CompletableFuture（含 userProperties 透传）")
     void testSendBatchAsyncSuccess() throws Exception {
         List<String> payloads = List.of("msg1", "msg2");
-        CompletableFuture<List<SendReceipt>> future = rocketmqTemplate.sendBatchAsync("batch_order_topic", payloads);
+        CompletableFuture<List<SendReceipt>> future = rocketmqTemplate.sendBatchAsync(
+                "batch_order_topic", "batch", payloads, Map.of("channel", "app"));
 
         List<SendReceipt> receipts = future.get();
         assertThat(receipts).hasSize(2);
+
+        ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
+        verify(producer, times(2)).sendAsync(captor.capture());
+        assertThat(captor.getValue().getProperties()).containsEntry("channel", "app");
     }
 
     @Test
@@ -518,6 +660,73 @@ class RocketmqTemplateTest {
         assertThatThrownBy(() -> rocketmqTemplate.sendBatch("batch_fail_topic", payloads))
                 .isInstanceOf(MessageDeliveryException.class)
                 .hasMessageContaining("Simulated broker network drop");
+    }
+
+    @Test
+    @DisplayName("验证异步批量发送异常转译：失败 Future 必须转译为 MessageDeliveryException 并保留原始 cause")
+    void testSendBatchAsyncTranslatesFailureToMessageDeliveryException() {
+        RuntimeException rootCause = new RuntimeException("Async broker failure");
+        when(producer.sendAsync(any(Message.class)))
+                .thenReturn(CompletableFuture.failedFuture(rootCause));
+
+        CompletableFuture<List<SendReceipt>> future = rocketmqTemplate.sendBatchAsync(
+                "batch_async_fail_topic", "batch", List.of("item1", "item2"), Map.of("region", "cn-west"));
+
+        assertThatThrownBy(future::get)
+                .isInstanceOf(ExecutionException.class)
+                .hasCauseInstanceOf(MessageDeliveryException.class)
+                .hasRootCauseMessage("Async broker failure");
+    }
+
+    @Test
+    @DisplayName("验证批量发送超时场景：超出指定 Duration 抛出携带 TimeoutException cause 的 MessageDeliveryException")
+    void testSendBatchTimeoutThrowsMessageDeliveryException() {
+        when(producer.sendAsync(any(Message.class)))
+                .thenReturn(new CompletableFuture<>());
+
+        assertThatThrownBy(() -> rocketmqTemplate.sendBatch(
+                "batch_timeout_topic", "tag", List.of("item1"), Duration.ofMillis(50), null))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasCauseInstanceOf(TimeoutException.class);
+    }
+
+    @Test
+    @DisplayName("验证延时发送参数防卫：null 或负数 Duration 触发 Fail-Fast")
+    void testSendDelayedRejectsNullOrNegativeDuration() {
+        assertThatThrownBy(() -> rocketmqTemplate.sendDelayed("delay_topic", "payload", null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("delay 不能为空");
+
+        assertThatThrownBy(() -> rocketmqTemplate.sendDelayed("delay_topic", "payload", Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("delay 延时时长不能为负数");
+    }
+
+    @Test
+    @DisplayName("验证系统级与保留前缀 userProperties 拦截：大小写不敏感且不污染上下文头")
+    void testProtectedHeaderKeysAreStripped() throws ClientException {
+        MDC.put("traceId", "trace-real-001");
+        Map<String, String> dirtyProps = new HashMap<>();
+        dirtyProps.put("X-User-Id", "spoofed-user");
+        dirtyProps.put("X-Ignore-Tenant", "true");
+        dirtyProps.put("X-Send-Timestamp", "999999");
+        dirtyProps.put("x-trace-id", "spoofed-trace");
+        dirtyProps.put("%RETRY%order_group", "1");
+        dirtyProps.put("%dlq%order_group", "1");
+        dirtyProps.put("retry_topic", "hacked_retry");
+        dirtyProps.put("env", "prod");
+
+        rocketmqTemplate.sendDelayed("delay_topic", "delay", "ORD-HEADER-01", "payload", Duration.ofSeconds(5), dirtyProps);
+
+        ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
+        verify(producer).send(captor.capture());
+        Map<String, String> props = captor.getValue().getProperties();
+        assertThat(props).containsEntry("env", "prod");
+        assertThat(props).containsEntry(MessageHeaderConstants.TRACE_ID, "trace-real-001");
+        assertThat(props.get(MessageHeaderConstants.SEND_TIMESTAMP)).isNotEqualTo("999999");
+        assertThat(props).doesNotContainKeys(
+                "X-User-Id", "X-Ignore-Tenant", "x-trace-id",
+                "%RETRY%order_group", "%dlq%order_group", "retry_topic");
     }
 
     // =========================================================================

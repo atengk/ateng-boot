@@ -13,6 +13,7 @@ ateng:
       producer:
         max-attempts: 3
         max-batch-size: 500
+        batch-slice-size: 64
         max-payload-size: 4MB
         compression-threshold: 4KB
         topics:

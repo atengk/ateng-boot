@@ -494,6 +494,17 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
         return Collections.unmodifiableList(activePushConsumers);
     }
 
+    /**
+     * 获取指定主题下内存 Broker 已接收的消息视图快照
+     */
+    public List<MessageView> getSentMessages(String topic) {
+        Queue<MessageView> queue = inMemoryQueues.get(topic);
+        if (queue == null || queue.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Collections.unmodifiableList(new ArrayList<>(queue));
+    }
+
     public void clear() {
         sentMessageCount.set(0);
         dispatchedMessageCount.set(0);

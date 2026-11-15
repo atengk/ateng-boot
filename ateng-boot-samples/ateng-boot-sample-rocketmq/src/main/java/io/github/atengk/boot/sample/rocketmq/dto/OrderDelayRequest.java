@@ -11,6 +11,7 @@ import lombok.NoArgsConstructor;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.util.Map;
 
 /**
  * 延时与定时消息发送请求 DTO
@@ -65,26 +66,52 @@ public class OrderDelayRequest implements Serializable {
      */
     private Long futureSeconds;
 
+    /**
+     * 自定义扩展属性（支持延时/定时消息透传与 SQL92 属性过滤）
+     */
+    private Map<String, String> properties;
+
+    private static final long DEFAULT_DELAY_SECONDS = 10L;
+    private static final long MILLIS_PER_SECOND = 1000L;
+    private static final long DEFAULT_FUTURE_MILLIS = 10_000L;
+    private static final String DEFAULT_STATUS = "UNPAID";
+
+    /**
+     * 解析相对延时秒数，未显式传入或非正数时回退至默认值（10 秒）
+     *
+     * @return 延时秒数
+     */
     public long resolveDelaySeconds() {
-        return delaySeconds != null && delaySeconds > 0 ? delaySeconds : 10L;
+        return delaySeconds != null && delaySeconds > 0 ? delaySeconds : DEFAULT_DELAY_SECONDS;
     }
 
+    /**
+     * 解析目标定时投递的毫秒级时间戳
+     *
+     * @return 未来投递时间戳
+     */
     public long resolveDeliverAtTimestamp() {
+        long now = System.currentTimeMillis();
         if (futureSeconds != null && futureSeconds > 0) {
-            return System.currentTimeMillis() + futureSeconds * 1000L;
+            return now + futureSeconds * MILLIS_PER_SECOND;
         }
-        if (deliverAtTimestamp != null && deliverAtTimestamp > System.currentTimeMillis()) {
+        if (deliverAtTimestamp != null && deliverAtTimestamp > now) {
             return deliverAtTimestamp;
         }
-        return System.currentTimeMillis() + 10_000L;
+        return now + DEFAULT_FUTURE_MILLIS;
     }
 
+    /**
+     * 转换为标准订单领域消息对象
+     *
+     * @return 订单消息实体
+     */
     public OrderMessage toOrderMessage() {
         return OrderMessage.builder()
                 .orderId(orderId)
                 .amount(amount)
                 .customerName(customerName)
-                .status(status != null ? status : "UNPAID")
+                .status(status != null ? status : DEFAULT_STATUS)
                 .build();
     }
 }

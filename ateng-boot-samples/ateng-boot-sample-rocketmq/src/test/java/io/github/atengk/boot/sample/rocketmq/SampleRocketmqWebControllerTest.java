@@ -9,6 +9,7 @@ import io.github.atengk.boot.sample.rocketmq.producer.TradeRocketmqProducer;
 import io.github.atengk.boot.sample.rocketmq.testdouble.InMemoryRocketmqBroker;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.apis.message.MessageView;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -54,6 +55,13 @@ class SampleRocketmqWebControllerTest {
 
     @Autowired(required = false)
     private InMemoryRocketmqBroker testBroker;
+
+    @AfterEach
+    void tearDown() {
+        if (testBroker != null) {
+            testBroker.clear();
+        }
+    }
 
     @Test
     @DisplayName("测试 RocketmqProduceController: 同步/异步/单向/FIFO/SQL92/批量与审计端点")
@@ -186,6 +194,82 @@ class SampleRocketmqWebControllerTest {
                 .andExpect(jsonPath("$.code").value(not(200)))
                 .andExpect(jsonPath("$.success").value(false));
 
+        // 9b. 超 64 条双层分片批量投递 (130 条 + userProperties) 与异步批量投递
+        List<OrderProduceRequest> slicedBatch = new java.util.ArrayList<>(130);
+        for (int i = 0; i < 130; i++) {
+            slicedBatch.add(OrderProduceRequest.builder()
+                    .orderId("ORD-SLICE-" + i)
+                    .amount(50.0 + i)
+                    .properties(i == 0 ? Map.of("region", "cn-east", "channel", "web") : null)
+                    .build());
+        }
+        mockMvc.perform(post("/sample/rocketmq/produce/batch")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new ValidList<>(slicedBatch))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.total").value(130))
+                .andExpect(jsonPath("$.data.successCount").value(130))
+                .andExpect(jsonPath("$.data.orderIds", hasSize(130)));
+
+        ValidList<OrderProduceRequest> asyncBatchReq = new ValidList<>(List.of(
+                OrderProduceRequest.builder()
+                        .orderId("ORD-BATCH-ASYNC-1")
+                        .amount(99.0)
+                        .properties(Map.of("region", "cn-north", "X-Trace-Id", "spoofed-trace"))
+                        .build()
+        ));
+        mockMvc.perform(post("/sample/rocketmq/produce/batch-async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(asyncBatchReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.successCount").value(1));
+
+        if (testBroker != null) {
+            List<MessageView> orderMsgs = testBroker.getSentMessages(TradeRocketmqProducer.TOPIC_ORDER);
+            assertThat(orderMsgs).anySatisfy(mv -> {
+                assertThat(mv.getProperties()).containsEntry("region", "cn-north");
+                assertThat(mv.getProperties().get("X-Trace-Id")).isNotEqualTo("spoofed-trace");
+            });
+
+            // 9c. 超 500 条前置 Fail-Fast 拦截（验证零底层发送）
+            int sentCountBeforeOverflow = testBroker.getSentMessageCount().get();
+            List<OrderProduceRequest> overflowBatch = new java.util.ArrayList<>(501);
+            for (int i = 0; i < 501; i++) {
+                overflowBatch.add(OrderProduceRequest.builder().orderId("ORD-OVERFLOW-" + i).amount(10.0).build());
+            }
+            mockMvc.perform(post("/sample/rocketmq/produce/batch")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(new ValidList<>(overflowBatch))))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(not(200)))
+                    .andExpect(jsonPath("$.success").value(false));
+            assertThat(testBroker.getSentMessageCount().get()).isEqualTo(sentCountBeforeOverflow);
+
+            // 9d. 批量属性取值冲突 Fail-Fast 拦截（验证零底层发送）
+            ValidList<OrderProduceRequest> conflictPropsBatch = new ValidList<>(List.of(
+                    OrderProduceRequest.builder()
+                            .orderId("ORD-CONFLICT-1")
+                            .amount(10.0)
+                            .properties(Map.of("region", "cn-east"))
+                            .build(),
+                    OrderProduceRequest.builder()
+                            .orderId("ORD-CONFLICT-2")
+                            .amount(20.0)
+                            .properties(Map.of("region", "cn-north"))
+                            .build()
+            ));
+            mockMvc.perform(post("/sample/rocketmq/produce/batch")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(conflictPropsBatch)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(not(200)))
+                    .andExpect(jsonPath("$.success").value(false));
+            assertThat(testBroker.getSentMessageCount().get()).isEqualTo(sentCountBeforeOverflow);
+        }
+
         // 10. 消费审计端点查询
         mockMvc.perform(get("/sample/rocketmq/produce/received"))
                 .andExpect(status().isOk())
@@ -250,6 +334,49 @@ class SampleRocketmqWebControllerTest {
                 .andExpect(jsonPath("$.data.orderId").value("ORD-WEB-DELIVER-001"))
                 .andExpect(jsonPath("$.data.deliverAtTimestamp").value(futureTimestamp))
                 .andExpect(jsonPath("$.data.status").value("SCHEDULED_SUCCESS"));
+
+        // 3b. 异步延时与异步定时发送携带 userProperties 透传
+        OrderDelayRequest asyncDelayReq = OrderDelayRequest.builder()
+                .orderId("ORD-WEB-ASYNC-DELAY-001")
+                .amount(128.0)
+                .delaySeconds(45L)
+                .properties(Map.of("scene", "timeout-close", "X-Trace-Id", "spoofed-delay-trace"))
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/delay/duration-async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(asyncDelayReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderId").value("ORD-WEB-ASYNC-DELAY-001"))
+                .andExpect(jsonPath("$.data.recallHandle").isNotEmpty())
+                .andExpect(jsonPath("$.data.status").value("DELAY_ASYNC_SCHEDULED"));
+
+        OrderDelayRequest asyncDeliverAtReq = OrderDelayRequest.builder()
+                .orderId("ORD-WEB-ASYNC-DELIVER-001")
+                .amount(199.0)
+                .futureSeconds(180L)
+                .properties(Map.of("scene", "scheduled-remind"))
+                .build();
+
+        mockMvc.perform(post("/sample/rocketmq/delay/deliver-at-async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(asyncDeliverAtReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderId").value("ORD-WEB-ASYNC-DELIVER-001"))
+                .andExpect(jsonPath("$.data.recallHandle").isNotEmpty())
+                .andExpect(jsonPath("$.data.status").value("SCHEDULED_ASYNC_SUCCESS"));
+
+        if (testBroker != null) {
+            List<MessageView> delayMsgs = testBroker.getSentMessages(TradeRocketmqProducer.TOPIC_DELAY);
+            assertThat(delayMsgs).anySatisfy(mv -> {
+                assertThat(mv.getProperties()).containsEntry("scene", "timeout-close");
+                assertThat(mv.getProperties().get("X-Trace-Id")).isNotEqualTo("spoofed-delay-trace");
+            });
+            assertThat(delayMsgs).anySatisfy(mv ->
+                    assertThat(mv.getProperties()).containsEntry("scene", "scheduled-remind"));
+        }
 
         // 4. 精准撤回延时消息
         OrderRecallRequest recallReq = OrderRecallRequest.builder()

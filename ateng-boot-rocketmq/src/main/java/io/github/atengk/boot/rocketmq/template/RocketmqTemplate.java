@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.exception.MessageDeliveryException;
+import io.github.atengk.boot.core.util.BatchSliceUtil;
 import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.helper.RocketmqMessageHelper;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
@@ -29,14 +30,18 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 
 /**
  * RocketMQ 5.x 生产端高阶增强门面
@@ -49,6 +54,24 @@ import java.util.concurrent.TimeUnit;
  */
 @Slf4j
 public class RocketmqTemplate {
+
+    /**
+     * 系统级追踪头与协议保留头集合（禁止业务自定义 userProperties 覆写污染）
+     */
+    private static final Set<String> PROTECTED_HEADER_KEYS = Set.of(
+            MessageHeaderConstants.TRACE_ID.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.TENANT_ID.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.USER_ID.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.IGNORE_TENANT.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.SEND_TIMESTAMP.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.BIZ_KEY.toLowerCase(Locale.ROOT),
+            RocketmqConstants.HEADER_COMPRESSION.toLowerCase(Locale.ROOT),
+            "retry_topic",
+            "retry_count",
+            "retry_flag",
+            "reconnect_after",
+            "origin_message_id"
+    );
 
     private final Producer producer;
     private final AtengRocketmqProperties properties;
@@ -186,45 +209,255 @@ public class RocketmqTemplate {
     // 3. 延时与定时发送 (sendDelayed / sendDeliverAt)
     // =========================================================================
 
+    /**
+     * 同步发送相对延时消息
+     *
+     * @param topic   目标主题
+     * @param payload 消息载荷
+     * @param delay   相对延时时长（不能为 null 或负数）
+     * @return 发送回执（含 recallHandle）
+     */
     public SendReceipt sendDelayed(String topic, Object payload, Duration delay) {
-        return sendDelayed(topic, null, null, payload, delay);
+        return sendDelayed(topic, null, null, payload, delay, null);
     }
 
+    /**
+     * 同步发送相对延时消息（指定 Tag）
+     *
+     * @param topic   目标主题
+     * @param tag     消息标签
+     * @param payload 消息载荷
+     * @param delay   相对延时时长（不能为 null 或负数）
+     * @return 发送回执（含 recallHandle）
+     */
     public SendReceipt sendDelayed(String topic, String tag, Object payload, Duration delay) {
-        return sendDelayed(topic, tag, null, payload, delay);
+        return sendDelayed(topic, tag, null, payload, delay, null);
     }
 
+    /**
+     * 同步发送相对延时消息（指定 Tag 与业务键）
+     *
+     * @param topic   目标主题
+     * @param tag     消息标签
+     * @param bizKey  业务唯一键
+     * @param payload 消息载荷
+     * @param delay   相对延时时长（不能为 null 或负数）
+     * @return 发送回执（含 recallHandle）
+     */
     public SendReceipt sendDelayed(String topic, String tag, String bizKey, Object payload, Duration delay) {
-        Assert.notNull(delay, "delay 不能为空");
-        return sendDeliverAt(topic, tag, bizKey, payload, Instant.now().plus(delay));
+        return sendDelayed(topic, tag, bizKey, payload, delay, null);
     }
 
+    /**
+     * 同步发送相对延时消息（全参，支持自定义属性透传）
+     *
+     * @param topic          目标主题
+     * @param tag            消息标签
+     * @param bizKey         业务唯一键
+     * @param payload        消息载荷
+     * @param delay          相对延时时长（不能为 null 或负数）
+     * @param userProperties 自定义扩展属性（系统/追踪保留头将被安全过滤）
+     * @return 发送回执（含 recallHandle）
+     */
+    public SendReceipt sendDelayed(
+            String topic,
+            String tag,
+            String bizKey,
+            Object payload,
+            Duration delay,
+            Map<String, String> userProperties) {
+        Assert.notNull(delay, "delay 不能为空");
+        Assert.isTrue(!delay.isNegative(), "delay 延时时长不能为负数");
+        return sendDeliverAt(topic, tag, bizKey, payload, Instant.now().plus(delay), userProperties);
+    }
+
+    /**
+     * 异步发送相对延时消息（免传 Tag 与业务键）
+     *
+     * @param topic   目标主题
+     * @param payload 消息载荷
+     * @param delay   相对延时时长（不能为 null 或负数）
+     * @return 异步发送回执 Future
+     */
+    public CompletableFuture<SendReceipt> sendDelayedAsync(String topic, Object payload, Duration delay) {
+        return sendDelayedAsync(topic, null, null, payload, delay, null);
+    }
+
+    /**
+     * 异步发送相对延时消息（指定 Tag，免传业务键）
+     *
+     * @param topic   目标主题
+     * @param tag     消息标签
+     * @param payload 消息载荷
+     * @param delay   相对延时时长（不能为 null 或负数）
+     * @return 异步发送回执 Future
+     */
+    public CompletableFuture<SendReceipt> sendDelayedAsync(String topic, String tag, Object payload, Duration delay) {
+        return sendDelayedAsync(topic, tag, null, payload, delay, null);
+    }
+
+    /**
+     * 异步发送相对延时消息（指定 Tag 与业务键）
+     *
+     * @param topic   目标主题
+     * @param tag     消息标签
+     * @param bizKey  业务唯一键
+     * @param payload 消息载荷
+     * @param delay   相对延时时长（不能为 null 或负数）
+     * @return 异步发送回执 Future
+     */
     public CompletableFuture<SendReceipt> sendDelayedAsync(String topic, String tag, String bizKey, Object payload, Duration delay) {
+        return sendDelayedAsync(topic, tag, bizKey, payload, delay, null);
+    }
+
+    /**
+     * 异步发送相对延时消息（全参，支持自定义属性透传）
+     *
+     * @param topic          目标主题
+     * @param tag            消息标签
+     * @param bizKey         业务唯一键
+     * @param payload        消息载荷
+     * @param delay          相对延时时长（不能为 null 或负数）
+     * @param userProperties 自定义扩展属性（系统/追踪保留头将被安全过滤）
+     * @return 异步发送回执 Future
+     */
+    public CompletableFuture<SendReceipt> sendDelayedAsync(
+            String topic,
+            String tag,
+            String bizKey,
+            Object payload,
+            Duration delay,
+            Map<String, String> userProperties) {
         Assert.notNull(delay, "delay 不能为空");
-        return sendDeliverAtAsync(topic, tag, bizKey, payload, Instant.now().plus(delay));
+        Assert.isTrue(!delay.isNegative(), "delay 延时时长不能为负数");
+        return sendDeliverAtAsync(topic, tag, bizKey, payload, Instant.now().plus(delay), userProperties);
     }
 
+    /**
+     * 同步发送绝对定时消息
+     *
+     * @param topic     目标主题
+     * @param payload   消息载荷
+     * @param deliverAt 目标投递时刻（不能为空）
+     * @return 发送回执（含 recallHandle）
+     */
     public SendReceipt sendDeliverAt(String topic, Object payload, Instant deliverAt) {
-        return sendDeliverAt(topic, null, null, payload, deliverAt);
+        return sendDeliverAt(topic, null, null, payload, deliverAt, null);
     }
 
+    /**
+     * 同步发送绝对定时消息（指定 Tag）
+     *
+     * @param topic     目标主题
+     * @param tag       消息标签
+     * @param payload   消息载荷
+     * @param deliverAt 目标投递时刻（不能为空）
+     * @return 发送回执（含 recallHandle）
+     */
     public SendReceipt sendDeliverAt(String topic, String tag, Object payload, Instant deliverAt) {
-        return sendDeliverAt(topic, tag, null, payload, deliverAt);
+        return sendDeliverAt(topic, tag, null, payload, deliverAt, null);
     }
 
+    /**
+     * 同步发送绝对定时消息（指定 Tag 与业务键）
+     *
+     * @param topic     目标主题
+     * @param tag       消息标签
+     * @param bizKey    业务唯一键
+     * @param payload   消息载荷
+     * @param deliverAt 目标投递时刻（不能为空）
+     * @return 发送回执（含 recallHandle）
+     */
     public SendReceipt sendDeliverAt(String topic, String tag, String bizKey, Object payload, Instant deliverAt) {
+        return sendDeliverAt(topic, tag, bizKey, payload, deliverAt, null);
+    }
+
+    /**
+     * 同步发送绝对定时消息（全参，支持自定义属性透传）
+     *
+     * @param topic          目标主题
+     * @param tag            消息标签
+     * @param bizKey         业务唯一键
+     * @param payload        消息载荷
+     * @param deliverAt      目标投递时刻（不能为空）
+     * @param userProperties 自定义扩展属性（系统/追踪保留头将被安全过滤）
+     * @return 发送回执（含 recallHandle）
+     */
+    public SendReceipt sendDeliverAt(
+            String topic,
+            String tag,
+            String bizKey,
+            Object payload,
+            Instant deliverAt,
+            Map<String, String> userProperties) {
         Assert.notNull(deliverAt, "deliverAt 不能为空");
         long deliveryTimestamp = deliverAt.toEpochMilli();
         String finalBizKey = RocketmqMessageHelper.resolveBizKey(bizKey, payload);
-        Message message = buildMessage(topic, tag, finalBizKey, payload, null, deliveryTimestamp, null);
+        Message message = buildMessage(topic, tag, finalBizKey, payload, null, deliveryTimestamp, userProperties);
         return doSendSync(message, topic, tag, finalBizKey);
     }
 
+    /**
+     * 异步发送绝对定时消息（免传 Tag 与业务键）
+     *
+     * @param topic     目标主题
+     * @param payload   消息载荷
+     * @param deliverAt 目标投递时刻（不能为空）
+     * @return 异步发送回执 Future
+     */
+    public CompletableFuture<SendReceipt> sendDeliverAtAsync(String topic, Object payload, Instant deliverAt) {
+        return sendDeliverAtAsync(topic, null, null, payload, deliverAt, null);
+    }
+
+    /**
+     * 异步发送绝对定时消息（指定 Tag，免传业务键）
+     *
+     * @param topic     目标主题
+     * @param tag       消息标签
+     * @param payload   消息载荷
+     * @param deliverAt 目标投递时刻（不能为空）
+     * @return 异步发送回执 Future
+     */
+    public CompletableFuture<SendReceipt> sendDeliverAtAsync(String topic, String tag, Object payload, Instant deliverAt) {
+        return sendDeliverAtAsync(topic, tag, null, payload, deliverAt, null);
+    }
+
+    /**
+     * 异步发送绝对定时消息（指定 Tag 与业务键）
+     *
+     * @param topic     目标主题
+     * @param tag       消息标签
+     * @param bizKey    业务唯一键
+     * @param payload   消息载荷
+     * @param deliverAt 目标投递时刻（不能为空）
+     * @return 异步发送回执 Future
+     */
     public CompletableFuture<SendReceipt> sendDeliverAtAsync(String topic, String tag, String bizKey, Object payload, Instant deliverAt) {
+        return sendDeliverAtAsync(topic, tag, bizKey, payload, deliverAt, null);
+    }
+
+    /**
+     * 异步发送绝对定时消息（全参，支持自定义属性透传）
+     *
+     * @param topic          目标主题
+     * @param tag            消息标签
+     * @param bizKey         业务唯一键
+     * @param payload        消息载荷
+     * @param deliverAt      目标投递时刻（不能为空）
+     * @param userProperties 自定义扩展属性（系统/追踪保留头将被安全过滤）
+     * @return 异步发送回执 Future
+     */
+    public CompletableFuture<SendReceipt> sendDeliverAtAsync(
+            String topic,
+            String tag,
+            String bizKey,
+            Object payload,
+            Instant deliverAt,
+            Map<String, String> userProperties) {
         Assert.notNull(deliverAt, "deliverAt 不能为空");
         long deliveryTimestamp = deliverAt.toEpochMilli();
         String finalBizKey = RocketmqMessageHelper.resolveBizKey(bizKey, payload);
-        Message message = buildMessage(topic, tag, finalBizKey, payload, null, deliveryTimestamp, null);
+        Message message = buildMessage(topic, tag, finalBizKey, payload, null, deliveryTimestamp, userProperties);
         return doSendAsync(message, topic, tag, finalBizKey);
     }
 
@@ -498,25 +731,93 @@ public class RocketmqTemplate {
     // 8. 批量可靠发送 (sendBatch / sendBatchAsync)
     // =========================================================================
 
+    /**
+     * 批量可靠同步发送消息（空集保底返回空不可变集合）
+     *
+     * @param topic    目标主题
+     * @param payloads 消息载荷列表
+     * @return 按原序聚合的不可变发送回执列表
+     */
     public List<SendReceipt> sendBatch(String topic, List<?> payloads) {
-        return sendBatch(topic, null, payloads, properties.getProducer().getSendTimeout());
+        return sendBatch(topic, null, payloads, null, null);
     }
 
+    /**
+     * 批量可靠同步发送消息（携带自定义扩展属性，免传 Tag）
+     *
+     * @param topic          目标主题
+     * @param payloads       消息载荷列表
+     * @param userProperties 自定义扩展属性（系统/追踪保留头将被安全过滤）
+     * @return 按原序聚合的不可变发送回执列表
+     */
+    public List<SendReceipt> sendBatch(String topic, List<?> payloads, Map<String, String> userProperties) {
+        return sendBatch(topic, null, payloads, null, userProperties);
+    }
+
+    /**
+     * 批量可靠同步发送消息（指定 Tag）
+     *
+     * @param topic    目标主题
+     * @param tag      消息标签
+     * @param payloads 消息载荷列表
+     * @return 按原序聚合的不可变发送回执列表
+     */
     public List<SendReceipt> sendBatch(String topic, String tag, List<?> payloads) {
-        return sendBatch(topic, tag, payloads, properties.getProducer().getSendTimeout());
+        return sendBatch(topic, tag, payloads, null, null);
     }
 
+    /**
+     * 批量可靠同步发送消息（指定 Tag 与自定义扩展属性；若需传 null 消歧请调用 5 参重载）
+     *
+     * @param topic          目标主题
+     * @param tag            消息标签
+     * @param payloads       消息载荷列表
+     * @param userProperties 自定义扩展属性（系统/追踪保留头将被安全过滤）
+     * @return 按原序聚合的不可变发送回执列表
+     */
+    public List<SendReceipt> sendBatch(String topic, String tag, List<?> payloads, Map<String, String> userProperties) {
+        return sendBatch(topic, tag, payloads, null, userProperties);
+    }
+
+    /**
+     * 批量可靠同步发送消息（指定 Tag 与等待超时时间）
+     *
+     * @param topic    目标主题
+     * @param tag      消息标签
+     * @param payloads 消息载荷列表
+     * @param timeout  批量聚合等待超时（非正数或 null 时回退使用默认 sendTimeout）
+     * @return 按原序聚合的不可变发送回执列表
+     */
     public List<SendReceipt> sendBatch(String topic, String tag, List<?> payloads, Duration timeout) {
-        Assert.hasText(topic, "topic 不能为空");
-        Assert.notEmpty(payloads, "payloads 不能为空且不可为空集合");
-        int maxBatchSize = properties.getProducer().getMaxBatchSize();
-        Assert.isTrue(payloads.size() <= maxBatchSize,
-                String.format("批量发送消息数量 [%d] 超出配置上限 [%d]", payloads.size(), maxBatchSize));
+        return sendBatch(topic, tag, payloads, timeout, null);
+    }
+
+    /**
+     * 批量可靠同步发送消息（全参两阶段契约：整批前置 Fail-Fast 校验 + {@link BatchSliceUtil} 分片并发汇聚）
+     *
+     * @param topic          目标主题
+     * @param tag            消息标签
+     * @param payloads       消息载荷列表（允许空集或 null，此时返回空不可变列表；若含 null 元素或单条压缩后超过 4MB 将零发送 Fail-Fast）
+     * @param timeout        批量聚合等待超时（非正数或 null 时回退使用默认 sendTimeout）
+     * @param userProperties 自定义扩展属性（系统/追踪保留头将被安全过滤）
+     * @return 按原序聚合的不可变发送回执列表
+     * @throws MessageDeliveryException 当单包超限、投递等待超时或底层 SDK 发送失败时抛出（完整保留原始 cause）
+     */
+    public List<SendReceipt> sendBatch(
+            String topic,
+            String tag,
+            List<?> payloads,
+            Duration timeout,
+            Map<String, String> userProperties) {
+        CompletableFuture<List<SendReceipt>> batchFuture = sendBatchAsync(topic, tag, payloads, userProperties);
+        if (payloads == null || payloads.isEmpty()) {
+            return batchFuture.join();
+        }
         Duration effectiveTimeout = (timeout != null && !timeout.isZero() && !timeout.isNegative())
                 ? timeout : properties.getProducer().getSendTimeout();
 
         try {
-            return sendBatchAsync(topic, tag, payloads).get(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            return batchFuture.get(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (java.util.concurrent.TimeoutException ex) {
             throw new MessageDeliveryException(
                     RocketmqConstants.MQ_TYPE,
@@ -525,12 +826,17 @@ public class RocketmqTemplate {
                     CommonResultCode.INTERNAL_SERVER_ERROR,
                     String.format("RocketMQ 批量发送等待超时 (%s): topic=%s, batchSize=%d", effectiveTimeout, topic, payloads.size()),
                     ex);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new MessageDeliveryException(
+                    RocketmqConstants.MQ_TYPE,
+                    topic,
+                    null,
+                    CommonResultCode.INTERNAL_SERVER_ERROR,
+                    String.format("RocketMQ 批量发送等待被中断: topic=%s, batchSize=%d", topic, payloads.size()),
+                    ex);
         } catch (Exception ex) {
-            Throwable cause = ex;
-            while ((cause instanceof java.util.concurrent.ExecutionException || cause instanceof CompletionException)
-                    && cause.getCause() != null) {
-                cause = cause.getCause();
-            }
+            Throwable cause = unwrapExecutionCause(ex);
             if (cause instanceof MessageDeliveryException mde) {
                 throw mde;
             }
@@ -544,39 +850,150 @@ public class RocketmqTemplate {
         }
     }
 
+    /**
+     * 批量可靠异步发送消息（空集保底返回已完成的空不可变集合 Future）
+     *
+     * @param topic    目标主题
+     * @param payloads 消息载荷列表
+     * @return 按原序聚合的不可变发送回执列表 Future
+     */
     public CompletableFuture<List<SendReceipt>> sendBatchAsync(String topic, List<?> payloads) {
-        return sendBatchAsync(topic, null, payloads);
+        return sendBatchAsync(topic, null, payloads, null);
     }
 
+    /**
+     * 批量可靠异步发送消息（携带自定义扩展属性，免传 Tag）
+     *
+     * @param topic          目标主题
+     * @param payloads       消息载荷列表
+     * @param userProperties 自定义扩展属性（系统/追踪保留头将被安全过滤）
+     * @return 按原序聚合的不可变发送回执列表 Future
+     */
+    public CompletableFuture<List<SendReceipt>> sendBatchAsync(
+            String topic,
+            List<?> payloads,
+            Map<String, String> userProperties) {
+        return sendBatchAsync(topic, null, payloads, userProperties);
+    }
+
+    /**
+     * 批量可靠异步发送消息（指定 Tag）
+     *
+     * @param topic    目标主题
+     * @param tag      消息标签
+     * @param payloads 消息载荷列表
+     * @return 按原序聚合的不可变发送回执列表 Future
+     */
     public CompletableFuture<List<SendReceipt>> sendBatchAsync(String topic, String tag, List<?> payloads) {
-        Assert.hasText(topic, "topic 不能为空");
-        Assert.notEmpty(payloads, "payloads 不能为空且不可为空集合");
+        return sendBatchAsync(topic, tag, payloads, null);
+    }
+
+    /**
+     * 批量可靠异步发送消息（全参两阶段契约：整批前置 Fail-Fast 校验 + {@link BatchSliceUtil} 分片并发汇聚）
+     *
+     * @param topic          目标主题
+     * @param tag            消息标签
+     * @param payloads       消息载荷列表（允许空集或 null，此时立即返回空不可变列表；含 null 元素或超限将同步 Fail-Fast 且零底层发送）
+     * @param userProperties 自定义扩展属性（系统/追踪保留头将被安全过滤）
+     * @return 按原序聚合的不可变发送回执列表 Future（异步异常统一转译为 {@link MessageDeliveryException} 并保留 cause）
+     */
+    public CompletableFuture<List<SendReceipt>> sendBatchAsync(
+            String topic,
+            String tag,
+            List<?> payloads,
+            Map<String, String> userProperties) {
+        String trimmedTopic = validateAndTrimTopic(topic);
+        if (payloads == null || payloads.isEmpty()) {
+            return CompletableFuture.completedFuture(Collections.emptyList());
+        }
         int maxBatchSize = properties.getProducer().getMaxBatchSize();
+        Assert.isTrue(maxBatchSize > 0, "maxBatchSize 必须大于 0");
         Assert.isTrue(payloads.size() <= maxBatchSize,
                 String.format("批量发送消息数量 [%d] 超出配置上限 [%d]", payloads.size(), maxBatchSize));
+        int batchSliceSize = properties.getProducer().getBatchSliceSize();
+        Assert.isTrue(batchSliceSize > 0, "batchSliceSize 必须大于 0");
 
-        long startTime = System.currentTimeMillis();
-        List<CompletableFuture<SendReceipt>> futures = new ArrayList<>(payloads.size());
-        for (Object payload : payloads) {
-            if (taskExecutor != null) {
-                futures.add(CompletableFuture.supplyAsync(() -> sendAsync(topic, tag, null, payload, null), taskExecutor)
-                        .thenCompose(future -> future));
-            } else {
-                futures.add(sendAsync(topic, tag, null, payload, null));
+        // 1. 第一阶段前置全量校验：检查无空元素、编码压缩后单条载荷上限，任一失败立即 Fail-Fast（零底层发送）
+        List<Message> preparedMessages = new ArrayList<>(payloads.size());
+        for (int i = 0; i < payloads.size(); i++) {
+            Object payload = payloads.get(i);
+            if (payload == null) {
+                throw new IllegalArgumentException("批量发送消息列表中存在 null 元素: index=" + i);
             }
+            String finalBizKey = RocketmqMessageHelper.resolveBizKey(null, payload);
+            preparedMessages.add(buildMessage(trimmedTopic, tag, finalBizKey, payload, null, null, userProperties));
         }
 
-        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-                .thenApply(v -> {
-                    List<SendReceipt> receipts = new ArrayList<>(futures.size());
-                    for (CompletableFuture<SendReceipt> future : futures) {
-                        receipts.add(future.join());
-                    }
+        // 2. 第二阶段自动分片并发投递：复用 BatchSliceUtil 按 batchSliceSize 切分并汇聚按序回执（异常统一因果转译）
+        long startTime = System.currentTimeMillis();
+        List<List<Message>> slices = BatchSliceUtil.slice(preparedMessages, batchSliceSize);
+        List<CompletableFuture<List<SendReceipt>>> sliceFutures = new ArrayList<>(slices.size());
+        for (List<Message> slice : slices) {
+            sliceFutures.add(dispatchBatchSliceAsync(slice));
+        }
+
+        return CompletableFuture.allOf(sliceFutures.toArray(new CompletableFuture[0]))
+                .handle((ignored, ex) -> {
                     long cost = System.currentTimeMillis() - startTime;
-                    log.info("[MQ-BATCH-SEND] mq=rocketmq topic={} tag={} count={} status=SUCCESS cost={}ms",
-                            topic, tag != null ? tag : "", payloads.size(), cost);
-                    return receipts;
+                    if (ex != null) {
+                        Throwable cause = unwrapExecutionCause(ex);
+                        log.warn("[MQ-BATCH-SEND] mq=rocketmq topic={} tag={} count={} slices={} sliceSize={} status=FAILED cost={}ms error={}",
+                                trimmedTopic, tag != null ? tag : "", preparedMessages.size(), slices.size(), batchSliceSize, cost, cause.getMessage());
+                        if (cause instanceof MessageDeliveryException mde) {
+                            throw mde;
+                        }
+                        throw new MessageDeliveryException(
+                                RocketmqConstants.MQ_TYPE,
+                                trimmedTopic,
+                                null,
+                                CommonResultCode.INTERNAL_SERVER_ERROR,
+                                "RocketMQ 批量发送失败: " + cause.getMessage(),
+                                cause);
+                    }
+                    List<SendReceipt> receipts = new ArrayList<>(preparedMessages.size());
+                    for (CompletableFuture<List<SendReceipt>> sliceFuture : sliceFutures) {
+                        receipts.addAll(sliceFuture.join());
+                    }
+                    log.info("[MQ-BATCH-SEND] mq=rocketmq topic={} tag={} count={} slices={} sliceSize={} status=SUCCESS cost={}ms",
+                            trimmedTopic, tag != null ? tag : "", preparedMessages.size(), slices.size(), batchSliceSize, cost);
+                    return Collections.unmodifiableList(receipts);
                 });
+    }
+
+    private CompletableFuture<List<SendReceipt>> dispatchBatchSliceAsync(List<Message> slice) {
+        try {
+            if (taskExecutor != null) {
+                return CompletableFuture.supplyAsync(() -> sendPreparedSliceAsync(slice), taskExecutor)
+                        .thenCompose(Function.identity());
+            }
+            return sendPreparedSliceAsync(slice);
+        } catch (RuntimeException ex) {
+            return CompletableFuture.failedFuture(ex);
+        }
+    }
+
+    private CompletableFuture<List<SendReceipt>> sendPreparedSliceAsync(List<Message> slice) {
+        List<CompletableFuture<SendReceipt>> messageFutures = new ArrayList<>(slice.size());
+        for (Message message : slice) {
+            messageFutures.add(producer.sendAsync(message));
+        }
+        return CompletableFuture.allOf(messageFutures.toArray(new CompletableFuture[0]))
+                .thenApply(v -> {
+                    List<SendReceipt> sliceReceipts = new ArrayList<>(messageFutures.size());
+                    for (CompletableFuture<SendReceipt> future : messageFutures) {
+                        sliceReceipts.add(future.join());
+                    }
+                    return sliceReceipts;
+                });
+    }
+
+    private Throwable unwrapExecutionCause(Throwable ex) {
+        Throwable cause = ex;
+        while ((cause instanceof java.util.concurrent.ExecutionException || cause instanceof CompletionException)
+                && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause;
     }
 
     // =========================================================================
@@ -656,6 +1073,18 @@ public class RocketmqTemplate {
     // 内部通用构建与执行方法
     // =========================================================================
 
+    /**
+     * 构建符合规范的 RocketMQ 原生消息对象（执行 Topic 防卫、序列化、GZIP 压缩、4MB 拦截与四维上下文安全注入）
+     *
+     * @param topic             目标主题
+     * @param tag               消息标签
+     * @param bizKey            业务唯一键（不能为空）
+     * @param payload           消息载荷
+     * @param messageGroup      顺序分组键
+     * @param deliveryTimestamp 绝对定时投递毫秒时间戳
+     * @param customProperties  业务自定义扩展属性（系统/追踪保留头将被自动过滤）
+     * @return RocketMQ 原生消息对象
+     */
     public Message buildMessage(
             String topic,
             String tag,
@@ -664,46 +1093,34 @@ public class RocketmqTemplate {
             String messageGroup,
             Long deliveryTimestamp,
             Map<String, String> customProperties) {
-        Assert.hasText(topic, "topic 不能为空");
-        if (!RocketmqConstants.TOPIC_PATTERN.matcher(topic).matches()) {
-            throw new IllegalArgumentException(String.format(
-                    "RocketMQ Topic 名称 [%s] 格式非法，必须符合正则 [%s]，严禁包含点号等特殊字符！",
-                    topic, RocketmqConstants.TOPIC_REGEX));
-        }
+        String trimmedTopic = validateAndTrimTopic(topic);
+        Assert.hasText(bizKey, "bizKey 不能为空");
 
-        // 1. 序列化为字节数组
+        // 1. 序列化为字节数组并前置拦截原始超限大报文
         byte[] bodyBytes = RocketmqMessageHelper.toPayloadBytes(payload);
-
-        // 2. 检查大报文 Fail-Fast
         long maxPayloadBytes = properties.getProducer().getMaxPayloadSize().toBytes();
-        if (bodyBytes.length > maxPayloadBytes) {
-            throw new MessageDeliveryException(
-                    RocketmqConstants.MQ_TYPE,
-                    topic,
-                    bizKey,
-                    CommonResultCode.BAD_REQUEST,
-                    String.format("RocketMQ 消息体过大 (%d 字节)，超过配置上限 (%d 字节)", bodyBytes.length, maxPayloadBytes),
-                    null);
-        }
+        checkMaxPayloadSize(bodyBytes.length, maxPayloadBytes, trimmedTopic, bizKey);
 
-        // 3. 构建 Header Map 并抓取四维上下文
+        // 2. 抓取四维上下文与业务键并按需执行透明 GZIP 压缩
         Map<String, Object> headerMap = new HashMap<>();
-        MessageContextPropagator.inject(headerMap);
+        MessageContextPropagator.inject(headerMap, bizKey);
 
-        // 4. 检查透明 GZIP 压缩
         long compressionThreshold = properties.getProducer().getCompressionThreshold().toBytes();
         if (bodyBytes.length > compressionThreshold) {
             try {
                 bodyBytes = RocketmqMessageHelper.compressGzip(bodyBytes);
                 headerMap.put(RocketmqConstants.HEADER_COMPRESSION, RocketmqConstants.COMPRESSION_GZIP);
             } catch (IOException e) {
-                log.warn("[ateng-boot-rocketmq] 消息透明 GZIP 压缩失败，回退发送原始报文: topic={}, bizKey={}", topic, bizKey, e);
+                log.warn("[ateng-boot-rocketmq] 消息透明 GZIP 压缩失败，回退发送原始报文: topic={}, bizKey={}", trimmedTopic, bizKey, e);
             }
         }
 
-        // 5. 组装 RocketMQ 原生 Message
+        // 3. 二次校验编码压缩后载荷体积上限，确保最终出站字节严格 <= maxPayloadSize
+        checkMaxPayloadSize(bodyBytes.length, maxPayloadBytes, trimmedTopic, bizKey);
+
+        // 4. 组装 RocketMQ 原生 Message
         MessageBuilder builder = provider.newMessageBuilder();
-        builder.setTopic(topic.trim());
+        builder.setTopic(trimmedTopic);
         if (StringUtils.hasText(tag)) {
             builder.setTag(tag.trim());
         }
@@ -716,23 +1133,58 @@ public class RocketmqTemplate {
         }
         builder.setBody(bodyBytes);
 
-        // 6. 添加四维上下文及自定义属性 (强制 UTF-8 String 归一化)
+        // 5. 先写入业务自定义扩展属性（过滤系统保留与追踪头，严禁污染）
+        if (customProperties != null) {
+            for (Map.Entry<String, String> entry : customProperties.entrySet()) {
+                String key = entry.getKey();
+                if (!isProtectedHeader(key) && entry.getValue() != null) {
+                    builder.addProperty(key.trim(), entry.getValue());
+                }
+            }
+        }
+
+        // 6. 最后覆写四维上下文及系统权威标识头 (强制 UTF-8 String 归一化)
         for (Map.Entry<String, Object> entry : headerMap.entrySet()) {
             if (entry.getKey() != null && entry.getValue() != null) {
                 builder.addProperty(entry.getKey(), String.valueOf(entry.getValue()));
             }
         }
-        builder.addProperty(MessageHeaderConstants.BIZ_KEY, bizKey);
-
-        if (customProperties != null) {
-            for (Map.Entry<String, String> entry : customProperties.entrySet()) {
-                if (entry.getKey() != null && entry.getValue() != null) {
-                    builder.addProperty(entry.getKey(), entry.getValue());
-                }
-            }
-        }
 
         return builder.build();
+    }
+
+    private String validateAndTrimTopic(String topic) {
+        Assert.hasText(topic, "topic 不能为空");
+        String trimmedTopic = topic.trim();
+        if (!RocketmqConstants.TOPIC_PATTERN.matcher(trimmedTopic).matches()) {
+            throw new IllegalArgumentException(String.format(
+                    "RocketMQ Topic 名称 [%s] 格式非法，必须符合正则 [%s]，严禁包含点号等特殊字符！",
+                    trimmedTopic, RocketmqConstants.TOPIC_REGEX));
+        }
+        return trimmedTopic;
+    }
+
+    private void checkMaxPayloadSize(long actualBytes, long maxPayloadBytes, String topic, String bizKey) {
+        if (actualBytes > maxPayloadBytes) {
+            throw new MessageDeliveryException(
+                    RocketmqConstants.MQ_TYPE,
+                    topic,
+                    bizKey,
+                    CommonResultCode.BAD_REQUEST,
+                    String.format("RocketMQ 消息体过大 (%d 字节)，超过配置上限 (%d 字节)", actualBytes, maxPayloadBytes),
+                    null);
+        }
+    }
+
+    private boolean isProtectedHeader(String key) {
+        if (!StringUtils.hasText(key)) {
+            return true;
+        }
+        String normalized = key.trim().toLowerCase(Locale.ROOT);
+        return normalized.startsWith("__")
+                || normalized.startsWith("%retry%")
+                || normalized.startsWith("%dlq%")
+                || PROTECTED_HEADER_KEYS.contains(normalized);
     }
 
     private SendReceipt doSendSync(Message message, String topic, String tag, String bizKey) {

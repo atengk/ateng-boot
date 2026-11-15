@@ -18,6 +18,10 @@ import org.springframework.web.bind.annotation.*;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * RocketMQ 延时调度与精准撤回场景控制器
@@ -33,11 +37,13 @@ import java.util.List;
 @RequiredArgsConstructor
 public class RocketmqDelayController {
 
+    private static final Duration ASYNC_AWAIT_TIMEOUT = Duration.ofSeconds(10);
+
     private final BatchDelayScenarioService batchDelayScenarioService;
     private final OrderDelayConsumer delayConsumer;
 
     /**
-     * 相对时长延时发送订单消息（返回 recallHandle 支持撤回）
+     * 相对时长延时发送订单消息（返回 recallHandle 支持撤回，支持自定义属性透传）
      *
      * @param request 延时请求参数
      * @return 延时响应（包含撤回句柄）
@@ -47,21 +53,29 @@ public class RocketmqDelayController {
         OrderMessage order = request.toOrderMessage();
         long seconds = request.resolveDelaySeconds();
         Duration delay = Duration.ofSeconds(seconds);
-        SendReceipt receipt = batchDelayScenarioService.sendDelayed(order, delay);
-
-        OrderDelayResponse response = OrderDelayResponse.builder()
-                .orderId(order.getOrderId())
-                .messageId(receipt.getMessageId().toString())
-                .delaySeconds(seconds)
-                .deliverAtTimestamp(System.currentTimeMillis() + delay.toMillis())
-                .recallHandle(receipt.getRecallHandle())
-                .status("DELAY_SCHEDULED")
-                .build();
-        return Result.success(response);
+        long deliverAtTimestamp = System.currentTimeMillis() + delay.toMillis();
+        SendReceipt receipt = batchDelayScenarioService.sendDelayed(order, delay, request.getProperties());
+        return Result.success(buildDelayResponse(order, receipt, seconds, deliverAtTimestamp, "DELAY_SCHEDULED"));
     }
 
     /**
-     * 绝对时间戳定时调度订单消息（返回 recallHandle）
+     * 异步相对时长延时发送订单消息（支持自定义属性透传）
+     *
+     * @param request 延时请求参数
+     * @return 延时响应（包含撤回句柄）
+     */
+    @PostMapping("/duration-async")
+    public Result<OrderDelayResponse> sendDelayedAsync(@Valid @RequestBody OrderDelayRequest request) {
+        OrderMessage order = request.toOrderMessage();
+        long seconds = request.resolveDelaySeconds();
+        Duration delay = Duration.ofSeconds(seconds);
+        long deliverAtTimestamp = System.currentTimeMillis() + delay.toMillis();
+        SendReceipt receipt = awaitFuture(batchDelayScenarioService.sendDelayedAsync(order, delay, request.getProperties()));
+        return Result.success(buildDelayResponse(order, receipt, seconds, deliverAtTimestamp, "DELAY_ASYNC_SCHEDULED"));
+    }
+
+    /**
+     * 绝对时间戳定时调度订单消息（返回 recallHandle，支持自定义属性透传）
      *
      * @param request 定时请求参数
      * @return 定时响应（包含撤回句柄）
@@ -71,16 +85,56 @@ public class RocketmqDelayController {
         OrderMessage order = request.toOrderMessage();
         long targetTimestamp = request.resolveDeliverAtTimestamp();
         Instant deliverAt = Instant.ofEpochMilli(targetTimestamp);
-        SendReceipt receipt = batchDelayScenarioService.sendDeliverAt(order, deliverAt);
+        SendReceipt receipt = batchDelayScenarioService.sendDeliverAt(order, deliverAt, request.getProperties());
+        return Result.success(buildDelayResponse(order, receipt, null, targetTimestamp, "SCHEDULED_SUCCESS"));
+    }
 
-        OrderDelayResponse response = OrderDelayResponse.builder()
+    /**
+     * 异步绝对时间戳定时调度订单消息（支持自定义属性透传）
+     *
+     * @param request 定时请求参数
+     * @return 定时响应（包含撤回句柄）
+     */
+    @PostMapping("/deliver-at-async")
+    public Result<OrderDelayResponse> sendDeliverAtAsync(@Valid @RequestBody OrderDelayRequest request) {
+        OrderMessage order = request.toOrderMessage();
+        long targetTimestamp = request.resolveDeliverAtTimestamp();
+        Instant deliverAt = Instant.ofEpochMilli(targetTimestamp);
+        SendReceipt receipt = awaitFuture(batchDelayScenarioService.sendDeliverAtAsync(order, deliverAt, request.getProperties()));
+        return Result.success(buildDelayResponse(order, receipt, null, targetTimestamp, "SCHEDULED_ASYNC_SUCCESS"));
+    }
+
+    private <T> T awaitFuture(CompletableFuture<T> future) {
+        try {
+            return future.get(ASYNC_AWAIT_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("等待 RocketMQ 异步延时发送结果被中断", ex);
+        } catch (TimeoutException ex) {
+            throw new IllegalStateException("等待 RocketMQ 异步延时发送结果超时", ex);
+        } catch (ExecutionException ex) {
+            Throwable cause = ex.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new IllegalStateException("异步发送 RocketMQ 延时消息失败", cause != null ? cause : ex);
+        }
+    }
+
+    private OrderDelayResponse buildDelayResponse(
+            OrderMessage order,
+            SendReceipt receipt,
+            Long delaySeconds,
+            long deliverAtTimestamp,
+            String status) {
+        return OrderDelayResponse.builder()
                 .orderId(order.getOrderId())
                 .messageId(receipt.getMessageId().toString())
-                .deliverAtTimestamp(targetTimestamp)
+                .delaySeconds(delaySeconds)
+                .deliverAtTimestamp(deliverAtTimestamp)
                 .recallHandle(receipt.getRecallHandle())
-                .status("SCHEDULED_SUCCESS")
+                .status(status)
                 .build();
-        return Result.success(response);
     }
 
     /**

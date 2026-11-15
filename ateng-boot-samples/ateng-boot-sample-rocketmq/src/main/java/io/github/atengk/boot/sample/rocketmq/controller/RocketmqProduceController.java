@@ -17,9 +17,16 @@ import org.apache.rocketmq.client.apis.producer.SendReceipt;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * RocketMQ 基础与保序消息发送场景控制器
@@ -34,6 +41,8 @@ import java.util.concurrent.CompletableFuture;
 @RequestMapping("/sample/rocketmq/produce")
 @RequiredArgsConstructor
 public class RocketmqProduceController {
+
+    private static final Duration ASYNC_AWAIT_TIMEOUT = Duration.ofSeconds(10);
 
     private final StandardRocketmqScenarioService standardScenarioService;
     private final OrderStandardConsumer standardConsumer;
@@ -50,7 +59,7 @@ public class RocketmqProduceController {
     public Result<OrderProduceResponse> sendSync(@Valid @RequestBody OrderProduceRequest request) {
         OrderMessage order = request.toOrderMessage();
         String tag = StringUtils.hasText(request.getTag()) ? request.getTag() : "create";
-        SendReceipt receipt = standardScenarioService.sendSync(order, tag);
+        SendReceipt receipt = standardScenarioService.sendSync(order, tag, request.getProperties());
         OrderProduceResponse response = OrderProduceResponse.builder()
                 .orderId(order.getOrderId())
                 .messageId(receipt.getMessageId().toString())
@@ -69,8 +78,8 @@ public class RocketmqProduceController {
     @PostMapping("/async")
     public Result<OrderProduceResponse> sendAsync(@Valid @RequestBody OrderProduceRequest request) {
         OrderMessage order = request.toOrderMessage();
-        CompletableFuture<SendReceipt> future = standardScenarioService.sendAsync(order);
-        SendReceipt receipt = future.join();
+        CompletableFuture<SendReceipt> future = standardScenarioService.sendAsync(order, request.getProperties());
+        SendReceipt receipt = awaitFuture(future);
         OrderProduceResponse response = OrderProduceResponse.builder()
                 .orderId(order.getOrderId())
                 .messageId(receipt.getMessageId().toString())
@@ -133,7 +142,7 @@ public class RocketmqProduceController {
     }
 
     /**
-     * 批量可靠发送订单消息（强制接入 ValidList 工业级校验）
+     * 批量可靠发送订单消息（支持自动分片并发投递与自定义属性透传，接入 ValidList 工业级校验）
      *
      * @param requests 批量发送请求列表
      * @return 批量发送统一响应
@@ -141,16 +150,74 @@ public class RocketmqProduceController {
     @PostMapping("/batch")
     public Result<BatchProduceResponse> sendBatch(@Valid @RequestBody ValidList<OrderProduceRequest> requests) {
         List<OrderMessage> orders = requests.stream().map(OrderProduceRequest::toOrderMessage).toList();
-        List<SendReceipt> receipts = standardScenarioService.sendBatch(orders, "batch");
+        List<SendReceipt> receipts = standardScenarioService.sendBatch(orders, "batch", extractBatchProperties(requests));
+        return Result.success(buildBatchResponse(requests, orders, receipts));
+    }
+
+    /**
+     * 异步批量可靠发送订单消息（支持自动分片并发投递与自定义属性透传）
+     *
+     * @param requests 批量发送请求列表
+     * @return 批量发送统一响应
+     */
+    @PostMapping("/batch-async")
+    public Result<BatchProduceResponse> sendBatchAsync(@Valid @RequestBody ValidList<OrderProduceRequest> requests) {
+        List<OrderMessage> orders = requests.stream().map(OrderProduceRequest::toOrderMessage).toList();
+        List<SendReceipt> receipts = awaitFuture(standardScenarioService
+                .sendBatchAsync(orders, "batch", extractBatchProperties(requests)));
+        return Result.success(buildBatchResponse(requests, orders, receipts));
+    }
+
+    private <T> T awaitFuture(CompletableFuture<T> future) {
+        try {
+            return future.get(ASYNC_AWAIT_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("等待 RocketMQ 异步发送结果被中断", ex);
+        } catch (TimeoutException ex) {
+            throw new IllegalStateException("等待 RocketMQ 异步发送结果超时", ex);
+        } catch (ExecutionException ex) {
+            Throwable cause = ex.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new IllegalStateException("异步发送 RocketMQ 消息失败", cause != null ? cause : ex);
+        }
+    }
+
+    private BatchProduceResponse buildBatchResponse(
+            ValidList<OrderProduceRequest> requests,
+            List<OrderMessage> orders,
+            List<SendReceipt> receipts) {
         List<String> orderIds = orders.stream().map(OrderMessage::getOrderId).toList();
         List<String> messageIds = receipts.stream().map(r -> r.getMessageId().toString()).toList();
-        BatchProduceResponse response = BatchProduceResponse.builder()
+        return BatchProduceResponse.builder()
                 .total(requests.size())
                 .successCount(receipts.size())
                 .orderIds(orderIds)
                 .messageIds(messageIds)
                 .build();
-        return Result.success(response);
+    }
+
+    private Map<String, String> extractBatchProperties(List<OrderProduceRequest> requests) {
+        Map<String, String> merged = new LinkedHashMap<>();
+        for (OrderProduceRequest request : requests) {
+            if (request == null) {
+                throw new IllegalArgumentException("批量请求列表中不能包含 null 元素");
+            }
+            Map<String, String> props = request.getProperties();
+            if (props == null || props.isEmpty()) {
+                continue;
+            }
+            for (Map.Entry<String, String> entry : props.entrySet()) {
+                String existing = merged.putIfAbsent(entry.getKey(), entry.getValue());
+                if (existing != null && !Objects.equals(existing, entry.getValue())) {
+                    throw new IllegalArgumentException(
+                            "批量消息属性键 [" + entry.getKey() + "] 存在冲突取值，请保持批次内属性一致");
+                }
+            }
+        }
+        return merged.isEmpty() ? null : merged;
     }
 
     /**

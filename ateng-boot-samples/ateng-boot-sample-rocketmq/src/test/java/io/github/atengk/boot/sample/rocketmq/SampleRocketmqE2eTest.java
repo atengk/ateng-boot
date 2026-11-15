@@ -41,6 +41,7 @@ import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -425,7 +426,7 @@ class SampleRocketmqE2eTest {
     // =========================================================================
 
     @Test
-    @DisplayName("场景 10：批量并发发信 (sendBatch / sendBatchAsync) 汇聚等待")
+    @DisplayName("场景 10：批量并发发信与微切片并发汇聚 (sendBatch / sendBatchAsync + userProperties)")
     void testBatchSend() {
         List<OrderMessage> batchOrders = List.of(
                 OrderMessage.builder().orderId("ORD-BATCH-1").amount(10.0).customerName("批买家1").status("CREATED").build(),
@@ -436,9 +437,34 @@ class SampleRocketmqE2eTest {
         List<SendReceipt> receipts = batchDelayScenarioService.sendBatch(batchOrders);
         assertThat(receipts).hasSize(3);
 
-        CompletableFuture<List<SendReceipt>> asyncFuture = batchDelayScenarioService.sendBatchAsync(batchOrders);
+        CompletableFuture<List<SendReceipt>> asyncFuture = batchDelayScenarioService.sendBatchAsync(
+                batchOrders, Map.of("region", "cn-east", "batchTag", "e2e"));
         List<SendReceipt> asyncReceipts = asyncFuture.join();
         assertThat(asyncReceipts).hasSize(3);
+
+        // 验证空集保底返回空不可变集合，超 64 条 (130条) 自动分片发送并完整保序返回
+        List<SendReceipt> emptyReceipts = batchDelayScenarioService.sendBatch(List.of());
+        assertThat(emptyReceipts).isEmpty();
+
+        List<OrderMessage> slicedOrders = new ArrayList<>(130);
+        for (int i = 0; i < 130; i++) {
+            slicedOrders.add(OrderMessage.builder()
+                    .orderId("ORD-E2E-SLICE-" + i)
+                    .amount(100.0 + i)
+                    .customerName("切片买家" + i)
+                    .status("CREATED")
+                    .build());
+        }
+        List<SendReceipt> slicedReceipts = batchDelayScenarioService.sendBatch(slicedOrders, Map.of("sliceTest", "true"));
+        assertThat(slicedReceipts).hasSize(130);
+
+        if (testBroker != null) {
+            List<MessageView> orderMessages = testBroker.getSentMessages(TradeRocketmqProducer.TOPIC_ORDER);
+            assertThat(orderMessages).anySatisfy(mv ->
+                    assertThat(mv.getProperties()).containsEntry("region", "cn-east").containsEntry("batchTag", "e2e"));
+            assertThat(orderMessages).anySatisfy(mv ->
+                    assertThat(mv.getProperties()).containsEntry("sliceTest", "true"));
+        }
     }
 
     // =========================================================================
