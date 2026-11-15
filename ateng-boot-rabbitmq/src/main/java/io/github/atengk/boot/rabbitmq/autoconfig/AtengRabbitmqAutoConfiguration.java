@@ -9,6 +9,7 @@ import io.github.atengk.boot.rabbitmq.callback.RabbitTransactionFailureCallback;
 import io.github.atengk.boot.rabbitmq.callback.RabbitUnroutableMessageCallback;
 import io.github.atengk.boot.rabbitmq.error.RabbitFatalExceptionStrategy;
 import io.github.atengk.boot.rabbitmq.interceptor.RabbitListenerGlobalAdvice;
+import io.github.atengk.boot.rabbitmq.manager.RabbitContainerManager;
 import io.github.atengk.boot.rabbitmq.properties.RabbitmqProperties;
 import io.github.atengk.boot.rabbitmq.retry.RabbitRetryPolicy;
 import io.github.atengk.boot.rabbitmq.template.RabbitDeadLetterReplayTemplate;
@@ -25,6 +26,7 @@ import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.listener.ConditionalRejectingErrorHandler;
 import org.springframework.amqp.rabbit.listener.FatalExceptionStrategy;
+import org.springframework.amqp.rabbit.listener.RabbitListenerEndpointRegistry;
 import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
 import org.springframework.amqp.rabbit.retry.RejectAndDontRequeueRecoverer;
 import org.springframework.amqp.support.converter.DefaultJackson2JavaTypeMapper;
@@ -187,6 +189,17 @@ public class AtengRabbitmqAutoConfiguration {
     @ConditionalOnMissingBean
     public RabbitListenerGlobalAdvice rabbitListenerGlobalAdvice(RabbitmqProperties properties) {
         return new RabbitListenerGlobalAdvice(properties);
+    }
+
+    /**
+     * 运行期监听容器管控与队列观测门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RabbitContainerManager rabbitContainerManager(
+            ObjectProvider<RabbitListenerEndpointRegistry> registryProvider,
+            ObjectProvider<RabbitAdmin> rabbitAdminProvider) {
+        return new RabbitContainerManager(registryProvider, rabbitAdminProvider);
     }
 
     /**

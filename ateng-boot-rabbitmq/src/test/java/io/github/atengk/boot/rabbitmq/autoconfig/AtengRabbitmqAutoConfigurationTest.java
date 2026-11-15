@@ -1,6 +1,7 @@
 package io.github.atengk.boot.rabbitmq.autoconfig;
 
 import io.github.atengk.boot.rabbitmq.interceptor.RabbitListenerGlobalAdvice;
+import io.github.atengk.boot.rabbitmq.manager.RabbitContainerManager;
 import io.github.atengk.boot.rabbitmq.template.RabbitDeadLetterReplayTemplate;
 import io.github.atengk.boot.rabbitmq.template.RabbitReliableTemplate;
 import org.junit.jupiter.api.DisplayName;
@@ -11,6 +12,7 @@ import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.listener.ConditionalRejectingErrorHandler;
 import org.springframework.amqp.rabbit.listener.FatalExceptionStrategy;
+import org.springframework.amqp.rabbit.listener.RabbitListenerEndpointRegistry;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.amqp.support.converter.SimpleMessageConverter;
@@ -48,6 +50,7 @@ class AtengRabbitmqAutoConfigurationTest {
             assertThat(context).hasSingleBean(FatalExceptionStrategy.class);
             assertThat(context).hasSingleBean(ConditionalRejectingErrorHandler.class);
             assertThat(context).hasSingleBean(RabbitListenerGlobalAdvice.class);
+            assertThat(context).hasSingleBean(RabbitContainerManager.class);
         });
     }
 
@@ -68,6 +71,18 @@ class AtengRabbitmqAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("用户自定义 RabbitContainerManager 时平滑无缝覆盖 (@ConditionalOnMissingBean)")
+    void testUserCustomRabbitContainerManagerOverride() {
+        RabbitContainerManager customManager = new RabbitContainerManager((RabbitListenerEndpointRegistry) null);
+        contextRunner
+                .withBean("customRabbitContainerManager", RabbitContainerManager.class, () -> customManager)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RabbitContainerManager.class);
+                    assertThat(context.getBean(RabbitContainerManager.class)).isSameAs(customManager);
+                });
+    }
+
+    @Test
     @DisplayName("配置 ateng.boot.rabbitmq.enabled=false 时安全停用装配")
     void testDisabledAutoConfiguration() {
         contextRunner
@@ -82,6 +97,7 @@ class AtengRabbitmqAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(FatalExceptionStrategy.class);
                     assertThat(context).doesNotHaveBean(ConditionalRejectingErrorHandler.class);
                     assertThat(context).doesNotHaveBean(RabbitListenerGlobalAdvice.class);
+                    assertThat(context).doesNotHaveBean(RabbitContainerManager.class);
                 });
     }
 
