@@ -1,15 +1,21 @@
 package io.github.atengk.boot.kafka.manager;
 
+import io.github.atengk.boot.kafka.model.KafkaContainerStatus;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.common.TopicPartition;
 import org.springframework.context.Lifecycle;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.kafka.listener.BatchMessageListener;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.KafkaMessageListenerContainer;
 import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.support.TopicPartitionOffset;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 import java.util.*;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Kafka 运行期消费监听容器动态流控与管控门面
@@ -26,6 +32,7 @@ import java.util.*;
 public class KafkaContainerManager {
 
     private final KafkaListenerEndpointRegistry registry;
+    private final ReentrantLock scaleLock = new ReentrantLock();
 
     /**
      * 构建消费监听容器管理门面
@@ -261,9 +268,117 @@ public class KafkaContainerManager {
         return count;
     }
 
+    /**
+     * 运行期动态调整目标监听容器并发消费者数量
+     *
+     * <p>对处于运行态的 {@link ConcurrentMessageListenerContainer}，先安全停止再更新并发数并重启（保持原暂停状态），
+     * 确保新增或缩减的子消费容器立即生效。</p>
+     *
+     * @param idOrTopic   监听容器 ID 或订阅主题名称
+     * @param concurrency 目标并发线程数（必须大于 0）
+     * @return 匹配并完成并发调整返回 {@code true}；未匹配任何容器返回 {@code false}
+     * @throws IllegalArgumentException {@code idOrTopic} 为空白或 {@code concurrency <= 0} 时抛出
+     * @throws IllegalStateException    匹配容器非 {@link ConcurrentMessageListenerContainer} 时抛出
+     */
+    public boolean scaleConcurrency(String idOrTopic, int concurrency) {
+        Assert.hasText(idOrTopic, "idOrTopic 不能为空白");
+        Assert.isTrue(concurrency > 0, "concurrency 必须大于 0");
+
+        List<MessageListenerContainer> targets = findContainers(idOrTopic);
+        if (targets.isEmpty()) {
+            log.warn("[MQ-CONTAINER-SCALE] 未找到匹配的消费监听容器: idOrTopic={}, concurrency={}", idOrTopic, concurrency);
+            return false;
+        }
+
+        // 先校验所有目标容器类型，避免部分容器已变更后才失败
+        List<ConcurrentMessageListenerContainer<?, ?>> concurrentContainers = new ArrayList<>(targets.size());
+        for (MessageListenerContainer container : targets) {
+            if (!(container instanceof ConcurrentMessageListenerContainer<?, ?> concurrent)) {
+                throw new IllegalStateException(
+                        "容器类型不支持动态调整并发度 (仅支持 ConcurrentMessageListenerContainer): "
+                                + container.getClass().getName());
+            }
+            concurrentContainers.add(concurrent);
+        }
+
+        scaleLock.lock();
+        try {
+            for (ConcurrentMessageListenerContainer<?, ?> concurrent : concurrentContainers) {
+                boolean wasRunning = concurrent.isRunning();
+                boolean wasPaused = concurrent.isContainerPaused() || concurrent.isPauseRequested();
+                if (wasRunning) {
+                    concurrent.stop();
+                }
+                concurrent.setConcurrency(concurrency);
+                if (wasRunning) {
+                    if (wasPaused) {
+                        // 在 start 前先标记暂停，避免子容器启动后产生拉取窗口
+                        concurrent.pause();
+                    }
+                    concurrent.start();
+                }
+                log.info("[MQ-CONTAINER-SCALE] 动态调整消费容器并发度完成: idOrTopic={}, listenerId={}, concurrency={}",
+                        idOrTopic, concurrent.getListenerId(), concurrency);
+            }
+        } finally {
+            scaleLock.unlock();
+        }
+        return true;
+    }
+
     // =========================================================================
-    // 3. 容器探测与检索 (Container Lookup)
+    // 3. 容器探测、状态快照与检索 (Container Lookup & Status Snapshots)
     // =========================================================================
+
+    /**
+     * 获取全部已注册消费监听容器的不可变状态快照列表
+     *
+     * @return 容器状态快照不可变列表（无注册表或无容器时保底返回空不可变列表）
+     */
+    public List<KafkaContainerStatus> getContainerStatuses() {
+        if (registry == null) {
+            return List.of();
+        }
+        List<KafkaContainerStatus> statuses = new ArrayList<>();
+        Set<String> ids = registry.getListenerContainerIds();
+        if (ids != null && !ids.isEmpty()) {
+            for (String id : ids) {
+                MessageListenerContainer container = registry.getListenerContainer(id);
+                if (container != null) {
+                    statuses.add(toContainerStatus(id, container));
+                }
+            }
+            return Collections.unmodifiableList(statuses);
+        }
+
+        Collection<MessageListenerContainer> containers = registry.getListenerContainers();
+        if (containers != null) {
+            for (MessageListenerContainer container : containers) {
+                if (container != null) {
+                    statuses.add(toContainerStatus(container.getListenerId(), container));
+                }
+            }
+        }
+        return Collections.unmodifiableList(statuses);
+    }
+
+    /**
+     * 查询指定监听容器 ID 或订阅主题对应的运行状态快照
+     *
+     * @param idOrTopic 监听容器 ID 或订阅主题名称
+     * @return 首个匹配容器的状态快照，未命中任何容器时返回 {@code null}
+     * @throws IllegalArgumentException {@code idOrTopic} 为空白时抛出
+     */
+    public KafkaContainerStatus getContainerStatus(String idOrTopic) {
+        Assert.hasText(idOrTopic, "idOrTopic 不能为空白");
+        String target = idOrTopic.trim();
+        List<MessageListenerContainer> matched = findContainers(target);
+        if (matched.isEmpty()) {
+            return null;
+        }
+        MessageListenerContainer first = matched.get(0);
+        return toContainerStatus(resolveRegisteredId(first, target), first);
+    }
 
     /**
      * 根据监听端点 ID 获取原生容器实例
@@ -301,9 +416,10 @@ public class KafkaContainerManager {
         if (!StringUtils.hasText(idOrTopic) || registry == null) {
             return Collections.emptyList();
         }
+        String target = idOrTopic.trim();
 
         // 1. 优先按 Listener ID 精确匹配
-        MessageListenerContainer directContainer = registry.getListenerContainer(idOrTopic);
+        MessageListenerContainer directContainer = registry.getListenerContainer(target);
         if (directContainer != null) {
             return List.of(directContainer);
         }
@@ -313,12 +429,113 @@ public class KafkaContainerManager {
         Collection<MessageListenerContainer> allContainers = registry.getListenerContainers();
         if (allContainers != null) {
             for (MessageListenerContainer container : allContainers) {
-                if (matchesTopic(container, idOrTopic)) {
+                if (matchesTopic(container, target)) {
                     matched.add(container);
                 }
             }
         }
         return Collections.unmodifiableList(matched);
+    }
+
+    private KafkaContainerStatus toContainerStatus(String registeredId, MessageListenerContainer container) {
+        String listenerId = StringUtils.hasText(container.getListenerId())
+                ? container.getListenerId()
+                : registeredId;
+        ContainerProperties props = container.getContainerProperties();
+        String groupId = StringUtils.hasText(container.getGroupId())
+                ? container.getGroupId()
+                : (props != null ? props.getGroupId() : null);
+
+        List<String> topics = extractTopics(props);
+        boolean running = container.isRunning();
+        boolean paused = container.isContainerPaused() || container.isPauseRequested();
+        boolean autoStartup = container.isAutoStartup();
+        boolean batchListener = isBatchListenerContainer(props);
+
+        int concurrency = 0;
+        int activeContainerCount = running ? 1 : 0;
+        if (container instanceof ConcurrentMessageListenerContainer<?, ?> concurrent) {
+            concurrency = concurrent.getConcurrency();
+            List<?> children = concurrent.getContainers();
+            if (children != null) {
+                activeContainerCount = (int) children.stream()
+                        .filter(child -> child instanceof Lifecycle lifecycle && lifecycle.isRunning())
+                        .count();
+            } else {
+                activeContainerCount = 0;
+            }
+        } else if (container instanceof KafkaMessageListenerContainer<?, ?>) {
+            concurrency = 1;
+        }
+
+        Collection<TopicPartition> rawPartitions = container.getAssignedPartitions();
+        List<String> assignedPartitions = rawPartitions == null
+                ? List.of()
+                : rawPartitions.stream()
+                        .filter(Objects::nonNull)
+                        .map(TopicPartition::toString)
+                        .sorted()
+                        .toList();
+
+        return new KafkaContainerStatus(
+                listenerId,
+                groupId,
+                topics,
+                running,
+                paused,
+                autoStartup,
+                batchListener,
+                concurrency,
+                activeContainerCount,
+                assignedPartitions,
+                container.getClass().getSimpleName()
+        );
+    }
+
+    private String resolveRegisteredId(MessageListenerContainer targetContainer, String fallback) {
+        if (StringUtils.hasText(targetContainer.getListenerId())) {
+            return targetContainer.getListenerId();
+        }
+        if (registry != null && registry.getListenerContainerIds() != null) {
+            for (String id : registry.getListenerContainerIds()) {
+                if (registry.getListenerContainer(id) == targetContainer) {
+                    return id;
+                }
+            }
+        }
+        return fallback;
+    }
+
+    private List<String> extractTopics(ContainerProperties props) {
+        if (props == null) {
+            return List.of();
+        }
+        Set<String> resolved = new LinkedHashSet<>();
+        if (props.getTopics() != null) {
+            for (String topic : props.getTopics()) {
+                if (StringUtils.hasText(topic)) {
+                    resolved.add(topic);
+                }
+            }
+        }
+        if (props.getTopicPattern() != null) {
+            resolved.add("pattern:" + props.getTopicPattern().pattern());
+        }
+        if (props.getTopicPartitions() != null) {
+            for (TopicPartitionOffset tpo : props.getTopicPartitions()) {
+                if (tpo != null && StringUtils.hasText(tpo.getTopic())) {
+                    resolved.add(tpo.getTopic());
+                }
+            }
+        }
+        return List.copyOf(resolved);
+    }
+
+    private boolean isBatchListenerContainer(ContainerProperties props) {
+        if (props == null) {
+            return false;
+        }
+        return props.getMessageListener() instanceof BatchMessageListener<?, ?>;
     }
 
     private boolean matchesTopic(MessageListenerContainer container, String topic) {

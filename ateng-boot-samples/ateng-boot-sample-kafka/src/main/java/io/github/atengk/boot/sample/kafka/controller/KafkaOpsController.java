@@ -2,16 +2,19 @@ package io.github.atengk.boot.sample.kafka.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.kafka.model.ConsumerGroupLag;
+import io.github.atengk.boot.kafka.model.KafkaContainerStatus;
 import io.github.atengk.boot.sample.kafka.dto.ContainerActionRequest;
-import io.github.atengk.boot.sample.kafka.dto.ContainerStatusResponse;
+import io.github.atengk.boot.sample.kafka.dto.ContainerScaleRequest;
 import io.github.atengk.boot.sample.kafka.dto.OffsetResetRequest;
 import io.github.atengk.boot.sample.kafka.dto.PartitionOffsetResponse;
 import io.github.atengk.boot.sample.kafka.service.KafkaOpsScenarioService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -32,6 +35,7 @@ import java.util.Map;
  * @since 2026-11-09
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/sample/kafka/ops")
 @RequiredArgsConstructor
@@ -106,22 +110,43 @@ public class KafkaOpsController {
     }
 
     /**
-     * 查询指定消费者容器是否处于运行或暂停状态
+     * 查询全量已注册消费监听容器运行期状态快照列表
      *
-     * @param idOrTopic 容器ID或主题名称
-     * @return 容器状态响应
+     * @return 容器状态快照列表
+     */
+    @GetMapping("/containers")
+    public Result<List<KafkaContainerStatus>> listContainers() {
+        List<KafkaContainerStatus> statuses = opsService.getContainerStatuses();
+        log.info("[HTTP-OPS-CONTAINERS] 查询全部监听容器快照: count={}", statuses.size());
+        return Result.success(statuses);
+    }
+
+    /**
+     * 查询指定消费监听容器的详细运行状态快照
+     *
+     * @param idOrTopic 容器 ID 或主题名称
+     * @return 容器状态快照视图（未匹配返回 null）
      */
     @GetMapping("/container-status")
-    public Result<ContainerStatusResponse> getContainerStatus(
+    public Result<KafkaContainerStatus> getContainerStatus(
+            @NotBlank(message = "idOrTopic 不能为空白")
             @RequestParam(value = "idOrTopic", defaultValue = "sample.order.topic") String idOrTopic) {
-        boolean running = opsService.isConsumerRunning(idOrTopic);
-        boolean paused = opsService.isConsumerPaused(idOrTopic);
-        log.info("[HTTP-OPS-CONTAINER-STATUS] 查询容器状态: idOrTopic={}, running={}, paused={}",
-                idOrTopic, running, paused);
-        return Result.success(ContainerStatusResponse.builder()
-                .idOrTopic(idOrTopic)
-                .running(running)
-                .paused(paused)
-                .build());
+        KafkaContainerStatus status = opsService.getContainerStatus(idOrTopic);
+        log.info("[HTTP-OPS-CONTAINER-STATUS] 查询容器状态: idOrTopic={}, status={}", idOrTopic, status);
+        return Result.success(status);
+    }
+
+    /**
+     * 运行期动态扩缩指定消费监听容器并发消费者数量
+     *
+     * @param request 容器并发扩缩请求
+     * @return 是否匹配并完成调整
+     */
+    @PostMapping("/container-scale")
+    public Result<Boolean> scaleContainerConcurrency(@Valid @RequestBody ContainerScaleRequest request) {
+        log.info("[HTTP-OPS-CONTAINER-SCALE] 动态调整容器并发度: idOrTopic={}, concurrency={}",
+                request.getContainerIdOrTopic(), request.getConcurrency());
+        boolean scaled = opsService.scaleConcurrency(request.getContainerIdOrTopic(), request.getConcurrency());
+        return Result.success(scaled);
     }
 }

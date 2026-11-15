@@ -1,5 +1,6 @@
 package io.github.atengk.boot.kafka.manager;
 
+import io.github.atengk.boot.kafka.model.KafkaContainerStatus;
 import io.github.atengk.boot.kafka.spi.KafkaRebalanceListener;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.common.TopicPartition;
@@ -7,7 +8,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.kafka.listener.BatchMessageListener;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.KafkaMessageListenerContainer;
 import org.springframework.kafka.listener.MessageListenerContainer;
 
 import java.util.*;
@@ -246,5 +250,175 @@ class KafkaContainerManagerTest {
 
         listener.onPartitionsLost(mockConsumer, partitions);
         assertThat(lostCalled.get()).isTrue();
+    }
+
+    @Test
+    @DisplayName("状态快照：空注册表返回空不可变列表，非空集合防空且不可变")
+    void testGetContainerStatusesEmptyRegistryAndImmutable() {
+        KafkaContainerManager nullManager = new KafkaContainerManager(null);
+        List<KafkaContainerStatus> nullStatuses = nullManager.getContainerStatuses();
+        assertThat(nullStatuses).isEmpty();
+        assertThatThrownBy(() -> nullStatuses.add(new KafkaContainerStatus(
+                "id", "g", null, true, false, true, false, 1, 1, null, "Test"
+        ))).isInstanceOf(UnsupportedOperationException.class);
+
+        when(registry.getListenerContainerIds()).thenReturn(Collections.emptySet());
+        when(registry.getListenerContainers()).thenReturn(Collections.emptyList());
+        assertThat(containerManager.getContainerStatuses()).isEmpty();
+
+        KafkaContainerStatus defensive = new KafkaContainerStatus(
+                "l1", "g1", null, true, false, true, false, 2, 1, null, "ConcurrentMessageListenerContainer"
+        );
+        assertThat(defensive.topics()).isEmpty();
+        assertThat(defensive.assignedPartitions()).isEmpty();
+        assertThatThrownBy(() -> defensive.topics().add("extra"))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> defensive.assignedPartitions().add("extra-0"))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    @DisplayName("状态快照：按 Listener ID 与 Topic 匹配单容器并暴露完整不可变元数据")
+    @SuppressWarnings("unchecked")
+    void testGetContainerStatusByIdAndTopicAndMissReturnsNull() {
+        assertThatThrownBy(() -> containerManager.getContainerStatus(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("idOrTopic 不能为空白");
+        assertThatThrownBy(() -> containerManager.getContainerStatus("  "))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        ConcurrentMessageListenerContainer<Object, Object> concurrent = mock(ConcurrentMessageListenerContainer.class);
+        ContainerProperties props = new ContainerProperties("orders.topic", "orders.dlt");
+        props.setMessageListener((BatchMessageListener<Object, Object>) (records) -> {});
+        KafkaMessageListenerContainer<Object, Object> child1 = mock(KafkaMessageListenerContainer.class);
+        KafkaMessageListenerContainer<Object, Object> child2 = mock(KafkaMessageListenerContainer.class);
+        when(child1.isRunning()).thenReturn(true);
+        when(child2.isRunning()).thenReturn(false);
+
+        when(concurrent.getListenerId()).thenReturn("orderBatchListener");
+        when(concurrent.getGroupId()).thenReturn("order-group");
+        when(concurrent.getContainerProperties()).thenReturn(props);
+        when(concurrent.isRunning()).thenReturn(true);
+        when(concurrent.isContainerPaused()).thenReturn(false);
+        when(concurrent.isPauseRequested()).thenReturn(true);
+        when(concurrent.isAutoStartup()).thenReturn(true);
+        when(concurrent.getConcurrency()).thenReturn(2);
+        when(concurrent.getContainers()).thenReturn(List.of(child1, child2));
+        when(concurrent.getAssignedPartitions()).thenReturn(List.of(
+                new TopicPartition("orders.topic", 1),
+                new TopicPartition("orders.topic", 0)
+        ));
+
+        when(registry.getListenerContainerIds()).thenReturn(Set.of("orderBatchListener"));
+        when(registry.getListenerContainer("orderBatchListener")).thenReturn(concurrent);
+        when(registry.getListenerContainers()).thenReturn(List.of(concurrent));
+
+        List<KafkaContainerStatus> all = containerManager.getContainerStatuses();
+        assertThat(all).hasSize(1);
+        KafkaContainerStatus byId = containerManager.getContainerStatus("orderBatchListener");
+        assertThat(byId).isNotNull();
+        assertThat(byId.listenerId()).isEqualTo("orderBatchListener");
+        assertThat(byId.groupId()).isEqualTo("order-group");
+        assertThat(byId.topics()).containsExactly("orders.topic", "orders.dlt");
+        assertThat(byId.running()).isTrue();
+        assertThat(byId.paused()).isTrue();
+        assertThat(byId.autoStartup()).isTrue();
+        assertThat(byId.batchListener()).isTrue();
+        assertThat(byId.concurrency()).isEqualTo(2);
+        assertThat(byId.activeContainerCount()).isEqualTo(1);
+        assertThat(byId.assignedPartitions()).containsExactly("orders.topic-0", "orders.topic-1");
+        assertThat(byId.containerType()).isEqualTo(concurrent.getClass().getSimpleName());
+
+        KafkaContainerStatus byTopic = containerManager.getContainerStatus("orders.topic");
+        assertThat(byTopic).isEqualTo(byId);
+
+        assertThat(containerManager.getContainerStatus("missing.topic")).isNull();
+    }
+
+    @Test
+    @DisplayName("动态扩缩容：校验空白目标、非正并发数、合法扩缩、未命中返回 false 及不支持容器类型防卫")
+    @SuppressWarnings("unchecked")
+    void testScaleConcurrencyContractsAndGuards() {
+        assertThatThrownBy(() -> containerManager.scaleConcurrency(null, 2))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("idOrTopic 不能为空白");
+        assertThatThrownBy(() -> containerManager.scaleConcurrency("   ", 2))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> containerManager.scaleConcurrency("orders.topic", 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("concurrency 必须大于 0");
+        assertThatThrownBy(() -> containerManager.scaleConcurrency("orders.topic", -3))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        when(registry.getListenerContainer("unknown.topic")).thenReturn(null);
+        when(registry.getListenerContainers()).thenReturn(Collections.emptyList());
+        assertThat(containerManager.scaleConcurrency("unknown.topic", 3)).isFalse();
+
+        ConcurrentMessageListenerContainer<Object, Object> runningConcurrent = mock(ConcurrentMessageListenerContainer.class);
+        when(runningConcurrent.getListenerId()).thenReturn("orderListener");
+        when(runningConcurrent.isRunning()).thenReturn(true);
+        when(runningConcurrent.isContainerPaused()).thenReturn(false);
+        when(runningConcurrent.isPauseRequested()).thenReturn(false);
+        when(registry.getListenerContainer("orderListener")).thenReturn(runningConcurrent);
+
+        assertThat(containerManager.scaleConcurrency("orderListener", 4)).isTrue();
+        org.mockito.InOrder order = inOrder(runningConcurrent);
+        order.verify(runningConcurrent).stop();
+        order.verify(runningConcurrent).setConcurrency(4);
+        order.verify(runningConcurrent).start();
+
+        MessageListenerContainer unsupported = mock(MessageListenerContainer.class);
+        when(registry.getListenerContainer("legacyListener")).thenReturn(unsupported);
+        assertThatThrownBy(() -> containerManager.scaleConcurrency("legacyListener", 2))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ConcurrentMessageListenerContainer");
+        verify(unsupported, never()).stop();
+    }
+
+    @Test
+    @DisplayName("动态扩缩容与快照分支：已停机仅更新并发、已暂停保持暂停、单容器及正则主题元数据映射")
+    @SuppressWarnings("unchecked")
+    void testScaleConcurrencyStoppedAndPausedBranchesAndSingleContainerSnapshot() {
+        ConcurrentMessageListenerContainer<Object, Object> stoppedContainer = mock(ConcurrentMessageListenerContainer.class);
+        when(stoppedContainer.getListenerId()).thenReturn("stoppedListener");
+        when(stoppedContainer.isRunning()).thenReturn(false);
+        when(registry.getListenerContainer("stoppedListener")).thenReturn(stoppedContainer);
+
+        assertThat(containerManager.scaleConcurrency("stoppedListener", 2)).isTrue();
+        verify(stoppedContainer, never()).stop();
+        verify(stoppedContainer).setConcurrency(2);
+        verify(stoppedContainer, never()).start();
+
+        ConcurrentMessageListenerContainer<Object, Object> pausedRunning = mock(ConcurrentMessageListenerContainer.class);
+        when(pausedRunning.getListenerId()).thenReturn("pausedListener");
+        when(pausedRunning.isRunning()).thenReturn(true);
+        when(pausedRunning.isContainerPaused()).thenReturn(true);
+        when(registry.getListenerContainer("pausedListener")).thenReturn(pausedRunning);
+
+        assertThat(containerManager.scaleConcurrency("pausedListener", 3)).isTrue();
+        org.mockito.InOrder pausedOrder = inOrder(pausedRunning);
+        pausedOrder.verify(pausedRunning).stop();
+        pausedOrder.verify(pausedRunning).setConcurrency(3);
+        pausedOrder.verify(pausedRunning).pause();
+        pausedOrder.verify(pausedRunning).start();
+
+        KafkaMessageListenerContainer<Object, Object> single = mock(KafkaMessageListenerContainer.class);
+        ContainerProperties patternProps = new ContainerProperties(java.util.regex.Pattern.compile("audit\\..*"));
+        when(single.getListenerId()).thenReturn("auditSingleListener");
+        when(single.getGroupId()).thenReturn("audit-group");
+        when(single.getContainerProperties()).thenReturn(patternProps);
+        when(single.isRunning()).thenReturn(true);
+        when(single.isAutoStartup()).thenReturn(false);
+        when(registry.getListenerContainerIds()).thenReturn(Collections.emptySet());
+        when(registry.getListenerContainers()).thenReturn(List.of(single));
+
+        List<KafkaContainerStatus> statuses = containerManager.getContainerStatuses();
+        assertThat(statuses).hasSize(1);
+        KafkaContainerStatus singleStatus = statuses.get(0);
+        assertThat(singleStatus.listenerId()).isEqualTo("auditSingleListener");
+        assertThat(singleStatus.topics()).containsExactly("pattern:audit\\..*");
+        assertThat(singleStatus.batchListener()).isFalse();
+        assertThat(singleStatus.concurrency()).isEqualTo(1);
+        assertThat(singleStatus.activeContainerCount()).isEqualTo(1);
     }
 }

@@ -5,6 +5,7 @@ import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.kafka.manager.KafkaContainerManager;
 import io.github.atengk.boot.kafka.manager.KafkaOffsetManager;
 import io.github.atengk.boot.kafka.model.ConsumerGroupLag;
+import io.github.atengk.boot.kafka.model.KafkaContainerStatus;
 import io.github.atengk.boot.sample.kafka.dto.ContainerActionRequest;
 import io.github.atengk.boot.sample.kafka.dto.OffsetResetRequest;
 import lombok.RequiredArgsConstructor;
@@ -15,6 +16,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -146,6 +148,48 @@ public class KafkaOpsScenarioService {
             return false;
         }
         return containerManager.isRunning(idOrTopic);
+    }
+
+    /**
+     * 查询全部已注册监听容器的运行期状态快照列表
+     *
+     * @return 容器状态快照不可变列表
+     */
+    public List<KafkaContainerStatus> getContainerStatuses() {
+        KafkaContainerManager containerManager = containerManagerProvider.getIfAvailable();
+        if (containerManager == null) {
+            return List.of();
+        }
+        return containerManager.getContainerStatuses();
+    }
+
+    /**
+     * 查询指定监听容器 ID 或订阅主题的运行期状态快照
+     *
+     * @param idOrTopic 容器 ID 或主题名称
+     * @return 容器状态快照，未命中返回 null
+     */
+    public KafkaContainerStatus getContainerStatus(String idOrTopic) {
+        KafkaContainerManager containerManager = containerManagerProvider.getIfAvailable();
+        if (containerManager == null) {
+            return null;
+        }
+        return containerManager.getContainerStatus(idOrTopic);
+    }
+
+    /**
+     * 动态调整指定监听容器并发消费者数量
+     *
+     * @param idOrTopic   容器 ID 或主题名称
+     * @param concurrency 目标并发度
+     * @return 匹配并完成扩缩返回 true，未命中返回 false
+     */
+    public boolean scaleConcurrency(String idOrTopic, int concurrency) {
+        KafkaContainerManager containerManager = containerManagerProvider.getIfAvailable();
+        if (containerManager == null) {
+            return false;
+        }
+        return containerManager.scaleConcurrency(idOrTopic, concurrency);
     }
 
     /**

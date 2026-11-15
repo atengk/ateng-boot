@@ -25,6 +25,7 @@ import io.github.atengk.boot.sample.kafka.consumer.*;
 import io.github.atengk.boot.sample.kafka.dto.BatchOrderProduceRequest;
 import io.github.atengk.boot.sample.kafka.dto.ContainerActionRequest;
 import io.github.atengk.boot.sample.kafka.dto.ContainerActionRequest.ContainerAction;
+import io.github.atengk.boot.sample.kafka.dto.ContainerScaleRequest;
 import io.github.atengk.boot.sample.kafka.dto.DeadLetterReplayRequest;
 import io.github.atengk.boot.sample.kafka.dto.NativeTxProduceRequest;
 import io.github.atengk.boot.sample.kafka.dto.OffsetResetRequest;
@@ -64,6 +65,7 @@ import org.springframework.http.MediaType;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ListenerExecutionFailedException;
 import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.support.KafkaHeaders;
@@ -195,6 +197,8 @@ class SampleKafkaE2eTest {
     @Qualifier(KafkaConstants.BATCH_CONTAINER_FACTORY)
     private ConcurrentKafkaListenerContainerFactory<?, ?> batchKafkaListenerContainerFactory;
 
+    private final Map<String, Integer> initialConcurrencies = new LinkedHashMap<>();
+
     private void awaitCondition(ThrowingRunnable assertion) {
         await().atMost(Duration.ofSeconds(10))
                 .pollInterval(Duration.ofMillis(100))
@@ -203,6 +207,7 @@ class SampleKafkaE2eTest {
 
     @BeforeEach
     void setUp() {
+        captureInitialConcurrencies();
         restoreAllContainers();
         if (offlineKafkaBroker != null) {
             offlineKafkaBroker.reset();
@@ -229,6 +234,18 @@ class SampleKafkaE2eTest {
         MDC.clear();
     }
 
+    private void captureInitialConcurrencies() {
+        if (!initialConcurrencies.isEmpty() || kafkaListenerEndpointRegistry == null) {
+            return;
+        }
+        for (MessageListenerContainer container : kafkaListenerEndpointRegistry.getListenerContainers()) {
+            String listenerId = container.getListenerId();
+            if (listenerId != null && container instanceof ConcurrentMessageListenerContainer<?, ?> concurrent) {
+                initialConcurrencies.put(listenerId, concurrent.getConcurrency());
+            }
+        }
+    }
+
     private void restoreAllContainers() {
         if (kafkaListenerEndpointRegistry == null) {
             return;
@@ -237,6 +254,12 @@ class SampleKafkaE2eTest {
             String listenerId = container.getListenerId();
             if (listenerId == null) {
                 continue;
+            }
+            Integer expectedConcurrency = initialConcurrencies.get(listenerId);
+            if (expectedConcurrency != null
+                    && container instanceof ConcurrentMessageListenerContainer<?, ?> concurrent
+                    && concurrent.getConcurrency() != expectedConcurrency) {
+                kafkaContainerManager.scaleConcurrency(listenerId, expectedConcurrency);
             }
             if (!container.isRunning()) {
                 kafkaContainerManager.start(listenerId);
@@ -985,7 +1008,14 @@ class SampleKafkaE2eTest {
     @Test
     @DisplayName("场景 15: 运行期消费容器动态流控 (KafkaContainerManager & KafkaOpsController Web 闭环)")
     void testScenario15_ConsumerContainerDynamicFlowControl() throws Exception {
-        // 1. HTTP 暂停指定 Topic 消费容器
+        // 1. HTTP 枚举全部监听容器快照，验证真实注册列表非空
+        mockMvc.perform(get("/sample/kafka/ops/containers"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data.length()", org.hamcrest.Matchers.greaterThanOrEqualTo(4)));
+
+        // 2. HTTP 暂停指定 Topic 消费容器
         ContainerActionRequest pauseReq = ContainerActionRequest.builder()
                 .containerIdOrTopic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
                 .action(ContainerAction.PAUSE)
@@ -997,15 +1027,26 @@ class SampleKafkaE2eTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 2. HTTP 查询容器运行与暂停状态
+        // 3. HTTP 查询升级后的 KafkaContainerStatus 运行与暂停详情视图
         mockMvc.perform(get("/sample/kafka/ops/container-status")
                         .param("idOrTopic", KafkaScenarioTopologyConfig.TOPIC_ORDER))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.paused").value(true))
-                .andExpect(jsonPath("$.data.running").value(true));
+                .andExpect(jsonPath("$.data.running").value(true))
+                .andExpect(jsonPath("$.data.batchListener").value(false))
+                .andExpect(jsonPath("$.data.concurrency").value(3))
+                .andExpect(jsonPath("$.data.activeContainerCount").value(3))
+                .andExpect(jsonPath("$.data.topics", org.hamcrest.Matchers.hasItem(KafkaScenarioTopologyConfig.TOPIC_ORDER)))
+                .andExpect(jsonPath("$.data.containerType").value("ConcurrentMessageListenerContainer"));
 
-        // 3. HTTP 恢复指定 Topic 消费容器
+        mockMvc.perform(get("/sample/kafka/ops/container-status")
+                        .param("idOrTopic", KafkaScenarioTopologyConfig.TOPIC_BATCH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.batchListener").value(true));
+
+        // 4. HTTP 恢复指定 Topic 消费容器并验证动态并发扩容生效
         ContainerActionRequest resumeReq = ContainerActionRequest.builder()
                 .containerIdOrTopic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
                 .action(ContainerAction.RESUME)
@@ -1017,7 +1058,55 @@ class SampleKafkaE2eTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 4. HTTP 启动与停止容器生命周期管控
+        ContainerScaleRequest scaleReq = ContainerScaleRequest.builder()
+                .containerIdOrTopic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
+                .concurrency(2)
+                .build();
+
+        mockMvc.perform(post("/sample/kafka/ops/container-scale")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(scaleReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        mockMvc.perform(get("/sample/kafka/ops/container-status")
+                        .param("idOrTopic", KafkaScenarioTopologyConfig.TOPIC_ORDER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.running").value(true))
+                .andExpect(jsonPath("$.data.concurrency").value(2))
+                .andExpect(jsonPath("$.data.activeContainerCount").value(2));
+
+        // 4.1 校验未匹配目标与非法并发数防卫
+        ContainerScaleRequest missReq = ContainerScaleRequest.builder()
+                .containerIdOrTopic("nonexistent.scale.topic")
+                .concurrency(2)
+                .build();
+        mockMvc.perform(post("/sample/kafka/ops/container-scale")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(missReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(false));
+
+        ContainerScaleRequest invalidReq = ContainerScaleRequest.builder()
+                .containerIdOrTopic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
+                .concurrency(0)
+                .build();
+        mockMvc.perform(post("/sample/kafka/ops/container-scale")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false));
+
+        mockMvc.perform(get("/sample/kafka/ops/container-status")
+                        .param("idOrTopic", "   "))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 5. HTTP 启动与停止容器生命周期管控
         ContainerActionRequest startReq = ContainerActionRequest.builder()
                 .containerIdOrTopic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
                 .action(ContainerAction.START)
