@@ -34,14 +34,13 @@ import io.github.atengk.boot.sample.kafka.dto.RetryTriggerRequest;
 import io.github.atengk.boot.sample.kafka.dto.UserEventProduceRequest;
 import io.github.atengk.boot.sample.kafka.model.OrderMessage;
 import io.github.atengk.boot.sample.kafka.model.UserEventMessage;
+import io.github.atengk.boot.sample.kafka.offline.OfflineKafkaBroker;
 import io.github.atengk.boot.sample.kafka.repository.MockOrderRepository;
 import io.github.atengk.boot.sample.kafka.service.*;
 import jakarta.validation.ValidationException;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.header.internals.RecordHeader;
@@ -60,14 +59,14 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
-import org.springframework.context.annotation.Profile;
 import org.springframework.core.ResolvableType;
 import org.springframework.http.MediaType;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
-import org.springframework.kafka.core.KafkaOperations;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ListenerExecutionFailedException;
+import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.support.KafkaHeaders;
-import org.springframework.kafka.support.SendResult;
 import org.springframework.kafka.support.converter.ByteArrayJsonMessageConverter;
 import org.springframework.messaging.Message;
 import org.springframework.test.web.servlet.MockMvc;
@@ -85,16 +84,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -103,7 +96,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * Kafka 场景沙箱 1:1 全场景端到端离线集成测试套件
  *
- * <p>全面覆盖 15 大企业级生产场景（100% 离线自洽，零外部物理 Broker 依赖）：
+ * <p>全面覆盖 15 大企业级生产场景（默认 {@code !local} 经由 {@code OfflineKafkaConfiguration} 内存驱动全真执行，{@code local} Profile 直连外部物理 Broker）：
  * <ul>
  *   <li>场景 1：Key 分区保序与同步、异步、物理分区可靠收发 (KafkaProduceController Web 闭环)</li>
  *   <li>场景 2：本地事务提交感知发信与回滚防幽灵消息 (sendAfterCommit + 补偿 SPI) (KafkaProduceController Web 闭环)</li>
@@ -127,7 +120,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest(classes = SampleKafkaApplication.class)
 @AutoConfigureMockMvc
-@Import({SampleKafkaE2eTest.MockKafkaTestConfig.class, SampleKafkaE2eTest.CommonTestConfig.class})
+@Import(SampleKafkaE2eTest.CommonTestConfig.class)
 @DisplayName("Kafka 场景沙箱 1:1 全场景端到端双模集成测试")
 class SampleKafkaE2eTest {
 
@@ -180,6 +173,18 @@ class SampleKafkaE2eTest {
     private KafkaReliableTemplate kafkaReliableTemplate;
 
     @Autowired
+    private KafkaTemplate<Object, Object> kafkaTemplate;
+
+    @Autowired
+    private KafkaContainerManager kafkaContainerManager;
+
+    @Autowired
+    private KafkaListenerEndpointRegistry kafkaListenerEndpointRegistry;
+
+    @Autowired(required = false)
+    private OfflineKafkaBroker offlineKafkaBroker;
+
+    @Autowired
     private MockOrderRepository mockOrderRepository;
 
     @Autowired
@@ -198,6 +203,10 @@ class SampleKafkaE2eTest {
 
     @BeforeEach
     void setUp() {
+        restoreAllContainers();
+        if (offlineKafkaBroker != null) {
+            offlineKafkaBroker.reset();
+        }
         orderSingleRecordConsumer.clear();
         batchRecordConsumer.clear();
         idempotentConsumer.clear();
@@ -214,9 +223,28 @@ class SampleKafkaE2eTest {
 
     @AfterEach
     void tearDown() {
+        restoreAllContainers();
         UserContextHolder.clear();
         TenantContextHolder.clear();
         MDC.clear();
+    }
+
+    private void restoreAllContainers() {
+        if (kafkaListenerEndpointRegistry == null) {
+            return;
+        }
+        for (MessageListenerContainer container : kafkaListenerEndpointRegistry.getListenerContainers()) {
+            String listenerId = container.getListenerId();
+            if (listenerId == null) {
+                continue;
+            }
+            if (!container.isRunning()) {
+                kafkaContainerManager.start(listenerId);
+            }
+            if (container.isPauseRequested()) {
+                kafkaContainerManager.resume(listenerId);
+            }
+        }
     }
 
     // =========================================================================
@@ -515,7 +543,8 @@ class SampleKafkaE2eTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
                     .andExpect(jsonPath("$.data[0].originalTopic").value(KafkaScenarioTopologyConfig.TOPIC_POISON))
-                    .andExpect(jsonPath("$.data[0].exceptionClassName").value(ValidationException.class.getName()))
+                    .andExpect(jsonPath("$.data[0].exceptionClassName").value(ListenerExecutionFailedException.class.getName()))
+                    .andExpect(jsonPath("$.data[0].exceptionStackTrace").value(org.hamcrest.Matchers.containsString(ValidationException.class.getName())))
                     .andExpect(jsonPath("$.data[0].exceptionMessage").value(org.hamcrest.Matchers.containsString("报文格式非法")));
         });
     }
@@ -566,8 +595,15 @@ class SampleKafkaE2eTest {
     @Test
     @DisplayName("场景 8: 死信安全重放 (KafkaDeadLetterController Web 闭环)")
     void testScenario8_DeadLetterReplayAndAntiAvalanche() throws Exception {
+        String dltTopic = KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT";
+        for (int i = 1; i <= 3; i++) {
+            OrderMessage payload = new OrderMessage("ORD-DLT-" + i, new BigDecimal("88.00"), "u1", "t1");
+            kafkaTemplate.send(dltTopic, "dlt-key-" + i, payload).get();
+        }
+        awaitCondition(() -> assertThat(deadLetterService.peekDeadLetters(dltTopic, 10)).hasSize(3));
+
         DeadLetterReplayRequest replayReq = DeadLetterReplayRequest.builder()
-                .dlqTopic(KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT")
+                .dlqTopic(dltTopic)
                 .targetTopic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
                 .limit(10)
                 .build();
@@ -580,14 +616,19 @@ class SampleKafkaE2eTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(3));
 
-        // 2. 带谓词过滤的安全重放校验
+        // 2. 带谓词过滤的安全重放校验（仅重放 key 非空的记录）
+        OrderMessage filteredKeep = new OrderMessage("ORD-DLT-KEEP", BigDecimal.TEN, "u1", "t1");
+        OrderMessage filteredDrop = new OrderMessage("ORD-DLT-DROP", BigDecimal.ONE, "u1", "t1");
+        kafkaTemplate.send(dltTopic, "keep-key", filteredKeep).get();
+        kafkaTemplate.send(dltTopic, null, filteredDrop).get();
+
         int filteredReplayed = deadLetterService.replayDeadLetters(
-                KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT",
+                dltTopic,
                 KafkaScenarioTopologyConfig.TOPIC_ORDER,
                 10,
                 record -> record.key() != null
         );
-        assertThat(filteredReplayed).isGreaterThanOrEqualTo(0);
+        assertThat(filteredReplayed).isEqualTo(1);
     }
 
     // =========================================================================
@@ -596,21 +637,33 @@ class SampleKafkaE2eTest {
     @Test
     @DisplayName("场景 9: 死信主题探查与物理清空 (KafkaDeadLetterController Web 闭环)")
     void testScenario9_DeadLetterPeekAndPurge() throws Exception {
+        String dltTopic = KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT";
+        OrderMessage sampleDlt = new OrderMessage("ORD-PEEK-001", new BigDecimal("19.90"), "u1", "t1");
+        kafkaTemplate.send(dltTopic, "peek-key-1", sampleDlt).get();
+        awaitCondition(() -> assertThat(deadLetterService.peekDeadLetters(dltTopic, 5)).hasSize(1));
+
         // 1. HTTP 只读探查死信队列 (不推进位移)
         mockMvc.perform(get("/sample/kafka/dead-letter/peek")
-                        .param("dltTopic", KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT")
+                        .param("dltTopic", dltTopic)
                         .param("limit", "5"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").isArray())
                 .andExpect(jsonPath("$.data.length()").value(1));
 
-        // 2. HTTP 物理清空死信主题
+        // 2. HTTP 物理清空死信主题并验证二次探查为空
         mockMvc.perform(post("/sample/kafka/dead-letter/purge")
-                        .param("dltTopic", KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT"))
+                        .param("dltTopic", dltTopic))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.success").value(true));
+
+        mockMvc.perform(get("/sample/kafka/dead-letter/peek")
+                        .param("dltTopic", dltTopic)
+                        .param("limit", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(0));
     }
 
     // =========================================================================
@@ -775,7 +828,11 @@ class SampleKafkaE2eTest {
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.success").value(false));
 
-        // 2. 发送正常消息 -> 一次尝试即成功并验证四维上下文透传
+        // 等待异步 @KafkaListener 完成首条 HTTP 触发消息消费
+        awaitCondition(() -> assertThat(retryService.getAttemptCount()).isGreaterThanOrEqualTo(1));
+        int baseAttemptCount = retryService.getAttemptCount();
+
+        // 2. 发送正常消息 -> 验证同步消费与四维上下文透传
         MDC.put("traceId", "trace-retry-999");
         TenantContextHolder.setTenantId("tenant-retry-888");
         UserContextHolder.setUserId("user-retry-777");
@@ -785,9 +842,9 @@ class SampleKafkaE2eTest {
         );
         retryService.onMessage(normalRecord, NonBlockingRetryScenarioService.TOPIC_RETRY_MAIN);
 
-        assertThat(retryService.getAttemptCount()).isEqualTo(1);
-        assertThat(retryService.getRetryLogs()).hasSize(1);
-        NonBlockingRetryScenarioService.RetryRecordLog logEntry = retryService.getRetryLogs().get(0);
+        assertThat(retryService.getAttemptCount()).isEqualTo(baseAttemptCount + 1);
+        NonBlockingRetryScenarioService.RetryRecordLog logEntry =
+                retryService.getRetryLogs().get(retryService.getRetryLogs().size() - 1);
         assertThat(logEntry.traceId()).isEqualTo("trace-retry-999");
         assertThat(logEntry.tenantId()).isEqualTo("tenant-retry-888");
         assertThat(logEntry.userId()).isEqualTo("user-retry-777");
@@ -808,7 +865,7 @@ class SampleKafkaE2eTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").isArray())
-                .andExpect(jsonPath("$.data.length()").value(2));
+                .andExpect(jsonPath("$.data.length()").value(org.hamcrest.Matchers.greaterThanOrEqualTo(2)));
     }
 
     // =========================================================================
@@ -817,17 +874,15 @@ class SampleKafkaE2eTest {
     @Test
     @DisplayName("场景 14: 运行期位移治理与实时 Lag 积压探测 (KafkaOffsetManager & KafkaOpsController Web 闭环)")
     void testScenario14_OffsetGovernanceAndRealtimeLagMonitoring() throws Exception {
-        // 1. HTTP 查询消费组当前提交位移
-        mockMvc.perform(get("/sample/kafka/ops/committed-offsets")
-                        .param("groupId", "sample-group"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").isArray());
+        for (int i = 1; i <= 2; i++) {
+            OrderMessage msg = new OrderMessage("ORD-LAG-" + i, new BigDecimal("50.00"), "u1", "t1");
+            kafkaTemplate.send(KafkaScenarioTopologyConfig.TOPIC_ORDER, "lag-key-" + i, msg).get();
+        }
 
-        // 2. HTTP 回拨消费位移至 EARLIEST
+        // 1. HTTP 回拨消费位移至 EARLIEST -> 产生可观测积压 Lag
         OffsetResetRequest earliestReq = OffsetResetRequest.builder()
                 .groupId("sample-group")
-                .topic("sample.order.topic")
+                .topic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
                 .resetType(ResetType.EARLIEST)
                 .build();
 
@@ -837,10 +892,31 @@ class SampleKafkaE2eTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 3. HTTP 推进消费位移至 LATEST
+        // 2. HTTP 查询消费组当前提交位移（确认位点记录真实存在）
+        mockMvc.perform(get("/sample/kafka/ops/committed-offsets")
+                        .param("groupId", "sample-group"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data").isNotEmpty());
+
+        // 3. HTTP 实时查询全分区与总积压 Lag（EARLIEST 下积压 >= 2）
+        String earliestLagBody = mockMvc.perform(get("/sample/kafka/ops/lag")
+                        .param("groupId", "sample-group")
+                        .param("topic", KafkaScenarioTopologyConfig.TOPIC_ORDER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.topic").value(KafkaScenarioTopologyConfig.TOPIC_ORDER))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertThat(objectMapper.readTree(earliestLagBody).path("data").path("totalLag").asLong())
+                .isGreaterThanOrEqualTo(2L);
+
+        // 4. HTTP 推进消费位移至 LATEST -> 积压归零
         OffsetResetRequest latestReq = OffsetResetRequest.builder()
                 .groupId("sample-group")
-                .topic("sample.order.topic")
+                .topic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
                 .resetType(ResetType.LATEST)
                 .build();
 
@@ -850,10 +926,21 @@ class SampleKafkaE2eTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 4. HTTP 按时间戳回拨消费位移
+        String latestLagBody = mockMvc.perform(get("/sample/kafka/ops/lag")
+                        .param("groupId", "sample-group")
+                        .param("topic", KafkaScenarioTopologyConfig.TOPIC_ORDER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertThat(objectMapper.readTree(latestLagBody).path("data").path("totalLag").asLong())
+                .isZero();
+
+        // 5. HTTP 按时间戳回拨消费位移
         OffsetResetRequest timestampReq = OffsetResetRequest.builder()
                 .groupId("sample-group")
-                .topic("sample.order.topic")
+                .topic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
                 .resetType(ResetType.TIMESTAMP)
                 .timestampMs(System.currentTimeMillis())
                 .build();
@@ -864,10 +951,10 @@ class SampleKafkaE2eTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        // 4.1 对抗性校验：重设策略为 TIMESTAMP 时 timestampMs 缺失触发 Fail-Fast 阻断，返回 400
+        // 5.1 对抗性校验：重设策略为 TIMESTAMP 时 timestampMs 缺失触发 Fail-Fast 阻断，返回 400
         OffsetResetRequest invalidTimestampReq = OffsetResetRequest.builder()
                 .groupId("sample-group")
-                .topic("sample.order.topic")
+                .topic(KafkaScenarioTopologyConfig.TOPIC_ORDER)
                 .resetType(ResetType.TIMESTAMP)
                 .timestampMs(null)
                 .build();
@@ -880,21 +967,16 @@ class SampleKafkaE2eTest {
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("timestampMs 必须为有效正数时间戳")));
 
-        // 5. HTTP 实时查询全分区与总积压 Lag (防负数保护)
-        mockMvc.perform(get("/sample/kafka/ops/lag")
-                        .param("groupId", "sample-group")
-                        .param("topic", "sample.order.topic"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.topic").value("sample.order.topic"))
-                .andExpect(jsonPath("$.data.totalLag").value(15));
-
         // 6. 底层 Service 直接调用对齐断言
-        ConsumerGroupLag lag = opsService.getConsumerGroupLag("sample-group", "sample.order.topic");
+        ConsumerGroupLag lag = opsService.getConsumerGroupLag("sample-group", KafkaScenarioTopologyConfig.TOPIC_ORDER);
         assertThat(lag).isNotNull();
-        assertThat(lag.groupId()).isIn("test-group", "sample-group", "sample-kafka-local-group");
-        assertThat(lag.topic()).isEqualTo("sample.order.topic");
+        assertThat(lag.groupId()).isEqualTo("sample-group");
+        assertThat(lag.topic()).isEqualTo(KafkaScenarioTopologyConfig.TOPIC_ORDER);
         assertThat(lag.totalLag()).isGreaterThanOrEqualTo(0L);
+        assertThat(lag.partitionLags()).allSatisfy(p -> {
+            assertThat(p.logEndOffset()).isGreaterThanOrEqualTo(Math.max(0L, p.committedOffset()));
+            assertThat(p.lag()).isEqualTo(Math.max(0L, p.logEndOffset() - Math.max(0L, p.committedOffset())));
+        });
     }
 
     // =========================================================================
@@ -957,156 +1039,6 @@ class SampleKafkaE2eTest {
                         .content(objectMapper.writeValueAsString(stopReq)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
-    }
-
-    @TestConfiguration
-    @Profile("!local")
-    static class MockKafkaTestConfig {
-
-        private final AtomicLong offsetSequence = new AtomicLong(100L);
-
-        @Bean
-        @Primary
-        public org.springframework.kafka.core.KafkaAdmin mockKafkaAdmin() {
-            return mock(org.springframework.kafka.core.KafkaAdmin.class);
-        }
-
-        @Bean
-        @Primary
-        public KafkaDeadLetterReplayTemplate mockDeadLetterReplayTemplate() {
-            KafkaDeadLetterReplayTemplate mock = mock(KafkaDeadLetterReplayTemplate.class);
-            when(mock.peek(anyString(), anyInt())).thenReturn(List.of(
-                    new ConsumerRecord<>("sample.poison.topic.DLT", 0, 1L, "k".getBytes(), "v".getBytes())
-            ));
-            when(mock.replay(anyString(), anyString(), anyInt())).thenReturn(3);
-            when(mock.replay(anyString(), anyString(), anyInt(), any())).thenReturn(2);
-            doNothing().when(mock).purge(anyString());
-            return mock;
-        }
-
-        @Bean
-        @Primary
-        public KafkaOffsetManager mockKafkaOffsetManager() {
-            KafkaOffsetManager mock = mock(KafkaOffsetManager.class);
-            when(mock.getConsumerGroupLag(anyString(), anyString())).thenReturn(
-                    new ConsumerGroupLag("test-group", "sample.order.topic", 15L, List.of(
-                            new PartitionLag(0, 100L, 85L, 15L)
-                    ))
-            );
-            when(mock.getConsumerGroupOffsets(anyString())).thenReturn(Map.of(
-                    new TopicPartition("sample.order.topic", 0), new OffsetAndMetadata(85L, "committed")
-            ));
-            return mock;
-        }
-
-        @Bean
-        @Primary
-        public KafkaContainerManager mockKafkaContainerManager() {
-            KafkaContainerManager mock = mock(KafkaContainerManager.class);
-            when(mock.pause(anyString())).thenReturn(true);
-            when(mock.resume(anyString())).thenReturn(true);
-            when(mock.start(anyString())).thenReturn(true);
-            when(mock.stop(anyString())).thenReturn(true);
-            when(mock.isPaused(anyString())).thenReturn(true);
-            when(mock.isRunning(anyString())).thenReturn(true);
-            return mock;
-        }
-
-        @Bean
-        @Primary
-        @SuppressWarnings("unchecked")
-        public KafkaTemplate<Object, Object> mockKafkaTemplate(
-                org.springframework.beans.factory.ObjectProvider<OrderSingleRecordConsumer> orderConsumerProvider,
-                org.springframework.beans.factory.ObjectProvider<PoisonPillKafkaConsumer> poisonConsumerProvider,
-                org.springframework.beans.factory.ObjectProvider<DeadLetterAuditConsumer> deadLetterAuditConsumerProvider,
-                org.springframework.beans.factory.ObjectProvider<BatchRecordConsumer> batchRecordConsumerProvider) {
-            KafkaTemplate<Object, Object> mockTemplate = mock(KafkaTemplate.class);
-
-            when(mockTemplate.send(any(ProducerRecord.class))).thenAnswer(invocation -> {
-                ProducerRecord<Object, Object> record = invocation.getArgument(0);
-                int partition = record.partition() != null ? record.partition() : 0;
-                long offset = offsetSequence.incrementAndGet();
-
-                RecordMetadata metadata = new RecordMetadata(
-                        new TopicPartition(record.topic(), partition),
-                        offset, 0, System.currentTimeMillis(), 0, 0
-                );
-                SendResult<Object, Object> sendResult = new SendResult<>(record, metadata);
-
-                // 模拟单条消息同步分发给监听器消费
-                if (KafkaScenarioTopologyConfig.TOPIC_ORDER.equals(record.topic())) {
-                    if (record.value() instanceof OrderMessage orderMsg) {
-                        String key = record.key() != null ? record.key().toString() : null;
-                        OrderSingleRecordConsumer consumer = orderConsumerProvider.getIfAvailable();
-                        if (consumer != null) {
-                            consumer.onOrderMessage(orderMsg, key, partition, offset);
-                        }
-                    }
-                } else if (KafkaScenarioTopologyConfig.TOPIC_BATCH.equals(record.topic())) {
-                    if (record.value() instanceof OrderMessage orderMsg) {
-                        String key = record.key() != null ? record.key().toString() : orderMsg.getOrderId();
-                        BatchRecordConsumer consumer = batchRecordConsumerProvider.getIfAvailable();
-                        if (consumer != null) {
-                            ConsumerRecord<String, OrderMessage> cr = new ConsumerRecord<>(
-                                    record.topic(), partition, offset, key, orderMsg
-                            );
-                            record.headers().forEach(header -> cr.headers().add(header));
-                            if (cr.headers().lastHeader(MessageHeaderConstants.TENANT_ID) == null && orderMsg.getTenantId() != null) {
-                                cr.headers().add(new RecordHeader(
-                                        MessageHeaderConstants.TENANT_ID,
-                                        orderMsg.getTenantId().getBytes(StandardCharsets.UTF_8)
-                                ));
-                            }
-                            consumer.onBatchRecords(List.of(cr));
-                        }
-                    }
-                } else if (KafkaScenarioTopologyConfig.TOPIC_POISON.equals(record.topic())) {
-                    if (record.value() instanceof String str) {
-                        PoisonPillKafkaConsumer consumer = poisonConsumerProvider.getIfAvailable();
-                        if (consumer != null) {
-                            try {
-                                consumer.onPoisonMessage(str);
-                            } catch (Exception ex) {
-                                DeadLetterAuditConsumer auditConsumer = deadLetterAuditConsumerProvider.getIfAvailable();
-                                if (auditConsumer != null) {
-                                    RecordHeaders dltHeaders = new RecordHeaders();
-                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_TOPIC, record.topic().getBytes(StandardCharsets.UTF_8)));
-                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_PARTITION, ByteBuffer.allocate(4).putInt(partition).array()));
-                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_OFFSET, ByteBuffer.allocate(8).putLong(offset).array()));
-                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_ORIGINAL_TIMESTAMP, ByteBuffer.allocate(8).putLong(System.currentTimeMillis()).array()));
-                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_EXCEPTION_FQCN, ex.getClass().getName().getBytes(StandardCharsets.UTF_8)));
-                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_EXCEPTION_MESSAGE, ex.getMessage().getBytes(StandardCharsets.UTF_8)));
-                                    dltHeaders.add(new RecordHeader(KafkaHeaders.DLT_EXCEPTION_STACKTRACE, "SampleStackTrace".getBytes(StandardCharsets.UTF_8)));
-
-                                    ConsumerRecord<Object, Object> cr = new ConsumerRecord<>(
-                                            record.topic() + ".DLT", partition, offset, 0L, null, 0, 0,
-                                            record.key(), record.value(), dltHeaders, Optional.empty()
-                                    );
-                                    auditConsumer.onDeadLetter(cr, record.topic() + ".DLT", ex.getMessage().getBytes(StandardCharsets.UTF_8));
-                                }
-                            }
-                        }
-                    }
-                } else if (record.topic() != null && record.topic().endsWith(".DLT")) {
-                    DeadLetterAuditConsumer consumer = deadLetterAuditConsumerProvider.getIfAvailable();
-                    if (consumer != null) {
-                        ConsumerRecord<Object, Object> cr = new ConsumerRecord<>(
-                                record.topic(), partition, offset, record.key(), record.value()
-                        );
-                        consumer.onDeadLetter(cr, record.topic(), "模拟死信转发异常".getBytes(StandardCharsets.UTF_8));
-                    }
-                }
-
-                return CompletableFuture.completedFuture(sendResult);
-            });
-
-            when(mockTemplate.executeInTransaction(any())).thenAnswer(invocation -> {
-                KafkaOperations.OperationsCallback<Object, Object, Object> cb = invocation.getArgument(0);
-                return cb.doInOperations(mockTemplate);
-            });
-
-            return mockTemplate;
-        }
     }
 
     @TestConfiguration

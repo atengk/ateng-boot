@@ -4,7 +4,17 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.kafka.helper.KafkaDeadLetterHelper;
 import io.github.atengk.boot.kafka.properties.AtengKafkaProperties;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.DeleteRecordsResult;
+import org.apache.kafka.clients.admin.DescribeTopicsResult;
+import org.apache.kafka.clients.admin.ListOffsetsResult;
+import org.apache.kafka.clients.admin.RecordsToDelete;
+import org.apache.kafka.clients.admin.TopicDescription;
 import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.common.KafkaFuture;
+import org.apache.kafka.common.Node;
+import org.apache.kafka.common.TopicPartitionInfo;
+import org.apache.kafka.common.internals.KafkaFutureImpl;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
@@ -32,6 +42,7 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
 
@@ -230,5 +241,44 @@ class KafkaDeadLetterReplayTemplateTest {
 
         assertThat(replayed).isEqualTo(1);
         verify(kafkaTemplate, times(1)).send(any(ProducerRecord.class));
+    }
+
+    @Test
+    @DisplayName("物理清空 purge：支持通过 Supplier<AdminClient> 对称接缝推进位移至 End Offset 并确定性关闭客户端")
+    @SuppressWarnings("unchecked")
+    void testPurgeThroughAdminClientSupplierSeam() {
+        String dlqTopic = "order.create.topic.DLT";
+        TopicPartition tp0 = new TopicPartition(dlqTopic, 0);
+
+        AdminClient adminClient = mock(AdminClient.class);
+        TopicDescription description = new TopicDescription(
+                dlqTopic, false,
+                List.of(new TopicPartitionInfo(0, Node.noNode(), List.of(), List.of()))
+        );
+        DescribeTopicsResult describeResult = mock(DescribeTopicsResult.class);
+        when(describeResult.values()).thenReturn(Map.of(dlqTopic, KafkaFuture.completedFuture(description)));
+        when(adminClient.describeTopics(Collections.singletonList(dlqTopic))).thenReturn(describeResult);
+
+        ListOffsetsResult listOffsetsResult = mock(ListOffsetsResult.class);
+        when(listOffsetsResult.all()).thenReturn(KafkaFuture.completedFuture(
+                Map.of(tp0, new ListOffsetsResult.ListOffsetsResultInfo(15L, 0L, Optional.empty()))
+        ));
+        when(adminClient.listOffsets(anyMap())).thenReturn(listOffsetsResult);
+
+        DeleteRecordsResult deleteResult = mock(DeleteRecordsResult.class);
+        KafkaFutureImpl<Void> deleteFuture = new KafkaFutureImpl<>();
+        deleteFuture.complete(null);
+        when(deleteResult.all()).thenReturn(deleteFuture);
+        when(adminClient.deleteRecords(anyMap())).thenReturn(deleteResult);
+
+        KafkaDeadLetterReplayTemplate customTemplate = new KafkaDeadLetterReplayTemplate(
+                consumerFactory, kafkaTemplate, properties, () -> adminClient
+        );
+        customTemplate.purge(dlqTopic);
+
+        ArgumentCaptor<Map<TopicPartition, RecordsToDelete>> deleteCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(adminClient).deleteRecords(deleteCaptor.capture());
+        assertThat(deleteCaptor.getValue().get(tp0).beforeOffset()).isEqualTo(15L);
+        verify(adminClient).close();
     }
 }

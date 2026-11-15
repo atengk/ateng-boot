@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.kafka.service;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.kafka.template.KafkaReliableTemplate;
 import io.github.atengk.boot.sample.kafka.config.KafkaScenarioTopologyConfig;
 import io.github.atengk.boot.sample.kafka.model.OrderMessage;
@@ -12,6 +13,7 @@ import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -68,7 +70,34 @@ public class TradeKafkaScenarioService {
      * 批量可靠发送订单消息
      */
     public List<SendResult<Object, Object>> sendBatchOrders(List<OrderMessage> orders) {
-        return kafkaReliableTemplate.sendBatch(KafkaScenarioTopologyConfig.TOPIC_BATCH, orders);
+        if (orders == null || orders.isEmpty()) {
+            return List.of();
+        }
+        String previousTenant = TenantContextHolder.getTenantId();
+        List<CompletableFuture<SendResult<Object, Object>>> futures = new ArrayList<>(orders.size());
+        try {
+            for (OrderMessage order : orders) {
+                if (order == null) {
+                    continue;
+                }
+                if (order.getTenantId() != null && !order.getTenantId().isBlank()) {
+                    TenantContextHolder.setTenantId(order.getTenantId());
+                } else {
+                    TenantContextHolder.clear();
+                }
+                futures.add(kafkaReliableTemplate.sendReliableAsync(
+                        KafkaScenarioTopologyConfig.TOPIC_BATCH,
+                        order.getOrderId(),
+                        order));
+            }
+        } finally {
+            if (previousTenant != null) {
+                TenantContextHolder.setTenantId(previousTenant);
+            } else {
+                TenantContextHolder.clear();
+            }
+        }
+        return futures.stream().map(CompletableFuture::join).toList();
     }
 
     /**

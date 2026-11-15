@@ -39,6 +39,7 @@ import java.util.Objects;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 /**
  * Kafka 死信消息受控治理与安全重放门面
@@ -71,13 +72,23 @@ public class KafkaDeadLetterReplayTemplate {
     private final KafkaTemplate<Object, Object> kafkaTemplate;
     private final KafkaAdmin kafkaAdmin;
     private final AtengKafkaProperties properties;
+    private final Supplier<AdminClient> adminClientSupplier;
 
     @SuppressWarnings("unchecked")
     public KafkaDeadLetterReplayTemplate(
             ConsumerFactory<?, ?> consumerFactory,
             KafkaTemplate<?, ?> kafkaTemplate,
             AtengKafkaProperties properties) {
-        this((ConsumerFactory<Object, Object>) consumerFactory, (KafkaTemplate<Object, Object>) kafkaTemplate, null, properties);
+        this((ConsumerFactory<Object, Object>) consumerFactory, (KafkaTemplate<Object, Object>) kafkaTemplate, null, properties, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    public KafkaDeadLetterReplayTemplate(
+            ConsumerFactory<?, ?> consumerFactory,
+            KafkaTemplate<?, ?> kafkaTemplate,
+            AtengKafkaProperties properties,
+            Supplier<AdminClient> adminClientSupplier) {
+        this((ConsumerFactory<Object, Object>) consumerFactory, (KafkaTemplate<Object, Object>) kafkaTemplate, null, properties, adminClientSupplier);
     }
 
     @SuppressWarnings("unchecked")
@@ -86,10 +97,30 @@ public class KafkaDeadLetterReplayTemplate {
             KafkaTemplate<?, ?> kafkaTemplate,
             KafkaAdmin kafkaAdmin,
             AtengKafkaProperties properties) {
+        this(consumerFactory, kafkaTemplate, kafkaAdmin, properties, null);
+    }
+
+    /**
+     * 基于完整基础设施与自定义 AdminClient 提供者构建死信治理门面
+     *
+     * @param consumerFactory     消费者工厂
+     * @param kafkaTemplate       消息发送模板
+     * @param kafkaAdmin          Spring KafkaAdmin（可为 null）
+     * @param properties          增强配置属性
+     * @param adminClientSupplier 自定义 AdminClient 提供者（可为 null，优先于 kafkaAdmin）
+     */
+    @SuppressWarnings("unchecked")
+    public KafkaDeadLetterReplayTemplate(
+            ConsumerFactory<?, ?> consumerFactory,
+            KafkaTemplate<?, ?> kafkaTemplate,
+            KafkaAdmin kafkaAdmin,
+            AtengKafkaProperties properties,
+            Supplier<AdminClient> adminClientSupplier) {
         this.consumerFactory = (ConsumerFactory<Object, Object>) Objects.requireNonNull(consumerFactory, "consumerFactory 不能为空");
         this.kafkaTemplate = (KafkaTemplate<Object, Object>) Objects.requireNonNull(kafkaTemplate, "kafkaTemplate 不能为空");
         this.kafkaAdmin = kafkaAdmin;
         this.properties = Objects.requireNonNull(properties, "properties 不能为空");
+        this.adminClientSupplier = adminClientSupplier;
     }
 
     /**
@@ -351,11 +382,11 @@ public class KafkaDeadLetterReplayTemplate {
      */
     public void purge(String dlqTopic) {
         Assert.hasText(dlqTopic, "dlqTopic 死信主题名称不能为空");
-        if (this.kafkaAdmin == null) {
+        if (this.adminClientSupplier == null && this.kafkaAdmin == null) {
             throw new IllegalStateException("KafkaAdmin 未配置或不可用，无法执行物理 purge 操作: dlqTopic=" + dlqTopic);
         }
 
-        try (AdminClient adminClient = AdminClient.create(kafkaAdmin.getConfigurationProperties())) {
+        try (AdminClient adminClient = createAdminClient()) {
             // 1. 获取主题全部分区
             DescribeTopicsResult describeTopicsResult = adminClient.describeTopics(Collections.singletonList(dlqTopic));
             TopicDescription description = describeTopicsResult.values().get(dlqTopic)
@@ -396,6 +427,25 @@ public class KafkaDeadLetterReplayTemplate {
             log.error("[MQ-DLT-PURGE-FAILED] 清空死信主题失败: dlqTopic={}, error={}", dlqTopic, ex.getMessage(), ex);
             throw new MessageDeliveryException(MQ_TYPE_KAFKA, dlqTopic, null, "物理清空死信主题失败: " + ex.getMessage(), ex);
         }
+    }
+
+    /**
+     * 创建底座 AdminClient（供子类扩展或自定义提供者接管）
+     *
+     * @return AdminClient 实例
+     */
+    protected AdminClient createAdminClient() {
+        if (this.adminClientSupplier != null) {
+            AdminClient client = this.adminClientSupplier.get();
+            if (client == null) {
+                throw new IllegalStateException("AdminClient 提供者返回 null，无法执行物理 purge 操作");
+            }
+            return client;
+        }
+        if (this.kafkaAdmin == null) {
+            throw new IllegalStateException("KafkaAdmin 未配置或不可用，无法执行物理 purge 操作");
+        }
+        return AdminClient.create(this.kafkaAdmin.getConfigurationProperties());
     }
 
     // =========================================================================

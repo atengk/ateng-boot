@@ -77,12 +77,28 @@ public class KafkaOffsetManager {
      * @param consumerFactory 消费工厂（作为连接属性备选回退，可为 null）
      */
     public KafkaOffsetManager(KafkaAdmin kafkaAdmin, AtengKafkaProperties properties, ConsumerFactory<?, ?> consumerFactory) {
+        this(kafkaAdmin, properties, consumerFactory, null);
+    }
+
+    /**
+     * 基于完整基础设施与自定义 AdminClient 提供者构建位移治理门面
+     *
+     * @param kafkaAdmin          Spring KafkaAdmin 基础设施（可为 null）
+     * @param properties          Kafka 增强配置属性（可为 null）
+     * @param consumerFactory     消费工厂（作为连接属性备选回退，可为 null）
+     * @param adminClientSupplier 自定义 AdminClient 提供者（可为 null）
+     */
+    public KafkaOffsetManager(
+            KafkaAdmin kafkaAdmin,
+            AtengKafkaProperties properties,
+            ConsumerFactory<?, ?> consumerFactory,
+            Supplier<AdminClient> adminClientSupplier) {
         this.kafkaAdmin = kafkaAdmin;
         this.consumerFactory = consumerFactory;
         this.timeout = (properties != null && properties.getOffset() != null && properties.getOffset().getTimeout() != null)
                 ? properties.getOffset().getTimeout()
                 : DEFAULT_TIMEOUT;
-        this.adminClientSupplier = null;
+        this.adminClientSupplier = adminClientSupplier;
     }
 
     /**
@@ -395,7 +411,11 @@ public class KafkaOffsetManager {
      */
     protected AdminClient createAdminClient() {
         if (adminClientSupplier != null) {
-            return adminClientSupplier.get();
+            AdminClient client = adminClientSupplier.get();
+            if (client == null) {
+                throw new IllegalStateException("AdminClient 提供者返回 null，无法执行消费组位移治理操作");
+            }
+            return client;
         }
         if (kafkaAdmin != null && !CollectionUtils.isEmpty(kafkaAdmin.getConfigurationProperties())) {
             return AdminClient.create(kafkaAdmin.getConfigurationProperties());
