@@ -9,7 +9,7 @@ OpenAPI 3.0 / Swagger 接口契约治理与生产安全配置属性类，以 `at
 _Avoid_: SwaggerProperties, DocProperties, SpringDocProperties
 
 **OpenApiGuardFilter**:
-最高优先级访问守卫 Servlet 过滤器，在生产环境 `enabled=false` 时执行 404 物理切断防御渗透探测，在开启状态下支持 HTTP Basic 认证挑战、Sa-Token 会话凭据守卫、静态 Token 标头守卫及前置 CIDR / IP 白名单网络防火墙，并放行静态前端资源。
+最高优先级访问守卫 Servlet 过滤器，在生产环境 `enabled=false` 时执行 404 物理切断防御渗透探测，在开启状态下支持 HTTP Basic 认证挑战、Sa-Token 会话凭据与细粒度角色/权限守卫（`401`/`403` 分级拦截）、静态 Token 标头守卫及前置 CIDR / IP 白名单网络防火墙（支持 `trusted-proxies` 授信反代校验），并放行静态前端资源。
 _Avoid_: SwaggerFilter, DocAuthFilter, SecurityGuardFilter
 
 **GuardMode**:
@@ -29,11 +29,11 @@ _Avoid_: AuthSchemeCustomizer, SecurityConfigurator, SchemeRegistrar
 _Avoid_: SecuritySchemeCustomizer, SaTokenDocCustomizer, SwaggerAuthCustomizer
 
 **OpenApiModelConverter**:
-基于 SpringDoc `ModelConverter` 的接口契约模型治理增强器，自动探测实现 Core 模块 `IBaseEnum` 的枚举字段并追加代码与描述全景字典、保障 `ValidList<E>` 批量入参 100% 渲染为原生 Array JSON 契约，并为 `@Sensitive` 脱敏字段无感注入掩码安全警示标签。
+基于 SpringDoc `ModelConverter` 的接口契约模型治理增强器，自动探测实现 Core 模块 `IBaseEnum` 的枚举字段及标注 `@InEnum` 的基础类型字段并追加代码与描述全景字典、保障 `ValidList<E>` 批量入参 100% 渲染为原生 Array JSON 契约，并为 `@FieldSensitive` 脱敏字段无感注入掩码安全警示标签（全量覆盖 Core 18 项 `SensitiveType`）。
 _Avoid_: ModelEnhancer, SchemaModifier, ModelInterceptor
 
 **OpenApiExportHelper**:
-OpenAPI 3.0 规范契约标准化离线导出门面类，提供将指定业务分组的 OpenAPI 契约高效导出为格式化 JSON / YAML 字符串、byte[] 或输出流的能力，支撑 CI/CD 自动化校验与前端 SDK 生成。
+OpenAPI 3.0 规范契约标准化离线导出门面类，提供将指定业务分组的 OpenAPI 契约高效导出为格式化 JSON / YAML 字符串、`byte[]`、输出流或安全落地至本地文件（`exportToFile`）的能力，支撑 CI/CD 自动化校验与前端 SDK 生成。
 _Avoid_: SpecExporter, DocDumper, OpenApiWriter
 
 **OpenApiExportController**:
@@ -64,8 +64,12 @@ _Avoid_: @SkipHeaders, @ExcludeHeaders, @NoGlobalHeaders
 标准 HTTP 响应语义补全定制器，自动为 Operation 补全 200/400/401/500 标准响应模型与语义说明，且防御性保留开发者自定义说明。
 _Avoid_: ApiResponseFilter, CommonResponseCustomizer, ResponseDescriptor
 
+**OperationGovernanceCustomizer**:
+基于零编译期强依赖注解内省的接口治理契约定制器，在 AST 构建期自动探测 `@SaIgnore` 摘除公开接口锁头，并为 `@SaCheckLogin`、`@SaCheckRole`、`@SaCheckPermission`、`@Idempotent`、`@RateLimiter`、`@ApiSign`、`@IpAccessControl`、`@ApiVersion` 自动追加 Markdown 治理契约说明块及 `@ApiSign` 四大验签请求头。
+_Avoid_: GovernanceOperationInterceptor, AnnotationDocEnhancer, SecurityNoteCustomizer
+
 **DynamicGroupedOpenApiRegistrar**:
-配置驱动的多业务分组动态注册器，实现 `ImportBeanDefinitionRegistrar`，依据 `ateng.boot.openapi.groups` 强类型配置列表动态向 Spring 容器注册 `GroupedOpenApi` Bean，并在未配置分组时兜底注册 `default` 全量分组。
+配置驱动的多业务分组动态注册器，实现 `ImportBeanDefinitionRegistrar`，依据 `ateng.boot.openapi.groups` 强类型配置列表（支持正向匹配与 `pathsToExclude` / `packagesToExclude` 排除规则）动态向 Spring 容器注册 `GroupedOpenApi` Bean，并在未配置分组时兜底注册 `default` 全量分组。
 _Avoid_: GroupRegistrar, OpenApiGroupConfig, GroupedApiFactory
 
 **OpenApiAutoConfiguration**:

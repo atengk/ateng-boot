@@ -1,6 +1,6 @@
 # ateng-boot-openapi OpenAPI 接口契约治理与安全底座
 
-> 面向生产就绪的企业级 RESTful 接口契约治理、五模生产安全防火墙与受管离线契约交付底座。全面拥抱 **SpringDoc 官方原生标准生态（Swagger UI 5.x，依赖 `springdoc-openapi-starter-webmvc-ui:2.6.0`）**，坚持纯原生、零臃肿依赖与强类型契约设计，深度协同 Core 模块的 `IBaseEnum`、`ValidList` 与 `@Sensitive` 原语，为分布式微服务与单体应用提供可信契约基础设施。
+> 面向生产就绪的企业级 RESTful 接口契约治理、五模纵深生产安全防火墙与受管离线契约交付底座。全面拥抱 **SpringDoc 官方原生标准生态（Swagger UI 5.x）**，坚持纯原生、零臃肿依赖与显式 `Result<T>` 强类型契约设计，深度协同 Core 模块的 `IBaseEnum`、`@InEnum`、`ValidList`、`@FieldSensitive`（18 项 `SensitiveType`）、`FileUtil`、`SpringUtil` 与 `CidrMatcher` 原语，并通过零编译依赖内省感知 Sa-Token 与 Web 治理注解，为单体应用与分布式微服务提供全链路可信契约基础设施。
 
 ---
 
@@ -8,46 +8,69 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.openapi.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **装配生命周期** | 核心契约自动装配 | `OpenApiAutoConfiguration` | `enabled` (默认 `true`) | `customOpenAPI(OpenApiProperties)`: 构建基础 OpenAPI 3.0 元数据契约 | [OpenApiAutoConfigurationTest](./src/test/java/io/github/atengk/boot/openapi/autoconfigure/OpenApiAutoConfigurationTest.java) |
-| **快捷路由** | /docs 友好路由重定向 | `OpenApiAutoConfiguration` | `redirect-docs` (默认 `true`) | `openApiWebMvcConfigurer`: 注册 `/docs` 与 `/doc` 302 重定向至 `/swagger-ui/index.html` | [OpenApiSampleEndToEndTest](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiSampleEndToEndTest.java) |
-| **安全防御** | 生产环境物理切断 (404) | `OpenApiGuardFilter` | `enabled=false` | `doFilter(...)`: 彻底切断 Swagger UI、`/v3/api-docs` 及离线导出端点，原生响应 404 | [OpenApiGuardIntegrationTest](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiGuardIntegrationTest.java) |
-| **安全防御** | HTTP Basic 访问守卫 | `OpenApiGuardFilter` | `guard.mode=BASIC`<br>`guard.basic.username`<br>`guard.basic.password` | `handleBasicAuth`: 触发标准 HTTP 401 `WWW-Authenticate: Basic` 弹窗，恒定时间比对防时序攻击 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
-| **安全防御** | Sa-Token 会话凭证守卫 | `OpenApiGuardFilter` | `guard.mode=SATOKEN` | `handleSaTokenAuth`: 弱依赖联动 Sa-Token 会话，未登录用户拒绝访问返回 401 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
-| **安全防御** | 静态令牌 (TOKEN) 守卫 | `OpenApiGuardFilter` | `guard.mode=TOKEN`<br>`guard.token.secret`<br>`guard.token.header-name`<br>`guard.token.allow-query-param`<br>`guard.token.query-param-name` | `handleTokenAuth`: 比对 `X-Doc-Token` 或 `?doc-token=xxx`，恒定时间防时序攻击比对 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
-| **安全防御** | CIDR 白名单网络防火墙 | `OpenApiGuardFilter`<br>`OpenApiCidrMatcher` | `guard.mode=IP_WHITELIST`<br>`guard.ip-whitelist.cidrs`<br>`guard.ip-whitelist.trusted-header`<br>`guard.ip-whitelist.enabled` | `matches(String clientIp)`: 支持 IPv4/IPv6 与子网掩码计算，配置反代受信任标头深度防伪造 | [OpenApiCidrMatcherTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiCidrMatcherTest.java) |
-| **安全防御** | 静态资源白名单放行 | `OpenApiGuardFilter` | `guard.mode` | `isStaticResource(path)`: 对 CSS, JS, WebJars, 图标等静态资源免密放行，防御样式死锁 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
-| **契约模型保真** | IBaseEnum 强类型枚举映射 | `OpenApiModelConverter` | 无需配置，自动探测 | `resolve(...)`: 映射真实 Integer/String 强类型 Schema，注入 `enum` 取值、Markdown 字典与示例 | [OpenApiModelConverterTest](./src/test/java/io/github/atengk/boot/openapi/converter/OpenApiModelConverterTest.java) |
-| **契约模型保真** | ValidList 批量数组保真 | `OpenApiModelConverter` | 无需配置，自动探测 | `resolve(...)`: 拦截泛型 `ValidList<E>` 并精确转换为原生 `ArraySchema` `[ { item } ]` | [OpenApiModelConverterTest](./src/test/java/io/github/atengk/boot/openapi/converter/OpenApiModelConverterTest.java) |
-| **契约模型保真** | @FieldSensitive 脱敏警示 | `OpenApiModelConverter` | 无需配置，自动探测 | `resolve(...)`: 为脱敏字段注入 `[脱敏字段: xxx掩码]` 警示前缀与标准示例掩码值 | [OpenApiModelConverterTest](./src/test/java/io/github/atengk/boot/openapi/converter/OpenApiModelConverterTest.java) |
-| **标头透传** | 全链路追踪头自动注入 | `GlobalHeaderCustomizer` | `headers.trace-id` (默认 `true`) | `customize(Operation, HandlerMethod)`: 自动向每个接口 Operation 注入请求头 `X-Trace-Id` | [GlobalHeaderCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/GlobalHeaderCustomizerTest.java) |
-| **标头透传** | 多租户标识头自动注入 | `GlobalHeaderCustomizer` | `headers.tenant-id` (默认 `true`) | `customize(Operation, HandlerMethod)`: 自动向每个接口 Operation 注入请求头 `X-Tenant-Id` | [GlobalHeaderCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/GlobalHeaderCustomizerTest.java) |
-| **标头透传** | 自定义全局请求头配置注入 | `GlobalHeaderCustomizer` | `headers.custom` (列表) | `customize(Operation, HandlerMethod)`: 声明式注入自定义 Header（名称、描述、必填项与示例） | [GlobalHeaderCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/GlobalHeaderCustomizerTest.java) |
-| **标头豁免** | 声明式精细化请求头豁免 | `@IgnoreGlobalHeaders` | 注解驱动 | 标注于类或方法上，支持无参全量豁免或精准指定豁免名单（如 `{"X-Tenant-Id"}`） | [GlobalHeaderCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/GlobalHeaderCustomizerTest.java) |
-| **通用鉴权** | 配置化多安全方案挂载 | `SecuritySchemesCustomizer` | `security-schemes` (列表) | `customise(OpenAPI)`: 配置驱动向 Components 注册 HTTP Bearer、ApiKey 并全局激活锁头 | [SecuritySchemesCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/SecuritySchemesCustomizerTest.java) |
-| **鉴权集成** | Sa-Token 锁头自动感知 | `SaTokenSecurityCustomizer` | 弱依赖感知 | `customise(OpenAPI)`: 探测并提取 Sa-Token 密钥名称，注册 APIKey 并激活锁头 | [SaTokenSecurityCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/SaTokenSecurityCustomizerTest.java) |
-| **状态码规范** | 通用状态码全景字典注入 | `ResultCodeDictionaryCustomizer` | `show-result-codes` (默认 `true`) | `customise(OpenAPI)`: 自动向 `Info.description` 追加 Core 模块通用状态码 Markdown 字典 | [ResultCodeDictionaryCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/ResultCodeDictionaryCustomizerTest.java) |
-| **状态码扩展** | 业务状态码字典 SPI 扩展 | `ResultCodeProvider` | SPI 注册 | `getResultCodes()`, `getTitle()`, `resolveScenario()`: 动态向全局描述注入业务领域状态码字典 | [ResultCodeProviderTest](./src/test/java/io/github/atengk/boot/openapi/customizer/ResultCodeProviderTest.java) |
-| **契约规范** | 标准 HTTP 响应说明补全 | `StandardApiResponseCustomizer` | `standard-responses` (默认 `true`) | `customize(Operation, HandlerMethod)`: 为 Operation 补全 200/400/401/500 响应语义 | [StandardApiResponseCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/StandardApiResponseCustomizerTest.java) |
-| **业务分组** | 配置驱动多业务分组路由 | `DynamicGroupedOpenApiRegistrar` | `groups` (配置列表) | `registerBeanDefinitions(...)`: 依据配置动态注册多 `GroupedOpenApi`，未配置时兜底单全量 | [DynamicGroupedOpenApiRegistrarTest](./src/test/java/io/github/atengk/boot/openapi/group/DynamicGroupedOpenApiRegistrarTest.java) |
-| **离线交付** | 离线契约导出门面助手 | `OpenApiExportHelper` | `exportJson(...)`<br>`exportYaml(...)`<br>`exportBytes(...)`<br>`export(...)` | 支持指定分组或全量 OpenAPI 规范导出为 JSON/YAML 字符串、字节数组或写入输出流 | [OpenApiExportHelperTest](./src/test/java/io/github/atengk/boot/openapi/export/OpenApiExportHelperTest.java)<br>[OpenApiSampleEndToEndTest](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiSampleEndToEndTest.java) |
-| **离线交付** | 受管离线契约导出 REST 控制器 | `OpenApiExportController` | `export.enabled: true` | `GET /docs/export/{group}.json` 与 `/{group}.yaml`，带 `Content-Disposition` 附件下载响应头 | [OpenApiExportControllerTest](./src/test/java/io/github/atengk/boot/openapi/export/OpenApiExportControllerTest.java) |
+| **装配生命周期** | 核心契约自动装配 | `OpenApiAutoConfiguration` | `enabled`（默认 `true`）<br>`title`, `description`, `version`, `terms-of-service`, `contact.*`, `license.*`, `servers.*` | `customOpenAPI(OpenApiProperties)`: 构建基础 OpenAPI 3.0 `Info` 与多环境 `Server` 契约 | [OpenApiAutoConfigurationTest](./src/test/java/io/github/atengk/boot/openapi/autoconfigure/OpenApiAutoConfigurationTest.java) |
+| **快捷路由** | /docs 友好路由重定向 | `OpenApiAutoConfiguration` | `redirect-docs`（默认 `true`） | `openApiWebMvcConfigurer`: 注册 `/docs` 与 `/doc` 302 重定向至 `/swagger-ui/index.html` | [OpenApiSampleEndToEndTest](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiSampleEndToEndTest.java) |
+| **安全防御** | 生产环境物理切断 (404) | `OpenApiGuardFilter` | `enabled=false` | `isOpenApiPath(String)`、`doFilterInternal(...)`: 拦截 `/swagger-ui/**`、`/docs`、`/doc`、`/v3/api-docs/**` 与 `/docs/export/**` 并响应 HTTP 404 | [OpenApiGuardIntegrationTest](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiGuardIntegrationTest.java) |
+| **安全防御** | HTTP Basic 访问守卫 | `OpenApiGuardFilter`<br>`GuardMode.BASIC` | `guard.mode=BASIC`<br>`guard.basic.username`<br>`guard.basic.password` | `handleBasicAuth`: 响应 HTTP 401 `WWW-Authenticate: Basic`，`MessageDigest.isEqual` 恒定时间防时序攻击 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
+| **安全防御** | Sa-Token 会话与角色/权限分级守卫 | `OpenApiGuardFilter`<br>`GuardMode.SATOKEN` | `guard.mode=SATOKEN`<br>`guard.satoken.roles`<br>`guard.satoken.permissions` | `handleSaTokenAuth`: 未登录 401；配置角色/权限时按 **OR 语义**判定（不匹配返回 403），并做瞬态上下文绑定与 `finally` 清理 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java)<br>[OpenApiGuardIntegrationTest](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiGuardIntegrationTest.java) |
+| **安全防御** | 静态令牌 (TOKEN) 守卫 | `OpenApiGuardFilter`<br>`GuardMode.TOKEN` | `guard.mode=TOKEN`<br>`guard.token.secret`<br>`guard.token.header-name`<br>`guard.token.allow-query-param`<br>`guard.token.query-param-name` | `handleTokenAuth`: 比对 `X-Doc-Token` 或可选 Query 参数 `?doc-token=...`，恒定时间防时序攻击 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
+| **安全防御** | CIDR 白名单与授信反代防伪造 | `OpenApiGuardFilter`<br>`OpenApiCidrMatcher`<br>`GuardMode.IP_WHITELIST` | `guard.mode=IP_WHITELIST`<br>`guard.ip-whitelist.enabled`<br>`guard.ip-whitelist.cidrs`<br>`guard.ip-whitelist.trusted-header`<br>`guard.ip-whitelist.trusted-proxies` | `extractClientIp(HttpServletRequest)`、`matches(String ip)`: 支持 IPv4/IPv6 CIDR 与端口剥离；配置 `trusted-proxies` 后仅授信反代连接才采信转发头 | [OpenApiCidrMatcherTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiCidrMatcherTest.java)<br>[OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
+| **安全防御** | 静态资源白名单放行 | `OpenApiGuardFilter` | `guard.mode` | `isStaticResource(String)`: 放行 `.css`、`.js`、`/webjars/`、图标等纯静态资源，避免 UI 样式死锁 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
+| **契约模型保真** | `IBaseEnum` 与 `@InEnum` 强类型映射 | `OpenApiModelConverter` | 自动装配，`DisposableBean` 对称注销 | `resolve(...)`: 同时探测 `IBaseEnum` 枚举与 DTO/方法参数 `@InEnum`，映射 `integer`/`boolean`/`string` Schema、`enum`、示例与 Markdown 字典；构造期同类去重注册 | [OpenApiModelConverterTest](./src/test/java/io/github/atengk/boot/openapi/converter/OpenApiModelConverterTest.java)<br>[OpenApiSampleEndToEndTest](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiSampleEndToEndTest.java) |
+| **契约模型保真** | `ValidList` 原生数组保真 | `OpenApiModelConverter` | 自动装配 | `resolve(...)`: 拦截 `ValidList<E>` 并转换为原生 `ArraySchema` `[ { item } ]` | [OpenApiModelConverterTest](./src/test/java/io/github/atengk/boot/openapi/converter/OpenApiModelConverterTest.java) |
+| **契约模型保真** | `@FieldSensitive` 全量 18 项脱敏警示 | `OpenApiModelConverter` | 自动装配 | `resolve(...)`: 覆盖全部 18 项 `SensitiveType`（`NONE` 跳过，`CUSTOM` 标注自定义区间），注入 `[脱敏字段: xxx掩码]` 前缀与掩码示例 | [OpenApiModelConverterTest](./src/test/java/io/github/atengk/boot/openapi/converter/OpenApiModelConverterTest.java) |
+| **标头透传** | 全局与自定义请求头双向注入 | `GlobalHeaderCustomizer` | `headers.trace-id`（默认 `true`）<br>`headers.tenant-id`（默认 `true`）<br>`headers.custom[]`（`name`, `description`, `required`, `default-value`, `example`） | `customize(Operation, HandlerMethod)`、`addHeaderIfNotPresent(...)`: 自动注入 `X-Trace-Id`、`X-Tenant-Id`（`string`）与自定义头，`example` 优先并回退 `defaultValue` | [GlobalHeaderCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/GlobalHeaderCustomizerTest.java) |
+| **标头豁免** | 声明式精细化请求头豁免 | `@IgnoreGlobalHeaders` | 注解 `value()` 属性 | 标注于类或方法，支持无参全量豁免或精准排除指定 Header（不区分大小写） | [GlobalHeaderCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/GlobalHeaderCustomizerTest.java) |
+| **治理内省** | 跨模块治理契约零耦合内省 | `OperationGovernanceCustomizer` | `operation-governance-notes`（默认 `true`） | `customize(Operation, HandlerMethod)`: `@SaIgnore` 摘除锁头（方法级鉴权注解优先）、渲染 8 类 Sa-Token/Web 治理注解 Markdown 契约，`@ApiSign(verifyRequest=true)` 防重注入 4 大验签头 | [OperationGovernanceCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/OperationGovernanceCustomizerTest.java)<br>[OpenApiSampleEndToEndTest](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiSampleEndToEndTest.java) |
+| **鉴权挂载** | 配置化多安全方案与 Sa-Token 锁头 | `SecuritySchemesCustomizer`<br>`SaTokenSecurityCustomizer` | `security-schemes[]`（`key`, `name`, `type`, `scheme`, `bearer-format`, `in`, `description`, `global`） | `customise(OpenAPI)`: 注册 HTTP Bearer/Basic/ApiKey 方案；检测到 Sa-Token 时自动注册 APIKey 方案 | [SecuritySchemesCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/SecuritySchemesCustomizerTest.java)<br>[SaTokenSecurityCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/SaTokenSecurityCustomizerTest.java) |
+| **状态码与响应** | 全景状态码字典与 SPI 扩展 | `ResultCodeDictionaryCustomizer`<br>`ResultCodeProvider` | `show-result-codes`（默认 `true`）<br>SPI Bean `getTitle()`, `getResultCodes()`, `resolveScenario(IResultCode)`, `getOrder()` | `customise(OpenAPI)`、`buildResultCodeTable()`: 注入 Core `CommonResultCode` 与业务扩展状态码 Markdown 表格 | [ResultCodeDictionaryCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/ResultCodeDictionaryCustomizerTest.java)<br>[ResultCodeProviderTest](./src/test/java/io/github/atengk/boot/openapi/customizer/ResultCodeProviderTest.java) |
+| **状态码与响应** | 标准 HTTP 响应语义补全 | `StandardApiResponseCustomizer` | `standard-responses`（默认 `true`） | `customize(Operation, HandlerMethod)`: 防覆盖补全 `200`/`400`/`401`/`500` 响应说明 | [StandardApiResponseCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/StandardApiResponseCustomizerTest.java) |
+| **业务分组** | 多业务分组动态注册与对称排除 | `DynamicGroupedOpenApiRegistrar` | `groups[]`（`group`, `display-name`, `paths-to-match`, `paths-to-exclude`, `packages-to-scan`, `packages-to-exclude`） | `registerBeanDefinitions(...)`、`buildGroupedOpenApi(...)`: 注册多 `GroupedOpenApi`，未配置分组时兜底 `default` | [DynamicGroupedOpenApiRegistrarTest](./src/test/java/io/github/atengk/boot/openapi/group/DynamicGroupedOpenApiRegistrarTest.java)<br>[OpenApiSampleEndToEndTest](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiSampleEndToEndTest.java) |
+| **离线交付** | 离线契约导出门面与安全落盘 | `OpenApiExportHelper`<br>`OpenApiFormat` | `DisposableBean`、`SpringUtil` 容器兜底 | 静态：`getInstance()`, `setInstance(...)`, `isValidGroupName(String)`, `exportJson(...)`, `exportYaml(...)`, `exportBytes(...)`, `export(...)`, `exportToFile(...)`<br>实例：`exportJsonString(...)`, `exportYamlString(...)`, `exportStream(...)`, `exportBytes(...)`, `exportFile(...)` | [OpenApiExportHelperTest](./src/test/java/io/github/atengk/boot/openapi/export/OpenApiExportHelperTest.java)<br>[OpenApiSampleEndToEndTest](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiSampleEndToEndTest.java) |
+| **离线交付** | 受管离线契约导出 REST 控制器 | `OpenApiExportController` | `export.enabled`（默认 `false`） | `GET /docs/export/json`、`/yaml`、`/{group}.json`、`/{group}.yaml`，白名单拦截非法 `{group}` 返回 400 | [OpenApiExportControllerTest](./src/test/java/io/github/atengk/boot/openapi/export/OpenApiExportControllerTest.java) |
 
 ---
 
 ## 1. 模块定位与快速起步
 
-只需引入依赖，即可享受零配置开箱即用的 OpenAPI 3.0 接口文档、全链路 TraceId 自动注入与 `/docs` 极简友好重定向：
+只需引入依赖并配置基础元数据，即可启用 OpenAPI 3.0 契约文档、全链路请求头自动注入、模型枚举/脱敏保真以及 `/docs` 快捷重定向：
 
 ### 1.1 引入 Maven 依赖
 
-`ateng-boot` 遵循 BOM 依赖版本统管规范（ADR-0003），子模块引入免配 `<version>`：
+方式一：在引入 `ateng-boot-bom` 进行依赖版本统管时，业务模块免配 `<version>`：
+
+```xml
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-bom</artifactId>
+            <version>1.2.0</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+
+<dependencies>
+    <dependency>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-openapi</artifactId>
+    </dependency>
+</dependencies>
+```
+
+方式二：未导入 BOM 时，可直接使用独立显式版本号坐标引入：
 
 ```xml
 <dependency>
     <groupId>io.github.atengk</groupId>
     <artifactId>ateng-boot-openapi</artifactId>
+    <version>1.2.0</version>
 </dependency>
 ```
+
+> 若需联动 `GuardMode.SATOKEN` 会话权限守卫或 Swagger UI 自动锁头，需同时引入可选依赖 `cn.dev33:sa-token-spring-boot3-starter`；未引入时模块仍可零依赖正常启动（仅在显式配置 `guard.mode=SATOKEN` 时 Fail-Fast 提示）。
 
 ### 1.2 最小起步配置 (`application.yml`)
 
@@ -56,98 +79,94 @@ ateng:
   boot:
     openapi:
       enabled: true
-      title: "电商中台微服务 API 契约沙箱"
+      title: "ateng-boot OpenAPI 生产级契约沙箱"
+      description: "面向企业级生产环境的接口契约治理、安全守卫与多业务域分组沙箱"
       version: "1.0.0"
-      description: "基于 ateng-boot 构建的标准化接口契约文档"
       headers:
         trace-id: true
         tenant-id: true
       redirect-docs: true
 ```
 
-### 1.3 Controller 极简实战编码（显式强契约 Result<T>）
+### 1.3 Controller 极简实战编码（显式强契约 `Result<T>`）
+
+以下代码摘自体验工程 [AdminUserController.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/main/java/io/github/atengk/boot/sample/openapi/controller/admin/AdminUserController.java)：
 
 ```java
 @Tag(name = "运营管理端 - 用户治理", description = "面向后台管理系统管理员的用户创建、明细查询与列表治理接口")
+@Validated
 @RestController
 @RequestMapping("/sample/openapi/admin/users")
 public class AdminUserController {
 
-    /**
-     * 创建系统用户
-     *
-     * @param request 创建参数
-     * @return 统一响应包装的新建用户视图
-     */
-    @Operation(summary = "创建系统用户", description = "校验账号格式与邮箱唯一性，成功后初始化并返回用户明细")
+    @Operation(summary = "创建系统用户", description = "校验账号格式、邮箱与 @InEnum 状态编码，成功后初始化并返回用户明细")
+    @SaCheckPermission("admin:user:create")
+    @Idempotent(timeout = 5)
     @PostMapping
     public Result<AdminUserVO> createUser(@Valid @RequestBody AdminUserCreateRequest request) {
+        UserStatusEnum status = request.getStatusCode() != null
+                ? EnumUtil.fromCode(UserStatusEnum.class, request.getStatusCode()).orElse(UserStatusEnum.ENABLE)
+                : UserStatusEnum.ENABLE;
         AdminUserVO user = AdminUserVO.of(
                 10001L,
                 request.getUsername(),
                 request.getRealName(),
                 request.getEmail(),
-                "13800138000"
+                "13800138000",
+                status
         );
         return Result.success(user);
     }
 }
 ```
 
-启动应用后，在浏览器访问 `http://localhost:8080/docs` 或 `http://localhost:8080/doc`，将自动 302 重定向至 Swagger UI 交互界面。
+启动体验工程后访问 `http://localhost:8080/docs` 或 `http://localhost:8080/doc`，将自动 302 重定向至 `/swagger-ui/index.html`。
 
 ---
 
 ## 2. 核心架构与设计不变量
 
-`ateng-boot-openapi` 架构坚持“外置安全守卫切面 + 内部 AST 契约保真构建 + 离线交付门面”的纵深防御模型：
+`ateng-boot-openapi` 采用“外置 Servlet 守卫防火墙 + SpringDoc AST 契约治理管线 + 受管离线交付门面”三层纵深架构：
 
 ```mermaid
 flowchart TD
-    subgraph ClientLayer["接入层请求 (Client / Gateway / Browser / CI-CD)"]
+    subgraph ClientLayer["接入层请求 (Browser / Gateway / SDK / CI-CD)"]
         direction TB
-        REQ_UI["GET /swagger-ui/**, /docs, /doc (页面与静态资源)"]
-        REQ_META["GET /v3/api-docs/** (OpenAPI 3.0 元数据契约)"]
-        REQ_EXPORT["GET /docs/export/{group}.json, .yaml (契约离线导出)"]
+        REQ_UI["GET /swagger-ui/**, /docs, /doc"]
+        REQ_META["GET /v3/api-docs/**"]
+        REQ_EXPORT["GET /docs/export/{group}.json, .yaml"]
     end
 
-    subgraph SecurityFirewall["第一道防线：OpenApiGuardFilter 生产安全防火墙"]
+    subgraph SecurityFirewall["第一道防线：OpenApiGuardFilter (HIGHEST_PRECEDENCE + 15)"]
         direction TB
         CHECK_ENABLED{"ateng.boot.openapi.enabled ?"}
-        CUTOFF_404["HTTP 404 Not Found<br/>(生产环境物理切断，零元数据泄露)"]
-        
-        CHECK_STATIC{"isStaticResource(path) ?"}
-        STATIC_PASS["静态资源安全放行<br/>(CSS, JS, WebJars, 图标)"]
-
-        CHECK_IP{"guard.ip-whitelist 启用 ?"}
-        IP_MATCH{"CIDR / IP 白名单校验<br/>(支持 trusted-header 解析与原生掩码计算)"}
-        IP_REJECT["HTTP 403 Forbidden<br/>(非内网授权 IP 拦截)"]
-
-        CHECK_MODE{"guard.mode 模式判定"}
-        MODE_NONE["NONE: 免密公开模式"]
-        MODE_BASIC["BASIC: HTTP Basic 凭据弹窗<br/>(MessageDigest 恒定时间防时序攻击)"]
-        MODE_SATOKEN["SATOKEN: Sa-Token 会话凭据守卫<br/>(未登录 401 拦截)"]
-        MODE_TOKEN["TOKEN: 静态令牌标头守卫<br/>(X-Doc-Token / Query 参数比对)"]
-        MODE_IP["IP_WHITELIST: 纯白名单守卫"]
+        CUTOFF_404["HTTP 404 Not Found<br/>(生产物理切断，零元数据暴露)"]
+        CHECK_STATIC{"isStaticResource ?"}
+        STATIC_PASS["静态资源放行<br/>(css / js / webjars / ico)"]
+        CHECK_IP{"IP 白名单启用 ?"}
+        TRUSTED_PROXY{"trusted-proxies 校验<br/>(仅授信反代才采信转发头)"}
+        IP_REJECT["HTTP 403 Forbidden"]
+        CHECK_MODE{"guard.mode 分流"}
+        MODE_BASIC["BASIC: HTTP 401 Basic 质询"]
+        MODE_SATOKEN["SATOKEN: 瞬态绑定 SaTokenContext<br/>未登录 401 / 角色权限 OR 校验失败 403"]
+        MODE_TOKEN["TOKEN: X-Doc-Token / Query 恒定时间比对"]
     end
 
-    subgraph AstPipeline["第二道防线：SpringDoc AST 契约构建与增强管线"]
+    subgraph AstPipeline["第二道防线：SpringDoc AST 契约增强管线"]
         direction TB
-        CONV_MODEL["OpenApiModelConverter (ModelConverter)<br/>1. IBaseEnum 强类型 Schema & Markdown 字典映射<br/>2. ValidList 原生 Array 数组契约保真<br/>3. @FieldSensitive 数据脱敏掩码安全标签注入"]
-        
-        CUSTOM_HEADER["GlobalHeaderCustomizer (OperationCustomizer)<br/>1. Trace-Id & Tenant-Id 自动透传<br/>2. headers.custom 动态配置注入<br/>3. @IgnoreGlobalHeaders 声明式精细化豁免"]
-        
-        CUSTOM_SEC["SecuritySchemesCustomizer (OpenApiCustomizer)<br/>配置驱动多安全方案 (Bearer / ApiKey / OAuth2)"]
-        CUSTOM_SATOKEN["SaTokenSecurityCustomizer (弱依赖自动锁头)"]
-        CUSTOM_DICT["ResultCodeDictionaryCustomizer + ResultCodeProvider SPI<br/>(系统通用 + 业务定制状态码全景字典)"]
-        CUSTOM_RESP["StandardApiResponseCustomizer (200/400/401/500 响应语义)"]
-        DYNAMIC_GROUP["DynamicGroupedOpenApiRegistrar (多业务分组动态路由)"]
+        CONV_MODEL["OpenApiModelConverter<br/>IBaseEnum/@InEnum + ValidList + 18 项 @FieldSensitive"]
+        CUSTOM_HEADER["GlobalHeaderCustomizer & @IgnoreGlobalHeaders<br/>X-Trace-Id / X-Tenant-Id / custom(example)"]
+        CUSTOM_GOV["OperationGovernanceCustomizer<br/>@SaIgnore 免锁头 + 8 类治理契约 + @ApiSign 验签头"]
+        CUSTOM_SEC["SecuritySchemesCustomizer & SaTokenSecurityCustomizer"]
+        CUSTOM_DICT["ResultCodeDictionaryCustomizer + ResultCodeProvider SPI"]
+        CUSTOM_RESP["StandardApiResponseCustomizer (200/400/401/500)"]
+        DYNAMIC_GROUP["DynamicGroupedOpenApiRegistrar<br/>paths/packages 匹配与对称排除"]
     end
 
-    subgraph ExportFacade["第三道防线：受管离线契约交付与运维门面"]
+    subgraph ExportFacade["第三道防线：受管离线交付门面"]
         direction TB
-        FACADE_HELPER["OpenApiExportHelper (静态/Spring 受管双模门面)<br/>支持 JSON / YAML 字符串、byte[] 与输出流导出"]
-        EXPORT_CTRL["OpenApiExportController (/docs/export/**)<br/>受 GuardFilter 管辖，带 Content-Disposition 附件触发下载"]
+        FACADE_HELPER["OpenApiExportHelper (DisposableBean + SpringUtil)<br/>exportJson / exportYaml / exportBytes / export / exportToFile"]
+        EXPORT_CTRL["OpenApiExportController<br/>isValidGroupName 400 拦截 + 附件流下载"]
     end
 
     REQ_UI --> CHECK_ENABLED
@@ -159,81 +178,75 @@ flowchart TD
     CHECK_STATIC -- true --> STATIC_PASS
     CHECK_STATIC -- false --> CHECK_IP
 
-    CHECK_IP -- 未配置 --> CHECK_MODE
-    CHECK_IP -- 配置白名单 --> IP_MATCH
-    IP_MATCH -- 拒绝 --> IP_REJECT
-    IP_MATCH -- 放行 --> CHECK_MODE
+    CHECK_IP -- 未启用 --> CHECK_MODE
+    CHECK_IP -- 启用 --> TRUSTED_PROXY
+    TRUSTED_PROXY -- 不命中白名单 --> IP_REJECT
+    TRUSTED_PROXY -- 放行 --> CHECK_MODE
 
-    CHECK_MODE -- NONE --> AstPipeline
-    CHECK_MODE -- BASIC --> MODE_BASIC
-    CHECK_MODE -- SATOKEN --> MODE_SATOKEN
-    CHECK_MODE -- TOKEN --> MODE_TOKEN
-    CHECK_MODE -- IP_WHITELIST --> MODE_IP
-
-    MODE_BASIC -- 认证成功 --> AstPipeline
-    MODE_SATOKEN -- 已登录 --> AstPipeline
-    MODE_TOKEN -- 校验成功 --> AstPipeline
-    MODE_IP -- 放行 --> AstPipeline
-
+    CHECK_MODE -- BASIC/SATOKEN/TOKEN 校验通过或 NONE --> AstPipeline
     AstPipeline --> ExportFacade
 ```
 
 ### 核心设计不变量
 
-1. **契约真实保真不变量 (Zero-Entity-Leakage & Semantic Truth)**：Controller 边界 100% 严禁直接接收或返回持久层 Entity；基于 `OpenApiModelConverter`，实现 Core 模块 `IBaseEnum` 的枚举映射为原生 integer/string Schema，`ValidList<E>` 100% 保真映射为原生 JSON Array，消除泛型擦除与反射歧义。
-2. **生产纵深安全不变量 (Zero-Data-Leakage)**：生产环境通过 `enabled: false` 实施物理 404 切断，彻底卸载文档组件；守卫认证采用恒定时间比对，杜绝时序攻击；反向代理 IP 解析仅在声明 `trusted-header` 时提取，默认以物理连接 IP 保底，防御标头伪造。
-3. **全链路透明透传与精细化豁免不变量 (Transparent Headers & Exemption)**：网关追踪与多租户标头自动无感挂载至每个 Operation；对外公开端点（登录、健康探针）依托 `@IgnoreGlobalHeaders` 声明式精准剔除内部标头。
-4. **双模离线交付不变量 (Dual-Mode Spec Delivery)**：同时具备受管 HTTP 端点 `/docs/export/**`（自动挂载 `Content-Disposition` 附件标头）与无依赖静态门面 `OpenApiExportHelper`，无缝服务于前端 SDK 自动生成与 CI/CD 契约归档。
+1. **契约真实保真不变量 (Zero-Entity-Leakage & Semantic Truth)**：Controller 边界严格使用 Request DTO 与 Response VO（分页统一 `PageQuery` / `PageResult<VO>`），严禁泄露持久层 Entity；枚举与 `@InEnum` 映射为真实强类型 Schema，`ValidList<E>` 保真为原生 JSON 数组，内存保持明文、`@FieldSensitive` 仅在文档标注出界脱敏预期。
+2. **生产纵深安全不变量 (Zero-Data-Leakage & Fail-Closed)**：生产关闭开关 `enabled=false` 时前置响应 HTTP `404`；Basic/Token 采用 `MessageDigest.isEqual` 恒定时间比对；配置 `trusted-proxies` 后，非授信 TCP 来源携带的转发头一律忽略；`SATOKEN` 角色/权限检验失败严格返回 HTTP `403` 且在 `finally` 中确定性清理瞬态上下文。
+3. **跨模块零强耦合内省不变量 (Decoupled Reflection Introspection)**：`OperationGovernanceCustomizer` 通过类名与注解属性缓存反射内省 Sa-Token 与 `ateng-boot-web` 治理注解，无需为 `ateng-boot-openapi` 引入额外重型传递依赖。
+4. **生命周期对称闭环不变量 (Symmetric Lifecycle)**：`OpenApiModelConverter` 与 `OpenApiExportHelper` 均实现 `DisposableBean`，容器销毁时精确注销全局静态注册表与静态实例引用，多上下文集成测试零残留。
 
 ---
 
 ## 3. 契约模型治理与语义保真套件
 
-### 3.1 IBaseEnum 强类型枚举与 Markdown 全景字典
+### 3.1 `IBaseEnum` 与 `@InEnum` 强类型枚举及 Markdown 字典
 
-针对 Core 模块强类型枚举契约 `IBaseEnum<T>`（ADR-0060），`OpenApiModelConverter` 自动解析其实际数据类型（Integer 或 String），填充合法取值集合与格式化 Markdown 表格字典。
+`OpenApiModelConverter` 不仅能自动识别字段上的 Core `IBaseEnum<T>` 枚举类型，还可探测 DTO 字段及 Controller 方法参数上的 `@InEnum(XxxEnum.class)` 约束，按 `getCode()` 真实类型生成 Schema 并幂等注入 Markdown 选项字典。
 
 #### 1. 专属配置片段
+
 ```yaml
 ateng:
   boot:
     openapi:
-      enabled: true # 模型转换器自动装配激活，无需额外配置
+      enabled: true # OpenApiModelConverter 自动装配生效
 ```
 
 #### 2. 实战 Java 示例代码
+
+以下模型与分页查询接口摘自体验工程 [AdminUserCreateRequest.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/main/java/io/github/atengk/boot/sample/openapi/model/AdminUserCreateRequest.java) 与 [AdminUserController.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/main/java/io/github/atengk/boot/sample/openapi/controller/admin/AdminUserController.java)：
+
 ```java
-public enum UserStatusEnum implements IBaseEnum<Integer> {
-    ENABLE(1, "启用"),
-    DISABLE(0, "停用");
+// 1. DTO 字段上的 @InEnum 整数约束
+@Schema(description = "管理端用户创建请求参数")
+public class AdminUserCreateRequest {
 
-    private final Integer code;
-    private final String label;
+    @InEnum(value = UserStatusEnum.class, message = "账号状态编码不合法")
+    @Schema(description = "账号状态编码")
+    private Integer statusCode = 1;
+}
 
-    UserStatusEnum(Integer code, String label) {
-        this.code = code;
-        this.label = label;
-    }
-
-    @Override
-    public Integer getCode() {
-        return code;
-    }
-
-    @Override
-    public String getLabel() {
-        return label;
-    }
+// 2. Controller 方法参数上的 @InEnum 与 PageQuery/PageResult 分页契约
+@Operation(summary = "分页查询系统用户", description = "使用 Core 标准 PageQuery 与 PageResult，并演示控制器参数 @InEnum 强类型枚举筛选")
+@RateLimiter(count = 60, time = 60, limitType = LimitType.IP)
+@GetMapping("/page")
+public Result<PageResult<AdminUserVO>> pageUsers(
+        @Valid @ParameterObject PageQuery pageQuery,
+        @Parameter(description = "账号状态编码筛选")
+        @InEnum(value = UserStatusEnum.class, message = "筛选状态编码不合法")
+        @RequestParam(value = "status", required = false) Integer status) {
+    // 返回 PageResult<AdminUserVO> ...
 }
 ```
 
 #### 3. 核心机制与预期契约输出
-- **底层机制**：SpringDoc 反射解析该字段时，`OpenApiModelConverter` 拦截其 Class 类型，判定实现 `IBaseEnum` 接口后，调用 `getCode()` 获取实际泛型类型，将 Schema `type` 置为对应原生类型，向 `enum` 数组注入真实业务码值，并在 `description` 追加枚举说明字典。
+
+- **底层机制**：依据枚举常量的 `getCode()` 运行时类型映射 Schema（`Long` -> `integer/int64`、`Integer` -> `integer/int32`、`Boolean` -> `boolean`，其余为 `string`），填充 `enum` 数组、首项 `example`，并按防重原则追加 `\n\n**枚举选项**：\n- ...`；同时在构造方法执行同类 `OpenApiModelConverter` 去重并实现 `DisposableBean.destroy()` 清理全局注册表。
 - **生成的 OpenAPI JSON 契约片段**：
   ```json
   "status": {
     "type": "integer",
-    "description": "账号状态<br/>**枚举选项：**<br/>- `1`: 启用 (ENABLE)<br/>- `0`: 停用 (DISABLE)",
+    "format": "int32",
+    "description": "账号状态\n\n**枚举选项**：\n- `1`: 启用 (ENABLE)\n- `0`: 停用 (DISABLE)",
     "enum": [ 1, 0 ],
     "example": 1
   }
@@ -241,11 +254,12 @@ public enum UserStatusEnum implements IBaseEnum<Integer> {
 
 ---
 
-### 3.2 ValidList 原生 JSON 数组契约保真
+### 3.2 `ValidList` 原生 JSON 数组契约保真
 
-为批量列表入参（ADR-0027）使用 `ValidList<E>` 时，原生 SpringDoc 会将其解析为普通包装对象，导致文档显示为 `{ "list": [...] }`。`OpenApiModelConverter` 拦截并将其重塑为标准原生 JSON 数组 `[ { item } ]`。
+批量入参遵循 `ValidList<E>` 契约，避免默认反射将 `ValidList` 渲染为内部属性对象。
 
 #### 1. 专属配置片段
+
 ```yaml
 ateng:
   boot:
@@ -254,13 +268,8 @@ ateng:
 ```
 
 #### 2. 实战 Java 示例代码
+
 ```java
-/**
- * 批量创建系统用户（演示 ValidList 原生 Array 契约）
- *
- * @param requestList 批量创建参数列表
- * @return 创建条数
- */
 @Operation(summary = "批量创建系统用户", description = "批量校验入参并初始化多个系统用户，支持 ValidList 原生 JSON 数组契约")
 @PostMapping("/batch")
 public Result<Integer> batchCreateUsers(@Valid @RequestBody ValidList<AdminUserCreateRequest> requestList) {
@@ -269,7 +278,8 @@ public Result<Integer> batchCreateUsers(@Valid @RequestBody ValidList<AdminUserC
 ```
 
 #### 3. 核心机制与预期契约输出
-- **底层机制**：`OpenApiModelConverter` 检查解析上下文类型是否属于 `ValidList`，若是则递归提取泛型参数 `E` 的 Schema，构建原生 `ArraySchema` 并将泛型 Schema 设置为其 `items`。
+
+- **底层机制**：`OpenApiModelConverter` 拦截 `ValidList` 原始类型，递归解析泛型实参 `E` 的 Schema 并返回标准 `ArraySchema`。
 - **生成的 OpenAPI JSON 契约片段**：
   ```json
   "requestBody": {
@@ -288,11 +298,12 @@ public Result<Integer> batchCreateUsers(@Valid @RequestBody ValidList<AdminUserC
 
 ---
 
-### 3.3 @FieldSensitive 数据脱敏安全警示标签
+### 3.3 `@FieldSensitive` 全量 18 项脱敏安全警示
 
-Core 模块在内存中保持真实明文（ADR-0012），出界时由 Jackson `@Sensitive` 掩码。`OpenApiModelConverter` 感知脱敏注解，自动注入掩码安全警示前缀与掩码示例值。
+系统内存中保持 100% 原始明文，出界序列化由 `@FieldSensitive` 控制脱敏掩码；文档层同步标注各字段出界掩码形态。
 
 #### 1. 专属配置片段
+
 ```yaml
 ateng:
   boot:
@@ -301,45 +312,65 @@ ateng:
 ```
 
 #### 2. 实战 Java 示例代码
+
+以下视图定义摘自 [AdminUserVO.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/main/java/io/github/atengk/boot/sample/openapi/model/AdminUserVO.java)：
+
 ```java
 @Schema(description = "管理端用户视图对象")
 public class AdminUserVO {
+
+    @FieldSensitive(SensitiveType.EMAIL)
+    @Schema(description = "工作电子邮箱", example = "zhangsan@example.com")
+    private String email;
 
     @FieldSensitive(SensitiveType.MOBILE_PHONE)
     @Schema(description = "联系手机号码")
     private String phone;
 
-    // ... 其余字段与 Getter/Setter
+    @FieldSensitive(SensitiveType.ID_CARD)
+    @Schema(description = "身份证号码")
+    private String idCard;
+
+    @FieldSensitive(SensitiveType.IPV4)
+    @Schema(description = "最近登录 IPv4")
+    private String lastLoginIp;
 }
 ```
 
 #### 3. 核心机制与预期契约输出
-- **底层机制**：解析 JavaBean 属性时，提取字段或 Getter 上的 `@Sensitive` / `@FieldSensitive` 注解，获取脱敏策略类型，自动为字段描述追加 `[脱敏字段: 手机号码掩码]` 前缀，并填充标准示例掩码值（如 `138****5678`）。
+
+- **全量覆盖机制**：支持 Core `SensitiveType` 全部 18 项类型，包含中文姓名、手机号、固话、身份证、邮箱、银行卡、密码、车牌、地址、IPv4、IPv6、统一社会信用代码（`SOCIAL_CREDIT_CODE` / `UNIFIED_CREDIT_CODE`）、密钥令牌、护照、`KEEP_HEAD_TAIL`（动态渲染前 `N` 后 `M` 位保留说明）与 `CUSTOM`（`[脱敏字段: 自定义区间掩码]`）；`SensitiveType.NONE` 不注入冗余警示前缀；若字段已显式声明 `example`，则保留开发者示例值不强覆。
 - **生成的 OpenAPI JSON 契约片段**：
   ```json
   "phone": {
     "type": "string",
-    "description": "联系手机号码 [脱敏字段: 手机号码掩码]",
+    "description": "[脱敏字段: 手机号码掩码] 联系手机号码",
     "example": "138****5678"
+  },
+  "lastLoginIp": {
+    "type": "string",
+    "description": "[脱敏字段: IPv4 地址掩码] 最近登录 IPv4",
+    "example": "192.168.1.*"
   }
   ```
 
 ---
 
-## 4. 全链路请求头治理与精细化豁免
+## 4. 全链路请求头治理与跨模块治理内省
 
-### 4.1 全链路 Trace-Id / Tenant-Id 与自定义请求头自动透传
+### 4.1 全局与自定义请求头自动透传（`example` 与 `default-value` 双向兼容）
 
-`GlobalHeaderCustomizer` 统一介入 SpringDoc AST 构建，为所有接口自动追加链路追踪头与多租户头，免除在每个 Controller 方法上手动标注 `@Parameter` 的冗余样板代码。
+`GlobalHeaderCustomizer` 自动向接口注入链路追踪 `X-Trace-Id`、多租户 `X-Tenant-Id` 与 YAML 中声明的自定义全局请求头。
 
 #### 1. 专属配置片段
+
 ```yaml
 ateng:
   boot:
     openapi:
       headers:
-        trace-id: true     # 自动注入 X-Trace-Id (String, 链路追踪追踪标识)
-        tenant-id: true    # 自动注入 X-Tenant-Id (Long, 多租户租户标识)
+        trace-id: true
+        tenant-id: true
         custom:
           - name: "X-App-Version"
             description: "客户端应用版本号"
@@ -348,66 +379,60 @@ ateng:
 ```
 
 #### 2. 实战 Java 示例代码
-业务 Controller 无需任何 `@Parameter(in = ParameterIn.HEADER, ...)` 样板代码，普通端点即可自动挂载配置的全部全局请求头：
+
+普通 Controller 方法无需编写任何 `@Parameter(in = ParameterIn.HEADER)` 样板代码：
 
 ```java
-@Tag(name = "运营管理端 - 用户治理", description = "面向后台管理系统管理员的用户创建、明细查询与列表治理接口")
-@RestController
-@RequestMapping("/sample/openapi/admin/users")
-public class AdminUserController {
-
-    /**
-     * 查询用户列表（自动透传 X-Trace-Id, X-Tenant-Id 与自定义 X-App-Version）
-     */
-    @Operation(summary = "查询系统用户全量列表", description = "检索全量受管用户简要信息")
-    @GetMapping
-    public Result<List<AdminUserVO>> listUsers() {
-        List<AdminUserVO> list = List.of(
-                AdminUserVO.of(10001L, "admin_dev", "系统管理员"),
-                AdminUserVO.of(10002L, "operator", "普通运营人员", "operator@example.com", "13900139000")
-        );
-        return Result.success(list);
-    }
+@Operation(summary = "查询系统用户全量列表", description = "检索全量受管用户简要信息")
+@GetMapping
+public Result<List<AdminUserVO>> listUsers() {
+    List<AdminUserVO> list = List.of(
+            AdminUserVO.of(10001L, "admin_dev", "系统管理员"),
+            AdminUserVO.of(10002L, "operator", "普通运营人员", "operator@example.com", "13900139000")
+    );
+    return Result.success(list);
 }
 ```
 
 #### 3. 核心机制与预期契约输出
-- **底层机制**：实现 SpringDoc `OperationCustomizer`，在 AST 节点遍历所有接口的 Operation 参数列表，若不存在指定 Header 则动态追加 `Parameter.in("header")`。
+
+- **双向兼容机制**：`HeaderParam` 同时支持 `defaultValue` 与 `example`；设置 `defaultValue` 时填充 `schema.setDefault(...)`，示例值按 `example` 优先、缺失时回退 `defaultValue` 同时渲染到 `parameter.example` 与 `schema.example`；`X-Trace-Id` 与 `X-Tenant-Id` 均为 `StringSchema`（`type: "string"`）。
 - **生成的 OpenAPI JSON 契约片段**：
   ```json
   "parameters": [
     {
       "name": "X-Trace-Id",
       "in": "header",
-      "description": "全链路追踪 ID (Trace ID)",
+      "description": "全链路追踪 Trace ID",
       "required": false,
       "schema": { "type": "string" }
     },
     {
       "name": "X-Tenant-Id",
       "in": "header",
-      "description": "多租户标识 (Tenant ID)",
+      "description": "多租户标识 Tenant ID",
       "required": false,
-      "schema": { "type": "integer", "format": "int64" }
+      "schema": { "type": "string" }
     },
     {
       "name": "X-App-Version",
       "in": "header",
       "description": "客户端应用版本号",
       "required": false,
-      "schema": { "type": "string" },
-      "example": "1.2.0"
+      "example": "1.2.0",
+      "schema": { "type": "string", "example": "1.2.0" }
     }
   ]
   ```
 
 ---
 
-### 4.2 @IgnoreGlobalHeaders 声明式精细化与全量请求头豁免
+### 4.2 `@IgnoreGlobalHeaders` 声明式精细化与全量豁免
 
-针对对外开放端点（如管理员登录、公开心跳探针、第三方回调），内部的多租户或应用版本头不应暴露在文档中。使用 `@IgnoreGlobalHeaders` 声明式精准或全量剔除。
+登录与公开探针接口可通过 `@IgnoreGlobalHeaders` 精准豁免指定全局头（求类与方法声明并集），或无参全量豁免。
 
 #### 1. 专属配置片段
+
 ```yaml
 ateng:
   boot:
@@ -418,26 +443,25 @@ ateng:
 ```
 
 #### 2. 实战 Java 示例代码
+
+以下实现摘自 [AdminAuthController.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/main/java/io/github/atengk/boot/sample/openapi/controller/admin/AdminAuthController.java)：
+
 ```java
-@Tag(name = "运营管理端 - 开放认证", description = "面向管理员的登录鉴权开放端点")
+@Tag(name = "运营管理端 - 开放认证", description = "面向管理员的登录鉴权开放端点，演示 @IgnoreGlobalHeaders 声明式请求头豁免机制")
 @RestController
 @RequestMapping("/sample/openapi/admin/auth")
 public class AdminAuthController {
 
-    /**
-     * 精准豁免 X-Tenant-Id，保留 X-Trace-Id 与自定义请求头
-     */
-    @Operation(summary = "管理员登录认证", description = "声明式精准豁免 X-Tenant-Id 租户头")
+    @Operation(summary = "管理员登录认证", description = "开放登录接口，声明式精准豁免 X-Tenant-Id 租户头")
+    @SaIgnore
     @IgnoreGlobalHeaders({"X-Tenant-Id"})
     @PostMapping("/login")
     public Result<String> login(@Valid @RequestBody LoginRequest request) {
         return Result.success("mock-jwt-token-12345");
     }
 
-    /**
-     * 无参全量豁免所有全局请求头，保持公开端点绝对纯净
-     */
-    @Operation(summary = "公开系统心跳探针", description = "声明式全量豁免所有全局请求头")
+    @Operation(summary = "公开系统心跳探针", description = "完全公开的监控端点，全量豁免所有全局请求头")
+    @SaIgnore
     @IgnoreGlobalHeaders
     @GetMapping("/ping")
     public Result<String> ping() {
@@ -447,49 +471,69 @@ public class AdminAuthController {
 ```
 
 #### 3. 核心机制与预期契约输出
-- **精准豁免**：声明 `@IgnoreGlobalHeaders({"X-Tenant-Id"})` 时，`GlobalHeaderCustomizer` 在注入请求头前比对白名单，精准跳过指定名称的请求头，其余全局头（如 `X-Trace-Id` 与自定义头）正常保留；
-- **全量豁免**：声明无参 `@IgnoreGlobalHeaders` 时，当前类或方法下所有接口直接跳过所有全局请求头注入逻辑。
-- **生成的 OpenAPI JSON 契约片段对比**：
+
+- **精细豁免与全量豁免**：`/login` 不区分大小写精准剔除 `X-Tenant-Id`，仅保留 `X-Trace-Id` 与 `X-App-Version`；`/ping` 因无参声明 `@IgnoreGlobalHeaders` 且无业务参数，生成的 Operation 不包含 `parameters` 节点。
+
+---
+
+### 4.3 `OperationGovernanceCustomizer` 跨模块治理契约零耦合内省
+
+通过反射扫描 Sa-Token 与 `ateng-boot-web` 治理注解，无需强依赖即可在文档自动渲染治理规则、免锁头与验签请求头。
+
+#### 1. 专属配置片段
+
+```yaml
+ateng:
+  boot:
+    openapi:
+      operation-governance-notes: true # 默认 true，是否在 Operation 描述追加治理契约 Markdown 块
+```
+
+#### 2. 实战 Java 示例代码
+
+以下开放回调接口摘自 [AdminUserController.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/main/java/io/github/atengk/boot/sample/openapi/controller/admin/AdminUserController.java)：
+
+```java
+@Operation(summary = "同步回调接收", description = "演示开放回调免锁头与入站签名、IP白名单、API版本治理契约自动生成")
+@SaIgnore
+@ApiSign(verifyRequest = true, signResponse = false)
+@IpAccessControl(rules = {"127.0.0.1", "10.0.0.0/8"})
+@ApiVersion("2")
+@PostMapping("/sync-callback")
+public Result<String> syncCallback(
+        @Parameter(name = "X-Signature", in = ParameterIn.HEADER, description = "自定义商户网关数字签名")
+        @RequestHeader(value = "X-Signature", required = false) String customSignature,
+        @Valid @RequestBody AdminUserCreateRequest request) {
+    return Result.success("SYNC_ACK:" + request.getUsername());
+}
+```
+
+#### 3. 核心机制与预期契约输出
+
+- **免锁头与优先级防线**：探测到 `@SaIgnore` 且方法未显式叠加 `@SaCheckLogin` / `@SaCheckRole` / `@SaCheckPermission` 时，自动将 `Operation.security` 置为空数组 `[]` 摘除 Swagger 锁头（若类标注 `@SaIgnore` 但具体方法叠加了鉴权注解，则按 Fail-Closed 语义保留锁头）。
+- **8 类治理注解内省与防重补签**：在 `Operation.description` 尾部幂等追加 `**接口治理契约**：` 列表（支持 `@SaCheckLogin`、`@SaCheckRole`、`@SaCheckPermission`、`@Idempotent`、`@RateLimiter`、`@ApiSign`、`@IpAccessControl`、`@ApiVersion`）；当 `@ApiSign(verifyRequest = true)` 时防重补齐 `X-App-Id`、`X-Timestamp`、`X-Nonce`、`X-Signature` 请求头，且绝不覆盖接口已手写的同名参数（如示例中的 `"自定义商户网关数字签名"`）。
+- **生成的 OpenAPI JSON 契约片段**：
   ```json
-  // 1. /sample/openapi/admin/auth/login (精准豁免 X-Tenant-Id，保留 X-Trace-Id 与自定义头)
-  "paths": {
-    "/sample/openapi/admin/auth/login": {
-      "post": {
-        "summary": "管理员登录认证",
-        "parameters": [
-          {
-            "name": "X-Trace-Id",
-            "in": "header",
-            "required": false,
-            "schema": { "type": "string" }
-          },
-          {
-            "name": "X-App-Version",
-            "in": "header",
-            "required": false,
-            "schema": { "type": "string" }
-          }
-        ]
-      }
-    },
-    // 2. /sample/openapi/admin/auth/ping (全量豁免所有全局请求头，无 parameters 字段)
-    "/sample/openapi/admin/auth/ping": {
-      "get": {
-        "summary": "公开系统心跳探针"
-      }
+  "/sample/openapi/admin/users/sync-callback": {
+    "post": {
+      "description": "演示开放回调免锁头与入站签名、IP白名单、API版本治理契约自动生成\n\n**接口治理契约**：\n- **访问安全**: 免鉴权公开访问 (`@SaIgnore`)\n- **接口加签**: 入站验签=`true`, 出站加签=`false`, 算法=`DEFAULT`\n- **IP 访问控制**: `WHITE_LIST` (`[127.0.0.1, 10.0.0.0/8]`)\n- **API 版本**: `v2`",
+      "security": []
     }
   }
   ```
 
 ---
 
-## 5. 多业务分组与动态路由
+## 5. 多业务分组与动态对称路由
 
-### 5.1 配置驱动 GroupedOpenApi 动态注册与路由匹配
+### 5.1 配置驱动分组匹配与对称排除 (`paths-to-exclude` / `packages-to-exclude`)
 
-`DynamicGroupedOpenApiRegistrar` 实现 `ImportBeanDefinitionRegistrar`，依据 YAML 配置动态向 Spring 容器注册多个 `GroupedOpenApi`，实现管理端与移动端接口的物理隔离与独立选项卡展示。
+`DynamicGroupedOpenApiRegistrar` 依据 YAML 配置动态向 Spring 容器注入 `GroupedOpenApi`，同时支持正向匹配与内部端点/内部包对称排除，无需拆包即可隔离内部运维接口。
 
 #### 1. 专属配置片段
+
+以下配置摘自体验工程 [application.yml](../ateng-boot-samples/ateng-boot-sample-openapi/src/main/resources/application.yml)：
+
 ```yaml
 ateng:
   boot:
@@ -499,62 +543,49 @@ ateng:
           display-name: "运营管理端 (Admin API)"
           paths-to-match:
             - "/sample/openapi/admin/**"
+          paths-to-exclude:
+            - "/sample/openapi/admin/auth/ping"
           packages-to-scan:
             - "io.github.atengk.boot.sample.openapi.controller.admin"
+          packages-to-exclude:
+            - "io.github.atengk.boot.sample.openapi.controller.admin.internal"
         - group: "app"
           display-name: "移动端服务 (App API)"
           paths-to-match:
             - "/sample/openapi/app/**"
           packages-to-scan:
             - "io.github.atengk.boot.sample.openapi.controller.app"
+        - group: "governance"
+          display-name: "契约治理与导出 (Governance API)"
+          paths-to-match:
+            - "/sample/openapi/governance/**"
+          packages-to-scan:
+            - "io.github.atengk.boot.sample.openapi.controller.governance"
 ```
 
 #### 2. 实战 Java 示例代码
-业务按架构层次归属不同的包路径与路由前缀，无需手动编写繁琐的 `GroupedOpenApi` `@Bean` 声明：
+
+[AdminInternalController.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/main/java/io/github/atengk/boot/sample/openapi/controller/admin/internal/AdminInternalController.java) 与 [AppArticleController.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/main/java/io/github/atengk/boot/sample/openapi/controller/app/AppArticleController.java) 归属不同子包与路径前缀，由注册器自动隔离：
 
 ```java
-// 1. 运营管理端控制器（包路径：io.github.atengk.boot.sample.openapi.controller.admin，路由前缀：/sample/openapi/admin/**）
-@Tag(name = "运营管理端 - 用户治理", description = "面向后台管理系统管理员的用户创建、明细查询与列表治理接口")
+@Tag(name = "运营管理端 - 内部诊断", description = "仅在全量文档暴露、在 admin 业务分组中通过 packages-to-exclude 剔除的内部运维探针")
 @RestController
-@RequestMapping("/sample/openapi/admin/users")
-public class AdminUserController {
-    // 管理端接口实现...
-}
+@RequestMapping("/sample/openapi/admin/internal")
+public class AdminInternalController {
 
-// 2. 移动端文章控制器（包路径：io.github.atengk.boot.sample.openapi.controller.app，路由前缀：/sample/openapi/app/**）
-@Tag(name = "移动端 - 文章资讯", description = "面向移动终端与小程序端的信息流推荐、分类阅读与文章详情接口")
-@RestController
-@RequestMapping("/sample/openapi/app/articles")
-public class AppArticleController {
-    // 移动端接口实现...
+    @Operation(summary = "获取内部运行指标", description = "内部排障专用探针，应被 admin 分组包排除规则剔除")
+    @SaIgnore
+    @GetMapping("/metrics")
+    public Result<String> metrics() {
+        return Result.success("INTERNAL_METRICS_OK");
+    }
 }
 ```
 
 #### 3. 核心机制与预期契约输出
-- **动态 Bean 注册**：在 Spring 容器启动早期，依据 `ateng.boot.openapi.groups` 列表逐项构造 `GroupedOpenApi` 的 `BeanDefinition` 并动态注入，支持设置展示名称、匹配路径通配符与包扫描路径；
-- **兜底全量分组**：若 YAML 中未配置任何 `groups` 列表，自动注册名为 `default` 的全量分组，扫描全路径 `/**`。
-- **分组元数据路由与契约隔离输出**：
-  - 管理端专属元数据：`GET /v3/api-docs/admin`（仅包含 admin 路由，排斥 app 路由）：
-    ```json
-    {
-      "openapi": "3.0.1",
-      "info": { "title": "ateng-boot OpenAPI 生产级契约沙箱" },
-      "paths": {
-        "/sample/openapi/admin/users": { ... },
-        "/sample/openapi/admin/auth/login": { ... }
-      }
-    }
-    ```
-  - 移动端专属元数据：`GET /v3/api-docs/app`（仅包含 app 路由，排斥 admin 路由）：
-    ```json
-    {
-      "openapi": "3.0.1",
-      "info": { "title": "ateng-boot OpenAPI 生产级契约沙箱" },
-      "paths": {
-        "/sample/openapi/app/articles": { ... }
-      }
-    }
-    ```
+
+- **空白过滤与兜底分组**：`DynamicGroupedOpenApiRegistrar.toNonBlankArray` 自动跳过空白条目并修剪前后空格后透传至 `GroupedOpenApi.Builder`；若未配置任何 `groups` 且 `enabled=true`，自动兜底注册名为 `default` 的全量分组（`/**`）。
+- **分组元数据隔离效果**：全量文档 `GET /v3/api-docs` 仍包含 `/sample/openapi/admin/auth/ping` 与 `/sample/openapi/admin/internal/metrics`，而在分组文档 `GET /v3/api-docs/admin` 中两者均被精准剔除，仅保留 `/sample/openapi/admin/users/**` 与 `/sample/openapi/admin/auth/login`。
 
 ---
 
@@ -562,93 +593,196 @@ public class AppArticleController {
 
 ### 6.1 生产环境 404 物理切断防元数据泄漏
 
-当服务部署于生产公网环境且不允许对外开放 Swagger UI 或 API 元数据时，通过物理开关实施彻底切断。
+当生产环境严禁对外暴露任何接口契约或文档界面时，使用总开关实施彻底物理切断；下游业务控制器（如 `OpenApiGovernanceController`）通过延迟依赖保持优雅降级：
 
 #### 1. 专属配置片段
+
 ```yaml
 ateng:
   boot:
     openapi:
-      enabled: false # 生产环境一键切断
+      enabled: false
 ```
 
-#### 2. 核心机制与预期契约输出
-- **物理卸载**：所有 OpenAPI 契约构建 Bean、Swagger UI 自动配置与重定向路由均被 `@ConditionalOnProperty` 拦截而不会实例化；
-- **最高优先级前沿切断**：`OpenApiGuardFilter` 注册在 Servlet 过滤链前沿，拦截任何匹配 `/swagger-ui/**`、`/docs`、`/doc`、`/v3/api-docs/**` 与 `/docs/export/**` 的请求，直接响应 HTTP 404 Not Found，杜绝渗透扫描与任何契约元数据泄漏。
-- **物理切断 HTTP 响应报文**：
-  ```http
-  GET /v3/api-docs HTTP/1.1
-  Host: api.example.com
+#### 2. 实战 Java 示例代码
 
-  HTTP/1.1 404 Not Found
-  Content-Length: 0
-  ```
+以下延迟装配与切断校验摘自 [OpenApiGovernanceController.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/main/java/io/github/atengk/boot/sample/openapi/controller/governance/OpenApiGovernanceController.java) 与 [OpenApiGuardIntegrationTest.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiGuardIntegrationTest.java)：
+
+```java
+// 1. 业务侧使用 ObjectProvider 延迟注入导出门面，确保 openapi.enabled=false 时容器正常启动
+private final ObjectProvider<OpenApiExportHelper> exportHelperProvider;
+
+private OpenApiExportHelper requireExportHelper() {
+    OpenApiExportHelper helper = exportHelperProvider.getIfAvailable();
+    if (helper == null) {
+        throw new BusinessException(CommonResultCode.SERVICE_UNAVAILABLE, "OpenAPI 导出能力未启用或尚未装配");
+    }
+    return helper;
+}
+
+// 2. 物理切断行为验证：Swagger UI、元数据与导出端点全部响应 404，内部字典仍可工作
+mockMvc.perform(get("/swagger-ui/index.html")).andExpect(status().isNotFound());
+mockMvc.perform(get("/v3/api-docs")).andExpect(status().isNotFound());
+mockMvc.perform(get("/docs")).andExpect(status().isNotFound());
+mockMvc.perform(get("/docs/export/json")).andExpect(status().isNotFound());
+mockMvc.perform(get("/sample/openapi/governance/preview").param("group", "admin"))
+        .andExpect(jsonPath("$.code").value(503));
+```
+
+#### 3. 核心机制与预期契约输出
+
+- **物理卸载与前沿阻断**：所有 AST 定制器、导出门面及控制器在 `enabled=false` 时均不注册，且 `OpenApiGuardFilter`（优先级 `Ordered.HIGHEST_PRECEDENCE + 15`）前置拦截 `/swagger-ui/**`、`/docs`、`/doc`、`/v3/api-docs/**` 与 `/docs/export/**` 并直接响应 HTTP `404 Not Found`。
 
 ---
 
-### 6.2 五大生产认证模式切换
+### 6.2 五大生产认证模式与 Sa-Token 角色/权限分级守卫
 
-通过 `ateng.boot.openapi.guard.mode` 灵活切换访问文档门户的安全防护等级：
+通过 `ateng.boot.openapi.guard.mode` 切换访问安全守卫等级，并在 `SATOKEN` 模式下支持按角色或权限细粒度放行：
 
 #### 1. 专属配置片段
+
 ```yaml
 ateng:
   boot:
     openapi:
       guard:
-        mode: BASIC # 可选：NONE, BASIC, SATOKEN, TOKEN, IP_WHITELIST
+        mode: SATOKEN # 可选：NONE, BASIC, SATOKEN, TOKEN, IP_WHITELIST
         basic:
           username: "admin"
-          password: "admin123"
+          password: "YOUR_BASIC_PASSWORD"
         token:
-          secret: "sample-doc-token"
+          secret: "YOUR_DOC_TOKEN"
           header-name: "X-Doc-Token"
           allow-query-param: true
           query-param-name: "doc-token"
-        ip-whitelist:
-          enabled: true
-          trusted-header: "X-Forwarded-For"
-          cidrs:
-            - "127.0.0.1"
-            - "10.0.0.0/8"
-            - "192.168.0.0/16"
+        satoken:
+          roles:
+            - "doc-admin"
+          permissions:
+            - "openapi:view"
 ```
 
-#### 2. 各模式行为机制
-- **`NONE`（默认开放模式）**：免密直接访问，适合本地开发与内网沙箱测试；
-- **`BASIC`（HTTP Basic 质询模式）**：未登录客户端触发标准 HTTP 401 `WWW-Authenticate: Basic realm="..."` 浏览器原生登录弹窗，凭据比对采用 `MessageDigest.isEqual` 恒定时间算法防时序攻击；
-- **`SATOKEN`（会话鉴权桥接模式）**：弱依赖桥接 Sa-Token 鉴权中心，未登录用户访问文档直接响应 HTTP 401；
-- **`TOKEN`（静态令牌标头模式）**：专为 CI/CD 自动化拉取设计，校验请求头 `X-Doc-Token: secret` 或 Query 参数 `?doc-token=secret`；
-- **`IP_WHITELIST`（纯 IP 白名单模式）**：非白名单 IP 访问文档统一响应 HTTP 403 Forbidden。
+#### 2. 实战 Java 示例代码
+
+以下 Sa-Token 权限模型接入与分级守卫校验摘自 [OpenApiGuardIntegrationTest.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiGuardIntegrationTest.java)：
+
+```java
+// 1. 业务侧注册 StpInterface，为登录主体分配角色与权限码
+@Bean
+public StpInterface stpInterface() {
+    return new StpInterface() {
+        @Override
+        public List<String> getPermissionList(Object loginId, String loginType) {
+            return "perm-user".equals(String.valueOf(loginId))
+                    ? List.of("openapi:view")
+                    : Collections.emptyList();
+        }
+
+        @Override
+        public List<String> getRoleList(Object loginId, String loginType) {
+            return "role-user".equals(String.valueOf(loginId))
+                    ? List.of("doc-admin")
+                    : Collections.emptyList();
+        }
+    };
+}
+
+// 2. 分级拦截校验：未登录 -> 401；普通已登录用户 -> 403；命中任一角色或权限 -> 放行
+mockMvc.perform(get("/docs")).andExpect(status().isUnauthorized());
+mockMvc.perform(get("/docs/export/json").header(StpUtil.getTokenName(), plainToken))
+        .andExpect(status().isForbidden());
+mockMvc.perform(get("/docs").header(StpUtil.getTokenName(), roleToken))
+        .andExpect(status().isFound());
+mockMvc.perform(get("/docs/export/json").header(StpUtil.getTokenName(), permToken))
+        .andExpect(status().isOk());
+```
+
+#### 3. 核心机制与预期响应行为
+
+- **`NONE`**：免密放行，适用本地开发与内网受控沙箱；
+- **`BASIC`**：缺失或凭据不匹配时返回 HTTP `401` 与 `WWW-Authenticate: Basic realm="OpenAPI Document Guard"`，校验采用 `MessageDigest.isEqual` 恒定时间防时序攻击；
+- **`TOKEN`**：按配置比对请求头（默认 `X-Doc-Token`）或可选 Query 参数（默认 `doc-token`），不匹配返回 HTTP `401`；
+- **`SATOKEN`**：因 `OpenApiGuardFilter`（`HIGHEST_PRECEDENCE + 15`）早于 Sa-Token 上下文过滤器（`-104`）执行，内部自动按需绑定瞬态 Servlet 上下文并在 `finally` 中安全释放，支持真实 Servlet 过滤链：`!StpUtil.isLogin()` 返回 HTTP `401 Unauthorized`；若 `roles` 或 `permissions` 非空，按 **OR 语义**判定（命中任一角色 `StpUtil.hasRole` 或任一权限 `StpUtil.hasPermission` 即放行），均未命中返回 HTTP `403 Forbidden`（含 `/docs` 与 `/docs/export/json`）；两者均为空或仅空白串时维持既有“已登录即放行”行为。
 
 ---
 
-### 6.3 CIDR 子网掩码计算与受信任反代标头防伪造
+### 6.3 CIDR 白名单与授信反向代理节点 (`trusted-proxies`) 防伪造
 
-`OpenApiCidrMatcher` 提供纳秒级 IPv4 / IPv6 子网掩码位运算，配合反向代理防护机制守卫网络边界。
+`OpenApiCidrMatcher` 复用 Core `CidrMatcher` 提供纯数值 IPv4/IPv6 CIDR 位运算（无 DNS 查询挂起风险），并结合授信反代列表严防公网客户端伪造转发头。
 
-#### 1. 核心防御机制
-- **受信任反代标头解析 (`trusted-header`)**：当应用部署于 Nginx、Envoy、Ingress 等反代背后时，配置 `trusted-header: X-Forwarded-For` 将提取反代链路首个客户端真实 IP 进行白名单比对；
-- **防客户端标头伪造保底**：**未显式配置 `trusted-header` 时，强制仅读取物理网络套接字连接 IP (`request.getRemoteAddr()`)**，杜绝公网攻击者随意伪造 Header 绕过白名单；
-- **静态资源免密白名单放行**：对 CSS, JS, WebJars, 图标等纯静态前端资产自动免密放行，防止浏览器因样式表二次鉴权失败而导致页面样式死锁崩溃。
+#### 1. 专属配置片段
+
+```yaml
+ateng:
+  boot:
+    openapi:
+      guard:
+        mode: IP_WHITELIST
+        ip-whitelist:
+          enabled: true
+          trusted-header: "X-Forwarded-For"
+          trusted-proxies:
+            - "127.0.0.1"
+            - "172.16.0.0/12"
+            - "fe80::/10"
+          cidrs:
+            - "10.0.0.0/8"
+            - "2001:db8:1::/48"
+```
+
+#### 2. 实战 Java 示例代码
+
+以下授信反代与伪造阻断验证摘自 [OpenApiGuardIntegrationTest.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiGuardIntegrationTest.java) 与 [OpenApiCidrMatcherTest.java](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiCidrMatcherTest.java)：
+
+```java
+// 1. 直接使用 OpenApiCidrMatcher 进行无 DNS 阻塞的 IPv4/IPv6 CIDR 匹配
+OpenApiCidrMatcher matcher = new OpenApiCidrMatcher(List.of("10.0.0.0/8", "2001:db8:1::/48"));
+boolean v4Allowed = matcher.matches("10.10.1.2");       // true
+boolean v6Allowed = matcher.matches("2001:db8:1::42");  // true
+
+// 2. 非授信物理来源 (192.168.1.99) 伪造 X-Forwarded-For=10.10.1.2 -> 忽略转发头并以物理 IP 拦截 403
+mockMvc.perform(get("/docs")
+        .header("X-Forwarded-For", "10.10.1.2")
+        .with(req -> {
+            req.setRemoteAddr("192.168.1.99");
+            return req;
+        })).andExpect(status().isForbidden());
+
+// 3. 授信反代节点 (172.16.0.10) 携带白名单客户端 X-Forwarded-For=10.10.1.2 -> 正常放行
+mockMvc.perform(get("/docs")
+        .header("X-Forwarded-For", "10.10.1.2, 172.16.0.10")
+        .with(req -> {
+            req.setRemoteAddr("172.16.0.10");
+            return req;
+        })).andExpect(status().isFound());
+```
+
+#### 3. 核心防御边界
+
+- **授信反代双重校验**：当配置了非空 `trusted-proxies` 且请求携带转发头时，先剥离端口并比对物理连接地址 `request.getRemoteAddr()`：仅当物理源命中 `trusted-proxies`（支持 IPv4/IPv6 CIDR）才采信 `trusted-header` 中首个非 `"unknown"` 客户端 IP；非授信物理节点（如 `192.168.1.99`）即使伪造 `X-Forwarded-For: 10.10.1.2`，系统直接忽略转发头并以物理 IP 拒绝放行（HTTP `403`）。
+- **向后兼容**：未配置 `trusted-proxies` 时完全保持既有 `trusted-header` 解析行为；未配置 `trusted-header` 时强制只取物理连接 IP；纯静态 Web 资源（`.css`, `.js`, `webjars`, 图标）免密放行防样式死锁。
 
 ---
 
 ## 7. 契约规范与状态码全景字典
 
-### 7.1 ResultCodeProvider 业务状态码 SPI 扩展
+### 7.1 `ResultCodeProvider` 业务状态码 SPI 扩展
 
-除 Core 模块内置的 `CommonResultCode` 外，各领域业务模块通过实现 `ResultCodeProvider` 接口，可将自身模块特有的业务状态码自动汇入全局文档描述中。
+各业务子系统通过实现 `ResultCodeProvider` Bean，即可将专属错误码自动合并渲染至 OpenAPI `Info.description` 尾部，并在体验工程治理控制器中供实时检索。
 
 #### 1. 专属配置片段
+
 ```yaml
 ateng:
   boot:
     openapi:
-      show-result-codes: true # 默认 true，开启状态码全景字典注入
+      show-result-codes: true # 默认 true
 ```
 
 #### 2. 实战 Java 示例代码
+
+以下 SPI 实现摘自 [SampleResultCodeProvider.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/main/java/io/github/atengk/boot/sample/openapi/provider/SampleResultCodeProvider.java)：
+
 ```java
 @Component
 public class SampleResultCodeProvider implements ResultCodeProvider {
@@ -656,24 +790,7 @@ public class SampleResultCodeProvider implements ResultCodeProvider {
     public enum SampleBusinessCode implements IResultCode {
         ARTICLE_AUDIT_PENDING(8001, "文章正在审核中"),
         USER_ACCOUNT_LOCKED(8002, "用户账号已被风控锁定");
-
-        private final Integer code;
-        private final String msg;
-
-        SampleBusinessCode(Integer code, String msg) {
-            this.code = code;
-            this.msg = msg;
-        }
-
-        @Override
-        public Integer getCode() {
-            return code;
-        }
-
-        @Override
-        public String getMsg() {
-            return msg;
-        }
+        // ... 构造器与 getCode()/getMsg()
     }
 
     @Override
@@ -704,25 +821,27 @@ public class SampleResultCodeProvider implements ResultCodeProvider {
 }
 ```
 
-#### 3. 核心机制与预期契约输出
-- **底层机制**：`ResultCodeDictionaryCustomizer` 收集容器中所有 `ResultCodeProvider` Bean，按照 `getOrder()` 升序排序，逐个生成 Markdown 格式的状态码表格，自动追加至全局 `OpenAPI.info.description` 尾部，使接口消费方在文档首页即可纵览全系统状态码。
-- **注入到 `info.description` 的 Markdown 字典输出片段**：
-  ```markdown
-  ### 样例工程自定义业务状态码字典 (Sample Result Codes)
+#### 3. 核心机制与预期 Markdown 输出
 
-  | 业务状态码 (Code) | 提示信息 (Message) | 触发场景 / 业务语义说明 |
-  | :--- | :--- | :--- |
-  | `8001` | 文章正在审核中 | 敏感词拦截或新发布内容进入人工审核队列 |
-  | `8002` | 用户账号已被风控锁定 | 密码输错超限或异常地理位置登录触发风控冻结 |
-  ```
+`ResultCodeDictionaryCustomizer` 收集全量 `ResultCodeProvider` 并按 `getOrder()` 升序渲染，幂等追加至 `Info.description`：
+
+```markdown
+### 样例工程自定义业务状态码字典 (Sample Result Codes)
+
+| 状态码 (code) | 语义说明 (msg) | 场景说明 |
+| :--- | :--- | :--- |
+| `8001` | 文章正在审核中 | 敏感词拦截或新发布内容进入人工审核队列 |
+| `8002` | 用户账号已被风控锁定 | 密码输错超限或异常地理位置登录触发风控冻结 |
+```
 
 ---
 
 ### 7.2 标准 HTTP 响应模型与语义说明
 
-`StandardApiResponseCustomizer` 遵循企业 REST 规范，自动向所有接口 Operation 补全 200, 400, 401, 500 标准响应语义，且尊重开发者手动指定的 `@ApiResponse`。
+`StandardApiResponseCustomizer` 自动向所有 Operation 补全企业级标准 HTTP 状态语义，同时防覆盖保留开发者手写的 `@ApiResponse`。
 
 #### 1. 专属配置片段
+
 ```yaml
 ateng:
   boot:
@@ -730,8 +849,7 @@ ateng:
       standard-responses: true # 默认 true
 ```
 
-#### 2. 实战 Java 示例代码
-业务控制器方法无需重复罗列通用的 400/401/500 等 `@ApiResponse` 注解，由框架自动统一补全：
+#### 2. 实战 Java 示例代码与预期 JSON 输出
 
 ```java
 @Operation(summary = "查询用户详情", description = "根据用户主键 ID 检索基础信息与状态")
@@ -742,106 +860,115 @@ public Result<AdminUserVO> getUserById(@Parameter(description = "用户唯一 ID
 }
 ```
 
-#### 3. 核心机制与预期契约输出
-- **底层机制**：若接口未显式声明 200，自动追加 `HTTP 200: 操作成功`；自动为所有接口追加 `HTTP 400: 参数校验失败 (Bad Request)`、`HTTP 401: 未认证或认证已过期 (Unauthorized)` 与 `HTTP 500: 服务器内部错误 (Internal Server Error)`，统一全系统契约规范；
-- **生成的 Operation responses JSON 契约片段**：
-  ```json
-  "responses": {
-    "200": {
-      "description": "操作成功",
-      "content": {
-        "application/json": {
-          "schema": {
-            "$ref": "#/components/schemas/ResultAdminUserVO"
-          }
-        }
-      }
-    },
-    "400": {
-      "description": "参数校验失败 (Bad Request)"
-    },
-    "401": {
-      "description": "未认证或认证已过期 (Unauthorized)"
-    },
-    "500": {
-      "description": "服务器内部错误 (Internal Server Error)"
-    }
+生成的 Operation `responses` 契约：
+
+```json
+"responses": {
+  "200": {
+    "description": "操作成功 (HTTP 200 OK)"
+  },
+  "400": {
+    "description": "参数校验失败 (HTTP 400 Bad Request)"
+  },
+  "401": {
+    "description": "未授权或凭证已过期 (HTTP 401 Unauthorized)"
+  },
+  "500": {
+    "description": "系统繁忙或内部错误 (HTTP 500 Internal Server Error)"
   }
-  ```
-
----
-
-## 8. 契约交付与离线导出门面
-
-### 8.1 OpenApiExportHelper 静态与流式双模门面
-
-在无需启动 Web 容器的单元测试、构建插件或 CI/CD 脚本中，使用 `OpenApiExportHelper` 门面类直接导出格式化契约：
-
-```java
-// 1. 导出指定业务分组的格式化 JSON 字符串
-String adminJson = OpenApiExportHelper.exportJson("admin");
-
-// 2. 导出默认全量分组的 YAML 字符串
-String defaultYaml = OpenApiExportHelper.exportYaml();
-
-// 3. 导出指定分组的二进制字节数组 (UTF-8)
-byte[] bytes = OpenApiExportHelper.exportBytes("admin", OpenApiFormat.JSON);
-
-// 4. 流式直接写入输出流 (文件或 HTTP 响应流，内存恒定防 OOM)
-try (FileOutputStream fos = new FileOutputStream("target/openapi-admin.yaml")) {
-    OpenApiExportHelper.export("admin", OpenApiFormat.YAML, fos);
 }
 ```
 
 ---
 
-### 8.2 受管下载端点 `/docs/export/**` 一键交付
+## 8. 契约交付与离线安全导出门面
 
-配置激活后，系统自动挂载轻量 REST 下载端点，携带标准 `Content-Disposition: attachment` 响应头：
+### 8.1 `OpenApiExportHelper` 双模离线导出与安全落盘 (`exportToFile`)
+
+`OpenApiExportHelper` 提供静态与 Spring 受管双模方法，实现 `DisposableBean` 对称销毁并内置 `SpringUtil` 容器兜底获取；`exportToFile` / `exportFile` 支持自动创建父目录、阻断路径穿越与系统垃圾文件拦截。
 
 #### 1. 专属配置片段
+
 ```yaml
 ateng:
   boot:
     openapi:
       export:
-        enabled: true # 激活受管离线下载端点
+        enabled: true # 开启受管离线下载端点（OpenApiExportHelper 默认随 openapi.enabled 装配）
 ```
 
-#### 2. 下载端点矩阵
+#### 2. 实战 Java 示例代码
 
-| 请求路径 | 契约格式 | 对应分组 | 触发下载附件文件名 |
+以下安全落盘与预览逻辑摘自体验工程 [OpenApiGovernanceController.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/main/java/io/github/atengk/boot/sample/openapi/controller/governance/OpenApiGovernanceController.java) 与回归用例：
+
+```java
+// 1. 静态门面直接导出 JSON/YAML 字符串与字节数组
+String adminJson = OpenApiExportHelper.exportJson("admin");
+String defaultYaml = OpenApiExportHelper.exportYaml();
+byte[] adminBytes = OpenApiExportHelper.exportBytes("admin", OpenApiFormat.JSON);
+
+// 2. 流式写入输出流
+try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+    OpenApiExportHelper.export("admin", OpenApiFormat.YAML, out);
+}
+
+// 3. 安全落盘至受管隔离目录（自动校验路径穿越与隐性垃圾文件，自动建目录）
+Path appTempDir = FileUtil.getAppTempDirectory("ateng-boot-sample-openapi").toAbsolutePath().normalize();
+Path targetFile = FileUtil.resolveSafePath(appTempDir, "exports/admin-contract.yaml");
+Path written = OpenApiExportHelper.exportToFile("admin", OpenApiFormat.YAML, targetFile);
+```
+
+#### 3. 生命周期与路径安全防线
+
+- **对称销毁与兜底解析**：`destroy()` 仅在 `instance == this` 时清空静态引用，防止多上下文集成测试交叉销毁误伤；静态引用为空且 `SpringUtil.isInitialized()` 时，自动回退解析容器 Bean。
+- **落盘三重防卫**：`validateTargetFile` 拦截 `null` / 空白 / `\0` 空字节、未归一化原始 `Path` 中任意 `..` 路径段（涵盖 `../escape.json` 与 `dir.resolve("../escape.json")`）、`FileUtil.isSystemJunkFile` 识别的 `.DS_Store`/`desktop.ini`/`thumbs.db`/`._*`/`__MACOSX` 以及目录路径；全部校验与序列化完成后再原子创建父目录并调用 `Files.write`。
+
+---
+
+### 8.2 受管离线导出端点 `/docs/export/**` 与 `{group}` 白名单拦截
+
+#### 1. 专属配置片段
+
+```yaml
+ateng:
+  boot:
+    openapi:
+      export:
+        enabled: true # 激活 /docs/export/** 受管下载端点（默认 false）
+```
+
+#### 2. 实战 Java 示例代码
+
+以下端点下载与路径穿越前置拦截验证摘自 [OpenApiSampleEndToEndTest.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiSampleEndToEndTest.java)：
+
+```java
+// 1. 下载指定业务分组的离线 JSON 附件
+mockMvc.perform(get("/docs/export/admin.json"))
+        .andExpect(status().isOk())
+        .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"openapi-admin.json\""));
+
+// 2. 非法或含路径穿越字符的 {group} 在控制器入口直接拦截 400
+mockMvc.perform(get("/docs/export/admin..secret.json")).andExpect(status().isBadRequest());
+mockMvc.perform(get("/docs/export/..evil.yaml")).andExpect(status().isBadRequest());
+```
+
+#### 3. 端点矩阵与预期 HTTP 响应
+
+| 请求路径 | 契约格式 | 对应分组 | 响应特征与边界行为 |
 | :--- | :--- | :--- | :--- |
-| `GET /docs/export/json` | JSON | 默认全量 | `openapi-default.json` |
-| `GET /docs/export/yaml` | YAML | 默认全量 | `openapi-default.yaml` |
-| `GET /docs/export/{group}.json` | JSON | 指定业务域 (`admin` / `app`) | `openapi-{group}.json` |
-| `GET /docs/export/{group}.yaml` | YAML | 指定业务域 (`admin` / `app`) | `openapi-{group}.yaml` |
+| `GET /docs/export/json` | JSON | 默认分组 | `Content-Disposition: attachment; filename="openapi-default.json"` |
+| `GET /docs/export/yaml` | YAML | 默认分组 | `Content-Disposition: attachment; filename="openapi-default.yaml"` |
+| `GET /docs/export/{group}.json` | JSON | 指定合法分组 | 校验 `OpenApiExportHelper.isValidGroupName(group)`；非法/含 `..` 响应 `400`，未知合法分组响应 `404` |
+| `GET /docs/export/{group}.yaml` | YAML | 指定合法分组 | 同上，返回 `application/yaml;charset=UTF-8` |
 
-#### 3. 核心机制与预期下载输出
-- **底层机制**：`OpenApiExportController` 拦截下载端点，调用 `OpenApiExportHelper` 实时序列化指定分组的 OpenAPI AST，注入 `Content-Disposition: attachment; filename="..."` 响应头，直接触发浏览器或自动化客户端将内容作为文件下载；
-- **导出会话 HTTP 响应报文与附件标头**：
-  ```http
-  GET /docs/export/admin.json HTTP/1.1
-  Host: localhost:8080
+```http
+GET /docs/export/admin.json HTTP/1.1
+Host: localhost:8080
 
-  HTTP/1.1 200 OK
-  Content-Type: application/json
-  Content-Disposition: attachment; filename="openapi-admin.json"
-
-  {
-    "openapi": "3.0.1",
-    "info": {
-      "title": "ateng-boot OpenAPI 生产级契约沙箱",
-      "version": "1.0.0"
-    },
-    "paths": {
-      "/sample/openapi/admin/users": { ... },
-      "/sample/openapi/admin/auth/login": { ... }
-    }
-  }
-  ```
-
-> **安全管辖说明**：所有离线导出端点均受到 `OpenApiGuardFilter` 生产安全防火墙管辖；若开启 Basic / Token 认证，下载接口同样必须通过认证挑战后方可放行。
+HTTP/1.1 200 OK
+Content-Disposition: attachment; filename="openapi-admin.json"
+Content-Type: application/json
+```
 
 ---
 
@@ -849,11 +976,9 @@ ateng:
 
 ### 9.1 `@ConditionalOnMissingBean` 扩展接管
 
-框架内部所有核心组件（`OpenAPI`、`GlobalHeaderCustomizer`、`SecuritySchemesCustomizer`、`ResultCodeDictionaryCustomizer`、`StandardApiResponseCustomizer`、`OpenApiExportHelper` 等）均显式标配 `@ConditionalOnMissingBean`，支持业务无缝声明同名或同类型 Bean 进行深度定制。
+所有核心 Bean（`customOpenAPI`、`openApiWebMvcConfigurer`、`openApiGuardFilterRegistration`、`globalHeaderCustomizer`、`operationGovernanceCustomizer`、`saTokenSecurityCustomizer`、`resultCodeDictionaryCustomizer`、`standardApiResponseCustomizer`、`securitySchemesCustomizer`、`openApiModelConverter`、`openApiExportHelper`、`openApiExportController`）均标配 `@ConditionalOnMissingBean`，支持业务按同类型或同名 Bean 无缝覆盖接管。
 
-### 9.2 Swagger UI 与安全方案配置化挂载
-
-无需引入重型安全框架，即可通过声明式配置向 `Components.securitySchemes` 注册 HTTP Bearer (JWT) 或 APIKey，并在 Swagger UI 右上角激活 Authorize 交互弹窗：
+### 9.2 多安全方案配置化与 `ResultCodeProvider` SPI
 
 ```yaml
 ateng:
@@ -865,129 +990,107 @@ ateng:
           scheme: "bearer"
           bearer-format: "JWT"
           description: "通用 JWT 认证方案"
+          global: true
 ```
 
-同时，当检测到类路径存在 Sa-Token 依赖时，`SaTokenSecurityCustomizer` 将自动提取 Sa-Token 的配置密钥名称，注册 APIKey 鉴权方案并全局激活锁头。
+同时检测到 Sa-Token 类路径时，`SaTokenSecurityCustomizer` 自动注入 APIKey 方案，与配置化方案可叠加协同激活 Swagger UI Authorize 锁头弹窗；业务模块另可通过实现 `ResultCodeProvider` Bean（完整示例见第 7.1 节 [SampleResultCodeProvider.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/main/java/io/github/atengk/boot/sample/openapi/provider/SampleResultCodeProvider.java)）按 `getOrder()` 排序扩展全局状态码全景字典。
 
-### 9.3 核心生产边界与非功能机制
+### 9.3 非功能边界清单
 
-1. **恒定时间防时序攻击**：Basic 认证与静态 Token 认证比对凭据时，严格使用 `java.security.MessageDigest.isEqual(byte[], byte[])` 逐字节比对，彻底防御利用响应延迟推断凭据前缀的时序侧信道攻击；
-2. **反向代理受信任标头防线**：未配置 `guard.ip-whitelist.trusted-header` 时，系统决不读取 `X-Forwarded-For` 等可伪造标头，以物理 TCP 连接 IP 为唯一仲裁源；
-3. **静态资源放行防样式死锁**：GuardFilter 对静态 Web 资源（`.css`, `.js`, `webjars`, 图标）实施安全免密放行，杜绝浏览器并发拉取静态资源因 401/403 导致 UI 渲染死锁。
+1. **JDK 21+ 虚拟线程友好**：过滤器与 AST 定制器全链路无 `synchronized` 阻塞 I/O 或静态 DNS 解析（`CidrMatcher` 仅做纯数值 IP 解析），零 Carrier Thread Pinning 风险；
+2. **可选依赖类加载隔离**：`sa-token-spring-boot3-starter` 为 `<optional>true</optional>`；`OperationGovernanceCustomizer` 通过类存在性缓存反射解析，`OpenApiGuardFilter` 仅在 `SATOKEN` 模式下延迟引用 Sa-Token Servlet 类，未引入 Sa-Token 的工程零 `NoClassDefFoundError`；
+3. **无状态与内存安全**：所有定制器、`CidrMatcher` 规则集合（`List.copyOf`）与 `OpenApiGuardFilter` 均为只读不可变或请求级隔离无状态实例。
 
 ---
 
 ## 10. 完整 YAML 配置属性清单 (全量速查附录)
 
-以下为 `ateng-boot-openapi` 所纳管的全部配置属性清单，配置前缀统一为 `ateng.boot.openapi`：
+以下属性完整对齐 [OpenApiProperties.java](./src/main/java/io/github/atengk/boot/openapi/properties/OpenApiProperties.java)，前缀为 `ateng.boot.openapi`：
 
 ```yaml
 ateng:
   boot:
     openapi:
-      # ==============================================================================
       # 1. 基础元数据与总开关
-      # ==============================================================================
-      enabled: true                               # 是否启用 OpenAPI 文档（默认 true；生产环境配置 false 触发 404 物理切断）
-      title: "ateng-boot API Documentation"       # 接口文档主标题
-      description: "Enterprise-grade API documentation powered by ateng-boot" # 接口文档描述信息
-      version: "1.0.0"                            # 接口文档版本号
+      enabled: true                                 # 是否启用 OpenAPI（false 时 404 物理切断）
+      title: "ateng-boot API Documentation"         # 文档主标题
+      description: "Enterprise-grade API documentation powered by ateng-boot" # 文档描述
+      version: "1.0.0"                              # 文档版本号
       terms-of-service: "https://example.com/terms" # 服务条款 URL
-      redirect-docs: true                         # 是否开启 /docs 与 /doc 友好路由 302 重定向至 Swagger UI（默认 true）
-      
-      # 文档联系人信息
+      redirect-docs: true                           # 是否开启 /docs 与 /doc 302 重定向至 Swagger UI
+      show-result-codes: true                       # 是否自动追加通用及 SPI 状态码字典
+      standard-responses: true                      # 是否自动补全 200/400/401/500 标准响应说明
+      operation-governance-notes: true              # 是否开启跨模块治理契约 Markdown 注释内省
+
       contact:
         name: "Ateng"
         url: "https://github.com/atengk"
         email: "admin@example.com"
-        
-      # 文档许可证信息
+
       license:
         name: "Apache-2.0"
         url: "https://www.apache.org/licenses/LICENSE-2.0"
-        
-      # 服务多环境网关 / 根路径列表 (Servers)
+
       servers:
         - url: "/"
-          description: "本地开发与网关直连环境"
-        - url: "https://api.example.com"
-          description: "生产反向代理网关环境"
+          description: "Default Gateway / Server"
 
-      # ==============================================================================
-      # 2. 全局请求头自动化注入配置
-      # ==============================================================================
+      # 2. 全局请求头注入配置
       headers:
-        trace-id: true                            # 是否自动向所有接口注入 X-Trace-Id 链路追踪请求头（默认 true）
-        tenant-id: true                           # 是否自动向所有接口注入 X-Tenant-Id 多租户标识请求头（默认 true）
-        custom:                                   # 自定义全局请求头列表
+        trace-id: true                              # 自动注入 X-Trace-Id
+        tenant-id: true                             # 自动注入 X-Tenant-Id
+        custom:
           - name: "X-App-Version"
             description: "客户端应用版本号"
             required: false
-            example: "1.2.0"
+            default-value: ""                       # 默认值
+            example: "1.2.0"                        # 示例值（优先于 default-value 展示）
 
-      # ==============================================================================
-      # 3. 多业务分组列表 (GroupedOpenApi)
-      # ==============================================================================
+      # 3. 多业务分组与对称排除
       groups:
-        - group: "admin"                          # 业务分组唯一标识
-          display-name: "运营管理端 (Admin API)"   # Swagger UI 下拉框展示名称
-          paths-to-match:                         # 该分组匹配的 URL 路径规则列表
-            - "/sample/openapi/admin/**"
-          packages-to-scan:                       # 该分组扫描的控制器包名列表
-            - "io.github.atengk.boot.sample.openapi.controller.admin"
-        - group: "app"
-          display-name: "移动端服务 (App API)"
+        - group: "admin"
+          display-name: "运营管理端 (Admin API)"
           paths-to-match:
-            - "/sample/openapi/app/**"
+            - "/sample/openapi/admin/**"
+          paths-to-exclude:
+            - "/sample/openapi/admin/auth/ping"
           packages-to-scan:
-            - "io.github.atengk.boot.sample.openapi.controller.app"
+            - "io.github.atengk.boot.sample.openapi.controller.admin"
+          packages-to-exclude:
+            - "io.github.atengk.boot.sample.openapi.controller.admin.internal"
 
-      # ==============================================================================
-      # 4. 生产安全访问守卫防火墙 (GuardFilter)
-      # ==============================================================================
+      # 4. 五模生产安全访问守卫 (OpenApiGuardFilter)
       guard:
-        mode: NONE                                # 守卫模式：NONE(免密), BASIC(弹窗), SATOKEN(会话), TOKEN(令牌), IP_WHITELIST(纯白名单)
-        
-        # HTTP Basic 认证配置 (mode 为 BASIC 时生效)
+        mode: NONE                                  # NONE | BASIC | SATOKEN | IP_WHITELIST | TOKEN
         basic:
           username: "admin"
-          password: "admin123"
-          
-        # 静态令牌认证配置 (mode 为 TOKEN 时生效)
+          password: "YOUR_BASIC_PASSWORD"
         token:
-          secret: "sample-doc-token"              # 静态访问令牌密钥
-          header-name: "X-Doc-Token"              # 携带令牌的请求头名称
-          allow-query-param: true                 # 是否允许通过 URL Query 参数传递令牌
-          query-param-name: "doc-token"           # URL Query 参数名称
-          
-        # IP / CIDR 白名单防火墙配置 (支持独立启用或与各模式叠加)
+          header-name: "X-Doc-Token"
+          secret: "YOUR_DOC_TOKEN"
+          allow-query-param: true
+          query-param-name: "doc-token"
+        satoken:
+          roles: []                                 # 允许访问的角色列表（与 permissions 为 OR 语义）
+          permissions: []                           # 允许访问的权限码列表（均空时仅校验已登录）
         ip-whitelist:
-          enabled: false                          # 是否强制开启 IP 白名单防火墙
-          trusted-header: "X-Forwarded-For"       # 反向代理受信任请求头名称（未配置时默认读取物理套接字 IP）
-          cidrs:                                  # 允许访问的 IPv4/IPv6 地址或 CIDR 子网段列表
-            - "127.0.0.1"
-            - "10.0.0.0/8"
-            - "192.168.0.0/16"
+          enabled: false                            # 是否强制开启 IP 白名单防火墙
+          trusted-header: "X-Forwarded-For"         # 可选转发标头（空则强制取 physical remoteAddr）
+          trusted-proxies: []                       # 授信反代 CIDR 列表（非空时先校验物理连接地址）
+          cidrs: []                                 # 允许访问的 IPv4/IPv6 或 CIDR 网段列表
 
-      # ==============================================================================
-      # 5. 契约规范与状态码全景字典
-      # ==============================================================================
-      show-result-codes: true                     # 是否在文档描述尾部自动追加系统与业务状态码字典表格（默认 true）
-      standard-responses: true                    # 是否自动为所有 Operation 补全 200/400/401/500 标准响应语义说明（默认 true）
-
-      # ==============================================================================
-      # 6. 通用 SecurityScheme 方案配置列表
-      # ==============================================================================
+      # 5. 通用 SecurityScheme 安全方案列表
       security-schemes:
-        - name: "bearerAuth"                      # 安全方案名称
-          type: "http"                            # 方案类型 (http, apiKey, oauth2 等)
-          scheme: "bearer"                        # HTTP 协议方案
-          bearer-format: "JWT"                    # Bearer Token 格式说明
+        - key: ""                                   # 唯一标识键（空时默认回退 name）
+          name: "bearerAuth"
+          type: "http"                              # http | apiKey | oauth2 | openIdConnect
+          scheme: "bearer"
+          bearer-format: "JWT"
+          in: "header"                              # header | query | cookie
           description: "通用 JWT 认证方案"
+          global: true                              # 是否全局强制挂载锁头
 
-      # ==============================================================================
-      # 7. 离线契约交付配置
-      # ==============================================================================
+      # 6. 离线契约导出端点开关
       export:
-        enabled: true                             # 是否暴露受管离线契约下载端点 /docs/export/**（默认 false）
+        enabled: false                              # 是否激活 /docs/export/** 下载端点（默认 false）
 ```
