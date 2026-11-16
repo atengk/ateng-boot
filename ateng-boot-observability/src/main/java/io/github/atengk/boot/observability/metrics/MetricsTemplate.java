@@ -178,6 +178,40 @@ public class MetricsTemplate {
     }
 
     /**
+     * 直接记录指定耗时时长（支持分位数、可聚合直方图与 SLO 耗时桶）
+     *
+     * @param name        指标名称
+     * @param duration    耗时时长
+     * @param percentiles 发布的分位数集合（范围 [0.0, 1.0]，非法值将被自动过滤）
+     * @param histogram   是否发布可聚合直方图
+     * @param sla         SLO 耗时桶边界集合（仅正数 Duration 生效，非正数与 null 将被自动过滤）
+     * @param tags        标签键值对
+     */
+    public void record(String name, Duration duration, double[] percentiles, boolean histogram, Duration[] sla, String... tags) {
+        record(name, duration, percentiles, histogram, sla, toTags(tags));
+    }
+
+    /**
+     * 直接记录指定耗时时长（支持分位数、可聚合直方图与 SLO 耗时桶）
+     *
+     * @param name        指标名称
+     * @param duration    耗时时长
+     * @param percentiles 发布的分位数集合（范围 [0.0, 1.0]，非法值将被自动过滤）
+     * @param histogram   是否发布可聚合直方图
+     * @param sla         SLO 耗时桶边界集合（仅正数 Duration 生效，非正数与 null 将被自动过滤）
+     * @param tags        标签集合
+     */
+    public void record(String name, Duration duration, double[] percentiles, boolean histogram, Duration[] sla, Iterable<Tag> tags) {
+        if (duration == null || duration.isNegative()) {
+            return;
+        }
+        Timer timer = timer(name, percentiles, histogram, sla, tags);
+        if (timer != null) {
+            timer.record(duration);
+        }
+    }
+
+    /**
      * 函数式环绕执行无返回值任务并记录耗时
      *
      * @param name     指标名称
@@ -196,19 +230,35 @@ public class MetricsTemplate {
      * @param tags     标签集合
      */
     public void record(String name, Runnable runnable, Iterable<Tag> tags) {
-        if (runnable == null) {
-            return;
-        }
-        if (this.registry == null || isBlank(name)) {
-            runnable.run();
-            return;
-        }
-        Timer.Sample sample = Timer.start(this.registry);
-        try {
-            runnable.run();
-        } finally {
-            sample.stop(timer(name, tags));
-        }
+        doRecordRunnable(name, runnable, () -> timer(name, tags));
+    }
+
+    /**
+     * 函数式环绕执行无返回值任务并记录耗时（支持分位数、可聚合直方图与 SLO 耗时桶）
+     *
+     * @param name        指标名称
+     * @param runnable    待执行任务
+     * @param percentiles 发布的分位数集合
+     * @param histogram   是否发布可聚合直方图
+     * @param sla         SLO 耗时桶边界集合
+     * @param tags        标签键值对
+     */
+    public void record(String name, Runnable runnable, double[] percentiles, boolean histogram, Duration[] sla, String... tags) {
+        record(name, runnable, percentiles, histogram, sla, toTags(tags));
+    }
+
+    /**
+     * 函数式环绕执行无返回值任务并记录耗时（支持分位数、可聚合直方图与 SLO 耗时桶）
+     *
+     * @param name        指标名称
+     * @param runnable    待执行任务
+     * @param percentiles 发布的分位数集合
+     * @param histogram   是否发布可聚合直方图
+     * @param sla         SLO 耗时桶边界集合
+     * @param tags        标签集合
+     */
+    public void record(String name, Runnable runnable, double[] percentiles, boolean histogram, Duration[] sla, Iterable<Tag> tags) {
+        doRecordRunnable(name, runnable, () -> timer(name, percentiles, histogram, sla, tags));
     }
 
     /**
@@ -234,18 +284,39 @@ public class MetricsTemplate {
      * @return 执行结果
      */
     public <T> T record(String name, Supplier<T> supplier, Iterable<Tag> tags) {
-        if (supplier == null) {
-            return null;
-        }
-        if (this.registry == null || isBlank(name)) {
-            return supplier.get();
-        }
-        Timer.Sample sample = Timer.start(this.registry);
-        try {
-            return supplier.get();
-        } finally {
-            sample.stop(timer(name, tags));
-        }
+        return doRecordSupplier(name, supplier, () -> timer(name, tags));
+    }
+
+    /**
+     * 函数式环绕执行有返回值任务并记录耗时（支持分位数、可聚合直方图与 SLO 耗时桶）
+     *
+     * @param name        指标名称
+     * @param supplier    结果提供者
+     * @param percentiles 发布的分位数集合
+     * @param histogram   是否发布可聚合直方图
+     * @param sla         SLO 耗时桶边界集合
+     * @param tags        标签键值对
+     * @param <T>         返回类型
+     * @return 执行结果
+     */
+    public <T> T record(String name, Supplier<T> supplier, double[] percentiles, boolean histogram, Duration[] sla, String... tags) {
+        return record(name, supplier, percentiles, histogram, sla, toTags(tags));
+    }
+
+    /**
+     * 函数式环绕执行有返回值任务并记录耗时（支持分位数、可聚合直方图与 SLO 耗时桶）
+     *
+     * @param name        指标名称
+     * @param supplier    结果提供者
+     * @param percentiles 发布的分位数集合
+     * @param histogram   是否发布可聚合直方图
+     * @param sla         SLO 耗时桶边界集合
+     * @param tags        标签集合
+     * @param <T>         返回类型
+     * @return 执行结果
+     */
+    public <T> T record(String name, Supplier<T> supplier, double[] percentiles, boolean histogram, Duration[] sla, Iterable<Tag> tags) {
+        return doRecordSupplier(name, supplier, () -> timer(name, percentiles, histogram, sla, tags));
     }
 
     /**
@@ -324,6 +395,128 @@ public class MetricsTemplate {
         return Timer.builder(name)
                 .tags(tags != null ? tags : Tags.empty())
                 .register(this.registry);
+    }
+
+    /**
+     * 获取或注册带分位数、可聚合直方图与 SLO 耗时桶配置的 Timer 实例
+     *
+     * @param name        指标名称
+     * @param percentiles 发布的分位数集合（范围 [0.0, 1.0]，非法值将被自动过滤）
+     * @param histogram   是否发布可聚合直方图
+     * @param sla         SLO 耗时桶边界集合（仅大于 0 的正数 Duration 生效）
+     * @param tags        标签键值对
+     * @return Timer 实例，若注册表或指标名为空则返回 null
+     */
+    public Timer timer(String name, double[] percentiles, boolean histogram, Duration[] sla, String... tags) {
+        return timer(name, percentiles, histogram, sla, toTags(tags));
+    }
+
+    /**
+     * 获取或注册带分位数、可聚合直方图与 SLO 耗时桶配置的 Timer 实例
+     *
+     * @param name        指标名称
+     * @param percentiles 发布的分位数集合（范围 [0.0, 1.0]，非法值将被自动过滤）
+     * @param histogram   是否发布可聚合直方图
+     * @param sla         SLO 耗时桶边界集合（仅大于 0 的正数 Duration 生效）
+     * @param tags        标签集合
+     * @return Timer 实例，若注册表或指标名为空则返回 null
+     */
+    public Timer timer(String name, double[] percentiles, boolean histogram, Duration[] sla, Iterable<Tag> tags) {
+        if (this.registry == null || isBlank(name)) {
+            return null;
+        }
+        Timer.Builder builder = Timer.builder(name)
+                .tags(tags != null ? tags : Tags.empty());
+        applyTimerDistribution(builder, percentiles, histogram, sla);
+        return builder.register(this.registry);
+    }
+
+    /**
+     * 安全配置 Timer 的分位数、可聚合直方图与 SLO 耗时桶边界（过滤非法分位数与非正数 SLA）
+     *
+     * @param builder     Timer 构造器
+     * @param percentiles 分位数数组（允许 null 或空数组）
+     * @param histogram   是否发布可聚合直方图
+     * @param sla         SLO 时长边界数组（允许 null 或空数组）
+     */
+    public static void applyTimerDistribution(Timer.Builder builder, double[] percentiles, boolean histogram, Duration[] sla) {
+        if (builder == null) {
+            return;
+        }
+        double[] validPercentiles = sanitizePercentiles(percentiles);
+        if (validPercentiles.length > 0) {
+            builder.publishPercentiles(validPercentiles);
+        }
+        builder.publishPercentileHistogram(histogram);
+        Duration[] validSla = sanitizeSla(sla);
+        if (validSla.length > 0) {
+            builder.serviceLevelObjectives(validSla);
+        }
+    }
+
+    private void doRecordRunnable(String name, Runnable runnable, Supplier<Timer> timerSupplier) {
+        if (runnable == null) {
+            return;
+        }
+        doRecordSupplier(name, () -> {
+            runnable.run();
+            return null;
+        }, timerSupplier);
+    }
+
+    private <T> T doRecordSupplier(String name, Supplier<T> supplier, Supplier<Timer> timerSupplier) {
+        if (supplier == null) {
+            return null;
+        }
+        if (this.registry == null || isBlank(name)) {
+            return supplier.get();
+        }
+        Timer.Sample sample = Timer.start(this.registry);
+        try {
+            return supplier.get();
+        } finally {
+            Timer timer = timerSupplier.get();
+            if (timer != null) {
+                sample.stop(timer);
+            }
+        }
+    }
+
+    private static double[] sanitizePercentiles(double[] percentiles) {
+        if (percentiles == null || percentiles.length == 0) {
+            return new double[0];
+        }
+        List<Double> valid = new ArrayList<>(percentiles.length);
+        for (double p : percentiles) {
+            if (Double.isFinite(p) && p >= 0.0 && p <= 1.0) {
+                valid.add(p);
+            } else {
+                log.warn("忽略非法分位数配置 [{}]，分位数必须在 [0.0, 1.0] 范围内", p);
+            }
+        }
+        if (valid.isEmpty()) {
+            return new double[0];
+        }
+        double[] result = new double[valid.size()];
+        for (int i = 0; i < valid.size(); i++) {
+            result[i] = valid.get(i);
+        }
+        return result;
+    }
+
+    private static Duration[] sanitizeSla(Duration[] sla) {
+        if (sla == null || sla.length == 0) {
+            return new Duration[0];
+        }
+        List<Duration> valid = new ArrayList<>(sla.length);
+        for (Duration d : sla) {
+            if (d != null && !d.isZero() && !d.isNegative()) {
+                valid.add(d);
+            } else {
+                log.warn("忽略非正数或空 SLO 耗时桶配置 [{}]", d);
+            }
+        }
+        return valid.toArray(new Duration[0]);
     }
 
     /**

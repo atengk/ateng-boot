@@ -6,6 +6,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.prometheusmetrics.PrometheusConfig;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -13,9 +15,12 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -215,5 +220,112 @@ class MetricsTemplateTest {
         metricsTemplate.increment("batch.metric.2");
         metricsTemplate.clear();
         assertThat(registry.getMeters()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("直方图与 SLO 重载：timer 与 record 全重载支持 percentiles/histogram/sla 分布导出")
+    void testTimerAndRecordWithHistogramAndSla() {
+        PrometheusMeterRegistry prometheusRegistry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+        MetricsTemplate promTemplate = new MetricsTemplate(prometheusRegistry);
+
+        double[] percentiles = {0.95, 0.99};
+        Duration[] sla = {Duration.ofMillis(50), Duration.ofMillis(100), Duration.ofMillis(500)};
+
+        // 1. timer(String..., Iterable<Tag>)
+        Timer directTimer = promTemplate.timer("trade.timer.direct", percentiles, true, sla, "channel", "app");
+        assertThat(directTimer).isNotNull();
+        directTimer.record(Duration.ofMillis(40));
+
+        // 2. record Duration（String... 与 Iterable<Tag>）
+        promTemplate.record("trade.duration.varargs", Duration.ofMillis(80), percentiles, true, sla, "channel", "web");
+        promTemplate.record("trade.duration.iterable", Duration.ofMillis(120), percentiles, false, sla, Tags.of("channel", "mini"));
+
+        // 3. record Runnable（String... 与 Iterable<Tag>）
+        AtomicBoolean ran1 = new AtomicBoolean(false);
+        AtomicBoolean ran2 = new AtomicBoolean(false);
+        promTemplate.record("trade.runnable.varargs", () -> ran1.set(true), percentiles, true, sla, "step", "pay");
+        promTemplate.record("trade.runnable.iterable", () -> ran2.set(true), percentiles, false, sla, Tags.of("step", "notify"));
+        assertThat(ran1).isTrue();
+        assertThat(ran2).isTrue();
+
+        // 4. record Supplier（String... 与 Iterable<Tag>）
+        String res1 = promTemplate.record("trade.supplier.varargs", () -> "risk-ok", percentiles, true, sla, "rule", "aml");
+        String res2 = promTemplate.record("trade.supplier.iterable", () -> "risk-pass", percentiles, false, sla, Tags.of("rule", "fraud"));
+        assertThat(res1).isEqualTo("risk-ok");
+        assertThat(res2).isEqualTo("risk-pass");
+
+        Timer iterableSlaTimer = prometheusRegistry.find("trade.duration.iterable").timer();
+        assertThat(iterableSlaTimer).isNotNull();
+        double[] sloBucketsMs = Arrays.stream(iterableSlaTimer.takeSnapshot().histogramCounts())
+                .mapToDouble(b -> b.bucket(TimeUnit.MILLISECONDS))
+                .toArray();
+        assertThat(sloBucketsMs).containsExactly(50.0, 100.0, 500.0);
+
+        double[] snapshotPercentiles = Arrays.stream(directTimer.takeSnapshot().percentileValues())
+                .mapToDouble(p -> p.percentile())
+                .toArray();
+        assertThat(snapshotPercentiles).containsExactly(0.95, 0.99);
+
+        String scrape = prometheusRegistry.scrape();
+        assertThat(scrape)
+                .contains("# TYPE trade_duration_varargs_seconds histogram")
+                .contains("trade_duration_varargs_seconds_bucket{")
+                .contains("trade_runnable_varargs_seconds_bucket{")
+                .contains("trade_supplier_varargs_seconds_bucket{")
+                .contains("le=\"0.05\"")
+                .contains("le=\"0.1\"")
+                .contains("le=\"0.5\"")
+                .contains("le=\"+Inf\"");
+    }
+
+    @Test
+    @DisplayName("直方图与 SLO 非法参数防御与空注册表降级：过滤非正数 SLA 与越界分位数，不阻断业务")
+    void testDistributionOverloadsDefensiveFallback() {
+        double[] mixedPercentiles = {-0.2, Double.NaN, 1.5, 0.95};
+        Duration[] mixedSla = {null, Duration.ZERO, Duration.ofMillis(-20), Duration.ofMillis(80)};
+
+        Timer sanitizedTimer = metricsTemplate.timer(
+                "defensive.timer", mixedPercentiles, false, mixedSla, "env", "test");
+        assertThat(sanitizedTimer).isNotNull();
+        sanitizedTimer.record(Duration.ofMillis(30));
+
+        double[] bucketMs = Arrays.stream(sanitizedTimer.takeSnapshot().histogramCounts())
+                .mapToDouble(b -> b.bucket(TimeUnit.MILLISECONDS))
+                .toArray();
+        assertThat(bucketMs).containsExactly(80.0);
+
+        double[] percentiles = Arrays.stream(sanitizedTimer.takeSnapshot().percentileValues())
+                .mapToDouble(p -> p.percentile())
+                .toArray();
+        assertThat(percentiles).containsExactly(0.95);
+
+        // 全部非法分位数与全部非正数 SLA 时应平稳降级为普通 Timer
+        Timer allInvalidTimer = metricsTemplate.timer(
+                "defensive.all_invalid",
+                new double[]{-1.0, 2.0, Double.POSITIVE_INFINITY},
+                false,
+                new Duration[]{Duration.ZERO, Duration.ofMillis(-5)},
+                "env", "test");
+        assertThat(allInvalidTimer).isNotNull();
+        assertThat(allInvalidTimer.takeSnapshot().histogramCounts()).isEmpty();
+        assertThat(allInvalidTimer.takeSnapshot().percentileValues()).isEmpty();
+
+        // 负数 duration 跳过记录
+        metricsTemplate.record("defensive.neg_duration", Duration.ofMillis(-10), new double[]{0.95}, true, mixedSla, "k", "v");
+        assertThat(registry.find("defensive.neg_duration").timer()).isNull();
+
+        // null Runnable / Supplier 安全返回
+        metricsTemplate.record("defensive.null_runnable", (Runnable) null, new double[]{0.95}, true, mixedSla, "k", "v");
+        assertThat(metricsTemplate.record("defensive.null_supplier", (java.util.function.Supplier<String>) null,
+                new double[]{0.95}, true, mixedSla, "k", "v")).isNull();
+
+        // 空注册表与空白指标名下，业务回调照常执行不阻塞
+        MetricsTemplate nullTemplate = new MetricsTemplate(null);
+        assertThat(nullTemplate.timer("x", mixedPercentiles, true, mixedSla, "k", "v")).isNull();
+        AtomicBoolean executed = new AtomicBoolean(false);
+        nullTemplate.record("x", () -> executed.set(true), mixedPercentiles, true, mixedSla, "k", "v");
+        assertThat(executed).isTrue();
+        assertThat(nullTemplate.record("x", () -> "ok", mixedPercentiles, true, mixedSla, "k", "v")).isEqualTo("ok");
+        assertThat(metricsTemplate.record("   ", () -> "blank-ok", mixedPercentiles, true, mixedSla, "k", "v")).isEqualTo("blank-ok");
     }
 }

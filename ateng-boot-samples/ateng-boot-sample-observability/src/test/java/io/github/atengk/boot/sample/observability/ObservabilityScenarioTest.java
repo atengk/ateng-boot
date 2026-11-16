@@ -33,6 +33,7 @@ import java.util.concurrent.ForkJoinPool;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -479,6 +480,77 @@ class ObservabilityScenarioTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(content().string(containsString("HealthProbeDegradedEvent")))
                 .andExpect(content().string(containsString("HealthProbeRecoveredEvent")));
+    }
+
+    @Test
+    @DisplayName("场景十四：MetricsTemplate 全景接口、直方图 SLO 桶与动态指标注销端到端断言")
+    void scenario14_histogramSloAndFullMetricsTemplateApi() throws Exception {
+        // 1. 函数式 Supplier 计时（订单风控校验）
+        mockMvc.perform(post("/sample/observability/metrics/risk-check")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"orderId\":\"ORD-20261116-101\",\"amount\":288.0,\"channel\":\"app\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("订单 ORD-20261116-101 风控校验完成: APPROVED"));
+
+        // 2. startSample / stopSample 分段履约计时
+        mockMvc.perform(post("/sample/observability/metrics/fulfillment-track")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"orderId\":\"ORD-20261116-101\",\"warehouseCode\":\"WH-SH-01\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("订单 ORD-20261116-101 在仓库 WH-SH-01 完成分段履约"));
+
+        // 3. gaugeCollectionSize 与 gaugeMapSize 容量 Gauge 采集
+        mockMvc.perform(get("/sample/observability/metrics/capacity-gauges"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.pendingQueueSize").value(2))
+                .andExpect(jsonPath("$.data.localCacheSize").value(3));
+
+        // 4. 开启 histogram=true 与 slaMs={50, 100, 500} 的 @ObservedMetric 订单结算
+        mockMvc.perform(post("/sample/observability/metrics/order-settle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"orderId\":\"ORD-20261116-101\",\"amount\":288.0,\"paymentMethod\":\"alipay\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("订单 ORD-20261116-101 通过 alipay 结算成功"));
+
+        // 5. 临时促销活动指标打点
+        mockMvc.perform(post("/sample/observability/metrics/campaign-metric/record")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"campaignId\":\"FLASH-1116\",\"channel\":\"app\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("活动 FLASH-1116 指标打点成功"));
+
+        // 6. 抓取 /actuator/prometheus，断言所有指标、SLO 直方图桶与全局 application 标签已导出
+        mockMvc.perform(get("/actuator/prometheus"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("sample_orders_risk_check_time_seconds_count{application=\"ateng-boot-sample-observability\",channel=\"app\"} 1")))
+                .andExpect(content().string(containsString("sample_fulfillment_duration_seconds_count{application=\"ateng-boot-sample-observability\",warehouse=\"WH-SH-01\"} 1")))
+                .andExpect(content().string(containsString("sample_fulfillment_pending_queue_size{application=\"ateng-boot-sample-observability\",domain=\"fulfillment\"} 2.0")))
+                .andExpect(content().string(containsString("sample_campaign_local_cache_size{application=\"ateng-boot-sample-observability\",domain=\"trade\"} 3.0")))
+                .andExpect(content().string(containsString("sample_campaign_flash_sale_total{application=\"ateng-boot-sample-observability\",campaignId=\"FLASH-1116\",channel=\"app\"} 1.0")))
+                .andExpect(content().string(containsString("# TYPE sample_order_settle_seconds histogram")))
+                .andExpect(content().string(containsString("sample_order_settle_seconds_bucket{application=\"ateng-boot-sample-observability\"")))
+                .andExpect(content().string(containsString("le=\"0.05\"")))
+                .andExpect(content().string(containsString("le=\"0.1\"")))
+                .andExpect(content().string(containsString("le=\"0.5\"")))
+                .andExpect(content().string(containsString("le=\"+Inf\"")))
+                .andExpect(content().string(containsString("sample_order_settle_calls_total{application=\"ateng-boot-sample-observability\"")));
+
+        // 7. 动态注销临时活动指标，再抓取 /actuator/prometheus 验证该指标已被彻底移除
+        mockMvc.perform(post("/sample/observability/metrics/campaign-metric/remove")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"campaignId\":\"FLASH-1116\",\"channel\":\"app\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(1));
+
+        mockMvc.perform(get("/actuator/prometheus"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(not(containsString("sample_campaign_flash_sale_total"))));
     }
 
     /**

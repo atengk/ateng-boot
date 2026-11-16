@@ -13,6 +13,8 @@ import org.springframework.aop.support.AopUtils;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 
 import java.lang.reflect.Method;
+import java.time.Duration;
+import java.util.Arrays;
 import java.util.Objects;
 
 /**
@@ -82,7 +84,7 @@ public class ObservedMetricAspect {
             // 严格遵守 Prometheus 指标规约：成功与失败分支必须保持完全相同的 Tag Keys 集合（补齐 exception="none"）
             Tags successTags = baseTags.and("status", "success", "exception", "none");
             if (annotation.recordDuration()) {
-                recordTimer(metricName, successTags, annotation.percentiles(), sample);
+                recordTimer(metricName, successTags, annotation, sample);
             }
             if (annotation.recordSuccess()) {
                 this.metricsTemplate.increment(metricName + ".calls", 1.0, successTags);
@@ -97,7 +99,7 @@ public class ObservedMetricAspect {
             String exceptionName = ex.getClass().getSimpleName();
             Tags failureTags = baseTags.and("status", "error", "exception", exceptionName);
             if (annotation.recordDuration()) {
-                recordTimer(metricName, failureTags, annotation.percentiles(), sample);
+                recordTimer(metricName, failureTags, annotation, sample);
             }
             if (annotation.recordFailure()) {
                 this.metricsTemplate.increment(metricName + ".calls", 1.0, failureTags);
@@ -107,16 +109,24 @@ public class ObservedMetricAspect {
         }
     }
 
-    private void recordTimer(String metricName, Tags tags, double[] percentiles, Timer.Sample sample) {
+    private void recordTimer(String metricName, Tags tags, ObservedMetric annotation, Timer.Sample sample) {
         if (sample == null || this.metricsTemplate.getRegistry() == null) {
             return;
         }
         Timer.Builder builder = Timer.builder(metricName)
                 .tags(tags)
                 .description("Observed method execution timer");
-        if (percentiles != null && percentiles.length > 0) {
-            builder.publishPercentiles(percentiles);
-        }
+        Duration[] slaDurations = toSlaDurations(annotation.slaMs());
+        MetricsTemplate.applyTimerDistribution(builder, annotation.percentiles(), annotation.histogram(), slaDurations);
         sample.stop(builder.register(this.metricsTemplate.getRegistry()));
+    }
+
+    private Duration[] toSlaDurations(long[] slaMs) {
+        if (slaMs == null || slaMs.length == 0) {
+            return new Duration[0];
+        }
+        return Arrays.stream(slaMs)
+                .mapToObj(Duration::ofMillis)
+                .toArray(Duration[]::new);
     }
 }

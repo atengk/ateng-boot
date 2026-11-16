@@ -58,4 +58,14 @@ public @interface ObservedMetric {
      * 耗时直方图分位数配置（默认采集 P50、P95、P99 分位数）
      */
     double[] percentiles() default {0.5, 0.95, 0.99};
+
+    /**
+     * 是否发布可聚合直方图（用于 Prometheus 多 Pod / 多实例跨节点聚合分位数计算，默认关闭）
+     */
+    boolean histogram() default false;
+
+    /**
+     * SLO 耗时桶边界列表（单位：毫秒；仅大于 0 的正数值生效，自动转换为 serviceLevelObjectives）
+     */
+    long[] slaMs() default {};
 }
