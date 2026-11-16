@@ -73,7 +73,7 @@ _Avoid_: BatchSendResult, MultiMailResponse, SendBatchResult
 _Avoid_: BatchItem, MailItemResult, SendResultItem
 
 **DynamicMailSession**:
-动态临时账号发信会话门面，由 `MailTemplate.forDynamicAccount` 派生，为指定运行时发件账号提供流畅的发信 DSL、受管异步与批量合并支持。
+动态临时账号发信会话门面，由 `MailTemplate.forDynamicAccount` 派生，为指定运行时发件账号提供流畅的发信 DSL、受管异步、本地事务感知与绑定账号的批量合并（`sendBatch`/`sendBatchAsync`/`sendBatchAfterCommit`/`sendBatchAsyncAfterCommit`）对称支持。
 _Avoid_: MailSession, AccountSession, MailClientSession
 
 **MailPriority**:

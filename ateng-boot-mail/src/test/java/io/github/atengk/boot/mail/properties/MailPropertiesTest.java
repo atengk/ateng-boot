@@ -32,6 +32,9 @@ class MailPropertiesTest {
         assertFalse(properties.isAllowEmptyAccounts());
         assertNotNull(properties.getBatch());
         assertEquals(4, properties.getBatch().getConcurrency());
+        assertEquals(50, properties.getBatch().getSliceSize());
+        assertTrue(properties.getBatch().isReuseTransport());
+        assertEquals(Duration.ofMinutes(5), properties.getBatch().getTimeout());
 
         assertNotNull(properties.getAsync());
         assertTrue(properties.getAsync().isEnabled());

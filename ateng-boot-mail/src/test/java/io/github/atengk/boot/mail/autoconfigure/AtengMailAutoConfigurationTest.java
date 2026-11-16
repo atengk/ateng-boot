@@ -679,6 +679,26 @@ class AtengMailAutoConfigurationTest {
         validatedRunner
                 .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.idempotent.ttl=0s")
                 .run(context -> assertThat(context).hasFailed());
+        validatedRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.batch.slice-size=0")
+                .run(context -> assertThat(context).hasFailed());
+        validatedRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.batch.timeout=0s")
+                .run(context -> assertThat(context).hasFailed());
+
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.mail.host=smtp.example.com",
+                        "ateng.boot.mail.batch.slice-size=25",
+                        "ateng.boot.mail.batch.reuse-transport=false",
+                        "ateng.boot.mail.batch.timeout=45s"
+                )
+                .run(context -> {
+                    MailProperties props = context.getBean(MailProperties.class);
+                    assertThat(props.getBatch().getSliceSize()).isEqualTo(25);
+                    assertThat(props.getBatch().isReuseTransport()).isFalse();
+                    assertThat(props.getBatch().getTimeout()).isEqualTo(java.time.Duration.ofSeconds(45));
+                });
     }
 
     @Test

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mail.template;
 
+import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
@@ -440,5 +441,45 @@ public class DynamicMailSession {
     public void sendTemplateAsyncAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
         String renderedHtml = template.renderTemplate(templateName, model, locale);
         sendHtmlAsyncAfterCommit(to, subject, renderedHtml);
+    }
+
+    // ==================== 动态会话批量个性化发信对称门面 ====================
+
+    /**
+     * 基于当前会话绑定账号批量个性化发送邮件（强制使用当前动态账号路由，支持 BatchSliceUtil 分片与片内 Transport 复用）
+     *
+     * @param messages 邮件消息列表
+     * @return 批量发信聚合回执
+     */
+    public BatchMailSendResult sendBatch(List<MailMessage> messages) {
+        return template.sendBatchWithAccount(account, messages);
+    }
+
+    /**
+     * 基于当前会话绑定账号异步批量个性化发送邮件
+     *
+     * @param messages 邮件消息列表
+     * @return 包含批量发信聚合回执的 CompletableFuture
+     */
+    public CompletableFuture<BatchMailSendResult> sendBatchAsync(List<MailMessage> messages) {
+        return template.sendBatchAsyncWithAccount(account, messages);
+    }
+
+    /**
+     * 基于当前会话绑定账号在本地事务提交后批量个性化发送邮件（回滚时自动取消并关闭流句柄）
+     *
+     * @param messages 邮件消息列表
+     */
+    public void sendBatchAfterCommit(List<MailMessage> messages) {
+        template.sendBatchAfterCommitWithAccount(account, messages);
+    }
+
+    /**
+     * 基于当前会话绑定账号在本地事务提交后异步批量个性化发送邮件（回滚时自动取消并关闭流句柄）
+     *
+     * @param messages 邮件消息列表
+     */
+    public void sendBatchAsyncAfterCommit(List<MailMessage> messages) {
+        template.sendBatchAsyncAfterCommitWithAccount(account, messages);
     }
 }

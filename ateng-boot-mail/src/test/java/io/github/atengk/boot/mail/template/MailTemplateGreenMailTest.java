@@ -3406,6 +3406,437 @@ class MailTemplateGreenMailTest {
         }
     }
 
+    @Test
+    @DisplayName("测试 BatchSliceUtil 分片并发投递至 GreenMail（大规模队列防爆与全量送达）")
+    void testSendBatchSlicedDeliveryWithGreenMail() throws Exception {
+        MailProperties slicedProps = new MailProperties();
+        slicedProps.setHost("127.0.0.1");
+        slicedProps.setPort(greenMail.getSmtp().getPort());
+        slicedProps.setSsl(false);
+        slicedProps.getBatch().setSliceSize(3);
+        slicedProps.getBatch().setConcurrency(2);
+        slicedProps.getBatch().setReuseTransport(true);
+
+        MailTemplate slicedTemplate = new MailTemplate(accountRegistry, slicedProps);
+        try {
+            List<MailMessage> messages = new ArrayList<>();
+            for (int i = 0; i < 10; i++) {
+                messages.add(new MailMessage()
+                        .to("slice-" + i + "@atengk.com")
+                        .subject("分片测试 " + i)
+                        .text("body " + i));
+            }
+            BatchMailSendResult result = slicedTemplate.sendBatch(messages);
+            assertTrue(result.isAllSuccess());
+            assertEquals(10, result.getTotalCount());
+            assertEquals(10, result.getSuccessCount());
+            assertEquals(0, result.getFailureCount());
+            assertTrue(greenMail.waitForIncomingEmail(5000, 10));
+        } finally {
+            slicedTemplate.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("测试片内 Transport 按拦截后最终路由账号分组复用、单封独立生命周期与 finally 释放")
+    void testBatchInSliceTransportReuseAndPerMessageLifecycle() throws Exception {
+        TransportTracker defaultTracker = new TransportTracker();
+        TransportTracker opsTracker = new TransportTracker();
+
+        JavaMailSenderImpl defaultSender = createTrackingSender("127.0.0.1", 2525, defaultTracker);
+        JavaMailSenderImpl opsSender = createTrackingSender("127.0.0.1", 2526, opsTracker);
+
+        MailAccountRegistry trackingRegistry = new MailAccountRegistry("default");
+        trackingRegistry.register(MailAccount.builder()
+                .name("default")
+                .host("127.0.0.1")
+                .port(2525)
+                .defaultFrom("default@atengk.com")
+                .archiveBcc("audit-batch@atengk.com")
+                .sender(defaultSender)
+                .build());
+        trackingRegistry.register(MailAccount.builder()
+                .name("ops")
+                .host("127.0.0.1")
+                .port(2526)
+                .defaultFrom("ops@atengk.com")
+                .sender(opsSender)
+                .build());
+
+        MailProperties props = new MailProperties();
+        props.getBatch().setSliceSize(20);
+        props.getBatch().setConcurrency(1);
+        props.getBatch().setReuseTransport(true);
+        props.getIdempotent().setEnabled(true);
+        props.getIdempotent().setRequireBizId(true);
+
+        AtomicInteger sendingEvents = new AtomicInteger();
+        AtomicInteger sentEvents = new AtomicInteger();
+        AtomicInteger failedEvents = new AtomicInteger();
+        AtomicInteger failureHandlerCalls = new AtomicInteger();
+
+        ApplicationEventPublisher publisher = ev -> {
+            if (ev instanceof MailSendingEvent) {
+                sendingEvents.incrementAndGet();
+            } else if (ev instanceof MailSentEvent) {
+                sentEvents.incrementAndGet();
+            } else if (ev instanceof MailSendFailedEvent) {
+                failedEvents.incrementAndGet();
+            }
+        };
+        MailSendFailureHandler failureHandler = (msg, cause) -> failureHandlerCalls.incrementAndGet();
+        MailSendInterceptor routingAndRejectInterceptor = msg -> {
+            if ("BLOCK-BY-INTERCEPTOR".equals(msg.getSubject())) {
+                return false;
+            }
+            if ("ROUTE-TO-OPS".equals(msg.getSubject())) {
+                msg.account("ops");
+            }
+            return true;
+        };
+
+        InMemoryMailIdempotentGuard idempotentGuard = new InMemoryMailIdempotentGuard(props.getIdempotent());
+        MailTemplate batchTemplate = new MailTemplate(
+                trackingRegistry, props, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), null, null, null,
+                publisher, List.of(failureHandler), List.of(routingAndRejectInterceptor),
+                null, null, idempotentGuard
+        );
+
+        try {
+            List<MailMessage> messages = List.of(
+                    new MailMessage().to("u1@example.com").returnPath("bounce-1@atengk.com").subject("normal-1").text("t1"),
+                    new MailMessage().to("u2@example.com").bizId("BATCH-BIZ-1").subject("normal-2").text("t2"),
+                    // 拦截器动态改写路由至 ops
+                    new MailMessage().to("u3@example.com").subject("ROUTE-TO-OPS").text("t3"),
+                    new MailMessage().account("ops").to("u4@example.com").subject("ops-2").text("t4"),
+                    new MailMessage().to("u5@example.com").subject("normal-3").text("t5"),
+                    // 重复 bizId 被幂等拦截（不占物理发送且触发失败事件与安全网）
+                    new MailMessage().to("u6@example.com").bizId("BATCH-BIZ-1").subject("dup-biz").text("t6"),
+                    // 被自定义拦截器阻断
+                    new MailMessage().to("u7@example.com").subject("BLOCK-BY-INTERCEPTOR").text("t7")
+            );
+
+            BatchMailSendResult result = batchTemplate.sendBatch(messages);
+            assertEquals(7, result.getTotalCount());
+            assertEquals(5, result.getSuccessCount());
+            assertEquals(2, result.getFailureCount());
+
+            // 核心验证：default 3 封仅连 1 次并精确关闭 1 次；ops（含被拦截器改写路由的一封）2 封仅连 1 次并精确关闭 1 次
+            assertEquals(1, defaultTracker.connectCalls.get(), "default 同片内必须仅连接 1 次物理 Transport");
+            assertEquals(3, defaultTracker.sendCalls.get());
+            assertEquals(1, defaultTracker.closeCalls.get(), "default 连接必须在 finally 确定性释放");
+
+            assertEquals(1, opsTracker.connectCalls.get(), "ops（含拦截后改写路由消息）必须共享 1 次物理 Transport");
+            assertEquals(2, opsTracker.sendCalls.get());
+            assertEquals(1, opsTracker.closeCalls.get(), "ops 连接必须在 finally 确定性释放");
+
+            // 单封 returnPath 与 archiveBcc 独立保留验证（被拦截器改写为 ops 账号的消息绝不残留 default 的归档密送）
+            org.eclipse.angus.mail.smtp.SMTPMessage firstSent = (org.eclipse.angus.mail.smtp.SMTPMessage) defaultTracker.sentMessages.get(0);
+            assertEquals("bounce-1@atengk.com", firstSent.getEnvelopeFrom());
+            assertTrue(java.util.Arrays.stream(firstSent.getAllRecipients())
+                    .anyMatch(addr -> addr.toString().contains("audit-batch@atengk.com")));
+
+            jakarta.mail.Message reroutedToOpsSent = opsTracker.sentMessages.get(0);
+            assertFalse(java.util.Arrays.stream(reroutedToOpsSent.getAllRecipients())
+                            .anyMatch(addr -> addr.toString().contains("audit-batch@atengk.com")),
+                    "拦截器动态改写账号后，不应残留原默认账号的 archiveBcc");
+
+            // 事件与失败安全网独立验证
+            assertEquals(5, sendingEvents.get());
+            assertEquals(5, sentEvents.get());
+            assertEquals(2, failedEvents.get());
+            assertEquals(2, failureHandlerCalls.get());
+        } finally {
+            batchTemplate.destroy();
+            idempotentGuard.clear();
+        }
+    }
+
+    @Test
+    @DisplayName("测试批内混合 logOnly=true 跳过物理 Transport 及连接意外断开重建重连一次")
+    void testBatchTransportReconnectOnceAndSandboxLogOnlyBypass() {
+        TransportTracker tracker = new TransportTracker();
+        tracker.failOnSendCallNumber.set(2); // 第 2 次物理 sendMessage 抛出断连异常，验证重连一次恢复
+
+        JavaMailSenderImpl sender = createTrackingSender("127.0.0.1", 2527, tracker);
+        MailAccountRegistry registry = new MailAccountRegistry("default");
+        registry.register(MailAccount.builder()
+                .name("default")
+                .host("127.0.0.1")
+                .port(2527)
+                .defaultFrom("default@atengk.com")
+                .sender(sender)
+                .build());
+
+        MailProperties props = new MailProperties();
+        props.getSandbox().setEnabled(true);
+        props.getSandbox().setAllowedRecipients(List.of("*@internal.local"));
+        props.getSandbox().setRedirectTo("trap@internal.local");
+        props.getBatch().setSliceSize(10);
+        props.getBatch().setConcurrency(1);
+        props.getBatch().setReuseTransport(true);
+
+        // 自定义前置拦截器：为特定主题标记 HEADER_SANDBOX_LOG_ONLY，演示批内混合 logOnly 模拟项跳过物理连接
+        MailSendInterceptor markLogOnlyInterceptor = msg -> {
+            if ("LOG-ONLY-ITEM".equals(msg.getSubject())) {
+                msg.header(MailSandboxInterceptor.HEADER_SANDBOX_LOG_ONLY, "true");
+            }
+            return true;
+        };
+
+        MailTemplate template = new MailTemplate(
+                registry, props, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), null, null, null, null, null,
+                List.of(markLogOnlyInterceptor, new MailSandboxInterceptor(props.getSandbox()))
+        );
+
+        try {
+            List<MailMessage> messages = List.of(
+                    new MailMessage().to("user1@internal.local").subject("LOG-ONLY-ITEM").text("skip transport"),
+                    new MailMessage().to("user2@internal.local").subject("phys-1").text("p1"),
+                    new MailMessage().to("user3@internal.local").subject("phys-2-reconnect").text("p2"),
+                    new MailMessage().to("user4@internal.local").subject("phys-3-reuse-new").text("p3")
+            );
+
+            BatchMailSendResult result = template.sendBatch(messages);
+            assertTrue(result.isAllSuccess());
+            assertEquals(4, result.getSuccessCount());
+
+            // 1. logOnly 条目跳过物理 Transport
+            // 2. 第 1 封 phys-1 成功 (connect #1, send #1)
+            // 3. 第 2 封 phys-2 在第 2 次 send 断开 -> 关闭旧连接 (close #1)、重连 (connect #2)、重发 (send #3) 成功
+            // 4. 第 3 封 phys-3 复用重连后的新 Transport (send #4)，结束后在 finally 关闭 (close #2)
+            assertEquals(2, tracker.connectCalls.get());
+            assertEquals(4, tracker.sendCalls.get());
+            assertEquals(2, tracker.closeCalls.get(), "所有已创建的旧/新 Transport 必须在 finally 全量关闭");
+        } finally {
+            template.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 batch.timeout 超时熔断：Fail-Safe 返回并保留已完成回执与 Message-ID，关闭未完成资源")
+    void testBatchTimeoutFailSafePreservesCompletedReceipts() {
+        AtomicInteger callCount = new AtomicInteger();
+        JavaMailSenderImpl slowSender = new JavaMailSenderImpl() {
+            @Override
+            public void send(MimeMessage mimeMessage) {
+                int idx = callCount.incrementAndGet();
+                if (idx >= 2) {
+                    try {
+                        Thread.sleep(5000L);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new org.springframework.mail.MailSendException("Interrupted on timeout", ie);
+                    }
+                }
+            }
+        };
+
+        MailAccountRegistry registry = new MailAccountRegistry("default");
+        registry.register(MailAccount.builder()
+                .name("default")
+                .host("127.0.0.1")
+                .port(2528)
+                .defaultFrom("default@atengk.com")
+                .sender(slowSender)
+                .build());
+
+        MailProperties props = new MailProperties();
+        props.getBatch().setSliceSize(1);
+        props.getBatch().setConcurrency(1);
+        props.getBatch().setTimeout(Duration.ofMillis(250));
+
+        AtomicBoolean thirdAttachmentClosed = new AtomicBoolean(false);
+        MailTemplate template = new MailTemplate(registry, props);
+        try {
+            List<MailMessage> messages = List.of(
+                    new MailMessage().to("fast1@example.com").subject("fast-1").text("ok"),
+                    new MailMessage().to("slow2@example.com").subject("slow-2").text("hang"),
+                    new MailMessage().to("unstarted3@example.com").subject("unstarted-3").text("pending")
+                            .attach("pending.txt", trackingStream(thirdAttachmentClosed))
+            );
+
+            long start = System.currentTimeMillis();
+            BatchMailSendResult result = template.sendBatch(messages);
+            long elapsed = System.currentTimeMillis() - start;
+
+            assertTrue(elapsed < 3500L, "超时熔断应快速返回而不阻塞等待 5000ms 慢任务，实际耗时: " + elapsed + "ms");
+            assertEquals(3, result.getTotalCount());
+            assertEquals(1, result.getSuccessCount());
+            assertEquals(2, result.getFailureCount());
+
+            MailSendResultItem firstItem = result.getItems().get(0);
+            assertTrue(firstItem.isSuccess());
+            assertNotNull(firstItem.getResult());
+            assertNotNull(firstItem.getResult().getMessageId());
+
+            assertFalse(result.getItems().get(1).isSuccess());
+            assertFalse(result.getItems().get(2).isSuccess());
+            assertInstanceOf(java.util.concurrent.TimeoutException.class, result.getItems().get(2).getCause());
+            assertTrue(thirdAttachmentClosed.get(), "超时未开始条目的附件流必须在 Fail-Safe 收口时确定性关闭");
+        } finally {
+            template.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 DynamicMailSession 4 项批量对称门面（强绑定动态账号）与 MailTemplate.sendBatchAfterCommit* 事务边界")
+    void testDynamicMailSessionBatchSymmetryAndTransactionAfterCommit() throws Exception {
+        // 验证 MailPriority IBaseEnum 契约兼容
+        assertEquals(1, MailPriority.HIGH.getCode());
+        assertEquals(MailPriority.NORMAL.getCode(), MailPriority.NORMAL.getValue());
+        assertEquals("高优先级", MailPriority.HIGH.getLabel());
+
+        MailAccount dynamicOps = MailAccount.builder()
+                .name("dynamic-ops")
+                .host("127.0.0.1")
+                .port(greenMail.getSmtp().getPort())
+                .username("ops@atengk.com")
+                .password("password")
+                .ssl(false)
+                .defaultFrom("ops@atengk.com")
+                .defaultFromName("动态运维通道")
+                .build();
+        DynamicMailSession session = mailTemplate.forDynamicAccount(dynamicOps);
+
+        // 1. DynamicMailSession.sendBatch 即使消息设了 account("default") 也必须强制路由至 dynamic-ops (ops@atengk.com)
+        BatchMailSendResult syncRes = session.sendBatch(List.of(
+                new MailMessage().account("default").to("dyn1@example.com").subject("dyn-sync-1").text("b1"),
+                new MailMessage().to("dyn2@example.com").subject("dyn-sync-2").text("b2")
+        ));
+        assertTrue(syncRes.isAllSuccess());
+        assertEquals(2, syncRes.getSuccessCount());
+
+        // 2. DynamicMailSession.sendBatchAsync
+        BatchMailSendResult asyncRes = session.sendBatchAsync(List.of(
+                new MailMessage().to("dyn3@example.com").subject("dyn-async-1").text("b3")
+        )).get(5, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(asyncRes.isAllSuccess());
+
+        assertTrue(greenMail.waitForIncomingEmail(5000, 3));
+        MimeMessage[] phase1Msgs = greenMail.getReceivedMessages();
+        assertEquals(3, phase1Msgs.length);
+        for (MimeMessage m : phase1Msgs) {
+            assertTrue(m.getFrom()[0].toString().contains("ops@atengk.com"),
+                    "DynamicMailSession.sendBatch* 必须强制使用绑定动态账号的发件人");
+        }
+        greenMail.purgeEmailFromAllMailboxes();
+
+        // 3. 事务回滚取消 MailTemplate.sendBatchAfterCommit 与资源释放
+        AtomicBoolean rollbackStreamClosed = new AtomicBoolean(false);
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        mailTemplate.sendBatchAfterCommit(List.of(
+                new MailMessage().to("tx-rb@example.com").subject("rollback-batch").text("rb")
+                        .attach("rb.txt", trackingStream(rollbackStreamClosed))
+        ));
+        for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+            sync.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+        }
+        TransactionSynchronizationManager.clearSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(false);
+        assertEquals(0, greenMail.getReceivedMessages().length);
+        assertTrue(rollbackStreamClosed.get(), "事务回滚必须确定性关闭批量消息挂载流句柄");
+
+        // 4. 事务提交后执行 MailTemplate.sendBatchAfterCommit + sendBatchAsyncAfterCommit 与 DynamicMailSession 对称事务批量
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        mailTemplate.sendBatchAfterCommit(List.of(
+                new MailMessage().to("tx1@example.com").subject("tx-sync").text("ok1")
+        ));
+        mailTemplate.sendBatchAsyncAfterCommit(List.of(
+                new MailMessage().to("tx2@example.com").subject("tx-async").text("ok2")
+        ));
+        session.sendBatchAfterCommit(List.of(
+                new MailMessage().to("tx3@example.com").subject("dyn-tx-sync").text("ok3")
+        ));
+        session.sendBatchAsyncAfterCommit(List.of(
+                new MailMessage().to("tx4@example.com").subject("dyn-tx-async").text("ok4")
+        ));
+
+        // 提交前 0 封发出
+        assertEquals(0, greenMail.getReceivedMessages().length);
+
+        List<TransactionSynchronization> syncs = new ArrayList<>(TransactionSynchronizationManager.getSynchronizations());
+        for (TransactionSynchronization sync : syncs) {
+            sync.afterCommit();
+            sync.afterCompletion(TransactionSynchronization.STATUS_COMMITTED);
+        }
+        TransactionSynchronizationManager.clearSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(false);
+
+        assertTrue(greenMail.waitForIncomingEmail(5000, 4));
+        assertEquals(4, greenMail.getReceivedMessages().length);
+    }
+
+    private JavaMailSenderImpl createTrackingSender(String host, int port, TransportTracker tracker) {
+        JavaMailSenderImpl sender = new JavaMailSenderImpl();
+        sender.setHost(host);
+        sender.setPort(port);
+        sender.setProtocol("smtp");
+        sender.setDefaultEncoding(StandardCharsets.UTF_8.name());
+
+        Properties props = new Properties();
+        props.put("mail.transport.protocol", "smtp");
+        props.put("test.transport.tracker", tracker);
+        jakarta.mail.Session session = jakarta.mail.Session.getInstance(props);
+        try {
+            session.setProvider(new jakarta.mail.Provider(
+                    jakarta.mail.Provider.Type.TRANSPORT,
+                    "smtp",
+                    TrackingTransport.class.getName(),
+                    "AtengTest",
+                    "1.0"
+            ));
+        } catch (jakarta.mail.NoSuchProviderException e) {
+            throw new IllegalStateException(e);
+        }
+        sender.setSession(session);
+        return sender;
+    }
+
+    private static final class TransportTracker {
+        final AtomicInteger connectCalls = new AtomicInteger();
+        final AtomicInteger sendCalls = new AtomicInteger();
+        final AtomicInteger closeCalls = new AtomicInteger();
+        final AtomicInteger failOnSendCallNumber = new AtomicInteger(-1);
+        final List<jakarta.mail.Message> sentMessages = java.util.Collections.synchronizedList(new ArrayList<>());
+    }
+
+    public static class TrackingTransport extends jakarta.mail.Transport {
+
+        private final TransportTracker tracker;
+
+        public TrackingTransport(jakarta.mail.Session session, jakarta.mail.URLName urlname) {
+            super(session, urlname);
+            Object obj = session.getProperties().get("test.transport.tracker");
+            this.tracker = (obj instanceof TransportTracker t) ? t : new TransportTracker();
+        }
+
+        @Override
+        protected boolean protocolConnect(String host, int port, String user, String password) {
+            tracker.connectCalls.incrementAndGet();
+            return true;
+        }
+
+        @Override
+        public void sendMessage(jakarta.mail.Message msg, jakarta.mail.Address[] addresses) throws jakarta.mail.MessagingException {
+            int callNo = tracker.sendCalls.incrementAndGet();
+            if (tracker.failOnSendCallNumber.get() == callNo) {
+                throw new jakarta.mail.MessagingException("Simulated transport disconnect on call #" + callNo);
+            }
+            tracker.sentMessages.add(msg);
+        }
+
+        @Override
+        public void close() throws jakarta.mail.MessagingException {
+            tracker.closeCalls.incrementAndGet();
+            super.close();
+        }
+    }
+
     private void collectAttachmentFilenames(Part part, List<String> names) throws Exception {
         if (part.getFileName() != null) {
             names.add(MimeUtility.decodeText(part.getFileName()));
