@@ -1,18 +1,31 @@
 package io.github.atengk.boot.observability.health;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.observability.autoconfigure.AtengHealthAutoConfiguration;
+import io.github.atengk.boot.observability.autoconfigure.AtengObservabilityAutoConfiguration;
 import io.github.atengk.boot.observability.event.HealthProbeDegradedEvent;
 import io.github.atengk.boot.observability.properties.ObservabilityProperties;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.Status;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.ApplicationEvent;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -25,6 +38,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @DisplayName("AbstractSafeHealthIndicator 防假死基类单元测试")
 class AbstractSafeHealthIndicatorTest {
+
+    @AfterEach
+    void tearDownContext() {
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+    }
 
     @Test
     @DisplayName("正常探测：子类正常返回并打标，返回 UP")
@@ -205,5 +225,97 @@ class AbstractSafeHealthIndicatorTest {
         Health health = indicator.health();
         assertThat(health.getStatus()).isEqualTo(Status.UP);
         assertThat(events).isEmpty();
+    }
+
+    @Test
+    @DisplayName("BeanFactoryAware 自动绑定：Spring 托管子类未传 Executor 时自动绑定 atengHealthProbeExecutor")
+    void testBeanFactoryAutoBindsManagedProbeExecutor() {
+        AtomicReference<String> probeThreadName = new AtomicReference<>();
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengObservabilityAutoConfiguration.class,
+                        AtengHealthAutoConfiguration.class
+                ))
+                .withBean("managedProbe", AbstractSafeHealthIndicator.class, () -> {
+                    ObservabilityProperties props = new ObservabilityProperties();
+                    return new AbstractSafeHealthIndicator(props) {
+                        @Override
+                        protected void doCheck(Health.Builder builder) {
+                            probeThreadName.set(Thread.currentThread().getName());
+                            builder.up();
+                        }
+                    };
+                })
+                .run(context -> {
+                    AbstractSafeHealthIndicator probe = context.getBean("managedProbe", AbstractSafeHealthIndicator.class);
+                    Executor expectedExecutor = context.getBean(AtengHealthAutoConfiguration.HEALTH_PROBE_EXECUTOR_BEAN_NAME, Executor.class);
+
+                    assertThat(probe.getExecutor()).isSameAs(expectedExecutor);
+                    assertThat(probe.getExecutor()).isNotSameAs(ForkJoinPool.commonPool());
+
+                    Health health = probe.health();
+                    assertThat(health.getStatus()).isEqualTo(Status.UP);
+                    assertThat(probeThreadName.get()).startsWith("ateng-health-probe-");
+                });
+    }
+
+    @Test
+    @DisplayName("异步探测四维 AsyncContext 透传与对称清理：正常及异常/超时后工作线程现场零污染")
+    void testAsyncContextPropagationAndCleanup() throws Exception {
+        ThreadPoolTaskExecutor singlePool = new ThreadPoolTaskExecutor();
+        singlePool.setCorePoolSize(1);
+        singlePool.setMaxPoolSize(1);
+        singlePool.setThreadNamePrefix("probe-ctx-worker-");
+        singlePool.initialize();
+
+        try {
+            AtomicReference<String> capturedSnapshot = new AtomicReference<>();
+            AbstractSafeHealthIndicator upProbe = new AbstractSafeHealthIndicator(Duration.ofSeconds(1), singlePool) {
+                @Override
+                protected void doCheck(Health.Builder builder) {
+                    capturedSnapshot.set(
+                            MDC.get("traceId") + "|"
+                                    + UserContextHolder.get() + "|"
+                                    + TenantContextHolder.getTenantId() + "|"
+                                    + TenantContextHolder.isIgnoreTenant()
+                    );
+                    builder.up();
+                }
+            };
+
+            MDC.put("traceId", "probe-trace-998");
+            UserContextHolder.set("probe-user-998");
+            TenantContextHolder.setTenantId("probe-tenant-998");
+            TenantContextHolder.runWithoutTenant(() -> {
+                Health health = upProbe.health();
+                assertThat(health.getStatus()).isEqualTo(Status.UP);
+            });
+
+            assertThat(capturedSnapshot.get()).isEqualTo("probe-trace-998|probe-user-998|probe-tenant-998|true");
+
+            // 验证异常及超时分支下工作线程现场同样被 finally 确定性清理还原
+            AbstractSafeHealthIndicator timeoutProbe = new AbstractSafeHealthIndicator(Duration.ofMillis(60), singlePool) {
+                @Override
+                protected void doCheck(Health.Builder builder) throws Exception {
+                    Thread.sleep(200);
+                    builder.up();
+                }
+            };
+            Health timeoutHealth = timeoutProbe.health();
+            assertThat(timeoutHealth.getStatus()).isEqualTo(Status.UNKNOWN);
+
+            // 提交干净任务检验唯一工作线程是否存在上下文残留污染
+            String workerResidual = CompletableFuture.supplyAsync(() ->
+                    MDC.get("traceId") + "|"
+                            + UserContextHolder.get() + "|"
+                            + TenantContextHolder.getTenantId() + "|"
+                            + TenantContextHolder.isIgnoreTenant(), singlePool
+            ).get(2, TimeUnit.SECONDS);
+
+            assertThat(workerResidual).isEqualTo("null|null|null|false");
+        } finally {
+            singlePool.destroy();
+        }
     }
 }

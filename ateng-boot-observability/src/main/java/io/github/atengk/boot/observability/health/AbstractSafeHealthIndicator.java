@@ -1,9 +1,13 @@
 package io.github.atengk.boot.observability.health;
 
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.observability.event.HealthProbeDegradedEvent;
 import io.github.atengk.boot.observability.properties.ObservabilityProperties;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.BeanFactory;
+import org.springframework.beans.factory.BeanFactoryAware;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.actuate.health.Status;
@@ -31,24 +35,42 @@ import java.util.concurrent.TimeoutException;
  * @since 2026-10-22
  */
 @Slf4j
-public abstract class AbstractSafeHealthIndicator implements HealthIndicator, ApplicationEventPublisherAware {
+public abstract class AbstractSafeHealthIndicator implements HealthIndicator, ApplicationEventPublisherAware, BeanFactoryAware {
 
     /**
      * 探针安全探测默认超时时间（2 秒）
      */
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(2);
 
+    /**
+     * 容器内专属受管健康探针线程池 Bean 名称
+     */
+    public static final String DEFAULT_EXECUTOR_BEAN_NAME = "atengHealthProbeExecutor";
+
     @Getter
     private final Duration timeout;
 
+    private final boolean explicitExecutor;
+
     @Getter
-    private final Executor executor;
+    private volatile Executor executor;
 
     private ApplicationEventPublisher eventPublisher;
 
     @Override
     public void setApplicationEventPublisher(ApplicationEventPublisher eventPublisher) {
         this.eventPublisher = eventPublisher;
+    }
+
+    @Override
+    public void setBeanFactory(BeanFactory beanFactory) throws BeansException {
+        if (!this.explicitExecutor && beanFactory != null && beanFactory.containsBean(DEFAULT_EXECUTOR_BEAN_NAME)) {
+            try {
+                this.executor = beanFactory.getBean(DEFAULT_EXECUTOR_BEAN_NAME, Executor.class);
+            } catch (BeansException ex) {
+                log.debug("未能绑定容器受管健康探针线程池 [{}]，继续使用保底执行器: {}", DEFAULT_EXECUTOR_BEAN_NAME, ex.getMessage());
+            }
+        }
     }
 
     /**
@@ -101,7 +123,8 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator, Ap
      */
     protected AbstractSafeHealthIndicator(Duration timeout, Executor executor) {
         this.timeout = (timeout != null && !timeout.isNegative() && !timeout.isZero()) ? timeout : DEFAULT_TIMEOUT;
-        this.executor = (executor != null) ? executor : ForkJoinPool.commonPool();
+        this.explicitExecutor = (executor != null);
+        this.executor = this.explicitExecutor ? executor : ForkJoinPool.commonPool();
     }
 
     /**
@@ -117,7 +140,8 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator, Ap
     @Override
     public Health health() {
         long startTime = System.currentTimeMillis();
-        CompletableFuture<Health> future = CompletableFuture.supplyAsync(() -> {
+        Executor targetExecutor = (this.executor != null) ? this.executor : ForkJoinPool.commonPool();
+        CompletableFuture<Health> future = CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> {
             Health.Builder builder = new Health.Builder();
             try {
                 doCheck(builder);
@@ -149,7 +173,7 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator, Ap
                         .withDetail("reason", ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName())
                         .build();
             }
-        }, this.executor);
+        }), targetExecutor);
 
         try {
             return future.get(this.timeout.toMillis(), TimeUnit.MILLISECONDS);

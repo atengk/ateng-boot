@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Kafka 集群连通性与生产消费受管安全健康探针
@@ -34,6 +35,7 @@ public class KafkaSafeHealthIndicator extends AbstractSafeHealthIndicator implem
     private final ObjectProvider<KafkaTemplate> kafkaTemplateProvider;
     private final ObjectProvider<KafkaAdmin> kafkaAdminProvider;
     private final AdminClient injectedAdminClient;
+    private final ReentrantLock adminClientLock = new ReentrantLock();
     private volatile AdminClient internalAdminClient;
 
     @SuppressWarnings("rawtypes")
@@ -119,7 +121,8 @@ public class KafkaSafeHealthIndicator extends AbstractSafeHealthIndicator implem
             return this.injectedAdminClient;
         }
         if (this.internalAdminClient == null) {
-            synchronized (this) {
+            adminClientLock.lock();
+            try {
                 if (this.internalAdminClient == null) {
                     Map<String, Object> configs = null;
                     if (kafkaAdminProvider != null && kafkaAdminProvider.getIfAvailable() != null) {
@@ -131,6 +134,10 @@ public class KafkaSafeHealthIndicator extends AbstractSafeHealthIndicator implem
                         this.internalAdminClient = AdminClient.create(configs);
                     }
                 }
+            } finally {
+                if (adminClientLock.isHeldByCurrentThread()) {
+                    adminClientLock.unlock();
+                }
             }
         }
         return this.internalAdminClient;
@@ -138,9 +145,19 @@ public class KafkaSafeHealthIndicator extends AbstractSafeHealthIndicator implem
 
     @Override
     public void destroy() {
-        if (this.internalAdminClient != null) {
+        AdminClient clientToClose;
+        adminClientLock.lock();
+        try {
+            clientToClose = this.internalAdminClient;
+            this.internalAdminClient = null;
+        } finally {
+            if (adminClientLock.isHeldByCurrentThread()) {
+                adminClientLock.unlock();
+            }
+        }
+        if (clientToClose != null) {
             try {
-                this.internalAdminClient.close(Duration.ofSeconds(1));
+                clientToClose.close(Duration.ofSeconds(1));
             } catch (Exception ex) {
                 log.warn("关闭 Kafka AdminClient 异常: {}", ex.getMessage());
             }

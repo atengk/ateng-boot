@@ -14,9 +14,15 @@ import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.kafka.core.KafkaTemplate;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.concurrent.ExecutionException;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -126,5 +132,70 @@ class KafkaSafeHealthIndicatorTest {
 
         // 验证 destroy 不抛出异常
         indicator.destroy();
+    }
+
+    @Test
+    @DisplayName("并发懒加载初始化 AdminClient（ReentrantLock 防 Pinning）：多并发安全无死锁且异常后锁可靠释放")
+    void testConcurrentLazyInitializationAndLockReleaseOnFailure() throws Exception {
+        ThreadPoolTaskExecutor probePool = new ThreadPoolTaskExecutor();
+        probePool.setCorePoolSize(6);
+        probePool.setMaxPoolSize(12);
+        probePool.setThreadNamePrefix("kafka-probe-");
+        probePool.initialize();
+
+        ThreadPoolTaskExecutor callerPool = new ThreadPoolTaskExecutor();
+        callerPool.setCorePoolSize(6);
+        callerPool.setMaxPoolSize(6);
+        callerPool.setThreadNamePrefix("kafka-caller-");
+        callerPool.initialize();
+
+        KafkaAdmin mockKafkaAdmin = mock(KafkaAdmin.class);
+        AtomicInteger callCount = new AtomicInteger(0);
+        when(mockKafkaAdmin.getConfigurationProperties()).thenAnswer(invocation -> {
+            if (callCount.incrementAndGet() == 1) {
+                throw new IllegalStateException("临时配置读取失败");
+            }
+            return Map.of();
+        });
+
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("kafkaAdmin", mockKafkaAdmin);
+
+        KafkaSafeHealthIndicator indicator = new KafkaSafeHealthIndicator(
+                beanFactory.getBeanProvider(KafkaTemplate.class),
+                beanFactory.getBeanProvider(KafkaAdmin.class),
+                Duration.ofSeconds(1),
+                probePool
+        );
+
+        try {
+            // 1. 首次调用配置读取抛异常：应降级 DOWN 且 ReentrantLock 在 finally 释放，不阻塞后续探测
+            Health first = indicator.health();
+            assertThat(first.getStatus()).isEqualTo(Status.DOWN);
+
+            // 2. 多线程并发调用探测与 destroy：无死锁、无异常泄漏
+            int concurrency = 6;
+            CountDownLatch startGate = new CountDownLatch(1);
+            List<CompletableFuture<Health>> futures = new ArrayList<>();
+            for (int i = 0; i < concurrency; i++) {
+                futures.add(CompletableFuture.supplyAsync(() -> {
+                    try {
+                        startGate.await(2, TimeUnit.SECONDS);
+                    } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return indicator.health();
+                }, callerPool));
+            }
+            startGate.countDown();
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(5, TimeUnit.SECONDS);
+            for (CompletableFuture<Health> future : futures) {
+                assertThat(future.get().getStatus()).isEqualTo(Status.UNKNOWN);
+            }
+        } finally {
+            indicator.destroy();
+            callerPool.destroy();
+            probePool.destroy();
+        }
     }
 }
