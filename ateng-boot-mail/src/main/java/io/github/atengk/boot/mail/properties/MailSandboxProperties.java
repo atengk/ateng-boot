@@ -1,6 +1,7 @@
 package io.github.atengk.boot.mail.properties;
 
 import lombok.Data;
+import org.springframework.validation.annotation.Validated;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -16,6 +17,7 @@ import java.util.List;
  * @since 2026-10-30
  */
 @Data
+@Validated
 public class MailSandboxProperties {
 
     /**

@@ -1,7 +1,10 @@
 package io.github.atengk.boot.mail.model;
 
+import io.github.atengk.boot.core.enums.IBaseEnum;
+import io.github.atengk.boot.core.util.EnumUtil;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.mail.javamail.JavaMailSenderImpl;
 
 import java.util.List;
 
@@ -66,5 +69,42 @@ class MailPriorityAndArchiveBccTest {
 
         assertThat(message.getBcc())
                 .containsExactly("bcc1@example.com", "bcc2@example.com", "bcc3@example.com");
+    }
+
+    @Test
+    @DisplayName("MailPriority: 实现 IBaseEnum<Integer> 并兼容 EnumUtil 编码解析")
+    void testMailPriorityImplementsIBaseEnum() {
+        assertThat(MailPriority.HIGH).isInstanceOf(IBaseEnum.class);
+        assertThat(MailPriority.HIGH.getCode()).isEqualTo(1);
+        assertThat(MailPriority.NORMAL.getCode()).isEqualTo(3);
+        assertThat(MailPriority.LOW.getCode()).isEqualTo(5);
+        assertThat(MailPriority.HIGH.getLabel()).isNotBlank();
+        assertThat(EnumUtil.fromCode(MailPriority.class, 1)).contains(MailPriority.HIGH);
+        assertThat(EnumUtil.fromCode(MailPriority.class, 3)).contains(MailPriority.NORMAL);
+        assertThat(EnumUtil.fromCode(MailPriority.class, 5)).contains(MailPriority.LOW);
+    }
+
+    @Test
+    @DisplayName("MailAccount: withSender 复制新实例完整保留 archiveBcc 合规归档邮箱")
+    void testMailAccountWithSenderPreservesArchiveBcc() {
+        MailAccount source = MailAccount.builder()
+                .name("dynamic-audit")
+                .host("smtp.example.com")
+                .port(465)
+                .username("sender@example.com")
+                .password("secret")
+                .defaultFrom("sender@example.com")
+                .defaultFromName("审计发件人")
+                .archiveBcc("audit-archive@example.com")
+                .build();
+
+        JavaMailSenderImpl sender = new JavaMailSenderImpl();
+        MailAccount bound = source.withSender(sender);
+
+        assertThat(bound.getSender()).isSameAs(sender);
+        assertThat(bound.getArchiveBcc()).isEqualTo("audit-archive@example.com");
+        assertThat(bound.getName()).isEqualTo("dynamic-audit");
+        assertThat(bound.getDefaultFrom()).isEqualTo("sender@example.com");
+        assertThat(bound.getDefaultFromName()).isEqualTo("审计发件人");
     }
 }

@@ -1,6 +1,9 @@
 package io.github.atengk.boot.mail.properties;
 
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import lombok.Data;
+import org.springframework.validation.annotation.Validated;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -12,6 +15,7 @@ import java.util.Map;
  * @since 2026-10-22
  */
 @Data
+@Validated
 public class MailAccountProperties {
 
     /**
@@ -22,6 +26,8 @@ public class MailAccountProperties {
     /**
      * SMTP 服务端口（通常 SSL 端口为 465，非 SSL 端口为 25 或 587）
      */
+    @Min(value = 1, message = "accounts.*.port 必须在 1 到 65535 之间")
+    @Max(value = 65535, message = "accounts.*.port 必须在 1 到 65535 之间")
     private Integer port = 465;
 
     /**

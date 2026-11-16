@@ -154,12 +154,16 @@ public class MailTemplate implements DisposableBean {
         this.templateRenderer = templateRenderer != null ? templateRenderer : new SimpleMailTemplateRenderer();
         this.accountResolver = accountResolver != null ? accountResolver : new TenantMailAccountResolver();
         this.accountProvider = accountProvider;
+        boolean asyncEnabled = properties.getAsync() == null || properties.getAsync().isEnabled();
         if (executor != null) {
             this.executor = executor;
             this.defaultExecutorCreated = false;
-        } else {
-            this.executor = createDefaultExecutor(properties != null ? properties.getAsync() : null);
+        } else if (asyncEnabled) {
+            this.executor = createDefaultExecutor(properties.getAsync());
             this.defaultExecutorCreated = true;
+        } else {
+            this.executor = null;
+            this.defaultExecutorCreated = false;
         }
         this.eventPublisher = eventPublisher;
         this.failureHandlers = failureHandlers != null ? Collections.unmodifiableList(new ArrayList<>(failureHandlers)) : Collections.emptyList();
@@ -184,13 +188,15 @@ public class MailTemplate implements DisposableBean {
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
+        requireNonEmptyRecipients(message);
+        MailAccount account = resolveAccount(message);
+        return sendWithAccount(account, message);
+    }
 
+    private void requireNonEmptyRecipients(MailMessage message) {
         if (message.getTo() == null || message.getTo().isEmpty()) {
             throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
         }
-
-        MailAccount account = resolveAccount(message);
-        return sendWithAccount(account, message);
     }
 
     private MailAccount resolveAccount(MailMessage message) {
@@ -263,9 +269,7 @@ public class MailTemplate implements DisposableBean {
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
-        if (message.getTo() == null || message.getTo().isEmpty()) {
-            throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
-        }
+        requireNonEmptyRecipients(message);
 
         String maskedTo = (message.getTo() != null)
                 ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
@@ -518,6 +522,7 @@ public class MailTemplate implements DisposableBean {
         MailSendResultItem[] results = new MailSendResultItem[total];
         Semaphore semaphore = new Semaphore(concurrency);
         List<CompletableFuture<Void>> futures = new ArrayList<>(total);
+        Executor batchExecutor = this.executor != null ? this.executor : Runnable::run;
 
         for (int i = 0; i < total; i++) {
             final int index = i;
@@ -540,7 +545,7 @@ public class MailTemplate implements DisposableBean {
                         Thread.currentThread().interrupt();
                         results[index] = MailSendResultItem.failure(index, message, "批量发送任务被中断: " + ie.getMessage(), ie);
                     }
-                }), executor);
+                }), batchExecutor);
                 futures.add(future);
             } catch (Throwable t) {
                 results[index] = MailSendResultItem.failure(index, message, "任务提交失败: " + t.getMessage(), t);
@@ -591,7 +596,7 @@ public class MailTemplate implements DisposableBean {
      * @return 包含批量发信聚合回执的 CompletableFuture
      */
     public CompletableFuture<BatchMailSendResult> sendBatchAsync(List<MailMessage> messages) {
-        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendBatch(messages)), executor);
+        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendBatch(messages)), requireAsyncExecutor());
     }
 
     private int resolveBatchConcurrency() {
@@ -912,7 +917,7 @@ public class MailTemplate implements DisposableBean {
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
-        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> send(message)), executor);
+        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> send(message)), requireAsyncExecutor());
     }
 
     /**
@@ -944,7 +949,7 @@ public class MailTemplate implements DisposableBean {
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
-        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendWithAccount(account, message)), executor);
+        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendWithAccount(account, message)), requireAsyncExecutor());
     }
 
     // ==================== 纯文本异步发信快捷门面 ====================
@@ -1147,7 +1152,7 @@ public class MailTemplate implements DisposableBean {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
         if (isTxSynchronizationActive()) {
-            registerAfterCommitSynchronization(message, () -> send(message), false);
+            registerAfterCommitSynchronization(message, () -> deliverAfterCommit(null, message), false);
         } else {
             send(message);
         }
@@ -1167,7 +1172,7 @@ public class MailTemplate implements DisposableBean {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
         if (isTxSynchronizationActive()) {
-            registerAfterCommitSynchronization(message, () -> sendWithAccount(account, message), false);
+            registerAfterCommitSynchronization(message, () -> deliverAfterCommit(account, message), false);
         } else {
             sendWithAccount(account, message);
         }
@@ -1198,7 +1203,7 @@ public class MailTemplate implements DisposableBean {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
         if (isTxSynchronizationActive()) {
-            registerAfterCommitSynchronization(message, () -> send(message), true);
+            registerAfterCommitSynchronization(message, () -> deliverAfterCommit(null, message), true);
         } else {
             sendAsync(message);
         }
@@ -1218,7 +1223,7 @@ public class MailTemplate implements DisposableBean {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
         if (isTxSynchronizationActive()) {
-            registerAfterCommitSynchronization(message, () -> sendWithAccount(account, message), true);
+            registerAfterCommitSynchronization(message, () -> deliverAfterCommit(account, message), true);
         } else {
             sendAsyncWithAccount(account, message);
         }
@@ -1672,15 +1677,33 @@ public class MailTemplate implements DisposableBean {
         return message.getHeaders() != null && "true".equalsIgnoreCase(message.getHeaders().get(MailSandboxInterceptor.HEADER_SANDBOX_LOG_ONLY));
     }
 
+    private Executor requireAsyncExecutor() {
+        if (this.executor == null) {
+            throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
+                    "邮件异步执行器未启用或未装配 (ateng.boot.mail.async.enabled=false)");
+        }
+        return this.executor;
+    }
+
     private void registerAfterCommitSynchronization(MailMessage message, Runnable deliveryTask, boolean isAsync) {
+        Executor asyncExecutor = isAsync ? requireAsyncExecutor() : null;
         AsyncContext.ContextSnapshot parentSnapshot = AsyncContext.ContextSnapshot.capture();
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
                 if (isAsync) {
-                    executor.execute(() -> executeDeliveryWithContext(parentSnapshot, deliveryTask));
+                    try {
+                        asyncExecutor.execute(() -> executeDeliveryWithContext(message, parentSnapshot, deliveryTask));
+                    } catch (Throwable submitEx) {
+                        // triggerFailureSafetyNet 内部已打印 [MailSafetyNet] 错误日志并触发告警事件与回调
+                        try {
+                            triggerFailureSafetyNet(message, maskRecipients(message), submitEx);
+                        } finally {
+                            message.close();
+                        }
+                    }
                 } else {
-                    executeDeliveryWithContext(parentSnapshot, deliveryTask);
+                    executeDeliveryWithContext(message, parentSnapshot, deliveryTask);
                 }
             }
 
@@ -1688,9 +1711,7 @@ public class MailTemplate implements DisposableBean {
             public void afterCompletion(int status) {
                 if (status != TransactionSynchronization.STATUS_COMMITTED) {
                     try {
-                        String masked = (message.getTo() != null)
-                                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
-                                : "";
+                        String masked = maskRecipients(message);
                         log.warn("Transaction uncommitted or rolled back (status: {}), canceled {}mail delivery to [{}], subject: [{}]",
                                 status, isAsync ? "async " : "", masked, message.getSubject());
                     } finally {
@@ -1702,15 +1723,46 @@ public class MailTemplate implements DisposableBean {
         });
     }
 
-    private void executeDeliveryWithContext(AsyncContext.ContextSnapshot parentSnapshot, Runnable deliveryTask) {
+    private void deliverAfterCommit(MailAccount explicitAccount, MailMessage message) {
+        MailAccount targetAccount;
+        try {
+            requireNonEmptyRecipients(message);
+            targetAccount = explicitAccount != null ? explicitAccount : resolveAccount(message);
+        } catch (Throwable preEx) {
+            try {
+                triggerFailureSafetyNet(message, maskRecipients(message), preEx);
+            } finally {
+                message.close();
+            }
+            return;
+        }
+        try {
+            sendWithAccount(targetAccount, message);
+        } catch (Throwable deliveryEx) {
+            // 事务提交后投递失败已由 sendWithAccount 触发失败兜底网并关闭资源，此处消费异常防止外层重复打印堆栈
+        }
+    }
+
+    private String maskRecipients(MailMessage message) {
+        if (message == null || message.getTo() == null) {
+            return "";
+        }
+        return message.getTo().stream()
+                .filter(Objects::nonNull)
+                .map(DesensitizeUtil::email)
+                .collect(Collectors.joining(","));
+    }
+
+    private void executeDeliveryWithContext(MailMessage message, AsyncContext.ContextSnapshot parentSnapshot, Runnable deliveryTask) {
         AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
         try {
             parentSnapshot.apply();
             deliveryTask.run();
         } catch (Throwable t) {
-            log.warn("Delivery after commit failed: {}", t.getMessage());
+            log.error("[MailAfterCommit] Delivery after commit failed for subject [{}]: {}",
+                    message != null ? message.getSubject() : null, t.getMessage(), t);
         } finally {
-            previous.apply();
+            previous.restore();
         }
     }
 

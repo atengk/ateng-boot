@@ -29,6 +29,9 @@ class MailPropertiesTest {
         assertEquals(DataSize.ofMegabytes(20), properties.getMaxAttachmentSize());
         assertEquals(DataSize.ofMegabytes(50), properties.getMaxTotalSize());
         assertEquals(100, properties.getMaxDynamicAccounts());
+        assertFalse(properties.isAllowEmptyAccounts());
+        assertNotNull(properties.getBatch());
+        assertEquals(4, properties.getBatch().getConcurrency());
 
         assertNotNull(properties.getAsync());
         assertTrue(properties.getAsync().isEnabled());

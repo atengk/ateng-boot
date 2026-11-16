@@ -124,6 +124,7 @@ public class MailAccount {
                 .starttls(this.starttls)
                 .defaultFrom(this.defaultFrom)
                 .defaultFromName(this.defaultFromName)
+                .archiveBcc(this.archiveBcc)
                 .properties(this.properties != null ? new LinkedHashMap<>(this.properties) : new LinkedHashMap<>())
                 .sender(sender)
                 .build();

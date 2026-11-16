@@ -18,12 +18,14 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 
 /**
- * 发信账号注册中心与底层物理 Sender 容器
+ * 发信账号注册中心与底层物理 Sender 缓存容器
  * <p>
  * 纳管启动时静态预热的多发件账号（支持多租户配置与 Spring 原生平滑纳管），
- * 并提供基于受控容量 LRU 缓存的编程式动态账号管理能力，杜绝高频 TCP 握手与内存泄漏。
+ * 并提供基于受控容量 LRU 缓存与可重入互斥锁 {@link ReentrantLock} 的并发安全动态账号管理能力（适配 JDK 21+ 虚拟线程）。
  * </p>
  *
  * @author Ateng
@@ -39,31 +41,37 @@ public class MailAccountRegistry {
     @Getter
     private final int maxDynamicAccounts;
 
+    private final MailProperties globalMailProperties;
+
+    private final ReentrantLock dynamicLock = new ReentrantLock();
     private final Map<String, MailAccount> dynamicAccountLruCache;
     private final Map<String, MailAccount> dynamicAccountByNameCache;
 
     public MailAccountRegistry(String defaultAccountName) {
-        this(defaultAccountName, 100);
+        this(defaultAccountName, 100, null);
     }
 
     public MailAccountRegistry(String defaultAccountName, int maxDynamicAccounts) {
+        this(defaultAccountName, maxDynamicAccounts, null);
+    }
+
+    public MailAccountRegistry(String defaultAccountName, int maxDynamicAccounts, MailProperties globalMailProperties) {
         this.defaultAccountName = (defaultAccountName != null && !defaultAccountName.isBlank())
                 ? defaultAccountName
                 : "default";
         this.maxDynamicAccounts = maxDynamicAccounts > 0 ? maxDynamicAccounts : 100;
+        this.globalMailProperties = globalMailProperties != null ? globalMailProperties : new MailProperties();
         this.dynamicAccountLruCache = createLruMap(this.maxDynamicAccounts);
         this.dynamicAccountByNameCache = createLruMap(this.maxDynamicAccounts);
     }
 
     private static <K, V> Map<K, V> createLruMap(int maxCapacity) {
-        return Collections.synchronizedMap(
-                new LinkedHashMap<>(16, 0.75f, true) {
-                    @Override
-                    protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
-                        return size() > maxCapacity;
-                    }
-                }
-        );
+        return new LinkedHashMap<>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+                return size() > maxCapacity;
+            }
+        };
     }
 
     /**
@@ -160,7 +168,14 @@ public class MailAccountRegistry {
         if (name == null || name.isBlank()) {
             return null;
         }
-        return dynamicAccountByNameCache.get(name);
+        return withDynamicLock(() -> {
+            MailAccount managed = dynamicAccountByNameCache.get(name);
+            if (managed != null && managed.getSender() != null) {
+                // 同步刷新底层指纹 LRU 访问序，防止热点账号仅靠名称查询时被提前逐出
+                dynamicAccountLruCache.get(managed.toFingerprint());
+            }
+            return managed;
+        });
     }
 
     /**
@@ -192,32 +207,25 @@ public class MailAccountRegistry {
             dynamicAccount.setName(effectiveName);
         }
 
-        MailAccount managed;
-        // 若调用方已自行显式注入物理 Sender，则直接使用
-        if (dynamicAccount.getSender() != null) {
-            managed = dynamicAccount;
-        } else {
-            String fingerprint = dynamicAccount.toFingerprint();
-            MailAccount cached = dynamicAccountLruCache.get(fingerprint);
-            if (cached != null && cached.getSender() != null) {
-                // 复用底层 Sender，保留入参的定制发件人与昵称
-                managed = copyWithSender(dynamicAccount, cached.getSender());
+        MailProperties effectiveProps = globalProps != null ? globalProps : this.globalMailProperties;
+        return withDynamicLock(() -> {
+            MailAccount managed;
+            if (dynamicAccount.getSender() != null) {
+                managed = dynamicAccount;
             } else {
-                synchronized (dynamicAccountLruCache) {
-                    cached = dynamicAccountLruCache.get(fingerprint);
-                    if (cached != null && cached.getSender() != null) {
-                        managed = copyWithSender(dynamicAccount, cached.getSender());
-                    } else {
-                        JavaMailSenderImpl sender = createSender(dynamicAccount, globalProps);
-                        managed = copyWithSender(dynamicAccount, sender);
-                        dynamicAccountLruCache.put(fingerprint, managed);
-                    }
+                String fingerprint = dynamicAccount.toFingerprint();
+                MailAccount cached = dynamicAccountLruCache.get(fingerprint);
+                if (cached != null && cached.getSender() != null) {
+                    managed = copyWithSender(dynamicAccount, cached.getSender());
+                } else {
+                    JavaMailSenderImpl sender = createSender(dynamicAccount, effectiveProps);
+                    managed = copyWithSender(dynamicAccount, sender);
+                    dynamicAccountLruCache.put(fingerprint, managed);
                 }
             }
-        }
-
-        dynamicAccountByNameCache.put(effectiveName, managed);
-        return managed;
+            dynamicAccountByNameCache.put(effectiveName, managed);
+            return managed;
+        });
     }
 
     /**
@@ -230,19 +238,34 @@ public class MailAccountRegistry {
         if (name == null || name.isBlank()) {
             return null;
         }
-        MailAccount removed = dynamicAccountByNameCache.remove(name);
-        if (removed != null) {
-            dynamicAccountLruCache.remove(removed.toFingerprint());
-        } else {
-            // 防御性补偿：若 nameCache 已被淘汰但指纹缓存仍残留该名称的 Sender 账号，遍历移除
-            synchronized (dynamicAccountLruCache) {
+        return withDynamicLock(() -> {
+            MailAccount removed = dynamicAccountByNameCache.remove(name);
+            if (removed != null) {
+                String fingerprint = removed.toFingerprint();
+                if (!hasDynamicAliasWithFingerprint(fingerprint)) {
+                    dynamicAccountLruCache.remove(fingerprint);
+                }
+            } else {
+                // 防御性补偿：若 nameCache 已被淘汰但指纹缓存仍残留该名称且无其他别名引用，清理对应指纹缓存
                 dynamicAccountLruCache.entrySet().removeIf(entry -> {
                     MailAccount acc = entry.getValue();
-                    return acc != null && name.equals(acc.getName());
+                    return acc != null && name.equals(acc.getName()) && !hasDynamicAliasWithFingerprint(entry.getKey());
                 });
             }
+            return removed;
+        });
+    }
+
+    private boolean hasDynamicAliasWithFingerprint(String fingerprint) {
+        if (fingerprint == null) {
+            return false;
         }
-        return removed;
+        for (MailAccount account : dynamicAccountByNameCache.values()) {
+            if (account != null && fingerprint.equals(account.toFingerprint())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -251,15 +274,35 @@ public class MailAccountRegistry {
      * @return 动态缓存条目数
      */
     public int dynamicSize() {
-        return Math.max(dynamicAccountByNameCache.size(), dynamicAccountLruCache.size());
+        return withDynamicLock(() -> Math.max(dynamicAccountByNameCache.size(), dynamicAccountLruCache.size()));
     }
 
     /**
      * 清理所有动态账号 LRU 缓存
      */
     public void clearDynamic() {
-        dynamicAccountByNameCache.clear();
-        dynamicAccountLruCache.clear();
+        withDynamicLock(() -> {
+            dynamicAccountByNameCache.clear();
+            dynamicAccountLruCache.clear();
+        });
+    }
+
+    private <T> T withDynamicLock(Supplier<T> action) {
+        dynamicLock.lock();
+        try {
+            return action.get();
+        } finally {
+            if (dynamicLock.isHeldByCurrentThread()) {
+                dynamicLock.unlock();
+            }
+        }
+    }
+
+    private void withDynamicLock(Runnable action) {
+        withDynamicLock(() -> {
+            action.run();
+            return null;
+        });
     }
 
     /**
@@ -321,7 +364,7 @@ public class MailAccountRegistry {
         }
         JavaMailSenderImpl sender = account.getSender();
         if (sender == null) {
-            sender = createSender(account, null);
+            sender = createSender(account, this.globalMailProperties);
         }
         doTestConnection(account, sender);
     }

@@ -6,7 +6,9 @@ import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.listener.MailAccountEvictListener;
 import io.github.atengk.boot.mail.model.MailAccount;
+import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.properties.MailProperties;
+import io.github.atengk.boot.mail.provider.MailAccountProvider;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.resolver.MailAccountResolver;
 import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
@@ -17,11 +19,16 @@ import io.github.atengk.boot.mail.template.renderer.ThymeleafMailTemplateRendere
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.validation.ValidationAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.thymeleaf.spring6.SpringTemplateEngine;
 
+import java.util.Map;
 import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -351,5 +358,153 @@ class AtengMailAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(MailSandboxInterceptor.class);
                 });
+    }
+
+    @Test
+    @DisplayName("零静态配置但存在 MailAccountProvider Bean 时成功装配空注册表与 MailTemplate")
+    void testAutoConfigurationWithMailAccountProviderOnly() {
+        contextRunner
+                .withUserConfiguration(DynamicProviderConfig.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailAccountRegistry.class);
+                    assertThat(context).hasSingleBean(MailTemplate.class);
+                    assertThat(context.getBean(MailAccountRegistry.class).size()).isEqualTo(0);
+                    MailTemplate mailTemplate = context.getBean(MailTemplate.class);
+                    assertThat(mailTemplate.getAccountProvider()).isNotNull();
+                });
+    }
+
+    @Test
+    @DisplayName("零静态配置但开启 sandbox.enabled=true 且 log-only=true（含驼峰宽松绑定）时允许装配")
+    void testAutoConfigurationWithSandboxLogOnlyWithoutAccounts() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.mail.sandbox.enabled=true",
+                        "ateng.boot.mail.sandbox.logOnly=true"
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailAccountRegistry.class);
+                    assertThat(context).hasSingleBean(MailTemplate.class);
+                    assertThat(context).hasSingleBean(MailSandboxInterceptor.class);
+                    assertThat(context.getBean(MailAccountRegistry.class).size()).isEqualTo(0);
+                });
+    }
+
+    @Test
+    @DisplayName("零静态配置但显式启用 allow-empty-accounts（含驼峰 allowEmptyAccounts）时允许装配")
+    void testAutoConfigurationWithAllowEmptyAccounts() {
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.allowEmptyAccounts=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailAccountRegistry.class);
+                    assertThat(context).hasSingleBean(MailTemplate.class);
+                    assertThat(context.getBean(MailAccountRegistry.class).size()).isEqualTo(0);
+                });
+    }
+
+    @Test
+    @DisplayName("仅开启 sandbox.enabled=true 但未开启 log-only 且无账号时保持跳过装配")
+    void testAutoConfigurationSkippedWhenSandboxWithoutLogOnlyAndNoAccounts() {
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.sandbox.enabled=true")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(MailAccountRegistry.class);
+                    assertThat(context).doesNotHaveBean(MailTemplate.class);
+                });
+    }
+
+    @Test
+    @DisplayName("spring.mail.properties.* 遵循环境配置优先级，高优先级源不被低优先级源反向覆盖")
+    void testSpringMailPropertiesHighestPrecedenceWins() {
+        contextRunner
+                .withInitializer(applicationContext -> {
+                    var sources = applicationContext.getEnvironment().getPropertySources();
+                    sources.addFirst(new MapPropertySource("lowPriorityMailProps", Map.of(
+                            "spring.mail.host", "smtp.low.com",
+                            "spring.mail.properties.mail.smtp.timeout", "9999",
+                            "spring.mail.properties.mail.low.only", "low-val"
+                    )));
+                    sources.addFirst(new MapPropertySource("highPriorityMailProps", Map.of(
+                            "spring.mail.host", "smtp.high.com",
+                            "spring.mail.properties.mail.smtp.timeout", "1500"
+                    )));
+                })
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailAccountRegistry.class);
+                    MailAccountRegistry registry = context.getBean(MailAccountRegistry.class);
+                    MailAccount defaultAcc = registry.getDefault();
+                    assertThat(defaultAcc.getHost()).isEqualTo("smtp.high.com");
+                    assertThat(defaultAcc.getProperties())
+                            .containsEntry("mail.smtp.timeout", "1500")
+                            .containsEntry("mail.low.only", "low-val");
+                });
+    }
+
+    @Test
+    @DisplayName("禁用 async.enabled=false 且无全局 taskExecutor 时不私自后台创建线程池")
+    void testAsyncDisabledWithoutGlobalTaskExecutorDoesNotCreateBackgroundExecutor() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.mail.host=smtp.example.com",
+                        "ateng.boot.mail.async.enabled=false"
+                )
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean("mailTaskExecutor");
+                    assertThat(context).hasSingleBean(MailTemplate.class);
+                    MailTemplate mailTemplate = context.getBean(MailTemplate.class);
+                    assertThat(mailTemplate.getExecutor()).isNull();
+                    org.assertj.core.api.Assertions.assertThatThrownBy(() -> mailTemplate.sendAsync(new MailMessage()
+                                    .to("disabled-async@example.com")
+                                    .subject("s")
+                                    .text("b")))
+                            .isInstanceOf(io.github.atengk.boot.mail.exception.MailSendException.class);
+                });
+    }
+
+    @Test
+    @DisplayName("全量 @Validated 配置边界校检拦截越界并发度、超时与容量上限")
+    void testPropertiesValidationRejectsOutOfBoundsValues() {
+        ApplicationContextRunner validatedRunner = new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(ValidationAutoConfiguration.class, AtengMailAutoConfiguration.class));
+
+        validatedRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.batch.concurrency=0")
+                .run(context -> assertThat(context).hasFailed());
+
+        validatedRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.batch.concurrency=33")
+                .run(context -> assertThat(context).hasFailed());
+
+        validatedRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.read-timeout=0s")
+                .run(context -> assertThat(context).hasFailed());
+
+        validatedRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.max-dynamic-accounts=0")
+                .run(context -> assertThat(context).hasFailed());
+
+        validatedRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.retry.max-attempts=0")
+                .run(context -> assertThat(context).hasFailed());
+
+        validatedRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.retry.delay=-1s")
+                .run(context -> assertThat(context).hasFailed());
+
+        validatedRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.async.core-pool-size=0")
+                .run(context -> assertThat(context).hasFailed());
+
+        validatedRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.connection-timeout=0s")
+                .run(context -> assertThat(context).hasFailed());
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class DynamicProviderConfig {
+        @Bean
+        MailAccountProvider mailAccountProvider() {
+            return accountName -> null;
+        }
     }
 }

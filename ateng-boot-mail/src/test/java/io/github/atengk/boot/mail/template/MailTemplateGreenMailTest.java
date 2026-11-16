@@ -4,6 +4,8 @@ import com.icegreen.greenmail.configuration.GreenMailConfiguration;
 import com.icegreen.greenmail.junit5.GreenMailExtension;
 import com.icegreen.greenmail.util.GreenMailUtil;
 import com.icegreen.greenmail.util.ServerSetupTest;
+import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.context.AsyncContextSnapshotProvider;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import org.springframework.context.i18n.LocaleContextHolder;
@@ -2035,5 +2037,181 @@ class MailTemplateGreenMailTest {
         MimeMessage received = greenMail.getReceivedMessages()[0];
         // 有效发件人地址为 defaultFrom: test@atengk.com
         assertEquals("test@atengk.com", received.getHeader("Disposition-Notification-To", null));
+    }
+
+    @Test
+    @DisplayName("测试 sendAfterCommit 收尾严格调用 previous.restore() 对称还原扩展上下文")
+    void testAfterCommitRestoresPreviousExtensionContextSafely() {
+        ThreadLocal<String> extHolder = new ThreadLocal<>();
+        AtomicBoolean providerActive = new AtomicBoolean(true);
+        List<Object> appliedSnapshots = new ArrayList<>();
+        List<Object> restoredSnapshots = new ArrayList<>();
+
+        AsyncContextSnapshotProvider testProvider = new AsyncContextSnapshotProvider() {
+            @Override
+            public Object capture() {
+                return providerActive.get() ? extHolder.get() : null;
+            }
+
+            @Override
+            public void apply(Object snapshot) {
+                if (!providerActive.get()) {
+                    return;
+                }
+                appliedSnapshots.add(snapshot);
+                if (snapshot instanceof String str) {
+                    extHolder.set(str);
+                } else {
+                    extHolder.remove();
+                }
+            }
+
+            @Override
+            public void restore(Object previous) {
+                if (!providerActive.get()) {
+                    return;
+                }
+                restoredSnapshots.add(previous);
+                if (previous instanceof String str) {
+                    extHolder.set(str);
+                } else {
+                    extHolder.remove();
+                }
+            }
+        };
+        AsyncContext.registerSnapshotProvider(testProvider);
+
+        try {
+            extHolder.set("tx-snapshot");
+            TransactionSynchronizationManager.initSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(true);
+
+            mailTemplate.sendAfterCommit(msg -> msg
+                    .to("tx-restore@example.com")
+                    .subject("上下文还原验证")
+                    .text("hello"));
+
+            extHolder.set("outer-prev");
+            for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+                sync.afterCommit();
+            }
+
+            assertEquals(List.of("tx-snapshot"), appliedSnapshots, "apply 只应在切入事务快照时触发");
+            assertEquals(List.of("outer-prev"), restoredSnapshots, "finally 必须对称调用 restore 还原先前上下文");
+            assertEquals("outer-prev", extHolder.get());
+        } finally {
+            providerActive.set(false);
+            AsyncContext.unregisterSnapshotProvider(testProvider);
+            extHolder.remove();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 sendAfterCommit 前置校验失败（如账号未找到）时触发一次安全网事件、回调且关闭流资源")
+    void testAfterCommitPreValidationFailureTriggersSafetyNetOnce() {
+        AtomicInteger handlerCount = new AtomicInteger(0);
+        AtomicReference<Throwable> capturedCause = new AtomicReference<>();
+        AtomicInteger eventCount = new AtomicInteger(0);
+        AtomicBoolean streamClosed = new AtomicBoolean(false);
+
+        MailSendFailureHandler failureHandler = (msg, cause) -> {
+            handlerCount.incrementAndGet();
+            capturedCause.set(cause);
+        };
+        ApplicationEventPublisher publisher = event -> {
+            if (event instanceof MailSendFailedEvent) {
+                eventCount.incrementAndGet();
+            }
+        };
+
+        MailTemplate customTemplate = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                mailTemplate.getAccountResolver(), mailTemplate.getExecutor(),
+                publisher, List.of(failureHandler));
+
+        ByteArrayInputStream bais = new ByteArrayInputStream("abc".getBytes(StandardCharsets.UTF_8)) {
+            @Override
+            public void close() throws IOException {
+                streamClosed.set(true);
+                super.close();
+            }
+        };
+        MailMessage invalidMsg = new MailMessage()
+                .account("missing-tx-account")
+                .to("tx-safety@example.com")
+                .subject("事务前置失败安全网测试")
+                .text("body")
+                .attach("tx.txt", bais);
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            customTemplate.sendAfterCommit(invalidMsg);
+
+            for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+                sync.afterCommit();
+                sync.afterCompletion(TransactionSynchronization.STATUS_COMMITTED);
+            }
+        } finally {
+            customTemplate.destroy();
+        }
+
+        assertEquals(1, handlerCount.get(), "事务前置失败同样必须触发且仅触发一次 MailSendFailureHandler");
+        assertEquals(1, eventCount.get(), "事务前置失败同样必须发布且仅发布一次 MailSendFailedEvent");
+        assertInstanceOf(MailSendException.class, capturedCause.get());
+        assertEquals(MailResultCode.MAIL_ACCOUNT_NOT_FOUND.getCode(), ((MailSendException) capturedCause.get()).getCode());
+        assertTrue(streamClosed.get(), "事务前置失败后消息资源句柄必须被确定性关闭");
+    }
+
+    @Test
+    @DisplayName("测试 sendAfterCommit 物理发送失败时安全网与失败事件仅触发一次（无重复触发）")
+    void testAfterCommitDeliveryFailureTriggersSafetyNetOnlyOnce() {
+        AtomicInteger handlerCount = new AtomicInteger(0);
+        AtomicInteger eventCount = new AtomicInteger(0);
+
+        MailSendFailureHandler failureHandler = (msg, cause) -> handlerCount.incrementAndGet();
+        ApplicationEventPublisher publisher = event -> {
+            if (event instanceof MailSendFailedEvent) {
+                eventCount.incrementAndGet();
+            }
+        };
+
+        MailTemplate customTemplate = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                mailTemplate.getAccountResolver(), mailTemplate.getExecutor(),
+                publisher, List.of(failureHandler));
+
+        MailAccount deadAccount = MailAccount.builder()
+                .name("tx-dead")
+                .host("127.0.0.1")
+                .port(59998)
+                .ssl(false)
+                .sender(new JavaMailSenderImpl() {
+                    @Override
+                    public void send(MimeMessage mimeMessage) {
+                        throw new org.springframework.mail.MailSendException("SMTP unreachable in tx");
+                    }
+                })
+                .build();
+        accountRegistry.register(deadAccount);
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            customTemplate.sendAfterCommit(msg -> msg
+                    .account("tx-dead")
+                    .to("tx-dead@example.com")
+                    .subject("物理发送失败一次安全网测试")
+                    .text("body"));
+
+            for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+                sync.afterCommit();
+            }
+        } finally {
+            customTemplate.destroy();
+        }
+
+        assertEquals(1, handlerCount.get());
+        assertEquals(1, eventCount.get());
     }
 }

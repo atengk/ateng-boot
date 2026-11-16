@@ -1,9 +1,24 @@
 package io.github.atengk.boot.mail.registry;
 
+import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.model.MailAccount;
+import io.github.atengk.boot.mail.properties.MailProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.mail.javamail.JavaMailSenderImpl;
+
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -160,5 +175,179 @@ class MailAccountRegistryTest {
         MailAccount evicted = registry.evictDynamic("tenant-dynamic");
         assertSame(managed, evicted);
         assertNull(registry.getDynamic("tenant-dynamic"));
+    }
+
+    @Test
+    @DisplayName("测试 getDynamic 命中时同步刷新 LRU 访问序，避免热点账号被提前淘汰")
+    void testGetDynamicRefreshesLruOrder() {
+        MailAccountRegistry registry = new MailAccountRegistry("default", 2);
+
+        MailAccount raw1 = MailAccount.builder().name("hot-alias").host("smtp.hot.com").username("hot").build();
+        MailAccount raw2 = MailAccount.builder().name("cold-alias").host("smtp.cold.com").username("cold").build();
+        MailAccount raw3 = MailAccount.builder().name("new-alias").host("smtp.new.com").username("new").build();
+
+        MailAccount managed1 = registry.getOrCreateDynamic("hot-alias", raw1, null);
+        MailAccount managed2 = registry.getOrCreateDynamic("cold-alias", raw2, null);
+
+        // 仅通过 getDynamic 访问 hot-alias，应将其标记为最近使用
+        MailAccount fetchedHot = registry.getDynamic("hot-alias");
+        assertNotNull(fetchedHot);
+        assertSame(managed1.getSender(), fetchedHot.getSender());
+
+        // 注册第 3 个账号触发淘汰：应淘汰冷门的 cold-alias，而非 hot-alias
+        registry.getOrCreateDynamic("new-alias", raw3, null);
+
+        assertNotNull(registry.getDynamic("hot-alias"), "被 getDynamic 激活的热点账号应留在缓存中");
+        assertNull(registry.getDynamic("cold-alias"), "冷门账号应被优先淘汰");
+        MailAccount hotAgain = registry.getOrCreateDynamic("hot-alias", raw1, null);
+        assertSame(managed1.getSender(), hotAgain.getSender(), "热点账号对应的物理 Sender 仍应被复用");
+        MailAccount coldAgain = registry.getOrCreateDynamic("cold-alias", raw2, null);
+        assertNotSame(managed2.getSender(), coldAgain.getSender());
+    }
+
+    @Test
+    @DisplayName("测试多别名共享物理配置时驱逐单个别名不会误删共享 Sender 指纹缓存")
+    void testEvictSharedFingerprintAliasPreservesSiblingSender() {
+        MailAccountRegistry registry = new MailAccountRegistry("default", 10);
+
+        MailAccount aliasA = MailAccount.builder()
+                .name("brand-a")
+                .host("smtp.shared-corp.com")
+                .port(465)
+                .username("relay@corp.com")
+                .password("pwd")
+                .defaultFrom("a@corp.com")
+                .archiveBcc("audit-a@corp.com")
+                .build();
+        MailAccount aliasB = MailAccount.builder()
+                .name("brand-b")
+                .host("smtp.shared-corp.com")
+                .port(465)
+                .username("relay@corp.com")
+                .password("pwd")
+                .defaultFrom("b@corp.com")
+                .archiveBcc("audit-b@corp.com")
+                .build();
+
+        MailAccount managedA = registry.getOrCreateDynamic("brand-a", aliasA, null);
+        MailAccount managedB = registry.getOrCreateDynamic("brand-b", aliasB, null);
+        assertSame(managedA.getSender(), managedB.getSender());
+
+        // 驱逐 brand-a，brand-b 仍存活，共享物理 Sender 应保留可复用
+        registry.evictDynamic("brand-a");
+        assertNull(registry.getDynamic("brand-a"));
+        assertNotNull(registry.getDynamic("brand-b"));
+
+        MailAccount aliasC = MailAccount.builder()
+                .name("brand-c")
+                .host("smtp.shared-corp.com")
+                .port(465)
+                .username("relay@corp.com")
+                .password("pwd")
+                .defaultFrom("c@corp.com")
+                .build();
+        MailAccount managedC = registry.getOrCreateDynamic("brand-c", aliasC, null);
+        assertSame(managedB.getSender(), managedC.getSender(), "兄弟别名仍存活时不应清除共享指纹对应的 Sender");
+
+        // 全部别名驱逐完毕后，应释放指纹缓存，再次创建将分配新 Sender
+        registry.evictDynamic("brand-b");
+        registry.evictDynamic("brand-c");
+        MailAccount managedAAfterFullEvict = registry.getOrCreateDynamic("brand-a", aliasA, null);
+        assertNotSame(managedA.getSender(), managedAAfterFullEvict.getSender());
+    }
+
+    @Test
+    @DisplayName("测试高压并发动态账号存取、驱逐与容量有界不变量（基于 ReentrantLock 无锁退化）")
+    void testConcurrentDynamicOperations() throws Exception {
+        MailAccountRegistry registry = new MailAccountRegistry("default", 8);
+        int threads = 16;
+        int opsPerThread = 100;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        List<Callable<Void>> tasks = new ArrayList<>();
+
+        try {
+            for (int t = 0; t < threads; t++) {
+                final int threadId = t;
+                tasks.add(() -> {
+                    startLatch.await(5, TimeUnit.SECONDS);
+                    for (int i = 0; i < opsPerThread; i++) {
+                        int keyIdx = (threadId + i) % 16;
+                        String name = "tenant-" + keyIdx;
+                        MailAccount account = MailAccount.builder()
+                                .name(name)
+                                .host("smtp.tenant" + keyIdx + ".example.com")
+                                .port(465)
+                                .username("user" + keyIdx)
+                                .password("pwd" + keyIdx)
+                                .archiveBcc("audit" + keyIdx + "@example.com")
+                                .build();
+                        MailAccount managed = registry.getOrCreateDynamic(name, account, null);
+                        assertNotNull(managed.getSender());
+                        assertEquals("audit" + keyIdx + "@example.com", managed.getArchiveBcc());
+                        registry.getDynamic(name);
+                        if (i % 5 == 0) {
+                            registry.evictDynamic(name);
+                        }
+                    }
+                    return null;
+                });
+            }
+
+            List<Future<Void>> futures = new ArrayList<>();
+            for (Callable<Void> task : tasks) {
+                futures.add(pool.submit(task));
+            }
+            startLatch.countDown();
+            for (Future<Void> future : futures) {
+                future.get(15, TimeUnit.SECONDS);
+            }
+            assertTrue(registry.dynamicSize() <= 8, "并发高压场景下动态缓存尺寸不得突破上限 8");
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 testConnectionOrThrow(MailAccount) 构建临时发信器继承全局网络超时防止假死")
+    void testConnectionOrThrowInheritsGlobalTimeouts() throws Exception {
+        MailProperties globalProps = new MailProperties();
+        globalProps.setConnectionTimeout(Duration.ofMillis(300));
+        globalProps.setReadTimeout(Duration.ofMillis(200));
+        globalProps.setWriteTimeout(Duration.ofMillis(300));
+        MailAccountRegistry registry = new MailAccountRegistry("default", 10, globalProps);
+
+        try (ServerSocket silentSmtp = new ServerSocket(0)) {
+            int port = silentSmtp.getLocalPort();
+            ExecutorService acceptExecutor = Executors.newSingleThreadExecutor();
+            try {
+                acceptExecutor.submit(() -> {
+                    try (Socket accepted = silentSmtp.accept()) {
+                        Thread.sleep(2000);
+                    } catch (Exception ignored) {
+                    }
+                });
+
+                MailAccount blackholeAccount = MailAccount.builder()
+                        .name("blackhole")
+                        .host("127.0.0.1")
+                        .port(port)
+                        .username("probe@example.com")
+                        .password("pwd")
+                        .ssl(false)
+                        .starttls(false)
+                        .build();
+
+                long startNanos = System.nanoTime();
+                MailSendException ex = assertThrows(MailSendException.class,
+                        () -> registry.testConnectionOrThrow(blackholeAccount));
+                long elapsedMs = Duration.ofNanos(System.nanoTime() - startNanos).toMillis();
+
+                assertEquals(MailResultCode.MAIL_CONNECT_TIMEOUT.getCode(), ex.getCode());
+                assertTrue(elapsedMs < 1500, "探活应继承 200ms 全局读超时并快速失败，实际耗时: " + elapsedMs + "ms");
+            } finally {
+                acceptExecutor.shutdownNow();
+            }
+        }
     }
 }

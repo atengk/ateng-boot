@@ -1,12 +1,14 @@
 package io.github.atengk.boot.mail.model;
 
+import io.github.atengk.boot.core.enums.IBaseEnum;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 
 /**
  * 邮件优先级与重要性强类型枚举
  * <p>
- * 遵循 RFC 标头规范标准，支持主流邮件客户端（Outlook、Foxmail、Apple Mail、Thunderbird 等）识别
+ * 遵循 RFC 标头规范标准，支持主流邮件客户端（Outlook、Foxmail、Apple Mail、Thunderbird 等）识别，
+ * 并实现 {@link IBaseEnum} 统一枚举契约。
  * </p>
  *
  * @author Ateng
@@ -14,22 +16,22 @@ import lombok.RequiredArgsConstructor;
  */
 @Getter
 @RequiredArgsConstructor
-public enum MailPriority {
+public enum MailPriority implements IBaseEnum<Integer> {
 
     /**
      * 高优先级 / 重要邮件 (X-Priority: 1, Importance: High)
      */
-    HIGH(1, "1", "High"),
+    HIGH(1, "1", "High", "高优先级"),
 
     /**
      * 普通优先级 / 默认正常邮件 (X-Priority: 3, Importance: Normal)
      */
-    NORMAL(3, "3", "Normal"),
+    NORMAL(3, "3", "Normal", "普通"),
 
     /**
      * 低优先级邮件 (X-Priority: 5, Importance: Low)
      */
-    LOW(5, "5", "Low");
+    LOW(5, "5", "Low", "低优先级");
 
     /**
      * 数字优先级编号 (1, 3, 5)
@@ -45,4 +47,14 @@ public enum MailPriority {
      * Importance / X-MSMail-Priority 标头值 ("High", "Normal", "Low")
      */
     private final String importance;
+
+    /**
+     * 展示标签描述
+     */
+    private final String label;
+
+    @Override
+    public Integer getCode() {
+        return priority;
+    }
 }

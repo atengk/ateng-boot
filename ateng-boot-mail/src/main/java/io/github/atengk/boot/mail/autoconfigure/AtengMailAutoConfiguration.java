@@ -69,7 +69,7 @@ public class AtengMailAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public MailAccountRegistry mailAccountRegistry(MailProperties properties, Environment env) {
-        MailAccountRegistry registry = new MailAccountRegistry(properties.getDefaultAccount(), properties.getMaxDynamicAccounts());
+        MailAccountRegistry registry = new MailAccountRegistry(properties.getDefaultAccount(), properties.getMaxDynamicAccounts(), properties);
         Map<String, MailAccountProperties> accountMap = properties.getAccounts();
 
         if (accountMap != null && !accountMap.isEmpty()) {
@@ -115,7 +115,7 @@ public class AtengMailAutoConfiguration {
             if (starttlsEnable != null) {
                 props.setStarttls(Boolean.parseBoolean(starttlsEnable));
             }
-            // 完整透传 spring.mail.properties.* 原生扩展配置
+            // 完整透传 spring.mail.properties.* 原生扩展配置（遵循环境配置源优先级，高优先级源不被低优先级源覆盖）
             if (env instanceof ConfigurableEnvironment configurableEnv) {
                 Map<String, String> extraProps = new LinkedHashMap<>();
                 for (PropertySource<?> ps : configurableEnv.getPropertySources()) {
@@ -123,9 +123,11 @@ public class AtengMailAutoConfiguration {
                         for (String key : eps.getPropertyNames()) {
                             if (key.startsWith("spring.mail.properties.")) {
                                 String propKey = key.substring("spring.mail.properties.".length());
-                                Object val = ps.getProperty(key);
-                                if (val != null) {
-                                    extraProps.put(propKey, String.valueOf(val));
+                                if (!extraProps.containsKey(propKey)) {
+                                    String val = env.getProperty(key);
+                                    if (val != null) {
+                                        extraProps.put(propKey, val);
+                                    }
                                 }
                             }
                         }
