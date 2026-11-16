@@ -74,6 +74,19 @@ class OpenApiGuardIntegrationTest {
             mockMvc.perform(get("/docs/export/json"))
                     .andExpect(status().isNotFound());
         }
+
+        @Test
+        @DisplayName("测试禁用时治理控制器延迟装配兼容：/preview 返回 503，/result-codes 仍可用")
+        void testGovernanceGracefulDegradationWhenDisabled() throws Exception {
+            mockMvc.perform(get("/sample/openapi/governance/preview").param("group", "admin"))
+                    .andExpect(status().isOk())
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").value(503));
+
+            mockMvc.perform(get("/sample/openapi/governance/result-codes").param("keyword", "8001"))
+                    .andExpect(status().isOk())
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").value(200))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data[0].code").value(8001));
+        }
     }
 
     @Nested

@@ -92,9 +92,12 @@ public class OpenApiExportController {
     }
 
     private ResponseEntity<byte[]> doExport(String group, OpenApiFormat format, HttpServletRequest request) {
+        if (group != null && !OpenApiExportHelper.isValidGroupName(group)) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+        }
         try {
-            String targetGroup = StringUtils.hasText(group) ? group.trim() : "default";
-            byte[] bytes = exportHelper.exportBytes(group, format, request);
+            String targetGroup = (group != null) ? group.trim() : "default";
+            byte[] bytes = exportHelper.exportBytes(group != null ? targetGroup : null, format, request);
             String filename = "openapi-" + targetGroup + "." + format.getExtension();
 
             return ResponseEntity.ok()

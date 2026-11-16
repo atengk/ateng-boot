@@ -679,9 +679,19 @@ public class OpenApiProperties {
         private List<String> pathsToMatch = new ArrayList<>();
 
         /**
+         * 排除的 URL 路径模式列表（AntPathMatcher 表达式，如 /admin/internal/**）
+         */
+        private List<String> pathsToExclude = new ArrayList<>();
+
+        /**
          * 扫描的 Controller 包名列表（如 io.github.atengk.sample.admin）
          */
         private List<String> packagesToScan = new ArrayList<>();
+
+        /**
+         * 排除的 Controller 包名列表（如 io.github.atengk.sample.admin.internal）
+         */
+        private List<String> packagesToExclude = new ArrayList<>();
 
         public String getGroup() {
             return group;
@@ -707,12 +717,28 @@ public class OpenApiProperties {
             this.pathsToMatch = pathsToMatch != null ? pathsToMatch : new ArrayList<>();
         }
 
+        public List<String> getPathsToExclude() {
+            return pathsToExclude != null ? pathsToExclude : Collections.emptyList();
+        }
+
+        public void setPathsToExclude(List<String> pathsToExclude) {
+            this.pathsToExclude = pathsToExclude != null ? pathsToExclude : new ArrayList<>();
+        }
+
         public List<String> getPackagesToScan() {
             return packagesToScan != null ? packagesToScan : Collections.emptyList();
         }
 
         public void setPackagesToScan(List<String> packagesToScan) {
             this.packagesToScan = packagesToScan != null ? packagesToScan : new ArrayList<>();
+        }
+
+        public List<String> getPackagesToExclude() {
+            return packagesToExclude != null ? packagesToExclude : Collections.emptyList();
+        }
+
+        public void setPackagesToExclude(List<String> packagesToExclude) {
+            this.packagesToExclude = packagesToExclude != null ? packagesToExclude : new ArrayList<>();
         }
     }
 

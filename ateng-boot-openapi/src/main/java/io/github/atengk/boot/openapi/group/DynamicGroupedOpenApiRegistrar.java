@@ -96,18 +96,38 @@ public class DynamicGroupedOpenApiRegistrar implements ImportBeanDefinitionRegis
             builder.displayName(group.getDisplayName());
         }
 
-        List<String> paths = group.getPathsToMatch();
-        if (paths != null && !paths.isEmpty()) {
-            builder.pathsToMatch(paths.toArray(new String[0]));
+        String[] paths = toNonBlankArray(group.getPathsToMatch());
+        if (paths.length > 0) {
+            builder.pathsToMatch(paths);
         } else {
             builder.pathsToMatch("/**");
         }
 
-        List<String> packages = group.getPackagesToScan();
-        if (packages != null && !packages.isEmpty()) {
-            builder.packagesToScan(packages.toArray(new String[0]));
+        String[] excludedPaths = toNonBlankArray(group.getPathsToExclude());
+        if (excludedPaths.length > 0) {
+            builder.pathsToExclude(excludedPaths);
+        }
+
+        String[] packages = toNonBlankArray(group.getPackagesToScan());
+        if (packages.length > 0) {
+            builder.packagesToScan(packages);
+        }
+
+        String[] excludedPackages = toNonBlankArray(group.getPackagesToExclude());
+        if (excludedPackages.length > 0) {
+            builder.packagesToExclude(excludedPackages);
         }
 
         return builder.build();
+    }
+
+    private static String[] toNonBlankArray(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return new String[0];
+        }
+        return values.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .toArray(String[]::new);
     }
 }

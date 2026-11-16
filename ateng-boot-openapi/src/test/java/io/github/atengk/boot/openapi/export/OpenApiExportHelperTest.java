@@ -1,18 +1,24 @@
 package io.github.atengk.boot.openapi.export;
 
+import io.github.atengk.boot.core.util.SpringUtil;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springdoc.core.models.GroupedOpenApi;
 import org.springdoc.webmvc.api.MultipleOpenApiWebMvcResource;
 import org.springdoc.webmvc.api.OpenApiWebMvcResource;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.support.GenericApplicationContext;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,6 +40,7 @@ class OpenApiExportHelperTest {
     @AfterEach
     void tearDown() {
         OpenApiExportHelper.setInstance(null);
+        SpringUtil.clear();
     }
 
     @Test
@@ -160,5 +167,107 @@ class OpenApiExportHelperTest {
 
         assertThat(helper.exportJsonString(null)).isEqualTo(mockDefaultJson);
         assertThat(OpenApiExportHelper.exportJson()).isEqualTo(mockDefaultJson);
+    }
+
+    @Test
+    @DisplayName("测试 DisposableBean destroy 仅对称清理当前静态实例而不误清后续新实例")
+    void testDisposableBeanDestroyResetsOnlyMatchingInstance() throws Exception {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<MultipleOpenApiWebMvcResource> multipleProvider = mock(ObjectProvider.class);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<OpenApiWebMvcResource> singleProvider = mock(ObjectProvider.class);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<OpenAPI> openApiProvider = mock(ObjectProvider.class);
+
+        OpenApiExportHelper first = new OpenApiExportHelper(multipleProvider, singleProvider, openApiProvider, List.of());
+        assertThat(OpenApiExportHelper.getInstance()).isSameAs(first);
+
+        OpenApiExportHelper second = new OpenApiExportHelper(multipleProvider, singleProvider, openApiProvider, List.of());
+        assertThat(OpenApiExportHelper.getInstance()).isSameAs(second);
+
+        // 销毁旧实例不应误清活跃的新实例
+        first.destroy();
+        assertThat(OpenApiExportHelper.getInstance()).isSameAs(second);
+
+        // 销毁当前实例应复位静态引用
+        second.destroy();
+        assertThatThrownBy(OpenApiExportHelper::getInstance)
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("测试静态引用为空时 getInstance 自动通过 SpringUtil 容器兜底回退")
+    void testGetInstanceFallsBackToSpringUtilWhenStaticInstanceNull() {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<MultipleOpenApiWebMvcResource> multipleProvider = mock(ObjectProvider.class);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<OpenApiWebMvcResource> singleProvider = mock(ObjectProvider.class);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<OpenAPI> openApiProvider = mock(ObjectProvider.class);
+
+        OpenApiExportHelper helper = new OpenApiExportHelper(multipleProvider, singleProvider, openApiProvider, List.of());
+        OpenApiExportHelper.setInstance(null);
+
+        try (GenericApplicationContext context = new GenericApplicationContext()) {
+            context.registerBean(OpenApiExportHelper.class, () -> helper);
+            context.refresh();
+            SpringUtil.setContext(context);
+
+            assertThat(OpenApiExportHelper.getInstance()).isSameAs(helper);
+        }
+    }
+
+    @Test
+    @DisplayName("测试 exportToFile 安全落盘 JSON/YAML、自动建目录及阻断路径穿越与系统垃圾文件")
+    void testExportToFileWritesSafelyAndBlocksUnsafePaths(@TempDir Path tempDir) throws Exception {
+        OpenAPI openAPI = new OpenAPI().info(
+                new Info().title("File Export API").version("1.0.0")
+        );
+
+        // 1. 独立脱机模式导出 YAML 并自动创建父目录
+        Path nestedYaml = tempDir.resolve("nested/dir/spec.yaml");
+        Path writtenYaml = OpenApiExportHelper.exportToFile(openAPI, OpenApiFormat.YAML, nestedYaml);
+        assertThat(writtenYaml).isEqualTo(nestedYaml.toAbsolutePath().normalize());
+        assertThat(Files.readString(writtenYaml, StandardCharsets.UTF_8)).contains("title: File Export API");
+
+        // 2. 受管多分组模式导出默认与指定分组文件
+        @SuppressWarnings("unchecked")
+        ObjectProvider<MultipleOpenApiWebMvcResource> multipleProvider = mock(ObjectProvider.class);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<OpenApiWebMvcResource> singleProvider = mock(ObjectProvider.class);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<OpenAPI> openApiProvider = mock(ObjectProvider.class);
+        MultipleOpenApiWebMvcResource multipleResource = mock(MultipleOpenApiWebMvcResource.class);
+        when(multipleProvider.getIfAvailable()).thenReturn(multipleResource);
+
+        String adminJson = "{\"info\":{\"title\":\"Admin File Spec\"}}";
+        when(multipleResource.openapiJson(any(), any(), eq("admin"), any()))
+                .thenReturn(adminJson.getBytes(StandardCharsets.UTF_8));
+        GroupedOpenApi adminGroup = GroupedOpenApi.builder().group("admin").pathsToMatch("/admin/**").build();
+        new OpenApiExportHelper(multipleProvider, singleProvider, openApiProvider, List.of(adminGroup));
+
+        Path defaultFile = tempDir.resolve("managed/default.json");
+        OpenApiExportHelper.exportToFile(defaultFile);
+        assertThat(Files.readString(defaultFile, StandardCharsets.UTF_8)).isEqualTo(adminJson);
+
+        Path adminFile = tempDir.resolve("managed/sub/admin.json");
+        OpenApiExportHelper.exportToFile("admin", OpenApiFormat.JSON, adminFile);
+        assertThat(Files.readString(adminFile, StandardCharsets.UTF_8)).isEqualTo(adminJson);
+
+        // 3. 拦截非法空参、路径穿越、目录及系统隐性垃圾文件
+        assertThatThrownBy(() -> OpenApiExportHelper.exportToFile(openAPI, OpenApiFormat.JSON, null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> OpenApiExportHelper.exportToFile(openAPI, OpenApiFormat.JSON, Paths.get("../escape.json")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> OpenApiExportHelper.exportToFile(openAPI, OpenApiFormat.JSON, tempDir.resolve("../escape.json")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> OpenApiExportHelper.exportToFile(openAPI, OpenApiFormat.JSON, tempDir.resolve(".DS_Store")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> OpenApiExportHelper.exportToFile(openAPI, OpenApiFormat.JSON, tempDir.resolve("desktop.ini")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> OpenApiExportHelper.exportToFile(openAPI, OpenApiFormat.JSON, tempDir.resolve("__MACOSX/spec.json")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> OpenApiExportHelper.exportToFile(openAPI, OpenApiFormat.JSON, tempDir))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

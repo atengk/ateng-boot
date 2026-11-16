@@ -71,11 +71,21 @@ ateng:
           display-name: "运营管理端 (Admin API)"
           paths-to-match:
             - "/sample/openapi/admin/**"
+          paths-to-exclude:
+            - "/sample/openapi/admin/auth/ping"
           packages-to-scan:
             - "io.github.atengk.boot.sample.openapi.controller.admin"
+          packages-to-exclude:
+            - "io.github.atengk.boot.sample.openapi.controller.admin.internal"
         - group: "app"
           display-name: "移动端服务 (App API)"
           paths-to-match:
             - "/sample/openapi/app/**"
           packages-to-scan:
             - "io.github.atengk.boot.sample.openapi.controller.app"
+        - group: "governance"
+          display-name: "契约治理与导出 (Governance API)"
+          paths-to-match:
+            - "/sample/openapi/governance/**"
+          packages-to-scan:
+            - "io.github.atengk.boot.sample.openapi.controller.governance"

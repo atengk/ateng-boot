@@ -1,7 +1,9 @@
 package io.github.atengk.boot.sample.openapi;
 
+import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.openapi.export.OpenApiExportHelper;
 import io.github.atengk.boot.openapi.export.OpenApiFormat;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,9 +15,12 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.not;
@@ -41,10 +46,17 @@ class OpenApiSampleEndToEndTest {
 
     private static final String BASE_ADMIN_USERS = "/sample/openapi/admin/users";
     private static final String BASE_ADMIN_AUTH = "/sample/openapi/admin/auth";
+    private static final String BASE_ADMIN_INTERNAL = "/sample/openapi/admin/internal";
     private static final String BASE_APP_ARTICLES = "/sample/openapi/app/articles";
+    private static final String BASE_GOVERNANCE = "/sample/openapi/governance";
 
     @Autowired
     private MockMvc mockMvc;
+
+    @AfterEach
+    void cleanTempArtifacts() {
+        FileUtil.cleanDirectorySafely(FileUtil.getAppTempDirectory("ateng-boot-sample-openapi"));
+    }
 
     @Test
     @DisplayName("测试 /docs 与 /doc 友好路由 302 重定向至 Swagger UI")
@@ -303,5 +315,104 @@ class OpenApiSampleEndToEndTest {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         OpenApiExportHelper.export("admin", OpenApiFormat.YAML, out);
         assertThat(out.toString(StandardCharsets.UTF_8)).contains("title: ateng-boot OpenAPI 生产级契约沙箱");
+    }
+
+    @Test
+    @DisplayName("测试多业务分组对称排除 (paths-to-exclude / packages-to-exclude) 与治理分组")
+    void testGroupExclusionRulesAndGovernanceGroup() throws Exception {
+        // 1. 全量文档包含内部端点、auth/ping 与治理端点
+        mockMvc.perform(get("/v3/api-docs").accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_INTERNAL + "/metrics']").exists())
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_AUTH + "/ping']").exists())
+                .andExpect(jsonPath("$.paths['" + BASE_GOVERNANCE + "/preview']").exists());
+
+        // 2. Admin 分组已通过 paths-to-exclude 与 packages-to-exclude 精准剔除 auth/ping 与 internal 包
+        mockMvc.perform(get("/v3/api-docs/admin").accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "']").exists())
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_AUTH + "/login']").exists())
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_AUTH + "/ping']").doesNotExist())
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_INTERNAL + "/metrics']").doesNotExist());
+
+        // 3. Governance 分组仅暴露契约治理领域控制器
+        mockMvc.perform(get("/v3/api-docs/governance").accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paths['" + BASE_GOVERNANCE + "/preview']").exists())
+                .andExpect(jsonPath("$.paths['" + BASE_GOVERNANCE + "/export-check']").exists())
+                .andExpect(jsonPath("$.paths['" + BASE_GOVERNANCE + "/result-codes']").exists())
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "']").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("测试契约治理领域控制器：契约摘要预览、安全写盘校验与状态码字典检索")
+    void testGovernanceControllerEndpoints() throws Exception {
+        // 1. 契约摘要预览
+        mockMvc.perform(get(BASE_GOVERNANCE + "/preview")
+                        .param("group", "admin")
+                        .param("format", "JSON"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.group").value("admin"))
+                .andExpect(jsonPath("$.data.format").value("JSON"))
+                .andExpect(jsonPath("$.data.byteLength").value(greaterThan(512)))
+                .andExpect(jsonPath("$.data.snippet", containsString("\"openapi\":\"3.0.1\"")));
+
+        // 2. 安全写盘校验（正常相对路径落盘至应用隔离临时目录）
+        mockMvc.perform(post(BASE_GOVERNANCE + "/export-check")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"group\":\"admin\",\"format\":\"YAML\",\"relativePath\":\"exports/admin-contract.yaml\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.group").value("admin"))
+                .andExpect(jsonPath("$.data.format").value("YAML"))
+                .andExpect(jsonPath("$.data.relativePath").value("exports/admin-contract.yaml"));
+
+        Path exportedFile = FileUtil.getAppTempDirectory("ateng-boot-sample-openapi")
+                .resolve("exports/admin-contract.yaml");
+        assertThat(Files.exists(exportedFile)).isTrue();
+        assertThat(Files.readString(exportedFile, StandardCharsets.UTF_8))
+                .contains("ateng-boot OpenAPI 生产级契约沙箱");
+
+        // 3. 安全写盘拦截路径穿越
+        mockMvc.perform(post(BASE_GOVERNANCE + "/export-check")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"group\":\"admin\",\"format\":\"JSON\",\"relativePath\":\"../../evil.json\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 4. 状态码字典检索（无关键字全量返回、数值/大小写不敏感匹配与未命中空数组兜底）
+        mockMvc.perform(get(BASE_GOVERNANCE + "/result-codes"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(greaterThan(10)));
+
+        mockMvc.perform(get(BASE_GOVERNANCE + "/result-codes")
+                        .param("keyword", "8001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data[0].code").value(8001));
+
+        mockMvc.perform(get(BASE_GOVERNANCE + "/result-codes")
+                        .param("keyword", "sample result codes"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data[*].code", hasItem(8001)))
+                .andExpect(jsonPath("$.data[*].code", hasItem(8002)));
+
+        mockMvc.perform(get(BASE_GOVERNANCE + "/result-codes")
+                        .param("keyword", "NON_EXISTENT_CODE_XYZ"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", hasSize(0)));
+    }
+
+    @Test
+    @DisplayName("测试 /docs/export/{group} 前置拦截非法及含路径穿越字符的分组参数")
+    void testExportEndpointBlocksIllegalGroupParam() throws Exception {
+        mockMvc.perform(get("/docs/export/admin..secret.json"))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/docs/export/..evil.yaml"))
+                .andExpect(status().isBadRequest());
     }
 }

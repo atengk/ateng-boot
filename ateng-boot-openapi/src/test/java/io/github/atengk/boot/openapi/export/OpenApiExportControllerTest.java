@@ -18,6 +18,8 @@ import static org.hamcrest.Matchers.startsWith;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -165,5 +167,25 @@ class OpenApiExportControllerTest {
             req.setRemoteAddr("127.0.0.1");
             return req;
         })).andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("测试前置拦截非法及含路径穿越字符的 {group} 路径变量，不穿透至导出门面")
+    void testRejectsUnsafeOrPathTraversalGroupName() throws Exception {
+        byte[] validBytes = "{\"openapi\":\"3.0.1\"}".getBytes(StandardCharsets.UTF_8);
+        when(exportHelper.exportBytes(eq("v1.0_admin-api"), eq(OpenApiFormat.JSON), any())).thenReturn(validBytes);
+
+        // 1. 含 ".." 路径穿越字符 / 非法符号 / 空白符 -> 前置拦截 HTTP 400
+        mockMvc.perform(get("/docs/export/admin..secret.json")).andExpect(status().isBadRequest());
+        mockMvc.perform(get("/docs/export/..evil.yaml")).andExpect(status().isBadRequest());
+        mockMvc.perform(get("/docs/export/bad$group.json")).andExpect(status().isBadRequest());
+        mockMvc.perform(get("/docs/export/bad group.json")).andExpect(status().isBadRequest());
+        verify(exportHelper, never()).exportBytes(any(), any(), any());
+
+        // 2. 合法含点号、下划线、连字符的分组名正常放行
+        mockMvc.perform(get("/docs/export/v1.0_admin-api.json"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"openapi-v1.0_admin-api.json\""))
+                .andExpect(content().bytes(validBytes));
     }
 }

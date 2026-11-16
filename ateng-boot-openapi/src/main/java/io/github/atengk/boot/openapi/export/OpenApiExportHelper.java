@@ -1,13 +1,19 @@
 package io.github.atengk.boot.openapi.export;
 
+import io.github.atengk.boot.core.util.FileUtil;
+import io.github.atengk.boot.core.util.SpringUtil;
 import io.swagger.v3.core.util.Json;
 import io.swagger.v3.core.util.Yaml;
 import io.swagger.v3.oas.models.OpenAPI;
 import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springdoc.api.OpenApiResourceNotFoundException;
 import org.springdoc.core.models.GroupedOpenApi;
 import org.springdoc.webmvc.api.MultipleOpenApiWebMvcResource;
 import org.springdoc.webmvc.api.OpenApiWebMvcResource;
+import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.util.StringUtils;
 import org.springframework.web.context.request.RequestAttributes;
@@ -18,26 +24,36 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * OpenAPI 契约离线导出标准化门面助手
  * <p>
  * 提供开箱即用的静态与 Spring 容器受管双模门面支持：
  * <ul>
- *     <li>支持将指定业务分组或全量默认分组的 OpenAPI 规范导出为格式化的 JSON / YAML 字符串、byte[] 或写入指定输出流；</li>
+ *     <li>支持将指定业务分组或全量默认分组的 OpenAPI 规范导出为格式化的 JSON / YAML 字符串、byte[]、输出流或安全落盘至本地文件；</li>
  *     <li>深度联动 SpringDoc WebMvc 运行时管线，亦可直接针对内存 {@link OpenAPI} 实体独立导出；</li>
- *     <li>完美支撑单元测试契约断言、本地代码生成与 CI/CD 自动化构建提取契约。</li>
+ *     <li>实现 {@link DisposableBean} 保障容器销毁时对称复位全局静态实例，完美支撑单元测试契约断言与 CI/CD 自动化构建。</li>
  * </ul>
  * </p>
  *
  * @author Ateng
  * @since 2026-10-30
  */
-public class OpenApiExportHelper {
+public class OpenApiExportHelper implements DisposableBean {
+
+    private static final Logger log = LoggerFactory.getLogger(OpenApiExportHelper.class);
+
+    /**
+     * 业务分组名称安全字符白名单（禁止 ".." 路径穿越及非法控制字符）
+     */
+    private static final Pattern SAFE_GROUP_PATTERN = Pattern.compile("^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$");
 
     private static volatile OpenApiExportHelper instance;
 
@@ -71,18 +87,36 @@ public class OpenApiExportHelper {
     // ==========================================
 
     /**
-     * 获取全局受管单例实例
+     * 获取全局受管单例实例（静态引用为空时自动尝试通过 {@link SpringUtil} 容器兜底解析）
      *
      * @return OpenApiExportHelper 受管单例
      * @throws IllegalStateException 若未在 Spring 容器中装配
      */
     public static OpenApiExportHelper getInstance() {
         OpenApiExportHelper current = instance;
+        if (current == null && SpringUtil.isInitialized()) {
+            try {
+                current = SpringUtil.getBean(OpenApiExportHelper.class);
+                instance = current;
+            } catch (BeansException | IllegalStateException ex) {
+                log.debug("Failed to resolve OpenApiExportHelper fallback bean from SpringUtil: {}", ex.getMessage());
+            }
+        }
         if (current == null) {
             throw new IllegalStateException("OpenApiExportHelper has not been initialized by the Spring container. "
                     + "If running outside Spring, use static methods that accept an OpenAPI instance directly.");
         }
         return current;
+    }
+
+    /**
+     * 校验业务分组名称是否满足安全字符白名单（禁止空白、控制字符及 ".." 路径穿越）
+     *
+     * @param group 业务分组标识
+     * @return 合法返回 true，否则返回 false
+     */
+    public static boolean isValidGroupName(String group) {
+        return StringUtils.hasText(group) && SAFE_GROUP_PATTERN.matcher(group.trim()).matches();
     }
 
     /**
@@ -92,6 +126,16 @@ public class OpenApiExportHelper {
      */
     public static void setInstance(OpenApiExportHelper helper) {
         instance = helper;
+    }
+
+    /**
+     * 容器销毁时对称清理全局静态引用，仅复位指向当前 Bean 的引用以防多上下文测试互相覆盖
+     */
+    @Override
+    public void destroy() {
+        if (instance == this) {
+            instance = null;
+        }
     }
 
     /**
@@ -186,6 +230,42 @@ public class OpenApiExportHelper {
         return getInstance().exportBytes(group, format, null);
     }
 
+    /**
+     * 安全导出默认全量分组规范至指定文件（默认 JSON 格式，自动创建父目录并校验路径安全）
+     *
+     * @param targetFile 目标输出文件路径
+     * @return 规范化后的绝对安全目标路径
+     * @throws IOException 写入文件异常
+     */
+    public static Path exportToFile(Path targetFile) throws IOException {
+        return exportToFile((String) null, OpenApiFormat.JSON, targetFile);
+    }
+
+    /**
+     * 安全导出默认全量分组规范至指定文件（自动创建父目录并校验路径安全）
+     *
+     * @param format     目标格式 (JSON / YAML)
+     * @param targetFile 目标输出文件路径
+     * @return 规范化后的绝对安全目标路径
+     * @throws IOException 写入文件异常
+     */
+    public static Path exportToFile(OpenApiFormat format, Path targetFile) throws IOException {
+        return exportToFile((String) null, format, targetFile);
+    }
+
+    /**
+     * 安全导出指定分组规范至本地文件（自动创建父目录并校验路径安全）
+     *
+     * @param group      业务分组名称（为 null 或空时回退为默认分组）
+     * @param format     目标格式 (JSON / YAML)
+     * @param targetFile 目标输出文件路径
+     * @return 规范化后的绝对安全目标路径
+     * @throws IOException 写入文件异常
+     */
+    public static Path exportToFile(String group, OpenApiFormat format, Path targetFile) throws IOException {
+        return getInstance().exportFile(group, format, targetFile);
+    }
+
     // ==========================================
     // 独立脱机导出方法 (Standalone OpenAPI Model API)
     // ==========================================
@@ -252,9 +332,84 @@ public class OpenApiExportHelper {
         out.flush();
     }
 
+    /**
+     * 将指定的 OpenAPI 对象安全落盘至目标文件（阻断路径穿越及系统垃圾文件，并自动创建父目录）
+     *
+     * @param openApi    OpenAPI 契约对象
+     * @param format     目标格式 (JSON / YAML)
+     * @param targetFile 目标文件路径
+     * @return 规范化后的绝对安全目标路径
+     * @throws IOException 写入文件异常
+     */
+    public static Path exportToFile(OpenAPI openApi, OpenApiFormat format, Path targetFile) throws IOException {
+        Path safeTarget = validateTargetFile(targetFile);
+        byte[] bytes = exportBytes(openApi, format);
+        return writeBytesToFile(safeTarget, bytes);
+    }
+
     // ==========================================
     // 实例受管导出方法 (Instance Managed API)
     // ==========================================
+
+    /**
+     * 导出指定分组规范安全落盘至本地文件
+     *
+     * @param group      业务分组名称（为 null 或空时回退为默认分组）
+     * @param format     目标格式 (JSON / YAML)
+     * @param targetFile 目标输出文件路径
+     * @return 规范化后的绝对安全目标路径
+     * @throws IOException 写入文件异常
+     */
+    public Path exportFile(String group, OpenApiFormat format, Path targetFile) throws IOException {
+        return exportFile(group, format, targetFile, null);
+    }
+
+    /**
+     * 导出指定分组规范安全落盘至本地文件（支持显式注入 HTTP 请求）
+     *
+     * @param group      业务分组名称（为 null 或空时回退为默认分组）
+     * @param format     目标格式 (JSON / YAML)
+     * @param targetFile 目标输出文件路径
+     * @param request    客户端 HTTP 请求（可选）
+     * @return 规范化后的绝对安全目标路径
+     * @throws IOException 写入文件异常
+     */
+    public Path exportFile(String group, OpenApiFormat format, Path targetFile, HttpServletRequest request) throws IOException {
+        Path safeTarget = validateTargetFile(targetFile);
+        byte[] bytes = exportBytes(group, format, request);
+        return writeBytesToFile(safeTarget, bytes);
+    }
+
+    private static Path validateTargetFile(Path targetFile) {
+        if (targetFile == null) {
+            throw new IllegalArgumentException("targetFile must not be null");
+        }
+        String rawPath = targetFile.toString();
+        if (rawPath.isBlank() || rawPath.contains("\0")) {
+            throw new IllegalArgumentException("targetFile must not be blank or contain null bytes");
+        }
+        for (Path segment : targetFile) {
+            if ("..".equals(segment.toString())) {
+                throw new IllegalArgumentException("检测到高危路径穿越 (Path Traversal) 尝试，拒绝写入: " + targetFile);
+            }
+        }
+        if (FileUtil.isSystemJunkFile(targetFile)) {
+            throw new IllegalArgumentException("目标路径命中操作系统隐性垃圾文件规则，拒绝写入: " + targetFile);
+        }
+        Path normalized = targetFile.toAbsolutePath().normalize();
+        if (normalized.getFileName() == null || Files.isDirectory(normalized)) {
+            throw new IllegalArgumentException("targetFile must point to a regular file path, not a directory: " + targetFile);
+        }
+        return normalized;
+    }
+
+    private static Path writeBytesToFile(Path normalizedTarget, byte[] bytes) throws IOException {
+        Path parent = normalizedTarget.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        return Files.write(normalizedTarget, bytes);
+    }
 
     /**
      * 导出指定分组的 JSON 规范字符串
