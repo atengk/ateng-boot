@@ -7,7 +7,9 @@ import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 云原生可观测性与度量运维配置属性
@@ -56,6 +58,31 @@ public class ObservabilityProperties {
     @Getter
     @Setter
     public static class MetricsProperties {
+
+        /**
+         * 是否自动注入 spring.application.name 作为全局 application 公共标签（默认开启）
+         */
+        private boolean includeApplicationTag = true;
+
+        /**
+         * 全局自定义公共标签键值对（自动附加到所有注册指标，例如 env=prod、region=cn-east）
+         */
+        private Map<String, String> commonTags = new LinkedHashMap<>();
+
+        /**
+         * 单个标签值允许的最大字符长度（默认 128，超过则截断防御索引膨胀；小于等于 0 表示不截断）
+         */
+        private int maxTagValueLength = 128;
+
+        /**
+         * 单个指标名称允许的最大标签组合基数上限（默认 1000，超出上限的新序列将被拒绝注册以防维度爆炸；小于等于 0 表示不限制）
+         */
+        private int maxMeterCardinality = 1000;
+
+        /**
+         * 按指标名称前缀黑名单丢弃采集（命中前缀的指标不被注册，如 jvm.gc.pause）
+         */
+        private List<String> denyMetricPrefixes = new ArrayList<>();
 
         /**
          * Prometheus 指标导出配置

@@ -103,14 +103,14 @@ class ObservabilityScenarioTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("运单 TRK-10001 已提交至受管线程池 sampleTaskExecutor"));
 
-        // 抓取 Prometheus 文本指标报文
+        // 抓取 Prometheus 文本指标报文（含自动注入的全局 application 标签）
         mockMvc.perform(get("/actuator/prometheus"))
                 .andExpect(status().isOk())
-                .andExpect(content().string(containsString("ateng_threadpool_core_size{pool=\"sampleTaskExecutor\"")))
-                .andExpect(content().string(containsString("ateng_threadpool_max_size{pool=\"sampleTaskExecutor\"")))
-                .andExpect(content().string(containsString("ateng_threadpool_active_count{pool=\"sampleTaskExecutor\"")))
-                .andExpect(content().string(containsString("ateng_threadpool_queue_size{pool=\"sampleTaskExecutor\"")))
-                .andExpect(content().string(containsString("ateng_threadpool_rejected_tasks_total{pool=\"sampleTaskExecutor\"")));
+                .andExpect(content().string(containsString("ateng_threadpool_core_size{application=\"ateng-boot-sample-observability\",pool=\"sampleTaskExecutor\"")))
+                .andExpect(content().string(containsString("ateng_threadpool_max_size{application=\"ateng-boot-sample-observability\",pool=\"sampleTaskExecutor\"")))
+                .andExpect(content().string(containsString("ateng_threadpool_active_count{application=\"ateng-boot-sample-observability\",pool=\"sampleTaskExecutor\"")))
+                .andExpect(content().string(containsString("ateng_threadpool_queue_size{application=\"ateng-boot-sample-observability\",pool=\"sampleTaskExecutor\"")))
+                .andExpect(content().string(containsString("ateng_threadpool_rejected_tasks_total{application=\"ateng-boot-sample-observability\",pool=\"sampleTaskExecutor\"")));
     }
 
     @Test
@@ -138,15 +138,16 @@ class ObservabilityScenarioTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(128.0));
 
-        // 4. 抓取 Prometheus 端点，断言业务指标已被发布
+        // 4. 抓取 Prometheus 端点，断言业务指标及自动注入的全局 application 标签已被发布
         mockMvc.perform(get("/actuator/prometheus"))
                 .andExpect(status().isOk())
-                .andExpect(content().string(containsString("sample_orders_total{channel=\"app\"} 1.0")))
-                .andExpect(content().string(containsString("sample_orders_amount_count{channel=\"app\"} 1")))
-                .andExpect(content().string(containsString("sample_orders_amount_sum{channel=\"app\"} 99.5")))
-                .andExpect(content().string(containsString("sample_orders_process_time_seconds_count{channel=\"app\"} 1")))
-                .andExpect(content().string(containsString("sample_orders_process_time_seconds_sum{channel=\"app\"} 0.025")))
+                .andExpect(content().string(containsString("sample_orders_total{application=\"ateng-boot-sample-observability\",channel=\"app\"} 1.0")))
+                .andExpect(content().string(containsString("sample_orders_amount_count{application=\"ateng-boot-sample-observability\",channel=\"app\"} 1")))
+                .andExpect(content().string(containsString("sample_orders_amount_sum{application=\"ateng-boot-sample-observability\",channel=\"app\"} 99.5")))
+                .andExpect(content().string(containsString("sample_orders_process_time_seconds_count{application=\"ateng-boot-sample-observability\",channel=\"app\"} 1")))
+                .andExpect(content().string(containsString("sample_orders_process_time_seconds_sum{application=\"ateng-boot-sample-observability\",channel=\"app\"} 0.025")))
                 .andExpect(content().string(containsString("sample_demo_observed_seconds_count{")))
+                .andExpect(content().string(containsString("application=\"ateng-boot-sample-observability\"")))
                 .andExpect(content().string(containsString("exception=\"none\"")))
                 .andExpect(content().string(containsString("status=\"success\"")))
                 .andExpect(content().string(containsString("tier=\"api\"")))

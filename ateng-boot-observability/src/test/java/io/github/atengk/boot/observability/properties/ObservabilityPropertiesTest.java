@@ -36,6 +36,11 @@ class ObservabilityPropertiesTest {
 
         // 度量指标默认配置
         assertThat(properties.getMetrics()).isNotNull();
+        assertThat(properties.getMetrics().isIncludeApplicationTag()).isTrue();
+        assertThat(properties.getMetrics().getCommonTags()).isEmpty();
+        assertThat(properties.getMetrics().getMaxTagValueLength()).isEqualTo(128);
+        assertThat(properties.getMetrics().getMaxMeterCardinality()).isEqualTo(1000);
+        assertThat(properties.getMetrics().getDenyMetricPrefixes()).isEmpty();
         assertThat(properties.getMetrics().getPrometheus().isEnabled()).isTrue();
         assertThat(properties.getMetrics().getThreadPool().isEnabled()).isTrue();
         assertThat(properties.getMetrics().getObserved().isEnabled()).isTrue();
@@ -84,6 +89,13 @@ class ObservabilityPropertiesTest {
         contextRunner
                 .withPropertyValues(
                         "ateng.boot.observability.enabled=true",
+                        "ateng.boot.observability.metrics.include-application-tag=false",
+                        "ateng.boot.observability.metrics.common-tags.env=prod",
+                        "ateng.boot.observability.metrics.common-tags.region=cn-east",
+                        "ateng.boot.observability.metrics.max-tag-value-length=64",
+                        "ateng.boot.observability.metrics.max-meter-cardinality=500",
+                        "ateng.boot.observability.metrics.deny-metric-prefixes[0]=jvm.gc.pause",
+                        "ateng.boot.observability.metrics.deny-metric-prefixes[1]=tomcat.sessions",
                         "ateng.boot.observability.metrics.prometheus.enabled=false",
                         "ateng.boot.observability.metrics.thread-pool.enabled=true",
                         "ateng.boot.observability.metrics.observed.enabled=false",
@@ -120,6 +132,14 @@ class ObservabilityPropertiesTest {
                     ObservabilityProperties props = context.getBean(ObservabilityProperties.class);
 
                     assertThat(props.isEnabled()).isTrue();
+                    assertThat(props.getMetrics().isIncludeApplicationTag()).isFalse();
+                    assertThat(props.getMetrics().getCommonTags())
+                            .containsEntry("env", "prod")
+                            .containsEntry("region", "cn-east");
+                    assertThat(props.getMetrics().getMaxTagValueLength()).isEqualTo(64);
+                    assertThat(props.getMetrics().getMaxMeterCardinality()).isEqualTo(500);
+                    assertThat(props.getMetrics().getDenyMetricPrefixes())
+                            .containsExactly("jvm.gc.pause", "tomcat.sessions");
                     assertThat(props.getMetrics().getPrometheus().isEnabled()).isFalse();
                     assertThat(props.getMetrics().getThreadPool().isEnabled()).isTrue();
                     assertThat(props.getMetrics().getObserved().isEnabled()).isFalse();

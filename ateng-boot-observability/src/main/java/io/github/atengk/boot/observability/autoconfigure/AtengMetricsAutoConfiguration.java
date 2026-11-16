@@ -1,33 +1,62 @@
 package io.github.atengk.boot.observability.autoconfigure;
 
 import io.github.atengk.boot.observability.aspect.ObservedMetricAspect;
+import io.github.atengk.boot.observability.metrics.AtengMetricsRegistryCustomizer;
 import io.github.atengk.boot.observability.metrics.AtengThreadPoolMeterBinder;
 import io.github.atengk.boot.observability.metrics.MetricsTemplate;
+import io.github.atengk.boot.observability.properties.ObservabilityProperties;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
+import org.springframework.boot.actuate.autoconfigure.metrics.MeterRegistryCustomizer;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.core.env.Environment;
 
 /**
  * ateng-boot 度量体系自动装配类
  * <p>
- * 负责装配 Prometheus 指标导出、业务度量操作门面 {@link MetricsTemplate}、
- * 声明式方法性能度量切面 {@link ObservedMetricAspect} 与受管线程池动态度量绑定器。
+ * 负责装配 Prometheus 指标导出、全局注册表定制器 {@link AtengMetricsRegistryCustomizer}、
+ * 业务度量操作门面 {@link MetricsTemplate}、声明式方法性能度量切面 {@link ObservedMetricAspect} 与受管线程池动态度量绑定器。
  * </p>
  *
  * @author Ateng
  * @since 2026-10-22
  */
 @Slf4j
-@AutoConfiguration(after = AtengObservabilityAutoConfiguration.class)
+@AutoConfiguration(
+        after = AtengObservabilityAutoConfiguration.class,
+        beforeName = {
+                "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration",
+                "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration",
+                "org.springframework.boot.actuate.autoconfigure.metrics.export.simple.SimpleMetricsExportAutoConfiguration",
+                "org.springframework.boot.actuate.autoconfigure.metrics.export.prometheus.PrometheusMetricsExportAutoConfiguration"
+        }
+)
 @ConditionalOnClass(MeterRegistry.class)
 @ConditionalOnProperty(prefix = "ateng.boot.observability", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class AtengMetricsAutoConfiguration {
+
+    /**
+     * 装配全局度量注册表定制器（公共标签注入与高基数熔断护栏）
+     *
+     * @param properties  可观测性配置属性
+     * @param environment Spring 环境对象
+     * @return AtengMetricsRegistryCustomizer 实例
+     */
+    @Bean
+    @ConditionalOnClass(MeterRegistryCustomizer.class)
+    @ConditionalOnMissingBean(AtengMetricsRegistryCustomizer.class)
+    public AtengMetricsRegistryCustomizer atengMetricsRegistryCustomizer(
+            ObservabilityProperties properties,
+            Environment environment) {
+        log.info("ateng-boot: Initialized AtengMetricsRegistryCustomizer for global tags & cardinality guard");
+        return new AtengMetricsRegistryCustomizer(properties, environment);
+    }
 
     /**
      * 装配业务度量编程式操作门面
