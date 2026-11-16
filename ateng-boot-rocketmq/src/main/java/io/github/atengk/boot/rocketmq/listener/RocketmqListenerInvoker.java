@@ -32,7 +32,6 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.lang.reflect.Type;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -42,6 +41,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Pattern;
 
 /**
  * RocketMQ 消费端声明式监听器反射调用与受控防卫核心执行器
@@ -63,6 +63,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class RocketmqListenerInvoker implements MessageListener {
 
     private static final int MAX_EXCEPTION_MESSAGE_LENGTH = 1024;
+    private static final Pattern CONTROL_CHAR_PATTERN = Pattern.compile("[\\x00-\\x1F\\x7F]+");
     private static final String REASON_GZIP_DECOMPRESS_FAILED = "GZIP_DECOMPRESS_FAILED";
     private static final String REASON_DESERIALIZATION_FAILED = "DESERIALIZATION_FAILED";
     private static final String REASON_VALIDATION_FAILED = "VALIDATION_FAILED";
@@ -377,7 +378,7 @@ public class RocketmqListenerInvoker implements MessageListener {
                     .ifPresent(group -> builder.setMessageGroup(group.trim()));
         }
 
-        builder.setBody(readRawBody(messageView.getBody()));
+        builder.setBody(RocketmqMessageHelper.readRawBody(messageView.getBody()));
 
         if (properties != null) {
             for (Map.Entry<String, String> entry : properties.entrySet()) {
@@ -394,7 +395,7 @@ public class RocketmqListenerInvoker implements MessageListener {
                 if (REPLACED_DIAGNOSTIC_HEADERS.contains(lowerKey)) {
                     continue;
                 }
-                builder.addProperty(trimmedKey, val);
+                builder.addProperty(trimmedKey, sanitizeControlCharacters(val));
             }
         }
 
@@ -451,15 +452,6 @@ public class RocketmqListenerInvoker implements MessageListener {
         return poisonPillCallback;
     }
 
-    private byte[] readRawBody(ByteBuffer byteBuffer) {
-        if (byteBuffer == null || byteBuffer.remaining() == 0) {
-            return new byte[0];
-        }
-        byte[] rawBytes = new byte[byteBuffer.remaining()];
-        byteBuffer.asReadOnlyBuffer().get(rawBytes);
-        return rawBytes;
-    }
-
     private String truncateExceptionMessage(Throwable cause) {
         if (cause == null) {
             return "";
@@ -468,10 +460,22 @@ public class RocketmqListenerInvoker implements MessageListener {
         if (!StringUtils.hasText(msg)) {
             msg = cause.getClass().getSimpleName();
         }
-        if (msg.length() > MAX_EXCEPTION_MESSAGE_LENGTH) {
-            return msg.substring(0, MAX_EXCEPTION_MESSAGE_LENGTH);
+        // RocketMQ 5.x 协议严禁消息属性含 ASCII 控制字符（如 Jackson 多行异常中的 \r/\n），清洗为空格防止 DLQ 转储被 40007 拒绝
+        String sanitized = sanitizeControlCharacters(msg).trim();
+        if (!StringUtils.hasText(sanitized)) {
+            sanitized = cause.getClass().getSimpleName();
         }
-        return msg;
+        if (sanitized.length() > MAX_EXCEPTION_MESSAGE_LENGTH) {
+            return sanitized.substring(0, MAX_EXCEPTION_MESSAGE_LENGTH);
+        }
+        return sanitized;
+    }
+
+    private String sanitizeControlCharacters(String value) {
+        if (value == null) {
+            return "";
+        }
+        return CONTROL_CHAR_PATTERN.matcher(value).replaceAll(" ");
     }
 
     private String resolveBizKey(Map<String, String> properties, MessageView messageView, String traceId) {
@@ -493,7 +497,7 @@ public class RocketmqListenerInvoker implements MessageListener {
     }
 
     private byte[] extractAndDecompressBody(MessageView messageView, Map<String, String> properties) throws IOException {
-        byte[] bodyBytes = readRawBody(messageView.getBody());
+        byte[] bodyBytes = RocketmqMessageHelper.readRawBody(messageView.getBody());
 
         String compression = properties.get(RocketmqConstants.HEADER_COMPRESSION);
         if (RocketmqConstants.COMPRESSION_GZIP.equalsIgnoreCase(compression)) {

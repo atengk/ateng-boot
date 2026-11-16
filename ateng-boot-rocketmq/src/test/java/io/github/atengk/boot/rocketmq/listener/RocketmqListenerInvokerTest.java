@@ -326,6 +326,8 @@ class RocketmqListenerInvokerTest {
         verify(producer, times(3)).send(captor.capture());
         for (Message msg : captor.getAllValues()) {
             capturedReasons.add(msg.getProperties().get(RocketmqConstants.HEADER_DEAD_LETTER_REASON));
+            String errMsg = msg.getProperties().get(RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_MESSAGE);
+            assertThat(errMsg).isNotBlank().doesNotContainPattern("[\\x00-\\x1F\\x7F]");
         }
         assertThat(capturedReasons).containsExactly("DESERIALIZATION_FAILED", "VALIDATION_FAILED", "FATAL_EXCEPTION");
     }

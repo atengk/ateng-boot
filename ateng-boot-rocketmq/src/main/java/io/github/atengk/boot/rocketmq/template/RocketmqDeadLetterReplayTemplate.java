@@ -634,12 +634,10 @@ public class RocketmqDeadLetterReplayTemplate {
     }
 
     private DecodedPayload decodePayloadSafely(MessageView mv, Map<String, String> props, String messageId) {
-        ByteBuffer byteBuffer = mv.getBody();
-        if (byteBuffer == null || byteBuffer.remaining() == 0) {
+        byte[] rawBytes = RocketmqMessageHelper.readRawBody(mv.getBody());
+        if (rawBytes.length == 0) {
             return new DecodedPayload("", false, 0);
         }
-        byte[] rawBytes = new byte[byteBuffer.remaining()];
-        byteBuffer.asReadOnlyBuffer().get(rawBytes);
 
         byte[] payloadBytes = rawBytes;
         String compression = getPropertyIgnoreCase(props, RocketmqConstants.HEADER_COMPRESSION);
@@ -723,12 +721,10 @@ public class RocketmqDeadLetterReplayTemplate {
      * 提取报文并解压
      */
     private byte[] extractAndDecompressBody(MessageView messageView, Map<String, String> properties) {
-        ByteBuffer byteBuffer = messageView.getBody();
-        if (byteBuffer == null || byteBuffer.remaining() == 0) {
-            return new byte[0];
+        byte[] rawBytes = RocketmqMessageHelper.readRawBody(messageView.getBody());
+        if (rawBytes.length == 0) {
+            return rawBytes;
         }
-        byte[] rawBytes = new byte[byteBuffer.remaining()];
-        byteBuffer.duplicate().get(rawBytes);
 
         String compression = properties.get(RocketmqConstants.HEADER_COMPRESSION);
         if (RocketmqConstants.COMPRESSION_GZIP.equalsIgnoreCase(compression)) {

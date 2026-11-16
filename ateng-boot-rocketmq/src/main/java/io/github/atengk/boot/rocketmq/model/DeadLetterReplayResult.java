@@ -1,10 +1,11 @@
 package io.github.atengk.boot.rocketmq.model;
 
+import io.github.atengk.boot.rocketmq.helper.RocketmqLockHelper;
+
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.Supplier;
 
 /**
  * 死信队列受控重放治理执行汇总结果模型
@@ -80,7 +81,7 @@ public class DeadLetterReplayResult implements Serializable {
     }
 
     private void recordEntry(DeadLetterReplayDetail detail) {
-        runWithLock(() -> {
+        RocketmqLockHelper.runWithLock(lock, () -> {
             this.totalPolled++;
             switch (detail.status()) {
                 case SUCCESS -> this.successCount++;
@@ -100,36 +101,36 @@ public class DeadLetterReplayResult implements Serializable {
     }
 
     public int getTotalPolled() {
-        return withLock(() -> totalPolled);
+        return RocketmqLockHelper.withLock(lock, () -> totalPolled);
     }
 
     public int getSuccessCount() {
-        return withLock(() -> successCount);
+        return RocketmqLockHelper.withLock(lock, () -> successCount);
     }
 
     public int getBlockedCount() {
-        return withLock(() -> blockedCount);
+        return RocketmqLockHelper.withLock(lock, () -> blockedCount);
     }
 
     public int getFailedCount() {
-        return withLock(() -> failedCount);
+        return RocketmqLockHelper.withLock(lock, () -> failedCount);
     }
 
     public List<DeadLetterReplayDetail> getDetails() {
-        return withLock(() -> List.copyOf(details));
+        return RocketmqLockHelper.withLock(lock, () -> List.copyOf(details));
     }
 
     public boolean isAllSuccess() {
-        return withLock(() -> totalPolled > 0 && successCount == totalPolled);
+        return RocketmqLockHelper.withLock(lock, () -> totalPolled > 0 && successCount == totalPolled);
     }
 
     public boolean hasFailures() {
-        return withLock(() -> blockedCount > 0 || failedCount > 0);
+        return RocketmqLockHelper.withLock(lock, () -> blockedCount > 0 || failedCount > 0);
     }
 
     @Override
     public String toString() {
-        return withLock(() -> "DeadLetterReplayResult{" +
+        return RocketmqLockHelper.withLock(lock, () -> "DeadLetterReplayResult{" +
                 "dlqTopic='" + dlqTopic + '\'' +
                 ", consumerGroup='" + consumerGroup + '\'' +
                 ", totalPolled=" + totalPolled +
@@ -138,27 +139,5 @@ public class DeadLetterReplayResult implements Serializable {
                 ", failedCount=" + failedCount +
                 ", detailsCount=" + details.size() +
                 '}');
-    }
-
-    private void runWithLock(Runnable action) {
-        lock.lock();
-        try {
-            action.run();
-        } finally {
-            if (lock.isHeldByCurrentThread()) {
-                lock.unlock();
-            }
-        }
-    }
-
-    private <T> T withLock(Supplier<T> action) {
-        lock.lock();
-        try {
-            return action.get();
-        } finally {
-            if (lock.isHeldByCurrentThread()) {
-                lock.unlock();
-            }
-        }
     }
 }

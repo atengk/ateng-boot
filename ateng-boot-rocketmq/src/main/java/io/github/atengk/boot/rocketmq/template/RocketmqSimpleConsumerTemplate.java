@@ -10,6 +10,7 @@ import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.consumer.DefaultSimpleConsumerFactory;
 import io.github.atengk.boot.rocketmq.consumer.SimpleConsumerFactory;
+import io.github.atengk.boot.rocketmq.helper.RocketmqLockHelper;
 import io.github.atengk.boot.rocketmq.helper.RocketmqMessageHelper;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import lombok.extern.slf4j.Slf4j;
@@ -25,7 +26,6 @@ import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
@@ -39,7 +39,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
 
 /**
  * RocketMQ 5.x 消费端流式拉取与租约控制高阶门面
@@ -522,7 +521,7 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
         String targetFingerprint = toFilterFingerprint(filter);
         SubscriptionKey subscriptionKey = new SubscriptionKey(normalizedGroup, normalizedTopic);
 
-        return withLock(consumerLock, () -> {
+        return RocketmqLockHelper.withLock(consumerLock, () -> {
             if (!running) {
                 throw new IllegalStateException("RocketmqSimpleConsumerTemplate 已关闭，无法创建新客户端连接");
             }
@@ -583,13 +582,13 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
 
     private void trackMessageGroup(String messageId, String consumerGroup) {
         if (messageId != null && StringUtils.hasText(consumerGroup)) {
-            runWithLock(messageGroupLock, () -> messageGroupMap.put(messageId, consumerGroup.trim()));
+            RocketmqLockHelper.runWithLock(messageGroupLock, () -> messageGroupMap.put(messageId, consumerGroup.trim()));
         }
     }
 
     private void untrackMessageGroup(MessageView messageView) {
         if (messageView != null && messageView.getMessageId() != null) {
-            runWithLock(messageGroupLock, () -> messageGroupMap.remove(messageView.getMessageId().toString()));
+            RocketmqLockHelper.runWithLock(messageGroupLock, () -> messageGroupMap.remove(messageView.getMessageId().toString()));
         }
     }
 
@@ -597,7 +596,7 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
         Assert.notNull(messageView, "messageView 不能为空");
         String messageId = messageView.getMessageId() != null ? messageView.getMessageId().toString() : null;
         if (messageId != null) {
-            String mappedGroup = withLock(messageGroupLock, () -> messageGroupMap.get(messageId));
+            String mappedGroup = RocketmqLockHelper.withLock(messageGroupLock, () -> messageGroupMap.get(messageId));
             if (StringUtils.hasText(mappedGroup)) {
                 return mappedGroup;
             }
@@ -642,9 +641,7 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
             return (T) msg;
         }
 
-        ByteBuffer byteBuffer = msg.getBody();
-        byte[] bodyBytes = new byte[byteBuffer.remaining()];
-        byteBuffer.get(bodyBytes);
+        byte[] bodyBytes = RocketmqMessageHelper.readRawBody(msg.getBody());
 
         String compression = properties.get(RocketmqConstants.HEADER_COMPRESSION);
         if (RocketmqConstants.COMPRESSION_GZIP.equalsIgnoreCase(compression)) {
@@ -690,12 +687,12 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
 
     @Override
     public void start() {
-        runWithLock(consumerLock, () -> this.running = true);
+        RocketmqLockHelper.runWithLock(consumerLock, () -> this.running = true);
     }
 
     @Override
     public void stop() {
-        runWithLock(consumerLock, () -> {
+        RocketmqLockHelper.runWithLock(consumerLock, () -> {
             this.running = false;
             stopAllLeaseWatchdogs();
             if (!consumerCache.isEmpty()) {
@@ -711,7 +708,7 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
             }
             subscriptionFilterCache.clear();
         });
-        runWithLock(messageGroupLock, messageGroupMap::clear);
+        RocketmqLockHelper.runWithLock(messageGroupLock, messageGroupMap::clear);
     }
 
     private LeaseRenewalGuard startLeaseRenewalWatchdog(
@@ -903,27 +900,5 @@ public class RocketmqSimpleConsumerTemplate implements SmartLifecycle, Disposabl
     @Override
     public void destroy() {
         stop();
-    }
-
-    private void runWithLock(ReentrantLock lock, Runnable action) {
-        lock.lock();
-        try {
-            action.run();
-        } finally {
-            if (lock.isHeldByCurrentThread()) {
-                lock.unlock();
-            }
-        }
-    }
-
-    private <T> T withLock(ReentrantLock lock, Supplier<T> action) {
-        lock.lock();
-        try {
-            return action.get();
-        } finally {
-            if (lock.isHeldByCurrentThread()) {
-                lock.unlock();
-            }
-        }
     }
 }

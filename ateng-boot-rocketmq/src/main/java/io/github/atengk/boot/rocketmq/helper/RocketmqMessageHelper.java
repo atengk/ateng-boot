@@ -15,6 +15,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.zip.GZIPInputStream;
@@ -171,6 +172,21 @@ public final class RocketmqMessageHelper {
             }
         }
         return baos.toByteArray();
+    }
+
+    /**
+     * 安全读取 {@link ByteBuffer} 中的只读副本字节数组（不改变原缓冲区 position/limit 游标）
+     *
+     * @param byteBuffer 原始消息体缓冲区（可为 {@code null}）
+     * @return 字节数组（空或 {@code null} 时保底返回空数组）
+     */
+    public static byte[] readRawBody(ByteBuffer byteBuffer) {
+        if (byteBuffer == null || byteBuffer.remaining() == 0) {
+            return new byte[0];
+        }
+        byte[] rawBytes = new byte[byteBuffer.remaining()];
+        byteBuffer.asReadOnlyBuffer().get(rawBytes);
+        return rawBytes;
     }
 
     /**

@@ -22,7 +22,7 @@
 | **消费受管容器** | 监听端点注册校验与确定性生命周期管理 | `RocketmqConsumerContainer` | `consumer.consumption-thread-count`<br>`consumer.max-cache-message-count`<br>`consumer.close-timeout` | 实现 `SmartInitializingSingleton`、`SmartLifecycle`、`DisposableBean`：扫描注册端点、校验 Topic 正则 `^[%a-zA-Z0-9_-]+$`；`ReentrantLock` 保护并发启停；停机时基于 Core 受管线程池排空在途消费 | `RocketmqConsumerContainerTest`<br>`SampleRocketmqE2eTest` |
 | **底层客户端工厂 SPI** | PushConsumer 与 SimpleConsumer 工厂抽象及默认实现 | `PushConsumerFactory`<br>`SimpleConsumerFactory`<br>`DefaultPushConsumerFactory`<br>`DefaultSimpleConsumerFactory` | - | `createPushConsumer(clientConfig, group, topic, filter, listener, threads, cacheCount)`<br>`createSimpleConsumer(clientConfig, group, subscriptions, awaitDuration)`：支持生产直连 gRPC Proxy 与测试替身 `InMemoryRocketmqBroker`（`@Profile("!local")`）无缝切换 | `AtengRocketmqAutoConfigurationTest`<br>`InMemoryRocketmqBroker`<br>`SampleRocketmqE2eTest` |
 | **消费调用执行器** | 入站上下文还原、推断反序列化、毒丸防护与幂等确认 | `RocketmqListenerInvoker` | `consumer.forward-poison-pill-to-dlq` | 实现 `MessageListener`：还原四维上下文并 `finally` 清理；透明 GZIP 解压；支持 `MessageView`、`byte[]`、`String`、DTO 与泛型集合反序列化；JSR-303 校验；`IdempotentException` 静默确认 | `RocketmqListenerInvokerTest`<br>`SampleRocketmqE2eTest` |
-| **消息辅助与常量** | 序列化、GZIP 压缩、上下文与业务键解析工具及保留头常量 | `RocketmqMessageHelper`<br>`RocketmqConstants` | - | `resolveBizKey(bizKey, payload)` / `extractBizKey(messageView)` / `toPayloadBytes(payload)` / `compressGzip(bytes)` / `decompressGzip(bytes)`；`RocketmqConstants` 定义 `TOPIC_REGEX`、`DLQ_TOPIC_PREFIX`、`HEADER_COMPRESSION` 与 `X-Dead-Letter-*` 诊断头常量 | `RocketmqMessageHelperTest` |
+| **消息辅助与常量** | 序列化、GZIP 压缩、载荷读取、锁守卫与保留头常量 | `RocketmqMessageHelper`<br>`RocketmqLockHelper`<br>`RocketmqConstants` | - | `resolveBizKey(bizKey, payload)` / `extractBizKey(messageView)` / `toPayloadBytes(payload)` / `readRawBody(byteBuffer)` / `compressGzip(bytes)` / `decompressGzip(bytes)` / `toFilterFingerprint(filter)`<br>`RocketmqLockHelper`：`runWithLock(lock, action)` / `withLock(lock, supplier)`（`finally` 持锁判断释放防 Pinning）<br>`RocketmqConstants` 定义 `TOPIC_REGEX`、`DLQ_TOPIC_PREFIX`、`HEADER_COMPRESSION` 与 `X-Dead-Letter-*` 诊断头常量 | `RocketmqMessageHelperTest`<br>`RocketmqLockHelperTest` |
 | **自动装配与配置** | 防御性自动装配核心类与强类型配置属性 | `AtengRocketmqAutoConfiguration`<br>`AtengRocketmqProperties` | `enabled`<br>`endpoints`<br>`access-key`<br>`secret-key`<br>`ssl-enabled`<br>`request-timeout`<br>`producer.*` / `consumer.*` / `simple-consumer.*` / `dead-letter.*` | 基于 `@AutoConfiguration` 注册，缺失 `endpoints` 平滑静默跳过；`Duration` / `DataSize` 强类型属性与 `@NestedConfigurationProperty` 嵌套校验 | `AtengRocketmqAutoConfigurationTest`<br>`AtengRocketmqPropertiesTest` |
 
 ---
@@ -725,7 +725,7 @@ flowchart TB
   }
   ```
 - **核心机制与边界防御**：
-  `receiveAndExecute` 每条消息独立激活与清理四维上下文：单条执行成功或命中 `IdempotentException` 时自动执行 `ack` 出队；单条抛出其他异常时仅跳过该条 `ack`、回调可选 `failureHandler` 并继续处理同批其余消息（绝不整批阻断）。开启 `auto-renew-lease=true` 时，看门狗按 `max(1s, invisibleDuration / 2)` 周期在受管异步调度器中自动调用 `changeInvisibleDurationAsync` 续期，受 `max-lease-renew-attempts`（默认 5 次）强力约束并在 `finally` 确定性取消，杜绝卡死任务引发无限活锁。
+  `receiveAndExecute` 每条消息独立激活与清理四维上下文：单条执行成功或命中 `IdempotentException` 时自动执行 `ack` 出队；单条抛出其他异常时仅跳过该条 `ack`、回调可选 `failureHandler` 并继续处理同批其余消息（绝不整批阻断）。开启 `auto-renew-lease=true` 时，看门狗按 `max(1s, invisibleDuration / 2)` 周期在受管异步调度器中自动调用 `changeInvisibleDuration` 续期，受 `max-lease-renew-attempts`（默认 5 次）强力约束并在 `finally` 确定性取消，杜绝卡死任务引发无限活锁。
 
 ---
 

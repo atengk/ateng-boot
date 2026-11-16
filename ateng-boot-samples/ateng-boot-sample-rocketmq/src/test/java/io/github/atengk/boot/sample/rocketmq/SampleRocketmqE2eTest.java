@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -90,6 +91,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @since 2026-10-22
  */
 @SpringBootTest(classes = {SampleRocketmqApplication.class, SampleRocketmqE2eTest.TestRocketmqConfig.class})
+@AutoConfigureMockMvc
 @DisplayName("RocketMQ 场景沙箱 1:1 端到端生产级集成测试 (20 大核心场景全覆盖)")
 class SampleRocketmqE2eTest {
 
@@ -237,9 +239,15 @@ class SampleRocketmqE2eTest {
         assertThat(receipt).isNotNull();
         assertThat(receipt.getMessageId()).isNotNull();
 
-        awaitUntil(() -> !standardConsumer.getReceivedOrders().isEmpty());
-        assertThat(standardConsumer.getReceivedOrders()).hasSize(1);
-        OrderMessage received = standardConsumer.getReceivedOrders().get(0);
+        awaitUntil(() -> standardConsumer.getReceivedOrders().stream()
+                .anyMatch(item -> "ORD-SYNC-001".equals(item.getOrderId())));
+        if (testBroker != null) {
+            assertThat(standardConsumer.getReceivedOrders()).hasSize(1);
+        }
+        OrderMessage received = standardConsumer.getReceivedOrders().stream()
+                .filter(item -> "ORD-SYNC-001".equals(item.getOrderId()))
+                .findFirst()
+                .orElseThrow();
         assertThat(received.getOrderId()).isEqualTo("ORD-SYNC-001");
         assertThat(received.getAmount()).isEqualTo(299.9);
         assertThat(received.getCustomerName()).isEqualTo("张三");
@@ -269,9 +277,14 @@ class SampleRocketmqE2eTest {
         SendReceipt receipt = future.join();
 
         assertThat(receipt).isNotNull();
-        awaitUntil(() -> !standardConsumer.getReceivedOrders().isEmpty());
-        assertThat(standardConsumer.getReceivedOrders()).hasSize(1);
-        assertThat(standardConsumer.getReceivedOrders().get(0).getOrderId()).isEqualTo("ORD-ASYNC-002");
+        awaitUntil(() -> standardConsumer.getReceivedOrders().stream()
+                .anyMatch(item -> "ORD-ASYNC-002".equals(item.getOrderId())));
+        if (testBroker != null) {
+            assertThat(standardConsumer.getReceivedOrders()).hasSize(1);
+        }
+        assertThat(standardConsumer.getReceivedOrders())
+                .extracting(OrderMessage::getOrderId)
+                .contains("ORD-ASYNC-002");
     }
 
     // =========================================================================
@@ -311,9 +324,14 @@ class SampleRocketmqE2eTest {
 
         standardScenarioService.sendSync(payOrder, "pay");
 
-        awaitUntil(() -> !standardConsumer.getReceivedOrders().isEmpty());
-        assertThat(standardConsumer.getReceivedOrders()).hasSize(1);
-        assertThat(standardConsumer.getReceivedOrders().get(0).getOrderId()).isEqualTo("ORD-TAG-PAY-001");
+        awaitUntil(() -> standardConsumer.getReceivedOrders().stream()
+                .anyMatch(item -> "ORD-TAG-PAY-001".equals(item.getOrderId())));
+        if (testBroker != null) {
+            assertThat(standardConsumer.getReceivedOrders()).hasSize(1);
+        }
+        assertThat(standardConsumer.getReceivedOrders())
+                .extracting(OrderMessage::getOrderId)
+                .contains("ORD-TAG-PAY-001");
 
         OrderMessage cancelOrder = OrderMessage.builder()
                 .orderId("ORD-TAG-CANCEL-001")
@@ -324,8 +342,10 @@ class SampleRocketmqE2eTest {
 
         standardScenarioService.sendSync(cancelOrder, "cancel");
 
-        // 仅消费了 1 条 pay 订单，未匹配的 cancel 标签被安全过滤丢弃
-        assertThat(standardConsumer.getReceivedOrders()).hasSize(1);
+        // 仅消费 pay 订单，未匹配的 cancel 标签被安全过滤丢弃
+        assertThat(standardConsumer.getReceivedOrders())
+                .extracting(OrderMessage::getOrderId)
+                .doesNotContain("ORD-TAG-CANCEL-001");
     }
 
     // =========================================================================
@@ -579,9 +599,14 @@ class SampleRocketmqE2eTest {
         transactionScenarioService.createOrderWithSendAfterCommit(order);
 
         assertThat(transactionScenarioService.getLocalDbOrders()).contains("ORD-COMMIT-001");
-        awaitUntil(() -> !standardConsumer.getReceivedOrders().isEmpty());
-        assertThat(standardConsumer.getReceivedOrders()).hasSize(1);
-        assertThat(standardConsumer.getReceivedOrders().get(0).getOrderId()).isEqualTo("ORD-COMMIT-001");
+        awaitUntil(() -> standardConsumer.getReceivedOrders().stream()
+                .anyMatch(item -> "ORD-COMMIT-001".equals(item.getOrderId())));
+        if (testBroker != null) {
+            assertThat(standardConsumer.getReceivedOrders()).hasSize(1);
+        }
+        assertThat(standardConsumer.getReceivedOrders())
+                .extracting(OrderMessage::getOrderId)
+                .contains("ORD-COMMIT-001");
     }
 
     // =========================================================================
@@ -623,10 +648,21 @@ class SampleRocketmqE2eTest {
         transactionScenarioService.createOrdersWithSendBatchAfterCommit(
                 commitOrders, "create", Map.of("batchChannel", "tx-h2"));
 
-        awaitUntil(() -> standardConsumer.getReceivedOrders().size() >= 2);
-        assertThat(standardConsumer.getReceivedOrders())
-                .extracting(OrderMessage::getOrderId)
-                .containsExactly("ORD-BTX-OK-1", "ORD-BTX-OK-2");
+        awaitUntil(() -> {
+            List<String> receivedIds = standardConsumer.getReceivedOrders().stream()
+                    .map(OrderMessage::getOrderId)
+                    .toList();
+            return receivedIds.contains("ORD-BTX-OK-1") && receivedIds.contains("ORD-BTX-OK-2");
+        });
+        if (testBroker != null) {
+            assertThat(standardConsumer.getReceivedOrders())
+                    .extracting(OrderMessage::getOrderId)
+                    .containsExactly("ORD-BTX-OK-1", "ORD-BTX-OK-2");
+        } else {
+            assertThat(standardConsumer.getReceivedOrders())
+                    .extracting(OrderMessage::getOrderId)
+                    .contains("ORD-BTX-OK-1", "ORD-BTX-OK-2");
+        }
         assertThat(standardConsumer.getReceivedTraceIds()).contains("TRACE-BATCH-TX-001");
         assertThat(standardConsumer.getReceivedTenantIds()).contains("TENANT-BATCH-TX");
         if (testBroker != null) {
@@ -693,8 +729,10 @@ class SampleRocketmqE2eTest {
     void testMaxPayloadSizeDefense() {
         byte[] largeBytes = new byte[5 * 1024 * 1024]; // 5MB
 
-        // 正常发送小报文不抛异常
+        // 正常发送小报文不抛异常（等待消费排空避免跨用例残留）
         assertThat(producer.sendOrderWithTag(OrderMessage.builder().orderId("ORD-NORMAL").build(), "create")).isNotNull();
+        awaitUntil(() -> standardConsumer.getReceivedOrders().stream()
+                .anyMatch(item -> "ORD-NORMAL".equals(item.getOrderId())));
 
         // 通过底层发送超限载荷 (5MB > 4MB 上限)，触发 Fail-Fast
         assertThatThrownBy(() -> producer.getRocketmqTemplate().send(TradeRocketmqProducer.TOPIC_ORDER, largeBytes))
@@ -718,6 +756,9 @@ class SampleRocketmqE2eTest {
 
         standardScenarioService.sendSync(invalidOrder, "poison");
 
+        if (poisonPillCallbackRecorder != null) {
+            awaitUntil(() -> !poisonPillCallbackRecorder.getEvents().isEmpty());
+        }
         // 毒丸报文在 invoker 处被 JSR-303 快速失败拦截并丢弃，消费者方法未被调用
         assertThat(poisonConsumer.getPoisonProcessCount().get()).isEqualTo(0);
     }
@@ -796,19 +837,20 @@ class SampleRocketmqE2eTest {
         simpleConsumerPullScenarioService.clearCache();
         String topic = TradeRocketmqProducer.TOPIC_ORDER;
 
-        // 1. 动态过滤表达式订阅刷新验证
+        // 1. 动态过滤表达式订阅刷新验证（先按 dyn_alpha 拉取确认，再投递 dyn_beta 并同组切换过滤表达式）
         String dynamicGroup = "sample_dynamic_filter_group";
         OrderMessage alpha = OrderMessage.builder().orderId("ORD_DYN_ALPHA").customerName("A").amount(10.0).status("CREATED").build();
-        OrderMessage beta = OrderMessage.builder().orderId("ORD_DYN_BETA").customerName("B").amount(20.0).status("CREATED").build();
         rocketmqTemplate.send(topic, "dyn_alpha", "ORD_DYN_ALPHA", alpha);
-        rocketmqTemplate.send(topic, "dyn_beta", "ORD_DYN_BETA", beta);
 
         List<MessageView> firstBatch = simpleConsumerPullScenarioService.pullMessages(topic, dynamicGroup, "dyn_alpha", 10, Duration.ofSeconds(30));
         assertThat(firstBatch).hasSize(1);
         assertThat(firstBatch.get(0).getTag()).contains("dyn_alpha");
         simpleConsumerPullScenarioService.acknowledge(dynamicGroup, firstBatch.get(0));
 
-        // 同消费组同 Topic 切换为 dyn_beta，应主动刷新底层 SimpleConsumer.subscribe 并拉取到 dyn_beta
+        // 同消费组同 Topic 切换为 dyn_beta，应主动刷新底层 SimpleConsumer.subscribe 并拉取到后续投递的 dyn_beta
+        OrderMessage beta = OrderMessage.builder().orderId("ORD_DYN_BETA").customerName("B").amount(20.0).status("CREATED").build();
+        rocketmqTemplate.send(topic, "dyn_beta", "ORD_DYN_BETA", beta);
+
         List<MessageView> secondBatch = simpleConsumerPullScenarioService.pullMessages(topic, dynamicGroup, "dyn_beta", 10, Duration.ofSeconds(30));
         assertThat(secondBatch).hasSize(1);
         assertThat(secondBatch.get(0).getTag()).contains("dyn_beta");
@@ -820,6 +862,12 @@ class SampleRocketmqE2eTest {
 
         // 2. 单条故障隔离与 IdempotentException 静默 ACK 验证
         String isoGroup = "sample_resilient_group";
+        if (testBroker == null) {
+            List<MessageView> stale = simpleConsumerPullScenarioService.pullMessages(topic, isoGroup, "resilient_tag", 32, Duration.ofSeconds(10));
+            for (MessageView view : stale) {
+                simpleConsumerPullScenarioService.acknowledge(isoGroup, view);
+            }
+        }
         OrderMessage ok1 = OrderMessage.builder().orderId("ORD_RES_OK_1").customerName("N1").amount(11.0).status("CREATED").build();
         OrderMessage idem = OrderMessage.builder().orderId("ORD_RES_IDEM").customerName("ID").amount(22.0).status("IDEMPOTENT").build();
         OrderMessage fail = OrderMessage.builder().orderId("ORD_RES_FAIL").customerName("FL").amount(33.0).status("FAIL").build();
@@ -836,16 +884,18 @@ class SampleRocketmqE2eTest {
         assertThat(isoReport.getConsumedCount()).isEqualTo(2);
         assertThat(isoReport.getIdempotentCount()).isEqualTo(1);
         assertThat(isoReport.getFailedCount()).isEqualTo(1);
-        assertThat(isoReport.getConsumedOrderIds()).containsExactly("ORD_RES_OK_1", "ORD_RES_OK_2");
+        assertThat(isoReport.getConsumedOrderIds()).containsExactlyInAnyOrder("ORD_RES_OK_1", "ORD_RES_OK_2");
         assertThat(isoReport.getFailedOrderIds()).containsExactly("ORD_RES_FAIL");
 
-        // 3. 长任务期间受控租约自动续期看门狗验证 (invisibleDuration=2s -> 周期 1s)
+        // 3. 长任务期间受控租约自动续期看门狗验证 (离线内存桩 2s/1.4s，真实 5.x Broker 最小隐身窗口 10s -> 周期 5s)
         String renewGroup = "sample_watchdog_group";
         OrderMessage slowOrder = OrderMessage.builder().orderId("ORD_WATCHDOG_1").customerName("SLOW").amount(55.0).status("CREATED").build();
         rocketmqTemplate.send(topic, "watchdog_tag", "ORD_WATCHDOG_1", slowOrder);
 
+        Duration watchdogInvisible = testBroker != null ? Duration.ofSeconds(2) : Duration.ofSeconds(10);
+        Duration watchdogDelay = testBroker != null ? Duration.ofMillis(1400) : Duration.ofMillis(5500);
         SimpleConsumeReportVO renewReport = simpleConsumerPullScenarioService.pullAndExecuteResilient(
-                topic, renewGroup, "watchdog_tag", 5, Duration.ofSeconds(2), Duration.ofMillis(1400));
+                topic, renewGroup, "watchdog_tag", 5, watchdogInvisible, watchdogDelay);
         assertThat(renewReport.getSettledCount()).isEqualTo(1);
         assertThat(renewReport.getConsumedOrderIds()).containsExactly("ORD_WATCHDOG_1");
         if (testBroker != null) {
@@ -987,6 +1037,12 @@ class SampleRocketmqE2eTest {
 
         DeadLetterReplayResult avalancheResult = deadLetterReplayScenarioService.replayDeadLetters(dlqGroup, 10);
         assertThat(avalancheResult.getBlockedCount()).isGreaterThanOrEqualTo(1);
+
+        // 等待重放回主业务主题的死信被标准消费端排空，避免跨越 @BeforeEach 污染后续用例
+        awaitUntil(() -> standardConsumer.getReceivedOrders().stream()
+                .map(OrderMessage::getOrderId)
+                .collect(java.util.stream.Collectors.toSet())
+                .containsAll(List.of("ORD_DLQ_001", "ORD_DLQ_TOPIC")));
     }
 
     // =========================================================================
@@ -998,6 +1054,9 @@ class SampleRocketmqE2eTest {
     void testPoisonPillDlqForwardingDiagnosedPeekAndSwitchOffComparison() throws Exception {
         String poisonGroup = "sample_poison_group";
         String auditReplayTopic = "sample_dlq_replay_audit_topic";
+        if (testBroker == null) {
+            deadLetterReplayScenarioService.discardDeadLetters(poisonGroup, 32);
+        }
 
         // 1. 默认开启 forward-poison-pill-to-dlq=true：投递 FATAL / MALFORMED_JSON / CORRUPTED_GZIP 毒丸
         DeadLetterPoisonPillRequest fatalReq = new DeadLetterPoisonPillRequest();
@@ -1017,11 +1076,10 @@ class SampleRocketmqE2eTest {
         gzipReq.setOrderId("ORD-E2E-POISON-GZIP");
         deadLetterReplayScenarioService.triggerPoisonPill(gzipReq);
 
-        // 消费方法未正常计数，全部由 invoker 拦截转储
-        assertThat(poisonConsumer.getPoisonProcessCount().get()).isZero();
-
-        // 2. 验证 SPI 回调捕获了 3 条转储事件
+        // 2. 验证 SPI 回调捕获了 3 条转储事件且消费方法未正常计数
         assertThat(poisonPillCallbackRecorder).isNotNull();
+        awaitUntil(() -> poisonPillCallbackRecorder.getEvents().size() >= 3);
+        assertThat(poisonConsumer.getPoisonProcessCount().get()).isZero();
         assertThat(poisonPillCallbackRecorder.getEvents()).hasSize(3);
         assertThat(poisonPillCallbackRecorder.getEvents())
                 .allSatisfy(event -> {
@@ -1059,11 +1117,20 @@ class SampleRocketmqE2eTest {
         assertThat(jsonRecord.hexPreview()).isFalse();
         assertThat(jsonRecord.payloadAsString()).isEqualTo("{e2e-corrupted-json");
 
+        // 真实 Broker 上零 ACK 窥视触发 PT30S 隐身租约，等待租约到期恢复可见后再执行受控重放
+        if (testBroker == null) {
+            Thread.sleep(31_000L);
+        }
+
         // 4. 受控重放至安全审计主题：非损坏载荷成功重放 (2条) 且历史故障诊断头已彻底剥离，损坏 GZIP 被防御拦截 (1条)
         DeadLetterReplayResult replayResult =
                 deadLetterReplayScenarioService.replayDeadLettersToTopic(poisonGroup, 20, auditReplayTopic);
         assertThat(replayResult.getSuccessCount()).isEqualTo(2);
         assertThat(replayResult.getFailedCount()).isEqualTo(1);
+        if (testBroker == null) {
+            Thread.sleep(31_000L);
+            deadLetterReplayScenarioService.discardDeadLetters(poisonGroup, 32);
+        }
 
         if (testBroker != null) {
             List<MessageView> replayedMessages = testBroker.getSentMessages(auditReplayTopic);

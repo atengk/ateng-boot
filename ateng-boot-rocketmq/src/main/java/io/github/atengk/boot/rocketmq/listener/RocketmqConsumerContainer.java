@@ -3,6 +3,7 @@ package io.github.atengk.boot.rocketmq.listener;
 import io.github.atengk.boot.rocketmq.annotation.RocketmqListener;
 import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
+import io.github.atengk.boot.rocketmq.helper.RocketmqLockHelper;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import io.github.atengk.boot.rocketmq.spi.RocketmqPoisonPillCallback;
 import jakarta.validation.Validator;
@@ -33,7 +34,6 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.Supplier;
 
 /**
  * RocketMQ 5.x 声明式消费端监听容器与生命周期管理器
@@ -307,7 +307,7 @@ public class RocketmqConsumerContainer implements
      * @return 若成功启动返回 true，若端点不存在或已在运行返回 false
      */
     public boolean startEndpoint(String id) {
-        return withLifecycleLock(() -> {
+        return RocketmqLockHelper.withLock(lifecycleLock, () -> {
             RocketmqListenerEndpoint endpoint = getEndpoint(id);
             if (endpoint == null) {
                 log.warn("[ateng-boot-rocketmq] 启动端点失败，未找到匹配端点: id={}", id);
@@ -324,7 +324,7 @@ public class RocketmqConsumerContainer implements
      * @return 若成功启动返回 true，若已在运行或缺少配置返回 false
      */
     public boolean startEndpoint(RocketmqListenerEndpoint endpoint) {
-        return withLifecycleLock(() -> {
+        return RocketmqLockHelper.withLock(lifecycleLock, () -> {
             if (endpoint == null || endpoint.isRunning()) {
                 return false;
             }
@@ -379,7 +379,7 @@ public class RocketmqConsumerContainer implements
      * @return 若成功停止返回 true，若端点不存在或未在运行返回 false
      */
     public boolean stopEndpoint(String id) {
-        return withLifecycleLock(() -> {
+        return RocketmqLockHelper.withLock(lifecycleLock, () -> {
             RocketmqListenerEndpoint endpoint = getEndpoint(id);
             if (endpoint == null) {
                 log.warn("[ateng-boot-rocketmq] 停止端点失败，未找到匹配端点: id={}", id);
@@ -396,7 +396,7 @@ public class RocketmqConsumerContainer implements
      * @return 若成功停止返回 true，若未在运行返回 false
      */
     public boolean stopEndpoint(RocketmqListenerEndpoint endpoint) {
-        return withLifecycleLock(() -> doStopEndpoint(endpoint));
+        return RocketmqLockHelper.withLock(lifecycleLock, () -> doStopEndpoint(endpoint));
     }
 
     private boolean doStopEndpoint(RocketmqListenerEndpoint endpoint) {
@@ -444,7 +444,7 @@ public class RocketmqConsumerContainer implements
 
     @Override
     public void start() {
-        runWithLifecycleLock(() -> {
+        RocketmqLockHelper.runWithLock(lifecycleLock, () -> {
             if (this.running) {
                 return;
             }
@@ -481,7 +481,7 @@ public class RocketmqConsumerContainer implements
                 ? closeTimeout.toMillis()
                 : 15_000L;
 
-        runWithLifecycleLock(() -> {
+        RocketmqLockHelper.runWithLock(lifecycleLock, () -> {
             this.running = false;
             log.info("[ateng-boot-rocketmq] 开始优雅停止 RocketMQ 消费监听容器，排空在途消费 (共 {} 个 PushConsumer)...", activeConsumers.size());
 
@@ -533,28 +533,6 @@ public class RocketmqConsumerContainer implements
     public void destroy() {
         if (isRunning() || !activeConsumers.isEmpty()) {
             stop();
-        }
-    }
-
-    private void runWithLifecycleLock(Runnable action) {
-        lifecycleLock.lock();
-        try {
-            action.run();
-        } finally {
-            if (lifecycleLock.isHeldByCurrentThread()) {
-                lifecycleLock.unlock();
-            }
-        }
-    }
-
-    private <T> T withLifecycleLock(Supplier<T> action) {
-        lifecycleLock.lock();
-        try {
-            return action.get();
-        } finally {
-            if (lifecycleLock.isHeldByCurrentThread()) {
-                lifecycleLock.unlock();
-            }
         }
     }
 }

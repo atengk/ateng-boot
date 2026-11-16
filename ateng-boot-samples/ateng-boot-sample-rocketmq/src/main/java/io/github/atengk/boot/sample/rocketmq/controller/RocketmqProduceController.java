@@ -24,9 +24,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
  * RocketMQ 基础与保序消息发送场景控制器
@@ -79,7 +76,7 @@ public class RocketmqProduceController {
     public Result<OrderProduceResponse> sendAsync(@Valid @RequestBody OrderProduceRequest request) {
         OrderMessage order = request.toOrderMessage();
         CompletableFuture<SendReceipt> future = standardScenarioService.sendAsync(order, request.getProperties());
-        SendReceipt receipt = awaitFuture(future);
+        SendReceipt receipt = RocketmqControllerHelper.awaitFuture(future, ASYNC_AWAIT_TIMEOUT, "异步发送 RocketMQ 消息");
         OrderProduceResponse response = OrderProduceResponse.builder()
                 .orderId(order.getOrderId())
                 .messageId(receipt.getMessageId().toString())
@@ -163,26 +160,11 @@ public class RocketmqProduceController {
     @PostMapping("/batch-async")
     public Result<BatchProduceResponse> sendBatchAsync(@Valid @RequestBody ValidList<OrderProduceRequest> requests) {
         List<OrderMessage> orders = requests.stream().map(OrderProduceRequest::toOrderMessage).toList();
-        List<SendReceipt> receipts = awaitFuture(standardScenarioService
-                .sendBatchAsync(orders, "batch", extractBatchProperties(requests)));
+        List<SendReceipt> receipts = RocketmqControllerHelper.awaitFuture(
+                standardScenarioService.sendBatchAsync(orders, "batch", extractBatchProperties(requests)),
+                ASYNC_AWAIT_TIMEOUT,
+                "异步批量发送 RocketMQ 消息");
         return Result.success(buildBatchResponse(requests, orders, receipts));
-    }
-
-    private <T> T awaitFuture(CompletableFuture<T> future) {
-        try {
-            return future.get(ASYNC_AWAIT_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("等待 RocketMQ 异步发送结果被中断", ex);
-        } catch (TimeoutException ex) {
-            throw new IllegalStateException("等待 RocketMQ 异步发送结果超时", ex);
-        } catch (ExecutionException ex) {
-            Throwable cause = ex.getCause();
-            if (cause instanceof RuntimeException runtimeException) {
-                throw runtimeException;
-            }
-            throw new IllegalStateException("异步发送 RocketMQ 消息失败", cause != null ? cause : ex);
-        }
     }
 
     private BatchProduceResponse buildBatchResponse(

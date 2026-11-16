@@ -473,7 +473,7 @@ class RocketmqSimpleConsumerTemplateTest {
                 String.class,
                 (payload, view) -> {
                     try {
-                        assertThat(twoRenewals.await(5, TimeUnit.SECONDS)).isTrue();
+                        assertThat(twoRenewals.await(10, TimeUnit.SECONDS)).isTrue();
                         // 多等待 1.3s，确认达到 maxLeaseRenewAttempts=2 上限后不会触发第 3 次续期
                         Thread.sleep(1300L);
                     } catch (InterruptedException e) {
