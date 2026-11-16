@@ -75,9 +75,18 @@ jobs:
         uses: dorny/paths-filter@v4
         id: filter
         with:
+          base: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          predicate-quantifier: 'some-with-excludes'
           filters: |
             code:
-              - '!(*.md|llms.txt|docs/**|.gitignore|.editorconfig|LICENSE)'
+              - '**'
+              - '!*.md'
+              - '!**/*.md'
+              - '!llms.txt'
+              - '!docs/**'
+              - '!.gitignore'
+              - '!.editorconfig'
+              - '!LICENSE'
 
       - name: 综合决策是否需要执行耗时测试 (发版提交智能短路直通)
         id: decide
