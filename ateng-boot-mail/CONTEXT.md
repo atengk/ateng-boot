@@ -9,7 +9,7 @@
 _Avoid_: JavaMailSender, MailUtil, EmailHelper, MailClient
 
 **MailAccount**:
-发件源账号领域实体与运行时配置模型，封装 SMTP 主机、端口、认证凭据、SSL/TLS 协议安全参数、默认发件人以及底层池化物理 `JavaMailSender` 实例映射。
+发件源账号领域实体与运行时配置模型，封装 SMTP 主机、端口、认证凭据、SSL/TLS 协议安全参数、默认发件人、有序主备容灾列表（`backupAccounts`）以及底层池化物理 `JavaMailSender` 实例映射。
 _Avoid_: EmailConfig, SmtpProperties, MailProfile, MailSender
 
 **MailMessage**:

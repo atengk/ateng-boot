@@ -3062,6 +3062,350 @@ class MailTemplateGreenMailTest {
         }
     }
 
+    @Test
+    @DisplayName("测试主账号瞬态故障重试耗尽后按 backupAccounts 顺序顺延容灾及全链异常保留完整因果链")
+    void testCascadeFailoverOrderRetryExhaustionAndCausalChain() throws Exception {
+        MailProperties failoverProps = new MailProperties();
+        failoverProps.getRetry().setEnabled(true);
+        failoverProps.getRetry().setMaxAttempts(2);
+        failoverProps.getRetry().setDelay(Duration.ofMillis(5));
+        failoverProps.getRetry().setJitter(false);
+
+        AtomicInteger primaryAttempts = new AtomicInteger();
+        AtomicInteger deadBackupAttempts = new AtomicInteger();
+        List<String> attemptSequence = new ArrayList<>();
+
+        JavaMailSenderImpl primaryFailingSender = new JavaMailSenderImpl() {
+            @Override
+            public void send(MimeMessage mimeMessage) {
+                primaryAttempts.incrementAndGet();
+                attemptSequence.add("primary");
+                throw new org.springframework.mail.MailSendException("SMTP 421 Service not available",
+                        new java.net.SocketTimeoutException("connect timed out"));
+            }
+        };
+        JavaMailSenderImpl deadBackupSender = new JavaMailSenderImpl() {
+            @Override
+            public void send(MimeMessage mimeMessage) {
+                deadBackupAttempts.incrementAndGet();
+                attemptSequence.add("dead-backup");
+                throw new org.springframework.mail.MailSendException("Connection refused to dead backup");
+            }
+        };
+
+        MailAccountRegistry failoverRegistry = new MailAccountRegistry("primary");
+        failoverRegistry.register(MailAccount.builder()
+                .name("primary")
+                .host("smtp.primary.example.com")
+                .port(465)
+                .defaultFrom("notice@primary.com")
+                .backupAccounts(List.of("dead-backup", "healthy-backup"))
+                .sender(primaryFailingSender)
+                .build());
+        failoverRegistry.register(MailAccount.builder()
+                .name("dead-backup")
+                .host("smtp.dead.example.com")
+                .port(465)
+                .defaultFrom("dead@dead.com")
+                .sender(deadBackupSender)
+                .build());
+        failoverRegistry.register(MailAccount.builder()
+                .name("healthy-backup")
+                .host("127.0.0.1")
+                .port(greenMail.getSmtp().getPort())
+                .username("ops@atengk.com")
+                .password("password")
+                .ssl(false)
+                .defaultFrom("ops@atengk.com")
+                .defaultFromName("备用运维中心")
+                .sender(accountRegistry.get("ops").getSender())
+                .build());
+
+        MailTemplate failoverTemplate = new MailTemplate(failoverRegistry, failoverProps);
+        try {
+            // 1. 主账号耗尽 2 次重试 -> dead-backup 耗尽 2 次重试 -> 顺延切换至 healthy-backup 成功投递
+            MailSendResult ok = failoverTemplate.sendText("failover-ok@example.com", "主备顺延容灾", "payload");
+            assertTrue(ok.isSuccess());
+            assertEquals(2, primaryAttempts.get(), "主账号应先耗尽自身 2 次重试再顺延");
+            assertEquals(2, deadBackupAttempts.get());
+            assertEquals(List.of("primary", "primary", "dead-backup", "dead-backup"), attemptSequence);
+
+            assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+            // 2. 全链均失败时，异常因果链必须完整保留主账号根因及备用账号 Suppressed 异常
+            failoverRegistry.register(MailAccount.builder()
+                    .name("only-dead-chain")
+                    .host("smtp.primary.example.com")
+                    .port(465)
+                    .defaultFrom("notice@primary.com")
+                    .backupAccounts(List.of("dead-backup"))
+                    .sender(primaryFailingSender)
+                    .build());
+
+            MailSendException chainEx = assertThrows(MailSendException.class, () ->
+                    failoverTemplate.send(msg -> msg
+                            .account("only-dead-chain")
+                            .to("all-dead@example.com")
+                            .subject("全链故障")
+                            .text("body")));
+            assertEquals(MailResultCode.MAIL_CONNECT_TIMEOUT, chainEx.getResultCode());
+            assertNotNull(chainEx.getCause());
+            assertTrue(chainEx.getCause().getSuppressed().length >= 1,
+                    "全链耗尽时必须把备用账号失败异常附加至 suppressed 因果链");
+        } finally {
+            failoverTemplate.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("测试认证失败、非法地址、拦截器与三阶防护阻断时立即 Fail-Fast 绝不触发备用切换")
+    void testDeterministicFailuresFailFastWithoutFailover() {
+        AtomicInteger healthyBackupCalls = new AtomicInteger();
+        JavaMailSenderImpl authFailSender = new JavaMailSenderImpl() {
+            @Override
+            public void send(MimeMessage mimeMessage) {
+                throw new org.springframework.mail.MailAuthenticationException("535 Authentication failed");
+            }
+        };
+        JavaMailSenderImpl healthyBackupSpy = new JavaMailSenderImpl() {
+            @Override
+            public void send(MimeMessage mimeMessage) {
+                healthyBackupCalls.incrementAndGet();
+            }
+        };
+
+        MailAccountRegistry registry = new MailAccountRegistry("auth-primary");
+        registry.register(MailAccount.builder()
+                .name("auth-primary")
+                .host("smtp.primary.example.com")
+                .port(465)
+                .username("user@primary.com")
+                .password("wrong")
+                .backupAccounts(List.of("healthy-backup"))
+                .sender(authFailSender)
+                .build());
+        registry.register(MailAccount.builder()
+                .name("healthy-backup")
+                .host("smtp.backup.example.com")
+                .port(465)
+                .defaultFrom("backup@backup.com")
+                .sender(healthyBackupSpy)
+                .build());
+
+        MailProperties props = new MailProperties();
+        props.getRetry().setEnabled(true);
+        props.getRetry().setMaxAttempts(2);
+        props.getRetry().setDelay(Duration.ofMillis(5));
+
+        MailSendInterceptor blockingInterceptor = msg -> false;
+        MailRateLimiter rejectLimiter = (a, m, r) -> false;
+
+        MailTemplate authTemplate = new MailTemplate(registry, props);
+        MailTemplate interceptorTemplate = new MailTemplate(registry, props, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), null, null, null, null, null, List.of(blockingInterceptor));
+        MailTemplate rateRejectTemplate = new MailTemplate(registry, props, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), null, null, null, null, null, null, rejectLimiter, null, null);
+
+        try {
+            // 1. 认证失败 Fail-Fast
+            MailSendException authEx = assertThrows(MailSendException.class, () ->
+                    authTemplate.sendText("failfast@example.com", "auth", "body"));
+            assertEquals(MailResultCode.MAIL_AUTHENTICATION_ERROR, authEx.getResultCode());
+
+            // 2. 空收件人 / 非法地址 Fail-Fast
+            assertThrows(MailSendException.class, () -> authTemplate.send(msg -> msg.to(" ").subject("s").text("t")));
+            assertThrows(MailSendException.class, () -> authTemplate.sendText("bad-email", "s", "t"));
+
+            // 3. 拦截器阻断 Fail-Fast
+            assertThrows(MailSendException.class, () -> interceptorTemplate.sendText("ok@example.com", "blocked", "body"));
+
+            // 4. 限流拒绝 Fail-Fast
+            MailSendException rateEx = assertThrows(MailSendException.class, () ->
+                    rateRejectTemplate.sendText("ok@example.com", "limited", "body"));
+            assertEquals(MailResultCode.MAIL_RATE_LIMITED, rateEx.getResultCode());
+
+            assertEquals(0, healthyBackupCalls.get(), "任何确定性失败均不得顺延切换备用账号");
+        } finally {
+            authTemplate.destroy();
+            interceptorTemplate.destroy();
+            rateRejectTemplate.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 SPF/DMARC 域名对齐（override-from-on-switch=true/false）、Reply-To 保留与多跳原始发件人保持")
+    void testFailoverSpfDmarcFromAlignmentAndReplyToPreservation() throws Exception {
+        JavaMailSenderImpl primaryFailing = new JavaMailSenderImpl() {
+            @Override
+            public void send(MimeMessage mimeMessage) {
+                throw new org.springframework.mail.MailSendException("Primary gateway down",
+                        new java.net.ConnectException("Connection refused"));
+            }
+        };
+        JavaMailSenderImpl deadHop = new JavaMailSenderImpl() {
+            @Override
+            public void send(MimeMessage mimeMessage) {
+                throw new org.springframework.mail.MailSendException("Dead hop unavailable");
+            }
+        };
+
+        MailAccountRegistry registry = new MailAccountRegistry("primary");
+        registry.register(MailAccount.builder()
+                .name("primary")
+                .host("smtp.primary.example.com")
+                .port(465)
+                .defaultFrom("notice@primary.com")
+                .backupAccounts(List.of("dead-hop"))
+                .sender(primaryFailing)
+                .build());
+        registry.register(MailAccount.builder()
+                .name("dead-hop")
+                .host("smtp.deadhop.example.com")
+                .port(465)
+                .defaultFrom("intermediate@deadhop.com")
+                .backupAccounts(List.of("rescue"))
+                .sender(deadHop)
+                .build());
+        registry.register(MailAccount.builder()
+                .name("rescue")
+                .host("127.0.0.1")
+                .port(greenMail.getSmtp().getPort())
+                .username("ops@atengk.com")
+                .password("password")
+                .ssl(false)
+                .defaultFrom("ops@atengk.com")
+                .defaultFromName("备用容灾发件箱")
+                .sender(accountRegistry.get("ops").getSender())
+                .build());
+
+        // 1. 默认 override-from-on-switch=true 且无显式 replyTo：多跳切换后 From 对齐为 ops@atengk.com，Reply-To 保留最原始 sender@primary.com
+        MailProperties overrideTrueProps = new MailProperties();
+        assertTrue(overrideTrueProps.getFailover().isOverrideFromOnSwitch());
+        MailTemplate overrideTemplate = new MailTemplate(registry, overrideTrueProps);
+        try {
+            overrideTemplate.send(msg -> msg
+                    .to("spf1@example.com")
+                    .from("sender@primary.com")
+                    .subject("默认域名对齐测试")
+                    .text("body1"));
+
+            // 2. 已有显式 replyTo 时尊重原值
+            overrideTemplate.send(msg -> msg
+                    .to("spf2@example.com")
+                    .from("sender@primary.com")
+                    .replyTo("support@primary.com")
+                    .subject("显式 Reply-To 尊重原值")
+                    .text("body2"));
+        } finally {
+            overrideTemplate.destroy();
+        }
+
+        // 3. override-from-on-switch=false：切换至备用通道投递但保留原 From 地址与原显示名（不串用备用 defaultFromName）
+        MailProperties overrideFalseProps = new MailProperties();
+        overrideFalseProps.getFailover().setOverrideFromOnSwitch(false);
+        MailTemplate preserveFromTemplate = new MailTemplate(registry, overrideFalseProps);
+        try {
+            preserveFromTemplate.send(msg -> msg
+                    .to("spf3@example.com")
+                    .from("主线客服 <sender@primary.com>")
+                    .subject("关闭域名覆盖测试")
+                    .text("body3"));
+        } finally {
+            preserveFromTemplate.destroy();
+        }
+
+        assertTrue(greenMail.waitForIncomingEmail(5000, 3));
+        MimeMessage[] received = greenMail.getReceivedMessages();
+        assertEquals(3, received.length);
+
+        assertTrue(received[0].getFrom()[0].toString().contains("ops@atengk.com"));
+        assertEquals("sender@primary.com", ((jakarta.mail.internet.InternetAddress) received[0].getReplyTo()[0]).getAddress());
+
+        assertTrue(received[1].getFrom()[0].toString().contains("ops@atengk.com"));
+        assertEquals("support@primary.com", ((jakarta.mail.internet.InternetAddress) received[1].getReplyTo()[0]).getAddress());
+
+        jakarta.mail.internet.InternetAddress thirdFrom = (jakarta.mail.internet.InternetAddress) received[2].getFrom()[0];
+        assertEquals("sender@primary.com", thirdFrom.getAddress());
+        assertEquals("主线客服", thirdFrom.getPersonal());
+        assertFalse(received[2].getFrom()[0].toString().contains("ops@atengk.com"));
+        assertFalse(received[2].getFrom()[0].toString().contains("备用容灾发件箱"));
+    }
+
+    @Test
+    @DisplayName("测试 backupAccounts 自引用、双向互备环路（A -> B -> A）防环隔离与缺失账号平滑跳过")
+    void testFailoverCyclePreventionAndMissingAccountSkip() throws Exception {
+        AtomicInteger aCalls = new AtomicInteger();
+        AtomicInteger bCalls = new AtomicInteger();
+        JavaMailSenderImpl failingSenderA = new JavaMailSenderImpl() {
+            @Override
+            public void send(MimeMessage mimeMessage) {
+                aCalls.incrementAndGet();
+                throw new org.springframework.mail.MailSendException("A down");
+            }
+        };
+        JavaMailSenderImpl failingSenderB = new JavaMailSenderImpl() {
+            @Override
+            public void send(MimeMessage mimeMessage) {
+                bCalls.incrementAndGet();
+                throw new org.springframework.mail.MailSendException("B down");
+            }
+        };
+
+        MailAccountRegistry registry = new MailAccountRegistry("loop-a");
+        registry.register(MailAccount.builder()
+                .name("loop-a")
+                .host("smtp.a.example.com")
+                .port(465)
+                .backupAccounts(List.of("loop-a", "missing-account", "loop-b"))
+                .sender(failingSenderA)
+                .build());
+        registry.register(MailAccount.builder()
+                .name("loop-b")
+                .host("smtp.b.example.com")
+                .port(465)
+                .backupAccounts(List.of("loop-a", "loop-b"))
+                .sender(failingSenderB)
+                .build());
+
+        MailTemplate loopTemplate = new MailTemplate(registry, new MailProperties());
+        try {
+            // 1. 纯双向环路 A -> [A, missing, B] -> [A, B]：每个实体账号仅精确执行 1 次，绝不死循环
+            assertThrows(MailSendException.class, () ->
+                    loopTemplate.sendText("cycle@example.com", "环路熔断校验", "body"));
+            assertEquals(1, aCalls.get());
+            assertEquals(1, bCalls.get());
+
+            // 2. 若 B 后方还挂有健康备用 ops，绕过已访问环路 A 后应顺延至 ops 成功投递
+            aCalls.set(0);
+            bCalls.set(0);
+            registry.register(MailAccount.builder()
+                    .name("loop-b")
+                    .host("smtp.b.example.com")
+                    .port(465)
+                    .backupAccounts(List.of("loop-a", "ops"))
+                    .sender(failingSenderB)
+                    .build());
+            registry.register(MailAccount.builder()
+                    .name("ops")
+                    .host("127.0.0.1")
+                    .port(greenMail.getSmtp().getPort())
+                    .username("ops@atengk.com")
+                    .password("password")
+                    .ssl(false)
+                    .defaultFrom("ops@atengk.com")
+                    .sender(accountRegistry.get("ops").getSender())
+                    .build());
+
+            MailSendResult ok = loopTemplate.sendText("escape-cycle@example.com", "绕环成功送达", "body");
+            assertTrue(ok.isSuccess());
+            assertEquals(1, aCalls.get());
+            assertEquals(1, bCalls.get());
+            assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+        } finally {
+            loopTemplate.destroy();
+        }
+    }
+
     private void collectAttachmentFilenames(Part part, List<String> names) throws Exception {
         if (part.getFileName() != null) {
             names.add(MimeUtility.decodeText(part.getFileName()));

@@ -6,7 +6,9 @@ import jakarta.validation.constraints.Min;
 import lombok.Data;
 import org.springframework.validation.annotation.Validated;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -100,6 +102,11 @@ public class MailAccountProperties {
      * 额外的底层 JavaMail 专有属性键值对
      */
     private Map<String, String> properties = new LinkedHashMap<>();
+
+    /**
+     * 主账号遇瞬态可用性故障且重试耗尽后的有序备用账号名称列表
+     */
+    private List<String> backupAccounts = new ArrayList<>();
 
     public String getFrom() {
         return from != null && !from.isBlank() ? from : defaultFrom;

@@ -1,6 +1,7 @@
 package io.github.atengk.boot.mail.template;
 
 import io.github.atengk.boot.core.autoconfigure.AsyncExecutorFactory;
+import io.github.atengk.boot.core.code.IResultCode;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.properties.AsyncPoolProperties;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
@@ -65,6 +66,7 @@ import java.io.OutputStream;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -73,6 +75,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Queue;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
@@ -364,30 +367,7 @@ public class MailTemplate implements DisposableBean {
 
             return executeWithOutboundGuards(account, message, () -> {
                 publishEvent(new MailSendingEvent(this, message));
-
-                MailSendResult result;
-                MailRetryProperties retryProps = properties.getRetry();
-                boolean repeatableMessage = isRepeatableMessage(message);
-                if (retryProps != null && retryProps.isEnabled() && !repeatableMessage) {
-                    log.warn("Message [{}] contains non-repeatable InputStream resource(s), disabling retry to prevent corrupted empty attachments",
-                            message.getSubject());
-                }
-                if (retryProps != null && retryProps.isEnabled() && repeatableMessage) {
-                    RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
-                            .maxAttempts(retryProps.getMaxAttempts())
-                            .delay(retryProps.getDelay())
-                            .multiplier(retryProps.getMultiplier())
-                            .maxDelay(retryProps.getMaxDelay())
-                            .jitter(retryProps.isJitter())
-                            .retryPredicate(this::isRetryableException)
-                            .onRetry((attempt, error) -> log.warn("Sending email to [{}] failed on attempt {}, preparing retry. Reason: {}",
-                                    currentMaskedTo, attempt, error.getMessage()))
-                            .build();
-                    result = RetryUtil.execute(() -> doSendPhysical(account, message, currentMaskedTo, traceId, messageId), retryConfig);
-                } else {
-                    result = doSendPhysical(account, message, currentMaskedTo, traceId, messageId);
-                }
-
+                MailSendResult result = executeWithCascadeFailover(account, message, currentMaskedTo, traceId, messageId);
                 publishEvent(new MailSentEvent(this, message, result));
                 return result;
             });
@@ -403,7 +383,126 @@ public class MailTemplate implements DisposableBean {
         }
     }
 
-    private MailSendResult doSendPhysical(MailAccount account, MailMessage message, String maskedTo, String traceId, String messageId) {
+    private MailSendResult executeWithCascadeFailover(MailAccount primaryAccount, MailMessage message,
+                                                      String currentMaskedTo, String traceId, String initialMessageId) {
+        boolean repeatableMessage = isRepeatableMessage(message);
+        try {
+            return sendPhysicalWithRetry(primaryAccount, message, currentMaskedTo, traceId,
+                    initialMessageId, null, repeatableMessage);
+        } catch (Throwable primaryFailure) {
+            if (!shouldTriggerFailover(primaryAccount, primaryFailure, repeatableMessage)) {
+                throw wrapAsRuntime(primaryFailure);
+            }
+
+            Set<String> visitedAccounts = new LinkedHashSet<>();
+            visitedAccounts.add(MailFailoverSupport.normalizeAccountName(primaryAccount.getName()));
+
+            Queue<String> candidateQueue = new ArrayDeque<>();
+            MailFailoverSupport.enqueueBackupAccounts(candidateQueue, primaryAccount);
+
+            boolean overrideFromOnSwitch = properties.getFailover() == null
+                    || properties.getFailover().isOverrideFromOnSwitch();
+            List<String> failedChain = new ArrayList<>();
+            failedChain.add(MailFailoverSupport.normalizeAccountName(primaryAccount.getName()) + ": " + primaryFailure.getMessage());
+
+            while (!candidateQueue.isEmpty()) {
+                String candidateName = candidateQueue.poll();
+                if (candidateName == null || candidateName.isBlank()) {
+                    continue;
+                }
+                String trimmedName = candidateName.trim();
+                if (!visitedAccounts.add(trimmedName)) {
+                    log.warn("[MailFailover] 检测到重复或闭环备用账号 [{}]，已防环跳过", trimmedName);
+                    continue;
+                }
+
+                MailAccount backupAccount = findAccount(trimmedName);
+                if (backupAccount == null) {
+                    log.warn("[MailFailover] 备用账号 [{}] 不存在或未注册，已跳过", trimmedName);
+                    continue;
+                }
+
+                MailFailoverSupport.FailoverAddressOverride addressOverride =
+                        MailFailoverSupport.resolveAddressOverride(overrideFromOnSwitch, primaryAccount, backupAccount, message);
+                String backupDomain = resolveDomain(backupAccount);
+                String backupMessageId = "<" + traceId + "-" + System.nanoTime() + "@" + backupDomain + ">";
+
+                log.warn("[MailFailover] 主/前序账号投递失败，自动顺延切换至备用账号 [{}], effectiveFrom=[{}]",
+                        trimmedName, addressOverride.from());
+
+                try {
+                    return sendPhysicalWithRetry(backupAccount, message, currentMaskedTo, traceId,
+                            backupMessageId, addressOverride, repeatableMessage);
+                } catch (Throwable backupFailure) {
+                    primaryFailure.addSuppressed(backupFailure);
+                    failedChain.add(trimmedName + ": " + backupFailure.getMessage());
+                    log.warn("[MailFailover] 备用账号 [{}] 投递同样失败: {}", trimmedName, backupFailure.getMessage());
+                    MailFailoverSupport.enqueueBackupAccounts(candidateQueue, backupAccount);
+                }
+            }
+
+            IResultCode code = (primaryFailure instanceof MailSendException mse)
+                    ? mse.getResultCode()
+                    : MailResultCode.MAIL_SEND_ERROR;
+            throw new MailSendException(code,
+                    "主备发信账号全链投递失败 [" + String.join(" -> ", failedChain) + "]",
+                    primaryFailure);
+        }
+    }
+
+    private MailSendResult sendPhysicalWithRetry(MailAccount account, MailMessage message,
+                                                 String currentMaskedTo, String traceId, String messageId,
+                                                 MailFailoverSupport.FailoverAddressOverride addressOverride,
+                                                 boolean repeatableMessage) {
+        MailRetryProperties retryProps = properties.getRetry();
+        if (retryProps != null && retryProps.isEnabled() && !repeatableMessage) {
+            log.warn("Message [{}] contains non-repeatable InputStream resource(s), disabling retry to prevent corrupted empty attachments",
+                    message.getSubject());
+        }
+        if (retryProps != null && retryProps.isEnabled() && repeatableMessage) {
+            RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
+                    .maxAttempts(retryProps.getMaxAttempts())
+                    .delay(retryProps.getDelay())
+                    .multiplier(retryProps.getMultiplier())
+                    .maxDelay(retryProps.getMaxDelay())
+                    .jitter(retryProps.isJitter())
+                    .retryPredicate(this::isRetryableException)
+                    .onRetry((attempt, error) -> log.warn("Sending email via account [{}] to [{}] failed on attempt {}, preparing retry. Reason: {}",
+                            account.getName(), currentMaskedTo, attempt, error.getMessage()))
+                    .build();
+            return RetryUtil.execute(
+                    () -> doSendPhysical(account, message, currentMaskedTo, traceId, messageId, addressOverride),
+                    retryConfig);
+        }
+        return doSendPhysical(account, message, currentMaskedTo, traceId, messageId, addressOverride);
+    }
+
+    private boolean shouldTriggerFailover(MailAccount primaryAccount, Throwable failure, boolean repeatableMessage) {
+        if (properties.getFailover() != null && !properties.getFailover().isEnabled()) {
+            return false;
+        }
+        if (primaryAccount.getBackupAccounts() == null || primaryAccount.getBackupAccounts().isEmpty()) {
+            return false;
+        }
+        if (!repeatableMessage) {
+            log.warn("[MailFailover] 消息包含不可重读的一次性 InputStream 资源，跳过主备切换以防止发出损坏空附件");
+            return false;
+        }
+        return isRetryableException(failure);
+    }
+
+    private static RuntimeException wrapAsRuntime(Throwable failure) {
+        if (failure instanceof RuntimeException re) {
+            return re;
+        }
+        if (failure instanceof Error err) {
+            throw err;
+        }
+        return new MailSendException(MailResultCode.MAIL_SEND_ERROR, "邮件发送失败: " + failure.getMessage(), failure);
+    }
+
+    private MailSendResult doSendPhysical(MailAccount account, MailMessage message, String maskedTo, String traceId,
+                                        String messageId, MailFailoverSupport.FailoverAddressOverride addressOverride) {
         log.info("Sending {} email via account [{}] to [{}], subject: [{}], messageId: [{}], attachments: {}, inlines: {}",
                 message.isHtml() ? "HTML" : "plaintext", account.getName(), maskedTo, message.getSubject(), messageId,
                 message.getAttachments() != null ? message.getAttachments().size() : 0,
@@ -422,23 +521,25 @@ public class MailTemplate implements DisposableBean {
             MimeMessageHelper helper = new MimeMessageHelper(mimeMessage, multipartMode, StandardCharsets.UTF_8.name());
 
             // 1. 发件人与中文昵称设置
-            String fromAddress = (message.getFrom() != null && !message.getFrom().isBlank())
-                    ? message.getFrom()
-                    : ((account.getDefaultFrom() != null && !account.getDefaultFrom().isBlank())
-                    ? account.getDefaultFrom()
-                    : account.getUsername());
-            String explicitFromName = (message.getFromName() != null && !message.getFromName().isBlank())
+            String fromAddress = (addressOverride != null && addressOverride.from() != null && !addressOverride.from().isBlank())
+                    ? addressOverride.from()
+                    : MailFailoverSupport.resolveRawFromAddress(account, message);
+            String explicitFromName = (addressOverride != null)
+                    ? addressOverride.fromName()
+                    : ((message.getFromName() != null && !message.getFromName().isBlank())
                     ? message.getFromName()
-                    : account.getDefaultFromName();
+                    : account.getDefaultFromName());
 
             if (fromAddress != null && !fromAddress.isBlank()) {
                 InternetAddress parsedFrom = parseSingleInternetAddress(fromAddress);
                 if (parsedFrom != null) {
-                    String effectivePersonal = (message.getFromName() != null && !message.getFromName().isBlank())
+                    String effectivePersonal = (addressOverride != null)
+                            ? explicitFromName
+                            : ((message.getFromName() != null && !message.getFromName().isBlank())
                             ? message.getFromName()
                             : ((parsedFrom.getPersonal() != null && !parsedFrom.getPersonal().isBlank())
                             ? parsedFrom.getPersonal()
-                            : account.getDefaultFromName());
+                            : account.getDefaultFromName()));
                     if (effectivePersonal != null && !effectivePersonal.isBlank()) {
                         helper.setFrom(new InternetAddress(parsedFrom.getAddress(), MailMessage.sanitizeHeaderText(effectivePersonal), StandardCharsets.UTF_8.name()));
                     } else {
@@ -459,8 +560,11 @@ public class MailTemplate implements DisposableBean {
             if (message.getBcc() != null && !message.getBcc().isEmpty()) {
                 helper.setBcc(message.getBcc().toArray(new String[0]));
             }
-            if (message.getReplyTo() != null && !message.getReplyTo().isBlank()) {
-                helper.setReplyTo(message.getReplyTo());
+            String effectiveReplyTo = (addressOverride != null && addressOverride.replyTo() != null && !addressOverride.replyTo().isBlank())
+                    ? addressOverride.replyTo()
+                    : message.getReplyTo();
+            if (effectiveReplyTo != null && !effectiveReplyTo.isBlank()) {
+                helper.setReplyTo(effectiveReplyTo);
             }
 
             // 3. 主题设置
@@ -1873,7 +1977,11 @@ public class MailTemplate implements DisposableBean {
     }
 
     private boolean isRetryableException(Throwable throwable) {
-        if (throwable instanceof MailAuthenticationException || throwable instanceof IllegalArgumentException) {
+        if (throwable instanceof Error
+                || throwable instanceof MailAuthenticationException
+                || throwable instanceof IllegalArgumentException
+                || MailAccountRegistry.isAuthenticationFailure(throwable)
+                || containsExceptionType(throwable, InterruptedException.class)) {
             return false;
         }
         if (throwable instanceof MailSendException mse) {

@@ -681,6 +681,42 @@ class AtengMailAutoConfigurationTest {
                 .run(context -> assertThat(context).hasFailed());
     }
 
+    @Test
+    @DisplayName("backupAccounts 与 failover.override-from-on-switch 在顶级配置与多账号映射中准确装配")
+    void testBackupAccountsAndFailoverAutoConfiguration() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.mail.accounts.primary.host=smtp.primary.example.com",
+                        "ateng.boot.mail.accounts.primary.backup-accounts[0]=backup-1",
+                        "ateng.boot.mail.accounts.primary.backup-accounts[1]=  ",
+                        "ateng.boot.mail.accounts.primary.backup-accounts[2]=backup-2",
+                        "ateng.boot.mail.accounts.backup-1.host=smtp.backup1.example.com",
+                        "ateng.boot.mail.accounts.backup-2.host=smtp.backup2.example.com",
+                        "ateng.boot.mail.failover.override-from-on-switch=false"
+                )
+                .run(context -> {
+                    MailAccountRegistry registry = context.getBean(MailAccountRegistry.class);
+                    MailAccount primary = registry.get("primary");
+                    assertThat(primary.getBackupAccounts()).containsExactly("backup-1", "backup-2");
+
+                    MailProperties props = context.getBean(MailProperties.class);
+                    assertThat(props.getFailover().isEnabled()).isTrue();
+                    assertThat(props.getFailover().isOverrideFromOnSwitch()).isFalse();
+                });
+
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.mail.host=smtp.top.example.com",
+                        "ateng.boot.mail.backup-accounts[0]=secondary"
+                )
+                .run(context -> {
+                    MailAccountRegistry registry = context.getBean(MailAccountRegistry.class);
+                    MailAccount topDefault = registry.getDefault();
+                    assertThat(topDefault.getBackupAccounts()).containsExactly("secondary");
+                    assertThat(context.getBean(MailProperties.class).getFailover().isOverrideFromOnSwitch()).isTrue();
+                });
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class DynamicProviderConfig {
         @Bean

@@ -14,7 +14,9 @@ import org.springframework.util.unit.DataSize;
 import org.springframework.validation.annotation.Validated;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -206,6 +208,11 @@ public class MailProperties {
     private Map<String, String> properties = new LinkedHashMap<>();
 
     /**
+     * 顶级单账号快捷配置：主账号遇瞬态可用性故障后的有序备用账号名称列表
+     */
+    private List<String> backupAccounts = new ArrayList<>();
+
+    /**
      * 多发信账号配置映射字典（键为账号逻辑名称，如 ops, marketing）
      */
     @Valid
@@ -265,6 +272,13 @@ public class MailProperties {
     @Valid
     @NestedConfigurationProperty
     private MailIdempotentProperties idempotent = new MailIdempotentProperties();
+
+    /**
+     * 邮件主备账号自动顺延容灾配置
+     */
+    @Valid
+    @NestedConfigurationProperty
+    private MailFailoverProperties failover = new MailFailoverProperties();
 
     public MailProperties() {
         this.async.setThreadNamePrefix("mail-async-");

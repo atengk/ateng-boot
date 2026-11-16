@@ -6,7 +6,9 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -102,6 +104,12 @@ public class MailAccount {
     private Map<String, String> properties = new LinkedHashMap<>();
 
     /**
+     * 主账号遇瞬态可用性故障且自身重试耗尽时的有序备用账号名称列表
+     */
+    @Builder.Default
+    private List<String> backupAccounts = new ArrayList<>();
+
+    /**
      * 底层池化物理发送器实例
      */
     private JavaMailSenderImpl sender;
@@ -180,6 +188,7 @@ public class MailAccount {
                 .defaultFromName(this.defaultFromName)
                 .archiveBcc(this.archiveBcc)
                 .properties(this.properties != null ? new LinkedHashMap<>(this.properties) : new LinkedHashMap<>())
+                .backupAccounts(this.backupAccounts != null ? new ArrayList<>(this.backupAccounts) : new ArrayList<>())
                 .sender(sender)
                 .build();
     }

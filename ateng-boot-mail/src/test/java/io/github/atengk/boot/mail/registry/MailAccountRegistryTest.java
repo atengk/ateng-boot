@@ -518,4 +518,54 @@ class MailAccountRegistryTest {
         assertEquals(1, refreshCount.get());
         assertEquals(2, connectCalls.get());
     }
+
+    @Test
+    @DisplayName("测试探针严格隔离：testConnection 与 testConnectionOrThrow 仅探测目标账号，绝不触发 Failover")
+    void testConnectionProbeStrictlyIsolatedWithoutFailover() {
+        MailAccountRegistry registry = new MailAccountRegistry("primary");
+        java.util.concurrent.atomic.AtomicInteger primaryCalls = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.atomic.AtomicInteger backupCalls = new java.util.concurrent.atomic.AtomicInteger(0);
+
+        JavaMailSenderImpl failingPrimarySender = new JavaMailSenderImpl() {
+            @Override
+            public void testConnection() throws jakarta.mail.MessagingException {
+                primaryCalls.incrementAndGet();
+                throw new jakarta.mail.MessagingException("Connection timeout",
+                        new java.net.SocketTimeoutException("Read timed out"));
+            }
+        };
+        JavaMailSenderImpl healthyBackupSender = new JavaMailSenderImpl() {
+            @Override
+            public void testConnection() {
+                backupCalls.incrementAndGet();
+            }
+        };
+
+        MailAccount primary = MailAccount.builder()
+                .name("primary")
+                .host("smtp.primary.example.com")
+                .port(465)
+                .backupAccounts(List.of("healthy-backup"))
+                .sender(failingPrimarySender)
+                .build();
+        MailAccount backup = MailAccount.builder()
+                .name("healthy-backup")
+                .host("smtp.backup.example.com")
+                .port(465)
+                .sender(healthyBackupSender)
+                .build();
+
+        assertEquals(List.of("healthy-backup"), primary.withSender(failingPrimarySender).getBackupAccounts());
+        registry.register(primary);
+        registry.register(backup);
+
+        assertFalse(registry.testConnection("primary"));
+        MailSendException probeEx = assertThrows(MailSendException.class,
+                () -> registry.testConnectionOrThrow("primary"));
+        assertEquals(MailResultCode.MAIL_CONNECT_TIMEOUT, probeEx.getResultCode());
+        assertEquals(2, primaryCalls.get());
+        assertEquals(0, backupCalls.get(), "主动连通性探针绝不允许顺延探测备用账号");
+        assertTrue(registry.testConnection("healthy-backup"));
+        assertEquals(1, backupCalls.get());
+    }
 }

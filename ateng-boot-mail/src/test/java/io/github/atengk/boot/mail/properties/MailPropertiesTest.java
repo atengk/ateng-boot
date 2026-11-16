@@ -52,6 +52,12 @@ class MailPropertiesTest {
         assertNotNull(properties.getIdempotent());
         assertFalse(properties.getIdempotent().isEnabled());
         assertTrue(properties.getIdempotent().isRequireBizId());
+
+        assertNotNull(properties.getBackupAccounts());
+        assertTrue(properties.getBackupAccounts().isEmpty());
+        assertNotNull(properties.getFailover());
+        assertTrue(properties.getFailover().isEnabled());
+        assertTrue(properties.getFailover().isOverrideFromOnSwitch());
     }
 
     @Test

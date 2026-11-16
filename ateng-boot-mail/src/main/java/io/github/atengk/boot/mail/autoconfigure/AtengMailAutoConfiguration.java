@@ -52,6 +52,7 @@ import org.springframework.util.StringUtils;
 import org.thymeleaf.spring6.SpringTemplateEngine;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -113,6 +114,7 @@ public class AtengMailAutoConfiguration {
             props.setDefaultFromName(properties.getDefaultFromName());
             props.setArchiveBcc(properties.getArchiveBcc());
             props.setProperties(properties.getProperties());
+            props.setBackupAccounts(properties.getBackupAccounts());
             registry.register(createMailAccount(properties.getDefaultAccount(), props, properties));
         } else if (StringUtils.hasText(env.getProperty("spring.mail.host"))) {
             // Spring 官方原生配置平滑保底
@@ -364,6 +366,15 @@ public class AtengMailAutoConfiguration {
                 ? accountProps.getArchiveBcc()
                 : (globalProps != null ? globalProps.getArchiveBcc() : null);
 
+        List<String> sanitizedBackups = new ArrayList<>();
+        if (accountProps.getBackupAccounts() != null) {
+            for (String backup : accountProps.getBackupAccounts()) {
+                if (StringUtils.hasText(backup)) {
+                    sanitizedBackups.add(backup.trim());
+                }
+            }
+        }
+
         MailAccount account = MailAccount.builder()
                 .name(name)
                 .host(accountProps.getHost())
@@ -380,6 +391,7 @@ public class AtengMailAutoConfiguration {
                 .defaultFromName(accountProps.getDefaultFromName())
                 .archiveBcc(archiveBcc)
                 .properties(accountProps.getProperties())
+                .backupAccounts(sanitizedBackups)
                 .build();
 
         JavaMailSenderImpl sender = MailAccountRegistry.createSender(account, globalProps);
