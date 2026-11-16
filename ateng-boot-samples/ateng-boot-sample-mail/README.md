@@ -1,12 +1,12 @@
 # ateng-boot-sample-mail 邮件通信与场景治理体验工程
 
-> 专注于演示与自验 `ateng-boot-mail` 核心特性在真实业务场景下的开箱使用。
+> 专注于演示与自验 `ateng-boot-mail` 全场景核心能力与企业级治理特性在真实业务场景下的开箱使用。
 
 ---
 
 ## 1. 快速启动与服务端口
 
-- **默认 HTTP 端口**：`8080` (可在 `application.yml` 中修改)
+- **默认 HTTP 端口**：`8080`（可在 `application.yml` 中修改）
 - **启动方式**：
   ```bash
   # 方式一：IDE 中运行 SampleMailApplication.java 的 main 方法
@@ -25,7 +25,7 @@
 
 ## 3. 核心 Controller 接口与一键体验
 
-应用启动后，可通过以下 cURL 命令或 HTTP 客户端直接发起调用体验：
+应用启动后，可通过以下 cURL 命令或 HTTP 客户端直接发起调用体验（覆盖 5 大高内聚业务控制器及可观测监控端点）：
 
 | 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- | :--- |
@@ -36,7 +36,7 @@
 | **发送流式电子账单附件邮件** | `MailMediaController` | `POST /sample/mail/media/attachment` | `curl -X POST "http://localhost:8080/sample/mail/media/attachment" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"月度电子账单","content":"请查收附件中的电子账单明细。","fileName":"statement-202610.pdf"}'` |
 | **正交内联资源 (Inline CID) 图文混排** | `MailMediaController` | `POST /sample/mail/media/inline` | `curl -X POST "http://localhost:8080/sample/mail/media/inline" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"企业品牌公告","title":"2026 季度企业通报"}'` |
 | **指定运维通道隔离发信** | `MailAccountController` | `POST /sample/mail/account/ops-channel` | `curl -X POST "http://localhost:8080/sample/mail/account/ops-channel" -H "Content-Type: application/json" -d '{"to":"ops-team@example.com","subject":"基础设施告警","content":"只读数据库节点 CPU 利用率超 85% 预警。"}'` |
-| **外部介质动态账号发信 (懒加载)** | `MailAccountController` | `POST /sample/mail/account/dynamic-send` | `curl -X POST "http://localhost:8080/sample/mail/account/dynamic-send" -H "Content-Type: application/json" -d '{"account":"dynamic-db-provider","to":"client@example.com","subject":"动态租户通知","content":"基于外部提供商懒加载账号投递专属通知。","from":"vip@atengk.org","fromName":"VIP客服组"}'` |
+| **外部介质动态账号发信 (懒加载)** | `MailAccountController` | `POST /sample/mail/account/dynamic-send` | `curl -X POST "http://localhost:8080/sample/mail/account/dynamic-send" -H "Content-Type: application/json" -d '{"account":"dynamic-db-provider","to":"client@example.com","subject":"动态租户通知","content":"基于外部提供商懒加载账号投递专属通知。","from":"vip@example.com","fromName":"VIP客服组"}'` |
 | **精准驱逐动态账号缓存 (单机刷新)** | `MailAccountController` | `POST /sample/mail/account/evict-cache` | `curl -X POST "http://localhost:8080/sample/mail/account/evict-cache?accountName=dynamic-db-provider"` |
 | **广播动态账号驱逐领域事件 (集群刷新)** | `MailAccountController` | `POST /sample/mail/account/broadcast-evict` | `curl -X POST "http://localhost:8080/sample/mail/account/broadcast-evict?accountName=dynamic-db-provider"` |
 | **管理端 SMTP 物理连通性一键测试** | `MailAccountController` | `POST /sample/mail/account/test-connection` | `curl -X POST "http://localhost:8080/sample/mail/account/test-connection?accountName=default"` |
@@ -45,13 +45,26 @@
 | **本地事务感知发信 (事务提交触发外发)** | `MailReliableController` | `POST /sample/mail/reliable/transaction-commit` | `curl -X POST "http://localhost:8080/sample/mail/reliable/transaction-commit" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"订单付款成功","content":"本地事务提交成功后由 sendAfterCommit 触发邮件投递。"}'` |
 | **本地事务感知发信 (事务回滚防幽灵撤销)** | `MailReliableController` | `POST /sample/mail/reliable/transaction-rollback` | `curl -X POST "http://localhost:8080/sample/mail/reliable/transaction-rollback" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"订单异常回滚","content":"事务抛出异常回滚，邮件自动防幽灵取消投递。"}'` |
 | **紧急告警发信 (优先级标头+回执+密送)** | `MailReliableController` | `POST /sample/mail/reliable/urgent-alert` | `curl -X POST "http://localhost:8080/sample/mail/reliable/urgent-alert" -H "Content-Type: application/json" -d '{"serviceName":"payment-gateway","alertLevel":"P0","errorMessage":"支付通道超时熔断","to":"oncall@example.com","requestReadReceipt":true,"archiveBcc":"audit-archive@example.com"}'` |
+| **出站频控触发 (40007) 与窗口重置恢复** | `MailGovernanceController` | `POST /sample/mail/governance/rate-limit-demo` | `curl -X POST "http://localhost:8080/sample/mail/governance/rate-limit-demo" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"频控限流测试","content":"连续突发请求校验令牌桶拦截与窗口恢复","burstCount":2}'` |
+| **自然日总配额硬熔断 (40008) 与事件捕获** | `MailGovernanceController` | `POST /sample/mail/governance/quota-demo` | `curl -X POST "http://localhost:8080/sample/mail/governance/quota-demo" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"日配额熔断测试","content":"超过单日配额拦截并触发 MailQuotaExceededEvent","burstCount":2}'` |
+| **bizId 出站幂等防重 (40009) 与失败放锁重试** | `MailGovernanceController` | `POST /sample/mail/governance/idempotent-demo` | `curl -X POST "http://localhost:8080/sample/mail/governance/idempotent-demo" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"幂等防重测试","content":"同流水号重复拦截，发信失败后自动放锁重试","bizId":"ORDER-PAY-1001"}'` |
+| **主备账号顺延容灾与 From/Reply-To 对齐** | `MailGovernanceController` | `POST /sample/mail/governance/failover-demo` | `curl -X POST "http://localhost:8080/sample/mail/governance/failover-demo" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"主备容灾切换","content":"主通道故障自动顺延 ops 备用账号投递","primaryFrom":"primary-support@corp.example.com"}'` |
+| **事务提交后批量合并发信 (支持回滚取消)** | `MailGovernanceController` | `POST /sample/mail/governance/batch-after-commit` | `curl -X POST "http://localhost:8080/sample/mail/governance/batch-after-commit" -H "Content-Type: application/json" -d '{"shouldRollback":false,"items":[{"to":"u1@example.com","subject":"批量通知1","content":"事务提交后批量外发"},{"to":"u2@example.com","subject":"批量通知2","content":"支持回滚自动取消"}]}'` |
+| **测试安全沙箱双策略 (重定向清场/纯日志)** | `MailGovernanceController` | `POST /sample/mail/governance/sandbox-demo` | `curl -X POST "http://localhost:8080/sample/mail/governance/sandbox-demo" -H "Content-Type: application/json" -d '{"to":"vip@customer.example.com","cc":"cc@customer.example.com","redirectTo":"qa@internal.example.com","allowedRecipients":["*@internal.example.com"],"subject":"账单测试","content":"验证非白名单重定向并清空 Cc","logOnly":false}'` |
+| **Freemarker 合规渲染与退信/一键退订标头** | `MailGovernanceController` | `POST /sample/mail/governance/freemarker-compliance` | `curl -X POST "http://localhost:8080/sample/mail/governance/freemarker-compliance" -H "Content-Type: application/json" -d '{"to":"subscriber@example.com","username":"张运维","noticeTitle":"安全合规周报","returnPath":"bounces@mailer.example.com","listUnsubscribe":"<https://unsub.example.com/1>, <mailto:unsub@example.com>"}'` |
+| **多租户上下文动态路由发信** | `MailGovernanceController` | `POST /sample/mail/governance/tenant-route` | `curl -X POST "http://localhost:8080/sample/mail/governance/tenant-route" -H "Content-Type: application/json" -d '{"tenantId":"ops","to":"tenant-user@example.com","subject":"多租户动态路由","content":"依托 TenantContextHolder 自动切换租户发信账号"}'` |
+| **清空全部动态发信账号 LRU 缓存** | `MailGovernanceController` | `POST /sample/mail/governance/clear-dynamic-accounts` | `curl -X POST "http://localhost:8080/sample/mail/governance/clear-dynamic-accounts"` |
+| **事务提交后受管异步发信 (支持回滚取消)** | `MailGovernanceController` | `POST /sample/mail/governance/async-after-commit` | `curl -X POST "http://localhost:8080/sample/mail/governance/async-after-commit?shouldRollback=false" -H "Content-Type: application/json" -d '{"to":"async@example.com","subject":"异步事务通知","content":"事务提交后由受管线程池异步投递"}'` |
+| **函数式 DSL 极简发信调用** | `MailGovernanceController` | `POST /sample/mail/governance/dsl-send` | `curl -X POST "http://localhost:8080/sample/mail/governance/dsl-send" -H "Content-Type: application/json" -d '{"to":"user@example.com","subject":"DSL 发信测试","content":"使用 Consumer<MailMessage> 极简构建并发送"}'` |
+| **邮件健康探针与 Micrometer 指标快照** | `MailGovernanceController` | `GET /sample/mail/governance/observability-status` | `curl "http://localhost:8080/sample/mail/governance/observability-status"` |
+| **Actuator 健康探针与 Prometheus 指标导出** | Actuator 端点 | `GET /actuator/health`<br>`GET /actuator/prometheus` | `curl "http://localhost:8080/actuator/health" && curl "http://localhost:8080/actuator/prometheus" \| grep ateng_mail` |
 
 ---
 
 ## 4. 全真自动化回归命令
 
 ```bash
-mvn test -pl ateng-boot-mail,ateng-boot-samples/ateng-boot-sample-mail -am -T 1C -nsu -B
+mvn test -pl ateng-boot-mail,ateng-boot-observability,ateng-boot-samples/ateng-boot-sample-mail -am -T 1C -nsu -B
 ```
 
-> 详细原理机制、配置清单与扩展定制，请参阅核心 Starter 文档：[ateng-boot-mail README](../../ateng-boot-mail/README.md)。
+> 详细原理机制、配置清单与扩展定制，请参阅核心 Starter 文档：[ateng-boot-mail README](../../ateng-boot-mail/README.md) 与 [ateng-boot-observability README](../../ateng-boot-observability/README.md)。

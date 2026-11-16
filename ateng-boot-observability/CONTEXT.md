@@ -52,6 +52,10 @@ _Avoid_: RabbitHealth, SafeRabbitProbe, RabbitConnectionProbe
 面向 ateng-boot-search 的防假死安全健康探针，基于受管异步线程探测 Elasticsearch 集群 Ping 状态与节点连通性，防止网络抖动拖垮探针。
 _Avoid_: EsHealthIndicator, ElasticCheck, SearchProbe
 
+**MailSafeHealthIndicator**:
+面向 ateng-boot-mail 的邮件通信防假死安全健康探针，仅探测 `MailAccountRegistry` 中静态预热账号列表的物理 SMTP 连通性（跳过动态租户缓存账号以避免单租户异常拖垮全局状态，静态账号为空时返回 `UNKNOWN`），内置默认 `60s` 防刷缓存 TTL 防范公网邮箱服务商限流，并对异常详情中的邮箱、密码与令牌自动脱敏掩码。
+_Avoid_: MailHealthProbe, SmtpHealthIndicator, EmailHealthCheck
+
 **MetricsTemplate**:
 业务指标度量统一编程式操作门面，基于 Micrometer 封装 Counter、Timer、Gauge 与 DistributionSummary 的高频采集语义，提供流式计时、函数式测量与常用多维打标能力。
 _Avoid_: MetricService, MetricHelper, PrometheusTemplate, MeterTemplate

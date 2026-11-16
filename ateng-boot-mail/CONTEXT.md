@@ -25,7 +25,7 @@ _Avoid_: Attachment, EmailFile, FileAttachment
 _Avoid_: InlineAttachment, EmbeddedImage, CidResource
 
 **MailAccountRegistry**:
-发件源账号静态注册中心与底层物理 Sender 缓存容器，管理预热的 `JavaMailSenderImpl` 实例池并提供并发安全存取。
+发信账号静态注册中心与底层 `JavaMailSenderImpl` 配置及物理发信器 LRU 缓存容器（基于 `ReentrantLock` 并发安全纳管静态与动态账号，并提供 `testConnection` 探活与 `XOAUTH2` 令牌刷新重载辅助；不同于批量发信期间按分片临时借还的 `Transport` 长连接复用）。
 _Avoid_: AccountManager, MailSenderPool, EmailRegistry
 
 **MailAccountResolver**:
@@ -73,11 +73,11 @@ _Avoid_: BatchSendResult, MultiMailResponse, SendBatchResult
 _Avoid_: BatchItem, MailItemResult, SendResultItem
 
 **DynamicMailSession**:
-动态临时账号发信会话门面，由 `MailTemplate.forDynamicAccount` 派生，为指定运行时发件账号提供流畅的发信 DSL、受管异步、本地事务感知与绑定账号的批量合并（`sendBatch`/`sendBatchAsync`/`sendBatchAfterCommit`/`sendBatchAsyncAfterCommit`）对称支持。
+动态临时账号发信会话门面，由 `MailTemplate.forDynamicAccount` 派生，为指定运行时发件账号提供对称完整的单封/异步/事务感知（`sendAfterCommit`/`sendAsyncAfterCommit`）、物理连通性探针（`testConnection`/`testConnectionOrThrow`）及绑定账号的批量合并（`sendBatch`/`sendBatchAsync`/`sendBatchAfterCommit`/`sendBatchAsyncAfterCommit`）能力。
 _Avoid_: MailSession, AccountSession, MailClientSession
 
 **MailPriority**:
-强类型邮件重要性与优先级枚举，统一抽象标准 RFC 3798 / RFC 2156 邮件标头规范（映射 `X-Priority` 与 `Importance`）。
+强类型邮件重要性与优先级枚举，统一抽象主流邮件客户端识别的 `X-Priority` / `Importance` 标头规范（与 `RFC 3798` 阅读回执正交配合）。
 _Avoid_: EmailPriority, PriorityLevel, MessagePriority
 
 **MailSandboxInterceptor**:
@@ -103,3 +103,43 @@ _Avoid_: QuotaAlertEvent, MailLimitWarningEvent
 **MailIdempotentGuard**:
 邮件出站幂等防重守卫 SPI，默认在 `require-biz-id=true` 时依据业务流水号 `bizId` 抢占独占锁（重复拦截抛出 `MAIL_IDEMPOTENT_REJECTED`），物理发信失败时主动执行 `releaseLock` 以支持补偿重试。
 _Avoid_: IdempotentLock, MailDeduplicator, DuplicateMailFilter
+
+**MailResultCode**:
+邮件模块统一语义化业务错误码枚举（实现 `IResultCode`），涵盖 `40001~40009`（收件人为空、账号未找到、附件超限、模板渲染失败、总容量超限、地址格式非法、频控拦截、日配额耗尽、幂等拒绝）与 `50001~50003`（发送失败、连接超时、认证失败）。
+_Avoid_: MailErrorCode, EmailStatusCode, MailFailureEnum
+
+**AuthMode**:
+SMTP 传输认证模式强类型枚举（实现 `IBaseEnum<String>`），定义 `AUTO`（存在用户名/密码时启用密码认证，否则免认证中继）、`PASSWORD`、`NONE`（免认证内网中继）与 `XOAUTH2`（OAuth2 访问令牌认证）。
+_Avoid_: SmtpAuthType, AuthStrategy, LoginMode
+
+**MailAccessTokenProvider**:
+SMTP `XOAUTH2` 动态访问令牌供给与刷新 SPI（`@FunctionalInterface`），提供 `getAccessToken` 与首次认证失败后自动触发的 `refreshAccessToken` 回调契约。
+_Avoid_: OAuthTokenService, TokenSupplier, MailTokenManager
+
+**ThymeleafMailTemplateRenderer**:
+基于 Spring 6 `SpringTemplateEngine` 的 Thymeleaf 邮件 HTML 模板渲染实现（实现 `MailTemplateRenderer`），配合 `MailTemplateResourceUtil` 执行 `Locale` 级联变体解析与路径安全校验。
+_Avoid_: ThymeleafViewRenderer, MailThymeleafEngine
+
+**FreemarkerMailTemplateRenderer**:
+基于 Freemarker `Configuration` 的邮件模板渲染实现（实现 `MailTemplateRenderer`），自动按扩展名（`.ftl` / `.ftlh`）与 `Locale` 级联渲染 HTML 内容。
+_Avoid_: FtlRenderer, FreemarkerView
+
+**MailTemplateResourceUtil**:
+邮件模板类路径探测与国际化 `Locale` 级联候选名称解析静态工具，内置防目录穿越（`..`）与空字符（`\0`）攻击拦截校验。
+_Avoid_: TemplatePathHelper, FtlResourceUtil, MailTemplateScanner
+
+**MailMetricsRecorder**:
+邮件发送、物理重试与主备容灾切换度量记录 SPI，解耦 `MailTemplate` 核心引擎与具体 Micrometer 实现，未引入观测组件时默认采用空实现降级。
+_Avoid_: MetricsCollector, MailStatService
+
+**MailMetrics**:
+基于 Micrometer 的邮件基础设施低基数度量采集团（实现 `MailMetricsRecorder`），导出 `ateng.mail.send.count`、`ateng.mail.send.duration`、`ateng.mail.retry.count`、`ateng.mail.failover.count` 及静态/动态账号 `Gauge`，强制收敛动态租户账号标签防 Prometheus 基数爆炸。
+_Avoid_: PrometheusMailExporter, MailStatCounter
+
+**MailSendOutcome**:
+邮件发信操作终态结果枚举，严格收敛低基数 Micrometer `outcome` 标签取值（`success`、`sandbox`、`intercepted`、`rate_limited`、`quota_exceeded`、`idempotent_rejected`、`failure`）。
+_Avoid_: DeliveryOutcome, SendStateTag
+
+**TrackableMimeMessage**:
+具备稳定唯一标头与追踪标识追踪能力的内部 `MimeMessage` 包装模型，确保 RFC 5322 `Message-ID` 与追踪上下文在底层的无损传递与防篡改。
+_Avoid_: CustomMimeMessage, RawEmailMessage

@@ -89,8 +89,8 @@ flowchart TD
 - **前置最高优先级拦截**：
   引入 `ateng.boot.mail.sandbox` 配置属性与内置 `MailSandboxInterceptor`，设定为最高优先级（`Ordered.HIGHEST_PRECEDENCE`），确保在所有业务拦截器之前生效；
 - **三模防护策略**：
-  1. **白名单放行**：通过 `allowed-recipients`（如 `*@internal.com`、`developer@test.com`）精准放行；
-  2. **强制重定向与防泄密清场**：非白名单邮件自动将 `to` 替换为 `redirect-to`（如 `mail-trap@company.com`），**同时绝对清空原邮件的 `cc` 与 `bcc`**，杜绝任何外部人员泄露，并在主题追加 `[SANDBOX-REDIRECT to: original@...]` 标头；
+  1. **白名单放行**：通过 `allowed-recipients`（如 `*@internal.example.com`、`developer@example.com`）精准放行；
+  2. **强制重定向与防泄密清场**：非白名单邮件自动将 `to` 替换为 `redirect-to`（如 `mail-trap@example.com`），**同时绝对清空原邮件的 `cc` 与 `bcc`**，杜绝任何外部人员泄露，并在主题追加 `[SANDBOX-REDIRECT to: original@...]` 标头；
   3. **纯日志模拟 (`log-only=true`)**：不发起任何物理网络连接，直接在控制台输出脱敏完整邮件报文并返回虚拟成功回执（Message-ID 标识为 `<sandbox-log-${traceId}@domain>`）。
 
 ### 3. 模板渲染引擎 SPI 国际化演化 (i18n Template SPI)
@@ -118,6 +118,29 @@ flowchart TD
   支持全局与账号级 `archive-bcc: compliance@example.com`，前置编排链自动追加至 `message.bcc` 列表，执行大小写无关的 `Set` 去重，并在脱敏日志中安全留痕；
 - **强类型邮件优先级与回执**：
   引入强类型枚举 `MailPriority`（`HIGH`, `NORMAL`, `LOW`）；`MailMessage` 提供链式 DSL：`priority(MailPriority.HIGH)` 自动注入 `X-Priority: 1` 与 `Importance: High`；提供 `readReceiptTo(email)` 与 `requestReadReceipt(true)` 自动注入 RFC 3798 `Disposition-Notification-To` 回执请求标头。
+
+---
+
+## 增量演进：2026-11 全场景生产加固 (Production Hardening Addendum)
+
+为彻底补全多租户集群协同、企业网关协议合规、主备高可用与云原生可观测闭环，在保持既有 ADR-0069 主体架构 100% 向后兼容的前提下，于同一演进基线下增量落地六项生产级治理能力：
+
+1. **三阶出站防御（限流 / 日配额熔断 / 业务幂等）与双模实现**：
+   - 新增 `MailRateLimiter`（发信账号维度令牌桶 + 单收件人维度滑动窗口，按去重实际物理收件人次计费，超限抛出 `MAIL_RATE_LIMITED`）、`MailDailyQuotaBreaker`（自然日去重收件人次硬熔断，超限抛出 `MAIL_QUOTA_EXCEEDED` 并同步发布 `MailQuotaExceededEvent` 解耦事件）以及 `MailIdempotentGuard`（默认 `require-biz-id=true` 仅对显式携带 `bizId` 的消息抢占防重锁，物理发信失败主动执行 `releaseLock` 支持补偿重试）；
+   - 全系防卫策略默认 `enabled=false` 保持零侵入，且同时内置单机内存 LRU 实现（`InMemory*`）与 Redis Lua 原子分布式实现（`Redis*`，标配 `fail-open-on-redis-error` 容错开关，无 Redis 时自动平滑降级）。
+2. **主备账号顺延容灾 (`backupAccounts`) 与 SPF/DMARC 域对齐**：
+   - 在账号重试耗尽遇到网络超时/认证等可转移故障时，按 `backupAccounts` 有序队列自动切换至备用账号重试并记录 `Failover` 指标；
+   - 通过 `ateng.boot.mail.failover.override-from-on-switch`（默认 `true`）自动将外发信封与 `From` 标头对齐至备用账号所属发件邮箱，并将原主账号发件地址自动写入 `Reply-To` 保留业务回复链路，避免严格 SPF/DMARC 域策略拒信。
+3. **认证扩展 (`AuthMode` + `XOAUTH2` + `sslTrust`) 与退信/退订合规协议**：
+   - 确立强类型 `AuthMode` 枚举（`AUTO` / `PASSWORD` / `NONE` / `XOAUTH2`），搭配 `MailAccessTokenProvider` SPI 在初次鉴权失败时执行单次受锁刷新重试，并支持内网自签名网关配置 `ssl-trust`；
+   - `MailMessage` 新增单封隔离的 SMTP Envelope `returnPath`（绝不污染共享 `Session`）、RFC 2369 `listUnsubscribe` 与 RFC 8058 `listUnsubscribePost`（清洗 CR/LF/NUL 防头部注入），并在 `SimpleMailTemplateRenderer` 增加 `ateng.boot.mail.template.html-escape` 可选防 XSS 转义开关。
+4. **分片批量合并升级（片内 `Transport` 复用 + `sendBatchAfterCommit` + 整批超时熔断）**：
+   - 重构批量引擎 `MailBatchSupport`，基于 `ateng-boot-core` 的 `BatchSliceUtil` 按 `batch.slice-size`（默认 50）切分批处理片区，在启用 `batch.reuse-transport=true` 时按路由账号片内复用同一物理 `Transport` 连续投递并强制收敛至 `batch.timeout`（默认 5 分钟）总超时，在超时后按 Fail-Safe 标为失败并确定性关闭遗留句柄；同时补齐 `MailTemplate` 与 `DynamicMailSession` 的 `sendBatchAfterCommit*` / `sendBatchAsyncAfterCommit*` 对称契约。
+5. **低基数 Micrometer 指标与防假死静态账号探针 (`MailSafeHealthIndicator`)**：
+   - `ateng-boot-mail` 通过弱依赖 `MailMetricsRecorder` / `MailMetrics` 暴露 `ateng.mail.send.count`、`ateng.mail.send.duration`、`ateng.mail.retry.count`、`ateng.mail.failover.count` 及静态/动态账号 `Gauge`，强制将动态租户账号收敛为 `dynamic`（独立运行上限 64 截断为 `other`），严禁收件人/主题进入标签；
+   - `ateng-boot-observability` 协同落地继承自 `AbstractSafeHealthIndicator` 的 `MailSafeHealthIndicator`，仅对静态账号列表执行物理探活（跳过动态账号且默认启用 `60s` `health.mail.cache-ttl` 防刷防封号，异常细节强制脱敏）。
+6. **双模式顶级单账号快捷配置**：
+   - `MailProperties` 新增 `allow-empty-accounts` 与顶级单账号扁平属性（`ateng.boot.mail.host/port/.../backup-accounts`）及其别名字段对齐，兼顾单账号微服务极简配置与多账号映射治理。
 
 ---
 
