@@ -431,6 +431,12 @@ public class OpenApiProperties {
         @NestedConfigurationProperty
         private Token token = new Token();
 
+        /**
+         * Sa-Token 会话与角色/权限分级守卫配置
+         */
+        @NestedConfigurationProperty
+        private SaTokenGuard satoken = new SaTokenGuard();
+
         public GuardMode getMode() {
             return mode;
         }
@@ -462,6 +468,45 @@ public class OpenApiProperties {
         public void setToken(Token token) {
             this.token = token != null ? token : new Token();
         }
+
+        public SaTokenGuard getSatoken() {
+            return satoken;
+        }
+
+        public void setSatoken(SaTokenGuard satoken) {
+            this.satoken = satoken != null ? satoken : new SaTokenGuard();
+        }
+    }
+
+    /**
+     * Sa-Token 会话与角色/权限分级守卫配置
+     */
+    public static class SaTokenGuard {
+        /**
+         * 允许访问 OpenAPI 文档的 Sa-Token 角色标识列表（OR 语义：满足任一角色或权限即可放行；均为空时仅校验已登录）
+         */
+        private List<String> roles = new ArrayList<>();
+
+        /**
+         * 允许访问 OpenAPI 文档的 Sa-Token 权限码列表（OR 语义：满足任一角色或权限即可放行；均为空时仅校验已登录）
+         */
+        private List<String> permissions = new ArrayList<>();
+
+        public List<String> getRoles() {
+            return roles != null ? roles : Collections.emptyList();
+        }
+
+        public void setRoles(List<String> roles) {
+            this.roles = roles != null ? roles : new ArrayList<>();
+        }
+
+        public List<String> getPermissions() {
+            return permissions != null ? permissions : Collections.emptyList();
+        }
+
+        public void setPermissions(List<String> permissions) {
+            this.permissions = permissions != null ? permissions : new ArrayList<>();
+        }
     }
 
     /**
@@ -483,6 +528,15 @@ public class OpenApiProperties {
          * 若配置，则从该标头提取首个合法客户端真实 IP；若未配置，严格读取物理连接 IP（request.getRemoteAddr()），防御客户端伪造 Header 越权。
          */
         private String trustedHeader;
+
+        /**
+         * 受信任的反向代理节点 IP 或 CIDR 列表（例如 127.0.0.1, 10.0.0.0/8, fe80::/10）。
+         * <p>
+         * 若显式配置了非空列表，仅当物理连接地址（request.getRemoteAddr()）命中该列表时才采信 {@code trustedHeader}；
+         * 若未配置（默认空），为保障既有配置向后兼容，直接采信配置的 {@code trustedHeader}。
+         * </p>
+         */
+        private List<String> trustedProxies = new ArrayList<>();
 
         public boolean isEnabled() {
             return enabled;
@@ -506,6 +560,14 @@ public class OpenApiProperties {
 
         public void setTrustedHeader(String trustedHeader) {
             this.trustedHeader = trustedHeader;
+        }
+
+        public List<String> getTrustedProxies() {
+            return trustedProxies != null ? trustedProxies : Collections.emptyList();
+        }
+
+        public void setTrustedProxies(List<String> trustedProxies) {
+            this.trustedProxies = trustedProxies != null ? trustedProxies : new ArrayList<>();
         }
     }
 

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.openapi.guard;
 
+import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.openapi.properties.GuardMode;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
 import jakarta.servlet.FilterChain;
@@ -7,12 +8,14 @@ import jakarta.servlet.ServletException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -447,5 +450,152 @@ class OpenApiGuardFilterTest {
 
         verify(filterChain, times(1)).doFilter(request, response);
         assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("授信反向代理防伪造：配置 trusted-proxies 后，非授信物理来源伪造转发头被忽略并拦截 403")
+    void testUntrustedProxyCannotSpoofTrustedHeaderWhenTrustedProxiesConfigured() throws ServletException, IOException {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.IP_WHITELIST);
+        properties.getGuard().getIpWhitelist().getCidrs().add("192.168.10.0/24");
+        properties.getGuard().getIpWhitelist().setTrustedHeader("X-Forwarded-For");
+        properties.getGuard().getIpWhitelist().getTrustedProxies().add("10.0.0.0/8");
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/swagger-ui/index.html");
+        request.setRemoteAddr("203.0.113.9"); // 非授信公网来源
+        request.addHeader("X-Forwarded-For", "192.168.10.88"); // 伪造内网白名单 IP
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain, never()).doFilter(any(), any());
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("授信反向代理穿透：物理连接命中 trusted-proxies 时采信转发头并匹配白名单放行（支持 IPv4 与 IPv6）")
+    void testTrustedProxyExtractsForwardedClientIpForIpv4AndIpv6() throws ServletException, IOException {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.IP_WHITELIST);
+        properties.getGuard().getIpWhitelist().getCidrs().add("192.168.10.0/24");
+        properties.getGuard().getIpWhitelist().getCidrs().add("2001:db8:1::/48");
+        properties.getGuard().getIpWhitelist().setTrustedHeader("X-Forwarded-For");
+        properties.getGuard().getIpWhitelist().getTrustedProxies().add("10.0.0.0/8");
+        properties.getGuard().getIpWhitelist().getTrustedProxies().add("fe80::/10");
+
+        // 1. IPv4 授信反代放行
+        MockHttpServletRequest ipv4Req = new MockHttpServletRequest("GET", "/v3/api-docs");
+        ipv4Req.setRemoteAddr("10.2.3.4");
+        ipv4Req.addHeader("X-Forwarded-For", "192.168.10.25, 10.2.3.4");
+        MockHttpServletResponse ipv4Resp = new MockHttpServletResponse();
+        filter.doFilter(ipv4Req, ipv4Resp, filterChain);
+        verify(filterChain, times(1)).doFilter(ipv4Req, ipv4Resp);
+        assertThat(ipv4Resp.getStatus()).isEqualTo(200);
+
+        // 2. IPv6 授信反代放行
+        MockHttpServletRequest ipv6Req = new MockHttpServletRequest("GET", "/v3/api-docs");
+        ipv6Req.setRemoteAddr("fe80::1");
+        ipv6Req.addHeader("X-Forwarded-For", "2001:db8:1::42");
+        MockHttpServletResponse ipv6Resp = new MockHttpServletResponse();
+        filter.doFilter(ipv6Req, ipv6Resp, filterChain);
+        verify(filterChain, times(1)).doFilter(ipv6Req, ipv6Resp);
+        assertThat(ipv6Resp.getStatus()).isEqualTo(200);
+
+        // 3. IPv6 非授信来源携带伪造头拦截 403
+        FilterChain blockedChain = mock(FilterChain.class);
+        MockHttpServletRequest spoofedIpv6 = new MockHttpServletRequest("GET", "/v3/api-docs");
+        spoofedIpv6.setRemoteAddr("2001:db9::99");
+        spoofedIpv6.addHeader("X-Forwarded-For", "2001:db8:1::42");
+        MockHttpServletResponse spoofedResp = new MockHttpServletResponse();
+        filter.doFilter(spoofedIpv6, spoofedResp, blockedChain);
+        verify(blockedChain, never()).doFilter(any(), any());
+        assertThat(spoofedResp.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("Sa-Token 模式未配置角色与权限时已登录会话直接放行")
+    void testSaTokenEmptyRolesAndPermissionsAllowsLoggedInUser() throws ServletException, IOException {
+        properties.getGuard().setMode(GuardMode.SATOKEN);
+        filter.afterPropertiesSet();
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::isLogin).thenReturn(true);
+
+            MockHttpServletRequest request = new MockHttpServletRequest("GET", "/docs");
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            FilterChain chain = mock(FilterChain.class);
+
+            filter.doFilter(request, response, chain);
+            verify(chain, times(1)).doFilter(request, response);
+            assertThat(response.getStatus()).isEqualTo(200);
+
+            // 仅含空白元素时亦视作未配置细粒度限制
+            properties.getGuard().getSatoken().setRoles(List.of(" ", ""));
+            properties.getGuard().getSatoken().setPermissions(List.of("\t"));
+            MockHttpServletRequest blankReq = new MockHttpServletRequest("GET", "/docs");
+            MockHttpServletResponse blankResp = new MockHttpServletResponse();
+            FilterChain blankChain = mock(FilterChain.class);
+            filter.doFilter(blankReq, blankResp, blankChain);
+            verify(blankChain, times(1)).doFilter(blankReq, blankResp);
+            assertThat(blankResp.getStatus()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    @DisplayName("Sa-Token 模式配置角色与权限时按 OR 语义判定并在无权限时返回 403")
+    void testSaTokenRolesAndPermissionsOrSemanticsAndForbidden() throws ServletException, IOException {
+        properties.getGuard().setMode(GuardMode.SATOKEN);
+        properties.getGuard().getSatoken().setRoles(List.of("doc-admin"));
+        properties.getGuard().getSatoken().setPermissions(List.of("openapi:view"));
+        filter.afterPropertiesSet();
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            // 1. 未登录返回 401
+            stpUtil.when(StpUtil::isLogin).thenReturn(false);
+            MockHttpServletRequest unauthReq = new MockHttpServletRequest("GET", "/docs");
+            MockHttpServletResponse unauthResp = new MockHttpServletResponse();
+            FilterChain unauthChain = mock(FilterChain.class);
+            filter.doFilter(unauthReq, unauthResp, unauthChain);
+            verify(unauthChain, never()).doFilter(any(), any());
+            assertThat(unauthResp.getStatus()).isEqualTo(401);
+
+            // 2. 已登录但角色与权限均不匹配，访问 /docs 和 /docs/export/json 均返回 403
+            stpUtil.when(StpUtil::isLogin).thenReturn(true);
+            stpUtil.when(() -> StpUtil.hasRole("doc-admin")).thenReturn(false);
+            stpUtil.when(() -> StpUtil.hasPermission("openapi:view")).thenReturn(false);
+
+            MockHttpServletRequest forbiddenReq = new MockHttpServletRequest("GET", "/docs");
+            MockHttpServletResponse forbiddenResp = new MockHttpServletResponse();
+            FilterChain forbiddenChain = mock(FilterChain.class);
+            filter.doFilter(forbiddenReq, forbiddenResp, forbiddenChain);
+            verify(forbiddenChain, never()).doFilter(any(), any());
+            assertThat(forbiddenResp.getStatus()).isEqualTo(403);
+
+            MockHttpServletRequest exportReq = new MockHttpServletRequest("GET", "/docs/export/json");
+            MockHttpServletResponse exportResp = new MockHttpServletResponse();
+            FilterChain exportChain = mock(FilterChain.class);
+            filter.doFilter(exportReq, exportResp, exportChain);
+            verify(exportChain, never()).doFilter(any(), any());
+            assertThat(exportResp.getStatus()).isEqualTo(403);
+
+            // 3. 仅命中任一角色即放行 (OR 语义)
+            stpUtil.when(() -> StpUtil.hasRole("doc-admin")).thenReturn(true);
+            MockHttpServletRequest roleReq = new MockHttpServletRequest("GET", "/docs");
+            MockHttpServletResponse roleResp = new MockHttpServletResponse();
+            FilterChain roleChain = mock(FilterChain.class);
+            filter.doFilter(roleReq, roleResp, roleChain);
+            verify(roleChain, times(1)).doFilter(roleReq, roleResp);
+            assertThat(roleResp.getStatus()).isEqualTo(200);
+
+            // 4. 仅命中任一权限即放行 (OR 语义)
+            stpUtil.when(() -> StpUtil.hasRole("doc-admin")).thenReturn(false);
+            stpUtil.when(() -> StpUtil.hasPermission("openapi:view")).thenReturn(true);
+            MockHttpServletRequest permReq = new MockHttpServletRequest("GET", "/docs/export/json");
+            MockHttpServletResponse permResp = new MockHttpServletResponse();
+            FilterChain permChain = mock(FilterChain.class);
+            filter.doFilter(permReq, permResp, permChain);
+            verify(permChain, times(1)).doFilter(permReq, permResp);
+            assertThat(permResp.getStatus()).isEqualTo(200);
+        }
     }
 }

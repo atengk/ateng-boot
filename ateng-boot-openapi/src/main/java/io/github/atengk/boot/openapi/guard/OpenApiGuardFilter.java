@@ -17,6 +17,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.List;
+import java.util.function.Predicate;
 
 /**
  * OpenAPI 接口文档生产安全守卫过滤器
@@ -47,6 +50,7 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
 
     private final OpenApiProperties properties;
     private volatile OpenApiCidrMatcher cidrMatcher;
+    private volatile OpenApiCidrMatcher trustedProxyMatcher;
 
     public OpenApiGuardFilter(OpenApiProperties properties) {
         this.properties = properties;
@@ -90,6 +94,9 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
                 this.cidrMatcher = new OpenApiCidrMatcher(ipWhitelist.getCidrs());
             } else if (ipWhitelist != null && ipWhitelist.getCidrs() != null && !ipWhitelist.getCidrs().isEmpty()) {
                 this.cidrMatcher = new OpenApiCidrMatcher(ipWhitelist.getCidrs());
+            }
+            if (ipWhitelist != null && ipWhitelist.getTrustedProxies() != null && !ipWhitelist.getTrustedProxies().isEmpty()) {
+                this.trustedProxyMatcher = new OpenApiCidrMatcher(ipWhitelist.getTrustedProxies());
             }
         }
     }
@@ -187,10 +194,27 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
     }
 
     /**
+     * 获取或延迟构建受信任反向代理节点 CIDR 匹配器
+     */
+    private OpenApiCidrMatcher getOrCreateTrustedProxyMatcher() {
+        if (trustedProxyMatcher == null && properties.getGuard() != null) {
+            OpenApiProperties.IpWhitelist ipWhitelist = properties.getGuard().getIpWhitelist();
+            if (ipWhitelist != null && !ipWhitelist.getTrustedProxies().isEmpty()) {
+                trustedProxyMatcher = new OpenApiCidrMatcher(ipWhitelist.getTrustedProxies());
+            }
+        }
+        return trustedProxyMatcher;
+    }
+
+    /**
      * 提取客户端真实 IP 地址
      * <p>
-     * 若配置了受信任代理标头（{@code trusted-header}，如 {@code X-Forwarded-For}），则从该标头提取首个非空有效 IP；
-     * 若未配置受信任标头，严格读取 {@link HttpServletRequest#getRemoteAddr()}，杜绝客户端伪造 Header 越权。
+     * 若配置了受信任代理标头（{@code trusted-header}，如 {@code X-Forwarded-For}）：
+     * <ul>
+     *     <li>若同时配置了 {@code trusted-proxies}，必须先校验物理连接地址命中授信反代节点后才采信转发标头；</li>
+     *     <li>若未配置 {@code trusted-proxies}，保持向后兼容直接读取该标头首个有效 IP。</li>
+     * </ul>
+     * 若未配置受信任标头，或物理来源未命中授信反代，严格返回物理连接 IP（{@link HttpServletRequest#getRemoteAddr()}）。
      * </p>
      *
      * @param request HTTP 请求
@@ -200,26 +224,40 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
         if (request == null) {
             return "";
         }
+        String rawRemoteAddr = request.getRemoteAddr();
+        String physicalIp = rawRemoteAddr != null ? OpenApiCidrMatcher.stripPort(rawRemoteAddr.trim()) : "";
+
         OpenApiProperties.IpWhitelist ipWhitelist = (properties.getGuard() != null)
                 ? properties.getGuard().getIpWhitelist()
                 : null;
         String trustedHeader = (ipWhitelist != null) ? ipWhitelist.getTrustedHeader() : null;
+        if (!StringUtils.hasText(trustedHeader)) {
+            return physicalIp;
+        }
 
-        if (StringUtils.hasText(trustedHeader)) {
-            String headerValue = request.getHeader(trustedHeader.trim());
-            if (StringUtils.hasText(headerValue)) {
-                String[] parts = headerValue.split(",");
-                for (String part : parts) {
-                    String candidate = part.trim();
-                    if (!candidate.isBlank() && !"unknown".equalsIgnoreCase(candidate)) {
-                        return OpenApiCidrMatcher.stripPort(candidate);
-                    }
-                }
+        String headerValue = request.getHeader(trustedHeader.trim());
+        if (!StringUtils.hasText(headerValue)) {
+            return physicalIp;
+        }
+
+        if (!ipWhitelist.getTrustedProxies().isEmpty()) {
+            OpenApiCidrMatcher proxyMatcher = getOrCreateTrustedProxyMatcher();
+            if (proxyMatcher == null || !proxyMatcher.matches(physicalIp)) {
+                log.debug("Untrusted remote address [{}] attempted to pass proxy header [{}]; falling back to physical IP.",
+                        physicalIp, trustedHeader);
+                return physicalIp;
             }
         }
 
-        String remoteAddr = request.getRemoteAddr();
-        return remoteAddr != null ? OpenApiCidrMatcher.stripPort(remoteAddr.trim()) : "";
+        String[] parts = headerValue.split(",");
+        for (String part : parts) {
+            String candidate = part.trim();
+            if (!candidate.isBlank() && !"unknown".equalsIgnoreCase(candidate)) {
+                return OpenApiCidrMatcher.stripPort(candidate);
+            }
+        }
+
+        return physicalIp;
     }
 
     /**
@@ -279,22 +317,108 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
      * 处理 Sa-Token 鉴权逻辑
      */
     private boolean handleSaTokenAuth(HttpServletRequest request, HttpServletResponse response, String path) throws IOException {
-        boolean loggedIn = false;
+        boolean boundContextHere = bindSaTokenContextIfAbsent(request, response);
         try {
-            loggedIn = cn.dev33.satoken.stp.StpUtil.isLogin();
-        } catch (Throwable t) {
-            log.warn("Sa-Token authentication check failed: {}", t.getMessage());
-        }
+            boolean loggedIn = false;
+            try {
+                loggedIn = cn.dev33.satoken.stp.StpUtil.isLogin();
+            } catch (Exception | LinkageError ex) {
+                log.warn("Sa-Token authentication check failed: {}", ex.getMessage());
+            }
 
-        if (!loggedIn) {
-            log.warn("OpenAPI document access rejected: Sa-Token session not logged in for path [{}]", path);
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-            response.setContentType("text/plain;charset=UTF-8");
-            response.getWriter().write("401 Unauthorized: OpenAPI document access requires Sa-Token authentication.");
+            if (!loggedIn) {
+                log.warn("OpenAPI document access rejected: Sa-Token session not logged in for path [{}]", path);
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                response.setContentType("text/plain;charset=UTF-8");
+                response.getWriter().write("401 Unauthorized: OpenAPI document access requires Sa-Token authentication.");
+                return false;
+            }
+
+            OpenApiProperties.SaTokenGuard saTokenGuard = (properties.getGuard() != null)
+                    ? properties.getGuard().getSatoken()
+                    : null;
+            List<String> roles = (saTokenGuard != null) ? saTokenGuard.getRoles() : Collections.emptyList();
+            List<String> permissions = (saTokenGuard != null) ? saTokenGuard.getPermissions() : Collections.emptyList();
+            if (!hasNonBlankElement(roles) && !hasNonBlankElement(permissions)) {
+                return true;
+            }
+
+            boolean authorized = false;
+            try {
+                authorized = matchesAnySaToken(roles, cn.dev33.satoken.stp.StpUtil::hasRole)
+                        || matchesAnySaToken(permissions, cn.dev33.satoken.stp.StpUtil::hasPermission);
+            } catch (Exception | LinkageError ex) {
+                log.warn("Sa-Token authorization check failed for path [{}]: {}", path, ex.getMessage());
+            }
+
+            if (!authorized) {
+                log.warn("OpenAPI document access forbidden: Sa-Token session lacks required roles/permissions for path [{}]", path);
+                response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                response.setContentType("text/plain;charset=UTF-8");
+                response.getWriter().write("403 Forbidden: OpenAPI document access requires configured Sa-Token role or permission.");
+                return false;
+            }
+
+            return true;
+        } finally {
+            if (boundContextHere) {
+                clearSaTokenContext();
+            }
+        }
+    }
+
+    /**
+     * OpenApiGuardFilter 位于 SaTokenContextFilterForJakartaServlet 之前执行早期防火墙拦截，
+     * 进入 SATOKEN 鉴权前若尚未绑定上下文且 Sa-Token 策略已就绪，则按 Servlet 请求临时绑定并在 finally 中清理。
+     */
+    private boolean bindSaTokenContextIfAbsent(HttpServletRequest request, HttpServletResponse response) {
+        try {
+            cn.dev33.satoken.context.SaTokenContext context = cn.dev33.satoken.SaManager.getSaTokenContext();
+            if (context == null || context == cn.dev33.satoken.context.SaTokenContextDefaultImpl.defaultContext) {
+                return false;
+            }
+            if (context.isValid() || cn.dev33.satoken.strategy.SaStrategy.instance.createSaRequest == null) {
+                return false;
+            }
+            cn.dev33.satoken.servlet.util.SaTokenContextJakartaServletUtil.setContext(request, response);
+            return true;
+        } catch (Exception | LinkageError ex) {
+            log.debug("Unable to bind transient Sa-Token Servlet context: {}", ex.getMessage());
             return false;
         }
+    }
 
-        return true;
+    private void clearSaTokenContext() {
+        try {
+            cn.dev33.satoken.servlet.util.SaTokenContextJakartaServletUtil.clearContext();
+        } catch (Exception | LinkageError ex) {
+            log.debug("Failed to clear transient Sa-Token Servlet context: {}", ex.getMessage());
+        }
+    }
+
+    private static boolean hasNonBlankElement(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return false;
+        }
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean matchesAnySaToken(List<String> candidates,
+                                             Predicate<String> checker) {
+        if (candidates == null || candidates.isEmpty()) {
+            return false;
+        }
+        for (String candidate : candidates) {
+            if (StringUtils.hasText(candidate) && checker.test(candidate.trim())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
