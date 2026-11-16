@@ -136,14 +136,15 @@ class ActuatorEndpointSecurityFilterTest {
     }
 
     @Test
-    @DisplayName("第一层网络防护：CIDR IP 白名单免密放行验证 (RemoteAddr 与 X-Forwarded-For)")
+    @DisplayName("第一层网络防护：CIDR IP 白名单免密放行与默认防 X-Forwarded-For 伪造绕过验证")
     void testCidrIpWhitelistPassThrough() throws ServletException, IOException {
         ObservabilityProperties properties = new ObservabilityProperties();
         properties.getSecurity().setLockdownEnabled(true);
         properties.getSecurity().setToken("super-token");
         properties.getSecurity().setAllowedIpRanges(List.of("10.0.0.0/8", "192.168.1.0/24"));
 
-        ActuatorEndpointSecurityFilter filter = new ActuatorEndpointSecurityFilter(properties);
+        ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
+        ActuatorEndpointSecurityFilter filter = new ActuatorEndpointSecurityFilter(properties, "/actuator", eventPublisher);
 
         // 1. RemoteAddr 命中 10.0.0.0/8 白名单 -> 免密放行
         MockHttpServletRequest req1 = new MockHttpServletRequest("GET", "/actuator/env");
@@ -155,7 +156,7 @@ class ActuatorEndpointSecurityFilterTest {
         verify(chain1).doFilter(req1, res1);
         assertThat(res1.getStatus()).isEqualTo(200);
 
-        // 2. X-Forwarded-For 命中 192.168.1.0/24 白名单 -> 免密放行
+        // 2. 默认 trustProxyHeaders=false 且无 trustedProxies：外网直连伪造 X-Forwarded-For -> 严禁绕过白名单并阻断 403
         MockHttpServletRequest req2 = new MockHttpServletRequest("GET", "/actuator/beans");
         req2.setRemoteAddr("203.0.113.1");
         req2.addHeader("X-Forwarded-For", "192.168.1.88, 10.0.0.1");
@@ -163,8 +164,12 @@ class ActuatorEndpointSecurityFilterTest {
         FilterChain chain2 = mock(FilterChain.class);
 
         filter.doFilter(req2, res2, chain2);
-        verify(chain2).doFilter(req2, res2);
-        assertThat(res2.getStatus()).isEqualTo(200);
+        verify(chain2, never()).doFilter(req2, res2);
+        assertThat(res2.getStatus()).isEqualTo(403);
+
+        ArgumentCaptor<ActuatorAccessDeniedEvent> captor = ArgumentCaptor.forClass(ActuatorAccessDeniedEvent.class);
+        verify(eventPublisher).publishEvent(captor.capture());
+        assertThat(captor.getValue().getClientIp()).isEqualTo("203.0.113.1");
 
         // 3. IP 未命中白名单且无凭据 -> 阻断 403
         MockHttpServletRequest req3 = new MockHttpServletRequest("GET", "/actuator/env");
@@ -175,6 +180,78 @@ class ActuatorEndpointSecurityFilterTest {
         filter.doFilter(req3, res3, chain3);
         verify(chain3, never()).doFilter(req3, res3);
         assertThat(res3.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("开启 trust-proxy-headers=true 时解析 X-Forwarded-For 首跳客户端 IP")
+    void testTrustProxyHeadersEnabled() throws ServletException, IOException {
+        ObservabilityProperties properties = new ObservabilityProperties();
+        properties.getSecurity().setLockdownEnabled(true);
+        properties.getSecurity().setTrustProxyHeaders(true);
+        properties.getSecurity().setAllowedIpRanges(List.of("192.168.1.0/24"));
+
+        ActuatorEndpointSecurityFilter filter = new ActuatorEndpointSecurityFilter(properties);
+
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/actuator/beans");
+        req.setRemoteAddr("203.0.113.1");
+        req.addHeader("X-Forwarded-For", "192.168.1.88, 10.0.0.1");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(req, res, chain);
+        verify(chain).doFilter(req, res);
+        assertThat(res.getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("配置 trusted-proxies 时仅授信命中代理网段的代理请求头并剥离端口号与 unknown")
+    void testTrustedProxiesSelectiveTrust() throws ServletException, IOException {
+        ObservabilityProperties properties = new ObservabilityProperties();
+        properties.getSecurity().setLockdownEnabled(true);
+        properties.getSecurity().setTrustProxyHeaders(false);
+        properties.getSecurity().setTrustedProxies(List.of("172.16.0.0/12"));
+        properties.getSecurity().setAllowedIpRanges(List.of("192.168.1.0/24"));
+
+        ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
+        ActuatorEndpointSecurityFilter filter = new ActuatorEndpointSecurityFilter(properties, "/actuator", eventPublisher);
+
+        // 1. 直连命中 trustedProxies 且代理头首跳有效 IP 命中 allowedIpRanges -> 放行 200
+        MockHttpServletRequest reqTrustedPass = new MockHttpServletRequest("GET", "/actuator/env");
+        reqTrustedPass.setRemoteAddr("172.16.0.10");
+        reqTrustedPass.addHeader("X-Forwarded-For", "unknown, 192.168.1.88:54321, 172.16.0.10");
+        MockHttpServletResponse resTrustedPass = new MockHttpServletResponse();
+        FilterChain chainTrustedPass = mock(FilterChain.class);
+
+        filter.doFilter(reqTrustedPass, resTrustedPass, chainTrustedPass);
+        verify(chainTrustedPass).doFilter(reqTrustedPass, resTrustedPass);
+        assertThat(resTrustedPass.getStatus()).isEqualTo(200);
+
+        // 2. 直连命中 trustedProxies 但真实首跳 IP 未命中白名单 -> 阻断 403 且审计事件记录真实首跳 IP
+        MockHttpServletRequest reqTrustedDeny = new MockHttpServletRequest("GET", "/actuator/env");
+        reqTrustedDeny.setRemoteAddr("172.16.0.10");
+        reqTrustedDeny.addHeader("X-Real-IP", "198.51.100.99:9000");
+        MockHttpServletResponse resTrustedDeny = new MockHttpServletResponse();
+        FilterChain chainTrustedDeny = mock(FilterChain.class);
+
+        filter.doFilter(reqTrustedDeny, resTrustedDeny, chainTrustedDeny);
+        verify(chainTrustedDeny, never()).doFilter(reqTrustedDeny, resTrustedDeny);
+        assertThat(resTrustedDeny.getStatus()).isEqualTo(403);
+
+        // 3. 直连未命中 trustedProxies 即使伪造 X-Forwarded-For -> 阻断 403 且审计事件记录直连 IP
+        MockHttpServletRequest reqUntrustedDeny = new MockHttpServletRequest("GET", "/actuator/env");
+        reqUntrustedDeny.setRemoteAddr("203.0.113.99");
+        reqUntrustedDeny.addHeader("X-Forwarded-For", "192.168.1.88");
+        MockHttpServletResponse resUntrustedDeny = new MockHttpServletResponse();
+        FilterChain chainUntrustedDeny = mock(FilterChain.class);
+
+        filter.doFilter(reqUntrustedDeny, resUntrustedDeny, chainUntrustedDeny);
+        verify(chainUntrustedDeny, never()).doFilter(reqUntrustedDeny, resUntrustedDeny);
+        assertThat(resUntrustedDeny.getStatus()).isEqualTo(403);
+
+        ArgumentCaptor<ActuatorAccessDeniedEvent> captor = ArgumentCaptor.forClass(ActuatorAccessDeniedEvent.class);
+        verify(eventPublisher, org.mockito.Mockito.times(2)).publishEvent(captor.capture());
+        assertThat(captor.getAllValues().get(0).getClientIp()).isEqualTo("198.51.100.99");
+        assertThat(captor.getAllValues().get(1).getClientIp()).isEqualTo("203.0.113.99");
     }
 
     @Test
@@ -391,5 +468,95 @@ class ActuatorEndpointSecurityFilterTest {
 
         verify(filterChain, never()).doFilter(request, response);
         assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("开启 stealth-mode=true 时未授权请求返回 404 隐身 JSON 并仍发布 ActuatorAccessDeniedEvent")
+    void testStealthModeReturns404AndPublishesAuditEvent() throws ServletException, IOException {
+        ObservabilityProperties properties = new ObservabilityProperties();
+        properties.getSecurity().setLockdownEnabled(true);
+        properties.getSecurity().setToken("stealth-secret");
+        properties.getSecurity().setStealthMode(true);
+
+        ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
+        ActuatorEndpointSecurityFilter filter = new ActuatorEndpointSecurityFilter(properties, "/actuator", eventPublisher);
+
+        // 1. 无凭据访问敏感端点 -> 返回 HTTP 404 隐身响应并照常发布安全审计事件
+        MockHttpServletRequest requestDenied = new MockHttpServletRequest("GET", "/actuator/env");
+        requestDenied.setRemoteAddr("198.51.100.77");
+        MockHttpServletResponse responseDenied = new MockHttpServletResponse();
+        FilterChain chainDenied = mock(FilterChain.class);
+
+        filter.doFilter(requestDenied, responseDenied, chainDenied);
+
+        verify(chainDenied, never()).doFilter(requestDenied, responseDenied);
+        assertThat(responseDenied.getStatus()).isEqualTo(404);
+        assertThat(responseDenied.getContentType()).startsWith("application/json");
+        assertThat(responseDenied.getContentAsString()).contains("\"code\":404");
+        assertThat(responseDenied.getContentAsString()).contains("\"msg\":\"Not Found\"");
+        assertThat(responseDenied.getContentAsString()).doesNotContain("Actuator");
+
+        ArgumentCaptor<ActuatorAccessDeniedEvent> captor = ArgumentCaptor.forClass(ActuatorAccessDeniedEvent.class);
+        verify(eventPublisher).publishEvent(captor.capture());
+        assertThat(captor.getValue().getUri()).isEqualTo("/actuator/env");
+        assertThat(captor.getValue().getClientIp()).isEqualTo("198.51.100.77");
+
+        // 2. 携带合法凭据时仍正常放行
+        MockHttpServletRequest requestAllowed = new MockHttpServletRequest("GET", "/actuator/env");
+        requestAllowed.setRemoteAddr("198.51.100.77");
+        requestAllowed.addHeader(ActuatorEndpointSecurityFilter.ACTUATOR_TOKEN_HEADER, "stealth-secret");
+        MockHttpServletResponse responseAllowed = new MockHttpServletResponse();
+        FilterChain chainAllowed = mock(FilterChain.class);
+
+        filter.doFilter(requestAllowed, responseAllowed, chainAllowed);
+
+        verify(chainAllowed).doFilter(requestAllowed, responseAllowed);
+        assertThat(responseAllowed.getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("支持通过 whitelisted-endpoints 动态扩展或收紧免密端点，并始终拦截 /actuator 根索引端点")
+    void testConfigurableWhitelistedEndpoints() throws ServletException, IOException {
+        // 1. 自定义扩展并收紧白名单：仅放行 metrics 与 custom-probe
+        ObservabilityProperties customProps = new ObservabilityProperties();
+        customProps.getSecurity().setLockdownEnabled(true);
+        customProps.getSecurity().setToken("whitelist-test-token");
+        customProps.getSecurity().setWhitelistedEndpoints(List.of(" /metrics ", "custom-probe/", "/", ""));
+
+        ActuatorEndpointSecurityFilter customFilter = new ActuatorEndpointSecurityFilter(customProps);
+
+        String[] allowedUris = {"/actuator/metrics", "/actuator/metrics/jvm.memory", "/actuator/custom-probe", "/actuator/custom-probe/sub"};
+        for (String uri : allowedUris) {
+            MockHttpServletRequest req = new MockHttpServletRequest("GET", uri);
+            MockHttpServletResponse res = new MockHttpServletResponse();
+            FilterChain chain = mock(FilterChain.class);
+            customFilter.doFilter(req, res, chain);
+            verify(chain).doFilter(req, res);
+            assertThat(res.getStatus()).isEqualTo(200);
+        }
+
+        String[] blockedUris = {"/actuator", "/actuator/", "/actuator//", "/actuator/metrics-extra", "/actuator/info", "/actuator/prometheus"};
+        for (String uri : blockedUris) {
+            MockHttpServletRequest req = new MockHttpServletRequest("GET", uri);
+            MockHttpServletResponse res = new MockHttpServletResponse();
+            FilterChain chain = mock(FilterChain.class);
+            customFilter.doFilter(req, res, chain);
+            verify(chain, never()).doFilter(req, res);
+            assertThat(res.getStatus()).isEqualTo(403);
+        }
+
+        // 2. 清空白名单：默认黄金端点也全量收紧拦截
+        ObservabilityProperties emptyWhitelistProps = new ObservabilityProperties();
+        emptyWhitelistProps.getSecurity().setLockdownEnabled(true);
+        emptyWhitelistProps.getSecurity().setToken("strict-token");
+        emptyWhitelistProps.getSecurity().setWhitelistedEndpoints(List.of());
+
+        ActuatorEndpointSecurityFilter strictFilter = new ActuatorEndpointSecurityFilter(emptyWhitelistProps);
+        MockHttpServletRequest reqHealth = new MockHttpServletRequest("GET", "/actuator/health");
+        MockHttpServletResponse resHealth = new MockHttpServletResponse();
+        FilterChain chainHealth = mock(FilterChain.class);
+        strictFilter.doFilter(reqHealth, resHealth, chainHealth);
+        verify(chainHealth, never()).doFilter(reqHealth, resHealth);
+        assertThat(resHealth.getStatus()).isEqualTo(403);
     }
 }

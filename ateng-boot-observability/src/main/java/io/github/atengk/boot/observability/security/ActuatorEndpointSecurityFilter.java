@@ -1,6 +1,7 @@
 package io.github.atengk.boot.observability.security;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.util.CidrMatcher;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.observability.event.ActuatorAccessDeniedEvent;
 import io.github.atengk.boot.observability.properties.ObservabilityProperties;
@@ -22,15 +23,16 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Actuator 生产端点高优先级安全守卫过滤器
  * <p>
  * 部署于 Servlet 容器最前沿，专职拦截 Actuator 端点请求并构建双层立体生产安全加固体系：
- * 1. 黄金探针与度量白名单免密放行：{@code /health}（含 {@code /liveness}、{@code /readiness}）、{@code /info}、{@code /prometheus} 与 {@code /pre-stop}；
- * 2. 第一层（网络层）：基于纯 JDK 17 原生位运算与 {@link CidrMatcher} 实现内网 IP / CIDR 网段白名单免密放行（{@code allowed-ip-ranges}）；
+ * 1. 可配置黄金探针与度量白名单免密放行（默认：{@code /health}、{@code /info}、{@code /prometheus} 与 {@code /pre-stop}），{@code /actuator} 根索引端点始终受拦截保护；
+ * 2. 第一层（网络层）：默认严格采信网络层 {@code RemoteAddr}，仅当开启 {@code trust-proxy-headers} 或直连命中 {@code trusted-proxies} 时解析代理请求头，并基于 {@link io.github.atengk.boot.core.util.CidrMatcher} 实现内网 IP / CIDR 网段白名单免密放行（{@code allowed-ip-ranges}）；
  * 3. 第二层（凭据层）：未命中白名单的外网请求，支持 {@code X-Actuator-Token} 或 {@code Authorization: Basic} 双重认证互斥核验（OR 逻辑）；
- * 4. 恒定时间防时序攻击（Timing Attack）对比凭证，未授权或凭据不匹配时阻断返回 HTTP 403 并发布 {@link ActuatorAccessDeniedEvent} 领域事件。
+ * 4. 恒定时间防时序攻击（Timing Attack）对比凭证，未授权或凭据不匹配时支持常规 HTTP 403 与隐身 HTTP 404（{@code stealth-mode}）阻断响应，并统一发布 {@link ActuatorAccessDeniedEvent} 领域事件。
  * </p>
  *
  * @author Ateng
@@ -58,6 +60,15 @@ public class ActuatorEndpointSecurityFilter extends OncePerRequestFilter impleme
      * 默认 Actuator 端点基础路径
      */
     public static final String DEFAULT_BASE_PATH = "/actuator";
+
+    private static final Pattern MULTI_SLASH_PATTERN = Pattern.compile("/+");
+
+    private static final List<String> DEFAULT_WHITELISTED_ENDPOINTS = List.of(
+            "health",
+            "info",
+            "prometheus",
+            "pre-stop"
+    );
 
     private static final String[] IP_HEADER_CANDIDATES = {
             "X-Forwarded-For",
@@ -111,7 +122,7 @@ public class ActuatorEndpointSecurityFilter extends OncePerRequestFilter impleme
 
         // 深度防卫：清洗多余斜杠，防止路径混淆绕过（如 /actuator//env）
         if (path != null) {
-            path = path.replaceAll("/+", "/");
+            path = MULTI_SLASH_PATTERN.matcher(path).replaceAll("/");
         } else {
             path = "";
         }
@@ -128,22 +139,23 @@ public class ActuatorEndpointSecurityFilter extends OncePerRequestFilter impleme
             subPath = subPath.substring(0, subPath.length() - 1);
         }
 
-        // 1. 白名单黄金端点免密放行
-        if (isWhitelisted(subPath)) {
+        ObservabilityProperties.SecurityProperties security = (properties != null) ? properties.getSecurity() : null;
+
+        // 1. 可配置白名单黄金端点免密放行（/actuator 根索引端点始终受安全拦截保护）
+        if (isWhitelisted(subPath, security)) {
             filterChain.doFilter(request, response);
             return;
         }
 
         // 2. 检查加固守卫开关
-        ObservabilityProperties.SecurityProperties security = (properties != null) ? properties.getSecurity() : null;
         boolean lockdownEnabled = (security == null) || security.isLockdownEnabled();
         if (!lockdownEnabled) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        // 提取客户端真实 IP
-        String clientIp = extractClientIp(request);
+        // 提取客户端真实 IP（默认仅采信网络层 RemoteAddr，仅在显式信任或直连命中 trustedProxies 时解析代理头）
+        String clientIp = extractClientIp(request, security);
 
         // 3. 第一层（网络层）：CIDR IP 白名单免密放行
         List<String> allowedIpRanges = (security != null) ? security.getAllowedIpRanges() : Collections.emptyList();
@@ -184,34 +196,49 @@ public class ActuatorEndpointSecurityFilter extends OncePerRequestFilter impleme
 
         log.warn("Actuator 端点安全拦截：高危端点 [{}] 访问拒绝，来源 IP: [{}]，原因: {}", path, clientIp, reason);
         publishAccessDeniedEvent(path, clientIp, reason);
-        rejectAccess(response, reason);
+        boolean stealthMode = (security != null) && security.isStealthMode();
+        rejectAccess(response, reason, stealthMode);
     }
 
     /**
-     * 判断是否为白名单黄金端点
+     * 判断是否为免密白名单端点（基于 {@code whitelistedEndpoints} 标准化配置匹配）
      */
-    private boolean isWhitelisted(String subPath) {
+    private boolean isWhitelisted(String subPath, ObservabilityProperties.SecurityProperties security) {
         if (subPath == null || subPath.isEmpty() || "/".equals(subPath)) {
             // /actuator 根索引端点包含全量已暴露端点元数据列表，加固模式下需鉴权
             return false;
         }
-        // 健康探针体系全量放行（包含 liveness、readiness 及各类子探针）
-        if (subPath.equals("/health") || subPath.startsWith("/health/")) {
-            return true;
+        List<String> configured = (security != null) ? security.getWhitelistedEndpoints() : DEFAULT_WHITELISTED_ENDPOINTS;
+        if (configured == null || configured.isEmpty()) {
+            return false;
         }
-        // 应用基础信息端点放行
-        if (subPath.equals("/info") || subPath.startsWith("/info/")) {
-            return true;
-        }
-        // Prometheus 指标抓取端点放行
-        if (subPath.equals("/prometheus") || subPath.startsWith("/prometheus/")) {
-            return true;
-        }
-        // 平滑停机流量排空端点放行
-        if (subPath.equals("/pre-stop") || subPath.startsWith("/pre-stop/")) {
-            return true;
+        for (String endpoint : configured) {
+            String normalizedEndpoint = normalizeEndpointPattern(endpoint);
+            if (normalizedEndpoint == null) {
+                continue;
+            }
+            if (subPath.equals(normalizedEndpoint) || subPath.startsWith(normalizedEndpoint + "/")) {
+                return true;
+            }
         }
         return false;
+    }
+
+    /**
+     * 标准化白名单子路径配置项（剥离首尾空白与多余斜杠，保证以单斜杠开头且非根路径）
+     */
+    private static String normalizeEndpointPattern(String endpoint) {
+        if (endpoint == null) {
+            return null;
+        }
+        String normalized = MULTI_SLASH_PATTERN.matcher(endpoint.strip()).replaceAll("/");
+        while (normalized.startsWith("/")) {
+            normalized = normalized.substring(1);
+        }
+        while (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized.isEmpty() ? null : "/" + normalized;
     }
 
     /**
@@ -275,28 +302,42 @@ public class ActuatorEndpointSecurityFilter extends OncePerRequestFilter impleme
     }
 
     /**
-     * 提取客户端真实 IP 地址（优先解析反向代理请求头）
+     * 提取客户端真实 IP 地址
+     * <p>
+     * 默认仅采信网络层直连 {@code RemoteAddr}；仅当显式开启 {@code trustProxyHeaders}
+     * 或直连地址命中 {@code trustedProxies} 白名单时，才依次解析反向代理请求头中的首跳有效 IP。
+     * </p>
      */
-    private static String extractClientIp(HttpServletRequest request) {
+    private static String extractClientIp(HttpServletRequest request,
+                                          ObservabilityProperties.SecurityProperties security) {
         if (request == null) {
             return "";
         }
-        for (String header : IP_HEADER_CANDIDATES) {
-            String value = request.getHeader(header);
-            if (value != null && !value.isBlank() && !"unknown".equalsIgnoreCase(value.trim())) {
-                int commaIndex = value.indexOf(',');
-                if (commaIndex >= 0) {
-                    value = value.substring(0, commaIndex).trim();
-                } else {
-                    value = value.trim();
+        String rawRemoteAddr = request.getRemoteAddr();
+        String remoteAddr = (rawRemoteAddr != null) ? CidrMatcher.stripPort(rawRemoteAddr.trim()) : "";
+
+        boolean trustProxyHeaders = security != null && security.isTrustProxyHeaders();
+        List<String> trustedProxies = (security != null) ? security.getTrustedProxies() : Collections.emptyList();
+        boolean fromTrustedProxy = trustedProxies != null && !trustedProxies.isEmpty()
+                && !remoteAddr.isEmpty()
+                && CidrMatcher.matchesAny(remoteAddr, trustedProxies);
+
+        if (trustProxyHeaders || fromTrustedProxy) {
+            for (String header : IP_HEADER_CANDIDATES) {
+                String value = request.getHeader(header);
+                if (value == null || value.isBlank()) {
+                    continue;
                 }
-                if (!value.isEmpty() && !"unknown".equalsIgnoreCase(value)) {
-                    return value;
+                String[] segments = value.split(",");
+                for (String segment : segments) {
+                    String candidate = CidrMatcher.stripPort(segment.trim());
+                    if (candidate != null && !candidate.isEmpty() && !"unknown".equalsIgnoreCase(candidate)) {
+                        return candidate;
+                    }
                 }
             }
         }
-        String remoteAddr = request.getRemoteAddr();
-        return remoteAddr != null ? remoteAddr.trim() : "";
+        return remoteAddr;
     }
 
     /**
@@ -313,13 +354,19 @@ public class ActuatorEndpointSecurityFilter extends OncePerRequestFilter impleme
     }
 
     /**
-     * 阻断未授权请求并返回统一 HTTP 403 规范 JSON
+     * 阻断未授权请求并返回规范 JSON 响应（隐身模式下返回 HTTP 404，常规模式返回 HTTP 403）
      */
-    private void rejectAccess(HttpServletResponse response, String message) throws IOException {
-        response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+    private void rejectAccess(HttpServletResponse response, String message, boolean stealthMode) throws IOException {
         response.setContentType("application/json;charset=UTF-8");
-        Result<?> result = Result.fail(403, "Actuator 端点访问拒绝: " + message);
-        response.getWriter().write(Objects.requireNonNullElse(JsonUtil.toJsonString(result), "{\"code\":403,\"msg\":\"Forbidden\"}"));
+        if (stealthMode) {
+            response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+            Result<?> result = Result.fail(404, "Not Found");
+            response.getWriter().write(Objects.requireNonNullElse(JsonUtil.toJsonString(result), "{\"code\":404,\"msg\":\"Not Found\"}"));
+        } else {
+            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+            Result<?> result = Result.fail(403, "Actuator 端点访问拒绝: " + message);
+            response.getWriter().write(Objects.requireNonNullElse(JsonUtil.toJsonString(result), "{\"code\":403,\"msg\":\"Forbidden\"}"));
+        }
         response.getWriter().flush();
     }
 

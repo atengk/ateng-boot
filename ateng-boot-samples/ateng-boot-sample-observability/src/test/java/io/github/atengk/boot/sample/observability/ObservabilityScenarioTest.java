@@ -369,6 +369,45 @@ class ObservabilityScenarioTest {
         assertThat(health.getDetails()).containsEntry("message", "未检测到已装配的 Redis 连接工厂或 Redisson 客户端");
     }
 
+    @Test
+    @DisplayName("场景十二：默认关闭代理头信任防 X-Forwarded-For 伪造绕过与 SBA 客户端握手自检")
+    void scenario12_proxyHeaderSpoofingBlockedAndAdminHandshakeCheck() throws Exception {
+        // 1. 外网 IP 携带伪造 X-Forwarded-For: 10.0.0.1 与 X-Real-IP: 192.168.1.100 企图绕过白名单 -> 必须被拦截 403 且审计真实直连 IP
+        mockMvc.perform(get("/actuator/env")
+                        .with(request -> {
+                            request.setRemoteAddr("172.16.0.1");
+                            return request;
+                        })
+                        .header("X-Forwarded-For", "10.0.0.1")
+                        .header("X-Real-IP", "192.168.1.100"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.msg").value(containsString("Actuator 端点访问拒绝")));
+
+        assertThat(eventCapture.deniedEvents).isNotEmpty();
+        ActuatorAccessDeniedEvent deniedEvent = eventCapture.deniedEvents.get(0);
+        assertThat(deniedEvent.getUri()).isEqualTo("/actuator/env");
+        assertThat(deniedEvent.getClientIp()).isEqualTo("172.16.0.1");
+
+        // 2. SBA 客户端握手密钥拦截器自检：传入测试握手密钥时应自动注入 X-Admin-Client-Secret 请求头
+        mockMvc.perform(get("/sample/observability/security/admin-handshake-check")
+                        .param("clientSecret", "test-sba-handshake-secret"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.headerName").value("X-Admin-Client-Secret"))
+                .andExpect(jsonPath("$.data.headerInjected").value(true))
+                .andExpect(jsonPath("$.data.maskedHeaderValue").value("test*****************cret"))
+                .andExpect(jsonPath("$.data.adminClientEnabled").value(true));
+
+        // 3. 未配置或传入空白密钥时，拦截器应保持幂等跳过而不注入请求头
+        mockMvc.perform(get("/sample/observability/security/admin-handshake-check"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.headerName").value("X-Admin-Client-Secret"))
+                .andExpect(jsonPath("$.data.headerInjected").value(false))
+                .andExpect(jsonPath("$.data.maskedHeaderValue").value(""));
+    }
+
     /**
      * 测试专用领域事件监听收集器配置
      */

@@ -58,6 +58,11 @@ class ObservabilityPropertiesTest {
         assertThat(properties.getSecurity().isLockdownEnabled()).isTrue();
         assertThat(properties.getSecurity().getToken()).isEmpty();
         assertThat(properties.getSecurity().getAllowedIpRanges()).isEmpty();
+        assertThat(properties.getSecurity().isTrustProxyHeaders()).isFalse();
+        assertThat(properties.getSecurity().getTrustedProxies()).isEmpty();
+        assertThat(properties.getSecurity().isStealthMode()).isFalse();
+        assertThat(properties.getSecurity().getWhitelistedEndpoints())
+                .containsExactly("health", "info", "prometheus", "pre-stop");
         assertThat(properties.getSecurity().getBasicAuth()).isNotNull();
         assertThat(properties.getSecurity().getBasicAuth().isEnabled()).isFalse();
         assertThat(properties.getSecurity().getBasicAuth().getUsername()).isEmpty();
@@ -92,6 +97,12 @@ class ObservabilityPropertiesTest {
                         "ateng.boot.observability.security.token=SEC_TOKEN_123456",
                         "ateng.boot.observability.security.allowed-ip-ranges[0]=10.0.0.0/8",
                         "ateng.boot.observability.security.allowed-ip-ranges[1]=192.168.1.0/24",
+                        "ateng.boot.observability.security.trust-proxy-headers=true",
+                        "ateng.boot.observability.security.trusted-proxies[0]=172.16.0.0/12",
+                        "ateng.boot.observability.security.trusted-proxies[1]=127.0.0.1",
+                        "ateng.boot.observability.security.stealth-mode=true",
+                        "ateng.boot.observability.security.whitelisted-endpoints[0]=health",
+                        "ateng.boot.observability.security.whitelisted-endpoints[1]=metrics",
                         "ateng.boot.observability.security.basic-auth.enabled=true",
                         "ateng.boot.observability.security.basic-auth.username=admin",
                         "ateng.boot.observability.security.basic-auth.password=secret123",
@@ -120,6 +131,10 @@ class ObservabilityPropertiesTest {
                     assertThat(props.getSecurity().isLockdownEnabled()).isTrue();
                     assertThat(props.getSecurity().getToken()).isEqualTo("SEC_TOKEN_123456");
                     assertThat(props.getSecurity().getAllowedIpRanges()).containsExactly("10.0.0.0/8", "192.168.1.0/24");
+                    assertThat(props.getSecurity().isTrustProxyHeaders()).isTrue();
+                    assertThat(props.getSecurity().getTrustedProxies()).containsExactly("172.16.0.0/12", "127.0.0.1");
+                    assertThat(props.getSecurity().isStealthMode()).isTrue();
+                    assertThat(props.getSecurity().getWhitelistedEndpoints()).containsExactly("health", "metrics");
                     assertThat(props.getSecurity().getBasicAuth().isEnabled()).isTrue();
                     assertThat(props.getSecurity().getBasicAuth().getUsername()).isEqualTo("admin");
                     assertThat(props.getSecurity().getBasicAuth().getPassword()).isEqualTo("secret123");

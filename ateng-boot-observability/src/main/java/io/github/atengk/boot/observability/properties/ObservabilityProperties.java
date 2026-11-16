@@ -311,6 +311,31 @@ public class ObservabilityProperties {
         private List<String> allowedIpRanges = new ArrayList<>();
 
         /**
+         * 是否无条件信任反向代理转发的客户端 IP 请求头（如 X-Forwarded-For、X-Real-IP，默认关闭以防外网伪造绕过白名单）。
+         * 关闭时仅采信直连网络层 RemoteAddr；若需仅信任网关代理头，推荐保持 false 并配置 {@link #trustedProxies}。
+         */
+        private boolean trustProxyHeaders = false;
+
+        /**
+         * 受信任的反向代理服务器 IP 或 CIDR 网段列表（例如 10.0.0.0/8、172.16.0.0/12、127.0.0.1）。
+         * 仅当直连 RemoteAddr 命中此列表时，才允许解析反向代理请求头提取首跳客户端 IP。
+         */
+        private List<String> trustedProxies = new ArrayList<>();
+
+        /**
+         * 404 隐身防扫描阻断模式开关（默认关闭）。
+         * 开启后未授权访问敏感端点对外返回 HTTP 404 JSON 报文，关闭时保持 HTTP 403；
+         * 无论处于何种模式，拦截前均如实记录安全告警并发布 ActuatorAccessDeniedEvent。
+         */
+        private boolean stealthMode = false;
+
+        /**
+         * 免密放行的 Actuator 相对子路径白名单（兼容配置项带或不带前导 /）。
+         * 默认放行 health、info、prometheus、pre-stop；/actuator 根索引端点始终受安全拦截保护。
+         */
+        private List<String> whitelistedEndpoints = new ArrayList<>(List.of("health", "info", "prometheus", "pre-stop"));
+
+        /**
          * Actuator 端点 HTTP Basic Auth 认证配置
          */
         @NestedConfigurationProperty
