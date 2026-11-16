@@ -221,7 +221,10 @@ public class OperationGovernanceCustomizer implements OperationCustomizer {
     @SuppressWarnings("unchecked")
     private Class<? extends Annotation> resolveAnnotationClass(String className) {
         Optional<Class<? extends Annotation>> cached = annotationClassCache.computeIfAbsent(className, key -> {
-            ClassLoader classLoader = getClass().getClassLoader();
+            ClassLoader classLoader = ClassUtils.getDefaultClassLoader();
+            if (classLoader == null) {
+                classLoader = getClass().getClassLoader();
+            }
             if (!ClassUtils.isPresent(key, classLoader)) {
                 return Optional.empty();
             }

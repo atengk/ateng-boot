@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.openapi.model;
 
+import io.github.atengk.boot.openapi.export.OpenApiExportHelper;
 import io.github.atengk.boot.openapi.export.OpenApiFormat;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
@@ -16,7 +17,7 @@ import jakarta.validation.constraints.Pattern;
 public class ContractExportRequest {
 
     @NotBlank(message = "分组名称不能为空")
-    @Pattern(regexp = "^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", message = "分组名称包含非法字符")
+    @Pattern(regexp = OpenApiExportHelper.GROUP_NAME_REGEX, message = "分组名称包含非法字符")
     @Schema(description = "目标业务分组标识", example = "admin")
     private String group = "default";
 

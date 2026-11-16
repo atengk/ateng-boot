@@ -10,12 +10,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.core.Ordered;
+import org.springframework.util.ClassUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
@@ -48,6 +50,8 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
      */
     public static final String BASIC_REALM_HEADER = "Basic realm=\"OpenAPI Document Guard\"";
 
+    private static final String SA_TOKEN_STP_UTIL_CLASS = "cn.dev33.satoken.stp.StpUtil";
+
     private final OpenApiProperties properties;
     private volatile OpenApiCidrMatcher cidrMatcher;
     private volatile OpenApiCidrMatcher trustedProxyMatcher;
@@ -66,11 +70,9 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
         super.afterPropertiesSet();
         if (properties != null && properties.getGuard() != null) {
             GuardMode mode = properties.getGuard().getMode();
-            if (mode == GuardMode.SATOKEN) {
-                try {
-                    Class.forName("cn.dev33.satoken.stp.StpUtil");
-                } catch (ClassNotFoundException e) {
-                    throw new IllegalStateException("OpenAPI guard mode is set to SATOKEN, but Sa-Token (cn.dev33.satoken.stp.StpUtil) was not found on the classpath. Please add sa-token-spring-boot3-starter dependency or change ateng.boot.openapi.guard.mode.", e);
+            if (mode == GuardMode.SATOKEN && properties.isEnabled()) {
+                if (!ClassUtils.isPresent(SA_TOKEN_STP_UTIL_CLASS, ClassUtils.getDefaultClassLoader())) {
+                    throw new IllegalStateException("OpenAPI guard mode is set to SATOKEN, but Sa-Token (cn.dev33.satoken.stp.StpUtil) was not found on the classpath. Please add sa-token-spring-boot3-starter dependency or change ateng.boot.openapi.guard.mode.");
                 }
             } else if (mode == GuardMode.BASIC && properties.isEnabled()) {
                 OpenApiProperties.Basic basic = properties.getGuard().getBasic();
@@ -87,16 +89,18 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
             // 预初始化 CIDR 匹配器并校验白名单配置
             OpenApiProperties.IpWhitelist ipWhitelist = properties.getGuard().getIpWhitelist();
             boolean ipWhitelistActive = (mode == GuardMode.IP_WHITELIST) || (ipWhitelist != null && ipWhitelist.isEnabled());
+            List<String> validCidrs = ipWhitelist != null ? toNonBlankList(ipWhitelist.getCidrs()) : Collections.emptyList();
             if (ipWhitelistActive && properties.isEnabled()) {
-                if (ipWhitelist == null || ipWhitelist.getCidrs() == null || ipWhitelist.getCidrs().isEmpty()) {
+                if (validCidrs.isEmpty()) {
                     throw new IllegalStateException("OpenAPI IP whitelist is enabled, but ateng.boot.openapi.guard.ip-whitelist.cidrs is empty.");
                 }
-                this.cidrMatcher = new OpenApiCidrMatcher(ipWhitelist.getCidrs());
-            } else if (ipWhitelist != null && ipWhitelist.getCidrs() != null && !ipWhitelist.getCidrs().isEmpty()) {
-                this.cidrMatcher = new OpenApiCidrMatcher(ipWhitelist.getCidrs());
+                this.cidrMatcher = new OpenApiCidrMatcher(validCidrs);
+            } else if (!validCidrs.isEmpty()) {
+                this.cidrMatcher = new OpenApiCidrMatcher(validCidrs);
             }
-            if (ipWhitelist != null && ipWhitelist.getTrustedProxies() != null && !ipWhitelist.getTrustedProxies().isEmpty()) {
-                this.trustedProxyMatcher = new OpenApiCidrMatcher(ipWhitelist.getTrustedProxies());
+            List<String> validProxies = ipWhitelist != null ? toNonBlankList(ipWhitelist.getTrustedProxies()) : Collections.emptyList();
+            if (!validProxies.isEmpty()) {
+                this.trustedProxyMatcher = new OpenApiCidrMatcher(validProxies);
             }
         }
     }
@@ -137,9 +141,8 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
             OpenApiCidrMatcher matcher = getOrCreateCidrMatcher();
             if (matcher == null || !matcher.matches(clientIp)) {
                 log.warn("OpenAPI document access rejected: client IP [{}] not in whitelist for path [{}]", clientIp, path);
-                response.setStatus(HttpServletResponse.SC_FORBIDDEN);
-                response.setContentType("text/plain;charset=UTF-8");
-                response.getWriter().write("403 Forbidden: OpenAPI document access rejected by IP whitelist.");
+                writePlainError(response, HttpServletResponse.SC_FORBIDDEN,
+                        "403 Forbidden: OpenAPI document access rejected by IP whitelist.");
                 return;
             }
         }
@@ -184,11 +187,8 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
      * 获取或延迟构建 CIDR 匹配器
      */
     private OpenApiCidrMatcher getOrCreateCidrMatcher() {
-        if (cidrMatcher == null && properties.getGuard() != null) {
-            OpenApiProperties.IpWhitelist ipWhitelist = properties.getGuard().getIpWhitelist();
-            if (ipWhitelist != null && !ipWhitelist.getCidrs().isEmpty()) {
-                cidrMatcher = new OpenApiCidrMatcher(ipWhitelist.getCidrs());
-            }
+        if (cidrMatcher == null) {
+            cidrMatcher = buildMatcherIfPresent(false);
         }
         return cidrMatcher;
     }
@@ -197,13 +197,22 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
      * 获取或延迟构建受信任反向代理节点 CIDR 匹配器
      */
     private OpenApiCidrMatcher getOrCreateTrustedProxyMatcher() {
-        if (trustedProxyMatcher == null && properties.getGuard() != null) {
-            OpenApiProperties.IpWhitelist ipWhitelist = properties.getGuard().getIpWhitelist();
-            if (ipWhitelist != null && !ipWhitelist.getTrustedProxies().isEmpty()) {
-                trustedProxyMatcher = new OpenApiCidrMatcher(ipWhitelist.getTrustedProxies());
-            }
+        if (trustedProxyMatcher == null) {
+            trustedProxyMatcher = buildMatcherIfPresent(true);
         }
         return trustedProxyMatcher;
+    }
+
+    private OpenApiCidrMatcher buildMatcherIfPresent(boolean trustedProxy) {
+        if (properties.getGuard() == null) {
+            return null;
+        }
+        OpenApiProperties.IpWhitelist ipWhitelist = properties.getGuard().getIpWhitelist();
+        if (ipWhitelist == null) {
+            return null;
+        }
+        List<String> cidrs = toNonBlankList(trustedProxy ? ipWhitelist.getTrustedProxies() : ipWhitelist.getCidrs());
+        return cidrs.isEmpty() ? null : new OpenApiCidrMatcher(cidrs);
     }
 
     /**
@@ -240,7 +249,7 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
             return physicalIp;
         }
 
-        if (!ipWhitelist.getTrustedProxies().isEmpty()) {
+        if (hasNonBlankElement(ipWhitelist.getTrustedProxies())) {
             OpenApiCidrMatcher proxyMatcher = getOrCreateTrustedProxyMatcher();
             if (proxyMatcher == null || !proxyMatcher.matches(physicalIp)) {
                 log.debug("Untrusted remote address [{}] attempted to pass proxy header [{}]; falling back to physical IP.",
@@ -314,86 +323,124 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
     }
 
     /**
-     * 处理 Sa-Token 鉴权逻辑
+     * 处理 Sa-Token 鉴权逻辑（通过静态延迟类 {@link SaTokenSupport} 彻底隔离可选依赖类加载）
      */
     private boolean handleSaTokenAuth(HttpServletRequest request, HttpServletResponse response, String path) throws IOException {
-        boolean boundContextHere = bindSaTokenContextIfAbsent(request, response);
-        try {
-            boolean loggedIn = false;
-            try {
-                loggedIn = cn.dev33.satoken.stp.StpUtil.isLogin();
-            } catch (Exception | LinkageError ex) {
-                log.warn("Sa-Token authentication check failed: {}", ex.getMessage());
-            }
-
-            if (!loggedIn) {
-                log.warn("OpenAPI document access rejected: Sa-Token session not logged in for path [{}]", path);
-                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-                response.setContentType("text/plain;charset=UTF-8");
-                response.getWriter().write("401 Unauthorized: OpenAPI document access requires Sa-Token authentication.");
-                return false;
-            }
-
-            OpenApiProperties.SaTokenGuard saTokenGuard = (properties.getGuard() != null)
-                    ? properties.getGuard().getSatoken()
-                    : null;
-            List<String> roles = (saTokenGuard != null) ? saTokenGuard.getRoles() : Collections.emptyList();
-            List<String> permissions = (saTokenGuard != null) ? saTokenGuard.getPermissions() : Collections.emptyList();
-            if (!hasNonBlankElement(roles) && !hasNonBlankElement(permissions)) {
-                return true;
-            }
-
-            boolean authorized = false;
-            try {
-                authorized = matchesAnySaToken(roles, cn.dev33.satoken.stp.StpUtil::hasRole)
-                        || matchesAnySaToken(permissions, cn.dev33.satoken.stp.StpUtil::hasPermission);
-            } catch (Exception | LinkageError ex) {
-                log.warn("Sa-Token authorization check failed for path [{}]: {}", path, ex.getMessage());
-            }
-
-            if (!authorized) {
-                log.warn("OpenAPI document access forbidden: Sa-Token session lacks required roles/permissions for path [{}]", path);
-                response.setStatus(HttpServletResponse.SC_FORBIDDEN);
-                response.setContentType("text/plain;charset=UTF-8");
-                response.getWriter().write("403 Forbidden: OpenAPI document access requires configured Sa-Token role or permission.");
-                return false;
-            }
-
-            return true;
-        } finally {
-            if (boundContextHere) {
-                clearSaTokenContext();
-            }
+        if (!ClassUtils.isPresent(SA_TOKEN_STP_UTIL_CLASS, ClassUtils.getDefaultClassLoader())) {
+            log.warn("OpenAPI document access rejected: Sa-Token is unavailable on classpath for path [{}]", path);
+            writePlainError(response, HttpServletResponse.SC_UNAUTHORIZED,
+                    "401 Unauthorized: OpenAPI document access requires Sa-Token authentication.");
+            return false;
         }
+        return SaTokenSupport.authenticate(properties, request, response, path);
     }
 
-    /**
-     * OpenApiGuardFilter 位于 SaTokenContextFilterForJakartaServlet 之前执行早期防火墙拦截，
-     * 进入 SATOKEN 鉴权前若尚未绑定上下文且 Sa-Token 策略已就绪，则按 Servlet 请求临时绑定并在 finally 中清理。
-     */
-    private boolean bindSaTokenContextIfAbsent(HttpServletRequest request, HttpServletResponse response) {
-        try {
-            cn.dev33.satoken.context.SaTokenContext context = cn.dev33.satoken.SaManager.getSaTokenContext();
-            if (context == null || context == cn.dev33.satoken.context.SaTokenContextDefaultImpl.defaultContext) {
+    private static final class SaTokenSupport {
+
+        private SaTokenSupport() {
+        }
+
+        private static boolean authenticate(OpenApiProperties properties,
+                                            HttpServletRequest request,
+                                            HttpServletResponse response,
+                                            String path) throws IOException {
+            boolean boundContextHere = bindContextIfAbsent(request, response);
+            try {
+                boolean loggedIn = false;
+                try {
+                    loggedIn = cn.dev33.satoken.stp.StpUtil.isLogin();
+                } catch (Exception | LinkageError ex) {
+                    log.warn("Sa-Token authentication check failed: {}", ex.getMessage());
+                }
+
+                if (!loggedIn) {
+                    log.warn("OpenAPI document access rejected: Sa-Token session not logged in for path [{}]", path);
+                    writePlainError(response, HttpServletResponse.SC_UNAUTHORIZED,
+                            "401 Unauthorized: OpenAPI document access requires Sa-Token authentication.");
+                    return false;
+                }
+
+                OpenApiProperties.SaTokenGuard saTokenGuard = (properties.getGuard() != null)
+                        ? properties.getGuard().getSatoken()
+                        : null;
+                List<String> roles = (saTokenGuard != null) ? saTokenGuard.getRoles() : Collections.emptyList();
+                List<String> permissions = (saTokenGuard != null) ? saTokenGuard.getPermissions() : Collections.emptyList();
+                if (!hasNonBlankElement(roles) && !hasNonBlankElement(permissions)) {
+                    return true;
+                }
+
+                boolean authorized = false;
+                try {
+                    authorized = matchesAny(roles, cn.dev33.satoken.stp.StpUtil::hasRole)
+                            || matchesAny(permissions, cn.dev33.satoken.stp.StpUtil::hasPermission);
+                } catch (Exception | LinkageError ex) {
+                    log.warn("Sa-Token authorization check failed for path [{}]: {}", path, ex.getMessage());
+                }
+
+                if (!authorized) {
+                    log.warn("OpenAPI document access forbidden: Sa-Token session lacks required roles/permissions for path [{}]", path);
+                    writePlainError(response, HttpServletResponse.SC_FORBIDDEN,
+                            "403 Forbidden: OpenAPI document access requires configured Sa-Token role or permission.");
+                    return false;
+                }
+
+                return true;
+            } finally {
+                if (boundContextHere) {
+                    clearContext();
+                }
+            }
+        }
+
+        private static boolean bindContextIfAbsent(HttpServletRequest request, HttpServletResponse response) {
+            try {
+                cn.dev33.satoken.context.SaTokenContext context = cn.dev33.satoken.SaManager.getSaTokenContext();
+                if (context == null || context == cn.dev33.satoken.context.SaTokenContextDefaultImpl.defaultContext) {
+                    return false;
+                }
+                if (context.isValid() || cn.dev33.satoken.strategy.SaStrategy.instance.createSaRequest == null) {
+                    return false;
+                }
+                cn.dev33.satoken.servlet.util.SaTokenContextJakartaServletUtil.setContext(request, response);
+                return true;
+            } catch (Exception | LinkageError ex) {
+                log.debug("Unable to bind transient Sa-Token Servlet context: {}", ex.getMessage());
                 return false;
             }
-            if (context.isValid() || cn.dev33.satoken.strategy.SaStrategy.instance.createSaRequest == null) {
+        }
+
+        private static void clearContext() {
+            try {
+                cn.dev33.satoken.servlet.util.SaTokenContextJakartaServletUtil.clearContext();
+            } catch (Exception | LinkageError ex) {
+                log.debug("Failed to clear transient Sa-Token Servlet context: {}", ex.getMessage());
+            }
+        }
+
+        private static boolean matchesAny(List<String> candidates, Predicate<String> checker) {
+            if (candidates == null || candidates.isEmpty()) {
                 return false;
             }
-            cn.dev33.satoken.servlet.util.SaTokenContextJakartaServletUtil.setContext(request, response);
-            return true;
-        } catch (Exception | LinkageError ex) {
-            log.debug("Unable to bind transient Sa-Token Servlet context: {}", ex.getMessage());
+            for (String candidate : candidates) {
+                if (StringUtils.hasText(candidate) && checker.test(candidate.trim())) {
+                    return true;
+                }
+            }
             return false;
         }
     }
 
-    private void clearSaTokenContext() {
-        try {
-            cn.dev33.satoken.servlet.util.SaTokenContextJakartaServletUtil.clearContext();
-        } catch (Exception | LinkageError ex) {
-            log.debug("Failed to clear transient Sa-Token Servlet context: {}", ex.getMessage());
+    private static List<String> toNonBlankList(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return Collections.emptyList();
         }
+        List<String> result = new ArrayList<>(values.size());
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                result.add(value.trim());
+            }
+        }
+        return result;
     }
 
     private static boolean hasNonBlankElement(List<String> values) {
@@ -408,17 +455,10 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
         return false;
     }
 
-    private static boolean matchesAnySaToken(List<String> candidates,
-                                             Predicate<String> checker) {
-        if (candidates == null || candidates.isEmpty()) {
-            return false;
-        }
-        for (String candidate : candidates) {
-            if (StringUtils.hasText(candidate) && checker.test(candidate.trim())) {
-                return true;
-            }
-        }
-        return false;
+    private static void writePlainError(HttpServletResponse response, int status, String body) throws IOException {
+        response.setStatus(status);
+        response.setContentType("text/plain;charset=UTF-8");
+        response.getWriter().write(body);
     }
 
     /**
@@ -426,9 +466,8 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
      */
     private void sendBasicChallenge(HttpServletResponse response) throws IOException {
         response.setHeader("WWW-Authenticate", BASIC_REALM_HEADER);
-        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-        response.setContentType("text/plain;charset=UTF-8");
-        response.getWriter().write("401 Unauthorized: OpenAPI document access requires Basic authentication.");
+        writePlainError(response, HttpServletResponse.SC_UNAUTHORIZED,
+                "401 Unauthorized: OpenAPI document access requires Basic authentication.");
     }
 
     /**
@@ -478,9 +517,8 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
      * 发送 HTTP 401 Token 认证失败响应
      */
     private void sendTokenChallenge(HttpServletResponse response) throws IOException {
-        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-        response.setContentType("text/plain;charset=UTF-8");
-        response.getWriter().write("401 Unauthorized: OpenAPI document access requires valid Token.");
+        writePlainError(response, HttpServletResponse.SC_UNAUTHORIZED,
+                "401 Unauthorized: OpenAPI document access requires valid Token.");
     }
 
     /**

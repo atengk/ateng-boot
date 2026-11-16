@@ -7,13 +7,24 @@ import cn.dev33.satoken.annotation.SaIgnore;
 import cn.dev33.satoken.annotation.SaMode;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
 import io.swagger.v3.oas.models.Operation;
+import io.swagger.v3.oas.models.parameters.Parameter;
 import io.swagger.v3.oas.models.security.SecurityRequirement;
+import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.description.annotation.AnnotationDescription;
+import net.bytebuddy.description.modifier.Visibility;
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.method.HandlerMethod;
 
+import java.lang.annotation.Annotation;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -159,5 +170,148 @@ class OperationGovernanceCustomizerTest {
         Operation op = new Operation().description("demo");
         assertThat(customizer.customize(op, null)).isSameAs(op);
         assertThat(op.getDescription()).isEqualTo("demo");
+    }
+
+    @Test
+    @DisplayName("测试 8 类全量治理注解组合（含 Web 5 类注解）与手写 X-Signature 验签头防重保留")
+    @SuppressWarnings("unchecked")
+    void testAllEightGovernanceAnnotationsAndCustomSignaturePreserved() throws Exception {
+        ClassLoader parentCl = getClass().getClassLoader();
+        ByteBuddy byteBuddy = new ByteBuddy();
+
+        AnnotationDescription runtimeRetention = AnnotationDescription.Builder.ofType(Retention.class)
+                .define("value", RetentionPolicy.RUNTIME)
+                .build();
+        AnnotationDescription methodAndTypeTarget = AnnotationDescription.Builder.ofType(Target.class)
+                .defineEnumerationArray("value", ElementType.class, ElementType.METHOD, ElementType.TYPE)
+                .build();
+
+        // 动态在独立子 ClassLoader 中生成 5 个 Web 治理注解桩
+        Class<? extends Annotation> idempotentAnn = (Class<? extends Annotation>) byteBuddy
+                .makeAnnotation()
+                .name("io.github.atengk.boot.web.idempotent.annotation.Idempotent")
+                .annotateType(runtimeRetention, methodAndTypeTarget)
+                .defineMethod("timeout", long.class, Visibility.PUBLIC).defaultValue(3L, long.class)
+                .defineMethod("timeUnit", TimeUnit.class, Visibility.PUBLIC).defaultValue(TimeUnit.SECONDS, TimeUnit.class)
+                .make()
+                .load(parentCl, ClassLoadingStrategy.Default.CHILD_FIRST)
+                .getLoaded();
+
+        ClassLoader dynamicCl = idempotentAnn.getClassLoader();
+
+        Class<? extends Annotation> rateLimiterAnn = (Class<? extends Annotation>) byteBuddy
+                .makeAnnotation()
+                .name("io.github.atengk.boot.web.ratelimit.annotation.RateLimiter")
+                .annotateType(runtimeRetention, methodAndTypeTarget)
+                .defineMethod("count", long.class, Visibility.PUBLIC).defaultValue(100L, long.class)
+                .defineMethod("time", long.class, Visibility.PUBLIC).defaultValue(60L, long.class)
+                .defineMethod("timeUnit", TimeUnit.class, Visibility.PUBLIC).defaultValue(TimeUnit.SECONDS, TimeUnit.class)
+                .defineMethod("limitType", String.class, Visibility.PUBLIC).defaultValue("DEFAULT", String.class)
+                .make()
+                .load(dynamicCl, ClassLoadingStrategy.Default.INJECTION)
+                .getLoaded();
+
+        Class<? extends Annotation> apiSignAnn = (Class<? extends Annotation>) byteBuddy
+                .makeAnnotation()
+                .name("io.github.atengk.boot.web.sign.annotation.ApiSign")
+                .annotateType(runtimeRetention, methodAndTypeTarget)
+                .defineMethod("verifyRequest", boolean.class, Visibility.PUBLIC).defaultValue(true, boolean.class)
+                .defineMethod("signResponse", boolean.class, Visibility.PUBLIC).defaultValue(true, boolean.class)
+                .defineMethod("expireSeconds", long.class, Visibility.PUBLIC).defaultValue(-1L, long.class)
+                .defineMethod("algorithm", String.class, Visibility.PUBLIC).defaultValue("DEFAULT", String.class)
+                .make()
+                .load(dynamicCl, ClassLoadingStrategy.Default.INJECTION)
+                .getLoaded();
+
+        Class<? extends Annotation> ipAccessAnn = (Class<? extends Annotation>) byteBuddy
+                .makeAnnotation()
+                .name("io.github.atengk.boot.web.ip.annotation.IpAccessControl")
+                .annotateType(runtimeRetention, methodAndTypeTarget)
+                .defineMethod("mode", String.class, Visibility.PUBLIC).defaultValue("WHITE_LIST", String.class)
+                .defineMethod("rules", String[].class, Visibility.PUBLIC).defaultValue(new String[0], String[].class)
+                .make()
+                .load(dynamicCl, ClassLoadingStrategy.Default.INJECTION)
+                .getLoaded();
+
+        Class<? extends Annotation> apiVersionAnn = (Class<? extends Annotation>) byteBuddy
+                .makeAnnotation()
+                .name("io.github.atengk.boot.web.version.annotation.ApiVersion")
+                .annotateType(runtimeRetention, methodAndTypeTarget)
+                .defineMethod("value", String.class, Visibility.PUBLIC).defaultValue("1", String.class)
+                .defineMethod("number", int.class, Visibility.PUBLIC).defaultValue(0, int.class)
+                .make()
+                .load(dynamicCl, ClassLoadingStrategy.Default.INJECTION)
+                .getLoaded();
+
+        Class<?> controllerType = byteBuddy
+                .subclass(Object.class)
+                .name("io.github.atengk.boot.openapi.customizer.DynamicAllGovernanceController")
+                .defineMethod("execute", void.class, Visibility.PUBLIC)
+                .intercept(net.bytebuddy.implementation.StubMethod.INSTANCE)
+                .annotateMethod(
+                        AnnotationDescription.Builder.ofType(SaCheckLogin.class).build(),
+                        AnnotationDescription.Builder.ofType(SaCheckRole.class)
+                                .defineArray("value", "admin").define("mode", SaMode.AND).build(),
+                        AnnotationDescription.Builder.ofType(SaCheckPermission.class)
+                                .defineArray("value", "order:pay").define("mode", SaMode.OR).build(),
+                        AnnotationDescription.Builder.ofType(idempotentAnn)
+                                .define("timeout", 5L).define("timeUnit", TimeUnit.SECONDS).build(),
+                        AnnotationDescription.Builder.ofType(rateLimiterAnn)
+                                .define("count", 20L).define("time", 10L)
+                                .define("timeUnit", TimeUnit.SECONDS).define("limitType", "IP").build(),
+                        AnnotationDescription.Builder.ofType(apiSignAnn)
+                                .define("verifyRequest", true).define("signResponse", true)
+                                .define("expireSeconds", 300L).define("algorithm", "HMAC_SHA256").build(),
+                        AnnotationDescription.Builder.ofType(ipAccessAnn)
+                                .define("mode", "WHITE_LIST")
+                                .defineArray("rules", "10.0.0.0/8").build(),
+                        AnnotationDescription.Builder.ofType(apiVersionAnn)
+                                .define("value", "1").define("number", 2).build()
+                )
+                .make()
+                .load(dynamicCl, ClassLoadingStrategy.Default.INJECTION)
+                .getLoaded();
+
+        Object controller = controllerType.getDeclaredConstructor().newInstance();
+        HandlerMethod handlerMethod = new HandlerMethod(controller, controllerType.getMethod("execute"));
+
+        Operation operation = new Operation()
+                .description("下单支付")
+                .addParametersItem(new Parameter().in("header").name("X-Signature").description("手写商户签名"));
+
+        ClassLoader originalCl = Thread.currentThread().getContextClassLoader();
+        try {
+            Thread.currentThread().setContextClassLoader(dynamicCl);
+            OperationGovernanceCustomizer customizer = new OperationGovernanceCustomizer(new OpenApiProperties());
+            customizer.customize(operation, handlerMethod);
+        } finally {
+            Thread.currentThread().setContextClassLoader(originalCl);
+        }
+
+        assertThat(operation.getDescription())
+                .contains("**接口治理契约**：")
+                .contains("需要登录认证 (`@SaCheckLogin`)")
+                .contains("角色要求")
+                .contains("权限要求")
+                .contains("防重幂等")
+                .contains("5 SECONDS")
+                .contains("限流策略")
+                .contains("10 SECONDS")
+                .contains("20")
+                .contains("接口加签")
+                .contains("防重放窗口=`300s`")
+                .contains("IP 访问控制")
+                .contains("10.0.0.0/8")
+                .contains("API 版本")
+                .contains("`v2`");
+
+        assertThat(operation.getParameters())
+                .extracting(Parameter::getName)
+                .containsExactlyInAnyOrder("X-Signature", "X-App-Id", "X-Timestamp", "X-Nonce");
+        assertThat(operation.getParameters())
+                .filteredOn(p -> "X-Signature".equals(p.getName()))
+                .singleElement()
+                .extracting(Parameter::getDescription)
+                .isEqualTo("手写商户签名");
     }
 }

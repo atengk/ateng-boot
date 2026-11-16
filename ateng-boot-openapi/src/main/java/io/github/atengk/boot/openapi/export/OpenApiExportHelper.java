@@ -51,9 +51,14 @@ public class OpenApiExportHelper implements DisposableBean {
     private static final Logger log = LoggerFactory.getLogger(OpenApiExportHelper.class);
 
     /**
-     * 业务分组名称安全字符白名单（禁止 ".." 路径穿越及非法控制字符）
+     * 业务分组名称安全字符正则表达式（禁止 ".." 路径穿越及非法控制字符）
      */
-    private static final Pattern SAFE_GROUP_PATTERN = Pattern.compile("^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$");
+    public static final String GROUP_NAME_REGEX = "^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$";
+
+    /**
+     * 业务分组名称安全字符白名单模式
+     */
+    private static final Pattern SAFE_GROUP_PATTERN = Pattern.compile(GROUP_NAME_REGEX);
 
     private static volatile OpenApiExportHelper instance;
 

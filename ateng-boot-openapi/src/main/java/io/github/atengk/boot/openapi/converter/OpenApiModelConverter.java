@@ -384,4 +384,14 @@ public class OpenApiModelConverter implements ModelConverter, DisposableBean {
         }
         return fields;
     }
+
+    @Override
+    public boolean equals(Object other) {
+        return other != null && getClass() == other.getClass();
+    }
+
+    @Override
+    public int hashCode() {
+        return getClass().hashCode();
+    }
 }

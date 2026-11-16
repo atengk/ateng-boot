@@ -598,4 +598,24 @@ class OpenApiGuardFilterTest {
             assertThat(permResp.getStatus()).isEqualTo(200);
         }
     }
+
+    @Test
+    @DisplayName("授信反向代理空白项兼容：trusted-proxies 仅含空白元素时视同未配置，保持向后兼容")
+    void testBlankTrustedProxiesTreatedAsUnconfiguredBackwardCompatibility() throws ServletException, IOException {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.IP_WHITELIST);
+        properties.getGuard().getIpWhitelist().getCidrs().add("10.0.0.0/8");
+        properties.getGuard().getIpWhitelist().setTrustedHeader("X-Forwarded-For");
+        properties.getGuard().getIpWhitelist().setTrustedProxies(List.of(" ", "\t"));
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/v3/api-docs");
+        request.setRemoteAddr("172.16.0.1");
+        request.addHeader("X-Forwarded-For", "10.1.2.3");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain, times(1)).doFilter(request, response);
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
 }

@@ -545,4 +545,18 @@ class OpenApiModelConverterTest {
                 .contains("**枚举选项**：")
                 .contains("- `1`: 启用状态 (ENABLE)");
     }
+
+    @Test
+    @DisplayName("基于类型的 equals 与 hashCode 契约测试")
+    void testTypeBasedEqualsAndHashCode() {
+        OpenApiModelConverter another = new OpenApiModelConverter();
+        try {
+            assertThat(converter).isEqualTo(another);
+            assertThat(converter.hashCode()).isEqualTo(another.hashCode());
+            assertThat(converter).isNotEqualTo(null);
+            assertThat(converter).isNotEqualTo("other");
+        } finally {
+            another.destroy();
+        }
+    }
 }

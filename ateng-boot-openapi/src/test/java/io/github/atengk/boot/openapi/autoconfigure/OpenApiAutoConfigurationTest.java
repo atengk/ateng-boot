@@ -9,18 +9,28 @@ import io.github.atengk.boot.openapi.customizer.SecuritySchemesCustomizer;
 import io.github.atengk.boot.openapi.customizer.StandardApiResponseCustomizer;
 import io.github.atengk.boot.openapi.export.OpenApiExportController;
 import io.github.atengk.boot.openapi.export.OpenApiExportHelper;
+import io.github.atengk.boot.openapi.guard.OpenApiGuardFilter;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
+import jakarta.servlet.FilterChain;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 /**
  * OpenAPI 自动装配脚手架与缺省行为测试
@@ -208,6 +218,70 @@ class OpenApiAutoConfigurationTest {
         @Bean
         public OpenAPI customOpenAPI() {
             return new OpenAPI().info(new Info().title("User Overridden API"));
+        }
+    }
+
+    @Test
+    @DisplayName("测试缺省 Sa-Token 依赖时平滑装配与 enabled=false/SATOKEN 物理切断不触发类加载失败")
+    void testWithoutSaTokenClasspathIsolation() {
+        FilteredClassLoader withoutSaToken = new FilteredClassLoader(
+                candidate -> candidate.startsWith("cn.dev33.satoken."));
+
+        // 1. 默认模式缺 Sa-Token：不装配 SaTokenSecurityCustomizer，GuardFilter 正常放行且零反射异常
+        contextRunner
+                .withClassLoader(withoutSaToken)
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(SaTokenSecurityCustomizer.class);
+                    assertThat(context).hasBean("openApiGuardFilterRegistration");
+
+                    @SuppressWarnings("unchecked")
+                    FilterRegistrationBean<OpenApiGuardFilter> reg =
+                            (FilterRegistrationBean<OpenApiGuardFilter>) context.getBean("openApiGuardFilterRegistration");
+                    OpenApiGuardFilter filter = reg.getFilter();
+                    filter.afterPropertiesSet();
+
+                    MockHttpServletRequest req = new MockHttpServletRequest("GET", "/docs");
+                    MockHttpServletResponse resp = new MockHttpServletResponse();
+                    FilterChain chain = mock(FilterChain.class);
+                    filter.doFilter(req, resp, chain);
+                    verify(chain, times(1)).doFilter(req, resp);
+                    // 确认类体反射内省不触发 NoClassDefFoundError
+                    assertThat(OpenApiGuardFilter.class.getDeclaredMethods()).isNotEmpty();
+                });
+
+        // 2. enabled=false + mode=SATOKEN 且缺 Sa-Token：平滑待命并执行 404 物理切断
+        contextRunner
+                .withClassLoader(withoutSaToken)
+                .withPropertyValues(
+                        "ateng.boot.openapi.enabled=false",
+                        "ateng.boot.openapi.guard.mode=SATOKEN"
+                )
+                .run(context -> {
+                    @SuppressWarnings("unchecked")
+                    FilterRegistrationBean<OpenApiGuardFilter> reg =
+                            (FilterRegistrationBean<OpenApiGuardFilter>) context.getBean("openApiGuardFilterRegistration");
+                    OpenApiGuardFilter filter = reg.getFilter();
+                    filter.afterPropertiesSet();
+
+                    MockHttpServletRequest req = new MockHttpServletRequest("GET", "/docs");
+                    MockHttpServletResponse resp = new MockHttpServletResponse();
+                    filter.doFilter(req, resp, mock(FilterChain.class));
+                    assertThat(resp.getStatus()).isEqualTo(404);
+                });
+
+        // 3. enabled=true + mode=SATOKEN 且缺 Sa-Token：使用隔离类加载器加载 OpenApiGuardFilter 并验证 Fail-Fast
+        ClassLoader originalCl = Thread.currentThread().getContextClassLoader();
+        try {
+            Thread.currentThread().setContextClassLoader(withoutSaToken);
+            OpenApiProperties props = new OpenApiProperties();
+            props.setEnabled(true);
+            props.getGuard().setMode(io.github.atengk.boot.openapi.properties.GuardMode.SATOKEN);
+            OpenApiGuardFilter filter = new OpenApiGuardFilter(props);
+            assertThatThrownBy(filter::afterPropertiesSet)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("Sa-Token");
+        } finally {
+            Thread.currentThread().setContextClassLoader(originalCl);
         }
     }
 }
