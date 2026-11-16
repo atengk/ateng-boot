@@ -2,9 +2,12 @@ package io.github.atengk.boot.sample.observability;
 
 import io.github.atengk.boot.observability.event.ActuatorAccessDeniedEvent;
 import io.github.atengk.boot.observability.event.HealthProbeDegradedEvent;
+import io.github.atengk.boot.observability.event.HealthProbeRecoveredEvent;
 import io.github.atengk.boot.observability.event.ThreadPoolRejectedEvent;
 import io.github.atengk.boot.observability.health.AbstractSafeHealthIndicator;
 import io.github.atengk.boot.observability.security.ActuatorEndpointSecurityFilter;
+import io.github.atengk.boot.sample.observability.probe.PaymentGatewayHealthIndicator;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -26,6 +29,7 @@ import java.time.Duration;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ForkJoinPool;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
@@ -72,9 +76,20 @@ class ObservabilityScenarioTest {
     @Autowired
     private TestEventCaptureConfiguration eventCapture;
 
+    @Autowired
+    private PaymentGatewayHealthIndicator paymentGatewayHealthIndicator;
+
     @BeforeEach
     void setUp() {
         eventCapture.clear();
+        paymentGatewayHealthIndicator.setSimulatedDown(false, null);
+        paymentGatewayHealthIndicator.resetProbeState();
+    }
+
+    @AfterEach
+    void tearDown() {
+        paymentGatewayHealthIndicator.setSimulatedDown(false, null);
+        paymentGatewayHealthIndicator.resetProbeState();
     }
 
     @Test
@@ -408,6 +423,63 @@ class ObservabilityScenarioTest {
                 .andExpect(jsonPath("$.data.maskedHeaderValue").value(""));
     }
 
+    @Test
+    @DisplayName("场景十三：PaymentGatewayHealthIndicator 受管线程池绑定与 UP -> DOWN -> UP 对称自愈闭环验证")
+    void scenario13_healthProbeDegradeAndRecoveryLifecycle() throws Exception {
+        // 1. 验证 BeanFactoryAware 已绑定专属受管线程池，未回退 ForkJoinPool.commonPool()
+        assertThat(paymentGatewayHealthIndicator.getExecutor()).isNotSameAs(ForkJoinPool.commonPool());
+
+        // 2. 注入支付网关故障并触发即时探测 -> 返回 DOWN，同时发布 HealthProbeDegradedEvent
+        mockMvc.perform(post("/sample/observability/probe/payment-gateway/degrade")
+                        .param("reason", "MockGatewayDown"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.status").value("DOWN"))
+                .andExpect(jsonPath("$.data.details.reason").value("MockGatewayDown"));
+
+        // 3. 验证 Readiness 联动降级为 503，Liveness 仍保持 200 UP 硬隔离
+        mockMvc.perform(get("/actuator/health/readiness"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.status").value("DOWN"))
+                .andExpect(jsonPath("$.components.paymentGateway.status").value("DOWN"));
+
+        mockMvc.perform(get("/actuator/health/liveness"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
+
+        assertThat(eventCapture.degradedEvents)
+                .anySatisfy(event -> {
+                    assertThat(event.getComponentName()).isEqualTo("paymentGateway");
+                    assertThat(event.getStatus()).isEqualTo("DOWN");
+                });
+
+        // 4. 恢复支付网关并触发自愈探测 -> 返回 UP 并广播对称 HealthProbeRecoveredEvent
+        mockMvc.perform(post("/sample/observability/probe/payment-gateway/recover"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.status").value("UP"));
+
+        mockMvc.perform(get("/actuator/health/readiness"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"))
+                .andExpect(jsonPath("$.components.paymentGateway.status").value("UP"));
+
+        assertThat(eventCapture.recoveredEvents)
+                .anySatisfy(event -> {
+                    assertThat(event.getComponentName()).isEqualTo("paymentGateway");
+                    assertThat(event.getPreviousStatus()).isEqualTo("DOWN");
+                    assertThat(event.getConsecutiveFailures()).isGreaterThanOrEqualTo(1L);
+                    assertThat(event.getDowntimeMs()).isGreaterThanOrEqualTo(0L);
+                });
+
+        // 5. 查询最近领域事件端点，验证 ObservabilityAlertEventListener 已同时捕获降级与恢复事件
+        mockMvc.perform(get("/sample/observability/security/recent-events"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(content().string(containsString("HealthProbeDegradedEvent")))
+                .andExpect(content().string(containsString("HealthProbeRecoveredEvent")));
+    }
+
     /**
      * 测试专用领域事件监听收集器配置
      */
@@ -416,6 +488,7 @@ class ObservabilityScenarioTest {
         final List<ActuatorAccessDeniedEvent> deniedEvents = new CopyOnWriteArrayList<>();
         final List<ThreadPoolRejectedEvent> rejectedEvents = new CopyOnWriteArrayList<>();
         final List<HealthProbeDegradedEvent> degradedEvents = new CopyOnWriteArrayList<>();
+        final List<HealthProbeRecoveredEvent> recoveredEvents = new CopyOnWriteArrayList<>();
 
         @EventListener
         void onAccessDenied(ActuatorAccessDeniedEvent event) {
@@ -432,10 +505,16 @@ class ObservabilityScenarioTest {
             degradedEvents.add(event);
         }
 
+        @EventListener
+        void onHealthProbeRecovered(HealthProbeRecoveredEvent event) {
+            recoveredEvents.add(event);
+        }
+
         void clear() {
             deniedEvents.clear();
             rejectedEvents.clear();
             degradedEvents.clear();
+            recoveredEvents.clear();
         }
     }
 

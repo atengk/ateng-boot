@@ -2,6 +2,7 @@ package io.github.atengk.boot.observability.health;
 
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.observability.event.HealthProbeDegradedEvent;
+import io.github.atengk.boot.observability.event.HealthProbeRecoveredEvent;
 import io.github.atengk.boot.observability.properties.ObservabilityProperties;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -15,13 +16,13 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.ApplicationEventPublisherAware;
 
 import java.time.Duration;
-import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 生产级受管健康探针防假死抽象基类
@@ -50,10 +51,25 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator, Ap
     @Getter
     private final Duration timeout;
 
+    @Getter
+    private final Duration cacheTtl;
+
+    @Getter
+    private final Duration degradedEventCooldown;
+
     private final boolean explicitExecutor;
 
     @Getter
     private volatile Executor executor;
+
+    private final ReentrantLock stateLock = new ReentrantLock();
+    private final ReentrantLock cacheLock = new ReentrantLock();
+    private volatile CachedHealthSnapshot cachedSnapshot;
+    private boolean degraded;
+    private long firstDegradedAtNanos;
+    private long lastDegradedEventAtNanos;
+    private String lastDegradedStatus;
+    private long consecutiveFailures;
 
     private ApplicationEventPublisher eventPublisher;
 
@@ -102,7 +118,7 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator, Ap
      * @param properties 可观测性全局配置属性
      */
     protected AbstractSafeHealthIndicator(ObservabilityProperties properties) {
-        this(resolveTimeout(properties), null);
+        this(resolveTimeout(properties), null, resolveCacheTtl(properties), resolveDegradedEventCooldown(properties));
     }
 
     /**
@@ -112,7 +128,7 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator, Ap
      * @param executor   受管异步线程池执行器
      */
     protected AbstractSafeHealthIndicator(ObservabilityProperties properties, Executor executor) {
-        this(resolveTimeout(properties), executor);
+        this(resolveTimeout(properties), executor, resolveCacheTtl(properties), resolveDegradedEventCooldown(properties));
     }
 
     /**
@@ -122,7 +138,25 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator, Ap
      * @param executor 受管异步线程池执行器（为空时回退至 ForkJoinPool.commonPool()）
      */
     protected AbstractSafeHealthIndicator(Duration timeout, Executor executor) {
+        this(timeout, executor, Duration.ZERO, Duration.ZERO);
+    }
+
+    /**
+     * 完整配置属性构造器
+     *
+     * @param timeout               探测超时时长（非正数或空时保底为 2 秒）
+     * @param executor              受管异步线程池执行器（为空时回退至 ForkJoinPool.commonPool()）
+     * @param cacheTtl              健康结果短效缓存有效期（非正数或空时关闭缓存）
+     * @param degradedEventCooldown 连续降级事件冷却间隔（非正数或空时不抑制）
+     */
+    protected AbstractSafeHealthIndicator(
+            Duration timeout,
+            Executor executor,
+            Duration cacheTtl,
+            Duration degradedEventCooldown) {
         this.timeout = (timeout != null && !timeout.isNegative() && !timeout.isZero()) ? timeout : DEFAULT_TIMEOUT;
+        this.cacheTtl = normalizeNonNegativeDuration(cacheTtl);
+        this.degradedEventCooldown = normalizeNonNegativeDuration(degradedEventCooldown);
         this.explicitExecutor = (executor != null);
         this.executor = this.explicitExecutor ? executor : ForkJoinPool.commonPool();
     }
@@ -137,51 +171,129 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator, Ap
         return DEFAULT_TIMEOUT;
     }
 
+    private static Duration resolveCacheTtl(ObservabilityProperties properties) {
+        if (properties != null && properties.getHealth() != null) {
+            return properties.getHealth().getCacheTtl();
+        }
+        return Duration.ZERO;
+    }
+
+    private static Duration resolveDegradedEventCooldown(ObservabilityProperties properties) {
+        if (properties != null && properties.getHealth() != null) {
+            return properties.getHealth().getDegradedEventCooldown();
+        }
+        return Duration.ZERO;
+    }
+
+    private static Duration normalizeNonNegativeDuration(Duration duration) {
+        if (duration == null || duration.isNegative() || duration.isZero()) {
+            return Duration.ZERO;
+        }
+        return duration;
+    }
+
+    /**
+     * 复位探针故障状态机、累计失败计数并失效短效缓存快照（供运维干预或测试隔离调用）
+     */
+    public void resetProbeState() {
+        cacheLock.lock();
+        try {
+            this.cachedSnapshot = null;
+            stateLock.lock();
+            try {
+                this.degraded = false;
+                this.firstDegradedAtNanos = 0L;
+                this.lastDegradedEventAtNanos = 0L;
+                this.lastDegradedStatus = null;
+                this.consecutiveFailures = 0L;
+            } finally {
+                if (stateLock.isHeldByCurrentThread()) {
+                    stateLock.unlock();
+                }
+            }
+        } finally {
+            if (cacheLock.isHeldByCurrentThread()) {
+                cacheLock.unlock();
+            }
+        }
+    }
+
     @Override
     public Health health() {
+        if (this.cacheTtl.isZero()) {
+            return executeProbe();
+        }
+
+        CachedHealthSnapshot snapshot = this.cachedSnapshot;
+        if (snapshot != null && System.nanoTime() < snapshot.expireAtNanos()) {
+            return snapshot.health();
+        }
+
+        cacheLock.lock();
+        try {
+            snapshot = this.cachedSnapshot;
+            if (snapshot != null && System.nanoTime() < snapshot.expireAtNanos()) {
+                return snapshot.health();
+            }
+            Health freshHealth = executeProbe();
+            this.cachedSnapshot = new CachedHealthSnapshot(freshHealth, System.nanoTime() + this.cacheTtl.toNanos());
+            return freshHealth;
+        } finally {
+            if (cacheLock.isHeldByCurrentThread()) {
+                cacheLock.unlock();
+            }
+        }
+    }
+
+    /**
+     * 执行单次异步超时受控的健康探测并驱动升降级状态机
+     */
+    private Health executeProbe() {
         long startTime = System.currentTimeMillis();
         Executor targetExecutor = (this.executor != null) ? this.executor : ForkJoinPool.commonPool();
-        CompletableFuture<Health> future = CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> {
+        CompletableFuture<ProbeOutcome> future = CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> {
             Health.Builder builder = new Health.Builder();
             try {
                 doCheck(builder);
                 Health health = builder.build();
-                if (Status.DOWN.equals(health.getStatus())) {
-                    long costMs = System.currentTimeMillis() - startTime;
-                    publishDegradedEvent("DOWN", costMs, "Probe reported DOWN status", null);
-                }
-                return health;
+                String degradedReason = Status.DOWN.equals(health.getStatus()) ? "Probe reported DOWN status" : null;
+                return new ProbeOutcome(health, null, degradedReason);
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
                 // 线程被主线程超时切断中断，由主线程负责发布 TIMEOUT 事件，工作线程避免重复发布次生事件
-                return Health.unknown()
+                return new ProbeOutcome(Health.unknown()
                         .withDetail("status", "CANCELLED")
                         .withDetail("reason", "Probe execution cancelled by timeout")
-                        .build();
+                        .build(), null, null);
             } catch (Exception ex) {
                 if (Thread.currentThread().isInterrupted() || isInterruptedCause(ex)) {
                     // 若线程已被中断取消，不再重复发布次生 DOWN 事件
-                    return Health.unknown()
+                    return new ProbeOutcome(Health.unknown()
                             .withDetail("status", "CANCELLED")
                             .withDetail("reason", "Probe execution cancelled by timeout")
-                            .build();
+                            .build(), null, null);
                 }
-                long costMs = System.currentTimeMillis() - startTime;
+                String reason = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
                 log.warn("健康探针 [{}] 执行检测异常: {}", getClass().getSimpleName(), ex.getMessage(), ex);
-                publishDegradedEvent("DOWN", costMs, ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName(), ex);
-                return Health.down(ex)
-                        .withDetail("reason", ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName())
-                        .build();
+                return new ProbeOutcome(Health.down(ex).withDetail("reason", reason).build(), ex, reason);
             }
         }), targetExecutor);
 
         try {
-            return future.get(this.timeout.toMillis(), TimeUnit.MILLISECONDS);
+            ProbeOutcome outcome = future.get(this.timeout.toMillis(), TimeUnit.MILLISECONDS);
+            Health health = outcome.health();
+            if (Status.UP.equals(health.getStatus())) {
+                recordUpTransition();
+            } else if (Status.DOWN.equals(health.getStatus())) {
+                long costMs = System.currentTimeMillis() - startTime;
+                recordDegradedTransition("DOWN", costMs, outcome.degradedReason(), outcome.errorCause());
+            }
+            return health;
         } catch (TimeoutException ex) {
             future.cancel(true);
             long costMs = System.currentTimeMillis() - startTime;
             log.warn("健康探针 [{}] 执行检测超时（阈值: {}），触发防假死降级", getClass().getSimpleName(), this.timeout);
-            publishDegradedEvent("TIMEOUT", costMs, "Probe execution timed out", ex);
+            recordDegradedTransition("TIMEOUT", costMs, "Probe execution timed out", ex);
             return Health.unknown()
                     .withDetail("status", "TIMEOUT")
                     .withDetail("timeout", this.timeout.toString())
@@ -191,19 +303,110 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator, Ap
             Thread.currentThread().interrupt();
             long costMs = System.currentTimeMillis() - startTime;
             log.warn("健康探针 [{}] 执行检测被中断", getClass().getSimpleName());
-            publishDegradedEvent("DOWN", costMs, "Probe execution interrupted", ex);
+            recordDegradedTransition("DOWN", costMs, "Probe execution interrupted", ex);
             return Health.down(ex)
                     .withDetail("reason", "Probe execution interrupted")
                     .build();
         } catch (ExecutionException ex) {
             Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
             long costMs = System.currentTimeMillis() - startTime;
+            String reason = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
             log.warn("健康探针 [{}] 异步执行异常: {}", getClass().getSimpleName(), cause.getMessage(), cause);
-            publishDegradedEvent("DOWN", costMs, cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName(), cause);
+            recordDegradedTransition("DOWN", costMs, reason, cause);
             return Health.down(cause)
-                    .withDetail("reason", cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName())
+                    .withDetail("reason", reason)
                     .build();
         }
+    }
+
+    private void recordDegradedTransition(String status, long costMs, String reason, Throwable cause) {
+        boolean shouldPublish;
+        long nowNanos = System.nanoTime();
+        stateLock.lock();
+        try {
+            if (!this.degraded) {
+                this.degraded = true;
+                this.firstDegradedAtNanos = nowNanos;
+                this.lastDegradedStatus = status;
+                this.consecutiveFailures = 1L;
+                this.lastDegradedEventAtNanos = nowNanos;
+                shouldPublish = true;
+            } else {
+                this.consecutiveFailures++;
+                this.lastDegradedStatus = status;
+                if (this.degradedEventCooldown.isZero()
+                        || (nowNanos - this.lastDegradedEventAtNanos) >= this.degradedEventCooldown.toNanos()) {
+                    this.lastDegradedEventAtNanos = nowNanos;
+                    shouldPublish = true;
+                } else {
+                    shouldPublish = false;
+                }
+            }
+        } finally {
+            if (stateLock.isHeldByCurrentThread()) {
+                stateLock.unlock();
+            }
+        }
+        if (shouldPublish) {
+            publishDegradedEvent(status, costMs, reason, cause);
+        }
+    }
+
+    private void recordUpTransition() {
+        RecoverySnapshot recovery = null;
+        long nowNanos = System.nanoTime();
+        stateLock.lock();
+        try {
+            if (this.degraded) {
+                long downtimeMs = Math.max(0L, TimeUnit.NANOSECONDS.toMillis(nowNanos - this.firstDegradedAtNanos));
+                recovery = new RecoverySnapshot(this.lastDegradedStatus, downtimeMs, this.consecutiveFailures);
+                this.degraded = false;
+                this.firstDegradedAtNanos = 0L;
+                this.lastDegradedEventAtNanos = 0L;
+                this.lastDegradedStatus = null;
+                this.consecutiveFailures = 0L;
+            }
+        } finally {
+            if (stateLock.isHeldByCurrentThread()) {
+                stateLock.unlock();
+            }
+        }
+        if (recovery != null) {
+            publishRecoveredEvent(recovery.previousStatus(), recovery.downtimeMs(), recovery.consecutiveFailures());
+        }
+    }
+
+    /**
+     * 发布健康探针恢复自愈领域事件
+     *
+     * @param previousStatus      恢复前最近一次故障状态
+     * @param downtimeMs          持续故障时长（毫秒）
+     * @param consecutiveFailures 故障期间累计连续失败次数
+     */
+    protected void publishRecoveredEvent(String previousStatus, long downtimeMs, long consecutiveFailures) {
+        if (this.eventPublisher != null) {
+            try {
+                this.eventPublisher.publishEvent(new HealthProbeRecoveredEvent(
+                        this,
+                        getClass().getSimpleName(),
+                        getComponentName(),
+                        previousStatus,
+                        downtimeMs,
+                        consecutiveFailures
+                ));
+            } catch (Exception e) {
+                log.warn("发布健康探针恢复事件失败 [{}]: {}", getClass().getSimpleName(), e.getMessage());
+            }
+        }
+    }
+
+    private record ProbeOutcome(Health health, Throwable errorCause, String degradedReason) {
+    }
+
+    private record RecoverySnapshot(String previousStatus, long downtimeMs, long consecutiveFailures) {
+    }
+
+    private record CachedHealthSnapshot(Health health, long expireAtNanos) {
     }
 
     /**

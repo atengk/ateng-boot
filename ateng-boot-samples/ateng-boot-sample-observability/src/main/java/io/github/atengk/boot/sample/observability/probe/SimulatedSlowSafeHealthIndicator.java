@@ -5,6 +5,7 @@ import org.springframework.boot.actuate.health.Health;
 import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.Duration;
+import java.util.concurrent.Executor;
 
 /**
  * 模拟慢中间件健康探针（用于触发防假死超时熔断）
@@ -15,7 +16,11 @@ import java.time.Duration;
 public class SimulatedSlowSafeHealthIndicator extends AbstractSafeHealthIndicator {
 
     public SimulatedSlowSafeHealthIndicator(Duration timeout, ApplicationEventPublisher eventPublisher) {
-        super(timeout);
+        this(timeout, null, eventPublisher);
+    }
+
+    public SimulatedSlowSafeHealthIndicator(Duration timeout, Executor executor, ApplicationEventPublisher eventPublisher) {
+        super(timeout, executor);
         if (eventPublisher != null) {
             setApplicationEventPublisher(eventPublisher);
         }

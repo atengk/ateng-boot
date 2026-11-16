@@ -5,6 +5,7 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.observability.autoconfigure.AtengHealthAutoConfiguration;
 import io.github.atengk.boot.observability.autoconfigure.AtengObservabilityAutoConfiguration;
 import io.github.atengk.boot.observability.event.HealthProbeDegradedEvent;
+import io.github.atengk.boot.observability.event.HealthProbeRecoveredEvent;
 import io.github.atengk.boot.observability.properties.ObservabilityProperties;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -21,10 +22,12 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -316,6 +319,213 @@ class AbstractSafeHealthIndicatorTest {
             assertThat(workerResidual).isEqualTo("null|null|null|false");
         } finally {
             singlePool.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("对称自愈闭环：UP -> DOWN/TIMEOUT -> UP 状态机精确发布 HealthProbeRecoveredEvent 并支持 resetProbeState")
+    void testDegradedAndRecoveredLifecycleWithStateMachine() {
+        List<ApplicationEvent> events = new ArrayList<>();
+        // phase: 0=UP, 1=DOWN(异常), 2=TIMEOUT, 3=UP
+        AtomicInteger phase = new AtomicInteger(0);
+
+        AbstractSafeHealthIndicator indicator = new AbstractSafeHealthIndicator(Duration.ofMillis(60)) {
+            @Override
+            protected String getComponentName() {
+                return "paymentGateway";
+            }
+
+            @Override
+            protected void doCheck(Health.Builder builder) throws Exception {
+                switch (phase.get()) {
+                    case 1 -> builder.down().withDetail("err", "down");
+                    case 2 -> {
+                        Thread.sleep(200);
+                        builder.up();
+                    }
+                    default -> builder.up();
+                }
+            }
+        };
+        indicator.setApplicationEventPublisher(e -> {
+            if (e instanceof ApplicationEvent appEvent) {
+                events.add(appEvent);
+            }
+        });
+
+        // 1. 初次 UP -> 不误发任何升降级事件
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+        assertThat(events).isEmpty();
+
+        // 2. 连续 3 次故障（DOWN, DOWN, TIMEOUT）
+        phase.set(1);
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+        phase.set(2);
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.UNKNOWN);
+
+        long degradedCount = events.stream().filter(HealthProbeDegradedEvent.class::isInstance).count();
+        assertThat(degradedCount).isEqualTo(3);
+
+        // 3. 恢复为 UP -> 发布对称的 HealthProbeRecoveredEvent
+        phase.set(3);
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+        List<HealthProbeRecoveredEvent> recoveredList = events.stream()
+                .filter(HealthProbeRecoveredEvent.class::isInstance)
+                .map(HealthProbeRecoveredEvent.class::cast)
+                .toList();
+        assertThat(recoveredList).hasSize(1);
+        HealthProbeRecoveredEvent recovered = recoveredList.get(0);
+        assertThat(recovered.getComponentName()).isEqualTo("paymentGateway");
+        assertThat(recovered.getPreviousStatus()).isEqualTo("TIMEOUT");
+        assertThat(recovered.getConsecutiveFailures()).isEqualTo(3);
+        assertThat(recovered.getDowntimeMs()).isGreaterThanOrEqualTo(0L);
+
+        // 4. 持续 UP 不重复发恢复事件
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+        assertThat(events.stream().filter(HealthProbeRecoveredEvent.class::isInstance).count()).isEqualTo(1);
+
+        // 5. resetProbeState 复位后从故障切回 UP 不触发恢复事件
+        events.clear();
+        phase.set(1);
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+        indicator.resetProbeState();
+        phase.set(0);
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+        assertThat(events.stream().filter(HealthProbeRecoveredEvent.class::isInstance)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("防告警风暴冷却（degraded-event-cooldown）：连续故障冷却期内抑制重复降级告警并正常累计失败次数")
+    void testDegradedEventCooldownSuppressesAlertStorm() {
+        ObservabilityProperties properties = new ObservabilityProperties();
+        properties.getHealth().setTimeout(Duration.ofMillis(80));
+        properties.getHealth().setDegradedEventCooldown(Duration.ofSeconds(5));
+
+        List<ApplicationEvent> events = new ArrayList<>();
+        AtomicInteger phase = new AtomicInteger(1); // 1=DOWN, 2=TIMEOUT, 0=UP
+
+        AbstractSafeHealthIndicator indicator = new AbstractSafeHealthIndicator(properties) {
+            @Override
+            protected String getComponentName() {
+                return "redis";
+            }
+
+            @Override
+            protected void doCheck(Health.Builder builder) throws Exception {
+                switch (phase.get()) {
+                    case 1 -> builder.down().withDetail("err", "unreachable");
+                    case 2 -> {
+                        Thread.sleep(200);
+                        builder.up();
+                    }
+                    default -> builder.up();
+                }
+            }
+        };
+        indicator.setApplicationEventPublisher(e -> {
+            if (e instanceof ApplicationEvent appEvent) {
+                events.add(appEvent);
+            }
+        });
+
+        // 连续 4 次故障：仅第 1 次发布 HealthProbeDegradedEvent
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+        phase.set(2);
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.UNKNOWN);
+        phase.set(1);
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0)).isInstanceOf(HealthProbeDegradedEvent.class);
+
+        // 恢复 UP：发布恢复事件且 consecutiveFailures 为 4
+        phase.set(0);
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+        List<HealthProbeRecoveredEvent> recovered = events.stream()
+                .filter(HealthProbeRecoveredEvent.class::isInstance)
+                .map(HealthProbeRecoveredEvent.class::cast)
+                .toList();
+        assertThat(recovered).hasSize(1);
+        assertThat(recovered.get(0).getPreviousStatus()).isEqualTo("DOWN");
+        assertThat(recovered.get(0).getConsecutiveFailures()).isEqualTo(4);
+
+        // 恢复后进入新故障周期：立即发布新一轮降级事件
+        events.clear();
+        phase.set(1);
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0)).isInstanceOf(HealthProbeDegradedEvent.class);
+    }
+
+    @Test
+    @DisplayName("防击穿缓存（cache-ttl）：并发抓取仅穿透一次探测，TTL 过期与 resetProbeState 后重新探测")
+    void testCacheTtlPreventsStampedeUnderConcurrency() throws Exception {
+        ObservabilityProperties properties = new ObservabilityProperties();
+        properties.getHealth().setTimeout(Duration.ofSeconds(1));
+        properties.getHealth().setCacheTtl(Duration.ofMillis(120));
+
+        AtomicInteger checkExecutions = new AtomicInteger(0);
+        ThreadPoolTaskExecutor probePool = new ThreadPoolTaskExecutor();
+        probePool.setCorePoolSize(2);
+        probePool.setMaxPoolSize(4);
+        probePool.setThreadNamePrefix("cache-probe-");
+        probePool.initialize();
+
+        ThreadPoolTaskExecutor callerPool = new ThreadPoolTaskExecutor();
+        callerPool.setCorePoolSize(8);
+        callerPool.setMaxPoolSize(8);
+        callerPool.setThreadNamePrefix("cache-caller-");
+        callerPool.initialize();
+
+        AbstractSafeHealthIndicator indicator = new AbstractSafeHealthIndicator(properties, probePool) {
+            @Override
+            protected void doCheck(Health.Builder builder) throws Exception {
+                int seq = checkExecutions.incrementAndGet();
+                Thread.sleep(20);
+                builder.up().withDetail("seq", seq);
+            }
+        };
+
+        try {
+            // 1. 并发 8 线程同时触发冷缓存探测 -> 仅 1 次穿透执行 doCheck
+            int concurrency = 8;
+            CountDownLatch startGate = new CountDownLatch(1);
+            List<CompletableFuture<Health>> futures = new ArrayList<>();
+            for (int i = 0; i < concurrency; i++) {
+                futures.add(CompletableFuture.supplyAsync(() -> {
+                    try {
+                        startGate.await(2, TimeUnit.SECONDS);
+                    } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return indicator.health();
+                }, callerPool));
+            }
+            startGate.countDown();
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(5, TimeUnit.SECONDS);
+            for (CompletableFuture<Health> future : futures) {
+                assertThat(future.get().getStatus()).isEqualTo(Status.UP);
+                assertThat(future.get().getDetails()).containsEntry("seq", 1);
+            }
+            assertThat(checkExecutions.get()).isEqualTo(1);
+
+            // 2. 等待 TTL 过期后再次探测 -> 穿透第 2 次
+            Thread.sleep(160);
+            Health refreshed = indicator.health();
+            assertThat(refreshed.getStatus()).isEqualTo(Status.UP);
+            assertThat(refreshed.getDetails()).containsEntry("seq", 2);
+            assertThat(checkExecutions.get()).isEqualTo(2);
+
+            // 3. 调用 resetProbeState() 主动失效缓存 -> 立即穿透第 3 次
+            indicator.resetProbeState();
+            Health afterReset = indicator.health();
+            assertThat(afterReset.getDetails()).containsEntry("seq", 3);
+            assertThat(checkExecutions.get()).isEqualTo(3);
+        } finally {
+            callerPool.destroy();
+            probePool.destroy();
         }
     }
 }

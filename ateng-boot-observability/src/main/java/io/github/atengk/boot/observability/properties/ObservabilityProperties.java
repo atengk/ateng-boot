@@ -128,6 +128,16 @@ public class ObservabilityProperties {
         private Duration timeout = Duration.ofSeconds(2);
 
         /**
+         * 探针健康结果短效缓存有效期（强类型 Duration，默认 0s 表示关闭缓存每次实时探测；大于 0 时防高频抓取击穿下游中间件）
+         */
+        private Duration cacheTtl = Duration.ZERO;
+
+        /**
+         * 同一探针连续故障期间重复广播降级事件的最小冷却间隔（强类型 Duration，默认 0s 表示不抑制；大于 0 时抑制告警风暴）
+         */
+        private Duration degradedEventCooldown = Duration.ZERO;
+
+        /**
          * Kubernetes 黄金探针智能硬分级隔离开关（默认开启）。
          * 开启时强制将外部物理依赖从 liveness 存活探针中剔除（仅包含 livenessState 与 ping），
          * 外部依赖仅在 readiness 中聚合，从根本上杜绝外部网络抖动引发 Pod 死亡螺旋（Death-Spiral）与误杀重启。

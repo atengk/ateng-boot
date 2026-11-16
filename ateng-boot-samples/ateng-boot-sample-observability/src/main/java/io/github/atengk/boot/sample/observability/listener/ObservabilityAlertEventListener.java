@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.observability.listener;
 
 import io.github.atengk.boot.observability.event.ActuatorAccessDeniedEvent;
 import io.github.atengk.boot.observability.event.HealthProbeDegradedEvent;
+import io.github.atengk.boot.observability.event.HealthProbeRecoveredEvent;
 import io.github.atengk.boot.observability.event.ThreadPoolRejectedEvent;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
@@ -61,6 +62,22 @@ public class ObservabilityAlertEventListener {
         payload.put("status", event.getStatus());
         payload.put("costMs", event.getCostMs());
         payload.put("reason", event.getReason());
+        addEvent(payload);
+    }
+
+    @EventListener
+    public void onHealthProbeRecovered(HealthProbeRecoveredEvent event) {
+        log.info("【运维恢复】组件健康探针自愈！探针: {}, 组件: {}, 故障前状态: {}, 持续故障: {}ms, 累计失败: {}次",
+                event.getProbeName(), event.getComponentName(), event.getPreviousStatus(),
+                event.getDowntimeMs(), event.getConsecutiveFailures());
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("eventType", "HealthProbeRecoveredEvent");
+        payload.put("timestamp", LocalDateTime.now().toString());
+        payload.put("componentName", event.getComponentName());
+        payload.put("previousStatus", event.getPreviousStatus());
+        payload.put("downtimeMs", event.getDowntimeMs());
+        payload.put("consecutiveFailures", event.getConsecutiveFailures());
         addEvent(payload);
     }
 
