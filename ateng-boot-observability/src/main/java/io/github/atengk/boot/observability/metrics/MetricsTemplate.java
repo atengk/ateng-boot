@@ -168,13 +168,7 @@ public class MetricsTemplate {
      * @param tags     标签集合
      */
     public void record(String name, Duration duration, Iterable<Tag> tags) {
-        if (duration == null || duration.isNegative()) {
-            return;
-        }
-        Timer timer = timer(name, tags);
-        if (timer != null) {
-            timer.record(duration);
-        }
+        doRecordDuration(duration, () -> timer(name, tags));
     }
 
     /**
@@ -202,10 +196,14 @@ public class MetricsTemplate {
      * @param tags        标签集合
      */
     public void record(String name, Duration duration, double[] percentiles, boolean histogram, Duration[] sla, Iterable<Tag> tags) {
+        doRecordDuration(duration, () -> timer(name, percentiles, histogram, sla, tags));
+    }
+
+    private void doRecordDuration(Duration duration, Supplier<Timer> timerSupplier) {
         if (duration == null || duration.isNegative()) {
             return;
         }
-        Timer timer = timer(name, percentiles, histogram, sla, tags);
+        Timer timer = timerSupplier.get();
         if (timer != null) {
             timer.record(duration);
         }
