@@ -2,11 +2,14 @@ package io.github.atengk.boot.mail.registry;
 
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
+import io.github.atengk.boot.mail.model.AuthMode;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.properties.MailProperties;
+import io.github.atengk.boot.mail.provider.MailAccessTokenProvider;
 import jakarta.mail.AuthenticationFailedException;
 import jakarta.mail.MessagingException;
 import lombok.Getter;
+import org.springframework.mail.MailAuthenticationException;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
 
 import java.nio.charset.StandardCharsets;
@@ -43,24 +46,34 @@ public class MailAccountRegistry {
 
     private final MailProperties globalMailProperties;
 
+    @Getter
+    private final MailAccessTokenProvider accessTokenProvider;
+
     private final ReentrantLock dynamicLock = new ReentrantLock();
+    private final ReentrantLock oauthExecutionLock = new ReentrantLock();
     private final Map<String, MailAccount> dynamicAccountLruCache;
     private final Map<String, MailAccount> dynamicAccountByNameCache;
 
     public MailAccountRegistry(String defaultAccountName) {
-        this(defaultAccountName, 100, null);
+        this(defaultAccountName, 100, null, null);
     }
 
     public MailAccountRegistry(String defaultAccountName, int maxDynamicAccounts) {
-        this(defaultAccountName, maxDynamicAccounts, null);
+        this(defaultAccountName, maxDynamicAccounts, null, null);
     }
 
     public MailAccountRegistry(String defaultAccountName, int maxDynamicAccounts, MailProperties globalMailProperties) {
+        this(defaultAccountName, maxDynamicAccounts, globalMailProperties, null);
+    }
+
+    public MailAccountRegistry(String defaultAccountName, int maxDynamicAccounts,
+                               MailProperties globalMailProperties, MailAccessTokenProvider accessTokenProvider) {
         this.defaultAccountName = (defaultAccountName != null && !defaultAccountName.isBlank())
                 ? defaultAccountName
                 : "default";
         this.maxDynamicAccounts = maxDynamicAccounts > 0 ? maxDynamicAccounts : 100;
         this.globalMailProperties = globalMailProperties != null ? globalMailProperties : new MailProperties();
+        this.accessTokenProvider = accessTokenProvider;
         this.dynamicAccountLruCache = createLruMap(this.maxDynamicAccounts);
         this.dynamicAccountByNameCache = createLruMap(this.maxDynamicAccounts);
     }
@@ -371,11 +384,17 @@ public class MailAccountRegistry {
 
     private void doTestConnection(MailAccount account, JavaMailSenderImpl sender) {
         try {
-            sender.testConnection();
+            executeWithOAuth2Refresh(account, sender, this.accessTokenProvider, sender::testConnection);
+        } catch (MailSendException mse) {
+            throw mse;
         } catch (AuthenticationFailedException afe) {
             throw new MailSendException(MailResultCode.MAIL_AUTHENTICATION_ERROR,
                     "发件账号 [" + account.getName() + "] 邮件服务器身份认证失败: " + afe.getMessage(), afe);
         } catch (MessagingException me) {
+            if (isAuthenticationFailure(me)) {
+                throw new MailSendException(MailResultCode.MAIL_AUTHENTICATION_ERROR,
+                        "发件账号 [" + account.getName() + "] 邮件服务器身份认证失败: " + me.getMessage(), me);
+            }
             Throwable cause = me.getCause();
             if (isTimeoutOrConnectRefused(me, cause)) {
                 throw new MailSendException(MailResultCode.MAIL_CONNECT_TIMEOUT,
@@ -384,9 +403,138 @@ public class MailAccountRegistry {
             throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
                     "发件账号 [" + account.getName() + "] 邮件服务器连通性检测失败: " + me.getMessage(), me);
         } catch (Exception e) {
+            if (isAuthenticationFailure(e)) {
+                throw new MailSendException(MailResultCode.MAIL_AUTHENTICATION_ERROR,
+                        "发件账号 [" + account.getName() + "] 邮件服务器身份认证失败: " + e.getMessage(), e);
+            }
             throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
                     "发件账号 [" + account.getName() + "] 邮件服务器连通性检测异常: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * 执行带 XOAUTH2 令牌动态注入与认证失败单次刷新重试的发送/探活操作
+     *
+     * @param account       目标发信账号
+     * @param sender        物理发信器
+     * @param tokenProvider 令牌供给器（可为 null）
+     * @param action        实际连接或投递动作
+     * @throws Exception 原始或转换后异常
+     */
+    public void executeWithOAuth2Refresh(MailAccount account, JavaMailSenderImpl sender,
+                                         MailAccessTokenProvider tokenProvider,
+                                         CheckedSenderAction action) throws Exception {
+        if (account.resolveEffectiveAuthMode() != AuthMode.XOAUTH2) {
+            action.execute();
+            return;
+        }
+        MailAccessTokenProvider effectiveProvider = tokenProvider != null ? tokenProvider : this.accessTokenProvider;
+        boolean refreshedOnInit = false;
+        String initialToken = resolveInitialOAuth2Token(account, effectiveProvider);
+        if ((initialToken == null || initialToken.isBlank()) && effectiveProvider != null) {
+            initialToken = invokeRefreshAccessToken(account, effectiveProvider);
+            refreshedOnInit = true;
+        }
+        applySenderPasswordIfChanged(sender, initialToken);
+        try {
+            action.execute();
+        } catch (Exception ex) {
+            if (!refreshedOnInit && effectiveProvider != null && isAuthenticationFailure(ex)) {
+                String refreshed = invokeRefreshAccessToken(account, effectiveProvider);
+                if (refreshed != null && !refreshed.isBlank()) {
+                    applySenderPasswordIfChanged(sender, refreshed);
+                    action.execute();
+                    return;
+                }
+            }
+            throw ex;
+        }
+    }
+
+    private void applySenderPasswordIfChanged(JavaMailSenderImpl sender, String token) {
+        if (token == null || token.isBlank()) {
+            return;
+        }
+        oauthExecutionLock.lock();
+        try {
+            if (!token.equals(sender.getPassword())) {
+                sender.setPassword(token);
+            }
+        } finally {
+            if (oauthExecutionLock.isHeldByCurrentThread()) {
+                oauthExecutionLock.unlock();
+            }
+        }
+    }
+
+    private static String resolveInitialOAuth2Token(MailAccount account, MailAccessTokenProvider tokenProvider) {
+        if (tokenProvider != null) {
+            try {
+                String provided = tokenProvider.getAccessToken(account);
+                if (provided != null && !provided.isBlank()) {
+                    return provided;
+                }
+            } catch (Exception e) {
+                throw new MailSendException(MailResultCode.MAIL_AUTHENTICATION_ERROR,
+                        "获取 XOAUTH2 访问令牌失败: " + e.getMessage(), e);
+            }
+        }
+        return account.resolveStaticAccessToken();
+    }
+
+    private static String invokeRefreshAccessToken(MailAccount account, MailAccessTokenProvider tokenProvider) {
+        try {
+            return tokenProvider.refreshAccessToken(account);
+        } catch (Exception e) {
+            throw new MailSendException(MailResultCode.MAIL_AUTHENTICATION_ERROR,
+                    "刷新 XOAUTH2 访问令牌失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 判断异常因果链是否属于 SMTP 身份认证失败
+     *
+     * @param throwable 异常对象
+     * @return true 表示身份认证失败
+     */
+    public static boolean isAuthenticationFailure(Throwable throwable) {
+        if (throwable == null) {
+            return false;
+        }
+        if (throwable instanceof org.springframework.mail.MailSendException springEx) {
+            Exception[] messageExceptions = springEx.getMessageExceptions();
+            if (messageExceptions != null) {
+                for (Exception me : messageExceptions) {
+                    if (isAuthenticationFailure(me)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof MailAuthenticationException || current instanceof AuthenticationFailedException) {
+                return true;
+            }
+            if (current instanceof MailSendException mse && mse.getResultCode() == MailResultCode.MAIL_AUTHENTICATION_ERROR) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    /**
+     * 可抛受检异常的发信/探活回调接口
+     */
+    @FunctionalInterface
+    public interface CheckedSenderAction {
+        /**
+         * 执行底层发信或连通性探活操作
+         *
+         * @throws Exception 执行失败时抛出异常
+         */
+        void execute() throws Exception;
     }
 
     private static boolean isTimeoutOrConnectRefused(Throwable t, Throwable cause) {
@@ -415,13 +563,26 @@ public class MailAccountRegistry {
         JavaMailSenderImpl sender = new JavaMailSenderImpl();
         sender.setHost(account.getHost());
         sender.setPort(account.getPort() > 0 ? account.getPort() : 465);
-        sender.setUsername(account.getUsername());
-        sender.setPassword(account.getPassword());
         sender.setDefaultEncoding(StandardCharsets.UTF_8.name());
 
         Properties props = sender.getJavaMailProperties();
         props.put("mail.transport.protocol", account.getProtocol() != null ? account.getProtocol() : "smtp");
-        props.put("mail.smtp.auth", "true");
+
+        AuthMode effectiveAuthMode = account.resolveEffectiveAuthMode();
+        if (effectiveAuthMode == AuthMode.NONE) {
+            props.put("mail.smtp.auth", "false");
+            sender.setUsername(null);
+            sender.setPassword(null);
+        } else if (effectiveAuthMode == AuthMode.XOAUTH2) {
+            sender.setUsername(account.getUsername());
+            sender.setPassword(account.resolveStaticAccessToken());
+            props.put("mail.smtp.auth", "true");
+            props.put("mail.smtp.auth.mechanisms", "XOAUTH2");
+        } else {
+            sender.setUsername(account.getUsername());
+            sender.setPassword(account.getPassword());
+            props.put("mail.smtp.auth", "true");
+        }
 
         if (globalProps != null) {
             if (globalProps.getConnectionTimeout() != null) {
@@ -435,17 +596,33 @@ public class MailAccountRegistry {
             }
         }
 
-        if (account.isSsl()) {
-            props.put("mail.smtp.ssl.enable", "true");
-        }
-        if (account.isStarttls()) {
-            props.put("mail.smtp.starttls.enable", "true");
-        }
+        applySslProperties(props, account);
         if (account.getProperties() != null) {
             props.putAll(account.getProperties());
         }
 
         return sender;
+    }
+
+    private static void applySslProperties(Properties props, MailAccount account) {
+        String trust = (account.getSslTrust() != null && !account.getSslTrust().isBlank())
+                ? account.getSslTrust().trim()
+                : null;
+        if (account.isSsl()) {
+            props.put("mail.smtp.ssl.enable", "true");
+            if (trust != null) {
+                props.put("mail.smtp.ssl.trust", trust);
+                props.put("mail.smtp.ssl.checkserveridentity", "*".equals(trust) ? "false" : "true");
+            } else {
+                props.put("mail.smtp.ssl.checkserveridentity", "true");
+            }
+        }
+        if (account.isStarttls()) {
+            props.put("mail.smtp.starttls.enable", "true");
+            if (!account.isSsl() && trust != null) {
+                props.put("mail.smtp.ssl.trust", trust);
+            }
+        }
     }
 
     private MailAccount copyWithSender(MailAccount source, JavaMailSenderImpl sender) {

@@ -6,9 +6,11 @@ import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.listener.MailAccountEvictListener;
+import io.github.atengk.boot.mail.model.AuthMode;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.properties.MailAccountProperties;
 import io.github.atengk.boot.mail.properties.MailProperties;
+import io.github.atengk.boot.mail.provider.MailAccessTokenProvider;
 import io.github.atengk.boot.mail.provider.MailAccountProvider;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.resolver.MailAccountResolver;
@@ -68,8 +70,14 @@ public class AtengMailAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public MailAccountRegistry mailAccountRegistry(MailProperties properties, Environment env) {
-        MailAccountRegistry registry = new MailAccountRegistry(properties.getDefaultAccount(), properties.getMaxDynamicAccounts(), properties);
+    public MailAccountRegistry mailAccountRegistry(MailProperties properties, Environment env,
+                                                   ObjectProvider<MailAccessTokenProvider> accessTokenProviderProvider) {
+        MailAccountRegistry registry = new MailAccountRegistry(
+                properties.getDefaultAccount(),
+                properties.getMaxDynamicAccounts(),
+                properties,
+                accessTokenProviderProvider.getIfAvailable()
+        );
         Map<String, MailAccountProperties> accountMap = properties.getAccounts();
 
         if (accountMap != null && !accountMap.isEmpty()) {
@@ -85,6 +93,9 @@ public class AtengMailAutoConfiguration {
             props.setPort(properties.getPort());
             props.setUsername(properties.getUsername());
             props.setPassword(properties.getPassword());
+            props.setAuthMode(properties.getAuthMode());
+            props.setAccessToken(properties.getAccessToken());
+            props.setSslTrust(properties.getSslTrust());
             props.setProtocol(properties.getProtocol());
             props.setSsl(properties.isSsl());
             props.setStarttls(properties.isStarttls());
@@ -220,6 +231,7 @@ public class AtengMailAutoConfiguration {
     public MailTemplate mailTemplate(MailAccountRegistry registry, MailProperties properties,
                                      MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver,
                                      ObjectProvider<MailAccountProvider> mailAccountProviderProvider,
+                                     ObjectProvider<MailAccessTokenProvider> accessTokenProviderProvider,
                                      @Qualifier("mailTaskExecutor") ObjectProvider<Executor> mailTaskExecutorProvider,
                                      @Qualifier("taskExecutor") ObjectProvider<Executor> genericTaskExecutorProvider,
                                      ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
@@ -230,10 +242,11 @@ public class AtengMailAutoConfiguration {
             executor = genericTaskExecutorProvider.getIfAvailable();
         }
         MailAccountProvider accountProvider = mailAccountProviderProvider.getIfAvailable();
+        MailAccessTokenProvider accessTokenProvider = accessTokenProviderProvider.getIfAvailable();
         ApplicationEventPublisher eventPublisher = eventPublisherProvider.getIfAvailable();
         List<MailSendFailureHandler> failureHandlers = failureHandlersProvider.getIfAvailable();
         List<MailSendInterceptor> interceptors = interceptorsProvider.getIfAvailable();
-        return new MailTemplate(registry, properties, templateRenderer, accountResolver, accountProvider, executor, eventPublisher, failureHandlers, interceptors);
+        return new MailTemplate(registry, properties, templateRenderer, accountResolver, accountProvider, accessTokenProvider, executor, eventPublisher, failureHandlers, interceptors);
     }
 
     private MailAccount createMailAccount(String name, MailAccountProperties accountProps, MailProperties globalProps) {
@@ -247,6 +260,9 @@ public class AtengMailAutoConfiguration {
                 .port(accountProps.getPort() != null ? accountProps.getPort() : 465)
                 .username(accountProps.getUsername())
                 .password(accountProps.getPassword())
+                .authMode(accountProps.getAuthMode() != null ? accountProps.getAuthMode() : AuthMode.AUTO)
+                .accessToken(accountProps.getAccessToken())
+                .sslTrust(accountProps.getSslTrust())
                 .protocol(accountProps.getProtocol() != null ? accountProps.getProtocol() : "smtp")
                 .ssl(accountProps.isSsl())
                 .starttls(accountProps.isStarttls())

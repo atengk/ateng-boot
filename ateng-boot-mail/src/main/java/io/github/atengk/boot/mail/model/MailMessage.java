@@ -129,6 +129,21 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     private boolean requestReadReceipt;
 
+    /**
+     * 单封独立退信信封地址（RFC 5321 Return-Path / Envelope MAIL FROM，绝不污染共享 Session）
+     */
+    private String returnPath;
+
+    /**
+     * 一键退订标头值（RFC 2369 List-Unsubscribe，如 "&lt;https://example.com/unsub&gt;, &lt;mailto:unsub@example.com&gt;"）
+     */
+    private String listUnsubscribe;
+
+    /**
+     * 一键 POST 退订声明标头值（RFC 8058 List-Unsubscribe-Post，如 "List-Unsubscribe=One-Click"）
+     */
+    private String listUnsubscribePost;
+
     // ==================== 链式 Fluent / DSL 构造辅助方法 ====================
 
     /**
@@ -185,6 +200,57 @@ public class MailMessage implements AutoCloseable, Serializable {
     public MailMessage requestReadReceipt(boolean requestReadReceipt) {
         this.requestReadReceipt = requestReadReceipt;
         return this;
+    }
+
+    /**
+     * 指定单封独立退信信封地址 (Envelope MAIL FROM / Return-Path)
+     *
+     * @param returnPath 退信接收邮箱地址
+     * @return 当前消息构建对象
+     */
+    public MailMessage returnPath(String returnPath) {
+        this.returnPath = returnPath;
+        return this;
+    }
+
+    /**
+     * 指定一键退订标头 (RFC 2369 List-Unsubscribe)
+     *
+     * @param listUnsubscribe 退订 URI 列表
+     * @return 当前消息构建对象
+     */
+    public MailMessage listUnsubscribe(String listUnsubscribe) {
+        this.listUnsubscribe = sanitizeHeaderText(listUnsubscribe);
+        return this;
+    }
+
+    /**
+     * 设置一键退订标头（清洗 CR/LF/NUL 防头部注入）
+     *
+     * @param listUnsubscribe 退订 URI 列表
+     */
+    public void setListUnsubscribe(String listUnsubscribe) {
+        this.listUnsubscribe = sanitizeHeaderText(listUnsubscribe);
+    }
+
+    /**
+     * 指定一键 POST 退订标头 (RFC 8058 List-Unsubscribe-Post)
+     *
+     * @param listUnsubscribePost 退订 POST 声明（通常为 "List-Unsubscribe=One-Click"）
+     * @return 当前消息构建对象
+     */
+    public MailMessage listUnsubscribePost(String listUnsubscribePost) {
+        this.listUnsubscribePost = sanitizeHeaderText(listUnsubscribePost);
+        return this;
+    }
+
+    /**
+     * 设置一键 POST 退订标头（清洗 CR/LF/NUL 防头部注入）
+     *
+     * @param listUnsubscribePost 退订 POST 声明
+     */
+    public void setListUnsubscribePost(String listUnsubscribePost) {
+        this.listUnsubscribePost = sanitizeHeaderText(listUnsubscribePost);
     }
 
     /**

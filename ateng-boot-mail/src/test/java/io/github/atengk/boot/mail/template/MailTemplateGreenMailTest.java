@@ -2527,6 +2527,231 @@ class MailTemplateGreenMailTest {
         assertTrue(closed7.get(), "异步禁用导致 sendAsync 抛出异常时必须关闭附件流");
     }
 
+    @Test
+    @DisplayName("测试 AuthMode.AUTO 无凭据与 AuthMode.NONE 对接无认证中继服务器开箱发信")
+    void testUnauthenticatedSmtpRelayWithAutoAndNoneAuthMode() throws Exception {
+        com.icegreen.greenmail.util.GreenMail openRelay = new com.icegreen.greenmail.util.GreenMail(
+                com.icegreen.greenmail.util.ServerSetupTest.SMTP.dynamicPort());
+        openRelay.start();
+        try {
+            int relayPort = openRelay.getSmtp().getPort();
+            MailAccount autoNoCredAccount = MailAccount.builder()
+                    .name("open-relay-auto")
+                    .host("127.0.0.1")
+                    .port(relayPort)
+                    .ssl(false)
+                    .defaultFrom("relay@internal.local")
+                    .build();
+            MailAccount managedAuto = accountRegistry.getOrCreateDynamic("open-relay-auto", autoNoCredAccount, mailProperties);
+            MailSendResult r1 = mailTemplate.sendWithAccount(managedAuto, new MailMessage()
+                    .to("internal1@internal.local")
+                    .subject("免认证中继 AUTO")
+                    .text("auto relay body"));
+            assertTrue(r1.isSuccess());
+
+            MailAccount forcedNoneAccount = MailAccount.builder()
+                    .name("open-relay-none")
+                    .host("127.0.0.1")
+                    .port(relayPort)
+                    .username("ignored-user@internal.local")
+                    .password("ignored-pwd")
+                    .authMode(io.github.atengk.boot.mail.model.AuthMode.NONE)
+                    .ssl(false)
+                    .defaultFrom("relay-none@internal.local")
+                    .build();
+            MailAccount managedNone = accountRegistry.getOrCreateDynamic("open-relay-none", forcedNoneAccount, mailProperties);
+            MailSendResult r2 = mailTemplate.sendWithAccount(managedNone, new MailMessage()
+                    .to("internal2@internal.local")
+                    .subject("免认证中继 NONE")
+                    .text("none relay body"));
+            assertTrue(r2.isSuccess());
+
+            assertTrue(openRelay.waitForIncomingEmail(5000, 2));
+            assertEquals(2, openRelay.getReceivedMessages().length);
+        } finally {
+            openRelay.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 AuthMode.XOAUTH2 动态签发令牌并在认证失败时自动刷新重试一次")
+    void testOAuth2TokenRefreshAndSingleRetryOnAuthFailure() throws Exception {
+        AtomicInteger getCalls = new AtomicInteger(0);
+        AtomicInteger refreshCalls = new AtomicInteger(0);
+        AtomicInteger sendCalls = new AtomicInteger(0);
+        List<String> observedTokens = new ArrayList<>();
+
+        io.github.atengk.boot.mail.provider.MailAccessTokenProvider tokenProvider =
+                new io.github.atengk.boot.mail.provider.MailAccessTokenProvider() {
+                    @Override
+                    public String getAccessToken(MailAccount account) {
+                        getCalls.incrementAndGet();
+                        return "stale-oauth-token";
+                    }
+
+                    @Override
+                    public String refreshAccessToken(MailAccount account) {
+                        refreshCalls.incrementAndGet();
+                        return "fresh-oauth-token";
+                    }
+                };
+
+        int smtpPort = greenMail.getSmtp().getPort();
+        JavaMailSenderImpl realSender = new JavaMailSenderImpl();
+        realSender.setHost("127.0.0.1");
+        realSender.setPort(smtpPort);
+        realSender.setUsername("test@atengk.com");
+        realSender.setPassword("password");
+
+        JavaMailSenderImpl oauthSender = new JavaMailSenderImpl() {
+            @Override
+            public void send(MimeMessage mimeMessage) {
+                int attempt = sendCalls.incrementAndGet();
+                observedTokens.add(getPassword());
+                if (attempt == 1) {
+                    throw new org.springframework.mail.MailAuthenticationException("XOAUTH2 token expired");
+                }
+                realSender.send(mimeMessage);
+            }
+        };
+
+        MailAccount oauthAccount = MailAccount.builder()
+                .name("oauth-mail")
+                .host("127.0.0.1")
+                .port(smtpPort)
+                .username("test@atengk.com")
+                .authMode(io.github.atengk.boot.mail.model.AuthMode.XOAUTH2)
+                .defaultFrom("oauth@atengk.com")
+                .sender(oauthSender)
+                .build();
+        accountRegistry.register(oauthAccount);
+
+        MailTemplate oauthTemplate = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), null, tokenProvider, null, null, null, null);
+        try {
+            MailSendResult result = oauthTemplate.send(msg -> msg
+                    .account("oauth-mail")
+                    .to("oauth-user@example.com")
+                    .subject("XOAUTH2 令牌刷新测试")
+                    .text("token refreshed ok"));
+            assertTrue(result.isSuccess());
+            assertEquals(1, getCalls.get());
+            assertEquals(1, refreshCalls.get());
+            assertEquals(2, sendCalls.get());
+            assertEquals(List.of("stale-oauth-token", "fresh-oauth-token"), observedTokens);
+            assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+            // 刷新后仍认证失败，不得无限重试，直接抛出 MAIL_AUTHENTICATION_ERROR
+            JavaMailSenderImpl alwaysFailOAuth = new JavaMailSenderImpl() {
+                @Override
+                public void send(MimeMessage mimeMessage) {
+                    sendCalls.incrementAndGet();
+                    throw new org.springframework.mail.MailAuthenticationException("revoked permanently");
+                }
+            };
+            accountRegistry.register(MailAccount.builder()
+                    .name("oauth-revoked")
+                    .host("127.0.0.1")
+                    .port(smtpPort)
+                    .username("test@atengk.com")
+                    .authMode(io.github.atengk.boot.mail.model.AuthMode.XOAUTH2)
+                    .sender(alwaysFailOAuth)
+                    .build());
+
+            sendCalls.set(0);
+            refreshCalls.set(0);
+            MailSendException failEx = assertThrows(MailSendException.class, () ->
+                    oauthTemplate.sendText("oauth-revoked", "oauth-fail@example.com", "fail", "body"));
+            assertEquals(MailResultCode.MAIL_AUTHENTICATION_ERROR, failEx.getResultCode());
+            assertEquals(1, refreshCalls.get());
+            assertEquals(2, sendCalls.get());
+        } finally {
+            oauthTemplate.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("测试单封 returnPath 改写物理信封 MAIL FROM 且与共享 Session 并发互不串扰，非法格式抛出 MAIL_INVALID_ADDRESS")
+    void testReturnPathEnvelopeFromAndSessionIsolation() throws Exception {
+        mailProperties.getRetry().setEnabled(true);
+        mailProperties.getRetry().setMaxAttempts(2);
+        mailProperties.getRetry().setDelay(Duration.ofMillis(10));
+
+        // 1. 非法 returnPath 立即抛出 MAIL_INVALID_ADDRESS
+        MailSendException invalidRp = assertThrows(MailSendException.class, () ->
+                mailTemplate.send(msg -> msg
+                        .to("rp-bad@example.com")
+                        .returnPath("invalid-return-path")
+                        .subject("s")
+                        .text("t")));
+        assertEquals(MailResultCode.MAIL_INVALID_ADDRESS, invalidRp.getResultCode());
+
+        // 2. 并发与串行交叉发送：单封指定 returnPath，其余不指定，互不污染共享 Session
+        MailSendResult r1 = mailTemplate.send(msg -> msg
+                .to("rp1@example.com")
+                .from("notice@atengk.com")
+                .returnPath("bounce-order-1@atengk.com")
+                .subject("独立退信地址验证")
+                .text("body1"));
+        assertTrue(r1.isSuccess());
+
+        MailSendResult r2 = mailTemplate.send(msg -> msg
+                .to("rp2@example.com")
+                .from("notice@atengk.com")
+                .subject("共享 Session 无串扰验证")
+                .text("body2"));
+        assertTrue(r2.isSuccess());
+
+        assertNull(accountRegistry.getDefault().getSender().getSession().getProperties().getProperty("mail.smtp.from"),
+                "共享 Session 严禁被单封 returnPath 污染");
+
+        assertTrue(greenMail.waitForIncomingEmail(5000, 2));
+        MimeMessage[] msgs = greenMail.getReceivedMessages();
+        assertEquals(2, msgs.length);
+        assertTrue(msgs[0].getHeader("Return-Path", null).contains("bounce-order-1@atengk.com"));
+        assertTrue(msgs[1].getHeader("Return-Path", null).contains("notice@atengk.com"));
+        assertFalse(msgs[1].getHeader("Return-Path", null).contains("bounce-order-1@atengk.com"));
+    }
+
+    @Test
+    @DisplayName("测试 List-Unsubscribe 与 List-Unsubscribe-Post 退订合规标头写入、换行清洗与 mailto 地址校验")
+    void testListUnsubscribeHeadersAndSanitization() throws Exception {
+        // 1. 非法 mailto 地址拦截（含未闭合尖括号畸形场景）
+        for (String badUnsub : List.of("<mailto:invalid-email-addr>", "<mailto:invalid-unclosed")) {
+            MailSendException invalidMailto = assertThrows(MailSendException.class, () ->
+                    mailTemplate.send(msg -> msg
+                            .to("unsub-bad@example.com")
+                            .listUnsubscribe(badUnsub)
+                            .subject("s")
+                            .text("t")));
+            assertEquals(MailResultCode.MAIL_INVALID_ADDRESS, invalidMailto.getResultCode());
+        }
+
+        // 2. 合法 HTTPS + mailto + One-Click 且带注入字符时清洗后写入真实报文
+        MailSendResult result = mailTemplate.send(msg -> msg
+                .to("unsub-ok@example.com")
+                .subject("订阅周报")
+                .html("<p>内容</p>")
+                .listUnsubscribe("<https://example.com/unsub?id=99>, <mailto:unsub@atengk.com?subject=unsubscribe>\r\nX-Injected-Unsub: evil")
+                .listUnsubscribePost("List-Unsubscribe=One-Click\r\nX-Injected-Post: evil"));
+        assertTrue(result.isSuccess());
+
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+        MimeMessage received = greenMail.getReceivedMessages()[0];
+        String unsub = received.getHeader("List-Unsubscribe", null);
+        String unsubPost = received.getHeader("List-Unsubscribe-Post", null);
+        assertNotNull(unsub);
+        assertNotNull(unsubPost);
+        assertTrue(unsub.contains("https://example.com/unsub?id=99"));
+        assertTrue(unsub.contains("mailto:unsub@atengk.com"));
+        assertFalse(unsub.contains("\r") || unsub.contains("\n"));
+        assertTrue(unsubPost.startsWith("List-Unsubscribe=One-Click"));
+        assertFalse(unsubPost.contains("\r") || unsubPost.contains("\n"));
+        assertNull(received.getHeader("X-Injected-Unsub"));
+        assertNull(received.getHeader("X-Injected-Post"));
+    }
+
     private ByteArrayInputStream trackingStream(AtomicBoolean closedFlag) {
         return new ByteArrayInputStream("data".getBytes(StandardCharsets.UTF_8)) {
             @Override

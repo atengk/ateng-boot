@@ -112,4 +112,20 @@ class MailMessageTest {
         assertFalse(val.contains("\r"));
         assertFalse(val.contains("\n"));
     }
+
+    @Test
+    @DisplayName("测试 returnPath、listUnsubscribe 与 listUnsubscribePost 链式构造及换行清洗")
+    void testReturnPathAndUnsubscribeHeaders() {
+        MailMessage msg = new MailMessage()
+                .returnPath("bounces+123@atengk.com")
+                .listUnsubscribe("<https://example.com/unsub>\r\nX-Evil: 1")
+                .listUnsubscribePost("List-Unsubscribe=One-Click\r\nX-Evil: 2\0");
+
+        assertEquals("bounces+123@atengk.com", msg.getReturnPath());
+        assertFalse(msg.getListUnsubscribe().contains("\r"));
+        assertFalse(msg.getListUnsubscribe().contains("\n"));
+        assertFalse(msg.getListUnsubscribePost().contains("\r"));
+        assertFalse(msg.getListUnsubscribePost().contains("\n"));
+        assertFalse(msg.getListUnsubscribePost().contains("\0"));
+    }
 }

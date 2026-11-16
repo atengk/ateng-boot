@@ -26,6 +26,7 @@ import io.github.atengk.boot.mail.model.MailSendResultItem;
 import io.github.atengk.boot.mail.model.TrackableMimeMessage;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.properties.MailRetryProperties;
+import io.github.atengk.boot.mail.provider.MailAccessTokenProvider;
 import io.github.atengk.boot.mail.provider.MailAccountProvider;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.resolver.MailAccountResolver;
@@ -111,6 +112,9 @@ public class MailTemplate implements DisposableBean {
     private final MailAccountProvider accountProvider;
 
     @Getter
+    private final MailAccessTokenProvider accessTokenProvider;
+
+    @Getter
     private final Executor executor;
 
     private final boolean defaultExecutorCreated;
@@ -153,11 +157,16 @@ public class MailTemplate implements DisposableBean {
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, MailAccountProvider accountProvider, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers, List<MailSendInterceptor> interceptors) {
+        this(accountRegistry, properties, templateRenderer, accountResolver, accountProvider, null, executor, eventPublisher, failureHandlers, interceptors);
+    }
+
+    public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, MailAccountProvider accountProvider, MailAccessTokenProvider accessTokenProvider, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers, List<MailSendInterceptor> interceptors) {
         this.accountRegistry = Objects.requireNonNull(accountRegistry, "accountRegistry must not be null");
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.templateRenderer = templateRenderer != null ? templateRenderer : new SimpleMailTemplateRenderer();
         this.accountResolver = accountResolver != null ? accountResolver : new TenantMailAccountResolver();
         this.accountProvider = accountProvider;
+        this.accessTokenProvider = accessTokenProvider != null ? accessTokenProvider : accountRegistry.getAccessTokenProvider();
         boolean asyncEnabled = properties.getAsync() == null || properties.getAsync().isEnabled();
         if (executor != null) {
             this.executor = executor;
@@ -459,6 +468,23 @@ public class MailTemplate implements DisposableBean {
                 helper.getMimeMessage().setHeader("Disposition-Notification-To", targetReceiptTo);
             }
 
+            // 4.3 单封独立 Envelope Return-Path 与 RFC 2369 / 8058 退订合规标头注入
+            if (message.getReturnPath() != null && !message.getReturnPath().isBlank()) {
+                InternetAddress parsedReturnPath = parseSingleInternetAddress(message.getReturnPath());
+                String envelopeFrom = parsedReturnPath != null
+                        ? parsedReturnPath.getAddress()
+                        : MailMessage.sanitizeHeaderText(message.getReturnPath()).trim();
+                mimeMessage.setEnvelopeFrom(envelopeFrom);
+            }
+            if (message.getListUnsubscribe() != null && !message.getListUnsubscribe().isBlank()) {
+                helper.getMimeMessage().setHeader("List-Unsubscribe",
+                        MailMessage.sanitizeHeaderText(message.getListUnsubscribe()).trim());
+            }
+            if (message.getListUnsubscribePost() != null && !message.getListUnsubscribePost().isBlank()) {
+                helper.getMimeMessage().setHeader("List-Unsubscribe-Post",
+                        MailMessage.sanitizeHeaderText(message.getListUnsubscribePost()).trim());
+            }
+
             // 5. 正文内容装配
             helper.setText(message.getText() != null ? message.getText() : "", message.isHtml());
 
@@ -502,9 +528,10 @@ public class MailTemplate implements DisposableBean {
                 }
             }
 
-            // 8. 物理发送
+            // 8. 物理发送（若为 XOAUTH2 则自动注入令牌并在认证失败时刷新重试一次）
             long start = System.nanoTime();
-            account.getSender().send(mimeMessage);
+            accountRegistry.executeWithOAuth2Refresh(account, account.getSender(), this.accessTokenProvider,
+                    () -> account.getSender().send(mimeMessage));
 
             // 防御性熔断：若流式读取组装过程中检测到容量超限（包括被底层 MIME 编码探测吞咽的异常），立即阻断并抛出
             if (sizeLimitException.get() != null) {
@@ -524,6 +551,9 @@ public class MailTemplate implements DisposableBean {
             if (nestedMse != null) {
                 throw nestedMse;
             }
+            if (MailAccountRegistry.isAuthenticationFailure(e)) {
+                throw new MailSendException(MailResultCode.MAIL_AUTHENTICATION_ERROR, "邮件服务器身份认证失败: " + e.getMessage(), e);
+            }
             if (isTimeoutException(e)) {
                 throw new MailSendException(MailResultCode.MAIL_CONNECT_TIMEOUT, "邮件服务器连接或读写超时: " + e.getMessage(), e);
             }
@@ -534,6 +564,9 @@ public class MailTemplate implements DisposableBean {
             MailSendException nestedMse = findNestedMailSendException(e);
             if (nestedMse != null) {
                 throw nestedMse;
+            }
+            if (MailAccountRegistry.isAuthenticationFailure(e)) {
+                throw new MailSendException(MailResultCode.MAIL_AUTHENTICATION_ERROR, "邮件服务器身份认证失败: " + e.getMessage(), e);
             }
             throw new MailSendException(MailResultCode.MAIL_SEND_ERROR, "邮件发送异常: " + e.getMessage(), e);
         }
@@ -1713,6 +1746,12 @@ public class MailTemplate implements DisposableBean {
         if (message.getHeaders() != null && !message.getHeaders().isEmpty()) {
             message.setHeaders(message.getHeaders());
         }
+        if (message.getListUnsubscribe() != null) {
+            message.setListUnsubscribe(message.getListUnsubscribe());
+        }
+        if (message.getListUnsubscribePost() != null) {
+            message.setListUnsubscribePost(message.getListUnsubscribePost());
+        }
         if (message.hasInlines()) {
             for (MailInlineResource inline : message.getInlines()) {
                 if (inline != null && inline.getContentId() != null) {
@@ -1844,6 +1883,12 @@ public class MailTemplate implements DisposableBean {
         if (message.getReadReceiptTo() != null && !message.getReadReceiptTo().isBlank()) {
             validateSingleEmailAddress(message.getReadReceiptTo(), "readReceiptTo");
         }
+        if (message.getReturnPath() != null && !message.getReturnPath().isBlank()) {
+            validateSingleEmailAddress(message.getReturnPath(), "returnPath");
+        }
+        if (message.getListUnsubscribe() != null && !message.getListUnsubscribe().isBlank()) {
+            validateListUnsubscribe(message.getListUnsubscribe());
+        }
         if (account != null) {
             String archiveBcc = (account.getArchiveBcc() != null && !account.getArchiveBcc().isBlank())
                     ? account.getArchiveBcc()
@@ -1872,6 +1917,30 @@ public class MailTemplate implements DisposableBean {
         if (message.getBcc() != null) {
             for (String addr : message.getBcc()) {
                 validateSingleEmailAddress(addr, "bcc");
+            }
+        }
+    }
+
+    private static void validateListUnsubscribe(String listUnsubscribe) {
+        String[] entries = listUnsubscribe.split(",");
+        for (String entry : entries) {
+            if (entry == null || entry.isBlank()) {
+                continue;
+            }
+            String token = entry.trim();
+            if (token.startsWith("<")) {
+                token = token.substring(1).trim();
+            }
+            if (token.endsWith(">")) {
+                token = token.substring(0, token.length() - 1).trim();
+            }
+            if (token.toLowerCase(java.util.Locale.ROOT).startsWith("mailto:")) {
+                String mailPart = token.substring("mailto:".length());
+                int queryIdx = mailPart.indexOf('?');
+                if (queryIdx >= 0) {
+                    mailPart = mailPart.substring(0, queryIdx);
+                }
+                validateSingleEmailAddress(mailPart, "listUnsubscribe(mailto)");
             }
         }
     }

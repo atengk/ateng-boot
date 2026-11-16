@@ -47,6 +47,22 @@ public class MailAccount {
     private String password;
 
     /**
+     * SMTP 认证模式（默认 AUTO：有凭据自动认证，无凭据自动免认证中继）
+     */
+    @Builder.Default
+    private AuthMode authMode = AuthMode.AUTO;
+
+    /**
+     * XOAUTH2 静态或初始访问令牌（可选，动态刷新优先通过 MailAccessTokenProvider SPI 获取）
+     */
+    private String accessToken;
+
+    /**
+     * SSL/TLS 信任主机名配置（如指定内网网关域名或 "*"，用于自签名或非公网 CA 环境覆写）
+     */
+    private String sslTrust;
+
+    /**
      * 传输协议
      */
     @Builder.Default
@@ -100,10 +116,45 @@ public class MailAccount {
                 + port + ":"
                 + (username != null ? username : "") + ":"
                 + (password != null ? password.hashCode() : 0) + ":"
+                + resolveEffectiveAuthMode().name() + ":"
+                + (authMode != null ? authMode.name() : AuthMode.AUTO.name()) + ":"
+                + (accessToken != null ? accessToken.hashCode() : 0) + ":"
+                + (sslTrust != null ? sslTrust : "") + ":"
                 + (protocol != null ? protocol : "smtp") + ":"
                 + ssl + ":"
                 + starttls + ":"
                 + (properties != null ? properties.hashCode() : 0);
+    }
+
+    /**
+     * 解析当前账号实际生效的认证模式（将 AUTO 依据凭据/令牌收敛为 PASSWORD / XOAUTH2 / NONE）
+     *
+     * @return 生效的认证模式
+     */
+    public AuthMode resolveEffectiveAuthMode() {
+        if (authMode != null && authMode != AuthMode.AUTO) {
+            return authMode;
+        }
+        boolean hasUserOrPwd = (username != null && !username.isBlank()) || (password != null && !password.isBlank());
+        if (hasUserOrPwd) {
+            return AuthMode.PASSWORD;
+        }
+        if (accessToken != null && !accessToken.isBlank()) {
+            return AuthMode.XOAUTH2;
+        }
+        return AuthMode.NONE;
+    }
+
+    /**
+     * 获取静态配置的 XOAUTH2 访问令牌（优先读取 accessToken，其次回退 password）
+     *
+     * @return 静态令牌或 null
+     */
+    public String resolveStaticAccessToken() {
+        if (accessToken != null && !accessToken.isBlank()) {
+            return accessToken;
+        }
+        return (password != null && !password.isBlank()) ? password : null;
     }
 
     /**
@@ -119,6 +170,9 @@ public class MailAccount {
                 .port(this.port)
                 .username(this.username)
                 .password(this.password)
+                .authMode(this.authMode != null ? this.authMode : AuthMode.AUTO)
+                .accessToken(this.accessToken)
+                .sslTrust(this.sslTrust)
                 .protocol(this.protocol)
                 .ssl(this.ssl)
                 .starttls(this.starttls)

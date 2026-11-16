@@ -2,8 +2,10 @@ package io.github.atengk.boot.mail.registry;
 
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
+import io.github.atengk.boot.mail.model.AuthMode;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.properties.MailProperties;
+import io.github.atengk.boot.mail.provider.MailAccessTokenProvider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
@@ -349,5 +351,171 @@ class MailAccountRegistryTest {
                 acceptExecutor.shutdownNow();
             }
         }
+    }
+
+    @Test
+    @DisplayName("测试 AuthMode 认证模式切换、SSL 主机名校验与 sslTrust 覆写及指纹/withSender 继承")
+    void testAuthModeAndSslIdentityVerification() {
+        // 1. AuthMode.AUTO 无凭据自动关闭 SMTP 认证
+        MailAccount relayAuto = MailAccount.builder()
+                .name("relay-auto")
+                .host("127.0.0.1")
+                .port(25)
+                .ssl(false)
+                .build();
+        JavaMailSenderImpl relaySender = MailAccountRegistry.createSender(relayAuto, null);
+        assertEquals("false", relaySender.getJavaMailProperties().getProperty("mail.smtp.auth"));
+
+        // 2. AuthMode.AUTO 有凭据开启 SMTP 认证
+        MailAccount pwdAuto = MailAccount.builder()
+                .name("pwd-auto")
+                .host("smtp.example.com")
+                .username("u@example.com")
+                .password("p")
+                .build();
+        JavaMailSenderImpl pwdSender = MailAccountRegistry.createSender(pwdAuto, null);
+        assertEquals("true", pwdSender.getJavaMailProperties().getProperty("mail.smtp.auth"));
+        assertEquals("true", pwdSender.getJavaMailProperties().getProperty("mail.smtp.ssl.checkserveridentity"));
+
+        // 3. AuthMode.NONE 即使配置了凭据也强制跳过认证
+        MailAccount forcedNone = MailAccount.builder()
+                .name("forced-none")
+                .host("127.0.0.1")
+                .port(25)
+                .username("u@example.com")
+                .password("p")
+                .authMode(AuthMode.NONE)
+                .ssl(false)
+                .build();
+        JavaMailSenderImpl noneSender = MailAccountRegistry.createSender(forcedNone, null);
+        assertEquals("false", noneSender.getJavaMailProperties().getProperty("mail.smtp.auth"));
+        assertNull(noneSender.getUsername());
+        assertNull(noneSender.getPassword());
+
+        // 4. ssl=true + sslTrust 覆写（指定域名保留主机名校验，通配符 "*" 适配自签名放行，properties 可显式覆盖）
+        MailAccount trustedHost = MailAccount.builder()
+                .name("trusted-host")
+                .host("10.0.0.5")
+                .ssl(true)
+                .sslTrust("smtp.corp.local")
+                .build();
+        JavaMailSenderImpl trustedSender = MailAccountRegistry.createSender(trustedHost, null);
+        assertEquals("smtp.corp.local", trustedSender.getJavaMailProperties().getProperty("mail.smtp.ssl.trust"));
+        assertEquals("true", trustedSender.getJavaMailProperties().getProperty("mail.smtp.ssl.checkserveridentity"));
+
+        MailAccount wildcardTrust = MailAccount.builder()
+                .name("wildcard-trust")
+                .host("10.0.0.6")
+                .ssl(true)
+                .sslTrust("*")
+                .build();
+        JavaMailSenderImpl wildcardSender = MailAccountRegistry.createSender(wildcardTrust, null);
+        assertEquals("*", wildcardSender.getJavaMailProperties().getProperty("mail.smtp.ssl.trust"));
+        assertEquals("false", wildcardSender.getJavaMailProperties().getProperty("mail.smtp.ssl.checkserveridentity"));
+
+        // 5. withSender 与 toFingerprint 必须完整包含 authMode、accessToken 与 sslTrust
+        MailAccount oauthAcc = MailAccount.builder()
+                .name("oauth")
+                .host("smtp.office365.com")
+                .port(587)
+                .username("u@corp.com")
+                .authMode(AuthMode.XOAUTH2)
+                .accessToken("tok-1")
+                .ssl(false)
+                .starttls(true)
+                .sslTrust("smtp.office365.com")
+                .build();
+        MailAccount copied = oauthAcc.withSender(new JavaMailSenderImpl());
+        assertEquals(AuthMode.XOAUTH2, copied.getAuthMode());
+        assertEquals("tok-1", copied.getAccessToken());
+        assertEquals("smtp.office365.com", copied.getSslTrust());
+        assertEquals(oauthAcc.toFingerprint(), copied.toFingerprint());
+
+        MailAccount diffToken = MailAccount.builder()
+                .name("oauth")
+                .host("smtp.office365.com")
+                .port(587)
+                .username("u@corp.com")
+                .authMode(AuthMode.XOAUTH2)
+                .accessToken("tok-2")
+                .ssl(false)
+                .starttls(true)
+                .sslTrust("smtp.office365.com")
+                .build();
+        assertNotEquals(oauthAcc.toFingerprint(), diffToken.toFingerprint());
+    }
+
+    @Test
+    @DisplayName("测试 XOAUTH2 探活自动注入 AccessToken 并在初次认证失败时刷新令牌重试一次")
+    void testConnectionOAuth2TokenRefreshAndSingleRetry() {
+        java.util.concurrent.atomic.AtomicInteger refreshCount = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.atomic.AtomicInteger connectCalls = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.List<String> observedTokens = new java.util.ArrayList<>();
+
+        MailAccessTokenProvider tokenProvider = new MailAccessTokenProvider() {
+            @Override
+            public String getAccessToken(MailAccount account) {
+                return "token-v1";
+            }
+
+            @Override
+            public String refreshAccessToken(MailAccount account) {
+                refreshCount.incrementAndGet();
+                return "token-v2";
+            }
+        };
+
+        MailAccountRegistry registry = new MailAccountRegistry("default", 10, new MailProperties(), tokenProvider);
+
+        JavaMailSenderImpl mockSender = new JavaMailSenderImpl() {
+            @Override
+            public void testConnection() throws jakarta.mail.MessagingException {
+                int call = connectCalls.incrementAndGet();
+                observedTokens.add(getPassword());
+                if (call == 1) {
+                    throw new jakarta.mail.AuthenticationFailedException("expired token");
+                }
+            }
+        };
+        MailAccount oauthAccount = MailAccount.builder()
+                .name("oauth-probe")
+                .host("smtp.office365.com")
+                .port(587)
+                .username("bot@corp.com")
+                .authMode(AuthMode.XOAUTH2)
+                .sender(mockSender)
+                .build();
+        registry.register(oauthAccount);
+
+        assertDoesNotThrow(() -> registry.testConnectionOrThrow("oauth-probe"));
+        assertEquals(1, refreshCount.get());
+        assertEquals(2, connectCalls.get());
+        assertEquals(List.of("token-v1", "token-v2"), observedTokens);
+
+        // 二次认证失败应收敛抛出 MAIL_AUTHENTICATION_ERROR 而不无限循环
+        JavaMailSenderImpl alwaysFailSender = new JavaMailSenderImpl() {
+            @Override
+            public void testConnection() throws jakarta.mail.MessagingException {
+                connectCalls.incrementAndGet();
+                throw new jakarta.mail.AuthenticationFailedException("invalid token");
+            }
+        };
+        MailAccount badOauth = MailAccount.builder()
+                .name("oauth-bad")
+                .host("smtp.office365.com")
+                .port(587)
+                .username("bot@corp.com")
+                .authMode(AuthMode.XOAUTH2)
+                .sender(alwaysFailSender)
+                .build();
+        registry.register(badOauth);
+        connectCalls.set(0);
+        refreshCount.set(0);
+
+        MailSendException ex = assertThrows(MailSendException.class,
+                () -> registry.testConnectionOrThrow("oauth-bad"));
+        assertEquals(MailResultCode.MAIL_AUTHENTICATION_ERROR, ex.getResultCode());
+        assertEquals(1, refreshCount.get());
+        assertEquals(2, connectCalls.get());
     }
 }

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mail.properties;
 
+import io.github.atengk.boot.mail.model.AuthMode;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import lombok.Data;
@@ -39,6 +40,21 @@ public class MailAccountProperties {
      * 认证密码或授权码（各大邮箱厂商均建议使用独立授权码）
      */
     private String password;
+
+    /**
+     * SMTP 认证模式，默认 AUTO（有凭据使用密码认证，无凭据自动免认证中继）
+     */
+    private AuthMode authMode = AuthMode.AUTO;
+
+    /**
+     * XOAUTH2 访问令牌（静态配置兜底，动态刷新建议实现 MailAccessTokenProvider SPI）
+     */
+    private String accessToken;
+
+    /**
+     * SSL 信任主机名配置（如内网主机名或 "*"，用于自签名网关覆写默认主机名一致性校验）
+     */
+    private String sslTrust;
 
     /**
      * 传输协议，默认为 smtp

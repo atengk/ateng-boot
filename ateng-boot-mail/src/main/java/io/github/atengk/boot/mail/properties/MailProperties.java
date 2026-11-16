@@ -1,6 +1,7 @@
 package io.github.atengk.boot.mail.properties;
 
 import io.github.atengk.boot.core.properties.AsyncPoolProperties;
+import io.github.atengk.boot.mail.model.AuthMode;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -112,6 +113,21 @@ public class MailProperties {
      * 顶级单账号快捷配置：认证密码或授权码
      */
     private String password;
+
+    /**
+     * 顶级单账号快捷配置：SMTP 认证模式，默认 AUTO
+     */
+    private AuthMode authMode = AuthMode.AUTO;
+
+    /**
+     * 顶级单账号快捷配置：XOAUTH2 访问令牌
+     */
+    private String accessToken;
+
+    /**
+     * 顶级单账号快捷配置：SSL 信任主机名配置（如内网网关域名或 "*"）
+     */
+    private String sslTrust;
 
     /**
      * 顶级单账号快捷配置：传输协议

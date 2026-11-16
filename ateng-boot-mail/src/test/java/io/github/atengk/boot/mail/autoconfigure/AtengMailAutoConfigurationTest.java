@@ -5,9 +5,11 @@ import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.listener.MailAccountEvictListener;
+import io.github.atengk.boot.mail.model.AuthMode;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.properties.MailProperties;
+import io.github.atengk.boot.mail.provider.MailAccessTokenProvider;
 import io.github.atengk.boot.mail.provider.MailAccountProvider;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.resolver.MailAccountResolver;
@@ -525,6 +527,60 @@ class AtengMailAutoConfigurationTest {
                     assertThat(renderer.isHtmlEscape()).isTrue();
                     String out = renderer.render("<p>${v}</p>$!{raw}", Map.of("v", "<b>x</b>", "raw", "<i>y</i>"));
                     assertThat(out).isEqualTo("<p>&lt;b&gt;x&lt;/b&gt;</p><i>y</i>");
+                });
+    }
+
+    @Test
+    @DisplayName("authMode、accessToken 与 sslTrust 在顶级配置与多账号映射中准确装配")
+    void testAuthModeAndSslTrustAutoConfiguration() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.mail.host=relay.internal.local",
+                        "ateng.boot.mail.port=25",
+                        "ateng.boot.mail.ssl=false",
+                        "ateng.boot.mail.auth-mode=NONE",
+                        "ateng.boot.mail.ssl-trust=relay.internal.local"
+                )
+                .run(context -> {
+                    MailAccountRegistry registry = context.getBean(MailAccountRegistry.class);
+                    MailAccount account = registry.getDefault();
+                    assertThat(account.getAuthMode()).isEqualTo(AuthMode.NONE);
+                    assertThat(account.getSslTrust()).isEqualTo("relay.internal.local");
+                    assertThat(account.getSender().getJavaMailProperties().getProperty("mail.smtp.auth")).isEqualTo("false");
+                });
+
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.mail.accounts.oauth.host=smtp.gmail.com",
+                        "ateng.boot.mail.accounts.oauth.username=bot@gmail.com",
+                        "ateng.boot.mail.accounts.oauth.auth-mode=XOAUTH2",
+                        "ateng.boot.mail.accounts.oauth.access-token=init-token",
+                        "ateng.boot.mail.accounts.oauth.ssl=true",
+                        "ateng.boot.mail.accounts.oauth.ssl-trust=smtp.gmail.com"
+                )
+                .run(context -> {
+                    MailAccountRegistry registry = context.getBean(MailAccountRegistry.class);
+                    MailAccount oauth = registry.get("oauth");
+                    assertThat(oauth.getAuthMode()).isEqualTo(AuthMode.XOAUTH2);
+                    assertThat(oauth.getAccessToken()).isEqualTo("init-token");
+                    assertThat(oauth.getSender().getJavaMailProperties().getProperty("mail.smtp.auth.mechanisms")).isEqualTo("XOAUTH2");
+                    assertThat(oauth.getSender().getJavaMailProperties().getProperty("mail.smtp.ssl.checkserveridentity")).isEqualTo("true");
+                    assertThat(oauth.getSender().getJavaMailProperties().getProperty("mail.smtp.ssl.trust")).isEqualTo("smtp.gmail.com");
+                });
+    }
+
+    @Test
+    @DisplayName("容器声明 MailAccessTokenProvider 时自动注入 MailAccountRegistry 与 MailTemplate")
+    void testMailAccessTokenProviderAutoWired() {
+        MailAccessTokenProvider tokenProvider = account -> "auto-wired-token";
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .withBean(MailAccessTokenProvider.class, () -> tokenProvider)
+                .run(context -> {
+                    MailAccountRegistry registry = context.getBean(MailAccountRegistry.class);
+                    MailTemplate template = context.getBean(MailTemplate.class);
+                    assertThat(registry.getAccessTokenProvider()).isSameAs(tokenProvider);
+                    assertThat(template.getAccessTokenProvider()).isSameAs(tokenProvider);
                 });
     }
 
