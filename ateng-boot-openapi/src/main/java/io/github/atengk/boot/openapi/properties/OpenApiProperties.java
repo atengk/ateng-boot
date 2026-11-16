@@ -93,6 +93,11 @@ public class OpenApiProperties {
     private boolean standardResponses = true;
 
     /**
+     * 是否自动内省 Sa-Token 与 Web 治理注解并注入治理契约说明（默认 true）
+     */
+    private boolean operationGovernanceNotes = true;
+
+    /**
      * 通用 SecurityScheme 认证方案配置列表（如 HTTP Bearer、ApiKey 等）
      */
     @NestedConfigurationProperty
@@ -214,6 +219,14 @@ public class OpenApiProperties {
 
     public void setStandardResponses(boolean standardResponses) {
         this.standardResponses = standardResponses;
+    }
+
+    public boolean isOperationGovernanceNotes() {
+        return operationGovernanceNotes;
+    }
+
+    public void setOperationGovernanceNotes(boolean operationGovernanceNotes) {
+        this.operationGovernanceNotes = operationGovernanceNotes;
     }
 
     public List<SecuritySchemeConfig> getSecuritySchemes() {
@@ -661,18 +674,28 @@ public class OpenApiProperties {
         private boolean required = false;
 
         /**
-         * 默认值或示例值
+         * 默认值
          */
         private String defaultValue;
+
+        /**
+         * 示例值（优先于 defaultValue 用于文档示例展示）
+         */
+        private String example;
 
         public HeaderParam() {
         }
 
         public HeaderParam(String name, String description, boolean required, String defaultValue) {
+            this(name, description, required, defaultValue, null);
+        }
+
+        public HeaderParam(String name, String description, boolean required, String defaultValue, String example) {
             this.name = name;
             this.description = description;
             this.required = required;
             this.defaultValue = defaultValue;
+            this.example = example;
         }
 
         public String getName() {
@@ -705,6 +728,14 @@ public class OpenApiProperties {
 
         public void setDefaultValue(String defaultValue) {
             this.defaultValue = defaultValue;
+        }
+
+        public String getExample() {
+            return example;
+        }
+
+        public void setExample(String example) {
+            this.example = example;
         }
     }
 

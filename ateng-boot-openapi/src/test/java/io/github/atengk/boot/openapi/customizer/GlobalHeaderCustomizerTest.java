@@ -124,6 +124,51 @@ class GlobalHeaderCustomizerTest {
     }
 
     @Test
+    @DisplayName("测试 HeaderParam.example 与 defaultValue 双向兼容与优先回显")
+    void testHeaderParamExampleAndDefaultValueCompatibility() {
+        OpenApiProperties properties = new OpenApiProperties();
+
+        // 1. 仅配置 example，未配置 defaultValue
+        OpenApiProperties.HeaderParam exampleOnly = new OpenApiProperties.HeaderParam();
+        exampleOnly.setName("X-App-Version");
+        exampleOnly.setDescription("客户端版本号");
+        exampleOnly.setExample("1.2.0");
+        properties.getHeaders().getCustom().add(exampleOnly);
+
+        // 2. 同时配置 defaultValue 与 example（example 优先展示，default 保留）
+        OpenApiProperties.HeaderParam both = new OpenApiProperties.HeaderParam();
+        both.setName("X-Client-Locale");
+        both.setDescription("语言区域");
+        both.setDefaultValue("zh-CN");
+        both.setExample("en-US");
+        properties.getHeaders().getCustom().add(both);
+
+        // 3. 仅配置 defaultValue（向下兼容回退为 example）
+        properties.getHeaders().getCustom().add(
+                new OpenApiProperties.HeaderParam("X-Device-Type", "设备类型", false, "Android"));
+
+        GlobalHeaderCustomizer customizer = new GlobalHeaderCustomizer(properties);
+        Operation operation = new Operation();
+        customizer.customize(operation, null);
+
+        List<Parameter> parameters = operation.getParameters();
+        Parameter appVersion = parameters.stream().filter(p -> "X-App-Version".equals(p.getName())).findFirst().orElseThrow();
+        assertThat(appVersion.getExample()).isEqualTo("1.2.0");
+        assertThat(appVersion.getSchema().getExample()).isEqualTo("1.2.0");
+        assertThat(appVersion.getSchema().getDefault()).isNull();
+
+        Parameter locale = parameters.stream().filter(p -> "X-Client-Locale".equals(p.getName())).findFirst().orElseThrow();
+        assertThat(locale.getExample()).isEqualTo("en-US");
+        assertThat(locale.getSchema().getExample()).isEqualTo("en-US");
+        assertThat(locale.getSchema().getDefault()).isEqualTo("zh-CN");
+
+        Parameter device = parameters.stream().filter(p -> "X-Device-Type".equals(p.getName())).findFirst().orElseThrow();
+        assertThat(device.getExample()).isEqualTo("Android");
+        assertThat(device.getSchema().getExample()).isEqualTo("Android");
+        assertThat(device.getSchema().getDefault()).isEqualTo("Android");
+    }
+
+    @Test
     @DisplayName("测试方法标注 @IgnoreGlobalHeaders 全量豁免跳过所有全局请求头注入")
     void testIgnoreAllHeadersOnMethod() throws NoSuchMethodException {
         OpenApiProperties properties = new OpenApiProperties();

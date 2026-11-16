@@ -1,16 +1,25 @@
 package io.github.atengk.boot.sample.openapi.controller.admin;
 
+import cn.dev33.satoken.annotation.SaCheckPermission;
+import cn.dev33.satoken.annotation.SaIgnore;
 import io.github.atengk.boot.core.annotation.InEnum;
-import io.github.atengk.boot.core.util.EnumUtil;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.util.EnumUtil;
 import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.sample.openapi.model.AdminUserCreateRequest;
 import io.github.atengk.boot.sample.openapi.model.AdminUserVO;
 import io.github.atengk.boot.sample.openapi.model.UserStatusEnum;
+import io.github.atengk.boot.web.idempotent.annotation.Idempotent;
+import io.github.atengk.boot.web.ip.annotation.IpAccessControl;
+import io.github.atengk.boot.web.ratelimit.annotation.LimitType;
+import io.github.atengk.boot.web.ratelimit.annotation.RateLimiter;
+import io.github.atengk.boot.web.sign.annotation.ApiSign;
+import io.github.atengk.boot.web.version.annotation.ApiVersion;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.enums.ParameterIn;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springdoc.core.annotations.ParameterObject;
@@ -19,6 +28,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -45,6 +55,8 @@ public class AdminUserController {
      * @return 统一响应包装的新建用户视图
      */
     @Operation(summary = "创建系统用户", description = "校验账号格式、邮箱与 @InEnum 状态编码，成功后初始化并返回用户明细")
+    @SaCheckPermission("admin:user:create")
+    @Idempotent(timeout = 5)
     @PostMapping
     public Result<AdminUserVO> createUser(@Valid @RequestBody AdminUserCreateRequest request) {
         UserStatusEnum status = request.getStatusCode() != null
@@ -109,6 +121,7 @@ public class AdminUserController {
      * @return 标准分页结果
      */
     @Operation(summary = "分页查询系统用户", description = "使用 Core 标准 PageQuery 与 PageResult，并演示控制器参数 @InEnum 强类型枚举筛选")
+    @RateLimiter(count = 60, time = 60, limitType = LimitType.IP)
     @GetMapping("/page")
     public Result<PageResult<AdminUserVO>> pageUsers(
             @Valid @ParameterObject PageQuery pageQuery,
@@ -133,5 +146,24 @@ public class AdminUserController {
         int fromIndex = (int) offset;
         int toIndex = (int) Math.min(filtered.size(), offset + size);
         return Result.success(PageResult.of(filtered.subList(fromIndex, toIndex), filtered.size(), current, size));
+    }
+
+    /**
+     * 开放平台用户状态同步回调（演示 @SaIgnore、@ApiSign、@IpAccessControl 与 @ApiVersion 治理契约内省）
+     *
+     * @param request 同步请求负载
+     * @return 接收确认回执
+     */
+    @Operation(summary = "同步回调接收", description = "演示开放回调免锁头与入站签名、IP白名单、API版本治理契约自动生成")
+    @SaIgnore
+    @ApiSign(verifyRequest = true, signResponse = false)
+    @IpAccessControl(rules = {"127.0.0.1", "10.0.0.0/8"})
+    @ApiVersion("2")
+    @PostMapping("/sync-callback")
+    public Result<String> syncCallback(
+            @Parameter(name = "X-Signature", in = ParameterIn.HEADER, description = "自定义商户网关数字签名")
+            @RequestHeader(value = "X-Signature", required = false) String customSignature,
+            @Valid @RequestBody AdminUserCreateRequest request) {
+        return Result.success("SYNC_ACK:" + request.getUsername());
     }
 }

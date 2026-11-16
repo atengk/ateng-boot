@@ -101,7 +101,8 @@ public class GlobalHeaderCustomizer implements OperationCustomizer {
         if (!CollectionUtils.isEmpty(customHeaders)) {
             for (OpenApiProperties.HeaderParam param : customHeaders) {
                 if (param != null && StringUtils.hasText(param.getName()) && !isHeaderIgnored(param.getName(), ignoredHeaders)) {
-                    addHeaderIfNotPresent(operation, param.getName(), param.getDescription(), param.isRequired(), param.getDefaultValue());
+                    addHeaderIfNotPresent(operation, param.getName(), param.getDescription(),
+                            param.isRequired(), param.getDefaultValue(), param.getExample());
                 }
             }
         }
@@ -140,26 +141,30 @@ public class GlobalHeaderCustomizer implements OperationCustomizer {
     }
 
     /**
-     * 防重防冲突：当 Operation 不存在同名 Header 参数时才执行追加（默认非必填、无默认值）
-     *
-     * @param operation   当前接口 Operation
-     * @param headerName  请求头名称
-     * @param description 描述说明
-     */
-    private void addHeaderIfNotPresent(Operation operation, String headerName, String description) {
-        addHeaderIfNotPresent(operation, headerName, description, false, null);
-    }
-
-    /**
      * 防重防冲突：当 Operation 不存在同名 Header 参数时才执行追加
      *
      * @param operation    当前接口 Operation
      * @param headerName   请求头名称
      * @param description  描述说明
      * @param required     是否必填
-     * @param defaultValue 默认值或示例值
+     * @param defaultValue 默认值
      */
     private void addHeaderIfNotPresent(Operation operation, String headerName, String description, boolean required, String defaultValue) {
+        addHeaderIfNotPresent(operation, headerName, description, required, defaultValue, null);
+    }
+
+    /**
+     * 防重防冲突：当 Operation 不存在同名 Header 参数时才执行追加（支持默认值与示例值分离）
+     *
+     * @param operation    当前接口 Operation
+     * @param headerName   请求头名称
+     * @param description  描述说明
+     * @param required     是否必填
+     * @param defaultValue 默认值
+     * @param example      示例值（优先于 defaultValue 渲染为示例）
+     */
+    public static void addHeaderIfNotPresent(Operation operation, String headerName, String description,
+                                             boolean required, String defaultValue, String example) {
         List<Parameter> parameters = operation.getParameters();
         if (parameters != null) {
             boolean exists = parameters.stream().anyMatch(param ->
@@ -174,7 +179,10 @@ public class GlobalHeaderCustomizer implements OperationCustomizer {
         StringSchema schema = new StringSchema();
         if (StringUtils.hasText(defaultValue)) {
             schema.setDefault(defaultValue);
-            schema.setExample(defaultValue);
+        }
+        String effectiveExample = StringUtils.hasText(example) ? example : defaultValue;
+        if (StringUtils.hasText(effectiveExample)) {
+            schema.setExample(effectiveExample);
         }
 
         Parameter headerParam = new Parameter()
@@ -183,6 +191,9 @@ public class GlobalHeaderCustomizer implements OperationCustomizer {
                 .description(description)
                 .required(required)
                 .schema(schema);
+        if (StringUtils.hasText(effectiveExample)) {
+            headerParam.setExample(effectiveExample);
+        }
 
         operation.addParametersItem(headerParam);
     }

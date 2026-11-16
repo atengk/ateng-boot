@@ -2,6 +2,7 @@ package io.github.atengk.boot.openapi.autoconfigure;
 
 import io.github.atengk.boot.openapi.converter.OpenApiModelConverter;
 import io.github.atengk.boot.openapi.customizer.GlobalHeaderCustomizer;
+import io.github.atengk.boot.openapi.customizer.OperationGovernanceCustomizer;
 import io.github.atengk.boot.openapi.customizer.ResultCodeDictionaryCustomizer;
 import io.github.atengk.boot.openapi.customizer.SaTokenSecurityCustomizer;
 import io.github.atengk.boot.openapi.customizer.SecuritySchemesCustomizer;
@@ -41,6 +42,7 @@ class OpenApiAutoConfigurationTest {
             assertThat(context).hasBean("openApiWebMvcConfigurer");
             assertThat(context).hasSingleBean(OpenApiProperties.class);
             assertThat(context).hasSingleBean(GlobalHeaderCustomizer.class);
+            assertThat(context).hasSingleBean(OperationGovernanceCustomizer.class);
             assertThat(context).hasSingleBean(SaTokenSecurityCustomizer.class);
             assertThat(context).hasSingleBean(ResultCodeDictionaryCustomizer.class);
             assertThat(context).hasSingleBean(StandardApiResponseCustomizer.class);
@@ -68,6 +70,7 @@ class OpenApiAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(OpenAPI.class);
                     assertThat(context).doesNotHaveBean("openApiWebMvcConfigurer");
                     assertThat(context).doesNotHaveBean(GlobalHeaderCustomizer.class);
+                    assertThat(context).doesNotHaveBean(OperationGovernanceCustomizer.class);
                     assertThat(context).doesNotHaveBean(SaTokenSecurityCustomizer.class);
                     assertThat(context).doesNotHaveBean(ResultCodeDictionaryCustomizer.class);
                     assertThat(context).doesNotHaveBean(StandardApiResponseCustomizer.class);
@@ -168,6 +171,34 @@ class OpenApiAutoConfigurationTest {
 
     static class SubHeaderCustomizer extends GlobalHeaderCustomizer {
         public SubHeaderCustomizer(OpenApiProperties properties) {
+            super(properties);
+        }
+    }
+
+    @Test
+    @DisplayName("测试用户自定义 OperationGovernanceCustomizer 支持平滑覆盖与开关绑定")
+    void testCustomGovernanceCustomizerOverrideAndPropertyBinding() {
+        contextRunner
+                .withPropertyValues("ateng.boot.openapi.operation-governance-notes=false")
+                .withUserConfiguration(CustomGovernanceCustomizerConfig.class)
+                .run(context -> {
+                    assertThat(context.getBean(OpenApiProperties.class).isOperationGovernanceNotes()).isFalse();
+                    assertThat(context).hasSingleBean(OperationGovernanceCustomizer.class);
+                    assertThat(context.getBean(OperationGovernanceCustomizer.class))
+                            .isInstanceOf(SubGovernanceCustomizer.class);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomGovernanceCustomizerConfig {
+        @Bean
+        public OperationGovernanceCustomizer operationGovernanceCustomizer(OpenApiProperties properties) {
+            return new SubGovernanceCustomizer(properties);
+        }
+    }
+
+    static class SubGovernanceCustomizer extends OperationGovernanceCustomizer {
+        public SubGovernanceCustomizer(OpenApiProperties properties) {
             super(properties);
         }
     }

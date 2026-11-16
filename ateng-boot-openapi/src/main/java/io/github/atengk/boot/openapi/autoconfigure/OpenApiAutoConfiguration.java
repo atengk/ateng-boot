@@ -2,6 +2,7 @@ package io.github.atengk.boot.openapi.autoconfigure;
 
 import io.github.atengk.boot.openapi.converter.OpenApiModelConverter;
 import io.github.atengk.boot.openapi.customizer.GlobalHeaderCustomizer;
+import io.github.atengk.boot.openapi.customizer.OperationGovernanceCustomizer;
 import io.github.atengk.boot.openapi.customizer.ResultCodeDictionaryCustomizer;
 import io.github.atengk.boot.openapi.customizer.SaTokenSecurityCustomizer;
 import io.github.atengk.boot.openapi.customizer.SecuritySchemesCustomizer;
@@ -165,6 +166,19 @@ public class OpenApiAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
     public GlobalHeaderCustomizer globalHeaderCustomizer(OpenApiProperties properties) {
         return new GlobalHeaderCustomizer(properties);
+    }
+
+    /**
+     * 注册跨模块接口治理契约零耦合内省定制器 (OperationCustomizer)
+     *
+     * @param properties 配置属性
+     * @return 接口治理契约定制器 Bean
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public OperationGovernanceCustomizer operationGovernanceCustomizer(OpenApiProperties properties) {
+        return new OperationGovernanceCustomizer(properties);
     }
 
     /**

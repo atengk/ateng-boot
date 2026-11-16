@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.openapi.controller.admin;
 
+import cn.dev33.satoken.annotation.SaIgnore;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.openapi.annotation.IgnoreGlobalHeaders;
 import io.github.atengk.boot.sample.openapi.model.LoginRequest;
@@ -30,6 +31,7 @@ public class AdminAuthController {
      * @return 访问 Token
      */
     @Operation(summary = "管理员登录认证", description = "开放登录接口，声明式精准豁免 X-Tenant-Id 租户头")
+    @SaIgnore
     @IgnoreGlobalHeaders({"X-Tenant-Id"})
     @PostMapping("/login")
     public Result<String> login(@Valid @RequestBody LoginRequest request) {
@@ -42,6 +44,7 @@ public class AdminAuthController {
      * @return 探针心跳
      */
     @Operation(summary = "公开系统心跳探针", description = "完全公开的监控端点，全量豁免所有全局请求头")
+    @SaIgnore
     @IgnoreGlobalHeaders
     @GetMapping("/ping")
     public Result<String> ping() {

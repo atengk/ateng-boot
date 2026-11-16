@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -162,6 +163,48 @@ class OpenApiSampleEndToEndTest {
                         .param("status", "99"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    @DisplayName("测试 HeaderParam.example 回显、@SaIgnore 免锁头与跨模块治理契约内省及 @ApiSign 请求头注入")
+    void testOperationGovernanceAndHeaderExampleContract() throws Exception {
+        mockMvc.perform(get("/v3/api-docs").accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                // 1. HeaderParam.example 回显（application.yml 配置的 X-App-Version example=1.2.0）
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "'].get.parameters[?(@.name=='X-App-Version')].example", hasItem("1.2.0")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "'].get.parameters[?(@.name=='X-App-Version')].schema.example", hasItem("1.2.0")))
+                // 2. @SaIgnore 公开接口自动摘除锁头（security 为空数组）并追加免鉴权契约
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_AUTH + "/login'].post.security.length()").value(0))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_AUTH + "/login'].post.description", containsString("**接口治理契约**：")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_AUTH + "/login'].post.description", containsString("@SaIgnore")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_AUTH + "/ping'].get.security.length()").value(0))
+                // 3. @Idempotent + @SaCheckPermission 治理说明内省
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "'].post.description", containsString("**接口治理契约**：")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "'].post.description", containsString("防重幂等")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "'].post.description", containsString("admin:user:create")))
+                // 4. @RateLimiter 治理说明内省
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/page'].get.description", containsString("限流策略")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/page'].get.description", containsString("IP")))
+                // 5. @ApiSign + @IpAccessControl + @ApiVersion + @SaIgnore 综合契约与四大验签请求头自动注入
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/sync-callback'].post.security.length()").value(0))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/sync-callback'].post.description", containsString("接口加签")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/sync-callback'].post.description", containsString("IP 访问控制")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/sync-callback'].post.description", containsString("API 版本")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/sync-callback'].post.parameters[*].name", hasItem("X-App-Id")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/sync-callback'].post.parameters[*].name", hasItem("X-Timestamp")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/sync-callback'].post.parameters[*].name", hasItem("X-Nonce")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/sync-callback'].post.parameters[*].name", hasItem("X-Signature")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/sync-callback'].post.parameters[?(@.name=='X-Signature')].description", hasItem("自定义商户网关数字签名")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/sync-callback'].post.parameters[?(@.name=='X-Signature')]", hasSize(1)));
+
+        // 6. 实际调用开放回调端点（携带 @ApiVersion("2") 要求的 X-API-Version: 2）验证端到端运行时正常响应
+        mockMvc.perform(post(BASE_ADMIN_USERS + "/sync-callback")
+                        .header("X-API-Version", "2")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"sync_bot\",\"realName\":\"同步机器人\",\"email\":\"bot@example.com\",\"statusCode\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("SYNC_ACK:sync_bot"));
     }
 
     @Test
