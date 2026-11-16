@@ -80,7 +80,6 @@ public class DynamicMailSession {
      * @return 发送结果回执
      */
     public MailSendResult send(Consumer<MailMessage> messageConfigurer) {
-        Objects.requireNonNull(messageConfigurer, "messageConfigurer must not be null");
         return withConfiguredMessage(messageConfigurer, this::send);
     }
 
@@ -351,14 +350,7 @@ public class DynamicMailSession {
     }
 
     private <T> T withConfiguredMessage(Consumer<MailMessage> messageConfigurer, Function<MailMessage, T> action) {
-        MailMessage message = new MailMessage();
-        try {
-            messageConfigurer.accept(message);
-            return action.apply(message);
-        } catch (Throwable t) {
-            message.close();
-            throw t;
-        }
+        return MailTemplate.executeWithConfiguredMessage(messageConfigurer, action);
     }
 
     public void sendTextAfterCommit(String to, String subject, String text) {

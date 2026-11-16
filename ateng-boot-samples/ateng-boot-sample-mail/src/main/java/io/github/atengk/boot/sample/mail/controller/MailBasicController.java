@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.mail.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.mail.model.MailSendResult;
+import io.github.atengk.boot.sample.mail.dto.EscapedTemplateMailRequest;
 import io.github.atengk.boot.sample.mail.dto.HtmlContentMailRequest;
 import io.github.atengk.boot.sample.mail.dto.SimpleTextMailRequest;
 import io.github.atengk.boot.sample.mail.dto.UserVerificationMailRequest;
@@ -103,5 +104,16 @@ public class MailBasicController {
                 locale
         );
         return Result.success(result);
+    }
+
+    /**
+     * 发送启用 HTML 转义防 XSS（${var}）与显式富文本透传（$!{rawVar}）模板邮件
+     *
+     * @param request 转义模板发信请求
+     * @return 强类型发信回执
+     */
+    @PostMapping("/escaped-template")
+    public Result<MailSendResult> sendEscapedTemplate(@Valid @RequestBody EscapedTemplateMailRequest request) {
+        return Result.success(mailScenarioService.sendEscapedTemplate(request));
     }
 }

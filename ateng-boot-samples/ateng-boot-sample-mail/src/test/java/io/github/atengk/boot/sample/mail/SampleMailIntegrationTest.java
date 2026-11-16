@@ -17,6 +17,8 @@ import io.github.atengk.boot.sample.mail.dto.AttachmentMailRequest;
 import io.github.atengk.boot.sample.mail.dto.BatchAfterCommitRequest;
 import io.github.atengk.boot.sample.mail.dto.ComplianceFreemarkerRequest;
 import io.github.atengk.boot.sample.mail.dto.DynamicAccountMailRequest;
+import io.github.atengk.boot.sample.mail.dto.DynamicBatchMailRequest;
+import io.github.atengk.boot.sample.mail.dto.EscapedTemplateMailRequest;
 import io.github.atengk.boot.sample.mail.dto.FailoverDemoRequest;
 import io.github.atengk.boot.sample.mail.dto.HtmlContentMailRequest;
 import io.github.atengk.boot.sample.mail.dto.InlineMediaMailRequest;
@@ -1196,5 +1198,115 @@ class SampleMailIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content()
                         .string(containsString("ateng_mail_send_count")));
+    }
+
+    @Test
+    @DisplayName("34. BasicController template.html-escape 自动转义 XSS 危险字符并透传 $!{trustedBadgeHtml}")
+    void shouldEscapeHtmlVariablesAndAllowRawPlaceholder() throws Exception {
+        EscapedTemplateMailRequest req = EscapedTemplateMailRequest.builder()
+                .to("escape-user@example.com")
+                .subject("模板安全转义通知")
+                .username("<script>alert(1)</script>")
+                .trustedBadgeHtml("<strong>VIP会员</strong>")
+                .build();
+
+        mockMvc.perform(post("/sample/mail/basic/escaped-template")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        assertThat(greenMail.waitForIncomingEmail(3000, 1)).isTrue();
+        MimeMessage delivered = greenMail.getReceivedMessages()[0];
+        String body = delivered.getContent().toString();
+        assertThat(body).contains("&lt;script&gt;alert(1)&lt;/script&gt;");
+        assertThat(body).doesNotContain("<script>alert(1)</script>");
+        assertThat(body).contains("<strong>VIP会员</strong>");
+    }
+
+    @Test
+    @DisplayName("35. MediaController ofBuffered 有界缓冲流附件与内联资源端到端发信成功")
+    void shouldSendBufferedAttachmentAndInlineResource() throws Exception {
+        AttachmentMailRequest req = AttachmentMailRequest.builder()
+                .to("buffered-media@example.com")
+                .subject("有界缓冲流电子对账单")
+                .content("请查收从一次性输入流缓冲转换后的电子账单")
+                .fileName("buffered-bill-202611.pdf")
+                .build();
+
+        mockMvc.perform(post("/sample/mail/media/buffered-attachment")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        assertThat(greenMail.waitForIncomingEmail(3000, 1)).isTrue();
+        MimeMessage delivered = greenMail.getReceivedMessages()[0];
+        assertThat(delivered.getSubject()).isEqualTo("有界缓冲流电子对账单");
+        assertThat(GreenMailUtil.getWholeMessage(delivered)).contains("buffered-bill-202611.pdf");
+        assertThat(GreenMailUtil.getWholeMessage(delivered)).contains("companyLogo");
+    }
+
+    @Test
+    @DisplayName("36. AccountController DynamicMailSession.sendBatch 动态会话批量分发与空列表校验")
+    void shouldSendBatchViaDynamicMailSessionAndValidateDto() throws Exception {
+        DynamicBatchMailRequest emptyReq = DynamicBatchMailRequest.builder()
+                .account("dyn-batch-acc")
+                .items(new ValidList<>(List.of()))
+                .build();
+        mockMvc.perform(post("/sample/mail/account/dynamic-batch")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(emptyReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.msg").value(containsString("批量发信列表不能为空")));
+
+        DynamicBatchMailRequest batchReq = DynamicBatchMailRequest.builder()
+                .account("dyn-batch-vip")
+                .from("vip-batch@example.com")
+                .fromName("VIP批量通知")
+                .items(new ValidList<>(List.of(
+                        SimpleTextMailRequest.builder().to("dyn1@example.com").subject("动态批量1").content("内容1").build(),
+                        SimpleTextMailRequest.builder().to("dyn2@example.com").subject("动态批量2").content("内容2").build()
+                )))
+                .build();
+
+        mockMvc.perform(post("/sample/mail/account/dynamic-batch")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(batchReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.totalCount").value(2))
+                .andExpect(jsonPath("$.data.successCount").value(2))
+                .andExpect(jsonPath("$.data.failureCount").value(0));
+
+        assertThat(greenMail.waitForIncomingEmail(3000, 2)).isTrue();
+        MimeMessage[] received = greenMail.getReceivedMessages();
+        assertThat(received).hasSize(2);
+        assertThat(((InternetAddress) received[0].getFrom()[0]).getAddress()).isEqualTo("vip-batch@example.com");
+    }
+
+    @Test
+    @DisplayName("37. AccountController XOAUTH2 动态令牌首次过期触发 MailAccessTokenProvider 刷新重试送达")
+    void shouldRefreshXOAuth2TokenAndDeliverSuccessfully() throws Exception {
+        SimpleTextMailRequest req = SimpleTextMailRequest.builder()
+                .to("oauth-demo@example.com")
+                .subject("XOAUTH2 令牌刷新演练")
+                .content("首次过期触发 refreshAccessToken 自动重连送达")
+                .build();
+
+        mockMvc.perform(post("/sample/mail/account/oauth2-refresh-demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.messageId").isNotEmpty());
+
+        assertThat(greenMail.waitForIncomingEmail(3000, 1)).isTrue();
+        MimeMessage delivered = greenMail.getReceivedMessages()[0];
+        assertThat(delivered.getSubject()).isEqualTo("XOAUTH2 令牌刷新演练");
     }
 }

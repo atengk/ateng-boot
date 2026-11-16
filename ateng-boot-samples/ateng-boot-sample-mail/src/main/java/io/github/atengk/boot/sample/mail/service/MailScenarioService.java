@@ -10,10 +10,14 @@ import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailPriority;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.template.MailTemplate;
+import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
 import io.github.atengk.boot.sample.mail.dto.AttachmentMailRequest;
 import io.github.atengk.boot.sample.mail.dto.DynamicAccountMailRequest;
+import io.github.atengk.boot.sample.mail.dto.DynamicBatchMailRequest;
+import io.github.atengk.boot.sample.mail.dto.EscapedTemplateMailRequest;
 import io.github.atengk.boot.sample.mail.dto.SalarySlipBatchRequest;
 import io.github.atengk.boot.sample.mail.dto.SalarySlipItemRequest;
+import io.github.atengk.boot.sample.mail.dto.SimpleTextMailRequest;
 import io.github.atengk.boot.sample.mail.dto.SystemAlertMailRequest;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -22,6 +26,8 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -45,6 +51,7 @@ import java.util.concurrent.CompletableFuture;
 public class MailScenarioService {
 
     private static final Logger log = LoggerFactory.getLogger(MailScenarioService.class);
+    private static final SimpleMailTemplateRenderer ESCAPED_RENDERER = new SimpleMailTemplateRenderer(true);
 
     private final MailTemplate mailTemplate;
     private final ApplicationEventPublisher eventPublisher;
@@ -399,5 +406,100 @@ public class MailScenarioService {
                 + "\n异常描述: " + request.getErrorMessage() + "\n请立即处置！";
         return sendUrgentAlert(request.getTo(), subject, content,
                 MailPriority.HIGH, request.isRequestReadReceipt(), request.getArchiveBcc());
+    }
+
+    /**
+     * 演示 SimpleMailTemplateRenderer 开启 HTML 转义（${var} 防 XSS）与 $!{rawVar} 显式富文本透传
+     *
+     * @param request 转义模板发信请求
+     * @return 发信结果
+     */
+    public MailSendResult sendEscapedTemplate(EscapedTemplateMailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("EscapedTemplateMailRequest must not be null");
+        }
+        log.info("Sending html-escaped template email to [{}]", DesensitizeUtil.email(request.getTo()));
+        String badge = request.getTrustedBadgeHtml() != null ? request.getTrustedBadgeHtml() : "<span>Verified</span>";
+        String template = "<html><body><h3>你好，${username}</h3><div>状态：$!{trustedBadgeHtml}</div></body></html>";
+        String renderedHtml = ESCAPED_RENDERER.render(template, Map.of(
+                "username", request.getUsername(),
+                "trustedBadgeHtml", badge
+        ));
+        return mailTemplate.sendHtml(request.getTo(), request.getSubject(), renderedHtml);
+    }
+
+    /**
+     * 演示将一次性 InputStream 经 ofBuffered 有界缓冲转换为可重读附件与内联资源并发送
+     *
+     * @param request 附件发信请求
+     * @return 发信结果
+     */
+    public MailSendResult sendBufferedAttachmentStatement(AttachmentMailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("AttachmentMailRequest must not be null");
+        }
+        String fileName = request.getFileName() != null && !request.getFileName().isBlank()
+                ? request.getFileName() : "buffered-statement.pdf";
+        log.info("Sending buffered-stream attachment [{}] to [{}]", fileName, DesensitizeUtil.email(request.getTo()));
+
+        byte[] pdfBytes = generateSimulatedPdfStatement(request.getContent());
+        byte[] logoBytes = new byte[]{
+                (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+                0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+                0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, (byte) 0xC4, (byte) 0x89
+        };
+        InputStream pdfStream = new ByteArrayInputStream(pdfBytes);
+        InputStream logoStream = new ByteArrayInputStream(logoBytes);
+
+        MailMessage message = new MailMessage()
+                .to(request.getTo())
+                .subject(request.getSubject())
+                .html("<html><body><p>" + request.getContent() + "</p><img src='cid:companyLogo'/></body></html>")
+                .attachment(MailAttachment.ofBuffered(fileName, pdfStream))
+                .inline(MailInlineResource.ofBuffered("companyLogo", logoStream, "image/png"));
+        return mailTemplate.send(message);
+    }
+
+    /**
+     * 演示通过 DynamicMailSession.sendBatch 强制绑定动态账号批量发送邮件
+     *
+     * @param request 动态批量发信请求
+     * @return 批量聚合发信回执
+     */
+    public BatchMailSendResult sendBatchByDynamicSession(DynamicBatchMailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("DynamicBatchMailRequest must not be null");
+        }
+        MailAccount base = mailTemplate.getAccountRegistry().getDefault();
+        String dynamicFrom = (request.getFrom() != null && !request.getFrom().isBlank())
+                ? request.getFrom() : base.getDefaultFrom();
+        String dynamicFromName = (request.getFromName() != null && !request.getFromName().isBlank())
+                ? request.getFromName() : base.getDefaultFromName();
+        MailAccount dynamicAccount = MailAccount.builder()
+                .name(request.getAccount())
+                .host(base.getHost())
+                .port(base.getPort())
+                .username(base.getUsername())
+                .password(base.getPassword())
+                .authMode(base.getAuthMode())
+                .protocol(base.getProtocol())
+                .ssl(base.isSsl())
+                .starttls(base.isStarttls())
+                .defaultFrom(dynamicFrom)
+                .defaultFromName(dynamicFromName)
+                .properties(base.getProperties() != null ? new HashMap<>(base.getProperties()) : new HashMap<>())
+                .build();
+
+        List<MailMessage> messages = new ArrayList<>(request.getItems().size());
+        for (SimpleTextMailRequest item : request.getItems()) {
+            messages.add(new MailMessage()
+                    .to(item.getTo())
+                    .subject(item.getSubject())
+                    .text(item.getContent()));
+        }
+        log.info("Sending batch emails via DynamicMailSession [{}], total={}",
+                request.getAccount(), messages.size());
+        return mailTemplate.forDynamicAccount(dynamicAccount).sendBatch(messages);
     }
 }

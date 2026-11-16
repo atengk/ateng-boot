@@ -1,9 +1,12 @@
 package io.github.atengk.boot.sample.mail.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.sample.mail.dto.DynamicAccountMailRequest;
+import io.github.atengk.boot.sample.mail.dto.DynamicBatchMailRequest;
 import io.github.atengk.boot.sample.mail.dto.SimpleTextMailRequest;
+import io.github.atengk.boot.sample.mail.service.MailGovernanceService;
 import io.github.atengk.boot.sample.mail.service.MailScenarioService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -31,6 +34,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class MailAccountController {
 
     private final MailScenarioService mailScenarioService;
+    private final MailGovernanceService mailGovernanceService;
 
     /**
      * 发送指定运维通道邮件（通道隔离验证）
@@ -94,5 +98,27 @@ public class MailAccountController {
     public Result<Boolean> testConnection(@RequestParam @NotBlank(message = "账号标识不能为空") String accountName) {
         mailScenarioService.testConnectionOrThrow(accountName);
         return Result.success(true);
+    }
+
+    /**
+     * 演示 DynamicMailSession.sendBatch 动态账号批量合并发信
+     *
+     * @param request 动态批量发信请求
+     * @return 批量聚合发信回执
+     */
+    @PostMapping("/dynamic-batch")
+    public Result<BatchMailSendResult> sendDynamicBatch(@Valid @RequestBody DynamicBatchMailRequest request) {
+        return Result.success(mailScenarioService.sendBatchByDynamicSession(request));
+    }
+
+    /**
+     * 演示 XOAUTH2 动态访问令牌首次过期触发 MailAccessTokenProvider 自动刷新与单次重试
+     *
+     * @param request 发信请求
+     * @return 刷新令牌后成功投递的强类型回执
+     */
+    @PostMapping("/oauth2-refresh-demo")
+    public Result<MailSendResult> oauth2RefreshDemo(@Valid @RequestBody SimpleTextMailRequest request) {
+        return Result.success(mailGovernanceService.runOAuth2RefreshDemo(request));
     }
 }

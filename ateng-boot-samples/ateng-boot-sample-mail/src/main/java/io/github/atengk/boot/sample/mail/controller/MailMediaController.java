@@ -57,4 +57,15 @@ public class MailMediaController {
         );
         return Result.success(result);
     }
+
+    /**
+     * 将一次性 InputStream 通过 ofBuffered 有界缓冲为可重读附件与内联资源并发送
+     *
+     * @param request 附件发信请求
+     * @return 强类型发信回执
+     */
+    @PostMapping("/buffered-attachment")
+    public Result<MailSendResult> sendWithBufferedAttachment(@Valid @RequestBody AttachmentMailRequest request) {
+        return Result.success(mailScenarioService.sendBufferedAttachmentStatement(request));
+    }
 }

@@ -2177,6 +2177,10 @@ public class MailTemplate implements DisposableBean {
     }
 
     private <T> T withConfiguredMessage(Consumer<MailMessage> messageConfigurer, Function<MailMessage, T> action) {
+        return executeWithConfiguredMessage(messageConfigurer, action);
+    }
+
+    static <T> T executeWithConfiguredMessage(Consumer<MailMessage> messageConfigurer, Function<MailMessage, T> action) {
         if (messageConfigurer == null) {
             throw new IllegalArgumentException("messageConfigurer must not be null");
         }

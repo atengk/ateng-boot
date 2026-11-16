@@ -566,12 +566,12 @@ class AtengMailAutoConfigurationTest {
 
         contextRunner
                 .withPropertyValues(
-                        "ateng.boot.mail.accounts.oauth.host=smtp.gmail.com",
-                        "ateng.boot.mail.accounts.oauth.username=bot@gmail.com",
+                        "ateng.boot.mail.accounts.oauth.host=smtp.oauth.example.com",
+                        "ateng.boot.mail.accounts.oauth.username=bot@oauth.example.com",
                         "ateng.boot.mail.accounts.oauth.auth-mode=XOAUTH2",
                         "ateng.boot.mail.accounts.oauth.access-token=init-token",
                         "ateng.boot.mail.accounts.oauth.ssl=true",
-                        "ateng.boot.mail.accounts.oauth.ssl-trust=smtp.gmail.com"
+                        "ateng.boot.mail.accounts.oauth.ssl-trust=smtp.oauth.example.com"
                 )
                 .run(context -> {
                     MailAccountRegistry registry = context.getBean(MailAccountRegistry.class);
@@ -580,7 +580,7 @@ class AtengMailAutoConfigurationTest {
                     assertThat(oauth.getAccessToken()).isEqualTo("init-token");
                     assertThat(oauth.getSender().getJavaMailProperties().getProperty("mail.smtp.auth.mechanisms")).isEqualTo("XOAUTH2");
                     assertThat(oauth.getSender().getJavaMailProperties().getProperty("mail.smtp.ssl.checkserveridentity")).isEqualTo("true");
-                    assertThat(oauth.getSender().getJavaMailProperties().getProperty("mail.smtp.ssl.trust")).isEqualTo("smtp.gmail.com");
+                    assertThat(oauth.getSender().getJavaMailProperties().getProperty("mail.smtp.ssl.trust")).isEqualTo("smtp.oauth.example.com");
                 });
     }
 

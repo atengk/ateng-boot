@@ -37,14 +37,18 @@ import io.github.atengk.boot.sample.mail.dto.SandboxDemoRequest;
 import io.github.atengk.boot.sample.mail.dto.SimpleTextMailRequest;
 import io.github.atengk.boot.sample.mail.dto.TenantRouteMailRequest;
 import io.github.atengk.boot.sample.mail.listener.SampleMailEventListener;
+import io.github.atengk.boot.sample.mail.provider.SampleOAuth2TokenProvider;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.mail.internet.MimeMessage;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.actuate.health.Health;
+import org.springframework.mail.MailAuthenticationException;
+import org.springframework.mail.javamail.JavaMailSenderImpl;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -57,6 +61,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 邮件高阶治理、容灾、合规、沙箱与可观测场景演示服务
@@ -74,6 +79,7 @@ public class MailGovernanceService {
     private final MailTemplate mailTemplate;
     private final MailProperties mailProperties;
     private final SampleMailEventListener eventListener;
+    private final SampleOAuth2TokenProvider oauth2TokenProvider;
     private final ObjectProvider<MailSafeHealthIndicator> mailHealthIndicatorProvider;
     private final ObjectProvider<MeterRegistry> meterRegistryProvider;
 
@@ -93,32 +99,35 @@ public class MailGovernanceService {
         props.setAccountPermitsPerSecond(0.05d);
         props.setRecipientMaxCount(10L);
 
-        MailTemplate guardedTemplate = buildGuardedTemplate(
-                new InMemoryMailRateLimiter(props), null, null, null, null);
-
         int allowed = 0;
         int blocked = 0;
         Integer triggeredCode = null;
         List<String> messageIds = new ArrayList<>();
+        boolean recovered = false;
 
-        for (int i = 0; i < request.getBurstCount(); i++) {
-            try {
-                MailSendResult res = guardedTemplate.send(new MailMessage()
-                        .to(request.getTo())
-                        .subject(request.getSubject() + " #" + (i + 1))
-                        .text(request.getContent()));
-                allowed++;
-                messageIds.add(res.getMessageId());
-            } catch (MailSendException mse) {
-                blocked++;
-                triggeredCode = mse.getResultCode().getCode();
+        MailTemplate guardedTemplate = buildGuardedTemplate(
+                new InMemoryMailRateLimiter(props), null, null, null, null);
+        try {
+            for (int i = 0; i < request.getBurstCount(); i++) {
+                try {
+                    MailSendResult res = guardedTemplate.send(new MailMessage()
+                            .to(request.getTo())
+                            .subject(request.getSubject() + " #" + (i + 1))
+                            .text(request.getContent()));
+                    allowed++;
+                    messageIds.add(res.getMessageId());
+                } catch (MailSendException mse) {
+                    blocked++;
+                    triggeredCode = mse.getResultCode().getCode();
+                }
             }
+        } finally {
+            guardedTemplate.destroy();
         }
 
         // 模拟进入新限流窗口（重建限流器）验证恢复放行
         MailTemplate recoveredTemplate = buildGuardedTemplate(
                 new InMemoryMailRateLimiter(props), null, null, null, null);
-        boolean recovered = false;
         try {
             MailSendResult recoveredRes = recoveredTemplate.send(new MailMessage()
                     .to(request.getTo())
@@ -128,6 +137,8 @@ public class MailGovernanceService {
             messageIds.add(recoveredRes.getMessageId());
         } catch (Exception ex) {
             log.warn("Rate-limit recovery check failed: {}", ex.getMessage());
+        } finally {
+            recoveredTemplate.destroy();
         }
 
         return GuardDemoResponse.builder()
@@ -155,26 +166,29 @@ public class MailGovernanceService {
         props.setEnabled(true);
         props.setDailyMaxCount(1L);
 
-        MailTemplate guardedTemplate = buildGuardedTemplate(
-                null, new InMemoryMailDailyQuotaBreaker(props), null, null, null);
-
         int allowed = 0;
         int blocked = 0;
         Integer triggeredCode = null;
         List<String> messageIds = new ArrayList<>();
 
-        for (int i = 0; i < request.getBurstCount(); i++) {
-            try {
-                MailSendResult res = guardedTemplate.send(new MailMessage()
-                        .to(request.getTo())
-                        .subject(request.getSubject() + " #" + (i + 1))
-                        .text(request.getContent()));
-                allowed++;
-                messageIds.add(res.getMessageId());
-            } catch (MailSendException mse) {
-                blocked++;
-                triggeredCode = mse.getResultCode().getCode();
+        MailTemplate guardedTemplate = buildGuardedTemplate(
+                null, new InMemoryMailDailyQuotaBreaker(props), null, null, null);
+        try {
+            for (int i = 0; i < request.getBurstCount(); i++) {
+                try {
+                    MailSendResult res = guardedTemplate.send(new MailMessage()
+                            .to(request.getTo())
+                            .subject(request.getSubject() + " #" + (i + 1))
+                            .text(request.getContent()));
+                    allowed++;
+                    messageIds.add(res.getMessageId());
+                } catch (MailSendException mse) {
+                    blocked++;
+                    triggeredCode = mse.getResultCode().getCode();
+                }
             }
+        } finally {
+            guardedTemplate.destroy();
         }
 
         boolean eventCaptured = eventListener.getQuotaExceededCount().get() > beforeEvents;
@@ -206,58 +220,61 @@ public class MailGovernanceService {
         props.setRequireBizId(true);
         props.setTtl(Duration.ofMinutes(5));
 
-        MailTemplate guardedTemplate = buildGuardedTemplate(
-                null, null, new InMemoryMailIdempotentGuard(props), null, null);
-
         int allowed = 0;
         int blocked = 0;
         Integer triggeredCode = null;
         List<String> messageIds = new ArrayList<>();
-
-        // 1. 同 bizId 连续提交两次：首次放行，二次触发 MAIL_IDEMPOTENT_REJECTED
-        for (int i = 0; i < 2; i++) {
-            try {
-                MailSendResult res = guardedTemplate.send(new MailMessage()
-                        .bizId(bizId)
-                        .to(request.getTo())
-                        .subject(request.getSubject())
-                        .text(request.getContent()));
-                allowed++;
-                messageIds.add(res.getMessageId());
-            } catch (MailSendException mse) {
-                blocked++;
-                triggeredCode = mse.getResultCode().getCode();
-            }
-        }
-
-        // 2. 验证失败自动放锁：使用新 bizId 通过不可达账号触发失败，随后同 bizId 改走健康通道重试成功
-        String retryBizId = bizId + "-retry";
         boolean failedAsExpected = false;
         boolean recoveredAfterFailure = false;
-        MailAccount brokenAccount = buildUnreachablePrimaryAccount(Collections.emptyList(), null);
+
+        MailTemplate guardedTemplate = buildGuardedTemplate(
+                null, null, new InMemoryMailIdempotentGuard(props), null, null);
         try {
-            guardedTemplate.sendWithAccount(brokenAccount, new MailMessage()
-                    .bizId(retryBizId)
-                    .to(request.getTo())
-                    .subject(request.getSubject() + " [Fail]")
-                    .text(request.getContent()));
-        } catch (MailSendException ex) {
-            failedAsExpected = true;
-            log.debug("Expected failure on broken account released idempotent lock for bizId [{}]: {}",
-                    retryBizId, ex.getMessage());
-        }
-        if (failedAsExpected) {
+            // 1. 同 bizId 连续提交两次：首次放行，二次触发 MAIL_IDEMPOTENT_REJECTED
+            for (int i = 0; i < 2; i++) {
+                try {
+                    MailSendResult res = guardedTemplate.send(new MailMessage()
+                            .bizId(bizId)
+                            .to(request.getTo())
+                            .subject(request.getSubject())
+                            .text(request.getContent()));
+                    allowed++;
+                    messageIds.add(res.getMessageId());
+                } catch (MailSendException mse) {
+                    blocked++;
+                    triggeredCode = mse.getResultCode().getCode();
+                }
+            }
+
+            // 2. 验证失败自动放锁：使用新 bizId 通过不可达账号触发失败，随后同 bizId 改走健康通道重试成功
+            String retryBizId = bizId + "-retry";
+            MailAccount brokenAccount = buildUnreachablePrimaryAccount(Collections.emptyList(), null);
             try {
-                MailSendResult retryRes = guardedTemplate.send(new MailMessage()
+                guardedTemplate.sendWithAccount(brokenAccount, new MailMessage()
                         .bizId(retryBizId)
                         .to(request.getTo())
-                        .subject(request.getSubject() + " [RetrySuccess]")
+                        .subject(request.getSubject() + " [Fail]")
                         .text(request.getContent()));
-                recoveredAfterFailure = retryRes.isSuccess();
-                messageIds.add(retryRes.getMessageId());
-            } catch (Exception ex) {
-                log.warn("Idempotent failure-release retry failed: {}", ex.getMessage());
+            } catch (MailSendException ex) {
+                failedAsExpected = true;
+                log.debug("Expected failure on broken account released idempotent lock for bizId [{}]: {}",
+                        retryBizId, ex.getMessage());
             }
+            if (failedAsExpected) {
+                try {
+                    MailSendResult retryRes = guardedTemplate.send(new MailMessage()
+                            .bizId(retryBizId)
+                            .to(request.getTo())
+                            .subject(request.getSubject() + " [RetrySuccess]")
+                            .text(request.getContent()));
+                    recoveredAfterFailure = retryRes.isSuccess();
+                    messageIds.add(retryRes.getMessageId());
+                } catch (Exception ex) {
+                    log.warn("Idempotent failure-release retry failed: {}", ex.getMessage());
+                }
+            }
+        } finally {
+            guardedTemplate.destroy();
         }
 
         return GuardDemoResponse.builder()
@@ -338,15 +355,66 @@ public class MailGovernanceService {
 
         MailTemplate sandboxTemplate = buildGuardedTemplate(
                 null, null, null, sandboxInterceptors, sandboxProps);
+        try {
+            MailMessage message = new MailMessage()
+                    .to(request.getTo())
+                    .subject(request.getSubject())
+                    .text(request.getContent());
+            if (request.getCc() != null && !request.getCc().isBlank()) {
+                message.cc(request.getCc());
+            }
+            return sandboxTemplate.send(message);
+        } finally {
+            sandboxTemplate.destroy();
+        }
+    }
 
-        MailMessage message = new MailMessage()
+    /**
+     * 演示 XOAUTH2 动态令牌首次过期 535 鉴权失败后自动刷新令牌并单次重试送达
+     *
+     * @param request 发信请求
+     * @return 刷新令牌后成功投递回执
+     */
+    public MailSendResult runOAuth2RefreshDemo(SimpleTextMailRequest request) {
+        log.info("Running XOAUTH2 dynamic token refresh demo to [{}]", DesensitizeUtil.email(request.getTo()));
+        MailAccount defaultAccount = mailTemplate.getAccountRegistry().getDefault();
+        JavaMailSenderImpl underlyingSender = defaultAccount.getSender();
+        String accountName = "oauth2-demo";
+        oauth2TokenProvider.seedInitialToken(accountName, "stale-oauth2-token");
+
+        AtomicInteger attempts = new AtomicInteger(0);
+        JavaMailSenderImpl oauthRefreshSender = new JavaMailSenderImpl() {
+            @Override
+            public MimeMessage createMimeMessage() {
+                return underlyingSender.createMimeMessage();
+            }
+
+            @Override
+            public void send(MimeMessage mimeMessage) {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new MailAuthenticationException("535 5.7.8 XOAUTH2 access token expired");
+                }
+                underlyingSender.send(mimeMessage);
+            }
+        };
+
+        MailAccount oauthAccount = MailAccount.builder()
+                .name(accountName)
+                .host(defaultAccount.getHost())
+                .port(defaultAccount.getPort())
+                .username(defaultAccount.getUsername())
+                .authMode(AuthMode.XOAUTH2)
+                .ssl(defaultAccount.isSsl())
+                .starttls(defaultAccount.isStarttls())
+                .defaultFrom(defaultAccount.getDefaultFrom())
+                .defaultFromName(defaultAccount.getDefaultFromName())
+                .sender(oauthRefreshSender)
+                .build();
+
+        return mailTemplate.forDynamicAccount(oauthAccount).send(message -> message
                 .to(request.getTo())
                 .subject(request.getSubject())
-                .text(request.getContent());
-        if (request.getCc() != null && !request.getCc().isBlank()) {
-            message.cc(request.getCc());
-        }
-        return sandboxTemplate.send(message);
+                .text(request.getContent()));
     }
 
     /**
@@ -499,6 +567,13 @@ public class MailGovernanceService {
         copy.setMaxAttachmentSize(mailProperties.getMaxAttachmentSize());
         copy.setMaxTotalSize(mailProperties.getMaxTotalSize());
         copy.setMaxDynamicAccounts(mailProperties.getMaxDynamicAccounts());
+        copy.setArchiveBcc(mailProperties.getArchiveBcc());
+        if (mailProperties.getAsync() != null) {
+            copy.setAsync(mailProperties.getAsync());
+        }
+        if (mailProperties.getTemplate() != null) {
+            copy.setTemplate(mailProperties.getTemplate());
+        }
         copy.setBatch(mailProperties.getBatch());
         copy.setFailover(mailProperties.getFailover());
         copy.getRetry().setEnabled(false);

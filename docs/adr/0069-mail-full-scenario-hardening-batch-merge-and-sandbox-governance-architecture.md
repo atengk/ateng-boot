@@ -129,7 +129,7 @@ flowchart TD
    - 新增 `MailRateLimiter`（发信账号维度令牌桶 + 单收件人维度滑动窗口，按去重实际物理收件人次计费，超限抛出 `MAIL_RATE_LIMITED`）、`MailDailyQuotaBreaker`（自然日去重收件人次硬熔断，超限抛出 `MAIL_QUOTA_EXCEEDED` 并同步发布 `MailQuotaExceededEvent` 解耦事件）以及 `MailIdempotentGuard`（默认 `require-biz-id=true` 仅对显式携带 `bizId` 的消息抢占防重锁，物理发信失败主动执行 `releaseLock` 支持补偿重试）；
    - 全系防卫策略默认 `enabled=false` 保持零侵入，且同时内置单机内存 LRU 实现（`InMemory*`）与 Redis Lua 原子分布式实现（`Redis*`，标配 `fail-open-on-redis-error` 容错开关，无 Redis 时自动平滑降级）。
 2. **主备账号顺延容灾 (`backupAccounts`) 与 SPF/DMARC 域对齐**：
-   - 在账号重试耗尽遇到网络超时/认证等可转移故障时，按 `backupAccounts` 有序队列自动切换至备用账号重试并记录 `Failover` 指标；
+   - 在账号重试耗尽遇到瞬态网络超时、连接拒绝或 SMTP 网关 421/5xx 可用性故障时，按 `backupAccounts` 有序队列自动切换至备用账号重试并记录 `Failover` 指标；遇认证失败（含令牌刷新后仍失败）、非法收件人地址、拦截器阻断及出站防护拒绝等确定性错误时立即 Fail-Fast，绝不触发备用账号切换；
    - 通过 `ateng.boot.mail.failover.override-from-on-switch`（默认 `true`）自动将外发信封与 `From` 标头对齐至备用账号所属发件邮箱，并将原主账号发件地址自动写入 `Reply-To` 保留业务回复链路，避免严格 SPF/DMARC 域策略拒信。
 3. **认证扩展 (`AuthMode` + `XOAUTH2` + `sslTrust`) 与退信/退订合规协议**：
    - 确立强类型 `AuthMode` 枚举（`AUTO` / `PASSWORD` / `NONE` / `XOAUTH2`），搭配 `MailAccessTokenProvider` SPI 在初次鉴权失败时执行单次受锁刷新重试，并支持内网自签名网关配置 `ssl-trust`；

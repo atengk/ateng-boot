@@ -9,14 +9,14 @@
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.mail.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (`*Test` / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **基础收发与 DSL** | 同步文本 / HTML / DSL 极简发信 | `MailTemplate`<br>`MailMessage`<br>`MailSendResult` | `enabled`<br>`default-account`<br>`allow-empty-accounts`<br>`host` / `port` / `accounts.*` | `send(MailMessage)` / `send(Consumer<MailMessage>)`<br>`sendText(...)` / `sendHtml(...)`<br>同步返回含 `messageId`、`recipients`、`duration` 的 `MailSendResult` | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest`<br>`MailBasicController`<br>`MailGovernanceController` |
-| **多语言模板渲染** | 多引擎模板 SPI 与 `Locale` 级联寻址 | `MailTemplate`<br>`MailTemplateRenderer`<br>`ThymeleafMailTemplateRenderer`<br>`FreemarkerMailTemplateRenderer`<br>`SimpleMailTemplateRenderer`<br>`MailTemplateResourceUtil` | `template.html-escape` | `renderTemplate(templateName, model, [Locale])`<br>`sendTemplate(...)` / `sendTemplateAsync(...)`<br>`MailTemplateResourceUtil.buildLocaleCandidateNames(...)` / `resolveExistingTemplateName(...)` / `validateSafeTemplateName(...)`<br>支持 `_en_US` $\rightarrow$ `_en` $\rightarrow$ 基础模板级联探测与目录穿越防御 | `ThymeleafMailTemplateRendererTest`<br>`FreemarkerMailTemplateRendererTest`<br>`SimpleMailTemplateRendererTest`<br>`MailTemplateRendererI18nTest`<br>`MailTemplateResourceUtilTest`<br>`MailBasicController`<br>`MailGovernanceController` |
-| **流式附件与内联** | RFC 6266 流式防爆附件与正交 Inline CID | `MailMessage`<br>`MailAttachment`<br>`MailInlineResource` | `max-attachment-size`（默认 `20MB`）<br>`max-total-size`（默认 `50MB`） | `MailAttachment.of(filename, File\|byte[]\|InputStreamSource\|Resource\|InputStream)`<br>`MailInlineResource.of(contentId, File\|byte[]\|InputStreamSource\|Resource, contentType)`<br>`message.attach(...)` / `message.inline(...)`<br>RFC 2231/5987 文件名防乱码、双重前置容量 Fail-Fast 与 `close()` 确定性清理 | `MailAttachmentTest`<br>`MailInlineResourceTest`<br>`MailMessageTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest`<br>`MailMediaController` |
+| **多语言模板渲染** | 多引擎模板 SPI 与 `Locale` 级联寻址 | `MailTemplate`<br>`MailTemplateRenderer`<br>`ThymeleafMailTemplateRenderer`<br>`FreemarkerMailTemplateRenderer`<br>`SimpleMailTemplateRenderer`<br>`MailTemplateResourceUtil` | `template.html-escape` | `renderTemplate(templateName, model, [Locale])`<br>`sendTemplate(...)` / `sendTemplateAsync(...)`<br>`MailTemplateResourceUtil.buildLocaleCandidateNames(...)` / `resolveExistingTemplateName(...)` / `validateSafeTemplateName(...)`<br>支持 `_en_US` $\rightarrow$ `_en` $\rightarrow$ 基础模板级联探测与目录穿越防御；开启 `html-escape` 时 `${var}` 自动转义，`$!{rawVar}` 原文透传 | `ThymeleafMailTemplateRendererTest`<br>`FreemarkerMailTemplateRendererTest`<br>`SimpleMailTemplateRendererTest`<br>`MailTemplateRendererI18nTest`<br>`MailTemplateResourceUtilTest`<br>`MailBasicController`<br>`MailGovernanceController` |
+| **流式附件与内联** | RFC 6266 流式防爆附件与正交 Inline CID | `MailMessage`<br>`MailAttachment`<br>`MailInlineResource` | `max-attachment-size`（默认 `20MB`）<br>`max-total-size`（默认 `50MB`） | `MailAttachment.of(...)` / `MailAttachment.ofBuffered(...)`<br>`MailInlineResource.of(...)` / `MailInlineResource.ofBuffered(...)`<br>`message.attach(...)` / `message.inline(...)`<br>RFC 2231/5987 文件名防乱码、双重前置容量 Fail-Fast、一次性流禁用重试与 `close()` 确定性清理 | `MailAttachmentTest`<br>`MailInlineResourceTest`<br>`MailMessageTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest`<br>`MailMediaController` |
 | **静态与动态账号** | 多账号隔离注册表与外部懒加载 LRU 池 | `MailAccountRegistry`<br>`MailAccountResolver`<br>`TenantMailAccountResolver`<br>`MailAccountProvider`<br>`DynamicMailSession`<br>`MailAccount` | `max-dynamic-accounts`（默认 `100`）<br>`accounts.<name>.*` | `MailTemplate.forDynamicAccount(MailAccount)`<br>`evictDynamicAccount(accountName)` / `clearDynamicAccounts()`<br>`MailAccountRegistry`: `register` / `unregister` / `getDynamic` / `getOrCreateDynamic` / `evictDynamic` / `clearDynamic`<br>结合 `TenantContextHolder` 透明路由租户账号，LRU 池化与 `ReentrantLock` 并发防 Pinning | `MailAccountRegistryTest`<br>`MailAccountResolverTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest`<br>`MailAccountController`<br>`MailGovernanceController` |
 | **认证扩展与探活** | `AUTO`/`PASSWORD`/`NONE`/`XOAUTH2` 认证与物理探针 | `AuthMode`<br>`MailAccessTokenProvider`<br>`MailTemplate`<br>`DynamicMailSession`<br>`MailAccountRegistry` | `auth-mode` / `accounts.*.auth-mode`<br>`access-token` / `ssl-trust`<br>`connection-timeout` / `read-timeout` / `write-timeout` | `AuthMode`: `AUTO`、`PASSWORD`、`NONE`、`XOAUTH2`<br>`MailAccessTokenProvider`: `getAccessToken` / `refreshAccessToken`（鉴权失败单次刷新重试）<br>`boolean testConnection([String\|MailAccount])` / `void testConnectionOrThrow([String\|MailAccount])`<br>零测试邮件真实握手与 `sslTrust` 自签名网关校验控制 | `MailAccountRegistryTest`<br>`AtengMailAutoConfigurationTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest`<br>`MailAccountController` |
-| **批量合并与事务** | 分片并发、片内 `Transport` 复用与事务同步 | `MailTemplate`<br>`DynamicMailSession`<br>`BatchMailSendResult`<br>`MailSendResultItem` | `batch.concurrency`（默认 `4`）<br>`batch.slice-size`（默认 `50`）<br>`batch.reuse-transport`（默认 `true`）<br>`batch.timeout`（默认 `5m`）<br>`async.*` | `sendBatch(List<MailMessage>)` / `sendBatchWithAccount(...)` / `sendBatchAsync(...)`<br>`sendBatchAfterCommit(...)` / `sendBatchAsyncAfterCommit(...)`<br>`sendAfterCommit(...)` / `sendAsyncAfterCommit(...)`（含文本/HTML/模板重载与 DSL）<br>基于 `BatchSliceUtil` 切片与 `Semaphore` 控流，Fail-Safe 聚合回执与事务回滚防幽灵撤销 | `BatchMailSendResultTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest`<br>`MailReliableController`<br>`MailGovernanceController` |
+| **批量合并与事务** | 分片并发、片内 `Transport` 复用与事务同步 | `MailTemplate`<br>`DynamicMailSession`<br>`BatchMailSendResult`<br>`MailSendResultItem` | `batch.concurrency`（默认 `4`）<br>`batch.slice-size`（默认 `50`）<br>`batch.reuse-transport`（默认 `true`）<br>`batch.timeout`（默认 `5m`）<br>`async.*` | `MailTemplate` & `DynamicMailSession` 对称提供 `sendBatch` / `sendBatchAsync` / `sendBatchAfterCommit` / `sendBatchAsyncAfterCommit`<br>`sendBatchWithAccount(...)` / `sendAfterCommit(...)` / `sendAsyncAfterCommit(...)`<br>基于 `BatchSliceUtil` 切片与 `Semaphore` 控流，Fail-Safe 聚合回执与事务回滚防幽灵撤销 | `BatchMailSendResultTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest`<br>`MailAccountController`<br>`MailReliableController`<br>`MailGovernanceController` |
 | **受管异步执行器** | 平台/虚拟双模线程池与四维上下文透传 | `MailTemplate`<br>`mailTaskExecutor`<br>`AsyncPoolProperties` | `async.enabled` / `async.mode`<br>`async.core-pool-size` / `async.max-pool-size`<br>`async.queue-capacity` / `async.keep-alive`<br>`async.thread-name-prefix` / `async.virtual-thread-name-prefix`<br>`async.concurrency-limit` / `async.rejected-policy` | `sendAsync(MailMessage)` / `sendAsync(Consumer<MailMessage>)`<br>`sendTextAsync(...)` / `sendHtmlAsync(...)`<br>基于 `ContextCopyingTaskDecorator` 透传 `<MDC, User, TenantId, IgnoreTenant>` 四维上下文并在 `finally` 清理 | `AtengMailAutoConfigurationTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest`<br>`MailReliableController` |
-| **重试与顺延容灾** | 指数退避重试与 `backupAccounts` 主备切换 | `MailProperties`<br>`MailRetryProperties`<br>`MailFailoverProperties`<br>`MailAccount` | `retry.enabled` / `retry.max-attempts` / `retry.delay` / `retry.multiplier` / `retry.max-delay` / `retry.jitter`<br>`failover.enabled` / `failover.override-from-on-switch`<br>`backup-accounts` / `accounts.*.backup-accounts` | 主账号重试耗尽后按 `backupAccounts` 顺延切换重试；`override-from-on-switch=true` 时自动对齐备用账号 `From` 域并将原 `From` 写入 `Reply-To` | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest`<br>`MailGovernanceController` |
-| **三阶出站防护** | 频率限制、日配额硬熔断与业务幂等防重 | `MailRateLimiter`（`InMemory*` / `Redis*`）<br>`MailDailyQuotaBreaker`（`InMemory*` / `Redis*`）<br>`MailIdempotentGuard`（`InMemory*` / `Redis*`）<br>`MailQuotaExceededEvent` | `rate-limit.*`<br>`quota.*`<br>`idempotent.*`<br>`fail-open-on-redis-error`（默认 `true`） | `MailRateLimiter.tryAcquire(...)`（账号令牌桶 + 收件人滑窗，触发 `40007`）<br>`MailDailyQuotaBreaker.tryConsume(...)`（触发 `40008` 并同步发布 `MailQuotaExceededEvent`）<br>`MailIdempotentGuard`: `tryAcquire` / `releaseLock` / `isLocked`（`bizId` 触发 `40009`，失败主动放锁） | `MailOutboundGuardsTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest`<br>`MailGovernanceController` |
+| **重试与顺延容灾** | 指数退避重试与 `backupAccounts` 主备切换 | `MailProperties`<br>`MailRetryProperties`<br>`MailFailoverProperties`<br>`MailAccount` | `retry.enabled` / `retry.max-attempts` / `retry.delay` / `retry.multiplier` / `retry.max-delay` / `retry.jitter`<br>`failover.enabled` / `failover.override-from-on-switch`<br>`backup-accounts` / `accounts.*.backup-accounts` | 主账号重试耗尽且遇可转移传输故障后按 `backupAccounts` 顺延切换重试（认证失败绝不切换）；`override-from-on-switch=true` 时自动对齐备用账号 `From` 域并将原 `From` 写入 `Reply-To` | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest`<br>`MailGovernanceController` |
+| **三阶出站防护** | 频率限制、日配额硬熔断与业务幂等防重 | `MailRateLimiter`（`InMemory*` / `Redis*`）<br>`MailDailyQuotaBreaker`（`InMemory*` / `Redis*`）<br>`MailIdempotentGuard`（`InMemory*` / `Redis*`）<br>`MailQuotaExceededEvent` | `rate-limit.*`<br>`quota.*`<br>`idempotent.*`<br>`fail-open-on-redis-error`（默认 `true`） | `MailMessage.bizId(String)`<br>`MailRateLimiter.tryAcquire(...)`（账号令牌桶 + 收件人滑窗，触发 `40007`）<br>`MailDailyQuotaBreaker.tryConsume(...)`（触发 `40008` 并同步发布 `MailQuotaExceededEvent`）<br>`MailIdempotentGuard`: `tryAcquire` / `releaseLock` / `isLocked`（`bizId` 触发 `40009`，失败主动放锁） | `MailOutboundGuardsTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest`<br>`MailGovernanceController` |
 | **合规协议与沙箱** | 优先级、回执、归档、退信/退订与沙箱防漏 | `MailPriority`<br>`MailMessage`<br>`MailSandboxInterceptor`<br>`MailSendInterceptor` | `archive-bcc` / `accounts.*.archive-bcc`<br>`sandbox.enabled` / `sandbox.allowed-recipients` / `sandbox.redirect-to` / `sandbox.log-only` | `message.priority(...)` / `readReceiptTo(...)` / `requestReadReceipt(...)`<br>`message.returnPath(...)` / `listUnsubscribe(...)` / `listUnsubscribePost(...)` / `replyTo(...)`<br>`MailSandboxInterceptor`（最高优先级 `HIGHEST_PRECEDENCE`）：白名单通配放行、非白名单重定向并强制清空 `Cc`/`Bcc`、`logOnly` 纯日志返虚回执 | `MailPriorityAndArchiveBccTest`<br>`MailSandboxInterceptorTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest`<br>`MailGovernanceController` |
 | **事件、补偿与异常** | 生命周期事件总线、失败补偿网与错误码体系 | `MailSendingEvent` / `MailSentEvent` / `MailSendFailedEvent`<br>`MailAccountEvictEvent`<br>`MailQuotaExceededEvent`<br>`MailSendFailureHandler`<br>`MailSendException` / `MailResultCode` | - | `MailSendFailureHandler.onFailure(message, cause)`<br>因果转译全覆盖 `MailResultCode`（`40001~40009`、`50001~50003`），100% 保留原始 `cause` 与脱敏日志 | `MailResultCodeTest`<br>`MailSendExceptionTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
 | **度量与健康探针** | 低基数 Micrometer 指标与静态账号探活 | `MailMetricsRecorder`<br>`MailMetrics`<br>`MailSendOutcome`<br>`MailSafeHealthIndicator`（Observability） | `ateng.boot.observability.health.mail.enabled`<br>`ateng.boot.observability.health.mail.cache-ttl`（默认 `60s`） | 导出 `ateng.mail.send.count`、`ateng.mail.send.duration`、`ateng.mail.retry.count`、`ateng.mail.failover.count` 及静态/动态账号 `Gauge`；静态账号探活带 `60s` 防刷缓存 | `MailMetricsTest`<br>`MailSafeHealthIndicatorTest`<br>`SampleMailIntegrationTest`<br>`MailGovernanceController` |
@@ -115,27 +115,25 @@ ateng:
           from-name: Ateng官方通知
 ```
 
-#### 极简实战代码（命令式 + 函数式 DSL）
+#### 1:1 逆向提取极简实战代码（来源：`MailScenarioService#sendSimpleText` & `MailGovernanceService#sendViaDsl`）
 ```java
 @Service
 @RequiredArgsConstructor
-public class NotificationMailService {
+public class MailScenarioService {
 
     private final MailTemplate mailTemplate;
 
-    public MailSendResult sendWelcome(String to, String username) {
-        return mailTemplate.sendText(
-                to,
-                "欢迎加入 Ateng Boot",
-                "尊敬的 " + username + "，恭喜您成功开通企业服务账户！"
-        );
+    public MailSendResult sendSimpleText(String to, String subject, String text) {
+        log.info("Sending simple text email to [{}]", DesensitizeUtil.email(to));
+        return mailTemplate.sendText(to, subject, text);
     }
 
-    public MailSendResult sendByDsl(String to, String subject, String content) {
+    public MailSendResult sendViaDsl(SimpleTextMailRequest request) {
+        log.info("Running functional DSL send demo to [{}]", DesensitizeUtil.email(request.getTo()));
         return mailTemplate.send(message -> message
-                .to(to)
-                .subject(subject)
-                .text(content));
+                .to(request.getTo())
+                .subject(request.getSubject())
+                .text(request.getContent()));
     }
 }
 ```
@@ -249,8 +247,9 @@ spring:
     encoding: UTF-8
 ```
 
-#### 1:1 逆向提取 Sample 代码（来源：`MailBasicController` & `MailScenarioService`）
+#### 1:1 逆向提取 Sample 代码（来源：`MailBasicController` & `MailScenarioService#sendEscapedTemplate`）
 ```java
+// 1. 多语言国际化模板发信（自动级联探测 _en_US -> _en -> 基础模板）
 @PostMapping("/i18n-template")
 public Result<MailSendResult> sendI18nTemplate(@Valid @RequestBody UserVerificationMailRequest request,
                                               @RequestParam(defaultValue = "zh_CN") String language) {
@@ -263,11 +262,24 @@ public Result<MailSendResult> sendI18nTemplate(@Valid @RequestBody UserVerificat
     );
     return Result.success(result);
 }
+
+// 2. 开启 html-escape=true 时 ${var} 自动转义防 XSS，$!{rawVar} 显式透传受信任富文本
+private static final SimpleMailTemplateRenderer ESCAPED_RENDERER = new SimpleMailTemplateRenderer(true);
+
+public MailSendResult sendEscapedTemplate(EscapedTemplateMailRequest request) {
+    String badge = request.getTrustedBadgeHtml() != null ? request.getTrustedBadgeHtml() : "<span>Verified</span>";
+    String template = "<html><body><h3>你好，${username}</h3><div>状态：$!{trustedBadgeHtml}</div></body></html>";
+    String renderedHtml = ESCAPED_RENDERER.render(template, Map.of(
+            "username", request.getUsername(),
+            "trustedBadgeHtml", badge
+    ));
+    return mailTemplate.sendHtml(request.getTo(), request.getSubject(), renderedHtml);
+}
 ```
 
 #### 机制与边界说明
 - **类路径安全级联寻址**：`MailTemplateResourceUtil` 依次探测 `""`、`templates/`、`templates/mail/`、`mail/` 前缀，生成 `<base>_en_US.html` $\rightarrow$ `<base>_en.html` $\rightarrow$ `<base>.html` 有序候选列表，并校验拒绝任何含 `..` 目录穿越或 `\0` 空字符的模板名称（触发 `MAIL_TEMPLATE_RENDER_ERROR` `40004`）；
-- **Locale 自动兜底**：未显式传入 `Locale` 时自动探测 Spring `LocaleContextHolder.getLocale()`。
+- **Locale 自动兜底与 XSS 兼容开关**：未显式传入 `Locale` 时自动探测 Spring `LocaleContextHolder.getLocale()`；`template.html-escape` 默认 `false` 保持向后兼容，开启后 `SimpleMailTemplateRenderer` 对 `${var}` 自动转义 `< > & " '`，同时支持 `$!{rawVar}` 原文透传。
 
 ---
 
@@ -316,18 +328,27 @@ public MailSendResult sendWithInline(String to, String subject, String title) {
             0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
             0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, (byte) 0xC4, (byte) 0x89
     };
+// 3. 将一次性 InputStream 经 ofBuffered 有界缓冲为可重读资源以支持重试（来源：MailScenarioService#sendBufferedAttachmentStatement）
+public MailSendResult sendBufferedAttachmentStatement(AttachmentMailRequest request) {
+    String fileName = request.getFileName() != null && !request.getFileName().isBlank()
+            ? request.getFileName() : "buffered-statement.pdf";
+    InputStream pdfStream = new ByteArrayInputStream(generateSimulatedPdfStatement(request.getContent()));
+    InputStream logoStream = new ByteArrayInputStream(logoBytes);
+
     MailMessage message = new MailMessage()
-            .to(to)
-            .subject(subject)
-            .html(html)
-            .inline(MailInlineResource.of("companyLogo", logoBytes, "image/png"));
+            .to(request.getTo())
+            .subject(request.getSubject())
+            .html("<html><body><p>" + request.getContent() + "</p><img src='cid:companyLogo'/></body></html>")
+            .attachment(MailAttachment.ofBuffered(fileName, pdfStream))
+            .inline(MailInlineResource.ofBuffered("companyLogo", logoStream, "image/png"));
     return mailTemplate.send(message);
 }
 ```
 
 #### 机制与边界说明
 - **双重容量熔断与 OOM 防御**：构造与物理装填前校验 `max-attachment-size` 与 `max-total-size`，流式读取时通过有界流（`BoundedInputStream`）强制截断超限输入，触发 `MAIL_ATTACHMENT_SIZE_EXCEEDED`（`40003`）或 `MAIL_TOTAL_SIZE_EXCEEDED`（`40005`）；
-- **正交通道与文件名防乱码**：`attach(...)` 与 `inline(...)` 在底层 MIME 多部结构中严格隔离；文件名按 RFC 2231/5987 规范编码并过滤非法路径符号。
+- **一次性流保护与有界缓冲**：裸 `InputStream`（`MailAttachment.of` / `MailInlineResource.of`）标记 `repeatable=false` 并自动禁用重试以防发出 0 字节损坏附件；需重试时改用 `ofBuffered(...)` 将流按 `max-attachment-size` 有界缓冲后立即关流；
+- **正交通道与文件名防乱码**：`attach(...)` 与 `inline(...)` 在底层 MIME 多部结构中严格隔离；文件名按 RFC 2231/5987 规范编码并过滤非法路径符号与系统垃圾文件。
 
 ---
 
@@ -391,21 +412,21 @@ ateng:
       write-timeout: 10s
       accounts:
         relay-internal:
-          host: smtp-relay.internal.corp
+          host: smtp-relay.internal.local
           port: 25
           ssl: false
           auth-mode: NONE             # 内网免认证 SMTP 中继
         m365-oauth:
-          host: smtp.office365.com
+          host: smtp.oauth.example.com
           port: 587
           ssl: false
           starttls: true
           auth-mode: XOAUTH2          # OAuth2 XOAUTH2 访问令牌认证
           username: bot@corp.example.com
-          ssl-trust: smtp.office365.com
+          ssl-trust: smtp.oauth.example.com
 ```
 
-#### 1:1 逆向提取 Sample 代码（来源：`MailAccountController` & `MailAccessTokenProvider`）
+#### 1:1 逆向提取 Sample 代码（来源：`MailAccountController` & `SampleOAuth2TokenProvider`）
 ```java
 // 1. 运维后台一键 SMTP 物理握手探针（仅执行 TCP/TLS/AUTH 握手并在 finally 断开，零测试邮件投递）
 @PostMapping("/test-connection")
@@ -414,19 +435,27 @@ public Result<Boolean> testConnection(@RequestParam @NotBlank(message = "账号�
     return Result.success(true);
 }
 
-// 2. 实现 MailAccessTokenProvider SPI 动态注入并刷新 XOAUTH2 短期令牌
+// 2. 实现 MailAccessTokenProvider SPI 动态注入并刷新 XOAUTH2 短期令牌（来源：SampleOAuth2TokenProvider）
 @Component
-public class CorpOAuth2TokenProvider implements MailAccessTokenProvider {
+public class SampleOAuth2TokenProvider implements MailAccessTokenProvider {
+
+    private final Map<String, String> tokenStore = new ConcurrentHashMap<>();
+    private final AtomicInteger refreshSequence = new AtomicInteger(0);
 
     @Override
     public String getAccessToken(MailAccount account) {
-        return fetchTokenFromIdentityCenter(account.getName());
+        String key = resolveKey(account);
+        return tokenStore.computeIfAbsent(key, k -> "initial-oauth2-token-" + k);
     }
 
     @Override
     public String refreshAccessToken(MailAccount account) {
         // 首次使用令牌返回 535 AuthenticationFailed 时由框架自动触发单次刷新重连
-        return forceRefreshToken(account.getName());
+        String key = resolveKey(account);
+        int seq = refreshSequence.incrementAndGet();
+        String refreshed = "refreshed-oauth2-token-" + seq;
+        tokenStore.put(key, refreshed);
+        return refreshed;
     }
 }
 ```
@@ -478,7 +507,7 @@ public MailSendResult runFailoverDemo(FailoverDemoRequest request) {
 ```
 
 #### 机制与边界说明
-- **可转移故障精确甄别**：仅当主账号重试耗尽并遭遇瞬态网络超时、连接拒绝、SMTP 服务器认证/投递异常等可转移故障时，才按 `backupAccounts` 队列顺序切换尝试备用账号；对于收件人为空、格式非法、拦截器阻断、出站限流/配额/幂等拦截等非通道问题绝不盲目切换；
+- **可转移故障精确甄别**：仅当主账号重试耗尽并遭遇瞬态网络超时、连接拒绝、SMTP 网关 421/5xx 临时可用性异常等可转移故障时，才按 `backupAccounts` 队列顺序切换尝试备用账号；对于**认证失败（含 XOAUTH2 令牌刷新后仍失败）**、收件人为空/格式非法、拦截器阻断、出站限流/配额/幂等拦截等确定性故障立即 Fail-Fast，绝不触发备用账号切换；
 - **SPF/DMARC 域对齐保驾**：开启 `override-from-on-switch: true` 后，切换至 `ops` 账号投递时自动将信封发件人与 `From` 标头对齐为 `ops@example.com`（防止被接收方按发件域 SPF/DMARC 拒信），同时把原主账号发件人 `primaryFrom` 写入 `Reply-To` 保留业务回邮链路。
 
 ---
@@ -523,6 +552,18 @@ public void sendBatchAfterCommit(BatchAfterCommitRequest request) {
     if (request.isShouldRollback()) {
         throw new IllegalStateException("Simulated business exception triggering batch rollback");
     }
+}
+
+// 3. 动态会话批量对称门面（来源：MailScenarioService#sendBatchByDynamicSession，强制绑定动态账号）
+public BatchMailSendResult sendBatchByDynamicSession(DynamicBatchMailRequest request) {
+    List<MailMessage> messages = new ArrayList<>(request.getItems().size());
+    for (SimpleTextMailRequest item : request.getItems()) {
+        messages.add(new MailMessage()
+                .to(item.getTo())
+                .subject(item.getSubject())
+                .text(item.getContent()));
+    }
+    return mailTemplate.forDynamicAccount(dynamicAccount).sendBatch(messages);
 }
 ```
 
@@ -634,7 +675,7 @@ public void onMailQuotaExceeded(MailQuotaExceededEvent event) {
 #### 机制与边界说明
 - **去重计费口径**：`MailRateLimiter` 与 `MailDailyQuotaBreaker` 均对每封邮件的 `To + Cc + Bcc` 收件地址执行小写清洗去重后按物理人次扣减；超限分别抛出 `MAIL_RATE_LIMITED`（`40007`）与 `MAIL_QUOTA_EXCEEDED`（`40008`）；
 - **双模自动切换**：当容器装配有 `ateng-boot-redis`（`StringRedisTemplate`）时自动启用原子 Lua 脚本驱动的 `RedisMailRateLimiter`、`RedisMailDailyQuotaBreaker` 与 `RedisMailIdempotentGuard`；未引入 Redis 时自动平滑降级为基于 `ReentrantLock` 的单机内存 LRU 实现（`InMemory*`）；
-- **失败放锁对称语义**：使用 `bizId` 抢占幂等锁后若在配额校验或物理 SMTP 发送阶段抛出异常，框架在 `finally` 路径主动调用 `idempotentGuard.releaseLock(...)`，保障后续业务补偿重发正常放行。
+- **失败放锁对称语义**：使用 `bizId` 抢占幂等锁后若在限流/配额校验或物理 SMTP 发送阶段抛出异常，框架在 `catch` 异常失败路径主动调用 `idempotentGuard.releaseLock(...)`，保障后续业务补偿重发正常放行（成功投递则保留锁定至 TTL 到期以防重放）。
 
 ---
 

@@ -214,21 +214,21 @@ class MailAccountRegistryTest {
 
         MailAccount aliasA = MailAccount.builder()
                 .name("brand-a")
-                .host("smtp.shared-corp.com")
+                .host("smtp.shared.example.com")
                 .port(465)
-                .username("relay@corp.com")
+                .username("relay@corp.example.com")
                 .password("pwd")
-                .defaultFrom("a@corp.com")
-                .archiveBcc("audit-a@corp.com")
+                .defaultFrom("a@corp.example.com")
+                .archiveBcc("audit-a@corp.example.com")
                 .build();
         MailAccount aliasB = MailAccount.builder()
                 .name("brand-b")
-                .host("smtp.shared-corp.com")
+                .host("smtp.shared.example.com")
                 .port(465)
-                .username("relay@corp.com")
+                .username("relay@corp.example.com")
                 .password("pwd")
-                .defaultFrom("b@corp.com")
-                .archiveBcc("audit-b@corp.com")
+                .defaultFrom("b@corp.example.com")
+                .archiveBcc("audit-b@corp.example.com")
                 .build();
 
         MailAccount managedA = registry.getOrCreateDynamic("brand-a", aliasA, null);
@@ -242,11 +242,11 @@ class MailAccountRegistryTest {
 
         MailAccount aliasC = MailAccount.builder()
                 .name("brand-c")
-                .host("smtp.shared-corp.com")
+                .host("smtp.shared.example.com")
                 .port(465)
-                .username("relay@corp.com")
+                .username("relay@corp.example.com")
                 .password("pwd")
-                .defaultFrom("c@corp.com")
+                .defaultFrom("c@corp.example.com")
                 .build();
         MailAccount managedC = registry.getOrCreateDynamic("brand-c", aliasC, null);
         assertSame(managedB.getSender(), managedC.getSender(), "兄弟别名仍存活时不应清除共享指纹对应的 Sender");
@@ -416,31 +416,31 @@ class MailAccountRegistryTest {
         // 5. withSender 与 toFingerprint 必须完整包含 authMode、accessToken 与 sslTrust
         MailAccount oauthAcc = MailAccount.builder()
                 .name("oauth")
-                .host("smtp.office365.com")
+                .host("smtp.oauth.example.com")
                 .port(587)
-                .username("u@corp.com")
+                .username("u@corp.example.com")
                 .authMode(AuthMode.XOAUTH2)
                 .accessToken("tok-1")
                 .ssl(false)
                 .starttls(true)
-                .sslTrust("smtp.office365.com")
+                .sslTrust("smtp.oauth.example.com")
                 .build();
         MailAccount copied = oauthAcc.withSender(new JavaMailSenderImpl());
         assertEquals(AuthMode.XOAUTH2, copied.getAuthMode());
         assertEquals("tok-1", copied.getAccessToken());
-        assertEquals("smtp.office365.com", copied.getSslTrust());
+        assertEquals("smtp.oauth.example.com", copied.getSslTrust());
         assertEquals(oauthAcc.toFingerprint(), copied.toFingerprint());
 
         MailAccount diffToken = MailAccount.builder()
                 .name("oauth")
-                .host("smtp.office365.com")
+                .host("smtp.oauth.example.com")
                 .port(587)
-                .username("u@corp.com")
+                .username("u@corp.example.com")
                 .authMode(AuthMode.XOAUTH2)
                 .accessToken("tok-2")
                 .ssl(false)
                 .starttls(true)
-                .sslTrust("smtp.office365.com")
+                .sslTrust("smtp.oauth.example.com")
                 .build();
         assertNotEquals(oauthAcc.toFingerprint(), diffToken.toFingerprint());
     }
@@ -479,9 +479,9 @@ class MailAccountRegistryTest {
         };
         MailAccount oauthAccount = MailAccount.builder()
                 .name("oauth-probe")
-                .host("smtp.office365.com")
+                .host("smtp.oauth.example.com")
                 .port(587)
-                .username("bot@corp.com")
+                .username("bot@corp.example.com")
                 .authMode(AuthMode.XOAUTH2)
                 .sender(mockSender)
                 .build();
@@ -502,9 +502,9 @@ class MailAccountRegistryTest {
         };
         MailAccount badOauth = MailAccount.builder()
                 .name("oauth-bad")
-                .host("smtp.office365.com")
+                .host("smtp.oauth.example.com")
                 .port(587)
-                .username("bot@corp.com")
+                .username("bot@corp.example.com")
                 .authMode(AuthMode.XOAUTH2)
                 .sender(alwaysFailSender)
                 .build();
