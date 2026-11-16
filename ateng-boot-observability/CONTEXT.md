@@ -5,7 +5,7 @@
 ## Language
 
 **AbstractSafeHealthIndicator**:
-受管健康探针防假死抽象基类，基于独立受管线程执行实际探测，强制挂载强类型超时切断（默认 2s），在下游发生网络闪断或假死时快速熔断并返回 UNKNOWN/WARN 降级状态，避免阻塞 Actuator 线程池引发 K8s 存活检查雪崩。
+受管健康探针防假死抽象基类，基于独立受管线程执行实际探测，强制挂载强类型超时切断（默认 2s），在下游发生网络闪断或假死时快速熔断并返回 UNKNOWN/DOWN 降级状态，避免阻塞 Actuator 线程池引发 K8s 存活检查雪崩。
 _Avoid_: BaseHealthIndicator, TimeoutHealthIndicator, SafeProbe
 
 **AtengThreadPoolMeterBinder**:
@@ -57,11 +57,19 @@ _Avoid_: EsHealthIndicator, ElasticCheck, SearchProbe
 _Avoid_: MetricService, MetricHelper, PrometheusTemplate, MeterTemplate
 
 **ObservedMetric**:
-声明式方法级度量监控注解，声明于 Spring 受管组件方法上，通过 AOP 切面透明记录执行耗时分位数（P95/P99）、成功与失败调用计数并自动打标导出。
+声明式方法级度量监控注解，声明于 Spring 受管组件方法或类上，通过 AOP 切面透明记录执行耗时分位数（P50/P95/P99）、直方图（Histogram）、SLO 耗时桶（SLA）及成功与失败调用计数并自动打标导出。
 _Avoid_: Metrics, Monitor, Measure, TimedMetric
 
+**ObservedMetricAspect**:
+声明式方法度量 AOP 环绕切面，拦截 `@ObservedMetric` 注解方法，统一采集 Timer 耗时、分位数/SLO 直方图与调用状态计数器（`status=success/error`、`exception`），并在度量异常时静默降级以保障业务主流程零阻断。
+_Avoid_: MetricInterceptor, TimedAspect, MonitorAdvice
+
+**AtengMetricsRegistryCustomizer**:
+全局度量注册表定制与高基数防爆治理器，基于 `MeterRegistryCustomizer` 与 `MeterFilter` 自动注入应用全局公共标签（`application` 与 `common-tags`）、截断超长标签值（`max-tag-value-length`）、限制单指标最大标签基数（`max-meter-cardinality`）并支持前缀黑名单过滤，防止 Prometheus TSDB 维度爆炸。
+_Avoid_: MetricsFilter, TagLimiter, CardinalityGuard
+
 **CidrMatcher**:
-基于 JDK 17 原生位运算与 InetAddress 构建的零臃肿 IP/CIDR 网段高效匹配器，支持 IPv4 与 IPv6 掩码过滤，无第三方工具包依赖。
+基于 JDK 17 原生位运算与 InetAddress 构建的零臃肿 IP/CIDR 网段高效匹配器，已下沉至 `ateng-boot-core` 并在本模块保留向后兼容继承类，支持 IPv4 与 IPv6 掩码过滤，无第三方工具包依赖。
 _Avoid_: IpMatcher, SubnetUtil, IpWhiteListUtil, NetworkUtil
 
 **ThreadPoolRejectedEvent**:
@@ -72,6 +80,10 @@ _Avoid_: RejectedTaskEvent, PoolRejectEvent, ThreadPoolOverflowEvent
 健康探针探测超时或抛出异常降级时发布的 Spring 领域事件，携带故障组件名称、耗时与因果异常，便于下游实现实时告警。
 _Avoid_: ProbeFailureEvent, HealthDownEvent, ProbeTimeoutEvent
 
+**HealthProbeRecoveredEvent**:
+健康探针从故障或超时降级状态（`DOWN` / `TIMEOUT`）恢复为健康状态（`UP`）时发布的对称 Spring 领域事件，携带探针名称、组件名称、故障前状态、累计连续失败次数及故障持续时长（`downtimeMs`），与 `HealthProbeDegradedEvent` 构成故障告警与自愈消警闭环。
+_Avoid_: ProbeUpEvent, HealthRestoredEvent, ProbeRecoveryNotification
+
 **ActuatorAccessDeniedEvent**:
 外部请求访问加固敏感端点未通过 Token、Basic Auth 或 IP 白名单核验被阻断时发布的 Spring 领域事件，便于审计未授权探测行为。
 _Avoid_: EndpointBlockEvent, SecurityRejectEvent
@@ -80,10 +92,6 @@ _Avoid_: EndpointBlockEvent, SecurityRejectEvent
 生产安全基线环境后处理器，在容器启动早期自动注入安全的默认暴露端点配置与 Kubernetes 探针自动开启配置，并强制将外部物理依赖从 Liveness 存活检查剥离至 Readiness 就绪检查。
 _Avoid_: ObservabilityPostProcessor, ActuatorConfigProcessor
 
-**PaymentGatewayHealthIndicator**:
-面向第三方支付通道的业务级防假死安全健康探针示例，基于受管异步线程探测支付网关连通性，超时硬切断避免外部网络阻塞。
-_Avoid_: PayHealthIndicator, PaymentProbe, PaySafeHealth
-
-**ObservabilityAlertEventListener**:
-运维全生命周期领域事件监听器，专职捕获线程池拒绝、探针降级与安全拦截三大事件，维持有界内存缓冲区供运维巡检与告警外发。
-_Avoid_: AlertListener, ObsEventListener, SecurityEventListener
+**AdminClientSecretHttpRequestInterceptor**:
+面向 Spring Boot Admin 客户端（SBA Client）的出站注册握手密钥拦截器，在实例向管控中心发起注册与心跳请求时透明注入 `X-Admin-Client-Secret` 请求头，与 `ateng-boot-admin` 服务端形成零配置安全准入闭环。
+_Avoid_: SbaSecretInterceptor, AdminAuthInterceptor, RegistrationHeaderFilter

@@ -80,8 +80,8 @@ flowchart TD
 
 ### 3. 业务度量双驱门面体系
 - **编程式度量门面 (`MetricsTemplate`)**：
-  - 封装 Micrometer 核心原语，提供 `increment`、`gauge`、`record`、`recordTime` 等强类型流式方法；
-  - 自动执行 Tag 键值对合法性防御性清洗与奇数截断防护，防止高基数维度污染；
+  - 封装 Micrometer 核心原语，提供 `increment`、`gauge`、`record`、`startSample`/`stopSample`、`summary` 与 `remove` 等强类型流式方法；
+  - 自动执行 Tag 键值对合法性防御性清洗与奇数孤立键补齐 `"UNKNOWN"` 防护，防止高基数维度污染；
 - **声明式切面注解 (`@ObservedMetric`)**：
   - 支持方法与类级别标注，由 `ObservedMetricAspect` 环绕拦截；
   - 透明采集调用总次数、执行成功与失败计数、执行耗时 Timer、分位数（默认 P50/P95/P99），并在失败时自动打标异常类名；
@@ -105,6 +105,15 @@ flowchart TD
   - 装饰包装原生 `RejectedExecutionHandler`，拦截饱和拒绝时刻；
   - 递增 Prometheus 拒绝计数器，并在抛出异常前广播 `ThreadPoolRejectedEvent`，携带当前活跃数、队列容量、最大线程数快照，完整保留原始因果链。
 
+### 6. 2026-11-16 阶段三加固演进（Issue #996 ~ #1002）
+面向 JDK 21+ 虚拟线程与云原生高基数生产场景深度体检后，对既有架构实施了以下增量加固与能力补齐（100% 保持既有默认开关向后兼容）：
+1. **代理头防欺骗、404 隐身模式与动态白名单**：`ActuatorEndpointSecurityFilter` 默认关闭代理头信任（`trust-proxy-headers=false`），仅采信直连网络层 `RemoteAddr` 或直连命中 `trusted-proxies` 网关白名单时方解析代理头；新增 `stealth-mode`（`404` 隐身防扫描阻断）与 `whitelisted-endpoints` 可配置白名单（`/actuator` 根索引始终拦截）；`CidrMatcher` 统一下沉至 `ateng-boot-core` 并在本模块保留兼容继承类。
+2. **虚拟线程防 Pinning、受管探针线程池与四维上下文透传**：`AbstractSafeHealthIndicator` 通过 `BeanFactoryAware` 自动绑定专属受管线程池 `atengHealthProbeExecutor`，并接入 `AsyncContext.wrapSupplier(...)` 透传及清理 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 四维上下文；`KafkaSafeHealthIndicator` 与探针基类全面采用 `ReentrantLock` 替代 `synchronized`，消除 JDK 21+ 虚拟线程 Carrier Pinning。
+3. **自愈对称事件、防击穿缓存与告警冷却闭环**：新增 `HealthProbeRecoveredEvent` 对称事件，携带故障前状态、持续故障时长（`downtimeMs`）与连续失败次数；新增 `health.cache-ttl`（基于 `ReentrantLock` 双重检查防穿透缓存）与 `health.degraded-event-cooldown`（连续故障抑制告警风暴），默认 `0s` 保持兼容。
+4. **全局公共标签与 Prometheus 高基数熔断治理**：新增 `AtengMetricsRegistryCustomizer`，依次挂载前缀黑名单（`deny-metric-prefixes`）、`application` 与 `common-tags` 公共标签、超长标签值截断（`max-tag-value-length=128`）以及基于 `ReentrantLock` 与 `onMeterRemoved` 动态退休的基数上限熔断（`max-meter-cardinality=1000`）。
+5. **直方图与 SLO 耗时桶双驱扩展**：`@ObservedMetric` 新增 `histogram` 与 `slaMs`，`MetricsTemplate` 补齐接收 `percentiles`、`histogram`、`Duration[] sla` 的 `timer(...)` 与 `record(...)` 重载及共享参数防卫逻辑，全面支持多 Pod 可聚合 Prometheus 直方图（`_bucket`）。
+6. **SBA 客户端出站握手加固**：`AdminClientSecretHttpRequestInterceptor` 幂等附加 `X-Admin-Client-Secret` 请求头，`AtengAdminClientAutoConfiguration` 注入 `actuator-token` 元数据并支持 `service-url`/`management-url` 覆写。
+
 ---
 
 ## 带来的收益与权衡分析 (Consequences & Trade-offs)
@@ -113,8 +122,8 @@ flowchart TD
 1. **彻底消除 Pod 死亡螺旋**：K8s Liveness 探针 100% 进程内自洽，杜绝因外部网络波动导致服务容器反复被杀。
 2. **探针假死免疫**：所有外部组件探测均有超时硬切断防护，Actuator 线程池绝对安全。
 3. **零门槛接入业务度量**：通过 `@ObservedMetric` 一行注解即可完成全链路耗时与分位数监控。
-4. **轻量无感知安全防护**：无需引入臃肿的 Spring Security，实现 CIDR 白名单与 Basic/Token 鉴权一体化。
-5. **运维事件全链路闭环**：通过三大领域事件（`ThreadPoolRejectedEvent`、`HealthProbeDegradedEvent`、`ActuatorAccessDeniedEvent`），支持企业级告警中心一秒定位故障源。
+4. **轻量无感知安全防护**：无需引入臃肿的 Spring Security，实现代理头防伪造、404 隐身防扫描、CIDR 白名单与 Basic/Token 鉴权及 SBA 出站握手一体化。
+5. **运维事件全链路闭环**：通过四大领域事件（`ThreadPoolRejectedEvent`、`HealthProbeDegradedEvent`、`HealthProbeRecoveredEvent`、`ActuatorAccessDeniedEvent`），支持企业级告警中心一秒定位故障源与自愈消警。
 
 ### 权衡与取舍 (Trade-offs & Mitigations)
 - **探针异步超时切断与底层网络句柄**：`future.cancel(true)` 会中断执行线程，但对于不可中断的阻塞 Socket IO，底层连接可能需要等待 TCP 超时释放。在实现中结合了底层驱动自身的连接超时（ConnectTimeout）作为第二道防线。
@@ -125,12 +134,12 @@ flowchart TD
 ## 实施与验证标准 (Implementation & Verification)
 
 1. **单测覆盖率与自洽性**：
-   - `CidrMatcherTest`、`AbstractSafeHealthIndicatorTest`、`MetricsTemplateTest`、`ObservedMetricAspectTest`、`TrackingRejectedExecutionHandlerTest` 100% 离线自洽通过。
+   - `CidrMatcherTest`、`AbstractSafeHealthIndicatorTest`、`MetricsTemplateTest`、`ObservedMetricAspectTest`、`AtengMetricsRegistryCustomizerTest`、`TrackingRejectedExecutionHandlerTest`、`ActuatorEndpointSecurityFilterTest`、`AdminClientSecretHttpRequestInterceptorTest` 100% 离线自洽通过。
 2. **1:1 场景工程端到端验证 (`ateng-boot-sample-observability`)**：
-   - 验证 Prometheus 抓取线程池与 `@ObservedMetric` 业务指标；
-   - 验证 `/actuator/health/liveness` 外部依赖绝对排除；
-   - 验证 CIDR 白名单直通与 Basic Auth / Token 403 阻断；
-   - 验证三大领域事件在真实容器与请求中被完整发布与捕获。
+   - 验证 Prometheus 抓取线程池、业务度量直方图/SLO `_bucket`、全局 `application` 标签与动态指标注销；
+   - 验证 `/actuator/health/liveness` 外部依赖绝对排除与支付网关探针 `UP -> DOWN -> UP` 自愈闭环；
+   - 验证代理头防伪造、CIDR 白名单直通、Basic Auth / Token 403 阻断及 SBA 出站握手自检；
+   - 验证四大领域事件在真实容器与请求中被完整发布与捕获。
 
 ---
 
