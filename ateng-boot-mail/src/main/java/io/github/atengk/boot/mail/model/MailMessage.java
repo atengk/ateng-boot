@@ -144,6 +144,11 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     private String listUnsubscribePost;
 
+    /**
+     * 业务幂等流水号（用于出站幂等防重，仅当 require-biz-id=true 且非空时启用）
+     */
+    private String bizId;
+
     // ==================== 链式 Fluent / DSL 构造辅助方法 ====================
 
     /**
@@ -154,6 +159,17 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage account(String account) {
         this.account = account;
+        return this;
+    }
+
+    /**
+     * 指定业务幂等流水号（用于出站幂等防重）
+     *
+     * @param bizId 业务唯一流水号
+     * @return 当前消息构建对象
+     */
+    public MailMessage bizId(String bizId) {
+        this.bizId = bizId;
         return this;
     }
 

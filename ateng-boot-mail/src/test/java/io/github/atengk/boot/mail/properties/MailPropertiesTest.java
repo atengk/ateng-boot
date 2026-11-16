@@ -44,6 +44,14 @@ class MailPropertiesTest {
         assertFalse(properties.isStarttls());
         assertNotNull(properties.getProperties());
         assertNotNull(properties.getAccounts());
+
+        assertNotNull(properties.getRateLimit());
+        assertFalse(properties.getRateLimit().isEnabled());
+        assertNotNull(properties.getQuota());
+        assertFalse(properties.getQuota().isEnabled());
+        assertNotNull(properties.getIdempotent());
+        assertFalse(properties.getIdempotent().isEnabled());
+        assertTrue(properties.getIdempotent().isRequireBizId());
     }
 
     @Test

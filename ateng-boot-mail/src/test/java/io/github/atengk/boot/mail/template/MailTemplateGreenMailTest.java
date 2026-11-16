@@ -11,12 +11,19 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import org.springframework.context.i18n.LocaleContextHolder;
 import java.util.Locale;
 import io.github.atengk.boot.mail.event.MailAccountEvictEvent;
+import io.github.atengk.boot.mail.event.MailQuotaExceededEvent;
 import io.github.atengk.boot.mail.event.MailSendEvent;
 import io.github.atengk.boot.mail.event.MailSendFailedEvent;
 import io.github.atengk.boot.mail.event.MailSendingEvent;
 import io.github.atengk.boot.mail.event.MailSentEvent;
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
+import io.github.atengk.boot.mail.guard.InMemoryMailDailyQuotaBreaker;
+import io.github.atengk.boot.mail.guard.InMemoryMailIdempotentGuard;
+import io.github.atengk.boot.mail.guard.InMemoryMailRateLimiter;
+import io.github.atengk.boot.mail.guard.MailDailyQuotaBreaker;
+import io.github.atengk.boot.mail.guard.MailIdempotentGuard;
+import io.github.atengk.boot.mail.guard.MailRateLimiter;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
@@ -28,8 +35,12 @@ import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailPriority;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.model.MailSendResultItem;
-import io.github.atengk.boot.mail.provider.MailAccountProvider;
+import io.github.atengk.boot.mail.properties.MailIdempotentProperties;
 import io.github.atengk.boot.mail.properties.MailProperties;
+import io.github.atengk.boot.mail.properties.MailQuotaProperties;
+import io.github.atengk.boot.mail.properties.MailRateLimitProperties;
+import io.github.atengk.boot.mail.properties.MailSandboxProperties;
+import io.github.atengk.boot.mail.provider.MailAccountProvider;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
 import io.github.atengk.boot.mail.template.renderer.FreemarkerMailTemplateRenderer;
@@ -2789,6 +2800,266 @@ class MailTemplateGreenMailTest {
                         .inline(io.github.atengk.boot.mail.model.MailInlineResource.of("pic", inlineStream, "image/png"))
                         .attach("part.bin", attachStream)));
         assertEquals(MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED, totalEx.getResultCode());
+    }
+
+    @Test
+    @DisplayName("测试三阶防护：多收件人 To+Cc+Bcc 去重计费、限流不重试与日配额熔断事件发布")
+    void testRateLimitQuotaDeduplicatedRecipientsAndNoRetry() {
+        MailProperties guardedProps = new MailProperties();
+        guardedProps.getRetry().setEnabled(true);
+        guardedProps.getRetry().setMaxAttempts(3);
+        guardedProps.getRetry().setDelay(Duration.ofMillis(10));
+
+        MailRateLimitProperties rateProps = guardedProps.getRateLimit();
+        rateProps.setEnabled(true);
+        rateProps.setAccountCapacity(4L);
+        rateProps.setAccountPermitsPerSecond(0.001d);
+        rateProps.setRecipientMaxCount(5L);
+
+        MailQuotaProperties quotaProps = guardedProps.getQuota();
+        quotaProps.setEnabled(true);
+        quotaProps.setDailyMaxCount(5L);
+
+        AtomicInteger rateLimiterInvocations = new AtomicInteger();
+        InMemoryMailRateLimiter innerLimiter = new InMemoryMailRateLimiter(rateProps);
+        MailRateLimiter countingLimiter = new MailRateLimiter() {
+            @Override
+            public boolean tryAcquire(MailAccount account, MailMessage message, java.util.Collection<String> deduplicatedRecipients) {
+                rateLimiterInvocations.incrementAndGet();
+                return innerLimiter.tryAcquire(account, message, deduplicatedRecipients);
+            }
+        };
+        InMemoryMailDailyQuotaBreaker quotaBreaker = new InMemoryMailDailyQuotaBreaker(quotaProps);
+
+        List<MailQuotaExceededEvent> quotaEvents = new ArrayList<>();
+        ApplicationEventPublisher publisher = event -> {
+            if (event instanceof MailQuotaExceededEvent qee) {
+                quotaEvents.add(qee);
+            }
+        };
+
+        MailTemplate guardedTemplate = new MailTemplate(
+                accountRegistry, guardedProps, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), null, null, null,
+                publisher, null, null, countingLimiter, quotaBreaker, null
+        );
+
+        try {
+            // 1. To+Cc+Bcc 含重复与显示名（大小写不同）：实际去重后仅 3 个物理邮箱（a, b, c）
+            MailSendResult r1 = guardedTemplate.send(msg -> msg
+                    .to("Alice <A@example.com>", "b@example.com")
+                    .cc("a@EXAMPLE.com", "c@example.com")
+                    .bcc("B@example.com")
+                    .subject("多收件人去重计费")
+                    .text("dedup body"));
+            assertTrue(r1.isSuccess());
+            assertEquals(3L, quotaBreaker.getCurrentCount(null));
+            assertEquals(1, rateLimiterInvocations.get());
+
+            // 2. 桶余量 1，申请 2 个去重收件人立即触发 MAIL_RATE_LIMITED，且配置 retry.enabled=true 时绝不重试（仅调用 1 次）
+            MailSendException rateEx = assertThrows(MailSendException.class, () ->
+                    guardedTemplate.send(msg -> msg
+                            .to("d@example.com", "e@example.com")
+                            .subject("触发限流")
+                            .text("blocked")));
+            assertEquals(MailResultCode.MAIL_RATE_LIMITED, rateEx.getResultCode());
+            assertEquals(2, rateLimiterInvocations.get());
+            assertEquals(3L, quotaBreaker.getCurrentCount(null));
+            assertTrue(quotaEvents.isEmpty());
+
+            // 3. 复位限流后剩余配额 2（3/5），发给 3 个去重收件人应立即触顶配额熔断且发布 MailQuotaExceededEvent，同样不重试
+            innerLimiter.reset();
+            AtomicInteger quotaBreakerCalls = new AtomicInteger();
+            MailDailyQuotaBreaker countingQuota = new MailDailyQuotaBreaker() {
+                @Override
+                public QuotaCheckResult tryConsume(MailAccount account, MailMessage message, int recipientCount) {
+                    quotaBreakerCalls.incrementAndGet();
+                    return quotaBreaker.tryConsume(account, message, recipientCount);
+                }
+
+                @Override
+                public long getCurrentCount(java.time.LocalDate date) {
+                    return quotaBreaker.getCurrentCount(date);
+                }
+            };
+
+            MailTemplate quotaGuardedTemplate = new MailTemplate(
+                    accountRegistry, guardedProps, new SimpleMailTemplateRenderer(),
+                    new TenantMailAccountResolver(), null, null, null,
+                    publisher, null, null, innerLimiter, countingQuota, null
+            );
+            MailSendException quotaEx = assertThrows(MailSendException.class, () ->
+                    quotaGuardedTemplate.send(msg -> msg
+                            .to("x1@example.com")
+                            .cc("x2@example.com")
+                            .bcc("x3@example.com")
+                            .subject("触发日配额熔断")
+                            .text("over quota")));
+            assertEquals(MailResultCode.MAIL_QUOTA_EXCEEDED, quotaEx.getResultCode());
+            assertEquals(1, quotaBreakerCalls.get());
+            assertEquals(1, quotaEvents.size());
+            MailQuotaExceededEvent event = quotaEvents.get(0);
+            assertEquals("default", event.getAccountName());
+            assertEquals(5L, event.getDailyLimit());
+            assertEquals(3L, event.getCurrentCount());
+            assertEquals(3, event.getRequestedCount());
+            assertEquals(3L, quotaBreaker.getCurrentCount(null));
+        } finally {
+            guardedTemplate.destroy();
+            innerLimiter.reset();
+            quotaBreaker.reset();
+        }
+    }
+
+    @Test
+    @DisplayName("测试沙箱 logOnly=true 自动豁免频控、日配额与幂等拦截")
+    void testSandboxLogOnlyExemptsGuards() {
+        MailProperties sandboxProps = new MailProperties();
+        MailSandboxProperties sandbox = sandboxProps.getSandbox();
+        sandbox.setEnabled(true);
+        sandbox.setLogOnly(true);
+
+        MailRateLimitProperties rateProps = sandboxProps.getRateLimit();
+        rateProps.setEnabled(true);
+        MailQuotaProperties quotaProps = sandboxProps.getQuota();
+        quotaProps.setEnabled(true);
+        quotaProps.setDailyMaxCount(1L);
+        MailIdempotentProperties idemProps = sandboxProps.getIdempotent();
+        idemProps.setEnabled(true);
+
+        AtomicInteger guardCalled = new AtomicInteger();
+        MailRateLimiter strictFailLimiter = (a, m, r) -> {
+            guardCalled.incrementAndGet();
+            return false;
+        };
+        InMemoryMailDailyQuotaBreaker quotaBreaker = new InMemoryMailDailyQuotaBreaker(quotaProps);
+        InMemoryMailIdempotentGuard idemGuard = new InMemoryMailIdempotentGuard(idemProps);
+        MailSandboxInterceptor sandboxInterceptor = new MailSandboxInterceptor(sandbox);
+
+        MailTemplate sandboxTemplate = new MailTemplate(
+                accountRegistry, sandboxProps, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), null, null, null, null, null,
+                List.of(sandboxInterceptor), strictFailLimiter, quotaBreaker, idemGuard
+        );
+
+        try {
+            // 连续以相同 bizId 在 logOnly 模式下发送多次，均直接放行并零扣减配额与频控
+            for (int i = 0; i < 3; i++) {
+                MailSendResult res = sandboxTemplate.send(msg -> msg
+                        .bizId("SANDBOX-BIZ-1")
+                        .to("real-user@example.com")
+                        .subject("沙箱纯日志豁免测试")
+                        .text("body"));
+                assertTrue(res.isSuccess());
+            }
+            assertEquals(0, guardCalled.get());
+            assertEquals(0L, quotaBreaker.getCurrentCount(null));
+            assertFalse(idemGuard.isLocked("biz:SANDBOX-BIZ-1"));
+        } finally {
+            sandboxTemplate.destroy();
+            quotaBreaker.reset();
+            idemGuard.clear();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 bizId 幂等防重：默认仅拦重复 bizId、无 bizId 放行、物理失败自动 releaseLock 允许重试")
+    void testIdempotentGuardBizIdBehaviorAndReleaseOnFailure() throws Exception {
+        MailProperties props = new MailProperties();
+        MailIdempotentProperties idemProps = props.getIdempotent();
+        idemProps.setEnabled(true);
+        idemProps.setRequireBizId(true);
+
+        InMemoryMailIdempotentGuard innerGuard = new InMemoryMailIdempotentGuard(idemProps);
+        AtomicInteger releaseCount = new AtomicInteger();
+        MailIdempotentGuard spyGuard = new MailIdempotentGuard() {
+            @Override
+            public boolean tryAcquire(MailAccount account, MailMessage message, String idempotentKey) {
+                return innerGuard.tryAcquire(account, message, idempotentKey);
+            }
+
+            @Override
+            public void releaseLock(MailAccount account, MailMessage message, String idempotentKey) {
+                releaseCount.incrementAndGet();
+                innerGuard.releaseLock(account, message, idempotentKey);
+            }
+
+            @Override
+            public boolean isLocked(String idempotentKey) {
+                return innerGuard.isLocked(idempotentKey);
+            }
+        };
+
+        MailTemplate template = new MailTemplate(
+                accountRegistry, props, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), null, null, null,
+                null, null, null, null, null, spyGuard
+        );
+
+        try {
+            // 1. 未传 bizId 时（require-biz-id=true），完全一致的内容允许反复发送
+            assertTrue(template.sendText("notice@example.com", "通用通知", "内容相同").isSuccess());
+            assertTrue(template.sendText("notice@example.com", "通用通知", "内容相同").isSuccess());
+
+            // 2. 携带相同 bizId 首次放行，二次幂等拦截（不重复发出第 4 封物理邮件，也不误释放首封锁）
+            MailSendResult ok = template.send(msg -> msg.bizId("PAY-2026-001").to("vip@example.com").subject("支付回执").text("ok"));
+            assertTrue(ok.isSuccess());
+            MailSendException dupEx = assertThrows(MailSendException.class, () ->
+                    template.send(msg -> msg.bizId("PAY-2026-001").to("vip@example.com").subject("支付回执").text("ok")));
+            assertEquals(MailResultCode.MAIL_IDEMPOTENT_REJECTED, dupEx.getResultCode());
+            assertEquals(0, releaseCount.get());
+            assertTrue(spyGuard.isLocked("biz:PAY-2026-001"));
+
+            // 3. 物理发送失败自动调用 releaseLock 允许后续补偿重试
+            JavaMailSenderImpl brokenSender = new JavaMailSenderImpl();
+            brokenSender.setHost("127.0.0.1");
+            brokenSender.setPort(1); // 无效不可达端口触发底层发送失败
+            brokenSender.getJavaMailProperties().put("mail.smtp.connectiontimeout", "1000");
+            MailAccount brokenAccount = MailAccount.builder()
+                    .name("broken")
+                    .host("127.0.0.1")
+                    .port(1)
+                    .sender(brokenSender)
+                    .build();
+
+            assertThrows(MailSendException.class, () ->
+                    template.sendWithAccount(brokenAccount, new MailMessage()
+                            .bizId("COMPENSATE-007")
+                            .to("retry@example.com")
+                            .subject("待补偿发送")
+                            .text("payload")));
+            assertEquals(1, releaseCount.get());
+            assertFalse(spyGuard.isLocked("biz:COMPENSATE-007"));
+
+            // 切换回正常可用账号携带同一 bizId 补偿发送成功
+            MailSendResult recovered = template.send(msg -> msg
+                    .bizId("COMPENSATE-007")
+                    .to("retry@example.com")
+                    .subject("补偿发送成功")
+                    .text("payload"));
+            assertTrue(recovered.isSuccess());
+            assertTrue(spyGuard.isLocked("biz:COMPENSATE-007"));
+
+            // 4. require-biz-id=false 时，未传 bizId 且内容（含附件元信息）一致会被摘要幂等拦截，不同附件放行
+            idemProps.setRequireBizId(false);
+            assertTrue(template.sendText("digest@example.com", "相同主题", "相同正文").isSuccess());
+            MailSendException digestDup = assertThrows(MailSendException.class, () ->
+                    template.sendText("digest@example.com", "相同主题", "相同正文"));
+            assertEquals(MailResultCode.MAIL_IDEMPOTENT_REJECTED, digestDup.getResultCode());
+
+            // 正文相同但携带不同附件时摘要不同应正常放行
+            MailSendResult withAttach = template.send(msg -> msg
+                    .to("digest@example.com")
+                    .subject("相同主题")
+                    .text("相同正文")
+                    .attach("contract-v2.txt", "v2".getBytes(StandardCharsets.UTF_8), "text/plain"));
+            assertTrue(withAttach.isSuccess());
+
+            assertTrue(greenMail.waitForIncomingEmail(5000, 6));
+        } finally {
+            template.destroy();
+            innerGuard.clear();
+        }
     }
 
     private void collectAttachmentFilenames(Part part, List<String> names) throws Exception {

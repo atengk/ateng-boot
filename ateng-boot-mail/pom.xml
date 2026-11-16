@@ -42,6 +42,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 可选依赖：Spring Data Redis（支持分布式邮件频控、日配额熔断与幂等防重） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 编译期配置注解处理器 (自动生成 IDE 智能配置补全元数据) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

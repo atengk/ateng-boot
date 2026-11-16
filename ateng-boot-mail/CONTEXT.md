@@ -87,3 +87,19 @@ _Avoid_: MailDevFilter, SandboxFilter, TestMailInterceptor
 **MailSendException**:
 邮件发送统一语义化业务异常（继承 Core 模块 `BusinessException`），拦截底层 JavaMail `MessagingException` / `MailAuthenticationException` 并完整保留原始因果链。
 _Avoid_: MessagingException, MailException, EmailException
+
+**MailRateLimiter**:
+邮件出站频率限制 SPI，融合发信账号维度令牌桶平滑限流与单收件人维度滑动窗口防轰炸，按去重后的实际物理收件人次计费拦截（触发 `MAIL_RATE_LIMITED`），内置单机内存与 Redis 分布式双模实现。
+_Avoid_: RateLimiter, MailThrottler, EmailRateLimit
+
+**MailDailyQuotaBreaker**:
+邮件自然日总配额硬熔断器 SPI，按自然日累计去重物理收件人次，触顶拦截（触发 `MAIL_QUOTA_EXCEEDED`）并驱动同步发布 `MailQuotaExceededEvent` 告警事件，支持跨日自动重置。
+_Avoid_: QuotaManager, DailyLimitBreaker, MailQuotaService
+
+**MailQuotaExceededEvent**:
+邮件自然日总配额耗尽熔断解耦领域事件，在总配额达到上限拦截时由 `MailTemplate` 同步发布，供业务按需监听告警而不强耦合通知子系统。
+_Avoid_: QuotaAlertEvent, MailLimitWarningEvent
+
+**MailIdempotentGuard**:
+邮件出站幂等防重守卫 SPI，默认在 `require-biz-id=true` 时依据业务流水号 `bizId` 抢占独占锁（重复拦截抛出 `MAIL_IDEMPOTENT_REJECTED`），物理发信失败时主动执行 `releaseLock` 以支持补偿重试。
+_Avoid_: IdempotentLock, MailDeduplicator, DuplicateMailFilter

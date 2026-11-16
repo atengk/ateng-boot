@@ -4,15 +4,20 @@ import io.github.atengk.boot.core.autoconfigure.AsyncExecutorFactory;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.properties.AsyncPoolProperties;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
+import io.github.atengk.boot.core.util.DigestUtil;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
+import io.github.atengk.boot.mail.event.MailQuotaExceededEvent;
 import io.github.atengk.boot.mail.event.MailSendEvent;
 import io.github.atengk.boot.mail.event.MailSendFailedEvent;
 import io.github.atengk.boot.mail.event.MailSendingEvent;
 import io.github.atengk.boot.mail.event.MailSentEvent;
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
+import io.github.atengk.boot.mail.guard.MailDailyQuotaBreaker;
+import io.github.atengk.boot.mail.guard.MailIdempotentGuard;
+import io.github.atengk.boot.mail.guard.MailRateLimiter;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
@@ -24,6 +29,7 @@ import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.model.MailSendResultItem;
 import io.github.atengk.boot.mail.model.TrackableMimeMessage;
+import io.github.atengk.boot.mail.properties.MailIdempotentProperties;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.properties.MailRetryProperties;
 import io.github.atengk.boot.mail.provider.MailAccessTokenProvider;
@@ -62,6 +68,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -128,6 +135,15 @@ public class MailTemplate implements DisposableBean {
     @Getter
     private final List<MailSendInterceptor> interceptors;
 
+    @Getter
+    private final MailRateLimiter rateLimiter;
+
+    @Getter
+    private final MailDailyQuotaBreaker dailyQuotaBreaker;
+
+    @Getter
+    private final MailIdempotentGuard idempotentGuard;
+
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties) {
         this(accountRegistry, properties, new SimpleMailTemplateRenderer(), new TenantMailAccountResolver(), null, null, null, null, null);
     }
@@ -161,6 +177,10 @@ public class MailTemplate implements DisposableBean {
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, MailAccountProvider accountProvider, MailAccessTokenProvider accessTokenProvider, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers, List<MailSendInterceptor> interceptors) {
+        this(accountRegistry, properties, templateRenderer, accountResolver, accountProvider, accessTokenProvider, executor, eventPublisher, failureHandlers, interceptors, null, null, null);
+    }
+
+    public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, MailAccountProvider accountProvider, MailAccessTokenProvider accessTokenProvider, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers, List<MailSendInterceptor> interceptors, MailRateLimiter rateLimiter, MailDailyQuotaBreaker dailyQuotaBreaker, MailIdempotentGuard idempotentGuard) {
         this.accountRegistry = Objects.requireNonNull(accountRegistry, "accountRegistry must not be null");
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.templateRenderer = templateRenderer != null ? templateRenderer : new SimpleMailTemplateRenderer();
@@ -187,6 +207,9 @@ public class MailTemplate implements DisposableBean {
         } else {
             this.interceptors = Collections.emptyList();
         }
+        this.rateLimiter = rateLimiter;
+        this.dailyQuotaBreaker = dailyQuotaBreaker;
+        this.idempotentGuard = idempotentGuard;
     }
 
     // ==================== 全能领域对象与函数式 DSL 发信 ====================
@@ -339,33 +362,35 @@ public class MailTemplate implements DisposableBean {
 
             String messageId = "<" + traceId + "-" + System.nanoTime() + "@" + domain + ">";
 
-            publishEvent(new MailSendingEvent(this, message));
+            return executeWithOutboundGuards(account, message, () -> {
+                publishEvent(new MailSendingEvent(this, message));
 
-            MailSendResult result;
-            MailRetryProperties retryProps = properties.getRetry();
-            boolean repeatableMessage = isRepeatableMessage(message);
-            if (retryProps != null && retryProps.isEnabled() && !repeatableMessage) {
-                log.warn("Message [{}] contains non-repeatable InputStream resource(s), disabling retry to prevent corrupted empty attachments",
-                        message.getSubject());
-            }
-            if (retryProps != null && retryProps.isEnabled() && repeatableMessage) {
-                RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
-                        .maxAttempts(retryProps.getMaxAttempts())
-                        .delay(retryProps.getDelay())
-                        .multiplier(retryProps.getMultiplier())
-                        .maxDelay(retryProps.getMaxDelay())
-                        .jitter(retryProps.isJitter())
-                        .retryPredicate(this::isRetryableException)
-                        .onRetry((attempt, error) -> log.warn("Sending email to [{}] failed on attempt {}, preparing retry. Reason: {}",
-                                currentMaskedTo, attempt, error.getMessage()))
-                        .build();
-                result = RetryUtil.execute(() -> doSendPhysical(account, message, currentMaskedTo, traceId, messageId), retryConfig);
-            } else {
-                result = doSendPhysical(account, message, currentMaskedTo, traceId, messageId);
-            }
+                MailSendResult result;
+                MailRetryProperties retryProps = properties.getRetry();
+                boolean repeatableMessage = isRepeatableMessage(message);
+                if (retryProps != null && retryProps.isEnabled() && !repeatableMessage) {
+                    log.warn("Message [{}] contains non-repeatable InputStream resource(s), disabling retry to prevent corrupted empty attachments",
+                            message.getSubject());
+                }
+                if (retryProps != null && retryProps.isEnabled() && repeatableMessage) {
+                    RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
+                            .maxAttempts(retryProps.getMaxAttempts())
+                            .delay(retryProps.getDelay())
+                            .multiplier(retryProps.getMultiplier())
+                            .maxDelay(retryProps.getMaxDelay())
+                            .jitter(retryProps.isJitter())
+                            .retryPredicate(this::isRetryableException)
+                            .onRetry((attempt, error) -> log.warn("Sending email to [{}] failed on attempt {}, preparing retry. Reason: {}",
+                                    currentMaskedTo, attempt, error.getMessage()))
+                            .build();
+                    result = RetryUtil.execute(() -> doSendPhysical(account, message, currentMaskedTo, traceId, messageId), retryConfig);
+                } else {
+                    result = doSendPhysical(account, message, currentMaskedTo, traceId, messageId);
+                }
 
-            publishEvent(new MailSentEvent(this, message, result));
-            return result;
+                publishEvent(new MailSentEvent(this, message, result));
+                return result;
+            });
         } catch (Throwable t) {
             triggerFailureSafetyNet(message, maskedTo, t);
             if (t instanceof MailSendException mse) {
@@ -1859,6 +1884,9 @@ public class MailTemplate implements DisposableBean {
                     || mse.getResultCode() == MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED
                     || mse.getResultCode() == MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED
                     || mse.getResultCode() == MailResultCode.MAIL_TEMPLATE_RENDER_ERROR
+                    || mse.getResultCode() == MailResultCode.MAIL_RATE_LIMITED
+                    || mse.getResultCode() == MailResultCode.MAIL_QUOTA_EXCEEDED
+                    || mse.getResultCode() == MailResultCode.MAIL_IDEMPOTENT_REJECTED
                     || (mse.getMessage() != null && mse.getMessage().contains("邮件发送被拦截器阻断"))) {
                 return false;
             }
@@ -1867,6 +1895,137 @@ public class MailTemplate implements DisposableBean {
             return false;
         }
         return true;
+    }
+
+    private MailSendResult executeWithOutboundGuards(MailAccount account, MailMessage message,
+                                                     java.util.function.Supplier<MailSendResult> deliverySupplier) {
+        if (this.rateLimiter == null && this.dailyQuotaBreaker == null && this.idempotentGuard == null) {
+            return deliverySupplier.get();
+        }
+        Set<String> deduplicatedRecipients = collectDeduplicatedRecipients(message);
+        String idempotentKey = this.idempotentGuard != null
+                ? resolveIdempotentKey(account, message, deduplicatedRecipients)
+                : null;
+        boolean idempotentAcquired = false;
+
+        if (this.idempotentGuard != null && idempotentKey != null) {
+            if (!this.idempotentGuard.tryAcquire(account, message, idempotentKey)) {
+                throw new MailSendException(MailResultCode.MAIL_IDEMPOTENT_REJECTED,
+                        "重复的邮件发送请求已被幂等拦截，idempotentKey=[" + idempotentKey + "]");
+            }
+            idempotentAcquired = true;
+        }
+
+        try {
+            if (this.rateLimiter != null && !this.rateLimiter.tryAcquire(account, message, deduplicatedRecipients)) {
+                throw new MailSendException(MailResultCode.MAIL_RATE_LIMITED,
+                        "邮件发送触发出站频率限制，account=[" + account.getName()
+                                + "], recipients=" + deduplicatedRecipients.size());
+            }
+
+            if (this.dailyQuotaBreaker != null) {
+                MailDailyQuotaBreaker.QuotaCheckResult quotaResult =
+                        this.dailyQuotaBreaker.tryConsume(account, message, deduplicatedRecipients.size());
+                if (quotaResult != null && !quotaResult.allowed()) {
+                    publishEvent(new MailQuotaExceededEvent(
+                            this,
+                            message,
+                            account.getName(),
+                            quotaResult.quotaDate(),
+                            quotaResult.dailyLimit(),
+                            quotaResult.currentCount(),
+                            quotaResult.requestedCount()
+                    ));
+                    throw new MailSendException(MailResultCode.MAIL_QUOTA_EXCEEDED,
+                            "邮件单日发送配额已用尽，dailyLimit=" + quotaResult.dailyLimit()
+                                    + ", currentCount=" + quotaResult.currentCount()
+                                    + ", requested=" + quotaResult.requestedCount());
+                }
+            }
+
+            return deliverySupplier.get();
+        } catch (Throwable sendEx) {
+            if (idempotentAcquired) {
+                try {
+                    this.idempotentGuard.releaseLock(account, message, idempotentKey);
+                } catch (Throwable releaseEx) {
+                    log.warn("[MailIdempotentGuard] 释放幂等锁失败，idempotentKey=[{}]: {}",
+                            idempotentKey, releaseEx.getMessage(), releaseEx);
+                }
+            }
+            throw sendEx;
+        }
+    }
+
+    private Set<String> collectDeduplicatedRecipients(MailMessage message) {
+        Set<String> deduplicated = new LinkedHashSet<>();
+        addNormalizedRecipients(deduplicated, message.getTo());
+        addNormalizedRecipients(deduplicated, message.getCc());
+        addNormalizedRecipients(deduplicated, message.getBcc());
+        return deduplicated;
+    }
+
+    private void addNormalizedRecipients(Set<String> target, Collection<String> source) {
+        if (source == null || source.isEmpty()) {
+            return;
+        }
+        for (String raw : source) {
+            if (raw == null || raw.isBlank()) {
+                continue;
+            }
+            InternetAddress parsed = parseSingleInternetAddress(raw);
+            String clean = (parsed != null && parsed.getAddress() != null && !parsed.getAddress().isBlank())
+                    ? parsed.getAddress().trim().toLowerCase(Locale.ROOT)
+                    : raw.trim().toLowerCase(Locale.ROOT);
+            if (!clean.isBlank()) {
+                target.add(clean);
+            }
+        }
+    }
+
+    private String resolveIdempotentKey(MailAccount account, MailMessage message, Set<String> deduplicatedRecipients) {
+        if (message.getBizId() != null && !message.getBizId().isBlank()) {
+            return "biz:" + MailMessage.sanitizeHeaderText(message.getBizId()).trim();
+        }
+        MailIdempotentProperties idempotentProps = properties != null ? properties.getIdempotent() : null;
+        boolean requireBizId = idempotentProps == null || idempotentProps.isRequireBizId();
+        if (requireBizId) {
+            return null;
+        }
+        List<String> sortedRecipients = new ArrayList<>(deduplicatedRecipients);
+        Collections.sort(sortedRecipients);
+        StringBuilder payload = new StringBuilder();
+        payload.append(account != null && account.getName() != null ? account.getName() : "default")
+                .append('|').append(message.getFrom() != null ? message.getFrom() : "")
+                .append('|').append(String.join(",", sortedRecipients))
+                .append('|').append(message.getSubject() != null ? message.getSubject() : "")
+                .append('|').append(message.isHtml())
+                .append('|').append(message.getText() != null ? message.getText() : "");
+        if (message.hasAttachments()) {
+            for (MailAttachment attachment : message.getAttachments()) {
+                if (attachment != null && !attachment.isSystemJunk()) {
+                    payload.append("|att:")
+                            .append(attachment.getFilename() != null ? attachment.getFilename() : "")
+                            .append(':')
+                            .append(attachment.getSize() != null ? attachment.getSize() : -1L)
+                            .append(':')
+                            .append(attachment.getContentType() != null ? attachment.getContentType() : "");
+                }
+            }
+        }
+        if (message.hasInlines()) {
+            for (MailInlineResource inline : message.getInlines()) {
+                if (inline != null && !inline.isSystemJunk()) {
+                    payload.append("|cid:")
+                            .append(inline.getContentId() != null ? inline.getContentId() : "")
+                            .append(':')
+                            .append(inline.getSize() != null ? inline.getSize() : -1L)
+                            .append(':')
+                            .append(inline.getContentType() != null ? inline.getContentType() : "");
+                }
+            }
+        }
+        return "digest:" + DigestUtil.sha256Hex(payload.toString());
     }
 
     private void validateMessageAddresses(MailAccount account, MailMessage message) {

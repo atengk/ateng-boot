@@ -245,6 +245,27 @@ public class MailProperties {
     @NestedConfigurationProperty
     private MailTemplateProperties template = new MailTemplateProperties();
 
+    /**
+     * 邮件出站频率限制（账号令牌桶 + 单收件人滑动窗口）配置
+     */
+    @Valid
+    @NestedConfigurationProperty
+    private MailRateLimitProperties rateLimit = new MailRateLimitProperties();
+
+    /**
+     * 邮件自然日总配额硬熔断配置
+     */
+    @Valid
+    @NestedConfigurationProperty
+    private MailQuotaProperties quota = new MailQuotaProperties();
+
+    /**
+     * 邮件出站幂等防重守卫配置
+     */
+    @Valid
+    @NestedConfigurationProperty
+    private MailIdempotentProperties idempotent = new MailIdempotentProperties();
+
     public MailProperties() {
         this.async.setThreadNamePrefix("mail-async-");
         this.async.setVirtualThreadNamePrefix("mail-vt-async-");

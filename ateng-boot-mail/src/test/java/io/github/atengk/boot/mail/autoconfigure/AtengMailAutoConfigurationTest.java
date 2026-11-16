@@ -1,6 +1,15 @@
 package io.github.atengk.boot.mail.autoconfigure;
 
 import io.github.atengk.boot.mail.event.MailAccountEvictEvent;
+import io.github.atengk.boot.mail.guard.InMemoryMailDailyQuotaBreaker;
+import io.github.atengk.boot.mail.guard.InMemoryMailIdempotentGuard;
+import io.github.atengk.boot.mail.guard.InMemoryMailRateLimiter;
+import io.github.atengk.boot.mail.guard.MailDailyQuotaBreaker;
+import io.github.atengk.boot.mail.guard.MailIdempotentGuard;
+import io.github.atengk.boot.mail.guard.MailRateLimiter;
+import io.github.atengk.boot.mail.guard.RedisMailDailyQuotaBreaker;
+import io.github.atengk.boot.mail.guard.RedisMailIdempotentGuard;
+import io.github.atengk.boot.mail.guard.RedisMailRateLimiter;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
@@ -27,6 +36,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.thymeleaf.spring6.SpringTemplateEngine;
 
@@ -582,6 +592,93 @@ class AtengMailAutoConfigurationTest {
                     assertThat(registry.getAccessTokenProvider()).isSameAs(tokenProvider);
                     assertThat(template.getAccessTokenProvider()).isSameAs(tokenProvider);
                 });
+    }
+
+    @Test
+    @DisplayName("三阶出站防护默认关闭零损耗，无 Redis 启用内存实现，引入 StringRedisTemplate 自动升级为 Redis 分布式实现")
+    void testThreeTierGuardsAutoConfigurationAndRedisSwitching() {
+        // 1. 默认未配置开关：三阶防护 Bean 不装配且 MailTemplate 对应字段为 null
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(MailRateLimiter.class);
+                    assertThat(context).doesNotHaveBean(MailDailyQuotaBreaker.class);
+                    assertThat(context).doesNotHaveBean(MailIdempotentGuard.class);
+                    MailTemplate template = context.getBean(MailTemplate.class);
+                    assertThat(template.getRateLimiter()).isNull();
+                    assertThat(template.getDailyQuotaBreaker()).isNull();
+                    assertThat(template.getIdempotentGuard()).isNull();
+                });
+
+        // 2. 开启三阶防护且无 StringRedisTemplate Bean：自动装配内存实现
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.mail.host=smtp.example.com",
+                        "ateng.boot.mail.rate-limit.enabled=true",
+                        "ateng.boot.mail.quota.enabled=true",
+                        "ateng.boot.mail.idempotent.enabled=true"
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailRateLimiter.class);
+                    assertThat(context.getBean(MailRateLimiter.class)).isInstanceOf(InMemoryMailRateLimiter.class);
+                    assertThat(context).hasSingleBean(MailDailyQuotaBreaker.class);
+                    assertThat(context.getBean(MailDailyQuotaBreaker.class)).isInstanceOf(InMemoryMailDailyQuotaBreaker.class);
+                    assertThat(context).hasSingleBean(MailIdempotentGuard.class);
+                    assertThat(context.getBean(MailIdempotentGuard.class)).isInstanceOf(InMemoryMailIdempotentGuard.class);
+
+                    MailTemplate template = context.getBean(MailTemplate.class);
+                    assertThat(template.getRateLimiter()).isInstanceOf(InMemoryMailRateLimiter.class);
+                    assertThat(template.getDailyQuotaBreaker()).isInstanceOf(InMemoryMailDailyQuotaBreaker.class);
+                    assertThat(template.getIdempotentGuard()).isInstanceOf(InMemoryMailIdempotentGuard.class);
+                });
+
+        // 3. 容器存在 StringRedisTemplate Bean 且开启开关：自动升级为 Redis 分布式实现
+        StringRedisTemplate mockRedis = org.mockito.Mockito.mock(StringRedisTemplate.class);
+        contextRunner
+                .withBean(StringRedisTemplate.class, () -> mockRedis)
+                .withPropertyValues(
+                        "ateng.boot.mail.host=smtp.example.com",
+                        "ateng.boot.mail.rate-limit.enabled=true",
+                        "ateng.boot.mail.quota.enabled=true",
+                        "ateng.boot.mail.idempotent.enabled=true"
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailRateLimiter.class);
+                    assertThat(context.getBean(MailRateLimiter.class)).isInstanceOf(RedisMailRateLimiter.class);
+                    assertThat(context).hasSingleBean(MailDailyQuotaBreaker.class);
+                    assertThat(context.getBean(MailDailyQuotaBreaker.class)).isInstanceOf(RedisMailDailyQuotaBreaker.class);
+                    assertThat(context).hasSingleBean(MailIdempotentGuard.class);
+                    assertThat(context.getBean(MailIdempotentGuard.class)).isInstanceOf(RedisMailIdempotentGuard.class);
+                });
+    }
+
+    @Test
+    @DisplayName("三阶防护支持自定义 SPI Bean 覆盖且 @Validated 拦截非法配置上下界")
+    void testThreeTierGuardsCustomOverrideAndValidation() {
+        MailRateLimiter customLimiter = (account, message, recipients) -> true;
+        contextRunner
+                .withBean(MailRateLimiter.class, () -> customLimiter)
+                .withPropertyValues(
+                        "ateng.boot.mail.host=smtp.example.com",
+                        "ateng.boot.mail.rate-limit.enabled=true"
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailRateLimiter.class);
+                    assertThat(context.getBean(MailRateLimiter.class)).isSameAs(customLimiter);
+                });
+
+        ApplicationContextRunner validatedRunner = new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(ValidationAutoConfiguration.class, AtengMailAutoConfiguration.class));
+
+        validatedRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.rate-limit.account-capacity=0")
+                .run(context -> assertThat(context).hasFailed());
+        validatedRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.quota.daily-max-count=0")
+                .run(context -> assertThat(context).hasFailed());
+        validatedRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com", "ateng.boot.mail.idempotent.ttl=0s")
+                .run(context -> assertThat(context).hasFailed());
     }
 
     @Configuration(proxyBeanMethods = false)
