@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.mail.service;
 
+import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.mail.event.MailAccountEvictEvent;
 import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailAccount;
@@ -57,7 +58,7 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendSimpleText(String to, String subject, String text) {
-        log.info("Sending simple text email to [{}]", to);
+        log.info("Sending simple text email to [{}]", DesensitizeUtil.email(to));
         return mailTemplate.sendText(to, subject, text);
     }
 
@@ -70,7 +71,7 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendMultiAccountOps(String to, String subject, String text) {
-        log.info("Sending ops channel email to [{}]", to);
+        log.info("Sending ops channel email to [{}]", DesensitizeUtil.email(to));
         return mailTemplate.sendText("ops", to, subject, text);
     }
 
@@ -84,7 +85,7 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendHtmlTemplate(String to, String subject, String username, String verifyCode) {
-        log.info("Sending html template email to [{}]", to);
+        log.info("Sending html template email to [{}]", DesensitizeUtil.email(to));
         Map<String, Object> model = new HashMap<>();
         model.put("username", username);
         model.put("code", verifyCode);
@@ -125,7 +126,7 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendWithAttachment(String to, String subject, String text, String fileName, byte[] content) {
-        log.info("Sending email with attachment [{}] to [{}]", fileName, to);
+        log.info("Sending email with attachment [{}] to [{}]", fileName, DesensitizeUtil.email(to));
         MailMessage message = new MailMessage()
                 .to(to)
                 .subject(subject)
@@ -143,7 +144,7 @@ public class MailScenarioService {
      * @return 异步回执 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendAsync(String to, String subject, String text) {
-        log.info("Sending async email to [{}]", to);
+        log.info("Sending async email to [{}]", DesensitizeUtil.email(to));
         return mailTemplate.sendTextAsync(to, subject, text);
     }
 
@@ -156,7 +157,7 @@ public class MailScenarioService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void sendTransactional(String to, String subject, String text, boolean shouldRollback) {
-        log.info("Triggering sendTransactional to [{}], will rollback: {}", to, shouldRollback);
+        log.info("Triggering sendTransactional to [{}], will rollback: {}", DesensitizeUtil.email(to), shouldRollback);
         MailMessage message = new MailMessage()
                 .to(to)
                 .subject(subject)
@@ -178,7 +179,7 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendWithDynamicAccount(MailAccount account, String to, String subject, String text) {
-        log.info("Sending email via dynamic account [{}] to [{}]", account.getName(), to);
+        log.info("Sending email via dynamic account [{}] to [{}]", account.getName(), DesensitizeUtil.email(to));
         return mailTemplate.forDynamicAccount(account).sendText(to, subject, text);
     }
 
@@ -194,7 +195,8 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendByAccount(String accountName, String to, String subject, String text, String from, String fromName) {
-        log.info("Sending email via accountName [{}] to [{}], customFrom: [{}], customFromName: [{}]", accountName, to, from, fromName);
+        log.info("Sending email via accountName [{}] to [{}], customFrom: [{}], customFromName: [{}]",
+                accountName, DesensitizeUtil.email(to), DesensitizeUtil.email(from), fromName);
         MailMessage message = new MailMessage()
                 .account(accountName)
                 .to(to)
@@ -255,7 +257,7 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendLocalizedVerifyCode(String to, String username, String code, Locale locale) {
-        log.info("Sending localized template email to [{}], locale: {}", to, locale);
+        log.info("Sending localized template email to [{}], locale: {}", DesensitizeUtil.email(to), locale);
         Map<String, Object> model = Map.of("username", username, "code", code);
         return mailTemplate.sendTemplate(to, "Verification Notice", "mail/i18n-verify-code", model, locale);
     }
@@ -294,7 +296,8 @@ public class MailScenarioService {
      */
     public MailSendResult sendUrgentAlert(String to, String subject, String content,
                                          MailPriority priority, boolean requestReadReceipt, String archiveBcc) {
-        log.info("Sending urgent alert email to [{}], priority: {}, requestReadReceipt: {}", to, priority, requestReadReceipt);
+        log.info("Sending urgent alert email to [{}], priority: {}, requestReadReceipt: {}",
+                DesensitizeUtil.email(to), priority, requestReadReceipt);
         MailMessage message = new MailMessage()
                 .to(to)
                 .subject(subject)
@@ -316,7 +319,7 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendHtmlContent(String to, String subject, String html) {
-        log.info("Sending html content email to [{}]", to);
+        log.info("Sending html content email to [{}]", DesensitizeUtil.email(to));
         return mailTemplate.sendHtml(to, subject, html);
     }
 
@@ -329,7 +332,7 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendWithInline(String to, String subject, String title) {
-        log.info("Sending inline media email to [{}]", to);
+        log.info("Sending inline media email to [{}]", DesensitizeUtil.email(to));
         String safeTitle = title != null && !title.isBlank() ? title : "企业通知";
         String html = "<html><body><h2>" + safeTitle + "</h2><p>品牌标识混排：</p><img src='cid:companyLogo'/></body></html>";
         // 构造标准 1x1 透明 PNG 字节流

@@ -6,6 +6,9 @@ spring:
     name: ateng-boot-sample-mail
   config:
     import: "optional:classpath:application-local.yml"
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.freemarker.FreeMarkerAutoConfiguration # 主容器保留 Thymeleaf 为默认模板引擎，Freemarker 由治理服务按需独立构造
   thymeleaf:
     prefix: classpath:/templates/
     suffix: .html

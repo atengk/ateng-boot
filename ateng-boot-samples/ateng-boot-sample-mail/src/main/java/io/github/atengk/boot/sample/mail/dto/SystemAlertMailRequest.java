@@ -60,5 +60,6 @@ public class SystemAlertMailRequest implements Serializable {
     /**
      * 合规审计归档密送邮箱（可选）
      */
+    @Email(message = "合规审计归档密送邮箱格式不合法")
     private String archiveBcc;
 }

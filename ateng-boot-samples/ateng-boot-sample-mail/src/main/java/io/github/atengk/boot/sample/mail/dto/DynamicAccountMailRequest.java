@@ -51,6 +51,7 @@ public class DynamicAccountMailRequest implements Serializable {
     /**
      * 动态覆盖发件人电子邮箱（可选，为空时采用账号默认发件人）
      */
+    @Email(message = "发件人电子邮箱格式不合法")
     private String from;
 
     /**

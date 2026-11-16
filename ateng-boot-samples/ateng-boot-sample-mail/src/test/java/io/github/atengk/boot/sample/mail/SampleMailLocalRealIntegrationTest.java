@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.mail;
 
+import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.mail.model.MailPriority;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.template.MailTemplate;
@@ -62,7 +63,7 @@ class SampleMailLocalRealIntegrationTest {
     @DisplayName("2. 真实外发纯文本邮件至 QQ 邮箱并强断言物理回执")
     void testRealSendSimpleText() {
         String myEmail = targetEmail;
-        log.info("正在向真实 QQ 邮箱 [{}] 发送联调测试邮件...", myEmail);
+        log.info("正在向真实 QQ 邮箱 [{}] 发送联调测试邮件...", DesensitizeUtil.email(myEmail));
 
         MailSendResult result = mailScenarioService.sendSimpleText(
                 myEmail,
@@ -81,7 +82,7 @@ class SampleMailLocalRealIntegrationTest {
     @DisplayName("3. 真实外发带 Thymeleaf 动态模板的国际化邮件")
     void testRealSendHtmlTemplate() {
         String myEmail = targetEmail;
-        log.info("正在向真实 QQ 邮箱 [{}] 发送动态模板渲染邮件...", myEmail);
+        log.info("正在向真实 QQ 邮箱 [{}] 发送动态模板渲染邮件...", DesensitizeUtil.email(myEmail));
 
         MailSendResult result = mailScenarioService.sendLocalizedVerifyCode(
                 myEmail,
@@ -100,7 +101,7 @@ class SampleMailLocalRealIntegrationTest {
     @DisplayName("4. 真实外发高优先级告警邮件（携带 X-Priority、Importance 与阅读回执标头）")
     void testRealSendHighPriorityAlert() {
         String myEmail = targetEmail;
-        log.info("正在向真实 QQ 邮箱 [{}] 发送高优先级告警邮件...", myEmail);
+        log.info("正在向真实 QQ 邮箱 [{}] 发送高优先级告警邮件...", DesensitizeUtil.email(myEmail));
 
         MailSendResult result = mailScenarioService.sendUrgentAlert(
                 myEmail,

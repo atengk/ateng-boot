@@ -2,7 +2,7 @@ package io.github.atengk.boot.sample.mail.dto;
 
 import io.github.atengk.boot.core.validation.ValidList;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.NotEmpty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -28,6 +28,6 @@ public class SalarySlipBatchRequest implements Serializable {
      * 批量员工工资条项列表
      */
     @Valid
-    @NotNull(message = "工资条列表不能为空")
+    @NotEmpty(message = "工资条列表不能为空")
     private ValidList<SalarySlipItemRequest> items;
 }

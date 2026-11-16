@@ -14,22 +14,31 @@ import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailPriority;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.sample.mail.dto.AttachmentMailRequest;
+import io.github.atengk.boot.sample.mail.dto.BatchAfterCommitRequest;
+import io.github.atengk.boot.sample.mail.dto.ComplianceFreemarkerRequest;
 import io.github.atengk.boot.sample.mail.dto.DynamicAccountMailRequest;
+import io.github.atengk.boot.sample.mail.dto.FailoverDemoRequest;
 import io.github.atengk.boot.sample.mail.dto.HtmlContentMailRequest;
 import io.github.atengk.boot.sample.mail.dto.InlineMediaMailRequest;
+import io.github.atengk.boot.sample.mail.dto.OutboundGuardDemoRequest;
 import io.github.atengk.boot.sample.mail.dto.SalarySlipBatchRequest;
 import io.github.atengk.boot.sample.mail.dto.SalarySlipItemRequest;
+import io.github.atengk.boot.sample.mail.dto.SandboxDemoRequest;
 import io.github.atengk.boot.sample.mail.dto.SimpleTextMailRequest;
 import io.github.atengk.boot.sample.mail.dto.SystemAlertMailRequest;
+import io.github.atengk.boot.sample.mail.dto.TenantRouteMailRequest;
 import io.github.atengk.boot.sample.mail.dto.UserVerificationMailRequest;
 import io.github.atengk.boot.sample.mail.handler.SampleMailFailureHandler;
 import io.github.atengk.boot.sample.mail.interceptor.SampleAuditMailInterceptor;
 import io.github.atengk.boot.sample.mail.listener.SampleMailEventListener;
 import io.github.atengk.boot.sample.mail.provider.SampleDatabaseMailAccountProvider;
 import io.github.atengk.boot.sample.mail.service.MailScenarioService;
+import jakarta.mail.Address;
 import jakarta.mail.BodyPart;
+import jakarta.mail.Message;
 import jakarta.mail.Multipart;
 import jakarta.mail.Part;
+import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.internet.MimeMessage;
 import jakarta.mail.internet.MimeUtility;
 import org.junit.jupiter.api.AfterAll;
@@ -55,6 +64,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
@@ -63,7 +73,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * 邮件场景端到端真实集成测试
  * <p>
- * 依托嵌入式 GreenMail 邮件服务器与 MockMvc，端到端全真验证 4 大领域 Controller 接口、
+ * 依托嵌入式 GreenMail 邮件服务器与 MockMvc，端到端全真验证 5 大领域 Controller 接口、
  * 业务 DTO JSR-303 防卫、Service 业务编排、HTML 模板渲染、附件挂载、内联资源、拦截器 SPI、
  * 事件生命周期广播与事务感知发信（{@code sendAfterCommit}）。
  * </p>
@@ -763,5 +773,428 @@ class SampleMailIntegrationTest {
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.msg").value(containsString("告警级别不合法")));
+    }
+
+    // ==========================================
+    // 五、MailGovernanceController 高阶治理、容灾、沙箱与可观测闭环测试
+    // ==========================================
+
+    @Test
+    @DisplayName("22. GovernanceController 频控演示触发 MAIL_RATE_LIMITED(40007) 并验证窗口重置恢复")
+    void shouldTriggerRateLimitAndRecoverInGovernanceController() throws Exception {
+        OutboundGuardDemoRequest req = OutboundGuardDemoRequest.builder()
+                .to("rate-demo@example.com")
+                .subject("频控测试主题")
+                .content("频控测试正文")
+                .burstCount(2)
+                .build();
+
+        mockMvc.perform(post("/sample/mail/governance/rate-limit-demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.allowedCount").value(1))
+                .andExpect(jsonPath("$.data.blockedCount").value(1))
+                .andExpect(jsonPath("$.data.triggeredResultCode").value(MailResultCode.MAIL_RATE_LIMITED.getCode()))
+                .andExpect(jsonPath("$.data.recoveredAfterResetOrRelease").value(true));
+
+        assertThat(greenMail.waitForIncomingEmail(3000, 2)).isTrue();
+    }
+
+    @Test
+    @DisplayName("23. GovernanceController 日配额硬熔断触发 MAIL_QUOTA_EXCEEDED(40008) 并捕获领域事件")
+    void shouldTriggerQuotaBreakerAndCaptureEvent() throws Exception {
+        OutboundGuardDemoRequest req = OutboundGuardDemoRequest.builder()
+                .to("quota-demo@example.com")
+                .subject("日配额测试")
+                .content("日配额测试正文")
+                .burstCount(2)
+                .build();
+
+        mockMvc.perform(post("/sample/mail/governance/quota-demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.allowedCount").value(1))
+                .andExpect(jsonPath("$.data.blockedCount").value(1))
+                .andExpect(jsonPath("$.data.triggeredResultCode").value(MailResultCode.MAIL_QUOTA_EXCEEDED.getCode()))
+                .andExpect(jsonPath("$.data.quotaEventCaptured").value(true));
+
+        assertThat(eventListener.getQuotaExceededCount().get()).isGreaterThanOrEqualTo(1);
+        assertThat(eventListener.getLastQuotaExceededEvent()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("24. GovernanceController bizId 幂等防重触发 MAIL_IDEMPOTENT_REJECTED(40009) 且失败放锁可重试")
+    void shouldEnforceIdempotentGuardAndReleaseOnFailure() throws Exception {
+        OutboundGuardDemoRequest req = OutboundGuardDemoRequest.builder()
+                .to("idem-demo@example.com")
+                .subject("幂等演示主题")
+                .content("幂等演示正文")
+                .bizId("ORDER-PAY-1017")
+                .burstCount(2)
+                .build();
+
+        mockMvc.perform(post("/sample/mail/governance/idempotent-demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.allowedCount").value(1))
+                .andExpect(jsonPath("$.data.blockedCount").value(1))
+                .andExpect(jsonPath("$.data.triggeredResultCode").value(MailResultCode.MAIL_IDEMPOTENT_REJECTED.getCode()))
+                .andExpect(jsonPath("$.data.recoveredAfterResetOrRelease").value(true));
+
+        assertThat(greenMail.waitForIncomingEmail(3000, 2)).isTrue();
+    }
+
+    @Test
+    @DisplayName("25. GovernanceController 主备顺延容灾自动切换 ops 并保留原 From 于 Reply-To")
+    void shouldFailoverToBackupAccountAndPreserveReplyTo() throws Exception {
+        FailoverDemoRequest req = FailoverDemoRequest.builder()
+                .to("failover-user@example.com")
+                .subject("主备容灾切换测试")
+                .content("主通道关闭后应顺延至 ops 通道送达")
+                .primaryFrom("primary-support@corp.example.com")
+                .build();
+
+        mockMvc.perform(post("/sample/mail/governance/failover-demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.messageId").isNotEmpty());
+
+        assertThat(greenMail.waitForIncomingEmail(3000, 1)).isTrue();
+        MimeMessage delivered = greenMail.getReceivedMessages()[0];
+        assertThat(((InternetAddress) delivered.getFrom()[0]).getAddress()).isEqualTo("ops@example.com");
+        assertThat(delivered.getReplyTo()).isNotEmpty();
+        assertThat(((InternetAddress) delivered.getReplyTo()[0]).getAddress())
+                .isEqualTo("primary-support@corp.example.com");
+    }
+
+    @Test
+    @DisplayName("26. GovernanceController sendBatchAfterCommit 提交成功投递且回滚安全取消整批幽灵邮件")
+    void shouldCommitOrCancelSendBatchAfterCommit() throws Exception {
+        ValidList<SimpleTextMailRequest> items = new ValidList<>(List.of(
+                SimpleTextMailRequest.builder().to("batch1@example.com").subject("批量一").content("内容一").build(),
+                SimpleTextMailRequest.builder().to("batch2@example.com").subject("批量二").content("内容二").build()
+        ));
+
+        BatchAfterCommitRequest rollbackReq = BatchAfterCommitRequest.builder()
+                .items(items)
+                .shouldRollback(true)
+                .build();
+
+        mockMvc.perform(post("/sample/mail/governance/batch-after-commit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(rollbackReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(containsString("回滚")));
+
+        assertThat(greenMail.waitForIncomingEmail(400, 1)).isFalse();
+        assertThat(greenMail.getReceivedMessages()).isEmpty();
+
+        BatchAfterCommitRequest commitReq = BatchAfterCommitRequest.builder()
+                .items(items)
+                .shouldRollback(false)
+                .build();
+
+        mockMvc.perform(post("/sample/mail/governance/batch-after-commit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(commitReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(containsString("提交")));
+
+        assertThat(greenMail.waitForIncomingEmail(3000, 2)).isTrue();
+        assertThat(greenMail.getReceivedMessages()).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("27. GovernanceController 沙箱双策略：非白名单重定向并清空 Cc，logOnly 不发起物理连接")
+    void shouldRedirectSandboxAndSupportLogOnlyMode() throws Exception {
+        SandboxDemoRequest redirectReq = SandboxDemoRequest.builder()
+                .to("real-vip@customer.example.com")
+                .cc("secret-cc@customer.example.com")
+                .redirectTo("qa-inbox@internal.example.com")
+                .allowedRecipients(List.of("*@internal.example.com"))
+                .subject("账单测试邮件")
+                .content("验证沙箱拦截重定向与清空抄送人")
+                .logOnly(false)
+                .build();
+
+        mockMvc.perform(post("/sample/mail/governance/sandbox-demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(redirectReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        assertThat(greenMail.waitForIncomingEmail(3000, 1)).isTrue();
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertThat(messages).hasSize(1);
+        MimeMessage redirected = messages[0];
+        assertThat(redirected.getRecipients(Message.RecipientType.TO))
+                .extracting(addr -> ((InternetAddress) addr).getAddress())
+                .containsExactly("qa-inbox@internal.example.com");
+        assertThat(redirected.getRecipients(Message.RecipientType.CC)).isNullOrEmpty();
+        assertThat(redirected.getSubject()).startsWith("[SANDBOX-REDIRECT");
+        assertThat(redirected.getHeader("X-Sandbox-Redirected-From"))
+                .anySatisfy(h -> assertThat(h).contains("real-vip@customer.example.com"));
+
+        greenMail.purgeEmailFromAllMailboxes();
+
+        SandboxDemoRequest logOnlyReq = SandboxDemoRequest.builder()
+                .to("real-vip@customer.example.com")
+                .subject("纯日志模拟测试")
+                .content("logOnly 模式不应发起物理发送")
+                .logOnly(true)
+                .build();
+
+        mockMvc.perform(post("/sample/mail/governance/sandbox-demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(logOnlyReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.messageId").value(containsString("<sandbox-log-")));
+
+        assertThat(greenMail.waitForIncomingEmail(300, 1)).isFalse();
+        assertThat(greenMail.getReceivedMessages()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("28. GovernanceController Freemarker 模板渲染与 List-Unsubscribe / Return-Path 合规头透传")
+    void shouldRenderFreemarkerTemplateAndAttachComplianceHeaders() throws Exception {
+        ComplianceFreemarkerRequest req = ComplianceFreemarkerRequest.builder()
+                .to("subscriber@example.com")
+                .username("张运维")
+                .noticeTitle("安全合规周报通知")
+                .returnPath("bounces@mailer.example.com")
+                .listUnsubscribe("<https://unsubscribe.example.com/u/1017>, <mailto:unsub@example.com>")
+                .listUnsubscribePost("List-Unsubscribe=One-Click")
+                .build();
+
+        mockMvc.perform(post("/sample/mail/governance/freemarker-compliance")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        assertThat(greenMail.waitForIncomingEmail(3000, 1)).isTrue();
+        MimeMessage delivered = greenMail.getReceivedMessages()[0];
+        String body = delivered.getContent().toString();
+        assertThat(body).contains("张运维").contains("安全合规周报通知").contains("RFC 2369");
+        assertThat(delivered.getHeader("List-Unsubscribe"))
+                .containsExactly("<https://unsubscribe.example.com/u/1017>, <mailto:unsub@example.com>");
+        assertThat(delivered.getHeader("List-Unsubscribe-Post"))
+                .containsExactly("List-Unsubscribe=One-Click");
+        assertThat(delivered.getHeader("Return-Path"))
+                .anySatisfy(rp -> assertThat(rp).contains("bounces@mailer.example.com"));
+    }
+
+    @Test
+    @DisplayName("29. GovernanceController TenantContextHolder 多租户动态路由与 clearDynamicAccounts 缓存清理")
+    void shouldRouteViaTenantContextAndClearDynamicAccounts() throws Exception {
+        assertThat(databaseMailAccountProvider).isNotNull();
+        databaseMailAccountProvider.saveAccount(
+                "tenant-1017",
+                "127.0.0.1",
+                smtpPort,
+                "",
+                "",
+                false,
+                "tenant-1017@example.com",
+                "Tenant 1017");
+        databaseMailAccountProvider.resetQueryCount();
+
+        try {
+            TenantRouteMailRequest req = TenantRouteMailRequest.builder()
+                    .tenantId("tenant-1017")
+                    .to("tenant-user@example.com")
+                    .subject("多租户动态路由通知")
+                    .content("通过 TenantContextHolder 自动切换租户账号发送")
+                    .build();
+
+            mockMvc.perform(post("/sample/mail/governance/tenant-route")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(req)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.success").value(true));
+
+            assertThat(greenMail.waitForIncomingEmail(3000, 1)).isTrue();
+            MimeMessage routedMessage = greenMail.getReceivedMessages()[0];
+            assertThat(((InternetAddress) routedMessage.getFrom()[0]).getAddress())
+                    .isEqualTo("tenant-1017@example.com");
+
+            assertThat(TenantContextHolder.getTenantId()).isNull();
+            assertThat(databaseMailAccountProvider.getQueryCount()).isEqualTo(1);
+
+            // 命中动态账号缓存，不重复查库
+            mockMvc.perform(post("/sample/mail/governance/tenant-route")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(req)))
+                    .andExpect(status().isOk());
+            assertThat(databaseMailAccountProvider.getQueryCount()).isEqualTo(1);
+
+            // 调用 clearDynamicAccounts 清空全量缓存后再次发送，重新触发 Provider 查库
+            mockMvc.perform(post("/sample/mail/governance/clear-dynamic-accounts"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+
+            mockMvc.perform(post("/sample/mail/governance/tenant-route")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(req)))
+                    .andExpect(status().isOk());
+            assertThat(databaseMailAccountProvider.getQueryCount()).isEqualTo(2);
+        } finally {
+            databaseMailAccountProvider.deleteAccount("tenant-1017");
+        }
+    }
+
+    @Test
+    @DisplayName("30. GovernanceController sendAsyncAfterCommit 事务提交异步外发与回滚取消")
+    void shouldCommitOrCancelSendAsyncAfterCommit() throws Exception {
+        SimpleTextMailRequest req = SimpleTextMailRequest.builder()
+                .to("async-tx@example.com")
+                .subject("异步事务感知通知")
+                .content("仅在事务提交后由受管线程池异步投递")
+                .build();
+
+        mockMvc.perform(post("/sample/mail/governance/async-after-commit")
+                        .param("shouldRollback", "true")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(containsString("回滚")));
+
+        assertThat(greenMail.waitForIncomingEmail(400, 1)).isFalse();
+
+        mockMvc.perform(post("/sample/mail/governance/async-after-commit")
+                        .param("shouldRollback", "false")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(containsString("提交")));
+
+        assertThat(greenMail.waitForIncomingEmail(5000, 1)).isTrue();
+    }
+
+    @Test
+    @DisplayName("31. GovernanceController 函数式 DSL send(Consumer<MailMessage>) 端到端发信成功")
+    void shouldSendMailViaFunctionalDsl() throws Exception {
+        SimpleTextMailRequest req = SimpleTextMailRequest.builder()
+                .to("dsl-user@example.com")
+                .subject("函数式 DSL 邮件")
+                .content("通过 MailTemplate.send(Consumer<MailMessage>) 发信")
+                .build();
+
+        mockMvc.perform(post("/sample/mail/governance/dsl-send")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        assertThat(greenMail.waitForIncomingEmail(3000, 1)).isTrue();
+        MimeMessage delivered = greenMail.getReceivedMessages()[0];
+        assertThat(delivered.getSubject()).isEqualTo("函数式 DSL 邮件");
+    }
+
+    @Test
+    @DisplayName("32. DTO 校验补全回归：SalarySlipBatch @NotEmpty / DynamicAccount from @Email / Failover primaryFrom @Email")
+    void shouldRejectInvalidDtoFieldsOnPatchedControllers() throws Exception {
+        SalarySlipBatchRequest emptyBatch = SalarySlipBatchRequest.builder()
+                .items(new ValidList<>(List.of()))
+                .build();
+        mockMvc.perform(post("/sample/mail/reliable/batch-salary")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(emptyBatch)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.msg").value(containsString("工资条列表不能为空")));
+
+        DynamicAccountMailRequest invalidFrom = DynamicAccountMailRequest.builder()
+                .account("dyn-bad-from")
+                .from("not-an-email")
+                .to("user@example.com")
+                .subject("无效发件人测试")
+                .content("正文")
+                .build();
+        mockMvc.perform(post("/sample/mail/account/dynamic-send")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidFrom)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.msg").value(containsString("发件人电子邮箱格式不合法")));
+
+        FailoverDemoRequest invalidPrimaryFrom = FailoverDemoRequest.builder()
+                .to("user@example.com")
+                .subject("测试")
+                .content("正文")
+                .primaryFrom("broken-email-format")
+                .build();
+        mockMvc.perform(post("/sample/mail/governance/failover-demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidPrimaryFrom)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.msg").value(containsString("主通道发件人电子邮箱格式不合法")));
+
+        SystemAlertMailRequest invalidArchiveBcc = SystemAlertMailRequest.builder()
+                .to("oncall@example.com")
+                .serviceName("order-service")
+                .alertLevel("P0")
+                .errorMessage("测试告警")
+                .archiveBcc("invalid-bcc-email")
+                .build();
+        mockMvc.perform(post("/sample/mail/reliable/urgent-alert")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidArchiveBcc)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.msg").value(containsString("合规审计归档密送邮箱格式不合法")));
+    }
+
+    @Test
+    @DisplayName("33. 可观测闭环：MailSafeHealthIndicator、Micrometer 指标快照及 Actuator /health 与 /prometheus")
+    void shouldExposeHealthIndicatorAndPrometheusMetrics() throws Exception {
+        // 先发起一次发信确保 Micrometer Counter 已注册并产生计数
+        SimpleTextMailRequest warmup = SimpleTextMailRequest.builder()
+                .to("metrics-warmup@example.com")
+                .subject("指标预热邮件")
+                .content("确保 ateng_mail_send_count 已采集")
+                .build();
+        mockMvc.perform(post("/sample/mail/governance/dsl-send")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(warmup)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/sample/mail/governance/observability-status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.healthStatus").value("UP"))
+                .andExpect(jsonPath("$.data.staticAccountCount").value(2.0))
+                .andExpect(jsonPath("$.data.totalSendCount").isNumber());
+
+        mockMvc.perform(get("/actuator/health"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"))
+                .andExpect(jsonPath("$.components.mail.status").value("UP"));
+
+        mockMvc.perform(get("/actuator/prometheus"))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content()
+                        .string(containsString("ateng_mail_send_count")));
     }
 }

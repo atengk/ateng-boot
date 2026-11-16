@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.mail.interceptor;
 
+import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.model.MailMessage;
 import org.slf4j.Logger;
@@ -33,7 +34,7 @@ public class SampleAuditMailInterceptor implements MailSendInterceptor, Ordered 
 
         // 1. 安全黑名单阻断拦截
         if (message.getTo().contains(BLOCKED_EMAIL)) {
-            log.warn("Blocked sending email to blacklisted address: [{}]", BLOCKED_EMAIL);
+            log.warn("Blocked sending email to blacklisted address: [{}]", DesensitizeUtil.email(BLOCKED_EMAIL));
             return false;
         }
 
