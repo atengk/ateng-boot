@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * 编程式动态账号发信会话操作门面
@@ -79,9 +80,7 @@ public class DynamicMailSession {
      */
     public MailSendResult send(Consumer<MailMessage> messageConfigurer) {
         Objects.requireNonNull(messageConfigurer, "messageConfigurer must not be null");
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        return send(message);
+        return withConfiguredMessage(messageConfigurer, this::send);
     }
 
     /**
@@ -200,9 +199,7 @@ public class DynamicMailSession {
         if (messageConfigurer == null) {
             throw new IllegalArgumentException("messageConfigurer must not be null");
         }
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        return sendAsync(message);
+        return withConfiguredMessage(messageConfigurer, this::sendAsync);
     }
 
     /**
@@ -319,9 +316,10 @@ public class DynamicMailSession {
         if (messageConfigurer == null) {
             throw new IllegalArgumentException("messageConfigurer must not be null");
         }
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        sendAfterCommit(message);
+        withConfiguredMessage(messageConfigurer, msg -> {
+            sendAfterCommit(msg);
+            return null;
+        });
     }
 
     /**
@@ -345,9 +343,21 @@ public class DynamicMailSession {
         if (messageConfigurer == null) {
             throw new IllegalArgumentException("messageConfigurer must not be null");
         }
+        withConfiguredMessage(messageConfigurer, msg -> {
+            sendAsyncAfterCommit(msg);
+            return null;
+        });
+    }
+
+    private <T> T withConfiguredMessage(Consumer<MailMessage> messageConfigurer, Function<MailMessage, T> action) {
         MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        sendAsyncAfterCommit(message);
+        try {
+            messageConfigurer.accept(message);
+            return action.apply(message);
+        } catch (Throwable t) {
+            message.close();
+            throw t;
+        }
     }
 
     public void sendTextAfterCommit(String to, String subject, String text) {

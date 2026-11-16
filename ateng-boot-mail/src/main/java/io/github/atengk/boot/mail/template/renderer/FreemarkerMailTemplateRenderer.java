@@ -34,6 +34,7 @@ public class FreemarkerMailTemplateRenderer implements MailTemplateRenderer {
         if (templateName == null || templateName.isBlank()) {
             throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR, "模板名称不能为空");
         }
+        MailTemplateResourceUtil.validateSafeTemplateName(templateName);
 
         try {
             String tplName = (templateName.endsWith(".ftl") || templateName.endsWith(".html") || templateName.endsWith(".ftlh"))

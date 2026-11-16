@@ -169,8 +169,9 @@ public class AtengMailAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean(MailTemplateRenderer.class)
-    public MailTemplateRenderer simpleMailTemplateRenderer() {
-        return new SimpleMailTemplateRenderer();
+    public MailTemplateRenderer simpleMailTemplateRenderer(MailProperties properties) {
+        boolean htmlEscape = properties.getTemplate() != null && properties.getTemplate().isHtmlEscape();
+        return new SimpleMailTemplateRenderer(htmlEscape);
     }
 
     @Bean

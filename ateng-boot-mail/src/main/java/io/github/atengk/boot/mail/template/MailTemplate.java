@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.autoconfigure.AsyncExecutorFactory;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.properties.AsyncPoolProperties;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
+import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.mail.event.MailSendEvent;
@@ -31,6 +32,7 @@ import io.github.atengk.boot.mail.resolver.MailAccountResolver;
 import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
 import io.github.atengk.boot.mail.template.renderer.MailTemplateRenderer;
 import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
+import jakarta.mail.internet.AddressException;
 import jakarta.mail.internet.InternetAddress;
 import lombok.Getter;
 import org.slf4j.Logger;
@@ -69,8 +71,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -188,13 +192,23 @@ public class MailTemplate implements DisposableBean {
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
-        requireNonEmptyRecipients(message);
-        MailAccount account = resolveAccount(message);
-        return sendWithAccount(account, message);
+        try {
+            requireNonEmptyRecipients(message);
+            validateMessageAddresses(null, message);
+            MailAccount account = resolveAccount(message);
+            return sendWithAccount(account, message);
+        } finally {
+            message.close();
+        }
     }
 
     private void requireNonEmptyRecipients(MailMessage message) {
-        if (message.getTo() == null || message.getTo().isEmpty()) {
+        List<String> to = message.getTo();
+        if (to == null || to.isEmpty()) {
+            throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
+        }
+        boolean hasNonBlank = to.stream().anyMatch(addr -> addr != null && !addr.isBlank());
+        if (!hasNonBlank) {
             throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
         }
     }
@@ -263,19 +277,21 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult sendWithAccount(MailAccount account, MailMessage message) {
-        if (account == null) {
-            throw new IllegalArgumentException("MailAccount must not be null");
-        }
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
-        requireNonEmptyRecipients(message);
+        if (account == null) {
+            message.close();
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
 
-        String maskedTo = (message.getTo() != null)
-                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
-                : "";
+        String maskedTo = maskRecipients(message);
 
         try {
+            requireNonEmptyRecipients(message);
+            validateMessageAddresses(account, message);
+            sanitizeMessageHeaders(message);
+
             // 0. 合规审计归档密送安全追加
             applyArchiveBcc(account, message);
 
@@ -285,10 +301,13 @@ public class MailTemplate implements DisposableBean {
             // 发信拦截器链前置执行
             applyInterceptors(message);
 
+            // 拦截器可能改写收件人列表或标头，发送前二次兜底校验与清洗
+            requireNonEmptyRecipients(message);
+            validateRecipientAddresses(message);
+            sanitizeMessageHeaders(message);
+
             // 重新计算拦截器改写后的脱敏收件人（如沙箱重定向）
-            String currentMaskedTo = (message.getTo() != null)
-                    ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
-                    : "";
+            String currentMaskedTo = maskRecipients(message);
 
             String traceId = resolveTraceId();
             String domain = resolveDomain(account);
@@ -315,7 +334,12 @@ public class MailTemplate implements DisposableBean {
 
             MailSendResult result;
             MailRetryProperties retryProps = properties.getRetry();
-            if (retryProps != null && retryProps.isEnabled()) {
+            boolean repeatableMessage = isRepeatableMessage(message);
+            if (retryProps != null && retryProps.isEnabled() && !repeatableMessage) {
+                log.warn("Message [{}] contains non-repeatable InputStream resource(s), disabling retry to prevent corrupted empty attachments",
+                        message.getSubject());
+            }
+            if (retryProps != null && retryProps.isEnabled() && repeatableMessage) {
                 RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
                         .maxAttempts(retryProps.getMaxAttempts())
                         .delay(retryProps.getDelay())
@@ -369,14 +393,28 @@ public class MailTemplate implements DisposableBean {
                     : ((account.getDefaultFrom() != null && !account.getDefaultFrom().isBlank())
                     ? account.getDefaultFrom()
                     : account.getUsername());
-            String fromName = (message.getFromName() != null && !message.getFromName().isBlank())
+            String explicitFromName = (message.getFromName() != null && !message.getFromName().isBlank())
                     ? message.getFromName()
                     : account.getDefaultFromName();
 
-            if (fromName != null && !fromName.isBlank()) {
-                helper.setFrom(new InternetAddress(fromAddress, fromName, StandardCharsets.UTF_8.name()));
-            } else if (fromAddress != null && !fromAddress.isBlank()) {
-                helper.setFrom(fromAddress);
+            if (fromAddress != null && !fromAddress.isBlank()) {
+                InternetAddress parsedFrom = parseSingleInternetAddress(fromAddress);
+                if (parsedFrom != null) {
+                    String effectivePersonal = (message.getFromName() != null && !message.getFromName().isBlank())
+                            ? message.getFromName()
+                            : ((parsedFrom.getPersonal() != null && !parsedFrom.getPersonal().isBlank())
+                            ? parsedFrom.getPersonal()
+                            : account.getDefaultFromName());
+                    if (effectivePersonal != null && !effectivePersonal.isBlank()) {
+                        helper.setFrom(new InternetAddress(parsedFrom.getAddress(), MailMessage.sanitizeHeaderText(effectivePersonal), StandardCharsets.UTF_8.name()));
+                    } else {
+                        helper.setFrom(parsedFrom.getAddress());
+                    }
+                } else if (explicitFromName != null && !explicitFromName.isBlank()) {
+                    helper.setFrom(new InternetAddress(fromAddress, MailMessage.sanitizeHeaderText(explicitFromName), StandardCharsets.UTF_8.name()));
+                } else {
+                    helper.setFrom(fromAddress);
+                }
             }
 
             // 2. 收件人、抄送人、密送人与回复地址设置
@@ -392,13 +430,16 @@ public class MailTemplate implements DisposableBean {
             }
 
             // 3. 主题设置
-            helper.setSubject(message.getSubject() != null ? message.getSubject() : "");
+            helper.setSubject(message.getSubject() != null ? MailMessage.sanitizeHeaderText(message.getSubject()) : "");
 
             // 4. 自定义邮件标头
             if (message.getHeaders() != null) {
                 for (Map.Entry<String, String> header : message.getHeaders().entrySet()) {
                     if (header.getKey() != null && header.getValue() != null) {
-                        helper.getMimeMessage().setHeader(header.getKey(), header.getValue());
+                        String cleanKey = MailMessage.sanitizeHeaderText(header.getKey()).trim();
+                        if (!cleanKey.isBlank()) {
+                            helper.getMimeMessage().setHeader(cleanKey, MailMessage.sanitizeHeaderText(header.getValue()));
+                        }
                     }
                 }
             }
@@ -422,25 +463,42 @@ public class MailTemplate implements DisposableBean {
             helper.setText(message.getText() != null ? message.getText() : "", message.isHtml());
 
             // 6. 内联嵌入资源（必须在 helper.setText 之后执行）
+            AtomicReference<MailSendException> sizeLimitException = new AtomicReference<>();
+            long maxAttachmentBytes = (properties.getMaxAttachmentSize() != null)
+                    ? properties.getMaxAttachmentSize().toBytes()
+                    : Long.MAX_VALUE;
+            long maxTotalBytes = (properties.getMaxTotalSize() != null)
+                    ? properties.getMaxTotalSize().toBytes()
+                    : Long.MAX_VALUE;
+            long knownTotalBytes = computeKnownTotalBytes(message);
+            CumulativeSizeTracker sizeTracker = new CumulativeSizeTracker(knownTotalBytes, maxTotalBytes, sizeLimitException);
+
             if (message.hasInlines()) {
                 for (MailInlineResource inline : message.getInlines()) {
-                    helper.addInline(inline.getContentId(), inline.getSource(), inline.getContentType());
+                    if (inline == null || inline.isSystemJunk()) {
+                        continue;
+                    }
+                    InputStreamSource source = inline.getSource();
+                    if (inline.getSize() == null && (maxAttachmentBytes < Long.MAX_VALUE || maxTotalBytes < Long.MAX_VALUE) && source != null) {
+                        source = wrapBoundedSource(inline.getContentId(), source, maxAttachmentBytes, sizeTracker, sizeLimitException);
+                    }
+                    helper.addInline(inline.getContentId(), source, inline.getContentType());
                 }
             }
 
             // 7. 附件流式挂载
-            AtomicReference<MailSendException> sizeLimitException = new AtomicReference<>();
             if (message.hasAttachments()) {
-                long maxAttachmentBytes = (properties.getMaxAttachmentSize() != null)
-                        ? properties.getMaxAttachmentSize().toBytes()
-                        : Long.MAX_VALUE;
                 for (MailAttachment attachment : message.getAttachments()) {
+                    if (attachment == null || attachment.isSystemJunk() || FileUtil.isSystemJunkFile(attachment.getFilename())) {
+                        continue;
+                    }
+                    String safeFilename = MailAttachment.cleanFilename(attachment.getFilename());
                     InputStreamSource source = attachment.getSource();
                     // 若附件容量预先未知，挂载流式计数防爆数据源，严防无界裸流耗尽物理内存
-                    if (attachment.getSize() == null && maxAttachmentBytes < Long.MAX_VALUE && source != null) {
-                        source = wrapBoundedSource(attachment.getFilename(), source, maxAttachmentBytes, sizeLimitException);
+                    if (attachment.getSize() == null && (maxAttachmentBytes < Long.MAX_VALUE || maxTotalBytes < Long.MAX_VALUE) && source != null) {
+                        source = wrapBoundedSource(safeFilename, source, maxAttachmentBytes, sizeTracker, sizeLimitException);
                     }
-                    helper.addAttachment(attachment.getFilename(), source, attachment.getContentType());
+                    helper.addAttachment(safeFilename, source, attachment.getContentType());
                 }
             }
 
@@ -488,12 +546,7 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult send(Consumer<MailMessage> messageConfigurer) {
-        if (messageConfigurer == null) {
-            throw new IllegalArgumentException("messageConfigurer must not be null");
-        }
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        return send(message);
+        return withConfiguredMessage(messageConfigurer, this::send);
     }
 
     // ==================== 批量个性化发信与邮件合并门面 ====================
@@ -543,11 +596,17 @@ public class MailTemplate implements DisposableBean {
                         }
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
+                        if (message != null) {
+                            message.close();
+                        }
                         results[index] = MailSendResultItem.failure(index, message, "批量发送任务被中断: " + ie.getMessage(), ie);
                     }
                 }), batchExecutor);
                 futures.add(future);
             } catch (Throwable t) {
+                if (message != null) {
+                    message.close();
+                }
                 results[index] = MailSendResultItem.failure(index, message, "任务提交失败: " + t.getMessage(), t);
             }
         }
@@ -596,7 +655,13 @@ public class MailTemplate implements DisposableBean {
      * @return 包含批量发信聚合回执的 CompletableFuture
      */
     public CompletableFuture<BatchMailSendResult> sendBatchAsync(List<MailMessage> messages) {
-        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendBatch(messages)), requireAsyncExecutor());
+        try {
+            Executor asyncExecutor = requireAsyncExecutor();
+            return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendBatch(messages)), asyncExecutor);
+        } catch (Throwable t) {
+            closeAllMessagesQuietly(messages);
+            throw t;
+        }
     }
 
     private int resolveBatchConcurrency() {
@@ -917,7 +982,13 @@ public class MailTemplate implements DisposableBean {
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
-        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> send(message)), requireAsyncExecutor());
+        try {
+            Executor asyncExecutor = requireAsyncExecutor();
+            return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> send(message)), asyncExecutor);
+        } catch (Throwable t) {
+            message.close();
+            throw t;
+        }
     }
 
     /**
@@ -927,12 +998,7 @@ public class MailTemplate implements DisposableBean {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendAsync(Consumer<MailMessage> messageConfigurer) {
-        if (messageConfigurer == null) {
-            throw new IllegalArgumentException("messageConfigurer must not be null");
-        }
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        return sendAsync(message);
+        return withConfiguredMessage(messageConfigurer, this::sendAsync);
     }
 
     /**
@@ -943,13 +1009,19 @@ public class MailTemplate implements DisposableBean {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendAsyncWithAccount(MailAccount account, MailMessage message) {
-        if (account == null) {
-            throw new IllegalArgumentException("MailAccount must not be null");
-        }
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
-        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendWithAccount(account, message)), requireAsyncExecutor());
+        try {
+            if (account == null) {
+                throw new IllegalArgumentException("MailAccount must not be null");
+            }
+            Executor asyncExecutor = requireAsyncExecutor();
+            return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendWithAccount(account, message)), asyncExecutor);
+        } catch (Throwable t) {
+            message.close();
+            throw t;
+        }
     }
 
     // ==================== 纯文本异步发信快捷门面 ====================
@@ -1152,7 +1224,12 @@ public class MailTemplate implements DisposableBean {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
         if (isTxSynchronizationActive()) {
-            registerAfterCommitSynchronization(message, () -> deliverAfterCommit(null, message), false);
+            try {
+                registerAfterCommitSynchronization(message, () -> deliverAfterCommit(null, message), false);
+            } catch (Throwable t) {
+                message.close();
+                throw t;
+            }
         } else {
             send(message);
         }
@@ -1165,14 +1242,20 @@ public class MailTemplate implements DisposableBean {
      * @param message 邮件消息模型
      */
     public void sendAfterCommitWithAccount(MailAccount account, MailMessage message) {
-        if (account == null) {
-            throw new IllegalArgumentException("MailAccount must not be null");
-        }
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
+        if (account == null) {
+            message.close();
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
         if (isTxSynchronizationActive()) {
-            registerAfterCommitSynchronization(message, () -> deliverAfterCommit(account, message), false);
+            try {
+                registerAfterCommitSynchronization(message, () -> deliverAfterCommit(account, message), false);
+            } catch (Throwable t) {
+                message.close();
+                throw t;
+            }
         } else {
             sendWithAccount(account, message);
         }
@@ -1184,12 +1267,10 @@ public class MailTemplate implements DisposableBean {
      * @param messageConfigurer 邮件消息配置器
      */
     public void sendAfterCommit(Consumer<MailMessage> messageConfigurer) {
-        if (messageConfigurer == null) {
-            throw new IllegalArgumentException("messageConfigurer must not be null");
-        }
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        sendAfterCommit(message);
+        withConfiguredMessage(messageConfigurer, msg -> {
+            sendAfterCommit(msg);
+            return null;
+        });
     }
 
     /**
@@ -1203,7 +1284,12 @@ public class MailTemplate implements DisposableBean {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
         if (isTxSynchronizationActive()) {
-            registerAfterCommitSynchronization(message, () -> deliverAfterCommit(null, message), true);
+            try {
+                registerAfterCommitSynchronization(message, () -> deliverAfterCommit(null, message), true);
+            } catch (Throwable t) {
+                message.close();
+                throw t;
+            }
         } else {
             sendAsync(message);
         }
@@ -1216,14 +1302,20 @@ public class MailTemplate implements DisposableBean {
      * @param message 邮件消息模型
      */
     public void sendAsyncAfterCommitWithAccount(MailAccount account, MailMessage message) {
-        if (account == null) {
-            throw new IllegalArgumentException("MailAccount must not be null");
-        }
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
+        if (account == null) {
+            message.close();
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
         if (isTxSynchronizationActive()) {
-            registerAfterCommitSynchronization(message, () -> deliverAfterCommit(account, message), true);
+            try {
+                registerAfterCommitSynchronization(message, () -> deliverAfterCommit(account, message), true);
+            } catch (Throwable t) {
+                message.close();
+                throw t;
+            }
         } else {
             sendAsyncWithAccount(account, message);
         }
@@ -1235,12 +1327,10 @@ public class MailTemplate implements DisposableBean {
      * @param messageConfigurer 邮件消息配置器
      */
     public void sendAsyncAfterCommit(Consumer<MailMessage> messageConfigurer) {
-        if (messageConfigurer == null) {
-            throw new IllegalArgumentException("messageConfigurer must not be null");
-        }
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        sendAsyncAfterCommit(message);
+        withConfiguredMessage(messageConfigurer, msg -> {
+            sendAsyncAfterCommit(msg);
+            return null;
+        });
     }
 
     // ==================== 事务感知发信快捷门面 ====================
@@ -1540,37 +1630,34 @@ public class MailTemplate implements DisposableBean {
                 ? properties.getMaxTotalSize().toBytes()
                 : Long.MAX_VALUE;
 
-        // 1. 单附件大小检查
+        // 1. 单附件与内联资源大小检查
         if (message.hasAttachments()) {
             for (MailAttachment attachment : message.getAttachments()) {
-                if (attachment != null && attachment.getSize() != null && attachment.getSize() > maxAttachmentBytes) {
+                if (attachment == null || attachment.isSystemJunk() || FileUtil.isSystemJunkFile(attachment.getFilename())) {
+                    continue;
+                }
+                if (attachment.getSize() != null && attachment.getSize() > maxAttachmentBytes) {
                     throw new MailSendException(MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED,
                             "邮件附件 [" + attachment.getFilename() + "] 大小 (" + attachment.getSize()
                                     + " 字节) 超出单个附件上限 (" + properties.getMaxAttachmentSize() + ")");
                 }
             }
         }
-
-        // 2. 邮件已知总容量检查
-        long estimatedTotal = (message.getText() != null)
-                ? message.getText().getBytes(StandardCharsets.UTF_8).length
-                : 0L;
-
-        if (message.hasAttachments()) {
-            for (MailAttachment attachment : message.getAttachments()) {
-                if (attachment != null && attachment.getSize() != null) {
-                    estimatedTotal += attachment.getSize();
-                }
-            }
-        }
-
         if (message.hasInlines()) {
             for (MailInlineResource inline : message.getInlines()) {
-                if (inline != null && inline.getSize() != null) {
-                    estimatedTotal += inline.getSize();
+                if (inline == null || inline.isSystemJunk()) {
+                    continue;
+                }
+                if (inline.getSize() != null && inline.getSize() > maxAttachmentBytes) {
+                    throw new MailSendException(MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED,
+                            "邮件内联资源 [" + inline.getContentId() + "] 大小 (" + inline.getSize()
+                                    + " 字节) 超出单个附件上限 (" + properties.getMaxAttachmentSize() + ")");
                 }
             }
         }
+
+        // 2. 邮件已知总容量检查
+        long estimatedTotal = computeKnownTotalBytes(message);
 
         if (estimatedTotal > maxTotalBytes) {
             throw new MailSendException(MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED,
@@ -1578,16 +1665,61 @@ public class MailTemplate implements DisposableBean {
         }
     }
 
+    private long computeKnownTotalBytes(MailMessage message) {
+        long estimatedTotal = (message.getText() != null)
+                ? message.getText().getBytes(StandardCharsets.UTF_8).length
+                : 0L;
+
+        if (message.hasAttachments()) {
+            for (MailAttachment attachment : message.getAttachments()) {
+                if (attachment != null && !attachment.isSystemJunk()
+                        && !FileUtil.isSystemJunkFile(attachment.getFilename())
+                        && attachment.getSize() != null) {
+                    estimatedTotal += attachment.getSize();
+                }
+            }
+        }
+
+        if (message.hasInlines()) {
+            for (MailInlineResource inline : message.getInlines()) {
+                if (inline != null && !inline.isSystemJunk() && inline.getSize() != null) {
+                    estimatedTotal += inline.getSize();
+                }
+            }
+        }
+        return estimatedTotal;
+    }
+
     private String resolveTraceId() {
         String traceId = MDC.get("traceId");
         if (traceId != null && !traceId.isBlank()) {
-            return traceId;
+            return MailMessage.sanitizeHeaderText(traceId);
         }
         return IdUtil.fastSimpleUUID();
     }
 
     private String resolveDomain(MailAccount account) {
-        return account != null ? account.getDomain() : "ateng-boot.local";
+        String domain = account != null ? account.getDomain() : "ateng-boot.local";
+        return MailMessage.sanitizeHeaderText(domain);
+    }
+
+    private void sanitizeMessageHeaders(MailMessage message) {
+        if (message.getSubject() != null) {
+            message.setSubject(message.getSubject());
+        }
+        if (message.getFromName() != null) {
+            message.setFromName(message.getFromName());
+        }
+        if (message.getHeaders() != null && !message.getHeaders().isEmpty()) {
+            message.setHeaders(message.getHeaders());
+        }
+        if (message.hasInlines()) {
+            for (MailInlineResource inline : message.getInlines()) {
+                if (inline != null && inline.getContentId() != null) {
+                    inline.setContentId(MailInlineResource.cleanContentId(inline.getContentId()));
+                }
+            }
+        }
     }
 
     private boolean isTimeoutException(Throwable throwable) {
@@ -1633,20 +1765,173 @@ public class MailTemplate implements DisposableBean {
         }
     }
 
+    private boolean isRepeatableMessage(MailMessage message) {
+        if (message.hasAttachments()) {
+            for (MailAttachment attachment : message.getAttachments()) {
+                if (attachment != null && !attachment.isSystemJunk() && !attachment.isRepeatable()) {
+                    return false;
+                }
+            }
+        }
+        if (message.hasInlines()) {
+            for (MailInlineResource inline : message.getInlines()) {
+                if (inline != null && !inline.isSystemJunk() && !inline.isRepeatable()) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private void closeAllMessagesQuietly(List<MailMessage> messages) {
+        if (messages == null) {
+            return;
+        }
+        for (MailMessage msg : messages) {
+            if (msg != null) {
+                msg.close();
+            }
+        }
+    }
+
+    private <T> T withConfiguredMessage(Consumer<MailMessage> messageConfigurer, Function<MailMessage, T> action) {
+        if (messageConfigurer == null) {
+            throw new IllegalArgumentException("messageConfigurer must not be null");
+        }
+        MailMessage message = new MailMessage();
+        try {
+            messageConfigurer.accept(message);
+            return action.apply(message);
+        } catch (Throwable t) {
+            message.close();
+            throw t;
+        }
+    }
+
     private boolean isRetryableException(Throwable throwable) {
-        if (throwable instanceof MailAuthenticationException) {
+        if (throwable instanceof MailAuthenticationException || throwable instanceof IllegalArgumentException) {
             return false;
         }
         if (throwable instanceof MailSendException mse) {
             if (mse.getResultCode() == MailResultCode.MAIL_AUTHENTICATION_ERROR
                     || mse.getResultCode() == MailResultCode.MAIL_ACCOUNT_NOT_FOUND
                     || mse.getResultCode() == MailResultCode.MAIL_RECIPIENT_EMPTY
+                    || mse.getResultCode() == MailResultCode.MAIL_INVALID_ADDRESS
                     || mse.getResultCode() == MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED
-                    || mse.getResultCode() == MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED) {
+                    || mse.getResultCode() == MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED
+                    || mse.getResultCode() == MailResultCode.MAIL_TEMPLATE_RENDER_ERROR
+                    || (mse.getMessage() != null && mse.getMessage().contains("邮件发送被拦截器阻断"))) {
                 return false;
             }
         }
+        if (containsExceptionType(throwable, AddressException.class)) {
+            return false;
+        }
         return true;
+    }
+
+    private void validateMessageAddresses(MailAccount account, MailMessage message) {
+        validateRecipientAddresses(message);
+        if (message.getFrom() != null && !message.getFrom().isBlank()) {
+            validateSingleEmailAddress(message.getFrom(), "from");
+        }
+        if (account != null && account.getDefaultFrom() != null && !account.getDefaultFrom().isBlank()) {
+            validateSingleEmailAddress(account.getDefaultFrom(), "defaultFrom");
+        }
+        if (message.getReplyTo() != null && !message.getReplyTo().isBlank()) {
+            validateSingleEmailAddress(message.getReplyTo(), "replyTo");
+        }
+        if (message.getReadReceiptTo() != null && !message.getReadReceiptTo().isBlank()) {
+            validateSingleEmailAddress(message.getReadReceiptTo(), "readReceiptTo");
+        }
+        if (account != null) {
+            String archiveBcc = (account.getArchiveBcc() != null && !account.getArchiveBcc().isBlank())
+                    ? account.getArchiveBcc()
+                    : (properties != null ? properties.getArchiveBcc() : null);
+            if (archiveBcc != null && !archiveBcc.isBlank()) {
+                for (String addr : archiveBcc.split("[,;]")) {
+                    if (addr != null && !addr.isBlank()) {
+                        validateSingleEmailAddress(addr, "archiveBcc");
+                    }
+                }
+            }
+        }
+    }
+
+    private void validateRecipientAddresses(MailMessage message) {
+        if (message.getTo() != null) {
+            for (String addr : message.getTo()) {
+                validateSingleEmailAddress(addr, "to");
+            }
+        }
+        if (message.getCc() != null) {
+            for (String addr : message.getCc()) {
+                validateSingleEmailAddress(addr, "cc");
+            }
+        }
+        if (message.getBcc() != null) {
+            for (String addr : message.getBcc()) {
+                validateSingleEmailAddress(addr, "bcc");
+            }
+        }
+    }
+
+    private static void validateSingleEmailAddress(String rawAddress, String fieldName) {
+        if (rawAddress == null || rawAddress.isBlank()) {
+            throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                    fieldName + " 邮件地址不能为空或空白");
+        }
+        if (rawAddress.indexOf('\r') >= 0 || rawAddress.indexOf('\n') >= 0 || rawAddress.indexOf('\0') >= 0) {
+            throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                    fieldName + " 邮件地址包含非法换行或空字符");
+        }
+        String trimmed = rawAddress.trim();
+        try {
+            InternetAddress[] parsed = InternetAddress.parse(trimmed, true);
+            if (parsed == null || parsed.length != 1) {
+                throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                        fieldName + " 邮件地址格式非法: [" + rawAddress + "]");
+            }
+            parsed[0].validate();
+            String addr = parsed[0].getAddress();
+            if (addr == null || addr.isBlank()) {
+                throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                        fieldName + " 邮件地址格式非法: [" + rawAddress + "]");
+            }
+            int atIdx = addr.indexOf('@');
+            if (atIdx <= 0 || atIdx >= addr.length() - 1 || addr.indexOf('@', atIdx + 1) >= 0) {
+                throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                        fieldName + " 邮件地址格式非法: [" + rawAddress + "]");
+            }
+            String domain = addr.substring(atIdx + 1);
+            if (domain.startsWith(".") || domain.endsWith(".") || domain.contains("..")) {
+                throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                        fieldName + " 邮件域名格式非法: [" + rawAddress + "]");
+            }
+        } catch (AddressException e) {
+            throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                    fieldName + " 邮件地址格式非法: [" + rawAddress + "]", e);
+        }
+    }
+
+    private static InternetAddress parseSingleInternetAddress(String rawAddress) {
+        try {
+            InternetAddress[] parsed = InternetAddress.parse(rawAddress.trim(), true);
+            return (parsed != null && parsed.length == 1) ? parsed[0] : null;
+        } catch (AddressException ignored) {
+            return null;
+        }
+    }
+
+    private static boolean containsExceptionType(Throwable throwable, Class<? extends Throwable> type) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (type.isInstance(current)) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private void applyInterceptors(MailMessage message) {
@@ -1786,10 +2071,12 @@ public class MailTemplate implements DisposableBean {
     }
 
     private InputStreamSource wrapBoundedSource(String filename, InputStreamSource originalSource, long maxBytes,
+                                                CumulativeSizeTracker sizeTracker,
                                                 AtomicReference<MailSendException> sizeLimitExceptionRef) {
+        AtomicLong itemMaxBytesRead = new AtomicLong(0);
         return () -> {
             InputStream in = originalSource.getInputStream();
-            return new BoundedInputStream(in, maxBytes, filename, sizeLimitExceptionRef);
+            return new BoundedInputStream(in, maxBytes, filename, itemMaxBytesRead, sizeTracker, sizeLimitExceptionRef);
         };
     }
 
@@ -1816,19 +2103,63 @@ public class MailTemplate implements DisposableBean {
     }
 
     /**
-     * 流式附件读取容量上限守护流，严密防范未知容量裸流耗尽物理内存
+     * 邮件流式未知大小累加总容量跟踪器
+     */
+    private final class CumulativeSizeTracker {
+        private final long maxTotalBytes;
+        private final AtomicLong totalBytes;
+        private final AtomicReference<MailSendException> sizeLimitExceptionRef;
+
+        private CumulativeSizeTracker(long initialKnownBytes, long maxTotalBytes,
+                                      AtomicReference<MailSendException> sizeLimitExceptionRef) {
+            this.maxTotalBytes = maxTotalBytes;
+            this.totalBytes = new AtomicLong(initialKnownBytes);
+            this.sizeLimitExceptionRef = sizeLimitExceptionRef;
+        }
+
+        private void recordItemProgress(AtomicLong itemMaxRead, long currentItemBytesRead, String itemName) throws IOException {
+            long prevMax = itemMaxRead.get();
+            if (currentItemBytesRead <= prevMax) {
+                return;
+            }
+            while (!itemMaxRead.compareAndSet(prevMax, currentItemBytesRead)) {
+                prevMax = itemMaxRead.get();
+                if (currentItemBytesRead <= prevMax) {
+                    return;
+                }
+            }
+            long delta = currentItemBytesRead - prevMax;
+            long accumulated = totalBytes.addAndGet(delta);
+            if (accumulated > maxTotalBytes) {
+                MailSendException ex = new MailSendException(MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED,
+                        "邮件流式读取累加总体积 (" + accumulated + " 字节) 超出总体积上限 (" + properties.getMaxTotalSize() + ")，触发资源: [" + itemName + "]");
+                if (sizeLimitExceptionRef != null) {
+                    sizeLimitExceptionRef.compareAndSet(null, ex);
+                }
+                throw ex;
+            }
+        }
+    }
+
+    /**
+     * 流式附件与内联资源读取容量上限守护流，严密防范未知容量裸流耗尽物理内存
      */
     private static class BoundedInputStream extends FilterInputStream {
         private final long maxBytes;
         private final String filename;
+        private final AtomicLong itemMaxBytesRead;
+        private final CumulativeSizeTracker sizeTracker;
         private final AtomicReference<MailSendException> sizeLimitExceptionRef;
         private long bytesRead = 0;
 
         public BoundedInputStream(InputStream in, long maxBytes, String filename,
+                                  AtomicLong itemMaxBytesRead, CumulativeSizeTracker sizeTracker,
                                   AtomicReference<MailSendException> sizeLimitExceptionRef) {
             super(in);
             this.maxBytes = maxBytes;
             this.filename = filename;
+            this.itemMaxBytesRead = itemMaxBytesRead;
+            this.sizeTracker = sizeTracker;
             this.sizeLimitExceptionRef = sizeLimitExceptionRef;
         }
 
@@ -1899,6 +2230,9 @@ public class MailTemplate implements DisposableBean {
                     sizeLimitExceptionRef.compareAndSet(null, ex);
                 }
                 throw ex;
+            }
+            if (sizeTracker != null) {
+                sizeTracker.recordItemProgress(itemMaxBytesRead, bytesRead, filename);
             }
         }
     }

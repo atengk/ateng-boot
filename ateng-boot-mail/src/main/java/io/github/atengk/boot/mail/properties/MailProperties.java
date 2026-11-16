@@ -222,6 +222,13 @@ public class MailProperties {
     @NestedConfigurationProperty
     private MailSandboxProperties sandbox = new MailSandboxProperties();
 
+    /**
+     * 邮件模板渲染配置
+     */
+    @Valid
+    @NestedConfigurationProperty
+    private MailTemplateProperties template = new MailTemplateProperties();
+
     public MailProperties() {
         this.async.setThreadNamePrefix("mail-async-");
         this.async.setVirtualThreadNamePrefix("mail-vt-async-");

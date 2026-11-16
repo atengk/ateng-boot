@@ -21,7 +21,26 @@ import java.util.regex.Pattern;
  */
 public class SimpleMailTemplateRenderer implements MailTemplateRenderer {
 
-    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\$\\{\\s*([a-zA-Z0-9_.-]+)\\s*\\}");
+    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\$(!?)\\{\\s*([a-zA-Z0-9_.-]+)\\s*\\}");
+
+    private final boolean htmlEscape;
+
+    public SimpleMailTemplateRenderer() {
+        this(false);
+    }
+
+    public SimpleMailTemplateRenderer(boolean htmlEscape) {
+        this.htmlEscape = htmlEscape;
+    }
+
+    /**
+     * 是否默认开启 HTML 特殊字符转义
+     *
+     * @return true 表示开启
+     */
+    public boolean isHtmlEscape() {
+        return htmlEscape;
+    }
 
     @Override
     public String render(String templateName, Map<String, Object> model) {
@@ -33,6 +52,13 @@ public class SimpleMailTemplateRenderer implements MailTemplateRenderer {
         if (templateName == null || templateName.isBlank()) {
             throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR, "模板名称不能为空");
         }
+        if (templateName.indexOf('\0') >= 0
+                || templateName.contains("../")
+                || templateName.contains("..\\")
+                || "..".equals(templateName.trim())) {
+            throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR,
+                    "模板名称包含非法路径穿越或空字符: [" + templateName + "]");
+        }
 
         String templateContent = loadTemplate(templateName, locale);
         if (model == null || model.isEmpty()) {
@@ -42,18 +68,42 @@ public class SimpleMailTemplateRenderer implements MailTemplateRenderer {
         Matcher matcher = PLACEHOLDER_PATTERN.matcher(templateContent);
         StringBuilder sb = new StringBuilder();
         while (matcher.find()) {
-            String placeholder = matcher.group(1);
+            boolean rawOutput = "!".equals(matcher.group(1));
+            String placeholder = matcher.group(2);
             Object value = resolveValue(placeholder, model);
-            String replacement = value != null ? Matcher.quoteReplacement(String.valueOf(value)) : "";
-            matcher.appendReplacement(sb, replacement);
+            String rendered = value != null ? String.valueOf(value) : "";
+            if (htmlEscape && !rawOutput) {
+                rendered = escapeHtml(rendered);
+            }
+            matcher.appendReplacement(sb, Matcher.quoteReplacement(rendered));
         }
         matcher.appendTail(sb);
         return sb.toString();
     }
 
+    private static String escapeHtml(String input) {
+        if (input == null || input.isEmpty()) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(input.length() + 16);
+        for (int i = 0; i < input.length(); i++) {
+            char c = input.charAt(i);
+            switch (c) {
+                case '&' -> out.append("&amp;");
+                case '<' -> out.append("&lt;");
+                case '>' -> out.append("&gt;");
+                case '"' -> out.append("&quot;");
+                case '\'' -> out.append("&#39;");
+                default -> out.append(c);
+            }
+        }
+        return out.toString();
+    }
+
     private String loadTemplate(String templateName, Locale locale) {
-        // 1. 若字符串直接包含 HTML 标签、换行符或 ${ 占位符且不以常见模板文件后缀结尾，可直接作为内联模板内容解析
-        if ((templateName.contains("${") || templateName.contains("<") || templateName.contains("\n"))
+        // 1. 若字符串直接包含 HTML 标签、换行符或 ${ / $!{ 占位符且不以常见模板文件后缀结尾，可直接作为内联模板内容解析
+        boolean hasPlaceholder = templateName.contains("${") || templateName.contains("$!{");
+        if ((hasPlaceholder || templateName.contains("<") || templateName.contains("\n"))
                 && !templateName.endsWith(".html") && !templateName.endsWith(".htm") && !templateName.endsWith(".ftl")) {
             return templateName;
         }
@@ -74,7 +124,7 @@ public class SimpleMailTemplateRenderer implements MailTemplateRenderer {
         }
 
         // 3. 若类路径未找到但包含占位符，支持纯字符串模板
-        if (templateName.contains("${")) {
+        if (hasPlaceholder) {
             return templateName;
         }
 

@@ -500,6 +500,34 @@ class AtengMailAutoConfigurationTest {
                 .run(context -> assertThat(context).hasFailed());
     }
 
+    @Test
+    @DisplayName("ateng.boot.mail.template.html-escape 正确绑定并控制 SimpleMailTemplateRenderer 转义行为")
+    void testTemplateHtmlEscapePropertyBinding() {
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .run(context -> {
+                    MailProperties props = context.getBean(MailProperties.class);
+                    assertThat(props.getTemplate().isHtmlEscape()).isFalse();
+                    MailTemplateRenderer renderer = context.getBean(MailTemplateRenderer.class);
+                    assertThat(renderer).isInstanceOf(SimpleMailTemplateRenderer.class);
+                    assertThat(((SimpleMailTemplateRenderer) renderer).isHtmlEscape()).isFalse();
+                });
+
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.mail.host=smtp.example.com",
+                        "ateng.boot.mail.template.html-escape=true"
+                )
+                .run(context -> {
+                    MailProperties props = context.getBean(MailProperties.class);
+                    assertThat(props.getTemplate().isHtmlEscape()).isTrue();
+                    SimpleMailTemplateRenderer renderer = (SimpleMailTemplateRenderer) context.getBean(MailTemplateRenderer.class);
+                    assertThat(renderer.isHtmlEscape()).isTrue();
+                    String out = renderer.render("<p>${v}</p>$!{raw}", Map.of("v", "<b>x</b>", "raw", "<i>y</i>"));
+                    assertThat(out).isEqualTo("<p>&lt;b&gt;x&lt;/b&gt;</p><i>y</i>");
+                });
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class DynamicProviderConfig {
         @Bean

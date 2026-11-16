@@ -33,6 +33,7 @@ public class ThymeleafMailTemplateRenderer implements MailTemplateRenderer {
         if (templateName == null || templateName.isBlank()) {
             throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR, "模板名称不能为空");
         }
+        MailTemplateResourceUtil.validateSafeTemplateName(templateName);
 
         try {
             Context context = (locale != null) ? new Context(locale) : new Context();

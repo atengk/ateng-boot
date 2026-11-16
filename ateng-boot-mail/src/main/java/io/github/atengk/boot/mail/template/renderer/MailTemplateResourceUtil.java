@@ -1,5 +1,7 @@
 package io.github.atengk.boot.mail.template.renderer;
 
+import io.github.atengk.boot.mail.exception.MailResultCode;
+import io.github.atengk.boot.mail.exception.MailSendException;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 
@@ -49,6 +51,7 @@ public final class MailTemplateResourceUtil {
         if (templateName == null || templateName.isBlank()) {
             return Collections.emptyList();
         }
+        validateSafeTemplateName(templateName);
 
         String base = templateName;
         String ext = "";
@@ -95,6 +98,7 @@ public final class MailTemplateResourceUtil {
         if (templateName == null || templateName.isBlank()) {
             return Collections.emptyList();
         }
+        validateSafeTemplateName(templateName);
 
         String effectiveExt = defaultExt != null ? defaultExt : ".html";
         String base = templateName;
@@ -143,6 +147,7 @@ public final class MailTemplateResourceUtil {
         if (candidateName == null || candidateName.isBlank()) {
             return null;
         }
+        validateSafeTemplateName(candidateName);
 
         String path = candidateName.endsWith(".html") || candidateName.endsWith(".htm") || candidateName.endsWith(".ftl")
                 ? candidateName
@@ -177,7 +182,11 @@ public final class MailTemplateResourceUtil {
      *         若均未找到物理文件则保底返回原始 templateName
      */
     public static String resolveExistingTemplateName(String templateName, Locale locale) {
-        if (templateName == null || templateName.isBlank() || locale == null) {
+        if (templateName == null || templateName.isBlank()) {
+            return templateName;
+        }
+        validateSafeTemplateName(templateName);
+        if (locale == null) {
             return templateName;
         }
         List<String> candidates = buildLocaleCandidateNames(templateName, locale);
@@ -187,5 +196,20 @@ public final class MailTemplateResourceUtil {
             }
         }
         return templateName;
+    }
+
+    /**
+     * 校验模板名称安全边界，阻断目录穿越（..）与空字符（\0）探测攻击
+     *
+     * @param templateName 模板名称或路径
+     */
+    public static void validateSafeTemplateName(String templateName) {
+        if (templateName == null) {
+            return;
+        }
+        if (templateName.indexOf('\0') >= 0 || templateName.contains("..")) {
+            throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR,
+                    "模板名称包含非法路径穿越或空字符: [" + templateName + "]");
+        }
     }
 }

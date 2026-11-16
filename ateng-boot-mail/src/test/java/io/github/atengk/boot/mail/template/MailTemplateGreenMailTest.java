@@ -2214,4 +2214,367 @@ class MailTemplateGreenMailTest {
         assertEquals(1, handlerCount.get());
         assertEquals(1, eventCount.get());
     }
+
+    @Test
+    @DisplayName("测试严格邮件地址格式校验：拦截 null/空白元素与非法格式且不触发重试，兼容显示名称邮箱")
+    void testStrictEmailAddressValidationAndDisplayNameSupport() throws Exception {
+        mailProperties.getRetry().setEnabled(true);
+        mailProperties.getRetry().setMaxAttempts(3);
+        mailProperties.getRetry().setDelay(Duration.ofMillis(10));
+
+        // 1. to 全为空白时抛出 MAIL_RECIPIENT_EMPTY
+        MailSendException allBlankTo = assertThrows(MailSendException.class, () ->
+                mailTemplate.send(new MailMessage().to("   ").subject("S").text("T")));
+        assertEquals(MailResultCode.MAIL_RECIPIENT_EMPTY, allBlankTo.getResultCode());
+
+        // 2. to / cc / bcc 混入 null 或空白元素时抛出 MAIL_INVALID_ADDRESS
+        MailSendException mixedNullTo = assertThrows(MailSendException.class, () ->
+                mailTemplate.send(new MailMessage().to("valid@example.com", null).subject("S").text("T")));
+        assertEquals(MailResultCode.MAIL_INVALID_ADDRESS, mixedNullTo.getResultCode());
+
+        MailSendException blankCc = assertThrows(MailSendException.class, () ->
+                mailTemplate.send(new MailMessage().to("valid@example.com").cc("  ").subject("S").text("T")));
+        assertEquals(MailResultCode.MAIL_INVALID_ADDRESS, blankCc.getResultCode());
+
+        MailSendException nullBcc = assertThrows(MailSendException.class, () ->
+                mailTemplate.send(new MailMessage().to("valid@example.com").bcc((String) null).subject("S").text("T")));
+        assertEquals(MailResultCode.MAIL_INVALID_ADDRESS, nullBcc.getResultCode());
+
+        // 3. 非法格式（含缺少@、后缀残缺、多地址注入、CRLF注入）在全字段均抛出 MAIL_INVALID_ADDRESS 且不触发重试
+        AtomicInteger attempts = new AtomicInteger(0);
+        MailAccount countingAccount = MailAccount.builder()
+                .name("addr-check-acc")
+                .host("127.0.0.1")
+                .port(greenMail.getSmtp().getPort())
+                .username("test@atengk.com")
+                .password("password")
+                .ssl(false)
+                .sender(new JavaMailSenderImpl() {
+                    @Override
+                    public void send(MimeMessage mimeMessage) {
+                        attempts.incrementAndGet();
+                        super.send(mimeMessage);
+                    }
+                })
+                .build();
+        accountRegistry.register(countingAccount);
+
+        for (MailMessage invalidMsg : List.of(
+                new MailMessage().account("addr-check-acc").to("not-an-email").subject("S").text("T"),
+                new MailMessage().account("addr-check-acc").to("valid@example.com").cc("bad@").subject("S").text("T"),
+                new MailMessage().account("addr-check-acc").to("valid@example.com").bcc("a@b.com, c@d.com").subject("S").text("T"),
+                new MailMessage().account("addr-check-acc").to("valid@example.com").from("invalid-from").subject("S").text("T"),
+                new MailMessage().account("addr-check-acc").to("valid@example.com").replyTo("bad\r\n@example.com").subject("S").text("T"),
+                new MailMessage().account("addr-check-acc").to("valid@example.com").readReceiptTo("bad-receipt").subject("S").text("T")
+        )) {
+            MailSendException ex = assertThrows(MailSendException.class, () -> mailTemplate.send(invalidMsg));
+            assertEquals(MailResultCode.MAIL_INVALID_ADDRESS, ex.getResultCode());
+        }
+        assertEquals(0, attempts.get(), "地址校验失败必须立即 Fail-Fast，严禁进入物理发送或重试");
+
+        // 4. archiveBcc 非法地址同样抛出 MAIL_INVALID_ADDRESS
+        mailProperties.setArchiveBcc("compliance@atengk.com, invalid-archive-addr");
+        MailSendException archiveEx = assertThrows(MailSendException.class, () ->
+                mailTemplate.send(new MailMessage().to("valid@example.com").subject("S").text("T")));
+        assertEquals(MailResultCode.MAIL_INVALID_ADDRESS, archiveEx.getResultCode());
+        mailProperties.setArchiveBcc(null);
+
+        // 5. 合法显示名称格式（如 "张三 <zhangsan@example.com>"）正常发信成功
+        MailSendResult validResult = mailTemplate.send(msg -> msg
+                .from("客服中心 <support@atengk.com>")
+                .to("张三 <zhangsan@example.com>")
+                .replyTo("工单系统 <reply@atengk.com>")
+                .subject("显示名称格式校验")
+                .text("兼容性验证"));
+        assertTrue(validResult.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+    }
+
+    @Test
+    @DisplayName("测试发送前清洗 Builder/Setter 构造的 CRLF 头部注入并验证 GreenMail 无伪造标头")
+    void testCrlfHeaderInjectionBlockedInGreenMail() throws Exception {
+        io.github.atengk.boot.mail.model.MailInlineResource dirtyInline =
+                io.github.atengk.boot.mail.model.MailInlineResource.builder()
+                        .contentId("cid1\r\nX-Injected-Cid: evil")
+                        .source(new org.springframework.core.io.ByteArrayResource(new byte[]{1, 2, 3}))
+                        .contentType("image/png")
+                        .size(3L)
+                        .build();
+
+        MailMessage dirtyMsg = MailMessage.builder()
+                .to(List.of("crlf-check@example.com"))
+                .from("sender@atengk.com")
+                .fromName("客服\r\nX-Injected-From: evil")
+                .subject("订单通知\r\nX-Injected-Subj: evil")
+                .html(true)
+                .text("<img src='cid:cid1'/>")
+                .headers(Map.of("X-Safe\r\n", "ok\r\nX-Injected-Hdr: evil"))
+                .inlines(List.of(dirtyInline))
+                .build();
+
+        MailSendResult result = mailTemplate.send(dirtyMsg);
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage received = greenMail.getReceivedMessages()[0];
+        assertNull(received.getHeader("X-Injected-Subj"));
+        assertNull(received.getHeader("X-Injected-From"));
+        assertNull(received.getHeader("X-Injected-Hdr"));
+        assertNull(received.getHeader("X-Injected-Cid"));
+        assertFalse(received.getSubject().contains("\r"));
+        assertFalse(received.getSubject().contains("\n"));
+    }
+
+    @Test
+    @DisplayName("测试自动跳过系统垃圾文件附件与内联资源且确定性关流")
+    void testSkipSystemJunkAttachmentsAndInlines(@org.junit.jupiter.api.io.TempDir java.nio.file.Path tempDir) throws Exception {
+        java.nio.file.Path dsStore = tempDir.resolve(".DS_Store");
+        java.nio.file.Files.writeString(dsStore, "mac metadata");
+
+        AtomicBoolean junkStreamClosed = new AtomicBoolean(false);
+        ByteArrayInputStream junkStream = new ByteArrayInputStream("win metadata".getBytes(StandardCharsets.UTF_8)) {
+            @Override
+            public void close() throws IOException {
+                junkStreamClosed.set(true);
+                super.close();
+            }
+        };
+
+        java.nio.file.Path thumbsDb = tempDir.resolve("thumbs.db");
+        java.nio.file.Files.writeString(thumbsDb, "thumb");
+
+        MailSendResult result = mailTemplate.send(msg -> msg
+                .to("junk-filter@example.com")
+                .subject("垃圾文件过滤测试")
+                .html("<p>正文</p>")
+                .attach(io.github.atengk.boot.mail.model.MailAttachment.of(dsStore.toFile()))
+                .attach("desktop.ini", junkStream)
+                .inline("junkCid", thumbsDb.toFile())
+                .attach("real-report.txt", "valid-data".getBytes(StandardCharsets.UTF_8)));
+
+        assertTrue(result.isSuccess());
+        assertTrue(junkStreamClosed.get(), "被跳过的系统垃圾文件流仍须确定性关闭");
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage received = greenMail.getReceivedMessages()[0];
+        List<String> attachedNames = new ArrayList<>();
+        collectAttachmentFilenames(received, attachedNames);
+        assertEquals(List.of("real-report.txt"), attachedNames);
+    }
+
+    @Test
+    @DisplayName("测试裸一次性 InputStream 禁用重试防空文件损坏，而 ofBuffered 与 byte[] 正常重试恢复")
+    void testNonRepeatableStreamDisablesRetryAndOfBufferedRetries() throws Exception {
+        mailProperties.getRetry().setEnabled(true);
+        mailProperties.getRetry().setMaxAttempts(3);
+        mailProperties.getRetry().setDelay(Duration.ofMillis(10));
+        mailProperties.getRetry().setJitter(false);
+
+        int smtpPort = greenMail.getSmtp().getPort();
+        JavaMailSenderImpl realSender = new JavaMailSenderImpl();
+        realSender.setHost("127.0.0.1");
+        realSender.setPort(smtpPort);
+        realSender.setUsername("test@atengk.com");
+        realSender.setPassword("password");
+
+        AtomicInteger attemptCounter = new AtomicInteger(0);
+        MailAccount flakyAccount = MailAccount.builder()
+                .name("flaky-stream-acc")
+                .host("127.0.0.1")
+                .port(smtpPort)
+                .username("test@atengk.com")
+                .password("password")
+                .ssl(false)
+                .defaultFrom("test@atengk.com")
+                .sender(new JavaMailSenderImpl() {
+                    @Override
+                    public void send(MimeMessage mimeMessage) {
+                        if (attemptCounter.incrementAndGet() == 1) {
+                            throw new org.springframework.mail.MailSendException("transient glitch");
+                        }
+                        realSender.send(mimeMessage);
+                    }
+                })
+                .build();
+        accountRegistry.register(flakyAccount);
+
+        // 1. 裸一次性 InputStream 禁用重试：只执行 1 次并直接失败，同时关闭流
+        AtomicBoolean rawClosed = new AtomicBoolean(false);
+        ByteArrayInputStream rawStream = new ByteArrayInputStream("once-only-payload".getBytes(StandardCharsets.UTF_8)) {
+            @Override
+            public void close() throws IOException {
+                rawClosed.set(true);
+                super.close();
+            }
+        };
+        assertThrows(MailSendException.class, () ->
+                mailTemplate.send(msg -> msg
+                        .account("flaky-stream-acc")
+                        .to("once@example.com")
+                        .subject("裸流禁重试")
+                        .text("body")
+                        .attach("once.txt", rawStream)));
+        assertEquals(1, attemptCounter.get(), "裸 InputStream 附件开启重试时必须禁用重试，严禁二次投递");
+        assertTrue(rawClosed.get());
+        assertEquals(0, greenMail.getReceivedMessages().length);
+
+        // 2. ofBuffered 有界缓冲附件支持正常重试并完整投递
+        attemptCounter.set(0);
+        ByteArrayInputStream bufSource = new ByteArrayInputStream("buffered-retry-payload".getBytes(StandardCharsets.UTF_8));
+        MailAttachment bufferedAttachment = MailAttachment.ofBuffered("buffered.txt", bufSource, 1024);
+        MailSendResult bufferedResult = mailTemplate.send(msg -> msg
+                .account("flaky-stream-acc")
+                .to("buffered@example.com")
+                .subject("缓冲流重试恢复")
+                .text("body")
+                .attach(bufferedAttachment));
+        assertTrue(bufferedResult.isSuccess());
+        assertEquals(2, attemptCounter.get(), "ofBuffered 资源应正常重试并于第 2 次恢复");
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+        MimeMessage received = greenMail.getReceivedMessages()[0];
+        Multipart mp = (Multipart) received.getContent();
+        String attachedContent = new String(mp.getBodyPart(1).getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals("buffered-retry-payload", attachedContent);
+    }
+
+    @Test
+    @DisplayName("测试前置校验异常、拦截器阻断与异步线程池拒绝全路径均确定性关闭 MailMessage 流资源")
+    void testFullPathDeterministicCloseOnValidationInterceptorAndExecutorRejection() {
+        // 1. 前置校验失败（MAIL_ACCOUNT_NOT_FOUND / MAIL_INVALID_ADDRESS / MAIL_RECIPIENT_EMPTY）
+        AtomicBoolean closed1 = new AtomicBoolean(false);
+        assertThrows(MailSendException.class, () ->
+                mailTemplate.send(new MailMessage()
+                        .account("missing-acc")
+                        .to("a@example.com")
+                        .subject("s")
+                        .text("t")
+                        .attach("a.txt", trackingStream(closed1))));
+        assertTrue(closed1.get(), "账号不存在前置失败时必须关闭附件流");
+
+        AtomicBoolean closed2 = new AtomicBoolean(false);
+        assertThrows(MailSendException.class, () ->
+                mailTemplate.send(new MailMessage()
+                        .to("bad-email")
+                        .subject("s")
+                        .text("t")
+                        .attach("b.txt", trackingStream(closed2))));
+        assertTrue(closed2.get(), "地址非法前置失败时必须关闭附件流");
+
+        // 2. 拦截器阻断
+        AtomicBoolean closed3 = new AtomicBoolean(false);
+        MailTemplate blockedTemplate = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), null, null, null,
+                List.of(msg -> false));
+        try {
+            assertThrows(MailSendException.class, () ->
+                    blockedTemplate.send(new MailMessage()
+                            .to("c@example.com")
+                            .subject("s")
+                            .text("t")
+                            .attach("c.txt", trackingStream(closed3))));
+            assertTrue(closed3.get(), "拦截器阻断时必须关闭附件流");
+        } finally {
+            blockedTemplate.destroy();
+        }
+
+        // 3. 异步线程池拒绝提交 (sendAsync, sendBatch, sendBatchAsync)
+        java.util.concurrent.Executor rejectingExecutor = cmd -> {
+            throw new java.util.concurrent.RejectedExecutionException("pool saturated");
+        };
+        MailTemplate rejectedTemplate = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), rejectingExecutor);
+
+        AtomicBoolean closed4 = new AtomicBoolean(false);
+        assertThrows(java.util.concurrent.RejectedExecutionException.class, () ->
+                rejectedTemplate.sendAsync(new MailMessage()
+                        .to("d@example.com")
+                        .subject("s")
+                        .text("t")
+                        .attach("d.txt", trackingStream(closed4))));
+        assertTrue(closed4.get(), "sendAsync 线程池拒绝提交时必须关闭附件流");
+
+        AtomicBoolean closed5 = new AtomicBoolean(false);
+        BatchMailSendResult batchResult = rejectedTemplate.sendBatch(List.of(new MailMessage()
+                .to("e@example.com")
+                .subject("s")
+                .text("t")
+                .attach("e.txt", trackingStream(closed5))));
+        assertEquals(1, batchResult.getFailureCount());
+        assertTrue(closed5.get(), "sendBatch 线程池拒绝提交时必须关闭附件流");
+
+        AtomicBoolean closed6 = new AtomicBoolean(false);
+        assertThrows(java.util.concurrent.RejectedExecutionException.class, () ->
+                rejectedTemplate.sendBatchAsync(List.of(new MailMessage()
+                        .to("f@example.com")
+                        .subject("s")
+                        .text("t")
+                        .attach("f.txt", trackingStream(closed6)))));
+        assertTrue(closed6.get(), "sendBatchAsync 线程池拒绝提交时必须关闭附件流");
+
+        // 4. async.enabled=false (executor == null) 调用 sendAsync 必须关闭流
+        MailProperties disabledAsyncProps = new MailProperties();
+        disabledAsyncProps.getAsync().setEnabled(false);
+        MailTemplate noAsyncTemplate = new MailTemplate(accountRegistry, disabledAsyncProps);
+        AtomicBoolean closed7 = new AtomicBoolean(false);
+        assertThrows(MailSendException.class, () ->
+                noAsyncTemplate.sendAsync(new MailMessage()
+                        .to("g@example.com")
+                        .subject("s")
+                        .text("t")
+                        .attach("g.txt", trackingStream(closed7))));
+        assertTrue(closed7.get(), "异步禁用导致 sendAsync 抛出异常时必须关闭附件流");
+    }
+
+    private ByteArrayInputStream trackingStream(AtomicBoolean closedFlag) {
+        return new ByteArrayInputStream("data".getBytes(StandardCharsets.UTF_8)) {
+            @Override
+            public void close() throws IOException {
+                closedFlag.set(true);
+                super.close();
+            }
+        };
+    }
+
+    @Test
+    @DisplayName("测试未知大小内联流超出单个上限抛出 MAIL_ATTACHMENT_SIZE_EXCEEDED，多流累加超总上限抛出 MAIL_TOTAL_SIZE_EXCEEDED")
+    void testInlineBoundedStreamAndCumulativeUnknownStreamTotalSizeLimit() {
+        mailProperties.setMaxAttachmentSize(DataSize.ofBytes(100));
+        mailProperties.setMaxTotalSize(DataSize.ofBytes(120));
+
+        // 1. 未知大小内联流超出单个上限 (150 > 100)
+        ByteArrayInputStream bigInline = new ByteArrayInputStream(new byte[150]);
+        MailSendException inlineEx = assertThrows(MailSendException.class, () ->
+                mailTemplate.send(msg -> msg
+                        .to("inline-limit@example.com")
+                        .subject("内联流超限")
+                        .html("<img src='cid:bigImg'/>")
+                        .inline(io.github.atengk.boot.mail.model.MailInlineResource.of("bigImg", bigInline, "image/png"))));
+        assertEquals(MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED, inlineEx.getResultCode());
+
+        // 2. 多个未知大小流（内联 80B + 附件 80B），单个均 <= 100B，但累加 160B > 120B 触发总容量熔断
+        ByteArrayInputStream inlineStream = new ByteArrayInputStream(new byte[80]);
+        ByteArrayInputStream attachStream = new ByteArrayInputStream(new byte[80]);
+        MailSendException totalEx = assertThrows(MailSendException.class, () ->
+                mailTemplate.send(msg -> msg
+                        .to("total-limit@example.com")
+                        .subject("累加流总大小超限")
+                        .html("<img src='cid:pic'/>")
+                        .inline(io.github.atengk.boot.mail.model.MailInlineResource.of("pic", inlineStream, "image/png"))
+                        .attach("part.bin", attachStream)));
+        assertEquals(MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED, totalEx.getResultCode());
+    }
+
+    private void collectAttachmentFilenames(Part part, List<String> names) throws Exception {
+        if (part.getFileName() != null) {
+            names.add(MimeUtility.decodeText(part.getFileName()));
+        }
+        if (part.isMimeType("multipart/*")) {
+            Multipart mp = (Multipart) part.getContent();
+            for (int i = 0; i < mp.getCount(); i++) {
+                collectAttachmentFilenames(mp.getBodyPart(i), names);
+            }
+        }
+    }
 }

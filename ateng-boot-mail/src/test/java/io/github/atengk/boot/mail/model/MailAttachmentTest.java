@@ -1,9 +1,12 @@
 package io.github.atengk.boot.mail.model;
 
+import io.github.atengk.boot.mail.exception.MailResultCode;
+import io.github.atengk.boot.mail.exception.MailSendException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.InputStreamResource;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -36,6 +39,20 @@ class MailAttachmentTest {
         assertEquals("attachment.dat", MailAttachment.cleanFilename(null));
         assertEquals("attachment.dat", MailAttachment.cleanFilename(".."));
         assertEquals("attachment.dat", MailAttachment.cleanFilename("."));
+        assertEquals("report.pdf", MailAttachment.cleanFilename("..\0/..\r\n/report\0.pdf"));
+        assertEquals("attachment.dat", MailAttachment.cleanFilename(".DS_Store"));
+        assertEquals("attachment.dat", MailAttachment.cleanFilename("C:\\Windows\\desktop.ini"));
+    }
+
+    @Test
+    @DisplayName("测试识别系统隐性垃圾文件标记")
+    void testSystemJunkDetection(@TempDir Path dir) throws IOException {
+        Path dsStore = dir.resolve(".DS_Store");
+        Files.writeString(dsStore, "junk");
+        assertTrue(MailAttachment.of(dsStore.toFile()).isSystemJunk());
+        assertTrue(MailAttachment.of("desktop.ini", new byte[]{1}).isSystemJunk());
+        assertTrue(MailAttachment.of("._hidden.pdf", new byte[]{1}).isSystemJunk());
+        assertFalse(MailAttachment.of("invoice.pdf", new byte[]{1}).isSystemJunk());
     }
 
     @Test
@@ -92,5 +109,34 @@ class MailAttachmentTest {
         assertFalse(cleaned.get());
         attachment.close();
         assertTrue(cleaned.get(), "close() 必须执行自定义注册的 cleanup 钩子");
+    }
+
+    @Test
+    @DisplayName("测试 repeatable 标记与 ofBuffered 有界缓冲构造")
+    void testRepeatableAndOfBuffered(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("r.txt");
+        Files.writeString(file, "abc");
+        assertTrue(MailAttachment.of(file.toFile()).isRepeatable());
+        assertTrue(MailAttachment.of("a.txt", "abc".getBytes()).isRepeatable());
+        assertTrue(MailAttachment.of("b.txt", new ByteArrayResource("abc".getBytes())).isRepeatable());
+        assertFalse(MailAttachment.of("c.txt", new ByteArrayInputStream("abc".getBytes())).isRepeatable());
+        assertFalse(MailAttachment.of("d.txt", new InputStreamResource(new ByteArrayInputStream("abc".getBytes()))).isRepeatable());
+
+        AtomicBoolean closed = new AtomicBoolean(false);
+        ByteArrayInputStream bais = new ByteArrayInputStream("buffered-ok".getBytes()) {
+            @Override
+            public void close() throws IOException {
+                closed.set(true);
+                super.close();
+            }
+        };
+        MailAttachment buffered = MailAttachment.ofBuffered("buf.txt", bais, 64);
+        assertTrue(buffered.isRepeatable());
+        assertEquals(11L, buffered.getSize());
+        assertTrue(closed.get(), "ofBuffered 读取完毕后应立即关闭原输入流");
+
+        MailSendException ex = assertThrows(MailSendException.class, () ->
+                MailAttachment.ofBuffered("too-big.bin", new ByteArrayInputStream(new byte[100]), 50));
+        assertEquals(MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED, ex.getResultCode());
     }
 }

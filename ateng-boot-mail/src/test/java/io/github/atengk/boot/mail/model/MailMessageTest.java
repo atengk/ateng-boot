@@ -93,4 +93,23 @@ class MailMessageTest {
         assertTrue(msg.isHtml());
         assertEquals("<b>富文本通知</b>", msg.getText());
     }
+
+    @Test
+    @DisplayName("测试 subject、fromName 与自定义标头构造时清洗 CR/LF/NUL 防头部注入")
+    void testCrlfSanitizationOnConstruction() {
+        MailMessage msg = new MailMessage()
+                .subject("通知\r\nBcc: evil@attacker.com")
+                .fromName("系统\r\nX-Evil: 1\0")
+                .header("X-Custom\r\n", "val\r\nX-Injected: true");
+
+        assertFalse(msg.getSubject().contains("\r"));
+        assertFalse(msg.getSubject().contains("\n"));
+        assertFalse(msg.getFromName().contains("\r"));
+        assertFalse(msg.getFromName().contains("\n"));
+        assertFalse(msg.getFromName().contains("\0"));
+        assertTrue(msg.getHeaders().containsKey("X-Custom"));
+        String val = msg.getHeaders().get("X-Custom");
+        assertFalse(val.contains("\r"));
+        assertFalse(val.contains("\n"));
+    }
 }

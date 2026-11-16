@@ -49,4 +49,11 @@ class FreemarkerMailTemplateRendererTest {
     void testTemplateNotFound() {
         assertThrows(MailSendException.class, () -> renderer.render("unknown", Map.of()));
     }
+
+    @Test
+    @DisplayName("测试模板名称包含 .. 或 \\0 立即拦截")
+    void testRejectsPathTraversalAndNullByte() {
+        assertThrows(MailSendException.class, () -> renderer.render("../notice", Map.of()));
+        assertThrows(MailSendException.class, () -> renderer.render("notice\0", Map.of()));
+    }
 }

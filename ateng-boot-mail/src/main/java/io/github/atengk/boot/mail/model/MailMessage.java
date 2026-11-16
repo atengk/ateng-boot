@@ -207,7 +207,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage from(String from, String fromName) {
         this.from = from;
-        this.fromName = fromName;
+        this.fromName = sanitizeHeaderText(fromName);
         return this;
     }
 
@@ -218,8 +218,17 @@ public class MailMessage implements AutoCloseable, Serializable {
      * @return 当前消息构建对象
      */
     public MailMessage fromName(String fromName) {
-        this.fromName = fromName;
+        this.fromName = sanitizeHeaderText(fromName);
         return this;
+    }
+
+    /**
+     * 设置发件人昵称（清洗 CR/LF/NUL 防头部注入）
+     *
+     * @param fromName 发件人昵称
+     */
+    public void setFromName(String fromName) {
+        this.fromName = sanitizeHeaderText(fromName);
     }
 
     /**
@@ -230,7 +239,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage to(String... to) {
         if (to != null) {
-            this.to.addAll(Arrays.stream(to).filter(Objects::nonNull).toList());
+            this.to.addAll(Arrays.asList(to));
         }
         return this;
     }
@@ -243,7 +252,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage to(Collection<String> to) {
         if (to != null) {
-            this.to.addAll(to.stream().filter(Objects::nonNull).toList());
+            this.to.addAll(to);
         }
         return this;
     }
@@ -256,7 +265,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage cc(String... cc) {
         if (cc != null) {
-            this.cc.addAll(Arrays.stream(cc).filter(Objects::nonNull).toList());
+            this.cc.addAll(Arrays.asList(cc));
         }
         return this;
     }
@@ -269,7 +278,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage cc(Collection<String> cc) {
         if (cc != null) {
-            this.cc.addAll(cc.stream().filter(Objects::nonNull).toList());
+            this.cc.addAll(cc);
         }
         return this;
     }
@@ -282,7 +291,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage bcc(String... bcc) {
         if (bcc != null) {
-            this.bcc.addAll(Arrays.stream(bcc).filter(Objects::nonNull).toList());
+            this.bcc.addAll(Arrays.asList(bcc));
         }
         return this;
     }
@@ -295,7 +304,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage bcc(Collection<String> bcc) {
         if (bcc != null) {
-            this.bcc.addAll(bcc.stream().filter(Objects::nonNull).toList());
+            this.bcc.addAll(bcc);
         }
         return this;
     }
@@ -318,8 +327,17 @@ public class MailMessage implements AutoCloseable, Serializable {
      * @return 当前消息构建对象
      */
     public MailMessage subject(String subject) {
-        this.subject = subject;
+        this.subject = sanitizeHeaderText(subject);
         return this;
+    }
+
+    /**
+     * 设置邮件主题（清洗 CR/LF/NUL 防头部注入）
+     *
+     * @param subject 邮件主题
+     */
+    public void setSubject(String subject) {
+        this.subject = sanitizeHeaderText(subject);
     }
 
     /**
@@ -354,8 +372,12 @@ public class MailMessage implements AutoCloseable, Serializable {
      * @return 当前消息构建对象
      */
     public MailMessage header(String name, String value) {
-        if (name != null && !name.isBlank() && value != null) {
-            this.headers.put(name, value);
+        String cleanName = sanitizeHeaderText(name);
+        if (cleanName != null && !cleanName.isBlank() && value != null) {
+            if (this.headers == null) {
+                this.headers = new LinkedHashMap<>();
+            }
+            this.headers.put(cleanName.trim(), sanitizeHeaderText(value));
         }
         return this;
     }
@@ -368,9 +390,26 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage headers(Map<String, String> headers) {
         if (headers != null) {
-            this.headers.putAll(headers);
+            if (this.headers == null) {
+                this.headers = new LinkedHashMap<>();
+            }
+            for (Map.Entry<String, String> entry : headers.entrySet()) {
+                header(entry.getKey(), entry.getValue());
+            }
         }
         return this;
+    }
+
+    /**
+     * 设置邮件标头映射（清洗键值 CR/LF/NUL 防头部注入）
+     *
+     * @param headers 标头映射
+     */
+    public void setHeaders(Map<String, String> headers) {
+        this.headers = new LinkedHashMap<>();
+        if (headers != null) {
+            headers(headers);
+        }
     }
 
     /**
@@ -566,7 +605,11 @@ public class MailMessage implements AutoCloseable, Serializable {
                     }
                 }
             }
-            attachments.clear();
+            try {
+                attachments.clear();
+            } catch (UnsupportedOperationException ignored) {
+                attachments = new ArrayList<>();
+            }
         }
         if (inlines != null) {
             for (MailInlineResource inline : inlines) {
@@ -577,7 +620,24 @@ public class MailMessage implements AutoCloseable, Serializable {
                     }
                 }
             }
-            inlines.clear();
+            try {
+                inlines.clear();
+            } catch (UnsupportedOperationException ignored) {
+                inlines = new ArrayList<>();
+            }
         }
+    }
+
+    /**
+     * 清洗邮件标头文本中的回车、换行与空字符，防范邮件头注入攻击
+     *
+     * @param value 原始文本
+     * @return 清洗后的文本
+     */
+    public static String sanitizeHeaderText(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.replace("\r", "").replace("\n", "").replace("\0", "");
     }
 }

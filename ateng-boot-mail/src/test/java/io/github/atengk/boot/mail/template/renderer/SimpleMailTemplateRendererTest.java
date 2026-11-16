@@ -81,4 +81,36 @@ class SimpleMailTemplateRendererTest {
         assertEquals("<h1>Hello World</h1>", renderer.render(template, null));
         assertEquals("<h1>Hello World</h1>", renderer.render(template, new HashMap<>()));
     }
+
+    @Test
+    @DisplayName("测试模板名称包含 .. 或 \\0 立即抛出 MAIL_TEMPLATE_RENDER_ERROR")
+    void testRejectsPathTraversalAndNullByte() {
+        for (String malicious : java.util.List.of("../secret.html", "..\\secret", "welcome\0.html", "<p>${name}</p>\0")) {
+            MailSendException ex = assertThrows(MailSendException.class, () ->
+                    renderer.render(malicious, Map.of("name", "a")));
+            assertEquals(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR, ex.getResultCode());
+        }
+    }
+
+    @Test
+    @DisplayName("测试默认关闭 htmlEscape 保持兼容，开启后转义 ${var} 并保留 $!{rawVar} 原文")
+    void testHtmlEscapeAndRawPlaceholder() {
+        String tpl = "<p>Hi ${name}</p><div>$!{rawHtml}</div>";
+        Map<String, Object> model = Map.of(
+                "name", "<script>alert('xss' & \"1\")</script>",
+                "rawHtml", "<b>Trusted</b>"
+        );
+
+        // 默认关闭：保持向后兼容
+        String defaultRendered = new SimpleMailTemplateRenderer().render(tpl, model);
+        assertEquals("<p>Hi <script>alert('xss' & \"1\")</script></p><div><b>Trusted</b></div>", defaultRendered);
+
+        // 开启 HTML 转义：${var} 自动转义危险字符，而 $!{rawVar} 保持原文
+        SimpleMailTemplateRenderer escapedRenderer = new SimpleMailTemplateRenderer(true);
+        String escapedRendered = escapedRenderer.render(tpl, model);
+        assertEquals(
+                "<p>Hi &lt;script&gt;alert(&#39;xss&#39; &amp; &quot;1&quot;)&lt;/script&gt;</p><div><b>Trusted</b></div>",
+                escapedRendered
+        );
+    }
 }

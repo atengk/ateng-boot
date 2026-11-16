@@ -52,7 +52,12 @@ public enum MailResultCode implements IResultCode {
     /**
      * 邮件总容量超出上限
      */
-    MAIL_TOTAL_SIZE_EXCEEDED(40005, "邮件总容量超出上限");
+    MAIL_TOTAL_SIZE_EXCEEDED(40005, "邮件总容量超出上限"),
+
+    /**
+     * 邮件地址格式非法
+     */
+    MAIL_INVALID_ADDRESS(40006, "邮件地址格式非法");
 
     private final Integer code;
     private final String msg;

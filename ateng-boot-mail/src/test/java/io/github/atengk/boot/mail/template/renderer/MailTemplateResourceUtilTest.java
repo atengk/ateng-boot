@@ -1,5 +1,7 @@
 package io.github.atengk.boot.mail.template.renderer;
 
+import io.github.atengk.boot.mail.exception.MailResultCode;
+import io.github.atengk.boot.mail.exception.MailSendException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.Resource;
@@ -8,6 +10,7 @@ import java.util.List;
 import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 邮件模板资源与国际化级联路径工具单元测试
@@ -105,5 +108,28 @@ class MailTemplateResourceUtilTest {
         // null 防御
         assertThat(MailTemplateResourceUtil.resolveExistingTemplateName("welcome.html", null)).isEqualTo("welcome.html");
         assertThat(MailTemplateResourceUtil.resolveExistingTemplateName(null, Locale.US)).isNull();
+    }
+
+    @Test
+    @DisplayName("路径穿越与空字符拦截：包含 .. 或 \\0 立即抛出 MAIL_TEMPLATE_RENDER_ERROR")
+    void testRejectsPathTraversalAndNullByte() {
+        for (String malicious : List.of("../application.yml", "mail/../../secret", "welcome\0.html")) {
+            assertThatThrownBy(() -> MailTemplateResourceUtil.buildLocaleCandidateNames(malicious, Locale.US))
+                    .isInstanceOf(MailSendException.class)
+                    .extracting(ex -> ((MailSendException) ex).getResultCode())
+                    .isEqualTo(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR);
+            assertThatThrownBy(() -> MailTemplateResourceUtil.buildPhysicalCandidateFileNames(malicious, Locale.US, ".html"))
+                    .isInstanceOf(MailSendException.class)
+                    .extracting(ex -> ((MailSendException) ex).getResultCode())
+                    .isEqualTo(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR);
+            assertThatThrownBy(() -> MailTemplateResourceUtil.resolveClasspathResource(malicious))
+                    .isInstanceOf(MailSendException.class)
+                    .extracting(ex -> ((MailSendException) ex).getResultCode())
+                    .isEqualTo(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR);
+            assertThatThrownBy(() -> MailTemplateResourceUtil.resolveExistingTemplateName(malicious, Locale.US))
+                    .isInstanceOf(MailSendException.class)
+                    .extracting(ex -> ((MailSendException) ex).getResultCode())
+                    .isEqualTo(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR);
+        }
     }
 }

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mail.model;
 
+import io.github.atengk.boot.core.util.FileUtil;
 import jakarta.activation.FileTypeMap;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -7,8 +8,10 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.InputStreamSource;
 import org.springframework.core.io.Resource;
+import org.springframework.util.unit.DataSize;
 
 import java.io.Closeable;
 import java.io.File;
@@ -60,6 +63,18 @@ public class MailInlineResource implements AutoCloseable, Serializable {
     private transient Runnable cleanupCallback;
 
     /**
+     * 是否为系统宿主隐性垃圾文件（如 .DS_Store、desktop.ini、thumbs.db 等，发送时自动跳过）
+     */
+    @Builder.Default
+    private boolean systemJunk = false;
+
+    /**
+     * 数据源是否可重复读取（File、byte[]、常规 Resource 与 ofBuffered 为 true；原始一次性 InputStream 为 false）
+     */
+    @Builder.Default
+    private boolean repeatable = true;
+
+    /**
      * 基于本地磁盘文件构建内联资源
      *
      * @param contentId 内联资源 Content-ID
@@ -68,6 +83,7 @@ public class MailInlineResource implements AutoCloseable, Serializable {
      */
     public static MailInlineResource of(String contentId, File file) {
         Objects.requireNonNull(file, "file must not be null");
+        boolean junk = FileUtil.isSystemJunkFile(file.toPath()) || FileUtil.isSystemJunkFile(file.getName());
         String cleanCid = cleanContentId(contentId);
         String mime = resolveContentType(file.getName(), null);
         return MailInlineResource.builder()
@@ -75,6 +91,7 @@ public class MailInlineResource implements AutoCloseable, Serializable {
                 .source(new FileSystemResource(file))
                 .contentType(mime)
                 .size(file.length())
+                .systemJunk(junk)
                 .build();
     }
 
@@ -120,11 +137,13 @@ public class MailInlineResource implements AutoCloseable, Serializable {
             } catch (Exception ignored) {
             }
         }
+        boolean repeatableSource = !(source instanceof InputStreamResource);
         return MailInlineResource.builder()
                 .contentId(cleanCid)
                 .source(source)
                 .contentType(mime)
                 .size(detectedSize)
+                .repeatable(repeatableSource)
                 .build();
     }
 
@@ -138,7 +157,9 @@ public class MailInlineResource implements AutoCloseable, Serializable {
     public static MailInlineResource of(String contentId, Resource resource) {
         Objects.requireNonNull(resource, "resource must not be null");
         String mime = resolveContentType(resource.getFilename(), null);
-        return of(contentId, (InputStreamSource) resource, mime);
+        MailInlineResource inline = of(contentId, (InputStreamSource) resource, mime);
+        inline.setSystemJunk(FileUtil.isSystemJunkFile(resource.getFilename()));
+        return inline;
     }
 
     /**
@@ -157,12 +178,71 @@ public class MailInlineResource implements AutoCloseable, Serializable {
                 .contentId(cleanCid)
                 .source(() -> inputStream)
                 .contentType(mime)
+                .repeatable(false)
                 .cleanupCallback(() -> {
                     try {
                         inputStream.close();
                     } catch (Exception ignored) {
                     }
                 })
+                .build();
+    }
+
+    /**
+     * 将一次性 InputStream 有界缓冲读取为可重读内联资源（默认最大 20MB，读取完成立即关闭原始输入流）
+     *
+     * @param contentId   内联资源 Content-ID
+     * @param inputStream 输入流
+     * @param contentType MIME 类型
+     * @return 可重读邮件内联资源模型
+     */
+    public static MailInlineResource ofBuffered(String contentId, InputStream inputStream, String contentType) {
+        return ofBuffered(contentId, inputStream, contentType, MailAttachment.DEFAULT_BUFFERED_MAX_BYTES);
+    }
+
+    /**
+     * 将一次性 InputStream 按指定 DataSize 上限有界缓冲读取为可重读内联资源
+     *
+     * @param contentId   内联资源 Content-ID
+     * @param inputStream 输入流
+     * @param contentType MIME 类型
+     * @param maxSize     容量上限
+     * @return 可重读邮件内联资源模型
+     */
+    public static MailInlineResource ofBuffered(String contentId, InputStream inputStream, String contentType, DataSize maxSize) {
+        Objects.requireNonNull(maxSize, "maxSize must not be null");
+        return ofBuffered(contentId, inputStream, contentType, maxSize.toBytes());
+    }
+
+    /**
+     * 将一次性 InputStream 按指定字节上限有界缓冲读取为可重读内联资源（读取完成或前置校验失败均立即关闭原始输入流）
+     *
+     * @param contentId   内联资源 Content-ID
+     * @param inputStream 输入流
+     * @param contentType MIME 类型
+     * @param maxBytes    允许读取的最大字节数
+     * @return 可重读邮件内联资源模型
+     */
+    public static MailInlineResource ofBuffered(String contentId, InputStream inputStream, String contentType, long maxBytes) {
+        Objects.requireNonNull(inputStream, "inputStream must not be null");
+        String cleanCid;
+        try {
+            cleanCid = cleanContentId(contentId);
+        } catch (Throwable t) {
+            try {
+                inputStream.close();
+            } catch (Exception ignored) {
+            }
+            throw t;
+        }
+        String mime = (contentType != null && !contentType.isBlank()) ? contentType : "image/png";
+        byte[] bytes = MailAttachment.readBufferedBytes(inputStream, maxBytes, cleanCid, "邮件内联资源");
+        return MailInlineResource.builder()
+                .contentId(cleanCid)
+                .source(new ByteArrayResource(bytes))
+                .contentType(mime)
+                .size((long) bytes.length)
+                .repeatable(true)
                 .build();
     }
 
@@ -208,12 +288,15 @@ public class MailInlineResource implements AutoCloseable, Serializable {
      * @return 清洗后的合法 Content-ID
      */
     public static String cleanContentId(String rawContentId) {
-        if (rawContentId == null || rawContentId.isBlank()) {
+        if (rawContentId == null) {
             throw new IllegalArgumentException("contentId must not be null or blank");
         }
-        String clean = rawContentId.trim();
+        String clean = MailMessage.sanitizeHeaderText(rawContentId).trim();
         if (clean.startsWith("<") && clean.endsWith(">") && clean.length() > 2) {
             clean = clean.substring(1, clean.length() - 1).trim();
+        }
+        if (clean.isBlank()) {
+            throw new IllegalArgumentException("contentId must not be null or blank");
         }
         return clean;
     }
