@@ -104,6 +104,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 可选依赖：Mail 邮件通信底座 (用于编译与装配 MailSafeHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-mail</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 可选依赖：Spring Boot Admin Client (用于 SBA 客户端透明增强与握手凭据注入) -->
         <dependency>
             <groupId>de.codecentric</groupId>

@@ -14,6 +14,8 @@ import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.listener.MailAccountEvictListener;
+import io.github.atengk.boot.mail.metrics.MailMetrics;
+import io.github.atengk.boot.mail.metrics.MailMetricsRecorder;
 import io.github.atengk.boot.mail.model.AuthMode;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailMessage;
@@ -27,10 +29,13 @@ import io.github.atengk.boot.mail.template.MailTemplate;
 import io.github.atengk.boot.mail.template.renderer.MailTemplateRenderer;
 import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
 import io.github.atengk.boot.mail.template.renderer.ThymeleafMailTemplateRenderer;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.validation.ValidationAutoConfiguration;
+import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -734,6 +739,49 @@ class AtengMailAutoConfigurationTest {
                     MailAccount topDefault = registry.getDefault();
                     assertThat(topDefault.getBackupAccounts()).containsExactly("secondary");
                     assertThat(context.getBean(MailProperties.class).getFailover().isOverrideFromOnSwitch()).isTrue();
+                });
+    }
+
+    @Test
+    @DisplayName("存在 MeterRegistry 时自动绑定 MailMetrics，缺失 Micrometer 时零报错平滑降级")
+    void testMicrometerMetricsAutoConfigurationAndGracefulDegradation() {
+        // 1. 存在 MeterRegistry 时自动装配 MailMetrics 并注入 MailTemplate
+        contextRunner
+                .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailMetrics.class);
+                    assertThat(context).hasSingleBean(MailMetricsRecorder.class);
+                    MailTemplate template = context.getBean(MailTemplate.class);
+                    assertThat(template.getMetricsRecorder()).isSameAs(context.getBean(MailMetrics.class));
+
+                    MeterRegistry registry = context.getBean(MeterRegistry.class);
+                    assertThat(registry.find("ateng.mail.accounts.static.size").gauge()).isNotNull();
+                    assertThat(registry.find("ateng.mail.accounts.static.size").gauge().value()).isEqualTo(1.0);
+                    assertThat(registry.find("ateng.mail.accounts.dynamic.capacity").gauge()).isNotNull();
+                });
+
+        // 2. management.metrics.enable.mail=false 时关闭自动指标装配，MailTemplate 仍正常运行
+        contextRunner
+                .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withPropertyValues(
+                        "ateng.boot.mail.host=smtp.example.com",
+                        "management.metrics.enable.mail=false"
+                )
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(MailMetrics.class);
+                    assertThat(context).hasSingleBean(MailTemplate.class);
+                    assertThat(context.getBean(MailTemplate.class).getMetricsRecorder()).isNotNull();
+                });
+
+        // 3. 缺席 micrometer-core 类路径且无 MeterRegistry 时零报错平滑降级启动
+        contextRunner
+                .withClassLoader(new FilteredClassLoader(MeterRegistry.class))
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(MailMetrics.class);
+                    assertThat(context).hasSingleBean(MailTemplate.class);
+                    assertThat(context.getBean(MailTemplate.class).getMetricsRecorder()).isNotNull();
                 });
     }
 

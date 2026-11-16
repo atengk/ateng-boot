@@ -218,6 +218,12 @@ public class ObservabilityProperties {
          */
         @NestedConfigurationProperty
         private SearchHealthProperties search = new SearchHealthProperties();
+
+        /**
+         * 邮件通信基础设施（ateng-boot-mail）健康探针配置
+         */
+        @NestedConfigurationProperty
+        private MailHealthProperties mail = new MailHealthProperties();
     }
 
     /**
@@ -322,6 +328,24 @@ public class ObservabilityProperties {
          * 是否启用 Search 安全健康探针（默认开启）
          */
         private boolean enabled = true;
+    }
+
+    /**
+     * 邮件通信基础设施（ateng-boot-mail）探针配置
+     */
+    @Getter
+    @Setter
+    public static class MailHealthProperties {
+
+        /**
+         * 是否启用邮件静态账号健康探针（默认开启）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 邮件健康探针防刷缓存有效期（强类型 Duration，默认 60s 以防高频探活触发公网邮件服务商认证限流；设为 0s 可关闭缓存）
+         */
+        private Duration cacheTtl = Duration.ofSeconds(60);
     }
 
     /**

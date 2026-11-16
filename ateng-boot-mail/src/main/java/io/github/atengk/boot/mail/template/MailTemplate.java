@@ -22,6 +22,8 @@ import io.github.atengk.boot.mail.guard.MailRateLimiter;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
+import io.github.atengk.boot.mail.metrics.MailMetricsRecorder;
+import io.github.atengk.boot.mail.metrics.MailSendOutcome;
 import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
@@ -102,6 +104,7 @@ import java.util.stream.Collectors;
 public class MailTemplate implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(MailTemplate.class);
+    private static final String INTERCEPTOR_BLOCKED_PREFIX = "邮件发送被拦截器阻断";
 
     private static final boolean SPRING_TX_PRESENT = ClassUtils.isPresent(
             "org.springframework.transaction.support.TransactionSynchronizationManager",
@@ -147,6 +150,9 @@ public class MailTemplate implements DisposableBean {
     @Getter
     private final MailIdempotentGuard idempotentGuard;
 
+    @Getter
+    private final MailMetricsRecorder metricsRecorder;
+
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties) {
         this(accountRegistry, properties, new SimpleMailTemplateRenderer(), new TenantMailAccountResolver(), null, null, null, null, null);
     }
@@ -184,6 +190,10 @@ public class MailTemplate implements DisposableBean {
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, MailAccountProvider accountProvider, MailAccessTokenProvider accessTokenProvider, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers, List<MailSendInterceptor> interceptors, MailRateLimiter rateLimiter, MailDailyQuotaBreaker dailyQuotaBreaker, MailIdempotentGuard idempotentGuard) {
+        this(accountRegistry, properties, templateRenderer, accountResolver, accountProvider, accessTokenProvider, executor, eventPublisher, failureHandlers, interceptors, rateLimiter, dailyQuotaBreaker, idempotentGuard, null);
+    }
+
+    public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, MailAccountProvider accountProvider, MailAccessTokenProvider accessTokenProvider, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers, List<MailSendInterceptor> interceptors, MailRateLimiter rateLimiter, MailDailyQuotaBreaker dailyQuotaBreaker, MailIdempotentGuard idempotentGuard, MailMetricsRecorder metricsRecorder) {
         this.accountRegistry = Objects.requireNonNull(accountRegistry, "accountRegistry must not be null");
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.templateRenderer = templateRenderer != null ? templateRenderer : new SimpleMailTemplateRenderer();
@@ -213,6 +223,7 @@ public class MailTemplate implements DisposableBean {
         this.rateLimiter = rateLimiter;
         this.dailyQuotaBreaker = dailyQuotaBreaker;
         this.idempotentGuard = idempotentGuard;
+        this.metricsRecorder = metricsRecorder != null ? metricsRecorder : MailMetricsRecorder.noop();
     }
 
     // ==================== 全能领域对象与函数式 DSL 发信 ====================
@@ -224,14 +235,39 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult send(MailMessage message) {
+        return sendInternal(message, null);
+    }
+
+    MailSendResult sendForBatch(MailAccount explicitBoundAccount, MailMessage message,
+                                AtomicReference<BatchDeliveryMetric> batchMetricRef) {
+        if (explicitBoundAccount != null) {
+            return sendWithAccountInternal(explicitBoundAccount, message, batchMetricRef);
+        }
+        return sendInternal(message, batchMetricRef);
+    }
+
+    private MailSendResult sendInternal(MailMessage message, AtomicReference<BatchDeliveryMetric> batchMetricRef) {
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
+        long startNanos = System.nanoTime();
         try {
-            requireNonEmptyRecipients(message);
-            validateMessageAddresses(null, message);
-            MailAccount account = resolveAccount(message);
-            return sendWithAccount(account, message);
+            MailAccount account;
+            try {
+                requireNonEmptyRecipients(message);
+                validateMessageAddresses(null, message);
+                account = resolveAccount(message);
+            } catch (Throwable t) {
+                String accountLabel = resolvePreFailureMetricAccount(message);
+                if (batchMetricRef != null) {
+                    batchMetricRef.set(new BatchDeliveryMetric(accountLabel, MailSendOutcome.FAILURE));
+                } else {
+                    metricsRecorder.recordSend(accountLabel, MailSendOutcome.FAILURE,
+                            Duration.ofNanos(System.nanoTime() - startNanos));
+                }
+                throw t;
+            }
+            return sendWithAccountInternal(account, message, batchMetricRef);
         } finally {
             message.close();
         }
@@ -312,6 +348,11 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult sendWithAccount(MailAccount account, MailMessage message) {
+        return sendWithAccountInternal(account, message, null);
+    }
+
+    private MailSendResult sendWithAccountInternal(MailAccount account, MailMessage message,
+                                                   AtomicReference<BatchDeliveryMetric> batchMetricRef) {
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
@@ -321,22 +362,31 @@ public class MailTemplate implements DisposableBean {
         }
 
         String maskedTo = maskRecipients(message);
+        long startNanos = System.nanoTime();
+        String metricAccount = account.getName();
 
         try {
             PreparedDelivery prepared = prepareForDelivery(account, message);
+            metricAccount = prepared.account().getName();
             if (prepared.logOnly()) {
-                return deliverSandboxLogOnly(prepared);
+                MailSendResult sandboxResult = deliverSandboxLogOnly(prepared);
+                recordOrCaptureSendMetric(batchMetricRef, metricAccount, MailSendOutcome.SANDBOX, startNanos);
+                return sandboxResult;
             }
 
             MailAccount targetAccount = prepared.account();
-            return executeWithOutboundGuards(targetAccount, message, () -> {
+            metricAccount = targetAccount.getName();
+            MailSendResult result = executeWithOutboundGuards(targetAccount, message, () -> {
                 publishEvent(new MailSendingEvent(this, message));
-                MailSendResult result = executeWithCascadeFailover(
+                MailSendResult sendResult = executeWithCascadeFailover(
                         targetAccount, message, prepared.maskedTo(), prepared.traceId(), prepared.messageId());
-                publishEvent(new MailSentEvent(this, message, result));
-                return result;
+                publishEvent(new MailSentEvent(this, message, sendResult));
+                return sendResult;
             });
+            recordOrCaptureSendMetric(batchMetricRef, metricAccount, MailSendOutcome.SUCCESS, startNanos);
+            return result;
         } catch (Throwable t) {
+            recordOrCaptureSendMetric(batchMetricRef, metricAccount, classifyFailureOutcome(t), startNanos);
             triggerFailureSafetyNet(message, maskedTo, t);
             if (t instanceof MailSendException mse) {
                 throw mse;
@@ -345,6 +395,17 @@ public class MailTemplate implements DisposableBean {
         } finally {
             // 确定性资源清理：释放所有流句柄与临时文件
             message.close();
+        }
+    }
+
+    private void recordOrCaptureSendMetric(AtomicReference<BatchDeliveryMetric> batchMetricRef,
+                                           String accountName,
+                                           MailSendOutcome outcome,
+                                           long startNanos) {
+        if (batchMetricRef != null) {
+            batchMetricRef.set(new BatchDeliveryMetric(accountName, outcome));
+        } else {
+            metricsRecorder.recordSend(accountName, outcome, Duration.ofNanos(System.nanoTime() - startNanos));
         }
     }
 
@@ -481,9 +542,12 @@ public class MailTemplate implements DisposableBean {
                     trimmedName, addressOverride.from());
 
             try {
-                return sendPhysicalWithRetry(backupAccount, message, currentMaskedTo, traceId,
+                MailSendResult failoverResult = sendPhysicalWithRetry(backupAccount, message, currentMaskedTo, traceId,
                         backupMessageId, addressOverride, repeatableMessage);
+                metricsRecorder.recordFailover(primaryAccount.getName(), true);
+                return failoverResult;
             } catch (Throwable backupFailure) {
+                metricsRecorder.recordFailover(primaryAccount.getName(), false);
                 primaryFailure.addSuppressed(backupFailure);
                 failedChain.add(trimmedName + ": " + backupFailure.getMessage());
                 log.warn("[MailFailover] 备用账号 [{}] 投递同样失败: {}", trimmedName, backupFailure.getMessage());
@@ -516,8 +580,11 @@ public class MailTemplate implements DisposableBean {
                     .maxDelay(retryProps.getMaxDelay())
                     .jitter(retryProps.isJitter())
                     .retryPredicate(this::isRetryableException)
-                    .onRetry((attempt, error) -> log.warn("Sending email via account [{}] to [{}] failed on attempt {}, preparing retry. Reason: {}",
-                            account.getName(), currentMaskedTo, attempt, error.getMessage()))
+                    .onRetry((attempt, error) -> {
+                        metricsRecorder.recordRetry(account.getName());
+                        log.warn("Sending email via account [{}] to [{}] failed on attempt {}, preparing retry. Reason: {}",
+                                account.getName(), currentMaskedTo, attempt, error.getMessage());
+                    })
                     .build();
             return RetryUtil.execute(
                     () -> doSendPhysical(account, message, currentMaskedTo, traceId, messageId, addressOverride),
@@ -942,6 +1009,43 @@ public class MailTemplate implements DisposableBean {
             return properties.getBatch().getTimeout();
         }
         return Duration.ofMinutes(5);
+    }
+
+    record BatchDeliveryMetric(String accountName, MailSendOutcome outcome) {
+    }
+
+    String resolvePreFailureMetricAccount(MailMessage message) {
+        if (message == null || message.getAccount() == null || message.getAccount().isBlank()) {
+            return "unresolved";
+        }
+        String candidate = message.getAccount().trim();
+        if (accountRegistry.contains(candidate) || accountRegistry.getDynamic(candidate) != null) {
+            return candidate;
+        }
+        return "unresolved";
+    }
+
+    MailSendOutcome classifyFailureOutcome(Throwable throwable) {
+        if (throwable instanceof MailSendException mse) {
+            IResultCode code = mse.getResultCode();
+            if (code == MailResultCode.MAIL_RATE_LIMITED) {
+                return MailSendOutcome.RATE_LIMITED;
+            }
+            if (code == MailResultCode.MAIL_QUOTA_EXCEEDED) {
+                return MailSendOutcome.QUOTA_EXCEEDED;
+            }
+            if (code == MailResultCode.MAIL_IDEMPOTENT_REJECTED) {
+                return MailSendOutcome.IDEMPOTENT_REJECTED;
+            }
+            if (isInterceptorBlocked(mse)) {
+                return MailSendOutcome.INTERCEPTED;
+            }
+        }
+        return MailSendOutcome.FAILURE;
+    }
+
+    private static boolean isInterceptorBlocked(MailSendException mse) {
+        return mse.getMessage() != null && mse.getMessage().contains(INTERCEPTOR_BLOCKED_PREFIX);
     }
 
     /**
@@ -2105,7 +2209,7 @@ public class MailTemplate implements DisposableBean {
                     || mse.getResultCode() == MailResultCode.MAIL_RATE_LIMITED
                     || mse.getResultCode() == MailResultCode.MAIL_QUOTA_EXCEEDED
                     || mse.getResultCode() == MailResultCode.MAIL_IDEMPOTENT_REJECTED
-                    || (mse.getMessage() != null && mse.getMessage().contains("邮件发送被拦截器阻断"))) {
+                    || isInterceptorBlocked(mse)) {
                 return false;
             }
         }
@@ -2394,7 +2498,7 @@ public class MailTemplate implements DisposableBean {
                         log.warn("Mail sending blocked by interceptor [{}], subject: [{}]",
                                 interceptor.getClass().getSimpleName(), message.getSubject());
                         throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
-                                "邮件发送被拦截器阻断: " + interceptor.getClass().getSimpleName());
+                                INTERCEPTOR_BLOCKED_PREFIX + ": " + interceptor.getClass().getSimpleName());
                     }
                 } catch (MailSendException mse) {
                     throw mse;
@@ -2433,6 +2537,7 @@ public class MailTemplate implements DisposableBean {
                     } catch (Throwable submitEx) {
                         // triggerFailureSafetyNet 内部已打印 [MailSafetyNet] 错误日志并触发告警事件与回调
                         try {
+                            metricsRecorder.recordSend(resolvePreFailureMetricAccount(message), MailSendOutcome.FAILURE, Duration.ZERO);
                             triggerFailureSafetyNet(message, maskRecipients(message), submitEx);
                         } finally {
                             message.close();
@@ -2492,12 +2597,16 @@ public class MailTemplate implements DisposableBean {
     }
 
     private void deliverAfterCommit(MailAccount explicitAccount, MailMessage message) {
+        long startNanos = System.nanoTime();
         MailAccount targetAccount;
         try {
             requireNonEmptyRecipients(message);
             targetAccount = explicitAccount != null ? explicitAccount : resolveAccount(message);
         } catch (Throwable preEx) {
             try {
+                String accountLabel = explicitAccount != null ? explicitAccount.getName() : resolvePreFailureMetricAccount(message);
+                metricsRecorder.recordSend(accountLabel, MailSendOutcome.FAILURE,
+                        Duration.ofNanos(System.nanoTime() - startNanos));
                 triggerFailureSafetyNet(message, maskRecipients(message), preEx);
             } finally {
                 message.close();

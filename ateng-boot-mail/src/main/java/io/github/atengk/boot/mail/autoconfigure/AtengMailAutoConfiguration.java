@@ -15,6 +15,8 @@ import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.listener.MailAccountEvictListener;
+import io.github.atengk.boot.mail.metrics.MailMetrics;
+import io.github.atengk.boot.mail.metrics.MailMetricsRecorder;
 import io.github.atengk.boot.mail.model.AuthMode;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.properties.MailAccountProperties;
@@ -70,7 +72,11 @@ import java.util.concurrent.Executor;
         afterName = {
                 "org.springframework.boot.autoconfigure.thymeleaf.ThymeleafAutoConfiguration",
                 "org.springframework.boot.autoconfigure.freemarker.FreeMarkerAutoConfiguration",
-                "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration"
+                "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration",
+                "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration",
+                "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration",
+                "org.springframework.boot.actuate.autoconfigure.metrics.export.simple.SimpleMetricsExportAutoConfiguration",
+                "org.springframework.boot.actuate.autoconfigure.metrics.export.prometheus.PrometheusMetricsExportAutoConfiguration"
         }
 )
 @ConditionalOnClass(JavaMailSender.class)
@@ -331,6 +337,23 @@ public class AtengMailAutoConfiguration {
         }
     }
 
+    /**
+     * Micrometer 低基数邮件度量指标装配（检测到 MeterRegistry Bean 时无侵入自动绑定）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "io.micrometer.core.instrument.MeterRegistry")
+    @ConditionalOnProperty(prefix = "management.metrics.enable", name = "mail", havingValue = "true", matchIfMissing = true)
+    public static class MailMetricsConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(MailMetricsRecorder.class)
+        @ConditionalOnBean(type = "io.micrometer.core.instrument.MeterRegistry")
+        public MailMetrics mailMetrics(io.micrometer.core.instrument.MeterRegistry meterRegistry,
+                                       MailAccountRegistry accountRegistry) {
+            return new MailMetrics(meterRegistry, accountRegistry);
+        }
+    }
+
     @Bean
     @ConditionalOnMissingBean
     public MailTemplate mailTemplate(MailAccountRegistry registry, MailProperties properties,
@@ -344,7 +367,8 @@ public class AtengMailAutoConfiguration {
                                      ObjectProvider<List<MailSendInterceptor>> interceptorsProvider,
                                      ObjectProvider<MailRateLimiter> rateLimiterProvider,
                                      ObjectProvider<MailDailyQuotaBreaker> dailyQuotaBreakerProvider,
-                                     ObjectProvider<MailIdempotentGuard> idempotentGuardProvider) {
+                                     ObjectProvider<MailIdempotentGuard> idempotentGuardProvider,
+                                     ObjectProvider<MailMetricsRecorder> metricsRecorderProvider) {
         Executor executor = mailTaskExecutorProvider.getIfAvailable();
         if (executor == null) {
             executor = genericTaskExecutorProvider.getIfAvailable();
@@ -357,8 +381,10 @@ public class AtengMailAutoConfiguration {
         MailRateLimiter rateLimiter = rateLimiterProvider.getIfAvailable();
         MailDailyQuotaBreaker dailyQuotaBreaker = dailyQuotaBreakerProvider.getIfAvailable();
         MailIdempotentGuard idempotentGuard = idempotentGuardProvider.getIfAvailable();
+        MailMetricsRecorder metricsRecorder = metricsRecorderProvider.getIfAvailable();
         return new MailTemplate(registry, properties, templateRenderer, accountResolver, accountProvider, accessTokenProvider,
-                executor, eventPublisher, failureHandlers, interceptors, rateLimiter, dailyQuotaBreaker, idempotentGuard);
+                executor, eventPublisher, failureHandlers, interceptors, rateLimiter, dailyQuotaBreaker, idempotentGuard,
+                metricsRecorder);
     }
 
     private MailAccount createMailAccount(String name, MailAccountProperties accountProps, MailProperties globalProps) {

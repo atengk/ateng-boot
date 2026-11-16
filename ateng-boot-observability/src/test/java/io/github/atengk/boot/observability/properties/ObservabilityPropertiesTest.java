@@ -59,6 +59,8 @@ class ObservabilityPropertiesTest {
         assertThat(properties.getHealth().getKafka().isEnabled()).isTrue();
         assertThat(properties.getHealth().getRabbitmq().isEnabled()).isTrue();
         assertThat(properties.getHealth().getSearch().isEnabled()).isTrue();
+        assertThat(properties.getHealth().getMail().isEnabled()).isTrue();
+        assertThat(properties.getHealth().getMail().getCacheTtl()).isEqualTo(Duration.ofSeconds(60));
 
         // 端点安全默认配置
         assertThat(properties.getSecurity()).isNotNull();
@@ -109,6 +111,8 @@ class ObservabilityPropertiesTest {
                         "ateng.boot.observability.health.kafka.enabled=false",
                         "ateng.boot.observability.health.rabbitmq.enabled=false",
                         "ateng.boot.observability.health.search.enabled=false",
+                        "ateng.boot.observability.health.mail.enabled=false",
+                        "ateng.boot.observability.health.mail.cache-ttl=120s",
                         "ateng.boot.observability.security.lockdown-enabled=true",
                         "ateng.boot.observability.security.token=SEC_TOKEN_123456",
                         "ateng.boot.observability.security.allowed-ip-ranges[0]=10.0.0.0/8",
@@ -153,6 +157,8 @@ class ObservabilityPropertiesTest {
                     assertThat(props.getHealth().getKafka().isEnabled()).isFalse();
                     assertThat(props.getHealth().getRabbitmq().isEnabled()).isFalse();
                     assertThat(props.getHealth().getSearch().isEnabled()).isFalse();
+                    assertThat(props.getHealth().getMail().isEnabled()).isFalse();
+                    assertThat(props.getHealth().getMail().getCacheTtl()).isEqualTo(Duration.ofSeconds(120));
                     assertThat(props.getHealth().getRealtime().isEnabled()).isTrue();
                     assertThat(props.getSecurity().isLockdownEnabled()).isTrue();
                     assertThat(props.getSecurity().getToken()).isEqualTo("SEC_TOKEN_123456");

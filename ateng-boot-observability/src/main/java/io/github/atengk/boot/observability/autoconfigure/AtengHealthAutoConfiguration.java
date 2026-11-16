@@ -1,9 +1,11 @@
 package io.github.atengk.boot.observability.autoconfigure;
 
 import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
+import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.observability.health.DynamicDatasourceHealthIndicator;
 import io.github.atengk.boot.observability.health.KafkaSafeHealthIndicator;
+import io.github.atengk.boot.observability.health.MailSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.RabbitmqSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.RealtimeHealthIndicator;
 import io.github.atengk.boot.observability.health.RedisSafeHealthIndicator;
@@ -57,6 +59,7 @@ import java.util.concurrent.TimeUnit;
 @AutoConfigureBefore(name = {
         "org.springframework.boot.actuate.autoconfigure.redis.RedisHealthContributorAutoConfiguration",
         "org.springframework.boot.actuate.autoconfigure.amqp.RabbitHealthContributorAutoConfiguration",
+        "org.springframework.boot.actuate.autoconfigure.mail.MailHealthContributorAutoConfiguration",
         "io.github.atengk.boot.search.autoconfigure.AtengSearchAutoConfiguration"
 })
 @ConditionalOnClass(HealthIndicator.class)
@@ -232,6 +235,24 @@ public class AtengHealthAutoConfiguration {
                 ObservabilityProperties properties,
                 @Qualifier(HEALTH_PROBE_EXECUTOR_BEAN_NAME) ObjectProvider<Executor> executorProvider) {
             return new SearchSafeHealthIndicator(searchEngineClientProvider, properties, executorProvider.getIfAvailable());
+        }
+    }
+
+    /**
+     * ateng-boot-mail 专属静态账号安全健康探针装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(MailAccountRegistry.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.observability.health.mail", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public static class MailHealthIndicatorConfiguration {
+
+        @Bean(name = {"mailHealthIndicator", "mailHealthContributor"})
+        @ConditionalOnMissingBean(name = "mailHealthIndicator")
+        public MailSafeHealthIndicator mailHealthIndicator(
+                ObjectProvider<MailAccountRegistry> registryProvider,
+                ObservabilityProperties properties,
+                @Qualifier(HEALTH_PROBE_EXECUTOR_BEAN_NAME) ObjectProvider<Executor> executorProvider) {
+            return new MailSafeHealthIndicator(registryProvider, properties, executorProvider.getIfAvailable());
         }
     }
 }

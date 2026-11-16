@@ -6,6 +6,7 @@ import io.github.atengk.boot.mail.event.MailSendingEvent;
 import io.github.atengk.boot.mail.event.MailSentEvent;
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
+import io.github.atengk.boot.mail.metrics.MailSendOutcome;
 import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailMessage;
@@ -87,7 +88,9 @@ final class MailBatchSupport {
             if (msg == null) {
                 itemStates.set(i, STATE_FINISHED);
                 IllegalArgumentException nullEx = new IllegalArgumentException("MailMessage at index " + i + " must not be null");
-                results.set(i, MailSendResultItem.failure(i, null, nullEx.getMessage(), nullEx));
+                completeBatchItem(results, i, MailSendResultItem.failure(i, null, nullEx.getMessage(), nullEx),
+                        template, resolveBatchAccountLabel(template, explicitBoundAccount, null),
+                        MailSendOutcome.FAILURE, batchStartNanos);
             } else {
                 pendingItems.add(new BatchItem(i, msg));
             }
@@ -112,7 +115,7 @@ final class MailBatchSupport {
                 permitAcquired = concurrencySemaphore.tryAcquire(remainingNanos, TimeUnit.NANOSECONDS);
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
-                markSliceInterrupted(slice, itemStates, results, ie);
+                markSliceInterrupted(template, explicitBoundAccount, slice, itemStates, results, ie, batchStartNanos);
                 break;
             }
             if (!permitAcquired) {
@@ -137,9 +140,11 @@ final class MailBatchSupport {
                     if (itemStates.compareAndSet(item.index(), STATE_PENDING, STATE_FINISHED)) {
                         closeQuietly(item.message());
                     }
-                    results.compareAndSet(item.index(), null,
+                    completeBatchItem(results, item.index(),
                             MailSendResultItem.failure(item.index(), item.message(),
-                                    "批量分片任务提交失败: " + submitEx.getMessage(), submitEx));
+                                    "批量分片任务提交失败: " + submitEx.getMessage(), submitEx),
+                            template, resolveBatchAccountLabel(template, explicitBoundAccount, item.message()),
+                            MailSendOutcome.FAILURE, batchStartNanos);
                 }
             }
         }
@@ -156,7 +161,9 @@ final class MailBatchSupport {
                 TimeoutException timeoutEx = batchTimedOut.get()
                         ? new TimeoutException(errorMsg)
                         : null;
-                results.compareAndSet(i, null, MailSendResultItem.failure(i, msg, errorMsg, timeoutEx));
+                completeBatchItem(results, i, MailSendResultItem.failure(i, msg, errorMsg, timeoutEx),
+                        template, resolveBatchAccountLabel(template, explicitBoundAccount, msg),
+                        MailSendOutcome.FAILURE, batchStartNanos);
             }
             if (itemStates.compareAndSet(i, STATE_PENDING, STATE_FINISHED)) {
                 closeQuietly(msg);
@@ -233,16 +240,21 @@ final class MailBatchSupport {
         }
     }
 
-    private static void markSliceInterrupted(List<BatchItem> slice,
+    private static void markSliceInterrupted(MailTemplate template,
+                                             MailAccount explicitBoundAccount,
+                                             List<BatchItem> slice,
                                              AtomicIntegerArray itemStates,
                                              AtomicReferenceArray<MailSendResultItem> results,
-                                             InterruptedException ie) {
+                                             InterruptedException ie,
+                                             long batchStartNanos) {
         for (BatchItem item : slice) {
             if (itemStates.compareAndSet(item.index(), STATE_PENDING, STATE_FINISHED)) {
                 closeQuietly(item.message());
             }
-            results.compareAndSet(item.index(), null,
-                    MailSendResultItem.failure(item.index(), item.message(), "批量发送任务被中断: " + ie.getMessage(), ie));
+            completeBatchItem(results, item.index(),
+                    MailSendResultItem.failure(item.index(), item.message(), "批量发送任务被中断: " + ie.getMessage(), ie),
+                    template, resolveBatchAccountLabel(template, explicitBoundAccount, item.message()),
+                    MailSendOutcome.FAILURE, batchStartNanos);
         }
     }
 
@@ -271,12 +283,15 @@ final class MailBatchSupport {
                 }
                 MailMessage message = item.message();
                 String maskedTo = template.maskRecipients(message);
+                long entryStartNanos = System.nanoTime();
                 try {
                     MailTemplate.PreparedDelivery prepared = template.prepareForDelivery(explicitBoundAccount, message);
                     if (prepared.logOnly()) {
                         try {
                             MailSendResult sandboxResult = template.deliverSandboxLogOnly(prepared);
-                            results.compareAndSet(item.index(), null, MailSendResultItem.success(item.index(), message, sandboxResult));
+                            completeBatchItem(results, item.index(),
+                                    MailSendResultItem.success(item.index(), message, sandboxResult),
+                                    template, prepared.account().getName(), MailSendOutcome.SANDBOX, entryStartNanos);
                         } finally {
                             itemStates.set(item.index(), STATE_FINISHED);
                             closeQuietly(message);
@@ -285,15 +300,17 @@ final class MailBatchSupport {
                     }
                     TransportGroupKey groupKey = new TransportGroupKey(prepared.account(), prepared.account().getSender());
                     physicalGroups.computeIfAbsent(groupKey, k -> new ArrayList<>())
-                            .add(new PreparedBatchEntry(item.index(), prepared));
+                            .add(new PreparedBatchEntry(item.index(), prepared, entryStartNanos));
                 } catch (Throwable t) {
                     try {
+                        String failAccount = resolveBatchAccountLabel(template, explicitBoundAccount, message);
                         template.triggerFailureSafetyNet(message, maskedTo, t);
                         MailSendException wrapped = (t instanceof MailSendException mse)
                                 ? mse
                                 : new MailSendException(MailResultCode.MAIL_SEND_ERROR, "邮件发送失败: " + t.getMessage(), t);
-                        results.compareAndSet(item.index(), null,
-                                MailSendResultItem.failure(item.index(), message, wrapped.getMessage(), wrapped));
+                        completeBatchItem(results, item.index(),
+                                MailSendResultItem.failure(item.index(), message, wrapped.getMessage(), wrapped),
+                                template, failAccount, template.classifyFailureOutcome(t), entryStartNanos);
                     } finally {
                         itemStates.set(item.index(), STATE_FINISHED);
                         closeQuietly(message);
@@ -331,13 +348,23 @@ final class MailBatchSupport {
                 continue;
             }
             MailMessage message = item.message();
+            long entryStartNanos = System.nanoTime();
+            AtomicReference<MailTemplate.BatchDeliveryMetric> metricRef = new AtomicReference<>();
             try {
-                MailSendResult result = explicitBoundAccount != null
-                        ? template.sendWithAccount(explicitBoundAccount, message)
-                        : template.send(message);
-                results.compareAndSet(item.index(), null, MailSendResultItem.success(item.index(), message, result));
+                MailSendResult result = template.sendForBatch(explicitBoundAccount, message, metricRef);
+                MailTemplate.BatchDeliveryMetric metric = metricRef.get();
+                String accountLabel = metric != null ? metric.accountName()
+                        : resolveBatchAccountLabel(template, explicitBoundAccount, message);
+                MailSendOutcome outcome = metric != null ? metric.outcome() : MailSendOutcome.SUCCESS;
+                completeBatchItem(results, item.index(), MailSendResultItem.success(item.index(), message, result),
+                        template, accountLabel, outcome, entryStartNanos);
             } catch (Throwable t) {
-                results.compareAndSet(item.index(), null, MailSendResultItem.failure(item.index(), message, t.getMessage(), t));
+                MailTemplate.BatchDeliveryMetric metric = metricRef.get();
+                String accountLabel = metric != null ? metric.accountName()
+                        : resolveBatchAccountLabel(template, explicitBoundAccount, message);
+                MailSendOutcome outcome = metric != null ? metric.outcome() : template.classifyFailureOutcome(t);
+                completeBatchItem(results, item.index(), MailSendResultItem.failure(item.index(), message, t.getMessage(), t),
+                        template, accountLabel, outcome, entryStartNanos);
             } finally {
                 itemStates.set(item.index(), STATE_FINISHED);
                 closeQuietly(message);
@@ -382,14 +409,16 @@ final class MailBatchSupport {
                         template.publishEvent(new MailSentEvent(template, message, sendResult));
                         return sendResult;
                     });
-                    results.compareAndSet(entry.index(), null, MailSendResultItem.success(entry.index(), message, result));
+                    completeBatchItem(results, entry.index(), MailSendResultItem.success(entry.index(), message, result),
+                            template, account.getName(), MailSendOutcome.SUCCESS, entry.startNanos());
                 } catch (Throwable t) {
                     template.triggerFailureSafetyNet(message, prepared.maskedTo(), t);
                     MailSendException wrapped = (t instanceof MailSendException mse)
                             ? mse
                             : new MailSendException(MailResultCode.MAIL_SEND_ERROR, "邮件发送失败: " + t.getMessage(), t);
-                    results.compareAndSet(entry.index(), null,
-                            MailSendResultItem.failure(entry.index(), message, wrapped.getMessage(), wrapped));
+                    completeBatchItem(results, entry.index(),
+                            MailSendResultItem.failure(entry.index(), message, wrapped.getMessage(), wrapped),
+                            template, account.getName(), template.classifyFailureOutcome(t), entry.startNanos());
                 } finally {
                     itemStates.set(entry.index(), STATE_FINISHED);
                     closeQuietly(message);
@@ -436,6 +465,7 @@ final class MailBatchSupport {
             }
 
             // 非认证物理连接断开：安全关闭旧连接并重建重连一次继续投递
+            template.getMetricsRecorder().recordRetry(account.getName());
             log.warn("[MailBatch] 复用 Transport 发送异常，尝试安全关闭并重连一次: account=[{}], messageId=[{}], reason={}",
                     account.getName(), prepared.messageId(), mappedFirst.getMessage());
             closeTransportQuietly(holder.transport);
@@ -556,6 +586,28 @@ final class MailBatchSupport {
         }
     }
 
+    private static void completeBatchItem(AtomicReferenceArray<MailSendResultItem> results,
+                                          int index,
+                                          MailSendResultItem itemResult,
+                                          MailTemplate template,
+                                          String accountName,
+                                          MailSendOutcome outcome,
+                                          long startNanos) {
+        if (results.compareAndSet(index, null, itemResult)) {
+            template.getMetricsRecorder().recordSend(accountName, outcome,
+                    Duration.ofNanos(Math.max(0L, System.nanoTime() - startNanos)));
+        }
+    }
+
+    private static String resolveBatchAccountLabel(MailTemplate template,
+                                                   MailAccount explicitBoundAccount,
+                                                   MailMessage message) {
+        if (explicitBoundAccount != null) {
+            return explicitBoundAccount.getName();
+        }
+        return template.resolvePreFailureMetricAccount(message);
+    }
+
     private static void closeQuietly(MailMessage message) {
         if (message != null) {
             message.close();
@@ -565,7 +617,7 @@ final class MailBatchSupport {
     private record BatchItem(int index, MailMessage message) {
     }
 
-    private record PreparedBatchEntry(int index, MailTemplate.PreparedDelivery prepared) {
+    private record PreparedBatchEntry(int index, MailTemplate.PreparedDelivery prepared, long startNanos) {
     }
 
     private static final class TransportHolder {
