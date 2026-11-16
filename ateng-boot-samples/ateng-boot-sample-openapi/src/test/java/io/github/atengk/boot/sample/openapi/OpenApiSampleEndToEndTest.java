@@ -20,6 +20,7 @@ import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -108,7 +109,59 @@ class OpenApiSampleEndToEndTest {
                 .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/batch'].post.requestBody.content['application/json'].schema.items").exists())
                 // 3. @FieldSensitive 敏感字段脱敏安全警示标签
                 .andExpect(jsonPath("$.components.schemas.AdminUserVO.properties.phone.description", containsString("[脱敏字段: 手机号码掩码]")))
-                .andExpect(jsonPath("$.components.schemas.AdminUserVO.properties.phone.example").value("138****5678"));
+                .andExpect(jsonPath("$.components.schemas.AdminUserVO.properties.phone.example").value("138****5678"))
+                .andExpect(jsonPath("$.components.schemas.AdminUserVO.properties.idCard.description", containsString("[脱敏字段: 身份证号掩码]")))
+                .andExpect(jsonPath("$.components.schemas.AdminUserVO.properties.email.description", containsString("[脱敏字段: 电子邮箱掩码]")))
+                .andExpect(jsonPath("$.components.schemas.AdminUserVO.properties.lastLoginIp.description", containsString("[脱敏字段: IPv4 地址掩码]")))
+                // 4. DTO @InEnum 注解映射：AdminUserCreateRequest.statusCode 自动生成 enum=[1,0] 与 Markdown 字典
+                .andExpect(jsonPath("$.components.schemas.AdminUserCreateRequest.properties.statusCode.type").value("integer"))
+                .andExpect(jsonPath("$.components.schemas.AdminUserCreateRequest.properties.statusCode.enum[0]").value(1))
+                .andExpect(jsonPath("$.components.schemas.AdminUserCreateRequest.properties.statusCode.enum[1]").value(0))
+                .andExpect(jsonPath("$.components.schemas.AdminUserCreateRequest.properties.statusCode.description", containsString("**枚举选项**：")))
+                // 5. Controller 方法参数 @InEnum 注解映射：/page?status= 自动生成 enum=[1,0] 与 Markdown 字典
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/page'].get.parameters[?(@.name=='status')].schema.type", hasItem("integer")))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/page'].get.parameters[?(@.name=='status')].schema.enum", hasItem(java.util.List.of(1, 0))))
+                .andExpect(jsonPath("$.paths['" + BASE_ADMIN_USERS + "/page'].get.parameters[?(@.name=='status')].schema.description", hasItem(containsString("**枚举选项**："))));
+    }
+
+    @Test
+    @DisplayName("测试管理端用户创建 @InEnum 校验与 PageQuery/PageResult 分页契约端点")
+    void testAdminUserInEnumAndPaginationContract() throws Exception {
+        // 1. 合法 @InEnum statusCode 创建成功
+        String validPayload = "{\"username\":\"zhangsan\",\"realName\":\"张三\",\"email\":\"zhangsan@example.com\",\"statusCode\":1}";
+        mockMvc.perform(post(BASE_ADMIN_USERS)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.username").value("zhangsan"));
+
+        // 2. 非法 @InEnum statusCode=99 触发 JSR-303 快速失败拦截
+        String invalidPayload = "{\"username\":\"zhangsan\",\"realName\":\"张三\",\"email\":\"zhangsan@example.com\",\"statusCode\":99}";
+        mockMvc.perform(post(BASE_ADMIN_USERS)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 3. 分页查询接口返回标准 Result<PageResult<AdminUserVO>>
+        mockMvc.perform(get(BASE_ADMIN_USERS + "/page")
+                        .param("current", "1")
+                        .param("size", "1")
+                        .param("status", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.current").value(1))
+                .andExpect(jsonPath("$.data.size").value(1))
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.pages").value(2))
+                .andExpect(jsonPath("$.data.records.length()").value(1));
+
+        // 4. 分页查询接口非法 @InEnum 参数触发参数校验失败
+        mockMvc.perform(get(BASE_ADMIN_USERS + "/page")
+                        .param("status", "99"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
     }
 
     @Test

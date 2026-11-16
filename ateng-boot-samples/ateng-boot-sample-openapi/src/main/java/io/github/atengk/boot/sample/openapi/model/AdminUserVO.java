@@ -24,12 +24,21 @@ public class AdminUserVO {
     @Schema(description = "用户真实姓名", example = "张三")
     private String realName;
 
+    @FieldSensitive(SensitiveType.EMAIL)
     @Schema(description = "工作电子邮箱", example = "zhangsan@example.com")
     private String email;
 
     @FieldSensitive(SensitiveType.MOBILE_PHONE)
     @Schema(description = "联系手机号码")
     private String phone;
+
+    @FieldSensitive(SensitiveType.ID_CARD)
+    @Schema(description = "身份证号码")
+    private String idCard;
+
+    @FieldSensitive(SensitiveType.IPV4)
+    @Schema(description = "最近登录 IPv4")
+    private String lastLoginIp;
 
     @Schema(description = "账号状态")
     private UserStatusEnum status;
@@ -41,11 +50,18 @@ public class AdminUserVO {
     }
 
     public AdminUserVO(Long id, String username, String realName, String email, String phone, UserStatusEnum status, LocalDateTime createTime) {
+        this(id, username, realName, email, phone, "110101199001012345", "192.168.1.100", status, createTime);
+    }
+
+    public AdminUserVO(Long id, String username, String realName, String email, String phone,
+                       String idCard, String lastLoginIp, UserStatusEnum status, LocalDateTime createTime) {
         this.id = id;
         this.username = username;
         this.realName = realName;
         this.email = email;
         this.phone = phone;
+        this.idCard = idCard;
+        this.lastLoginIp = lastLoginIp;
         this.status = status;
         this.createTime = createTime;
     }
@@ -56,6 +72,10 @@ public class AdminUserVO {
 
     public static AdminUserVO of(Long id, String username, String realName, String email, String phone) {
         return new AdminUserVO(id, username, realName, email, phone, UserStatusEnum.ENABLE, LocalDateTime.now());
+    }
+
+    public static AdminUserVO of(Long id, String username, String realName, String email, String phone, UserStatusEnum status) {
+        return new AdminUserVO(id, username, realName, email, phone, status, LocalDateTime.now());
     }
 
     public Long getId() {
@@ -96,6 +116,22 @@ public class AdminUserVO {
 
     public void setPhone(String phone) {
         this.phone = phone;
+    }
+
+    public String getIdCard() {
+        return idCard;
+    }
+
+    public void setIdCard(String idCard) {
+        this.idCard = idCard;
+    }
+
+    public String getLastLoginIp() {
+        return lastLoginIp;
+    }
+
+    public void setLastLoginIp(String lastLoginIp) {
+        this.lastLoginIp = lastLoginIp;
     }
 
     public UserStatusEnum getStatus() {
