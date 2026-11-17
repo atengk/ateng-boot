@@ -5,8 +5,11 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -125,5 +128,59 @@ class FtpProgressListenerTest {
         assertThat(snapshot.totalBytes()).isEqualTo(0L);
         assertThat(snapshot.percentage()).isEqualTo(100.0);
         assertThat(throttler.isCompleted()).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试初始断点偏移量构造器从断点百分比平滑递增至 100%")
+    void testInitialOffsetResumableProgress() {
+        List<ProgressSnapshot> snapshots = new ArrayList<>();
+        FtpProgressListener listener = (transferred, total, percentage) ->
+                snapshots.add(new ProgressSnapshot(transferred, total, percentage));
+
+        FtpProgressThrottler throttler = new FtpProgressThrottler(listener, 1_000L, 500L);
+        throttler.update(100L);
+        throttler.finish();
+
+        assertThat(snapshots).hasSize(2);
+        assertThat(snapshots.get(0).bytesTransferred()).isEqualTo(600L);
+        assertThat(snapshots.get(0).percentage()).isEqualTo(60.0);
+        assertThat(snapshots.get(1).bytesTransferred()).isEqualTo(1_000L);
+        assertThat(snapshots.get(1).percentage()).isEqualTo(100.0);
+    }
+
+    @Test
+    @DisplayName("测试锁外触发回调且不持有对象监视器锁 (防虚拟线程 Pinning 与跨线程重入死锁)")
+    void testCallbackInvokedOutsideLockWithoutMonitorPinning() throws Exception {
+        List<ProgressSnapshot> snapshots = new CopyOnWriteArrayList<>();
+        AtomicBoolean holdsMonitorLock = new AtomicBoolean(false);
+        AtomicReference<FtpProgressThrottler> throttlerRef = new AtomicReference<>();
+        AtomicBoolean concurrentUpdateTriggered = new AtomicBoolean(false);
+
+        FtpProgressListener listener = (transferred, total, percentage) -> {
+            snapshots.add(new ProgressSnapshot(transferred, total, percentage));
+            if (Thread.holdsLock(throttlerRef.get())) {
+                holdsMonitorLock.set(true);
+            }
+            if (concurrentUpdateTriggered.compareAndSet(false, true)) {
+                // 若在回调期间仍持有互斥锁，则另一线程调用 update 将死锁超限
+                CompletableFuture<Void> otherThreadUpdate = CompletableFuture.runAsync(
+                        () -> throttlerRef.get().update(200L));
+                try {
+                    otherThreadUpdate.get(2, TimeUnit.SECONDS);
+                } catch (Exception e) {
+                    throw new RuntimeException("回调期间发生锁争用死锁", e);
+                }
+            }
+        };
+
+        FtpProgressThrottler throttler = new FtpProgressThrottler(listener, 1_000L, 1.0, 200L);
+        throttlerRef.set(throttler);
+
+        throttler.update(100L);
+        throttler.finish();
+
+        assertThat(holdsMonitorLock.get()).isFalse();
+        assertThat(throttler.getBytesTransferred()).isEqualTo(300L);
+        assertThat(snapshots.get(snapshots.size() - 1).percentage()).isEqualTo(100.0);
     }
 }

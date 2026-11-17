@@ -32,6 +32,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
@@ -126,33 +127,25 @@ public class FtpTemplate {
             return registry.getTemplate(currentTarget).execute(action);
         }
 
-        FTPClient client = null;
+        FTPClient client = borrowClient();
         boolean invalidated = false;
         try {
-            client = pool.borrowObject();
             return action.doInFtp(client);
         } catch (Exception e) {
             // 防御性连接治理：凡涉及底层 IO/网络异常，或连接已处于断开/不可用状态，强制标记失效物理销毁
-            boolean connectionBroken = (client == null) || !client.isConnected() || !client.isAvailable();
+            boolean connectionBroken = !client.isConnected() || !client.isAvailable();
             boolean hasIoError = (e instanceof IOException) || (e.getCause() instanceof IOException);
-            if ((hasIoError || connectionBroken) && client != null) {
-                try {
-                    pool.invalidateObject(client);
-                    invalidated = true;
-                } catch (Exception ignored) {
-                }
+            if (hasIoError || connectionBroken) {
+                invalidateClientQuietly(client);
+                invalidated = true;
             }
             if (e instanceof FtpException fe) {
                 throw fe;
             }
             throw new FtpException(FtpResultCode.OPERATION_FAILED, "执行 FTP 操作失败: " + e.getMessage(), e);
         } finally {
-            if (client != null && !invalidated) {
-                try {
-                    pool.returnObject(client);
-                } catch (Exception e) {
-                    log.warn("归还 FTP 客户端至连接池失败: {}", e.getMessage());
-                }
+            if (!invalidated) {
+                returnClientQuietly(client);
             }
         }
     }
@@ -220,6 +213,45 @@ public class FtpTemplate {
         testConnectionOrThrowInternal();
     }
 
+    private FTPClient borrowClient() {
+        try {
+            return pool.borrowObject();
+        } catch (NoSuchElementException e) {
+            // Commons Pool2 在 activateObject 失败时会销毁对象并抛出携带原始 cause 的 NoSuchElementException
+            if (e.getCause() instanceof FtpException fe) {
+                throw fe;
+            }
+            throw new FtpException(FtpResultCode.POOL_EXHAUSTED,
+                    "FTP 连接池 [" + this.serverName + "] 已耗尽或借出等待超时: " + e.getMessage(), e);
+        } catch (FtpException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new FtpException(FtpResultCode.OPERATION_FAILED,
+                    "借用 FTP 客户端连接失败 [" + this.serverName + "]: " + e.getMessage(), e);
+        }
+    }
+
+    private void invalidateClientQuietly(FTPClient client) {
+        if (client == null) {
+            return;
+        }
+        try {
+            pool.invalidateObject(client);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void returnClientQuietly(FTPClient client) {
+        if (client == null) {
+            return;
+        }
+        try {
+            pool.returnObject(client);
+        } catch (Exception e) {
+            log.warn("归还 FTP 客户端至连接池失败: {}", e.getMessage());
+        }
+    }
+
     private boolean testConnectionInternal() {
         try {
             testConnectionOrThrowInternal();
@@ -231,11 +263,10 @@ public class FtpTemplate {
     }
 
     private void testConnectionOrThrowInternal() {
-        FTPClient client = null;
+        FTPClient client = borrowClient();
         boolean invalidated = false;
         try {
-            client = pool.borrowObject();
-            if (client == null || !client.isConnected() || !client.isAvailable()) {
+            if (!client.isConnected() || !client.isAvailable()) {
                 throw new FtpException(FtpResultCode.CONNECT_FAILED,
                         "FTP 服务节点 [" + this.serverName + "] 连接不可用或已断开");
             }
@@ -245,25 +276,16 @@ public class FtpTemplate {
                         "FTP 服务节点 [" + this.serverName + "] NOOP 心跳检测失败，响应码: " + client.getReplyCode());
             }
         } catch (Exception e) {
-            if (client != null) {
-                try {
-                    pool.invalidateObject(client);
-                    invalidated = true;
-                } catch (Exception ignored) {
-                }
-            }
+            invalidateClientQuietly(client);
+            invalidated = true;
             if (e instanceof FtpException fe) {
                 throw fe;
             }
             throw new FtpException(FtpResultCode.CONNECT_FAILED,
                     "FTP 服务节点 [" + this.serverName + "] 连通性探测失败: " + e.getMessage(), e);
         } finally {
-            if (client != null && !invalidated) {
-                try {
-                    pool.returnObject(client);
-                } catch (Exception e) {
-                    log.warn("归还 FTP 客户端至连接池失败: {}", e.getMessage());
-                }
+            if (!invalidated) {
+                returnClientQuietly(client);
             }
         }
     }
@@ -1092,6 +1114,9 @@ public class FtpTemplate {
     public boolean deleteDirectory(String remoteDir, boolean recursive) {
         Assert.hasText(remoteDir, "remoteDir must not be blank");
         String safeDir = cleanAndValidatePath(remoteDir);
+        if (safeDir.isBlank() || "/".equals(safeDir)) {
+            throw new FtpException(FtpResultCode.INVALID_PATH, "严禁删除 FTP 根目录或当前工作目录: " + remoteDir);
+        }
         return execute(client -> deleteDirectoryInternal(client, safeDir, recursive));
     }
 

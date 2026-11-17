@@ -35,11 +35,11 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- MockFtpServer (用于离线端到端测试) -->
+        <!-- MockFtpServer (支撑 @Profile("!local") 离线嵌入式自洽体验与端到端测试) -->
         <dependency>
             <groupId>org.mockftpserver</groupId>
             <artifactId>MockFtpServer</artifactId>
-            <scope>test</scope>
+            <scope>compile</scope>
         </dependency>
     </dependencies>
 

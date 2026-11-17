@@ -34,6 +34,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -744,5 +748,100 @@ class FtpTemplateTest {
         assertThatThrownBy(() -> ftpTemplate.downloadDirectory("/test_single.txt", tempDir.toFile()))
                 .isInstanceOf(FtpException.class)
                 .satisfies(e -> assertThat(((FtpException) e).getCode()).isEqualTo(FtpResultCode.INVALID_PATH.getCode()));
+    }
+
+    @Test
+    @DisplayName("测试根目录删除熔断守卫 (Root Path Deletion Guard) 拦截所有根路径变体")
+    void testDeleteRootDirectoryBlockedByGuard() {
+        ftpTemplate.writeString("/test/protected.txt", "keep me");
+
+        for (String rootCandidate : List.of("/", "///", "/./", "\\")) {
+            assertThatThrownBy(() -> ftpTemplate.deleteDirectory(rootCandidate, true))
+                    .isInstanceOf(FtpException.class)
+                    .extracting(e -> ((FtpException) e).getCode())
+                    .isEqualTo(FtpResultCode.INVALID_PATH.getCode());
+        }
+        assertThatThrownBy(() -> ftpTemplate.deleteDirectory("/", false))
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.INVALID_PATH.getCode());
+
+        assertThat(ftpTemplate.exists("/test/protected.txt")).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试连接池耗尽超时精确转译为 POOL_EXHAUSTED (51008) 并保留原始 cause")
+    void testPoolExhaustedThrowsPoolExhaustedException() throws Exception {
+        GenericObjectPoolConfig<FTPClient> smallConfig = new GenericObjectPoolConfig<>();
+        smallConfig.setMaxTotal(1);
+        smallConfig.setMaxIdle(1);
+        smallConfig.setMaxWait(Duration.ofMillis(120));
+        GenericObjectPool<FTPClient> smallPool = new GenericObjectPool<>(
+                new FtpClientPooledObjectFactory(properties), smallConfig);
+        FtpTemplate smallTemplate = new FtpTemplate(smallPool, properties);
+
+        CountDownLatch acquired = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CompletableFuture<Void> holder = CompletableFuture.runAsync(() ->
+                smallTemplate.execute(client -> {
+                    acquired.countDown();
+                    try {
+                        release.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return true;
+                }));
+
+        try {
+            assertThat(acquired.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(() -> smallTemplate.exists("/test"))
+                    .isInstanceOf(FtpException.class)
+                    .satisfies(e -> {
+                        assertThat(((FtpException) e).getCode()).isEqualTo(FtpResultCode.POOL_EXHAUSTED.getCode());
+                        assertThat(e.getCause()).isInstanceOf(NoSuchElementException.class);
+                    });
+        } finally {
+            release.countDown();
+            holder.get(5, TimeUnit.SECONDS);
+            smallPool.close();
+        }
+    }
+
+    @Test
+    @DisplayName("测试业务回调抛出 NoSuchElementException 与 activateObject 失败不被误判为 POOL_EXHAUSTED")
+    void testNonPoolExhaustedNoSuchElementNotMisclassified() throws Exception {
+        // 1. 业务回调内部抛出 NoSuchElementException 应归因 OPERATION_FAILED 而非 POOL_EXHAUSTED
+        assertThatThrownBy(() -> ftpTemplate.execute(client -> {
+            throw new NoSuchElementException("business element missing");
+        }))
+                .isInstanceOf(FtpException.class)
+                .satisfies(e -> {
+                    assertThat(((FtpException) e).getCode()).isEqualTo(FtpResultCode.OPERATION_FAILED.getCode());
+                    assertThat(e.getCause()).isInstanceOf(NoSuchElementException.class);
+                });
+
+        // 2. activateObject 失败时，Commons Pool2 抛出包装了 FtpException(OPERATION_FAILED) 的 NoSuchElementException，
+        //    FtpTemplate 应透传原始 OPERATION_FAILED 并触发坏连接销毁
+        FtpClientPooledObjectFactory failingActivateFactory = new FtpClientPooledObjectFactory(properties) {
+            @Override
+            public void activateObject(org.apache.commons.pool2.PooledObject<FTPClient> p) {
+                throw new FtpException(FtpResultCode.OPERATION_FAILED, "模拟借出复位失败");
+            }
+        };
+        GenericObjectPoolConfig<FTPClient> config = new GenericObjectPoolConfig<>();
+        config.setMaxTotal(2);
+        GenericObjectPool<FTPClient> brokenPool = new GenericObjectPool<>(failingActivateFactory, config);
+        FtpTemplate brokenTemplate = new FtpTemplate(brokenPool, properties);
+        try {
+            assertThatThrownBy(() -> brokenTemplate.execute(FTPClient::sendNoOp))
+                    .isInstanceOf(FtpException.class)
+                    .hasMessageContaining("模拟借出复位失败")
+                    .extracting(e -> ((FtpException) e).getCode())
+                    .isEqualTo(FtpResultCode.OPERATION_FAILED.getCode());
+            assertThat(brokenPool.getDestroyedCount()).isGreaterThanOrEqualTo(1L);
+        } finally {
+            brokenPool.close();
+        }
     }
 }
