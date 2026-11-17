@@ -5,7 +5,7 @@
 ## Language
 
 **NotificationTemplate**:
-协同通知操作核心门面具体类，提供命令式纯净 API（`send`、`sendAsync`、`sendAfterCommit`、`sendTemplate`）、统一领域消息分发、四维跨线程上下文透传及本地事务感知发信。
+协同通知操作核心门面具体类，提供命令式纯净 API（`send`、`sendAsync`、`sendAfterCommit`、`sendTemplate`、`sendBroadcast`、`sendBroadcastAsync`）、统一领域消息分发、多渠道并发广播、四维跨线程上下文透传及本地事务感知发信。
 _Avoid_: NotificationUtil, RobotHelper, DingTalkClient, WeComSender, FeishuBot, NotificationService
 
 **NotificationMessage**:
@@ -25,7 +25,7 @@ _Avoid_: MarkdownPayload, MdMessage, RichTextMessage
 _Avoid_: ActionCard, TemplateCard, InteractiveCard, FeishuCard, DingCard
 
 **ImageMessage**:
-图片通知领域消息模型，结构化封装图片 Base64 编码与 MD5 校验和。
+图片通知领域消息模型，结构化封装图片 Base64 编码与 MD5 校验和（企微原生图片）、飞书 `imageKey`（飞书原生图片）及公网 `imageUrl`（跨平台图文自适应降级），并提供本地文件与输入流零字节防卫。
 _Avoid_: ImgPayload, PicMessage, MediaMessage
 
 **RawMessage**:
@@ -97,7 +97,7 @@ _Avoid_: DingDriver, DingTalkRobot, DingClient
 _Avoid_: LarkDriver, FeishuRobot, LarkClient
 
 **GenericWebhookNotificationProvider**:
-通用自定义 JSON Webhook 驱动实现，面向开发者自建告警网关或第三方标准化端点。
+通用自定义 JSON Webhook 驱动实现，面向开发者自建告警网关或第三方标准化端点，使用 `X-Webhook-Timestamp` 与 `X-Signature-SHA256` 防重放签名头并淘汰明文密钥头。
 _Avoid_: CustomDriver, HttpWebhookProvider
 
 **NotificationRateLimiter**:
@@ -108,12 +108,16 @@ _Avoid_: Limiter, RateLimitingService, RobotThrottler
 基于内存滑动窗口/令牌桶算法的默认本地频控器实现。
 _Avoid_: LocalLimiter, SimpleRateLimiter
 
+**RedisNotificationRateLimiter**:
+基于 Redis Lua 原子脚本的分布式双窗口（分钟级配额 + 秒级突发令牌）滑动窗口频控器实现，支撑多 Pod 集群聚合限流与微退避排队，无 Redis 时平滑回退至 `InMemoryNotificationRateLimiter`。
+_Avoid_: DistributedLimiter, RedissonBotLimiter, ClusterRateLimiter
+
 **NotificationContextHolder**:
 线程级动态切源上下文持有者，提供线程级隐式切换当前生效渠道名称的机制（`runWithChannel`）。
 _Avoid_: ChannelContext, NotificationHolder, RobotContext
 
 **NotifyAlert**:
-声明式异常告警切面注解，标注于 Controller、Service 或 `@Scheduled` 方法，在抛出未受控异常时自动采集堆栈与链路上下文并推送卡片告警。
+声明式异常告警切面注解，标注于 Controller、Service 或 `@Scheduled` 方法，在抛出未受控异常时自动采集堆栈、链路上下文与 `detailUrl`（`${traceId}` 插值）并推送卡片告警。
 _Avoid_: AlertOnException, ErrorNotify, ExceptionAlarm
 
 **NotifyAlertAspect**:

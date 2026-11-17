@@ -144,3 +144,20 @@ flowchart TD
    引入主备渠道顺延故障转移体系，防御单公网服务商瘫痪或内网网关抖动，确保生产高危监控告警必达。
 3. **零臃肿与纯原生一致性**：
    全部基于 JDK 17 与 Spring 6 原生设施构建，无第三方重型工具包污染，100% 保持内存真明文与受管生命周期安全。
+
+---
+
+## 演进注记 (Spec #1041 Evolution Note, 2026-11-17)
+
+1. **配置路径勘误与归位**：原 2.1 节所述 `ateng.boot.notification.default-feishu-burst-permits` 实为嵌套属性路径，正式对外契约统一归位至 `ateng.boot.notification.rate-limit.default-feishu-burst-permits`（归属 `NotificationRateLimitProperties`）；异步发信统一复用 Core 底座受管 `taskExecutor`（`ateng.boot.async.*`）与 `AsyncUtil.getExecutor()`，模块自身不设 `async` 配置节。
+2. **三端协议权威加固与通用防重放升级**：
+   - 钉钉/飞书/企微/通用出站全面采用 `URI.create` 传入不可变 URI 严防 RestClient 二次编码；补齐钉钉 `singleURL` 非空保底、企微 `card_action` 必填对齐与三端官方业务错误码精准分类；
+   - `GenericWebhookNotificationProvider` 废弃并移除明文头 `X-Webhook-Secret`，升级为 `X-Webhook-Timestamp` + `X-Signature-SHA256` HMAC 防重放头，配合 `NotificationSignUtil.verifyGenericWebhook` 常量时间比对验签；
+   - `AbstractNotificationProvider` 定制超时 `RestClient` 缓存引入基于 `ReentrantLock` 的容量 256 LRU 与 `NotificationChannelEvictEvent` 渠道热更新驱逐联动。
+3. **跨端图片防 OOM 与分布式双滑窗限流**：
+   - `ImageMessage` 扩展 `imageKey` 与公网 `imageUrl` 跨端自适应降级，并基于 `ateng.boot.notification.max-image-size` 在 Base64 解码分配堆内存前执行长度预检防 OOM；
+   - 基于 `<optional>true</optional>` 引入 Spring Data Redis 并在 `AtengNotificationAutoConfiguration` 中通过 `NoneNestedConditions` 互斥装配 `RedisNotificationRateLimiter`（单次原子 Lua 脚本同时校验分钟窗与秒级突发窗，支持 `redis-key-prefix` 与 `fail-open-on-redis-error`）。
+4. **受管调度、并发广播与离线自洽体验闭环**：
+   - 清除主源码全部 `Executors` / `new Thread` / `ForkJoinPool.commonPool()`，改由 Spring 受管 `notificationAlertTaskScheduler`（`ThreadPoolTaskScheduler`）驱动防风暴聚合与四维 `AsyncContext` 快照跨窗还原，并支持 `@NotifyAlert.detailUrl` 与 `alert.detail-url` `${traceId}` 插值跳转；
+   - `NotificationOperations` / `NotificationTemplate` 新增 `sendBroadcast` / `sendBroadcastAsync` 对称并发广播门面，实现 Fail-Fast 校验、去重保序与单点故障隔离；
+   - `ateng-boot-sample-notification` 新增 `@Profile("!local")` 离线仿真网关 `NotificationMockGatewayController` 与 `MockWebhookRecordStore`，默认指向本机端口仿真端点实现零外部依赖端到端体验。
