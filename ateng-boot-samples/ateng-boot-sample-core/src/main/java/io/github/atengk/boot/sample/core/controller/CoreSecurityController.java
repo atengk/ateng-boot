@@ -1,12 +1,14 @@
 package io.github.atengk.boot.sample.core.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.core.dto.PasswordCheckRequest;
 import io.github.atengk.boot.sample.core.dto.PaymentCryptoRequest;
 import io.github.atengk.boot.sample.core.dto.SecurityCryptoRequest;
 import io.github.atengk.boot.sample.core.dto.SignAndVerifyRequest;
 import io.github.atengk.boot.sample.core.service.CoreSecurityScenarioService;
 import io.github.atengk.boot.sample.core.vo.CustomerPrivacyVO;
 import io.github.atengk.boot.sample.core.vo.IdGenerateVO;
+import io.github.atengk.boot.sample.core.vo.PasswordCheckVO;
 import io.github.atengk.boot.sample.core.vo.PaymentCryptoVO;
 import io.github.atengk.boot.sample.core.vo.SecurityCryptoVO;
 import io.github.atengk.boot.sample.core.vo.SignAndVerifyVO;
@@ -90,5 +92,16 @@ public class CoreSecurityController {
     @PostMapping("/crypto")
     public Result<SecurityCryptoVO> processSymmetricCrypto(@RequestBody @Valid SecurityCryptoRequest request) {
         return Result.success(securityScenarioService.processSymmetricCryptoScenario(request));
+    }
+
+    /**
+     * 6. 纯 JDK 原生 PBKDF2 口令慢哈希、恒定时间校验与迭代升级端点
+     *
+     * @param request 口令哈希与校验请求对象
+     * @return 口令随机盐哈希、匹配验证与平滑升级状态响应
+     */
+    @PostMapping("/password")
+    public Result<PasswordCheckVO> verifyPasswordLifecycle(@RequestBody @Valid PasswordCheckRequest request) {
+        return Result.success(securityScenarioService.verifyPasswordLifecycle(request));
     }
 }

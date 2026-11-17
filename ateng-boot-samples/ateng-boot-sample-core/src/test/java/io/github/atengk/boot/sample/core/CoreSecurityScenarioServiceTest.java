@@ -6,12 +6,14 @@ import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.model.Pair;
 import io.github.atengk.boot.core.model.Triple;
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.sample.core.dto.PasswordCheckRequest;
 import io.github.atengk.boot.sample.core.dto.PaymentCryptoRequest;
 import io.github.atengk.boot.sample.core.dto.SecurityCryptoRequest;
 import io.github.atengk.boot.sample.core.dto.SignAndVerifyRequest;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
 import io.github.atengk.boot.sample.core.service.CoreSecurityScenarioService;
 import io.github.atengk.boot.sample.core.vo.IdGenerateVO;
+import io.github.atengk.boot.sample.core.vo.PasswordCheckVO;
 import io.github.atengk.boot.sample.core.vo.PaymentCryptoVO;
 import io.github.atengk.boot.sample.core.vo.SecurityCryptoVO;
 import io.github.atengk.boot.sample.core.vo.SignAndVerifyVO;
@@ -244,6 +246,34 @@ class CoreSecurityScenarioServiceTest {
                 .isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> securityScenarioService.processSymmetricCryptoScenario(
                 SecurityCryptoRequest.builder().plaintext("data").aad("  ").build()))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    @DisplayName("测试PasswordUtil口令慢哈希、恒定时间校验与迭代升级闭环")
+    void testVerifyPasswordLifecycle() {
+        PasswordCheckRequest request = PasswordCheckRequest.builder()
+                .username("alice.chen")
+                .rawPassword("Ateng#Sec2026!")
+                .legacyIterations(20_000)
+                .build();
+
+        PasswordCheckVO vo = securityScenarioService.verifyPasswordLifecycle(request);
+
+        assertThat(vo.getUsername()).isEqualTo("alice.chen");
+        assertThat(vo.getEncodedPassword()).startsWith("$pbkdf2-sha256$310000$");
+        assertThat(vo.getSecondEncodedPassword()).startsWith("$pbkdf2-sha256$310000$");
+        assertThat(vo.isSaltUnique()).isTrue();
+        assertThat(vo.isMatched()).isTrue();
+        assertThat(vo.isWrongPasswordRejected()).isTrue();
+        assertThat(vo.isLegacyNeedsUpgrade()).isTrue();
+        assertThat(vo.getUpgradedPassword()).startsWith("$pbkdf2-sha256$310000$");
+        assertThat(vo.isCurrentNeedsUpgrade()).isFalse();
+
+        assertThatThrownBy(() -> securityScenarioService.verifyPasswordLifecycle(null))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> securityScenarioService.verifyPasswordLifecycle(
+                PasswordCheckRequest.builder().username("alice.chen").rawPassword("   ").build()))
                 .isInstanceOf(BusinessException.class);
     }
 }

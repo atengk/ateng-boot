@@ -14,12 +14,15 @@ import io.github.atengk.boot.core.util.HexUtil;
 import io.github.atengk.boot.core.util.HmacUtil;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.core.util.PasswordUtil;
+import io.github.atengk.boot.sample.core.dto.PasswordCheckRequest;
 import io.github.atengk.boot.sample.core.dto.PaymentCryptoRequest;
 import io.github.atengk.boot.sample.core.dto.SecurityCryptoRequest;
 import io.github.atengk.boot.sample.core.dto.SignAndVerifyRequest;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
 import io.github.atengk.boot.sample.core.vo.CustomerPrivacyVO;
 import io.github.atengk.boot.sample.core.vo.IdGenerateVO;
+import io.github.atengk.boot.sample.core.vo.PasswordCheckVO;
 import io.github.atengk.boot.sample.core.vo.PaymentCryptoVO;
 import io.github.atengk.boot.sample.core.vo.SecurityCryptoVO;
 import io.github.atengk.boot.sample.core.vo.SignAndVerifyVO;
@@ -463,5 +466,59 @@ public class CoreSecurityScenarioService {
             Arrays.fill(sm4Key, (byte) 0);
             Arrays.fill(gcmKey, (byte) 0);
         }
+    }
+
+    /**
+     * 15. 验证纯 JDK 原生 PasswordUtil 口令慢哈希、恒定时间防时序校验与迭代升级闭环
+     *
+     * @param request 口令哈希与校验请求对象
+     * @return 口令慢哈希、匹配结果与平滑升级状态视图
+     */
+    public PasswordCheckVO verifyPasswordLifecycle(PasswordCheckRequest request) {
+        BusinessAssert.notNull(request, "口令校验请求体不能为空");
+        BusinessAssert.hasText(request.getUsername(), "账号名不能为空");
+        BusinessAssert.hasText(request.getRawPassword(), "原始口令不能为空");
+
+        int legacyIterations = request.getLegacyIterations() != null ? request.getLegacyIterations() : 100_000;
+        BusinessAssert.isTrue(
+                legacyIterations >= PasswordUtil.MIN_ITERATIONS && legacyIterations <= PasswordUtil.MAX_ITERATIONS,
+                "存量迭代次数必须在 [{}, {}] 区间内",
+                PasswordUtil.MIN_ITERATIONS,
+                PasswordUtil.MAX_ITERATIONS
+        );
+
+        String rawPassword = request.getRawPassword();
+
+        // 1. 注册/改密：同一明文两次哈希因随机盐不同产生完全不同的存储串
+        String encoded = PasswordUtil.hash(rawPassword);
+        String secondEncoded = PasswordUtil.hash(rawPassword);
+        boolean saltUnique = !encoded.equals(secondEncoded);
+
+        // 2. 登录验密：常量时间比对正确口令，并安全拒绝错误口令与畸形哈希串
+        boolean matched = PasswordUtil.matches(rawPassword, encoded) && PasswordUtil.matches(rawPassword, secondEncoded);
+        boolean wrongPasswordRejected = !PasswordUtil.matches(rawPassword + "-invalid", encoded)
+                && !PasswordUtil.matches(rawPassword, "$pbkdf2-sha256$invalid$salt$hash");
+
+        // 3. 存量低迭代哈希检测与登录后平滑重哈希升级
+        String legacyEncoded = PasswordUtil.hash(rawPassword, legacyIterations);
+        boolean legacyNeedsUpgrade = PasswordUtil.matches(rawPassword, legacyEncoded)
+                && PasswordUtil.needsUpgrade(legacyEncoded);
+        String upgradedPassword = legacyNeedsUpgrade ? PasswordUtil.hash(rawPassword) : legacyEncoded;
+        boolean currentNeedsUpgrade = PasswordUtil.needsUpgrade(upgradedPassword);
+
+        log.info("口令慢哈希与校验闭环完成: username={}, saltUnique={}, matched={}, legacyNeedsUpgrade={}",
+                request.getUsername(), saltUnique, matched, legacyNeedsUpgrade);
+
+        return PasswordCheckVO.builder()
+                .username(request.getUsername())
+                .encodedPassword(encoded)
+                .secondEncodedPassword(secondEncoded)
+                .saltUnique(saltUnique)
+                .matched(matched)
+                .wrongPasswordRejected(wrongPasswordRejected)
+                .legacyNeedsUpgrade(legacyNeedsUpgrade)
+                .upgradedPassword(upgradedPassword)
+                .currentNeedsUpgrade(currentNeedsUpgrade)
+                .build();
     }
 }

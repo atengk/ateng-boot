@@ -46,6 +46,7 @@
 | **安全受限 SpEL 求值门面** | 安全受限 SpEL 表达式求值门面与受管 AST 缓存 | `SpelUtil` | `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | `SpelUtil.evaluate(expr, root, vars, type)`, `SpelUtil.evaluateMethod(method, args, expr, type)`, `evaluateTrusted(...)`, `parseExpression(expr)`, `SpelUtil.configureCache(maxCapacity, ttl)` (外置配置自动绑定注入), `getCacheSize()`, `clearCache()` | `SpelUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **函数式业务管道** | 轻量函数式管道编排与中断异常隔离 | `Pipeline<C>`, `PipelineStage<C>`, `PipelineInterruptible`, `PipelineResult`, `PipelineErrorHandler` | - | `Pipeline.builder().addStage(...).build()`, `pipeline.execute(ctx)`, `result.isSuccess()`, `result.isTerminated()`, `result.orThrow()` | `PipelineTest.java`, `CorePipelineScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
 | **原生安全 HMAC 加签** | 纯原生密钥散列与国密 HmacSM3 加签及恒定时间防侧信道比对 | `HmacUtil` | - | `HmacUtil.hmacSha256Hex(data, key)`, `hmacSha256Base64`, `hmacSm3(byte[]/String)`, `hmacSm3Hex`, `hmacSm3Base64` (`HMAC_SM3`), `hmacSha1Hex`, `hmacMd5Hex`, `verifyHex(expected, actual)`, `verifyBase64(expected, actual)`（恒定时间安全比对） | `HmacUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/sign-and-verify`), `CoreSecurityScenarioServiceTest.java` |
+| **口令慢哈希与恒定校验** | 纯 JDK 原生 `PBKDF2WithHmacSHA256` 加盐慢哈希、防时序比对与迭代升级判定 | `PasswordUtil` | -（静态常量：`DEFAULT_ITERATIONS=310000`, `MIN_ITERATIONS=10000`, `MAX_ITERATIONS=5000000`） | `PasswordUtil.hash(CharSequence/char[])`, `hash(raw, iterations)`, `matches(CharSequence/char[], encodedPassword)`, `needsUpgrade(encodedPassword[, targetIterations])` | `PasswordUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/password`), `CoreSecurityScenarioServiceTest.java` |
 | **数据传输与硬件校验和** | 纯原生数据传输与硬件报文校验和计算 | `ChecksumUtil` | - | `ChecksumUtil.crc32(data)`, `crc32Hex(data)`, `crc32c(data)`, `crc32cHex(data)`, `adler32(data)`, `adler32Hex(data)`, `verifyCrc32`, `verifyCrc32c`, `verifyAdler32`，支持 `InputStream` 流式计算 | `ChecksumUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **单机流量整形与限流** | 纯无锁 CAS 纳秒级平滑令牌桶限流器 | `TokenBucketLimiter` | - | `new TokenBucketLimiter(capacity, refillRatePerSecond)`, `tryAcquire()`, `tryAcquire(permits)`, `tryAcquire(permits, timeout)`, `acquire()`, `acquire(permits)`, `getAvailableTokens()` | `TokenBucketLimiterTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
 | **核心配置外置化与发号器装配** | Core 配置属性绑定、受管雪花发号器与缓存自动装配 | `CoreProperties`, `SnowflakeProperties`, `CacheProperties`, `AtengCoreAutoConfiguration`, `CoreCacheInitializer`, `CoreSnowflakeInitializer`, `Snowflake` | `ateng.boot.core.clock-backoff-tolerance`, `ateng.boot.core.cache-ttl`, `ateng.boot.core.snowflake.enabled`, `worker-id`, `datacenter-id`, `epoch`, `clock-backoff-tolerance`, `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | 自动装配 `@Bean Snowflake`，自适应网卡/IP推导；时钟回拨熔断转译；`CoreSnowflakeInitializer` 同步受管 `Snowflake` 至 `IdUtil` 并在销毁时对称解绑；`CoreCacheInitializer` 自动将 `cache` 配置绑定至 `SpelUtil` 与 `LambdaUtil` | `AtengCoreAutoConfigurationTest.java`, `SnowflakeTest.java`, `CoreSecurityControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
@@ -125,7 +126,7 @@ flowchart TD
     subgraph CoreAlgorithms["原生算法与数据安全防护"]
         direction TB
         ID["2026雪花发号与短码<br/>Snowflake / IdUtil"]
-        SEC["数据脱敏与安全编解码<br/>DesensitizeUtil / CryptoUtil / DigestUtil / HexUtil / HmacUtil"]
+        SEC["数据脱敏与安全编解码<br/>DesensitizeUtil / CryptoUtil / DigestUtil / HexUtil / HmacUtil / PasswordUtil"]
         DATA["高性能数据结构与工具集<br/>JsonUtil / TreeUtil / CollectionUtil / BatchSliceUtil / FileUtil / NetUtil"]
     end
 
@@ -992,6 +993,65 @@ String crc32cHex = ChecksumUtil.crc32cHex(rawPayload);
 String adler32Hex = ChecksumUtil.adler32Hex(rawPayload);
 try (InputStream stream = new ByteArrayInputStream(rawPayload.getBytes(StandardCharsets.UTF_8))) {
     long streamCrc = ChecksumUtil.crc32(stream);
+}
+```
+
+---
+
+### 4.5 纯 JDK 原生口令慢哈希与恒定时间校验 (`PasswordUtil`)
+
+#### 业务场景与痛点
+业务系统在未引入 Spring Security 的轻量架构下实现用户注册、登录验密与改密时，若直接使用普通无盐摘要（如 `DigestUtil.sha256Hex` / `md5Hex`），极易遭受彩虹表与 GPU 暴力碰撞破解；而常规字符串 `equals` 比对又存在侧信道时序攻击风险。`PasswordUtil` 基于 JDK 17 原生 `SecretKeyFactory`（`PBKDF2WithHmacSHA256`）与 `SecureRandom` 提供零外部依赖的加盐慢哈希门面。
+
+#### 核心安全参数与防卫边界（无额外 YAML 配置，常量开箱即用）
+- **自描述存储格式**：`$pbkdf2-sha256$<iterations>$<base64Salt>$<base64Hash>`（采用无填充 URL-safe Base64，便于数据库存储与跨系统迁移）。
+- **默认密码学基线**：默认迭代 `310_000` 次（`DEFAULT_ITERATIONS`）、16 字节（128-bit）随机盐（`DEFAULT_SALT_LENGTH`）、32 字节（256-bit）派生密钥（`DEFAULT_KEY_LENGTH_BITS`）。
+- **生成侧 Fail-Fast 与内存擦除**：`hash(...)` 面对 `null`、空串或全空白串直接抛出 `IllegalArgumentException`，但**严格保留有效口令前后空格不裁剪**；底层临时 `char[]` 与 `PBEKeySpec` 在 `finally` 块中确定性清零（且 `char[]` 重载不篡改调用方原始数组）。
+- **校验侧安全降级与防 DoS 熔断**：`matches(...)` 与 `needsUpgrade(...)` 面对空输入、畸形段数、不支持前缀、非法 Base64 或盐/摘要字节长度异常时一律安全返回 `false`；迭代次数硬约束于 `[10_000, 5_000_000]`（`MIN_ITERATIONS` ~ `MAX_ITERATIONS`），防止恶意篡改超大迭代次数引发 CPU DoS；派生比对底层严格调用 `MessageDigest.isEqual` 保持常量时间。
+
+#### 核心代码范式
+代码锚定样例：[`PasswordCheckRequest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/dto/PasswordCheckRequest.java)、[`CoreSecurityController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSecurityController.java)（`POST /sample/core/security/password`）、[`CoreSecurityScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreSecurityScenarioService.java)
+
+```java
+import io.github.atengk.boot.core.util.PasswordUtil;
+
+// 1. 注册/改密：同一明文两次哈希因随机盐不同产生完全不同的存储串
+String encoded = PasswordUtil.hash(rawPassword);
+String secondEncoded = PasswordUtil.hash(rawPassword);
+boolean saltUnique = !encoded.equals(secondEncoded); // true
+
+// 2. 登录验密：常量时间比对正确口令，并安全拒绝错误口令与畸形哈希串
+boolean matched = PasswordUtil.matches(rawPassword, encoded); // true
+boolean wrongPasswordRejected = !PasswordUtil.matches(rawPassword + "-invalid", encoded)
+        && !PasswordUtil.matches(rawPassword, "$pbkdf2-sha256$invalid$salt$hash"); // true
+
+// 3. 存量低迭代哈希检测与登录后平滑重哈希升级
+String legacyEncoded = PasswordUtil.hash(rawPassword, 100_000);
+if (PasswordUtil.matches(rawPassword, legacyEncoded) && PasswordUtil.needsUpgrade(legacyEncoded)) {
+    String upgradedPassword = PasswordUtil.hash(rawPassword);
+    boolean currentNeedsUpgrade = PasswordUtil.needsUpgrade(upgradedPassword); // false
+}
+```
+
+#### 预期响应 JSON 契约
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "username": "alice.chen",
+    "encodedPassword": "$pbkdf2-sha256$310000$<16字节URL-safe随机盐>$<32字节派生摘要>",
+    "secondEncodedPassword": "$pbkdf2-sha256$310000$<另一随机盐>$<另一派生摘要>",
+    "saltUnique": true,
+    "matched": true,
+    "wrongPasswordRejected": true,
+    "legacyNeedsUpgrade": true,
+    "upgradedPassword": "$pbkdf2-sha256$310000$<新随机盐>$<新派生摘要>",
+    "currentNeedsUpgrade": false
+  },
+  "timestamp": 1794052800000,
+  "success": true,
+  "traceId": "91a0c841bb2f4e3c9c64be630c71049c"
 }
 ```
 
