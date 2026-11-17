@@ -23,6 +23,7 @@ import org.mockftpserver.fake.filesystem.UnixFakeFileSystem;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -376,28 +377,37 @@ class FtpClientPooledObjectFactoryTest {
     }
 
     @Test
-    @DisplayName("测试 serverTimeZone 绑定与 FtpClientCustomizer 扩展点回调")
+    @DisplayName("测试 serverTimeZone 绑定与多个 FtpClientCustomizer 按序回调")
     void testServerTimeZoneAndCustomizerInvocation() throws Exception {
         properties.setServerTimeZone("Asia/Shanghai");
         AtomicInteger invokedCount = new AtomicInteger(0);
         AtomicReference<String> capturedServerName = new AtomicReference<>();
         AtomicReference<FTPClient> capturedClient = new AtomicReference<>();
+        List<String> invocationOrder = new ArrayList<>();
 
-        FtpClientCustomizer customizer = (serverName, client, props) -> {
+        FtpClientCustomizer firstCustomizer = (serverName, client, props) -> {
+            invocationOrder.add("first");
             invokedCount.incrementAndGet();
             capturedServerName.set(serverName);
             capturedClient.set(client);
             client.setListHiddenFiles(true);
         };
+        FtpClientCustomizer secondCustomizer = (serverName, client, props) -> {
+            invocationOrder.add("second");
+            invokedCount.incrementAndGet();
+            client.setRemoteVerificationEnabled(false);
+        };
 
         FtpClientPooledObjectFactory customFactory = new FtpClientPooledObjectFactory(
-                "archive", properties, List.of(customizer));
+                "archive", properties, List.of(firstCustomizer, secondCustomizer));
         FTPClient client = customFactory.create();
         try {
-            assertThat(invokedCount.get()).isEqualTo(1);
+            assertThat(invokedCount.get()).isEqualTo(2);
+            assertThat(invocationOrder).containsExactly("first", "second");
             assertThat(capturedServerName.get()).isEqualTo("archive");
             assertThat(capturedClient.get()).isSameAs(client);
             assertThat(client.getListHiddenFiles()).isTrue();
+            assertThat(client.isRemoteVerificationEnabled()).isFalse();
             assertThat(client.listFiles("/")).isNotNull();
         } finally {
             customFactory.destroyObject(new DefaultPooledObject<>(client));

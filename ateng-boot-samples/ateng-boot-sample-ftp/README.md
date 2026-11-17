@@ -42,7 +42,7 @@
 | **跨目录安全移动** | `FtpDocumentController` | `POST /sample/ftp/document/move` | `curl -X POST "http://localhost:8080/sample/ftp/document/move" -H "Content-Type: application/json" -d "{\"sourcePath\":\"/docs/policy-bak.txt\",\"targetPath\":\"/archive\"}"` |
 | **同级文件重命名** | `FtpDocumentController` | `POST /sample/ftp/document/rename` | `curl -X POST "http://localhost:8080/sample/ftp/document/rename" -H "Content-Type: application/json" -d "{\"sourcePath\":\"/docs/policy.txt\",\"targetPath\":\"/docs/policy-v2.txt\"}"` |
 | **查询文件详细元数据** | `FtpDocumentController` | `GET /sample/ftp/document/info` | `curl "http://localhost:8080/sample/ftp/document/info?remotePath=/docs/policy-v2.txt"` |
-| **RFC 3659 MLSD 机器目录** | `FtpDocumentController` | `GET /sample/ftp/document/list-files` | `curl "http://localhost:8080/sample/ftp/document/list-files?remoteDir=/docs"` |
+| **RFC 3659 MLSD 机器列表** | `FtpDocumentController` | `GET /sample/ftp/document/list-files` | `curl "http://localhost:8080/sample/ftp/document/list-files?remoteDir=/docs"` |
 | **对称流式文件下载** | `FtpDocumentController` | `GET /sample/ftp/document/download` | `curl -OJ "http://localhost:8080/sample/ftp/document/download?remotePath=/docs/policy-v2.txt"` |
 | **零落盘流式摘要计算** | `FtpDocumentController` | `GET /sample/ftp/document/hash` | `curl "http://localhost:8080/sample/ftp/document/hash?remotePath=/docs/policy-v2.txt&algorithm=SHA-256"` |
 | **零落盘摘要常量比对** | `FtpDocumentController` | `POST /sample/ftp/document/verify-hash` | `curl -X POST "http://localhost:8080/sample/ftp/document/verify-hash" -H "Content-Type: application/json" -d "{\"remotePath\":\"/docs/policy-v2.txt\",\"expectedHex\":\"YOUR_SHA256_HEX\",\"algorithm\":\"SHA-256\"}"` |
@@ -63,7 +63,8 @@
 | **动态切源读取 (backup 节点)** | `FtpGovernanceController` | `GET /sample/ftp/governance/dynamic-routing-read` | `curl "http://localhost:8080/sample/ftp/governance/dynamic-routing-read?serverName=backup&remotePath=/routing/notice.txt"` |
 | **运行期动态热注册节点** | `FtpGovernanceController` | `POST /sample/ftp/governance/register-node` | `curl -X POST "http://localhost:8080/sample/ftp/governance/register-node" -H "Content-Type: application/json" -d "{\"serverName\":\"tenant-01\",\"host\":\"127.0.0.1\",\"port\":2121,\"username\":\"admin\",\"password\":\"YOUR_PASSWORD\",\"mode\":\"PASSIVE\"}"` |
 | **运行期安全注销服务节点** | `FtpGovernanceController` | `POST /sample/ftp/governance/unregister-node` | `curl -X POST "http://localhost:8080/sample/ftp/governance/unregister-node" -H "Content-Type: application/json" -d "{\"serverName\":\"tenant-01\"}"` |
-| **连接池实时运行时指标** | `FtpGovernanceController` | `GET /sample/ftp/governance/pool-stats` | `curl "http://localhost:8080/sample/ftp/governance/pool-stats?serverName=default"` |
+| **单节点连接池实时指标** | `FtpGovernanceController` | `GET /sample/ftp/governance/pool-stats` | `curl "http://localhost:8080/sample/ftp/governance/pool-stats?serverName=default"` |
+| **全节点连接池批量指标** | `FtpGovernanceController` | `GET /sample/ftp/governance/all-pool-stats` | `curl "http://localhost:8080/sample/ftp/governance/all-pool-stats"` |
 
 ---
 

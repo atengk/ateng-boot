@@ -233,8 +233,7 @@ public class DocumentSyncScenarioService {
      * @return 小写十六进制摘要字符串
      */
     public String calculateHash(String remotePath, String algorithm) {
-        String effectiveAlgorithm = (algorithm != null && !algorithm.isBlank()) ? algorithm.trim() : "SHA-256";
-        return ftpTemplate.calculateHash(remotePath, effectiveAlgorithm);
+        return ftpTemplate.calculateHash(remotePath, resolveHashAlgorithm(algorithm));
     }
 
     /**
@@ -246,7 +245,10 @@ public class DocumentSyncScenarioService {
      * @return 一致返回 true，否则返回 false
      */
     public boolean verifyHash(String remotePath, String expectedHex, String algorithm) {
-        String effectiveAlgorithm = (algorithm != null && !algorithm.isBlank()) ? algorithm.trim() : "SHA-256";
-        return ftpTemplate.verifyHash(remotePath, expectedHex, effectiveAlgorithm);
+        return ftpTemplate.verifyHash(remotePath, expectedHex, resolveHashAlgorithm(algorithm));
+    }
+
+    private String resolveHashAlgorithm(String algorithm) {
+        return (algorithm != null && !algorithm.isBlank()) ? algorithm.trim() : "SHA-256";
     }
 }

@@ -142,18 +142,14 @@ public class FtpPoolProperties {
         if (defaults == null) {
             return;
         }
-        this.maxTotal = pick("maxTotal", this.maxTotal, defaults.maxTotal);
-        this.maxIdle = pick("maxIdle", this.maxIdle, defaults.maxIdle);
-        this.minIdle = pick("minIdle", this.minIdle, defaults.minIdle);
-        this.maxWait = pick("maxWait", this.maxWait, defaults.maxWait);
-        this.testOnBorrow = pick("testOnBorrow", this.testOnBorrow, defaults.testOnBorrow);
-        this.testOnReturn = pick("testOnReturn", this.testOnReturn, defaults.testOnReturn);
-        this.testWhileIdle = pick("testWhileIdle", this.testWhileIdle, defaults.testWhileIdle);
-        this.timeBetweenEvictionRuns = pick("timeBetweenEvictionRuns", this.timeBetweenEvictionRuns, defaults.timeBetweenEvictionRuns);
-        this.minEvictableIdleTime = pick("minEvictableIdleTime", this.minEvictableIdleTime, defaults.minEvictableIdleTime);
-    }
-
-    private <T> T pick(String key, T current, T parent) {
-        return configuredFields.contains(key) ? current : parent;
+        this.maxTotal = FtpProperties.pickConfigured(this.configuredFields, "maxTotal", this.maxTotal, defaults.maxTotal);
+        this.maxIdle = FtpProperties.pickConfigured(this.configuredFields, "maxIdle", this.maxIdle, defaults.maxIdle);
+        this.minIdle = FtpProperties.pickConfigured(this.configuredFields, "minIdle", this.minIdle, defaults.minIdle);
+        this.maxWait = FtpProperties.pickConfigured(this.configuredFields, "maxWait", this.maxWait, defaults.maxWait);
+        this.testOnBorrow = FtpProperties.pickConfigured(this.configuredFields, "testOnBorrow", this.testOnBorrow, defaults.testOnBorrow);
+        this.testOnReturn = FtpProperties.pickConfigured(this.configuredFields, "testOnReturn", this.testOnReturn, defaults.testOnReturn);
+        this.testWhileIdle = FtpProperties.pickConfigured(this.configuredFields, "testWhileIdle", this.testWhileIdle, defaults.testWhileIdle);
+        this.timeBetweenEvictionRuns = FtpProperties.pickConfigured(this.configuredFields, "timeBetweenEvictionRuns", this.timeBetweenEvictionRuns, defaults.timeBetweenEvictionRuns);
+        this.minEvictableIdleTime = FtpProperties.pickConfigured(this.configuredFields, "minEvictableIdleTime", this.minEvictableIdleTime, defaults.minEvictableIdleTime);
     }
 }

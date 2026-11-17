@@ -48,7 +48,7 @@ import java.util.function.Predicate;
  * 基于 Apache Commons Pool2 受管连接池与 Apache Commons Net 构建，
  * 对称覆盖流式/文件/字节/Resource 读写、原子上传守护与异常补偿、
  * 前置路径穿越安全清洗、级联多级目录自动创建（mkdir -p）、
- * RFC 959 协议线缆转码、RFC 3659 MLSD 机器目录高精度解析与受管流安全生命周期。
+ * RFC 959 协议线缆转码、RFC 3659 MLSD 机器列表高精度解析与受管流安全生命周期。
  * </p>
  *
  * @author Ateng
@@ -404,10 +404,7 @@ public class FtpTemplate {
      */
     public boolean upload(String remotePath, File localFile) {
         Assert.hasText(remotePath, "remotePath must not be blank");
-        Assert.notNull(localFile, "localFile must not be null");
-        if (!localFile.exists() || !localFile.isFile()) {
-            throw new FtpException(FtpResultCode.INVALID_PATH, "本地待上传文件不存在或不是标准文件: " + localFile.getAbsolutePath());
-        }
+        validateLocalUploadFile(localFile);
         try (InputStream in = new BufferedInputStream(new FileInputStream(localFile))) {
             return upload(remotePath, in);
         } catch (IOException e) {
@@ -518,10 +515,7 @@ public class FtpTemplate {
             return upload(remotePath, localFile);
         }
         Assert.hasText(remotePath, "remotePath must not be blank");
-        Assert.notNull(localFile, "localFile must not be null");
-        if (!localFile.exists() || !localFile.isFile()) {
-            throw new FtpException(FtpResultCode.INVALID_PATH, "本地待上传文件不存在或不是标准文件: " + localFile.getAbsolutePath());
-        }
+        validateLocalUploadFile(localFile);
         try (InputStream in = new BufferedInputStream(new FileInputStream(localFile))) {
             return upload(remotePath, in, localFile.length(), progressListener);
         } catch (IOException e) {
@@ -874,11 +868,7 @@ public class FtpTemplate {
         }
 
         Assert.hasText(remotePath, "remotePath must not be blank");
-        Assert.notNull(localFile, "localFile must not be null");
-        if (!localFile.exists() || !localFile.isFile()) {
-            throw new FtpException(FtpResultCode.INVALID_PATH,
-                    "本地待上传文件不存在或不是标准文件: " + localFile.getAbsolutePath());
-        }
+        validateLocalUploadFile(localFile);
 
         String safePath = cleanAndValidatePath(remotePath);
         long localLength = localFile.length();
@@ -1116,11 +1106,7 @@ public class FtpTemplate {
         }
 
         Assert.hasText(remotePath, "remotePath must not be blank");
-        Assert.notNull(localFile, "localFile must not be null");
-        if (!localFile.exists() || !localFile.isFile()) {
-            throw new FtpException(FtpResultCode.INVALID_PATH,
-                    "本地待上传文件不存在或不是标准文件: " + localFile.getAbsolutePath());
-        }
+        validateLocalUploadFile(localFile);
 
         String safePath = cleanAndValidatePath(remotePath);
         String normalizedSuffix = normalizeSentinelSuffix(sentinelSuffix);
@@ -1295,7 +1281,7 @@ public class FtpTemplate {
     }
 
     /**
-     * 获取指定目录下的所有文件及子目录列表（优先尝试 RFC 3659 MLSD 机器目录探测）
+     * 获取指定目录下的所有文件及子目录列表（优先尝试 RFC 3659 MLSD 机器列表探测）
      *
      * @param remoteDir 远程目录路径（为空或 "/" 默认表示根目录）
      * @return 强类型文件元数据列表（无结果保底返回空列表，绝不返回 null）
@@ -2304,5 +2290,13 @@ public class FtpTemplate {
                     "非法信标文件后缀 (禁止路径分隔符或穿越序列): " + sentinelSuffix);
         }
         return trimmed.startsWith(".") ? trimmed : "." + trimmed;
+    }
+
+    private void validateLocalUploadFile(File localFile) {
+        Assert.notNull(localFile, "localFile must not be null");
+        if (!localFile.exists() || !localFile.isFile()) {
+            throw new FtpException(FtpResultCode.INVALID_PATH,
+                    "本地待上传文件不存在或不是标准文件: " + localFile.getAbsolutePath());
+        }
     }
 }

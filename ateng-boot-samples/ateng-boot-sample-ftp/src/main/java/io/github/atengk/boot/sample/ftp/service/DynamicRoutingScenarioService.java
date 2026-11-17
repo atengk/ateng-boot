@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.Map;
 import java.util.function.Supplier;
 
 /**
@@ -82,6 +83,15 @@ public class DynamicRoutingScenarioService {
      */
     public FtpPoolStats getPoolStats(String serverName) {
         return ftpTemplate.getPoolStats(serverName);
+    }
+
+    /**
+     * 获取所有已注册 FTP 服务节点的连接池运行指标快照映射
+     *
+     * @return 按节点标识索引的连接池指标快照只读映射
+     */
+    public Map<String, FtpPoolStats> getAllPoolStats() {
+        return ftpTemplate.getAllPoolStats();
     }
 
     /**

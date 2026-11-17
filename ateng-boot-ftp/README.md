@@ -34,7 +34,7 @@
 | **连接池指标快照** | 实时连接池运行态观测指标 | `FtpTemplate`<br>`FtpClientRegistry`<br>`FtpPoolStats` | `pool.*` | `getPoolStats()` / `getPoolStats(String)` / `getAllPoolStats()` / `FtpClientRegistry.buildPoolStats(String, ObjectPool<FTPClient>)`，返回活跃/空闲/等待/容量不可变快照 | `FtpTemplateTest`<br>`FtpClientRegistryTest`<br>`FtpGovernanceController`<br>`SampleFtpWebIntegrationTest` |
 | **连通性健康探针** | 零副作用物理连通性自验 | `FtpTemplate` | `pool.test-on-borrow` | `testConnection()` / `testConnection(String)` / `testConnectionOrThrow()` / `testConnectionOrThrow(String)`，发送 `NOOP` 指令毫秒级测活并立即归还，全程零文件读写 | `FtpTemplateTest`<br>`FtpGovernanceController`<br>`SampleFtpWebIntegrationTest` |
 | **连接池心跳自愈** | 借还生命周期与断线自愈 | `FtpClientPooledObjectFactory`<br>`FtpPoolProperties` | `pool.*` | 基于 Commons Pool2 与 `AtengFtpAutoConfiguration`，借出/归还双重 `cwd("/")` 复位防串目录；借出校验 `NOOP`；IO 异常自动 `invalidateObject` 剔除坏连接 | `FtpClientPooledObjectFactoryTest`<br>`FtpPropertiesTest`<br>`FtpDynamicRoutingAndAutoConfigurationTest` |
-| **客户端定制 SPI** | 原生 `FTPClient` 定制扩展点 | `FtpClientCustomizer` | - | `customize(String, FTPClient, FtpProperties)`，在建连登录并完成基础初始化后触发回调，按序支持自定义解析器、代理或传输缓冲区微调 | `FtpClientRegistryTest`<br>`FtpDynamicRoutingAndAutoConfigurationTest` |
+| **客户端定制 SPI** | 原生 `FTPClient` 定制扩展点 | `FtpClientCustomizer` | - | `customize(String, FTPClient, FtpProperties)`，在建连登录并完成基础初始化后按序触发回调，支持自定义解析器、代理或传输缓冲区微调 | `FtpClientPooledObjectFactoryTest`<br>`FtpClientRegistryTest`<br>`SampleFtpCustomizerConfig`<br>`SampleFtpWebIntegrationTest` |
 | **FTPS 安全加密** | SSL / TLS 传输层安全通道 | `FtpsProperties`<br>`FtpsDataChannelProtection` | `ftps.enabled`<br>`ftps.protocol`<br>`ftps.implicit`<br>`ftps.data-channel-protection`<br>`ftps.trust-all`<br>`ftps.trust-store-*`<br>`ftps.key-store-*` | 支持显式（`AUTH TLS`）与隐式 FTPS（Port 990）、数据通道保护级别（`PROT P`/`PROT C`）及双向证书认证 | `FtpPropertiesTest`<br>`FtpClientPooledObjectFactoryTest`<br>`SampleFtpIntegrationTest` |
 | **路径清洗与转码** | 路径穿越拦截与 RFC 959 线缆转码 | `FtpTemplate` | `control-encoding`<br>`server-time-zone` | `cleanAndValidatePath(String)` / `getParentPath(String)` / `getFileName(String)` / `normalizePath(String, String)` / `toWirePath(String)` / `fromWirePath(String)`，拦截 `..` 与 `\0` 注入并消除中文乱码 | `FtpTemplateTest`<br>`FtpDocumentController` |
 | **原生会话逃逸舱** | 底层原生 `FTPClient` 透传 | `FtpTemplate`<br>`FtpClientCallback<T>` | - | `execute(FtpClientCallback<T>)`，安全借用原生客户端执行底层协议扩展指令并在 `finally` 归还，IO 断开自动剔除失效连接 | `FtpTemplateTest` |
@@ -386,7 +386,7 @@ ftpTemplate.deleteFile("/docs/temp.bin");
 // 2. 递归清空删除目录及其所有子文件（传入 "/" 将触发 Root Path Deletion Guard 拒绝拦截）
 ftpTemplate.deleteDirectory("/archive", true);
 
-// 3. RFC 3659 MLSD 机器目录解析
+// 3. RFC 3659 MLSD 机器列表解析
 List<FtpFileInfo> files = ftpTemplate.listFiles("/docs");
 for (FtpFileInfo file : files) {
     log.info("文件: {}, 大小: {} bytes, 时间: {}", file.getName(), file.getSize(), file.getLastModified());
@@ -635,7 +635,12 @@ public FtpPoolStats registerNode(RegisterNodeRequest request) {
 }
 
 // 2. 运行期对称注销指定具名节点并确定性关闭连接池
-boolean removed = ftpClientRegistry.unregister("tenant-edge-01");
+public boolean unregisterNode(String serverName) {
+    return ftpClientRegistry.unregister(serverName);
+}
+
+// 调用示例（与 SampleFtpWebIntegrationTest 一致）
+boolean removed = unregisterNode("tenant-dynamic");
 ```
 - **核心机制与边界防御**：
   - **继承不覆盖**：通过 `nodeProps.mergeFrom(defaultProperties)` 仅补全未显式设置的参数，绝不覆盖显式配置；
@@ -732,28 +737,41 @@ public FtpClientCustomizer ftpsEndpointVerificationCustomizer() {
 - **核心机制与边界防御**：`ftps.enabled=true` 时，连接登录后自动下发 `PBSZ 0` 与 `PROT P`（`PRIVATE`）或 `PROT C`（`CLEAR`）；生产环境必须保持 `trust-all: false` 并配置 `trust-store-path`，加载证书异常统一转译为 `FtpException(CONNECT_FAILED)`。
 
 ### 7.2 原生客户端定制 SPI (`FtpClientCustomizer`) 与 Bean 覆盖接管
-支持以轻量级 SPI 定制底层 `FTPClient`，以及通过 `@ConditionalOnMissingBean` 覆盖默认组件：
+支持以轻量级 SPI 按节点名称定制底层 `FTPClient`，以及通过 `@ConditionalOnMissingBean` 覆盖默认核心 Bean：
+
+```yaml
+ateng:
+  boot:
+    ftp:
+      enabled: true
+      servers:
+        backup:                                   # 目标节点名称，传入 FtpClientCustomizer#customize(serverName, ...)
+          host: 127.0.0.1
+          port: 2122
+          username: backup_user
+          password: YOUR_BACKUP_PASSWORD
+          mode: PASSIVE
+```
+
+（逆向提取自 `SampleFtpCustomizerConfig`）
 ```java
 @Configuration
-public class CustomFtpConfig {
+public class SampleFtpCustomizerConfig {
 
-    // 1. 注入 FtpClientCustomizer SPI：建连并登录初始化后自动按序回调，免覆盖整体连接池工厂
+    // 1. 注入 FtpClientCustomizer SPI：建连登录并完成基础协议初始化后按序回调，免覆盖整体连接池工厂
     @Bean
-    public FtpClientCustomizer customBufferAndProxyCustomizer() {
+    public FtpClientCustomizer backupRemoteVerificationCustomizer() {
         return (serverName, client, properties) -> {
             if ("backup".equals(serverName)) {
                 client.setRemoteVerificationEnabled(false);
             }
         };
     }
-
-    // 2. 如需完全接管门面实例，可借助 @ConditionalOnMissingBean 声明自定义 FtpTemplate
-    @Bean
-    public FtpTemplate customFtpTemplate(FtpClientRegistry registry) {
-        return registry.getDefaultTemplate();
-    }
 }
 ```
+- **核心机制与边界防御**：
+  - **按序非侵入扩展**：自动装配通过 `ObjectProvider<FtpClientCustomizer>` 收集全部定制器并在 `FtpClientPooledObjectFactory.create()` 完成连接、登录及超时配置后按序回调，同时覆盖 `default`、静态 `servers.*` 与运行期动态 `register` 节点；
+  - **幂等与防覆盖**：若需在多定制器间约束顺序，可配合 `@Order`；如需完全接管核心门面，可声明自定义 `FtpTemplate` / `FtpClientRegistry` Bean 利用 `@ConditionalOnMissingBean` 平滑替换。
 
 ### 7.3 原生会话逃逸舱机制 (execute)
 当需要调用 Apache Commons Net 的底层专有协议指令时，通过逃逸舱机制安全借用原生客户端，并在 `finally` 绝对安全归还连接池。

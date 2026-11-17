@@ -39,6 +39,7 @@ class SampleFtpEmbeddedServerTest {
         int backupPort = findFreePort();
 
         contextRunner.withPropertyValues(
+                        "spring.profiles.active=default",
                         "ateng.boot.ftp.enabled=true",
                         "ateng.boot.ftp.host=127.0.0.1",
                         "ateng.boot.ftp.port=" + defaultPort,

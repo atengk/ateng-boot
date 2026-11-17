@@ -426,7 +426,7 @@ public class SampleFtpWebIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("Secured Backup Datacenter Payload"));
 
-        // 6. 查看连接池指标（原生 FtpPoolStats 门面映射）
+        // 6. 查看单节点与全节点连接池指标（原生 FtpPoolStats 门面映射）
         mockMvc.perform(get("/sample/ftp/governance/pool-stats")
                         .param("serverName", "default"))
                 .andExpect(status().isOk())
@@ -437,6 +437,19 @@ public class SampleFtpWebIntegrationTest {
                 .andExpect(jsonPath("$.data.maxIdle").value(8))
                 .andExpect(jsonPath("$.data.minIdle").value(2))
                 .andExpect(jsonPath("$.data.maxConnections").value(10));
+
+        mockMvc.perform(get("/sample/ftp/governance/all-pool-stats"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.default.serverName").value("default"))
+                .andExpect(jsonPath("$.data.backup.serverName").value("backup"));
+
+        // 7. 验证 SampleFtpCustomizerConfig 中注册的 FtpClientCustomizer SPI 已按节点生效
+        Boolean defaultRemoteVerification = ftpTemplate.execute(client -> client.isRemoteVerificationEnabled());
+        Boolean backupRemoteVerification = FtpContextHolder.runWith("backup",
+                () -> ftpTemplate.execute(client -> client.isRemoteVerificationEnabled()));
+        assertThat(defaultRemoteVerification).isTrue();
+        assertThat(backupRemoteVerification).isFalse();
     }
 
     @Test

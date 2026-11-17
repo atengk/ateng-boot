@@ -142,18 +142,14 @@ public class FtpsProperties {
         if (defaults == null) {
             return;
         }
-        this.enabled = pick("enabled", this.enabled, defaults.enabled);
-        this.protocol = pick("protocol", this.protocol, defaults.protocol);
-        this.implicit = pick("implicit", this.implicit, defaults.implicit);
-        this.dataChannelProtection = pick("dataChannelProtection", this.dataChannelProtection, defaults.dataChannelProtection);
-        this.trustAll = pick("trustAll", this.trustAll, defaults.trustAll);
-        this.trustStorePath = pick("trustStorePath", this.trustStorePath, defaults.trustStorePath);
-        this.trustStorePassword = pick("trustStorePassword", this.trustStorePassword, defaults.trustStorePassword);
-        this.keyStorePath = pick("keyStorePath", this.keyStorePath, defaults.keyStorePath);
-        this.keyStorePassword = pick("keyStorePassword", this.keyStorePassword, defaults.keyStorePassword);
-    }
-
-    private <T> T pick(String key, T current, T parent) {
-        return configuredFields.contains(key) ? current : parent;
+        this.enabled = FtpProperties.pickConfigured(this.configuredFields, "enabled", this.enabled, defaults.enabled);
+        this.protocol = FtpProperties.pickConfigured(this.configuredFields, "protocol", this.protocol, defaults.protocol);
+        this.implicit = FtpProperties.pickConfigured(this.configuredFields, "implicit", this.implicit, defaults.implicit);
+        this.dataChannelProtection = FtpProperties.pickConfigured(this.configuredFields, "dataChannelProtection", this.dataChannelProtection, defaults.dataChannelProtection);
+        this.trustAll = FtpProperties.pickConfigured(this.configuredFields, "trustAll", this.trustAll, defaults.trustAll);
+        this.trustStorePath = FtpProperties.pickConfigured(this.configuredFields, "trustStorePath", this.trustStorePath, defaults.trustStorePath);
+        this.trustStorePassword = FtpProperties.pickConfigured(this.configuredFields, "trustStorePassword", this.trustStorePassword, defaults.trustStorePassword);
+        this.keyStorePath = FtpProperties.pickConfigured(this.configuredFields, "keyStorePath", this.keyStorePath, defaults.keyStorePath);
+        this.keyStorePassword = FtpProperties.pickConfigured(this.configuredFields, "keyStorePassword", this.keyStorePassword, defaults.keyStorePassword);
     }
 }

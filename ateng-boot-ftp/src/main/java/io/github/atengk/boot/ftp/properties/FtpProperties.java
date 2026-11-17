@@ -272,18 +272,18 @@ public class FtpProperties {
         if (defaults == null) {
             return;
         }
-        this.mode = pick("mode", this.mode, defaults.mode);
-        this.fileType = pick("fileType", this.fileType, defaults.fileType);
-        this.controlEncoding = pick("controlEncoding", this.controlEncoding, defaults.controlEncoding);
-        this.connectTimeout = pick("connectTimeout", this.connectTimeout, defaults.connectTimeout);
-        this.dataTimeout = pick("dataTimeout", this.dataTimeout, defaults.dataTimeout);
-        this.controlKeepAliveTimeout = pick("controlKeepAliveTimeout", this.controlKeepAliveTimeout, defaults.controlKeepAliveTimeout);
-        this.bufferSize = pick("bufferSize", this.bufferSize, defaults.bufferSize);
-        this.maxDownloadBytes = pick("maxDownloadBytes", this.maxDownloadBytes, defaults.maxDownloadBytes);
-        this.atomicUpload = pick("atomicUpload", this.atomicUpload, defaults.atomicUpload);
-        this.tempFileSuffix = pick("tempFileSuffix", this.tempFileSuffix, defaults.tempFileSuffix);
-        this.autoCreateDirectories = pick("autoCreateDirectories", this.autoCreateDirectories, defaults.autoCreateDirectories);
-        this.serverTimeZone = pick("serverTimeZone", this.serverTimeZone, defaults.serverTimeZone);
+        this.mode = pickConfigured(this.configuredFields, "mode", this.mode, defaults.mode);
+        this.fileType = pickConfigured(this.configuredFields, "fileType", this.fileType, defaults.fileType);
+        this.controlEncoding = pickConfigured(this.configuredFields, "controlEncoding", this.controlEncoding, defaults.controlEncoding);
+        this.connectTimeout = pickConfigured(this.configuredFields, "connectTimeout", this.connectTimeout, defaults.connectTimeout);
+        this.dataTimeout = pickConfigured(this.configuredFields, "dataTimeout", this.dataTimeout, defaults.dataTimeout);
+        this.controlKeepAliveTimeout = pickConfigured(this.configuredFields, "controlKeepAliveTimeout", this.controlKeepAliveTimeout, defaults.controlKeepAliveTimeout);
+        this.bufferSize = pickConfigured(this.configuredFields, "bufferSize", this.bufferSize, defaults.bufferSize);
+        this.maxDownloadBytes = pickConfigured(this.configuredFields, "maxDownloadBytes", this.maxDownloadBytes, defaults.maxDownloadBytes);
+        this.atomicUpload = pickConfigured(this.configuredFields, "atomicUpload", this.atomicUpload, defaults.atomicUpload);
+        this.tempFileSuffix = pickConfigured(this.configuredFields, "tempFileSuffix", this.tempFileSuffix, defaults.tempFileSuffix);
+        this.autoCreateDirectories = pickConfigured(this.configuredFields, "autoCreateDirectories", this.autoCreateDirectories, defaults.autoCreateDirectories);
+        this.serverTimeZone = pickConfigured(this.configuredFields, "serverTimeZone", this.serverTimeZone, defaults.serverTimeZone);
 
         if (this.pool == null) {
             this.pool = defaults.getPool() != null ? defaults.getPool().copy() : new FtpPoolProperties();
@@ -297,7 +297,7 @@ public class FtpProperties {
         }
     }
 
-    private <T> T pick(String key, T current, T parent) {
+    static <T> T pickConfigured(Set<String> configuredFields, String key, T current, T parent) {
         return configuredFields.contains(key) ? current : parent;
     }
 }

@@ -23,6 +23,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * 远程 FTP 节点治理与健康运维控制器
  * <p>
@@ -135,6 +138,19 @@ public class FtpGovernanceController {
     public Result<FtpPoolStatsVO> getPoolStats(@RequestParam(value = "serverName", required = false) String serverName) {
         String targetServer = StringUtils.hasText(serverName) ? serverName : FtpClientRegistry.DEFAULT_SERVER;
         return Result.success(toStatsVO(dynamicRoutingService.getPoolStats(targetServer)));
+    }
+
+    /**
+     * 批量查看所有已注册 FTP 服务节点的连接池实时运行指标（直接调用原生 getAllPoolStats 门面）
+     *
+     * @return 按节点名称索引的连接池指标快照映射
+     */
+    @GetMapping("/all-pool-stats")
+    public Result<Map<String, FtpPoolStatsVO>> getAllPoolStats() {
+        Map<String, FtpPoolStats> allStats = dynamicRoutingService.getAllPoolStats();
+        Map<String, FtpPoolStatsVO> result = new LinkedHashMap<>(allStats.size());
+        allStats.forEach((name, stats) -> result.put(name, toStatsVO(stats)));
+        return Result.success(result);
     }
 
     private FtpPoolStatsVO toStatsVO(FtpPoolStats stats) {
