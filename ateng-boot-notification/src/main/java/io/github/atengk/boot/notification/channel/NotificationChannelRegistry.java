@@ -10,6 +10,7 @@ import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -161,10 +162,18 @@ public class NotificationChannelRegistry {
     }
 
     /**
-     * 清空当前所有缓存的渠道配置
+     * 清空当前所有缓存的渠道配置，并联动发布渠道驱逐事件清理下游缓存
      */
     public void clear() {
-        channels.clear();
+        if (channels.isEmpty()) {
+            return;
+        }
+        for (String name : new ArrayList<>(channels.keySet())) {
+            NotificationChannel removed = channels.remove(name);
+            if (removed != null && eventPublisher != null) {
+                eventPublisher.publishEvent(new NotificationChannelEvictEvent(this, name, removed));
+            }
+        }
     }
 
     /**

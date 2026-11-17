@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.notification.service;
 
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.AsyncUtil;
 import io.github.atengk.boot.notification.alert.AlertStormSuppressor;
 import io.github.atengk.boot.notification.annotation.NotifyAlert;
 import io.github.atengk.boot.sample.notification.dto.AlertStormSuppressRequest;
@@ -101,7 +102,7 @@ public class OrderAlertScenarioService {
         AtomicReference<Throwable> capturedThrowable = new AtomicReference<>();
 
         // 接入 Core 受管线程池并发模拟瞬时故障风暴
-        Executor executor = taskExecutorProvider.getIfAvailable();
+        Executor executor = taskExecutorProvider.getIfAvailable(AsyncUtil::getExecutor);
         List<CompletableFuture<Void>> futures = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
             final int index = i;
@@ -117,9 +118,7 @@ public class OrderAlertScenarioService {
                     capturedThrowable.compareAndSet(null, ex);
                 }
             };
-            futures.add(executor != null
-                    ? CompletableFuture.runAsync(stormTask, executor)
-                    : CompletableFuture.runAsync(stormTask));
+            futures.add(CompletableFuture.runAsync(stormTask, executor));
         }
 
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();

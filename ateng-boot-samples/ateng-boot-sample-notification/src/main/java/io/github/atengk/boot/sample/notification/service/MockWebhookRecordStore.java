@@ -4,16 +4,16 @@ import io.github.atengk.boot.sample.notification.vo.MockWebhookRecordVO;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 离线仿真 Webhook 网关录制报文内存存储组件（仅在非 local Profile 下装配）
- * 将状态存储从 Controller 剥离，保证控制器无状态并以有界并发队列保存审计报文
+ * 将状态存储从 Controller 剥离，保证控制器无状态并以 ReentrantLock 保护的有界队列保存审计报文
  *
  * @author Ateng
  * @since 2026-11-17
@@ -25,7 +25,7 @@ public class MockWebhookRecordStore {
     private static final int MAX_RECORD_CAPACITY = 200;
 
     private final ReentrantLock lock = new ReentrantLock();
-    private final Deque<MockWebhookRecordVO> records = new ConcurrentLinkedDeque<>();
+    private final Deque<MockWebhookRecordVO> records = new ArrayDeque<>(MAX_RECORD_CAPACITY);
 
     /**
      * 追加一条录制报文（超出容量上限时淘汰最旧记录）

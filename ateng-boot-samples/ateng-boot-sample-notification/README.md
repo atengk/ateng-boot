@@ -60,7 +60,7 @@
     "msg": "操作成功",
     "data": {
       "ops-alert": {
-        "messageId": "a1b2c3d4e5f6...",
+        "messageId": "4f8c2a1b9e3d4c7f8a12b34c56d78e90",
         "channel": "ops-alert",
         "platform": "WECOM",
         "success": true,
@@ -69,13 +69,13 @@
         "errorMessage": null
       },
       "feishu-ops": {
-        "messageId": "f6e5d4c3b2a1...",
+        "messageId": "7a9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d",
         "channel": "feishu-ops",
         "platform": "FEISHU",
         "success": false,
         "costDuration": "PT0.012S",
         "rawResponse": "{\"code\":500,\"msg\":\"Feishu Gateway Error\"}",
-        "errorMessage": "协同平台 HTTP 请求异常 [status=500, target=...]: 500 Server Error"
+        "errorMessage": "协同平台 HTTP 请求异常 [status=500, target=http://127.0.0.1:8080/webhook/feishu]: 500 Internal Server Error: \"{\"code\":500,\"msg\":\"Feishu Gateway Error\"}\""
       }
     },
     "success": true
@@ -89,12 +89,26 @@
     "msg": "操作成功",
     "data": [
       {
-        "id": "9f8e7d6c...",
+        "id": "9f8e7d6c5b4a3210fedcba9876543210",
         "platform": "DINGTALK",
         "path": "/sample/notification/mock-gateway/dingtalk",
-        "queryString": "timestamp=1794909840123&sign=...",
+        "queryString": "timestamp=1794909840123&sign=vQ2xYz9kM0pL1nR4sT7uW8aB3cD5eF6gH7iJ8kL9mN0%3D",
+        "headers": {
+          "content-type": "application/json",
+          "host": "localhost:8080"
+        },
+        "payload": {
+          "msgtype": "actionCard",
+          "actionCard": {
+            "title": "钉钉网关卡片",
+            "text": "### 钉钉网关卡片\n\n验证非空 singleURL 与无二次编码加签",
+            "singleTitle": "查看详情",
+            "singleURL": "https://open.dingtalk.com"
+          }
+        },
         "signatureVerified": true,
-        "detailMessage": "钉钉报文与签名校验通过"
+        "detailMessage": "钉钉报文与签名校验通过",
+        "receivedAt": "2026-11-17T21:40:12.345"
       }
     ],
     "success": true

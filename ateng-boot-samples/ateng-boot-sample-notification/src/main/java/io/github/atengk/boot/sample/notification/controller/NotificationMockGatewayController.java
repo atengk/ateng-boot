@@ -1,17 +1,12 @@
 package io.github.atengk.boot.sample.notification.controller;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
-import io.github.atengk.boot.notification.channel.NotificationChannel;
-import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
 import io.github.atengk.boot.notification.model.Platform;
-import io.github.atengk.boot.notification.properties.NotificationChannelProperties;
-import io.github.atengk.boot.notification.properties.NotificationProperties;
 import io.github.atengk.boot.notification.provider.GenericWebhookNotificationProvider;
-import io.github.atengk.boot.notification.util.NotificationSignUtil;
 import io.github.atengk.boot.sample.notification.service.MockWebhookRecordStore;
+import io.github.atengk.boot.sample.notification.service.MockWebhookSignatureVerifier;
 import io.github.atengk.boot.sample.notification.vo.MockWebhookRecordVO;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
@@ -27,22 +22,16 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * 离线仿真 Webhook 网关控制器（仅在非 local Profile 下装配，保持完全无状态）
- * 内置企业微信、钉钉、飞书与通用 Webhook 协议验签、报文录制审计与清空接口，实现开箱即用零外部依赖体验
+ * 对接企业微信、钉钉、飞书与通用 Webhook 接收端点，并将验签委托至 {@link MockWebhookSignatureVerifier}、审计记录委托至 {@link MockWebhookRecordStore}
  *
  * @author Ateng
  * @since 2026-11-17
@@ -55,10 +44,8 @@ import java.util.Set;
 public class NotificationMockGatewayController {
 
     private static final String LEGACY_PLAINTEXT_SECRET_HEADER = "x-webhook-secret";
-    private static final long GENERIC_REPLAY_WINDOW_MILLIS = Duration.ofMinutes(5).toMillis();
 
-    private final NotificationProperties notificationProperties;
-    private final NotificationChannelRegistry channelRegistry;
+    private final MockWebhookSignatureVerifier signatureVerifier;
     private final MockWebhookRecordStore recordStore;
 
     /**
@@ -97,13 +84,9 @@ public class NotificationMockGatewayController {
             return ResponseEntity.ok(Map.of("errcode", 310000, "errmsg", "sign double encoded"));
         }
 
-        Set<String> secrets = resolveConfiguredSecrets(Platform.DINGTALK);
-        if (!secrets.isEmpty()) {
-            boolean verified = verifyDingTalkAgainstSecrets(secrets, timestamp, sign, queryString);
-            if (!verified) {
-                recordRequest(Platform.DINGTALK, request, rawBody, false, "钉钉 URL 查询参数签名校验未通过");
-                return ResponseEntity.ok(Map.of("errcode", 310000, "errmsg", "sign not match"));
-            }
+        if (!signatureVerifier.verifyDingTalk(timestamp, sign, queryString)) {
+            recordRequest(Platform.DINGTALK, request, rawBody, false, "钉钉 URL 查询参数签名校验未通过");
+            return ResponseEntity.ok(Map.of("errcode", 310000, "errmsg", "sign not match"));
         }
 
         recordRequest(Platform.DINGTALK, request, rawBody, true, "钉钉报文与签名校验通过");
@@ -121,13 +104,9 @@ public class NotificationMockGatewayController {
     public ResponseEntity<Map<String, Object>> receiveFeishu(
             @RequestBody(required = false) String rawBody,
             HttpServletRequest request) {
-        Set<String> secrets = resolveConfiguredSecrets(Platform.FEISHU);
-        if (!secrets.isEmpty()) {
-            boolean verified = verifyFeishuAgainstSecrets(secrets, rawBody);
-            if (!verified) {
-                recordRequest(Platform.FEISHU, request, rawBody, false, "飞书请求体签名校验未通过");
-                return ResponseEntity.ok(Map.of("code", 19021, "msg", "sign match fail"));
-            }
+        if (!signatureVerifier.verifyFeishu(rawBody)) {
+            recordRequest(Platform.FEISHU, request, rawBody, false, "飞书请求体签名校验未通过");
+            return ResponseEntity.ok(Map.of("code", 19021, "msg", "sign match fail"));
         }
 
         recordRequest(Platform.FEISHU, request, rawBody, true, "飞书报文与签名校验通过");
@@ -151,16 +130,12 @@ public class NotificationMockGatewayController {
                     .body(Map.of("code", 400, "message", "forbidden plaintext header X-Webhook-Secret"));
         }
 
-        Set<String> secrets = resolveConfiguredSecrets(Platform.GENERIC);
-        if (!secrets.isEmpty()) {
-            String tsHeader = request.getHeader(GenericWebhookNotificationProvider.HEADER_WEBHOOK_TIMESTAMP);
-            String sigHeader = request.getHeader(GenericWebhookNotificationProvider.HEADER_SIGNATURE_SHA256);
-            boolean verified = verifyGenericAgainstSecrets(secrets, tsHeader, sigHeader, rawBody);
-            if (!verified) {
-                recordRequest(Platform.GENERIC, request, rawBody, false, "通用网关防重放时间戳或 HMAC 签名校验未通过");
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                        .body(Map.of("code", 401, "message", "invalid webhook signature or expired timestamp"));
-            }
+        String tsHeader = request.getHeader(GenericWebhookNotificationProvider.HEADER_WEBHOOK_TIMESTAMP);
+        String sigHeader = request.getHeader(GenericWebhookNotificationProvider.HEADER_SIGNATURE_SHA256);
+        if (!signatureVerifier.verifyGeneric(tsHeader, sigHeader, rawBody)) {
+            recordRequest(Platform.GENERIC, request, rawBody, false, "通用网关防重放时间戳或 HMAC 签名校验未通过");
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("code", 401, "message", "invalid webhook signature or expired timestamp"));
         }
 
         recordRequest(Platform.GENERIC, request, rawBody, true, "通用网关防重放签名校验通过");
@@ -234,128 +209,5 @@ public class NotificationMockGatewayController {
             log.debug("MockGateway failed to parse JSON body, retaining raw payload: {}", ex.getMessage());
             return rawBody;
         }
-    }
-
-    private Set<String> resolveConfiguredSecrets(Platform platform) {
-        Set<String> secrets = new LinkedHashSet<>();
-        if (notificationProperties != null && notificationProperties.getChannels() != null) {
-            for (NotificationChannelProperties channelProps : notificationProperties.getChannels().values()) {
-                if (channelProps != null && channelProps.getPlatform() == platform
-                        && channelProps.getSecret() != null && !channelProps.getSecret().isBlank()) {
-                    secrets.add(channelProps.getSecret().trim());
-                }
-            }
-        }
-        if (channelRegistry != null) {
-            for (NotificationChannel channel : channelRegistry.getAll().values()) {
-                if (channel != null && channel.getPlatform() == platform
-                        && channel.getSecret() != null && !channel.getSecret().isBlank()) {
-                    secrets.add(channel.getSecret().trim());
-                }
-            }
-        }
-        return secrets;
-    }
-
-    private boolean verifyDingTalkAgainstSecrets(Set<String> secrets, String timestamp,
-                                                 String decodedSign, String queryString) {
-        if (timestamp == null || timestamp.isBlank()) {
-            return false;
-        }
-        long tsMillis;
-        try {
-            tsMillis = Long.parseLong(timestamp.trim());
-        } catch (NumberFormatException ex) {
-            log.debug("MockGateway rejected invalid DingTalk timestamp [{}]: {}", timestamp, ex.getMessage());
-            return false;
-        }
-        String rawSign = extractRawQueryParam(queryString, "sign");
-        for (String secret : secrets) {
-            String expectedEncoded = NotificationSignUtil.signDingTalk(secret, tsMillis);
-            if (expectedEncoded == null) {
-                continue;
-            }
-            if (rawSign != null && constantTimeEquals(expectedEncoded, rawSign)) {
-                return true;
-            }
-            if (rawSign == null && decodedSign != null && !decodedSign.isBlank()) {
-                String expectedDecoded = URLDecoder.decode(expectedEncoded, StandardCharsets.UTF_8);
-                if (constantTimeEquals(expectedDecoded, decodedSign)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private boolean verifyFeishuAgainstSecrets(Set<String> secrets, String rawBody) {
-        if (rawBody == null || rawBody.isBlank()) {
-            return false;
-        }
-        try {
-            JsonNode root = JsonUtil.getObjectMapper().readTree(rawBody);
-            String timestamp = root.path("timestamp").asText(null);
-            String sign = root.path("sign").asText(null);
-            if (timestamp == null || timestamp.isBlank() || sign == null || sign.isBlank()) {
-                return false;
-            }
-            long tsSeconds = Long.parseLong(timestamp.trim());
-            for (String secret : secrets) {
-                String expected = NotificationSignUtil.signFeishu(secret, tsSeconds);
-                if (expected != null && constantTimeEquals(expected, sign)) {
-                    return true;
-                }
-            }
-            return false;
-        } catch (Exception ex) {
-            log.debug("MockGateway failed to verify Feishu signature: {}", ex.getMessage());
-            return false;
-        }
-    }
-
-    private boolean verifyGenericAgainstSecrets(Set<String> secrets, String tsHeader,
-                                                String sigHeader, String rawBody) {
-        if (tsHeader == null || tsHeader.isBlank() || sigHeader == null || sigHeader.isBlank()) {
-            return false;
-        }
-        long tsMillis;
-        try {
-            tsMillis = Long.parseLong(tsHeader.trim());
-        } catch (NumberFormatException ex) {
-            log.debug("MockGateway rejected invalid Generic timestamp header [{}]: {}", tsHeader, ex.getMessage());
-            return false;
-        }
-        if (Math.abs(System.currentTimeMillis() - tsMillis) > GENERIC_REPLAY_WINDOW_MILLIS) {
-            log.debug("MockGateway rejected expired Generic webhook timestamp [{}]", tsMillis);
-            return false;
-        }
-        for (String secret : secrets) {
-            if (NotificationSignUtil.verifyGenericWebhook(secret, tsMillis, rawBody, sigHeader)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private String extractRawQueryParam(String queryString, String key) {
-        if (queryString == null || queryString.isBlank()) {
-            return null;
-        }
-        String prefix = key + "=";
-        for (String pair : queryString.split("&")) {
-            if (pair.startsWith(prefix)) {
-                return pair.substring(prefix.length());
-            }
-        }
-        return null;
-    }
-
-    private boolean constantTimeEquals(String a, String b) {
-        if (a == null || b == null) {
-            return false;
-        }
-        return MessageDigest.isEqual(
-                a.trim().getBytes(StandardCharsets.UTF_8),
-                b.trim().getBytes(StandardCharsets.UTF_8));
     }
 }

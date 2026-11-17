@@ -12,6 +12,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -191,5 +193,37 @@ class NotificationChannelRegistryTest {
         assertThat(capturedEvent.get()).isNotNull();
         assertThat(capturedEvent.get().getChannelName()).isEqualTo("hot-update-channel");
         assertThat(capturedEvent.get().getEvictedChannel()).isEqualTo(oldChannel);
+    }
+
+    @Test
+    @DisplayName("测试清空全部渠道时为所有已缓存渠道发布 NotificationChannelEvictEvent 事件")
+    void testChannelClearPublishesEvictEventsForAllEntries() {
+        List<NotificationChannelEvictEvent> capturedEvents = new ArrayList<>();
+        registry.setEventPublisher(event -> {
+            if (event instanceof NotificationChannelEvictEvent evictEvent) {
+                capturedEvents.add(evictEvent);
+            }
+        });
+
+        NotificationChannel ch1 = NotificationChannel.builder()
+                .name("clear-channel-1")
+                .platform(Platform.WECOM)
+                .webhook("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=111")
+                .build();
+        NotificationChannel ch2 = NotificationChannel.builder()
+                .name("clear-channel-2")
+                .platform(Platform.FEISHU)
+                .webhook("https://open.feishu.cn/open-apis/bot/v2/hook/222")
+                .build();
+
+        registry.register(ch1);
+        registry.register(ch2);
+        assertThat(capturedEvents).isEmpty();
+
+        registry.clear();
+        assertThat(registry.size()).isEqualTo(0);
+        assertThat(capturedEvents)
+                .extracting(NotificationChannelEvictEvent::getChannelName)
+                .containsExactlyInAnyOrder("clear-channel-1", "clear-channel-2");
     }
 }

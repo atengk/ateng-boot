@@ -34,7 +34,9 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * 企业协同通知发信多场景业务服务
@@ -213,9 +215,19 @@ public class NotificationScenarioService {
                 Thread.currentThread().interrupt();
                 throw new NotificationException(NotificationResultCode.NOTIFICATION_SEND_ERROR,
                         "异步广播等待执行结果被中断", ex);
-            } catch (Exception ex) {
+            } catch (ExecutionException ex) {
+                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                if (cause instanceof NotificationException notificationEx) {
+                    throw notificationEx;
+                }
+                if (cause instanceof RuntimeException runtimeEx) {
+                    throw runtimeEx;
+                }
                 throw new NotificationException(NotificationResultCode.NOTIFICATION_SEND_ERROR,
-                        "异步广播执行异常: " + ex.getMessage(), ex);
+                        "异步广播执行异常: " + cause.getMessage(), cause);
+            } catch (TimeoutException ex) {
+                throw new NotificationException(NotificationResultCode.NOTIFICATION_SEND_ERROR,
+                        "异步广播等待执行结果超时", ex);
             }
         }
         return notificationTemplate.sendBroadcast(request.getChannels(), message);
