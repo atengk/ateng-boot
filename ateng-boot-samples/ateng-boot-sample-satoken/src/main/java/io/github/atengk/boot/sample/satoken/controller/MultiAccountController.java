@@ -2,9 +2,13 @@ package io.github.atengk.boot.sample.satoken.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.annotation.SaCheckRole;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.satoken.dto.LoginRequestDTO;
 import io.github.atengk.boot.sample.satoken.dto.UserProfileDTO;
+import io.github.atengk.boot.sample.satoken.vo.MultiAccountOverviewVO;
+import io.github.atengk.boot.satoken.annotation.Anonymous;
 import io.github.atengk.boot.satoken.annotation.CheckDataOwner;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.util.LoginHelper;
@@ -43,6 +47,7 @@ public class MultiAccountController {
      * @return 签发的 admin 体系 Token
      */
     @PostMapping("/admin/login")
+    @Anonymous
     public Result<String> adminLogin(@RequestBody LoginRequestDTO request) {
         String userId = (request != null && request.getUserId() != null && !request.getUserId().isBlank())
                 ? request.getUserId() : "admin-001";
@@ -85,6 +90,16 @@ public class MultiAccountController {
     }
 
     /**
+     * 管理端控制台概览（无显式方法内 checkLogin，由全局 check-login=true + login-type-routes 路由拦截器保护）
+     *
+     * @return 当前上下文用户与租户视图
+     */
+    @GetMapping("/admin/overview")
+    public Result<MultiAccountOverviewVO> getAdminOverview() {
+        return Result.success(buildOverview("admin"));
+    }
+
+    /**
      * 管理端用户注销下线
      *
      * @return 成功响应
@@ -104,6 +119,7 @@ public class MultiAccountController {
      * @return 签发的 member 体系 Token
      */
     @PostMapping("/member/login")
+    @Anonymous
     public Result<String> memberLogin(@RequestBody LoginRequestDTO request) {
         String userId = (request != null && request.getUserId() != null && !request.getUserId().isBlank())
                 ? request.getUserId() : "member-001";
@@ -155,6 +171,24 @@ public class MultiAccountController {
     @CheckDataOwner(type = "member", expr = "#dto.userId")
     public Result<String> updateMemberProfile(@Valid @RequestBody UserProfileDTO dto) {
         return Result.success("会员资料更新成功: " + dto.getNickname());
+    }
+
+    /**
+     * 会员端首页概览（无显式方法内 checkLogin，由全局 check-login=true + login-type-routes 路由拦截器保护）
+     *
+     * @return 当前上下文用户与租户视图
+     */
+    @GetMapping("/member/overview")
+    public Result<MultiAccountOverviewVO> getMemberOverview() {
+        return Result.success(buildOverview("member"));
+    }
+
+    private MultiAccountOverviewVO buildOverview(String channel) {
+        return MultiAccountOverviewVO.builder()
+                .userId(UserContextHolder.get())
+                .tenantId(TenantContextHolder.getTenantId())
+                .channel(channel)
+                .build();
     }
 
     /**

@@ -120,6 +120,13 @@ flowchart TD
 - **JDK 21+ 虚拟线程防 Pinning 清零**：
   - 将 `LoginHelper`、`PermissionCacheService`、`AtengSaTokenInterceptor`、`AnonymousUrlProcessor` 中的 `synchronized` 全面替换为 `ReentrantLock`（遵循 `isHeldByCurrentThread()` 校验释放范式，对齐 [ADR-0029](./0029-virtual-threads-and-adaptive-async-runtime.md)）。
 
+### 9. 全局 `check-login=true` 多账号路由感知与上下文对齐 (2026-11 缺陷修复演进)
+- **问题背景（Issue #1034）**：既有 `AtengSaTokenAutoConfiguration` 与 `SaTokenWebMvcConfigurer` 在 `ateng.boot.satoken.interceptor.check-login=true` 时两处重复硬编码 `StpUtil.checkLogin()`（且父类 `SaInterceptor.auth` 默认非空导致判空失效），致使 `LoginHelper.login("admin", user)` 等非默认 `loginType` 多账号接口被错误拦截返回 401；
+- **路由级 `loginType` 映射 (`interceptor.login-type-routes`)**：在 `SaTokenProperties.InterceptorProperties` 新增 `Map<String, List<String>> loginTypeRoutes`（`LinkedHashMap` 保序，Key 为 `loginType`，Value 为 AntPath 模式列表，规避 Spring Boot `ConfigurationPropertyName` 对路径 Key 中 `/`、`*` 字符的裁剪问题），匹配时采用 `AntPathMatcher.getPatternComparator(lookupPath)` 最精确模式优先、同精度按声明顺序兜底；
+- **单一真相源与统一优先级解析**：移除 `AtengSaTokenAutoConfiguration` 与 `SaTokenWebMvcConfigurer` 中的重复 `StpUtil.checkLogin()` 挂载，将 `check-login` 逻辑统一收敛至 `AtengSaTokenInterceptor`，并追踪 `hasCustomAuth` 标记兼容外部自定义 `setAuth(...)`。非白名单请求的校验目标 `loginType` 按以下确定性优先级解析：`外部自定义 auth > DynamicPathPermissionProvider 动态规则 loginType > interceptor.login-type-routes > ateng.boot.satoken.primary-login-type（默认 "login"）`；
+- **严格校验与正交开关**：`check-login=false` 时 `login-type-routes` 不强制触发 401 拦截，仅作为动态规则与上下文同步的 `loginType` 路由提示；`check-login=true` 未命中任何映射时严格校验 `primary-login-type`，严禁“任意账号体系已登录即放行”的越权降级；
+- **四维上下文对齐**：`syncContextIfLoggedIn` 优先绑定当前请求路由鉴权命中的 `loginType`，避免同一请求携带多端 Token 时 `UserContextHolder` 与 `TenantContextHolder` 串号。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)

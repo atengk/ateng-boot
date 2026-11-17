@@ -5,7 +5,7 @@
 ## Language
 
 **AtengSaTokenInterceptor**:
-企业级双轨路由拦截器，深度承接 Sa-Token 路由匹配与白名单过滤，更关键地负责全链路双维上下文的生命周期镜像管理：在 `preHandle` 将认证上下文无感对称注入 `UserContextHolder` 与 `TenantContextHolder`，在 `afterCompletion` 强制执行双清空，从源头杜绝 Web 容器工作线程池复用造成的跨请求上下文串染与数据越权。
+企业级双轨路由拦截器，深度承接 Sa-Token 路由匹配与白名单过滤，支持 `check-login=true` 严格模式下的多账号体系按路径路由（`interceptor.login-type-routes` 最精确 AntPath 优先）与 `primary-login-type` 兜底校验（按 `自定义 auth > 动态规则 loginType > YAML 路由映射 > primary-login-type` 优先级解析），更关键地负责全链路双维上下文的生命周期镜像管理：在 `preHandle` 将当前命中账号体系的认证上下文无感对称注入 `UserContextHolder` 与 `TenantContextHolder`，在 `afterCompletion` 强制执行双清空，从源头杜绝 Web 容器工作线程池复用造成的跨请求上下文串染与数据越权。
 _Avoid_: SaRouteInterceptor, SecurityFilter, AuthInterceptor
 
 **LoginHelper**:

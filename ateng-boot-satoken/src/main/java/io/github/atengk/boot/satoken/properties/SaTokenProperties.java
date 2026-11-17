@@ -7,7 +7,9 @@ import org.springframework.boot.context.properties.NestedConfigurationProperty;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Sa-Token 鉴权增强配置属性
@@ -119,6 +121,16 @@ public class SaTokenProperties {
                 "/*.css",
                 "/*.js"
         ));
+
+        /**
+         * 多账号体系路由映射表（Key 为账号体系标识 loginType，如 admin、member；Value 为匹配的 AntPath 路径模式列表）。
+         * <p>
+         * 开启 {@code check-login=true} 时，拦截器按最精确 AntPath 优先（同精度按声明顺序）路由至对应
+         * {@code StpLogic} 校验登录态，未命中时回退至 {@code primary-login-type}；
+         * 未开启 {@code check-login} 时，仅作为动态路径规则与上下文同步的 {@code loginType} 路由提示。
+         * </p>
+         */
+        private Map<String, List<String>> loginTypeRoutes = new LinkedHashMap<>();
     }
 
     /**
