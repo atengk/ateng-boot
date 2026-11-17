@@ -97,6 +97,39 @@ class InMemoryServerKeyVerifierTest {
         assertThat(verifier.getKnownKeys()).isEmpty();
     }
 
+    @Test
+    @DisplayName("测试 removeKnownKey 定点移除主机指纹：支持 host+port 与 hostPortKey 清理及公钥轮换重信任")
+    void testRemoveKnownKey() throws GeneralSecurityException {
+        InMemoryServerKeyVerifier lenientVerifier = new InMemoryServerKeyVerifier(HostKeyPolicy.LENIENT);
+        InetSocketAddress address = new InetSocketAddress("10.10.1.20", 22);
+        KeyPair oldKey = generateRsaKeyPair();
+        KeyPair newKey = generateRsaKeyPair();
+
+        // 1. 首次信任旧公钥，换新公钥时被 MITM 防卫阻断
+        assertThat(lenientVerifier.verifyServerKey(null, address, oldKey.getPublic())).isTrue();
+        assertThat(lenientVerifier.verifyServerKey(null, address, newKey.getPublic())).isFalse();
+
+        // 2. 通过 host + port 定点移除后，可重新信任新公钥
+        java.security.PublicKey removed = lenientVerifier.removeKnownKey("10.10.1.20", 22);
+        assertThat(removed).isEqualTo(oldKey.getPublic());
+        assertThat(lenientVerifier.getKnownKey("10.10.1.20:22")).isNull();
+        assertThat(lenientVerifier.verifyServerKey(null, address, newKey.getPublic())).isTrue();
+
+        // 3. 通过 hostPortKey 移除与空白/空入参防御
+        assertThat(lenientVerifier.removeKnownKey("10.10.1.20:22")).isEqualTo(newKey.getPublic());
+        assertThat(lenientVerifier.removeKnownKey("10.10.1.20:22")).isNull();
+        assertThat(lenientVerifier.removeKnownKey((String) null)).isNull();
+        assertThat(lenientVerifier.removeKnownKey("   ")).isNull();
+        assertThat(lenientVerifier.removeKnownKey(null, 22)).isNull();
+
+        // 4. STRICT 模式下移除已知指纹后应立即阻断连接
+        InMemoryServerKeyVerifier strictVerifier = new InMemoryServerKeyVerifier(HostKeyPolicy.STRICT);
+        strictVerifier.registerKnownKey("10.10.1.20", 22, oldKey.getPublic());
+        assertThat(strictVerifier.verifyServerKey(null, address, oldKey.getPublic())).isTrue();
+        strictVerifier.removeKnownKey("10.10.1.20:22");
+        assertThat(strictVerifier.verifyServerKey(null, address, oldKey.getPublic())).isFalse();
+    }
+
     private static KeyPair generateRsaKeyPair() throws GeneralSecurityException {
         KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
         generator.initialize(2048);

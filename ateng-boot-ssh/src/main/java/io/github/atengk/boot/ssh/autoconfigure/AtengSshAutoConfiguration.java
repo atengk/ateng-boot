@@ -1,7 +1,6 @@
 package io.github.atengk.boot.ssh.autoconfigure;
 
 import io.github.atengk.boot.ssh.lifecycle.SshLifecycleManager;
-import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
 import io.github.atengk.boot.ssh.properties.SshProperties;
 import io.github.atengk.boot.ssh.registry.SshClientRegistry;
@@ -63,18 +62,7 @@ public class AtengSshAutoConfiguration {
     @ConditionalOnMissingBean
     public SshClientRegistry sshClientRegistry(SshProperties properties) {
         SshClientRegistry registry = new SshClientRegistry();
-
-        // 1. 若配置了默认单节点 host，则注册默认 default 节点
-        if (properties.getHost() != null && !properties.getHost().isBlank()) {
-            registry.register(SshClientRegistry.DEFAULT_SERVER, SshServerInfo.fromProperties(properties));
-        }
-
-        // 2. 注册 YAML 命名多服务器节点字典
-        if (properties.getServers() != null && !properties.getServers().isEmpty()) {
-            properties.getServers().forEach((name, serverProps) -> {
-                registry.register(name, SshServerInfo.fromProperties(serverProps));
-            });
-        }
+        registry.registerProperties(properties);
 
         log.info("ateng-boot-ssh: SshClientRegistry 自动装配完成，已纳管节点: {}", registry.getServerNames());
         return registry;
@@ -99,20 +87,25 @@ public class AtengSshAutoConfiguration {
     /**
      * 自动装配受管会话缓存池 SshSessionPool（具备 LRU、TTL 与心跳保活）
      *
-     * @param sshClient  底座 SshClient 客户端
-     * @param properties 全局配置属性
+     * @param sshClient              底座 SshClient 客户端
+     * @param properties             全局配置属性
+     * @param taskSchedulerProvider  可选共享调度器提供者
+     * @param clientRegistryProvider 可选命名主机注册表提供者（用于绑定注销联动驱逐）
      * @return 会话池实例
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
     public SshSessionPool sshSessionPool(SshClient sshClient,
                                          SshProperties properties,
-                                         ObjectProvider<ThreadPoolTaskScheduler> taskSchedulerProvider) {
-        return new SshSessionPool(
+                                         ObjectProvider<ThreadPoolTaskScheduler> taskSchedulerProvider,
+                                         ObjectProvider<SshClientRegistry> clientRegistryProvider) {
+        SshSessionPool pool = new SshSessionPool(
                 sshClient,
                 properties.getPool(),
                 taskSchedulerProvider.getIfAvailable() != null ? taskSchedulerProvider.getIfAvailable().getScheduledExecutor() : null
         );
+        clientRegistryProvider.ifAvailable(registry -> registry.addEvictionListener(pool::evict));
+        return pool;
     }
 
     /**

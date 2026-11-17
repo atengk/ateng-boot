@@ -65,6 +65,11 @@ public class SshProperties {
     private HostKeyPolicy hostKeyPolicy = HostKeyPolicy.LENIENT;
 
     /**
+     * 跳板机 / 堡垒机节点名称（引用 {@code ateng.boot.ssh.servers.<name>} 中的已配置节点标识，支持多级级联与环路防卫）
+     */
+    private String jumpHost;
+
+    /**
      * 网络 TCP 连接与 SSH 协议协商超时阈值
      */
     private Duration connectTimeout = Duration.ofSeconds(10);

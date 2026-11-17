@@ -178,6 +178,17 @@ public final class SshServerInfo {
      * @return 不可变描述符
      */
     public static SshServerInfo fromProperties(SshProperties properties) {
+        return fromProperties(properties, null);
+    }
+
+    /**
+     * 从配置属性对象与已解析的跳板机描述符转换构建目标服务器描述符
+     *
+     * @param properties 配置属性
+     * @param jumpHost   已解析的跳板机描述符（可为 null）
+     * @return 不可变描述符
+     */
+    public static SshServerInfo fromProperties(SshProperties properties, SshServerInfo jumpHost) {
         if (properties == null) {
             return null;
         }
@@ -193,6 +204,7 @@ public final class SshServerInfo {
                 .connectTimeout(properties.getConnectTimeout() != null ? properties.getConnectTimeout() : Duration.ofSeconds(10))
                 .authTimeout(properties.getAuthTimeout() != null ? properties.getAuthTimeout() : Duration.ofSeconds(15))
                 .commandTimeout(properties.getCommandTimeout() != null ? properties.getCommandTimeout() : Duration.ofSeconds(60))
+                .jumpHost(jumpHost)
                 .build();
     }
 

@@ -7,6 +7,9 @@ import io.github.atengk.boot.ssh.properties.SshProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -90,5 +93,79 @@ class SshClientRegistryTest {
         registry.clear();
         assertThat(registry.getServerNames()).isEmpty();
         assertThat(registry.contains("node1")).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 unregister 对称注销与覆盖注册时自动触发旧连接驱逐回调")
+    void testUnregisterAndOverwriteEvictionListener() {
+        SshClientRegistry registry = new SshClientRegistry();
+        List<SshServerInfo> evictedServers = new ArrayList<>();
+        registry.addEvictionListener(evictedServers::add);
+
+        SshServerInfo oldNode1 = SshServerInfo.of("10.0.0.1", "root", "oldpass");
+        SshServerInfo rotatedNode1 = SshServerInfo.of("10.0.0.1", "root", "newpass");
+        SshServerInfo sameCredNode1 = SshServerInfo.of("10.0.0.1", "root", "newpass");
+
+        registry.register("node1", oldNode1);
+        assertThat(evictedServers).isEmpty();
+
+        // 1. 同名节点凭据变更覆盖注册：触发对旧描述符的驱逐通知
+        registry.register("node1", rotatedNode1);
+        assertThat(evictedServers).containsExactly(oldNode1);
+
+        // 2. 相同池路由键幂等重复注册：不重复触发驱逐
+        registry.register("node1", sameCredNode1);
+        assertThat(evictedServers).hasSize(1);
+
+        // 3. 注销已有节点：移除并返回旧描述符，同时触发驱逐回调
+        SshServerInfo removed = registry.unregister("node1");
+        assertThat(removed).isSameAs(sameCredNode1);
+        assertThat(registry.contains("node1")).isFalse();
+        assertThat(evictedServers).hasSize(2);
+        assertThat(evictedServers.get(1)).isSameAs(sameCredNode1);
+
+        // 4. 注销不存在或空白节点名：幂等返回 null，不触发驱逐
+        assertThat(registry.unregister("node1")).isNull();
+        assertThat(registry.unregister(null)).isNull();
+        assertThat(registry.unregister("  ")).isNull();
+        assertThat(evictedServers).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("测试单个 Properties 注册及全量拓扑解析时 jump-host 关联与环路/缺失阻断")
+    void testRegisterPropertiesWithJumpHostGuard() {
+        SshClientRegistry registry = new SshClientRegistry();
+
+        SshProperties bastionProps = new SshProperties();
+        bastionProps.setHost("10.0.0.100");
+        bastionProps.setUsername("bastion");
+        registry.register("bastion", bastionProps);
+
+        SshProperties targetProps = new SshProperties();
+        targetProps.setHost("192.168.1.10");
+        targetProps.setUsername("app");
+        targetProps.setJumpHost("bastion");
+        registry.register("target", targetProps);
+
+        assertThat(registry.getServer("target").hasJumpHost()).isTrue();
+        assertThat(registry.getServer("target").getJumpHost().getHost()).isEqualTo("10.0.0.100");
+
+        // 自引用拦截
+        SshProperties selfProps = new SshProperties();
+        selfProps.setHost("192.168.1.11");
+        selfProps.setUsername("app");
+        selfProps.setJumpHost("self-node");
+        assertThatThrownBy(() -> registry.register("self-node", selfProps))
+                .isInstanceOf(SshOperationException.class)
+                .satisfies(ex -> assertThat(((SshOperationException) ex).getResultCode()).isEqualTo(SshResultCode.JUMP_HOST_FAILED));
+
+        // 跳板机不存在拦截
+        SshProperties missingJumpProps = new SshProperties();
+        missingJumpProps.setHost("192.168.1.12");
+        missingJumpProps.setUsername("app");
+        missingJumpProps.setJumpHost("ghost-bastion");
+        assertThatThrownBy(() -> registry.register("app-node", missingJumpProps))
+                .isInstanceOf(SshOperationException.class)
+                .satisfies(ex -> assertThat(((SshOperationException) ex).getResultCode()).isEqualTo(SshResultCode.JUMP_HOST_FAILED));
     }
 }
