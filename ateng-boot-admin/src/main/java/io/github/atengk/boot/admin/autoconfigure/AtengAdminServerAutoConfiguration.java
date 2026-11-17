@@ -128,7 +128,7 @@ public class AtengAdminServerAutoConfiguration {
     public ZombieInstanceCleanupScheduler zombieInstanceCleanupScheduler(
             InstanceRepository repository,
             ObjectProvider<InstanceRegistry> registryProvider,
-            ObjectProvider<ThreadPoolTaskScheduler> taskSchedulerProvider,
+            @Qualifier("sbaNotificationTaskScheduler") ObjectProvider<ThreadPoolTaskScheduler> taskSchedulerProvider,
             AtengAdminServerProperties properties) {
         return new ZombieInstanceCleanupScheduler(
                 repository,
