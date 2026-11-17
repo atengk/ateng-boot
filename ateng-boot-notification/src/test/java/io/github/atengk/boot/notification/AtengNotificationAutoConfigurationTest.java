@@ -7,6 +7,7 @@ import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
 import io.github.atengk.boot.notification.handler.NotificationSendFailureHandler;
 import io.github.atengk.boot.notification.limiter.InMemoryNotificationRateLimiter;
 import io.github.atengk.boot.notification.limiter.NotificationRateLimiter;
+import io.github.atengk.boot.notification.limiter.RedisNotificationRateLimiter;
 import io.github.atengk.boot.notification.model.TextMessage;
 import io.github.atengk.boot.notification.properties.NotificationProperties;
 import io.github.atengk.boot.notification.provider.DingTalkNotificationProvider;
@@ -18,10 +19,13 @@ import io.github.atengk.boot.notification.template.NotificationTemplate;
 import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
@@ -120,6 +124,58 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
                 .run(context -> {
                     assertThat(context).hasSingleBean(NotificationRateLimiter.class);
                     assertInstanceOf(InMemoryNotificationRateLimiter.class, context.getBean(NotificationRateLimiter.class));
+                });
+    }
+
+    @Test
+    @DisplayName("验证分布式与单机频控条件装配矩阵：开关控制、StringRedisTemplate Bean 就绪、缺类平滑降级与自定义 Bean 退让")
+    void testRateLimiterConditionalAssemblyMatrix() {
+        // 1. 存在 StringRedisTemplate Bean 但未开启 distributed=true（默认 false）：仍装配单机版
+        contextRunner
+                .withBean(StringRedisTemplate.class, () -> Mockito.mock(StringRedisTemplate.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(NotificationRateLimiter.class);
+                    assertInstanceOf(InMemoryNotificationRateLimiter.class, context.getBean(NotificationRateLimiter.class));
+                });
+
+        // 2. 开启 distributed=true 且容器存在 StringRedisTemplate Bean：激活 RedisNotificationRateLimiter 并绑定 Redis 属性
+        contextRunner
+                .withBean(StringRedisTemplate.class, () -> Mockito.mock(StringRedisTemplate.class))
+                .withPropertyValues(
+                        "ateng.boot.notification.rate-limit.distributed=true",
+                        "ateng.boot.notification.rate-limit.redis-key-prefix=custom:notify:rl:",
+                        "ateng.boot.notification.rate-limit.fail-open-on-redis-error=false"
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(NotificationRateLimiter.class);
+                    NotificationRateLimiter bean = context.getBean(NotificationRateLimiter.class);
+                    assertInstanceOf(RedisNotificationRateLimiter.class, bean);
+
+                    RedisNotificationRateLimiter redisLimiter = (RedisNotificationRateLimiter) bean;
+                    assertEquals("custom:notify:rl:{ops}:minute", redisLimiter.buildMinuteKey("ops"));
+
+                    NotificationProperties props = context.getBean(NotificationProperties.class);
+                    assertEquals("custom:notify:rl:", props.getRateLimit().getRedisKeyPrefix());
+                    assertFalse(props.getRateLimit().isFailOpenOnRedisError());
+                });
+
+        // 3. 开启 distributed=true 但类路径缺少 StringRedisTemplate（可选 Redis 依赖未引入）：平滑降级单机版零报错
+        contextRunner
+                .withClassLoader(new FilteredClassLoader(StringRedisTemplate.class))
+                .withPropertyValues("ateng.boot.notification.rate-limit.distributed=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(NotificationRateLimiter.class);
+                    assertInstanceOf(InMemoryNotificationRateLimiter.class, context.getBean(NotificationRateLimiter.class));
+                });
+
+        // 4. 开启 distributed=true 且存在 StringRedisTemplate，但用户自定义了 NotificationRateLimiter：用户 Bean 优先接管
+        contextRunner
+                .withBean(StringRedisTemplate.class, () -> Mockito.mock(StringRedisTemplate.class))
+                .withPropertyValues("ateng.boot.notification.rate-limit.distributed=true")
+                .withUserConfiguration(CustomNotificationBeanConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(NotificationRateLimiter.class);
+                    assertInstanceOf(CustomTestRateLimiter.class, context.getBean(NotificationRateLimiter.class));
                 });
     }
 

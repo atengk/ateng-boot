@@ -11,6 +11,7 @@ import io.github.atengk.boot.notification.handler.LoggingNotificationSendFailure
 import io.github.atengk.boot.notification.handler.NotificationSendFailureHandler;
 import io.github.atengk.boot.notification.limiter.InMemoryNotificationRateLimiter;
 import io.github.atengk.boot.notification.limiter.NotificationRateLimiter;
+import io.github.atengk.boot.notification.limiter.RedisNotificationRateLimiter;
 import io.github.atengk.boot.notification.properties.NotificationProperties;
 import io.github.atengk.boot.notification.provider.DingTalkNotificationProvider;
 import io.github.atengk.boot.notification.provider.FeishuNotificationProvider;
@@ -25,14 +26,18 @@ import org.aspectj.lang.annotation.Aspect;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.AutoConfigureAfter;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.NoneNestedConditions;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -51,12 +56,18 @@ import java.util.concurrent.Executor;
  * @since 2026-10-23
  */
 @Slf4j
-@AutoConfiguration
-@AutoConfigureAfter(AtengAsyncAutoConfiguration.class)
+@AutoConfiguration(
+        after = AtengAsyncAutoConfiguration.class,
+        afterName = "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration"
+)
 @ConditionalOnClass(RestClient.class)
 @ConditionalOnProperty(prefix = "ateng.boot.notification", name = "enabled", havingValue = "true", matchIfMissing = true)
 @Conditional(NotificationConfiguredCondition.class)
 @EnableConfigurationProperties(NotificationProperties.class)
+@Import({
+        AtengNotificationAutoConfiguration.RedisNotificationRateLimiterConfiguration.class,
+        AtengNotificationAutoConfiguration.InMemoryNotificationRateLimiterConfiguration.class
+})
 public class AtengNotificationAutoConfiguration {
 
     /**
@@ -145,20 +156,59 @@ public class AtengNotificationAutoConfiguration {
     }
 
     /**
-     * 自动装配客户端通道频控器
-     * 默认装配单机内存滑动窗口频控器 InMemoryNotificationRateLimiter
-     * 预留分布式扩展钩子，当注入第三方分布式实现或自定义 Bean 时自动优雅退让
-     *
-     * @param properties 全局通知配置属性
-     * @return NotificationRateLimiter 实例
+     * 分布式客户端通道频控器条件装配配置
+     * 仅在同时满足类路径存在 StringRedisTemplate、容器存在 StringRedisTemplate Bean 且显式开启 distributed=true 时生效
      */
-    @Bean
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "org.springframework.data.redis.core.StringRedisTemplate")
+    @ConditionalOnBean(type = "org.springframework.data.redis.core.StringRedisTemplate")
+    @ConditionalOnProperty(prefix = "ateng.boot.notification.rate-limit", name = "distributed", havingValue = "true")
     @ConditionalOnMissingBean(NotificationRateLimiter.class)
-    public NotificationRateLimiter notificationRateLimiter(NotificationProperties properties) {
-        if (properties.getRateLimit().isDistributed()) {
-            log.warn("协同通知频控配置启用了 distributed=true，但未检测到分布式 NotificationRateLimiter Bean，回退为 InMemoryNotificationRateLimiter 单机内存频控");
+    static class RedisNotificationRateLimiterConfiguration {
+
+        @Bean(name = "notificationRateLimiter")
+        public NotificationRateLimiter redisNotificationRateLimiter(
+                StringRedisTemplate stringRedisTemplate,
+                NotificationProperties properties) {
+            log.debug("Initializing RedisNotificationRateLimiter (prefix={}, failOpenOnRedisError={})",
+                    properties.getRateLimit().getRedisKeyPrefix(),
+                    properties.getRateLimit().isFailOpenOnRedisError());
+            return new RedisNotificationRateLimiter(stringRedisTemplate, properties.getRateLimit());
         }
-        return new InMemoryNotificationRateLimiter(properties.getRateLimit());
+    }
+
+    /**
+     * 分布式频控未就绪判定条件（与 RedisNotificationRateLimiterConfiguration 严格互斥，保证顺序无关确定性装配）
+     */
+    static class FallbackToInMemoryRateLimiterCondition extends NoneNestedConditions {
+
+        FallbackToInMemoryRateLimiterCondition() {
+            super(ConfigurationPhase.REGISTER_BEAN);
+        }
+
+        @ConditionalOnClass(name = "org.springframework.data.redis.core.StringRedisTemplate")
+        @ConditionalOnBean(type = "org.springframework.data.redis.core.StringRedisTemplate")
+        @ConditionalOnProperty(prefix = "ateng.boot.notification.rate-limit", name = "distributed", havingValue = "true")
+        static class DistributedRedisReady {
+        }
+    }
+
+    /**
+     * 单机内存客户端通道频控器条件装配与平滑回退配置
+     * 当未启用分布式模式、缺少 StringRedisTemplate 或未注入自定义 Bean 时自动兜底装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @Conditional(FallbackToInMemoryRateLimiterCondition.class)
+    @ConditionalOnMissingBean(NotificationRateLimiter.class)
+    static class InMemoryNotificationRateLimiterConfiguration {
+
+        @Bean(name = "notificationRateLimiter")
+        public NotificationRateLimiter inMemoryNotificationRateLimiter(NotificationProperties properties) {
+            if (properties.getRateLimit().isDistributed()) {
+                log.warn("协同通知频控配置启用了 distributed=true，但未检测到可用的 StringRedisTemplate Bean 或类路径依赖，平滑回退为 InMemoryNotificationRateLimiter 单机内存频控");
+            }
+            return new InMemoryNotificationRateLimiter(properties.getRateLimit());
+        }
     }
 
     /**

@@ -36,6 +36,8 @@ class NotificationPropertiesTest {
         assertTrue(properties.getRateLimit().isEnabled());
         assertFalse(properties.getRateLimit().isDistributed());
         assertEquals(Duration.ofSeconds(2), properties.getRateLimit().getMaxWaitDuration());
+        assertEquals("ateng:notification:ratelimit:", properties.getRateLimit().getRedisKeyPrefix());
+        assertTrue(properties.getRateLimit().isFailOpenOnRedisError());
 
         // 告警默认值
         assertNotNull(properties.getAlert());

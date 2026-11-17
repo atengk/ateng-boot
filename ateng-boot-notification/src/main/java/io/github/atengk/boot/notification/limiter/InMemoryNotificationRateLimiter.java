@@ -1,8 +1,6 @@
 package io.github.atengk.boot.notification.limiter;
 
-import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.notification.channel.NotificationChannel;
-import io.github.atengk.boot.notification.model.Platform;
 import io.github.atengk.boot.notification.properties.NotificationRateLimitProperties;
 import lombok.extern.slf4j.Slf4j;
 
@@ -22,9 +20,8 @@ import java.util.concurrent.locks.ReentrantLock;
  * @since 2026-10-23
  */
 @Slf4j
-public class InMemoryNotificationRateLimiter implements NotificationRateLimiter {
+public class InMemoryNotificationRateLimiter extends AbstractNotificationRateLimiter {
 
-    private final NotificationRateLimitProperties properties;
     private final Duration windowDuration;
     private final ConcurrentHashMap<String, ChannelWindowLimiter> limiters = new ConcurrentHashMap<>();
 
@@ -33,14 +30,13 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
     }
 
     public InMemoryNotificationRateLimiter(NotificationRateLimitProperties properties, Duration windowDuration) {
-        this.properties = properties != null ? properties : new NotificationRateLimitProperties();
+        super(properties);
         this.windowDuration = windowDuration != null ? windowDuration : Duration.ofMinutes(1);
     }
 
     @Override
     public boolean tryAcquire(NotificationChannel channel, Duration maxWaitDuration) {
-        BusinessAssert.notNull(channel, "通知渠道不能为空");
-        BusinessAssert.isTrue(channel.getName() != null && !channel.getName().isBlank(), "渠道名称不能为空");
+        String channelName = validateAndNormalizeChannelName(channel);
 
         if (!properties.isEnabled()) {
             return true;
@@ -48,50 +44,10 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
 
         int permits = resolvePermitsPerMinute(channel);
         int burstPermits = resolveBurstPermitsPerSecond(channel);
-        ChannelWindowLimiter limiter = limiters.computeIfAbsent(channel.getName(),
+        ChannelWindowLimiter limiter = limiters.computeIfAbsent(channelName,
                 name -> new ChannelWindowLimiter(windowDuration.toNanos()));
 
         return limiter.tryAcquire(permits, burstPermits, maxWaitDuration);
-    }
-
-    @Override
-    public int resolvePermitsPerMinute(NotificationChannel channel) {
-        if (channel == null) {
-            return properties.getDefaultGenericPermits();
-        }
-        if (channel.getPermitsPerMinute() != null && channel.getPermitsPerMinute() > 0) {
-            return channel.getPermitsPerMinute();
-        }
-        Platform platform = channel.getPlatform();
-        if (platform == null) {
-            return properties.getDefaultGenericPermits();
-        }
-        return switch (platform) {
-            case DINGTALK -> properties.getDefaultDingTalkPermits();
-            case WECOM -> properties.getDefaultWeComPermits();
-            case FEISHU -> properties.getDefaultFeishuPermits();
-            case GENERIC -> properties.getDefaultGenericPermits();
-        };
-    }
-
-    @Override
-    public int resolveBurstPermitsPerSecond(NotificationChannel channel) {
-        if (channel == null || !properties.isEnabled()) {
-            return 0;
-        }
-        if (channel.getBurstPermitsPerSecond() != null && channel.getBurstPermitsPerSecond() > 0) {
-            return channel.getBurstPermitsPerSecond();
-        }
-        Platform platform = channel.getPlatform();
-        if (platform == Platform.FEISHU) {
-            return properties.getDefaultFeishuBurstPermits();
-        }
-        return 0;
-    }
-
-    @Override
-    public Duration getDefaultMaxWaitDuration() {
-        return properties.getMaxWaitDuration() != null ? properties.getMaxWaitDuration() : Duration.ofSeconds(2);
     }
 
     @Override
@@ -99,7 +55,7 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
         if (channelName == null || channelName.isBlank()) {
             return;
         }
-        ChannelWindowLimiter limiter = limiters.get(channelName);
+        ChannelWindowLimiter limiter = limiters.get(channelName.trim());
         if (limiter != null) {
             limiter.reset();
         }
@@ -122,7 +78,8 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
         }
         int permits = resolvePermitsPerMinute(channel);
         int burstPermits = resolveBurstPermitsPerSecond(channel);
-        ChannelWindowLimiter limiter = limiters.get(channel.getName());
+        String channelName = channel.getName() != null ? channel.getName().trim() : null;
+        ChannelWindowLimiter limiter = channelName != null ? limiters.get(channelName) : null;
         if (limiter == null) {
             return burstPermits > 0 ? Math.min(permits, burstPermits) : permits;
         }

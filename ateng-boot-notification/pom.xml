@@ -56,6 +56,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Spring Data Redis (可选依赖，开启分布式多节点频控且存在 StringRedisTemplate 时自适应激活) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 编译期配置注解处理器 (自动生成 IDE 智能配置补全元数据) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
