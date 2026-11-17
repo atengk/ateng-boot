@@ -176,4 +176,62 @@ class FeishuNotificationProviderIntegrationTest {
                     assertThat(sex.getRawResponse()).contains("99991400");
                 });
     }
+
+    @Test
+    @DisplayName("测试飞书自定义机器人签名失败 (code=19021) 与关键词不匹配 (code=19024) 转译为认证错误")
+    void testCustomBotAuthAndKeywordFailure() {
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setBody("{\"code\":19021,\"msg\":\"sign match fail\"}")
+                .addHeader("Content-Type", "application/json"));
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setBody("{\"code\":19024,\"msg\":\"Key Words Not Found\"}")
+                .addHeader("Content-Type", "application/json"));
+
+        NotificationChannel channel = NotificationChannel.builder()
+                .name("feishu-custom-auth")
+                .platform(Platform.FEISHU)
+                .webhook(server.url("/open-apis/bot/v2/hook/feishu_custom").toString())
+                .build();
+
+        assertThatThrownBy(() -> provider.send(channel, TextMessage.of("hello"), restClient))
+                .isInstanceOf(NotificationSendException.class)
+                .satisfies(ex -> {
+                    NotificationSendException sex = (NotificationSendException) ex;
+                    assertThat(sex.getResultCode()).isEqualTo(NotificationResultCode.NOTIFICATION_AUTHENTICATION_ERROR);
+                    assertThat(sex.getRawResponse()).contains("19021");
+                });
+
+        assertThatThrownBy(() -> provider.send(channel, TextMessage.of("hello"), restClient))
+                .isInstanceOf(NotificationSendException.class)
+                .satisfies(ex -> {
+                    NotificationSendException sex = (NotificationSendException) ex;
+                    assertThat(sex.getResultCode()).isEqualTo(NotificationResultCode.NOTIFICATION_AUTHENTICATION_ERROR);
+                    assertThat(sex.getRawResponse()).contains("19024");
+                });
+    }
+
+    @Test
+    @DisplayName("测试飞书自定义机器人限流 (code=11232) 转译为频控超限错误")
+    void testCustomBotRateLimit11232() {
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setBody("{\"code\":11232,\"msg\":\"create message service trigger rate limit\"}")
+                .addHeader("Content-Type", "application/json"));
+
+        NotificationChannel channel = NotificationChannel.builder()
+                .name("feishu-limit-11232")
+                .platform(Platform.FEISHU)
+                .webhook(server.url("/open-apis/bot/v2/hook/feishu_limit_11232").toString())
+                .build();
+
+        assertThatThrownBy(() -> provider.send(channel, TextMessage.of("hello"), restClient))
+                .isInstanceOf(NotificationSendException.class)
+                .satisfies(ex -> {
+                    NotificationSendException sex = (NotificationSendException) ex;
+                    assertThat(sex.getResultCode()).isEqualTo(NotificationResultCode.NOTIFICATION_RATE_LIMIT_EXCEEDED);
+                    assertThat(sex.getRawResponse()).contains("11232");
+                });
+    }
 }

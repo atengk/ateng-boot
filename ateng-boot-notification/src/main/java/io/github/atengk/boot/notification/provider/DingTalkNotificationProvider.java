@@ -15,6 +15,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.RestClient;
 
+import java.net.URI;
 import java.util.Map;
 
 /**
@@ -52,9 +53,9 @@ public class DingTalkNotificationProvider extends AbstractNotificationProvider {
         // 2. 转译构建钉钉专有 Payload
         Map<String, Object> payload = DingTalkPayloadBuilder.INSTANCE.buildPayload(message);
 
-        // 3. 执行 HTTP POST 发送
+        // 3. 执行 HTTP POST 发送（传入不可变 URI 实例，防止 RestClient 对已编码的 sign 二次编码）
         ResponseEntity<String> response = restClient.post()
-                .uri(targetUrl)
+                .uri(URI.create(targetUrl))
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(payload)
                 .retrieve()
@@ -78,12 +79,10 @@ public class DingTalkNotificationProvider extends AbstractNotificationProvider {
     }
 
     private NotificationResultCode determineDingTalkResultCode(int errcode) {
-        if (errcode == 130101) {
-            return NotificationResultCode.NOTIFICATION_RATE_LIMIT_EXCEEDED;
-        }
-        if (errcode == 300001 || errcode == 310000 || errcode == 88) {
-            return NotificationResultCode.NOTIFICATION_AUTHENTICATION_ERROR;
-        }
-        return NotificationResultCode.NOTIFICATION_SEND_ERROR;
+        return switch (errcode) {
+            case 130101 -> NotificationResultCode.NOTIFICATION_RATE_LIMIT_EXCEEDED;
+            case 300001, 310000, 88 -> NotificationResultCode.NOTIFICATION_AUTHENTICATION_ERROR;
+            default -> NotificationResultCode.NOTIFICATION_SEND_ERROR;
+        };
     }
 }

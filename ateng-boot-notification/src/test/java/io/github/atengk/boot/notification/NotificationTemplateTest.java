@@ -743,4 +743,69 @@ class NotificationTemplateTest extends BaseNotificationTest {
         assertTrue(eventTraceIds.stream().allMatch("trace-failover-8888"::equals));
         assertTrue(eventUserIds.stream().allMatch("user-operator-99"::equals));
     }
+
+    @Test
+    @DisplayName("验证飞书 19021 认证错误不触发故障转移，飞书 11232 频控错误触发故障转移")
+    void testFeishuErrorCodeFailoverDiscrimination() throws InterruptedException {
+        NotificationChannel backup = NotificationChannel.builder()
+                .name("backup-feishu-err-discrim")
+                .platform(Platform.WECOM)
+                .webhook(getWebhookUrl("backup/wecom/discrim"))
+                .build();
+        NotificationChannel primary = NotificationChannel.builder()
+                .name("primary-feishu-err-discrim")
+                .platform(Platform.FEISHU)
+                .webhook(getWebhookUrl("primary/feishu/discrim"))
+                .backupChannels(List.of("backup-feishu-err-discrim"))
+                .build();
+        registry.register(backup);
+        registry.register(primary);
+
+        // 1. 认证失败 (19021) 应立即熔断，严禁切换备用渠道
+        enqueueOkJson("{\"code\":19021,\"msg\":\"sign match fail\"}");
+        assertThatThrownBy(() -> template.send("primary-feishu-err-discrim", TextMessage.of("认证拦截测试")))
+                .isInstanceOf(NotificationSendException.class)
+                .satisfies(ex -> assertEquals(NotificationResultCode.NOTIFICATION_AUTHENTICATION_ERROR,
+                        ((NotificationSendException) ex).getResultCode()));
+        assertEquals(1, server.getRequestCount());
+        takeRequest();
+
+        // 2. 频控超限 (11232) 应平滑转移至备用渠道并成功送达
+        enqueueOkJson("{\"code\":11232,\"msg\":\"create message service trigger rate limit\"}");
+        enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+
+        NotificationSendResult result = template.send("primary-feishu-err-discrim", TextMessage.of("频控故障转移测试"));
+        assertTrue(result.isSuccess());
+        assertEquals("backup-feishu-err-discrim", result.getChannel());
+
+        RecordedRequest req1 = takeRequest();
+        assertThat(req1.getPath()).contains("primary/feishu/discrim");
+        RecordedRequest req2 = takeRequest();
+        assertThat(req2.getPath()).contains("backup/wecom/discrim");
+    }
+
+    @Test
+    @DisplayName("验证钉钉加签通过 NotificationTemplate 最高门面出站时 Query 签名严格一致且无 %25 二次编码")
+    void testDingTalkSignatureNotDoubleEncodedViaTemplate() throws InterruptedException {
+        enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+
+        NotificationSendResult result = template.send("default-dingtalk", TextMessage.of("验签无二次编码测试"));
+        assertTrue(result.isSuccess());
+
+        RecordedRequest req = takeRequest();
+        assertNotNull(req);
+        String path = req.getPath();
+        assertNotNull(path);
+        assertThat(path).contains("timestamp=").contains("sign=").doesNotContain("%25");
+
+        okhttp3.HttpUrl url = req.getRequestUrl();
+        assertNotNull(url);
+        String tsParam = url.queryParameter("timestamp");
+        assertNotNull(tsParam);
+
+        String expectedRawSign = io.github.atengk.boot.notification.util.NotificationSignUtil
+                .signDingTalk("test-secret", Long.parseLong(tsParam));
+        assertNotNull(expectedRawSign);
+        assertThat(path).contains("sign=" + expectedRawSign);
+    }
 }

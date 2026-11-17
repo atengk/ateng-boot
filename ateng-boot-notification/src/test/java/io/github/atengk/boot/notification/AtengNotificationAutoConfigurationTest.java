@@ -7,6 +7,7 @@ import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
 import io.github.atengk.boot.notification.handler.NotificationSendFailureHandler;
 import io.github.atengk.boot.notification.limiter.InMemoryNotificationRateLimiter;
 import io.github.atengk.boot.notification.limiter.NotificationRateLimiter;
+import io.github.atengk.boot.notification.model.TextMessage;
 import io.github.atengk.boot.notification.properties.NotificationProperties;
 import io.github.atengk.boot.notification.provider.DingTalkNotificationProvider;
 import io.github.atengk.boot.notification.provider.FeishuNotificationProvider;
@@ -165,6 +166,45 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
             assertEquals("/robot/send", recordedRequest.getPath());
             assertEquals("{\"msgtype\":\"text\",\"text\":{\"content\":\"ping\"}}", recordedRequest.getBody().readUtf8());
         });
+    }
+
+    @Test
+    @DisplayName("验证渠道注销触发 NotificationChannelEvictEvent 后联动驱逐驱动定制 RestClient 缓存")
+    void testChannelEvictEventClearsProviderClientCache() {
+        enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.notification.channels.evict-test-channel.platform=DINGTALK",
+                        "ateng.boot.notification.channels.evict-test-channel.webhook=" + getWebhookUrl("dingtalk/evict"),
+                        "ateng.boot.notification.channels.evict-test-channel.connect-timeout=1500ms",
+                        "ateng.boot.notification.channels.evict-test-channel.read-timeout=2500ms"
+                )
+                .run(context -> {
+                    NotificationTemplate template = context.getBean(NotificationTemplate.class);
+                    NotificationChannelRegistry registry = context.getBean(NotificationChannelRegistry.class);
+                    DingTalkNotificationProvider provider = context.getBean(DingTalkNotificationProvider.class);
+
+                    assertEquals(0, provider.getCustomClientCacheSize());
+                    template.send("evict-test-channel", TextMessage.of("触发定制超时客户端缓存"));
+                    assertEquals(1, provider.getCustomClientCacheSize());
+
+                    // 热更新同渠道超时配置：触发驱逐事件并原位替换缓存，严禁条目数膨胀
+                    enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+                    registry.register(io.github.atengk.boot.notification.channel.NotificationChannel.builder()
+                            .name("evict-test-channel")
+                            .platform(io.github.atengk.boot.notification.model.Platform.DINGTALK)
+                            .webhook(getWebhookUrl("dingtalk/evict"))
+                            .connectTimeout(Duration.ofMillis(1800))
+                            .readTimeout(Duration.ofMillis(2800))
+                            .build());
+                    assertEquals(0, provider.getCustomClientCacheSize());
+                    template.send("evict-test-channel", TextMessage.of("触发热更新后新超时缓存"));
+                    assertEquals(1, provider.getCustomClientCacheSize());
+
+                    registry.unregister("evict-test-channel");
+                    assertEquals(0, provider.getCustomClientCacheSize());
+                });
     }
 
     @Configuration(proxyBeanMethods = false)

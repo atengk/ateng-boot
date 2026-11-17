@@ -162,4 +162,34 @@ class NotificationChannelRegistryTest {
         assertThat(capturedEvent.get().getChannelName()).isEqualTo("test-evict-channel");
         assertThat(capturedEvent.get().getEvictedChannel()).isEqualTo(channel);
     }
+
+    @Test
+    @DisplayName("测试热更新同名渠道时自动发布 NotificationChannelEvictEvent 驱逐旧配置")
+    void testChannelOverwritePublishesEvictEvent() {
+        AtomicReference<NotificationChannelEvictEvent> capturedEvent = new AtomicReference<>();
+        registry.setEventPublisher(event -> {
+            if (event instanceof NotificationChannelEvictEvent evictEvent) {
+                capturedEvent.set(evictEvent);
+            }
+        });
+
+        NotificationChannel oldChannel = NotificationChannel.builder()
+                .name("hot-update-channel")
+                .platform(Platform.DINGTALK)
+                .webhook("https://oapi.dingtalk.com/robot/send?access_token=old")
+                .build();
+        NotificationChannel newChannel = NotificationChannel.builder()
+                .name("hot-update-channel")
+                .platform(Platform.DINGTALK)
+                .webhook("https://oapi.dingtalk.com/robot/send?access_token=new")
+                .build();
+
+        registry.register(oldChannel);
+        assertThat(capturedEvent.get()).isNull();
+
+        registry.register(newChannel);
+        assertThat(capturedEvent.get()).isNotNull();
+        assertThat(capturedEvent.get().getChannelName()).isEqualTo("hot-update-channel");
+        assertThat(capturedEvent.get().getEvictedChannel()).isEqualTo(oldChannel);
+    }
 }

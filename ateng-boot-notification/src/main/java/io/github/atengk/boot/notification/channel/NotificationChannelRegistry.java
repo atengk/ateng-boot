@@ -51,13 +51,16 @@ public class NotificationChannelRegistry {
     }
 
     /**
-     * 注册新的运行时渠道配置
+     * 注册新的运行时渠道配置（同名覆盖更新时触发驱逐事件通知下游清理缓存）
      *
      * @param channel 渠道配置对象
      */
     public void register(NotificationChannel channel) {
         BusinessAssert.notNull(channel, "待注册的渠道配置不能为 null");
-        channels.put(channel.getName(), channel);
+        NotificationChannel previous = channels.put(channel.getName(), channel);
+        if (previous != null && eventPublisher != null) {
+            eventPublisher.publishEvent(new NotificationChannelEvictEvent(this, channel.getName(), previous));
+        }
         if (log.isDebugEnabled()) {
             log.debug("Registered notification channel: name={}, platform={}, webhook={}",
                     channel.getName(), channel.getPlatform(), NotificationDesensitizeUtil.maskWebhook(channel.getWebhook()));

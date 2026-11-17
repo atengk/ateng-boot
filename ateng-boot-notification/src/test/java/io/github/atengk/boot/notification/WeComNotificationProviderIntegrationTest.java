@@ -180,4 +180,27 @@ class WeComNotificationProviderIntegrationTest {
                     assertThat(sex.getRawResponse()).contains("45009");
                 });
     }
+
+    @Test
+    @DisplayName("测试企微 40058 参数/凭据错误转译为认证错误")
+    void testError40058Mapping() {
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setBody("{\"errcode\":40058,\"errmsg\":\"bad parameter\"}")
+                .addHeader("Content-Type", "application/json"));
+
+        NotificationChannel channel = NotificationChannel.builder()
+                .name("wecom-40058")
+                .platform(Platform.WECOM)
+                .webhook(server.url("/cgi-bin/webhook/send?key=test").toString())
+                .build();
+
+        assertThatThrownBy(() -> provider.send(channel, MarkdownMessage.of("hello"), restClient))
+                .isInstanceOf(NotificationSendException.class)
+                .satisfies(ex -> {
+                    NotificationSendException sex = (NotificationSendException) ex;
+                    assertThat(sex.getResultCode()).isEqualTo(NotificationResultCode.NOTIFICATION_AUTHENTICATION_ERROR);
+                    assertThat(sex.getRawResponse()).contains("40058");
+                });
+    }
 }

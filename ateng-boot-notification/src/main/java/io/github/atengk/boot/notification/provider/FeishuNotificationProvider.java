@@ -15,6 +15,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.RestClient;
 
+import java.net.URI;
 import java.util.Map;
 
 /**
@@ -52,9 +53,9 @@ public class FeishuNotificationProvider extends AbstractNotificationProvider {
             payload.put("sign", sign);
         }
 
-        // 3. 执行 HTTP POST 发送
+        // 3. 执行 HTTP POST 发送（传入不可变 URI 实例，防止 Query 参数被二次编码）
         ResponseEntity<String> response = restClient.post()
-                .uri(targetUrl)
+                .uri(URI.create(targetUrl))
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(payload)
                 .retrieve()
@@ -78,12 +79,10 @@ public class FeishuNotificationProvider extends AbstractNotificationProvider {
     }
 
     private NotificationResultCode determineFeishuResultCode(int code) {
-        if (code == 99991400) {
-            return NotificationResultCode.NOTIFICATION_RATE_LIMIT_EXCEEDED;
-        }
-        if (code == 19001 || code == 19002 || code == 99991663 || code == 99991668) {
-            return NotificationResultCode.NOTIFICATION_AUTHENTICATION_ERROR;
-        }
-        return NotificationResultCode.NOTIFICATION_SEND_ERROR;
+        return switch (code) {
+            case 99991400, 11232 -> NotificationResultCode.NOTIFICATION_RATE_LIMIT_EXCEEDED;
+            case 19001, 19002, 19021, 19024, 99991663, 99991668 -> NotificationResultCode.NOTIFICATION_AUTHENTICATION_ERROR;
+            default -> NotificationResultCode.NOTIFICATION_SEND_ERROR;
+        };
     }
 }

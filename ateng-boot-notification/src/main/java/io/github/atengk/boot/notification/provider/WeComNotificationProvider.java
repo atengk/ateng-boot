@@ -14,6 +14,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.RestClient;
 
+import java.net.URI;
 import java.util.Map;
 
 /**
@@ -43,9 +44,9 @@ public class WeComNotificationProvider extends AbstractNotificationProvider {
         // 1. 转译构建企业微信专有 Payload（包含自动 Markdown 表格降级与图片计算）
         Map<String, Object> payload = WeComPayloadBuilder.INSTANCE.buildPayload(message);
 
-        // 2. 执行 HTTP POST 发送
+        // 2. 执行 HTTP POST 发送（传入不可变 URI 实例，防止 Query 参数被二次编码）
         ResponseEntity<String> response = restClient.post()
-                .uri(targetUrl)
+                .uri(URI.create(targetUrl))
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(payload)
                 .retrieve()
@@ -69,12 +70,10 @@ public class WeComNotificationProvider extends AbstractNotificationProvider {
     }
 
     private NotificationResultCode determineWeComResultCode(int errcode) {
-        if (errcode == 45009) {
-            return NotificationResultCode.NOTIFICATION_RATE_LIMIT_EXCEEDED;
-        }
-        if (errcode == 93000 || errcode == 40014 || errcode == 40058) {
-            return NotificationResultCode.NOTIFICATION_AUTHENTICATION_ERROR;
-        }
-        return NotificationResultCode.NOTIFICATION_SEND_ERROR;
+        return switch (errcode) {
+            case 45009 -> NotificationResultCode.NOTIFICATION_RATE_LIMIT_EXCEEDED;
+            case 93000, 40014, 40058 -> NotificationResultCode.NOTIFICATION_AUTHENTICATION_ERROR;
+            default -> NotificationResultCode.NOTIFICATION_SEND_ERROR;
+        };
     }
 }
