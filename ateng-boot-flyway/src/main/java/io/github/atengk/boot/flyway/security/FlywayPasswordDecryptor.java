@@ -62,15 +62,29 @@ public class FlywayPasswordDecryptor {
      * @return 内存明文口令
      */
     public String decrypt(String rawPassword) {
+        return decrypt(rawPassword, this.credentialProperties);
+    }
+
+    /**
+     * 使用目标级凭据属性优先回退全局密钥材料执行瞬态解密
+     *
+     * @param rawPassword        原始配置口令或密文
+     * @param overrideProperties 目标级凭据属性（为空时仅使用全局凭据配置）
+     * @return 内存明文口令
+     */
+    public String decrypt(String rawPassword, AtengFlywayProperties.CredentialProperties overrideProperties) {
         if (!supports(rawPassword)) {
             return rawPassword;
         }
+        AtengFlywayProperties.CredentialProperties effective = overrideProperties != null
+                ? overrideProperties
+                : this.credentialProperties;
         try {
             String plaintext;
             if (rawPassword.startsWith(PREFIX_AES)) {
-                plaintext = decryptAes(rawPassword.substring(PREFIX_AES.length()));
+                plaintext = decryptAes(rawPassword.substring(PREFIX_AES.length()), effective);
             } else if (rawPassword.startsWith(PREFIX_SM4)) {
-                plaintext = decryptSm4(rawPassword.substring(PREFIX_SM4.length()));
+                plaintext = decryptSm4(rawPassword.substring(PREFIX_SM4.length()), effective);
             } else {
                 return rawPassword;
             }
@@ -91,7 +105,7 @@ public class FlywayPasswordDecryptor {
         }
     }
 
-    private String decryptAes(String payload) {
+    private String decryptAes(String payload, AtengFlywayProperties.CredentialProperties effective) {
         String[] parts = payload.split(":", -1);
         if (parts.length == 3) {
             byte[] key = parseMaterial(parts[0], false);
@@ -99,14 +113,14 @@ public class FlywayPasswordDecryptor {
             return CryptoUtil.decryptCbc(parts[2], key, iv);
         }
         if (parts.length == 1) {
-            byte[] key = resolveGlobalKey();
-            byte[] iv = resolveGlobalIv();
+            byte[] key = resolveGlobalKey(effective);
+            byte[] iv = resolveGlobalIv(effective);
             return CryptoUtil.decryptCbc(parts[0], key, iv);
         }
         throw new IllegalArgumentException("非法 AES 密文格式");
     }
 
-    private String decryptSm4(String payload) {
+    private String decryptSm4(String payload, AtengFlywayProperties.CredentialProperties effective) {
         String[] parts = payload.split(":", -1);
         if (parts.length == 3) {
             byte[] key = parseMaterial(parts[0], false);
@@ -118,9 +132,10 @@ public class FlywayPasswordDecryptor {
             return CryptoUtil.decryptSm4Ecb(parts[1], key);
         }
         if (parts.length == 1) {
-            byte[] key = resolveGlobalKey();
-            if (StringUtils.hasText(credentialProperties.getIv())) {
-                byte[] iv = resolveGlobalIv();
+            byte[] key = resolveGlobalKey(effective);
+            String ivText = resolveGlobalIvText(effective);
+            if (StringUtils.hasText(ivText)) {
+                byte[] iv = resolveGlobalIv(effective);
                 return CryptoUtil.decryptSm4Cbc(parts[0], key, iv);
             }
             return CryptoUtil.decryptSm4Ecb(parts[0], key);
@@ -128,16 +143,25 @@ public class FlywayPasswordDecryptor {
         throw new IllegalArgumentException("非法 SM4 密文格式");
     }
 
-    private byte[] resolveGlobalKey() {
-        String globalKey = credentialProperties.getSecretKey();
+    private byte[] resolveGlobalKey(AtengFlywayProperties.CredentialProperties effective) {
+        String globalKey = effective != null && StringUtils.hasText(effective.getSecretKey())
+                ? effective.getSecretKey()
+                : credentialProperties.getSecretKey();
         if (!StringUtils.hasText(globalKey)) {
             throw new IllegalStateException("未配置全局解密密钥 ateng.boot.flyway.credential.secret-key");
         }
         return parseMaterial(globalKey, false);
     }
 
-    private byte[] resolveGlobalIv() {
-        String globalIv = credentialProperties.getIv();
+    private String resolveGlobalIvText(AtengFlywayProperties.CredentialProperties effective) {
+        if (effective != null && StringUtils.hasText(effective.getIv())) {
+            return effective.getIv();
+        }
+        return credentialProperties.getIv();
+    }
+
+    private byte[] resolveGlobalIv(AtengFlywayProperties.CredentialProperties effective) {
+        String globalIv = resolveGlobalIvText(effective);
         if (!StringUtils.hasText(globalIv)) {
             return new byte[CryptoUtil.DEFAULT_CBC_IV_SIZE];
         }

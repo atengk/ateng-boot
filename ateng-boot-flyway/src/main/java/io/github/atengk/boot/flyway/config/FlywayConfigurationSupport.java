@@ -1,7 +1,12 @@
 package io.github.atengk.boot.flyway.config;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
+import io.github.atengk.boot.flyway.enums.MigrationTargetKind;
 import io.github.atengk.boot.flyway.guard.ProductionSafetyGuard;
+import io.github.atengk.boot.flyway.model.MigrationTarget;
+import io.github.atengk.boot.flyway.properties.AtengFlywayProperties;
+import io.github.atengk.boot.flyway.routing.TargetRoutingSupport;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.callback.Callback;
 import org.flywaydb.core.api.configuration.FluentConfiguration;
@@ -17,7 +22,9 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import javax.sql.DataSource;
+import java.nio.charset.Charset;
 import java.sql.DatabaseMetaData;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -39,7 +46,7 @@ public final class FlywayConfigurationSupport {
 
     private static final Logger log = LoggerFactory.getLogger(FlywayConfigurationSupport.class);
     private static final String VENDOR_PLACEHOLDER = "{vendor}";
-    private static final Pattern URI_USER_INFO_PATTERN = Pattern.compile("(://[^:/\\s]+:)([^@/\\s]+)(@)");
+    private static final Pattern URI_USER_INFO_PATTERN = Pattern.compile("(://[^:/@\\s]*:)([^@/\\s]+)(@)");
     private static final Pattern KEY_VALUE_SECRET_PATTERN = Pattern.compile("(?i)\\b(password|pwd|secret|token|accessKey|secretKey)\\s*=\\s*([^;&\\s,)']+)");
 
     private FlywayConfigurationSupport() {
@@ -66,6 +73,44 @@ public final class FlywayConfigurationSupport {
                                      List<JavaMigration> javaMigrations,
                                      List<Callback> callbacks,
                                      ProductionSafetyGuard safetyGuard) {
+        return buildFlyway(
+                MigrationTarget.builder().targetKey(targetKey).dataSource(dataSource).build(),
+                dataSource,
+                flywayProperties,
+                null,
+                resourceLoader,
+                customizers,
+                javaMigrations,
+                callbacks,
+                safetyGuard
+        );
+    }
+
+    /**
+     * 基于迁移目标描述符、全局参数与目标级覆写及上下文占位符注入构建受管 {@link Flyway} 实例
+     *
+     * @param target           迁移目标描述符
+     * @param effectiveDataSource 实际绑定的物理或瞬态数据源
+     * @param flywayProperties Spring Boot 原生 Flyway 全局配置
+     * @param atengProperties  ateng-boot-flyway 治理配置（含占位符开关）
+     * @param resourceLoader   资源加载器
+     * @param customizers      配置定制器列表
+     * @param javaMigrations   Java 迁移脚本 Bean 列表
+     * @param callbacks        Flyway 生命周期回调 Bean 列表
+     * @param safetyGuard      生产安全守卫
+     * @return 构建完成的 Flyway 实例
+     */
+    public static Flyway buildFlyway(MigrationTarget target,
+                                     DataSource effectiveDataSource,
+                                     FlywayProperties flywayProperties,
+                                     AtengFlywayProperties atengProperties,
+                                     ResourceLoader resourceLoader,
+                                     List<FlywayConfigurationCustomizer> customizers,
+                                     List<JavaMigration> javaMigrations,
+                                     List<Callback> callbacks,
+                                     ProductionSafetyGuard safetyGuard) {
+        Objects.requireNonNull(target, "target 不能为空");
+        String targetKey = target.getTargetKey();
         if (safetyGuard != null) {
             safetyGuard.validateConfiguration(targetKey, flywayProperties);
         }
@@ -75,8 +120,9 @@ public final class FlywayConfigurationSupport {
                 : Thread.currentThread().getContextClassLoader();
         FluentConfiguration configuration = Flyway.configure(classLoader);
 
-        if (dataSource != null) {
-            configuration.dataSource(dataSource);
+        DataSource dsToUse = effectiveDataSource != null ? effectiveDataSource : target.getDataSource();
+        if (dsToUse != null) {
+            configuration.dataSource(dsToUse);
         } else if (flywayProperties != null && StringUtils.hasText(flywayProperties.getUrl())) {
             configuration.dataSource(
                     flywayProperties.getUrl(),
@@ -85,7 +131,8 @@ public final class FlywayConfigurationSupport {
             );
         }
 
-        applyProperties(configuration, flywayProperties, dataSource, safetyGuard);
+        applyProperties(configuration, flywayProperties, dsToUse, safetyGuard);
+        applyTargetOverridesAndPlaceholders(configuration, target, dsToUse, flywayProperties, atengProperties);
 
         if (!CollectionUtils.isEmpty(javaMigrations)) {
             configuration.javaMigrations(javaMigrations.toArray(new JavaMigration[0]));
@@ -111,6 +158,110 @@ public final class FlywayConfigurationSupport {
         }
 
         return configuration.load();
+    }
+
+    private static void applyTargetOverridesAndPlaceholders(FluentConfiguration configuration,
+                                                            MigrationTarget target,
+                                                            DataSource dataSource,
+                                                            FlywayProperties globalProps,
+                                                            AtengFlywayProperties atengProps) {
+        AtengFlywayProperties.DataSourceMigrationProperties override = target.getMigrationConfig();
+        String fallbackUrl = resolveFallbackUrl(target, globalProps);
+
+        if (target.getKind() != MigrationTargetKind.PRIMARY) {
+            List<String> targetLocations = (override != null && !CollectionUtils.isEmpty(override.getLocations()))
+                    ? override.getLocations()
+                    : List.of("classpath:db/migration/" + TargetRoutingSupport.sanitizePathSegment(target.getTargetKey()));
+            List<String> resolved = resolveLocations(targetLocations, dataSource, fallbackUrl);
+            if (!CollectionUtils.isEmpty(resolved)) {
+                configuration.locations(resolved.toArray(new String[0]));
+            }
+        } else if (override != null && !CollectionUtils.isEmpty(override.getLocations())) {
+            List<String> resolved = resolveLocations(override.getLocations(), dataSource, fallbackUrl);
+            if (!CollectionUtils.isEmpty(resolved)) {
+                configuration.locations(resolved.toArray(new String[0]));
+            }
+        }
+
+        if (override != null) {
+            if (StringUtils.hasText(override.getTable())) {
+                configuration.table(override.getTable().trim());
+            }
+            if (!CollectionUtils.isEmpty(override.getSchemas())) {
+                configuration.schemas(override.getSchemas().toArray(new String[0]));
+            }
+            if (StringUtils.hasText(override.getDefaultSchema())) {
+                configuration.defaultSchema(override.getDefaultSchema().trim());
+            }
+            if (override.getBaselineOnMigrate() != null) {
+                configuration.baselineOnMigrate(override.getBaselineOnMigrate());
+            }
+            if (StringUtils.hasText(override.getBaselineVersion())) {
+                configuration.baselineVersion(override.getBaselineVersion().trim());
+            }
+            if (StringUtils.hasText(override.getBaselineDescription())) {
+                configuration.baselineDescription(override.getBaselineDescription().trim());
+            }
+            if (override.getValidateOnMigrate() != null) {
+                configuration.validateOnMigrate(override.getValidateOnMigrate());
+            }
+            if (override.getOutOfOrder() != null) {
+                configuration.outOfOrder(override.getOutOfOrder());
+            }
+            Charset encoding = override.getEncoding();
+            if (encoding != null) {
+                configuration.encoding(encoding);
+            }
+        }
+
+        Map<String, String> mergedPlaceholders = buildMergedPlaceholders(target, globalProps, atengProps, override);
+        if (!mergedPlaceholders.isEmpty()) {
+            configuration.placeholders(mergedPlaceholders);
+        }
+    }
+
+    private static String resolveFallbackUrl(MigrationTarget target, FlywayProperties globalProps) {
+        if (target.getCredential() != null && StringUtils.hasText(target.getCredential().getUrl())) {
+            return target.getCredential().getUrl().trim();
+        }
+        return globalProps != null ? globalProps.getUrl() : null;
+    }
+
+    private static Map<String, String> buildMergedPlaceholders(MigrationTarget target,
+                                                             FlywayProperties globalProps,
+                                                             AtengFlywayProperties atengProps,
+                                                             AtengFlywayProperties.DataSourceMigrationProperties override) {
+        Map<String, String> merged = new LinkedHashMap<>();
+        boolean injectContext = atengProps == null
+                || atengProps.getPlaceholder() == null
+                || atengProps.getPlaceholder().isEnabled();
+        if (injectContext) {
+            String dsKeyVar = atengProps != null && atengProps.getPlaceholder() != null
+                    && StringUtils.hasText(atengProps.getPlaceholder().getDsKeyName())
+                    ? atengProps.getPlaceholder().getDsKeyName().trim()
+                    : "ateng_ds_key";
+            String tenantIdVar = atengProps != null && atengProps.getPlaceholder() != null
+                    && StringUtils.hasText(atengProps.getPlaceholder().getTenantIdName())
+                    ? atengProps.getPlaceholder().getTenantIdName().trim()
+                    : "ateng_tenant_id";
+
+            if (StringUtils.hasText(target.getTargetKey())) {
+                merged.put(dsKeyVar, target.getTargetKey().trim());
+            }
+            String tenantId = StringUtils.hasText(target.getTenantId())
+                    ? target.getTenantId().trim()
+                    : (StringUtils.hasText(TenantContextHolder.getTenantId())
+                    ? TenantContextHolder.getTenantId().trim()
+                    : "");
+            merged.put(tenantIdVar, tenantId);
+        }
+        if (globalProps != null && !CollectionUtils.isEmpty(globalProps.getPlaceholders())) {
+            merged.putAll(globalProps.getPlaceholders());
+        }
+        if (override != null && !CollectionUtils.isEmpty(override.getPlaceholders())) {
+            merged.putAll(override.getPlaceholders());
+        }
+        return merged;
     }
 
     private static void applyProperties(FluentConfiguration configuration,

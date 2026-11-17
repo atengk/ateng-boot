@@ -1,15 +1,19 @@
 package io.github.atengk.boot.flyway.properties;
 
+import io.github.atengk.boot.flyway.enums.BatchExecutionPolicy;
 import io.github.atengk.boot.flyway.enums.FlywayExecutionMode;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 import org.springframework.util.StringUtils;
 
+import java.nio.charset.Charset;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Flyway 数据库版本化迁移企业级治理配置属性
@@ -37,6 +41,16 @@ public class AtengFlywayProperties {
     private FlywayExecutionMode mode = FlywayExecutionMode.MIGRATE;
 
     /**
+     * 主库与显式纳管静态业务库的失败容错策略（默认 FAIL_FAST，遇异常立即阻断启动）
+     */
+    private BatchExecutionPolicy staticFailurePolicy = BatchExecutionPolicy.FAIL_FAST;
+
+    /**
+     * 分布式互斥锁最大等待超时时间（默认 30 秒）
+     */
+    private Duration lockWaitTimeout = Duration.ofSeconds(30);
+
+    /**
      * 生产防误操作安全守卫配置
      */
     @NestedConfigurationProperty
@@ -47,6 +61,23 @@ public class AtengFlywayProperties {
      */
     @NestedConfigurationProperty
     private CredentialProperties credential = new CredentialProperties();
+
+    /**
+     * 上下文迁移占位符自动注入配置
+     */
+    @NestedConfigurationProperty
+    private PlaceholderProperties placeholder = new PlaceholderProperties();
+
+    /**
+     * 多数据源路由过滤治理配置
+     */
+    @NestedConfigurationProperty
+    private TargetRoutingProperties routing = new TargetRoutingProperties();
+
+    /**
+     * 显式纳管的静态多业务库独立迁移配置（dsKey -> 独立迁移参数与凭据覆盖）
+     */
+    private Map<String, DataSourceMigrationProperties> datasources = new LinkedHashMap<>();
 
     /**
      * 可观测与健康探针配置
@@ -164,5 +195,122 @@ public class AtengFlywayProperties {
          * 是否注册 Micrometer 迁移度量指标绑定器
          */
         private boolean metricsEnabled = true;
+    }
+
+    /**
+     * 只读上下文占位符自动注入配置
+     */
+    @Data
+    public static class PlaceholderProperties {
+
+        /**
+         * 是否在构建 Flyway 配置时自动注入只读上下文占位符（绝不覆盖用户显式配置的同名占位符）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 目标数据源标识占位符变量名（默认 ateng_ds_key）
+         */
+        private String dsKeyName = "ateng_ds_key";
+
+        /**
+         * 租户标识占位符变量名（默认 ateng_tenant_id）
+         */
+        private String tenantIdName = "ateng_tenant_id";
+    }
+
+    /**
+     * 多数据源目标路由排除与主从屏蔽配置
+     */
+    @Data
+    public static class TargetRoutingProperties {
+
+        /**
+         * 是否永久排除名称为 slave 或 *_slave 的从库数据源（建议保持 true）
+         */
+        private boolean skipSlave = true;
+
+        /**
+         * 是否永久排除读写分离只读集群分组数据源 GroupDataSource（建议保持 true）
+         */
+        private boolean skipReadOnlyGroup = true;
+
+        /**
+         * 额外强制排除的辅助数据源标识列表
+         */
+        private List<String> excludedDataSources = new ArrayList<>();
+    }
+
+    /**
+     * 显式纳管静态业务库（L2）的独立 Flyway 参数与 DDL 凭据覆写配置
+     */
+    @Data
+    public static class DataSourceMigrationProperties {
+
+        /**
+         * 是否启用该静态数据源的版本化迁移（false 时从迁移目标集合跳过）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 独立脚本扫描路径列表（未配置时按目标标识隔离为 classpath:db/migration/{dsKey}）
+         */
+        private List<String> locations;
+
+        /**
+         * 独立迁移历史记录表名（为空时继承 spring.flyway.table）
+         */
+        private String table;
+
+        /**
+         * 独立受控 Schema 列表（为空时继承 spring.flyway.schemas）
+         */
+        private List<String> schemas;
+
+        /**
+         * 独立默认 Schema（为空时继承 spring.flyway.default-schema）
+         */
+        private String defaultSchema;
+
+        /**
+         * 是否在非空存量库自动执行 Baseline（为空时继承全局配置）
+         */
+        private Boolean baselineOnMigrate;
+
+        /**
+         * 独立 Baseline 版本号（为空时继承全局配置）
+         */
+        private String baselineVersion;
+
+        /**
+         * 独立 Baseline 描述文本（为空时继承全局配置）
+         */
+        private String baselineDescription;
+
+        /**
+         * 是否在迁移前校验历史脚本 Checksum（为空时继承全局配置）
+         */
+        private Boolean validateOnMigrate;
+
+        /**
+         * 是否允许乱序执行脚本（为空时继承全局配置）
+         */
+        private Boolean outOfOrder;
+
+        /**
+         * 独立脚本字符集编码（为空时继承 spring.flyway.encoding）
+         */
+        private Charset encoding;
+
+        /**
+         * 目标级专属 SQL 占位符（优先于全局 spring.flyway.placeholders 及自动注入占位符）
+         */
+        private Map<String, String> placeholders = new LinkedHashMap<>();
+
+        /**
+         * 目标级独立高权限 DDL 迁移凭据（支持 enc:sm4:/enc:aes: 密文）
+         */
+        @NestedConfigurationProperty
+        private CredentialProperties credential = new CredentialProperties();
     }
 }

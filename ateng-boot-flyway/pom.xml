@@ -91,6 +91,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 动态多数据源协同扩展支持 (按需可选引入，不强绑纯 JDBC/JPA 工程) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-datasource</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 单元测试套件 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

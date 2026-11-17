@@ -1,13 +1,21 @@
 package io.github.atengk.boot.flyway.autoconfigure;
 
 import io.github.atengk.boot.flyway.config.FlywayConfigurationSupport;
+import io.github.atengk.boot.flyway.enums.MigrationTargetKind;
 import io.github.atengk.boot.flyway.guard.ProductionSafetyGuard;
 import io.github.atengk.boot.flyway.listener.FlywayMigrationListener;
+import io.github.atengk.boot.flyway.model.MigrationTarget;
 import io.github.atengk.boot.flyway.observability.FlywayHealthIndicator;
 import io.github.atengk.boot.flyway.observability.FlywayMetricsBinder;
 import io.github.atengk.boot.flyway.properties.AtengFlywayProperties;
+import io.github.atengk.boot.flyway.routing.DynamicDatasourceFlywayTargetResolver;
+import io.github.atengk.boot.flyway.routing.SingleDataSourceFlywayTargetResolver;
+import io.github.atengk.boot.flyway.routing.TargetRoutingSupport;
 import io.github.atengk.boot.flyway.security.FlywayPasswordDecryptor;
 import io.github.atengk.boot.flyway.security.TransientFlywayExecutor;
+import io.github.atengk.boot.flyway.spi.DefaultFlywayLockProvider;
+import io.github.atengk.boot.flyway.spi.FlywayLockProvider;
+import io.github.atengk.boot.flyway.spi.FlywayTargetResolver;
 import io.github.atengk.boot.flyway.template.FlywayTemplate;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.MeterBinder;
@@ -30,6 +38,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionOutcome;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.SpringBootCondition;
 import org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration;
@@ -64,7 +73,8 @@ import java.util.Set;
  * <p>
  * 声明排在 Spring Boot 原生 {@link FlywayAutoConfiguration} 之前接管启动迁移入口，
  * 透传容器内注册的 {@link FlywayConfigurationCustomizer}、{@link JavaMigration} 与 {@link Callback}，
- * 并统一装配隔离式加密 DDL 凭据、MyBatis-Plus 启动初始化顺序屏障、领域事件总线与可选可观测组件。
+ * 并统一装配隔离式加密 DDL 凭据、{@code ateng-boot-datasource} 多数据源三轨路由器、
+ * MyBatis-Plus 启动初始化顺序屏障、领域事件总线与可选可观测组件。
  * 当 {@code ateng.boot.flyway.enabled=false} 时退让给 Spring Boot 原生自动装配；
  * 当 {@code spring.flyway.enabled=false} 时联动关闭自动装配。
  * </p>
@@ -74,7 +84,8 @@ import java.util.Set;
  */
 @AutoConfiguration(
         before = FlywayAutoConfiguration.class,
-        after = {DataSourceAutoConfiguration.class, JdbcTemplateAutoConfiguration.class, HibernateJpaAutoConfiguration.class}
+        after = {DataSourceAutoConfiguration.class, JdbcTemplateAutoConfiguration.class, HibernateJpaAutoConfiguration.class},
+        afterName = "io.github.atengk.boot.datasource.config.AtengDatasourceAutoConfiguration"
 )
 @ConditionalOnClass(Flyway.class)
 @Conditional(AtengFlywayAutoConfiguration.AtengFlywayEnabledCondition.class)
@@ -100,7 +111,45 @@ public class AtengFlywayAutoConfiguration {
     }
 
     /**
-     * 核心迁移与门面装配配置（优先于可观测嵌套配置加载，确保 @ConditionalOnBean(FlywayTemplate.class) 准确感知）
+     * 动态多数据源路由器可选扩展配置（仅当 classpath 存在 AtengDynamicRoutingDataSource 时生效）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource")
+    static class DynamicDatasourceRoutingConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(FlywayTargetResolver.class)
+        public FlywayTargetResolver dynamicDatasourceFlywayTargetResolver(
+                AtengFlywayProperties atengProperties,
+                FlywayProperties flywayProperties,
+                ObjectProvider<DataSource> dataSourceProvider) {
+            return new DynamicDatasourceFlywayTargetResolver(
+                    atengProperties,
+                    flywayProperties,
+                    dataSourceProvider != null ? dataSourceProvider.getIfAvailable() : null
+            );
+        }
+    }
+
+    /**
+     * 单数据源回退目标路由器配置（无动态多数据源依赖时激活）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnMissingClass("io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource")
+    static class SingleDatasourceRoutingConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(FlywayTargetResolver.class)
+        public FlywayTargetResolver singleDataSourceFlywayTargetResolver(
+                AtengFlywayProperties atengProperties,
+                FlywayProperties flywayProperties,
+                ObjectProvider<DataSource> dataSourceProvider) {
+            return new SingleDataSourceFlywayTargetResolver(atengProperties, flywayProperties, dataSourceProvider);
+        }
+    }
+
+    /**
+     * 核心迁移与门面装配配置
      */
     @Configuration(proxyBeanMethods = false)
     static class CoreMigrationConfiguration {
@@ -132,16 +181,28 @@ public class AtengFlywayAutoConfiguration {
         }
 
         /**
-         * 正常模式：注册受管默认主目标 Flyway 实例（启用隔离 DDL 凭据时不注册，防止暴露闭池 Flyway Bean）
+         * 注册缺省迁移并发互斥锁 SPI 实现
          *
-         * @param atengProperties     增强配置属性
-         * @param flywayProperties    Spring Boot 原生 Flyway 属性
-         * @param dataSourceProvider  数据源提供者
-         * @param resourceLoader      资源加载器
-         * @param customizersProvider 配置定制器提供者
-         * @param migrationsProvider  Java 迁移脚本提供者
-         * @param callbacksProvider   生命周期回调提供者
-         * @param safetyGuard         生产安全守卫
+         * @return 缺省互斥锁实现
+         */
+        @Bean
+        @ConditionalOnMissingBean(FlywayLockProvider.class)
+        public FlywayLockProvider flywayLockProvider() {
+            return new DefaultFlywayLockProvider();
+        }
+
+        /**
+         * 正常模式：注册受管默认主目标 Flyway 实例（多数据源下自动解包物理主库 DataSource；隔离 DDL 凭据时不注册）
+         *
+         * @param atengProperties        增强配置属性
+         * @param flywayProperties       Spring Boot 原生 Flyway 属性
+         * @param dataSourceProvider     数据源提供者
+         * @param targetResolverProvider 目标路由器提供者
+         * @param resourceLoader         资源加载器
+         * @param customizersProvider    配置定制器提供者
+         * @param migrationsProvider     Java 迁移脚本提供者
+         * @param callbacksProvider      生命周期回调提供者
+         * @param safetyGuard            生产安全守卫
          * @return 受管 Flyway 实例
          */
         @Bean
@@ -150,30 +211,30 @@ public class AtengFlywayAutoConfiguration {
         public Flyway atengFlyway(AtengFlywayProperties atengProperties,
                                   FlywayProperties flywayProperties,
                                   ObjectProvider<DataSource> dataSourceProvider,
+                                  ObjectProvider<FlywayTargetResolver> targetResolverProvider,
                                   ResourceLoader resourceLoader,
                                   ObjectProvider<FlywayConfigurationCustomizer> customizersProvider,
                                   ObjectProvider<JavaMigration> migrationsProvider,
                                   ObjectProvider<Callback> callbacksProvider,
                                   ProductionSafetyGuard safetyGuard) {
-            DataSource dataSource = dataSourceProvider.getIfAvailable();
-            List<FlywayConfigurationCustomizer> customizers = toOrderedList(customizersProvider);
-            List<JavaMigration> javaMigrations = toOrderedList(migrationsProvider);
-            List<Callback> callbacks = toOrderedList(callbacksProvider);
+            MigrationTarget primaryTarget = resolvePrimaryTarget(atengProperties, dataSourceProvider, targetResolverProvider);
+            DataSource physicalDataSource = primaryTarget.getDataSource();
 
             return FlywayConfigurationSupport.buildFlyway(
-                    atengProperties.getPrimaryTargetKey(),
-                    dataSource,
+                    primaryTarget,
+                    physicalDataSource,
                     flywayProperties,
+                    atengProperties,
                     resourceLoader,
-                    customizers,
-                    javaMigrations,
-                    callbacks,
+                    toOrderedList(customizersProvider),
+                    toOrderedList(migrationsProvider),
+                    toOrderedList(callbacksProvider),
                     safetyGuard
             );
         }
 
         /**
-         * 隔离式 DDL 凭据模式：注册短生命周期瞬态连接执行器（不向容器注册额外 DataSource Bean）
+         * 全局隔离式 DDL 凭据模式：注册短生命周期瞬态连接执行器（不向容器注册额外 DataSource Bean）
          *
          * @param atengProperties           增强配置属性
          * @param flywayProperties          Spring Boot 原生 Flyway 属性
@@ -199,26 +260,26 @@ public class AtengFlywayAutoConfiguration {
                 ObjectProvider<Callback> callbacksProvider,
                 ProductionSafetyGuard safetyGuard,
                 ObjectProvider<DataSource> runtimeDataSourceProvider) {
-            return new TransientFlywayExecutor(
-                    atengProperties,
-                    flywayProperties,
-                    passwordDecryptor,
-                    resourceLoader,
-                    toOrderedList(customizersProvider),
-                    toOrderedList(migrationsProvider),
-                    toOrderedList(callbacksProvider),
-                    safetyGuard,
-                    runtimeDataSourceProvider
-            );
+            return createExecutor(atengProperties, flywayProperties, passwordDecryptor, resourceLoader,
+                    customizersProvider, migrationsProvider, callbacksProvider, safetyGuard, runtimeDataSourceProvider);
         }
 
         /**
-         * 注册对称编程式迁移门面 {@link FlywayTemplate}（兼容正常模式与隔离 DDL 凭据模式）
+         * 注册对称编程式迁移门面 {@link FlywayTemplate}（统一适配单库、隔离凭据与 L1/L2 多数据源）
          *
          * @param flywayProvider            正常模式 Flyway 提供者
-         * @param transientExecutorProvider 隔离模式瞬态执行器提供者
+         * @param transientExecutorProvider 全局隔离模式瞬态执行器提供者
+         * @param targetResolverProvider    目标路由器提供者
+         * @param lockProviderProvider      分布式互斥锁提供者
          * @param atengProperties           增强配置属性
+         * @param flywayProperties          Spring Boot 原生 Flyway 属性
+         * @param passwordDecryptor         密码瞬态解密器
+         * @param resourceLoader            资源加载器
+         * @param customizersProvider       配置定制器提供者
+         * @param migrationsProvider        Java 迁移脚本提供者
+         * @param callbacksProvider         生命周期回调提供者
          * @param safetyGuard               生产安全守卫
+         * @param dataSourceProvider        运行期数据源提供者
          * @param migrationStrategyProvider 可选的自定义迁移策略
          * @param eventPublisher            Spring 领域事件发布器
          * @param listenersProvider         迁移监听器延迟提供者
@@ -229,18 +290,34 @@ public class AtengFlywayAutoConfiguration {
         @ConditionalOnMissingBean(FlywayTemplate.class)
         public FlywayTemplate flywayTemplate(ObjectProvider<Flyway> flywayProvider,
                                              ObjectProvider<TransientFlywayExecutor> transientExecutorProvider,
+                                             ObjectProvider<FlywayTargetResolver> targetResolverProvider,
+                                             ObjectProvider<FlywayLockProvider> lockProviderProvider,
                                              AtengFlywayProperties atengProperties,
+                                             FlywayProperties flywayProperties,
+                                             FlywayPasswordDecryptor passwordDecryptor,
+                                             ResourceLoader resourceLoader,
+                                             ObjectProvider<FlywayConfigurationCustomizer> customizersProvider,
+                                             ObjectProvider<JavaMigration> migrationsProvider,
+                                             ObjectProvider<Callback> callbacksProvider,
                                              ProductionSafetyGuard safetyGuard,
+                                             ObjectProvider<DataSource> dataSourceProvider,
                                              ObjectProvider<FlywayMigrationStrategy> migrationStrategyProvider,
                                              ApplicationEventPublisher eventPublisher,
                                              ObjectProvider<FlywayMigrationListener> listenersProvider) {
             Flyway primaryFlyway = flywayProvider != null ? flywayProvider.getIfAvailable() : null;
-            TransientFlywayExecutor transientExecutor = transientExecutorProvider != null
+            TransientFlywayExecutor primaryTransientExecutor = transientExecutorProvider != null
                     ? transientExecutorProvider.getIfAvailable()
                     : null;
+            TransientFlywayExecutor targetBuilderSupport = primaryTransientExecutor != null
+                    ? primaryTransientExecutor
+                    : createExecutor(atengProperties, flywayProperties, passwordDecryptor, resourceLoader,
+                    customizersProvider, migrationsProvider, callbacksProvider, safetyGuard, dataSourceProvider);
             return new FlywayTemplate(
                     primaryFlyway,
-                    transientExecutor,
+                    primaryTransientExecutor,
+                    targetBuilderSupport,
+                    targetResolverProvider != null ? targetResolverProvider.getIfAvailable() : null,
+                    lockProviderProvider != null ? lockProviderProvider.getIfAvailable() : null,
                     atengProperties,
                     safetyGuard,
                     migrationStrategyProvider != null ? migrationStrategyProvider.getIfAvailable() : null,
@@ -302,6 +379,49 @@ public class AtengFlywayAutoConfiguration {
                     atengProperties,
                     flywayProperties,
                     safetyGuard
+            );
+        }
+
+        private MigrationTarget resolvePrimaryTarget(AtengFlywayProperties atengProperties,
+                                                     ObjectProvider<DataSource> dataSourceProvider,
+                                                     ObjectProvider<FlywayTargetResolver> targetResolverProvider) {
+            FlywayTargetResolver resolver = targetResolverProvider != null ? targetResolverProvider.getIfAvailable() : null;
+            if (resolver != null) {
+                for (MigrationTarget target : resolver.resolveTargets()) {
+                    if (target != null && target.getKind() == MigrationTargetKind.PRIMARY) {
+                        return target;
+                    }
+                }
+            }
+            DataSource raw = dataSourceProvider != null ? dataSourceProvider.getIfAvailable() : null;
+            return MigrationTarget.builder()
+                    .targetKey(atengProperties.getPrimaryTargetKey())
+                    .kind(MigrationTargetKind.PRIMARY)
+                    .dataSource(raw != null ? TargetRoutingSupport.unwrapBasicProxy(raw) : null)
+                    .migrationConfig(atengProperties.getDatasources().get(atengProperties.getPrimaryTargetKey()))
+                    .build();
+        }
+
+        private TransientFlywayExecutor createExecutor(
+                AtengFlywayProperties atengProperties,
+                FlywayProperties flywayProperties,
+                FlywayPasswordDecryptor passwordDecryptor,
+                ResourceLoader resourceLoader,
+                ObjectProvider<FlywayConfigurationCustomizer> customizersProvider,
+                ObjectProvider<JavaMigration> migrationsProvider,
+                ObjectProvider<Callback> callbacksProvider,
+                ProductionSafetyGuard safetyGuard,
+                ObjectProvider<DataSource> dataSourceProvider) {
+            return new TransientFlywayExecutor(
+                    atengProperties,
+                    flywayProperties,
+                    passwordDecryptor,
+                    resourceLoader,
+                    toOrderedList(customizersProvider),
+                    toOrderedList(migrationsProvider),
+                    toOrderedList(callbacksProvider),
+                    safetyGuard,
+                    dataSourceProvider
             );
         }
 

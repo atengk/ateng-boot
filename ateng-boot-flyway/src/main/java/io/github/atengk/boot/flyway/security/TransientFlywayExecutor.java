@@ -4,6 +4,7 @@ import io.github.atengk.boot.flyway.config.FlywayConfigurationSupport;
 import io.github.atengk.boot.flyway.enums.FlywayResultCode;
 import io.github.atengk.boot.flyway.exception.FlywayException;
 import io.github.atengk.boot.flyway.guard.ProductionSafetyGuard;
+import io.github.atengk.boot.flyway.model.MigrationTarget;
 import io.github.atengk.boot.flyway.properties.AtengFlywayProperties;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.callback.Callback;
@@ -102,35 +103,72 @@ public class TransientFlywayExecutor {
      * @return 操作执行结果
      */
     public <T> T execute(String targetKey, Function<Flyway, T> action) {
+        return execute(MigrationTarget.builder()
+                .targetKey(targetKey)
+                .credential(atengProperties.getCredential())
+                .build(), action);
+    }
+
+    /**
+     * 基于完整迁移目标描述符在瞬态隔离连接作用域内执行 {@link Flyway} 操作（支持 L2 独立加密 DDL 凭据）
+     *
+     * @param target 迁移目标描述符
+     * @param action 基于 Flyway 实例的业务操作回调
+     * @param <T>    返回值类型
+     * @return 操作执行结果
+     */
+    public <T> T execute(MigrationTarget target, Function<Flyway, T> action) {
+        Objects.requireNonNull(target, "target 不能为空");
         Objects.requireNonNull(action, "action 不能为空");
-        AtengFlywayProperties.CredentialProperties credential = atengProperties.getCredential();
+        AtengFlywayProperties.CredentialProperties credential = target.getCredential() != null
+                && target.getCredential().isConfigured()
+                ? target.getCredential()
+                : atengProperties.getCredential();
         if (credential == null || !credential.isConfigured()) {
-            throw new FlywayException(FlywayResultCode.CONFIG_INVALID, "未配置有效的隔离式 DDL 凭据");
+            throw new FlywayException(FlywayResultCode.CONFIG_INVALID,
+                    "目标 [" + target.getTargetKey() + "] 未配置有效的隔离式 DDL 凭据");
         }
 
-        String jdbcUrl = resolveEffectiveJdbcUrl(credential);
+        String jdbcUrl = resolveEffectiveJdbcUrl(credential, target.getDataSource());
         String username = credential.getUsername();
-        String plainPassword = passwordDecryptor.decrypt(credential.getPassword());
+        String plainPassword = passwordDecryptor.decrypt(credential.getPassword(), credential);
 
-        DataSource transientDataSource = createTransientDataSource(credential, jdbcUrl, username, plainPassword);
+        DataSource transientDataSource = createTransientDataSource(
+                target.getTargetKey(), credential, jdbcUrl, username, plainPassword);
         activeTransientPoolCount.incrementAndGet();
         try {
-            Flyway flyway = FlywayConfigurationSupport.buildFlyway(
-                    targetKey,
-                    transientDataSource,
-                    flywayProperties,
-                    resourceLoader,
-                    customizers,
-                    javaMigrations,
-                    callbacks,
-                    safetyGuard
-            );
+            Flyway flyway = buildFlyway(target, transientDataSource);
             return action.apply(flyway);
         } finally {
-            closeQuietly(transientDataSource, targetKey);
+            closeQuietly(transientDataSource, target.getTargetKey());
             activeTransientPoolCount.decrementAndGet();
             closedTransientPoolCount.incrementAndGet();
         }
+    }
+
+    /**
+     * 基于既有物理数据源构建受管 {@link Flyway} 实例（非隔离凭据模式使用，复用容器物理池不创建额外连接池）
+     *
+     * @param target 迁移目标描述符
+     * @return 受管 Flyway 实例
+     */
+    public Flyway buildFlyway(MigrationTarget target) {
+        Objects.requireNonNull(target, "target 不能为空");
+        return buildFlyway(target, target.getDataSource());
+    }
+
+    private Flyway buildFlyway(MigrationTarget target, DataSource effectiveDataSource) {
+        return FlywayConfigurationSupport.buildFlyway(
+                target,
+                effectiveDataSource,
+                flywayProperties,
+                atengProperties,
+                resourceLoader,
+                customizers,
+                javaMigrations,
+                callbacks,
+                safetyGuard
+        );
     }
 
     /**
@@ -151,19 +189,17 @@ public class TransientFlywayExecutor {
         return closedTransientPoolCount.get();
     }
 
-    private String resolveEffectiveJdbcUrl(AtengFlywayProperties.CredentialProperties credential) {
+    private String resolveEffectiveJdbcUrl(AtengFlywayProperties.CredentialProperties credential,
+                                           DataSource targetDataSource) {
         if (StringUtils.hasText(credential.getUrl())) {
             return credential.getUrl().trim();
         }
-        if (StringUtils.hasText(flywayProperties.getUrl())) {
-            return flywayProperties.getUrl().trim();
-        }
-        DataSource runtimeDataSource = runtimeDataSourceProvider != null
-                ? runtimeDataSourceProvider.getIfAvailable()
-                : null;
-        if (runtimeDataSource != null) {
+        DataSource candidateDs = targetDataSource != null
+                ? targetDataSource
+                : (runtimeDataSourceProvider != null ? runtimeDataSourceProvider.getIfAvailable() : null);
+        if (candidateDs != null) {
             try {
-                String extracted = JdbcUtils.extractDatabaseMetaData(runtimeDataSource, DatabaseMetaData::getURL);
+                String extracted = JdbcUtils.extractDatabaseMetaData(candidateDs, DatabaseMetaData::getURL);
                 if (StringUtils.hasText(extracted)) {
                     return extracted;
                 }
@@ -176,16 +212,24 @@ public class TransientFlywayExecutor {
                 );
             }
         }
+        if (StringUtils.hasText(flywayProperties.getUrl())) {
+            return flywayProperties.getUrl().trim();
+        }
         throw new FlywayException(FlywayResultCode.CONFIG_INVALID,
                 "隔离 DDL 凭据模式未配置可用 JDBC URL（请设置 ateng.boot.flyway.credential.url 或提供容器 DataSource）");
     }
 
-    private DataSource createTransientDataSource(AtengFlywayProperties.CredentialProperties credential,
+    private DataSource createTransientDataSource(String targetKey,
+                                                 AtengFlywayProperties.CredentialProperties credential,
                                                  String jdbcUrl,
                                                  String username,
                                                  String password) {
         if (ClassUtils.isPresent(HIKARI_CLASS, TransientFlywayExecutor.class.getClassLoader())) {
-            return HikariTransientDataSourceFactory.create(credential, jdbcUrl, username, password);
+            String poolSuffix = StringUtils.hasText(targetKey) ? targetKey.trim().replaceAll("[^a-zA-Z0-9._-]", "_") : "default";
+            long seq = closedTransientPoolCount.get() + activeTransientPoolCount.get() + 1;
+            return HikariTransientDataSourceFactory.create(
+                    "ateng-flyway-transient-ddl-" + poolSuffix + "-" + seq,
+                    credential, jdbcUrl, username, password);
         }
         return buildFallbackDriverDataSource(credential, jdbcUrl, username, password);
     }
@@ -227,12 +271,13 @@ public class TransientFlywayExecutor {
         private HikariTransientDataSourceFactory() {
         }
 
-        private static DataSource create(AtengFlywayProperties.CredentialProperties credential,
+        private static DataSource create(String poolName,
+                                         AtengFlywayProperties.CredentialProperties credential,
                                          String jdbcUrl,
                                          String username,
                                          String password) {
             com.zaxxer.hikari.HikariDataSource ds = new com.zaxxer.hikari.HikariDataSource();
-            ds.setPoolName("ateng-flyway-transient-ddl");
+            ds.setPoolName(poolName);
             ds.setJdbcUrl(jdbcUrl);
             if (StringUtils.hasText(username)) {
                 ds.setUsername(username);
