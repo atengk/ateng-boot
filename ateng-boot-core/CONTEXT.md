@@ -76,6 +76,10 @@ _Avoid_: AesUtil, EncryptionUtil, EncryptUtil, Sm4Util
 纯 JDK 17 原生摘要算法与国密杂凑工具类，提供 SHA-256、MD5 及纯原生国密 SM3 (GB/T 32905-2016) 字节数组与十六进制摘要计算门面。
 _Avoid_: HashUtil, Md5Util, ShaUtil, Sm3Util
 
+**PasswordUtil**:
+纯 JDK 原生口令慢哈希与恒定时间校验工具类，基于 `PBKDF2WithHmacSHA256` 与密码学安全随机盐生成自描述存储串，并提供防时序攻击比对与迭代升级判定。
+_Avoid_: PasswordEncoder, PwdUtil, BcryptUtil, PassUtil
+
 **TreeUtil**:
 通用泛型树形结构构建工具，依托纯函数式接口与哈希表两遍扫描算法，以 O(N) 线性时间复杂度实现扁平列表到嵌套树的高性能组装。
 _Avoid_: TreeBuilder, NodeUtil, MenuTreeUtil

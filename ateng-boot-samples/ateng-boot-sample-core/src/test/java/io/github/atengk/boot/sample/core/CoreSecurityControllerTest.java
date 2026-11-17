@@ -232,4 +232,51 @@ class CoreSecurityControllerTest {
                 .andExpect(jsonPath("$.code", is(400)))
                 .andExpect(jsonPath("$.success", is(false)));
     }
+
+    @Test
+    @DisplayName("POST /sample/core/security/password - PBKDF2 口令慢哈希、恒定时间校验与升级闭环")
+    void testVerifyPasswordLifecycle_Success() throws Exception {
+        String jsonBody = """
+                {
+                  "username": "alice.chen",
+                  "rawPassword": "Ateng#Login2026!",
+                  "legacyIterations": 20000
+                }
+                """;
+
+        mockMvc.perform(post("/sample/core/security/password")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.username", is("alice.chen")))
+                .andExpect(jsonPath("$.data.encodedPassword", startsWith("$pbkdf2-sha256$310000$")))
+                .andExpect(jsonPath("$.data.secondEncodedPassword", startsWith("$pbkdf2-sha256$310000$")))
+                .andExpect(jsonPath("$.data.saltUnique", is(true)))
+                .andExpect(jsonPath("$.data.matched", is(true)))
+                .andExpect(jsonPath("$.data.wrongPasswordRejected", is(true)))
+                .andExpect(jsonPath("$.data.legacyNeedsUpgrade", is(true)))
+                .andExpect(jsonPath("$.data.upgradedPassword", startsWith("$pbkdf2-sha256$310000$")))
+                .andExpect(jsonPath("$.data.currentNeedsUpgrade", is(false)));
+    }
+
+    @Test
+    @DisplayName("POST /sample/core/security/password - 空账号或越界迭代次数触发 JSR-303 校验拦截")
+    void testVerifyPasswordLifecycle_ValidationFail() throws Exception {
+        String invalidJson = """
+                {
+                  "username": "",
+                  "rawPassword": "",
+                  "legacyIterations": 100
+                }
+                """;
+
+        mockMvc.perform(post("/sample/core/security/password")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(400)))
+                .andExpect(jsonPath("$.success", is(false)));
+    }
 }
