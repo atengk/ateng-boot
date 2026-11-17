@@ -1,6 +1,8 @@
 package io.github.atengk.boot.notification;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.notification.channel.NotificationChannel;
 import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
 import io.github.atengk.boot.notification.context.NotificationContextHolder;
@@ -30,6 +32,7 @@ import io.github.atengk.boot.notification.provider.NotificationProvider;
 import io.github.atengk.boot.notification.provider.WeComNotificationProvider;
 import io.github.atengk.boot.notification.renderer.SimpleNotificationTemplateRenderer;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
+import okhttp3.mockwebserver.Dispatcher;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.RecordedRequest;
 import okhttp3.mockwebserver.SocketPolicy;
@@ -49,7 +52,9 @@ import org.springframework.web.client.RestClient;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -166,6 +171,7 @@ class NotificationTemplateTest extends BaseNotificationTest {
         }
         MDC.clear();
         UserContextHolder.clear();
+        TenantContextHolder.clear();
         NotificationContextHolder.clear();
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.clearSynchronization();
@@ -868,5 +874,256 @@ class NotificationTemplateTest extends BaseNotificationTest {
                 .hasCauseInstanceOf(NotificationException.class);
         assertTrue(asyncFailureCalled.get());
         assertEquals(2, server.getRequestCount());
+    }
+
+    @Test
+    @DisplayName("验证多渠道广播 Fail-Fast 前置校验、空白清理、去重与保序 LinkedHashMap 返回")
+    void testSendBroadcastValidationAndNormalization() throws Exception {
+        TextMessage validMsg = TextMessage.of("广播前置校验测试");
+
+        // 1. 渠道集合为 null / 空 / 全空白时同步与异步均立即快速失败，零网络请求
+        assertThatThrownBy(() -> template.sendBroadcast(null, validMsg))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> template.sendBroadcast(Collections.emptyList(), validMsg))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> template.sendBroadcast(Arrays.asList(" ", "\t", null), validMsg))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> template.sendBroadcastAsync(Collections.emptyList(), validMsg))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> template.sendBroadcastAsync(Arrays.asList(" ", null), validMsg))
+                .isInstanceOf(BusinessException.class);
+
+        // 2. 消息为空 / 校验不合法 / 图片体积超限时均立即快速失败，零网络请求
+        assertThatThrownBy(() -> template.sendBroadcast(List.of("wecom-alert"), null))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> template.sendBroadcast(List.of("wecom-alert"), new TextMessage("   ")))
+                .isInstanceOf(NotificationException.class);
+        assertThatThrownBy(() -> template.sendBroadcastAsync(List.of("wecom-alert"), new TextMessage("   ")))
+                .isInstanceOf(NotificationException.class);
+
+        properties.setMaxImageSize(DataSize.ofBytes(4));
+        ImageMessage overLimitImg = ImageMessage.fromBytes("hello".getBytes(StandardCharsets.UTF_8));
+        assertThatThrownBy(() -> template.sendBroadcast(List.of("wecom-alert"), overLimitImg))
+                .isInstanceOf(NotificationException.class);
+        properties.setMaxImageSize(DataSize.ofMegabytes(2));
+        assertEquals(0, server.getRequestCount());
+
+        // 3. 混合空白、null 与重复渠道名时，自动清理并按首次出现顺序去重保序返回
+        configureMultiPlatformDispatcher(false);
+
+        List<String> noisyChannels = Arrays.asList("  wecom-alert ", "", null, "feishu-alert", "wecom-alert", " generic-alert ");
+        Map<String, NotificationSendResult> results = template.sendBroadcast(noisyChannels, validMsg);
+
+        assertInstanceOf(LinkedHashMap.class, results);
+        assertThat(results.keySet()).containsExactly("wecom-alert", "feishu-alert", "generic-alert");
+        assertThat(results.values()).allSatisfy(res -> assertTrue(res.isSuccess()));
+        assertEquals(3, server.getRequestCount());
+
+        // 异步广播同样遵守清理去重保序
+        Map<String, NotificationSendResult> asyncResults = template.sendBroadcastAsync(noisyChannels, validMsg)
+                .get(5, TimeUnit.SECONDS);
+        assertInstanceOf(LinkedHashMap.class, asyncResults);
+        assertThat(asyncResults.keySet()).containsExactly("wecom-alert", "feishu-alert", "generic-alert");
+        assertThat(asyncResults.values()).allSatisfy(res -> assertTrue(res.isSuccess()));
+        assertEquals(6, server.getRequestCount());
+    }
+
+    @Test
+    @DisplayName("验证异构多平台并发广播单点故障隔离：HTTP 500、客户端频控拦截与不存在渠道均不阻断其余渠道送达")
+    void testSendBroadcastFailureIsolationAcrossPlatforms() throws Exception {
+        // 1. MockWebServer 按路径分发：钉钉成功、企微成功、飞书返回 HTTP 500（无备用渠道）
+        configureMultiPlatformDispatcher(true);
+
+        // 1A. 同步广播 3 个异构平台：default-dingtalk(成功) + feishu-alert(500失败) + wecom-alert(成功)
+        List<String> threePlatforms = List.of("default-dingtalk", "feishu-alert", "wecom-alert");
+        Map<String, NotificationSendResult> http500Result = template.sendBroadcast(threePlatforms, TextMessage.of("异构广播 HTTP 500 隔离"));
+
+        assertThat(http500Result.keySet()).containsExactly("default-dingtalk", "feishu-alert", "wecom-alert");
+        assertTrue(http500Result.get("default-dingtalk").isSuccess());
+        assertEquals(Platform.DINGTALK, http500Result.get("default-dingtalk").getPlatform());
+        assertTrue(http500Result.get("wecom-alert").isSuccess());
+        assertEquals(Platform.WECOM, http500Result.get("wecom-alert").getPlatform());
+
+        NotificationSendResult feishuFailed = http500Result.get("feishu-alert");
+        assertFalse(feishuFailed.isSuccess());
+        assertEquals("feishu-alert", feishuFailed.getChannel());
+        assertEquals(Platform.FEISHU, feishuFailed.getPlatform());
+        assertNotNull(feishuFailed.getCostDuration());
+        assertThat(feishuFailed.getRawResponse()).contains("Feishu Gateway Down");
+        assertThat(feishuFailed.getErrorMessage()).isNotBlank();
+
+        // 1B. 异步广播同样保持 2 success + 1 failure 隔离
+        Map<String, NotificationSendResult> asyncHttp500Result = template
+                .sendBroadcastAsync(threePlatforms, TextMessage.of("异步异构广播 HTTP 500 隔离"))
+                .get(5, TimeUnit.SECONDS);
+        assertThat(asyncHttp500Result.keySet()).containsExactly("default-dingtalk", "feishu-alert", "wecom-alert");
+        assertEquals(2, asyncHttp500Result.values().stream().filter(NotificationSendResult::isSuccess).count());
+        assertFalse(asyncHttp500Result.get("feishu-alert").isSuccess());
+        assertThat(asyncHttp500Result.get("feishu-alert").getErrorMessage()).isNotBlank();
+
+        // 2. 触发客户端频控拦截时隔离（strict-broadcast 配额=1，先耗尽再广播）
+        NotificationChannel strictBroadcast = NotificationChannel.builder()
+                .name("strict-broadcast")
+                .platform(Platform.DINGTALK)
+                .webhook(getWebhookUrl("dingtalk/strict"))
+                .permitsPerMinute(1)
+                .build();
+        registry.register(strictBroadcast);
+        template.send("strict-broadcast", TextMessage.of("耗尽配额"));
+
+        List<String> rateLimitChannels = List.of("wecom-alert", "strict-broadcast", "generic-alert");
+        Map<String, NotificationSendResult> rateLimitResult = template.sendBroadcast(rateLimitChannels, TextMessage.of("频控单点隔离"));
+        assertThat(rateLimitResult.keySet()).containsExactly("wecom-alert", "strict-broadcast", "generic-alert");
+        assertTrue(rateLimitResult.get("wecom-alert").isSuccess());
+        assertTrue(rateLimitResult.get("generic-alert").isSuccess());
+
+        NotificationSendResult limited = rateLimitResult.get("strict-broadcast");
+        assertFalse(limited.isSuccess());
+        assertEquals("strict-broadcast", limited.getChannel());
+        assertEquals(Platform.DINGTALK, limited.getPlatform());
+        assertThat(limited.getErrorMessage()).isNotBlank();
+
+        // 3. 包含不存在渠道时隔离，其余渠道正常送达
+        List<String> withMissingChannel = List.of("wecom-alert", "non-existent-channel", "generic-alert");
+        Map<String, NotificationSendResult> missingResult = template.sendBroadcast(withMissingChannel, TextMessage.of("缺省渠道隔离"));
+        assertThat(missingResult.keySet()).containsExactly("wecom-alert", "non-existent-channel", "generic-alert");
+        assertTrue(missingResult.get("wecom-alert").isSuccess());
+        assertTrue(missingResult.get("generic-alert").isSuccess());
+
+        NotificationSendResult missing = missingResult.get("non-existent-channel");
+        assertFalse(missing.isSuccess());
+        assertEquals("non-existent-channel", missing.getChannel());
+        assertNull(missing.getPlatform());
+        assertThat(missing.getErrorMessage()).contains("non-existent-channel");
+
+        // 4. 传入 "default" 别名触发频控拦截时，失败结果仍能正确解析出底层平台类型
+        registry.setDefaultChannelName("strict-broadcast");
+        Map<String, NotificationSendResult> defaultAliasResult = template.sendBroadcast(
+                List.of("wecom-alert", "default"), TextMessage.of("默认别名频控隔离"));
+        assertTrue(defaultAliasResult.get("wecom-alert").isSuccess());
+        NotificationSendResult defaultFailed = defaultAliasResult.get("default");
+        assertFalse(defaultFailed.isSuccess());
+        assertEquals("default", defaultFailed.getChannel());
+        assertEquals(Platform.DINGTALK, defaultFailed.getPlatform());
+        assertThat(defaultFailed.getErrorMessage()).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("验证同步与异步多渠道广播在受管工作线程中无损透传四维上下文并在 finally 严格清理现场")
+    void testSendBroadcastContextPropagationAndWorkerCleanup() throws Exception {
+        configureMultiPlatformDispatcher(false);
+
+        MDC.put("traceId", "trace-broadcast-7777");
+        UserContextHolder.set("user-broadcast-66");
+        TenantContextHolder.setTenantId("tenant-broadcast-99");
+        TenantContextHolder.setIgnoreTenant(true);
+
+        List<String> capturedTraceIds = new CopyOnWriteArrayList<>();
+        List<String> capturedUserIds = new CopyOnWriteArrayList<>();
+        List<String> capturedTenantIds = new CopyOnWriteArrayList<>();
+        List<Boolean> capturedIgnoreTenants = new CopyOnWriteArrayList<>();
+        List<String> workerThreadNames = new CopyOnWriteArrayList<>();
+
+        template.setApplicationEventPublisher(event -> {
+            if (event instanceof NotificationSendingEvent) {
+                capturedTraceIds.add(MDC.get("traceId"));
+                capturedUserIds.add(UserContextHolder.get());
+                capturedTenantIds.add(TenantContextHolder.getExplicit());
+                capturedIgnoreTenants.add(TenantContextHolder.isIgnoreTenant());
+                workerThreadNames.add(Thread.currentThread().getName());
+            }
+        });
+
+        List<String> channels = List.of("default-dingtalk", "wecom-alert", "feishu-alert");
+
+        // 1. 验证同步并发广播四维上下文透传
+        Map<String, NotificationSendResult> syncResult = template.sendBroadcast(channels, TextMessage.of("同步广播四维透传"));
+        assertAndClearCapturedContext(syncResult, capturedTraceIds, capturedUserIds,
+                capturedTenantIds, capturedIgnoreTenants, workerThreadNames);
+
+        // 验证异步并发广播四维上下文透传
+        Map<String, NotificationSendResult> asyncResult = template
+                .sendBroadcastAsync(channels, TextMessage.of("异步广播四维透传"))
+                .get(5, TimeUnit.SECONDS);
+        assertAndClearCapturedContext(asyncResult, capturedTraceIds, capturedUserIds,
+                capturedTenantIds, capturedIgnoreTenants, workerThreadNames);
+
+        // 2. 验证工作线程在 finally 中严格清理/恢复现场，无 ThreadLocal 残留污染线程池
+        List<CompletableFuture<Boolean>> cleanupChecks = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            cleanupChecks.add(CompletableFuture.supplyAsync(() ->
+                    MDC.get("traceId") == null
+                            && UserContextHolder.get() == null
+                            && TenantContextHolder.getExplicit() == null
+                            && !TenantContextHolder.isIgnoreTenant(),
+                    asyncExecutor));
+        }
+        for (CompletableFuture<Boolean> check : cleanupChecks) {
+            assertTrue(check.get(5, TimeUnit.SECONDS), "工作线程执行完毕后必须彻底清理四维上下文快照");
+        }
+
+        // 3. 验证未显式注入 asyncExecutor 时回退 Core AsyncUtil 受管线程池，严禁沦陷至 ForkJoinPool.commonPool
+        NotificationTemplate fallbackExecutorTemplate = new NotificationTemplate(
+                properties, registry, providers, rateLimiter, restClient,
+                templateRenderer, null, event -> {
+            if (event instanceof NotificationSendingEvent) {
+                assertThat(Thread.currentThread().getName()).doesNotContain("ForkJoinPool.commonPool");
+                assertEquals("trace-broadcast-7777", MDC.get("traceId"));
+            }
+        }, null);
+        Map<String, NotificationSendResult> fallbackResult = fallbackExecutorTemplate
+                .sendBroadcastAsync(List.of("wecom-alert", "generic-alert"), TextMessage.of("Core受管兜底线程池验证"))
+                .get(5, TimeUnit.SECONDS);
+        assertEquals(2, fallbackResult.size());
+        assertThat(fallbackResult.values()).allSatisfy(res -> assertTrue(res.isSuccess()));
+    }
+
+    private void assertAndClearCapturedContext(
+            Map<String, NotificationSendResult> results,
+            List<String> capturedTraceIds,
+            List<String> capturedUserIds,
+            List<String> capturedTenantIds,
+            List<Boolean> capturedIgnoreTenants,
+            List<String> workerThreadNames) {
+        assertEquals(3, results.size());
+        assertThat(results.values()).allSatisfy(res -> assertTrue(res.isSuccess()));
+        assertEquals(3, capturedTraceIds.size());
+        assertThat(capturedTraceIds).containsOnly("trace-broadcast-7777");
+        assertThat(capturedUserIds).containsOnly("user-broadcast-66");
+        assertThat(capturedTenantIds).containsOnly("tenant-broadcast-99");
+        assertThat(capturedIgnoreTenants).containsOnly(true);
+        assertThat(workerThreadNames).allSatisfy(name -> assertThat(name).doesNotContain("ForkJoinPool.commonPool"));
+        capturedTraceIds.clear();
+        capturedUserIds.clear();
+        capturedTenantIds.clear();
+        capturedIgnoreTenants.clear();
+        workerThreadNames.clear();
+    }
+
+    private void configureMultiPlatformDispatcher(boolean failFeishu) {
+        server.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                String path = request.getPath();
+                if (path != null && path.startsWith("/feishu/")) {
+                    if (failFeishu) {
+                        return new MockResponse().setResponseCode(500)
+                                .setHeader("Content-Type", "application/json; charset=utf-8")
+                                .setBody("{\"code\":500,\"msg\":\"Feishu Gateway Down\"}");
+                    }
+                    return new MockResponse().setResponseCode(200)
+                            .setHeader("Content-Type", "application/json; charset=utf-8")
+                            .setBody("{\"code\":0,\"msg\":\"ok\"}");
+                }
+                if (path != null && path.startsWith("/generic/")) {
+                    return new MockResponse().setResponseCode(200)
+                            .setHeader("Content-Type", "application/json; charset=utf-8")
+                            .setBody("{\"status\":\"ok\"}");
+                }
+                return new MockResponse().setResponseCode(200)
+                        .setHeader("Content-Type", "application/json; charset=utf-8")
+                        .setBody("{\"errcode\":0,\"errmsg\":\"ok\"}");
+            }
+        });
     }
 }

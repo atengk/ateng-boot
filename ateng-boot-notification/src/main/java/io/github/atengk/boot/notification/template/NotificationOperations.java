@@ -3,6 +3,7 @@ package io.github.atengk.boot.notification.template;
 import io.github.atengk.boot.notification.model.NotificationMessage;
 import io.github.atengk.boot.notification.model.NotificationSendResult;
 
+import java.util.Collection;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
@@ -96,4 +97,24 @@ public interface NotificationOperations {
      * @return 发送结果
      */
     NotificationSendResult sendTemplate(String channelName, NotificationMessage messageTemplate, Map<String, Object> variables);
+
+    /**
+     * 多渠道同步并发广播通知（支持空白清理、去重保序与单渠道故障隔离）
+     * 通过受管线程池并发派发并自动透传四维全链路上下文快照，单渠道异常不会阻断其余渠道送达
+     *
+     * @param channelNames 目标渠道名称集合（自动忽略空白项并按首次出现顺序去重）
+     * @param message      待广播推送的通知领域消息
+     * @return 按入参去重顺序排列的渠道发送结果映射（实际为 LinkedHashMap）
+     */
+    Map<String, NotificationSendResult> sendBroadcast(Collection<String> channelNames, NotificationMessage message);
+
+    /**
+     * 多渠道异步并发广播通知（支持空白清理、去重保序与单渠道故障隔离）
+     * 通过受管线程池并发派发并自动透传四维全链路上下文快照，单渠道异常不会阻断其余渠道送达
+     *
+     * @param channelNames 目标渠道名称集合（自动忽略空白项并按首次出现顺序去重）
+     * @param message      待广播推送的通知领域消息
+     * @return 包含有序渠道发送结果映射（实际为 LinkedHashMap）的 CompletableFuture
+     */
+    CompletableFuture<Map<String, NotificationSendResult>> sendBroadcastAsync(Collection<String> channelNames, NotificationMessage message);
 }

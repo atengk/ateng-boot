@@ -1,7 +1,9 @@
 package io.github.atengk.boot.notification.template;
 
 import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.util.AsyncUtil;
 import io.github.atengk.boot.core.util.BusinessAssert;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.TransactionUtil;
 import io.github.atengk.boot.notification.channel.NotificationChannel;
 import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
@@ -43,12 +45,18 @@ import org.springframework.web.client.RestClientResponseException;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.EnumMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 
 /**
@@ -129,11 +137,7 @@ public class NotificationTemplate implements NotificationOperations, Application
 
     @Override
     public NotificationSendResult send(String channelName, NotificationMessage message) {
-        BusinessAssert.notNull(message, "通知消息不能为空");
-        message.validate();
-        if (message instanceof ImageMessage imageMessage) {
-            validateImagePayloadSize(imageMessage);
-        }
+        validateMessage(message);
 
         String resolvedChannelName = resolveChannelName(channelName);
         NotificationChannel primaryChannel = channelRegistry.get(resolvedChannelName);
@@ -297,6 +301,29 @@ public class NotificationTemplate implements NotificationOperations, Application
         return send(channelName, renderedMessage);
     }
 
+    @Override
+    public Map<String, NotificationSendResult> sendBroadcast(Collection<String> channelNames, NotificationMessage message) {
+        validateMessage(message);
+        List<String> targets = normalizeBroadcastChannels(channelNames);
+        if (targets.size() == 1) {
+            Map<String, NotificationSendResult> singleResult = new LinkedHashMap<>(1);
+            String target = targets.get(0);
+            singleResult.put(target, sendForBroadcast(target, message));
+            return singleResult;
+        }
+        List<CompletableFuture<NotificationSendResult>> futures = submitBroadcastFutures(targets, message);
+        return awaitBroadcastResults(targets, futures);
+    }
+
+    @Override
+    public CompletableFuture<Map<String, NotificationSendResult>> sendBroadcastAsync(Collection<String> channelNames, NotificationMessage message) {
+        validateMessage(message);
+        List<String> targets = normalizeBroadcastChannels(channelNames);
+        List<CompletableFuture<NotificationSendResult>> futures = submitBroadcastFutures(targets, message);
+        return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
+                .thenApply(ignored -> assembleOrderedBroadcastResults(targets, futures));
+    }
+
     /**
      * 解析当前生效的目标渠道名称
      * 按照优先级：显式入参 -> 线程级动态切源上下文 -> 渠道动态解析器 SPI -> 全局默认渠道
@@ -363,7 +390,7 @@ public class NotificationTemplate implements NotificationOperations, Application
         if (asyncExecutor != null) {
             return asyncExecutor;
         }
-        return ForkJoinPool.commonPool();
+        return AsyncUtil.getExecutor();
     }
 
     private NotificationMessage renderMessage(NotificationMessage template, Map<String, Object> variables) {
@@ -445,6 +472,154 @@ public class NotificationTemplate implements NotificationOperations, Application
             return isTransientException(ex.getCause());
         }
         return false;
+    }
+
+    private void validateMessage(NotificationMessage message) {
+        BusinessAssert.notNull(message, "通知消息不能为空");
+        message.validate();
+        if (message instanceof ImageMessage imageMessage) {
+            validateImagePayloadSize(imageMessage);
+        }
+    }
+
+    private List<String> normalizeBroadcastChannels(Collection<String> channelNames) {
+        BusinessAssert.notEmpty(channelNames, "广播目标渠道集合不能为空");
+        Set<String> deduplicated = new LinkedHashSet<>(channelNames.size());
+        for (String channelName : channelNames) {
+            if (channelName != null && !channelName.isBlank()) {
+                deduplicated.add(channelName.trim());
+            }
+        }
+        BusinessAssert.notEmpty(deduplicated, "广播目标渠道集合不能全为空白名称");
+        return List.copyOf(deduplicated);
+    }
+
+    private List<CompletableFuture<NotificationSendResult>> submitBroadcastFutures(
+            List<String> targets, NotificationMessage message) {
+        Executor executor = obtainAsyncExecutor();
+        List<CompletableFuture<NotificationSendResult>> futures = new ArrayList<>(targets.size());
+        for (String targetChannel : targets) {
+            Supplier<NotificationSendResult> task = AsyncContext.wrapSupplier(
+                    () -> sendForBroadcast(targetChannel, message));
+            futures.add(CompletableFuture.supplyAsync(task, executor));
+        }
+        return futures;
+    }
+
+    private Map<String, NotificationSendResult> awaitBroadcastResults(
+            List<String> targets, List<CompletableFuture<NotificationSendResult>> futures) {
+        Duration waitTimeout = resolveBroadcastAwaitTimeout();
+        try {
+            CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
+                    .get(waitTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            return assembleOrderedBroadcastResults(targets, futures);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            cancelPendingFutures(futures);
+            throw new NotificationException(NotificationResultCode.NOTIFICATION_SEND_ERROR,
+                    "多渠道并发广播等待结果被中断", ex);
+        } catch (TimeoutException ex) {
+            Map<String, NotificationSendResult> partialResults = new LinkedHashMap<>(targets.size());
+            String timeoutMsg = "多渠道并发广播等待超时 [" + waitTimeout.toMillis() + " ms]";
+            for (int i = 0; i < targets.size(); i++) {
+                String target = targets.get(i);
+                CompletableFuture<NotificationSendResult> future = futures.get(i);
+                if (future.isDone() && !future.isCompletedExceptionally() && !future.isCancelled()) {
+                    partialResults.put(target, future.join());
+                } else {
+                    future.cancel(true);
+                    partialResults.put(target, NotificationSendResult.failure(
+                            IdUtil.simpleUUID(),
+                            target,
+                            resolvePlatformQuietly(target, null),
+                            waitTimeout,
+                            null,
+                            timeoutMsg
+                    ));
+                }
+            }
+            log.warn("多渠道并发广播部分任务超时兜底返回: targets={}, timeoutMs={}", targets, waitTimeout.toMillis());
+            return partialResults;
+        } catch (ExecutionException ex) {
+            Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+            throw new NotificationException(NotificationResultCode.NOTIFICATION_SEND_ERROR,
+                    "多渠道并发广播执行异常: " + cause.getMessage(), cause);
+        }
+    }
+
+    private Duration resolveBroadcastAwaitTimeout() {
+        long connectMs = properties.getConnectTimeout() != null ? properties.getConnectTimeout().toMillis() : 3_000L;
+        long readMs = properties.getReadTimeout() != null ? properties.getReadTimeout().toMillis() : 5_000L;
+        long rateLimitWaitMs = (properties.getRateLimit() != null && properties.getRateLimit().getMaxWaitDuration() != null)
+                ? properties.getRateLimit().getMaxWaitDuration().toMillis()
+                : 2_000L;
+        long perAttemptMs = Math.max(0L, connectMs) + Math.max(0L, readMs) + Math.max(0L, rateLimitWaitMs);
+        long boundedMs = Math.max(30_000L, perAttemptMs * 4L);
+        return Duration.ofMillis(boundedMs);
+    }
+
+    private void cancelPendingFutures(List<CompletableFuture<NotificationSendResult>> futures) {
+        for (CompletableFuture<NotificationSendResult> future : futures) {
+            if (!future.isDone()) {
+                future.cancel(true);
+            }
+        }
+    }
+
+    private NotificationSendResult sendForBroadcast(String targetChannel, NotificationMessage message) {
+        long startTime = System.nanoTime();
+        try {
+            return send(targetChannel, message);
+        } catch (Exception ex) {
+            Duration cost = Duration.ofNanos(System.nanoTime() - startTime);
+            Platform platform = resolvePlatformQuietly(targetChannel, ex);
+            String rawResponse = (ex instanceof NotificationSendException sendEx) ? sendEx.getRawResponse() : null;
+            String errorMessage = (ex.getMessage() != null && !ex.getMessage().isBlank())
+                    ? ex.getMessage()
+                    : ex.getClass().getSimpleName();
+            log.warn("多渠道并发广播单点故障隔离: 渠道 [{}] (platform={}) 发送失败, 耗时={}ms, 原因={}",
+                    targetChannel, platform, cost.toMillis(), errorMessage);
+            return NotificationSendResult.failure(
+                    IdUtil.simpleUUID(),
+                    targetChannel,
+                    platform,
+                    cost,
+                    rawResponse,
+                    errorMessage
+            );
+        }
+    }
+
+    private Map<String, NotificationSendResult> assembleOrderedBroadcastResults(
+            List<String> targets, List<CompletableFuture<NotificationSendResult>> futures) {
+        Map<String, NotificationSendResult> results = new LinkedHashMap<>(targets.size());
+        for (int i = 0; i < targets.size(); i++) {
+            results.put(targets.get(i), futures.get(i).join());
+        }
+        return results;
+    }
+
+    private Platform resolvePlatformQuietly(String targetChannel, Exception ex) {
+        if (ex instanceof NotificationSendException sendEx && sendEx.getPlatform() != null) {
+            try {
+                return Platform.valueOf(sendEx.getPlatform());
+            } catch (IllegalArgumentException ignored) {
+                // 回退从注册表提取平台类型
+            }
+        }
+        if (channelRegistry != null && targetChannel != null
+                && !(ex instanceof NotificationException ne
+                && ne.getResultCode() == NotificationResultCode.NOTIFICATION_CHANNEL_NOT_FOUND)) {
+            try {
+                NotificationChannel registered = channelRegistry.get(targetChannel);
+                if (registered != null) {
+                    return registered.getPlatform();
+                }
+            } catch (Exception ignored) {
+                // 渠道不存在或解析失败时返回 null
+            }
+        }
+        return null;
     }
 
     private void validateImagePayloadSize(ImageMessage imageMessage) {
