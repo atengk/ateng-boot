@@ -108,7 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [detect-changes]
     if: needs.detect-changes.outputs.code_changed != 'false'
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
