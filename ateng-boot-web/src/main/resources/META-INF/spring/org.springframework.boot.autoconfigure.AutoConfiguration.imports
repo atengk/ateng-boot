@@ -6,3 +6,4 @@ io.github.atengk.boot.web.shutdown.autoconfigure.AtengGracefulShutdownAutoConfig
 io.github.atengk.boot.web.ip.autoconfigure.AtengIpAccessControlAutoConfiguration
 io.github.atengk.boot.web.version.autoconfigure.AtengApiVersionAutoConfiguration
 io.github.atengk.boot.web.dict.autoconfigure.AtengEnumDictionaryAutoConfiguration
+io.github.atengk.boot.web.captcha.autoconfigure.AtengCaptchaAutoConfiguration

@@ -58,3 +58,12 @@ ateng:
         naming-strategy: "lower-camel-case"
         scan-packages:
           - "io.github.atengk.boot.sample.web.enums"
+      captcha:
+        enabled: true
+        key-prefix: "captcha:"
+        renderer: SVG
+        type: CHAR
+        char-type: ALPHANUMERIC_SAFE
+        length: 4
+        expire: 2m
+        ignore-case: true

@@ -360,10 +360,6 @@ public class AtengSaTokenAutoConfiguration {
             ObjectProvider<DynamicPathPermissionProvider> dynamicPathPermissionProvider) {
         AtengSaTokenInterceptor saInterceptor = new AtengSaTokenInterceptor(properties, dynamicPathPermissionProvider);
         saInterceptor.isAnnotation(false);
-        if (properties.getInterceptor().isCheckLogin()) {
-            log.info("Sa-Token 开启全域路由强制登录校验模式 (check-login=true)");
-            saInterceptor.setAuth(handler -> StpUtil.checkLogin());
-        }
         return saInterceptor;
     }
 

@@ -336,6 +336,62 @@ _Avoid_: AuditLogEvent, OperationRecordEvent, WebOperateEvent
 `@OperateLog` 与 `@WebLog` 切面共享的包内安全脱敏原语，负责合并全局 `default-exclude-params`（11 项默认敏感词基线）与注解级 `excludeParams`，并对嵌套实体、Map、Collection 与数组执行忽略大小写递归掩码及环引用防护（`[CIRCULAR_REF]` / `[EXCLUDED]`）。
 _Avoid_: LogMasker, ParamFilterUtil, SensitiveArgCleaner
 
+**CaptchaTemplate**:
+图形验证码全生命周期编程式门面，负责生成图像凭据、执行严格一次一密（无论核验成败均原子消费）校验（`verify` / `verifyOrThrow`）及主动失效清理（`invalidate`）。
+_Avoid_: CaptchaService, VerifyCodeManager, ImageCodeUtil
+
+**CaptchaResult**:
+不可变图形验证码生成结果契约模型（记录模型），承载随机唯一键（`captchaKey`）、Base64 Data URL 图像载荷（`imageBase64`）与有效时长秒数（`expireSeconds`）。
+_Avoid_: CaptchaVO, CaptchaResponse, VerifyCodeDTO
+
+**CaptchaStore**:
+图形验证码答案状态存储的通用 SPI 接口，定义带 TTL 写入（`save`）、严格单次消费原子取删（`getAndDelete`）及主动清除（`delete`）契约。
+_Avoid_: CaptchaCache, CaptchaRepository, CodeStorage
+
+**RedissonCaptchaStore**:
+基于 `RedissonClient` `RBucket` 原生原子 `getAndDelete` 与存活周期实现的分布式验证码存储（Tier 1 最高优先级）。
+_Avoid_: RedissonVerifyStore, RedissonCodeCache
+
+**RedisCaptchaStore**:
+基于 `StringRedisTemplate` 与原子 `getAndDelete` 原语实现的分布式验证码存储（Tier 2 次级）。
+_Avoid_: RedisVerifyStore, StringRedisCaptchaCache
+
+**InMemoryCaptchaStore**:
+基于纯 JDK `ConcurrentHashMap`、`ReentrantLock` 细粒度并发控制、软容量上限淘汰及 CAS 节流清理的单机内存验证码存储兜底实现（Tier 3 兜底）。
+_Avoid_: LocalCaptchaStore, MemoryCaptchaCache
+
+**CaptchaRenderer**:
+图形验证码图像渲染 SPI 接口，定义根据展示文本与配置参数生成 Base64 Data URL 图像载荷的契约。
+_Avoid_: CaptchaDrawer, ImageGenerator, CaptchaPainter
+
+**SvgCaptchaRenderer**:
+默认零系统字体依赖的纯 JDK 矢量图形渲染器，基于内置字符轮廓 `<path>` 表叠加随机旋转缩放、贝塞尔干扰曲线与噪点生成 `data:image/svg+xml;base64,...` 图像，输出不含 `<text>` 标签以防御正则直读。
+_Avoid_: SvgDrawer, VectorCaptchaGenerator
+
+**PngCaptchaRenderer**:
+基于纯 JDK `BufferedImage` / `Graphics2D` 与逻辑字体渲染字符扭曲、干扰线及噪点并输出 `data:image/png;base64,...` 位图的备选图形渲染器。
+_Avoid_: AwtCaptchaGenerator, BufferedImageCaptchaDrawer
+
+**CaptchaType**:
+图形验证码内容模式枚举，支持随机字符（`CHAR`）与简单加减乘算术表达式（`MATH`）。
+_Avoid_: CaptchaCategory, VerifyType
+
+**CaptchaCharType**:
+随机字符模式字符集策略枚举，支持剔除易混淆字符的安全字母数字混合（`ALPHANUMERIC_SAFE`，默认）、纯数字（`NUMERIC`）、纯字母（`ALPHA`）与全量字母数字（`ALPHANUMERIC`）。
+_Avoid_: CharMode, CodeCharset
+
+**CaptchaRendererType**:
+图形验证码内置渲染引擎类型枚举，支持零字体依赖矢量图（`SVG`，默认）与位图（`PNG`）。
+_Avoid_: ImageFormat, RenderEngine
+
+**CaptchaProperties**:
+图形验证码运行时强类型配置属性，以 `ateng.boot.web.captcha` 为前缀，纳管开关、Key 前缀、渲染引擎、内容模式、字符集、尺寸、过期时长（`Duration`）、大小写策略、干扰强度、故障降级开关（`fail-open`）及内存兜底参数。
+_Avoid_: VerifyCodeProperties, ImageCaptchaConfig
+
+**AtengCaptchaAutoConfiguration**:
+图形验证码三级自适应自动装配类，按序探测并装配 `CaptchaStore`（Redisson → Redis → InMemory）、`CaptchaRenderer`（SVG / PNG）及编程式门面 `CaptchaTemplate`。
+_Avoid_: CaptchaConfig, CaptchaAutoConfig
+
 ---
 
 ## Disambiguation & Errata

@@ -21,7 +21,7 @@
 | **越权防御** | 多账号水平越权防御 | `@CheckDataOwner`<br>`DataOwnerProvider<T>`<br>`LoginHelper` | `data-owner.enabled` | `@CheckDataOwner(expr, type, provider, allowAdmin, message)` / `DataOwnerProvider.getOwnerId(id, loginType)` / `checkSelf(...)` / `checkSelfByLoginType(...)` / `isSelf(...)` / `isSelfOrAdmin(...)` / `isBelongsToTenant(...)` / `checkBelongsToTenant(...)` / `checkBelongsToTenantByLoginType(...)` | `SaCheckDataOwnerAspectTest` / `AccessControlController` / `MultiAccountController` |
 | **公开与白名单** | 多源免鉴权自动汇聚 | `@Anonymous`<br>`SaTokenWhitelistProvider`<br>`AnonymousUrlProcessor` | `white-list`<br>`interceptor.excludes` | 类/方法 `@Anonymous(boolean value = true)`（支持 `@Anonymous(true)` / `@Anonymous(false)`，扫描转译 `{id}`->`*`、`{*path}`->`**`）+ `SaTokenWhitelistProvider.getWhitelist()` + YAML 白名单去重聚合 | `AnonymousUrlProcessorTest` / `PublicPortalController` |
 | **动态权限** | 动态 URL 权限规则管道 | `DynamicPathPermissionProvider`<br>`PathPermissionRule` | `interceptor.enabled`<br>`interceptor.check-login`<br>`interceptor.includes`<br>`interceptor.excludes` | `PathPermissionRule.of(...)`（支持 `httpMethod`、`loginType`、`SaMode.AND / SaMode.OR`），由 `AtengSaTokenInterceptor` 自动拦截匹配 | `PathPermissionRuleTest` / `AtengSaTokenInterceptorTest` / `PublicPortalController` |
-| **路由拦截** | 双轨守卫与上下文清理 | `AtengSaTokenInterceptor`<br>`SaTokenWebMvcConfigurer` | `interceptor.enabled`<br>`interceptor.check-login`<br>`interceptor.includes`<br>`interceptor.excludes` | `preHandle` 校验并对称注入 `UserContextHolder` + `TenantContextHolder`，`afterCompletion` 在 `finally` 中双清空 | `AtengSaTokenInterceptorTest` / `SampleSaTokenCheckLoginIntegrationTest` |
+| **路由拦截** | 双轨守卫与上下文清理 | `AtengSaTokenInterceptor`<br>`SaTokenWebMvcConfigurer` | `interceptor.enabled`<br>`interceptor.check-login`<br>`interceptor.login-type-routes`<br>`interceptor.includes`<br>`interceptor.excludes` | `preHandle` 按 `自定义 auth > 动态规则 loginType > login-type-routes > primary-login-type` 校验并对称注入命中账号的 `UserContextHolder` + `TenantContextHolder`，`afterCompletion` 在 `finally` 中双清空；提供 `resolveRouteLoginType(lookupPath)` 与 `isCustomAuthConfigured()` | `AtengSaTokenInterceptorTest` / `SampleSaTokenCheckLoginIntegrationTest` / `SampleSaTokenMultiAccountCheckLoginIntegrationTest` |
 | **两级缓存** | 多账号隔离权限缓存 | `CachedStpInterface`<br>`PermissionCacheService` | `permission-cache.enabled`<br>`permission-cache.timeout`<br>`permission-cache.empty-ttl` | 优先复用 `TwoLevelCacheManager`（`TwoLevelPermissionCacheAdapter.getTwoLevelCache()`，64 条带锁），回退轻量 Redis+5s LRU 或有界内存 LRU（10000 上限）；提供 `get` / `set` / `delete` / `build*Key` / `refreshUserPermissions([loginType,] userId)` / `refreshRolePermissions([loginType,] roleCode)` / `clearUserCache(...)` / `clearRoleCache(...)` / `clearAll()` / `clearAllCache()` / `clearLocalUserCache(...)` / `clearLocalRoleCache(...)` / `clearLocalAllCache()` / `getLocalCacheSize()` / `getAdapter()` | `CachedStpInterfaceTest` / `PermissionCacheServiceTest` / `PermissionCacheController` |
 | **权限 SPI** | 角色权限业务加载扩展 | `UserRolePermissionLoader` | - | `loadRolesByUserId(userId[, loginType])` / `loadPermissionsByRole(roleCode[, loginType])` / `loadDirectPermissionsByUserId(userId[, loginType])`（默认实现 `DefaultUserRolePermissionLoader`） | `CachedStpInterfaceTest` / `PermissionCacheController` |
 | **集群同步** | Pub/Sub 即时广播作废 | `SaTokenClusterBroadcaster`<br>`SaTokenClusterSyncListener` | `cluster-sync.enabled`<br>`cluster-sync.channel` | `broadcast(eventType, [loginType,] targetKey)` / `getInstanceId()` / `processRemoteMessage(msg)`，携带 `instanceId` 自消费防卫丢弃 | `SaTokenClusterSyncTest` / `InternalClusterController` |
@@ -169,8 +169,9 @@ public class AuthSessionController {
 ┌─────────────────────────────────┐                     ┌──────────────────────────────────┐
 │     AtengSaTokenInterceptor     │                     │   AOP 切面体系 (Controller/Service)│
 │ • 白名单 O(1)/AntPath 快速放行   │                     │ • @SaCheckRole / @SaCheckPermission│
-│ • DynamicPathPermission SPI 鉴权 │                     │ • @CheckDataOwner (多账号 IDOR 防御)│
-│ • 四维上下文对称注入与 finally 清理│                     │ • @CheckSameToken (零信任常数时间验签)│
+│ • check-login 多账号路由/主账号兜底│                     │ • @CheckDataOwner (多账号 IDOR 防御)│
+│ • DynamicPathPermission SPI 鉴权 │                     │ • @CheckSameToken (零信任常数时间验签)│
+│ • 四维上下文对称注入与 finally 清理│                     │                                    │
 └────────────────┬────────────────┘                     └────────────────┬─────────────────┘
                  │                                                       │
                  └───────────────────────┬───────────────────────────────┘
@@ -387,7 +388,14 @@ sa-token:
 ateng:
   boot:
     satoken:
-      primary-login-type: login   # 多账号共存时优先映射至 UserContextHolder 的主账号体系 (默认: login)
+      primary-login-type: login   # 多账号共存时优先映射至 UserContextHolder 的主账号体系，也是 check-login=true 未命中路由映射时的兜底体系 (默认: login)
+      interceptor:
+        check-login: false        # 开启后按 login-type-routes 精确路由校验，未命中回退 primary-login-type
+        login-type-routes:        # 多账号路由映射（Key 为 loginType，Value 为 AntPath 列表；最精确路径优先）
+          admin:
+            - "/sample/satoken/multi-account/admin/**"
+          member:
+            - "/sample/satoken/multi-account/member/**"
 ```
 
 ### 4.2 1:1 实战代码（源自 `MultiAccountController.java` 与 `AuthSessionController.java`）
@@ -401,9 +409,10 @@ ateng:
 public class MultiAccountController {
 
     /**
-     * 管理端独立登录（下发独立请求头 satoken-admin）
+     * 管理端独立登录（下发独立请求头 satoken-admin；标注 @Anonymous 兼容 check-login=true 严格模式）
      */
     @PostMapping("/admin/login")
+    @Anonymous
     public Result<String> adminLogin(@RequestBody LoginRequestDTO request) {
         String userId = (request != null && request.getUserId() != null && !request.getUserId().isBlank())
                 ? request.getUserId() : "admin-001";
@@ -433,9 +442,18 @@ public class MultiAccountController {
     }
 
     /**
-     * 会员端独立登录（下发独立请求头 satoken-member，与 admin 物理隔离）
+     * 管理端控制台概览（无需方法内硬编码 checkLogin，由全局 check-login=true + login-type-routes 自动路由至 admin 体系校验）
+     */
+    @GetMapping("/admin/overview")
+    public Result<MultiAccountOverviewVO> getAdminOverview() {
+        return Result.success(buildOverview("admin"));
+    }
+
+    /**
+     * 会员端独立登录（下发独立请求头 satoken-member，与 admin 物理隔离；标注 @Anonymous 兼容 check-login=true）
      */
     @PostMapping("/member/login")
+    @Anonymous
     public Result<String> memberLogin(@RequestBody LoginRequestDTO request) {
         String userId = (request != null && request.getUserId() != null && !request.getUserId().isBlank())
                 ? request.getUserId() : "member-001";
@@ -1093,7 +1111,12 @@ ateng:
         - "/v3/api-docs/**"
       interceptor:
         enabled: true             # 是否挂载双轨拦截器 AtengSaTokenInterceptor (默认: true)
-        check-login: false        # 严格模式：开启后除汇聚白名单外所有路由均强制 checkLogin() (默认: false)
+        check-login: false        # 严格模式：开启后按 动态规则 > login-type-routes > primary-login-type 执行登录校验 (默认: false)
+        login-type-routes:        # 多账号体系路径路由表（最精确 AntPath 优先，同精度先声明优先）
+          admin:
+            - "/sample/satoken/multi-account/admin/**"
+          member:
+            - "/sample/satoken/multi-account/member/**"
         includes:
           - "/**"
         excludes:
@@ -1712,7 +1735,8 @@ public class DatabaseUserRolePermissionLoader implements UserRolePermissionLoade
 | `token.max-login-count` | `int` | `12` | 最大并发会话数上限 |
 | `token.token-style` | `String` | `"uuid"` | Token 生成算法风格 |
 | `interceptor.enabled` | `boolean` | `true` | 是否挂载双轨拦截器与 `@Anonymous` 处理器 |
-| `interceptor.check-login` | `boolean` | `false` | 严格全局登录拦截开关 |
+| `interceptor.check-login` | `boolean` | `false` | 严格全局登录拦截开关（开启后按 `自定义 auth > 动态规则 loginType > login-type-routes > primary-login-type` 校验） |
+| `interceptor.login-type-routes` | `` `Map<String, List<String>>` `` | `{}` | 多账号体系路由映射表（Key 为 `loginType`，Value 为 AntPath 模式列表；最精确路径优先，未开启 `check-login` 时仅作路由与上下文对齐提示） |
 | `interceptor.includes` | `List<String>` | `["/**"]` | 拦截器匹配路径模式 |
 | `interceptor.excludes` | `List<String>` | `["/doc.html", "/webjars/**", "/swagger-resources/**", "/v3/api-docs/**", "/favicon.ico", "/actuator/**", "/error", "/*.html", "/*.css", "/*.js"]` | 拦截器排除路径列表（注意：YAML 中显式覆盖该 `List` 时将替换默认集合，建议完整保留或通过 `@Anonymous`/`SaTokenWhitelistProvider` 增量追加） |
 | `same-token.enabled` | `boolean` | `true` | 微服务内部 Same-Token 校验开关 |
@@ -1769,6 +1793,7 @@ ateng:
       interceptor:
         enabled: true
         check-login: false
+        login-type-routes: {}
         includes:
           - "/**"
         # 注意：YAML 配置 List 会整体覆盖默认排除列表，生产中建议保留以下 10 项基础放行后再追加业务路径

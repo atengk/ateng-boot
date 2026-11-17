@@ -208,6 +208,13 @@ flowchart TD
 - **入站 TraceId 净化与两阶段自适应停机排空 (`TraceFilter` & `AtengGracefulShutdownHandler`)**：`TraceFilter` 通过 `ateng.boot.web.trace.max-length`（默认 `64`）与安全字符集（`[a-zA-Z0-9._:-]`）校验入站 `X-Trace-Id` 防御日志注入与超长载荷攻击，同时剔除控制面路径（`/pre-stop`、`/actuator/pre-stop`、`mvc-endpoint-path`）避免在途计数自锁；`GracefulShutdownProperties` 拆分 `quiet-period`（未配置时默认等价 `drain-timeout` 保向后兼容）与 `poll-interval`（默认 `100ms`），实现“路由摘除静默传播 -> 剩余窗口轮询探测在途归零提前退出”两阶段自适应排空。
 - **默认审计敏感字段基线与存储 SPI 收敛 (`@OperateLog` & `@WebLog`)**：`OperateLogProperties.default-exclude-params` 与 `LogProperties.default-exclude-params` 统一内建 11 项安全基线字段（`password`、`passwd`、`pwd`、`oldPassword`、`newPassword`、`confirmPassword`、`secret`、`token`、`accessToken`、`refreshToken`、`authorization`），经共享原语 `AuditParamSanitizer` 对嵌套对象与集合执行大小写不敏感递归掩码及环引用防御；`OperateLogStorageProvider` 确立 `store(OperateLogModel)` 为唯一抽象方法保持 `@FunctionalInterface` 语义，保留 `save(OperateLogModel)` 作为向后兼容 `default` 委托别名。
 
+### 14. 纯 JDK 原生轻量图形验证码生成与受管校验架构 (Pure-JDK Image Captcha Generation & Burn-on-Read Verification Architecture)
+为消除上层项目各自引入重型三方 Captcha 库带来的依赖膨胀，并与前端 `<AtengCaptcha type="image" />` 组件形成开箱即用闭环，`ateng-boot-web` 增量引入纯 JDK 原生图形验证码生成与受管校验体系（`io.github.atengk.boot.web.captcha.*`）：
+- **零字体依赖 SVG 矢量优先渲染 (`CaptchaRenderer` SPI)**：提供 `CaptchaRenderer` SPI 与内置双引擎（`SvgCaptchaRenderer` / `PngCaptchaRenderer`）。默认采用 `SvgCaptchaRenderer`（`data:image/svg+xml;base64,...`），基于内置字符矢量轮廓 `<path>` 表叠加随机旋转缩放、贝塞尔干扰曲线与噪点，**输出绝对不包含明文 `<text>` 标签**（防爬虫正则直读），且 100% 脱离 `java.awt` 与操作系统字体库（彻底消除 Alpine / Distroless 等精简无头容器缺少 `fontconfig` 引发的运行时异常）；同时保留基于 `BufferedImage` / `Graphics2D`（逻辑字体）的 `PngCaptchaRenderer` 可通过 `ateng.boot.web.captcha.renderer=PNG` 一键切换。
+- **双模内容生成与防混淆策略**：通过 `ateng.boot.web.captcha.type` 同时支持随机字符（`CHAR`，默认 `ALPHANUMERIC_SAFE` 剔除 `0/O/o/1/I/l`，可配置 `NUMERIC`/`ALPHA`/`ALPHANUMERIC`）与简单算术题（`MATH`，支持 `+`/`-`/`*` 个位数运算且减法确保非负结果）。
+- **严格一次一密防爆破 (`CaptchaStore` & `CaptchaTemplate`)**：`CaptchaTemplate` 对外提供 `generate()`、`generate(CaptchaType)`、`verify(key, code)`、`verifyOrThrow(key, code)` 与对称主动清理 `invalidate(key)`，返回不可变 `CaptchaResult(captchaKey, imageBase64, expireSeconds)`；无论用户输入正确或错误，核验均通过 `CaptchaStore.getAndDelete` **原子读取并立即销毁**（严禁针对同一 `captchaKey` 多次暴力试错），统一复用 `BusinessException` 与 `CommonResultCode`。
+- **三级自适应存储与纯门面边界**：`AtengCaptchaAutoConfiguration` 对齐幂等/限流架构，按 `RedissonClient` → `StringRedisTemplate` → `InMemoryCaptchaStore`（`ConcurrentHashMap` + `ReentrantLock` 防虚拟线程 Pinning + 软容量上限淘汰 + Core 受管线程池 CAS 节流清理）三级自适应装配，默认 `fail-open: false`（分布式存储故障抛出受管异常防多节点状态裂脑，可按需开启降级内存）；Starter 内仅交付编程式 `CaptchaTemplate`，不内置暴露未鉴权默认 HTTP 端点，由业务 Controller 自主挂载路由与限流策略。
+
 ---
 
 ## 核心配置与类拓扑速查 (Configuration & Architecture Map)
@@ -231,6 +238,7 @@ flowchart TD
 | `OperateLogStorageProvider` | - | `DefaultOperateLogStorageProvider` | 操作审计存储解耦 `@FunctionalInterface` SPI（`store` 主契约与 `save` 兼容别名），开箱提供 SLF4J JSON 保底 |
 | `AtengGracefulShutdownHandler` | `shutdown.enabled`, `shutdown.drain-timeout`, `shutdown.quiet-period`, `shutdown.poll-interval`, `shutdown.smart-lifecycle-enabled` | `true`, `10s`, `null` (`=drain-timeout`), `100ms`, `true` | K8s 就绪探针反转、两阶段自适应排空（静默传播+轮询提前退出）与 `SmartLifecycle` 兜底 |
 | `PreStopEndpoint` / `PreStopController` | `shutdown.actuator-endpoint-enabled`, `shutdown.mvc-endpoint-enabled`, `shutdown.mvc-endpoint-path` | `true`, `null`, `"/pre-stop"` | `/actuator/pre-stop` 与 `/pre-stop` 双模停机排空端点（已排除在途自计数） |
+| `CaptchaTemplate` / `CaptchaStore` / `CaptchaRenderer` | `captcha.enabled`, `captcha.renderer`, `captcha.type`, `captcha.char-type`, `captcha.length`, `captcha.expire`, `captcha.ignore-case`, `captcha.fail-open` | `true`, `SVG`, `CHAR`, `ALPHANUMERIC_SAFE`, `4`, `2m`, `true`, `false` | 纯 JDK 原生图形验证码生成（SVG `<path>` / PNG）与严格一次一密原子核验，三级存储自适应 |
 
 ---
 

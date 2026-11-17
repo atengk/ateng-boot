@@ -117,6 +117,30 @@ class SaTokenPropertiesTest {
     }
 
     @Test
+    @DisplayName("验证 interceptor.login-type-routes 多账号路由配置绑定与默认值")
+    void testInterceptorLoginTypeRoutesBinding() {
+        SaTokenProperties defaults = new SaTokenProperties();
+        assertThat(defaults.getInterceptor().getLoginTypeRoutes()).isNotNull().isEmpty();
+
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.satoken.primary-login-type=admin",
+                        "ateng.boot.satoken.interceptor.check-login=true",
+                        "ateng.boot.satoken.interceptor.login-type-routes.admin[0]=/admin/**",
+                        "ateng.boot.satoken.interceptor.login-type-routes.admin[1]=/sys/**",
+                        "ateng.boot.satoken.interceptor.login-type-routes.member[0]=/app/**"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaTokenProperties properties = context.getBean(SaTokenProperties.class);
+                    assertThat(properties.getInterceptor().isCheckLogin()).isTrue();
+                    assertThat(properties.getInterceptor().getLoginTypeRoutes())
+                            .containsEntry("admin", java.util.List.of("/admin/**", "/sys/**"))
+                            .containsEntry("member", java.util.List.of("/app/**"));
+                });
+    }
+
+    @Test
     @DisplayName("验证 SameTokenConstant 常量与默认配置属性对齐")
     void testSameTokenConstantAlignment() {
         assertThat(io.github.atengk.boot.satoken.constant.SaTokenConstant.SAME_TOKEN_HEADER).isEqualTo("SA-SAME-TOKEN");

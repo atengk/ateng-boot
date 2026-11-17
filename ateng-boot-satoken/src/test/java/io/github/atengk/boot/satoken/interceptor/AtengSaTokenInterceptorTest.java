@@ -20,7 +20,9 @@ import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.springframework.beans.factory.ObjectProvider;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -430,6 +432,189 @@ class AtengSaTokenInterceptorTest {
                     .when(adminLogic).checkLogin();
             assertThatThrownBy(() -> interceptor.preHandle(request, response, new Object()))
                     .isInstanceOf(cn.dev33.satoken.exception.NotLoginException.class);
+        }
+    }
+
+    @Test
+    @DisplayName("测试 check-login=true 未配置路径路由时按 primary-login-type 校验并同步上下文")
+    void testCheckLoginFallbackToPrimaryLoginType() throws Exception {
+        SaTokenProperties props = new SaTokenProperties();
+        props.setPrimaryLoginType("admin");
+        props.getInterceptor().setCheckLogin(true);
+        AtengSaTokenInterceptor checkInterceptor = new AtengSaTokenInterceptor(props);
+        checkInterceptor.isAnnotation(false);
+
+        when(request.getRequestURI()).thenReturn("/api/dashboard/stats");
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            loginHelperMock.when(() -> LoginHelper.checkLogin("admin")).thenAnswer(inv -> null);
+            loginHelperMock.when(() -> LoginHelper.getActiveLoginType("admin")).thenReturn("admin");
+            loginHelperMock.when(() -> LoginHelper.getTenantId("admin")).thenReturn("tenant-admin");
+            loginHelperMock.when(() -> LoginHelper.getUserId("admin")).thenReturn("admin-100");
+
+            assertThat(checkInterceptor.preHandle(request, response, new Object())).isTrue();
+            loginHelperMock.verify(() -> LoginHelper.checkLogin("admin"));
+            loginHelperMock.verify(() -> LoginHelper.checkLogin("login"), never());
+            assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant-admin");
+            assertThat(UserContextHolder.get()).isEqualTo("admin-100");
+
+            checkInterceptor.afterCompletion(request, response, new Object(), null);
+            assertThat(TenantContextHolder.getTenantId()).isNull();
+            assertThat(UserContextHolder.get()).isNull();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 check-login=true 按 login-type-routes 路由校验多账号体系（含重叠路径最精确优先与未命中兜底）")
+    void testCheckLoginWithLoginTypeRoutesAndSpecificity() throws Exception {
+        SaTokenProperties props = new SaTokenProperties();
+        props.setPrimaryLoginType("login");
+        props.getInterceptor().setCheckLogin(true);
+        Map<String, List<String>> routes = new LinkedHashMap<>();
+        routes.put("admin", List.of("/admin/**", "sys/**"));
+        routes.put("member", List.of("/admin/open/**", "/app/**"));
+        props.getInterceptor().setLoginTypeRoutes(routes);
+
+        AtengSaTokenInterceptor routeInterceptor = new AtengSaTokenInterceptor(props);
+        routeInterceptor.isAnnotation(false);
+
+        assertThat(routeInterceptor.resolveRouteLoginType("/admin/users")).isEqualTo("admin");
+        assertThat(routeInterceptor.resolveRouteLoginType("/sys/dict")).isEqualTo("admin");
+        assertThat(routeInterceptor.resolveRouteLoginType("/admin/open/profile")).isEqualTo("member");
+        assertThat(routeInterceptor.resolveRouteLoginType("/app/orders")).isEqualTo("member");
+        assertThat(routeInterceptor.resolveRouteLoginType("/other/ping")).isNull();
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            loginHelperMock.when(() -> LoginHelper.checkLogin(anyString())).thenAnswer(inv -> null);
+            loginHelperMock.when(() -> LoginHelper.isLogin("admin")).thenReturn(true);
+            loginHelperMock.when(() -> LoginHelper.getUserId("admin")).thenReturn("admin-01");
+            loginHelperMock.when(() -> LoginHelper.isLogin("member")).thenReturn(true);
+            loginHelperMock.when(() -> LoginHelper.getUserId("member")).thenReturn("member-01");
+            loginHelperMock.when(() -> LoginHelper.getActiveLoginType("login")).thenReturn("login");
+            loginHelperMock.when(() -> LoginHelper.getUserId("login")).thenReturn("login-01");
+
+            when(request.getRequestURI()).thenReturn("/admin/users");
+            assertThat(routeInterceptor.preHandle(request, response, new Object())).isTrue();
+            loginHelperMock.verify(() -> LoginHelper.checkLogin("admin"));
+            assertThat(UserContextHolder.get()).isEqualTo("admin-01");
+            routeInterceptor.afterCompletion(request, response, new Object(), null);
+
+            when(request.getRequestURI()).thenReturn("/admin/open/profile");
+            assertThat(routeInterceptor.preHandle(request, response, new Object())).isTrue();
+            loginHelperMock.verify(() -> LoginHelper.checkLogin("member"));
+            assertThat(UserContextHolder.get()).isEqualTo("member-01");
+            routeInterceptor.afterCompletion(request, response, new Object(), null);
+
+            when(request.getRequestURI()).thenReturn("/other/ping");
+            assertThat(routeInterceptor.preHandle(request, response, new Object())).isTrue();
+            loginHelperMock.verify(() -> LoginHelper.checkLogin("login"));
+            assertThat(UserContextHolder.get()).isEqualTo("login-01");
+        }
+    }
+
+    @Test
+    @DisplayName("测试 check-login=true 与 DynamicPathPermissionProvider 协同优先级及去重校验")
+    void testCheckLoginPriorityWithDynamicPathPermissionProvider() throws Exception {
+        SaTokenProperties props = new SaTokenProperties();
+        props.setPrimaryLoginType("login");
+        props.getInterceptor().setCheckLogin(true);
+        Map<String, List<String>> routes = new LinkedHashMap<>();
+        routes.put("member", List.of("/api/orders/**", "/api/ops/**"));
+        props.getInterceptor().setLoginTypeRoutes(routes);
+
+        DynamicPathPermissionProvider provider = DynamicPathPermissionProvider.of(
+                // 显式指定 ops 体系，优先级高于 YAML 的 member 路由
+                PathPermissionRule.of("/api/ops/**", "POST", "ops", SaMode.OR, "ops:deploy"),
+                // 未指定 loginType（仅配置权限码），应继承 YAML 路由的 member 体系
+                PathPermissionRule.of("/api/orders/**", "GET", "order:view")
+        );
+
+        AtengSaTokenInterceptor combinedInterceptor = new AtengSaTokenInterceptor(props);
+        combinedInterceptor.isAnnotation(false);
+        combinedInterceptor.setDynamicPathPermissionProvider(provider);
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            StpLogic opsLogic = mock(StpLogic.class);
+            StpLogic memberLogic = mock(StpLogic.class);
+            loginHelperMock.when(() -> LoginHelper.checkLogin(anyString())).thenAnswer(inv -> null);
+            loginHelperMock.when(() -> LoginHelper.getStpLogic("ops")).thenReturn(opsLogic);
+            loginHelperMock.when(() -> LoginHelper.getStpLogic("member")).thenReturn(memberLogic);
+            loginHelperMock.when(() -> LoginHelper.isSuperAdmin(anyString())).thenReturn(false);
+            loginHelperMock.when(() -> LoginHelper.isLogin(anyString())).thenReturn(true);
+
+            // 1. 动态规则显式指定 ops 覆盖 YAML 路由 member
+            when(request.getRequestURI()).thenReturn("/api/ops/release");
+            when(request.getMethod()).thenReturn("POST");
+            assertThat(combinedInterceptor.preHandle(request, response, new Object())).isTrue();
+            loginHelperMock.verify(() -> LoginHelper.checkLogin("ops"));
+            verify(opsLogic, never()).checkLogin();
+            verify(opsLogic).checkPermissionOr("ops:deploy");
+
+            // 2. 动态规则未指定 loginType，继承 YAML 路由 member
+            when(request.getRequestURI()).thenReturn("/api/orders/list");
+            when(request.getMethod()).thenReturn("GET");
+            assertThat(combinedInterceptor.preHandle(request, response, new Object())).isTrue();
+            loginHelperMock.verify(() -> LoginHelper.checkLogin("member"));
+            verify(memberLogic, never()).checkLogin();
+            verify(memberLogic).checkPermissionOr("order:view");
+        }
+    }
+
+    @Test
+    @DisplayName("测试外部自定义 auth 优先接管 check-login，且 setAuth(null) 可恢复内置校验")
+    void testCustomAuthOverridesCheckLoginAndResetRestores() throws Exception {
+        SaTokenProperties props = new SaTokenProperties();
+        props.setPrimaryLoginType("admin");
+        props.getInterceptor().setCheckLogin(true);
+
+        AtengSaTokenInterceptor customInterceptor = new AtengSaTokenInterceptor(handler -> {
+            throw new IllegalStateException("custom-auth-invoked");
+        }, props);
+        customInterceptor.isAnnotation(false);
+        assertThat(customInterceptor.isCustomAuthConfigured()).isTrue();
+
+        when(request.getRequestURI()).thenReturn("/api/custom/test");
+        assertThatThrownBy(() -> customInterceptor.preHandle(request, response, new Object()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("custom-auth-invoked");
+
+        // 重置为 null 后恢复内置 check-login 路由校验
+        customInterceptor.setAuth(null);
+        assertThat(customInterceptor.isCustomAuthConfigured()).isFalse();
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            loginHelperMock.when(() -> LoginHelper.checkLogin("admin")).thenAnswer(inv -> null);
+            assertThat(customInterceptor.preHandle(request, response, new Object())).isTrue();
+            loginHelperMock.verify(() -> LoginHelper.checkLogin("admin"));
+        }
+    }
+
+    @Test
+    @DisplayName("测试 check-login=false 时 login-type-routes 不强制拦截，但精准对齐上下文防止跨账号串号")
+    void testCheckLoginDisabledWithLoginTypeRoutesAlignsContextWithoutBlocking() throws Exception {
+        SaTokenProperties props = new SaTokenProperties();
+        props.setPrimaryLoginType("login");
+        props.getInterceptor().setCheckLogin(false);
+        props.getInterceptor().setLoginTypeRoutes(Map.of("member", List.of("/app/**")));
+
+        AtengSaTokenInterceptor passiveInterceptor = new AtengSaTokenInterceptor(props);
+        passiveInterceptor.isAnnotation(false);
+
+        when(request.getRequestURI()).thenReturn("/app/orders/1");
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            // 仅 login 体系登录、member 未登录时：不抛 401，也不将 login 身份错误注入 member 路由上下文
+            loginHelperMock.when(() -> LoginHelper.isLogin("member")).thenReturn(false);
+            loginHelperMock.when(() -> LoginHelper.isLogin("login")).thenReturn(true);
+            loginHelperMock.when(() -> LoginHelper.getUserId("login")).thenReturn("login-user");
+
+            assertThat(passiveInterceptor.preHandle(request, response, new Object())).isTrue();
+            loginHelperMock.verify(() -> LoginHelper.checkLogin(anyString()), never());
+            assertThat(UserContextHolder.get()).isNull();
+
+            // member 已登录时精准同步 member 上下文
+            loginHelperMock.when(() -> LoginHelper.isLogin("member")).thenReturn(true);
+            loginHelperMock.when(() -> LoginHelper.getUserId("member")).thenReturn("member-user");
+            assertThat(passiveInterceptor.preHandle(request, response, new Object())).isTrue();
+            assertThat(UserContextHolder.get()).isEqualTo("member-user");
         }
     }
 }

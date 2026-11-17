@@ -137,6 +137,16 @@
 | **K8s 优雅停机就绪探针翻转探测 (GET)** | `PreStopController` (内置) | `GET /pre-stop` | `curl -i "http://localhost:8080/pre-stop"` (返回 `inFlightRequestsAtStart` 与 `inFlightRequestsRemaining` 在途排空计数) |
 | **K8s preStop 钩子触发流量排空 (POST)** | `PreStopController` (内置) | `POST /pre-stop` | `curl -i -X POST "http://localhost:8080/pre-stop"` (触发幂等排空并返回在途请求快照) |
 
+### 3.7 纯 JDK 原生轻量图形验证码生成与受管校验 (`WebCaptchaController`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **生成默认 SVG 图形验证码** | `WebCaptchaController` | `GET /sample/web/captcha/image` | `curl "http://localhost:8080/sample/web/captcha/image"` |
+| **生成简单算术图形验证码** | `WebCaptchaController` | `GET /sample/web/captcha/math` | `curl "http://localhost:8080/sample/web/captcha/math"` |
+| **账号登录并强校验验证码 (一次一密)** | `WebCaptchaController` | `POST /sample/web/captcha/login` | `curl -X POST "http://localhost:8080/sample/web/captcha/login" -H "Content-Type: application/json" -d "{\"username\":\"ateng\",\"password\":\"YOUR_PASSWORD\",\"captchaKey\":\"<key>\",\"captchaCode\":\"<code>\"}"` |
+| **独立布尔核验图形验证码** | `WebCaptchaController` | `POST /sample/web/captcha/verify` | `curl -X POST "http://localhost:8080/sample/web/captcha/verify" -H "Content-Type: application/json" -d "{\"captchaKey\":\"<key>\",\"captchaCode\":\"<code>\"}"` |
+| **主动失效指定图形验证码** | `WebCaptchaController` | `DELETE /sample/web/captcha/{captchaKey}` | `curl -X DELETE "http://localhost:8080/sample/web/captcha/<key>"` |
+
 ---
 
 ## 4. 全真自动化回归命令
