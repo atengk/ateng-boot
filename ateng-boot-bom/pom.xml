@@ -202,6 +202,11 @@
                 <artifactId>ateng-boot-milvus</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-flyway</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <!-- Milvus 官方原生 Java SDK -->
             <dependency>
                 <groupId>io.milvus</groupId>

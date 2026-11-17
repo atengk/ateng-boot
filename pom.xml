@@ -72,6 +72,7 @@
         <module>ateng-boot-liteflow</module>
         <module>ateng-boot-ai</module>
         <module>ateng-boot-milvus</module>
+        <module>ateng-boot-flyway</module>
     </modules>
 
     <properties>
@@ -464,6 +465,11 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-milvus</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-flyway</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <!-- Milvus 官方原生 Java SDK -->
