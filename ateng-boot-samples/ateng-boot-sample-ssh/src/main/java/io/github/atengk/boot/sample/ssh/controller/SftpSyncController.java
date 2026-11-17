@@ -1,10 +1,13 @@
 package io.github.atengk.boot.sample.ssh.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.sample.ssh.dto.SftpDeleteDirectoryRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpDirectorySyncRequest;
+import io.github.atengk.boot.sample.ssh.dto.SftpDownloadResumeRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpLargeTransferRequest;
 import io.github.atengk.boot.sample.ssh.service.SftpScenarioService;
+import io.github.atengk.boot.sample.ssh.vo.SftpDownloadResumeResultVO;
 import io.github.atengk.boot.sample.ssh.vo.SftpSyncResultVO;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -141,5 +144,32 @@ public class SftpSyncController {
 
         return Result.success("大文件节流上传成功: " + request.getRemotePath()
                 + " [size=" + request.getSizeKb() + "KB, 触发回调次数=" + callbackCount.get() + "]");
+    }
+
+    /**
+     * 大文件断点续传下载至本地磁盘路径（基于本地字节偏移量定点续读）
+     *
+     * @param request 断点续传下载请求载荷
+     * @return 传输回执
+     */
+    @PostMapping("/download-resume")
+    public Result<SftpDownloadResumeResultVO> downloadResume(@Valid @RequestBody SftpDownloadResumeRequest request) {
+        log.info("SftpSyncController: 收到大文件断点续传下载请求 [remotePath={} -> localPath={}]",
+                request.getRemotePath(), request.getLocalPath());
+        long start = System.currentTimeMillis();
+        String cleanLocalPath = FileUtil.cleanPath(request.getLocalPath());
+        File localFile = new File(cleanLocalPath);
+        sftpScenarioService.downloadResume(request.getRemotePath(), localFile);
+        long cost = System.currentTimeMillis() - start;
+
+        SftpDownloadResumeResultVO vo = SftpDownloadResumeResultVO.builder()
+                .remotePath(request.getRemotePath())
+                .localPath(localFile.getAbsolutePath())
+                .fileSize(localFile.length())
+                .durationMs(cost)
+                .success(true)
+                .message("大文件断点续传下载成功")
+                .build();
+        return Result.success(vo);
     }
 }

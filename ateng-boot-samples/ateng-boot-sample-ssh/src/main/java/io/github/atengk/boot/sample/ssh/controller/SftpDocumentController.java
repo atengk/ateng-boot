@@ -5,6 +5,7 @@ import io.github.atengk.boot.sample.ssh.dto.SftpAppendTextRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpCopyMoveRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpPathRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpRenameRequest;
+import io.github.atengk.boot.sample.ssh.dto.SftpSymlinkRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpWriteTextRequest;
 import io.github.atengk.boot.sample.ssh.service.SftpScenarioService;
 import io.github.atengk.boot.sample.ssh.vo.SftpFileInfoVO;
@@ -196,5 +197,32 @@ public class SftpDocumentController {
         log.info("SftpDocumentController: 收到删除单文件请求 [remotePath={}]", request.getRemotePath());
         boolean deleted = sftpScenarioService.delete(request.getRemotePath());
         return Result.success(deleted);
+    }
+
+    /**
+     * 在远端创建符号链接（常用于发布版本软链原子切换）
+     *
+     * @param request 符号链接创建请求载荷
+     * @return 成功状态
+     */
+    @PostMapping("/symlink")
+    public Result<Boolean> createSymlink(@Valid @RequestBody SftpSymlinkRequest request) {
+        log.info("SftpDocumentController: 收到创建符号链接请求 [linkPath={} -> targetPath={}]",
+                request.getLinkPath(), request.getTargetPath());
+        sftpScenarioService.createSymlink(request.getLinkPath(), request.getTargetPath());
+        return Result.success(true);
+    }
+
+    /**
+     * 读取远端符号链接指向的目标路径
+     *
+     * @param linkPath 符号链接路径
+     * @return 目标路径
+     */
+    @GetMapping("/read-link")
+    public Result<String> readLink(@RequestParam("linkPath") @NotBlank(message = "符号链接路径不能为空") String linkPath) {
+        log.info("SftpDocumentController: 收到读取符号链接请求 [linkPath={}]", linkPath);
+        String targetPath = sftpScenarioService.readLink(linkPath);
+        return Result.success(targetPath);
     }
 }

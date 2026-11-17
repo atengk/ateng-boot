@@ -98,7 +98,7 @@ public class SftpTemplate {
      * @param inputStream 本地输入流
      */
     public void upload(String remotePath, InputStream inputStream) {
-        upload(null, remotePath, inputStream, null);
+        upload((SshServerInfo) null, remotePath, inputStream, null);
     }
 
     /**
@@ -109,7 +109,30 @@ public class SftpTemplate {
      * @param progressListener 传输进度监听器（可为 null）
      */
     public void upload(String remotePath, InputStream inputStream, SftpProgressListener progressListener) {
-        upload(null, remotePath, inputStream, progressListener);
+        upload((SshServerInfo) null, remotePath, inputStream, progressListener);
+    }
+
+    /**
+     * 在指定具名服务器节点上传输入流数据至远程路径
+     *
+     * @param serverName  节点名称
+     * @param remotePath  远程目标文件路径
+     * @param inputStream 本地输入流
+     */
+    public void upload(String serverName, String remotePath, InputStream inputStream) {
+        upload(resolveServerInfo(serverName), remotePath, inputStream, null);
+    }
+
+    /**
+     * 在指定具名服务器节点上传输入流数据至远程路径并挂载进度监听器
+     *
+     * @param serverName       节点名称
+     * @param remotePath       远程目标文件路径
+     * @param inputStream      本地输入流
+     * @param progressListener 传输进度监听器
+     */
+    public void upload(String serverName, String remotePath, InputStream inputStream, SftpProgressListener progressListener) {
+        upload(resolveServerInfo(serverName), remotePath, inputStream, progressListener);
     }
 
     /**
@@ -154,7 +177,7 @@ public class SftpTemplate {
      * @param localFile  本地磁盘文件
      */
     public void upload(String remotePath, File localFile) {
-        upload(null, remotePath, localFile, null);
+        upload((SshServerInfo) null, remotePath, localFile, null);
     }
 
     /**
@@ -165,7 +188,30 @@ public class SftpTemplate {
      * @param progressListener 传输进度监听器
      */
     public void upload(String remotePath, File localFile, SftpProgressListener progressListener) {
-        upload(null, remotePath, localFile, progressListener);
+        upload((SshServerInfo) null, remotePath, localFile, progressListener);
+    }
+
+    /**
+     * 在指定具名服务器节点上传本地磁盘文件至远程路径
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标文件路径
+     * @param localFile  本地磁盘文件
+     */
+    public void upload(String serverName, String remotePath, File localFile) {
+        upload(resolveServerInfo(serverName), remotePath, localFile, null);
+    }
+
+    /**
+     * 在指定具名服务器节点上传本地磁盘文件至远程路径并挂载进度监听器
+     *
+     * @param serverName       节点名称
+     * @param remotePath       远程目标文件路径
+     * @param localFile        本地磁盘文件
+     * @param progressListener 传输进度监听器
+     */
+    public void upload(String serverName, String remotePath, File localFile, SftpProgressListener progressListener) {
+        upload(resolveServerInfo(serverName), remotePath, localFile, progressListener);
     }
 
     /**
@@ -212,7 +258,7 @@ public class SftpTemplate {
      * @param data       数据字节数组
      */
     public void upload(String remotePath, byte[] data) {
-        upload(null, remotePath, data, null);
+        upload((SshServerInfo) null, remotePath, data, null);
     }
 
     /**
@@ -223,7 +269,30 @@ public class SftpTemplate {
      * @param progressListener 传输进度监听器
      */
     public void upload(String remotePath, byte[] data, SftpProgressListener progressListener) {
-        upload(null, remotePath, data, progressListener);
+        upload((SshServerInfo) null, remotePath, data, progressListener);
+    }
+
+    /**
+     * 在指定具名服务器节点上传字节数组至远程路径
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标文件路径
+     * @param data       数据字节数组
+     */
+    public void upload(String serverName, String remotePath, byte[] data) {
+        upload(resolveServerInfo(serverName), remotePath, data, null);
+    }
+
+    /**
+     * 在指定具名服务器节点上传字节数组至远程路径并挂载进度监听器
+     *
+     * @param serverName       节点名称
+     * @param remotePath       远程目标文件路径
+     * @param data             数据字节数组
+     * @param progressListener 传输进度监听器
+     */
+    public void upload(String serverName, String remotePath, byte[] data, SftpProgressListener progressListener) {
+        upload(resolveServerInfo(serverName), remotePath, data, progressListener);
     }
 
     /**
@@ -357,7 +426,7 @@ public class SftpTemplate {
      * @param outputStream 目标输出流
      */
     public void download(String remotePath, OutputStream outputStream) {
-        download(null, remotePath, outputStream, null);
+        download((SshServerInfo) null, remotePath, outputStream, null);
     }
 
     /**
@@ -368,7 +437,30 @@ public class SftpTemplate {
      * @param progressListener 传输进度监听器
      */
     public void download(String remotePath, OutputStream outputStream, SftpProgressListener progressListener) {
-        download(null, remotePath, outputStream, progressListener);
+        download((SshServerInfo) null, remotePath, outputStream, progressListener);
+    }
+
+    /**
+     * 从指定具名服务器节点下载远程文件并写入本地输出流
+     *
+     * @param serverName   节点名称
+     * @param remotePath   远程目标文件路径
+     * @param outputStream 目标输出流
+     */
+    public void download(String serverName, String remotePath, OutputStream outputStream) {
+        download(resolveServerInfo(serverName), remotePath, outputStream, null);
+    }
+
+    /**
+     * 从指定具名服务器节点下载远程文件并写入本地输出流，同时挂载进度监听器
+     *
+     * @param serverName       节点名称
+     * @param remotePath       远程目标文件路径
+     * @param outputStream     目标输出流
+     * @param progressListener 传输进度监听器
+     */
+    public void download(String serverName, String remotePath, OutputStream outputStream, SftpProgressListener progressListener) {
+        download(resolveServerInfo(serverName), remotePath, outputStream, progressListener);
     }
 
     /**
@@ -423,7 +515,18 @@ public class SftpTemplate {
      * @param streamConsumer 输入流消费函数
      */
     public void download(String remotePath, Consumer<InputStream> streamConsumer) {
-        download(null, remotePath, streamConsumer);
+        download((SshServerInfo) null, remotePath, streamConsumer);
+    }
+
+    /**
+     * 从指定具名服务器节点下载远程文件流并由函数式消费者处理
+     *
+     * @param serverName     节点名称
+     * @param remotePath     远程目标文件路径
+     * @param streamConsumer 输入流消费函数
+     */
+    public void download(String serverName, String remotePath, Consumer<InputStream> streamConsumer) {
+        download(resolveServerInfo(serverName), remotePath, streamConsumer);
     }
 
     /**
@@ -456,7 +559,7 @@ public class SftpTemplate {
      * @param localFile  本地目标文件
      */
     public void downloadToFile(String remotePath, File localFile) {
-        downloadToFile(null, remotePath, localFile, null);
+        downloadToFile((SshServerInfo) null, remotePath, localFile, null);
     }
 
     /**
@@ -467,7 +570,30 @@ public class SftpTemplate {
      * @param progressListener 传输进度监听器
      */
     public void downloadToFile(String remotePath, File localFile, SftpProgressListener progressListener) {
-        downloadToFile(null, remotePath, localFile, progressListener);
+        downloadToFile((SshServerInfo) null, remotePath, localFile, progressListener);
+    }
+
+    /**
+     * 从指定具名服务器节点下载远程文件至本地磁盘文件
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标文件路径
+     * @param localFile  本地目标文件
+     */
+    public void downloadToFile(String serverName, String remotePath, File localFile) {
+        downloadToFile(resolveServerInfo(serverName), remotePath, localFile, null);
+    }
+
+    /**
+     * 从指定具名服务器节点下载远程文件至本地磁盘文件，挂载进度监听器
+     *
+     * @param serverName       节点名称
+     * @param remotePath       远程目标文件路径
+     * @param localFile        本地目标文件
+     * @param progressListener 传输进度监听器
+     */
+    public void downloadToFile(String serverName, String remotePath, File localFile, SftpProgressListener progressListener) {
+        downloadToFile(resolveServerInfo(serverName), remotePath, localFile, progressListener);
     }
 
     /**
@@ -510,7 +636,18 @@ public class SftpTemplate {
      * @return 文件字节数据
      */
     public byte[] downloadToBytes(String remotePath) {
-        return downloadToBytes(null, remotePath);
+        return downloadToBytes((SshServerInfo) null, remotePath);
+    }
+
+    /**
+     * 从指定具名服务器节点下载远程文件为内存字节数组
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标文件路径
+     * @return 文件字节数据
+     */
+    public byte[] downloadToBytes(String serverName, String remotePath) {
+        return downloadToBytes(resolveServerInfo(serverName), remotePath);
     }
 
     /**
@@ -524,6 +661,143 @@ public class SftpTemplate {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         download(serverInfo, remotePath, baos, null);
         return baos.toByteArray();
+    }
+
+    /**
+     * 大文件断点续传下载至本地磁盘文件（走当前上下文/缺省路由）
+     *
+     * @param remotePath 远程目标文件路径
+     * @param localFile  本地目标文件
+     */
+    public void downloadResume(String remotePath, File localFile) {
+        downloadResume((SshServerInfo) null, remotePath, localFile, null);
+    }
+
+    /**
+     * 大文件断点续传下载至本地磁盘文件并挂载传输进度监听器（走当前上下文/缺省路由）
+     *
+     * @param remotePath       远程目标文件路径
+     * @param localFile        本地目标文件
+     * @param progressListener 传输进度监听器
+     */
+    public void downloadResume(String remotePath, File localFile, SftpProgressListener progressListener) {
+        downloadResume((SshServerInfo) null, remotePath, localFile, progressListener);
+    }
+
+    /**
+     * 从指定具名服务器节点断点续传下载大文件至本地磁盘文件
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标文件路径
+     * @param localFile  本地目标文件
+     */
+    public void downloadResume(String serverName, String remotePath, File localFile) {
+        downloadResume(resolveServerInfo(serverName), remotePath, localFile, null);
+    }
+
+    /**
+     * 从指定具名服务器节点断点续传下载大文件至本地磁盘文件并挂载进度监听器
+     *
+     * @param serverName       节点名称
+     * @param remotePath       远程目标文件路径
+     * @param localFile        本地目标文件
+     * @param progressListener 传输进度监听器
+     */
+    public void downloadResume(String serverName, String remotePath, File localFile, SftpProgressListener progressListener) {
+        downloadResume(resolveServerInfo(serverName), remotePath, localFile, progressListener);
+    }
+
+    /**
+     * 大文件断点续传下载至本地磁盘文件
+     *
+     * @param serverInfo 动态目标服务器描述符
+     * @param remotePath 远程目标文件路径
+     * @param localFile  本地目标文件
+     */
+    public void downloadResume(SshServerInfo serverInfo, String remotePath, File localFile) {
+        downloadResume(serverInfo, remotePath, localFile, null);
+    }
+
+    /**
+     * 大文件断点续传下载至本地磁盘文件并挂载进度监听器
+     * <p>
+     * 1. 若本地文件大小大于远程文件大小，立即 Fail-Fast 抛出 {@link SshOperationException}；<br>
+     * 2. 若本地文件大小等于远程文件大小，触发满额进度回调后幂等返回；<br>
+     * 3. 若 0 &lt;= localSize &lt; remoteSize，从远程文件偏移量 localSize 处定点读取并追加写入本地文件。
+     * </p>
+     *
+     * @param serverInfo       动态目标服务器描述符
+     * @param remotePath       远程目标文件路径
+     * @param localFile        本地目标文件
+     * @param progressListener 传输进度监听器
+     */
+    public void downloadResume(SshServerInfo serverInfo, String remotePath, File localFile, SftpProgressListener progressListener) {
+        Assert.notNull(localFile, "Local destination file must not be null");
+        Assert.isTrue(!localFile.exists() || localFile.isFile(),
+                "Local destination must not be a directory: " + localFile.getAbsolutePath());
+        String normalizedPath = normalizeRemotePath(remotePath);
+        SshServerInfo target = resolveServerInfo(serverInfo);
+
+        File parentDir = localFile.getParentFile();
+        if (parentDir != null && !parentDir.exists() && !parentDir.mkdirs() && !parentDir.exists()) {
+            throw new SshOperationException(SshResultCode.SFTP_TRANSFER_FAILED,
+                    "创建本地父目录失败 [" + parentDir.getAbsolutePath() + "]");
+        }
+
+        try {
+            sessionPool.execute(target, session -> {
+                try (SftpClient sftp = createSftpClient(session)) {
+                    SftpClient.Attributes attrs = sftp.stat(normalizedPath);
+                    if (attrs.isDirectory()) {
+                        throw new SshOperationException(SshResultCode.SFTP_TRANSFER_FAILED,
+                                "无法对远程目录执行断点续传下载 [" + normalizedPath + "]");
+                    }
+                    long remoteSize = attrs.getSize();
+                    long localSize = localFile.exists() ? localFile.length() : 0L;
+
+                    if (localSize > remoteSize) {
+                        throw new SshOperationException(SshResultCode.SFTP_TRANSFER_FAILED,
+                                "本地文件字节数 (" + localSize + ") 大于远程文件字节数 (" + remoteSize + ")，无法断点续传 [" + normalizedPath + "]");
+                    }
+
+                    if (localSize == remoteSize) {
+                        if (!localFile.exists()) {
+                            // 远程为 0 字节文件且本地尚未创建时落盘空文件
+                            try (OutputStream ignored = new FileOutputStream(localFile)) {
+                                // empty file created
+                            }
+                        }
+                        notifyProgressSafely(progressListener, remoteSize, remoteSize);
+                        return null;
+                    }
+
+                    int bufferSize = resolveBufferSize();
+                    byte[] buffer = new byte[bufferSize];
+                    long fileOffset = localSize;
+                    boolean appendMode = localSize > 0L;
+                    try (SftpClient.CloseableHandle handle = sftp.open(normalizedPath, SftpClient.OpenMode.Read);
+                         OutputStream out = new FileOutputStream(localFile, appendMode)) {
+                        int bytesRead;
+                        while (fileOffset < remoteSize
+                                && (bytesRead = sftp.read(handle, fileOffset, buffer, 0, buffer.length)) > 0) {
+                            out.write(buffer, 0, bytesRead);
+                            fileOffset += bytesRead;
+                            notifyProgressSafely(progressListener, fileOffset, remoteSize);
+                        }
+                        out.flush();
+                    }
+                    if (fileOffset < remoteSize) {
+                        throw new SshOperationException(SshResultCode.SFTP_TRANSFER_FAILED,
+                                "断点续传下载提前结束，预期 " + remoteSize + " 字节，实际到达 " + fileOffset + " 字节 [" + normalizedPath + "]");
+                    }
+                    return null;
+                } catch (Exception e) {
+                    throw translateException(e, normalizedPath);
+                }
+            });
+        } finally {
+            closeProgressListenerQuietly(progressListener);
+        }
     }
 
     // ==========================================
@@ -679,7 +953,18 @@ public class SftpTemplate {
      * @return 文件元数据对象
      */
     public SftpFileInfo stat(String remotePath) {
-        return stat(null, remotePath);
+        return stat((SshServerInfo) null, remotePath);
+    }
+
+    /**
+     * 在指定具名服务器节点查询远程文件或目录的只读元数据
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标文件路径
+     * @return 文件元数据对象
+     */
+    public SftpFileInfo stat(String serverName, String remotePath) {
+        return stat(resolveServerInfo(serverName), remotePath);
     }
 
     /**
@@ -710,7 +995,18 @@ public class SftpTemplate {
      * @return 是否存在
      */
     public boolean exists(String remotePath) {
-        return exists(null, remotePath);
+        return exists((SshServerInfo) null, remotePath);
+    }
+
+    /**
+     * 在指定具名服务器节点检查远程文件或目录是否存在
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标路径
+     * @return 是否存在
+     */
+    public boolean exists(String serverName, String remotePath) {
+        return exists(resolveServerInfo(serverName), remotePath);
     }
 
     /**
@@ -746,7 +1042,18 @@ public class SftpTemplate {
      * @return 目录项元数据列表（自动过滤 "." 与 ".." 相对标记）
      */
     public List<SftpFileInfo> list(String remotePath) {
-        return list(null, remotePath);
+        return list((SshServerInfo) null, remotePath);
+    }
+
+    /**
+     * 在指定具名服务器节点列出远程指定目录下的所有文件与子目录元数据列表
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目录路径
+     * @return 目录项元数据列表（自动过滤 "." 与 ".." 相对标记）
+     */
+    public List<SftpFileInfo> list(String serverName, String remotePath) {
+        return list(resolveServerInfo(serverName), remotePath);
     }
 
     /**
@@ -786,7 +1093,18 @@ public class SftpTemplate {
      * @return 是否删除成功（若文件原本不存在则返回 false）
      */
     public boolean delete(String remotePath) {
-        return delete(null, remotePath);
+        return delete((SshServerInfo) null, remotePath);
+    }
+
+    /**
+     * 在指定具名服务器节点删除远程单个文件或空目录
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标路径
+     * @return 是否删除成功（若文件原本不存在则返回 false）
+     */
+    public boolean delete(String serverName, String remotePath) {
+        return delete(resolveServerInfo(serverName), remotePath);
     }
 
     /**
@@ -834,7 +1152,18 @@ public class SftpTemplate {
      * @return 是否删除成功（若路径原本不存在则返回 false）
      */
     public boolean deleteRecursively(String remotePath) {
-        return deleteRecursively(null, remotePath);
+        return deleteRecursively((SshServerInfo) null, remotePath);
+    }
+
+    /**
+     * 在指定具名服务器节点深度优先（DFS）递归删除远程非空目录或文件
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标路径
+     * @return 是否删除成功（若路径原本不存在则返回 false）
+     */
+    public boolean deleteRecursively(String serverName, String remotePath) {
+        return deleteRecursively(resolveServerInfo(serverName), remotePath);
     }
 
     /**
@@ -865,7 +1194,18 @@ public class SftpTemplate {
      * @param permissions POSIX 权限位（如 0755, 0644）
      */
     public void chmod(String remotePath, int permissions) {
-        chmod(null, remotePath, permissions);
+        chmod((SshServerInfo) null, remotePath, permissions);
+    }
+
+    /**
+     * 在指定具名服务器节点修改远程文件或目录的 POSIX 权限
+     *
+     * @param serverName  节点名称
+     * @param remotePath  远程目标路径
+     * @param permissions POSIX 权限位（如 0755, 0644）
+     */
+    public void chmod(String serverName, String remotePath, int permissions) {
+        chmod(resolveServerInfo(serverName), remotePath, permissions);
     }
 
     /**
@@ -897,7 +1237,17 @@ public class SftpTemplate {
      * @param remotePath 远程目录路径
      */
     public void mkdir(String remotePath) {
-        mkdir(null, remotePath);
+        mkdir((SshServerInfo) null, remotePath);
+    }
+
+    /**
+     * 在指定具名服务器节点创建远程单级目录
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目录路径
+     */
+    public void mkdir(String serverName, String remotePath) {
+        mkdir(resolveServerInfo(serverName), remotePath);
     }
 
     /**
@@ -926,7 +1276,17 @@ public class SftpTemplate {
      * @param remotePath 远程目录路径
      */
     public void mkdirs(String remotePath) {
-        mkdirs(null, remotePath);
+        mkdirs((SshServerInfo) null, remotePath);
+    }
+
+    /**
+     * 在指定具名服务器节点递归创建远程多级父目录（类似 mkdir -p）
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目录路径
+     */
+    public void mkdirs(String serverName, String remotePath) {
+        mkdirs(resolveServerInfo(serverName), remotePath);
     }
 
     /**
@@ -1051,6 +1411,95 @@ public class SftpTemplate {
     }
 
     // ==========================================
+    // 3.2 符号链接治理契约 (createSymlink, readLink)
+    // ==========================================
+
+    /**
+     * 在远程节点创建符号链接（走当前上下文/缺省路由）
+     *
+     * @param linkPath   符号链接路径（将自动创建缺失父目录）
+     * @param targetPath 链接指向的目标路径
+     */
+    public void createSymlink(String linkPath, String targetPath) {
+        createSymlink((SshServerInfo) null, linkPath, targetPath);
+    }
+
+    /**
+     * 在指定具名服务器节点创建符号链接
+     *
+     * @param serverName 节点名称
+     * @param linkPath   符号链接路径
+     * @param targetPath 链接指向的目标路径
+     */
+    public void createSymlink(String serverName, String linkPath, String targetPath) {
+        createSymlink(resolveServerInfo(serverName), linkPath, targetPath);
+    }
+
+    /**
+     * 在指定目标描述符服务器上创建符号链接
+     *
+     * @param serverInfo 动态目标服务器描述符
+     * @param linkPath   符号链接路径
+     * @param targetPath 链接指向的目标路径
+     */
+    public void createSymlink(SshServerInfo serverInfo, String linkPath, String targetPath) {
+        String normalizedLink = normalizeRemotePath(linkPath);
+        String normalizedTarget = normalizeRemotePath(targetPath);
+        SshServerInfo target = resolveServerInfo(serverInfo);
+
+        sessionPool.execute(target, session -> {
+            try (SftpClient sftp = createSftpClient(session)) {
+                ensureParentDirectoryExists(sftp, normalizedLink);
+                sftp.symLink(normalizedLink, normalizedTarget);
+                return null;
+            } catch (Exception e) {
+                throw translateException(e, normalizedLink + " -> " + normalizedTarget);
+            }
+        });
+    }
+
+    /**
+     * 读取远程符号链接所指向的目标路径（走当前上下文/缺省路由）
+     *
+     * @param linkPath 符号链接路径
+     * @return 符号链接指向的目标路径
+     */
+    public String readLink(String linkPath) {
+        return readLink((SshServerInfo) null, linkPath);
+    }
+
+    /**
+     * 在指定具名服务器节点读取远程符号链接所指向的目标路径
+     *
+     * @param serverName 节点名称
+     * @param linkPath   符号链接路径
+     * @return 符号链接指向的目标路径
+     */
+    public String readLink(String serverName, String linkPath) {
+        return readLink(resolveServerInfo(serverName), linkPath);
+    }
+
+    /**
+     * 在指定目标描述符服务器上读取远程符号链接所指向的目标路径
+     *
+     * @param serverInfo 动态目标服务器描述符
+     * @param linkPath   符号链接路径
+     * @return 符号链接指向的目标路径
+     */
+    public String readLink(SshServerInfo serverInfo, String linkPath) {
+        String normalizedLink = normalizeRemotePath(linkPath);
+        SshServerInfo target = resolveServerInfo(serverInfo);
+
+        return sessionPool.execute(target, session -> {
+            try (SftpClient sftp = createSftpClient(session)) {
+                return sftp.readLink(normalizedLink);
+            } catch (Exception e) {
+                throw translateException(e, normalizedLink);
+            }
+        });
+    }
+
+    // ==========================================
     // 4. 目录树整包双向同步契约 (uploadDirectory / downloadDirectory)
     // ==========================================
 
@@ -1061,7 +1510,7 @@ public class SftpTemplate {
      * @param remoteDir 远程目标根目录
      */
     public void uploadDirectory(File localDir, String remoteDir) {
-        uploadDirectory(null, localDir, remoteDir);
+        uploadDirectory((SshServerInfo) null, localDir, remoteDir);
     }
 
     /**
@@ -1071,7 +1520,29 @@ public class SftpTemplate {
      * @param remoteDir 远程目标根目录
      */
     public void uploadDirectory(Path localDir, String remoteDir) {
-        uploadDirectory(null, localDir != null ? localDir.toFile() : null, remoteDir);
+        uploadDirectory((SshServerInfo) null, localDir != null ? localDir.toFile() : null, remoteDir);
+    }
+
+    /**
+     * 在指定具名服务器节点递归上传本地目录树整包至远程目录
+     *
+     * @param serverName 节点名称
+     * @param localDir   本地根目录 File
+     * @param remoteDir  远程目标根目录
+     */
+    public void uploadDirectory(String serverName, File localDir, String remoteDir) {
+        uploadDirectory(resolveServerInfo(serverName), localDir, remoteDir);
+    }
+
+    /**
+     * 在指定具名服务器节点递归上传本地目录树整包至远程目录
+     *
+     * @param serverName 节点名称
+     * @param localDir   本地根目录 Path
+     * @param remoteDir  远程目标根目录
+     */
+    public void uploadDirectory(String serverName, Path localDir, String remoteDir) {
+        uploadDirectory(resolveServerInfo(serverName), localDir != null ? localDir.toFile() : null, remoteDir);
     }
 
     /**
@@ -1147,7 +1618,7 @@ public class SftpTemplate {
      * @param localDir  本地目标根目录 File
      */
     public void downloadDirectory(String remoteDir, File localDir) {
-        downloadDirectory(null, remoteDir, localDir);
+        downloadDirectory((SshServerInfo) null, remoteDir, localDir);
     }
 
     /**
@@ -1157,7 +1628,29 @@ public class SftpTemplate {
      * @param localDir  本地目标根目录 Path
      */
     public void downloadDirectory(String remoteDir, Path localDir) {
-        downloadDirectory(null, remoteDir, localDir != null ? localDir.toFile() : null);
+        downloadDirectory((SshServerInfo) null, remoteDir, localDir != null ? localDir.toFile() : null);
+    }
+
+    /**
+     * 从指定具名服务器节点递归下载远程目录树整包至本地目录
+     *
+     * @param serverName 节点名称
+     * @param remoteDir  远程根目录
+     * @param localDir   本地目标根目录 File
+     */
+    public void downloadDirectory(String serverName, String remoteDir, File localDir) {
+        downloadDirectory(resolveServerInfo(serverName), remoteDir, localDir);
+    }
+
+    /**
+     * 从指定具名服务器节点递归下载远程目录树整包至本地目录
+     *
+     * @param serverName 节点名称
+     * @param remoteDir  远程根目录
+     * @param localDir   本地目标根目录 Path
+     */
+    public void downloadDirectory(String serverName, String remoteDir, Path localDir) {
+        downloadDirectory(resolveServerInfo(serverName), remoteDir, localDir != null ? localDir.toFile() : null);
     }
 
     /**
@@ -1278,10 +1771,7 @@ public class SftpTemplate {
     }
 
     private void copyStream(InputStream in, OutputStream out, SftpProgressListener listener, long totalBytes) throws IOException {
-        int bufferSize = (int) properties.getSftp().getBufferSize().toBytes();
-        if (bufferSize <= 0) {
-            bufferSize = 32768;
-        }
+        int bufferSize = resolveBufferSize();
         byte[] buffer = new byte[bufferSize];
         int bytesRead;
         long transferred = 0L;
@@ -1289,28 +1779,38 @@ public class SftpTemplate {
             while ((bytesRead = in.read(buffer)) != -1) {
                 out.write(buffer, 0, bytesRead);
                 transferred += bytesRead;
-                if (listener != null) {
-                    try {
-                        listener.onProgress(transferred, totalBytes);
-                    } catch (Throwable t) {
-                        log.debug("ateng-boot-ssh: SftpProgressListener 进度回调异常: {}", t.getMessage());
-                    }
-                }
+                notifyProgressSafely(listener, transferred, totalBytes);
             }
-            if (transferred == 0L && listener != null) {
-                try {
-                    listener.onProgress(0L, totalBytes);
-                } catch (Throwable t) {
-                    log.debug("ateng-boot-ssh: SftpProgressListener 0字节进度回调异常: {}", t.getMessage());
-                }
+            if (transferred == 0L) {
+                notifyProgressSafely(listener, 0L, totalBytes);
             }
         } finally {
-            if (listener instanceof AutoCloseable closeable) {
-                try {
-                    closeable.close();
-                } catch (Exception ignore) {
-                    log.debug("ateng-boot-ssh: 关闭 SftpProgressListener 异常: {}", ignore.getMessage());
-                }
+            closeProgressListenerQuietly(listener);
+        }
+    }
+
+    private int resolveBufferSize() {
+        int bufferSize = (int) properties.getSftp().getBufferSize().toBytes();
+        return bufferSize > 0 ? bufferSize : 32768;
+    }
+
+    private void notifyProgressSafely(SftpProgressListener listener, long transferredBytes, long totalBytes) {
+        if (listener == null) {
+            return;
+        }
+        try {
+            listener.onProgress(transferredBytes, totalBytes);
+        } catch (Throwable t) {
+            log.debug("ateng-boot-ssh: SftpProgressListener 进度回调异常: {}", t.getMessage());
+        }
+    }
+
+    private void closeProgressListenerQuietly(SftpProgressListener listener) {
+        if (listener instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (Exception ignore) {
+                log.debug("ateng-boot-ssh: 关闭 SftpProgressListener 异常: {}", ignore.getMessage());
             }
         }
     }

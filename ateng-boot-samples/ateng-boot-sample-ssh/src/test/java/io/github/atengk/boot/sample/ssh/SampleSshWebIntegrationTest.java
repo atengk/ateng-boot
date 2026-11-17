@@ -5,9 +5,11 @@ import io.github.atengk.boot.sample.ssh.dto.SftpAppendTextRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpCopyMoveRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpDeleteDirectoryRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpDirectorySyncRequest;
+import io.github.atengk.boot.sample.ssh.dto.SftpDownloadResumeRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpLargeTransferRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpPathRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpRenameRequest;
+import io.github.atengk.boot.sample.ssh.dto.SftpSymlinkRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpWriteTextRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshBatchInspectRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshCommandRequest;
@@ -883,6 +885,59 @@ public class SampleSshWebIntegrationTest {
                 .andExpect(jsonPath("$.data", is(true)));
     }
 
+    @Test
+    @DisplayName("SftpDocumentController: 远程符号链接创建、读取与参数校验")
+    void testSftpSymlinkAndReadLink() throws Exception {
+        String targetPath = "/releases/v1.0/app.conf";
+        String linkPath = "/releases/current/app.conf";
+
+        // 1. 准备目标文件
+        SftpWriteTextRequest writeReq = SftpWriteTextRequest.builder()
+                .remotePath(targetPath)
+                .content("RELEASE_VERSION=1.0.0")
+                .build();
+        mockMvc.perform(post("/sample/ssh/sftp-doc/write-text")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(writeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", is(true)));
+
+        // 2. 创建符号链接
+        SftpSymlinkRequest symlinkReq = SftpSymlinkRequest.builder()
+                .linkPath(linkPath)
+                .targetPath(targetPath)
+                .build();
+        mockMvc.perform(post("/sample/ssh/sftp-doc/symlink")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(symlinkReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", is(true)));
+
+        // 3. 读取符号链接指向与通过链接读内容
+        mockMvc.perform(get("/sample/ssh/sftp-doc/read-link")
+                        .param("linkPath", linkPath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", containsString("app.conf")));
+
+        mockMvc.perform(get("/sample/ssh/sftp-doc/read-text")
+                        .param("remotePath", linkPath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", is("RELEASE_VERSION=1.0.0")));
+
+        // 4. JSR-303 参数校验 Fail-Fast
+        SftpSymlinkRequest invalidReq = SftpSymlinkRequest.builder()
+                .linkPath("")
+                .targetPath(targetPath)
+                .build();
+        mockMvc.perform(post("/sample/ssh/sftp-doc/symlink")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.msg", containsString("符号链接路径不能为空")));
+    }
+
     // ==========================================
     // 5. SftpSyncController 端点测试
     // ==========================================
@@ -965,6 +1020,58 @@ public class SampleSshWebIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data", containsString("大文件节流上传成功")));
+    }
+
+    @Test
+    @DisplayName("SftpSyncController: 大文件断点续传下载与参数校验")
+    void testSftpDownloadResume() throws Exception {
+        String remotePath = "/transfer/resume-source.bin";
+        byte[] fullPayload = new byte[64 * 1024];
+        for (int i = 0; i < fullPayload.length; i++) {
+            fullPayload[i] = (byte) ((i + 13) & 0xFF);
+        }
+        MockMultipartFile file = new MockMultipartFile("file", "resume-source.bin",
+                MediaType.APPLICATION_OCTET_STREAM_VALUE, fullPayload);
+        mockMvc.perform(multipart("/sample/ssh/sftp-doc/upload")
+                        .file(file)
+                        .param("remotePath", remotePath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 准备半截本地文件（前 25% 字节）
+        Path localDest = testTempDir.resolve("resume-dest/resume-source.bin");
+        Files.createDirectories(localDest.getParent());
+        int partialSize = fullPayload.length / 4;
+        byte[] partialBytes = new byte[partialSize];
+        System.arraycopy(fullPayload, 0, partialBytes, 0, partialSize);
+        Files.write(localDest, partialBytes);
+
+        SftpDownloadResumeRequest resumeReq = SftpDownloadResumeRequest.builder()
+                .remotePath(remotePath)
+                .localPath(localDest.toAbsolutePath().toString())
+                .build();
+
+        mockMvc.perform(post("/sample/ssh/sftp-sync/download-resume")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(resumeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success", is(true)))
+                .andExpect(jsonPath("$.data.remotePath", is(remotePath)))
+                .andExpect(jsonPath("$.data.fileSize").value(fullPayload.length));
+
+        assertThat(Files.readAllBytes(localDest)).isEqualTo(fullPayload);
+
+        // JSR-303 参数校验 Fail-Fast
+        SftpDownloadResumeRequest invalidReq = SftpDownloadResumeRequest.builder()
+                .remotePath("")
+                .localPath(localDest.toAbsolutePath().toString())
+                .build();
+        mockMvc.perform(post("/sample/ssh/sftp-sync/download-resume")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.msg", containsString("远程文件路径不能为空")));
     }
 
     // ==========================================

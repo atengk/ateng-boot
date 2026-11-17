@@ -219,6 +219,45 @@ public class SftpScenarioService {
         return sftpTemplate.delete(remotePath);
     }
 
+    /**
+     * 创建远程符号链接
+     *
+     * @param linkPath   符号链接路径
+     * @param targetPath 链接指向的目标路径
+     */
+    public void createSymlink(String linkPath, String targetPath) {
+        log.info("ateng-boot-ssh-sample: 正在创建符号链接 [linkPath={} -> targetPath={}]", linkPath, targetPath);
+        sftpTemplate.createSymlink(linkPath, targetPath);
+    }
+
+    /**
+     * 读取远程符号链接所指向的目标路径
+     *
+     * @param linkPath 符号链接路径
+     * @return 目标路径
+     */
+    public String readLink(String linkPath) {
+        log.info("ateng-boot-ssh-sample: 正在读取符号链接目标 [linkPath={}]", linkPath);
+        return sftpTemplate.readLink(linkPath);
+    }
+
+    /**
+     * 大文件断点续传下载至本地磁盘文件（挂载 100ms 节流进度防抖监听器）
+     *
+     * @param remotePath 远程文件路径
+     * @param localFile  本地目标文件
+     */
+    public void downloadResume(String remotePath, File localFile) {
+        log.info("ateng-boot-ssh-sample: 正在执行断点续传下载 [remotePath={} -> localFile={}]",
+                remotePath, localFile != null ? localFile.getAbsolutePath() : null);
+        SftpProgressListener throttledListener = SftpProgressThrottler.of(
+                (transferred, total) -> log.debug("ateng-boot-ssh-sample: 断点续传进度 [remotePath={}, transferred={}/{}]",
+                        remotePath, transferred, total),
+                Duration.ofMillis(100)
+        );
+        sftpTemplate.downloadResume(remotePath, localFile, throttledListener);
+    }
+
     private InputStream toInputStream(byte[] data) {
         return new ByteArrayInputStream(data != null ? data : new byte[0]);
     }
