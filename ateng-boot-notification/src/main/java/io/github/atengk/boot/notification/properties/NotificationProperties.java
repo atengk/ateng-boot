@@ -3,6 +3,7 @@ package io.github.atengk.boot.notification.properties;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
+import org.springframework.util.unit.DataSize;
 
 import java.time.Duration;
 import java.util.LinkedHashMap;
@@ -37,6 +38,11 @@ public class NotificationProperties {
      * 全局默认网络读取超时，默认 5 秒
      */
     private Duration readTimeout = Duration.ofSeconds(5);
+
+    /**
+     * 单张图片消息最大允许体积上限，默认 2MB（对齐企业微信官方图片大小限制并防御 OOM）
+     */
+    private DataSize maxImageSize = DataSize.ofMegabytes(2);
 
     /**
      * 客户端主动频控配置

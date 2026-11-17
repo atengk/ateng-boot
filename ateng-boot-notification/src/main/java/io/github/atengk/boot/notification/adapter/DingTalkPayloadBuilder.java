@@ -1,8 +1,11 @@
 package io.github.atengk.boot.notification.adapter;
 
+import io.github.atengk.boot.notification.exception.NotificationException;
+import io.github.atengk.boot.notification.exception.NotificationResultCode;
 import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardButtonOrientation;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.ImageMessage;
 import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.MentionTarget;
@@ -14,6 +17,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * 钉钉群机器人 Webhook 报文构建适配器
@@ -24,6 +28,7 @@ import java.util.Map;
 public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
 
     public static final DingTalkPayloadBuilder INSTANCE = new DingTalkPayloadBuilder();
+    private static final String DEFAULT_ACTION_CARD_URL = "https://open.dingtalk.com";
 
     @Override
     public Map<String, Object> buildPayload(NotificationMessage message) {
@@ -39,6 +44,7 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
             case MARKDOWN -> buildMarkdownPayload(root, (MarkdownMessage) message);
             case CARD -> buildCardPayload(root, (CardMessage) message);
             case LINK -> buildLinkPayload(root, (LinkMessage) message);
+            case IMAGE -> buildImagePayload(root, (ImageMessage) message);
             case RAW -> buildRawPayload(root, (RawMessage) message);
             default -> throw new UnsupportedOperationException("钉钉群机器人暂不支持消息类型: " + message.getMessageType());
         }
@@ -60,29 +66,7 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
         Map<String, Object> mdNode = new LinkedHashMap<>();
         mdNode.put("title", msg.getTitle() != null ? msg.getTitle() : "系统通知");
 
-        String text = msg.getContent() != null ? msg.getContent() : "";
-        MentionTarget mention = msg.getMention();
-        if (mention != null && mention.hasMentions()) {
-            StringBuilder appendBuilder = new StringBuilder();
-            if (mention.isAtAll() && !text.contains("@所有人") && !text.contains("@all")) {
-                appendBuilder.append("@所有人 ");
-            }
-            for (String mobile : mention.getAtMobiles()) {
-                if (!text.contains("@" + mobile)) {
-                    appendBuilder.append("@").append(mobile).append(" ");
-                }
-            }
-            for (String userId : mention.getAtUserIds()) {
-                if (!text.contains("@" + userId)) {
-                    appendBuilder.append("@").append(userId).append(" ");
-                }
-            }
-            String toAppend = appendBuilder.toString().trim();
-            if (!toAppend.isEmpty()) {
-                text = text.isEmpty() ? toAppend : text + "\n\n" + toAppend;
-            }
-        }
-
+        String text = appendMentionText(msg.getContent(), msg.getMention());
         mdNode.put("text", text);
         root.put("markdown", mdNode);
 
@@ -94,7 +78,7 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
         Map<String, Object> cardNode = new LinkedHashMap<>();
         cardNode.put("title", msg.getTitle() != null ? msg.getTitle() : "系统通知");
 
-        // 正文处理（主图拼装在 Markdown 头部）
+        // 正文处理（主图拼装在 Markdown 头部，同步幂等注入 @ 提醒文本触发客户端高亮）
         StringBuilder textBuilder = new StringBuilder();
         if (msg.getMainImageUrl() != null && !msg.getMainImageUrl().isBlank()) {
             textBuilder.append("![").append(msg.getTitle()).append("](").append(msg.getMainImageUrl()).append(")\n\n");
@@ -102,7 +86,7 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
         if (msg.getContent() != null) {
             textBuilder.append(msg.getContent());
         }
-        cardNode.put("text", textBuilder.toString());
+        cardNode.put("text", appendMentionText(textBuilder.toString(), msg.getMention()));
 
         // 按钮构建
         if (msg.isSingleAction()) {
@@ -113,8 +97,8 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
                 singleTitle = firstBtn.getText();
                 singleUrl = firstBtn.getUrl();
             }
-            cardNode.put("singleTitle", singleTitle != null ? singleTitle : "查看详情");
-            cardNode.put("singleURL", singleUrl != null ? singleUrl : "");
+            cardNode.put("singleTitle", singleTitle != null && !singleTitle.isBlank() ? singleTitle : "查看详情");
+            cardNode.put("singleURL", singleUrl != null && !singleUrl.isBlank() ? singleUrl : DEFAULT_ACTION_CARD_URL);
         } else if (!msg.getButtons().isEmpty()) {
             String orientation = (msg.getBtnOrientation() != null)
                     ? msg.getBtnOrientation().getCode()
@@ -129,13 +113,48 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
             }
             cardNode.put("btns", btnList);
         } else {
-            // 既非 singleAction 且按钮列表为空时，ActionCard 不得输出空 btns: []，自动降级为默认查看单按钮
+            // 无按钮时钉钉官方 actionCard 要求 singleTitle 与非空 singleURL 均必填
             cardNode.put("singleTitle", "查看详情");
-            cardNode.put("singleURL", "");
+            cardNode.put("singleURL", DEFAULT_ACTION_CARD_URL);
         }
 
         root.put("actionCard", cardNode);
         attachAt(root, msg.getMention());
+    }
+
+    private String appendMentionText(String rawText, MentionTarget mention) {
+        String text = rawText != null ? rawText : "";
+        if (mention == null || !mention.hasMentions()) {
+            return text;
+        }
+        StringBuilder appendBuilder = new StringBuilder();
+        if (mention.isAtAll() && !containsMentionToken(text, "所有人") && !containsMentionToken(text, "all")) {
+            appendBuilder.append("@所有人 ");
+        }
+        for (String mobile : mention.getAtMobiles()) {
+            if (!containsMentionToken(text, mobile)) {
+                appendBuilder.append("@").append(mobile).append(" ");
+            }
+        }
+        for (String userId : mention.getAtUserIds()) {
+            if (!containsMentionToken(text, userId)) {
+                appendBuilder.append("@").append(userId).append(" ");
+            }
+        }
+        String toAppend = appendBuilder.toString().trim();
+        if (toAppend.isEmpty()) {
+            return text;
+        }
+        return text.isEmpty() ? toAppend : text + "\n\n" + toAppend;
+    }
+
+    private boolean containsMentionToken(String text, String token) {
+        if (text.isEmpty() || token == null || token.isBlank()) {
+            return false;
+        }
+        return Pattern.compile("(?<![A-Za-z0-9_.@])@" + Pattern.quote(token) + "(?![A-Za-z0-9_])")
+                .matcher(text)
+                .find();
     }
 
     private void buildLinkPayload(Map<String, Object> root, LinkMessage msg) {
@@ -146,6 +165,21 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
         linkNode.put("messageUrl", msg.getMessageUrl());
         linkNode.put("picUrl", msg.getPicUrl() != null ? msg.getPicUrl() : "");
         root.put("link", linkNode);
+
+        attachAt(root, msg.getMention());
+    }
+
+    private void buildImagePayload(Map<String, Object> root, ImageMessage msg) {
+        if (msg.getImageUrl() == null || msg.getImageUrl().isBlank()) {
+            throw new NotificationException(NotificationResultCode.NOTIFICATION_UNSUPPORTED_PLATFORM,
+                    "钉钉群机器人 Webhook 不支持直接发送二进制 Base64 图片，请改用 ImageMessage.ofUrl(imageUrl)");
+        }
+        root.put("msgtype", "markdown");
+        Map<String, Object> mdNode = new LinkedHashMap<>();
+        mdNode.put("title", "图片通知");
+        String text = appendMentionText("![图片通知](" + msg.getImageUrl().trim() + ")", msg.getMention());
+        mdNode.put("text", text);
+        root.put("markdown", mdNode);
 
         attachAt(root, msg.getMention());
     }

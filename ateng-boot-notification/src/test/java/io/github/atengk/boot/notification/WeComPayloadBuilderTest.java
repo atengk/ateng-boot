@@ -1,6 +1,8 @@
 package io.github.atengk.boot.notification;
 
 import io.github.atengk.boot.notification.adapter.WeComPayloadBuilder;
+import io.github.atengk.boot.notification.exception.NotificationException;
+import io.github.atengk.boot.notification.exception.NotificationResultCode;
 import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
@@ -190,5 +192,83 @@ class WeComPayloadBuilderTest {
         assertEquals("今年中秋节公司有豪礼相送", article.get("description"));
         assertEquals("https://work.weixin.qq.com/gift", article.get("url"));
         assertEquals("https://img.example.com/gift.png", article.get("picurl"));
+    }
+
+    @Test
+    @DisplayName("验证企微无按钮与多按钮 template_card 强制生成必填 card_action 且 jump_list 裁剪至 3 项")
+    @SuppressWarnings("unchecked")
+    void testBuildTemplateCardRequiredCardActionAndJumpListCap() {
+        // 1. 无按钮卡片仍需生成必填 card_action (type=1 + 合规兜底 url)
+        CardMessage noBtnCard = CardMessage.of("系统预警", "Redis 内存水位达 88%");
+        Map<String, Object> noBtnPayload = builder.buildPayload(noBtnCard);
+        Map<String, Object> noBtnCardObj = (Map<String, Object>) noBtnPayload.get("template_card");
+        Map<String, Object> noBtnAction = (Map<String, Object>) noBtnCardObj.get("card_action");
+        assertNotNull(noBtnAction);
+        assertEquals(1, noBtnAction.get("type"));
+        assertEquals("https://work.weixin.qq.com", noBtnAction.get("url"));
+
+        // 2. 多按钮（4 个按钮）自动以首按钮 URL 补齐必填 card_action 且 jump_list 最多保留前 3 项
+        CardMessage multiBtnCard = CardMessage.of("发布审批", "请确认生产变更")
+                .button("按钮1", "https://ops.example.com/1")
+                .button("按钮2", "https://ops.example.com/2")
+                .button("按钮3", "https://ops.example.com/3")
+                .button("按钮4", "https://ops.example.com/4");
+        Map<String, Object> multiPayload = builder.buildPayload(multiBtnCard);
+        Map<String, Object> multiCardObj = (Map<String, Object>) multiPayload.get("template_card");
+
+        Map<String, Object> multiAction = (Map<String, Object>) multiCardObj.get("card_action");
+        assertNotNull(multiAction);
+        assertEquals(1, multiAction.get("type"));
+        assertEquals("https://ops.example.com/1", multiAction.get("url"));
+
+        List<Map<String, Object>> jumpList = (List<Map<String, Object>>) multiCardObj.get("jump_list");
+        assertEquals(3, jumpList.size());
+        assertEquals("按钮3", jumpList.get(2).get("title"));
+    }
+
+    @Test
+    @DisplayName("验证企微 news_notice 图文卡片将正文写入 main_title.desc 对齐官方数据结构")
+    @SuppressWarnings("unchecked")
+    void testNewsNoticeMapsContentToMainTitleDesc() {
+        CardMessage newsCard = CardMessage.of("周报封面", "本周核心 SLA 达到 99.99%")
+                .mainImageUrl("https://img.example.com/cover.png")
+                .singleAction("阅读周报", "https://report.example.com/1");
+
+        Map<String, Object> payload = builder.buildPayload(newsCard);
+        Map<String, Object> cardObj = (Map<String, Object>) payload.get("template_card");
+        assertEquals("news_notice", cardObj.get("card_type"));
+
+        Map<String, Object> mainTitle = (Map<String, Object>) cardObj.get("main_title");
+        assertEquals("周报封面", mainTitle.get("title"));
+        assertEquals("本周核心 SLA 达到 99.99%", mainTitle.get("desc"));
+        assertNull(cardObj.get("sub_title_text"));
+    }
+
+    @Test
+    @DisplayName("验证 ImageMessage 在企微支持 imageUrl 自适应 news 图文及无 md5 自动补算")
+    @SuppressWarnings("unchecked")
+    void testImageUrlAndAutoMd5() {
+        ImageMessage urlImg = ImageMessage.ofUrl("https://img.example.com/wecom-banner.png");
+        Map<String, Object> urlPayload = builder.buildPayload(urlImg);
+        assertEquals("news", urlPayload.get("msgtype"));
+        Map<String, Object> newsNode = (Map<String, Object>) urlPayload.get("news");
+        List<Map<String, Object>> articles = (List<Map<String, Object>>) newsNode.get("articles");
+        assertEquals("https://img.example.com/wecom-banner.png", articles.get(0).get("picurl"));
+
+        ImageMessage base64Only = ImageMessage.ofBase64("aGVsbG8=", null);
+        Map<String, Object> imgPayload = builder.buildPayload(base64Only);
+        assertEquals("image", imgPayload.get("msgtype"));
+        Map<String, String> imageNode = (Map<String, String>) imgPayload.get("image");
+        assertEquals("5d41402abc4b2a76b9719d911017c592", imageNode.get("md5"));
+
+        // 非法 Base64 且缺少 md5 时应抛出 NOTIFICATION_PARAMETER_INVALID
+        ImageMessage badBase64 = ImageMessage.ofBase64("not!valid!base64", null);
+        NotificationException badB64Ex = assertThrows(NotificationException.class, () -> builder.buildPayload(badBase64));
+        assertEquals(NotificationResultCode.NOTIFICATION_PARAMETER_INVALID, badB64Ex.getResultCode());
+
+        // 仅含飞书 imageKey 的跨平台消息传入企微应统一抛出 NOTIFICATION_UNSUPPORTED_PLATFORM
+        ImageMessage feishuOnly = ImageMessage.ofFeishuKey("img_v2_only_feishu");
+        NotificationException unsupportedEx = assertThrows(NotificationException.class, () -> builder.buildPayload(feishuOnly));
+        assertEquals(NotificationResultCode.NOTIFICATION_UNSUPPORTED_PLATFORM, unsupportedEx.getResultCode());
     }
 }

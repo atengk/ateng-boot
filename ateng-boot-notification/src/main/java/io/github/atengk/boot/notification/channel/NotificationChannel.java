@@ -1,10 +1,10 @@
 package io.github.atengk.boot.notification.channel;
 
 import io.github.atengk.boot.core.util.BusinessAssert;
-import io.github.atengk.boot.notification.exception.NotificationResultCode;
 import io.github.atengk.boot.notification.model.Platform;
 import io.github.atengk.boot.notification.properties.NotificationChannelProperties;
 import io.github.atengk.boot.notification.util.NotificationDesensitizeUtil;
+import io.github.atengk.boot.notification.util.NotificationValidationUtil;
 import lombok.Builder;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -91,10 +91,12 @@ public class NotificationChannel implements Serializable {
         BusinessAssert.notNull(platform, "协同平台类型不能为空");
         BusinessAssert.isTrue(webhook != null && !webhook.isBlank(), "Webhook 推送地址不能为空");
 
+        String normalizedWebhook = NotificationValidationUtil.validateHttpUrl(webhook, "Webhook 地址");
         this.name = name.trim();
         this.platform = platform;
-        this.webhook = webhook.trim();
-        this.secret = (secret != null && !secret.isBlank()) ? secret.trim() : null;
+        this.webhook = normalizedWebhook;
+        // 企业微信官方群机器人仅依赖 URL 中的 key 鉴权，严禁配置 secret 防止污染或参数错误
+        this.secret = (platform != Platform.WECOM && secret != null && !secret.isBlank()) ? secret.trim() : null;
         this.connectTimeout = connectTimeout;
         this.readTimeout = readTimeout;
         this.permitsPerMinute = permitsPerMinute;

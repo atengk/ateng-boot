@@ -15,6 +15,7 @@ import io.github.atengk.boot.notification.exception.NotificationSendException;
 import io.github.atengk.boot.notification.handler.NotificationSendFailureHandler;
 import io.github.atengk.boot.notification.limiter.InMemoryNotificationRateLimiter;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.ImageMessage;
 import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.NotificationSendResult;
@@ -42,8 +43,10 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.util.unit.DataSize;
 import org.springframework.web.client.RestClient;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -807,5 +810,63 @@ class NotificationTemplateTest extends BaseNotificationTest {
                 .signDingTalk("test-secret", Long.parseLong(tsParam));
         assertNotNull(expectedRawSign);
         assertThat(path).contains("sign=" + expectedRawSign);
+    }
+
+    @Test
+    @DisplayName("验证 NotificationTemplate 支持跨端 ImageMessage 发送并在出站前拦截超限体积")
+    void testCrossPlatformImageAndMaxSizeGuard() throws InterruptedException {
+        enqueueOkJson("{\"code\":0,\"msg\":\"ok\"}");
+        NotificationSendResult feishuRes = template.send("feishu-alert", ImageMessage.ofFeishuKey("img_v2_cross"));
+        assertTrue(feishuRes.isSuccess());
+        RecordedRequest feishuReq = takeRequest();
+        assertThat(feishuReq.getBody().readUtf8()).contains("\"msg_type\":\"image\"").contains("img_v2_cross");
+
+        enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+        NotificationSendResult dingRes = template.send("default-dingtalk", ImageMessage.ofUrl("https://img.example.com/ok.png"));
+        assertTrue(dingRes.isSuccess());
+        RecordedRequest dingReq = takeRequest();
+        assertThat(dingReq.getBody().readUtf8()).contains("\"msgtype\":\"markdown\"").contains("https://img.example.com/ok.png");
+
+        // 调整全局上限为 4 字节后，发送 5 字节图片必须在出站前 Fail-Fast 阻断，零网络请求
+        properties.setMaxImageSize(DataSize.ofBytes(4));
+        ImageMessage overLimitImg = ImageMessage.fromBytes("hello".getBytes(StandardCharsets.UTF_8));
+        assertThatThrownBy(() -> template.send("wecom-alert", overLimitImg))
+                .isInstanceOf(NotificationException.class)
+                .satisfies(ex -> assertEquals(NotificationResultCode.NOTIFICATION_PARAMETER_INVALID,
+                        ((NotificationException) ex).getResultCode()));
+        assertEquals(2, server.getRequestCount());
+
+        // 非法 Base64 编码字符串必须在出站前快速失败（恢复 2MB 上限确保走入解码 format 校验），零网络请求
+        properties.setMaxImageSize(DataSize.ofMegabytes(2));
+        ImageMessage invalidB64 = ImageMessage.ofBase64("not!valid!base64", "5d41402abc4b2a76b9719d911017c592");
+        assertThatThrownBy(() -> template.send("wecom-alert", invalidB64))
+                .isInstanceOf(NotificationException.class)
+                .satisfies(ex -> assertEquals(NotificationResultCode.NOTIFICATION_PARAMETER_INVALID,
+                        ((NotificationException) ex).getResultCode()));
+        assertEquals(2, server.getRequestCount());
+
+        // 显式配置非正数 maxImageSize 时快速失败，零网络请求
+        properties.setMaxImageSize(DataSize.ofBytes(0));
+        ImageMessage smallImg = ImageMessage.fromBytes("hi".getBytes(StandardCharsets.UTF_8));
+        assertThatThrownBy(() -> template.send("wecom-alert", smallImg))
+                .isInstanceOf(NotificationException.class)
+                .satisfies(ex -> assertEquals(NotificationResultCode.NOTIFICATION_PARAMETER_INVALID,
+                        ((NotificationException) ex).getResultCode()));
+        assertEquals(2, server.getRequestCount());
+
+        // 异步 sendAsync 发送超限图片同样在出站前拦截并回调 failureHandler，零网络请求
+        NotificationProperties asyncProps = new NotificationProperties();
+        asyncProps.setDefaultChannel("wecom-alert");
+        asyncProps.setMaxImageSize(DataSize.ofBytes(4));
+        AtomicBoolean asyncFailureCalled = new AtomicBoolean(false);
+        NotificationTemplate asyncTemplate = new NotificationTemplate(
+                asyncProps, registry, providers, rateLimiter, restClient,
+                templateRenderer, (ch, msg, ex) -> asyncFailureCalled.set(true), eventPublisher, asyncExecutor);
+        CompletableFuture<NotificationSendResult> future = asyncTemplate.sendAsync("wecom-alert", overLimitImg);
+        assertThatThrownBy(() -> future.get(5, TimeUnit.SECONDS))
+                .isInstanceOf(ExecutionException.class)
+                .hasCauseInstanceOf(NotificationException.class);
+        assertTrue(asyncFailureCalled.get());
+        assertEquals(2, server.getRequestCount());
     }
 }

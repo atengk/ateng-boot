@@ -115,4 +115,37 @@ class NotificationChannelTest {
         assertThat(fromProps.toString()).contains("backupChannels=[feishu-backup]");
         assertThat(fromProps.toString()).contains("burstPermitsPerSecond=12");
     }
+
+    @Test
+    @DisplayName("测试企微渠道强制净化误配 secret 与非 http(s) Webhook 地址前置 Fail-Fast 拦截")
+    void testWeComSecretSanitizationAndWebhookSchemeGuard() {
+        NotificationChannel wecom = NotificationChannel.builder()
+                .name("wecom-sanitize")
+                .platform(Platform.WECOM)
+                .webhook("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc123456")
+                .secret("misconfigured-secret-must-be-cleared")
+                .build();
+        assertThat(wecom.getSecret()).isNull();
+
+        assertThatThrownBy(() -> NotificationChannel.builder()
+                .name("bad-scheme")
+                .platform(Platform.DINGTALK)
+                .webhook("ftp://example.com/webhook")
+                .build())
+                .isInstanceOf(BusinessException.class);
+
+        assertThatThrownBy(() -> NotificationChannel.builder()
+                .name("bad-uri")
+                .platform(Platform.FEISHU)
+                .webhook("https://bad host/hook")
+                .build())
+                .isInstanceOf(BusinessException.class);
+
+        assertThatThrownBy(() -> NotificationChannel.builder()
+                .name("missing-host")
+                .platform(Platform.WECOM)
+                .webhook("https://")
+                .build())
+                .isInstanceOf(BusinessException.class);
+    }
 }

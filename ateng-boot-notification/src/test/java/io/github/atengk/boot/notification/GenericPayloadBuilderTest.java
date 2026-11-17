@@ -75,7 +75,7 @@ class GenericPayloadBuilderTest {
     }
 
     @Test
-    @DisplayName("验证 ImageMessage 转译为通用 Webhook 结构")
+    @DisplayName("验证 ImageMessage 转译为通用 Webhook 结构（支持 base64/imageKey/imageUrl）")
     @SuppressWarnings("unchecked")
     void testBuildImagePayload() {
         ImageMessage img = new ImageMessage("b64", "md5");
@@ -85,6 +85,12 @@ class GenericPayloadBuilderTest {
         Map<String, String> image = (Map<String, String>) payload.get("image");
         assertEquals("b64", image.get("base64"));
         assertEquals("md5", image.get("md5"));
+
+        ImageMessage urlImg = ImageMessage.ofFeishuKey("img_key_1").imageUrl("https://img.example.com/a.png");
+        Map<String, Object> extPayload = builder.buildPayload(urlImg);
+        Map<String, String> extImage = (Map<String, String>) extPayload.get("image");
+        assertEquals("img_key_1", extImage.get("imageKey"));
+        assertEquals("https://img.example.com/a.png", extImage.get("imageUrl"));
     }
 
     @Test

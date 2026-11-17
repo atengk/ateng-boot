@@ -8,6 +8,8 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 
+import org.springframework.util.unit.DataSize;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -27,6 +29,7 @@ class NotificationPropertiesTest {
         assertEquals("ops-alert", properties.getDefaultChannel());
         assertEquals(Duration.ofSeconds(3), properties.getConnectTimeout());
         assertEquals(Duration.ofSeconds(5), properties.getReadTimeout());
+        assertEquals(DataSize.ofMegabytes(2), properties.getMaxImageSize());
 
         // 频控默认值
         assertNotNull(properties.getRateLimit());

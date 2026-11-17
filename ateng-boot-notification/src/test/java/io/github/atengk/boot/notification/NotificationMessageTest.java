@@ -26,6 +26,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.util.unit.DataSize;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -226,6 +228,51 @@ class NotificationMessageTest {
         try (java.io.ByteArrayInputStream emptyIn = new java.io.ByteArrayInputStream(new byte[0])) {
             assertThrows(NotificationException.class, () -> ImageMessage.fromInputStream(emptyIn));
         }
+    }
+
+    @Test
+    @DisplayName("验证 ImageMessage 跨端 imageKey/imageUrl 扩展与超过 2MB 防 OOM 快速失败")
+    void testImageMessageCrossPlatformAndSizeLimit(@TempDir Path tempDir) throws IOException {
+        ImageMessage feishuImg = ImageMessage.ofFeishuKey("img_v2_001");
+        assertEquals("img_v2_001", feishuImg.getImageKey());
+        assertDoesNotThrow(feishuImg::validate);
+
+        ImageMessage urlImg = ImageMessage.ofUrl("https://img.example.com/banner.png");
+        assertEquals("https://img.example.com/banner.png", urlImg.getImageUrl());
+        assertDoesNotThrow(urlImg::validate);
+
+        ImageMessage invalidUrlImg = ImageMessage.ofUrl("ftp://img.example.com/banner.png");
+        assertThrows(NotificationException.class, invalidUrlImg::validate);
+
+        // 超过默认 2MB 上限的字节数组与本地文件应立即抛 NotificationException
+        byte[] oversized = new byte[2 * 1024 * 1024 + 1];
+        NotificationException bytesEx = assertThrows(NotificationException.class, () -> ImageMessage.fromBytes(oversized));
+        assertEquals(NotificationResultCode.NOTIFICATION_PARAMETER_INVALID.getCode(), bytesEx.getCode());
+
+        Path oversizedFile = tempDir.resolve("oversized.png");
+        Files.write(oversizedFile, oversized);
+        NotificationException pathEx = assertThrows(NotificationException.class, () -> ImageMessage.fromPath(oversizedFile));
+        assertEquals(NotificationResultCode.NOTIFICATION_PARAMETER_INVALID.getCode(), pathEx.getCode());
+
+        // 自定义 DataSize 限额也应触发拦截
+        byte[] mediumBytes = new byte[2048];
+        assertThrows(NotificationException.class, () -> ImageMessage.fromBytes(mediumBytes, DataSize.ofKilobytes(1)));
+        try (java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(mediumBytes)) {
+            assertThrows(NotificationException.class, () -> ImageMessage.fromInputStream(in, DataSize.ofKilobytes(1)));
+        }
+
+        // 0 字节空文件与目录应快速失败
+        Path emptyFile = tempDir.resolve("empty.png");
+        Files.createFile(emptyFile);
+        assertThrows(NotificationException.class, () -> ImageMessage.fromPath(emptyFile));
+        assertThrows(NotificationException.class, () -> ImageMessage.fromPath(tempDir));
+
+        // 显式传入 0 或负数 DataSize、空字节数组 computeMd5Hex、缺少 host 的 URL 均应快速失败
+        assertThrows(NotificationException.class, () -> ImageMessage.fromBytes(mediumBytes, DataSize.ofBytes(0)));
+        assertThrows(NotificationException.class, () -> ImageMessage.fromBytes(mediumBytes, DataSize.ofBytes(-1)));
+        assertThrows(NotificationException.class, () -> ImageMessage.computeMd5Hex(null));
+        assertThrows(NotificationException.class, () -> ImageMessage.computeMd5Hex(new byte[0]));
+        assertThrows(NotificationException.class, () -> ImageMessage.ofUrl("https://").validate());
     }
 
     @Test

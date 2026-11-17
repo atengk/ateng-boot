@@ -1,5 +1,7 @@
 package io.github.atengk.boot.notification.adapter;
 
+import io.github.atengk.boot.notification.exception.NotificationException;
+import io.github.atengk.boot.notification.exception.NotificationResultCode;
 import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
@@ -10,6 +12,8 @@ import io.github.atengk.boot.notification.model.MentionTarget;
 import io.github.atengk.boot.notification.model.NotificationMessage;
 import io.github.atengk.boot.notification.model.RawMessage;
 import io.github.atengk.boot.notification.model.TextMessage;
+import io.github.atengk.boot.notification.util.NotificationValidationUtil;
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -22,9 +26,12 @@ import java.util.Map;
  * @author Ateng
  * @since 2026-10-23
  */
+@Slf4j
 public class WeComPayloadBuilder implements NotificationPayloadBuilder {
 
     public static final WeComPayloadBuilder INSTANCE = new WeComPayloadBuilder();
+    private static final String DEFAULT_TEMPLATE_CARD_URL = "https://work.weixin.qq.com";
+    private static final int MAX_JUMP_LIST_SIZE = 3;
 
     @Override
     public Map<String, Object> buildPayload(NotificationMessage message) {
@@ -117,9 +124,12 @@ public class WeComPayloadBuilder implements NotificationPayloadBuilder {
 
         Map<String, String> mainTitle = new LinkedHashMap<>();
         mainTitle.put("title", msg.getTitle() != null ? msg.getTitle() : "系统通知");
+        if (hasImage && msg.getContent() != null && !msg.getContent().isBlank()) {
+            mainTitle.put("desc", msg.getContent());
+        }
         card.put("main_title", mainTitle);
 
-        if (msg.getContent() != null && !msg.getContent().isBlank()) {
+        if (!hasImage && msg.getContent() != null && !msg.getContent().isBlank()) {
             card.put("sub_title_text", msg.getContent());
         }
 
@@ -130,24 +140,23 @@ public class WeComPayloadBuilder implements NotificationPayloadBuilder {
             card.put("card_image", imageNode);
         }
 
-        // 单跳转行动
-        if (msg.isSingleAction()) {
-            String url = msg.getSingleActionUrl();
-            if ((url == null || url.isBlank()) && !msg.getButtons().isEmpty()) {
-                url = msg.getButtons().get(0).getUrl();
-            }
-            if (url != null && !url.isBlank()) {
-                Map<String, Object> cardAction = new LinkedHashMap<>();
-                cardAction.put("type", 1);
-                cardAction.put("url", url);
-                card.put("card_action", cardAction);
-            }
-        }
+        // 企业微信 template_card 官方规定 card_action 为 100% 必填：按单跳URL -> 首按钮URL -> 默认官方地址三级推导
+        String actionUrl = resolveCardActionUrl(msg);
+        Map<String, Object> cardAction = new LinkedHashMap<>();
+        cardAction.put("type", 1);
+        cardAction.put("url", actionUrl);
+        card.put("card_action", cardAction);
 
-        // 多按钮列表跳转 (jump_list)
+        // 多按钮列表跳转 (jump_list 官方限制最多 3 项)
         if (!msg.getButtons().isEmpty()) {
+            if (msg.getButtons().size() > MAX_JUMP_LIST_SIZE) {
+                log.warn("企业微信 template_card jump_list 官方限制最多 {} 项，当前传入 {} 项，超出部分将被截断",
+                        MAX_JUMP_LIST_SIZE, msg.getButtons().size());
+            }
             List<Map<String, Object>> jumpList = new ArrayList<>();
-            for (CardButton btn : msg.getButtons()) {
+            int limit = Math.min(MAX_JUMP_LIST_SIZE, msg.getButtons().size());
+            for (int i = 0; i < limit; i++) {
+                CardButton btn = msg.getButtons().get(i);
                 Map<String, Object> j = new LinkedHashMap<>();
                 j.put("type", 1);
                 j.put("title", btn.getText());
@@ -160,12 +169,48 @@ public class WeComPayloadBuilder implements NotificationPayloadBuilder {
         root.put("template_card", card);
     }
 
+    private String resolveCardActionUrl(CardMessage msg) {
+        if (msg.getSingleActionUrl() != null && !msg.getSingleActionUrl().isBlank()) {
+            return msg.getSingleActionUrl();
+        }
+        if (!msg.getButtons().isEmpty()) {
+            String firstUrl = msg.getButtons().get(0).getUrl();
+            if (firstUrl != null && !firstUrl.isBlank()) {
+                return firstUrl;
+            }
+        }
+        return DEFAULT_TEMPLATE_CARD_URL;
+    }
+
     private void buildImagePayload(Map<String, Object> root, ImageMessage msg) {
-        root.put("msgtype", "image");
-        Map<String, String> imageNode = new LinkedHashMap<>();
-        imageNode.put("base64", msg.getBase64());
-        imageNode.put("md5", msg.getMd5());
-        root.put("image", imageNode);
+        if (msg.getBase64() != null && !msg.getBase64().isBlank()) {
+            root.put("msgtype", "image");
+            Map<String, String> imageNode = new LinkedHashMap<>();
+            String base64 = msg.getBase64().trim();
+            String md5 = msg.getMd5();
+            if (md5 == null || md5.isBlank()) {
+                byte[] decoded = NotificationValidationUtil.decodeBase64(base64);
+                md5 = ImageMessage.computeMd5Hex(decoded);
+            }
+            imageNode.put("base64", base64);
+            imageNode.put("md5", md5);
+            root.put("image", imageNode);
+            return;
+        }
+        if (msg.getImageUrl() != null && !msg.getImageUrl().isBlank()) {
+            root.put("msgtype", "news");
+            Map<String, Object> newsNode = new LinkedHashMap<>();
+            Map<String, Object> article = new LinkedHashMap<>();
+            article.put("title", "图片通知");
+            article.put("description", "");
+            article.put("url", msg.getImageUrl().trim());
+            article.put("picurl", msg.getImageUrl().trim());
+            newsNode.put("articles", List.of(article));
+            root.put("news", newsNode);
+            return;
+        }
+        throw new NotificationException(NotificationResultCode.NOTIFICATION_UNSUPPORTED_PLATFORM,
+                "企业微信群机器人发送图片请提供 Base64 编码或公网 imageUrl");
     }
 
     private void buildLinkPayload(Map<String, Object> root, LinkMessage msg) {

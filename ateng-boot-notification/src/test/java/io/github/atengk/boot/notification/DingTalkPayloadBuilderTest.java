@@ -1,9 +1,12 @@
 package io.github.atengk.boot.notification;
 
 import io.github.atengk.boot.notification.adapter.DingTalkPayloadBuilder;
+import io.github.atengk.boot.notification.exception.NotificationException;
+import io.github.atengk.boot.notification.exception.NotificationResultCode;
 import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardButtonOrientation;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.ImageMessage;
 import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.RawMessage;
@@ -133,7 +136,7 @@ class DingTalkPayloadBuilderTest {
     }
 
     @Test
-    @DisplayName("验证 CardMessage 携带 @人 时钉钉 ActionCard 正确生成 at 节点（覆盖所有人、手机号、工号）")
+    @DisplayName("验证 CardMessage 携带 @人 时钉钉 ActionCard 正确生成 at 节点并在正文幂等追加 @ 提醒文本")
     @SuppressWarnings("unchecked")
     void testBuildCardPayloadWithMention() {
         CardMessage card = CardMessage.of("发布单待确认", "v1.2.0 发布申请已提交")
@@ -144,6 +147,13 @@ class DingTalkPayloadBuilderTest {
 
         Map<String, Object> payload = builder.buildPayload(card);
 
+        Map<String, Object> actionCard = (Map<String, Object>) payload.get("actionCard");
+        String cardText = (String) actionCard.get("text");
+        assertTrue(cardText.contains("v1.2.0 发布申请已提交"));
+        assertTrue(cardText.contains("@所有人"));
+        assertTrue(cardText.contains("@13800000001"));
+        assertTrue(cardText.contains("@ding_user_456"));
+
         Map<String, Object> atObj = (Map<String, Object>) payload.get("at");
         assertNotNull(atObj);
         assertEquals(true, atObj.get("isAtAll"));
@@ -152,7 +162,7 @@ class DingTalkPayloadBuilderTest {
     }
 
     @Test
-    @DisplayName("验证 CardMessage 无任何按钮时自动降级为 singleAction 避免输出空 btns 触发协议错误")
+    @DisplayName("验证 CardMessage 无任何按钮时自动降级为 singleAction 并兜底合规非空 singleURL")
     @SuppressWarnings("unchecked")
     void testBuildCardPayloadWithoutButtons() {
         CardMessage card = CardMessage.of("纯展示通知", "无任何交互跳转按钮");
@@ -162,7 +172,7 @@ class DingTalkPayloadBuilderTest {
         assertEquals("actionCard", payload.get("msgtype"));
         Map<String, Object> actionCard = (Map<String, Object>) payload.get("actionCard");
         assertEquals("查看详情", actionCard.get("singleTitle"));
-        assertEquals("", actionCard.get("singleURL"));
+        assertEquals("https://open.dingtalk.com", actionCard.get("singleURL"));
         assertNull(actionCard.get("btns"));
     }
 
@@ -216,5 +226,43 @@ class DingTalkPayloadBuilderTest {
         assertEquals("1", actionCard.get("btnOrientation"));
         List<Map<String, String>> btns = (List<Map<String, String>>) actionCard.get("btns");
         assertEquals(2, btns.size());
+    }
+
+    @Test
+    @DisplayName("验证 ImageMessage 在钉钉支持 imageUrl 自适应图文，纯 Base64 抛出受控异常")
+    @SuppressWarnings("unchecked")
+    void testBuildImagePayload() {
+        ImageMessage urlImage = ImageMessage.ofUrl("https://img.example.com/chart.png").atAll();
+        Map<String, Object> payload = builder.buildPayload(urlImage);
+
+        assertEquals("markdown", payload.get("msgtype"));
+        Map<String, Object> mdNode = (Map<String, Object>) payload.get("markdown");
+        assertTrue(((String) mdNode.get("text")).contains("https://img.example.com/chart.png"));
+        assertTrue(((String) mdNode.get("text")).contains("@所有人"));
+
+        ImageMessage base64Only = ImageMessage.ofBase64("aGVsbG8=", "5d41402abc4b2a76b9719d911017c592");
+        NotificationException ex = assertThrows(NotificationException.class, () -> builder.buildPayload(base64Only));
+        assertEquals(NotificationResultCode.NOTIFICATION_UNSUPPORTED_PLATFORM, ex.getResultCode());
+
+        ImageMessage feishuOnly = ImageMessage.ofFeishuKey("img_v2_only_feishu");
+        NotificationException feishuEx = assertThrows(NotificationException.class, () -> builder.buildPayload(feishuOnly));
+        assertEquals(NotificationResultCode.NOTIFICATION_UNSUPPORTED_PLATFORM, feishuEx.getResultCode());
+    }
+
+    @Test
+    @DisplayName("验证 CardMessage @提醒文本幂等去重及手机号前缀边界匹配")
+    @SuppressWarnings("unchecked")
+    void testCardMentionIdempotencyAndPrefixBoundary() {
+        CardMessage alreadyMentionedCard = (CardMessage) CardMessage.of("发布审批", "通知 @所有人 与 @138000000010 处理工单")
+                .atAll()
+                .atMobiles("13800000001");
+
+        Map<String, Object> payload = builder.buildPayload(alreadyMentionedCard);
+        Map<String, Object> actionCard = (Map<String, Object>) payload.get("actionCard");
+        String text = (String) actionCard.get("text");
+
+        assertEquals(1, text.split("@所有人", -1).length - 1);
+        // 正文仅有 138000000010 前缀相似号时，仍应正确注入 @13800000001
+        assertTrue(text.contains("@13800000001\n") || text.endsWith("@13800000001"));
     }
 }

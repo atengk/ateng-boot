@@ -73,8 +73,18 @@ public class GenericPayloadBuilder implements NotificationPayloadBuilder {
             root.put("messageUrl", link.getMessageUrl());
         } else if (message instanceof ImageMessage img) {
             Map<String, String> imgNode = new LinkedHashMap<>();
-            imgNode.put("base64", img.getBase64());
-            imgNode.put("md5", img.getMd5());
+            if (img.getBase64() != null && !img.getBase64().isBlank()) {
+                imgNode.put("base64", img.getBase64());
+            }
+            if (img.getMd5() != null && !img.getMd5().isBlank()) {
+                imgNode.put("md5", img.getMd5());
+            }
+            if (img.getImageKey() != null && !img.getImageKey().isBlank()) {
+                imgNode.put("imageKey", img.getImageKey());
+            }
+            if (img.getImageUrl() != null && !img.getImageUrl().isBlank()) {
+                imgNode.put("imageUrl", img.getImageUrl());
+            }
             root.put("image", imgNode);
         }
 

@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
 public final class WeComMarkdownSanitizer {
 
     private static final Pattern IMAGE_PATTERN = Pattern.compile("!\\[(.*?)\\]\\((.*?)\\)");
-    private static final Pattern HTML_TAG_PATTERN = Pattern.compile("</?(?!(?:font\\b|/font\\b))[a-zA-Z][a-zA-Z0-9]*(?:\\s+[^>]*)?/?>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern HTML_TAG_PATTERN = Pattern.compile("</?(?!(?:font\\b|/font\\b|https?://))[a-zA-Z][a-zA-Z0-9]*(?:\\s+[^>]*)?/?>", Pattern.CASE_INSENSITIVE);
     private static final Pattern TABLE_DIVIDER_PATTERN = Pattern.compile("^\\s*\\|?\\s*[:\\-]+\\s*(\\|\\s*[:\\-]+\\s*)+\\|?\\s*$");
 
     private WeComMarkdownSanitizer() {

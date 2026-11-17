@@ -17,6 +17,7 @@ import io.github.atengk.boot.notification.handler.LoggingNotificationSendFailure
 import io.github.atengk.boot.notification.handler.NotificationSendFailureHandler;
 import io.github.atengk.boot.notification.limiter.NotificationRateLimiter;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.ImageMessage;
 import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.NotificationMessage;
@@ -28,12 +29,14 @@ import io.github.atengk.boot.notification.provider.NotificationProvider;
 import io.github.atengk.boot.notification.renderer.NotificationTemplateRenderer;
 import io.github.atengk.boot.notification.renderer.SimpleNotificationTemplateRenderer;
 import io.github.atengk.boot.notification.util.NotificationDesensitizeUtil;
+import io.github.atengk.boot.notification.util.NotificationValidationUtil;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEvent;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.ApplicationEventPublisherAware;
+import org.springframework.util.unit.DataSize;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -128,6 +131,9 @@ public class NotificationTemplate implements NotificationOperations, Application
     public NotificationSendResult send(String channelName, NotificationMessage message) {
         BusinessAssert.notNull(message, "通知消息不能为空");
         message.validate();
+        if (message instanceof ImageMessage imageMessage) {
+            validateImagePayloadSize(imageMessage);
+        }
 
         String resolvedChannelName = resolveChannelName(channelName);
         NotificationChannel primaryChannel = channelRegistry.get(resolvedChannelName);
@@ -439,5 +445,15 @@ public class NotificationTemplate implements NotificationOperations, Application
             return isTransientException(ex.getCause());
         }
         return false;
+    }
+
+    private void validateImagePayloadSize(ImageMessage imageMessage) {
+        if (imageMessage.getBase64() == null || imageMessage.getBase64().isBlank()) {
+            return;
+        }
+        DataSize configuredMax = properties.getMaxImageSize();
+        long maxBytes = NotificationValidationUtil.resolvePositiveMaxBytes(
+                configuredMax, ImageMessage.DEFAULT_MAX_IMAGE_SIZE, "配置项 ateng.boot.notification.max-image-size");
+        NotificationValidationUtil.decodeBase64WithinLimit(imageMessage.getBase64(), maxBytes);
     }
 }
