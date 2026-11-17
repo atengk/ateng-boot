@@ -87,7 +87,8 @@ class InMemoryCaptchaStoreTest {
         CountDownLatch startGate = new CountDownLatch(1);
         AtomicInteger winCount = new AtomicInteger(0);
 
-        try (ExecutorService pool = Executors.newFixedThreadPool(threads)) {
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
             List<Callable<String>> tasks = new ArrayList<>(threads);
             for (int i = 0; i < threads; i++) {
                 tasks.add(() -> {
@@ -107,6 +108,8 @@ class InMemoryCaptchaStoreTest {
             for (Future<String> future : futures) {
                 future.get();
             }
+        } finally {
+            pool.shutdownNow();
         }
 
         assertThat(winCount.get()).isEqualTo(1);

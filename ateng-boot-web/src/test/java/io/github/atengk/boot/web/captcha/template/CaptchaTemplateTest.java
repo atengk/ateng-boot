@@ -203,7 +203,8 @@ class CaptchaTemplateTest {
         int threads = 12;
         CountDownLatch gate = new CountDownLatch(1);
         AtomicInteger passCount = new AtomicInteger(0);
-        try (ExecutorService pool = Executors.newFixedThreadPool(threads)) {
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
             List<Callable<Boolean>> tasks = new ArrayList<>(threads);
             for (int i = 0; i < threads; i++) {
                 tasks.add(() -> {
@@ -223,6 +224,8 @@ class CaptchaTemplateTest {
             for (Future<Boolean> future : futures) {
                 future.get();
             }
+        } finally {
+            pool.shutdownNow();
         }
 
         assertThat(passCount.get()).isEqualTo(1);
