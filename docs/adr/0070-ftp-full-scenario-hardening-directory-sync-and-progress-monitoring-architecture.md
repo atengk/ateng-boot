@@ -127,3 +127,11 @@ flowchart TD
 
 ### 妥协成本 (Cons)
 1. **跨路径复制网络流开销**：由于 FTP 协议缺乏原生服务端复制指令，`copy` 需经过客户端网络流中转，大文件跨路径复制会产生对应的网络往返流量（因此架构上显式限定为单文件复制，严禁无界整目录复制）。
+
+---
+
+## 后续增量演进注记 (Incremental Hardening & Audit)
+
+- **虚拟线程 Pinning 防治与并发安全**：`FtpProgressThrottler` 内部同步锁由 `synchronized` 全面演进为 `java.util.concurrent.locks.ReentrantLock` 并在释放锁后派发监听回调，彻底消除 JDK 21+ 虚拟线程运行时 Carrier Pinning 风险；同时扩展了 `initialBytesTransferred` 构造重载以服务双向断点续传进度跟踪。
+- **根目录误删硬熔断与批处理防误伤**：`FtpTemplate#deleteDirectory` 新增 **Root Path Deletion Guard** 强制拒绝 `"/"` 删除；本地与远端扫描隐性文件过滤统一对齐（Windows `desktop.ini`/`Thumbs.db`、macOS `.DS_Store`/`._*`、Linux `.git`），并在目录层级探测中强化 `CWD` 兜底识别。
+- **双向断点续传、零落盘流式摘要与对账信标**：在此全场景底座上进一步补全 `uploadResume` / `downloadResume`（含针对不支持或忽略 `REST` 服务端的 `.part` 防重降级）、`calculateHash` / `verifyHash`（零临时文件 `MessageDigest` + `isEqual` 常量时间校验）及 `uploadWithSentinel`（两阶段主文件转正 + 就绪信标写入）；详见 [ADR-0096](./0096-ftp-sample-multi-controller-and-production-hardening-architecture.md) 与工单 #1020 / #1027 / #1028 / #1029。

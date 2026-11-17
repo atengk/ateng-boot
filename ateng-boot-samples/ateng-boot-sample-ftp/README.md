@@ -21,7 +21,7 @@
 ## 2. 运行环境与双模切换
 
 - **默认 / CI 模式**（未激活 `local` Profile）：
-  测试套件内置纯内存 `FakeFtpServer`，自动在本地动态端口挂载 `default`（主节点）与 `backup`（备用节点），无需安装或启动任何外部物理 FTP 服务，即可秒级启动运行与 100% 离线自洽通过全套自动化回归测试；
+  应用主工程内置 `@Profile("!local")` 的 `EmbeddedFtpServerConfig`，启动时自动为 `default` 与 `servers.*` 具名节点拉起轻量嵌入式 `FakeFtpServer`；集成测试套件同样内置随机端口内存 `FakeFtpServer`，无需部署外部 FTP 服务即可一键体验全套 REST 端点或 100% 离线跑通全量回归测试；
 - **Local 真实模式**（激活 `local` Profile）：
   若需连接真实物理 FTP/FTPS 中间件（如 vsftpd、ProFTPD、FileZilla Server 等），复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并填入真实主机、端口与鉴权账密；启动应用或运行测试时追加 `-Dspring.profiles.active=local` 即可直连真实服务联调（该文件已被 `.gitignore` 严格拦截，CI 零风险与凭据安全）。
 
@@ -44,18 +44,25 @@
 | **查询文件详细元数据** | `FtpDocumentController` | `GET /sample/ftp/document/info` | `curl "http://localhost:8080/sample/ftp/document/info?remotePath=/docs/policy-v2.txt"` |
 | **RFC 3659 MLSD 机器目录** | `FtpDocumentController` | `GET /sample/ftp/document/list-files` | `curl "http://localhost:8080/sample/ftp/document/list-files?remoteDir=/docs"` |
 | **对称流式文件下载** | `FtpDocumentController` | `GET /sample/ftp/document/download` | `curl -OJ "http://localhost:8080/sample/ftp/document/download?remotePath=/docs/policy-v2.txt"` |
+| **零落盘流式摘要计算** | `FtpDocumentController` | `GET /sample/ftp/document/hash` | `curl "http://localhost:8080/sample/ftp/document/hash?remotePath=/docs/policy-v2.txt&algorithm=SHA-256"` |
+| **零落盘摘要常量比对** | `FtpDocumentController` | `POST /sample/ftp/document/verify-hash` | `curl -X POST "http://localhost:8080/sample/ftp/document/verify-hash" -H "Content-Type: application/json" -d "{\"remotePath\":\"/docs/policy-v2.txt\",\"expectedHex\":\"YOUR_SHA256_HEX\",\"algorithm\":\"SHA-256\"}"` |
 | **单文件确定性删除** | `FtpDocumentController` | `POST /sample/ftp/document/delete-file` | `curl -X POST "http://localhost:8080/sample/ftp/document/delete-file" -H "Content-Type: application/json" -d "{\"path\":\"/upload/notice.txt\"}"` |
 | **级联清空删除目录** | `FtpDocumentController` | `POST /sample/ftp/document/delete-directory` | `curl -X POST "http://localhost:8080/sample/ftp/document/delete-directory" -H "Content-Type: application/json" -d "{\"path\":\"/archive\",\"recursive\":true}"` |
 | **金融日结对账全目录上传** | `FtpBatchSyncController` | `POST /sample/ftp/sync/upload-directory` | `curl -X POST "http://localhost:8080/sample/ftp/sync/upload-directory" -H "Content-Type: application/json" -d "{\"localDir\":\"/data/settlement/20261110\",\"remoteDir\":\"/finance/settlement\",\"filterExtension\":\".csv\",\"failFast\":false}"` |
 | **金融日结对账全目录下载** | `FtpBatchSyncController` | `POST /sample/ftp/sync/download-directory` | `curl -X POST "http://localhost:8080/sample/ftp/sync/download-directory" -H "Content-Type: application/json" -d "{\"localDir\":\"/data/audit/20261110\",\"remoteDir\":\"/finance/settlement\",\"filterExtension\":\".csv\",\"failFast\":false}"` |
+| **对账信标伴随原子上传** | `FtpBatchSyncController` | `POST /sample/ftp/sync/upload-with-sentinel` | `curl -X POST "http://localhost:8080/sample/ftp/sync/upload-with-sentinel" -H "Content-Type: application/json" -d "{\"remotePath\":\"/finance/settle.csv\",\"localPath\":\"/data/settle.csv\",\"sentinelSuffix\":\".ok\"}"` |
 | **大文件流式进度上传** | `FtpTransferController` | `POST /sample/ftp/transfer/upload-large` | `curl -X POST "http://localhost:8080/sample/ftp/transfer/upload-large" -H "Content-Type: application/json" -d "{\"remotePath\":\"/transfer/payload-10m.bin\",\"sizeKb\":10240}"` |
 | **大文件流式进度下载** | `FtpTransferController` | `POST /sample/ftp/transfer/download-large` | `curl -X POST "http://localhost:8080/sample/ftp/transfer/download-large" -H "Content-Type: application/json" -d "{\"remotePath\":\"/transfer/payload-10m.bin\",\"localPath\":\"/tmp/downloaded-10m.bin\"}"` |
+| **大文件断点续传上传** | `FtpTransferController` | `POST /sample/ftp/transfer/upload-resume` | `curl -X POST "http://localhost:8080/sample/ftp/transfer/upload-resume" -H "Content-Type: application/json" -d "{\"remotePath\":\"/transfer/payload-10m.bin\",\"localPath\":\"/tmp/payload-10m.bin\"}"` |
+| **大文件断点续传下载** | `FtpTransferController` | `POST /sample/ftp/transfer/download-resume` | `curl -X POST "http://localhost:8080/sample/ftp/transfer/download-resume" -H "Content-Type: application/json" -d "{\"remotePath\":\"/transfer/payload-10m.bin\",\"localPath\":\"/tmp/resume-10m.bin\"}"` |
 | **50MB 内存防爆熔断守护** | `FtpTransferController` | `GET /sample/ftp/transfer/download-safe` | `curl "http://localhost:8080/sample/ftp/transfer/download-safe?remotePath=/transfer/payload-10m.bin"` |
 | **默认主节点无副作用探针** | `FtpGovernanceController` | `GET /sample/ftp/governance/probe-health` | `curl "http://localhost:8080/sample/ftp/governance/probe-health"` |
 | **具名备用节点健康探针** | `FtpGovernanceController` | `GET /sample/ftp/governance/probe-health` | `curl "http://localhost:8080/sample/ftp/governance/probe-health?serverName=backup"` |
 | **物理健康连通性强断言** | `FtpGovernanceController` | `POST /sample/ftp/governance/assert-healthy` | `curl -X POST "http://localhost:8080/sample/ftp/governance/assert-healthy?serverName=backup"` |
 | **动态切源写入 (backup 节点)** | `FtpGovernanceController` | `POST /sample/ftp/governance/dynamic-routing-write` | `curl -X POST "http://localhost:8080/sample/ftp/governance/dynamic-routing-write" -H "Content-Type: application/json" -d "{\"serverName\":\"backup\",\"remotePath\":\"/routing/notice.txt\",\"content\":\"Backup Datacenter Payload\"}"` |
 | **动态切源读取 (backup 节点)** | `FtpGovernanceController` | `GET /sample/ftp/governance/dynamic-routing-read` | `curl "http://localhost:8080/sample/ftp/governance/dynamic-routing-read?serverName=backup&remotePath=/routing/notice.txt"` |
+| **运行期动态热注册节点** | `FtpGovernanceController` | `POST /sample/ftp/governance/register-node` | `curl -X POST "http://localhost:8080/sample/ftp/governance/register-node" -H "Content-Type: application/json" -d "{\"serverName\":\"tenant-01\",\"host\":\"127.0.0.1\",\"port\":2121,\"username\":\"admin\",\"password\":\"YOUR_PASSWORD\",\"mode\":\"PASSIVE\"}"` |
+| **运行期安全注销服务节点** | `FtpGovernanceController` | `POST /sample/ftp/governance/unregister-node` | `curl -X POST "http://localhost:8080/sample/ftp/governance/unregister-node" -H "Content-Type: application/json" -d "{\"serverName\":\"tenant-01\"}"` |
 | **连接池实时运行时指标** | `FtpGovernanceController` | `GET /sample/ftp/governance/pool-stats` | `curl "http://localhost:8080/sample/ftp/governance/pool-stats?serverName=default"` |
 
 ---

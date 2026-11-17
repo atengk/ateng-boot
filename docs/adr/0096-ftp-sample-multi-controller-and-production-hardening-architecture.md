@@ -26,54 +26,55 @@
 
 ```mermaid
 flowchart TD
-    subgraph SampleMatrix["1. ateng-boot-sample-ftp 4 大领域控制器与 DTO/VO 矩阵"]
-        DocCtrl["FtpDocumentController (/sample/ftp/document/*)\n- 表单文件原子上传 / 磁盘文件指定上传\n- 纯文本快捷读写 / RFC 959 增量追加写\n- 受管管道流原子对拷 / 跨目录移动 / 文件重命名\n- 详细元数据获取 / RFC 3659 MLSD 机器目录\n- 对称流式下载 / 单文件删除 / 级联清空删除目录"]
-        SyncCtrl["FtpBatchSyncController (/sample/ftp/sync/*)\n- 金融日结对账全目录上传 (uploadDirectory)\n- 金融日结对账全目录下载 (downloadDirectory)\n- 后缀过滤 / 覆盖策略 / Fail-Safe 弹性容错聚合回执"]
-        TransferCtrl["FtpTransferController (/sample/ftp/transfer/*)\n- 大文件流式进度上传 (TransferListener 防抖节流)\n- 大文件流式进度下载 (TransferListener 满额保底)\n- 50MB 内存防爆熔断守护 (流式消费防御)"]
-        GovCtrl["FtpGovernanceController (/sample/ftp/governance/*)\n- 默认主节点/具名备用节点无害健康探针 (probe-health)\n- 物理健康连通性强断言 (assert-healthy)\n- 动态切源读写 (backup 节点)\n- 连接池运行时指标 (active/idle/maxTotal)"]
-        DTOMatrix["10 大强类型 DTO + 5 大标准 VO (Zero-Entity-Leakage)\nUploadFile / WriteText / AppendText / CopyMove / Rename / Path\nDeleteDirectory / DirectorySync / LargeFileTransfer / DynamicRouting\nFtpFileInfo / BatchTransferResult / TransferFailureItem / TransferProgress / FtpPoolStats"]
+    subgraph SampleMatrix["1. ateng-boot-sample-ftp 4 大领域控制器与 15 DTO / 6 VO 矩阵"]
+        DocCtrl["FtpDocumentController (/sample/ftp/document/*)\n- 表单文件原子上传 / 磁盘文件指定上传 / 纯文本快捷读写 / APPE 增量追加写\n- 受管管道流原子对拷 / 跨目录移动 / 重命名 / 元数据与 MLSD 机器目录\n- 零落盘流式摘要计算与校验 (hash / verify-hash) / 对称下载与级联删除"]
+        SyncCtrl["FtpBatchSyncController (/sample/ftp/sync/*)\n- 金融日结对账全目录上传与下载 (upload-directory / download-directory)\n- 对账信标伴随原子上传 (upload-with-sentinel)\n- 宿主隐性文件过滤 / Fail-Safe 弹性容错聚合回执"]
+        TransferCtrl["FtpTransferController (/sample/ftp/transfer/*)\n- 大文件流式进度上传与下载 (ReentrantLock 防抖节流)\n- 大文件双向断点续传 (upload-resume / download-resume)\n- 50MB 内存防爆熔断守护 (download-safe)"]
+        GovCtrl["FtpGovernanceController (/sample/ftp/governance/*)\n- 默认主节点/备用节点无害探针与强断言 (probe-health / assert-healthy)\n- 动态切源读写 (FtpContextHolder) / 动态节点注册与注销 (register / unregister)\n- 连接池实时运行指标快照 (pool-stats -> FtpPoolStats)"]
+        DTOMatrix["15 大强类型 DTO + 6 大标准 VO (Zero-Entity-Leakage)\nUploadFile / WriteText / AppendText / CopyMove / Rename / Path / DeleteDirectory\nDirectorySync / LargeFileTransfer / ResumeTransfer / VerifyHash / SentinelUpload\nDynamicRouting / RegisterNode / UnregisterNode\nFtpFileInfoVO / BatchTransferResultVO / TransferFailureItemVO\nTransferProgressVO / FtpPoolStatsVO / SentinelUploadResultVO"]
     end
 
     subgraph DocSpec["2. ateng-boot-ftp 5D 生产文档与 8 级大章收敛"]
         Ch0["第 0 章：全景速查矩阵 (100% 覆盖门面/配置/SPI/错误码，锚定样例)"]
         Ch1_2["第 1-2 章：定位快速入门与核心架构拓扑 (Mermaid 拓扑/时序/状态机)"]
-        Ch3_6["第 3-6 章：能力大章三要素就近闭环\n- 单文件与文档管理 (文档操作与 MLSD)\n- 目录批量同步与容错 (递归同步与 Fail-Safe)\n- 大文件流式传输与进度监听 (节流防抖与内存防爆)\n- 多数据源动态路由与连接池治理 (主备探针与指标透视)"]
-        Ch7_8["第 7-8 章：生产扩展接管 (FTPS/SPI/逃生舱) + 完整 YAML 配置字典"]
+        Ch3_6["第 3-6 章：能力大章三要素就近闭环\n- 单文件与流式摘要校验 (文档生命周期与 MLSD)\n- 目录批量同步与信标上传 (Fail-Safe 与对账信标)\n- 大文件流式传输与双向断点续传 (节流防抖与内存防爆)\n- 多节点动态治理与连接池观测 (主备探针/热注册/指标快照)"]
+        Ch7_8["第 7-8 章：生产扩展接管 (FTPS/FtpClientCustomizer/逃生舱) + 完整 YAML 配置字典"]
     end
 
     subgraph TestHarness["3. 端到端全自洽双模测试"]
-        OfflineCI["CI / 默认模式：FakeFtpServer 内存服务器 (随机动态端口)，100% 离线秒级全绿"]
+        OfflineCI["CI / 默认模式：EmbeddedFtpServerConfig 与测试 FakeFtpServer (100% 离线全绿)"]
         LocalReal["Local 联调模式：application-local.yml 接入真实物理 FTP 服务全真自验"]
     end
 ```
 
 ### 1. 样例工程 Web 化与 4 大高内聚领域控制器
-- 引入 `ateng-boot-web` 基础设施，解耦为 4 大业务领域 `@RestController`：
-  - `FtpDocumentController` (`/sample/ftp/document/*`)：覆盖单文件全生命周期操作与元数据检索；
-  - `FtpBatchSyncController` (`/sample/ftp/sync/*`)：覆盖多层级目录递归批量同步与弹性容错聚合；
-  - `FtpTransferController` (`/sample/ftp/transfer/*`)：覆盖大文件流式传输、防抖节流进度监听与内存防爆守卫；
-  - `FtpGovernanceController` (`/sample/ftp/governance/*`)：覆盖主备连通性探针、动态切源与连接池运行时治理。
+- 引入 `ateng-boot-web` 基础设施，解耦为 4 大业务领域 `@RestController`（共 30 个 REST 端点）：
+  - `FtpDocumentController` (`/sample/ftp/document/*`)：覆盖单文件全生命周期操作、MLSD 元数据检索与零落盘流式摘要计算/比对；
+  - `FtpBatchSyncController` (`/sample/ftp/sync/*`)：覆盖多层级目录递归批量同步、Fail-Safe 容错聚合与对账就绪信标伴随上传；
+  - `FtpTransferController` (`/sample/ftp/transfer/*`)：覆盖大文件流式传输、双向断点续传、防抖节流进度监听与内存防爆守卫；
+  - `FtpGovernanceController` (`/sample/ftp/governance/*`)：覆盖主备连通性探针、动态切源、运行期节点热注册/注销与连接池运行态指标治理。
 - 严格遵循 `/sample/ftp/<domain>/<action>` 统一 REST 路由规范；
 - 遵循 Zero-Entity-Leakage 契约，入参全部采用专用强类型 DTO，出参统一显式返回强类型 `Result<T>`。
 
-### 2. 10 大强类型 DTO 与 5 大业务 VO 矩阵
+### 2. 15 大强类型 DTO 与 6 大业务 VO 矩阵
 - 入参建立细粒度强类型 DTO 矩阵：
-  - `UploadFileRequest`、`WriteTextRequest`、`AppendTextRequest`、`CopyMoveRequest`、`RenameRequest`、`PathRequest`、`DeleteDirectoryRequest`、`DirectorySyncRequest`、`LargeFileTransferRequest`、`DynamicRoutingRequest`；
+  - `UploadFileRequest`、`WriteTextRequest`、`AppendTextRequest`、`CopyMoveRequest`、`RenameRequest`、`PathRequest`、`DeleteDirectoryRequest`、`DirectorySyncRequest`、`LargeFileTransferRequest`、`ResumeTransferRequest`、`VerifyHashRequest`、`SentinelUploadRequest`、`DynamicRoutingRequest`、`RegisterNodeRequest`、`UnregisterNodeRequest`；
   - 全量字段挂载 JSR-303 注解（`@NotBlank`、`@NotNull`、`@Min`、`@Max`、`@Size` 等），实现传输边界第一道防线 Fail-Fast。
 - 出参提供语义化业务 VO：
-  - `FtpFileInfoVO`、`BatchTransferResultVO`、`TransferFailureItemVO`、`TransferProgressVO`、`FtpPoolStatsVO`；
+  - `FtpFileInfoVO`、`BatchTransferResultVO`、`TransferFailureItemVO`、`TransferProgressVO`、`FtpPoolStatsVO`、`SentinelUploadResultVO`；
   - 彻底杜绝底层 Apache Commons Net 原生 `FTPFile` 或受管内部连接对象泄漏至网络层。
 
 ### 3. Starter 文档 8 级大章收敛与三要素就近闭环
 - 重构 `ateng-boot-ftp/README.md` 为 8 级大章骨架：
-  - **第 0 章 全景速查矩阵**：100% 覆盖核心门面（`FtpTemplate`）、配置前缀（`ateng.boot.ftp.*`）、扩展 SPI（`FtpClientCustomizer`、`FtpKeyStrategy`）与业务错误码（`FTP_CONNECTION_ERROR`、`FTP_FILE_NOT_FOUND`、`FTP_PATH_TRAVERSAL`、`FTP_TRANSFER_TIMEOUT` 等），逐项锚定样例控制器与测试用例；
-  - **第 1-2 章 定位与架构不变量**：提供极简起步配置，集成 Mermaid 架构拓扑图、双重 CWD 复位时序图（借出与归还双重 `cwd("/")` 复位）与原子上传状态机（写入 `.tmp` $\to$ 流完整闭合 $\to$ 原子 `rename` $\to$ 异常补偿独立清理）；
+  - **第 0 章 全景速查矩阵**：100% 覆盖核心门面（`FtpTemplate`、`FtpClientRegistry`）、配置前缀（`ateng.boot.ftp.*`）、扩展 SPI（`FtpClientCustomizer`）、模型快照（`FtpFileInfo`、`BatchTransferResult`、`FtpPoolStats`）与全量错误码（`FtpResultCode` `51001`~`51010`），逐项锚定样例控制器与测试用例；
+  - **第 1-2 章 定位与架构不变量**：提供 BOM/独立双模起步坐标，集成 Mermaid 架构拓扑图、双重 CWD 复位时序图（借出与归还双重 `cwd("/")` 复位）与原子上传状态机（写入 `.tmp` $\to$ 流完整闭合 $\to$ 原子 `rename` $\to$ 异常补偿独立清理）；
   - **第 3-6 章 能力领域大章**：各能力领域独立成章，同屏就近闭环“专属 YAML + 真实 Sample Java + 机制边界防坑”；
-  - **第 7-8 章 生产扩展与全量配置字典**：FTPS 安全加密、自定义 SPI、`execute` 逃生通道、路径穿越过滤与全量配置字典表。
-- 重构 Sample `README.md` 为标准 **四段式极简体验卡**（端口启动、双模测试、24 项 cURL 体验矩阵、端到端回归命令）。
+  - **第 7-8 章 生产扩展与全量配置字典**：FTPS 安全加密（与 `FtpsProperties` 字段 100% 对齐）、`FtpClientCustomizer` SPI、`@ConditionalOnMissingBean` 覆盖接管、`execute` 逃生通道、路径穿越过滤与真实默认值 YAML 配置字典表。
+- 重构 Sample `README.md` 为标准 **四段式极简体验卡**（端口启动、双模测试与 `EmbeddedFtpServerConfig` 说明、31 项 cURL 体验矩阵、端到端回归命令）。
 
 ### 4. 端到端全自洽双模测试守护
-- 编写 `SampleFtpWebIntegrationTest`，基于 Spring MockMvc 与内嵌 `FakeFtpServer`（动态端口分配与 `@DynamicPropertySource` 动态绑定），覆盖 4 大控制器 24 个端点的全真 HTTP 交互，确保 CI 离线自洽 100% 全绿；
+- 在 `ateng-boot-sample-ftp` 中新增 `@Profile("!local")` 的 `EmbeddedFtpServerConfig`，使得离线直接运行 Sample Web 应用或回归测试均无需外部 FTP 依赖即可在本地拉起嵌入式 `FakeFtpServer`；
+- 编写 `SampleFtpWebIntegrationTest`，基于 Spring MockMvc 与内嵌 `FakeFtpServer`（动态端口分配与 `@DynamicPropertySource` 动态绑定），完整覆盖 4 大控制器 30 个 REST 端点（含断点续传、零落盘哈希计算/比对、对账信标伴随上传与动态节点注册/注销）及 15 个强类型 DTO、6 个业务 VO 契约的全真 HTTP 交互，确保 CI 离线自洽 100% 全绿；
 - 保留 `application-local.example.yml` 模板，支持通过真实物理 FTP 服务进行联调与压力验证。
 
 ---
@@ -81,13 +82,13 @@ flowchart TD
 ## 权衡与收益考量 (Consequences)
 
 ### 正向收益
-1. **交互体验与上手效率质的飞跃**：开发者可在 1 分钟内通过 24 条开箱即用的 cURL 命令直接验证 FTP 文件操作、批量同步、大文件传输与多节点切换，学习与排查成本极低；
-2. **契约强健与边界防卫完备**：10 大专用强类型 DTO 矩阵杜绝了长参数与数据泥团隐患，JSR-303 格式校验在接入层直接拦截非法路径与越界数值，彻底保护底层 FTP 协议栈；
-3. **架构资产标准化**：完全满足全仓库 12 项准出自检清单与 5D 文档标准，统一了全工程 Starter/Sample 的交互体验模式；
+1. **交互体验与上手效率质的飞跃**：开发者可在 1 分钟内通过 31 条开箱即用的 cURL 命令直接验证 FTP 文件生命周期、批量同步与信标伴随上传、大文件双向断点续传与流式摘要校验，以及运行期动态多节点注册治理，学习与排查成本极低；
+2. **契约强健与边界防卫完备**：15 大专用强类型 DTO 矩阵杜绝了长参数与数据泥团隐患，JSR-303 格式校验在接入层直接拦截非法路径与越界数值，彻底保护底层 FTP 协议栈；
+3. **架构资产标准化与配置真理源对齐**：消除过时 FTPS 虚构配置与连接池默认值偏差，完全对齐 `FtpClientCustomizer` SPI、`FtpPoolStats` 观测快照、全量 `FtpResultCode`（`51001`~`51010`）及仓库 12 项准出自检清单；
 4. **CI 稳定零抖动**：测试套件基于 `FakeFtpServer` 随机动态端口，并发执行互不干扰，100% 离线秒级全绿。
 
 ### 妥协与成本
-1. **模型资产数量增加**：新增 10 个 DTO 与 5 个 VO 类文件，工程资产数增加，但换来了绝对的架构清晰度与类型安全；
+1. **模型资产数量增加**：扩展至 15 个 DTO 与 6 个 VO 类文件，工程资产数增加，但换来了绝对的架构清晰度与类型安全；
 2. **样例依赖增加**：Sample 引入了 `ateng-boot-web` 依赖，但在 `-DskipSamples` 与 `<maven.deploy.skip>true</maven.deploy.skip>` 隔离策略守护下，绝不影响 Starter 本身的纯净轻量。
 
 ---
@@ -95,5 +96,5 @@ flowchart TD
 ## 演进落地状态与交付审计 (Delivery & Verification Audit)
 
 - **当前状态**：`Accepted`
-- **关联工单**：#856（Parent Spec）、#857（Sample Web Controller & DTO/VO Matrix）、#858（Starter 5D README & Sample 4-Section Card）、#859（ADR-0096 & Domain Glossary）
-- **前置决策演进 (Superseding Note)**：本决策全面演进并深化了 [ADR-0043](./0043-ftp-and-ftps-connection-pooling-and-resilient-client-architecture.md) 与 [ADR-0070](./0070-ftp-full-scenario-hardening-directory-sync-and-progress-monitoring-architecture.md)。原 ADR-0070 中关于“移除 Sample Web Controller、重构为纯后台 ScenarioService”的样例形态决策，正式由本 ADR 与《工业级文档与样例工程标准规范》（`docs/agents/documentation-specification.md`）取代。
+- **关联工单**：#856（Parent Spec）、#857（Sample Web Controller & DTO/VO Matrix）、#858（Starter 5D README & Sample 4-Section Card）、#859（ADR-0096 & Domain Glossary）；后续全模块工业级体检扩容闭环 #1020（Parent）、#1027（连接池/路由/`FtpClientCustomizer`/根目录守卫与编码矫正）、#1028（运行期动态节点注册/注销与 `FtpPoolStats` 观测闭环）、#1029（双向断点续传/零落盘流式摘要/信标伴随上传）、#1030（5D 文档/四段式体验卡/领域词表与 ADR 收敛）。
+- **前置决策演进 (Superseding Note)**：本决策全面演进并深化了 [ADR-0043](./0043-ftp-and-ftps-connection-pooling-and-resilient-client-architecture.md) 与 [ADR-0070](./0070-ftp-full-scenario-hardening-directory-sync-and-progress-monitoring-architecture.md)。原 ADR-0070 中关于“移除 Sample Web Controller、重构为纯后台 ScenarioService”的样例形态决策，正式由本 ADR 与《工业级文档与样例工程标准规范》（`../agents/documentation-specification.md`）取代。
