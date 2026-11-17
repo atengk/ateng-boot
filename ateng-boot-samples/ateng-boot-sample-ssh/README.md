@@ -1,6 +1,6 @@
 # ateng-boot-sample-ssh SSH 与 SFTP 基础设施体验工程
 
-> 专注于演示与自验 `ateng-boot-ssh` 核心特性在真实业务场景下的开箱使用：涵盖命令执行与安全提权、集群批量巡检与动态切源、受管本地端口转发与跳板机级联穿透、SFTP 文档生命周期与目录双向镜像同步、以及 WebSSH 交互式伪终端会话。
+> 专注于演示与自验 `ateng-boot-ssh` 核心特性在真实业务场景下的开箱使用：涵盖命令执行与高危防火墙拦截、有界输出截断、集群批量巡检与会话池快照、双向受管端口转发（`LOCAL`/`REMOTE`）与跳板机级联穿透、SFTP 全生命周期与软链接/断点续传下载、以及 WebSSH 交互式伪终端会话。
 
 ---
 
@@ -29,19 +29,23 @@
 
 | 领域分类 | Controller 类 | 功能场景 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- | :--- | :--- |
-| **命令执行** | `SshCommandController` | 同步执行远程短命令 | `POST /sample/ssh/command/exec` | `curl -s -X POST "http://localhost:8080/sample/ssh/command/exec" -H "Content-Type: application/json" -d '{"command":"uname -a"}'` |
+| **命令执行** | `SshCommandController` | 同步执行远程短命令（支持有界输出截断与高危命令阻断） | `POST /sample/ssh/command/exec` | `curl -s -X POST "http://localhost:8080/sample/ssh/command/exec" -H "Content-Type: application/json" -d '{"command":"uname -a","maxOutputBytes":65536}'` |
 | **命令执行** | `SshCommandController` | 异步下发命令 (Future) | `POST /sample/ssh/command/exec-async` | `curl -s -X POST "http://localhost:8080/sample/ssh/command/exec-async" -H "Content-Type: application/json" -d '{"command":"hostname"}'` |
 | **命令执行** | `SshCommandController` | 原生 Sudo 提权与密码抹零 | `POST /sample/ssh/command/exec-sudo` | `curl -s -X POST "http://localhost:8080/sample/ssh/command/exec-sudo" -H "Content-Type: application/json" -d '{"command":"whoami","sudoPassword":"YOUR_SUDO_PASSWORD"}'` |
 | **命令执行** | `SshCommandController` | 多行复杂运维脚本管道执行 | `POST /sample/ssh/command/exec-script` | `curl -s -X POST "http://localhost:8080/sample/ssh/command/exec-script" -H "Content-Type: application/json" -d '{"scriptBody":"echo line1\necho line2"}'` |
 | **命令执行** | `SshCommandController` | 长任务滚动日志按行流式消费 | `POST /sample/ssh/command/stream-log` | `curl -s -X POST "http://localhost:8080/sample/ssh/command/stream-log" -H "Content-Type: application/json" -d '{"command":"for i in 1 2 3; do echo item $i; done"}'` |
 | **命令执行** | `SshCommandController` | 节点连通性轻量无害探针 | `GET /sample/ssh/command/probe-health` | `curl -s -X GET "http://localhost:8080/sample/ssh/command/probe-health?serverName=node1"` |
 | **集群治理** | `SshClusterController` | 集群多节点高级批量并发巡检 | `POST /sample/ssh/cluster/batch-inspect` | `curl -s -X POST "http://localhost:8080/sample/ssh/cluster/batch-inspect" -H "Content-Type: application/json" -d '{"serverNames":["node1","node2"],"command":"uptime","concurrency":2,"failFast":false}'` |
-| **集群治理** | `SshClusterController` | CMDB 纯内存资产动态直连 | `POST /sample/ssh/cluster/dynamic-connect` | `curl -s -X POST "http://localhost:8080/sample/ssh/cluster/dynamic-connect" -H "Content-Type: application/json" -d '{"host":"127.0.0.1","port":2222,"username":"testuser","password":"testpassword","command":"id"}'` |
+| **集群治理** | `SshClusterController` | CMDB 纯内存资产动态直连 | `POST /sample/ssh/cluster/dynamic-connect` | `curl -s -X POST "http://localhost:8080/sample/ssh/cluster/dynamic-connect" -H "Content-Type: application/json" -d '{"host":"127.0.0.1","port":2222,"username":"testuser","password":"YOUR_PASSWORD","command":"id"}'` |
 | **集群治理** | `SshClusterController` | 线程级上下文透明切源执行 | `POST /sample/ssh/cluster/context-switch` | `curl -s -X POST "http://localhost:8080/sample/ssh/cluster/context-switch" -H "Content-Type: application/json" -d '{"serverName":"node1","command":"hostname"}'` |
-| **受管隧道** | `SshTunnelController` | 开启本地端口转发隧道 | `POST /sample/ssh/tunnel/open-tunnel` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/open-tunnel" -H "Content-Type: application/json" -d '{"localPort":0,"remoteHost":"127.0.0.1","remotePort":80}'` |
-| **受管隧道** | `SshTunnelController` | 对称安全释放端口转发隧道 | `POST /sample/ssh/tunnel/close-tunnel` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/close-tunnel" -H "Content-Type: application/json" -d '{"localPort":8088}'` |
+| **集群治理** | `SshClusterController` | 查询会话池运行态统计快照 (`SshPoolStats`) | `GET /sample/ssh/cluster/pool-stats` | `curl -s -X GET "http://localhost:8080/sample/ssh/cluster/pool-stats"` |
+| **受管隧道** | `SshTunnelController` | 开启本地端口转发隧道 (`ssh -L`) | `POST /sample/ssh/tunnel/open-tunnel` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/open-tunnel" -H "Content-Type: application/json" -d '{"localPort":0,"remoteHost":"127.0.0.1","remotePort":80}'` |
+| **受管隧道** | `SshTunnelController` | 对称安全释放本地端口转发隧道 | `POST /sample/ssh/tunnel/close-tunnel` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/close-tunnel" -H "Content-Type: application/json" -d '{"localPort":8088}'` |
+| **受管隧道** | `SshTunnelController` | 开启远程端口转发隧道 (`ssh -R`) | `POST /sample/ssh/tunnel/open-remote-tunnel` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/open-remote-tunnel" -H "Content-Type: application/json" -d '{"remotePort":0,"localHost":"127.0.0.1","localPort":8080}'` |
+| **受管隧道** | `SshTunnelController` | 对称安全释放远程端口转发隧道 | `POST /sample/ssh/tunnel/close-remote-tunnel` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/close-remote-tunnel" -H "Content-Type: application/json" -d '{"remotePort":18080}'` |
 | **受管隧道** | `SshTunnelController` | ProxyJump 两级跳板机级联穿透 | `POST /sample/ssh/tunnel/proxy-jump` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/proxy-jump" -H "Content-Type: application/json" -d '{"targetHost":"172.16.0.10","targetPort":22,"jump1Host":"10.0.0.1","jump1Port":22,"jump2Host":"192.168.1.1","jump2Port":22,"command":"uptime"}'` |
-| **受管隧道** | `SshTunnelController` | 端口转发真实 TCP 流量交互 | `POST /sample/ssh/tunnel/tcp-echo` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/tcp-echo" -H "Content-Type: application/json" -d '{"remoteHost":"127.0.0.1","remotePort":7777,"message":"ping"}'` |
+| **受管隧道** | `SshTunnelController` | 本地端口转发真实 TCP 流量交互 | `POST /sample/ssh/tunnel/tcp-echo` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/tcp-echo" -H "Content-Type: application/json" -d '{"remoteHost":"127.0.0.1","remotePort":7777,"message":"ping"}'` |
+| **受管隧道** | `SshTunnelController` | 远程端口转发反向 TCP 流量穿透 | `POST /sample/ssh/tunnel/remote-tcp-echo` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/remote-tcp-echo" -H "Content-Type: application/json" -d '{"remotePort":0,"localHost":"127.0.0.1","localPort":7777,"message":"reverse-ping"}'` |
 | **SFTP 文档** | `SftpDocumentController` | 表单文件原子上传 (.tmp+rename) | `POST /sample/ssh/sftp-doc/upload` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/upload" -F "file=@local.txt" -F "remotePath=/upload/remote.txt"` |
 | **SFTP 文档** | `SftpDocumentController` | 对称流式下载远端文件 | `GET /sample/ssh/sftp-doc/download` | `curl -s -X GET "http://localhost:8080/sample/ssh/sftp-doc/download?remotePath=/upload/remote.txt" -o downloaded.txt` |
 | **SFTP 文档** | `SftpDocumentController` | 纯文本与 JSON 快捷写入 | `POST /sample/ssh/sftp-doc/write-text` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/write-text" -H "Content-Type: application/json" -d '{"remotePath":"/app/config.json","content":"{\"env\":\"prod\"}"}'` |
@@ -49,6 +53,8 @@
 | **SFTP 文档** | `SftpDocumentController` | 文件尾部增量追加写 | `POST /sample/ssh/sftp-doc/append-text` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/append-text" -H "Content-Type: application/json" -d '{"remotePath":"/app/audit.log","content":"user logged in\n"}'` |
 | **SFTP 文档** | `SftpDocumentController` | 跨目录安全平移文件 | `POST /sample/ssh/sftp-doc/copy-move` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/copy-move" -H "Content-Type: application/json" -d '{"sourcePath":"/app/config.json","targetPath":"/backup/config.json"}'` |
 | **SFTP 文档** | `SftpDocumentController` | 原地原子重命名文件 | `POST /sample/ssh/sftp-doc/rename` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/rename" -H "Content-Type: application/json" -d '{"oldPath":"/backup/config.json","newPath":"/backup/config-v1.json"}'` |
+| **SFTP 文档** | `SftpDocumentController` | 创建远程符号链接 (`createSymlink`) | `POST /sample/ssh/sftp-doc/symlink` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/symlink" -H "Content-Type: application/json" -d '{"linkPath":"/releases/current/app.conf","targetPath":"/releases/v1.0/app.conf"}'` |
+| **SFTP 文档** | `SftpDocumentController` | 读取远程符号链接目标 (`readLink`) | `GET /sample/ssh/sftp-doc/read-link` | `curl -s -X GET "http://localhost:8080/sample/ssh/sftp-doc/read-link?linkPath=/releases/current/app.conf"` |
 | **SFTP 文档** | `SftpDocumentController` | 查询文件详细元数据 | `GET /sample/ssh/sftp-doc/info` | `curl -s -X GET "http://localhost:8080/sample/ssh/sftp-doc/info?remotePath=/backup/config-v1.json"` |
 | **SFTP 文档** | `SftpDocumentController` | 探测远程文件路径是否存在 | `GET /sample/ssh/sftp-doc/exists` | `curl -s -X GET "http://localhost:8080/sample/ssh/sftp-doc/exists?remotePath=/backup/config-v1.json"` |
 | **SFTP 文档** | `SftpDocumentController` | 单文件确定性物理删除 | `POST /sample/ssh/sftp-doc/delete` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/delete" -H "Content-Type: application/json" -d '{"remotePath":"/backup/config-v1.json"}'` |
@@ -56,6 +62,7 @@
 | **目录同步** | `SftpSyncController` | 目录树整包递归镜像下载同步 | `POST /sample/ssh/sftp-sync/download-dir` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-sync/download-dir" -H "Content-Type: application/json" -d '{"remoteDir":"/remote/sync-data","localDir":"/tmp/downloaded-data"}'` |
 | **目录同步** | `SftpSyncController` | DFS 递归清空删除非空目录树 | `POST /sample/ssh/sftp-sync/delete-dir` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-sync/delete-dir" -H "Content-Type: application/json" -d '{"remotePath":"/remote/sync-data","recursive":true}'` |
 | **目录同步** | `SftpSyncController` | 大文件带节流防抖进度流式上传 | `POST /sample/ssh/sftp-sync/upload-large` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-sync/upload-large" -H "Content-Type: application/json" -d '{"remotePath":"/remote/bigfile.bin","sizeKb":512}'` |
+| **目录同步** | `SftpSyncController` | 大文件断点续传下载 (`downloadResume`) | `POST /sample/ssh/sftp-sync/download-resume` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-sync/download-resume" -H "Content-Type: application/json" -d '{"remotePath":"/remote/bigfile.bin","localPath":"/tmp/bigfile.bin"}'` |
 | **WebSSH** | `SshTerminalController` | WebSSH 终端规格与诊断指标 | `GET /sample/ssh/terminal/info` | `curl -s -X GET "http://localhost:8080/sample/ssh/terminal/info"` |
 | **WebSSH** | `WebSshWebSocketHandler` | 原生 WebSocket 实时终端交互 | `WS /ws/ssh` | 浏览器直连或使用 `wscat -c "ws://localhost:8080/ws/ssh"` |
 

@@ -101,5 +101,16 @@ flowchart TD
 ## 演进落地状态与交付审计 (Delivery & Verification Audit)
 
 - **当前状态**：`Accepted`
-- **关联工单**：#860（Parent Spec）、#861（Sample Web Controller & DTO/VO Matrix）、#862（Starter 5D README & Sample 4-Section Card）、#863（ADR-0097 & Domain Glossary）
+- **关联工单**：#860（Parent Spec）、#861（Sample Web Controller & DTO/VO Matrix）、#862（Starter 5D README & Sample 4-Section Card）、#863（ADR-0097 & Domain Glossary）、#1019（Parent Hardening Spec）、#1021~#1026（虚拟线程防 Pinning、命令拦截器 SPI、远程端口转发、SFTP 全量具名路由/软链接/断点续传及 5D 文档同步验收）
 - **前置决策演进 (Superseding Note)**：本决策全面演进并深化了 [ADR-0044](./0044-ssh-and-sftp-remote-governance-architecture.md) 与 [ADR-0071](./0071-ssh-and-sftp-full-scenario-hardening-and-governance-architecture.md)。原 ADR-0071 中关于“移除 Sample Web Controller、重构为纯后台 ScenarioService”的样例形态决策，正式由本 ADR 与《工业级文档与样例工程标准规范》（`docs/agents/documentation-specification.md`）取代。
+
+---
+
+## 增量演进：全场景加固体验端点与 DTO/VO 矩阵扩容 (2026-11-17)
+
+在既有 17 DTO / 6 VO / 25 端点 / 14 维错误码基线之上，本轮加固与扩容将 Sample 契约扩展至 **24 个 DTO、8 个 VO、36 项一键体验入口与 17 维错误码（`56001`~`56017`）**：
+
+1. **命令执行与防火墙体验增强（`SshCommandController`）**：`SshCommandRequest` 新增 `maxOutputBytes` 支持单次有界截断演练，`SshExecResultVO` 新增 `truncated` 标记字段；对高危命令下发自动返回业务状态码 `56017`（`COMMAND_FORBIDDEN`）。
+2. **集群会话池运行态观测（`SshClusterController`）**：新增 `GET /sample/ssh/cluster/pool-stats` 端点与不可变 `SshPoolStatsVO`（封装 `maxSessions`、`poolSize`、`activeSessions`、`totalCreated`、`totalHits`、`totalEvicted`、`totalFailed`、`hitRate`）。
+3. **远程端口转发反向穿透闭环（`SshTunnelController`）**：新增 `POST /sample/ssh/tunnel/open-remote-tunnel`、`POST /sample/ssh/tunnel/close-remote-tunnel` 与 `POST /sample/ssh/tunnel/remote-tcp-echo` 端点，配套 `SshRemoteTunnelOpenRequest`、`SshRemoteTunnelCloseRequest` 与 `SshRemoteTcpEchoRequest`；`SshTunnelInfoVO` 升级携带 `TunnelMode` 字段。
+4. **SFTP 软链接治理与断点续传下载（`SftpDocumentController` & `SftpSyncController`）**：`SftpDocumentController` 新增 `POST /sample/ssh/sftp-doc/symlink`（`SftpSymlinkRequest`）与 `GET /sample/ssh/sftp-doc/read-link`；`SftpSyncController` 新增 `POST /sample/ssh/sftp-sync/download-resume`（`SftpDownloadResumeRequest` + `SftpDownloadResumeResultVO`，含本地路径防穿越校验）。

@@ -1,6 +1,6 @@
 # ateng-boot-ssh 基础设施 Starter
 
-> 工业级 SSH 远程命令执行、SFTP 安全文件传输与 WebSSH 交互终端基础设施 Starter，基于 Apache MINA SSHD 原生异步驱动内核构建。全面涵盖四位一体拓扑路由（缺省单机 / YAML 命名字典 / 线程动态切源 / CMDB 纯内存直连）、LRU/TTL 活跃心跳会话缓存池（`SshSessionPool`）、RFC 4254 孤儿进程超时主动信号防卫（`TERM`/`INT`）、无 TTY 原生 Sudo 提权安全管道与密码即时内存抹零、Core 四维上下文全链路透传集群并发巡检（`execBatch` / `execBatchAdvanced`）、无害轻量连通性探针（`testConnection`）、受管本地端口转发（`SshTunnelHandle`）、ProxyJump 级联跳板机穿透、SFTP 临时文件原子上传防脏读（`.uploading.tmp` + `rename`）、流式传输高频节流防抖（`SftpProgressThrottler`）、深度优先（DFS）递归删除非空目录树、双向目录树整包同步、以及基于 Spring 原生 WebSocket 驱动的 WebSSH 交互式 PTY 伪终端会话（`SshShellHandle`）。
+> 工业级 SSH 远程命令执行、SFTP 安全文件传输与 WebSSH 交互终端基础设施 Starter，基于 Apache MINA SSHD 原生异步驱动内核构建。全链路采用 `ReentrantLock` 消除 JDK 21+ 虚拟线程 Carrier Pinning，全面涵盖四位一体拓扑路由（缺省单机 / YAML 命名字典 / 线程动态切源 / CMDB 纯内存直连）、LRU/TTL 活跃心跳会话缓存池与运行态观测快照（`SshSessionPool` / `SshPoolStats`）、YAML 声明式 `jump-host` 环路防卫与动态注销驱逐（`SshClientRegistry.unregister`）、同步有界输出防 OOM（`BoundedByteArrayOutputStream`）、POSIX 工作目录转义、`SshCommandInterceptor` 高危命令防火墙、RFC 4254 孤儿进程超时信号防卫（`TERM`/`INT`）、无 TTY 原生 Sudo 提权管道与口令抹零、Core 四维上下文集群并发巡检（`execBatchAdvanced`）、双向受管端口转发（`LOCAL` / `REMOTE`）、SFTP 全量具名节点路由/原子上传/符号链接治理/大文件断点续传下载/进度防抖/双向目录树同步，以及基于 Spring 原生 WebSocket 驱动的 WebSSH 交互式伪终端会话（`SshShellHandle`）。
 
 ---
 
@@ -8,40 +8,46 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 模型 / SPI | 关键配置项 (`ateng.boot.ssh.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Controller) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **命令执行** | 同步短命令执行契约 | `SshTemplate` | `command-timeout` | `exec(String)` / `exec(String, SshExecOptions)` / `exec(String, String)` / `exec(SshServerInfo, String)`，返回强类型 `SshExecResult`（含 `exitCode`、`stdout`、`stderr`、`duration`） | `SshTemplateCommandExecutionTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
-| **命令执行** | 非阻塞异步执行 | `SshTemplate` | `command-timeout` | `execAsync(String)` / `execAsync(String, SshExecOptions)` / `execAsync(String, String)` / `execAsync(SshServerInfo, String)`，返回 `CompletableFuture<SshExecResult>`，在 Core 受管异步线程池调度 | `SshTemplateAsyncExecutionTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
+| **命令执行** | 同步短命令执行契约 | `SshTemplate`<br>`SshExecOptions`<br>`SshExecResult` | `command-timeout`<br>`max-output-size` | `exec(String)` / `exec(String, SshExecOptions)` / `exec(String, String)` / `exec(SshServerInfo, String)`，返回强类型 `SshExecResult`（含 `exitCode`、`stdout`、`stderr`、`duration`、`truncated`） | `SshTemplateCommandExecutionTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
+| **命令执行** | 有界输出防 OOM 与 POSIX 目录转义 | `BoundedByteArrayOutputStream`<br>`SshCommandExecutor` | `max-output-size` | 限制同步命令 `stdout`/`stderr` 最大内存缓冲（默认 `10MB`），超限安全截断并继续排空通道，`SshExecResult.isTruncated()` 置为 `true`；`workingDir` 拦截 `\0`/`\r`/`\n` 并执行 POSIX 单引号安全转义 | `BoundedByteArrayOutputStreamTest`<br>`SshCommandExecutorTest`<br>`SshTemplateCommandExecutionTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
+| **命令执行** | 命令拦截器 SPI 与高危命令防火墙 | `SshCommandInterceptor`<br>`HighRiskCommandInterceptor` | `dangerous-command-guard-enabled`<br>`dangerous-command-patterns` | SPI 提供 `beforeExecute` / `afterExecute` / `onError`；内置最高优先级守卫拦截 `rm -rf /`、`mkfs`、`dd` 覆写、Fork 炸弹、`shutdown`/`reboot` 及自定义黑名单正则，阻断码 `56017 (COMMAND_FORBIDDEN)` | `AtengSshAutoConfigurationTest`<br>`SshTemplateCommandExecutionTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
+| **命令执行** | 非阻塞异步执行 | `SshTemplate` | `command-timeout` | `execAsync(String)` / `execAsync(String, SshExecOptions)` / `execAsync(String, String)` / `execAsync(SshServerInfo, String)` / `execScriptAsync(...)`，返回 `CompletableFuture<SshExecResult>`，在 Core 受管异步线程池调度 | `SshTemplateProbeAndAsyncTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
 | **命令执行** | 原生 Sudo 提权安全管道 | `SshTemplate` | `command-timeout` | `execSudo(String, String)` / `execSudo(String, char[])` / `execSudo(String, String, String)` / `execSudo(SshServerInfo, String, String)`，底层构建 `-S -p ''` 安全管道，口令发送完毕后立即执行 `Arrays.fill` 擦除抹零 | `SshTemplateSudoAndBatchTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
 | **命令执行** | 多行脚本管道执行 | `SshTemplate` | `command-timeout` | `execScript(String)` / `execScript(String, String)` / `execScript(SshServerInfo, String)`，自动将 Windows CRLF 规范化为 Unix LF，打包为远端 Shell 管道执行 | `SshTemplateCommandExecutionTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
 | **命令执行** | 长任务流式按行消费 | `SshTemplate`<br>`Consumer<String>` | `command-timeout` | `execStream(String, Consumer<String>)` / `execStream(String, Consumer<String>, Consumer<String>)` / `execStream(SshServerInfo, String, Consumer<String>, Consumer<String>, SshExecOptions)`，按行回调消费远端滚动日志，防 OOM，返回退出码 | `LineStreamingOutputStreamTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
-| **命令执行** | 轻量无害连通性探针 | `SshTemplate` | `connect-timeout`<br>`auth-timeout` | `testConnection(String)` / `testConnection(SshServerInfo)`，仅执行 TCP 握手与 SSH 凭据身份验证协商即刻断开，不分配伪终端或执行进程，返回 `boolean` | `SshTemplateConnectivityProbeTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
-| **命令执行** | 瞬态单次任务隔离执行 | `SshTemplate`<br>`SshSessionPool` | `connect-timeout`<br>`auth-timeout` | `execOnce(SshServerInfo, String)` / `execOnce(SshServerInfo, String, SshExecOptions)`，执行完毕立即确定性物理断开关闭底层连接，零连接与句柄残留 | `ProxyJumpCascadingTest`<br>`SampleSshIntegrationTest` |
-| **集群治理** | 集群多主机基础并发巡检 | `SshTemplate` | `command-timeout` | `execBatch(Collection<SshServerInfo>, String)` / `execBatchNamed(Collection<String>, String)` / `execSudoBatch(Collection<SshServerInfo>, String, String)`，联动 Core 受管线程池并透传四维快照 | `SshTemplateSudoAndBatchTest`<br>`SampleSshIntegrationTest` |
-| **集群治理** | 集群高级批量巡检聚合 | `SshTemplate`<br>`SshBatchOptions`<br>`SshBatchExecResult` | `command-timeout` | `execBatchAdvanced(Collection<SshServerInfo>, String, SshBatchOptions)` / `execBatchAdvancedNamed(Collection<String>, String, SshBatchOptions)`，返回强类型 `SshBatchExecResult`（含成功/失败计数、明细字典、`isAllSuccess()`、`throwIfAnyFailed()`） | `SshBatchAdvancedExecutionTest`<br>`SshClusterController`<br>`SampleSshWebIntegrationTest` |
-| **集群治理** | CMDB 纯内存资产直连 | `SshServerInfo` | - | 不可变值对象，支持动态指定主机、端口、用户名、口令/私钥与主机公钥校验策略，无需提前在配置文件中声明 | `SshServerInfoTest`<br>`SshClusterController`<br>`SampleSshWebIntegrationTest` |
-| **集群治理** | 线程级动态切源路由 | `SshContextHolder` | `servers.*` | `setServer(String)` / `setServerInfo(SshServerInfo)` / `getServer()` / `getServerInfo()` / `runWith(String, Supplier<T>)` / `runWithInfo(SshServerInfo, Supplier<T>)` / `clear()`，支持栈式嵌套作用域并在 `finally` 确定性复位现场 | `SshContextHolderTest`<br>`SshClusterController`<br>`SampleSshWebIntegrationTest` |
-| **集群治理** | 命名多主机受管注册表 | `SshClientRegistry` | `servers.*` | `register(String, SshServerInfo)` / `getServer(String)` / `getDefaultServer()` / `containsServer(String)` / `getServerNames()`，集中纳管 YAML 声明的多主机资产字典 | `SshClientRegistryTest`<br>`SampleSshIntegrationTest` |
-| **网络穿透** | 受管本地端口转发 | `SshTemplate`<br>`SshTunnelHandle` | `connect-timeout` | `openLocalTunnel(int, String, int)` / `openLocalTunnel(String, int, String, int)` / `openLocalTunnel(SshServerInfo, int, String, int)`，支持操作系统动态分配可用随机端口 (`localPort=0`) | `SshTemplateTunnelTest`<br>`SshTunnelController`<br>`SampleSshWebIntegrationTest` |
-| **网络穿透** | 受管隧道生命周期句柄 | `SshTunnelHandle`<br>`AutoCloseable` | - | 实现 `AutoCloseable`，提供 `close()`、`isAlive()`、`isClosed()`、`getLocalPort()`、`getLocalHost()`、`getRemoteHost()`、`getRemotePort()`，幂等安全释放本地监听 Socket | `SshTunnelHandleTest`<br>`SshTunnelController`<br>`SampleSshWebIntegrationTest` |
-| **网络穿透** | ProxyJump 跳板机穿透 | `SshServerInfo`<br>`SshSessionPool` | `connect-timeout`<br>`auth-timeout` | `SshServerInfo.builder().jumpHost(...)`，递归解析级联跳板机拓扑，通过跳板机会话开启临时转发直连目标，双向生命周期级联清理 | `ProxyJumpCascadingTest`<br>`SshTunnelController`<br>`SampleSshWebIntegrationTest` |
-| **网络穿透** | 隧道真实 TCP 流量交互 | `SshTunnelHandle` + `Socket` | - | 本地客户端向本地转发端口发起 TCP 读写，成功透传至远端隔离内网服务并接收回显数据 | `SshScenarioService`<br>`SshTunnelController`<br>`SampleSshWebIntegrationTest` |
-| **SFTP 传输** | SFTP 核心操作门面 | `SftpTemplate`<br>`SftpProperties` | `sftp.buffer-size`<br>`sftp.transfer-timeout`<br>`sftp.atomic-upload-enabled`<br>`sftp.atomic-upload-suffix` | `upload(...)`、`download(...)`、`append(...)`、`rename(...)`、`move(...)`、`readString(...)`、`writeString(...)`、`exists(...)`、`stat(...)`、`delete(...)`、`chmod(...)`、`mkdir(...)`、`mkdirs(...)`，瞬态借还连接 | `SftpTemplateTest`<br>`SftpDocumentController`<br>`SampleSshWebIntegrationTest` |
-| **SFTP 传输** | SFTP 原子上传覆盖防脏读 | `SftpTemplate` | `sftp.atomic-upload-enabled`<br>`sftp.atomic-upload-suffix` | 上传期间写入 `<target>.uploading.tmp`，完全闭合后原子执行 `rename`；发生传输异常自动执行确定性反向清理补偿，根除下游脏读 | `SftpTemplateTest`<br>`SftpDocumentController`<br>`SampleSshWebIntegrationTest` |
-| **SFTP 传输** | 纯文本与配置读写 | `SftpTemplate` | `sftp.buffer-size` | `readString(String)` / `readString(String, Charset)` / `writeString(String, String)` / `writeString(String, String, Charset)`，默认 UTF-8 编码，免除样板流编排 | `SftpTemplateLifecycleMethodsTest`<br>`SftpDocumentController`<br>`SampleSshWebIntegrationTest` |
-| **SFTP 传输** | 文件尾部增量追加写 | `SftpTemplate` | `sftp.buffer-size` | `append(String, InputStream)` / `append(String, InputStream, SftpProgressListener)`，基于原生追加模式向已有文件末尾增量写入 | `SftpTemplateLifecycleMethodsTest`<br>`SftpDocumentController`<br>`SampleSshWebIntegrationTest` |
-| **SFTP 传输** | 原地重命名与跨目录移动 | `SftpTemplate` | - | `rename(String, String)` 原地原子重命名；`move(String, String)` 自动探测目标父目录并跨目录安全平移文件 | `SftpTemplateLifecycleMethodsTest`<br>`SftpDocumentController`<br>`SampleSshWebIntegrationTest` |
-| **SFTP 传输** | 文件元数据查询与存在探测 | `SftpTemplate`<br>`SftpFileInfo` | - | `exists(String)` 探测路径是否存在；`stat(String)` / `list(String)` 返回只读不可变 `SftpFileInfo` 元数据对象 | `SftpTemplateTest`<br>`SftpDocumentController`<br>`SampleSshWebIntegrationTest` |
-| **SFTP 传输** | DFS 递归清空非空目录 | `SftpTemplate` | - | `deleteRecursively(String remotePath)`，深度优先后序遍历递归删除非空目录，内置敏感系统根目录黑名单防卫 | `SftpTemplateTest`<br>`SftpDocumentController`<br>`SftpSyncController`<br>`SampleSshWebIntegrationTest` |
-| **SFTP 传输** | 目录树双向整包同步 | `SftpTemplate` | `sftp.buffer-size` | `uploadDirectory(File, String)` 与 `downloadDirectory(String, File)`，镜像递归整包目录树，环境宿主中立过滤 `.DS_Store`、`desktop.ini` | `SftpTemplateTest`<br>`SftpSyncController`<br>`SampleSshWebIntegrationTest` |
-| **SFTP 传输** | 流式传输进度节流防抖 | `SftpProgressThrottler`<br>`SftpProgressListener` | `sftp.buffer-size` | `SftpProgressThrottler.of(SftpProgressListener, Duration)`，按指定时间间隔防抖节流，抑制高频进度回调引发的 CPU 与日志风暴 | `SftpProgressThrottlerTest`<br>`SftpSyncController`<br>`SampleSshWebIntegrationTest` |
+| **命令执行** | 轻量无害连通性探针 | `SshTemplate` | `connect-timeout`<br>`auth-timeout` | `testConnection(String)` / `testConnection(SshServerInfo)` / `testConnectionOrThrow(...)`，仅执行 TCP 握手与 SSH 凭据身份验证协商即刻断开，不分配伪终端或执行进程 | `SshTemplateProbeAndAsyncTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
+| **命令执行** | 瞬态单次任务隔离执行与会话回调 | `SshTemplate`<br>`SshSessionPool`<br>`SshSessionCallback` | `connect-timeout`<br>`auth-timeout` | `execOnce(...)` / `execSudoOnce(...)` 执行完毕即物理断开零句柄残留；`execute(SshSessionCallback<T>)` / `execute(SshServerInfo, SshSessionCallback<T>)` / `execute(SshServerInfo, SshSessionAction)` 在池化会话上安全执行自定义底层操作 | `ProxyJumpCascadingTest`<br>`SshTemplateCommandExecutionTest`<br>`SampleSshIntegrationTest` |
+| **集群治理** | 集群多主机基础并发巡检 | `SshTemplate` | `command-timeout` | `execBatch(...)` / `execBatchNamed(...)` / `execSudoBatch(...)`，联动 Core 受管线程池并透传四维快照 | `SshTemplateSudoAndBatchTest`<br>`SampleSshIntegrationTest` |
+| **集群治理** | 集群高级批量巡检聚合 | `SshTemplate`<br>`SshBatchOptions`<br>`SshBatchExecResult` | `command-timeout` | `execBatchAdvanced(...)` / `execBatchAdvancedNamed(...)`，返回强类型 `SshBatchExecResult`（含成功/失败计数、明细字典、`isAllSuccess()`、`throwIfAnyFailed()`） | `SshTemplateSudoAndBatchTest`<br>`SshClusterController`<br>`SampleSshWebIntegrationTest` |
+| **集群治理** | CMDB 纯内存资产直连 | `SshServerInfo` | - | 不可变值对象，支持动态指定主机、端口、用户名、口令/私钥、跳板机与主机公钥校验策略，无需提前在配置文件中声明 | `SshServerInfoTest`<br>`SshClusterController`<br>`SampleSshWebIntegrationTest` |
+| **集群治理** | 线程级动态切源路由 | `SshContextHolder` | `servers.*` | `setServer(String)` / `setServerInfo(SshServerInfo)` / `getServer()` / `getServerInfo()` / `runWith(...)` / `runWithInfo(...)` / `clear()`，支持栈式嵌套作用域并在 `finally` 确定性复位现场 | `SshContextHolderTest`<br>`SshClusterController`<br>`SampleSshWebIntegrationTest` |
+| **集群治理** | 命名多主机受管注册表与注销驱逐 | `SshClientRegistry` | `servers.*`<br>`servers.*.jump-host` | `register(String, SshServerInfo)` / `unregister(String)` / `getServer(String)` / `getDefaultServer()` / `contains(String)` / `getServerNames()` / `addEvictionListener(...)`；注销或覆写时联动 `SshSessionPool::evict` 清理旧连接 | `SshClientRegistryTest`<br>`AtengSshAutoConfigurationTest`<br>`SampleSshIntegrationTest` |
+| **集群治理** | 会话池运行态统计快照 | `SshTemplate`<br>`SshSessionPool`<br>`SshPoolStats` | `pool.*` | `SshTemplate.getPoolStats()` / `SshSessionPool.getStats()`，返回不可变 `SshPoolStats`（`maxSessions`、`poolSize`、`activeSessions`、`totalCreated`、`totalHits`、`totalEvicted`、`totalFailed`、`getHitRate()`） | `SshSessionPoolTest`<br>`SshClusterController`<br>`SampleSshWebIntegrationTest` |
+| **网络穿透** | 受管本地端口转发 (`ssh -L`) | `SshTemplate`<br>`SshTunnelHandle`<br>`TunnelMode` | `connect-timeout` | `openLocalTunnel(int, String, int)` / `openLocalTunnel(String, int, String, int)` / `openLocalTunnel(SshServerInfo, int, String, int)` / `openLocalTunnel(SshServerInfo, SshdSocketAddress, SshdSocketAddress)`，支持 `localPort=0` 动态分配端口 | `SshTemplateTunnelTest`<br>`SshTunnelController`<br>`SampleSshWebIntegrationTest` |
+| **网络穿透** | 受管远程端口转发 (`ssh -R`) | `SshTemplate`<br>`SshTunnelHandle`<br>`TunnelMode` | `connect-timeout` | `openRemoteTunnel(int, String, int)` / `openRemoteTunnel(String, int, String, int)` / `openRemoteTunnel(SshServerInfo, int, String, int)` / `openRemoteTunnel(SshServerInfo, SshdSocketAddress, SshdSocketAddress)`，共享客户端标配 `REMOTE_FORWARDED_ONLY_FILTER` | `SshTemplateTunnelTest`<br>`SshTunnelHandleTest`<br>`SshTunnelController`<br>`SampleSshWebIntegrationTest` |
+| **网络穿透** | 受管隧道生命周期句柄 | `SshTunnelHandle`<br>`TunnelMode`<br>`AutoCloseable` | - | 提供 `getTunnelMode()`（`LOCAL` / `REMOTE`）、`isAlive()`、`isClosed()`、`close()`、`getLocalHost()`、`getLocalPort()`、`getRemoteHost()`、`getRemotePort()`，幂等释放监听与反向绑定 | `SshTunnelHandleTest`<br>`SshLifecycleManagerTunnelTeardownTest`<br>`SshTunnelController`<br>`SampleSshWebIntegrationTest` |
+| **网络穿透** | ProxyJump 跳板机穿透与 YAML 环路防卫 | `SshServerInfo`<br>`SshClientRegistry`<br>`SshSessionPool` | `jump-host`<br>`servers.*.jump-host` | 支持 YAML `jump-host` 声明与 `SshServerInfo.builder().jumpHost(...)`，内置自环/多级环路与缺失节点 Fail-Fast 检测（`56010 JUMP_HOST_FAILED`），双向生命周期级联清理 | `ProxyJumpCascadingTest`<br>`SshClientRegistryTest`<br>`SshTunnelController`<br>`SampleSshWebIntegrationTest` |
+| **网络穿透** | 隧道真实 TCP 流量交互 | `SshTunnelHandle` + `Socket` | - | 支持本地转发正向 TCP 穿透（`/tcp-echo`）与远程转发反向 TCP 穿透（`/remote-tcp-echo`）并接收完整回显数据 | `SshScenarioService`<br>`SshTunnelController`<br>`SampleSshWebIntegrationTest` |
+| **SFTP 传输** | SFTP 全量具名路由与核心门面 | `SftpTemplate`<br>`SftpProperties` | `sftp.buffer-size`<br>`sftp.transfer-timeout`<br>`sftp.atomic-upload-enabled`<br>`sftp.atomic-upload-suffix` | 全部文件/目录/元数据方法（`upload`、`download`、`downloadToFile`、`downloadToBytes`、`append`、`readString`、`writeString`、`stat`、`exists`、`list`、`delete`、`deleteRecursively`、`chmod`、`mkdir`、`mkdirs`、`rename`、`move`、`uploadDirectory`、`downloadDirectory`）对称支持 `(String serverName, ...)` 与 `(SshServerInfo, ...)` | `SftpTemplateTest`<br>`SftpTemplateNamedAndAdvancedTest`<br>`SftpDocumentController`<br>`SampleSshWebIntegrationTest` |
+| **SFTP 传输** | SFTP 原子上传覆盖防脏读 | `SftpTemplate` | `sftp.atomic-upload-enabled`<br>`sftp.atomic-upload-suffix` | 上传期间写入 `<target>.uploading.tmp`，完全闭合后原子执行 `rename`（兼容 SFTP v3/v5+）；发生传输异常自动执行确定性反向清理补偿 | `SftpTemplateTest`<br>`SftpDocumentController`<br>`SampleSshWebIntegrationTest` |
+| **SFTP 传输** | 远程符号链接创建与读取 | `SftpTemplate` | - | `createSymlink([serverName\|serverInfo], linkPath, targetPath)` 与 `readLink([serverName\|serverInfo], linkPath)`，全路径经 `normalizeRemotePath` 清洗拦截 `../` 越界，创建前自动补齐父目录 | `SftpTemplateNamedAndAdvancedTest`<br>`SftpDocumentController`<br>`SampleSshWebIntegrationTest` |
+| **SFTP 传输** | 大文件断点续传下载 | `SftpTemplate` | `sftp.buffer-size`<br>`sftp.transfer-timeout` | `downloadResume([serverName\|serverInfo], remotePath, localFile, [listener])`；`localSize > remoteSize` Fail-Fast 抛 `56006`、`==` 满额回调幂等返回（兼容 0 字节文件）、`<` 基于偏移量定点续读追加 | `SftpTemplateNamedAndAdvancedTest`<br>`SftpSyncController`<br>`SampleSshWebIntegrationTest` |
+| **SFTP 传输** | 纯文本与配置读写 | `SftpTemplate` | `sftp.buffer-size` | `readString(...)` / `writeString(...)`，支持缺省、`serverName` 与 `SshServerInfo` 重载，默认 UTF-8 编码 | `SftpTemplateTest`<br>`SftpDocumentController`<br>`SampleSshWebIntegrationTest` |
+| **SFTP 传输** | 文件尾部增量追加写 | `SftpTemplate` | `sftp.buffer-size` | `append([serverName\|serverInfo], remotePath, InputStream\|byte[])`，基于 `O_CREAT \| O_APPEND` 向已有文件末尾增量写入 | `SftpTemplateTest`<br>`SftpDocumentController`<br>`SampleSshWebIntegrationTest` |
+| **SFTP 传输** | 原地重命名与跨目录移动 | `SftpTemplate` | - | `rename(...)` 原地原子重命名；`move(...)` 自动探测目标父目录并跨目录安全平移文件 | `SftpTemplateTest`<br>`SftpDocumentController`<br>`SampleSshWebIntegrationTest` |
+| **SFTP 传输** | 文件元数据查询与存在探测 | `SftpTemplate`<br>`SftpFileInfo` | - | `exists(...)` 探测路径是否存在；`stat(...)` / `list(...)` 返回只读不可变 `SftpFileInfo` 元数据对象 | `SftpTemplateTest`<br>`SftpDocumentController`<br>`SampleSshWebIntegrationTest` |
+| **SFTP 传输** | DFS 递归清空非空目录 | `SftpTemplate` | - | `deleteRecursively(...)`，深度优先后序遍历递归删除非空目录（安全单点摘除软链），内置敏感系统根目录黑名单防卫 | `SftpTemplateTest`<br>`SftpSyncController`<br>`SampleSshWebIntegrationTest` |
+| **SFTP 传输** | 目录树双向整包同步 | `SftpTemplate` | `sftp.buffer-size` | `uploadDirectory(...)` 与 `downloadDirectory(...)`（支持 `File` 与 `Path` 及 `serverName`），镜像递归目录树，过滤 `.DS_Store`、`desktop.ini` 并防软链成环 | `SftpTemplateTest`<br>`SftpTemplateNamedAndAdvancedTest`<br>`SftpSyncController`<br>`SampleSshWebIntegrationTest` |
+| **SFTP 传输** | 流式传输进度节流防抖 | `SftpProgressThrottler`<br>`SftpProgressListener` | `sftp.buffer-size` | `SftpProgressThrottler.of(SftpProgressListener, Duration)`，底层全 `ReentrantLock` 无 Pinning，按时间间隔或百分比步长防抖节流并保证终态 100% 必达 | `SftpProgressThrottlerTest`<br>`SftpSyncController`<br>`SampleSshWebIntegrationTest` |
 | **WebSSH** | 交互式终端开启门面 | `SshTemplate`<br>`SshShellHandle` | `command-timeout` | `openShell()` / `openShell(SshShellOptions)` / `openShell(String)` / `openShell(SshServerInfo)`，开辟 PTY 伪终端通道并返回受管生命周期句柄 | `SshTemplateShellTest`<br>`WebSshWebSocketHandler`<br>`SampleSshIntegrationTest` |
-| **WebSSH** | 交互终端受管生命周期句柄 | `SshShellHandle`<br>`AutoCloseable` | - | 采用纯二进制数据模型，提供 `sendInput(byte[])`、`onOutput(Consumer<byte[]>)`、`resize(cols, rows)`、`onClose(Runnable)`、`close()`，无损传输 ANSI 字符与颜色 | `SshShellHandleTest`<br>`WebSshWebSocketHandler`<br>`SampleSshIntegrationTest` |
+| **WebSSH** | 交互终端受管生命周期句柄 | `SshShellHandle`<br>`AutoCloseable` | - | 采用纯二进制数据模型与 `ReentrantLock` 写入防 Pinning，提供 `sendInput(byte[])`、`onOutput(Consumer<byte[]>)`、`resize(cols, rows)`、`onClose(Runnable)`、`close()` | `SshShellHandleTest`<br>`WebSshWebSocketHandler`<br>`SampleSshIntegrationTest` |
 | **WebSSH** | 终端规格富选项模型 | `SshShellOptions` | - | `defaults()`（默认 `xterm-256color`, 80x24）、`ofSize(cols, rows)`、`ofTerm(term)`，支持环境变量字典、像素宽高与 `PtyMode` 声明 | `SshShellOptionsTest`<br>`WebSshWebSocketHandler` |
 | **WebSSH** | 终端元数据诊断端点 | `SshTerminalController` | - | `GET /sample/ssh/terminal/info`，对外暴露终端默认类型、规格行列尺寸与 WebSocket 握手状态 | `SshTerminalController`<br>`SampleSshWebIntegrationTest` |
-| **底层治理** | 受管会话缓存池 | `SshSessionPool`<br>`AutoCloseable` | `pool.max-sessions`<br>`pool.idle-timeout`<br>`pool.heartbeat-interval` | 按 `username@host:port#hash->via(...)` 复合键池化复用活会话，消除 200~500ms 重复建连开销；后台探针心跳保活与空闲超时自动淘汰 | `SshSessionPoolTest`<br>`SampleSshIntegrationTest` |
+| **底层治理** | 无 Pinning 受管会话缓存池 | `SshSessionPool`<br>`AutoCloseable` | `pool.max-sessions`<br>`pool.idle-timeout`<br>`pool.heartbeat-interval` | 64 分段 `ReentrantLock` 消除 JDK 21+ 虚拟线程 Pinning；按 `username@host:port#hash->via(...)` 复合键池化复用活会话，后台心跳保活与空闲超时淘汰 | `SshSessionPoolTest`<br>`SampleSshIntegrationTest` |
 | **底层治理** | 多元认证与纯内存私钥 | `SshKeyLoader` | `password`<br>`private-key`<br>`private-key-path`<br>`passphrase` | 支持口令密码、纯内存 OpenSSH/PEM 私钥字符串（RAM 运行零磁盘落盘）、本地密钥文件与预置 KeyPair 统合认证 | `SshKeyLoaderAndAuthenticationTest`<br>`SampleSshIntegrationTest` |
-| **底层治理** | 云原生纯内存指纹容器 | `InMemoryServerKeyVerifier`<br>`HostKeyPolicy` | `host-key-policy` | 提供 `LENIENT`（宽容记录首次指纹）、`STRICT`（生产已知指纹白名单）、`IGNORE`（内网免检），100% 内存运行，绝不尝试写盘 `~/.ssh/known_hosts` | `InMemoryServerKeyVerifierTest`<br>`SampleSshIntegrationTest` |
-| **底层治理** | 确定性三步停机时序 | `SshLifecycleManager`<br>`SmartLifecycle` | - | 停机时序：【1. 优先关闭所有活跃交互式 PTY 终端与端口转发隧道 -> 2. 安全注销池化 Session -> 3. 停止底层 NIO SshClient】，杜绝端口悬挂与野进程残留 | `SshLifecycleManagerTest`<br>`SshLifecycleManagerShellTeardownTest` |
-| **底层治理** | 因果异常体系与统一错误码 | `SshOperationException`<br>`SshResultCode` | - | 拦截底层 NIO 与协议层异常，转译为语义化 `SshOperationException`，赋予规范错误码（`56001`~`56014`）并 100% 完整保留原始因果链堆栈 | `SshExceptionAndResultCodeTest`<br>`SampleSshWebIntegrationTest` |
+| **底层治理** | 云原生纯内存指纹容器 | `InMemoryServerKeyVerifier`<br>`HostKeyPolicy` | `host-key-policy` | 提供 `LENIENT`、`STRICT`、`IGNORE`，支持 `registerKnownKey(...)` 与 `removeKnownKey(...)` 对称治理，100% 内存运行不写盘 `~/.ssh/known_hosts` | `InMemoryServerKeyVerifierTest`<br>`SampleSshIntegrationTest` |
+| **底层治理** | 确定性三步停机时序 | `SshLifecycleManager`<br>`SmartLifecycle` | - | 停机时序：【1. 优先关闭所有活跃交互式 PTY 终端与双向端口转发隧道 -> 2. 安全注销池化 Session -> 3. 停止底层 NIO SshClient】 | `SshLifecycleManagerTest`<br>`SshLifecycleManagerShellTeardownTest`<br>`SshLifecycleManagerTunnelTeardownTest` |
+| **底层治理** | 因果异常体系与统一错误码 | `SshOperationException`<br>`SshResultCode` | - | 拦截底层 NIO 与协议层异常，转译为语义化 `SshOperationException`，赋予规范错误码（`56001`~`56017`）并 100% 完整保留原始 `cause` 链 | `SshExceptionAndResultCodeTest`<br>`SampleSshWebIntegrationTest` |
 
 ---
 
@@ -52,12 +58,38 @@
 - **纯原生异步零臃肿依赖**：依托 Apache MINA SSHD (`sshd-core` + `sshd-sftp`) 原生协议引擎构建，100% 基于 Java 原生 NIO 异步非阻塞事件驱动模型，绝不引入外部非标臃肿依赖；
 - **长连接池化与瞬态借还双轨制**：为高频命令执行与端口转发提供 LRU/TTL 会话池（`SshSessionPool`），为 SFTP 文件传输开辟瞬态短会话，兼顾秒级并发与物理资源极致安全；
 - **云原生只读容器适配**：纯内存主机指纹校验器彻底攻克了 Kubernetes 只读根文件系统（Read-Only Rootfs）下写入 `known_hosts` 失败崩溃的痼疾；
-- **全场景工业级加固**：覆盖无 TTY Sudo 提权安全管道、超时孤儿进程信号主动防卫、ProxyJump 跳板机级联多跳穿透、受管本地端口转发、SFTP 原子上传与高频节流防抖、DFS 递归删除与全目录双向镜像、以及 WebSSH 交互式伪终端。
+- **全场景工业级加固**：覆盖高危命令拦截防火墙（`SshCommandInterceptor`）、有界输出防 OOM、无 TTY Sudo 提权安全管道、超时孤儿进程信号主动防卫、ProxyJump 跳板机级联穿透与环路检测、双向受管端口转发（`LOCAL` / `REMOTE`）、SFTP 全量具名节点路由/原子上传/符号链接/大文件断点续传下载与高频节流防抖、DFS 递归删除与双向目录镜像、以及 WebSSH 交互式伪终端。
+
+**方式一：推荐结合 `ateng-boot-bom` 引入（免配版本号）：**
+
+```xml
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-bom</artifactId>
+            <version>1.2.0</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+
+<dependencies>
+    <dependency>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-ssh</artifactId>
+    </dependency>
+</dependencies>
+```
+
+**方式二：独立显式版本引入：**
 
 ```xml
 <dependency>
     <groupId>io.github.atengk</groupId>
     <artifactId>ateng-boot-ssh</artifactId>
+    <version>1.2.0</version>
 </dependency>
 ```
 
@@ -71,12 +103,14 @@ ateng:
       enabled: true
       host: 127.0.0.1
       port: 2222
-      username: testuser
-      password: testpassword
+      username: opsuser
+      password: YOUR_PASSWORD
       host-key-policy: lenient
       connect-timeout: 10s
       auth-timeout: 15s
       command-timeout: 60s
+      max-output-size: 10MB
+      dangerous-command-guard-enabled: true
       pool:
         max-sessions: 64
         idle-timeout: 5m
@@ -92,27 +126,21 @@ ateng:
 代码 100% 逆向提取自已跑通的样例工程业务组件 [`SshScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-ssh/src/main/java/io/github/atengk/boot/sample/ssh/service/SshScenarioService.java) 与 [`SftpScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-ssh/src/main/java/io/github/atengk/boot/sample/ssh/service/SftpScenarioService.java)：
 
 ```java
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class DevopsOpsService {
+// 1. 同步执行远程命令（摘自 SshScenarioService）
+public SshExecResult exec(String command) {
+    log.info("ateng-boot-ssh-sample: 正在执行同步命令 [{}]", command);
+    return sshTemplate.exec(command);
+}
 
-    private final SshTemplate sshTemplate;
-    private final SftpTemplate sftpTemplate;
+// 2. 纯文本配置文件快捷写入与读取（摘自 SftpScenarioService）
+public void writeConfig(String remotePath, String content) {
+    log.info("ateng-boot-ssh-sample: 正在写入远端配置文件 [remotePath={}]", remotePath);
+    sftpTemplate.writeString(remotePath, content);
+}
 
-    // 1. 同步执行 Linux 基础命令
-    public String checkSystemUptime() {
-        SshExecResult result = sshTemplate.exec("uptime");
-        log.info("命令执行耗时: {} ms, exitCode: {}", result.getDuration().toMillis(), result.getExitCode());
-        return result.getStdout();
-    }
-
-    // 2. 纯文本配置文件安全写入与读取
-    public void deployConfig(String remotePath, String jsonConfig) {
-        sftpTemplate.writeString(remotePath, jsonConfig);
-        String saved = sftpTemplate.readString(remotePath);
-        log.info("配置同步校验成功: length={}", saved.length());
-    }
+public String readConfig(String remotePath) {
+    log.info("ateng-boot-ssh-sample: 正在读取远端配置文件 [remotePath={}]", remotePath);
+    return sftpTemplate.readString(remotePath);
 }
 ```
 
@@ -125,26 +153,27 @@ public class DevopsOpsService {
 ```mermaid
 flowchart TD
     subgraph ClientLayer["客户端调用层 (Application / Web / Task)"]
-        Ctrl1["SshCommandController (/sample/ssh/command/*)\n- 同步短命令 / 异步 Future / Sudo 提权 / 多行脚本 / 流式日志 / 健康探针"]
-        Ctrl2["SshClusterController (/sample/ssh/cluster/*)\n- 集群受控批量巡检 / CMDB 纯内存直连 / 线程上下文动态切源"]
-        Ctrl3["SshTunnelController (/sample/ssh/tunnel/*)\n- 本地端口转发建立与对称释放 / ProxyJump 级联跳板机 / TCP 穿透"]
-        Ctrl4["SftpDocumentController (/sample/ssh/sftp-doc/*)\n- 表单原子上传 / 流式下载 / 文本读写 / 追加写 / 重命名与移动 / 删除"]
-        Ctrl5["SftpSyncController (/sample/ssh/sftp-sync/*)\n- 目录树整包双向镜像同步 / DFS 递归删除 / 大文件进度防抖节流"]
+        Ctrl1["SshCommandController (/sample/ssh/command/*)\n- 同步有界执行 / 防火墙拦截 / 异步 Future / Sudo 提权 / 多行脚本 / 流式日志 / 健康探针"]
+        Ctrl2["SshClusterController (/sample/ssh/cluster/*)\n- 集群批量巡检 / CMDB 动态直连 / 线程上下文动态切源 / 会话池快照"]
+        Ctrl3["SshTunnelController (/sample/ssh/tunnel/*)\n- 本地与远程端口转发建立释放 / ProxyJump 级联跳板机 / 双向 TCP 穿透"]
+        Ctrl4["SftpDocumentController (/sample/ssh/sftp-doc/*)\n- 表单原子上传 / 流式下载 / 文本读写 / 追加写 / 重命名与移动 / 符号链接创建读取 / 删除"]
+        Ctrl5["SftpSyncController (/sample/ssh/sftp-sync/*)\n- 目录树整包双向镜像同步 / DFS 递归删除 / 大文件进度防抖 / 断点续传下载"]
         Ctrl6["SshTerminalController & WebSSH (/sample/ssh/terminal/* & /ws/ssh)\n- 原生 WebSocket 实时终端交互 / 终端规格诊断"]
     end
 
-    subgraph FacadeLayer["核心门面层 (ateng-boot-ssh)"]
-        SshT["SshTemplate\n(命令执行 / 批量巡检 / 端口转发 / PTY 会话)"]
-        SftpT["SftpTemplate\n(原子上传 / 断点追加 / 目录镜像 / DFS 递归删除)"]
+    subgraph FacadeLayer["核心门面与安全防护层 (ateng-boot-ssh)"]
+        SshT["SshTemplate\n(命令执行 / 拦截器责任链 / 批量巡检 / 双向隧道 / PTY 会话)"]
+        Guard["SshCommandInterceptor SPI\n(HighRiskCommandInterceptor 56017 防火墙 + 审计)"]
+        SftpT["SftpTemplate\n(全量具名路由 / 原子上传 / 软链接 / 断点续传 / 目录镜像 / DFS 递归删除)"]
         CtxH["SshContextHolder\n(线程栈级切源上下文)"]
-        Reg["SshClientRegistry\n(命名多主机字典中心)"]
-        Throt["SftpProgressThrottler\n(高频进度节流防抖引擎)"]
+        Reg["SshClientRegistry\n(命名多主机注册 / jump-host 环路检测 / 注销驱逐)"]
+        Throt["SftpProgressThrottler\n(ReentrantLock 高频进度节流防抖引擎)"]
     end
 
-    subgraph PoolLayer["会话治理与生命周期层 (Apache MINA SSHD)"]
-        Pool["SshSessionPool\n(复合键长连接池 / 心跳保活 / 空闲淘汰)"]
-        Lifecycle["SshLifecycleManager\n(确定性三步停机释放: 终端/隧道 -> 会话 -> Client)"]
-        KeyVer["InMemoryServerKeyVerifier\n(云原生纯内存主机公钥校验器)"]
+    subgraph PoolLayer["无 Pinning 会话治理与生命周期层 (Apache MINA SSHD)"]
+        Pool["SshSessionPool\n(64 分段 ReentrantLock / 复合键池化 / SshPoolStats 快照 / 心跳淘汰)"]
+        Lifecycle["SshLifecycleManager\n(确定性三步停机释放: 终端与双向隧道 -> 会话池 -> Client)"]
+        KeyVer["InMemoryServerKeyVerifier\n(云原生纯内存公钥指纹注册与对称清理)"]
     end
 
     subgraph ServerLayer["远端 SSH / SFTP 服务端"]
@@ -156,6 +185,7 @@ flowchart TD
     Ctrl1 & Ctrl2 & Ctrl3 --> SshT
     Ctrl4 & Ctrl5 --> SftpT
     Ctrl6 --> SshT
+    SshT --> Guard
     CtxH -. 动态路由 .-> SshT & SftpT
     SshT & SftpT --> Reg
     Reg --> Pool
@@ -268,12 +298,8 @@ ateng:
 ```java
 @PostMapping("/exec")
 public Result<SshExecResultVO> exec(@Valid @RequestBody SshCommandRequest request) {
-    SshExecResult result;
-    if (StringUtils.hasText(request.getServerName())) {
-        result = sshScenarioService.exec(request.getServerName(), request.getCommand());
-    } else {
-        result = sshScenarioService.exec(request.getCommand());
-    }
+    SshExecResult result = sshScenarioService.exec(
+            request.getServerName(), request.getCommand(), request.getMaxOutputBytes());
     return Result.success(SshExecResultVO.from(result));
 }
 ```
@@ -370,6 +396,33 @@ public Result<List<String>> streamLog(@Valid @RequestBody SshStreamLogRequest re
 ```
 - **核心机制**：基于 `LineStreamingOutputStream` 逐字节解析换行符，产生完整行即刻回调 `Consumer<String>`，零全量内存缓冲，退出后返回远端进程退出码。
 
+### 3.6 有界输出防 OOM、POSIX 目录转义与高危命令防火墙 (max-output-size / SshCommandInterceptor)
+同步命令执行默认限制内存缓冲上限，并在命令下发前执行拦截器防火墙校验与 `workingDir` POSIX 安全转义，防止大输出 OOM 与高危误操作。
+
+```yaml
+ateng:
+  boot:
+    ssh:
+      max-output-size: 10MB                       # 同步命令 stdout/stderr 最大内存缓冲容量（默认 10MB）
+      dangerous-command-guard-enabled: true       # 启用内置高危命令防火墙（默认 true）
+      dangerous-command-patterns:                 # 可选追加自定义高危指令正则黑名单
+        - "(?i)\\bdrop\\s+database\\b"
+```
+
+（代码逆向提取自 [`SshCommandController.java`](../ateng-boot-samples/ateng-boot-sample-ssh/src/main/java/io/github/atengk/boot/sample/ssh/controller/SshCommandController.java) 与 [`SshScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-ssh/src/main/java/io/github/atengk/boot/sample/ssh/service/SshScenarioService.java)）
+```java
+@PostMapping("/exec")
+public Result<SshExecResultVO> exec(@Valid @RequestBody SshCommandRequest request) {
+    SshExecResult result = sshScenarioService.exec(
+            request.getServerName(), request.getCommand(), request.getMaxOutputBytes());
+    return Result.success(SshExecResultVO.from(result));
+}
+```
+- **核心机制与边界防御**：
+  - **有界缓冲防 OOM**：`BoundedByteArrayOutputStream` 在达到 `maxOutputSize` 后保留前缀并静默消费丢弃后续字节（防远端进程写阻塞或 SIGPIPE），同时置位 `SshExecResult.isTruncated() == true`；
+  - **高危命令防火墙**：`HighRiskCommandInterceptor` 以 `Ordered.HIGHEST_PRECEDENCE` 驻守前置链路，默认拦截 `rm -rf /`、`mkfs`、`dd` 块设备覆写、Fork 炸弹与 `shutdown`/`reboot`/`halt`/`poweroff`/`init 0|6`，命中后立即 Fail-Fast 抛出 `SshOperationException(56017, COMMAND_FORBIDDEN)`；
+  - **POSIX 目录转义**：`SshCommandExecutor` 前置拒绝 `workingDir` 中的 `\0`/`\r`/`\n` 非法控制字符，并采用 `cd '<escaped>' && ( ... )` 标准 POSIX 单引号转义拼接工作目录。
+
 ---
 
 ## 4. 多主机拓扑与集群批量巡检套件
@@ -386,7 +439,7 @@ ateng:
           host: 127.0.0.1
           port: 2223
           username: worker1
-          password: worker1pass
+          password: YOUR_PASSWORD
 ```
 
 （代码逆向提取自 [`SshClusterController.java`](../ateng-boot-samples/ateng-boot-sample-ssh/src/main/java/io/github/atengk/boot/sample/ssh/controller/SshClusterController.java)）
@@ -484,6 +537,31 @@ public Result<Boolean> probeHealth(@RequestParam(value = "serverName", required 
 ```
 - **核心机制**：仅执行 TCP 握手建连与 SSH 身份凭据鉴权，验证通过后即刻断开，绝不开辟 PTY 伪终端通道，绝不启动远程进程，零远端系统负载副作用。
 
+### 4.5 会话池运行态统计快照与动态注销驱逐 (pool-stats / unregister)
+提供 `SshSessionPool` 实时只读观测快照，并在节点配置注销或覆写时自动联动驱逐旧连接会话。
+
+```yaml
+ateng:
+  boot:
+    ssh:
+      pool:
+        max-sessions: 64                          # 会话池最大活跃容量上限（默认 64）
+        idle-timeout: 5m                          # 空闲会话自动逐出时间（默认 5m）
+        heartbeat-interval: 15s                   # 长连接心跳保活周期（默认 15s）
+```
+
+（代码逆向提取自 [`SshClusterController.java`](../ateng-boot-samples/ateng-boot-sample-ssh/src/main/java/io/github/atengk/boot/sample/ssh/controller/SshClusterController.java) 与 [`AtengSshAutoConfiguration.java`](../ateng-boot-ssh/src/main/java/io/github/atengk/boot/ssh/autoconfigure/AtengSshAutoConfiguration.java)）
+```java
+@GetMapping("/pool-stats")
+public Result<SshPoolStatsVO> poolStats() {
+    SshPoolStats stats = sshScenarioService.getPoolStats();
+    return Result.success(SshPoolStatsVO.from(stats));
+}
+```
+- **核心机制与边界防御**：
+  - `SshPoolStats` 封装 `maxSessions`、`poolSize`、`activeSessions`、`totalCreated`、`totalHits`、`totalEvicted`、`totalFailed` 与 `getHitRate()`，只读不可变且零额外阻塞；
+  - `AtengSshAutoConfiguration` 将 `pool::evict` 注册为 `SshClientRegistry` 驱逐监听器：调用 `registry.unregister(name)` 或覆盖注册同名节点时，自动驱逐并物理断开对应旧主机池化会话。
+
 ---
 
 ## 5. 受管端口转发与跳板机穿透套件
@@ -500,7 +578,7 @@ ateng:
 
 （代码逆向提取自 [`SshTunnelController.java`](../ateng-boot-samples/ateng-boot-sample-ssh/src/main/java/io/github/atengk/boot/sample/ssh/controller/SshTunnelController.java)）
 ```java
-// 1. 开启受管端口转发隧道 (localPort 设为 0 时由操作系统分配空闲端口)
+// 1. 开启受管本地端口转发隧道 (localPort 设为 0 时由操作系统分配空闲端口)
 @PostMapping("/open-tunnel")
 public Result<SshTunnelInfoVO> openTunnel(@Valid @RequestBody SshTunnelOpenRequest request) {
     int boundPort = sshScenarioService.openManagedTunnel(
@@ -510,6 +588,7 @@ public Result<SshTunnelInfoVO> openTunnel(@Valid @RequestBody SshTunnelOpenReque
             request.getRemotePort());
 
     return Result.success(SshTunnelInfoVO.builder()
+            .tunnelMode(TunnelMode.LOCAL)
             .localPort(boundPort)
             .localHost("127.0.0.1")
             .remoteHost(request.getRemoteHost())
@@ -524,10 +603,43 @@ public Result<Boolean> closeTunnel(@Valid @RequestBody SshTunnelCloseRequest req
     return Result.success(closed);
 }
 ```
-- **核心机制**：返回实现 `AutoCloseable` 的 `SshTunnelHandle`，支持通过 `close()` 幂等关闭本地 ServerSocket 监听；受管隧道集中注册至 `SshLifecycleManager`，容器退出时 1/3 优先销毁。
+- **核心机制**：返回实现 `AutoCloseable` 的 `SshTunnelHandle`（`tunnelMode = TunnelMode.LOCAL`），支持通过 `close()` 幂等关闭本地 ServerSocket 监听；受管隧道集中注册至 `SshLifecycleManager`，容器退出时 1/3 优先销毁。
 
-### 5.2 ProxyJump 两级跳板机级联穿透 (proxy-jump)
-支持穿越两级或多级跳板机网络（Client -> Jump1 -> Jump2 -> InternalTarget）执行运维指令与传输文件。
+### 5.2 远程端口转发与反向 TCP 穿透 (open-remote-tunnel / close-remote-tunnel)
+对称支持 `ssh -R` 远程反向端口转发：在远端 SSH 服务端绑定监听端口并将入站流量经加密隧道反向代理至本地目标服务，适用于内网 Webhook 回调与边缘节点反向接入。
+
+```yaml
+ateng:
+  boot:
+    ssh:
+      connect-timeout: 10s
+      auth-timeout: 15s
+```
+
+（代码逆向提取自 [`SshTunnelController.java`](../ateng-boot-samples/ateng-boot-sample-ssh/src/main/java/io/github/atengk/boot/sample/ssh/controller/SshTunnelController.java)）
+```java
+// 1. 开启受管远程端口转发隧道 (remotePort 设为 0 时由远端服务端自动分配可用端口)
+@PostMapping("/open-remote-tunnel")
+public Result<SshTunnelInfoVO> openRemoteTunnel(@Valid @RequestBody SshRemoteTunnelOpenRequest request) {
+    SshTunnelHandle handle = sshScenarioService.openManagedRemoteTunnel(
+            request.getServerName(),
+            request.getRemotePort() != null ? request.getRemotePort() : 0,
+            request.getLocalHost(),
+            request.getLocalPort());
+    return Result.success(SshTunnelInfoVO.from(handle));
+}
+
+// 2. 对称安全释放远程端口转发隧道
+@PostMapping("/close-remote-tunnel")
+public Result<Boolean> closeRemoteTunnel(@Valid @RequestBody SshRemoteTunnelCloseRequest request) {
+    boolean closed = sshScenarioService.closeManagedRemoteTunnel(request.getRemotePort());
+    return Result.success(closed);
+}
+```
+- **核心机制与边界防御**：`AtengSshAutoConfiguration` 为共享 `SshClient` 装配最小权限 `SshTunnelHandle.REMOTE_FORWARDED_ONLY_FILTER`，仅放行反向入站 `forwarded-tcpip` 通道（拒绝非受控正向代理滥用）；`SshTunnelHandle.close()` 对称注销远端端口绑定并由 `SshLifecycleManager` 停机兜底回收。
+
+### 5.3 ProxyJump 跳板机级联穿透与 YAML 环路防卫 (proxy-jump / jump-host)
+支持通过 Java 编程式构造或 YAML 声明式 `jump-host` 穿越多级跳板机网络（Client -> Jump1 -> Jump2 -> InternalTarget）执行运维指令与传输文件。
 
 ```yaml
 ateng:
@@ -535,6 +647,18 @@ ateng:
     ssh:
       connect-timeout: 15s
       auth-timeout: 20s
+      servers:
+        bastion:
+          host: 10.0.0.1
+          port: 2222
+          username: jumpuser
+          password: YOUR_PASSWORD
+        internal-db-host:
+          host: 172.16.0.10
+          port: 22
+          username: opsuser
+          password: YOUR_PASSWORD
+          jump-host: bastion                      # YAML 声明式指定前置跳板机节点名
 ```
 
 （代码逆向提取自 [`SshTunnelController.java`](../ateng-boot-samples/ateng-boot-sample-ssh/src/main/java/io/github/atengk/boot/sample/ssh/controller/SshTunnelController.java)）
@@ -549,7 +673,7 @@ public Result<SshExecResultVO> proxyJump(@Valid @RequestBody SshProxyJumpRequest
     return Result.success(SshExecResultVO.from(result));
 }
 ```
-- **核心机制**：基于 `SshServerInfo.jumpHost` 递归声明拓扑，底层通过中继跳板机建立临时安全通道串联多级链路，并在顶层任务完成或异常时执行级联逆向资源回收。
+- **核心机制与边界防御**：`SshClientRegistry.registerProperties` 在装配阶段按拓扑解析多级 `jump-host` 引用链，若发现自引用、循环依赖（如 `A -> B -> A`）或引用不存在的节点名，立即 Fail-Fast 抛出 `SshOperationException(56010, JUMP_HOST_FAILED)`；异常时执行级联逆向会话资源回收。
 
 ---
 
@@ -581,11 +705,17 @@ public Result<String> upload(@RequestParam("file") MultipartFile file,
 
 // 2. 对称流式下载至 HTTP 响应
 @GetMapping("/download")
-public void download(@RequestParam("remotePath") @NotBlank String remotePath,
+public void download(@RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath,
                      HttpServletResponse response) throws IOException {
     byte[] data = sftpScenarioService.download(remotePath);
+    String filename = StringUtils.getFilename(remotePath);
+    if (!StringUtils.hasText(filename)) {
+        filename = "download.bin";
+    }
+    String encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
     response.setContentType(MediaType.APPLICATION_OCTET_STREAM_VALUE);
-    response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + remotePath + "\"");
+    response.setHeader(HttpHeaders.CONTENT_DISPOSITION,
+            "attachment; filename=\"" + encodedFilename + "\"; filename*=UTF-8''" + encodedFilename);
     response.setContentLength(data.length);
     response.getOutputStream().write(data);
     response.getOutputStream().flush();
@@ -716,6 +846,75 @@ public Result<String> uploadLargeFile(@Valid @RequestBody SftpLargeTransferReque
 ```
 - **核心机制**：按指定时间间隔（如 100ms）或百分比步长防抖节流，并在传输结束（100% 满额）时保证最终状态确定性触达。
 
+### 6.6 SFTP 具名节点路由与远程符号链接治理 (symlink / read-link)
+`SftpTemplate` 全量文件、目录与元数据方法均对称支持 `(String serverName, ...)` 具名路由；同时提供远程符号链接创建与目标读取（常用于发布版本软链原子切换）。
+
+```yaml
+ateng:
+  boot:
+    ssh:
+      servers:
+        release-node:
+          host: 192.168.1.105
+          port: 22
+          username: deployer
+          password: YOUR_PASSWORD
+```
+
+（代码逆向提取自 [`SftpDocumentController.java`](../ateng-boot-samples/ateng-boot-sample-ssh/src/main/java/io/github/atengk/boot/sample/ssh/controller/SftpDocumentController.java)）
+```java
+// 1. 在远端创建符号链接
+@PostMapping("/symlink")
+public Result<Boolean> createSymlink(@Valid @RequestBody SftpSymlinkRequest request) {
+    sftpScenarioService.createSymlink(request.getLinkPath(), request.getTargetPath());
+    return Result.success(true);
+}
+
+// 2. 读取远端符号链接指向的目标路径
+@GetMapping("/read-link")
+public Result<String> readLink(@RequestParam("linkPath") @NotBlank String linkPath) {
+    String targetPath = sftpScenarioService.readLink(linkPath);
+    return Result.success(targetPath);
+}
+```
+- **核心机制与边界防御**：`createSymlink` 与 `readLink` 均强制通过 `normalizeRemotePath` 清洗 `linkPath` 与 `targetPath`，拦截 `../` 路径穿越；`createSymlink` 自动递归补齐软链接缺失父目录，且 `deleteRecursively` 遇软链仅单点摘除链接本身、严禁穿透删除目标目录真实数据。
+
+### 6.7 大文件断点续传下载 (download-resume)
+针对大体积安装包或镜像在网络中断后的容错拉取场景，支持基于本地已落盘字节偏移量发起定点续传下载。
+
+```yaml
+ateng:
+  boot:
+    ssh:
+      sftp:
+        buffer-size: 64KB
+        transfer-timeout: 15m
+```
+
+（代码逆向提取自 [`SftpSyncController.java`](../ateng-boot-samples/ateng-boot-sample-ssh/src/main/java/io/github/atengk/boot/sample/ssh/controller/SftpSyncController.java) 与 [`SftpScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-ssh/src/main/java/io/github/atengk/boot/sample/ssh/service/SftpScenarioService.java)）
+```java
+@PostMapping("/download-resume")
+public Result<SftpDownloadResumeResultVO> downloadResume(@Valid @RequestBody SftpDownloadResumeRequest request) {
+    long start = System.currentTimeMillis();
+    String cleanLocalPath = FileUtil.cleanPath(request.getLocalPath());
+    File localFile = new File(cleanLocalPath);
+    sftpScenarioService.downloadResume(request.getRemotePath(), localFile);
+    return Result.success(SftpDownloadResumeResultVO.builder()
+            .remotePath(request.getRemotePath())
+            .localPath(localFile.getAbsolutePath())
+            .fileSize(localFile.length())
+            .durationMs(System.currentTimeMillis() - start)
+            .success(true)
+            .message("大文件断点续传下载成功")
+            .build());
+}
+```
+- **核心机制与边界防御**：
+  - 自动比对本地文件大小 `localSize` 与远程 `stat` 大小 `remoteSize`；
+  - 若 `localSize > remoteSize`，立即 Fail-Fast 抛出 `SshOperationException(56006, SFTP_TRANSFER_FAILED)`（绝不篡改本地文件）；
+  - 若 `localSize == remoteSize`，兼容远程 0 字节文件并触发满额进度回调后幂等返回；
+  - 若 `0 <= localSize < remoteSize`，通过 `sftp.open(..., OpenMode.Read)` 与 `sftp.read(handle, fileOffset, ...)` 从偏移量 `localSize` 处追加写入本地文件，实时回调 `(fileOffset, remoteSize)` 进度。
+
 ---
 
 ## 7. WebSSH 交互式伪终端套件
@@ -794,40 +993,55 @@ protected void handleTextMessage(WebSocketSession session, TextMessage message) 
 
 ## 8. 生产扩展接管与核心非功能边界
 
-### 8.1 SshSessionPool 连接池治理与复合键复用
+### 8.1 SshSessionPool 无 Pinning 连接池治理与运行态观测
 在高并发远程命令执行场景中，频繁三次握手与 SSH 凭据协商存在 200~500ms 固有开销。框架提供 `SshSessionPool` 受管连接池：
-- **复合键池化**：按 `username@host:port#hash->via(...)` 复合特征键池化会话，多线程并发执行时安全复用活连接；
-- **心跳保活与空闲淘汰**：后台定时发送心跳探针保持 TCP 连接活跃，防范云厂商 NAT 防火墙静默断链；超过 `idle-timeout` 自动平滑回收空闲连接；
-- **瞬态任务隔离**：对 SFTP 传输与一次性跳板机任务开辟瞬态连接并在使用后即刻释放，绝不污染全局长连接池。
+- **虚拟线程防 Pinning**：连接池 64 分段锁及内部流/句柄并发临界区 100% 采用 `ReentrantLock`（严格在 `finally` 判断 `isHeldByCurrentThread()` 后释放），在 JDK 21+ 虚拟线程运行时下彻底杜绝 Carrier Thread Pinning；
+- **复合键池化与观测快照**：按 `username@host:port#hash->via(...)` 复合特征键池化会话，通过 `SshTemplate.getPoolStats()` / `SshSessionPool.getStats()` 暴露不可变 `SshPoolStats`（容量、活跃数、新建/命中/淘汰/失败数及命中率）；
+- **心跳保活与注销联动驱逐**：后台定时发送心跳探针防范 NAT 静默断链；`SshClientRegistry.unregister` 或覆盖注册同名主机时自动联动 `pool::evict` 驱逐旧连接；SFTP 与 `execOnce` 开辟瞬态连接并在使用后即刻释放。
 
 ### 8.2 云原生纯内存主机公钥指纹校验器 (InMemoryServerKeyVerifier)
 在 Kubernetes 生产环境中，Pod 普遍挂载只读根文件系统（Read-Only Rootfs）。传统客户端尝试向 `~/.ssh/known_hosts` 写入指纹将导致应用崩溃。框架内置 `InMemoryServerKeyVerifier`：
-- **纯内存运行**：指纹状态 100% 驻留堆内存，严禁任何写盘操作；
+- **纯内存运行与对称清理**：指纹状态 100% 驻留堆内存，严禁任何写盘操作；提供 `registerKnownKey(...)` 与 `removeKnownKey(...)` 对称 API，支撑云主机同 IP 重建更换公钥时的定点旧指纹移除；
 - **三档安全策略 (`HostKeyPolicy`)**：
   - `LENIENT`（默认）：首次连接自动信任并缓存在内存中，后续连接校验防篡改；
   - `STRICT`：生产最高安全级，仅信任预设公钥指纹列表，指纹不匹配抛出 `56003 (HOST_KEY_REJECTED)`，彻底防范中间人攻击（MITM）；
   - `IGNORE`：内网安全沙箱环境免检。
 
-### 8.3 自定义 Bean 覆盖接管 (@ConditionalOnMissingBean)
-核心门面与组件均标配 `@ConditionalOnMissingBean`，支持下游业务按需声明自定义 Bean 实现全权接管：
+### 8.3 命令拦截器 SPI 与自定义 Bean 覆盖接管
+支持通过实现 `SshCommandInterceptor` SPI（可配合 `@Order` / `Ordered` 指定顺序）无侵入接入命令安全审计、动态拦截或耗时指标采集；同时核心门面均标配 `@ConditionalOnMissingBean`：
+
 ```java
 @Configuration
 public class CustomSshConfig {
 
     @Bean
-    public SshTemplate customSshTemplate(SshClientRegistry registry, SshSessionPool sessionPool) {
-        return new SshTemplate(registry, sessionPool);
+    @Order(100)
+    public SshCommandInterceptor commandAuditInterceptor() {
+        return new SshCommandInterceptor() {
+            @Override
+            public void beforeExecute(SshServerInfo server, String command, SshExecOptions options) {
+                // 命令下发前审计记录或合规校验
+            }
+        };
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public SshTemplate customSshTemplate(SshSessionPool sessionPool,
+                                         SshClientRegistry registry,
+                                         SshProperties properties) {
+        return new SshTemplate(sessionPool, registry, properties);
     }
 }
 ```
 
 ### 8.4 确定性三步停机与资源防泄漏边界
 在 Spring Boot 应用销毁阶段，`SshLifecycleManager` 严格遵循确定性时序释放资源：
-1. **优先切断长连接上层**：销毁全部活跃的 WebSSH 交互式伪终端通道与本地端口转发监听 ServerSocket；
+1. **优先切断长连接上层**：销毁全部活跃的 WebSSH 交互式伪终端通道与双向端口转发隧道（`LOCAL` / `REMOTE`）；
 2. **安全注销池化会话**：向远端发送 SSH 协议断开帧并销毁全部 `ClientSession`；
 3. **停止 MINA NIO 内核**：停止底座 `SshClient` 事件循环与受管工作线程池。
 
-### 8.5 十四维因果异常体系与统一错误码 (SshResultCode)
+### 8.5 十七维因果异常体系与统一错误码 (SshResultCode)
 
 | 状态码 | 枚举常量 | 业务含义 | 典型触发场景 |
 | :--- | :--- | :--- | :--- |
@@ -836,15 +1050,18 @@ public class CustomSshConfig {
 | **56003** | `HOST_KEY_REJECTED` | SSH服务端主机指纹校验未通过 | STRICT 模式下主机公钥指纹与已知列表不匹配（防 MITM 中间人攻击） |
 | **56004** | `COMMAND_EXEC_FAILED` | SSH远程命令执行异常 | ChannelExec 开辟失败、执行管道 IO 异常 |
 | **56005** | `COMMAND_TIMEOUT` | SSH远程命令执行超时 | 命令耗时超出阈值，已触发 SIGTERM/SIGINT 孤儿进程信号防卫 |
-| **56006** | `SFTP_TRANSFER_FAILED` | SFTP文件传输或读写异常 | 网络断开、磁盘满、IO 流管道中断 |
-| **56007** | `SFTP_FILE_NOT_FOUND` | SFTP远程文件或目录不存在 | 访问不存在的远程文件、stat 失败 |
+| **56006** | `SFTP_TRANSFER_FAILED` | SFTP文件传输或读写异常 | 网络断开、磁盘满、IO 流管道中断、断点续传本地字节大于远程字节 |
+| **56007** | `SFTP_FILE_NOT_FOUND` | SFTP远程文件或目录不存在 | 访问不存在的远程文件、stat/readLink 失败 |
 | **56008** | `SFTP_PERMISSION_DENIED` | SFTP远程操作权限不足 | 目标路径无写权限、无 chmod 权限 |
-| **56009** | `TUNNEL_FAILED` | SSH端口转发隧道异常 | 本地端口冲突、远端转发目标不可达 |
-| **56010** | `JUMP_HOST_FAILED` | SSH跳板机中继穿透失败 | 跳板机会话建立失败、多跳中继通道断开 |
+| **56009** | `TUNNEL_FAILED` | SSH端口转发隧道异常 | 本地/远端端口冲突、远端转发目标不可达 |
+| **56010** | `JUMP_HOST_FAILED` | SSH跳板机中继穿透失败 | 跳板机会话建立失败、YAML `jump-host` 自环/成环或节点缺失 |
 | **56011** | `SERVER_NOT_FOUND` | 未找到指定的SSH服务节点 | 访问未在 `SshClientRegistry` 中注册的命名节点 |
-| **56012** | `OPERATION_FAILED` | SSH通用操作执行失败 | 默认保底操作失败 |
+| **56012** | `OPERATION_FAILED` | SSH通用操作执行失败 | 默认保底操作失败、高危命令正则语法非法 |
 | **56013** | `SHELL_OPEN_FAILED` | SSH交互式终端创建失败 | ChannelShell 开辟失败、服务端未配置 ShellFactory |
 | **56014** | `SHELL_OPERATION_FAILED` | SSH交互式终端操作失败 | 终端已关闭状态下发送输入、resize 调整失败 |
+| **56015** | `BATCH_EXEC_FAILED` | SSH集群批量命令执行异常 | 批量巡检调度异常、部分或全部节点执行失败 |
+| **56016** | `PROBE_FAILED` | SSH服务节点连通性探测失败 | `testConnectionOrThrow` 探测目标握手或鉴权失败 |
+| **56017** | `COMMAND_FORBIDDEN` | SSH高危命令被安全策略阻断 | 命中 `HighRiskCommandInterceptor` 内置或自定义正则黑名单 |
 
 ---
 
@@ -863,9 +1080,13 @@ ateng:
       private-key-path: ""                        # 本地磁盘私钥文件路径
       passphrase: ""                              # 加密私钥的密码短语
       host-key-policy: LENIENT                    # 主机指纹策略：LENIENT(宽容自适应) / STRICT(白名单强校验) / IGNORE(内网免检)
+      jump-host: ""                               # 默认主节点前置跳板机节点名称（引用 servers.<name>，支持级联与环路防卫）
       connect-timeout: 10s                        # 网络 TCP 连接与 SSH 协议协商超时阈值（默认 10s）
       auth-timeout: 15s                           # 用户凭据身份鉴权认证超时阈值（默认 15s）
       command-timeout: 60s                        # 远程命令执行超时阈值（默认 60s，超时触发 RFC 4254 信号防卫）
+      max-output-size: 10MB                       # 单次同步命令 stdout/stderr 最大内存缓冲容量上限（默认 10MB，防 OOM）
+      dangerous-command-guard-enabled: true       # 是否启用内置高危毁灭性命令安全防火墙（默认 true）
+      dangerous-command-patterns: []              # 自定义附加高危命令拦截正则表达式列表
 
       # SshSessionPool 受管长连接池治理调优
       pool:
@@ -888,6 +1109,7 @@ ateng:
           username: worker1
           password: YOUR_PASSWORD
           command-timeout: 30s
+          jump-host: bastion
         node2:
           host: 192.168.1.102
           port: 22

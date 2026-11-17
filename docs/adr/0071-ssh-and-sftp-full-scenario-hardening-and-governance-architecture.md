@@ -61,7 +61,7 @@ flowchart TD
 
     subgraph DualModeSandbox["1:1 Sample 场景样例沙箱 (ateng-boot-sample-ssh)"]
         direction TB
-        CLEAN_SERVICE["纯净业务场景: SshScenarioService & SftpScenarioService (零Controller)"]
+        CLEAN_SERVICE["纯净业务场景: SshScenarioService & SftpScenarioService (初期零Controller，后续见 ADR-0097)"]
         WEBSOCKET_EP["WebSSH 唯一 Web 接入点: WebSocketConfig & WebSshWebSocketHandler"]
         DUAL_PROFILE["双模自适应测试: CI 离线嵌入式 SSH Server vs 本地 application-local.yml 真实联调"]
     end
@@ -99,7 +99,7 @@ flowchart TD
 - **向后兼容契约**：既有 `execBatch` 签名继续保留并返回 `Map<SshServerInfo, SshExecResult>`，底层统一复用新引擎。
 
 ### 4. 样例工程架构纯化与双模自适应测试
-- **彻底根除 Controller 污染**：移除 `SshSampleController` 与 `SftpDemoController`，重构为 `SshScenarioService` 与 `SftpScenarioService`；仅保留 `WebSocketConfig` 与 `WebSshWebSocketHandler` 作为 WebSSH 的必要传输协议端点；
+- **彻底根除 Controller 污染（注：后续已在 [ADR-0097](./0097-ssh-sample-multi-controller-and-production-hardening-architecture.md) 演进为多领域 REST Controller 体验端）**：移除 `SshSampleController` 与 `SftpDemoController`，重构为 `SshScenarioService` 与 `SftpScenarioService`；仅保留 `WebSocketConfig` 与 `WebSshWebSocketHandler` 作为 WebSSH 的必要传输协议端点；
 - **双模自适应测试与凭据卫生**：根目录 `.gitignore` 强制收敛忽略 `**/application-local*.yml`；Sample 工程提供 `application-local.example.yml` 凭据模板；`application.yml` 统配 `spring.config.import: "optional:classpath:application-local.yml"`。测试内部的嵌入式 Mock/Server 统配 `@Profile("!local")`，保证 CI 100% 离线自洽。
 
 ---
@@ -115,3 +115,15 @@ flowchart TD
 
 ### 妥协成本
 - 架构引入 `SshBatchExecResult`、`SshBatchOptions` 与 `SftpProgressThrottler` 等新领域模型，需在 `CONTEXT.md`、JavaDoc 与子模块 `README.md` 中保持 100% 全景矩阵收敛。
+
+---
+
+## 演进与全场景加固增量 (2026-11-17 迭代加固，#1019)
+
+在既有全场景基础设施之上，围绕 JDK 21+ 虚拟线程高并发安全、防 OOM、命令防火墙、网络双向对称穿透与 SFTP 对称治理落地以下深度演进：
+
+1. **全链路 `ReentrantLock` 虚拟线程防 Carrier Pinning**：将 `SshSessionPool`（64 分段锁）、`SshShellHandle`、`LineStreamingOutputStream`、`SftpProgressThrottler` 与 `SshTemplate` 中的 `synchronized` 100% 替换为 `ReentrantLock`（遵循 `lock()` + `finally { if (lock.isHeldByCurrentThread()) lock.unlock(); }`），同步通过 `SshPoolStats`（含 `getHitRate()`）暴露会话池运行态快照。
+2. **YAML 声明式 `jump-host` 环路防卫与生命周期对称**：`SshProperties` 新增 `jumpHost` 声明并在 `SshClientRegistry.registerProperties` 中拓扑解析，内置自引用、多级环路与缺失节点 Fail-Fast 检测；`SshClientRegistry.unregister` 联动触发 `SshSessionPool::evict` 驱逐旧池化会话，`InMemoryServerKeyVerifier` 补齐 `removeKnownKey` 对称指纹清理。
+3. **命令安全防火墙、有界缓冲防 OOM 与 POSIX 工作目录转义**：新增 `SshCommandInterceptor` SPI 与最高优先级内置守卫 `HighRiskCommandInterceptor`（拦截 `rm -rf /`、`mkfs`、`dd` 覆写、Fork 炸弹、`shutdown`/`reboot` 及自定义 `dangerous-command-patterns`，错误码 `56017 COMMAND_FORBIDDEN`）；同步输出通过 `BoundedByteArrayOutputStream` 与 `maxOutputSize`（默认 `10MB`）限制内存上限并消费排空通道，`SshExecResult.truncated` 精确反馈截断状态；`SshCommandExecutor` 对 `workingDir` 拦截 `\0`/`\r`/`\n` 并执行标准 POSIX 单引号安全转义。
+4. **双向受管端口转发（`LOCAL` & `REMOTE`）**：扩展 `SshTunnelHandle` 支持 `TunnelMode`（`LOCAL`/`REMOTE`），`SshTemplate` 新增 `openRemoteTunnel`（`ssh -R`）全系列重载并由 `SshLifecycleManager` 统一纳管停机释放；共享 `SshClient` 装配最小权限 `SshTunnelHandle.REMOTE_FORWARDED_ONLY_FILTER` 防越权转发。
+5. **`SftpTemplate` 全量具名节点路由、软链接治理与断点续传下载**：全面补齐文件、目录与元数据方法的 `(String serverName, ...)` 重载；新增 `createSymlink`/`readLink`（全路径强制经过 `normalizeRemotePath` 防路径穿越）与 `downloadResume`（支持断点续读追加、满额幂等、0 字节文件安全落盘与本地字节超限 Fail-Fast 阻断）。

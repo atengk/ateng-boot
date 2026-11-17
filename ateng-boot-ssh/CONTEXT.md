@@ -29,7 +29,7 @@ _Avoid_: SshRoutingContext, SshSessionHolder
 _Avoid_: SshExecutor, SshManager, SshClientHelper
 
 **SftpTemplate (SFTP 传输门面)**:
-对外提供流式上传下载、目录递归同步与文件权限元数据治理的对称文件操作门面。
+对外提供全量具名节点路由、流式上传下载、断点续传下载、符号链接治理、目录递归同步与文件权限元数据治理的对称文件操作门面。
 _Avoid_: SftpUtil, SftpManager, SftpClientTemplate
 
 **SshCommandInterceptor (命令执行拦截器)**:
@@ -141,25 +141,29 @@ _Avoid_: 胖控制器, 命令执行端点, SshWebController
 _Avoid_: 批量操作端点, 集群管理器, ClusterWebController
 
 **SshTunnelController (网络穿透领域控制器)**:
-纳管本地端口转发受管句柄生命周期建立释放、两级跳板机级联穿透与真实 TCP 流量交互的接入层控制器。
+纳管本地与远程端口转发受管句柄生命周期建立释放、两级跳板机级联穿透与正反向真实 TCP 流量交互的接入层控制器。
 _Avoid_: 端口映射接口, 跳板机控制器, TunnelWebController
 
 **SftpDocumentController (SFTP 文档领域控制器)**:
-纳管文件表单原子上传、对称流式下载、纯文本快捷读写、尾部增量追加、跨目录移动与文件元数据生命周期的接入层控制器。
+纳管文件表单原子上传、对称流式下载、纯文本快捷读写、尾部增量追加、跨目录移动、符号链接创建读取与文件元数据生命周期的接入层控制器。
 _Avoid_: 文件上传控制器, SftpWebController, 文档网关
 
 **SftpSyncController (SFTP 目录同步控制器)**:
-纳管目录树整包双向镜像上传与下载同步、DFS 递归删除非空目录与大文件进度节流防抖的接入层控制器。
+纳管目录树整包双向镜像上传与下载同步、DFS 递归删除非空目录、大文件进度节流防抖与断点续传下载的接入层控制器。
 _Avoid_: 目录批量控制器, SyncWebController, 同步接口
+
+**Resume Download (断点续传下载)**:
+基于本地已存在文件字节偏移量向远程 SFTP 发起定点续读并追加写入的容错传输机制（支持满额幂等跳过与本地字节超限快速失败）。
+_Avoid_: 增量下载, 分片拉取, OffsetDownload
 
 **SshTerminalController (WebSSH 终端诊断控制器)**:
 提供 WebSSH 终端规格、默认行列尺寸与 WebSocket 端点运行状态只读诊断的接入层控制器。
 _Avoid_: WebSshWebController, 终端控制器, 终端网关
 
 **SSH Typed DTO Matrix (SSH 强类型入参 DTO 矩阵)**:
-遵循 ADR-0010 与 ADR-0027，在网络接入层对所有 SSH/SFTP 操作请求进行 JSR-303 Fail-Fast 校验的 17 大专用请求数据对象集合。
+遵循 ADR-0010 与 ADR-0027，在网络接入层对所有 SSH/SFTP 操作请求进行 JSR-303 Fail-Fast 校验的 24 大专用请求数据对象集合。
 _Avoid_: 裸参数透传, Entity 越界, 泛型 Map 传参
 
 **SSH Typed VO Matrix (SSH 强类型业务 VO 矩阵)**:
-对外提供安全脱敏、消除底层 MINA SSHD SDK 内部引用与连接泄露的 7 大业务响应数据对象集合（含 `SshPoolStatsVO`）。
+对外提供安全脱敏、消除底层 MINA SSHD SDK 内部引用与连接泄露的 8 大业务响应数据对象集合（含 `SshPoolStatsVO`、`SftpDownloadResumeResultVO`）。
 _Avoid_: Entity 泄漏, 原生 Session 暴露, 模糊响应
