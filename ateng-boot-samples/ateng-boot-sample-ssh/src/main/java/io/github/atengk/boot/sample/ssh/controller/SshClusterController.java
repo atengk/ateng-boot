@@ -7,16 +7,19 @@ import io.github.atengk.boot.sample.ssh.dto.SshDynamicHostRequest;
 import io.github.atengk.boot.sample.ssh.service.SshScenarioService;
 import io.github.atengk.boot.sample.ssh.vo.SshBatchExecResultVO;
 import io.github.atengk.boot.sample.ssh.vo.SshExecResultVO;
+import io.github.atengk.boot.sample.ssh.vo.SshPoolStatsVO;
 import io.github.atengk.boot.ssh.enums.HostKeyPolicy;
 import io.github.atengk.boot.ssh.model.SshBatchExecResult;
 import io.github.atengk.boot.ssh.model.SshBatchOptions;
 import io.github.atengk.boot.ssh.model.SshExecResult;
+import io.github.atengk.boot.ssh.model.SshPoolStats;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -109,5 +112,16 @@ public class SshClusterController {
 
         String output = sshScenarioService.executeWithContextSwitch(request.getServerName(), request.getCommand());
         return Result.success(output);
+    }
+
+    /**
+     * 获取受管会话缓存池当前运行态统计快照
+     *
+     * @return 会话池运行态统计 VO
+     */
+    @GetMapping("/pool-stats")
+    public Result<SshPoolStatsVO> poolStats() {
+        SshPoolStats stats = sshScenarioService.getPoolStats();
+        return Result.success(SshPoolStatsVO.from(stats));
     }
 }

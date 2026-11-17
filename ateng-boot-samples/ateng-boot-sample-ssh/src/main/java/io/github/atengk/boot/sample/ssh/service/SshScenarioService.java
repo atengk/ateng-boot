@@ -5,6 +5,7 @@ import io.github.atengk.boot.ssh.enums.HostKeyPolicy;
 import io.github.atengk.boot.ssh.model.SshBatchExecResult;
 import io.github.atengk.boot.ssh.model.SshBatchOptions;
 import io.github.atengk.boot.ssh.model.SshExecResult;
+import io.github.atengk.boot.ssh.model.SshPoolStats;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.template.SshTemplate;
 import io.github.atengk.boot.ssh.tunnel.SshTunnelHandle;
@@ -383,6 +384,15 @@ public class SshScenarioService {
             return sshTemplate.execScript(serverName, scriptBody);
         }
         return runMaintenanceScript(scriptBody);
+    }
+
+    /**
+     * 获取受管会话缓存池当前运行态统计快照
+     *
+     * @return 会话池统计快照
+     */
+    public SshPoolStats getPoolStats() {
+        return sshTemplate.getPoolStats();
     }
 
     @PreDestroy

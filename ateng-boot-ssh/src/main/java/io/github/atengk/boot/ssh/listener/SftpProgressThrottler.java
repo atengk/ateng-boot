@@ -3,6 +3,7 @@ package io.github.atengk.boot.ssh.listener;
 import org.springframework.util.Assert;
 
 import java.time.Duration;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * SFTP 流式文件传输进度平滑节流器
@@ -31,6 +32,7 @@ public class SftpProgressThrottler implements SftpProgressListener, AutoCloseabl
     private final double minStepPercentage;
     private final Duration minInterval;
     private final long minIntervalMillis;
+    private final ReentrantLock lock = new ReentrantLock();
 
     private long lastNotifiedBytes = -1L;
     private long lastNotifiedTime = 0L;
@@ -113,60 +115,74 @@ public class SftpProgressThrottler implements SftpProgressListener, AutoCloseabl
     }
 
     @Override
-    public synchronized void onProgress(long transferredBytes, long totalBytes) {
+    public void onProgress(long transferredBytes, long totalBytes) {
         if (delegate == null) {
             return;
         }
-        this.lastTransferredBytes = transferredBytes;
-        this.lastTotalBytes = totalBytes;
+        lock.lock();
+        try {
+            this.lastTransferredBytes = transferredBytes;
+            this.lastTotalBytes = totalBytes;
 
-        // 1. 终态满额保底拦截：若已传输达到或超过总大小（且总大小已知 >= 0），无条件触发 100% 终态通知
-        if (totalBytes >= 0 && transferredBytes >= totalBytes) {
-            if (!terminalNotified) {
-                notifyDelegate(transferredBytes, totalBytes, 100.0);
-                this.terminalNotified = true;
+            // 1. 终态满额保底拦截：若已传输达到或超过总大小（且总大小已知 >= 0），无条件触发 100% 终态通知
+            if (totalBytes >= 0 && transferredBytes >= totalBytes) {
+                if (!terminalNotified) {
+                    notifyDelegate(transferredBytes, totalBytes, 100.0);
+                    this.terminalNotified = true;
+                }
+                return;
             }
-            return;
-        }
 
-        long now = System.currentTimeMillis();
+            long now = System.currentTimeMillis();
 
-        // 2. 首次回调触发（建立基线）
-        if (lastNotifiedBytes < 0) {
-            double initialPercentage = (totalBytes > 0) ? (transferredBytes * 100.0 / totalBytes) : -1.0;
-            notifyDelegate(transferredBytes, totalBytes, initialPercentage);
-            return;
-        }
-
-        // 3. 双重防抖条件判定：时间间隔满足 OR 进度步长满足
-        boolean timeExceeded = (now - lastNotifiedTime >= minIntervalMillis);
-        boolean stepExceeded = false;
-        double currentPercentage = -1.0;
-
-        if (totalBytes > 0) {
-            currentPercentage = transferredBytes * 100.0 / totalBytes;
-            if (currentPercentage - lastNotifiedPercentage >= minStepPercentage) {
-                stepExceeded = true;
+            // 2. 首次回调触发（建立基线）
+            if (lastNotifiedBytes < 0) {
+                double initialPercentage = (totalBytes > 0) ? (transferredBytes * 100.0 / totalBytes) : -1.0;
+                notifyDelegate(transferredBytes, totalBytes, initialPercentage);
+                return;
             }
-        }
 
-        if (timeExceeded || stepExceeded) {
-            notifyDelegate(transferredBytes, totalBytes, currentPercentage);
+            // 3. 双重防抖条件判定：时间间隔满足 OR 进度步长满足
+            boolean timeExceeded = (now - lastNotifiedTime >= minIntervalMillis);
+            boolean stepExceeded = false;
+            double currentPercentage = -1.0;
+
+            if (totalBytes > 0) {
+                currentPercentage = transferredBytes * 100.0 / totalBytes;
+                if (currentPercentage - lastNotifiedPercentage >= minStepPercentage) {
+                    stepExceeded = true;
+                }
+            }
+
+            if (timeExceeded || stepExceeded) {
+                notifyDelegate(transferredBytes, totalBytes, currentPercentage);
+            }
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
     /**
      * 触发满额终态保底通知并闭合状态
      */
-    public synchronized void finish() {
-        if (!terminalNotified && delegate != null) {
-            if (lastTotalBytes >= 0 && lastTransferredBytes >= lastTotalBytes) {
-                notifyDelegate(lastTotalBytes, lastTotalBytes, 100.0);
-            } else if (lastTransferredBytes != lastNotifiedBytes) {
-                double percentage = (lastTotalBytes > 0) ? (lastTransferredBytes * 100.0 / lastTotalBytes) : -1.0;
-                notifyDelegate(lastTransferredBytes, lastTotalBytes, percentage);
+    public void finish() {
+        lock.lock();
+        try {
+            if (!terminalNotified && delegate != null) {
+                if (lastTotalBytes >= 0 && lastTransferredBytes >= lastTotalBytes) {
+                    notifyDelegate(lastTotalBytes, lastTotalBytes, 100.0);
+                } else if (lastTransferredBytes != lastNotifiedBytes) {
+                    double percentage = (lastTotalBytes > 0) ? (lastTransferredBytes * 100.0 / lastTotalBytes) : -1.0;
+                    notifyDelegate(lastTransferredBytes, lastTotalBytes, percentage);
+                }
+                this.terminalNotified = true;
             }
-            this.terminalNotified = true;
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
@@ -178,14 +194,21 @@ public class SftpProgressThrottler implements SftpProgressListener, AutoCloseabl
     /**
      * 重置节流器状态
      */
-    public synchronized void reset() {
-        this.lastNotifiedBytes = -1L;
-        this.lastNotifiedTime = 0L;
-        this.lastNotifiedPercentage = -1.0;
-        this.lastTransferredBytes = 0L;
-        this.lastTotalBytes = -1L;
-        this.notificationCount = 0L;
-        this.terminalNotified = false;
+    public void reset() {
+        lock.lock();
+        try {
+            this.lastNotifiedBytes = -1L;
+            this.lastNotifiedTime = 0L;
+            this.lastNotifiedPercentage = -1.0;
+            this.lastTransferredBytes = 0L;
+            this.lastTotalBytes = -1L;
+            this.notificationCount = 0L;
+            this.terminalNotified = false;
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
     }
 
     private void notifyDelegate(long transferredBytes, long totalBytes, double percentage) {
@@ -208,19 +231,47 @@ public class SftpProgressThrottler implements SftpProgressListener, AutoCloseabl
         return minInterval;
     }
 
-    public synchronized long getLastNotifiedBytes() {
-        return lastNotifiedBytes;
+    public long getLastNotifiedBytes() {
+        lock.lock();
+        try {
+            return lastNotifiedBytes;
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
     }
 
-    public synchronized double getLastNotifiedPercentage() {
-        return lastNotifiedPercentage;
+    public double getLastNotifiedPercentage() {
+        lock.lock();
+        try {
+            return lastNotifiedPercentage;
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
     }
 
-    public synchronized long getNotificationCount() {
-        return notificationCount;
+    public long getNotificationCount() {
+        lock.lock();
+        try {
+            return notificationCount;
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
     }
 
-    public synchronized boolean isTerminalNotified() {
-        return terminalNotified;
+    public boolean isTerminalNotified() {
+        lock.lock();
+        try {
+            return terminalNotified;
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
     }
 }

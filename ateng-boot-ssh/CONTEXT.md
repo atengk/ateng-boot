@@ -12,6 +12,10 @@ _Avoid_: SshConfig, SshNode, SshConnectionParam
 按目标主机坐标与凭据指纹缓存并复用高开销 SSH 会话连接的受管连接池设施。
 _Avoid_: SshPool, 连接仓库, 会话缓存器
 
+**SshPoolStats (会话池状态快照)**:
+封装受管会话缓存池最大容量、当前条目数、活跃连接数、累计新建数、缓存命中数、淘汰数与建连失败数的只读诊断值对象。
+_Avoid_: PoolMetrics, 连接池监控器, SessionCounter
+
 **SshClientRegistry (命名主机注册表)**:
 纳管静态声明的多命名 SSH 客户端会话资源并在运行时按需分发的受管注册中心。
 _Avoid_: SshHostManager, SshServerMap, SshPoolRegistry
@@ -137,5 +141,5 @@ _Avoid_: WebSshWebController, 终端控制器, 终端网关
 _Avoid_: 裸参数透传, Entity 越界, 泛型 Map 传参
 
 **SSH Typed VO Matrix (SSH 强类型业务 VO 矩阵)**:
-对外提供安全脱敏、消除底层 MINA SSHD SDK 内部引用与连接泄露的 6 大业务响应数据对象集合。
+对外提供安全脱敏、消除底层 MINA SSHD SDK 内部引用与连接泄露的 7 大业务响应数据对象集合（含 `SshPoolStatsVO`）。
 _Avoid_: Entity 泄漏, 原生 Session 暴露, 模糊响应

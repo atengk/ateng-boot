@@ -555,6 +555,40 @@ public class SampleSshWebIntegrationTest {
                 .andExpect(jsonPath("$.data", is("CTX_SWITCH_OK")));
     }
 
+    @Test
+    @DisplayName("SshClusterController: 查询会话池运行态统计快照 (SshPoolStats)")
+    void testClusterPoolStats() throws Exception {
+        // 先触发两次命令执行以确保池中存在活跃会话与缓存命中统计
+        SshCommandRequest cmdReq = SshCommandRequest.builder().command("echo STATS_PING").build();
+        mockMvc.perform(post("/sample/ssh/command/exec")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(cmdReq)))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/sample/ssh/command/exec")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(cmdReq)))
+                .andExpect(status().isOk());
+
+        MvcResult statsResult = mockMvc.perform(get("/sample/ssh/cluster/pool-stats"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.maxSessions").value(64))
+                .andExpect(jsonPath("$.data.poolSize", org.hamcrest.Matchers.greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.data.activeSessions", org.hamcrest.Matchers.greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.data.totalCreated", notNullValue()))
+                .andExpect(jsonPath("$.data.totalHits", notNullValue()))
+                .andExpect(jsonPath("$.data.totalEvicted", notNullValue()))
+                .andExpect(jsonPath("$.data.totalFailed", notNullValue()))
+                .andExpect(jsonPath("$.data.hitRate", org.hamcrest.Matchers.greaterThan(0.0)))
+                .andReturn();
+
+        var dataNode = objectMapper.readTree(statsResult.getResponse().getContentAsString()).path("data");
+        assertThat(dataNode.path("totalCreated").asLong()).isGreaterThanOrEqualTo(1L);
+        assertThat(dataNode.path("totalHits").asLong()).isGreaterThanOrEqualTo(1L);
+        assertThat(dataNode.path("totalEvicted").asLong()).isGreaterThanOrEqualTo(0L);
+        assertThat(dataNode.path("totalFailed").asLong()).isGreaterThanOrEqualTo(0L);
+    }
+
     // ==========================================
     // 3. SshTunnelController 端点测试
     // ==========================================

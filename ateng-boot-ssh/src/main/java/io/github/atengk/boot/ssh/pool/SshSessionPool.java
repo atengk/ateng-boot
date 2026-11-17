@@ -3,6 +3,7 @@ package io.github.atengk.boot.ssh.pool;
 import io.github.atengk.boot.ssh.credential.SshKeyLoader;
 import io.github.atengk.boot.ssh.exception.SshOperationException;
 import io.github.atengk.boot.ssh.exception.SshResultCode;
+import io.github.atengk.boot.ssh.model.SshPoolStats;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.properties.SshPoolProperties;
 import io.github.atengk.boot.ssh.verifier.InMemoryServerKeyVerifier;
@@ -25,6 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * SSH 工业级受管会话缓存池
@@ -41,7 +43,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class SshSessionPool implements AutoCloseable {
 
     private static final int STRIPE_COUNT = 64;
-    private final Object[] stripeLocks;
+    private final ReentrantLock[] stripeLocks;
 
     private final SshClient sshClient;
     private final SshPoolProperties poolProperties;
@@ -57,6 +59,11 @@ public class SshSessionPool implements AutoCloseable {
     private final ScheduledExecutorService evictionScheduler;
     private final ThreadPoolTaskScheduler internalTaskScheduler;
 
+    private final AtomicLong totalCreated = new AtomicLong(0);
+    private final AtomicLong totalHits = new AtomicLong(0);
+    private final AtomicLong totalEvicted = new AtomicLong(0);
+    private final AtomicLong totalFailed = new AtomicLong(0);
+
     private volatile boolean closed = false;
 
     public SshSessionPool(SshClient sshClient, SshPoolProperties poolProperties) {
@@ -68,9 +75,9 @@ public class SshSessionPool implements AutoCloseable {
         this.sshClient = sshClient;
         this.poolProperties = poolProperties != null ? poolProperties : new SshPoolProperties();
 
-        this.stripeLocks = new Object[STRIPE_COUNT];
+        this.stripeLocks = new ReentrantLock[STRIPE_COUNT];
         for (int i = 0; i < STRIPE_COUNT; i++) {
-            this.stripeLocks[i] = new Object();
+            this.stripeLocks[i] = new ReentrantLock();
         }
 
         if (externalScheduler != null) {
@@ -102,12 +109,12 @@ public class SshSessionPool implements AutoCloseable {
                 this.poolProperties.getHeartbeatInterval());
     }
 
-    private Object getLock(String poolKey) {
+    private ReentrantLock getLock(String poolKey) {
         if (poolKey == null) {
             return stripeLocks[0];
         }
         int hash = poolKey.hashCode() ^ (poolKey.hashCode() >>> 16);
-        int index = Math.abs(hash % STRIPE_COUNT);
+        int index = Math.floorMod(hash, STRIPE_COUNT);
         return stripeLocks[index];
     }
 
@@ -128,34 +135,50 @@ public class SshSessionPool implements AutoCloseable {
         PooledSessionHolder holder = pool.get(poolKey);
         if (holder != null && holder.isAlive() && !holder.isExpired(idleTimeoutMillis)) {
             holder.touch();
+            totalHits.incrementAndGet();
             return holder.getSession();
         }
 
-        // 2. 慢速路径 (Slow Path)：基于分段锁建立防惊群建连握手
-        Object lock = getLock(poolKey);
-        synchronized (lock) {
+        // 2. 慢速路径 (Slow Path)：基于分段可重入锁建立防惊群建连握手（规避虚拟线程 Pinning）
+        ReentrantLock lock = getLock(poolKey);
+        lock.lock();
+        try {
             checkNotClosed();
             holder = pool.get(poolKey);
             if (holder != null && holder.isAlive() && !holder.isExpired(idleTimeoutMillis)) {
                 holder.touch();
+                totalHits.incrementAndGet();
                 return holder.getSession();
             }
 
             // 若已有旧会话但已失效或过期，安全关闭并注销
             if (holder != null) {
-                holder.close();
-                pool.remove(poolKey);
+                if (pool.remove(poolKey, holder)) {
+                    totalEvicted.incrementAndGet();
+                    holder.close();
+                }
             }
 
             // 容量防护：若池化数量达到上限，LRU 淘汰最久未访问会话
             evictLruIfNeeded();
 
             // 建立全新网络连接与认证
-            ClientSession newSession = createAndAuthenticateSession(serverInfo);
+            ClientSession newSession;
+            try {
+                newSession = createAndAuthenticateSession(serverInfo);
+            } catch (RuntimeException ex) {
+                totalFailed.incrementAndGet();
+                throw ex;
+            }
             holder = new PooledSessionHolder(poolKey, serverInfo, newSession);
             pool.put(poolKey, holder);
+            totalCreated.incrementAndGet();
             log.debug("ateng-boot-ssh: 成功建立并池化 SSH 会话 [poolKey={}]", poolKey);
             return newSession;
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
@@ -273,12 +296,18 @@ public class SshSessionPool implements AutoCloseable {
         if (poolKey == null) {
             return;
         }
-        Object lock = getLock(poolKey);
-        synchronized (lock) {
+        ReentrantLock lock = getLock(poolKey);
+        lock.lock();
+        try {
             PooledSessionHolder holder = pool.remove(poolKey);
             if (holder != null) {
+                totalEvicted.incrementAndGet();
                 holder.close();
                 log.debug("ateng-boot-ssh: 已主动剔除并注销池化会话 [poolKey={}]", poolKey);
+            }
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
             }
         }
     }
@@ -308,14 +337,42 @@ public class SshSessionPool implements AutoCloseable {
     }
 
     /**
+     * 获取当前会话缓存池的运行态统计快照
+     *
+     * @return 不可变统计快照对象
+     */
+    public SshPoolStats getStats() {
+        int currentPoolSize = 0;
+        int currentActiveSessions = 0;
+        for (PooledSessionHolder holder : pool.values()) {
+            currentPoolSize++;
+            if (holder.isAlive()) {
+                currentActiveSessions++;
+            }
+        }
+        return SshPoolStats.builder()
+                .maxSessions(poolProperties.getMaxSessions())
+                .poolSize(currentPoolSize)
+                .activeSessions(currentActiveSessions)
+                .totalCreated(totalCreated.get())
+                .totalHits(totalHits.get())
+                .totalEvicted(totalEvicted.get())
+                .totalFailed(totalFailed.get())
+                .build();
+    }
+
+    /**
      * 清空并物理断开所有池化会话
      */
     public void clear() {
         log.info("ateng-boot-ssh: 正在清空并断开所有池化会话 (共 {} 个)...", pool.size());
-        for (PooledSessionHolder holder : pool.values()) {
-            holder.close();
+        for (String key : pool.keySet()) {
+            PooledSessionHolder holder = pool.remove(key);
+            if (holder != null) {
+                totalEvicted.incrementAndGet();
+                holder.close();
+            }
         }
-        pool.clear();
     }
 
     /**
@@ -457,6 +514,7 @@ public class SshSessionPool implements AutoCloseable {
         if (oldestKey != null) {
             PooledSessionHolder evicted = pool.remove(oldestKey);
             if (evicted != null) {
+                totalEvicted.incrementAndGet();
                 log.info("ateng-boot-ssh: 会话池已满 (容量={})，LRU 淘汰最久未活跃会话 [{}]",
                         poolProperties.getMaxSessions(), evicted.getServerInfo().toSessionKey());
                 evicted.close();
@@ -474,8 +532,10 @@ public class SshSessionPool implements AutoCloseable {
             PooledSessionHolder holder = entry.getValue();
             if (!holder.isAlive() || holder.isExpired(idleTimeoutMillis)) {
                 log.debug("ateng-boot-ssh: 后台探测到失效或空闲超时会话，执行清理注销 [poolKey={}]", entry.getKey());
-                pool.remove(entry.getKey(), holder);
-                holder.close();
+                if (pool.remove(entry.getKey(), holder)) {
+                    totalEvicted.incrementAndGet();
+                    holder.close();
+                }
             }
         }
     }

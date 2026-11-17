@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -21,6 +22,7 @@ public class LineStreamingOutputStream extends OutputStream {
     private final Consumer<String> lineConsumer;
     private final Charset charset;
     private final ByteArrayOutputStream lineBuffer = new ByteArrayOutputStream(256);
+    private final ReentrantLock lock = new ReentrantLock();
 
     public LineStreamingOutputStream(Consumer<String> lineConsumer, Charset charset) {
         this.lineConsumer = lineConsumer;
@@ -28,45 +30,66 @@ public class LineStreamingOutputStream extends OutputStream {
     }
 
     @Override
-    public synchronized void write(int b) {
-        if (b == '\n') {
-            flushLine();
-        } else if (b != '\r') {
-            lineBuffer.write(b);
+    public void write(int b) {
+        lock.lock();
+        try {
+            if (b == '\n') {
+                flushLine();
+            } else if (b != '\r') {
+                lineBuffer.write(b);
+            }
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
     @Override
-    public synchronized void write(byte[] b, int off, int len) {
+    public void write(byte[] b, int off, int len) {
         if (b == null) {
             return;
         }
-        int start = off;
-        int end = off + len;
-        for (int i = off; i < end; i++) {
-            if (b[i] == '\n') {
-                lineBuffer.write(b, start, i - start);
-                flushLine();
-                start = i + 1;
-            } else if (b[i] == '\r') {
-                lineBuffer.write(b, start, i - start);
-                start = i + 1;
+        lock.lock();
+        try {
+            int start = off;
+            int end = off + len;
+            for (int i = off; i < end; i++) {
+                if (b[i] == '\n') {
+                    lineBuffer.write(b, start, i - start);
+                    flushLine();
+                    start = i + 1;
+                } else if (b[i] == '\r') {
+                    lineBuffer.write(b, start, i - start);
+                    start = i + 1;
+                }
+            }
+            if (start < end) {
+                lineBuffer.write(b, start, end - start);
+            }
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
             }
         }
-        if (start < end) {
-            lineBuffer.write(b, start, end - start);
+    }
+
+    @Override
+    public void flush() {
+        lock.lock();
+        try {
+            if (lineBuffer.size() > 0) {
+                flushLine();
+            }
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
     @Override
-    public synchronized void flush() {
-        if (lineBuffer.size() > 0) {
-            flushLine();
-        }
-    }
-
-    @Override
-    public synchronized void close() {
+    public void close() {
         flush();
     }
 

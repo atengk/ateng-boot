@@ -10,6 +10,7 @@ import io.github.atengk.boot.ssh.model.SshBatchExecResult;
 import io.github.atengk.boot.ssh.model.SshBatchOptions;
 import io.github.atengk.boot.ssh.model.SshExecOptions;
 import io.github.atengk.boot.ssh.model.SshExecResult;
+import io.github.atengk.boot.ssh.model.SshPoolStats;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.model.SshShellOptions;
 import io.github.atengk.boot.ssh.pool.SshSessionAction;
@@ -46,6 +47,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -83,6 +85,7 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
     private final SshLifecycleManager lifecycleManager;
 
     private volatile ThreadPoolTaskExecutor internalExecutor;
+    private final ReentrantLock executorLock = new ReentrantLock();
 
     private record BatchTaskTarget(String name, SshServerInfo server) {}
     private record BatchTaskItem(int index, BatchTaskTarget target, CompletableFuture<SshExecResult> future) {}
@@ -1582,12 +1585,26 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
         }
     }
 
+    // ==========================================
+    // 11. 会话缓存池运行态统计快照契约 (getPoolStats)
+    // ==========================================
+
+    /**
+     * 获取受管会话缓存池当前运行态统计快照
+     *
+     * @return 不可变会话池运行态统计快照
+     */
+    public SshPoolStats getPoolStats() {
+        return sessionPool.getStats();
+    }
+
     private Executor getEffectiveExecutor() {
         if (this.executor != null) {
             return this.executor;
         }
         if (this.internalExecutor == null) {
-            synchronized (this) {
+            executorLock.lock();
+            try {
                 if (this.internalExecutor == null) {
                     ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
                     exec.setCorePoolSize(Math.max(2, Runtime.getRuntime().availableProcessors()));
@@ -1598,6 +1615,10 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                     exec.setAwaitTerminationSeconds(5);
                     exec.initialize();
                     this.internalExecutor = exec;
+                }
+            } finally {
+                if (executorLock.isHeldByCurrentThread()) {
+                    executorLock.unlock();
                 }
             }
         }

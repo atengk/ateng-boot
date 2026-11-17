@@ -6,6 +6,7 @@ import io.github.atengk.boot.ssh.exception.SshOperationException;
 import io.github.atengk.boot.ssh.exception.SshResultCode;
 import io.github.atengk.boot.ssh.model.SshExecOptions;
 import io.github.atengk.boot.ssh.model.SshExecResult;
+import io.github.atengk.boot.ssh.model.SshPoolStats;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
 import io.github.atengk.boot.ssh.properties.SshProperties;
@@ -271,6 +272,22 @@ class SshTemplateCommandExecutionTest {
         SshExecResult result = template.exec("echo pty-enabled", options);
         assertThat(result.isSuccess()).isTrue();
         assertThat(result.getStdout().trim()).isEqualTo("pty-enabled");
+    }
+
+    @Test
+    @DisplayName("测试 SshTemplate.getPoolStats() 暴露会话池统计快照")
+    void testGetPoolStats() {
+        template.exec("echo stats-1");
+        template.exec("echo stats-2");
+
+        SshPoolStats stats = template.getPoolStats();
+        assertThat(stats).isNotNull();
+        assertThat(stats.getMaxSessions()).isEqualTo(64);
+        assertThat(stats.getPoolSize()).isEqualTo(1);
+        assertThat(stats.getActiveSessions()).isEqualTo(1);
+        assertThat(stats.getTotalCreated()).isEqualTo(1);
+        assertThat(stats.getTotalHits()).isEqualTo(1);
+        assertThat(stats.getHitRate()).isEqualTo(0.5d);
     }
 
     /**
