@@ -23,6 +23,7 @@ import io.github.atengk.boot.notification.renderer.SimpleNotificationTemplateRen
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.annotation.Aspect;
+import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -324,11 +325,12 @@ public class AtengNotificationAutoConfiguration {
 
     /**
      * 自动装配专用于防告警风暴聚合的 Spring 受管定时调度器
-     * 启用容器优雅停机等待排空策略并开放 @ConditionalOnMissingBean 允许外部接管定制
+     * 启用容器优雅停机等待排空策略并开放 @ConditionalOnMissingBean 允许外部接管定制；
+     * 显式关闭按类型自动注入候选（autowireCandidate = false），避免与其他模块的 ThreadPoolTaskScheduler / TaskScheduler 产生多 Bean 冲突
      *
      * @return ThreadPoolTaskScheduler 受管调度器实例
      */
-    @Bean(name = "notificationAlertTaskScheduler")
+    @Bean(name = "notificationAlertTaskScheduler", autowireCandidate = false)
     @ConditionalOnMissingBean(name = "notificationAlertTaskScheduler")
     public ThreadPoolTaskScheduler notificationAlertTaskScheduler() {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
@@ -347,7 +349,7 @@ public class AtengNotificationAutoConfiguration {
      *
      * @param notificationTemplate 协同通知操作核心门面
      * @param properties           全局通知配置属性
-     * @param alertTaskScheduler   Spring 受管防风暴聚合调度器
+     * @param beanFactory          Spring Bean 工厂（按精确 Bean 名获取专有调度器）
      * @return AlertStormSuppressor 实例
      */
     @Bean
@@ -355,7 +357,8 @@ public class AtengNotificationAutoConfiguration {
     public AlertStormSuppressor alertStormSuppressor(
             NotificationTemplate notificationTemplate,
             NotificationProperties properties,
-            @Qualifier("notificationAlertTaskScheduler") TaskScheduler alertTaskScheduler) {
+            BeanFactory beanFactory) {
+        TaskScheduler alertTaskScheduler = beanFactory.getBean("notificationAlertTaskScheduler", TaskScheduler.class);
         log.debug("Initializing AlertStormSuppressor (suppressWindow={})", properties.getAlert().getSuppressWindow());
         return new AlertStormSuppressor(notificationTemplate, properties.getAlert(), alertTaskScheduler);
     }

@@ -142,6 +142,22 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
     }
 
     @Test
+    @DisplayName("验证 notificationAlertTaskScheduler 不干扰其他模块按类型注入单例 TaskScheduler 或 ThreadPoolTaskScheduler")
+    void testAlertSchedulerDoesNotPolluteByTypeAutowiring() {
+        contextRunner
+                .withUserConfiguration(PeerTaskSchedulerConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasBean("notificationAlertTaskScheduler");
+                    assertThat(context).hasBean("peerTaskScheduler");
+                    assertThat(context.getBeanProvider(ThreadPoolTaskScheduler.class).getIfAvailable())
+                            .isSameAs(context.getBean("peerTaskScheduler", ThreadPoolTaskScheduler.class));
+                    assertThat(context.getBeanProvider(org.springframework.scheduling.TaskScheduler.class).getIfAvailable())
+                            .isSameAs(context.getBean("peerTaskScheduler", org.springframework.scheduling.TaskScheduler.class));
+                    assertThat(context).hasSingleBean(AlertStormSuppressor.class);
+                });
+    }
+
+    @Test
     @DisplayName("验证 downstream 开启 distributed=true 时未注入分布式 Bean 则平滑回退单机内存版")
     void testDistributedRateLimiterFallback() {
         contextRunner
@@ -290,6 +306,19 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
                     registry.unregister("evict-test-channel");
                     assertEquals(0, provider.getCustomClientCacheSize());
                 });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class PeerTaskSchedulerConfiguration {
+
+        @Bean(name = "peerTaskScheduler", destroyMethod = "destroy")
+        public ThreadPoolTaskScheduler peerTaskScheduler() {
+            ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+            scheduler.setPoolSize(1);
+            scheduler.setThreadNamePrefix("peer-sched-");
+            scheduler.setDaemon(true);
+            return scheduler;
+        }
     }
 
     @Configuration(proxyBeanMethods = false)
