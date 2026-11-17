@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.notification.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.notification.model.NotificationSendResult;
+import io.github.atengk.boot.sample.notification.dto.BroadcastRequest;
 import io.github.atengk.boot.sample.notification.dto.ChannelSwitchRequest;
 import io.github.atengk.boot.sample.notification.dto.FailoverDemoRequest;
 import io.github.atengk.boot.sample.notification.dto.TemplateMessageRequest;
@@ -13,6 +14,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Map;
 
 /**
  * 协同通知渠道拓扑治理与高可用容灾场景控制器
@@ -66,5 +69,18 @@ public class NotificationChannelController {
         log.info("协同通知: 触发主备渠道顺延故障转移发信 [primaryChannel={}]", request.getPrimaryChannel());
         NotificationSendResult result = notificationService.sendWithFailover(request);
         return Result.success(result);
+    }
+
+    /**
+     * 演示多渠道并发广播通知与单点故障隔离
+     *
+     * @param request 广播通知请求传输对象
+     * @return 按渠道顺序排列的发送结果映射（局部失败隔离，不影响其余渠道）
+     */
+    @PostMapping("/broadcast")
+    public Result<Map<String, NotificationSendResult>> sendBroadcast(@Valid @RequestBody BroadcastRequest request) {
+        log.info("协同通知: 触发多渠道并发广播发信 [channels={}, async={}]", request.getChannels(), request.isAsync());
+        Map<String, NotificationSendResult> results = notificationService.sendBroadcast(request);
+        return Result.success(results);
     }
 }

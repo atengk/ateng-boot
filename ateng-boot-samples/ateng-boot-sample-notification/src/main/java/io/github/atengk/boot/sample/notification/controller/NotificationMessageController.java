@@ -86,14 +86,15 @@ public class NotificationMessageController {
     }
 
     /**
-     * 发送图片通知（支持 Base64 与本地图片路径，严格执行零字节与存在性卫语句防卫）
+     * 发送图片通知（支持 Base64、本地图片路径与公网 imageUrl 跨端自适应转发）
      *
      * @param request 图片发信请求
      * @return 强类型发信结果契约
      */
     @PostMapping("/image")
     public Result<NotificationSendResult> sendImage(@Valid @RequestBody ImageMessageRequest request) {
-        log.info("协同通知: 发送图片消息 [channel={}, hasPath={}]", request.getChannel(), request.getImagePath() != null);
+        log.info("协同通知: 发送图片消息 [channel={}, hasPath={}, hasUrl={}]",
+                request.getChannel(), request.getImagePath() != null, request.getImageUrl() != null);
         NotificationSendResult result = notificationService.sendImage(request);
         return Result.success(result);
     }

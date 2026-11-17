@@ -34,17 +34,24 @@ public class ImageMessageRequest implements Serializable {
     private String md5;
 
     /**
-     * 本地图片文件绝对路径（与 base64 二选一，自动计算 Base64 与 MD5 并执行零字节防卫）
+     * 本地图片文件绝对路径（与 base64 / imageUrl 三选一，自动计算 Base64 与 MD5 并执行零字节防卫）
      */
     private String imagePath;
 
     /**
-     * 校验请求载荷是否至少提供 Base64 或本地图片路径
+     * 公网可访问图片完整 URL（用于钉钉/飞书/企微跨端图文自适应发送）
+     */
+    private String imageUrl;
+
+    /**
+     * 校验请求载荷是否至少提供 Base64、本地图片路径或公网 imageUrl 之一
      *
      * @return 校验通过返回 true
      */
-    @AssertTrue(message = "必须提供有效图片 Base64 内容或本地图片路径")
+    @AssertTrue(message = "必须提供有效图片 Base64 内容、本地图片路径或公网 imageUrl")
     public boolean isValidPayload() {
-        return (base64 != null && !base64.isBlank()) || (imagePath != null && !imagePath.isBlank());
+        return (base64 != null && !base64.isBlank())
+                || (imagePath != null && !imagePath.isBlank())
+                || (imageUrl != null && !imageUrl.isBlank());
     }
 }

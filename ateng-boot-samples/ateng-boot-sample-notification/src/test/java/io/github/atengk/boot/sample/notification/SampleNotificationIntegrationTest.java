@@ -1,18 +1,28 @@
 package io.github.atengk.boot.sample.notification;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.notification.alert.AlertStormSuppressor;
+import io.github.atengk.boot.notification.util.NotificationSignUtil;
 import io.github.atengk.boot.notification.channel.NotificationChannel;
 import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
 import io.github.atengk.boot.notification.model.CardButtonOrientation;
 import io.github.atengk.boot.notification.model.CardColor;
+import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.NotificationSendResult;
 import io.github.atengk.boot.notification.model.Platform;
+import io.github.atengk.boot.notification.model.TextMessage;
+import io.github.atengk.boot.notification.provider.GenericWebhookNotificationProvider;
+import io.github.atengk.boot.notification.template.NotificationTemplate;
 import io.github.atengk.boot.sample.notification.dto.AlertTriggerRequest;
 import io.github.atengk.boot.sample.notification.dto.CardMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.MarkdownMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.TextMessageRequest;
 import io.github.atengk.boot.sample.notification.provider.SampleCustomNotificationChannelProvider;
+import okhttp3.mockwebserver.Dispatcher;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
+import okhttp3.mockwebserver.QueueDispatcher;
 import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -22,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -37,26 +48,34 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * 企业协同通知场景样例端到端全链路集成自验测试
- * 基于纯内存 MockWebServer 模拟全平台 Webhook 服务，离线验证全部发信、切源、事务与告警场景
+ * 结合内置 @Profile("!local") 离线仿真网关与纯内存 MockWebServer，离线验证全平台协议、并发广播、切源、事务与告警场景
  *
  * @author Ateng
  * @since 2026-10-23
  */
-@SpringBootTest(classes = SampleNotificationApplication.class)
+@SpringBootTest(classes = SampleNotificationApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureMockMvc
 @DisplayName("Notification 场景样例端到端集成测试")
 class SampleNotificationIntegrationTest {
 
     private static MockWebServer mockServer;
 
+    @LocalServerPort
+    private int serverPort;
+
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private NotificationTemplate notificationTemplate;
 
     @Autowired
     private NotificationChannelRegistry channelRegistry;
@@ -84,7 +103,12 @@ class SampleNotificationIntegrationTest {
         }
         if (channelRegistry != null) {
             channelRegistry.unregister("sample-failover-primary");
+            channelRegistry.unregister("gw-wecom");
+            channelRegistry.unregister("gw-dingtalk");
+            channelRegistry.unregister("gw-feishu");
+            channelRegistry.unregister("gw-generic");
         }
+        mockServer.setDispatcher(new QueueDispatcher());
         while (true) {
             try {
                 RecordedRequest req = mockServer.takeRequest(10, TimeUnit.MILLISECONDS);
@@ -502,22 +526,27 @@ class SampleNotificationIntegrationTest {
                 }
                 """;
 
-        mockMvc.perform(post("/sample/notification/alert/trigger")
+        String traceId = mockMvc.perform(post("/sample/notification/alert/trigger")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(alertPayload))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(500));
+                .andExpect(jsonPath("$.code").value(500))
+                .andReturn().getResponse().getHeader("X-Trace-Id");
+        assertNotNull(traceId);
 
         // 验证首发告警卡片已送达 MockWebServer
         RecordedRequest recorded = mockServer.takeRequest(3, TimeUnit.SECONDS);
         assertNotNull(recorded);
         String body = recorded.getBody().readUtf8();
 
-        // 验证参数安全脱敏：包含 orderId，但 password 必须被彻底掩码为 ******，严禁明文外泄
+        // 验证参数安全脱敏与 @NotifyAlert.detailUrl 链路追踪跳转插值
         assertThat(body)
                 .contains("订单履约业务未捕获异常")
                 .contains("ORD-ALERT-9999")
                 .contains("******")
+                .contains("card_action")
+                .contains("https://apm.example.com/traces/" + traceId)
+                .doesNotContain("${traceId}")
                 .doesNotContain("SUPER_SECRET_PASSWORD_123");
 
         // 验证防风暴聚合：窗口期内（10s）再次触发相同异常，被静默拦截，不再产生新的即时网络请求
@@ -702,5 +731,249 @@ class SampleNotificationIntegrationTest {
         } finally {
             channelRegistry.unregister("sample-failover-primary");
         }
+    }
+
+    @Test
+    @DisplayName("端到端验证 @Profile(\"!local\") 离线仿真网关四平台验签、报文录制查询与清空闭环")
+    void testOfflineMockGatewayAndAuditLifecycle() throws Exception {
+        mockMvc.perform(delete("/sample/notification/mock-gateway/records"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        String gatewayBase = "http://localhost:" + serverPort + "/sample/notification/mock-gateway/";
+        channelRegistry.register(NotificationChannel.builder()
+                .name("gw-wecom")
+                .platform(Platform.WECOM)
+                .webhook(gatewayBase + "wecom")
+                .build());
+        channelRegistry.register(NotificationChannel.builder()
+                .name("gw-dingtalk")
+                .platform(Platform.DINGTALK)
+                .webhook(gatewayBase + "dingtalk")
+                .secret("SEC_DINGTALK_SECRET_SAMPLE")
+                .build());
+        channelRegistry.register(NotificationChannel.builder()
+                .name("gw-feishu")
+                .platform(Platform.FEISHU)
+                .webhook(gatewayBase + "feishu")
+                .secret("SEC_FEISHU_SECRET_SAMPLE")
+                .build());
+        channelRegistry.register(NotificationChannel.builder()
+                .name("gw-generic")
+                .platform(Platform.GENERIC)
+                .webhook(gatewayBase + "generic")
+                .secret("SEC_GENERIC_SECRET_SAMPLE")
+                .build());
+
+        // 1. 真实 HTTP 直连本地仿真网关验证全四端协议（企微 card_action、钉钉无二次编码+非空 singleURL、飞书加签、通用防重放头）
+        NotificationSendResult wecomRes = notificationTemplate.send("gw-wecom",
+                CardMessage.of("企微网关卡片", "验证必填 card_action"));
+        assertTrue(wecomRes.isSuccess());
+
+        NotificationSendResult dingRes = notificationTemplate.send("gw-dingtalk",
+                CardMessage.of("钉钉网关卡片", "验证非空 singleURL 与无二次编码加签"));
+        assertTrue(dingRes.isSuccess());
+
+        NotificationSendResult feishuRes = notificationTemplate.send("gw-feishu",
+                TextMessage.of("飞书网关文本加签验证"));
+        assertTrue(feishuRes.isSuccess());
+
+        NotificationSendResult genericRes = notificationTemplate.send("gw-generic",
+                TextMessage.of("通用网关防重放头验证"));
+        assertTrue(genericRes.isSuccess());
+
+        // 2. 查询录制报文审计记录（验证 4 条记录、签名全部通过、协议字段完整、通用头不含明文密钥）
+        String recordsJson = mockMvc.perform(get("/sample/notification/mock-gateway/records"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(4))
+                .andExpect(jsonPath("$.data[0].platform").value("WECOM"))
+                .andExpect(jsonPath("$.data[0].signatureVerified").value(true))
+                .andExpect(jsonPath("$.data[1].platform").value("DINGTALK"))
+                .andExpect(jsonPath("$.data[1].signatureVerified").value(true))
+                .andExpect(jsonPath("$.data[2].platform").value("FEISHU"))
+                .andExpect(jsonPath("$.data[2].signatureVerified").value(true))
+                .andExpect(jsonPath("$.data[3].platform").value("GENERIC"))
+                .andExpect(jsonPath("$.data[3].signatureVerified").value(true))
+                .andReturn().getResponse().getContentAsString();
+
+        JsonNode recordsRoot = JsonUtil.getObjectMapper().readTree(recordsJson).path("data");
+        JsonNode wecomCardAction = recordsRoot.get(0).path("payload").path("template_card").path("card_action");
+        assertEquals(1, wecomCardAction.path("type").asInt());
+        assertThat(wecomCardAction.path("url").asText()).isNotBlank();
+
+        JsonNode dingCard = recordsRoot.get(1).path("payload").path("actionCard");
+        assertThat(dingCard.path("singleURL").asText()).isNotBlank();
+        assertThat(recordsRoot.get(1).path("queryString").asText()).doesNotContain("%25");
+
+        JsonNode genericHeaders = recordsRoot.get(3).path("headers");
+        assertThat(genericHeaders.has(GenericWebhookNotificationProvider.HEADER_WEBHOOK_TIMESTAMP.toLowerCase())).isTrue();
+        assertThat(genericHeaders.has(GenericWebhookNotificationProvider.HEADER_SIGNATURE_SHA256.toLowerCase())).isTrue();
+        assertThat(genericHeaders.has("x-webhook-secret")).isFalse();
+
+        // 按平台过滤查询
+        mockMvc.perform(get("/sample/notification/mock-gateway/records").param("platform", "DINGTALK"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].platform").value("DINGTALK"));
+
+        // 清空审计记录
+        mockMvc.perform(delete("/sample/notification/mock-gateway/records"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(4));
+
+        mockMvc.perform(get("/sample/notification/mock-gateway/records"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(0));
+
+        // 3. 安全反向校验：通用网关拒绝明文 X-Webhook-Secret 头与过期防重放时间戳，钉钉拒绝二次编码/错误签名，飞书拒绝错误签名
+        mockMvc.perform(post("/sample/notification/mock-gateway/generic")
+                        .header("X-Webhook-Secret", "SEC_GENERIC_SECRET_SAMPLE")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"content\":\"forbidden-plaintext-header\"}"))
+                .andExpect(status().is4xxClientError());
+
+        long expiredTs = System.currentTimeMillis() - 600_000L;
+        String expiredBody = "{\"content\":\"expired-replay\"}";
+        String expiredSig = NotificationSignUtil.signGenericWebhook("SEC_GENERIC_SECRET_SAMPLE", expiredTs, expiredBody);
+        mockMvc.perform(post("/sample/notification/mock-gateway/generic")
+                        .header(GenericWebhookNotificationProvider.HEADER_WEBHOOK_TIMESTAMP, String.valueOf(expiredTs))
+                        .header(GenericWebhookNotificationProvider.HEADER_SIGNATURE_SHA256, expiredSig)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(expiredBody))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(post("/sample/notification/mock-gateway/dingtalk?timestamp=1700000000000&sign=bad%252Bsign")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"msgtype\":\"text\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.errcode").value(310000));
+
+        mockMvc.perform(post("/sample/notification/mock-gateway/feishu")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"msg_type\":\"text\",\"timestamp\":\"1700000000\",\"sign\":\"invalid-sign\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(19021));
+    }
+
+    @Test
+    @DisplayName("端到端验证多渠道并发广播接口 (/sample/notification/channel/broadcast)：JSR-303 校验、单点 500 隔离与异步广播")
+    void testBroadcastChannelEndpointWithFailureIsolation() throws Exception {
+        // 1. 非法入参 Fail-Fast（空渠道集合 / 空白正文 -> JSR-303 返回 code=400）
+        String invalidBroadcast = """
+                {
+                  "channels": [],
+                  "content": ""
+                }
+                """;
+        mockMvc.perform(post("/sample/notification/channel/broadcast")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidBroadcast))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 2. 配置 MockWebServer 按路径分发：企微与通用返回 200，飞书返回 HTTP 500 触发单点故障隔离
+        mockServer.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                String path = request.getPath();
+                if (path != null && path.startsWith("/webhook/feishu")) {
+                    return new MockResponse().setResponseCode(500)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("{\"code\":500,\"msg\":\"Feishu Gateway Error\"}");
+                }
+                if (path != null && path.startsWith("/webhook/generic")) {
+                    return new MockResponse().setResponseCode(200)
+                            .setHeader("Content-Type", "application/json")
+                            .setBody("{\"status\":\"ok\"}");
+                }
+                return new MockResponse().setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setBody("{\"errcode\":0,\"errmsg\":\"ok\",\"code\":0,\"msg\":\"success\"}");
+            }
+        });
+
+        String broadcastPayload = """
+                {
+                  "channels": ["ops-alert", "feishu-ops", "generic-monitor"],
+                  "content": "【全网故障预警】核心支付链路发生局部超时，请各端值班人排查"
+                }
+                """;
+
+        mockMvc.perform(post("/sample/notification/channel/broadcast")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(broadcastPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data['ops-alert'].success").value(true))
+                .andExpect(jsonPath("$.data['ops-alert'].platform").value("WECOM"))
+                .andExpect(jsonPath("$.data['feishu-ops'].success").value(false))
+                .andExpect(jsonPath("$.data['feishu-ops'].platform").value("FEISHU"))
+                .andExpect(jsonPath("$.data['feishu-ops'].errorMessage").isNotEmpty())
+                .andExpect(jsonPath("$.data['generic-monitor'].success").value(true))
+                .andExpect(jsonPath("$.data['generic-monitor'].platform").value("GENERIC"));
+
+        // 3. 验证 async=true 异步并发广播同样保持隔离
+        String asyncBroadcastPayload = """
+                {
+                  "channels": ["ops-alert", "feishu-ops"],
+                  "content": "异步广播单点隔离自验",
+                  "async": true
+                }
+                """;
+        mockMvc.perform(post("/sample/notification/channel/broadcast")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(asyncBroadcastPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data['ops-alert'].success").value(true))
+                .andExpect(jsonPath("$.data['feishu-ops'].success").value(false));
+    }
+
+    @Test
+    @DisplayName("端到端验证公网 imageUrl 跨端图片发信：校验钉钉 Markdown 自适应与企微图文转发")
+    void testSendImageMessageWithPublicUrlEndpoint() throws Exception {
+        enqueueSuccessResponse();
+        enqueueSuccessResponse();
+
+        String dingPayload = """
+                {
+                  "channel": "dingtalk-dev",
+                  "imageUrl": "https://img.example.com/alert-banner.png"
+                }
+                """;
+        mockMvc.perform(post("/sample/notification/message/image")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(dingPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.platform").value("DINGTALK"));
+
+        RecordedRequest dingReq = mockServer.takeRequest(3, TimeUnit.SECONDS);
+        assertNotNull(dingReq);
+        assertThat(dingReq.getBody().readUtf8())
+                .contains("\"msgtype\":\"markdown\"")
+                .contains("https://img.example.com/alert-banner.png");
+
+        String wecomPayload = """
+                {
+                  "channel": "ops-alert",
+                  "imageUrl": "https://img.example.com/alert-banner.png"
+                }
+                """;
+        mockMvc.perform(post("/sample/notification/message/image")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(wecomPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.platform").value("WECOM"));
+
+        RecordedRequest wecomReq = mockServer.takeRequest(3, TimeUnit.SECONDS);
+        assertNotNull(wecomReq);
+        assertThat(wecomReq.getBody().readUtf8())
+                .contains("https://img.example.com/alert-banner.png");
     }
 }

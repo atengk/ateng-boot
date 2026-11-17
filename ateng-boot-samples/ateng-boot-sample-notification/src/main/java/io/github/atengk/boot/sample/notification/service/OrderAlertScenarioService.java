@@ -49,6 +49,7 @@ public class OrderAlertScenarioService {
             title = "订单履约业务未捕获异常",
             suppressWindow = 10,
             includeArgs = true,
+            detailUrl = "https://apm.example.com/traces/${traceId}",
             ignoreExceptions = {IllegalArgumentException.class}
     )
     public String processOrder(AlertTriggerRequest request) {

@@ -15,14 +15,14 @@ ateng:
       channels:
         ops-alert:
           platform: wecom
-          webhook: http://localhost:18080/webhook/wecom
+          webhook: http://localhost:${server.port:8080}/sample/notification/mock-gateway/wecom
           # 企微 Webhook 官方仅使用 URL 中的 key 鉴权，无 secret 加签机制
           connect-timeout: 3s
           read-timeout: 5s
           permits-per-minute: 20
         dingtalk-dev:
           platform: dingtalk
-          webhook: http://localhost:18080/webhook/dingtalk
+          webhook: http://localhost:${server.port:8080}/sample/notification/mock-gateway/dingtalk
           secret: SEC_DINGTALK_SECRET_SAMPLE
           connect-timeout: 3s
           read-timeout: 5s
@@ -32,14 +32,14 @@ ateng:
             - feishu-ops
         feishu-ops:
           platform: feishu
-          webhook: http://localhost:18080/webhook/feishu
+          webhook: http://localhost:${server.port:8080}/sample/notification/mock-gateway/feishu
           secret: SEC_FEISHU_SECRET_SAMPLE
           connect-timeout: 3s
           read-timeout: 5s
           permits-per-minute: 100
         generic-monitor:
           platform: generic
-          webhook: http://localhost:18080/webhook/generic
+          webhook: http://localhost:${server.port:8080}/sample/notification/mock-gateway/generic
           secret: SEC_GENERIC_SECRET_SAMPLE
           connect-timeout: 3s
           read-timeout: 5s

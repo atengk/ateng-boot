@@ -1,6 +1,8 @@
 package io.github.atengk.boot.sample.notification.service;
 
 import io.github.atengk.boot.notification.context.NotificationContextHolder;
+import io.github.atengk.boot.notification.exception.NotificationException;
+import io.github.atengk.boot.notification.exception.NotificationResultCode;
 import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
@@ -12,6 +14,7 @@ import io.github.atengk.boot.notification.model.NotificationSendResult;
 import io.github.atengk.boot.notification.model.RawMessage;
 import io.github.atengk.boot.notification.model.TextMessage;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
+import io.github.atengk.boot.sample.notification.dto.BroadcastRequest;
 import io.github.atengk.boot.sample.notification.dto.CardMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.ChannelSwitchRequest;
 import io.github.atengk.boot.sample.notification.dto.FailoverDemoRequest;
@@ -27,9 +30,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 企业协同通知发信多场景业务服务
@@ -42,17 +47,15 @@ import java.util.concurrent.CompletableFuture;
 @RequiredArgsConstructor
 public class NotificationScenarioService {
 
+    private static final Duration BROADCAST_ASYNC_TIMEOUT = Duration.ofSeconds(30);
+
     private final NotificationTemplate notificationTemplate;
 
     /**
      * 同步发送纯文本通知
      */
     public NotificationSendResult sendText(TextMessageRequest request) {
-        TextMessage message = new TextMessage(request.getContent());
-        MentionTarget mentionTarget = buildMentionTarget(request.getAtAll(), request.getAtMobiles(), request.getAtUserIds());
-        if (mentionTarget != null) {
-            message.setMention(mentionTarget);
-        }
+        TextMessage message = buildTextMessage(request.getContent(), request.getAtAll(), request.getAtMobiles(), request.getAtUserIds());
         return notificationTemplate.send(request.getChannel(), message);
     }
 
@@ -169,7 +172,7 @@ public class NotificationScenarioService {
     }
 
     /**
-     * 图片通知发信（支持 Base64 与本地路径零字节防卫）
+     * 图片通知发信（支持 Base64、本地路径零字节防卫与公网 imageUrl 跨端自适应）
      *
      * @param request 图片发信请求
      * @return 发信结果
@@ -178,13 +181,44 @@ public class NotificationScenarioService {
         ImageMessage message;
         if (StringUtils.hasText(request.getImagePath())) {
             message = ImageMessage.fromPath(java.nio.file.Path.of(request.getImagePath()));
-        } else if (StringUtils.hasText(request.getMd5())) {
-            message = ImageMessage.ofBase64(request.getBase64(), request.getMd5());
+        } else if (StringUtils.hasText(request.getBase64())) {
+            if (StringUtils.hasText(request.getMd5())) {
+                message = ImageMessage.ofBase64(request.getBase64(), request.getMd5());
+            } else {
+                byte[] bytes = java.util.Base64.getDecoder().decode(request.getBase64());
+                message = ImageMessage.fromBytes(bytes);
+            }
         } else {
-            byte[] bytes = java.util.Base64.getDecoder().decode(request.getBase64());
-            message = ImageMessage.fromBytes(bytes);
+            message = new ImageMessage();
+        }
+        if (StringUtils.hasText(request.getImageUrl())) {
+            message.setImageUrl(request.getImageUrl().trim());
         }
         return notificationTemplate.send(request.getChannel(), message);
+    }
+
+    /**
+     * 多渠道并发广播通知（支持同步/异步门面派发与单点故障隔离）
+     *
+     * @param request 广播通知请求
+     * @return 按入参去重顺序返回的渠道发送结果映射
+     */
+    public Map<String, NotificationSendResult> sendBroadcast(BroadcastRequest request) {
+        TextMessage message = buildTextMessage(request.getContent(), request.getAtAll(), request.getAtMobiles(), request.getAtUserIds());
+        if (request.isAsync()) {
+            try {
+                return notificationTemplate.sendBroadcastAsync(request.getChannels(), message)
+                        .get(BROADCAST_ASYNC_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new NotificationException(NotificationResultCode.NOTIFICATION_SEND_ERROR,
+                        "异步广播等待执行结果被中断", ex);
+            } catch (Exception ex) {
+                throw new NotificationException(NotificationResultCode.NOTIFICATION_SEND_ERROR,
+                        "异步广播执行异常: " + ex.getMessage(), ex);
+            }
+        }
+        return notificationTemplate.sendBroadcast(request.getChannels(), message);
     }
 
     /**
@@ -194,19 +228,25 @@ public class NotificationScenarioService {
      * @return 发信结果
      */
     public NotificationSendResult sendWithSwitchedChannel(ChannelSwitchRequest request) {
-        TextMessage message = new TextMessage(request.getContent());
-        MentionTarget mentionTarget = buildMentionTarget(request.getAtAll(), request.getAtMobiles(), request.getAtUserIds());
-        if (mentionTarget != null) {
-            message.setMention(mentionTarget);
-        }
+        TextMessage message = buildTextMessage(request.getContent(), request.getAtAll(), request.getAtMobiles(), request.getAtUserIds());
         try {
             return NotificationContextHolder.callWithChannel(request.getTargetChannel(), () -> notificationTemplate.send(message));
         } catch (Exception e) {
             if (e instanceof RuntimeException re) {
                 throw re;
             }
-            throw new IllegalStateException("切换通知渠道发信失败: " + e.getMessage(), e);
+            throw new NotificationException(NotificationResultCode.NOTIFICATION_SEND_ERROR,
+                    "切换通知渠道发信失败: " + e.getMessage(), e);
         }
+    }
+
+    private TextMessage buildTextMessage(String content, Boolean atAll, List<String> mobiles, List<String> userIds) {
+        TextMessage message = new TextMessage(content);
+        MentionTarget mentionTarget = buildMentionTarget(atAll, mobiles, userIds);
+        if (mentionTarget != null) {
+            message.setMention(mentionTarget);
+        }
+        return message;
     }
 
     private MentionTarget buildMentionTarget(Boolean atAll, List<String> mobiles, List<String> userIds) {
