@@ -39,7 +39,22 @@ public class FtpPoolStatsVO implements Serializable {
     private Integer idleConnections;
 
     /**
+     * 当前阻塞等待借出连接的线程数
+     */
+    private Integer waitingBorrowers;
+
+    /**
      * 最大允许连接数（-1 表示无界或未限定）
      */
     private Integer maxConnections;
+
+    /**
+     * 最大空闲连接数
+     */
+    private Integer maxIdle;
+
+    /**
+     * 最小空闲连接数
+     */
+    private Integer minIdle;
 }

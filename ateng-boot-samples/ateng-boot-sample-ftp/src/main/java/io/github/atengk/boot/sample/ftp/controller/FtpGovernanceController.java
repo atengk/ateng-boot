@@ -1,9 +1,12 @@
 package io.github.atengk.boot.sample.ftp.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.ftp.model.FtpPoolStats;
 import io.github.atengk.boot.ftp.registry.FtpClientRegistry;
 import io.github.atengk.boot.ftp.template.FtpTemplate;
 import io.github.atengk.boot.sample.ftp.dto.DynamicRoutingRequest;
+import io.github.atengk.boot.sample.ftp.dto.RegisterNodeRequest;
+import io.github.atengk.boot.sample.ftp.dto.UnregisterNodeRequest;
 import io.github.atengk.boot.sample.ftp.service.ConnectivityProbeScenarioService;
 import io.github.atengk.boot.sample.ftp.service.DynamicRoutingScenarioService;
 import io.github.atengk.boot.sample.ftp.vo.FtpPoolStatsVO;
@@ -11,9 +14,6 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.net.ftp.FTPClient;
-import org.apache.commons.pool2.ObjectPool;
-import org.apache.commons.pool2.impl.GenericObjectPool;
 import org.springframework.util.StringUtils;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -26,7 +26,8 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * 远程 FTP 节点治理与健康运维控制器
  * <p>
- * 提供零副作用物理连通性探针（NOOP）、断言检查、FtpContextHolder 线程栈级动态切源读写与连接池指标端点。
+ * 提供零副作用物理连通性探针（NOOP）、断言检查、FtpContextHolder 线程栈级动态切源读写、
+ * 运行期节点动态热注册/注销与连接池指标端点。
  * </p>
  *
  * @author Ateng
@@ -41,7 +42,6 @@ public class FtpGovernanceController {
 
     private final ConnectivityProbeScenarioService connectivityProbeService;
     private final DynamicRoutingScenarioService dynamicRoutingService;
-    private final FtpClientRegistry ftpClientRegistry;
     private final FtpTemplate ftpTemplate;
 
     /**
@@ -104,7 +104,29 @@ public class FtpGovernanceController {
     }
 
     /**
-     * 查看 Commons Pool2 受管连接池实时运行指标
+     * 运行期动态注册或热替换具名 FTP 服务节点
+     *
+     * @param request 节点注册请求
+     * @return 注册后节点的连接池运行时指标
+     */
+    @PostMapping("/register-node")
+    public Result<FtpPoolStatsVO> registerNode(@Valid @RequestBody RegisterNodeRequest request) {
+        return Result.success(toStatsVO(dynamicRoutingService.registerNode(request)));
+    }
+
+    /**
+     * 运行期安全注销具名 FTP 服务节点并释放连接池（严禁注销 default 主节点）
+     *
+     * @param request 节点注销请求
+     * @return 是否存在并成功注销
+     */
+    @PostMapping("/unregister-node")
+    public Result<Boolean> unregisterNode(@Valid @RequestBody UnregisterNodeRequest request) {
+        return Result.success(dynamicRoutingService.unregisterNode(request.getServerName()));
+    }
+
+    /**
+     * 查看 Commons Pool2 受管连接池实时运行指标（直接调用原生 FtpPoolStats 门面）
      *
      * @param serverName 目标服务节点标识（可选）
      * @return 连接池指标
@@ -112,17 +134,18 @@ public class FtpGovernanceController {
     @GetMapping("/pool-stats")
     public Result<FtpPoolStatsVO> getPoolStats(@RequestParam(value = "serverName", required = false) String serverName) {
         String targetServer = StringUtils.hasText(serverName) ? serverName : FtpClientRegistry.DEFAULT_SERVER;
-        ObjectPool<FTPClient> pool = ftpClientRegistry.getPool(targetServer);
+        return Result.success(toStatsVO(dynamicRoutingService.getPoolStats(targetServer)));
+    }
 
-        int maxTotal = pool instanceof GenericObjectPool<?> genericPool ? genericPool.getMaxTotal() : -1;
-
-        FtpPoolStatsVO vo = FtpPoolStatsVO.builder()
-                .serverName(targetServer)
-                .activeConnections(pool.getNumActive())
-                .idleConnections(pool.getNumIdle())
-                .maxConnections(maxTotal)
+    private FtpPoolStatsVO toStatsVO(FtpPoolStats stats) {
+        return FtpPoolStatsVO.builder()
+                .serverName(stats.getServerName())
+                .activeConnections(stats.getActiveConnections())
+                .idleConnections(stats.getIdleConnections())
+                .waitingBorrowers(stats.getWaitingBorrowers())
+                .maxConnections(stats.getMaxTotal())
+                .maxIdle(stats.getMaxIdle())
+                .minIdle(stats.getMinIdle())
                 .build();
-
-        return Result.success(vo);
     }
 }

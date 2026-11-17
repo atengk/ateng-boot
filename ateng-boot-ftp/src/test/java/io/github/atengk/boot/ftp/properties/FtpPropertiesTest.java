@@ -64,4 +64,51 @@ class FtpPropertiesTest {
         assertThat(pool.getTimeBetweenEvictionRuns()).isEqualTo(Duration.ofMinutes(1));
         assertThat(pool.getMinEvictableIdleTime()).isEqualTo(Duration.ofMinutes(5));
     }
+
+    @Test
+    @DisplayName("测试 mergeFrom 继承父级连接池与 FTPS 缺省配置且隔离可变引用")
+    void testMergeFromInheritsDefaultsWithoutOverwritingExplicitChildSettings() {
+        FtpProperties parent = new FtpProperties();
+        parent.setConnectTimeout(Duration.ofSeconds(5));
+        parent.setDataTimeout(Duration.ofSeconds(12));
+        parent.setBufferSize(DataSize.ofKilobytes(128));
+        parent.getPool().setMaxTotal(32);
+        parent.getPool().setMaxWait(Duration.ofSeconds(2));
+        parent.getFtps().setEnabled(true);
+        parent.getFtps().setTrustStorePath("classpath:trust.p12");
+
+        FtpProperties child = new FtpProperties();
+        child.setHost("10.0.0.2");
+        child.setPort(2122);
+        child.getPool().setMaxTotal(6);
+
+        child.mergeFrom(parent);
+
+        assertThat(child.getHost()).isEqualTo("10.0.0.2");
+        assertThat(child.getPort()).isEqualTo(2122);
+        assertThat(child.getConnectTimeout()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(child.getDataTimeout()).isEqualTo(Duration.ofSeconds(12));
+        assertThat(child.getBufferSize()).isEqualTo(DataSize.ofKilobytes(128));
+        assertThat(child.getPool().getMaxTotal()).isEqualTo(6);
+        assertThat(child.getPool().getMaxWait()).isEqualTo(Duration.ofSeconds(2));
+        assertThat(child.getFtps().isEnabled()).isTrue();
+        assertThat(child.getFtps().getTrustStorePath()).isEqualTo("classpath:trust.p12");
+
+        // 修改子节点不应污染父节点
+        child.getPool().setMaxTotal(99);
+        child.getFtps().setTrustStorePath("classpath:other.p12");
+        assertThat(parent.getPool().getMaxTotal()).isEqualTo(32);
+        assertThat(parent.getFtps().getTrustStorePath()).isEqualTo("classpath:trust.p12");
+
+        // 子节点显式设置恰好等于类默认值的属性 (false / 16) 时，严禁被父级配置覆盖
+        FtpProperties explicitChild = new FtpProperties();
+        explicitChild.getPool().setMaxTotal(16);
+        explicitChild.getFtps().setEnabled(false);
+        explicitChild.mergeFrom(parent);
+
+        assertThat(explicitChild.getPool().getMaxTotal()).isEqualTo(16);
+        assertThat(explicitChild.getPool().getMaxWait()).isEqualTo(Duration.ofSeconds(2));
+        assertThat(explicitChild.getFtps().isEnabled()).isFalse();
+        assertThat(explicitChild.getFtps().getTrustStorePath()).isEqualTo("classpath:trust.p12");
+    }
 }

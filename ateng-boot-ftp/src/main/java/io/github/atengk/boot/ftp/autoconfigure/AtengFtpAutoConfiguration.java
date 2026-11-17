@@ -1,16 +1,12 @@
 package io.github.atengk.boot.ftp.autoconfigure;
 
 import io.github.atengk.boot.ftp.customizer.FtpClientCustomizer;
-import io.github.atengk.boot.ftp.pool.FtpClientPooledObjectFactory;
-import io.github.atengk.boot.ftp.properties.FtpPoolProperties;
 import io.github.atengk.boot.ftp.properties.FtpProperties;
 import io.github.atengk.boot.ftp.registry.FtpClientRegistry;
 import io.github.atengk.boot.ftp.template.FtpTemplate;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.net.ftp.FTPClient;
-import org.apache.commons.pool2.ObjectPool;
 import org.apache.commons.pool2.impl.GenericObjectPool;
-import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -56,22 +52,17 @@ public class AtengFtpAutoConfiguration {
                 ? customizersProvider.orderedStream().toList()
                 : Collections.emptyList();
 
-        FtpClientRegistry registry = new FtpClientRegistry();
+        FtpClientRegistry registry = new FtpClientRegistry(properties, customizers);
 
         // 1. 装配并注册默认主节点 (default)
-        ObjectPool<FTPClient> defaultPool = createObjectPool(FtpClientRegistry.DEFAULT_SERVER, properties, customizers);
-        FtpTemplate defaultTemplate = new FtpTemplate(defaultPool, properties, registry, FtpClientRegistry.DEFAULT_SERVER);
-        registry.register(FtpClientRegistry.DEFAULT_SERVER, defaultTemplate, defaultPool);
+        registry.register(FtpClientRegistry.DEFAULT_SERVER, properties);
 
         // 2. 装配并注册命名多节点 (servers)
         Map<String, FtpProperties> servers = properties.getServers();
         if (servers != null && !servers.isEmpty()) {
             servers.forEach((name, nodeProps) -> {
                 if (nodeProps != null && !FtpClientRegistry.DEFAULT_SERVER.equalsIgnoreCase(name)) {
-                    nodeProps.mergeFrom(properties);
-                    ObjectPool<FTPClient> nodePool = createObjectPool(name, nodeProps, customizers);
-                    FtpTemplate nodeTemplate = new FtpTemplate(nodePool, nodeProps, registry, name);
-                    registry.register(name, nodeTemplate, nodePool);
+                    registry.register(name, nodeProps);
                 }
             });
         }
@@ -90,33 +81,5 @@ public class AtengFtpAutoConfiguration {
     @ConditionalOnMissingBean
     public FtpTemplate ftpTemplate(FtpClientRegistry registry) {
         return registry.getDefaultTemplate();
-    }
-
-    /**
-     * 基于节点配置构建受管连接池
-     *
-     * @param serverName  服务节点名称
-     * @param props       节点配置
-     * @param customizers 客户端定制器扩展链
-     * @return Commons Pool2 受管对象池
-     */
-    private ObjectPool<FTPClient> createObjectPool(String serverName,
-                                                   FtpProperties props,
-                                                   List<FtpClientCustomizer> customizers) {
-        FtpClientPooledObjectFactory factory = new FtpClientPooledObjectFactory(serverName, props, customizers);
-        GenericObjectPoolConfig<FTPClient> config = new GenericObjectPoolConfig<>();
-        FtpPoolProperties poolProps = props.getPool() != null ? props.getPool() : new FtpPoolProperties();
-
-        config.setMaxTotal(poolProps.getMaxTotal());
-        config.setMaxIdle(poolProps.getMaxIdle());
-        config.setMinIdle(poolProps.getMinIdle());
-        config.setMaxWait(poolProps.getMaxWait());
-        config.setTestOnBorrow(poolProps.isTestOnBorrow());
-        config.setTestOnReturn(poolProps.isTestOnReturn());
-        config.setTestWhileIdle(poolProps.isTestWhileIdle());
-        config.setTimeBetweenEvictionRuns(poolProps.getTimeBetweenEvictionRuns());
-        config.setMinEvictableIdleDuration(poolProps.getMinEvictableIdleTime());
-
-        return new GenericObjectPool<>(factory, config);
     }
 }

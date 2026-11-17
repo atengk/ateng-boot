@@ -9,7 +9,9 @@ import io.github.atengk.boot.sample.ftp.dto.DirectorySyncRequest;
 import io.github.atengk.boot.sample.ftp.dto.DynamicRoutingRequest;
 import io.github.atengk.boot.sample.ftp.dto.LargeFileTransferRequest;
 import io.github.atengk.boot.sample.ftp.dto.PathRequest;
+import io.github.atengk.boot.sample.ftp.dto.RegisterNodeRequest;
 import io.github.atengk.boot.sample.ftp.dto.RenameRequest;
+import io.github.atengk.boot.sample.ftp.dto.UnregisterNodeRequest;
 import io.github.atengk.boot.sample.ftp.dto.UploadFileRequest;
 import io.github.atengk.boot.sample.ftp.dto.WriteTextRequest;
 import lombok.extern.slf4j.Slf4j;
@@ -413,14 +415,99 @@ public class SampleFtpWebIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("Secured Backup Datacenter Payload"));
 
-        // 6. 查看连接池指标
+        // 6. 查看连接池指标（原生 FtpPoolStats 门面映射）
         mockMvc.perform(get("/sample/ftp/governance/pool-stats")
                         .param("serverName", "default"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.serverName").value("default"))
                 .andExpect(jsonPath("$.data.idleConnections", notNullValue()))
+                .andExpect(jsonPath("$.data.waitingBorrowers").value(0))
+                .andExpect(jsonPath("$.data.maxIdle").value(8))
+                .andExpect(jsonPath("$.data.minIdle").value(2))
                 .andExpect(jsonPath("$.data.maxConnections").value(10));
+    }
+
+    @Test
+    @DisplayName("04.1 FtpGovernanceController: 动态节点热注册、切源读写、安全注销与 default 防护")
+    void testDynamicNodeRegisterAndUnregisterLifecycle() throws Exception {
+        FakeFtpServer dynamicServer = new FakeFtpServer();
+        dynamicServer.setServerControlPort(0);
+        FileSystem dynFs = new UnixFakeFileSystem();
+        dynFs.add(new DirectoryEntry("/"));
+        dynamicServer.setFileSystem(dynFs);
+        dynamicServer.addUserAccount(new UserAccount("dyn_user", "dyn_pass", "/"));
+        dynamicServer.start();
+
+        try {
+            // 1. 动态热注册 tenant-dynamic 节点
+            RegisterNodeRequest registerReq = RegisterNodeRequest.builder()
+                    .serverName("tenant-dynamic")
+                    .host("127.0.0.1")
+                    .port(dynamicServer.getServerControlPort())
+                    .username("dyn_user")
+                    .password("dyn_pass")
+                    .build();
+
+            mockMvc.perform(post("/sample/ftp/governance/register-node")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(registerReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.serverName").value("tenant-dynamic"))
+                    .andExpect(jsonPath("$.data.maxConnections").value(10));
+
+            // 2. 使用 FtpContextHolder 动态切源至新注册节点写入与读取
+            DynamicRoutingRequest writeReq = DynamicRoutingRequest.builder()
+                    .serverName("tenant-dynamic")
+                    .remotePath("/tenant/hello.txt")
+                    .content("Dynamic Node Content 2026")
+                    .build();
+
+            mockMvc.perform(post("/sample/ftp/governance/dynamic-routing-write")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(writeReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+
+            mockMvc.perform(get("/sample/ftp/governance/dynamic-routing-read")
+                            .param("serverName", "tenant-dynamic")
+                            .param("remotePath", "/tenant/hello.txt"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("Dynamic Node Content 2026"));
+
+            // 3. 注销 tenant-dynamic 节点并确认再次查询返回 SERVER_NOT_FOUND
+            UnregisterNodeRequest unregisterReq = UnregisterNodeRequest.builder()
+                    .serverName("tenant-dynamic")
+                    .build();
+
+            mockMvc.perform(post("/sample/ftp/governance/unregister-node")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(unregisterReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+
+            mockMvc.perform(get("/sample/ftp/governance/pool-stats")
+                            .param("serverName", "tenant-dynamic"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(51010));
+
+            // 4. 严禁注销 default 主节点
+            UnregisterNodeRequest defaultUnregisterReq = UnregisterNodeRequest.builder()
+                    .serverName("default")
+                    .build();
+
+            mockMvc.perform(post("/sample/ftp/governance/unregister-node")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(defaultUnregisterReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(51009));
+        } finally {
+            dynamicServer.stop();
+        }
     }
 
     @Test
@@ -464,6 +551,28 @@ public class SampleFtpWebIntegrationTest {
 
         mockMvc.perform(get("/sample/ftp/transfer/download-safe")
                         .param("remotePath", ""))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 4. 动态节点注册/注销 DTO JSR-303 校验防御
+        RegisterNodeRequest invalidRegisterReq = RegisterNodeRequest.builder()
+                .serverName("")
+                .host("127.0.0.1")
+                .port(0)
+                .username("user")
+                .build();
+        mockMvc.perform(post("/sample/ftp/governance/register-node")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRegisterReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        UnregisterNodeRequest invalidUnregisterReq = UnregisterNodeRequest.builder()
+                .serverName("")
+                .build();
+        mockMvc.perform(post("/sample/ftp/governance/unregister-node")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidUnregisterReq)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400));
     }

@@ -9,6 +9,7 @@ import io.github.atengk.boot.ftp.listener.ProgressInputStream;
 import io.github.atengk.boot.ftp.listener.ProgressOutputStream;
 import io.github.atengk.boot.ftp.model.BatchTransferResult;
 import io.github.atengk.boot.ftp.model.FtpFileInfo;
+import io.github.atengk.boot.ftp.model.FtpPoolStats;
 import io.github.atengk.boot.ftp.model.TransferFailureItem;
 import io.github.atengk.boot.ftp.pool.FtpClientCallback;
 import io.github.atengk.boot.ftp.properties.FtpProperties;
@@ -32,6 +33,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -211,6 +213,43 @@ public class FtpTemplate {
             return;
         }
         testConnectionOrThrowInternal();
+    }
+
+    /**
+     * 获取当前或上下文绑定 FTP 节点的受管连接池运行时指标快照
+     *
+     * @return 连接池运行指标快照
+     */
+    public FtpPoolStats getPoolStats() {
+        return getPoolStats(FtpContextHolder.getServer());
+    }
+
+    /**
+     * 获取指定具名 FTP 节点的受管连接池运行时指标快照
+     *
+     * @param targetServerName 目标服务节点名称（为空或空白则查询当前节点）
+     * @return 连接池运行指标快照
+     */
+    public FtpPoolStats getPoolStats(String targetServerName) {
+        String effectiveName = (targetServerName != null && !targetServerName.isBlank())
+                ? targetServerName.trim()
+                : this.serverName;
+        if (registry != null) {
+            return registry.getPoolStats(effectiveName);
+        }
+        return FtpClientRegistry.buildPoolStats(this.serverName, this.pool);
+    }
+
+    /**
+     * 获取当前注册表下所有已注册 FTP 节点的受管连接池运行时指标快照映射
+     *
+     * @return 节点名到连接池运行指标快照的只读映射
+     */
+    public Map<String, FtpPoolStats> getAllPoolStats() {
+        if (registry != null) {
+            return registry.getAllPoolStats();
+        }
+        return Collections.singletonMap(this.serverName, getPoolStats());
     }
 
     private FTPClient borrowClient() {

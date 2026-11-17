@@ -76,6 +76,10 @@ _Avoid_: 临时上传守卫, 事务上传防护, 写入保护
 在受管连接池工厂创建并初始化底层 `FTPClient` / `FTPSClient` 实例时，供业务层注入自定义协议参数、代理或解析器的函数式扩展点接口。
 _Avoid_: FtpInterceptor, FtpWrapper, 客户端后置处理器
 
+**FtpPoolStats (连接池运行指标快照)**:
+封装指定具名 FTP 节点连接池当前活跃连接数、空闲连接数、等待线程数与最大/最小容量的不可变运行时度量快照。
+_Avoid_: PoolStatus, FtpMetrics, 连接池计数器
+
 **Root Path Deletion Guard (根路径删除熔断守卫)**:
 在执行目录删除操作时，强制拦截对根目录（`"/"`）的删除请求以防止整盘清空事故的安全守卫。
 _Avoid_: 目录锁, 权限拦截, 删库防御
