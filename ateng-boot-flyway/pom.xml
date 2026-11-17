@@ -77,10 +77,31 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Actuator 可观测扩展支持 (按需可选引入) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Micrometer 核心度量指标扩展支持 (按需可选引入) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 单元测试套件 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- MyBatis-Plus 启动初始化顺序屏障验证 (仅用于测试作用域) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-mybatis-plus</artifactId>
             <scope>test</scope>
         </dependency>
 
