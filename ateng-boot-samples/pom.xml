@@ -40,6 +40,7 @@
         <module>ateng-boot-sample-mqtt</module>
         <module>ateng-boot-sample-pay</module>
         <module>ateng-boot-sample-datasource</module>
+        <module>ateng-boot-sample-flyway</module>
         <module>ateng-boot-sample-encrypt</module>
         <module>ateng-boot-sample-statemachine</module>
         <module>ateng-boot-sample-job-local</module>

@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-samples</artifactId>
+        <version>1.2.0</version>
+    </parent>
+
+    <artifactId>ateng-boot-sample-flyway</artifactId>
+    <packaging>jar</packaging>
+
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>ateng-boot Flyway 数据库版本化迁移与多数据源/SaaS 物理租户协同场景样例</description>
+
+    <properties>
+        <maven.deploy.skip>true</maven.deploy.skip>
+    </properties>
+
+    <dependencies>
+        <!-- Flyway 数据库版本化迁移底座 -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-flyway</artifactId>
+        </dependency>
+
+        <!-- Web 契约与运行时组件 -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+        </dependency>
+
+        <!-- 动态多数据源与 SaaS 物理隔离底座 -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-datasource</artifactId>
+        </dependency>
+
+        <!-- MyBatis-Plus 持久层增强与初始化屏障验证 -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-mybatis-plus</artifactId>
+        </dependency>
+
+        <!-- Spring Boot Actuator 健康探针与运维端点 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Micrometer 度量指标支持 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+        </dependency>
+
+        <!-- H2 内存数据库 (默认离线自洽演示与测试) -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- MySQL 驱动与 Flyway MySQL 方言 (local 模式联调) -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- PostgreSQL 驱动与 Flyway PostgreSQL 方言 (local 模式联调) -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
