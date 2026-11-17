@@ -43,11 +43,11 @@ final class AtengFlywayStartupSupport {
             }
             case VALIDATE_ONLY -> {
                 log.info("ateng-boot-flyway 启动执行模式为 VALIDATE_ONLY，执行受管目标只读一致性校验 [policy={}]", staticPolicy);
-                flywayTemplate.validateTargets(staticPolicy);
+                flywayTemplate.executeStartupTargets(FlywayExecutionMode.VALIDATE_ONLY);
             }
             case MIGRATE -> {
                 log.info("ateng-boot-flyway 启动执行模式为 MIGRATE，开始执行受管目标数据库版本化迁移 [policy={}]", staticPolicy);
-                flywayTemplate.migrateTargets(staticPolicy);
+                flywayTemplate.executeStartupTargets(FlywayExecutionMode.MIGRATE);
             }
         }
     }

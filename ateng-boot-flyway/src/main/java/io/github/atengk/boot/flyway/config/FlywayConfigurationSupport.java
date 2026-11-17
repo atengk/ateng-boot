@@ -168,16 +168,9 @@ public final class FlywayConfigurationSupport {
         AtengFlywayProperties.DataSourceMigrationProperties override = target.getMigrationConfig();
         String fallbackUrl = resolveFallbackUrl(target, globalProps);
 
-        if (target.getKind() != MigrationTargetKind.PRIMARY) {
-            List<String> targetLocations = (override != null && !CollectionUtils.isEmpty(override.getLocations()))
-                    ? override.getLocations()
-                    : List.of("classpath:db/migration/" + TargetRoutingSupport.sanitizePathSegment(target.getTargetKey()));
+        List<String> targetLocations = resolveTargetSpecificLocations(target, override, atengProps);
+        if (!CollectionUtils.isEmpty(targetLocations)) {
             List<String> resolved = resolveLocations(targetLocations, dataSource, fallbackUrl);
-            if (!CollectionUtils.isEmpty(resolved)) {
-                configuration.locations(resolved.toArray(new String[0]));
-            }
-        } else if (override != null && !CollectionUtils.isEmpty(override.getLocations())) {
-            List<String> resolved = resolveLocations(override.getLocations(), dataSource, fallbackUrl);
             if (!CollectionUtils.isEmpty(resolved)) {
                 configuration.locations(resolved.toArray(new String[0]));
             }
@@ -218,6 +211,24 @@ public final class FlywayConfigurationSupport {
         if (!mergedPlaceholders.isEmpty()) {
             configuration.placeholders(mergedPlaceholders);
         }
+    }
+
+    private static List<String> resolveTargetSpecificLocations(MigrationTarget target,
+                                                             AtengFlywayProperties.DataSourceMigrationProperties override,
+                                                             AtengFlywayProperties atengProps) {
+        if (override != null && !CollectionUtils.isEmpty(override.getLocations())) {
+            return override.getLocations();
+        }
+        if (target.getKind() == MigrationTargetKind.TENANT) {
+            return (atengProps != null && atengProps.getTenant() != null
+                    && !CollectionUtils.isEmpty(atengProps.getTenant().getLocations()))
+                    ? atengProps.getTenant().getLocations()
+                    : List.of("classpath:db/migration/tenant");
+        }
+        if (target.getKind() != MigrationTargetKind.PRIMARY) {
+            return List.of("classpath:db/migration/" + TargetRoutingSupport.sanitizePathSegment(target.getTargetKey()));
+        }
+        return null;
     }
 
     private static String resolveFallbackUrl(MigrationTarget target, FlywayProperties globalProps) {

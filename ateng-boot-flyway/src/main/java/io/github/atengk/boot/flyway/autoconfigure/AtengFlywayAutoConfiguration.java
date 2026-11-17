@@ -9,6 +9,7 @@ import io.github.atengk.boot.flyway.observability.FlywayHealthIndicator;
 import io.github.atengk.boot.flyway.observability.FlywayMetricsBinder;
 import io.github.atengk.boot.flyway.properties.AtengFlywayProperties;
 import io.github.atengk.boot.flyway.routing.DynamicDatasourceFlywayTargetResolver;
+import io.github.atengk.boot.flyway.routing.FlywayTenantLifecycleListener;
 import io.github.atengk.boot.flyway.routing.SingleDataSourceFlywayTargetResolver;
 import io.github.atengk.boot.flyway.routing.TargetRoutingSupport;
 import io.github.atengk.boot.flyway.security.FlywayPasswordDecryptor;
@@ -25,6 +26,7 @@ import org.flywaydb.core.api.migration.JavaMigration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.config.BeanDefinition;
@@ -67,6 +69,7 @@ import javax.sql.DataSource;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.Executor;
 
 /**
  * ateng-boot-flyway 自动装配入口
@@ -122,11 +125,15 @@ public class AtengFlywayAutoConfiguration {
         public FlywayTargetResolver dynamicDatasourceFlywayTargetResolver(
                 AtengFlywayProperties atengProperties,
                 FlywayProperties flywayProperties,
-                ObjectProvider<DataSource> dataSourceProvider) {
+                ObjectProvider<DataSource> dataSourceProvider,
+                ObjectProvider<io.github.atengk.boot.datasource.properties.DatasourceProperties> datasourcePropertiesProvider,
+                ObjectProvider<io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider> tenantDataSourceProviderProvider) {
             return new DynamicDatasourceFlywayTargetResolver(
                     atengProperties,
                     flywayProperties,
-                    dataSourceProvider != null ? dataSourceProvider.getIfAvailable() : null
+                    dataSourceProvider != null ? dataSourceProvider.getIfAvailable() : null,
+                    datasourcePropertiesProvider != null ? datasourcePropertiesProvider.getIfAvailable() : null,
+                    tenantDataSourceProviderProvider != null ? tenantDataSourceProviderProvider.getIfAvailable() : null
             );
         }
     }
@@ -303,7 +310,9 @@ public class AtengFlywayAutoConfiguration {
                                              ObjectProvider<DataSource> dataSourceProvider,
                                              ObjectProvider<FlywayMigrationStrategy> migrationStrategyProvider,
                                              ApplicationEventPublisher eventPublisher,
-                                             ObjectProvider<FlywayMigrationListener> listenersProvider) {
+                                             ObjectProvider<FlywayMigrationListener> listenersProvider,
+                                             ListableBeanFactory beanFactory,
+                                             ObjectProvider<Executor> executorProvider) {
             Flyway primaryFlyway = flywayProvider != null ? flywayProvider.getIfAvailable() : null;
             TransientFlywayExecutor primaryTransientExecutor = transientExecutorProvider != null
                     ? transientExecutorProvider.getIfAvailable()
@@ -322,7 +331,8 @@ public class AtengFlywayAutoConfiguration {
                     safetyGuard,
                     migrationStrategyProvider != null ? migrationStrategyProvider.getIfAvailable() : null,
                     eventPublisher,
-                    listenersProvider
+                    listenersProvider,
+                    resolveManagedExecutor(beanFactory, executorProvider)
             );
         }
 
@@ -428,6 +438,60 @@ public class AtengFlywayAutoConfiguration {
         private <T> List<T> toOrderedList(ObjectProvider<T> provider) {
             return provider != null ? provider.orderedStream().toList() : Collections.emptyList();
         }
+
+        private Executor resolveManagedExecutor(ListableBeanFactory beanFactory, ObjectProvider<Executor> executorProvider) {
+            if (beanFactory != null) {
+                if (beanFactory.containsBean("taskExecutor")) {
+                    Object bean = beanFactory.getBean("taskExecutor");
+                    if (bean instanceof Executor executor) {
+                        return executor;
+                    }
+                }
+                if (beanFactory.containsBean("applicationTaskExecutor")) {
+                    Object bean = beanFactory.getBean("applicationTaskExecutor");
+                    if (bean instanceof Executor executor) {
+                        return executor;
+                    }
+                }
+            }
+            return executorProvider != null ? executorProvider.getIfUnique() : null;
+        }
+    }
+
+    /**
+     * 动态数据源运行期挂载迁移生命周期监听器自动装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = {
+            "io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource",
+            "io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate"
+    })
+    static class DynamicDatasourceLifecycleConfiguration {
+
+        @Bean
+        @Conditional(FlywayRuntimeCapableCondition.class)
+        @ConditionalOnMissingBean(FlywayTenantLifecycleListener.class)
+        public FlywayTenantLifecycleListener flywayTenantLifecycleListener(
+                ObjectProvider<FlywayTemplate> flywayTemplateProvider,
+                AtengFlywayProperties atengProperties,
+                ObjectProvider<FlywayTargetResolver> targetResolverProvider,
+                ObjectProvider<io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate> dynamicDatasourceTemplateProvider) {
+            return new FlywayTenantLifecycleListener(
+                    flywayTemplateProvider,
+                    atengProperties,
+                    targetResolverProvider,
+                    dynamicDatasourceTemplateProvider
+            );
+        }
+
+        @Bean
+        @ConditionalOnBean({FlywayTenantLifecycleListener.class, io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate.class})
+        @ConditionalOnMissingBean(name = "dynamicDatasourceLifecycleListenersInitializer")
+        public SmartInitializingSingleton atengFlywayLifecycleListenerFallbackRegistrar(
+                io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate dynamicDatasourceTemplate,
+                FlywayTenantLifecycleListener listener) {
+            return () -> dynamicDatasourceTemplate.addLifecycleListener(listener);
+        }
     }
 
     /**
@@ -439,7 +503,7 @@ public class AtengFlywayAutoConfiguration {
     static class FlywayHealthObservabilityConfiguration {
 
         @Bean(name = "flywayHealthIndicator")
-        @Conditional(FlywayObservabilityEligibleCondition.class)
+        @Conditional(FlywayRuntimeCapableCondition.class)
         @ConditionalOnMissingBean(value = FlywayHealthIndicator.class, name = "flywayHealthIndicator")
         public FlywayHealthIndicator flywayHealthIndicator(FlywayTemplate flywayTemplate,
                                                            AtengFlywayProperties atengProperties) {
@@ -456,7 +520,7 @@ public class AtengFlywayAutoConfiguration {
     static class FlywayMetricsObservabilityConfiguration {
 
         @Bean
-        @Conditional(FlywayObservabilityEligibleCondition.class)
+        @Conditional(FlywayRuntimeCapableCondition.class)
         @ConditionalOnMissingBean(FlywayMetricsBinder.class)
         public FlywayMetricsBinder flywayMetricsBinder(FlywayTemplate flywayTemplate,
                                                        AtengFlywayProperties atengProperties) {
@@ -561,11 +625,11 @@ public class AtengFlywayAutoConfiguration {
     }
 
     /**
-     * 可观测扩展生效条件：具备容器 DataSource、独立 spring.flyway.url、隔离 DDL 凭据或自定义 FlywayTemplate
+     * 迁移运行时能力就绪条件：具备容器 DataSource、独立 spring.flyway.url、隔离 DDL 凭据或自定义 FlywayTemplate
      */
-    static final class FlywayObservabilityEligibleCondition extends AnyNestedCondition {
+    static final class FlywayRuntimeCapableCondition extends AnyNestedCondition {
 
-        FlywayObservabilityEligibleCondition() {
+        FlywayRuntimeCapableCondition() {
             super(ConfigurationPhase.REGISTER_BEAN);
         }
 

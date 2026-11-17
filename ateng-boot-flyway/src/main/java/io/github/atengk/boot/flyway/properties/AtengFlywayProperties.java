@@ -1,8 +1,11 @@
 package io.github.atengk.boot.flyway.properties;
 
 import io.github.atengk.boot.flyway.enums.BatchExecutionPolicy;
+import io.github.atengk.boot.flyway.enums.DynamicMountFailurePolicy;
 import io.github.atengk.boot.flyway.enums.FlywayExecutionMode;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 import org.springframework.util.StringUtils;
@@ -78,6 +81,12 @@ public class AtengFlywayProperties {
      * 显式纳管的静态多业务库独立迁移配置（dsKey -> 独立迁移参数与凭据覆盖）
      */
     private Map<String, DataSourceMigrationProperties> datasources = new LinkedHashMap<>();
+
+    /**
+     * SaaS 物理多租户（L3）启动批量迁移与动态挂载生命周期配置
+     */
+    @NestedConfigurationProperty
+    private TenantMigrationProperties tenant = new TenantMigrationProperties();
 
     /**
      * 可观测与健康探针配置
@@ -312,5 +321,63 @@ public class AtengFlywayProperties {
          */
         @NestedConfigurationProperty
         private CredentialProperties credential = new CredentialProperties();
+    }
+
+    /**
+     * SaaS 物理多租户（L3）批量迁移与动态挂载治理配置
+     */
+    @Data
+    @EqualsAndHashCode(callSuper = true)
+    @ToString(callSuper = true)
+    public static class TenantMigrationProperties extends DataSourceMigrationProperties {
+
+        public TenantMigrationProperties() {
+            setLocations(new ArrayList<>(List.of("classpath:db/migration/tenant")));
+        }
+
+        /**
+         * 是否启用 SaaS 物理多租户迁移治理（默认 false，开启后自动发现租户库并隔离迁移目录）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 应用启动时是否自动对全部已有物理租户库执行迁移或校验
+         */
+        private boolean migrateOnStartup = true;
+
+        /**
+         * 运行期通过 DynamicDatasourceTemplate 动态挂载新租户库时是否自动触发迁移
+         */
+        private boolean migrateOnDynamicAdd = true;
+
+        /**
+         * 启动期租户批量迁移是否异步执行（默认 false 同步；大租户群可设为 true 以免阻塞启动端口暴露）
+         */
+        private boolean asyncStartup = false;
+
+        /**
+         * 租户批量迁移有界并发度（默认 1 串行；大于 1 时依托 Core 受管线程池与 AsyncContext 并发执行）
+         */
+        private int concurrency = 1;
+
+        /**
+         * 租户批量并发迁移协调最大等待超时时间（默认 10 分钟，严防无界挂起）
+         */
+        private Duration batchTimeout = Duration.ofMinutes(10);
+
+        /**
+         * 租户批量迁移失败容错策略（默认 FAIL_SAFE，单租户失败不影响其余租户及平台主库）
+         */
+        private BatchExecutionPolicy failurePolicy = BatchExecutionPolicy.FAIL_SAFE;
+
+        /**
+         * 运行期动态挂载租户数据源迁移失败时的处置策略（默认 KEEP_AND_REPORT 保留数据源并上报）
+         */
+        private DynamicMountFailurePolicy dynamicMountFailurePolicy = DynamicMountFailurePolicy.KEEP_AND_REPORT;
+
+        /**
+         * 租户数据源名称前缀覆写（为空时自动继承 ateng.boot.datasource.multi-tenancy.data-source-prefix，缺省 tenant_）
+         */
+        private String dataSourcePrefix;
     }
 }

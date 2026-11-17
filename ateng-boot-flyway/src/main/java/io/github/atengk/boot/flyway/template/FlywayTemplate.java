@@ -1,5 +1,7 @@
 package io.github.atengk.boot.flyway.template;
 
+import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.util.AsyncUtil;
 import io.github.atengk.boot.flyway.config.FlywayConfigurationSupport;
 import io.github.atengk.boot.flyway.enums.BatchExecutionPolicy;
 import io.github.atengk.boot.flyway.enums.FlywayExecutionMode;
@@ -54,9 +56,13 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /**
@@ -85,8 +91,10 @@ public class FlywayTemplate {
     private final FlywayMigrationStrategy migrationStrategy;
     private final ApplicationEventPublisher eventPublisher;
     private final ObjectProvider<FlywayMigrationListener> listenersProvider;
+    private final Executor taskExecutor;
     private final List<FlywayMigrationListener> manualListeners = new CopyOnWriteArrayList<>();
     private final AtomicReference<MigrationSummary> lastMigrationSummary = new AtomicReference<>();
+    private final AtomicReference<CompletableFuture<BatchMigrationResult>> startupTenantMigrationFuture = new AtomicReference<>();
 
     /**
      * 构造单目标数据源迁移门面
@@ -165,6 +173,36 @@ public class FlywayTemplate {
                           FlywayMigrationStrategy migrationStrategy,
                           ApplicationEventPublisher eventPublisher,
                           ObjectProvider<FlywayMigrationListener> listenersProvider) {
+        this(primaryFlyway, primaryTransientExecutor, targetBuilderSupport, targetResolver,
+                lockProvider, properties, safetyGuard, migrationStrategy, eventPublisher, listenersProvider, null);
+    }
+
+    /**
+     * 构造支持受管线程池注入的完整多数据源协同迁移门面（L1/L2/L3 全场景）
+     *
+     * @param primaryFlyway            正常模式主目标 Flyway 实例（隔离模式下可为 null）
+     * @param primaryTransientExecutor 主目标瞬态执行器（非全局隔离模式下为 null）
+     * @param targetBuilderSupport     多目标配置与瞬态凭据执行支撑（可为 null）
+     * @param targetResolver           迁移目标路由器（可为 null，回退单目标模式）
+     * @param lockProvider             并发迁移互斥锁提供者（为空时使用默认实现）
+     * @param properties               ateng-boot-flyway 配置属性
+     * @param safetyGuard              生产安全守卫
+     * @param migrationStrategy        可选的自定义迁移策略
+     * @param eventPublisher           Spring 领域事件发布器（可为 null）
+     * @param listenersProvider        迁移监听器延迟提供者（可为 null）
+     * @param taskExecutor             受管异步线程池（为空时回退至 Core {@link AsyncUtil#getExecutor()}）
+     */
+    public FlywayTemplate(Flyway primaryFlyway,
+                          TransientFlywayExecutor primaryTransientExecutor,
+                          TransientFlywayExecutor targetBuilderSupport,
+                          FlywayTargetResolver targetResolver,
+                          FlywayLockProvider lockProvider,
+                          AtengFlywayProperties properties,
+                          ProductionSafetyGuard safetyGuard,
+                          FlywayMigrationStrategy migrationStrategy,
+                          ApplicationEventPublisher eventPublisher,
+                          ObjectProvider<FlywayMigrationListener> listenersProvider,
+                          Executor taskExecutor) {
         Assert.state(primaryFlyway != null || primaryTransientExecutor != null || targetResolver != null,
                 "primaryFlyway、primaryTransientExecutor 与 targetResolver 不能同时为空");
         this.primaryFlyway = primaryFlyway;
@@ -177,6 +215,7 @@ public class FlywayTemplate {
         this.migrationStrategy = migrationStrategy;
         this.eventPublisher = eventPublisher;
         this.listenersProvider = listenersProvider;
+        this.taskExecutor = taskExecutor;
     }
 
     /**
@@ -323,6 +362,154 @@ public class FlywayTemplate {
     public BatchMigrationResult validateTargets(Collection<String> targetKeys, BatchExecutionPolicy policy) {
         Assert.notEmpty(targetKeys, "目标数据源集合 (targetKeys) 不能为空");
         return executeBatchTargets(targetKeys, FlywayExecutionMode.VALIDATE_ONLY, policy);
+    }
+
+    /**
+     * 按配置容错策略与有界并发度对全部 SaaS 物理租户库执行批量版本化迁移
+     *
+     * @return 全租户批量迁移聚合回执
+     */
+    public BatchMigrationResult migrateAllTenants() {
+        return migrateAllTenants(resolveTenantFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略与配置有界并发度对全部 SaaS 物理租户库执行批量版本化迁移
+     *
+     * @param policy 批量执行容错策略（FAIL_FAST / FAIL_SAFE）
+     * @return 全租户批量迁移聚合回执
+     */
+    public BatchMigrationResult migrateAllTenants(BatchExecutionPolicy policy) {
+        BatchExecutionPolicy effectivePolicy = policy != null ? policy : resolveTenantFailurePolicy();
+        List<String> tenantKeys = resolveTenantTargetKeys();
+        return executeBatchList(tenantKeys, FlywayExecutionMode.MIGRATE, effectivePolicy,
+                resolveTenantConcurrency(), true);
+    }
+
+    /**
+     * 按配置容错策略与有界并发度对全部 SaaS 物理租户库执行批量一致性校验
+     *
+     * @return 全租户批量校验聚合回执
+     */
+    public BatchMigrationResult validateAllTenants() {
+        return validateAllTenants(resolveTenantFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略与配置有界并发度对全部 SaaS 物理租户库执行批量一致性校验
+     *
+     * @param policy 批量执行容错策略（FAIL_FAST / FAIL_SAFE）
+     * @return 全租户批量校验聚合回执
+     */
+    public BatchMigrationResult validateAllTenants(BatchExecutionPolicy policy) {
+        BatchExecutionPolicy effectivePolicy = policy != null ? policy : resolveTenantFailurePolicy();
+        List<String> tenantKeys = resolveTenantTargetKeys();
+        return executeBatchList(tenantKeys, FlywayExecutionMode.VALIDATE_ONLY, effectivePolicy,
+                resolveTenantConcurrency(), true);
+    }
+
+    /**
+     * 获取启动期异步租户迁移任务句柄（未开启异步启动或尚未调度时返回 null）
+     *
+     * @return 异步租户批量迁移任务 Future，可为 null
+     */
+    public CompletableFuture<BatchMigrationResult> getStartupTenantMigrationFuture() {
+        return startupTenantMigrationFuture.get();
+    }
+
+    /**
+     * 启动初始化调度入口：先同步完成静态核心目标，再按需同步或异步执行全租户批量迁移与摘要合并
+     *
+     * @param mode 启动执行模式（MIGRATE / VALIDATE_ONLY）
+     * @return 启动阶段批处理回执
+     */
+    public BatchMigrationResult executeStartupTargets(FlywayExecutionMode mode) {
+        BatchExecutionPolicy staticPolicy = resolveStaticFailurePolicy();
+        List<String> staticKeys = resolveStaticTargetKeys();
+        BatchMigrationResult staticResult = executeBatchList(staticKeys, mode, staticPolicy, 1, true);
+
+        AtengFlywayProperties.TenantMigrationProperties tenantProps = properties.getTenant();
+        if (tenantProps == null || !tenantProps.isEnabled() || !tenantProps.isMigrateOnStartup()) {
+            return staticResult;
+        }
+        List<String> tenantKeys = resolveTenantTargetKeys();
+        if (tenantKeys.isEmpty()) {
+            return staticResult;
+        }
+
+        BatchExecutionPolicy tenantPolicy = resolveTenantFailurePolicy();
+        int concurrency = resolveTenantConcurrency();
+
+        if (tenantProps.isAsyncStartup()) {
+            FlywayBatchExecutor.AsyncBatchHandle handle = FlywayBatchExecutor.launchAsync(
+                    tenantKeys, mode, tenantPolicy, concurrency, resolveTaskExecutor(),
+                    this::executeBatchItem, this::sanitize);
+            CompletableFuture<BatchMigrationResult> asyncFuture = handle.future()
+                    .whenComplete((tenantResult, ex) -> {
+                        if (tenantResult != null) {
+                            BatchMigrationResult combined = FlywayBatchExecutor.mergeBatchResults(
+                                    mode, tenantPolicy, staticResult, tenantResult);
+                            lastMigrationSummary.set(FlywayBatchExecutor.toSummary(combined));
+                        } else if (ex != null) {
+                            Throwable unwrapped = (ex instanceof CompletionException && ex.getCause() != null)
+                                    ? ex.getCause() : ex;
+                            if (unwrapped instanceof FlywayBatchExecutor.BatchFailFastException failFast) {
+                                BatchMigrationResult combined = FlywayBatchExecutor.mergeBatchResults(
+                                        mode, tenantPolicy, staticResult, failFast.getPartialResult());
+                                lastMigrationSummary.set(FlywayBatchExecutor.toSummary(combined));
+                            }
+                            log.error("启动期异步租户批量执行异常: {}", sanitize(unwrapped.getMessage()), unwrapped);
+                        }
+                    });
+            startupTenantMigrationFuture.set(asyncFuture);
+            return staticResult;
+        }
+
+        BatchMigrationResult tenantResult = executeBatchList(tenantKeys, mode, tenantPolicy, concurrency, false);
+        BatchMigrationResult combined = FlywayBatchExecutor.mergeBatchResults(mode, tenantPolicy, staticResult, tenantResult);
+        lastMigrationSummary.set(FlywayBatchExecutor.toSummary(combined));
+        return combined;
+    }
+
+    /**
+     * 执行运行期动态挂载数据源的增量迁移或校验，并在保留模式失败或成功时增量合并全局摘要快照
+     *
+     * @param targetKey         动态挂载数据源标识
+     * @param mode              当前执行模式（MIGRATE / VALIDATE_ONLY）
+     * @param rollbackOnFailure 失败时是否即将摘除数据源（为 true 时不在全局摘要中滞留失败状态）
+     * @return 执行结果
+     */
+    public MigrationOutcome executeDynamicMountTarget(String targetKey,
+                                                      FlywayExecutionMode mode,
+                                                      boolean rollbackOnFailure) {
+        String resolvedKey = requireTargetKey(targetKey);
+        FlywayExecutionMode effectiveMode = mode != null ? mode : FlywayExecutionMode.MIGRATE;
+        Instant start = Instant.now();
+        try {
+            MigrationOutcome outcome = executeBatchItem(resolvedKey, effectiveMode);
+            lastMigrationSummary.updateAndGet(existing ->
+                    FlywayBatchExecutor.upsertSummaryOutcome(existing, effectiveMode, outcome));
+            return outcome;
+        } catch (FlywayException e) {
+            if (!rollbackOnFailure) {
+                MigrationOutcome failureOutcome = buildFailureOutcome(resolvedKey, effectiveMode, start, sanitize(e.getMessage()));
+                lastMigrationSummary.updateAndGet(existing ->
+                        FlywayBatchExecutor.upsertSummaryOutcome(existing, effectiveMode, failureOutcome));
+            }
+            throw e;
+        } catch (Exception e) {
+            String safeMessage = sanitize(e.getMessage());
+            if (!rollbackOnFailure) {
+                MigrationOutcome failureOutcome = buildFailureOutcome(resolvedKey, effectiveMode, start, safeMessage);
+                lastMigrationSummary.updateAndGet(existing ->
+                        FlywayBatchExecutor.upsertSummaryOutcome(existing, effectiveMode, failureOutcome));
+            }
+            FlywayResultCode code = effectiveMode == FlywayExecutionMode.VALIDATE_ONLY
+                    ? FlywayResultCode.VALIDATION_FAILED
+                    : FlywayResultCode.MIGRATION_FAILED;
+            throw new FlywayException(code,
+                    "动态挂载数据源 [" + resolvedKey + "] 执行失败: " + safeMessage, e);
+        }
     }
 
     /**
@@ -632,118 +819,50 @@ public class FlywayTemplate {
                                                      BatchExecutionPolicy policy) {
         BatchExecutionPolicy effectivePolicy = policy != null ? policy : resolveStaticFailurePolicy();
         List<String> targetKeys = resolveBatchKeys(explicitKeys);
-        Instant batchStart = Instant.now();
-        List<MigrationOutcome> outcomes = new ArrayList<>(targetKeys.size());
-        List<TargetFailure> failures = new ArrayList<>();
-        int successCount = 0;
-        int skippedCount = 0;
-
-        for (String rawKey : targetKeys) {
-            String key = requireTargetKey(rawKey);
-            Instant itemStart = Instant.now();
-            try {
-                MigrationOutcome outcome;
-                if (mode == FlywayExecutionMode.VALIDATE_ONLY) {
-                    MigrationValidationResult val = executeSingleValidation(key, false);
-                    Instant finishedAt = Instant.now();
-                    outcome = MigrationOutcome.builder()
-                            .targetKey(key)
-                            .mode(FlywayExecutionMode.VALIDATE_ONLY)
-                            .success(val.isValid())
-                            .skipped(false)
-                            .migrationsExecuted(0)
-                            .duration(Duration.between(itemStart, finishedAt))
-                            .executedAt(finishedAt)
-                            .warnings(val.getWarnings())
-                            .build();
-                } else {
-                    outcome = executeSingleMigration(key, false);
-                }
-                outcomes.add(outcome);
-                if (outcome.isSkipped()) {
-                    skippedCount++;
-                } else {
-                    successCount++;
-                }
-            } catch (FlywayException e) {
-                String safeMessage = sanitize(e.getMessage());
-                MigrationOutcome failureOutcome = buildFailureOutcome(key, mode, itemStart, safeMessage);
-                outcomes.add(failureOutcome);
-                failures.add(TargetFailure.builder()
-                        .targetKey(key)
-                        .errorCode(e.getCode())
-                        .errorMessage(safeMessage)
-                        .duration(failureOutcome.getDuration())
-                        .build());
-                if (effectivePolicy == BatchExecutionPolicy.FAIL_FAST) {
-                    recordBatchSummary(mode, outcomes, failures.size(), skippedCount, successCount, batchStart);
-                    throw e;
-                }
-            } catch (Exception e) {
-                String safeMessage = sanitize(e.getMessage());
-                MigrationOutcome failureOutcome = buildFailureOutcome(key, mode, itemStart, safeMessage);
-                outcomes.add(failureOutcome);
-                FlywayResultCode code = mode == FlywayExecutionMode.VALIDATE_ONLY
-                        ? FlywayResultCode.VALIDATION_FAILED
-                        : FlywayResultCode.MIGRATION_FAILED;
-                failures.add(TargetFailure.builder()
-                        .targetKey(key)
-                        .errorCode(code.getCode())
-                        .errorMessage(safeMessage)
-                        .duration(failureOutcome.getDuration())
-                        .build());
-                if (effectivePolicy == BatchExecutionPolicy.FAIL_FAST) {
-                    recordBatchSummary(mode, outcomes, failures.size(), skippedCount, successCount, batchStart);
-                    throw new FlywayException(code,
-                            "目标数据源 [" + key + "] 批量执行失败: " + safeMessage, e);
-                }
-            }
-        }
-
-        Instant finishedAt = Instant.now();
-        Duration totalDuration = Duration.between(batchStart, finishedAt);
-        lastMigrationSummary.set(MigrationSummary.builder()
-                .mode(mode)
-                .executedAt(finishedAt)
-                .totalDuration(totalDuration)
-                .totalTargets(outcomes.size())
-                .successCount(successCount)
-                .failedCount(failures.size())
-                .skippedCount(skippedCount)
-                .outcomes(Collections.unmodifiableList(outcomes))
-                .build());
-
-        return BatchMigrationResult.builder()
-                .mode(mode)
-                .policy(effectivePolicy)
-                .executedAt(finishedAt)
-                .totalDuration(totalDuration)
-                .totalTargets(outcomes.size())
-                .successCount(successCount)
-                .skippedCount(skippedCount)
-                .failedCount(failures.size())
-                .outcomes(Collections.unmodifiableList(outcomes))
-                .failures(Collections.unmodifiableList(failures))
-                .build();
+        return executeBatchList(targetKeys, mode, effectivePolicy, 1, true);
     }
 
-    private void recordBatchSummary(FlywayExecutionMode mode,
-                                    List<MigrationOutcome> outcomes,
-                                    int failedCount,
-                                    int skippedCount,
-                                    int successCount,
-                                    Instant batchStart) {
-        Instant finishedAt = Instant.now();
-        lastMigrationSummary.set(MigrationSummary.builder()
-                .mode(mode)
-                .executedAt(finishedAt)
-                .totalDuration(Duration.between(batchStart, finishedAt))
-                .totalTargets(outcomes.size())
-                .successCount(successCount)
-                .failedCount(failedCount)
-                .skippedCount(skippedCount)
-                .outcomes(Collections.unmodifiableList(new ArrayList<>(outcomes)))
-                .build());
+    private BatchMigrationResult executeBatchList(List<String> targetKeys,
+                                                  FlywayExecutionMode mode,
+                                                  BatchExecutionPolicy effectivePolicy,
+                                                  int concurrency,
+                                                  boolean recordSummary) {
+        if (CollectionUtils.isEmpty(targetKeys)) {
+            BatchMigrationResult empty = FlywayBatchExecutor.emptyResult(mode, effectivePolicy);
+            if (recordSummary) {
+                lastMigrationSummary.set(FlywayBatchExecutor.toSummary(empty));
+            }
+            return empty;
+        }
+        List<String> normalizedKeys = targetKeys.stream().map(this::requireTargetKey).toList();
+        if (concurrency <= 1 || normalizedKeys.size() <= 1) {
+            return FlywayBatchExecutor.executeSerially(
+                    normalizedKeys, mode, effectivePolicy, this::executeBatchItem,
+                    this::sanitize, lastMigrationSummary, recordSummary);
+        }
+        return FlywayBatchExecutor.executeConcurrently(
+                normalizedKeys, mode, effectivePolicy, concurrency, resolveBatchTimeout(),
+                resolveTaskExecutor(), this::executeBatchItem, this::sanitize,
+                lastMigrationSummary, recordSummary);
+    }
+
+    private MigrationOutcome executeBatchItem(String key, FlywayExecutionMode mode) {
+        Instant itemStart = Instant.now();
+        if (mode == FlywayExecutionMode.VALIDATE_ONLY) {
+            MigrationValidationResult val = executeSingleValidation(key, false);
+            Instant finishedAt = Instant.now();
+            return MigrationOutcome.builder()
+                    .targetKey(key)
+                    .mode(FlywayExecutionMode.VALIDATE_ONLY)
+                    .success(val.isValid())
+                    .skipped(false)
+                    .migrationsExecuted(0)
+                    .duration(Duration.between(itemStart, finishedAt))
+                    .executedAt(finishedAt)
+                    .warnings(val.getWarnings())
+                    .build();
+        }
+        return executeSingleMigration(key, false);
     }
 
     private MigrationOutcome executeSingleMigration(String resolvedKey, boolean recordAsSingleSummary) {
@@ -905,13 +1024,39 @@ public class FlywayTemplate {
         if (targetResolver == null) {
             return List.of(resolvePrimaryTargetKey());
         }
+        return filterTargetKeys(target -> true, Collections.emptyList());
+    }
+
+    private List<String> resolveStaticTargetKeys() {
+        if (targetResolver == null) {
+            return List.of(resolvePrimaryTargetKey());
+        }
+        return filterTargetKeys(target -> target.getKind() != MigrationTargetKind.TENANT,
+                List.of(resolvePrimaryTargetKey()));
+    }
+
+    private List<String> resolveTenantTargetKeys() {
+        if (targetResolver == null) {
+            return Collections.emptyList();
+        }
+        return extractTargetKeys(targetResolver.resolveTenantTargets(), target -> true);
+    }
+
+    private List<String> filterTargetKeys(Predicate<MigrationTarget> filter, List<String> emptyFallback) {
         List<MigrationTarget> targets = targetResolver.resolveTargets();
+        if (CollectionUtils.isEmpty(targets)) {
+            return emptyFallback;
+        }
+        return extractTargetKeys(targets, filter);
+    }
+
+    private List<String> extractTargetKeys(List<MigrationTarget> targets, Predicate<MigrationTarget> filter) {
         if (CollectionUtils.isEmpty(targets)) {
             return Collections.emptyList();
         }
         List<String> keys = new ArrayList<>(targets.size());
         for (MigrationTarget target : targets) {
-            if (target != null && StringUtils.hasText(target.getTargetKey())) {
+            if (target != null && filter.test(target) && StringUtils.hasText(target.getTargetKey())) {
                 keys.add(target.getTargetKey().trim());
             }
         }
@@ -937,6 +1082,37 @@ public class FlywayTemplate {
         return properties.getStaticFailurePolicy() != null
                 ? properties.getStaticFailurePolicy()
                 : BatchExecutionPolicy.FAIL_FAST;
+    }
+
+    private BatchExecutionPolicy resolveTenantFailurePolicy() {
+        AtengFlywayProperties.TenantMigrationProperties tenantProps = properties.getTenant();
+        return tenantProps != null && tenantProps.getFailurePolicy() != null
+                ? tenantProps.getFailurePolicy()
+                : BatchExecutionPolicy.FAIL_SAFE;
+    }
+
+    private int resolveTenantConcurrency() {
+        AtengFlywayProperties.TenantMigrationProperties tenantProps = properties.getTenant();
+        if (tenantProps == null || tenantProps.getConcurrency() <= 1) {
+            return 1;
+        }
+        return tenantProps.getConcurrency();
+    }
+
+    private Duration resolveBatchTimeout() {
+        AtengFlywayProperties.TenantMigrationProperties tenantProps = properties.getTenant();
+        Duration configured = tenantProps != null ? tenantProps.getBatchTimeout() : null;
+        if (configured != null && !configured.isNegative() && !configured.isZero()) {
+            return configured;
+        }
+        return Duration.ofMinutes(10);
+    }
+
+    private Executor resolveTaskExecutor() {
+        if (taskExecutor != null) {
+            return taskExecutor;
+        }
+        return AsyncUtil.getExecutor();
     }
 
     private String requireTargetKey(String targetKey) {
@@ -1020,16 +1196,21 @@ public class FlywayTemplate {
                                      MigrationOutcome outcome,
                                      Instant finishedAt,
                                      Duration elapsed) {
-        lastMigrationSummary.set(MigrationSummary.builder()
-                .mode(mode)
-                .executedAt(finishedAt)
-                .totalDuration(elapsed)
-                .totalTargets(1)
-                .successCount(outcome.isSuccess() ? 1 : 0)
-                .failedCount(outcome.isSuccess() ? 0 : 1)
-                .skippedCount(outcome.isSkipped() ? 1 : 0)
-                .outcomes(List.of(outcome))
-                .build());
+        lastMigrationSummary.updateAndGet(existing -> {
+            if (existing != null && existing.getTotalTargets() > 1) {
+                return FlywayBatchExecutor.upsertSummaryOutcome(existing, mode, outcome);
+            }
+            return MigrationSummary.builder()
+                    .mode(mode)
+                    .executedAt(finishedAt)
+                    .totalDuration(elapsed)
+                    .totalTargets(1)
+                    .successCount(outcome.isSuccess() ? 1 : 0)
+                    .failedCount(outcome.isSuccess() ? 0 : 1)
+                    .skippedCount(outcome.isSkipped() ? 1 : 0)
+                    .outcomes(List.of(outcome))
+                    .build();
+        });
     }
 
     private MigrationOutcome buildFailureOutcome(String targetKey,
