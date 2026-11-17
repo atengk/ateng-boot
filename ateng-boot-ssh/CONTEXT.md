@@ -53,8 +53,12 @@ _Avoid_: CommandOutput, ExecResponse, SshResult
 _Avoid_: CommandConfig, ExecParam, SshOptions
 
 **SshTunnelHandle (受管隧道句柄)**:
-封装本地端口转发长连接会话并提供确定性资源释放与探活能力的受管句柄。
+封装本地或远程端口转发长连接会话，暴露 `TunnelMode` 方向模式并提供确定性资源释放与探活能力的受管句柄。
 _Avoid_: SshTunnel, PortForwarder, TunnelSession
+
+**TunnelMode (端口转发隧道方向模式)**:
+声明 SSH 端口转发隧道方向语义的枚举（`LOCAL` 本地正向转发与 `REMOTE` 远程反向转发）。
+_Avoid_: ForwardType, TunnelDirection, TunnelType
 
 **SshShellHandle (受管终端会话句柄)**:
 封装交互式 PTY 伪终端会话并支持窗口重设、流式收发字节帧的受管终端交互句柄。
@@ -91,6 +95,10 @@ _Avoid_: 临时上传, 事务写入, 安全覆盖
 **Local Port Forwarding (本地端口转发)**:
 将本地客户端指定端口的 TCP 流量经由安全 SSH 会话隧道透明代理至远程内网主机的机制。
 _Avoid_: 本地映射, 端口穿透, 内部代理
+
+**Remote Port Forwarding (远程端口转发)**:
+在远端 SSH 服务端监听绑定端口并将入站 TCP 流量经由安全 SSH 会话隧道反向转发至本地目标服务的穿透机制。
+_Avoid_: 反向代理, 远端内网穿透, ReverseTunnel
 
 **ProxyJump (跳板机穿透)**:
 经由中间堡垒机/跳板机建立级联 SSH 会话并直达隔离内网目标主机的多跳代理机制。

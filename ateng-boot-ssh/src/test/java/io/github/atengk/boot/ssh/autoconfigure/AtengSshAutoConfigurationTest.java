@@ -54,6 +54,18 @@ class AtengSshAutoConfigurationTest {
             SshClient client = context.getBean(SshClient.class);
             assertThat(client.isStarted()).isTrue();
             assertThat(client.getServerKeyVerifier()).isInstanceOf(InMemoryServerKeyVerifier.class);
+            assertThat(client.getTcpForwardingFilter()).isNotNull();
+            assertThat(client.getTcpForwardingFilter().canConnect(
+                    org.apache.sshd.server.forward.TcpForwardingFilter.Type.Forwarded,
+                    new org.apache.sshd.common.util.net.SshdSocketAddress("127.0.0.1", 8080),
+                    null)).isTrue();
+            assertThat(client.getTcpForwardingFilter().canConnect(
+                    org.apache.sshd.server.forward.TcpForwardingFilter.Type.Direct,
+                    new org.apache.sshd.common.util.net.SshdSocketAddress("127.0.0.1", 8080),
+                    null)).isFalse();
+            assertThat(client.getTcpForwardingFilter().canListen(
+                    new org.apache.sshd.common.util.net.SshdSocketAddress("127.0.0.1", 8080),
+                    null)).isFalse();
 
             SshLifecycleManager lifecycleManager = context.getBean(SshLifecycleManager.class);
             assertThat(lifecycleManager.isRunning()).isTrue();

@@ -8,6 +8,7 @@ import io.github.atengk.boot.ssh.properties.SshProperties;
 import io.github.atengk.boot.ssh.registry.SshClientRegistry;
 import io.github.atengk.boot.ssh.template.SftpTemplate;
 import io.github.atengk.boot.ssh.template.SshTemplate;
+import io.github.atengk.boot.ssh.tunnel.SshTunnelHandle;
 import io.github.atengk.boot.ssh.verifier.InMemoryServerKeyVerifier;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.sshd.client.SshClient;
@@ -81,6 +82,7 @@ public class AtengSshAutoConfiguration {
     public SshClient sshClient(ServerKeyVerifier serverKeyVerifier) {
         SshClient client = SshClient.setUpDefaultClient();
         client.setServerKeyVerifier(serverKeyVerifier);
+        client.setForwardingFilter(SshTunnelHandle.REMOTE_FORWARDED_ONLY_FILTER);
         client.start();
         log.info("ateng-boot-ssh: Apache MINA SshClient 自动装配启动完成");
         return client;

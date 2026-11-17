@@ -2,13 +2,18 @@ package io.github.atengk.boot.sample.ssh.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.ssh.dto.SshProxyJumpRequest;
+import io.github.atengk.boot.sample.ssh.dto.SshRemoteTcpEchoRequest;
+import io.github.atengk.boot.sample.ssh.dto.SshRemoteTunnelCloseRequest;
+import io.github.atengk.boot.sample.ssh.dto.SshRemoteTunnelOpenRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshTcpEchoRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshTunnelCloseRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshTunnelOpenRequest;
 import io.github.atengk.boot.sample.ssh.service.SshScenarioService;
 import io.github.atengk.boot.sample.ssh.vo.SshExecResultVO;
 import io.github.atengk.boot.sample.ssh.vo.SshTunnelInfoVO;
+import io.github.atengk.boot.ssh.enums.TunnelMode;
 import io.github.atengk.boot.ssh.model.SshExecResult;
+import io.github.atengk.boot.ssh.tunnel.SshTunnelHandle;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -55,6 +60,7 @@ public class SshTunnelController {
                 request.getRemotePort());
 
         SshTunnelInfoVO vo = SshTunnelInfoVO.builder()
+                .tunnelMode(TunnelMode.LOCAL)
                 .localPort(boundPort)
                 .localHost("127.0.0.1")
                 .remoteHost(request.getRemoteHost())
@@ -75,6 +81,39 @@ public class SshTunnelController {
     public Result<Boolean> closeTunnel(@Valid @RequestBody SshTunnelCloseRequest request) {
         log.info("SshTunnelController: 收到释放本地端口转发隧道请求 [localPort={}]", request.getLocalPort());
         boolean closed = sshScenarioService.closeManagedTunnel(request.getLocalPort());
+        return Result.success(closed);
+    }
+
+    /**
+     * 建立受管的远程端口转发隧道 (ssh -R)
+     *
+     * @param request 远程隧道开启请求载荷
+     * @return 实际绑定的远端监听与本地目标状态信息
+     */
+    @PostMapping("/open-remote-tunnel")
+    public Result<SshTunnelInfoVO> openRemoteTunnel(@Valid @RequestBody SshRemoteTunnelOpenRequest request) {
+        log.info("SshTunnelController: 收到建立远程端口转发隧道请求 [serverName={}, remotePort={}, local={}:{}]",
+                request.getServerName(), request.getRemotePort(), request.getLocalHost(), request.getLocalPort());
+
+        SshTunnelHandle handle = sshScenarioService.openManagedRemoteTunnel(
+                request.getServerName(),
+                request.getRemotePort() != null ? request.getRemotePort() : 0,
+                request.getLocalHost(),
+                request.getLocalPort());
+
+        return Result.success(SshTunnelInfoVO.from(handle));
+    }
+
+    /**
+     * 对称安全释放受管的远程端口转发隧道
+     *
+     * @param request 远程隧道释放请求载荷
+     * @return true 若成功释放
+     */
+    @PostMapping("/close-remote-tunnel")
+    public Result<Boolean> closeRemoteTunnel(@Valid @RequestBody SshRemoteTunnelCloseRequest request) {
+        log.info("SshTunnelController: 收到释放远程端口转发隧道请求 [remotePort={}]", request.getRemotePort());
+        boolean closed = sshScenarioService.closeManagedRemoteTunnel(request.getRemotePort());
         return Result.success(closed);
     }
 
@@ -112,6 +151,28 @@ public class SshTunnelController {
 
         String echoReply = sshScenarioService.forwardAndQueryTcp(
                 request.getRemoteHost(), request.getRemotePort(), request.getMessage());
+
+        return Result.success(echoReply);
+    }
+
+    /**
+     * 演示建立远程端口转发隧道并完成反向穿透 TCP 通信回显 (ssh -R)
+     *
+     * @param request 远程隧道 TCP 交互请求载荷
+     * @return 本地服务经反向隧道回传的响应内容
+     * @throws Exception 通信异常
+     */
+    @PostMapping("/remote-tcp-echo")
+    public Result<String> remoteTcpEcho(@Valid @RequestBody SshRemoteTcpEchoRequest request) throws Exception {
+        log.info("SshTunnelController: 收到远程端口转发反向 TCP 流量穿透请求 [serverName={}, remotePort={}, local={}:{}]",
+                request.getServerName(), request.getRemotePort(), request.getLocalHost(), request.getLocalPort());
+
+        String echoReply = sshScenarioService.reverseForwardAndQueryTcp(
+                request.getServerName(),
+                request.getRemotePort() != null ? request.getRemotePort() : 0,
+                request.getLocalHost(),
+                request.getLocalPort(),
+                request.getMessage());
 
         return Result.success(echoReply);
     }

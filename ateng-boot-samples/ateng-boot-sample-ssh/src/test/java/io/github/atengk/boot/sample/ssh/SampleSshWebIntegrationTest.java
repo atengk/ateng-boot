@@ -14,6 +14,9 @@ import io.github.atengk.boot.sample.ssh.dto.SshCommandRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshContextSwitchRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshDynamicHostRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshProxyJumpRequest;
+import io.github.atengk.boot.sample.ssh.dto.SshRemoteTcpEchoRequest;
+import io.github.atengk.boot.sample.ssh.dto.SshRemoteTunnelCloseRequest;
+import io.github.atengk.boot.sample.ssh.dto.SshRemoteTunnelOpenRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshScriptRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshStreamLogRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshSudoRequest;
@@ -632,6 +635,7 @@ public class SampleSshWebIntegrationTest {
                         .content(objectMapper.writeValueAsString(openReq)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.tunnelMode", is("LOCAL")))
                 .andExpect(jsonPath("$.data.alive", is(true)))
                 .andReturn();
 
@@ -689,6 +693,72 @@ public class SampleSshWebIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data", is("ECHO_REPLY:HELLO_TUNNEL_TCP")));
+    }
+
+    @Test
+    @DisplayName("SshTunnelController: 远程端口转发建立、对称释放与反向 TCP 流量回显")
+    void testRemoteTunnelLifecycleAndTcpEcho() throws Exception {
+        // 1. 建立受管远程端口转发（remotePort=0 由远端 SSH 服务端动态分配监听端口）
+        SshRemoteTunnelOpenRequest openReq = SshRemoteTunnelOpenRequest.builder()
+                .remotePort(0)
+                .localHost("127.0.0.1")
+                .localPort(echoTcpServer.getLocalPort())
+                .build();
+
+        MvcResult openResult = mockMvc.perform(post("/sample/ssh/tunnel/open-remote-tunnel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(openReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.tunnelMode", is("REMOTE")))
+                .andExpect(jsonPath("$.data.localHost", is("127.0.0.1")))
+                .andExpect(jsonPath("$.data.localPort", is(echoTcpServer.getLocalPort())))
+                .andExpect(jsonPath("$.data.alive", is(true)))
+                .andReturn();
+
+        String responseBody = openResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        int remotePort = objectMapper.readTree(responseBody).path("data").path("remotePort").asInt();
+        assertThat(remotePort).isGreaterThan(0);
+
+        // 2. 对称安全释放远程端口转发隧道
+        SshRemoteTunnelCloseRequest closeReq = SshRemoteTunnelCloseRequest.builder()
+                .remotePort(remotePort)
+                .build();
+
+        mockMvc.perform(post("/sample/ssh/tunnel/close-remote-tunnel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(closeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", is(true)));
+
+        // 3. 端到端反向 TCP 流量穿透回显
+        SshRemoteTcpEchoRequest echoReq = SshRemoteTcpEchoRequest.builder()
+                .remotePort(0)
+                .localHost("127.0.0.1")
+                .localPort(echoTcpServer.getLocalPort())
+                .message("HELLO_REMOTE_TUNNEL")
+                .build();
+
+        mockMvc.perform(post("/sample/ssh/tunnel/remote-tcp-echo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(echoReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", is("ECHO_REPLY:HELLO_REMOTE_TUNNEL")));
+
+        // 4. JSR-303 参数边界校验 Fail-Fast (非法 localPort = 0)
+        SshRemoteTunnelOpenRequest invalidReq = SshRemoteTunnelOpenRequest.builder()
+                .remotePort(0)
+                .localHost("127.0.0.1")
+                .localPort(0)
+                .build();
+
+        mockMvc.perform(post("/sample/ssh/tunnel/open-remote-tunnel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.msg", containsString("端口范围必须为 1~65535")));
     }
 
     // ==========================================

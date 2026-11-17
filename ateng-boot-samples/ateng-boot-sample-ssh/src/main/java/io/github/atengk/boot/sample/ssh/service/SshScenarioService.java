@@ -20,6 +20,7 @@ import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
@@ -53,9 +54,14 @@ public class SshScenarioService {
     private final SshTemplate sshTemplate;
 
     /**
-     * 当前服务受管的活跃端口转发句柄映射字典 (key: localPort)
+     * 当前服务受管的活跃本地端口转发句柄映射字典 (key: localPort)
      */
     private final Map<Integer, SshTunnelHandle> managedTunnels = new ConcurrentHashMap<>();
+
+    /**
+     * 当前服务受管的活跃远程端口转发句柄映射字典 (key: remotePort)
+     */
+    private final Map<Integer, SshTunnelHandle> managedRemoteTunnels = new ConcurrentHashMap<>();
 
     /**
      * 演示默认主节点同步命令执行
@@ -299,17 +305,32 @@ public class SshScenarioService {
             int localPort = tunnel.getLocalPort();
             log.info("ateng-boot-ssh-sample: 本地端口转发隧道已就绪 [127.0.0.1:{} -> {}:{}]",
                     localPort, remoteHost, remotePort);
+            return exchangeTcpLine("127.0.0.1", localPort, message);
+        }
+    }
 
-            try (Socket socket = new Socket("127.0.0.1", localPort);
-                 BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
-                 BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
-
-                socket.setSoTimeout(3000);
-                writer.write(message + "\n");
-                writer.flush();
-
-                return reader.readLine();
-            }
+    /**
+     * 演示远程端口转发与反向穿透 TCP 流量回显验证 (ssh -R)
+     *
+     * @param serverName 远端 SSH 节点名称（可空，缺省默认节点）
+     * @param remotePort 远端绑定端口（0 表示动态分配）
+     * @param localHost  本地目标服务主机
+     * @param localPort  本地目标服务端口
+     * @param message    测试发送的文本
+     * @return 经由反向隧道回传的响应内容
+     * @throws Exception 通信异常
+     */
+    public String reverseForwardAndQueryTcp(String serverName,
+                                            int remotePort,
+                                            String localHost,
+                                            int localPort,
+                                            String message) throws Exception {
+        try (SshTunnelHandle handle = sshTemplate.openRemoteTunnel(serverName, remotePort, localHost, localPort)) {
+            int boundRemotePort = handle.getRemotePort();
+            String connectHost = resolveRemoteConnectHost(handle);
+            log.info("ateng-boot-ssh-sample: 远程端口转发隧道已就绪 [{}:{} -> {}:{}]",
+                    connectHost, boundRemotePort, localHost, localPort);
+            return exchangeTcpLine(connectHost, boundRemotePort, message);
         }
     }
 
@@ -333,19 +354,76 @@ public class SshScenarioService {
     }
 
     /**
+     * 演示建立受管的远程端口转发隧道 (ssh -R)
+     *
+     * @param serverName 节点名称
+     * @param remotePort 远端期望绑定端口（0 为动态分配）
+     * @param localHost  本地目标服务主机
+     * @param localPort  本地目标服务端口
+     * @return 受管远程端口转发句柄
+     */
+    public SshTunnelHandle openManagedRemoteTunnel(String serverName, int remotePort, String localHost, int localPort) {
+        SshTunnelHandle handle = sshTemplate.openRemoteTunnel(serverName, remotePort, localHost, localPort);
+        managedRemoteTunnels.put(handle.getRemotePort(), handle);
+        log.info("ateng-boot-ssh-sample: 受管远程端口转发隧道已注册 [remotePort={}, local={}:{}]",
+                handle.getRemotePort(), localHost, localPort);
+        return handle;
+    }
+
+    /**
      * 对称释放受管的本地端口转发隧道
      *
      * @param localPort 本地绑定端口
      * @return true 若成功释放
      */
     public boolean closeManagedTunnel(int localPort) {
-        SshTunnelHandle handle = managedTunnels.remove(localPort);
+        return closeManagedTunnelByKey(managedTunnels, localPort, "localPort");
+    }
+
+    /**
+     * 对称释放受管的远程端口转发隧道
+     *
+     * @param remotePort 远端绑定端口
+     * @return true 若成功释放
+     */
+    public boolean closeManagedRemoteTunnel(int remotePort) {
+        return closeManagedTunnelByKey(managedRemoteTunnels, remotePort, "remotePort");
+    }
+
+    private boolean closeManagedTunnelByKey(Map<Integer, SshTunnelHandle> tunnelMap, int port, String label) {
+        SshTunnelHandle handle = tunnelMap.remove(port);
         if (handle != null) {
             handle.close();
-            log.info("ateng-boot-ssh-sample: 受管端口转发隧道已安全释放 [localPort={}]", localPort);
+            log.info("ateng-boot-ssh-sample: 受管端口转发隧道已安全释放 [{}={}]", label, port);
             return true;
         }
         return false;
+    }
+
+    private String exchangeTcpLine(String host, int port, String message) throws Exception {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), 3000);
+            socket.setSoTimeout(3000);
+            try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
+                writer.write(message + "\n");
+                writer.flush();
+                return reader.readLine();
+            }
+        }
+    }
+
+    private static String resolveRemoteConnectHost(SshTunnelHandle handle) {
+        String remoteHost = handle.getRemoteHost();
+        if (remoteHost != null && !remoteHost.isBlank()
+                && !"0.0.0.0".equals(remoteHost) && !"::".equals(remoteHost)) {
+            return remoteHost;
+        }
+        if (handle.getServerInfo() != null && handle.getServerInfo().getHost() != null
+                && !handle.getServerInfo().getHost().isBlank()) {
+            return handle.getServerInfo().getHost();
+        }
+        return "127.0.0.1";
     }
 
     /**
@@ -428,12 +506,18 @@ public class SshScenarioService {
 
     @PreDestroy
     public void closeAllTunnels() {
-        for (SshTunnelHandle handle : managedTunnels.values()) {
+        closeTunnelMap(managedTunnels);
+        closeTunnelMap(managedRemoteTunnels);
+    }
+
+    private void closeTunnelMap(Map<Integer, SshTunnelHandle> tunnelMap) {
+        for (SshTunnelHandle handle : tunnelMap.values()) {
             try {
                 handle.close();
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                log.warn("ateng-boot-ssh-sample: 销毁清理受管端口转发隧道异常: {}", e.getMessage());
             }
         }
-        managedTunnels.clear();
+        tunnelMap.clear();
     }
 }
