@@ -12,6 +12,8 @@ import io.github.atengk.boot.sample.ssh.dto.SftpRenameRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpSymlinkRequest;
 import io.github.atengk.boot.sample.ssh.dto.SftpWriteTextRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshBatchInspectRequest;
+import io.github.atengk.boot.sample.ssh.dto.SshClusterRegisterNodeRequest;
+import io.github.atengk.boot.sample.ssh.dto.SshClusterUnregisterNodeRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshCommandRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshContextSwitchRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshDynamicHostRequest;
@@ -19,6 +21,7 @@ import io.github.atengk.boot.sample.ssh.dto.SshProxyJumpRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshRemoteTcpEchoRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshRemoteTunnelCloseRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshRemoteTunnelOpenRequest;
+import io.github.atengk.boot.sample.ssh.dto.SshRemoveKnownKeyRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshScriptRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshStreamLogRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshSudoRequest;
@@ -214,8 +217,8 @@ public class SampleSshWebIntegrationTest {
         server.setPasswordAuthenticator((u, p, s) -> expectedUser.equals(u) && expectedPass.equals(p));
         server.setForwardingFilter(AcceptAllForwardingFilter.INSTANCE);
 
-        if ("testuser".equals(expectedUser)) {
-            Path sftpRoot = sharedTempDir.resolve("sftp-storage");
+        if ("testuser".equals(expectedUser) || "worker1".equals(expectedUser)) {
+            Path sftpRoot = sharedTempDir.resolve("sftp-storage-" + expectedUser);
             try {
                 Files.createDirectories(sftpRoot);
             } catch (IOException ignored) {
@@ -329,6 +332,7 @@ public class SampleSshWebIntegrationTest {
             registry.add("ateng.boot.ssh.servers.bastion.port", () -> bastionServer.getPort());
             registry.add("ateng.boot.ssh.servers.bastion.username", () -> "ops");
             registry.add("ateng.boot.ssh.servers.bastion.password", () -> "opspassword");
+            registry.add("ateng.boot.ssh.servers.intranet-app.port", () -> targetServer.getPort());
         }
     }
 
@@ -1090,5 +1094,143 @@ public class SampleSshWebIntegrationTest {
                 .andExpect(jsonPath("$.data.websocketEndpoint", is("/ws/ssh")))
                 .andExpect(jsonPath("$.data.activeSessions").value(0))
                 .andExpect(jsonPath("$.data.status", is("UP")));
+    }
+
+    @Test
+    @DisplayName("YAML jump-host 声明式跳板机路由与自定义 SshCommandInterceptor SPI 审计统计端点")
+    void testYamlJumpHostAndCommandAuditInterceptor() throws Exception {
+        // 1. 通过 application.yml 中声明的 jump-host: bastion 路由节点 intranet-app 执行命令
+        SshCommandRequest jumpReq = SshCommandRequest.builder()
+                .serverName("intranet-app")
+                .command("echo YAML_JUMP_OK")
+                .build();
+        mockMvc.perform(post("/sample/ssh/command/exec")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(jumpReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.stdout", containsString("YAML_JUMP_OK")));
+
+        // 2. 触发高危命令拦截（确保 onError 审计计数递增）
+        SshCommandRequest blockedReq = SshCommandRequest.builder()
+                .command("reboot")
+                .build();
+        mockMvc.perform(post("/sample/ssh/command/exec")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(blockedReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(56017));
+
+        // 3. 查询自定义 SshCommandInterceptor SPI 统计视图
+        MvcResult auditResult = mockMvc.perform(get("/sample/ssh/command/audit-stats"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.executedCount", notNullValue()))
+                .andExpect(jsonPath("$.data.errorCount", notNullValue()))
+                .andReturn();
+        var auditData = objectMapper.readTree(auditResult.getResponse().getContentAsString()).path("data");
+        assertThat(auditData.path("executedCount").asLong()).isGreaterThanOrEqualTo(1L);
+        assertThat(auditData.path("errorCount").asLong()).isGreaterThanOrEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("SshClusterController: 动态节点注册、注销联动会话驱逐与内存主机公钥指纹定点移除")
+    void testClusterRegisterUnregisterAndRemoveKnownKey() throws Exception {
+        String dynamicNodeName = "dynamic-ephemeral";
+        // 1. 注册临时节点（复用 node2Server）
+        SshClusterRegisterNodeRequest registerReq = SshClusterRegisterNodeRequest.builder()
+                .serverName(dynamicNodeName)
+                .host("127.0.0.1")
+                .port(node2Server.getPort())
+                .username("worker2")
+                .password("worker2pass")
+                .build();
+        mockMvc.perform(post("/sample/ssh/cluster/register-node")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(registerReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", is(true)));
+
+        // 2. 执行命令建立池化会话并触发 InMemoryServerKeyVerifier 记录指纹
+        SshCommandRequest execReq = SshCommandRequest.builder()
+                .serverName(dynamicNodeName)
+                .command("echo DYNAMIC_EPHEMERAL_OK")
+                .build();
+        mockMvc.perform(post("/sample/ssh/command/exec")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(execReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.stdout", containsString("DYNAMIC_EPHEMERAL_OK")));
+
+        // 3. 注销节点并触发旧会话驱逐
+        SshClusterUnregisterNodeRequest unregisterReq = SshClusterUnregisterNodeRequest.builder()
+                .serverName(dynamicNodeName)
+                .build();
+        mockMvc.perform(post("/sample/ssh/cluster/unregister-node")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(unregisterReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", is(true)));
+
+        // 再次调用已注销节点应返回 SERVER_NOT_FOUND (56011)
+        mockMvc.perform(post("/sample/ssh/command/exec")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(execReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(56011));
+
+        // 4. 定点移除内存公钥指纹缓存（首次返回 true，二次幂等返回 false）
+        SshRemoveKnownKeyRequest removeKeyReq = SshRemoveKnownKeyRequest.builder()
+                .host("127.0.0.1")
+                .port(node2Server.getPort())
+                .build();
+        mockMvc.perform(post("/sample/ssh/cluster/remove-known-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(removeKeyReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", is(true)));
+
+        mockMvc.perform(post("/sample/ssh/cluster/remove-known-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(removeKeyReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", is(false)));
+    }
+
+    @Test
+    @DisplayName("SftpDocumentController: SftpTemplate 具名节点 (serverName) 路由隔离读写")
+    void testSftpNamedNodeRouting() throws Exception {
+        String remotePath = "/named/node1-config.txt";
+        SftpWriteTextRequest writeReq = SftpWriteTextRequest.builder()
+                .serverName("node1")
+                .remotePath(remotePath)
+                .content("NODE1_ISOLATED_CONF")
+                .build();
+
+        mockMvc.perform(post("/sample/ssh/sftp-doc/write-text")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(writeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", is(true)));
+
+        mockMvc.perform(get("/sample/ssh/sftp-doc/read-text")
+                        .param("serverName", "node1")
+                        .param("remotePath", remotePath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", is("NODE1_ISOLATED_CONF")));
+
+        // 缺省默认节点中不存在该路径，验证具名节点物理路由隔离生效
+        mockMvc.perform(get("/sample/ssh/sftp-doc/exists")
+                        .param("remotePath", remotePath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", is(false)));
     }
 }

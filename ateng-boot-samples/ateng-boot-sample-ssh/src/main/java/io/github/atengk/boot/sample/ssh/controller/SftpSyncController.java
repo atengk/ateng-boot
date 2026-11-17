@@ -154,12 +154,12 @@ public class SftpSyncController {
      */
     @PostMapping("/download-resume")
     public Result<SftpDownloadResumeResultVO> downloadResume(@Valid @RequestBody SftpDownloadResumeRequest request) {
-        log.info("SftpSyncController: 收到大文件断点续传下载请求 [remotePath={} -> localPath={}]",
-                request.getRemotePath(), request.getLocalPath());
+        log.info("SftpSyncController: 收到大文件断点续传下载请求 [serverName={}, remotePath={} -> localPath={}]",
+                request.getServerName(), request.getRemotePath(), request.getLocalPath());
         long start = System.currentTimeMillis();
         String cleanLocalPath = FileUtil.cleanPath(request.getLocalPath());
         File localFile = new File(cleanLocalPath);
-        sftpScenarioService.downloadResume(request.getRemotePath(), localFile);
+        sftpScenarioService.downloadResume(request.getServerName(), request.getRemotePath(), localFile);
         long cost = System.currentTimeMillis() - start;
 
         SftpDownloadResumeResultVO vo = SftpDownloadResumeResultVO.builder()

@@ -26,6 +26,11 @@ public class SftpWriteTextRequest implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
+     * 目标服务节点名称（可选，缺省使用默认主节点）
+     */
+    private String serverName;
+
+    /**
      * 远程目标文件绝对路径
      */
     @NotBlank(message = "远程文件路径不能为空")

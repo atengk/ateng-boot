@@ -10,7 +10,7 @@
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **命令执行** | 同步短命令执行契约 | `SshTemplate`<br>`SshExecOptions`<br>`SshExecResult` | `command-timeout`<br>`max-output-size` | `exec(String)` / `exec(String, SshExecOptions)` / `exec(String, String)` / `exec(SshServerInfo, String)`，返回强类型 `SshExecResult`（含 `exitCode`、`stdout`、`stderr`、`duration`、`truncated`） | `SshTemplateCommandExecutionTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
 | **命令执行** | 有界输出防 OOM 与 POSIX 目录转义 | `BoundedByteArrayOutputStream`<br>`SshCommandExecutor` | `max-output-size` | 限制同步命令 `stdout`/`stderr` 最大内存缓冲（默认 `10MB`），超限安全截断并继续排空通道，`SshExecResult.isTruncated()` 置为 `true`；`workingDir` 拦截 `\0`/`\r`/`\n` 并执行 POSIX 单引号安全转义 | `BoundedByteArrayOutputStreamTest`<br>`SshCommandExecutorTest`<br>`SshTemplateCommandExecutionTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
-| **命令执行** | 命令拦截器 SPI 与高危命令防火墙 | `SshCommandInterceptor`<br>`HighRiskCommandInterceptor` | `dangerous-command-guard-enabled`<br>`dangerous-command-patterns` | SPI 提供 `beforeExecute` / `afterExecute` / `onError`；内置最高优先级守卫拦截 `rm -rf /`、`mkfs`、`dd` 覆写、Fork 炸弹、`shutdown`/`reboot` 及自定义黑名单正则，阻断码 `56017 (COMMAND_FORBIDDEN)` | `AtengSshAutoConfigurationTest`<br>`SshTemplateCommandExecutionTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
+| **命令执行** | 命令拦截器 SPI 与高危命令防火墙 | `SshCommandInterceptor`<br>`HighRiskCommandInterceptor` | `dangerous-command-guard-enabled`<br>`dangerous-command-patterns` | SPI 提供 `beforeExecute` / `afterExecute` / `onError`；内置最高优先级守卫拦截 `rm -rf /`、`mkfs`、`dd` 覆写、Fork 炸弹、`shutdown`/`reboot` 及自定义黑名单正则，阻断码 `56017 (COMMAND_FORBIDDEN)` | `AtengSshAutoConfigurationTest`<br>`SshTemplateCommandExecutionTest`<br>`SampleCommandAuditInterceptor`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
 | **命令执行** | 非阻塞异步执行 | `SshTemplate` | `command-timeout` | `execAsync(String)` / `execAsync(String, SshExecOptions)` / `execAsync(String, String)` / `execAsync(SshServerInfo, String)` / `execScriptAsync(...)`，返回 `CompletableFuture<SshExecResult>`，在 Core 受管异步线程池调度 | `SshTemplateProbeAndAsyncTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
 | **命令执行** | 原生 Sudo 提权安全管道 | `SshTemplate` | `command-timeout` | `execSudo(String, String)` / `execSudo(String, char[])` / `execSudo(String, String, String)` / `execSudo(SshServerInfo, String, String)`，底层构建 `-S -p ''` 安全管道，口令发送完毕后立即执行 `Arrays.fill` 擦除抹零 | `SshTemplateSudoAndBatchTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
 | **命令执行** | 多行脚本管道执行 | `SshTemplate` | `command-timeout` | `execScript(String)` / `execScript(String, String)` / `execScript(SshServerInfo, String)`，自动将 Windows CRLF 规范化为 Unix LF，打包为远端 Shell 管道执行 | `SshTemplateCommandExecutionTest`<br>`SshCommandController`<br>`SampleSshWebIntegrationTest` |
@@ -21,7 +21,7 @@
 | **集群治理** | 集群高级批量巡检聚合 | `SshTemplate`<br>`SshBatchOptions`<br>`SshBatchExecResult` | `command-timeout` | `execBatchAdvanced(...)` / `execBatchAdvancedNamed(...)`，返回强类型 `SshBatchExecResult`（含成功/失败计数、明细字典、`isAllSuccess()`、`throwIfAnyFailed()`） | `SshTemplateSudoAndBatchTest`<br>`SshClusterController`<br>`SampleSshWebIntegrationTest` |
 | **集群治理** | CMDB 纯内存资产直连 | `SshServerInfo` | - | 不可变值对象，支持动态指定主机、端口、用户名、口令/私钥、跳板机与主机公钥校验策略，无需提前在配置文件中声明 | `SshServerInfoTest`<br>`SshClusterController`<br>`SampleSshWebIntegrationTest` |
 | **集群治理** | 线程级动态切源路由 | `SshContextHolder` | `servers.*` | `setServer(String)` / `setServerInfo(SshServerInfo)` / `getServer()` / `getServerInfo()` / `runWith(...)` / `runWithInfo(...)` / `clear()`，支持栈式嵌套作用域并在 `finally` 确定性复位现场 | `SshContextHolderTest`<br>`SshClusterController`<br>`SampleSshWebIntegrationTest` |
-| **集群治理** | 命名多主机受管注册表与注销驱逐 | `SshClientRegistry` | `servers.*`<br>`servers.*.jump-host` | `register(String, SshServerInfo)` / `unregister(String)` / `getServer(String)` / `getDefaultServer()` / `contains(String)` / `getServerNames()` / `addEvictionListener(...)`；注销或覆写时联动 `SshSessionPool::evict` 清理旧连接 | `SshClientRegistryTest`<br>`AtengSshAutoConfigurationTest`<br>`SampleSshIntegrationTest` |
+| **集群治理** | 命名多主机受管注册表与注销驱逐 | `SshClientRegistry` | `servers.*`<br>`servers.*.jump-host` | `register(String, SshServerInfo\|SshProperties)` / `registerProperties(SshProperties)` / `unregister(String)` / `getServer(String)` / `getDefaultServer()` / `contains(String)` / `getServerNames()` / `getServers()` / `clear()` / `addEvictionListener(...)` / `removeEvictionListener(...)`；注销、清空或覆写（含下游 `jump-host` 级联刷新）自动联动 `SshSessionPool::evict` | `SshClientRegistryTest`<br>`AtengSshAutoConfigurationTest`<br>`SshClusterController`<br>`SampleSshWebIntegrationTest` |
 | **集群治理** | 会话池运行态统计快照 | `SshTemplate`<br>`SshSessionPool`<br>`SshPoolStats` | `pool.*` | `SshTemplate.getPoolStats()` / `SshSessionPool.getStats()`，返回不可变 `SshPoolStats`（`maxSessions`、`poolSize`、`activeSessions`、`totalCreated`、`totalHits`、`totalEvicted`、`totalFailed`、`getHitRate()`） | `SshSessionPoolTest`<br>`SshClusterController`<br>`SampleSshWebIntegrationTest` |
 | **网络穿透** | 受管本地端口转发 (`ssh -L`) | `SshTemplate`<br>`SshTunnelHandle`<br>`TunnelMode` | `connect-timeout` | `openLocalTunnel(int, String, int)` / `openLocalTunnel(String, int, String, int)` / `openLocalTunnel(SshServerInfo, int, String, int)` / `openLocalTunnel(SshServerInfo, SshdSocketAddress, SshdSocketAddress)`，支持 `localPort=0` 动态分配端口 | `SshTemplateTunnelTest`<br>`SshTunnelController`<br>`SampleSshWebIntegrationTest` |
 | **网络穿透** | 受管远程端口转发 (`ssh -R`) | `SshTemplate`<br>`SshTunnelHandle`<br>`TunnelMode` | `connect-timeout` | `openRemoteTunnel(int, String, int)` / `openRemoteTunnel(String, int, String, int)` / `openRemoteTunnel(SshServerInfo, int, String, int)` / `openRemoteTunnel(SshServerInfo, SshdSocketAddress, SshdSocketAddress)`，共享客户端标配 `REMOTE_FORWARDED_ONLY_FILTER` | `SshTemplateTunnelTest`<br>`SshTunnelHandleTest`<br>`SshTunnelController`<br>`SampleSshWebIntegrationTest` |
@@ -45,7 +45,7 @@
 | **WebSSH** | 终端元数据诊断端点 | `SshTerminalController` | - | `GET /sample/ssh/terminal/info`，对外暴露终端默认类型、规格行列尺寸与 WebSocket 握手状态 | `SshTerminalController`<br>`SampleSshWebIntegrationTest` |
 | **底层治理** | 无 Pinning 受管会话缓存池 | `SshSessionPool`<br>`AutoCloseable` | `pool.max-sessions`<br>`pool.idle-timeout`<br>`pool.heartbeat-interval` | 64 分段 `ReentrantLock` 消除 JDK 21+ 虚拟线程 Pinning；按 `username@host:port#hash->via(...)` 复合键池化复用活会话，后台心跳保活与空闲超时淘汰 | `SshSessionPoolTest`<br>`SampleSshIntegrationTest` |
 | **底层治理** | 多元认证与纯内存私钥 | `SshKeyLoader` | `password`<br>`private-key`<br>`private-key-path`<br>`passphrase` | 支持口令密码、纯内存 OpenSSH/PEM 私钥字符串（RAM 运行零磁盘落盘）、本地密钥文件与预置 KeyPair 统合认证 | `SshKeyLoaderAndAuthenticationTest`<br>`SampleSshIntegrationTest` |
-| **底层治理** | 云原生纯内存指纹容器 | `InMemoryServerKeyVerifier`<br>`HostKeyPolicy` | `host-key-policy` | 提供 `LENIENT`、`STRICT`、`IGNORE`，支持 `registerKnownKey(...)` 与 `removeKnownKey(...)` 对称治理，100% 内存运行不写盘 `~/.ssh/known_hosts` | `InMemoryServerKeyVerifierTest`<br>`SampleSshIntegrationTest` |
+| **底层治理** | 云原生纯内存指纹容器 | `InMemoryServerKeyVerifier`<br>`HostKeyPolicy` | `host-key-policy` | 提供 `LENIENT`、`STRICT`、`IGNORE`，支持 `registerKnownKey(...)` 与 `removeKnownKey(...)` 对称治理，100% 内存运行不写盘 `~/.ssh/known_hosts` | `InMemoryServerKeyVerifierTest`<br>`SshClusterController`<br>`SampleSshWebIntegrationTest` |
 | **底层治理** | 确定性三步停机时序 | `SshLifecycleManager`<br>`SmartLifecycle` | - | 停机时序：【1. 优先关闭所有活跃交互式 PTY 终端与双向端口转发隧道 -> 2. 安全注销池化 Session -> 3. 停止底层 NIO SshClient】 | `SshLifecycleManagerTest`<br>`SshLifecycleManagerShellTeardownTest`<br>`SshLifecycleManagerTunnelTeardownTest` |
 | **底层治理** | 因果异常体系与统一错误码 | `SshOperationException`<br>`SshResultCode` | - | 拦截底层 NIO 与协议层异常，转译为语义化 `SshOperationException`，赋予规范错误码（`56001`~`56017`）并 100% 完整保留原始 `cause` 链 | `SshExceptionAndResultCodeTest`<br>`SampleSshWebIntegrationTest` |
 
@@ -557,10 +557,23 @@ public Result<SshPoolStatsVO> poolStats() {
     SshPoolStats stats = sshScenarioService.getPoolStats();
     return Result.success(SshPoolStatsVO.from(stats));
 }
+
+@PostMapping("/unregister-node")
+public Result<Boolean> unregisterNode(@Valid @RequestBody SshClusterUnregisterNodeRequest request) {
+    boolean removed = sshScenarioService.unregisterManagedNode(request.getServerName());
+    return Result.success(removed);
+}
+
+@PostMapping("/remove-known-key")
+public Result<Boolean> removeKnownKey(@Valid @RequestBody SshRemoveKnownKeyRequest request) {
+    boolean removed = sshScenarioService.removeKnownHostKey(request.getHost(), request.getPort());
+    return Result.success(removed);
+}
 ```
 - **核心机制与边界防御**：
   - `SshPoolStats` 封装 `maxSessions`、`poolSize`、`activeSessions`、`totalCreated`、`totalHits`、`totalEvicted`、`totalFailed` 与 `getHitRate()`，只读不可变且零额外阻塞；
-  - `AtengSshAutoConfiguration` 将 `pool::evict` 注册为 `SshClientRegistry` 驱逐监听器：调用 `registry.unregister(name)` 或覆盖注册同名节点时，自动驱逐并物理断开对应旧主机池化会话。
+  - `AtengSshAutoConfiguration` 将 `pool::evict` 注册为 `SshClientRegistry` 驱逐监听器：调用 `registry.unregister(name)` 或覆盖注册同名节点（含上游 `jump-host` 覆写时下游节点级联刷新）自动驱逐并物理断开对应旧主机池化会话；
+  - `InMemoryServerKeyVerifier.removeKnownKey(host, port)` 支持云主机同 IP 重建更换公钥后定点移除旧指纹缓存。
 
 ---
 

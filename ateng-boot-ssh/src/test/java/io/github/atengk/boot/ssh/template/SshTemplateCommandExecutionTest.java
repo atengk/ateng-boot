@@ -328,7 +328,11 @@ class SshTemplateCommandExecutionTest {
                 "dd if=/dev/zero of=/dev/sdb bs=1M",
                 ":(){ :|:& };:",
                 "shutdown -h now",
-                "reboot"
+                "reboot",
+                "sudo reboot",
+                "sudo -u root shutdown -h now",
+                "echo ok && reboot",
+                "ls; halt"
         );
         for (String cmd : dangerousCommands) {
             assertThatThrownBy(() -> template.exec(cmd))
@@ -337,9 +341,18 @@ class SshTemplateCommandExecutionTest {
                             .isEqualTo(SshResultCode.COMMAND_FORBIDDEN));
         }
 
-        // 2. 安全子路径不误杀
-        SshExecResult safeRm = template.exec("echo rm -rf /tmp/build-cache");
-        assertThat(safeRm.isSuccess()).isTrue();
+        // 2. 安全子路径与参数位关键字不误杀
+        List<String> safeCommands = List.of(
+                "echo rm -rf /tmp/build-cache",
+                "echo rm -rf /",
+                "echo reboot",
+                "echo shutdown -h now",
+                "grep halt /var/log/app.log"
+        );
+        for (String safeCmd : safeCommands) {
+            SshExecResult safeResult = template.exec(safeCmd);
+            assertThat(safeResult.isSuccess()).isTrue();
+        }
 
         // 3. 自定义附加黑名单正则阻断
         SshProperties customProps = new SshProperties();

@@ -5,7 +5,9 @@ import io.github.atengk.boot.sample.ssh.dto.SshCommandRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshScriptRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshStreamLogRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshSudoRequest;
+import io.github.atengk.boot.sample.ssh.interceptor.SampleCommandAuditInterceptor;
 import io.github.atengk.boot.sample.ssh.service.SshScenarioService;
+import io.github.atengk.boot.sample.ssh.vo.SshCommandAuditStatsVO;
 import io.github.atengk.boot.sample.ssh.vo.SshExecResultVO;
 import io.github.atengk.boot.ssh.model.SshExecResult;
 import jakarta.validation.Valid;
@@ -42,6 +44,7 @@ import java.util.concurrent.CompletableFuture;
 public class SshCommandController {
 
     private final SshScenarioService sshScenarioService;
+    private final SampleCommandAuditInterceptor sampleCommandAuditInterceptor;
 
     /**
      * 同步执行远程短命令
@@ -125,5 +128,18 @@ public class SshCommandController {
         log.info("SshCommandController: 正在探测节点连通性 [serverName={}]", serverName);
         boolean connected = sshScenarioService.testConnection(serverName);
         return Result.success(connected);
+    }
+
+    /**
+     * 查询自定义 SshCommandInterceptor SPI 命令审计拦截器累计计数
+     *
+     * @return 命令审计统计 VO
+     */
+    @GetMapping("/audit-stats")
+    public Result<SshCommandAuditStatsVO> auditStats() {
+        return Result.success(SshCommandAuditStatsVO.builder()
+                .executedCount(sampleCommandAuditInterceptor.getExecutedCount())
+                .errorCount(sampleCommandAuditInterceptor.getErrorCount())
+                .build());
     }
 }

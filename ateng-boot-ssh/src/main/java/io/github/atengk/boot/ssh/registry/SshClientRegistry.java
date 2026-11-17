@@ -7,6 +7,7 @@ import io.github.atengk.boot.ssh.properties.SshProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.Assert;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -14,9 +15,11 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -38,7 +41,9 @@ public class SshClientRegistry {
     public static final String DEFAULT_SERVER = "default";
 
     private final Map<String, SshServerInfo> servers = new ConcurrentHashMap<>();
+    private final Map<String, String> jumpHostRefs = new ConcurrentHashMap<>();
     private final List<Consumer<SshServerInfo>> evictionListeners = new CopyOnWriteArrayList<>();
+    private final ReentrantLock topologyLock = new ReentrantLock();
 
     /**
      * 注册节点变更或注销时的会话驱逐回调监听器
@@ -71,11 +76,17 @@ public class SshClientRegistry {
         Assert.hasText(name, "server name must not be blank");
         Assert.notNull(serverInfo, "SshServerInfo must not be null");
         String trimmedName = name.trim();
-        SshServerInfo previous = servers.put(trimmedName, serverInfo);
-        log.info("ateng-boot-ssh: 成功注册 SSH 服务节点 [name={}, target={}]", trimmedName, serverInfo.toSessionKey());
-        if (previous != null && (!Objects.equals(previous.toPoolKey(), serverInfo.toPoolKey()) || !Objects.equals(previous, serverInfo))) {
-            notifyEviction(previous);
+        List<SshServerInfo> evicted = new ArrayList<>();
+        topologyLock.lock();
+        try {
+            registerInternal(trimmedName, serverInfo, null, evicted);
+            cascadeUpdateDownstream(trimmedName, serverInfo, evicted);
+        } finally {
+            if (topologyLock.isHeldByCurrentThread()) {
+                topologyLock.unlock();
+            }
         }
+        evicted.forEach(this::notifyEviction);
     }
 
     /**
@@ -89,11 +100,22 @@ public class SshClientRegistry {
             return null;
         }
         String trimmedName = name.trim();
-        SshServerInfo removed = servers.remove(trimmedName);
-        if (removed != null) {
-            log.info("ateng-boot-ssh: 已注销 SSH 服务节点 [name={}, target={}]", trimmedName, removed.toSessionKey());
-            notifyEviction(removed);
+        SshServerInfo removed;
+        List<SshServerInfo> evicted = new ArrayList<>();
+        topologyLock.lock();
+        try {
+            removed = servers.remove(trimmedName);
+            jumpHostRefs.remove(trimmedName);
+            if (removed != null) {
+                log.info("ateng-boot-ssh: 已注销 SSH 服务节点 [name={}, target={}]", trimmedName, removed.toSessionKey());
+                evicted.add(removed);
+            }
+        } finally {
+            if (topologyLock.isHeldByCurrentThread()) {
+                topologyLock.unlock();
+            }
         }
+        evicted.forEach(this::notifyEviction);
         return removed;
     }
 
@@ -107,20 +129,29 @@ public class SshClientRegistry {
         Assert.hasText(name, "server name must not be blank");
         Assert.notNull(properties, "SshProperties must not be null");
         String trimmedName = name.trim();
-        SshServerInfo jumpInfo = null;
-        String jumpHost = properties.getJumpHost();
-        if (jumpHost != null && !jumpHost.isBlank()) {
-            String trimmedJump = jumpHost.trim();
-            if (trimmedJump.equals(trimmedName)) {
-                throw new SshOperationException(SshResultCode.JUMP_HOST_FAILED,
-                        "检测到 SSH 跳板机 (jump-host) 循环引用拓扑: [" + trimmedName + " -> " + trimmedJump + "]");
+        List<SshServerInfo> evicted = new ArrayList<>();
+        topologyLock.lock();
+        try {
+            SshServerInfo jumpInfo = null;
+            String trimmedJump = null;
+            String jumpHost = properties.getJumpHost();
+            if (jumpHost != null && !jumpHost.isBlank()) {
+                trimmedJump = jumpHost.trim();
+                validateNoCycleOnLink(trimmedName, trimmedJump);
+                jumpInfo = servers.get(trimmedJump);
+                if (jumpInfo == null) {
+                    throw missingJumpHostException(trimmedName, trimmedJump);
+                }
             }
-            jumpInfo = servers.get(trimmedJump);
-            if (jumpInfo == null) {
-                throw missingJumpHostException(trimmedName, trimmedJump);
+            SshServerInfo serverInfo = SshServerInfo.fromProperties(properties, jumpInfo);
+            registerInternal(trimmedName, serverInfo, trimmedJump, evicted);
+            cascadeUpdateDownstream(trimmedName, serverInfo, evicted);
+        } finally {
+            if (topologyLock.isHeldByCurrentThread()) {
+                topologyLock.unlock();
             }
         }
-        register(trimmedName, SshServerInfo.fromProperties(properties, jumpInfo));
+        evicted.forEach(this::notifyEviction);
     }
 
     /**
@@ -149,17 +180,98 @@ public class SshClientRegistry {
         }
 
         Map<String, SshServerInfo> resolved = new LinkedHashMap<>(nodeMap.size());
+        Map<String, String> resolvedJumpNames = new LinkedHashMap<>(nodeMap.size());
         Set<String> visiting = new LinkedHashSet<>();
         for (String nodeName : nodeMap.keySet()) {
-            resolveNodeTopology(nodeName, nodeMap, resolved, visiting);
+            resolveNodeTopology(nodeName, nodeMap, resolved, resolvedJumpNames, visiting);
         }
-        // 全量拓扑校验无误后再原子写入注册表，防止局部残留
-        resolved.forEach(this::register);
+
+        // 全量拓扑校验无误后再原子写入注册表并级联刷新，防止局部残留
+        List<SshServerInfo> evicted = new ArrayList<>();
+        topologyLock.lock();
+        try {
+            resolved.forEach((nodeName, info) ->
+                    registerInternal(nodeName, info, resolvedJumpNames.get(nodeName), evicted));
+            resolved.forEach((nodeName, info) ->
+                    cascadeUpdateDownstream(nodeName, info, evicted));
+        } finally {
+            if (topologyLock.isHeldByCurrentThread()) {
+                topologyLock.unlock();
+            }
+        }
+        evicted.forEach(this::notifyEviction);
+    }
+
+    private void registerInternal(String trimmedName,
+                                  SshServerInfo serverInfo,
+                                  String jumpHostName,
+                                  List<SshServerInfo> evicted) {
+        if (jumpHostName != null && !jumpHostName.isBlank()) {
+            jumpHostRefs.put(trimmedName, jumpHostName.trim());
+        } else {
+            jumpHostRefs.remove(trimmedName);
+        }
+        SshServerInfo previous = servers.put(trimmedName, serverInfo);
+        log.info("ateng-boot-ssh: 成功注册 SSH 服务节点 [name={}, target={}]", trimmedName, serverInfo.toSessionKey());
+        if (previous != null && (!Objects.equals(previous.toPoolKey(), serverInfo.toPoolKey()) || !Objects.equals(previous, serverInfo))) {
+            evicted.add(previous);
+        }
+    }
+
+    private void validateNoCycleOnLink(String nodeName, String jumpHostName) {
+        List<String> chain = new ArrayList<>();
+        chain.add(nodeName);
+        String cursor = jumpHostName;
+        Set<String> visited = new LinkedHashSet<>();
+        while (cursor != null && !cursor.isBlank()) {
+            chain.add(cursor);
+            if (cursor.equals(nodeName) || !visited.add(cursor)) {
+                throw new SshOperationException(SshResultCode.JUMP_HOST_FAILED,
+                        "检测到 SSH 跳板机 (jump-host) 循环引用拓扑: [" + String.join(" -> ", chain) + "]");
+            }
+            cursor = jumpHostRefs.get(cursor);
+        }
+    }
+
+    private void cascadeUpdateDownstream(String rootParentName,
+                                         SshServerInfo rootParentInfo,
+                                         List<SshServerInfo> evicted) {
+        Queue<String> queue = new ArrayDeque<>();
+        Set<String> visited = new LinkedHashSet<>();
+        queue.add(rootParentName);
+        visited.add(rootParentName);
+
+        while (!queue.isEmpty()) {
+            String currentParent = queue.poll();
+            SshServerInfo parentInfo = currentParent.equals(rootParentName) ? rootParentInfo : servers.get(currentParent);
+            if (parentInfo == null) {
+                continue;
+            }
+            for (Map.Entry<String, String> entry : jumpHostRefs.entrySet()) {
+                String childName = entry.getKey();
+                if (!currentParent.equals(entry.getValue()) || !visited.add(childName)) {
+                    continue;
+                }
+                SshServerInfo oldChild = servers.get(childName);
+                if (oldChild == null) {
+                    continue;
+                }
+                SshServerInfo updatedChild = oldChild.toBuilder().jumpHost(parentInfo).build();
+                if (!Objects.equals(oldChild.toPoolKey(), updatedChild.toPoolKey()) || !Objects.equals(oldChild, updatedChild)) {
+                    servers.put(childName, updatedChild);
+                    evicted.add(oldChild);
+                    log.info("ateng-boot-ssh: 级联刷新下游 SSH 节点跳板机快照 [node={}, jumpHost={}]",
+                            childName, currentParent);
+                }
+                queue.add(childName);
+            }
+        }
     }
 
     private SshServerInfo resolveNodeTopology(String nodeName,
                                               Map<String, SshProperties> nodeMap,
                                               Map<String, SshServerInfo> resolved,
+                                              Map<String, String> resolvedJumpNames,
                                               Set<String> visiting) {
         SshServerInfo cached = resolved.get(nodeName);
         if (cached != null) {
@@ -185,7 +297,8 @@ public class SshClientRegistry {
             if (!nodeMap.containsKey(trimmedJump)) {
                 throw missingJumpHostException(nodeName, trimmedJump);
             }
-            jumpInfo = resolveNodeTopology(trimmedJump, nodeMap, resolved, visiting);
+            resolvedJumpNames.put(nodeName, trimmedJump);
+            jumpInfo = resolveNodeTopology(trimmedJump, nodeMap, resolved, resolvedJumpNames, visiting);
         }
 
         visiting.remove(nodeName);
@@ -270,12 +383,22 @@ public class SshClientRegistry {
      * 清理所有已注册的节点信息并逐一通知驱逐关联会话
      */
     public void clear() {
-        for (String key : new ArrayList<>(servers.keySet())) {
-            SshServerInfo removed = servers.remove(key);
-            if (removed != null) {
-                notifyEviction(removed);
+        List<SshServerInfo> evicted = new ArrayList<>();
+        topologyLock.lock();
+        try {
+            for (String key : new ArrayList<>(servers.keySet())) {
+                SshServerInfo removed = servers.remove(key);
+                if (removed != null) {
+                    evicted.add(removed);
+                }
+            }
+            jumpHostRefs.clear();
+        } finally {
+            if (topologyLock.isHeldByCurrentThread()) {
+                topologyLock.unlock();
             }
         }
+        evicted.forEach(this::notifyEviction);
     }
 
     private void notifyEviction(SshServerInfo serverInfo) {

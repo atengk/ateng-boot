@@ -755,17 +755,7 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
      * @return 强类型命令执行结果
      */
     public SshExecResult execSudo(SshServerInfo serverInfo, String command, char[] sudoPassword, SshExecOptions options) {
-        SshServerInfo target = resolveServerInfo(serverInfo);
-        Duration timeout = resolveDefaultTimeout(target);
-        try {
-            return executeSyncWithInterceptors(target, command, options, () ->
-                    sessionPool.execute(target, session ->
-                            SshCommandExecutor.executeSudo(session, command, sudoPassword, options, timeout, properties.getMaxOutputSize())));
-        } finally {
-            if (sudoPassword != null) {
-                java.util.Arrays.fill(sudoPassword, '\0');
-            }
-        }
+        return executeSudoInternal(serverInfo, command, sudoPassword, options, false);
     }
 
     /**
@@ -816,11 +806,21 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
      * @return 强类型命令执行结果
      */
     public SshExecResult execSudoOnce(SshServerInfo serverInfo, String command, char[] sudoPassword, SshExecOptions options) {
+        return executeSudoInternal(serverInfo, command, sudoPassword, options, true);
+    }
+
+    private SshExecResult executeSudoInternal(SshServerInfo serverInfo,
+                                              String command,
+                                              char[] sudoPassword,
+                                              SshExecOptions options,
+                                              boolean transientSession) {
         SshServerInfo target = resolveServerInfo(serverInfo);
         Duration timeout = resolveDefaultTimeout(target);
         try {
-            return executeSyncWithInterceptors(target, command, options, () ->
-                    sessionPool.executeOnce(target, session ->
+            return executeSyncWithInterceptors(target, command, options, () -> transientSession
+                    ? sessionPool.executeOnce(target, session ->
+                            SshCommandExecutor.executeSudo(session, command, sudoPassword, options, timeout, properties.getMaxOutputSize()))
+                    : sessionPool.execute(target, session ->
                             SshCommandExecutor.executeSudo(session, command, sudoPassword, options, timeout, properties.getMaxOutputSize())));
         } finally {
             if (sudoPassword != null) {

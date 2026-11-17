@@ -459,11 +459,13 @@ public class SshSessionPool implements AutoCloseable {
                         .getSession();
             }
 
-            // 注入真实目标服务器地址属性与策略备选守卫
+            // 注入真实目标服务器地址属性与策略备选守卫（共享 SshClient 既有 InMemoryServerKeyVerifier 时严禁新建临时实例覆盖）
             session.setAttribute(InMemoryServerKeyVerifier.TARGET_HOST_KEY, serverInfo.toHostPortKey());
             if (serverInfo.getHostKeyPolicy() != null) {
                 session.setAttribute(InMemoryServerKeyVerifier.HOST_KEY_POLICY_KEY, serverInfo.getHostKeyPolicy());
-                session.setServerKeyVerifier(serverInfo.getHostKeyPolicy().toVerifier());
+                if (!(sshClient.getServerKeyVerifier() instanceof InMemoryServerKeyVerifier)) {
+                    session.setServerKeyVerifier(serverInfo.getHostKeyPolicy().toVerifier());
+                }
             }
 
             // 统合注入四元身份凭据（密码/纯内存私钥/路径/KeyPair）

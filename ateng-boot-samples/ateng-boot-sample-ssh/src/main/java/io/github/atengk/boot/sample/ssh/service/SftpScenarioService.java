@@ -7,6 +7,7 @@ import io.github.atengk.boot.ssh.template.SftpTemplate;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -49,9 +50,25 @@ public class SftpScenarioService {
      * @param data       待上传字节数组
      */
     public void upload(String remotePath, byte[] data) {
-        log.info("ateng-boot-ssh-sample: 正在上传文件至 [remotePath={}, size={} bytes]", remotePath, data != null ? data.length : 0);
+        upload(null, remotePath, data);
+    }
+
+    /**
+     * 在指定具名节点上传字节内容至远端目标路径（启用原子临时上传文件机制）
+     *
+     * @param serverName 目标节点名称（可为空，缺省使用默认节点）
+     * @param remotePath 远端绝对路径
+     * @param data       待上传字节数组
+     */
+    public void upload(String serverName, String remotePath, byte[] data) {
+        log.info("ateng-boot-ssh-sample: 正在上传文件至 [serverName={}, remotePath={}, size={} bytes]",
+                serverName, remotePath, data != null ? data.length : 0);
         try (InputStream in = toInputStream(data)) {
-            sftpTemplate.upload(remotePath, in);
+            if (StringUtils.hasText(serverName)) {
+                sftpTemplate.upload(serverName, remotePath, in);
+            } else {
+                sftpTemplate.upload(remotePath, in);
+            }
         } catch (IOException e) {
             throw new UncheckedIOException("上传文件流读取失败 [remotePath=" + remotePath + "]", e);
         }
@@ -64,9 +81,24 @@ public class SftpScenarioService {
      * @return 文件字节内容
      */
     public byte[] download(String remotePath) {
-        log.info("ateng-boot-ssh-sample: 正在流式下载文件 [remotePath={}]", remotePath);
+        return download(null, remotePath);
+    }
+
+    /**
+     * 从指定具名节点流式下载远端文件并返回全部字节数据
+     *
+     * @param serverName 目标节点名称（可为空）
+     * @param remotePath 远端文件路径
+     * @return 文件字节内容
+     */
+    public byte[] download(String serverName, String remotePath) {
+        log.info("ateng-boot-ssh-sample: 正在流式下载文件 [serverName={}, remotePath={}]", serverName, remotePath);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        sftpTemplate.download(remotePath, out);
+        if (StringUtils.hasText(serverName)) {
+            sftpTemplate.download(serverName, remotePath, out);
+        } else {
+            sftpTemplate.download(remotePath, out);
+        }
         return out.toByteArray();
     }
 
@@ -110,8 +142,23 @@ public class SftpScenarioService {
      * @param content    文本内容
      */
     public void writeConfig(String remotePath, String content) {
-        log.info("ateng-boot-ssh-sample: 正在写入远端配置文件 [remotePath={}]", remotePath);
-        sftpTemplate.writeString(remotePath, content);
+        writeConfig(null, remotePath, content);
+    }
+
+    /**
+     * 向指定具名节点快捷写入 UTF-8 字符串内容至远端配置文件
+     *
+     * @param serverName 目标节点名称（可为空）
+     * @param remotePath 远端文件路径
+     * @param content    文本内容
+     */
+    public void writeConfig(String serverName, String remotePath, String content) {
+        log.info("ateng-boot-ssh-sample: 正在写入远端配置文件 [serverName={}, remotePath={}]", serverName, remotePath);
+        if (StringUtils.hasText(serverName)) {
+            sftpTemplate.writeString(serverName, remotePath, content);
+        } else {
+            sftpTemplate.writeString(remotePath, content);
+        }
     }
 
     /**
@@ -121,8 +168,21 @@ public class SftpScenarioService {
      * @return 文本内容
      */
     public String readConfig(String remotePath) {
-        log.info("ateng-boot-ssh-sample: 正在读取远端配置文件 [remotePath={}]", remotePath);
-        return sftpTemplate.readString(remotePath);
+        return readConfig(null, remotePath);
+    }
+
+    /**
+     * 从指定具名节点快捷读取远端文本配置文件内容
+     *
+     * @param serverName 目标节点名称（可为空）
+     * @param remotePath 远端文件路径
+     * @return 文本内容
+     */
+    public String readConfig(String serverName, String remotePath) {
+        log.info("ateng-boot-ssh-sample: 正在读取远端配置文件 [serverName={}, remotePath={}]", serverName, remotePath);
+        return StringUtils.hasText(serverName)
+                ? sftpTemplate.readString(serverName, remotePath)
+                : sftpTemplate.readString(remotePath);
     }
 
     /**
@@ -194,7 +254,20 @@ public class SftpScenarioService {
      * @return true 若存在
      */
     public boolean exists(String remotePath) {
-        return sftpTemplate.exists(remotePath);
+        return exists(null, remotePath);
+    }
+
+    /**
+     * 检查指定具名节点远端文件或目录是否存在
+     *
+     * @param serverName 目标节点名称（可为空）
+     * @param remotePath 远端路径
+     * @return true 若存在
+     */
+    public boolean exists(String serverName, String remotePath) {
+        return StringUtils.hasText(serverName)
+                ? sftpTemplate.exists(serverName, remotePath)
+                : sftpTemplate.exists(remotePath);
     }
 
     /**
@@ -204,8 +277,21 @@ public class SftpScenarioService {
      * @return 文件元数据载荷
      */
     public SftpFileInfo stat(String remotePath) {
-        log.info("ateng-boot-ssh-sample: 正在获取远端文件元数据 [remotePath={}]", remotePath);
-        return sftpTemplate.stat(remotePath);
+        return stat(null, remotePath);
+    }
+
+    /**
+     * 获取指定具名节点远端文件或目录的元数据信息
+     *
+     * @param serverName 目标节点名称（可为空）
+     * @param remotePath 远端路径
+     * @return 文件元数据载荷
+     */
+    public SftpFileInfo stat(String serverName, String remotePath) {
+        log.info("ateng-boot-ssh-sample: 正在获取远端文件元数据 [serverName={}, remotePath={}]", serverName, remotePath);
+        return StringUtils.hasText(serverName)
+                ? sftpTemplate.stat(serverName, remotePath)
+                : sftpTemplate.stat(remotePath);
     }
 
     /**
@@ -215,8 +301,21 @@ public class SftpScenarioService {
      * @return true 若删除成功
      */
     public boolean delete(String remotePath) {
-        log.info("ateng-boot-ssh-sample: 正在删除远端文件 [remotePath={}]", remotePath);
-        return sftpTemplate.delete(remotePath);
+        return delete(null, remotePath);
+    }
+
+    /**
+     * 删除指定具名节点的远程单文件
+     *
+     * @param serverName 目标节点名称（可为空）
+     * @param remotePath 远端文件路径
+     * @return true 若删除成功
+     */
+    public boolean delete(String serverName, String remotePath) {
+        log.info("ateng-boot-ssh-sample: 正在删除远端文件 [serverName={}, remotePath={}]", serverName, remotePath);
+        return StringUtils.hasText(serverName)
+                ? sftpTemplate.delete(serverName, remotePath)
+                : sftpTemplate.delete(remotePath);
     }
 
     /**
@@ -226,8 +325,24 @@ public class SftpScenarioService {
      * @param targetPath 链接指向的目标路径
      */
     public void createSymlink(String linkPath, String targetPath) {
-        log.info("ateng-boot-ssh-sample: 正在创建符号链接 [linkPath={} -> targetPath={}]", linkPath, targetPath);
-        sftpTemplate.createSymlink(linkPath, targetPath);
+        createSymlink(null, linkPath, targetPath);
+    }
+
+    /**
+     * 在指定具名节点创建远程符号链接
+     *
+     * @param serverName 目标节点名称（可为空）
+     * @param linkPath   符号链接路径
+     * @param targetPath 链接指向的目标路径
+     */
+    public void createSymlink(String serverName, String linkPath, String targetPath) {
+        log.info("ateng-boot-ssh-sample: 正在创建符号链接 [serverName={}, linkPath={} -> targetPath={}]",
+                serverName, linkPath, targetPath);
+        if (StringUtils.hasText(serverName)) {
+            sftpTemplate.createSymlink(serverName, linkPath, targetPath);
+        } else {
+            sftpTemplate.createSymlink(linkPath, targetPath);
+        }
     }
 
     /**
@@ -237,8 +352,21 @@ public class SftpScenarioService {
      * @return 目标路径
      */
     public String readLink(String linkPath) {
-        log.info("ateng-boot-ssh-sample: 正在读取符号链接目标 [linkPath={}]", linkPath);
-        return sftpTemplate.readLink(linkPath);
+        return readLink(null, linkPath);
+    }
+
+    /**
+     * 读取指定具名节点远程符号链接所指向的目标路径
+     *
+     * @param serverName 目标节点名称（可为空）
+     * @param linkPath   符号链接路径
+     * @return 目标路径
+     */
+    public String readLink(String serverName, String linkPath) {
+        log.info("ateng-boot-ssh-sample: 正在读取符号链接目标 [serverName={}, linkPath={}]", serverName, linkPath);
+        return StringUtils.hasText(serverName)
+                ? sftpTemplate.readLink(serverName, linkPath)
+                : sftpTemplate.readLink(linkPath);
     }
 
     /**
@@ -248,14 +376,29 @@ public class SftpScenarioService {
      * @param localFile  本地目标文件
      */
     public void downloadResume(String remotePath, File localFile) {
-        log.info("ateng-boot-ssh-sample: 正在执行断点续传下载 [remotePath={} -> localFile={}]",
-                remotePath, localFile != null ? localFile.getAbsolutePath() : null);
+        downloadResume(null, remotePath, localFile);
+    }
+
+    /**
+     * 从指定具名节点断点续传下载大文件至本地磁盘文件（挂载 100ms 节流进度防抖监听器）
+     *
+     * @param serverName 目标节点名称（可为空）
+     * @param remotePath 远程文件路径
+     * @param localFile  本地目标文件
+     */
+    public void downloadResume(String serverName, String remotePath, File localFile) {
+        log.info("ateng-boot-ssh-sample: 正在执行断点续传下载 [serverName={}, remotePath={} -> localFile={}]",
+                serverName, remotePath, localFile != null ? localFile.getAbsolutePath() : null);
         SftpProgressListener throttledListener = SftpProgressThrottler.of(
                 (transferred, total) -> log.debug("ateng-boot-ssh-sample: 断点续传进度 [remotePath={}, transferred={}/{}]",
                         remotePath, transferred, total),
                 Duration.ofMillis(100)
         );
-        sftpTemplate.downloadResume(remotePath, localFile, throttledListener);
+        if (StringUtils.hasText(serverName)) {
+            sftpTemplate.downloadResume(serverName, remotePath, localFile, throttledListener);
+        } else {
+            sftpTemplate.downloadResume(remotePath, localFile, throttledListener);
+        }
     }
 
     private InputStream toInputStream(byte[] data) {

@@ -168,4 +168,50 @@ class SshClientRegistryTest {
                 .isInstanceOf(SshOperationException.class)
                 .satisfies(ex -> assertThat(((SshOperationException) ex).getResultCode()).isEqualTo(SshResultCode.JUMP_HOST_FAILED));
     }
+
+    @Test
+    @DisplayName("测试运行期覆写跳板机节点时自动级联刷新下游快照并触发旧快照驱逐与反向环路检测")
+    void testCascadeRebuildOnJumpHostOverwrite() {
+        SshClientRegistry registry = new SshClientRegistry();
+        List<SshServerInfo> evicted = new ArrayList<>();
+        registry.addEvictionListener(evicted::add);
+
+        SshProperties rootProps = new SshProperties();
+        SshProperties bastion = new SshProperties();
+        bastion.setHost("10.0.0.1");
+        bastion.setUsername("ops");
+        SshProperties jump2 = new SshProperties();
+        jump2.setHost("10.0.0.2");
+        jump2.setUsername("ops2");
+        jump2.setJumpHost("bastion");
+        SshProperties target = new SshProperties();
+        target.setHost("172.16.0.10");
+        target.setUsername("app");
+        target.setJumpHost("jump2");
+        rootProps.setServers(java.util.Map.of("bastion", bastion, "jump2", jump2, "target", target));
+
+        registry.registerProperties(rootProps);
+        assertThat(evicted).isEmpty();
+
+        // 1. 覆写最上游 bastion 主机配置 -> 下游 jump2 与 target 均自动刷新 jumpHost 快照并触发驱逐
+        SshProperties updatedBastion = new SshProperties();
+        updatedBastion.setHost("10.0.0.99");
+        updatedBastion.setUsername("ops-new");
+        registry.register("bastion", updatedBastion);
+
+        assertThat(registry.getServer("bastion").getHost()).isEqualTo("10.0.0.99");
+        assertThat(registry.getServer("jump2").getJumpHost().getHost()).isEqualTo("10.0.0.99");
+        assertThat(registry.getServer("target").getJumpHost().getJumpHost().getHost()).isEqualTo("10.0.0.99");
+        assertThat(evicted).hasSize(3);
+
+        // 2. 尝试将上游 bastion 的 jumpHost 指回下游 target -> 拦截成环并保持注册表原状
+        SshProperties cyclicBastion = new SshProperties();
+        cyclicBastion.setHost("10.0.0.99");
+        cyclicBastion.setUsername("ops-new");
+        cyclicBastion.setJumpHost("target");
+        assertThatThrownBy(() -> registry.register("bastion", cyclicBastion))
+                .isInstanceOf(SshOperationException.class)
+                .satisfies(ex -> assertThat(((SshOperationException) ex).getResultCode()).isEqualTo(SshResultCode.JUMP_HOST_FAILED));
+        assertThat(registry.getServer("bastion").hasJumpHost()).isFalse();
+    }
 }

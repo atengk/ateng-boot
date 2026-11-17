@@ -353,6 +353,36 @@ class SshSessionPoolTest {
             ClientSession ignoreSession = pool.acquire(ignoreServer);
             assertThat(ignoreSession).isNotNull();
             assertThat(ignoreSession.isOpen()).isTrue();
+            pool.evict(ignoreServer);
+
+            // 3. LENIENT 模式首次建连应写入共享 InMemoryServerKeyVerifier；随后 STRICT 放行，removeKnownKey 后再次 STRICT 阻断
+            SshServerInfo lenientServer = SshServerInfo.builder()
+                    .host("127.0.0.1")
+                    .port(serverPort)
+                    .username("pooluser")
+                    .password("poolpass")
+                    .hostKeyPolicy(HostKeyPolicy.LENIENT)
+                    .build();
+            ClientSession lenientSession = pool.acquire(lenientServer);
+            assertThat(lenientSession.isOpen()).isTrue();
+            assertThat(verifier.getKnownKeys()).containsKey("127.0.0.1:" + serverPort);
+
+            // 使用独立凭据槽位（不同 poolKey）迫使重新握手校验 STRICT
+            SshServerInfo strictKnownServer = SshServerInfo.builder()
+                    .host("127.0.0.1")
+                    .port(serverPort)
+                    .username("pooluser")
+                    .password("poolpass")
+                    .passphrase("strict-slot")
+                    .hostKeyPolicy(HostKeyPolicy.STRICT)
+                    .build();
+            ClientSession strictSession = pool.acquire(strictKnownServer);
+            assertThat(strictSession.isOpen()).isTrue();
+
+            assertThat(verifier.removeKnownKey("127.0.0.1", serverPort)).isNotNull();
+            pool.evict(strictKnownServer);
+            assertThatThrownBy(() -> pool.acquire(strictKnownServer))
+                    .isInstanceOf(SshOperationException.class);
         } finally {
             customClient.stop();
         }

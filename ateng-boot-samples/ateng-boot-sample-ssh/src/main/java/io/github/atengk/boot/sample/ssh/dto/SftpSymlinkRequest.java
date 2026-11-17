@@ -25,6 +25,11 @@ public class SftpSymlinkRequest implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
+     * 目标服务节点名称（可选，缺省使用默认主节点）
+     */
+    private String serverName;
+
+    /**
      * 符号链接路径
      */
     @NotBlank(message = "符号链接路径不能为空")

@@ -228,6 +228,7 @@ class SampleSshIntegrationTest {
             registry.add("ateng.boot.ssh.servers.bastion.port", () -> bastionServer.getPort());
             registry.add("ateng.boot.ssh.servers.bastion.username", () -> "ops");
             registry.add("ateng.boot.ssh.servers.bastion.password", () -> "opspassword");
+            registry.add("ateng.boot.ssh.servers.intranet-app.port", () -> targetServer.getPort());
         }
     }
 

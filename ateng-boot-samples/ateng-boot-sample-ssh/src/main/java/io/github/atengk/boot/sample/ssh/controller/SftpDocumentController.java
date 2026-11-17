@@ -60,10 +60,11 @@ public class SftpDocumentController {
      */
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Result<String> upload(@RequestParam("file") MultipartFile file,
-                                 @RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath) throws IOException {
-        log.info("SftpDocumentController: 收到表单文件上传请求 [originalFilename={}, size={}, remotePath={}]",
-                file.getOriginalFilename(), file.getSize(), remotePath);
-        sftpScenarioService.upload(remotePath, file.getBytes());
+                                 @RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath,
+                                 @RequestParam(value = "serverName", required = false) String serverName) throws IOException {
+        log.info("SftpDocumentController: 收到表单文件上传请求 [serverName={}, originalFilename={}, size={}, remotePath={}]",
+                serverName, file.getOriginalFilename(), file.getSize(), remotePath);
+        sftpScenarioService.upload(serverName, remotePath, file.getBytes());
         return Result.success("上传成功: " + remotePath);
     }
 
@@ -71,14 +72,16 @@ public class SftpDocumentController {
      * 流式下载远端文件（直接输出二进制附件流）
      *
      * @param remotePath 远端目标路径
+     * @param serverName 目标服务节点名称（可选）
      * @param response   HTTP 响应载体
      * @throws IOException IO 异常
      */
     @GetMapping("/download")
     public void download(@RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath,
+                         @RequestParam(value = "serverName", required = false) String serverName,
                          HttpServletResponse response) throws IOException {
-        log.info("SftpDocumentController: 收到流式文件下载请求 [remotePath={}]", remotePath);
-        byte[] data = sftpScenarioService.download(remotePath);
+        log.info("SftpDocumentController: 收到流式文件下载请求 [serverName={}, remotePath={}]", serverName, remotePath);
+        byte[] data = sftpScenarioService.download(serverName, remotePath);
 
         String filename = StringUtils.getFilename(remotePath);
         if (!StringUtils.hasText(filename)) {
@@ -101,8 +104,9 @@ public class SftpDocumentController {
      */
     @PostMapping("/write-text")
     public Result<Boolean> writeText(@Valid @RequestBody SftpWriteTextRequest request) {
-        log.info("SftpDocumentController: 收到写入文本配置请求 [remotePath={}]", request.getRemotePath());
-        sftpScenarioService.writeConfig(request.getRemotePath(), request.getContent());
+        log.info("SftpDocumentController: 收到写入文本配置请求 [serverName={}, remotePath={}]",
+                request.getServerName(), request.getRemotePath());
+        sftpScenarioService.writeConfig(request.getServerName(), request.getRemotePath(), request.getContent());
         return Result.success(true);
     }
 
@@ -110,12 +114,14 @@ public class SftpDocumentController {
      * 快捷读取远端 UTF-8 纯文本配置文件
      *
      * @param remotePath 远端路径
+     * @param serverName 目标服务节点名称（可选）
      * @return 文本内容
      */
     @GetMapping("/read-text")
-    public Result<String> readText(@RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath) {
-        log.info("SftpDocumentController: 收到读取文本配置请求 [remotePath={}]", remotePath);
-        String content = sftpScenarioService.readConfig(remotePath);
+    public Result<String> readText(@RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath,
+                                   @RequestParam(value = "serverName", required = false) String serverName) {
+        log.info("SftpDocumentController: 收到读取文本配置请求 [serverName={}, remotePath={}]", serverName, remotePath);
+        String content = sftpScenarioService.readConfig(serverName, remotePath);
         return Result.success(content);
     }
 
@@ -167,9 +173,10 @@ public class SftpDocumentController {
      * @return 元数据 VO
      */
     @GetMapping("/info")
-    public Result<SftpFileInfoVO> getInfo(@RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath) {
-        log.info("SftpDocumentController: 收到查询文件元数据请求 [remotePath={}]", remotePath);
-        SftpFileInfo info = sftpScenarioService.stat(remotePath);
+    public Result<SftpFileInfoVO> getInfo(@RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath,
+                                          @RequestParam(value = "serverName", required = false) String serverName) {
+        log.info("SftpDocumentController: 收到查询文件元数据请求 [serverName={}, remotePath={}]", serverName, remotePath);
+        SftpFileInfo info = sftpScenarioService.stat(serverName, remotePath);
         return Result.success(SftpFileInfoVO.from(info));
     }
 
@@ -177,12 +184,14 @@ public class SftpDocumentController {
      * 检查远端文件或目录是否存在
      *
      * @param remotePath 远端路径
+     * @param serverName 目标服务节点名称（可选）
      * @return true 若存在
      */
     @GetMapping("/exists")
-    public Result<Boolean> exists(@RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath) {
-        log.info("SftpDocumentController: 收到检查路径是否存在请求 [remotePath={}]", remotePath);
-        boolean exist = sftpScenarioService.exists(remotePath);
+    public Result<Boolean> exists(@RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath,
+                                  @RequestParam(value = "serverName", required = false) String serverName) {
+        log.info("SftpDocumentController: 收到检查路径是否存在请求 [serverName={}, remotePath={}]", serverName, remotePath);
+        boolean exist = sftpScenarioService.exists(serverName, remotePath);
         return Result.success(exist);
     }
 
@@ -194,8 +203,9 @@ public class SftpDocumentController {
      */
     @PostMapping("/delete")
     public Result<Boolean> deleteFile(@Valid @RequestBody SftpPathRequest request) {
-        log.info("SftpDocumentController: 收到删除单文件请求 [remotePath={}]", request.getRemotePath());
-        boolean deleted = sftpScenarioService.delete(request.getRemotePath());
+        log.info("SftpDocumentController: 收到删除单文件请求 [serverName={}, remotePath={}]",
+                request.getServerName(), request.getRemotePath());
+        boolean deleted = sftpScenarioService.delete(request.getServerName(), request.getRemotePath());
         return Result.success(deleted);
     }
 
@@ -207,22 +217,24 @@ public class SftpDocumentController {
      */
     @PostMapping("/symlink")
     public Result<Boolean> createSymlink(@Valid @RequestBody SftpSymlinkRequest request) {
-        log.info("SftpDocumentController: 收到创建符号链接请求 [linkPath={} -> targetPath={}]",
-                request.getLinkPath(), request.getTargetPath());
-        sftpScenarioService.createSymlink(request.getLinkPath(), request.getTargetPath());
+        log.info("SftpDocumentController: 收到创建符号链接请求 [serverName={}, linkPath={} -> targetPath={}]",
+                request.getServerName(), request.getLinkPath(), request.getTargetPath());
+        sftpScenarioService.createSymlink(request.getServerName(), request.getLinkPath(), request.getTargetPath());
         return Result.success(true);
     }
 
     /**
      * 读取远端符号链接指向的目标路径
      *
-     * @param linkPath 符号链接路径
+     * @param linkPath   符号链接路径
+     * @param serverName 目标服务节点名称（可选）
      * @return 目标路径
      */
     @GetMapping("/read-link")
-    public Result<String> readLink(@RequestParam("linkPath") @NotBlank(message = "符号链接路径不能为空") String linkPath) {
-        log.info("SftpDocumentController: 收到读取符号链接请求 [linkPath={}]", linkPath);
-        String targetPath = sftpScenarioService.readLink(linkPath);
+    public Result<String> readLink(@RequestParam("linkPath") @NotBlank(message = "符号链接路径不能为空") String linkPath,
+                                   @RequestParam(value = "serverName", required = false) String serverName) {
+        log.info("SftpDocumentController: 收到读取符号链接请求 [serverName={}, linkPath={}]", serverName, linkPath);
+        String targetPath = sftpScenarioService.readLink(serverName, linkPath);
         return Result.success(targetPath);
     }
 }

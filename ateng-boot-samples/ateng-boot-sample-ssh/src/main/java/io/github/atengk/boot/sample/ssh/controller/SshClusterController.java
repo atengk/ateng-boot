@@ -2,8 +2,11 @@ package io.github.atengk.boot.sample.ssh.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.ssh.dto.SshBatchInspectRequest;
+import io.github.atengk.boot.sample.ssh.dto.SshClusterRegisterNodeRequest;
+import io.github.atengk.boot.sample.ssh.dto.SshClusterUnregisterNodeRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshContextSwitchRequest;
 import io.github.atengk.boot.sample.ssh.dto.SshDynamicHostRequest;
+import io.github.atengk.boot.sample.ssh.dto.SshRemoveKnownKeyRequest;
 import io.github.atengk.boot.sample.ssh.service.SshScenarioService;
 import io.github.atengk.boot.sample.ssh.vo.SshBatchExecResultVO;
 import io.github.atengk.boot.sample.ssh.vo.SshExecResultVO;
@@ -123,5 +126,51 @@ public class SshClusterController {
     public Result<SshPoolStatsVO> poolStats() {
         SshPoolStats stats = sshScenarioService.getPoolStats();
         return Result.success(SshPoolStatsVO.from(stats));
+    }
+
+    /**
+     * 动态注册具名 SSH 服务节点至注册表（支持指定 jumpHost 跳板机）
+     *
+     * @param request 节点注册请求载荷
+     * @return 成功状态
+     */
+    @PostMapping("/register-node")
+    public Result<Boolean> registerNode(@Valid @RequestBody SshClusterRegisterNodeRequest request) {
+        log.info("SshClusterController: 收到动态注册节点请求 [serverName={}, target={}@{}:{}, jumpHost={}]",
+                request.getServerName(), request.getUsername(), request.getHost(), request.getPort(), request.getJumpHost());
+        sshScenarioService.registerManagedNode(
+                request.getServerName(),
+                request.getHost(),
+                request.getPort(),
+                request.getUsername(),
+                request.getPassword(),
+                request.getJumpHost());
+        return Result.success(true);
+    }
+
+    /**
+     * 动态注销具名 SSH 服务节点并自动联动驱逐池化旧会话
+     *
+     * @param request 节点注销请求载荷
+     * @return true 若节点存在并已注销驱逐
+     */
+    @PostMapping("/unregister-node")
+    public Result<Boolean> unregisterNode(@Valid @RequestBody SshClusterUnregisterNodeRequest request) {
+        log.info("SshClusterController: 收到注销节点并联动驱逐会话请求 [serverName={}]", request.getServerName());
+        boolean removed = sshScenarioService.unregisterManagedNode(request.getServerName());
+        return Result.success(removed);
+    }
+
+    /**
+     * 定点移除指定主机在纯内存公钥校验器中的指纹缓存
+     *
+     * @param request 移除指纹请求载荷
+     * @return true 若原本存在指纹缓存并已成功移除
+     */
+    @PostMapping("/remove-known-key")
+    public Result<Boolean> removeKnownKey(@Valid @RequestBody SshRemoveKnownKeyRequest request) {
+        log.info("SshClusterController: 收到定点移除内存主机指纹请求 [{}:{}]", request.getHost(), request.getPort());
+        boolean removed = sshScenarioService.removeKnownHostKey(request.getHost(), request.getPort());
+        return Result.success(removed);
     }
 }

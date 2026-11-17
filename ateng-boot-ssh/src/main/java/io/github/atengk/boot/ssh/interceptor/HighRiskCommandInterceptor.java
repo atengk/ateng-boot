@@ -27,18 +27,25 @@ import java.util.regex.PatternSyntaxException;
 @Slf4j
 public class HighRiskCommandInterceptor implements SshCommandInterceptor, Ordered {
 
+    /**
+     * 命令位置前置边界：匹配行首、命令分隔符（; / & / | / ( / 换行）后可选包装器（sudo/exec/nohup/command），
+     * 避免将参数位出现的关键字（如 echo reboot、grep halt）误判为待执行指令。
+     */
+    private static final String COMMAND_PREFIX =
+            "(?:^|[;\\r\\n&|(])\\s*(?:(?:sudo(?:\\s+-(?:[ugpChrt]\\s+\\S+|\\S*))*|exec|nohup|command)\\s+)*";
+
     private static final List<Pattern> BUILTIN_DANGEROUS_PATTERNS = List.of(
             // 针对根目录 / 或 /* 的递归强制删除（精确放行 /tmp/... 等具体子路径）
-            Pattern.compile("(?i)(?:^|[;&|(\\s])rm\\s+(?:-(?:[a-zA-Z]*[rR][a-zA-Z]*|[a-zA-Z]*f[a-zA-Z]*)|--recursive|--force|--no-preserve-root)(?:\\s+(?:-(?:[a-zA-Z]*[rR][a-zA-Z]*|[a-zA-Z]*f[a-zA-Z]*)|--recursive|--force|--no-preserve-root))*\\s+(?:/\\*?(?:\\s|$|[;&|)])|--no-preserve-root)"),
+            Pattern.compile("(?i)" + COMMAND_PREFIX + "rm\\s+(?:-(?:[a-zA-Z]*[rR][a-zA-Z]*|[a-zA-Z]*f[a-zA-Z]*)|--recursive|--force|--no-preserve-root)(?:\\s+(?:-(?:[a-zA-Z]*[rR][a-zA-Z]*|[a-zA-Z]*f[a-zA-Z]*)|--recursive|--force|--no-preserve-root))*\\s+(?:/\\*?(?:\\s|$|[;&|)])|--no-preserve-root)"),
             // 磁盘与分区格式化
-            Pattern.compile("(?i)(?:^|[;&|(\\s])(?:mkfs(?:\\.[a-z0-9_+-]+)?|mke2fs)\\b"),
+            Pattern.compile("(?i)" + COMMAND_PREFIX + "(?:mkfs(?:\\.[a-z0-9_+-]+)?|mke2fs)\\b"),
             // 块设备原始覆写清零（豁免 /dev/null）
-            Pattern.compile("(?i)(?:^|[;&|(\\s])dd\\b[^;&|\\n]*\\bof=/dev/(?:[svhx]d[a-z]\\d*|nvme\\d+n\\d+(?:p\\d+)?|mmcblk\\d+(?:p\\d+)?)\\b"),
-            Pattern.compile("(?i)(?:^|[;&|(\\s])dd\\b[^;&|\\n]*\\bif=/dev/(?:zero|u?random)\\b[^;&|\\n]*\\bof=/dev/(?!null\\b)\\S+"),
+            Pattern.compile("(?i)" + COMMAND_PREFIX + "dd\\b[^;&|\\n]*\\bof=/dev/(?:[svhx]d[a-z]\\d*|nvme\\d+n\\d+(?:p\\d+)?|mmcblk\\d+(?:p\\d+)?)\\b"),
+            Pattern.compile("(?i)" + COMMAND_PREFIX + "dd\\b[^;&|\\n]*\\bif=/dev/(?:zero|u?random)\\b[^;&|\\n]*\\bof=/dev/(?!null\\b)\\S+"),
             // 经典 Fork 炸弹
             Pattern.compile(":\\s*\\(\\s*\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\}\\s*;\\s*:"),
             // 宿主机停机、重启与切换至运行级别 0/6
-            Pattern.compile("(?i)(?:^|[;&|(\\s])(?:shutdown|reboot|halt|poweroff|init\\s+[06])(?:\\s|$|[;&|)])")
+            Pattern.compile("(?i)" + COMMAND_PREFIX + "(?:shutdown|reboot|halt|poweroff|init\\s+[06])(?:\\s|$|[;\\r\\n&|)])")
     );
 
     private final List<Pattern> patterns;

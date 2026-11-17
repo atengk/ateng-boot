@@ -2,17 +2,24 @@ package io.github.atengk.boot.sample.ssh.service;
 
 import io.github.atengk.boot.ssh.context.SshContextHolder;
 import io.github.atengk.boot.ssh.enums.HostKeyPolicy;
+import io.github.atengk.boot.ssh.exception.SshOperationException;
+import io.github.atengk.boot.ssh.exception.SshResultCode;
 import io.github.atengk.boot.ssh.model.SshBatchExecResult;
 import io.github.atengk.boot.ssh.model.SshBatchOptions;
 import io.github.atengk.boot.ssh.model.SshExecOptions;
 import io.github.atengk.boot.ssh.model.SshExecResult;
 import io.github.atengk.boot.ssh.model.SshPoolStats;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
+import io.github.atengk.boot.ssh.properties.SshProperties;
+import io.github.atengk.boot.ssh.registry.SshClientRegistry;
 import io.github.atengk.boot.ssh.template.SshTemplate;
 import io.github.atengk.boot.ssh.tunnel.SshTunnelHandle;
+import io.github.atengk.boot.ssh.verifier.InMemoryServerKeyVerifier;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.sshd.client.keyverifier.ServerKeyVerifier;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.util.unit.DataSize;
 
@@ -52,6 +59,8 @@ import java.util.function.Consumer;
 public class SshScenarioService {
 
     private final SshTemplate sshTemplate;
+    private final SshClientRegistry sshClientRegistry;
+    private final ObjectProvider<ServerKeyVerifier> serverKeyVerifierProvider;
 
     /**
      * 当前服务受管的活跃本地端口转发句柄映射字典 (key: localPort)
@@ -502,6 +511,55 @@ public class SshScenarioService {
      */
     public SshPoolStats getPoolStats() {
         return sshTemplate.getPoolStats();
+    }
+
+    /**
+     * 动态注册具名 SSH 服务节点至注册表（支持指定 jumpHost 跳板机节点名称）
+     *
+     * @param serverName 节点名称
+     * @param host       主机地址
+     * @param port       SSH 端口
+     * @param username   用户名
+     * @param password   口令密码
+     * @param jumpHost   跳板机节点名称（可为空）
+     */
+    public void registerManagedNode(String serverName, String host, int port, String username, String password, String jumpHost) {
+        SshProperties props = new SshProperties();
+        props.setHost(host);
+        props.setPort(port);
+        props.setUsername(username);
+        props.setPassword(password);
+        props.setHostKeyPolicy(HostKeyPolicy.LENIENT);
+        if (jumpHost != null && !jumpHost.isBlank()) {
+            props.setJumpHost(jumpHost);
+        }
+        sshClientRegistry.register(serverName, props);
+    }
+
+    /**
+     * 动态注销具名 SSH 服务节点并自动联动会话池驱逐旧连接
+     *
+     * @param serverName 节点名称
+     * @return true 若节点存在并已注销驱逐
+     */
+    public boolean unregisterManagedNode(String serverName) {
+        return sshClientRegistry.unregister(serverName) != null;
+    }
+
+    /**
+     * 定点移除指定主机在内存指纹校验器中缓存的公钥指纹
+     *
+     * @param host 目标主机地址
+     * @param port 目标端口
+     * @return true 若原先存在指纹缓存并已移除
+     */
+    public boolean removeKnownHostKey(String host, int port) {
+        ServerKeyVerifier verifier = serverKeyVerifierProvider.getIfAvailable();
+        if (!(verifier instanceof InMemoryServerKeyVerifier memoryVerifier)) {
+            throw new SshOperationException(SshResultCode.OPERATION_FAILED,
+                    "当前 ServerKeyVerifier 不是 InMemoryServerKeyVerifier，无法执行内存指纹移除");
+        }
+        return memoryVerifier.removeKnownKey(host, port) != null;
     }
 
     @PreDestroy

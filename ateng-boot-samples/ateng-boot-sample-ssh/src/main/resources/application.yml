@@ -50,3 +50,11 @@ ateng:
           username: ops
           password: opspassword
           command-timeout: 60s
+        # 通过 jump-host 声明式指定经过 bastion 堡垒机穿透的内网节点
+        intranet-app:
+          host: 127.0.0.1
+          port: 2226
+          username: target_user
+          password: target_pass
+          jump-host: bastion
+          command-timeout: 30s

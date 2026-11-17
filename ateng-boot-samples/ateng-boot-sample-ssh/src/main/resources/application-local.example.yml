@@ -39,3 +39,9 @@ ateng:
           port: 22
           username: YOUR_BASTION_USERNAME
           password: YOUR_BASTION_PASSWORD
+        intranet-app:
+          host: YOUR_INTRANET_HOST
+          port: 22
+          username: YOUR_INTRANET_USERNAME
+          password: YOUR_INTRANET_PASSWORD
+          jump-host: bastion
