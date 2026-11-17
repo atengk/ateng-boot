@@ -4,8 +4,10 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.ftp.model.BatchTransferResult;
 import io.github.atengk.boot.ftp.model.FtpFileInfo;
 import io.github.atengk.boot.sample.ftp.dto.DirectorySyncRequest;
+import io.github.atengk.boot.sample.ftp.dto.SentinelUploadRequest;
 import io.github.atengk.boot.sample.ftp.service.SettlementBatchSyncScenarioService;
 import io.github.atengk.boot.sample.ftp.vo.BatchTransferResultVO;
+import io.github.atengk.boot.sample.ftp.vo.SentinelUploadResultVO;
 import io.github.atengk.boot.sample.ftp.vo.TransferFailureItemVO;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -82,6 +84,26 @@ public class FtpBatchSyncController {
         }
 
         return Result.success(toVO(result));
+    }
+
+    /**
+     * 原子上传主文件并在主文件落盘转正后伴随写入对账就绪信标文件
+     *
+     * @param request 信标伴随上传请求
+     * @return 信标伴随上传回执
+     */
+    @PostMapping("/upload-with-sentinel")
+    public Result<SentinelUploadResultVO> uploadWithSentinel(@Valid @RequestBody SentinelUploadRequest request) {
+        File localFile = new File(request.getLocalPath());
+        String sentinelPath = settlementBatchSyncService.uploadWithSentinel(
+                request.getRemotePath(), localFile, request.getSentinelSuffix());
+        String sentinelContent = settlementBatchSyncService.readSentinelContent(sentinelPath);
+        return Result.success(SentinelUploadResultVO.builder()
+                .remotePath(request.getRemotePath())
+                .sentinelPath(sentinelPath)
+                .fileSize(localFile.length())
+                .sentinelContent(sentinelContent)
+                .build());
     }
 
     private BatchTransferResultVO toVO(BatchTransferResult result) {

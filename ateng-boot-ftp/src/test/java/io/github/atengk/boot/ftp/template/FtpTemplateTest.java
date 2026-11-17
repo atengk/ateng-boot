@@ -32,8 +32,13 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.NoSuchElementException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -843,5 +848,344 @@ class FtpTemplateTest {
         } finally {
             brokenPool.close();
         }
+    }
+
+    @Test
+    @DisplayName("uploadResume: 部分 .tmp 分片应从断点 APPE 续传并原子转正，进度从断点推进至 100%")
+    void uploadResume_partialTmpFile_resumesViaAppeAndRenames(@TempDir Path tempDir) throws Exception {
+        byte[] fullContent = new byte[256 * 1024];
+        for (int i = 0; i < fullContent.length; i++) {
+            fullContent[i] = (byte) ((i * 31 + 7) & 0xFF);
+        }
+        int breakpoint = 100 * 1024;
+        Path localFile = tempDir.resolve("resume-up.bin");
+        Files.write(localFile, fullContent);
+
+        FileEntry tmpEntry = new FileEntry("/test/resume-up.bin.tmp");
+        tmpEntry.setContents(Arrays.copyOf(fullContent, breakpoint));
+        fakeFtpServer.getFileSystem().add(tmpEntry);
+
+        List<Double> percentages = new ArrayList<>();
+        FtpProgressListener listener = (bytesTransferred, totalBytes, percentage) -> percentages.add(percentage);
+
+        boolean uploaded = ftpTemplate.uploadResume("/test/resume-up.bin", localFile.toFile(), listener);
+
+        assertThat(uploaded).isTrue();
+        assertThat(fakeFtpServer.getFileSystem().exists("/test/resume-up.bin")).isTrue();
+        assertThat(fakeFtpServer.getFileSystem().exists("/test/resume-up.bin.tmp")).isFalse();
+        assertThat(ftpTemplate.downloadToBytes("/test/resume-up.bin")).isEqualTo(fullContent);
+        assertThat(percentages).isNotEmpty();
+        assertThat(percentages.get(0)).isGreaterThanOrEqualTo(39.0);
+        assertThat(percentages.get(percentages.size() - 1)).isEqualTo(100.0);
+        assertThat(percentages).allSatisfy(p -> assertThat(p).isBetween(0.0, 100.0));
+    }
+
+    @Test
+    @DisplayName("uploadResume: 续传中途失败时应保留 .tmp 临时分片以便下次继续续传")
+    void uploadResume_midFailurePreservesTmp_andNextResumeCompletes(@TempDir Path tempDir) throws Exception {
+        byte[] fullContent = new byte[64 * 1024];
+        for (int i = 0; i < fullContent.length; i++) {
+            fullContent[i] = (byte) ((i + 19) & 0xFF);
+        }
+        int initialBreakpoint = 16 * 1024;
+        Path localFile = tempDir.resolve("preserve-tmp.bin");
+        Files.write(localFile, fullContent);
+
+        FileEntry tmpEntry = new FileEntry("/test/preserve-tmp.bin.tmp");
+        tmpEntry.setContents(Arrays.copyOf(fullContent, initialBreakpoint));
+        fakeFtpServer.getFileSystem().add(tmpEntry);
+
+        org.mockftpserver.core.command.CommandHandler originalAppe = fakeFtpServer.getCommandHandler("APPE");
+        fakeFtpServer.setCommandHandler("APPE",
+                new org.mockftpserver.core.command.StaticReplyCommandHandler(426, "Simulated APPE abort"));
+        try {
+            assertThatThrownBy(() -> ftpTemplate.uploadResume("/test/preserve-tmp.bin", localFile.toFile()))
+                    .isInstanceOf(FtpException.class)
+                    .extracting(e -> ((FtpException) e).getCode())
+                    .isEqualTo(FtpResultCode.UPLOAD_FAILED.getCode());
+
+            assertThat(fakeFtpServer.getFileSystem().exists("/test/preserve-tmp.bin.tmp")).isTrue();
+            assertThat(fakeFtpServer.getFileSystem().exists("/test/preserve-tmp.bin")).isFalse();
+        } finally {
+            fakeFtpServer.setCommandHandler("APPE", originalAppe);
+        }
+
+        boolean completed = ftpTemplate.uploadResume("/test/preserve-tmp.bin", localFile.toFile());
+        assertThat(completed).isTrue();
+        assertThat(ftpTemplate.downloadToBytes("/test/preserve-tmp.bin")).isEqualTo(fullContent);
+        assertThat(fakeFtpServer.getFileSystem().exists("/test/preserve-tmp.bin.tmp")).isFalse();
+    }
+
+    @Test
+    @DisplayName("uploadResume: 远端脏分片大于本地文件大小时应清理并从零重传")
+    void uploadResume_oversizedRemoteTmp_deletesDirtyAndReuploads(@TempDir Path tempDir) throws Exception {
+        byte[] localContent = "fresh-small-payload".getBytes(StandardCharsets.UTF_8);
+        Path localFile = tempDir.resolve("oversized.bin");
+        Files.write(localFile, localContent);
+
+        byte[] dirtyContent = new byte[4096];
+        Arrays.fill(dirtyContent, (byte) 0x7A);
+        FileEntry dirtyEntry = new FileEntry("/test/oversized.bin.tmp");
+        dirtyEntry.setContents(dirtyContent);
+        fakeFtpServer.getFileSystem().add(dirtyEntry);
+
+        boolean uploaded = ftpTemplate.uploadResume("/test/oversized.bin", localFile.toFile());
+
+        assertThat(uploaded).isTrue();
+        assertThat(ftpTemplate.downloadToBytes("/test/oversized.bin")).isEqualTo(localContent);
+        assertThat(fakeFtpServer.getFileSystem().exists("/test/oversized.bin.tmp")).isFalse();
+    }
+
+    @Test
+    @DisplayName("uploadResume: 远端分片与本地等长且非空时应跳过传输直接原子转正并触发 100% 回调")
+    void uploadResume_equalSizeTmp_skipsTransferRenamesAndNotifies100Percent(@TempDir Path tempDir) throws Exception {
+        byte[] content = new byte[1024];
+        Arrays.fill(content, (byte) 0x42);
+        Path localFile = tempDir.resolve("equal.bin");
+        Files.write(localFile, content);
+
+        FileEntry tmpEntry = new FileEntry("/test/equal.bin.tmp");
+        tmpEntry.setContents(content);
+        fakeFtpServer.getFileSystem().add(tmpEntry);
+
+        AtomicReference<Double> lastPercentage = new AtomicReference<>();
+        boolean uploaded = ftpTemplate.uploadResume("/test/equal.bin", localFile.toFile(),
+                (transferred, total, pct) -> lastPercentage.set(pct));
+
+        assertThat(uploaded).isTrue();
+        assertThat(fakeFtpServer.getFileSystem().exists("/test/equal.bin")).isTrue();
+        assertThat(fakeFtpServer.getFileSystem().exists("/test/equal.bin.tmp")).isFalse();
+        assertThat(ftpTemplate.downloadToBytes("/test/equal.bin")).isEqualTo(content);
+        assertThat(lastPercentage.get()).isEqualTo(100.0);
+    }
+
+    @Test
+    @DisplayName("uploadResume: 零字节空文件应正常上传完成并回调 100%")
+    void uploadResume_zeroByteFile_uploadsAndNotifies100Percent(@TempDir Path tempDir) throws Exception {
+        Path emptyFile = tempDir.resolve("empty.bin");
+        Files.write(emptyFile, new byte[0]);
+
+        AtomicReference<Double> lastPercentage = new AtomicReference<>();
+        boolean uploaded = ftpTemplate.uploadResume("/test/empty-resume.bin", emptyFile.toFile(),
+                (transferred, total, pct) -> lastPercentage.set(pct));
+
+        assertThat(uploaded).isTrue();
+        assertThat(ftpTemplate.getFileInfo("/test/empty-resume.bin").getSize()).isZero();
+        assertThat(lastPercentage.get()).isEqualTo(100.0);
+    }
+
+    @Test
+    @DisplayName("downloadResume: 本地已存在部分文件时应断点续传并完整对齐字节与进度")
+    void downloadResume_partialLocalFile_resumesAndMatchesSource(@TempDir Path tempDir) throws Exception {
+        byte[] remoteContent = new byte[128 * 1024];
+        for (int i = 0; i < remoteContent.length; i++) {
+            remoteContent[i] = (byte) ((i * 17 + 3) & 0xFF);
+        }
+        FileEntry remoteEntry = new FileEntry("/test/resume-down.bin");
+        remoteEntry.setContents(remoteContent);
+        fakeFtpServer.getFileSystem().add(remoteEntry);
+
+        int localOffset = 40 * 1024;
+        Path localTarget = tempDir.resolve("resume-down.bin");
+        Files.write(localTarget, Arrays.copyOf(remoteContent, localOffset));
+
+        List<Double> percentages = new ArrayList<>();
+        boolean downloaded = ftpTemplate.downloadResume("/test/resume-down.bin", localTarget.toFile(),
+                (transferred, total, pct) -> percentages.add(pct));
+
+        assertThat(downloaded).isTrue();
+        assertThat(Files.readAllBytes(localTarget)).isEqualTo(remoteContent);
+        assertThat(percentages).isNotEmpty();
+        assertThat(percentages.get(0)).isGreaterThanOrEqualTo(31.0);
+        assertThat(percentages.get(percentages.size() - 1)).isEqualTo(100.0);
+        assertThat(percentages).allSatisfy(p -> assertThat(p).isBetween(0.0, 100.0));
+    }
+
+    @Test
+    @DisplayName("downloadResume: 本地文件已完整等长时应跳过下载并触发 100% 回调")
+    void downloadResume_equalSizeLocalFile_skipsTransferAndNotifies100Percent(@TempDir Path tempDir) throws Exception {
+        byte[] remoteContent = "complete-local-content".getBytes(StandardCharsets.UTF_8);
+        FileEntry remoteEntry = new FileEntry("/test/equal-down.bin");
+        remoteEntry.setContents(remoteContent);
+        fakeFtpServer.getFileSystem().add(remoteEntry);
+
+        Path localTarget = tempDir.resolve("equal-down.bin");
+        Files.write(localTarget, remoteContent);
+
+        AtomicReference<Double> lastPercentage = new AtomicReference<>();
+        boolean downloaded = ftpTemplate.downloadResume("/test/equal-down.bin", localTarget.toFile(),
+                (transferred, total, pct) -> lastPercentage.set(pct));
+
+        assertThat(downloaded).isTrue();
+        assertThat(Files.readAllBytes(localTarget)).isEqualTo(remoteContent);
+        assertThat(lastPercentage.get()).isEqualTo(100.0);
+    }
+
+    @Test
+    @DisplayName("downloadResume: 本地文件大于远端文件时应清零偏移量并全量覆盖下载")
+    void downloadResume_oversizedLocalFile_truncatesAndRedownloads(@TempDir Path tempDir) throws Exception {
+        byte[] remoteContent = "small-remote-source".getBytes(StandardCharsets.UTF_8);
+        FileEntry remoteEntry = new FileEntry("/test/shrink-down.bin");
+        remoteEntry.setContents(remoteContent);
+        fakeFtpServer.getFileSystem().add(remoteEntry);
+
+        byte[] dirtyLocal = new byte[2048];
+        Arrays.fill(dirtyLocal, (byte) 0x55);
+        Path localTarget = tempDir.resolve("shrink-down.bin");
+        Files.write(localTarget, dirtyLocal);
+
+        boolean downloaded = ftpTemplate.downloadResume("/test/shrink-down.bin", localTarget.toFile());
+
+        assertThat(downloaded).isTrue();
+        assertThat(Files.readAllBytes(localTarget)).isEqualTo(remoteContent);
+    }
+
+    @Test
+    @DisplayName("downloadResume: 远端路径不存在或为目录时应抛出对应 FtpException")
+    void downloadResume_missingOrDirectoryRemote_throwsExpectedException(@TempDir Path tempDir) {
+        Path localTarget = tempDir.resolve("err.bin");
+        assertThatThrownBy(() -> ftpTemplate.downloadResume("/test/no-such-file.bin", localTarget.toFile()))
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.FILE_NOT_FOUND.getCode());
+
+        assertThatThrownBy(() -> ftpTemplate.downloadResume("/test", localTarget.toFile()))
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.INVALID_PATH.getCode());
+    }
+
+    @Test
+    @DisplayName("calculateHash: 零落盘流式计算 MD5 与 SHA-256 小写十六进制摘要应 100% 匹配")
+    void calculateHash_md5AndSha256_computesLowercaseHexWithoutTempFile() throws Exception {
+        byte[] payload = new byte[64 * 1024];
+        for (int i = 0; i < payload.length; i++) {
+            payload[i] = (byte) ((i * 13 + 5) & 0xFF);
+        }
+        ftpTemplate.upload("/test/checksum-payload.bin", payload);
+
+        String expectedMd5 = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(payload));
+        String expectedSha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload));
+
+        assertThat(ftpTemplate.calculateHash("/test/checksum-payload.bin", "MD5")).isEqualTo(expectedMd5);
+        assertThat(ftpTemplate.calculateHash("/test/checksum-payload.bin", "SHA-256")).isEqualTo(expectedSha256);
+    }
+
+    @Test
+    @DisplayName("calculateHash: 缺失文件与非法摘要算法应快速失败抛出预期异常")
+    void calculateHash_missingFileOrUnsupportedAlgorithm_throwsExpectedException() {
+        ftpTemplate.upload("/test/hash-err.txt", "hash".getBytes(StandardCharsets.UTF_8));
+
+        assertThatThrownBy(() -> ftpTemplate.calculateHash("/test/not-found-hash.bin", "SHA-256"))
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.FILE_NOT_FOUND.getCode());
+
+        assertThatThrownBy(() -> ftpTemplate.calculateHash("/test/hash-err.txt", "UNKNOWN-HASH-ALGO"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("verifyHash: 大小写不敏感常量时间摘要比对与篡改拦截")
+    void verifyHash_caseInsensitiveAndConstantTime_matchesOrReturnsFalse() throws Exception {
+        byte[] payload = "settlement-hash-verify-body".getBytes(StandardCharsets.UTF_8);
+        ftpTemplate.upload("/test/verify-body.txt", payload);
+        String expectedSha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload));
+
+        assertThat(ftpTemplate.verifyHash("/test/verify-body.txt",
+                "  " + expectedSha256.toUpperCase(Locale.ROOT) + "  ", "SHA-256")).isTrue();
+
+        String tampered = "0".repeat(expectedSha256.length() - 1) + "1";
+        assertThat(ftpTemplate.verifyHash("/test/verify-body.txt", tampered, "SHA-256")).isFalse();
+        assertThat(ftpTemplate.verifyHash("/test/verify-body.txt", "deadbeef", "SHA-256")).isFalse();
+    }
+
+    @Test
+    @DisplayName("uploadWithSentinel: 默认 .ok 与自定义信标后缀应写入 SHA-256 摘要、文件名与字节长度")
+    void uploadWithSentinel_defaultAndCustomOkSuffix_writesSha256DigestLine(@TempDir Path tempDir) throws Exception {
+        byte[] payload = "bill_id,amount\n1001,99.50\n".getBytes(StandardCharsets.UTF_8);
+        Path localFile = tempDir.resolve("settle-20261117.csv");
+        Files.write(localFile, payload);
+        String expectedSha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload));
+
+        String okSentinel = ftpTemplate.uploadWithSentinel("/test/settle-default.csv", localFile.toFile(), null);
+        assertThat(okSentinel).isEqualTo("/test/settle-default.csv.ok");
+        assertThat(ftpTemplate.downloadToBytes("/test/settle-default.csv")).isEqualTo(payload);
+        assertThat(ftpTemplate.readString(okSentinel))
+                .isEqualTo(expectedSha256 + "  settle-default.csv  " + payload.length + "\n");
+
+        String doneSentinel = ftpTemplate.uploadWithSentinel("/test/settle-custom.csv", localFile.toFile(), "done");
+        assertThat(doneSentinel).isEqualTo("/test/settle-custom.csv.done");
+        assertThat(ftpTemplate.readString(doneSentinel))
+                .isEqualTo(expectedSha256 + "  settle-custom.csv  " + payload.length + "\n");
+    }
+
+    @Test
+    @DisplayName("uploadWithSentinel: .sha256 与 .md5 信标后缀应生成标准校验和文件格式")
+    void uploadWithSentinel_digestSuffix_writesStandardChecksumLine(@TempDir Path tempDir) throws Exception {
+        byte[] payload = "reconciliation-ledger-batch".getBytes(StandardCharsets.UTF_8);
+        Path localFile = tempDir.resolve("ledger.dat");
+        Files.write(localFile, payload);
+        String expectedSha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload));
+        String expectedMd5 = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(payload));
+
+        String shaSentinel = ftpTemplate.uploadWithSentinel("/test/ledger-a.dat", localFile.toFile(), ".sha256");
+        assertThat(shaSentinel).isEqualTo("/test/ledger-a.dat.sha256");
+        assertThat(ftpTemplate.readString(shaSentinel)).isEqualTo(expectedSha256 + "  ledger-a.dat\n");
+
+        String md5Sentinel = ftpTemplate.uploadWithSentinel("/test/ledger-b.dat", localFile.toFile(), "MD5");
+        assertThat(md5Sentinel).isEqualTo("/test/ledger-b.dat.MD5");
+        assertThat(ftpTemplate.readString(md5Sentinel)).isEqualTo(expectedMd5 + "  ledger-b.dat\n");
+    }
+
+    @Test
+    @DisplayName("uploadWithSentinel: 非法路径穿越信标后缀应直接拦截抛出 INVALID_PATH")
+    void uploadWithSentinel_traversalSuffix_throwsInvalidPath(@TempDir Path tempDir) throws Exception {
+        Path localFile = tempDir.resolve("safe.txt");
+        Files.writeString(localFile, "safe", StandardCharsets.UTF_8);
+
+        assertThatThrownBy(() -> ftpTemplate.uploadWithSentinel("/test/safe.txt", localFile.toFile(), "../evil"))
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.INVALID_PATH.getCode());
+
+        assertThatThrownBy(() -> ftpTemplate.uploadWithSentinel("/test/safe.txt", localFile.toFile(), "dir/ok"))
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.INVALID_PATH.getCode());
+    }
+
+    @Test
+    @DisplayName("downloadResume: 服务端 502 拒绝 REST 时应回退全量拉取跳过前缀；零字节文件应自动落地本地空文件")
+    void downloadResume_restRejected502_fallsBackCleanlyAndCreatesEmptyFile(@TempDir Path tempDir) throws Exception {
+        byte[] remoteContent = new byte[48 * 1024];
+        for (int i = 0; i < remoteContent.length; i++) {
+            remoteContent[i] = (byte) ((i * 7 + 13) & 0xFF);
+        }
+        ftpTemplate.upload("/test/rest502.bin", remoteContent);
+        ftpTemplate.upload("/test/zero-down.bin", new byte[0]);
+
+        Path partialLocal = tempDir.resolve("rest502.bin");
+        Files.write(partialLocal, Arrays.copyOf(remoteContent, 16 * 1024));
+
+        org.mockftpserver.core.command.CommandHandler originalRest = fakeFtpServer.getCommandHandler("REST");
+        fakeFtpServer.setCommandHandler("REST",
+                new org.mockftpserver.core.command.StaticReplyCommandHandler(502, "REST not implemented"));
+        try {
+            boolean downloaded = ftpTemplate.downloadResume("/test/rest502.bin", partialLocal.toFile());
+            assertThat(downloaded).isTrue();
+            assertThat(Files.readAllBytes(partialLocal)).isEqualTo(remoteContent);
+        } finally {
+            fakeFtpServer.setCommandHandler("REST", originalRest);
+        }
+
+        Path zeroTarget = tempDir.resolve("zero-down.bin");
+        AtomicReference<Double> pctRef = new AtomicReference<>();
+        boolean zeroDownloaded = ftpTemplate.downloadResume("/test/zero-down.bin", zeroTarget.toFile(),
+                (transferred, total, pct) -> pctRef.set(pct));
+        assertThat(zeroDownloaded).isTrue();
+        assertThat(Files.exists(zeroTarget)).isTrue();
+        assertThat(Files.size(zeroTarget)).isZero();
+        assertThat(pctRef.get()).isEqualTo(100.0);
     }
 }

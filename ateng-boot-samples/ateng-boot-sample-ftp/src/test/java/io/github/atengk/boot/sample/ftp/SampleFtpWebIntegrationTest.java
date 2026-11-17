@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.ftp;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.ftp.context.FtpContextHolder;
+import io.github.atengk.boot.ftp.template.FtpTemplate;
 import io.github.atengk.boot.sample.ftp.dto.AppendTextRequest;
 import io.github.atengk.boot.sample.ftp.dto.CopyMoveRequest;
 import io.github.atengk.boot.sample.ftp.dto.DeleteDirectoryRequest;
@@ -11,8 +12,11 @@ import io.github.atengk.boot.sample.ftp.dto.LargeFileTransferRequest;
 import io.github.atengk.boot.sample.ftp.dto.PathRequest;
 import io.github.atengk.boot.sample.ftp.dto.RegisterNodeRequest;
 import io.github.atengk.boot.sample.ftp.dto.RenameRequest;
+import io.github.atengk.boot.sample.ftp.dto.ResumeTransferRequest;
+import io.github.atengk.boot.sample.ftp.dto.SentinelUploadRequest;
 import io.github.atengk.boot.sample.ftp.dto.UnregisterNodeRequest;
 import io.github.atengk.boot.sample.ftp.dto.UploadFileRequest;
+import io.github.atengk.boot.sample.ftp.dto.VerifyHashRequest;
 import io.github.atengk.boot.sample.ftp.dto.WriteTextRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.AfterAll;
@@ -40,6 +44,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
@@ -79,6 +87,9 @@ public class SampleFtpWebIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private FtpTemplate ftpTemplate;
 
     private static boolean isLocalProfile() {
         String active = System.getProperty("spring.profiles.active");
@@ -575,5 +586,170 @@ public class SampleFtpWebIntegrationTest {
                         .content(objectMapper.writeValueAsString(invalidUnregisterReq)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400));
+
+        // 5. 断点续传、摘要校验与信标上传 JSR-303 校验防御
+        ResumeTransferRequest invalidResumeReq = ResumeTransferRequest.builder()
+                .remotePath("")
+                .localPath("")
+                .build();
+        mockMvc.perform(post("/sample/ftp/transfer/upload-resume")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidResumeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+        mockMvc.perform(post("/sample/ftp/transfer/download-resume")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidResumeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        mockMvc.perform(get("/sample/ftp/document/hash")
+                        .param("remotePath", ""))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        VerifyHashRequest invalidVerifyReq = VerifyHashRequest.builder()
+                .remotePath("/test.bin")
+                .expectedHex("")
+                .build();
+        mockMvc.perform(post("/sample/ftp/document/verify-hash")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidVerifyReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        SentinelUploadRequest invalidSentinelReq = SentinelUploadRequest.builder()
+                .remotePath("")
+                .localPath("")
+                .build();
+        mockMvc.perform(post("/sample/ftp/sync/upload-with-sentinel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidSentinelReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    @DisplayName("06. FtpTransfer/Document/Sync: 断点续传、零落盘摘要校验与信标伴随上传端到端联调")
+    void testResumableChecksumAndSentinelWorkflows(@TempDir Path tempDir) throws Exception {
+        byte[] payload = new byte[96 * 1024];
+        for (int i = 0; i < payload.length; i++) {
+            payload[i] = (byte) ((i * 29 + 11) & 0xFF);
+        }
+        String expectedSha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload));
+        String expectedMd5 = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(payload));
+
+        // 1. 准备本地大文件与远端 .tmp 断点分片，测试断点上传
+        Path sourceFile = tempDir.resolve("resume-source.bin");
+        Files.write(sourceFile, payload);
+        String remoteResumePath = "/transfer/resume-sample.bin";
+        ftpTemplate.upload(remoteResumePath + ".tmp", Arrays.copyOf(payload, 32 * 1024));
+
+        ResumeTransferRequest uploadResumeReq = ResumeTransferRequest.builder()
+                .remotePath(remoteResumePath)
+                .localPath(sourceFile.toAbsolutePath().toString())
+                .build();
+        mockMvc.perform(post("/sample/ftp/transfer/upload-resume")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(uploadResumeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.completed").value(true))
+                .andExpect(jsonPath("$.data.percentage").value(100.0))
+                .andExpect(jsonPath("$.data.bytesTransferred").value(payload.length));
+
+        assertThat(ftpTemplate.downloadToBytes(remoteResumePath)).isEqualTo(payload);
+
+        // 2. 准备本地不完整下载文件，测试断点下载
+        Path downloadTarget = tempDir.resolve("resume-downloaded.bin");
+        Files.write(downloadTarget, Arrays.copyOf(payload, 24 * 1024));
+        ResumeTransferRequest downloadResumeReq = ResumeTransferRequest.builder()
+                .remotePath(remoteResumePath)
+                .localPath(downloadTarget.toAbsolutePath().toString())
+                .build();
+        mockMvc.perform(post("/sample/ftp/transfer/download-resume")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(downloadResumeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.completed").value(true))
+                .andExpect(jsonPath("$.data.percentage").value(100.0))
+                .andExpect(jsonPath("$.data.bytesTransferred").value(payload.length));
+
+        assertThat(Files.readAllBytes(downloadTarget)).isEqualTo(payload);
+
+        // 3. 零落盘流式摘要计算与常量时间比对
+        mockMvc.perform(get("/sample/ftp/document/hash")
+                        .param("remotePath", remoteResumePath)
+                        .param("algorithm", "SHA-256"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(expectedSha256));
+
+        mockMvc.perform(get("/sample/ftp/document/hash")
+                        .param("remotePath", remoteResumePath)
+                        .param("algorithm", "MD5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(expectedMd5));
+
+        VerifyHashRequest validVerifyReq = VerifyHashRequest.builder()
+                .remotePath(remoteResumePath)
+                .expectedHex(expectedSha256.toUpperCase(Locale.ROOT))
+                .algorithm("SHA-256")
+                .build();
+        mockMvc.perform(post("/sample/ftp/document/verify-hash")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(validVerifyReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        VerifyHashRequest tamperedVerifyReq = VerifyHashRequest.builder()
+                .remotePath(remoteResumePath)
+                .expectedHex("0".repeat(expectedSha256.length()))
+                .algorithm("SHA-256")
+                .build();
+        mockMvc.perform(post("/sample/ftp/document/verify-hash")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(tamperedVerifyReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(false));
+
+        // 4. 对账就绪信标文件伴随上传 (.ok 与 .sha256)
+        Path settlementFile = tempDir.resolve("settle-batch.csv");
+        byte[] csvBytes = "order_no,amount\n2026111701,188.00\n".getBytes(StandardCharsets.UTF_8);
+        Files.write(settlementFile, csvBytes);
+        String csvSha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(csvBytes));
+
+        SentinelUploadRequest okSentinelReq = SentinelUploadRequest.builder()
+                .remotePath("/finance/sentinel/settle-batch.csv")
+                .localPath(settlementFile.toAbsolutePath().toString())
+                .sentinelSuffix(".ok")
+                .build();
+        mockMvc.perform(post("/sample/ftp/sync/upload-with-sentinel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(okSentinelReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.remotePath").value("/finance/sentinel/settle-batch.csv"))
+                .andExpect(jsonPath("$.data.sentinelPath").value("/finance/sentinel/settle-batch.csv.ok"))
+                .andExpect(jsonPath("$.data.fileSize").value(csvBytes.length))
+                .andExpect(jsonPath("$.data.sentinelContent")
+                        .value(csvSha256 + "  settle-batch.csv  " + csvBytes.length + "\n"));
+
+        SentinelUploadRequest shaSentinelReq = SentinelUploadRequest.builder()
+                .remotePath("/finance/sentinel/settle-batch-digest.csv")
+                .localPath(settlementFile.toAbsolutePath().toString())
+                .sentinelSuffix(".sha256")
+                .build();
+        mockMvc.perform(post("/sample/ftp/sync/upload-with-sentinel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(shaSentinelReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.sentinelPath").value("/finance/sentinel/settle-batch-digest.csv.sha256"))
+                .andExpect(jsonPath("$.data.sentinelContent").value(csvSha256 + "  settle-batch-digest.csv\n"));
     }
 }

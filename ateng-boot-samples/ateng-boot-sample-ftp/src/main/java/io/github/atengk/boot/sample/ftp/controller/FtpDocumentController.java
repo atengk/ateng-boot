@@ -8,6 +8,7 @@ import io.github.atengk.boot.sample.ftp.dto.DeleteDirectoryRequest;
 import io.github.atengk.boot.sample.ftp.dto.PathRequest;
 import io.github.atengk.boot.sample.ftp.dto.RenameRequest;
 import io.github.atengk.boot.sample.ftp.dto.UploadFileRequest;
+import io.github.atengk.boot.sample.ftp.dto.VerifyHashRequest;
 import io.github.atengk.boot.sample.ftp.dto.WriteTextRequest;
 import io.github.atengk.boot.sample.ftp.service.DocumentSyncScenarioService;
 import io.github.atengk.boot.sample.ftp.vo.FtpFileInfoVO;
@@ -232,6 +233,32 @@ public class FtpDocumentController {
 
         documentSyncService.downloadToStream(remotePath, response.getOutputStream());
         response.flushBuffer();
+    }
+
+    /**
+     * 零落盘流式计算远程文件的十六进制摘要（默认 SHA-256）
+     *
+     * @param remotePath 远程文件路径
+     * @param algorithm  摘要算法名称（默认 SHA-256）
+     * @return 小写十六进制摘要字符串
+     */
+    @GetMapping("/hash")
+    public Result<String> calculateHash(
+            @RequestParam("remotePath") @NotBlank(message = "远程文件路径不能为空") String remotePath,
+            @RequestParam(value = "algorithm", defaultValue = "SHA-256") String algorithm) {
+        return Result.success(documentSyncService.calculateHash(remotePath, algorithm));
+    }
+
+    /**
+     * 零落盘流式比对远程文件摘要是否与预期一致
+     *
+     * @param request 摘要比对请求
+     * @return 一致返回 true，否则返回 false
+     */
+    @PostMapping("/verify-hash")
+    public Result<Boolean> verifyHash(@Valid @RequestBody VerifyHashRequest request) {
+        return Result.success(documentSyncService.verifyHash(
+                request.getRemotePath(), request.getExpectedHex(), request.getAlgorithm()));
     }
 
     private FtpFileInfoVO toVO(FtpFileInfo info) {

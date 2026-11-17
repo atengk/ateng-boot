@@ -28,11 +28,15 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.function.Consumer;
@@ -122,11 +126,9 @@ public class FtpTemplate {
         Assert.notNull(action, "FtpClientCallback must not be null");
 
         // 1. 动态切源路由探测：若线程上下文绑定了特定节点，且不是当前节点自身，则委托给注册表对应的节点执行
-        String currentTarget = FtpContextHolder.getServer();
-        if (currentTarget != null && !currentTarget.isBlank()
-                && registry != null
-                && !currentTarget.equalsIgnoreCase(this.serverName)) {
-            return registry.getTemplate(currentTarget).execute(action);
+        FtpTemplate targetTemplate = resolveTargetTemplate();
+        if (targetTemplate != this) {
+            return targetTemplate.execute(action);
         }
 
         FTPClient client = borrowClient();
@@ -354,12 +356,7 @@ public class FtpTemplate {
         try {
             return execute(client -> {
                 // 1. 父级多级目录自动递归创建 (mkdir -p)
-                if (properties.isAutoCreateDirectories()) {
-                    String parentDir = getParentPath(safePath);
-                    if (parentDir != null && !parentDir.isBlank() && !"/".equals(parentDir)) {
-                        makeDirectoriesInternal(client, parentDir);
-                    }
-                }
+                ensureParentDirectory(client, safePath);
 
                 boolean success;
                 try {
@@ -374,20 +371,7 @@ public class FtpTemplate {
                             "FTP 文件上传失败: " + safePath + ", 服务端返回码: " + reply);
                 }
                 if (isAtomic) {
-                    boolean renamed = client.rename(wireUploadPath, wireTargetPath);
-                    if (!renamed) {
-                        // 部分服务端在目标文件已存在时不予直接覆盖，尝试先删除目标文件再原子 rename
-                        try {
-                            client.deleteFile(wireTargetPath);
-                            renamed = client.rename(wireUploadPath, wireTargetPath);
-                        } catch (Exception ignored) {
-                        }
-                    }
-                    if (!renamed) {
-                        int reply = client.getReplyCode();
-                        throw new FtpException(FtpResultCode.UPLOAD_FAILED,
-                                "FTP 原子重命名失败: " + uploadPath + " -> " + safePath + ", 服务端返回码: " + reply);
-                    }
+                    renameAtomicTempFile(client, uploadPath, safePath, wireUploadPath, wireTargetPath);
                 }
                 return true;
             });
@@ -589,12 +573,7 @@ public class FtpTemplate {
         String wirePath = toWirePath(safePath);
 
         return execute(client -> {
-            if (properties.isAutoCreateDirectories()) {
-                String parentDir = getParentPath(safePath);
-                if (parentDir != null && !parentDir.isBlank() && !"/".equals(parentDir)) {
-                    makeDirectoriesInternal(client, parentDir);
-                }
-            }
+            ensureParentDirectory(client, safePath);
             boolean success;
             try {
                 success = client.appendFile(wirePath, in);
@@ -851,43 +830,317 @@ public class FtpTemplate {
         Assert.notNull(consumer, "Consumer must not be null");
         String safePath = cleanAndValidatePath(remotePath);
         execute(client -> {
-            String wirePath = toWirePath(safePath);
-            InputStream in = null;
-            boolean commandCompleted = false;
-            try {
-                in = client.retrieveFileStream(wirePath);
-                if (in == null) {
-                    int reply = client.getReplyCode();
-                    throw new FtpException(FtpResultCode.FILE_NOT_FOUND,
-                            "获取远程文件流失败 (文件不存在或权限不足): " + safePath + ", 服务端返回码: " + reply);
-                }
-                consumer.accept(in);
-            } finally {
-                if (in != null) {
-                    try {
-                        in.close();
-                    } catch (IOException ignored) {
-                    }
-                    try {
-                        commandCompleted = client.completePendingCommand();
-                    } catch (Exception e) {
-                        log.debug("FTP completePendingCommand 闭合异常: {}", e.getMessage());
-                    }
-                    if (!commandCompleted) {
-                        // 若挂起指令未能正常闭合，连接协议状态已不可信，主动断开以触发连接池销毁防卫
-                        try {
-                            client.disconnect();
-                        } catch (Exception ignored) {
-                        }
-                    }
-                }
-            }
-            if (!commandCompleted) {
-                log.warn("FTP 挂起数据读取指令未正常结束: {}", safePath);
-                throw new FtpException(FtpResultCode.DOWNLOAD_FAILED, "完成 FTP 数据读取挂起指令失败: " + safePath);
-            }
+            retrieveStreamInternal(client, toWirePath(safePath), safePath, consumer::accept);
             return null;
         });
+    }
+
+    // ==========================================
+    // 断点续传操作 (Resumable Transfer)
+    // ==========================================
+
+    /**
+     * 断点续传上传本地文件到远程路径
+     *
+     * @param remotePath 远程文件目标路径
+     * @param localFile  本地待上传文件
+     * @return 上传完成返回 true
+     */
+    public boolean uploadResume(String remotePath, File localFile) {
+        return uploadResume(remotePath, localFile, null);
+    }
+
+    /**
+     * 断点续传上传本地文件到远程路径并挂载流式进度监听器
+     * <p>
+     * 自动探测远端残留分片（开启原子上传时探测 {@code .tmp} 临时分片）：
+     * <ul>
+     *     <li>若远端分片大于本地文件，视为脏分片自动删除后从零重传；</li>
+     *     <li>若远端分片与本地等长（非空），跳过字节传输直接原子转正（或确认完成）并触发 100.0% 回调；</li>
+     *     <li>若 {@code 0 < remoteOffset < localLength}，跳过本地前缀偏移并借助 {@code APPE} 增量续传；</li>
+     *     <li>续传中途异常时保留 {@code .tmp} 分片，确保下次调用可继续从断点恢复。</li>
+     * </ul>
+     * </p>
+     *
+     * @param remotePath       远程文件目标路径
+     * @param localFile        本地待上传文件
+     * @param progressListener 传输进度监听回调（可为 null）
+     * @return 上传完成返回 true
+     */
+    public boolean uploadResume(String remotePath, File localFile, FtpProgressListener progressListener) {
+        FtpTemplate targetTemplate = resolveTargetTemplate();
+        if (targetTemplate != this) {
+            return targetTemplate.uploadResume(remotePath, localFile, progressListener);
+        }
+
+        Assert.hasText(remotePath, "remotePath must not be blank");
+        Assert.notNull(localFile, "localFile must not be null");
+        if (!localFile.exists() || !localFile.isFile()) {
+            throw new FtpException(FtpResultCode.INVALID_PATH,
+                    "本地待上传文件不存在或不是标准文件: " + localFile.getAbsolutePath());
+        }
+
+        String safePath = cleanAndValidatePath(remotePath);
+        long localLength = localFile.length();
+        boolean isAtomic = properties.isAtomicUpload();
+        String suffix = properties.getTempFileSuffix() != null ? properties.getTempFileSuffix() : ".tmp";
+        String uploadPath = isAtomic ? safePath + suffix : safePath;
+        String wireUploadPath = toWirePath(uploadPath);
+        String wireTargetPath = toWirePath(safePath);
+
+        FtpFileInfo remoteFragmentInfo = getFileInfo(uploadPath);
+        if (remoteFragmentInfo != null && remoteFragmentInfo.isDirectory()) {
+            throw new FtpException(FtpResultCode.INVALID_PATH, "远程断点路径是目录而非文件: " + uploadPath);
+        }
+
+        long remoteOffset = remoteFragmentInfo != null ? Math.max(0L, remoteFragmentInfo.getSize()) : 0L;
+        if (remoteOffset > localLength) {
+            deleteFile(uploadPath);
+            remoteOffset = 0L;
+        }
+
+        if (remoteOffset == localLength && localLength > 0L) {
+            if (isAtomic) {
+                execute(client -> {
+                    ensureParentDirectory(client, safePath);
+                    renameAtomicTempFile(client, uploadPath, safePath, wireUploadPath, wireTargetPath);
+                    return true;
+                });
+            }
+            if (progressListener != null) {
+                progressListener.onProgress(localLength, localLength, 100.0);
+            }
+            return true;
+        }
+
+        final long resumeOffset = remoteOffset;
+        FtpProgressThrottler throttler = progressListener != null
+                ? new FtpProgressThrottler(progressListener, localLength, resumeOffset)
+                : null;
+
+        boolean success = execute(client -> {
+            ensureParentDirectory(client, safePath);
+            try (InputStream rawIn = new BufferedInputStream(new FileInputStream(localFile))) {
+                if (resumeOffset > 0L) {
+                    rawIn.skipNBytes(resumeOffset);
+                }
+                InputStream uploadStream = throttler != null ? new ProgressInputStream(rawIn, throttler) : rawIn;
+                boolean transferred = resumeOffset > 0L
+                        ? client.appendFile(wireUploadPath, uploadStream)
+                        : client.storeFile(wireUploadPath, uploadStream);
+                if (!transferred) {
+                    int reply = client.getReplyCode();
+                    throw new FtpException(FtpResultCode.UPLOAD_FAILED,
+                            "FTP 断点续传上传失败: " + safePath + ", 偏移量: " + resumeOffset + ", 服务端返回码: " + reply);
+                }
+            } catch (FtpException fe) {
+                throw fe;
+            } catch (Exception e) {
+                throw new FtpException(FtpResultCode.UPLOAD_FAILED,
+                        "FTP 断点续传写入异常: " + safePath + ", 偏移量: " + resumeOffset + ", 原因: " + e.getMessage(), e);
+            }
+            if (isAtomic) {
+                renameAtomicTempFile(client, uploadPath, safePath, wireUploadPath, wireTargetPath);
+            }
+            return true;
+        });
+
+        if (success && throttler != null) {
+            throttler.finish();
+        }
+        return success;
+    }
+
+    /**
+     * 断点续传下载远程文件到本地磁盘文件
+     *
+     * @param remotePath 远程文件路径
+     * @param localFile  本地目标文件
+     * @return 下载完成返回 true
+     */
+    public boolean downloadResume(String remotePath, File localFile) {
+        return downloadResume(remotePath, localFile, null);
+    }
+
+    /**
+     * 断点续传下载远程文件到本地磁盘文件并挂载流式进度监听器
+     * <p>
+     * 自动探测远端文件元信息与本地已有字节偏移量：
+     * <ul>
+     *     <li>远端缺失或为目录时快速失败抛出 {@link FtpException}；</li>
+     *     <li>本地与远端等长时跳过传输并触发 100.0% 回调；</li>
+     *     <li>本地字节数大于远端时重置偏移为 0 并全量覆盖重写；</li>
+     *     <li>部分已下载时通过 {@code REST} 从断点增量追加，并兼容忽略 {@code REST} 指令的老旧/模拟服务端防重防溢出。</li>
+     * </ul>
+     * </p>
+     *
+     * @param remotePath       远程文件路径
+     * @param localFile        本地目标文件
+     * @param progressListener 传输进度监听回调（可为 null）
+     * @return 下载完成返回 true
+     */
+    public boolean downloadResume(String remotePath, File localFile, FtpProgressListener progressListener) {
+        FtpTemplate targetTemplate = resolveTargetTemplate();
+        if (targetTemplate != this) {
+            return targetTemplate.downloadResume(remotePath, localFile, progressListener);
+        }
+
+        Assert.hasText(remotePath, "remotePath must not be blank");
+        Assert.notNull(localFile, "localFile must not be null");
+        if (localFile.exists() && localFile.isDirectory()) {
+            throw new FtpException(FtpResultCode.INVALID_PATH,
+                    "本地目标路径是目录而非文件: " + localFile.getAbsolutePath());
+        }
+
+        String safePath = cleanAndValidatePath(remotePath);
+        FtpFileInfo remoteInfo = getFileInfo(safePath);
+        if (remoteInfo == null) {
+            throw new FtpException(FtpResultCode.FILE_NOT_FOUND, "远程文件不存在: " + safePath);
+        }
+        if (remoteInfo.isDirectory()) {
+            throw new FtpException(FtpResultCode.INVALID_PATH, "远程路径是目录而非文件: " + safePath);
+        }
+
+        long remoteSize = Math.max(0L, remoteInfo.getSize());
+        File parent = localFile.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+
+        long localOffset = (localFile.exists() && localFile.isFile()) ? localFile.length() : 0L;
+        if (localOffset == remoteSize) {
+            if (remoteSize == 0L && !localFile.exists()) {
+                try {
+                    Files.write(localFile.toPath(), new byte[0]);
+                } catch (IOException e) {
+                    throw new FtpException(FtpResultCode.DOWNLOAD_FAILED,
+                            "创建本地空文件失败: " + localFile.getAbsolutePath(), e);
+                }
+            }
+            if (progressListener != null) {
+                progressListener.onProgress(remoteSize, remoteSize, 100.0);
+            }
+            return true;
+        }
+
+        if (localOffset > remoteSize) {
+            localOffset = 0L;
+        }
+        if (localOffset == 0L) {
+            return download(safePath, localFile, progressListener);
+        }
+
+        return downloadResumeFromOffset(safePath, localFile, localOffset, remoteSize, progressListener);
+    }
+
+    // ==========================================
+    // 零落盘流式校验与信标伴随操作 (Streaming Checksum & Sentinel Upload)
+    // ==========================================
+
+    /**
+     * 零落盘流式计算远程文件的消息摘要（如 MD5、SHA-256）
+     * <p>
+     * 直接将受管 FTP 数据流喂入 {@link MessageDigest}，不创建任何本地临时文件，
+     * 堆内存占用恒定为单缓冲区大小（O(1)），返回小写十六进制摘要字符串。
+     * </p>
+     *
+     * @param remotePath 远程文件路径
+     * @param algorithm  摘要算法名称（如 {@code MD5}、{@code SHA-256}）
+     * @return 小写十六进制摘要字符串
+     */
+    public String calculateHash(String remotePath, String algorithm) {
+        FtpTemplate targetTemplate = resolveTargetTemplate();
+        if (targetTemplate != this) {
+            return targetTemplate.calculateHash(remotePath, algorithm);
+        }
+
+        Assert.hasText(remotePath, "remotePath must not be blank");
+        Assert.hasText(algorithm, "algorithm must not be blank");
+        String safePath = cleanAndValidatePath(remotePath);
+        MessageDigest digest = createMessageDigest(algorithm.trim());
+        int bufferSize = resolveStreamBufferSize();
+
+        downloadStream(safePath, in -> digestStream(in, digest, bufferSize, safePath));
+        return HexFormat.of().formatHex(digest.digest());
+    }
+
+    /**
+     * 零落盘流式比对远程文件摘要与预期十六进制摘要是否一致
+     * <p>
+     * 忽略预期摘要首尾空白与大小写差异，并采用 {@link MessageDigest#isEqual(byte[], byte[])}
+     * 执行常量时间摘要比对。
+     * </p>
+     *
+     * @param remotePath  远程文件路径
+     * @param expectedHex 预期十六进制摘要值
+     * @param algorithm   摘要算法名称（如 {@code MD5}、{@code SHA-256}）
+     * @return 一致返回 true，否则返回 false
+     */
+    public boolean verifyHash(String remotePath, String expectedHex, String algorithm) {
+        FtpTemplate targetTemplate = resolveTargetTemplate();
+        if (targetTemplate != this) {
+            return targetTemplate.verifyHash(remotePath, expectedHex, algorithm);
+        }
+
+        Assert.hasText(remotePath, "remotePath must not be blank");
+        Assert.hasText(expectedHex, "expectedHex must not be blank");
+        Assert.hasText(algorithm, "algorithm must not be blank");
+
+        String actualHex = calculateHash(remotePath, algorithm);
+        String normalizedExpected = expectedHex.trim().toLowerCase(Locale.ROOT);
+        return MessageDigest.isEqual(
+                actualHex.getBytes(StandardCharsets.US_ASCII),
+                normalizedExpected.getBytes(StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * 原子上传主文件并在主文件落盘转正后伴随写入对账就绪信标文件
+     * <p>
+     * 遵循“先主数据文件、后信标文件”两阶段提交契约，彻底防止下游轮询服务在主文件未就绪时提前消费：
+     * <ul>
+     *     <li>{@code sentinelSuffix} 为 null 或空白时默认采用 {@code .ok}；缺少前导 {@code .} 时自动补全；</li>
+     *     <li>后缀名不区分大小写为 {@code .sha256} 或 {@code .md5} 时，写入标准校验和行：{@code <hex_digest>  <file_name>\n}；</li>
+     *     <li>其余通用后缀（如 {@code .ok}、{@code .done}）默认采用 SHA-256，写入对账清单行：{@code <sha256_hex>  <file_name>  <size_bytes>\n}。</li>
+     * </ul>
+     * </p>
+     *
+     * @param remotePath     远程主文件路径
+     * @param localFile      本地待上传文件
+     * @param sentinelSuffix 信标文件后缀（可为 null，默认 {@code .ok}）
+     * @return 远程信标文件完整路径
+     */
+    public String uploadWithSentinel(String remotePath, File localFile, String sentinelSuffix) {
+        FtpTemplate targetTemplate = resolveTargetTemplate();
+        if (targetTemplate != this) {
+            return targetTemplate.uploadWithSentinel(remotePath, localFile, sentinelSuffix);
+        }
+
+        Assert.hasText(remotePath, "remotePath must not be blank");
+        Assert.notNull(localFile, "localFile must not be null");
+        if (!localFile.exists() || !localFile.isFile()) {
+            throw new FtpException(FtpResultCode.INVALID_PATH,
+                    "本地待上传文件不存在或不是标准文件: " + localFile.getAbsolutePath());
+        }
+
+        String safePath = cleanAndValidatePath(remotePath);
+        String normalizedSuffix = normalizeSentinelSuffix(sentinelSuffix);
+        String sentinelPath = cleanAndValidatePath(safePath + normalizedSuffix);
+
+        boolean isMd5Mode = ".md5".equalsIgnoreCase(normalizedSuffix);
+        boolean isDigestOnlyMode = isMd5Mode || ".sha256".equalsIgnoreCase(normalizedSuffix);
+        String digestAlgorithm = isMd5Mode ? "MD5" : "SHA-256";
+        String digestHex = computeLocalFileHash(localFile, digestAlgorithm);
+
+        // 1. 先原子上传主文件并转正，确保信标落地前数据文件已 100% 完整可见
+        upload(safePath, localFile);
+
+        // 2. 构建并原子写入信标文件
+        String fileName = getFileName(safePath);
+        String sentinelContent = isDigestOnlyMode
+                ? digestHex + "  " + fileName + "\n"
+                : digestHex + "  " + fileName + "  " + localFile.length() + "\n";
+        writeString(sentinelPath, sentinelContent, StandardCharsets.UTF_8);
+        return sentinelPath;
     }
 
     // ==========================================
@@ -999,6 +1252,27 @@ public class FtpTemplate {
                 }
             }
             if (ftpFile == null) {
+                // 4. 若根目录或无列表权限的目录未能从父级枚举命中，尝试 CWD 探测确认目录存在并复位
+                String currentDir = client.printWorkingDirectory();
+                try {
+                    if (client.changeWorkingDirectory(wirePath)) {
+                        return FtpFileInfo.builder()
+                                .name(getFileName(safePath))
+                                .path(safePath)
+                                .size(0L)
+                                .isDirectory(true)
+                                .isFile(false)
+                                .build();
+                    }
+                } catch (Exception ignored) {
+                } finally {
+                    if (currentDir != null) {
+                        try {
+                            client.changeWorkingDirectory(currentDir);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
                 return null;
             }
             String rawName = ftpFile.getName();
@@ -1802,5 +2076,233 @@ public class FtpTemplate {
             }
         }
         return client.removeDirectory(wireDir);
+    }
+
+    private FtpTemplate resolveTargetTemplate() {
+        String currentTarget = FtpContextHolder.getServer();
+        if (currentTarget != null && !currentTarget.isBlank()
+                && registry != null
+                && !currentTarget.equalsIgnoreCase(this.serverName)) {
+            return registry.getTemplate(currentTarget);
+        }
+        return this;
+    }
+
+    private void ensureParentDirectory(FTPClient client, String safePath) throws IOException {
+        if (properties.isAutoCreateDirectories()) {
+            String parentDir = getParentPath(safePath);
+            if (parentDir != null && !parentDir.isBlank() && !"/".equals(parentDir)) {
+                makeDirectoriesInternal(client, parentDir);
+            }
+        }
+    }
+
+    private void renameAtomicTempFile(FTPClient client, String uploadPath, String safePath,
+                                      String wireUploadPath, String wireTargetPath) throws IOException {
+        boolean renamed = client.rename(wireUploadPath, wireTargetPath);
+        if (!renamed) {
+            // 部分服务端在目标文件已存在时不予直接覆盖，尝试先删除目标文件再原子 rename
+            try {
+                client.deleteFile(wireTargetPath);
+                renamed = client.rename(wireUploadPath, wireTargetPath);
+            } catch (Exception ignored) {
+            }
+        }
+        if (!renamed) {
+            int reply = client.getReplyCode();
+            throw new FtpException(FtpResultCode.UPLOAD_FAILED,
+                    "FTP 原子重命名失败: " + uploadPath + " -> " + safePath + ", 服务端返回码: " + reply);
+        }
+    }
+
+    private boolean downloadResumeFromOffset(String safePath, File localFile, long localOffset,
+                                             long remoteSize, FtpProgressListener progressListener) {
+        FtpProgressThrottler throttler = progressListener != null
+                ? new FtpProgressThrottler(progressListener, remoteSize, localOffset)
+                : null;
+        String wirePath = toWirePath(safePath);
+
+        boolean success = execute(client -> {
+            boolean supportsRestStream = hasFeatureSafe(client, "REST", "STREAM");
+            client.setRestartOffset(localOffset);
+            try {
+                if (supportsRestStream) {
+                    try (OutputStream rawOut = new BufferedOutputStream(new FileOutputStream(localFile, true))) {
+                        OutputStream targetOut = throttler != null ? new ProgressOutputStream(rawOut, throttler) : rawOut;
+                        retrieveStreamInternal(client, wirePath, safePath, in -> {
+                            in.transferTo(targetOut);
+                            targetOut.flush();
+                        });
+                    }
+                } else {
+                    downloadResumeWithFallbackPartFile(client, wirePath, safePath, localFile, localOffset, remoteSize, throttler);
+                }
+                return true;
+            } catch (FtpException fe) {
+                throw fe;
+            } catch (Exception e) {
+                throw new FtpException(FtpResultCode.DOWNLOAD_FAILED,
+                        "FTP 断点续传下载异常: " + safePath + ", 偏移量: " + localOffset + ", 原因: " + e.getMessage(), e);
+            } finally {
+                client.setRestartOffset(0L);
+            }
+        });
+
+        if (success && throttler != null) {
+            throttler.finish();
+        }
+        return success;
+    }
+
+    private void downloadResumeWithFallbackPartFile(FTPClient client, String wirePath, String safePath,
+                                                    File localFile, long localOffset, long remoteSize,
+                                                    FtpProgressThrottler throttler) throws IOException {
+        Path partFile = Files.createTempFile("ateng_ftp_resume_", ".part");
+        try {
+            long receivedBytes;
+            try {
+                receivedBytes = retrieveStreamToTempFile(client, wirePath, safePath, partFile);
+            } catch (FtpException e) {
+                int reply = client.getReplyCode();
+                if (reply == 500 || reply == 502 || reply == 504) {
+                    // 老旧服务端明确拒绝 REST 指令时，清零客户端偏移并全量拉取至临时文件后再跳过本地已有偏移
+                    client.setRestartOffset(0L);
+                    receivedBytes = retrieveStreamToTempFile(client, wirePath, safePath, partFile);
+                } else {
+                    throw e;
+                }
+            }
+            try (InputStream partIn = new BufferedInputStream(Files.newInputStream(partFile));
+                 OutputStream rawOut = new BufferedOutputStream(new FileOutputStream(localFile, true))) {
+                if (receivedBytes == remoteSize) {
+                    // 服务端忽略 REST 指令并重发全量文件，跳过本地已存在的偏移字节防重追加
+                    partIn.skipNBytes(localOffset);
+                }
+                OutputStream targetOut = throttler != null ? new ProgressOutputStream(rawOut, throttler) : rawOut;
+                partIn.transferTo(targetOut);
+                targetOut.flush();
+            }
+        } finally {
+            Files.deleteIfExists(partFile);
+        }
+    }
+
+    private long retrieveStreamToTempFile(FTPClient client, String wirePath, String safePath, Path partFile) {
+        final long[] received = {0L};
+        retrieveStreamInternal(client, wirePath, safePath, in -> {
+            try (OutputStream partOut = new BufferedOutputStream(Files.newOutputStream(partFile))) {
+                received[0] = in.transferTo(partOut);
+                partOut.flush();
+            }
+        });
+        return received[0];
+    }
+
+    private boolean hasFeatureSafe(FTPClient client, String feature, String value) {
+        try {
+            return client.hasFeature(feature, value);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void retrieveStreamInternal(FTPClient client, String wirePath, String safePath,
+                                        CheckedStreamConsumer consumer) {
+        InputStream in = null;
+        boolean commandCompleted = false;
+        try {
+            in = client.retrieveFileStream(wirePath);
+            if (in == null) {
+                int reply = client.getReplyCode();
+                throw new FtpException(FtpResultCode.FILE_NOT_FOUND,
+                        "获取远程文件流失败 (文件不存在或权限不足): " + safePath + ", 服务端返回码: " + reply);
+            }
+            consumer.accept(in);
+        } catch (IOException e) {
+            throw new FtpException(FtpResultCode.DOWNLOAD_FAILED,
+                    "读取远程文件流异常: " + safePath + ", 原因: " + e.getMessage(), e);
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (IOException ignored) {
+                }
+                try {
+                    commandCompleted = client.completePendingCommand();
+                } catch (Exception e) {
+                    log.debug("FTP completePendingCommand 闭合异常: {}", e.getMessage());
+                }
+                if (!commandCompleted) {
+                    // 若挂起指令未能正常闭合，连接协议状态已不可信，主动断开以触发连接池销毁防卫
+                    try {
+                        client.disconnect();
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        }
+        if (!commandCompleted) {
+            log.warn("FTP 挂起数据读取指令未正常结束: {}", safePath);
+            throw new FtpException(FtpResultCode.DOWNLOAD_FAILED, "完成 FTP 数据读取挂起指令失败: " + safePath);
+        }
+    }
+
+    @FunctionalInterface
+    private interface CheckedStreamConsumer {
+        void accept(InputStream in) throws IOException;
+    }
+
+    private MessageDigest createMessageDigest(String algorithm) {
+        try {
+            return MessageDigest.getInstance(algorithm);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalArgumentException("不支持的摘要算法: " + algorithm, e);
+        }
+    }
+
+    private int resolveStreamBufferSize() {
+        DataSize bufferSize = properties.getBufferSize();
+        if (bufferSize != null && bufferSize.toBytes() > 0L) {
+            return (int) Math.min(bufferSize.toBytes(), 1024L * 1024L);
+        }
+        return 8192;
+    }
+
+    private void digestStream(InputStream in, MessageDigest digest, int bufferSize, String sourceDesc) {
+        byte[] buffer = new byte[bufferSize];
+        int read;
+        try {
+            while ((read = in.read(buffer)) != -1) {
+                digest.update(buffer, 0, read);
+            }
+        } catch (IOException e) {
+            throw new FtpException(FtpResultCode.DOWNLOAD_FAILED,
+                    "流式计算文件摘要异常: " + sourceDesc + ", 原因: " + e.getMessage(), e);
+        }
+    }
+
+    private String computeLocalFileHash(File localFile, String algorithm) {
+        MessageDigest digest = createMessageDigest(algorithm);
+        int bufferSize = resolveStreamBufferSize();
+        try (InputStream in = new BufferedInputStream(new FileInputStream(localFile))) {
+            digestStream(in, digest, bufferSize, localFile.getAbsolutePath());
+        } catch (IOException e) {
+            throw new FtpException(FtpResultCode.UPLOAD_FAILED,
+                    "读取本地文件计算摘要失败: " + localFile.getAbsolutePath(), e);
+        }
+        return HexFormat.of().formatHex(digest.digest());
+    }
+
+    private String normalizeSentinelSuffix(String sentinelSuffix) {
+        if (sentinelSuffix == null || sentinelSuffix.isBlank()) {
+            return ".ok";
+        }
+        String trimmed = sentinelSuffix.trim();
+        if (trimmed.contains("/") || trimmed.contains("\\")
+                || trimmed.contains("..") || trimmed.indexOf('\0') >= 0) {
+            throw new FtpException(FtpResultCode.INVALID_PATH,
+                    "非法信标文件后缀 (禁止路径分隔符或穿越序列): " + sentinelSuffix);
+        }
+        return trimmed.startsWith(".") ? trimmed : "." + trimmed;
     }
 }

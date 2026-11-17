@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.ftp.controller;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.ftp.template.FtpTemplate;
 import io.github.atengk.boot.sample.ftp.dto.LargeFileTransferRequest;
+import io.github.atengk.boot.sample.ftp.dto.ResumeTransferRequest;
 import io.github.atengk.boot.sample.ftp.service.LargeFileTransferScenarioService;
 import io.github.atengk.boot.sample.ftp.vo.TransferProgressVO;
 import jakarta.validation.Valid;
@@ -105,6 +106,38 @@ public class FtpTransferController {
                 targetFile.delete();
             }
         }
+    }
+
+    /**
+     * 断点续传上传本地大文件到远程路径
+     *
+     * @param request 断点续传传输请求
+     * @return 最终传输进度追踪回执
+     */
+    @PostMapping("/upload-resume")
+    public Result<TransferProgressVO> uploadResume(@Valid @RequestBody ResumeTransferRequest request) {
+        AtomicReference<TransferProgressVO> progressRef = new AtomicReference<>(
+                createProgressVO(request.getRemotePath(), 0L, -1L, 0.0));
+        largeFileTransferService.uploadResume(request.getRemotePath(), new File(request.getLocalPath()),
+                (bytesTransferred, totalBytes, percentage) -> progressRef.set(
+                        createProgressVO(request.getRemotePath(), bytesTransferred, totalBytes, percentage)));
+        return Result.success(progressRef.get());
+    }
+
+    /**
+     * 断点续传下载远程大文件到本地磁盘
+     *
+     * @param request 断点续传传输请求
+     * @return 最终传输进度追踪回执
+     */
+    @PostMapping("/download-resume")
+    public Result<TransferProgressVO> downloadResume(@Valid @RequestBody ResumeTransferRequest request) {
+        AtomicReference<TransferProgressVO> progressRef = new AtomicReference<>(
+                createProgressVO(request.getRemotePath(), 0L, -1L, 0.0));
+        largeFileTransferService.downloadResume(request.getRemotePath(), new File(request.getLocalPath()),
+                (bytesTransferred, totalBytes, percentage) -> progressRef.set(
+                        createProgressVO(request.getRemotePath(), bytesTransferred, totalBytes, percentage)));
+        return Result.success(progressRef.get());
     }
 
     /**

@@ -84,4 +84,28 @@ public class SettlementBatchSyncScenarioService {
         log.info("开始定制从远端同步结算目录至本地: {} -> {}, failFast={}", remoteSettlementDir, localSettlementDir.getAbsolutePath(), failFast);
         return ftpTemplate.downloadDirectory(remoteSettlementDir, localSettlementDir, filter, failFast);
     }
+
+    /**
+     * 原子上传对账主文件并伴随写入对账就绪信标文件
+     *
+     * @param remotePath     远程主文件路径
+     * @param localFile      本地待上传文件
+     * @param sentinelSuffix 信标文件后缀（默认 .ok）
+     * @return 远程信标文件完整路径
+     */
+    public String uploadWithSentinel(String remotePath, File localFile, String sentinelSuffix) {
+        log.info("开始原子上传对账文件并伴随生成信标: {} -> {}, suffix={}",
+                localFile.getAbsolutePath(), remotePath, sentinelSuffix);
+        return ftpTemplate.uploadWithSentinel(remotePath, localFile, sentinelSuffix);
+    }
+
+    /**
+     * 读取远程信标文件清单正文
+     *
+     * @param sentinelPath 远程信标文件路径
+     * @return 信标文件正文
+     */
+    public String readSentinelContent(String sentinelPath) {
+        return ftpTemplate.readString(sentinelPath);
+    }
 }

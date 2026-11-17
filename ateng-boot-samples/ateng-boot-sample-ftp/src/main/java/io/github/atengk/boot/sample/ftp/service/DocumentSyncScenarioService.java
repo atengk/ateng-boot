@@ -224,4 +224,29 @@ public class DocumentSyncScenarioService {
         log.info("递归删除远程目录: {}", remoteDir);
         return ftpTemplate.deleteDirectory(remoteDir, true);
     }
+
+    /**
+     * 零落盘流式计算远程文件的十六进制摘要（默认 SHA-256）
+     *
+     * @param remotePath 远程文件路径
+     * @param algorithm  摘要算法名称（可为空，默认 SHA-256）
+     * @return 小写十六进制摘要字符串
+     */
+    public String calculateHash(String remotePath, String algorithm) {
+        String effectiveAlgorithm = (algorithm != null && !algorithm.isBlank()) ? algorithm.trim() : "SHA-256";
+        return ftpTemplate.calculateHash(remotePath, effectiveAlgorithm);
+    }
+
+    /**
+     * 零落盘流式比对远程文件摘要是否与预期一致
+     *
+     * @param remotePath  远程文件路径
+     * @param expectedHex 预期十六进制摘要
+     * @param algorithm   摘要算法名称（可为空，默认 SHA-256）
+     * @return 一致返回 true，否则返回 false
+     */
+    public boolean verifyHash(String remotePath, String expectedHex, String algorithm) {
+        String effectiveAlgorithm = (algorithm != null && !algorithm.isBlank()) ? algorithm.trim() : "SHA-256";
+        return ftpTemplate.verifyHash(remotePath, expectedHex, effectiveAlgorithm);
+    }
 }

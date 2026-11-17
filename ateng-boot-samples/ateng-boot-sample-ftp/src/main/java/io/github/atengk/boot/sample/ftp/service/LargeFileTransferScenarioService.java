@@ -94,4 +94,41 @@ public class LargeFileTransferScenarioService {
         log.info("开始大文件数据流下载: {}", remotePath);
         return ftpTemplate.download(remotePath, out, progressListener);
     }
+
+    /**
+     * 断点续传上传大文件到远程 FTP 并挂载进度监听器
+     *
+     * @param remotePath       远程目标路径
+     * @param localFile        本地待上传文件
+     * @param progressListener 传输进度监听回调（为 null 时使用控制台标准心跳输出）
+     * @return 上传完成返回 true
+     */
+    public boolean uploadResume(String remotePath, File localFile, FtpProgressListener progressListener) {
+        if (localFile != null) {
+            log.info("开始大文件断点续传上传: {} -> {}, 文件大小: {} bytes",
+                    localFile.getAbsolutePath(), remotePath, localFile.length());
+        }
+        FtpProgressListener listener = progressListener != null ? progressListener : (bytesTransferred, totalBytes, percentage) ->
+                log.info("[UPLOAD-RESUME-PROGRESS] 目标: {}, 进度: {}/{} bytes ({})",
+                        remotePath, bytesTransferred, totalBytes, String.format("%.2f%%", percentage));
+        return ftpTemplate.uploadResume(remotePath, localFile, listener);
+    }
+
+    /**
+     * 断点续传下载远程大文件到本地磁盘并挂载进度监听器
+     *
+     * @param remotePath       远程文件路径
+     * @param localFile        本地目标文件
+     * @param progressListener 传输进度监听回调（为 null 时使用控制台标准心跳输出）
+     * @return 下载完成返回 true
+     */
+    public boolean downloadResume(String remotePath, File localFile, FtpProgressListener progressListener) {
+        if (localFile != null) {
+            log.info("开始大文件断点续传下载: {} -> {}", remotePath, localFile.getAbsolutePath());
+        }
+        FtpProgressListener listener = progressListener != null ? progressListener : (bytesTransferred, totalBytes, percentage) ->
+                log.info("[DOWNLOAD-RESUME-PROGRESS] 来源: {}, 进度: {}/{} bytes ({})",
+                        remotePath, bytesTransferred, totalBytes, String.format("%.2f%%", percentage));
+        return ftpTemplate.downloadResume(remotePath, localFile, listener);
+    }
 }
