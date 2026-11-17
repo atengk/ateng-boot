@@ -55,6 +55,13 @@ ateng:
         enabled: true
         drain-timeout: 0s
 
+      # 7. 纯 JDK 图形验证码切换体验（SVG 矢量防直读 | PNG 位图）
+      captcha:
+        enabled: true
+        renderer: SVG
+        type: CHAR
+        expire: 2m
+
 # ==============================================================================
 # 分布式中间件拓展体验说明（可选）：
 # 若在 pom.xml 中引入 RedissonClient 或 StringRedisTemplate，

@@ -16,6 +16,7 @@
 | **动态 CORS 跨域** | 动态跨域来源校验与凭证安全反射 | `CorsOriginProvider`, `DefaultCorsOriginProvider`, `DynamicCorsConfigurationSource` | `ateng.boot.web.cors.enabled`, `allowed-origins`, `allowed-methods`, `allowed-headers`, `allow-credentials`, `allow-localhost`, `exposed-headers`, `max-age` | 基于配置属性通配或 `CorsOriginProvider.isAllowed(origin)` SPI 动态扩展校验 Origin，安全反射并支持凭据传输（Cookie），放行本地 localhost 调试 | `DynamicCorsTest.java`, `WebSecurityAndSignControllerTest.java` |
 | **自适应限流防刷** | 三级自适应令牌桶与多维限流 | `@RateLimiter`, `LimitType`, `RateLimiterStore`, `InMemoryRateLimiterStore`, `RedisRateLimiterStore`, `RedissonRateLimiterStore`, `RateLimiterProperties` | `ateng.boot.web.ratelimit.enabled`, `key-prefix`, `fail-open`, `include-headers`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@RateLimiter(count, time, timeUnit, limitType, key, prefix, message)`，`RateLimiterStore.tryAcquire(key, count, time, unit)`、`getAvailablePermits(key, count, time, unit)` 与 `reset(key)` 对称状态管理与只读剩余许可探针；默认 `include-headers: true` 回写 `X-RateLimit-Limit` / `X-RateLimit-Remaining`；支持默认/IP/用户/租户（`LimitType.TENANT`）多维限流；`fail-open` 默认 `false` 严格透传异常，设为 `true` 时后端故障降级回退单机 `InMemoryRateLimiterStore`；`ReentrantLock` 杜绝虚拟线程 Carrier Pinning | `RateLimiterAspectTest.java`, `AtengRateLimiterAutoConfigurationTest.java`, `InMemoryRateLimiterStoreTest.java`, `RedisRateLimiterStoreTest.java`, `RedissonRateLimiterStoreTest.java`, `WebTrafficGovernanceControllerTest.java`, `WebTenantRateLimiterSampleTest.java` |
 | **自适应防重幂等** | 三级自适应防重幂等引擎 | `@Idempotent`, `IdempotentKeyStore`, `InMemoryIdempotentKeyStore`, `RedisIdempotentKeyStore`, `RedissonIdempotentKeyStore`, `IdempotentProperties` | `ateng.boot.web.idempotent.enabled`, `key-prefix`, `fail-open`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@Idempotent(key, prefix, timeout, timeUnit, message, delKeyOnException)`，`IdempotentKeyStore.tryLock(key, timeout, unit)`、`unlock(key)` 与 `isLocked(key)` 对称状态探针；支持 SpEL 动态提取业务键、自动防抖、业务异常释放；`fail-open` 默认 `false` 严格透传异常，设为 `true` 时后端故障降级回退单机 `InMemoryIdempotentKeyStore`；`ReentrantLock` 杜绝虚拟线程 Carrier Pinning | `IdempotentAspectTest.java`, `AtengIdempotentAutoConfigurationTest.java`, `InMemoryIdempotentKeyStoreTest.java`, `WebTrafficGovernanceControllerTest.java` |
+| **纯 JDK 图形验证码** | 零字体依赖 SVG/PNG 生成与一次一密受管核验 | `CaptchaTemplate`, `CaptchaResult`, `CaptchaType`, `CaptchaCharType`, `CaptchaRendererType`, `CaptchaStore`, `InMemoryCaptchaStore`, `RedisCaptchaStore`, `RedissonCaptchaStore`, `CaptchaRenderer`, `SvgCaptchaRenderer`, `PngCaptchaRenderer`, `CaptchaProperties`, `AtengCaptchaAutoConfiguration` | `ateng.boot.web.captcha.enabled`, `key-prefix`, `renderer`, `type`, `char-type`, `length`, `math-operators`, `width`, `height`, `expire`, `ignore-case`, `noise-line-count`, `noise-dot-count`, `fail-open`, `in-memory.max-capacity`, `in-memory.clean-interval` | `CaptchaTemplate.generate()`, `generate(CaptchaType)`, `verify(key, code)`, `verifyOrThrow(key, code)`, `invalidate(key)`；`CaptchaStore.save(key, answer, ttl)`, `getAndDelete(key)`, `delete(key)`；`CaptchaRenderer.render(displayText, properties)`；默认零系统字体依赖 `SvgCaptchaRenderer`（纯 `<path>` 轮廓无 `<text>` 防直读），可切 `PngCaptchaRenderer`；支持 `CHAR`（默认剔除 `0/O/o/1/I/l`）与 `MATH`；核验严格一次一密（无论成败原子 `getAndDelete` 销毁）；Redisson $\rightarrow$ Redis $\rightarrow$ InMemory 三级自适应存储，`fail-open` 默认 `false` | `CaptchaTemplateTest.java`, `AtengCaptchaAutoConfigurationTest.java`, `InMemoryCaptchaStoreTest.java`, `RedisCaptchaStoreTest.java`, `RedissonCaptchaStoreTest.java`, `SvgCaptchaRendererTest.java`, `PngCaptchaRendererTest.java`, `WebCaptchaControllerTest.java`, `WebCaptchaPngSampleTest.java` |
 | **云原生优雅停机** | K8s 就绪探针排空与在途请求感知 | `AtengGracefulShutdownHandler`, `DrainResult`, `PreStopEndpoint`, `PreStopController` | `ateng.boot.web.shutdown.enabled`, `drain-timeout`, `quiet-period`, `poll-interval`, `smart-lifecycle-enabled`, `actuator-endpoint-enabled`, `mvc-endpoint-enabled`, `mvc-endpoint-path` | `drain()`, `isDrained()`, `getInFlightRequestCount()`, 翻转 `ReadinessState.REFUSING_TRAFFIC`，两阶段自适应排空（先等待 `quiet-period` 保障路由传播，未配置时等价 `drain-timeout: 10s`；剩余窗口按 `poll-interval: 100ms` 轮询探测在途归零即提前退出），统计并返回 `inFlightRequestsAtStart` / `inFlightRequestsRemaining` 在途请求快照，`AtomicBoolean` 状态机排空幂等，支持 `/actuator/pre-stop` 与 `/pre-stop` 双模端点及 `SmartLifecycle` 兜底 | `AtengGracefulShutdownHandlerTest.java`, `PreStopEndpointTest.java`, `PreStopControllerTest.java`, `AtengGracefulShutdownAutoConfigurationTest.java`, `WebCloudLifecycleControllerTest.java` |
 | **慢请求主动告警** | 长耗时慢请求性能主动告警与长连接放行 | `SlowRequestFilter` | `ateng.boot.web.slow-request.enabled`, `threshold`, `exclude-urls` | 请求出口处计算总耗时，超过阈值（强类型 Duration）输出包含 TraceId、URI、Method、耗时与 ClientIp 的 `[SLOW_REQUEST]` 格式化 WARN 日志，自动放行 WebSocket、SSE、文件下载与异步挂起请求，支持 Ant 路径白名单 | `SlowRequestFilterTest.java`, `SlowRequestMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogModel`, `OperateLogEvent` | `ateng.boot.web.operate-log.enabled`, `default-exclude-params` | `@OperateLog(value, module, title, type, description, saveParams, saveResult, excludeParams)`，自动关联线程上下文（操作人/租户）与合并全局 11 项默认敏感基线递归掩码，出参自动联动 `@FieldSensitive` 视图脱敏，保留原始异常因果链，支持异步存储 SPI `OperateLogStorageProvider.store(logModel)`（保留兼容 `default save(logModel)` 别名）与 `OperateLogEvent` 事件广播及开箱即用 JSON 保底 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java`, `WebObservabilityAndAuditControllerTest.java` |
@@ -1203,7 +1204,7 @@ public Result<String> slowExcludedDemo(@RequestParam(defaultValue = "60") long d
 
 ---
 
-## 5. 接口防刷限流与防重幂等治理套件
+## 5. 接口防刷限流、防重幂等与图形验证码治理套件
 
 ### 5.1 三级自适应令牌桶限流防刷引擎 (`@RateLimiter`)
 
@@ -1438,6 +1439,137 @@ public Result<Boolean> isLocked(@RequestParam String key) {
   "data": null,
   "success": false,
   "traceId": "9c8b7a6f5e4d3c2b"
+}
+```
+
+---
+
+### 5.3 纯 JDK 原生轻量图形验证码生成与受管校验 (`CaptchaTemplate`)
+
+#### 场景痛点
+登录、注册与敏感业务提交接口需要图形验证码拦截自动化脚本与撞库攻击，并需直接对接前端 `<AtengCaptcha type="image" />` 组件。传统第三方 Captcha 依赖不仅体积臃肿，且基于 AWT `Graphics2D` 的实现一旦部署到精简的 Alpine / Distroless 无头 Linux 容器镜像，极易因缺少 `fontconfig` 或系统字体库抛出运行时崩溃；同时若核验阶段未做到“原子读删”，同一 `captchaKey` 仍可能遭遇并发重放或多次试错爆破。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      captcha:
+        # 是否启用图形验证码自动装配（默认 true）
+        enabled: true
+        # 验证码存储键前缀（默认 captcha:）
+        key-prefix: "captcha:"
+        # 渲染引擎类型（SVG 零字体依赖矢量路径 | PNG JDK BufferedImage 位图，默认 SVG）
+        renderer: SVG
+        # 验证码内容模式（CHAR 随机字符 | MATH 简单算术，默认 CHAR）
+        type: CHAR
+        # 随机字符集策略（ALPHANUMERIC_SAFE 默认剔除 0/O/o/1/I/l | NUMERIC | ALPHA | ALPHANUMERIC）
+        char-type: ALPHANUMERIC_SAFE
+        # 随机字符位数（默认 4）
+        length: 4
+        # 算术模式支持的运算符（默认 +-*）
+        math-operators: "+-*"
+        # 图像尺寸（默认 130x44）
+        width: 130
+        height: 44
+        # 验证码有效时长（强类型 Duration，默认 2m）
+        expire: 2m
+        # 核验时是否忽略大小写（默认 true）
+        ignore-case: true
+        # 干扰线与噪点数量（默认 4 条线、30 个噪点）
+        noise-line-count: 4
+        noise-dot-count: 30
+        # 分布式存储故障时是否降级单机内存存储（默认 false，严格抛出异常阻断防集群裂脑）
+        fail-open: false
+        in-memory:
+          # 单机内存存储容量软上限（默认 100000）
+          max-capacity: 100000
+          # 内存过期惰性清理触发周期（强类型 Duration，默认 60s）
+          clean-interval: 60s
+```
+
+#### 核心机制与边界防御
+- **零字体依赖 SVG 矢量渲染优先 (`SvgCaptchaRenderer` / `PngCaptchaRenderer`)**：默认采用 `SvgCaptchaRenderer`（`data:image/svg+xml;base64,...`），基于内置字符矢量轮廓 `<path>` 表叠加随机旋转缩放、贝塞尔干扰曲线与噪点，**输出绝对不包含明文 `<text>` 标签**，既防爬虫正则直读答案又 100% 脱离 `java.awt` 与系统字体库；可通过 `renderer: PNG` 一键切换为 `BufferedImage` 位图渲染，或实现 `CaptchaRenderer` SPI 自主接管渲染。
+- **严格一次一密防爆破 (`CaptchaStore.getAndDelete`)**：无论调用 `verify(key, code)` 或 `verifyOrThrow(key, code)`，以及用户输入正确或错误，核验均通过 `getAndDelete` 原子读取并立即销毁；输错一次即强制失效需刷新换图，彻底杜绝针对同一 `captchaKey` 的并发重放与多次猜测爆破；同时对称提供 `invalidate(captchaKey)` 主动清理契约。
+- **三级自适应存储与故障边界**：按 `RedissonClient`（`RBucket#getAndDelete`）$\rightarrow$ `StringRedisTemplate`（原子 `GET+DEL` Lua 脚本）$\rightarrow$ `InMemoryCaptchaStore`（`ConcurrentHashMap` + `ReentrantLock` 防虚拟线程 Carrier Pinning + 软容量淘汰 + Core 受管线程池异步清理）自动探测装配；默认 `fail-open: false` 在分布式存储故障时抛出带原始 `cause` 链的 `BusinessException`，按需开启 `fail-open: true` 后可降级至单机内存。
+- **纯门面安全边界**：Starter 内不默认暴露公共 HTTP 端点，由业务 Controller 自主注入 `CaptchaTemplate` 并按需叠加 `@RateLimiter` 或业务校验逻辑。
+
+#### 1:1 实测业务代码范式
+```java
+@RestController
+@RequestMapping("/sample/web/captcha")
+public class WebCaptchaController {
+
+    private final CaptchaTemplate captchaTemplate;
+
+    public WebCaptchaController(CaptchaTemplate captchaTemplate) {
+        this.captchaTemplate = captchaTemplate;
+    }
+
+    // 1. 生成图形验证码（默认按配置生成 CHAR；支持传入 type=CHAR|MATH 动态切换）
+    @GetMapping("/image")
+    public Result<CaptchaResult> generateImage(@RequestParam(value = "type", required = false) CaptchaType type) {
+        CaptchaResult result = type == null ? captchaTemplate.generate() : captchaTemplate.generate(type);
+        return Result.success(result);
+    }
+
+    // 2. 生成简单算术图形验证码
+    @GetMapping("/math")
+    public Result<CaptchaResult> generateMath() {
+        return Result.success(captchaTemplate.generate(CaptchaType.MATH));
+    }
+
+    // 3. 登录强校验（verifyOrThrow 校验失败或过期直接抛 BusinessException(400) 并烧毁 Key）
+    @PostMapping("/login")
+    public Result<CaptchaLoginVO> login(@Valid @RequestBody CaptchaLoginDTO dto) {
+        captchaTemplate.verifyOrThrow(dto.getCaptchaKey(), dto.getCaptchaCode());
+        CaptchaLoginVO vo = CaptchaLoginVO.builder()
+                .username(dto.getUsername())
+                .accessToken("demo_tok_" + IdUtil.fastSimpleUUID())
+                .loginTime(LocalDateTime.now())
+                .build();
+        return Result.success(vo);
+    }
+
+    // 4. 布尔核验与主动失效对称接口
+    @PostMapping("/verify")
+    public Result<Boolean> verify(@Valid @RequestBody CaptchaVerifyDTO dto) {
+        return Result.success(captchaTemplate.verify(dto.getCaptchaKey(), dto.getCaptchaCode()));
+    }
+
+    @DeleteMapping("/{captchaKey}")
+    public Result<Void> invalidate(@PathVariable("captchaKey") String captchaKey) {
+        captchaTemplate.invalidate(captchaKey);
+        return Result.success();
+    }
+}
+```
+
+#### 真实 HTTP 响应报文验证
+
+##### (1) 生成图形验证码 (`GET /sample/web/captcha/image`)
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "captchaKey": "f75add2850872d1575988f73542c8e05",
+    "imageBase64": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmci...",
+    "expireSeconds": 120
+  },
+  "success": true,
+  "traceId": "067f201b1f28d5509989f822c178f2b2"
+}
+```
+
+##### (2) 输错后防重放被拦截 (`POST /sample/web/captcha/login`)
+```json
+{
+  "code": 400,
+  "msg": "图形验证码已失效，请刷新重试",
+  "data": null,
+  "success": false,
+  "traceId": "067f201b1f28d5509989f822c178f2b2"
 }
 ```
 
@@ -2558,4 +2690,38 @@ ateng:
       sanity-check:
         # 是否启用生产环境高危配置安全防呆自检（默认 true）
         enabled: true
+      captcha:
+        # 是否启用纯 JDK 原生图形验证码自动装配（默认 true）
+        enabled: true
+        # 存储全局 Key 前缀（默认 captcha:）
+        key-prefix: "captcha:"
+        # 图像渲染引擎类型（默认 SVG；可选 PNG）
+        renderer: SVG
+        # 默认验证码内容模式（默认 CHAR；可选 MATH）
+        type: CHAR
+        # 随机字符模式字符集策略（默认 ALPHANUMERIC_SAFE；可选 NUMERIC、ALPHA、ALPHANUMERIC）
+        char-type: ALPHANUMERIC_SAFE
+        # 随机字符位数（默认 4）
+        length: 4
+        # 算术模式允许的运算符（默认 +-*）
+        math-operators: "+-*"
+        # 图像宽度（像素，默认 130）
+        width: 130
+        # 图像高度（像素，默认 44）
+        height: 44
+        # 验证码有效时长（强类型 Duration，默认 2m）
+        expire: 2m
+        # 核验时是否忽略大小写（默认 true）
+        ignore-case: true
+        # 干扰线数量（默认 4）
+        noise-line-count: 4
+        # 干扰噪点数量（默认 30）
+        noise-dot-count: 30
+        # 分布式存储故障时是否降级至单机内存存储（默认 false：严格抛出异常阻断）
+        fail-open: false
+        in-memory:
+          # 单机内存存储软上限（默认 100000）
+          max-capacity: 100000
+          # 后台惰性过期清理扫描周期（强类型 Duration，默认 60s）
+          clean-interval: 60s
 ```
