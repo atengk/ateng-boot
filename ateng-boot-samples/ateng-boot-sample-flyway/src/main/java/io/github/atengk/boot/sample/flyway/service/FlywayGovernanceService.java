@@ -6,25 +6,19 @@ import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.flyway.enums.FlywayResultCode;
 import io.github.atengk.boot.flyway.exception.FlywayException;
-import io.github.atengk.boot.flyway.guard.ProductionSafetyGuard;
 import io.github.atengk.boot.flyway.model.MigrationTarget;
 import io.github.atengk.boot.flyway.observability.FlywayHealthIndicator;
 import io.github.atengk.boot.flyway.properties.AtengFlywayProperties;
-import io.github.atengk.boot.flyway.security.FlywayPasswordDecryptor;
-import io.github.atengk.boot.flyway.security.TransientFlywayExecutor;
 import io.github.atengk.boot.flyway.spi.FlywayTargetResolver;
+import io.github.atengk.boot.flyway.template.FlywayTemplate;
 import io.github.atengk.boot.sample.flyway.dto.IsolatedCredentialDemoRequest;
 import io.github.atengk.boot.sample.flyway.vo.IsolatedCredentialDemoResponse;
 import io.github.atengk.boot.sample.flyway.vo.MigrationHealthResponse;
 import lombok.RequiredArgsConstructor;
-import org.flywaydb.core.api.callback.Callback;
-import org.flywaydb.core.api.migration.JavaMigration;
+import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.output.ValidateResult;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.actuate.health.Health;
-import org.springframework.boot.autoconfigure.flyway.FlywayConfigurationCustomizer;
-import org.springframework.boot.autoconfigure.flyway.FlywayProperties;
-import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;
@@ -42,13 +36,7 @@ import java.util.Map;
 public class FlywayGovernanceService {
 
     private final FlywayTargetResolver targetResolver;
-    private final AtengFlywayProperties atengFlywayProperties;
-    private final FlywayProperties flywayProperties;
-    private final ResourceLoader resourceLoader;
-    private final ObjectProvider<FlywayConfigurationCustomizer> customizersProvider;
-    private final ObjectProvider<JavaMigration> javaMigrationsProvider;
-    private final ObjectProvider<Callback> callbacksProvider;
-    private final ProductionSafetyGuard safetyGuard;
+    private final FlywayTemplate flywayTemplate;
     private final ObjectProvider<FlywayHealthIndicator> healthIndicatorProvider;
 
     /**
@@ -91,26 +79,14 @@ public class FlywayGovernanceService {
                 .failurePolicy(baseTarget.getFailurePolicy())
                 .build();
 
-        TransientFlywayExecutor transientExecutor = new TransientFlywayExecutor(
-                atengFlywayProperties,
-                flywayProperties,
-                new FlywayPasswordDecryptor(transientCred),
-                resourceLoader,
-                customizersProvider.orderedStream().toList(),
-                javaMigrationsProvider.orderedStream().toList(),
-                callbacksProvider.orderedStream().toList(),
-                safetyGuard,
-                null
-        );
-
-        ValidateResult result = transientExecutor.execute(credTarget, org.flywaydb.core.Flyway::validateWithResult);
+        ValidateResult result = flywayTemplate.executeTransient(credTarget, Flyway::validateWithResult);
         return IsolatedCredentialDemoResponse.builder()
                 .targetKey(targetKey)
                 .maskedCiphertext("enc:sm4:" + DesensitizeUtil.password(encryptedPassword))
                 .validationPassed(result.validationSuccessful)
                 .validateCount(result.validateCount)
-                .activeTransientPoolCount(transientExecutor.getActiveTransientPoolCount())
-                .closedTransientPoolCount(transientExecutor.getClosedTransientPoolCount())
+                .activeTransientPoolCount(flywayTemplate.getActiveTransientPoolCount())
+                .closedTransientPoolCount(flywayTemplate.getClosedTransientPoolCount())
                 .build();
     }
 

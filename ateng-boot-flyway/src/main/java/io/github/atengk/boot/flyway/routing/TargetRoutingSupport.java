@@ -34,12 +34,8 @@ public final class TargetRoutingSupport {
         }
         String normalized = dsKey.trim().toLowerCase(Locale.ROOT);
         AtengFlywayProperties.TargetRoutingProperties routing = properties != null ? properties.getRouting() : null;
-        if (routing == null || routing.isSkipSlave()) {
-            if ("slave".equals(normalized)
-                    || normalized.endsWith("_slave")
-                    || normalized.startsWith("slave_")) {
-                return true;
-            }
+        if ((routing == null || routing.isSkipSlave()) && isSlaveNaming(normalized)) {
+            return true;
         }
         if (routing != null && !CollectionUtils.isEmpty(routing.getExcludedDataSources())) {
             for (String excluded : routing.getExcludedDataSources()) {
@@ -50,6 +46,41 @@ public final class TargetRoutingSupport {
             }
         }
         return false;
+    }
+
+    /**
+     * 判断数据源或分组名称是否符合从库命名约定（{@code slave}、{@code slave_*}、{@code *_slave}）
+     *
+     * @param name 数据源或分组名称
+     * @return true 表示命中从库命名约定
+     */
+    public static boolean isSlaveNaming(String name) {
+        if (!StringUtils.hasText(name)) {
+            return false;
+        }
+        String normalized = name.trim().toLowerCase(Locale.ROOT);
+        return "slave".equals(normalized)
+                || normalized.endsWith("_slave")
+                || normalized.startsWith("slave_");
+    }
+
+    /**
+     * 判断分组名称是否符合只读/从库分组命名约定
+     *
+     * @param groupName 分组名称
+     * @return true 表示只读或从库分组
+     */
+    public static boolean isReadOnlyGroupNaming(String groupName) {
+        if (!StringUtils.hasText(groupName)) {
+            return false;
+        }
+        String normalized = groupName.trim().toLowerCase(Locale.ROOT);
+        return isSlaveNaming(normalized)
+                || normalized.contains("readonly")
+                || normalized.contains("read_only")
+                || normalized.contains("read-only")
+                || normalized.endsWith("_ro")
+                || normalized.startsWith("ro_");
     }
 
     /**

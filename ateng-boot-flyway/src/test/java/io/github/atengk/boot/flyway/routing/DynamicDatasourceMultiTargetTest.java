@@ -1,5 +1,6 @@
 package io.github.atengk.boot.flyway.routing;
 
+import com.baomidou.dynamic.datasource.ds.GroupDataSource;
 import com.baomidou.dynamic.datasource.provider.DynamicDataSourceProvider;
 import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
 import com.zaxxer.hikari.HikariDataSource;
@@ -443,6 +444,67 @@ class DynamicDatasourceMultiTargetTest {
                     FlywayException fe = (FlywayException) ex;
                     assertThat(fe.getCode()).isEqualTo(FlywayResultCode.LOCK_TIMEOUT.getCode());
                     assertThat(fe.getMessage()).doesNotContain("UnlockPass77");
+                });
+    }
+
+    @Test
+    @DisplayName("应剔除自定义名称只读组与全从库成员分组，且主库禁用无目标时启动不抛 TARGET_NOT_FOUND")
+    void shouldExcludeCustomReadOnlyGroupAndAllowAllTargetsDisabledStartup() {
+        HikariDataSource masterDs = newH2Pool("custom_ro_master");
+        HikariDataSource readPoolDs = newH2Pool("custom_read_pool");
+        HikariDataSource memberSlaveDs = newH2Pool("custom_ro_member");
+        Map<String, DataSource> dsMap = new LinkedHashMap<>();
+        dsMap.put("master", masterDs);
+        dsMap.put("read_pool_node", readPoolDs);
+        dsMap.put("node_a_slave", memberSlaveDs);
+
+        DatasourceProperties dsProps = new DatasourceProperties();
+        dsProps.getReadWriteSplit().setEnabled(true);
+        dsProps.getReadWriteSplit().setSlaveDataSource("read_pool");
+        DynamicDataSourceProvider provider = () -> dsMap;
+        AtengDynamicRoutingDataSource routing = new AtengDynamicRoutingDataSource(
+                List.of(provider), dsProps, new DefaultTenantDataSourceProvider(dsProps));
+        routing.setPrimary("master");
+        routing.afterPropertiesSet();
+
+        GroupDataSource customReadGroup = new GroupDataSource("read_pool", routing.getHealthAwareStrategy());
+        customReadGroup.addDatasource("read_pool_node", readPoolDs);
+        routing.addGroupDataSource("read_pool", customReadGroup);
+
+        GroupDataSource allSlaveMemberGroup = new GroupDataSource("replica_cluster", routing.getHealthAwareStrategy());
+        allSlaveMemberGroup.addDatasource("node_a_slave", memberSlaveDs);
+        routing.addGroupDataSource("replica_cluster", allSlaveMemberGroup);
+
+        AtengFlywayProperties flywayProps = new AtengFlywayProperties();
+        flywayProps.getDatasources().put("read_pool_node", new AtengFlywayProperties.DataSourceMigrationProperties());
+        flywayProps.getDatasources().put("node_a_slave", new AtengFlywayProperties.DataSourceMigrationProperties());
+        DynamicDatasourceFlywayTargetResolver resolver = new DynamicDatasourceFlywayTargetResolver(
+                flywayProps,
+                new org.springframework.boot.autoconfigure.flyway.FlywayProperties(),
+                routing,
+                dsProps,
+                null);
+        assertThat(resolver.resolveTargets())
+                .extracting(MigrationTarget::getTargetKey)
+                .containsExactly("master");
+
+        // 主库显式禁用且无其他纳管库时，启动应平稳返回空摘要而不抛 TARGET_NOT_FOUND
+        HikariDataSource disabledMasterDs = newH2Pool("disabled_master");
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengFlywayAutoConfiguration.class,
+                        FlywayAutoConfiguration.class
+                ))
+                .withBean(DataSource.class, () -> disabledMasterDs)
+                .withPropertyValues(
+                        "spring.flyway.locations=classpath:db/multi/master",
+                        "ateng.boot.flyway.datasources.default.enabled=false"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    FlywayTemplate template = context.getBean(FlywayTemplate.class);
+                    assertThat(template.getLastMigrationSummary()).isNotNull();
+                    assertThat(template.getLastMigrationSummary().getTotalTargets()).isZero();
                 });
     }
 }

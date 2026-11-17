@@ -12,17 +12,14 @@ import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.util.StringUtils;
 
-import java.time.Duration;
-import java.time.Instant;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 缓存感知型 Flyway 数据库迁移健康探针
  * <p>
  * 基于 {@link FlywayTemplate} 最近一次执行摘要快照与可配置缓存窗口 {@code healthCacheTtl} 暴露健康状态，
- * 采用 {@link ReentrantLock} 防止并发健康探查击穿数据库且严格避免 JDK 21+ 虚拟线程 Carrier Pinning；
+ * 采用 {@link java.util.concurrent.locks.ReentrantLock} 防止并发健康探查击穿数据库且严格避免 JDK 21+ 虚拟线程 Carrier Pinning；
  * 隔离凭据模式下按需走瞬态连接并在缓存周期内零额外数据库查询，异常信息全量脱敏。
  * </p>
  *
@@ -32,11 +29,8 @@ import java.util.concurrent.locks.ReentrantLock;
 public class FlywayHealthIndicator implements HealthIndicator, FlywayMigrationListener {
 
     private final FlywayTemplate flywayTemplate;
-    private final AtengFlywayProperties properties;
-    private final ReentrantLock cacheLock = new ReentrantLock();
+    private final ObservabilityTtlCache<Health> healthCache;
     private final AtomicLong databaseProbeCount = new AtomicLong(0);
-
-    private volatile CachedHealthSnapshot cachedSnapshot;
 
     /**
      * 构造缓存感知 Flyway 健康探针
@@ -46,33 +40,14 @@ public class FlywayHealthIndicator implements HealthIndicator, FlywayMigrationLi
      */
     public FlywayHealthIndicator(FlywayTemplate flywayTemplate, AtengFlywayProperties properties) {
         this.flywayTemplate = Objects.requireNonNull(flywayTemplate, "flywayTemplate 不能为空");
-        this.properties = Objects.requireNonNull(properties, "properties 不能为空");
+        this.healthCache = new ObservabilityTtlCache<>(
+                Objects.requireNonNull(properties, "properties 不能为空"),
+                flywayTemplate::getSummaryVersion);
     }
 
     @Override
     public Health health() {
-        Duration ttl = resolveCacheTtl();
-        CachedHealthSnapshot current = this.cachedSnapshot;
-        Instant now = Instant.now();
-        if (isCacheValid(current, ttl, now)) {
-            return current.health();
-        }
-
-        cacheLock.lock();
-        try {
-            current = this.cachedSnapshot;
-            now = Instant.now();
-            if (isCacheValid(current, ttl, now)) {
-                return current.health();
-            }
-            Health computed = evaluateHealth();
-            this.cachedSnapshot = new CachedHealthSnapshot(computed, Instant.now());
-            return computed;
-        } finally {
-            if (cacheLock.isHeldByCurrentThread()) {
-                cacheLock.unlock();
-            }
-        }
+        return healthCache.getOrCompute(this::evaluateHealth);
     }
 
     @Override
@@ -89,7 +64,7 @@ public class FlywayHealthIndicator implements HealthIndicator, FlywayMigrationLi
      * 主动失效当前健康缓存快照，触发下一次探查刷新
      */
     public void invalidateCache() {
-        this.cachedSnapshot = null;
+        healthCache.invalidate();
     }
 
     /**
@@ -154,22 +129,5 @@ public class FlywayHealthIndicator implements HealthIndicator, FlywayMigrationLi
                 .withDetail("failedCount", summary.getFailedCount())
                 .withDetail("error", errorDetail)
                 .build();
-    }
-
-    private Duration resolveCacheTtl() {
-        AtengFlywayProperties.ObservabilityProperties obs = properties.getObservability();
-        return obs != null && obs.getHealthCacheTtl() != null
-                ? obs.getHealthCacheTtl()
-                : Duration.ofSeconds(30);
-    }
-
-    private boolean isCacheValid(CachedHealthSnapshot snapshot, Duration ttl, Instant now) {
-        if (snapshot == null || ttl == null || ttl.isZero() || ttl.isNegative()) {
-            return false;
-        }
-        return now.isBefore(snapshot.cachedAt().plus(ttl));
-    }
-
-    private record CachedHealthSnapshot(Health health, Instant cachedAt) {
     }
 }

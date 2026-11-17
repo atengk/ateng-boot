@@ -467,14 +467,19 @@ public class DynamicDatasourceFlywayTargetResolver implements FlywayTargetResolv
     }
 
     private Set<String> collectReadOnlyGroupMembers(Map<String, GroupDataSource> groupMap) {
-        if (CollectionUtils.isEmpty(groupMap)) {
-            return Collections.emptySet();
-        }
+        boolean skipSlave = properties.getRouting() == null || properties.getRouting().isSkipSlave();
         boolean skipReadOnlyGroup = properties.getRouting() == null || properties.getRouting().isSkipReadOnlyGroup();
-        if (!skipReadOnlyGroup) {
+        String configuredReadWriteSlave = resolveConfiguredReadWriteSlave();
+        if (CollectionUtils.isEmpty(groupMap) && (!skipSlave || !StringUtils.hasText(configuredReadWriteSlave))) {
             return Collections.emptySet();
         }
         Set<String> excluded = new LinkedHashSet<>();
+        if (skipSlave && StringUtils.hasText(configuredReadWriteSlave)) {
+            excluded.add(configuredReadWriteSlave);
+        }
+        if (!skipReadOnlyGroup || CollectionUtils.isEmpty(groupMap)) {
+            return excluded;
+        }
         for (Map.Entry<String, GroupDataSource> entry : groupMap.entrySet()) {
             String groupName = entry.getKey();
             GroupDataSource group = entry.getValue();
@@ -482,12 +487,10 @@ public class DynamicDatasourceFlywayTargetResolver implements FlywayTargetResolv
                 continue;
             }
             String normalizedGroup = groupName.trim().toLowerCase(Locale.ROOT);
-            boolean readOnlyGroup = "slave".equals(normalizedGroup)
-                    || normalizedGroup.endsWith("_slave")
-                    || normalizedGroup.startsWith("slave_")
-                    || normalizedGroup.contains("readonly")
-                    || normalizedGroup.contains("read_only")
-                    || normalizedGroup.contains("read-only");
+            boolean configuredSlaveGroup = skipSlave && Objects.equals(normalizedGroup, configuredReadWriteSlave);
+            boolean readOnlyGroup = configuredSlaveGroup
+                    || TargetRoutingSupport.isReadOnlyGroupNaming(normalizedGroup)
+                    || areAllMembersSlaveNamed(group);
             if (!readOnlyGroup) {
                 continue;
             }
@@ -501,6 +504,26 @@ public class DynamicDatasourceFlywayTargetResolver implements FlywayTargetResolv
             }
         }
         return excluded;
+    }
+
+    private String resolveConfiguredReadWriteSlave() {
+        if (datasourceProperties != null && datasourceProperties.getReadWriteSplit() != null
+                && StringUtils.hasText(datasourceProperties.getReadWriteSplit().getSlaveDataSource())) {
+            return datasourceProperties.getReadWriteSplit().getSlaveDataSource().trim().toLowerCase(Locale.ROOT);
+        }
+        return null;
+    }
+
+    private boolean areAllMembersSlaveNamed(GroupDataSource group) {
+        if (group == null || CollectionUtils.isEmpty(group.getDataSourceMap())) {
+            return false;
+        }
+        for (String memberKey : group.getDataSourceMap().keySet()) {
+            if (!TargetRoutingSupport.isSlaveNaming(memberKey)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private BatchExecutionPolicy resolveStaticPolicy() {

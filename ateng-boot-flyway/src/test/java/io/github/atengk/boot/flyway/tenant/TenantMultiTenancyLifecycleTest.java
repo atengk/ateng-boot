@@ -574,7 +574,16 @@ class TenantMultiTenancyLifecycleTest {
                     DataSource t1004Ds = dsTemplate.getDataSource("tenant_1004");
                     assertThat(tableExists(t1004Ds, "tenant_order")).isTrue();
 
-                    // 1d. 模拟动态挂载迁移失败 (KEEP_AND_REPORT)：保留数据源并上报，修复脚本后可成功补迁
+                    // 1d. 模拟动态挂载迁移失败 (KEEP_AND_REPORT)：模拟回调窗口内并发探查先缓存旧 UP，完成后仍须立即失效并转 DOWN
+                    flywayTemplate.addMigrationListener(new io.github.atengk.boot.flyway.listener.FlywayMigrationListener() {
+                        @Override
+                        public void onMigrationFailed(String targetKey, MigrationOutcome outcome, Throwable cause) {
+                            if ("tenant_flaky".equals(targetKey)) {
+                                // 在 lastMigrationSummary 尚未更新前探查一次健康状态，模拟并发窗口竞态
+                                healthIndicator.health();
+                            }
+                        }
+                    });
                     Files.writeString(migrationFile, "INVALID SQL SYNTAX FOR TENANT;", StandardCharsets.UTF_8);
                     HikariDataSource flakyDs = newH2Pool("tenant_flaky");
                     dsTemplate.addDataSource("tenant_flaky", flakyDs, false);

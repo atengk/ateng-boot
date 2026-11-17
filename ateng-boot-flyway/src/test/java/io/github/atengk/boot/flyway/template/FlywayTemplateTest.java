@@ -246,14 +246,21 @@ class FlywayTemplateTest {
     @Test
     @DisplayName("异常与摘要文本中的 JDBC 凭据和密钥参数应统一脱敏掩码")
     void shouldSanitizeJdbcCredentialsAndSecretsInMessages() {
-        String raw = "Failed to connect jdbc:mysql://admin:SuperSecret123@db.internal:3306/app?useSSL=false&password=PlainPwd999&token=Tok888";
+        String raw = "Failed to connect jdbc:mysql://admin:SuperSecret123@db.internal:3306/app?user=ddl_admin&username=root_adm&useSSL=false&password=PlainPwd999&token=Tok888";
         String safe = FlywayConfigurationSupport.sanitizeSensitiveText(raw);
 
         assertThat(safe).contains("jdbc:mysql://admin:******@db.internal:3306/app");
+        assertThat(safe).contains("user=******");
+        assertThat(safe).contains("username=******");
         assertThat(safe).contains("password=******");
         assertThat(safe).contains("token=******");
         assertThat(safe).doesNotContain("SuperSecret123");
+        assertThat(safe).doesNotContain("ddl_admin");
+        assertThat(safe).doesNotContain("root_adm");
         assertThat(safe).doesNotContain("PlainPwd999");
         assertThat(safe).doesNotContain("Tok888");
+
+        FlywayException ex = new FlywayException(FlywayResultCode.MIGRATION_FAILED, raw);
+        assertThat(ex.getMessage()).doesNotContain("SuperSecret123").doesNotContain("ddl_admin").doesNotContain("PlainPwd999");
     }
 }

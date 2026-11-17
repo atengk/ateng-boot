@@ -28,6 +28,7 @@ import java.sql.Driver;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
+import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
@@ -235,10 +236,10 @@ public class TransientFlywayExecutor {
     }
 
     @SuppressWarnings("unchecked")
-    private DataSource buildFallbackDriverDataSource(AtengFlywayProperties.CredentialProperties credential,
-                                                     String jdbcUrl,
-                                                     String username,
-                                                     String password) {
+    DataSource buildFallbackDriverDataSource(AtengFlywayProperties.CredentialProperties credential,
+                                             String jdbcUrl,
+                                             String username,
+                                             String password) {
         SimpleDriverDataSource ds = new SimpleDriverDataSource();
         ds.setUrl(jdbcUrl);
         if (StringUtils.hasText(username)) {
@@ -247,7 +248,8 @@ public class TransientFlywayExecutor {
         if (password != null) {
             ds.setPassword(password);
         }
-        String driverClassName = StringUtils.hasText(credential.getDriverClassName())
+        applyFallbackConnectTimeout(ds, credential != null ? credential.getConnectTimeout() : null, jdbcUrl);
+        String driverClassName = credential != null && StringUtils.hasText(credential.getDriverClassName())
                 ? credential.getDriverClassName().trim()
                 : DatabaseDriver.fromJdbcUrl(jdbcUrl).getDriverClassName();
         if (StringUtils.hasText(driverClassName)) {
@@ -261,6 +263,23 @@ public class TransientFlywayExecutor {
             }
         }
         return ds;
+    }
+
+    private void applyFallbackConnectTimeout(SimpleDriverDataSource ds, Duration timeout, String jdbcUrl) {
+        if (timeout == null || timeout.isNegative() || timeout.isZero()) {
+            return;
+        }
+        long millis = Math.max(1L, timeout.toMillis());
+        int seconds = (int) Math.max(1L, (millis + 999L) / 1000L);
+        Properties connProps = new Properties();
+        DatabaseDriver driver = DatabaseDriver.fromJdbcUrl(jdbcUrl);
+        switch (driver) {
+            case POSTGRESQL -> connProps.setProperty("connectTimeout", String.valueOf(seconds));
+            case ORACLE -> connProps.setProperty("oracle.net.CONNECT_TIMEOUT", String.valueOf(millis));
+            case SQLSERVER -> connProps.setProperty("loginTimeout", String.valueOf(seconds));
+            default -> connProps.setProperty("connectTimeout", String.valueOf(millis));
+        }
+        ds.setConnectionProperties(connProps);
     }
 
     /**

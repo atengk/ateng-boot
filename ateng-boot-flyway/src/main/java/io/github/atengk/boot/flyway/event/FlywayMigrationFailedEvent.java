@@ -4,6 +4,7 @@ import io.github.atengk.boot.flyway.config.FlywayConfigurationSupport;
 import io.github.atengk.boot.flyway.enums.FlywayExecutionMode;
 import io.github.atengk.boot.flyway.model.MigrationOutcome;
 import org.springframework.context.ApplicationEvent;
+import org.springframework.util.StringUtils;
 
 import java.util.Objects;
 
@@ -46,7 +47,10 @@ public class FlywayMigrationFailedEvent extends ApplicationEvent {
         super(source);
         this.targetKey = Objects.requireNonNull(targetKey, "targetKey 不能为空");
         this.mode = mode;
-        this.errorMessage = FlywayConfigurationSupport.sanitizeSensitiveText(errorMessage);
+        String rawMessage = StringUtils.hasText(errorMessage)
+                ? errorMessage
+                : (cause != null ? cause.getMessage() : null);
+        this.errorMessage = FlywayConfigurationSupport.sanitizeSensitiveText(rawMessage);
         this.exceptionType = cause != null ? cause.getClass().getName() : null;
         this.outcome = outcome;
         this.cause = cause;

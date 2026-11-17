@@ -17,8 +17,10 @@ import org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 
 import javax.sql.DataSource;
+import java.time.Duration;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -178,5 +180,34 @@ class IsolatedCredentialTest {
                     assertThat(context).hasSingleBean(Flyway.class);
                     assertThat(context).doesNotHaveBean(TransientFlywayExecutor.class);
                 });
+    }
+
+    @Test
+    @DisplayName("无 HikariCP 回退 SimpleDriverDataSource 时应将 connectTimeout 透传至连接属性")
+    void shouldApplyConnectTimeoutOnFallbackSimpleDriverDataSource() {
+        AtengFlywayProperties props = new AtengFlywayProperties();
+        props.getCredential().setConnectTimeout(Duration.ofSeconds(7));
+        TransientFlywayExecutor executor = new TransientFlywayExecutor(
+                props,
+                new org.springframework.boot.autoconfigure.flyway.FlywayProperties(),
+                new FlywayPasswordDecryptor(props.getCredential()),
+                new org.springframework.core.io.DefaultResourceLoader(),
+                null,
+                null,
+                null,
+                new io.github.atengk.boot.flyway.guard.ProductionSafetyGuard(
+                        props, new org.springframework.mock.env.MockEnvironment()),
+                null
+        );
+        DataSource fallbackDs = executor.buildFallbackDriverDataSource(
+                props.getCredential(),
+                "jdbc:h2:mem:fallback_timeout_test;DB_CLOSE_DELAY=-1",
+                "sa",
+                ""
+        );
+        assertThat(fallbackDs).isInstanceOf(SimpleDriverDataSource.class);
+        SimpleDriverDataSource simpleDs = (SimpleDriverDataSource) fallbackDs;
+        assertThat(simpleDs.getConnectionProperties()).isNotNull();
+        assertThat(simpleDs.getConnectionProperties().getProperty("connectTimeout")).isEqualTo("7000");
     }
 }

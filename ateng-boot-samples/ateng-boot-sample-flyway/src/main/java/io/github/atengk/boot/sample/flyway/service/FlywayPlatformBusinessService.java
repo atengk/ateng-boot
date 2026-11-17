@@ -27,6 +27,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.List;
+import java.util.function.Function;
 
 /**
  * 平台基础数据、独立审计库与 SaaS 物理多租户业务服务
@@ -56,20 +57,15 @@ public class FlywayPlatformBusinessService {
     public List<TenantRegistryResponse> listPlatformTenants() {
         List<TenantRegistryEntity> entities = tenantRegistryMapper.selectList(
                 new LambdaQueryWrapper<TenantRegistryEntity>().orderByAsc(TenantRegistryEntity::getId));
-        if (entities == null || entities.isEmpty()) {
-            return List.of();
-        }
-        return entities.stream()
-                .map(entity -> TenantRegistryResponse.builder()
-                        .id(entity.getId())
-                        .tenantCode(entity.getTenantCode())
-                        .tenantName(entity.getTenantName())
-                        .dsKey(entity.getDsKey())
-                        .planTier(entity.getPlanTier())
-                        .sourceDs(entity.getSourceDs())
-                        .status(entity.getStatus())
-                        .build())
-                .toList();
+        return mapNonEmptyList(entities, entity -> TenantRegistryResponse.builder()
+                .id(entity.getId())
+                .tenantCode(entity.getTenantCode())
+                .tenantName(entity.getTenantName())
+                .dsKey(entity.getDsKey())
+                .planTier(entity.getPlanTier())
+                .sourceDs(entity.getSourceDs())
+                .status(entity.getStatus())
+                .build());
     }
 
     /**
@@ -81,19 +77,14 @@ public class FlywayPlatformBusinessService {
         return dynamicDatasourceTemplate.callInDataSource("log_db", () -> {
             List<AuditLogEntity> entities = auditLogMapper.selectList(
                     new LambdaQueryWrapper<AuditLogEntity>().orderByAsc(AuditLogEntity::getId));
-            if (entities == null || entities.isEmpty()) {
-                return List.of();
-            }
-            return entities.stream()
-                    .map(entity -> AuditLogResponse.builder()
-                            .id(entity.getId())
-                            .sourceDs(entity.getSourceDs())
-                            .auditScope(entity.getAuditScope())
-                            .actionName(entity.getActionName())
-                            .operatorName(entity.getOperatorName())
-                            .detail(entity.getDetail())
-                            .build())
-                    .toList();
+            return mapNonEmptyList(entities, entity -> AuditLogResponse.builder()
+                    .id(entity.getId())
+                    .sourceDs(entity.getSourceDs())
+                    .auditScope(entity.getAuditScope())
+                    .actionName(entity.getActionName())
+                    .operatorName(entity.getOperatorName())
+                    .detail(entity.getDetail())
+                    .build());
         });
     }
 
@@ -182,13 +173,15 @@ public class FlywayPlatformBusinessService {
             String routedDs = dynamicDatasourceTemplate.getCurrentDataSourceKey();
             List<TenantOrderEntity> entities = tenantOrderMapper.selectList(
                     new LambdaQueryWrapper<TenantOrderEntity>().orderByAsc(TenantOrderEntity::getId));
-            if (entities == null || entities.isEmpty()) {
-                return List.of();
-            }
-            return entities.stream()
-                    .map(entity -> toOrderResponse(entity, routedDs))
-                    .toList();
+            return mapNonEmptyList(entities, entity -> toOrderResponse(entity, routedDs));
         });
+    }
+
+    private <E, R> List<R> mapNonEmptyList(List<E> entities, Function<E, R> mapper) {
+        if (entities == null || entities.isEmpty()) {
+            return List.of();
+        }
+        return entities.stream().map(mapper).toList();
     }
 
     private String resolveTenantPrefix() {

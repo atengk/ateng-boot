@@ -26,6 +26,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -71,7 +72,7 @@ final class FlywayBatchExecutor {
                                                 BatchExecutionPolicy policy,
                                                 TargetItemRunner itemRunner,
                                                 Function<String, String> sanitizer,
-                                                AtomicReference<MigrationSummary> summaryRef,
+                                                Consumer<MigrationSummary> summaryRecorder,
                                                 boolean recordSummary) {
         Instant batchStart = Instant.now();
         List<MigrationOutcome> outcomes = new ArrayList<>(targetKeys.size());
@@ -91,8 +92,8 @@ final class FlywayBatchExecutor {
             } else {
                 failures.add(item.failure());
                 if (policy == BatchExecutionPolicy.FAIL_FAST) {
-                    if (recordSummary) {
-                        summaryRef.set(toSummary(assembleResult(mode, policy, batchStart,
+                    if (recordSummary && summaryRecorder != null) {
+                        summaryRecorder.accept(toSummary(assembleResult(mode, policy, batchStart,
                                 outcomes, failures, successCount, skippedCount)));
                     }
                     throw item.fastFailure();
@@ -102,8 +103,8 @@ final class FlywayBatchExecutor {
 
         BatchMigrationResult result = assembleResult(mode, policy, batchStart,
                 outcomes, failures, successCount, skippedCount);
-        if (recordSummary) {
-            summaryRef.set(toSummary(result));
+        if (recordSummary && summaryRecorder != null) {
+            summaryRecorder.accept(toSummary(result));
         }
         return result;
     }
@@ -116,21 +117,21 @@ final class FlywayBatchExecutor {
                                                     Executor executor,
                                                     TargetItemRunner itemRunner,
                                                     Function<String, String> sanitizer,
-                                                    AtomicReference<MigrationSummary> summaryRef,
+                                                    Consumer<MigrationSummary> summaryRecorder,
                                                     boolean recordSummary) {
         AsyncBatchHandle handle = launchAsync(
                 targetKeys, mode, policy, concurrency, executor, itemRunner, sanitizer);
         try {
             BatchMigrationResult result = handle.future().get(batchTimeout.toMillis(), TimeUnit.MILLISECONDS);
-            if (recordSummary) {
-                summaryRef.set(toSummary(result));
+            if (recordSummary && summaryRecorder != null) {
+                summaryRecorder.accept(toSummary(result));
             }
             return result;
         } catch (ExecutionException e) {
             Throwable cause = e.getCause();
             if (cause instanceof BatchFailFastException failFast) {
-                if (recordSummary) {
-                    summaryRef.set(toSummary(failFast.getPartialResult()));
+                if (recordSummary && summaryRecorder != null) {
+                    summaryRecorder.accept(toSummary(failFast.getPartialResult()));
                 }
                 throw failFast.getCauseException();
             }

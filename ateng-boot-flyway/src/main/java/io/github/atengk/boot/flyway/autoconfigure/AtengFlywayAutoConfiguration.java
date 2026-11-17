@@ -541,7 +541,7 @@ public class AtengFlywayAutoConfiguration {
         }
     }
 
-    private static boolean isIsolatedCredentialConfigured(Environment environment) {
+    static boolean isIsolatedCredentialConfigured(Environment environment) {
         if (environment == null) {
             return false;
         }

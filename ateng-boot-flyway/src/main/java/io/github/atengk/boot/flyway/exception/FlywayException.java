@@ -2,6 +2,7 @@ package io.github.atengk.boot.flyway.exception;
 
 import io.github.atengk.boot.core.code.IResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.flyway.config.FlywayConfigurationSupport;
 import io.github.atengk.boot.flyway.enums.FlywayResultCode;
 
 /**
@@ -40,7 +41,7 @@ public class FlywayException extends BusinessException {
      * @param customMsg  自定义错误描述
      */
     public FlywayException(IResultCode resultCode, String customMsg) {
-        super(resultCode, customMsg);
+        super(resultCode, FlywayConfigurationSupport.sanitizeSensitiveText(customMsg));
     }
 
     /**
@@ -51,7 +52,7 @@ public class FlywayException extends BusinessException {
      * @param cause      原始异常原因
      */
     public FlywayException(IResultCode resultCode, String customMsg, Throwable cause) {
-        super(resultCode, customMsg, cause);
+        super(resultCode, FlywayConfigurationSupport.sanitizeSensitiveText(customMsg), cause);
     }
 
     /**
@@ -60,7 +61,7 @@ public class FlywayException extends BusinessException {
      * @param message 错误描述
      */
     public FlywayException(String message) {
-        super(FlywayResultCode.MIGRATION_FAILED, message);
+        super(FlywayResultCode.MIGRATION_FAILED, FlywayConfigurationSupport.sanitizeSensitiveText(message));
     }
 
     /**
@@ -70,6 +71,6 @@ public class FlywayException extends BusinessException {
      * @param cause   原始异常原因
      */
     public FlywayException(String message, Throwable cause) {
-        super(FlywayResultCode.MIGRATION_FAILED, message, cause);
+        super(FlywayResultCode.MIGRATION_FAILED, FlywayConfigurationSupport.sanitizeSensitiveText(message), cause);
     }
 }

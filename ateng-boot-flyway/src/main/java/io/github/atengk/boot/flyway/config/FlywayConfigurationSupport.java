@@ -48,6 +48,7 @@ public final class FlywayConfigurationSupport {
     private static final String VENDOR_PLACEHOLDER = "{vendor}";
     private static final Pattern URI_USER_INFO_PATTERN = Pattern.compile("(://[^:/@\\s]*:)([^@/\\s]+)(@)");
     private static final Pattern KEY_VALUE_SECRET_PATTERN = Pattern.compile("(?i)\\b(password|pwd|secret|token|accessKey|secretKey)\\s*=\\s*([^;&\\s,)']+)");
+    private static final Pattern JDBC_QUERY_USER_PATTERN = Pattern.compile("(?i)([?&;]\\s*(?:user|username)\\s*=\\s*)([^;&\\s,)']+)");
 
     private FlywayConfigurationSupport() {
     }
@@ -452,8 +453,10 @@ public final class FlywayConfigurationSupport {
         String quotedMask = Matcher.quoteReplacement(DesensitizeUtil.password("secret"));
         String sanitized = URI_USER_INFO_PATTERN.matcher(message)
                 .replaceAll("$1" + quotedMask + "$3");
-        return KEY_VALUE_SECRET_PATTERN.matcher(sanitized)
+        sanitized = KEY_VALUE_SECRET_PATTERN.matcher(sanitized)
                 .replaceAll("$1=" + quotedMask);
+        return JDBC_QUERY_USER_PATTERN.matcher(sanitized)
+                .replaceAll("$1" + quotedMask);
     }
 
     private static DatabaseDriver resolveDatabaseDriver(DataSource dataSource, String fallbackUrl) {

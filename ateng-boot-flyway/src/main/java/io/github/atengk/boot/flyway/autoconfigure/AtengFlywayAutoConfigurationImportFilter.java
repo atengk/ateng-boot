@@ -1,9 +1,7 @@
 package io.github.atengk.boot.flyway.autoconfigure;
 
-import io.github.atengk.boot.flyway.properties.AtengFlywayProperties;
 import org.springframework.boot.autoconfigure.AutoConfigurationImportFilter;
 import org.springframework.boot.autoconfigure.AutoConfigurationMetadata;
-import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.context.EnvironmentAware;
 import org.springframework.core.env.Environment;
 
@@ -56,10 +54,6 @@ public class AtengFlywayAutoConfigurationImportFilter implements AutoConfigurati
         if (Boolean.FALSE.equals(springEnabled)) {
             return false;
         }
-        AtengFlywayProperties props = Binder.get(environment)
-                .bind("ateng.boot.flyway", AtengFlywayProperties.class)
-                .orElse(null);
-        return props != null && props.isEnabled()
-                && props.getCredential() != null && props.getCredential().isConfigured();
+        return AtengFlywayAutoConfiguration.isIsolatedCredentialConfigured(environment);
     }
 }

@@ -307,4 +307,44 @@ class FlywayObservabilityAndEventsTest {
                     assertThat(valFailedEvents.get(0).getErrorMessage()).doesNotContain("BAD_PAYLOAD_TOKEN");
                 });
     }
+
+    @Test
+    @DisplayName("MIGRATE 启动完成后再次调用 validate 失败仍应广播 FailedEvent 并回调 onMigrationFailed")
+    void shouldEmitFailedEventAndCallbackWhenValidateFailsAfterMigrateStartup(@TempDir Path tempDir) throws Exception {
+        Path v1 = tempDir.resolve("V1__validate_event.sql");
+        Files.writeString(v1, "CREATE TABLE obs_val_check (id BIGINT PRIMARY KEY);", StandardCharsets.UTF_8);
+
+        String dbName = "flyway_obs_val_after_mig_" + UUID.randomUUID().toString().replace("-", "");
+        List<FlywayMigrationFailedEvent> failedEvents = new CopyOnWriteArrayList<>();
+        AtomicInteger callbackFailCount = new AtomicInteger(0);
+
+        newContextRunner(dbName)
+                .withPropertyValues("spring.flyway.locations=filesystem:" + tempDir.toAbsolutePath())
+                .withBean("valFailEventCollector", ApplicationListener.class,
+                        () -> (ApplicationListener<FlywayMigrationFailedEvent>) failedEvents::add)
+                .withBean("valFailListener", FlywayMigrationListener.class, () -> new FlywayMigrationListener() {
+                    @Override
+                    public void onMigrationFailed(String targetKey, MigrationOutcome outcome, Throwable cause) {
+                        callbackFailCount.incrementAndGet();
+                    }
+                })
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    FlywayTemplate template = context.getBean(FlywayTemplate.class);
+                    assertThat(template.getLastMigrationSummary()).isNotNull();
+
+                    // 篡改已执行脚本触发校验失败
+                    Files.writeString(v1, "CREATE TABLE obs_val_check (id BIGINT PRIMARY KEY, note VARCHAR(32));",
+                            StandardCharsets.UTF_8);
+
+                    assertThatThrownBy(template::validate)
+                            .isInstanceOf(FlywayException.class)
+                            .satisfies(ex -> assertThat(((FlywayException) ex).getCode())
+                                    .isEqualTo(FlywayResultCode.VALIDATION_FAILED.getCode()));
+
+                    assertThat(callbackFailCount.get()).isEqualTo(1);
+                    assertThat(failedEvents).hasSize(1);
+                    assertThat(failedEvents.get(0).getMode()).isEqualTo(FlywayExecutionMode.VALIDATE_ONLY);
+                });
+    }
 }

@@ -60,15 +60,12 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
     private static final String TAG_OUTCOME = "outcome";
 
     private final FlywayTemplate flywayTemplate;
-    private final AtengFlywayProperties properties;
+    private final ObservabilityTtlCache<Integer> pendingCache;
     private final Queue<MigrationOutcome> pendingOutcomes = new ConcurrentLinkedQueue<>();
     private final Set<MeterRegistry> boundRegistries = Collections.newSetFromMap(new IdentityHashMap<>());
     private final ReentrantLock bindLock = new ReentrantLock();
-    private final ReentrantLock pendingCacheLock = new ReentrantLock();
     private final AtomicBoolean queueOverflowWarned = new AtomicBoolean(false);
     private final AtomicLong pendingProbeCount = new AtomicLong(0);
-
-    private volatile CachedPendingSnapshot cachedPending;
 
     /**
      * 构造 Flyway Micrometer 度量绑定器（使用默认缓存窗口配置）
@@ -87,7 +84,7 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
      */
     public FlywayMetricsBinder(FlywayTemplate flywayTemplate, AtengFlywayProperties properties) {
         this.flywayTemplate = Objects.requireNonNull(flywayTemplate, "flywayTemplate 不能为空");
-        this.properties = Objects.requireNonNull(properties, "properties 不能为空");
+        this.pendingCache = new ObservabilityTtlCache<>(Objects.requireNonNull(properties, "properties 不能为空"));
     }
 
     @Override
@@ -151,7 +148,7 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
      * 主动失效待执行脚本指标缓存
      */
     public void invalidatePendingCache() {
-        this.cachedPending = null;
+        pendingCache.invalidate();
     }
 
     /**
@@ -164,27 +161,7 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
     }
 
     private double resolvePendingCount() {
-        Duration ttl = resolveCacheTtl();
-        CachedPendingSnapshot current = this.cachedPending;
-        Instant now = Instant.now();
-        if (isCacheValid(current, ttl, now)) {
-            return current.count();
-        }
-        pendingCacheLock.lock();
-        try {
-            current = this.cachedPending;
-            now = Instant.now();
-            if (isCacheValid(current, ttl, now)) {
-                return current.count();
-            }
-            int count = queryPendingSafely();
-            this.cachedPending = new CachedPendingSnapshot(count, Instant.now());
-            return count;
-        } finally {
-            if (pendingCacheLock.isHeldByCurrentThread()) {
-                pendingCacheLock.unlock();
-            }
-        }
+        return pendingCache.getOrCompute(this::queryPendingSafely);
     }
 
     private int queryPendingSafely() {
@@ -197,20 +174,6 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
                     FlywayConfigurationSupport.sanitizeSensitiveText(e.getMessage()));
             return 0;
         }
-    }
-
-    private Duration resolveCacheTtl() {
-        AtengFlywayProperties.ObservabilityProperties obs = properties.getObservability();
-        return obs != null && obs.getHealthCacheTtl() != null
-                ? obs.getHealthCacheTtl()
-                : Duration.ofSeconds(30);
-    }
-
-    private boolean isCacheValid(CachedPendingSnapshot snapshot, Duration ttl, Instant now) {
-        if (snapshot == null || ttl == null || ttl.isZero() || ttl.isNegative()) {
-            return false;
-        }
-        return now.isBefore(snapshot.cachedAt().plus(ttl));
     }
 
     private List<MigrationOutcome> snapshotBufferedOutcomes() {
@@ -278,8 +241,5 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
                     .register(meterRegistry)
                     .record(duration.toMillis(), TimeUnit.MILLISECONDS);
         }
-    }
-
-    private record CachedPendingSnapshot(int count, Instant cachedAt) {
     }
 }

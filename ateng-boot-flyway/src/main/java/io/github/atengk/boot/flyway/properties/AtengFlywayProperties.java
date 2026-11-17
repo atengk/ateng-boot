@@ -332,13 +332,9 @@ public class AtengFlywayProperties {
     public static class TenantMigrationProperties extends DataSourceMigrationProperties {
 
         public TenantMigrationProperties() {
+            setEnabled(false);
             setLocations(new ArrayList<>(List.of("classpath:db/migration/tenant")));
         }
-
-        /**
-         * 是否启用 SaaS 物理多租户迁移治理（默认 false，开启后自动发现租户库并隔离迁移目录）
-         */
-        private boolean enabled = false;
 
         /**
          * 应用启动时是否自动对全部已有物理租户库执行迁移或校验

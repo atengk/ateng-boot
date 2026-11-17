@@ -7,8 +7,6 @@ import io.github.atengk.boot.flyway.enums.BatchExecutionPolicy;
 import io.github.atengk.boot.flyway.enums.FlywayExecutionMode;
 import io.github.atengk.boot.flyway.enums.FlywayResultCode;
 import io.github.atengk.boot.flyway.enums.MigrationTargetKind;
-import io.github.atengk.boot.flyway.event.FlywayMigrationCompletedEvent;
-import io.github.atengk.boot.flyway.event.FlywayMigrationFailedEvent;
 import io.github.atengk.boot.flyway.exception.FlywayException;
 import io.github.atengk.boot.flyway.guard.ProductionSafetyGuard;
 import io.github.atengk.boot.flyway.listener.FlywayMigrationListener;
@@ -22,7 +20,6 @@ import io.github.atengk.boot.flyway.model.MigrationSummary;
 import io.github.atengk.boot.flyway.model.MigrationTarget;
 import io.github.atengk.boot.flyway.model.MigrationTargetInfo;
 import io.github.atengk.boot.flyway.model.MigrationValidationResult;
-import io.github.atengk.boot.flyway.model.TargetFailure;
 import io.github.atengk.boot.flyway.properties.AtengFlywayProperties;
 import io.github.atengk.boot.flyway.security.TransientFlywayExecutor;
 import io.github.atengk.boot.flyway.spi.DefaultFlywayLockProvider;
@@ -58,12 +55,13 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 
 /**
  * Flyway 数据库版本化迁移统一对称门面
@@ -89,11 +87,10 @@ public class FlywayTemplate {
     private final AtengFlywayProperties properties;
     private final ProductionSafetyGuard safetyGuard;
     private final FlywayMigrationStrategy migrationStrategy;
-    private final ApplicationEventPublisher eventPublisher;
-    private final ObjectProvider<FlywayMigrationListener> listenersProvider;
+    private final FlywayExecutionNotifier notifier;
     private final Executor taskExecutor;
-    private final List<FlywayMigrationListener> manualListeners = new CopyOnWriteArrayList<>();
     private final AtomicReference<MigrationSummary> lastMigrationSummary = new AtomicReference<>();
+    private final AtomicLong summaryVersion = new AtomicLong(0);
     private final AtomicReference<CompletableFuture<BatchMigrationResult>> startupTenantMigrationFuture = new AtomicReference<>();
 
     /**
@@ -213,8 +210,7 @@ public class FlywayTemplate {
         this.properties = Objects.requireNonNull(properties, "properties 不能为空");
         this.safetyGuard = Objects.requireNonNull(safetyGuard, "safetyGuard 不能为空");
         this.migrationStrategy = migrationStrategy;
-        this.eventPublisher = eventPublisher;
-        this.listenersProvider = listenersProvider;
+        this.notifier = new FlywayExecutionNotifier(this, eventPublisher, listenersProvider);
         this.taskExecutor = taskExecutor;
     }
 
@@ -224,9 +220,7 @@ public class FlywayTemplate {
      * @param listener 迁移监听器
      */
     public void addMigrationListener(FlywayMigrationListener listener) {
-        if (listener != null && !manualListeners.contains(listener)) {
-            manualListeners.add(listener);
-        }
+        notifier.addListener(listener);
     }
 
     /**
@@ -235,9 +229,7 @@ public class FlywayTemplate {
      * @param listener 迁移监听器
      */
     public void removeMigrationListener(FlywayMigrationListener listener) {
-        if (listener != null) {
-            manualListeners.remove(listener);
-        }
+        notifier.removeListener(listener);
     }
 
     /**
@@ -449,14 +441,14 @@ public class FlywayTemplate {
                         if (tenantResult != null) {
                             BatchMigrationResult combined = FlywayBatchExecutor.mergeBatchResults(
                                     mode, tenantPolicy, staticResult, tenantResult);
-                            lastMigrationSummary.set(FlywayBatchExecutor.toSummary(combined));
+                            commitSummary(FlywayBatchExecutor.toSummary(combined));
                         } else if (ex != null) {
                             Throwable unwrapped = (ex instanceof CompletionException && ex.getCause() != null)
                                     ? ex.getCause() : ex;
                             if (unwrapped instanceof FlywayBatchExecutor.BatchFailFastException failFast) {
                                 BatchMigrationResult combined = FlywayBatchExecutor.mergeBatchResults(
                                         mode, tenantPolicy, staticResult, failFast.getPartialResult());
-                                lastMigrationSummary.set(FlywayBatchExecutor.toSummary(combined));
+                                commitSummary(FlywayBatchExecutor.toSummary(combined));
                             }
                             log.error("启动期异步租户批量执行异常: {}", sanitize(unwrapped.getMessage()), unwrapped);
                         }
@@ -467,7 +459,7 @@ public class FlywayTemplate {
 
         BatchMigrationResult tenantResult = executeBatchList(tenantKeys, mode, tenantPolicy, concurrency, false);
         BatchMigrationResult combined = FlywayBatchExecutor.mergeBatchResults(mode, tenantPolicy, staticResult, tenantResult);
-        lastMigrationSummary.set(FlywayBatchExecutor.toSummary(combined));
+        commitSummary(FlywayBatchExecutor.toSummary(combined));
         return combined;
     }
 
@@ -487,22 +479,19 @@ public class FlywayTemplate {
         Instant start = Instant.now();
         try {
             MigrationOutcome outcome = executeBatchItem(resolvedKey, effectiveMode);
-            lastMigrationSummary.updateAndGet(existing ->
-                    FlywayBatchExecutor.upsertSummaryOutcome(existing, effectiveMode, outcome));
+            updateSummary(existing -> FlywayBatchExecutor.upsertSummaryOutcome(existing, effectiveMode, outcome));
             return outcome;
         } catch (FlywayException e) {
             if (!rollbackOnFailure) {
                 MigrationOutcome failureOutcome = buildFailureOutcome(resolvedKey, effectiveMode, start, sanitize(e.getMessage()));
-                lastMigrationSummary.updateAndGet(existing ->
-                        FlywayBatchExecutor.upsertSummaryOutcome(existing, effectiveMode, failureOutcome));
+                updateSummary(existing -> FlywayBatchExecutor.upsertSummaryOutcome(existing, effectiveMode, failureOutcome));
             }
             throw e;
         } catch (Exception e) {
             String safeMessage = sanitize(e.getMessage());
             if (!rollbackOnFailure) {
                 MigrationOutcome failureOutcome = buildFailureOutcome(resolvedKey, effectiveMode, start, safeMessage);
-                lastMigrationSummary.updateAndGet(existing ->
-                        FlywayBatchExecutor.upsertSummaryOutcome(existing, effectiveMode, failureOutcome));
+                updateSummary(existing -> FlywayBatchExecutor.upsertSummaryOutcome(existing, effectiveMode, failureOutcome));
             }
             FlywayResultCode code = effectiveMode == FlywayExecutionMode.VALIDATE_ONLY
                     ? FlywayResultCode.VALIDATION_FAILED
@@ -529,14 +518,9 @@ public class FlywayTemplate {
      */
     public List<MigrationScriptInfo> pending(String targetKey) {
         String resolvedKey = requireTargetKey(targetKey);
-        try {
-            return executeWithFlyway(resolvedKey, false, flyway -> convertScripts(flyway.info().pending()));
-        } catch (FlywayException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new FlywayException(FlywayResultCode.MIGRATION_FAILED,
-                    "查询目标数据源 [" + resolvedKey + "] 待迁移脚本失败: " + sanitize(e.getMessage()), e);
-        }
+        return executeOperation(resolvedKey, false, FlywayResultCode.MIGRATION_FAILED,
+                "查询目标数据源 [" + resolvedKey + "] 待迁移脚本失败",
+                flyway -> convertScripts(flyway.info().pending()));
     }
 
     /**
@@ -556,39 +540,34 @@ public class FlywayTemplate {
      */
     public MigrationTargetInfo info(String targetKey) {
         String resolvedKey = requireTargetKey(targetKey);
-        try {
-            return executeWithFlyway(resolvedKey, false, flyway -> {
-                MigrationInfoService infoService = flyway.info();
-                MigrationInfo current = infoService.current();
-                String currentVersion = current != null && current.getVersion() != null
-                        ? current.getVersion().getVersion()
-                        : null;
-                MigrationInfo[] all = infoService.all();
-                int appliedCount = infoService.applied().length;
-                int pendingCount = infoService.pending().length;
-                int failedCount = 0;
-                if (all != null) {
-                    for (MigrationInfo item : all) {
-                        if (item.getState() != null && item.getState().isFailed()) {
-                            failedCount++;
+        return executeOperation(resolvedKey, false, FlywayResultCode.MIGRATION_FAILED,
+                "查询目标数据源 [" + resolvedKey + "] 迁移历史信息失败",
+                flyway -> {
+                    MigrationInfoService infoService = flyway.info();
+                    MigrationInfo current = infoService.current();
+                    String currentVersion = current != null && current.getVersion() != null
+                            ? current.getVersion().getVersion()
+                            : null;
+                    MigrationInfo[] all = infoService.all();
+                    int appliedCount = infoService.applied().length;
+                    int pendingCount = infoService.pending().length;
+                    int failedCount = 0;
+                    if (all != null) {
+                        for (MigrationInfo item : all) {
+                            if (item.getState() != null && item.getState().isFailed()) {
+                                failedCount++;
+                            }
                         }
                     }
-                }
-                return MigrationTargetInfo.builder()
-                        .targetKey(resolvedKey)
-                        .currentVersion(currentVersion)
-                        .appliedCount(appliedCount)
-                        .pendingCount(pendingCount)
-                        .failedCount(failedCount)
-                        .scripts(convertScripts(all))
-                        .build();
-            });
-        } catch (FlywayException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new FlywayException(FlywayResultCode.MIGRATION_FAILED,
-                    "查询目标数据源 [" + resolvedKey + "] 迁移历史信息失败: " + sanitize(e.getMessage()), e);
-        }
+                    return MigrationTargetInfo.builder()
+                            .targetKey(resolvedKey)
+                            .currentVersion(currentVersion)
+                            .appliedCount(appliedCount)
+                            .pendingCount(pendingCount)
+                            .failedCount(failedCount)
+                            .scripts(convertScripts(all))
+                            .build();
+                });
     }
 
     /**
@@ -651,33 +630,28 @@ public class FlywayTemplate {
      */
     public MigrationBaselineResult baseline(String targetKey, String version, String description) {
         String resolvedKey = requireTargetKey(targetKey);
-        try {
-            return executeWithFlyway(resolvedKey, true, baseFlyway -> {
-                Flyway runner = baseFlyway;
-                if (StringUtils.hasText(version) || StringUtils.hasText(description)) {
-                    FluentConfiguration cfg = Flyway.configure().configuration(baseFlyway.getConfiguration());
-                    if (StringUtils.hasText(version)) {
-                        cfg.baselineVersion(version);
+        return executeOperation(resolvedKey, true, FlywayResultCode.BASELINE_FAILED,
+                "目标数据源 [" + resolvedKey + "] 基线初始化失败",
+                baseFlyway -> {
+                    Flyway runner = baseFlyway;
+                    if (StringUtils.hasText(version) || StringUtils.hasText(description)) {
+                        FluentConfiguration cfg = Flyway.configure().configuration(baseFlyway.getConfiguration());
+                        if (StringUtils.hasText(version)) {
+                            cfg.baselineVersion(version);
+                        }
+                        if (StringUtils.hasText(description)) {
+                            cfg.baselineDescription(description);
+                        }
+                        runner = cfg.load();
                     }
-                    if (StringUtils.hasText(description)) {
-                        cfg.baselineDescription(description);
-                    }
-                    runner = cfg.load();
-                }
-                BaselineResult result = runner.baseline();
-                return MigrationBaselineResult.builder()
-                        .targetKey(resolvedKey)
-                        .successfullyBaselined(result.successfullyBaselined)
-                        .baselineVersion(result.baselineVersion)
-                        .warnings(copyList(result.warnings))
-                        .build();
-            });
-        } catch (FlywayException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new FlywayException(FlywayResultCode.BASELINE_FAILED,
-                    "目标数据源 [" + resolvedKey + "] 基线初始化失败: " + sanitize(e.getMessage()), e);
-        }
+                    BaselineResult result = runner.baseline();
+                    return MigrationBaselineResult.builder()
+                            .targetKey(resolvedKey)
+                            .successfullyBaselined(result.successfullyBaselined)
+                            .baselineVersion(result.baselineVersion)
+                            .warnings(copyList(result.warnings))
+                            .build();
+                });
     }
 
     /**
@@ -697,21 +671,16 @@ public class FlywayTemplate {
      */
     public MigrationRepairResult repair(String targetKey) {
         String resolvedKey = requireTargetKey(targetKey);
-        try {
-            return executeWithFlyway(resolvedKey, true, flyway -> {
-                RepairResult result = flyway.repair();
-                return MigrationRepairResult.builder()
-                        .targetKey(resolvedKey)
-                        .repairActions(copyList(result.repairActions))
-                        .warnings(copyList(result.warnings))
-                        .build();
-            });
-        } catch (FlywayException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new FlywayException(FlywayResultCode.REPAIR_FAILED,
-                    "目标数据源 [" + resolvedKey + "] 迁移历史修复失败: " + sanitize(e.getMessage()), e);
-        }
+        return executeOperation(resolvedKey, true, FlywayResultCode.REPAIR_FAILED,
+                "目标数据源 [" + resolvedKey + "] 迁移历史修复失败",
+                flyway -> {
+                    RepairResult result = flyway.repair();
+                    return MigrationRepairResult.builder()
+                            .targetKey(resolvedKey)
+                            .repairActions(copyList(result.repairActions))
+                            .warnings(copyList(result.warnings))
+                            .build();
+                });
     }
 
     /**
@@ -732,23 +701,18 @@ public class FlywayTemplate {
     public MigrationCleanResult clean(String targetKey) {
         String resolvedKey = requireTargetKey(targetKey);
         safetyGuard.assertCleanAllowed(resolvedKey, null);
-        try {
-            return executeWithFlyway(resolvedKey, true, flyway -> {
-                safetyGuard.assertCleanAllowed(resolvedKey, flyway);
-                CleanResult result = flyway.clean();
-                return MigrationCleanResult.builder()
-                        .targetKey(resolvedKey)
-                        .schemasCleaned(copyList(result.schemasCleaned))
-                        .schemasDropped(copyList(result.schemasDropped))
-                        .warnings(copyList(result.warnings))
-                        .build();
-            });
-        } catch (FlywayException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new FlywayException(FlywayResultCode.MIGRATION_FAILED,
-                    "目标数据源 [" + resolvedKey + "] 清理操作失败: " + sanitize(e.getMessage()), e);
-        }
+        return executeOperation(resolvedKey, true, FlywayResultCode.MIGRATION_FAILED,
+                "目标数据源 [" + resolvedKey + "] 清理操作失败",
+                flyway -> {
+                    safetyGuard.assertCleanAllowed(resolvedKey, flyway);
+                    CleanResult result = flyway.clean();
+                    return MigrationCleanResult.builder()
+                            .targetKey(resolvedKey)
+                            .schemasCleaned(copyList(result.schemasCleaned))
+                            .schemasDropped(copyList(result.schemasDropped))
+                            .warnings(copyList(result.warnings))
+                            .build();
+                });
     }
 
     /**
@@ -773,7 +737,7 @@ public class FlywayTemplate {
                     .warnings(Collections.emptyList())
                     .build());
         }
-        lastMigrationSummary.set(MigrationSummary.builder()
+        commitSummary(MigrationSummary.builder()
                 .mode(FlywayExecutionMode.DISABLED)
                 .executedAt(now)
                 .totalDuration(Duration.ZERO)
@@ -792,6 +756,15 @@ public class FlywayTemplate {
      */
     public MigrationSummary getLastMigrationSummary() {
         return lastMigrationSummary.get();
+    }
+
+    /**
+     * 获取全局汇总摘要单调递增版本号（用于可观测缓存防竞态失效校验）
+     *
+     * @return 摘要快照版本号
+     */
+    public long getSummaryVersion() {
+        return summaryVersion.get();
     }
 
     /**
@@ -814,6 +787,25 @@ public class FlywayTemplate {
         return runner != null ? runner.getClosedTransientPoolCount() : 0L;
     }
 
+    /**
+     * 基于指定迁移目标（含临时隔离 DDL 凭据）在瞬态连接作用域内执行受管 {@link Flyway} 操作
+     *
+     * @param target 迁移目标描述符
+     * @param action 基于 Flyway 实例的业务操作回调
+     * @param <T>    返回值类型
+     * @return 操作执行结果
+     */
+    public <T> T executeTransient(MigrationTarget target, Function<Flyway, T> action) {
+        Objects.requireNonNull(target, "target 不能为空");
+        Objects.requireNonNull(action, "action 不能为空");
+        TransientFlywayExecutor runner = targetBuilderSupport != null ? targetBuilderSupport : primaryTransientExecutor;
+        if (runner == null) {
+            throw new FlywayException(FlywayResultCode.CONFIG_INVALID,
+                    "当前环境未装配瞬态 Flyway 执行器，无法执行隔离凭据迁移操作");
+        }
+        return runner.execute(target, action);
+    }
+
     private BatchMigrationResult executeBatchTargets(Collection<String> explicitKeys,
                                                      FlywayExecutionMode mode,
                                                      BatchExecutionPolicy policy) {
@@ -830,7 +822,7 @@ public class FlywayTemplate {
         if (CollectionUtils.isEmpty(targetKeys)) {
             BatchMigrationResult empty = FlywayBatchExecutor.emptyResult(mode, effectivePolicy);
             if (recordSummary) {
-                lastMigrationSummary.set(FlywayBatchExecutor.toSummary(empty));
+                commitSummary(FlywayBatchExecutor.toSummary(empty));
             }
             return empty;
         }
@@ -838,12 +830,12 @@ public class FlywayTemplate {
         if (concurrency <= 1 || normalizedKeys.size() <= 1) {
             return FlywayBatchExecutor.executeSerially(
                     normalizedKeys, mode, effectivePolicy, this::executeBatchItem,
-                    this::sanitize, lastMigrationSummary, recordSummary);
+                    this::sanitize, this::commitSummary, recordSummary);
         }
         return FlywayBatchExecutor.executeConcurrently(
                 normalizedKeys, mode, effectivePolicy, concurrency, resolveBatchTimeout(),
                 resolveTaskExecutor(), this::executeBatchItem, this::sanitize,
-                lastMigrationSummary, recordSummary);
+                this::commitSummary, recordSummary);
     }
 
     private MigrationOutcome executeBatchItem(String key, FlywayExecutionMode mode) {
@@ -867,7 +859,7 @@ public class FlywayTemplate {
 
     private MigrationOutcome executeSingleMigration(String resolvedKey, boolean recordAsSingleSummary) {
         Instant start = Instant.now();
-        notifyBeforeMigrate(resolvedKey);
+        notifier.notifyBeforeMigrate(resolvedKey);
         try {
             MigrationOutcome outcome = executeWithFlyway(resolvedKey, true, flyway -> {
                 if (migrationStrategy != null) {
@@ -913,26 +905,16 @@ public class FlywayTemplate {
             if (recordAsSingleSummary) {
                 recordSingleSummary(FlywayExecutionMode.MIGRATE, outcome, outcome.getExecutedAt(), outcome.getDuration());
             }
-            notifyMigrationSucceeded(outcome);
-            publishCompletedEvent(outcome);
+            notifier.notifySucceeded(outcome);
             return outcome;
         } catch (FlywayException e) {
-            String safeMessage = sanitize(e.getMessage());
-            MigrationOutcome failureOutcome = recordAsSingleSummary
-                    ? recordSingleFailureSummary(resolvedKey, FlywayExecutionMode.MIGRATE, start, safeMessage)
-                    : buildFailureOutcome(resolvedKey, FlywayExecutionMode.MIGRATE, start, safeMessage);
-            notifyMigrationFailed(resolvedKey, failureOutcome, e);
-            publishFailedEvent(resolvedKey, FlywayExecutionMode.MIGRATE, safeMessage, failureOutcome, e);
+            reportSingleFailure(resolvedKey, FlywayExecutionMode.MIGRATE, start, sanitize(e.getMessage()), e, recordAsSingleSummary);
             throw e;
         } catch (Exception e) {
             String safeMessage = sanitize(e.getMessage());
-            MigrationOutcome failureOutcome = recordAsSingleSummary
-                    ? recordSingleFailureSummary(resolvedKey, FlywayExecutionMode.MIGRATE, start, safeMessage)
-                    : buildFailureOutcome(resolvedKey, FlywayExecutionMode.MIGRATE, start, safeMessage);
             FlywayException translated = new FlywayException(FlywayResultCode.MIGRATION_FAILED,
                     "目标数据源 [" + resolvedKey + "] 迁移执行失败: " + safeMessage, e);
-            notifyMigrationFailed(resolvedKey, failureOutcome, translated);
-            publishFailedEvent(resolvedKey, FlywayExecutionMode.MIGRATE, safeMessage, failureOutcome, translated);
+            reportSingleFailure(resolvedKey, FlywayExecutionMode.MIGRATE, start, safeMessage, translated, recordAsSingleSummary);
             throw translated;
         }
     }
@@ -945,13 +927,9 @@ public class FlywayTemplate {
                 ValidateResult result = flyway.validateWithResult();
                 if (!result.validationSuccessful) {
                     String details = sanitize(result.getAllErrorMessages());
-                    MigrationOutcome failureOutcome = recordSummary
-                            ? recordSingleFailureSummary(resolvedKey, FlywayExecutionMode.VALIDATE_ONLY, start, details)
-                            : buildFailureOutcome(resolvedKey, FlywayExecutionMode.VALIDATE_ONLY, start, details);
                     FlywayException ex = new FlywayException(FlywayResultCode.VALIDATION_FAILED,
                             "目标数据源 [" + resolvedKey + "] 迁移校验失败: " + details);
-                    notifyMigrationFailed(resolvedKey, failureOutcome, ex);
-                    publishFailedEvent(resolvedKey, FlywayExecutionMode.VALIDATE_ONLY, details, failureOutcome, ex);
+                    reportSingleFailure(resolvedKey, FlywayExecutionMode.VALIDATE_ONLY, start, details, ex, recordSummary);
                     failureAlreadyReported[0] = true;
                     throw ex;
                 }
@@ -985,23 +963,14 @@ public class FlywayTemplate {
             });
         } catch (FlywayException e) {
             if (!failureAlreadyReported[0]) {
-                String safeMessage = sanitize(e.getMessage());
-                MigrationOutcome failureOutcome = recordSummary
-                        ? recordSingleFailureSummary(resolvedKey, FlywayExecutionMode.VALIDATE_ONLY, start, safeMessage)
-                        : buildFailureOutcome(resolvedKey, FlywayExecutionMode.VALIDATE_ONLY, start, safeMessage);
-                notifyMigrationFailed(resolvedKey, failureOutcome, e);
-                publishFailedEvent(resolvedKey, FlywayExecutionMode.VALIDATE_ONLY, safeMessage, failureOutcome, e);
+                reportSingleFailure(resolvedKey, FlywayExecutionMode.VALIDATE_ONLY, start, sanitize(e.getMessage()), e, recordSummary);
             }
             throw e;
         } catch (Exception e) {
             String safeMessage = sanitize(e.getMessage());
-            MigrationOutcome failureOutcome = recordSummary
-                    ? recordSingleFailureSummary(resolvedKey, FlywayExecutionMode.VALIDATE_ONLY, start, safeMessage)
-                    : buildFailureOutcome(resolvedKey, FlywayExecutionMode.VALIDATE_ONLY, start, safeMessage);
             FlywayException translated = new FlywayException(FlywayResultCode.VALIDATION_FAILED,
                     "目标数据源 [" + resolvedKey + "] 迁移校验异常: " + safeMessage, e);
-            notifyMigrationFailed(resolvedKey, failureOutcome, translated);
-            publishFailedEvent(resolvedKey, FlywayExecutionMode.VALIDATE_ONLY, safeMessage, failureOutcome, translated);
+            reportSingleFailure(resolvedKey, FlywayExecutionMode.VALIDATE_ONLY, start, safeMessage, translated, recordSummary);
             throw translated;
         }
     }
@@ -1032,7 +1001,7 @@ public class FlywayTemplate {
             return List.of(resolvePrimaryTargetKey());
         }
         return filterTargetKeys(target -> target.getKind() != MigrationTargetKind.TENANT,
-                List.of(resolvePrimaryTargetKey()));
+                Collections.emptyList());
     }
 
     private List<String> resolveTenantTargetKeys() {
@@ -1065,11 +1034,7 @@ public class FlywayTemplate {
 
     private List<String> resolveBatchKeys(Collection<String> explicitKeys) {
         if (explicitKeys == null) {
-            List<String> resolved = resolveOrderedTargetKeys();
-            if (!resolved.isEmpty()) {
-                return resolved;
-            }
-            return List.of(resolvePrimaryTargetKey());
+            return resolveOrderedTargetKeys();
         }
         Set<String> deduplicated = new LinkedHashSet<>();
         for (String key : explicitKeys) {
@@ -1118,6 +1083,20 @@ public class FlywayTemplate {
     private String requireTargetKey(String targetKey) {
         Assert.hasText(targetKey, "目标数据源标识 (targetKey) 不能为空");
         return targetKey.trim();
+    }
+
+    private <T> T executeOperation(String resolvedKey,
+                                   boolean acquireLock,
+                                   FlywayResultCode failureCode,
+                                   String failurePrefix,
+                                   Function<Flyway, T> action) {
+        try {
+            return executeWithFlyway(resolvedKey, acquireLock, action);
+        } catch (FlywayException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new FlywayException(failureCode, failurePrefix + ": " + sanitize(e.getMessage()), e);
+        }
     }
 
     private <T> T executeWithFlyway(String resolvedKey, boolean acquireLock, Function<Flyway, T> action) {
@@ -1192,11 +1171,21 @@ public class FlywayTemplate {
         return FlywayConfigurationSupport.sanitizeSensitiveText(rawMessage);
     }
 
+    private void commitSummary(MigrationSummary summary) {
+        lastMigrationSummary.set(summary);
+        summaryVersion.incrementAndGet();
+    }
+
+    private void updateSummary(UnaryOperator<MigrationSummary> updater) {
+        lastMigrationSummary.updateAndGet(updater);
+        summaryVersion.incrementAndGet();
+    }
+
     private void recordSingleSummary(FlywayExecutionMode mode,
                                      MigrationOutcome outcome,
                                      Instant finishedAt,
                                      Duration elapsed) {
-        lastMigrationSummary.updateAndGet(existing -> {
+        updateSummary(existing -> {
             if (existing != null && existing.getTotalTargets() > 1) {
                 return FlywayBatchExecutor.upsertSummaryOutcome(existing, mode, outcome);
             }
@@ -1240,63 +1229,16 @@ public class FlywayTemplate {
         return outcome;
     }
 
-    private List<FlywayMigrationListener> resolveListeners() {
-        Set<FlywayMigrationListener> combined = new LinkedHashSet<>();
-        if (listenersProvider != null) {
-            listenersProvider.orderedStream().forEach(combined::add);
-        }
-        combined.addAll(manualListeners);
-        return new ArrayList<>(combined);
-    }
-
-    private void notifyBeforeMigrate(String targetKey) {
-        for (FlywayMigrationListener listener : resolveListeners()) {
-            try {
-                listener.onBeforeMigrate(targetKey);
-            } catch (Exception e) {
-                log.warn("FlywayMigrationListener#onBeforeMigrate 执行异常 [target={}]: {}",
-                        targetKey, sanitize(e.getMessage()));
-            }
-        }
-    }
-
-    private void notifyMigrationSucceeded(MigrationOutcome outcome) {
-        for (FlywayMigrationListener listener : resolveListeners()) {
-            try {
-                listener.onMigrationSucceeded(outcome);
-            } catch (Exception e) {
-                log.warn("FlywayMigrationListener#onMigrationSucceeded 执行异常 [target={}]: {}",
-                        outcome.getTargetKey(), sanitize(e.getMessage()));
-            }
-        }
-    }
-
-    private void notifyMigrationFailed(String targetKey, MigrationOutcome outcome, Throwable cause) {
-        for (FlywayMigrationListener listener : resolveListeners()) {
-            try {
-                listener.onMigrationFailed(targetKey, outcome, cause);
-            } catch (Exception e) {
-                log.warn("FlywayMigrationListener#onMigrationFailed 执行异常 [target={}]: {}",
-                        targetKey, sanitize(e.getMessage()));
-            }
-        }
-    }
-
-    private void publishCompletedEvent(MigrationOutcome outcome) {
-        if (eventPublisher != null) {
-            eventPublisher.publishEvent(new FlywayMigrationCompletedEvent(this, outcome));
-        }
-    }
-
-    private void publishFailedEvent(String targetKey,
-                                    FlywayExecutionMode mode,
-                                    String safeMessage,
-                                    MigrationOutcome outcome,
-                                    Throwable cause) {
-        if (eventPublisher != null) {
-            eventPublisher.publishEvent(new FlywayMigrationFailedEvent(
-                    this, targetKey, mode, safeMessage, outcome, cause));
-        }
+    private void reportSingleFailure(String resolvedKey,
+                                     FlywayExecutionMode mode,
+                                     Instant start,
+                                     String safeMessage,
+                                     Throwable cause,
+                                     boolean recordSummary) {
+        MigrationOutcome failureOutcome = recordSummary
+                ? recordSingleFailureSummary(resolvedKey, mode, start, safeMessage)
+                : buildFailureOutcome(resolvedKey, mode, start, safeMessage);
+        notifier.notifyFailed(resolvedKey, mode, safeMessage, failureOutcome, cause);
     }
 
     private List<MigrationScriptInfo> convertScripts(MigrationInfo[] infos) {
