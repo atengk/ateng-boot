@@ -373,6 +373,30 @@ public class SampleSshWebIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", notNullValue()))
                 .andExpect(jsonPath("$.msg", containsString("命令内容不能为空")));
+
+        // 4. 内置高危命令防火墙阻断 (56017 COMMAND_FORBIDDEN)
+        SshCommandRequest dangerousRequest = SshCommandRequest.builder()
+                .command("rm -rf /")
+                .build();
+        mockMvc.perform(post("/sample/ssh/command/exec")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(dangerousRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(56017))
+                .andExpect(jsonPath("$.msg", containsString("高危命令")));
+
+        // 5. 有界输出流 maxOutputBytes 安全截断校验
+        SshCommandRequest truncatedRequest = SshCommandRequest.builder()
+                .command("echo " + "X".repeat(100))
+                .maxOutputBytes(32L)
+                .build();
+        mockMvc.perform(post("/sample/ssh/command/exec")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(truncatedRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.truncated", is(true)))
+                .andExpect(jsonPath("$.data.stdout", is("X".repeat(32))));
     }
 
     @Test

@@ -1,5 +1,7 @@
 package io.github.atengk.boot.ssh.autoconfigure;
 
+import io.github.atengk.boot.ssh.interceptor.HighRiskCommandInterceptor;
+import io.github.atengk.boot.ssh.interceptor.SshCommandInterceptor;
 import io.github.atengk.boot.ssh.lifecycle.SshLifecycleManager;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
 import io.github.atengk.boot.ssh.properties.SshProperties;
@@ -122,11 +124,27 @@ public class AtengSshAutoConfiguration {
     }
 
     /**
+     * 自动装配内置高危毁灭性命令安全防火墙拦截器（默认开启，可通过 dangerous-command-guard-enabled 关闭）
+     *
+     * @param properties 全局配置属性
+     * @return 高危命令防火墙拦截器
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.ssh", name = "dangerous-command-guard-enabled", havingValue = "true", matchIfMissing = true)
+    public HighRiskCommandInterceptor highRiskCommandInterceptor(SshProperties properties) {
+        return new HighRiskCommandInterceptor(properties);
+    }
+
+    /**
      * 自动装配 SSH 核心操作门面 SshTemplate（同步、流式、脚本与瞬态执行）
      *
-     * @param sshSessionPool    会话缓存池
-     * @param sshClientRegistry 命名多主机注册表
-     * @param properties        全局配置属性
+     * @param sshSessionPool         会话缓存池
+     * @param sshClientRegistry      命名多主机注册表
+     * @param properties             全局配置属性
+     * @param taskExecutorProvider   可选受管异步执行器提供者
+     * @param lifecycleManagerProvider 可选生命周期协调器提供者
+     * @param interceptorsProvider   可选命令执行拦截器列表提供者（按 @Order 顺序注入）
      * @return SshTemplate 门面实例
      */
     @Bean
@@ -135,9 +153,12 @@ public class AtengSshAutoConfiguration {
                                    SshClientRegistry sshClientRegistry,
                                    SshProperties properties,
                                    @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
-                                   ObjectProvider<SshLifecycleManager> lifecycleManagerProvider) {
+                                   ObjectProvider<SshLifecycleManager> lifecycleManagerProvider,
+                                   ObjectProvider<SshCommandInterceptor> interceptorsProvider) {
         return new SshTemplate(sshSessionPool, sshClientRegistry, properties,
-                taskExecutorProvider.getIfAvailable(), lifecycleManagerProvider.getIfAvailable());
+                taskExecutorProvider.getIfAvailable(),
+                lifecycleManagerProvider.getIfAvailable(),
+                interceptorsProvider.orderedStream().toList());
     }
 
     /**

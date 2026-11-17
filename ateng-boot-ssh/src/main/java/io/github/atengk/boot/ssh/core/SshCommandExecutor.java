@@ -12,8 +12,8 @@ import org.apache.sshd.common.SshConstants;
 import org.apache.sshd.common.channel.PtyChannelConfiguration;
 import org.apache.sshd.common.util.buffer.Buffer;
 import org.springframework.util.Assert;
+import org.springframework.util.unit.DataSize;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
@@ -42,6 +42,7 @@ import java.util.function.Consumer;
 public final class SshCommandExecutor {
 
     private static final Duration DEFAULT_SIGNAL_GRACE_PERIOD = Duration.ofMillis(500);
+    private static final DataSize DEFAULT_MAX_OUTPUT_SIZE = DataSize.ofMegabytes(10);
 
     private SshCommandExecutor() {
     }
@@ -55,20 +56,29 @@ public final class SshCommandExecutor {
      * @param defaultTimeout 默认超时时长
      * @return 强类型命令执行结果
      */
+    public static SshExecResult executeSync(ClientSession session,
+                                            String rawCommand,
+                                            SshExecOptions options,
+                                            Duration defaultTimeout) {
+        return executeSync(session, rawCommand, options, defaultTimeout, DEFAULT_MAX_OUTPUT_SIZE);
+    }
+
     /**
-     * 同步执行单条远程命令并捕获完整输出结果
+     * 同步执行单条远程命令并捕获有界输出结果（防 OOM）
      *
-     * @param session        活跃客户端会话
-     * @param rawCommand     待执行的原始命令
-     * @param options        扩展配置选项（可为 null）
-     * @param defaultTimeout 默认超时时长
+     * @param session              活跃客户端会话
+     * @param rawCommand           待执行的原始命令
+     * @param options              扩展配置选项（可为 null）
+     * @param defaultTimeout       默认超时时长
+     * @param defaultMaxOutputSize 默认最大输出缓冲容量
      * @return 强类型命令执行结果
      */
     public static SshExecResult executeSync(ClientSession session,
                                             String rawCommand,
                                             SshExecOptions options,
-                                            Duration defaultTimeout) {
-        return executeSyncWithStdin(session, rawCommand, null, options, defaultTimeout);
+                                            Duration defaultTimeout,
+                                            DataSize defaultMaxOutputSize) {
+        return executeSyncWithStdin(session, rawCommand, null, options, defaultTimeout, defaultMaxOutputSize);
     }
 
     /**
@@ -86,17 +96,38 @@ public final class SshCommandExecutor {
                                                      byte[] stdinBytes,
                                                      SshExecOptions options,
                                                      Duration defaultTimeout) {
+        return executeSyncWithStdin(session, rawCommand, stdinBytes, options, defaultTimeout, DEFAULT_MAX_OUTPUT_SIZE);
+    }
+
+    /**
+     * 同步执行远程命令（支持向通道标准输入写入字节流及有界输出防 OOM 限制）
+     *
+     * @param session              活跃客户端会话
+     * @param rawCommand           待执行的原始命令
+     * @param stdinBytes           标准输入字节数据（写入后立即冲刷关闭输入管道，可为 null）
+     * @param options              扩展配置选项（可为 null）
+     * @param defaultTimeout       默认超时时长
+     * @param defaultMaxOutputSize 默认最大输出缓冲容量
+     * @return 强类型命令执行结果
+     */
+    public static SshExecResult executeSyncWithStdin(ClientSession session,
+                                                     String rawCommand,
+                                                     byte[] stdinBytes,
+                                                     SshExecOptions options,
+                                                     Duration defaultTimeout,
+                                                     DataSize defaultMaxOutputSize) {
         Assert.notNull(session, "ClientSession must not be null");
         Assert.hasText(rawCommand, "command must not be blank");
 
         SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
         Charset charset = effectiveOptions.getCharset() != null ? effectiveOptions.getCharset() : StandardCharsets.UTF_8;
         Duration timeout = resolveTimeout(effectiveOptions, defaultTimeout);
+        long maxOutputBytes = resolveMaxOutputBytes(effectiveOptions, defaultMaxOutputSize);
         String finalCommand = buildEffectiveCommand(rawCommand, effectiveOptions);
 
         long startTime = System.currentTimeMillis();
-        ByteArrayOutputStream stdoutStream = new ByteArrayOutputStream();
-        ByteArrayOutputStream stderrStream = new ByteArrayOutputStream();
+        BoundedByteArrayOutputStream stdoutStream = new BoundedByteArrayOutputStream(maxOutputBytes);
+        BoundedByteArrayOutputStream stderrStream = new BoundedByteArrayOutputStream(maxOutputBytes);
 
         ChannelExec channel = null;
         try {
@@ -135,12 +166,14 @@ public final class SshCommandExecutor {
 
             String stdout = stdoutStream.toString(charset);
             String stderr = stderrStream.toString(charset);
+            boolean truncated = stdoutStream.isTruncated() || stderrStream.isTruncated();
 
             return SshExecResult.builder()
                     .exitCode(exitCode)
                     .stdout(stdout)
                     .stderr(stderr)
                     .duration(duration)
+                    .truncated(truncated)
                     .build();
         } catch (SshOperationException e) {
             throw e;
@@ -166,6 +199,26 @@ public final class SshCommandExecutor {
                                             char[] sudoPassword,
                                             SshExecOptions options,
                                             Duration defaultTimeout) {
+        return executeSudo(session, rawCommand, sudoPassword, options, defaultTimeout, DEFAULT_MAX_OUTPUT_SIZE);
+    }
+
+    /**
+     * 执行原生 Sudo 提权命令（支持有界输出防 OOM 限制）
+     *
+     * @param session              活跃客户端会话
+     * @param rawCommand           待以管理员权限执行的命令
+     * @param sudoPassword         提权密码（char 数组，传输完毕后由系统无条件就地擦除清零）
+     * @param options              扩展配置选项
+     * @param defaultTimeout       默认超时时长
+     * @param defaultMaxOutputSize 默认最大输出缓冲容量
+     * @return 强类型命令执行结果
+     */
+    public static SshExecResult executeSudo(ClientSession session,
+                                            String rawCommand,
+                                            char[] sudoPassword,
+                                            SshExecOptions options,
+                                            Duration defaultTimeout,
+                                            DataSize defaultMaxOutputSize) {
         Assert.notNull(session, "ClientSession must not be null");
         Assert.hasText(rawCommand, "command must not be blank");
 
@@ -178,7 +231,7 @@ public final class SshCommandExecutor {
             if (sudoPassword != null && sudoPassword.length > 0) {
                 passwordBytes = encodePasswordWithNewline(sudoPassword, charset);
             }
-            return executeSyncWithStdin(session, sudoCommand, passwordBytes, effectiveOptions, defaultTimeout);
+            return executeSyncWithStdin(session, sudoCommand, passwordBytes, effectiveOptions, defaultTimeout, defaultMaxOutputSize);
         } finally {
             // 提权凭据内存绝对擦除抹零 (In-Memory Scrubbing)
             if (passwordBytes != null) {
@@ -302,12 +355,27 @@ public final class SshCommandExecutor {
      * @return 最终组装的完整命令
      */
     public static String buildEffectiveCommand(String rawCommand, SshExecOptions options) {
-        if (options == null || options.getWorkingDir() == null || options.getWorkingDir().isBlank()) {
+        if (options == null || options.getWorkingDir() == null) {
             return rawCommand;
         }
-        String workingDir = options.getWorkingDir().trim();
-        // 自动注入切换工作目录前置指令
+        String rawWorkingDir = options.getWorkingDir();
+        validateWorkingDir(rawWorkingDir);
+        if (rawWorkingDir.isBlank()) {
+            return rawCommand;
+        }
+        String workingDir = rawWorkingDir.trim();
+        // 自动注入切换工作目录前置指令（严格 POSIX 单引号安全转义）
         return "cd " + quotePath(workingDir) + " && ( " + rawCommand + " )";
+    }
+
+    private static void validateWorkingDir(String workingDir) {
+        for (int i = 0; i < workingDir.length(); i++) {
+            char ch = workingDir.charAt(i);
+            if (ch == '\0' || ch == '\r' || ch == '\n') {
+                throw new SshOperationException(SshResultCode.COMMAND_EXEC_FAILED,
+                        "SSH 工作目录包含非法控制字符，已拒绝拼接执行");
+            }
+        }
     }
 
     /**
@@ -373,11 +441,20 @@ public final class SshCommandExecutor {
         return defaultTimeout != null ? defaultTimeout : Duration.ofSeconds(60);
     }
 
-    private static String quotePath(String path) {
-        if (path.contains(" ") && !path.startsWith("'") && !path.startsWith("\"")) {
-            return "'" + path + "'";
+    private static long resolveMaxOutputBytes(SshExecOptions options, DataSize defaultMaxOutputSize) {
+        if (options != null && options.getMaxOutputSize() != null) {
+            Assert.isTrue(!options.getMaxOutputSize().isNegative(), "SshExecOptions.maxOutputSize must not be negative");
+            return options.getMaxOutputSize().toBytes();
         }
-        return path;
+        if (defaultMaxOutputSize != null) {
+            Assert.isTrue(!defaultMaxOutputSize.isNegative(), "SshProperties.maxOutputSize must not be negative");
+            return defaultMaxOutputSize.toBytes();
+        }
+        return DEFAULT_MAX_OUTPUT_SIZE.toBytes();
+    }
+
+    private static String quotePath(String path) {
+        return "'" + path.replace("'", "'\\''") + "'";
     }
 
     private static void closeChannelQuietly(ChannelExec channel) {

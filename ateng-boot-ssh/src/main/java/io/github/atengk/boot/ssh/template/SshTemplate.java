@@ -5,6 +5,8 @@ import io.github.atengk.boot.ssh.context.SshContextHolder;
 import io.github.atengk.boot.ssh.core.SshCommandExecutor;
 import io.github.atengk.boot.ssh.exception.SshOperationException;
 import io.github.atengk.boot.ssh.exception.SshResultCode;
+import io.github.atengk.boot.ssh.interceptor.HighRiskCommandInterceptor;
+import io.github.atengk.boot.ssh.interceptor.SshCommandInterceptor;
 import io.github.atengk.boot.ssh.lifecycle.SshLifecycleManager;
 import io.github.atengk.boot.ssh.model.SshBatchExecResult;
 import io.github.atengk.boot.ssh.model.SshBatchOptions;
@@ -49,6 +51,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -84,6 +87,8 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
     @Getter
     private final SshLifecycleManager lifecycleManager;
 
+    private final List<SshCommandInterceptor> interceptors;
+
     private volatile ThreadPoolTaskExecutor internalExecutor;
     private final ReentrantLock executorLock = new ReentrantLock();
 
@@ -108,6 +113,25 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                        SshProperties properties,
                        Executor executor,
                        SshLifecycleManager lifecycleManager) {
+        this(sessionPool, clientRegistry, properties, executor, lifecycleManager, defaultInterceptors(properties));
+    }
+
+    /**
+     * 构造 SSH 核心操作门面（支持注入有序命令执行拦截器链）
+     *
+     * @param sessionPool      受管会话缓存池
+     * @param clientRegistry   命名多主机注册表
+     * @param properties       全局配置属性
+     * @param executor         受管异步执行器（可为 null）
+     * @param lifecycleManager 生命周期协调器（可为 null）
+     * @param interceptors     命令执行拦截器列表（可为 null）
+     */
+    public SshTemplate(SshSessionPool sessionPool,
+                       SshClientRegistry clientRegistry,
+                       SshProperties properties,
+                       Executor executor,
+                       SshLifecycleManager lifecycleManager,
+                       List<SshCommandInterceptor> interceptors) {
         Assert.notNull(sessionPool, "SshSessionPool must not be null");
         Assert.notNull(clientRegistry, "SshClientRegistry must not be null");
         this.sessionPool = sessionPool;
@@ -115,6 +139,14 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
         this.properties = properties != null ? properties : new SshProperties();
         this.executor = executor;
         this.lifecycleManager = lifecycleManager;
+        this.interceptors = interceptors != null ? List.copyOf(interceptors) : Collections.emptyList();
+    }
+
+    private static List<SshCommandInterceptor> defaultInterceptors(SshProperties properties) {
+        if (properties == null || properties.isDangerousCommandGuardEnabled()) {
+            return List.of(new HighRiskCommandInterceptor(properties));
+        }
+        return Collections.emptyList();
     }
 
     // ==========================================
@@ -187,8 +219,9 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
     public SshExecResult exec(SshServerInfo serverInfo, String command, SshExecOptions options) {
         SshServerInfo target = resolveServerInfo(serverInfo);
         Duration timeout = resolveDefaultTimeout(target);
-        return sessionPool.execute(target, session ->
-                SshCommandExecutor.executeSync(session, command, options, timeout));
+        return executeSyncWithInterceptors(target, command, options, () ->
+                sessionPool.execute(target, session ->
+                        SshCommandExecutor.executeSync(session, command, options, timeout, properties.getMaxOutputSize())));
     }
 
     // ==========================================
@@ -344,8 +377,14 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                           SshExecOptions options) {
         SshServerInfo target = resolveServerInfo(serverInfo);
         Duration timeout = resolveDefaultTimeout(target);
-        return sessionPool.execute(target, session ->
-                SshCommandExecutor.executeStream(session, command, stdoutConsumer, stderrConsumer, options, timeout));
+        return executeWithInterceptors(
+                target,
+                command,
+                options,
+                () -> sessionPool.execute(target, session ->
+                        SshCommandExecutor.executeStream(session, command, stdoutConsumer, stderrConsumer, options, timeout)),
+                exitCode -> SshExecResult.builder().exitCode(exitCode).build()
+        );
     }
 
     // ==========================================
@@ -523,8 +562,9 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
     public SshExecResult execOnce(SshServerInfo serverInfo, String command, SshExecOptions options) {
         SshServerInfo target = resolveServerInfo(serverInfo);
         Duration timeout = resolveDefaultTimeout(target);
-        return sessionPool.executeOnce(target, session ->
-                SshCommandExecutor.executeSync(session, command, options, timeout));
+        return executeSyncWithInterceptors(target, command, options, () ->
+                sessionPool.executeOnce(target, session ->
+                        SshCommandExecutor.executeSync(session, command, options, timeout, properties.getMaxOutputSize())));
     }
 
     // ==========================================
@@ -714,8 +754,15 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
     public SshExecResult execSudo(SshServerInfo serverInfo, String command, char[] sudoPassword, SshExecOptions options) {
         SshServerInfo target = resolveServerInfo(serverInfo);
         Duration timeout = resolveDefaultTimeout(target);
-        return sessionPool.execute(target, session ->
-                SshCommandExecutor.executeSudo(session, command, sudoPassword, options, timeout));
+        try {
+            return executeSyncWithInterceptors(target, command, options, () ->
+                    sessionPool.execute(target, session ->
+                            SshCommandExecutor.executeSudo(session, command, sudoPassword, options, timeout, properties.getMaxOutputSize())));
+        } finally {
+            if (sudoPassword != null) {
+                java.util.Arrays.fill(sudoPassword, '\0');
+            }
+        }
     }
 
     /**
@@ -768,8 +815,15 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
     public SshExecResult execSudoOnce(SshServerInfo serverInfo, String command, char[] sudoPassword, SshExecOptions options) {
         SshServerInfo target = resolveServerInfo(serverInfo);
         Duration timeout = resolveDefaultTimeout(target);
-        return sessionPool.executeOnce(target, session ->
-                SshCommandExecutor.executeSudo(session, command, sudoPassword, options, timeout));
+        try {
+            return executeSyncWithInterceptors(target, command, options, () ->
+                    sessionPool.executeOnce(target, session ->
+                            SshCommandExecutor.executeSudo(session, command, sudoPassword, options, timeout, properties.getMaxOutputSize())));
+        } finally {
+            if (sudoPassword != null) {
+                java.util.Arrays.fill(sudoPassword, '\0');
+            }
+        }
     }
 
     // ==========================================
@@ -1678,5 +1732,61 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
             return properties.getCommandTimeout();
         }
         return Duration.ofSeconds(60);
+    }
+
+    private SshExecResult executeSyncWithInterceptors(SshServerInfo target,
+                                                      String command,
+                                                      SshExecOptions options,
+                                                      Supplier<SshExecResult> action) {
+        return executeWithInterceptors(target, command, options, action, Function.identity());
+    }
+
+    private <T> T executeWithInterceptors(SshServerInfo target,
+                                          String command,
+                                          SshExecOptions options,
+                                          Supplier<T> action,
+                                          Function<T, SshExecResult> resultMapper) {
+        if (interceptors.isEmpty()) {
+            return action.get();
+        }
+        SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
+        try {
+            notifyInterceptorsBefore(target, command, effectiveOptions);
+            T outcome = action.get();
+            notifyInterceptorsAfter(target, command, effectiveOptions, resultMapper.apply(outcome));
+            return outcome;
+        } catch (Throwable error) {
+            notifyInterceptorsOnError(target, command, effectiveOptions, error);
+            throw error;
+        }
+    }
+
+    private void notifyInterceptorsBefore(SshServerInfo target, String command, SshExecOptions options) {
+        for (SshCommandInterceptor interceptor : interceptors) {
+            interceptor.beforeExecute(target, command, options);
+        }
+    }
+
+    private void notifyInterceptorsAfter(SshServerInfo target,
+                                         String command,
+                                         SshExecOptions options,
+                                         SshExecResult result) {
+        for (SshCommandInterceptor interceptor : interceptors) {
+            interceptor.afterExecute(target, command, options, result);
+        }
+    }
+
+    private void notifyInterceptorsOnError(SshServerInfo target,
+                                           String command,
+                                           SshExecOptions options,
+                                           Throwable error) {
+        for (SshCommandInterceptor interceptor : interceptors) {
+            try {
+                interceptor.onError(target, command, options, error);
+            } catch (Exception ex) {
+                log.warn("ateng-boot-ssh: 执行命令拦截器 onError 回调异常 [{}]: {}",
+                        interceptor.getClass().getSimpleName(), ex.getMessage());
+            }
+        }
     }
 }

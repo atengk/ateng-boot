@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.ssh.dto;
 
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -34,4 +35,10 @@ public class SshCommandRequest implements Serializable {
      * 目标节点名称（缺省使用默认主节点）
      */
     private String serverName;
+
+    /**
+     * 可选单次命令最大输出缓冲字节上限（缺省使用全局 maxOutputSize）
+     */
+    @Min(value = 1, message = "maxOutputBytes 必须大于 0")
+    private Long maxOutputBytes;
 }

@@ -2,6 +2,8 @@ package io.github.atengk.boot.ssh.autoconfigure;
 
 import io.github.atengk.boot.ssh.exception.SshOperationException;
 import io.github.atengk.boot.ssh.exception.SshResultCode;
+import io.github.atengk.boot.ssh.interceptor.HighRiskCommandInterceptor;
+import io.github.atengk.boot.ssh.interceptor.SshCommandInterceptor;
 import io.github.atengk.boot.ssh.lifecycle.SshLifecycleManager;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
@@ -260,5 +262,66 @@ class AtengSshAutoConfigurationTest {
             assertThat(((SshOperationException) root).getResultCode()).isEqualTo(SshResultCode.JUMP_HOST_FAILED);
             assertThat(root.getMessage()).contains("non-existent");
         });
+    }
+
+    @Test
+    @DisplayName("测试 HighRiskCommandInterceptor 自动装配开关与自定义 SshCommandInterceptor @Order 排序注入")
+    void testCommandInterceptorAutoConfigurationAndOrder() {
+        // 1. 默认启用 HighRiskCommandInterceptor
+        contextRunner.run(context -> assertThat(context).hasSingleBean(HighRiskCommandInterceptor.class));
+
+        // 2. dangerous-command-guard-enabled=false 时关闭默认高危命令守卫
+        contextRunner.withPropertyValues("ateng.boot.ssh.dangerous-command-guard-enabled=false")
+                .run(context -> assertThat(context).doesNotHaveBean(HighRiskCommandInterceptor.class));
+
+        // 3. 自定义 @Order 拦截器自动按序注入 SshTemplate
+        java.util.List<String> callOrder = new java.util.ArrayList<>();
+        SshCommandInterceptor second = new OrderedTestInterceptor(20, "second", callOrder);
+        SshCommandInterceptor first = new OrderedTestInterceptor(10, "first", callOrder);
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.ssh.host=127.0.0.1",
+                        "ateng.boot.ssh.username=ops",
+                        "ateng.boot.ssh.password=pass"
+                )
+                .withBean("secondInterceptor", SshCommandInterceptor.class, () -> second)
+                .withBean("firstInterceptor", SshCommandInterceptor.class, () -> first)
+                .run(context -> {
+                    io.github.atengk.boot.ssh.template.SshTemplate template = context.getBean(io.github.atengk.boot.ssh.template.SshTemplate.class);
+                    org.assertj.core.api.Assertions.assertThatThrownBy(() -> template.exec("rm -rf /"))
+                            .isInstanceOf(SshOperationException.class)
+                            .satisfies(ex -> assertThat(((SshOperationException) ex).getResultCode())
+                                    .isEqualTo(SshResultCode.COMMAND_FORBIDDEN));
+                    // HighRiskCommandInterceptor (HIGHEST_PRECEDENCE) 最先执行并阻断，随后按 @Order 依次回调 onError
+                    assertThat(callOrder).containsExactly("first:error", "second:error");
+                });
+    }
+
+    @org.springframework.core.annotation.Order
+    private static final class OrderedTestInterceptor implements SshCommandInterceptor, org.springframework.core.Ordered {
+        private final int order;
+        private final String name;
+        private final java.util.List<String> callOrder;
+
+        private OrderedTestInterceptor(int order, String name, java.util.List<String> callOrder) {
+            this.order = order;
+            this.name = name;
+            this.callOrder = callOrder;
+        }
+
+        @Override
+        public int getOrder() {
+            return order;
+        }
+
+        @Override
+        public void beforeExecute(SshServerInfo serverInfo, String command, io.github.atengk.boot.ssh.model.SshExecOptions options) {
+            callOrder.add(name + ":before");
+        }
+
+        @Override
+        public void onError(SshServerInfo serverInfo, String command, io.github.atengk.boot.ssh.model.SshExecOptions options, Throwable error) {
+            callOrder.add(name + ":error");
+        }
     }
 }

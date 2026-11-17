@@ -4,6 +4,8 @@ import io.github.atengk.boot.ssh.enums.HostKeyPolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import org.springframework.util.unit.DataSize;
+
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,6 +30,9 @@ class SshPropertiesTest {
         assertThat(properties.getConnectTimeout()).isEqualTo(Duration.ofSeconds(10));
         assertThat(properties.getAuthTimeout()).isEqualTo(Duration.ofSeconds(15));
         assertThat(properties.getCommandTimeout()).isEqualTo(Duration.ofSeconds(60));
+        assertThat(properties.getMaxOutputSize()).isEqualTo(DataSize.ofMegabytes(10));
+        assertThat(properties.isDangerousCommandGuardEnabled()).isTrue();
+        assertThat(properties.getDangerousCommandPatterns()).isEmpty();
 
         // Pool 默认配置
         SshPoolProperties pool = properties.getPool();

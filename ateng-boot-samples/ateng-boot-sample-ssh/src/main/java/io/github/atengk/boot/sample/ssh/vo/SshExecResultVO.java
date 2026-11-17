@@ -50,6 +50,11 @@ public class SshExecResultVO implements Serializable {
     private Boolean success;
 
     /**
+     * 输出内容是否因超出缓冲上限而被截断
+     */
+    private Boolean truncated;
+
+    /**
      * 从底层实体转换为对外契约 VO
      *
      * @param result 底层命令结果
@@ -65,6 +70,7 @@ public class SshExecResultVO implements Serializable {
                 .stderr(result.getStderr())
                 .durationMs(result.getDuration() != null ? result.getDuration().toMillis() : 0L)
                 .success(result.isSuccess())
+                .truncated(result.isTruncated())
                 .build();
     }
 }

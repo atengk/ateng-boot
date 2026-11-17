@@ -92,7 +92,12 @@ public enum SshResultCode implements IResultCode {
     /**
      * SSH 服务节点连通性探测失败
      */
-    PROBE_FAILED(56016, "SSH服务节点连通性探测失败");
+    PROBE_FAILED(56016, "SSH服务节点连通性探测失败"),
+
+    /**
+     * SSH 高危命令被安全策略阻断
+     */
+    COMMAND_FORBIDDEN(56017, "SSH高危命令被安全策略阻断");
 
     /**
      * 业务状态码

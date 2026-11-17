@@ -48,6 +48,12 @@ public final class SshExecResult {
     private final Duration duration = Duration.ZERO;
 
     /**
+     * 标准输出或标准错误是否因超出 maxOutputSize 上限而被安全截断
+     */
+    @Builder.Default
+    private final boolean truncated = false;
+
+    /**
      * 判断命令是否成功执行完毕（退出状态码 == 0）
      *
      * @return true 若退出码为 0

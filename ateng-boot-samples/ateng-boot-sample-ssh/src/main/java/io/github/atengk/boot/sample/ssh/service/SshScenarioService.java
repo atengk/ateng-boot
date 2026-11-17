@@ -4,6 +4,7 @@ import io.github.atengk.boot.ssh.context.SshContextHolder;
 import io.github.atengk.boot.ssh.enums.HostKeyPolicy;
 import io.github.atengk.boot.ssh.model.SshBatchExecResult;
 import io.github.atengk.boot.ssh.model.SshBatchOptions;
+import io.github.atengk.boot.ssh.model.SshExecOptions;
 import io.github.atengk.boot.ssh.model.SshExecResult;
 import io.github.atengk.boot.ssh.model.SshPoolStats;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
@@ -13,6 +14,7 @@ import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.util.unit.DataSize;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -74,11 +76,40 @@ public class SshScenarioService {
      * @return 执行结果
      */
     public SshExecResult exec(String serverName, String command) {
+        return exec(serverName, command, SshExecOptions.defaults());
+    }
+
+    /**
+     * 演示指定命名节点同步命令执行（支持按最大输出字节数覆盖限制）
+     *
+     * @param serverName     目标节点名称（可为空）
+     * @param command        待执行命令
+     * @param maxOutputBytes 最大输出缓冲字节上限（可为 null）
+     * @return 执行结果
+     */
+    public SshExecResult exec(String serverName, String command, Long maxOutputBytes) {
+        SshExecOptions options = maxOutputBytes != null
+                ? SshExecOptions.builder().maxOutputSize(DataSize.ofBytes(maxOutputBytes)).build()
+                : SshExecOptions.defaults();
+        return exec(serverName, command, options);
+    }
+
+    /**
+     * 演示指定命名节点同步命令执行（支持执行选项覆盖）
+     *
+     * @param serverName 目标节点名称（可为空）
+     * @param command    待执行命令
+     * @param options    命令执行参数选项
+     * @return 执行结果
+     */
+    public SshExecResult exec(String serverName, String command, SshExecOptions options) {
+        SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
         if (!org.springframework.util.StringUtils.hasText(serverName)) {
-            return exec(command);
+            log.info("ateng-boot-ssh-sample: 正在执行同步命令 [{}]", command);
+            return sshTemplate.exec(command, effectiveOptions);
         }
         log.info("ateng-boot-ssh-sample: 正在目标节点 [{}] 执行同步命令 [{}]", serverName, command);
-        return sshTemplate.exec(serverName, command);
+        return sshTemplate.exec(serverName, command, effectiveOptions);
     }
 
     /**

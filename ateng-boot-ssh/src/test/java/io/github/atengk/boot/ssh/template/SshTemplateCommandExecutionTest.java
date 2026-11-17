@@ -4,6 +4,8 @@ import io.github.atengk.boot.ssh.context.SshContextHolder;
 import io.github.atengk.boot.ssh.enums.HostKeyPolicy;
 import io.github.atengk.boot.ssh.exception.SshOperationException;
 import io.github.atengk.boot.ssh.exception.SshResultCode;
+import io.github.atengk.boot.ssh.interceptor.HighRiskCommandInterceptor;
+import io.github.atengk.boot.ssh.interceptor.SshCommandInterceptor;
 import io.github.atengk.boot.ssh.model.SshExecOptions;
 import io.github.atengk.boot.ssh.model.SshExecResult;
 import io.github.atengk.boot.ssh.model.SshPoolStats;
@@ -26,6 +28,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+
+import org.springframework.util.unit.DataSize;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -290,6 +294,120 @@ class SshTemplateCommandExecutionTest {
         assertThat(stats.getHitRate()).isEqualTo(0.5d);
     }
 
+    @Test
+    @DisplayName("测试 maxOutputSize 有界输出流防 OOM：超限安全截断并排空通道，返回 truncated=true 与真实退出码")
+    void testMaxOutputSizeTruncationAndDrain() {
+        // 1. 输出在阈值内：不截断
+        SshExecOptions withinLimit = SshExecOptions.builder()
+                .maxOutputSize(DataSize.ofBytes(1024))
+                .build();
+        SshExecResult normal = template.exec("large_output_test", withinLimit);
+        assertThat(normal.isSuccess()).isTrue();
+        assertThat(normal.isTruncated()).isFalse();
+        assertThat(normal.getStdout().getBytes(StandardCharsets.UTF_8).length).isEqualTo(512);
+
+        // 2. 输出超过阈值：仅保留前 64 字节，排空远端流确保进程正常退出并置位 truncated=true
+        SshExecOptions smallLimit = SshExecOptions.builder()
+                .maxOutputSize(DataSize.ofBytes(64))
+                .build();
+        SshExecResult truncated = template.exec("large_output_test", smallLimit);
+        assertThat(truncated.isSuccess()).isTrue();
+        assertThat(truncated.getExitCode()).isZero();
+        assertThat(truncated.isTruncated()).isTrue();
+        assertThat(truncated.getStdout().getBytes(StandardCharsets.UTF_8).length).isEqualTo(64);
+    }
+
+    @Test
+    @DisplayName("测试内置 HighRiskCommandInterceptor 高危命令防火墙：精确阻断毁灭性指令并放行安全子路径")
+    void testHighRiskCommandGuard() {
+        // 1. 内置毁灭性命令阻断（错误码 56017 COMMAND_FORBIDDEN）
+        List<String> dangerousCommands = List.of(
+                "rm -rf /",
+                "rm -rf /*",
+                "sudo mkfs.ext4 /dev/sda",
+                "dd if=/dev/zero of=/dev/sdb bs=1M",
+                ":(){ :|:& };:",
+                "shutdown -h now",
+                "reboot"
+        );
+        for (String cmd : dangerousCommands) {
+            assertThatThrownBy(() -> template.exec(cmd))
+                    .isInstanceOf(SshOperationException.class)
+                    .satisfies(ex -> assertThat(((SshOperationException) ex).getResultCode())
+                            .isEqualTo(SshResultCode.COMMAND_FORBIDDEN));
+        }
+
+        // 2. 安全子路径不误杀
+        SshExecResult safeRm = template.exec("echo rm -rf /tmp/build-cache");
+        assertThat(safeRm.isSuccess()).isTrue();
+
+        // 3. 自定义附加黑名单正则阻断
+        SshProperties customProps = new SshProperties();
+        customProps.setHost("127.0.0.1");
+        customProps.setPort(serverPort);
+        customProps.setUsername("testuser");
+        customProps.setPassword("testpass");
+        customProps.setHostKeyPolicy(HostKeyPolicy.IGNORE);
+        customProps.setDangerousCommandPatterns(List.of("(?i)\\bdrop\\s+database\\b"));
+
+        SshTemplate customTemplate = new SshTemplate(sessionPool, registry, customProps);
+        assertThatThrownBy(() -> customTemplate.exec("mysql -e 'DROP DATABASE prod'"))
+                .isInstanceOf(SshOperationException.class)
+                .satisfies(ex -> assertThat(((SshOperationException) ex).getResultCode())
+                        .isEqualTo(SshResultCode.COMMAND_FORBIDDEN));
+
+        // 4. 非法正则规则在构造期 Fail-Fast 转译为 SshOperationException 并保留 cause
+        SshProperties invalidRegexProps = new SshProperties();
+        invalidRegexProps.setDangerousCommandPatterns(List.of("[invalid-regex"));
+        assertThatThrownBy(() -> new HighRiskCommandInterceptor(invalidRegexProps))
+                .isInstanceOf(SshOperationException.class)
+                .hasCauseInstanceOf(java.util.regex.PatternSyntaxException.class);
+    }
+
+    @Test
+    @DisplayName("测试 SshCommandInterceptor SPI 执行前后与异常生命周期回调")
+    void testCommandInterceptorLifecycle() {
+        List<String> events = new ArrayList<>();
+        SshCommandInterceptor auditInterceptor = new SshCommandInterceptor() {
+            @Override
+            public void beforeExecute(SshServerInfo serverInfo, String command, SshExecOptions options) {
+                events.add("before:" + command);
+            }
+
+            @Override
+            public void afterExecute(SshServerInfo serverInfo, String command, SshExecOptions options, SshExecResult result) {
+                events.add("after:" + command + ":" + result.getExitCode());
+            }
+
+            @Override
+            public void onError(SshServerInfo serverInfo, String command, SshExecOptions options, Throwable error) {
+                events.add("error:" + command + ":" + error.getClass().getSimpleName());
+            }
+        };
+
+        SshProperties props = new SshProperties();
+        SshTemplate interceptedTemplate = new SshTemplate(
+                sessionPool, registry, props, null, null,
+                List.of(new HighRiskCommandInterceptor(props), auditInterceptor));
+
+        // 1. 正常执行：触发 before -> after
+        SshExecResult ok = interceptedTemplate.exec("echo ok-spi");
+        assertThat(ok.isSuccess()).isTrue();
+        assertThat(events).containsExactly("before:echo ok-spi", "after:echo ok-spi:0");
+
+        // 2. 流式执行：触发 before -> after
+        events.clear();
+        int streamCode = interceptedTemplate.execStream("stream_test", line -> {}, null, SshExecOptions.defaults());
+        assertThat(streamCode).isZero();
+        assertThat(events).containsExactly("before:stream_test", "after:stream_test:0");
+
+        // 3. 高危命令被前置拦截器阻断，且后续异常被 onError 感知
+        events.clear();
+        assertThatThrownBy(() -> interceptedTemplate.exec("rm -rf /"))
+                .isInstanceOf(SshOperationException.class);
+        assertThat(events).containsExactly("error:rm -rf /:SshOperationException");
+    }
+
     /**
      * 针对嵌入式 SSH 服务端的命令测试工厂
      */
@@ -413,6 +531,15 @@ class SshTemplateCommandExecutionTest {
                     if (cleanCmd.contains("gbk_test")) {
                         Charset gbk = Charset.forName("GBK");
                         out.write("服务启动成功，系统运行正常\n".getBytes(gbk));
+                        out.flush();
+                        callback.onExit(0);
+                        return;
+                    }
+
+                    if (cleanCmd.contains("large_output_test")) {
+                        byte[] payload = new byte[512];
+                        java.util.Arrays.fill(payload, (byte) 'A');
+                        out.write(payload);
                         out.flush();
                         callback.onExit(0);
                         return;

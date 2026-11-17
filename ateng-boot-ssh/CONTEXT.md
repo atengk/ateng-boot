@@ -32,6 +32,18 @@ _Avoid_: SshExecutor, SshManager, SshClientHelper
 对外提供流式上传下载、目录递归同步与文件权限元数据治理的对称文件操作门面。
 _Avoid_: SftpUtil, SftpManager, SftpClientTemplate
 
+**SshCommandInterceptor (命令执行拦截器)**:
+在远程命令执行前后及异常阶段介入以实施高危指令阻断、安全审计与指标采集的扩展接口。
+_Avoid_: 命令过滤器, SshFilter, ShellHook
+
+**HighRiskCommandInterceptor (高危命令安全守卫)**:
+基于内置毁灭性指令规则与自定义正则黑名单在命令下发前执行快速失败阻断的防御组件。
+_Avoid_: 命令黑名单, 敏感词过滤, DangerousFilter
+
+**BoundedByteArrayOutputStream (有界输出缓冲流)**:
+限制单次同步命令标准输出与错误流最大内存驻留字节数并支持静默排空与截断标记的防 OOM 缓冲流。
+_Avoid_: 截断流, 限流缓冲, MaxOutputBuffer
+
 **SshExecResult (命令执行结果载荷)**:
 封装远程命令执行退出码、标准输出、标准错误及耗时指标的强类型结果对象。
 _Avoid_: CommandOutput, ExecResponse, SshResult

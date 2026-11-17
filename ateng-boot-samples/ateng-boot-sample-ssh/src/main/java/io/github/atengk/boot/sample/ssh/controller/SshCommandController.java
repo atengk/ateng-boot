@@ -53,7 +53,7 @@ public class SshCommandController {
     public Result<SshExecResultVO> exec(@Valid @RequestBody SshCommandRequest request) {
         log.info("SshCommandController: 收到同步命令执行请求 [serverName={}, command={}]",
                 request.getServerName(), request.getCommand());
-        SshExecResult result = sshScenarioService.exec(request.getServerName(), request.getCommand());
+        SshExecResult result = sshScenarioService.exec(request.getServerName(), request.getCommand(), request.getMaxOutputBytes());
         return Result.success(SshExecResultVO.from(result));
     }
 

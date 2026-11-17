@@ -1,5 +1,8 @@
 package io.github.atengk.boot.ssh.core;
 
+import io.github.atengk.boot.ssh.exception.SshOperationException;
+import io.github.atengk.boot.ssh.exception.SshResultCode;
+import io.github.atengk.boot.ssh.model.SshExecOptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -47,5 +50,26 @@ class SshCommandExecutorTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> SshCommandExecutor.buildSudoCommand(null))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("测试 workingDir POSIX 单引号安全转义与非法控制字符防注入拦截")
+    void testWorkingDirPosixEscapingAndControlCharGuard() {
+        // 1. 普通路径与含空格路径均采用标准单引号包裹
+        assertThat(SshCommandExecutor.buildEffectiveCommand("pwd", SshExecOptions.ofWorkingDir("/var/log/nginx")))
+                .isEqualTo("cd '/var/log/nginx' && ( pwd )");
+        assertThat(SshCommandExecutor.buildEffectiveCommand("pwd", SshExecOptions.ofWorkingDir("/opt/my app")))
+                .isEqualTo("cd '/opt/my app' && ( pwd )");
+
+        // 2. 内嵌单引号与特殊符号遵循 POSIX 单引号转义 (' -> '\'')
+        assertThat(SshCommandExecutor.buildEffectiveCommand("ls -la", SshExecOptions.ofWorkingDir("/opt/it's/$app")))
+                .isEqualTo("cd '/opt/it'\\''s/$app' && ( ls -la )");
+
+        // 3. 包含 \n、\r、\0 控制字符立即 Fail-Fast 阻断（含纯控制字符边界）
+        for (String badDir : new String[]{"/tmp\nrm -rf /", "/tmp\rid", "/tmp\0id", "\n", "\r\n", "\0"}) {
+            assertThatThrownBy(() -> SshCommandExecutor.buildEffectiveCommand("pwd", SshExecOptions.ofWorkingDir(badDir)))
+                    .isInstanceOf(SshOperationException.class)
+                    .satisfies(ex -> assertThat(((SshOperationException) ex).getResultCode()).isEqualTo(SshResultCode.COMMAND_EXEC_FAILED));
+        }
     }
 }

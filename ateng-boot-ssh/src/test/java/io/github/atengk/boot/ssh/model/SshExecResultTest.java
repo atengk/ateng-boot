@@ -34,6 +34,7 @@ class SshExecResultTest {
         assertThat(result.getStderr()).isEmpty();
         assertThat(result.isSuccess()).isTrue();
         assertThat(result.isFailed()).isFalse();
+        assertThat(result.isTruncated()).isFalse();
         assertThat(result.getDuration()).isEqualTo(Duration.ofMillis(120));
 
         // checkSuccess 不抛异常且返回自身
