@@ -28,9 +28,11 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.*;
@@ -63,6 +65,11 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
             assertThat(context).hasSingleBean(NotificationTemplateRenderer.class);
             assertThat(context).hasSingleBean(NotificationSendFailureHandler.class);
             assertThat(context).hasSingleBean(NotificationTemplate.class);
+            assertThat(context).hasBean("notificationAlertTaskScheduler");
+            org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler alertScheduler =
+                    context.getBean("notificationAlertTaskScheduler",
+                            org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler.class);
+            assertEquals("ateng-notif-alert-", alertScheduler.getThreadNamePrefix());
             assertThat(context).hasSingleBean(AlertStormSuppressor.class);
             assertThat(context).hasSingleBean(NotifyAlertAspect.class);
 
@@ -95,6 +102,7 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
                         "ateng.boot.notification.read-timeout=8s",
                         "ateng.boot.notification.rate-limit.enabled=true",
                         "ateng.boot.notification.rate-limit.max-wait-duration=1500ms",
+                        "ateng.boot.notification.alert.detail-url=https://apm.example.com/trace/${traceId}",
                         "ateng.boot.notification.channels.ops-alert.platform=DINGTALK",
                         "ateng.boot.notification.channels.ops-alert.webhook=https://oapi.dingtalk.com/robot/send?access_token=test_token",
                         "ateng.boot.notification.channels.ops-alert.secret=test_secret",
@@ -106,6 +114,7 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
                     assertEquals(Duration.ofSeconds(2), properties.getConnectTimeout());
                     assertEquals(Duration.ofSeconds(8), properties.getReadTimeout());
                     assertEquals(Duration.ofMillis(1500), properties.getRateLimit().getMaxWaitDuration());
+                    assertEquals("https://apm.example.com/trace/${traceId}", properties.getAlert().getDetailUrl());
 
                     assertEquals(1, properties.getChannels().size());
                     assertTrue(properties.getChannels().containsKey("ops-alert"));
@@ -114,6 +123,22 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
                     NotificationChannelRegistry registry = context.getBean(NotificationChannelRegistry.class);
                     assertTrue(registry.has("ops-alert"));
                 });
+    }
+
+    @Test
+    @DisplayName("验证 Spring 容器关闭时受管 notificationAlertTaskScheduler 同步优雅停机销毁")
+    void testAlertSchedulerLifecycleShutdownWithContainer() {
+        AtomicReference<org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler> capturedScheduler =
+                new AtomicReference<>();
+        contextRunner.run(context -> {
+            org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler scheduler =
+                    context.getBean("notificationAlertTaskScheduler",
+                            org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler.class);
+            capturedScheduler.set(scheduler);
+            assertFalse(scheduler.getScheduledThreadPoolExecutor().isShutdown());
+        });
+        assertNotNull(capturedScheduler.get());
+        assertTrue(capturedScheduler.get().getScheduledThreadPoolExecutor().isShutdown());
     }
 
     @Test
@@ -195,6 +220,10 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
                     NotificationRateLimiter rateLimiter = context.getBean(NotificationRateLimiter.class);
                     assertNotNull(rateLimiter);
                     assertTrue(rateLimiter instanceof CustomTestRateLimiter);
+
+                    org.springframework.scheduling.TaskScheduler scheduler =
+                            context.getBean("notificationAlertTaskScheduler", org.springframework.scheduling.TaskScheduler.class);
+                    assertInstanceOf(CustomTestTaskScheduler.class, scheduler);
                 });
     }
 
@@ -277,6 +306,18 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
         @Bean
         public NotificationRateLimiter customNotificationRateLimiter() {
             return new CustomTestRateLimiter();
+        }
+
+        @Bean(name = "notificationAlertTaskScheduler")
+        public org.springframework.scheduling.TaskScheduler customNotificationAlertTaskScheduler() {
+            return new CustomTestTaskScheduler();
+        }
+    }
+
+    static class CustomTestTaskScheduler extends ThreadPoolTaskScheduler {
+        CustomTestTaskScheduler() {
+            setPoolSize(1);
+            setThreadNamePrefix("custom-alert-sched-");
         }
     }
 

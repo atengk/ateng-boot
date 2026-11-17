@@ -125,6 +125,7 @@ public class NotifyAlertAspect {
         }
 
         String topStackFrames = extractTopStackFrames(ex);
+        String detailUrl = AlertStormSuppressor.resolveDetailUrl(alert.detailUrl(), properties.getDetailUrl(), traceId);
 
         return AlertContext.builder()
                 .fingerprint(fingerprint)
@@ -142,6 +143,7 @@ public class NotifyAlertAspect {
                 .topStackFrames(topStackFrames)
                 .suppressWindow(suppressWindow)
                 .occurrenceTime(LocalDateTime.now())
+                .detailUrl(detailUrl)
                 .build();
     }
 

@@ -96,4 +96,9 @@ public class AlertContext implements Serializable {
      * 异常发生时间
      */
     private final LocalDateTime occurrenceTime;
+
+    /**
+     * 告警链路详情跳转地址（支持 ${traceId} 插值解析后的完整地址）
+     */
+    private final String detailUrl;
 }

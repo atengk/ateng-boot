@@ -1,5 +1,7 @@
 package io.github.atengk.boot.notification;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.notification.alert.AlertContext;
 import io.github.atengk.boot.notification.alert.AlertStormSuppressor;
 import io.github.atengk.boot.notification.model.CardColor;
@@ -13,7 +15,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
+import org.slf4j.MDC;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 import java.lang.reflect.Method;
 import java.time.Duration;
@@ -24,14 +27,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
@@ -45,7 +48,7 @@ class AlertStormSuppressorTest {
 
     private NotificationTemplate mockTemplate;
     private NotificationAlertProperties alertProperties;
-    private ScheduledExecutorService scheduler;
+    private ThreadPoolTaskScheduler scheduler;
     private AlertStormSuppressor suppressor;
     private List<NotificationMessage> sentMessages;
 
@@ -70,14 +73,21 @@ class AlertStormSuppressorTest {
             );
         });
 
-        scheduler = Executors.newScheduledThreadPool(4);
+        scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(2);
+        scheduler.setThreadNamePrefix("ateng-notif-alert-");
+        scheduler.setWaitForTasksToCompleteOnShutdown(true);
+        scheduler.initialize();
         suppressor = new AlertStormSuppressor(mockTemplate, alertProperties, scheduler);
     }
 
     @AfterEach
     void tearDown() {
         suppressor.destroy();
-        scheduler.shutdownNow();
+        scheduler.destroy();
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
     }
 
     private AlertContext buildTestAlert(String fingerprint, String methodSig) {
@@ -295,5 +305,138 @@ class AlertStormSuppressorTest {
 
         int lineNo = AlertStormSuppressor.findFirstBusinessLineNumber(wrapper2, testMethod);
         assertTrue(lineNo > 0, "应穿透到内部业务类的真实代码行号");
+    }
+
+    @Test
+    @DisplayName("验证跨越抑制窗口的四维 AsyncContext 快照无损透传及调度线程确定性清理防污染")
+    void testCrossWindowAsyncContextPropagationAndThreadCleanup() throws Exception {
+        ThreadPoolTaskScheduler singleScheduler = new ThreadPoolTaskScheduler();
+        singleScheduler.setPoolSize(1);
+        singleScheduler.setThreadNamePrefix("ateng-notif-alert-ctx-");
+        singleScheduler.initialize();
+
+        NotificationAlertProperties ctxProps = new NotificationAlertProperties();
+        ctxProps.setSuppressWindow(Duration.ofMillis(80));
+        ctxProps.setDefaultChannel("ops-alert");
+
+        NotificationTemplate templateMock = mock(NotificationTemplate.class);
+        when(templateMock.send(any(), any(NotificationMessage.class)))
+                .thenReturn(NotificationSendResult.success("m1", "ops-alert", Platform.DINGTALK, Duration.ofMillis(1), "ok"));
+
+        CountDownLatch summaryLatch = new CountDownLatch(1);
+        AtomicReference<String> capturedThreadName = new AtomicReference<>();
+        AtomicReference<String> capturedTraceId = new AtomicReference<>();
+        AtomicReference<String> capturedUserId = new AtomicReference<>();
+        AtomicReference<String> capturedTenantId = new AtomicReference<>();
+        AtomicBoolean capturedIgnoreTenant = new AtomicBoolean(false);
+
+        when(templateMock.sendAsync(any(), any(NotificationMessage.class))).thenAnswer(inv -> {
+            capturedThreadName.set(Thread.currentThread().getName());
+            capturedTraceId.set(MDC.get("traceId"));
+            capturedUserId.set(UserContextHolder.get());
+            capturedTenantId.set(TenantContextHolder.getTenantId());
+            capturedIgnoreTenant.set(TenantContextHolder.isIgnoreTenant());
+            summaryLatch.countDown();
+            return CompletableFuture.completedFuture(null);
+        });
+
+        AlertStormSuppressor ctxSuppressor = new AlertStormSuppressor(templateMock, ctxProps, singleScheduler);
+        try {
+            // 主线程注入完整四维上下文快照
+            MDC.put("traceId", "trace-storm-4d-999");
+            UserContextHolder.set("user-storm-admin");
+            TenantContextHolder.setTenantId("tenant-vip-01");
+            TenantContextHolder.setIgnoreTenant(true);
+
+            AlertContext firstAlert = buildTestAlert("fp-4d-ctx", "ContextService#fail", Duration.ofMillis(80));
+            assertTrue(ctxSuppressor.processAlert(firstAlert));
+            assertFalse(ctxSuppressor.processAlert(firstAlert));
+
+            // 模拟 HTTP 请求处理完毕立即清空主线程上下文
+            MDC.clear();
+            UserContextHolder.clear();
+            TenantContextHolder.clear();
+
+            assertTrue(summaryLatch.await(3, TimeUnit.SECONDS));
+            assertThat(capturedThreadName.get()).startsWith("ateng-notif-alert-ctx-");
+            assertEquals("trace-storm-4d-999", capturedTraceId.get());
+            assertEquals("user-storm-admin", capturedUserId.get());
+            assertEquals("tenant-vip-01", capturedTenantId.get());
+            assertTrue(capturedIgnoreTenant.get());
+
+            // 强验证：同一调度工作线程在下一轮任务中上下文已彻底清理，零线程池污染
+            CountDownLatch cleanLatch = new CountDownLatch(1);
+            AtomicReference<String> nextTrace = new AtomicReference<>("dirty");
+            AtomicReference<String> nextUser = new AtomicReference<>("dirty");
+            AtomicReference<String> nextTenant = new AtomicReference<>("dirty");
+            AtomicBoolean nextIgnore = new AtomicBoolean(true);
+            singleScheduler.getScheduledExecutor().execute(() -> {
+                nextTrace.set(MDC.get("traceId"));
+                nextUser.set(UserContextHolder.get());
+                nextTenant.set(TenantContextHolder.getTenantId());
+                nextIgnore.set(TenantContextHolder.isIgnoreTenant());
+                cleanLatch.countDown();
+            });
+            assertTrue(cleanLatch.await(2, TimeUnit.SECONDS));
+            assertNull(nextTrace.get());
+            assertNull(nextUser.get());
+            assertNull(nextTenant.get());
+            assertFalse(nextIgnore.get());
+        } finally {
+            ctxSuppressor.destroy();
+            singleScheduler.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("验证 detailUrl 优先级、${traceId} 插值及首发与汇总双卡片挂载跳转按钮，及自管理调度器与失败回滚防卫")
+    void testDetailUrlAttachmentAndDefaultSchedulerLifecycle() throws InterruptedException {
+        alertProperties.setDetailUrl("https://trace.example.com/global/${traceId}");
+
+        CountDownLatch summaryLatch = new CountDownLatch(1);
+        when(mockTemplate.sendAsync(any(), any(NotificationMessage.class))).thenAnswer(invocation -> {
+            NotificationMessage msg = invocation.getArgument(1);
+            sentMessages.add(msg);
+            summaryLatch.countDown();
+            return CompletableFuture.completedFuture(
+                    NotificationSendResult.success("msg-1", "ops-alert", Platform.DINGTALK, Duration.ofMillis(5), "ok")
+            );
+        });
+
+        // 1. AlertContext 未显式指定 detailUrl 时回退全局配置并插值 ${traceId}
+        AlertContext globalUrlAlert = buildTestAlert("fp-url-global", "UrlService#run", Duration.ofMillis(80));
+        assertTrue(suppressor.processAlert(globalUrlAlert));
+        assertFalse(suppressor.processAlert(globalUrlAlert));
+        assertTrue(summaryLatch.await(3, TimeUnit.SECONDS));
+
+        assertEquals(2, sentMessages.size());
+        CardMessage redCard = (CardMessage) sentMessages.get(0);
+        CardMessage orangeCard = (CardMessage) sentMessages.get(1);
+        assertEquals("查看链路详情", redCard.getSingleActionText());
+        assertEquals("https://trace.example.com/global/trace-123456", redCard.getSingleActionUrl());
+        assertEquals("查看链路详情", orangeCard.getSingleActionText());
+        assertEquals("https://trace.example.com/global/trace-123456", orangeCard.getSingleActionUrl());
+
+        // 2. 两参构造内置 Spring 受管守护 ThreadPoolTaskScheduler 支持独立创建与 destroy 安全关闭
+        AlertStormSuppressor standalone = new AlertStormSuppressor(mockTemplate, alertProperties);
+        assertDoesNotThrow(() -> standalone.processAlert(buildTestAlert("fp-standalone", "Standalone#call", Duration.ofSeconds(5))));
+        assertDoesNotThrow(standalone::destroy);
+
+        // 3. 入参 Fail-Fast、调度拒绝回滚活跃窗口以及 resolveDetailUrl 边界情况
+        assertThrows(io.github.atengk.boot.core.exception.BusinessException.class,
+                () -> new AlertStormSuppressor(mockTemplate, alertProperties, (org.springframework.scheduling.TaskScheduler) null));
+        assertThrows(io.github.atengk.boot.core.exception.BusinessException.class,
+                () -> new AlertStormSuppressor(mockTemplate, alertProperties, (java.util.concurrent.ScheduledExecutorService) null));
+
+        org.springframework.scheduling.TaskScheduler rejectingScheduler = mock(org.springframework.scheduling.TaskScheduler.class);
+        when(rejectingScheduler.schedule(any(Runnable.class), any(java.time.Instant.class)))
+                .thenThrow(new org.springframework.core.task.TaskRejectedException("pool shutdown"));
+        AlertStormSuppressor rollbackSuppressor = new AlertStormSuppressor(mockTemplate, alertProperties, rejectingScheduler);
+        assertTrue(rollbackSuppressor.processAlert(buildTestAlert("fp-rollback", "Rollback#call", Duration.ofSeconds(10))));
+        assertEquals(0, rollbackSuppressor.getActiveWindowsCount(), "调度提交失败后必须立即清理活跃窗口避免后续告警永久静默");
+
+        assertNull(AlertStormSuppressor.resolveDetailUrl("  ", "  ", "t-1"));
+        assertNull(AlertStormSuppressor.resolveDetailUrl("${traceId}", null, "   "));
+        assertEquals("https://apm.example.com/trace/", AlertStormSuppressor.resolveDetailUrl("https://apm.example.com/trace/${traceId}", null, null));
     }
 }

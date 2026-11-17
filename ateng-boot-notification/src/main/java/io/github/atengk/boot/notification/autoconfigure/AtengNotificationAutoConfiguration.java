@@ -41,6 +41,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.web.client.RestClient;
 
 import java.net.http.HttpClient;
@@ -321,20 +323,41 @@ public class AtengNotificationAutoConfiguration {
     }
 
     /**
+     * 自动装配专用于防告警风暴聚合的 Spring 受管定时调度器
+     * 启用容器优雅停机等待排空策略并开放 @ConditionalOnMissingBean 允许外部接管定制
+     *
+     * @return ThreadPoolTaskScheduler 受管调度器实例
+     */
+    @Bean(name = "notificationAlertTaskScheduler")
+    @ConditionalOnMissingBean(name = "notificationAlertTaskScheduler")
+    public ThreadPoolTaskScheduler notificationAlertTaskScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(2);
+        scheduler.setThreadNamePrefix("ateng-notif-alert-");
+        scheduler.setWaitForTasksToCompleteOnShutdown(true);
+        scheduler.setAwaitTerminationSeconds(10);
+        scheduler.setRemoveOnCancelPolicy(true);
+        log.debug("Initializing managed notificationAlertTaskScheduler (prefix=ateng-notif-alert-, poolSize=2)");
+        return scheduler;
+    }
+
+    /**
      * 自动装配防告警风暴聚合抑制引擎
      * 实施“首发即时通报 + 窗口期原子计数拦截 + 周期末聚合通报”三阶抗洪算法
      *
      * @param notificationTemplate 协同通知操作核心门面
      * @param properties           全局通知配置属性
+     * @param alertTaskScheduler   Spring 受管防风暴聚合调度器
      * @return AlertStormSuppressor 实例
      */
     @Bean
     @ConditionalOnMissingBean
     public AlertStormSuppressor alertStormSuppressor(
             NotificationTemplate notificationTemplate,
-            NotificationProperties properties) {
+            NotificationProperties properties,
+            @Qualifier("notificationAlertTaskScheduler") TaskScheduler alertTaskScheduler) {
         log.debug("Initializing AlertStormSuppressor (suppressWindow={})", properties.getAlert().getSuppressWindow());
-        return new AlertStormSuppressor(notificationTemplate, properties.getAlert());
+        return new AlertStormSuppressor(notificationTemplate, properties.getAlert(), alertTaskScheduler);
     }
 
     /**
