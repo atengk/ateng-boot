@@ -1,12 +1,12 @@
 # ateng-boot
 
-> 面向生产就绪的 Spring Boot 3（3.3.13）全栈基础设施与企业中间件 Starter 套件——零臃肿纯原生、显式强类型契约、35 领域开箱协同、原生 AI-Ready。
+> 面向生产就绪的 Spring Boot 3（3.3.13）全栈基础设施与企业中间件 Starter 套件——零臃肿纯原生、显式强类型契约、36 领域开箱协同、原生 AI-Ready。
 
 [![CI](https://github.com/atengk/ateng-boot/actions/workflows/ci.yml/badge.svg)](https://github.com/atengk/ateng-boot/actions/workflows/ci.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.atengk/ateng-boot.svg?style=flat-square&color=blue)](https://central.sonatype.com/artifact/io.github.atengk/ateng-boot)
 [![JDK](https://img.shields.io/badge/JDK-17%20~%2021+-orange.svg)](https://www.oracle.com/java/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.13-brightgreen.svg)](https://spring.io/projects/spring-boot)
-[![Starters](https://img.shields.io/badge/Starters-35-blueviolet.svg)](#2-全栈能力版图与模块目录)
+[![Starters](https://img.shields.io/badge/Starters-36-blueviolet.svg)](#2-全栈能力版图与模块目录)
 [![AI-Ready](https://img.shields.io/badge/AI--Ready-llms.txt-00b4d8.svg)](./llms.txt)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
 
@@ -16,7 +16,7 @@
 
 - **纯原生、零臃肿依赖**：基于 JDK 17 LTS（兼容 JDK 21+ 虚拟线程运行时）与 Spring 6 原生能力构建，坚决屏蔽 `hutool-all`、`guava` 等重型工具包，避免依赖冲突与安全面扩大。
 - **显式强类型工程契约**：Controller 显式返回 `Result<T>` 与 `PageResult<VO>`，`ValidList` + `BusinessAssert` 分层防卫，拒绝 `@ResponseBodyAdvice` 隐式篡改返回体，杜绝 ORM Entity 穿透到接口层。
-- **单体全家桶与微服务按需拼装兼得**：单体与快速原型通过 [`ateng-boot-all`](./ateng-boot-all/README.md) 一行依赖集齐 6 大核心底座；微服务与复杂系统导入 [`ateng-boot-bom`](./ateng-boot-bom/README.md) 按需精细选配 35 项企业能力，未配置外部中间件时平滑降级待命。
+- **单体全家桶与微服务按需拼装兼得**：单体与快速原型通过 [`ateng-boot-all`](./ateng-boot-all/README.md) 一行依赖集齐 6 大核心底座；微服务与复杂系统导入 [`ateng-boot-bom`](./ateng-boot-bom/README.md) 按需精细选配 36 项企业能力，未配置外部中间件时平滑降级待命。
 - **内置企业级 AI 与向量检索底座**：集成 [`ateng-boot-ai`](./ateng-boot-ai/README.md)（`@AiAgent` 声明式智能体、DeepSeek/OpenAI 兼容多模型路由、RAG 混合检索溯源、MCP/OpenAPI 工具、HITL 人机审批与配额护栏）与 [`ateng-boot-milvus`](./ateng-boot-milvus/README.md)。
 - **为 AI 编码时代而设计（AI-Ready）**：仓库原生维护 [`llms.txt`](./llms.txt)、[`CONTEXT-MAP.md`](./CONTEXT-MAP.md)、每个 Starter 自包含的全景 API 速查表与离线可运行 Sample，让 Cursor、Claude Code、Copilot 等助手直接生成零幻觉业务代码。
 
@@ -36,9 +36,9 @@ flowchart TB
         WEB["ateng-boot-web<br/>链路追踪 · 异常脱敏 · 幂等/限流/加签"]
     end
 
-    subgraph DOMAINS["按需拼装全栈领域能力（35 Starters）"]
+    subgraph DOMAINS["按需拼装全栈领域能力（36 Starters）"]
         direction LR
-        D1["数据与检索<br/>MP · 多源 · Redis · ES · Milvus"]
+        D1["数据与检索<br/>MP · 多源 · Flyway · Redis · ES · Milvus"]
         D2["安全与治理<br/>Sa-Token · Social · Encrypt · Observability · OpenAPI · Admin"]
         D3["通信与消息<br/>HTTP · Realtime · TCP · MQTT · Rabbit · Kafka · RocketMQ"]
         D4["文件与远程<br/>Storage · Excel · Word/PDF · FTP · SSH"]
@@ -46,7 +46,7 @@ flowchart TB
         D6["商业与 AI<br/>Pay · SMS · Mail · Webhook · AI Agent/RAG"]
     end
 
-    SAMPLES["ateng-boot-samples<br/>36 个离线自验示例工程（1:1 映射）"]
+    SAMPLES["ateng-boot-samples<br/>37 个离线自验示例工程（1:1 映射）"]
 
     APP --> ALL
     APP --> BOM
@@ -192,7 +192,7 @@ mvn -pl ateng-boot-samples/ateng-boot-sample-ai spring-boot:run
 
 ## 2. 全栈能力版图与模块目录
 
-仓库共包含 **37 个 Maven 模块**（1 个 BOM + 1 个聚合全家桶 + 35 个功能 Starter）与 **36 个 1:1 自验示例工程**。每个 Starter 模块均配有一份自包含的权威使用文档（含全量 API 速查矩阵、YAML/Java 示例与边界说明）：
+仓库共包含 **38 个 Maven 模块**（1 个 BOM + 1 个聚合全家桶 + 36 个功能 Starter）与 **37 个 1:1 自验示例工程**。每个 Starter 模块均配有一份自包含的权威使用文档（含全量 API 速查矩阵、YAML/Java 示例与边界说明）：
 
 ### 依赖治理与全局聚合
 
@@ -200,7 +200,7 @@ mvn -pl ateng-boot-samples/ateng-boot-sample-ai spring-boot:run
 | :--- | :--- | :--- |
 | `ateng-boot-bom` | 纯 `<dependencyManagement>` 依赖物料清单，统一锁定全量坐标版本并隔离测试传递依赖 | [模块文档](./ateng-boot-bom/README.md) · [示例总览](./ateng-boot-samples/README.md) |
 | `ateng-boot-all` | 零源码空 JAR 聚合包，一键装配 `core`/`web`/`mybatis-plus`/`redis`/`excel`/`satoken` 六大核心底座 | [模块文档](./ateng-boot-all/README.md) · [冒烟示例](./ateng-boot-samples/ateng-boot-sample-smoke-test/README.md) |
-| `ateng-boot-samples` | 36 个零共享代码的可运行 Web 体验沙箱，默认离线可跑并支持 `-Dspring-boot.run.profiles=local` 联调真实中间件 | [示例矩阵](./ateng-boot-samples/README.md) |
+| `ateng-boot-samples` | 37 个零共享代码的可运行 Web 体验沙箱，默认离线可跑并支持 `-Dspring-boot.run.profiles=local` 联调真实中间件 | [示例矩阵](./ateng-boot-samples/README.md) |
 
 ### 核心基座与 Web 运行时
 
@@ -215,6 +215,7 @@ mvn -pl ateng-boot-samples/ateng-boot-sample-ai spring-boot:run
 | :--- | :--- | :--- |
 | `ateng-boot-mybatis-plus` | 五级实体继承、审计填充、JSqlParser 行级多租户、`@DataScope` 数据权限、`@FieldEncrypt` 加密、批量插入/Upsert、流式游标与乐观锁重试 | [模块文档](./ateng-boot-mybatis-plus/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-mybatis-plus/README.md) |
 | `ateng-boot-datasource` | SaaS 物理多租户分库、主从读写分离、从库故障熔断主动探活自愈、三向差量同步与事务假切源守卫 | [模块文档](./ateng-boot-datasource/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-datasource/README.md) |
+| `ateng-boot-flyway` | Flyway 10.x 数据库版本化迁移、生产 `clean` 强守卫、SM4/AES 隔离 DDL 凭据、主从/静态多库/物理租户建表协同与 MyBatis-Plus 顺序屏障 | [模块文档](./ateng-boot-flyway/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-flyway/README.md) |
 | `ateng-boot-redis` | Spring Data Redis + Redisson 双核融合、无 `@class` JSON 序列化、`@DistributedLock`、防穿透缓存、L1+L2 缓存、延时队列与 Stream | [模块文档](./ateng-boot-redis/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-redis/README.md) |
 | `ateng-boot-search` | Elasticsearch 8.x & OpenSearch 双引擎检索门面、安全 DSL 构造、流式批量处理器、零停机别名切换与 Search-After 深度分页 | [模块文档](./ateng-boot-search/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-search/README.md) |
 | `ateng-boot-milvus` | Milvus `MilvusClientV2` 集合运维、多向量混合检索（RRF/Weighted）、多租户 `PartitionKey` 隔离与 LangChain4j 桥接 | [模块文档](./ateng-boot-milvus/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-milvus/README.md) |
@@ -282,8 +283,8 @@ mvn -pl ateng-boot-samples/ateng-boot-sample-ai spring-boot:run
 
 | 入口文件 | 面向对象 | 核心用途 |
 | :--- | :--- | :--- |
-| [`llms.txt`](./llms.txt) | AI Agent / MCP 文档抓取 | 遵循 llms.txt 标准的极简全局索引，汇总 37 模块路径与核心编码约束 |
-| [`CONTEXT-MAP.md`](./CONTEXT-MAP.md) | AI 架构寻址 | 查阅 38 个限界上下文职责边界与跨模块依赖拓扑 |
+| [`llms.txt`](./llms.txt) | AI Agent / MCP 文档抓取 | 遵循 llms.txt 标准的极简全局索引，汇总 38 模块路径与核心编码约束 |
+| [`CONTEXT-MAP.md`](./CONTEXT-MAP.md) | AI 架构寻址 | 查阅 39 个限界上下文职责边界与跨模块依赖拓扑 |
 | `./ateng-boot-<module>/README.md` | 业务集成生成 | 第 0 节全景矩阵 + 同屏闭环“YAML 配置 + 真实 Java 代码 + 生产边界” |
 | `./ateng-boot-samples/ateng-boot-sample-*` | 端到端参考范式 | 每个能力域对应一份可直接编译运行的真实多 Controller / DTO / 测试工程 |
 
@@ -306,6 +307,6 @@ mvn -pl ateng-boot-samples/ateng-boot-sample-ai spring-boot:run
 
 - **架构决策看板（全量 ADR 索引）**：[`docs/adr/README.md`](./docs/adr/README.md)
 - **模块边界与限界上下文地图**：[`CONTEXT-MAP.md`](./CONTEXT-MAP.md)
-- **36 个可运行示例工程指南**：[`ateng-boot-samples/README.md`](./ateng-boot-samples/README.md)
+- **37 个可运行示例工程指南**：[`ateng-boot-samples/README.md`](./ateng-boot-samples/README.md)
 - **分支模型、提交规约与代码贡献**：[`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - **开源许可协议**：[Apache License 2.0](./LICENSE)

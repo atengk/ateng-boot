@@ -76,7 +76,7 @@ flowchart TB
 - 提供 `FlywayTargetResolver` SPI 支持自定义目标发现与脚本映射规则；单目标块支持按需覆写 `enabled`、`locations`、`table`、`schemas`、`default-schema`、`baseline-on-migrate`、`baseline-version`、`validate-on-migrate`、`out-of-order`、`encoding` 与 `placeholders`（未配置项透明继承 `spring.flyway.*`），并默认自动注入不覆盖显式声明的只读上下文占位符 `ateng_ds_key` 与 `ateng_tenant_id`。
 
 ### 2.3 容错、受管并发、动态挂载回滚与集群锁
-- **分层失败策略（对齐 `BatchExecutionPolicy`）**：主库与显式配置的核心静态库固定采用 **`FAIL_FAST`**（失败即阻断启动）；SaaS 多租户批量迁移默认采用 **`FAIL_SAFE`**（对齐 `DynamicDatasourceTemplate.forEachTenant` 语义，单租户异常汇总至 `BatchMigrationResult` 并发布失败事件，不拖垮整体服务，且支持配置切换为 `FAIL_FAST`）；
+- **分层失败策略（对齐 `BatchExecutionPolicy`）**：主库与显式配置的核心静态库默认采用 **`FAIL_FAST`**（失败即阻断启动，可通过 `ateng.boot.flyway.static-failure-policy` 按需切换）；SaaS 多租户批量迁移默认采用 **`FAIL_SAFE`**（对齐 `DynamicDatasourceTemplate.forEachTenant` 语义，单租户异常汇总至 `BatchMigrationResult` 并发布失败事件，不拖垮整体服务，且支持配置切换为 `FAIL_FAST`）；
 - **动态挂载失败处置策略（`DynamicMountFailurePolicy`）**：由于 `DynamicDatasourceTemplate.notifyDataSourceAdded` 内部捕获监听器异常且在同一线程持有 `lifecycleLock`（`ReentrantLock` 可重入），维持 `ateng-boot-datasource` 零改动，在监听器内提供 **`KEEP_AND_REPORT`**（默认：保留数据源并发布失败事件以便重试补迁）与 **`ROLLBACK_DATASOURCE`**（同线程主动调用 `DynamicDatasourceTemplate.removeDataSource(dsKey, true)` 摘除未建表数据源，防流量误入）；
 - **受管并发执行**：多租户批量迁移默认串行（`concurrency = 1`），支持配置有界并发（`> 1`）并依托 `ateng-boot-core` 受管线程池与 `AsyncContext` 透传上下文，支持启动同步（默认）与大租户群可选异步；
 - **集群并发迁移锁**：默认依托 Flyway 原生数据库表级/咨询锁保证 K8s 多副本并发启动安全，不强绑 Redis；同时预留可选的 `FlywayLockProvider` SPI。

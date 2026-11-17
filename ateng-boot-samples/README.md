@@ -23,6 +23,7 @@
 | **`ateng-boot-sample-mqtt`** | **专一物联网 MQTT 5.0 / 3.1.1 客户端 Demo**<br/>REST 风格主题通配提取、`X-Trace-Id` 标头全链路透传、集群 `$share` 共享订阅、MQTT 5.0 同步 RPC、本地事务对齐发信、工业国标/车联网 `HexPayload` 强类型转译、Actuator 探针与 Micrometer 黄金度量 | MQTT / Web / Actuator | **零 DB 依赖** | [查看](./ateng-boot-sample-mqtt/README.md) |
 | **`ateng-boot-sample-pay`** | **专一企业级多渠道支付 Demo**<br/>微信支付 V3 / 支付宝双规驱动、统一收单门面 `PayTemplate`、服务端二次加签、双模防重并发锁、业务回调监听器 SPI | Pay / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-pay/README.md) |
 | **`ateng-boot-sample-job-snail`** | **SnailJob 调度与协同重试双擎 Demo**<br/>100% 离线脱网单测沙箱 `SnailJobTestHelper`、大数据流式游标切片、`TenantJobTemplate` 租户隔离遍历、`SnailRetryTemplate` 协同重试与手动上报、四维上下文快照穿透、三阶平滑停机排空与告警防风暴聚合 | SnailJob / Web / Actuator | **零 DB 依赖** | [查看](./ateng-boot-sample-job-snail/README.md) |
+| **`ateng-boot-sample-flyway`** | **Flyway 版本化迁移与多源协同 Demo**<br/>L1 主从锁主库零入侵迁移、L2 静态业务库隔离迁移、L3 SaaS 物理租户批量与动态挂载建表、Spring `JavaMigration`、生产 `clean` 硬熔断、SM4 瞬态加密 DDL 凭据与 MyBatis-Plus 顺序屏障 | Flyway / Datasource / MP / Web / Actuator | H2 5 内存库 | [查看](./ateng-boot-sample-flyway/README.md) |
 | **`ateng-boot-sample-smoke-test`** | **全家桶 CI 冒烟准出门禁**<br/>全量 Starter 无冲突自动装配校验与端到端核心链路冒烟验收（耗时 ≤ 8s） | All / H2 / OpenAPI | H2 内存库 | [查看](./ateng-boot-sample-smoke-test/README.md) |
 
 ---
@@ -64,6 +65,9 @@ mvn -pl ateng-boot-samples/ateng-boot-sample-mqtt spring-boot:run
 
 # 启动 11：多渠道支付收单与 Webhook 回调演示
 mvn -pl ateng-boot-samples/ateng-boot-sample-pay spring-boot:run
+
+# 启动 12：Flyway 数据库版本化迁移与多数据源/物理租户协同演示
+mvn -pl ateng-boot-samples/ateng-boot-sample-flyway spring-boot:run
 ```
 
 ---
@@ -109,7 +113,10 @@ mvn test -pl ateng-boot-mqtt,ateng-boot-samples/ateng-boot-sample-mqtt -am -T 1C
 # 场景 L：修改了 ateng-boot-job-snail，定向联动自验
 mvn test -pl ateng-boot-job-snail,ateng-boot-samples/ateng-boot-sample-job-snail -am -T 1C
 
-# 场景 M：发版前或全反应堆构建时，全家桶极速冒烟准出
+# 场景 M：修改了 ateng-boot-flyway，定向联动自验
+mvn test -pl ateng-boot-flyway,ateng-boot-samples/ateng-boot-sample-flyway -am -T 1C
+
+# 场景 N：发版前或全反应堆构建时，全家桶极速冒烟准出
 mvn test -pl ateng-boot-samples/ateng-boot-sample-smoke-test -am -T 1C
 ```
 

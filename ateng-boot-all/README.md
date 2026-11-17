@@ -6,7 +6,7 @@
 
 ## 0. 核心捆绑成员与按需扩展选型矩阵 (维度零：100% 全覆盖)
 
-`ateng-boot-all` **本身不编译任何 Java 类与自动装配器**，而是严格收敛 **6 大高频基础核心 Starter (`CoreStarterBundle`)** 的传递入口；其余 29 项重型或专有基础设施保持按需独立选配，防止单应用无谓依赖膨胀。
+`ateng-boot-all` **本身不编译任何 Java 类与自动装配器**，而是严格收敛 **6 大高频基础核心 Starter (`CoreStarterBundle`)** 的传递入口；其余 30 项重型或专有基础设施保持按需独立选配，防止单应用无谓依赖膨胀。
 
 ### 0.1 默认传递捆绑的 6 大核心 Starter (`CoreStarterBundle`)
 
@@ -19,9 +19,9 @@
 | 5 | `ateng-boot-excel` | `ExcelUtil` / `ExcelWebUtil` / `@ExcelSensitive` / `@ExcelDropdown` / `BatchValidationListener` / `WorkbookEncryption` | Apache Fesod 流式导出与下载、导出动态脱敏、行级校验红字回写与 AES 加密 | [查看](../ateng-boot-excel/README.md) |
 | 6 | `ateng-boot-satoken` | `LoginHelper` / `LoginUser` / `@SaCheckLogin` / `@SaCheckRole` / `@CheckDataOwner` / `@CheckSameToken` / `SaTokenCurrentUserProvider` | 登录与多账号会话路由、自动贯通 Core/MP 操作人上下文、L1+L2 权限缓存与零信任 | [查看](../ateng-boot-satoken/README.md) |
 
-### 0.2 未捆绑但兼容共存的 29 项按需扩展 Starter 选型对比矩阵
+### 0.2 未捆绑但兼容共存的 30 项按需扩展 Starter 选型对比矩阵
 
-> 下列 29 个模块不随 `ateng-boot-all` 默认传递，已纳入 [`ateng-boot-bom`](../ateng-boot-bom/README.md) 统一管控版本，业务按需直接引入即可与全家桶**零冲突共存**：
+> 下列 30 个模块不随 `ateng-boot-all` 默认传递，已纳入 [`ateng-boot-bom`](../ateng-boot-bom/README.md) 统一管控版本，业务按需直接引入即可与全家桶**零冲突共存**：
 
 | 领域分类 | 按需引入坐标 (`io.github.atengk:*`) | 核心适用场景 | 权威文档 |
 | :--- | :--- | :--- | :--- |
@@ -45,6 +45,7 @@
 | **交易与安全** | `ateng-boot-pay` | 微信支付 v3 与支付宝官方 SDK 统一收单与回调验签防重网关 | [查看](../ateng-boot-pay/README.md) |
 | **交易与安全** | `ateng-boot-social` | OAuth2 第三方社会化登录、两阶段绑定票据与 Sa-Token 多端会话联动 | [查看](../ateng-boot-social/README.md) |
 | **交易与安全** | `ateng-boot-datasource` | SaaS 动态多数据源、主从读写分离、从库自愈与事务假切源守卫 | [查看](../ateng-boot-datasource/README.md) |
+| **数据与持久** | `ateng-boot-flyway` | Flyway 10.x 数据库版本化迁移、生产 `clean` 强守卫、隔离 DDL 凭据与多源/物理租户迁移协同 | [查看](../ateng-boot-flyway/README.md) |
 | **交易与安全** | `ateng-boot-encrypt` | 配置属性全链路透明加解密、AES/RSA/SM2/SM4、CLI 回写与 `/env` 掩码 | [查看](../ateng-boot-encrypt/README.md) |
 | **调度与流程** | `ateng-boot-statemachine` | 无状态单例业务状态机 Fluent DSL、CAS 跃迁与状态图导出 | [查看](../ateng-boot-statemachine/README.md) |
 | **调度与流程** | `ateng-boot-liteflow` | LiteFlow 规则与 DAG 流程编排、受管并行池与静态预检回滚 | [查看](../ateng-boot-liteflow/README.md) |

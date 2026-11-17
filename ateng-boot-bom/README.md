@@ -6,7 +6,7 @@
 
 ## 0. 全量纳管坐标与隔离边界全景速查矩阵 (维度零：100% 全覆盖)
 
-本模块共显式纳管 **70 项 `<dependencyManagement>` 条目**（含 `2` 项基准 BOM 导入、`36` 项 `io.github.atengk` 分发构件与 `32` 项核心第三方中间件坐标），并通过 `ManagedDependencyBoundary` 严格屏蔽框架内部兼容与单测依赖。
+本模块共显式纳管 **74 项 `<dependencyManagement>` 条目**（含 `2` 项基准 BOM 导入、`37` 项 `io.github.atengk` 分发构件与 `35` 项核心第三方中间件坐标），并通过 `ManagedDependencyBoundary` 严格屏蔽框架内部兼容与单测依赖。
 
 ### 0.1 顶层基准 BOM 传递导入 (2 项)
 
@@ -15,7 +15,7 @@
 | `org.springframework.boot:spring-boot-dependencies` | `3.3.13` | `pom` / `import` | 纳管 Spring Boot 3.3、Spring Framework 6.1、Jackson `2.17.3`、Netty、Micrometer 等全部基础运行时版本（[ADR-0006](../docs/adr/0006-dependency-baseline-and-upgrade-strategy.md)） |
 | `software.amazon.awssdk:bom` | `2.25.70` | `pom` / `import` | 统一对齐 AWS SDK v2 S3 客户端与底层 HTTP / Auth / Regions 子构件版本 |
 
-### 0.2 `ateng-boot` 全部分发构件坐标清单 (36 项 = 1 聚合 + 35 Starter)
+### 0.2 `ateng-boot` 全部分发构件坐标清单 (37 项 = 1 聚合 + 36 Starter)
 
 | 领域分组 | 构件坐标 (`io.github.atengk:*`) | 当前版本 | 职责定位 | 相关文档 |
 | :--- | :--- | :---: | :--- | :--- |
@@ -46,6 +46,7 @@
 | **安全交易** | `io.github.atengk:ateng-boot-pay` | `1.2.0` | 微信支付 v3 与支付宝官方 SDK 统一/专有收单门面、异步通知防重网关 | [README](../ateng-boot-pay/README.md) |
 | **安全交易** | `io.github.atengk:ateng-boot-social` | `1.2.0` | OAuth2 社会化登录、两阶段绑定票据与 Sa-Token 多端会话签发 | [README](../ateng-boot-social/README.md) |
 | **安全交易** | `io.github.atengk:ateng-boot-datasource` | `1.2.0` | SaaS 动态多数据源、主从读写分离、从库自愈与事务假切源守卫 | [README](../ateng-boot-datasource/README.md) |
+| **数据持久** | `io.github.atengk:ateng-boot-flyway` | `1.2.0` | Flyway 10.x 数据库版本化迁移、生产守卫、加密隔离凭据与多源租户协同 | [README](../ateng-boot-flyway/README.md) |
 | **安全交易** | `io.github.atengk:ateng-boot-encrypt` | `1.2.0` | 配置透明加解密、AES/RSA/SM2/SM4、原地回写 CLI 与 `/env` 掩码 | [README](../ateng-boot-encrypt/README.md) |
 | **调度流程** | `io.github.atengk:ateng-boot-statemachine` | `1.2.0` | 高性能无状态业务状态机 DSL、CAS 跃迁、事务同步与拓扑图导出 | [README](../ateng-boot-statemachine/README.md) |
 | **调度流程** | `io.github.atengk:ateng-boot-liteflow` | `1.2.0` | LiteFlow 规则与 DAG 编排、受管并行线程池、静态预检与快照回滚 | [README](../ateng-boot-liteflow/README.md) |

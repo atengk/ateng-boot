@@ -13,6 +13,7 @@ import io.github.atengk.boot.sample.flyway.dto.TargetOperationRequest;
 import io.github.atengk.boot.sample.flyway.dto.TenantMountRequest;
 import io.github.atengk.boot.sample.flyway.dto.TenantOrderCreateRequest;
 import io.github.atengk.boot.sample.flyway.entity.TenantRegistryEntity;
+import io.github.atengk.boot.sample.flyway.listener.SampleFlywayEventListener;
 import io.github.atengk.boot.sample.flyway.mapper.TenantRegistryMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -61,6 +62,9 @@ class FlywaySampleControllersMockMvcTest {
 
     @Autowired
     private TenantRegistryMapper tenantRegistryMapper;
+
+    @Autowired
+    private SampleFlywayEventListener sampleFlywayEventListener;
 
     @AfterEach
     void cleanupContexts() {
@@ -111,6 +115,7 @@ class FlywaySampleControllersMockMvcTest {
         assertThat(tableExists(slaveDs, "flyway_schema_history")).isFalse();
         assertThat(tableExists(slaveDs, "sys_tenant_registry")).isFalse();
         assertThat(tableExists(slaveDs, "biz_audit_log")).isFalse();
+        assertThat(slaveDs).isNotNull();
         assertThat(tableExists(slaveDs, "biz_tenant_order")).isFalse();
     }
 
@@ -142,6 +147,8 @@ class FlywaySampleControllersMockMvcTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.valid").value(true));
 
+        int completedBefore = sampleFlywayEventListener.getCompletedEventCount();
+
         mockMvc.perform(post("/sample/flyway/migration/execute")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(TargetOperationRequest.builder().targetKey("master").build())))
@@ -154,6 +161,8 @@ class FlywaySampleControllersMockMvcTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.allSuccess").value(true))
                 .andExpect(jsonPath("$.data.totalTargets").value(2));
+
+        assertThat(sampleFlywayEventListener.getCompletedEventCount()).isGreaterThanOrEqualTo(completedBefore + 3);
 
         // JSR-303 参数空值拦截
         mockMvc.perform(post("/sample/flyway/migration/validate")
