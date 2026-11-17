@@ -83,6 +83,21 @@ flowchart TD
   - 默认/CI 模式：使用 Mock 桩自洽秒级运行通过；
   - Local 真实模式（激活 `local` profile）：基于 `application-local.yml`（由 `application-local.example.yml` 模板衍生），直连真实 RustFS（`http://YOUR_S3_ENDPOINT:9000`）进行核心读写、预签名直传、分片合并与全真断言。
 
+### 6. 全场景深度加固：跨源流式复移、事务感知协同、防覆盖上传与九道防线收敛 (Full-Scenario Hardening & Transaction Coordination)
+- **跨存储源流式复制与迁移（`copyTo` / `moveTo`）**：
+  - 在 `StorageOperations` / `StorageTemplate` 提供原生跨源复移契约，当目标源与当前源驱动相同时自动短路调用底层原生 `copy` / `move`（复用本地 NIO `ATOMIC_MOVE` 或 S3 零带宽 `CopyObject`）；
+  - 当跨不同存储源时，通过 `try-with-resources` 流式桥接下载与上传，自动保留 `contentType`、`size` 与 `userMetadata`，`moveTo` 严格遵守“先写目标源成功、后删源对象”安全次序。
+- **Spring 事务感知存储协同（`deleteAfterCommit` / `uploadWithRollbackDelete`）**：
+  - 深度复用 `ateng-boot-core` 的 `TransactionUtil`，在注册时刻立即捕获绑定当前活动存储源的不可变句柄（`use(getCurrentSourceKey())`），防止 `@Storage` 切面退出后事务回调发生跨源误删；
+  - `deleteAfterCommit` / `deleteBatchAfterCommit` 确保仅在数据库事务物理提交成功后才清理旧对象；`uploadWithRollbackDelete` / `registerRollbackDelete` 在数据库事务回滚时自动补偿清理刚上传的孤儿文件（无活跃事务时平滑降级）。
+- **防覆盖条件上传（`uploadIfAbsent`）**：
+  - 新增 `StorageResultCode.STORAGE_OBJECT_ALREADY_EXISTS (40024)`，结合门面层前置判存与驱动层原子冲突转译（Local `FileAlreadyExistsException`、S3 `412 PreconditionFailed`），防御电子合同与归档凭证被并发静默覆写。
+- **本地多源预签名对称性与九道防线底座收敛**：
+  - 拉齐 `LocalDriver.getPresignedUrl` 与 `LocalStorageDownloadController` 的多源 `source` 签名及 `StorageDriverFactory` 动态路由能力，并将本地预签名端点开关解耦为 `ateng.boot.storage.local.endpoint-enabled`（默认 `true`），支持 S3 + Local 混合多源拓扑；
+  - `StorageContextHolder` 内建注册 `AsyncContextSnapshotProvider` 接入 Core 五维异步透传，并补齐 `executeWith` / `runWith` 编程式安全切源闭包；
+  - `StorageChunkCleaner` 取缔 `Executors.newSingleThreadScheduledExecutor` 野线程，改为接入受管 `TaskScheduler` / `ThreadPoolTaskScheduler`；
+  - `StorageSecurityUtil` 与 `LocalDriver` 收敛复用 Core `HmacUtil` 与 `StorageHashUtil.md5Hex`；`S3Driver.deleteBatch` 接入 Core `BatchSliceUtil` 按 1,000 条自动分批删除；新增 `ateng.boot.storage.max-chunk-size`（`DataSize`，默认 `100MB`）分片流上限防 OOM 守卫及 `StorageGuardProperties.disallowedExtensions` 自定义黑名单配置。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)

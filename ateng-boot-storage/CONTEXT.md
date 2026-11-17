@@ -9,15 +9,15 @@
 _Avoid_: StorageAdapter, StorageClientImpl, FileDriver
 
 **StorageOperations**:
-存储操作高阶门面契约接口，定义上传、下载、预签名、分片、标签与多源路由的对称操作语义。
+存储操作高阶门面契约接口，定义上传（含防覆盖 `uploadIfAbsent`）、下载、预签名、分片、标签、多源路由（含跨源流式复移 `copyTo`/`moveTo`）与 Spring 事务感知协同（`deleteAfterCommit`/`uploadWithRollbackDelete`）的对称操作语义。
 _Avoid_: FileService, StorageService, BlobOperations
 
 **StorageTemplate**:
-面向业务开发者的受管高阶操作门面，负责参数防卫清洗、安全嗅探联动、多存储源路由调度、领域事件广播与异常统一转译。
+面向业务开发者的受管高阶操作门面，负责参数防卫清洗、安全嗅探联动、多存储源路由调度、跨源流式复移、事务回滚防孤儿补偿、领域事件广播与异常统一转译。
 _Avoid_: FileManager, UploadHelper, StorageUtil
 
 **StorageResource**:
-实现 Spring 原生 `Resource` 与 `WritableResource` 接口的强类型资源载荷，桥接底层存储对象与 HTTP Range 206 断点续传响应。
+实现 Spring 原生 `Resource` 与 `WritableResource` 接口的强类型资源载荷，桥接底层存储对象与 HTTP Range 206 断点续传响应，并提供幂等写入流关闭与安全防卫联动。
 _Avoid_: FileResponse, DownloadResult, StorageStream
 
 **StorageObject**:
@@ -33,7 +33,7 @@ _Avoid_: TempUrl, DownloadUrl, SignedLink
 _Avoid_: UploadParam, DirectUploadDto, SignRequest
 
 **PresignedDownloadRequest**:
-构建预签名只读下载外链的强类型请求模型，定义目标路径、有效时长以及响应头重写规则（如友好中文下载文件名）。
+构建预签名只读下载外链的强类型请求模型，定义目标路径、有效时长、目标存储源标识以及响应头重写规则（如友好中文下载文件名）。
 _Avoid_: DownloadParam, PresignGetOption, UrlSignRequest
 
 **StorageDriverFactory**:
@@ -41,7 +41,7 @@ _Avoid_: DownloadParam, PresignGetOption, UrlSignRequest
 _Avoid_: DriverRegistry, DriverPool, StorageManager
 
 **StorageContextHolder**:
-线程级当前存储源路由标识持有者，配合 `StorageTaskDecorator` 支撑异步线程池与虚拟线程的存储源上下文透传。
+线程级当前存储源路由标识持有者，提供 `executeWith`/`runWith` 函数式安全切源闭包，并内建 `AsyncContextSnapshotProvider` 配合 `StorageTaskDecorator` 支撑受管异步线程池与虚拟线程的五维存储源上下文透传。
 _Avoid_: StorageThreadLocal, DynamicStorageManager
 
 **@Storage**:
@@ -49,15 +49,15 @@ _Avoid_: StorageThreadLocal, DynamicStorageManager
 _Avoid_: SwitchStorage, DS
 
 **LocalStorageDownloadController**:
-Local 存储内置的预签名防盗链只读安全下载端点，校验签名合法性与有效期限并执行流式输出。
+Local 存储内置的预签名防盗链只读安全下载端点，支持多存储源 `source` 动态路由，校验签名合法性与有效期限并执行流式输出。
 _Avoid_: FileDownloadServlet, StaticFileServer
 
 **LocalStorageUploadController**:
-Local 存储内置的预签名直传写入安全端点，接收客户端 HTTP PUT 直传或分片直传数据并执行签名、配额与魔数校验。
+Local 存储内置的预签名直传写入安全端点，支持多存储源 `source` 动态路由，接收客户端 HTTP PUT 直传或分片直传数据并执行签名、配额与魔数校验。
 _Avoid_: FileUploadServlet, LocalUploadReceiver
 
 **StorageGuard**:
-文件安全防卫与真实内容特征嗅探器，基于头部魔数比对与扩展名白名单校验拦截伪装文件。
+文件安全防卫与真实内容特征嗅探器，基于头部魔数比对、扩展名白名单（`allowedExtensions`）与黑名单（`disallowedExtensions`）校验拦截伪装文件。
 _Avoid_: FileValidator, SecurityChecker, FileFilter
 
 **StorageFileType**:
@@ -65,7 +65,7 @@ _Avoid_: FileValidator, SecurityChecker, FileFilter
 _Avoid_: FileFormatEnum, MimeTypeEnum, MagicNumber
 
 **StorageChunkCleaner**:
-孤儿分片碎片生命周期守护组件，定期扫描并物理回收超时未完成合并的临时分片会话。
+孤儿分片碎片生命周期守护组件，基于受管 `TaskScheduler` 定期扫描并物理回收超时未完成合并的临时分片会话。
 _Avoid_: OrphanCleaner, MultipartGarbageCollector, ChunkSweeper
 
 **StorageHashUtil**:
@@ -97,7 +97,7 @@ _Avoid_: FileException, S3Exception
 _Avoid_: ContractSnapshotDto, TestUser, AuditData
 
 **StorageObjectController**:
-样例工程核心对象存取领域控制器（`/sample/storage/object/*`），负责电子合同上传、自定义元数据、批注与审计快照便捷读写、零拷贝复制与归档移动、目录列举与分页检索及天然幂等删除。
+样例工程核心对象存取领域控制器（`/sample/storage/object/*`），负责电子合同上传、防覆盖封存（`uploadIfAbsent`）、事务感知防孤儿上传与提交后删档（`uploadWithRollbackDelete`/`deleteAfterCommit`）、自定义元数据、批注与审计快照便捷读写、零拷贝复制与归档移动、目录列举与分页检索及天然幂等删除。
 _Avoid_: FileController, ObjectApi, StorageController
 
 **StorageTransferController**:
@@ -113,5 +113,5 @@ _Avoid_: PresignController, DirectUploadController, LinkController
 _Avoid_: MultipartController, ChunkUploadController, SliceController
 
 **StorageGovernanceController**:
-样例工程存储多源与云原生治理领域控制器（`/sample/storage/governance/*`），负责声明式 @Storage 与编程式 use(...) 跨源双活备份、对象业务标签（Tagging）生命周期治理、冷热分层与加密探查、连通性探针 (ping) 与连接池/配置诊断字典提取。
+样例工程存储多源与云原生治理领域控制器（`/sample/storage/governance/*`），负责声明式 @Storage、编程式 use(...)/executeWith(...) 切源、跨源流式复移备份与归档（`copyTo`/`moveTo`）、对象业务标签（Tagging）生命周期治理、冷热分层与加密探查、连通性探针 (ping) 与连接池/配置诊断字典提取。
 _Avoid_: MultiSourceController, S3AdminController, StorageManageController
