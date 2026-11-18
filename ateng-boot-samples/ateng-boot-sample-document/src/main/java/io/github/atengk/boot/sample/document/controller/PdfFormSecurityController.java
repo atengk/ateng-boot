@@ -2,11 +2,16 @@ package io.github.atengk.boot.sample.document.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.document.pdf.model.PdfFormFieldDescriptor;
+import io.github.atengk.boot.document.pdf.model.PdfMetadata;
+import io.github.atengk.boot.sample.document.model.PdfMetadataUpdateRequest;
+import io.github.atengk.boot.sample.document.model.PdfRedactRequest;
 import io.github.atengk.boot.sample.document.model.SupplierFormRequest;
 import io.github.atengk.boot.sample.document.service.FinanceStatementService;
 import io.github.atengk.boot.sample.document.service.SupplierFormService;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -22,6 +27,7 @@ import java.util.List;
  * @author Ateng
  * @since 2026-11-10
  */
+@Validated
 @RestController
 @RequestMapping("/sample/document/pdf")
 public class PdfFormSecurityController {
@@ -110,5 +116,62 @@ public class PdfFormSecurityController {
     public Result<Boolean> verifyProtectionPassword(@RequestParam(defaultValue = "Pass123456") String password,
                                                    @RequestParam(defaultValue = "Pass123456") String verifyPassword) {
         return Result.success(financeStatementService.verifyStatementPassword(password, verifyPassword));
+    }
+
+    /**
+     * 7. 接收涂黑脱敏请求 DTO 对对账单执行物理不可逆光栅涂黑并流式下载
+     *
+     * @param response HTTP 响应对象
+     * @param request  物理涂黑脱敏请求 DTO
+     */
+    @PostMapping("/redact/download")
+    public void redactByRequest(HttpServletResponse response,
+                                @Valid @RequestBody PdfRedactRequest request) {
+        financeStatementService.downloadRedactedStatementWeb(response, request);
+    }
+
+    /**
+     * 8. 通过 GET 快捷对对账单指定敏感关键字执行物理不可逆涂黑脱敏下载
+     *
+     * @param response HTTP 响应对象
+     * @param keyword  待抹除敏感关键字
+     */
+    @GetMapping("/redact/keywords/download")
+    public void redactByKeyword(HttpServletResponse response,
+                                @RequestParam(defaultValue = "1,850,200.00") @NotBlank(message = "待抹除关键字不能为空") String keyword) {
+        financeStatementService.downloadRedactedKeywordsStatementWeb(response, keyword);
+    }
+
+    /**
+     * 9. 增量更新对账单文档标准摘要元数据并流式下载
+     *
+     * @param response HTTP 响应对象
+     * @param request  元数据更新请求 DTO
+     */
+    @PostMapping("/metadata/update")
+    public void updateMetadata(HttpServletResponse response,
+                               @Valid @RequestBody PdfMetadataUpdateRequest request) {
+        financeStatementService.updateStatementMetadataWeb(response, request);
+    }
+
+    /**
+     * 10. 彻底脱敏剥离对账单标准摘要与 XMP 隐私元数据并下载
+     *
+     * @param response HTTP 响应对象
+     */
+    @GetMapping("/metadata/strip/download")
+    public void stripMetadata(HttpServletResponse response) {
+        financeStatementService.stripStatementMetadataWeb(response);
+    }
+
+    /**
+     * 11. 演示携带打开密码穿透自省已加密对账单的 11 维元数据
+     *
+     * @param password 打开密码
+     * @return 解密后探测得到的 PDF 元数据
+     */
+    @GetMapping("/security/protected-metadata")
+    public Result<PdfMetadata> inspectProtectedMetadata(@RequestParam(defaultValue = "Pass123456") String password) {
+        return Result.success(financeStatementService.inspectProtectedStatementMetadata(password));
     }
 }

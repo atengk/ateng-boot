@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.document.model;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -59,5 +60,18 @@ public class ContractRenderRequest {
     /**
      * 负责与参与项目经验列表
      */
+    @Valid
     private List<ProjectExperience> items;
+
+    /**
+     * 是否自动拼装商业保密协议附件（默认 true）
+     */
+    @Builder.Default
+    private Boolean withConfidentialityAgreement = true;
+
+    /**
+     * 是否在落款处压印浮动企业电子公章（默认 true）
+     */
+    @Builder.Default
+    private Boolean withSeal = true;
 }

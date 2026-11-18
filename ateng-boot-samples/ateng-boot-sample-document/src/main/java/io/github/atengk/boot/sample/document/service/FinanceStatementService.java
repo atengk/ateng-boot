@@ -1,25 +1,30 @@
 package io.github.atengk.boot.sample.document.service;
 
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.document.enums.KeywordStampOccurrence;
 import io.github.atengk.boot.document.enums.PageNumberPosition;
 import io.github.atengk.boot.document.enums.WatermarkLayer;
 import io.github.atengk.boot.document.font.ResolvedFont;
 import io.github.atengk.boot.document.pdf.PdfTemplate;
 import io.github.atengk.boot.document.pdf.model.CrossPageSealOptions;
 import io.github.atengk.boot.document.pdf.model.ImageStampOptions;
+import io.github.atengk.boot.document.pdf.model.ImageToPdfOptions;
+import io.github.atengk.boot.document.pdf.model.KeywordStampOptions;
 import io.github.atengk.boot.document.pdf.model.PageNumberOptions;
 import io.github.atengk.boot.document.pdf.model.PdfMetadata;
+import io.github.atengk.boot.document.pdf.model.PdfMetadataUpdate;
+import io.github.atengk.boot.document.pdf.model.RedactOptions;
 import io.github.atengk.boot.document.pdf.model.SecurityOptions;
+import io.github.atengk.boot.document.pdf.model.TextPositionMatch;
 import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
 import io.github.atengk.boot.document.pdf.util.PdfWebUtil;
+import io.github.atengk.boot.sample.document.model.PdfMetadataUpdateRequest;
+import io.github.atengk.boot.sample.document.model.PdfRedactRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.http.ContentDisposition;
-import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -32,6 +37,8 @@ import java.util.Map;
 public class FinanceStatementService {
 
     private static final String STATEMENT_TEMPLATE_PATH = "classpath:templates/sample-statement.pdf";
+    private static final String SUPPLIER_FORM_TEMPLATE_PATH = "classpath:templates/supplier-form.pdf";
+    private static final String SEAL_IMAGE_PATH = "classpath:images/company-seal.png";
 
     private final PdfTemplate pdfTemplate;
 
@@ -288,26 +295,7 @@ public class FinanceStatementService {
     public void renderPageWeb(HttpServletResponse response, int pageIndex, float dpi, boolean inline) {
         byte[] pngBytes = renderStatementPageToPng(STATEMENT_TEMPLATE_PATH, pageIndex, dpi);
         String filename = String.format("财务对账单_第%d页_%s.png", pageIndex + 1, inline ? "高清预览" : "缩略图");
-
-        response.setContentType("image/png");
-        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-cache, no-store, must-revalidate");
-        response.setHeader(HttpHeaders.PRAGMA, "no-cache");
-        response.setDateHeader(HttpHeaders.EXPIRES, 0);
-
-        ContentDisposition.Builder builder = inline ? ContentDisposition.inline() : ContentDisposition.attachment();
-        ContentDisposition disposition = builder
-                .filename(filename, StandardCharsets.UTF_8)
-                .build();
-        response.setHeader(HttpHeaders.CONTENT_DISPOSITION, disposition.toString());
-
-        try {
-            OutputStream os = response.getOutputStream();
-            os.write(pngBytes);
-            os.flush();
-        } catch (Exception e) {
-            throw new RuntimeException("流式写入 PNG 响应失败: " + e.getMessage(), e);
-        }
+        PdfWebUtil.writeImageToResponse(response, filename, pngBytes, inline);
     }
 
     /**
@@ -374,5 +362,211 @@ public class FinanceStatementService {
      */
     public ResolvedFont resolveFont() {
         return pdfTemplate.getFontResolver().resolveFont();
+    }
+
+    /**
+     * Web 环境下导出施加公司印章 Logo 矩阵平铺暗水印的对账单（支持跳过封面页）
+     *
+     * @param response  HTTP 响应对象
+     * @param skipPages 跳过前 N 页不施加水印
+     */
+    public void downloadImageWatermarkedStatementWeb(HttpServletResponse response, int skipPages) {
+        WatermarkOptions options = WatermarkOptions.builder()
+                .image(SEAL_IMAGE_PATH)
+                .imageWidth(76.0f)
+                .imageHeight(76.0f)
+                .opacity(0.18f)
+                .rotation(-25.0f)
+                .rowSpacing(160.0f)
+                .colSpacing(190.0f)
+                .skipPages(Math.max(0, skipPages))
+                .layer(WatermarkLayer.OVERLAY)
+                .build();
+        byte[] pdfBytes = pdfTemplate.addWatermarkToBytes(STATEMENT_TEMPLATE_PATH, options);
+        PdfWebUtil.download(response, "财务对账单_Logo图片暗水印", pdfBytes);
+    }
+
+    /**
+     * 在对账单中检索指定关键字的物理左下角坐标位置列表
+     *
+     * @param keyword 待定位关键字文本
+     * @return 命中位置列表
+     */
+    public List<TextPositionMatch> findStatementKeywordPositions(String keyword) {
+        return pdfTemplate.findTextPositions(STATEMENT_TEMPLATE_PATH, keyword);
+    }
+
+    /**
+     * 基于关键字自动定位在对账单上压印电子公章
+     *
+     * @param keyword    待定位锚点关键字
+     * @param occurrence 多处命中时的盖章策略
+     * @return 盖章后的 PDF 二进制数据
+     */
+    public byte[] stampKeywordOnStatement(String keyword, KeywordStampOccurrence occurrence) {
+        KeywordStampOptions options = KeywordStampOptions.builder()
+                .keyword(keyword)
+                .stampImage(SEAL_IMAGE_PATH)
+                .width(96.0f)
+                .height(96.0f)
+                .offsetX(16.0f)
+                .offsetY(-30.0f)
+                .occurrence(occurrence != null ? occurrence : KeywordStampOccurrence.LAST)
+                .failIfNotFound(true)
+                .build();
+        return pdfTemplate.stampAtKeywordToBytes(STATEMENT_TEMPLATE_PATH, options);
+    }
+
+    /**
+     * Web 环境下导出按关键字自动定位盖章的对账单
+     *
+     * @param response   HTTP 响应对象
+     * @param keyword    待定位锚点关键字
+     * @param occurrence 命中策略（FIRST / LAST / ALL）
+     */
+    public void downloadKeywordStampedStatementWeb(HttpServletResponse response, String keyword, KeywordStampOccurrence occurrence) {
+        byte[] stampedPdf = stampKeywordOnStatement(keyword, occurrence);
+        PdfWebUtil.download(response, "财务对账单_关键字自动盖章", stampedPdf);
+    }
+
+    /**
+     * 对对账单执行敏感关键字物理不可逆光栅涂黑脱敏
+     *
+     * @param request 物理涂黑脱敏请求 DTO
+     * @return 脱敏重封后的 PDF 二进制数据
+     */
+    public byte[] redactStatement(PdfRedactRequest request) {
+        RedactOptions options = RedactOptions.builder()
+                .keywords(request.getKeywords())
+                .maskColor(request.getMaskColor() != null && !request.getMaskColor().isBlank() ? request.getMaskColor() : "#000000")
+                .dpi(request.getDpi())
+                .password(request.getPassword())
+                .build();
+        return pdfTemplate.redactToBytes(STATEMENT_TEMPLATE_PATH, options);
+    }
+
+    /**
+     * Web 环境下导出按 DTO 参数物理涂黑脱敏后的对账单
+     *
+     * @param response HTTP 响应对象
+     * @param request  物理涂黑脱敏请求 DTO
+     */
+    public void downloadRedactedStatementWeb(HttpServletResponse response, PdfRedactRequest request) {
+        byte[] redactedPdf = redactStatement(request);
+        PdfWebUtil.download(response, "财务对账单_物理涂黑脱敏", redactedPdf);
+    }
+
+    /**
+     * Web 环境下通过 GET 快捷体验关键字物理不可逆涂黑脱敏
+     *
+     * @param response HTTP 响应对象
+     * @param keyword  待抹除敏感关键字
+     */
+    public void downloadRedactedKeywordsStatementWeb(HttpServletResponse response, String keyword) {
+        byte[] redactedPdf = pdfTemplate.redactKeywordsToBytes(STATEMENT_TEMPLATE_PATH, List.of(keyword));
+        PdfWebUtil.download(response, "财务对账单_关键字物理涂黑", redactedPdf);
+    }
+
+    /**
+     * Web 环境下增量更新对账单文档元数据并下载
+     *
+     * @param response HTTP 响应对象
+     * @param request  元数据更新请求 DTO
+     */
+    public void updateStatementMetadataWeb(HttpServletResponse response, PdfMetadataUpdateRequest request) {
+        PdfMetadataUpdate update = PdfMetadataUpdate.builder()
+                .title(request.getTitle())
+                .author(request.getAuthor())
+                .subject(request.getSubject())
+                .keywords(request.getKeywords())
+                .creator(request.getCreator())
+                .password(request.getPassword())
+                .build();
+        byte[] updatedPdf = pdfTemplate.updateMetadataToBytes(STATEMENT_TEMPLATE_PATH, update);
+        PdfWebUtil.download(response, "财务对账单_元数据更新", updatedPdf);
+    }
+
+    /**
+     * Web 环境下先注入示例元数据再执行彻底脱敏剥离并下载
+     *
+     * @param response HTTP 响应对象
+     */
+    public void stripStatementMetadataWeb(HttpServletResponse response) {
+        PdfMetadataUpdate seed = PdfMetadataUpdate.builder()
+                .title("内部机密对账单")
+                .author("财务内控部")
+                .subject("待剥离主题")
+                .keywords("机密,对账")
+                .creator("Internal ERP")
+                .build();
+        byte[] seeded = pdfTemplate.updateMetadataToBytes(STATEMENT_TEMPLATE_PATH, seed);
+        byte[] stripped = pdfTemplate.stripMetadataToBytes(seeded);
+        PdfWebUtil.download(response, "财务对账单_元数据剥离", stripped);
+    }
+
+    /**
+     * 演示加密 PDF 文档口令穿透自省元数据
+     *
+     * @param password 打开密码
+     * @return 解密后探测得到的 PDF 元数据
+     */
+    public PdfMetadata inspectProtectedStatementMetadata(String password) {
+        byte[] watermarked = generateWatermarkedStatement("安全专员", "AUD-007", "13800138000");
+        byte[] protectedPdf = protectStatement(watermarked, password, "AdminOwnerPass#2026");
+        return pdfTemplate.inspectMetadata(protectedPdf, password);
+    }
+
+    /**
+     * 场景编排：将企业印章/凭证图像资产编排合成为标准或原图尺寸 PDF
+     *
+     * @param fitToImage 是否按原图尺寸精确封装成页
+     * @return 合成的 PDF 二进制数据
+     */
+    public byte[] generateImagesToPdf(boolean fitToImage) {
+        ImageToPdfOptions options = fitToImage ? ImageToPdfOptions.fitToImage() : ImageToPdfOptions.defaults();
+        return pdfTemplate.imagesToPdfToBytes(List.of(SEAL_IMAGE_PATH), options);
+    }
+
+    /**
+     * Web 环境下将图像资产合成为 PDF 并流式下载
+     *
+     * @param response   HTTP 响应对象
+     * @param fitToImage 是否按原图尺寸封装
+     */
+    public void downloadImagesToPdfWeb(HttpServletResponse response, boolean fitToImage) {
+        byte[] pdfBytes = generateImagesToPdf(fitToImage);
+        PdfWebUtil.download(response, "凭证图像合成归档", pdfBytes);
+    }
+
+    /**
+     * Web 环境下物理删除对账单指定页面索引并下载
+     *
+     * @param response  HTTP 响应对象
+     * @param pageIndex 待删除页面索引（0-based）
+     */
+    public void downloadDeletedPagesStatementWeb(HttpServletResponse response, int pageIndex) {
+        byte[] pdfBytes = pdfTemplate.deletePagesToBytes(STATEMENT_TEMPLATE_PATH, pageIndex);
+        PdfWebUtil.download(response, "财务对账单_删除指定页", pdfBytes);
+    }
+
+    /**
+     * Web 环境下按倒序重排对账单页面结构并下载
+     *
+     * @param response HTTP 响应对象
+     */
+    public void downloadReorderedPagesStatementWeb(HttpServletResponse response) {
+        byte[] pdfBytes = pdfTemplate.reorderPagesToBytes(STATEMENT_TEMPLATE_PATH, 1, 0);
+        PdfWebUtil.download(response, "财务对账单_页面倒序重排", pdfBytes);
+    }
+
+    /**
+     * Web 环境下向对账单指定位置插入供应商表单附页并下载
+     *
+     * @param response          HTTP 响应对象
+     * @param insertAtPageIndex 插入位置索引（0-based）
+     */
+    public void downloadInsertedPagesStatementWeb(HttpServletResponse response, int insertAtPageIndex) {
+        byte[] pdfBytes = pdfTemplate.insertPagesToBytes(STATEMENT_TEMPLATE_PATH, SUPPLIER_FORM_TEMPLATE_PATH, insertAtPageIndex);
+        PdfWebUtil.download(response, "财务对账单_插入附件页", pdfBytes);
     }
 }

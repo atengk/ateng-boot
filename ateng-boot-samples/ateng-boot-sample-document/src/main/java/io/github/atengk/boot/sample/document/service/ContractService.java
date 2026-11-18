@@ -1,17 +1,28 @@
 package io.github.atengk.boot.sample.document.service;
 
+import com.deepoove.poi.config.Configure;
+import com.deepoove.poi.config.ConfigureBuilder;
+import io.github.atengk.boot.document.exception.DocumentResultCode;
+import io.github.atengk.boot.document.exception.WordRenderException;
+import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
 import io.github.atengk.boot.document.word.WordTemplate;
 import io.github.atengk.boot.document.word.model.FloatingPicture;
+import io.github.atengk.boot.document.word.model.StitchOptions;
+import io.github.atengk.boot.document.word.model.WordMetadata;
 import io.github.atengk.boot.document.word.util.WordWebUtil;
 import io.github.atengk.boot.sample.document.model.ContractRenderRequest;
 import io.github.atengk.boot.sample.document.model.ProjectExperience;
 import jakarta.servlet.http.HttpServletResponse;
+import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xwpf.usermodel.XWPFTable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.math.BigInteger;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -51,7 +62,10 @@ public class ContractService {
         // 2. 编译渲染主合同
         byte[] mainContract = wordTemplate.renderToBytes(CONTRACT_TEMPLATE_PATH, dataModel);
 
-        // 3. 物理无缝拼装附件保密协议
+        // 3. 按开关物理拼装保密协议附件
+        if (Boolean.FALSE.equals(request.getWithConfidentialityAgreement())) {
+            return mainContract;
+        }
         return wordTemplate.stitchToBytes(mainContract, ATTACHMENT_TEMPLATE_PATH);
     }
 
@@ -85,7 +99,13 @@ public class ContractService {
         WordWebUtil.writeToResponse(response, fileName, finalDocx);
     }
 
-    private Map<String, Object> buildDataModel(ContractRenderRequest req) {
+    /**
+     * 组装电子劳动合同模板填充数据模型（含可选浮动电子公章）
+     *
+     * @param req 劳动合同填报请求 DTO
+     * @return poi-tl 模板渲染数据字典
+     */
+    public Map<String, Object> buildDataModel(ContractRenderRequest req) {
         Map<String, Object> map = new HashMap<>();
         map.put("employeeName", req.getEmployeeName());
         map.put("idCard", req.getIdCard());
@@ -96,19 +116,21 @@ public class ContractService {
         map.put("items", req.getItems());
 
         // 注入浮动公章（基于字符锚定，实现标准骑字盖章压印效果）
-        try {
-            ClassPathResource sealRes = new ClassPathResource(SEAL_IMAGE_PATH);
-            if (sealRes.exists()) {
-                try (InputStream is = sealRes.getInputStream()) {
-                    byte[] sealBytes = is.readAllBytes();
-                    FloatingPicture seal = FloatingPicture.ofBytes(sealBytes, 120, 120, -80, -48);
-                    map.put("seal", seal);
+        if (!Boolean.FALSE.equals(req.getWithSeal())) {
+            try {
+                ClassPathResource sealRes = new ClassPathResource(SEAL_IMAGE_PATH);
+                if (sealRes.exists()) {
+                    try (InputStream is = sealRes.getInputStream()) {
+                        byte[] sealBytes = is.readAllBytes();
+                        FloatingPicture seal = FloatingPicture.ofBytes(sealBytes, 120, 120, -80, -48);
+                        map.put("seal", seal);
+                    }
+                } else {
+                    log.warn("未定位到指定印章图片资产: {}", SEAL_IMAGE_PATH);
                 }
-            } else {
-                log.warn("未定位到指定印章图片资产: {}", SEAL_IMAGE_PATH);
+            } catch (Exception e) {
+                log.warn("加载印章图片资产失败: {}", e.getMessage(), e);
             }
-        } catch (Exception e) {
-            log.warn("加载印章图片资产失败: {}", e.getMessage(), e);
         }
 
         return map;
@@ -231,6 +253,185 @@ public class ContractService {
             throw new io.github.atengk.boot.document.exception.WordRenderException(
                     io.github.atengk.boot.document.exception.DocumentResultCode.DOCUMENT_OPERATION_FAILED,
                     "表格单元格合并处理失败: " + e.getMessage(), e);
+        }
+    }
+
+    private byte[] generateDefaultContractBytes(String employeeName) {
+        return generateContractDocx(createDefaultRequest(employeeName));
+    }
+
+    /**
+     * 自省探查生成的电子劳动合同结构与安全保护元数据（支持 AES 加密文档口令穿透）
+     *
+     * @param employeeName 员工姓名
+     * @param password     可选加密打开密码（非空时先执行 AES-256 加密再执行口令穿透自省）
+     * @return 结构化 Word 元数据模型
+     */
+    public WordMetadata inspectContractMetadata(String employeeName, String password) {
+        byte[] docx = generateDefaultContractBytes(employeeName);
+        if (password != null && !password.isBlank()) {
+            byte[] encrypted = wordTemplate.encryptToBytes(docx, password);
+            return wordTemplate.inspectMetadata(encrypted, password);
+        }
+        return wordTemplate.inspectMetadata(docx);
+    }
+
+    /**
+     * Web 环境下导出完成首行跨列合并的劳动合同 DOCX
+     *
+     * @param response     HTTP 响应对象
+     * @param employeeName 员工姓名
+     */
+    public void exportMergedTableContractToWeb(HttpServletResponse response, String employeeName) {
+        ContractRenderRequest request = createDefaultRequest(employeeName);
+        byte[] docx = generateContractDocx(request);
+        byte[] merged = mergeContractTableCells(docx);
+        String fileName = String.format("劳动合同_单元格合并_%s", request.getEmployeeName());
+        WordWebUtil.download(response, fileName, merged);
+    }
+
+    /**
+     * Web 环境下导出施加 Agile AES-256 文件打开级加密的劳动合同
+     *
+     * @param response     HTTP 响应对象
+     * @param employeeName 员工姓名
+     * @param password     打开文档密码
+     */
+    public void exportEncryptedContractToWeb(HttpServletResponse response, String employeeName, String password) {
+        ContractRenderRequest request = createDefaultRequest(employeeName);
+        byte[] docx = generateContractDocx(request);
+        byte[] encrypted = wordTemplate.encryptToBytes(docx, password);
+        String fileName = String.format("劳动合同_AES加密_%s", request.getEmployeeName());
+        WordWebUtil.download(response, fileName, encrypted);
+    }
+
+    /**
+     * Web 环境下验证 AES-256 加密后使用正确打开密码解密还原明文合同
+     *
+     * @param response     HTTP 响应对象
+     * @param employeeName 员工姓名
+     * @param password     打开文档密码
+     */
+    public void exportDecryptedContractToWeb(HttpServletResponse response, String employeeName, String password) {
+        ContractRenderRequest request = createDefaultRequest(employeeName);
+        byte[] docx = generateContractDocx(request);
+        byte[] encrypted = wordTemplate.encryptToBytes(docx, password);
+        byte[] decrypted = wordTemplate.decryptToBytes(encrypted, password);
+        String fileName = String.format("劳动合同_AES解密还原_%s", request.getEmployeeName());
+        WordWebUtil.download(response, fileName, decrypted);
+    }
+
+    /**
+     * 校验 Word 文档 Agile AES-256 文件打开加密状态与口令解密正确性
+     *
+     * @param password       加密口令
+     * @param verifyPassword 待验证解密口令
+     * @return 加密标识为 true 且使用待验证口令成功还原明文返回 true，密码不匹配返回 false
+     */
+    public boolean verifyContractEncryptionPassword(String password, String verifyPassword) {
+        byte[] docx = generateDefaultContractBytes("密钥校验员");
+        byte[] encrypted = wordTemplate.encryptToBytes(docx, password);
+        if (!wordTemplate.isEncrypted(encrypted)) {
+            return false;
+        }
+        try {
+            byte[] decrypted = wordTemplate.decryptToBytes(encrypted, verifyPassword);
+            return !wordTemplate.isEncrypted(decrypted);
+        } catch (WordRenderException e) {
+            if (e.getResultCode() == DocumentResultCode.PASSWORD_ERROR) {
+                return false;
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * Web 环境下导出压印页眉 VML 对角动态宏水印的劳动合同
+     *
+     * @param response      HTTP 响应对象
+     * @param employeeName  员工姓名
+     * @param operatorName  操作人姓名（用于解析 #{user.name} 水印宏）
+     * @param watermarkText 水印模板文本
+     */
+    public void exportWatermarkedContractToWeb(HttpServletResponse response, String employeeName,
+                                               String operatorName, String watermarkText) {
+        ContractRenderRequest request = createDefaultRequest(employeeName);
+        byte[] docx = generateContractDocx(request);
+        Map<String, Object> vars = Map.of("user", Map.of("name", operatorName));
+        WatermarkOptions options = WatermarkOptions.builder()
+                .text(watermarkText)
+                .variables(vars)
+                .build();
+        byte[] watermarked = wordTemplate.addWatermarkToBytes(docx, options);
+        String fileName = String.format("劳动合同_页眉水印_%s", request.getEmployeeName());
+        WordWebUtil.download(response, fileName, watermarked);
+    }
+
+    /**
+     * Web 环境下按 StitchOptions 控制主合同与保密协议附件是否分页拼装导出
+     *
+     * @param response         HTTP 响应对象
+     * @param employeeName     员工姓名
+     * @param pageBreakBetween 子文档之间是否插入分页符
+     */
+    public void exportStitchedContractToWeb(HttpServletResponse response, String employeeName, boolean pageBreakBetween) {
+        ContractRenderRequest request = createDefaultRequest(employeeName);
+        byte[] mainContract = renderMainContract(request);
+        StitchOptions options = StitchOptions.builder()
+                .pageBreakBetween(pageBreakBetween)
+                .build();
+        byte[] stitched = wordTemplate.stitchToBytes(List.of(mainContract, ATTACHMENT_TEMPLATE_PATH), options);
+        String fileName = String.format("劳动合同_分页拼装_%s", request.getEmployeeName());
+        WordWebUtil.download(response, fileName, stitched);
+    }
+
+    /**
+     * Web 环境下演示按需启用 SpringEL 表达式与横向动态列循环（LoopColumnTableRenderPolicy）生成季度预算汇总表
+     *
+     * @param response   HTTP 响应对象
+     * @param department 部门名称
+     */
+    public void exportQuarterlyColumnLoopContractToWeb(HttpServletResponse response, String department) {
+        byte[] templateBytes = buildQuarterlyColumnTemplateBytes();
+        ConfigureBuilder builder = wordTemplate.configureBuilder(true);
+        wordTemplate.bindLoopColumn(builder, "quarters");
+        Configure configure = builder.build();
+
+        Map<String, Object> dataModel = new HashMap<>();
+        dataModel.put("department", department);
+        dataModel.put("quarters", List.of(
+                Map.of("quarter", "2026 Q1", "budget", "120 万元"),
+                Map.of("quarter", "2026 Q2", "budget", "150 万元"),
+                Map.of("quarter", "2026 Q3", "budget", "180 万元")
+        ));
+
+        byte[] rendered = wordTemplate.renderToBytes(templateBytes, dataModel, configure);
+        String fileName = String.format("季度研发预算列循环报表_%s", department);
+        WordWebUtil.download(response, fileName, rendered);
+    }
+
+    private byte[] buildQuarterlyColumnTemplateBytes() {
+        try (XWPFDocument doc = new XWPFDocument(); ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            doc.createParagraph().createRun().setText("部门研发季度预算汇总（{{department.toUpperCase()}}）");
+            XWPFTable table = doc.createTable(3, 1);
+            if (table.getCTTbl().getTblGrid() == null) {
+                table.getCTTbl().addNewTblGrid();
+            }
+            if (table.getCTTbl().getTblGrid().sizeOfGridColArray() == 0) {
+                table.getCTTbl().getTblGrid().addNewGridCol().setW(BigInteger.valueOf(2400));
+            }
+            table.getRow(0).getCell(0).setText("{{quarters}}");
+            table.getRow(1).getCell(0).setText("[quarter]");
+            table.getRow(2).getCell(0).setText("[budget]");
+            for (int r = 0; r < 3; r++) {
+                table.getRow(r).getCell(0).setWidth("2400");
+            }
+            doc.write(baos);
+            return baos.toByteArray();
+        } catch (Exception e) {
+            throw new io.github.atengk.boot.document.exception.WordRenderException(
+                    io.github.atengk.boot.document.exception.DocumentResultCode.WORD_RENDER_FAILED,
+                    "构建季度列循环示例模板失败: " + e.getMessage(), e);
         }
     }
 }

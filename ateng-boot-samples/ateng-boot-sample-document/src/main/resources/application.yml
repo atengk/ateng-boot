@@ -4,17 +4,26 @@ server:
 spring:
   application:
     name: ateng-boot-sample-document
+  config:
+    import: "optional:classpath:application-local.yml"
 
 ateng:
   boot:
     document:
       enabled: true
       in-memory-threshold: 10MB
+      max-document-size: 100MB
       temp-dir: ""
       word:
         template-base-dir: "classpath:/templates/"
+        spring-el-enabled: false
+        spring-el-strict: false
       pdf:
         font-path: classpath:fonts/sample-cjk.ttf
+        default-render-dpi: 150.0
+        max-render-dpi: 600.0
+        default-max-render-pages: 50
+        redaction-dpi: 200.0
       watermark:
         default-text: "内部绝密 严禁外传"
         opacity: 0.25
@@ -23,3 +32,9 @@ ateng:
         color: "#CC0000"
         row-spacing: 120.0
         col-spacing: 180.0
+      converter:
+        gotenberg:
+          enabled: false
+          base-url: ""
+          connect-timeout: 5s
+          read-timeout: 60s

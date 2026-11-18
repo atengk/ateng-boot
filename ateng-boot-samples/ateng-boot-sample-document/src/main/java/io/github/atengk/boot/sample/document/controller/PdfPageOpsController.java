@@ -5,6 +5,8 @@ import io.github.atengk.boot.document.font.ResolvedFont;
 import io.github.atengk.boot.document.pdf.model.PdfMetadata;
 import io.github.atengk.boot.sample.document.service.FinanceStatementService;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.constraints.Min;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -16,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
  * @author Ateng
  * @since 2026-11-10
  */
+@Validated
 @RestController
 @RequestMapping("/sample/document")
 public class PdfPageOpsController {
@@ -121,5 +124,51 @@ public class PdfPageOpsController {
     @GetMapping("/inspect/font")
     public Result<ResolvedFont> inspectFont() {
         return Result.success(financeStatementService.resolveFont());
+    }
+
+    /**
+     * 9. 将企业图像资产合成编排为标准 A4 或原图等寸 PDF 文档下载
+     *
+     * @param response   HTTP 响应对象
+     * @param fitToImage 是否按原图尺寸精确封装单页
+     */
+    @GetMapping("/pdf/page/images-to-pdf/download")
+    public void downloadImagesToPdf(HttpServletResponse response,
+                                    @RequestParam(defaultValue = "false") boolean fitToImage) {
+        financeStatementService.downloadImagesToPdfWeb(response, fitToImage);
+    }
+
+    /**
+     * 10. 物理删除对账单指定页面索引并下载
+     *
+     * @param response  HTTP 响应对象
+     * @param pageIndex 待删除页面索引（0-based，默认 0）
+     */
+    @GetMapping("/pdf/page/delete/download")
+    public void downloadDeletedPagesPdf(HttpServletResponse response,
+                                        @RequestParam(defaultValue = "0") int pageIndex) {
+        financeStatementService.downloadDeletedPagesStatementWeb(response, pageIndex);
+    }
+
+    /**
+     * 11. 按倒序全新页序重排对账单页面结构并下载
+     *
+     * @param response HTTP 响应对象
+     */
+    @GetMapping("/pdf/page/reorder/download")
+    public void downloadReorderedPagesPdf(HttpServletResponse response) {
+        financeStatementService.downloadReorderedPagesStatementWeb(response);
+    }
+
+    /**
+     * 12. 向对账单指定页码位置之前插入供应商表单附件页并下载
+     *
+     * @param response          HTTP 响应对象
+     * @param insertAtPageIndex 插入位置索引（0-based，默认 1）
+     */
+    @GetMapping("/pdf/page/insert/download")
+    public void downloadInsertedPagesPdf(HttpServletResponse response,
+                                         @RequestParam(defaultValue = "1") @Min(value = 0, message = "插入页面索引不能小于 0") int insertAtPageIndex) {
+        financeStatementService.downloadInsertedPagesStatementWeb(response, insertAtPageIndex);
     }
 }

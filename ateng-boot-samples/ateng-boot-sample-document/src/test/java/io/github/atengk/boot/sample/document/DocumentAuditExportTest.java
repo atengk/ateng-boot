@@ -3,16 +3,24 @@ package io.github.atengk.boot.sample.document;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.document.enums.KeywordStampOccurrence;
+import io.github.atengk.boot.document.enums.WatermarkLayer;
+import io.github.atengk.boot.document.pdf.PdfTemplate;
+import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
+import io.github.atengk.boot.document.word.WordTemplate;
 import io.github.atengk.boot.sample.document.model.ContractRenderRequest;
+import io.github.atengk.boot.sample.document.model.PdfRedactRequest;
 import io.github.atengk.boot.sample.document.model.ProjectExperience;
 import io.github.atengk.boot.sample.document.model.SupplierFormRequest;
 import io.github.atengk.boot.sample.document.service.ContractService;
+import io.github.atengk.boot.sample.document.service.DocumentConvertService;
 import io.github.atengk.boot.sample.document.service.FinanceStatementService;
 import io.github.atengk.boot.sample.document.service.SupplierFormService;
 import io.github.atengk.boot.sample.document.template.TemplateInitializer;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm;
+import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -68,6 +76,15 @@ class DocumentAuditExportTest {
 
     @Autowired
     private SupplierFormService supplierFormService;
+
+    @Autowired
+    private WordTemplate wordTemplate;
+
+    @Autowired
+    private PdfTemplate pdfTemplate;
+
+    @Autowired
+    private DocumentConvertService documentConvertService;
 
     @BeforeAll
     static void setup() throws IOException {
@@ -238,6 +255,118 @@ class DocumentAuditExportTest {
         ));
 
         // =========================================================================
+        // 场景 10: PDF 关键字自动定位压印电子公章
+        // =========================================================================
+        byte[] statementKeywordSealBytes = financeStatementService.stampKeywordOnStatement(
+                "Settled", KeywordStampOccurrence.LAST
+        );
+        auditEntries.add(saveAndAudit(
+                "statement-keyword-seal.pdf",
+                "PDF 关键字自动坐标定位压印电子公章 (Settled / LAST)",
+                "PDF",
+                statementKeywordSealBytes,
+                statementPages
+        ));
+
+        // =========================================================================
+        // 场景 11: PDF 敏感内容物理不可逆光栅涂黑脱敏
+        // =========================================================================
+        byte[] statementRedactedBytes = financeStatementService.redactStatement(
+                PdfRedactRequest.builder()
+                        .keywords(List.of("1,850,200.00", "12,000.00"))
+                        .maskColor("#000000")
+                        .dpi(150.0f)
+                        .build()
+        );
+        auditEntries.add(saveAndAudit(
+                "statement-redacted.pdf",
+                "PDF 敏感结算金额物理不可逆光栅涂黑脱敏 (150 DPI)",
+                "PDF",
+                statementRedactedBytes,
+                statementPages
+        ));
+
+        // =========================================================================
+        // 场景 12: Word Agile AES-256 文件打开级加密保护
+        // =========================================================================
+        byte[] contractAesEncryptedBytes = wordTemplate.encryptToBytes(contractMergedBytes, "WordAes#2026");
+        auditEntries.add(saveAndAudit(
+                "contract-aes-encrypted.docx",
+                "Word Agile AES-256 文件打开级加密保护 (口令: WordAes#2026)",
+                "DOCX",
+                contractAesEncryptedBytes,
+                2
+        ));
+
+        // =========================================================================
+        // 场景 13: 企业印章图片资产合成归档 PDF
+        // =========================================================================
+        byte[] imagesToPdfBytes = financeStatementService.generateImagesToPdf(true);
+        auditEntries.add(saveAndAudit(
+                "seal-images-to-pdf.pdf",
+                "企业电子印章 PNG 图片资产按原图尺寸合成归档 PDF",
+                "PDF",
+                imagesToPdfBytes,
+                1
+        ));
+
+        // =========================================================================
+        // 场景 14: PDF 企业印章 Logo 图片矩阵平铺暗水印
+        // =========================================================================
+        byte[] statementImageWatermarkedBytes = pdfTemplate.addWatermarkToBytes(
+                "classpath:templates/sample-statement.pdf",
+                WatermarkOptions.builder()
+                        .image("classpath:images/company-seal.png")
+                        .imageWidth(76.0f)
+                        .imageHeight(76.0f)
+                        .opacity(0.18f)
+                        .rotation(-25.0f)
+                        .layer(WatermarkLayer.OVERLAY)
+                        .build()
+        );
+        auditEntries.add(saveAndAudit(
+                "statement-image-watermarked.pdf",
+                "PDF 企业印章 Logo 图片矩阵平铺防泄密暗水印",
+                "PDF",
+                statementImageWatermarkedBytes,
+                statementPages
+        ));
+
+        // =========================================================================
+        // 场景 15: Word 劳动合同跨格式转换 PDF (默认 !local 离线转换桩)
+        // =========================================================================
+        byte[] contractConvertedPdfBytes = documentConvertService.convertContractWordToPdf(fullContractReq);
+        int convertedPages;
+        try (PDDocument doc = Loader.loadPDF(contractConvertedPdfBytes)) {
+            convertedPages = doc.getNumberOfPages();
+        }
+        auditEntries.add(saveAndAudit(
+                "contract-converted-to-pdf.pdf",
+                "Word 劳动合同跨格式转档 PDF (OfflineSimulatedDocumentConverter)",
+                "PDF",
+                contractConvertedPdfBytes,
+                convertedPages
+        ));
+
+        // =========================================================================
+        // 场景 16: Word 劳动合同原生页眉 VML 对角动态宏水印
+        // =========================================================================
+        byte[] contractWatermarkedBytes = wordTemplate.addWatermarkToBytes(
+                contractMergedBytes,
+                WatermarkOptions.builder()
+                        .text("#{user.name} 绝密合同")
+                        .variables(Map.of("user", Map.of("name", "法务总监")))
+                        .build()
+        );
+        auditEntries.add(saveAndAudit(
+                "contract-watermarked.docx",
+                "Word 劳动合同原生页眉 VML 对角动态宏文字水印",
+                "DOCX",
+                contractWatermarkedBytes,
+                2
+        ));
+
+        // =========================================================================
         // 生成 audit-manifest.json 结构化元数据清单
         // =========================================================================
         Path manifestPath = OUTPUT_DIR.resolve("audit-manifest.json");
@@ -263,7 +392,7 @@ class DocumentAuditExportTest {
         // =========================================================================
         // 强断言业务合法性与关键约束
         // =========================================================================
-        assertThat(auditEntries).hasSize(9);
+        assertThat(auditEntries).hasSize(16);
 
         // 验证 DOCX 内容
         try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(contractRenderedBytes))) {
@@ -296,6 +425,29 @@ class DocumentAuditExportTest {
         assertThat(img).isNotNull();
         assertThat(img.getWidth()).isGreaterThan(500);
         assertThat(img.getHeight()).isGreaterThan(500);
+
+        // 验证物理涂黑不可逆（敏感金额无法通过文本抽取还原）
+        try (PDDocument doc = Loader.loadPDF(statementRedactedBytes)) {
+            String redactedText = new PDFTextStripper().getText(doc);
+            assertThat(redactedText).doesNotContain("1,850,200.00");
+            assertThat(redactedText).doesNotContain("12,000.00");
+        }
+
+        // 验证 Word AES-256 文件级加密状态与解密还原
+        assertThat(wordTemplate.isEncrypted(contractAesEncryptedBytes)).isTrue();
+        byte[] decryptedContract = wordTemplate.decryptToBytes(contractAesEncryptedBytes, "WordAes#2026");
+        assertThat(wordTemplate.isEncrypted(decryptedContract)).isFalse();
+        assertThat(wordTemplate.extractText(decryptedContract)).contains("李云龙");
+
+        // 验证图转 PDF 与转换产物合法性
+        try (PDDocument doc = Loader.loadPDF(imagesToPdfBytes)) {
+            assertThat(doc.getNumberOfPages()).isEqualTo(1);
+        }
+        try (PDDocument doc = Loader.loadPDF(contractConvertedPdfBytes)) {
+            assertThat(new PDFTextStripper().getText(doc)).contains("110101198501011234");
+        }
+        // 验证 Word 页眉 VML 水印已写入页眉部件
+        assertThat(wordTemplate.inspectMetadata(contractWatermarkedBytes).isHasHeadersOrFooters()).isTrue();
     }
 
     private AuditFileEntry saveAndAudit(String fileName, String scenarioName, String format, byte[] content, int pageCount) throws IOException {
