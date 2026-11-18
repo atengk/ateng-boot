@@ -175,4 +175,23 @@ class DynamicDatasourceTemplateLifecycleTest {
 
         assertThat(template.getDataSourceKeys()).contains("master");
     }
+
+    @Test
+    @DisplayName("测试单参便捷注销 removeDataSource(dsKey) 默认执行优雅排空并继续受核心白名单保护")
+    void shouldSupportSingleArgRemoveDataSourceWithGracefulDrain() {
+        JdbcDataSource tempDs = new JdbcDataSource();
+        tempDs.setURL("jdbc:h2:mem:temp_single_arg_remove;DB_CLOSE_DELAY=-1");
+        tempDs.setUser("sa");
+        tempDs.setPassword("");
+
+        template.addDataSource("temp_single_ds", tempDs);
+        assertThat(template.getDataSourceKeys()).contains("temp_single_ds");
+
+        template.removeDataSource("temp_single_ds");
+        assertThat(template.getDataSourceKeys()).doesNotContain("temp_single_ds");
+
+        assertThatThrownBy(() -> template.removeDataSource("master"))
+                .isInstanceOf(DataSourceSwitchException.class)
+                .hasMessageContaining("受管主数据源严禁动态注销");
+    }
 }

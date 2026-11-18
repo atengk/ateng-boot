@@ -37,7 +37,9 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -133,6 +135,64 @@ public class DynamicDatasourceTemplate {
     public void runInDataSource(String dsKey, Runnable action) {
         Objects.requireNonNull(action, "执行动作 (action) 不能为空");
         callInDataSource(dsKey, () -> {
+            action.run();
+            return null;
+        });
+    }
+
+    /**
+     * 在配置的主库数据源上下文中执行代码块（带返回值）
+     *
+     * @param action 业务执行闭包
+     * @param <T>    返回数据类型
+     * @return 业务执行结果
+     */
+    public <T> T callInMaster(Supplier<T> action) {
+        Objects.requireNonNull(action, "执行动作 (action) 不能为空");
+        String masterKey = datasourceProperties.getReadWriteSplit() != null
+                ? datasourceProperties.getReadWriteSplit().getMasterDataSource()
+                : null;
+        Assert.hasText(masterKey, "主数据源标识 (masterDataSource) 未配置或为空");
+        return callInDataSource(masterKey, action);
+    }
+
+    /**
+     * 在配置的主库数据源上下文中执行代码块（无返回值）
+     *
+     * @param action 业务执行闭包
+     */
+    public void runInMaster(Runnable action) {
+        Objects.requireNonNull(action, "执行动作 (action) 不能为空");
+        callInMaster(() -> {
+            action.run();
+            return null;
+        });
+    }
+
+    /**
+     * 在配置的从库数据源（或从库分组）上下文中执行代码块（带返回值）
+     *
+     * @param action 业务执行闭包
+     * @param <T>    返回数据类型
+     * @return 业务执行结果
+     */
+    public <T> T callInSlave(Supplier<T> action) {
+        Objects.requireNonNull(action, "执行动作 (action) 不能为空");
+        String slaveKey = datasourceProperties.getReadWriteSplit() != null
+                ? datasourceProperties.getReadWriteSplit().getSlaveDataSource()
+                : null;
+        Assert.hasText(slaveKey, "从数据源标识 (slaveDataSource) 未配置或为空");
+        return callInDataSource(slaveKey, action);
+    }
+
+    /**
+     * 在配置的从库数据源（或从库分组）上下文中执行代码块（无返回值）
+     *
+     * @param action 业务执行闭包
+     */
+    public void runInSlave(Runnable action) {
+        Objects.requireNonNull(action, "执行动作 (action) 不能为空");
+        callInSlave(() -> {
             action.run();
             return null;
         });
@@ -278,6 +338,28 @@ public class DynamicDatasourceTemplate {
         }
         groupDataSource.addDatasource(memberKey, memberDs);
         log.info("ateng-boot-datasource: 分组 [{}] 成功挂载节点 [{}]", groupKey, memberKey);
+    }
+
+    /**
+     * 快捷从指定分组中摘除物理数据源节点（与 {@link #addGroupMember(String, String)} 保持对称）
+     *
+     * @param groupKey  分组标识
+     * @param memberKey 物理成员数据源标识
+     * @return true 表示成功摘除节点；false 表示分组不存在或该成员不在分组中
+     */
+    public boolean removeGroupMember(String groupKey, String memberKey) {
+        Assert.hasText(groupKey, "groupKey 不能为空");
+        Assert.hasText(memberKey, "memberKey 不能为空");
+        GroupDataSource groupDataSource = dataSource.getGroupDataSources().get(groupKey);
+        if (groupDataSource == null) {
+            return false;
+        }
+        DataSource removed = groupDataSource.removeDatasource(memberKey);
+        if (removed != null) {
+            log.info("ateng-boot-datasource: 分组 [{}] 成功摘除节点 [{}]", groupKey, memberKey);
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -480,7 +562,7 @@ public class DynamicDatasourceTemplate {
      * @param action 遍历消费动作
      * @return 批处理聚合执行结果
      */
-    public BatchExecutionResult forEachDataSource(Consumer<String> action) {
+    public BatchExecutionResult<Void> forEachDataSource(Consumer<String> action) {
         return forEachDataSource(BatchExecutionPolicy.FAIL_SAFE, action);
     }
 
@@ -491,7 +573,7 @@ public class DynamicDatasourceTemplate {
      * @param action 遍历消费动作
      * @return 批处理聚合执行结果
      */
-    public BatchExecutionResult forEachDataSource(BatchExecutionPolicy policy, Consumer<String> action) {
+    public BatchExecutionResult<Void> forEachDataSource(BatchExecutionPolicy policy, Consumer<String> action) {
         return forEachDataSource(getDataSourceKeys(), policy, action);
     }
 
@@ -502,7 +584,7 @@ public class DynamicDatasourceTemplate {
      * @param action 遍历消费动作
      * @return 批处理聚合执行结果
      */
-    public BatchExecutionResult forEachDataSource(Collection<String> dsKeys, Consumer<String> action) {
+    public BatchExecutionResult<Void> forEachDataSource(Collection<String> dsKeys, Consumer<String> action) {
         return forEachDataSource(dsKeys, BatchExecutionPolicy.FAIL_SAFE, action);
     }
 
@@ -514,13 +596,77 @@ public class DynamicDatasourceTemplate {
      * @param action 遍历消费动作
      * @return 批处理聚合执行结果
      */
-    public BatchExecutionResult forEachDataSource(Collection<String> dsKeys,
-                                                  BatchExecutionPolicy policy,
-                                                  Consumer<String> action) {
+    public BatchExecutionResult<Void> forEachDataSource(Collection<String> dsKeys,
+                                                        BatchExecutionPolicy policy,
+                                                        Consumer<String> action) {
+        Objects.requireNonNull(action, "执行动作 (action) 不能为空");
+        return executeBatchDataSources(dsKeys, policy, dsKey -> {
+            action.accept(dsKey);
+            return null;
+        }, false);
+    }
+
+    /**
+     * 全库批量遍历所有已注册物理数据源并聚合计算结果（默认 FAIL_SAFE 容错聚合策略）
+     *
+     * @param action 遍历计算函数
+     * @param <T>    单库计算结果类型
+     * @return 包含各库返回值映射表与失败清单的批处理聚合结果
+     */
+    public <T> BatchExecutionResult<T> forEachDataSourceWithResult(Function<String, T> action) {
+        return forEachDataSourceWithResult(BatchExecutionPolicy.FAIL_SAFE, action);
+    }
+
+    /**
+     * 全库批量遍历所有已注册物理数据源并聚合计算结果
+     *
+     * @param policy 批处理容错策略
+     * @param action 遍历计算函数
+     * @param <T>    单库计算结果类型
+     * @return 包含各库返回值映射表与失败清单的批处理聚合结果
+     */
+    public <T> BatchExecutionResult<T> forEachDataSourceWithResult(BatchExecutionPolicy policy,
+                                                                   Function<String, T> action) {
+        return forEachDataSourceWithResult(getDataSourceKeys(), policy, action);
+    }
+
+    /**
+     * 批量遍历指定物理数据源集合并聚合计算结果（默认 FAIL_SAFE 容错聚合策略）
+     *
+     * @param dsKeys 指定数据源集合
+     * @param action 遍历计算函数
+     * @param <T>    单库计算结果类型
+     * @return 包含各库返回值映射表与失败清单的批处理聚合结果
+     */
+    public <T> BatchExecutionResult<T> forEachDataSourceWithResult(Collection<String> dsKeys,
+                                                                   Function<String, T> action) {
+        return forEachDataSourceWithResult(dsKeys, BatchExecutionPolicy.FAIL_SAFE, action);
+    }
+
+    /**
+     * 批量遍历指定物理数据源集合并聚合计算结果
+     *
+     * @param dsKeys 指定数据源集合
+     * @param policy 批处理容错策略
+     * @param action 遍历计算函数
+     * @param <T>    单库计算结果类型
+     * @return 包含各库返回值映射表与失败清单的批处理聚合结果
+     */
+    public <T> BatchExecutionResult<T> forEachDataSourceWithResult(Collection<String> dsKeys,
+                                                                   BatchExecutionPolicy policy,
+                                                                   Function<String, T> action) {
+        Objects.requireNonNull(action, "执行动作 (action) 不能为空");
+        return executeBatchDataSources(dsKeys, policy, action, true);
+    }
+
+    private <T> BatchExecutionResult<T> executeBatchDataSources(Collection<String> dsKeys,
+                                                                BatchExecutionPolicy policy,
+                                                                Function<String, T> action,
+                                                                boolean collectResults) {
         Objects.requireNonNull(policy, "批处理容错策略 (policy) 不能为空");
         Objects.requireNonNull(action, "执行动作 (action) 不能为空");
 
-        BatchExecutionResult.Builder builder = BatchExecutionResult.builder();
+        BatchExecutionResult.Builder<T> builder = BatchExecutionResult.builder();
         if (dsKeys == null || dsKeys.isEmpty()) {
             return builder.build();
         }
@@ -530,21 +676,14 @@ public class DynamicDatasourceTemplate {
                 continue;
             }
             try {
-                runInDataSource(dsKey, () -> action.accept(dsKey));
-                builder.recordSuccess();
-            } catch (Throwable t) {
-                builder.recordFailure(dsKey, t);
-                if (policy == BatchExecutionPolicy.FAIL_FAST) {
-                    if (t instanceof RuntimeException runtimeException) {
-                        throw runtimeException;
-                    }
-                    if (t instanceof Error error) {
-                        throw error;
-                    }
-                    throw new DataSourceSwitchException("数据源 [" + dsKey + "] 批处理执行异常: " + t.getMessage(), t,
-                            DatasourceResultCode.DATASOURCE_SWITCH_ERROR);
+                T value = callInDataSource(dsKey, () -> action.apply(dsKey));
+                if (collectResults) {
+                    builder.recordSuccess(dsKey, value);
+                } else {
+                    builder.recordSuccess();
                 }
-                log.warn("数据源 [{}] 批处理执行失败，FAIL_SAFE 容错隔离继续: {}", dsKey, t.getMessage(), t);
+            } catch (Throwable t) {
+                handleBatchFailure("数据源", dsKey, t, policy, builder);
             }
         }
         return builder.build();
@@ -556,7 +695,7 @@ public class DynamicDatasourceTemplate {
      * @param action 遍历消费动作（入参：tenantId, dsKey）
      * @return 批处理聚合执行结果
      */
-    public BatchExecutionResult forEachTenant(BiConsumer<String, String> action) {
+    public BatchExecutionResult<Void> forEachTenant(BiConsumer<String, String> action) {
         return forEachTenant(BatchExecutionPolicy.FAIL_SAFE, action);
     }
 
@@ -567,9 +706,13 @@ public class DynamicDatasourceTemplate {
      * @param action 遍历消费动作（入参：tenantId, dsKey）
      * @return 批处理聚合执行结果
      */
-    public BatchExecutionResult forEachTenant(BatchExecutionPolicy policy, BiConsumer<String, String> action) {
+    public BatchExecutionResult<Void> forEachTenant(BatchExecutionPolicy policy, BiConsumer<String, String> action) {
+        Objects.requireNonNull(action, "执行动作 (action) 不能为空");
         Map<String, String> activeTenants = resolveActiveTenants();
-        return executeBatchTenants(activeTenants, policy, action);
+        return executeBatchTenants(activeTenants, policy, (tenantId, dsKey) -> {
+            action.accept(tenantId, dsKey);
+            return null;
+        }, false);
     }
 
     /**
@@ -579,7 +722,7 @@ public class DynamicDatasourceTemplate {
      * @param action    遍历消费动作（入参：tenantId, dsKey）
      * @return 批处理聚合执行结果
      */
-    public BatchExecutionResult forEachTenant(Collection<String> tenantIds, BiConsumer<String, String> action) {
+    public BatchExecutionResult<Void> forEachTenant(Collection<String> tenantIds, BiConsumer<String, String> action) {
         return forEachTenant(tenantIds, BatchExecutionPolicy.FAIL_SAFE, action);
     }
 
@@ -591,16 +734,75 @@ public class DynamicDatasourceTemplate {
      * @param action    遍历消费动作（入参：tenantId, dsKey）
      * @return 批处理聚合执行结果
      */
-    public BatchExecutionResult forEachTenant(Collection<String> tenantIds,
-                                              BatchExecutionPolicy policy,
-                                              BiConsumer<String, String> action) {
+    public BatchExecutionResult<Void> forEachTenant(Collection<String> tenantIds,
+                                                    BatchExecutionPolicy policy,
+                                                    BiConsumer<String, String> action) {
+        Objects.requireNonNull(action, "执行动作 (action) 不能为空");
+        return executeBatchTenants(buildTenantMap(tenantIds), policy, (tenantId, dsKey) -> {
+            action.accept(tenantId, dsKey);
+            return null;
+        }, false);
+    }
+
+    /**
+     * 全租户批量遍历并聚合计算结果（默认 FAIL_SAFE 容错聚合策略，自动探测活跃租户）
+     *
+     * @param action 遍历计算函数（入参：tenantId, dsKey）
+     * @param <T>    单租户计算结果类型
+     * @return 包含各租户返回值映射表与失败清单的批处理聚合结果
+     */
+    public <T> BatchExecutionResult<T> forEachTenantWithResult(BiFunction<String, String, T> action) {
+        return forEachTenantWithResult(BatchExecutionPolicy.FAIL_SAFE, action);
+    }
+
+    /**
+     * 全租户批量遍历并聚合计算结果（自动探测活跃租户）
+     *
+     * @param policy 批处理容错策略
+     * @param action 遍历计算函数（入参：tenantId, dsKey）
+     * @param <T>    单租户计算结果类型
+     * @return 包含各租户返回值映射表与失败清单的批处理聚合结果
+     */
+    public <T> BatchExecutionResult<T> forEachTenantWithResult(BatchExecutionPolicy policy,
+                                                               BiFunction<String, String, T> action) {
+        Map<String, String> activeTenants = resolveActiveTenants();
+        return executeBatchTenants(activeTenants, policy, action, true);
+    }
+
+    /**
+     * 批量遍历指定租户集合并聚合计算结果（默认 FAIL_SAFE 容错聚合策略）
+     *
+     * @param tenantIds 指定租户标识集合
+     * @param action    遍历计算函数（入参：tenantId, dsKey）
+     * @param <T>       单租户计算结果类型
+     * @return 包含各租户返回值映射表与失败清单的批处理聚合结果
+     */
+    public <T> BatchExecutionResult<T> forEachTenantWithResult(Collection<String> tenantIds,
+                                                               BiFunction<String, String, T> action) {
+        return forEachTenantWithResult(tenantIds, BatchExecutionPolicy.FAIL_SAFE, action);
+    }
+
+    /**
+     * 批量遍历指定租户集合并聚合计算结果
+     *
+     * @param tenantIds 指定租户标识集合
+     * @param policy    批处理容错策略
+     * @param action    遍历计算函数（入参：tenantId, dsKey）
+     * @param <T>       单租户计算结果类型
+     * @return 包含各租户返回值映射表与失败清单的批处理聚合结果
+     */
+    public <T> BatchExecutionResult<T> forEachTenantWithResult(Collection<String> tenantIds,
+                                                               BatchExecutionPolicy policy,
+                                                               BiFunction<String, String, T> action) {
         Objects.requireNonNull(policy, "批处理容错策略 (policy) 不能为空");
         Objects.requireNonNull(action, "执行动作 (action) 不能为空");
+        return executeBatchTenants(buildTenantMap(tenantIds), policy, action, true);
+    }
 
+    private Map<String, String> buildTenantMap(Collection<String> tenantIds) {
         if (tenantIds == null || tenantIds.isEmpty()) {
-            return BatchExecutionResult.builder().build();
+            return Collections.emptyMap();
         }
-
         Map<String, String> tenantMap = new LinkedHashMap<>();
         for (String tenantId : tenantIds) {
             if (StringUtils.hasText(tenantId)) {
@@ -608,7 +810,7 @@ public class DynamicDatasourceTemplate {
                 tenantMap.put(tenantId, dsKey);
             }
         }
-        return executeBatchTenants(tenantMap, policy, action);
+        return tenantMap;
     }
 
     /**
@@ -643,13 +845,14 @@ public class DynamicDatasourceTemplate {
     /**
      * 执行多租户沙箱批处理循环
      */
-    private BatchExecutionResult executeBatchTenants(Map<String, String> tenantMap,
-                                                     BatchExecutionPolicy policy,
-                                                     BiConsumer<String, String> action) {
+    private <T> BatchExecutionResult<T> executeBatchTenants(Map<String, String> tenantMap,
+                                                            BatchExecutionPolicy policy,
+                                                            BiFunction<String, String, T> action,
+                                                            boolean collectResults) {
         Objects.requireNonNull(policy, "批处理容错策略 (policy) 不能为空");
         Objects.requireNonNull(action, "执行动作 (action) 不能为空");
 
-        BatchExecutionResult.Builder builder = BatchExecutionResult.builder();
+        BatchExecutionResult.Builder<T> builder = BatchExecutionResult.builder();
         if (tenantMap == null || tenantMap.isEmpty()) {
             return builder.build();
         }
@@ -658,24 +861,36 @@ public class DynamicDatasourceTemplate {
             String tenantId = entry.getKey();
             String dsKey = entry.getValue();
             try {
-                runInTenantDataSource(tenantId, () -> action.accept(tenantId, dsKey));
-                builder.recordSuccess();
-            } catch (Throwable t) {
-                builder.recordFailure(tenantId, t);
-                if (policy == BatchExecutionPolicy.FAIL_FAST) {
-                    if (t instanceof RuntimeException runtimeException) {
-                        throw runtimeException;
-                    }
-                    if (t instanceof Error error) {
-                        throw error;
-                    }
-                    throw new DataSourceSwitchException("租户 [" + tenantId + "] 批处理执行异常: " + t.getMessage(), t,
-                            DatasourceResultCode.DATASOURCE_SWITCH_ERROR);
+                T value = callInTenantDataSource(tenantId, () -> action.apply(tenantId, dsKey));
+                if (collectResults) {
+                    builder.recordSuccess(tenantId, value);
+                } else {
+                    builder.recordSuccess();
                 }
-                log.warn("租户 [{}] 批处理执行失败，FAIL_SAFE 容错隔离继续: {}", tenantId, t.getMessage(), t);
+            } catch (Throwable t) {
+                handleBatchFailure("租户", tenantId, t, policy, builder);
             }
         }
         return builder.build();
+    }
+
+    private void handleBatchFailure(String targetType,
+                                    String targetKey,
+                                    Throwable t,
+                                    BatchExecutionPolicy policy,
+                                    BatchExecutionResult.Builder<?> builder) {
+        builder.recordFailure(targetKey, t);
+        if (policy == BatchExecutionPolicy.FAIL_FAST) {
+            if (t instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            if (t instanceof Error error) {
+                throw error;
+            }
+            throw new DataSourceSwitchException(targetType + " [" + targetKey + "] 批处理执行异常: " + t.getMessage(), t,
+                    DatasourceResultCode.DATASOURCE_SWITCH_ERROR);
+        }
+        log.warn("{} [{}] 批处理执行失败，FAIL_SAFE 容错隔离继续: {}", targetType, targetKey, t.getMessage(), t);
     }
 
     /**
@@ -954,6 +1169,15 @@ public class DynamicDatasourceTemplate {
             return dataSource.getGroupDataSources().get(dsKey).determineDataSource();
         }
         return null;
+    }
+
+    /**
+     * 优雅注销并安全销毁数据源（默认启用优雅排空）
+     *
+     * @param dsKey 待注销数据源标识
+     */
+    public void removeDataSource(String dsKey) {
+        removeDataSource(dsKey, true);
     }
 
     /**
