@@ -128,8 +128,3 @@ _Avoid_: MqttClientWrapper, MqttClientTemplate, 客户端代理类
 基于 `NamedMqttClientRegistry` 在运行期安全注册、替换与注销命名客户端并联动解除订阅与清理度量资源的对称治理能力。
 _Avoid_: 客户端池热重载, 临时连接池
 
-
-
-
-
-

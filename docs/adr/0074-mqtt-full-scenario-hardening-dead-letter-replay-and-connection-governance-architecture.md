@@ -3,6 +3,8 @@
 ## 状态
 `Accepted`
 
+> **[演进注记 / Superseding Note (ADR-0099 / ADR-0108)]**：本文档第 5 节关于“移除 Sample Web Controller、保持 Zero-Controller”的局部样例约定，已被全局文档规范与 [ADR-0099](./0099-mqtt-sample-web-experience-and-documentation-specification-architecture.md)、[ADR-0108](./0108-mqtt-reliability-dead-letter-store-and-virtual-thread-architecture.md) 正式取代（现行 `ateng-boot-sample-mqtt` 引入 `ateng-boot-web` 并拆分 8 大高内聚领域 Controller）。此外，本文档第 1 节原以 Broker `retained=true` 作为死信主题默认留存方式的约定，已由 [ADR-0108](./0108-mqtt-reliability-dead-letter-store-and-virtual-thread-architecture.md) 正式修订为“默认 `ateng.boot.mqtt.dlt.retained=false` + 有界 `MqttDeadLetterStore` SPI（默认 `InMemoryMqttDeadLetterStore`）保留连续多条毒丸并联动 `peekBrokerFallback=true` 兼容历史保留报文”；原 `MqttContainerManager.pause()` 已由 `(clientName, mqttFilter)` 引用计数驱动物理 Broker `unsubscribe`/`subscribe` 接替。
+
 ---
 
 ## 背景与痛点 (Context & Problem Statement)
