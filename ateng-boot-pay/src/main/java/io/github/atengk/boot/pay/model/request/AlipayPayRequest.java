@@ -1,5 +1,7 @@
 package io.github.atengk.boot.pay.model.request;
 
+import com.alipay.api.domain.ExtendParams;
+import com.alipay.api.domain.SettleInfo;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -118,4 +120,21 @@ public class AlipayPayRequest implements Serializable {
      * 第三方应用授权令牌 (服务商代特约商家发起交易时的令牌，app_auth_token)
      */
     private String appAuthToken;
+
+    // ================= 分账前置冻结与可选结算扩展 =================
+
+    /**
+     * 前置分账冻结声明（true 时在 extend_params 中透传 royalty_freeze=true 冻结交易资金等待后续分账）
+     */
+    private Boolean royaltyFreeze;
+
+    /**
+     * 支付宝官方扩展业务参数（可选，高阶参数扩展逃生舱）
+     */
+    private ExtendParams extendParams;
+
+    /**
+     * 支付宝官方结算信息（可选，配置 settleDetailInfos 与 settlePeriodTime）
+     */
+    private SettleInfo settleInfo;
 }

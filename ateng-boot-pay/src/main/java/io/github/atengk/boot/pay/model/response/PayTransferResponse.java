@@ -64,6 +64,11 @@ public class PayTransferResponse implements Serializable {
     private BigDecimal amount;
 
     /**
+     * 渠道收费 / 转账手续费（元，可选）
+     */
+    private BigDecimal fee;
+
+    /**
      * 收款方账号（内存明文）
      */
     private String payeeAccount;
@@ -102,6 +107,7 @@ public class PayTransferResponse implements Serializable {
                 ", payFundOrderId='" + payFundOrderId + '\'' +
                 ", status=" + status +
                 ", amount=" + amount +
+                ", fee=" + fee +
                 ", payeeAccount='" + DesensitizeUtil.maskKeepHeadTail(payeeAccount, 2, 2) + '\'' +
                 ", payeeRealName='" + DesensitizeUtil.chineseName(payeeRealName) + '\'' +
                 ", payTime='" + payTime + '\'' +

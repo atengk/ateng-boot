@@ -132,11 +132,17 @@ public class PayBillParser {
     }
 
     /**
-     * 解压并解析 ZIP 压缩包输入流（自动遍历内含的 CSV 文件）
+     * 解压并解析 ZIP 压缩包输入流（自动遍历内含的 CSV 文件，合并明细渠道与官方汇总信息且与条目顺序无关）
      */
     private PayBillSummary parseZipStream(InputStream in, Charset defaultCharset, Consumer<PayBillEntry> consumer) throws IOException {
         Charset charset = defaultCharset != null ? defaultCharset : Charset.forName("GBK");
-        PayBillSummary primarySummary = null;
+        PayBillSummary merged = PayBillSummary.builder().build();
+        boolean appliedExplicitSummary = false;
+        long fallbackCount = 0;
+        BigDecimal fallbackTotal = BigDecimal.ZERO;
+        BigDecimal fallbackSettlement = BigDecimal.ZERO;
+        BigDecimal fallbackRefund = BigDecimal.ZERO;
+        BigDecimal fallbackFee = BigDecimal.ZERO;
 
         try (ZipInputStream zipIn = new ZipInputStream(in, charset)) {
             ZipEntry entry;
@@ -150,25 +156,72 @@ public class PayBillParser {
                 }
                 log.debug("Unpacking ZIP entry: {}", name);
                 NonClosingInputStream ncis = new NonClosingInputStream(zipIn);
-                PayBillSummary s = parseCsvStream(ncis, charset, consumer);
-                if (primarySummary == null || (s.getTotalCount() != null && s.getTotalCount() > 0)) {
-                    primarySummary = s;
+                CsvParseOutcome outcome = parseCsvStreamWithMeta(ncis, charset, consumer);
+                PayBillSummary part = outcome.summary();
+
+                if (merged.getChannel() == null && part.getChannel() != null) {
+                    merged.setChannel(part.getChannel());
+                }
+                merged.getRawSummary().putAll(part.getRawSummary());
+
+                if (outcome.hasExplicitSummary()) {
+                    copySummaryMetrics(part, merged);
+                    appliedExplicitSummary = true;
+                } else if (outcome.detailCount() > 0) {
+                    fallbackCount += outcome.detailCount();
+                    fallbackTotal = fallbackTotal.add(outcome.computedTotalAmount());
+                    fallbackSettlement = fallbackSettlement.add(outcome.computedSettlementAmount());
+                    fallbackRefund = fallbackRefund.add(outcome.computedRefundAmount());
+                    fallbackFee = fallbackFee.add(outcome.computedServiceFee());
                 }
                 zipIn.closeEntry();
             }
         }
-        return primarySummary != null ? primarySummary : PayBillSummary.builder().build();
+
+        if (!appliedExplicitSummary) {
+            merged.setTotalCount(fallbackCount);
+            if (fallbackCount > 0) {
+                merged.setTotalAmount(fallbackTotal);
+                merged.setSettlementAmount(fallbackSettlement);
+                merged.setRefundAmount(fallbackRefund);
+                merged.setServiceFee(fallbackFee);
+            }
+        }
+        return merged;
+    }
+
+    private static void copySummaryMetrics(PayBillSummary source, PayBillSummary target) {
+        if (source.getTotalCount() != null) {
+            target.setTotalCount(source.getTotalCount());
+        }
+        if (source.getTotalAmount() != null) {
+            target.setTotalAmount(source.getTotalAmount());
+        }
+        if (source.getSettlementAmount() != null) {
+            target.setSettlementAmount(source.getSettlementAmount());
+        }
+        if (source.getRefundAmount() != null) {
+            target.setRefundAmount(source.getRefundAmount());
+        }
+        if (source.getServiceFee() != null) {
+            target.setServiceFee(source.getServiceFee());
+        }
     }
 
     /**
      * 核心 CSV 文本流状态机解析逻辑
      */
     private PayBillSummary parseCsvStream(InputStream in, Charset charset, Consumer<PayBillEntry> consumer) throws IOException {
+        return parseCsvStreamWithMeta(in, charset, consumer).summary();
+    }
+
+    private CsvParseOutcome parseCsvStreamWithMeta(InputStream in, Charset charset, Consumer<PayBillEntry> consumer) throws IOException {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, charset))) {
             Map<String, Integer> headerMap = null;
             Map<String, Integer> summaryHeaderMap = null;
             PayChannel channel = null;
             boolean summaryMode = false;
+            boolean hasExplicitSummary = false;
 
             PayBillSummary summary = PayBillSummary.builder().build();
 
@@ -191,7 +244,9 @@ public class PayBillParser {
 
                 // 过滤注释与分隔行（如支付宝的 # 业务明细列表、#----------------等）
                 if (line.startsWith("#")) {
-                    parseCommentSummary(line, summary);
+                    if (parseCommentSummary(line, summary)) {
+                        hasExplicitSummary = true;
+                    }
                     continue;
                 }
 
@@ -205,6 +260,7 @@ public class PayBillParser {
                 if (summaryMode) {
                     // 汇总数值行
                     parseSummaryDataLine(line, summaryHeaderMap, summary, channel);
+                    hasExplicitSummary = true;
                     continue;
                 }
 
@@ -255,8 +311,20 @@ public class PayBillParser {
                 summary.setServiceFee(computedServiceFee);
             }
 
-            return summary;
+            return new CsvParseOutcome(summary, hasExplicitSummary, computedCount,
+                    computedTotalAmount, computedSettlementAmount, computedRefundAmount, computedServiceFee);
         }
+    }
+
+    private record CsvParseOutcome(
+            PayBillSummary summary,
+            boolean hasExplicitSummary,
+            long detailCount,
+            BigDecimal computedTotalAmount,
+            BigDecimal computedSettlementAmount,
+            BigDecimal computedRefundAmount,
+            BigDecimal computedServiceFee
+    ) {
     }
 
     /**
@@ -405,10 +473,12 @@ public class PayBillParser {
 
     /**
      * 针对部分包含在注释中的汇总信息进行正则/文本轻量抽取
+     *
+     * @return true 若命中了显式汇总统计键（总交易笔数/总笔数/总交易金额）
      */
-    private void parseCommentSummary(String line, PayBillSummary summary) {
+    private boolean parseCommentSummary(String line, PayBillSummary summary) {
         if (!line.contains("：") && !line.contains(":")) {
-            return;
+            return false;
         }
         String content = line.substring(1).trim();
         String[] parts = content.split("[:：]", 2);
@@ -418,10 +488,13 @@ public class PayBillParser {
             summary.getRawSummary().put(key, val);
             if (key.contains("总交易笔数") || key.contains("总笔数")) {
                 summary.setTotalCount(parseLong(val));
+                return true;
             } else if (key.contains("总交易金额")) {
                 summary.setTotalAmount(parseBigDecimal(val));
+                return true;
             }
         }
+        return false;
     }
 
     /**

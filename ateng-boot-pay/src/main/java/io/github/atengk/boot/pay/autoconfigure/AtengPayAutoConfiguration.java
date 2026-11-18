@@ -13,6 +13,7 @@ import io.github.atengk.boot.pay.core.lock.InMemoryPayLockManager;
 import io.github.atengk.boot.pay.core.lock.PayLockManager;
 import io.github.atengk.boot.pay.core.lock.RedisPayLockManager;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
+import io.github.atengk.boot.pay.core.profitsharing.AlipayProfitSharingService;
 import io.github.atengk.boot.pay.core.profitsharing.WechatProfitSharingService;
 import io.github.atengk.boot.pay.core.transfer.PayTransferService;
 import io.github.atengk.boot.pay.spi.PayCallbackListener;
@@ -103,6 +104,18 @@ public class AtengPayAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.pay.alipay", name = "enabled", havingValue = "true", matchIfMissing = true)
     public AlipayTemplate alipayTemplate(NamedMerchantRegistry namedMerchantRegistry, PayProperties payProperties) {
         return new AlipayTemplate(namedMerchantRegistry, payProperties);
+    }
+
+    /**
+     * 注册支付宝交易分账与结算专有业务服务（与微信分账共享物理开关 ateng.boot.pay.profit-sharing.enabled）
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(AlipayTemplate.class)
+    @ConditionalOnProperty(name = "ateng.boot.pay.profit-sharing.enabled", havingValue = "true")
+    public AlipayProfitSharingService alipayProfitSharingService(AlipayTemplate alipayTemplate) {
+        log.info("Profit-sharing feature enabled, configuring AlipayProfitSharingService.");
+        return new AlipayProfitSharingService(alipayTemplate);
     }
 
     /**
