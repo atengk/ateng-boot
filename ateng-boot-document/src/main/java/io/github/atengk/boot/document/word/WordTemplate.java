@@ -3,26 +3,52 @@ package io.github.atengk.boot.document.word;
 import com.deepoove.poi.XWPFTemplate;
 import com.deepoove.poi.config.Configure;
 import com.deepoove.poi.config.ConfigureBuilder;
+import com.deepoove.poi.plugin.table.LoopColumnTableRenderPolicy;
 import com.deepoove.poi.plugin.table.LoopRowTableRenderPolicy;
+import com.deepoove.poi.policy.RenderPolicy;
 import com.deepoove.poi.template.BlockTemplate;
 import com.deepoove.poi.template.ElementTemplate;
 import com.deepoove.poi.template.MetaTemplate;
 import com.deepoove.poi.util.TableTools;
 import com.deepoove.poi.xwpf.NiceXWPFDocument;
 import io.github.atengk.boot.core.util.FileUtil;
+import io.github.atengk.boot.document.exception.DocumentException;
 import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.WordRenderException;
+import io.github.atengk.boot.document.pdf.WatermarkMacroParser;
+import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
 import io.github.atengk.boot.document.properties.DocumentProperties;
+import io.github.atengk.boot.document.properties.DocumentWatermarkProperties;
 import io.github.atengk.boot.document.properties.DocumentWordProperties;
+import io.github.atengk.boot.document.spi.DefaultDocumentConverter;
+import io.github.atengk.boot.document.spi.DocumentConverter;
+import io.github.atengk.boot.document.util.DocumentWebHelper;
+import io.github.atengk.boot.document.word.model.StitchOptions;
+import io.github.atengk.boot.document.word.model.WordMetadata;
 import io.github.atengk.boot.document.word.policy.FloatingPictureRenderPolicy;
 import org.apache.poi.ooxml.POIXMLDocumentPart;
+import org.apache.poi.ooxml.POIXMLProperties;
+import org.apache.poi.openxml4j.opc.OPCPackage;
+import org.apache.poi.poifs.crypt.CipherAlgorithm;
+import org.apache.poi.poifs.crypt.Decryptor;
+import org.apache.poi.poifs.crypt.EncryptionInfo;
+import org.apache.poi.poifs.crypt.EncryptionMode;
+import org.apache.poi.poifs.crypt.Encryptor;
 import org.apache.poi.poifs.crypt.HashAlgorithm;
+import org.apache.poi.poifs.filesystem.FileMagic;
+import org.apache.poi.poifs.filesystem.POIFSFileSystem;
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
+import org.apache.poi.xwpf.model.XWPFHeaderFooterPolicy;
+import org.apache.poi.xwpf.usermodel.BreakType;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFFactory;
+import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFRelation;
+import org.apache.poi.xwpf.usermodel.XWPFRun;
 import org.apache.poi.xwpf.usermodel.XWPFSettings;
 import org.apache.poi.xwpf.usermodel.XWPFTable;
+import org.apache.poi.xwpf.usermodel.XWPFTableCell;
+import org.apache.poi.xwpf.usermodel.XWPFTableRow;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.Resource;
@@ -64,6 +90,21 @@ public class WordTemplate {
 
     private final DocumentWordProperties wordProperties;
     private final DocumentProperties documentProperties;
+    private final DocumentConverter documentConverter;
+
+    /**
+     * 使用根配置属性与转换器 SPI 构造 WordTemplate 门面实例
+     *
+     * @param documentProperties 文档模块全局配置属性
+     * @param documentConverter  文档跨格式转换器 SPI（为空时回退 {@link DefaultDocumentConverter}）
+     */
+    public WordTemplate(DocumentProperties documentProperties, DocumentConverter documentConverter) {
+        this.documentProperties = documentProperties != null ? documentProperties : new DocumentProperties();
+        this.wordProperties = this.documentProperties.getWord() != null
+                ? this.documentProperties.getWord()
+                : new DocumentWordProperties();
+        this.documentConverter = documentConverter != null ? documentConverter : new DefaultDocumentConverter();
+    }
 
     /**
      * 使用根配置属性构造 WordTemplate 门面实例（同步继承 maxDocumentSize 等全局防线）
@@ -71,10 +112,7 @@ public class WordTemplate {
      * @param documentProperties 文档模块全局配置属性
      */
     public WordTemplate(DocumentProperties documentProperties) {
-        this.documentProperties = documentProperties != null ? documentProperties : new DocumentProperties();
-        this.wordProperties = this.documentProperties.getWord() != null
-                ? this.documentProperties.getWord()
-                : new DocumentWordProperties();
+        this(documentProperties, null);
     }
 
     /**
@@ -89,13 +127,14 @@ public class WordTemplate {
         }
         this.documentProperties = fallback;
         this.wordProperties = fallback.getWord();
+        this.documentConverter = new DefaultDocumentConverter();
     }
 
     /**
      * 使用缺省配置构造 WordTemplate 门面实例
      */
     public WordTemplate() {
-        this(new DocumentProperties());
+        this(new DocumentProperties(), null);
     }
 
     /**
@@ -116,6 +155,17 @@ public class WordTemplate {
      */
     public static WordTemplate of(DocumentProperties documentProperties) {
         return new WordTemplate(documentProperties);
+    }
+
+    /**
+     * 静态工厂构造方法（继承全局配置并绑定文档跨格式转换器 SPI）
+     *
+     * @param documentProperties 文档模块全局配置属性
+     * @param documentConverter  文档跨格式转换器 SPI
+     * @return WordTemplate 实例
+     */
+    public static WordTemplate of(DocumentProperties documentProperties, DocumentConverter documentConverter) {
+        return new WordTemplate(documentProperties, documentConverter);
     }
 
     /**
@@ -175,6 +225,7 @@ public class WordTemplate {
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED,
                     "渲染 Word 模板失败: " + e.getMessage(), e);
         } finally {
+            clearFloatingPicturePolicies(configToUse);
             if (template != null) {
                 try {
                     template.close();
@@ -233,6 +284,8 @@ public class WordTemplate {
             }
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED,
                     "渲染 Word 模板并导出字节失败: " + e.getMessage(), e);
+        } finally {
+            clearFloatingPicturePolicies(configToUse);
         }
     }
 
@@ -393,13 +446,23 @@ public class WordTemplate {
     }
 
     /**
-     * 创建默认的 poi-tl 配置构建器（按配置按需开启 SpringEL 支持与常用标签策略）
+     * 创建默认的 poi-tl 配置构建器（按配置 {@code springElEnabled} 决定是否启用 SpringEL，默认关闭防注入）
      *
      * @return ConfigureBuilder 实例
      */
     public ConfigureBuilder configureBuilder() {
+        return configureBuilder(wordProperties.isSpringElEnabled());
+    }
+
+    /**
+     * 创建 poi-tl 配置构建器并显式控制是否启用 SpringEL 表达式解析（仅建议在可信模板场景开启）
+     *
+     * @param enableSpringEl 是否启用 SpringEL 表达式求值
+     * @return ConfigureBuilder 实例
+     */
+    public ConfigureBuilder configureBuilder(boolean enableSpringEl) {
         ConfigureBuilder builder = Configure.builder();
-        if (wordProperties.isSpringElEnabled()) {
+        if (enableSpringEl) {
             builder.useSpringEL(wordProperties.isSpringElStrict());
         }
         // 预绑定常用表格行循环策略（支持同一行中包含 {{items}}[prop] 模板）
@@ -447,6 +510,26 @@ public class WordTemplate {
     }
 
     /**
+     * 便捷方法：为指定标签名称绑定表格列循环策略（横向动态扩展多列表格列）
+     *
+     * @param builder  配置构建器
+     * @param tagNames 标签名称列表
+     * @return 链式 ConfigureBuilder
+     */
+    public ConfigureBuilder bindLoopColumn(ConfigureBuilder builder, String... tagNames) {
+        Objects.requireNonNull(builder, "builder 不能为空");
+        if (tagNames != null) {
+            LoopColumnTableRenderPolicy policy = new LoopColumnTableRenderPolicy(true);
+            for (String tag : tagNames) {
+                if (tag != null && !tag.trim().isEmpty()) {
+                    builder.bind(tag.trim(), policy);
+                }
+            }
+        }
+        return builder;
+    }
+
+    /**
      * 便捷方法：为指定标签名称绑定浮动印章渲染策略
      *
      * @param builder  配置构建器
@@ -464,6 +547,17 @@ public class WordTemplate {
             }
         }
         return builder;
+    }
+
+    private void clearFloatingPicturePolicies(Configure config) {
+        if (config == null || config.getCustomPolicys() == null) {
+            return;
+        }
+        for (RenderPolicy policy : config.getCustomPolicys().values()) {
+            if (policy instanceof FloatingPictureRenderPolicy fpPolicy) {
+                fpPolicy.clear();
+            }
+        }
     }
 
     /**
@@ -772,14 +866,28 @@ public class WordTemplate {
      * @throws WordRenderException 拼装合并失败或输入流异常时抛出
      */
     public void stitch(Object target, List<?> docxSources) {
+        stitch(target, docxSources, new StitchOptions());
+    }
+
+    /**
+     * 按指定拼装控制选项将多个独立的 Word 文档按序合并并输出至目标（支持子文档间插入分页符）
+     *
+     * @param target      目标输出对象（支持 File, Path, OutputStream, WritableResource, String）
+     * @param docxSources 待拼装的文档列表（支持 Resource, InputStream, File, Path, byte[], String）
+     * @param options     拼装控制选项（为 null 时按连续无缝拼接处理）
+     * @throws WordRenderException 拼装合并失败或输入流异常时抛出
+     */
+    public void stitch(Object target, List<?> docxSources, StitchOptions options) {
         Objects.requireNonNull(target, "目标输出 target 不能为空");
         if (docxSources == null || docxSources.isEmpty()) {
             throw new IllegalArgumentException("待拼装的 Word 文档输入列表 docxSources 不能为空");
         }
+        boolean pageBreak = options != null && options.isPageBreakBetween();
 
         try {
             NiceXWPFDocument mainDoc = null;
             List<NiceXWPFDocument> subDocs = new ArrayList<>();
+            List<NiceXWPFDocument> docsToClose = new ArrayList<>();
             List<InputStream> openedStreams = new ArrayList<>();
 
             try {
@@ -791,6 +899,7 @@ public class WordTemplate {
                     InputStream is = resolveInputStream(src);
                     openedStreams.add(is);
                     NiceXWPFDocument doc = new NiceXWPFDocument(is);
+                    docsToClose.add(doc);
                     if (i == 0) {
                         mainDoc = doc;
                     } else {
@@ -799,28 +908,34 @@ public class WordTemplate {
                 }
 
                 if (!subDocs.isEmpty()) {
-                    mainDoc = mainDoc.merge(subDocs, mainDoc.createParagraph().createRun());
+                    if (pageBreak) {
+                        for (NiceXWPFDocument subDoc : subDocs) {
+                            XWPFParagraph breakPara = mainDoc.createParagraph();
+                            breakPara.createRun().addBreak(BreakType.PAGE);
+                            XWPFRun anchorRun = mainDoc.createParagraph().createRun();
+                            mainDoc = mainDoc.merge(List.of(subDoc), anchorRun);
+                            if (mainDoc != null && !docsToClose.contains(mainDoc)) {
+                                docsToClose.add(mainDoc);
+                            }
+                        }
+                    } else {
+                        mainDoc = mainDoc.merge(subDocs, mainDoc.createParagraph().createRun());
+                        if (mainDoc != null && !docsToClose.contains(mainDoc)) {
+                            docsToClose.add(mainDoc);
+                        }
+                    }
                 }
 
-                NiceXWPFDocument finalDoc = mainDoc.generate();
-                OutputStream os = resolveOutputStream(target);
-                try {
+                OutputStream os = null;
+                try (NiceXWPFDocument finalDoc = mainDoc.generate()) {
+                    os = resolveOutputStream(target);
                     finalDoc.write(os);
                     os.flush();
                 } finally {
-                    finalDoc.close();
-                    if (!(target instanceof OutputStream)) {
-                        os.close();
-                    }
+                    closeOutputStreamQuietly(os, target);
                 }
             } finally {
-                if (mainDoc != null) {
-                    try {
-                        mainDoc.close();
-                    } catch (Exception ignored) {
-                    }
-                }
-                for (NiceXWPFDocument d : subDocs) {
+                for (NiceXWPFDocument d : docsToClose) {
                     try {
                         d.close();
                     } catch (Exception ignored) {
@@ -862,8 +977,19 @@ public class WordTemplate {
      * @return 拼装后的 Word 二进制数据
      */
     public byte[] stitchToBytes(List<?> docxSources) {
+        return stitchToBytes(docxSources, new StitchOptions());
+    }
+
+    /**
+     * 按指定拼装控制选项将多个独立的 Word 文档拼装并导出为二进制字节数组
+     *
+     * @param docxSources 待拼装的文档列表
+     * @param options     拼装控制选项
+     * @return 拼装后的 Word 二进制数据
+     */
+    public byte[] stitchToBytes(List<?> docxSources, StitchOptions options) {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        stitch(baos, docxSources);
+        stitch(baos, docxSources, options);
         return baos.toByteArray();
     }
 
@@ -879,7 +1005,11 @@ public class WordTemplate {
     }
 
     /**
-     * 为 Word 文档施加只读密码锁定保护（Read-Only Protection with Password）
+     * 为 Word 文档施加基于 {@code settings.xml} 的只读编辑锁定保护（{@code ReadonlyProtection}）
+     * <p>
+     * 注意：该方法写入 OOXML 编辑限制标记防止误编辑，文件物理载体仍以明文 ZIP 封装可直接打开；
+     * 若需真正禁止无密码打开访问，请使用 {@link #encrypt(Object, Object, String)}（Agile AES-256 加密信封）。
+     * </p>
      *
      * @param source   原始 Word 文档输入源
      * @param target   目标输出对象
@@ -1047,6 +1177,479 @@ public class WordTemplate {
                 throw nested;
             }
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED, "校验 Word 文档保护密码失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 使用 Agile AES-256（SHA-512）复合文档加密信封对 Word (.docx) 施加文件打开级加密保护
+     *
+     * @param source   原始明文 Word 文档输入源（支持 Resource, InputStream, File, Path, byte[], String）
+     * @param target   目标输出对象（支持 File, Path, OutputStream, WritableResource, String）
+     * @param password 打开文档密码（不可为空或纯空白）
+     * @throws WordRenderException 口令为空、文档损坏、已加密或加密失败时抛出
+     */
+    public void encrypt(Object source, Object target, String password) {
+        Objects.requireNonNull(source, "模板输入源 source 不能为空");
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+        if (password == null || password.isBlank()) {
+            throw new WordRenderException(DocumentResultCode.ENCRYPTION_ERROR, "Word 文件级加密密码不能为空");
+        }
+
+        byte[] plainBytes = readSourceBytesBounded(source);
+        OutputStream os = null;
+        try {
+            FileMagic magic = FileMagic.valueOf(plainBytes);
+            if (magic != FileMagic.OOXML) {
+                throw new WordRenderException(DocumentResultCode.ENCRYPTION_ERROR,
+                        "待加密的 Word 文档必须为标准明文 OOXML (.docx) 格式，当前探测格式: " + magic);
+            }
+            // 校验 OOXML ZIP 包结构完整性，防畸形伪造流
+            try (OPCPackage ignored = OPCPackage.open(new ByteArrayInputStream(plainBytes))) {
+                // 仅校验可正常打开
+            }
+
+            try (POIFSFileSystem fs = new POIFSFileSystem()) {
+                EncryptionInfo info = new EncryptionInfo(
+                        EncryptionMode.agile, CipherAlgorithm.aes256, HashAlgorithm.sha512, -1, -1, null);
+                Encryptor encryptor = info.getEncryptor();
+                encryptor.confirmPassword(password);
+                try (OutputStream encOs = encryptor.getDataStream(fs)) {
+                    encOs.write(plainBytes);
+                    encOs.flush();
+                }
+                os = resolveOutputStream(target);
+                fs.writeFilesystem(os);
+                os.flush();
+            }
+        } catch (WordRenderException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            WordRenderException nested = unwrapWordRenderException(e);
+            if (nested != null) {
+                throw nested;
+            }
+            throw new WordRenderException(DocumentResultCode.ENCRYPTION_ERROR,
+                    "Word 文件级 AES-256 加密失败: " + e.getMessage(), e);
+        } finally {
+            closeOutputStreamQuietly(os, target);
+        }
+    }
+
+    /**
+     * 使用 Agile AES-256（SHA-512）加密 Word (.docx) 并导出为字节数组
+     *
+     * @param source   原始明文 Word 文档输入源
+     * @param password 打开文档密码
+     * @return 加密后的复合文档字节数组
+     */
+    public byte[] encryptToBytes(Object source, String password) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        encrypt(source, baos, password);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 使用打开密码解密 Agile AES-256 加密的 Word (.docx) 文档并输出还原明文
+     *
+     * @param source   加密 Word 文档输入源
+     * @param target   目标明文输出对象
+     * @param password 打开文档密码（不可为空或纯空白）
+     * @throws WordRenderException 口令为空、口令错误、文档非加密信封或解密失败时抛出
+     */
+    public void decrypt(Object source, Object target, String password) {
+        Objects.requireNonNull(source, "模板输入源 source 不能为空");
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+        if (password == null || password.isBlank()) {
+            throw new WordRenderException(DocumentResultCode.ENCRYPTION_ERROR, "Word 文件级解密密码不能为空");
+        }
+
+        byte[] encryptedBytes = readSourceBytesBounded(source);
+        byte[] decryptedBytes = decryptToPlainBytes(encryptedBytes, password);
+        writeBytesToTarget(decryptedBytes, target, DocumentResultCode.ENCRYPTION_ERROR, "写出解密后的 Word 文档流失败");
+    }
+
+    /**
+     * 解密 Word (.docx) 文档并导出为明文字节数组
+     *
+     * @param source   加密 Word 文档输入源
+     * @param password 打开文档密码
+     * @return 明文 OOXML 字节数组
+     */
+    public byte[] decryptToBytes(Object source, String password) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        decrypt(source, baos, password);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 判断指定 Word 文档是否处于文件打开级加密信封保护状态（区别于仅 settings.xml 只读编辑锁）
+     *
+     * @param source Word 文档输入源
+     * @return 已施加加密信封返回 true，标准明文 OOXML 返回 false
+     * @throws WordRenderException 文档不存在、超限或损坏无法识别格式时抛出
+     */
+    public boolean isEncrypted(Object source) {
+        Objects.requireNonNull(source, "模板输入源 source 不能为空");
+        byte[] bytes = readSourceBytesBounded(source);
+        try {
+            FileMagic magic = FileMagic.valueOf(bytes);
+            if (magic == FileMagic.OOXML) {
+                return false;
+            }
+            if (magic == FileMagic.OLE2) {
+                try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(bytes))) {
+                    return fs.getRoot().hasEntry(EncryptionInfo.ENCRYPTION_INFO_ENTRY);
+                }
+            }
+            throw new WordRenderException(DocumentResultCode.ENCRYPTION_ERROR,
+                    "无法识别的 Word 文档头魔数，疑似文件损坏或非 .docx 格式: " + magic);
+        } catch (WordRenderException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new WordRenderException(DocumentResultCode.ENCRYPTION_ERROR,
+                    "探测 Word 文档加密状态失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 为 Word (.docx) 文档压印原生页眉 VML 对角文字水印（基于默认全局水印配置与动态宏变量）
+     *
+     * @param source 原始 Word 文档输入源
+     * @param target 目标输出对象
+     */
+    public void addWatermark(Object source, Object target) {
+        addWatermark(source, target, (WatermarkOptions) null);
+    }
+
+    /**
+     * 为 Word (.docx) 文档压印原生页眉 VML 对角文字水印（支持动态宏变量如 #{user.name}、#{user.phone}、#{tenantId}）
+     *
+     * @param source 原始 Word 文档输入源
+     * @param target 目标输出对象
+     * @param text   水印文本模板
+     */
+    public void addWatermark(Object source, Object target, String text) {
+        addWatermark(source, target, WatermarkOptions.ofText(text));
+    }
+
+    /**
+     * 为 Word (.docx) 文档压印原生页眉 VML 对角文字水印并输出至目标
+     *
+     * @param source  原始 Word 文档输入源
+     * @param target  目标输出对象
+     * @param options 水印配置选项（为 null 时回退全局默认水印配置）
+     */
+    public void addWatermark(Object source, Object target, WatermarkOptions options) {
+        Objects.requireNonNull(source, "模板输入源 source 不能为空");
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+
+        DocumentWatermarkProperties defaultWp = documentProperties.getWatermark() != null
+                ? documentProperties.getWatermark()
+                : new DocumentWatermarkProperties();
+        String rawText = options != null && options.getText() != null
+                ? options.getText()
+                : defaultWp.getDefaultText();
+        String resolvedText = WatermarkMacroParser.parse(rawText, options != null ? options.getVariables() : null);
+
+        if (resolvedText == null || resolvedText.isBlank()) {
+            byte[] passthrough = readSourceBytesBounded(source);
+            writeBytesToTarget(passthrough, target, DocumentResultCode.DOCUMENT_OPERATION_FAILED, "写入 Word 原样输出流失败");
+            return;
+        }
+
+        OutputStream os = null;
+        try (InputStream is = resolveInputStream(source);
+             XWPFDocument doc = new XWPFDocument(is)) {
+            if (doc.getDocument().getBody().getSectPr() == null) {
+                doc.getDocument().getBody().addNewSectPr();
+            }
+            XWPFHeaderFooterPolicy headerFooterPolicy = new XWPFHeaderFooterPolicy(doc);
+            headerFooterPolicy.createWatermark(resolvedText);
+
+            os = resolveOutputStream(target);
+            doc.write(os);
+            os.flush();
+        } catch (WordRenderException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            WordRenderException nested = unwrapWordRenderException(e);
+            if (nested != null) {
+                throw nested;
+            }
+            throw new WordRenderException(DocumentResultCode.DOCUMENT_OPERATION_FAILED,
+                    "Word 页眉水印压印失败: " + e.getMessage(), e);
+        } finally {
+            closeOutputStreamQuietly(os, target);
+        }
+    }
+
+    /**
+     * 为 Word (.docx) 文档压印原生页眉 VML 水印并导出为字节数组
+     *
+     * @param source 原始 Word 文档输入源
+     * @param text   水印文本模板
+     * @return 带水印的 Word 文档字节数组
+     */
+    public byte[] addWatermarkToBytes(Object source, String text) {
+        return addWatermarkToBytes(source, WatermarkOptions.ofText(text));
+    }
+
+    /**
+     * 为 Word (.docx) 文档压印原生页眉 VML 水印并导出为字节数组
+     *
+     * @param source  原始 Word 文档输入源
+     * @param options 水印配置选项
+     * @return 带水印的 Word 文档字节数组
+     */
+    public byte[] addWatermarkToBytes(Object source, WatermarkOptions options) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        addWatermark(source, baos, options);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 自省探查明文 Word (.docx) 文档的结构计数、安全保护状态与核心元数据属性
+     *
+     * @param source Word 文档输入源
+     * @return 结构化 {@link WordMetadata} 元数据模型
+     */
+    public WordMetadata inspectMetadata(Object source) {
+        return inspectMetadata(source, null);
+    }
+
+    /**
+     * 自省探查 Word (.docx) 文档的结构计数、安全保护状态与核心元数据属性（支持加密文档口令穿透）
+     *
+     * @param source   Word 文档输入源
+     * @param password 打开密码（文档处于 Agile AES-256 加密状态时必填）
+     * @return 结构化 {@link WordMetadata} 元数据模型
+     */
+    public WordMetadata inspectMetadata(Object source, String password) {
+        Objects.requireNonNull(source, "模板输入源 source 不能为空");
+        byte[] rawBytes = readSourceBytesBounded(source);
+        try {
+            FileMagic magic = FileMagic.valueOf(rawBytes);
+            boolean isAesEncrypted = false;
+            byte[] plainBytes;
+
+            if (magic == FileMagic.OLE2) {
+                try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(rawBytes))) {
+                    if (!fs.getRoot().hasEntry(EncryptionInfo.ENCRYPTION_INFO_ENTRY)) {
+                        throw new WordRenderException(DocumentResultCode.ENCRYPTION_ERROR,
+                                "检测到未包含加密信封的非 OOXML OLE2 文档，当前自省仅支持 .docx 或 AES-256 加密 .docx");
+                    }
+                }
+                if (password == null || password.isBlank()) {
+                    throw new WordRenderException(DocumentResultCode.PASSWORD_ERROR,
+                            "Word 文档已加密，自省元数据需要提供打开密码");
+                }
+                plainBytes = decryptToPlainBytes(rawBytes, password);
+                isAesEncrypted = true;
+            } else if (magic == FileMagic.OOXML) {
+                plainBytes = rawBytes;
+            } else {
+                throw new WordRenderException(DocumentResultCode.DOCUMENT_OPERATION_FAILED,
+                        "不支持或已损坏的 Word 文档格式: " + magic);
+            }
+
+            try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(plainBytes))) {
+                int paragraphs = doc.getParagraphs().size();
+                for (XWPFTable table : doc.getTables()) {
+                    paragraphs += countTableParagraphs(table);
+                }
+
+                POIXMLProperties xmlProps = doc.getProperties();
+                POIXMLProperties.CoreProperties core = xmlProps != null ? xmlProps.getCoreProperties() : null;
+                POIXMLProperties.ExtendedProperties extended = xmlProps != null ? xmlProps.getExtendedProperties() : null;
+
+                return WordMetadata.builder()
+                        .pageCountHint(extended != null ? Math.max(0, extended.getPages()) : 0)
+                        .paragraphCount(paragraphs)
+                        .tableCount(doc.getTables().size())
+                        .pictureCount(doc.getAllPictures().size())
+                        .hasHeadersOrFooters(!doc.getHeaderList().isEmpty() || !doc.getFooterList().isEmpty())
+                        .readonlyProtected(doc.isEnforcedReadonlyProtection())
+                        .encrypted(isAesEncrypted)
+                        .title(core != null ? core.getTitle() : null)
+                        .author(core != null ? core.getCreator() : null)
+                        .subject(core != null ? core.getSubject() : null)
+                        .keywords(core != null ? core.getKeywords() : null)
+                        .creator(extended != null ? extended.getApplication() : null)
+                        .creationDate(core != null && core.getCreated() != null ? core.getCreated().toInstant() : null)
+                        .modificationDate(core != null && core.getModified() != null ? core.getModified().toInstant() : null)
+                        .build();
+            }
+        } catch (WordRenderException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new WordRenderException(DocumentResultCode.DOCUMENT_OPERATION_FAILED,
+                    "探查 Word 文档元数据失败: " + e.getMessage(), e);
+        }
+    }
+
+    private int countTableParagraphs(XWPFTable table) {
+        int count = 0;
+        for (XWPFTableRow row : table.getRows()) {
+            for (XWPFTableCell cell : row.getTableCells()) {
+                count += cell.getParagraphs().size();
+                for (XWPFTable nested : cell.getTables()) {
+                    count += countTableParagraphs(nested);
+                }
+            }
+        }
+        return count;
+    }
+
+    /**
+     * 渲染 Word 模板并经由当前绑定的 {@link DocumentConverter} SPI 转换为 PDF 输出至目标
+     *
+     * @param source 模板数据源
+     * @param data   渲染数据模型
+     * @param target 目标 PDF 输出对象
+     */
+    public void renderToPdf(Object source, Object data, Object target) {
+        renderToPdf(source, data, target, null, this.documentConverter);
+    }
+
+    /**
+     * 渲染 Word 模板并委托指定 {@link DocumentConverter} SPI 转换为 PDF 输出至目标
+     *
+     * @param source    模板数据源
+     * @param data      渲染数据模型
+     * @param target    目标 PDF 输出对象
+     * @param converter 指定的文档转换器 SPI
+     */
+    public void renderToPdf(Object source, Object data, Object target, DocumentConverter converter) {
+        renderToPdf(source, data, target, null, converter);
+    }
+
+    /**
+     * 使用自定义 poi-tl 配置渲染 Word 模板并委托 {@link DocumentConverter} SPI 转换为 PDF 输出至目标
+     *
+     * @param source    模板数据源
+     * @param data      渲染数据模型
+     * @param target    目标 PDF 输出对象
+     * @param configure 自定义 poi-tl 配置（为 null 时使用默认配置）
+     * @param converter 文档转换器 SPI（为 null 时使用当前门面绑定的默认转换器）
+     */
+    public void renderToPdf(Object source, Object data, Object target, Configure configure, DocumentConverter converter) {
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+        byte[] pdfBytes = renderToPdfToBytes(source, data, configure, converter);
+        writeBytesToTarget(pdfBytes, target, DocumentResultCode.CONVERSION_FAILED, "写出渲染后的 PDF 字节流失败");
+    }
+
+    /**
+     * 渲染 Word 模板并经由当前绑定的 {@link DocumentConverter} SPI 导出 PDF 字节数组
+     *
+     * @param source 模板数据源
+     * @param data   渲染数据模型
+     * @return 转换后的 PDF 二进制字节数据
+     */
+    public byte[] renderToPdfToBytes(Object source, Object data) {
+        return renderToPdfToBytes(source, data, null, this.documentConverter);
+    }
+
+    /**
+     * 渲染 Word 模板并委托指定 {@link DocumentConverter} SPI 导出 PDF 字节数组
+     *
+     * @param source    模板数据源
+     * @param data      渲染数据模型
+     * @param converter 指定的文档转换器 SPI
+     * @return 转换后的 PDF 二进制字节数据
+     */
+    public byte[] renderToPdfToBytes(Object source, Object data, DocumentConverter converter) {
+        return renderToPdfToBytes(source, data, null, converter);
+    }
+
+    /**
+     * 使用自定义 poi-tl 配置渲染 Word 模板并委托 {@link DocumentConverter} SPI 导出 PDF 字节数组
+     *
+     * @param source    模板数据源
+     * @param data      渲染数据模型
+     * @param configure 自定义 poi-tl 配置
+     * @param converter 文档转换器 SPI
+     * @return 转换后的 PDF 二进制字节数据
+     */
+    public byte[] renderToPdfToBytes(Object source, Object data, Configure configure, DocumentConverter converter) {
+        DocumentConverter effectiveConverter = converter != null ? converter : this.documentConverter;
+        if (effectiveConverter == null) {
+            throw new WordRenderException(DocumentResultCode.CONVERSION_FAILED, "未配置可用的 DocumentConverter 转换器 SPI");
+        }
+        byte[] docxBytes = renderToBytes(source, data, configure);
+        return effectiveConverter.docxToPdf(new ByteArrayInputStream(docxBytes));
+    }
+
+    private void writeBytesToTarget(byte[] data, Object target, DocumentResultCode errorCode, String errorMessage) {
+        OutputStream os = null;
+        try {
+            os = resolveOutputStream(target);
+            os.write(data);
+            os.flush();
+        } catch (IOException e) {
+            throw new WordRenderException(errorCode, errorMessage + ": " + e.getMessage(), e);
+        } finally {
+            closeOutputStreamQuietly(os, target);
+        }
+    }
+
+    private void closeOutputStreamQuietly(OutputStream os, Object target) {
+        if (os != null && !(target instanceof OutputStream)) {
+            try {
+                os.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private byte[] readSourceBytesBounded(Object source) {
+        InputStream is = resolveInputStream(source);
+        try {
+            return DocumentWebHelper.readBytesBounded(is, resolveMaxDocumentSizeBytes());
+        } catch (WordRenderException e) {
+            throw e;
+        } catch (DocumentException e) {
+            throw new WordRenderException(e.getResultCode(), e.getMessage(), e);
+        } catch (IOException e) {
+            throw new WordRenderException(DocumentResultCode.DOCUMENT_OPERATION_FAILED,
+                    "读取 Word 文档字节内容失败: " + e.getMessage(), e);
+        } finally {
+            if (!(source instanceof InputStream)) {
+                try {
+                    is.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    private byte[] decryptToPlainBytes(byte[] encryptedBytes, String password) {
+        try {
+            FileMagic magic = FileMagic.valueOf(encryptedBytes);
+            if (magic != FileMagic.OLE2) {
+                throw new WordRenderException(DocumentResultCode.ENCRYPTION_ERROR,
+                        "待解密文档并非加密的 OLE2 复合文档信封，当前格式: " + magic);
+            }
+            try (POIFSFileSystem fs = new POIFSFileSystem(new ByteArrayInputStream(encryptedBytes))) {
+                if (!fs.getRoot().hasEntry(EncryptionInfo.ENCRYPTION_INFO_ENTRY)) {
+                    throw new WordRenderException(DocumentResultCode.ENCRYPTION_ERROR,
+                            "OLE2 复合文档缺失 EncryptionInfo 加密描述条目");
+                }
+                EncryptionInfo info = new EncryptionInfo(fs);
+                Decryptor decryptor = Decryptor.getInstance(info);
+                if (!decryptor.verifyPassword(password)) {
+                    throw new WordRenderException(DocumentResultCode.PASSWORD_ERROR, "Word 文档打开密码错误");
+                }
+                try (InputStream decIs = decryptor.getDataStream(fs)) {
+                    return DocumentWebHelper.readBytesBounded(decIs, resolveMaxDocumentSizeBytes());
+                }
+            }
+        } catch (WordRenderException e) {
+            throw e;
+        } catch (DocumentException e) {
+            throw new WordRenderException(e.getResultCode(), e.getMessage(), e);
+        } catch (Exception e) {
+            throw new WordRenderException(DocumentResultCode.ENCRYPTION_ERROR,
+                    "Word 文件级解密失败: " + e.getMessage(), e);
         }
     }
 

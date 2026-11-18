@@ -1,12 +1,23 @@
 package io.github.atengk.boot.document.word;
 
 import com.deepoove.poi.config.Configure;
+import com.deepoove.poi.config.ConfigureBuilder;
+import com.deepoove.poi.data.Pictures;
 import com.deepoove.poi.plugin.table.LoopRowTableRenderPolicy;
 import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.WordRenderException;
+import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.properties.DocumentWordProperties;
+import io.github.atengk.boot.document.spi.DocumentConverter;
+import io.github.atengk.boot.document.spi.GotenbergDocumentConverter;
 import io.github.atengk.boot.document.word.model.FloatingPicture;
+import io.github.atengk.boot.document.word.model.WordMetadata;
+import io.github.atengk.boot.document.word.policy.FloatingPictureRenderPolicy;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.web.client.RestClient;
 import org.apache.poi.util.Units;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
@@ -523,6 +534,255 @@ class WordTemplateTest {
         assertThatThrownBy(() -> wordTemplate.renderToBytes(oversized, Map.of("name", "test")))
                 .isInstanceOf(WordRenderException.class)
                 .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.DOCUMENT_SIZE_EXCEEDED);
+    }
+
+    @Test
+    @DisplayName("SpringEL 安全开关：默认阻断静态类调用与表达式求值，显式开启后可安全求值且非严格模式缺失不崩溃")
+    void testSpringElSafetySwitchAndStrictness() throws Exception {
+        byte[] tplBytes;
+        try (XWPFDocument doc = new XWPFDocument(); ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            doc.createParagraph().createRun().setText("Ver={{T(java.lang.System).getProperty('java.version')}}|Up={{name.toUpperCase()}}|Miss={{noSuchKey}}");
+            doc.write(baos);
+            tplBytes = baos.toByteArray();
+        }
+
+        // 1. 默认关闭 SpringEL：不执行 T(System) 与方法调用
+        WordTemplate defaultWord = new WordTemplate();
+        String defaultText = defaultWord.extractText(defaultWord.renderToBytes(tplBytes, Map.of("name", "ateng")));
+        assertThat(defaultText).doesNotContain(System.getProperty("java.version"));
+        assertThat(defaultText).doesNotContain("ATENG");
+
+        // 2. 通过 configureBuilder(true) 显式开启（默认非严格模式）：支持表达式且缺失字段不抛错
+        Configure enabledCfg = defaultWord.configureBuilder(true).build();
+        String enabledText = defaultWord.extractText(defaultWord.renderToBytes(tplBytes, Map.of("name", "ateng"), enabledCfg));
+        assertThat(enabledText).contains("Up=ATENG");
+
+        // 3. 通过 DocumentWordProperties.springElEnabled=true 驱动默认配置
+        DocumentWordProperties wordProps = new DocumentWordProperties();
+        wordProps.setSpringElEnabled(true);
+        wordProps.setSpringElStrict(false);
+        WordTemplate propEnabledWord = new WordTemplate(wordProps);
+        String propText = propEnabledWord.extractText(propEnabledWord.renderToBytes(tplBytes, Map.of("name", "boot")));
+        assertThat(propText).contains("Up=BOOT");
+    }
+
+    @Test
+    @DisplayName("动态列循环与浮动印章 ThreadLocal 外层 finally 确定性清理")
+    void testBindLoopColumnAndFloatingThreadLocalCleanup() throws Exception {
+        // 1. bindLoopColumn 横向动态扩展表格列
+        byte[] colTplBytes;
+        try (XWPFDocument doc = new XWPFDocument(); ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            XWPFTable table = doc.createTable(3, 1);
+            if (table.getCTTbl().getTblGrid() == null) {
+                table.getCTTbl().addNewTblGrid();
+            }
+            if (table.getCTTbl().getTblGrid().sizeOfGridColArray() == 0) {
+                table.getCTTbl().getTblGrid().addNewGridCol().setW(java.math.BigInteger.valueOf(2000));
+            }
+            table.getRow(0).getCell(0).setText("{{cols}}");
+            table.getRow(1).getCell(0).setText("[quarter]");
+            table.getRow(2).getCell(0).setText("[amount]");
+            for (int r = 0; r < 3; r++) {
+                table.getRow(r).getCell(0).setWidth("2000");
+            }
+            doc.write(baos);
+            colTplBytes = baos.toByteArray();
+        }
+
+        WordTemplate wordTemplate = new WordTemplate();
+        ConfigureBuilder builder = wordTemplate.configureBuilder();
+        wordTemplate.bindLoopColumn(builder, "cols");
+        byte[] renderedColBytes = wordTemplate.renderToBytes(colTplBytes, Map.of(
+                "cols", List.of(
+                        Map.of("quarter", "Q1", "amount", "100万"),
+                        Map.of("quarter", "Q2", "amount", "200万")
+                )
+        ), builder.build());
+
+        try (XWPFDocument outDoc = new XWPFDocument(new ByteArrayInputStream(renderedColBytes))) {
+            assertThat(outDoc.getTables()).hasSize(1);
+            XWPFTable outTable = outDoc.getTables().get(0);
+            assertThat(outTable.getRow(1).getTableCells()).hasSizeGreaterThanOrEqualTo(2);
+            String fullText = getFullDocumentText(outDoc);
+            assertThat(fullText).contains("Q1", "Q2", "100万", "200万");
+        }
+
+        // 2. 渲染异常中止后外层 finally 确定性清理 FloatingPictureRenderPolicy ThreadLocal
+        byte[] sealBytes;
+        try (InputStream sealIs = new ClassPathResource("images/seal.png").getInputStream()) {
+            sealBytes = sealIs.readAllBytes();
+        }
+        FloatingPictureRenderPolicy sealPolicy = new FloatingPictureRenderPolicy(10, 20);
+        // 模拟 cast() 已绑定前置 dx=777 的 ThreadLocal 状态，随后渲染过程抛错
+        sealPolicy.cast(FloatingPicture.of(Pictures.ofBytes(sealBytes).size(40, 40).create(), 777, 0));
+
+        byte[] failTplBytes;
+        try (XWPFDocument doc = new XWPFDocument(); ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            doc.createParagraph().createRun().setText("{{boom}}");
+            doc.write(baos);
+            failTplBytes = baos.toByteArray();
+        }
+        Configure failCfg = Configure.builder()
+                .bind("seal", sealPolicy)
+                .bind("boom", (ele, data, template) -> {
+                    throw new IllegalStateException("模拟前置渲染异常");
+                })
+                .build();
+
+        assertThatThrownBy(() -> wordTemplate.renderToBytes(failTplBytes, Map.of("boom", "trigger"), failCfg))
+                .isInstanceOf(WordRenderException.class);
+
+        // 验证同线程后续用同一个 sealPolicy 渲染普通图片时未受泄漏 dx=777 污染，而是恢复默认 dx=10
+        byte[] okSealTpl;
+        try (XWPFDocument doc = new XWPFDocument(); ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            doc.createParagraph().createRun().setText("{{seal}}");
+            doc.write(baos);
+            okSealTpl = baos.toByteArray();
+        }
+        Configure reuseCfg = Configure.builder().bind("seal", sealPolicy).build();
+        byte[] okRendered = wordTemplate.renderToBytes(okSealTpl,
+                Map.of("seal", Pictures.ofBytes(sealBytes).size(40, 40).create()), reuseCfg);
+        try (XWPFDocument okDoc = new XWPFDocument(new ByteArrayInputStream(okRendered))) {
+            CTDrawing drawing = okDoc.getParagraphs().get(0).getRuns().get(0).getCTR().getDrawingArray(0);
+            CTAnchor anchor = drawing.getAnchorArray(0);
+            assertThat(anchor.getPositionH().getPosOffset()).isEqualTo(Units.toEMU(10));
+        }
+    }
+
+    @Test
+    @DisplayName("页眉水印：addWatermark 通过 XWPFHeaderFooterPolicy 注入含宏替换与脱敏的 VML 水印文本")
+    void testHeaderVmlWatermarkWithMacroDesensitization() throws Exception {
+        byte[] sourceDoc;
+        try (XWPFDocument doc = new XWPFDocument(); ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            doc.createParagraph().createRun().setText("核心采购合同正文");
+            doc.write(baos);
+            sourceDoc = baos.toByteArray();
+        }
+
+        WordTemplate wordTemplate = new WordTemplate();
+        WatermarkOptions opts = WatermarkOptions.builder()
+                .text("内部机密 #{user.name} #{user.phone}")
+                .build()
+                .setUser("李四", "lisi", "13812345678");
+
+        byte[] watermarked = wordTemplate.addWatermarkToBytes(sourceDoc, opts);
+        try (XWPFDocument outDoc = new XWPFDocument(new ByteArrayInputStream(watermarked))) {
+            assertThat(outDoc.getHeaderList()).isNotEmpty();
+            String headerXml = outDoc.getHeaderList().stream()
+                    .flatMap(h -> h.getParagraphs().stream())
+                    .map(p -> p.getCTP().xmlText())
+                    .reduce("", String::concat);
+            assertThat(headerXml).contains("内部机密 李四 138****5678");
+            assertThat(headerXml).doesNotContain("13812345678");
+        }
+
+        byte[] simpleWatermarked = wordTemplate.addWatermarkToBytes(sourceDoc, "仅供参考");
+        try (XWPFDocument simpleDoc = new XWPFDocument(new ByteArrayInputStream(simpleWatermarked))) {
+            String headerXml = simpleDoc.getHeaderList().stream()
+                    .flatMap(h -> h.getParagraphs().stream())
+                    .map(p -> p.getCTP().xmlText())
+                    .reduce("", String::concat);
+            assertThat(headerXml).contains("仅供参考");
+        }
+    }
+
+    @Test
+    @DisplayName("结构自省：inspectMetadata 精准汇总结构计数、核心属性、只读锁与 AES 加密状态")
+    void testInspectWordMetadataPlainAndEncrypted() throws Exception {
+        byte[] sealBytes;
+        try (InputStream sealIs = new ClassPathResource("images/seal.png").getInputStream()) {
+            sealBytes = sealIs.readAllBytes();
+        }
+        byte[] richDoc;
+        try (XWPFDocument doc = new XWPFDocument(); ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            doc.getProperties().getCoreProperties().setTitle("年度架构白皮书");
+            doc.getProperties().getCoreProperties().setCreator("Ateng");
+            doc.getProperties().getCoreProperties().setSubjectProperty("架构治理");
+            doc.getProperties().getCoreProperties().setKeywords("Word,PDF,Security");
+            doc.createParagraph().createRun().setText("第一段正文");
+            doc.createParagraph().createRun().setText("第二段正文");
+            XWPFTable table = doc.createTable(2, 2);
+            table.getRow(0).getCell(0).setText("列1");
+            try (InputStream picIs = new ByteArrayInputStream(sealBytes)) {
+                doc.createParagraph().createRun().addPicture(
+                        picIs, org.apache.poi.xwpf.usermodel.Document.PICTURE_TYPE_PNG, "seal.png", Units.toEMU(40), Units.toEMU(40));
+            }
+            doc.write(baos);
+            richDoc = baos.toByteArray();
+        }
+
+        WordTemplate wordTemplate = new WordTemplate();
+        byte[] watermarked = wordTemplate.addWatermarkToBytes(richDoc, "CONFIDENTIAL");
+
+        WordMetadata plainMeta = wordTemplate.inspectMetadata(watermarked);
+        assertThat(plainMeta.getParagraphCount()).isGreaterThanOrEqualTo(3);
+        assertThat(plainMeta.getTableCount()).isEqualTo(1);
+        assertThat(plainMeta.getPictureCount()).isEqualTo(1);
+        assertThat(plainMeta.isHasHeadersOrFooters()).isTrue();
+        assertThat(plainMeta.isReadonlyProtected()).isFalse();
+        assertThat(plainMeta.isEncrypted()).isFalse();
+        assertThat(plainMeta.getTitle()).isEqualTo("年度架构白皮书");
+        assertThat(plainMeta.getAuthor()).isEqualTo("Ateng");
+        assertThat(plainMeta.getSubject()).isEqualTo("架构治理");
+        assertThat(plainMeta.getKeywords()).isEqualTo("Word,PDF,Security");
+
+        // 只读锁状态
+        byte[] protectedDoc = wordTemplate.protectToBytes(watermarked, "RO#123");
+        WordMetadata roMeta = wordTemplate.inspectMetadata(protectedDoc);
+        assertThat(roMeta.isReadonlyProtected()).isTrue();
+        assertThat(roMeta.isEncrypted()).isFalse();
+
+        // AES-256 加密信封状态
+        byte[] encryptedDoc = wordTemplate.encryptToBytes(watermarked, "Aes#123");
+        assertThatThrownBy(() -> wordTemplate.inspectMetadata(encryptedDoc))
+                .isInstanceOf(WordRenderException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.PASSWORD_ERROR);
+
+        WordMetadata encMeta = wordTemplate.inspectMetadata(encryptedDoc, "Aes#123");
+        assertThat(encMeta.isEncrypted()).isTrue();
+        assertThat(encMeta.getTitle()).isEqualTo("年度架构白皮书");
+        assertThat(encMeta.getTableCount()).isEqualTo(1);
+        assertThat(encMeta.getPictureCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("转 PDF 桥接：renderToPdf 委托自定义或 MockRestServiceServer 绑定的 GotenbergDocumentConverter")
+    void testRenderToPdfBridgeWithCustomAndGotenbergConverter() {
+        WordTemplate wordTemplate = new WordTemplate();
+        Map<String, Object> model = createTestModel(false);
+        byte[] expectedPdf = "%PDF-1.7-BRIDGED".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        // 1. 委托自定义 DocumentConverter
+        DocumentConverter customConverter = new DocumentConverter() {
+            @Override
+            public byte[] docxToPdf(InputStream docxInputStream) {
+                return expectedPdf;
+            }
+
+            @Override
+            public byte[] htmlToPdf(InputStream htmlInputStream) {
+                return new byte[0];
+            }
+        };
+        assertThat(wordTemplate.renderToPdfToBytes(sampleTemplateBytes, model, customConverter)).isEqualTo(expectedPdf);
+
+        // 2. 委托绑定 MockRestServiceServer 的 GotenbergDocumentConverter
+        DocumentProperties props = new DocumentProperties();
+        props.getConverter().getGotenberg().setEnabled(true);
+        props.getConverter().getGotenberg().setBaseUrl("http://gotenberg.internal:3000");
+        RestClient.Builder builder = RestClient.builder().baseUrl("http://gotenberg.internal:3000");
+        MockRestServiceServer mockServer = MockRestServiceServer.bindTo(builder).build();
+        mockServer.expect(org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo(
+                        "http://gotenberg.internal:3000/forms/libreoffice/convert"))
+                .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.method(HttpMethod.POST))
+                .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess(
+                        expectedPdf, MediaType.APPLICATION_PDF));
+
+        GotenbergDocumentConverter gotenbergConverter = new GotenbergDocumentConverter(props, builder.build());
+        ByteArrayOutputStream pdfOut = new ByteArrayOutputStream();
+        wordTemplate.renderToPdf(sampleTemplateBytes, model, pdfOut, gotenbergConverter);
+        assertThat(pdfOut.toByteArray()).isEqualTo(expectedPdf);
+        mockServer.verify();
     }
 
     private String getFullDocumentText(XWPFDocument doc) {

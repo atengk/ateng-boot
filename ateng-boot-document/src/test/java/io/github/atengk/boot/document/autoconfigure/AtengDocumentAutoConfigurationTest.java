@@ -63,7 +63,7 @@ class AtengDocumentAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("测试用户自定义 DocumentConverter 时缺省 Bean 平滑让位")
+    @DisplayName("测试用户自定义 DocumentConverter 时缺省 Bean 平滑让位且自动桥接至 WordTemplate")
     void testCustomConverterOverride() {
         contextRunner.withUserConfiguration(CustomConverterConfiguration.class)
                 .run(context -> {
@@ -72,6 +72,9 @@ class AtengDocumentAutoConfigurationTest {
                     assertThat(context).hasSingleBean(DocumentFontResolver.class);
                     assertThat(context).hasSingleBean(WordTemplate.class);
                     assertThat(context).hasSingleBean(PdfTemplate.class);
+                    assertThat(context.getBean(WordTemplate.class)
+                            .renderToPdfToBytes("classpath:templates/word/contract-template.docx", java.util.Map.of()))
+                            .isEqualTo(new byte[]{1, 2, 3});
                 });
     }
 

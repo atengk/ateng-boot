@@ -7,6 +7,7 @@ import io.github.atengk.boot.document.spi.DefaultDocumentConverter;
 import io.github.atengk.boot.document.spi.DocumentConverter;
 import io.github.atengk.boot.document.spi.GotenbergDocumentConverter;
 import io.github.atengk.boot.document.word.WordTemplate;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -75,15 +76,17 @@ public class AtengDocumentAutoConfiguration {
     }
 
     /**
-     * 注册 Word 文档模板渲染统一操作门面
+     * 注册 Word 文档模板渲染统一操作门面（注入 DocumentConverter SPI 支持 renderToPdf 桥接）
      *
-     * @param properties 文档治理根配置属性
+     * @param properties        文档治理根配置属性
+     * @param converterProvider 文档跨格式转换器 SPI 提供者
      * @return WordTemplate 实例
      */
     @Bean
     @ConditionalOnMissingBean(WordTemplate.class)
-    public WordTemplate wordTemplate(DocumentProperties properties) {
-        return new WordTemplate(properties);
+    public WordTemplate wordTemplate(DocumentProperties properties,
+                                     ObjectProvider<DocumentConverter> converterProvider) {
+        return new WordTemplate(properties, converterProvider.getIfAvailable());
     }
 
     /**
