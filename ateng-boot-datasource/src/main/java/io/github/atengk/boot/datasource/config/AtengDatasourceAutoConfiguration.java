@@ -137,14 +137,25 @@ public class AtengDatasourceAutoConfiguration {
     /**
      * 注册动态数据源事务切源安全守卫
      *
-     * @param datasourceProperties 数据源配置属性
+     * @param datasourceProperties          数据源配置属性
+     * @param tenantDataSourceProvider      租户数据源解析器提供者
+     * @param readAfterWriteManagerProvider 写后即读协调管理器提供者
+     * @param routingDataSourceProvider     动态路由数据源提供者
      * @return 事务切源安全守卫实例
      */
     @Bean
     @ConditionalOnMissingBean(DynamicDatasourceGuard.class)
-    public DynamicDatasourceGuard datasourceGuard(DatasourceProperties datasourceProperties) {
+    public DynamicDatasourceGuard datasourceGuard(DatasourceProperties datasourceProperties,
+                                                  ObjectProvider<TenantDataSourceProvider> tenantDataSourceProvider,
+                                                  ObjectProvider<ReadAfterWriteManager> readAfterWriteManagerProvider,
+                                                  ObjectProvider<DynamicRoutingDataSource> routingDataSourceProvider) {
         log.info("装配 DynamicDatasourceGuard 动态数据源事务切源安全守卫");
-        return new DynamicDatasourceGuard(datasourceProperties);
+        return new DynamicDatasourceGuard(
+                datasourceProperties,
+                tenantDataSourceProvider::getIfAvailable,
+                readAfterWriteManagerProvider::getIfAvailable,
+                routingDataSourceProvider::getIfAvailable
+        );
     }
 
     /**

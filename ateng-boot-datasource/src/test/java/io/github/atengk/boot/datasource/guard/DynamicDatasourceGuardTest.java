@@ -1,15 +1,22 @@
 package io.github.atengk.boot.datasource.guard;
 
 import com.baomidou.dynamic.datasource.annotation.DS;
+import com.baomidou.dynamic.datasource.ds.GroupDataSource;
 import com.baomidou.dynamic.datasource.processor.DsProcessor;
 import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
 import com.baomidou.dynamic.datasource.tx.TransactionContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.datasource.enums.MultiTenancyMode;
+import io.github.atengk.boot.datasource.enums.ReadAfterWriteScope;
 import io.github.atengk.boot.datasource.exception.DataSourceSwitchException;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
+import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteContextHolder;
+import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteManager;
 import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
+import io.github.atengk.boot.datasource.strategy.HealthAwareDynamicDataSourceStrategy;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
+import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
 import org.aopalliance.intercept.MethodInvocation;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,6 +24,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import javax.sql.DataSource;
@@ -71,6 +79,7 @@ class DynamicDatasourceGuardTest {
         TransactionContext.remove();
         DynamicDataSourceContextHolder.clear();
         TenantContextHolder.clear();
+        ReadAfterWriteContextHolder.clear();
     }
 
     @Test
@@ -248,6 +257,199 @@ class DynamicDatasourceGuardTest {
         // 目标切向 slave 时安全放行
         guard.validateSwitch("slave");
         guard.validateContextIsolated("slave");
+    }
+
+    @Test
+    @DisplayName("测试无 @DS 租户事务中准确绑定 tenant_1001，拦截切向 master 并放行同库重入")
+    void testUnannotatedTenantTransaction_BlocksMasterAndAllowsSameTenantReentry() {
+        TenantDataSourceProvider provider = new DefaultTenantDataSourceProvider(properties);
+        ReadAfterWriteManager rawManager = new ReadAfterWriteManager(properties.getReadWriteSplit().getReadAfterWrite(), null);
+        DynamicDatasourceGuard tenantAwareGuard = new DynamicDatasourceGuard(
+                properties, () -> provider, () -> rawManager, () -> routingDataSource
+        );
+
+        TenantContextHolder.setTenantId("1001");
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        // 1. 应识别当前事务绑定数据源为 tenant_1001
+        assertThat(tenantAwareGuard.getCurrentTransactionDataSourceKey()).isEqualTo("tenant_1001");
+
+        // 2. 尝试切源至 master 触发假切源阻断
+        assertThatThrownBy(() -> tenantAwareGuard.validateSwitch("master"))
+                .isInstanceOf(DataSourceSwitchException.class)
+                .hasMessageContaining("当前事务已绑定数据源 [tenant_1001]")
+                .hasMessageContaining("尝试切源至 [master]");
+
+        // 3. 切源至同一租户物理库 tenant_1001 安全放行
+        tenantAwareGuard.validateSwitch("tenant_1001");
+    }
+
+    @Test
+    @DisplayName("测试免租户穿透与 IGNORE 模式下无 @DS 事务绑定至默认主库")
+    void testUnannotatedTransactionWithIgnoreTenantOrIgnoreMode_BindsToMaster() {
+        TenantDataSourceProvider provider = new DefaultTenantDataSourceProvider(properties);
+        ReadAfterWriteManager rawManager = new ReadAfterWriteManager(properties.getReadWriteSplit().getReadAfterWrite(), null);
+        DynamicDatasourceGuard tenantAwareGuard = new DynamicDatasourceGuard(
+                properties, () -> provider, () -> rawManager, () -> routingDataSource
+        );
+
+        // 场景 A: isIgnoreTenant = true
+        TenantContextHolder.setTenantId("1001");
+        TenantContextHolder.setIgnoreTenant(true);
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        assertThat(tenantAwareGuard.getCurrentTransactionDataSourceKey()).isEqualTo("master");
+        tenantAwareGuard.validateSwitch("master");
+        assertThatThrownBy(() -> tenantAwareGuard.validateSwitch("tenant_1001"))
+                .isInstanceOf(DataSourceSwitchException.class)
+                .hasMessageContaining("当前事务已绑定数据源 [master]");
+
+        // 清理并进入场景 B: MultiTenancyMode.IGNORE
+        tearDown();
+        properties.getMultiTenancy().setMode(MultiTenancyMode.IGNORE);
+        TenantContextHolder.setTenantId("1001");
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        assertThat(tenantAwareGuard.getCurrentTransactionDataSourceKey()).isEqualTo("master");
+        tenantAwareGuard.validateSwitch("master");
+    }
+
+    @Test
+    @DisplayName("测试 FALLBACK_MASTER 模式下未知租户无 @DS 事务回退绑定至主库")
+    void testUnannotatedTransactionWithUnknownTenantFallbackMaster_BindsToMaster() {
+        TenantDataSourceProvider provider = new DefaultTenantDataSourceProvider(properties);
+        ReadAfterWriteManager rawManager = new ReadAfterWriteManager(properties.getReadWriteSplit().getReadAfterWrite(), null);
+        DynamicDatasourceGuard tenantAwareGuard = new DynamicDatasourceGuard(
+                properties, () -> provider, () -> rawManager, () -> routingDataSource
+        );
+
+        properties.getMultiTenancy().setMode(MultiTenancyMode.FALLBACK_MASTER);
+        TenantContextHolder.setTenantId("9999");
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        assertThat(tenantAwareGuard.getCurrentTransactionDataSourceKey()).isEqualTo("master");
+        tenantAwareGuard.validateSwitch("master");
+        assertThatThrownBy(() -> tenantAwareGuard.validateSwitch("tenant_1001"))
+                .isInstanceOf(DataSourceSwitchException.class);
+    }
+
+    @Test
+    @DisplayName("测试 AtengDynamicRoutingDataSource 活动事务首次路由自动绑定物理库并在事务结束后自动解绑")
+    void testRoutingDetermineDataSource_BindsTxResourceAndUnbindsAfterCompletion() {
+        TenantContextHolder.setTenantId("1001");
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        DataSource resolved = routingDataSource.determineDataSource();
+        assertThat(resolved).isNotNull();
+        assertThat(TransactionSynchronizationManager.getResource(DynamicDatasourceGuard.TX_BOUND_DATASOURCE_RESOURCE_KEY))
+                .isEqualTo("tenant_1001");
+
+        // 即便随后上下文变化，当前事务资源仍锁定初次绑定的 tenant_1001
+        TenantContextHolder.setTenantId("9999");
+        assertThat(guard.getCurrentTransactionDataSourceKey()).isEqualTo("tenant_1001");
+        assertThatThrownBy(() -> guard.validateSwitch("master"))
+                .isInstanceOf(DataSourceSwitchException.class)
+                .hasMessageContaining("当前事务已绑定数据源 [tenant_1001]");
+
+        // 模拟事务完结触发同步器清理
+        for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+            sync.afterCompletion(TransactionSynchronization.STATUS_COMMITTED);
+        }
+        assertThat(TransactionSynchronizationManager.hasResource(DynamicDatasourceGuard.TX_BOUND_DATASOURCE_RESOURCE_KEY))
+                .isFalse();
+    }
+
+    @Test
+    @DisplayName("测试全局与租户只读事务在写后即读防延迟激活时对齐回退主库")
+    void testReadOnlyTransactionWithReadAfterWrite_AlignsGuardAndRoutingToMaster() {
+        properties.getReadWriteSplit().setEnabled(true);
+        properties.getReadWriteSplit().getReadAfterWrite().setEnabled(true);
+        properties.getReadWriteSplit().getReadAfterWrite().setScope(ReadAfterWriteScope.REQUEST);
+
+        DataSource slaveDs = mock(DataSource.class);
+        DataSource tenantSlaveDs = mock(DataSource.class);
+        routingDataSource.addDataSource("slave", slaveDs);
+        routingDataSource.addDataSource("tenant_1001_slave", tenantSlaveDs);
+
+        TenantDataSourceProvider provider = new DefaultTenantDataSourceProvider(properties);
+        ReadAfterWriteManager rawManager = new ReadAfterWriteManager(properties.getReadWriteSplit().getReadAfterWrite(), null);
+        DynamicDatasourceGuard alignedGuard = new DynamicDatasourceGuard(
+                properties, () -> provider, () -> rawManager, () -> routingDataSource
+        );
+
+        // 1. 全局只读事务（未触发写后即读）-> 绑定 slave
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);
+        assertThat(alignedGuard.getCurrentTransactionDataSourceKey()).isEqualTo("slave");
+        alignedGuard.validateSwitch("slave");
+
+        // 2. 全局只读事务（已触发写后即读）-> 回退绑定 master，拦截 slave
+        tearDown();
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);
+        rawManager.markWriteOccurred();
+        assertThat(alignedGuard.getCurrentTransactionDataSourceKey()).isEqualTo("master");
+        alignedGuard.validateSwitch("master");
+        assertThatThrownBy(() -> alignedGuard.validateSwitch("slave"))
+                .isInstanceOf(DataSourceSwitchException.class)
+                .hasMessageContaining("当前事务已绑定数据源 [master]");
+
+        // 3. 租户只读事务（写后即读激活）-> 回退绑定 tenant_1001，未激活时绑定 tenant_1001_slave
+        tearDown();
+        TenantContextHolder.setTenantId("1001");
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);
+        assertThat(alignedGuard.getCurrentTransactionDataSourceKey()).isEqualTo("tenant_1001_slave");
+
+        tearDown();
+        TenantContextHolder.setTenantId("1001");
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);
+        rawManager.markWriteOccurred();
+        assertThat(alignedGuard.getCurrentTransactionDataSourceKey()).isEqualTo("tenant_1001");
+    }
+
+    @Test
+    @DisplayName("测试从库分组全部熔断降级主库时事务资源精准绑定主库而非失效分组")
+    void testRoutingFallbackToMasterWhenAllSlavesBlacklisted_BindsMasterResource() {
+        HealthAwareDynamicDataSourceStrategy strategy = new HealthAwareDynamicDataSourceStrategy(properties);
+        try {
+            AtengDynamicRoutingDataSource failoverRouting = new AtengDynamicRoutingDataSource(
+                    Collections.emptyList(), properties, new DefaultTenantDataSourceProvider(properties), strategy, null
+            );
+            DataSource masterDs = mock(DataSource.class);
+            DataSource slave1Ds = mock(DataSource.class);
+            failoverRouting.setPrimary("master");
+            failoverRouting.addDataSource("master", masterDs);
+            failoverRouting.addDataSource("slave_1", slave1Ds);
+
+            GroupDataSource slaveGroup = new GroupDataSource("slave", strategy);
+            slaveGroup.addDatasource("slave_1", slave1Ds);
+            failoverRouting.addGroupDataSource("slave", slaveGroup);
+
+            // 熔断全部从库节点
+            strategy.recordFailure("slave_1");
+
+            TransactionSynchronizationManager.initSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(true);
+            TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);
+
+            DataSource resolved = failoverRouting.determineDataSource();
+            assertThat(resolved).isSameAs(masterDs);
+            assertThat(TransactionSynchronizationManager.getResource(DynamicDatasourceGuard.TX_BOUND_DATASOURCE_RESOURCE_KEY))
+                    .isEqualTo("master");
+        } finally {
+            strategy.destroy();
+        }
     }
 
     /**
