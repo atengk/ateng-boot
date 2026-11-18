@@ -142,6 +142,11 @@ public class WechatPayTemplate {
     private final PayProperties payProperties;
 
     /**
+     * 微信线下条码付撤销冲正受控重试总开关（基于配置属性构造，不可变）
+     */
+    private final boolean wechatReverseRetryEnabled;
+
+    /**
      * 微信线下条码付撤销冲正受控重试策略（基于配置属性构造，不可变）
      */
     private final RetryUtil.RetryConfig wechatReverseRetryConfig;
@@ -171,10 +176,13 @@ public class WechatPayTemplate {
         WechatPayProperties.ReverseRetryProperties retryProps = this.payProperties.getWechat() != null
                 ? this.payProperties.getWechat().getReverseRetry()
                 : null;
-        int maxAttempts = retryProps != null && retryProps.getMaxAttempts() > 0 ? retryProps.getMaxAttempts() : 3;
-        Duration delay = retryProps != null && retryProps.getDelay() != null ? retryProps.getDelay() : Duration.ofSeconds(3);
-        double multiplier = retryProps != null && retryProps.getMultiplier() > 0 ? retryProps.getMultiplier() : 1.0;
-        Duration maxDelay = retryProps != null && retryProps.getMaxDelay() != null ? retryProps.getMaxDelay() : Duration.ofSeconds(3);
+        this.wechatReverseRetryEnabled = retryProps == null || retryProps.isEnabled();
+        int maxAttempts = this.wechatReverseRetryEnabled
+                ? (retryProps != null && retryProps.getMaxAttempts() > 0 ? retryProps.getMaxAttempts() : 3)
+                : 1;
+        Duration delay = retryProps != null && retryProps.getDelay() != null ? retryProps.getDelay() : Duration.ofSeconds(1);
+        double multiplier = retryProps != null && retryProps.getMultiplier() >= 1.0 ? retryProps.getMultiplier() : 2.0;
+        Duration maxDelay = retryProps != null && retryProps.getMaxDelay() != null ? retryProps.getMaxDelay() : Duration.ofSeconds(5);
 
         this.wechatReverseRetryConfig = RetryUtil.RetryConfig.builder()
                 .maxAttempts(maxAttempts)
@@ -182,10 +190,16 @@ public class WechatPayTemplate {
                 .multiplier(multiplier)
                 .maxDelay(maxDelay)
                 .retryPredicate(throwable -> {
+                    if (throwable instanceof WechatReverseRecallException) {
+                        return true;
+                    }
                     if (throwable instanceof HttpException) {
                         return true;
                     }
                     if (throwable instanceof ServiceException se) {
+                        if (isReverseEndpointUnsupported(se)) {
+                            return false;
+                        }
                         int status = se.getHttpStatusCode();
                         String code = se.getErrorCode();
                         return status >= 500
@@ -196,6 +210,15 @@ public class WechatPayTemplate {
                     return false;
                 })
                 .build();
+    }
+
+    /**
+     * 获取当前生效的微信条码付撤销重试配置（主要供单元测试校验）
+     *
+     * @return 不可变重试配置
+     */
+    RetryUtil.RetryConfig getWechatReverseRetryConfig() {
+        return wechatReverseRetryConfig;
     }
 
     /**
@@ -813,11 +836,15 @@ public class WechatPayTemplate {
 
             Map<String, Object> bodyMap = new LinkedHashMap<>();
             if (isPartner) {
-                bodyMap.put("sp_appid", resolveSpAppId(merchantProps, request));
-                bodyMap.put("sp_mchid", resolveSpMchId(merchantProps, request));
-                bodyMap.put("sub_mchid", resolveSubMchId(merchantProps, request));
-                if (resolveSubAppId(merchantProps, request) != null) {
-                    bodyMap.put("sub_appid", resolveSubAppId(merchantProps, request));
+                String spAppId = resolveSpAppId(merchantProps, request);
+                String spMchId = resolveSpMchId(merchantProps, request);
+                String subMchId = requirePartnerSubMchId(merchantProps, request, "条码支付");
+                String subAppId = resolveSubAppId(merchantProps, request);
+                bodyMap.put("sp_appid", spAppId);
+                bodyMap.put("sp_mchid", spMchId);
+                bodyMap.put("sub_mchid", subMchId);
+                if (hasText(subAppId)) {
+                    bodyMap.put("sub_appid", subAppId);
                 }
             } else {
                 bodyMap.put("appid", resolveAppId(merchantProps, request));
@@ -1007,11 +1034,13 @@ public class WechatPayTemplate {
      * 撤销/冲正微信支付订单（主要用于线下条码付等场景超时未决时的最终处置）
      * <p>
      * 微信官方说明：支付规则为若用户未支付则关闭订单，若用户已支付则自动原路退款。
-     * 当遇到网络通信抖动或微信系统繁忙（SYSTEMERROR/BANKERROR）时，内置依托 RetryUtil 最多重试 3 次（固定间隔 3 秒）。
+     * 当 {@code reverseRetry.enabled=true} 且遇到网络抖动、服务端临时错误或撤销响应指示需重试（{@code recall=Y}）时，
+     * 依托 {@link RetryUtil} 按指数退避策略执行受控重试（默认初始 1s、倍率 2.0、上限 5s、最多 3 次）；
+     * 当网关反馈暂不支持直接撤销端点且启用 {@code reverseFallback.enabled=true} 时，自动执行“先查单 -> 未支付关单 -> 已支付按策略处置”安全兜底闭环。
      * </p>
      *
      * @param request 撤销请求参数（必须提供 outTradeNo）
-     * @return 撤销冲正操作响应（tradeState 为 CLOSED）
+     * @return 撤销冲正操作响应
      */
     public PayResponse cancelOrder(WechatPayRequest request) {
         if (request == null || request.getOutTradeNo() == null || request.getOutTradeNo().isBlank()) {
@@ -1020,16 +1049,18 @@ public class WechatPayTemplate {
         WechatMerchantProperties merchantProps = resolveMerchant(request);
         WechatServiceHolder holder = getServiceHolder(merchantProps);
         boolean isPartner = isPartnerMode(merchantProps, request);
+        String resolvedSubMchId = isPartner ? requirePartnerSubMchId(merchantProps, request, "撤销订单") : null;
 
         return executeWithExceptionTranslation("cancelOrder", () -> {
+            String encodedOutTradeNo = urlEncodePath(request.getOutTradeNo().trim());
             String url = isPartner
-                    ? String.format(PARTNER_REVERSE_URL, request.getOutTradeNo())
-                    : String.format(DIRECT_REVERSE_URL, request.getOutTradeNo());
+                    ? String.format(PARTNER_REVERSE_URL, encodedOutTradeNo)
+                    : String.format(DIRECT_REVERSE_URL, encodedOutTradeNo);
 
             Map<String, Object> bodyMap = new LinkedHashMap<>();
             if (isPartner) {
                 bodyMap.put("sp_mchid", resolveSpMchId(merchantProps, request));
-                bodyMap.put("sub_mchid", resolveSubMchId(merchantProps, request));
+                bodyMap.put("sub_mchid", resolvedSubMchId);
             } else {
                 bodyMap.put("mchid", merchantProps.getMchId());
             }
@@ -1044,20 +1075,214 @@ public class WechatPayTemplate {
                     .body(new JsonRequestBody.Builder().body(jsonBody).build())
                     .build();
 
-            // 依托 Core 原语 RetryUtil 执行受控退避重试（默认最多 3 次，间隔 3 秒）
-            RetryUtil.execute(() -> {
-                holder.getHttpClient().execute(httpRequest, Object.class);
-            }, wechatReverseRetryConfig);
+            WechatReverseResponse reverseResp;
+            try {
+                if (wechatReverseRetryEnabled) {
+                    reverseResp = RetryUtil.execute(() -> executeReverseAttempt(holder, httpRequest), wechatReverseRetryConfig);
+                } else {
+                    reverseResp = executeReverseAttempt(holder, httpRequest);
+                }
+            } catch (ServiceException se) {
+                if (isReverseFallbackEnabled() && isReverseEndpointUnsupported(se)) {
+                    log.warn("WeChat /reverse endpoint unsupported (httpStatus={}, code={}), falling back to query -> close/refund for outTradeNo={}",
+                            se.getHttpStatusCode(), se.getErrorCode(), request.getOutTradeNo());
+                    return executeReverseFallback(request, merchantProps, isPartner);
+                }
+                throw se;
+            }
+
+            PayTradeState tradeState = reverseResp != null && hasText(reverseResp.getTradeState())
+                    ? mapTradeState(reverseResp.getTradeState())
+                    : PayTradeState.REVOKED;
+            String rawTradeState = reverseResp != null && hasText(reverseResp.getTradeState())
+                    ? reverseResp.getTradeState().trim()
+                    : tradeState.getCode();
+            String tradeStateDesc = reverseResp != null && hasText(reverseResp.getTradeStateDesc())
+                    ? reverseResp.getTradeStateDesc().trim()
+                    : "订单已成功撤销冲正";
+            String outTradeNo = reverseResp != null && hasText(reverseResp.getOutTradeNo())
+                    ? reverseResp.getOutTradeNo().trim()
+                    : request.getOutTradeNo();
 
             return PayResponse.builder()
                     .channel(PayChannel.WECHAT_PAY)
-                    .outTradeNo(request.getOutTradeNo())
-                    .tradeState(PayTradeState.REVOKED)
-                    .rawTradeState(PayTradeState.REVOKED.getCode())
-                    .tradeStateDesc("订单已成功撤销冲正")
+                    .outTradeNo(outTradeNo)
+                    .transactionId(reverseResp != null ? reverseResp.getTransactionId() : null)
+                    .tradeState(tradeState)
+                    .rawTradeState(rawTradeState)
+                    .tradeStateDesc(tradeStateDesc)
                     .success(true)
+                    .rawResponse(reverseResp)
                     .build();
         });
+    }
+
+    private WechatReverseResponse executeReverseAttempt(WechatServiceHolder holder, HttpRequest httpRequest) {
+        HttpResponse<WechatReverseResponse> httpResp = holder.getHttpClient().execute(httpRequest, WechatReverseResponse.class);
+        WechatReverseResponse reverseResp = null;
+        if (httpResp != null) {
+            if (httpResp.getBody() instanceof JsonResponseBody jsonBody && hasText(jsonBody.getBody())) {
+                reverseResp = JsonUtil.parseObject(jsonBody.getBody(), WechatReverseResponse.class);
+            } else {
+                reverseResp = httpResp.getServiceResponse();
+            }
+        }
+        if (reverseResp != null && reverseResp.isRecallRequired()) {
+            throw new WechatReverseRecallException(
+                    "微信撤销冲正未决，渠道指示需退避重试 (recall=" + reverseResp.getRecall() + ")");
+        }
+        return reverseResp;
+    }
+
+    private PayResponse executeReverseFallback(WechatPayRequest request,
+                                               WechatMerchantProperties merchantProps,
+                                               boolean isPartner) {
+        PayResponse queried;
+        try {
+            queried = queryOrder(request);
+        } catch (PayTradeException queryEx) {
+            if (queryEx.getResultCode() == PayResultCode.PAY_ORDER_NOT_FOUND) {
+                return buildFallbackPayResponse(request.getOutTradeNo(), null, null,
+                        PayTradeState.CLOSED, "ORDER_NOT_EXIST",
+                        "网关不支持直接撤销端点，安全兜底查单确认订单不存在，视同已关闭", null);
+            }
+            throw queryEx;
+        }
+
+        PayTradeState currentState = queried.getTradeState();
+        if (currentState == PayTradeState.CLOSED || currentState == PayTradeState.REVOKED
+                || currentState == PayTradeState.PAYERROR || currentState == PayTradeState.REFUND) {
+            String defaultDesc = currentState == PayTradeState.REFUND
+                    ? "安全兜底查单确认订单已转入退款"
+                    : "安全兜底查单确认订单已终态结束";
+            return buildFallbackPayResponse(
+                    firstNonBlankText(queried.getOutTradeNo(), request.getOutTradeNo()),
+                    queried.getTransactionId(), queried.getAmount(),
+                    currentState, firstNonBlankText(queried.getRawTradeState(), currentState.getCode()),
+                    firstNonBlankText(queried.getTradeStateDesc(), defaultDesc), queried.getRawResponse());
+        }
+        if (currentState == PayTradeState.SUCCESS) {
+            return handleFallbackPaidOrder(request, queried, merchantProps, isPartner);
+        }
+
+        // NOTPAY 或 USERPAYING 状态：执行关单
+        try {
+            PayResponse closeResp = closeOrder(request);
+            return buildFallbackPayResponse(
+                    firstNonBlankText(closeResp.getOutTradeNo(), request.getOutTradeNo()),
+                    queried.getTransactionId(), queried.getAmount(),
+                    PayTradeState.CLOSED, PayTradeState.CLOSED.getCode(),
+                    "网关不支持直接撤销端点，安全兜底已确认未支付并关闭订单", closeResp.getRawResponse());
+        } catch (PayTradeException closeEx) {
+            if ("ORDERPAID".equalsIgnoreCase(closeEx.getRawErrorCode())) {
+                PayResponse latestPaid = queryOrder(request);
+                return handleFallbackPaidOrder(request, latestPaid, merchantProps, isPartner);
+            }
+            if ("ORDERCLOSED".equalsIgnoreCase(closeEx.getRawErrorCode())) {
+                return buildFallbackPayResponse(request.getOutTradeNo(), queried.getTransactionId(), queried.getAmount(),
+                        PayTradeState.CLOSED, PayTradeState.CLOSED.getCode(),
+                        "网关不支持直接撤销端点，安全兜底确认订单已关闭", null);
+            }
+            throw closeEx;
+        }
+    }
+
+    private PayResponse handleFallbackPaidOrder(WechatPayRequest request,
+                                              PayResponse queried,
+                                              WechatMerchantProperties merchantProps,
+                                              boolean isPartner) {
+        WechatPayProperties.ReverseFallbackProperties fallbackProps = payProperties != null && payProperties.getWechat() != null
+                ? payProperties.getWechat().getReverseFallback()
+                : null;
+        WechatPayProperties.ReverseFallbackProperties.PaidPolicy policy = fallbackProps != null && fallbackProps.getPaidPolicy() != null
+                ? fallbackProps.getPaidPolicy()
+                : WechatPayProperties.ReverseFallbackProperties.PaidPolicy.REJECT;
+
+        if (policy == WechatPayProperties.ReverseFallbackProperties.PaidPolicy.REJECT) {
+            throw new PayTradeException(PayResultCode.PAY_TRADE_STATE_INVALID,
+                    "ORDER_PAID_REVERSE_REJECTED",
+                    "订单已支付成功且安全兜底策略配置为拒绝自动退款，请人工核实或显式发起退款");
+        }
+
+        BigDecimal refundAmount = queried.getAmount() != null ? queried.getAmount() : request.getAmount();
+        if (refundAmount == null || refundAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new PayException(PayResultCode.PAY_AMOUNT_INVALID,
+                    "安全兜底自动退款无法确定实付金额，请显式传入订单金额或人工退款");
+        }
+
+        String outRefundNo = buildDeterministicReverseRefundNo(request.getOutTradeNo());
+        WechatRefundRequest refundReq = WechatRefundRequest.builder()
+                .merchantKey(request.getMerchantKey())
+                .outTradeNo(request.getOutTradeNo())
+                .transactionId(queried.getTransactionId())
+                .outRefundNo(outRefundNo)
+                .totalAmount(refundAmount)
+                .refundAmount(refundAmount)
+                .reason("条码支付撤销安全兜底自动全额退款")
+                .subMchId(isPartner ? resolveSubMchId(merchantProps, request) : null)
+                .build();
+        PayRefundResponse refundResp = refund(refundReq);
+
+        return buildFallbackPayResponse(
+                firstNonBlankText(refundResp.getOutTradeNo(), request.getOutTradeNo()),
+                firstNonBlankText(refundResp.getTransactionId(), queried.getTransactionId()),
+                refundResp.getRefundAmount() != null ? refundResp.getRefundAmount() : refundAmount,
+                PayTradeState.REFUND,
+                firstNonBlankText(refundResp.getRawRefundState(), PayTradeState.REFUND.getCode()),
+                "网关不支持直接撤销端点，安全兜底确认已支付并已自动发起全额退款(outRefundNo=" + outRefundNo + ")",
+                refundResp);
+    }
+
+    private PayResponse buildFallbackPayResponse(String outTradeNo,
+                                               String transactionId,
+                                               BigDecimal amount,
+                                               PayTradeState tradeState,
+                                               String rawTradeState,
+                                               String tradeStateDesc,
+                                               Object rawResponse) {
+        return PayResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outTradeNo(outTradeNo)
+                .transactionId(transactionId)
+                .amount(amount)
+                .tradeState(tradeState)
+                .rawTradeState(rawTradeState)
+                .tradeStateDesc(tradeStateDesc)
+                .success(true)
+                .rawResponse(rawResponse)
+                .build();
+    }
+
+    private boolean isReverseFallbackEnabled() {
+        return payProperties != null
+                && payProperties.getWechat() != null
+                && payProperties.getWechat().getReverseFallback() != null
+                && payProperties.getWechat().getReverseFallback().isEnabled();
+    }
+
+    private static boolean isReverseEndpointUnsupported(ServiceException se) {
+        if (se == null) {
+            return false;
+        }
+        String code = se.getErrorCode();
+        if ("ORDERNOTEXIST".equalsIgnoreCase(code) || "ORDER_NOT_EXIST".equalsIgnoreCase(code)) {
+            return false;
+        }
+        int status = se.getHttpStatusCode();
+        if (status == 404 || status == 405 || status == 501) {
+            return true;
+        }
+        return "RESOURCE_NOT_EXISTS".equalsIgnoreCase(code)
+                || "API_NOT_SUPPORTED".equalsIgnoreCase(code)
+                || "METHOD_NOT_ALLOWED".equalsIgnoreCase(code)
+                || "NOT_IMPLEMENTED".equalsIgnoreCase(code)
+                || "UNSUPPORTED_OPERATION".equalsIgnoreCase(code)
+                || "REVERSE_NOT_SUPPORTED".equalsIgnoreCase(code);
+    }
+
+    private static String buildDeterministicReverseRefundNo(String outTradeNo) {
+        String candidate = "REV_" + outTradeNo.trim();
+        return candidate.length() <= 64 ? candidate : candidate.substring(0, 64);
     }
 
     /**
@@ -2693,6 +2918,7 @@ public class WechatPayTemplate {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID, "对账单日期 (billDate) 不能为空");
         }
         WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        populatePartnerSubMchidIfNeeded(merchantProps, request);
         WechatServiceHolder holder = getServiceHolder(merchantProps);
         return executeWithExceptionTranslation("downloadTradeBill", () ->
                 holder.billDownloadServiceExtension.getTradeBill(request)
@@ -2749,6 +2975,7 @@ public class WechatPayTemplate {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID, "对账单日期 (billDate) 不能为空");
         }
         WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        populatePartnerSubMchidIfNeeded(merchantProps, request);
         WechatServiceHolder holder = getServiceHolder(merchantProps);
         return executeWithExceptionTranslation("queryTradeBill", () ->
                 holder.billDownloadService.getTradeBill(request)
@@ -2849,22 +3076,44 @@ public class WechatPayTemplate {
     }
 
     private boolean isPartnerMode(WechatMerchantProperties merchantProps, WechatPayRequest request) {
-        if (request != null) {
-            if (request.getSpMchId() != null && !request.getSpMchId().isBlank()) {
-                return true;
-            }
-            if (request.getSubMchId() != null && !request.getSubMchId().isBlank()) {
-                return true;
-            }
+        if (request != null && (hasText(request.getSpMchId()) || hasText(request.getSubMchId()))) {
+            return true;
         }
-        return merchantProps.getSpMchId() != null && !merchantProps.getSpMchId().isBlank();
+        return isPartnerMode(merchantProps, (String) null);
     }
 
     private boolean isPartnerMode(WechatMerchantProperties merchantProps, String subMchId) {
-        if (subMchId != null && !subMchId.isBlank()) {
+        if (hasText(subMchId)) {
             return true;
         }
-        return merchantProps.getSpMchId() != null && !merchantProps.getSpMchId().isBlank();
+        if (merchantProps != null && (hasText(merchantProps.getSpMchId()) || hasText(merchantProps.getSubMchId()))) {
+            return true;
+        }
+        return payProperties != null
+                && payProperties.getWechat() != null
+                && payProperties.getWechat().isServiceProviderMode();
+    }
+
+    private void populatePartnerSubMchidIfNeeded(WechatMerchantProperties merchantProps, GetTradeBillRequest request) {
+        if (!hasText(request.getSubMchid()) && isPartnerMode(merchantProps, request.getSubMchid())) {
+            String resolvedSubMchid = resolveSubMchId(merchantProps, request.getSubMchid());
+            if (hasText(resolvedSubMchid)) {
+                request.setSubMchid(resolvedSubMchid.trim());
+            }
+        }
+    }
+
+    private String requirePartnerSubMchId(WechatMerchantProperties merchantProps, WechatPayRequest request, String operationName) {
+        String subMchId = resolveSubMchId(merchantProps, request);
+        if (!hasText(subMchId)) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID,
+                    "服务商模式下" + operationName + "必须提供特约子商户号 [subMchId]");
+        }
+        return subMchId.trim();
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private String resolveAppId(WechatMerchantProperties merchantProps, WechatPayRequest request) {
@@ -3135,6 +3384,76 @@ public class WechatPayTemplate {
 
         public com.wechat.pay.java.service.partnerpayments.app.AppServiceExtension getPartnerAppServiceExtension() {
             return partnerAppServiceExtension;
+        }
+    }
+
+    /**
+     * 微信条码付撤销（/reverse）结构化响应模型
+     */
+    private static class WechatReverseResponse {
+        @JsonProperty("out_trade_no")
+        private String outTradeNo;
+
+        @JsonProperty("transaction_id")
+        private String transactionId;
+
+        @JsonProperty("mchid")
+        private String mchId;
+
+        @JsonProperty("sp_mchid")
+        private String spMchId;
+
+        @JsonProperty("sub_mchid")
+        private String subMchId;
+
+        @JsonProperty("trade_state")
+        private String tradeState;
+
+        @JsonProperty("trade_state_desc")
+        private String tradeStateDesc;
+
+        @JsonProperty("recall")
+        private String recall;
+
+        public String getOutTradeNo() {
+            return outTradeNo;
+        }
+
+        public String getTransactionId() {
+            return transactionId;
+        }
+
+        public String getTradeState() {
+            return tradeState;
+        }
+
+        public String getTradeStateDesc() {
+            return tradeStateDesc;
+        }
+
+        public String getRecall() {
+            return recall;
+        }
+
+        public boolean isRecallRequired() {
+            if ("N".equalsIgnoreCase(recall) || "false".equalsIgnoreCase(recall)) {
+                return false;
+            }
+            if ("Y".equalsIgnoreCase(recall) || "true".equalsIgnoreCase(recall)) {
+                return true;
+            }
+            return "USERPAYING".equalsIgnoreCase(tradeState) || "PROCESSING".equalsIgnoreCase(tradeState);
+        }
+    }
+
+    /**
+     * 微信撤销接口明确指示需退避重试（recall=Y）的内部控制异常
+     */
+    private static class WechatReverseRecallException extends PayTradeException {
+        private static final long serialVersionUID = 1L;
+
+        public WechatReverseRecallException(String message) {
+            super(PayResultCode.PAY_TRADE_STATE_INVALID, "REVERSE_RECALL_REQUIRED", message);
         }
     }
 }

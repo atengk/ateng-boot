@@ -2,6 +2,7 @@ package io.github.atengk.boot.pay.core.executor;
 
 import io.github.atengk.boot.pay.config.properties.BarcodePayProperties;
 import io.github.atengk.boot.pay.core.PayTemplate;
+import io.github.atengk.boot.pay.core.context.PayContextHolder;
 import io.github.atengk.boot.pay.enums.PayChannel;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
@@ -12,6 +13,7 @@ import io.github.atengk.boot.pay.model.request.UnifiedCancelRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedPayRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedQueryRequest;
 import io.github.atengk.boot.pay.model.response.PayResponse;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -65,6 +67,11 @@ class BarcodePayExecutorTest {
 
         // 使用零物理等待的 Mock Sleeper 加速单测执行（毫秒级极速反馈）
         executor.setSleeper(duration -> sleepCount.incrementAndGet());
+    }
+
+    @AfterEach
+    void tearDown() {
+        PayContextHolder.clear();
     }
 
     @Test
@@ -318,5 +325,176 @@ class BarcodePayExecutorTest {
                 .build();
         PayException ex3 = assertThrows(PayException.class, () -> executor.execute(zeroAmount));
         assertEquals(PayResultCode.PAY_AMOUNT_INVALID, ex3.getResultCode());
+
+        // 5. 未指定 channel 且上下文也未绑定渠道时 Fail-Fast
+        UnifiedPayRequest noChannel = UnifiedPayRequest.builder()
+                .outTradeNo("T001")
+                .authCode("130000000000000000")
+                .amount(new BigDecimal("10.00"))
+                .build();
+        PayException ex4 = assertThrows(PayException.class, () -> executor.execute(noChannel));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex4.getResultCode());
+        verify(payTemplate, never()).pay(any());
+    }
+
+    @Test
+    @DisplayName("上下文渠道继承与显式覆盖优先: 请求省略 channel 时自动读取 PayContextHolder")
+    void testExecute_contextChannelFallbackAndOverride() {
+        PayContextHolder.setChannel(PayChannel.WECHAT_PAY);
+
+        UnifiedPayRequest contextReq = UnifiedPayRequest.builder()
+                .outTradeNo("BAR_CTX_001")
+                .amount(new BigDecimal("25.00"))
+                .authCode("134567890123456789")
+                .subject("上下文渠道继承")
+                .build();
+
+        when(payTemplate.pay(any(UnifiedPayRequest.class))).thenReturn(PayResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .tradeType(PayTradeType.BARCODE)
+                .outTradeNo("BAR_CTX_001")
+                .tradeState(PayTradeState.USERPAYING)
+                .success(false)
+                .build());
+        when(payTemplate.queryOrder(any(UnifiedQueryRequest.class))).thenReturn(PayResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outTradeNo("BAR_CTX_001")
+                .tradeState(PayTradeState.SUCCESS)
+                .success(true)
+                .build());
+
+        PayResponse ctxResp = executor.execute(contextReq);
+        assertTrue(ctxResp.isSuccess());
+        assertEquals(PayChannel.WECHAT_PAY, ctxResp.getChannel());
+
+        ArgumentCaptor<UnifiedQueryRequest> queryCaptor = ArgumentCaptor.forClass(UnifiedQueryRequest.class);
+        verify(payTemplate).queryOrder(queryCaptor.capture());
+        assertEquals(PayChannel.WECHAT_PAY, queryCaptor.getValue().getChannel());
+
+        // 显式指定渠道应覆盖 PayContextHolder 上下文渠道
+        UnifiedPayRequest overrideReq = UnifiedPayRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .outTradeNo("BAR_CTX_002")
+                .amount(new BigDecimal("35.00"))
+                .authCode("281234567890123456")
+                .subject("显式渠道覆盖")
+                .build();
+        when(payTemplate.pay(any(UnifiedPayRequest.class))).thenReturn(PayResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .tradeType(PayTradeType.BARCODE)
+                .outTradeNo("BAR_CTX_002")
+                .tradeState(PayTradeState.SUCCESS)
+                .success(true)
+                .build());
+
+        PayResponse overrideResp = executor.execute(overrideReq);
+        assertTrue(overrideResp.isSuccess());
+        assertEquals(PayChannel.ALIPAY, overrideResp.getChannel());
+    }
+
+    @Test
+    @DisplayName("首次扣款返回 PAYERROR / CLOSED 明确失败终态: 立即短路返回，0 次查单 0 次休眠")
+    void testExecute_initialDefinitiveFailureShortCircuit() {
+        UnifiedPayRequest payErrorReq = UnifiedPayRequest.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outTradeNo("BAR_INIT_FAIL_001")
+                .amount(new BigDecimal("18.00"))
+                .authCode("134567890123456789")
+                .subject("余额不足失败测试")
+                .build();
+
+        when(payTemplate.pay(any(UnifiedPayRequest.class))).thenReturn(PayResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .tradeType(PayTradeType.BARCODE)
+                .outTradeNo("BAR_INIT_FAIL_001")
+                .tradeState(PayTradeState.PAYERROR)
+                .tradeStateDesc("余额不足")
+                .success(false)
+                .build());
+
+        PayResponse response = executor.execute(payErrorReq);
+        assertNotNull(response);
+        assertFalse(response.isSuccess());
+        assertEquals(PayTradeState.PAYERROR, response.getTradeState());
+        assertEquals("余额不足", response.getTradeStateDesc());
+        assertEquals(0, sleepCount.get());
+        verify(payTemplate, times(1)).pay(any(UnifiedPayRequest.class));
+        verify(payTemplate, never()).queryOrder(any(UnifiedQueryRequest.class));
+        verify(payTemplate, never()).cancelOrder(any(UnifiedCancelRequest.class));
+
+        UnifiedPayRequest closedReq = UnifiedPayRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .outTradeNo("BAR_INIT_CLOSED_002")
+                .amount(new BigDecimal("18.00"))
+                .authCode("281234567890123456")
+                .subject("已关闭订单测试")
+                .build();
+        when(payTemplate.pay(any(UnifiedPayRequest.class))).thenReturn(PayResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .tradeType(PayTradeType.BARCODE)
+                .outTradeNo("BAR_INIT_CLOSED_002")
+                .tradeState(PayTradeState.CLOSED)
+                .tradeStateDesc("交易已关闭")
+                .success(false)
+                .build());
+
+        PayResponse closedResp = executor.execute(closedReq);
+        assertEquals(PayTradeState.CLOSED, closedResp.getTradeState());
+        assertEquals(0, sleepCount.get());
+        verify(payTemplate, never()).queryOrder(any(UnifiedQueryRequest.class));
+    }
+
+    @Test
+    @DisplayName("超时触发撤销忠实透传非 REVOKED 真实状态与描述（如 CLOSED / 退回描述）")
+    void testExecute_timeoutAutoReversalPreservesRealStateAndDesc() {
+        UnifiedPayRequest request = UnifiedPayRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .outTradeNo("BAR_TIMEOUT_REAL_001")
+                .amount(new BigDecimal("66.00"))
+                .authCode("281234567890123456")
+                .appAuthToken("isv_token_001")
+                .subject("超时真实状态透传")
+                .build();
+
+        when(payTemplate.pay(any(UnifiedPayRequest.class))).thenReturn(PayResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .tradeType(PayTradeType.BARCODE)
+                .outTradeNo("BAR_TIMEOUT_REAL_001")
+                .tradeState(PayTradeState.USERPAYING)
+                .success(false)
+                .build());
+        when(payTemplate.queryOrder(any(UnifiedQueryRequest.class))).thenReturn(PayResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .outTradeNo("BAR_TIMEOUT_REAL_001")
+                .tradeState(PayTradeState.USERPAYING)
+                .success(false)
+                .build());
+        when(payTemplate.cancelOrder(any(UnifiedCancelRequest.class))).thenReturn(PayResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .outTradeNo("BAR_TIMEOUT_REAL_001")
+                .transactionId("ALI_TX_REAL_999")
+                .tradeState(PayTradeState.CLOSED)
+                .rawTradeState("CLOSED")
+                .tradeStateDesc("订单已撤销冲正(action=refund)")
+                .success(true)
+                .build());
+
+        PayResponse response = executor.execute(request, Duration.ofMillis(10), Duration.ofMillis(5), true);
+
+        assertNotNull(response);
+        assertFalse(response.isSuccess());
+        assertEquals(PayTradeState.CLOSED, response.getTradeState());
+        assertEquals("CLOSED", response.getRawTradeState());
+        assertTrue(response.getTradeStateDesc().contains("系统已自动发起撤销冲正"));
+        assertTrue(response.getTradeStateDesc().contains("订单已撤销冲正(action=refund)"));
+        assertEquals("ALI_TX_REAL_999", response.getTransactionId());
+
+        ArgumentCaptor<UnifiedQueryRequest> queryCaptor = ArgumentCaptor.forClass(UnifiedQueryRequest.class);
+        verify(payTemplate, atLeastOnce()).queryOrder(queryCaptor.capture());
+        assertEquals("isv_token_001", queryCaptor.getValue().getAppAuthToken());
+
+        ArgumentCaptor<UnifiedCancelRequest> cancelCaptor = ArgumentCaptor.forClass(UnifiedCancelRequest.class);
+        verify(payTemplate, times(1)).cancelOrder(cancelCaptor.capture());
+        assertEquals("isv_token_001", cancelCaptor.getValue().getAppAuthToken());
     }
 }

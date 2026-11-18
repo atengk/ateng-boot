@@ -58,6 +58,12 @@ public class WechatPayProperties implements Serializable {
     private ReverseRetryProperties reverseRetry = new ReverseRetryProperties();
 
     /**
+     * 微信条码付撤销安全兜底配置
+     */
+    @NestedConfigurationProperty
+    private ReverseFallbackProperties reverseFallback = new ReverseFallbackProperties();
+
+    /**
      * 微信撤销冲正受控退避重试配置属性
      */
     @Data
@@ -76,18 +82,51 @@ public class WechatPayProperties implements Serializable {
         private int maxAttempts = 3;
 
         /**
-         * 重试初始退避间隔时间 (默认 3 秒)
+         * 重试初始退避间隔时间 (默认 1 秒)
          */
-        private Duration delay = Duration.ofSeconds(3);
+        private Duration delay = Duration.ofSeconds(1);
 
         /**
-         * 指数退避倍率 (默认 1.0)
+         * 指数退避倍率 (默认 2.0)
          */
-        private double multiplier = 1.0;
+        private double multiplier = 2.0;
 
         /**
-         * 最大退避间隔时间 (默认 3 秒)
+         * 最大退避间隔时间 (默认 5 秒)
          */
-        private Duration maxDelay = Duration.ofSeconds(3);
+        private Duration maxDelay = Duration.ofSeconds(5);
+    }
+
+    /**
+     * 微信条码付撤销安全兜底策略配置属性
+     */
+    @Data
+    public static class ReverseFallbackProperties implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * 是否启用安全兜底（当网关反馈不支持直接撤销端点时，按先查单再关单/退款策略闭环处置，默认 false）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 安全兜底查单确认订单已支付（SUCCESS）时的处置策略（默认 REJECT 拒绝自动退款）
+         */
+        private PaidPolicy paidPolicy = PaidPolicy.REJECT;
+
+        /**
+         * 安全兜底遇到已支付订单时的处置策略
+         */
+        public enum PaidPolicy {
+            /**
+             * 拒绝自动处置，抛出业务异常交由上层或人工核实
+             */
+            REJECT,
+            /**
+             * 自动发起原金额全额原路退款
+             */
+            AUTO_REFUND
+        }
     }
 }

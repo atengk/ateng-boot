@@ -1223,9 +1223,11 @@ class PayTemplateTest {
 
         PayBillDownloadRequest request = PayBillDownloadRequest.builder()
                 .channel(PayChannel.WECHAT_PAY)
+                .merchantKey("partner_tenant")
                 .billDate("2026-10-24")
                 .billType("ALL")
                 .tarType("GZIP")
+                .subMchid("1900000002")
                 .build();
 
         PayBillDownloadResponse response = payTemplate.downloadBill(request);
@@ -1233,6 +1235,11 @@ class PayTemplateTest {
         assertEquals(PayChannel.WECHAT_PAY, response.getChannel());
         assertEquals("2026-10-24", response.getBillDate());
         assertNotNull(response.getFileStream());
+
+        org.mockito.ArgumentCaptor<com.wechat.pay.java.service.billdownload.model.GetTradeBillRequest> billCaptor =
+                org.mockito.ArgumentCaptor.forClass(com.wechat.pay.java.service.billdownload.model.GetTradeBillRequest.class);
+        verify(wechatPayTemplate).downloadTradeBill(eq("partner_tenant"), billCaptor.capture());
+        assertEquals("1900000002", billCaptor.getValue().getSubMchid());
 
         InputStream directStream = payTemplate.downloadBillStream(request);
         assertNotNull(directStream);
