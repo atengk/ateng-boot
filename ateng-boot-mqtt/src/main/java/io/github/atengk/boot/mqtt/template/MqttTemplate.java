@@ -1362,6 +1362,8 @@ public class MqttTemplate {
             triggerPostConsume(effectiveClient, endpointId, actualTopic, message, stringHeaders, e);
             log.error("[MQTT] Error dispatching programmatic subscription message on topic [{}] for client [{}]: {}",
                     actualTopic, effectiveClient, e.getMessage(), e);
+        } finally {
+            handle.acknowledgeMessage(message);
         }
     }
 

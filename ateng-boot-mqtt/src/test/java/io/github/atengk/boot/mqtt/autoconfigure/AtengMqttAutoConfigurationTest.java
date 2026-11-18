@@ -5,13 +5,17 @@ import io.github.atengk.boot.mqtt.codec.CompositeMqttMessageConverter;
 import io.github.atengk.boot.mqtt.credentials.MqttCredentials;
 import io.github.atengk.boot.mqtt.credentials.MqttCredentialsProvider;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
+import io.github.atengk.boot.mqtt.dlt.InMemoryMqttDeadLetterStore;
+import io.github.atengk.boot.mqtt.dlt.MqttDeadLetterStore;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.listener.MqttConnectionEventDispatcher;
 import io.github.atengk.boot.mqtt.listener.MqttContainerManager;
 import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcessor;
 import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
+import io.github.atengk.boot.mqtt.model.MqttDeadLetterRecord;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
+import io.github.atengk.boot.mqtt.properties.MqttDltProperties;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
 import io.github.atengk.boot.mqtt.template.MqttDeadLetterReplayTemplate;
@@ -171,6 +175,61 @@ class AtengMqttAutoConfigurationTest {
                     assertThat(registry.find("mqtt.message.published").tag("topic", "dev/001/data").counter()).isNotNull();
                     assertThat(registry.find("mqtt.message.published").tag("topic", "dev/002/data").counter()).isNull();
                     assertThat(registry.find("mqtt.message.published").tag("topic", "__overflow__").counter()).isNotNull();
+                });
+    }
+
+    @Test
+    @DisplayName("测试死信存储属性与 MqttDeadLetterStore SPI 自动装配及覆盖替换")
+    void testDltPropertiesAndStoreAutoConfiguration() {
+        contextRunner.run(context -> {
+            AtengMqttProperties props = context.getBean(AtengMqttProperties.class);
+            MqttDltProperties dltProps = props.getDlt();
+            assertThat(dltProps.isRetained()).isFalse();
+            assertThat(dltProps.isPeekBrokerFallback()).isTrue();
+            assertThat(dltProps.getMaxRecordsPerTopic()).isEqualTo(1000);
+            assertThat(dltProps.getMaxTotalRecords()).isEqualTo(10000);
+            assertThat(context).hasSingleBean(MqttDeadLetterStore.class);
+            assertThat(context.getBean(MqttDeadLetterStore.class)).isInstanceOf(InMemoryMqttDeadLetterStore.class);
+        });
+
+        contextRunner.withPropertyValues(
+                        "ateng.boot.mqtt.dlt.retained=true",
+                        "ateng.boot.mqtt.dlt.peek-broker-fallback=false",
+                        "ateng.boot.mqtt.dlt.max-records-per-topic=50",
+                        "ateng.boot.mqtt.dlt.max-total-records=200"
+                )
+                .run(context -> {
+                    MqttDltProperties dltProps = context.getBean(AtengMqttProperties.class).getDlt();
+                    assertThat(dltProps.isRetained()).isTrue();
+                    assertThat(dltProps.isPeekBrokerFallback()).isFalse();
+                    assertThat(dltProps.getMaxRecordsPerTopic()).isEqualTo(50);
+                    assertThat(dltProps.getMaxTotalRecords()).isEqualTo(200);
+                });
+
+        MqttDeadLetterStore customStore = new MqttDeadLetterStore() {
+            @Override
+            public void save(MqttDeadLetterRecord record) {
+            }
+
+            @Override
+            public java.util.List<MqttDeadLetterRecord> peek(String dltTopic, int limit) {
+                return java.util.Collections.emptyList();
+            }
+
+            @Override
+            public boolean remove(String dltTopic, String recordId) {
+                return false;
+            }
+
+            @Override
+            public int purge(String dltTopic) {
+                return 0;
+            }
+        };
+        contextRunner.withBean(MqttDeadLetterStore.class, () -> customStore)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MqttDeadLetterStore.class);
+                    assertThat(context.getBean(MqttDeadLetterStore.class)).isSameAs(customStore);
                 });
     }
 }

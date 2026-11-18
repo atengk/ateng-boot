@@ -440,36 +440,40 @@ public class MqttRequestReplyManager implements SmartLifecycle {
      * 处理响应主题接收到的入站报文
      */
     private void handleInboundResponse(MqttClientHandle handle, String actualTopic, MqttMessage message) {
-        byte[] correlationBytes = null;
-        if (message.getProperties() != null) {
-            correlationBytes = message.getProperties().getCorrelationData();
-        }
-        if (correlationBytes == null || correlationBytes.length == 0) {
-            log.warn("[MQTT] Inbound response received on topic [{}] without correlationData, discarded", actualTopic);
-            return;
-        }
+        try {
+            byte[] correlationBytes = null;
+            if (message.getProperties() != null) {
+                correlationBytes = message.getProperties().getCorrelationData();
+            }
+            if (correlationBytes == null || correlationBytes.length == 0) {
+                log.warn("[MQTT] Inbound response received on topic [{}] without correlationData, discarded", actualTopic);
+                return;
+            }
 
-        String correlationId = new String(correlationBytes, StandardCharsets.UTF_8);
-        PendingRequest pending = pendingRequests.remove(correlationId);
-        if (pending == null) {
-            log.debug("[MQTT] Response arrived for correlationId [{}] on topic [{}] but no active pending request found (expired or already handled)",
-                    correlationId, actualTopic);
-            return;
-        }
+            String correlationId = new String(correlationBytes, StandardCharsets.UTF_8);
+            PendingRequest pending = pendingRequests.remove(correlationId);
+            if (pending == null) {
+                log.debug("[MQTT] Response arrived for correlationId [{}] on topic [{}] but no active pending request found (expired or already handled)",
+                        correlationId, actualTopic);
+                return;
+            }
 
-        Runnable completeTask = () -> {
-            Map<String, Object> headers = extractHeaders(message);
-            MessageContextPropagator.runInContext(headers, () -> {
-                pending.future.complete(message);
-                log.debug("[MQTT] Successfully completed request-response for correlationId [{}] on topic [{}]",
-                        correlationId, pending.topic);
-            });
-        };
+            Runnable completeTask = () -> {
+                Map<String, Object> headers = extractHeaders(message);
+                MessageContextPropagator.runInContext(headers, () -> {
+                    pending.future.complete(message);
+                    log.debug("[MQTT] Successfully completed request-response for correlationId [{}] on topic [{}]",
+                            correlationId, pending.topic);
+                });
+            };
 
-        if (executor != null) {
-            executor.execute(completeTask);
-        } else {
-            completeTask.run();
+            if (executor != null) {
+                executor.execute(completeTask);
+            } else {
+                completeTask.run();
+            }
+        } finally {
+            handle.acknowledgeMessage(message);
         }
     }
 

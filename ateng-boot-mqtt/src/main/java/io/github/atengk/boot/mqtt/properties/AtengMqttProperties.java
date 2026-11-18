@@ -37,6 +37,18 @@ public class AtengMqttProperties {
     private MqttMetricsProperties metrics = new MqttMetricsProperties();
 
     /**
+     * 消费端确认模式与退避重试策略配置
+     */
+    @NestedConfigurationProperty
+    private MqttConsumerProperties consumer = new MqttConsumerProperties();
+
+    /**
+     * 死信投递与本地死信存储策略配置
+     */
+    @NestedConfigurationProperty
+    private MqttDltProperties dlt = new MqttDltProperties();
+
+    /**
      * 命名多客户端配置注册表（支持多 Broker 或多园区隔离）
      */
     @NestedConfigurationProperty
@@ -72,6 +84,22 @@ public class AtengMqttProperties {
 
     public void setMetrics(MqttMetricsProperties metrics) {
         this.metrics = metrics != null ? metrics : new MqttMetricsProperties();
+    }
+
+    public MqttConsumerProperties getConsumer() {
+        return consumer;
+    }
+
+    public void setConsumer(MqttConsumerProperties consumer) {
+        this.consumer = consumer != null ? consumer : new MqttConsumerProperties();
+    }
+
+    public MqttDltProperties getDlt() {
+        return dlt;
+    }
+
+    public void setDlt(MqttDltProperties dlt) {
+        this.dlt = dlt != null ? dlt : new MqttDltProperties();
     }
 
     public Map<String, MqttClientProperties> getClients() {

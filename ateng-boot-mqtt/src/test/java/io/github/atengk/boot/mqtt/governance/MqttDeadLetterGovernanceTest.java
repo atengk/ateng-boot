@@ -2,13 +2,18 @@ package io.github.atengk.boot.mqtt.governance;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.mqtt.annotation.MqttListener;
 import io.github.atengk.boot.mqtt.context.MqttContextHolder;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
+import io.github.atengk.boot.mqtt.dlt.InMemoryMqttDeadLetterStore;
+import io.github.atengk.boot.mqtt.dlt.MqttDeadLetterStore;
+import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcessor;
 import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
 import io.github.atengk.boot.mqtt.model.MqttDeadLetterRecord;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.properties.ClientIdStrategy;
 import io.github.atengk.boot.mqtt.properties.MqttClientProperties;
+import io.github.atengk.boot.mqtt.properties.MqttDltProperties;
 import io.github.atengk.boot.mqtt.properties.PersistenceType;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.template.MqttDeadLetterReplayTemplate;
@@ -303,12 +308,203 @@ class MqttDeadLetterGovernanceTest {
         assertThat(record.isReplayed()).isFalse();
         assertThat(record.replayCount()).isEqualTo(0);
 
-        // 2. 空保护
+        // 2. 空保护与兼容 9 参构造自愈 recordId
         MqttDeadLetterRecord emptyRecord = new MqttDeadLetterRecord(
+                "t/DLT", null, null, 1, null, null, 0L, 0, null
+        );
+        MqttDeadLetterRecord secondEmptyRecord = new MqttDeadLetterRecord(
                 "t/DLT", null, null, 1, null, null, 0L, 0, null
         );
         assertThat(emptyRecord.payload()).isEmpty();
         assertThat(emptyRecord.userProperties()).isEmpty();
         assertThat(emptyRecord.getPayloadAsString()).isEmpty();
+        assertThat(emptyRecord.recordId()).isNotBlank();
+        assertThat(secondEmptyRecord.recordId()).isNotBlank().isNotEqualTo(emptyRecord.recordId());
+    }
+
+    static class MultiPoisonPillListener {
+        @MqttListener(topics = "dlt/multi/poison", qos = 1)
+        public void onPoison(String payload) {
+            throw new IllegalStateException("fatal-multi-" + payload);
+        }
+    }
+
+    @Test
+    @DisplayName("DeadLetterStore 闭环：连续毒丸入库无 retained 覆盖丢失、replay 按 recordId 精确消除、purge 双清")
+    void shouldPersistMultiplePoisonPillsInStoreWithoutRetainedLossAndRemoveOnReplayAndPurge() throws Exception {
+        MqttDltProperties dltProps = new MqttDltProperties();
+        assertThat(dltProps.isRetained()).isFalse();
+        assertThat(dltProps.isPeekBrokerFallback()).isTrue();
+        assertThat(dltProps.getMaxRecordsPerTopic()).isEqualTo(1000);
+        assertThat(dltProps.getMaxTotalRecords()).isEqualTo(10000);
+
+        MqttDeadLetterStore store = new InMemoryMqttDeadLetterStore(dltProps);
+        MqttListenerEndpointRegistry registry = new MqttListenerEndpointRegistry(clientRegistry, new PayloadGuard(), executor);
+        registry.setDltProperties(dltProps);
+        registry.setDeadLetterStore(store);
+
+        MqttDeadLetterReplayTemplate storeReplayTemplate =
+                new MqttDeadLetterReplayTemplate(clientRegistry, mqttTemplate, 1, store, dltProps);
+
+        new MqttListenerAnnotationBeanPostProcessor(registry)
+                .postProcessAfterInitialization(new MultiPoisonPillListener(), "multiPoisonPillListener");
+        registry.start();
+
+        String dltTopic = "dlt/multi/poison/DLT";
+        String targetTopic = "dlt/multi/replayed";
+        try {
+            mqttTemplate.publish("dlt/multi/poison", "pill-1", 1);
+            mqttTemplate.publish("dlt/multi/poison", "pill-2", 1);
+            mqttTemplate.publish("dlt/multi/poison", "pill-3", 1);
+
+            long deadline = System.currentTimeMillis() + 5000;
+            while (System.currentTimeMillis() < deadline && storeReplayTemplate.peek(dltTopic, 10).size() < 3) {
+                Thread.sleep(50);
+            }
+
+            List<MqttDeadLetterRecord> storedRecords = storeReplayTemplate.peek(dltTopic, 10);
+            assertThat(storedRecords).hasSize(3);
+            assertThat(storedRecords).extracting(MqttDeadLetterRecord::getPayloadAsString)
+                    .containsExactly("pill-1", "pill-2", "pill-3");
+            assertThat(storedRecords).extracting(MqttDeadLetterRecord::recordId).doesNotHaveDuplicates();
+
+            // 验证 Broker DLT 主题未残留 retained=true 单槽覆盖报文
+            List<MqttMessage> retainedCheck = new CopyOnWriteArrayList<>();
+            clientRegistry.getDefaultClientHandle().getAsyncClient().subscribe(
+                    new MqttSubscription[]{new MqttSubscription(dltTopic, 1)}, null, null,
+                    new org.eclipse.paho.mqttv5.client.IMqttMessageListener[]{
+                            (topic, msg) -> retainedCheck.add(msg)
+                    }, null
+            ).waitForCompletion(3000);
+            Thread.sleep(150);
+            clientRegistry.getDefaultClientHandle().unsubscribe(dltTopic);
+            assertThat(retainedCheck).isEmpty();
+
+            // 重放前 2 条：replay 后应精准移除已重放的 2 条，仅余第 3 条
+            CountDownLatch replayLatch = new CountDownLatch(2);
+            List<String> replayedPayloads = new CopyOnWriteArrayList<>();
+            clientRegistry.getDefaultClientHandle().getAsyncClient().subscribe(
+                    new MqttSubscription[]{new MqttSubscription(targetTopic, 1)}, null, null,
+                    new org.eclipse.paho.mqttv5.client.IMqttMessageListener[]{
+                            (topic, msg) -> {
+                                replayedPayloads.add(new String(msg.getPayload(), StandardCharsets.UTF_8));
+                                replayLatch.countDown();
+                            }
+                    }, null
+            ).waitForCompletion(3000);
+
+            int replayed = storeReplayTemplate.replay(dltTopic, targetTopic, 2);
+            assertThat(replayed).isEqualTo(2);
+            assertThat(replayLatch.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(replayedPayloads).containsExactly("pill-1", "pill-2");
+
+            List<MqttDeadLetterRecord> remaining = storeReplayTemplate.peek(dltTopic, 10);
+            assertThat(remaining).hasSize(1);
+            assertThat(remaining.get(0).getPayloadAsString()).isEqualTo("pill-3");
+
+            // purge 清空剩余 Store 与 Broker
+            storeReplayTemplate.purge(dltTopic);
+            assertThat(storeReplayTemplate.peek(dltTopic, 10)).isEmpty();
+        } finally {
+            registry.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("DeadLetterStore 有界容量淘汰与 peekBrokerFallback 开关契约")
+    void shouldEvictOldestWhenBoundedLimitExceededAndHonorBrokerFallbackFlag() throws Exception {
+        MqttDltProperties limitedProps = new MqttDltProperties();
+        limitedProps.setMaxRecordsPerTopic(2);
+        limitedProps.setMaxTotalRecords(3);
+        MqttDeadLetterStore limitedStore = new InMemoryMqttDeadLetterStore(limitedProps);
+
+        limitedStore.save(new MqttDeadLetterRecord("topic-a/DLT", "topic-a", "a1".getBytes(StandardCharsets.UTF_8), 1, "E", "m", 1L, 0, null));
+        limitedStore.save(new MqttDeadLetterRecord("topic-a/DLT", "topic-a", "a2".getBytes(StandardCharsets.UTF_8), 1, "E", "m", 2L, 0, null));
+        limitedStore.save(new MqttDeadLetterRecord("topic-a/DLT", "topic-a", "a3".getBytes(StandardCharsets.UTF_8), 1, "E", "m", 3L, 0, null));
+
+        // 单主题上限 2：淘汰 a1，保留 [a2, a3]
+        assertThat(limitedStore.peek("topic-a/DLT", 10))
+                .extracting(MqttDeadLetterRecord::getPayloadAsString)
+                .containsExactly("a2", "a3");
+
+        // 全局上限 3：继续写入 topic-b 两条（a2,a3,b1,b2 共4条 -> 淘汰全局最早的 a2），topic-a 仅余 [a3]
+        limitedStore.save(new MqttDeadLetterRecord("topic-b/DLT", "topic-b", "b1".getBytes(StandardCharsets.UTF_8), 1, "E", "m", 4L, 0, null));
+        limitedStore.save(new MqttDeadLetterRecord("topic-b/DLT", "topic-b", "b2".getBytes(StandardCharsets.UTF_8), 1, "E", "m", 5L, 0, null));
+
+        assertThat(limitedStore.peek("topic-a/DLT", 10))
+                .extracting(MqttDeadLetterRecord::getPayloadAsString)
+                .containsExactly("a3");
+        assertThat(limitedStore.peek("topic-b/DLT", 10))
+                .extracting(MqttDeadLetterRecord::getPayloadAsString)
+                .containsExactly("b1", "b2");
+
+        // 再写入第 4 条有效数据 c1 -> 淘汰全局次早的 a3，topic-a 清空
+        limitedStore.save(new MqttDeadLetterRecord("topic-c/DLT", "topic-c", "c1".getBytes(StandardCharsets.UTF_8), 1, "E", "m", 6L, 0, null));
+        assertThat(limitedStore.peek("topic-a/DLT", 10)).isEmpty();
+
+        // 验证 peekBrokerFallback 开关
+        String externalDlt = "external/broker/only/DLT";
+        mqttTemplate.publishRetained(externalDlt, "EXTERNAL_BROKER_PILL", 1);
+        Thread.sleep(150);
+
+        MqttDltProperties fallbackOnProps = new MqttDltProperties();
+        fallbackOnProps.setPeekBrokerFallback(true);
+        MqttDeadLetterReplayTemplate fallbackOnTemplate =
+                new MqttDeadLetterReplayTemplate(clientRegistry, mqttTemplate, 1, new InMemoryMqttDeadLetterStore(fallbackOnProps), fallbackOnProps);
+        assertThat(fallbackOnTemplate.peek(externalDlt, 5))
+                .extracting(MqttDeadLetterRecord::getPayloadAsString)
+                .containsExactly("EXTERNAL_BROKER_PILL");
+
+        MqttDltProperties fallbackOffProps = new MqttDltProperties();
+        fallbackOffProps.setPeekBrokerFallback(false);
+        MqttDeadLetterReplayTemplate fallbackOffTemplate =
+                new MqttDeadLetterReplayTemplate(clientRegistry, mqttTemplate, 1, new InMemoryMqttDeadLetterStore(fallbackOffProps), fallbackOffProps);
+        assertThat(fallbackOffTemplate.peek(externalDlt, 5, Duration.ofMillis(200))).isEmpty();
+    }
+
+    @Test
+    @DisplayName("InMemoryMqttDeadLetterStore 防御：同 recordId 覆写不误淘汰、多客户端作用域隔离与非法参数 Fail-Fast")
+    void shouldGuardInMemoryStoreAgainstOverwriteEvictionCrossClientLeakAndInvalidArgs() {
+        assertThatThrownBy(() -> new InMemoryMqttDeadLetterStore(0, 10))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new InMemoryMqttDeadLetterStore(10, 0))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        MqttDltProperties props = new MqttDltProperties();
+        props.setMaxRecordsPerTopic(5);
+        props.setMaxTotalRecords(2);
+        MqttDeadLetterStore store = new InMemoryMqttDeadLetterStore(props);
+
+        // 1. 重复写入相同 recordId 后触发全局上限淘汰：不能因旧全局索引条目而误淘汰新存活的相同 recordId 记录
+        MqttDeadLetterRecord rec1Initial = new MqttDeadLetterRecord(
+                "dup/DLT", "dup", "v1".getBytes(StandardCharsets.UTF_8), 1, "E", "m", 1L, 0, null, "shared-id-1");
+        MqttDeadLetterRecord rec1Updated = new MqttDeadLetterRecord(
+                "dup/DLT", "dup", "v1-updated".getBytes(StandardCharsets.UTF_8), 1, "E", "m", 2L, 0, null, "shared-id-1");
+        MqttDeadLetterRecord rec2 = new MqttDeadLetterRecord(
+                "dup/DLT", "dup", "v2".getBytes(StandardCharsets.UTF_8), 1, "E", "m", 3L, 0, null, "id-2");
+        MqttDeadLetterRecord rec3 = new MqttDeadLetterRecord(
+                "other/DLT", "other", "v3".getBytes(StandardCharsets.UTF_8), 1, "E", "m", 4L, 0, null, "id-3");
+
+        store.save("clientA", rec1Initial);
+        store.save("clientA", rec1Updated);
+        store.save("clientA", rec2);
+        // 写入 rec3（总数触及 2）：最老的应是 rec1Updated（因为它在 rec2 之前重新插入），不应连累仍应存活的 rec2
+        store.save("clientA", rec3);
+
+        assertThat(store.peek("clientA", "dup/DLT", 10))
+                .extracting(MqttDeadLetterRecord::getPayloadAsString)
+                .containsExactly("v2");
+        assertThat(store.peek("clientA", "other/DLT", 10))
+                .extracting(MqttDeadLetterRecord::getPayloadAsString)
+                .containsExactly("v3");
+
+        // 2. 相同 dltTopic 在不同客户端作用域之间严格隔离，purge("clientA", ...) 不影响 "clientB"
+        store.save("clientB", new MqttDeadLetterRecord(
+                "other/DLT", "other", "b-payload".getBytes(StandardCharsets.UTF_8), 1, "E", "m", 5L, 0, null, "id-b"));
+        assertThat(store.purge("clientA", "other/DLT")).isEqualTo(1);
+        assertThat(store.peek("clientA", "other/DLT", 10)).isEmpty();
+        assertThat(store.peek("clientB", "other/DLT", 10))
+                .extracting(MqttDeadLetterRecord::getPayloadAsString)
+                .containsExactly("b-payload");
     }
 }

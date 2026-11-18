@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mqtt.model;
 
+import io.github.atengk.boot.core.util.IdUtil;
 import org.eclipse.paho.mqttv5.common.MqttMessage;
 import org.eclipse.paho.mqttv5.common.packet.UserProperty;
 import org.springframework.util.StringUtils;
@@ -12,7 +13,7 @@ import java.util.Map;
 
 /**
  * MQTT 死信记录强类型承载模型
- * 封装死信来源主题、原始业务主题、原始载荷、QoS、异常类型与消息、死信时间戳、重放次数及用户扩展标头
+ * 封装死信来源主题、原始业务主题、原始载荷、QoS、异常类型与消息、死信时间戳、重放次数、用户扩展标头及记录唯一标识
  *
  * @author Ateng
  * @since 2026-10-31
@@ -26,7 +27,8 @@ public record MqttDeadLetterRecord(
         String exceptionMessage,
         long dltTimestamp,
         int replayCount,
-        Map<String, String> userProperties
+        Map<String, String> userProperties,
+        String recordId
 ) {
 
     public static final String HEADER_ORIGINAL_TOPIC = "x-original-topic";
@@ -40,6 +42,24 @@ public record MqttDeadLetterRecord(
     public MqttDeadLetterRecord {
         userProperties = userProperties != null ? Collections.unmodifiableMap(userProperties) : Collections.emptyMap();
         payload = payload != null ? payload : new byte[0];
+        recordId = StringUtils.hasText(recordId) ? recordId : IdUtil.fastSimpleUUID();
+    }
+
+    /**
+     * 兼容历史 9 参构造方法（自动生成唯一 recordId）
+     */
+    public MqttDeadLetterRecord(
+            String dltTopic,
+            String originalTopic,
+            byte[] payload,
+            int qos,
+            String exceptionClass,
+            String exceptionMessage,
+            long dltTimestamp,
+            int replayCount,
+            Map<String, String> userProperties
+    ) {
+        this(dltTopic, originalTopic, payload, qos, exceptionClass, exceptionMessage, dltTimestamp, replayCount, userProperties, null);
     }
 
     /**

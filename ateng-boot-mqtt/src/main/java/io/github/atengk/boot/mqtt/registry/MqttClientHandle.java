@@ -6,7 +6,10 @@ import org.eclipse.paho.mqttv5.client.IMqttToken;
 import org.eclipse.paho.mqttv5.client.MqttAsyncClient;
 import org.eclipse.paho.mqttv5.client.MqttConnectionOptions;
 import org.eclipse.paho.mqttv5.common.MqttException;
+import org.eclipse.paho.mqttv5.common.MqttMessage;
 import org.eclipse.paho.mqttv5.common.MqttSubscription;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
@@ -26,6 +29,8 @@ import java.util.function.BiConsumer;
  * @since 2026-10-23
  */
 public class MqttClientHandle {
+
+    private static final Logger log = LoggerFactory.getLogger(MqttClientHandle.class);
 
     private final String clientName;
     private final String actualClientId;
@@ -150,8 +155,33 @@ public class MqttClientHandle {
      * @throws MqttException 底层订阅异常
      */
     public IMqttToken subscribe(String topicFilter, int qos, IMqttMessageListener listener) throws MqttException {
+        return subscribe(topicFilter, qos, false, false, 0, listener);
+    }
+
+    /**
+     * 订阅单个主题并挂载消息监听器（支持完整 MQTT 5.0 订阅选项）
+     * 底层采用单元素数组封装提交，彻底规避 Paho 1.2.5 内部 subscriptionIdentifiers 空指针及并发竞态 Bug
+     *
+     * @param topicFilter       主题过滤器
+     * @param qos               QoS 等级
+     * @param noLocal           禁止接收自身连接发出的消息
+     * @param retainAsPublished 转发时保留发布端原始 Retain 标志
+     * @param retainHandling    订阅建立时保留消息投递策略 (0, 1, 2)
+     * @param listener          消息监听器（可选）
+     * @return 订阅操作完成 Token
+     * @throws MqttException 底层订阅异常
+     */
+    public IMqttToken subscribe(String topicFilter,
+                                int qos,
+                                boolean noLocal,
+                                boolean retainAsPublished,
+                                int retainHandling,
+                                IMqttMessageListener listener) throws MqttException {
         Assert.hasText(topicFilter, "topicFilter must not be blank");
         MqttSubscription subscription = new MqttSubscription(topicFilter, qos);
+        subscription.setNoLocal(noLocal);
+        subscription.setRetainAsPublished(retainAsPublished);
+        subscription.setRetainHandling(retainHandling);
         IMqttMessageListener[] listeners = listener != null ? new IMqttMessageListener[]{listener} : null;
         IMqttToken token = asyncClient.subscribe(
                 new MqttSubscription[]{subscription},
@@ -164,6 +194,23 @@ public class MqttClientHandle {
                 ? clientProperties.getConnectionTimeout().toMillis() : 5000L;
         token.waitForCompletion(timeoutMs > 0 ? timeoutMs : 5000L);
         return token;
+    }
+
+    /**
+     * 在开启 Paho manualAcks 模式下统一提交入站消息确认 (QoS 1/2 提交 PUBACK/PUBCOMP，QoS 0 自动跳过)
+     *
+     * @param message 已接收的 MQTT 报文
+     */
+    public void acknowledgeMessage(MqttMessage message) {
+        if (message == null || message.getQos() <= 0 || asyncClient == null || !asyncClient.isConnected()) {
+            return;
+        }
+        try {
+            asyncClient.messageArrivedComplete(message.getId(), message.getQos());
+        } catch (Exception e) {
+            log.warn("[MQTT] Failed to acknowledge message [id={}, qos={}] on client [{}]: {}",
+                    message.getId(), message.getQos(), clientName, e.getMessage());
+        }
     }
 
     /**

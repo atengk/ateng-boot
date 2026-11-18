@@ -356,8 +356,9 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
         // 3. 构建持久化介质
         MqttClientPersistence persistence = createPersistence(clientProps, actualClientId);
 
-        // 4. 创建 Paho MqttAsyncClient
+        // 4. 创建 Paho MqttAsyncClient 并启用受管手动确认 (manualAcks=true)，由底座统一调度确认出口
         MqttAsyncClient asyncClient = new MqttAsyncClient(primaryUri, actualClientId, persistence);
+        asyncClient.setManualAcks(true);
 
         // 5. 构建连接选项 MqttConnectionOptions
         MqttConnectionOptions connOpts = buildConnectionOptions(clientName, actualClientId, clientProps, serverUris);

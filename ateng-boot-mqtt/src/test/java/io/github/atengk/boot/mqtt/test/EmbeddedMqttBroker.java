@@ -36,6 +36,7 @@ public class EmbeddedMqttBroker {
     private volatile boolean stopped = false;
 
     private final Map<Channel, Set<String>> channelSubscriptions = new ConcurrentHashMap<>();
+    private final Map<Channel, Map<String, MqttSubscriptionOption>> channelSubscriptionOptions = new ConcurrentHashMap<>();
     private final Map<Channel, String> clientIds = new ConcurrentHashMap<>();
     private final Map<Channel, WillRecord> willMessages = new ConcurrentHashMap<>();
     private final Map<String, RetainedRecord> retainedMessages = new ConcurrentHashMap<>();
@@ -281,10 +282,17 @@ public class EmbeddedMqttBroker {
             List<MqttQoS> grantedQosList = new ArrayList<>();
 
             Set<String> subs = channelSubscriptions.computeIfAbsent(ctx.channel(), k -> new CopyOnWriteArraySet<>());
+            Map<String, MqttSubscriptionOption> optMap = channelSubscriptionOptions.computeIfAbsent(ctx.channel(), k -> new ConcurrentHashMap<>());
+            Set<String> newlyAdded = new HashSet<>();
             for (MqttTopicSubscription sub : topicSubscriptions) {
-                subs.add(sub.topicName());
+                if (subs.add(sub.topicName())) {
+                    newlyAdded.add(sub.topicName());
+                }
+                if (sub.option() != null) {
+                    optMap.put(sub.topicName(), sub.option());
+                }
                 grantedQosList.add(sub.qualityOfService());
-                log.debug("[EmbeddedMqttBroker] Client [{}] subscribed to [{}]", clientIds.get(ctx.channel()), sub.topicName());
+                log.debug("[EmbeddedMqttBroker] Client [{}] subscribed to [{}] (option={})", clientIds.get(ctx.channel()), sub.topicName(), sub.option());
             }
 
             MqttSubAckMessage subAck = MqttMessageBuilders.subAck()
@@ -293,8 +301,20 @@ public class EmbeddedMqttBroker {
                     .build();
             ctx.writeAndFlush(subAck);
 
-            // 依据 MQTT 规范向新订阅者派发匹配的 Broker 保留消息
+            // 依据 MQTT 5.0 retainHandling 策略决定是否派发 Broker 保留消息
             for (MqttTopicSubscription sub : topicSubscriptions) {
+                MqttSubscriptionOption opt = sub.option();
+                MqttSubscriptionOption.RetainedHandlingPolicy policy = opt != null && opt.retainHandling() != null
+                        ? opt.retainHandling()
+                        : MqttSubscriptionOption.RetainedHandlingPolicy.SEND_AT_SUBSCRIBE;
+                if (policy == MqttSubscriptionOption.RetainedHandlingPolicy.DONT_SEND_AT_SUBSCRIBE) {
+                    continue;
+                }
+                if (policy == MqttSubscriptionOption.RetainedHandlingPolicy.SEND_AT_SUBSCRIBE_IF_NOT_YET_EXISTS
+                        && !newlyAdded.contains(sub.topicName())) {
+                    continue;
+                }
+
                 String subFilter = sub.topicName();
                 if (subFilter.startsWith("$share/")) {
                     int thirdSlash = subFilter.indexOf('/', 7);
@@ -337,6 +357,10 @@ public class EmbeddedMqttBroker {
             if (subs != null) {
                 subs.removeAll(topics);
             }
+            Map<String, MqttSubscriptionOption> optMap = channelSubscriptionOptions.get(ctx.channel());
+            if (optMap != null) {
+                topics.forEach(optMap::remove);
+            }
 
             MqttUnsubAckMessage unsubAck = MqttMessageBuilders.unsubAck()
                     .packetId(packetId)
@@ -375,8 +399,8 @@ public class EmbeddedMqttBroker {
                 ctx.writeAndFlush(new MqttMessage(recHeader, recVar));
             }
 
-            // 转发消息给匹配的订阅客户端
-            broadcastMessage(topic, payloadBytes, qos, props);
+            // 转发消息给匹配的订阅客户端（传递发布源通道与 retained 标志支持 noLocal 与 retainAsPublished）
+            broadcastMessage(ctx.channel(), topic, payloadBytes, qos, retained, props);
         }
 
         private void handlePubRel(ChannelHandlerContext ctx, MqttMessage msg) {
@@ -395,7 +419,7 @@ public class EmbeddedMqttBroker {
             cleanChannel(ctx.channel());
             if (will != null) {
                 log.info("[EmbeddedMqttBroker] Client channel closed unexpectedly without DISCONNECT, triggering LWT broadcast on topic [{}]", will.topic());
-                broadcastMessage(will.topic(), will.payload(), will.qos(), null);
+                broadcastMessage(null, will.topic(), will.payload(), will.qos(), false, null);
             }
             super.channelInactive(ctx);
         }
@@ -409,17 +433,19 @@ public class EmbeddedMqttBroker {
 
         private void cleanChannel(Channel ch) {
             channelSubscriptions.remove(ch);
+            channelSubscriptionOptions.remove(ch);
             clientIds.remove(ch);
         }
     }
 
-    private void broadcastMessage(String topic, byte[] payloadBytes, MqttQoS qos, io.netty.handler.codec.mqtt.MqttProperties props) {
+    private void broadcastMessage(Channel publisherChannel, String topic, byte[] payloadBytes, MqttQoS qos, boolean publisherRetained, io.netty.handler.codec.mqtt.MqttProperties props) {
         for (Map.Entry<Channel, Set<String>> entry : channelSubscriptions.entrySet()) {
             Channel ch = entry.getKey();
             if (!ch.isActive()) {
                 continue;
             }
             Set<String> filters = entry.getValue();
+            Map<String, MqttSubscriptionOption> optMap = channelSubscriptionOptions.get(ch);
             for (String filter : filters) {
                 String effectiveFilter = filter;
                 if (filter.startsWith("$share/")) {
@@ -429,10 +455,15 @@ public class EmbeddedMqttBroker {
                     }
                 }
                 if (isTopicMatch(effectiveFilter, topic)) {
+                    MqttSubscriptionOption opt = optMap != null ? optMap.get(filter) : null;
+                    if (opt != null && opt.isNoLocal() && publisherChannel != null && ch == publisherChannel) {
+                        continue;
+                    }
+                    boolean forwardRetain = opt != null && opt.isRetainAsPublished() && publisherRetained;
                     MqttMessageBuilders.PublishBuilder builder = MqttMessageBuilders.publish()
                             .topicName(topic)
                             .qos(qos)
-                            .retained(false)
+                            .retained(forwardRetain)
                             .payload(Unpooled.copiedBuffer(payloadBytes));
 
                     if (qos != MqttQoS.AT_MOST_ONCE) {

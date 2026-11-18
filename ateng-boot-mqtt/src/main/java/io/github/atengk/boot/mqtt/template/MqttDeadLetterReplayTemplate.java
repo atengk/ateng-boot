@@ -1,7 +1,9 @@
 package io.github.atengk.boot.mqtt.template;
 
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.mqtt.dlt.MqttDeadLetterStore;
 import io.github.atengk.boot.mqtt.model.MqttDeadLetterRecord;
+import io.github.atengk.boot.mqtt.properties.MqttDltProperties;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import org.eclipse.paho.mqttv5.client.IMqttMessageListener;
@@ -47,15 +49,36 @@ public class MqttDeadLetterReplayTemplate {
     private final NamedMqttClientRegistry clientRegistry;
     private final MqttTemplate mqttTemplate;
     private final AtomicInteger maxReplayCount;
+    private volatile MqttDeadLetterStore deadLetterStore;
+    private volatile MqttDltProperties dltProperties;
 
     public MqttDeadLetterReplayTemplate(NamedMqttClientRegistry clientRegistry, MqttTemplate mqttTemplate) {
-        this(clientRegistry, mqttTemplate, 1);
+        this(clientRegistry, mqttTemplate, 1, null, null);
     }
 
     public MqttDeadLetterReplayTemplate(NamedMqttClientRegistry clientRegistry, MqttTemplate mqttTemplate, int maxReplayCount) {
+        this(clientRegistry, mqttTemplate, maxReplayCount, null, null);
+    }
+
+    /**
+     * 构建死信重放治理模板（支持本地死信存储 SPI 与自定义死信配置属性）
+     *
+     * @param clientRegistry  命名客户端注册表
+     * @param mqttTemplate    MQTT 发信门面
+     * @param maxReplayCount  最大允许重放次数阈值
+     * @param deadLetterStore 本地死信存储 SPI（可为 null）
+     * @param dltProperties   死信策略配置属性（可为 null 时使用默认配置）
+     */
+    public MqttDeadLetterReplayTemplate(NamedMqttClientRegistry clientRegistry,
+                                        MqttTemplate mqttTemplate,
+                                        int maxReplayCount,
+                                        MqttDeadLetterStore deadLetterStore,
+                                        MqttDltProperties dltProperties) {
         this.clientRegistry = Objects.requireNonNull(clientRegistry, "NamedMqttClientRegistry must not be null");
         this.mqttTemplate = Objects.requireNonNull(mqttTemplate, "MqttTemplate must not be null");
         this.maxReplayCount = new AtomicInteger(Math.max(1, maxReplayCount));
+        this.deadLetterStore = deadLetterStore;
+        this.dltProperties = dltProperties != null ? dltProperties : new MqttDltProperties();
     }
 
     public int getMaxReplayCount() {
@@ -64,6 +87,24 @@ public class MqttDeadLetterReplayTemplate {
 
     public void setMaxReplayCount(int maxReplayCount) {
         this.maxReplayCount.set(Math.max(1, maxReplayCount));
+    }
+
+    /**
+     * 注入或替换本地死信存储 SPI 实现
+     *
+     * @param deadLetterStore 死信存储实现
+     */
+    public void setDeadLetterStore(MqttDeadLetterStore deadLetterStore) {
+        this.deadLetterStore = deadLetterStore;
+    }
+
+    /**
+     * 更新死信策略配置属性
+     *
+     * @param dltProperties 死信配置属性
+     */
+    public void setDltProperties(MqttDltProperties dltProperties) {
+        this.dltProperties = dltProperties != null ? dltProperties : new MqttDltProperties();
     }
 
     // ==================== 死信只读探查接口 (peek) ====================
@@ -118,17 +159,31 @@ public class MqttDeadLetterReplayTemplate {
             throw new IllegalArgumentException("limit must not exceed maximum threshold of " + MAX_LIMIT + ": " + limit);
         }
         Duration effectiveTimeout = (timeout != null && !timeout.isNegative() && !timeout.isZero()) ? timeout : Duration.ofSeconds(2);
-
         String effectiveClient = resolveEffectiveClientName(clientName);
+
+        if (deadLetterStore != null) {
+            List<MqttDeadLetterRecord> stored = deadLetterStore.peek(effectiveClient, dltTopic, limit);
+            if (!stored.isEmpty()) {
+                return stored;
+            }
+        }
+        if (dltProperties != null && !dltProperties.isPeekBrokerFallback()) {
+            return Collections.emptyList();
+        }
+
         MqttClientHandle handle = clientRegistry.getConnectedClientHandle(effectiveClient);
 
         List<MqttDeadLetterRecord> records = new CopyOnWriteArrayList<>();
         CountDownLatch latch = new CountDownLatch(limit);
 
         IMqttMessageListener listener = (topic, message) -> {
-            MqttDeadLetterRecord record = MqttDeadLetterRecord.fromMqttMessage(dltTopic, message);
-            records.add(record);
-            latch.countDown();
+            try {
+                MqttDeadLetterRecord record = MqttDeadLetterRecord.fromMqttMessage(dltTopic, message);
+                records.add(record);
+                latch.countDown();
+            } finally {
+                handle.acknowledgeMessage(message);
+            }
         };
 
         try {
@@ -297,6 +352,9 @@ public class MqttDeadLetterReplayTemplate {
         // 4. 发起受控重放发信
         String effectiveClient = resolveEffectiveClientName(clientName);
         mqttTemplate.publishToClient(effectiveClient, effectiveTarget, record.payload(), record.qos(), false, cleanProps);
+        if (deadLetterStore != null && StringUtils.hasText(record.dltTopic()) && StringUtils.hasText(record.recordId())) {
+            deadLetterStore.remove(effectiveClient, record.dltTopic(), record.recordId());
+        }
         log.info("[MQTT-DLT] Replayed dead-letter message to topic [{}] with replayCount [{}]",
                 effectiveTarget, record.replayCount() + 1);
         return true;
@@ -322,8 +380,11 @@ public class MqttDeadLetterReplayTemplate {
     public void purge(String clientName, String dltTopic) {
         Assert.hasText(dltTopic, "dltTopic must not be blank");
         String effectiveClient = resolveEffectiveClientName(clientName);
-        MqttClientHandle handle = clientRegistry.getConnectedClientHandle(effectiveClient);
+        clientRegistry.getConnectedClientHandle(effectiveClient);
 
+        if (deadLetterStore != null) {
+            deadLetterStore.purge(effectiveClient, dltTopic);
+        }
         // 对称抹除 Broker 上的保留死信 (byte[0] + retained=true)
         mqttTemplate.clearRetainedToClient(effectiveClient, dltTopic, 1);
         log.info("[MQTT-DLT] Successfully purged dead letter topic [{}] on client [{}]", dltTopic, effectiveClient);

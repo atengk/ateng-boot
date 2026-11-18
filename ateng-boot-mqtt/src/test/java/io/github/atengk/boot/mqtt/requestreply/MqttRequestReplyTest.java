@@ -4,9 +4,13 @@ import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.mqtt.annotation.MqttListener;
+import io.github.atengk.boot.mqtt.annotation.MqttReply;
 import io.github.atengk.boot.mqtt.context.MqttContextHolder;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.exception.MqttTimeoutException;
+import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcessor;
+import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.properties.ClientIdStrategy;
 import io.github.atengk.boot.mqtt.properties.MqttClientProperties;
@@ -450,5 +454,145 @@ class MqttRequestReplyTest {
 
         String reply = future.get(3, TimeUnit.SECONDS);
         assertThat(reply).isEqualTo("HEALED_OK");
+    }
+
+    static class DeclarativeReplyDeviceBean {
+        private final java.util.concurrent.Executor asyncExecutor;
+
+        DeclarativeReplyDeviceBean(java.util.concurrent.Executor asyncExecutor) {
+            this.asyncExecutor = asyncExecutor;
+        }
+
+        @MqttListener(topics = "rpc/sync/echo", client = "device", qos = 1)
+        public DeviceResponse onSyncQuery(DeviceQuery query) {
+            return new DeviceResponse(query.deviceId(), "ACK", 99);
+        }
+
+        @MqttListener(topics = "rpc/async/echo", client = "device", qos = 1)
+        @MqttReply(qos = 1, retained = false)
+        public CompletableFuture<String> onAsyncQuery(String payload) {
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    Thread.sleep(30);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return "ASYNC:" + payload;
+            }, asyncExecutor);
+        }
+
+        private final java.util.concurrent.atomic.AtomicInteger asyncRetryCount = new java.util.concurrent.atomic.AtomicInteger();
+
+        @MqttListener(topics = "rpc/async/retry", client = "device", qos = 1, maxRetries = 1)
+        @MqttReply(qos = 1)
+        public CompletableFuture<String> onAsyncRetry(String payload) {
+            int attempt = asyncRetryCount.incrementAndGet();
+            if (attempt == 1) {
+                return CompletableFuture.failedFuture(new RuntimeException("transient-async-fail"));
+            }
+            return CompletableFuture.completedFuture("ASYNC-RECOVERED:" + payload);
+        }
+
+        @MqttListener(topics = "rpc/fallback/notify", client = "device", qos = 1)
+        @MqttReply(topic = "rpc/fallback/out", qos = 1, retained = true)
+        public String onFallbackNotify(String payload) {
+            return "FALLBACK:" + payload;
+        }
+
+        @MqttListener(topics = "rpc/no-target/ignore", client = "device", qos = 1)
+        public String onMissingTarget(String payload) {
+            return "IGNORED";
+        }
+    }
+
+    @Test
+    @DisplayName("声明式应答闭环：非 void 与 CompletableFuture 自动回发 CorrelationData 与四维上下文、失败退避重试与 @MqttReply 兜底主题")
+    void shouldReplyDeclarativelyForSyncValueCompletableFutureAndFallbackTopic() throws Exception {
+        MqttListenerEndpointRegistry endpointRegistry =
+                new MqttListenerEndpointRegistry(clientRegistry, new PayloadGuard(), testExecutor);
+        DeclarativeReplyDeviceBean deviceBean = new DeclarativeReplyDeviceBean(testExecutor);
+        new MqttListenerAnnotationBeanPostProcessor(endpointRegistry)
+                .postProcessAfterInitialization(deviceBean, "declarativeReplyDeviceBean");
+        endpointRegistry.start();
+
+        try {
+            // 1. 同步非 void 返回值自动回发至入站 ResponseTopic 并携带 CorrelationData 与四维上下文
+            MDC.put("traceId", "trace-decl-reply");
+            TenantContextHolder.setTenantId("tenant-decl");
+            UserContextHolder.setUserId("user-decl");
+            TenantContextHolder.setIgnoreTenant(true);
+            try {
+                DeviceResponse syncReply = mqttTemplate.sendAndReceive(
+                        "rpc/sync/echo",
+                        new DeviceQuery("DEV-88"),
+                        DeviceResponse.class,
+                        Duration.ofSeconds(3)
+                );
+                assertThat(syncReply).isEqualTo(new DeviceResponse("DEV-88", "ACK", 99));
+            } finally {
+                MDC.clear();
+                TenantContextHolder.clear();
+                UserContextHolder.clear();
+            }
+
+            // 校验同步声明式应答回发报文携带了四维上下文标头
+            assertThat(broker.getReceivedMessages()).anySatisfy(m -> {
+                assertThat(m.getTopic()).startsWith("sys/response/");
+                Map<String, String> replyHeaders = new HashMap<>();
+                if (m.getProperties() != null) {
+                    for (io.netty.handler.codec.mqtt.MqttProperties.MqttProperty<?> prop : m.getProperties().listAll()) {
+                        if (prop instanceof io.netty.handler.codec.mqtt.MqttProperties.UserProperties up) {
+                            for (io.netty.handler.codec.mqtt.MqttProperties.StringPair pair : up.value()) {
+                                replyHeaders.put(pair.key, pair.value);
+                            }
+                        } else if (prop instanceof io.netty.handler.codec.mqtt.MqttProperties.UserProperty up) {
+                            replyHeaders.put(up.value().key, up.value().value);
+                        }
+                    }
+                }
+                assertThat(replyHeaders).containsEntry(io.github.atengk.boot.core.constant.MessageHeaderConstants.TRACE_ID, "trace-decl-reply");
+                assertThat(replyHeaders).containsEntry(io.github.atengk.boot.core.constant.MessageHeaderConstants.TENANT_ID, "tenant-decl");
+                assertThat(replyHeaders).containsEntry(io.github.atengk.boot.core.constant.MessageHeaderConstants.USER_ID, "user-decl");
+                assertThat(replyHeaders).containsEntry(io.github.atengk.boot.core.constant.MessageHeaderConstants.IGNORE_TENANT, "true");
+            });
+
+            // 2. CompletableFuture 异步返回值自动回发匹配 CorrelationData
+            CompletableFuture<String> asyncFuture = mqttTemplate.sendAndReceiveAsync(
+                    "rpc/async/echo",
+                    "hello",
+                    1,
+                    String.class,
+                    Duration.ofSeconds(3)
+            );
+            assertThat(asyncFuture.get(3, TimeUnit.SECONDS)).isEqualTo("ASYNC:hello");
+
+            // 3. CompletableFuture 异常完成触发非致命重试并最终应答恢复
+            String retriedAsync = mqttTemplate.sendAndReceiveAsync(
+                    "rpc/async/retry",
+                    "retry-me",
+                    1,
+                    String.class,
+                    Duration.ofSeconds(3)
+            ).get(3, TimeUnit.SECONDS);
+            assertThat(retriedAsync).isEqualTo("ASYNC-RECOVERED:retry-me");
+            assertThat(deviceBean.asyncRetryCount.get()).isEqualTo(2);
+
+            // 4. 入站未携带 ResponseTopic 时通过 @MqttReply(topic=...) 兜底发布，无兜底主题时不崩溃
+            mqttTemplate.publish("rpc/fallback/notify", "go", 1);
+            mqttTemplate.publish("rpc/no-target/ignore", "noop", 1);
+
+            long deadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < deadline
+                    && broker.getReceivedMessages().stream().noneMatch(m -> "rpc/fallback/out".equals(m.getTopic()))) {
+                Thread.sleep(30);
+            }
+            assertThat(broker.getReceivedMessages()).anySatisfy(m -> {
+                assertThat(m.getTopic()).isEqualTo("rpc/fallback/out");
+                assertThat(new String(m.getPayload(), StandardCharsets.UTF_8)).isEqualTo("FALLBACK:go");
+                assertThat(m.isRetained()).isTrue();
+            });
+        } finally {
+            endpointRegistry.stop();
+        }
     }
 }

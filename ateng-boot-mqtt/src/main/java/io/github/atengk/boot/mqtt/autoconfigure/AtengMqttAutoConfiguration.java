@@ -5,6 +5,8 @@ import io.github.atengk.boot.mqtt.codec.CompositeMqttMessageConverter;
 import io.github.atengk.boot.mqtt.codec.MqttMessageConverter;
 import io.github.atengk.boot.mqtt.credentials.MqttCredentialsProvider;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
+import io.github.atengk.boot.mqtt.dlt.InMemoryMqttDeadLetterStore;
+import io.github.atengk.boot.mqtt.dlt.MqttDeadLetterStore;
 import io.github.atengk.boot.mqtt.handler.DefaultMqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.interceptor.MqttMessageInterceptor;
@@ -132,14 +134,20 @@ public class AtengMqttAutoConfiguration {
                                                            ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider,
                                                            ObjectProvider<ThreadPoolTaskScheduler> threadPoolTaskSchedulerProvider) {
         Executor executor = taskExecutorProvider.getIfAvailable(mqttExecutorProvider::getIfAvailable);
-        ScheduledExecutorService scheduledExecutor = scheduledExecutorProvider.getIfAvailable();
+        ScheduledExecutorService scheduledExecutor = resolveScheduledExecutor(scheduledExecutorProvider, threadPoolTaskSchedulerProvider);
+        return new MqttRequestReplyManager(namedMqttClientRegistry, mqttPayloadGuard, executor, scheduledExecutor, metricsProvider.getIfAvailable());
+    }
+
+    private ScheduledExecutorService resolveScheduledExecutor(ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider,
+                                                              ObjectProvider<ThreadPoolTaskScheduler> threadPoolTaskSchedulerProvider) {
+        ScheduledExecutorService scheduledExecutor = scheduledExecutorProvider.getIfUnique();
         if (scheduledExecutor == null) {
-            ThreadPoolTaskScheduler scheduler = threadPoolTaskSchedulerProvider.getIfAvailable();
+            ThreadPoolTaskScheduler scheduler = threadPoolTaskSchedulerProvider.getIfUnique();
             if (scheduler != null) {
                 scheduledExecutor = scheduler.getScheduledExecutor();
             }
         }
-        return new MqttRequestReplyManager(namedMqttClientRegistry, mqttPayloadGuard, executor, scheduledExecutor, metricsProvider.getIfAvailable());
+        return scheduledExecutor;
     }
 
     @Bean
@@ -168,6 +176,12 @@ public class AtengMqttAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    public MqttDeadLetterStore mqttDeadLetterStore(AtengMqttProperties properties) {
+        return new InMemoryMqttDeadLetterStore(properties != null ? properties.getDlt() : null);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public MqttListenerEndpointRegistry mqttListenerEndpointRegistry(NamedMqttClientRegistry namedMqttClientRegistry,
                                                                     PayloadGuard mqttPayloadGuard,
                                                                     AtengMqttProperties properties,
@@ -175,19 +189,27 @@ public class AtengMqttAutoConfiguration {
                                                                     ObjectProvider<MqttRequestReplyManager> requestReplyManagerProvider,
                                                                     @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
                                                                     @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider,
-                                                                    ObjectProvider<List<MqttMessageInterceptor>> interceptorsProvider) {
+                                                                    ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider,
+                                                                    ObjectProvider<ThreadPoolTaskScheduler> threadPoolTaskSchedulerProvider,
+                                                                    ObjectProvider<List<MqttMessageInterceptor>> interceptorsProvider,
+                                                                    ObjectProvider<MqttDeadLetterStore> deadLetterStoreProvider) {
         Executor executor = taskExecutorProvider.getIfAvailable(mqttExecutorProvider::getIfAvailable);
+        ScheduledExecutorService scheduledExecutor = resolveScheduledExecutor(scheduledExecutorProvider, threadPoolTaskSchedulerProvider);
         MqttListenerEndpointRegistry registry = new MqttListenerEndpointRegistry(
                 namedMqttClientRegistry,
                 mqttPayloadGuard,
                 executor,
                 metricsProvider.getIfAvailable(),
                 requestReplyManagerProvider.getIfAvailable(),
-                interceptorsProvider.getIfAvailable(Collections::emptyList)
+                interceptorsProvider.getIfAvailable(Collections::emptyList),
+                properties != null ? properties.getConsumer() : null,
+                scheduledExecutor
         );
         if (properties != null) {
             registry.setMaxReplayCount(properties.getMaxReplayCount());
+            registry.setDltProperties(properties.getDlt());
         }
+        registry.setDeadLetterStore(deadLetterStoreProvider.getIfAvailable());
         return registry;
     }
 
@@ -207,10 +229,17 @@ public class AtengMqttAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public MqttDeadLetterReplayTemplate mqttDeadLetterReplayTemplate(NamedMqttClientRegistry namedMqttClientRegistry,
-                                                                    MqttTemplate mqttTemplate,
-                                                                    AtengMqttProperties properties) {
+                                                                     MqttTemplate mqttTemplate,
+                                                                     AtengMqttProperties properties,
+                                                                     ObjectProvider<MqttDeadLetterStore> deadLetterStoreProvider) {
         int maxReplay = properties != null ? properties.getMaxReplayCount() : 1;
-        return new MqttDeadLetterReplayTemplate(namedMqttClientRegistry, mqttTemplate, maxReplay);
+        return new MqttDeadLetterReplayTemplate(
+                namedMqttClientRegistry,
+                mqttTemplate,
+                maxReplay,
+                deadLetterStoreProvider.getIfAvailable(),
+                properties != null ? properties.getDlt() : null
+        );
     }
 
     @Bean

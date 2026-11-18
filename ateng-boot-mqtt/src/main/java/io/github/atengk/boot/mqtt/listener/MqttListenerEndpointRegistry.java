@@ -1,18 +1,27 @@
 package io.github.atengk.boot.mqtt.listener;
 
+import io.github.atengk.boot.core.constant.MessageHeaderConstants;
+import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.exception.IdempotentException;
 import io.github.atengk.boot.core.helper.FatalExceptionClassifier;
+import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.mqtt.annotation.MqttReply;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
+import io.github.atengk.boot.mqtt.dlt.MqttDeadLetterStore;
 import io.github.atengk.boot.mqtt.exception.SilentAckException;
 import io.github.atengk.boot.mqtt.interceptor.MqttMessageInterceptor;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.model.MqttDeadLetterRecord;
+import io.github.atengk.boot.mqtt.properties.AckMode;
+import io.github.atengk.boot.mqtt.properties.MqttConsumerProperties;
+import io.github.atengk.boot.mqtt.properties.MqttDltProperties;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
 import io.github.atengk.boot.mqtt.routing.MqttTopicPattern;
 import io.github.atengk.boot.mqtt.util.MqttHeaderUtils;
+import org.eclipse.paho.mqttv5.client.MqttActionListener;
 import org.eclipse.paho.mqttv5.client.IMqttToken;
 import org.eclipse.paho.mqttv5.client.MqttCallback;
 import org.eclipse.paho.mqttv5.client.MqttDisconnectResponse;
@@ -24,6 +33,7 @@ import org.eclipse.paho.mqttv5.common.packet.UserProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.util.StringUtils;
 
 import java.time.Duration;
@@ -31,18 +41,25 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -64,13 +81,23 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
 
     private final List<MqttListenerEndpoint> endpoints = new CopyOnWriteArrayList<>();
     private final Map<String, List<String>> subscribedTopicsByClient = new ConcurrentHashMap<>();
+    private final Map<FilterKey, Set<String>> activeFilterEndpoints = new ConcurrentHashMap<>();
+    private final Map<FilterKey, Integer> subscribedQosByFilter = new ConcurrentHashMap<>();
     private final Set<String> pausedEndpoints = ConcurrentHashMap.newKeySet();
+    private final Set<PendingRetry> pendingRetries = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicInteger inFlightTasks = new AtomicInteger(0);
+    private final ReentrantLock subscriptionLock = new ReentrantLock();
+    private final ReentrantLock schedulerLock = new ReentrantLock();
     private final ReentrantLock drainLock = new ReentrantLock();
     private final Condition allTasksDrained = drainLock.newCondition();
     private volatile MqttRequestReplyManager requestReplyManager;
     private volatile int maxReplayCount = 1;
+    private volatile MqttConsumerProperties consumerProperties = new MqttConsumerProperties();
+    private volatile MqttDltProperties dltProperties = new MqttDltProperties();
+    private volatile MqttDeadLetterStore deadLetterStore;
+    private volatile ScheduledExecutorService externalScheduler;
+    private volatile ThreadPoolTaskScheduler ownedScheduler;
 
     public MqttListenerEndpointRegistry(NamedMqttClientRegistry clientRegistry,
                                         PayloadGuard payloadGuard,
@@ -99,12 +126,64 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                                         MqttMetrics metrics,
                                         MqttRequestReplyManager requestReplyManager,
                                         List<MqttMessageInterceptor> interceptors) {
+        this(clientRegistry, payloadGuard, executor, metrics, requestReplyManager, interceptors, new MqttConsumerProperties(), null);
+    }
+
+    /**
+     * 构建完整的 declarative MQTT 监听器端点注册与运行期调度容器
+     *
+     * @param clientRegistry      命名客户端注册表
+     * @param payloadGuard        出入站报文载荷安全守卫
+     * @param executor            受管消费工作线程池
+     * @param metrics             Micrometer 度量采集器（可选）
+     * @param requestReplyManager 请求-响应关联器（可选）
+     * @param interceptors        消息拦截器链（可选）
+     * @param consumerProperties  消费确认与退避重试配置（可选）
+     * @param taskScheduler       延迟重试调度执行器（可选，缺省按需创建内部受管调度器）
+     */
+    public MqttListenerEndpointRegistry(NamedMqttClientRegistry clientRegistry,
+                                        PayloadGuard payloadGuard,
+                                        Executor executor,
+                                        MqttMetrics metrics,
+                                        MqttRequestReplyManager requestReplyManager,
+                                        List<MqttMessageInterceptor> interceptors,
+                                        MqttConsumerProperties consumerProperties,
+                                        ScheduledExecutorService taskScheduler) {
         this.clientRegistry = clientRegistry;
         this.payloadGuard = payloadGuard != null ? payloadGuard : new PayloadGuard();
         this.executor = executor;
         this.metrics = metrics;
         this.requestReplyManager = requestReplyManager;
         this.interceptors = interceptors != null ? new ArrayList<>(interceptors) : Collections.emptyList();
+        this.consumerProperties = consumerProperties != null ? consumerProperties : new MqttConsumerProperties();
+        this.externalScheduler = taskScheduler;
+    }
+
+    /**
+     * 设置消费确认与重试配置属性
+     *
+     * @param consumerProperties 消费端配置
+     */
+    public void setConsumerProperties(MqttConsumerProperties consumerProperties) {
+        this.consumerProperties = consumerProperties != null ? consumerProperties : new MqttConsumerProperties();
+    }
+
+    /**
+     * 获取当前消费确认与重试配置属性
+     *
+     * @return 消费端配置
+     */
+    public MqttConsumerProperties getConsumerProperties() {
+        return consumerProperties;
+    }
+
+    /**
+     * 注入外部延迟重试调度执行器
+     *
+     * @param taskScheduler 外部调度执行器
+     */
+    public void setTaskScheduler(ScheduledExecutorService taskScheduler) {
+        this.externalScheduler = taskScheduler;
     }
 
     public void setRequestReplyManager(MqttRequestReplyManager requestReplyManager) {
@@ -120,6 +199,42 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     }
 
     /**
+     * 获取死信存储与投递策略配置属性
+     *
+     * @return 死信策略配置
+     */
+    public MqttDltProperties getDltProperties() {
+        return dltProperties;
+    }
+
+    /**
+     * 设置死信存储与投递策略配置属性
+     *
+     * @param dltProperties 死信策略配置
+     */
+    public void setDltProperties(MqttDltProperties dltProperties) {
+        this.dltProperties = dltProperties != null ? dltProperties : new MqttDltProperties();
+    }
+
+    /**
+     * 获取当前生效的本地死信存储 SPI 实现
+     *
+     * @return 死信存储实例，未启用时返回 null
+     */
+    public MqttDeadLetterStore getDeadLetterStore() {
+        return deadLetterStore;
+    }
+
+    /**
+     * 注入本地死信存储 SPI 实现
+     *
+     * @param deadLetterStore 死信存储实例
+     */
+    public void setDeadLetterStore(MqttDeadLetterStore deadLetterStore) {
+        this.deadLetterStore = deadLetterStore;
+    }
+
+    /**
      * 注册声明式监听器端点
      *
      * @param endpoint 端点元数据
@@ -128,7 +243,18 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         if (endpoint == null) {
             return;
         }
+        if (resolveAckMode(endpoint) == AckMode.AUTO_AFTER_CONSUME
+                && endpoint.getAdapter().hasAcknowledgmentParameter()) {
+            throw new IllegalStateException(
+                    "Endpoint [" + endpoint.getId() + "] uses AUTO_AFTER_CONSUME mode and must not declare MqttAcknowledgment parameter; configure ackMode = AckMode.MANUAL instead");
+        }
         endpoints.add(endpoint);
+        if (!endpoint.getAnnotation().autoStartup()) {
+            pausedEndpoints.add(endpoint.getId());
+            log.info("[MQTT] Registered listener endpoint [{}] (autoStartup=false, paused) for topics {}",
+                    endpoint.getId(), endpoint.getAnnotation().topics());
+            return;
+        }
         log.info("[MQTT] Registered listener endpoint [{}] for topics {}", endpoint.getId(), endpoint.getAnnotation().topics());
 
         if (isRunning()) {
@@ -152,6 +278,11 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             clientRegistry.addActiveBindingPredicate(this::hasActiveEndpointsForClient);
 
             for (MqttListenerEndpoint endpoint : endpoints) {
+                if (isPaused(endpoint.getId())) {
+                    log.info("[MQTT] Skipping initial Broker subscription for paused endpoint [{}] (autoStartup=false)",
+                            endpoint.getId());
+                    continue;
+                }
                 try {
                     subscribeEndpoint(endpoint);
                 } catch (Exception e) {
@@ -171,8 +302,16 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     }
 
     private void handleClientUnregistered(String clientName) {
-        if (StringUtils.hasText(clientName)) {
+        if (!StringUtils.hasText(clientName)) {
+            return;
+        }
+        subscriptionLock.lock();
+        try {
             subscribedTopicsByClient.remove(clientName);
+            activeFilterEndpoints.keySet().removeIf(key -> key.clientName().equals(clientName));
+            subscribedQosByFilter.keySet().removeIf(key -> key.clientName().equals(clientName));
+        } finally {
+            subscriptionLock.unlock();
         }
     }
 
@@ -186,7 +325,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                 if (StringUtils.hasText(endpoint.getSharedGroup()) && isEndpointAssignedToClient(endpoint, handle.getClientName())) {
                     for (MqttTopicPattern pattern : endpoint.getPatterns()) {
                         if (pattern.matchAndExtract(topic) != null) {
-                            submitManagedTask(() -> dispatchMessage(endpoint, pattern, topic, message, handle));
+                            submitTrackedTask(doneCallback -> dispatchMessage(endpoint, pattern, topic, message, handle, doneCallback));
                             break;
                         }
                     }
@@ -207,7 +346,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
      */
     public void handleConnectComplete(MqttClientHandle handle, boolean reconnect, String serverURI) {
         log.info("[MQTT] Client [{}] connect completed (reconnect={}) to {}", handle.getClientName(), reconnect, serverURI);
-        if (reconnect) {
+        if (reconnect && isRunning()) {
             resubscribeEndpointsForClient(handle);
             if (requestReplyManager != null) {
                 requestReplyManager.handleReconnect(handle.getClientName());
@@ -223,45 +362,148 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     }
 
     private void subscribeEndpoint(MqttListenerEndpoint endpoint) {
-        String clientName = endpoint.getClientName();
-        MqttClientHandle handle = resolveClientHandle(clientName);
+        subscriptionLock.lock();
+        try {
+            subscribeEndpointLocked(endpoint);
+        } finally {
+            subscriptionLock.unlock();
+        }
+    }
+
+    private void subscribeEndpointLocked(MqttListenerEndpoint endpoint) {
+        MqttClientHandle handle = resolveClientHandle(endpoint.getClientName());
+        String effectiveClient = handle.getClientName();
         String sharedGroup = endpoint.getSharedGroup();
 
         for (MqttTopicPattern pattern : endpoint.getPatterns()) {
             String filter = pattern.getSharedMqttFilter(sharedGroup);
-            try {
-                org.eclipse.paho.mqttv5.client.IMqttMessageListener listener = (topic, message) -> {
-                    // Paho I/O 回调线程中秒级提交至受管线程池，彻底杜绝 KeepAlive 假死
-                    submitManagedTask(() -> dispatchMessage(endpoint, pattern, topic, message, handle));
-                };
-                handle.subscribe(filter, endpoint.getQos(), listener);
-                List<String> clientTopics = subscribedTopicsByClient.computeIfAbsent(handle.getClientName(), k -> new CopyOnWriteArrayList<>());
-                if (!clientTopics.contains(filter)) {
-                    clientTopics.add(filter);
+            FilterKey key = new FilterKey(effectiveClient, filter);
+            Set<String> activeIds = activeFilterEndpoints.computeIfAbsent(key, k -> ConcurrentHashMap.newKeySet());
+            boolean addedNow = activeIds.add(endpoint.getId());
+            List<String> clientTopics = subscribedTopicsByClient.computeIfAbsent(effectiveClient, k -> new CopyOnWriteArrayList<>());
+            int effectiveQos = resolveMaxActiveQosLocked(key, endpoint.getQos());
+            boolean needsBrokerSubscribe = activeIds.size() == 1
+                    || !clientTopics.contains(filter)
+                    || endpoint.getQos() >= effectiveQos && !subscribedQosMatches(key, effectiveQos);
+            if (needsBrokerSubscribe) {
+                try {
+                    subscribeFilterToBrokerLocked(handle, filter, endpoint, effectiveQos, clientTopics);
+                    subscribedQosByFilter.put(key, effectiveQos);
+                } catch (RuntimeException ex) {
+                    if (addedNow) {
+                        activeIds.remove(endpoint.getId());
+                        if (activeIds.isEmpty()) {
+                            activeFilterEndpoints.remove(key);
+                        }
+                    }
+                    throw ex;
                 }
-                log.info("[MQTT] Client [{}] successfully subscribed to [{}] for endpoint [{}]",
-                        handle.getClientName(), filter, endpoint.getId());
-            } catch (MqttException e) {
-                throw new BusinessException("Failed to subscribe MQTT topic [" + filter + "]: " + e.getMessage(), e);
+            } else {
+                log.debug("[MQTT] Reusing existing Broker subscription [{}] on client [{}] for endpoint [{}] (refCount={})",
+                        filter, effectiveClient, endpoint.getId(), activeIds.size());
+            }
+        }
+    }
+
+    private int resolveMaxActiveQosLocked(FilterKey key, int candidateQos) {
+        Set<String> activeIds = activeFilterEndpoints.get(key);
+        if (activeIds == null || activeIds.isEmpty()) {
+            return candidateQos;
+        }
+        int maxQos = candidateQos;
+        for (String id : activeIds) {
+            MqttListenerEndpoint ep = findEndpoint(id);
+            if (ep != null && ep.getQos() > maxQos) {
+                maxQos = ep.getQos();
+            }
+        }
+        return maxQos;
+    }
+
+    private boolean subscribedQosMatches(FilterKey key, int effectiveQos) {
+        Integer current = subscribedQosByFilter.get(key);
+        return current != null && current >= effectiveQos;
+    }
+
+    private void subscribeFilterToBrokerLocked(MqttClientHandle handle,
+                                               String filter,
+                                               MqttListenerEndpoint endpoint,
+                                               int effectiveQos,
+                                               List<String> clientTopics) {
+        try {
+            org.eclipse.paho.mqttv5.client.IMqttMessageListener listener = (topic, message) -> {
+                // Paho I/O 回调线程中秒级提交至受管线程池，彻底杜绝 KeepAlive 假死
+                dispatchFilterMessage(handle, filter, topic, message);
+            };
+            handle.subscribe(
+                    filter,
+                    effectiveQos,
+                    endpoint.getAnnotation().noLocal(),
+                    endpoint.getAnnotation().retainAsPublished(),
+                    endpoint.getAnnotation().retainHandling(),
+                    listener
+            );
+            if (!clientTopics.contains(filter)) {
+                clientTopics.add(filter);
+            }
+            log.info("[MQTT] Client [{}] successfully subscribed to [{}] (qos={}) for endpoint [{}]",
+                    handle.getClientName(), filter, effectiveQos, endpoint.getId());
+        } catch (MqttException e) {
+            throw new BusinessException("Failed to subscribe MQTT topic [" + filter + "]: " + e.getMessage(), e);
+        }
+    }
+
+    private void dispatchFilterMessage(MqttClientHandle handle,
+                                       String filter,
+                                       String topic,
+                                       MqttMessage message) {
+        for (MqttListenerEndpoint endpoint : endpoints) {
+            if (isPaused(endpoint.getId())
+                    || StringUtils.hasText(endpoint.getSharedGroup())
+                    || !isEndpointAssignedToClient(endpoint, handle.getClientName())) {
+                continue;
+            }
+            for (MqttTopicPattern pattern : endpoint.getPatterns()) {
+                if (pattern.getSharedMqttFilter(null).equals(filter) && pattern.matchAndExtract(topic) != null) {
+                    submitTrackedTask(doneCallback -> dispatchMessage(endpoint, pattern, topic, message, handle, doneCallback));
+                    break;
+                }
             }
         }
     }
 
     /**
-     * 断线重连后全量重新订阅指定客户端的所有端点主题
+     * 断线重连后重新订阅指定客户端的所有活跃（未暂停）端点主题
      */
     private void resubscribeEndpointsForClient(MqttClientHandle handle) {
         String clientName = handle.getClientName();
         log.info("[MQTT] Triggering automatic subscription self-healing for client [{}] on reconnect", clientName);
-        for (MqttListenerEndpoint endpoint : endpoints) {
-            if (isEndpointAssignedToClient(endpoint, clientName)) {
-                try {
-                    subscribeEndpoint(endpoint);
-                } catch (Exception e) {
-                    log.error("[MQTT] Error during resubscription for endpoint [{}] on client [{}]: {}",
-                            endpoint.getId(), clientName, e.getMessage(), e);
+        subscriptionLock.lock();
+        try {
+            Set<String> resubscribedFilters = new HashSet<>();
+            List<String> clientTopics = subscribedTopicsByClient.computeIfAbsent(clientName, k -> new CopyOnWriteArrayList<>());
+            for (MqttListenerEndpoint endpoint : endpoints) {
+                if (!isEndpointAssignedToClient(endpoint, clientName) || isPaused(endpoint.getId())) {
+                    continue;
+                }
+                for (MqttTopicPattern pattern : endpoint.getPatterns()) {
+                    String filter = pattern.getSharedMqttFilter(endpoint.getSharedGroup());
+                    FilterKey key = new FilterKey(clientName, filter);
+                    activeFilterEndpoints.computeIfAbsent(key, k -> ConcurrentHashMap.newKeySet()).add(endpoint.getId());
+                    if (resubscribedFilters.add(filter)) {
+                        int effectiveQos = resolveMaxActiveQosLocked(key, endpoint.getQos());
+                        try {
+                            subscribeFilterToBrokerLocked(handle, filter, endpoint, effectiveQos, clientTopics);
+                            subscribedQosByFilter.put(key, effectiveQos);
+                        } catch (Exception e) {
+                            log.error("[MQTT] Error during resubscription for endpoint [{}] on client [{}]: {}",
+                                    endpoint.getId(), clientName, e.getMessage(), e);
+                        }
+                    }
                 }
             }
+        } finally {
+            subscriptionLock.unlock();
         }
     }
 
@@ -269,85 +511,480 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                                  MqttTopicPattern pattern,
                                  String actualTopic,
                                  MqttMessage message,
-                                 MqttClientHandle handle) {
+                                 MqttClientHandle handle,
+                                 Runnable doneCallback) {
         if (isPaused(endpoint.getId())) {
             log.debug("[MQTT] Endpoint [{}] is paused, skipping message dispatch for topic [{}]", endpoint.getId(), actualTopic);
+            doneCallback.run();
             return;
         }
         if (metrics != null) {
             metrics.recordReceived(handle.getClientName(), actualTopic);
         }
-        Semaphore semaphore = endpoint.getConcurrencySemaphore();
-        if (semaphore != null) {
-            try {
-                semaphore.acquire();
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
+
+        ConsumeExecutionContext ctx = new ConsumeExecutionContext(endpoint, pattern, actualTopic, message, handle, doneCallback);
+        if (!ctx.acquireConcurrencyPermit()) {
+            ctx.finishWithoutAck();
+            return;
+        }
+
+        try (MessageContextPropagator.ContextScope ignored = MessageContextPropagator.activate(ctx.headers)) {
+            if (!ctx.prepareBeforeExecution()) {
                 return;
             }
+            ctx.executeAttempt(0);
         }
-        long startNanos = System.nanoTime();
-        Map<String, String> headers = MqttHeaderUtils.extractHeaders(message);
+    }
 
+    private AckMode resolveAckMode(MqttListenerEndpoint endpoint) {
+        AckMode[] overrides = endpoint.getAnnotation().ackMode();
+        if (overrides != null && overrides.length > 0 && overrides[0] != null) {
+            return overrides[0];
+        }
+        return consumerProperties != null && consumerProperties.getAckMode() != null
+                ? consumerProperties.getAckMode()
+                : AckMode.AUTO_AFTER_CONSUME;
+    }
+
+    private int resolveMaxRetries(MqttListenerEndpoint endpoint) {
+        int override = endpoint.getAnnotation().maxRetries();
+        if (override >= 0) {
+            return override;
+        }
+        return consumerProperties != null ? Math.max(0, consumerProperties.getMaxRetries()) : 2;
+    }
+
+    private long computeBackoffMillis(int failedAttemptIndex) {
+        MqttConsumerProperties props = consumerProperties != null ? consumerProperties : new MqttConsumerProperties();
+        long initialMs = props.getInitialBackoff() != null ? Math.max(0L, props.getInitialBackoff().toMillis()) : 200L;
+        long maxMs = props.getMaxBackoff() != null ? Math.max(initialMs, props.getMaxBackoff().toMillis()) : 5000L;
+        double multiplier = Math.max(1.0, props.getBackoffMultiplier());
+        double computed = initialMs * Math.pow(multiplier, failedAttemptIndex);
+        if (Double.isNaN(computed) || Double.isInfinite(computed)) {
+            return maxMs;
+        }
+        return Math.min(Math.round(computed), maxMs);
+    }
+
+    private ScheduledExecutorService getOrCreateRetryScheduler() {
+        ScheduledExecutorService ext = this.externalScheduler;
+        if (ext != null) {
+            return ext;
+        }
+        schedulerLock.lock();
         try {
+            if (this.ownedScheduler == null) {
+                ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+                scheduler.setPoolSize(2);
+                scheduler.setThreadNamePrefix("ateng-mqtt-retry-");
+                scheduler.setDaemon(true);
+                scheduler.setWaitForTasksToCompleteOnShutdown(false);
+                scheduler.initialize();
+                this.ownedScheduler = scheduler;
+            }
+            return this.ownedScheduler.getScheduledExecutor();
+        } finally {
+            schedulerLock.unlock();
+        }
+    }
+
+    private final class ConsumeExecutionContext {
+        private final MqttListenerEndpoint endpoint;
+        private final MqttTopicPattern pattern;
+        private final String actualTopic;
+        private final MqttMessage message;
+        private final MqttClientHandle handle;
+        private final Runnable doneCallback;
+        private final AckMode ackMode;
+        private final int maxRetries;
+        private final Map<String, String> headers;
+        private final Semaphore semaphore;
+        private final AtomicBoolean semaphoreAcquired = new AtomicBoolean(false);
+        private final AtomicBoolean finished = new AtomicBoolean(false);
+        private final DefaultMqttAcknowledgment manualAck;
+        private final long startNanos = System.nanoTime();
+        private Map<String, String> pathVariables;
+
+        private ConsumeExecutionContext(MqttListenerEndpoint endpoint,
+                                        MqttTopicPattern pattern,
+                                        String actualTopic,
+                                        MqttMessage message,
+                                        MqttClientHandle handle,
+                                        Runnable doneCallback) {
+            this.endpoint = endpoint;
+            this.pattern = pattern;
+            this.actualTopic = actualTopic;
+            this.message = message;
+            this.handle = handle;
+            this.doneCallback = doneCallback;
+            this.ackMode = resolveAckMode(endpoint);
+            this.maxRetries = resolveMaxRetries(endpoint);
+            this.headers = MqttHeaderUtils.extractHeaders(message);
+            this.semaphore = endpoint.getConcurrencySemaphore();
+            this.manualAck = ackMode == AckMode.MANUAL
+                    ? new DefaultMqttAcknowledgment(() -> handleFatalPoisonPill(endpoint, pattern.getRawPattern(), actualTopic, message, handle,
+                            new BusinessException("Explicitly rejected to dead-letter topic via MqttAcknowledgment.nackToDlt()")),
+                            () -> handle.acknowledgeMessage(message))
+                    : null;
+        }
+
+        boolean acquireConcurrencyPermit() {
+            if (semaphore == null) {
+                return true;
+            }
+            try {
+                semaphore.acquire();
+                semaphoreAcquired.set(true);
+                return true;
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+
+        boolean prepareBeforeExecution() {
+            this.pathVariables = pattern.matchAndExtract(actualTopic);
+            if (this.pathVariables == null) {
+                finishWithForcedAck();
+                return false;
+            }
+            // 入站大报文守卫校验（超限属于结构性毒丸，0 次重试直接转入死信/丢弃）
+            try {
+                if (message != null && message.getPayload() != null && handle.getClientProperties() != null) {
+                    payloadGuard.validate(message.getPayload(), handle.getClientProperties().getMaxPayloadSize(), actualTopic);
+                }
+            } catch (Throwable guardEx) {
+                triggerPostConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, guardEx);
+                recordConsumeMetric(false);
+                handleFatalPoisonPill(endpoint, pattern.getRawPattern(), actualTopic, message, handle, guardEx);
+                finishWithForcedAck();
+                return false;
+            }
+
             // 消息消费前置拦截切面
             for (MqttMessageInterceptor interceptor : interceptors) {
                 try {
                     if (!interceptor.preConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers)) {
                         log.debug("[MQTT] Message on topic [{}] for endpoint [{}] was intercepted and dropped by [{}]",
                                 actualTopic, endpoint.getId(), interceptor.getClass().getSimpleName());
-                        return;
+                        finishWithForcedAck();
+                        return false;
                     }
                 } catch (Throwable t) {
                     log.error("[MQTT] Error in interceptor [{}] preConsume: {}", interceptor.getClass().getSimpleName(), t.getMessage(), t);
-                    throw t;
+                    handleExecutionFailure(0, t);
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        void executeAttempt(int attempt) {
+            try {
+                Object result = endpoint.getAdapter().invoke(actualTopic, message, pathVariables, manualAck);
+                if (result instanceof CompletableFuture<?> replyFuture) {
+                    replyFuture.whenComplete((replyValue, replyEx) -> {
+                        try (MessageContextPropagator.ContextScope ignored = MessageContextPropagator.activate(headers)) {
+                            if (replyEx != null) {
+                                Throwable unwrapped = replyEx instanceof CompletionException ce && ce.getCause() != null
+                                        ? ce.getCause() : replyEx;
+                                handleExecutionFailure(attempt, unwrapped);
+                            } else {
+                                completeSuccessfullyWithReply(replyValue);
+                            }
+                        }
+                    });
+                } else {
+                    completeSuccessfullyWithReply(result);
+                }
+            } catch (Throwable e) {
+                handleExecutionFailure(attempt, e);
+            }
+        }
+
+        private void completeSuccessfullyWithReply(Object replyValue) {
+            // 业务监听方法已完成执行，@MqttReply 回发故障不再重入业务逻辑以防止非幂等重复执行
+            if (replyValue != null) {
+                try {
+                    publishDeclarativeReply(replyValue);
+                } catch (Throwable replySendEx) {
+                    log.error("[MQTT] Listener endpoint [{}] succeeded on topic [{}], but declarative @MqttReply publish failed: {}",
+                            endpoint.getId(), actualTopic, replySendEx.getMessage(), replySendEx);
+                }
+            }
+            triggerPostConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, null);
+            recordConsumeMetric(true);
+            finishWithAutoAck();
+        }
+
+        private void publishDeclarativeReply(Object replyValue) throws MqttException {
+            MqttProperties inboundProps = message != null ? message.getProperties() : null;
+            MqttReply replyAnnotation = endpoint.getReplyAnnotation();
+
+            String replyTopic = inboundProps != null ? inboundProps.getResponseTopic() : null;
+            if (!StringUtils.hasText(replyTopic) && replyAnnotation != null) {
+                replyTopic = replyAnnotation.topic();
+            }
+            if (!StringUtils.hasText(replyTopic)) {
+                log.warn("[MQTT] Listener endpoint [{}] returned non-null reply for topic [{}], but neither inbound ResponseTopic nor @MqttReply(topic=...) is present; skipping reply",
+                        endpoint.getId(), actualTopic);
+                return;
+            }
+            if (!handle.isConnected()) {
+                throw new BusinessException("Cannot publish @MqttReply to [" + replyTopic + "]: client [" + handle.getClientName() + "] is disconnected");
+            }
+
+            int replyQos = replyAnnotation != null ? replyAnnotation.qos() : 1;
+            boolean replyRetained = replyAnnotation != null && replyAnnotation.retained();
+            byte[] replyBytes = endpoint.getAdapter().serializePayload(replyValue);
+            payloadGuard.validate(
+                    replyBytes,
+                    handle.getClientProperties() != null ? handle.getClientProperties().getMaxPayloadSize() : null,
+                    replyTopic
+            );
+
+            MqttMessage replyMessage = new MqttMessage(replyBytes);
+            replyMessage.setQos(replyQos);
+            replyMessage.setRetained(replyRetained);
+
+            if (handle.isMqttV5()) {
+                MqttProperties outboundProps = new MqttProperties();
+                if (inboundProps != null && inboundProps.getCorrelationData() != null) {
+                    outboundProps.setCorrelationData(inboundProps.getCorrelationData());
+                }
+                List<UserProperty> userProps = new ArrayList<>();
+                String traceId = headers.get(MessageHeaderConstants.TRACE_ID);
+                if (!StringUtils.hasText(traceId)) {
+                    traceId = IdUtil.fastSimpleUUID();
+                }
+                userProps.add(new UserProperty(MessageHeaderConstants.TRACE_ID, traceId));
+                String tenantId = headers.get(MessageHeaderConstants.TENANT_ID);
+                if (StringUtils.hasText(tenantId)) {
+                    userProps.add(new UserProperty(MessageHeaderConstants.TENANT_ID, tenantId));
+                }
+                String userId = headers.get(MessageHeaderConstants.USER_ID);
+                if (StringUtils.hasText(userId)) {
+                    userProps.add(new UserProperty(MessageHeaderConstants.USER_ID, userId));
+                }
+                String ignoreTenant = headers.get(MessageHeaderConstants.IGNORE_TENANT);
+                if (StringUtils.hasText(ignoreTenant)) {
+                    userProps.add(new UserProperty(MessageHeaderConstants.IGNORE_TENANT, ignoreTenant));
+                }
+                outboundProps.setUserProperties(userProps);
+                replyMessage.setProperties(outboundProps);
+            }
+
+            final String targetReplyTopic = replyTopic;
+            handle.getAsyncClient().publish(targetReplyTopic, replyMessage, null, new MqttActionListener() {
+                @Override
+                public void onSuccess(IMqttToken asyncActionToken) {
+                    log.debug("[MQTT] Declarative reply published from endpoint [{}] to topic [{}]", endpoint.getId(), targetReplyTopic);
+                }
+
+                @Override
+                public void onFailure(IMqttToken asyncActionToken, Throwable exception) {
+                    log.error("[MQTT] Async failure publishing declarative reply from endpoint [{}] to topic [{}]: {}",
+                            endpoint.getId(), targetReplyTopic, exception != null ? exception.getMessage() : "unknown", exception);
+                }
+            });
+        }
+
+        void handleExecutionFailure(int attempt, Throwable e) {
+            // 1. 消费端静默确认与幂等防重拦截 (Silent ACK Invariant)
+            if (isSilentAckOrIdempotent(e)) {
+                triggerPostConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, e);
+                recordConsumeMetric(false);
+                log.info("[MQTT] Silent ACK requested or idempotent duplicate detected on topic [{}] for endpoint [{}], submitting ACK to terminate redelivery loop: {}",
+                        actualTopic, endpoint.getId(), e.getMessage());
+                finishWithForcedAck();
+                return;
+            }
+
+            // 2. MANUAL 模式下业务代码已显式完成确认或放弃确认的幂等闭环
+            if (manualAck != null && manualAck.isSettled()) {
+                triggerPostConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, e);
+                recordConsumeMetric(false);
+                finishWithoutAck();
+                return;
+            }
+
+            // 3. @Valid 校验失败或 FatalExceptionClassifier 判定的不可自愈毒丸：0 次重试直接转入死信并强制确认
+            if (FatalExceptionClassifier.isFatal(e)) {
+                triggerPostConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, e);
+                recordConsumeMetric(false);
+                handleFatalPoisonPill(endpoint, pattern.getRawPattern(), actualTopic, message, handle, e);
+                finishWithForcedAck();
+                return;
+            }
+
+            // 4. 可恢复非致命异常：按受管指数退避调度重试，期间保持信号量与在途计数不释放
+            if (attempt < maxRetries && running.get() && !isPaused(endpoint.getId())) {
+                long delayMs = computeBackoffMillis(attempt);
+                log.warn("[MQTT] Recoverable consumer error on topic [{}] for endpoint [{}] (attempt {}/{}), scheduling retry in {}ms: {}",
+                        actualTopic, endpoint.getId(), attempt + 1, maxRetries + 1, delayMs, e.getMessage());
+                if (scheduleRetryAttempt(attempt + 1, delayMs)) {
+                    return;
                 }
             }
 
-            Map<String, String> variables = pattern.matchAndExtract(actualTopic);
-            if (variables == null) {
-                return;
-            }
-            // 入站大报文守卫校验
-            if (message != null && message.getPayload() != null) {
-                payloadGuard.validate(message.getPayload(), handle.getClientProperties().getMaxPayloadSize(), actualTopic);
-            }
-            // 反射调用适配器
-            endpoint.getAdapter().invoke(actualTopic, message, variables);
-
-            // 消息消费后置拦截切面 (逆序执行)
-            triggerPostConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, null);
-
-            if (metrics != null) {
-                metrics.recordConsume(endpoint.getId(), pattern.getRawPattern(), true, System.nanoTime() - startNanos);
-            }
-        } catch (Throwable e) {
-            // 消息消费后置拦截切面 (异常逆序执行)
+            // 5. 重试耗尽或容器停机/暂停：停机或暂停中留待 Broker 重投；否则转入 DLT 并强制提交确认解除飞行窗口阻塞
             triggerPostConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, e);
-
-            if (metrics != null) {
-                metrics.recordConsume(endpoint.getId(), pattern.getRawPattern(), false, System.nanoTime() - startNanos);
-            }
-            // 1. 消费端静默确认与幂等防重拦截 (Silent ACK Invariant)
-            if (isSilentAckOrIdempotent(e)) {
-                log.info("[MQTT] Silent ACK requested or idempotent duplicate detected on topic [{}] for endpoint [{}], submitting ACK to terminate redelivery loop: {}",
-                        actualTopic, endpoint.getId(), e.getMessage());
+            recordConsumeMetric(false);
+            if (!running.get() || isPaused(endpoint.getId())) {
+                finishWithoutAck();
                 return;
             }
-
-            // 2. 毒丸死信转移 (DLT Invariant)
-            if (FatalExceptionClassifier.isFatal(e)) {
+            if (endpoint.getAnnotation().enableDlt()) {
                 handleFatalPoisonPill(endpoint, pattern.getRawPattern(), actualTopic, message, handle, e);
+            } else {
+                log.error("[MQTT] Consumer retries exhausted for topic [{}] on endpoint [{}] (DLT disabled), acknowledging to unblock flow: {}",
+                        actualTopic, endpoint.getId(), e.getMessage(), e);
+            }
+            finishWithForcedAck();
+        }
+
+        private boolean scheduleRetryAttempt(int nextAttempt, long delayMs) {
+            PendingRetry pendingRetry = new PendingRetry(this);
+            pendingRetries.add(pendingRetry);
+            try {
+                ScheduledFuture<?> future = getOrCreateRetryScheduler().schedule(() -> {
+                    if (!pendingRetries.remove(pendingRetry)) {
+                        return;
+                    }
+                    if (!running.get() || isPaused(endpoint.getId())) {
+                        finishWithoutAck();
+                        return;
+                    }
+                    Runnable retryTask = () -> {
+                        try (MessageContextPropagator.ContextScope ignored = MessageContextPropagator.activate(headers)) {
+                            executeAttempt(nextAttempt);
+                        }
+                    };
+                    if (executor != null) {
+                        try {
+                            executor.execute(retryTask);
+                        } catch (Throwable submitEx) {
+                            log.warn("[MQTT] Retry executor rejected attempt for endpoint [{}]: {}",
+                                    endpoint.getId(), submitEx.getMessage());
+                            finishWithoutAck();
+                        }
+                    } else {
+                        retryTask.run();
+                    }
+                }, delayMs, TimeUnit.MILLISECONDS);
+                pendingRetry.setFuture(future);
+                if (!pendingRetries.contains(pendingRetry)) {
+                    future.cancel(false);
+                }
+                return true;
+            } catch (Throwable scheduleEx) {
+                pendingRetries.remove(pendingRetry);
+                log.warn("[MQTT] Failed to schedule retry for endpoint [{}]: {}", endpoint.getId(), scheduleEx.getMessage());
+                return false;
+            }
+        }
+
+        private void recordConsumeMetric(boolean success) {
+            if (metrics != null) {
+                metrics.recordConsume(endpoint.getId(), pattern.getRawPattern(), success, System.nanoTime() - startNanos);
+            }
+        }
+
+        void finishWithAutoAck() {
+            finish(ackMode == AckMode.AUTO_AFTER_CONSUME);
+        }
+
+        void finishWithForcedAck() {
+            finish(true);
+        }
+
+        void finishWithoutAck() {
+            finish(false);
+        }
+
+        private void finish(boolean shouldAck) {
+            if (!finished.compareAndSet(false, true)) {
                 return;
             }
-
-            // 3. 非致命普通异常日志记录
-            log.error("[MQTT] Error during message dispatch for topic [{}] on endpoint [{}]: {}",
-                    actualTopic, endpoint.getId(), e.getMessage(), e);
-        } finally {
-            if (semaphore != null) {
-                semaphore.release();
+            try {
+                if (shouldAck) {
+                    if (manualAck != null) {
+                        manualAck.ack();
+                    } else {
+                        handle.acknowledgeMessage(message);
+                    }
+                }
+            } finally {
+                if (semaphore != null && semaphoreAcquired.compareAndSet(true, false)) {
+                    semaphore.release();
+                }
+                doneCallback.run();
             }
+        }
+    }
+
+    private static final class PendingRetry {
+        private final ConsumeExecutionContext context;
+        private volatile ScheduledFuture<?> future;
+
+        private PendingRetry(ConsumeExecutionContext context) {
+            this.context = context;
+        }
+
+        ConsumeExecutionContext context() {
+            return context;
+        }
+
+        ScheduledFuture<?> getFuture() {
+            return future;
+        }
+
+        void setFuture(ScheduledFuture<?> future) {
+            this.future = future;
+        }
+    }
+
+    private static final class DefaultMqttAcknowledgment implements MqttAcknowledgment {
+
+        private final Runnable dltAction;
+        private final Runnable ackAction;
+        private final AtomicBoolean settled = new AtomicBoolean(false);
+        private volatile boolean acknowledged = false;
+
+        private DefaultMqttAcknowledgment(Runnable dltAction, Runnable ackAction) {
+            this.dltAction = dltAction;
+            this.ackAction = ackAction;
+        }
+
+        @Override
+        public void ack() {
+            if (settled.compareAndSet(false, true)) {
+                ackAction.run();
+                this.acknowledged = true;
+            }
+        }
+
+        @Override
+        public void nackToDlt() {
+            if (settled.compareAndSet(false, true)) {
+                dltAction.run();
+                ackAction.run();
+                this.acknowledged = true;
+            }
+        }
+
+        @Override
+        public void abandonWithoutAck() {
+            settled.compareAndSet(false, true);
+        }
+
+        @Override
+        public boolean isAcknowledged() {
+            return acknowledged;
+        }
+
+        boolean isSettled() {
+            return settled.get();
         }
     }
 
@@ -421,27 +1058,50 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             byte[] payload = message != null && message.getPayload() != null ? message.getPayload() : new byte[0];
             MqttMessage dltMessage = new MqttMessage(payload);
             dltMessage.setQos(endpoint.getQos());
-            dltMessage.setRetained(true);
+            dltMessage.setRetained(dltProperties != null && dltProperties.isRetained());
 
-            // 构建死信出站 MqttProperties，附加原始上下文与异常堆栈标头
+            // 构建死信出站 MqttProperties 与本地死信存储记录
             Throwable fatalCause = findRootFatalCause(cause);
-            MqttProperties dltProperties = new MqttProperties();
+            String exceptionClass = fatalCause != null ? fatalCause.getClass().getName() : null;
+            String exMsg = fatalCause != null ? fatalCause.getMessage() : null;
+            if (exMsg != null && exMsg.length() > 512) {
+                exMsg = exMsg.substring(0, 512) + "...";
+            }
+            long dltTimestamp = System.currentTimeMillis();
+
+            MqttProperties dltMqttProperties = new MqttProperties();
             List<UserProperty> userProps = new ArrayList<>();
+            Map<String, String> userPropMap = new LinkedHashMap<>();
             if (message != null && message.getProperties() != null && message.getProperties().getUserProperties() != null) {
-                userProps.addAll(message.getProperties().getUserProperties());
-            }
-            userProps.add(new UserProperty("x-original-topic", actualTopic));
-            userProps.add(new UserProperty("x-exception-class", fatalCause.getClass().getName()));
-            String exMsg = fatalCause.getMessage();
-            if (exMsg != null) {
-                if (exMsg.length() > 512) {
-                    exMsg = exMsg.substring(0, 512) + "...";
+                for (UserProperty existingProp : message.getProperties().getUserProperties()) {
+                    userProps.add(existingProp);
+                    userPropMap.put(existingProp.getKey(), existingProp.getValue());
                 }
-                userProps.add(new UserProperty("x-exception-message", exMsg));
             }
-            userProps.add(new UserProperty("x-dlt-timestamp", String.valueOf(System.currentTimeMillis())));
-            dltProperties.setUserProperties(userProps);
-            dltMessage.setProperties(dltProperties);
+            appendDltHeader(userProps, userPropMap, MqttDeadLetterRecord.HEADER_ORIGINAL_TOPIC, actualTopic);
+            if (exceptionClass != null) {
+                appendDltHeader(userProps, userPropMap, MqttDeadLetterRecord.HEADER_EXCEPTION_CLASS, exceptionClass);
+            }
+            if (exMsg != null) {
+                appendDltHeader(userProps, userPropMap, MqttDeadLetterRecord.HEADER_EXCEPTION_MESSAGE, exMsg);
+            }
+            appendDltHeader(userProps, userPropMap, MqttDeadLetterRecord.HEADER_DLT_TIMESTAMP, String.valueOf(dltTimestamp));
+            dltMqttProperties.setUserProperties(userProps);
+            dltMessage.setProperties(dltMqttProperties);
+
+            if (deadLetterStore != null) {
+                deadLetterStore.save(handle.getClientName(), new MqttDeadLetterRecord(
+                        dltTopic,
+                        actualTopic,
+                        payload,
+                        endpoint.getQos(),
+                        exceptionClass,
+                        exMsg,
+                        dltTimestamp,
+                        replayCount,
+                        userPropMap
+                ));
+            }
 
             handle.getAsyncClient().publish(dltTopic, dltMessage);
             if (metrics != null) {
@@ -453,6 +1113,11 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             log.error("[MQTT] Failed to forward poison pill to DLT topic [{}] on client [{}]: {}",
                     dltTopic, handle.getClientName(), e.getMessage(), e);
         }
+    }
+
+    private void appendDltHeader(List<UserProperty> userProps, Map<String, String> userPropMap, String key, String value) {
+        userProps.add(new UserProperty(key, value));
+        userPropMap.put(key, value);
     }
 
     private MqttClientHandle resolveClientHandle(String clientName) {
@@ -467,46 +1132,86 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         if (running.compareAndSet(true, false)) {
             log.info("[MQTT] Stopping MqttListenerEndpointRegistry, unsubscribing [{}] active client channels", subscribedTopicsByClient.size());
             // 1. 第一阶段：注销所有入站订阅，阻断新报文涌入
-            for (Map.Entry<String, List<String>> entry : subscribedTopicsByClient.entrySet()) {
-                String clientName = entry.getKey();
-                List<String> topics = entry.getValue();
-                if (topics.isEmpty()) {
-                    continue;
-                }
-                try {
-                    if (clientRegistry.containsClient(clientName)) {
-                        MqttClientHandle handle = clientRegistry.getClientHandle(clientName);
-                        if (handle.isConnected()) {
-                            handle.unsubscribe(topics.toArray(new String[0]));
-                            log.info("[MQTT] Client [{}] unsubscribed {} topics cleanly", clientName, topics.size());
-                        }
+            subscriptionLock.lock();
+            try {
+                for (Map.Entry<String, List<String>> entry : subscribedTopicsByClient.entrySet()) {
+                    String clientName = entry.getKey();
+                    List<String> topics = entry.getValue();
+                    if (topics.isEmpty()) {
+                        continue;
                     }
-                } catch (Exception e) {
-                    log.warn("[MQTT] Error unsubscribing topics for client [{}]: {}", clientName, e.getMessage());
+                    try {
+                        if (clientRegistry.containsClient(clientName)) {
+                            MqttClientHandle handle = clientRegistry.getClientHandle(clientName);
+                            if (handle.isConnected()) {
+                                handle.unsubscribe(topics.toArray(new String[0]));
+                                log.info("[MQTT] Client [{}] unsubscribed {} topics cleanly", clientName, topics.size());
+                            }
+                        }
+                    } catch (Exception e) {
+                        log.warn("[MQTT] Error unsubscribing topics for client [{}]: {}", clientName, e.getMessage());
+                    }
                 }
+                subscribedTopicsByClient.clear();
+                activeFilterEndpoints.clear();
+                subscribedQosByFilter.clear();
+            } finally {
+                subscriptionLock.unlock();
             }
-            subscribedTopicsByClient.clear();
 
-            // 2. 第二阶段：排空受管线程池中未决任务（最多等待 shutdownTimeout）
+            // 2. 第二阶段：主动取消退避等待中的延迟重试任务并补偿释放信号量/在途计数，再排空线程池
+            cancelPendingRetries();
             drainExecutor();
+
+            schedulerLock.lock();
+            try {
+                if (ownedScheduler != null) {
+                    ownedScheduler.shutdown();
+                    ownedScheduler = null;
+                }
+            } finally {
+                schedulerLock.unlock();
+            }
         }
     }
 
-    private void submitManagedTask(Runnable task) {
+    private void cancelPendingRetries() {
+        if (pendingRetries.isEmpty()) {
+            return;
+        }
+        for (PendingRetry pending : new ArrayList<>(pendingRetries)) {
+            if (pendingRetries.remove(pending)) {
+                ScheduledFuture<?> future = pending.getFuture();
+                if (future != null) {
+                    future.cancel(false);
+                }
+                pending.context().finishWithoutAck();
+            }
+        }
+    }
+
+    private void submitTrackedTask(Consumer<Runnable> taskConsumer) {
         inFlightTasks.incrementAndGet();
+        AtomicBoolean completed = new AtomicBoolean(false);
+        Runnable doneCallback = () -> {
+            if (completed.compareAndSet(false, true)) {
+                onTaskCompleted();
+            }
+        };
         Runnable trackedTask = () -> {
             try {
-                task.run();
-            } finally {
-                onTaskCompleted();
+                taskConsumer.accept(doneCallback);
+            } catch (Throwable ex) {
+                doneCallback.run();
+                throw ex;
             }
         };
         if (executor != null) {
             try {
                 executor.execute(trackedTask);
             } catch (Throwable submitEx) {
-                onTaskCompleted();
-                throw submitEx;
+                log.warn("[MQTT] Consumer executor rejected inbound task: {}", submitEx.getMessage());
+                doneCallback.run();
             }
         } else {
             trackedTask.run();
@@ -593,7 +1298,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     // ==================== 容器动态运维接口 (MqttContainerManager 支撑) ====================
 
     /**
-     * 暂停指定端点的消息消费调度
+     * 暂停指定端点的消息消费调度（基于引用计数在活跃端点归零时向 Broker 真实退订）
      *
      * @param endpointId 端点唯一标识
      */
@@ -601,15 +1306,22 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         if (!StringUtils.hasText(endpointId)) {
             throw new IllegalArgumentException("endpointId must not be blank");
         }
-        if (!containsEndpoint(endpointId)) {
-            throw new IllegalArgumentException("MQTT listener endpoint not found: " + endpointId);
+        subscriptionLock.lock();
+        try {
+            MqttListenerEndpoint endpoint = findEndpoint(endpointId);
+            if (endpoint == null) {
+                throw new IllegalArgumentException("MQTT listener endpoint not found: " + endpointId);
+            }
+            pausedEndpoints.add(endpointId);
+            releaseEndpointSubscriptionsLocked(endpoint);
+            log.info("[MQTT] Paused message dispatch for listener endpoint [{}]", endpointId);
+        } finally {
+            subscriptionLock.unlock();
         }
-        pausedEndpoints.add(endpointId);
-        log.info("[MQTT] Paused message dispatch for listener endpoint [{}]", endpointId);
     }
 
     /**
-     * 恢复指定端点的消息消费调度
+     * 恢复指定端点的消息消费调度（按需重建 Broker 底层订阅）
      *
      * @param endpointId 端点唯一标识
      */
@@ -617,11 +1329,20 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         if (!StringUtils.hasText(endpointId)) {
             throw new IllegalArgumentException("endpointId must not be blank");
         }
-        if (!containsEndpoint(endpointId)) {
-            throw new IllegalArgumentException("MQTT listener endpoint not found: " + endpointId);
+        subscriptionLock.lock();
+        try {
+            MqttListenerEndpoint endpoint = findEndpoint(endpointId);
+            if (endpoint == null) {
+                throw new IllegalArgumentException("MQTT listener endpoint not found: " + endpointId);
+            }
+            pausedEndpoints.remove(endpointId);
+            if (isRunning()) {
+                subscribeEndpointLocked(endpoint);
+            }
+            log.info("[MQTT] Resumed message dispatch for listener endpoint [{}]", endpointId);
+        } finally {
+            subscriptionLock.unlock();
         }
-        pausedEndpoints.remove(endpointId);
-        log.info("[MQTT] Resumed message dispatch for listener endpoint [{}]", endpointId);
     }
 
     /**
@@ -638,21 +1359,106 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     }
 
     /**
-     * 全局暂停所有已注册端点的消费调度
+     * 全局暂停所有已注册端点的消费调度（并向 Broker 真实退订对应主题过滤器）
      */
     public void pauseAll() {
-        for (MqttListenerEndpoint endpoint : endpoints) {
-            pausedEndpoints.add(endpoint.getId());
+        subscriptionLock.lock();
+        try {
+            RuntimeException firstError = null;
+            for (MqttListenerEndpoint endpoint : endpoints) {
+                pausedEndpoints.add(endpoint.getId());
+                try {
+                    releaseEndpointSubscriptionsLocked(endpoint);
+                } catch (RuntimeException ex) {
+                    if (firstError == null) {
+                        firstError = ex;
+                    } else {
+                        firstError.addSuppressed(ex);
+                    }
+                }
+            }
+            if (firstError != null) {
+                throw firstError;
+            }
+            log.info("[MQTT] Paused message dispatch for all [{}] listener endpoints", endpoints.size());
+        } finally {
+            subscriptionLock.unlock();
         }
-        log.info("[MQTT] Paused message dispatch for all [{}] listener endpoints", endpoints.size());
     }
 
     /**
-     * 全局恢复所有已注册端点的消费调度
+     * 全局恢复所有已注册端点的消费调度（按引用计数重建 Broker 订阅）
      */
     public void resumeAll() {
-        pausedEndpoints.clear();
-        log.info("[MQTT] Resumed message dispatch for all [{}] listener endpoints", endpoints.size());
+        subscriptionLock.lock();
+        try {
+            pausedEndpoints.clear();
+            if (isRunning()) {
+                for (MqttListenerEndpoint endpoint : endpoints) {
+                    subscribeEndpointLocked(endpoint);
+                }
+            }
+            log.info("[MQTT] Resumed message dispatch for all [{}] listener endpoints", endpoints.size());
+        } finally {
+            subscriptionLock.unlock();
+        }
+    }
+
+    private void releaseEndpointSubscriptionsLocked(MqttListenerEndpoint endpoint) {
+        MqttClientHandle handle = resolveExistingClientHandle(endpoint.getClientName());
+        String effectiveClient = handle != null
+                ? handle.getClientName()
+                : (StringUtils.hasText(endpoint.getClientName()) ? endpoint.getClientName() : clientRegistry.getDefaultClientName());
+        if (!StringUtils.hasText(effectiveClient)) {
+            return;
+        }
+        for (MqttTopicPattern pattern : endpoint.getPatterns()) {
+            String filter = pattern.getSharedMqttFilter(endpoint.getSharedGroup());
+            FilterKey key = new FilterKey(effectiveClient, filter);
+            Set<String> activeIds = activeFilterEndpoints.get(key);
+            if (activeIds == null || !activeIds.contains(endpoint.getId())) {
+                continue;
+            }
+            boolean lastActiveEndpoint = activeIds.size() == 1;
+            if (lastActiveEndpoint && handle != null && handle.isConnected()) {
+                try {
+                    handle.unsubscribe(filter);
+                    log.info("[MQTT] Client [{}] unsubscribed [{}] because active endpoint refCount reached 0",
+                            effectiveClient, filter);
+                } catch (MqttException e) {
+                    throw new BusinessException("Failed to unsubscribe MQTT topic [" + filter + "]: " + e.getMessage(), e);
+                }
+            }
+            activeIds.remove(endpoint.getId());
+            if (activeIds.isEmpty()) {
+                activeFilterEndpoints.remove(key);
+                subscribedQosByFilter.remove(key);
+                List<String> clientTopics = subscribedTopicsByClient.get(effectiveClient);
+                if (clientTopics != null) {
+                    clientTopics.remove(filter);
+                }
+            }
+        }
+    }
+
+    private MqttListenerEndpoint findEndpoint(String endpointId) {
+        for (MqttListenerEndpoint endpoint : endpoints) {
+            if (endpoint.getId().equals(endpointId)) {
+                return endpoint;
+            }
+        }
+        return null;
+    }
+
+    private MqttClientHandle resolveExistingClientHandle(String clientName) {
+        String effectiveName = StringUtils.hasText(clientName) ? clientName : clientRegistry.getDefaultClientName();
+        if (!StringUtils.hasText(effectiveName) || !clientRegistry.containsClient(effectiveName)) {
+            return null;
+        }
+        return clientRegistry.getClientHandle(effectiveName);
+    }
+
+    private record FilterKey(String clientName, String mqttFilter) {
     }
 
     /**
