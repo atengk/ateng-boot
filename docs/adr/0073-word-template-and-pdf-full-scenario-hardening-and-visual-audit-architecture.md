@@ -155,12 +155,33 @@ flowchart TB
 1. **核心底座单元测试**：
    - [`WordTemplateTest.java`](../../ateng-boot-document/src/test/java/io/github/atengk/boot/document/word/WordTemplateTest.java)：覆盖变量反查、正文抽取、空数据表格折叠与空图元清理；
    - [`PdfTemplateFormTest.java`](../../ateng-boot-document/src/test/java/io/github/atengk/boot/document/pdf/PdfTemplateFormTest.java)：覆盖表单域巡检自省、动态 CJK 字体装配与 XFA 快速失败熔断；
-   - [`PdfTemplateMetadataTest.java`](../../ateng-boot-document/src/test/java/io/github/atengk/boot/document/pdf/PdfTemplateMetadataTest.java)：覆盖核心元数据自省、分页文本抽取与带密码文档探查；
+   - [`PdfTemplateTest.java`](../../ateng-boot-document/src/test/java/io/github/atengk/boot/document/pdf/PdfTemplateTest.java)：覆盖核心元数据自省、分页文本抽取、双模水印、关键字盖章、光栅涂黑与编排探查；
    - [`PdfTemplateRenderTest.java`](../../ateng-boot-document/src/test/java/io/github/atengk/boot/document/pdf/PdfTemplateRenderTest.java)：覆盖单页/多页上限截断、DPI 范围保护、流式光栅消费与越界异常防卫；
    - [`PdfTemplateCrossPageSealTest.java`](../../ateng-boot-document/src/test/java/io/github/atengk/boot/document/pdf/PdfTemplateCrossPageSealTest.java)：覆盖 3 页、5 页跳首尾、单页、自定义页面、边缘贴合与切片精度无损验证。
 2. **场景工程端到端点检**：
    - [`DocumentAuditExportTest.java`](../../ateng-boot-samples/ateng-boot-sample-document/src/test/java/io/github/atengk/boot/sample/document/DocumentAuditExportTest.java)：端到端运行 9 大场景，生成真实文件至 `ateng-boot-samples/ateng-boot-sample-document/target/test-output/` 并生成 `audit-manifest.json`；
    - 多线程测试命令全绿：`mvn test -pl ateng-boot-document,ateng-boot-samples/ateng-boot-sample-document -am -T 1C -nsu -B`。
 3. **关联 Issue**：
-   - Parent: [#530](https://github.com/atengk/ateng-boot/issues/530)
-   - Sub-tickets: [#531](https://github.com/atengk/ateng-boot/issues/531), [#532](https://github.com/atengk/ateng-boot/issues/532), [#533](https://github.com/atengk/ateng-boot/issues/533), [#534](https://github.com/atengk/ateng-boot/issues/534), [#535](https://github.com/atengk/ateng-boot/issues/535), [#536](https://github.com/atengk/ateng-boot/issues/536)
+   - 演进阶段一（基础加固与点检体系）：Parent [#530](https://github.com/atengk/ateng-boot/issues/530)（[#531](https://github.com/atengk/ateng-boot/issues/531), [#532](https://github.com/atengk/ateng-boot/issues/532), [#533](https://github.com/atengk/ateng-boot/issues/533), [#534](https://github.com/atengk/ateng-boot/issues/534), [#535](https://github.com/atengk/ateng-boot/issues/535), [#536](https://github.com/atengk/ateng-boot/issues/536)）
+   - 演进阶段二（全场景扩容、九道防线加固与 Gotenberg SPI 闭环）：Parent [#1049](https://github.com/atengk/ateng-boot/issues/1049)（[#1050](https://github.com/atengk/ateng-boot/issues/1050), [#1051](https://github.com/atengk/ateng-boot/issues/1051), [#1052](https://github.com/atengk/ateng-boot/issues/1052), [#1053](https://github.com/atengk/ateng-boot/issues/1053), [#1054](https://github.com/atengk/ateng-boot/issues/1054)）
+
+
+---
+
+## 二次演进注记：全场景深度加固、九道防线治理与 Gotenberg SPI 闭环 (2026-11)
+
+在存量模块工业级成熟度体检与全场景扩容（#1049）中，针对高频企业文档治理、安全边界与云原生运行态稳定性，在既有 ADR-0073 基础上作出以下核心不可逆权衡与底座加固：
+
+1. **PDF 物理涂黑脱敏策略权衡（命中页高清单页光栅重封 vs 内容流局部擦除）**：
+   - **决策**：采用 `PdfRedactionSupport` 执行 **受影响页高清光栅化涂黑重封装（默认 `200 DPI` + `finally { image.flush(); }`，未命中页保持 100% 原生矢量无损）**，而非直接尝试解析并修改 PDF 内容流操作符局部删字。
+   - **理由**：PDF 内容流中字符可能经过非顺序定位（`TJ`/`Tm` 矩阵拆分）、XObject Form 嵌套引用、透明层叠加或隐写字形编码，局部流擦除极易漏删残留导致复制穿透泄密；仅对命中敏感关键字或物理矩形区域的页面渲染为像素位图并覆盖遮罩重新封装，可从物理层 100% 根除底层文本字节与矢量路径，同时保留未涉密页面的原生矢量清晰度与可检索性。
+2. **Word 安全语义正交拆解与 SpringEL 防注入默认关闭**：
+   - **决策**：保留 `WordTemplate.protect/unprotect` 向后兼容并正式将其领域语义收口为 **`ReadonlyProtection`**（`settings.xml` 只读编辑锁定）；新增 **`encrypt/decrypt/isEncrypted`** 基于 POI `EncryptionMode.agile`（AES-256 + SHA-512）实现真正的文件打开级加密信封。同时将 `ateng.boot.document.word.spring-el-enabled` **默认设为 `false`**，仅支持通过显式配置或 `configureBuilder(true)` 为可信内部模板按需开启。
+   - **理由**：消除 `WordTemplate.protect` 与 `PdfTemplate.protect` 同名异义导致的加密误用风险；默认禁用 poi-tl SpringEL 可彻底阻断运营上传不可信模板时可能触发的 `T(java.lang.System)` 等表达式注入攻击面。
+3. **Gotenberg `RestClient` 条件装配逃生舱与零强制依赖红线**：
+   - **决策**：严格恪守零新增第三方强制依赖红线，仅在 `ateng-boot-document/pom.xml` 以 `<optional>true</optional>` 声明 `spring-web` 守卫；在 `AtengDocumentAutoConfiguration` 中通过独立静态配置类 `GotenbergConverterConfiguration`（`@ConditionalOnClass(RestClient.class)` + `@ConditionalOnProperty(prefix = "ateng.boot.document.converter.gotenberg", name = "enabled", havingValue = "true")`）提供开箱即用的 `GotenbergDocumentConverter`，并强制校验合法 `http/https` `baseUrl`、`Duration` 连接/读取超时及 `DataSize maxDocumentSize`（默认 `100MB`）流容量硬熔断。在 `ateng-boot-sample-document` 配套提供 `@Profile("!local")` 的 `OfflineSimulatedDocumentConverter` 离线模拟桩，实现默认/CI 离线自洽与 `local` 真实 Gotenberg 集群的无缝双模切换。
+4. **九道成熟度防线同步加固与 CJK 字体失败策略覆盖声明 (Superseding Note)**：
+   - **冲突与演进覆盖声明（覆盖前文第 2 节 L103）**：原第 2 节所述“四级顺延装配 + PDFBox 默认降级字体”策略已正式演进收口为 **两级探测（`FontResolutionTier.CONFIG` -> `SYSTEM`）+ 智能 Fail-Fast**——仅纯 ASCII/WinAnsi 文本允许回退 `HELVETICA`，含任何非 ASCII 中文字符而宿主与配置均无可用字体时，立即前置 Fail-Fast 抛出 `57003 DocumentFontException` 并附带 Dockerfile 修复指引，杜绝吞咽缺失导致的汉字方块乱码；
+   - `DocumentFontResolver` 临界区由 `synchronized` 迁移为 `ReentrantLock` 消除 JDK 21+ 虚拟线程 Carrier Pinning（参见 [ADR-0029](./0029-virtual-threads-and-adaptive-async-runtime.md)）；
+   - 临时目录托管、Web 导出文件名及模板基准路径组合统一收敛复用 Core `FileUtil`（防 `../` 路径穿越）；
+   - 修复 `isEncrypted`/`hasAcroForm` 异常吞咽、移除 `PdfTemplate.protect` 硬编码管理密码（改用 `SecureRandom` 生成强随机口令）、纯 ASCII vs 非 ASCII 中文智能 Fail-Fast（缺失中文字体直接抛出 `57003 DocumentFontException`）、全模块枚举统一实现 `IBaseEnum<String>`，并将 `DocumentAuditExportTest` 落盘验真场景由 9 项扩展至 16 项。
