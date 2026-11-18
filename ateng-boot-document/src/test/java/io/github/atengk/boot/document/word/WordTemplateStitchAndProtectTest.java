@@ -251,6 +251,36 @@ class WordTemplateStitchAndProtectTest {
         }
     }
 
+    @Test
+    @DisplayName("分页与页眉页脚拼装控制：StitchOptions 前置重载与 keepHeaderFooter=false 剥离页眉页脚")
+    void testStitchOptionsPrecedingOverloadsAndKeepHeaderFooter(@TempDir Path tempDir) throws Exception {
+        byte[] mainWithHeader = wordTemplate.addWatermarkToBytes(
+                createSimpleDoc("主文档含页眉水印", "主体内容段落"), "CONFIDENTIAL-HDR");
+        byte[] annexDoc = createSimpleDoc("附件二", "附加补充条款");
+        assertThat(wordTemplate.inspectMetadata(mainWithHeader).isHasHeadersOrFooters()).isTrue();
+
+        // 1. 默认 keepHeaderFooter=true 保留主文档页眉页脚（选项前置 List 重载）
+        Path keptPath = tempDir.resolve("kept-hdr.docx");
+        wordTemplate.stitch(keptPath, StitchOptions.builder().pageBreakBetween(true).build(), List.of(mainWithHeader, annexDoc));
+        assertThat(wordTemplate.inspectMetadata(keptPath).isHasHeadersOrFooters()).isTrue();
+
+        // 2. keepHeaderFooter=false 剥离页眉页脚（选项前置可变参数与字节数组重载）
+        StitchOptions stripOpts = StitchOptions.builder()
+                .pageBreakBetween(true)
+                .keepHeaderFooter(false)
+                .build();
+        byte[] strippedBytes = wordTemplate.stitchToBytes(stripOpts, mainWithHeader, annexDoc);
+        assertThat(wordTemplate.inspectMetadata(strippedBytes).isHasHeadersOrFooters()).isFalse();
+        assertThat(wordTemplate.extractText(strippedBytes)).contains("主文档含页眉水印", "附件二");
+
+        Path strippedPath = tempDir.resolve("stripped-hdr.docx");
+        wordTemplate.stitch(strippedPath, stripOpts, mainWithHeader, annexDoc);
+        assertThat(wordTemplate.inspectMetadata(strippedPath).isHasHeadersOrFooters()).isFalse();
+
+        byte[] strippedListBytes = wordTemplate.stitchToBytes(stripOpts, List.of(mainWithHeader, annexDoc));
+        assertThat(wordTemplate.inspectMetadata(strippedListBytes).isHasHeadersOrFooters()).isFalse();
+    }
+
     private static byte[] createSimpleDoc(String title, String content) throws IOException {
         try (XWPFDocument doc = new XWPFDocument();
              ByteArrayOutputStream baos = new ByteArrayOutputStream()) {

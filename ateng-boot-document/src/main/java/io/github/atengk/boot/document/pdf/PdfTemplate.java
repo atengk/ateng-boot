@@ -368,22 +368,18 @@ public class PdfTemplate {
         return true;
     }
 
-    private void drawPageWatermark(PDDocument doc, PDPage page, String text, PDFont font,
-                                   WatermarkOptions opts, Color color) throws IOException {
+    @FunctionalInterface
+    private interface TiledWatermarkCellDrawer {
+        void draw(PDPageContentStream cs) throws IOException;
+    }
+
+    private void drawTiledWatermark(PDDocument doc, PDPage page, WatermarkOptions opts, Color color,
+                                    TiledWatermarkCellDrawer cellDrawer) throws IOException {
         PDRectangle visibleBox = PdfRedactionSupport.resolveVisibleBox(page);
         int rotation = PdfRedactionSupport.normalizeRotation(page);
-        float[] visSize = PdfRedactionSupport.resolveVisualSize(visibleBox, rotation);
-        float width = visSize[0];
-        float height = visSize[1];
-
-        String[] rawLines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n", -1);
-        float fontSize = opts.getFontSize();
-        float lineHeight = fontSize * 1.35f;
-        float[] lineWidths = new float[rawLines.length];
-        for (int i = 0; i < rawLines.length; i++) {
-            String line = rawLines[i];
-            lineWidths[i] = line.isEmpty() ? 0.0f : font.getStringWidth(line) / 1000.0f * fontSize;
-        }
+        PdfRedactionSupport.VisualSize visSize = PdfRedactionSupport.resolveVisualSize(visibleBox, rotation);
+        float width = visSize.width();
+        float height = visSize.height();
 
         PDPageContentStream.AppendMode mode = opts.getLayer() == WatermarkLayer.UNDERLAY
                 ? PDPageContentStream.AppendMode.PREPEND
@@ -393,12 +389,14 @@ public class PdfTemplate {
             cs.saveGraphicsState();
             PdfRedactionSupport.applyVisualCoordinateTransform(cs, visibleBox, rotation);
 
-            // 设置透明度与颜色
+            // 设置透明度与可选前景色
             PDExtendedGraphicsState gs = new PDExtendedGraphicsState();
             gs.setNonStrokingAlphaConstant(opts.getOpacity());
             gs.setStrokingAlphaConstant(opts.getOpacity());
             cs.setGraphicsStateParameters(gs);
-            cs.setNonStrokingColor(color.getRed() / 255.0f, color.getGreen() / 255.0f, color.getBlue() / 255.0f);
+            if (color != null) {
+                cs.setNonStrokingColor(color.getRed() / 255.0f, color.getGreen() / 255.0f, color.getBlue() / 255.0f);
+            }
 
             // 基于可见旋转区域外扩平铺，确保任何角度不留边缘空白
             float colSpacing = Math.max(50.0f, opts.getColSpacing());
@@ -413,19 +411,7 @@ public class PdfTemplate {
                 for (float y = minY; y <= maxY; y += rowSpacing) {
                     cs.saveGraphicsState();
                     cs.transform(Matrix.getRotateInstance(angleRad, x, y));
-                    for (int idx = 0; idx < rawLines.length; idx++) {
-                        String line = rawLines[idx];
-                        if (line.isEmpty()) {
-                            continue;
-                        }
-                        float offsetX = -lineWidths[idx] / 2.0f;
-                        float offsetY = -idx * lineHeight;
-                        cs.beginText();
-                        cs.setFont(font, fontSize);
-                        cs.newLineAtOffset(offsetX, offsetY);
-                        cs.showText(line);
-                        cs.endText();
-                    }
+                    cellDrawer.draw(cs);
                     cs.restoreGraphicsState();
                 }
             }
@@ -433,47 +419,40 @@ public class PdfTemplate {
         }
     }
 
+    private void drawPageWatermark(PDDocument doc, PDPage page, String text, PDFont font,
+                                   WatermarkOptions opts, Color color) throws IOException {
+        String[] rawLines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n", -1);
+        float fontSize = opts.getFontSize();
+        float lineHeight = fontSize * 1.35f;
+        float[] lineWidths = new float[rawLines.length];
+        for (int i = 0; i < rawLines.length; i++) {
+            String line = rawLines[i];
+            lineWidths[i] = line.isEmpty() ? 0.0f : font.getStringWidth(line) / 1000.0f * fontSize;
+        }
+
+        drawTiledWatermark(doc, page, opts, color, cs -> {
+            for (int idx = 0; idx < rawLines.length; idx++) {
+                String line = rawLines[idx];
+                if (line.isEmpty()) {
+                    continue;
+                }
+                float offsetX = -lineWidths[idx] / 2.0f;
+                float offsetY = -idx * lineHeight;
+                cs.beginText();
+                cs.setFont(font, fontSize);
+                cs.newLineAtOffset(offsetX, offsetY);
+                cs.showText(line);
+                cs.endText();
+            }
+        });
+    }
+
     private void drawPageImageWatermark(PDDocument doc, PDPage page, PDImageXObject image,
                                         WatermarkOptions opts) throws IOException {
-        PDRectangle visibleBox = PdfRedactionSupport.resolveVisibleBox(page);
-        int rotation = PdfRedactionSupport.normalizeRotation(page);
-        float[] visSize = PdfRedactionSupport.resolveVisualSize(visibleBox, rotation);
-        float width = visSize[0];
-        float height = visSize[1];
         float imgW = opts.getImageWidth();
         float imgH = opts.getImageHeight();
-
-        PDPageContentStream.AppendMode mode = opts.getLayer() == WatermarkLayer.UNDERLAY
-                ? PDPageContentStream.AppendMode.PREPEND
-                : PDPageContentStream.AppendMode.APPEND;
-
-        try (PDPageContentStream cs = new PDPageContentStream(doc, page, mode, true, true)) {
-            cs.saveGraphicsState();
-            PdfRedactionSupport.applyVisualCoordinateTransform(cs, visibleBox, rotation);
-
-            PDExtendedGraphicsState gs = new PDExtendedGraphicsState();
-            gs.setNonStrokingAlphaConstant(opts.getOpacity());
-            gs.setStrokingAlphaConstant(opts.getOpacity());
-            cs.setGraphicsStateParameters(gs);
-
-            float colSpacing = Math.max(50.0f, opts.getColSpacing());
-            float rowSpacing = Math.max(30.0f, opts.getRowSpacing());
-            float minX = -width * 0.5f;
-            float maxX = width * 1.5f;
-            float minY = -height * 0.5f;
-            float maxY = height * 1.5f;
-            double angleRad = Math.toRadians(opts.getRotation());
-
-            for (float x = minX; x <= maxX; x += colSpacing) {
-                for (float y = minY; y <= maxY; y += rowSpacing) {
-                    cs.saveGraphicsState();
-                    cs.transform(Matrix.getRotateInstance(angleRad, x, y));
-                    cs.drawImage(image, -imgW / 2.0f, -imgH / 2.0f, imgW, imgH);
-                    cs.restoreGraphicsState();
-                }
-            }
-            cs.restoreGraphicsState();
-        }
+        drawTiledWatermark(doc, page, opts, null,
+                cs -> cs.drawImage(image, -imgW / 2.0f, -imgH / 2.0f, imgW, imgH));
     }
 
     // ==========================================
@@ -965,7 +944,7 @@ public class PdfTemplate {
 
         float dpi = options.getDpi() != null ? options.getDpi() : resolveDefaultRedactionDpi();
         validateDpi(dpi);
-        Color maskColor = parseColor(options.getMaskColor(), Color.BLACK);
+        Color maskColor = parseColor(options.resolveEffectiveMaskColor(), Color.BLACK);
         float padding = Math.max(0.0f, options.getPadding());
 
         try (LoadedPdfDocument loadedPdf = loadDocument(source, options.getPassword())) {
@@ -980,10 +959,15 @@ public class PdfTemplate {
                 throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "PDF 文档页数为空");
             }
 
-            Map<Integer, List<PdfRedactionSupport.RedactRect>> masksByPage = PdfRedactionSupport.collectRedactionMasks(
+            PdfRedactionSupport.RedactionPlan plan = PdfRedactionSupport.collectRedactionPlan(
                     doc, options, padding, totalPages);
-            if (!masksByPage.isEmpty()) {
-                PdfRedactionSupport.applyRasterRedactionToPages(doc, masksByPage, dpi, maskColor);
+            if (options.isFailIfNotFound()
+                    && (plan.masksByPage().isEmpty() || (hasKeywords && plan.keywordMatchCount() == 0))) {
+                throw new PdfOperationException(DocumentResultCode.KEYWORD_NOT_FOUND,
+                        "未在 PDF 文档中命中任何待物理涂黑脱敏的敏感内容");
+            }
+            if (!plan.masksByPage().isEmpty()) {
+                PdfRedactionSupport.applyRasterRedactionToPages(doc, plan.masksByPage(), dpi, maskColor);
             }
             saveDocument(doc, target);
         } catch (PdfOperationException | IllegalArgumentException e) {
@@ -2442,9 +2426,9 @@ public class PdfTemplate {
                                 PageNumberOptions opts, Color color) throws IOException {
         PDRectangle visibleBox = PdfRedactionSupport.resolveVisibleBox(page);
         int rotation = PdfRedactionSupport.normalizeRotation(page);
-        float[] visSize = PdfRedactionSupport.resolveVisualSize(visibleBox, rotation);
-        float width = visSize[0];
-        float height = visSize[1];
+        PdfRedactionSupport.VisualSize visSize = PdfRedactionSupport.resolveVisualSize(visibleBox, rotation);
+        float width = visSize.width();
+        float height = visSize.height();
         float fontSize = opts.getFontSize();
         float margin = opts.getMargin();
 

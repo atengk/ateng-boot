@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.Objects;
+import java.util.function.Function;
 
 /**
  * 文档 Web 流式传输内部通用辅助组件
@@ -78,7 +79,22 @@ public final class DocumentWebHelper {
      * @return 有界包装输入流
      */
     public static InputStream wrapBoundedInputStream(InputStream delegate, long maxBytes) {
+        return wrapBoundedInputStream(delegate, maxBytes,
+                msg -> new DocumentException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED, msg));
+    }
+
+    /**
+     * 对输入流包装有界字节计数防卫，允许调用方自定义超限抛出的异常类型
+     *
+     * @param delegate                 原始输入流
+     * @param maxBytes                 最大允许读取字节数（<= 0 或 {@link Long#MAX_VALUE} 时不拦截）
+     * @param overflowExceptionFactory 容量超限异常构造器
+     * @return 有界包装输入流
+     */
+    public static InputStream wrapBoundedInputStream(InputStream delegate, long maxBytes,
+                                                     Function<String, ? extends RuntimeException> overflowExceptionFactory) {
         Objects.requireNonNull(delegate, "输入流 delegate 不能为空");
+        Objects.requireNonNull(overflowExceptionFactory, "超限异常构造器 overflowExceptionFactory 不能为空");
         if (maxBytes <= 0 || maxBytes == Long.MAX_VALUE) {
             return delegate;
         }
@@ -89,11 +105,7 @@ public final class DocumentWebHelper {
             public int read() throws IOException {
                 int b = super.read();
                 if (b != -1) {
-                    bytesReadTotal++;
-                    if (bytesReadTotal > maxBytes) {
-                        throw new DocumentException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
-                                "文档输入流超出最大允许容量上限 (" + maxBytes + " bytes): " + bytesReadTotal);
-                    }
+                    checkOverflow(1);
                 }
                 return b;
             }
@@ -102,13 +114,17 @@ public final class DocumentWebHelper {
             public int read(byte[] b, int off, int len) throws IOException {
                 int n = super.read(b, off, len);
                 if (n > 0) {
-                    bytesReadTotal += n;
-                    if (bytesReadTotal > maxBytes) {
-                        throw new DocumentException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
-                                "文档输入流超出最大允许容量上限 (" + maxBytes + " bytes): " + bytesReadTotal);
-                    }
+                    checkOverflow(n);
                 }
                 return n;
+            }
+
+            private void checkOverflow(int delta) {
+                bytesReadTotal += delta;
+                if (bytesReadTotal > maxBytes) {
+                    throw overflowExceptionFactory.apply(
+                            "文档输入流超出最大允许容量上限 (" + maxBytes + " bytes): " + bytesReadTotal);
+                }
             }
         };
     }

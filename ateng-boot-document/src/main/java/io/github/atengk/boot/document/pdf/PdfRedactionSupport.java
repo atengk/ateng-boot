@@ -47,6 +47,18 @@ final class PdfRedactionSupport {
     record RedactRect(float x, float y, float width, float height) {
     }
 
+    /**
+     * 旋转校准后的页面可视宽高值对象（单位：pt）
+     */
+    record VisualSize(float width, float height) {
+    }
+
+    /**
+     * 物理涂黑脱敏扫描计划（包含按页分组的物理遮罩区域与关键字命中总数）
+     */
+    record RedactionPlan(Map<Integer, List<RedactRect>> masksByPage, int keywordMatchCount) {
+    }
+
     static PDRectangle resolveVisibleBox(PDPage page) {
         PDRectangle cropBox = page.getCropBox();
         return cropBox != null ? cropBox : page.getMediaBox();
@@ -56,10 +68,10 @@ final class PdfRedactionSupport {
         return ((page.getRotation() % 360) + 360) % 360;
     }
 
-    static float[] resolveVisualSize(PDRectangle visibleBox, int rotation) {
+    static VisualSize resolveVisualSize(PDRectangle visibleBox, int rotation) {
         float w = visibleBox.getWidth();
         float h = visibleBox.getHeight();
-        return (rotation == 90 || rotation == 270) ? new float[]{h, w} : new float[]{w, h};
+        return (rotation == 90 || rotation == 270) ? new VisualSize(h, w) : new VisualSize(w, h);
     }
 
     static void applyVisualCoordinateTransform(PDPageContentStream cs, PDRectangle visibleBox, int rotation)
@@ -89,6 +101,12 @@ final class PdfRedactionSupport {
 
     static List<TextPositionMatch> findTextPositionsInDocument(PDDocument doc, String keyword,
                                                                Set<Integer> targetPages) throws IOException {
+        return findTextPositionsInDocument(doc, keyword, targetPages, false);
+    }
+
+    static List<TextPositionMatch> findTextPositionsInDocument(PDDocument doc, String keyword,
+                                                               Set<Integer> targetPages,
+                                                               boolean ignoreCase) throws IOException {
         int totalPages = doc.getNumberOfPages();
         List<TextPositionMatch> matches = new ArrayList<>();
         for (int p = 1; p <= totalPages; p++) {
@@ -139,7 +157,7 @@ final class PdfRedactionSupport {
 
             String full = pageText.toString();
             int cursor = 0;
-            while ((cursor = full.indexOf(keyword, cursor)) >= 0) {
+            while ((cursor = findNextMatchIndex(full, keyword, cursor, ignoreCase)) >= 0) {
                 int endIdx = cursor + keyword.length();
                 float minX = Float.MAX_VALUE;
                 float minBottomY = Float.MAX_VALUE;
@@ -165,7 +183,7 @@ final class PdfRedactionSupport {
                 if (minX != Float.MAX_VALUE) {
                     matches.add(TextPositionMatch.builder()
                             .pageIndex(p - 1)
-                            .text(keyword)
+                            .text(full.substring(cursor, endIdx))
                             .x(minX)
                             .y(minBottomY)
                             .width(Math.max(1.0f, maxRightX - minX))
@@ -178,15 +196,32 @@ final class PdfRedactionSupport {
         return matches;
     }
 
-    static Map<Integer, List<RedactRect>> collectRedactionMasks(PDDocument doc, RedactOptions options,
-                                                                float padding, int totalPages) throws IOException {
+    private static int findNextMatchIndex(String haystack, String needle, int fromIndex, boolean ignoreCase) {
+        if (!ignoreCase) {
+            return haystack.indexOf(needle, fromIndex);
+        }
+        int needleLen = needle.length();
+        int limit = haystack.length() - needleLen;
+        for (int i = Math.max(0, fromIndex); i <= limit; i++) {
+            if (haystack.regionMatches(true, i, needle, 0, needleLen)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    static RedactionPlan collectRedactionPlan(PDDocument doc, RedactOptions options,
+                                              float padding, int totalPages) throws IOException {
         Map<Integer, List<RedactRect>> masksByPage = new LinkedHashMap<>();
+        int keywordMatchCount = 0;
         if (options.getKeywords() != null) {
             for (String keyword : options.getKeywords()) {
                 if (keyword == null || keyword.isEmpty()) {
                     continue;
                 }
-                List<TextPositionMatch> matches = findTextPositionsInDocument(doc, keyword, options.getTargetPages());
+                List<TextPositionMatch> matches = findTextPositionsInDocument(
+                        doc, keyword, options.getTargetPages(), options.isIgnoreCase());
+                keywordMatchCount += matches.size();
                 for (TextPositionMatch match : matches) {
                     float descenderExtra = match.getHeight() * 0.25f;
                     masksByPage.computeIfAbsent(match.getPageIndex(), k -> new ArrayList<>())
@@ -214,7 +249,7 @@ final class PdfRedactionSupport {
                         .add(new RedactRect(area.getX(), area.getY(), area.getWidth(), area.getHeight()));
             }
         }
-        return masksByPage;
+        return new RedactionPlan(masksByPage, keywordMatchCount);
     }
 
     static void applyRasterRedactionToPages(PDDocument doc, Map<Integer, List<RedactRect>> masksByPage,
@@ -227,7 +262,7 @@ final class PdfRedactionSupport {
             PDPage page = doc.getPage(pageIdx);
             PDRectangle visibleBox = resolveVisibleBox(page);
             int rotation = normalizeRotation(page);
-            float[] visSize = resolveVisualSize(visibleBox, rotation);
+            VisualSize visSize = resolveVisualSize(visibleBox, rotation);
             float llx = visibleBox.getLowerLeftX();
             float lly = visibleBox.getLowerLeftY();
 
@@ -241,7 +276,7 @@ final class PdfRedactionSupport {
                     int imgH = rendered.getHeight();
                     for (RedactRect rect : entry.getValue()) {
                         int px = Math.max(0, Math.round((rect.x() - llx) * scale));
-                        int py = Math.max(0, Math.round((visSize[1] - (rect.y() - lly + rect.height())) * scale));
+                        int py = Math.max(0, Math.round((visSize.height() - (rect.y() - lly + rect.height())) * scale));
                         int pw = Math.min(imgW - px, Math.max(1, Math.round(rect.width() * scale)));
                         int ph = Math.min(imgH - py, Math.max(1, Math.round(rect.height() * scale)));
                         if (pw > 0 && ph > 0) {
@@ -260,7 +295,7 @@ final class PdfRedactionSupport {
             PDImageXObject pdImage = PDImageXObject.createFromByteArray(doc, encodedBytes, "redact-page-" + pageIdx);
             try (PDPageContentStream cs = new PDPageContentStream(doc, page, PDPageContentStream.AppendMode.OVERWRITE, true, true)) {
                 applyVisualCoordinateTransform(cs, visibleBox, rotation);
-                cs.drawImage(pdImage, 0, 0, visSize[0], visSize[1]);
+                cs.drawImage(pdImage, 0, 0, visSize.width(), visSize.height());
             }
         }
     }

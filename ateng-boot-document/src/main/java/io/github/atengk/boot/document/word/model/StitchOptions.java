@@ -22,4 +22,10 @@ public class StitchOptions {
      */
     @Builder.Default
     private boolean pageBreakBetween = false;
+
+    /**
+     * 是否保留主文档页眉与页脚（默认 true；设为 false 时在拼装后剥离所有页眉页脚及节引用）
+     */
+    @Builder.Default
+    private boolean keepHeaderFooter = true;
 }

@@ -10,17 +10,17 @@
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Word 核心渲染** | 模板编译、SpringEL 安全开关与动态行/列循环 | `WordTemplate` | `word.template-base-dir`<br>`word.spring-el-enabled`<br>`word.spring-el-strict` | `of(...)`；`render(source, data, target[, configure])` / `renderToBytes(source, data[, configure])`；`compile(source[, configure])`；`configureBuilder()` / `configureBuilder(enableSpringEl)` / `createDefaultConfigure()`；`bindLoopRow(builder, tagNames)` / `bindLoopColumn(builder, tagNames)` / `bindFloatingPicture(builder, tagNames)`；支持 `Resource`、`InputStream`、`File`、`Path`、`byte[]`、`String`（带 `../` 路径防穿越） | `WordTemplateTest`<br>`WordContractController` |
 | **Word 自省与合并** | AST 变量反查、纯文本抽取、元数据与表格合并 | `WordTemplate`<br>`WordMetadata` | - | `listVariableNames(source[, configure])`；`extractText(source)`；`inspectMetadata(source[, password])`（返回 `WordMetadata` 含段落/表格/图片数、页眉标志、只读/加密标志）；`mergeCellsHorizontal(table, row, fromCol, toCol)` / `mergeCellsVertical(table, col, fromRow, toRow)` | `WordTemplateTest`<br>`WordContractController` |
-| **Word 拼装与水印** | 多文档分页拼装与页眉 VML 水印 | `WordTemplate`<br>`StitchOptions` | `watermark.*` | `stitch(target, docxSources[, options])` / `stitch(target, Object... docxSources)` / `stitchToBytes(...)`（支持 `StitchOptions.pageBreakBetween` 分页拼装）；`addWatermark(source, target[, text\|options])` / `addWatermarkToBytes(...)`（页眉 VML 对角动态宏水印） | `WordTemplateStitchAndProtectTest`<br>`WordContractController` |
+| **Word 拼装与水印** | 多文档分页拼装与页眉 VML 水印 | `WordTemplate`<br>`StitchOptions` | `watermark.*` | `stitch(target, docxSources[, options])` / `stitch(target, options, docxSources)` / `stitch(target, [options, ]Object... docxSources)` / `stitchToBytes(...)`（支持 `StitchOptions.pageBreakBetween` 与 `keepHeaderFooter`）；`addWatermark(source, target[, text\|options])` / `addWatermarkToBytes(...)`（页眉 VML 对角动态宏水印） | `WordTemplateStitchAndProtectTest`<br>`WordContractController` |
 | **Word 双轨安全** | `ReadonlyProtection` 编辑锁 vs Agile AES-256 加密 | `WordTemplate` | - | 只读编辑锁：`protect(source, target[, password])` / `protectToBytes(...)` / `unprotect(...)` / `isEnforcedReadonlyProtection(source)` / `validateProtectionPassword(source, password)`；文件打开加密：`encrypt(source, target, password)` / `encryptToBytes(...)` / `decrypt(source, target, password)` / `decryptToBytes(...)` / `isEncrypted(source)` | `WordTemplateStitchAndProtectTest`<br>`WordContractController` |
 | **Word 浮动印章** | 独立浮动公章签名图层与线程清理 | `FloatingPicture`<br>`FloatingPictureRenderPolicy` | - | `FloatingPicture.of(pictureData[, dx, dy, relH, relV])` / `ofBytes(...)` / `ofFile(...)` / `ofStream(...)`；`WordTemplate.render` 外层 `finally` 调用 `FloatingPictureRenderPolicy.clear()` 确定性清理 ThreadLocal；可选图元为 `null` 时优雅清空 | `WordTemplateTest`<br>`WordContractController` |
 | **Word 转档桥接** | Word 渲染直出 PDF 跨格式桥接 | `WordTemplate`<br>`DocumentConverter` | `converter.gotenberg.*` | `renderToPdf(source, data, target[, configure, converter])` / `renderToPdfToBytes(source, data[, configure, converter])`（内部委托 `DocumentConverter.docxToPdf`） | `WordTemplateTest`<br>`DocumentConvertController` |
 | **PDF 双模暗水印** | 文本 + Logo 图片平铺矩阵水印与旋转校准 | `PdfTemplate`<br>`WatermarkOptions`<br>`WatermarkLayer` | `watermark.default-text`<br>`watermark.opacity`<br>`watermark.rotation`<br>`watermark.font-size`<br>`watermark.color`<br>`watermark.layer`<br>`watermark.row-spacing`<br>`watermark.col-spacing` | `addWatermark(source, target[, options\|watermarkText])` / `addWatermarkToBytes(...)`；`addImageWatermark(source, target, image[, options])` / `addImageWatermarkToBytes(...)`；支持多行 `\n`、`page.getRotation()` 与 `CropBox` 校准、`skipPages`、`targetPages`、`password`；`WatermarkOptions.ofDefault()` / `ofText(...)` / `ofImage(...)` | `PdfTemplateTest`<br>`PdfWatermarkSealController` |
 | **PDF 盖章与骑缝章** | 绝对坐标盖章、关键字自动盖章与跨页骑缝章 | `PdfTemplate`<br>`ImageStampOptions`<br>`KeywordStampOptions`<br>`KeywordStampOccurrence`<br>`TextPositionMatch`<br>`CrossPageSealOptions`<br>`CrossPageSealEdge` | - | 绝对盖章：`addImageStamp(...)` / `addImageStampToBytes(...)`；关键字定位：`findTextPositions(source, keyword[, password])`、`stampAtKeyword(source, target, options)` / `stampAtKeywordToBytes(...)`（支持 `FIRST`/`LAST`/`ALL`、`offsetX`/`offsetY`、`failIfNotFound`）；跨页骑缝章：`stampCrossPageSeal(...)` / `stampCrossPageSealToBytes(...)` | `PdfTemplateTest`<br>`PdfTemplateCrossPageSealTest`<br>`PdfWatermarkSealController` |
-| **PDF 物理涂黑脱敏** | 命中页高清光栅化不可逆遮罩重封 | `PdfTemplate`<br>`RedactOptions`<br>`RedactArea` | `pdf.redaction-dpi` | `redact(source, target, options)` / `redactToBytes(source, options)`；`redactKeywords(source, target, keywords[, password])` / `redactKeywordsToBytes(...)`；`redactAreas(source, target, areas[, password])` / `redactAreasToBytes(...)`；命中页按 `200 DPI` 光栅涂黑并 `image.flush()`，未命中页保持矢量无损 | `PdfTemplateTest`<br>`PdfFormSecurityController` |
+| **PDF 物理涂黑脱敏** | 命中页高清光栅化不可逆遮罩重封 | `PdfTemplate`<br>`RedactOptions`<br>`RedactArea` | `pdf.redaction-dpi` | `redact(source, target, options)` / `redactToBytes(source, options)`；`redactKeywords(source, target, keywords[, password])` / `redactKeywordsToBytes(...)`；`redactAreas(source, target, areas[, password])` / `redactAreasToBytes(...)`（支持 `maskColor`/`color`、`ignoreCase`、`failIfNotFound`）；命中页按 `200 DPI` 光栅涂黑并 `image.flush()`，未命中页保持矢量无损 | `PdfTemplateTest`<br>`PdfFormSecurityController` |
 | **PDF 元数据治理** | 11 维元数据自省、增量更新、隐私剥离与文本抽取 | `PdfTemplate`<br>`PdfMetadata`<br>`PdfMetadataUpdate` | - | `inspectMetadata(source[, password])`；`updateMetadata(source, target, update)` / `updateMetadataToBytes(...)`；`stripMetadata(source, target[, password])` / `stripMetadataToBytes(...)`；`extractText(source[, startPage, endPage, password])`；`getPageCount(source[, password])` | `PdfTemplateTest`<br>`PdfFormSecurityController`<br>`PdfPageOpsController` |
 | **PDF 动态表单** | AcroForm 8 维自省、填报、矢量扁平化与 XFA 熔断 | `PdfTemplate`<br>`FormOptions`<br>`PdfFormFieldDescriptor`<br>`FieldCategory` | - | `fillForm(source, target, formData[, options])` / `fillFormToBytes(...)`；`listFormFields(source[, password])`；`getFormFields(source[, password])`；`hasAcroForm(source[, password])`；动态 XFA 强制抛出 `57008 PDF_XFA_UNSUPPORTED` | `PdfTemplateFormTest`<br>`PdfFormSecurityController` |
 | **PDF 编排与图转** | 合并、拆分、提取、删除、重排、插入、旋转与图转 PDF | `PdfTemplate`<br>`ImageToPdfOptions`<br>`PageNumberOptions`<br>`PageNumberPosition` | - | `merge(...)` / `mergeToBytes(pdfSources[, password])`；`split(...)` / `splitToBytes(source[, splitAtPage, password])`；`extractPageRange*` / `extractPages*`；`deletePages*`；`reorderPages*`；`insertPages*`；`imagesToPdf(imageSources, target[, options])` / `imagesToPdfToBytes(...)`；`rotatePages*`；`addPageNumbers*`（支持全量 `password` 穿透） | `PdfTemplateTest`<br>`PdfPageOpsController` |
-| **PDF 安全与渲染** | 256 位 AES 权限锁（随机默认管理密码）与防 OOM 渲染 | `PdfTemplate`<br>`SecurityOptions`<br>`PdfRenderOptions`<br>`PageImageConsumer` | `pdf.default-render-dpi`<br>`pdf.max-render-dpi`<br>`pdf.default-max-render-pages` | `protect(source, target, options\|userPassword, ownerPassword)` / `protectToBytes(...)`（未传 `ownerPassword` 时以 `SecureRandom` 随机生成）；`unprotect*` / `isEncrypted`；`renderPageToImage*` / `renderPageToPng*` / `renderPageToImageBytes` / `renderAllPagesToPng*` / `renderPages*` | `PdfTemplateRenderTest`<br>`PdfFormSecurityController`<br>`PdfPageOpsController` |
+| **PDF 安全与渲染** | 256 位 AES 权限锁（随机默认管理密码）与防 OOM 渲染 | `PdfTemplate`<br>`SecurityOptions`<br>`PdfRenderOptions`<br>`PageImageConsumer` | `pdf.default-render-dpi`<br>`pdf.max-render-dpi`<br>`pdf.default-max-render-pages` | `protect(source, target, options\|userPassword, ownerPassword)` / `protectToBytes(...)`（未传 `ownerPassword` 时以 `SecureRandom` 随机生成）；`unprotect*` / `isEncrypted`；`renderPageToImage*` / `renderPageToPng*` / `renderPageToImageBytes` / `renderPageToBytes(source[, pageIndex, options])` / `renderAllPagesToPng*` / `renderAllPagesToBytes(source, options)` / `renderPages*` | `PdfTemplateRenderTest`<br>`PdfFormSecurityController`<br>`PdfPageOpsController` |
 | **PDF 转档桥接** | DOCX / HTML 转 PDF 跨格式门面桥接 | `PdfTemplate`<br>`DocumentConverter` | `converter.gotenberg.*` | `fromDocx(docxSource, target[, converter])` / `fromDocxToBytes(...)`；`fromHtml(htmlSource, target[, converter])` / `fromHtmlToBytes(...)` | `PdfTemplateTest`<br>`DocumentConvertController` |
 | **中文字体探测** | CJK 云原生三级探测（虚拟线程安全 `ReentrantLock`） | `DocumentFontResolver`<br>`ResolvedFont`<br>`FontResolutionTier` | `pdf.font-path`<br>`pdf.preferred-font-names` | `resolveFont()` / `loadFont(document[, customPath])` / `isFontAvailable()` / `clearCache()` / `getCachedFont()`；`FontResolutionTier`（实现 `IBaseEnum<String>`：`CONFIG` / `SYSTEM`）；纯 ASCII 回退、含中文缺失字形快速失败抛出 `57003` | `DocumentFontResolverTest`<br>`PdfPageOpsController` |
 | **水印宏解析器** | 动态操作人、租户、时间宏解析与手机号脱敏掩码 | `WatermarkMacroParser` | `watermark.default-text` | `parse(templateString, variables)`；支持 `#{user.name}` / `#{user.nickname}`、`#{user.code}` / `#{user.username}`、`#{user.phone}` / `#{user.mobile}`（脱敏掩码）、`#{tenantId}`、`#{traceId}`、`#{now('pattern')}` 及 `!'默认值'` 回退 | `WatermarkMacroParserTest`<br>`PdfWatermarkSealController` |
@@ -305,6 +305,7 @@ WordTemplate.mergeCellsHorizontal(table, 0, 0, 1);
 
 #### 核心机制与边界说明
 - `StitchOptions.pageBreakBetween=true` 时在每个子文档拼接边界自动插入 `BreakType.PAGE` 分页符，避免附件协议紧贴主合同末尾；默认 `false` 保持连续无缝拼装。
+- `StitchOptions.keepHeaderFooter` 默认为 `true`（保留主文档页眉页脚）；设为 `false` 时在合并输出前确定性清空并剥离全部页眉页脚及节引用（支持 `stitch(target, options, ...)` 选项前置与后置两种重载）。
 
 ---
 
@@ -576,6 +577,7 @@ byte[] redactedPdf = pdfTemplate.redactToBytes(STATEMENT_TEMPLATE_PATH, options)
 
 #### 核心机制与边界说明
 - **100% 物理不可逆清除**：仅对命中敏感关键字或指定物理区域（`RedactArea`）的页面执行高清光栅化重封（默认 `200 DPI`），遮罩像素级覆盖后在 `finally` 中 `image.flush()`；未命中敏感词页面保留原生矢量结构与可选中文本。
+- **灵活匹配与未命中防卫**：支持 `maskColor`/`color`（十六进制色值别名）、`ignoreCase`（默认 `false`，开启后按索引安全方式忽略大小写检索）及 `failIfNotFound`（默认 `false`，开启后零命中时快速失败抛出 `57012 KEYWORD_NOT_FOUND`）。
 
 ---
 
@@ -741,9 +743,15 @@ ateng:
 
 #### 真实业务 Java 示例（提取自 `FinanceStatementService` & `PdfPageOpsController`）
 ```java
+// FinanceStatementService
+public ResolvedFont resolveFont() {
+    return pdfTemplate.getFontResolver().resolveFont();
+}
+
+// PdfPageOpsController
 @GetMapping("/inspect/font")
 public Result<ResolvedFont> inspectFont() {
-    return Result.success(pdfTemplate.getFontResolver().resolveFont());
+    return Result.success(financeStatementService.resolveFont());
 }
 ```
 

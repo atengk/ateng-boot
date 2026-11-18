@@ -1098,6 +1098,32 @@ class PdfTemplateTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    @DisplayName("物理涂黑扩展防卫：RedactOptions 支持 ignoreCase、failIfNotFound 与 color 别名")
+    void testRedactIgnoreCaseFailIfNotFoundAndColorAlias() {
+        byte[] pdf = createSamplePdfWithCJK("Confidential SecretToken-Alpha End");
+
+        // 1. ignoreCase=false（默认）不命中大小写不一致的关键字；开启 failIfNotFound=true 抛出 KEYWORD_NOT_FOUND
+        assertThatThrownBy(() -> pdfTemplate.redactToBytes(pdf,
+                io.github.atengk.boot.document.pdf.model.RedactOptions.builder()
+                        .keywords(List.of("secrettoken-alpha"))
+                        .failIfNotFound(true)
+                        .build()))
+                .isInstanceOf(PdfOperationException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.KEYWORD_NOT_FOUND);
+
+        // 2. ignoreCase=true + color 别名可准确物理擦除大小写混合关键字
+        byte[] redacted = pdfTemplate.redactToBytes(pdf,
+                io.github.atengk.boot.document.pdf.model.RedactOptions.builder()
+                        .keywords(List.of("secrettoken-alpha"))
+                        .ignoreCase(true)
+                        .failIfNotFound(true)
+                        .color("#112233")
+                        .dpi(120.0f)
+                        .build());
+        assertThat(pdfTemplate.extractText(redacted)).doesNotContain("SecretToken-Alpha").doesNotContain("Confidential");
+    }
+
     private static byte[] createSamplePdfWithCJK(String content) {
         try (PDDocument doc = new PDDocument();
              ByteArrayOutputStream baos = new ByteArrayOutputStream()) {

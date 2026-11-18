@@ -42,6 +42,8 @@ import org.apache.poi.xwpf.model.XWPFHeaderFooterPolicy;
 import org.apache.poi.xwpf.usermodel.BreakType;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFFactory;
+import org.apache.poi.xwpf.usermodel.XWPFFooter;
+import org.apache.poi.xwpf.usermodel.XWPFHeader;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFRelation;
 import org.apache.poi.xwpf.usermodel.XWPFRun;
@@ -49,6 +51,8 @@ import org.apache.poi.xwpf.usermodel.XWPFSettings;
 import org.apache.poi.xwpf.usermodel.XWPFTable;
 import org.apache.poi.xwpf.usermodel.XWPFTableCell;
 import org.apache.poi.xwpf.usermodel.XWPFTableRow;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTHdrFtrRef;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSectPr;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.Resource;
@@ -751,38 +755,8 @@ public class WordTemplate {
     }
 
     private InputStream wrapBoundedInputStream(InputStream delegate, long maxBytes) {
-        if (maxBytes == Long.MAX_VALUE) {
-            return delegate;
-        }
-        return new java.io.FilterInputStream(delegate) {
-            private long bytesReadTotal = 0;
-
-            @Override
-            public int read() throws IOException {
-                int b = super.read();
-                if (b != -1) {
-                    bytesReadTotal++;
-                    if (bytesReadTotal > maxBytes) {
-                        throw new WordRenderException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
-                                "Word 输入流大小超出安全上限 (" + maxBytes + " bytes): " + bytesReadTotal);
-                    }
-                }
-                return b;
-            }
-
-            @Override
-            public int read(byte[] b, int off, int len) throws IOException {
-                int n = super.read(b, off, len);
-                if (n > 0) {
-                    bytesReadTotal += n;
-                    if (bytesReadTotal > maxBytes) {
-                        throw new WordRenderException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
-                                "Word 输入流大小超出安全上限 (" + maxBytes + " bytes): " + bytesReadTotal);
-                    }
-                }
-                return n;
-            }
-        };
+        return DocumentWebHelper.wrapBoundedInputStream(delegate, maxBytes,
+                msg -> new WordRenderException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED, msg));
     }
 
     /**
@@ -883,6 +857,7 @@ public class WordTemplate {
             throw new IllegalArgumentException("待拼装的 Word 文档输入列表 docxSources 不能为空");
         }
         boolean pageBreak = options != null && options.isPageBreakBetween();
+        boolean keepHeaderFooter = options == null || options.isKeepHeaderFooter();
 
         try {
             NiceXWPFDocument mainDoc = null;
@@ -928,6 +903,9 @@ public class WordTemplate {
 
                 OutputStream os = null;
                 try (NiceXWPFDocument finalDoc = mainDoc.generate()) {
+                    if (!keepHeaderFooter) {
+                        stripHeadersAndFooters(finalDoc);
+                    }
                     os = resolveOutputStream(target);
                     finalDoc.write(os);
                     os.flush();
@@ -960,6 +938,17 @@ public class WordTemplate {
     }
 
     /**
+     * 按指定拼装控制选项将多个独立的 Word 文档按序合并并输出至目标（选项前置重载）
+     *
+     * @param target      目标输出对象
+     * @param options     拼装控制选项
+     * @param docxSources 待拼装的文档列表
+     */
+    public void stitch(Object target, StitchOptions options, List<?> docxSources) {
+        stitch(target, docxSources, options);
+    }
+
+    /**
      * 将多个独立的 Word 文档物理无缝按序拼装并输出至目标（可变参数便捷重载）
      *
      * @param target      目标输出对象
@@ -968,6 +957,18 @@ public class WordTemplate {
     public void stitch(Object target, Object... docxSources) {
         Objects.requireNonNull(docxSources, "待拼装的 Word 文档输入源不能为空");
         stitch(target, Arrays.asList(docxSources));
+    }
+
+    /**
+     * 按指定拼装控制选项将多个独立的 Word 文档按序拼装并输出至目标（选项前置可变参数重载）
+     *
+     * @param target      目标输出对象
+     * @param options     拼装控制选项
+     * @param docxSources 待拼装的文档输入源列表
+     */
+    public void stitch(Object target, StitchOptions options, Object... docxSources) {
+        Objects.requireNonNull(docxSources, "待拼装的 Word 文档输入源不能为空");
+        stitch(target, Arrays.asList(docxSources), options);
     }
 
     /**
@@ -994,6 +995,17 @@ public class WordTemplate {
     }
 
     /**
+     * 按指定拼装控制选项将多个独立的 Word 文档拼装并导出为二进制字节数组（选项前置重载）
+     *
+     * @param options     拼装控制选项
+     * @param docxSources 待拼装的文档列表
+     * @return 拼装后的 Word 二进制数据
+     */
+    public byte[] stitchToBytes(StitchOptions options, List<?> docxSources) {
+        return stitchToBytes(docxSources, options);
+    }
+
+    /**
      * 将多个独立的 Word 文档物理无缝拼装并导出为二进制字节数组（可变参数便捷重载）
      *
      * @param docxSources 待拼装的文档输入源列表
@@ -1002,6 +1014,51 @@ public class WordTemplate {
     public byte[] stitchToBytes(Object... docxSources) {
         Objects.requireNonNull(docxSources, "待拼装的 Word 文档输入源不能为空");
         return stitchToBytes(Arrays.asList(docxSources));
+    }
+
+    /**
+     * 按指定拼装控制选项将多个独立的 Word 文档拼装并导出为二进制字节数组（选项前置可变参数重载）
+     *
+     * @param options     拼装控制选项
+     * @param docxSources 待拼装的文档输入源列表
+     * @return 拼装后的 Word 二进制数据
+     */
+    public byte[] stitchToBytes(StitchOptions options, Object... docxSources) {
+        Objects.requireNonNull(docxSources, "待拼装的 Word 文档输入源不能为空");
+        return stitchToBytes(Arrays.asList(docxSources), options);
+    }
+
+    private void stripHeadersAndFooters(XWPFDocument doc) {
+        for (XWPFHeader header : new ArrayList<>(doc.getHeaderList())) {
+            header.clearHeaderFooter();
+            String relId = doc.getRelationId(header);
+            if (relId != null) {
+                doc.getPackagePart().removeRelationship(relId);
+            }
+        }
+        for (XWPFFooter footer : new ArrayList<>(doc.getFooterList())) {
+            footer.clearHeaderFooter();
+            String relId = doc.getRelationId(footer);
+            if (relId != null) {
+                doc.getPackagePart().removeRelationship(relId);
+            }
+        }
+        if (doc.getDocument().getBody() != null) {
+            clearSectionHeaderFooterRefs(doc.getDocument().getBody().getSectPr());
+        }
+        for (XWPFParagraph paragraph : doc.getParagraphs()) {
+            if (paragraph.getCTP() != null && paragraph.getCTP().getPPr() != null) {
+                clearSectionHeaderFooterRefs(paragraph.getCTP().getPPr().getSectPr());
+            }
+        }
+    }
+
+    private void clearSectionHeaderFooterRefs(CTSectPr sectPr) {
+        if (sectPr == null) {
+            return;
+        }
+        sectPr.setHeaderReferenceArray(new CTHdrFtrRef[0]);
+        sectPr.setFooterReferenceArray(new CTHdrFtrRef[0]);
     }
 
     /**
