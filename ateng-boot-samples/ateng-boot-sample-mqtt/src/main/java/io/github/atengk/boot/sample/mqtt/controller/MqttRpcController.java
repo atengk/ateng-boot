@@ -16,10 +16,11 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
 
 /**
  * MQTT 5.0 双向 RPC 设备下行控制体验端控制器
- * 提供同步阻塞与异步非阻塞指令下发、CorrelationData 匹配及超时转译
+ * 提供同步阻塞与异步非阻塞指令下发、声明式 @MqttReply 自动应答、CorrelationData 匹配及超时转译
  *
  * @author Ateng
  * @since 2026-11-10
@@ -44,12 +45,8 @@ public class MqttRpcController {
     public Result<CommandResponse> sendControlSync(@Valid @RequestBody DeviceCommandRequest request) {
         log.info("[HTTP-RPC] 接收同步阻塞 RPC 控制指令: {}", request);
         Duration timeout = resolveTimeout(request);
-        try {
-            CommandResponse response = rpcScenarioService.sendControlSync(request.getAction(), request.getSpeed(), timeout);
-            return Result.success(response);
-        } catch (Exception e) {
-            return handleRpcException("[HTTP-RPC] 同步 RPC 执行失败", e);
-        }
+        return executeSyncRpc("[HTTP-RPC] 同步 RPC 执行失败",
+                () -> rpcScenarioService.sendControlSync(request.getAction(), request.getSpeed(), timeout));
     }
 
     /**
@@ -65,6 +62,43 @@ public class MqttRpcController {
         return rpcScenarioService.sendControlAsync(request.getAction(), request.getSpeed(), timeout)
                 .thenApply(Result::success)
                 .exceptionally(ex -> handleRpcException("[HTTP-RPC] 异步 RPC 执行失败", ex));
+    }
+
+    /**
+     * 声明式同步自动应答演示：服务端监听端点直接返回对象并由 @MqttReply 自动回发响应
+     *
+     * @param request 控制指令请求
+     * @return 设备应答回执
+     */
+    @PostMapping("/declarative-reply")
+    public Result<CommandResponse> sendDeclarativeSync(@Valid @RequestBody DeviceCommandRequest request) {
+        log.info("[HTTP-RPC] 接收声明式同步 @MqttReply 控制指令: {}", request);
+        Duration timeout = resolveTimeout(request);
+        return executeSyncRpc("[HTTP-RPC] 声明式同步 RPC 执行失败",
+                () -> rpcScenarioService.sendDeclarativeSync(request.getAction(), request.getSpeed(), timeout));
+    }
+
+    /**
+     * 声明式异步自动应答演示：服务端监听端点返回 CompletableFuture 并自动携带 CorrelationData 回发
+     *
+     * @param request 控制指令请求
+     * @return 异步设备应答回执
+     */
+    @PostMapping("/declarative-reply-async")
+    public CompletableFuture<Result<CommandResponse>> sendDeclarativeAsync(@Valid @RequestBody DeviceCommandRequest request) {
+        log.info("[HTTP-RPC] 接收声明式异步 @MqttReply 控制指令: {}", request);
+        Duration timeout = resolveTimeout(request);
+        return rpcScenarioService.sendDeclarativeAsync(request.getAction(), request.getSpeed(), timeout)
+                .thenApply(Result::success)
+                .exceptionally(ex -> handleRpcException("[HTTP-RPC] 声明式异步 RPC 执行失败", ex));
+    }
+
+    private Result<CommandResponse> executeSyncRpc(String errorLogPrefix, Supplier<CommandResponse> supplier) {
+        try {
+            return Result.success(supplier.get());
+        } catch (Exception e) {
+            return handleRpcException(errorLogPrefix, e);
+        }
     }
 
     private Duration resolveTimeout(DeviceCommandRequest request) {

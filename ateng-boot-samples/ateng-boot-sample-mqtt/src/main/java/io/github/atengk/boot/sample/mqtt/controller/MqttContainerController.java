@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.mqtt.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.mqtt.listener.MqttEndpointStatus;
+import io.github.atengk.boot.sample.mqtt.dto.MqttContainerSummaryVO;
 import io.github.atengk.boot.sample.mqtt.service.MqttContainerGovernanceScenarioService;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
@@ -78,5 +79,43 @@ public class MqttContainerController {
     public Result<String> publishTestMessage(@RequestParam(value = "message", defaultValue = "GOVERNANCE_TEST_MSG") String message) {
         governanceScenarioService.publishMessage(message);
         return Result.success("测试报文已投递至治理通道: " + message);
+    }
+
+    /**
+     * 投递消息至 MANUAL 手动确认演示通道（包含 REJECT_DLT 字样将触发显式 nackToDlt）
+     *
+     * @param payload 测试载荷
+     * @return 投递提示
+     */
+    @PostMapping("/publish-manual")
+    public Result<String> publishManualMessage(
+            @NotBlank(message = "载荷 payload 不能为空")
+            @RequestParam("payload") String payload) {
+        governanceScenarioService.publishManualMessage(payload);
+        return Result.success("已投递至 MANUAL 确认演示通道: " + payload);
+    }
+
+    /**
+     * 投递消息至瞬态异常退避重试演示通道（TRANSIENT: 前缀将模拟首次瞬态失败并由框架自动重试恢复）
+     *
+     * @param payload 测试载荷
+     * @return 投递提示
+     */
+    @PostMapping("/publish-retry")
+    public Result<String> publishRetryMessage(
+            @NotBlank(message = "载荷 payload 不能为空")
+            @RequestParam("payload") String payload) {
+        governanceScenarioService.publishRetryMessage(payload);
+        return Result.success("已投递至受管退避重试演示通道: " + payload);
+    }
+
+    /**
+     * 查询监听容器运维与可靠性验证汇总快照
+     *
+     * @return 容器汇总视图
+     */
+    @GetMapping("/summary")
+    public Result<MqttContainerSummaryVO> getSummary() {
+        return Result.success(governanceScenarioService.getSummary());
     }
 }

@@ -14,6 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -37,14 +38,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * MQTT Sample Web 控制器全场景 MockMvc 集成自验
- * 覆盖 7 大领域 Controller 路由、JSR-303 参数校验拦截、异常映射与 Result<T> 规范契约
- * 包含遥测端到端、同步/异步 RPC、十六进制编解码、批量与保留消息、死信 DLT 治理、容器运维与事务协同发信
+ * 覆盖 8 大领域 Controller 路由、JSR-303 参数校验拦截、异常映射与 Result<T> 规范契约
+ * 包含遥测端到端、同步/异步/声明式 RPC、十六进制编解码、批量与保留消息、死信 DLT 治理、容器运维与动态多客户端治理
  *
  * @author Ateng
  * @since 2026-11-10
  */
 @SpringBootTest(classes = SampleMqttApplication.class)
 @AutoConfigureMockMvc
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @DisplayName("MQTT Sample Web 控制器全场景集成测试")
 class SampleMqttWebControllerTest {
 
@@ -592,5 +594,354 @@ class SampleMqttWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(not(200)))
                 .andExpect(jsonPath("$.success").value(false));
+    }
+
+    @Test
+    @DisplayName("18. 测试 MqttClientGovernanceController: 动态注册客户端 -> use() 定向收发 -> 快照查询 -> 注销与 JSR-303 校验")
+    void testClientGovernanceLifecycleAndValidation() throws Exception {
+        String dynamicClient = "park-north";
+        String dynamicTopic = "iot/clients/" + dynamicClient + "/command";
+
+        // 1. JSR-303 拦截空白客户端名与非法 QoS
+        RegisterClientRequest invalidRegister = RegisterClientRequest.builder()
+                .clientName("")
+                .build();
+        mockMvc.perform(post("/sample/mqtt/clients/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRegister)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        ClientPublishRequest invalidQosPublish = ClientPublishRequest.builder()
+                .clientName(dynamicClient)
+                .topic(dynamicTopic)
+                .payload("INVALID_QOS")
+                .qos(5)
+                .build();
+        mockMvc.perform(post("/sample/mqtt/clients/publish")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidQosPublish)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 禁止注销默认主客户端 & 禁止向未注册客户端发布
+        mockMvc.perform(delete("/sample/mqtt/clients/primary"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+        ClientPublishRequest unknownClientPublish = ClientPublishRequest.builder()
+                .clientName("unknown-client")
+                .topic(dynamicTopic)
+                .payload("FAIL")
+                .qos(1)
+                .build();
+        mockMvc.perform(post("/sample/mqtt/clients/publish")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(unknownClientPublish)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 2. 动态注册命名客户端（缺省复用主客户端 Broker 地址与认证基线）
+        RegisterClientRequest registerRequest = RegisterClientRequest.builder()
+                .clientName(dynamicClient)
+                .clientIdPrefix("sample-park-north")
+                .cleanStart(true)
+                .connectionTimeoutSeconds(5)
+                .build();
+        mockMvc.perform(post("/sample/mqtt/clients/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(registerRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.clientName").value(dynamicClient))
+                .andExpect(jsonPath("$.data.connected").value(true));
+
+        try {
+            // 2-1. 重复注册同名动态客户端 Fail-Fast 拦截
+            mockMvc.perform(post("/sample/mqtt/clients/register")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(registerRequest)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(not(200)))
+                    .andExpect(jsonPath("$.success").value(false));
+            // 3. 查询受管客户端列表与健康快照
+            mockMvc.perform(get("/sample/mqtt/clients"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.success").value(true))
+                    .andExpect(jsonPath("$.data[?(@.clientName == '" + dynamicClient + "')].connected")
+                            .value(org.hamcrest.Matchers.contains(true)));
+
+            // 4. 通过 MqttTemplate.use(clientName) 定向投递并消费回显
+            ClientPublishRequest publishRequest = ClientPublishRequest.builder()
+                    .clientName(dynamicClient)
+                    .topic(dynamicTopic)
+                    .payload("OPEN_BARRIER_GATE_1")
+                    .qos(1)
+                    .retained(false)
+                    .build();
+            mockMvc.perform(post("/sample/mqtt/clients/publish")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(publishRequest)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.success").value(true));
+
+            await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                    mockMvc.perform(get("/sample/mqtt/clients/consumed")
+                                    .param("clientName", dynamicClient))
+                            .andExpect(status().isOk())
+                            .andExpect(jsonPath("$.data[0]").value("OPEN_BARRIER_GATE_1"))
+            );
+        } finally {
+            // 5. 安全注销动态客户端并确认已从快照清单移除
+            mockMvc.perform(delete("/sample/mqtt/clients/" + dynamicClient))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.success").value(true));
+        }
+
+        mockMvc.perform(get("/sample/mqtt/clients"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.clientName == '" + dynamicClient + "')]").isEmpty());
+    }
+
+    @Test
+    @DisplayName("19. 测试 MqttRpcController: @MqttReply 声明式同步与 CompletableFuture 异步应答")
+    void testRpcDeclarativeReplySyncAndAsync() throws Exception {
+        DeviceCommandRequest syncRequest = DeviceCommandRequest.builder()
+                .action("SYNC_STATUS")
+                .speed(1600)
+                .timeoutSeconds(5)
+                .build();
+
+        mockMvc.perform(post("/sample/mqtt/rpc/declarative-reply")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(syncRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.message").value("DECLARATIVE_SYNC_OK"));
+
+        DeviceCommandRequest asyncRequest = DeviceCommandRequest.builder()
+                .action("ASYNC_CALIBRATE")
+                .speed(1800)
+                .timeoutSeconds(5)
+                .build();
+
+        MvcResult asyncResult = mockMvc.perform(post("/sample/mqtt/rpc/declarative-reply-async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(asyncRequest)))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(asyncResult))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.message").value("DECLARATIVE_ASYNC_OK"));
+    }
+
+    @Test
+    @DisplayName("20. 测试 MqttDeadLetterController: @Valid 消费校验直入死信与连续多条毒丸有序 peek/replay/purge")
+    void testDeadLetterValidFailAndOrderedMultiPoisonStore() throws Exception {
+        // 1. JSR-303 网关来源必填校验拦截（第一道防线）
+        WorkOrderDispatchRequest invalidGatewayReq = WorkOrderDispatchRequest.builder()
+                .gatewayId("")
+                .orderNo("WO-01")
+                .targetTemp(100)
+                .build();
+        mockMvc.perform(post("/sample/mqtt/dead-letter/trigger-valid-fail")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidGatewayReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 2. @Valid 消费侧模型校验失败：0 次重试直接转入 iot/devices/valid-order/DLT
+        String validDltTopic = "iot/devices/valid-order/DLT";
+        mockMvc.perform(delete("/sample/mqtt/dead-letter/purge").param("topic", validDltTopic))
+                .andExpect(status().isOk());
+
+        WorkOrderDispatchRequest invalidOrderPayload = WorkOrderDispatchRequest.builder()
+                .gatewayId("gw-south-01")
+                .orderNo("")
+                .targetTemp(-5)
+                .build();
+        mockMvc.perform(post("/sample/mqtt/dead-letter/trigger-valid-fail")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidOrderPayload)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                mockMvc.perform(get("/sample/mqtt/dead-letter/peek")
+                                .param("topic", validDltTopic)
+                                .param("count", "5"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.length()").value(1))
+                        .andExpect(jsonPath("$.data[0].exceptionClass").value(containsString("ValidationException")))
+        );
+        mockMvc.perform(delete("/sample/mqtt/dead-letter/purge").param("topic", validDltTopic))
+                .andExpect(status().isOk());
+
+        // 3. 连续投递 3 条毒丸：依赖 MqttDeadLetterStore 全量有序留存不覆盖 -> 局部重放 2 条 -> 剩余 1 条 -> purge 清空
+        String multiDltTopic = "iot/devices/poison-test/DLT";
+        mockMvc.perform(delete("/sample/mqtt/dead-letter/purge").param("topic", multiDltTopic))
+                .andExpect(status().isOk());
+        deadLetterScenarioService.clear();
+
+        MultiPoisonRequest invalidElementReq = MultiPoisonRequest.builder()
+                .payloads(List.of("   "))
+                .build();
+        mockMvc.perform(post("/sample/mqtt/dead-letter/trigger-multi-poison")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidElementReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        MultiPoisonRequest multiRequest = MultiPoisonRequest.builder()
+                .payloads(List.of("POISON_SEQ_1", "POISON_SEQ_2", "POISON_SEQ_3"))
+                .build();
+        mockMvc.perform(post("/sample/mqtt/dead-letter/trigger-multi-poison")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(multiRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                mockMvc.perform(get("/sample/mqtt/dead-letter/peek")
+                                .param("topic", multiDltTopic)
+                                .param("count", "10"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.length()").value(3))
+                        .andExpect(jsonPath("$.data[0].payloadAsString").value("POISON_SEQ_1"))
+                        .andExpect(jsonPath("$.data[1].payloadAsString").value("POISON_SEQ_2"))
+                        .andExpect(jsonPath("$.data[2].payloadAsString").value("POISON_SEQ_3"))
+        );
+
+        DeadLetterReplayRequest partialReplay = DeadLetterReplayRequest.builder()
+                .sourceTopic(multiDltTopic)
+                .targetTopic("iot/devices/poison-recovered")
+                .count(2)
+                .timeoutSeconds(2)
+                .build();
+        mockMvc.perform(post("/sample/mqtt/dead-letter/replay")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(partialReplay)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(containsString("成功受控重放 2 条")));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                assertThat(deadLetterScenarioService.getRecoveredMessages())
+                        .contains("POISON_SEQ_1", "POISON_SEQ_2")
+        );
+
+        mockMvc.perform(get("/sample/mqtt/dead-letter/peek")
+                        .param("topic", multiDltTopic)
+                        .param("count", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].payloadAsString").value("POISON_SEQ_3"));
+
+        mockMvc.perform(delete("/sample/mqtt/dead-letter/purge").param("topic", multiDltTopic))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("21. 测试 MqttContainerController: MANUAL 手动确认/拒绝入死信、瞬态重试与引用计数流控运维")
+    void testContainerManualAckRetryAndRefCountFlowControl() throws Exception {
+        governanceScenarioService.clear();
+        String manualDltTopic = "iot/governance/manual-ack/DLT";
+        mockMvc.perform(delete("/sample/mqtt/dead-letter/purge").param("topic", manualDltTopic))
+                .andExpect(status().isOk());
+
+        // 0. JSR-303 参数校验拦截空白 payload
+        mockMvc.perform(post("/sample/mqtt/container/publish-manual").param("payload", "  "))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+        mockMvc.perform(post("/sample/mqtt/container/publish-retry").param("payload", ""))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(not(200)))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 1. MANUAL 模式：正常确认与显式 nackToDlt
+        mockMvc.perform(post("/sample/mqtt/container/publish-manual").param("payload", "MANUAL_OK_1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        mockMvc.perform(post("/sample/mqtt/container/publish-manual").param("payload", "REJECT_DLT_ITEM"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                mockMvc.perform(get("/sample/mqtt/container/summary"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.manualAckedMessages[0]").value("MANUAL_OK_1"))
+        );
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                mockMvc.perform(get("/sample/mqtt/dead-letter/peek")
+                                .param("topic", manualDltTopic)
+                                .param("count", "5"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.length()").value(1))
+                        .andExpect(jsonPath("$.data[0].payloadAsString").value("REJECT_DLT_ITEM"))
+        );
+        mockMvc.perform(delete("/sample/mqtt/dead-letter/purge").param("topic", manualDltTopic))
+                .andExpect(status().isOk());
+
+        // 2. 可恢复瞬态异常重试恢复
+        mockMvc.perform(post("/sample/mqtt/container/publish-retry").param("payload", "TRANSIENT:JOB-77"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                mockMvc.perform(get("/sample/mqtt/container/summary"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.retriedMessages[0]").value("TRANSIENT:JOB-77"))
+                        .andExpect(jsonPath("$.data.retryAttemptTraces.length()").value(2))
+                        .andExpect(jsonPath("$.data.retryAttemptTraces[0]").value("attempt-1:TRANSIENT:JOB-77"))
+                        .andExpect(jsonPath("$.data.retryAttemptTraces[1]").value("attempt-2:TRANSIENT:JOB-77"))
+        );
+
+        // 3. 引用计数真实 Broker 流控：同一共享过滤器两个端点，只暂停一个保留订阅，全暂停退订，恢复重建订阅
+        String sharedA = "mqttContainerGovernanceScenarioService#onSharedFlowPrimary";
+        String sharedB = "mqttContainerGovernanceScenarioService#onSharedFlowBackup";
+        String sharedFilter = "$share/gov-cluster/iot/governance/shared-flow";
+
+        try {
+            mockMvc.perform(post("/sample/mqtt/container/pause").param("endpointId", sharedA))
+                    .andExpect(status().isOk());
+            mockMvc.perform(get("/sample/mqtt/container/summary"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.subscribedTopics", org.hamcrest.Matchers.hasItem(sharedFilter)));
+
+            governanceScenarioService.publishSharedFlowMessage("FLOW_MSG_B");
+            await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                    mockMvc.perform(get("/sample/mqtt/container/summary"))
+                            .andExpect(status().isOk())
+                            .andExpect(jsonPath("$.data.sharedFlowMessages", org.hamcrest.Matchers.hasItem("backup:FLOW_MSG_B")))
+            );
+
+            mockMvc.perform(post("/sample/mqtt/container/pause").param("endpointId", sharedB))
+                    .andExpect(status().isOk());
+            mockMvc.perform(get("/sample/mqtt/container/summary"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.subscribedTopics", not(org.hamcrest.Matchers.hasItem(sharedFilter))));
+        } finally {
+            mockMvc.perform(post("/sample/mqtt/container/resume").param("endpointId", sharedA))
+                    .andExpect(status().isOk());
+            mockMvc.perform(post("/sample/mqtt/container/resume").param("endpointId", sharedB))
+                    .andExpect(status().isOk());
+        }
+        mockMvc.perform(get("/sample/mqtt/container/summary"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.subscribedTopics", org.hamcrest.Matchers.hasItem(sharedFilter)));
     }
 }

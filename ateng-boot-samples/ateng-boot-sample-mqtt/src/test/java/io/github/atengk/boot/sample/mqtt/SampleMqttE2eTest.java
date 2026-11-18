@@ -12,14 +12,17 @@ import io.github.atengk.boot.sample.mqtt.service.*;
 import io.github.atengk.boot.sample.mqtt.test.EmbeddedMqttBroker;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.Status;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -34,13 +37,14 @@ import static org.awaitility.Awaitility.await;
 
 /**
  * ateng-boot-sample-mqtt 端到端自动化集成自验用例
- * 纯净基于 @SpringBootTest 验证 7 大场景业务服务
+ * 纯净基于 @SpringBootTest 验证 8 大场景业务服务
  * 依托纯内存 Netty MQTT Broker 测试桩，100% 离线秒级全绿验证全特性
  *
  * @author Ateng
  * @since 2026-10-31
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class SampleMqttE2eTest {
 
     private static EmbeddedMqttBroker broker;
@@ -97,6 +101,9 @@ class SampleMqttE2eTest {
     @Autowired
     private TransactionalTelemetryScenarioService txScenarioService;
 
+    @Autowired
+    private ClientGovernanceScenarioService clientGovernanceScenarioService;
+
     @Autowired(required = false)
     private MqttHealthIndicator healthIndicator;
 
@@ -104,7 +111,8 @@ class SampleMqttE2eTest {
     private MeterRegistry meterRegistry;
 
     @BeforeEach
-    void setUp() {
+    @AfterEach
+    void resetContextAndScenarioState() {
         telemetryScenarioService.clear();
         hexScenarioService.clear();
         batchScenarioService.clear();
@@ -113,6 +121,7 @@ class SampleMqttE2eTest {
         txScenarioService.clear();
         UserContextHolder.clear();
         TenantContextHolder.clear();
+        MDC.clear();
     }
 
     @Test
@@ -338,5 +347,172 @@ class SampleMqttE2eTest {
         assertThat(meterRegistry.find("mqtt.message.published").counters()).isNotEmpty();
         assertThat(meterRegistry.find("mqtt.publish.latency").timers()).isNotEmpty();
         assertThat(meterRegistry.find("mqtt.message.received").counters()).isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("场景 8：多客户端动态治理、MqttTemplate.use() 定向投递与消费、Gauge 注册与注销清理闭环")
+    void testScenario8_DynamicClientGovernanceAndGaugeCleanup() {
+        String dynamicClient = "park-edge-e2e";
+        clientGovernanceScenarioService.clear(dynamicClient);
+
+        var summary = clientGovernanceScenarioService.registerClient(
+                io.github.atengk.boot.sample.mqtt.dto.RegisterClientRequest.builder()
+                        .clientName(dynamicClient)
+                        .clientIdPrefix("e2e-park-edge")
+                        .cleanStart(true)
+                        .connectionTimeoutSeconds(5)
+                        .build()
+        );
+        assertThat(summary.getClientName()).isEqualTo(dynamicClient);
+        assertThat(summary.isConnected()).isTrue();
+
+        try {
+            assertThat(meterRegistry.find("mqtt.client.status").tag("client", dynamicClient).gauge())
+                    .isNotNull()
+                    .satisfies(g -> assertThat(g.value()).isEqualTo(1.0));
+
+            clientGovernanceScenarioService.publishToClient(
+                    dynamicClient,
+                    "iot/clients/" + dynamicClient + "/command",
+                    "E2E_GATE_SYNC",
+                    1,
+                    false
+            );
+
+            await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                    assertThat(clientGovernanceScenarioService.getConsumedMessages(dynamicClient))
+                            .contains("E2E_GATE_SYNC")
+            );
+        } finally {
+            clientGovernanceScenarioService.unregisterClient(dynamicClient, false);
+        }
+
+        assertThat(meterRegistry.find("mqtt.client.status").tag("client", dynamicClient).gauge()).isNull();
+        assertThat(clientGovernanceScenarioService.listClientSummaries())
+                .noneMatch(item -> dynamicClient.equals(item.getClientName()));
+    }
+
+    @Test
+    @DisplayName("场景 9：声明式 @MqttReply、@Valid 死信与有序多毒丸、MANUAL/重试、引用计数流控及 noLocal/retainHandling=2 全链路")
+    void testScenario9_EnterpriseReliabilityAndFlowControlE2e() throws Exception {
+        // 1. 声明式 @MqttReply 同步与 CompletableFuture 异步应答
+        CommandResponse syncReply = rpcScenarioService.sendDeclarativeSync("E2E_DECL_SYNC", 1200, Duration.ofSeconds(3));
+        assertThat(syncReply.isSuccess()).isTrue();
+        assertThat(syncReply.getMessage()).isEqualTo("DECLARATIVE_SYNC_OK");
+
+        CommandResponse asyncReply = rpcScenarioService.sendDeclarativeAsync("E2E_DECL_ASYNC", 1500, Duration.ofSeconds(3))
+                .get(3, TimeUnit.SECONDS);
+        assertThat(asyncReply.isSuccess()).isTrue();
+        assertThat(asyncReply.getMessage()).isEqualTo("DECLARATIVE_ASYNC_OK");
+
+        // 2. @Valid 校验失败 0 重试入死信 & 连续多条毒丸有序留存
+        String validDltTopic = "iot/devices/valid-order/DLT";
+        dltScenarioService.purgeDeadLetters(validDltTopic);
+        dltScenarioService.triggerInvalidWorkOrder("gw-south-e2e", "", -1);
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                assertThat(dltScenarioService.peekDeadLetters(validDltTopic, 5, Duration.ofSeconds(2)))
+                        .singleElement()
+                        .satisfies(rec -> assertThat(rec.exceptionClass()).contains("ValidationException"))
+        );
+        dltScenarioService.purgeDeadLetters(validDltTopic);
+
+        String multiDltTopic = "iot/devices/poison-test/DLT";
+        dltScenarioService.purgeDeadLetters(multiDltTopic);
+        dltScenarioService.triggerMultiPoison(List.of("POISON_E2E_1", "POISON_E2E_2"));
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                assertThat(dltScenarioService.peekDeadLetters(multiDltTopic, 5, Duration.ofSeconds(2)))
+                        .extracting(MqttDeadLetterRecord::getPayloadAsString)
+                        .containsExactly("POISON_E2E_1", "POISON_E2E_2")
+        );
+        dltScenarioService.purgeDeadLetters(multiDltTopic);
+
+        // 3. MANUAL 确认（ack 与 nackToDlt）与瞬态重试恢复
+        governanceScenarioService.clear();
+        String manualDltTopic = "iot/governance/manual-ack/DLT";
+        dltScenarioService.purgeDeadLetters(manualDltTopic);
+        governanceScenarioService.publishManualMessage("E2E_MANUAL_ACCEPT");
+        governanceScenarioService.publishManualMessage("REJECT_DLT_E2E");
+        governanceScenarioService.publishRetryMessage("TRANSIENT:E2E_JOB");
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> {
+            assertThat(governanceScenarioService.getSummary().getManualAckedMessages()).contains("E2E_MANUAL_ACCEPT");
+            assertThat(governanceScenarioService.getSummary().getRetriedMessages()).contains("TRANSIENT:E2E_JOB");
+            assertThat(dltScenarioService.peekDeadLetters(manualDltTopic, 5, Duration.ofSeconds(2)))
+                    .extracting(MqttDeadLetterRecord::getPayloadAsString)
+                    .contains("REJECT_DLT_E2E");
+        });
+        dltScenarioService.purgeDeadLetters(manualDltTopic);
+
+        // 4. 共享过滤器的引用计数流控（pause -> 保持 -> 归零退订 -> resume 恢复消费）
+        String sharedA = "mqttContainerGovernanceScenarioService#onSharedFlowPrimary";
+        String sharedB = "mqttContainerGovernanceScenarioService#onSharedFlowBackup";
+        String sharedFilter = "$share/gov-cluster/iot/governance/shared-flow";
+        try {
+            governanceScenarioService.pauseEndpoint(sharedA);
+            assertThat(governanceScenarioService.getSummary().getSubscribedTopics()).contains(sharedFilter);
+            governanceScenarioService.publishSharedFlowMessage("FLOW_MSG_1");
+            await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                    assertThat(governanceScenarioService.getSummary().getSharedFlowMessages()).contains("backup:FLOW_MSG_1")
+            );
+
+            governanceScenarioService.pauseEndpoint(sharedB);
+            assertThat(governanceScenarioService.getSummary().getSubscribedTopics()).doesNotContain(sharedFilter);
+        } finally {
+            governanceScenarioService.resumeEndpoint(sharedA);
+            governanceScenarioService.resumeEndpoint(sharedB);
+        }
+        assertThat(governanceScenarioService.getSummary().getSubscribedTopics()).contains(sharedFilter);
+
+        // 5. MQTT 5.0 noLocal=true 回环抑制与 retainHandling=2 历史保留不重推验证
+        String noLocalEndpoint = "mqttContainerGovernanceScenarioService#onNoLocalMessage";
+        String peerClient = "e2e-nolocal-peer";
+        clientGovernanceScenarioService.registerClient(
+                io.github.atengk.boot.sample.mqtt.dto.RegisterClientRequest.builder()
+                        .clientName(peerClient)
+                        .clientIdPrefix("e2e-nolocal-peer")
+                        .cleanStart(true)
+                        .connectionTimeoutSeconds(5)
+                        .build()
+        );
+        try {
+            // 暂停后再通过 peer 发布 retained=true 历史保留报文，resume 时因 retainHandling=2 不应重推旧保留报文
+            governanceScenarioService.pauseEndpoint(noLocalEndpoint);
+            clientGovernanceScenarioService.publishToClient(
+                    peerClient,
+                    "iot/governance/nolocal-channel",
+                    "RETAINED_SUPPRESSED_ON_RESUME",
+                    1,
+                    true
+            );
+            Thread.sleep(150);
+            governanceScenarioService.resumeEndpoint(noLocalEndpoint);
+            Thread.sleep(200);
+            assertThat(governanceScenarioService.getNoLocalMessages()).doesNotContain("RETAINED_SUPPRESSED_ON_RESUME");
+
+            governanceScenarioService.publishNoLocalSelfEcho("SELF_ECHO_IGNORED");
+            if (broker != null) {
+                await().atMost(3, TimeUnit.SECONDS).untilAsserted(() ->
+                        assertThat(broker.getReceivedMessages())
+                                .anyMatch(m -> "SELF_ECHO_IGNORED".equals(new String(m.getPayload(), java.nio.charset.StandardCharsets.UTF_8)))
+                );
+            } else {
+                Thread.sleep(250);
+            }
+            assertThat(governanceScenarioService.getNoLocalMessages()).doesNotContain("SELF_ECHO_IGNORED");
+
+            clientGovernanceScenarioService.publishToClient(
+                    peerClient,
+                    "iot/governance/nolocal-channel",
+                    "PEER_DELIVERED_OK",
+                    1,
+                    false
+            );
+            await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                    assertThat(governanceScenarioService.getNoLocalMessages()).contains("PEER_DELIVERED_OK")
+            );
+        } finally {
+            governanceScenarioService.resumeEndpoint(noLocalEndpoint);
+            governanceScenarioService.clearNoLocalRetained();
+            clientGovernanceScenarioService.unregisterClient(peerClient, false);
+        }
     }
 }

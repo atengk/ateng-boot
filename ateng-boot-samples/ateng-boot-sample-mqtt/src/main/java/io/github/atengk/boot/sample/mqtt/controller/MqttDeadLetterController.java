@@ -3,6 +3,8 @@ package io.github.atengk.boot.sample.mqtt.controller;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.mqtt.model.MqttDeadLetterRecord;
 import io.github.atengk.boot.sample.mqtt.dto.DeadLetterReplayRequest;
+import io.github.atengk.boot.sample.mqtt.dto.MultiPoisonRequest;
+import io.github.atengk.boot.sample.mqtt.dto.WorkOrderDispatchRequest;
 import io.github.atengk.boot.sample.mqtt.service.DeadLetterReplayScenarioService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -38,6 +40,33 @@ public class MqttDeadLetterController {
         log.info("[HTTP-DLT] 投送毒丸测试载荷: {}", payload);
         dltScenarioService.triggerPoisonPill(payload);
         return Result.success("毒丸报文已投递，触发不可逆致命异常并自动转移至 DLT 死信主题: " + payload);
+    }
+
+    /**
+     * 投送待校验工单载荷，演示消费端 @Valid 参数校验失败 0 次重试直入死信队列
+     *
+     * @param request 工单下发请求
+     * @return 投递提示
+     */
+    @PostMapping("/trigger-valid-fail")
+    public Result<String> triggerValidFail(@Valid @RequestBody WorkOrderDispatchRequest request) {
+        log.info("[HTTP-DLT] 投送工单载荷至 @Valid 消费端: gateway={}, orderNo={}",
+                request.getGatewayId(), request.getOrderNo());
+        dltScenarioService.triggerInvalidWorkOrder(request.getGatewayId(), request.getOrderNo(), request.getTargetTemp());
+        return Result.success("工单报文已投递至消费端 @Valid 校验管道: gatewayId=" + request.getGatewayId());
+    }
+
+    /**
+     * 连续批量投送多条毒丸报文，演示 MqttDeadLetterStore 有序全量留存而不覆盖
+     *
+     * @param request 批量毒丸请求
+     * @return 投递提示
+     */
+    @PostMapping("/trigger-multi-poison")
+    public Result<String> triggerMultiPoison(@Valid @RequestBody MultiPoisonRequest request) {
+        log.info("[HTTP-DLT] 批量投送连续毒丸报文: count={}", request.getPayloads().size());
+        dltScenarioService.triggerMultiPoison(request.getPayloads());
+        return Result.success("已连续投递 " + request.getPayloads().size() + " 条毒丸报文至死信存储管道");
     }
 
     /**

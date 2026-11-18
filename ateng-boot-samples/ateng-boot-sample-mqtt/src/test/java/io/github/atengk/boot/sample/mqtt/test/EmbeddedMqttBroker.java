@@ -11,14 +11,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 基于 Netty 原生 MQTT 编解码器的超轻量纯内存 MQTT Broker 测试桩
- * 支持 CONNECT/DISCONNECT/SUBSCRIBE/UNSUBSCRIBE/PUBLISH、QoS 0/1/2 编解码、通配符与共享订阅路由及 Broker 保留消息分发
  *
  * @author Ateng
  * @since 2026-10-23
@@ -35,12 +36,15 @@ public class EmbeddedMqttBroker {
     private volatile boolean stopped = false;
 
     private final Map<Channel, Set<String>> channelSubscriptions = new ConcurrentHashMap<>();
+    private final Map<Channel, Map<String, MqttSubscriptionOption>> channelSubscriptionOptions = new ConcurrentHashMap<>();
     private final Map<Channel, String> clientIds = new ConcurrentHashMap<>();
     private final Map<Channel, WillRecord> willMessages = new ConcurrentHashMap<>();
     private final Map<String, RetainedRecord> retainedMessages = new ConcurrentHashMap<>();
     private final AtomicInteger messageIdCounter = new AtomicInteger(1);
-    private final List<ReceivedMessage> receivedMessages = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final List<ReceivedMessage> receivedMessages = new CopyOnWriteArrayList<>();
+    private final List<ConnectRecord> connectRecords = new CopyOnWriteArrayList<>();
 
+    public record ConnectRecord(String clientId, String username, String password) {}
     private record WillRecord(String topic, byte[] payload, MqttQoS qos, boolean retained) {}
     private record RetainedRecord(String topic, byte[] payload, MqttQoS qos, io.netty.handler.codec.mqtt.MqttProperties properties) {}
 
@@ -88,6 +92,23 @@ public class EmbeddedMqttBroker {
 
     public List<ReceivedMessage> getReceivedMessages() {
         return Collections.unmodifiableList(receivedMessages);
+    }
+
+    public List<ConnectRecord> getConnectRecords() {
+        return Collections.unmodifiableList(connectRecords);
+    }
+
+    public void clearConnectRecords() {
+        connectRecords.clear();
+    }
+
+    /**
+     * 模拟物理断链：直接强关所有活跃客户端通道以触发客户端自动重连
+     */
+    public void disconnectAllClients() {
+        for (Channel ch : new ArrayList<>(clientIds.keySet())) {
+            ch.close();
+        }
     }
 
     public void clearReceivedMessages() {
@@ -155,9 +176,17 @@ public class EmbeddedMqttBroker {
                 serverChannel = null;
             }
         }
+        for (Channel ch : clientIds.keySet()) {
+            try {
+                if (ch.isOpen()) {
+                    ch.close().sync();
+                }
+            } catch (Throwable ignored) {
+            }
+        }
         if (workerGroup != null) {
             try {
-                workerGroup.shutdownGracefully();
+                workerGroup.shutdownGracefully(0, 5, java.util.concurrent.TimeUnit.SECONDS);
             } catch (Throwable ignored) {
             } finally {
                 workerGroup = null;
@@ -165,17 +194,19 @@ public class EmbeddedMqttBroker {
         }
         if (bossGroup != null) {
             try {
-                bossGroup.shutdownGracefully();
+                bossGroup.shutdownGracefully(0, 5, java.util.concurrent.TimeUnit.SECONDS);
             } catch (Throwable ignored) {
             } finally {
                 bossGroup = null;
             }
         }
         channelSubscriptions.clear();
+        channelSubscriptionOptions.clear();
         clientIds.clear();
         willMessages.clear();
         retainedMessages.clear();
         receivedMessages.clear();
+        connectRecords.clear();
         log.info("[EmbeddedMqttBroker] Stopped In-Memory MQTT Broker successfully");
     }
 
@@ -215,6 +246,10 @@ public class EmbeddedMqttBroker {
 
         private void handleConnect(ChannelHandlerContext ctx, MqttConnectMessage msg) {
             String clientId = msg.payload().clientIdentifier();
+            String username = msg.payload().userName();
+            byte[] passwordBytes = msg.payload().passwordInBytes();
+            String password = passwordBytes != null ? new String(passwordBytes, StandardCharsets.UTF_8) : null;
+            connectRecords.add(new ConnectRecord(clientId, username, password));
             clientIds.put(ctx.channel(), clientId);
             channelSubscriptions.computeIfAbsent(ctx.channel(), k -> new CopyOnWriteArraySet<>());
 
@@ -249,10 +284,17 @@ public class EmbeddedMqttBroker {
             List<MqttQoS> grantedQosList = new ArrayList<>();
 
             Set<String> subs = channelSubscriptions.computeIfAbsent(ctx.channel(), k -> new CopyOnWriteArraySet<>());
+            Map<String, MqttSubscriptionOption> optMap = channelSubscriptionOptions.computeIfAbsent(ctx.channel(), k -> new ConcurrentHashMap<>());
+            Set<String> newlyAdded = new HashSet<>();
             for (MqttTopicSubscription sub : topicSubscriptions) {
-                subs.add(sub.topicName());
+                if (subs.add(sub.topicName())) {
+                    newlyAdded.add(sub.topicName());
+                }
+                if (sub.option() != null) {
+                    optMap.put(sub.topicName(), sub.option());
+                }
                 grantedQosList.add(sub.qualityOfService());
-                log.debug("[EmbeddedMqttBroker] Client [{}] subscribed to [{}]", clientIds.get(ctx.channel()), sub.topicName());
+                log.debug("[EmbeddedMqttBroker] Client [{}] subscribed to [{}] (option={})", clientIds.get(ctx.channel()), sub.topicName(), sub.option());
             }
 
             MqttSubAckMessage subAck = MqttMessageBuilders.subAck()
@@ -261,8 +303,20 @@ public class EmbeddedMqttBroker {
                     .build();
             ctx.writeAndFlush(subAck);
 
-            // 依据 MQTT 规范向新订阅者派发匹配的 Broker 保留消息
+            // 依据 MQTT 5.0 retainHandling 策略决定是否派发 Broker 保留消息
             for (MqttTopicSubscription sub : topicSubscriptions) {
+                MqttSubscriptionOption opt = sub.option();
+                MqttSubscriptionOption.RetainedHandlingPolicy policy = opt != null && opt.retainHandling() != null
+                        ? opt.retainHandling()
+                        : MqttSubscriptionOption.RetainedHandlingPolicy.SEND_AT_SUBSCRIBE;
+                if (policy == MqttSubscriptionOption.RetainedHandlingPolicy.DONT_SEND_AT_SUBSCRIBE) {
+                    continue;
+                }
+                if (policy == MqttSubscriptionOption.RetainedHandlingPolicy.SEND_AT_SUBSCRIBE_IF_NOT_YET_EXISTS
+                        && !newlyAdded.contains(sub.topicName())) {
+                    continue;
+                }
+
                 String subFilter = sub.topicName();
                 if (subFilter.startsWith("$share/")) {
                     int thirdSlash = subFilter.indexOf('/', 7);
@@ -305,6 +359,10 @@ public class EmbeddedMqttBroker {
             if (subs != null) {
                 subs.removeAll(topics);
             }
+            Map<String, MqttSubscriptionOption> optMap = channelSubscriptionOptions.get(ctx.channel());
+            if (optMap != null) {
+                topics.forEach(optMap::remove);
+            }
 
             MqttUnsubAckMessage unsubAck = MqttMessageBuilders.unsubAck()
                     .packetId(packetId)
@@ -343,8 +401,8 @@ public class EmbeddedMqttBroker {
                 ctx.writeAndFlush(new MqttMessage(recHeader, recVar));
             }
 
-            // 转发消息给匹配的订阅客户端
-            broadcastMessage(topic, payloadBytes, qos, props);
+            // 转发消息给匹配的订阅客户端（传递发布源通道与 retained 标志支持 noLocal 与 retainAsPublished）
+            broadcastMessage(ctx.channel(), topic, payloadBytes, qos, retained, props);
         }
 
         private void handlePubRel(ChannelHandlerContext ctx, MqttMessage msg) {
@@ -363,7 +421,7 @@ public class EmbeddedMqttBroker {
             cleanChannel(ctx.channel());
             if (will != null) {
                 log.info("[EmbeddedMqttBroker] Client channel closed unexpectedly without DISCONNECT, triggering LWT broadcast on topic [{}]", will.topic());
-                broadcastMessage(will.topic(), will.payload(), will.qos(), null);
+                broadcastMessage(null, will.topic(), will.payload(), will.qos(), false, null);
             }
             super.channelInactive(ctx);
         }
@@ -377,17 +435,19 @@ public class EmbeddedMqttBroker {
 
         private void cleanChannel(Channel ch) {
             channelSubscriptions.remove(ch);
+            channelSubscriptionOptions.remove(ch);
             clientIds.remove(ch);
         }
     }
 
-    private void broadcastMessage(String topic, byte[] payloadBytes, MqttQoS qos, io.netty.handler.codec.mqtt.MqttProperties props) {
+    private void broadcastMessage(Channel publisherChannel, String topic, byte[] payloadBytes, MqttQoS qos, boolean publisherRetained, io.netty.handler.codec.mqtt.MqttProperties props) {
         for (Map.Entry<Channel, Set<String>> entry : channelSubscriptions.entrySet()) {
             Channel ch = entry.getKey();
             if (!ch.isActive()) {
                 continue;
             }
             Set<String> filters = entry.getValue();
+            Map<String, MqttSubscriptionOption> optMap = channelSubscriptionOptions.get(ch);
             for (String filter : filters) {
                 String effectiveFilter = filter;
                 if (filter.startsWith("$share/")) {
@@ -397,10 +457,15 @@ public class EmbeddedMqttBroker {
                     }
                 }
                 if (isTopicMatch(effectiveFilter, topic)) {
+                    MqttSubscriptionOption opt = optMap != null ? optMap.get(filter) : null;
+                    if (opt != null && opt.isNoLocal() && publisherChannel != null && ch == publisherChannel) {
+                        continue;
+                    }
+                    boolean forwardRetain = opt != null && opt.isRetainAsPublished() && publisherRetained;
                     MqttMessageBuilders.PublishBuilder builder = MqttMessageBuilders.publish()
                             .topicName(topic)
                             .qos(qos)
-                            .retained(false)
+                            .retained(forwardRetain)
                             .payload(Unpooled.copiedBuffer(payloadBytes));
 
                     if (qos != MqttQoS.AT_MOST_ONCE) {
