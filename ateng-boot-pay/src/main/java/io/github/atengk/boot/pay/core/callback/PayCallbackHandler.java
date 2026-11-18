@@ -16,18 +16,22 @@ import io.github.atengk.boot.pay.config.properties.AlipayAppProperties;
 import io.github.atengk.boot.pay.config.properties.PayHttpProperties;
 import io.github.atengk.boot.pay.config.properties.PayProperties;
 import io.github.atengk.boot.pay.config.properties.WechatMerchantProperties;
+import io.github.atengk.boot.pay.core.WechatPayTemplate;
 import io.github.atengk.boot.pay.core.certificate.WechatAutoCertificateManager;
 import io.github.atengk.boot.pay.core.lock.PayLockManager;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
 import io.github.atengk.boot.pay.enums.PayChannel;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
+import io.github.atengk.boot.pay.enums.PayTransferState;
 import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.exception.PaySignException;
+import io.github.atengk.boot.pay.model.callback.OrderClosedCallback;
 import io.github.atengk.boot.pay.model.callback.PayCallbackResponse;
 import io.github.atengk.boot.pay.model.callback.PayCallbackResult;
 import io.github.atengk.boot.pay.model.callback.PaymentSuccessCallback;
 import io.github.atengk.boot.pay.model.callback.RefundSuccessCallback;
+import io.github.atengk.boot.pay.model.callback.TransferNotifyCallback;
 import io.github.atengk.boot.pay.spi.PayCallbackListener;
 import io.github.atengk.boot.pay.util.CurrencyUtil;
 import io.github.atengk.boot.pay.util.PayKeyLoader;
@@ -45,6 +49,7 @@ import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.*;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /**
@@ -100,7 +105,7 @@ public class PayCallbackHandler {
     // ==========================================
 
     /**
-     * 完整处理微信支付 V3 Webhook 回调（自动智能识别支付成功 vs 退款通知事件，执行验签、解密、双轨防重锁、监听器派发与 ACK 应答转译）
+     * 完整处理微信支付 V3 Webhook 回调（自动智能识别支付、退款与商家转账通知事件，执行验签、解密、双轨防重锁、监听器派发与 ACK 应答转译）
      *
      * @param merchantKeyOrId 命名商户键或商户号
      * @param headers         HTTP 标头字典
@@ -110,6 +115,9 @@ public class PayCallbackHandler {
     public PayCallbackResponse handleWechat(String merchantKeyOrId, Map<String, String> headers, String body) {
         if (isWechatRefundNotification(body)) {
             return handleWechatRefund(merchantKeyOrId, headers, body);
+        }
+        if (isWechatTransferNotification(body)) {
+            return handleWechatTransfer(merchantKeyOrId, headers, body);
         }
         return handleWechatPayment(merchantKeyOrId, headers, body);
     }
@@ -160,7 +168,45 @@ public class PayCallbackHandler {
     }
 
     /**
-     * 完整处理微信支付 V3 支付成功通知 Webhook 回调（验签、解密、channel:outTradeNo 防重锁、监听器派发与 ACK 应答转译）
+     * 完整处理微信新版商家转账单据终态通知 Webhook 回调（{@code MCHTRANSFER.BILL.FINISHED}）
+     *
+     * @param merchantKeyOrId 命名商户键或商户号
+     * @param headers         HTTP 标头字典
+     * @param body            原始请求体 JSON 字符串
+     * @return 统一回调应答模型
+     */
+    public PayCallbackResponse handleWechatTransfer(String merchantKeyOrId, Map<String, String> headers, String body) {
+        TransferNotifyCallback callback;
+        try {
+            callback = parseAndVerifyWechatTransfer(merchantKeyOrId, headers, body);
+        } catch (PaySignException e) {
+            log.warn("WeChat transfer callback signature verification or decryption failed for merchant [{}]: {}",
+                    merchantKeyOrId, e.getMessage());
+            return buildWechatResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(), "FAIL",
+                    "签名验证或解密失败: " + e.getMessage(), PayCallbackResult.fail(e.getMessage()), null, null, null, null);
+        } catch (Exception e) {
+            log.error("Unexpected error parsing WeChat transfer callback for merchant [{}]: {}",
+                    merchantKeyOrId, e.getMessage(), e);
+            return buildWechatResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(), "FAIL",
+                    "回调报文解析异常: " + e.getMessage(), PayCallbackResult.fail(e.getMessage()), null, null, null, null);
+        }
+
+        String bizNo = firstNonBlankText(callback.getOutBizNo(), callback.getOrderId());
+        if (!hasText(bizNo)) {
+            return buildWechatResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(), "FAIL",
+                    "微信商家转账回调缺少转账单号", PayCallbackResult.fail("缺少转账单号"), null, null, null, callback);
+        }
+        return dispatchWechatWithLock(
+                "transfer",
+                PayChannel.WECHAT_PAY.name() + ":TRANSFER:" + bizNo,
+                bizNo,
+                () -> dispatchTransfer(callback),
+                null, null, null, callback
+        );
+    }
+
+    /**
+     * 完整处理微信支付 V3 交易通知 Webhook 回调（严格终态守卫：仅 {@code SUCCESS} 触发支付成功监听，{@code CLOSED}/{@code REVOKED} 路由至 {@code onOrderClosed}，其余非成功态静默忽略）
      *
      * @param merchantKeyOrId 命名商户键或商户号
      * @param headers         HTTP 标头字典
@@ -183,24 +229,41 @@ public class PayCallbackHandler {
                     "回调报文解析异常: " + e.getMessage(), PayCallbackResult.fail(e.getMessage()), null, null);
         }
 
-        String lockKey = PayChannel.WECHAT_PAY.name() + ":" + callback.getOutTradeNo();
-        return processWithLock(
-                lockKey,
+        PayTradeState state = callback.getTradeState();
+        if (state == PayTradeState.CLOSED || state == PayTradeState.REVOKED) {
+            OrderClosedCallback closedCallback = toWechatOrderClosedCallback(merchantKeyOrId, callback);
+            String outTradeNo = closedCallback.getOutTradeNo();
+            if (!hasText(outTradeNo)) {
+                return buildWechatResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(), "FAIL",
+                        "微信关单回调缺少商户订单号 [outTradeNo]", PayCallbackResult.fail("缺少商户订单号"), null, null, closedCallback, null);
+            }
+            return dispatchWechatWithLock(
+                    "close",
+                    PayChannel.WECHAT_PAY.name() + ":CLOSED:" + outTradeNo,
+                    outTradeNo,
+                    () -> dispatchOrderClosed(closedCallback),
+                    null, null, closedCallback, null
+            );
+        }
+
+        if (state != PayTradeState.SUCCESS) {
+            log.info("Ignoring non-success WeChat payment notification: outTradeNo={}, tradeState={}",
+                    callback.getOutTradeNo(), state);
+            return buildWechatResponse(HttpStatus.OK.value(), "SUCCESS", "成功",
+                    PayCallbackResult.ignore("忽略非支付成功状态通知: " + state), null, null, null, null);
+        }
+
+        String outTradeNo = callback.getOutTradeNo();
+        if (!hasText(outTradeNo)) {
+            return buildWechatResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(), "FAIL",
+                    "微信支付回调缺少商户订单号 [outTradeNo]", PayCallbackResult.fail("缺少商户订单号"), callback, null);
+        }
+        return dispatchWechatWithLock(
+                "pay",
+                PayChannel.WECHAT_PAY.name() + ":" + outTradeNo,
+                outTradeNo,
                 () -> dispatch(callback),
-                () -> {
-                    log.warn("WeChat pay callback lock contention detected for key [{}], responding FAIL to trigger retry", lockKey);
-                    return buildWechatResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(), "FAIL",
-                            "并发防重锁冲突，等待下一次重试", PayCallbackResult.fail("并发防重锁冲突"), callback, null);
-                },
-                result -> {
-                    if (result.isFail()) {
-                        log.warn("WeChat pay callback listener returned FAIL for outTradeNo [{}], reason: {}",
-                                callback.getOutTradeNo(), result.getMessage());
-                        return buildWechatResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(), "FAIL",
-                                result.getMessage(), result, callback, null);
-                    }
-                    return buildWechatResponse(HttpStatus.OK.value(), "SUCCESS", "成功", result, callback, null);
-                }
+                callback, null, null, null
         );
     }
 
@@ -226,62 +289,24 @@ public class PayCallbackHandler {
     }
 
     /**
-     * 编程式验签与解密微信支付 V3 支付成功回调报文
+     * 编程式验签与解密微信支付 V3 支付回调报文
      *
      * @param merchantKeyOrId 命名商户键或商户号
      * @param headers         HTTP 标头字典
      * @param body            原始请求体 JSON 字符串
-     * @return 标准化领域支付成功回调数据
+     * @return 标准化领域支付回调数据
      * @throws PaySignException 当签名验证失败、证书不存在或解密异常时抛出
      */
     public PaymentSuccessCallback parseAndVerifyWechat(String merchantKeyOrId, Map<String, String> headers, String body) {
-        if (headers == null || headers.isEmpty()) {
-            throw new PaySignException(PayResultCode.PAY_PARAM_INVALID, "微信支付回调 HTTP 标头不能为空");
-        }
-        if (body == null || body.isBlank()) {
-            throw new PaySignException(PayResultCode.PAY_PARAM_INVALID, "微信支付回调请求体不能为空");
-        }
         if (isWechatRefundNotification(body)) {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID,
                     "当前通知为微信退款回调 (REFUND.*)，请调用 parseAndVerifyWechatRefund 方法解析");
         }
-
-        WechatMerchantProperties merchant = namedMerchantRegistry.resolveWechatMerchant(merchantKeyOrId);
-        String serialNumber = getHeaderCaseInsensitive(headers, WECHAT_HEADER_SERIAL);
-        String signature = getHeaderCaseInsensitive(headers, WECHAT_HEADER_SIGNATURE);
-        String timestamp = getHeaderCaseInsensitive(headers, WECHAT_HEADER_TIMESTAMP);
-        String nonce = getHeaderCaseInsensitive(headers, WECHAT_HEADER_NONCE);
-        String signType = getHeaderCaseInsensitive(headers, WECHAT_HEADER_SIGN_TYPE);
-        if (signType == null || signType.isBlank()) {
-            signType = DEFAULT_SIGN_TYPE;
+        if (isWechatTransferNotification(body)) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID,
+                    "当前通知为微信商家转账回调 (MCHTRANSFER.*)，请调用 parseAndVerifyWechatTransfer 方法解析");
         }
-
-        if (serialNumber == null || signature == null || timestamp == null || nonce == null) {
-            throw new PaySignException(PayResultCode.PAY_PARAM_INVALID,
-                    "微信支付回调缺少必要签名标头 (Wechatpay-Serial, Wechatpay-Signature, Wechatpay-Timestamp, Wechatpay-Nonce)");
-        }
-
-        RequestParam requestParam = new RequestParam.Builder()
-                .serialNumber(serialNumber)
-                .nonce(nonce)
-                .signature(signature)
-                .timestamp(timestamp)
-                .signType(signType)
-                .body(body)
-                .build();
-
-        NotificationParser parser = createWechatNotificationParser(merchant, serialNumber);
-        Transaction transaction;
-        try {
-            transaction = parser.parse(requestParam, Transaction.class);
-        } catch (ValidationException e) {
-            throw new PaySignException(PayResultCode.PAY_SIGN_VERIFY_ERROR, "微信支付回调签名验证失败: " + e.getMessage(), e);
-        } catch (DecryptionException e) {
-            throw new PaySignException(PayResultCode.PAY_SIGN_VERIFY_ERROR, "微信支付回调 AES-GCM 密文解密失败: " + e.getMessage(), e);
-        } catch (Exception e) {
-            throw new PaySignException(PayResultCode.PAY_SIGN_VERIFY_ERROR, "微信支付回调报文解析异常: " + e.getMessage(), e);
-        }
-
+        Transaction transaction = parseWechatNotification(merchantKeyOrId, headers, body, "微信支付回调", Transaction.class);
         return mapWechatTransaction(merchantKeyOrId, transaction);
     }
 
@@ -295,11 +320,36 @@ public class PayCallbackHandler {
      * @throws PaySignException 当签名验证失败、证书不存在或解密异常时抛出
      */
     public RefundSuccessCallback parseAndVerifyWechatRefund(String merchantKeyOrId, Map<String, String> headers, String body) {
+        RefundNotification refundNotification = parseWechatNotification(
+                merchantKeyOrId, headers, body, "微信支付退款回调", RefundNotification.class);
+        return mapWechatRefundNotification(merchantKeyOrId, refundNotification);
+    }
+
+    /**
+     * 编程式验签与解密微信新版商家转账单据终态通知回调报文 ({@code MCHTRANSFER.BILL.FINISHED})
+     *
+     * @param merchantKeyOrId 命名商户键或商户号
+     * @param headers         HTTP 标头字典
+     * @param body            原始请求体 JSON 字符串
+     * @return 标准化领域商家转账通知回调数据
+     * @throws PaySignException 当签名验证失败、证书不存在或解密异常时抛出
+     */
+    public TransferNotifyCallback parseAndVerifyWechatTransfer(String merchantKeyOrId, Map<String, String> headers, String body) {
+        WechatTransferBillNotification notification = parseWechatNotification(
+                merchantKeyOrId, headers, body, "微信商家转账回调", WechatTransferBillNotification.class);
+        return mapWechatTransferNotification(merchantKeyOrId, notification);
+    }
+
+    private <T> T parseWechatNotification(String merchantKeyOrId,
+                                          Map<String, String> headers,
+                                          String body,
+                                          String sceneLabel,
+                                          Class<T> targetClass) {
         if (headers == null || headers.isEmpty()) {
-            throw new PaySignException(PayResultCode.PAY_PARAM_INVALID, "微信支付退款回调 HTTP 标头不能为空");
+            throw new PaySignException(PayResultCode.PAY_PARAM_INVALID, sceneLabel + " HTTP 标头不能为空");
         }
         if (body == null || body.isBlank()) {
-            throw new PaySignException(PayResultCode.PAY_PARAM_INVALID, "微信支付退款回调请求体不能为空");
+            throw new PaySignException(PayResultCode.PAY_PARAM_INVALID, sceneLabel + "请求体不能为空");
         }
 
         WechatMerchantProperties merchant = namedMerchantRegistry.resolveWechatMerchant(merchantKeyOrId);
@@ -314,7 +364,7 @@ public class PayCallbackHandler {
 
         if (serialNumber == null || signature == null || timestamp == null || nonce == null) {
             throw new PaySignException(PayResultCode.PAY_PARAM_INVALID,
-                    "微信支付退款回调缺少必要签名标头 (Wechatpay-Serial, Wechatpay-Signature, Wechatpay-Timestamp, Wechatpay-Nonce)");
+                    sceneLabel + "缺少必要签名标头 (Wechatpay-Serial, Wechatpay-Signature, Wechatpay-Timestamp, Wechatpay-Nonce)");
         }
 
         RequestParam requestParam = new RequestParam.Builder()
@@ -327,18 +377,15 @@ public class PayCallbackHandler {
                 .build();
 
         NotificationParser parser = createWechatNotificationParser(merchant, serialNumber);
-        RefundNotification refundNotification;
         try {
-            refundNotification = parser.parse(requestParam, RefundNotification.class);
+            return parser.parse(requestParam, targetClass);
         } catch (ValidationException e) {
-            throw new PaySignException(PayResultCode.PAY_SIGN_VERIFY_ERROR, "微信支付退款回调签名验证失败: " + e.getMessage(), e);
+            throw new PaySignException(PayResultCode.PAY_SIGN_VERIFY_ERROR, sceneLabel + "签名验证失败: " + e.getMessage(), e);
         } catch (DecryptionException e) {
-            throw new PaySignException(PayResultCode.PAY_SIGN_VERIFY_ERROR, "微信支付退款回调 AES-GCM 密文解密失败: " + e.getMessage(), e);
+            throw new PaySignException(PayResultCode.PAY_SIGN_VERIFY_ERROR, sceneLabel + " AES-GCM 密文解密失败: " + e.getMessage(), e);
         } catch (Exception e) {
-            throw new PaySignException(PayResultCode.PAY_SIGN_VERIFY_ERROR, "微信支付退款回调报文解析异常: " + e.getMessage(), e);
+            throw new PaySignException(PayResultCode.PAY_SIGN_VERIFY_ERROR, sceneLabel + "报文解析异常: " + e.getMessage(), e);
         }
-
-        return mapWechatRefundNotification(merchantKeyOrId, refundNotification);
     }
 
     /**
@@ -355,6 +402,20 @@ public class PayCallbackHandler {
                 || body.contains("\"REFUND.ABNORMAL\"")
                 || body.contains("\"REFUND.CLOSED\"")
                 || (body.contains("\"event_type\"") && body.contains("REFUND."));
+    }
+
+    /**
+     * 判断当前微信通知报文是否属于新版商家转账事件 (MCHTRANSFER.BILL.FINISHED)
+     *
+     * @param body 回调 JSON 原始报文
+     * @return true 表示为商家转账通知
+     */
+    public static boolean isWechatTransferNotification(String body) {
+        if (body == null || body.isBlank()) {
+            return false;
+        }
+        return body.contains("\"MCHTRANSFER.BILL.FINISHED\"")
+                || (body.contains("\"event_type\"") && body.contains("MCHTRANSFER."));
     }
 
     /**
@@ -487,6 +548,71 @@ public class PayCallbackHandler {
                 .build();
     }
 
+    private TransferNotifyCallback mapWechatTransferNotification(String merchantKey, WechatTransferBillNotification notif) {
+        BigDecimal amount = notif.getTransferAmount() != null
+                ? CurrencyUtil.fenToYuan(notif.getTransferAmount())
+                : BigDecimal.ZERO;
+        PayTransferState status = WechatPayTemplate.mapWechatTransferBillStatus(notif.getState());
+        String payTime = firstNonBlankText(notif.getUpdateTime(), notif.getCreateTime());
+
+        return TransferNotifyCallback.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .merchantKey(merchantKey)
+                .outBizNo(notif.getOutBillNo())
+                .orderId(notif.getTransferBillNo())
+                .status(status)
+                .rawStatus(notif.getState())
+                .amount(amount)
+                .payeeAccount(notif.getOpenid())
+                .payTime(payTime)
+                .failReason(notif.getFailReason())
+                .rawPayload(notif)
+                .build();
+    }
+
+    private OrderClosedCallback toWechatOrderClosedCallback(String merchantKey, PaymentSuccessCallback payment) {
+        String rawState = null;
+        String closeReason = null;
+        String closeTime = payment.getPayTime();
+        if (payment.getRawPayload() instanceof Transaction tx) {
+            rawState = tx.getTradeState() != null ? tx.getTradeState().name() : null;
+            closeReason = tx.getTradeStateDesc();
+        }
+        return OrderClosedCallback.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .merchantKey(merchantKey)
+                .outTradeNo(payment.getOutTradeNo())
+                .transactionId(payment.getTransactionId())
+                .amount(payment.getAmount())
+                .closeTime(closeTime)
+                .tradeState(payment.getTradeState())
+                .rawTradeState(firstNonBlankText(rawState, payment.getTradeState().getCode()))
+                .closeReason(closeReason)
+                .attach(payment.getAttach())
+                .rawPayload(payment.getRawPayload())
+                .build();
+    }
+
+    private OrderClosedCallback toAlipayOrderClosedCallback(String appKey,
+                                                            Map<String, String> params,
+                                                            PaymentSuccessCallback payment) {
+        String closeTime = firstNonBlankText(params.get("gmt_close"), params.get("notify_time"));
+        String tradeStatus = params.get("trade_status");
+        return OrderClosedCallback.builder()
+                .channel(PayChannel.ALIPAY)
+                .merchantKey(appKey)
+                .outTradeNo(payment.getOutTradeNo())
+                .transactionId(payment.getTransactionId())
+                .amount(payment.getAmount())
+                .closeTime(closeTime)
+                .tradeState(payment.getTradeState())
+                .rawTradeState(firstNonBlankText(tradeStatus, payment.getTradeState().getCode()))
+                .closeReason(tradeStatus)
+                .attach(payment.getAttach())
+                .rawPayload(payment.getRawPayload())
+                .build();
+    }
+
     private PayTradeState mapWechatTradeState(Transaction.TradeStateEnum state) {
         if (state == null) {
             return PayTradeState.PAYERROR;
@@ -508,7 +634,7 @@ public class PayCallbackHandler {
     // ==========================================
 
     /**
-     * 完整处理支付宝 Webhook 回调（自动智能识别支付成功 vs 退款事件，执行验签、双轨防重锁、监听器派发与 ACK 应答转译）
+     * 完整处理支付宝 Webhook 回调（自动智能识别支付、退款与关单事件，执行验签、双轨防重锁、监听器派发与 ACK 应答转译）
      *
      * @param appKeyOrId 命名应用键或 AppId
      * @param params     支付宝回调表单参数字典
@@ -540,6 +666,14 @@ public class PayCallbackHandler {
             return buildAlipayResponse("fail", PayCallbackResult.fail(e.getMessage()), null, null);
         }
 
+        if (!"REFUND_SUCCESS".equalsIgnoreCase(callback.getRefundStatus())) {
+            log.info("Ignoring non-success Alipay refund notification: outRefundNo={}, refundStatus={}",
+                    callback.getOutRefundNo(), callback.getRefundStatus());
+            return buildAlipayResponse("success",
+                    PayCallbackResult.ignore("忽略非退款成功状态通知: " + callback.getRefundStatus()),
+                    null, callback, null, null);
+        }
+
         String lockKey = PayChannel.ALIPAY.name() + ":" + callback.getOutRefundNo();
         return processWithLock(
                 lockKey,
@@ -560,7 +694,7 @@ public class PayCallbackHandler {
     }
 
     /**
-     * 完整处理支付宝支付成功 Webhook 回调（验签、channel:outTradeNo 防重锁、监听器派发与 ACK 应答转译）
+     * 完整处理支付宝交易通知 Webhook 回调（严格终态守卫：仅 {@code TRADE_SUCCESS}/{@code TRADE_FINISHED} 触发支付成功监听，{@code TRADE_CLOSED} 路由至 {@code onOrderClosed}，其余非成功态静默忽略）
      *
      * @param appKeyOrId 命名应用键或 AppId
      * @param params     支付宝回调表单参数字典
@@ -578,22 +712,40 @@ public class PayCallbackHandler {
             return buildAlipayResponse("fail", PayCallbackResult.fail(e.getMessage()), null, null);
         }
 
-        String lockKey = PayChannel.ALIPAY.name() + ":" + callback.getOutTradeNo();
-        return processWithLock(
-                lockKey,
+        PayTradeState state = callback.getTradeState();
+        if (state == PayTradeState.CLOSED || state == PayTradeState.REVOKED) {
+            OrderClosedCallback closedCallback = toAlipayOrderClosedCallback(appKeyOrId, params, callback);
+            String outTradeNo = closedCallback.getOutTradeNo();
+            if (!hasText(outTradeNo)) {
+                return buildAlipayResponse("fail", PayCallbackResult.fail("缺少商户订单号"), null, null, closedCallback, null);
+            }
+            return dispatchAlipayWithLock(
+                    "close",
+                    PayChannel.ALIPAY.name() + ":CLOSED:" + outTradeNo,
+                    outTradeNo,
+                    () -> dispatchOrderClosed(closedCallback),
+                    null, null, closedCallback, null
+            );
+        }
+
+        if (state != PayTradeState.SUCCESS) {
+            log.info("Ignoring non-success Alipay payment notification: outTradeNo={}, tradeState={}",
+                    callback.getOutTradeNo(), state);
+            return buildAlipayResponse("success",
+                    PayCallbackResult.ignore("忽略非支付成功终态通知: " + state),
+                    null, null, null, null);
+        }
+
+        String outTradeNo = callback.getOutTradeNo();
+        if (!hasText(outTradeNo)) {
+            return buildAlipayResponse("fail", PayCallbackResult.fail("缺少商户订单号"), callback, null);
+        }
+        return dispatchAlipayWithLock(
+                "pay",
+                PayChannel.ALIPAY.name() + ":" + outTradeNo,
+                outTradeNo,
                 () -> dispatch(callback),
-                () -> {
-                    log.warn("Alipay callback lock contention detected for key [{}], responding fail to trigger retry", lockKey);
-                    return buildAlipayResponse("fail", PayCallbackResult.fail("并发防重锁冲突"), callback, null);
-                },
-                result -> {
-                    if (result.isFail()) {
-                        log.warn("Alipay callback listener returned FAIL for outTradeNo [{}], reason: {}",
-                                callback.getOutTradeNo(), result.getMessage());
-                        return buildAlipayResponse("fail", result, callback, null);
-                    }
-                    return buildAlipayResponse("success", result, callback, null);
-                }
+                callback, null, null, null
         );
     }
 
@@ -637,7 +789,7 @@ public class PayCallbackHandler {
     }
 
     /**
-     * 判断当前支付宝回调参数是否属于退款通知 (包含 refund_fee 且大于 0)
+     * 判断当前支付宝回调参数是否属于退款通知（必须具备正退款金额，且携带退款时间戳 {@code gmt_refund}、退款业务单号或明确退款状态，防止全额退款二次关单通知误路由）
      *
      * @param params 支付宝回调表单参数字典
      * @return true 表示为退款通知
@@ -646,8 +798,13 @@ public class PayCallbackHandler {
         if (params == null || params.isEmpty()) {
             return false;
         }
-        String refundFee = params.get("refund_fee");
-        return refundFee != null && !refundFee.isBlank() && !refundFee.equals("0.00") && !refundFee.equals("0");
+        if (!hasPositiveAmount(params.get("refund_fee"))) {
+            return false;
+        }
+        return hasText(params.get("gmt_refund"))
+                || hasText(params.get("out_biz_no"))
+                || hasText(params.get("out_request_no"))
+                || hasText(params.get("refund_status"));
     }
 
     private void verifyAlipaySignature(String appKeyOrId, Map<String, String> params) {
@@ -705,15 +862,8 @@ public class PayCallbackHandler {
             }
         }
 
-        String buyerId = params.get("buyer_id");
-        if (buyerId == null || buyerId.isBlank()) {
-            buyerId = params.get("buyer_open_id");
-        }
-
-        String payTime = params.get("gmt_payment");
-        if (payTime == null || payTime.isBlank()) {
-            payTime = params.get("notify_time");
-        }
+        String buyerId = firstNonBlankText(params.get("buyer_id"), params.get("buyer_open_id"));
+        String payTime = firstNonBlankText(params.get("gmt_payment"), params.get("notify_time"));
 
         String tradeStatus = params.get("trade_status");
         PayTradeState tradeState = mapAlipayTradeState(tradeStatus);
@@ -736,13 +886,7 @@ public class PayCallbackHandler {
     private RefundSuccessCallback mapAlipayRefundParams(String appKey, Map<String, String> params) {
         String outTradeNo = params.get("out_trade_no");
         String tradeNo = params.get("trade_no");
-        String outRefundNo = params.get("out_biz_no");
-        if (outRefundNo == null || outRefundNo.isBlank()) {
-            outRefundNo = params.get("out_request_no");
-        }
-        if (outRefundNo == null || outRefundNo.isBlank()) {
-            outRefundNo = outTradeNo;
-        }
+        String outRefundNo = firstNonBlankText(params.get("out_biz_no"), params.get("out_request_no"), outTradeNo);
 
         String refundFeeStr = params.get("refund_fee");
         BigDecimal refundAmount = BigDecimal.ZERO;
@@ -766,10 +910,9 @@ public class PayCallbackHandler {
             }
         }
 
-        String refundTime = params.get("gmt_refund");
-        if (refundTime == null || refundTime.isBlank()) {
-            refundTime = params.get("notify_time");
-        }
+        String gmtRefund = params.get("gmt_refund");
+        String refundTime = firstNonBlankText(gmtRefund, params.get("notify_time"));
+        String refundStatus = resolveAlipayRefundStatus(params, gmtRefund, refundAmount);
 
         return RefundSuccessCallback.builder()
                 .channel(PayChannel.ALIPAY)
@@ -781,9 +924,21 @@ public class PayCallbackHandler {
                 .refundAmount(refundAmount)
                 .totalAmount(totalAmount)
                 .refundTime(refundTime)
-                .refundStatus("REFUND_SUCCESS")
+                .refundStatus(refundStatus)
                 .rawPayload(Collections.unmodifiableMap(params))
                 .build();
+    }
+
+    private static String resolveAlipayRefundStatus(Map<String, String> params, String gmtRefund, BigDecimal refundAmount) {
+        String explicitStatus = params.get("refund_status");
+        if (hasText(explicitStatus)) {
+            return explicitStatus.trim();
+        }
+        if (hasText(gmtRefund) && refundAmount != null && refundAmount.compareTo(BigDecimal.ZERO) > 0) {
+            return "REFUND_SUCCESS";
+        }
+        String tradeStatus = params.get("trade_status");
+        return hasText(tradeStatus) ? tradeStatus.trim() : "PROCESSING";
     }
 
     private PayTradeState mapAlipayTradeState(String tradeStatus) {
@@ -803,31 +958,9 @@ public class PayCallbackHandler {
     // ==========================================
 
     private PayCallbackResult dispatch(PaymentSuccessCallback callback) {
-        if (listeners.isEmpty()) {
-            log.info("No PayCallbackListener registered in application context, auto ACK callback for [{}]",
-                    callback.getOutTradeNo());
-            return PayCallbackResult.ignore("未注册任何回调监听器");
-        }
-
-        PayCallbackResult lastResult = PayCallbackResult.success();
-        for (PayCallbackListener listener : listeners) {
-            if (listener.supports(callback)) {
-                try {
-                    PayCallbackResult res = listener.onPaymentSuccess(callback);
-                    if (res != null) {
-                        if (res.isFail()) {
-                            return res;
-                        }
-                        lastResult = res;
-                    }
-                } catch (Exception e) {
-                    log.error("PayCallbackListener [{}] threw exception processing callback for [{}]: {}",
-                            listener.getClass().getName(), callback.getOutTradeNo(), e.getMessage(), e);
-                    return PayCallbackResult.fail("监听器执行异常: " + e.getMessage());
-                }
-            }
-        }
-        return lastResult;
+        return dispatchToListeners("payment", callback.getOutTradeNo(),
+                listener -> listener.supports(callback),
+                listener -> listener.onPaymentSuccess(callback));
     }
 
     /**
@@ -837,17 +970,50 @@ public class PayCallbackHandler {
      * @return 业务处理结果
      */
     public PayCallbackResult dispatchRefund(RefundSuccessCallback callback) {
+        return dispatchToListeners("refund", callback.getOutRefundNo(),
+                listener -> listener.supports(callback),
+                listener -> listener.onRefundSuccess(callback));
+    }
+
+    /**
+     * 派发订单关闭异步回调事件给业务监听器
+     *
+     * @param callback 标准化订单关闭回调事件
+     * @return 业务处理结果
+     */
+    public PayCallbackResult dispatchOrderClosed(OrderClosedCallback callback) {
+        return dispatchToListeners("order-closed", callback.getOutTradeNo(),
+                listener -> listener.supports(callback),
+                listener -> listener.onOrderClosed(callback));
+    }
+
+    /**
+     * 派发商家转账结果异步回调事件给业务监听器
+     *
+     * @param callback 标准化商家转账回调事件
+     * @return 业务处理结果
+     */
+    public PayCallbackResult dispatchTransfer(TransferNotifyCallback callback) {
+        return dispatchToListeners("transfer", firstNonBlankText(callback.getOutBizNo(), callback.getOrderId()),
+                listener -> listener.supports(callback),
+                listener -> listener.onTransferNotify(callback));
+    }
+
+    private PayCallbackResult dispatchToListeners(String eventLabel,
+                                                    String bizNo,
+                                                    Predicate<PayCallbackListener> supportsPredicate,
+                                                    Function<PayCallbackListener, PayCallbackResult> invoker) {
         if (listeners.isEmpty()) {
-            log.info("No PayCallbackListener registered in application context, auto ACK refund callback for [{}]",
-                    callback.getOutRefundNo());
+            log.info("No PayCallbackListener registered in application context, auto ACK {} callback for [{}]",
+                    eventLabel, bizNo);
             return PayCallbackResult.ignore("未注册任何回调监听器");
         }
 
         PayCallbackResult lastResult = PayCallbackResult.success();
         for (PayCallbackListener listener : listeners) {
-            if (listener.supports(callback)) {
+            if (supportsPredicate.test(listener)) {
                 try {
-                    PayCallbackResult res = listener.onRefundSuccess(callback);
+                    PayCallbackResult res = invoker.apply(listener);
                     if (res != null) {
                         if (res.isFail()) {
                             return res;
@@ -855,13 +1021,70 @@ public class PayCallbackHandler {
                         lastResult = res;
                     }
                 } catch (Exception e) {
-                    log.error("PayCallbackListener [{}] threw exception processing refund for [{}]: {}",
-                            listener.getClass().getName(), callback.getOutRefundNo(), e.getMessage(), e);
-                    return PayCallbackResult.fail("退款监听器执行异常: " + e.getMessage());
+                    log.error("PayCallbackListener [{}] threw exception processing {} for [{}]: {}",
+                            listener.getClass().getName(), eventLabel, bizNo, e.getMessage(), e);
+                    return PayCallbackResult.fail("监听器执行异常: " + e.getMessage());
                 }
             }
         }
         return lastResult;
+    }
+
+    private PayCallbackResponse dispatchWechatWithLock(String scene,
+                                                       String lockKey,
+                                                       String bizNo,
+                                                       Supplier<PayCallbackResult> dispatchAction,
+                                                       PaymentSuccessCallback paymentCallback,
+                                                       RefundSuccessCallback refundCallback,
+                                                       OrderClosedCallback orderClosedCallback,
+                                                       TransferNotifyCallback transferCallback) {
+        return processWithLock(
+                lockKey,
+                dispatchAction,
+                () -> {
+                    log.warn("WeChat {} callback lock contention detected for key [{}], responding FAIL to trigger retry", scene, lockKey);
+                    return buildWechatResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(), "FAIL",
+                            "并发防重锁冲突，等待下一次重试", PayCallbackResult.fail("并发防重锁冲突"),
+                            paymentCallback, refundCallback, orderClosedCallback, transferCallback);
+                },
+                result -> {
+                    if (result.isFail()) {
+                        log.warn("WeChat {} callback listener returned FAIL for bizNo [{}], reason: {}",
+                                scene, bizNo, result.getMessage());
+                        return buildWechatResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(), "FAIL",
+                                result.getMessage(), result, paymentCallback, refundCallback, orderClosedCallback, transferCallback);
+                    }
+                    return buildWechatResponse(HttpStatus.OK.value(), "SUCCESS", "成功",
+                            result, paymentCallback, refundCallback, orderClosedCallback, transferCallback);
+                }
+        );
+    }
+
+    private PayCallbackResponse dispatchAlipayWithLock(String scene,
+                                                       String lockKey,
+                                                       String bizNo,
+                                                       Supplier<PayCallbackResult> dispatchAction,
+                                                       PaymentSuccessCallback paymentCallback,
+                                                       RefundSuccessCallback refundCallback,
+                                                       OrderClosedCallback orderClosedCallback,
+                                                       TransferNotifyCallback transferCallback) {
+        return processWithLock(
+                lockKey,
+                dispatchAction,
+                () -> {
+                    log.warn("Alipay {} callback lock contention detected for key [{}], responding fail to trigger retry", scene, lockKey);
+                    return buildAlipayResponse("fail", PayCallbackResult.fail("并发防重锁冲突"),
+                            paymentCallback, refundCallback, orderClosedCallback, transferCallback);
+                },
+                result -> {
+                    if (result.isFail()) {
+                        log.warn("Alipay {} callback listener returned FAIL for bizNo [{}], reason: {}",
+                                scene, bizNo, result.getMessage());
+                        return buildAlipayResponse("fail", result, paymentCallback, refundCallback, orderClosedCallback, transferCallback);
+                    }
+                    return buildAlipayResponse("success", result, paymentCallback, refundCallback, orderClosedCallback, transferCallback);
+                }
+        );
     }
 
     /**
@@ -897,7 +1120,9 @@ public class PayCallbackHandler {
     private PayCallbackResponse buildWechatResponse(int httpStatus, String code, String message,
                                                     PayCallbackResult result,
                                                     PaymentSuccessCallback callback,
-                                                    RefundSuccessCallback refundCallback) {
+                                                    RefundSuccessCallback refundCallback,
+                                                    OrderClosedCallback orderClosedCallback,
+                                                    TransferNotifyCallback transferCallback) {
         String json = String.format("{\"code\":\"%s\",\"message\":\"%s\"}", code, escapeJson(message));
         return PayCallbackResponse.builder()
                 .httpStatus(httpStatus)
@@ -906,17 +1131,23 @@ public class PayCallbackHandler {
                 .result(result != null ? result : (httpStatus == 200 ? PayCallbackResult.success() : PayCallbackResult.fail(message)))
                 .callback(callback)
                 .refundCallback(refundCallback)
+                .orderClosedCallback(orderClosedCallback)
+                .transferCallback(transferCallback)
                 .build();
     }
 
     private PayCallbackResponse buildWechatResponse(int httpStatus, String code, String message,
-                                                    PayCallbackResult result, PaymentSuccessCallback callback) {
-        return buildWechatResponse(httpStatus, code, message, result, callback, null);
+                                                    PayCallbackResult result,
+                                                    PaymentSuccessCallback callback,
+                                                    RefundSuccessCallback refundCallback) {
+        return buildWechatResponse(httpStatus, code, message, result, callback, refundCallback, null, null);
     }
 
     private PayCallbackResponse buildAlipayResponse(String responseText, PayCallbackResult result,
                                                     PaymentSuccessCallback callback,
-                                                    RefundSuccessCallback refundCallback) {
+                                                    RefundSuccessCallback refundCallback,
+                                                    OrderClosedCallback orderClosedCallback,
+                                                    TransferNotifyCallback transferCallback) {
         return PayCallbackResponse.builder()
                 .httpStatus(HttpStatus.OK.value())
                 .contentType(TEXT_CONTENT_TYPE)
@@ -924,11 +1155,42 @@ public class PayCallbackHandler {
                 .result(result != null ? result : ("success".equals(responseText) ? PayCallbackResult.success() : PayCallbackResult.fail("fail")))
                 .callback(callback)
                 .refundCallback(refundCallback)
+                .orderClosedCallback(orderClosedCallback)
+                .transferCallback(transferCallback)
                 .build();
     }
 
-    private PayCallbackResponse buildAlipayResponse(String responseText, PayCallbackResult result, PaymentSuccessCallback callback) {
-        return buildAlipayResponse(responseText, result, callback, null);
+    private PayCallbackResponse buildAlipayResponse(String responseText, PayCallbackResult result,
+                                                    PaymentSuccessCallback callback,
+                                                    RefundSuccessCallback refundCallback) {
+        return buildAlipayResponse(responseText, result, callback, refundCallback, null, null);
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static boolean hasPositiveAmount(String amountText) {
+        if (!hasText(amountText)) {
+            return false;
+        }
+        try {
+            return new BigDecimal(amountText.trim()).compareTo(BigDecimal.ZERO) > 0;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    private static String firstNonBlankText(String... candidates) {
+        if (candidates == null) {
+            return null;
+        }
+        for (String candidate : candidates) {
+            if (hasText(candidate)) {
+                return candidate.trim();
+            }
+        }
+        return null;
     }
 
     private String escapeJson(String input) {
@@ -971,5 +1233,59 @@ public class PayCallbackHandler {
             }
         }
         return map;
+    }
+
+    /**
+     * 微信新版商家转账单据终态通知 (MCHTRANSFER.BILL.FINISHED) 解密载荷 DTO
+     * <p>
+     * 字段名遵循 Gson {@code LOWER_CASE_WITH_UNDERSCORES} 自动映射规则。
+     * </p>
+     */
+    private static class WechatTransferBillNotification {
+        private String mchId;
+        private String outBillNo;
+        private String transferBillNo;
+        private String state;
+        private Long transferAmount;
+        private String openid;
+        private String failReason;
+        private String createTime;
+        private String updateTime;
+
+        public String getMchId() {
+            return mchId;
+        }
+
+        public String getOutBillNo() {
+            return outBillNo;
+        }
+
+        public String getTransferBillNo() {
+            return transferBillNo;
+        }
+
+        public String getState() {
+            return state;
+        }
+
+        public Long getTransferAmount() {
+            return transferAmount;
+        }
+
+        public String getOpenid() {
+            return openid;
+        }
+
+        public String getFailReason() {
+            return failReason;
+        }
+
+        public String getCreateTime() {
+            return createTime;
+        }
+
+        public String getUpdateTime() {
+            return updateTime;
+        }
     }
 }

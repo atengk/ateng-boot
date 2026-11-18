@@ -11,12 +11,15 @@ import io.github.atengk.boot.pay.core.lock.InMemoryPayLockManager;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
 import io.github.atengk.boot.pay.enums.PayChannel;
 import io.github.atengk.boot.pay.enums.PayTradeState;
+import io.github.atengk.boot.pay.enums.PayTransferState;
 import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.exception.PaySignException;
+import io.github.atengk.boot.pay.model.callback.OrderClosedCallback;
 import io.github.atengk.boot.pay.model.callback.PayCallbackResponse;
 import io.github.atengk.boot.pay.model.callback.PayCallbackResult;
 import io.github.atengk.boot.pay.model.callback.PaymentSuccessCallback;
 import io.github.atengk.boot.pay.model.callback.RefundSuccessCallback;
+import io.github.atengk.boot.pay.model.callback.TransferNotifyCallback;
 import io.github.atengk.boot.pay.spi.PayCallbackListener;
 import io.github.atengk.boot.pay.util.PayKeyLoader;
 import org.junit.jupiter.api.AfterEach;
@@ -888,5 +891,413 @@ class PayCallbackHandlerTest {
 
         assertThrows(PaySignException.class,
                 () -> localHandler.parseAndVerifyWechat("pubkey_only_mch", certHeaders, certBody));
+    }
+
+    // =========================================================================
+    // 5. 终态严格守卫、关单钩子、支付宝退款分流与微信新版转账回调 (#1066)
+    // =========================================================================
+
+    @Test
+    @DisplayName("微信支付通知严格终态防线: NOTPAY/PAYERROR 忽略且不触发 onPaymentSuccess，CLOSED 路由至 onOrderClosed 且无锁泄漏")
+    void testWechatNonSuccessStates_neverTriggerOnPaymentSuccessAndNoLockLeak() throws Exception {
+        AtomicBoolean paymentCalled = new AtomicBoolean(false);
+        AtomicReference<OrderClosedCallback> closedRef = new AtomicReference<>();
+        listeners.add(new PayCallbackListener() {
+            @Override
+            public PayCallbackResult onPaymentSuccess(PaymentSuccessCallback callback) {
+                paymentCalled.set(true);
+                return PayCallbackResult.success();
+            }
+
+            @Override
+            public PayCallbackResult onOrderClosed(OrderClosedCallback callback) {
+                closedRef.set(callback);
+                return PayCallbackResult.success("关单已接收");
+            }
+        });
+
+        // 1. NOTPAY 拦截
+        Map<String, String> notPayHeaders = new HashMap<>();
+        String notPayBody = buildWechatNotificationBody(
+                buildWechatTransactionJsonWithState("WX_NOTPAY_01", "WX_TX_NP", 1000, "openid_1", "NOTPAY"),
+                notPayHeaders, testCertSerial, "TRANSACTION.NOTPAY");
+        PayCallbackResponse notPayResp = handler.handleWechat("default", notPayHeaders, notPayBody);
+        assertEquals(200, notPayResp.getHttpStatus());
+        assertTrue(notPayResp.isIgnore());
+        assertNull(notPayResp.getCallback());
+        assertFalse(paymentCalled.get());
+        assertNull(closedRef.get());
+        assertTrue(payLockManager.tryLock("WECHAT_PAY:WX_NOTPAY_01", Duration.ofSeconds(1)));
+        payLockManager.unlock("WECHAT_PAY:WX_NOTPAY_01");
+
+        // 2. PAYERROR 拦截
+        Map<String, String> payErrHeaders = new HashMap<>();
+        String payErrBody = buildWechatNotificationBody(
+                buildWechatTransactionJsonWithState("WX_PAYERR_02", "WX_TX_PE", 1000, "openid_2", "PAYERROR"),
+                payErrHeaders, testCertSerial, "TRANSACTION.PAYERROR");
+        PayCallbackResponse payErrResp = handler.handleWechat("default", payErrHeaders, payErrBody);
+        assertEquals(200, payErrResp.getHttpStatus());
+        assertTrue(payErrResp.isIgnore());
+        assertNull(payErrResp.getCallback());
+        assertFalse(paymentCalled.get());
+        assertTrue(payLockManager.tryLock("WECHAT_PAY:WX_PAYERR_02", Duration.ofSeconds(1)));
+        payLockManager.unlock("WECHAT_PAY:WX_PAYERR_02");
+
+        // 3. CLOSED 路由至 onOrderClosed 而绝不触发 onPaymentSuccess
+        Map<String, String> closedHeaders = new HashMap<>();
+        String closedBody = buildWechatNotificationBody(
+                buildWechatTransactionJsonWithState("WX_CLOSED_03", "WX_TX_CL", 1000, "openid_3", "CLOSED"),
+                closedHeaders, testCertSerial, "TRANSACTION.CLOSED");
+        PayCallbackResponse closedResp = handler.handleWechat("default", closedHeaders, closedBody);
+        assertEquals(200, closedResp.getHttpStatus());
+        assertTrue(closedResp.isSuccess());
+        assertTrue(closedResp.isOrderClosed());
+        assertNull(closedResp.getCallback());
+        assertFalse(paymentCalled.get());
+        assertNotNull(closedRef.get());
+        assertEquals(PayChannel.WECHAT_PAY, closedRef.get().getChannel());
+        assertEquals("WX_CLOSED_03", closedRef.get().getOutTradeNo());
+        assertEquals(PayTradeState.CLOSED, closedRef.get().getTradeState());
+        assertTrue(payLockManager.tryLock("WECHAT_PAY:CLOSED:WX_CLOSED_03", Duration.ofSeconds(1)));
+        payLockManager.unlock("WECHAT_PAY:CLOSED:WX_CLOSED_03");
+    }
+
+    @Test
+    @DisplayName("支付宝非支付成功态拦截与退款/关单精准分流: WAIT_BUYER_PAY 忽略、纯 TRADE_CLOSED 触发关单、带 gmt_refund+refund_fee>0 路由退款且不硬编码状态")
+    void testAlipayStrictGuardAndRefundVsClosedRouting() throws Exception {
+        AtomicBoolean paymentCalled = new AtomicBoolean(false);
+        AtomicBoolean refundCalled = new AtomicBoolean(false);
+        AtomicReference<OrderClosedCallback> closedRef = new AtomicReference<>();
+        listeners.add(new PayCallbackListener() {
+            @Override
+            public PayCallbackResult onPaymentSuccess(PaymentSuccessCallback callback) {
+                paymentCalled.set(true);
+                return PayCallbackResult.success();
+            }
+
+            @Override
+            public PayCallbackResult onRefundSuccess(RefundSuccessCallback callback) {
+                refundCalled.set(true);
+                return PayCallbackResult.success();
+            }
+
+            @Override
+            public PayCallbackResult onOrderClosed(OrderClosedCallback callback) {
+                closedRef.set(callback);
+                return PayCallbackResult.success("关单已落地");
+            }
+        });
+
+        // 1. WAIT_BUYER_PAY 拦截，绝不触发 onPaymentSuccess
+        Map<String, String> waitParams = buildAlipayParams("ALI_WAIT_01", "ALI_TX_W1", "50.00",
+                "2088001", "WAIT_BUYER_PAY", null);
+        PayCallbackResponse waitResp = handler.handleAlipay("default", waitParams);
+        assertEquals("success", waitResp.getResponseBody());
+        assertTrue(waitResp.isIgnore());
+        assertNull(waitResp.getCallback());
+        assertFalse(paymentCalled.get());
+        assertNull(closedRef.get());
+        assertTrue(payLockManager.tryLock("ALIPAY:ALI_WAIT_01", Duration.ofSeconds(1)));
+        payLockManager.unlock("ALIPAY:ALI_WAIT_01");
+
+        // 2. 纯 TRADE_CLOSED（无 gmt_refund，含 gmt_close 与 refund_fee=0.00）-> 触发 onOrderClosed，不触发 onPaymentSuccess / onRefundSuccess
+        Map<String, String> closedRaw = new HashMap<>();
+        closedRaw.put("app_id", "2021000000000001");
+        closedRaw.put("out_trade_no", "ALI_CLOSED_02");
+        closedRaw.put("trade_no", "ALI_TX_C2");
+        closedRaw.put("total_amount", "50.00");
+        closedRaw.put("refund_fee", "0.00");
+        closedRaw.put("trade_status", "TRADE_CLOSED");
+        closedRaw.put("gmt_close", "2026-11-18 16:00:00");
+        closedRaw.put("notify_time", "2026-11-18 16:00:01");
+        closedRaw.put("charset", "UTF-8");
+        closedRaw.put("sign_type", "RSA2");
+        signAlipayParams(closedRaw);
+
+        PayCallbackResponse closedResp = handler.handleAlipay("default", closedRaw);
+        assertEquals("success", closedResp.getResponseBody());
+        assertTrue(closedResp.isSuccess());
+        assertTrue(closedResp.isOrderClosed());
+        assertNull(closedResp.getCallback());
+        assertFalse(paymentCalled.get());
+        assertFalse(refundCalled.get());
+        assertNotNull(closedRef.get());
+        assertEquals("ALI_CLOSED_02", closedRef.get().getOutTradeNo());
+        assertEquals(PayTradeState.CLOSED, closedRef.get().getTradeState());
+        assertEquals("TRADE_CLOSED", closedRef.get().getRawTradeState());
+        assertEquals("2026-11-18 16:00:00", closedRef.get().getCloseTime());
+        assertTrue(payLockManager.tryLock("ALIPAY:CLOSED:ALI_CLOSED_02", Duration.ofSeconds(1)));
+        payLockManager.unlock("ALIPAY:CLOSED:ALI_CLOSED_02");
+
+        // 3. 全额退款二次无退款时间戳/单号标识的 TRADE_CLOSED（仅有累计 refund_fee 但无 gmt_refund/out_biz_no/refund_status）-> 防误判为退款
+        closedRef.set(null);
+        Map<String, String> secondaryClosed = new HashMap<>();
+        secondaryClosed.put("app_id", "2021000000000001");
+        secondaryClosed.put("out_trade_no", "ALI_CLOSED_SEC_03");
+        secondaryClosed.put("trade_no", "ALI_TX_C3");
+        secondaryClosed.put("total_amount", "50.00");
+        secondaryClosed.put("refund_fee", "50.00");
+        secondaryClosed.put("trade_status", "TRADE_CLOSED");
+        secondaryClosed.put("gmt_close", "2026-11-18 16:05:00");
+        secondaryClosed.put("charset", "UTF-8");
+        secondaryClosed.put("sign_type", "RSA2");
+        signAlipayParams(secondaryClosed);
+
+        PayCallbackResponse secondaryResp = handler.handleAlipay("default", secondaryClosed);
+        assertFalse(refundCalled.get(), "无退款时间/单号标识的二次关单不应误路由至退款");
+        assertTrue(secondaryResp.isOrderClosed());
+        assertNotNull(closedRef.get());
+
+        // 4. 明确带有 refund_status=REFUND_FAIL 时不硬编码为 REFUND_SUCCESS 且不误触发 onRefundSuccess
+        Map<String, String> refundFailRaw = new HashMap<>();
+        refundFailRaw.put("app_id", "2021000000000001");
+        refundFailRaw.put("out_trade_no", "ALI_REF_FAIL_04");
+        refundFailRaw.put("trade_no", "ALI_TX_RF4");
+        refundFailRaw.put("out_biz_no", "ALI_R_FAIL_04");
+        refundFailRaw.put("total_amount", "50.00");
+        refundFailRaw.put("refund_fee", "10.00");
+        refundFailRaw.put("refund_status", "REFUND_FAIL");
+        refundFailRaw.put("gmt_refund", "2026-11-18 16:10:00");
+        refundFailRaw.put("trade_status", "TRADE_SUCCESS");
+        refundFailRaw.put("charset", "UTF-8");
+        refundFailRaw.put("sign_type", "RSA2");
+        signAlipayParams(refundFailRaw);
+
+        RefundSuccessCallback parsedFailRefund = handler.parseAndVerifyAlipayRefund("default", refundFailRaw);
+        assertEquals("REFUND_FAIL", parsedFailRefund.getRefundStatus());
+        PayCallbackResponse refundFailResp = handler.handleAlipay("default", refundFailRaw);
+        assertTrue(refundFailResp.isIgnore());
+        assertFalse(refundCalled.get());
+    }
+
+    @Test
+    @DisplayName("微信新版商家转账回调 MCHTRANSFER.BILL.FINISHED: 验签解密、终态映射、ACK 应答与防重锁确定性释放")
+    void testWechatTransferNotification_fullLifecycleAndLockHygiene() throws Exception {
+        AtomicReference<TransferNotifyCallback> transferRef = new AtomicReference<>();
+        listeners.add(new PayCallbackListener() {
+            @Override
+            public PayCallbackResult onPaymentSuccess(PaymentSuccessCallback callback) {
+                fail("商家转账通知不应触发 onPaymentSuccess");
+                return PayCallbackResult.fail("wrong");
+            }
+
+            @Override
+            public PayCallbackResult onTransferNotify(TransferNotifyCallback callback) {
+                transferRef.set(callback);
+                if (callback.getStatus() == PayTransferState.FAIL) {
+                    return PayCallbackResult.fail("模拟业务暂挂触发重试");
+                }
+                return PayCallbackResult.success("转账入账确认");
+            }
+        });
+
+        // 1. SUCCESS 转账通知
+        String successJson = """
+                {
+                  "mch_id": "1900000001",
+                  "out_bill_no": "MCH_BILL_CB_001",
+                  "transfer_bill_no": "13300000999001",
+                  "state": "SUCCESS",
+                  "transfer_amount": 12345,
+                  "openid": "oUpF8uMuAJO_M2pxb1Q9zNjWeS6o",
+                  "create_time": "2026-11-18T16:00:00+08:00",
+                  "update_time": "2026-11-18T16:01:00+08:00"
+                }
+                """;
+        Map<String, String> headers1 = new HashMap<>();
+        String body1 = buildWechatTransferNotificationBody(successJson, headers1);
+
+        // parseAndVerifyWechat 应拒绝并提示专用方法
+        PayException wrongApiEx = assertThrows(PayException.class,
+                () -> handler.parseAndVerifyWechat("default", headers1, body1));
+        assertTrue(wrongApiEx.getMessage().contains("parseAndVerifyWechatTransfer"));
+
+        PayCallbackResponse resp1 = handler.handleWechat("default", headers1, body1);
+        assertEquals(200, resp1.getHttpStatus());
+        assertEquals("{\"code\":\"SUCCESS\",\"message\":\"成功\"}", resp1.getResponseBody());
+        assertTrue(resp1.isSuccess());
+        assertTrue(resp1.isTransfer());
+        TransferNotifyCallback cb1 = resp1.getTransferCallback();
+        assertNotNull(cb1);
+        assertEquals(PayChannel.WECHAT_PAY, cb1.getChannel());
+        assertEquals("MCH_BILL_CB_001", cb1.getOutBizNo());
+        assertEquals("13300000999001", cb1.getOrderId());
+        assertEquals(PayTransferState.SUCCESS, cb1.getStatus());
+        assertEquals(new BigDecimal("123.45"), cb1.getAmount());
+        assertEquals("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o", cb1.getPayeeAccount());
+        assertEquals("2026-11-18T16:01:00+08:00", cb1.getPayTime());
+        assertTrue(payLockManager.tryLock("WECHAT_PAY:TRANSFER:MCH_BILL_CB_001", Duration.ofSeconds(1)));
+        payLockManager.unlock("WECHAT_PAY:TRANSFER:MCH_BILL_CB_001");
+
+        // 2. CANCELLED 撤销转账终态映射
+        String cancelledJson = """
+                {
+                  "mch_id": "1900000001",
+                  "out_bill_no": "MCH_BILL_CB_002",
+                  "transfer_bill_no": "13300000999002",
+                  "state": "CANCELLED",
+                  "transfer_amount": 5000,
+                  "openid": "openid_cancel",
+                  "update_time": "2026-11-18T16:02:00+08:00"
+                }
+                """;
+        Map<String, String> headers2 = new HashMap<>();
+        String body2 = buildWechatTransferNotificationBody(cancelledJson, headers2);
+        PayCallbackResponse resp2 = handler.handleWechat("default", headers2, body2);
+        assertEquals(200, resp2.getHttpStatus());
+        assertEquals(PayTransferState.CANCELLED, resp2.getTransferCallback().getStatus());
+
+        // 3. FAIL 状态且监听器返回 FAIL -> HTTP 500 且 finally 释放锁
+        String failJson = """
+                {
+                  "mch_id": "1900000001",
+                  "out_bill_no": "MCH_BILL_CB_003",
+                  "transfer_bill_no": "13300000999003",
+                  "state": "FAIL",
+                  "transfer_amount": 800,
+                  "openid": "openid_fail",
+                  "fail_reason": "PAYEE_ACCOUNT_ABNORMAL",
+                  "update_time": "2026-11-18T16:03:00+08:00"
+                }
+                """;
+        Map<String, String> headers3 = new HashMap<>();
+        String body3 = buildWechatTransferNotificationBody(failJson, headers3);
+        PayCallbackResponse resp3 = handler.handleWechat("default", headers3, body3);
+        assertEquals(500, resp3.getHttpStatus());
+        assertTrue(resp3.isFail());
+        assertEquals(PayTransferState.FAIL, resp3.getTransferCallback().getStatus());
+        assertEquals("PAYEE_ACCOUNT_ABNORMAL", resp3.getTransferCallback().getFailReason());
+        assertTrue(payLockManager.tryLock("WECHAT_PAY:TRANSFER:MCH_BILL_CB_003", Duration.ofSeconds(1)));
+        payLockManager.unlock("WECHAT_PAY:TRANSFER:MCH_BILL_CB_003");
+
+        // 4. 转账回调防重锁冲突 -> HTTP 500 FAIL
+        assertTrue(payLockManager.tryLock("WECHAT_PAY:TRANSFER:MCH_BILL_CB_001", Duration.ofSeconds(10)));
+        PayCallbackResponse lockConflictResp = handler.handleWechat("default", headers1, body1);
+        assertEquals(500, lockConflictResp.getHttpStatus());
+        assertTrue(lockConflictResp.isFail());
+        assertTrue(lockConflictResp.getResponseBody().contains("并发防重锁冲突"));
+        payLockManager.unlock("WECHAT_PAY:TRANSFER:MCH_BILL_CB_001");
+    }
+
+    @Test
+    @DisplayName("向后兼容: 仅实现 onPaymentSuccess 的既有监听器无需改动即可正常消费关单与转账默认钩子")
+    void testLegacyPaymentOnlyListener_backwardCompatibility() throws Exception {
+        AtomicBoolean paymentInvoked = new AtomicBoolean(false);
+        // 仅实现 SAM 接口方法 onPaymentSuccess，完全不重写 onOrderClosed / onTransferNotify
+        listeners.add(callback -> {
+            paymentInvoked.set(true);
+            return PayCallbackResult.success();
+        });
+
+        Map<String, String> closedHeaders = new HashMap<>();
+        String closedBody = buildWechatNotificationBody(
+                buildWechatTransactionJsonWithState("LEGACY_CL_01", "WX_LEGACY_CL", 500, "openid", "CLOSED"),
+                closedHeaders, testCertSerial, "TRANSACTION.CLOSED");
+        PayCallbackResponse closedResp = handler.handleWechat("default", closedHeaders, closedBody);
+        assertEquals(200, closedResp.getHttpStatus());
+        assertTrue(closedResp.isSuccess());
+        assertFalse(paymentInvoked.get());
+
+        String transferJson = """
+                {
+                  "mch_id": "1900000001",
+                  "out_bill_no": "LEGACY_TR_01",
+                  "transfer_bill_no": "13300000888",
+                  "state": "SUCCESS",
+                  "transfer_amount": 100,
+                  "openid": "openid_tr",
+                  "update_time": "2026-11-18T16:15:00+08:00"
+                }
+                """;
+        Map<String, String> trHeaders = new HashMap<>();
+        String trBody = buildWechatTransferNotificationBody(transferJson, trHeaders);
+        PayCallbackResponse trResp = handler.handleWechat("default", trHeaders, trBody);
+        assertEquals(200, trResp.getHttpStatus());
+        assertTrue(trResp.isSuccess());
+        assertFalse(paymentInvoked.get());
+    }
+
+    private String buildWechatTransactionJsonWithState(String outTradeNo, String txId, int totalFen,
+                                                       String openid, String tradeState) {
+        return "{\n" +
+                "  \"appid\": \"wx_default_app\",\n" +
+                "  \"mchid\": \"1900000001\",\n" +
+                "  \"out_trade_no\": \"" + outTradeNo + "\",\n" +
+                "  \"transaction_id\": \"" + txId + "\",\n" +
+                "  \"trade_type\": \"NATIVE\",\n" +
+                "  \"trade_state\": \"" + tradeState + "\",\n" +
+                "  \"trade_state_desc\": \"" + tradeState + "\",\n" +
+                "  \"success_time\": \"2026-11-18T16:00:00+08:00\",\n" +
+                "  \"amount\": {\n" +
+                "    \"total\": " + totalFen + ",\n" +
+                "    \"payer_total\": " + totalFen + ",\n" +
+                "    \"currency\": \"CNY\",\n" +
+                "    \"payer_currency\": \"CNY\"\n" +
+                "  },\n" +
+                "  \"payer\": {\n" +
+                "    \"openid\": \"" + openid + "\"\n" +
+                "  }\n" +
+                "}";
+    }
+
+    private String buildWechatNotificationBody(String resourceJson, Map<String, String> headers,
+                                               String serialNumber, String eventType) throws Exception {
+        return buildWechatEncryptedNotification(resourceJson, headers, serialNumber, eventType, "transaction", "transaction");
+    }
+
+    private String buildWechatTransferNotificationBody(String transferJson, Map<String, String> headers) throws Exception {
+        return buildWechatEncryptedNotification(transferJson, headers, testCertSerial,
+                "MCHTRANSFER.BILL.FINISHED", "transfer_bill", "transfer_bill");
+    }
+
+    private String buildWechatEncryptedNotification(String resourceJson, Map<String, String> headers,
+                                                    String serialNumber, String eventType,
+                                                    String associatedData, String originalType) throws Exception {
+        String nonce = "aes_gcm_nonce_" + System.nanoTime();
+
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        SecretKeySpec keySpec = new SecretKeySpec(API_V3_KEY.getBytes(StandardCharsets.UTF_8), "AES");
+        GCMParameterSpec gcmSpec = new GCMParameterSpec(128, nonce.getBytes(StandardCharsets.UTF_8));
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec);
+        cipher.updateAAD(associatedData.getBytes(StandardCharsets.UTF_8));
+        String ciphertextBase64 = Base64.getEncoder().encodeToString(cipher.doFinal(resourceJson.getBytes(StandardCharsets.UTF_8)));
+
+        String body = "{\n" +
+                "  \"id\": \"EV-" + System.nanoTime() + "\",\n" +
+                "  \"create_time\": \"2026-11-18T16:00:00+08:00\",\n" +
+                "  \"resource_type\": \"encrypt-resource\",\n" +
+                "  \"event_type\": \"" + eventType + "\",\n" +
+                "  \"summary\": \"" + eventType + "\",\n" +
+                "  \"resource\": {\n" +
+                "    \"algorithm\": \"AEAD_AES_256_GCM\",\n" +
+                "    \"ciphertext\": \"" + ciphertextBase64 + "\",\n" +
+                "    \"associated_data\": \"" + associatedData + "\",\n" +
+                "    \"original_type\": \"" + originalType + "\",\n" +
+                "    \"nonce\": \"" + nonce + "\"\n" +
+                "  }\n" +
+                "}";
+
+        long timestamp = Instant.now().getEpochSecond();
+        String headerNonce = "header_nonce_" + System.nanoTime();
+        String signPayload = timestamp + "\n" + headerNonce + "\n" + body + "\n";
+
+        Signature signer = Signature.getInstance("SHA256withRSA");
+        signer.initSign(testPrivateKey);
+        signer.update(signPayload.getBytes(StandardCharsets.UTF_8));
+        String signature = Base64.getEncoder().encodeToString(signer.sign());
+
+        headers.put("Wechatpay-Timestamp", String.valueOf(timestamp));
+        headers.put("Wechatpay-Nonce", headerNonce);
+        headers.put("Wechatpay-Signature", signature);
+        headers.put("Wechatpay-Serial", serialNumber);
+        headers.put("Wechatpay-Signature-Type", "WECHATPAY2-SHA256-RSA2048");
+
+        return body;
+    }
+
+    private void signAlipayParams(Map<String, String> params) throws Exception {
+        String content = AlipaySignature.getSignCheckContentV1(params);
+        String sign = AlipaySignature.rsaSign(content, testPrivateKeyPem, "UTF-8", "RSA2");
+        params.put("sign", sign);
     }
 }

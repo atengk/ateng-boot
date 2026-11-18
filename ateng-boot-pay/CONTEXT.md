@@ -49,7 +49,7 @@ _Avoid_: WxPayService, WxPayClient, WechatPayHelper
 _Avoid_: AliPayService, AliPayClient, AlipayHelper
 
 **Pay Callback Listener (回调业务监听器)**:
-用于接收框架验签解密并防重拦截后的标准化强类型支付/退款成功事件的业务 SPI 契约。
+用于接收框架验签解密并防重拦截后的标准化强类型支付成功、退款成功、订单关闭及商家转账异步回调事件的业务 SPI 契约。
 _Avoid_: PayCallbackConsumer, WebhookHandler, PayEventListener
 
 **Pay Callback Handler (回调处理门面)**:
@@ -175,3 +175,11 @@ _Avoid_: 新版批次转账, 微信红包打款, 旧版明细单
 **Transfer Scene Report Info (转账场景报备信息)**:
 新版商家转账按营销活动、劳务报酬、企业赔付等固定场景ID（`transfer_scene_id`）强制附带的报备键值对集合（`info_type` + `info_content`），用于渠道风控合规核验。
 _Avoid_: 转账附言, 批次备注, 拓展参数
+
+**Transfer Notify Callback (商家转账异步回调事件)**:
+微信新版商家转账单据进入终态（`SUCCESS`、`FAIL`、`CANCELLED`）后由 `MCHTRANSFER.BILL.FINISHED` Webhook 通知经验签与 AES-256-GCM 解密映射的标准化转账结果回调事件。
+_Avoid_: 打款通知, 提现回调, BatchTransferCallback
+
+**Order Closed Callback (订单关闭异步回调事件)**:
+由渠道明确通知交易已关闭或已撤销（如微信 `CLOSED`/`REVOKED`、无退款语义的支付宝 `TRADE_CLOSED`）且经终态守卫分流至 `onOrderClosed` 的标准化关单回调事件。
+_Avoid_: 取消通知, 超时事件, CloseNotifyDTO
