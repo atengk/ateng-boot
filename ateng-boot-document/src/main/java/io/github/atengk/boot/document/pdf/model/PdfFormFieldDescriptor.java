@@ -1,8 +1,10 @@
 package io.github.atengk.boot.document.pdf.model;
 
+import io.github.atengk.boot.core.enums.IBaseEnum;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 /**
@@ -65,35 +67,44 @@ public class PdfFormFieldDescriptor {
     /**
      * 表单字段语义化分类枚举
      */
-    public enum FieldCategory {
+    @Getter
+    public enum FieldCategory implements IBaseEnum<String> {
         /**
          * 文本输入域（PDTextField）
          */
-        TEXT,
+        TEXT("text", "文本输入域"),
 
         /**
          * 复选框（PDCheckBox）
          */
-        CHECKBOX,
+        CHECKBOX("checkbox", "复选框"),
 
         /**
          * 单选按钮组（PDRadioButton）
          */
-        RADIO_BUTTON,
+        RADIO_BUTTON("radio_button", "单选按钮组"),
 
         /**
          * 选择列表或下拉框（PDChoice: ListBox / ComboBox）
          */
-        CHOICE,
+        CHOICE("choice", "选择列表/下拉框"),
 
         /**
          * 数字签名域（PDSignatureField）
          */
-        SIGNATURE,
+        SIGNATURE("signature", "数字签名域"),
 
         /**
          * 其他或未知类型字段
          */
-        OTHER
+        OTHER("other", "其他字段");
+
+        private final String code;
+        private final String label;
+
+        FieldCategory(String code, String label) {
+            this.code = code;
+            this.label = label;
+        }
     }
 }

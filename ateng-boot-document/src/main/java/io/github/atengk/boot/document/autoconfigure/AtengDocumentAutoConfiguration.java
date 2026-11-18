@@ -5,12 +5,16 @@ import io.github.atengk.boot.document.pdf.PdfTemplate;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.spi.DefaultDocumentConverter;
 import io.github.atengk.boot.document.spi.DocumentConverter;
+import io.github.atengk.boot.document.spi.GotenbergDocumentConverter;
 import io.github.atengk.boot.document.word.WordTemplate;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.client.RestClient;
 
 /**
  * 企业级文档治理底座自动装配器
@@ -22,6 +26,30 @@ import org.springframework.context.annotation.Bean;
 @ConditionalOnProperty(prefix = "ateng.boot.document", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(DocumentProperties.class)
 public class AtengDocumentAutoConfiguration {
+
+    /**
+     * Gotenberg 远程跨格式转换适配器条件装配配置（独立隔离 {@link RestClient} 类加载边界）
+     *
+     * @author Ateng
+     * @since 2026-11-18
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(RestClient.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.document.converter.gotenberg", name = "enabled", havingValue = "true")
+    static class GotenbergConverterConfiguration {
+
+        /**
+         * 注册 Gotenberg 远程文档转换器 SPI
+         *
+         * @param properties 文档治理根配置属性
+         * @return GotenbergDocumentConverter 实例
+         */
+        @Bean
+        @ConditionalOnMissingBean(DocumentConverter.class)
+        public DocumentConverter gotenbergDocumentConverter(DocumentProperties properties) {
+            return new GotenbergDocumentConverter(properties);
+        }
+    }
 
     /**
      * 注册缺省文档跨格式转换器 SPI（保底快速失败）
@@ -55,7 +83,7 @@ public class AtengDocumentAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(WordTemplate.class)
     public WordTemplate wordTemplate(DocumentProperties properties) {
-        return new WordTemplate(properties.getWord());
+        return new WordTemplate(properties);
     }
 
     /**

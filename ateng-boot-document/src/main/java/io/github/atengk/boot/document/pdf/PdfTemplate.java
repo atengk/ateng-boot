@@ -1,8 +1,10 @@
 package io.github.atengk.boot.document.pdf;
 
+import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.document.enums.CrossPageSealEdge;
 import io.github.atengk.boot.document.enums.PageNumberPosition;
 import io.github.atengk.boot.document.enums.WatermarkLayer;
+import io.github.atengk.boot.document.exception.DocumentException;
 import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.PdfOperationException;
 import io.github.atengk.boot.document.font.DocumentFontResolver;
@@ -19,6 +21,7 @@ import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
 import io.github.atengk.boot.document.properties.DocumentPdfProperties;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.properties.DocumentWatermarkProperties;
+import io.github.atengk.boot.document.util.DocumentWebHelper;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.cos.COSArray;
 import org.apache.pdfbox.cos.COSBase;
@@ -67,6 +70,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -923,6 +927,8 @@ public class PdfTemplate {
             }
         } catch (PdfOperationException | IllegalArgumentException e) {
             throw e;
+        } catch (DocumentException e) {
+            throw new PdfOperationException(e.getResultCode(), e.getMessage(), e);
         } catch (Exception e) {
             throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "合并 PDF 文档失败: " + e.getMessage(), e);
         }
@@ -981,7 +987,7 @@ public class PdfTemplate {
         } else if (outputDir instanceof Path p) {
             targetDir = p.toFile();
         } else if (outputDir instanceof String s) {
-            targetDir = new File(s.trim());
+            targetDir = new File(FileUtil.cleanPath(s.trim()));
         } else {
             throw new IllegalArgumentException("不支持的输出目录类型: " + outputDir.getClass().getName());
         }
@@ -990,7 +996,14 @@ public class PdfTemplate {
             targetDir.mkdirs();
         }
 
-        String filePrefix = prefix != null && !prefix.trim().isEmpty() ? prefix.trim() : "split_";
+        String filePrefix = "split_";
+        if (prefix != null && !prefix.trim().isEmpty()) {
+            String cleanedPrefix = FileUtil.cleanFilename(prefix.replace("\r", "").replace("\n", "").trim());
+            if (cleanedPrefix.isEmpty()) {
+                throw new IllegalArgumentException("拆分文件名前缀包含非法路径穿越或无效字符: " + prefix);
+            }
+            filePrefix = cleanedPrefix;
+        }
         List<File> generatedFiles = new ArrayList<>();
 
         try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
@@ -1002,7 +1015,7 @@ public class PdfTemplate {
             try {
                 for (int i = 0; i < pages.size(); i++) {
                     PDDocument pageDoc = pages.get(i);
-                    File outFile = new File(targetDir, filePrefix + (i + 1) + ".pdf");
+                    File outFile = FileUtil.resolveSafePath(targetDir.toPath(), filePrefix + (i + 1) + ".pdf").toFile();
                     pageDoc.save(outFile);
                     generatedFiles.add(outFile);
                 }
@@ -2414,14 +2427,27 @@ public class PdfTemplate {
         return loadDocument(source, null);
     }
 
+    private long resolveMaxDocumentSizeBytes() {
+        if (documentProperties.getMaxDocumentSize() != null
+                && documentProperties.getMaxDocumentSize().toBytes() > 0) {
+            return documentProperties.getMaxDocumentSize().toBytes();
+        }
+        return Long.MAX_VALUE;
+    }
+
     private LoadedPdfDocument loadDocument(Object source, String password) throws IOException {
         long thresholdBytes = documentProperties.getInMemoryThreshold().toBytes();
+        long maxDocumentBytes = resolveMaxDocumentSizeBytes();
 
         try {
             // 1. 本地物理文件
             if (source instanceof File file) {
                 if (!file.exists() || !file.isFile() || !file.canRead()) {
                     throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, "PDF 文件不存在或不可读: " + file.getAbsolutePath());
+                }
+                if (file.length() > maxDocumentBytes) {
+                    throw new PdfOperationException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                            "PDF 文件体积超出安全上限 (" + maxDocumentBytes + " bytes): " + file.length());
                 }
                 if (file.length() > thresholdBytes) {
                     // 超限直接使用 RandomAccessReadBufferedFile 缓冲文件模式
@@ -2439,6 +2465,10 @@ public class PdfTemplate {
 
             // 3. 字节数组
             if (source instanceof byte[] bytes) {
+                if (bytes.length > maxDocumentBytes) {
+                    throw new PdfOperationException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                            "PDF 字节数组体积超出安全上限 (" + maxDocumentBytes + " bytes): " + bytes.length);
+                }
                 if (bytes.length > thresholdBytes) {
                     File tempFile = createTrackedTempFile("pdf-overflow-", ".pdf");
                     try {
@@ -2462,7 +2492,7 @@ public class PdfTemplate {
 
             // 4. 输入流自适应读取与溢出防 OOM 控制
             if (source instanceof InputStream is) {
-                return loadFromInputStream(is, thresholdBytes, password);
+                return loadFromInputStream(is, thresholdBytes, maxDocumentBytes, password);
             }
 
             // 5. Spring Resource
@@ -2479,7 +2509,7 @@ public class PdfTemplate {
                     // 不支持 getFile 时转为 InputStream 处理
                 }
                 try (InputStream ris = resource.getInputStream()) {
-                    return loadFromInputStream(ris, thresholdBytes, password);
+                    return loadFromInputStream(ris, thresholdBytes, maxDocumentBytes, password);
                 }
             }
 
@@ -2490,10 +2520,8 @@ public class PdfTemplate {
                     throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, "PDF 路径不能为空");
                 }
                 if (path.startsWith(CLASSPATH_PREFIX)) {
-                    String sub = path.substring(CLASSPATH_PREFIX.length());
-                    if (sub.startsWith("/")) {
-                        sub = sub.substring(1);
-                    }
+                    String cleanSub = FileUtil.cleanPath(path.substring(CLASSPATH_PREFIX.length()));
+                    String sub = cleanSub.startsWith("/") ? cleanSub.substring(1) : cleanSub;
                     InputStream cis = getClass().getClassLoader().getResourceAsStream(sub);
                     if (cis == null) {
                         cis = Thread.currentThread().getContextClassLoader().getResourceAsStream(sub);
@@ -2502,10 +2530,11 @@ public class PdfTemplate {
                         throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, "未找到指定的类路径 PDF 资源: " + path);
                     }
                     try (InputStream finalCis = cis) {
-                        return loadFromInputStream(finalCis, thresholdBytes, password);
+                        return loadFromInputStream(finalCis, thresholdBytes, maxDocumentBytes, password);
                     }
                 }
-                File f = new File(path);
+                String cleanPath = FileUtil.cleanPath(path);
+                File f = new File(cleanPath);
                 if (f.exists() && f.isFile() && f.canRead()) {
                     return loadDocument(f, password);
                 }
@@ -2519,10 +2548,11 @@ public class PdfTemplate {
     }
 
     private LoadedPdfDocument loadFromInputStream(InputStream is, long thresholdBytes) throws IOException {
-        return loadFromInputStream(is, thresholdBytes, null);
+        return loadFromInputStream(is, thresholdBytes, resolveMaxDocumentSizeBytes(), null);
     }
 
-    private LoadedPdfDocument loadFromInputStream(InputStream is, long thresholdBytes, String password) throws IOException {
+    private LoadedPdfDocument loadFromInputStream(InputStream is, long thresholdBytes,
+                                                  long maxDocumentBytes, String password) throws IOException {
         ByteArrayOutputStream memoryBaos = new ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
         int bytesRead;
@@ -2534,6 +2564,10 @@ public class PdfTemplate {
         try {
             while ((bytesRead = is.read(buffer)) != -1) {
                 totalRead += bytesRead;
+                if (totalRead > maxDocumentBytes) {
+                    throw new PdfOperationException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                            "PDF 输入流大小超出安全上限 (" + maxDocumentBytes + " bytes): " + totalRead);
+                }
                 if (tempFile == null && totalRead > thresholdBytes) {
                     // 超过阈值，立刻切换为临时文件磁盘缓存模式
                     tempFile = createTrackedTempFile("pdf-overflow-", ".pdf");
@@ -2619,7 +2653,12 @@ public class PdfTemplate {
     }
 
     private byte[] resolveImageBytes(Object image) {
+        long maxBytes = resolveMaxDocumentSizeBytes();
         if (image instanceof byte[] b) {
+            if (b.length > maxBytes) {
+                throw new PdfOperationException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                        "印章图片大小超出安全上限 (" + maxBytes + " bytes): " + b.length);
+            }
             return b;
         }
         if (image instanceof BufferedImage bi) {
@@ -2631,6 +2670,10 @@ public class PdfTemplate {
             }
         }
         if (image instanceof File f) {
+            if (f.length() > maxBytes) {
+                throw new PdfOperationException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                        "印章图片文件大小超出安全上限 (" + maxBytes + " bytes): " + f.length());
+            }
             try {
                 return Files.readAllBytes(f.toPath());
             } catch (IOException e) {
@@ -2639,21 +2682,31 @@ public class PdfTemplate {
         }
         if (image instanceof Path p) {
             try {
+                if (Files.size(p) > maxBytes) {
+                    throw new PdfOperationException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                            "印章图片 Path 大小超出安全上限 (" + maxBytes + " bytes)");
+                }
                 return Files.readAllBytes(p);
+            } catch (PdfOperationException e) {
+                throw e;
             } catch (IOException e) {
                 throw new PdfOperationException(DocumentResultCode.DOCUMENT_OPERATION_FAILED, "读取印章图片 Path 失败: " + p.toAbsolutePath(), e);
             }
         }
         if (image instanceof InputStream is) {
             try {
-                return is.readAllBytes();
+                return DocumentWebHelper.readBytesBounded(is, maxBytes);
+            } catch (DocumentException e) {
+                throw new PdfOperationException(e.getResultCode(), e.getMessage(), e);
             } catch (IOException e) {
                 throw new PdfOperationException(DocumentResultCode.DOCUMENT_OPERATION_FAILED, "读取印章图片流失败", e);
             }
         }
         if (image instanceof Resource res) {
             try (InputStream is = res.getInputStream()) {
-                return is.readAllBytes();
+                return DocumentWebHelper.readBytesBounded(is, maxBytes);
+            } catch (DocumentException e) {
+                throw new PdfOperationException(e.getResultCode(), e.getMessage(), e);
             } catch (IOException e) {
                 throw new PdfOperationException(DocumentResultCode.DOCUMENT_OPERATION_FAILED, "读取印章图片 Resource 失败", e);
             }
@@ -2661,21 +2714,26 @@ public class PdfTemplate {
         if (image instanceof String str) {
             String path = str.trim();
             if (path.startsWith(CLASSPATH_PREFIX)) {
-                String sub = path.substring(CLASSPATH_PREFIX.length());
-                if (sub.startsWith("/")) {
-                    sub = sub.substring(1);
-                }
+                String cleanSub = FileUtil.cleanPath(path.substring(CLASSPATH_PREFIX.length()));
+                String sub = cleanSub.startsWith("/") ? cleanSub.substring(1) : cleanSub;
                 InputStream cis = getClass().getClassLoader().getResourceAsStream(sub);
                 if (cis != null) {
                     try (cis) {
-                        return cis.readAllBytes();
+                        return DocumentWebHelper.readBytesBounded(cis, maxBytes);
+                    } catch (DocumentException e) {
+                        throw new PdfOperationException(e.getResultCode(), e.getMessage(), e);
                     } catch (IOException e) {
                         throw new PdfOperationException(DocumentResultCode.DOCUMENT_OPERATION_FAILED, "读取类路径印章图片失败: " + path, e);
                     }
                 }
             }
-            File f = new File(path);
+            String cleanPath = FileUtil.cleanPath(path);
+            File f = new File(cleanPath);
             if (f.exists() && f.isFile()) {
+                if (f.length() > maxBytes) {
+                    throw new PdfOperationException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                            "印章图片文件大小超出安全上限 (" + maxBytes + " bytes): " + f.length());
+                }
                 try {
                     return Files.readAllBytes(f.toPath());
                 } catch (IOException e) {
@@ -2725,7 +2783,7 @@ public class PdfTemplate {
             }
         }
         if (target instanceof String str) {
-            return resolveOutputStream(new File(str.trim()));
+            return resolveOutputStream(new File(FileUtil.cleanPath(str.trim())));
         }
         throw new IllegalArgumentException("不支持的目标输出类型: " + target.getClass().getName());
     }
@@ -2735,6 +2793,10 @@ public class PdfTemplate {
         try (InputStream is = resolveRawInputStream(source)) {
             is.transferTo(os);
             os.flush();
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (DocumentException e) {
+            throw new PdfOperationException(e.getResultCode(), e.getMessage(), e);
         } catch (IOException e) {
             throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "复制源文件到目标失败: " + e.getMessage(), e);
         } finally {
@@ -2748,25 +2810,25 @@ public class PdfTemplate {
     }
 
     private InputStream resolveRawInputStream(Object source) throws IOException {
-        if (source instanceof InputStream is) {
-            return is;
+        long maxBytes = resolveMaxDocumentSizeBytes();
+        if (source instanceof byte[] b && b.length > maxBytes) {
+            throw new PdfOperationException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                    "PDF 字节数组体积超出安全上限 (" + maxBytes + " bytes): " + b.length);
         }
-        if (source instanceof byte[] b) {
-            return new ByteArrayInputStream(b);
+        if (source instanceof File f && f.length() > maxBytes) {
+            throw new PdfOperationException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                    "PDF 文件体积超出安全上限 (" + maxBytes + " bytes): " + f.length());
         }
-        if (source instanceof File f) {
-            return new FileInputStream(f);
+        if (source instanceof Path p && Files.size(p) > maxBytes) {
+            throw new PdfOperationException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                    "PDF Path 文件体积超出安全上限 (" + maxBytes + " bytes)");
         }
-        if (source instanceof Path p) {
-            return Files.newInputStream(p);
+        try {
+            InputStream raw = DocumentWebHelper.resolveInputStream(source);
+            return DocumentWebHelper.wrapBoundedInputStream(raw, maxBytes);
+        } catch (FileNotFoundException e) {
+            throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, e.getMessage(), e);
         }
-        if (source instanceof Resource r) {
-            return r.getInputStream();
-        }
-        if (source instanceof String s) {
-            return new FileInputStream(s.trim());
-        }
-        throw new IllegalArgumentException("不支持的输入源: " + source.getClass().getName());
     }
 
     private WatermarkOptions createDefaultWatermarkOptions() {

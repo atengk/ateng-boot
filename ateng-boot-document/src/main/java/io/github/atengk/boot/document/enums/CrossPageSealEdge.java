@@ -1,5 +1,6 @@
 package io.github.atengk.boot.document.enums;
 
+import io.github.atengk.boot.core.enums.IBaseEnum;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 
@@ -11,7 +12,7 @@ import lombok.Getter;
  */
 @Getter
 @AllArgsConstructor
-public enum CrossPageSealEdge {
+public enum CrossPageSealEdge implements IBaseEnum<String> {
 
     /**
      * 右侧边缘居中（企业合同最常用的标准骑缝章位置）
@@ -35,4 +36,9 @@ public enum CrossPageSealEdge {
 
     private final String code;
     private final String desc;
+
+    @Override
+    public String getLabel() {
+        return desc;
+    }
 }

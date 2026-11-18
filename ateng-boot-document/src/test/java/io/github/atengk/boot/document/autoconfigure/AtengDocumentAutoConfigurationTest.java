@@ -1,21 +1,28 @@
 package io.github.atengk.boot.document.autoconfigure;
 
+import io.github.atengk.boot.document.exception.DocumentResultCode;
+import io.github.atengk.boot.document.exception.WordRenderException;
 import io.github.atengk.boot.document.font.DocumentFontResolver;
 import io.github.atengk.boot.document.pdf.PdfTemplate;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.spi.DefaultDocumentConverter;
 import io.github.atengk.boot.document.spi.DocumentConverter;
+import io.github.atengk.boot.document.spi.GotenbergDocumentConverter;
 import io.github.atengk.boot.document.word.WordTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.web.client.RestClient;
 
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 文档治理自动装配单元测试
@@ -98,6 +105,55 @@ class AtengDocumentAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasSingleBean(PdfTemplate.class);
                     assertThat(context.getBean(PdfTemplate.class)).isInstanceOf(CustomPdfTemplate.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试开启 Gotenberg 开关且配置 baseUrl 时激活 GotenbergDocumentConverter 并替代默认实现")
+    void testGotenbergAutoConfigurationActivated() {
+        contextRunner.withPropertyValues(
+                        "ateng.boot.document.converter.gotenberg.enabled=true",
+                        "ateng.boot.document.converter.gotenberg.base-url=http://localhost:3000"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(DocumentConverter.class);
+                    assertThat(context.getBean(DocumentConverter.class)).isInstanceOf(GotenbergDocumentConverter.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试开启 Gotenberg 开关但缺少 baseUrl 时装配快速失败")
+    void testGotenbergAutoConfigurationFailsWhenBaseUrlBlank() {
+        contextRunner.withPropertyValues("ateng.boot.document.converter.gotenberg.enabled=true")
+                .run(context -> assertThat(context).hasFailed());
+    }
+
+    @Test
+    @DisplayName("测试当类路径缺少 RestClient 时即使开启 Gotenberg 也平滑回退至 DefaultDocumentConverter")
+    void testGotenbergConfigurationIsolatedWithoutRestClient() {
+        contextRunner.withClassLoader(new FilteredClassLoader(RestClient.class))
+                .withPropertyValues(
+                        "ateng.boot.document.converter.gotenberg.enabled=true",
+                        "ateng.boot.document.converter.gotenberg.base-url=http://localhost:3000"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(DocumentConverter.class);
+                    assertThat(context.getBean(DocumentConverter.class)).isInstanceOf(DefaultDocumentConverter.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试自动装配的 WordTemplate 继承全局 maxDocumentSize 防线")
+    void testAutoConfiguredWordTemplateInheritsMaxDocumentSize() {
+        contextRunner.withPropertyValues("ateng.boot.document.max-document-size=32B")
+                .run(context -> {
+                    WordTemplate wordTemplate = context.getBean(WordTemplate.class);
+                    byte[] oversized = new byte[128];
+                    assertThatThrownBy(() -> wordTemplate.extractText(new ByteArrayInputStream(oversized)))
+                            .isInstanceOf(WordRenderException.class)
+                            .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.DOCUMENT_SIZE_EXCEEDED);
                 });
     }
 

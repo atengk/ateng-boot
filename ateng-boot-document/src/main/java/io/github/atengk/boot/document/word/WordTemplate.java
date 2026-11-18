@@ -9,8 +9,10 @@ import com.deepoove.poi.template.ElementTemplate;
 import com.deepoove.poi.template.MetaTemplate;
 import com.deepoove.poi.util.TableTools;
 import com.deepoove.poi.xwpf.NiceXWPFDocument;
+import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.WordRenderException;
+import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.properties.DocumentWordProperties;
 import io.github.atengk.boot.document.word.policy.FloatingPictureRenderPolicy;
 import org.apache.poi.ooxml.POIXMLDocumentPart;
@@ -61,21 +63,39 @@ public class WordTemplate {
     private static final String CLASSPATH_PREFIX = "classpath:";
 
     private final DocumentWordProperties wordProperties;
+    private final DocumentProperties documentProperties;
 
     /**
-     * 使用指定配置构造 WordTemplate 门面实例
+     * 使用根配置属性构造 WordTemplate 门面实例（同步继承 maxDocumentSize 等全局防线）
+     *
+     * @param documentProperties 文档模块全局配置属性
+     */
+    public WordTemplate(DocumentProperties documentProperties) {
+        this.documentProperties = documentProperties != null ? documentProperties : new DocumentProperties();
+        this.wordProperties = this.documentProperties.getWord() != null
+                ? this.documentProperties.getWord()
+                : new DocumentWordProperties();
+    }
+
+    /**
+     * 使用指定 Word 子配置构造 WordTemplate 门面实例
      *
      * @param wordProperties Word 文档配置属性
      */
     public WordTemplate(DocumentWordProperties wordProperties) {
-        this.wordProperties = wordProperties != null ? wordProperties : new DocumentWordProperties();
+        DocumentProperties fallback = new DocumentProperties();
+        if (wordProperties != null) {
+            fallback.setWord(wordProperties);
+        }
+        this.documentProperties = fallback;
+        this.wordProperties = fallback.getWord();
     }
 
     /**
      * 使用缺省配置构造 WordTemplate 门面实例
      */
     public WordTemplate() {
-        this(new DocumentWordProperties());
+        this(new DocumentProperties());
     }
 
     /**
@@ -86,6 +106,16 @@ public class WordTemplate {
      */
     public static WordTemplate of(DocumentWordProperties wordProperties) {
         return new WordTemplate(wordProperties);
+    }
+
+    /**
+     * 静态工厂构造方法（继承全局文档安全阈值配置）
+     *
+     * @param documentProperties 文档模块全局配置属性
+     * @return WordTemplate 实例
+     */
+    public static WordTemplate of(DocumentProperties documentProperties) {
+        return new WordTemplate(documentProperties);
     }
 
     /**
@@ -131,7 +161,17 @@ public class WordTemplate {
             os.flush();
         } catch (WordRenderException e) {
             throw e;
+        } catch (IllegalArgumentException e) {
+            if (e instanceof org.apache.poi.UnsupportedFileFormatException) {
+                throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED,
+                        "渲染 Word 模板失败: " + e.getMessage(), e);
+            }
+            throw e;
         } catch (Exception e) {
+            WordRenderException nested = unwrapWordRenderException(e);
+            if (nested != null) {
+                throw nested;
+            }
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED,
                     "渲染 Word 模板失败: " + e.getMessage(), e);
         } finally {
@@ -180,7 +220,17 @@ public class WordTemplate {
             return baos.toByteArray();
         } catch (WordRenderException e) {
             throw e;
+        } catch (IllegalArgumentException e) {
+            if (e instanceof org.apache.poi.UnsupportedFileFormatException) {
+                throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED,
+                        "渲染 Word 模板并导出字节失败: " + e.getMessage(), e);
+            }
+            throw e;
         } catch (Exception e) {
+            WordRenderException nested = unwrapWordRenderException(e);
+            if (nested != null) {
+                throw nested;
+            }
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED,
                     "渲染 Word 模板并导出字节失败: " + e.getMessage(), e);
         }
@@ -211,12 +261,24 @@ public class WordTemplate {
         Configure configToUse = configure != null ? configure : createDefaultConfigure();
         try {
             return XWPFTemplate.compile(is, configToUse);
+        } catch (WordRenderException e) {
+            if (!(source instanceof InputStream)) {
+                try {
+                    is.close();
+                } catch (Exception ignored) {
+                }
+            }
+            throw e;
         } catch (Exception e) {
             if (!(source instanceof InputStream)) {
                 try {
                     is.close();
                 } catch (Exception ignored) {
                 }
+            }
+            WordRenderException nested = unwrapWordRenderException(e);
+            if (nested != null) {
+                throw nested;
             }
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED,
                     "编译 Word 模板异常 [" + source + "]: " + e.getMessage(), e);
@@ -307,16 +369,17 @@ public class WordTemplate {
      */
     public String extractText(Object source) {
         Objects.requireNonNull(source, "source 不能为空");
-        InputStream is = null;
-        try {
-            is = resolveInputStream(source);
-            try (XWPFDocument doc = new XWPFDocument(is);
-                 XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
-                return extractor.getText();
-            }
+        InputStream is = resolveInputStream(source);
+        try (XWPFDocument doc = new XWPFDocument(is);
+             XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+            return extractor.getText();
         } catch (WordRenderException e) {
             throw e;
         } catch (Exception e) {
+            WordRenderException nested = unwrapWordRenderException(e);
+            if (nested != null) {
+                throw nested;
+            }
             throw new WordRenderException(DocumentResultCode.DOCUMENT_OPERATION_FAILED,
                     "提取 Word 文档正文纯文本失败 [" + source + "]: " + e.getMessage(), e);
         } finally {
@@ -330,12 +393,15 @@ public class WordTemplate {
     }
 
     /**
-     * 创建默认的 poi-tl 配置构建器（预置 SpringEL 支持与常用标签策略）
+     * 创建默认的 poi-tl 配置构建器（按配置按需开启 SpringEL 支持与常用标签策略）
      *
      * @return ConfigureBuilder 实例
      */
     public ConfigureBuilder configureBuilder() {
         ConfigureBuilder builder = Configure.builder();
+        if (wordProperties.isSpringElEnabled()) {
+            builder.useSpringEL(wordProperties.isSpringElStrict());
+        }
         // 预绑定常用表格行循环策略（支持同一行中包含 {{items}}[prop] 模板）
         LoopRowTableRenderPolicy loopRowPolicy = new LoopRowTableRenderPolicy(true);
         builder.bind("items", loopRowPolicy);
@@ -436,19 +502,24 @@ public class WordTemplate {
     }
 
     /**
-     * 将多源模板入参自适应解析为可用输入流
+     * 将多源模板入参自适应解析为可用输入流，统一施加路径穿越防线与单文档体积上限保护
      *
      * @param source 多源模板输入
      * @return 模板二进制输入流
-     * @throws WordRenderException 模板不存在或解析失败时抛出
+     * @throws WordRenderException 模板不存在、超出体积上限或解析失败时抛出
      */
     public InputStream resolveInputStream(Object source) {
         Objects.requireNonNull(source, "模板输入源 source 不能为空");
+        long maxBytes = resolveMaxDocumentSizeBytes();
 
         if (source instanceof InputStream is) {
-            return is;
+            return wrapBoundedInputStream(is, maxBytes);
         }
         if (source instanceof byte[] bytes) {
+            if (bytes.length > maxBytes) {
+                throw new WordRenderException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                        "Word 字节数组大小超出安全上限 (" + maxBytes + " bytes): " + bytes.length);
+            }
             return new ByteArrayInputStream(bytes);
         }
         if (source instanceof File file) {
@@ -456,8 +527,12 @@ public class WordTemplate {
                 throw new WordRenderException(DocumentResultCode.TEMPLATE_NOT_FOUND,
                         "Word 模板物理文件不存在或不可读: " + file.getAbsolutePath());
             }
+            if (file.length() > maxBytes) {
+                throw new WordRenderException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                        "Word 模板物理文件大小超出安全上限 (" + maxBytes + " bytes): " + file.length());
+            }
             try {
-                return new FileInputStream(file);
+                return wrapBoundedInputStream(new FileInputStream(file), maxBytes);
             } catch (IOException e) {
                 throw new WordRenderException(DocumentResultCode.TEMPLATE_NOT_FOUND,
                         "无法打开 Word 模板文件: " + file.getAbsolutePath(), e);
@@ -469,7 +544,14 @@ public class WordTemplate {
                         "Word 模板 Path 路径不存在或不可读: " + path.toAbsolutePath());
             }
             try {
-                return Files.newInputStream(path);
+                long size = Files.size(path);
+                if (size > maxBytes) {
+                    throw new WordRenderException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                            "Word 模板 Path 文件大小超出安全上限 (" + maxBytes + " bytes): " + size);
+                }
+                return wrapBoundedInputStream(Files.newInputStream(path), maxBytes);
+            } catch (WordRenderException e) {
+                throw e;
             } catch (IOException e) {
                 throw new WordRenderException(DocumentResultCode.TEMPLATE_NOT_FOUND,
                         "无法打开 Word 模板 Path 文件: " + path.toAbsolutePath(), e);
@@ -481,55 +563,70 @@ public class WordTemplate {
                         "Word 模板 Spring Resource 资源不存在: " + resource.getDescription());
             }
             try {
-                return resource.getInputStream();
+                return wrapBoundedInputStream(resource.getInputStream(), maxBytes);
             } catch (IOException e) {
                 throw new WordRenderException(DocumentResultCode.TEMPLATE_NOT_FOUND,
                         "无法读取 Word 模板 Spring Resource: " + resource.getDescription(), e);
             }
         }
         if (source instanceof String str) {
-            String path = str.trim();
-            if (path.isEmpty()) {
+            String rawPath = str.trim();
+            if (rawPath.isEmpty()) {
                 throw new WordRenderException(DocumentResultCode.TEMPLATE_NOT_FOUND, "Word 模板路径不能为空");
             }
-            // 1. 显式 classpath: 前缀解析
-            if (path.startsWith(CLASSPATH_PREFIX)) {
-                InputStream is = loadClasspathStream(path.substring(CLASSPATH_PREFIX.length()));
+            // 1. 显式 classpath: 前缀解析（强制路径净化防穿越）
+            if (rawPath.startsWith(CLASSPATH_PREFIX)) {
+                String cleanSub = FileUtil.cleanPath(rawPath.substring(CLASSPATH_PREFIX.length()));
+                InputStream is = loadClasspathStream(cleanSub);
                 if (is != null) {
-                    return is;
+                    return wrapBoundedInputStream(is, maxBytes);
                 }
                 throw new WordRenderException(DocumentResultCode.TEMPLATE_NOT_FOUND,
-                        "未找到指定的类路径 Word 模板: " + path);
+                        "未找到指定的类路径 Word 模板: " + rawPath);
             }
+
+            // 1.5 通用路径穿越校验
+            String path = FileUtil.cleanPath(rawPath);
 
             // 2. 本地绝对或相对物理文件检查
             File file = new File(path);
             if (file.exists() && file.isFile() && file.canRead()) {
+                if (file.length() > maxBytes) {
+                    throw new WordRenderException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                            "Word 模板物理文件大小超出安全上限 (" + maxBytes + " bytes): " + file.length());
+                }
                 try {
-                    return new FileInputStream(file);
+                    return wrapBoundedInputStream(new FileInputStream(file), maxBytes);
                 } catch (IOException e) {
                     throw new WordRenderException(DocumentResultCode.TEMPLATE_NOT_FOUND,
                             "读取物理 Word 模板文件失败: " + file.getAbsolutePath(), e);
                 }
             }
 
-            // 3. 基于 templateBaseDir 组合探测
+            // 3. 基于 templateBaseDir 安全组合探测
             String baseDir = wordProperties.getTemplateBaseDir();
-            if (baseDir != null && !baseDir.trim().isEmpty()) {
+            if (baseDir != null && !baseDir.trim().isEmpty() && !file.isAbsolute()) {
                 String normalizedBase = baseDir.trim();
-                String combined = normalizedBase.endsWith("/") || path.startsWith("/")
-                        ? normalizedBase + (path.startsWith("/") ? path.substring(1) : path)
-                        : normalizedBase + "/" + path;
-                if (combined.startsWith(CLASSPATH_PREFIX)) {
-                    InputStream is = loadClasspathStream(combined.substring(CLASSPATH_PREFIX.length()));
+                String relative = path.startsWith("/") ? path.substring(1) : path;
+                if (normalizedBase.startsWith(CLASSPATH_PREFIX)) {
+                    String baseSub = normalizedBase.substring(CLASSPATH_PREFIX.length());
+                    String combinedSub = baseSub.endsWith("/") ? baseSub + relative : baseSub + "/" + relative;
+                    String cleanCombinedSub = FileUtil.cleanPath(combinedSub);
+                    InputStream is = loadClasspathStream(cleanCombinedSub);
                     if (is != null) {
-                        return is;
+                        return wrapBoundedInputStream(is, maxBytes);
                     }
                 } else {
-                    File combinedFile = new File(combined);
+                    String cleanBase = FileUtil.cleanPath(normalizedBase);
+                    Path safeCombined = FileUtil.resolveSafePath(Path.of(cleanBase), relative);
+                    File combinedFile = safeCombined.toFile();
                     if (combinedFile.exists() && combinedFile.isFile() && combinedFile.canRead()) {
+                        if (combinedFile.length() > maxBytes) {
+                            throw new WordRenderException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                                    "Word 模板物理文件大小超出安全上限 (" + maxBytes + " bytes): " + combinedFile.length());
+                        }
                         try {
-                            return new FileInputStream(combinedFile);
+                            return wrapBoundedInputStream(new FileInputStream(combinedFile), maxBytes);
                         } catch (IOException e) {
                             throw new WordRenderException(DocumentResultCode.TEMPLATE_NOT_FOUND,
                                     "读取模板基准路径下的物理文件失败: " + combinedFile.getAbsolutePath(), e);
@@ -541,14 +638,57 @@ public class WordTemplate {
             // 4. 兜底直接尝试作为 classpath 相对路径读取
             InputStream fallbackIs = loadClasspathStream(path);
             if (fallbackIs != null) {
-                return fallbackIs;
+                return wrapBoundedInputStream(fallbackIs, maxBytes);
             }
 
             throw new WordRenderException(DocumentResultCode.TEMPLATE_NOT_FOUND,
-                    "未能定位到 Word 模板文件: " + path);
+                    "未能定位到 Word 模板文件: " + rawPath);
         }
 
         throw new IllegalArgumentException("不支持的模板输入源类型: " + source.getClass().getName());
+    }
+
+    private long resolveMaxDocumentSizeBytes() {
+        if (documentProperties.getMaxDocumentSize() != null
+                && documentProperties.getMaxDocumentSize().toBytes() > 0) {
+            return documentProperties.getMaxDocumentSize().toBytes();
+        }
+        return Long.MAX_VALUE;
+    }
+
+    private InputStream wrapBoundedInputStream(InputStream delegate, long maxBytes) {
+        if (maxBytes == Long.MAX_VALUE) {
+            return delegate;
+        }
+        return new java.io.FilterInputStream(delegate) {
+            private long bytesReadTotal = 0;
+
+            @Override
+            public int read() throws IOException {
+                int b = super.read();
+                if (b != -1) {
+                    bytesReadTotal++;
+                    if (bytesReadTotal > maxBytes) {
+                        throw new WordRenderException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                                "Word 输入流大小超出安全上限 (" + maxBytes + " bytes): " + bytesReadTotal);
+                    }
+                }
+                return b;
+            }
+
+            @Override
+            public int read(byte[] b, int off, int len) throws IOException {
+                int n = super.read(b, off, len);
+                if (n > 0) {
+                    bytesReadTotal += n;
+                    if (bytesReadTotal > maxBytes) {
+                        throw new WordRenderException(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED,
+                                "Word 输入流大小超出安全上限 (" + maxBytes + " bytes): " + bytesReadTotal);
+                    }
+                }
+                return n;
+            }
+        };
     }
 
     /**
@@ -602,7 +742,7 @@ public class WordTemplate {
             }
         }
         if (target instanceof String str) {
-            return resolveOutputStream(new File(str.trim()));
+            return resolveOutputStream(new File(FileUtil.cleanPath(str.trim())));
         }
 
         throw new IllegalArgumentException("不支持的目标输出类型: " + target.getClass().getName());
@@ -696,6 +836,10 @@ public class WordTemplate {
         } catch (WordRenderException | IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
+            WordRenderException nested = unwrapWordRenderException(e);
+            if (nested != null) {
+                throw nested;
+            }
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED, "多文档拼装合并失败: " + e.getMessage(), e);
         }
     }
@@ -769,6 +913,10 @@ public class WordTemplate {
         } catch (WordRenderException | IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
+            WordRenderException nested = unwrapWordRenderException(e);
+            if (nested != null) {
+                throw nested;
+            }
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED, "为 Word 文档施加只读保护失败: " + e.getMessage(), e);
         }
     }
@@ -834,6 +982,10 @@ public class WordTemplate {
         } catch (WordRenderException | IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
+            WordRenderException nested = unwrapWordRenderException(e);
+            if (nested != null) {
+                throw nested;
+            }
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED, "解除 Word 文档只读保护失败: " + e.getMessage(), e);
         }
     }
@@ -864,6 +1016,10 @@ public class WordTemplate {
         } catch (WordRenderException | IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
+            WordRenderException nested = unwrapWordRenderException(e);
+            if (nested != null) {
+                throw nested;
+            }
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED, "检查 Word 文档只读保护状态失败: " + e.getMessage(), e);
         }
     }
@@ -886,8 +1042,25 @@ public class WordTemplate {
         } catch (WordRenderException | IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
+            WordRenderException nested = unwrapWordRenderException(e);
+            if (nested != null) {
+                throw nested;
+            }
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED, "校验 Word 文档保护密码失败: " + e.getMessage(), e);
         }
+    }
+
+    private WordRenderException unwrapWordRenderException(Throwable throwable) {
+        Throwable cursor = throwable;
+        int depth = 0;
+        while (cursor != null && depth < 16) {
+            if (cursor instanceof WordRenderException wre) {
+                return wre;
+            }
+            cursor = cursor.getCause();
+            depth++;
+        }
+        return null;
     }
 
     private void ensureSettingsInitialized(XWPFDocument doc) {

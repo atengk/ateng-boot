@@ -116,6 +116,24 @@ class WordWebUtilTest {
                 .hasMessageContaining("filename 不能为空");
     }
 
+    @Test
+    @DisplayName("安全防护：文件名路径穿越与空字节清洗与拦截")
+    void testFilenamePathTraversalSanitization() throws Exception {
+        byte[] dummyDocx = createSimpleTemplateDocx("安全测试");
+
+        MockHttpServletResponse cleanedResp = new MockHttpServletResponse();
+        WordWebUtil.writeToResponse(cleanedResp, "../../evil/季度报表", dummyDocx);
+        String disposition = cleanedResp.getHeader(HttpHeaders.CONTENT_DISPOSITION);
+        assertThat(disposition).doesNotContain("..");
+        assertThat(disposition).contains(".docx");
+
+        MockHttpServletResponse rejectedResp = new MockHttpServletResponse();
+        assertThatThrownBy(() -> WordWebUtil.writeToResponse(rejectedResp, "../../..", dummyDocx))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> WordWebUtil.writeToResponse(rejectedResp, "\0", dummyDocx))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     private static byte[] createSimpleTemplateDocx(String text) throws IOException {
         try (XWPFDocument doc = new XWPFDocument()) {
             XWPFParagraph p = doc.createParagraph();

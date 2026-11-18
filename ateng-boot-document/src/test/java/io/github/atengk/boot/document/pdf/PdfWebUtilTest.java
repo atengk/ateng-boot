@@ -137,6 +137,24 @@ class PdfWebUtilTest {
                 .hasMessageContaining("filename 不能为空");
     }
 
+    @Test
+    @DisplayName("安全防护：文件名路径穿越与空字节清洗与拦截")
+    void testFilenamePathTraversalSanitization() throws Exception {
+        byte[] samplePdf = createSimplePdf();
+
+        MockHttpServletResponse cleanedResp = new MockHttpServletResponse();
+        PdfWebUtil.writeToResponse(cleanedResp, "../../evil/月度报告", samplePdf);
+        String disposition = cleanedResp.getHeader(HttpHeaders.CONTENT_DISPOSITION);
+        assertThat(disposition).doesNotContain("..");
+        assertThat(disposition).contains(".pdf");
+
+        MockHttpServletResponse rejectedResp = new MockHttpServletResponse();
+        assertThatThrownBy(() -> PdfWebUtil.writeToResponse(rejectedResp, "../../..", samplePdf))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> PdfWebUtil.writeToResponse(rejectedResp, "\0", samplePdf))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     private static byte[] createSimplePdf() throws IOException {
         try (PDDocument doc = new PDDocument()) {
             doc.addPage(new PDPage(PDRectangle.A4));

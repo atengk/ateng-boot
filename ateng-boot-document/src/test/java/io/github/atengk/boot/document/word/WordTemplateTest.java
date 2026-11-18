@@ -4,6 +4,7 @@ import com.deepoove.poi.config.Configure;
 import com.deepoove.poi.plugin.table.LoopRowTableRenderPolicy;
 import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.WordRenderException;
+import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.properties.DocumentWordProperties;
 import io.github.atengk.boot.document.word.model.FloatingPicture;
 import org.apache.poi.util.Units;
@@ -499,6 +500,29 @@ class WordTemplateTest {
         assertThatThrownBy(() -> wordTemplate.extractText(corruptBytes))
                 .isInstanceOf(WordRenderException.class)
                 .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.DOCUMENT_OPERATION_FAILED);
+    }
+
+    @Test
+    @DisplayName("安全防线：模板路径穿越拦截与 maxDocumentSize 超限拒绝")
+    void testPathTraversalAndMaxDocumentSizeGuard() {
+        DocumentProperties properties = new DocumentProperties();
+        properties.setMaxDocumentSize(org.springframework.util.unit.DataSize.ofBytes(64));
+        properties.getWord().setTemplateBaseDir("classpath:/templates/word/");
+
+        WordTemplate wordTemplate = new WordTemplate(properties);
+
+        assertThatThrownBy(() -> wordTemplate.extractText("../../etc/passwd"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("路径穿越");
+
+        byte[] oversized = new byte[128];
+        assertThatThrownBy(() -> wordTemplate.extractText(new ByteArrayInputStream(oversized)))
+                .isInstanceOf(WordRenderException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.DOCUMENT_SIZE_EXCEEDED);
+
+        assertThatThrownBy(() -> wordTemplate.renderToBytes(oversized, Map.of("name", "test")))
+                .isInstanceOf(WordRenderException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.DOCUMENT_SIZE_EXCEEDED);
     }
 
     private String getFullDocumentText(XWPFDocument doc) {

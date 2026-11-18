@@ -599,6 +599,53 @@ class PdfTemplateTest {
         return createSamplePdfWithCJK(content);
     }
 
+    @Test
+    @DisplayName("安全防线：PdfTemplate 加载体积超限拦截与 split 前缀路径穿越清洗")
+    void testMaxDocumentSizeAndSplitPrefixSanitization(@TempDir Path tempDir) throws Exception {
+        byte[] multiPagePdf = createMultiPagePdf("第一页安全测试", "第二页安全测试");
+
+        DocumentProperties tinyProps = createTestProperties();
+        tinyProps.setMaxDocumentSize(DataSize.ofBytes(128));
+        PdfTemplate restrictedTemplate = new PdfTemplate(tinyProps, new DocumentFontResolver(tinyProps.getPdf()));
+
+        assertThatThrownBy(() -> restrictedTemplate.getPageCount(multiPagePdf))
+                .isInstanceOf(PdfOperationException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.DOCUMENT_SIZE_EXCEEDED);
+
+        assertThatThrownBy(() -> restrictedTemplate.getPageCount(new ByteArrayInputStream(multiPagePdf)))
+                .isInstanceOf(PdfOperationException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.DOCUMENT_SIZE_EXCEEDED);
+
+        File pdfFile = tempDir.resolve("large.pdf").toFile();
+        Files.write(pdfFile.toPath(), multiPagePdf);
+        assertThatThrownBy(() -> restrictedTemplate.getPageCount(pdfFile))
+                .isInstanceOf(PdfOperationException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.DOCUMENT_SIZE_EXCEEDED);
+
+        DocumentProperties normalProps = createTestProperties();
+        PdfTemplate normalTemplate = new PdfTemplate(normalProps, new DocumentFontResolver(normalProps.getPdf()));
+        Path splitDir = tempDir.resolve("split-safe");
+
+        assertThatThrownBy(() -> normalTemplate.split(multiPagePdf, splitDir.toFile(), "../../.."))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        List<File> splitFiles = normalTemplate.split(multiPagePdf, splitDir.toFile(), "../../evil_");
+        assertThat(splitFiles).hasSize(2);
+        for (File f : splitFiles) {
+            assertThat(f.toPath().toAbsolutePath().normalize()).startsWith(splitDir.toAbsolutePath().normalize());
+            assertThat(f.getName()).doesNotContain("..");
+        }
+
+        // merge 与 copySourceToTarget(resolveRawInputStream) 同等实施路径穿越与体积熔断
+        assertThatThrownBy(() -> normalTemplate.merge(new ByteArrayOutputStream(), List.of("../../etc/passwd")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("路径穿越");
+
+        assertThatThrownBy(() -> restrictedTemplate.merge(new ByteArrayOutputStream(), List.of(multiPagePdf, multiPagePdf)))
+                .isInstanceOf(PdfOperationException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.DOCUMENT_SIZE_EXCEEDED);
+    }
+
     private static byte[] createSamplePdfWithCJK(String content) {
         try (PDDocument doc = new PDDocument();
              ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
