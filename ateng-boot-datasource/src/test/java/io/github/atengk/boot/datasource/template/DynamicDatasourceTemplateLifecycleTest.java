@@ -194,4 +194,156 @@ class DynamicDatasourceTemplateLifecycleTest {
                 .isInstanceOf(DataSourceSwitchException.class)
                 .hasMessageContaining("受管主数据源严禁动态注销");
     }
+
+    @Test
+    @DisplayName("测试注销数据源联动摘除全部分组残余引用并清除熔断黑名单与在途主动探活")
+    void shouldClearBlacklistActiveProbeAndGroupReferencesOnRemoveDataSource() {
+        DatasourceProperties failoverProps = new DatasourceProperties();
+        failoverProps.getReadWriteSplit().setEnabled(true);
+        failoverProps.getReadWriteSplit().getFailover().setEnabled(true);
+        failoverProps.getReadWriteSplit().getFailover().setActiveProbeEnabled(true);
+        failoverProps.getReadWriteSplit().getFailover().setProbeInitialInterval(Duration.ofSeconds(30));
+        failoverProps.getDynamicLoad().setProbeTimeout(Duration.ofSeconds(1));
+        failoverProps.getDynamicLoad().setDrainTimeout(Duration.ofSeconds(1));
+
+        JdbcDataSource localMaster = new JdbcDataSource();
+        localMaster.setURL("jdbc:h2:mem:master_remove_cleanup;DB_CLOSE_DELAY=-1");
+        localMaster.setUser("sa");
+        localMaster.setPassword("");
+
+        AtengDynamicRoutingDataSource failoverRouting = new AtengDynamicRoutingDataSource(
+                Collections.emptyList(), failoverProps, null, null, null);
+        failoverRouting.addDataSource("master", localMaster);
+        failoverRouting.setPrimary("master");
+
+        DynamicDatasourceTemplate failoverTemplate = new DynamicDatasourceTemplate(
+                failoverRouting, failoverProps, null, null, defaultDataSourceCreator);
+
+        try {
+            JdbcDataSource node1 = new JdbcDataSource();
+            node1.setURL("jdbc:h2:mem:ro_node_1_cleanup;DB_CLOSE_DELAY=-1");
+            node1.setUser("sa");
+            node1.setPassword("");
+
+            JdbcDataSource node2 = new JdbcDataSource();
+            node2.setURL("jdbc:h2:mem:ro_node_2_cleanup;DB_CLOSE_DELAY=-1");
+            node2.setUser("sa");
+            node2.setPassword("");
+
+            failoverTemplate.addDataSource("ro_node_1", node1);
+            failoverTemplate.addDataSource("ro_node_2", node2);
+            failoverTemplate.addGroupMember("slave", "ro_node_1");
+            failoverTemplate.addGroupMember("slave", "ro_node_2");
+            failoverTemplate.addGroupMember("analytics_ro", "ro_node_1");
+            failoverTemplate.addGroupMember("analytics_ro", "ro_node_2");
+            failoverTemplate.addGroupMember("single_ro", "ro_node_1");
+
+            // 模拟节点进入黑名单并启动主动探活
+            failoverRouting.getHealthAwareStrategy().recordFailure("ro_node_1");
+            assertThat(failoverRouting.getHealthAwareStrategy().isBlacklisted("ro_node_1")).isTrue();
+            assertThat(failoverRouting.getHealthAwareStrategy().isProbing("ro_node_1")).isTrue();
+
+            // 注销数据源
+            failoverTemplate.removeDataSource("ro_node_1");
+
+            // 1. 路由表、黑名单与在途主动探活全部清理
+            assertThat(failoverTemplate.getDataSourceKeys()).doesNotContain("ro_node_1");
+            assertThat(failoverRouting.getHealthAwareStrategy().isBlacklisted("ro_node_1")).isFalse();
+            assertThat(failoverRouting.getHealthAwareStrategy().isProbing("ro_node_1")).isFalse();
+
+            // 2. 所有包含该物理节点的分组均已摘除残余引用，健康节点保留，空分组同步清理
+            assertThat(failoverRouting.getGroupDataSources().get("slave").getDataSourceMap())
+                    .doesNotContainKey("ro_node_1")
+                    .containsKey("ro_node_2");
+            assertThat(failoverRouting.getGroupDataSources().get("analytics_ro").getDataSourceMap())
+                    .doesNotContainKey("ro_node_1")
+                    .containsKey("ro_node_2");
+            assertThat(failoverRouting.getGroupDataSources()).doesNotContainKey("single_ro");
+
+            // 3. 分组路由依然正常可用且只命中健康节点
+            assertThat(failoverRouting.resolveWithFailover("slave")).isSameAs(node2);
+        } finally {
+            failoverRouting.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("测试热重载成功后联动解除熔断黑名单、取消在途探活并刷新分组节点引用")
+    void shouldUnblacklistAndRefreshGroupReferenceOnReloadDataSource() {
+        DatasourceProperties failoverProps = new DatasourceProperties();
+        failoverProps.getReadWriteSplit().setEnabled(true);
+        failoverProps.getReadWriteSplit().getFailover().setEnabled(true);
+        failoverProps.getReadWriteSplit().getFailover().setActiveProbeEnabled(true);
+        failoverProps.getReadWriteSplit().getFailover().setProbeInitialInterval(Duration.ofSeconds(30));
+        failoverProps.getDynamicLoad().setProbeTimeout(Duration.ofSeconds(1));
+        failoverProps.getDynamicLoad().setDrainTimeout(Duration.ofSeconds(1));
+
+        JdbcDataSource localMaster = new JdbcDataSource();
+        localMaster.setURL("jdbc:h2:mem:master_reload_unblacklist;DB_CLOSE_DELAY=-1");
+        localMaster.setUser("sa");
+        localMaster.setPassword("");
+
+        AtengDynamicRoutingDataSource failoverRouting = new AtengDynamicRoutingDataSource(
+                Collections.emptyList(), failoverProps, null, null, null);
+        failoverRouting.addDataSource("master", localMaster);
+        failoverRouting.setPrimary("master");
+
+        DynamicDatasourceTemplate failoverTemplate = new DynamicDatasourceTemplate(
+                failoverRouting, failoverProps, null, null, defaultDataSourceCreator);
+
+        try {
+            DataSourceProperty v1Prop = new DataSourceProperty();
+            v1Prop.setPoolName("ro_reload_v1");
+            v1Prop.setUrl("jdbc:h2:mem:ro_reload_v1;DB_CLOSE_DELAY=-1");
+            v1Prop.setUsername("sa");
+            v1Prop.setPassword("");
+            v1Prop.setDriverClassName("org.h2.Driver");
+
+            failoverTemplate.addDataSource("ro_reload_node", v1Prop);
+            failoverTemplate.addGroupMember("slave", "ro_reload_node");
+            DataSource oldDs = failoverRouting.getDataSources().get("ro_reload_node");
+
+            // 置入黑名单并开启主动探活
+            failoverRouting.getHealthAwareStrategy().recordFailure("ro_reload_node");
+            assertThat(failoverRouting.getHealthAwareStrategy().isBlacklisted("ro_reload_node")).isTrue();
+            assertThat(failoverRouting.getHealthAwareStrategy().isProbing("ro_reload_node")).isTrue();
+
+            // 失败的热重载绝不提前解封黑名单
+            DataSourceProperty badProp = new DataSourceProperty();
+            badProp.setPoolName("ro_reload_bad");
+            badProp.setUrl("jdbc:h2:tcp://127.0.0.1:19999/unreachable_reload");
+            badProp.setUsername("sa");
+            badProp.setPassword("");
+            badProp.setDriverClassName("org.h2.Driver");
+
+            assertThatThrownBy(() -> failoverTemplate.reloadDataSource("ro_reload_node", badProp))
+                    .isInstanceOf(DataSourceSwitchException.class);
+            assertThat(failoverRouting.getHealthAwareStrategy().isBlacklisted("ro_reload_node")).isTrue();
+
+            // 健康新配置热重载成功
+            DataSourceProperty v2Prop = new DataSourceProperty();
+            v2Prop.setPoolName("ro_reload_v2");
+            v2Prop.setUrl("jdbc:h2:mem:ro_reload_v2;DB_CLOSE_DELAY=-1");
+            v2Prop.setUsername("sa");
+            v2Prop.setPassword("");
+            v2Prop.setDriverClassName("org.h2.Driver");
+
+            failoverTemplate.reloadDataSource("ro_reload_node", v2Prop);
+
+            // 1. 自动解封黑名单并取消在途探活
+            assertThat(failoverRouting.getHealthAwareStrategy().isBlacklisted("ro_reload_node")).isFalse();
+            assertThat(failoverRouting.getHealthAwareStrategy().isProbing("ro_reload_node")).isFalse();
+
+            // 2. 单库注册表与分组节点引用均同步指向新连接池
+            DataSource newDs = failoverRouting.getDataSources().get("ro_reload_node");
+            assertThat(newDs).isNotNull().isNotSameAs(oldDs);
+            assertThat(failoverRouting.getGroupDataSources().get("slave").getDataSourceMap().get("ro_reload_node"))
+                    .isSameAs(newDs);
+
+            // 3. 分组路由即刻放行至健康新池，不再降级主库
+            assertThat(failoverRouting.resolveWithFailover("slave")).isSameAs(newDs);
+        } finally {
+            failoverRouting.destroy();
+        }
+    }
 }

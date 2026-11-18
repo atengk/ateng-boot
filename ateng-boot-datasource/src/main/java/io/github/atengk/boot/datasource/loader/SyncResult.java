@@ -12,7 +12,7 @@ import java.util.List;
 /**
  * 外部动态数据源差量同步结果快照
  * <p>
- * 封装智能三向差量比对（Smart Diff）后的变更结果，包括新增、注销、热重载以及跳过的核心数据源统计。
+ * 封装智能三向差量比对（Smart Diff）后的变更结果，包括新增、注销、热重载、跳过以及失败数据源统计。
  * </p>
  *
  * @author Ateng
@@ -51,6 +51,27 @@ public class SyncResult implements Serializable {
     private List<String> skippedKeys = Collections.emptyList();
 
     /**
+     * 新增挂载、连通性预检、热重载或注销失败的数据源标识列表
+     */
+    @Builder.Default
+    private List<String> failedKeys = Collections.emptyList();
+
+    /**
+     * 兼容四参构造器（未提供失败列表时默认为空集合）
+     *
+     * @param addedKeys    新增数据源标识列表
+     * @param removedKeys  注销数据源标识列表
+     * @param reloadedKeys 热重载数据源标识列表
+     * @param skippedKeys  跳过数据源标识列表
+     */
+    public SyncResult(List<String> addedKeys,
+                      List<String> removedKeys,
+                      List<String> reloadedKeys,
+                      List<String> skippedKeys) {
+        this(addedKeys, removedKeys, reloadedKeys, skippedKeys, Collections.emptyList());
+    }
+
+    /**
      * 获取新增数据源数量
      *
      * @return 数量
@@ -84,6 +105,15 @@ public class SyncResult implements Serializable {
      */
     public int getSkippedCount() {
         return skippedKeys != null ? skippedKeys.size() : 0;
+    }
+
+    /**
+     * 获取同步失败数据源数量
+     *
+     * @return 数量
+     */
+    public int getFailedCount() {
+        return failedKeys != null ? failedKeys.size() : 0;
     }
 
     /**

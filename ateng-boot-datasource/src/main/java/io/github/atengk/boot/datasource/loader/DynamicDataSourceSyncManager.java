@@ -122,6 +122,7 @@ public class DynamicDataSourceSyncManager implements DisposableBean {
             List<String> removedKeys = new ArrayList<>();
             List<String> reloadedKeys = new ArrayList<>();
             List<String> skippedKeys = new ArrayList<>();
+            List<String> failedKeys = new ArrayList<>();
 
             // 1. 处理新增项 (Additions) 与变更项 (Hot Reload)
             for (Map.Entry<String, DataSourceProperty> entry : incomingMap.entrySet()) {
@@ -147,6 +148,7 @@ public class DynamicDataSourceSyncManager implements DisposableBean {
                         addedKeys.add(dsKey);
                         log.info("ateng-boot-datasource: 差量同步新增数据源成功 [dsKey={}]", dsKey);
                     } catch (Exception e) {
+                        failedKeys.add(dsKey);
                         log.error("ateng-boot-datasource: 差量同步新增数据源失败 [dsKey={}]: {}", dsKey, e.getMessage(), e);
                     }
                 } else {
@@ -159,6 +161,7 @@ public class DynamicDataSourceSyncManager implements DisposableBean {
                             reloadedKeys.add(dsKey);
                             log.info("ateng-boot-datasource: 差量同步热重载数据源成功 [dsKey={}]", dsKey);
                         } catch (Exception e) {
+                            failedKeys.add(dsKey);
                             log.error("ateng-boot-datasource: 差量同步热重载数据源失败 [dsKey={}]: {}", dsKey, e.getMessage(), e);
                         }
                     } else {
@@ -183,6 +186,7 @@ public class DynamicDataSourceSyncManager implements DisposableBean {
                             loadedProperties.remove(trackedKey);
                             log.info("ateng-boot-datasource: 差量同步优雅注销数据源成功 [dsKey={}]", trackedKey);
                         } catch (Exception e) {
+                            failedKeys.add(trackedKey);
                             log.error("ateng-boot-datasource: 差量同步优雅注销数据源失败 [dsKey={}]: {}", trackedKey, e.getMessage(), e);
                         }
                     } else {
@@ -193,14 +197,16 @@ public class DynamicDataSourceSyncManager implements DisposableBean {
             }
 
             SyncResult result = SyncResult.builder()
-                    .addedKeys(addedKeys)
-                    .removedKeys(removedKeys)
-                    .reloadedKeys(reloadedKeys)
-                    .skippedKeys(skippedKeys)
+                    .addedKeys(Collections.unmodifiableList(addedKeys))
+                    .removedKeys(Collections.unmodifiableList(removedKeys))
+                    .reloadedKeys(Collections.unmodifiableList(reloadedKeys))
+                    .skippedKeys(Collections.unmodifiableList(skippedKeys))
+                    .failedKeys(Collections.unmodifiableList(failedKeys))
                     .build();
 
-            log.info("ateng-boot-datasource: 完成外部数据源差量同步 (新增: {}, 注销: {}, 热重载: {}, 核心跳过: {})",
-                    result.getAddedCount(), result.getRemovedCount(), result.getReloadedCount(), result.getSkippedCount());
+            log.info("ateng-boot-datasource: 完成外部数据源差量同步 (新增: {}, 注销: {}, 热重载: {}, 核心跳过: {}, 失败: {})",
+                    result.getAddedCount(), result.getRemovedCount(), result.getReloadedCount(),
+                    result.getSkippedCount(), result.getFailedCount());
             return result;
         } finally {
             if (syncLock.isHeldByCurrentThread()) {

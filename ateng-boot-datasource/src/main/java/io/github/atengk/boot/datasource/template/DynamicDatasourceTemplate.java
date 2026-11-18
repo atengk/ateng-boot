@@ -19,6 +19,7 @@ import io.github.atengk.boot.datasource.listener.DynamicDatasourceLifecycleListe
 import io.github.atengk.boot.datasource.model.DataSourcePoolStats;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
+import io.github.atengk.boot.datasource.strategy.HealthAwareDynamicDataSourceStrategy;
 import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
 import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
 import org.slf4j.Logger;
@@ -1198,24 +1199,35 @@ public class DynamicDatasourceTemplate {
         lifecycleLock.lock();
         try {
             DataSource targetDs = dataSource.getDataSources().get(dsKey);
-            if (targetDs == null) {
+            Set<HealthAwareDynamicDataSourceStrategy> strategies = collectHealthAwareStrategies();
+            // 1. 先从全部分组数据源摘除该物理节点引用并清理空分组，杜绝分组路由引用已关闭连接池
+            DataSource removedFromGroup = removeNodeFromAllGroups(dsKey);
+
+            if (targetDs != null) {
+                // 2. 从动态路由注册表中摘除，切断单库新请求流量
+                dataSource.removeDataSource(dsKey);
+                log.info("ateng-boot-datasource: 已从动态路由表摘除数据源流量 [dsKey={}]", dsKey);
+            } else if (removedFromGroup == null) {
+                unblacklistStrategies(strategies, dsKey);
                 log.warn("ateng-boot-datasource: 待注销数据源不存在或已被移除 [dsKey={}]", dsKey);
                 return;
+            } else {
+                targetDs = removedFromGroup;
             }
-            // 1. 先从动态路由注册表中摘除，切断新请求流量
-            dataSource.removeDataSource(dsKey);
-            log.info("ateng-boot-datasource: 已从动态路由表摘除数据源流量 [dsKey={}]", dsKey);
 
-            // 2. 若指定 graceful，执行优雅排空 (Drain)
+            // 3. 联动高可用策略移除熔断黑名单并取消在途主动探活任务
+            unblacklistStrategies(strategies, dsKey);
+
+            // 4. 若指定 graceful，执行优雅排空 (Drain)
             if (graceful) {
                 drainDataSource(dsKey, targetDs);
             }
 
-            // 3. 物理关闭底层连接池
+            // 5. 物理关闭底层连接池
             closeDataSource(targetDs);
             log.info("ateng-boot-datasource: 受管数据源已安全物理关闭 [dsKey={}]", dsKey);
 
-            // 4. 触发生命周期注销事件通知
+            // 6. 触发生命周期注销事件通知
             notifyDataSourceRemoved(dsKey);
         } finally {
             if (lifecycleLock.isHeldByCurrentThread()) {
@@ -1317,9 +1329,14 @@ public class DynamicDatasourceTemplate {
         DataSource oldDs = null;
         try {
             oldDs = dataSource.getDataSources().get(dsKey);
-            // 切换路由
+            // 先刷新包含该节点的分组引用至新健康池，防止 addDataSource 关闭旧池期间分组短暂引用已关闭连接池
+            refreshNodeInAllGroups(dsKey, newDs);
+            // 再原子切换单库路由表
             dataSource.addDataSource(dsKey, newDs);
             log.info("ateng-boot-datasource: 已原子切换新数据源路由流量 [dsKey={}]", dsKey);
+
+            // 联动高可用策略解除历史熔断黑名单并取消在途主动探活，使新健康池即刻放行流量
+            unblacklistStrategies(collectHealthAwareStrategies(), dsKey);
 
             // 通知生命周期监听器（例如 Micrometer 重新绑定新池）
             notifyDataSourceAdded(dsKey, newDs);
@@ -1336,6 +1353,84 @@ public class DynamicDatasourceTemplate {
             }
             closeDataSource(oldDs);
             log.info("ateng-boot-datasource: 热重载旧数据源已安全物理关闭 [dsKey={}]", dsKey);
+        }
+    }
+
+    /**
+     * 从全部已注册的分组数据源中摘除指定物理节点，若分组已无任何剩余节点则同步清理空分组
+     */
+    private DataSource removeNodeFromAllGroups(String dsKey) {
+        Map<String, GroupDataSource> groupMap = dataSource.getGroupDataSources();
+        if (groupMap == null || groupMap.isEmpty()) {
+            return null;
+        }
+        DataSource removedReference = null;
+        for (Map.Entry<String, GroupDataSource> entry : new ArrayList<>(groupMap.entrySet())) {
+            GroupDataSource group = entry.getValue();
+            if (group == null) {
+                continue;
+            }
+            DataSource removed = group.removeDatasource(dsKey);
+            if (removed != null) {
+                if (removedReference == null) {
+                    removedReference = removed;
+                }
+                log.info("ateng-boot-datasource: 已从分组 [{}] 同步摘除待注销节点 [{}]", entry.getKey(), dsKey);
+                if (group.size() == 0) {
+                    groupMap.remove(entry.getKey(), group);
+                    log.info("ateng-boot-datasource: 分组 [{}] 已无有效节点，同步清理空分组路由", entry.getKey());
+                }
+            }
+        }
+        return removedReference;
+    }
+
+    /**
+     * 同步刷新包含目标物理节点的分组数据源引用，确保热重载后分组路由指向新健康连接池
+     */
+    private void refreshNodeInAllGroups(String dsKey, DataSource newDs) {
+        Map<String, GroupDataSource> groupMap = dataSource.getGroupDataSources();
+        if (groupMap == null || groupMap.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, GroupDataSource> entry : groupMap.entrySet()) {
+            GroupDataSource group = entry.getValue();
+            if (group != null && group.getDataSourceMap() != null && group.getDataSourceMap().containsKey(dsKey)) {
+                group.addDatasource(dsKey, newDs);
+                log.info("ateng-boot-datasource: 已同步刷新分组 [{}] 中的热重载节点 [{}]", entry.getKey(), dsKey);
+            }
+        }
+    }
+
+    /**
+     * 收集路由数据源及全部分组关联的高可用故障自愈策略实例（按对象引用去重）
+     */
+    private Set<HealthAwareDynamicDataSourceStrategy> collectHealthAwareStrategies() {
+        Set<HealthAwareDynamicDataSourceStrategy> strategies = Collections.newSetFromMap(new IdentityHashMap<>());
+        if (dataSource instanceof AtengDynamicRoutingDataSource atengDs && atengDs.getHealthAwareStrategy() != null) {
+            strategies.add(atengDs.getHealthAwareStrategy());
+        }
+        Map<String, GroupDataSource> groupMap = dataSource.getGroupDataSources();
+        if (groupMap != null) {
+            for (GroupDataSource group : groupMap.values()) {
+                if (group != null
+                        && group.getDynamicDataSourceStrategy() instanceof HealthAwareDynamicDataSourceStrategy strategy) {
+                    strategies.add(strategy);
+                }
+            }
+        }
+        return strategies;
+    }
+
+    /**
+     * 联动底层高可用策略移出熔断黑名单并取消在途主动探活任务
+     */
+    private void unblacklistStrategies(Set<HealthAwareDynamicDataSourceStrategy> strategies, String dsKey) {
+        if (!StringUtils.hasText(dsKey) || strategies == null || strategies.isEmpty()) {
+            return;
+        }
+        for (HealthAwareDynamicDataSourceStrategy strategy : strategies) {
+            strategy.unblacklist(dsKey);
         }
     }
 

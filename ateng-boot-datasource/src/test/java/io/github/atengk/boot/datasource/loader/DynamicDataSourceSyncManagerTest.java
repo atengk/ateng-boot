@@ -280,6 +280,70 @@ class DynamicDataSourceSyncManagerTest {
                 .hasMessageContaining("受管核心数据源严禁动态重载或替换");
     }
 
+    @Test
+    @DisplayName("测试外部配置部分不可达时 SyncResult 准确聚合 failedKeys 且不阻塞健康数据源同步")
+    void shouldAggregateFailedKeysWithoutBlockingHealthyDataSourcesDuringAddAndReload() {
+        Map<String, DataSourceProperty> externalMap = new LinkedHashMap<>();
+        externalMap.put("tenant_ok_1", createProperty("tenant_ok_1", "jdbc:h2:mem:sync_ok_1;DB_CLOSE_DELAY=-1"));
+        externalMap.put("tenant_ok_2", createProperty("tenant_ok_2", "jdbc:h2:mem:sync_ok_2;DB_CLOSE_DELAY=-1"));
+        externalMap.put("tenant_bad_add", createProperty("tenant_bad_add", "jdbc:h2:tcp://127.0.0.1:19999/bad_add"));
+
+        DynamicDataSourceSyncManager syncManager = new DynamicDataSourceSyncManager(template, properties, () -> externalMap);
+
+        try {
+            // 1. 新增阶段混合健康与不可达节点
+            SyncResult addResult = syncManager.sync();
+
+            assertThat(addResult.getAddedCount()).isEqualTo(2);
+            assertThat(addResult.getAddedKeys()).containsExactlyInAnyOrder("tenant_ok_1", "tenant_ok_2");
+            assertThat(addResult.getFailedCount()).isEqualTo(1);
+            assertThat(addResult.getFailedKeys()).containsExactly("tenant_bad_add");
+            assertThat(addResult.hasChanges()).isTrue();
+            assertThat(template.containsDataSource("tenant_ok_1")).isTrue();
+            assertThat(template.containsDataSource("tenant_ok_2")).isTrue();
+            assertThat(template.containsDataSource("tenant_bad_add")).isFalse();
+
+            // 2. 热重载阶段混合健康配置变更与不可达配置变更
+            externalMap.remove("tenant_bad_add");
+            externalMap.put("tenant_ok_1", createProperty("tenant_ok_1_v2", "jdbc:h2:mem:sync_ok_1_v2;DB_CLOSE_DELAY=-1"));
+            externalMap.put("tenant_ok_2", createProperty("tenant_ok_2_bad", "jdbc:h2:tcp://127.0.0.1:19999/bad_reload"));
+
+            SyncResult reloadResult = syncManager.sync();
+
+            assertThat(reloadResult.getReloadedCount()).isEqualTo(1);
+            assertThat(reloadResult.getReloadedKeys()).containsExactly("tenant_ok_1");
+            assertThat(reloadResult.getFailedCount()).isEqualTo(1);
+            assertThat(reloadResult.getFailedKeys()).containsExactly("tenant_ok_2");
+            assertThat(reloadResult.hasChanges()).isTrue();
+            assertThat(template.containsDataSource("tenant_ok_2")).isTrue();
+
+            // 3. 仅有失败项且无实质拓扑变更时 hasChanges() 仍为 false
+            SyncResult failOnlyResult = syncManager.sync();
+            assertThat(failOnlyResult.getFailedCount()).isEqualTo(1);
+            assertThat(failOnlyResult.getFailedKeys()).containsExactly("tenant_ok_2");
+            assertThat(failOnlyResult.hasChanges()).isFalse();
+
+            // 4. 验证 SyncResult 既有四参构造与空结果完全向后兼容
+            SyncResult legacy = new SyncResult(List.of("a"), List.of(), List.of(), List.of());
+            assertThat(legacy.getAddedCount()).isEqualTo(1);
+            assertThat(legacy.getFailedKeys()).isEmpty();
+            assertThat(legacy.getFailedCount()).isZero();
+            assertThat(legacy.hasChanges()).isTrue();
+
+            SyncResult empty = SyncResult.empty();
+            assertThat(empty.getFailedKeys()).isEmpty();
+            assertThat(empty.getFailedCount()).isZero();
+            assertThat(empty.hasChanges()).isFalse();
+
+            SyncResult noArg = new SyncResult();
+            assertThat(noArg.getFailedKeys()).isEmpty();
+            assertThat(noArg.getFailedCount()).isZero();
+            assertThat(noArg.hasChanges()).isFalse();
+        } finally {
+            syncManager.destroy();
+        }
+    }
+
     private DataSourceProperty createProperty(String poolName, String url) {
         DataSourceProperty property = new DataSourceProperty();
         property.setPoolName(poolName);
