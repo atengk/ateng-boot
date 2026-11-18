@@ -3,11 +3,8 @@ package io.github.atengk.boot.mqtt.template;
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
-import io.github.atengk.boot.core.context.TenantContextHolder;
-import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.exception.MessageDeliveryException;
-import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.mqtt.codec.MqttMessageConverter;
 import io.github.atengk.boot.mqtt.context.MqttContextHolder;
@@ -1035,29 +1032,8 @@ public class MqttTemplate {
             properties = new MqttProperties();
             List<UserProperty> userProperties = new ArrayList<>();
 
-            // 1. TraceId (优先抓取 MDC，无则纯原生快速生成)
-            String traceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
-            if (!StringUtils.hasText(traceId)) {
-                traceId = IdUtil.fastSimpleUUID();
-            }
-            userProperties.add(new UserProperty(MessageHeaderConstants.TRACE_ID, traceId));
-
-            // 2. TenantId
-            String tenantId = TenantContextHolder.getTenantId();
-            if (StringUtils.hasText(tenantId)) {
-                userProperties.add(new UserProperty(MessageHeaderConstants.TENANT_ID, tenantId));
-            }
-
-            // 3. UserId
-            String userId = UserContextHolder.get();
-            if (StringUtils.hasText(userId)) {
-                userProperties.add(new UserProperty(MessageHeaderConstants.USER_ID, userId));
-            }
-
-            // 4. IgnoreTenant
-            if (TenantContextHolder.isIgnoreTenant()) {
-                userProperties.add(new UserProperty(MessageHeaderConstants.IGNORE_TENANT, "true"));
-            }
+            // 1-4. 四维上下文 (TraceId / TenantId / UserId / IgnoreTenant)
+            MqttHeaderUtils.appendCurrentContextUserProperties(userProperties);
 
             // 5. SendTimestamp
             userProperties.add(new UserProperty(MessageHeaderConstants.SEND_TIMESTAMP, String.valueOf(System.currentTimeMillis())));
@@ -1373,17 +1349,7 @@ public class MqttTemplate {
                                     MqttMessage message,
                                     Map<String, String> headers,
                                     Throwable ex) {
-        if (interceptors.isEmpty()) {
-            return;
-        }
-        for (int i = interceptors.size() - 1; i >= 0; i--) {
-            try {
-                interceptors.get(i).postConsume(clientName, endpointId, actualTopic, message, headers, ex);
-            } catch (Throwable t) {
-                log.warn("[MQTT] Error in interceptor [{}] postConsume: {}",
-                        interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
-            }
-        }
+        MqttMessageInterceptor.invokePostConsume(interceptors, clientName, endpointId, actualTopic, message, headers, ex);
     }
 
     /**

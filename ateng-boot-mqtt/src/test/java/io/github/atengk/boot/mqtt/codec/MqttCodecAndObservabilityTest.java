@@ -393,7 +393,11 @@ class MqttCodecAndObservabilityTest {
         when(slowHandle.getHealthDetails()).thenReturn(Map.of("connected", true, "status", "CONNECTED"));
         when(registry.getClientHandles()).thenReturn(Map.of("slow", slowHandle));
 
-        java.util.concurrent.ExecutorService probeExec = java.util.concurrent.Executors.newSingleThreadExecutor();
+        org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor probeExec = new org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor();
+        probeExec.setCorePoolSize(1);
+        probeExec.setMaxPoolSize(1);
+        probeExec.setThreadNamePrefix("mqtt-health-test-");
+        probeExec.initialize();
         try {
             MqttHealthIndicator healthIndicator = new MqttHealthIndicator(registry, probeExec);
             Health health = healthIndicator.health();
@@ -401,7 +405,7 @@ class MqttCodecAndObservabilityTest {
             assertTrue(String.valueOf(health.getDetails().get("error")).contains("timed out"));
             assertFalse(health.getDetails().containsKey("clients"), "超时后异步线程不应篡改主线程 Health.Builder");
         } finally {
-            probeExec.shutdownNow();
+            probeExec.shutdown();
         }
     }
 

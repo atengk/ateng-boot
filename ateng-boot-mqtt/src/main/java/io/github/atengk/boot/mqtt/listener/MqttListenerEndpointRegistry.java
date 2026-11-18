@@ -5,7 +5,6 @@ import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.exception.IdempotentException;
 import io.github.atengk.boot.core.helper.FatalExceptionClassifier;
-import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.mqtt.annotation.MqttReply;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.dlt.MqttDeadLetterStore;
@@ -21,6 +20,7 @@ import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
 import io.github.atengk.boot.mqtt.routing.MqttTopicPattern;
 import io.github.atengk.boot.mqtt.util.MqttHeaderUtils;
+import io.github.atengk.boot.mqtt.util.MqttSchedulerSupport;
 import org.eclipse.paho.mqttv5.client.MqttActionListener;
 import org.eclipse.paho.mqttv5.client.IMqttToken;
 import org.eclipse.paho.mqttv5.client.MqttCallback;
@@ -86,6 +86,8 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     private final Set<String> pausedEndpoints = ConcurrentHashMap.newKeySet();
     private final Set<PendingRetry> pendingRetries = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean registryHooksRegistered = new AtomicBoolean(false);
+    private final Map<String, MqttClientHandle> boundFallbackHandles = new ConcurrentHashMap<>();
     private final AtomicInteger inFlightTasks = new AtomicInteger(0);
     private final ReentrantLock subscriptionLock = new ReentrantLock();
     private final ReentrantLock schedulerLock = new ReentrantLock();
@@ -269,13 +271,15 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             if (metrics != null) {
                 metrics.bindClientRegistry(clientRegistry);
             }
-            // 为所有已配置及运行期热注册客户端绑定兜底回调、连接完成监听与热注销守卫
+            // 为所有已配置及运行期热注册客户端绑定兜底回调、连接完成监听与热注销守卫（幂等防重）
             for (MqttClientHandle handle : clientRegistry.getClientHandles().values()) {
                 bindFallbackCallback(handle);
             }
-            clientRegistry.addClientRegisteredListener(this::bindFallbackCallback);
-            clientRegistry.addClientUnregisterListener(this::handleClientUnregistered);
-            clientRegistry.addActiveBindingPredicate(this::hasActiveEndpointsForClient);
+            if (registryHooksRegistered.compareAndSet(false, true)) {
+                clientRegistry.addClientRegisteredListener(this::bindFallbackCallback);
+                clientRegistry.addClientUnregisterListener(this::handleClientUnregistered);
+                clientRegistry.addActiveBindingPredicate(this::hasActiveEndpointsForClient);
+            }
 
             for (MqttListenerEndpoint endpoint : endpoints) {
                 if (isPaused(endpoint.getId())) {
@@ -305,6 +309,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         if (!StringUtils.hasText(clientName)) {
             return;
         }
+        boundFallbackHandles.remove(clientName);
         subscriptionLock.lock();
         try {
             subscribedTopicsByClient.remove(clientName);
@@ -316,6 +321,9 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     }
 
     private void bindFallbackCallback(MqttClientHandle handle) {
+        if (handle == null) {
+            return;
+        }
         handle.setFallbackMessageListener((topic, message) -> {
             // 仅针对共享订阅端点（因 $share 前缀导致 Paho 内部 TopicFilter 无法直接匹配 listener）执行兜底分发，彻底防御普通端点重复分发
             for (MqttListenerEndpoint endpoint : endpoints) {
@@ -332,8 +340,13 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                 }
             }
         });
-        handle.addConnectCompleteListener((reconnect, serverURI) -> {
-            handleConnectComplete(handle, reconnect, serverURI);
+        boundFallbackHandles.compute(handle.getClientName(), (name, existing) -> {
+            if (existing != handle) {
+                handle.addConnectCompleteListener((reconnect, serverURI) -> {
+                    handleConnectComplete(handle, reconnect, serverURI);
+                });
+            }
+            return handle;
         });
     }
 
@@ -574,13 +587,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         schedulerLock.lock();
         try {
             if (this.ownedScheduler == null) {
-                ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
-                scheduler.setPoolSize(2);
-                scheduler.setThreadNamePrefix("ateng-mqtt-retry-");
-                scheduler.setDaemon(true);
-                scheduler.setWaitForTasksToCompleteOnShutdown(false);
-                scheduler.initialize();
-                this.ownedScheduler = scheduler;
+                this.ownedScheduler = MqttSchedulerSupport.createDaemonScheduler(2, "ateng-mqtt-retry-");
             }
             return this.ownedScheduler.getScheduledExecutor();
         } finally {
@@ -753,23 +760,13 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                     outboundProps.setCorrelationData(inboundProps.getCorrelationData());
                 }
                 List<UserProperty> userProps = new ArrayList<>();
-                String traceId = headers.get(MessageHeaderConstants.TRACE_ID);
-                if (!StringUtils.hasText(traceId)) {
-                    traceId = IdUtil.fastSimpleUUID();
-                }
-                userProps.add(new UserProperty(MessageHeaderConstants.TRACE_ID, traceId));
-                String tenantId = headers.get(MessageHeaderConstants.TENANT_ID);
-                if (StringUtils.hasText(tenantId)) {
-                    userProps.add(new UserProperty(MessageHeaderConstants.TENANT_ID, tenantId));
-                }
-                String userId = headers.get(MessageHeaderConstants.USER_ID);
-                if (StringUtils.hasText(userId)) {
-                    userProps.add(new UserProperty(MessageHeaderConstants.USER_ID, userId));
-                }
-                String ignoreTenant = headers.get(MessageHeaderConstants.IGNORE_TENANT);
-                if (StringUtils.hasText(ignoreTenant)) {
-                    userProps.add(new UserProperty(MessageHeaderConstants.IGNORE_TENANT, ignoreTenant));
-                }
+                MqttHeaderUtils.appendContextUserProperties(
+                        userProps,
+                        headers.get(MessageHeaderConstants.TRACE_ID),
+                        headers.get(MessageHeaderConstants.TENANT_ID),
+                        headers.get(MessageHeaderConstants.USER_ID),
+                        headers.get(MessageHeaderConstants.IGNORE_TENANT)
+                );
                 outboundProps.setUserProperties(userProps);
                 replyMessage.setProperties(outboundProps);
             }
@@ -1035,7 +1032,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         }
 
         // 防御死信主题自循环投递隐患：若当前报文已来自 DLT 主题，严禁再次转发自身
-        if (actualTopic.endsWith("/DLT") || actualTopic.startsWith("sys/dlt")) {
+        if (MqttDeadLetterRecord.isDeadLetterTopic(actualTopic)) {
             log.error("[MQTT] Poison pill occurred on dead-letter topic [{}] itself for endpoint [{}], dropping message to break infinite DLT self-loop: {}",
                     actualTopic, endpoint.getId(), cause.getMessage());
             return;
@@ -1283,16 +1280,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
 
     private void triggerPostConsume(String clientName, String endpointId, String actualTopic,
                                     MqttMessage message, Map<String, String> headers, Throwable ex) {
-        if (interceptors.isEmpty()) {
-            return;
-        }
-        for (int i = interceptors.size() - 1; i >= 0; i--) {
-            try {
-                interceptors.get(i).postConsume(clientName, endpointId, actualTopic, message, headers, ex);
-            } catch (Throwable t) {
-                log.warn("[MQTT] Error in interceptor [{}] postConsume: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
-            }
-        }
+        MqttMessageInterceptor.invokePostConsume(interceptors, clientName, endpointId, actualTopic, message, headers, ex);
     }
 
     // ==================== 容器动态运维接口 (MqttContainerManager 支撑) ====================

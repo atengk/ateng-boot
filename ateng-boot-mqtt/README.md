@@ -732,7 +732,7 @@ public class DeadLetterReplayScenarioService {
 
 #### 核心机制与防御说明
 - **多毒丸防覆写与作用域隔离**：早期 Broker `retained = true` 方式会导致连续第二条毒丸覆盖销毁第一条。现行默认通过 `MqttDeadLetterStore`（默认自动装配 `InMemoryMqttDeadLetterStore`）按 `(clientName, dltTopic)` 作用域有序保存全部死信，同时向 Broker 发出普通 DLT 消息供实时监控订阅；
-- **校验失败零重试直通 DLT**：反序列化崩溃、大报文超限（`PayloadGuard`）、`FatalExceptionClassifier` 致命异常以及监听形参 `@Valid` 触发的校验异常（`ConstraintViolationException` / `MethodValidationException`）一律跳过指数退避重试，毫秒级隔离转入死信并提交 `PUBACK`。
+- **校验失败零重试直通 DLT**：反序列化崩溃、大报文超限（`PayloadGuard`）、`FatalExceptionClassifier` 致命异常以及监听形参 `@Valid` 触发的校验异常（框架经 `ValidatorUtil.validate` 转译为 `jakarta.validation.ValidationException`，同时兼容 `ConstraintViolationException`）一律跳过指数退避重试，毫秒级隔离转入死信并提交 `PUBACK`。
 
 ---
 
@@ -961,7 +961,7 @@ ateng:
             hostname-verification-enabled: true                # 生产默认开启 TLS 主机名严格核验
 ```
 
-- `MqttSslSocketFactoryBuilder` 同时支持 PEM（含受密保保护的 PKCS#8 / PKCS#1 私钥）与 JKS / PKCS12 KeyStore/TrustStore，默认启用 HTTPS 标准主机名验证 (`hostname-verification-enabled = true`) 严防证书错配中间人攻击。
+- `MqttSslSocketFactoryBuilder` 同时支持 PEM（含明文与口令加密的 PKCS#8 私钥）与 JKS / PKCS12 KeyStore/TrustStore，默认启用 HTTPS 标准主机名验证 (`hostname-verification-enabled = true`) 严防证书错配中间人攻击。
 
 ---
 

@@ -871,4 +871,64 @@ class MqttListenerContainerTest {
             testExec.shutdown();
         }
     }
+
+    @Test
+    @DisplayName("容器二次启停幂等防重：多次 start/stop 不重复注册客户端回调钩子与重连监听器，并正确取消外部定时任务")
+    void shouldAvoidDuplicateListenerHooksAcrossRestartCycles() {
+        NamedMqttClientRegistry spyClientRegistry = org.mockito.Mockito.spy(clientRegistry);
+        MqttClientHandle handle = clientRegistry.getDefaultClientHandle();
+
+        ThreadPoolTaskExecutor testExec = new ThreadPoolTaskExecutor();
+        testExec.setCorePoolSize(2);
+        testExec.setMaxPoolSize(4);
+        testExec.setThreadNamePrefix("ateng-idempotent-restart-");
+        testExec.initialize();
+
+        org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler externalScheduler =
+                new org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler();
+        externalScheduler.setPoolSize(1);
+        externalScheduler.setThreadNamePrefix("ateng-external-rr-");
+        externalScheduler.setRemoveOnCancelPolicy(true);
+        externalScheduler.initialize();
+
+        io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager spyRrManager = org.mockito.Mockito.spy(
+                new io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager(
+                        spyClientRegistry, new PayloadGuard(), testExec, externalScheduler.getScheduledExecutor()));
+        MqttListenerEndpointRegistry spyEndpointRegistry = org.mockito.Mockito.spy(
+                new MqttListenerEndpointRegistry(spyClientRegistry, new PayloadGuard(), testExec, null, spyRrManager));
+
+        try {
+            // 第一轮 start -> stop -> 第二轮 start
+            spyRrManager.start();
+            spyEndpointRegistry.start();
+            spyEndpointRegistry.stop();
+            spyRrManager.stop();
+
+            // 外部调度器下的定时任务应已被取消（活动任务数为 0）
+            assertThat(externalScheduler.getScheduledThreadPoolExecutor().getQueue()).isEmpty();
+
+            spyRrManager.start();
+            spyEndpointRegistry.start();
+
+            // 向 clientRegistry 注册钩子的方法均应严格仅调用 1 次（MqttListenerEndpointRegistry + MqttRequestReplyManager 各 1 次）
+            org.mockito.Mockito.verify(spyClientRegistry, org.mockito.Mockito.times(2))
+                    .addClientRegisteredListener(org.mockito.ArgumentMatchers.any());
+            org.mockito.Mockito.verify(spyClientRegistry, org.mockito.Mockito.times(2))
+                    .addClientUnregisterListener(org.mockito.ArgumentMatchers.any());
+            org.mockito.Mockito.verify(spyClientRegistry, org.mockito.Mockito.times(1))
+                    .addActiveBindingPredicate(org.mockito.ArgumentMatchers.any());
+
+            // 模拟一次重连事件：handleConnectComplete 应仅触发 1 次（且由它联动 1 次 handleReconnect，加上 handle 自身绑定总共不随启停次数倍增）
+            handle.notifyConnectComplete(true, broker.getServerUri());
+            org.mockito.Mockito.verify(spyEndpointRegistry, org.mockito.Mockito.times(1))
+                    .handleConnectComplete(handle, true, broker.getServerUri());
+            org.mockito.Mockito.verify(spyRrManager, org.mockito.Mockito.times(2))
+                    .handleReconnect(handle.getClientName());
+        } finally {
+            spyEndpointRegistry.stop();
+            spyRrManager.stop();
+            externalScheduler.shutdown();
+            testExec.shutdown();
+        }
+    }
 }

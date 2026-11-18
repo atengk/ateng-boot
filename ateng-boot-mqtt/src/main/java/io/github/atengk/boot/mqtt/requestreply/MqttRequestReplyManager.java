@@ -2,8 +2,6 @@ package io.github.atengk.boot.mqtt.requestreply;
 
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
-import io.github.atengk.boot.core.context.TenantContextHolder;
-import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.exception.MessageDeliveryException;
 import io.github.atengk.boot.core.util.IdUtil;
@@ -14,6 +12,7 @@ import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.util.MqttHeaderUtils;
+import io.github.atengk.boot.mqtt.util.MqttSchedulerSupport;
 import org.eclipse.paho.mqttv5.client.IMqttMessageListener;
 import org.eclipse.paho.mqttv5.client.IMqttToken;
 import org.eclipse.paho.mqttv5.common.MqttException;
@@ -41,6 +40,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
@@ -63,12 +63,15 @@ public class MqttRequestReplyManager implements SmartLifecycle {
 
     private final Map<String, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
     private final Set<String> subscribedClientNames = ConcurrentHashMap.newKeySet();
+    private final Map<String, MqttClientHandle> boundConnectHandles = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean registryHooksRegistered = new AtomicBoolean(false);
     private final ReentrantLock subscriptionLock = new ReentrantLock();
 
     private final boolean externalScanner;
     private ThreadPoolTaskScheduler ownedTaskScheduler;
     private ScheduledExecutorService timeoutScanner;
+    private volatile ScheduledFuture<?> timeoutScannerFuture;
 
     public MqttRequestReplyManager(NamedMqttClientRegistry clientRegistry,
                                   PayloadGuard payloadGuard,
@@ -101,23 +104,21 @@ public class MqttRequestReplyManager implements SmartLifecycle {
         if (running.compareAndSet(false, true)) {
             log.info("[MQTT] Starting MqttRequestReplyManager, initializing aggregated response subscriptions");
             if (this.timeoutScanner == null) {
-                ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
-                scheduler.setPoolSize(1);
-                scheduler.setThreadNamePrefix("ateng-mqtt-request-reply-cleaner-");
-                scheduler.setDaemon(true);
-                scheduler.initialize();
-                this.ownedTaskScheduler = scheduler;
-                this.timeoutScanner = scheduler.getScheduledExecutor();
+                this.ownedTaskScheduler = MqttSchedulerSupport.createDaemonScheduler(1, "ateng-mqtt-request-reply-cleaner-");
+                this.timeoutScanner = this.ownedTaskScheduler.getScheduledExecutor();
             }
             // 启动定时超时安全扫描器（每 500ms 扫描一次），防范无界内存挂起
-            this.timeoutScanner.scheduleWithFixedDelay(this::scanAndCleanExpiredRequests, 500, 500, TimeUnit.MILLISECONDS);
+            this.timeoutScannerFuture = this.timeoutScanner.scheduleWithFixedDelay(
+                    this::scanAndCleanExpiredRequests, 500, 500, TimeUnit.MILLISECONDS);
 
-            // 预订阅所有已配置客户端的私有聚合响应主题并绑定重连与热插拔联动监听
+            // 预订阅所有已配置客户端的私有聚合响应主题并绑定重连与热插拔联动监听（幂等防重）
             for (MqttClientHandle handle : clientRegistry.getClientHandles().values()) {
                 bindClientForRequestReply(handle);
             }
-            clientRegistry.addClientRegisteredListener(this::bindClientForRequestReply);
-            clientRegistry.addClientUnregisterListener(this::handleClientRemoved);
+            if (registryHooksRegistered.compareAndSet(false, true)) {
+                clientRegistry.addClientRegisteredListener(this::bindClientForRequestReply);
+                clientRegistry.addClientUnregisterListener(this::handleClientRemoved);
+            }
         }
     }
 
@@ -127,10 +128,15 @@ public class MqttRequestReplyManager implements SmartLifecycle {
         }
         try {
             ensureSubscribed(handle);
-            handle.addConnectCompleteListener((reconnect, serverURI) -> {
-                if (reconnect) {
-                    handleReconnect(handle.getClientName());
+            boundConnectHandles.compute(handle.getClientName(), (name, existing) -> {
+                if (existing != handle) {
+                    handle.addConnectCompleteListener((reconnect, serverURI) -> {
+                        if (reconnect) {
+                            handleReconnect(handle.getClientName());
+                        }
+                    });
                 }
+                return handle;
             });
         } catch (Exception e) {
             log.error("[MQTT] Failed to pre-subscribe aggregated response topic for client [{}]: {}",
@@ -142,6 +148,11 @@ public class MqttRequestReplyManager implements SmartLifecycle {
     public void stop() {
         if (running.compareAndSet(true, false)) {
             log.info("[MQTT] Stopping MqttRequestReplyManager, cleaning [{}] pending requests", pendingRequests.size());
+            ScheduledFuture<?> future = this.timeoutScannerFuture;
+            this.timeoutScannerFuture = null;
+            if (future != null) {
+                future.cancel(false);
+            }
             if (!externalScanner && ownedTaskScheduler != null) {
                 ownedTaskScheduler.shutdown();
                 ownedTaskScheduler = null;
@@ -228,6 +239,7 @@ public class MqttRequestReplyManager implements SmartLifecycle {
         if (!StringUtils.hasText(clientName)) {
             return;
         }
+        boundConnectHandles.remove(clientName);
         subscriptionLock.lock();
         try {
             subscribedClientNames.remove(clientName);
@@ -502,27 +514,7 @@ public class MqttRequestReplyManager implements SmartLifecycle {
 
     private void injectContextUserProperties(MqttProperties props) {
         List<UserProperty> userProperties = new ArrayList<>();
-
-        String traceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
-        if (!StringUtils.hasText(traceId)) {
-            traceId = IdUtil.fastSimpleUUID();
-        }
-        userProperties.add(new UserProperty(MessageHeaderConstants.TRACE_ID, traceId));
-
-        String userId = UserContextHolder.get();
-        if (StringUtils.hasText(userId)) {
-            userProperties.add(new UserProperty(MessageHeaderConstants.USER_ID, userId));
-        }
-
-        String tenantId = TenantContextHolder.getTenantId();
-        if (StringUtils.hasText(tenantId)) {
-            userProperties.add(new UserProperty(MessageHeaderConstants.TENANT_ID, tenantId));
-        }
-
-        if (TenantContextHolder.isIgnoreTenant()) {
-            userProperties.add(new UserProperty(MessageHeaderConstants.IGNORE_TENANT, "true"));
-        }
-
+        MqttHeaderUtils.appendCurrentContextUserProperties(userProperties);
         props.setUserProperties(userProperties);
     }
 

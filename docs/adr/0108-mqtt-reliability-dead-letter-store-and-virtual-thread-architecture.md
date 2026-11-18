@@ -61,7 +61,7 @@ flowchart TD
 ### 2. 全量 `manualAcks = true`、`AckMode` 与零重试毒丸铁律
 - **底层确认收口**：`NamedMqttClientRegistry` 构建所有 `MqttAsyncClient` 时强制设置 `manualAcks = true`，由框架通过 `MqttClientHandle.messageArrivedComplete(...)` 统一对 QoS 1/2 提交 PUBACK/PUBCOMP（QoS 0 自动跳过）；
 - **双模消费确认**：`AtengMqttProperties.consumer.ackMode` 与 `@MqttListener(ackMode = ...)` 支持 `AUTO_AFTER_CONSUME`（默认）与 `MANUAL`。`MANUAL` 模式下向监听方法注入严格单次幂等状态机句柄 `MqttAcknowledgment`（`ack()`、`nackToDlt()`、`abandonWithoutAck()`、`isAcknowledged()`），首次状态跃迁生效后后续调用均为幂等空操作；
-- **分类快速分流**：消费端 JSR-303 `@Valid` 校验失败（`ConstraintViolationException` / `MethodValidationException`）与 `FatalExceptionClassifier` 判定的致命异常执行 **0 次重试直接路由至 DLT**；`SilentAckException` 与 `IdempotentException` 直接触发静默 PUBACK，彻底终结死循环。
+- **分类快速分流**：消费端 JSR-303 `@Valid` 校验失败（`jakarta.validation.ValidationException` / `ConstraintViolationException`）与 `FatalExceptionClassifier` 判定的致命异常执行 **0 次重试直接路由至 DLT**；`SilentAckException` 与 `IdempotentException` 直接触发静默 PUBACK，彻底终结死循环。
 
 ### 3. `MqttDeadLetterStore` SPI 与对称清理闭环（修订 [ADR-0074](./0074-mqtt-full-scenario-hardening-dead-letter-replay-and-connection-governance-architecture.md)）
 - **解除 Broker Retained 单条覆写瓶颈**：新增 `MqttDltProperties`（前缀 `ateng.boot.mqtt.dlt`），将 `dlt.retained` 默认设为 **`false`**，新增 `MqttDeadLetterStore` SPI 并在无外部实现时自动装配有界内存实现 `InMemoryMqttDeadLetterStore`；

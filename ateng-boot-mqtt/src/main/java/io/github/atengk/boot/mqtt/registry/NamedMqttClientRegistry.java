@@ -38,6 +38,7 @@ import org.springframework.util.StringUtils;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -133,6 +134,7 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
      * 初始化并连接所有配置的 MQTT 客户端
      */
     public void initClients() {
+        List<MqttClientHandle> initialized = new ArrayList<>();
         registryLock.lock();
         try {
             if (!properties.isEnabled()) {
@@ -150,10 +152,14 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
                 if (clientHandles.containsKey(clientName)) {
                     continue;
                 }
-                registerConnectedHandle(clientName, entry.getValue(), false);
+                MqttClientHandle handle = registerConnectedHandle(clientName, entry.getValue(), false);
+                initialized.add(handle);
             }
         } finally {
             registryLock.unlock();
+        }
+        for (MqttClientHandle handle : initialized) {
+            notifyRegisteredAndPublishConnected(handle);
         }
     }
 
@@ -167,15 +173,18 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
     public MqttClientHandle registerClient(String clientName, MqttClientProperties clientProps) {
         validateRegistrationArgs(clientName, clientProps);
         String trimmedName = clientName.trim();
+        MqttClientHandle handle;
         registryLock.lock();
         try {
             if (clientHandles.containsKey(trimmedName)) {
                 throw new BusinessException("MQTT client [" + trimmedName + "] already exists");
             }
-            return registerConnectedHandle(trimmedName, clientProps, true);
+            handle = registerConnectedHandle(trimmedName, clientProps, true);
         } finally {
             registryLock.unlock();
         }
+        notifyRegisteredAndPublishConnected(handle);
+        return handle;
     }
 
     /**
@@ -188,15 +197,20 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
     public MqttClientHandle registerOrReplaceClient(String clientName, MqttClientProperties clientProps) {
         validateRegistrationArgs(clientName, clientProps);
         String trimmedName = clientName.trim();
+        MqttClientHandle handle;
         registryLock.lock();
         try {
             if (clientHandles.containsKey(trimmedName)) {
-                closeAndRemoveHandle(trimmedName, clientHandles.get(trimmedName));
+                MqttClientHandle previous = detachHandleForRemoval(trimmedName, clientHandles.get(trimmedName));
+                // 热替换同逻辑名客户端时需先断开旧连接，避免 STATIC clientId 与新建连接在 Broker 端互踢
+                disconnectAndCloseHandle(trimmedName, previous);
             }
-            return registerConnectedHandle(trimmedName, clientProps, true);
+            handle = registerConnectedHandle(trimmedName, clientProps, true);
         } finally {
             registryLock.unlock();
         }
+        notifyRegisteredAndPublishConnected(handle);
+        return handle;
     }
 
     /**
@@ -219,6 +233,7 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
             throw new IllegalArgumentException("clientName must not be blank");
         }
         String trimmedName = clientName.trim();
+        MqttClientHandle removed;
         registryLock.lock();
         try {
             MqttClientHandle handle = clientHandles.get(trimmedName);
@@ -231,20 +246,19 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
             if (!force && hasActiveBindings(trimmedName)) {
                 throw new BusinessException("Cannot unregister MQTT client [" + trimmedName + "] while active listener endpoints are bound");
             }
-            closeAndRemoveHandle(trimmedName, handle);
-            log.info("[MQTT] Dynamically unregistered and disconnected client [{}]", trimmedName);
+            removed = detachHandleForRemoval(trimmedName, handle);
         } finally {
             registryLock.unlock();
         }
+        disconnectAndCloseHandle(trimmedName, removed);
+        log.info("[MQTT] Dynamically unregistered and disconnected client [{}]", trimmedName);
     }
 
     private MqttClientHandle registerConnectedHandle(String clientName, MqttClientProperties clientProps, boolean dynamic) {
         try {
             MqttClientHandle handle = createAndConnectClient(clientName, clientProps);
             clientHandles.put(clientName, handle);
-            notifyClientRegistered(handle);
             String primaryUri = clientProps.resolvePrimaryServerUri();
-            publishConnectedEvent(clientName, primaryUri, handle.getActualClientId(), false);
             log.info("[MQTT] Successfully {} client [{}] with actual clientId [{}] to [{}]",
                     dynamic ? "dynamically registered and connected" : "initialized and connected",
                     clientName, handle.getActualClientId(), primaryUri);
@@ -258,7 +272,17 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
         }
     }
 
-    private void closeAndRemoveHandle(String clientName, MqttClientHandle handle) {
+    private void notifyRegisteredAndPublishConnected(MqttClientHandle handle) {
+        if (handle == null) {
+            return;
+        }
+        notifyClientRegistered(handle);
+        MqttClientProperties clientProps = handle.getClientProperties();
+        String primaryUri = clientProps != null ? clientProps.resolvePrimaryServerUri() : null;
+        publishConnectedEvent(handle.getClientName(), primaryUri, handle.getActualClientId(), false);
+    }
+
+    private MqttClientHandle detachHandleForRemoval(String clientName, MqttClientHandle handle) {
         for (Consumer<String> listener : clientUnregisterListeners) {
             try {
                 listener.accept(clientName);
@@ -267,7 +291,7 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
             }
         }
         clientHandles.remove(clientName, handle);
-        disconnectAndCloseHandle(clientName, handle);
+        return handle;
     }
 
     private void disconnectAndCloseHandle(String clientName, MqttClientHandle handle) {
@@ -630,17 +654,19 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
 
     @Override
     public void stop() {
+        Map<String, MqttClientHandle> toClose = Collections.emptyMap();
         registryLock.lock();
         try {
             if (running.compareAndSet(true, false) || !clientHandles.isEmpty()) {
                 log.info("[MQTT] Shutting down NamedMqttClientRegistry, cleanly disconnecting [{}] active clients", clientHandles.size());
-                for (Map.Entry<String, MqttClientHandle> entry : clientHandles.entrySet()) {
-                    disconnectAndCloseHandle(entry.getKey(), entry.getValue());
-                }
+                toClose = new LinkedHashMap<>(clientHandles);
                 clientHandles.clear();
             }
         } finally {
             registryLock.unlock();
+        }
+        for (Map.Entry<String, MqttClientHandle> entry : toClose.entrySet()) {
+            disconnectAndCloseHandle(entry.getKey(), entry.getValue());
         }
     }
 

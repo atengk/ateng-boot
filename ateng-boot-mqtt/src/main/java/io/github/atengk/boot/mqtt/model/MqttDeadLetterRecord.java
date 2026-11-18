@@ -164,4 +164,14 @@ public record MqttDeadLetterRecord(
         }
         return 0;
     }
+
+    /**
+     * 判断给定主题是否属于框架约定的死信主题（防御死信自循环投递）
+     *
+     * @param topic MQTT 主题名称
+     * @return true 若为死信主题
+     */
+    public static boolean isDeadLetterTopic(String topic) {
+        return StringUtils.hasText(topic) && (topic.endsWith("/DLT") || topic.startsWith("sys/dlt"));
+    }
 }
