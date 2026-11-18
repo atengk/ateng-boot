@@ -41,6 +41,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.util.StreamUtils;
 
+import static io.github.atengk.boot.pay.util.PayTextUtil.firstNonBlankText;
+import static io.github.atengk.boot.pay.util.PayTextUtil.hasText;
+
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -1166,10 +1169,6 @@ public class PayCallbackHandler {
         return buildAlipayResponse(responseText, result, callback, refundCallback, null, null);
     }
 
-    private static boolean hasText(String value) {
-        return value != null && !value.isBlank();
-    }
-
     private static boolean hasPositiveAmount(String amountText) {
         if (!hasText(amountText)) {
             return false;
@@ -1179,18 +1178,6 @@ public class PayCallbackHandler {
         } catch (NumberFormatException e) {
             return false;
         }
-    }
-
-    private static String firstNonBlankText(String... candidates) {
-        if (candidates == null) {
-            return null;
-        }
-        for (String candidate : candidates) {
-            if (hasText(candidate)) {
-                return candidate.trim();
-            }
-        }
-        return null;
     }
 
     private String escapeJson(String input) {

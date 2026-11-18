@@ -33,4 +33,9 @@ public class PayTransferQueryDTO implements Serializable {
     private String outBizNo;
 
     private String orderId;
+
+    /**
+     * 是否查询旧版微信商家批次转账（/v3/transfer/batches），默认 false/null 查询新版转账单
+     */
+    private Boolean legacyBatchMode;
 }

@@ -32,6 +32,8 @@ import java.util.Date;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 /**
@@ -188,17 +190,27 @@ public class WechatAutoCertificateManager implements DisposableBean {
         }
 
         PayHttpProperties effectiveHttp = PayHttpProperties.orDefault(httpProps);
-        // 每个商户仅构建一次默认 HTTP 下载客户端并在周期轮换中复用连接池，避免重复创建泄露资源
-        HttpClient reusableDefaultClient = customHttpClientSupplier == null
-                ? buildBootstrapDownloadClient(merchantId, serialNumber, keySource, effectiveHttp)
-                : null;
+        // 懒加载并按商户复用默认 HTTP 下载客户端，避免 customHttpClientSupplier 返回 null 时周期轮换重复建池泄漏
+        AtomicReference<HttpClient> defaultClientRef = new AtomicReference<>();
+        ReentrantLock defaultClientLock = new ReentrantLock();
         Runnable task = () -> {
             HttpClient customClient = customHttpClientSupplier != null ? customHttpClientSupplier.get() : null;
-            HttpClient downloadClient = customClient != null
-                    ? customClient
-                    : (reusableDefaultClient != null
-                            ? reusableDefaultClient
-                            : buildBootstrapDownloadClient(merchantId, serialNumber, keySource, effectiveHttp));
+            HttpClient downloadClient = customClient;
+            if (downloadClient == null) {
+                downloadClient = defaultClientRef.get();
+                if (downloadClient == null) {
+                    defaultClientLock.lock();
+                    try {
+                        downloadClient = defaultClientRef.get();
+                        if (downloadClient == null) {
+                            downloadClient = buildBootstrapDownloadClient(merchantId, serialNumber, keySource, effectiveHttp);
+                            defaultClientRef.set(downloadClient);
+                        }
+                    } finally {
+                        defaultClientLock.unlock();
+                    }
+                }
+            }
 
             CertificateDownloader downloader = new CertificateDownloader.Builder()
                     .downloadUrl(CERT_DOWNLOAD_URL)
@@ -212,10 +224,10 @@ public class WechatAutoCertificateManager implements DisposableBean {
         registerMerchantIfAbsent(merchantId, task);
     }
 
-    private HttpClient buildBootstrapDownloadClient(String merchantId,
-                                                    String serialNumber,
-                                                    String keySource,
-                                                    PayHttpProperties effectiveHttp) {
+    HttpClient buildBootstrapDownloadClient(String merchantId,
+                                            String serialNumber,
+                                            String keySource,
+                                            PayHttpProperties effectiveHttp) {
         PrivateKey privateKey = PayKeyLoader.loadPrivateKey(keySource);
         Credential credential = new WechatPay2Credential(merchantId, new RSASigner(serialNumber, privateKey));
         return new DefaultHttpClientBuilder()

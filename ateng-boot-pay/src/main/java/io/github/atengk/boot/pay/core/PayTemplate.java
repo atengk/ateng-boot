@@ -590,6 +590,10 @@ public class PayTemplate {
                 if (wechatPayTemplate == null) {
                     throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用");
                 }
+                if (Boolean.TRUE.equals(request.getLegacyBatchMode())) {
+                    yield wechatPayTemplate.queryTransferDetail(
+                            request.getMerchantKey(), request.getOutBizNo(), request.getPayFundOrderId());
+                }
                 yield wechatPayTemplate.queryTransfer(request.getMerchantKey(), request.getOutBizNo(), request.getOrderId());
             }
             case ALIPAY -> {

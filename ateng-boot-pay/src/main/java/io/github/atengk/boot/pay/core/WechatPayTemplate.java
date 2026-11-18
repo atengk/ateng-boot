@@ -92,6 +92,9 @@ import io.github.atengk.boot.pay.util.PayKeyLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static io.github.atengk.boot.pay.util.PayTextUtil.firstNonBlankText;
+import static io.github.atengk.boot.pay.util.PayTextUtil.hasText;
+
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.net.URLEncoder;
@@ -161,6 +164,12 @@ public class WechatPayTemplate {
      */
     private volatile HttpClient customHttpClient;
 
+    /**
+     * 实例级动态开关覆写（避免修改共享 PayProperties 单例配置）
+     */
+    private volatile Boolean profitSharingEnabledOverride;
+    private volatile Boolean transferEnabledOverride;
+
     public WechatPayTemplate(NamedMerchantRegistry namedMerchantRegistry,
                              WechatAutoCertificateManager wechatAutoCertificateManager) {
         this(namedMerchantRegistry, wechatAutoCertificateManager, new PayProperties());
@@ -222,15 +231,12 @@ public class WechatPayTemplate {
     }
 
     /**
-     * 动态配置资金分账总开关（主要用于单测切换或受控管理）
+     * 动态配置资金分账总开关（仅作用于当前模板实例，主要用于单测切换或受控管理）
      *
      * @param enabled 是否开启分账功能
      */
     public void setProfitSharingEnabled(boolean enabled) {
-        if (this.payProperties.getProfitSharing() == null) {
-            this.payProperties.setProfitSharing(new PayProfitSharingProperties());
-        }
-        this.payProperties.getProfitSharing().setEnabled(enabled);
+        this.profitSharingEnabledOverride = enabled;
     }
 
     /**
@@ -239,6 +245,9 @@ public class WechatPayTemplate {
      * @return true 开启，false 关闭
      */
     public boolean isProfitSharingEnabled() {
+        if (this.profitSharingEnabledOverride != null) {
+            return this.profitSharingEnabledOverride;
+        }
         return this.payProperties != null && this.payProperties.getProfitSharing() != null && this.payProperties.getProfitSharing().isEnabled();
     }
 
@@ -252,13 +261,10 @@ public class WechatPayTemplate {
     }
 
     /**
-     * 动态设置单笔资金转账开关（主要供单测使用）
+     * 动态设置单笔资金转账开关（仅作用于当前模板实例，主要供单测使用）
      */
     public void setTransferEnabled(boolean enabled) {
-        if (this.payProperties.getTransfer() == null) {
-            this.payProperties.setTransfer(new PayTransferProperties());
-        }
-        this.payProperties.getTransfer().setEnabled(enabled);
+        this.transferEnabledOverride = enabled;
     }
 
     /**
@@ -267,6 +273,9 @@ public class WechatPayTemplate {
      * @return true 开启，false 关闭
      */
     public boolean isTransferEnabled() {
+        if (this.transferEnabledOverride != null) {
+            return this.transferEnabledOverride;
+        }
         return this.payProperties != null && this.payProperties.getTransfer() != null && this.payProperties.getTransfer().isEnabled();
     }
 
@@ -2654,18 +2663,6 @@ public class WechatPayTemplate {
         return URLEncoder.encode(segment, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
-    private static String firstNonBlankText(String... candidates) {
-        if (candidates == null) {
-            return null;
-        }
-        for (String candidate : candidates) {
-            if (candidate != null && !candidate.isBlank()) {
-                return candidate.trim();
-            }
-        }
-        return null;
-    }
-
     /**
      * 微信新版商家转账（/v3/fund-app/mch-transfer/transfer-bills）响应 DTO
      */
@@ -3110,10 +3107,6 @@ public class WechatPayTemplate {
                     "服务商模式下" + operationName + "必须提供特约子商户号 [subMchId]");
         }
         return subMchId.trim();
-    }
-
-    private static boolean hasText(String value) {
-        return value != null && !value.isBlank();
     }
 
     private String resolveAppId(WechatMerchantProperties merchantProps, WechatPayRequest request) {

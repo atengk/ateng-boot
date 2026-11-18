@@ -1300,4 +1300,22 @@ class PayCallbackHandlerTest {
         String sign = AlipaySignature.rsaSign(content, testPrivateKeyPem, "UTF-8", "RSA2");
         params.put("sign", sign);
     }
+
+    @Test
+    @DisplayName("TransferNotifyCallback: toString 对 payeeAccount 执行脱敏掩码且内存中保留原始明文")
+    void testTransferNotifyCallbackToStringMasking() {
+        String rawOpenId = "oUpF8uMuAJO_M2pxb1Q9zNjWeS6o";
+        TransferNotifyCallback callback = TransferNotifyCallback.builder()
+                .channel(io.github.atengk.boot.pay.enums.PayChannel.WECHAT_PAY)
+                .outBizNo("MCH_OUT_MASK_01")
+                .payeeAccount(rawOpenId)
+                .rawPayload(Map.of("secret", "do_not_dump"))
+                .build();
+
+        assertEquals(rawOpenId, callback.getPayeeAccount());
+        String logStr = callback.toString();
+        assertFalse(logStr.contains(rawOpenId), "toString() 严禁输出完整明文收款账号/OpenID");
+        assertFalse(logStr.contains("do_not_dump"), "toString() 不应直接倾泻 rawPayload");
+        assertTrue(logStr.contains("*"));
+    }
 }

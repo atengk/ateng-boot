@@ -1080,6 +1080,23 @@ class PayTemplateTest {
         PayTransferResponse resp2 = payTemplate.queryTransfer(PayChannel.ALIPAY, "alipay_key", "A_001", "ORD_001");
         assertNotNull(resp2);
         assertEquals(PayChannel.ALIPAY, resp2.getChannel());
+
+        PayTransferResponse mockLegacy = PayTransferResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outBizNo("BATCH_LEG_01")
+                .status(PayTransferState.SUCCESS)
+                .build();
+        when(wechatPayTemplate.queryTransferDetail(eq("wechat_key"), eq("BATCH_LEG_01"), eq("DET_LEG_01")))
+                .thenReturn(mockLegacy);
+        PayTransferResponse legacyResp = payTemplate.queryTransfer(UnifiedTransferQueryRequest.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .merchantKey("wechat_key")
+                .outBizNo("BATCH_LEG_01")
+                .payFundOrderId("DET_LEG_01")
+                .legacyBatchMode(Boolean.TRUE)
+                .build());
+        assertEquals("BATCH_LEG_01", legacyResp.getOutBizNo());
+        verify(wechatPayTemplate).queryTransferDetail("wechat_key", "BATCH_LEG_01", "DET_LEG_01");
     }
 
     @Test

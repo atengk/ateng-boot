@@ -3,7 +3,7 @@
 > 工业级企业多渠道专有支付中间件底座 Starter，深度集成腾讯官方权威 `wechatpay-java:0.2.17` 与蚂蚁金服 `alipay-sdk-java:4.40.1044.ALL` 原生 SDK，支持双轨专有独立门面 `WechatPayTemplate` 与 `AlipayTemplate`、顶层轻量统一收单门面 `PayTemplate`、支付宝小程序原生调起、微信新版用户确认模式商家转账与撤销、双渠道资金分账（微信 V3 分账与支付宝交易分账）、微信平台公钥/平台证书灰度双模验签、全通道 `PayHttpProperties` 网络超时治理、线下收银台条码付阶梯轮询与冲正兜底、财务对账单（GZIP 与支付宝双 CSV ZIP）流式解压解析引擎、四模密钥自适应加载、全事件异步 Webhook 网关与防重并发排队锁，以及全域 `BigDecimal` 元契约治理。
 
 - **架构基线**：[ADR-0048 企业级多渠道专有支付中间件底座架构设计](../docs/adr/0048-enterprise-multi-channel-payment-architecture.md)、[ADR-0077 企业级支付底座官方SDK权威对齐与全场景加固架构](../docs/adr/0077-enterprise-pay-official-alignment-and-full-scenario-hardening-architecture.md)、[ADR-0100 支付基础设施样例工程多控制器领域解耦、REST 路由标准化与五维规范重构架构决策](../docs/adr/0100-pay-sample-multi-controller-and-documentation-specification-architecture.md)
-- **研发工单闭环**：[#552](https://github.com/atengk/ateng-boot/issues/552) ~ [#557](https://github.com/atengk/ateng-boot/issues/557)（底座与五维基线初始化）、[#884](https://github.com/atengk/ateng-boot/issues/884) ~ [#886](https://github.com/atengk/ateng-boot/issues/886)（REST 路由与 ADR-0100 重构）、[#1061](https://github.com/atengk/ateng-boot/issues/1061)（Parent 全场景升级）、[#1065](https://github.com/atengk/ateng-boot/issues/1065)（HTTP 超时/支付宝分账/微信新版商家转账/对账单与灰度双轨验签）、[#1066](https://github.com/atengk/ateng-boot/issues/1066)（回调非终态守卫、退款分流、`onOrderClosed` / `onTransferNotify` SPI 扩展与条码撤单安全兜底）、[#1067](https://github.com/atengk/ateng-boot/issues/1067)（Sample 34 端点与 30 项 E2E 回归）、[#1068](https://github.com/atengk/ateng-boot/issues/1068)（五维文档 1:1 源码纠偏与 ADR 演进同步）
+- **研发工单闭环**：[#552](https://github.com/atengk/ateng-boot/issues/552) ~ [#557](https://github.com/atengk/ateng-boot/issues/557)（底座与五维基线初始化）、[#884](https://github.com/atengk/ateng-boot/issues/884) ~ [#886](https://github.com/atengk/ateng-boot/issues/886)（REST 路由与 ADR-0100 重构）、[#1061](https://github.com/atengk/ateng-boot/issues/1061)（Parent 全场景升级）、[#1062](https://github.com/atengk/ateng-boot/issues/1062)（HTTP 超时治理、金额防溢出与微信公钥/自动证书灰度双轨验签）、[#1063](https://github.com/ateng/ateng-boot/issues/1063)（支付宝协议纠偏、账单防 ZIP Bomb 与 `AlipayProfitSharingService` 交易分账扩容）、[#1064](https://github.com/atengk/ateng-boot/issues/1064)（微信新版商家转账主链路升级、撤销与旧版批次显式兼容）、[#1065](https://github.com/atengk/ateng-boot/issues/1065)（条码收银执行闭环、微信撤销指数退避兜底与服务商全链对齐）、[#1066](https://github.com/atengk/ateng-boot/issues/1066)（回调非终态守卫、退款分流、`onOrderClosed` / `onTransferNotify` SPI 扩展与条码撤单安全兜底）、[#1067](https://github.com/atengk/ateng-boot/issues/1067)（Sample 34 端点与 30 项 E2E 回归）、[#1068](https://github.com/atengk/ateng-boot/issues/1068)（五维文档 1:1 源码纠偏与 ADR 演进同步）
 
 ---
 
@@ -18,7 +18,7 @@
 | **统一收单** | 统一未付款订单关闭 | `PayTemplate` | `ateng.boot.pay.enabled` | `closeOrder(UnifiedCloseRequest)` / `closeOrder(PayChannel, String)` / `closeOrder(PayChannel, String, String)` | `PayTemplateTest` / `PaySampleIntegrationTest` |
 | **统一收单** | 统一交易订单撤销/冲正 | `PayTemplate` | `ateng.boot.pay.enabled` | `cancelOrder(UnifiedCancelRequest)` / `cancelOrder(PayChannel, String)` / `cancelOrder(PayChannel, String, String)`，如实透传渠道 `REVOKED`/`CLOSED` 状态 | `PayTemplateTest` / `PaySampleIntegrationTest` |
 | **统一退款** | 统一售后退款发起与查询 | `PayTemplate` | `ateng.boot.pay.enabled` | `refund(UnifiedRefundRequest)`；`queryRefund(UnifiedRefundQueryRequest)` / `queryRefund(PayChannel, String)` / `queryRefund(PayChannel, String, String)` | `PayTemplateTest` / `PaySampleIntegrationTest` |
-| **统一转账** | 统一商家转账发起、查询与撤销 | `PayTemplate` | `ateng.boot.pay.transfer.enabled`<br>`ateng.boot.pay.wechat.default-transfer-scene-id` | `transfer(UnifiedTransferRequest)`（支持 `transferSceneId`、`transferSceneReportInfos`、`legacyBatchMode`、返回 `packageInfo`）；`queryTransfer(...)`；`cancelTransfer(PayChannel, String, String)` | `PayTemplateTest` / `PaySampleIntegrationTest` |
+| **统一转账** | 统一商家转账发起、查询与撤销 | `PayTemplate` | `ateng.boot.pay.transfer.enabled`<br>`ateng.boot.pay.wechat.default-transfer-scene-id` | `transfer(UnifiedTransferRequest)`（支持 `transferSceneId`、`transferSceneReportInfos`、`legacyBatchMode`、返回 `packageInfo`）；`queryTransfer(UnifiedTransferQueryRequest)`（支持 `legacyBatchMode` 旧版批次查询路由）；`cancelTransfer(PayChannel, String, String)` | `PayTemplateTest` / `PaySampleIntegrationTest` |
 | **转账业务** | 单笔资金转账专有服务 | `PayTransferService` | `ateng.boot.pay.transfer.enabled` | `transfer(...)` / `queryTransfer(...)` / `cancelTransfer(...)` / `transferWechat(...)` / `queryWechatTransfer(...)` / `queryWechatTransferBill(...)` / `cancelWechatTransfer(...)` / `transferAlipay(...)` / `queryAlipayTransfer(...)` | `PayTransferServiceTest` / `PaySampleIntegrationTest` |
 | **对账单流** | 财务对账单流式下载与解析 | `PayTemplate` / `PayBillParser` | `ateng.boot.pay.enabled` | `downloadBillStream(PayBillDownloadRequest)`；`parse(InputStream)` 全量解析、`parse(InputStream, Consumer<PayBillEntry>)` 零 OOM 流式消费，支持微信 GZIP 与支付宝双 CSV ZIP | `PayBillParserTest` / `PaySampleIntegrationTest` |
 | **统一逃生舱** | 便捷原生客户端与门面获取 | `PayTemplate` | - | `getWechatClient()`、`getAlipayClient()`、`getWechatPayTemplate()`、`getAlipayTemplate()` | `PayTemplateTest` |
@@ -570,7 +570,7 @@ public Result<PayRefundResponse> queryRefund(@Valid @RequestBody PayRefundQueryD
 }
 ```
 
-- **机制与边界说明**：部分退款要求每次退款的 `outRefundNo` 严格全局唯一（出站支付宝时自动映射为 `out_request_no`），累计退款不得超过 `totalAmount`；支付宝退款查询若官方仅返回 `refund_status=REFUND_SUCCESS` 或仅有 `refund_fee` 均能准确映射至 `PayRefundState.SUCCESS`。
+- **机制与边界说明**：部分退款要求每次退款的 `outRefundNo` 严格全局唯一（出站支付宝时自动映射为 `out_request_no`），累计退款不得超过 `totalAmount`；支付宝退款查询严格校验 `refund_status=REFUND_SUCCESS` 方映射为 `PayRefundState.SUCCESS`，其余状态或缺失 `refund_status`（如仅有 `refund_fee` 但未明确成功）一律映射为 `PayRefundState.PROCESSING`，避免退款中状态被误判成功。
 
 ---
 
@@ -958,7 +958,7 @@ public class CloudKmsCertificateProvider implements PayCertificateProvider {
 
 ### 11.2 HTTP 客户端网络超时前置 Fail-Fast 防线
 
-`PayHttpProperties` 为微信支付与支付宝底层 HTTP 客户端强约束超时时间（`connectTimeout=5s`、`readTimeout=15s`、`writeTimeout=15s`）；任何超时项被错误配置为 `null`、非正时长（`<= 0`）或超出整型毫秒上限时，在加载校验节点直接 Fail-Fast 抛出 `PAY_PARAM_INVALID`（`58010`）。
+`PayHttpProperties` 为微信支付与支付宝底层 HTTP 客户端强约束超时时间（`connectTimeout=5s`、`readTimeout=15s`、`writeTimeout=15s`）；任何超时项被错误配置为 `null`、非正时长（`<= 0`）或超出整型毫秒上限时，在加载校验节点直接 Fail-Fast 抛出 `PAY_PARAM_INVALID`（`58010`）。其中微信 OkHttp 客户端全量消费 `connect`/`read`/`write` 三项超时，支付宝官方 `AlipayConfig` 与对账单 `HttpURLConnection` 原生消费 `connect`/`read` 超时。
 
 ### 11.3 防御性锁释放范式
 
@@ -1015,7 +1015,7 @@ public class CloudKmsCertificateProvider implements PayCertificateProvider {
 | `ateng.boot.pay.alipay.service-provider-mode` | `Boolean` | `false` | 是否开启支付宝服务商（ISV）模式标记 |
 | `ateng.boot.pay.alipay.http.connect-timeout` | `Duration` | `5s` | 支付宝 HTTP 客户端建立连接超时（强类型 `Duration`，必须大于 0） |
 | `ateng.boot.pay.alipay.http.read-timeout` | `Duration` | `15s` | 支付宝 HTTP 客户端读取响应超时（强类型 `Duration`，必须大于 0） |
-| `ateng.boot.pay.alipay.http.write-timeout` | `Duration` | `15s` | 支付宝 HTTP 客户端写入请求超时（强类型 `Duration`，必须大于 0） |
+| `ateng.boot.pay.alipay.http.write-timeout` | `Duration` | `15s` | 支付宝 HTTP 配置写入请求超时校验项（强类型 `Duration`，必须大于 0；官方 `AlipayConfig` 底层仅透传 `connect-timeout` 与 `read-timeout`） |
 | `ateng.boot.pay.alipay.apps.<key>.app-id` | `String` | - | 支付宝开放平台应用 AppID |
 | `ateng.boot.pay.alipay.apps.<key>.private-key` | `String` | - | 支付宝应用私钥纯文本内容 |
 | `ateng.boot.pay.alipay.apps.<key>.private-key-path` | `String` | - | 支付宝应用私钥文件路径（`classpath:` / `file:`） |

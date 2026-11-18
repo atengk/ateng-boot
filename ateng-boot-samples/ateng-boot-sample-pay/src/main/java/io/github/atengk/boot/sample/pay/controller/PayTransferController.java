@@ -88,6 +88,7 @@ public class PayTransferController {
                 .merchantKey(dto.getMerchantKey())
                 .outBizNo(dto.getOutBizNo())
                 .orderId(dto.getOrderId())
+                .legacyBatchMode(dto.getLegacyBatchMode())
                 .build();
 
         PayTransferResponse response = payTemplate.queryTransfer(request);

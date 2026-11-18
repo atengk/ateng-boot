@@ -1,5 +1,6 @@
 package io.github.atengk.boot.pay.model.callback;
 
+import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.pay.enums.PayChannel;
 import io.github.atengk.boot.pay.enums.PayTransferState;
 import lombok.AllArgsConstructor;
@@ -82,4 +83,20 @@ public class TransferNotifyCallback implements Serializable {
      * 渠道原始回调载荷对象
      */
     private Object rawPayload;
+
+    @Override
+    public String toString() {
+        return "TransferNotifyCallback{" +
+                "channel=" + channel +
+                ", merchantKey='" + merchantKey + '\'' +
+                ", outBizNo='" + outBizNo + '\'' +
+                ", orderId='" + orderId + '\'' +
+                ", status=" + status +
+                ", rawStatus='" + rawStatus + '\'' +
+                ", amount=" + amount +
+                ", payeeAccount='" + DesensitizeUtil.maskKeepHeadTail(payeeAccount, 2, 2) + '\'' +
+                ", payTime='" + payTime + '\'' +
+                ", failReason='" + failReason + '\'' +
+                '}';
+    }
 }

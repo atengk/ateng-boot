@@ -34,7 +34,7 @@ public class PayHttpProperties implements Serializable {
     private Duration readTimeout = Duration.ofSeconds(15);
 
     /**
-     * HTTP 写入请求超时时间（默认 15 秒，必须大于 0）
+     * HTTP 写入请求超时时间（默认 15 秒，必须大于 0；参与双渠道前置 Fail-Fast 校验，底层作用于微信 OkHttp 客户端写入阶段，支付宝官方 SDK {@code AlipayConfig} 仅透传连接与读取超时）
      */
     private Duration writeTimeout = Duration.ofSeconds(15);
 

@@ -32,6 +32,7 @@ import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
 import io.github.atengk.boot.pay.model.response.PayTransferResponse;
 import io.github.atengk.boot.pay.util.PayKeyLoader;
+import io.github.atengk.boot.pay.util.PayTextUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeanUtils;
@@ -90,6 +91,12 @@ public class AlipayTemplate {
      */
     private Function<String, InputStream> billStreamDownloader;
 
+    /**
+     * 实例级动态开关覆写（避免修改共享 PayProperties 单例配置）
+     */
+    private volatile Boolean transferEnabledOverride;
+    private volatile Boolean profitSharingEnabledOverride;
+
     public AlipayTemplate(NamedMerchantRegistry namedMerchantRegistry, PayProperties payProperties) {
         this.namedMerchantRegistry = Objects.requireNonNull(namedMerchantRegistry, "NamedMerchantRegistry 不能为空");
         this.payProperties = payProperties != null ? payProperties : new PayProperties();
@@ -100,13 +107,10 @@ public class AlipayTemplate {
     }
 
     /**
-     * 动态设置单笔资金转账开关（主要供单测使用）
+     * 动态设置单笔资金转账开关（仅作用于当前模板实例，主要供单测使用）
      */
     public void setTransferEnabled(boolean enabled) {
-        if (this.payProperties.getTransfer() == null) {
-            this.payProperties.setTransfer(new PayTransferProperties());
-        }
-        this.payProperties.getTransfer().setEnabled(enabled);
+        this.transferEnabledOverride = enabled;
     }
 
     /**
@@ -115,6 +119,9 @@ public class AlipayTemplate {
      * @return true 开启，false 关闭
      */
     public boolean isTransferEnabled() {
+        if (this.transferEnabledOverride != null) {
+            return this.transferEnabledOverride;
+        }
         return this.payProperties != null && this.payProperties.getTransfer() != null && this.payProperties.getTransfer().isEnabled();
     }
 
@@ -128,13 +135,10 @@ public class AlipayTemplate {
     }
 
     /**
-     * 动态设置资金分账开关（与微信共享同一物理配置开关，主要供单测使用）
+     * 动态设置资金分账开关（仅作用于当前模板实例，主要供单测使用）
      */
     public void setProfitSharingEnabled(boolean enabled) {
-        if (this.payProperties.getProfitSharing() == null) {
-            this.payProperties.setProfitSharing(new PayProfitSharingProperties());
-        }
-        this.payProperties.getProfitSharing().setEnabled(enabled);
+        this.profitSharingEnabledOverride = enabled;
     }
 
     /**
@@ -143,6 +147,9 @@ public class AlipayTemplate {
      * @return true 开启，false 关闭
      */
     public boolean isProfitSharingEnabled() {
+        if (this.profitSharingEnabledOverride != null) {
+            return this.profitSharingEnabledOverride;
+        }
         return this.payProperties != null && this.payProperties.getProfitSharing() != null && this.payProperties.getProfitSharing().isEnabled();
     }
 
@@ -1110,13 +1117,13 @@ public class AlipayTemplate {
 
         BigDecimal transAmount = parseTransferDecimal(response.getTransAmount(), "转账金额", response.getCode());
         BigDecimal fee = parseTransferDecimal(response.getOrderFee(), "转账手续费", response.getCode());
-        String failReason = firstNonBlank(
+        String failReason = PayTextUtil.firstNonBlankText(
                 response.getFailReason(),
                 response.getSubOrderFailReason(),
                 response.getFailInstReason(),
                 extractJsonTextField(response.getBody(), "alipay_fund_trans_common_query_response", "fail_reason"),
                 response.getSubMsg());
-        String errorCode = firstNonBlank(
+        String errorCode = PayTextUtil.firstNonBlankText(
                 response.getErrorCode(),
                 response.getSubOrderErrorCode(),
                 response.getFailInstErrorCode(),
@@ -1149,18 +1156,6 @@ public class AlipayTemplate {
             throw new PayTradeException(PayResultCode.PAY_GATEWAY_ERROR,
                     code, "支付宝转账" + fieldDesc + "解析失败: [" + rawValue + "]", e);
         }
-    }
-
-    private static String firstNonBlank(String... candidates) {
-        if (candidates == null) {
-            return null;
-        }
-        for (String candidate : candidates) {
-            if (candidate != null && !candidate.isBlank()) {
-                return candidate;
-            }
-        }
-        return null;
     }
 
     private static String extractJsonTextField(String body, String wrapperNode, String fieldName) {

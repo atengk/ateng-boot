@@ -48,6 +48,7 @@ class AlipayProfitSharingServiceTest {
 
     private MockWebServer server;
     private PrivateKey alipayPrivateKey;
+    private PayProperties props;
     private AlipayTemplate alipayTemplate;
     private AlipayProfitSharingService profitSharingService;
 
@@ -66,7 +67,7 @@ class AlipayProfitSharingServiceTest {
         alipayPrivateKey = alipayKeyPair.getPrivate();
         String alipayPublicKeyPem = Base64.getEncoder().encodeToString(alipayKeyPair.getPublic().getEncoded());
 
-        PayProperties props = new PayProperties();
+        props = new PayProperties();
         AlipayAppProperties isvApp = new AlipayAppProperties();
         isvApp.setAppId("2021000000000501");
         isvApp.setPrivateKey(merchantPrivateKeyPem);
@@ -90,8 +91,9 @@ class AlipayProfitSharingServiceTest {
     }
 
     @Test
-    @DisplayName("物理总开关关闭时调用 AlipayProfitSharingService 立即 Fail-Fast 拦截")
+    @DisplayName("物理总开关关闭时调用 AlipayProfitSharingService 立即 Fail-Fast 拦截且不污染共享 PayProperties")
     void testProfitSharingDisabledFailsFast() {
+        boolean initialSharedState = alipayTemplate.isProfitSharingEnabled();
         alipayTemplate.setProfitSharingEnabled(false);
 
         AlipayTradeRoyaltyRelationBindModel bindModel = new AlipayTradeRoyaltyRelationBindModel();
@@ -102,6 +104,11 @@ class AlipayProfitSharingServiceTest {
         PayException ex2 = assertThrows(PayException.class,
                 () -> profitSharingService.orderSettle(new AlipayTradeOrderSettleModel()));
         assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex2.getResultCode());
+
+        // 验证实例级覆写未修改原始共享 PayProperties 状态
+        alipayTemplate.setProfitSharingEnabled(true);
+        assertFalse(initialSharedState);
+        assertFalse(props.getProfitSharing().isEnabled());
     }
 
     @Test

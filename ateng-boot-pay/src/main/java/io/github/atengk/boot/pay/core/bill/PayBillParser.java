@@ -137,7 +137,8 @@ public class PayBillParser {
     private PayBillSummary parseZipStream(InputStream in, Charset defaultCharset, Consumer<PayBillEntry> consumer) throws IOException {
         Charset charset = defaultCharset != null ? defaultCharset : Charset.forName("GBK");
         PayBillSummary merged = PayBillSummary.builder().build();
-        boolean appliedExplicitSummary = false;
+        PayBillSummary commentFallback = PayBillSummary.builder().build();
+        boolean appliedTableSummary = false;
         long fallbackCount = 0;
         BigDecimal fallbackTotal = BigDecimal.ZERO;
         BigDecimal fallbackSettlement = BigDecimal.ZERO;
@@ -164,10 +165,14 @@ public class PayBillParser {
                 }
                 merged.getRawSummary().putAll(part.getRawSummary());
 
-                if (outcome.hasExplicitSummary()) {
+                if (outcome.hasTableSummary()) {
                     copySummaryMetrics(part, merged);
-                    appliedExplicitSummary = true;
-                } else if (outcome.detailCount() > 0) {
+                    appliedTableSummary = true;
+                } else if (outcome.hasCommentSummary()) {
+                    copySummaryMetrics(part, commentFallback);
+                }
+
+                if (outcome.detailCount() > 0) {
                     fallbackCount += outcome.detailCount();
                     fallbackTotal = fallbackTotal.add(outcome.computedTotalAmount());
                     fallbackSettlement = fallbackSettlement.add(outcome.computedSettlementAmount());
@@ -178,13 +183,24 @@ public class PayBillParser {
             }
         }
 
-        if (!appliedExplicitSummary) {
-            merged.setTotalCount(fallbackCount);
+        if (!appliedTableSummary) {
+            copySummaryMetrics(commentFallback, merged);
+            if (merged.getTotalCount() == null) {
+                merged.setTotalCount(fallbackCount);
+            }
             if (fallbackCount > 0) {
-                merged.setTotalAmount(fallbackTotal);
-                merged.setSettlementAmount(fallbackSettlement);
-                merged.setRefundAmount(fallbackRefund);
-                merged.setServiceFee(fallbackFee);
+                if (merged.getTotalAmount() == null) {
+                    merged.setTotalAmount(fallbackTotal);
+                }
+                if (merged.getSettlementAmount() == null) {
+                    merged.setSettlementAmount(fallbackSettlement);
+                }
+                if (merged.getRefundAmount() == null) {
+                    merged.setRefundAmount(fallbackRefund);
+                }
+                if (merged.getServiceFee() == null) {
+                    merged.setServiceFee(fallbackFee);
+                }
             }
         }
         return merged;
@@ -212,7 +228,26 @@ public class PayBillParser {
      * 核心 CSV 文本流状态机解析逻辑
      */
     private PayBillSummary parseCsvStream(InputStream in, Charset charset, Consumer<PayBillEntry> consumer) throws IOException {
-        return parseCsvStreamWithMeta(in, charset, consumer).summary();
+        CsvParseOutcome outcome = parseCsvStreamWithMeta(in, charset, consumer);
+        PayBillSummary summary = outcome.summary();
+        if (summary.getTotalCount() == null) {
+            summary.setTotalCount(outcome.detailCount());
+        }
+        if (outcome.detailCount() > 0) {
+            if (summary.getTotalAmount() == null) {
+                summary.setTotalAmount(outcome.computedTotalAmount());
+            }
+            if (summary.getSettlementAmount() == null) {
+                summary.setSettlementAmount(outcome.computedSettlementAmount());
+            }
+            if (summary.getRefundAmount() == null) {
+                summary.setRefundAmount(outcome.computedRefundAmount());
+            }
+            if (summary.getServiceFee() == null) {
+                summary.setServiceFee(outcome.computedServiceFee());
+            }
+        }
+        return summary;
     }
 
     private CsvParseOutcome parseCsvStreamWithMeta(InputStream in, Charset charset, Consumer<PayBillEntry> consumer) throws IOException {
@@ -221,7 +256,8 @@ public class PayBillParser {
             Map<String, Integer> summaryHeaderMap = null;
             PayChannel channel = null;
             boolean summaryMode = false;
-            boolean hasExplicitSummary = false;
+            boolean hasTableSummary = false;
+            boolean hasCommentSummary = false;
 
             PayBillSummary summary = PayBillSummary.builder().build();
 
@@ -245,7 +281,7 @@ public class PayBillParser {
                 // 过滤注释与分隔行（如支付宝的 # 业务明细列表、#----------------等）
                 if (line.startsWith("#")) {
                     if (parseCommentSummary(line, summary)) {
-                        hasExplicitSummary = true;
+                        hasCommentSummary = true;
                     }
                     continue;
                 }
@@ -260,7 +296,7 @@ public class PayBillParser {
                 if (summaryMode) {
                     // 汇总数值行
                     parseSummaryDataLine(line, summaryHeaderMap, summary, channel);
-                    hasExplicitSummary = true;
+                    hasTableSummary = true;
                     continue;
                 }
 
@@ -294,31 +330,15 @@ public class PayBillParser {
                 }
             }
 
-            // 汇总保底兜底赋值
-            if (summary.getTotalCount() == null) {
-                summary.setTotalCount(computedCount);
-            }
-            if (summary.getTotalAmount() == null && computedCount > 0) {
-                summary.setTotalAmount(computedTotalAmount);
-            }
-            if (summary.getSettlementAmount() == null && computedCount > 0) {
-                summary.setSettlementAmount(computedSettlementAmount);
-            }
-            if (summary.getRefundAmount() == null && computedCount > 0) {
-                summary.setRefundAmount(computedRefundAmount);
-            }
-            if (summary.getServiceFee() == null && computedCount > 0) {
-                summary.setServiceFee(computedServiceFee);
-            }
-
-            return new CsvParseOutcome(summary, hasExplicitSummary, computedCount,
+            return new CsvParseOutcome(summary, hasTableSummary, hasCommentSummary, computedCount,
                     computedTotalAmount, computedSettlementAmount, computedRefundAmount, computedServiceFee);
         }
     }
 
     private record CsvParseOutcome(
             PayBillSummary summary,
-            boolean hasExplicitSummary,
+            boolean hasTableSummary,
+            boolean hasCommentSummary,
             long detailCount,
             BigDecimal computedTotalAmount,
             BigDecimal computedSettlementAmount,

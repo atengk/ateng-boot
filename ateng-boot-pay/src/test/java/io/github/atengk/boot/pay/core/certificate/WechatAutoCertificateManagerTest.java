@@ -129,4 +129,42 @@ class WechatAutoCertificateManagerTest {
         assertFalse(manager.hasCertificates(merchantId));
         assertThrows(PaySignException.class, () -> manager.getAvailableCertificate(merchantId));
     }
+
+    @Test
+    @DisplayName("registerMerchantIfReady: customHttpClientSupplier 返回 null 时按商户懒加载并复用唯一默认 HttpClient")
+    void testRegisterMerchantIfReadyReusesDefaultHttpClientWhenSupplierReturnsNull() {
+        AtomicInteger buildCount = new AtomicInteger(0);
+        com.wechat.pay.java.core.http.HttpClient sharedMockClient =
+                org.mockito.Mockito.mock(com.wechat.pay.java.core.http.HttpClient.class);
+
+        WechatAutoCertificateManager countingManager = new WechatAutoCertificateManager(Duration.ofMinutes(10)) {
+            @Override
+            com.wechat.pay.java.core.http.HttpClient buildBootstrapDownloadClient(
+                    String merchantId,
+                    String serialNumber,
+                    String keySource,
+                    io.github.atengk.boot.pay.config.properties.PayHttpProperties effectiveHttp) {
+                buildCount.incrementAndGet();
+                return sharedMockClient;
+            }
+        };
+
+        try {
+            var merchant = new io.github.atengk.boot.pay.config.properties.WechatMerchantProperties();
+            merchant.setMchId("1900000199");
+            merchant.setAutoCertificate(true);
+            merchant.setMerchantSerialNumber("SERIAL_199");
+            merchant.setApiV3Key("test_api_v3_key_32_bytes_long!!");
+            merchant.setPrivateKeyPath("classpath:certs/test_private_key.pem");
+
+            // 传入非空 supplier 但实际返回 null（模拟 WechatPayTemplate 生产默认场景）
+            countingManager.registerMerchantIfReady(merchant, null, () -> null);
+            assertThrows(Exception.class, () -> countingManager.refreshCertificate("1900000199"));
+            assertThrows(Exception.class, () -> countingManager.refreshCertificate("1900000199"));
+
+            assertEquals(1, buildCount.get(), "周期轮换与按需刷新必须复用同一个默认 HttpClient，严禁每次重建泄漏");
+        } finally {
+            countingManager.destroy();
+        }
+    }
 }
