@@ -38,8 +38,10 @@ import org.springframework.util.StringUtils;
 
 import java.time.Duration;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -85,6 +87,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     private final Map<FilterKey, Integer> subscribedQosByFilter = new ConcurrentHashMap<>();
     private final Set<String> pausedEndpoints = ConcurrentHashMap.newKeySet();
     private final Set<PendingRetry> pendingRetries = ConcurrentHashMap.newKeySet();
+    private final Map<String, SerialEndpointQueue> serialQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean registryHooksRegistered = new AtomicBoolean(false);
     private final Map<String, MqttClientHandle> boundFallbackHandles = new ConcurrentHashMap<>();
@@ -333,7 +336,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                 if (StringUtils.hasText(endpoint.getSharedGroup()) && isEndpointAssignedToClient(endpoint, handle.getClientName())) {
                     for (MqttTopicPattern pattern : endpoint.getPatterns()) {
                         if (pattern.matchAndExtract(topic) != null) {
-                            submitTrackedTask(doneCallback -> dispatchMessage(endpoint, pattern, topic, message, handle, doneCallback));
+                            submitTrackedTask(endpoint, doneCallback -> dispatchMessage(endpoint, pattern, topic, message, handle, doneCallback));
                             break;
                         }
                     }
@@ -478,7 +481,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             }
             for (MqttTopicPattern pattern : endpoint.getPatterns()) {
                 if (pattern.getSharedMqttFilter(null).equals(filter) && pattern.matchAndExtract(topic) != null) {
-                    submitTrackedTask(doneCallback -> dispatchMessage(endpoint, pattern, topic, message, handle, doneCallback));
+                    submitTrackedTask(endpoint, doneCallback -> dispatchMessage(endpoint, pattern, topic, message, handle, doneCallback));
                     break;
                 }
             }
@@ -1156,8 +1159,9 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                 subscriptionLock.unlock();
             }
 
-            // 2. 第二阶段：主动取消退避等待中的延迟重试任务并补偿释放信号量/在途计数，再排空线程池
+            // 2. 第二阶段：主动取消退避等待中的延迟重试任务、清空单端点串行积压队列并排空线程池
             cancelPendingRetries();
+            drainSerialQueues();
             drainExecutor();
 
             schedulerLock.lock();
@@ -1187,7 +1191,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         }
     }
 
-    private void submitTrackedTask(Consumer<Runnable> taskConsumer) {
+    private void submitTrackedTask(MqttListenerEndpoint endpoint, Consumer<Runnable> taskConsumer) {
         inFlightTasks.incrementAndGet();
         AtomicBoolean completed = new AtomicBoolean(false);
         Runnable doneCallback = () -> {
@@ -1195,6 +1199,15 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                 onTaskCompleted();
             }
         };
+        if (endpoint != null && endpoint.getConcurrency() == 1 && executor != null) {
+            SerialEndpointQueue serialQueue = serialQueues.computeIfAbsent(endpoint.getId(), k -> new SerialEndpointQueue());
+            serialQueue.enqueue(new QueuedDispatchTask(taskConsumer, doneCallback));
+            return;
+        }
+        dispatchToExecutor(taskConsumer, doneCallback);
+    }
+
+    private boolean dispatchToExecutor(Consumer<Runnable> taskConsumer, Runnable doneCallback) {
         Runnable trackedTask = () -> {
             try {
                 taskConsumer.accept(doneCallback);
@@ -1206,12 +1219,135 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         if (executor != null) {
             try {
                 executor.execute(trackedTask);
+                return true;
             } catch (Throwable submitEx) {
                 log.warn("[MQTT] Consumer executor rejected inbound task: {}", submitEx.getMessage());
                 doneCallback.run();
+                return false;
             }
         } else {
             trackedTask.run();
+            return true;
+        }
+    }
+
+    private void drainSerialQueues() {
+        for (SerialEndpointQueue queue : serialQueues.values()) {
+            for (QueuedDispatchTask pending : queue.drainPending()) {
+                pending.doneCallback().run();
+            }
+        }
+    }
+
+    private record QueuedDispatchTask(Consumer<Runnable> taskConsumer, Runnable doneCallback) {
+    }
+
+    private final class SerialEndpointQueue {
+        private final ReentrantLock queueLock = new ReentrantLock();
+        private final Deque<QueuedDispatchTask> pendingQueue = new ArrayDeque<>();
+        private boolean active = false;
+
+        void enqueue(QueuedDispatchTask task) {
+            if (!running.get()) {
+                task.doneCallback().run();
+                return;
+            }
+            boolean startNow = false;
+            queueLock.lock();
+            try {
+                if (!running.get()) {
+                    startNow = false;
+                } else if (!active) {
+                    active = true;
+                    startNow = true;
+                } else {
+                    pendingQueue.addLast(task);
+                    return;
+                }
+            } finally {
+                queueLock.unlock();
+            }
+            if (startNow) {
+                runSequentially(task);
+            } else {
+                task.doneCallback().run();
+            }
+        }
+
+        private void runSequentially(QueuedDispatchTask initialTask) {
+            QueuedDispatchTask current = initialTask;
+            while (current != null) {
+                final QueuedDispatchTask taskToRun = current;
+                final AtomicBoolean advanced = new AtomicBoolean(false);
+                final boolean[] syncFailed = new boolean[]{false};
+                Runnable chainedDone = () -> {
+                    if (advanced.compareAndSet(false, true)) {
+                        try {
+                            taskToRun.doneCallback().run();
+                        } finally {
+                            // 若当前处于同步拒绝路径，交由外层循环迭代推进避免递归栈深化
+                            if (!syncFailed[0]) {
+                                QueuedDispatchTask next = pollNextLocked();
+                                if (next != null) {
+                                    runSequentially(next);
+                                }
+                            }
+                        }
+                    }
+                };
+                // 若 executor 拒绝提交（返回 false），标记 syncFailed 让当前栈帧直接迭代推进下一条
+                if (executor != null) {
+                    Runnable trackedTask = () -> {
+                        try {
+                            taskToRun.taskConsumer().accept(chainedDone);
+                        } catch (Throwable ex) {
+                            chainedDone.run();
+                            throw ex;
+                        }
+                    };
+                    try {
+                        executor.execute(trackedTask);
+                        return;
+                    } catch (Throwable submitEx) {
+                        log.warn("[MQTT] Consumer executor rejected serial endpoint task: {}", submitEx.getMessage());
+                        syncFailed[0] = true;
+                        chainedDone.run();
+                        current = pollNextLocked();
+                    }
+                } else {
+                    dispatchToExecutor(taskToRun.taskConsumer(), chainedDone);
+                    return;
+                }
+            }
+        }
+
+        private QueuedDispatchTask pollNextLocked() {
+            queueLock.lock();
+            try {
+                QueuedDispatchTask next = running.get() ? pendingQueue.pollFirst() : null;
+                if (next == null) {
+                    active = false;
+                }
+                return next;
+            } finally {
+                queueLock.unlock();
+            }
+        }
+
+        List<QueuedDispatchTask> drainPending() {
+            queueLock.lock();
+            try {
+                if (pendingQueue.isEmpty()) {
+                    active = false;
+                    return Collections.emptyList();
+                }
+                List<QueuedDispatchTask> drained = new ArrayList<>(pendingQueue);
+                pendingQueue.clear();
+                active = false;
+                return drained;
+            } finally {
+                queueLock.unlock();
+            }
         }
     }
 

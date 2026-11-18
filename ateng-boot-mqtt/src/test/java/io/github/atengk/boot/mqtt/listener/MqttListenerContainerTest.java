@@ -931,4 +931,46 @@ class MqttListenerContainerTest {
             testExec.shutdown();
         }
     }
+
+    static class StrictBurstOrderBean {
+        final List<String> received = new CopyOnWriteArrayList<>();
+        final CountDownLatch done = new CountDownLatch(20);
+
+        @MqttListener(topics = "order/burst/fifo", qos = 1, concurrency = 1)
+        public void onMessage(String payload) {
+            received.add(payload);
+            done.countDown();
+        }
+    }
+
+    @Test
+    @DisplayName("并发度为 1 的端点在多线程执行器下连发报文应严格保持到达 FIFO 顺序")
+    void shouldPreserveStrictFifoOrderForConcurrencyOneUnderMultiThreadedExecutor() throws Exception {
+        ThreadPoolTaskExecutor multiExec = new ThreadPoolTaskExecutor();
+        multiExec.setCorePoolSize(8);
+        multiExec.setMaxPoolSize(16);
+        multiExec.setThreadNamePrefix("ateng-fifo-burst-");
+        multiExec.initialize();
+
+        MqttListenerEndpointRegistry fifoRegistry = new MqttListenerEndpointRegistry(
+                clientRegistry, new PayloadGuard(), multiExec);
+        StrictBurstOrderBean orderBean = new StrictBurstOrderBean();
+        new MqttListenerAnnotationBeanPostProcessor(fifoRegistry)
+                .postProcessAfterInitialization(orderBean, "strictBurstOrderBean");
+        fifoRegistry.start();
+
+        try {
+            List<String> expected = new java.util.ArrayList<>(20);
+            for (int i = 0; i < 20; i++) {
+                String msg = "seq-" + i;
+                expected.add(msg);
+                mqttTemplate.publish("order/burst/fifo", msg, 1);
+            }
+            assertThat(orderBean.done.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(orderBean.received).containsExactlyElementsOf(expected);
+        } finally {
+            fifoRegistry.stop();
+            multiExec.shutdown();
+        }
+    }
 }
