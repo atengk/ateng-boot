@@ -2,7 +2,7 @@
 
 ## 背景与痛点
 
-在 [ADR-0048](./0048-enterprise-multi-channel-payment-architecture.md) 与 [ADR-0077](./0077-enterprise-pay-official-alignment-and-full-scenario-hardening-architecture.md) 中，框架确立了 `ateng-boot-pay` 作为面向企业电商收单、SaaS 订阅缴费、政企在线服务及资金清结算的专有支付基础设施，深度集成了腾讯官方权威 `wechatpay-java:0.2.17` 与蚂蚁金服 `alipay-sdk-java:4.40.1044.ALL` 原生 SDK，支持双规专有独立门面与顶层轻量统一收单门面。
+在 [ADR-0048](./0048-enterprise-multi-channel-payment-architecture.md) 与 [ADR-0077](./0077-enterprise-pay-official-alignment-and-full-scenario-hardening-architecture.md) 中，框架确立了 `ateng-boot-pay` 作为面向企业电商收单、SaaS 订阅缴费、政企在线服务及资金清结算的专有支付基础设施，深度集成了腾讯官方权威 `wechatpay-java:0.2.17` 与蚂蚁金服 `alipay-sdk-java:4.40.1044.ALL` 原生 SDK，支持双轨专有独立门面与顶层轻量统一收单门面。
 
 然而，随着全框架标准化治理的演进以及《工业级文档与样例工程标准规范》（[`docs/agents/documentation-specification.md`](../agents/documentation-specification.md)）的确立，既有样例与文档工程暴露出以下严重的结构性缺陷与规范断层：
 
@@ -32,7 +32,7 @@ flowchart TD
         RefundCtrl["PayRefundController (/sample/pay/refund/*)\n- 售后退款发起 (apply) / 退款状态与流水进度主动查询 (query)"]
         TransferCtrl["PayTransferController (/sample/pay/transfer/*)\n- 商家转账到微信零钱与支付宝单笔转账 (apply) / 转账状态查询 (query)"]
         ProfitSharingCtrl["PayProfitSharingController (/sample/pay/profit-sharing/*)\n- 微信资金分账接收方绑定 (receivers/add) / 在途剩余资金完结解冻 (unfreeze)"]
-        BillCtrl["PayBillController (/sample/pay/bill/*)\n- 财务对账单流式全量内存解析 (parse-memory) / 常驻 O(1) 零 OOM 流式逐行对账消费 (stream-reconcile)"]
+        BillCtrl["PayBillController (/sample/pay/bill/*)\n- 财务对账单流式全量内存解析 (parse-memory) / 常驻 O(1) 零 OOM 流式逐行对账消费 (stream-consume)"]
     end
 
     subgraph DocSpec["2. 1:1 逆向交付五维生产就绪文档与四段式极简体验卡"]
@@ -117,3 +117,21 @@ flowchart TD
 | **10. 单测全自洽三铁律** | ✅ 通过 | 纯内存 MockWebServer 仿真，上下文严格清理，默认模式 100% 离线自洽 |
 | **11. 远程服务双模真实验证** | ✅ 通过 | 内置 `@Profile("!local")` 仿真桩与 `application-local.example.yml` 模板，CI 与脱机环境零公网依赖 |
 | **12. 传输契约绝对解耦** | ✅ 通过 | Controller 传输边界 100% 杜绝直接接收或返回持久层实体，统一使用 DTO 与 `Result<T>` |
+
+---
+
+## 增量演进（2026-11）：双渠道分账与新版转账端到端拓展、5D 文档纠偏归零 (#1067 / #1068)
+
+基于 #1065 与 #1066 核心协议增强，对 `ateng-boot-sample-pay` 与五维文档完成以下闭环演进：
+
+1. **样例控制器端点与 DTO 矩阵全面扩充（18 -> 34 组端点，16 个强类型 DTO）**：
+   - `PayBarcodeController` 新增 `POST /sample/pay/barcode/cancel` 演示双渠道主动撤销结果如实透传；
+   - `PayTransferController` 升级 `/apply` 支持 `transferSceneId`、`PayTransferSceneReportInfoDTO` 与 `legacyBatchMode`，并新增 `POST /sample/pay/transfer/cancel`；
+   - `PayProfitSharingController` 保留既有微信接口兼容性同时补全微信 9 步分账闭环（账号日志经 `DesensitizeUtil.maskKeepHeadTail` 脱敏、枚举经 `parseEnum` 安全转译），并新增 7 组 `/alipay/*` 前置冻结收单与分账端点；
+   - `PayBillController` 统一提取 `buildDownloadRequest` 支持服务商 `subMchid`/`smid` 透传；
+   - `OrderPaymentCallbackListener` 扩展实现幂等 `onOrderClosed` 与 `onTransferNotify`。
+2. **集成测试回归升级（22 -> 30 项全真用例）**：
+   - `PaySampleIntegrationTest` 补齐 23~30 号端到端用例，覆盖双渠道撤销、微信新版商家转账+`MockWebServer` 密文/请求头断言、微信与支付宝完整分账（含 ISV `app_auth_token` 透传）、支付宝标准 2-CSV GBK ZIP 账单流式解析、关单/转账 SPI 幂等、灰度双轨双验签、非终态防重放与 `MCHTRANSFER.BILL.FINISHED` Webhook 全链回归。
+3. **五维 Starter 文档 1:1 源码对校与纠偏**：
+   - 彻底肃清原 `ateng-boot-pay/README.md` 与真实源码不一致的标识符与默认值：修正 `PayResultCode` 号段 `58001~58013`（原错将 `PAY_PARAM_INVALID` 标为 `58001`）、修正 `PayTradeType`（移除不存在的 `WAP`，明确 `AlipayTemplate.payWap` 为专有方法）、补全 `PayTransferState` 7 态、修正 `BarcodePayProperties.pollInterval` 默认值（`3s`）、修正 `PayProperties`/`WechatPayProperties`/`AlipayPayProperties`/`WechatMerchantProperties.autoCertificate` 默认开关值（均为 `true`）、修正静态公钥属性键 `wechat-pay-public-key` 与对账单获取方法 `AlipayTemplate.queryBillDownloadUrl`、修正时序图参数类型 `PaymentSuccessCallback`；
+   - 将第 7 章升级为“双渠道资金分账套件”，第 0 章与第 12 章配置字典 100% 对齐现有核心代码与全绿样例。

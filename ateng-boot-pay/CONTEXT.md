@@ -1,6 +1,6 @@
 # Pay 企业级专有多渠道支付与资金底座
 
-面向企业电商收单、SaaS 订阅缴费、政企在线服务及资金清结算的专有支付基础设施，基于微信支付 V3 与支付宝官方权威 SDK 构建，提供双规专有独立门面、顶层轻量统一收单门面、四模自适应证书加载、微信平台证书自动轮换、自动化 Webhook 验签解密、双轨分布式防重锁与全域 BigDecimal 元契约治理。
+面向企业电商收单、SaaS 订阅缴费、政企在线服务及资金清结算的专有支付基础设施，基于微信支付 V3 与支付宝官方权威 SDK 构建，提供双轨专有独立门面、顶层轻量统一收单门面、四模自适应证书加载、微信平台证书自动轮换、自动化 Webhook 验签解密、双轨分布式防重锁与全域 BigDecimal 元契约治理。
 
 ## Language
 
@@ -29,7 +29,7 @@ _Avoid_: 退款ID, 售后单号, refundOrderId
 _Avoid_: 平台退款单号, 退款凭据
 
 **Pay Trade Type (交易场景类型)**:
-第三方支付平台定义的标准化收单交互终端场景枚举（NATIVE, JSAPI, H5, APP, BARCODE）。
+第三方支付平台定义的标准化收单交互终端场景枚举（NATIVE, JSAPI, H5, APP, BARCODE, PAGE）。
 _Avoid_: 支付终端, 支付途径, 交易模式, SceneType
 
 **Pay Trade State (交易状态机)**:
@@ -183,3 +183,7 @@ _Avoid_: 打款通知, 提现回调, BatchTransferCallback
 **Order Closed Callback (订单关闭异步回调事件)**:
 由渠道明确通知交易已关闭或已撤销（如微信 `CLOSED`/`REVOKED`、无退款语义的支付宝 `TRADE_CLOSED`）且经终态守卫分流至 `onOrderClosed` 的标准化关单回调事件。
 _Avoid_: 取消通知, 超时事件, CloseNotifyDTO
+
+**Pay HTTP Properties (全通道网络超时配置)**:
+统一纳管微信支付与支付宝底层 HTTP 客户端连接、读取与写入超时时长（`Duration`）的强类型配置对象，执行非正数与整型毫秒溢出前置 Fail-Fast 防卫。
+_Avoid_: HttpTimeoutConfig, NetTimeoutProps, 连接池参数

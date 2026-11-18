@@ -76,9 +76,9 @@ flowchart TD
 
 ## 关键架构设计与不变量 (The Architectural Invariants)
 
-### 1. 官方权威 SDK 内核驱动与双规专有门面为主 (`WechatPayTemplate` & `AlipayTemplate`)
+### 1. 官方权威 SDK 内核驱动与双轨专有门面为主 (`WechatPayTemplate` & `AlipayTemplate`)
 - **官方权威基线**：微信端引入腾讯官方权威 `com.github.wechatpay-apiv3:wechatpay-java:0.2.17`，支付宝端引入官方权威 `com.alipay.sdk:alipay-sdk-java:4.40.1044.ALL`，坚决杜绝第三方“二手包装库”的依赖膨胀与更新滞后。
-- **双规专有独立门面**：
+- **双轨专有独立门面**：
   - `WechatPayTemplate`：专职提供微信 100% 原生体验，涵盖 Native、JSAPI、H5、App、条码付（付款码被扫）、订单查询、关单、退款、退款查询、申请交易对账单、添加分账接收方、请求分账、解冻分账、商家转账到零钱等全套能力；
   - `AlipayTemplate`：专职提供支付宝 100% 原生体验，涵盖电脑网站支付（Page）、手机网站支付（Wap）、App 支付、当面付条码与扫码、统一收单交易查询、关闭、撤销（Cancel）、统一退款、退款查询、对账单下载、单笔转账到支付宝账户等全套能力；
   - 保留 `getWechatClient()` 与 `getAlipayClient()` 逃生舱，调用方可随时获取底层原生客户端执行罕见或定制化 API。
@@ -103,7 +103,7 @@ flowchart TD
   - 同时支持直接配置“微信平台公钥（WechatPay Public Key）”与公钥 ID 的静态模式。
 
 ### 4. 命名多商户注册表与服务商/特约子商户模式 (`ISV / Partner Mode`)
-- **直连与服务商双规支持**：
+- **直连与服务商双轨支持**：
   - 配置层支持 `service-provider-mode: true` 标记；
   - 微信支持服务商核心字段：`spMchId`（服务商商户号）、`spAppId`（服务商 AppId）、`subMchId`（特约商户号）、`subAppId`（子商户 AppId，可选）；专有门面底层自动根据服务商属性无缝切换服务商专属 API 端点；
   - 支付宝支持 ISV 模式：入参支持 `appAuthToken`（第三方应用授权令牌），底层自动在出站请求中注入，代表特约商家调用接口并分佣；
@@ -184,3 +184,27 @@ flowchart TD
 ### 妥协与成本
 1. **依赖体积增量**：官方 SDK 自身包含部分依赖（如 bcprov、fastjson 或 okhttp），需要在 `ateng-boot-bom` 中对传递依赖执行严格的版本统管与排他性对齐，杜绝类路径版本冲突。
 2. **多商户证书内存占用**：自动轮换微信平台证书需要在内存中维护定时器与证书缓存，通过限定刷新周期（默认 24 小时）与 LRU 机制确保内存开销完全可控。
+
+---
+
+## 增量演进（2026-11）：协议全量对齐、双渠道分账与安全边界加固 (#1061 / #1065 / #1066)
+
+随着微信支付 V3 官方接口与支付宝分账协议演进，在保持 `PayTemplate` 与专有门面向后兼容的前提下，于 2026-11 完成以下核心能力增量加固：
+
+1. **全通道网络 HTTP 超时与前置防卫 (`PayHttpProperties`)**：
+   - 为 `ateng.boot.pay.wechat.http` 与 `ateng.boot.pay.alipay.http` 统一装配强类型 `PayHttpProperties`（默认 `connectTimeout = 5s`、`readTimeout = 15s`、`writeTimeout = 15s`），并执行 `toTimeoutMillis` 非正数与整型溢出 Fail-Fast 校验，消除底层 HTTP 客户端无界悬挂风险。
+2. **微信新版“用户确认模式”商家转账全面主链切换**：
+   - 新版 `WechatPayTemplate` 默认切换至微信 V3 `/v3/fund-app/mch-transfer/transfer-bills`，通过 `WechatPayProperties.defaultTransferSceneId`（默认 `"1000"`）、`TransferSceneReportInfo` 与 `PayTransferResponse.packageInfo` 完整支撑用户微信内确认收款与 `WAIT_USER_CONFIRM` 状态，同时支持 `PayTemplate.cancelTransfer` / `PayTransferService.cancelTransfer` 主动撤销（`CANCELLED`）及显式 `legacyBatchMode = true` 向后兼容旧版批次转账。
+3. **支付宝交易分账门面与前置冻结收单 (`AlipayProfitSharingService`)**：
+   - 与 `WechatProfitSharingService` 共享高敏物理开关 `ateng.boot.pay.profit-sharing.enabled=true`，封装支付宝分账关系绑定/解绑/批量查询（`bindRelation`/`unbindRelation`/`batchQueryRelation`）、结算确认（`confirmSettle`）、订单分账结算与查询（`orderSettle`/`queryOrderSettle`），并打通 `AlipayPayRequest.royaltyFreeze` 前置分账冻结（`extend_params.royalty_freeze=true`）与 ISV `app_auth_token` 全链透传。
+4. **微信公钥灰度双轨验签与条码付反向撤销安全兜底**：
+   - 当微信商户同时开启静态公钥与 `autoCertificate = true` 时，`PayCallbackHandler` 支持在公钥与已注册平台证书之间灰度双轨兼容验签（纯公钥模式拒绝旧平台证书序列号）；
+   - `WechatPayProperties.ReverseFallbackProperties` 新增受控安全兜底（默认关闭 `enabled = false`、`paidPolicy = REJECT`，支持配置 `AUTO_REFUND`）。
+5. **Webhook 严格非终态拦截、支付宝退款分流与双模全事件 SPI (`PayCallbackListener`)**：
+   - `PayCallbackHandler` 严守支付入账防线：微信 `NOTPAY`/`PAYERROR` 与支付宝 `WAIT_BUYER_PAY` 等非成功态静默返回 ACK 而绝不触发 `onPaymentSuccess`；微信 `CLOSED`/`REVOKED` 与未带退款金额的支付宝 `TRADE_CLOSED` 自动路由至 `OrderClosedCallback`（`onOrderClosed`），微信 `MCHTRANSFER.BILL.FINISHED` 自动验签解密并路由至 `TransferNotifyCallback`（`onTransferNotify`）；支付宝异步通知以 `refund_fee` 是否存在精准分流退款回调与交易状态回调。
+6. **对账单双 CSV ZIP 顺序无关解析 (`PayBillParser`)**：
+   - 修复支付宝 ZIP 多条目（明细 CSV + 汇总 CSV）解析逻辑，支持明细条目与 `(汇总).csv` 条目在任意压缩顺序下全量解析并合并汇总指标。
+
+### 后续演进 Roadmap（预授权与合单支付规划）
+- **资金预授权 (Pre-Authorization)**：后续按冻结-扣款/解冻异步结算模型扩展支付宝预授权与微信押金分阶段门面；
+- **微信合单支付 (Combine Pay)**：针对平台跨多子商户购物车合并下单场景，后续按独立聚合请求/子单模型演进而不破坏现有单笔收单抽象。
