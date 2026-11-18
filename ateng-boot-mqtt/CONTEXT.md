@@ -80,5 +80,56 @@ _Avoid_: 状态回调, 物理钩子, 连通通知
 在报文发布与消费生命周期前后执行统一横切逻辑（审计打点、加解密、动态脱敏）的扩展点 SPI。
 _Avoid_: 消息过滤器, 传输切面, 管道钩子
 
+**Dead Letter Store (死信存储)**:
+负责持久化或有界缓存已转移的死信记录以支撑可靠只读探查、受控重放与确定性清空的可插拔存储 SPI，规避 Broker 保留消息单槽覆盖丢信问题。
+_Avoid_: 死信缓存池, 异常记录库
+
+**Offline Buffer Policy (断线缓冲策略)**:
+决定客户端在断线重连期间对出站发布请求采取本地离线缓冲补发还是快速失败的治理策略。
+_Avoid_: 断网队列策略, 离线降级开关
+
+**Will Delay Interval (遗嘱延迟间隔)**:
+MQTT 5.0 协议原生属性，在客户端异常掉线后延迟指定时长再由 Broker 广播遗嘱消息，从而屏蔽短暂网络抖动触发的虚假离线告警。
+_Avoid_: 遗嘱冷却期, 掉线防抖时间
+
+**Subscription Options (订阅选项)**:
+MQTT 5.0 协议原生的主题订阅控制参数组合，涵盖防回环 `noLocal`、保留标志透传 `retainAsPublished` 与初始保留报文投递策略 `retainHandling`。
+_Avoid_: 订阅标志位, 消费过滤开关
+
+**Credentials Provider (动态凭据供给器)**:
+在客户端建连及断线重连阶段按需动态提供或刷新认证凭据（如 IoT 设备签名或短效 JWT 令牌）的扩展点 SPI。
+_Avoid_: 静态密码刷新器, 鉴权回调
+
+**Ack Mode (消费确认模式)**:
+控制监听器何时向 Broker 提交消费确认（`AUTO_AFTER_CONSUME` 消费及重试闭环后自动确认，`MANUAL` 交由业务显式触发）的可靠性契约。
+_Avoid_: 提交策略, 自动应答开关
+
+**MQTT Acknowledgment (手动确认句柄)**:
+在 `MANUAL` 确认模式下注入监听方法形参的显式确认控制契约，提供 `ack`、`nackToDlt` 与 `abandonWithoutAck` 三态语义。
+_Avoid_: 消息回执器, 手动提交器
+
+**Declarative Reply (声明式应答)**:
+在请求-响应模式下，监听方法通过非空返回值（含异步 `CompletableFuture`）或可选 `@MqttReply` 自动向入站 `ResponseTopic` 回发携带 `CorrelationData` 应答的交互范式。
+_Avoid_: 注解回传, 自动回调发送
+
+**Consumer Retry Policy (消费退避重试策略)**:
+针对监听端可恢复瞬态异常执行受管非阻塞指数退避重试，并在耗尽后转入死信或按策略确认的容错契约。
+_Avoid_: 无限重推, 死循环重试
+
+**Topic Pattern Cardinality Guard (主题标签基数防线)**:
+在度量采集中强制使用有限基数声明式主题模板并默认屏蔽高基数物理主题标签的防 OOM 治理机制。
+_Avoid_: 指标过滤开关, 标签裁剪器
+
+**Client-Scoped Template (客户端绑定视图)**:
+通过 `MqttTemplate.use(clientName)` 派生的不可变命名客户端操作视图，显式锁定目标 Broker 路由且优先级高于线程级上下文绑定。
+_Avoid_: MqttClientWrapper, MqttClientTemplate, 客户端代理类
+
+**Dynamic Client Lifecycle (动态客户端热插拔)**:
+基于 `NamedMqttClientRegistry` 在运行期安全注册、替换与注销命名客户端并联动解除订阅与清理度量资源的对称治理能力。
+_Avoid_: 客户端池热重载, 临时连接池
+
+
+
+
 
 

@@ -2,6 +2,8 @@ package io.github.atengk.boot.mqtt.autoconfigure;
 
 import io.github.atengk.boot.mqtt.actuator.MqttHealthIndicator;
 import io.github.atengk.boot.mqtt.codec.CompositeMqttMessageConverter;
+import io.github.atengk.boot.mqtt.credentials.MqttCredentials;
+import io.github.atengk.boot.mqtt.credentials.MqttCredentialsProvider;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.listener.MqttConnectionEventDispatcher;
@@ -20,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -43,6 +46,8 @@ class AtengMqttAutoConfigurationTest {
             assertThat(context).hasSingleBean(MqttSendFailureHandler.class);
             assertThat(context).hasSingleBean(CompositeMqttMessageConverter.class);
             assertThat(context).hasSingleBean(ThreadPoolTaskExecutor.class);
+            assertThat(context).hasSingleBean(ThreadPoolTaskScheduler.class);
+            assertThat(context).hasBean("mqttTaskScheduler");
             assertThat(context).hasSingleBean(MqttRequestReplyManager.class);
             assertThat(context).hasSingleBean(MqttTemplate.class);
             assertThat(context).hasSingleBean(MqttDeadLetterReplayTemplate.class);
@@ -102,5 +107,36 @@ class AtengMqttAutoConfigurationTest {
                     MqttListenerEndpointRegistry registry = context.getBean(MqttListenerEndpointRegistry.class);
                     assertThat(registry.getMaxReplayCount()).isEqualTo(3);
                 });
+    }
+
+    @Test
+    @DisplayName("测试 MqttCredentialsProvider 自定义 Bean 自动装配注入")
+    void testCredentialsProviderBeanAutoConfiguration() {
+        MqttCredentialsProvider customProvider = (clientName, props, reconnect) ->
+                MqttCredentials.of("spi-user", "spi-secret");
+        contextRunner.withBean(MqttCredentialsProvider.class, () -> customProvider)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MqttCredentialsProvider.class);
+                    assertThat(context).hasSingleBean(NamedMqttClientRegistry.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试自定义 ThreadPoolTaskScheduler Bean 复用：任意名称的调度器均优先复用而不重复创建 mqttTaskScheduler")
+    void testCustomThreadPoolTaskSchedulerReuse() {
+        ThreadPoolTaskScheduler customScheduler = new ThreadPoolTaskScheduler();
+        customScheduler.setPoolSize(1);
+        customScheduler.setThreadNamePrefix("custom-app-scheduler-");
+        customScheduler.initialize();
+        try {
+            contextRunner.withBean("customAppScheduler", ThreadPoolTaskScheduler.class, () -> customScheduler)
+                    .run(context -> {
+                        assertThat(context).hasSingleBean(ThreadPoolTaskScheduler.class);
+                        assertThat(context).doesNotHaveBean("mqttTaskScheduler");
+                        assertThat(context).hasSingleBean(MqttRequestReplyManager.class);
+                    });
+        } finally {
+            customScheduler.shutdown();
+        }
     }
 }

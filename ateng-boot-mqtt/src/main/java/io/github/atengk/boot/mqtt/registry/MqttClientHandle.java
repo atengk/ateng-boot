@@ -36,6 +36,15 @@ public class MqttClientHandle {
     private volatile IMqttMessageListener fallbackMessageListener;
     private final List<BiConsumer<Boolean, String>> connectCompleteListeners = new CopyOnWriteArrayList<>();
     private final AtomicBoolean disconnectedPublished = new AtomicBoolean(false);
+    private volatile boolean closing = false;
+
+    public void markClosing() {
+        this.closing = true;
+    }
+
+    public boolean isClosing() {
+        return closing;
+    }
 
     public boolean markDisconnected() {
         return disconnectedPublished.compareAndSet(false, true);
@@ -236,7 +245,7 @@ public class MqttClientHandle {
         details.put("connected", connected);
         details.put("clientId", actualClientId);
         if (clientProperties != null) {
-            details.put("serverUri", clientProperties.getServerUri());
+            details.put("serverUri", clientProperties.resolvePrimaryServerUri());
             details.put("automaticReconnect", clientProperties.isAutomaticReconnect());
             details.put("protocolVersion", clientProperties.getProtocolVersion());
         }

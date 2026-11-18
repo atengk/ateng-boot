@@ -1,9 +1,14 @@
 package io.github.atengk.boot.mqtt.properties;
 
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
+import org.springframework.util.StringUtils;
 import org.springframework.util.unit.DataSize;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 单个 MQTT 客户端连接配置属性
@@ -17,6 +22,16 @@ public class MqttClientProperties {
      * Broker 连接地址（支持 tcp://, ssl://, ws://, wss://）
      */
     private String serverUri = "tcp://127.0.0.1:1883";
+
+    /**
+     * 多 Broker 集群高可用故障转移地址列表（优先使用该列表，未配置时回退至 serverUri）
+     */
+    private List<String> serverUris = new ArrayList<>();
+
+    /**
+     * WebSocket 握手自定义 HTTP 请求头（适用于 ws:// 或 wss:// 协议携带鉴权或租户头）
+     */
+    private Map<String, String> webSocketHeaders = new LinkedHashMap<>();
 
     /**
      * 客户端逻辑标识前缀
@@ -136,6 +151,55 @@ public class MqttClientProperties {
 
     public void setServerUri(String serverUri) {
         this.serverUri = serverUri;
+    }
+
+    public List<String> getServerUris() {
+        return serverUris;
+    }
+
+    public void setServerUris(List<String> serverUris) {
+        this.serverUris = serverUris != null ? serverUris : new ArrayList<>();
+    }
+
+    public Map<String, String> getWebSocketHeaders() {
+        return webSocketHeaders;
+    }
+
+    public void setWebSocketHeaders(Map<String, String> webSocketHeaders) {
+        this.webSocketHeaders = webSocketHeaders != null ? webSocketHeaders : new LinkedHashMap<>();
+    }
+
+    /**
+     * 解析有效的 Broker 地址有序列表（优先使用 serverUris，为空时回退至 serverUri）
+     *
+     * @return 非空 Broker 地址数组
+     */
+    public String[] resolveServerUris() {
+        List<String> resolved = new ArrayList<>();
+        if (serverUris != null) {
+            for (String uri : serverUris) {
+                if (StringUtils.hasText(uri)) {
+                    String trimmed = uri.trim();
+                    if (!resolved.contains(trimmed)) {
+                        resolved.add(trimmed);
+                    }
+                }
+            }
+        }
+        if (resolved.isEmpty() && StringUtils.hasText(serverUri)) {
+            resolved.add(serverUri.trim());
+        }
+        return resolved.toArray(new String[0]);
+    }
+
+    /**
+     * 解析首要 Broker 连接地址
+     *
+     * @return 首要连接地址
+     */
+    public String resolvePrimaryServerUri() {
+        String[] uris = resolveServerUris();
+        return uris.length > 0 ? uris[0] : serverUri;
     }
 
     public String getClientId() {

@@ -363,4 +363,79 @@ class MqttListenerContainerTest {
         Thread.sleep(300);
         assertThat(listenerBean.receivedWildcard).contains("HEALED_TEMP_28");
     }
+
+    static class SlowDrainListenerBean {
+        final CountDownLatch started = new CountDownLatch(1);
+        final AtomicBoolean finished = new AtomicBoolean(false);
+
+        @MqttListener(topics = "drain/virtual/test", qos = 1)
+        public void onSlowMessage(String payload) throws InterruptedException {
+            started.countDown();
+            Thread.sleep(250);
+            finished.set(true);
+        }
+    }
+
+    @Test
+    @DisplayName("执行器无关停机排空：SimpleAsyncTaskExecutor 虚拟线程执行器下 stop() 仍阻塞等待在途任务完成")
+    void shouldDrainInFlightTasksWithSimpleAsyncTaskExecutor() throws Exception {
+        AtengMqttProperties props = new AtengMqttProperties();
+        props.setDefaultClient("drain");
+        MqttClientProperties clientProps = new MqttClientProperties();
+        clientProps.setServerUri(broker.getServerUri());
+        clientProps.setClientId("drain-virtual-client");
+        clientProps.setClientIdStrategy(ClientIdStrategy.STATIC);
+        clientProps.setShutdownTimeout(Duration.ofSeconds(3));
+        props.getClients().put("drain", clientProps);
+
+        NamedMqttClientRegistry drainClientRegistry = new NamedMqttClientRegistry(props);
+        drainClientRegistry.initClients();
+
+        org.springframework.core.task.SimpleAsyncTaskExecutor virtualLikeExecutor =
+                new org.springframework.core.task.SimpleAsyncTaskExecutor("ateng-vt-");
+        MqttListenerEndpointRegistry drainEndpointRegistry =
+                new MqttListenerEndpointRegistry(drainClientRegistry, new PayloadGuard(), virtualLikeExecutor);
+        SlowDrainListenerBean slowBean = new SlowDrainListenerBean();
+        new MqttListenerAnnotationBeanPostProcessor(drainEndpointRegistry)
+                .postProcessAfterInitialization(slowBean, "slowDrainListenerBean");
+        drainEndpointRegistry.start();
+
+        try {
+            MqttTemplate template = new MqttTemplate(drainClientRegistry, new PayloadGuard());
+            template.publish("drain/virtual/test", "slow-payload", 1);
+
+            assertThat(slowBean.started.await(3, TimeUnit.SECONDS)).isTrue();
+            drainEndpointRegistry.stop();
+            assertThat(slowBean.finished.get()).isTrue();
+        } finally {
+            drainEndpointRegistry.stop();
+            drainClientRegistry.destroy();
+        }
+    }
+
+    static class EdgeListenerBean {
+        @MqttListener(topics = "edge/guard/test", client = "edge", qos = 1)
+        public void onEdgeMessage(String payload) {}
+    }
+
+    @Test
+    @DisplayName("动态注销守卫：仍被活跃 @MqttListener 绑定的命名客户端默认拒绝注销，暂停或 force=true 后可安全注销")
+    void shouldGuardUnregisterWhenActiveListenerBound() {
+        MqttClientProperties edgeProps = new MqttClientProperties();
+        edgeProps.setServerUri(broker.getServerUri());
+        edgeProps.setClientId("edge-bound-client");
+        edgeProps.setClientIdStrategy(ClientIdStrategy.STATIC);
+        clientRegistry.registerClient("edge", edgeProps);
+
+        EdgeListenerBean edgeBean = new EdgeListenerBean();
+        postProcessor.postProcessAfterInitialization(edgeBean, "edgeListenerBean");
+
+        assertThatThrownBy(() -> clientRegistry.unregisterClient("edge"))
+                .isInstanceOf(io.github.atengk.boot.core.exception.BusinessException.class)
+                .hasMessageContaining("active listener");
+
+        containerManager.pause("edgeListenerBean#onEdgeMessage");
+        clientRegistry.unregisterClient("edge");
+        assertThat(clientRegistry.containsClient("edge")).isFalse();
+    }
 }

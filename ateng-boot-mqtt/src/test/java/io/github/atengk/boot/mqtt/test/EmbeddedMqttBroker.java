@@ -11,8 +11,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -38,8 +40,10 @@ public class EmbeddedMqttBroker {
     private final Map<Channel, WillRecord> willMessages = new ConcurrentHashMap<>();
     private final Map<String, RetainedRecord> retainedMessages = new ConcurrentHashMap<>();
     private final AtomicInteger messageIdCounter = new AtomicInteger(1);
-    private final List<ReceivedMessage> receivedMessages = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final List<ReceivedMessage> receivedMessages = new CopyOnWriteArrayList<>();
+    private final List<ConnectRecord> connectRecords = new CopyOnWriteArrayList<>();
 
+    public record ConnectRecord(String clientId, String username, String password) {}
     private record WillRecord(String topic, byte[] payload, MqttQoS qos, boolean retained) {}
     private record RetainedRecord(String topic, byte[] payload, MqttQoS qos, io.netty.handler.codec.mqtt.MqttProperties properties) {}
 
@@ -87,6 +91,23 @@ public class EmbeddedMqttBroker {
 
     public List<ReceivedMessage> getReceivedMessages() {
         return Collections.unmodifiableList(receivedMessages);
+    }
+
+    public List<ConnectRecord> getConnectRecords() {
+        return Collections.unmodifiableList(connectRecords);
+    }
+
+    public void clearConnectRecords() {
+        connectRecords.clear();
+    }
+
+    /**
+     * 模拟物理断链：直接强关所有活跃客户端通道以触发客户端自动重连
+     */
+    public void disconnectAllClients() {
+        for (Channel ch : new ArrayList<>(clientIds.keySet())) {
+            ch.close();
+        }
     }
 
     public void clearReceivedMessages() {
@@ -222,6 +243,10 @@ public class EmbeddedMqttBroker {
 
         private void handleConnect(ChannelHandlerContext ctx, MqttConnectMessage msg) {
             String clientId = msg.payload().clientIdentifier();
+            String username = msg.payload().userName();
+            byte[] passwordBytes = msg.payload().passwordInBytes();
+            String password = passwordBytes != null ? new String(passwordBytes, StandardCharsets.UTF_8) : null;
+            connectRecords.add(new ConnectRecord(clientId, username, password));
             clientIds.put(ctx.channel(), clientId);
             channelSubscriptions.computeIfAbsent(ctx.channel(), k -> new CopyOnWriteArraySet<>());
 

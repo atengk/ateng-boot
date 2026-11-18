@@ -38,7 +38,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 /**
@@ -62,6 +66,9 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     private final Map<String, List<String>> subscribedTopicsByClient = new ConcurrentHashMap<>();
     private final Set<String> pausedEndpoints = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicInteger inFlightTasks = new AtomicInteger(0);
+    private final ReentrantLock drainLock = new ReentrantLock();
+    private final Condition allTasksDrained = drainLock.newCondition();
     private volatile MqttRequestReplyManager requestReplyManager;
     private volatile int maxReplayCount = 1;
 
@@ -136,10 +143,13 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             if (metrics != null) {
                 metrics.bindClientRegistry(clientRegistry);
             }
-            // 为所有已配置客户端绑定兜底回调与连接完成监听，确保共享订阅与断线重连自愈无遗漏
+            // 为所有已配置及运行期热注册客户端绑定兜底回调、连接完成监听与热注销守卫
             for (MqttClientHandle handle : clientRegistry.getClientHandles().values()) {
                 bindFallbackCallback(handle);
             }
+            clientRegistry.addClientRegisteredListener(this::bindFallbackCallback);
+            clientRegistry.addClientUnregisterListener(this::handleClientUnregistered);
+            clientRegistry.addActiveBindingPredicate(this::hasActiveEndpointsForClient);
 
             for (MqttListenerEndpoint endpoint : endpoints) {
                 try {
@@ -148,6 +158,21 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                     log.error("[MQTT] Failed to subscribe endpoint [{}]: {}", endpoint.getId(), e.getMessage(), e);
                 }
             }
+        }
+    }
+
+    private boolean hasActiveEndpointsForClient(String clientName) {
+        for (MqttListenerEndpoint endpoint : endpoints) {
+            if (isEndpointAssignedToClient(endpoint, clientName) && !isPaused(endpoint.getId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void handleClientUnregistered(String clientName) {
+        if (StringUtils.hasText(clientName)) {
+            subscribedTopicsByClient.remove(clientName);
         }
     }
 
@@ -161,7 +186,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                 if (StringUtils.hasText(endpoint.getSharedGroup()) && isEndpointAssignedToClient(endpoint, handle.getClientName())) {
                     for (MqttTopicPattern pattern : endpoint.getPatterns()) {
                         if (pattern.matchAndExtract(topic) != null) {
-                            executor.execute(() -> dispatchMessage(endpoint, pattern, topic, message, handle));
+                            submitManagedTask(() -> dispatchMessage(endpoint, pattern, topic, message, handle));
                             break;
                         }
                     }
@@ -207,7 +232,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             try {
                 org.eclipse.paho.mqttv5.client.IMqttMessageListener listener = (topic, message) -> {
                     // Paho I/O 回调线程中秒级提交至受管线程池，彻底杜绝 KeepAlive 假死
-                    executor.execute(() -> dispatchMessage(endpoint, pattern, topic, message, handle));
+                    submitManagedTask(() -> dispatchMessage(endpoint, pattern, topic, message, handle));
                 };
                 handle.subscribe(filter, endpoint.getQos(), listener);
                 List<String> clientTopics = subscribedTopicsByClient.computeIfAbsent(handle.getClientName(), k -> new CopyOnWriteArrayList<>());
@@ -466,10 +491,39 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         }
     }
 
-    private void drainExecutor() {
-        if (executor == null) {
-            return;
+    private void submitManagedTask(Runnable task) {
+        inFlightTasks.incrementAndGet();
+        Runnable trackedTask = () -> {
+            try {
+                task.run();
+            } finally {
+                onTaskCompleted();
+            }
+        };
+        if (executor != null) {
+            try {
+                executor.execute(trackedTask);
+            } catch (Throwable submitEx) {
+                onTaskCompleted();
+                throw submitEx;
+            }
+        } else {
+            trackedTask.run();
         }
+    }
+
+    private void onTaskCompleted() {
+        if (inFlightTasks.decrementAndGet() <= 0) {
+            drainLock.lock();
+            try {
+                allTasksDrained.signalAll();
+            } finally {
+                drainLock.unlock();
+            }
+        }
+    }
+
+    private void drainExecutor() {
         Duration maxTimeout = Duration.ofSeconds(5);
         for (MqttClientHandle h : clientRegistry.getClientHandles().values()) {
             if (h.getClientProperties() != null && h.getClientProperties().getShutdownTimeout() != null) {
@@ -478,30 +532,29 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                 }
             }
         }
-        long deadline = System.currentTimeMillis() + maxTimeout.toMillis();
-        log.info("[MQTT] Awaiting executor task queue draining (max timeout: {}ms)", maxTimeout.toMillis());
-        while (System.currentTimeMillis() < deadline) {
-            if (getActiveCount() <= 0) {
-                break;
+        long timeoutMs = maxTimeout.toMillis();
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        log.info("[MQTT] Awaiting in-flight consumer tasks draining (active: {}, max timeout: {}ms)",
+                inFlightTasks.get(), timeoutMs);
+        drainLock.lock();
+        try {
+            while (inFlightTasks.get() > 0) {
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                if (remainingNanos <= 0L) {
+                    log.warn("[MQTT] Timed out waiting for [{}] in-flight consumer tasks to drain", inFlightTasks.get());
+                    break;
+                }
+                try {
+                    allTasksDrained.await(remainingNanos, TimeUnit.NANOSECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             }
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
+        } finally {
+            drainLock.unlock();
         }
-        log.info("[MQTT] Executor task queue drained successfully");
-    }
-
-    private int getActiveCount() {
-        if (executor instanceof org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor springExec) {
-            return springExec.getActiveCount();
-        }
-        if (executor instanceof java.util.concurrent.ThreadPoolExecutor jdkExec) {
-            return jdkExec.getActiveCount();
-        }
-        return 0;
+        log.info("[MQTT] Executor task queue drained successfully (remaining in-flight: {})", inFlightTasks.get());
     }
 
     @Override

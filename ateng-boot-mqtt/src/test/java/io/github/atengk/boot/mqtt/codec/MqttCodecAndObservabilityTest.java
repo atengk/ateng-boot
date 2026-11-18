@@ -26,17 +26,28 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.Status;
 
+import javax.crypto.Cipher;
+import javax.crypto.EncryptedPrivateKeyInfo;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.PBEParameterSpec;
 import javax.net.ssl.SSLSocketFactory;
 import java.io.FileOutputStream;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.AlgorithmParameters;
+import java.security.Key;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.KeyStore;
+import java.security.PrivateKey;
+import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -370,6 +381,30 @@ class MqttCodecAndObservabilityTest {
     }
 
     @Test
+    @DisplayName("测试 MqttHealthIndicator 超时后不发生跨线程 Health.Builder 并发篡改")
+    void testHealthIndicatorTimeoutSnapshotIsolation() {
+        NamedMqttClientRegistry registry = mock(NamedMqttClientRegistry.class);
+        MqttClientHandle slowHandle = mock(MqttClientHandle.class);
+        when(slowHandle.isConnected()).thenAnswer(inv -> {
+            Thread.sleep(2500);
+            return true;
+        });
+        when(slowHandle.getHealthDetails()).thenReturn(Map.of("connected", true, "status", "CONNECTED"));
+        when(registry.getClientHandles()).thenReturn(Map.of("slow", slowHandle));
+
+        java.util.concurrent.ExecutorService probeExec = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            MqttHealthIndicator healthIndicator = new MqttHealthIndicator(registry, probeExec);
+            Health health = healthIndicator.health();
+            assertEquals(Status.DOWN, health.getStatus());
+            assertTrue(String.valueOf(health.getDetails().get("error")).contains("timed out"));
+            assertFalse(health.getDetails().containsKey("clients"), "超时后异步线程不应篡改主线程 Health.Builder");
+        } finally {
+            probeExec.shutdownNow();
+        }
+    }
+
+    @Test
     @DisplayName("测试 MqttClientHandle.getHealthDetails() 真实快照提取")
     void testMqttClientHandleHealthDetails() {
         MqttClientProperties props = new MqttClientProperties();
@@ -473,5 +508,84 @@ class MqttCodecAndObservabilityTest {
         // 模拟断开
         when(handle.isConnected()).thenReturn(false);
         assertEquals(0.0, gauge.value());
+    }
+
+    @Test
+    @DisplayName("测试 MqttSslSocketFactoryBuilder 解密加密 PKCS#8 PEM 私钥及缺密码/错密码快速失败")
+    void testSslEncryptedPkcs8PrivateKeyPem(@TempDir Path tempDir) throws Exception {
+        Path p12Path = tempDir.resolve("client-identity.p12");
+        String keytool = Path.of(System.getProperty("java.home"), "bin", "keytool").toString();
+        Process process = new ProcessBuilder(
+                keytool, "-genkeypair",
+                "-alias", "mqtt-client",
+                "-keyalg", "RSA",
+                "-keysize", "2048",
+                "-storetype", "PKCS12",
+                "-keystore", p12Path.toAbsolutePath().toString(),
+                "-storepass", "changeit",
+                "-keypass", "changeit",
+                "-dname", "CN=localhost",
+                "-validity", "1"
+        ).redirectErrorStream(true).start();
+        String toolOutput = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(0, process.waitFor(), "keytool 生成测试密钥失败: " + toolOutput);
+
+        KeyStore ks = KeyStore.getInstance("PKCS12");
+        try (var fis = Files.newInputStream(p12Path)) {
+            ks.load(fis, "changeit".toCharArray());
+        }
+        X509Certificate cert = (X509Certificate) ks.getCertificate("mqtt-client");
+        PrivateKey privateKey = (PrivateKey) ks.getKey("mqtt-client", "changeit".toCharArray());
+
+        String certPem = "-----BEGIN CERTIFICATE-----\n"
+                + Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.UTF_8)).encodeToString(cert.getEncoded())
+                + "\n-----END CERTIFICATE-----\n";
+        Path certPath = tempDir.resolve("client.crt");
+        Files.writeString(certPath, certPem, StandardCharsets.UTF_8);
+
+        // 生成标准 PKCS#8 加密 PEM (PBEWithSHA1AndDESede, 100% 兼容 JDK 17 AlgorithmId DER 编码与解码)
+        byte[] salt = new byte[8];
+        new SecureRandom().nextBytes(salt);
+        PBEParameterSpec pbeParamSpec = new PBEParameterSpec(salt, 4096);
+        String encAlg = "PBEWithSHA1AndDESede";
+        SecretKeyFactory skf = SecretKeyFactory.getInstance(encAlg);
+        Key pbeKey = skf.generateSecret(new PBEKeySpec("pem-pass-123".toCharArray()));
+        Cipher cipher = Cipher.getInstance(encAlg);
+        cipher.init(Cipher.ENCRYPT_MODE, pbeKey, pbeParamSpec);
+        byte[] encryptedBytes = cipher.doFinal(privateKey.getEncoded());
+        EncryptedPrivateKeyInfo epki = new EncryptedPrivateKeyInfo(cipher.getParameters(), encryptedBytes);
+
+        String encryptedKeyPem = "-----BEGIN ENCRYPTED PRIVATE KEY-----\n"
+                + Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.UTF_8)).encodeToString(epki.getEncoded())
+                + "\n-----END ENCRYPTED PRIVATE KEY-----\n";
+        Path encryptedKeyPath = tempDir.resolve("client-encrypted.key");
+        Files.writeString(encryptedKeyPath, encryptedKeyPem, StandardCharsets.UTF_8);
+
+        // 1. 正确密码正常解密并构建双向认证 SSLSocketFactory
+        MqttSslProperties validProps = new MqttSslProperties();
+        validProps.setEnabled(true);
+        validProps.setClientCert(certPath.toAbsolutePath().toString());
+        validProps.setClientKey(encryptedKeyPath.toAbsolutePath().toString());
+        validProps.setClientKeyPassword("pem-pass-123");
+        assertNotNull(MqttSslSocketFactoryBuilder.build(validProps));
+
+        // 2. 加密私钥未配置密码时快速失败，且保留因果链
+        MqttSslProperties missingPwdProps = new MqttSslProperties();
+        missingPwdProps.setEnabled(true);
+        missingPwdProps.setClientCert(certPath.toAbsolutePath().toString());
+        missingPwdProps.setClientKey(encryptedKeyPath.toAbsolutePath().toString());
+        Exception missingEx = assertThrows(io.github.atengk.boot.core.exception.BusinessException.class,
+                () -> MqttSslSocketFactoryBuilder.build(missingPwdProps));
+        assertInstanceOf(IllegalArgumentException.class, missingEx.getCause());
+
+        // 3. 错误密码解密失败快速抛出清晰异常，且保留因果链
+        MqttSslProperties wrongPwdProps = new MqttSslProperties();
+        wrongPwdProps.setEnabled(true);
+        wrongPwdProps.setClientCert(certPath.toAbsolutePath().toString());
+        wrongPwdProps.setClientKey(encryptedKeyPath.toAbsolutePath().toString());
+        wrongPwdProps.setClientKeyPassword("wrong-pass");
+        Exception wrongEx = assertThrows(io.github.atengk.boot.core.exception.BusinessException.class,
+                () -> MqttSslSocketFactoryBuilder.build(wrongPwdProps));
+        assertInstanceOf(IllegalArgumentException.class, wrongEx.getCause());
     }
 }

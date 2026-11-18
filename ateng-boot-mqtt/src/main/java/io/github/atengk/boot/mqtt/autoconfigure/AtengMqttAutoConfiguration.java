@@ -3,6 +3,7 @@ package io.github.atengk.boot.mqtt.autoconfigure;
 import io.github.atengk.boot.mqtt.actuator.MqttHealthIndicator;
 import io.github.atengk.boot.mqtt.codec.CompositeMqttMessageConverter;
 import io.github.atengk.boot.mqtt.codec.MqttMessageConverter;
+import io.github.atengk.boot.mqtt.credentials.MqttCredentialsProvider;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.handler.DefaultMqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
@@ -36,6 +37,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Role;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 import java.util.Collections;
 import java.util.List;
@@ -50,6 +52,8 @@ import java.util.concurrent.ScheduledExecutorService;
  */
 @AutoConfiguration
 @AutoConfigureAfter(name = {
+        "org.springframework.boot.autoconfigure.task.TaskExecutionAutoConfiguration",
+        "org.springframework.boot.autoconfigure.task.TaskSchedulingAutoConfiguration",
         "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration",
         "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration"
 })
@@ -61,8 +65,9 @@ public class AtengMqttAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public NamedMqttClientRegistry namedMqttClientRegistry(AtengMqttProperties properties,
-                                                           ObjectProvider<MqttWillProvider> willProvider) {
-        return new NamedMqttClientRegistry(properties, willProvider.getIfAvailable());
+                                                           ObjectProvider<MqttWillProvider> willProvider,
+                                                           ObjectProvider<MqttCredentialsProvider> credentialsProvider) {
+        return new NamedMqttClientRegistry(properties, willProvider.getIfAvailable(), credentialsProvider.getIfAvailable());
     }
 
     @Bean
@@ -104,6 +109,18 @@ public class AtengMqttAutoConfiguration {
         return executor;
     }
 
+    @Bean(name = "mqttTaskScheduler")
+    @ConditionalOnMissingBean(ThreadPoolTaskScheduler.class)
+    public ThreadPoolTaskScheduler mqttTaskScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(2);
+        scheduler.setThreadNamePrefix("ateng-mqtt-scheduler-");
+        scheduler.setDaemon(true);
+        scheduler.setWaitForTasksToCompleteOnShutdown(false);
+        scheduler.initialize();
+        return scheduler;
+    }
+
     @Bean
     @ConditionalOnMissingBean
     public MqttRequestReplyManager mqttRequestReplyManager(NamedMqttClientRegistry namedMqttClientRegistry,
@@ -111,9 +128,16 @@ public class AtengMqttAutoConfiguration {
                                                            ObjectProvider<MqttMetrics> metricsProvider,
                                                            @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
                                                            @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider,
-                                                           ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider) {
+                                                           ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider,
+                                                           ObjectProvider<ThreadPoolTaskScheduler> threadPoolTaskSchedulerProvider) {
         Executor executor = taskExecutorProvider.getIfAvailable(mqttExecutorProvider::getIfAvailable);
         ScheduledExecutorService scheduledExecutor = scheduledExecutorProvider.getIfAvailable();
+        if (scheduledExecutor == null) {
+            ThreadPoolTaskScheduler scheduler = threadPoolTaskSchedulerProvider.getIfAvailable();
+            if (scheduler != null) {
+                scheduledExecutor = scheduler.getScheduledExecutor();
+            }
+        }
         return new MqttRequestReplyManager(namedMqttClientRegistry, mqttPayloadGuard, executor, scheduledExecutor, metricsProvider.getIfAvailable());
     }
 

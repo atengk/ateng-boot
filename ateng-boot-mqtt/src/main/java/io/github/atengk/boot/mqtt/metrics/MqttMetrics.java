@@ -7,10 +7,14 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * MQTT Micrometer 云原生黄金可观测性度量指标组件
@@ -22,14 +26,16 @@ import java.util.concurrent.TimeUnit;
 public class MqttMetrics {
 
     private final MeterRegistry meterRegistry;
-    private final Map<String, Boolean> registeredClients = new ConcurrentHashMap<>();
+    private final Map<String, Gauge> registeredClientGauges = new ConcurrentHashMap<>();
+    private final Set<NamedMqttClientRegistry> boundRegistries = Collections.newSetFromMap(new IdentityHashMap<>());
+    private final ReentrantLock bindLock = new ReentrantLock();
 
     public MqttMetrics(MeterRegistry meterRegistry) {
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
     }
 
     /**
-     * 绑定并为所有命名客户端注册连接状态 Gauge 监控
+     * 绑定并为所有命名客户端注册连接状态 Gauge 监控，同时挂载动态客户端注册与注销联动钩子
      *
      * @param clientRegistry 命名客户端注册中心
      */
@@ -38,14 +44,49 @@ public class MqttMetrics {
             return;
         }
         for (Map.Entry<String, MqttClientHandle> entry : clientRegistry.getClientHandles().entrySet()) {
-            String clientName = entry.getKey();
-            MqttClientHandle handle = entry.getValue();
-            if (registeredClients.putIfAbsent(clientName, Boolean.TRUE) == null) {
-                Gauge.builder("mqtt.client.status", handle, h -> h.isConnected() ? 1.0 : 0.0)
-                        .tag("client", clientName)
-                        .description("MQTT client connection status (1=connected, 0=disconnected)")
-                        .register(meterRegistry);
+            bindClientGauge(entry.getKey(), entry.getValue());
+        }
+        bindLock.lock();
+        try {
+            if (boundRegistries.add(clientRegistry)) {
+                clientRegistry.addClientRegisteredListener(handle -> bindClientGauge(handle.getClientName(), handle));
+                clientRegistry.addClientUnregisterListener(this::unbindClient);
             }
+        } finally {
+            bindLock.unlock();
+        }
+    }
+
+    /**
+     * 为单个命名客户端绑定连接状态 Gauge（若已存在则先解绑旧 Gauge 以防句柄残留）
+     *
+     * @param clientName 客户端逻辑名称
+     * @param handle     客户端句柄
+     */
+    public void bindClientGauge(String clientName, MqttClientHandle handle) {
+        if (clientName == null || handle == null) {
+            return;
+        }
+        unbindClient(clientName);
+        Gauge gauge = Gauge.builder("mqtt.client.status", handle, h -> h.isConnected() ? 1.0 : 0.0)
+                .tag("client", clientName)
+                .description("MQTT client connection status (1=connected, 0=disconnected)")
+                .register(meterRegistry);
+        registeredClientGauges.put(clientName, gauge);
+    }
+
+    /**
+     * 解绑并移除指定已注销客户端的连接状态 Gauge，防止指标与内存泄漏
+     *
+     * @param clientName 客户端逻辑名称
+     */
+    public void unbindClient(String clientName) {
+        if (clientName == null) {
+            return;
+        }
+        Gauge old = registeredClientGauges.remove(clientName);
+        if (old != null) {
+            meterRegistry.remove(old.getId());
         }
     }
 

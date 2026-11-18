@@ -1,6 +1,8 @@
 package io.github.atengk.boot.mqtt.registry;
 
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.mqtt.credentials.MqttCredentials;
+import io.github.atengk.boot.mqtt.credentials.MqttCredentialsProvider;
 import io.github.atengk.boot.mqtt.event.MqttConnectedEvent;
 import io.github.atengk.boot.mqtt.event.MqttConnectionLostEvent;
 import io.github.atengk.boot.mqtt.event.MqttDisconnectedEvent;
@@ -36,9 +38,16 @@ import org.springframework.util.StringUtils;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 /**
  * MQTT 命名客户端注册中心与生命周期管理器
@@ -52,17 +61,47 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
 
     private final AtengMqttProperties properties;
     private final MqttWillProvider willProvider;
+    private final MqttCredentialsProvider credentialsProvider;
     private final Map<String, MqttClientHandle> clientHandles = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final ReentrantLock registryLock = new ReentrantLock();
+    private final List<Consumer<MqttClientHandle>> clientRegisteredListeners = new CopyOnWriteArrayList<>();
+    private final List<Consumer<String>> clientUnregisterListeners = new CopyOnWriteArrayList<>();
+    private final List<Predicate<String>> activeBindingPredicates = new CopyOnWriteArrayList<>();
     private ApplicationEventPublisher applicationEventPublisher;
 
     public NamedMqttClientRegistry(AtengMqttProperties properties) {
-        this(properties, null);
+        this(properties, null, null);
     }
 
     public NamedMqttClientRegistry(AtengMqttProperties properties, MqttWillProvider willProvider) {
+        this(properties, willProvider, null);
+    }
+
+    public NamedMqttClientRegistry(AtengMqttProperties properties,
+                                   MqttWillProvider willProvider,
+                                   MqttCredentialsProvider credentialsProvider) {
         this.properties = properties;
         this.willProvider = willProvider;
+        this.credentialsProvider = credentialsProvider;
+    }
+
+    public void addClientRegisteredListener(Consumer<MqttClientHandle> listener) {
+        if (listener != null) {
+            clientRegisteredListeners.add(listener);
+        }
+    }
+
+    public void addClientUnregisterListener(Consumer<String> listener) {
+        if (listener != null) {
+            clientUnregisterListeners.add(listener);
+        }
+    }
+
+    public void addActiveBindingPredicate(Predicate<String> predicate) {
+        if (predicate != null) {
+            activeBindingPredicates.add(predicate);
+        }
     }
 
     @Override
@@ -92,30 +131,193 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
     /**
      * 初始化并连接所有配置的 MQTT 客户端
      */
-    public synchronized void initClients() {
-        if (!properties.isEnabled()) {
-            log.info("[MQTT] ateng-boot-mqtt is disabled via configuration");
-            return;
-        }
-        Map<String, MqttClientProperties> clients = properties.getClients();
-        if (clients == null || clients.isEmpty()) {
-            log.warn("[MQTT] No MQTT clients configured under 'ateng.boot.mqtt.clients'");
-            return;
-        }
+    public void initClients() {
+        registryLock.lock();
+        try {
+            if (!properties.isEnabled()) {
+                log.info("[MQTT] ateng-boot-mqtt is disabled via configuration");
+                return;
+            }
+            Map<String, MqttClientProperties> clients = properties.getClients();
+            if (clients == null || clients.isEmpty()) {
+                log.warn("[MQTT] No MQTT clients configured under 'ateng.boot.mqtt.clients'");
+                return;
+            }
 
-        for (Map.Entry<String, MqttClientProperties> entry : clients.entrySet()) {
-            String clientName = entry.getKey();
-            MqttClientProperties clientProps = entry.getValue();
+            for (Map.Entry<String, MqttClientProperties> entry : clients.entrySet()) {
+                String clientName = entry.getKey();
+                if (clientHandles.containsKey(clientName)) {
+                    continue;
+                }
+                registerConnectedHandle(clientName, entry.getValue(), false);
+            }
+        } finally {
+            registryLock.unlock();
+        }
+    }
+
+    /**
+     * 运行期动态注册并连接命名 MQTT 客户端（重名立即快速失败）
+     *
+     * @param clientName  客户端逻辑名称
+     * @param clientProps 客户端配置属性
+     * @return 已连接的客户端句柄
+     */
+    public MqttClientHandle registerClient(String clientName, MqttClientProperties clientProps) {
+        validateRegistrationArgs(clientName, clientProps);
+        String trimmedName = clientName.trim();
+        registryLock.lock();
+        try {
+            if (clientHandles.containsKey(trimmedName)) {
+                throw new BusinessException("MQTT client [" + trimmedName + "] already exists");
+            }
+            return registerConnectedHandle(trimmedName, clientProps, true);
+        } finally {
+            registryLock.unlock();
+        }
+    }
+
+    /**
+     * 运行期动态注册或热替换命名 MQTT 客户端（若已存在同名客户端，则先安全断开并清理旧资源后重建连接）
+     *
+     * @param clientName  客户端逻辑名称
+     * @param clientProps 客户端配置属性
+     * @return 新建连接的客户端句柄
+     */
+    public MqttClientHandle registerOrReplaceClient(String clientName, MqttClientProperties clientProps) {
+        validateRegistrationArgs(clientName, clientProps);
+        String trimmedName = clientName.trim();
+        registryLock.lock();
+        try {
+            if (clientHandles.containsKey(trimmedName)) {
+                closeAndRemoveHandle(trimmedName, clientHandles.get(trimmedName));
+            }
+            return registerConnectedHandle(trimmedName, clientProps, true);
+        } finally {
+            registryLock.unlock();
+        }
+    }
+
+    /**
+     * 运行期安全注销并断开指定的命名 MQTT 客户端（默认禁止注销默认主客户端及存在活跃监听器的客户端）
+     *
+     * @param clientName 客户端逻辑名称
+     */
+    public void unregisterClient(String clientName) {
+        unregisterClient(clientName, false);
+    }
+
+    /**
+     * 运行期安全注销并断开指定的命名 MQTT 客户端
+     *
+     * @param clientName 客户端逻辑名称
+     * @param force      是否强制注销（为 true 时跳过默认客户端与活跃监听器绑定守卫）
+     */
+    public void unregisterClient(String clientName, boolean force) {
+        if (!StringUtils.hasText(clientName)) {
+            throw new IllegalArgumentException("clientName must not be blank");
+        }
+        String trimmedName = clientName.trim();
+        registryLock.lock();
+        try {
+            MqttClientHandle handle = clientHandles.get(trimmedName);
+            if (handle == null) {
+                throw new BusinessException("No MQTT client found with name [" + trimmedName + "]");
+            }
+            if (!force && trimmedName.equals(properties.getDefaultClient())) {
+                throw new BusinessException("Cannot unregister default MQTT client [" + trimmedName + "] without force=true");
+            }
+            if (!force && hasActiveBindings(trimmedName)) {
+                throw new BusinessException("Cannot unregister MQTT client [" + trimmedName + "] while active listener endpoints are bound");
+            }
+            closeAndRemoveHandle(trimmedName, handle);
+            log.info("[MQTT] Dynamically unregistered and disconnected client [{}]", trimmedName);
+        } finally {
+            registryLock.unlock();
+        }
+    }
+
+    private MqttClientHandle registerConnectedHandle(String clientName, MqttClientProperties clientProps, boolean dynamic) {
+        try {
+            MqttClientHandle handle = createAndConnectClient(clientName, clientProps);
+            clientHandles.put(clientName, handle);
+            notifyClientRegistered(handle);
+            String primaryUri = clientProps.resolvePrimaryServerUri();
+            publishConnectedEvent(clientName, primaryUri, handle.getActualClientId(), false);
+            log.info("[MQTT] Successfully {} client [{}] with actual clientId [{}] to [{}]",
+                    dynamic ? "dynamically registered and connected" : "initialized and connected",
+                    clientName, handle.getActualClientId(), primaryUri);
+            return handle;
+        } catch (Exception e) {
+            if (e instanceof BusinessException be) {
+                throw be;
+            }
+            String action = dynamic ? "register" : "initialize";
+            throw new BusinessException("Failed to " + action + " MQTT client [" + clientName + "]: " + e.getMessage(), e);
+        }
+    }
+
+    private void closeAndRemoveHandle(String clientName, MqttClientHandle handle) {
+        for (Consumer<String> listener : clientUnregisterListeners) {
             try {
-                MqttClientHandle handle = createAndConnectClient(clientName, clientProps);
-                clientHandles.put(clientName, handle);
-                publishConnectedEvent(clientName, clientProps.getServerUri(), handle.getActualClientId(), false);
-                log.info("[MQTT] Successfully initialized and connected client [{}] with actual clientId [{}] to [{}]",
-                        clientName, handle.getActualClientId(), clientProps.getServerUri());
+                listener.accept(clientName);
             } catch (Exception e) {
-                throw new BusinessException("Failed to initialize MQTT client [" + clientName + "]: " + e.getMessage(), e);
+                log.warn("[MQTT] Error in unregister listener for client [{}]: {}", clientName, e.getMessage(), e);
             }
         }
+        clientHandles.remove(clientName, handle);
+        disconnectAndCloseHandle(clientName, handle);
+    }
+
+    private void disconnectAndCloseHandle(String clientName, MqttClientHandle handle) {
+        if (handle == null) {
+            return;
+        }
+        handle.markClosing();
+        MqttClientProperties clientProps = handle.getClientProperties();
+        String primaryUri = clientProps != null ? clientProps.resolvePrimaryServerUri() : null;
+        long shutdownMs = clientProps != null && clientProps.getShutdownTimeout() != null
+                ? clientProps.getShutdownTimeout().toMillis() : 5000L;
+        long effectiveTimeoutMs = shutdownMs > 0 ? shutdownMs : 5000L;
+        try {
+            if (handle.getAsyncClient() != null && handle.getAsyncClient().isConnected()) {
+                // 显式发送 MQTT 规范 DISCONNECT 报文，告知 Broker 正常下线并依法销毁 LWT 遗嘱消息（防误报）
+                handle.getAsyncClient().disconnect().waitForCompletion(effectiveTimeoutMs);
+                publishDisconnectedEvent(clientName, primaryUri, handle.getActualClientId(), handle);
+            }
+            if (handle.getAsyncClient() != null) {
+                handle.getAsyncClient().close();
+            }
+            log.info("[MQTT] Client [{}] disconnected and closed cleanly with DISCONNECT", clientName);
+        } catch (Exception e) {
+            log.warn("[MQTT] Error closing MQTT client [{}]: {}", clientName, e.getMessage());
+        }
+    }
+
+    private void notifyClientRegistered(MqttClientHandle handle) {
+        for (Consumer<MqttClientHandle> listener : clientRegisteredListeners) {
+            try {
+                listener.accept(handle);
+            } catch (Exception e) {
+                log.warn("[MQTT] Error in client registered listener for [{}]: {}", handle.getClientName(), e.getMessage(), e);
+            }
+        }
+    }
+
+    private boolean hasActiveBindings(String clientName) {
+        for (Predicate<String> predicate : activeBindingPredicates) {
+            if (predicate.test(clientName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void validateRegistrationArgs(String clientName, MqttClientProperties clientProps) {
+        if (!StringUtils.hasText(clientName)) {
+            throw new IllegalArgumentException("clientName must not be blank");
+        }
+        Objects.requireNonNull(clientProps, "clientProps must not be null");
     }
 
     /**
@@ -141,18 +343,23 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
                     "Consider setting clientIdStrategy=STATIC or IP_PID.", clientName);
         }
 
-        // 2. 解析实际 ClientId
+        // 2. 解析实际 ClientId 与可用 Broker 地址列表
         String baseClientId = StringUtils.hasText(clientProps.getClientId()) ? clientProps.getClientId() : "ateng-mqtt-" + clientName;
         String actualClientId = clientProps.getClientIdStrategy().resolve(baseClientId);
+        String[] serverUris = clientProps.resolveServerUris();
+        if (serverUris.length == 0) {
+            throw new IllegalArgumentException("MQTT serverUri/serverUris must not be blank for client [" + clientName + "]");
+        }
+        String primaryUri = serverUris[0];
 
         // 3. 构建持久化介质
         MqttClientPersistence persistence = createPersistence(clientProps, actualClientId);
 
         // 4. 创建 Paho MqttAsyncClient
-        MqttAsyncClient asyncClient = new MqttAsyncClient(clientProps.getServerUri(), actualClientId, persistence);
+        MqttAsyncClient asyncClient = new MqttAsyncClient(primaryUri, actualClientId, persistence);
 
         // 5. 构建连接选项 MqttConnectionOptions
-        MqttConnectionOptions connOpts = buildConnectionOptions(clientName, actualClientId, clientProps);
+        MqttConnectionOptions connOpts = buildConnectionOptions(clientName, actualClientId, clientProps, serverUris);
 
         // 6. 配置 DisconnectedBufferOptions
         DisconnectedBufferOptions bufferOpts = new DisconnectedBufferOptions();
@@ -169,16 +376,23 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
             @Override
             public void disconnected(MqttDisconnectResponse disconnectResponse) {
                 log.debug("[MQTT] Client [{}] disconnected callback received", clientName);
+                boolean isUnexpectedDrop = !handle.isClosing() && clientHandles.get(clientName) == handle;
+                if (isUnexpectedDrop && clientProps.isAutomaticReconnect() && credentialsProvider != null) {
+                    refreshDynamicCredentials(clientName, clientProps, connOpts, true);
+                }
                 if (disconnectResponse != null && disconnectResponse.getException() != null) {
-                    publishConnectionLostEvent(clientName, clientProps.getServerUri(), actualClientId, disconnectResponse.getException());
+                    publishConnectionLostEvent(clientName, primaryUri, actualClientId, disconnectResponse.getException());
                 } else {
-                    publishDisconnectedEvent(clientName, clientProps.getServerUri(), actualClientId);
+                    publishDisconnectedEvent(clientName, primaryUri, actualClientId, handle);
                 }
             }
 
             @Override
             public void mqttErrorOccurred(MqttException exception) {
                 log.warn("[MQTT] Client [{}] error occurred: {}", clientName, exception.getMessage());
+                if (!handle.isClosing() && !handle.isConnected() && clientProps.isAutomaticReconnect() && credentialsProvider != null) {
+                    refreshDynamicCredentials(clientName, clientProps, connOpts, true);
+                }
             }
 
             @Override
@@ -222,9 +436,15 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
         return new MemoryPersistence();
     }
 
-    private MqttConnectionOptions buildConnectionOptions(String clientName, String actualClientId, MqttClientProperties clientProps) {
+    private MqttConnectionOptions buildConnectionOptions(String clientName,
+                                                         String actualClientId,
+                                                         MqttClientProperties clientProps,
+                                                         String[] serverUris) {
         MqttConnectionOptions connOpts = new MqttConnectionOptions();
-        connOpts.setServerURIs(new String[]{clientProps.getServerUri()});
+        connOpts.setServerURIs(serverUris);
+        if (clientProps.getWebSocketHeaders() != null && !clientProps.getWebSocketHeaders().isEmpty()) {
+            connOpts.setCustomWebSocketHeaders(new LinkedHashMap<>(clientProps.getWebSocketHeaders()));
+        }
         connOpts.setCleanStart(clientProps.isCleanStart());
         if (clientProps.getSessionExpiryInterval() != null) {
             connOpts.setSessionExpiryInterval(clientProps.getSessionExpiryInterval().toSeconds());
@@ -237,31 +457,51 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
         }
         connOpts.setReceiveMaximum(clientProps.getMaxInflight());
 
+        // 认证凭据配置：静态凭据打底，动态 SPI 优先覆盖
         if (StringUtils.hasText(clientProps.getUsername())) {
             connOpts.setUserName(clientProps.getUsername());
         }
         if (StringUtils.hasText(clientProps.getPassword())) {
             connOpts.setPassword(clientProps.getPassword().getBytes(StandardCharsets.UTF_8));
         }
+        if (credentialsProvider != null) {
+            refreshDynamicCredentials(clientName, clientProps, connOpts, false);
+        }
+
+        // 协议版本判定（用于约束 MQTT 5.0 扩展属性装配）
+        String protocolVersion = StringUtils.hasText(clientProps.getProtocolVersion()) ? clientProps.getProtocolVersion().trim() : "5.0";
+        boolean isMqtt311 = "3.1.1".equalsIgnoreCase(protocolVersion) || "3.1".equalsIgnoreCase(protocolVersion);
 
         // LWT 遗嘱消息配置（优先使用 MqttWillProvider 动态 SPI，无则回退静态配置）
+        boolean hasWill = false;
         MqttWill dynamicWill = willProvider != null ? willProvider.getWill(clientName, actualClientId, clientProps) : null;
         if (dynamicWill != null && StringUtils.hasText(dynamicWill.getTopic())) {
             MqttMessage willMsg = new MqttMessage(dynamicWill.getPayload());
             willMsg.setQos(dynamicWill.getQos());
             willMsg.setRetained(dynamicWill.isRetained());
             connOpts.setWill(dynamicWill.getTopic(), willMsg);
+            hasWill = true;
             log.info("[MQTT] Configured dynamic LWT will for client [{}] to topic [{}] via MqttWillProvider", clientName, dynamicWill.getTopic());
         } else if (clientProps.getLwt() != null && clientProps.getLwt().isEnabled() && StringUtils.hasText(clientProps.getLwt().getTopic())) {
             MqttMessage willMsg = new MqttMessage(clientProps.getLwt().getPayloadBytes());
             willMsg.setQos(clientProps.getLwt().getQos());
             willMsg.setRetained(clientProps.getLwt().isRetain());
             connOpts.setWill(clientProps.getLwt().getTopic(), willMsg);
+            hasWill = true;
+        }
+
+        if (hasWill && !isMqtt311 && clientProps.getLwt() != null && clientProps.getLwt().getWillDelayInterval() != null) {
+            long delaySeconds = clientProps.getLwt().getWillDelayInterval().toSeconds();
+            if (delaySeconds > 0) {
+                MqttProperties willProps = new MqttProperties();
+                willProps.setWillDelayInterval(delaySeconds);
+                connOpts.setWillMessageProperties(willProps);
+                log.info("[MQTT] Configured LWT willDelayInterval [{}s] for client [{}]", delaySeconds, clientName);
+            }
         }
 
         // 协议版本适配（MQTT 3.1.1 存量降级模式防御 5.0 特有参数引发 Broker 异常）
-        String protocolVersion = StringUtils.hasText(clientProps.getProtocolVersion()) ? clientProps.getProtocolVersion().trim() : "5.0";
-        if ("3.1.1".equalsIgnoreCase(protocolVersion) || "3.1".equalsIgnoreCase(protocolVersion)) {
+        if (isMqtt311) {
             log.info("[MQTT] Client [{}] configured for MQTT 3.1.1 legacy compatibility mode", clientName);
             connOpts.setSessionExpiryInterval(0L);
             connOpts.setTopicAliasMaximum(0);
@@ -270,17 +510,52 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
             log.info("[MQTT] Configured topicAliasMaximum [{}] for client [{}]", clientProps.getTopicAliasMaximum(), clientName);
         }
 
-        // TLS / SSL 安全套接字配置
-        if (clientProps.getSsl() != null && clientProps.getSsl().isEnabled()) {
-            javax.net.ssl.SSLSocketFactory socketFactory = MqttSslSocketFactoryBuilder.build(clientProps.getSsl());
-            if (socketFactory != null) {
-                connOpts.setSocketFactory(socketFactory);
-                log.info("[MQTT] Configured custom SSLSocketFactory for client [{}] with protocol [{}]",
-                        clientName, clientProps.getSsl().getProtocol());
+        // TLS / SSL 安全套接字配置与主机名校验开关
+        if (clientProps.getSsl() != null) {
+            connOpts.setHttpsHostnameVerificationEnabled(clientProps.getSsl().isHostnameVerificationEnabled());
+            if (clientProps.getSsl().isEnabled()) {
+                javax.net.ssl.SSLSocketFactory socketFactory = MqttSslSocketFactoryBuilder.build(clientProps.getSsl());
+                if (socketFactory != null) {
+                    connOpts.setSocketFactory(socketFactory);
+                    log.info("[MQTT] Configured custom SSLSocketFactory for client [{}] with protocol [{}], hostnameVerification={}",
+                            clientName, clientProps.getSsl().getProtocol(), clientProps.getSsl().isHostnameVerificationEnabled());
+                }
             }
         }
 
         return connOpts;
+    }
+
+    private void refreshDynamicCredentials(String clientName,
+                                           MqttClientProperties clientProps,
+                                           MqttConnectionOptions connOpts,
+                                           boolean reconnect) {
+        try {
+            MqttCredentials credentials = credentialsProvider.resolveCredentials(clientName, clientProps, reconnect);
+            if (credentials == null) {
+                return;
+            }
+            if (credentials.getUsername() != null) {
+                connOpts.setUserName(credentials.getUsername());
+            } else {
+                connOpts.setUserName(StringUtils.hasText(clientProps.getUsername()) ? clientProps.getUsername() : null);
+            }
+            if (credentials.getPassword() != null) {
+                connOpts.setPassword(credentials.getPassword().getBytes(StandardCharsets.UTF_8));
+            } else {
+                connOpts.setPassword(StringUtils.hasText(clientProps.getPassword())
+                        ? clientProps.getPassword().getBytes(StandardCharsets.UTF_8) : null);
+            }
+            connOpts.setAuthMethod(StringUtils.hasText(credentials.getAuthMethod()) ? credentials.getAuthMethod() : null);
+            connOpts.setAuthData(credentials.getAuthData());
+            log.debug("[MQTT] Resolved dynamic credentials for client [{}] (reconnect={})", clientName, reconnect);
+        } catch (Exception e) {
+            if (!reconnect) {
+                throw e;
+            }
+            log.warn("[MQTT] Failed to refresh dynamic credentials during reconnect for client [{}]: {}",
+                    clientName, e.getMessage(), e);
+        }
     }
 
     /**
@@ -339,25 +614,17 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
 
     @Override
     public void stop() {
-        if (running.compareAndSet(true, false) || !clientHandles.isEmpty()) {
-            log.info("[MQTT] Shutting down NamedMqttClientRegistry, cleanly disconnecting [{}] active clients", clientHandles.size());
-            for (Map.Entry<String, MqttClientHandle> entry : clientHandles.entrySet()) {
-                String name = entry.getKey();
-                MqttClientHandle handle = entry.getValue();
-                try {
-                    if (handle.getAsyncClient().isConnected()) {
-                        long shutdownMs = handle.getClientProperties().getShutdownTimeout().toMillis();
-                        // 显式发送 MQTT 规范 DISCONNECT 报文，告知 Broker 正常下线并依法销毁 LWT 遗嘱消息（防误报）
-                        handle.getAsyncClient().disconnect().waitForCompletion(shutdownMs > 0 ? shutdownMs : 5000L);
-                        publishDisconnectedEvent(name, handle.getClientProperties().getServerUri(), handle.getActualClientId());
-                    }
-                    handle.getAsyncClient().close();
-                    log.info("[MQTT] Client [{}] disconnected and closed cleanly with DISCONNECT", name);
-                } catch (Exception e) {
-                    log.warn("[MQTT] Error closing MQTT client [{}]: {}", name, e.getMessage());
+        registryLock.lock();
+        try {
+            if (running.compareAndSet(true, false) || !clientHandles.isEmpty()) {
+                log.info("[MQTT] Shutting down NamedMqttClientRegistry, cleanly disconnecting [{}] active clients", clientHandles.size());
+                for (Map.Entry<String, MqttClientHandle> entry : clientHandles.entrySet()) {
+                    disconnectAndCloseHandle(entry.getKey(), entry.getValue());
                 }
+                clientHandles.clear();
             }
-            clientHandles.clear();
+        } finally {
+            registryLock.unlock();
         }
     }
 
@@ -382,8 +649,11 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
     }
 
     public void publishDisconnectedEvent(String clientName, String serverUri, String clientId) {
-        MqttClientHandle handle = clientHandles.get(clientName);
-        if (handle != null && !handle.markDisconnected()) {
+        publishDisconnectedEvent(clientName, serverUri, clientId, clientHandles.get(clientName));
+    }
+
+    public void publishDisconnectedEvent(String clientName, String serverUri, String clientId, MqttClientHandle targetHandle) {
+        if (targetHandle != null && !targetHandle.markDisconnected()) {
             return;
         }
         if (applicationEventPublisher != null) {
