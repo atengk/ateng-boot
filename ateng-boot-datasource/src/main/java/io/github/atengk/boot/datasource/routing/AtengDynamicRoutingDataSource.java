@@ -118,6 +118,10 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
                     return resolveAndBindTransaction(tenantMasterKey);
                 }
             }
+            if (isActiveWriteTransaction(readWrite) && isMasterWriteTarget(explicitKey, masterKey, tenantMasterKey)) {
+                log.debug("显式切源 [{}] 处于非只读写事务中，自动激活写后即读一致性防延迟标记", explicitKey);
+                markWriteOccurredIfPresent();
+            }
             return resolveAndBindTransaction(explicitKey);
         }
 
@@ -126,19 +130,16 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
         if (multiTenancy.isEnabled() && hasTenant && multiTenancy.getMode() != MultiTenancyMode.IGNORE) {
             if (containsDataSource(tenantMasterKey)) {
                 // 3.1 租户写事务 (@Transactional)
-                if (readWrite.isEnabled() && TransactionSynchronizationManager.isActualTransactionActive()
-                        && !TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
+                if (isActiveWriteTransaction(readWrite)) {
                     log.debug("租户 [{}] 写事务 (@Transactional) 自动绑定至租户主库: [{}]", currentTenantId, tenantMasterKey);
-                    if (readAfterWriteManager != null) {
-                        readAfterWriteManager.markWriteOccurred();
-                    }
+                    markWriteOccurredIfPresent();
                     return resolveAndBindTransaction(tenantMasterKey);
                 }
 
                 // 3.2 租户只读事务 (@Transactional(readOnly = true))
                 if (readWrite.isEnabled() && TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
                     if (writeOccurred) {
-                        log.debug("写后读主 (Read-After-Write) 防延迟生效，租户 [{}] 只读事务强制回退主库: [{}]", currentTenantId, tenantMasterKey);
+                        log.debug("写后即读防延迟生效，租户 [{}] 只读事务回退主库: [{}]", currentTenantId, tenantMasterKey);
                         return resolveAndBindTransaction(tenantMasterKey);
                     }
                     if (StringUtils.hasText(tenantSlaveKey) && containsDataSource(tenantSlaveKey)) {
@@ -151,7 +152,7 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
 
                 // 3.3 租户非事务/自动提交语句
                 if (writeOccurred) {
-                    log.debug("写后读主 (Read-After-Write) 防延迟生效，租户 [{}] 非事务查询强制路由至主库: [{}]", currentTenantId, tenantMasterKey);
+                    log.debug("写后即读防延迟生效，租户 [{}] 非事务查询回退主库: [{}]", currentTenantId, tenantMasterKey);
                     return resolveAndBindTransaction(tenantMasterKey);
                 }
 
@@ -174,7 +175,7 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
         // 4. 全局读写分离：只读事务 (@Transactional(readOnly = true))
         if (readWrite.isEnabled() && TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
             if (writeOccurred) {
-                log.debug("写后读主 (Read-After-Write) 防延迟生效，只读事务强制回退全局主库: [{}]", masterKey);
+                log.debug("写后即读防延迟生效，只读事务回退全局主库: [{}]", masterKey);
                 return resolveAndBindTransaction(masterKey);
             }
             if (containsDataSource(slaveKey)) {
@@ -186,12 +187,10 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
             }
         }
 
-        // 5. 全局写事务：当前处于活动 Spring 事务中且非只读，强制绑定至主库并触发写标记
-        if (readWrite.isEnabled() && TransactionSynchronizationManager.isActualTransactionActive()) {
+        // 5. 全局写事务：当前处于活动 Spring 事务中且非只读，绑定至主库并触发写标记
+        if (isActiveWriteTransaction(readWrite)) {
             log.debug("写事务 (@Transactional) 自动绑定至全局主库: [{}]", masterKey);
-            if (readAfterWriteManager != null) {
-                readAfterWriteManager.markWriteOccurred();
-            }
+            markWriteOccurredIfPresent();
             return resolveAndBindTransaction(masterKey);
         }
 
@@ -261,6 +260,25 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
             }
         }
         throw e;
+    }
+
+    private boolean isActiveWriteTransaction(DatasourceProperties.ReadWriteSplitProperties readWrite) {
+        return readWrite.isEnabled()
+                && TransactionSynchronizationManager.isActualTransactionActive()
+                && !TransactionSynchronizationManager.isCurrentTransactionReadOnly();
+    }
+
+    private void markWriteOccurredIfPresent() {
+        if (readAfterWriteManager != null) {
+            readAfterWriteManager.markWriteOccurred();
+        }
+    }
+
+    private boolean isMasterWriteTarget(String explicitKey,
+                                        String masterKey,
+                                        String tenantMasterKey) {
+        return Objects.equals(explicitKey, masterKey)
+                || (StringUtils.hasText(tenantMasterKey) && Objects.equals(explicitKey, tenantMasterKey));
     }
 
     private DataSource resolveAndBindTransaction(String dsKey) {

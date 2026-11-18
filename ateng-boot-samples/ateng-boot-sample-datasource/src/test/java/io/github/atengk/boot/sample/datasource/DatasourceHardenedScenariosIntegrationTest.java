@@ -5,6 +5,7 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.datasource.loader.DynamicDataSourceLoader;
 import io.github.atengk.boot.datasource.loader.SyncResult;
 import io.github.atengk.boot.datasource.model.DataSourcePoolStats;
+import io.github.atengk.boot.datasource.readwrite.DefaultWriteOccurredResolver;
 import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteManager;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.sample.datasource.entity.OrderEntity;
@@ -61,12 +62,18 @@ class DatasourceHardenedScenariosIntegrationTest {
     @Autowired
     private ReadAfterWriteManager readAfterWriteManager;
 
+    @Autowired(required = false)
+    private DefaultWriteOccurredResolver defaultWriteOccurredResolver;
+
     @Autowired
     private DynamicDatasourceTemplate dynamicDatasourceTemplate;
 
     @AfterEach
     void tearDown() {
         TenantContextHolder.clear();
+        if (defaultWriteOccurredResolver != null) {
+            defaultWriteOccurredResolver.clearAll();
+        }
         if (readAfterWriteManager != null) {
             readAfterWriteManager.clear();
         }
@@ -91,9 +98,14 @@ class DatasourceHardenedScenariosIntegrationTest {
         // 1. 为租户 1001 配置从库分组 (tenant_1001_slave -> slave 物理节点)
         tenantReadWriteScenarioService.configureTenantSlaveGroup(tenantId, "tenant_1001_slave", "slave");
 
-        // 2. 租户写入订单并触发写标记
+        // 2. 租户写入订单并触发写标记（按租户隔离校验写后即读窗口）
         tenantReadWriteScenarioService.createOrderWithWriteTracking(tenantId, orderNo);
-        assertThat(tenantReadWriteScenarioService.isWriteOccurredActive()).isTrue();
+        Boolean tenantWriteActive = TenantContextHolder.runWithTenant(tenantId,
+                () -> tenantReadWriteScenarioService.isWriteOccurredActive());
+        assertThat(tenantWriteActive).isTrue();
+        Boolean otherTenantWriteActive = TenantContextHolder.runWithTenant("1002",
+                () -> tenantReadWriteScenarioService.isWriteOccurredActive());
+        assertThat(otherTenantWriteActive).isFalse();
 
         // 3. 租户只读查询：在写后读主防延迟期内，系统强制自适应路由至租户主库 (tenant_1001)，读到刚写入的数据
         OrderEntity entity = tenantReadWriteScenarioService.queryOrderWithConsistency(tenantId, orderNo);

@@ -189,4 +189,57 @@ class AtengDynamicRoutingDataSourceReadWriteTest {
         DataSource resolvedReadOnly = routingDataSource.determineDataSource();
         assertThat(resolvedReadOnly).isSameAs(tenant1001Ds);
     }
+
+    @Test
+    @DisplayName("测试显式 @DS('master') 非只读写事务自动激活写后即读防延迟标记")
+    void testExplicitMasterWriteTransaction_MarksWriteOccurred_AndForcesSubsequentReadToMaster() {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(false);
+
+        DynamicDataSourceContextHolder.push("master");
+        try {
+            DataSource resolved = routingDataSource.determineDataSource();
+            assertThat(resolved).isSameAs(masterDataSource);
+            assertThat(readAfterWriteManager.isWriteOccurred()).isTrue();
+        } finally {
+            DynamicDataSourceContextHolder.poll();
+        }
+
+        // 紧邻的显式 @DS("slave") 只读查询自动回退主库
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);
+        DynamicDataSourceContextHolder.push("slave");
+        try {
+            DataSource readDs = routingDataSource.determineDataSource();
+            assertThat(readDs).isSameAs(masterDataSource);
+        } finally {
+            DynamicDataSourceContextHolder.poll();
+        }
+    }
+
+    @Test
+    @DisplayName("测试显式 @DS('slave') 或只读 @DS('master') 事务不会误触发写后即读标记")
+    void testExplicitSlaveOrReadOnlyMaster_DoesNotMarkWriteOccurred() {
+        // 1. 显式 @DS("slave") 非只读事务不误触发
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(false);
+        DynamicDataSourceContextHolder.push("slave");
+        try {
+            DataSource resolved = routingDataSource.determineDataSource();
+            assertThat(resolved).isIn(slave1DataSource, slave2DataSource);
+            assertThat(readAfterWriteManager.isWriteOccurred()).isFalse();
+        } finally {
+            DynamicDataSourceContextHolder.poll();
+        }
+
+        // 2. 显式 @DS("master") 只读事务不误触发
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);
+        DynamicDataSourceContextHolder.push("master");
+        try {
+            DataSource resolved = routingDataSource.determineDataSource();
+            assertThat(resolved).isSameAs(masterDataSource);
+            assertThat(readAfterWriteManager.isWriteOccurred()).isFalse();
+        } finally {
+            DynamicDataSourceContextHolder.poll();
+        }
+    }
 }

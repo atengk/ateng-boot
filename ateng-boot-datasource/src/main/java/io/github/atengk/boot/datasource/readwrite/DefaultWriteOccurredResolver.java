@@ -1,5 +1,6 @@
 package io.github.atengk.boot.datasource.readwrite;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import org.springframework.util.StringUtils;
 
@@ -65,15 +66,21 @@ public class DefaultWriteOccurredResolver implements WriteOccurredResolver {
     }
 
     /**
-     * 解析当前客户端的标识 Key
-     * 优先提取 UserContextHolder 用户 ID，若未登录则回退至当前线程标识
+     * 解析当前客户端的复合隔离标识 Key
+     * <p>
+     * 优先纳入租户维度防多租户串扰，再提取 UserContextHolder 用户 ID；未登录时回退至当前线程对象稳定标识。
+     * </p>
      */
-    @SuppressWarnings("deprecation")
     protected String resolveCurrentKey() {
+        String tenantId = TenantContextHolder.getTenantId();
+        String tenantPrefix = (StringUtils.hasText(tenantId) && !TenantContextHolder.isIgnoreTenant())
+                ? "TENANT:" + tenantId + ":"
+                : "GLOBAL:";
+
         String userId = UserContextHolder.getUserId();
         if (StringUtils.hasText(userId)) {
-            return "USER:" + userId;
+            return tenantPrefix + "USER:" + userId;
         }
-        return "THREAD:" + Thread.currentThread().getId();
+        return tenantPrefix + "THREAD:" + Integer.toHexString(System.identityHashCode(Thread.currentThread()));
     }
 }

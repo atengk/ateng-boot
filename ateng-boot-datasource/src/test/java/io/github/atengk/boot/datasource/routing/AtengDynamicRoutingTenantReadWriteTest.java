@@ -310,4 +310,47 @@ class AtengDynamicRoutingTenantReadWriteTest {
             DynamicDataSourceContextHolder.poll();
         }
     }
+
+    @Test
+    @DisplayName("测试租户上下文下显式 @DS('tenant_1001') 非只读写事务自动激活写后即读标记")
+    void testTenantExplicitMasterWriteTransaction_MarksWriteOccurred() {
+        TenantContextHolder.setTenantId("1001");
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(false);
+
+        DynamicDataSourceContextHolder.push("tenant_1001");
+        try {
+            DataSource writeDs = routingDataSource.determineDataSource();
+            assertThat(writeDs).isSameAs(tenant1001MasterDs);
+            assertThat(readAfterWriteManager.isWriteOccurred()).isTrue();
+        } finally {
+            DynamicDataSourceContextHolder.poll();
+        }
+
+        // 紧邻切向通用 slave 读，自动回退租户主库 tenant_1001
+        DynamicDataSourceContextHolder.push("slave");
+        try {
+            DataSource readDs = routingDataSource.determineDataSource();
+            assertThat(readDs).isSameAs(tenant1001MasterDs);
+        } finally {
+            DynamicDataSourceContextHolder.poll();
+        }
+    }
+
+    @Test
+    @DisplayName("测试租户上下文下显式 @DS('slave') 不误触发写后即读标记")
+    void testTenantExplicitSlave_DoesNotMarkWriteOccurred() {
+        TenantContextHolder.setTenantId("1001");
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(false);
+
+        DynamicDataSourceContextHolder.push("slave");
+        try {
+            DataSource readDs = routingDataSource.determineDataSource();
+            assertThat(readDs).isIn(tenant1001Slave1Ds, tenant1001Slave2Ds);
+            assertThat(readAfterWriteManager.isWriteOccurred()).isFalse();
+        } finally {
+            DynamicDataSourceContextHolder.poll();
+        }
+    }
 }
