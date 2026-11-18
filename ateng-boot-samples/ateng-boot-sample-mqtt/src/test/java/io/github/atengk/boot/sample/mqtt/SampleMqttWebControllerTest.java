@@ -408,6 +408,11 @@ class SampleMqttWebControllerTest {
     @Test
     @DisplayName("12. 测试 MqttDeadLetterController: 毒丸触发、死信只读窥探、受控重放与清空闭环")
     void testDeadLetterLifecycle() throws Exception {
+        // 清理前序测试可能留存的同主题死信，避免干扰序号与载荷断言
+        mockMvc.perform(delete("/sample/mqtt/dead-letter/purge")
+                        .param("topic", "iot/devices/poison-test/DLT"))
+                .andExpect(status().isOk());
+
         // 1. 触发毒丸消息
         mockMvc.perform(post("/sample/mqtt/dead-letter/trigger-poison")
                         .param("payload", "POISON_PAYLOAD"))
@@ -415,17 +420,19 @@ class SampleMqttWebControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.success").value(true));
 
-        // 2. 离线只读窥探死信
-        mockMvc.perform(get("/sample/mqtt/dead-letter/peek")
-                        .param("topic", "iot/devices/poison-test/DLT")
-                        .param("count", "5")
-                        .param("timeoutSeconds", "2"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.data[0].dltTopic").value("iot/devices/poison-test/DLT"))
-                .andExpect(jsonPath("$.data[0].payloadAsString").value("POISON_PAYLOAD"))
-                .andExpect(jsonPath("$.data[0].exceptionMessage").value("FATAL_POISON_PILL"));
+        // 2. 离线只读窥探死信（等待异步消费转入 DLT 存储完成）
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+                mockMvc.perform(get("/sample/mqtt/dead-letter/peek")
+                                .param("topic", "iot/devices/poison-test/DLT")
+                                .param("count", "5")
+                                .param("timeoutSeconds", "1"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.code").value(200))
+                        .andExpect(jsonPath("$.success").value(true))
+                        .andExpect(jsonPath("$.data[0].dltTopic").value("iot/devices/poison-test/DLT"))
+                        .andExpect(jsonPath("$.data[0].payloadAsString").value("POISON_PAYLOAD"))
+                        .andExpect(jsonPath("$.data[0].exceptionMessage").value("FATAL_POISON_PILL"))
+        );
 
         // 3. 受控重放死信至恢复主题
         DeadLetterReplayRequest replayRequest = DeadLetterReplayRequest.builder()
