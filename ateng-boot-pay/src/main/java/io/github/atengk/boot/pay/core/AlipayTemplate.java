@@ -6,6 +6,7 @@ import com.alipay.api.request.*;
 import com.alipay.api.response.*;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.pay.config.properties.AlipayAppProperties;
+import io.github.atengk.boot.pay.config.properties.PayHttpProperties;
 import io.github.atengk.boot.pay.config.properties.PayProperties;
 import io.github.atengk.boot.pay.config.properties.PayTransferProperties;
 import io.github.atengk.boot.pay.core.context.PayContextHolder;
@@ -1401,6 +1402,10 @@ public class AlipayTemplate {
     private AlipayClientHolder createClientHolder(AlipayAppProperties properties) {
         AlipayConfig config = new AlipayConfig();
         config.setServerUrl(properties.getServerUrl());
+        PayHttpProperties httpProps = PayHttpProperties.orDefault(
+                payProperties.getAlipay() != null ? payProperties.getAlipay().getHttp() : null);
+        config.setConnectTimeout(httpProps.resolveConnectTimeoutMs());
+        config.setReadTimeout(httpProps.resolveReadTimeoutMs());
         config.setAppId(properties.getAppId());
         config.setFormat(properties.getFormat() != null ? properties.getFormat() : "json");
         config.setCharset(properties.getCharset() != null ? properties.getCharset() : "UTF-8");

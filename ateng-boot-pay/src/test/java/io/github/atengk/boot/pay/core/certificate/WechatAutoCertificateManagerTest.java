@@ -107,4 +107,26 @@ class WechatAutoCertificateManagerTest {
         assertThrows(PaySignException.class, () -> manager.getCertificate(merchantId, null));
         assertThrows(PaySignException.class, () -> manager.getAvailableCertificate(null));
     }
+
+    @Test
+    @DisplayName("幂等注册: registerMerchantIfAbsent 对同商户不重复执行同步初始下载")
+    void testRegisterMerchantIfAbsentIdempotent() {
+        String merchantId = "1900000098";
+        java.util.concurrent.atomic.AtomicInteger downloads = new java.util.concurrent.atomic.AtomicInteger(0);
+        Runnable task = () -> {
+            downloads.incrementAndGet();
+            manager.registerCertificates(merchantId, Map.of(serialNumber, testCert));
+        };
+
+        manager.registerMerchantIfAbsent(merchantId, task);
+        manager.registerMerchantIfAbsent(merchantId, task);
+
+        assertEquals(1, downloads.get());
+        assertTrue(manager.hasCertificates(merchantId));
+        assertNotNull(manager.getCertificate(merchantId, serialNumber));
+
+        manager.destroy();
+        assertFalse(manager.hasCertificates(merchantId));
+        assertThrows(PaySignException.class, () -> manager.getAvailableCertificate(merchantId));
+    }
 }

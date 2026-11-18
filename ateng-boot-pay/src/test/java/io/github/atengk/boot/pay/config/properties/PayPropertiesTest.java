@@ -40,10 +40,16 @@ class PayPropertiesTest {
             assertThat(properties.getWechat().isEnabled()).isTrue();
             assertThat(properties.getWechat().getDefaultMerchant()).isEqualTo("default");
             assertThat(properties.getWechat().isServiceProviderMode()).isFalse();
+            assertThat(properties.getWechat().getHttp().getConnectTimeout()).isEqualTo(Duration.ofSeconds(5));
+            assertThat(properties.getWechat().getHttp().getReadTimeout()).isEqualTo(Duration.ofSeconds(15));
+            assertThat(properties.getWechat().getHttp().getWriteTimeout()).isEqualTo(Duration.ofSeconds(15));
 
             assertThat(properties.getAlipay().isEnabled()).isTrue();
             assertThat(properties.getAlipay().getDefaultApp()).isEqualTo("default");
             assertThat(properties.getAlipay().isServiceProviderMode()).isFalse();
+            assertThat(properties.getAlipay().getHttp().getConnectTimeout()).isEqualTo(Duration.ofSeconds(5));
+            assertThat(properties.getAlipay().getHttp().getReadTimeout()).isEqualTo(Duration.ofSeconds(15));
+            assertThat(properties.getAlipay().getHttp().getWriteTimeout()).isEqualTo(Duration.ofSeconds(15));
         });
     }
 
@@ -65,9 +71,15 @@ class PayPropertiesTest {
                 "ateng.boot.pay.wechat.merchants.store1.api-v3-key=test_api_v3_key_32_bytes_long!!",
                 "ateng.boot.pay.wechat.merchants.store1.wechat-pay-public-key-path=classpath:certs/test_public_key.pem",
                 "ateng.boot.pay.wechat.merchants.store1.sub-mch-id=sub999",
+                "ateng.boot.pay.wechat.http.connect-timeout=2s",
+                "ateng.boot.pay.wechat.http.read-timeout=8s",
+                "ateng.boot.pay.wechat.http.write-timeout=10s",
                 "ateng.boot.pay.alipay.default-app=app1",
                 "ateng.boot.pay.alipay.apps.app1.app-id=2021000000000000",
-                "ateng.boot.pay.alipay.apps.app1.app-auth-token=token_abc_123"
+                "ateng.boot.pay.alipay.apps.app1.app-auth-token=token_abc_123",
+                "ateng.boot.pay.alipay.http.connect-timeout=3s",
+                "ateng.boot.pay.alipay.http.read-timeout=9s",
+                "ateng.boot.pay.alipay.http.write-timeout=12s"
         ).run(context -> {
             assertThat(context).hasSingleBean(PayProperties.class);
             PayProperties properties = context.getBean(PayProperties.class);
@@ -92,6 +104,13 @@ class PayPropertiesTest {
             assertThat(app1).isNotNull();
             assertThat(app1.getAppId()).isEqualTo("2021000000000000");
             assertThat(app1.getAppAuthToken()).isEqualTo("token_abc_123");
+
+            assertThat(properties.getWechat().getHttp().getConnectTimeout()).isEqualTo(Duration.ofSeconds(2));
+            assertThat(properties.getWechat().getHttp().getReadTimeout()).isEqualTo(Duration.ofSeconds(8));
+            assertThat(properties.getWechat().getHttp().getWriteTimeout()).isEqualTo(Duration.ofSeconds(10));
+            assertThat(properties.getAlipay().getHttp().getConnectTimeout()).isEqualTo(Duration.ofSeconds(3));
+            assertThat(properties.getAlipay().getHttp().getReadTimeout()).isEqualTo(Duration.ofSeconds(9));
+            assertThat(properties.getAlipay().getHttp().getWriteTimeout()).isEqualTo(Duration.ofSeconds(12));
         });
     }
 

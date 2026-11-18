@@ -812,4 +812,81 @@ class PayCallbackHandlerTest {
         params.put("sign", sign);
         return params;
     }
+
+    @Test
+    @DisplayName("微信回调: 配置平台公钥但缺失 wechatPayPublicKeyId 时快速失败而非回退请求头序列号")
+    void testWechatCallbackPublicKeyMissingIdFailFast() throws Exception {
+        var pubSrc = payProperties.getWechat().getMerchants().get("pubkey_mch");
+        var localProps = new PayProperties();
+        localProps.getWechat().setDefaultMerchant("pubkey_missing_id");
+        var broken = new io.github.atengk.boot.pay.config.properties.WechatMerchantProperties();
+        broken.setMchId("1900000089");
+        broken.setAppId(pubSrc.getAppId());
+        broken.setApiV3Key(pubSrc.getApiV3Key());
+        broken.setWechatPayPublicKeyPath(pubSrc.getWechatPayPublicKeyPath());
+        broken.setWechatPayPublicKeyId(null);
+        localProps.getWechat().getMerchants().put("pubkey_missing_id", broken);
+
+        var localHandler = new PayCallbackHandler(
+                new NamedMerchantRegistry(localProps), certificateManager, payLockManager, localProps, listeners);
+
+        String txJson = buildWechatTransactionJson("WX_PUBKEY_NOID", "WX_TX_NOID", 100, "openid", null);
+        Map<String, String> headers = new HashMap<>();
+        String body = buildWechatNotificationBody(txJson, headers, "PUB_KEY_ID_CALLBACK_001");
+
+        io.github.atengk.boot.pay.exception.PayException ex = assertThrows(
+                io.github.atengk.boot.pay.exception.PayException.class,
+                () -> localHandler.parseAndVerifyWechat("pubkey_missing_id", headers, body));
+        assertEquals(io.github.atengk.boot.pay.enums.PayResultCode.PAY_PARAM_INVALID, ex.getResultCode());
+    }
+
+    @Test
+    @DisplayName("微信回调灰度迁移: 开启公钥+autoCertificate 时双轨兼容公钥ID与平台证书序列号")
+    void testWechatCallbackGrayscaleMigrationCombinedVerification() throws Exception {
+        var pubSrc = payProperties.getWechat().getMerchants().get("pubkey_mch");
+        var localProps = new PayProperties();
+
+        // 1. 灰度双轨模式 (pubkey + autoCertificate=true)
+        String grayscaleMchId = "1900000090";
+        var grayscaleMch = new io.github.atengk.boot.pay.config.properties.WechatMerchantProperties();
+        grayscaleMch.setMchId(grayscaleMchId);
+        grayscaleMch.setAppId(pubSrc.getAppId());
+        grayscaleMch.setApiV3Key(pubSrc.getApiV3Key());
+        grayscaleMch.setWechatPayPublicKeyPath(pubSrc.getWechatPayPublicKeyPath());
+        grayscaleMch.setWechatPayPublicKeyId("PUB_KEY_ID_CALLBACK_001");
+        grayscaleMch.setAutoCertificate(true);
+        localProps.getWechat().getMerchants().put("grayscale_mch", grayscaleMch);
+
+        // 注册对应平台证书
+        var existingCert = certificateManager.getAvailableCertificate("1900000001");
+        String certSerial = existingCert.getSerialNumber().toString(16).toUpperCase();
+        certificateManager.registerCertificates(grayscaleMchId, Map.of(certSerial, existingCert));
+
+        // 2. 纯公钥模式 (autoCertificate=false) 拒绝旧平台证书序列号回调
+        var pubOnlyMch = new io.github.atengk.boot.pay.config.properties.WechatMerchantProperties();
+        pubOnlyMch.setMchId("1900000091");
+        pubOnlyMch.setAppId(pubSrc.getAppId());
+        pubOnlyMch.setApiV3Key(pubSrc.getApiV3Key());
+        pubOnlyMch.setWechatPayPublicKeyPath(pubSrc.getWechatPayPublicKeyPath());
+        pubOnlyMch.setWechatPayPublicKeyId("PUB_KEY_ID_CALLBACK_001");
+        pubOnlyMch.setAutoCertificate(false);
+        localProps.getWechat().getMerchants().put("pubkey_only_mch", pubOnlyMch);
+        certificateManager.registerCertificates("1900000091", Map.of(certSerial, existingCert));
+
+        var localHandler = new PayCallbackHandler(
+                new NamedMerchantRegistry(localProps), certificateManager, payLockManager, localProps, listeners);
+
+        String txPubJson = buildWechatTransactionJson("WX_GRAY_PUB_01", "WX_TX_GP_1", 500, "openid_p", null);
+        Map<String, String> pubHeaders = new HashMap<>();
+        String pubBody = buildWechatNotificationBody(txPubJson, pubHeaders, "PUB_KEY_ID_CALLBACK_001");
+        assertEquals("WX_GRAY_PUB_01", localHandler.parseAndVerifyWechat("grayscale_mch", pubHeaders, pubBody).getOutTradeNo());
+
+        String txCertJson = buildWechatTransactionJson("WX_GRAY_CERT_01", "WX_TX_GC_1", 600, "openid_c", null);
+        Map<String, String> certHeaders = new HashMap<>();
+        String certBody = buildWechatNotificationBody(txCertJson, certHeaders, certSerial);
+        assertEquals("WX_GRAY_CERT_01", localHandler.parseAndVerifyWechat("grayscale_mch", certHeaders, certBody).getOutTradeNo());
+
+        assertThrows(PaySignException.class,
+                () -> localHandler.parseAndVerifyWechat("pubkey_only_mch", certHeaders, certBody));
+    }
 }

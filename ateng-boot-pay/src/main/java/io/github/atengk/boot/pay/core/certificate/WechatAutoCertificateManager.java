@@ -1,11 +1,28 @@
 package io.github.atengk.boot.pay.core.certificate;
 
+import com.wechat.pay.java.core.auth.Credential;
+import com.wechat.pay.java.core.auth.Validator;
+import com.wechat.pay.java.core.auth.WechatPay2Credential;
+import com.wechat.pay.java.core.certificate.CertificateDownloader;
+import com.wechat.pay.java.core.certificate.CertificateHandler;
+import com.wechat.pay.java.core.certificate.CertificateProvider;
+import com.wechat.pay.java.core.cipher.AeadAesCipher;
+import com.wechat.pay.java.core.cipher.RSASigner;
+import com.wechat.pay.java.core.http.DefaultHttpClientBuilder;
+import com.wechat.pay.java.core.http.HttpClient;
+import com.wechat.pay.java.core.http.HttpHeaders;
+import com.wechat.pay.java.core.util.PemUtil;
+import io.github.atengk.boot.pay.config.properties.PayHttpProperties;
+import io.github.atengk.boot.pay.config.properties.WechatMerchantProperties;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.exception.PaySignException;
+import io.github.atengk.boot.pay.util.PayKeyLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 
+import java.nio.charset.StandardCharsets;
+import java.security.PrivateKey;
 import java.security.cert.CertificateExpiredException;
 import java.security.cert.CertificateNotYetValidException;
 import java.security.cert.X509Certificate;
@@ -15,6 +32,7 @@ import java.util.Date;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 /**
  * 微信支付平台证书自动定时轮换与生命周期管理器
@@ -35,6 +53,29 @@ public class WechatAutoCertificateManager implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(WechatAutoCertificateManager.class);
     private static final Duration DEFAULT_REFRESH_INTERVAL = Duration.ofHours(1);
+    private static final String CERT_DOWNLOAD_URL = "https://api.mch.weixin.qq.com/v3/certificates?algorithm_type=RSA";
+    private static final CertificateHandler RSA_CERTIFICATE_HANDLER = new CertificateHandler() {
+        @Override
+        public X509Certificate generateCertificate(String certificate) {
+            return PemUtil.loadX509FromString(certificate);
+        }
+
+        @Override
+        public void validateCertPath(X509Certificate certificate) {
+            // 证书完整性已由 APIv3 密钥 AEAD-AES-256-GCM 解密校验
+        }
+    };
+    private static final Validator BOOTSTRAP_VALIDATOR = new Validator() {
+        @Override
+        public <T> boolean validate(HttpHeaders responseHeaders, String responseBody) {
+            return true;
+        }
+
+        @Override
+        public <T> String getSerialNumber() {
+            return "";
+        }
+    };
 
     /**
      * 商户证书缓存表：merchantId -> (serialNumber -> X509Certificate)
@@ -102,6 +143,125 @@ public class WechatAutoCertificateManager implements DisposableBean {
             return;
         }
         downloadTaskMap.put(merchantId, downloadTask);
+        runInitialFetchSafely(merchantId, downloadTask);
+    }
+
+    /**
+     * 幂等注册商户定时下载任务：仅在商户尚未注册下载任务且当前无已缓存证书时立即执行初始拉取
+     *
+     * @param merchantId   微信商户号
+     * @param downloadTask 证书拉取任务闭包
+     */
+    public void registerMerchantIfAbsent(String merchantId, Runnable downloadTask) {
+        if (merchantId == null || merchantId.isBlank() || downloadTask == null) {
+            return;
+        }
+        if (downloadTaskMap.putIfAbsent(merchantId, downloadTask) == null && !hasCertificates(merchantId)) {
+            runInitialFetchSafely(merchantId, downloadTask);
+        }
+    }
+
+    /**
+     * 当商户配置启用了自动平台证书下载且凭据完备时，幂等注册官方 {@code /v3/certificates} 下载轮换任务
+     *
+     * @param merchant                 微信商户配置
+     * @param httpProps                HTTP 超时配置（可空，默认兜底）
+     * @param customHttpClientSupplier 自定义 HttpClient 提供器（可空，主要用于测试桩注入）
+     */
+    public void registerMerchantIfReady(WechatMerchantProperties merchant,
+                                        PayHttpProperties httpProps,
+                                        Supplier<HttpClient> customHttpClientSupplier) {
+        if (merchant == null || !merchant.isAutoCertificate()) {
+            return;
+        }
+        String merchantId = merchant.getMchId();
+        if (merchantId == null || merchantId.isBlank() || downloadTaskMap.containsKey(merchantId)) {
+            return;
+        }
+        String serialNumber = merchant.getMerchantSerialNumber();
+        String apiV3Key = merchant.getApiV3Key();
+        String keySource = merchant.resolvePrivateKeySource();
+        if (serialNumber == null || serialNumber.isBlank()
+                || apiV3Key == null || apiV3Key.isBlank()
+                || keySource == null) {
+            return;
+        }
+
+        PayHttpProperties effectiveHttp = PayHttpProperties.orDefault(httpProps);
+        // 每个商户仅构建一次默认 HTTP 下载客户端并在周期轮换中复用连接池，避免重复创建泄露资源
+        HttpClient reusableDefaultClient = customHttpClientSupplier == null
+                ? buildBootstrapDownloadClient(merchantId, serialNumber, keySource, effectiveHttp)
+                : null;
+        Runnable task = () -> {
+            HttpClient customClient = customHttpClientSupplier != null ? customHttpClientSupplier.get() : null;
+            HttpClient downloadClient = customClient != null
+                    ? customClient
+                    : (reusableDefaultClient != null
+                            ? reusableDefaultClient
+                            : buildBootstrapDownloadClient(merchantId, serialNumber, keySource, effectiveHttp));
+
+            CertificateDownloader downloader = new CertificateDownloader.Builder()
+                    .downloadUrl(CERT_DOWNLOAD_URL)
+                    .httpClient(downloadClient)
+                    .aeadCipher(new AeadAesCipher(apiV3Key.getBytes(StandardCharsets.UTF_8)))
+                    .certificateHandler(RSA_CERTIFICATE_HANDLER)
+                    .build();
+            Map<String, X509Certificate> downloaded = downloader.download();
+            registerCertificates(merchantId, downloaded);
+        };
+        registerMerchantIfAbsent(merchantId, task);
+    }
+
+    private HttpClient buildBootstrapDownloadClient(String merchantId,
+                                                    String serialNumber,
+                                                    String keySource,
+                                                    PayHttpProperties effectiveHttp) {
+        PrivateKey privateKey = PayKeyLoader.loadPrivateKey(keySource);
+        Credential credential = new WechatPay2Credential(merchantId, new RSASigner(serialNumber, privateKey));
+        return new DefaultHttpClientBuilder()
+                .credential(credential)
+                .validator(BOOTSTRAP_VALIDATOR)
+                .connectTimeoutMs(effectiveHttp.resolveConnectTimeoutMs())
+                .readTimeoutMs(effectiveHttp.resolveReadTimeoutMs())
+                .writeTimeoutMs(effectiveHttp.resolveWriteTimeoutMs())
+                .build();
+    }
+
+    /**
+     * 构建绑定指定商户号的官方 SDK {@link CertificateProvider} 适配器
+     *
+     * @param merchantId 微信商户号
+     * @return CertificateProvider 实例
+     */
+    public CertificateProvider buildCertificateProvider(String merchantId) {
+        return new CertificateProvider() {
+            @Override
+            public X509Certificate getCertificate(String serialNumber) {
+                return WechatAutoCertificateManager.this.getCertificate(merchantId, serialNumber);
+            }
+
+            @Override
+            public X509Certificate getAvailableCertificate() {
+                return WechatAutoCertificateManager.this.getAvailableCertificate(merchantId);
+            }
+        };
+    }
+
+    /**
+     * 判断指定商户当前是否已存在缓存证书
+     *
+     * @param merchantId 微信商户号
+     * @return true 已缓存至少一张证书
+     */
+    public boolean hasCertificates(String merchantId) {
+        if (merchantId == null || merchantId.isBlank()) {
+            return false;
+        }
+        ConcurrentHashMap<String, X509Certificate> cached = certificateCache.get(merchantId);
+        return cached != null && !cached.isEmpty();
+    }
+
+    private void runInitialFetchSafely(String merchantId, Runnable downloadTask) {
         try {
             downloadTask.run();
             log.info("Successfully executed initial certificate fetch for merchant [{}]", merchantId);

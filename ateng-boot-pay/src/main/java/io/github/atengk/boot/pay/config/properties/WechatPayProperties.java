@@ -41,6 +41,12 @@ public class WechatPayProperties implements Serializable {
     private Map<String, WechatMerchantProperties> merchants = new HashMap<>();
 
     /**
+     * HTTP 客户端网络超时配置
+     */
+    @NestedConfigurationProperty
+    private PayHttpProperties http = new PayHttpProperties();
+
+    /**
      * 微信线下条码付撤销冲正重试配置
      */
     @NestedConfigurationProperty

@@ -57,6 +57,7 @@ import com.wechat.pay.java.service.transferbatch.model.*;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
+import io.github.atengk.boot.pay.config.properties.PayHttpProperties;
 import io.github.atengk.boot.pay.config.properties.PayProfitSharingProperties;
 import io.github.atengk.boot.pay.config.properties.PayProperties;
 import io.github.atengk.boot.pay.config.properties.PayTransferProperties;
@@ -274,7 +275,7 @@ public class WechatPayTemplate {
         WechatMerchantProperties merchantProps = resolveMerchant(request);
         WechatServiceHolder holder = getServiceHolder(merchantProps);
         boolean isPartner = isPartnerMode(merchantProps, request);
-        long fen = CurrencyUtil.yuanToFen(request.getAmount());
+        int fen = CurrencyUtil.yuanToFenInt(request.getAmount());
         String notifyUrl = resolveNotifyUrl(merchantProps, request);
 
         return executeWithExceptionTranslation("payNative", () -> {
@@ -296,7 +297,7 @@ public class WechatPayTemplate {
 
                 com.wechat.pay.java.service.partnerpayments.nativepay.model.Amount amount =
                         new com.wechat.pay.java.service.partnerpayments.nativepay.model.Amount();
-                amount.setTotal((int) fen);
+                amount.setTotal(fen);
                 amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
                 prepayReq.setAmount(amount);
 
@@ -336,7 +337,7 @@ public class WechatPayTemplate {
 
                 com.wechat.pay.java.service.payments.nativepay.model.Amount amount =
                         new com.wechat.pay.java.service.payments.nativepay.model.Amount();
-                amount.setTotal((int) fen);
+                amount.setTotal(fen);
                 amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
                 prepayReq.setAmount(amount);
 
@@ -381,7 +382,7 @@ public class WechatPayTemplate {
         WechatMerchantProperties merchantProps = resolveMerchant(request);
         WechatServiceHolder holder = getServiceHolder(merchantProps);
         boolean isPartner = isPartnerMode(merchantProps, request);
-        long fen = CurrencyUtil.yuanToFen(request.getAmount());
+        int fen = CurrencyUtil.yuanToFenInt(request.getAmount());
         String notifyUrl = resolveNotifyUrl(merchantProps, request);
 
         if (!isPartner && (request.getOpenid() == null || request.getOpenid().isBlank())) {
@@ -413,7 +414,7 @@ public class WechatPayTemplate {
 
                 com.wechat.pay.java.service.partnerpayments.jsapi.model.Amount amount =
                         new com.wechat.pay.java.service.partnerpayments.jsapi.model.Amount();
-                amount.setTotal((int) fen);
+                amount.setTotal(fen);
                 amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
                 prepayReq.setAmount(amount);
 
@@ -477,7 +478,7 @@ public class WechatPayTemplate {
 
                 com.wechat.pay.java.service.payments.jsapi.model.Amount amount =
                         new com.wechat.pay.java.service.payments.jsapi.model.Amount();
-                amount.setTotal((int) fen);
+                amount.setTotal(fen);
                 amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
                 prepayReq.setAmount(amount);
 
@@ -538,7 +539,7 @@ public class WechatPayTemplate {
         WechatMerchantProperties merchantProps = resolveMerchant(request);
         WechatServiceHolder holder = getServiceHolder(merchantProps);
         boolean isPartner = isPartnerMode(merchantProps, request);
-        long fen = CurrencyUtil.yuanToFen(request.getAmount());
+        int fen = CurrencyUtil.yuanToFenInt(request.getAmount());
         String notifyUrl = resolveNotifyUrl(merchantProps, request);
 
         return executeWithExceptionTranslation("payH5", () -> {
@@ -560,7 +561,7 @@ public class WechatPayTemplate {
 
                 com.wechat.pay.java.service.partnerpayments.h5.model.Amount amount =
                         new com.wechat.pay.java.service.partnerpayments.h5.model.Amount();
-                amount.setTotal((int) fen);
+                amount.setTotal(fen);
                 amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
                 prepayReq.setAmount(amount);
 
@@ -609,7 +610,7 @@ public class WechatPayTemplate {
 
                 com.wechat.pay.java.service.payments.h5.model.Amount amount =
                         new com.wechat.pay.java.service.payments.h5.model.Amount();
-                amount.setTotal((int) fen);
+                amount.setTotal(fen);
                 amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
                 prepayReq.setAmount(amount);
 
@@ -661,7 +662,7 @@ public class WechatPayTemplate {
         WechatMerchantProperties merchantProps = resolveMerchant(request);
         WechatServiceHolder holder = getServiceHolder(merchantProps);
         boolean isPartner = isPartnerMode(merchantProps, request);
-        long fen = CurrencyUtil.yuanToFen(request.getAmount());
+        int fen = CurrencyUtil.yuanToFenInt(request.getAmount());
         String notifyUrl = resolveNotifyUrl(merchantProps, request);
 
         return executeWithExceptionTranslation("payApp", () -> {
@@ -685,7 +686,7 @@ public class WechatPayTemplate {
 
                 com.wechat.pay.java.service.partnerpayments.app.model.Amount amount =
                         new com.wechat.pay.java.service.partnerpayments.app.model.Amount();
-                amount.setTotal((int) fen);
+                amount.setTotal(fen);
                 amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
                 prepayReq.setAmount(amount);
 
@@ -738,7 +739,7 @@ public class WechatPayTemplate {
 
                 com.wechat.pay.java.service.payments.app.model.Amount amount =
                         new com.wechat.pay.java.service.payments.app.model.Amount();
-                amount.setTotal((int) fen);
+                amount.setTotal(fen);
                 amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
                 prepayReq.setAmount(amount);
 
@@ -798,7 +799,7 @@ public class WechatPayTemplate {
         WechatMerchantProperties merchantProps = resolveMerchant(request);
         WechatServiceHolder holder = getServiceHolder(merchantProps);
         boolean isPartner = isPartnerMode(merchantProps, request);
-        long fen = CurrencyUtil.yuanToFen(request.getAmount());
+        int fen = CurrencyUtil.yuanToFenInt(request.getAmount());
 
         return executeWithExceptionTranslation("payBarcode", () -> {
             String url = isPartner ? PARTNER_CODEPAY_URL : DIRECT_CODEPAY_URL;
@@ -2622,21 +2623,23 @@ public class WechatPayTemplate {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信商户证书序列号 [merchantSerialNumber] 不能为空");
         }
 
-        String keySource = props.getPrivateKeyPem() != null && !props.getPrivateKeyPem().isBlank()
-                ? props.getPrivateKeyPem()
-                : props.getPrivateKeyPath();
-        if (keySource == null || keySource.isBlank()) {
+        String keySource = props.resolvePrivateKeySource();
+        if (keySource == null) {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信商户私钥 [privateKeyPem / privateKeyPath] 不能为空");
         }
         PrivateKey privateKey = PayKeyLoader.loadPrivateKey(keySource);
+
+        PayHttpProperties httpProps = PayHttpProperties.orDefault(
+                payProperties.getWechat() != null ? payProperties.getWechat().getHttp() : null);
+        int connectTimeoutMs = httpProps.resolveConnectTimeoutMs();
+        int readTimeoutMs = httpProps.resolveReadTimeoutMs();
+        int writeTimeoutMs = httpProps.resolveWriteTimeoutMs();
 
         Config config;
         if (props.hasPublicKey()) {
             String pubKeySource = props.resolvePublicKeySource();
             PublicKey pubKey = PayKeyLoader.loadPublicKey(pubKeySource);
-            String pubKeyId = props.getWechatPayPublicKeyId() != null && !props.getWechatPayPublicKeyId().isBlank()
-                    ? props.getWechatPayPublicKeyId()
-                    : serialNumber;
+            String pubKeyId = props.requirePublicKeyId();
             RSAPublicKeyConfig.Builder builder = new RSAPublicKeyConfig.Builder()
                     .merchantId(merchantId)
                     .privateKey(privateKey)
@@ -2648,23 +2651,19 @@ public class WechatPayTemplate {
             }
             config = builder.build();
         } else {
-            CertificateProvider certProvider = new CertificateProvider() {
-                @Override
-                public X509Certificate getCertificate(String serialNumber) {
-                    return wechatAutoCertificateManager.getCertificate(merchantId, serialNumber);
-                }
-
-                @Override
-                public X509Certificate getAvailableCertificate() {
-                    return wechatAutoCertificateManager.getAvailableCertificate(merchantId);
-                }
-            };
+            wechatAutoCertificateManager.registerMerchantIfReady(props, httpProps, () -> this.customHttpClient);
+            CertificateProvider certProvider = wechatAutoCertificateManager.buildCertificateProvider(merchantId);
             config = new AbstractRSAConfig(merchantId, privateKey, serialNumber, certProvider) {};
         }
 
         HttpClient httpClient = customHttpClient != null
                 ? customHttpClient
-                : new DefaultHttpClientBuilder().config(config).build();
+                : new DefaultHttpClientBuilder()
+                        .config(config)
+                        .connectTimeoutMs(connectTimeoutMs)
+                        .readTimeoutMs(readTimeoutMs)
+                        .writeTimeoutMs(writeTimeoutMs)
+                        .build();
 
         return new WechatServiceHolder(config, httpClient);
     }

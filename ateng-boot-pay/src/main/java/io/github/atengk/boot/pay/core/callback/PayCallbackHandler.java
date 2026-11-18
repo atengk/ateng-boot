@@ -1,8 +1,11 @@
 package io.github.atengk.boot.pay.core.callback;
 
 import com.alipay.api.internal.util.AlipaySignature;
+import com.wechat.pay.java.core.certificate.CertificateProvider;
+import com.wechat.pay.java.core.cipher.AeadAesCipher;
 import com.wechat.pay.java.core.exception.DecryptionException;
 import com.wechat.pay.java.core.exception.ValidationException;
+import com.wechat.pay.java.core.notification.AbstractNotificationConfig;
 import com.wechat.pay.java.core.notification.NotificationParser;
 import com.wechat.pay.java.core.notification.RSANotificationConfig;
 import com.wechat.pay.java.core.notification.RSAPublicKeyNotificationConfig;
@@ -10,6 +13,7 @@ import com.wechat.pay.java.core.notification.RequestParam;
 import com.wechat.pay.java.service.payments.model.Transaction;
 import com.wechat.pay.java.service.refund.model.RefundNotification;
 import io.github.atengk.boot.pay.config.properties.AlipayAppProperties;
+import io.github.atengk.boot.pay.config.properties.PayHttpProperties;
 import io.github.atengk.boot.pay.config.properties.PayProperties;
 import io.github.atengk.boot.pay.config.properties.WechatMerchantProperties;
 import io.github.atengk.boot.pay.core.certificate.WechatAutoCertificateManager;
@@ -357,13 +361,32 @@ public class PayCallbackHandler {
      * 构建微信通知解析器（优先静态平台公钥，回退证书自动管理器与配置证书）
      */
     private NotificationParser createWechatNotificationParser(WechatMerchantProperties merchant, String serialNumber) {
-        // 1. 若配置了微信平台公钥（静态公钥模式）
+        PayHttpProperties httpProps = PayHttpProperties.orDefault(
+                payProperties.getWechat() != null ? payProperties.getWechat().getHttp() : null);
+
+        // 1. 若配置了微信平台公钥（支持灰度双轨模式：publicKey + autoCertificate=true）
+        if (merchant.getApiV3Key() == null || merchant.getApiV3Key().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信支付 APIv3 密钥 [apiV3Key] 不能为空");
+        }
         if (merchant.hasPublicKey()) {
             String pubKeySource = merchant.resolvePublicKeySource();
             PublicKey pubKey = PayKeyLoader.loadPublicKey(pubKeySource);
-            String publicKeyId = merchant.getWechatPayPublicKeyId() != null && !merchant.getWechatPayPublicKeyId().isBlank()
-                    ? merchant.getWechatPayPublicKeyId()
-                    : serialNumber;
+            String publicKeyId = merchant.requirePublicKeyId();
+            if (merchant.isAutoCertificate() && wechatAutoCertificateManager != null) {
+                wechatAutoCertificateManager.registerMerchantIfReady(merchant, httpProps, null);
+                CertificateProvider certProvider =
+                        wechatAutoCertificateManager.buildCertificateProvider(merchant.getMchId());
+                AeadAesCipher aeadCipher =
+                        new AeadAesCipher(merchant.getApiV3Key().getBytes(StandardCharsets.UTF_8));
+                AbstractNotificationConfig grayscaleConfig = new AbstractNotificationConfig(
+                        "WECHATPAY2-SHA256-RSA2048",
+                        "AEAD_AES_256_GCM",
+                        certProvider,
+                        pubKey,
+                        publicKeyId,
+                        aeadCipher) {};
+                return new NotificationParser(grayscaleConfig);
+            }
             RSAPublicKeyNotificationConfig config = new RSAPublicKeyNotificationConfig.Builder()
                     .publicKey(pubKey)
                     .publicKeyId(publicKeyId)
@@ -373,6 +396,9 @@ public class PayCallbackHandler {
         }
 
         // 2. 平台证书模式
+        if (wechatAutoCertificateManager != null) {
+            wechatAutoCertificateManager.registerMerchantIfReady(merchant, httpProps, null);
+        }
         X509Certificate cert = null;
         if (wechatAutoCertificateManager != null) {
             try {

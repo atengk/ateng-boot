@@ -801,6 +801,20 @@ class WechatPayTemplateTest {
         assertEquals(PayResultCode.PAY_PARAM_INVALID, ex4.getResultCode());
     }
 
+    @Test
+    @DisplayName("payNative: 超出 32 位整型分上限金额快速拦截防止静默截断")
+    void testPayNativeAmountOverflowGuard() {
+        WechatPayRequest overflowReq = WechatPayRequest.builder()
+                .outTradeNo("OVERFLOW_20261118_001")
+                .description("大额防溢出校验商品")
+                .amount(new BigDecimal("21474836.48"))
+                .build();
+
+        PayException ex = assertThrows(PayException.class, () -> payTemplate.payNative(overflowReq));
+        assertEquals(PayResultCode.PAY_AMOUNT_INVALID, ex.getResultCode());
+        assertEquals(0, server.getRequestCount(), "金额溢出必须在调用网关前前置阻断");
+    }
+
     // =========================================================================
     // 10. 资金分账单元测试 (Profit Sharing)
     // =========================================================================
@@ -1235,6 +1249,180 @@ class WechatPayTemplateTest {
         assertTrue(response.isSuccess());
         assertEquals("weixin://wxpay/bizpayurl?pr=mock_pubkey_qr", response.getQrCode());
         assertEquals(new BigDecimal("88.88"), response.getAmount());
+    }
+
+    @Test
+    @DisplayName("网络超时防悬挂: 微信 HttpProperties 读取超时真实作用于构建出的 HttpClient 并验证非法超时 Fail-Fast")
+    void testWechatHttpTimeoutTakesEffectAndValidation() {
+        PayProperties fastProps = new PayProperties();
+        fastProps.getWechat().getHttp().setConnectTimeout(Duration.ofMillis(500));
+        fastProps.getWechat().getHttp().setReadTimeout(Duration.ofMillis(200));
+        fastProps.getWechat().getHttp().setWriteTimeout(Duration.ofMillis(500));
+        fastProps.getWechat().setDefaultMerchant("fast");
+
+        WechatMerchantProperties mch = new WechatMerchantProperties();
+        mch.setMchId("1900000099");
+        mch.setAppId("wx_fast_app");
+        mch.setMerchantSerialNumber(testCertSerial);
+        mch.setPrivateKeyPath(CLASSPATH_KEY);
+        fastProps.getWechat().getMerchants().put("fast", mch);
+
+        certificateManager.registerCertificates("1900000099", Map.of(testCertSerial, testCert));
+        WechatPayTemplate fastTemplate = new WechatPayTemplate(
+                new NamedMerchantRegistry(fastProps), certificateManager, fastProps);
+
+        server.enqueue(new MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE));
+        HttpClient builtClient = fastTemplate.getHttpClient("fast");
+        long startNanos = System.nanoTime();
+        assertThrows(com.wechat.pay.java.core.exception.HttpException.class,
+                () -> builtClient.download(server.url("/v3/slow-timeout-probe").toString()));
+        long elapsedMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+        assertTrue(elapsedMs < 3000, "微信 200ms 读取超时必须生效，实际耗时: " + elapsedMs + "ms");
+
+        // 非法 <= 0 超时配置必须 Fail-Fast
+        PayProperties badProps = new PayProperties();
+        badProps.getWechat().getHttp().setReadTimeout(Duration.ZERO);
+        badProps.getWechat().setDefaultMerchant("bad");
+        badProps.getWechat().getMerchants().put("bad", mch);
+        WechatPayTemplate badTemplate = new WechatPayTemplate(
+                new NamedMerchantRegistry(badProps), certificateManager, badProps);
+        PayException ex = assertThrows(PayException.class, () -> badTemplate.getHttpClient("bad"));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex.getResultCode());
+    }
+
+    @Test
+    @DisplayName("微信公钥ID强校验: 配置公钥但缺失 wechatPayPublicKeyId 时快速失败而非回退商户序列号")
+    void testWechatPublicKeyMissingIdFailFast() {
+        PayProperties props = new PayProperties();
+        props.getWechat().setDefaultMerchant("pubkey_missing_id");
+        WechatMerchantProperties broken = new WechatMerchantProperties();
+        broken.setMchId("1900000087");
+        broken.setAppId("wx_pubkey_app");
+        broken.setMerchantSerialNumber(testCertSerial);
+        broken.setPrivateKeyPath(CLASSPATH_KEY);
+        broken.setWechatPayPublicKeyPath("classpath:certs/test_public_key.pem");
+        broken.setWechatPayPublicKeyId("   ");
+        props.getWechat().getMerchants().put("pubkey_missing_id", broken);
+
+        WechatPayTemplate brokenTemplate = new WechatPayTemplate(
+                new NamedMerchantRegistry(props), certificateManager, props);
+        PayException ex = assertThrows(PayException.class, () -> brokenTemplate.getWechatConfig("pubkey_missing_id"));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex.getResultCode());
+    }
+
+    @Test
+    @DisplayName("自动平台证书下载与生命周期: 未预置证书时通过 /v3/certificates 下载解密并支持 destroy 清理")
+    void testWechatAutoCertificateDownloadAndDestroyLifecycle() throws Exception {
+        String autoMchId = "1900000088";
+        PayProperties autoProps = new PayProperties();
+        autoProps.getWechat().setDefaultMerchant("auto_mch");
+        WechatMerchantProperties autoMch = new WechatMerchantProperties();
+        autoMch.setMchId(autoMchId);
+        autoMch.setAppId("wx_auto_app");
+        autoMch.setMerchantSerialNumber(testCertSerial);
+        autoMch.setPrivateKeyPath(CLASSPATH_KEY);
+        autoMch.setApiV3Key("0123456789ABCDEF0123456789ABCDEF");
+        autoMch.setNotifyUrl("https://example.com/pay/callback/wechat");
+        autoMch.setAutoCertificate(true);
+        autoProps.getWechat().getMerchants().put("auto_mch", autoMch);
+
+        WechatAutoCertificateManager autoCertManager = new WechatAutoCertificateManager(Duration.ofMinutes(10));
+        WechatPayTemplate autoTemplate = new WechatPayTemplate(
+                new NamedMerchantRegistry(autoProps), autoCertManager, autoProps);
+        try {
+            okhttp3.OkHttpClient redirectOkHttpClient = new okhttp3.OkHttpClient.Builder()
+                    .addInterceptor(chain -> {
+                        okhttp3.Request orig = chain.request();
+                        okhttp3.HttpUrl newUrl = orig.url().newBuilder()
+                                .scheme("http")
+                                .host(server.getHostName())
+                                .port(server.getPort())
+                                .build();
+                        return chain.proceed(orig.newBuilder().url(newUrl).build());
+                    })
+                    .build();
+            com.wechat.pay.java.core.auth.Credential cred = new com.wechat.pay.java.core.auth.WechatPay2Credential(
+                    autoMchId, new com.wechat.pay.java.core.cipher.RSASigner(testCertSerial, testPrivateKey));
+            com.wechat.pay.java.core.auth.Validator bootstrapValidator = new com.wechat.pay.java.core.auth.Validator() {
+                @Override
+                public <T> boolean validate(com.wechat.pay.java.core.http.HttpHeaders responseHeaders, String responseBody) {
+                    return true;
+                }
+
+                @Override
+                public <T> String getSerialNumber() {
+                    return testCertSerial;
+                }
+            };
+            HttpClient mockAutoClient = new DefaultHttpClientBuilder()
+                    .credential(cred)
+                    .validator(bootstrapValidator)
+                    .okHttpClient(redirectOkHttpClient)
+                    .build();
+            autoTemplate.setCustomHttpClient(mockAutoClient);
+
+            // 构造加密后的 /v3/certificates 平台证书响应（AEAD_AES_256_GCM）
+            String certPem = "-----BEGIN CERTIFICATE-----\n"
+                    + Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.UTF_8)).encodeToString(testCert.getEncoded())
+                    + "\n-----END CERTIFICATE-----";
+            String nonce = "cert_nonce_12";
+            String associatedData = "certificate";
+            javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(javax.crypto.Cipher.ENCRYPT_MODE,
+                    new javax.crypto.spec.SecretKeySpec(autoMch.getApiV3Key().getBytes(StandardCharsets.UTF_8), "AES"),
+                    new javax.crypto.spec.GCMParameterSpec(128, nonce.getBytes(StandardCharsets.UTF_8)));
+            cipher.updateAAD(associatedData.getBytes(StandardCharsets.UTF_8));
+            String ciphertext = Base64.getEncoder().encodeToString(cipher.doFinal(certPem.getBytes(StandardCharsets.UTF_8)));
+
+            String certRespBody = "{"
+                    + "\"data\":[{"
+                    + "\"serial_no\":\"" + testCertSerial + "\","
+                    + "\"effective_time\":\"2026-01-01T00:00:00+08:00\","
+                    + "\"expire_time\":\"2030-01-01T00:00:00+08:00\","
+                    + "\"encrypt_certificate\":{"
+                    + "\"algorithm\":\"AEAD_AES_256_GCM\","
+                    + "\"nonce\":\"" + nonce + "\","
+                    + "\"associated_data\":\"" + associatedData + "\","
+                    + "\"ciphertext\":\"" + ciphertext + "\""
+                    + "}"
+                    + "}]"
+                    + "}";
+
+            server.enqueue(mockResponse(200, certRespBody));
+            server.enqueue(mockResponse(200, "{\"code_url\":\"weixin://wxpay/bizpayurl?pr=auto_cert_ok\"}"));
+            server.enqueue(mockResponse(200, certRespBody));
+
+            WechatPayRequest request = WechatPayRequest.builder()
+                    .merchantKey("auto_mch")
+                    .outTradeNo("AUTO_CERT_20261118_01")
+                    .description("自动证书下载测试")
+                    .amount(new BigDecimal("12.34"))
+                    .build();
+
+            PayResponse response = autoTemplate.payNative(request);
+            assertTrue(response.isSuccess());
+            assertEquals("weixin://wxpay/bizpayurl?pr=auto_cert_ok", response.getQrCode());
+            assertNotNull(autoCertManager.getCertificate(autoMchId, testCertSerial));
+
+            RecordedRequest firstReq = server.takeRequest();
+            RecordedRequest secondReq = server.takeRequest();
+            assertTrue(firstReq.getPath().startsWith("/v3/certificates"));
+            assertTrue(secondReq.getPath().contains("/v3/pay/transactions/native"));
+
+            // 触发证书刷新更新并验证 HTTP 模拟桩再次拉取
+            autoCertManager.refreshCertificate(autoMchId);
+            RecordedRequest refreshReq = server.takeRequest();
+            assertTrue(refreshReq.getPath().startsWith("/v3/certificates"));
+            assertNotNull(autoCertManager.getAvailableCertificate(autoMchId));
+
+            // 销毁生命周期后校验缓存与任务已彻底清理
+            autoCertManager.destroy();
+            assertFalse(autoCertManager.hasCertificates(autoMchId));
+            assertThrows(io.github.atengk.boot.pay.exception.PaySignException.class,
+                    () -> autoCertManager.getAvailableCertificate(autoMchId));
+        } finally {
+            autoCertManager.destroy();
+        }
     }
 
     // =========================================================================

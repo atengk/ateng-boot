@@ -145,8 +145,12 @@ _Avoid_: 买家账号, openid, 支付宝账号
 _Avoid_: 商户工厂, 商户缓存, 多账号管理器, MerchantService
 
 **Pay Context Holder (支付上下文持有者)**:
-基于 ThreadLocal 维护当前线程级商户切源别名（MerchantKey），为多租户与微服务环境提供透明请求级商户切源与隔离支持的上下文持有者。
+基于 ThreadLocal 维护当前线程级商户与支付宝应用路由键（MerchantKey），为多租户与微服务环境提供透明请求级商户切源与隔离支持的上下文持有者。
 _Avoid_: 租户切源器, 商户上下文, PayThreadLocal, MerchantHolder
+
+**Merchant Key (商户路由键)**:
+商户注册表中用于标识、路由和热切换不同渠道账号配置的逻辑别名或兼容商户/应用标识，区别于第三方渠道原生清算主号（MchId / SpMchId / SubMchId / AppId）。
+_Avoid_: 商户密钥键, 路由Tag, 账号别名
 
 **Pay Certificate Provider (支付证书扩展提供器)**:
 用于对接外部 KMS、HashiCorp Vault、加密数据库或云存储以动态解密和加载商户私钥与证书的 SPI 扩展契约。
@@ -155,3 +159,7 @@ _Avoid_: 证书加载器, 私钥解密器, 证书SPI, KeyStoreHelper
 **Pay Lock Manager (双轨并发防重排队锁管理器)**:
 在 Webhook 回调入站时基于交易流水号与退款单号提供并发排队锁的门面组件，优先装配 Redis 分布式锁并在无 Redis 时无感以本地内存并发锁保底，并在回调完成后于 `finally` 块防御性安全释放。
 _Avoid_: 回调锁, 防并发组件, 支付互斥锁, LockHelper
+
+**Public Key Grayscale Migration (微信平台证书公钥灰度切换)**:
+微信商户由 5 年周期平台证书向静态微信支付平台公钥平滑过渡期间的混合运行阶段，该阶段回调验签可能同时接收平台证书序列号与公钥标识签名，需要支持双模并发校验。
+_Avoid_: 证书迁移, 公钥替换期, 混合签名

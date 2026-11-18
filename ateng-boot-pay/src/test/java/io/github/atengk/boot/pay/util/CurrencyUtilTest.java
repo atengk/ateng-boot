@@ -45,6 +45,20 @@ class CurrencyUtilTest {
     }
 
     @Test
+    @DisplayName("元转整型分 - 边界值与 32 位整型溢出拦截测试")
+    void testYuanToFenIntOverflowGuard() {
+        assertThat(CurrencyUtil.yuanToFenInt(new BigDecimal("21474836.47"))).isEqualTo(Integer.MAX_VALUE);
+
+        assertThatThrownBy(() -> CurrencyUtil.yuanToFenInt(new BigDecimal("21474836.48")))
+                .isInstanceOf(PayException.class)
+                .hasFieldOrPropertyWithValue("resultCode", PayResultCode.PAY_AMOUNT_INVALID);
+
+        assertThatThrownBy(() -> CurrencyUtil.yuanToFenInt(new BigDecimal("99999999.99")))
+                .isInstanceOf(PayException.class)
+                .hasFieldOrPropertyWithValue("resultCode", PayResultCode.PAY_AMOUNT_INVALID);
+    }
+
+    @Test
     @DisplayName("分转元 - 正常精准转换与精度保留测试")
     void testFenToYuanNormal() {
         assertThat(CurrencyUtil.fenToYuan(100L)).isEqualByComparingTo(new BigDecimal("1.00"));

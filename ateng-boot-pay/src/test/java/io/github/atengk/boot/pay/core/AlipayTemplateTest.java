@@ -925,6 +925,30 @@ class AlipayTemplateTest {
         assertThrows(PayException.class, () -> payTemplate.downloadBillStream(""));
     }
 
+    @Test
+    @DisplayName("网络超时防悬挂: 配置 Duration 读取超时真实作用于 AlipayClient 并快速失败")
+    void testHttpReadTimeoutTakesEffect() {
+        PayProperties fastTimeoutProps = new PayProperties();
+        fastTimeoutProps.getAlipay().getHttp().setConnectTimeout(java.time.Duration.ofMillis(500));
+        fastTimeoutProps.getAlipay().getHttp().setReadTimeout(java.time.Duration.ofMillis(200));
+
+        AlipayAppProperties app = new AlipayAppProperties();
+        app.setAppId("2021000000000088");
+        app.setPrivateKey(merchantPrivateKeyPem);
+        app.setAlipayPublicKey(alipayPublicKeyPem);
+        app.setServerUrl(server.url("/gateway.do").toString());
+        fastTimeoutProps.getAlipay().setDefaultApp("fast");
+        fastTimeoutProps.getAlipay().getApps().put("fast", app);
+
+        AlipayTemplate fastTemplate = new AlipayTemplate(new NamedMerchantRegistry(fastTimeoutProps), fastTimeoutProps);
+        server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE));
+
+        long startNanos = System.nanoTime();
+        assertThrows(PayNetworkException.class, () -> fastTemplate.queryOrder("FAST_TIMEOUT_001"));
+        long elapsedMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+        assertTrue(elapsedMs < 3000, "配置的 200ms 读取超时必须及时生效，实际耗时: " + elapsedMs + "ms");
+    }
+
     // =========================================================================
     // 私有辅助工具
     // =========================================================================
