@@ -31,6 +31,12 @@ public class AtengMqttProperties {
     private int maxReplayCount = 1;
 
     /**
+     * Micrometer 度量采集低基数治理配置
+     */
+    @NestedConfigurationProperty
+    private MqttMetricsProperties metrics = new MqttMetricsProperties();
+
+    /**
      * 命名多客户端配置注册表（支持多 Broker 或多园区隔离）
      */
     @NestedConfigurationProperty
@@ -58,6 +64,14 @@ public class AtengMqttProperties {
 
     public void setMaxReplayCount(int maxReplayCount) {
         this.maxReplayCount = Math.max(1, maxReplayCount);
+    }
+
+    public MqttMetricsProperties getMetrics() {
+        return metrics;
+    }
+
+    public void setMetrics(MqttMetricsProperties metrics) {
+        this.metrics = metrics != null ? metrics : new MqttMetricsProperties();
     }
 
     public Map<String, MqttClientProperties> getClients() {

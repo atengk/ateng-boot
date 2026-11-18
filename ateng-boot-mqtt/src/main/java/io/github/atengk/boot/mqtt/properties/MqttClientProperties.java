@@ -145,6 +145,11 @@ public class MqttClientProperties {
      */
     private int topicAliasMaximum = 0;
 
+    /**
+     * 断线离线缓冲策略（默认 BUFFER_WHEN_RECONNECTING，支持 FAIL_FAST）
+     */
+    private OfflineBufferPolicy offlineBufferPolicy = OfflineBufferPolicy.BUFFER_WHEN_RECONNECTING;
+
     public String getServerUri() {
         return serverUri;
     }
@@ -376,6 +381,25 @@ public class MqttClientProperties {
 
     public void setTopicAliasMaximum(int topicAliasMaximum) {
         this.topicAliasMaximum = topicAliasMaximum;
+    }
+
+    public OfflineBufferPolicy getOfflineBufferPolicy() {
+        return offlineBufferPolicy;
+    }
+
+    public void setOfflineBufferPolicy(OfflineBufferPolicy offlineBufferPolicy) {
+        this.offlineBufferPolicy = offlineBufferPolicy != null ? offlineBufferPolicy : OfflineBufferPolicy.BUFFER_WHEN_RECONNECTING;
+    }
+
+    /**
+     * 判断当前客户端是否满足断线离线缓冲前提（策略为 BUFFER_WHEN_RECONNECTING、开启自动重连且缓冲容量大于 0）
+     *
+     * @return true 若允许离线缓冲
+     */
+    public boolean isOfflineBufferingEnabled() {
+        return offlineBufferPolicy == OfflineBufferPolicy.BUFFER_WHEN_RECONNECTING
+                && automaticReconnect
+                && maxBufferedMessages > 0;
     }
 
     /**

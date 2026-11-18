@@ -9,6 +9,7 @@ import io.github.atengk.boot.mqtt.event.MqttDisconnectedEvent;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.properties.ClientIdStrategy;
 import io.github.atengk.boot.mqtt.properties.MqttClientProperties;
+import io.github.atengk.boot.mqtt.properties.OfflineBufferPolicy;
 import io.github.atengk.boot.mqtt.properties.PersistenceType;
 import io.github.atengk.boot.mqtt.ssl.MqttSslSocketFactoryBuilder;
 import io.github.atengk.boot.mqtt.will.MqttWill;
@@ -361,10 +362,10 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
         // 5. 构建连接选项 MqttConnectionOptions
         MqttConnectionOptions connOpts = buildConnectionOptions(clientName, actualClientId, clientProps, serverUris);
 
-        // 6. 配置 DisconnectedBufferOptions
+        // 6. 配置 DisconnectedBufferOptions（受 offlineBufferPolicy 与自动重连约束）
         DisconnectedBufferOptions bufferOpts = new DisconnectedBufferOptions();
-        bufferOpts.setBufferEnabled(true);
-        bufferOpts.setBufferSize(clientProps.getMaxBufferedMessages());
+        bufferOpts.setBufferEnabled(clientProps.isOfflineBufferingEnabled());
+        bufferOpts.setBufferSize(Math.max(1, clientProps.getMaxBufferedMessages()));
         bufferOpts.setDeleteOldestMessages(true);
         bufferOpts.setPersistBuffer(clientProps.getPersistenceType() == PersistenceType.FILE);
         asyncClient.setBufferOpts(bufferOpts);
@@ -589,6 +590,20 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
         MqttClientHandle handle = clientHandles.get(clientName);
         if (handle == null) {
             throw new BusinessException("No MQTT client found with name [" + clientName + "]");
+        }
+        return handle;
+    }
+
+    /**
+     * 获取指定名称且处于已连接状态的客户端句柄（断线时立即快速失败）
+     *
+     * @param clientName 客户端逻辑名称
+     * @return 已连接的客户端句柄
+     */
+    public MqttClientHandle getConnectedClientHandle(String clientName) {
+        MqttClientHandle handle = getClientHandle(clientName);
+        if (!handle.isConnected()) {
+            throw new BusinessException("MQTT client [" + handle.getClientName() + "] is not connected to broker");
         }
         return handle;
     }

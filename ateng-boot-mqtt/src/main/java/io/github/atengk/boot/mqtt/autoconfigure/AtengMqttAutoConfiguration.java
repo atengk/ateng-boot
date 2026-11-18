@@ -15,6 +15,7 @@ import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcess
 import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
+import io.github.atengk.boot.mqtt.properties.MqttMetricsProperties;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
 import io.github.atengk.boot.mqtt.template.MqttDeadLetterReplayTemplate;
@@ -243,8 +244,10 @@ public class AtengMqttAutoConfiguration {
         @ConditionalOnMissingBean
         @ConditionalOnBean(MeterRegistry.class)
         public MqttMetrics mqttMetrics(MeterRegistry meterRegistry,
+                                       AtengMqttProperties properties,
                                        ObjectProvider<NamedMqttClientRegistry> namedMqttClientRegistry) {
-            MqttMetrics metrics = new MqttMetrics(meterRegistry);
+            MqttMetricsProperties metricsProps = properties != null ? properties.getMetrics() : new MqttMetricsProperties();
+            MqttMetrics metrics = new MqttMetrics(meterRegistry, metricsProps);
             metrics.bindClientRegistry(namedMqttClientRegistry.getIfAvailable());
             return metrics;
         }

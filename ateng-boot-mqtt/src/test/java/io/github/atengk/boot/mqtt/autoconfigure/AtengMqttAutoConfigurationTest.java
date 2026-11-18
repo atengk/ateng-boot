@@ -11,6 +11,7 @@ import io.github.atengk.boot.mqtt.listener.MqttContainerManager;
 import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcessor;
 import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
+import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
 import io.github.atengk.boot.mqtt.template.MqttDeadLetterReplayTemplate;
@@ -138,5 +139,38 @@ class AtengMqttAutoConfigurationTest {
         } finally {
             customScheduler.shutdown();
         }
+    }
+
+    @Test
+    @DisplayName("测试低基数度量属性组装配与注入：默认屏蔽 topic 标签，显式开启并透传基数上限")
+    void testMetricsPropertiesAutoConfiguration() {
+        contextRunner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .run(context -> {
+                    AtengMqttProperties props = context.getBean(AtengMqttProperties.class);
+                    assertThat(props.getMetrics().isIncludeTopicTag()).isFalse();
+                    assertThat(props.getMetrics().getMaxTopicCardinality()).isEqualTo(200);
+
+                    MqttMetrics metrics = context.getBean(MqttMetrics.class);
+                    MeterRegistry registry = context.getBean(MeterRegistry.class);
+                    metrics.recordPublished("primary", "dev/001/data", 1);
+                    var counter = registry.find("mqtt.message.published").tag("client", "primary").counter();
+                    assertThat(counter).isNotNull();
+                    assertThat(counter.getId().getTag("topic")).isNull();
+                });
+
+        contextRunner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withPropertyValues(
+                        "ateng.boot.mqtt.metrics.include-topic-tag=true",
+                        "ateng.boot.mqtt.metrics.max-topic-cardinality=1"
+                )
+                .run(context -> {
+                    MqttMetrics metrics = context.getBean(MqttMetrics.class);
+                    MeterRegistry registry = context.getBean(MeterRegistry.class);
+                    metrics.recordPublished("primary", "dev/001/data", 1);
+                    metrics.recordPublished("primary", "dev/002/data", 1);
+                    assertThat(registry.find("mqtt.message.published").tag("topic", "dev/001/data").counter()).isNotNull();
+                    assertThat(registry.find("mqtt.message.published").tag("topic", "dev/002/data").counter()).isNull();
+                    assertThat(registry.find("mqtt.message.published").tag("topic", "__overflow__").counter()).isNotNull();
+                });
     }
 }

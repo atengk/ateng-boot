@@ -18,6 +18,7 @@ import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.interceptor.MqttMessageInterceptor;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.model.MqttPublishRecord;
+import io.github.atengk.boot.mqtt.properties.MqttClientProperties;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
@@ -41,14 +42,19 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -76,6 +82,14 @@ public class MqttTemplate {
     private final MqttMessageConverter messageConverter;
     private final MqttMetrics metrics;
     private final List<MqttMessageInterceptor> interceptors;
+    private final String boundClientName;
+    private final Map<String, List<ProgrammaticSubscription>> programmaticSubscriptions;
+    private final Set<MqttClientHandle> boundReconnectHandles;
+    private final ReentrantLock programmaticLock;
+
+    private record ProgrammaticSubscription(String topicFilter,
+                                            int qos,
+                                            org.eclipse.paho.mqttv5.client.IMqttMessageListener listener) {}
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry, PayloadGuard payloadGuard) {
         this(clientRegistry, payloadGuard, new DefaultMqttSendFailureHandler(), null, null, null, null, Collections.emptyList());
@@ -120,6 +134,22 @@ public class MqttTemplate {
                         MqttMessageConverter messageConverter,
                         MqttMetrics metrics,
                         List<MqttMessageInterceptor> interceptors) {
+        this(clientRegistry, payloadGuard, failureHandler, executor, requestReplyManager,
+                messageConverter, metrics, interceptors, null, null, null, null);
+    }
+
+    private MqttTemplate(NamedMqttClientRegistry clientRegistry,
+                         PayloadGuard payloadGuard,
+                         MqttSendFailureHandler failureHandler,
+                         Executor executor,
+                         MqttRequestReplyManager requestReplyManager,
+                         MqttMessageConverter messageConverter,
+                         MqttMetrics metrics,
+                         List<MqttMessageInterceptor> interceptors,
+                         String boundClientName,
+                         Map<String, List<ProgrammaticSubscription>> sharedSubscriptions,
+                         Set<MqttClientHandle> sharedReconnectHandles,
+                         ReentrantLock sharedLock) {
         this.clientRegistry = Objects.requireNonNull(clientRegistry, "clientRegistry must not be null");
         this.payloadGuard = payloadGuard != null ? payloadGuard : new PayloadGuard();
         this.failureHandler = failureHandler != null ? failureHandler : new DefaultMqttSendFailureHandler();
@@ -127,7 +157,102 @@ public class MqttTemplate {
         this.requestReplyManager = requestReplyManager;
         this.messageConverter = messageConverter;
         this.metrics = metrics;
-        this.interceptors = interceptors != null ? new ArrayList<>(interceptors) : Collections.emptyList();
+        this.interceptors = interceptors != null ? Collections.unmodifiableList(new ArrayList<>(interceptors)) : Collections.emptyList();
+        this.boundClientName = StringUtils.hasText(boundClientName) ? boundClientName.trim() : null;
+        boolean isRoot = sharedSubscriptions == null;
+        this.programmaticSubscriptions = isRoot ? new ConcurrentHashMap<>() : sharedSubscriptions;
+        this.boundReconnectHandles = sharedReconnectHandles != null
+                ? sharedReconnectHandles : Collections.newSetFromMap(new IdentityHashMap<>());
+        this.programmaticLock = sharedLock != null ? sharedLock : new ReentrantLock();
+        if (isRoot) {
+            bindProgrammaticLifecycleHooks();
+        }
+    }
+
+    private void bindProgrammaticLifecycleHooks() {
+        Map<String, MqttClientHandle> existingHandles = clientRegistry.getClientHandles();
+        if (existingHandles != null) {
+            for (MqttClientHandle handle : existingHandles.values()) {
+                attachProgrammaticReconnectHook(handle);
+            }
+        }
+        clientRegistry.addClientRegisteredListener(this::attachProgrammaticReconnectHook);
+        clientRegistry.addClientUnregisterListener(name -> {
+            if (StringUtils.hasText(name)) {
+                programmaticLock.lock();
+                try {
+                    programmaticSubscriptions.remove(name);
+                    boundReconnectHandles.removeIf(h -> name.equals(h.getClientName()));
+                } finally {
+                    programmaticLock.unlock();
+                }
+            }
+        });
+    }
+
+    private void attachProgrammaticReconnectHook(MqttClientHandle handle) {
+        if (handle == null) {
+            return;
+        }
+        programmaticLock.lock();
+        try {
+            if (!boundReconnectHandles.add(handle)) {
+                return;
+            }
+        } finally {
+            programmaticLock.unlock();
+        }
+        handle.addConnectCompleteListener((reconnect, serverURI) -> {
+            if (reconnect) {
+                resubscribeProgrammaticTopics(handle);
+            }
+        });
+    }
+
+    private void resubscribeProgrammaticTopics(MqttClientHandle handle) {
+        List<ProgrammaticSubscription> subs = programmaticSubscriptions.get(handle.getClientName());
+        if (subs == null || subs.isEmpty()) {
+            return;
+        }
+        for (ProgrammaticSubscription sub : subs) {
+            try {
+                handle.subscribe(sub.topicFilter(), sub.qos(), sub.listener());
+                log.info("[MQTT] Self-healed programmatic subscription [{}] on client [{}] after reconnect",
+                        sub.topicFilter(), handle.getClientName());
+            } catch (Exception e) {
+                log.error("[MQTT] Failed to self-heal programmatic subscription [{}] on client [{}]: {}",
+                        sub.topicFilter(), handle.getClientName(), e.getMessage(), e);
+            }
+        }
+    }
+
+    /**
+     * 派生绑定到指定命名客户端的不可变 {@link MqttTemplate} 视图
+     * <p>
+     * 路由优先级：显式传入 {@code clientName} &gt; {@link #use(String)} 绑定视图 &gt; {@link MqttContextHolder} 线程上下文 &gt; {@code defaultClient}。
+     * </p>
+     *
+     * @param clientName 目标命名客户端逻辑名称（不可为空白）
+     * @return 不可变且线程安全的客户端绑定视图
+     */
+    public MqttTemplate use(String clientName) {
+        if (!StringUtils.hasText(clientName)) {
+            throw new IllegalArgumentException("MQTT clientName must not be blank");
+        }
+        return new MqttTemplate(
+                this.clientRegistry,
+                this.payloadGuard,
+                this.failureHandler,
+                this.executor,
+                this.requestReplyManager,
+                this.messageConverter,
+                this.metrics,
+                this.interceptors,
+                clientName,
+                this.programmaticSubscriptions,
+                this.boundReconnectHandles,
+                this.programmaticLock
+        );
     }
 
     // ==================== 默认客户端同步发信接口 ====================
@@ -356,6 +481,46 @@ public class MqttTemplate {
     }
 
     /**
+     * 在当前物理事务成功提交后同步发信（指定消息有效期）；若无事务则平滑降级就地发信
+     *
+     * @param topic         目标主题
+     * @param payload       载荷对象
+     * @param qos           QoS 等级 (0, 1, 2)
+     * @param retained      是否保留消息
+     * @param messageExpiry 消息有效生命周期（MQTT 5.0）
+     */
+    public void sendAfterCommit(String topic, Object payload, int qos, boolean retained, Duration messageExpiry) {
+        sendAfterCommitToClient(null, topic, payload, qos, retained, null, messageExpiry);
+    }
+
+    /**
+     * 在当前物理事务成功提交后同步发信（指定自定义用户属性）；若无事务则平滑降级就地发信
+     *
+     * @param topic          目标主题
+     * @param payload        载荷对象
+     * @param qos            QoS 等级 (0, 1, 2)
+     * @param retained       是否保留消息
+     * @param userProperties 自定义用户属性（MQTT 5.0 User Properties）
+     */
+    public void sendAfterCommit(String topic, Object payload, int qos, boolean retained, Map<String, String> userProperties) {
+        sendAfterCommitToClient(null, topic, payload, qos, retained, userProperties, null);
+    }
+
+    /**
+     * 在当前物理事务成功提交后同步发信（指定自定义用户属性与消息有效期）；若无事务则平滑降级就地发信
+     *
+     * @param topic          目标主题
+     * @param payload        载荷对象
+     * @param qos            QoS 等级 (0, 1, 2)
+     * @param retained       是否保留消息
+     * @param userProperties 自定义用户属性（MQTT 5.0 User Properties）
+     * @param messageExpiry  消息有效生命周期（MQTT 5.0）
+     */
+    public void sendAfterCommit(String topic, Object payload, int qos, boolean retained, Map<String, String> userProperties, Duration messageExpiry) {
+        sendAfterCommitToClient(null, topic, payload, qos, retained, userProperties, messageExpiry);
+    }
+
+    /**
      * 指定客户端在当前物理事务成功提交后发信；若无事务则平滑降级就地发信
      *
      * @param clientName 客户端逻辑名称
@@ -365,27 +530,72 @@ public class MqttTemplate {
      * @param retained   是否保留消息
      */
     public void sendAfterCommitToClient(String clientName, String topic, Object payload, int qos, boolean retained) {
+        sendAfterCommitToClient(clientName, topic, payload, qos, retained, null, null);
+    }
+
+    /**
+     * 指定客户端在当前物理事务成功提交后发信（指定消息有效期）；若无事务则平滑降级就地发信
+     *
+     * @param clientName    客户端逻辑名称
+     * @param topic         目标主题
+     * @param payload       载荷对象
+     * @param qos           QoS 等级 (0, 1, 2)
+     * @param retained      是否保留消息
+     * @param messageExpiry 消息有效生命周期（MQTT 5.0）
+     */
+    public void sendAfterCommitToClient(String clientName, String topic, Object payload, int qos, boolean retained, Duration messageExpiry) {
+        sendAfterCommitToClient(clientName, topic, payload, qos, retained, null, messageExpiry);
+    }
+
+    /**
+     * 指定客户端在当前物理事务成功提交后发信（指定自定义用户属性）；若无事务则平滑降级就地发信
+     *
+     * @param clientName     客户端逻辑名称
+     * @param topic          目标主题
+     * @param payload        载荷对象
+     * @param qos            QoS 等级 (0, 1, 2)
+     * @param retained       是否保留消息
+     * @param userProperties 自定义用户属性（MQTT 5.0 User Properties）
+     */
+    public void sendAfterCommitToClient(String clientName, String topic, Object payload, int qos, boolean retained, Map<String, String> userProperties) {
+        sendAfterCommitToClient(clientName, topic, payload, qos, retained, userProperties, null);
+    }
+
+    /**
+     * 指定客户端在当前物理事务成功提交后发信（指定自定义用户属性与消息有效期）；若无事务则平滑降级就地发信
+     *
+     * @param clientName     客户端逻辑名称
+     * @param topic          目标主题
+     * @param payload        载荷对象
+     * @param qos            QoS 等级 (0, 1, 2)
+     * @param retained       是否保留消息
+     * @param userProperties 自定义用户属性（MQTT 5.0 User Properties）
+     * @param messageExpiry  消息有效生命周期（MQTT 5.0）
+     */
+    public void sendAfterCommitToClient(String clientName,
+                                        String topic,
+                                        Object payload,
+                                        int qos,
+                                        boolean retained,
+                                        Map<String, String> userProperties,
+                                        Duration messageExpiry) {
         // 1. 前置快速失败防御 (Fail-Fast)
         validateQos(qos);
         validateTopic(topic);
         byte[] payloadBytes = toPayloadBytes(payload);
         String effectiveClient = resolveEffectiveClientName(clientName);
-        MqttClientHandle handle = resolveClientHandle(effectiveClient);
+        MqttClientHandle handle = resolveClientHandle(effectiveClient, true);
         payloadGuard.validate(payloadBytes, handle.getClientProperties().getMaxPayloadSize(), topic);
+        Map<String, String> snapshotProps = userProperties != null ? new HashMap<>(userProperties) : new HashMap<>();
 
-        // 2. 事务同步注册或降级执行
+        // 2. 事务同步注册或降级执行（提交后重新解析最新句柄，防止热替换或断线绕过在线校验）
         if (isTxActive()) {
-            Runnable deliveryTask = AsyncContext.wrap(() -> {
-                try {
-                    doPublishWithResolvedHandle(handle, topic, payloadBytes, qos, retained);
-                } catch (Throwable e) {
-                    triggerFailureHandler(effectiveClient, topic, payloadBytes, qos, retained, e);
-                    throw e;
-                }
-            });
+            Runnable deliveryTask = AsyncContext.wrap(() ->
+                    executeProtectedPublish(effectiveClient, null, topic, payloadBytes, qos, retained, snapshotProps, messageExpiry)
+            );
             TxSynchronizationDelegate.registerAfterCommit(deliveryTask, topic, effectiveClient);
         } else {
-            doPublishWithResolvedHandle(handle, topic, payloadBytes, qos, retained);
+            executeProtectedPublish(effectiveClient, handle, topic, payloadBytes, qos, retained, snapshotProps, messageExpiry);
         }
     }
 
@@ -531,7 +741,7 @@ public class MqttTemplate {
         long startTime = System.nanoTime();
 
         try {
-            MqttClientHandle handle = resolveClientHandle(effectiveClient);
+            MqttClientHandle handle = resolveClientHandle(effectiveClient, true);
             payloadGuard.validate(payloadBytes, handle.getClientProperties().getMaxPayloadSize(), topic);
 
             MqttMessage message = buildMqttMessage(handle, payloadBytes, qos, retained, mutableUserProps, messageExpiry);
@@ -734,7 +944,17 @@ public class MqttTemplate {
         validateTopic(topic);
         String effectiveClient = resolveEffectiveClientName(clientName);
         Map<String, String> mutableUserProps = userProperties != null ? new HashMap<>(userProperties) : new HashMap<>();
+        executeProtectedPublish(effectiveClient, null, topic, payloadBytes, qos, retained, mutableUserProps, messageExpiry);
+    }
 
+    private void executeProtectedPublish(String effectiveClient,
+                                         MqttClientHandle preResolvedHandle,
+                                         String topic,
+                                         byte[] payloadBytes,
+                                         int qos,
+                                         boolean retained,
+                                         Map<String, String> mutableUserProps,
+                                         Duration messageExpiry) {
         // 1. 消息发布前置拦截切面
         for (MqttMessageInterceptor interceptor : interceptors) {
             try {
@@ -750,7 +970,7 @@ public class MqttTemplate {
         }
 
         try {
-            MqttClientHandle handle = resolveClientHandle(effectiveClient);
+            MqttClientHandle handle = preResolvedHandle != null ? preResolvedHandle : resolveClientHandle(effectiveClient, true);
             payloadGuard.validate(payloadBytes, handle.getClientProperties().getMaxPayloadSize(), topic);
             doPublishWithResolvedHandle(handle, topic, payloadBytes, qos, retained, mutableUserProps, messageExpiry);
 
@@ -871,22 +1091,38 @@ public class MqttTemplate {
 
     /**
      * 解析生效的受管 MQTT 客户端逻辑名称
+     * <p>
+     * 路由优先级：显式传入 {@code clientName} &gt; {@link #use(String)} 绑定视图 &gt; {@link MqttContextHolder} 线程上下文 &gt; {@code defaultClient}。
+     * </p>
      */
     private String resolveEffectiveClientName(String clientName) {
         if (StringUtils.hasText(clientName)) {
-            return clientName;
+            return clientName.trim();
+        }
+        if (StringUtils.hasText(boundClientName)) {
+            return boundClientName;
         }
         String contextName = MqttContextHolder.getClientName();
         if (StringUtils.hasText(contextName)) {
-            return contextName;
+            return contextName.trim();
         }
         return clientRegistry.getDefaultClientName();
     }
 
     /**
-     * 解析生效的受管 MQTT 客户端句柄
+     * 解析生效的受管 MQTT 客户端句柄（默认强制校验在线状态）
      */
     private MqttClientHandle resolveClientHandle(String effectiveName) {
+        return resolveClientHandle(effectiveName, false);
+    }
+
+    /**
+     * 解析生效的受管 MQTT 客户端句柄
+     *
+     * @param effectiveName        客户端逻辑名称
+     * @param allowOfflineBuffering 是否允许在断线重连离线缓冲策略生效时放行出站投递
+     */
+    private MqttClientHandle resolveClientHandle(String effectiveName, boolean allowOfflineBuffering) {
         MqttClientHandle handle;
         if (StringUtils.hasText(effectiveName)) {
             handle = clientRegistry.getClientHandle(effectiveName);
@@ -897,10 +1133,15 @@ public class MqttTemplate {
         if (handle == null) {
             throw new BusinessException("No MQTT client handle available for name [" + effectiveName + "]");
         }
-        if (!handle.isConnected()) {
+        if (!handle.isConnected() && (!allowOfflineBuffering || !canBufferOffline(handle))) {
             throw new BusinessException("MQTT client [" + handle.getClientName() + "] is not connected to broker");
         }
         return handle;
+    }
+
+    private boolean canBufferOffline(MqttClientHandle handle) {
+        MqttClientProperties props = handle.getClientProperties();
+        return props != null && props.isOfflineBufferingEnabled();
     }
 
     /**
@@ -1033,46 +1274,114 @@ public class MqttTemplate {
      * @param callback    消息回调函数
      */
     public void subscribeToClient(String clientName, String topicFilter, int qos, Consumer<MqttMessage> callback) {
-        validateTopic(topicFilter);
-        validateQos(qos);
         Objects.requireNonNull(callback, "callback must not be null");
-
-        String effectiveClient = resolveEffectiveClientName(clientName);
-        MqttClientHandle handle = resolveClientHandle(effectiveClient);
-
-        try {
-            org.eclipse.paho.mqttv5.client.IMqttMessageListener listener = (actualTopic, message) -> {
-                Runnable task = () -> {
-                    Map<String, Object> headers = extractHeaders(message);
-                    MessageContextPropagator.runInContext(headers, () -> callback.accept(message));
-                };
-                if (executor != null) {
-                    executor.execute(task);
-                } else {
-                    task.run();
-                }
-            };
-            handle.subscribe(topicFilter, qos, listener);
-            log.info("[MQTT] Client [{}] subscribed to [{}] with QoS [{}] dynamically", effectiveClient, topicFilter, qos);
-        } catch (MqttException e) {
-            throw new BusinessException("Failed to subscribe MQTT topic [" + topicFilter + "] on client [" + effectiveClient + "]: " + e.getMessage(), e);
-        }
+        registerManagedSubscription(clientName, topicFilter, qos, (actualTopic, message) -> callback.accept(message));
     }
 
     /**
-     * 指定客户端编程式订阅指定主题（双参数回调）
+     * 指定客户端编程式订阅指定主题（双参数回调，首参为 Broker 实际投递的物理主题 actualTopic）
      *
      * @param clientName  客户端逻辑名称
      * @param topicFilter 订阅主题过滤器
      * @param qos         QoS 等级 (0, 1, 2)
-     * @param callback    (topic, payload) 回调函数
+     * @param callback    (actualTopic, payload) 回调函数
      */
     public void subscribeToClient(String clientName, String topicFilter, int qos, BiConsumer<String, byte[]> callback) {
         Objects.requireNonNull(callback, "callback must not be null");
-        subscribeToClient(clientName, topicFilter, qos, message -> {
-            byte[] payload = message != null ? message.getPayload() : new byte[0];
-            callback.accept(topicFilter, payload);
+        registerManagedSubscription(clientName, topicFilter, qos, (actualTopic, message) -> {
+            byte[] payload = message != null && message.getPayload() != null ? message.getPayload() : new byte[0];
+            callback.accept(actualTopic, payload);
         });
+    }
+
+    private void registerManagedSubscription(String clientName,
+                                             String topicFilter,
+                                             int qos,
+                                             BiConsumer<String, MqttMessage> handler) {
+        validateTopic(topicFilter);
+        validateQos(qos);
+        String trimmedFilter = topicFilter.trim();
+
+        String effectiveClient = resolveEffectiveClientName(clientName);
+        MqttClientHandle handle = resolveClientHandle(effectiveClient);
+        attachProgrammaticReconnectHook(handle);
+        String endpointId = "programmatic:" + effectiveClient + ":" + trimmedFilter;
+
+        org.eclipse.paho.mqttv5.client.IMqttMessageListener listener = (actualTopic, message) -> {
+            Runnable task = () -> dispatchProgrammaticMessage(effectiveClient, endpointId, actualTopic, message, handle, handler);
+            if (executor != null) {
+                executor.execute(task);
+            } else {
+                task.run();
+            }
+        };
+
+        try {
+            handle.subscribe(trimmedFilter, qos, listener);
+            programmaticLock.lock();
+            try {
+                List<ProgrammaticSubscription> subs = programmaticSubscriptions.computeIfAbsent(
+                        effectiveClient, k -> new CopyOnWriteArrayList<>());
+                subs.removeIf(existing -> existing.topicFilter().equals(trimmedFilter));
+                subs.add(new ProgrammaticSubscription(trimmedFilter, qos, listener));
+            } finally {
+                programmaticLock.unlock();
+            }
+            log.info("[MQTT] Client [{}] subscribed to [{}] with QoS [{}] under managed registry", effectiveClient, trimmedFilter, qos);
+        } catch (MqttException e) {
+            throw new BusinessException("Failed to subscribe MQTT topic [" + trimmedFilter + "] on client [" + effectiveClient + "]: " + e.getMessage(), e);
+        }
+    }
+
+    private void dispatchProgrammaticMessage(String effectiveClient,
+                                             String endpointId,
+                                             String actualTopic,
+                                             MqttMessage message,
+                                             MqttClientHandle handle,
+                                             BiConsumer<String, MqttMessage> handler) {
+        if (metrics != null) {
+            metrics.recordReceived(effectiveClient, actualTopic);
+        }
+        Map<String, String> stringHeaders = MqttHeaderUtils.extractHeaders(message);
+        Map<String, Object> contextHeaders = new HashMap<>(stringHeaders);
+
+        try {
+            if (message != null && message.getPayload() != null && handle.getClientProperties() != null) {
+                payloadGuard.validate(message.getPayload(), handle.getClientProperties().getMaxPayloadSize(), actualTopic);
+            }
+            for (MqttMessageInterceptor interceptor : interceptors) {
+                if (!interceptor.preConsume(effectiveClient, endpointId, actualTopic, message, stringHeaders)) {
+                    log.debug("[MQTT] Programmatic message on topic [{}] for client [{}] intercepted by [{}]",
+                            actualTopic, effectiveClient, interceptor.getClass().getSimpleName());
+                    return;
+                }
+            }
+            MessageContextPropagator.runInContext(contextHeaders, () -> handler.accept(actualTopic, message));
+            triggerPostConsume(effectiveClient, endpointId, actualTopic, message, stringHeaders, null);
+        } catch (Throwable e) {
+            triggerPostConsume(effectiveClient, endpointId, actualTopic, message, stringHeaders, e);
+            log.error("[MQTT] Error dispatching programmatic subscription message on topic [{}] for client [{}]: {}",
+                    actualTopic, effectiveClient, e.getMessage(), e);
+        }
+    }
+
+    private void triggerPostConsume(String clientName,
+                                    String endpointId,
+                                    String actualTopic,
+                                    MqttMessage message,
+                                    Map<String, String> headers,
+                                    Throwable ex) {
+        if (interceptors.isEmpty()) {
+            return;
+        }
+        for (int i = interceptors.size() - 1; i >= 0; i--) {
+            try {
+                interceptors.get(i).postConsume(clientName, endpointId, actualTopic, message, headers, ex);
+            } catch (Throwable t) {
+                log.warn("[MQTT] Error in interceptor [{}] postConsume: {}",
+                        interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
+            }
+        }
     }
 
     /**
@@ -1092,14 +1401,24 @@ public class MqttTemplate {
      */
     public void unsubscribeFromClient(String clientName, String topicFilter) {
         validateTopic(topicFilter);
+        String trimmedFilter = topicFilter.trim();
         String effectiveClient = resolveEffectiveClientName(clientName);
         MqttClientHandle handle = resolveClientHandle(effectiveClient);
 
         try {
-            handle.unsubscribe(topicFilter);
-            log.info("[MQTT] Client [{}] unsubscribed from [{}] dynamically", effectiveClient, topicFilter);
+            handle.unsubscribe(trimmedFilter);
+            programmaticLock.lock();
+            try {
+                List<ProgrammaticSubscription> subs = programmaticSubscriptions.get(effectiveClient);
+                if (subs != null) {
+                    subs.removeIf(sub -> sub.topicFilter().equals(trimmedFilter));
+                }
+            } finally {
+                programmaticLock.unlock();
+            }
+            log.info("[MQTT] Client [{}] unsubscribed from [{}] dynamically", effectiveClient, trimmedFilter);
         } catch (MqttException e) {
-            throw new BusinessException("Failed to unsubscribe MQTT topic [" + topicFilter + "] on client [" + effectiveClient + "]: " + e.getMessage(), e);
+            throw new BusinessException("Failed to unsubscribe MQTT topic [" + trimmedFilter + "] on client [" + effectiveClient + "]: " + e.getMessage(), e);
         }
     }
 
@@ -1377,10 +1696,6 @@ public class MqttTemplate {
             return null;
         }
         return JsonUtil.parseObject(payload, responseType);
-    }
-
-    private Map<String, Object> extractHeaders(MqttMessage message) {
-        return new HashMap<>(MqttHeaderUtils.extractHeaders(message));
     }
 
     public List<MqttMessageInterceptor> getInterceptors() {

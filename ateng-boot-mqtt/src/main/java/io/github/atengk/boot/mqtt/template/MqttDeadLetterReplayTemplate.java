@@ -120,7 +120,7 @@ public class MqttDeadLetterReplayTemplate {
         Duration effectiveTimeout = (timeout != null && !timeout.isNegative() && !timeout.isZero()) ? timeout : Duration.ofSeconds(2);
 
         String effectiveClient = resolveEffectiveClientName(clientName);
-        MqttClientHandle handle = clientRegistry.getClientHandle(effectiveClient);
+        MqttClientHandle handle = clientRegistry.getConnectedClientHandle(effectiveClient);
 
         List<MqttDeadLetterRecord> records = new CopyOnWriteArrayList<>();
         CountDownLatch latch = new CountDownLatch(limit);
@@ -322,6 +322,7 @@ public class MqttDeadLetterReplayTemplate {
     public void purge(String clientName, String dltTopic) {
         Assert.hasText(dltTopic, "dltTopic must not be blank");
         String effectiveClient = resolveEffectiveClientName(clientName);
+        MqttClientHandle handle = clientRegistry.getConnectedClientHandle(effectiveClient);
 
         // 对称抹除 Broker 上的保留死信 (byte[0] + retained=true)
         mqttTemplate.clearRetainedToClient(effectiveClient, dltTopic, 1);

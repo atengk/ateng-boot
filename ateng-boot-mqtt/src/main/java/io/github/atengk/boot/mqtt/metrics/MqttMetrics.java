@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mqtt.metrics;
 
+import io.github.atengk.boot.mqtt.properties.MqttMetricsProperties;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.micrometer.core.instrument.Counter;
@@ -25,13 +26,26 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 public class MqttMetrics {
 
+    /**
+     * 当显式开启物理主题标签且不同主题数量超过基数上限时的聚合溢出标签值
+     */
+    public static final String OVERFLOW_TOPIC_TAG = "__overflow__";
+
     private final MeterRegistry meterRegistry;
+    private final MqttMetricsProperties metricsProperties;
     private final Map<String, Gauge> registeredClientGauges = new ConcurrentHashMap<>();
     private final Set<NamedMqttClientRegistry> boundRegistries = Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Set<String> registeredTopicTags = ConcurrentHashMap.newKeySet();
     private final ReentrantLock bindLock = new ReentrantLock();
+    private final ReentrantLock cardinalityLock = new ReentrantLock();
 
     public MqttMetrics(MeterRegistry meterRegistry) {
+        this(meterRegistry, new MqttMetricsProperties());
+    }
+
+    public MqttMetrics(MeterRegistry meterRegistry, MqttMetricsProperties metricsProperties) {
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
+        this.metricsProperties = metricsProperties != null ? metricsProperties : new MqttMetricsProperties();
     }
 
     /**
@@ -110,19 +124,17 @@ public class MqttMetrics {
      * @param durationNanos 发送耗时（纳秒）
      */
     public void recordPublished(String clientName, String topic, int qos, long durationNanos) {
+        io.micrometer.core.instrument.Tags tags = buildClientTags(
+                clientName, topic, "qos", String.valueOf(qos));
         Counter.builder("mqtt.message.published")
-                .tag("client", clientName != null ? clientName : "unknown")
-                .tag("topic", topic != null ? topic : "unknown")
-                .tag("qos", String.valueOf(qos))
+                .tags(tags)
                 .description("Count of published MQTT messages")
                 .register(meterRegistry)
                 .increment();
 
         if (durationNanos >= 0) {
             Timer.builder("mqtt.publish.latency")
-                    .tag("client", clientName != null ? clientName : "unknown")
-                    .tag("topic", topic != null ? topic : "unknown")
-                    .tag("qos", String.valueOf(qos))
+                    .tags(tags)
                     .description("MQTT message publishing latency")
                     .register(meterRegistry)
                     .record(durationNanos, TimeUnit.NANOSECONDS);
@@ -137,25 +149,24 @@ public class MqttMetrics {
      */
     public void recordReceived(String clientName, String topic) {
         Counter.builder("mqtt.message.received")
-                .tag("client", clientName != null ? clientName : "unknown")
-                .tag("topic", topic != null ? topic : "unknown")
+                .tags(buildClientTags(clientName, topic))
                 .description("Count of received MQTT messages")
                 .register(meterRegistry)
                 .increment();
     }
 
     /**
-     * 记录监听器端点消费耗时
+     * 记录监听器端点消费耗时（使用有限基数声明式主题模板标签）
      *
      * @param endpointId    端点标识
-     * @param topic         实际主题
+     * @param topicPattern  声明式主题模板（如 {@code devices/{deviceId}/telemetry}）
      * @param success       消费是否成功
      * @param durationNanos 耗时（纳秒）
      */
-    public void recordConsume(String endpointId, String topic, boolean success, long durationNanos) {
+    public void recordConsume(String endpointId, String topicPattern, boolean success, long durationNanos) {
         Timer.builder("mqtt.consumer.latency")
                 .tag("endpoint", endpointId != null ? endpointId : "unknown")
-                .tag("topic", topic != null ? topic : "unknown")
+                .tag("topic", topicPattern != null ? topicPattern : "unknown")
                 .tag("status", success ? "success" : "failure")
                 .description("MQTT message consumption latency")
                 .register(meterRegistry)
@@ -163,15 +174,15 @@ public class MqttMetrics {
     }
 
     /**
-     * 记录毒丸死信 DLT 转移计数
+     * 记录毒丸死信 DLT 转移计数（使用有限基数声明式主题模板标签）
      *
-     * @param endpointId 端点标识
-     * @param topic      原主题
+     * @param endpointId   端点标识
+     * @param topicPattern 声明式主题模板
      */
-    public void recordDlt(String endpointId, String topic) {
+    public void recordDlt(String endpointId, String topicPattern) {
         Counter.builder("mqtt.consumer.dlt")
                 .tag("endpoint", endpointId != null ? endpointId : "unknown")
-                .tag("topic", topic != null ? topic : "unknown")
+                .tag("topic", topicPattern != null ? topicPattern : "unknown")
                 .description("Count of poison pill messages routed to DLT")
                 .register(meterRegistry)
                 .increment();
@@ -185,11 +196,50 @@ public class MqttMetrics {
      */
     public void recordRequestTimeout(String clientName, String topic) {
         Counter.builder("mqtt.requestreply.timeout")
-                .tag("client", clientName != null ? clientName : "unknown")
-                .tag("topic", topic != null ? topic : "unknown")
+                .tags(buildClientTags(clientName, topic))
                 .description("Count of timed out MQTT request-reply messages")
                 .register(meterRegistry)
                 .increment();
+    }
+
+    private io.micrometer.core.instrument.Tags buildClientTags(String clientName, String topic, String... extraKeyValues) {
+        io.micrometer.core.instrument.Tags tags = io.micrometer.core.instrument.Tags.of(
+                "client", clientName != null ? clientName : "unknown");
+        if (extraKeyValues != null && extraKeyValues.length > 0) {
+            tags = tags.and(extraKeyValues);
+        }
+        String boundedTopic = resolveTopicTagIfEnabled(topic);
+        if (boundedTopic != null) {
+            tags = tags.and("topic", boundedTopic);
+        }
+        return tags;
+    }
+
+    private String resolveTopicTagIfEnabled(String rawTopic) {
+        if (!metricsProperties.isIncludeTopicTag()) {
+            return null;
+        }
+        String normalized = rawTopic != null ? rawTopic : "unknown";
+        if (registeredTopicTags.contains(normalized)) {
+            return normalized;
+        }
+        int maxCardinality = metricsProperties.getMaxTopicCardinality();
+        if (maxCardinality <= 0) {
+            return OVERFLOW_TOPIC_TAG;
+        }
+        cardinalityLock.lock();
+        try {
+            if (registeredTopicTags.contains(normalized)) {
+                return normalized;
+            }
+            if (registeredTopicTags.size() < maxCardinality) {
+                registeredTopicTags.add(normalized);
+                return normalized;
+            }
+            return OVERFLOW_TOPIC_TAG;
+        } finally {
+            cardinalityLock.unlock();
+        }
     }
 
     public MeterRegistry getMeterRegistry() {

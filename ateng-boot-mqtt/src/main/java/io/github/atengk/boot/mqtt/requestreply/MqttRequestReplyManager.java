@@ -386,7 +386,7 @@ public class MqttRequestReplyManager implements SmartLifecycle {
         validateTopic(topic);
         validateTimeout(timeout);
 
-        MqttClientHandle handle = clientRegistry.getClientHandle(clientName);
+        MqttClientHandle handle = clientRegistry.getConnectedClientHandle(clientName);
         ensureSubscribed(handle);
 
         // 1. 生成基于 UUID 的关联标识 Correlation Data

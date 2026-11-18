@@ -319,14 +319,14 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             triggerPostConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, null);
 
             if (metrics != null) {
-                metrics.recordConsume(endpoint.getId(), actualTopic, true, System.nanoTime() - startNanos);
+                metrics.recordConsume(endpoint.getId(), pattern.getRawPattern(), true, System.nanoTime() - startNanos);
             }
         } catch (Throwable e) {
             // 消息消费后置拦截切面 (异常逆序执行)
             triggerPostConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, e);
 
             if (metrics != null) {
-                metrics.recordConsume(endpoint.getId(), actualTopic, false, System.nanoTime() - startNanos);
+                metrics.recordConsume(endpoint.getId(), pattern.getRawPattern(), false, System.nanoTime() - startNanos);
             }
             // 1. 消费端静默确认与幂等防重拦截 (Silent ACK Invariant)
             if (isSilentAckOrIdempotent(e)) {
@@ -337,7 +337,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
 
             // 2. 毒丸死信转移 (DLT Invariant)
             if (FatalExceptionClassifier.isFatal(e)) {
-                handleFatalPoisonPill(endpoint, actualTopic, message, handle, e);
+                handleFatalPoisonPill(endpoint, pattern.getRawPattern(), actualTopic, message, handle, e);
                 return;
             }
 
@@ -386,6 +386,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     }
 
     private void handleFatalPoisonPill(MqttListenerEndpoint endpoint,
+                                       String topicPattern,
                                        String actualTopic,
                                        MqttMessage message,
                                        MqttClientHandle handle,
@@ -444,7 +445,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
 
             handle.getAsyncClient().publish(dltTopic, dltMessage);
             if (metrics != null) {
-                metrics.recordDlt(endpoint.getId(), actualTopic);
+                metrics.recordDlt(endpoint.getId(), topicPattern);
             }
             log.warn("[MQTT] Poison pill message on topic [{}] successfully transferred to DLT [{}] for endpoint [{}], submitted ACK to break redelivery loop",
                     actualTopic, dltTopic, endpoint.getId());
