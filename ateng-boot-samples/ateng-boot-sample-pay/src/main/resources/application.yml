@@ -32,6 +32,10 @@ ateng:
       wechat:
         enabled: true
         default-merchant: default
+        default-transfer-scene-id: "1000"
+        http:
+          connect-timeout: 5s
+          read-timeout: 15s
         merchants:
           default:
             app-id: wx8888888888888888
@@ -44,6 +48,9 @@ ateng:
       alipay:
         enabled: true
         default-app: default
+        http:
+          connect-timeout: 5s
+          read-timeout: 15s
         apps:
           default:
             app-id: "2021000000000001"

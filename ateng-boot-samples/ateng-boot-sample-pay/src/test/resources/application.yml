@@ -26,6 +26,10 @@ ateng:
       wechat:
         enabled: true
         default-merchant: default
+        default-transfer-scene-id: "1000"
+        http:
+          connect-timeout: 5s
+          read-timeout: 5s
         merchants:
           default:
             app-id: wx8888888888888888
@@ -37,9 +41,22 @@ ateng:
             wechat-pay-public-key-id: "PUB_KEY_ID_TEST_001"
             notify-url: "http://127.0.0.1:8080/ateng-pay/callback/wechat"
             auto-certificate: false
+          grayscale:
+            app-id: wx8888888888888888
+            mch-id: "1900000090"
+            api-v3-key: "32bytesMockApiV3KeyForTesting000"
+            merchant-serial-number: "5F1C72E2A8931B72A2E13AF8DEE92471EB397115"
+            private-key-path: classpath:certs/test_private_key.pem
+            wechat-pay-public-key-path: classpath:certs/test_public_key.pem
+            wechat-pay-public-key-id: "PUB_KEY_ID_GRAY_001"
+            notify-url: "http://127.0.0.1:8080/ateng-pay/callback/wechat/grayscale"
+            auto-certificate: true
       alipay:
         enabled: true
         default-app: default
+        http:
+          connect-timeout: 5s
+          read-timeout: 5s
         apps:
           default:
             app-id: "2021000000000001"
