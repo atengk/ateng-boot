@@ -8,15 +8,16 @@ import lombok.NoArgsConstructor;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * PDF 防泄密平铺水印高级选项
+ * PDF 防泄密平铺水印高级选项（支持文本与图片双模平铺及页码过滤）
  *
  * @author Ateng
  * @since 2026-10-23
  */
 @Data
-@Builder
+@Builder(toBuilder = true)
 @NoArgsConstructor
 @AllArgsConstructor
 public class WatermarkOptions {
@@ -76,6 +77,39 @@ public class WatermarkOptions {
     private Map<String, Object> variables = new HashMap<>();
 
     /**
+     * 图片/Logo 平铺水印输入源（为空时走文本水印模式，非空时优先绘制图片平铺矩阵水印）
+     */
+    private Object image;
+
+    /**
+     * 图片平铺水印单图绘制宽度（单位：pt，默认 100.0f）
+     */
+    @Builder.Default
+    private float imageWidth = 100.0f;
+
+    /**
+     * 图片平铺水印单图绘制高度（单位：pt，默认 100.0f）
+     */
+    @Builder.Default
+    private float imageHeight = 100.0f;
+
+    /**
+     * 跳过前 N 页不施加水印（如跳过封面页，默认 0）
+     */
+    @Builder.Default
+    private int skipPages = 0;
+
+    /**
+     * 限定施加水印的 1-based 目标页码集合（为空时默认作用于全部非跳过页面）
+     */
+    private Set<Integer> targetPages;
+
+    /**
+     * 打开加密 PDF 文档的密码（可选）
+     */
+    private String password;
+
+    /**
      * 便捷设置上下文变量
      *
      * @param key   变量名
@@ -129,5 +163,27 @@ public class WatermarkOptions {
      */
     public static WatermarkOptions ofText(String text) {
         return WatermarkOptions.builder().text(text).build();
+    }
+
+    /**
+     * 创建指定图片/Logo 的默认平铺矩阵水印选项
+     *
+     * @param image 水印图片输入源
+     * @return WatermarkOptions 实例
+     */
+    public static WatermarkOptions ofImage(Object image) {
+        return WatermarkOptions.builder().image(image).build();
+    }
+
+    /**
+     * 创建指定图片/Logo 及平铺尺寸的水印选项
+     *
+     * @param image  水印图片输入源
+     * @param width  单图绘制宽度（pt）
+     * @param height 单图绘制高度（pt）
+     * @return WatermarkOptions 实例
+     */
+    public static WatermarkOptions ofImage(Object image, float width, float height) {
+        return WatermarkOptions.builder().image(image).imageWidth(width).imageHeight(height).build();
     }
 }

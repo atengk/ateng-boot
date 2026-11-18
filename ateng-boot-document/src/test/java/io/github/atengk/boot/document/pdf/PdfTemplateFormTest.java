@@ -393,6 +393,10 @@ class PdfTemplateFormTest {
         assertThat(fields).containsKey("username");
 
         assertThat(pdfTemplate.hasAcroForm(encryptedPdf, pass)).isTrue();
+
+        byte[] filled = pdfTemplate.fillFormToBytes(encryptedPdf, Map.of("username", "AtengUser"),
+                FormOptions.builder().flatten(true).password(pass).build());
+        assertThat(pdfTemplate.extractText(filled)).contains("AtengUser");
     }
 
     @Test
@@ -461,6 +465,27 @@ class PdfTemplateFormTest {
             doc.save(baos);
             return baos.toByteArray();
         }
+    }
+
+    /**
+     * 验证缺少中文字体时，纯 ASCII 表单回退西文字体，含中文则前置抛出 DocumentFontException (57003)
+     */
+    @Test
+    @DisplayName("表单字体防卫：缺失中文字体时纯 ASCII 放行回退，含中文前置抛出 DocumentFontException")
+    void testFormStrictCjkFontFailFast(@TempDir Path tempDir) throws Exception {
+        byte[] templatePdf = createSampleFormPdf();
+        DocumentProperties noFontProps = new DocumentProperties();
+        noFontProps.getPdf().setFontPath("");
+        io.github.atengk.boot.document.font.DocumentFontResolver emptyDirResolver =
+                new io.github.atengk.boot.document.font.DocumentFontResolver(noFontProps.getPdf(), List.of(tempDir.toString()));
+        PdfTemplate strictPdf = new PdfTemplate(noFontProps, emptyDirResolver);
+
+        byte[] asciiFilled = strictPdf.fillFormToBytes(templatePdf, Map.of("username", "Alice"));
+        assertThat(asciiFilled).isNotEmpty();
+
+        assertThatThrownBy(() -> strictPdf.fillFormToBytes(templatePdf, Map.of("username", "张三")))
+                .isInstanceOf(io.github.atengk.boot.document.exception.DocumentFontException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.FONT_NOT_FOUND);
     }
 
     /**

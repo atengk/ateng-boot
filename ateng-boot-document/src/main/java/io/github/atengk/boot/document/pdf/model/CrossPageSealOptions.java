@@ -118,6 +118,11 @@ public class CrossPageSealOptions {
     private WatermarkLayer layer = WatermarkLayer.OVERLAY;
 
     /**
+     * 打开加密 PDF 文档的密码（可选）
+     */
+    private String password;
+
+    /**
      * 静态工厂：使用指定印章图片创建默认骑缝章选项（120pt * 120pt，右侧边缘居中贴边）
      *
      * @param sealImage 印章图片输入源

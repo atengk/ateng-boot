@@ -75,6 +75,12 @@ class AtengDocumentAutoConfigurationTest {
                     assertThat(context.getBean(WordTemplate.class)
                             .renderToPdfToBytes("classpath:templates/word/contract-template.docx", java.util.Map.of()))
                             .isEqualTo(new byte[]{1, 2, 3});
+                    assertThat(context.getBean(PdfTemplate.class)
+                            .fromDocxToBytes("classpath:templates/word/contract-template.docx"))
+                            .isEqualTo(new byte[]{1, 2, 3});
+                    assertThat(context.getBean(PdfTemplate.class)
+                            .fromHtmlToBytes("<h1>Bridge</h1>"))
+                            .isEqualTo(new byte[]{4, 5, 6});
                 });
     }
 

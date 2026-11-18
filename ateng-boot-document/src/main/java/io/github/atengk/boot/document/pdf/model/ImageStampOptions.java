@@ -66,6 +66,11 @@ public class ImageStampOptions {
     private WatermarkLayer layer = WatermarkLayer.OVERLAY;
 
     /**
+     * 打开加密 PDF 文档的密码（可选）
+     */
+    private String password;
+
+    /**
      * 静态工厂：创建指定页面和坐标的电子印章压印选项
      *
      * @param image     印章图片数据源

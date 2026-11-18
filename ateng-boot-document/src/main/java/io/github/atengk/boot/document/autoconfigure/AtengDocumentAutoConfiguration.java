@@ -90,15 +90,18 @@ public class AtengDocumentAutoConfiguration {
     }
 
     /**
-     * 注册 PDF 文档治理统一操作门面
+     * 注册 PDF 文档治理统一操作门面（注入 DocumentConverter SPI 支持 fromDocx / fromHtml 转档桥接）
      *
-     * @param properties   文档治理根配置属性
-     * @param fontResolver 中文字体解析器
+     * @param properties        文档治理根配置属性
+     * @param fontResolver      中文字体解析器
+     * @param converterProvider 文档跨格式转换器 SPI 提供者
      * @return PdfTemplate 实例
      */
     @Bean
     @ConditionalOnMissingBean(PdfTemplate.class)
-    public PdfTemplate pdfTemplate(DocumentProperties properties, DocumentFontResolver fontResolver) {
-        return new PdfTemplate(properties, fontResolver);
+    public PdfTemplate pdfTemplate(DocumentProperties properties,
+                                   DocumentFontResolver fontResolver,
+                                   ObjectProvider<DocumentConverter> converterProvider) {
+        return new PdfTemplate(properties, fontResolver, converterProvider.getIfAvailable());
     }
 }

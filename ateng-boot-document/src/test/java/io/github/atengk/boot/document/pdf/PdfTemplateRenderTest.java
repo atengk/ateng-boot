@@ -192,6 +192,28 @@ class PdfTemplateRenderTest {
                 });
     }
 
+    @Test
+    @DisplayName("配置联动：DocumentPdfProperties 自定义 maxRenderDpi 与 defaultMaxRenderPages 生效")
+    void testDocumentPdfPropertiesRenderLimits() {
+        byte[] pdfBytes = createSampleMultiPagePdf("第一页", "第二页");
+
+        DocumentProperties customProps = createTestProperties();
+        customProps.getPdf().setDefaultRenderDpi(100.0f);
+        customProps.getPdf().setMaxRenderDpi(200.0f);
+        customProps.getPdf().setDefaultMaxRenderPages(1);
+
+        PdfTemplate boundedTemplate = new PdfTemplate(customProps);
+        assertThat(boundedTemplate.renderPageToPng(pdfBytes, 0)).isNotEmpty();
+
+        assertThatThrownBy(() -> boundedTemplate.renderPageToImage(pdfBytes, 0, 250.0f))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("200.0");
+
+        assertThatThrownBy(() -> boundedTemplate.renderAllPagesToPng(pdfBytes))
+                .isInstanceOf(PdfOperationException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.PDF_RENDER_EXCEEDED_MAX_PAGES);
+    }
+
     private static byte[] createSampleMultiPagePdf(String page1Text, String page2Text) {
         try (PDDocument doc = new PDDocument();
              ByteArrayOutputStream baos = new ByteArrayOutputStream()) {

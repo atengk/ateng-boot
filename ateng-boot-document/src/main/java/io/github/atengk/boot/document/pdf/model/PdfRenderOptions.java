@@ -43,6 +43,11 @@ public class PdfRenderOptions {
     private int maxPages = 50;
 
     /**
+     * 打开加密 PDF 文档的密码（可选）
+     */
+    private String password;
+
+    /**
      * 校验渲染分辨率 DPI 是否在安全防爆范围 [72.0, 600.0] 内
      *
      * @param dpi 待校验的分辨率
