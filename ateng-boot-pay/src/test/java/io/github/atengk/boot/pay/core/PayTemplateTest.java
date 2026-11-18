@@ -1063,7 +1063,7 @@ class PayTemplateTest {
     @DisplayName("queryTransfer: 统一转账查询路由与单标识符重载")
     void testQueryTransfer_routing() {
         PayTransferResponse mockWechat = PayTransferResponse.builder().channel(PayChannel.WECHAT_PAY).status(PayTransferState.SUCCESS).build();
-        when(wechatPayTemplate.queryTransferDetail(eq("wechat_key"), eq("W_001"), eq("W_001"))).thenReturn(mockWechat);
+        when(wechatPayTemplate.queryTransfer(eq("wechat_key"), eq("W_001"), isNull())).thenReturn(mockWechat);
 
         PayTransferResponse resp1 = payTemplate.queryTransfer(UnifiedTransferQueryRequest.builder()
                 .channel(PayChannel.WECHAT_PAY)
@@ -1072,6 +1072,7 @@ class PayTemplateTest {
                 .build());
         assertNotNull(resp1);
         assertEquals(PayChannel.WECHAT_PAY, resp1.getChannel());
+        verify(wechatPayTemplate).queryTransfer("wechat_key", "W_001", null);
 
         PayTransferResponse mockAlipay = PayTransferResponse.builder().channel(PayChannel.ALIPAY).status(PayTransferState.SUCCESS).build();
         when(alipayTemplate.queryTransfer(eq("alipay_key"), eq("A_001"), eq("ORD_001"))).thenReturn(mockAlipay);
@@ -1123,6 +1124,89 @@ class PayTemplateTest {
         assertFalse(respStr.contains(originalRealName), "PayTransferResponse toString() 严禁泄露真实明文姓名");
         assertFalse(respStr.contains(originalAccount), "PayTransferResponse toString() 严禁泄露真实明文账号");
         assertTrue(respStr.contains("*"), "PayTransferResponse toString() 必须包含脱敏掩码");
+    }
+
+    @Test
+    @DisplayName("transfer: 新版商家转账状态机 (WAIT_USER_CONFIRM / CANCELLED) 与领域模型扩展校验")
+    void testUserConfirmTransferDomainModels() {
+        assertFalse(PayTransferState.WAIT_USER_CONFIRM.isFinal());
+        assertTrue(PayTransferState.WAIT_USER_CONFIRM.isWaitUserConfirm());
+        assertTrue(PayTransferState.CANCELLED.isFinal());
+
+        var reportInfo = io.github.atengk.boot.pay.model.request.TransferSceneReportInfo.builder()
+                .infoType("活动名称")
+                .infoContent("会员拉新返现")
+                .build();
+        assertEquals("活动名称", reportInfo.getInfoType());
+        assertEquals("会员拉新返现", reportInfo.getInfoContent());
+
+        PayTransferResponse waitResp = PayTransferResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .status(PayTransferState.WAIT_USER_CONFIRM)
+                .packageInfo("MOCK_PACKAGE_CONFIRM_01")
+                .build();
+        assertEquals("MOCK_PACKAGE_CONFIRM_01", waitResp.getPackageInfo());
+    }
+
+    @Test
+    @DisplayName("transfer/cancelTransfer: 微信场景字段透传与统一撤销转账路由与防御")
+    void testTransferSceneForwardingAndCancelTransferRouting() {
+        var reportInfo = io.github.atengk.boot.pay.model.request.TransferSceneReportInfo.builder()
+                .infoType("活动名称")
+                .infoContent("会员拉新返现")
+                .build();
+        PayTransferResponse waitResp = PayTransferResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outBizNo("WX_TRANS_SCENE_01")
+                .orderId("133000001")
+                .status(PayTransferState.WAIT_USER_CONFIRM)
+                .packageInfo("MOCK_PKG_INFO")
+                .build();
+        when(wechatPayTemplate.transfer(eq("mch_a"), any(WechatTransferRequest.class))).thenReturn(waitResp);
+
+        UnifiedTransferRequest unifiedReq = UnifiedTransferRequest.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .merchantKey("mch_a")
+                .outBizNo("WX_TRANS_SCENE_01")
+                .amount(new BigDecimal("18.88"))
+                .title("会员活动奖励")
+                .remark("拉新返现")
+                .payeeAccount("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
+                .payeeRealName("赵六")
+                .transferSceneId("1005")
+                .transferSceneReportInfos(java.util.List.of(reportInfo))
+                .legacyBatchMode(Boolean.TRUE)
+                .build();
+
+        PayTransferResponse resp = payTemplate.transfer(unifiedReq);
+        assertEquals(PayTransferState.WAIT_USER_CONFIRM, resp.getStatus());
+        assertEquals("MOCK_PKG_INFO", resp.getPackageInfo());
+
+        ArgumentCaptor<WechatTransferRequest> captor = ArgumentCaptor.forClass(WechatTransferRequest.class);
+        verify(wechatPayTemplate).transfer(eq("mch_a"), captor.capture());
+        WechatTransferRequest forwarded = captor.getValue();
+        assertEquals("1005", forwarded.getTransferSceneId());
+        assertEquals(Boolean.TRUE, forwarded.getLegacyBatchMode());
+        assertNotNull(forwarded.getTransferSceneReportInfos());
+        assertEquals(1, forwarded.getTransferSceneReportInfos().size());
+        assertEquals("活动名称", forwarded.getTransferSceneReportInfos().get(0).getInfoType());
+
+        PayTransferResponse cancelledResp = PayTransferResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outBizNo("WX_TRANS_SCENE_01")
+                .status(PayTransferState.CANCELLED)
+                .build();
+        when(wechatPayTemplate.cancelTransfer("mch_a", "WX_TRANS_SCENE_01")).thenReturn(cancelledResp);
+        PayTransferResponse cancelResult = payTemplate.cancelTransfer(PayChannel.WECHAT_PAY, "mch_a", "WX_TRANS_SCENE_01");
+        assertEquals(PayTransferState.CANCELLED, cancelResult.getStatus());
+
+        PayException aliEx = assertThrows(PayException.class,
+                () -> payTemplate.cancelTransfer(PayChannel.ALIPAY, "ALI_NOT_SUPPORT_01"));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, aliEx.getResultCode());
+
+        PayException blankEx = assertThrows(PayException.class,
+                () -> payTemplate.cancelTransfer(PayChannel.WECHAT_PAY, "   "));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, blankEx.getResultCode());
     }
 
     @Test

@@ -30,6 +30,11 @@ public class WechatPayProperties implements Serializable {
     private String defaultMerchant = "default";
 
     /**
+     * 新版商家转账默认转账场景 ID（可选，统一转账门面未显式传入时兜底使用，默认 1000）
+     */
+    private String defaultTransferSceneId = "1000";
+
+    /**
      * 是否开启服务商（ISV）模式
      */
     private boolean serviceProviderMode = false;

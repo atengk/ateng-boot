@@ -38,7 +38,17 @@ public enum PayTransferState {
     /**
      * 资金退回 / 银行退票（终态，转账到银行卡失败退回）
      */
-    REFUND("REFUND", "转账退票");
+    REFUND("REFUND", "转账退票"),
+
+    /**
+     * 待收款用户确认收款（微信新版用户确认商家转账中间态）
+     */
+    WAIT_USER_CONFIRM("WAIT_USER_CONFIRM", "待用户确认收款"),
+
+    /**
+     * 商家转账已撤销（终态）
+     */
+    CANCELLED("CANCELLED", "已撤销");
 
     private final String code;
     private final String description;
@@ -56,7 +66,11 @@ public enum PayTransferState {
         return this == PROCESSING;
     }
 
+    public boolean isWaitUserConfirm() {
+        return this == WAIT_USER_CONFIRM;
+    }
+
     public boolean isFinal() {
-        return this == SUCCESS || this == FAIL || this == CLOSED || this == REFUND;
+        return this == SUCCESS || this == FAIL || this == CLOSED || this == REFUND || this == CANCELLED;
     }
 }

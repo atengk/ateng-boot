@@ -94,6 +94,11 @@ public class PayTransferResponse implements Serializable {
     private String errorCode;
 
     /**
+     * 微信新版商家转账拉起确认收款页面所需凭证（package_info，WAIT_USER_CONFIRM 时返回）
+     */
+    private String packageInfo;
+
+    /**
      * 渠道原生原始响应对象（逃生舱，保留完整上下文）
      */
     private Object rawResponse;

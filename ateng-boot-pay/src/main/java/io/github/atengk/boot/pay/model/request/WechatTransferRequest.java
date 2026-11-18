@@ -69,9 +69,19 @@ public class WechatTransferRequest implements Serializable {
     private String userName;
 
     /**
-     * 转账场景 ID（可选，如 1001-现金营销）
+     * 转账场景 ID（新版商家转账必填，未传时取全局配置 defaultTransferSceneId 兜底，如 1000-现金营销）
      */
     private String transferSceneId;
+
+    /**
+     * 新版商家转账场景报备信息列表（对应微信 transfer_scene_report_infos）
+     */
+    private java.util.List<TransferSceneReportInfo> transferSceneReportInfos;
+
+    /**
+     * 是否显式退回使用旧版商家批次转账（/v3/transfer/batches），默认 false/null 走新版商家转账主链路
+     */
+    private Boolean legacyBatchMode;
 
     /**
      * 异步结果通知地址（可选）

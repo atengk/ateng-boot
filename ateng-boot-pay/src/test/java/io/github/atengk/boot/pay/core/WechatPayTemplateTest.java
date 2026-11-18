@@ -1079,10 +1079,16 @@ class WechatPayTemplateTest {
 
         PayException ex4 = assertThrows(PayException.class, () -> payTemplate.getTransferBatchService());
         assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex4.getResultCode());
+
+        PayException ex5 = assertThrows(PayException.class, () -> payTemplate.queryTransfer("BILL_DISABLED_001"));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex5.getResultCode());
+
+        PayException ex6 = assertThrows(PayException.class, () -> payTemplate.cancelTransfer("BILL_DISABLED_001"));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex6.getResultCode());
     }
 
     @Test
-    @DisplayName("transfer: 100% 离线自洽模拟微信单笔转账发起与明细状态查询")
+    @DisplayName("transfer(legacyBatchMode=true): 显式开启旧版批次模式兼容调用 /v3/transfer/batches")
     void testInitiateSingleTransferAndQueryHermetic() throws Exception {
         payTemplate.setTransferEnabled(true);
 
@@ -1097,6 +1103,7 @@ class WechatPayTemplateTest {
                 .transferRemark("研发绩效奖金")
                 .openid("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
                 .userName("张三")
+                .legacyBatchMode(true)
                 .build();
 
         PayTransferResponse transferResp = payTemplate.transfer(transferReq);
@@ -1139,6 +1146,143 @@ class WechatPayTemplateTest {
 
         // 3. 逃生舱实例检查
         assertNotNull(payTemplate.getTransferBatchService());
+    }
+
+    @Test
+    @DisplayName("transfer: 默认新版商家转账全链路 (WAIT_USER_CONFIRM / packageInfo / user_name 加密 / 双路径查单 / cancelTransfer)")
+    void testUserConfirmTransferMainFlowAndCancelHermetic() throws Exception {
+        payTemplate.setTransferEnabled(true);
+
+        // 1. 大额 >= 2000 元未传收款人真实姓名必须 Fail-Fast
+        WechatTransferRequest largeWithoutName = WechatTransferRequest.builder()
+                .outBatchNo("MCH_TRANS_LARGE_NO_NAME")
+                .amount(new BigDecimal("2000.00"))
+                .openid("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
+                .build();
+        PayException largeEx = assertThrows(PayException.class, () -> payTemplate.transfer(largeWithoutName));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, largeEx.getResultCode());
+
+        // 1b. 场景报备项存在空白 infoType/infoContent 时必须 Fail-Fast
+        WechatTransferRequest badReportReq = WechatTransferRequest.builder()
+                .outBatchNo("MCH_TRANS_BAD_REPORT")
+                .amount(new BigDecimal("10.00"))
+                .openid("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
+                .transferSceneReportInfos(java.util.List.of(
+                        io.github.atengk.boot.pay.model.request.TransferSceneReportInfo.builder()
+                                .infoType("   ")
+                                .infoContent("活动内容")
+                                .build()))
+                .build();
+        PayException badReportEx = assertThrows(PayException.class, () -> payTemplate.transfer(badReportReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, badReportEx.getResultCode());
+
+        // 2. 新版商家转账发起（使用平台公钥商户 pubkey_mch + 场景报备 + 真实姓名加密）
+        com.wechat.pay.java.core.Config pubKeyConfig = payTemplate.getWechatConfig("pubkey_mch");
+        OkHttpClient redirectOkHttpClient = new OkHttpClient.Builder()
+                .addInterceptor(chain -> {
+                    Request orig = chain.request();
+                    HttpUrl newUrl = orig.url().newBuilder()
+                            .scheme("http")
+                            .host(server.getHostName())
+                            .port(server.getPort())
+                            .build();
+                    return chain.proceed(orig.newBuilder().url(newUrl).build());
+                })
+                .build();
+        HttpClient pubKeyHttpClient = new DefaultHttpClientBuilder()
+                .config(pubKeyConfig)
+                .okHttpClient(redirectOkHttpClient)
+                .build();
+
+        String initiateJson = "{\"out_bill_no\":\"MCH_BILL_20261118_01\",\"transfer_bill_no\":\"133000007110109690030000001\",\"create_time\":\"2026-11-18T15:00:00+08:00\",\"state\":\"WAIT_USER_CONFIRM\",\"package_info\":\"MOCK_PKG_INFO_ABC\"}";
+        server.enqueue(mockResponse(200, initiateJson, "PUB_KEY_ID_TEST_001"));
+
+        var reportInfo = io.github.atengk.boot.pay.model.request.TransferSceneReportInfo.builder()
+                .infoType("活动名称")
+                .infoContent("会员拉新奖励")
+                .build();
+        WechatTransferRequest newReq = WechatTransferRequest.builder()
+                .merchantKey("pubkey_mch")
+                .outBatchNo("MCH_BILL_20261118_01")
+                .transferSceneId("1000")
+                .transferRemark("会员拉新现金红包")
+                .amount(new BigDecimal("2000.00"))
+                .openid("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
+                .userName("王五")
+                .notifyUrl("https://example.com/transfer/notify")
+                .transferSceneReportInfos(java.util.List.of(reportInfo))
+                .build();
+
+        assertFalse(newReq.toString().contains("王五"), "WechatTransferRequest.toString() 不得泄露收款人明文姓名");
+
+        HttpClient defaultHttpClient = new DefaultHttpClientBuilder()
+                .config(payTemplate.getWechatConfig())
+                .okHttpClient(redirectOkHttpClient)
+                .build();
+
+        PayTransferResponse initResp;
+        payTemplate.setCustomHttpClient(pubKeyHttpClient);
+        try {
+            initResp = payTemplate.transfer("pubkey_mch", newReq);
+        } finally {
+            payTemplate.setCustomHttpClient(defaultHttpClient);
+        }
+        assertEquals(PayChannel.WECHAT_PAY, initResp.getChannel());
+        assertEquals("MCH_BILL_20261118_01", initResp.getOutBizNo());
+        assertEquals("133000007110109690030000001", initResp.getOrderId());
+        assertEquals(PayTransferState.WAIT_USER_CONFIRM, initResp.getStatus());
+        assertEquals("MOCK_PKG_INFO_ABC", initResp.getPackageInfo());
+        assertFalse(initResp.toString().contains("王五"), "PayTransferResponse.toString() 不得泄露收款人明文姓名");
+
+        RecordedRequest recordedInit = server.takeRequest();
+        assertEquals("POST", recordedInit.getMethod());
+        assertEquals("/v3/fund-app/mch-transfer/transfer-bills", recordedInit.getPath());
+        assertEquals("PUB_KEY_ID_TEST_001", recordedInit.getHeader("Wechatpay-Serial"));
+        String initBody = recordedInit.getBody().readUtf8();
+        assertTrue(initBody.contains("\"appid\":\"wx_pubkey_app\""));
+        assertTrue(initBody.contains("\"out_bill_no\":\"MCH_BILL_20261118_01\""));
+        assertTrue(initBody.contains("\"transfer_scene_id\":\"1000\""));
+        assertTrue(initBody.contains("\"openid\":\"oUpF8uMuAJO_M2pxb1Q9zNjWeS6o\""));
+        assertTrue(initBody.contains("\"transfer_amount\":200000"));
+        assertTrue(initBody.contains("\"transfer_remark\":\"会员拉新现金红包\""));
+        assertTrue(initBody.contains("\"transfer_scene_report_infos\""));
+        assertTrue(initBody.contains("\"info_type\":\"活动名称\""));
+        assertTrue(initBody.contains("\"info_content\":\"会员拉新奖励\""));
+        assertTrue(initBody.contains("\"notify_url\":\"https://example.com/transfer/notify\""));
+        assertTrue(initBody.contains("\"user_name\":\"") && !initBody.contains("\"user_name\":\"王五\""),
+                "出站载荷中的 user_name 必须为密文");
+
+        // 3. 按商户单号 out_bill_no 查询
+        String queryByOutJson = "{\"mch_id\":\"1900000001\",\"out_bill_no\":\"MCH_BILL_20261118_01\",\"transfer_bill_no\":\"133000007110109690030000001\",\"state\":\"SUCCESS\",\"transfer_amount\":200000,\"openid\":\"oUpF8uMuAJO_M2pxb1Q9zNjWeS6o\",\"update_time\":\"2026-11-18T15:02:00+08:00\"}";
+        server.enqueue(mockResponse(200, queryByOutJson));
+        PayTransferResponse q1 = payTemplate.queryTransfer("MCH_BILL_20261118_01");
+        assertEquals(PayTransferState.SUCCESS, q1.getStatus());
+        assertEquals(new BigDecimal("2000.00"), q1.getAmount());
+        assertEquals("133000007110109690030000001", q1.getOrderId());
+        RecordedRequest reqQ1 = server.takeRequest();
+        assertEquals("GET", reqQ1.getMethod());
+        assertEquals("/v3/fund-app/mch-transfer/transfer-bills/out-bill-no/MCH_BILL_20261118_01", reqQ1.getPath());
+
+        // 4. 按微信转账单号 transfer_bill_no 查询
+        String queryByWxJson = "{\"mch_id\":\"1900000001\",\"out_bill_no\":\"MCH_BILL_20261118_01\",\"transfer_bill_no\":\"133000007110109690030000001\",\"state\":\"PROCESSING\",\"transfer_amount\":5000,\"openid\":\"oUpF8uMuAJO_M2pxb1Q9zNjWeS6o\",\"create_time\":\"2026-11-18T15:00:00+08:00\"}";
+        server.enqueue(mockResponse(200, queryByWxJson));
+        PayTransferResponse q2 = payTemplate.queryTransfer(null, null, "133000007110109690030000001");
+        assertEquals(PayTransferState.PROCESSING, q2.getStatus());
+        assertEquals(new BigDecimal("50.00"), q2.getAmount());
+        RecordedRequest reqQ2 = server.takeRequest();
+        assertEquals("GET", reqQ2.getMethod());
+        assertEquals("/v3/fund-app/mch-transfer/transfer-bills/transfer-bill-no/133000007110109690030000001", reqQ2.getPath());
+
+        // 5. 撤销转账 cancelTransfer
+        String cancelJson = "{\"out_bill_no\":\"MCH_BILL_20261118_01\",\"transfer_bill_no\":\"133000007110109690030000001\",\"state\":\"CANCELLED\",\"update_time\":\"2026-11-18T15:03:00+08:00\"}";
+        server.enqueue(mockResponse(200, cancelJson));
+        PayTransferResponse cancelResp = payTemplate.cancelTransfer("MCH_BILL_20261118_01");
+        assertEquals(PayTransferState.CANCELLED, cancelResp.getStatus());
+        assertEquals("MCH_BILL_20261118_01", cancelResp.getOutBizNo());
+        assertEquals("133000007110109690030000001", cancelResp.getOrderId());
+        RecordedRequest reqCancel = server.takeRequest();
+        assertEquals("POST", reqCancel.getMethod());
+        assertEquals("/v3/fund-app/mch-transfer/transfer-bills/out-bill-no/MCH_BILL_20261118_01/cancel", reqCancel.getPath());
     }
 
     @Test

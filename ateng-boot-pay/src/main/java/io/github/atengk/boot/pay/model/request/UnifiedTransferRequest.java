@@ -87,6 +87,21 @@ public class UnifiedTransferRequest implements Serializable {
     private String notifyUrl;
 
     /**
+     * 转账场景 ID（可选，主要用于微信新版商家转账，如 1000）
+     */
+    private String transferSceneId;
+
+    /**
+     * 转账场景报备信息列表（可选，主要用于微信新版商家转账）
+     */
+    private java.util.List<TransferSceneReportInfo> transferSceneReportInfos;
+
+    /**
+     * 是否显式退回使用旧版微信商家批次转账（/v3/transfer/batches），默认 false/null 走新版主链路
+     */
+    private Boolean legacyBatchMode;
+
+    /**
      * 扩展透传参数（可选）
      */
     private Map<String, Object> extra;

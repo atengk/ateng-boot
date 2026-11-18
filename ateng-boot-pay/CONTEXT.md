@@ -167,3 +167,11 @@ _Avoid_: 证书迁移, 公钥替换期, 混合签名
 **Alipay Royalty Profit Sharing (支付宝交易分账)**:
 支付宝收单体系下基于前置分账冻结声明、分账接收方关系绑定、确认结算与订单多方分账结算实现平台佣金与合作方分账的资金分润生命周期能力。
 _Avoid_: 支付宝转账, 余额分润, 商家打款
+
+**User-Confirm Merchant Transfer (微信新版用户确认模式商家转账)**:
+微信支付 2025 年全面推行的单笔商家转账主链路（`/v3/fund-app/mch-transfer/transfer-bills`），发起后返回 `WAIT_USER_CONFIRM` 状态与 `package_info` 调起凭据供用户确认收款，并支持在终态前主动撤销转账单（`/cancel`）。
+_Avoid_: 新版批次转账, 微信红包打款, 旧版明细单
+
+**Transfer Scene Report Info (转账场景报备信息)**:
+新版商家转账按营销活动、劳务报酬、企业赔付等固定场景ID（`transfer_scene_id`）强制附带的报备键值对集合（`info_type` + `info_content`），用于渠道风控合规核验。
+_Avoid_: 转账附言, 批次备注, 拓展参数

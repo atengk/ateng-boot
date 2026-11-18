@@ -546,6 +546,9 @@ public class PayTemplate {
                         .openid(request.getPayeeAccount())
                         .userName(request.getPayeeRealName())
                         .notifyUrl(request.getNotifyUrl())
+                        .transferSceneId(request.getTransferSceneId())
+                        .transferSceneReportInfos(request.getTransferSceneReportInfos())
+                        .legacyBatchMode(request.getLegacyBatchMode())
                         .build();
                 yield wechatPayTemplate.transfer(request.getMerchantKey(), wechatReq);
             }
@@ -587,7 +590,7 @@ public class PayTemplate {
                 if (wechatPayTemplate == null) {
                     throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用");
                 }
-                yield wechatPayTemplate.queryTransferDetail(request.getMerchantKey(), request.getOutBizNo(), request.getOutBizNo());
+                yield wechatPayTemplate.queryTransfer(request.getMerchantKey(), request.getOutBizNo(), request.getOrderId());
             }
             case ALIPAY -> {
                 if (alipayTemplate == null) {
@@ -639,6 +642,52 @@ public class PayTemplate {
      */
     public PayTransferResponse queryTransfer(PayChannel channel, String merchantKey, String outBizNo, String orderId) {
         return queryTransfer(UnifiedTransferQueryRequest.builder().channel(channel).merchantKey(merchantKey).outBizNo(outBizNo).orderId(orderId).build());
+    }
+
+    /**
+     * 撤销待确认单笔转账（默认渠道）
+     *
+     * @param outBizNo 商户转账单号
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse cancelTransfer(String outBizNo) {
+        return cancelTransfer(null, null, outBizNo);
+    }
+
+    /**
+     * 撤销待确认单笔转账（指定渠道）
+     *
+     * @param channel  支付渠道
+     * @param outBizNo 商户转账单号
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse cancelTransfer(PayChannel channel, String outBizNo) {
+        return cancelTransfer(channel, null, outBizNo);
+    }
+
+    /**
+     * 撤销待确认单笔转账（指定渠道与商户路由键）
+     *
+     * @param channel     支付渠道
+     * @param merchantKey 商户别名或应用别名
+     * @param outBizNo    商户转账单号
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse cancelTransfer(PayChannel channel, String merchantKey, String outBizNo) {
+        if (outBizNo == null || outBizNo.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "撤销单笔转账必须提供商户转账单号 [outBizNo]");
+        }
+        PayChannel resolved = resolveChannel(channel);
+        return switch (resolved) {
+            case WECHAT_PAY -> {
+                if (wechatPayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用");
+                }
+                yield wechatPayTemplate.cancelTransfer(merchantKey, outBizNo);
+            }
+            case ALIPAY -> throw new PayException(PayResultCode.PAY_PARAM_INVALID,
+                    "支付宝渠道暂不支持撤销单笔转账，请通过后续状态查询确认最终结果");
+        };
     }
 
     // =========================================================================

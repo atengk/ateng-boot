@@ -47,6 +47,8 @@ class PayPropertiesTest {
             assertThat(properties.getAlipay().isEnabled()).isTrue();
             assertThat(properties.getAlipay().getDefaultApp()).isEqualTo("default");
             assertThat(properties.getAlipay().isServiceProviderMode()).isFalse();
+            assertThat(properties.getWechat().getHttp().getConnectTimeout()).isEqualTo(Duration.ofSeconds(5));
+            assertThat(properties.getWechat().getDefaultTransferSceneId()).isEqualTo("1000");
             assertThat(properties.getAlipay().getHttp().getConnectTimeout()).isEqualTo(Duration.ofSeconds(5));
             assertThat(properties.getAlipay().getHttp().getReadTimeout()).isEqualTo(Duration.ofSeconds(15));
             assertThat(properties.getAlipay().getHttp().getWriteTimeout()).isEqualTo(Duration.ofSeconds(15));
@@ -66,6 +68,7 @@ class PayPropertiesTest {
                 "ateng.boot.pay.transfer.enabled=true",
                 "ateng.boot.pay.profit-sharing.enabled=true",
                 "ateng.boot.pay.wechat.default-merchant=store1",
+                "ateng.boot.pay.wechat.default-transfer-scene-id=1005",
                 "ateng.boot.pay.wechat.merchants.store1.app-id=wx1234567890",
                 "ateng.boot.pay.wechat.merchants.store1.mch-id=1900000109",
                 "ateng.boot.pay.wechat.merchants.store1.api-v3-key=test_api_v3_key_32_bytes_long!!",
@@ -91,6 +94,7 @@ class PayPropertiesTest {
             assertThat(properties.getBarcode().isAutoCancelOnTimeout()).isFalse();
             assertThat(properties.getTransfer().isEnabled()).isTrue();
             assertThat(properties.getProfitSharing().isEnabled()).isTrue();
+            assertThat(properties.getWechat().getDefaultTransferSceneId()).isEqualTo("1005");
 
             WechatMerchantProperties store1 = properties.getWechat().getMerchants().get("store1");
             assertThat(store1).isNotNull();
