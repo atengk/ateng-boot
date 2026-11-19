@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -54,9 +55,89 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
         super(taskExecutor, defaultBatchSize, defaultMaxConcurrency, progressLogInterval);
     }
 
+    /**
+     * 构造具备全局默认失败切片回调的 MyBatis 流式游标批处理模板
+     *
+     * @param taskExecutor          受管并发线程池
+     * @param defaultBatchSize      默认切片大小
+     * @param defaultMaxConcurrency 默认最大并发切片数
+     * @param progressLogInterval   默认进度日志打卡步长
+     * @param defaultFailureHandler 全局默认失败切片回调 SPI（可为 null）
+     */
+    public XxlMyBatisStreamingTemplate(
+            Executor taskExecutor,
+            int defaultBatchSize,
+            int defaultMaxConcurrency,
+            int progressLogInterval,
+            BatchFailureHandler<?> defaultFailureHandler) {
+        super(taskExecutor, defaultBatchSize, defaultMaxConcurrency, progressLogInterval, defaultFailureHandler);
+    }
+
     public XxlMyBatisStreamingTemplate(Executor taskExecutor, int defaultBatchSize, int defaultMaxConcurrency, StreamingQueryTemplate streamingQueryTemplate) {
         super(taskExecutor, defaultBatchSize, defaultMaxConcurrency);
         this.streamingQueryTemplate = streamingQueryTemplate;
+    }
+
+    /**
+     * 构造绑定指定 {@link StreamingQueryTemplate} 与全局默认 {@link BatchFailureHandler} 的流式批处理模板
+     *
+     * @param taskExecutor           受管并发线程池
+     * @param defaultBatchSize       默认切片大小
+     * @param defaultMaxConcurrency  默认最大并发切片数
+     * @param progressLogInterval    默认进度日志打卡步长
+     * @param streamingQueryTemplate MyBatis-Plus 游标流式查询模板
+     * @param defaultFailureHandler  全局默认失败切片回调 SPI（可为 null）
+     */
+    public XxlMyBatisStreamingTemplate(
+            Executor taskExecutor,
+            int defaultBatchSize,
+            int defaultMaxConcurrency,
+            int progressLogInterval,
+            StreamingQueryTemplate streamingQueryTemplate,
+            BatchFailureHandler<?> defaultFailureHandler) {
+        super(taskExecutor, defaultBatchSize, defaultMaxConcurrency, progressLogInterval, defaultFailureHandler);
+        this.streamingQueryTemplate = streamingQueryTemplate;
+    }
+
+    /**
+     * 内部轻量派生视图构造器，完整保留策略快照及流式查询模板引用
+     */
+    protected XxlMyBatisStreamingTemplate(
+            Executor taskExecutor,
+            int defaultBatchSize,
+            int defaultMaxConcurrency,
+            int progressLogInterval,
+            boolean failFast,
+            StreamingQueryTemplate streamingQueryTemplate,
+            BatchFailureHandler<?> defaultFailureHandler) {
+        super(taskExecutor, defaultBatchSize, defaultMaxConcurrency, progressLogInterval, failFast, defaultFailureHandler);
+        this.streamingQueryTemplate = streamingQueryTemplate;
+    }
+
+    @Override
+    public XxlMyBatisStreamingTemplate withFailFast(boolean failFast) {
+        return new XxlMyBatisStreamingTemplate(
+                getTaskExecutor(),
+                getDefaultBatchSize(),
+                getDefaultMaxConcurrency(),
+                getProgressLogInterval(),
+                failFast,
+                this.streamingQueryTemplate,
+                getDefaultFailureHandler()
+        );
+    }
+
+    @Override
+    public XxlMyBatisStreamingTemplate withProgressLogInterval(int progressLogInterval) {
+        return new XxlMyBatisStreamingTemplate(
+                getTaskExecutor(),
+                getDefaultBatchSize(),
+                getDefaultMaxConcurrency(),
+                progressLogInterval,
+                isFailFast(),
+                this.streamingQueryTemplate,
+                getDefaultFailureHandler()
+        );
     }
 
     public StreamingQueryTemplate getStreamingQueryTemplate() {
@@ -175,13 +256,7 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
                     truncatedFailures[0] = true;
                 }
 
-                if (failureHandler != null) {
-                    try {
-                        failureHandler.accept(new FailedBatch<>(batch, batchIndex, null, t));
-                    } catch (Throwable callbackEx) {
-                        log.error("流式游标失败回调执行异常: {}", callbackEx.getMessage(), callbackEx);
-                    }
-                }
+                handleFailedBatch(failureHandler, new FailedBatch<>(batch, batchIndex, null, t), "流式游标失败回调执行异常");
 
                 if (isFailFast()) {
                     if (t instanceof RuntimeException re) {
@@ -276,6 +351,7 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
         int effectiveConcurrency = maxConcurrency > 0 ? maxConcurrency : getDefaultMaxConcurrency();
 
         long startTime = System.nanoTime();
+        boolean effectiveFailFast = isFailFast();
         Executor executor = getEffectiveExecutor();
         Semaphore semaphore = new Semaphore(effectiveConcurrency);
         List<CompletableFuture<Void>> futures = new ArrayList<>();
@@ -286,7 +362,8 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
         AtomicLong failCount = new AtomicLong(0);
         AtomicInteger batchCount = new AtomicInteger(0);
         AtomicReference<Throwable> firstError = new AtomicReference<>();
-        List<Object> failedItems = Collections.synchronizedList(new ArrayList<>());
+        List<Object> failedItems = new ArrayList<>();
+        ReentrantLock failedItemsLock = new ReentrantLock();
         AtomicBoolean truncatedFailures = new AtomicBoolean(false);
         AtomicLong processedCount = new AtomicLong(0);
         AtomicLong lastReportedCount = new AtomicLong(0);
@@ -295,7 +372,7 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
             if (chunk == null || chunk.isEmpty()) {
                 return;
             }
-            if (isFailFast() && firstError.get() != null) {
+            if (effectiveFailFast && firstError.get() != null) {
                 return;
             }
             int chunkSize = chunk.size();
@@ -322,24 +399,14 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
                         failCount.addAndGet(chunkSize);
                         firstError.compareAndSet(null, t);
 
-                        synchronized (failedItems) {
-                            if (XxlShardingBatchTemplate.collectFailedItems(failedItems, immutableBatch)) {
-                                truncatedFailures.set(true);
-                            }
-                        }
+                        recordFailedItems(failedItems, failedItemsLock, truncatedFailures, immutableBatch);
 
-                        if (failureHandler != null) {
-                            try {
-                                failureHandler.accept(new FailedBatch<>(immutableBatch, batchIndex, null, t));
-                            } catch (Throwable callbackEx) {
-                                log.error("并发流式游标失败回调执行异常: {}", callbackEx.getMessage(), callbackEx);
-                            }
-                        }
+                        handleFailedBatch(failureHandler, new FailedBatch<>(immutableBatch, batchIndex, null, t), "并发流式游标失败回调执行异常");
 
-                        if (!isFailFast()) {
+                        if (!effectiveFailFast) {
                             log.error("并行流式游标消费异常 [批次: {}]: {}", batchIndex, t.getMessage(), t);
                         }
-                        if (isFailFast()) {
+                        if (effectiveFailFast) {
                             if (t instanceof RuntimeException re) {
                                 throw re;
                             }
@@ -348,12 +415,7 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
                     } finally {
                         semaphore.release();
                         long currentProcessed = processedCount.addAndGet(chunkSize);
-                        int interval = getProgressLogInterval();
-                        if (interval > 0 && (currentProcessed - lastReportedCount.get() >= interval)) {
-                            if (lastReportedCount.compareAndSet(lastReportedCount.get(), currentProcessed)) {
-                                reportProgress(currentProcessed, successCount.get(), failCount.get(), batchCount.get(), startTime);
-                            }
-                        }
+                        checkAndReportProgress(currentProcessed, lastReportedCount, successCount.get(), failCount.get(), batchCount.get(), startTime);
                     }
                 }, executor);
             } catch (Throwable t) {
@@ -388,7 +450,7 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
         try {
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
         } catch (Throwable t) {
-            if (isFailFast()) {
+            if (effectiveFailFast) {
                 Throwable cause = firstError.get() != null ? firstError.get() : (t.getCause() != null ? t.getCause() : t);
                 if (cause instanceof RuntimeException re) {
                     throw re;
@@ -398,7 +460,7 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
             log.error("并行流式消费聚合等待异常: {}", t.getMessage(), t);
         }
 
-        if (isFailFast() && firstError.get() != null) {
+        if (effectiveFailFast && firstError.get() != null) {
             Throwable t = firstError.get();
             if (t instanceof RuntimeException re) {
                 throw re;
@@ -407,6 +469,14 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration, failedItems, truncatedFailures.get());
+        return new BatchExecutionResult(
+                totalCount.get(),
+                successCount.get(),
+                failCount.get(),
+                batchCount.get(),
+                duration,
+                snapshotFailedItems(failedItems, failedItemsLock),
+                truncatedFailures.get()
+        );
     }
 }

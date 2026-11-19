@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -56,26 +57,75 @@ public class XxlShardingBatchTemplate {
     private final Executor taskExecutor;
     private final int defaultBatchSize;
     private final int defaultMaxConcurrency;
+    private final BatchFailureHandler<?> defaultFailureHandler;
     private volatile boolean failFast = true;
     private volatile int progressLogInterval = DEFAULT_PROGRESS_LOG_INTERVAL;
 
     public XxlShardingBatchTemplate() {
-        this(null, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, DEFAULT_PROGRESS_LOG_INTERVAL);
+        this(null, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, DEFAULT_PROGRESS_LOG_INTERVAL, null);
     }
 
     public XxlShardingBatchTemplate(Executor taskExecutor) {
-        this(taskExecutor, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, DEFAULT_PROGRESS_LOG_INTERVAL);
+        this(taskExecutor, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, DEFAULT_PROGRESS_LOG_INTERVAL, null);
     }
 
     public XxlShardingBatchTemplate(Executor taskExecutor, int defaultBatchSize, int defaultMaxConcurrency) {
-        this(taskExecutor, defaultBatchSize, defaultMaxConcurrency, DEFAULT_PROGRESS_LOG_INTERVAL);
+        this(taskExecutor, defaultBatchSize, defaultMaxConcurrency, DEFAULT_PROGRESS_LOG_INTERVAL, null);
     }
 
     public XxlShardingBatchTemplate(Executor taskExecutor, int defaultBatchSize, int defaultMaxConcurrency, int progressLogInterval) {
+        this(taskExecutor, defaultBatchSize, defaultMaxConcurrency, progressLogInterval, null);
+    }
+
+    /**
+     * 构造具备全局默认失败切片回调的分片流式批处理模板
+     *
+     * @param taskExecutor          受管并发线程池（为 null 时回退 Spring {@code taskExecutor} 或公共池）
+     * @param defaultBatchSize      默认切片大小
+     * @param defaultMaxConcurrency 默认最大并发切片数
+     * @param progressLogInterval   默认进度日志打卡步长
+     * @param defaultFailureHandler 全局默认失败切片回调 SPI（可为 null）
+     */
+    public XxlShardingBatchTemplate(
+            Executor taskExecutor,
+            int defaultBatchSize,
+            int defaultMaxConcurrency,
+            int progressLogInterval,
+            BatchFailureHandler<?> defaultFailureHandler) {
         this.taskExecutor = taskExecutor;
         this.defaultBatchSize = defaultBatchSize > 0 ? defaultBatchSize : DEFAULT_BATCH_SIZE;
         this.defaultMaxConcurrency = defaultMaxConcurrency > 0 ? defaultMaxConcurrency : DEFAULT_MAX_CONCURRENCY;
         this.progressLogInterval = progressLogInterval > 0 ? progressLogInterval : DEFAULT_PROGRESS_LOG_INTERVAL;
+        this.defaultFailureHandler = defaultFailureHandler;
+    }
+
+    /**
+     * 内部轻量派生视图构造器，完整保留调用方显式指定的不可变策略快照
+     *
+     * @param taskExecutor          受管并发线程池
+     * @param defaultBatchSize      默认切片大小
+     * @param defaultMaxConcurrency 默认最大并发切片数
+     * @param progressLogInterval   进度日志打卡步长（允许 {@code <= 0} 表示关闭）
+     * @param failFast              快速失败策略快照
+     * @param defaultFailureHandler 全局默认失败切片回调 SPI
+     */
+    protected XxlShardingBatchTemplate(
+            Executor taskExecutor,
+            int defaultBatchSize,
+            int defaultMaxConcurrency,
+            int progressLogInterval,
+            boolean failFast,
+            BatchFailureHandler<?> defaultFailureHandler) {
+        this.taskExecutor = taskExecutor;
+        this.defaultBatchSize = defaultBatchSize;
+        this.defaultMaxConcurrency = defaultMaxConcurrency;
+        this.progressLogInterval = progressLogInterval;
+        this.failFast = failFast;
+        this.defaultFailureHandler = defaultFailureHandler;
+    }
+
+    protected Executor getTaskExecutor() {
+        return taskExecutor;
     }
 
     public int getDefaultBatchSize() {
@@ -86,10 +136,26 @@ public class XxlShardingBatchTemplate {
         return defaultMaxConcurrency;
     }
 
+    /**
+     * 获取当前模板绑定的全局默认失败切片回调 SPI
+     *
+     * @return 全局默认 {@link BatchFailureHandler}，未装配时返回 null
+     */
+    public BatchFailureHandler<?> getDefaultFailureHandler() {
+        return defaultFailureHandler;
+    }
+
     public boolean isFailFast() {
         return failFast;
     }
 
+    /**
+     * 设置快速失败策略（注意：直接修改共享单例字段存在并发串扰风险）
+     *
+     * @param failFast true 遇异常快速失败；false 收集异常并继续后续切片
+     * @deprecated 请改用无状态不可变派生视图 {@link #withFailFast(boolean)}
+     */
+    @Deprecated(since = "1.2.0")
     public void setFailFast(boolean failFast) {
         this.failFast = failFast;
     }
@@ -98,8 +164,53 @@ public class XxlShardingBatchTemplate {
         return progressLogInterval;
     }
 
+    /**
+     * 设置流式进度日志打卡步长（注意：直接修改共享单例字段存在并发串扰风险）
+     *
+     * @param progressLogInterval 进度输出间隔条数（{@code <= 0} 时关闭自动进度输出）
+     * @deprecated 请改用无状态不可变派生视图 {@link #withProgressLogInterval(int)}
+     */
+    @Deprecated(since = "1.2.0")
     public void setProgressLogInterval(int progressLogInterval) {
         this.progressLogInterval = progressLogInterval;
+    }
+
+    /**
+     * 基于当前模板派生携带指定 {@code failFast} 策略的轻量无状态视图实例
+     *
+     * <p>底层受管线程池与全局 {@link BatchFailureHandler} 与原实例共享，原单例自身配置完全不受影响。</p>
+     *
+     * @param failFast 目标快速失败策略
+     * @return 具备独立 {@code failFast} 策略的派生视图实例
+     */
+    public XxlShardingBatchTemplate withFailFast(boolean failFast) {
+        return new XxlShardingBatchTemplate(
+                this.taskExecutor,
+                this.defaultBatchSize,
+                this.defaultMaxConcurrency,
+                this.progressLogInterval,
+                failFast,
+                this.defaultFailureHandler
+        );
+    }
+
+    /**
+     * 基于当前模板派生携带指定 {@code progressLogInterval} 步长的轻量无状态视图实例
+     *
+     * <p>底层受管线程池与全局 {@link BatchFailureHandler} 与原实例共享，原单例自身配置完全不受影响。</p>
+     *
+     * @param progressLogInterval 进度日志打卡步长（{@code <= 0} 时关闭）
+     * @return 具备独立进度打卡步长的派生视图实例
+     */
+    public XxlShardingBatchTemplate withProgressLogInterval(int progressLogInterval) {
+        return new XxlShardingBatchTemplate(
+                this.taskExecutor,
+                this.defaultBatchSize,
+                this.defaultMaxConcurrency,
+                progressLogInterval,
+                this.failFast,
+                this.defaultFailureHandler
+        );
     }
 
     // ==================== 进度打卡与失败项收集辅助 ====================
@@ -163,6 +274,79 @@ public class XxlShardingBatchTemplate {
             }
         }
         return chunk.size() > spaceLeft;
+    }
+
+    /**
+     * 在显式 {@link ReentrantLock} 保护下并发安全地记录失败项并维护截断标志
+     *
+     * @param failedItems       目标有界失败记录列表
+     * @param lock              保护失败列表的显式可重入锁
+     * @param truncatedFailures 截断标记原子开关
+     * @param batch             当前失败切片数据
+     * @param <T>               实体类型
+     */
+    protected static <T> void recordFailedItems(
+            List<Object> failedItems,
+            ReentrantLock lock,
+            AtomicBoolean truncatedFailures,
+            List<T> batch) {
+        lock.lock();
+        try {
+            if (collectFailedItems(failedItems, batch)) {
+                truncatedFailures.set(true);
+            }
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+
+    /**
+     * 在显式 {@link ReentrantLock} 保护下读取失败记录列表的安全只读快照
+     *
+     * @param failedItems 失败记录列表
+     * @param lock        保护失败列表的显式可重入锁
+     * @return 不可变快照拷贝
+     */
+    protected static List<Object> snapshotFailedItems(List<Object> failedItems, ReentrantLock lock) {
+        lock.lock();
+        try {
+            return new ArrayList<>(failedItems);
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+
+    /**
+     * 按照“就近显式回调优先、全局默认 Bean 缺省兜底”两级仲裁规则分派失败切片处理
+     *
+     * @param explicitFailureHandler 单次调用显式传入的失败回调（可为 null）
+     * @param failedBatch            失败切片死信模型
+     * @param errorLogPrefix         回调异常时的日志前缀
+     * @param <T>                    实体类型
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    protected <T> void handleFailedBatch(
+            Consumer<FailedBatch<T>> explicitFailureHandler,
+            FailedBatch<T> failedBatch,
+            String errorLogPrefix) {
+        if (failedBatch == null) {
+            return;
+        }
+        Consumer<FailedBatch<T>> effectiveHandler = explicitFailureHandler != null
+                ? explicitFailureHandler
+                : (BatchFailureHandler) this.defaultFailureHandler;
+        if (effectiveHandler == null) {
+            return;
+        }
+        try {
+            effectiveHandler.accept(failedBatch);
+        } catch (Throwable callbackEx) {
+            log.error("{}: {}", errorLogPrefix, callbackEx.getMessage(), callbackEx);
+        }
     }
 
     // ==================== 1. 基于游标/步长流式分页 (单线程顺序消费) ====================
@@ -314,14 +498,8 @@ public class XxlShardingBatchTemplate {
                     truncatedFailures = true;
                 }
 
-                // 2. 触发失败补偿回调
-                if (failureHandler != null) {
-                    try {
-                        failureHandler.accept(new FailedBatch<>(chunk, batchCount, lastId, t));
-                    } catch (Throwable callbackEx) {
-                        log.error("分片流式批处理失败回调执行异常: {}", callbackEx.getMessage(), callbackEx);
-                    }
-                }
+                // 2. 按照“就近显式优先、全局默认兜底”规则触发失败补偿回调
+                handleFailedBatch(failureHandler, new FailedBatch<>(chunk, batchCount, lastId, t), "分片流式批处理失败回调执行异常");
 
                 if (!failFast) {
                     log.error("分片流式批处理执行异常 [批次: {}, 当前游标 ID: {}]: {}", batchCount, lastId, t.getMessage(), t);
@@ -532,14 +710,8 @@ public class XxlShardingBatchTemplate {
                         truncatedFailures = true;
                     }
 
-                    // 2. 触发失败补偿回调
-                    if (failureHandler != null) {
-                        try {
-                            failureHandler.accept(new FailedBatch<>(matchedChunk, batchCount, lastId, t));
-                        } catch (Throwable callbackEx) {
-                            log.error("分片流式批处理失败回调执行异常: {}", callbackEx.getMessage(), callbackEx);
-                        }
-                    }
+                    // 2. 按照“就近显式优先、全局默认兜底”规则触发失败补偿回调
+                    handleFailedBatch(failureHandler, new FailedBatch<>(matchedChunk, batchCount, lastId, t), "分片流式批处理失败回调执行异常");
 
                     if (!failFast) {
                         log.error("分片流式批处理执行异常 [批次: {}, 当前游标 ID: {}]: {}", batchCount, lastId, t.getMessage(), t);
@@ -656,18 +828,20 @@ public class XxlShardingBatchTemplate {
         TaskSnapshot snapshot = TaskSnapshot.capture();
 
         ID lastId = initialId;
+        boolean effectiveFailFast = this.failFast;
         AtomicLong totalCount = new AtomicLong(0);
         AtomicLong successCount = new AtomicLong(0);
         AtomicLong failCount = new AtomicLong(0);
         AtomicInteger batchCount = new AtomicInteger(0);
         AtomicReference<Throwable> firstError = new AtomicReference<>();
-        List<Object> failedItems = Collections.synchronizedList(new ArrayList<>());
+        List<Object> failedItems = new ArrayList<>();
+        ReentrantLock failedItemsLock = new ReentrantLock();
         AtomicBoolean truncatedFailures = new AtomicBoolean(false);
         AtomicLong processedCount = new AtomicLong(0);
         AtomicLong lastReportedCount = new AtomicLong(0);
 
         while (true) {
-            if (failFast && firstError.get() != null) {
+            if (effectiveFailFast && firstError.get() != null) {
                 log.warn("检测到前序并发切片执行失败，快速熔断终止后续拉取");
                 break;
             }
@@ -707,26 +881,18 @@ public class XxlShardingBatchTemplate {
                         failCount.addAndGet(chunkSize);
                         firstError.compareAndSet(null, t);
 
-                        // 1. 收集失败项至有界集合 (并发安全)
-                        synchronized (failedItems) {
-                            if (collectFailedItems(failedItems, immutableBatch)) {
-                                truncatedFailures.set(true);
-                            }
-                        }
+                        // 1. 收集失败项至有界集合 (ReentrantLock 并发安全保护)
+                        recordFailedItems(failedItems, failedItemsLock, truncatedFailures, immutableBatch);
 
-                        // 2. 触发失败补偿回调
-                        if (failureHandler != null) {
-                            try {
-                                failureHandler.accept(new FailedBatch<>(immutableBatch, currentBatchIndex, currentBatchCursor, t));
-                            } catch (Throwable callbackEx) {
-                                log.error("并发分片批处理失败回调执行异常: {}", callbackEx.getMessage(), callbackEx);
-                            }
-                        }
+                        // 2. 按照“就近显式优先、全局默认兜底”规则触发失败补偿回调
+                        handleFailedBatch(failureHandler,
+                                new FailedBatch<>(immutableBatch, currentBatchIndex, currentBatchCursor, t),
+                                "并发分片批处理失败回调执行异常");
 
-                        if (!failFast) {
+                        if (!effectiveFailFast) {
                             log.error("并行分片批处理异常 [批次: {}]: {}", currentBatchIndex, t.getMessage(), t);
                         }
-                        if (failFast) {
+                        if (effectiveFailFast) {
                             if (t instanceof RuntimeException re) {
                                 throw re;
                             }
@@ -753,7 +919,7 @@ public class XxlShardingBatchTemplate {
         try {
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
         } catch (Throwable ex) {
-            if (failFast) {
+            if (effectiveFailFast) {
                 Throwable cause = firstError.get() != null ? firstError.get() : (ex.getCause() != null ? ex.getCause() : ex);
                 if (cause instanceof RuntimeException re) {
                     throw re;
@@ -762,7 +928,7 @@ public class XxlShardingBatchTemplate {
             }
         }
 
-        if (failFast && firstError.get() != null) {
+        if (effectiveFailFast && firstError.get() != null) {
             Throwable t = firstError.get();
             if (t instanceof RuntimeException re) {
                 throw re;
@@ -771,7 +937,15 @@ public class XxlShardingBatchTemplate {
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration, failedItems, truncatedFailures.get());
+        return new BatchExecutionResult(
+                totalCount.get(),
+                successCount.get(),
+                failCount.get(),
+                batchCount.get(),
+                duration,
+                snapshotFailedItems(failedItems, failedItemsLock),
+                truncatedFailures.get()
+        );
     }
 
     /**
@@ -836,18 +1010,20 @@ public class XxlShardingBatchTemplate {
         TaskSnapshot snapshot = TaskSnapshot.capture();
 
         Long lastId = initialId;
+        boolean effectiveFailFast = this.failFast;
         AtomicLong totalCount = new AtomicLong(0);
         AtomicLong successCount = new AtomicLong(0);
         AtomicLong failCount = new AtomicLong(0);
         AtomicInteger batchCount = new AtomicInteger(0);
         AtomicReference<Throwable> firstError = new AtomicReference<>();
-        List<Object> failedItems = Collections.synchronizedList(new ArrayList<>());
+        List<Object> failedItems = new ArrayList<>();
+        ReentrantLock failedItemsLock = new ReentrantLock();
         AtomicBoolean truncatedFailures = new AtomicBoolean(false);
         AtomicLong processedCount = new AtomicLong(0);
         AtomicLong lastReportedCount = new AtomicLong(0);
 
         while (true) {
-            if (failFast && firstError.get() != null) {
+            if (effectiveFailFast && firstError.get() != null) {
                 log.warn("检测到前序并发切片执行失败，快速熔断终止后续拉取");
                 break;
             }
@@ -898,26 +1074,18 @@ public class XxlShardingBatchTemplate {
                             failCount.addAndGet(matchedSize);
                             firstError.compareAndSet(null, t);
 
-                            // 1. 收集失败项至有界集合 (并发安全)
-                            synchronized (failedItems) {
-                                if (collectFailedItems(failedItems, immutableBatch)) {
-                                    truncatedFailures.set(true);
-                                }
-                            }
+                            // 1. 收集失败项至有界集合 (ReentrantLock 并发安全保护)
+                            recordFailedItems(failedItems, failedItemsLock, truncatedFailures, immutableBatch);
 
-                            // 2. 触发失败补偿回调
-                            if (failureHandler != null) {
-                                try {
-                                    failureHandler.accept(new FailedBatch<>(immutableBatch, currentBatchIndex, currentBatchCursor, t));
-                                } catch (Throwable callbackEx) {
-                                    log.error("并发分片批处理失败回调执行异常: {}", callbackEx.getMessage(), callbackEx);
-                                }
-                            }
+                            // 2. 按照“就近显式优先、全局默认兜底”规则触发失败补偿回调
+                            handleFailedBatch(failureHandler,
+                                    new FailedBatch<>(immutableBatch, currentBatchIndex, currentBatchCursor, t),
+                                    "并发分片批处理失败回调执行异常");
 
-                            if (!failFast) {
+                            if (!effectiveFailFast) {
                                 log.error("并行分片批处理异常 [批次: {}]: {}", currentBatchIndex, t.getMessage(), t);
                             }
-                            if (failFast) {
+                            if (effectiveFailFast) {
                                 if (t instanceof RuntimeException re) {
                                     throw re;
                                 }
@@ -944,7 +1112,7 @@ public class XxlShardingBatchTemplate {
         try {
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
         } catch (Throwable ex) {
-            if (failFast) {
+            if (effectiveFailFast) {
                 Throwable cause = firstError.get() != null ? firstError.get() : (ex.getCause() != null ? ex.getCause() : ex);
                 if (cause instanceof RuntimeException re) {
                     throw re;
@@ -953,7 +1121,7 @@ public class XxlShardingBatchTemplate {
             }
         }
 
-        if (failFast && firstError.get() != null) {
+        if (effectiveFailFast && firstError.get() != null) {
             Throwable t = firstError.get();
             if (t instanceof RuntimeException re) {
                 throw re;
@@ -962,10 +1130,18 @@ public class XxlShardingBatchTemplate {
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration, failedItems, truncatedFailures.get());
+        return new BatchExecutionResult(
+                totalCount.get(),
+                successCount.get(),
+                failCount.get(),
+                batchCount.get(),
+                duration,
+                snapshotFailedItems(failedItems, failedItemsLock),
+                truncatedFailures.get()
+        );
     }
 
-    private void checkAndReportProgress(long currentProcessed, AtomicLong lastReported, long successCount, long failCount, int batchCount, long startTime) {
+    protected void checkAndReportProgress(long currentProcessed, AtomicLong lastReported, long successCount, long failCount, int batchCount, long startTime) {
         if (progressLogInterval <= 0) {
             return;
         }
