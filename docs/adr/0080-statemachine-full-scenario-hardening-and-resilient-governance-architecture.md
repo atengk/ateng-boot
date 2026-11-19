@@ -116,3 +116,14 @@ flowchart TD
 | `59006` | `MACHINE_NOT_FOUND` | 未找到指定标识的状态机实例 | 404 Not Found |
 | `59007` | `STATE_LIFECYCLE_FAILED`| 状态进入(onEntry)或退出(onExit)生命周期执行异常 | 500 Internal Error |
 | `59008` | `BATCH_TRANSITION_FAILED`| 批量状态流转部分或全量失败 | 500 Internal Error |
+
+---
+
+## 演进补充：全场景二阶加固 (2026-11-19)
+
+围绕工业级代码成熟度九道防线，在保持既有公共契约 100% 向后兼容的前提下完成以下五项纵深加固：
+1. **批量 CAS-First 安全流转 (`fireEventBatchWithCas` / `StateMachineCasTemplate.executeBatch`)**：补齐批处理场景下对 `CasUpdater` 的原生对称支持，严格确保批处理内每笔实体同样执行“只读试算 $\to$ CAS 条件更新 $\to$ 回写实体 $\to$ 生命周期与 Action 链”时序，彻底消除在 `setter` 中执行 CAS 更新导致的冲突副作用泄漏；
+2. **精确幂等策略裁决**：升级幂等索引与判定逻辑，对 `ChoiceTransition` 结合运行时非空 `Context` 动态校验解析出的目标状态是否等于当前状态（杜绝跨分支误命中），并在内部执行回执中精确区分真实跃迁与幂等短路放行（修复 `InternalTransition` 首次 `fireEventWithCasQuietly` 误标为 `idempotent = true`）；
+3. **切面拦截器 `machineId` 感知、隔离与慢跃迁阈值**：为 `StateMachineInterceptor` 扩展 `supports(String machineId)` 与携带 `machineId` 的 `default` 三阶段钩子；`MetricsStateMachineInterceptor` 统一注入 `machine_id` 标签；`StateMachineProperties.Logging` 新增 `Duration slowTransitionThreshold = Duration.ofMillis(500)`，`LoggingStateMachineInterceptor` 支持超阈值 `WARN` 慢跃迁告警及 `JsonUtil` / 正则兜底的上下文安全脱敏；
+4. **四维上下文审计对齐**：`TransitionAuditEvent` 补齐自动采集自 `TenantContextHolder.getTenantId()` 的 `tenantId` 与 `idempotent` 标记；
+5. **只读拓扑内省与构建期死路由防卫**：`StateMachine` 新增 `getAllStates()`、`getAllEvents()`、`getPossibleTargetStates(S, E)` 只读门面；`DefaultStateMachineBuilder.build(machineId)` 构建期 Fail-Fast 拦截无条件冲突死路由及 `Choice` 混用。

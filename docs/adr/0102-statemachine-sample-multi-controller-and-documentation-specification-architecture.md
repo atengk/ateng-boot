@@ -51,21 +51,21 @@ flowchart TD
   1. `StateMachineOrderController`（`/sample/statemachine/order/*`）：覆盖电商订单全生命周期（创建、支付、风控评估、发货、追加物流轨迹、妥投、完结、取消及退款）；
   2. `StateMachineProbeController`（`/sample/statemachine/probe/*`）：覆盖零副作用只读预检探测（`canFire` / `verifyTransition` / `getAvailableEvents`）与前端动态操作按钮权限评估；
   3. `StateMachineCallbackController`（`/sample/statemachine/callback/*`）：覆盖第三方支付异步回调处理、CAS-First 乐观锁并发防重与高并发多线程冲突模拟；
-  4. `StateMachineBatchController`（`/sample/statemachine/batch/*`）：覆盖超时订单大批量切片关单（`fireEventBatch`）与 Fail-Safe 局部异常容错隔离；
-  5. `StateMachineTopologyController`（`/sample/statemachine/topology/*`）：覆盖 Mermaid / PlantUML 状态机拓扑图动态导出及全局注册表（`StateMachineFactory`）单例内省。
-- 遵循 Zero-Entity-Leakage 契约，Controller 传输边界 100% 严禁暴露 ORM 实体（`OrderDO`），入参统一采用强类型 Request DTO（7 个 DTO 均标配 JSR-303 校验），出参统一显式返回强类型 `Result<T>` 配合 5 个领域 VO（`OrderVO`、`OrderTransitionVO`、`OrderButtonActionVO`、`OrderBatchResultVO`、`OrderConcurrentSimulationVO`）。
+  4. `StateMachineBatchController`（`/sample/statemachine/batch/*`）：覆盖超时订单大批量切片 CAS 安全关单（`fireEventBatchWithCas`）与 Fail-Safe 局部异常容错隔离；
+  5. `StateMachineTopologyController`（`/sample/statemachine/topology/*`）：覆盖 Mermaid / PlantUML 状态机拓扑图动态导出、全局注册表（`StateMachineFactory`）单例内省及只读拓扑元数据内省（`GET /metadata`）。
+- 遵循 Zero-Entity-Leakage 契约，Controller 传输边界 100% 严禁暴露 ORM 实体（`OrderDO`），入参统一采用强类型 Request DTO（7 个 DTO 均标配 JSR-303 校验），出参统一显式返回强类型 `Result<T>` 配合 6 个领域 VO（`OrderVO`、`OrderTransitionVO`、`OrderButtonActionVO`、`OrderBatchResultVO`、`OrderConcurrentSimulationVO`、`OrderTopologyMetadataVO`）。
 
 ### 2. 1:1 逆向交付五维生产文档与四段式极简体验卡
-- **Sample 极简体验卡**：重构 `ateng-boot-sample-statemachine/README.md`，聚焦端口启动（8080）、双模切换、21 组全场景 cURL 体验命令表与回归命令，彻底移除长篇架构原理抄录；
+- **Sample 极简体验卡**：重构 `ateng-boot-sample-statemachine/README.md`，聚焦端口启动（8080）、双模切换、22 组全场景 cURL 体验命令表与回归命令，彻底移除长篇架构原理抄录；
 - **Starter 5D 权威文档**：重构 `ateng-boot-statemachine/README.md`，确立 8 大标准章节体系：
   - 第 0 章：特性与公共 API 全景速查矩阵（100% 覆盖门面、构建器、配置项、SPI 与异常体系，转义泛型字符）；
-  - 第 1~2 章：模块定位快速起步与无状态单例架构拓扑（集成订单状态流转图与 CAS-First 执行时序图）；
-  - 第 3~6 章：4 大业务能力领域大章（DSL 规则编排套件、只读预检探测套件、CAS 乐观锁防重与事务同步套件、大批量切片流转与可观测性套件），每个子小节均严格在同一屏幕内闭环“专属 YAML + 真实 Sample Java + 机制边界”三要素；
-  - 第 7~8 章：生产扩展接管、核心生产边界、全量 YAML 配置字典及 Sample Controller 路由映射附录。
+  - 第 1~2 章：模块定位快速起步（含 BOM 免版本与独立显式版本双模 Maven 坐标）与无状态单例架构拓扑（集成订单状态流转图与 CAS-First 执行时序图）；
+  - 第 3~6 章：4 大业务能力领域大章（DSL 规则编排套件、只读预检探测与拓扑内省套件、CAS 乐观锁防重与事务同步套件、大批量切片 CAS 流转与可观测性套件），每个子小节均严格在同一屏幕内闭环“专属 YAML + 真实 Sample Java + 机制边界”三要素；
+  - 第 7~8 章：生产扩展接管（含 `StateMachineInterceptor.supports` 多机台隔离）、核心生产边界、全量 YAML 配置字典及 Sample Controller 路由映射附录。
 
 ### 3. 双轨全真自动化回归测试守护
-- 交付 `SampleStateMachineWebControllerTest`：包含 15 项全场景 MockMvc 测试，100% 覆盖 5 大 Controller 的全部 HTTP 端点，断言 HTTP 状态码、JSR-303 快速失败拦截与 `Result<T>` 强类型契约；
-- 保留并调优 `OrderLifecycleIntegrationTest`：包含 13 项场景集成测试，专职断言 4 大专职场景服务、CAS-First 乐观锁前置时序并发防重、`performAfterCommit` 本地事务后钩子、大批量切片流转以及 `StateTransitionAuditListener` 轨迹审计监听器。
+- 交付 `SampleStateMachineWebControllerTest`：包含 15 项全场景 MockMvc 测试，100% 覆盖 5 大 Controller 的全部 22 个 HTTP 端点，断言 HTTP 状态码、JSR-303 快速失败拦截与 `Result<T>` 强类型契约；
+- 保留并调优 `OrderLifecycleIntegrationTest`：包含 16 项场景集成测试（叠加 Starter 130 项核心单元测试），专职断言 4 大专职场景服务、单笔及批量 CAS-First 乐观锁前置时序并发防重、精确幂等与版本号一致性、`performAfterCommit` 本地事务后钩子以及 `StateTransitionAuditListener` 轨迹审计监听器。
 
 ---
 

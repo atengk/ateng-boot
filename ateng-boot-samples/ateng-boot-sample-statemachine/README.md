@@ -49,6 +49,7 @@
 | **导出动态 Mermaid 拓扑图源码** | `StateMachineTopologyController` | `GET /sample/statemachine/topology/mermaid` | `curl -s "http://localhost:8080/sample/statemachine/topology/mermaid"` |
 | **导出动态 PlantUML 拓扑图源码** | `StateMachineTopologyController` | `GET /sample/statemachine/topology/plantuml` | `curl -s "http://localhost:8080/sample/statemachine/topology/plantuml"` |
 | **探查全局已注册机台标识集合** | `StateMachineTopologyController` | `GET /sample/statemachine/topology/machines` | `curl -s "http://localhost:8080/sample/statemachine/topology/machines"` |
+| **只读内省状态机拓扑元数据** | `StateMachineTopologyController` | `GET /sample/statemachine/topology/metadata` | `curl -s "http://localhost:8080/sample/statemachine/topology/metadata"` |
 
 ---
 
